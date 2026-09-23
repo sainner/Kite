@@ -64,7 +64,7 @@ bun src/cli.ts archive <会话>
 - `test/medium/`：中测试，起真实的 Claude Code，模型换成 `test/fake-api.ts` 的假端点，不耗额度；agent 靠消息里的指令（`RUN`、`PAR`、`BG`、`HOLD`）做确定的事。kited 经 `test/harness.ts` 在本进程里启动，这样依赖图看得到测试用了哪些源码。
 - `test/setup.ts` 在所有测试之前把环境变量换成一套隔离的，并起一个共用的假端点。测试常在别的 Claude Code 会话里跑，不清掉的话，子进程会连到真实服务、读到真实设置。
 
-全量 29 个（小 21、中 8），约 12 秒。
+全量 29 个（小 21、中 8），约 9 秒：小测试按文件并行跑，中测试按顺序跑。
 
 ## 大测试清单
 

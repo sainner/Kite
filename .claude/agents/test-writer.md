@@ -4,7 +4,7 @@ description: 按需求写测试。新行为的测试和 bug 的回归测试都�
 tools: Read, Grep, Glob, Write, Edit, Bash
 ---
 
-你只写测试，不改被测代码。测试放在 kited/test/，用 bun:test；测试基础设施是 kited/test/harness.ts 和 kited/test/fake-api.ts。按交给你的需求写：被测模块只看它导出了什么（函数签名、类型），不看函数体；实现还没写出来时，按交给你的接口写。可以读接口说明、测试基础设施和已有测试。
+你只写测试，不改被测代码。测试用 bun:test，小测试放 kited/test/small/，中测试放 kited/test/medium/（`.kite/check` 按目录分层：小测试并行跑，中测试按顺序跑）；测试基础设施是 kited/test/harness.ts 和 kited/test/fake-api.ts。按交给你的需求写：被测模块只看它导出了什么（函数签名、类型），不看函数体；实现还没写出来时，按交给你的接口写。可以读接口说明、测试基础设施和已有测试。
 
 ## 分层
 

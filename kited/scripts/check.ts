@@ -10,7 +10,6 @@ import { join } from 'node:path';
 const KITED = join(import.meta.dir, '..');
 const LOG_DIR = join(KITED, 'node_modules', '.cache', 'kite-check');
 const LOG = join(LOG_DIR, 'last.log');
-const REPORT = join(LOG_DIR, 'last.xml');
 
 /** 预算，和 .claude/agents/test-writer.md 里的分层表一致。 */
 const LIMIT = { small: 1, medium: 2 };
@@ -53,42 +52,51 @@ const changed = [
 const full = process.argv.includes('--all') || changed.some((f) => FULL_TRIGGERS.includes(f));
 const scope = full ? '全量' : '受影响的';
 
-// 3. 跑测试
-rmSync(REPORT, { force: true });
+// 3. 跑测试。小测试只调 git、互不相干，按文件分到多个进程并行跑；
+// 中测试每个都起 Claude Code，并行就是同时起好几个，照旧按顺序跑
+type Tier = 'small' | 'medium';
+const TIERS: Array<{ tier: Tier; args: string[] }> = [
+  { tier: 'small', args: ['--parallel'] },
+  { tier: 'medium', args: [] },
+];
+const unescape = (s: string) => s.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#10;/g, '\n').replace(/&amp;/g, '&');
+interface Case { name: string; file: string; time: number; tier: Tier; failure?: string }
+const cases: Case[] = [];
+const problems: string[] = [];
 const started = performance.now();
-const tests = run(['bun', 'test', ...(full ? [] : [base ? `--changed=${base}` : '--changed']), '--reporter=junit', `--reporter-outfile=${REPORT}`]);
+for (const { tier, args } of TIERS) {
+  const report = join(LOG_DIR, `${tier}.xml`);
+  rmSync(report, { force: true });
+  const tests = run(['bun', 'test', ...args, ...(full ? [] : [base ? `--changed=${base}` : '--changed']), `test/${tier}`, '--reporter=junit', `--reporter-outfile=${report}`]);
+  // 没有受影响的测试时 bun 不写报告，退出码为 0
+  if (!existsSync(report)) {
+    if (tests.code !== 0) problems.push(`${tier === 'small' ? '小' : '中'}测试没跑起来：`, ...tests.out.trim().split('\n').slice(-15).map((l) => `  ${l}`));
+    continue;
+  }
+  const before = cases.length;
+  for (const m of readFileSync(report, 'utf8').matchAll(/<testcase name="([^"]*)"[^>]*? time="([^"]*)" file="([^"]*)"[^>]*?(?:\/>|>([\s\S]*?)<\/testcase>)/g)) {
+    // 失败项有时只有 type 没有 message，比如 <failure type="AssertionError" />，细节在日志里
+    const tag = m[4] ? /<failure\b([^>]*)>/.exec(m[4])?.[1] : undefined;
+    const failure = tag === undefined ? undefined : unescape(/message="([^"]*)"/.exec(tag)?.[1] ?? /type="([^"]*)"/.exec(tag)?.[1] ?? '失败');
+    cases.push({ name: unescape(m[1]!), time: Number(m[2]), file: m[3]!, tier, ...(failure !== undefined ? { failure } : {}) });
+  }
+  // 测试进程报错退出、报告里却没有失败项：比如某个文件加载就出错了
+  if (tests.code !== 0 && !cases.slice(before).some((c) => c.failure !== undefined)) {
+    problems.push('测试进程出错退出：', ...tests.out.trim().split('\n').slice(-15).map((l) => `  ${l}`));
+  }
+}
 const seconds = (performance.now() - started) / 1000;
 
-// 4. 读报告，核对预算
-interface Case { name: string; file: string; time: number; failure?: string }
-// 没有受影响的测试时 bun 不写报告，退出码为 0
-if (!existsSync(REPORT) && tests.code !== 0) fail(['测试没跑起来：', ...tests.out.trim().split('\n').slice(-15).map((l) => `  ${l}`)]);
-const xml = existsSync(REPORT) ? readFileSync(REPORT, 'utf8') : '';
-const unescape = (s: string) => s.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#10;/g, '\n').replace(/&amp;/g, '&');
-const cases: Case[] = [];
-for (const m of xml.matchAll(/<testcase name="([^"]*)"[^>]*? time="([^"]*)" file="([^"]*)"[^>]*?(?:\/>|>([\s\S]*?)<\/testcase>)/g)) {
-  // 失败项有时只有 type 没有 message，比如 <failure type="AssertionError" />，细节在日志里
-  const tag = m[4] ? /<failure\b([^>]*)>/.exec(m[4])?.[1] : undefined;
-  const failure = tag === undefined ? undefined : unescape(/message="([^"]*)"/.exec(tag)?.[1] ?? /type="([^"]*)"/.exec(tag)?.[1] ?? '失败');
-  cases.push({ name: unescape(m[1]!), time: Number(m[2]), file: m[3]!, ...(failure !== undefined ? { failure } : {}) });
-}
-const tier = (file: string) => (file.includes('/small/') ? 'small' : file.includes('/medium/') ? 'medium' : null);
-
-const problems: string[] = [];
-const unlayered = new Set<string>();
+// 4. 核对规则和预算
+const unlayered = run(['git', 'ls-files', '--cached', '--others', '--exclude-standard', 'test']).out.split('\n')
+  .filter((f) => f.endsWith('.test.ts') && !/^test\/(small|medium)\//.test(f));
+for (const f of unlayered) problems.push(`没分层：${f} 要放在 test/small/ 或 test/medium/`);
 for (const c of cases) {
   if (c.failure !== undefined) problems.push(`失败：${c.file} › ${c.name}\n    ${c.failure.split('\n')[0]}`);
-  const t = tier(c.file);
-  if (!t) unlayered.add(c.file);
-  else if (c.time > LIMIT[t]) problems.push(`超时：${c.file} › ${c.name} 用了 ${c.time.toFixed(2)} 秒，${t === 'small' ? '小' : '中'}测试上限 ${LIMIT[t]} 秒`);
-}
-for (const f of unlayered) problems.push(`没分层：${f} 要放在 test/small/ 或 test/medium/`);
-// 测试进程报错退出、报告里却没有失败项：比如某个文件加载就出错了
-if (tests.code !== 0 && !cases.some((c) => c.failure !== undefined)) {
-  problems.push('测试进程出错退出：', ...tests.out.trim().split('\n').slice(-15).map((l) => `  ${l}`));
+  if (c.time > LIMIT[c.tier]) problems.push(`超时：${c.file} › ${c.name} 用了 ${c.time.toFixed(2)} 秒，${c.tier === 'small' ? '小' : '中'}测试上限 ${LIMIT[c.tier]} 秒`);
 }
 if (full) {
-  const medium = cases.filter((c) => tier(c.file) === 'medium').length;
+  const medium = cases.filter((c) => c.tier === 'medium').length;
   if (medium > MEDIUM_MAX) problems.push(`中测试有 ${medium} 个，上限 ${MEDIUM_MAX} 个`);
   if (seconds > TOTAL_MAX) problems.push(`全量用了 ${seconds.toFixed(1)} 秒，上限 ${TOTAL_MAX} 秒`);
 }

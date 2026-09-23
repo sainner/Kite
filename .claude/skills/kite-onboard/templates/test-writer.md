@@ -30,6 +30,7 @@ tools: Read, Grep, Glob, Write, Edit, Bash
 ## 写法
 
 - 测试名写成一句行为，读名字就知道挡住什么。
+- 小测试和中测试放在不同的目录（<比如 test/small/、test/medium/>），`.kite/check` 按目录分层：小测试并行跑，中测试按顺序跑。
 - 测试要 import 它测的代码，模板、配置这类非代码的输入也要 import。`.kite/check` 沿 import 关系找受影响的测试，只按路径起子进程，依赖就找不到。
 - 不用睡眠等时间，等事件或状态。
 - 每个测试自己建临时目录，结束时删掉。
