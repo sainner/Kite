@@ -13,6 +13,34 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { join } from 'node:path';
 
+/*
+ * 会话里去掉的上游功能：和 Kite 自己的机制冲突的，以及依赖 Kite 没有的宿主（终端、桌面 App、claude.ai）的。
+ * 会话上下文里有什么见 kited/README.md「会话的上下文」。
+ */
+const DISALLOWED_TOOLS = [
+  // 每个会话本来就在 Kite 建的工作树里，agent 自己进出工作树，快照和合回主线就对不上了
+  'EnterWorktree', 'ExitWorktree',
+  // 通知由 Kite App 负责
+  'PushNotification',
+  // claude.ai 的云端例行任务、设计系统同步
+  'RemoteTrigger', 'DesignSync',
+  // 交给宿主界面渲染审查结果；Kite App 没有这个界面，结果照常写在回复里
+  'ReportFindings',
+  // 配置终端状态栏的子 agent
+  'Agent(statusline-setup)',
+];
+const SKILLS_OFF = [
+  // 终端快捷键；Kite 会话不弹审批
+  'keybindings-help', 'fewer-permission-prompts',
+  // 生成 CLAUDE.md，和项目规范冲突：规范里 CLAUDE.md 只有一行 @AGENTS.md
+  'init',
+  // claude.ai 的云端例行任务
+  'schedule',
+  // 从 claude.ai 同步来的，要用桌面 App 的内置浏览器、Chrome 扩展、操控电脑或 claude.ai 的记忆，Kite 会话里没有
+  'anthropic-skills:built-in-browser', 'anthropic-skills:chrome-browser', 'anthropic-skills:computer-use',
+  'anthropic-skills:morning', 'anthropic-skills:import-memory',
+];
+
 /**
  * 一条要投递的消息。human 为 true 表示人发的，记录里带 origin: human；Kite 自己发的（如合并冲突的说明）不带，
  * 翻译时靠这一点区分。
@@ -172,7 +200,15 @@ export class Runner {
       // 和裸跑 Claude Code 一样：不指定时 SDK 只发一段极简系统提示，没有记忆、git 状态等段落
       systemPrompt: { type: 'preset', preset: 'claude_code' },
       settingSources: ['user', 'project', 'local'],
-      settings: { autoMemoryDirectory: join(cwd, '.kite', 'memory') },
+      settings: {
+        autoMemoryDirectory: join(cwd, '.kite', 'memory'),
+        // 会话由 Kite 管，不用 Claude Code 自己的后台会话（claude agents、--bg）
+        disableAgentView: true,
+        // claude.ai 的连接器（Gmail、日历等）没授权时只多一段「请去授权」的说明；授权以后要用再打开
+        disableClaudeAiConnectors: true,
+        skillOverrides: Object.fromEntries(SKILLS_OFF.map((s) => [s, 'off' as const])),
+      },
+      disallowedTools: DISALLOWED_TOOLS,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       stderr: (d) => { this.stderrTail = [...this.stderrTail, ...d.split('\n').filter(Boolean)].slice(-20); },

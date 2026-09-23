@@ -39,6 +39,19 @@ bun src/cli.ts archive <会话>
 10. **采纳**。同一项目的采纳按项目串行（本机锁）。先在会话工作树里提交全部改动，再把主线合进会话分支：有冲突就留在会话工作树里，写一条说明交给 agent（不带 human 标记），它这一轮结束后自动重试。最后主文件夹快进到会话分支。主线指主文件夹当前检出的分支。主文件夹永远不会处于冲突状态；用户仓库里没提交的改动只要不碰会话改过的文件，快进时原样保留，碰到了就拒绝采纳并说明原因。采纳之后会话照常可用，可以接着改、再采纳。
 11. **归档**。关掉进程，存最后一枚快照，删掉工作树和会话分支，快照引用保留。有没合回主线的改动时要显式 force。
 
+## 会话的上下文
+
+在 Kite 仓库自己的工作树里实测（Claude Code 2.1.280），还没开始对话时模型看到约 11K token：
+
+- **系统提示**（约 2.3K）：`claude_code` 预设。角色和安全边界、行为准则、记忆的用法（路径是工作树的 `.kite/memory/`）、模型列表。其中「输出显示在终端里」对 Kite 不准确，等 App 定下渲染方式再用 `append` 改。
+- **工具**：常驻的是 Agent、Bash、Read、Edit、Write、Skill、ToolSearch、Workflow、ScheduleWakeup、ListAgents；CronCreate、CronDelete、CronList、Monitor、TaskStop、SendMessage、NotebookEdit、WebFetch、WebSearch 只列名字，用到时经 ToolSearch 加载。本机版 Claude Code 没有 Glob、Grep，搜索走 Bash。
+- **环境**：跟在第一条消息后面的一条系统消息。工作目录，并说明这是工作树、不要切回主仓库、不要用裸 `git stash`；可用的子 agent 和 skill 列表，skill 列表是最大的一块（约 2.4K）；当天日期。
+- **用户上下文**：用户级和项目的 CLAUDE.md（项目的经 `@AGENTS.md` 引入 AGENTS.md）、账号邮箱、会话开始时的 git 状态。
+
+去掉的上游功能列在 `src/runner.ts` 开头：和 Kite 自己的机制冲突的（进出工作树、Claude Code 自己的后台会话、生成 CLAUDE.md 的 init），以及依赖 Kite 没有的宿主（终端、桌面 App、claude.ai）的。定时任务（CronCreate、ScheduleWakeup、/loop）保留：上游的 Stop 钩子把它们算进 `session_crons`，有定时任务时 Kite 不关进程。
+
+重新量的办法：SDK 的 `Query.getContextUsage()` 给出和 `/context` 一样的分类统计，用官方计数接口算，不耗额度，但 skill 和工具两项之间的拆分不准，只看总数；要看原文，把 `ANTHROPIC_BASE_URL` 指到假端点，抓第一次请求，同时设 `ENABLE_TOOL_SEARCH=true`，否则地址不是官方的时候不启用工具搜索，所有工具都会常驻。
+
 ## 接口
 
 | 方法 | 路径 | 说明 |
@@ -74,6 +87,7 @@ bun src/cli.ts archive <会话>
 2. 会话记录里的系统提示有记忆段落，路径是工作树的 `.kite/memory/`；人发的消息带 `origin: human`。
 3. 再发一条消息：进程重新 resume，记下从发消息到进程就绪、到首条回复各用多久。
 4. 采纳：主文件夹出现改动，git 历史干净；然后归档。
+5. 量一次会话的上下文（办法见「会话的上下文」）：`src/runner.ts` 里去掉的工具和 skill 名字还对得上，没有新冒出来的无关功能。
 
 ## 还没做的
 
