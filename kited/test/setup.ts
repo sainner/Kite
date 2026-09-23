@@ -36,8 +36,8 @@ Object.assign(process.env, {
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
 });
 
-afterAll(() => {
+afterAll(async () => {
   api.releaseAll();
-  api.stop();
+  await api.stop();
   rmSync(root, { recursive: true, force: true });
 });

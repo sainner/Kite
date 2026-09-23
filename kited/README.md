@@ -82,7 +82,7 @@ SDK 加自定义工具只有进程内 MCP 服务器这一条路（`src/tools.ts`
 
 ## 测试
 
-改完在仓库根目录跑 `.kite/check`：先做类型检查，再只跑这次改动影响到的测试，加 `--all` 跑全量。测试规则在 `.claude/agents/test-writer.md`，测试由这个子 agent 按需求写。
+改完在仓库根目录跑 `.kite/check`：先同时做类型检查和 lint（`eslint.config.js`，只开 TypeScript 查不出来的两条 Promise 规则），再只跑这次改动影响到的测试，加 `--all` 跑全量。测试规则在 `.claude/agents/test-writer.md`，测试由这个子 agent 按需求写。
 
 - `test/small/`：小测试，直接调模块，git 在临时目录里跑，不起 Claude Code。
 - `test/medium/`：中测试，起真实的 Claude Code，模型换成 `test/fake-api.ts` 的假端点，不耗额度；agent 靠消息里的指令（`RUN`、`PAR`、`CALL`、`BG`、`HOLD`）做确定的事。kited 经 `test/harness.ts` 在本进程里启动，这样依赖图看得到测试用了哪些源码。

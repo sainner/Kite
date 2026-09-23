@@ -41,7 +41,8 @@ export interface FakeApi {
   release(tag: string): void;
   /** 放行所有挂着的请求和后台任务，测试收尾用。 */
   releaseAll(): void;
-  stop(): void;
+  /** 关掉端点，连同还开着的连接；等它关完再删 BG 放行标记所在的目录。 */
+  stop(): Promise<void>;
 }
 
 function lastUser(body: any): { text: string; hasToolResult: boolean } {

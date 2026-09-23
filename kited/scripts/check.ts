@@ -1,6 +1,6 @@
 /**
  * Kite 仓库的检查命令，由 .kite/check 调用，契约见 kite-onboard skill（.claude/skills/kite-onboard/SKILL.md）。
- * 先做类型检查，再跑受影响的测试（--all 跑全量），最后按测试规则的预算核对耗时。
+ * 先同时做类型检查和 lint，再跑受影响的测试（--all 跑全量），最后按测试规则的预算核对耗时。
  * 受影响的测试从 KITE_BASE 起算改动，没有这个变量就看还没提交的改动；依赖或配置变了跑全量。
  * 输出只报结论、失败项和超预算项。完整日志写进 KITE_LOG_DIR（Kite 的 check 工具给的目录）；手动跑时没有这个变量，
  * 每次建一个新的临时目录，通过就删掉，没通过就留着并给出路径。
@@ -28,23 +28,46 @@ writeFileSync(LOG, '');
 const log = (text: string) => writeFileSync(LOG, text, { flag: 'a' });
 
 function run(cmd: string[], cwd = KITED): { code: number; out: string } {
-  const r = Bun.spawnSync(cmd, { cwd, stdout: 'pipe', stderr: 'pipe' });
+  const r = Bun.spawnSync(cmd, { cwd, env: process.env, stdout: 'pipe', stderr: 'pipe' });
   const out = r.stdout.toString() + r.stderr.toString();
   log(`$ ${cmd.join(' ')}\n${out}\n`);
   return { code: r.exitCode, out };
 }
+
+async function runAsync(cmd: string[], cwd = KITED): Promise<{ code: number; out: string; stdout: string }> {
+  const p = Bun.spawn(cmd, { cwd, env: process.env, stdout: 'pipe', stderr: 'pipe' });
+  const [stdout, stderr] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
+  const code = await p.exited;
+  log(`$ ${cmd.join(' ')}\n${stdout}${stderr}\n`);
+  return { code, out: stdout + stderr, stdout };
+}
+
+interface LintFile { filePath: string; messages: Array<{ line: number; ruleId: string | null; message: string }> }
 
 function fail(lines: string[]): never {
   console.log([...lines, `完整日志：${LOG}`].join('\n'));
   process.exit(1);
 }
 
-// 1. 类型检查
-const tsc = run(['bunx', 'tsc', '--noEmit']);
+// 1. 类型检查和 lint 都是几秒的事，同时跑。lint 只开 TypeScript 查不出来的规则，见 eslint.config.js；
+// 用 --bun 在 Bun 里跑，工作机不用另装 Node
+const [tsc, lint] = await Promise.all([
+  runAsync(['bunx', 'tsc', '--noEmit']),
+  runAsync(['bunx', '--bun', 'eslint', '--format', 'json', '.']),
+]);
+const early: string[] = [];
 if (tsc.code !== 0) {
   const errors = tsc.out.split('\n').filter((l) => /error TS\d+/.test(l));
-  fail([`类型检查没通过，${errors.length} 处错误：`, ...errors.slice(0, 20).map((l) => `  ${l}`)]);
+  early.push(`类型检查没通过，${errors.length} 处错误：`, ...errors.slice(0, 20).map((l) => `  ${l}`));
 }
+if (lint.code !== 0) {
+  let files: LintFile[] | undefined;
+  try { files = JSON.parse(lint.stdout) as LintFile[]; } catch { /* 出错时它不输出 JSON */ }
+  const found = files?.flatMap((f) => f.messages.map((m) => `${f.filePath.slice(KITED.length + 1)}:${m.line} ${m.message}（${m.ruleId ?? '解析错误'}）`)) ?? [];
+  if (found.length) early.push(`lint 没通过，${found.length} 处：`, ...found.slice(0, 20).map((l) => `  ${l}`));
+  else early.push('lint 没跑起来：', ...lint.out.trim().split('\n').slice(-15).map((l) => `  ${l}`));
+}
+if (early.length) fail(early);
 
 // 2. 跑哪些测试
 const base = process.env.KITE_BASE;
@@ -107,5 +130,5 @@ if (full) {
 if (problems.length) fail([`检查没通过（${scope}测试 ${cases.length} 个，${seconds.toFixed(1)} 秒）：`, ...problems.map((p) => `  ${p}`)]);
 if (!GIVEN) rmSync(LOG_DIR, { recursive: true, force: true });
 console.log(cases.length === 0
-  ? '检查通过：类型检查通过，这次改动没有影响到任何测试。'
-  : `检查通过：类型检查通过，${scope}测试 ${cases.length} 个，${seconds.toFixed(1)} 秒。`);
+  ? '检查通过：类型检查和 lint 通过，这次改动没有影响到任何测试。'
+  : `检查通过：类型检查和 lint 通过，${scope}测试 ${cases.length} 个，${seconds.toFixed(1)} 秒。`);

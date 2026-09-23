@@ -15,8 +15,14 @@ let stopping = false;
 async function stop() {
   if (stopping) return;
   stopping = true;
-  await daemon.stop();
+  try {
+    await daemon.stop();
+  } catch (e) {
+    // 信号处理不会等这个 Promise，出错要自己接住，否则成了没人处理的拒绝
+    console.error(`kited 停止时出错：${(e as Error).message}`);
+    process.exit(1);
+  }
   process.exit(0);
 }
-process.on('SIGINT', stop);
-process.on('SIGTERM', stop);
+process.on('SIGINT', () => void stop());
+process.on('SIGTERM', () => void stop());
