@@ -31,7 +31,11 @@ test('一条完整的会话：第一条消息到达 agent，「会话开始」�
   const kk = k;
   const repo = newRepo(kk.root, 'proj', { 'a.txt': 'a\n' });
   const out = token('检查输出');
-  writeFiles(repo, { '.kite/check': `#!/bin/sh\necho "${out} args=[$*]"\n` });
+  // 脚本内容固定，标记放进文件由脚本读出来：macOS 上内容没见过的可执行文件第一次执行约多 260 毫秒
+  writeFiles(repo, {
+    '.kite/check-marker': `${out}\n`,
+    '.kite/check': '#!/bin/sh\nread out < .kite/check-marker\necho "$out args=[$*]"\n',
+  });
   chmodSync(join(repo, '.kite/check'), 0o755);
   const head = commitAll(repo, '加检查命令');
   const p = await registerProject(kk, repo);

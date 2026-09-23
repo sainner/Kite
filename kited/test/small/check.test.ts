@@ -15,14 +15,23 @@ const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catc
  * 依赖的运行时行为：检查命令常是 sh 包一层再起子进程，只停最外层的话，子进程被 1 号进程收养、继续跑
  * （本机实测：SIGTERM 杀掉 sh 后，它的后台 sleep 的父进程变成 1，还活着）；非交互 sh 的后台任务忽略 SIGINT。
  * 停得干不干净取决于这些，看代码确认不了。
+ *
+ * 脚本内容要固定，随机的东西放进文件由脚本读出来：macOS 上内容没见过的可执行文件第一次执行约多 260 毫秒
+ * （本机实测；内容执行过的新文件约 50 毫秒，同一个文件再执行约 10 毫秒）。脚本里带随机内容的话，
+ * 每次都要多付这一笔，检查命令起得晚，300 毫秒的超时可能在它记下 pid 之前就到了。
  */
 test('runCheck 超时或 signal 触发时停掉检查命令和它起的子进程，stopped 分别为 timeout、aborted，code 为 null，不算通过', async () => {
   // 这里只看怎么停，用不着 git：普通文件夹既当主文件夹又当工作树（取不到 HEAD，不传 KITE_BASE）
   const wt = temp();
   const main = wt;
-  // sh 起一个后台子进程，记下自己和它的 pid，然后等它。sleep 的秒数带一个随机小数，凭它在进程表里认出这个子进程
-  const sleep = `sleep 30.${Math.floor(Math.random() * 1e6)}`;
-  writeFiles(wt, { '.kite/check': `#!/bin/sh\n${sleep} &\necho "$$ $!" > pids\nwait\n` });
+  // sh 起一个后台子进程，记下自己和它的 pid，然后等它。sleep 的秒数带一个随机小数（从文件 secs 读），
+  // 凭它在进程表里认出这个子进程
+  const secs = `30.${Math.floor(Math.random() * 1e6)}`;
+  const sleep = `sleep ${secs}`;
+  writeFiles(wt, {
+    secs: `${secs}\n`,
+    '.kite/check': '#!/bin/sh\nread s < secs\nsleep "$s" &\necho "$$ $!" > pids\nwait\n',
+  });
   chmodSync(join(wt, '.kite/check'), 0o755);
   const pidFile = join(wt, 'pids');
   const pids = () => {
