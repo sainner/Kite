@@ -130,7 +130,7 @@ export class Kite {
     let r = this.runners.get(s.id);
     if (r) return r;
     const tools = () => kiteTools({
-      main: this.project(s.projectId).path, worktree: s.worktree,
+      main: this.project(s.projectId).path, worktree: s.worktree, checkLogs: join(this.home, 'sessions', s.id, 'checks'),
       onCheck: (result) => this.bus.emit(s.id, { type: 'check', result }),
     });
     r = new Runner({ cwd: s.worktree, nativeId: s.nativeId, title: s.title, tools }, {

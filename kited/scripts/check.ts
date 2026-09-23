@@ -2,15 +2,18 @@
  * Kite 仓库的检查命令，由 .kite/check 调用，契约见 kite-onboard skill（.claude/skills/kite-onboard/SKILL.md）。
  * 先做类型检查，再跑受影响的测试（--all 跑全量），最后按测试规则的预算核对耗时。
  * 受影响的测试从 KITE_BASE 起算改动，没有这个变量就看还没提交的改动；依赖或配置变了跑全量。
- * 输出只报结论、失败项和超预算项。完整日志每次写进一个新的临时目录，通过就删掉，没通过就留着并给出路径。
+ * 输出只报结论、失败项和超预算项。完整日志写进 KITE_LOG_DIR（Kite 的 check 工具给的目录）；手动跑时没有这个变量，
+ * 每次建一个新的临时目录，通过就删掉，没通过就留着并给出路径。
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const KITED = join(import.meta.dir, '..');
-// 每次运行一个自己的目录：几个检查同时跑（几个会话，或主 agent 和子 agent）时不互相覆盖日志和测试报告
-const LOG_DIR = mkdtempSync(join(tmpdir(), 'kite-check-'));
+// 日志写在哪由调用方定。手动跑时自己建临时目录，不写在固定位置，免得同时跑的检查互相覆盖
+const GIVEN = process.env.KITE_LOG_DIR;
+const LOG_DIR = GIVEN ?? mkdtempSync(join(tmpdir(), 'kite-check-'));
+if (GIVEN) mkdirSync(GIVEN, { recursive: true });
 const LOG = join(LOG_DIR, 'log');
 
 /** 预算，和 .claude/agents/test-writer.md 里的分层表一致。 */
@@ -102,7 +105,7 @@ if (full) {
 }
 
 if (problems.length) fail([`检查没通过（${scope}测试 ${cases.length} 个，${seconds.toFixed(1)} 秒）：`, ...problems.map((p) => `  ${p}`)]);
-rmSync(LOG_DIR, { recursive: true, force: true });
+if (!GIVEN) rmSync(LOG_DIR, { recursive: true, force: true });
 console.log(cases.length === 0
   ? '检查通过：类型检查通过，这次改动没有影响到任何测试。'
   : `检查通过：类型检查通过，${scope}测试 ${cases.length} 个，${seconds.toFixed(1)} 秒。`);

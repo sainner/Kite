@@ -12,11 +12,13 @@ export interface ToolContext {
   /** 主文件夹。 */
   main: string;
   worktree: string;
+  /** 这个会话的检查日志放在哪。 */
+  checkLogs: string;
   onCheck(r: CheckResult): void;
 }
 
 /** 这个会话该有的工具，一个都没有时返回 undefined。每次启动 Claude Code 进程时新建。 */
 export function kiteTools(c: ToolContext): McpSdkServerConfigWithInstance | undefined {
-  const tools = hasCheck(c.worktree) ? [checkTool({ main: c.main, worktree: c.worktree, onResult: c.onCheck })] : [];
+  const tools = hasCheck(c.worktree) ? [checkTool({ main: c.main, worktree: c.worktree, logRoot: c.checkLogs, onResult: c.onCheck })] : [];
   return tools.length ? createSdkMcpServer({ name: 'kite', alwaysLoad: true, tools }) : undefined;
 }
