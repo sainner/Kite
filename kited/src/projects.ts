@@ -5,7 +5,7 @@
  */
 import { existsSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join, relative, isAbsolute } from 'node:path';
+import { basename, join, relative, isAbsolute, sep } from 'node:path';
 import { KiteError } from './errors.ts';
 import { commitIdentity, git, gitTry, revParse } from './git.ts';
 import type { CommitOwner, Project, Store } from './store.ts';
@@ -15,7 +15,8 @@ import GITIGNORE_TEMPLATE from '../../.claude/skills/kite-onboard/templates/giti
 /** a 在 b 里面，或就是 b。 */
 export function within(a: string, b: string): boolean {
   const r = relative(b, a);
-  return r === '' || (!r.startsWith('..') && !isAbsolute(r));
+  // 只认 .. 这一段本身：「..data」这样的名字是 b 里面的文件夹
+  return r === '' || (r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r));
 }
 
 /** 同步目录。iCloud「桌面与文稿」的判断方式未核实。 */
