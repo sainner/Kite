@@ -9,14 +9,17 @@
 import {
   getSessionInfo, query,
   type Options, type PostToolBatchHookInput, type Query, type SDKMessage, type SDKUserMessage,
-  type StopHookInput, type UserPromptSubmitHookInput,
+  type SettingSource, type StopHookInput, type UserPromptSubmitHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { join } from 'node:path';
 
 /*
- * 会话里去掉的上游功能：和 Kite 自己的机制冲突的，以及依赖 Kite 没有的宿主（终端、桌面 App、claude.ai）的。
- * 会话上下文里有什么见 kited/README.md「会话的上下文」。
+ * Kite 会话只带做事用的上游功能。会话上下文里有什么见 kited/README.md「会话的上下文」。
+ *
+ * 设置只读项目的两层。用户级（~/.claude 下的设置、CLAUDE.md、skill、子 agent、插件）是给人自己用 Claude Code 的，
+ * 不带进 Kite 会话；从 claude.ai 同步来的 skill、插件和连接器也不带，开关在 options() 的 settings 里。
  */
+export const SETTING_SOURCES: SettingSource[] = ['project', 'local'];
 const DISALLOWED_TOOLS = [
   // 每个会话本来就在 Kite 建的工作树里，agent 自己进出工作树，快照和合回主线就对不上了
   'EnterWorktree', 'ExitWorktree',
@@ -26,9 +29,12 @@ const DISALLOWED_TOOLS = [
   'RemoteTrigger', 'DesignSync',
   // 交给宿主界面渲染审查结果；Kite App 没有这个界面，结果照常写在回复里
   'ReportFindings',
+  // 多 agent 编排、/loop 自定节奏，连同下面的 workflow-authoring、loop 两个 skill 一起去掉
+  'Workflow', 'ScheduleWakeup',
   // 配置终端状态栏的子 agent
   'Agent(statusline-setup)',
 ];
+/** Claude Code 自带的 skill 只留 code-review、simplify、security-review、claude-api。 */
 const SKILLS_OFF = [
   // 终端快捷键；Kite 会话不弹审批
   'keybindings-help', 'fewer-permission-prompts',
@@ -36,9 +42,8 @@ const SKILLS_OFF = [
   'init',
   // claude.ai 的云端例行任务
   'schedule',
-  // 从 claude.ai 同步来的，要用桌面 App 的内置浏览器、Chrome 扩展、操控电脑或 claude.ai 的记忆，Kite 会话里没有
-  'anthropic-skills:built-in-browser', 'anthropic-skills:chrome-browser', 'anthropic-skills:computer-use',
-  'anthropic-skills:morning', 'anthropic-skills:import-memory',
+  // 画图配色、改 Claude Code 自己的设置、启动项目的 App、按间隔重复、写 Workflow 脚本
+  'dataviz', 'update-config', 'run', 'loop', 'workflow-authoring',
 ];
 
 /**
@@ -199,12 +204,14 @@ export class Runner {
       ...(resume ? { resume: nativeId } : { sessionId: nativeId, title }),
       // 和裸跑 Claude Code 一样：不指定时 SDK 只发一段极简系统提示，没有记忆、git 状态等段落
       systemPrompt: { type: 'preset', preset: 'claude_code' },
-      settingSources: ['user', 'project', 'local'],
+      settingSources: SETTING_SOURCES,
       settings: {
         autoMemoryDirectory: join(cwd, '.kite', 'memory'),
         // 会话由 Kite 管，不用 Claude Code 自己的后台会话（claude agents、--bg）
         disableAgentView: true,
-        // claude.ai 的连接器（Gmail、日历等）没授权时只多一段「请去授权」的说明；授权以后要用再打开
+        // 从 claude.ai 同步来的 skill、插件和连接器（Gmail、日历等）。经 settings 传入只对这个会话生效，不动本机的文件
+        syncClaudeAiSkills: false,
+        syncClaudeAiPlugins: false,
         disableClaudeAiConnectors: true,
         skillOverrides: Object.fromEntries(SKILLS_OFF.map((s) => [s, 'off' as const])),
       },

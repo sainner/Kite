@@ -29,9 +29,9 @@ bun src/cli.ts archive <会话>
 
 1. **登记项目**。已有的 git 仓库直接用，提交归用户（`commits: user`）。普通文件夹由 Kite 执行 `git init`，写入 `.gitignore` 模板（项目规范 kite-onboard skill 里的 `templates/gitignore`，kited 直接 import 这一份），提交初始版本后立即打包对象库，之后的提交由 Kite 代做（`commits: kite`）。放在 iCloud、Dropbox 里的文件夹，仓库本体放到 `KITE_HOME/repos/`。
 2. **建工作树**。起点是主文件夹当时的 HEAD。Kite 代管提交的项目先把主文件夹里没提交的改动存成一个提交，否则新会话看不到用户刚放进去的文件。工作树放在项目文件夹外，分支叫 `kite/<会话>`。
-3. **带上被忽略的文件**，规则照 Claude Code 2.1.280 自己建工作树时的做法：设置里的 `worktree.symlinkDirectories` 做软链接（用 SDK 的 `resolveSettings` 读合并后的设置），`.worktreeinclude` 里同时被 `.gitignore` 忽略的文件以 APFS 克隆的方式复制。`.claude/settings.local.json` 不用复制：Claude Code 在工作树里会读主仓库的那一份（已实测）。
+3. **带上被忽略的文件**，规则照 Claude Code 2.1.280 自己建工作树时的做法：设置里的 `worktree.symlinkDirectories` 做软链接（用 SDK 的 `resolveSettings` 读项目两层合并后的设置），`.worktreeinclude` 里同时被 `.gitignore` 忽略的文件以 APFS 克隆的方式复制。`.claude/settings.local.json` 不用复制：Claude Code 在工作树里会读主仓库的那一份（已实测）。
 4. **初始化**。工作树里有 `.kite/setup` 就执行它，当前目录是工作树，主文件夹路径在 `KITE_MAIN_DIR` 里。只看退出码，非 0 时会话变为 `prepare_failed`，不启动 agent。然后打一枚「会话开始」快照。
-5. **对话**。每个会话一个 `Runner`，管一个 Claude Code 进程。消息直接写进进程的输入流，进程已关闭就用原生会话 id 就地 resume（第一次用 `sessionId` 指定 id，所以 Kite 在启动前就知道它）。人发的消息带 `origin: {kind: 'human'}`，会话记录里据此区分人发的和 Kite 发的。系统提示用 `claude_code` 预设（SDK 不指定时只发一段极简提示，没有记忆、git 状态等段落），设置来源是 user、project、local 三层，权限模式是 bypassPermissions，记忆目录指到工作树的 `.kite/memory`（经 `settings` 选项传入；写在项目的 `.claude/settings.json` 里会被上游出于安全考虑忽略）。
+5. **对话**。每个会话一个 `Runner`，管一个 Claude Code 进程。消息直接写进进程的输入流，进程已关闭就用原生会话 id 就地 resume（第一次用 `sessionId` 指定 id，所以 Kite 在启动前就知道它）。人发的消息带 `origin: {kind: 'human'}`，会话记录里据此区分人发的和 Kite 发的。系统提示用 `claude_code` 预设（SDK 不指定时只发一段极简提示，没有记忆、git 状态等段落），设置只读项目的两层（project、local，见「会话的上下文」），权限模式是 bypassPermissions，记忆目录指到工作树的 `.kite/memory`（经 `settings` 选项传入；写在项目的 `.claude/settings.json` 里会被上游出于安全考虑忽略）。
 6. **收口**。回合结束时看 Stop 钩子输入里的 `background_tasks` 和 `session_crons`：两份都是空数组，就关闭输入流让进程退出；读不到就当作不空。Stop 之后又来了消息就不关。关闭期间来的消息先存着，进程退出后带着它们重新 resume。进程被杀、kited 重启都等同于关闭。
 7. **快照**。每批工具调用全部完成后（PostToolBatch 钩子，并行调用只触发一次）捕获一次，回合结束再捕获一次，以收进后台任务写的文件。快照是挂在 `refs/kite/snapshots/<会话>` 上的提交链（不用 `refs/kite/<会话>`，否则和会话分支 `kite/<会话>` 的短名撞车，git 会优先解析成快照），用工作树自己的私有索引，不动 HEAD、分支和暂存区；树没变就不产生新提交。提交说明的第一行是开启这一回合的用户消息，尾部用 `Kite-Session` 和 `Kite-Tool-Use` 记下会话和工具调用 id。
 8. **回退**。把工作树恢复成某一枚快照，只动文件。回退前先捕获一次现状（现状已经在快照里就不重复存），所以回退本身可以撤销。agent 正在工作时不允许。
@@ -41,14 +41,19 @@ bun src/cli.ts archive <会话>
 
 ## 会话的上下文
 
-在 Kite 仓库自己的工作树里实测（Claude Code 2.1.280），还没开始对话时模型看到约 11K token：
+在 Kite 仓库自己的工作树里实测（Claude Code 2.1.280），还没开始对话时模型看到约 7.9K token：
 
 - **系统提示**（约 2.3K）：`claude_code` 预设。角色和安全边界、行为准则、记忆的用法（路径是工作树的 `.kite/memory/`）、模型列表。其中「输出显示在终端里」对 Kite 不准确，等 App 定下渲染方式再用 `append` 改。
-- **工具**：常驻的是 Agent、Bash、Read、Edit、Write、Skill、ToolSearch、Workflow、ScheduleWakeup、ListAgents；CronCreate、CronDelete、CronList、Monitor、TaskStop、SendMessage、NotebookEdit、WebFetch、WebSearch 只列名字，用到时经 ToolSearch 加载。本机版 Claude Code 没有 Glob、Grep，搜索走 Bash。
-- **环境**：跟在第一条消息后面的一条系统消息。工作目录，并说明这是工作树、不要切回主仓库、不要用裸 `git stash`；可用的子 agent 和 skill 列表，skill 列表是最大的一块（约 2.4K）；当天日期。
-- **用户上下文**：用户级和项目的 CLAUDE.md（项目的经 `@AGENTS.md` 引入 AGENTS.md）、账号邮箱、会话开始时的 git 状态。
+- **工具**：常驻的是 Agent、Bash、Read、Edit、Write、Skill、ToolSearch、ListAgents；CronCreate、CronDelete、CronList、Monitor、TaskStop、SendMessage、NotebookEdit、WebFetch、WebSearch 只列名字，用到时经 ToolSearch 加载。本机版 Claude Code 没有 Glob、Grep，搜索走 Bash。
+- **环境**：跟在第一条消息后面的一条系统消息。工作目录，并说明这是工作树、不要切回主仓库、不要用裸 `git stash`；子 agent 列表（Explore、general-purpose、Plan，加上项目自己的）；skill 列表（Claude Code 自带的 code-review、simplify、security-review、claude-api，加上项目自己的）；当天日期。
+- **用户上下文**：项目的 CLAUDE.md（经 `@AGENTS.md` 引入 AGENTS.md）、账号邮箱、会话开始时的 git 状态。
 
-去掉的上游功能列在 `src/runner.ts` 开头：和 Kite 自己的机制冲突的（进出工作树、Claude Code 自己的后台会话、生成 CLAUDE.md 的 init），以及依赖 Kite 没有的宿主（终端、桌面 App、claude.ai）的。定时任务（CronCreate、ScheduleWakeup、/loop）保留：上游的 Stop 钩子把它们算进 `session_crons`，有定时任务时 Kite 不关进程。
+Kite 会话只带做事用的上游功能，取舍列在 `src/runner.ts` 开头：
+
+- 设置只读项目的两层（project、local）。用户级（`~/.claude` 下的设置、CLAUDE.md、skill、子 agent、插件）是给人自己用 Claude Code 的，不带进来；建工作树时读 `worktree.symlinkDirectories` 也只看这两层。
+- 从 claude.ai 同步来的 skill、插件和连接器不带。开关经 SDK 的 `settings` 选项传入，只对这个会话生效，不动本机的文件。
+- 去掉和 Kite 自己的机制冲突的（进出工作树、Claude Code 自己的后台会话、生成 CLAUDE.md 的 init），依赖 Kite 没有的宿主（终端、桌面 App、claude.ai）的，以及用不上的（Workflow、ScheduleWakeup 和配套的 skill，画图配色、改 Claude Code 设置、启动项目 App 的 skill）。
+- 定时任务（CronCreate）保留：上游的 Stop 钩子把它算进 `session_crons`，有定时任务时 Kite 不关进程。
 
 重新量的办法：SDK 的 `Query.getContextUsage()` 给出和 `/context` 一样的分类统计，用官方计数接口算，不耗额度，但 skill 和工具两项之间的拆分不准，只看总数；要看原文，把 `ANTHROPIC_BASE_URL` 指到假端点，抓第一次请求，同时设 `ENABLE_TOOL_SEARCH=true`，否则地址不是官方的时候不启用工具搜索，所有工具都会常驻。
 
@@ -91,6 +96,7 @@ bun src/cli.ts archive <会话>
 
 ## 还没做的
 
+- 个人偏好放哪：Kite 会话不读 `~/.claude` 的用户级配置，用户的个人偏好（比如回答用简体中文）和关于人的记忆要有 Kite 自己的位置，还没定。
 - 权限：现在一律 bypassPermissions，没开 Claude Code 沙箱。沙箱挡不挡得住经链接写资源库、会话工作树里的 git 提交要写主仓库的 `.git`，这两件事都没验证。
 - 对话回退（`resumeSessionAt` 加 `forkSession`）和统一格式的翻译器，放到第 3 步。
 - 多机集成（推送、被拒后重合）。第一阶段只有一台工作机。

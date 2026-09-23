@@ -9,6 +9,7 @@ import { closeSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, o
 import { dirname, isAbsolute, join } from 'node:path';
 import { git, gitTry } from './git.ts';
 import { within } from './projects.ts';
+import { SETTING_SOURCES } from './runner.ts';
 
 const SETUP_TIMEOUT_MS = 15 * 60_000;
 
@@ -28,7 +29,8 @@ function escapes(dest: string, worktreeReal: string): boolean {
 }
 
 async function linkDirectories(main: string, worktree: string, real: string): Promise<void> {
-  const { effective } = await resolveSettings({ cwd: main });
+  // 和会话读同样的设置层，用户级的不算
+  const { effective } = await resolveSettings({ cwd: main, settingSources: SETTING_SOURCES });
   for (const d of effective.worktree?.symlinkDirectories ?? []) {
     if (isAbsolute(d) || d.split(/[/\\]/).some((s) => /^\.\.[ .]*$/.test(s))) continue;
     const src = join(main, d);
