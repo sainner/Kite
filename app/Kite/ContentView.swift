@@ -18,8 +18,7 @@ struct ContentView: View {
         .background(Theme.background)
         .ignoresSafeArea()
         #else
-        Text("Kite")
-            .padding()
+        PhoneLayout()
         #endif
     }
 }

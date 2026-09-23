@@ -50,21 +50,25 @@ struct SplitView: View {
     }
 }
 
-/// 一张卡片。现在只有占位色块，颜色用来区分是哪个窗口。
 struct PaneCard: View {
     let pane: Pane
 
     var body: some View {
-        RoundedRectangle(cornerRadius: Metrics.cardRadius)
-            .fill(Theme.card)
-            .shadow(color: .black.opacity(0.06), radius: 1, y: 1)
-            .overlay {
-                VStack(alignment: .leading, spacing: 12) {
-                    RoundedRectangle(cornerRadius: 4).fill(pane.tint).frame(width: 96, height: 14)
-                    RoundedRectangle(cornerRadius: 8).fill(pane.tint.opacity(0.12))
-                }
-                .padding(14)
-            }
+        PaneContent(pane: pane)
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.cardRadius))
+    }
+}
+
+/// 窗口里的内容。现在只有占位色块，颜色用来区分是哪个窗口。
+struct PaneContent: View {
+    let pane: Pane
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            RoundedRectangle(cornerRadius: 4).fill(pane.tint).frame(width: 96, height: 14)
+            RoundedRectangle(cornerRadius: 8).fill(pane.tint.opacity(0.12))
+        }
+        .padding(14)
     }
 }
 

@@ -7,10 +7,9 @@ app/
 ├── Kite.xcodeproj
 │   └── xcshareddata/xcschemes/Kite.xcscheme   共享 scheme，命令行和 Xcode 用同一个
 └── Kite/                                      源码和资源
-    ├── KiteApp.swift                          入口
-    ├── ContentView.swift
-    └── Assets.xcassets
 ```
+
+布局：Mac 上左边侧边栏、右边一组卡片，卡片的排布见 `Tiles.swift`；iPhone 上会话窗口铺满屏幕，侧边栏和 action 栏从边上拉出来，见 `PhoneLayout.swift`。尺寸和颜色集中在 `Theme.swift`。
 
 ## 约定
 

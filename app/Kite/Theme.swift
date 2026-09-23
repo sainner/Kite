@@ -21,4 +21,10 @@ enum Metrics {
     static let cardRadius: CGFloat = 12
     /// 卡片拖小时的下限。
     static let minPane: CGFloat = 160
+    /// iPhone 上窗口的圆角。不大于各款全面屏 iPhone 的屏幕圆角（最小是 iPhone 11 Pro 的 39），铺满时藏在屏幕圆角外面，移开才显出来。
+    static let phoneCardRadius: CGFloat = 39
+    /// iPhone 上 action 栏的高度，不含底部 Home 条让出的距离。
+    static let actionBar: CGFloat = 64
+    /// iPhone 上拉出侧边栏、action 栏的手势区：左边缘多宽、底边多高。
+    static let edgeZone: CGFloat = 24
 }
