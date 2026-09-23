@@ -61,8 +61,9 @@ const seconds = (performance.now() - started) / 1000;
 
 // 4. 读报告，核对预算
 interface Case { name: string; file: string; time: number; failure?: string }
-if (!existsSync(REPORT)) fail(['测试没跑起来：', ...tests.out.trim().split('\n').slice(-15).map((l) => `  ${l}`)]);
-const xml = readFileSync(REPORT, 'utf8');
+// 没有受影响的测试时 bun 不写报告，退出码为 0
+if (!existsSync(REPORT) && tests.code !== 0) fail(['测试没跑起来：', ...tests.out.trim().split('\n').slice(-15).map((l) => `  ${l}`)]);
+const xml = existsSync(REPORT) ? readFileSync(REPORT, 'utf8') : '';
 const unescape = (s: string) => s.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#10;/g, '\n').replace(/&amp;/g, '&');
 const cases: Case[] = [];
 for (const m of xml.matchAll(/<testcase name="([^"]*)"[^>]*? time="([^"]*)" file="([^"]*)"[^>]*?(?:\/>|>([\s\S]*?)<\/testcase>)/g)) {
