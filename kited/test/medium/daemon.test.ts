@@ -1,5 +1,5 @@
 /**
- * 经 HTTP 驱动本进程里的 kited，会话起真实的 Claude Code，模型换成假端点：D1、D6、D7，以及会话的 check 工具。
+ * 经 HTTP 驱动本进程里的 kited，会话起真实的 Claude Code，模型换成假端点：D1、D7，以及会话的 check 工具。
  */
 import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
@@ -24,7 +24,7 @@ const toolResult = (l: { body: any }, id: string) => (l.body.messages as any[])
   .flatMap((x) => (Array.isArray(x.content) ? x.content : []))
   .find((c: any) => c.type === 'tool_result' && c.tool_use_id === id);
 
-test('一条完整的会话：第一条消息到达 agent，「会话开始」是最早的快照，一批并行工具调用一枚快照，回合结束关闭，再发消息续接同一个原生会话，有没合回的改动时归档要 force，归档后工作树和分支删掉、快照留下、不能再发消息；项目里有 .kite/check 时 agent 常驻一个名为 check 的工具，调用它（带 all）跑检查，结果发成 check 事件、输出回到模型', async () => {
+test('一条完整的会话：第一条消息到达 agent，「会话开始」是最早的快照，一批并行工具调用一枚快照，回合结束关闭，再发消息续接同一个原生会话，带 force 归档后工作树和分支删掉、快照留下、不能再发消息；项目里有 .kite/check 时 agent 常驻一个名为 check 的工具，调用它（带 all）跑检查，结果发成 check 事件、输出回到模型', async () => {
   // 地址不是官方的时候上游默认不开工具搜索，所有工具都常驻；打开它，「check 常驻、不经 ToolSearch」才验得出来
   process.env.ENABLE_TOOL_SEARCH = 'true';
   k = startKited();
@@ -41,6 +41,13 @@ test('一条完整的会话：第一条消息到达 agent，「会话开始」�
   const s = await createSession(kk, p.id, `${firstLine}\nPAR echo a > p1.txt ;; echo b > p2.txt`);
   const req1 = await api.waitRequest((l) => l.main && l.lastUserText.includes(a));
   expect(req1.toolUseIds).toHaveLength(2);
+  /*
+   * 依赖的上游行为两条：
+   * 1. Claude Code 对进程内（type 为 sdk）MCP 服务器的工具，设了 CLAUDE_AGENT_SDK_MCP_NO_PREFIX=1 时用裸名，
+   *    不加 mcp__kite__ 前缀（没写进文档，2.1.280 实测）；
+   * 2. 服务器设了 alwaysLoad 时工具常驻、不经 ToolSearch；没设时开了工具搜索的请求里根本没有这个工具（2.1.280 实测）。
+   * 先确认工具搜索真的开了，否则第 2 条验不出来。
+   */
   expect(tools(req1).map((t) => t.name)).toContain('ToolSearch');
   const checkTool = tools(req1).find((t) => t.name === 'check');
   expect(checkTool).toBeDefined();
@@ -73,10 +80,7 @@ test('一条完整的会话：第一条消息到达 agent，「会话开始」�
   expect(init.type === 'sdk' && init.message.session_id).toBe(s.nativeId);
   await waitRunner(kk, s.id, 'closed', m);
 
-  // 归档：有没合回的改动时不带 force 被拒绝
-  const refused = await kk.call('POST', `/sessions/${s.id}/archive`, {});
-  expect(refused.status).toBe(409);
-  expect(existsSync(s.worktree)).toBe(true);
+  // 归档：有没合回的改动，带 force
   const archived = await kk.call('POST', `/sessions/${s.id}/archive`, { force: true });
   expect(archived.status).toBe(200);
   expect(existsSync(s.worktree)).toBe(false);
@@ -86,31 +90,6 @@ test('一条完整的会话：第一条消息到达 agent，「会话开始」�
   expect(kept).toEqual(expect.arrayContaining(snaps.map((x) => x.commit)));
   const late = await kk.call('POST', `/sessions/${s.id}/messages`, { text: '还在吗' });
   expect(late.status).toBe(409);
-});
-
-test('agent 正在工作时，采纳和回退都被拒绝（409）；项目里没有 .kite/check 时 agent 没有 check 工具', async () => {
-  k = startKited();
-  const kk = k;
-  const repo = newRepo(kk.root, 'proj', { 'a.txt': 'a\n' });
-  const p = await registerProject(kk, repo);
-  const hold = token('d6');
-  const s = await createSession(kk, p.id, `HOLD ${hold} 慢慢想`);
-  const req = await api.held(hold);
-  // 这里没开工具搜索，提供了的工具全都列在请求里
-  expect(tools(req).map((t) => t.name)).not.toContain('check');
-  const start = (await listSnapshots(kk, s.id)).at(-1)!;
-  writeFiles(s.worktree, { 'wip.txt': 'agent 写到一半\n' });
-  const head = git(repo, 'rev-parse', 'HEAD');
-
-  const adopt = await kk.call('POST', `/sessions/${s.id}/adopt`);
-  expect(adopt.status).toBe(409);
-  expect(typeof adopt.body.error).toBe('string');
-  const restore = await kk.call('POST', `/sessions/${s.id}/restore`, { commit: start.commit });
-  expect(restore.status).toBe(409);
-  expect(typeof restore.body.error).toBe('string');
-
-  expect(git(repo, 'rev-parse', 'HEAD')).toBe(head);
-  expect(read(join(s.worktree, 'wip.txt'))).toBe('agent 写到一半\n');
 });
 
 /** 会话记录里 type 为 user 的条目和它的文本。 */

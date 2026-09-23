@@ -82,12 +82,6 @@ export async function createSession(k: Kited, project: string, prompt: string): 
   return r.body;
 }
 
-export async function getSession(k: Kited, id: string): Promise<any> {
-  const r = await k.call('GET', `/sessions/${id}`);
-  if (r.status !== 200) throw new Error(`取会话 ${id} 失败：${r.status} ${JSON.stringify(r.body)}`);
-  return r.body;
-}
-
 export async function sendMessage(k: Kited, id: string, text: string): Promise<void> {
   const r = await k.call('POST', `/sessions/${id}/messages`, { text });
   if (r.status !== 200) throw new Error(`发消息失败：${r.status} ${JSON.stringify(r.body)}`);
