@@ -1,6 +1,6 @@
 ---
 name: kite-onboard
-description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录结构、.gitignore、AGENTS.md、CLAUDE.md，代码项目再加 test-writer 子 agent 和 .kite/check。项目接入 Kite、新建项目、整理项目结构、写 AGENTS.md 或测试规则时用。
+description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录结构、.gitignore、AGENTS.md、CLAUDE.md、记忆目录，能判断改坏没有的项目加 .kite/check，代码项目再加 test-writer 子 agent。项目接入 Kite、新建项目、整理项目结构、写 AGENTS.md 或测试规则时用。
 ---
 
 # Kite 项目规范
@@ -26,9 +26,10 @@ description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录�
 │   └── settings.json      上游设置，如 worktree.symlinkDirectories（建工作树时要软链接的目录）
 ├── .worktreeinclude       建工作树时要复制过去的被忽略文件，如 .env
 ├── .kite/
-│   ├── memory/            agent 记住的项目知识，Kite 启动会话时把记忆目录指到这里
+│   ├── memory/            agent 记住的项目知识，Kite 启动会话时把记忆目录指到这里；
+│                          在 Kite 之外直接用 Claude Code 时，由 .claude/settings.local.json 指过来
 │   ├── setup              可选。工作树的初始化命令，如装依赖；只用退出码报告成败
-│   └── check              代码项目提供。检查命令：类型检查加受影响的测试，加 --all 跑全量
+│   └── check              检查命令：判断这个项目改坏了没有。代码项目是类型检查加受影响的测试，加 --all 跑全量
 │                          受影响的测试从 KITE_BASE 这个版本起算改动，没有这个变量就看还没提交的改动
 │                          只用退出码报告成败；输出只报结论、失败项和超预算项，完整日志写进 KITE_LOG_DIR 并给出路径
 ├── docs/                  可选。完整的机制说明
@@ -47,14 +48,15 @@ description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录�
 3. **大文件**：列出项目里按 templates/gitignore 属于大文件类型、却被 git 跟踪的文件，建议挪进资源库，不自动挪。
 4. **AGENTS.md**：没有就按 templates/AGENTS.md 写，尖括号处向用户问清楚或从项目里读出来再填。已有的不重写，只检查代码项目有没有「测试」一节。
 5. **CLAUDE.md**：只有一行 `@AGENTS.md`。已有且内容不同时，提示用户把内容并进 AGENTS.md，不自己合并。
-6. **代码项目的测试**：
-   - 按 templates/test-writer.md 写 `.claude/agents/test-writer.md`，分层表里填本项目的小、中、大各指什么。
-   - 提供 `.kite/check`，契约见上面的目录图，写法见下一节。
-7. **报告**：补了哪些文件；哪些需要用户决定。
+6. **记忆目录**：在 Kite 之外直接用 Claude Code 的机器上，在 `.claude/settings.local.json`（不进 git）里把 `autoMemoryDirectory` 设成本项目 `.kite/memory` 的绝对路径，否则记忆写进用户目录（`~/.claude/projects/…/memory/`）。上游只认绝对路径或 `~/` 开头的路径，所以不写进提交的 `.claude/settings.json`。用户目录里已有的、关于这个项目的记忆，挪进来。
+7. **检查**：能判断「改坏了没有」的项目提供 `.kite/check`，契约见上面的目录图，写法见下一节。代码项目再按 templates/test-writer.md 写 `.claude/agents/test-writer.md`，分层表里填本项目的小、中、大各指什么。
+8. **报告**：补了哪些文件；哪些需要用户决定。
 
 ## .kite/check 怎么写
 
-检查一慢，人和 agent 就会少跑、跳过。下面几条都是为了让它快、可信：
+检查回答的是「这个项目改坏了没有」，不只代码项目有。能快速判断的都可以放进来，比如：论文项目编译出 PDF、没有未定义的引用和缺失的图；数据分析项目在一小份样本数据上把流程跑通；网站能构建、站内没有坏链接。
+
+检查一慢，人和 agent 就会少跑、跳过。下面几条以代码项目为例，都是为了让它快、可信；别的项目取其中适用的（先快后慢、只看改动、只报结论、不漏报）：
 
 1. **先类型检查，再跑测试**。类型错误几秒就能报出来，不用等测试。
 2. **只跑受影响的测试**。沿 import 关系，从改动的文件找到依赖它们的测试，尽量用语言工具自带的功能（Bun 的 `bun test --changed`、Jest 的 `--findRelatedTests`、pytest 的 testmon 插件），不自己造依赖图。改动从 `KITE_BASE` 起算，没有这个变量就看还没提交的改动。依赖清单、锁文件、测试配置变了，依赖图看不出影响范围，跑全量。没有受影响的测试就直接通过。

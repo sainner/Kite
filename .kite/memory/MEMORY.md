@@ -1,0 +1,2 @@
+- [Kite 来历](kite-origin.md) — Pigeon 冻结后的替代品，交接文档在 docs/任务书.md，含三问和不做清单
+- [每会话一个工作树](session-worktree-decision.md) — 已决定：会话跑在独立工作树、完成后自动合并；四个待解问题和不带的 Pigeon 机制

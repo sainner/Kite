@@ -166,7 +166,7 @@ function report(r: CheckResult): string {
 export function checkTool(o: { main: string; worktree: string; logRoot: string; onResult(r: CheckResult): void }) {
   return tool(
     'check',
-    '跑项目的检查（.kite/check）：类型检查，加上受改动影响的测试。改完代码用它确认，通过才算完成。'
+    '跑项目的检查（.kite/check），判断这个项目改坏了没有；代码项目通常是类型检查加受改动影响的测试。改完用它确认，通过才算完成。'
       + '受影响的范围按这个会话相对主线的全部改动算，提交过的也算；在 Bash 里直接跑 .kite/check 只看还没提交的改动。',
     { all: z.boolean().optional().describe('跑全部测试，不只是受影响的') },
     async ({ all }, extra) => {

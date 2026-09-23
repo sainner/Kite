@@ -31,7 +31,7 @@ bun src/cli.ts archive <会话>
 2. **建工作树**。起点是主文件夹当时的 HEAD。Kite 代管提交的项目先把主文件夹里没提交的改动存成一个提交，否则新会话看不到用户刚放进去的文件。工作树放在项目文件夹外，分支叫 `kite/<会话>`。
 3. **带上被忽略的文件**，规则照 Claude Code 2.1.280 自己建工作树时的做法：设置里的 `worktree.symlinkDirectories` 做软链接（用 SDK 的 `resolveSettings` 读项目两层合并后的设置），`.worktreeinclude` 里同时被 `.gitignore` 忽略的文件以 APFS 克隆的方式复制。`.claude/settings.local.json` 不用复制：Claude Code 在工作树里会读主仓库的那一份（已实测）。
 4. **初始化**。工作树里有 `.kite/setup` 就执行它，当前目录是工作树，主文件夹路径在 `KITE_MAIN_DIR` 里。只看退出码，非 0 时会话变为 `prepare_failed`，不启动 agent。然后打一枚「会话开始」快照。
-5. **对话**。每个会话一个 `Runner`，管一个 Claude Code 进程。消息直接写进进程的输入流，进程已关闭就用原生会话 id 就地 resume（第一次用 `sessionId` 指定 id，所以 Kite 在启动前就知道它）。人发的消息带 `origin: {kind: 'human'}`，会话记录里据此区分人发的和 Kite 发的。系统提示用 `claude_code` 预设（SDK 不指定时只发一段极简提示，没有记忆、git 状态等段落），设置只读项目的两层（project、local，见「会话的上下文」），权限模式是 bypassPermissions，记忆目录指到工作树的 `.kite/memory`（经 `settings` 选项传入；写在项目的 `.claude/settings.json` 里会被上游出于安全考虑忽略）。
+5. **对话**。每个会话一个 `Runner`，管一个 Claude Code 进程。消息直接写进进程的输入流，进程已关闭就用原生会话 id 就地 resume（第一次用 `sessionId` 指定 id，所以 Kite 在启动前就知道它）。人发的消息带 `origin: {kind: 'human'}`，会话记录里据此区分人发的和 Kite 发的。系统提示用 `claude_code` 预设（SDK 不指定时只发一段极简提示，没有记忆、git 状态等段落），设置只读项目的两层（project、local，见「会话的上下文」），权限模式是 bypassPermissions，记忆目录指到工作树的 `.kite/memory`（经 `settings` 选项传入，优先级高于项目里的设置；上游只接受绝对路径，项目里提交的设置写不了每棵工作树各自的路径）。
 6. **收口**。回合结束时看 Stop 钩子输入里的 `background_tasks` 和 `session_crons`：两份都是空数组，就关闭输入流让进程退出；读不到就当作不空。Stop 之后又来了消息就不关。关闭期间来的消息先存着，进程退出后带着它们重新 resume。进程被杀、kited 重启都等同于关闭。
 7. **快照**。每批工具调用全部完成后（PostToolBatch 钩子，并行调用只触发一次）捕获一次，回合结束再捕获一次，以收进后台任务写的文件。快照是挂在 `refs/kite/snapshots/<会话>` 上的提交链（不用 `refs/kite/<会话>`，否则和会话分支 `kite/<会话>` 的短名撞车，git 会优先解析成快照），用工作树自己的私有索引，不动 HEAD、分支和暂存区；树没变就不产生新提交。提交说明的第一行是开启这一回合的用户消息，尾部用 `Kite-Session` 和 `Kite-Tool-Use` 记下会话和工具调用 id。
 8. **回退**。把工作树恢复成某一枚快照，只动文件。回退前先捕获一次现状（现状已经在快照里就不重复存），所以回退本身可以撤销。agent 正在工作时不允许。
@@ -88,7 +88,7 @@ SDK 加自定义工具只有进程内 MCP 服务器这一条路（`src/tools.ts`
 - `test/medium/`：中测试，起真实的 Claude Code，模型换成 `test/fake-api.ts` 的假端点，不耗额度；agent 靠消息里的指令（`RUN`、`PAR`、`CALL`、`BG`、`HOLD`）做确定的事。kited 经 `test/harness.ts` 在本进程里启动，这样依赖图看得到测试用了哪些源码。
 - `test/setup.ts` 在所有测试之前把环境变量换成一套隔离的，并起一个共用的假端点。测试常在别的 Claude Code 会话里跑，不清掉的话，子进程会连到真实服务、读到真实设置。
 
-全量 16 个（小 9、中 7），约 8 秒：小测试按文件并行跑，中测试按顺序跑。
+小测试按文件并行跑，中测试按顺序跑。个数和耗时会随改动变，实测记录在 `spikes/check/README.md`。
 
 ## 大测试清单
 
