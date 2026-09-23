@@ -27,7 +27,7 @@ bun src/cli.ts archive <会话>
 
 ## 一个会话的一生
 
-1. **登记项目**。已有的 git 仓库直接用，提交归用户（`commits: user`）。普通文件夹由 Kite 执行 `git init`，写入 `.gitignore` 模板（`templates/gitignore`，和 docs/项目规范.md 里的一致），提交初始版本后立即打包对象库，之后的提交由 Kite 代做（`commits: kite`）。放在 iCloud、Dropbox 里的文件夹，仓库本体放到 `KITE_HOME/repos/`。
+1. **登记项目**。已有的 git 仓库直接用，提交归用户（`commits: user`）。普通文件夹由 Kite 执行 `git init`，写入 `.gitignore` 模板（项目规范 kite-onboard skill 里的 `templates/gitignore`，kited 直接 import 这一份），提交初始版本后立即打包对象库，之后的提交由 Kite 代做（`commits: kite`）。放在 iCloud、Dropbox 里的文件夹，仓库本体放到 `KITE_HOME/repos/`。
 2. **建工作树**。起点是主文件夹当时的 HEAD。Kite 代管提交的项目先把主文件夹里没提交的改动存成一个提交，否则新会话看不到用户刚放进去的文件。工作树放在项目文件夹外，分支叫 `kite/<会话>`。
 3. **带上被忽略的文件**，规则照 Claude Code 2.1.280 自己建工作树时的做法：设置里的 `worktree.symlinkDirectories` 做软链接（用 SDK 的 `resolveSettings` 读合并后的设置），`.worktreeinclude` 里同时被 `.gitignore` 忽略的文件以 APFS 克隆的方式复制。`.claude/settings.local.json` 不用复制：Claude Code 在工作树里会读主仓库的那一份（已实测）。
 4. **初始化**。工作树里有 `.kite/setup` 就执行它，当前目录是工作树，主文件夹路径在 `KITE_MAIN_DIR` 里。只看退出码，非 0 时会话变为 `prepare_failed`，不启动 agent。然后打一枚「会话开始」快照。
@@ -58,14 +58,13 @@ bun src/cli.ts archive <会话>
 
 ## 测试
 
-`test/harness.ts` 在隔离环境里起一个 kited 子进程，Claude Code 指向 `test/fake-api.ts` 的假端点：不调模型、不耗额度，靠消息里的指令（`RUN`、`PAR`、`BG`、`SLOW`）让 agent 执行确定的工具调用。
+改完在仓库根目录跑 `.kite/check`：先做类型检查，再只跑这次改动影响到的测试，加 `--all` 跑全量。测试规则在 `.claude/agents/test-writer.md`，测试由这个子 agent 按需求写。
 
-```bash
-bun test
-bunx tsc --noEmit
-```
+- `test/small/`：小测试，直接调模块，git 在临时目录里跑，不起 Claude Code。
+- `test/medium/`：中测试，起真实的 Claude Code，模型换成 `test/fake-api.ts` 的假端点，不耗额度；agent 靠消息里的指令（`RUN`、`PAR`、`BG`、`HOLD`）做确定的事。kited 经 `test/harness.ts` 在本进程里启动，这样依赖图看得到测试用了哪些源码。
+- `test/setup.ts` 在所有测试之前把环境变量换成一套隔离的，并起一个共用的假端点。测试常在别的 Claude Code 会话里跑，不清掉的话，子进程会连到真实服务、读到真实设置。
 
-测试是按需求写的黑盒测试，只经 HTTP 接口和事件检验行为，不看实现，共 63 个，跑一遍约 85 秒。测试结束会删掉临时目录，要保留现场就设 `KITE_TEST_KEEP=1`。
+全量 29 个（小 21、中 8），约 12 秒。
 
 ## 大测试清单
 
@@ -85,3 +84,4 @@ bunx tsc --noEmit
 - 二进制文件冲突让用户二选一，现在一律交给 agent。
 - 被打断的回合不触发 Stop 钩子，读不到收口清单，进程留着，直到下一回合正常结束。
 - 有定时任务时不关进程这一半没有测试：假端点驱动不了 CronCreate。
+- 消息可能丢：kited 和它起的 Claude Code 在同一刻被杀，而 Claude Code 还没把刚收到的消息写进会话记录时，这条消息就没了。重启后再发消息能正常续接，但丢的那条不会补发。要保证送达，得等 Claude Code 确认收到（SDK 回放的用户消息）才算投递完成，之前一直由 kited 保存。

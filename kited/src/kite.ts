@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KiteError } from './errors.ts';
 import { type AdoptResult, Bus } from './events.ts';
-import { commitIdentity, git, gitTry, isAncestor, isDirty, revParse, unmergedPaths } from './git.ts';
+import { hasUnmerged, mainline, mergeBack } from './mainline.ts';
 import { register } from './projects.ts';
 import { Runner } from './runner.ts';
 import { capture, list, restore, type Snapshot } from './snapshots.ts';
@@ -95,7 +95,7 @@ export class Kite {
     const project = this.project(projectId);
     if (!prompt.trim()) throw new KiteError('第一条消息不能为空');
     const id = newSessionId();
-    const base = await this.serial(`project:${project.id}`, () => this.mainline(project));
+    const base = await this.serial(`project:${project.id}`, () => mainline(project));
     const s: Session = {
       id, projectId: project.id, title: titleOf(prompt),
       worktree: join(this.home, 'worktrees', project.id, id), branch: `kite/${id}`, base,
@@ -123,20 +123,6 @@ export class Kite {
       this.bus.emit(s.id, { type: 'error', message: (e as Error).message });
       this.setStatus(s, 'prepare_failed');
     }
-  }
-
-  /**
-   * 主线当前的 commit。Kite 代管提交的项目，先把主文件夹里没提交的改动存成一个版本：
-   * 非技术用户会直接在主文件夹改文件，不存的话新会话看不到，采纳时也可能被覆盖。
-   */
-  private async mainline(p: Project): Promise<string> {
-    if (p.commits === 'kite' && (await isDirty(p.path))) {
-      await git(p.path, ['add', '-A']);
-      await git(p.path, ['commit', '-q', '-m', 'Kite：保存主文件夹里的改动'], { env: await commitIdentity(p.path) });
-    }
-    const head = await revParse(p.path, 'HEAD');
-    if (!head) throw new KiteError(`主文件夹没有可用的提交：${p.path}`, 409);
-    return head;
   }
 
   private runner(s: Session): Runner {
@@ -222,32 +208,14 @@ export class Kite {
     if (this.runners.get(id)?.busy) throw new KiteError('agent 正在工作，等这一轮结束再采纳', 409);
     const p = this.project(s.projectId);
     const result = await this.serial(`project:${p.id}`, async (): Promise<AdoptResult> => {
-      const wt = s.worktree;
-      const identity = await commitIdentity(wt);
-      const merging = await revParse(wt, 'MERGE_HEAD');
-      if (merging) {
-        const files = await unmergedPaths(wt);
-        if (files.length) return { status: 'conflict', files };
+      const r = await mergeBack(p, s.worktree, s.title);
+      if (r.status === 'merged') return { status: 'adopted', commit: r.commit };
+      // 刚合出来的冲突交给 agent；上次留下的已经交过了，等它解决
+      if (r.fresh) {
+        this.adoptAfterTurn.add(s.id);
+        this.runner(s).send({ text: conflictPrompt(s.branch, r.files), human: false });
       }
-      if (merging || (await isDirty(wt))) {
-        await git(wt, ['add', '-A']);
-        await git(wt, ['commit', '-q', ...(merging ? ['--no-edit'] : ['-m', s.title])], { env: identity });
-      }
-      const main = await this.mainline(p);
-      if (!(await isAncestor(wt, main, 'HEAD'))) {
-        const r = await gitTry(wt, ['merge', '-q', '--no-edit', main], { env: identity });
-        if (r.code !== 0) {
-          const files = await unmergedPaths(wt);
-          if (!files.length) throw new KiteError(`把主线合进会话分支失败：${r.stderr.trim()}`, 409);
-          this.adoptAfterTurn.add(s.id);
-          this.runner(s).send({ text: conflictPrompt(s.branch, files), human: false });
-          return { status: 'conflict', files };
-        }
-      }
-      const head = (await revParse(wt, 'HEAD'))!;
-      const ff = await gitTry(p.path, ['merge', '-q', '--ff-only', head]);
-      if (ff.code !== 0) throw new KiteError(`主文件夹没法快进到会话的版本：${ff.stderr.trim()}`, 409);
-      return { status: 'adopted', commit: head };
+      return { status: 'conflict', files: r.files };
     });
     this.bus.emit(s.id, { type: 'adopt', result });
     return result;
@@ -255,21 +223,12 @@ export class Kite {
 
   // ── 归档 ──
 
-  /** 会话里有没有还没合回主线的东西。 */
-  private async unadopted(s: Session, p: Project): Promise<boolean> {
-    if (!existsSync(s.worktree)) return false;
-    if (await isDirty(s.worktree)) return true;
-    const head = await revParse(s.worktree, 'HEAD');
-    const main = await revParse(p.path, 'HEAD');
-    return !head || !main || !(await isAncestor(p.path, head, main));
-  }
-
   /** 关掉进程、删工作树和会话分支，快照引用保留。有没采纳的改动时要 force。 */
   async archive(id: string, force = false): Promise<void> {
     const s = this.mustSession(id);
     if (s.status === 'archived') return;
     const p = this.project(s.projectId);
-    if (!force && (await this.unadopted(s, p))) throw new KiteError('会话有没合回主线的改动；确定丢弃就加 force', 409);
+    if (!force && (await hasUnmerged(p.path, s.worktree))) throw new KiteError('会话有没合回主线的改动；确定丢弃就加 force', 409);
     const r = this.runners.get(id);
     if (r) {
       if (r.busy) await r.interrupt().catch(() => {});

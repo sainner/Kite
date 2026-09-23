@@ -9,8 +9,8 @@ import { basename, join, relative, isAbsolute } from 'node:path';
 import { KiteError } from './errors.ts';
 import { commitIdentity, git, gitTry, revParse } from './git.ts';
 import type { CommitOwner, Project, Store } from './store.ts';
-
-const GITIGNORE_TEMPLATE = join(import.meta.dir, '..', 'templates', 'gitignore');
+// 模板只有一份，在项目规范（kite-onboard skill）里。文本 import：模板一改，依赖图就会选中登记相关的测试
+import GITIGNORE_TEMPLATE from '../../.claude/skills/kite-onboard/templates/gitignore' with { type: 'text' };
 
 /** a 在 b 里面，或就是 b。 */
 export function within(a: string, b: string): boolean {
@@ -69,7 +69,7 @@ async function initFolder(path: string, home: string, id: string): Promise<void>
   const separate = isSynced(path) ? [`--separate-git-dir=${join(home, 'repos', `${id}.git`)}`] : [];
   await git(path, ['init', '-q', '-b', 'main', ...separate, path]);
   const ignore = join(path, '.gitignore');
-  if (!existsSync(ignore)) writeFileSync(ignore, await Bun.file(GITIGNORE_TEMPLATE).text());
+  if (!existsSync(ignore)) writeFileSync(ignore, GITIGNORE_TEMPLATE);
   await git(path, ['add', '-A']);
   await git(path, ['commit', '-q', '--allow-empty', '-m', 'Kite：初始版本'], { env: await commitIdentity(path) });
   // 首次提交时每个文件一个松散对象，立刻打包，否则对象库会膨胀

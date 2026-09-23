@@ -181,7 +181,8 @@ export class Runner {
           const input = i as UserPromptSubmitHookInput;
           if (this.interruptPending) {
             this.interruptPending = false;
-            return { continue: false, stopReason: '已打断' };
+            // block 会把这条消息从上下文里删掉；continue: false 只是停下，消息会并进下一回合
+            return { decision: 'block', reason: '已打断' };
           }
           this.turnActive = true;
           this.busy = true;

@@ -1,0 +1,70 @@
+---
+name: kite-onboard
+description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录结构、.gitignore、AGENTS.md、CLAUDE.md，代码项目再加 test-writer 子 agent 和 .kite/check。项目接入 Kite、新建项目、整理项目结构、写 AGENTS.md 或测试规则时用。
+---
+
+# Kite 项目规范
+
+「项目」指被 Kite 管理的任意文件夹。每个项目都是一个标准 git 仓库：已有的仓库直接用，普通文件夹由 Kite 替你初始化（kited 登记项目时自动做 `git init`、写入 .gitignore、提交初始版本）。
+
+体检和补齐的原则：缺什么补什么，已有的不动；要改用户已有的文件，先说明要改什么、为什么，得到同意再改。
+
+## 一个项目长这样
+
+```
+论文项目/
+├── .git/                  版本库，访达默认看不到
+│                          放在 iCloud、Dropbox 等同步目录里的项目，这里是一个一行字的指针文件，
+│                          仓库本体放到同步目录之外（git init --separate-git-dir）
+├── .gitignore             Kite 初始化时写入 templates/gitignore；已有仓库不改
+├── AGENTS.md              给 agent 的项目说明，唯一的指令源；按 templates/AGENTS.md 写
+├── CLAUDE.md              只有一行：@AGENTS.md
+├── .claude/
+│   ├── agents/
+│   │   └── test-writer.md 代码项目提供。写测试的子 agent，测试规则都在这里；按 templates/test-writer.md 写
+│   ├── rules/             只在碰到特定路径时适用的约定
+│   └── settings.json      上游设置，如 worktree.symlinkDirectories（建工作树时要软链接的目录）
+├── .worktreeinclude       建工作树时要复制过去的被忽略文件，如 .env
+├── .kite/
+│   ├── memory/            agent 记住的项目知识，Kite 启动会话时把记忆目录指到这里
+│   ├── setup              可选。工作树的初始化命令，如装依赖；只用退出码报告成败
+│   └── check              代码项目提供。检查命令：类型检查加受影响的测试，加 --all 跑全量
+│                          受影响的测试从 KITE_BASE 这个版本起算改动，没有这个变量就看还没提交的改动
+│                          只用退出码报告成败；输出只报结论、失败项和超预算项，完整日志写进文件并给出路径
+├── docs/                  可选。完整的机制说明
+├── assets -> 资源库里这个项目的目录（链接本身进 git，大文件本体在资源库）
+└── 正文文件……
+```
+
+不在项目里的：会话记录、会话的工作树、Kite 的快照（在 `.git` 里的 `refs/kite/`，不建分支）、大文件本体、只关于某个人的记忆。
+
+## 体检和补齐
+
+按顺序检查，每一步只补缺的：
+
+1. **git 仓库**：不是仓库就停下，提示用户在 Kite 里登记这个文件夹，由 kited 初始化。
+2. **.gitignore**：Kite 初始化的仓库应当是 templates/gitignore 的内容；已有的仓库用它自己的，不改。
+3. **大文件**：列出项目里按 templates/gitignore 属于大文件类型、却被 git 跟踪的文件，建议挪进资源库，不自动挪。
+4. **AGENTS.md**：没有就按 templates/AGENTS.md 写，尖括号处向用户问清楚或从项目里读出来再填。已有的不重写，只检查代码项目有没有「测试」一节。
+5. **CLAUDE.md**：只有一行 `@AGENTS.md`。已有且内容不同时，提示用户把内容并进 AGENTS.md，不自己合并。
+6. **代码项目的测试**：
+   - 按 templates/test-writer.md 写 `.claude/agents/test-writer.md`，分层表里填本项目的小、中、大各指什么。
+   - 提供 `.kite/check`，契约见上面的目录图：类型检查加受影响的测试，`--all` 跑全量，只用退出码报告成败，输出只报结论、失败项和超预算项。
+7. **报告**：补了哪些文件；哪些需要用户决定。
+
+## 测试规则为什么放在子 agent 里
+
+写测试和写实现分开：主 agent 写实现，test-writer 只照需求写测试，看不到实现，所以测试检验的是需求，不会复述实现。两边可以并行，前提是动手前先把需求和接口写下来。测试规则只在这个子 agent 工作时加载，平时不占上下文。
+
+templates/test-writer.md 分层表里的数字是默认预算，项目可以改，改了写明原因。数字这样定是因为：人等一件事超过 10 秒注意力就会离开，开发中跑的测试要落在这个范围里；大多数测试应该是只测一小块逻辑的小测试，《Software Engineering at Google》建议约占八成，小测试以毫秒计，几千个也能几秒跑完。
+
+## 知识放哪（暂定，可能调整）
+
+| 知识 | 放哪 | 加载方式 |
+|---|---|---|
+| 始终适用的约定 | AGENTS.md | 每轮加载 |
+| 只在碰到特定文件时适用的约定 | `.claude/rules/*.md`，用 `paths:` 限定 | 碰到对应路径时注入 |
+| 值得带到以后会话的单条事实 | `.kite/memory/`，一事一文件，`MEMORY.md` 做索引 | 索引每轮加载，正文按需读 |
+| 完整的机制说明 | `docs/` | 索引注入，正文按需读 |
+
+进项目的只有关于项目的记忆。关于某个人的偏好和协作方式留在用户级，不进共享仓库。
