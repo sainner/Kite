@@ -68,7 +68,7 @@ description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录�
 
 在 Kite 会话里，agent 经 Kite 给的 check 工具调用它。怎么跑由工具定，检查命令只管查什么、怎么报：`KITE_BASE` 取会话分支和主线的分叉点，`KITE_LOG_DIR` 按会话留在 Kite 的目录里，一台机器上一次只跑一个检查，检查命令不用自己加锁。什么时候该跑检查写在工具说明里，AGENTS.md 不用再提。
 
-Kite 仓库自己的 `.kite/check` 是一个例子：它调 kited/scripts/check.ts，类型检查和 lint 同时跑，用 `bun test --changed` 选测试，小测试加 `--parallel`。
+Kite 仓库自己的 `.kite/check` 是一个例子：它调 kited/scripts/check.ts，类型检查和 lint 同时跑，App 有改动时一起编译 App，用 `bun test --changed` 选测试，小测试加 `--parallel`。
 
 ## 测试规则为什么放在子 agent 里
 

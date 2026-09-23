@@ -1,6 +1,6 @@
 /**
  * Kite 仓库的检查命令，由 .kite/check 调用，契约见 kite-onboard skill（.claude/skills/kite-onboard/SKILL.md）。
- * 先同时做类型检查和 lint，再跑受影响的测试（--all 跑全量），最后按测试规则的预算核对耗时。
+ * 先同时做类型检查和 lint（App 有改动时加上 App 的编译），再跑受影响的测试（--all 跑全量），最后按测试规则的预算核对耗时。
  * 受影响的测试从 KITE_BASE 起算改动，没有这个变量就看还没提交的改动；依赖或配置变了跑全量。
  * 输出只报结论、失败项和超预算项。完整日志写进 KITE_LOG_DIR（Kite 的 check 工具给的目录）；手动跑时没有这个变量，
  * 每次建一个新的临时目录，通过就删掉，没通过就留着并给出路径。
@@ -49,11 +49,29 @@ function fail(lines: string[]): never {
   process.exit(1);
 }
 
-// 1. 类型检查和 lint 都是几秒的事，同时跑。lint 只开 TypeScript 查不出来的规则，见 eslint.config.js；
-// 用 --bun 在 Bun 里跑，工作机不用另装 Node
-const [tsc, lint] = await Promise.all([
+// 1. 改了哪些文件
+const base = process.env.KITE_BASE;
+const root = run(['git', 'rev-parse', '--show-toplevel']).out.trim();
+const changed = [
+  ...run(['git', 'diff', '--name-only', base ?? 'HEAD'], root).out.split('\n'),
+  ...run(['git', 'ls-files', '--others', '--exclude-standard'], root).out.split('\n'),
+].filter(Boolean);
+const all = process.argv.includes('--all');
+const full = all || changed.some((f) => FULL_TRIGGERS.includes(f));
+const scope = full ? '全量' : '受影响的';
+
+// 2. 静态检查都是几秒的事，同时跑。lint 只开 TypeScript 查不出来的规则，见 eslint.config.js；
+// 用 --bun 在 Bun 里跑，工作机不用另装 Node。App 有改动才编译，Mac 和 iOS 两端一起编。
+// 编译缓存用 Xcode 的默认位置：系统框架的预编译模块各工程共用，新工作树第一次编译约 5 秒；
+// 关掉索引，每个工作树的缓存约 9 MB，不关约 70 MB
+const APP = join(root, 'app');
+const buildApp = all || changed.some((f) => f.startsWith('app/'));
+const [tsc, lint, app] = await Promise.all([
   runAsync(['bunx', 'tsc', '--noEmit']),
   runAsync(['bunx', '--bun', 'eslint', '--format', 'json', '.']),
+  buildApp ? runAsync(['xcodebuild', '-project', 'Kite.xcodeproj', '-scheme', 'Kite',
+    '-destination', 'generic/platform=macOS', '-destination', 'generic/platform=iOS Simulator',
+    'build', '-quiet', 'COMPILER_INDEX_STORE_ENABLE=NO'], APP) : undefined,
 ]);
 const early: string[] = [];
 if (tsc.code !== 0) {
@@ -67,17 +85,14 @@ if (lint.code !== 0) {
   if (found.length) early.push(`lint 没通过，${found.length} 处：`, ...found.slice(0, 20).map((l) => `  ${l}`));
   else early.push('lint 没跑起来：', ...lint.out.trim().split('\n').slice(-15).map((l) => `  ${l}`));
 }
+if (app && app.code !== 0) {
+  // 两端各报一遍同样的错，去重
+  const errors = [...new Set(app.out.split('\n').filter((l) => l.includes(': error:')).map((l) => l.replace(`${APP}/`, 'app/')))];
+  if (errors.length) early.push(`App 编译没通过，${errors.length} 处错误：`, ...errors.slice(0, 20).map((l) => `  ${l}`));
+  else early.push('App 编译没通过：', ...app.out.trim().split('\n').slice(-15).map((l) => `  ${l}`));
+}
 if (early.length) fail(early);
-
-// 2. 跑哪些测试
-const base = process.env.KITE_BASE;
-const root = run(['git', 'rev-parse', '--show-toplevel']).out.trim();
-const changed = [
-  ...run(['git', 'diff', '--name-only', base ?? 'HEAD'], root).out.split('\n'),
-  ...run(['git', 'ls-files', '--others', '--exclude-standard'], root).out.split('\n'),
-].filter(Boolean);
-const full = process.argv.includes('--all') || changed.some((f) => FULL_TRIGGERS.includes(f));
-const scope = full ? '全量' : '受影响的';
+const passed = app ? '类型检查、lint 和 App 编译通过' : '类型检查和 lint 通过';
 
 // 3. 跑测试。小测试只调 git、互不相干，按文件分到多个进程并行跑；
 // 中测试每个都起 Claude Code，并行就是同时起好几个，照旧按顺序跑
@@ -130,5 +145,5 @@ if (full) {
 if (problems.length) fail([`检查没通过（${scope}测试 ${cases.length} 个，${seconds.toFixed(1)} 秒）：`, ...problems.map((p) => `  ${p}`)]);
 if (!GIVEN) rmSync(LOG_DIR, { recursive: true, force: true });
 console.log(cases.length === 0
-  ? '检查通过：类型检查和 lint 通过，这次改动没有影响到任何测试。'
-  : `检查通过：类型检查和 lint 通过，${scope}测试 ${cases.length} 个，${seconds.toFixed(1)} 秒。`);
+  ? `检查通过：${passed}，这次改动没有影响到任何测试。`
+  : `检查通过：${passed}，${scope}测试 ${cases.length} 个，${seconds.toFixed(1)} 秒。`);
