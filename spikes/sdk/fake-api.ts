@@ -79,7 +79,9 @@ export function startFakeApi() {
       else if (hasToolResult) content = [{ type: 'text', text: '工具完成' }];
       else {
         const m = /SLEEP (\d+)/.exec(text);
-        if (m) { content = [{ type: 'tool_use', id: `toolu_fake_${++seq}`, name: 'Bash', input: { command: `sleep ${m[1]}; echo slept`, description: 'sleep' } }]; stop = 'tool_use'; }
+        const bg = /BG (\d+)/.exec(text);
+        if (bg) { content = [{ type: 'tool_use', id: `toolu_fake_${++seq}`, name: 'Bash', input: { command: `sleep ${bg[1]}; echo bg-done`, description: 'background sleep', run_in_background: true } }]; stop = 'tool_use'; }
+        else if (m) { content = [{ type: 'tool_use', id: `toolu_fake_${++seq}`, name: 'Bash', input: { command: `sleep ${m[1]}; echo slept`, description: 'sleep' } }]; stop = 'tool_use'; }
         else content = [{ type: 'text', text: `echo: ${text.slice(-40)}` + (config.pad ? '\n' + '长'.repeat(config.pad) : '') }];
       }
       if (body.stream === false) {

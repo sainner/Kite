@@ -2,8 +2,8 @@
  * 1b：Agent SDK 常驻进程验证。用假端点驱动真实的 Claude Code（SDK 自带 2.1.280）。
  * 用法：bun run.ts <临时目录>
  */
-import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import { spawn, execSync, type ChildProcess } from 'node:child_process';
+import { execSync } from 'node:child_process';
+import { isolatedEnv, Sess as BaseSess } from './harness';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { startFakeApi, type Logged } from './fake-api';
@@ -13,17 +13,7 @@ if (!root) throw new Error('需要临时目录参数');
 rmSync(root, { recursive: true, force: true });
 mkdirSync(root, { recursive: true });
 const fake = startFakeApi();
-const cfgDir = join(root, 'claude-config');
-const home = join(root, 'home');
-mkdirSync(cfgDir); mkdirSync(home);
-const env = {
-  PATH: '/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin',
-  HOME: home, TMPDIR: process.env.TMPDIR ?? '/tmp', LANG: 'en_US.UTF-8', USER: process.env.USER ?? 'u', SHELL: '/bin/zsh',
-  CLAUDE_CONFIG_DIR: cfgDir,
-  ANTHROPIC_BASE_URL: `http://127.0.0.1:${fake.port}`,
-  ANTHROPIC_API_KEY: 'sk-ant-fake',
-  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-};
+const { cfgDir, env } = isolatedEnv(root, fake.port);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 const rows: string[][] = [];
@@ -32,66 +22,8 @@ const details: Record<string, unknown> = {};
 let markSeq = 0;
 const mark = (tag = 'M') => `<<${tag}${String(++markSeq).padStart(3, '0')}>>`;
 
-class Inbox implements AsyncIterable<SDKUserMessage> {
-  private buf: SDKUserMessage[] = [];
-  private wake?: () => void;
-  private closed = false;
-  push(text: string, priority?: 'now' | 'next' | 'later') {
-    this.buf.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null, ...(priority ? { priority } : {}) });
-    this.wake?.();
-  }
-  close() { this.closed = true; this.wake?.(); }
-  async *[Symbol.asyncIterator]() {
-    while (true) {
-      while (this.buf.length) yield this.buf.shift()!;
-      if (this.closed) return;
-      await new Promise<void>((r) => (this.wake = r));
-      this.wake = undefined;
-    }
-  }
-}
-
-class Sess {
-  inbox = new Inbox();
-  msgs: Array<{ at: number; m: any }> = [];
-  sessionId?: string;
-  child?: ChildProcess;
-  error?: unknown;
-  ended: Promise<void>;
-  private resultWaiters: Array<(m: any) => void> = [];
-  constructor(cwd: string, extra: Record<string, unknown> = {}) {
-    const q = query({
-      prompt: this.inbox,
-      options: {
-        cwd, env, settingSources: [], allowedTools: ['Bash'],
-        stderr: () => {},
-        spawnClaudeCodeProcess: (o) => {
-          const cp = spawn(o.command, o.args, { cwd: o.cwd, env: o.env as any, stdio: ['pipe', 'pipe', 'pipe'] });
-          cp.stderr?.resume();
-          this.child = cp;
-          return cp as any;
-        },
-        ...extra,
-      },
-    });
-    this.ended = (async () => {
-      try {
-        for await (const m of q) {
-          this.msgs.push({ at: Date.now(), m });
-          if ((m as any).session_id) this.sessionId = (m as any).session_id;
-          if (m.type === 'result') this.resultWaiters.shift()?.(m);
-        }
-      } catch (e) { this.error = e; }
-    })();
-  }
-  /** 先登记等待，再投递；返回投递时刻和本条结果的 Promise。 */
-  send(text: string, priority?: 'now' | 'next' | 'later') {
-    const result = new Promise<any>((r) => this.resultWaiters.push(r));
-    const at = Date.now();
-    this.inbox.push(text, priority);
-    return { at, result };
-  }
-  rssKb(): number { return Number(execSync(`ps -o rss= -p ${this.child!.pid}`).toString().trim()); }
+class Sess extends BaseSess {
+  constructor(cwd: string, extra: Record<string, unknown> = {}) { super(cwd, env, extra); }
 }
 
 const waitReq = (m: string, toolResult = false) => fake.waitFor((l) => l.lastUserText.includes(m) && l.hasToolResult === toolResult);
