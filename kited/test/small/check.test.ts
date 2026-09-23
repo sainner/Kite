@@ -45,8 +45,9 @@ test('runCheck 超时或 signal 触发时停掉检查命令和它起的子进程
     const running = runCheck({ main, worktree: wt, signal: ac.signal });
     const second = await until(pids, '检查命令起了子进程', 2_000);
     seen.push(...second);
-    // 在进程表里认得出活着的子进程，上面超时那一段的检查才不是空的
-    expect(sleeping()).toBe(true);
+    // 在进程表里认得出活着的子进程，上面超时那一段的检查才不是空的。
+    // 要等：`sleep … &` 先 fork 再 exec，sh 写 pids 时子进程的命令行可能还是 sh
+    await until(sleeping, '进程表里认得出子进程', 2_000);
     ac.abort();
     const aborted = await running;
     expect(aborted).toMatchObject({ ok: false, code: null, stopped: 'aborted' });

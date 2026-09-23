@@ -2,14 +2,16 @@
  * Kite 仓库的检查命令，由 .kite/check 调用，契约见 kite-onboard skill（.claude/skills/kite-onboard/SKILL.md）。
  * 先做类型检查，再跑受影响的测试（--all 跑全量），最后按测试规则的预算核对耗时。
  * 受影响的测试从 KITE_BASE 起算改动，没有这个变量就看还没提交的改动；依赖或配置变了跑全量。
- * 输出只报结论、失败项和超预算项，完整日志写进 node_modules/.cache/kite-check/。
+ * 输出只报结论、失败项和超预算项。完整日志每次写进一个新的临时目录，通过就删掉，没通过就留着并给出路径。
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const KITED = join(import.meta.dir, '..');
-const LOG_DIR = join(KITED, 'node_modules', '.cache', 'kite-check');
-const LOG = join(LOG_DIR, 'last.log');
+// 每次运行一个自己的目录：几个检查同时跑（几个会话，或主 agent 和子 agent）时不互相覆盖日志和测试报告
+const LOG_DIR = mkdtempSync(join(tmpdir(), 'kite-check-'));
+const LOG = join(LOG_DIR, 'log');
 
 /** 预算，和 .claude/agents/test-writer.md 里的分层表一致。 */
 const LIMIT = { small: 1, medium: 2 };
@@ -19,7 +21,6 @@ const TOTAL_MAX = 15;
 /** 这些变了依赖图看不出影响范围，跑全量。 */
 const FULL_TRIGGERS = ['kited/package.json', 'kited/bun.lock', 'kited/tsconfig.json', 'kited/bunfig.toml'];
 
-mkdirSync(LOG_DIR, { recursive: true });
 writeFileSync(LOG, '');
 const log = (text: string) => writeFileSync(LOG, text, { flag: 'a' });
 
@@ -66,7 +67,6 @@ const problems: string[] = [];
 const started = performance.now();
 for (const { tier, args } of TIERS) {
   const report = join(LOG_DIR, `${tier}.xml`);
-  rmSync(report, { force: true });
   const tests = run(['bun', 'test', ...args, ...(full ? [] : [base ? `--changed=${base}` : '--changed']), `test/${tier}`, '--reporter=junit', `--reporter-outfile=${report}`]);
   // 没有受影响的测试时 bun 不写报告，退出码为 0
   if (!existsSync(report)) {
@@ -102,6 +102,7 @@ if (full) {
 }
 
 if (problems.length) fail([`检查没通过（${scope}测试 ${cases.length} 个，${seconds.toFixed(1)} 秒）：`, ...problems.map((p) => `  ${p}`)]);
+rmSync(LOG_DIR, { recursive: true, force: true });
 console.log(cases.length === 0
   ? '检查通过：类型检查通过，这次改动没有影响到任何测试。'
   : `检查通过：类型检查通过，${scope}测试 ${cases.length} 个，${seconds.toFixed(1)} 秒。`);
