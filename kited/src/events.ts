@@ -1,5 +1,6 @@
 /** 实时事件：SDK 原始消息原样转发，另加 Kite 自己的状态变化。事件不落库，历史以会话记录和 git 为准。 */
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { CheckResult } from './check.ts';
 import type { RunnerState } from './runner.ts';
 import type { SessionStatus } from './store.ts';
 
@@ -12,6 +13,8 @@ export type KiteEvent =
   | { type: 'setup'; exit: number | null; log: string }
   | { type: 'snapshot'; commit: string; label: string; changedFiles: number }
   | { type: 'adopt'; result: AdoptResult }
+  /** agent 调了 check 工具。 */
+  | { type: 'check'; result: CheckResult }
   | { type: 'error'; message: string };
 
 export type AdoptResult =

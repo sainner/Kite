@@ -5,6 +5,7 @@
  * 主循环请求（带 tools）按最后一条用户消息决定回复：
  *  - 含 tool_result          → 结束回合，回一句「工具完成」；
  *  - PAR <命令1> ;; <命令2>   → 一次回复里并行调两个 Bash；
+ *  - CALL <工具名> <JSON 对象> → 以这个 JSON 为参数调一次该工具（名字照请求 tools 里的写，比如 check）；
  *  - RUN <命令>               → 调一次 Bash 执行这条命令；
  *  - BG <标记>                → 后台 Bash，一直等到测试调 release(标记) 才结束；
  *  - 含「冲突」               → 用 Bash 以会话分支一侧解决冲突并提交（模拟 agent 解决合并冲突）；
@@ -79,8 +80,8 @@ function sse(model: string, content: any[], stop: string): string {
   return ev.map(([e, d]) => `event: ${e}\ndata: ${JSON.stringify(d)}\n\n`).join('');
 }
 
-const bash = (command: string, extra: Record<string, unknown> = {}) =>
-  ({ type: 'tool_use', id: `toolu_fake_${++seq}`, name: 'Bash', input: { command, description: 'fake', ...extra } });
+const toolUse = (name: string, input: unknown) => ({ type: 'tool_use', id: `toolu_fake_${++seq}`, name, input });
+const bash = (command: string, extra: Record<string, unknown> = {}) => toolUse('Bash', { command, description: 'fake', ...extra });
 
 /** 把会话分支一侧的版本当作冲突的解决结果并提交。 */
 const RESOLVE = 'git checkout --ours -- . && git add -A && git -c user.name=agent -c user.email=agent@example.com commit -q --no-edit';
@@ -135,6 +136,7 @@ export function startFakeApi(dir: string): FakeApi {
         let m: RegExpExecArray | null;
         if (hasToolResult) content = [{ type: 'text', text: '工具完成' }];
         else if ((m = /PAR (.+?) ;; (.+)$/m.exec(text))) { content = [bash(m[1]!), bash(m[2]!)]; stop = 'tool_use'; }
+        else if ((m = /CALL (\S+) (\{.*\})$/m.exec(text))) { content = [toolUse(m[1]!, JSON.parse(m[2]!))]; stop = 'tool_use'; }
         else if ((m = /RUN (.+)$/m.exec(text))) { content = [bash(m[1]!)]; stop = 'tool_use'; }
         else if ((m = /BG (\S+)/.exec(text))) {
           background.add(m[1]!);

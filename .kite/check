@@ -1,4 +1,4 @@
 #!/bin/sh
-# Kite 仓库的检查命令，契约见 docs/项目规范.md；实现在 kited/scripts/check.ts。
+# Kite 仓库的检查命令，契约见 kite-onboard skill（.claude/skills/kite-onboard/SKILL.md）；实现在 kited/scripts/check.ts。
 export PATH="$HOME/.bun/bin:/opt/homebrew/bin:$PATH"
 exec bun "$(dirname "$0")/../kited/scripts/check.ts" "$@"

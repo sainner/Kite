@@ -8,10 +8,11 @@
  */
 import {
   getSessionInfo, query,
-  type Options, type PostToolBatchHookInput, type Query, type SDKMessage, type SDKUserMessage,
+  type McpSdkServerConfigWithInstance, type Options, type PostToolBatchHookInput, type Query, type SDKMessage, type SDKUserMessage,
   type SettingSource, type StopHookInput, type UserPromptSubmitHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { join } from 'node:path';
+import { TOOLS_ENV } from './tools.ts';
 
 /*
  * Kite 会话只带做事用的上游功能。会话上下文里有什么见 kited/README.md「会话的上下文」。
@@ -87,7 +88,13 @@ export interface RunnerEvents {
   state(state: RunnerState, error?: string): void;
 }
 
-export interface RunnerConfig { cwd: string; nativeId: string; title: string }
+export interface RunnerConfig {
+  cwd: string;
+  nativeId: string;
+  title: string;
+  /** Kite 给会话的工具（见 tools.ts），每次启动进程时调用。 */
+  tools?: () => McpSdkServerConfigWithInstance | undefined;
+}
 
 export class Runner {
   state: RunnerState = 'closed';
@@ -199,8 +206,11 @@ export class Runner {
 
   private options(resume: boolean): Options {
     const { cwd, nativeId, title } = this.cfg;
+    const tools = this.cfg.tools?.();
     return {
       cwd,
+      env: { ...process.env, ...TOOLS_ENV },
+      ...(tools ? { mcpServers: { kite: tools } } : {}),
       ...(resume ? { resume: nativeId } : { sessionId: nativeId, title }),
       // 和裸跑 Claude Code 一样：不指定时 SDK 只发一段极简系统提示，没有记忆、git 状态等段落
       systemPrompt: { type: 'preset', preset: 'claude_code' },

@@ -14,6 +14,7 @@ import { register } from './projects.ts';
 import { Runner } from './runner.ts';
 import { capture, list, restore, type Snapshot } from './snapshots.ts';
 import type { Project, Session, Store } from './store.ts';
+import { kiteTools } from './tools.ts';
 import { addWorktree, removeWorktree, runSetup } from './worktrees.ts';
 
 export interface SessionView extends Session {
@@ -128,7 +129,11 @@ export class Kite {
   private runner(s: Session): Runner {
     let r = this.runners.get(s.id);
     if (r) return r;
-    r = new Runner({ cwd: s.worktree, nativeId: s.nativeId, title: s.title }, {
+    const tools = () => kiteTools({
+      main: this.project(s.projectId).path, worktree: s.worktree,
+      onCheck: (result) => this.bus.emit(s.id, { type: 'check', result }),
+    });
+    r = new Runner({ cwd: s.worktree, nativeId: s.nativeId, title: s.title, tools }, {
       message: (message) => this.bus.emit(s.id, { type: 'sdk', message }),
       turnStart: (prompt, source) => this.turnLabels.set(s.id, source === 'system' ? '后台任务完成' : firstLine(prompt)),
       toolBatch: (input) => this.snapshot(s, input.tool_calls.map((c) => c.tool_use_id)),

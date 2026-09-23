@@ -44,7 +44,7 @@ bun src/cli.ts archive <会话>
 在 Kite 仓库自己的工作树里实测（Claude Code 2.1.280），还没开始对话时模型看到约 7.9K token：
 
 - **系统提示**（约 2.3K）：`claude_code` 预设。角色和安全边界、行为准则、记忆的用法（路径是工作树的 `.kite/memory/`）、模型列表。其中「输出显示在终端里」对 Kite 不准确，等 App 定下渲染方式再用 `append` 改。
-- **工具**：常驻的是 Agent、Bash、Read、Edit、Write、Skill、ToolSearch、ListAgents；CronCreate、CronDelete、CronList、Monitor、TaskStop、SendMessage、NotebookEdit、WebFetch、WebSearch 只列名字，用到时经 ToolSearch 加载。本机版 Claude Code 没有 Glob、Grep，搜索走 Bash。
+- **工具**：常驻的是 Agent、Bash、Read、Edit、Write、Skill、ToolSearch、ListAgents，项目有 `.kite/check` 时还有 Kite 自己的 check（见下一节）；CronCreate、CronDelete、CronList、Monitor、TaskStop、SendMessage、NotebookEdit、WebFetch、WebSearch 只列名字，用到时经 ToolSearch 加载。本机版 Claude Code 没有 Glob、Grep，搜索走 Bash。
 - **环境**：跟在第一条消息后面的一条系统消息。工作目录，并说明这是工作树、不要切回主仓库、不要用裸 `git stash`；子 agent 列表（Explore、general-purpose、Plan，加上项目自己的）；skill 列表（Claude Code 自带的 code-review、simplify、security-review、claude-api，加上项目自己的）；当天日期。
 - **用户上下文**：项目的 CLAUDE.md（经 `@AGENTS.md` 引入 AGENTS.md）、账号邮箱、会话开始时的 git 状态。
 
@@ -56,6 +56,12 @@ Kite 会话只带做事用的上游功能，取舍列在 `src/runner.ts` 开头�
 - 定时任务（CronCreate）保留：上游的 Stop 钩子把它算进 `session_crons`，有定时任务时 Kite 不关进程。
 
 重新量的办法：SDK 的 `Query.getContextUsage()` 给出和 `/context` 一样的分类统计，用官方计数接口算，不耗额度，但 skill 和工具两项之间的拆分不准，只看总数；要看原文，把 `ANTHROPIC_BASE_URL` 指到假端点，抓第一次请求，同时设 `ENABLE_TOOL_SEARCH=true`，否则地址不是官方的时候不启用工具搜索，所有工具都会常驻。
+
+## Kite 的工具
+
+SDK 加自定义工具只有进程内 MCP 服务器这一条路（`src/tools.ts`）：工具代码就在 kited 里运行，不起进程、不走网络。启动 Claude Code 时设 `CLAUDE_AGENT_SDK_MCP_NO_PREFIX=1`，这类工具用裸名，模型看到的是 `check` 而不是 `mcp__kite__check`；这个变量上游没写进文档，Pigeon 从 2.1.226 用起，2.1.280 实测仍有效。再加 `alwaysLoad`，和内置工具一样常驻，不经 ToolSearch。工具在每次启动 Claude Code 进程时按工作树现状组装。
+
+**check**（`src/check.ts`）：跑工作树里的 `.kite/check`，只在有这个文件时提供，参数只有 `all`（跑全量）。比 agent 在 Bash 里直接跑多两样：`KITE_BASE` 由 Kite 给，取会话分支和主线的分叉点，会话里已经提交的改动也算进受影响的范围；结果发成 `check` 事件，App 可以直接显示。检查命令自成一个进程组，超过 10 分钟或回合被打断时连子进程一起停掉。输出原样送回模型，太长时只留结尾；没通过时工具结果标为错误。什么时候该用写在工具说明里，AGENTS.md 不再重复。
 
 ## 接口
 
@@ -70,7 +76,7 @@ Kite 会话只带做事用的上游功能，取舍列在 `src/runner.ts` 开头�
 | POST | `/sessions/:id/restore` | 恢复到快照 `{commit}` |
 | POST | `/sessions/:id/adopt` | 合回主线，返回 `adopted` 或 `conflict` |
 | POST | `/sessions/:id/archive` | 归档 `{force?}` |
-| GET | `/events` | SSE 事件流（`?session=`）：SDK 原始消息，以及 status、runner、idle、setup、snapshot、adopt、error |
+| GET | `/events` | SSE 事件流（`?session=`）：SDK 原始消息，以及 status、runner、idle、setup、snapshot、adopt、check、error |
 
 事件不落库。会话内容以 Claude Code 自己的会话记录为准，快照以 git 为准，数据库只记项目和会话的登记信息。
 
@@ -79,10 +85,10 @@ Kite 会话只带做事用的上游功能，取舍列在 `src/runner.ts` 开头�
 改完在仓库根目录跑 `.kite/check`：先做类型检查，再只跑这次改动影响到的测试，加 `--all` 跑全量。测试规则在 `.claude/agents/test-writer.md`，测试由这个子 agent 按需求写。
 
 - `test/small/`：小测试，直接调模块，git 在临时目录里跑，不起 Claude Code。
-- `test/medium/`：中测试，起真实的 Claude Code，模型换成 `test/fake-api.ts` 的假端点，不耗额度；agent 靠消息里的指令（`RUN`、`PAR`、`BG`、`HOLD`）做确定的事。kited 经 `test/harness.ts` 在本进程里启动，这样依赖图看得到测试用了哪些源码。
+- `test/medium/`：中测试，起真实的 Claude Code，模型换成 `test/fake-api.ts` 的假端点，不耗额度；agent 靠消息里的指令（`RUN`、`PAR`、`CALL`、`BG`、`HOLD`）做确定的事。kited 经 `test/harness.ts` 在本进程里启动，这样依赖图看得到测试用了哪些源码。
 - `test/setup.ts` 在所有测试之前把环境变量换成一套隔离的，并起一个共用的假端点。测试常在别的 Claude Code 会话里跑，不清掉的话，子进程会连到真实服务、读到真实设置。
 
-全量 29 个（小 21、中 8），约 9 秒：小测试按文件并行跑，中测试按顺序跑。
+全量 31 个（小 23、中 8），约 10 秒：小测试按文件并行跑，中测试按顺序跑。
 
 ## 大测试清单
 
@@ -92,7 +98,7 @@ Kite 会话只带做事用的上游功能，取舍列在 `src/runner.ts` 开头�
 2. 会话记录里的系统提示有记忆段落，路径是工作树的 `.kite/memory/`；人发的消息带 `origin: human`。
 3. 再发一条消息：进程重新 resume，记下从发消息到进程就绪、到首条回复各用多久。
 4. 采纳：主文件夹出现改动，git 历史干净；然后归档。
-5. 量一次会话的上下文（办法见「会话的上下文」）：`src/runner.ts` 里去掉的工具和 skill 名字还对得上，没有新冒出来的无关功能。
+5. 量一次会话的上下文（办法见「会话的上下文」）：`src/runner.ts` 里去掉的工具和 skill 名字还对得上，没有新冒出来的无关功能；Kite 的工具名不带 `mcp__` 前缀。
 
 ## 还没做的
 
