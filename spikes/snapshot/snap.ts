@@ -21,12 +21,31 @@ export interface Folder {
   env: Record<string, string>; // hidden 模式带 GIT_DIR / GIT_WORK_TREE
 }
 
-/** hidden 模式下默认忽略的东西：系统垃圾、依赖和虚拟环境、编辑器临时文件。 */
-const HIDDEN_DEFAULT_EXCLUDES = [
-  '.DS_Store', '._*', '.Spotlight-V100', '.Trashes', 'Icon\r',
-  'node_modules/', '.venv/', 'venv/', '__pycache__/', '.ipynb_checkpoints/',
-  '~$*', '*.swp', '.~lock.*#',
+/** 两种库都忽略的东西：系统垃圾、编辑器临时文件。 */
+const JUNK_EXCLUDES = ['.DS_Store', '._*', '.Spotlight-V100', '.Trashes', 'Icon\r', '~$*', '*.swp', '.~lock.*#'];
+
+/**
+ * 项目库额外忽略：依赖和虚拟环境，以及大文件类型。大文件放资源库，项目文件夹里尽量不放。
+ * 矢量图（svg）和 Office 文档（docx/xlsx/pptx）是正文的一部分，照常进快照。
+ * 扩展名同时列大小写两种写法：hidden 仓库在 APFS 上 core.ignorecase 为 true 时大小写不敏感，
+ * 但别处初始化的仓库不一定，列全更稳。
+ */
+const MEDIA_EXTS = [
+  'png', 'jpg', 'jpeg', 'gif', 'heic', 'webp', 'tif', 'tiff', 'bmp', 'dng', 'cr2', 'nef', 'arw', 'raw', // 位图
+  'pdf',
+  'mp4', 'mov', 'm4v', 'mkv', 'avi', 'webm', // 视频
+  'mp3', 'wav', 'm4a', 'aac', 'flac', 'aiff', // 音频
+  'zip', 'tar', 'gz', 'tgz', '7z', 'rar', 'dmg', 'iso', // 压缩包、镜像
+  'psd', 'ai', 'sketch', // 设计源文件
+  'parquet', 'h5', 'hdf5', 'npy', 'npz', 'mat', 'feather', // 二进制数据
 ];
+const PROJECT_EXCLUDES = [
+  'node_modules/', '.venv/', 'venv/', '__pycache__/', '.ipynb_checkpoints/',
+  ...MEDIA_EXTS.flatMap((e) => [`*.${e}`, `*.${e.toUpperCase()}`]),
+];
+
+/** project：项目文件夹，排除大文件；library：资源库（未来的 NAS），什么都收、不压缩。 */
+export type Kind = 'project' | 'library';
 
 export function git(folder: Folder, args: string[], opts: { env?: Record<string, string>; input?: string } = {}): string {
   const r = spawnSync('git', ['-c', 'core.quotePath=false', ...args], {
@@ -40,7 +59,7 @@ export function git(folder: Folder, args: string[], opts: { env?: Record<string,
   return r.stdout.trim();
 }
 
-export function openFolder(workTree: string, kiteHome: string, id: string): Folder {
+export function openFolder(workTree: string, kiteHome: string, id: string, kind: Kind = 'project'): Folder {
   const inRepo = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: workTree, encoding: 'utf8' });
   if (inRepo.status === 0 && inRepo.stdout.trim() === workTree) {
     const f: Folder = { mode: 'repo', workTree, gitDir: '', env: {} };
@@ -58,7 +77,14 @@ export function openFolder(workTree: string, kiteHome: string, id: string): Fold
     git(f, ['config', 'core.bare', 'false']);
     git(f, ['config', 'core.worktree', workTree]);
     mkdirSync(join(gitDir, 'info'), { recursive: true });
-    writeFileSync(join(gitDir, 'info', 'exclude'), HIDDEN_DEFAULT_EXCLUDES.join('\n') + '\n');
+    const excludes = kind === 'project' ? [...JUNK_EXCLUDES, ...PROJECT_EXCLUDES] : JUNK_EXCLUDES;
+    writeFileSync(join(gitDir, 'info', 'exclude'), excludes.join('\n') + '\n');
+    if (kind === 'library') {
+      // 媒体文件本来就压不动：关掉 zlib 省 CPU；超过 1 MB 的文件不做增量压缩
+      git(f, ['config', 'core.compression', '0']);
+      git(f, ['config', 'core.looseCompression', '0']);
+      git(f, ['config', 'core.bigFileThreshold', '1m']);
+    }
   }
   return f;
 }

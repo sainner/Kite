@@ -76,24 +76,32 @@ const sh = (cmd: string, cwd: string) => execSync(cmd, { cwd, encoding: 'utf8' }
   mkdirSync(join(w, 'data'), { recursive: true });
   writeFileSync(join(w, 'paper.tex'), '\\section{v1}\n');
   writeFileSync(join(w, 'data/raw.csv'), 'x,y\n1,2\n');
-  writeFileSync(join(w, 'figure.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+  writeFileSync(join(w, 'report.docx'), Buffer.from([0x50, 0x4b, 3, 4, 1, 2, 3]));
+  writeFileSync(join(w, 'figure.png'), 'png-v1');
+  writeFileSync(join(w, 'SCAN.PDF'), 'pdf-v1');
+  writeFileSync(join(w, 'diagram.svg'), '<svg/>');
   writeFileSync(join(w, '.DS_Store'), 'junk');
   writeFileSync(join(w, '中文 文件名.md'), '笔记 v1\n');
   const f = openFolder(w, kiteHome, 'plain');
   check('识别为普通文件夹', f.mode === 'hidden');
   const s1 = capture(f, 's', '开始');
   check('文件夹里不出现 .git', !existsSync(join(w, '.git')));
-  check('.DS_Store 默认被忽略', !git(f, ['ls-tree', '-r', '--name-only', s1.commit]).includes('.DS_Store'));
+  const files1 = git(f, ['ls-tree', '-r', '--name-only', s1.commit]).split('\n');
+  check('.DS_Store 默认被忽略', !files1.includes('.DS_Store'));
+  check('图片和 PDF（含大写扩展名）不进快照', !files1.includes('figure.png') && !files1.includes('SCAN.PDF'));
+  check('svg 和 docx 照常进快照', files1.includes('diagram.svg') && files1.includes('report.docx'));
 
   execSync(`rm -rf "${join(w, 'data')}" && mv "${join(w, 'paper.tex')}" "${join(w, 'paper-old.tex')}"`);
   writeFileSync(join(w, '中文 文件名.md'), '笔记 v2\n');
-  writeFileSync(join(w, 'figure.png'), Buffer.from([9, 9, 9]));
+  writeFileSync(join(w, 'report.docx'), Buffer.from([9, 9, 9]));
+  writeFileSync(join(w, 'figure.png'), 'png-v2');
   capture(f, 's', 'agent 用 Bash 删了 data、改了名');
   restore(f, 's', s1.commit);
   check('rm -rf 删掉的目录回来了', read(join(w, 'data/raw.csv')) === 'x,y\n1,2\n');
   check('mv 改名的文件回到原名、新名消失', existsSync(join(w, 'paper.tex')) && !existsSync(join(w, 'paper-old.tex')));
   check('中文带空格的文件名正常', read(join(w, '中文 文件名.md')) === '笔记 v1\n');
-  check('二进制文件逐字节还原', readFileSync(join(w, 'figure.png')).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])));
+  check('二进制文件逐字节还原', readFileSync(join(w, 'report.docx')).equals(Buffer.from([0x50, 0x4b, 3, 4, 1, 2, 3])));
+  check('被排除的图片不受回退影响（保持 agent 改后的样子）', read(join(w, 'figure.png')) === 'png-v2');
   check('.DS_Store 不动', read(join(w, '.DS_Store')) === 'junk');
 }
 

@@ -89,6 +89,39 @@ if (!only.length || only.includes('research')) {
   row('科研文件夹', 'gc 前后对象库', `${mb(b)} → ${mb(objectStoreBytes(f))}`);
 }
 
+// ---------- 场景四：资源库（未来的 NAS） ----------
+if (!only.length || only.includes('library')) {
+  const w = join(root, 'library');
+  rmSync(w, { recursive: true, force: true });
+  mkdirSync(join(w, 'videos'), { recursive: true });
+  mkdirSync(join(w, 'photos/2026'), { recursive: true });
+  for (let i = 0; i < 6; i++) writeFileSync(join(w, 'videos', `clip-${i}.mov`), randomBytes(128 * 1024 * 1024));
+  for (let i = 0; i < 100; i++) writeFileSync(join(w, 'photos/2026', `IMG_${i}.HEIC`), randomBytes(3 * 1024 * 1024));
+  const size = Number(sh(`du -sk "${w}"`).split('\t')[0]) * 1024;
+  row('资源库', '规模', `106 个文件，${mb(size)}，全是压不动的随机字节`);
+  const f = openFolder(w, kiteHome, 'library', 'library');
+  const s = 'lib';
+  let b = objectStoreBytes(f);
+  const first = capture(f, s, '入库');
+  row('资源库', '首次入库', ms(first.ms));
+  row('资源库', '首次入库后对象库增长', mb(objectStoreBytes(f) - b));
+  row('资源库', '无改动快照（中位数/5 次）', ms(median([0, 1, 2, 3, 4].map(() => capture(f, s, '空').ms))));
+  const step = (what: string, act: () => void) => {
+    b = objectStoreBytes(f);
+    act();
+    const t = capture(f, s, what);
+    row('资源库', `${what}：耗时 / 对象库增长`, `${ms(t.ms)} / ${mb(objectStoreBytes(f) - b)}`);
+    return t;
+  };
+  step('把一个 128 MB 视频复制一份（真复制，不是克隆）', () => sh(`cp -X videos/clip-0.mov videos/clip-0-copy.mov`, w));
+  step('把整个照片目录改名', () => sh('mv photos/2026 photos/2026-春季', w));
+  step('换掉一张 3 MB 的照片', () => writeFileSync(join(w, 'photos/2026-春季/IMG_5.HEIC'), randomBytes(3 * 1024 * 1024)));
+  step('删掉两个视频', () => sh('rm videos/clip-1.mov videos/clip-2.mov', w));
+  const r = restore(f, s, first.commit);
+  row('资源库', '整体回退到入库时（找回两个视频、目录改回原名）', ms(r.ms));
+  row('资源库', '回退后文件夹大小', mb(Number(sh(`du -sk "${w}"`).split('\t')[0]) * 1024));
+}
+
 // ---------- 场景三：五万个小文件 ----------
 if (!only.length || only.includes('big')) {
   const w = join(root, 'big');
