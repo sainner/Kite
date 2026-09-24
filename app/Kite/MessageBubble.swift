@@ -6,13 +6,12 @@ import SwiftUI
 /// 太长的折起来，底下渐隐。图片和文件排在气泡上面，靠右。
 /// 气泡里不放按钮，大小固定。iPhone 上点它、Mac 上右键弹出操作栏（见 ActionBar.swift），再来一下收起，和消息右边对齐：
 /// 排队中的是立即发送、编辑、取消发送；收到了的是编辑、回退、分叉。都有复制，折起来的还有展开全文。
-/// 刚发出去时气泡先藏着，等控制区飞来的融球落在它右下角，再从那里往左上展开（见 FlyingBlob）。
+/// 刚发出去时气泡连同附件在下面一点藏着，对话往上滑的同时从下往上浮进来、淡显（见 SessionPane.send）。
 struct MessageBubble: View {
     let message: Message
     let queued: Bool
     @Environment(Session.self) private var session
     @Environment(\.arrivingMessages) private var arriving
-    @Environment(\.flyingMessages) private var flying
     @Environment(\.selectedRow) private var selection
     @State private var expanded = false
     /// 正文不折时有多高。
@@ -28,19 +27,20 @@ struct MessageBubble: View {
             VStack(alignment: .trailing, spacing: 6) {
                 if !message.attachments.isEmpty {
                     AttachmentRow(attachments: message.attachments)
-                        .opacity(landing ? 0 : 1)
-                        .animation(.easeOut(duration: 0.3).delay(0.2), value: landing)
                 }
-                bubble(folded: foldable && !expanded, landing: landing)
+                bubble(folded: foldable && !expanded)
                     #if os(macOS)
                     .opensActionBar(.message(message.id))
                     #endif
             }
+            // 动画跟着 SessionPane 发送时的那一下走，和对话往上滑同步
+            .offset(y: landing ? Metrics.bubbleRise : 0)
+            .opacity(landing ? 0 : 1)
             .actionBar(.message(message.id), side: .trailing) { actions(foldable: foldable) }
         }
     }
 
-    private func bubble(folded: Bool, landing: Bool) -> some View {
+    private func bubble(folded: Bool) -> some View {
         content
             .fixedSize(horizontal: false, vertical: true)
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
@@ -49,19 +49,11 @@ struct MessageBubble: View {
                 LinearGradient(stops: [.init(color: .black, location: folded ? 0.7 : 1), .init(color: .black.opacity(folded ? 0 : 1), location: 1)],
                                startPoint: .top, endPoint: .bottom)
             }
-            .opacity(landing ? 0 : 1)
-            .background { BubbleSurface(reveal: landing ? 0 : 1, filled: queued ? 0 : 1) }
-            .clipShape(BubbleShape(reveal: landing ? 0 : 1))
-            // 融球落下后从右下角展开；排队中到收到，底色填进来
-            .animation(.spring(duration: 0.45, bounce: 0.15), value: landing)
+            .background { BubbleSurface(filled: queued ? 0 : 1) }
+            .clipShape(BubbleShape())
+            // 排队中到收到，底色填进来
             .animation(.easeInOut(duration: 0.3), value: queued)
             .contentShape(BubbleShape())
-            // 融球还在飞就一直报自己在哪；气泡在它飞到一多半时就开始展开了，不能只在藏着的时候报
-            .anchorPreference(key: FlightAnchors.self, value: .bounds) { anchor in
-                FlightAnchors.Value(bubbles: flying.contains(message.id) ? [message.id: anchor] : [:])
-            }
-            // 融球还在飞的时候整个藏着；落下时直接出现，不跟着上面的动画淡入
-            .opacity(landing ? 0 : 1)
     }
 
     /// 气泡里的正文连同边距。iPhone 上点一下开关操作栏；长按以后接着拖是选字，操作栏自己收起。
@@ -292,28 +284,18 @@ private struct TrailingFlow: Layout {
 
 // MARK: - 形状
 
-/// 气泡的形状：右下角圆角小一点。reveal 从 0 到 1：从右下角一个融球大小的圆，往左上展开成整个气泡。
+/// 气泡的形状：右下角圆角小一点。
 nonisolated struct BubbleShape: InsettableShape {
-    var reveal: CGFloat = 1
     var inset: CGFloat = 0
-
-    var animatableData: CGFloat {
-        get { reveal }
-        set { reveal = newValue }
-    }
 
     func path(in rect: CGRect) -> Path {
         let rect = rect.insetBy(dx: inset, dy: inset)
-        let blob = min(Metrics.sendBlob, rect.width, rect.height)
-        let width = blob + (rect.width - blob) * reveal
-        let height = blob + (rect.height - blob) * reveal
-        let limit = min(width, height) / 2
-        // reveal 为 0 时四个角都是半径 blob/2，正好是个圆
+        let limit = min(rect.width, rect.height) / 2
         let radius = min(Metrics.bubbleRadius - inset, limit)
-        let tail = min(blob / 2 + (Metrics.bubbleTail - inset - blob / 2) * reveal, limit)
-        return UnevenRoundedRectangle(topLeadingRadius: radius, bottomLeadingRadius: radius,
-                                      bottomTrailingRadius: max(tail, 0), topTrailingRadius: radius, style: .continuous)
-            .path(in: CGRect(x: rect.maxX - width, y: rect.maxY - height, width: width, height: height))
+        let tail = min(Metrics.bubbleTail - inset, limit)
+        return UnevenRoundedRectangle(topLeadingRadius: max(radius, 0), bottomLeadingRadius: max(radius, 0),
+                                      bottomTrailingRadius: max(tail, 0), topTrailingRadius: max(radius, 0), style: .continuous)
+            .path(in: rect)
     }
 
     func inset(by amount: CGFloat) -> BubbleShape {
@@ -324,20 +306,18 @@ nonisolated struct BubbleShape: InsettableShape {
 }
 
 /// 气泡的底色和描边。filled 从 0 到 1：排队中只描边，收到了填上底色。
-/// 刚落下时是填了色的小圆，展开的同时底色褪掉，所以还在排队的气泡展开完只剩描边。
 private struct BubbleSurface: View, Animatable {
-    var reveal: CGFloat
     var filled: CGFloat
 
-    var animatableData: AnimatablePair<CGFloat, CGFloat> {
-        get { AnimatablePair(reveal, filled) }
-        set { (reveal, filled) = (newValue.first, newValue.second) }
+    var animatableData: CGFloat {
+        get { filled }
+        set { filled = newValue }
     }
 
     var body: some View {
-        let shape = BubbleShape(reveal: reveal)
+        let shape = BubbleShape()
         ZStack {
-            shape.fill(Theme.bubble).opacity(max(filled, 1 - reveal))
+            shape.fill(Theme.bubble).opacity(filled)
             shape.strokeBorder(Theme.bubbleStroke, lineWidth: 1).opacity(1 - filled)
         }
     }
@@ -346,77 +326,6 @@ private struct BubbleSurface: View, Animatable {
 // MARK: - 发送动画
 
 extension EnvironmentValues {
-    /// 刚发出、气泡还藏着的消息：融球飞到一多半，气泡从落点开始展开。SessionPane 给出。
+    /// 刚发出、气泡还在下面藏着的消息：对话往上滑的同时，气泡从下往上浮进来。SessionPane 给出。
     @Entry var arrivingMessages: Set<UUID> = []
-    /// 融球还在飞的消息：它们的气泡报出自己在哪，融球往那里飞。SessionPane 给出。
-    @Entry var flyingMessages: Set<UUID> = []
-}
-
-/// 发送动画的两头：控制区那张卡片，和融球要落到的气泡。
-struct FlightAnchors: PreferenceKey {
-    struct Value {
-        var card: Anchor<CGRect>?
-        var bubbles: [UUID: Anchor<CGRect>] = [:]
-    }
-
-    static var defaultValue: Value { Value() }
-
-    static func reduce(value: inout Value, nextValue: () -> Value) {
-        let next = nextValue()
-        value.card = value.card ?? next.card
-        value.bubbles.merge(next.bubbles) { $1 }
-    }
-}
-
-/// 发送时的融球：一颗液态玻璃的小球，起点压在控制区卡片的上边缘、靠右的圆角那里，和卡片融在一起；
-/// 往外飞时卡片上先鼓出一个包、拉出细颈，离远了颈断开，成一颗玻璃水滴飞到气泡的右下角，落下后气泡从那里往左上展开。
-/// 鼓包、拉颈、断开都是玻璃容器（SessionPane 外面的 GlassEffectContainer）按两块玻璃的远近自己画的。
-/// 起点、终点每一帧都重新取，对话在滚也落得准。
-struct FlyingBlob: View {
-    let start: CGPoint
-    let end: CGPoint
-    /// 飞到一多半：气泡开始从落点展开，落下时正好并进去。
-    let opening: () -> Void
-    let landed: () -> Void
-    @State private var progress: CGFloat = 0
-    private static let duration = 0.5
-
-    var body: some View {
-        Color.clear
-            .modifier(BlobPath(progress: progress, start: start, end: end))
-            .allowsHitTesting(false)
-            .onAppear {
-                // 和对话往上滑一样长，落下时气泡正好滑到位
-                withAnimation(.smooth(duration: Self.duration)) {
-                    progress = 1
-                } completion: {
-                    landed()
-                }
-                Task {
-                    try? await Task.sleep(for: .seconds(Self.duration * 0.55))
-                    opening()
-                }
-            }
-    }
-}
-
-/// 融球走到哪、多大：前三成从卡片边上鼓出来、长到原大小，之后照原大小飞过去。
-/// 改的是玻璃的尺寸，不用缩放：玻璃按尺寸融合，缩放只是画的时候放大（Keyo 的经验，见 ActionBar 的说明）。
-private struct BlobPath: ViewModifier, Animatable {
-    var progress: CGFloat
-    let start: CGPoint
-    let end: CGPoint
-
-    var animatableData: CGFloat {
-        get { progress }
-        set { progress = newValue }
-    }
-
-    func body(content: Content) -> some View {
-        let size = Metrics.sendBlob * (0.3 + 0.7 * min(progress / 0.3, 1))
-        content
-            .frame(width: size, height: size)
-            .glassEffect(.regular, in: .circle)
-            .position(x: start.x + (end.x - start.x) * progress, y: start.y + (end.y - start.y) * progress)
-    }
 }

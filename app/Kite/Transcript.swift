@@ -268,23 +268,32 @@ extension Transcript {
         return list
     }
 
-    /// 发一条消息：先排队，agent 收到时（receive）才变成记录。现在只改假数据；接上 kited 后经它写进输入流。
-    mutating func send(_ message: Message) {
+    /// 发一条消息：先排队，agent 收到时（receive）才变成记录，返回它会不会开启新的一轮。
+    /// 空闲、前面也没有还没收到的才开启新的一轮；回合在跑、或者前面还排着别的，就是排在后面、收到时并进那一轮的（midTurn）。
+    /// 现在只改假数据；接上 kited 后经它写进输入流。
+    @discardableResult
+    mutating func send(_ message: Message) -> Bool {
+        var message = message
+        message.midTurn = running || !pending.isEmpty
         pending.append(message)
+        return !message.midTurn
     }
 
-    /// agent 收到了排队的这一条：回合在跑就是并进这一轮的插话，否则开启新的一轮。
+    /// agent 收到了排队的这一条：回合在跑、或者发的时候排在别的后面，就是并进那一轮的插话，否则开启新的一轮。
     mutating func receive(_ id: UUID) {
         guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
         var message = pending.remove(at: index)
-        message.midTurn = running
+        message.midTurn = message.midTurn || running
         records.append(Record(block: .human(message)))
     }
 
     /// 撤回排队的一条，返回它。已经收到的撤不了，只能回退。接上 kited 后调 Claude Code 的 cancel_async_message。
+    /// 撤回的是要开启新一轮的那条，排在它后面的一条接着开启。
     mutating func withdraw(_ id: UUID) -> Message? {
         guard let index = pending.firstIndex(where: { $0.id == id }) else { return nil }
-        return pending.remove(at: index)
+        let message = pending.remove(at: index)
+        if !message.midTurn, index < pending.count { pending[index].midTurn = false }
+        return message
     }
 
     /// 排队的马上发出去：回合在跑就先打断它。
@@ -310,6 +319,7 @@ extension Transcript {
         added.append(Record(block: .interrupted))
         records += added
         running = false
+        for index in pending.indices { pending[index].midTurn = index > 0 }
         for message in pending { receive(message.id) }
     }
 

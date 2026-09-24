@@ -108,9 +108,8 @@ enum Metrics {
     /// 气泡的圆角，右下角小一点。形状在主线程之外也会取，所以标 nonisolated。
     nonisolated static let bubbleRadius: CGFloat = 18
     nonisolated static let bubbleTail: CGFloat = 6
-    /// 发送时从控制区飞到对话里的融球的直径，气泡从它展开；它离控制区卡片多近时和卡片融在一起。
-    nonisolated static let sendBlob: CGFloat = 16
-    static let blobMerge: CGFloat = 16
+    /// 发送时气泡从多低的地方往上浮进来。
+    static let bubbleRise: CGFloat = 32
     /// 人发的消息折起来时显示多高，大约十行；比它高出不少才折（见 MessageBubble）。
     static let messageFold: CGFloat = 220
     /// 消息上面附件缩略图的高度。
