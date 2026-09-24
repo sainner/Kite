@@ -28,13 +28,14 @@ struct PhoneLayout: View {
             let sidebarWidth = min(screen.width - Metrics.padding - Metrics.phoneMinWindow, 320)
             // 窗口底边要升到 action 栏上面，action 栏在 Home 条上面
             let actionsHeight = Metrics.actionArea + insets.bottom + Metrics.padding
+            let current = model.current?.id
             ZStack(alignment: .topLeading) {
                 Theme.background.ignoresSafeArea()
                 ScreenCornerReader { screenRadius = $0 }.ignoresSafeArea()
                 // 会话列表，点一个就切过去并收起。一次只露出一侧，另一侧藏起来，免得窗口移开时从边上露出来
                 VStack(spacing: 4) {
                     ForEach(model.sessions) { session in
-                        SessionRow(session: session, current: model.current?.id == session.id, height: 44)
+                        SessionRow(session: session, current: current == session.id, height: 44)
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 model.selected = session.id
@@ -143,23 +144,23 @@ struct PhoneLayout: View {
 
     /// 打开到几成，0 是铺满，1 是完全打开。
     private func progress(_ drawer: Drawer, extent: CGFloat) -> CGFloat {
-        let base: CGFloat = open == drawer ? 1 : 0
-        guard dragging == drawer, extent > 0 else { return base }
-        let moved = drawer == .sidebar ? translation.width : -translation.height
-        return min(max(base + moved / extent, 0), 1)
+        guard dragging == drawer, extent > 0 else { return open == drawer ? 1 : 0 }
+        return min(max(fraction(drawer, moved: translation, extent: extent), 0), 1)
+    }
+
+    /// 从拖动前的状态往打开方向挪了 moved，换算成打开到几成，不截断。
+    private func fraction(_ drawer: Drawer, moved: CGSize, extent: CGFloat) -> CGFloat {
+        (open == drawer ? 1 : 0) + (drawer == .sidebar ? moved.width : -moved.height) / extent
     }
 
     private func drag(_ drawer: Drawer, extent: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 5, coordinateSpace: .global)
             .onChanged { value in
-                dragging = drawer
+                if dragging != drawer { dragging = drawer }
                 translation = value.translation
             }
             .onEnded { value in
-                let end = value.predictedEndTranslation
-                let moved = drawer == .sidebar ? end.width : -end.height
-                let base: CGFloat = open == drawer ? 1 : 0
-                settle(base + moved / extent > 0.5 ? drawer : nil)
+                settle(fraction(drawer, moved: value.predictedEndTranslation, extent: extent) > 0.5 ? drawer : nil)
             }
     }
 

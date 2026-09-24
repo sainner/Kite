@@ -13,8 +13,9 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { gitTry, revParse } from './git.ts';
+import type { ToolContext } from './tools.ts';
 
-export const CHECK_TIMEOUT_MS = 10 * 60_000;
+const CHECK_TIMEOUT_MS = 10 * 60_000;
 /** 检查命令本该只输出结论；万一刷屏只留结尾，失败项和日志路径通常在那里。 */
 const OUTPUT_MAX = 20_000;
 
@@ -162,17 +163,16 @@ function report(r: CheckResult): string {
   return r.waited >= 1 ? `${text}\n（排队等了 ${Math.round(r.waited)} 秒，别的检查在跑）` : text;
 }
 
-/** logRoot：这个会话的检查日志放在哪，每次检查在它下面建一个目录。 */
-export function checkTool(o: { main: string; worktree: string; logRoot: string; onResult(r: CheckResult): void }) {
+export function checkTool(o: ToolContext) {
   return tool(
     'check',
     '跑项目的检查（.kite/check），判断这个项目改坏了没有；代码项目通常是类型检查加受改动影响的测试。改完用它确认，通过才算完成。'
       + '受影响的范围按这个会话相对主线的全部改动算，提交过的也算；在 Bash 里直接跑 .kite/check 只看还没提交的改动。',
     { all: z.boolean().optional().describe('跑全部测试，不只是受影响的') },
     async ({ all }, extra) => {
-      const logDir = join(o.logRoot, `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 4)}`);
+      const logDir = join(o.checkLogs, `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 4)}`);
       const r = await runCheck({ main: o.main, worktree: o.worktree, all, logDir, signal: (extra as { signal?: AbortSignal }).signal });
-      o.onResult(r);
+      o.onCheck(r);
       return { content: [{ type: 'text', text: report(r) }], ...(r.ok ? {} : { isError: true }) };
     },
   );

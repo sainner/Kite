@@ -31,6 +31,11 @@ final class AppModel {
     var pendingPlacement: CGRect?
     var sidebarWidth = Metrics.sidebarWidth
     var sidebarCollapsed = false
+    /// 主窗口内容区的大小，分离出去的窗口照它开。
+    var contentSize: CGSize = .zero
+
+    /// 侧边栏实际占的宽度：收起时是一列图标。
+    var sidebarShown: CGFloat { sidebarCollapsed ? Metrics.rail : sidebarWidth }
 
     func session(_ id: Int) -> Session? {
         sessions.first { $0.id == id }

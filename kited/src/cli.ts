@@ -17,12 +17,17 @@ const USAGE = `用法：
   kite adopt <会话>                   把会话的改动合回主线
   kite archive <会话> [--force]       归档会话，删掉工作树`;
 
+function unreachable(): never {
+  console.error(`连不上 kited（${BASE}）`);
+  process.exit(1);
+}
+
 async function call(method: string, path: string, body?: unknown): Promise<any> {
   const r = await fetch(BASE + path, {
     method,
     headers: body === undefined ? {} : { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
-  }).catch(() => { console.error(`连不上 kited（${BASE}）`); process.exit(1); });
+  }).catch(unreachable);
   const j: any = await r.json();
   if (!r.ok) { console.error(j.error); process.exit(1); }
   return j;
@@ -68,10 +73,10 @@ function printAdopt(r: any): void {
 
 /**
  * 订阅事件流，连上之后执行 action（它返回要跟的会话 id），打印这个会话的事件，直到 stop 返回 true。
- * 先订阅再执行，事件不会漏。
+ * 先订阅再执行，事件不会漏。事先知道会话 id 时传 known，只订阅这个会话。
  */
-async function follow(action: () => Promise<string | undefined>, stop: (e: any) => boolean = () => false): Promise<void> {
-  const res = await fetch(`${BASE}/events`).catch(() => { console.error(`连不上 kited（${BASE}）`); process.exit(1); });
+async function follow(action: () => Promise<string | undefined>, stop: (e: any) => boolean = () => false, known?: string): Promise<void> {
+  const res = await fetch(`${BASE}/events${known ? `?session=${encodeURIComponent(known)}` : ''}`).catch(unreachable);
   const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
   let session: string | undefined;
   let decided = false;
@@ -82,7 +87,7 @@ async function follow(action: () => Promise<string | undefined>, stop: (e: any) 
     return stop(e);
   };
   let buf = '';
-  let acting: Promise<void> | undefined;
+  let acted = false;
   while (true) {
     const { value, done } = await reader.read();
     if (done) return;
@@ -91,8 +96,9 @@ async function follow(action: () => Promise<string | undefined>, stop: (e: any) 
     while ((i = buf.indexOf('\n\n')) >= 0) {
       const chunk = buf.slice(0, i);
       buf = buf.slice(i + 2);
-      if (chunk.startsWith(': connected') && !acting) {
-        acting = action().then((id) => {
+      if (chunk.startsWith(': connected') && !acted) {
+        acted = true;
+        void action().then((id) => {
           session = id;
           decided = true;
           for (const e of early.splice(0)) if (handle(e)) process.exit(0);
@@ -138,10 +144,10 @@ switch (cmd) {
     break;
   case 'send':
     need(2);
-    await follow(async () => { await call('POST', `/sessions/${args[0]}/messages`, { text: args.slice(1).join(' ') }); return args[0]; }, turnOver);
+    await follow(async () => { await call('POST', `/sessions/${args[0]}/messages`, { text: args.slice(1).join(' ') }); return args[0]; }, turnOver, args[0]);
     break;
   case 'follow':
-    await follow(async () => args[0]);
+    await follow(async () => args[0], undefined, args[0]);
     break;
   case 'interrupt':
     need(1);
@@ -163,7 +169,7 @@ switch (cmd) {
     let conflicts = 0;
     // 冲突时 kited 把冲突交给 agent，它这一轮结束后自动重试；跟到合回主线，或第二次冲突为止
     await follow(async () => { await call('POST', `/sessions/${args[0]}/adopt`); return args[0]; },
-      (e) => e.type === 'error' || (e.type === 'adopt' && (e.result.status === 'adopted' || ++conflicts > 1)));
+      (e) => e.type === 'error' || (e.type === 'adopt' && (e.result.status === 'adopted' || ++conflicts > 1)), args[0]);
     break;
   }
   case 'archive':

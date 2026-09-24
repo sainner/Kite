@@ -17,30 +17,29 @@ if (GIVEN) mkdirSync(GIVEN, { recursive: true });
 const LOG = join(LOG_DIR, 'log');
 
 /** 预算，和 .claude/agents/test-writer.md 里的分层表一致。 */
-const LIMIT = { small: 1, medium: 2 };
 const MEDIUM_MAX = 8;
 const TOTAL_MAX = 15;
 
-/** 这些变了依赖图看不出影响范围，跑全量。 */
-const FULL_TRIGGERS = ['kited/package.json', 'kited/bun.lock', 'kited/tsconfig.json', 'kited/bunfig.toml'];
+/**
+ * 这些变了依赖图看不出影响范围，跑全量。test/setup.ts 是 bunfig.toml 里的 preload，fake-api.ts 是它引的：
+ * 测试文件不 import 它们，bun test --changed 看不出所有测试都受影响。
+ */
+const FULL_TRIGGERS = ['kited/package.json', 'kited/bun.lock', 'kited/tsconfig.json', 'kited/bunfig.toml', 'kited/test/setup.ts', 'kited/test/fake-api.ts'];
 
 writeFileSync(LOG, '');
 const log = (text: string) => writeFileSync(LOG, text, { flag: 'a' });
 
-function run(cmd: string[], cwd = KITED): { code: number; out: string } {
-  const r = Bun.spawnSync(cmd, { cwd, env: process.env, stdout: 'pipe', stderr: 'pipe' });
-  const out = r.stdout.toString() + r.stderr.toString();
-  log(`$ ${cmd.join(' ')}\n${out}\n`);
-  return { code: r.exitCode, out };
-}
-
-async function runAsync(cmd: string[], cwd = KITED): Promise<{ code: number; out: string; stdout: string }> {
+async function run(cmd: string[], cwd = KITED): Promise<{ code: number; out: string; stdout: string }> {
   const p = Bun.spawn(cmd, { cwd, env: process.env, stdout: 'pipe', stderr: 'pipe' });
   const [stdout, stderr] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
   const code = await p.exited;
   log(`$ ${cmd.join(' ')}\n${stdout}${stderr}\n`);
   return { code, out: stdout + stderr, stdout };
 }
+
+/** 报告里列前 20 条；没法解析时看输出的最后 15 行。 */
+const head = (lines: string[]) => lines.slice(0, 20).map((l) => `  ${l}`);
+const tail = (out: string) => out.trim().split('\n').slice(-15).map((l) => `  ${l}`);
 
 interface LintFile { filePath: string; messages: Array<{ line: number; ruleId: string | null; message: string }> }
 
@@ -51,11 +50,12 @@ function fail(lines: string[]): never {
 
 // 1. 改了哪些文件
 const base = process.env.KITE_BASE;
-const root = run(['git', 'rev-parse', '--show-toplevel']).out.trim();
-const changed = [
-  ...run(['git', 'diff', '--name-only', base ?? 'HEAD'], root).out.split('\n'),
-  ...run(['git', 'ls-files', '--others', '--exclude-standard'], root).out.split('\n'),
-].filter(Boolean);
+const root = (await run(['git', 'rev-parse', '--show-toplevel'])).out.trim();
+const [diff, untracked] = await Promise.all([
+  run(['git', 'diff', '--name-only', base ?? 'HEAD'], root),
+  run(['git', 'ls-files', '--others', '--exclude-standard'], root),
+]);
+const changed = [...diff.out.split('\n'), ...untracked.out.split('\n')].filter(Boolean);
 const all = process.argv.includes('--all');
 const full = all || changed.some((f) => FULL_TRIGGERS.includes(f));
 const scope = full ? '全量' : '受影响的';
@@ -67,77 +67,85 @@ const scope = full ? '全量' : '受影响的';
 const APP = join(root, 'app');
 const buildApp = all || changed.some((f) => f.startsWith('app/'));
 const [tsc, lint, app] = await Promise.all([
-  runAsync(['bunx', 'tsc', '--noEmit']),
-  runAsync(['bunx', '--bun', 'eslint', '--format', 'json', '.']),
-  buildApp ? runAsync(['xcodebuild', '-project', 'Kite.xcodeproj', '-scheme', 'Kite',
+  run(['bunx', 'tsc', '--noEmit']),
+  run(['bunx', '--bun', 'eslint', '--format', 'json', '.']),
+  buildApp ? run(['xcodebuild', '-project', 'Kite.xcodeproj', '-scheme', 'Kite',
     '-destination', 'generic/platform=macOS', '-destination', 'generic/platform=iOS Simulator',
     'build', '-quiet', 'COMPILER_INDEX_STORE_ENABLE=NO'], APP) : undefined,
 ]);
 const early: string[] = [];
 if (tsc.code !== 0) {
   const errors = tsc.out.split('\n').filter((l) => /error TS\d+/.test(l));
-  early.push(`类型检查没通过，${errors.length} 处错误：`, ...errors.slice(0, 20).map((l) => `  ${l}`));
+  early.push(`类型检查没通过，${errors.length} 处错误：`, ...head(errors));
 }
 if (lint.code !== 0) {
   let files: LintFile[] | undefined;
   try { files = JSON.parse(lint.stdout) as LintFile[]; } catch { /* 出错时它不输出 JSON */ }
   const found = files?.flatMap((f) => f.messages.map((m) => `${f.filePath.slice(KITED.length + 1)}:${m.line} ${m.message}（${m.ruleId ?? '解析错误'}）`)) ?? [];
-  if (found.length) early.push(`lint 没通过，${found.length} 处：`, ...found.slice(0, 20).map((l) => `  ${l}`));
-  else early.push('lint 没跑起来：', ...lint.out.trim().split('\n').slice(-15).map((l) => `  ${l}`));
+  if (found.length) early.push(`lint 没通过，${found.length} 处：`, ...head(found));
+  else early.push('lint 没跑起来：', ...tail(lint.out));
 }
 if (app && app.code !== 0) {
   // 两端各报一遍同样的错，去重
   const errors = [...new Set(app.out.split('\n').filter((l) => l.includes(': error:')).map((l) => l.replace(`${APP}/`, 'app/')))];
-  if (errors.length) early.push(`App 编译没通过，${errors.length} 处错误：`, ...errors.slice(0, 20).map((l) => `  ${l}`));
-  else early.push('App 编译没通过：', ...app.out.trim().split('\n').slice(-15).map((l) => `  ${l}`));
+  if (errors.length) early.push(`App 编译没通过，${errors.length} 处错误：`, ...head(errors));
+  else early.push('App 编译没通过：', ...tail(app.out));
 }
 if (early.length) fail(early);
 const passed = app ? '类型检查、lint 和 App 编译通过' : '类型检查和 lint 通过';
 
 // 3. 跑测试。小测试只调 git、互不相干，按文件分到多个进程并行跑；
 // 中测试每个都起 Claude Code，并行就是同时起好几个，照旧按顺序跑
-type Tier = 'small' | 'medium';
-const TIERS: Array<{ tier: Tier; args: string[] }> = [
-  { tier: 'small', args: ['--parallel'] },
-  { tier: 'medium', args: [] },
+const TIERS = [
+  { dir: 'small', name: '小', args: ['--parallel'], limit: 1 },
+  { dir: 'medium', name: '中', args: [], limit: 2 },
 ];
+type Tier = (typeof TIERS)[number];
 const unescape = (s: string) => s.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#10;/g, '\n').replace(/&amp;/g, '&');
+const attrs = (tag: string) => Object.fromEntries([...tag.matchAll(/(\w+)="([^"]*)"/g)].map((m) => [m[1]!, unescape(m[2]!)]));
 interface Case { name: string; file: string; time: number; tier: Tier; failure?: string }
 const cases: Case[] = [];
 const problems: string[] = [];
 const started = performance.now();
-for (const { tier, args } of TIERS) {
-  const report = join(LOG_DIR, `${tier}.xml`);
-  const tests = run(['bun', 'test', ...args, ...(full ? [] : [base ? `--changed=${base}` : '--changed']), `test/${tier}`, '--reporter=junit', `--reporter-outfile=${report}`]);
+for (const tier of TIERS) {
+  const report = join(LOG_DIR, `${tier.dir}.xml`);
+  const tests = await run(['bun', 'test', ...tier.args, ...(full ? [] : [base ? `--changed=${base}` : '--changed']), `test/${tier.dir}`, '--reporter=junit', `--reporter-outfile=${report}`]);
   // 没有受影响的测试时 bun 不写报告，退出码为 0
   if (!existsSync(report)) {
-    if (tests.code !== 0) problems.push(`${tier === 'small' ? '小' : '中'}测试没跑起来：`, ...tests.out.trim().split('\n').slice(-15).map((l) => `  ${l}`));
+    if (tests.code !== 0) problems.push(`${tier.name}测试没跑起来：`, ...tail(tests.out));
     continue;
   }
+  const xml = readFileSync(report, 'utf8');
   const before = cases.length;
-  for (const m of readFileSync(report, 'utf8').matchAll(/<testcase name="([^"]*)"[^>]*? time="([^"]*)" file="([^"]*)"[^>]*?(?:\/>|>([\s\S]*?)<\/testcase>)/g)) {
+  // 按属性名取，不依赖属性的先后
+  for (const m of xml.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)) {
+    const a = attrs(m[1]!);
     // 失败项有时只有 type 没有 message，比如 <failure type="AssertionError" />，细节在日志里
-    const tag = m[4] ? /<failure\b([^>]*)>/.exec(m[4])?.[1] : undefined;
-    const failure = tag === undefined ? undefined : unescape(/message="([^"]*)"/.exec(tag)?.[1] ?? /type="([^"]*)"/.exec(tag)?.[1] ?? '失败');
-    cases.push({ name: unescape(m[1]!), time: Number(m[2]), file: m[3]!, tier, ...(failure !== undefined ? { failure } : {}) });
+    const tag = m[2] ? /<failure\b([^>]*)>/.exec(m[2])?.[1] : undefined;
+    const f = tag === undefined ? undefined : attrs(tag);
+    const failure = f && (f.message ?? f.type ?? '失败');
+    cases.push({ name: a.name ?? '', time: Number(a.time), file: a.file ?? '', tier, ...(failure !== undefined ? { failure } : {}) });
   }
+  // 报告里的测试数和读出来的对不上，说明没读全，不能按读出来的判定通过
+  const declared = Number(attrs(/<testsuites\b([^>]*)>/.exec(xml)?.[1] ?? '').tests);
+  if (declared !== cases.length - before) problems.push(`${tier.name}测试报告有 ${declared} 个测试，读出 ${cases.length - before} 个`);
   // 测试进程报错退出、报告里却没有失败项：比如某个文件加载就出错了
   if (tests.code !== 0 && !cases.slice(before).some((c) => c.failure !== undefined)) {
-    problems.push('测试进程出错退出：', ...tests.out.trim().split('\n').slice(-15).map((l) => `  ${l}`));
+    problems.push('测试进程出错退出：', ...tail(tests.out));
   }
 }
 const seconds = (performance.now() - started) / 1000;
 
 // 4. 核对规则和预算
-const unlayered = run(['git', 'ls-files', '--cached', '--others', '--exclude-standard', 'test']).out.split('\n')
+const unlayered = (await run(['git', 'ls-files', '--cached', '--others', '--exclude-standard', 'test'])).out.split('\n')
   .filter((f) => f.endsWith('.test.ts') && !/^test\/(small|medium)\//.test(f));
 for (const f of unlayered) problems.push(`没分层：${f} 要放在 test/small/ 或 test/medium/`);
 for (const c of cases) {
   if (c.failure !== undefined) problems.push(`失败：${c.file} › ${c.name}\n    ${c.failure.split('\n')[0]}`);
-  if (c.time > LIMIT[c.tier]) problems.push(`超时：${c.file} › ${c.name} 用了 ${c.time.toFixed(2)} 秒，${c.tier === 'small' ? '小' : '中'}测试上限 ${LIMIT[c.tier]} 秒`);
+  if (c.time > c.tier.limit) problems.push(`超时：${c.file} › ${c.name} 用了 ${c.time.toFixed(2)} 秒，${c.tier.name}测试上限 ${c.tier.limit} 秒`);
 }
 if (full) {
-  const medium = cases.filter((c) => c.tier === 'medium').length;
+  const medium = cases.filter((c) => c.tier.dir === 'medium').length;
   if (medium > MEDIUM_MAX) problems.push(`中测试有 ${medium} 个，上限 ${MEDIUM_MAX} 个`);
   if (seconds > TOTAL_MAX) problems.push(`全量用了 ${seconds.toFixed(1)} 秒，上限 ${TOTAL_MAX} 秒`);
 }

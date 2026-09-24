@@ -109,9 +109,8 @@ export class Runner {
   private turnActive = false;
   /** 消息已投递、回合还没开始时收到的打断：等回合开始时拦下。 */
   private interruptPending = false;
-  /** 本回合的 Stop 钩子跑过没有；被打断的回合可能没有。 */
-  private stopInTurn = false;
-  private idleAtStop = false;
+  /** 本回合 Stop 钩子报的是否已无后台任务和定时任务；没跑过 Stop 为 null，被打断的回合可能没有。 */
+  private stopIdle: boolean | null = null;
   private sentAfterStop = false;
   private stderrTail: string[] = [];
 
@@ -142,11 +141,11 @@ export class Runner {
   }
 
   /** 关输入流，等进程退出；超时就杀掉。之后不再接受消息。归档和 kited 退出时用。 */
-  async shutdown(timeoutMs = 10_000): Promise<void> {
+  async shutdown(): Promise<void> {
     this.disposed = true;
     this.pending = [];
     this.inbox?.close();
-    const timer = setTimeout(() => this.q?.close(), timeoutMs);
+    const timer = setTimeout(() => this.q?.close(), 10_000);
     await this.ended;
     clearTimeout(timer);
   }
@@ -155,7 +154,7 @@ export class Runner {
     const inbox = new Inbox();
     for (const t of this.pending.splice(0)) inbox.push(t);
     this.inbox = inbox;
-    this.stopInTurn = false;
+    this.stopIdle = null;
     this.turnActive = false;
     this.interruptPending = false;
     this.setState('running');
@@ -192,12 +191,12 @@ export class Runner {
   private async turnEnded(inbox: Inbox): Promise<void> {
     this.turnActive = false;
     await this.on.turnEnd();
-    const stopped = this.stopInTurn;
-    this.stopInTurn = false;
+    const idle = this.stopIdle;
+    this.stopIdle = null;
     // Stop 之后又来了消息：CLI 会接着开下一轮
-    if (stopped && this.sentAfterStop) return;
+    if (idle !== null && this.sentAfterStop) return;
     this.busy = false;
-    if (stopped && this.idleAtStop) {
+    if (idle) {
       this.setState('closing');
       inbox.close();
     }
@@ -248,8 +247,7 @@ export class Runner {
         }] }],
         Stop: [{ hooks: [async (i) => {
           const s = i as StopHookInput;
-          this.stopInTurn = true;
-          this.idleAtStop = Array.isArray(s.background_tasks) && s.background_tasks.length === 0
+          this.stopIdle = Array.isArray(s.background_tasks) && s.background_tasks.length === 0
             && Array.isArray(s.session_crons) && s.session_crons.length === 0;
           this.sentAfterStop = false;
           return {};

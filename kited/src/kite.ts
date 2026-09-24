@@ -175,8 +175,7 @@ export class Kite {
     return this.serial(`snap:${s.id}`, async () => {
       const label = fixedLabel ?? this.turnLabels.get(s.id) ?? s.title;
       try {
-        const r = await capture(s.worktree, s.id, label, toolUseIds);
-        if (r.created) this.bus.emit(s.id, { type: 'snapshot', commit: r.commit, label, changedFiles: r.changedFiles });
+        this.emitSnapshot(s, await capture(s.worktree, s.id, label, toolUseIds), label);
       } catch (e) {
         // 快照失败不能卡住 agent
         this.bus.emit(s.id, { type: 'error', message: `快照失败：${(e as Error).message}` });
@@ -198,8 +197,12 @@ export class Kite {
     if (!commit || !target) throw new KiteError(`这个会话没有快照 ${commit}`, 404);
     await this.serial(`snap:${s.id}`, async () => {
       const { current, label } = await restore(s.worktree, s.id, target.commit);
-      if (current.created) this.bus.emit(s.id, { type: 'snapshot', commit: current.commit, label, changedFiles: current.changedFiles });
+      this.emitSnapshot(s, current, label);
     });
+  }
+
+  private emitSnapshot(s: Session, r: { commit: string; created: boolean; changedFiles: number }, label: string): void {
+    if (r.created) this.bus.emit(s.id, { type: 'snapshot', commit: r.commit, label, changedFiles: r.changedFiles });
   }
 
   // ── 采纳 ──

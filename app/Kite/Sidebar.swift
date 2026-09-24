@@ -66,32 +66,35 @@ struct MacSidebar: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        if model.sidebarCollapsed { rail } else { expanded }
+        let current = model.current?.id
+        Group {
+            if model.sidebarCollapsed { rail(current) } else { expanded(current) }
+        }
+        .padding(.top, Metrics.titleBar - Metrics.padding)
     }
 
-    private var expanded: some View {
+    private func expanded(_ current: Int?) -> some View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
                 ForEach(model.sessions) { session in
-                    SessionRow(session: session, current: model.current?.id == session.id, detached: model.detached.contains(session.id))
+                    SessionRow(session: session, current: current == session.id, detached: model.detached.contains(session.id))
                         .overlay { source(session) }
                 }
             }
             Spacer(minLength: Metrics.gap)
             ActionArea()
         }
-        .padding(.top, Metrics.titleBar - Metrics.padding)
         .padding(.leading, Metrics.sidebarLeading)
     }
 
-    private var rail: some View {
+    private func rail(_ current: Int?) -> some View {
         VStack(spacing: 8) {
             ForEach(model.sessions) { session in
                 // 已经分离成独立窗口的画淡一点
                 Circle().fill(session.tint).frame(width: 24, height: 24)
                     .opacity(model.detached.contains(session.id) ? 0.35 : 1)
                     .padding(6)
-                    .background(model.current?.id == session.id ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 10))
+                    .background(current == session.id ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 10))
                     .overlay { source(session) }
             }
             Spacer(minLength: Metrics.gap)
@@ -100,7 +103,6 @@ struct MacSidebar: View {
             }
             Circle().fill(Theme.placeholder).frame(width: 28, height: 28).padding(.top, 4)
         }
-        .padding(.top, Metrics.titleBar - Metrics.padding)
         .frame(maxWidth: .infinity)
     }
 
@@ -112,12 +114,11 @@ struct MacSidebar: View {
             } else {
                 model.selected = session.id
             }
-        } onDetach: { point, window in
+        } onDetach: { point in
             guard !model.detached.contains(session.id) else { return }
-            // 独立窗口里的卡片和主窗口内容区一样大：去掉侧边栏和缝，顶上换成标题那一条；左上角落在指针附近
-            let sidebar = model.sidebarCollapsed ? Metrics.rail : model.sidebarWidth
-            let size = CGSize(width: window.width - sidebar - Metrics.gap, height: window.height - Metrics.padding + Metrics.windowHeader)
-            model.pendingPlacement = CGRect(origin: CGPoint(x: point.x - 60, y: point.y - 16), size: size)
+            // 独立窗口里的卡片和主窗口内容区一样大；窗口左上角放在指针左上方，指针落在标题那一条上
+            model.pendingPlacement = CGRect(origin: CGPoint(x: point.x - 60, y: point.y - 16),
+                                            size: DetachedSession.windowSize(content: model.contentSize))
             openWindow(id: "session", value: session.id)
         }
     }

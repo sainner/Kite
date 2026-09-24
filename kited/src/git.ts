@@ -1,14 +1,8 @@
 /** git 子进程。异步执行，不阻塞 kited 的事件循环；多个会话的快照可以同时进行。 */
 
-export interface GitResult { code: number; stdout: string; stderr: string }
+interface GitResult { code: number; stdout: string; stderr: string }
 
-export class GitError extends Error {
-  constructor(readonly args: string[], readonly result: GitResult) {
-    super(`git ${args.join(' ')} 失败（${result.code}）：${result.stderr.trim() || result.stdout.trim()}`);
-  }
-}
-
-export interface GitOptions { env?: Record<string, string>; input?: string }
+interface GitOptions { env?: Record<string, string>; input?: string }
 
 export async function gitTry(cwd: string, args: string[], opts: GitOptions = {}): Promise<GitResult> {
   const p = Bun.spawn(['git', '-c', 'core.quotePath=false', ...args], {
@@ -22,10 +16,10 @@ export async function gitTry(cwd: string, args: string[], opts: GitOptions = {})
   return { code, stdout, stderr };
 }
 
-/** 失败抛 GitError；返回去掉首尾空白的标准输出。 */
+/** 失败抛错；返回去掉首尾空白的标准输出。 */
 export async function git(cwd: string, args: string[], opts: GitOptions = {}): Promise<string> {
   const r = await gitTry(cwd, args, opts);
-  if (r.code !== 0) throw new GitError(args, r);
+  if (r.code !== 0) throw new Error(`git ${args.join(' ')} 失败（${r.code}）：${r.stderr.trim() || r.stdout.trim()}`);
   return r.stdout.trim();
 }
 
@@ -46,9 +40,14 @@ export const KITE_IDENTITY = {
 
 /** 代用户提交时的身份：仓库配了用户就用用户的，没配就署名 Kite。 */
 export async function commitIdentity(cwd: string): Promise<Record<string, string>> {
-  const name = (await gitTry(cwd, ['config', 'user.name'])).stdout.trim();
-  const email = (await gitTry(cwd, ['config', 'user.email'])).stdout.trim();
-  return name && email ? {} : KITE_IDENTITY;
+  const [name, email] = await Promise.all([gitTry(cwd, ['config', 'user.name']), gitTry(cwd, ['config', 'user.email'])]);
+  return name.stdout.trim() && email.stdout.trim() ? {} : KITE_IDENTITY;
+}
+
+/** 提交工作树里的全部改动（含未跟踪的），身份见 commitIdentity。args 是 commit 的其余参数。 */
+export async function commitAll(cwd: string, args: string[]): Promise<void> {
+  const [, env] = await Promise.all([git(cwd, ['add', '-A']), commitIdentity(cwd)]);
+  await git(cwd, ['commit', '-q', ...args], { env });
 }
 
 /** 工作树里有没有未提交的改动（含未跟踪、不含被忽略的文件）。 */

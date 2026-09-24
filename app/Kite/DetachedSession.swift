@@ -21,6 +21,7 @@ struct DetachedSession: View {
 
     var body: some View {
         if let session = model.session(id) {
+            let minimum = Self.windowSize(content: session.workspace.root.minimumSize)
             VStack(spacing: 0) {
                 SessionTitle(session: session)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -29,7 +30,7 @@ struct DetachedSession: View {
                 SessionContent(session: session)
                     .padding([.horizontal, .bottom], Metrics.padding)
             }
-            .frame(minWidth: 600, minHeight: 400)
+            .frame(minWidth: minimum.width, minHeight: minimum.height)
             .background(Theme.background)
             .ignoresSafeArea()
             .onAppear {
@@ -38,6 +39,11 @@ struct DetachedSession: View {
             }
             .onDisappear { model.detached.remove(id) }
         }
+    }
+
+    /// 卡片区域是 content 大小时窗口有多大：四周的边距，顶上换成标题那一条。
+    static func windowSize(content: CGSize) -> CGSize {
+        CGSize(width: content.width + 2 * Metrics.padding, height: content.height + Metrics.windowHeader + Metrics.padding)
     }
 }
 #endif

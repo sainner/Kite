@@ -16,9 +16,10 @@ const SETUP_TIMEOUT_MS = 15 * 60_000;
 export async function addWorktree(main: string, worktree: string, branch: string, base: string): Promise<void> {
   mkdirSync(dirname(worktree), { recursive: true });
   await git(main, ['worktree', 'add', '-q', '-b', branch, worktree, base]);
+  // escapes 按真实路径判断目标有没有经链接逃出工作树
   const real = realpathSync(worktree);
-  await linkDirectories(main, worktree, real);
-  await copyIncludes(main, worktree, real);
+  await linkDirectories(main, real);
+  await copyIncludes(main, real);
 }
 
 /** 目标路径的父目录经链接落到了工作树外面。 */
@@ -28,20 +29,20 @@ function escapes(dest: string, worktreeReal: string): boolean {
   return !within(realpathSync(dir), worktreeReal);
 }
 
-async function linkDirectories(main: string, worktree: string, real: string): Promise<void> {
+async function linkDirectories(main: string, real: string): Promise<void> {
   // 和会话读同样的设置层，用户级的不算
   const { effective } = await resolveSettings({ cwd: main, settingSources: SETTING_SOURCES });
   for (const d of effective.worktree?.symlinkDirectories ?? []) {
     if (isAbsolute(d) || d.split(/[/\\]/).some((s) => /^\.\.[ .]*$/.test(s))) continue;
     const src = join(main, d);
-    const dest = join(worktree, d);
+    const dest = join(real, d);
     if (!existsSync(src) || existsSync(dest) || escapes(dest, real)) continue;
     mkdirSync(dirname(dest), { recursive: true });
     symlinkSync(src, dest);
   }
 }
 
-async function copyIncludes(main: string, worktree: string, real: string): Promise<void> {
+async function copyIncludes(main: string, real: string): Promise<void> {
   const patterns = join(main, '.worktreeinclude');
   if (!existsSync(patterns)) return;
   const split = (s: string) => s.split('\0').filter(Boolean);
@@ -51,7 +52,7 @@ async function copyIncludes(main: string, worktree: string, real: string): Promi
   const ignored = split((await gitTry(main, ['check-ignore', '-z', '--stdin'], { input: matched.join('\0') + '\0' })).stdout);
   for (const f of ignored) {
     const src = join(main, f);
-    const dest = join(worktree, f);
+    const dest = join(real, f);
     if (lstatSync(src).isSymbolicLink() || escapes(dest, real)) continue;
     mkdirSync(dirname(dest), { recursive: true });
     // APFS 上是克隆，不额外占空间
@@ -69,11 +70,10 @@ export async function runSetup(main: string, worktree: string, logPath: string):
   mkdirSync(dirname(logPath), { recursive: true });
   const fd = openSync(logPath, 'w');
   try {
-    const p = Bun.spawn([script], { cwd: worktree, env: { ...process.env, KITE_MAIN_DIR: main }, stdin: 'ignore', stdout: fd, stderr: fd });
-    const timer = setTimeout(() => p.kill(), SETUP_TIMEOUT_MS);
-    const code = await p.exited;
-    clearTimeout(timer);
-    return code;
+    const p = Bun.spawn([script], {
+      cwd: worktree, env: { ...process.env, KITE_MAIN_DIR: main }, stdin: 'ignore', stdout: fd, stderr: fd, timeout: SETUP_TIMEOUT_MS,
+    });
+    return await p.exited;
   } catch (e) {
     writeSync(fd, `启动 .kite/setup 失败：${(e as Error).message}\n`);
     return 126;

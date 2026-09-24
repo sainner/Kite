@@ -28,25 +28,39 @@ struct TilesLayer: View {
                         .placed(rect)
                 }
                 ForEach(Pane.allCases, id: \.self) { pane in
-                    if let (rect, circle) = place(pane, in: layout) {
-                        PaneCard(pane: pane, circle: circle) { point in
-                            workspace.drag(pane, to: local(point), in: bounds)
-                        } onDrop: {
-                            workspace.drop(in: bounds)
-                        }
-                        .placed(rect)
-                        .zIndex(workspace.drag?.pane == pane ? 1 : 0)
+                    CardSlot(pane: pane, rect: layout.panes[pane]) { point in
+                        workspace.drag(pane, to: local(point), in: bounds)
+                    } onDrop: {
+                        workspace.drop(in: bounds)
                     }
+                    .zIndex(workspace.drag?.pane == pane ? 1 : 0)
                 }
             }
         }
         .disablesWindowDragging()
     }
+}
 
-    /// 卡片在哪、是不是缩成了圆。拖出去的卡片不在排布里，按拖动的阶段摆。
-    private func place(_ pane: Pane, in layout: TileLayout) -> (CGRect, Bool)? {
+/// 一张卡片摆在哪。拖出去的那张不在排布里，按拖动的阶段摆：跟着指针时缩成圆，松手后展开到落点。
+/// 只有它读指针位置，指针一动只重画这一张，不重算整个排布。
+private struct CardSlot: View {
+    let pane: Pane
+    /// 在排布里的位置，不在排布里为 nil。
+    let rect: CGRect?
+    var onDrag: (CGPoint) -> Void
+    var onDrop: () -> Void
+    @Environment(Workspace.self) private var workspace
+
+    var body: some View {
+        if let (frame, circle) = place {
+            PaneCard(pane: pane, circle: circle, onDrag: onDrag, onDrop: onDrop)
+                .placed(frame)
+        }
+    }
+
+    private var place: (CGRect, Bool)? {
         guard let drag = workspace.drag, drag.pane == pane, drag.phase != .attached else {
-            return layout.panes[pane].map { ($0, false) }
+            return rect.map { ($0, false) }
         }
         if case .landing(let rect) = drag.phase { return (rect, false) }
         let size = Metrics.dragBubble
@@ -82,7 +96,7 @@ struct PaneCard: View {
                     .padding(.horizontal, 14)
                     .frame(height: Metrics.cardHeader)
                     .overlay {
-                        MouseDragArea(cursor: .openHand, activeCursor: .closedHand, minimumDistance: 4, onChanged: onDrag, onEnded: onDrop)
+                        MouseDragArea(cursor: .openHand, activeCursor: .closedHand, minimumDistance: Metrics.dragThreshold, onChanged: onDrag, onEnded: onDrop)
                     }
                     PaneBody(pane: pane)
                         .padding([.horizontal, .bottom], 14)

@@ -8,7 +8,7 @@ struct MouseDragArea: NSViewRepresentable {
     var cursor: NSCursor
     /// 拖动中的指针样式，不给就不变。
     var activeCursor: NSCursor?
-    /// 挪动多少才算拖动，免得单击也算。
+    /// 挪动多少才算拖动，免得单击也算，见 Metrics.dragThreshold。
     var minimumDistance: CGFloat = 0
     var onChanged: (CGPoint) -> Void
     var onEnded: () -> Void = {}
@@ -18,12 +18,15 @@ struct MouseDragArea: NSViewRepresentable {
     }
 
     func updateNSView(_ view: DragView, context: Context) {
-        view.cursor = cursor
+        // 拖动时每动一下都会走到这里，指针样式变了才让窗口重设
+        if view.cursor !== cursor {
+            view.cursor = cursor
+            view.window?.invalidateCursorRects(for: view)
+        }
         view.activeCursor = activeCursor
         view.minimumDistance = minimumDistance
         view.onChanged = onChanged
         view.onEnded = onEnded
-        view.window?.invalidateCursorRects(for: view)
     }
 
     final class DragView: NSView {

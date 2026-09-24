@@ -6,13 +6,13 @@
  * 索引记着文件的修改时间，下次只需逐个 stat。快照的第一个父节点永远是上一枚快照，
  * agent 自己提交过时另挂当时的 HEAD。调用方负责同一会话内串行。
  */
-import { existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { git, isAncestor, KITE_IDENTITY, revParse } from './git.ts';
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { git, gitTry, isAncestor, KITE_IDENTITY } from './git.ts';
 
-export const snapshotRef = (sessionId: string) => `refs/kite/snapshots/${sessionId}`;
+const snapshotRef = (sessionId: string) => `refs/kite/snapshots/${sessionId}`;
 
-export interface Captured { commit: string; tree: string; created: boolean; changedFiles: number }
+interface Captured { commit: string; tree: string; created: boolean; changedFiles: number }
 
 export interface Snapshot { commit: string; at: number; label: string; toolUseIds: string[] }
 
@@ -42,23 +42,33 @@ function message(sessionId: string, label: string, toolUseIds: string[]): string
   return [label, '', `Kite-Session: ${sessionId}`, ...toolUseIds.map((id) => `Kite-Tool-Use: ${id}`)].join('\n');
 }
 
-/**
- * 把一棵树记成会话的一枚新快照，挂在 previous 之后。fromTree 是上一个状态的树，用来数改了几个文件。
- * head 是工作树当时的 HEAD：agent 自己提交过、HEAD 不在快照链上时，另挂成父节点；传 null 表示不用挂。
- */
-async function record(worktree: string, sessionId: string, tree: string, fromTree: string | null, previous: string | null, head: string | null, label: string, toolUseIds: string[]): Promise<Captured> {
-  const changedFiles = fromTree
-    ? (await git(worktree, ['diff-tree', '-r', '--name-only', '--no-renames', fromTree, tree])).split('\n').filter(Boolean).length
-    : (await git(worktree, ['ls-tree', '-r', '--name-only', tree])).split('\n').filter(Boolean).length;
-  const parents: string[] = [];
-  if (previous) parents.push('-p', previous);
-  if (head && (!previous || !(await isAncestor(worktree, head, previous)))) parents.push('-p', head);
-  const commit = await git(worktree, ['commit-tree', tree, ...parents, '-F', '-'], {
-    env: KITE_IDENTITY, input: message(sessionId, label, toolUseIds),
-  });
-  // 比较并交换：引用在读取之后被动过就失败，不覆盖
-  await git(worktree, ['update-ref', '--no-deref', snapshotRef(sessionId), commit, previous ?? '']);
-  return { commit, tree, created: true, changedFiles };
+interface NewSnapshot {
+  tree: string;
+  /** 上一个状态的树，用来数改了几个文件。 */
+  fromTree?: string | null;
+  previous?: string | null;
+  /** 工作树当时的 HEAD：agent 自己提交过、HEAD 不在快照链上时，另挂成父节点。 */
+  head?: string | null;
+}
+
+/** 把一棵树记成会话的一枚新快照，挂在 previous 之后。数改动和提交互不依赖，同时做，agent 少等一次 git。 */
+async function record(worktree: string, sessionId: string, r: NewSnapshot, label: string, toolUseIds: string[]): Promise<Captured> {
+  const count = git(worktree, r.fromTree
+    ? ['diff-tree', '-r', '--name-only', '--no-renames', r.fromTree, r.tree]
+    : ['ls-tree', '-r', '--name-only', r.tree]);
+  const chain = (async () => {
+    const parents: string[] = [];
+    if (r.previous) parents.push('-p', r.previous);
+    if (r.head && (!r.previous || !(await isAncestor(worktree, r.head, r.previous)))) parents.push('-p', r.head);
+    const commit = await git(worktree, ['commit-tree', r.tree, ...parents, '-F', '-'], {
+      env: KITE_IDENTITY, input: message(sessionId, label, toolUseIds),
+    });
+    // 比较并交换：引用在读取之后被动过就失败，不覆盖
+    await git(worktree, ['update-ref', '--no-deref', snapshotRef(sessionId), commit, r.previous ?? '']);
+    return commit;
+  })();
+  const [files, commit] = await Promise.all([count, chain]);
+  return { commit, tree: r.tree, created: true, changedFiles: files.split('\n').filter(Boolean).length };
 }
 
 /** 捕获整个工作树。树没变就复用上一枚，不产生新提交。 */
@@ -68,14 +78,20 @@ export async function capture(worktree: string, sessionId: string, label: string
   const env = { GIT_INDEX_FILE: await privateIndex(worktree) };
 
   if (!existsSync(env.GIT_INDEX_FILE)) {
-    const base = previous ?? head;
-    await git(worktree, base ? ['read-tree', base] : ['read-tree', '--empty'], { env });
+    // 第一枚从工作树自己的索引起步：刚建的工作树的索引记着文件的修改时间，add 只需逐个 stat，
+    // 按树重建的索引没有修改时间，得把每个文件重读一遍。已有快照链（私有索引丢了）才按上一枚重建
+    const own = join(dirname(dirname(env.GIT_INDEX_FILE)), 'index');
+    if (!previous && existsSync(own)) copyFileSync(own, env.GIT_INDEX_FILE);
+    else {
+      const base = previous ?? head;
+      await git(worktree, base ? ['read-tree', base] : ['read-tree', '--empty'], { env });
+    }
   }
   await git(worktree, ['add', '-A', '--', '.'], { env });
   const tree = await git(worktree, ['write-tree'], { env });
 
   if (previous && prevTree === tree) return { commit: previous, tree, created: false, changedFiles: 0 };
-  return record(worktree, sessionId, tree, prevTree ?? headTree ?? null, previous ?? null, head ?? null, label, toolUseIds);
+  return record(worktree, sessionId, { tree, fromTree: prevTree ?? headTree, previous, head }, label, toolUseIds);
 }
 
 /**
@@ -93,16 +109,17 @@ export async function restore(worktree: string, sessionId: string, target: strin
   // 目标就是现状时不产生新快照。HEAD 没动，safety 已经把它挂好了，所以不用再挂
   const current = tree === safety.tree
     ? { ...safety, created: false, changedFiles: 0 }
-    : await record(worktree, sessionId, tree, safety.tree, safety.commit, null, label, []);
+    : await record(worktree, sessionId, { tree, fromTree: safety.tree, previous: safety.commit }, label, []);
   return { safety, current, label };
 }
 
-/** 会话的快照链，新的在前。沿第一父节点走，遇到不属于本会话的提交就停。 */
-export async function list(cwd: string, sessionId: string, limit = 1000): Promise<Snapshot[]> {
-  const ref = snapshotRef(sessionId);
-  if (!(await revParse(cwd, ref))) return [];
+/** 会话的快照链，新的在前，最多 1000 枚。沿第一父节点走，遇到不属于本会话的提交就停。 */
+export async function list(cwd: string, sessionId: string): Promise<Snapshot[]> {
   const fmt = '%H%x1f%ct%x1f%s%x1f%(trailers:key=Kite-Session,valueonly,separator=%x2C)%x1f%(trailers:key=Kite-Tool-Use,valueonly,separator=%x2C)%x1e';
-  const out = await git(cwd, ['log', '--first-parent', `-n${limit}`, `--format=${fmt}`, ref]);
+  // 还没有快照时引用不存在，log 失败
+  const r = await gitTry(cwd, ['log', '--first-parent', '-n1000', `--format=${fmt}`, snapshotRef(sessionId)]);
+  if (r.code !== 0) return [];
+  const out = r.stdout.trim();
   const snaps: Snapshot[] = [];
   for (const rec of out.split('\x1e')) {
     const [commit, at, label, owner, tools] = rec.trim().split('\x1f');

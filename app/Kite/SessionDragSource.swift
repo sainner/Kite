@@ -8,8 +8,8 @@ import SwiftUI
 struct SessionDragSource: NSViewRepresentable {
     let tint: Color
     var onClick: () -> Void
-    /// 松手的位置（屏幕坐标，左上角是原点）和主窗口的大小。
-    var onDetach: (CGPoint, CGSize) -> Void
+    /// 松手的位置，屏幕坐标，左上角是原点。
+    var onDetach: (CGPoint) -> Void
 
     static let type = NSPasteboard.PasteboardType("com.sainner.kite.session")
 
@@ -26,7 +26,7 @@ struct SessionDragSource: NSViewRepresentable {
     final class SourceView: NSView, NSDraggingSource {
         var tint = NSColor.systemBlue
         var onClick: (() -> Void)?
-        var onDetach: ((CGPoint, CGSize) -> Void)?
+        var onDetach: ((CGPoint) -> Void)?
         private var start: NSPoint?
 
         override var mouseDownCanMoveWindow: Bool { false }
@@ -39,13 +39,14 @@ struct SessionDragSource: NSViewRepresentable {
         override func mouseDragged(with event: NSEvent) {
             guard let start else { return }
             let location = event.locationInWindow
-            guard hypot(location.x - start.x, location.y - start.y) >= 4 else { return }
+            guard hypot(location.x - start.x, location.y - start.y) >= Metrics.dragThreshold else { return }
             self.start = nil
             let item = NSPasteboardItem()
             item.setString("", forType: SessionDragSource.type)
             let dragging = NSDraggingItem(pasteboardWriter: item)
             // 拖的样子是一个小窗口：白底，顶上一条会话的颜色
-            let image = NSImage(size: NSSize(width: 120, height: 80), flipped: true) { rect in
+            let size = NSSize(width: 120, height: 80)
+            let image = NSImage(size: size, flipped: true) { rect in
                 let window = NSBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), xRadius: 8, yRadius: 8)
                 NSColor.white.setFill()
                 window.fill()
@@ -58,7 +59,7 @@ struct SessionDragSource: NSViewRepresentable {
                 return true
             }
             let point = convert(location, from: nil)
-            dragging.setDraggingFrame(NSRect(x: point.x - 20, y: point.y - 12, width: 120, height: 80), contents: image)
+            dragging.setDraggingFrame(NSRect(origin: NSPoint(x: point.x - 20, y: point.y - 12), size: size), contents: image)
             beginDraggingSession(with: [dragging], event: event, source: self)
         }
 
@@ -81,7 +82,7 @@ struct SessionDragSource: NSViewRepresentable {
             guard operation.isEmpty, let window, !window.frame.contains(screenPoint) else { return }
             // AppKit 的屏幕坐标左下角是原点，按主屏的高度翻过来
             let height = NSScreen.screens.first?.frame.height ?? 0
-            onDetach?(CGPoint(x: screenPoint.x, y: height - screenPoint.y), window.frame.size)
+            onDetach?(CGPoint(x: screenPoint.x, y: height - screenPoint.y))
         }
     }
 }

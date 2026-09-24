@@ -9,7 +9,7 @@ struct MainWindow: View {
     var body: some View {
         HStack(spacing: 0) {
             MacSidebar()
-                .frame(width: model.sidebarCollapsed ? Metrics.rail : model.sidebarWidth)
+                .frame(width: model.sidebarShown)
             MouseDragArea(cursor: .columnResize) { point in
                 resizeSidebar(to: point.x - Metrics.padding - Metrics.gap / 2)
             }
@@ -17,15 +17,22 @@ struct MainWindow: View {
             .disablesWindowDragging()
             if let session = model.current {
                 SessionContent(session: session)
+                    .onGeometryChange(for: CGSize.self) { $0.size } action: { model.contentSize = $0 }
             } else {
                 // 会话都分离出去了
                 Color.clear
             }
         }
         .padding(Metrics.padding)
-        .frame(minWidth: 900, minHeight: 560)
+        // 窗口不能小到放不下当前会话的卡片
+        .frame(minWidth: 2 * Metrics.padding + model.sidebarShown + Metrics.gap + minimum.width,
+               minHeight: 2 * Metrics.padding + minimum.height)
         .background(Theme.background)
         .ignoresSafeArea()
+    }
+
+    private var minimum: CGSize {
+        model.current?.workspace.root.minimumSize ?? .zero
     }
 
     private func resizeSidebar(to width: CGFloat) {

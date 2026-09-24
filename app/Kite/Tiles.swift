@@ -27,11 +27,6 @@ final class Split {
         self.first = first
         self.second = second
     }
-
-    /// 第一块的长度。两块之间留一道缝。
-    func firstLength(in total: CGFloat) -> CGFloat {
-        (max(total - Metrics.gap, 0) * ratio).rounded()
-    }
 }
 
 /// 一种排布在某块地方里摆出来的样子：各张卡片、占位、每一刀留下的缝各在哪。
@@ -60,6 +55,20 @@ extension Tile {
         }
     }
 
+    /// 最小尺寸：每张卡片不小于 minPane；切成两块时，沿切的方向两块相加再加上缝，另一个方向取大的。
+    var minimumSize: CGSize {
+        switch self {
+        case .pane, .placeholder:
+            CGSize(width: Metrics.minPane, height: Metrics.minPane)
+        case .split(let split):
+            split.axis == .horizontal
+                ? CGSize(width: split.first.minimumSize.width + Metrics.gap + split.second.minimumSize.width,
+                         height: max(split.first.minimumSize.height, split.second.minimumSize.height))
+                : CGSize(width: max(split.first.minimumSize.width, split.second.minimumSize.width),
+                         height: split.first.minimumSize.height + Metrics.gap + split.second.minimumSize.height)
+        }
+    }
+
     func layout(in rect: CGRect) -> TileLayout {
         var result = TileLayout()
         place(in: rect, into: &result)
@@ -74,17 +83,10 @@ extension Tile {
             result.placeholder = rect
         case .split(let split):
             let horizontal = split.axis == .horizontal
-            let first = split.firstLength(in: horizontal ? rect.width : rect.height)
-            let rest = (horizontal ? rect.width : rect.height) - first - Metrics.gap
-            let a = horizontal
-                ? CGRect(x: rect.minX, y: rect.minY, width: first, height: rect.height)
-                : CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: first)
-            let gap = horizontal
-                ? CGRect(x: a.maxX, y: rect.minY, width: Metrics.gap, height: rect.height)
-                : CGRect(x: rect.minX, y: a.maxY, width: rect.width, height: Metrics.gap)
-            let b = horizontal
-                ? CGRect(x: gap.maxX, y: rect.minY, width: rest, height: rect.height)
-                : CGRect(x: rect.minX, y: gap.maxY, width: rect.width, height: rest)
+            let edge: CGRectEdge = horizontal ? .minXEdge : .minYEdge
+            let available = max((horizontal ? rect.width : rect.height) - Metrics.gap, 0)
+            let (a, rest) = rect.divided(atDistance: (available * split.ratio).rounded(), from: edge)
+            let (gap, b) = rest.divided(atDistance: Metrics.gap, from: edge)
             result.gaps.append(TileLayout.Gap(split: split, rect: gap, region: rect))
             split.first.place(in: a, into: &result)
             split.second.place(in: b, into: &result)
@@ -101,7 +103,7 @@ extension Tile {
         case .split(let split):
             guard let first = split.first.removing(pane) else { return split.second }
             guard let second = split.second.removing(pane) else { return first }
-            return .split(Split(split.axis, split.ratio, first, second))
+            return rebuilt(split, first, second)
         }
     }
 
@@ -113,23 +115,28 @@ extension Tile {
         case .placeholder:
             return self
         case .split(let split):
-            return .split(Split(split.axis, split.ratio, split.first.replacing(pane, with: tile), split.second.replacing(pane, with: tile)))
+            return rebuilt(split, split.first.replacing(pane, with: tile), split.second.replacing(pane, with: tile))
         }
     }
 
     /// 从 target 的 edge 那边切一刀，把 tile 放进去，两半各占一半。
     func inserting(_ tile: Tile, beside target: Pane, on edge: Edge) -> Tile {
-        switch self {
-        case .pane(let p) where p == target:
-            let axis: Axis = edge == .leading || edge == .trailing ? .horizontal : .vertical
-            let before = edge == .leading || edge == .top
-            return .split(Split(axis, 0.5, before ? tile : self, before ? self : tile))
-        case .pane, .placeholder:
-            return self
-        case .split(let split):
-            return .split(Split(split.axis, split.ratio,
-                                split.first.inserting(tile, beside: target, on: edge),
-                                split.second.inserting(tile, beside: target, on: edge)))
+        let axis: Axis = edge == .leading || edge == .trailing ? .horizontal : .vertical
+        let before = edge == .leading || edge == .top
+        return replacing(target, with: .split(Split(axis, 0.5, before ? tile : .pane(target), before ? .pane(target) : tile)))
+    }
+
+    /// 两边都没变就沿用原来的这一刀：它的缝的视图不用重建，比例也还是同一份。
+    private func rebuilt(_ split: Split, _ first: Tile, _ second: Tile) -> Tile {
+        first.isSame(split.first) && second.isSame(split.second) ? self : .split(Split(split.axis, split.ratio, first, second))
+    }
+
+    private func isSame(_ other: Tile) -> Bool {
+        switch (self, other) {
+        case (.pane(let a), .pane(let b)): a == b
+        case (.placeholder, .placeholder): true
+        case (.split(let a), .split(let b)): a === b
+        default: false
         }
     }
 }
@@ -183,6 +190,12 @@ struct CardDrag {
     var spot: DropSpot?
     /// 拖动中显示的排布：剩下的，或者插了占位的预览。
     var layout: Tile?
+
+    /// 把 tile 放到落点上的排布；没有落点时为 nil。
+    func placing(_ tile: Tile) -> Tile? {
+        guard let spot, let rest else { return nil }
+        return rest.inserting(tile, beside: spot.target, on: spot.edge)
+    }
 }
 
 /// 一个窗口组：有哪些窗口、Mac 上怎么排、聚焦的是哪个。Mac 把它们排成卡片，iPhone 一次显示聚焦的那个。
@@ -196,7 +209,7 @@ final class Workspace {
     /// 拖动时指针在内容区里的位置。一直在变，和 drag 分开，免得每动一下整个排布都重算。
     private(set) var pointer: CGPoint = .zero
 
-    init(_ arrangement: Arrangement = .oneAndTwo) {
+    init(_ arrangement: Arrangement) {
         let tile = arrangement.tile
         root = tile
         focused = tile.panes[0]
@@ -213,14 +226,17 @@ final class Workspace {
         if !root.panes.contains(focused) { focused = root.panes[0] }
     }
 
-    /// 拖动 gap 这道缝。
+    /// 拖动 gap 这道缝。两边都不小于各自的最小尺寸，里面再切过的也算上。
     func resize(_ gap: TileLayout.Gap, to location: CGPoint) {
-        let horizontal = gap.split.axis == .horizontal
-        let available = (horizontal ? gap.region.width : gap.region.height) - Metrics.gap
-        guard available > 0 else { return }
-        let position = horizontal ? location.x - gap.region.minX : location.y - gap.region.minY
-        let lower = min(Metrics.minPane / available, 0.5)
-        gap.split.ratio = min(max((position - Metrics.gap / 2) / available, lower), 1 - lower)
+        let split = gap.split
+        let horizontal = split.axis == .horizontal
+        let length = { (size: CGSize) in horizontal ? size.width : size.height }
+        let available = length(gap.region.size) - Metrics.gap
+        let lower = length(split.first.minimumSize)
+        let upper = available - length(split.second.minimumSize)
+        guard available > 0, lower <= upper else { return }
+        let position = (horizontal ? location.x - gap.region.minX : location.y - gap.region.minY) - Metrics.gap / 2
+        split.ratio = min(max(position, lower), upper) / available
     }
 
     func drag(_ pane: Pane, to location: CGPoint, in bounds: CGRect) {
@@ -241,16 +257,20 @@ final class Workspace {
         // 指针在卡片之间的缝里时保持原来的落点，出了内容区才取消
         if let rest = next.rest, bounds.contains(location) {
             if let (target, frame) = rest.layout(in: bounds).panes.first(where: { $0.value.contains(location) }) {
+                // 离哪条边近放哪边；这张卡片在那个方向上不够切成两张的，那条边不算
                 let x = (location.x - frame.minX) / frame.width
                 let y = (location.y - frame.minY) / frame.height
+                let wide = frame.width >= 2 * Metrics.minPane + Metrics.gap
+                let tall = frame.height >= 2 * Metrics.minPane + Metrics.gap
                 let edges: [(Edge, CGFloat)] = [(.leading, x), (.trailing, 1 - x), (.top, y), (.bottom, 1 - y)]
-                next.spot = DropSpot(target: target, edge: edges.min { $0.1 < $1.1 }!.0)
+                    .filter { $0.0 == .leading || $0.0 == .trailing ? wide : tall }
+                next.spot = edges.min { $0.1 < $1.1 }.map { DropSpot(target: target, edge: $0.0) }
             }
         } else {
             next.spot = nil
         }
         guard drag?.phase == .attached || next.spot != drag?.spot else { return }
-        next.layout = next.spot.flatMap { spot in next.rest?.inserting(.placeholder, beside: spot.target, on: spot.edge) } ?? next.rest
+        next.layout = next.placing(.placeholder) ?? next.rest
         withAnimation(.snappy) { drag = next }
     }
 
@@ -261,7 +281,7 @@ final class Workspace {
             return
         }
         // 有落点就放进去；没有就回原位，原位先换成占位，别的卡片先让回来
-        let final = next.spot.flatMap { spot in next.rest?.inserting(.pane(next.pane), beside: spot.target, on: spot.edge) } ?? root
+        let final = next.placing(.pane(next.pane)) ?? root
         if next.spot == nil { next.layout = root.replacing(next.pane, with: .placeholder) }
         next.phase = .landing(final.layout(in: bounds).panes[next.pane] ?? .zero)
         withAnimation(.snappy) {

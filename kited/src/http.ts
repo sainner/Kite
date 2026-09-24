@@ -12,8 +12,8 @@ const str = (v: unknown, name: string): string => {
   return v;
 };
 
-function handle(fn: (req: Request & { params: Record<string, string> }) => Promise<unknown> | unknown) {
-  return async (req: Request & { params: Record<string, string> }) => {
+function handle<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
+  return async (req: R) => {
     try {
       const out = await fn(req);
       return out instanceof Response ? out : Response.json(out ?? { ok: true });
@@ -24,13 +24,23 @@ function handle(fn: (req: Request & { params: Record<string, string> }) => Promi
   };
 }
 
+/** 同一个事件发给几个订阅者时只序列化一次：工具结果可能很大。 */
+const encoded = new WeakMap<Envelope, string>();
+function encode(e: Envelope): string {
+  let text = encoded.get(e);
+  if (text === undefined) {
+    text = `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`;
+    encoded.set(e, text);
+  }
+  return text;
+}
+
 function events(kite: Kite, session: string | undefined): Response {
   let unsubscribe = () => {};
   let heartbeat: Timer | undefined;
   const stream = new ReadableStream<string>({
     start(controller) {
-      const send = (e: Envelope) => controller.enqueue(`event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`);
-      unsubscribe = kite.bus.subscribe(session, send);
+      unsubscribe = kite.bus.subscribe(session, (e) => controller.enqueue(encode(e)));
       heartbeat = setInterval(() => controller.enqueue(': \n\n'), 15_000);
       controller.enqueue(': connected\n\n');
     },
@@ -56,18 +66,18 @@ export function serve(kite: Kite, port: number) {
           return kite.createSession(str(b.project, 'project'), str(b.prompt, 'prompt'));
         }),
       },
-      '/sessions/:id': { GET: handle((req) => kite.session(req.params.id!)) },
+      '/sessions/:id': { GET: handle((req) => kite.session(req.params.id)) },
       '/sessions/:id/messages': {
-        POST: handle(async (req) => kite.send(req.params.id!, str((await body(req)).text, 'text'))),
+        POST: handle(async (req) => kite.send(req.params.id, str((await body(req)).text, 'text'))),
       },
-      '/sessions/:id/interrupt': { POST: handle((req) => kite.interrupt(req.params.id!)) },
-      '/sessions/:id/snapshots': { GET: handle((req) => kite.snapshots(req.params.id!)) },
+      '/sessions/:id/interrupt': { POST: handle((req) => kite.interrupt(req.params.id)) },
+      '/sessions/:id/snapshots': { GET: handle((req) => kite.snapshots(req.params.id)) },
       '/sessions/:id/restore': {
-        POST: handle(async (req) => kite.restore(req.params.id!, str((await body(req)).commit, 'commit'))),
+        POST: handle(async (req) => kite.restore(req.params.id, str((await body(req)).commit, 'commit'))),
       },
-      '/sessions/:id/adopt': { POST: handle((req) => kite.adopt(req.params.id!)) },
+      '/sessions/:id/adopt': { POST: handle((req) => kite.adopt(req.params.id)) },
       '/sessions/:id/archive': {
-        POST: handle(async (req) => kite.archive(req.params.id!, (await body(req)).force === true)),
+        POST: handle(async (req) => kite.archive(req.params.id, (await body(req)).force === true)),
       },
       '/events': { GET: (req) => events(kite, new URL(req.url).searchParams.get('session') ?? undefined) },
     },

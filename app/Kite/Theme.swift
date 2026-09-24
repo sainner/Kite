@@ -34,6 +34,8 @@ enum Metrics {
     static let cardRadius: CGFloat = 12
     /// 卡片拖小时的下限。
     static let minPane: CGFloat = 160
+    /// 按下后挪动多少才算拖动，免得单击也算。
+    static let dragThreshold: CGFloat = 4
     /// 卡片标题栏的高度，Mac 上按住它拖动卡片。
     static let cardHeader: CGFloat = 40
     /// 拖出布局的卡片变成的圆。

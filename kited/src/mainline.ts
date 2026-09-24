@@ -5,7 +5,7 @@
  */
 import { existsSync } from 'node:fs';
 import { KiteError } from './errors.ts';
-import { commitIdentity, git, gitTry, isAncestor, isDirty, revParse, unmergedPaths } from './git.ts';
+import { commitAll, commitIdentity, gitTry, isAncestor, isDirty, revParse, unmergedPaths } from './git.ts';
 import type { Project } from './store.ts';
 
 /**
@@ -13,10 +13,7 @@ import type { Project } from './store.ts';
  * 非技术用户会直接在主文件夹改文件，不存的话新会话看不到，合回主线时也可能被覆盖。
  */
 export async function mainline(p: Pick<Project, 'path' | 'commits'>): Promise<string> {
-  if (p.commits === 'kite' && (await isDirty(p.path))) {
-    await git(p.path, ['add', '-A']);
-    await git(p.path, ['commit', '-q', '-m', 'Kite：保存主文件夹里的改动'], { env: await commitIdentity(p.path) });
-  }
+  if (p.commits === 'kite' && (await isDirty(p.path))) await commitAll(p.path, ['-m', 'Kite：保存主文件夹里的改动']);
   const head = await revParse(p.path, 'HEAD');
   if (!head) throw new KiteError(`主文件夹没有可用的提交：${p.path}`, 409);
   return head;
@@ -29,19 +26,15 @@ export type MergeBack =
 
 /** 把会话工作树的全部改动合回主线。message 用作会话里未提交改动的提交说明。 */
 export async function mergeBack(p: Pick<Project, 'path' | 'commits'>, worktree: string, message: string): Promise<MergeBack> {
-  const identity = await commitIdentity(worktree);
   const merging = await revParse(worktree, 'MERGE_HEAD');
   if (merging) {
     const files = await unmergedPaths(worktree);
     if (files.length) return { status: 'conflict', files, fresh: false };
   }
-  if (merging || (await isDirty(worktree))) {
-    await git(worktree, ['add', '-A']);
-    await git(worktree, ['commit', '-q', ...(merging ? ['--no-edit'] : ['-m', message])], { env: identity });
-  }
+  if (merging || (await isDirty(worktree))) await commitAll(worktree, merging ? ['--no-edit'] : ['-m', message]);
   const main = await mainline(p);
   if (!(await isAncestor(worktree, main, 'HEAD'))) {
-    const r = await gitTry(worktree, ['merge', '-q', '--no-edit', main], { env: identity });
+    const r = await gitTry(worktree, ['merge', '-q', '--no-edit', main], { env: await commitIdentity(worktree) });
     if (r.code !== 0) {
       const files = await unmergedPaths(worktree);
       if (!files.length) throw new KiteError(`把主线合进会话分支失败：${r.stderr.trim()}`, 409);
@@ -58,7 +51,6 @@ export async function mergeBack(p: Pick<Project, 'path' | 'commits'>, worktree: 
 export async function hasUnmerged(main: string, worktree: string): Promise<boolean> {
   if (!existsSync(worktree)) return false;
   if (await isDirty(worktree)) return true;
-  const head = await revParse(worktree, 'HEAD');
-  const tip = await revParse(main, 'HEAD');
+  const [head, tip] = await Promise.all([revParse(worktree, 'HEAD'), revParse(main, 'HEAD')]);
   return !head || !tip || !(await isAncestor(main, head, tip));
 }
