@@ -21,8 +21,13 @@ enum Metrics {
     static let cardRadius: CGFloat = 12
     /// 卡片拖小时的下限。
     static let minPane: CGFloat = 160
-    /// iPhone 上 action 栏的高度，不含底部 Home 条让出的距离。
-    static let actionBar: CGFloat = 64
+    /// 卡片标题栏的高度，Mac 上按住它拖动卡片。
+    static let cardHeader: CGFloat = 40
+    /// action 区：一排按钮、账号那一行，和两行之间的距离。
+    static let actionButton: CGFloat = 36
+    static let accountRow: CGFloat = 36
+    static let actionSpacing: CGFloat = 10
+    static var actionArea: CGFloat { actionButton + actionSpacing + accountRow }
     /// iPhone 上拉出侧边栏、action 栏的手势区：左边缘多宽、底边多高。
     static let edgeZone: CGFloat = 24
 }

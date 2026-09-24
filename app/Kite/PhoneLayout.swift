@@ -2,8 +2,9 @@
 import SwiftUI
 import UIKit
 
-/// iPhone：会话窗口平时铺满屏幕，盖住 App 的底色。从左边缘往右滑，窗口右移，上下边距同时出现，露出底色上的侧边栏；
-/// 从窗口底部往上滑，窗口上移，左右边距同时出现，露出底色上的 action 栏。圆角同时从屏幕圆角变成屏幕圆角减去边距。
+/// iPhone：会话窗口平时铺满屏幕，盖住 App 的底色。从左边缘往右滑，窗口缩到右边，露出底色上的侧边栏；
+/// 从窗口底部往上滑，窗口缩到上面，露出底色上的 action 栏。缩小时四边的边距同时出现，内容不重排、超出的部分裁掉，
+/// 圆角从屏幕圆角变成屏幕圆角减去边距。
 /// 打开时点窗口或往回拖收起。
 struct PhoneLayout: View {
     private enum Drawer { case sidebar, actions }
@@ -14,6 +15,8 @@ struct PhoneLayout: View {
     @State private var translation: CGSize = .zero
     /// 屏幕圆角，读到之前按 0 算：铺满时窗口的角本来就被屏幕圆角盖住。
     @State private var screenRadius: CGFloat = 0
+    /// 窗口里显示的是哪个，用窗口顶部的页签切换。
+    @State private var selected: Pane = .session
 
     var body: some View {
         GeometryReader { geo in
@@ -22,19 +25,19 @@ struct PhoneLayout: View {
                                 height: geo.size.height + insets.top + insets.bottom)
             let sidebarWidth = min(screen.width * 0.8, 320)
             // 窗口底边要升到 action 栏上面，action 栏在 Home 条上面
-            let actionsHeight = Metrics.actionBar + insets.bottom + Metrics.padding
+            let actionsHeight = Metrics.actionArea + insets.bottom + Metrics.padding
             ZStack(alignment: .topLeading) {
                 Theme.background.ignoresSafeArea()
                 ScreenCornerReader { screenRadius = $0 }.ignoresSafeArea()
                 // 一次只露出一侧，另一侧藏起来，免得窗口移开时从边上露出来
-                Sidebar()
+                SidebarList()
                     .padding(.top, Metrics.padding * 2)
                     .padding(.leading, Metrics.padding + Metrics.sidebarLeading)
                     .padding(.trailing, Metrics.gap)
                     .frame(width: sidebarWidth)
                     .opacity(showing(.sidebar) ? 1 : 0)
-                ActionBar()
-                    .frame(height: Metrics.actionBar)
+                ActionArea()
+                    .padding(.horizontal, Metrics.padding * 2)
                     .frame(maxHeight: .infinity, alignment: .bottom)
                     .opacity(showing(.actions) ? 1 : 0)
             }
@@ -49,39 +52,64 @@ struct PhoneLayout: View {
         let s = progress(.sidebar, extent: sidebarWidth)
         let a = progress(.actions, extent: actionsHeight)
         let pad = Metrics.padding
-        return ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: max(screenRadius - (s + a) * pad, 0)).fill(Theme.card)
-            // 内容始终让开状态栏和 Home 条
-            PaneContent(pane: .session).padding(insets)
-        }
-        .frame(width: screen.width - 2 * a * pad, height: screen.height - 2 * s * pad)
-        .overlay {
-            if let drawer = open {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture { settle(nil) }
-                    .gesture(drag(drawer, extent: drawer == .sidebar ? sidebarWidth : actionsHeight))
+        // 窗口缩进屏幕里，四边的边距随进度出现；拉开的那一侧让出侧边栏或 action 栏
+        let left = s * sidebarWidth + a * pad
+        let top = (s + a) * pad
+        let right = screen.width - (s + a) * pad
+        let bottom = screen.height - s * pad - a * actionsHeight
+        let shape = RoundedRectangle(cornerRadius: max(screenRadius - (s + a) * pad, 0))
+        // 内容保持铺满时的排版，贴着窗口左上角，超出窗口的部分裁掉
+        return tabs
+            .padding(insets)
+            .frame(width: screen.width, height: screen.height, alignment: .topLeading)
+            .frame(width: right - left, height: bottom - top, alignment: .topLeading)
+            .background(Theme.card)
+            .clipShape(shape)
+            .contentShape(shape)
+            .overlay {
+                if let drawer = open {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { settle(nil) }
+                        .gesture(drag(drawer, extent: drawer == .sidebar ? sidebarWidth : actionsHeight))
+                }
             }
-        }
-        .overlay(alignment: .leading) {
-            if open == nil {
-                Color.clear
-                    .frame(width: Metrics.edgeZone)
-                    .contentShape(Rectangle())
-                    .gesture(drag(.sidebar, extent: sidebarWidth))
+            .overlay(alignment: .leading) {
+                if open == nil {
+                    Color.clear
+                        .frame(width: Metrics.edgeZone)
+                        .contentShape(Rectangle())
+                        .gesture(drag(.sidebar, extent: sidebarWidth))
+                }
             }
-        }
-        .overlay(alignment: .bottom) {
-            // 盖住 Home 条那一段再往上一点。从屏幕最底边起滑仍是系统回主屏幕的手势
-            if open == nil {
-                Color.clear
-                    .frame(height: Metrics.edgeZone + insets.bottom)
-                    .contentShape(Rectangle())
-                    .gesture(drag(.actions, extent: actionsHeight))
+            .overlay(alignment: .bottom) {
+                // 盖住 Home 条那一段再往上一点。从屏幕最底边起滑仍是系统回主屏幕的手势
+                if open == nil {
+                    Color.clear
+                        .frame(height: Metrics.edgeZone + insets.bottom)
+                        .contentShape(Rectangle())
+                        .gesture(drag(.actions, extent: actionsHeight))
+                }
             }
+            .offset(x: left, y: top)
+            .ignoresSafeArea()
+    }
+
+    /// 窗口顶部一排页签，点了切换窗口。iPhone 上只有这一个窗口，不做换位置。
+    private var tabs: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                ForEach(Pane.allCases, id: \.self) { pane in
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(pane.tint.opacity(pane == selected ? 1 : 0.25))
+                        .frame(width: 56, height: 24)
+                        .contentShape(Rectangle())
+                        .onTapGesture { selected = pane }
+                }
+            }
+            PaneBody(pane: selected)
         }
-        .offset(x: s * sidebarWidth + a * pad, y: s * pad - a * actionsHeight)
-        .ignoresSafeArea()
+        .padding(14)
     }
 
     private func showing(_ drawer: Drawer) -> Bool {
@@ -150,15 +178,4 @@ private struct ScreenCornerReader: UIViewRepresentable {
     }
 }
 
-/// action 栏，比如切换会话。现在只有占位色块。
-private struct ActionBar: View {
-    var body: some View {
-        HStack(spacing: 12) {
-            ForEach(0..<4, id: \.self) { _ in
-                RoundedRectangle(cornerRadius: 12).fill(Theme.placeholder)
-            }
-        }
-        .padding(.horizontal, Metrics.padding * 2)
-    }
-}
 #endif

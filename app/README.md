@@ -9,7 +9,7 @@ app/
 └── Kite/                                      源码和资源
 ```
 
-布局：Mac 上左边侧边栏、右边一组卡片，卡片的排布见 `Tiles.swift`；iPhone 上会话窗口铺满屏幕，侧边栏和 action 栏从边上拉出来，见 `PhoneLayout.swift`。尺寸和颜色集中在 `Theme.swift`。
+布局：Mac 上左边侧边栏（上面是列表，底部是 action 区），右边一组卡片，按住卡片标题栏拖到别的卡片上换位置，排布和拖放见 `Tiles.swift`；iPhone 上一个窗口铺满屏幕，窗口顶部的页签切换内容，侧边栏和 action 栏从边上拉出来，见 `PhoneLayout.swift`。尺寸和颜色集中在 `Theme.swift`。
 
 ## 约定
 
