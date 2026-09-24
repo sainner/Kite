@@ -111,8 +111,10 @@ test('采纳冲突：返回冲突文件并把说明交给 agent，这一回合�
   const repo = newRepo(kk.root, 'proj', { 'c.txt': 'base\n' });
   const p = await registerProject(kk, repo);
   const h = token('标记D7');
-  const s = await createSession(kk, p.id, `RUN echo session > c.txt # ${h}`);
+  // 第一回合只回显、不调工具；会话一侧的改动由测试直接写进会话工作树，采纳时 kited 先把工作树里未提交的改动提交到会话分支，效果和 agent 写的一样
+  const s = await createSession(kk, p.id, `改一下 c.txt ${h}`);
   await waitRunner(kk, s.id, 'closed');
+  writeFiles(s.worktree, { 'c.txt': 'session\n' });
 
   writeFiles(repo, { 'c.txt': 'main\n' });
   const mainCommit = commitAll(repo, '主线改了 c');

@@ -8,20 +8,24 @@ struct PaneHeader {
 }
 
 /// 窗口的共有布局：浮在上面的标题栏、内容、浮在下面的控制区。内容从标题栏和控制区后面滚过去，
-/// 标题栏后面垫系统的滚动边缘效果（硬边），控制区后面垫一层渐变遮罩，让底下的状态信息看得清。Mac 上是一张卡片的内容，iPhone 上铺满窗口；各个窗口只给标题栏的信息、内容、控制区里的东西，
+/// 标题栏后面垫系统的滚动边缘效果（软边），控制区后面垫一层到窗口底边的渐变遮罩。Mac 上是一张卡片的内容，iPhone 上铺满窗口；各个窗口只给标题栏的信息、内容、控制区里的东西，
 /// 和控制区底下的状态信息。
-/// 控制区是一张液态玻璃卡片，左右留边，底下贴着 Home 条、键盘让出的安全区；底下没有安全区时（Mac 的卡片、iPhone 拉开抽屉）离窗口底边留一点。
+/// 控制区是一张液态玻璃卡片，左右留边，底下贴着 Home 条让出的安全区；底下没有安全区时（Mac 的卡片、iPhone 拉开抽屉）离窗口底边留一点，
+/// 打字时离键盘也留这么多。
 /// 状态信息只看不点，放在控制区底下的安全区里，iPhone 上小横条藏起来以后才显示（它只在进 App 时出来一下），打字时不显示。
 /// 控制区里的输入框拿 typing 绑定焦点。iPhone 上打字时点控制区以外的地方收起键盘；不打字时从控制区往上拖拉出 action 栏。
+/// iPhone 上标题栏左边有个按钮拉开侧边栏。
 struct PaneWindow<Content: View, Controls: View>: View {
     let header: PaneHeader
     let status: Text?
     let content: Content
     let controls: (FocusState<Bool>.Binding) -> Controls
     @FocusState private var typing: Bool
-    /// 窗口底下被 Home 条、键盘盖着的那一截。
-    @State private var bottomInset: CGFloat = 0
+    /// 窗口底下被 Home 条盖着的那一截，不含键盘。
+    @Environment(\.homeIndicatorInset) private var homeInset
+    @Environment(\.keyboardShown) private var keyboardShown
     @Environment(\.homeIndicatorHidden) private var indicatorHidden
+    @Environment(\.openSidebar) private var openSidebar
 
     init(header: PaneHeader, status: Text? = nil, @ViewBuilder content: () -> Content,
          @ViewBuilder controls: @escaping (_ typing: FocusState<Bool>.Binding) -> Controls) {
@@ -38,10 +42,13 @@ struct PaneWindow<Content: View, Controls: View>: View {
             .endsTyping($typing)
             .safeAreaBar(edge: .bottom, spacing: 0) {
                 controls($typing)
-                    .glassEffect(.regular, in: .rect(cornerRadius: Metrics.controlRadius))
+                    // 离窗口的角近的两个角和窗口圆角同心，远的用最小圆角
+                    .glassEffect(.regular, in: ConcentricRectangle(corners: .concentric(minimum: .fixed(Metrics.controlRadius))))
                     .padding(.horizontal, Metrics.controlMargin)
-                    // 底下的安全区够高就贴着它，不够的补到 controlMargin；拉开抽屉时安全区慢慢变没，边距跟着慢慢出来
-                    .padding(.bottom, max(Metrics.controlMargin - bottomInset, 0))
+                    // Home 条那一截够高就贴着它，不够的补到 controlMargin；拉开抽屉时它慢慢变没，边距跟着慢慢出来。
+                    // 键盘不一样：不贴着它，照样留 controlMargin。不另加动画：keyboardShown 和键盘让出的安全区在同一次更新里变，
+                    // 边距跟着键盘自己的动画走，和键盘同步
+                    .padding(.bottom, keyboardShown ? Metrics.controlMargin : max(Metrics.controlMargin - homeInset, 0))
                     .frame(maxWidth: .infinity)
                     .background { bottomFade }
                     .overlay(alignment: .bottom) { statusLine }
@@ -49,36 +56,46 @@ struct PaneWindow<Content: View, Controls: View>: View {
                     .pullsDrawer(enabled: !typing)
             }
             .safeAreaBar(edge: .top, spacing: 0) {
-                HeaderBar(header: header)
+                HeaderBar(header: header, openSidebar: sidebarAction)
             }
-            // 标题栏后面垫硬边；控制区后面用自己的渐变遮罩，见 bottomFade
-            .scrollEdgeEffectStyle(.hard, for: .top)
+            // 标题栏后面垫软边；控制区后面用自己的渐变遮罩，见 bottomFade
+            .scrollEdgeEffectStyle(.soft, for: .top)
             .scrollEdgeEffectHidden(true, for: .bottom)
-            .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomInset = $0 }
     }
 
-    /// 控制区后面的渐变遮罩：用窗口的底色，从控制区顶边的全透明线性过渡到底边的不透明，底下的安全区整个盖住，
-    /// 内容滚到这里渐渐淡掉，状态信息后面是干净的底色。
+    /// 标题栏左边按钮的动作：先收起键盘，再拉开侧边栏。
+    private var sidebarAction: (@MainActor () -> Void)? {
+        guard let openSidebar else { return nil }
+        return {
+            typing = false
+            openSidebar()
+        }
+    }
+
+    /// 控制区后面的渐变遮罩：用窗口的底色，从控制区顶边的全透明过渡到不透明，往下伸过 Home 条那一截到窗口底边，
+    /// 内容滚到这里渐渐淡掉。不透明度是 1 − h²，h 是离窗口底边的距离占整段高度的比例：底下一截接近不透，越往上掉得越快。
     private var bottomFade: some View {
-        LinearGradient(colors: [Theme.card.opacity(0), Theme.card], startPoint: .top, endPoint: .bottom)
-            .overlay(alignment: .bottom) {
-                Theme.card.frame(height: bottomInset).offset(y: bottomInset)
-            }
+        let stops = (0...10).map { i in
+            let h = 1 - Double(i) / 10
+            return Gradient.Stop(color: Theme.card.opacity(1 - h * h), location: 1 - h)
+        }
+        return LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
+            .padding(.bottom, -homeInset)
             .allowsHitTesting(false)
     }
 
-    /// 状态信息：挪到控制区下面，在安全区里垂直居中。安全区放不下一行字（拉开抽屉）时不显示。
+    /// 状态信息：挪到控制区下面，在 Home 条那一截里垂直居中。那一截放不下一行字（拉开抽屉）时不显示。
     @ViewBuilder
     private var statusLine: some View {
         if let status {
-            let shown = indicatorHidden && !typing && bottomInset >= Metrics.statusMinHeight
+            let shown = indicatorHidden && !typing && !keyboardShown && homeInset >= Metrics.statusMinHeight
             status
                 .font(Theme.status)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .padding(.horizontal, Metrics.controlMargin)
-                .frame(height: bottomInset)
-                .offset(y: bottomInset)
+                .frame(height: homeInset)
+                .offset(y: homeInset)
                 .opacity(shown ? 1 : 0)
                 .animation(.easeInOut(duration: 0.25), value: shown)
                 .allowsHitTesting(false)
@@ -87,9 +104,11 @@ struct PaneWindow<Content: View, Controls: View>: View {
 }
 
 /// 标题栏。Mac 上标题、次要信息排成一行靠左，固定高度垂直居中；卡片的拖动把手由卡片自己叠在上面。
-/// iPhone 上居中，次要信息在标题下面；状态栏的安全区底下本来空着一截，所以上边不留、下边留一点。
+/// iPhone 上居中，次要信息在标题下面，左边是拉开侧边栏的按钮；状态栏的安全区底下本来空着一截，所以上边不留、下边留一点。
 private struct HeaderBar: View {
     let header: PaneHeader
+    /// iPhone 上拉开侧边栏，Mac 上不用。
+    let openSidebar: (@MainActor () -> Void)?
 
     var body: some View {
         #if os(macOS)
@@ -98,20 +117,40 @@ private struct HeaderBar: View {
             .padding(.horizontal, 14)
             .frame(height: Metrics.header)
         #else
-        VStack(spacing: 2) {
-            Text(header.title).font(Theme.title)
-            if let detail = header.detail {
-                Text(detail).font(Theme.caption).foregroundStyle(.secondary)
+        HStack(spacing: 0) {
+            sidebarButton
+            VStack(spacing: 2) {
+                Text(header.title).font(Theme.title)
+                if let detail = header.detail {
+                    Text(detail).font(Theme.caption).foregroundStyle(.secondary)
+                }
             }
+            .lineLimit(1)
+            .frame(maxWidth: .infinity)
+            // 标题只是显示，点它落到下面的内容上：打字时点这里也收起键盘
+            .allowsHitTesting(false)
+            // 右边垫一个一样宽的空位，标题才在窗口正中
+            sidebarButton.hidden()
         }
-        .lineLimit(1)
         .padding(.horizontal, 14)
         .padding(.bottom, Metrics.phoneHeaderBottom)
-        .frame(maxWidth: .infinity)
-        // 标题栏只是显示，点它落到下面的内容上：打字时点这里也收起键盘
-        .allowsHitTesting(false)
         #endif
     }
+
+    #if os(iOS)
+    @ViewBuilder
+    private var sidebarButton: some View {
+        if let openSidebar {
+            Button(action: openSidebar) {
+                Image(systemName: "sidebar.left")
+                    .font(Theme.body)
+                    .frame(width: Metrics.headerButton, height: Metrics.headerButton)
+            }
+            .buttonStyle(.plain)
+            .glassEffect(.regular.interactive(), in: .circle)
+        }
+    }
+    #endif
 }
 
 #if os(macOS)
@@ -162,7 +201,15 @@ private struct PlaceholderPane: View {
 extension EnvironmentValues {
     /// iPhone 上小横条（Home 条）这会儿藏起来了，控制区底下那一截空出来放状态信息。PhoneLayout 给出，Mac 上总是 false。
     @Entry var homeIndicatorHidden = false
+    /// 窗口底下被 Home 条盖着的那一截，不含键盘。SwiftUI 的安全区读出来是合在一起的，分不出键盘，
+    /// PhoneLayout 从 UIKit 读了给出；Mac 上是 0。
+    @Entry var homeIndicatorInset: CGFloat = 0
+    /// iPhone 上键盘升起来了。PhoneLayout 在屏幕这一层比出来：SwiftUI 的安全区比 Home 条那一截高。
+    /// 不能在窗口里比：拉开、收起抽屉时窗口里读到的安全区跟着动画逐帧变，还会冲过 Home 条那一截，会被当成键盘。Mac 上总是 false。
+    @Entry var keyboardShown = false
 
+    /// iPhone 上拉开侧边栏，标题栏左边的按钮调它。PhoneLayout 给出，没有就不显示按钮。
+    @Entry var openSidebar: (@MainActor () -> Void)?
     /// iPhone 上从控制区往上拖拉出 action 栏：窗口给出拖动的处理，控制区接手势。没有就不接。
     @Entry var drawerPull: DrawerPull?
 }
@@ -206,14 +253,13 @@ private struct DrawerPullModifier: ViewModifier {
     let enabled: Bool
     @Environment(\.drawerPull) private var pull
 
+    // 有没有 pull 都是同一个结构，没有时只停掉手势。分成两支的话，拉开、收起抽屉时 pull 在有无之间切换，
+    // 控制区会被当成换了一个视图，淡出再淡入
     func body(content: Content) -> some View {
-        if let pull {
-            content
-                .contentShape(Rectangle())
-                .simultaneousGesture(pull.gesture, isEnabled: enabled)
-        } else {
-            content
-        }
+        content
+            .contentShape(Rectangle())
+            .simultaneousGesture((pull ?? DrawerPull(changed: { _ in }, ended: { _ in })).gesture,
+                                 isEnabled: enabled && pull != nil)
     }
 }
 #endif

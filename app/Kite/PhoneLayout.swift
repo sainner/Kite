@@ -2,7 +2,7 @@
 import SwiftUI
 import UIKit
 
-/// iPhone：会话窗口平时铺满屏幕，盖住 App 的底色。从左边缘往右滑，窗口缩到右边，露出底色上的侧边栏；
+/// iPhone：会话窗口平时铺满屏幕，盖住 App 的底色。从左边缘往右滑或点标题栏左边的按钮，窗口缩到右边，露出底色上的侧边栏；
 /// 从控制区往上拖，窗口从上下两头缩小，露出底色上的 action 栏和它上面一行页签。缩小时四边的边距同时出现，
 /// 内容不重新换行，只露边距的那个方向等比缩放：让出侧边栏时右边裁掉；让出 action 栏时内容变矮，浮在底下的控制区跟着窗口底边走，
 /// 圆角从屏幕圆角变成屏幕圆角减去边距。
@@ -21,21 +21,29 @@ struct PhoneLayout: View {
     /// 页签和 action 栏合起来多高，按实际排出来的量。
     @State private var drawerHeight: CGFloat = 0
     @State private var indicatorHidden = false
+    /// 状态栏、Home 条让出的安全区，不含键盘，从 UIKit 读；读到之前按 SwiftUI 的算。
+    @State private var systemInsets: EdgeInsets?
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         GeometryReader { geo in
+            // SwiftUI 的安全区把状态栏、Home 条和键盘合在一起（分区只能用来忽略，读不出各占多少）
             let insets = geo.safeAreaInsets
             let screen = CGSize(width: geo.size.width + insets.leading + insets.trailing,
                                 height: geo.size.height + insets.top + insets.bottom)
+            let system = systemInsets ?? insets
             // 侧边栏拉开后，窗口至少留下 phoneMinWindow 宽
             let sidebarWidth = min(screen.width - Metrics.padding - Metrics.phoneMinWindow, 320)
             // 窗口底边要升到页签上面，页签在 action 栏上面，action 栏在 Home 条上面
-            let actionsHeight = drawerHeight + insets.bottom + Metrics.padding
+            let actionsHeight = drawerHeight + system.bottom + Metrics.padding
             let current = model.current?.id
             ZStack(alignment: .topLeading) {
                 Theme.background.ignoresSafeArea()
-                ScreenCornerReader { screenRadius = $0 }.ignoresSafeArea()
+                ScreenReader { radius, insets in
+                    screenRadius = radius
+                    systemInsets = insets
+                }
+                .ignoresSafeArea()
                 // 会话列表，点一个就切过去并收起。一次只露出一侧，另一侧藏起来，免得窗口移开时从边上露出来
                 VStack(spacing: 4) {
                     ForEach(model.sessions) { session in
@@ -64,7 +72,7 @@ struct PhoneLayout: View {
             }
             // 窗口铺满整个屏幕，放在 overlay 里，不把上面这层撑出安全区，action 栏才能留在 Home 条上面
             .overlay(alignment: .topLeading) {
-                PhoneWindow(open: $open, dragging: $dragging, screen: screen, insets: insets,
+                PhoneWindow(open: $open, dragging: $dragging, screen: screen, insets: insets, homeInset: system.bottom,
                             sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius)
             }
         }
@@ -105,7 +113,10 @@ private struct PhoneWindow: View {
     @Binding var open: Drawer?
     @Binding var dragging: Drawer?
     let screen: CGSize
+    /// 屏幕四边被盖着的：状态栏、Home 条，键盘升起来时底下是键盘。
     let insets: EdgeInsets
+    /// 其中 Home 条那一截，不含键盘。
+    let homeInset: CGFloat
     let sidebarWidth: CGFloat
     let actionsHeight: CGFloat
     let screenRadius: CGFloat
@@ -123,26 +134,34 @@ private struct PhoneWindow: View {
         let top = (s + a) * pad
         let right = screen.width - (s + a) * pad
         let bottom = screen.height - s * pad - a * actionsHeight
-        let shape = RoundedRectangle(cornerRadius: max(screenRadius - (s + a) * pad, 0))
+        let radius = max(screenRadius - (s + a) * pad, 0)
+        let shape = RoundedRectangle(cornerRadius: radius)
         // 内容贴着窗口左上角等比缩小，宽度照铺满时排，字不重新换行：拉侧边栏时按窗口高度缩，右边裁掉；
         // 拉 action 栏时按窗口宽度缩，高度只排到窗口底边，控制区这些浮在底下的跟着窗口底边走
         let scale = (screen.height - 2 * s * pad) / screen.height * (screen.width - 2 * a * pad) / screen.width
-        // 窗口里只给状态栏、Home 条还盖着窗口的那一截让位：窗口移开多少就少让多少，换算成缩放前的尺寸
+        // 窗口里只给状态栏、Home 条、键盘还盖着窗口的那一截让位：窗口移开多少就少让多少，换算成缩放前的尺寸
         let covered = EdgeInsets(top: max(insets.top - top, 0) / scale,
                                  leading: max(insets.leading - left, 0) / scale,
                                  bottom: max(insets.bottom - (screen.height - bottom), 0) / scale,
                                  trailing: max(insets.trailing - (screen.width - right), 0) / scale)
+        let coveredByHome = max(homeInset - (screen.height - bottom), 0) / scale
         Group {
             if let session = model.current {
                 // 聚焦的那个窗口铺满，内容从状态栏、标题栏、控制区和 Home 条后面滚过去
                 PaneBody(pane: session.workspace.focused)
                     .environment(session)
                     .environment(\.drawerPull, open == nil ? pull(.actions, extent: actionsHeight) : nil)
+                    // 一直给着：打开时窗口上盖着一层点了收起的，按钮点不到。有无来回切的话，标题栏会被当成换了一个视图
+                    .environment(\.openSidebar, { settle(.sidebar) })
+                    .environment(\.homeIndicatorInset, coveredByHome)
+                    .environment(\.keyboardShown, insets.bottom > homeInset + 1)
                     .id(session.id)
             }
         }
         .safeAreaPadding(covered)
         .frame(width: screen.width, height: (bottom - top) / scale, alignment: .topLeading)
+        // 窗口的形状，里面同心的圆角（控制区卡片）跟着它；在缩放前，圆角也换算成缩放前的
+        .containerShape(RoundedRectangle(cornerRadius: radius / scale))
         .scaleEffect(scale, anchor: .topLeading)
         .frame(width: right - left, height: bottom - top, alignment: .topLeading)
         .background(Theme.card)
@@ -208,9 +227,12 @@ private struct PhoneWindow: View {
     }
 }
 
-/// 读屏幕圆角：铺满屏幕、圆角和容器同心的 UIView，它的实际圆角就是屏幕圆角（iOS 26 起的公开接口）。
-private struct ScreenCornerReader: UIViewRepresentable {
-    let onRead: (CGFloat) -> Void
+/// 用一个铺满屏幕的 UIView 读 SwiftUI 读不到的两样：
+/// - 屏幕圆角：圆角和容器同心的 UIView，它的实际圆角就是屏幕圆角（iOS 26 起的公开接口）。
+/// - 状态栏、Home 条让出的安全区：UIKit 的安全区不含键盘，键盘另有 keyboardLayoutGuide。
+///   SwiftUI 的安全区分成 container 和 keyboard 两区，但只能按区忽略，读出来的是合在一起的。
+private struct ScreenReader: UIViewRepresentable {
+    let onRead: (_ radius: CGFloat, _ insets: EdgeInsets) -> Void
 
     func makeUIView(context: Context) -> Probe {
         let view = Probe()
@@ -225,16 +247,23 @@ private struct ScreenCornerReader: UIViewRepresentable {
     }
 
     final class Probe: UIView {
-        var onRead: ((CGFloat) -> Void)?
-        private var last: CGFloat?
+        var onRead: ((CGFloat, EdgeInsets) -> Void)?
+        private var last: (radius: CGFloat, insets: UIEdgeInsets)?
+
+        override func safeAreaInsetsDidChange() {
+            super.safeAreaInsetsDidChange()
+            setNeedsLayout()
+        }
 
         override func layoutSubviews() {
             super.layoutSubviews()
             let radius = effectiveRadius(corner: .topLeft)
-            guard radius != last, let onRead else { return }
-            last = radius
+            let insets = safeAreaInsets
+            guard radius != last?.radius || insets != last?.insets, let onRead else { return }
+            last = (radius, insets)
+            let edges = EdgeInsets(top: insets.top, leading: insets.left, bottom: insets.bottom, trailing: insets.right)
             // 不在布局过程中改 SwiftUI 的状态
-            Task { onRead(radius) }
+            Task { onRead(radius, edges) }
         }
     }
 }

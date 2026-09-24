@@ -88,7 +88,10 @@ struct PaneCard: View {
         shape
             .fill(circle ? pane.tint : Theme.card)
             .overlay(alignment: .topLeading) {
-                PaneBody(pane: pane).opacity(circle ? 0 : 1)
+                PaneBody(pane: pane)
+                    // 卡片的形状，里面同心的圆角（控制区卡片）跟着它
+                    .containerShape(RoundedRectangle(cornerRadius: Metrics.cardRadius))
+                    .opacity(circle ? 0 : 1)
             }
             .overlay(alignment: .top) {
                 // 拖动的把手：顶上和标题栏一样高的一条，不管标题栏里放了什么

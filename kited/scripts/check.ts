@@ -98,7 +98,7 @@ const passed = app ? '类型检查、lint 和 App 编译通过' : '类型检查�
 // 中测试每个都起 Claude Code，并行就是同时起好几个，照旧按顺序跑
 const TIERS = [
   { dir: 'small', name: '小', args: ['--parallel'], limit: 1 },
-  { dir: 'medium', name: '中', args: [], limit: 2 },
+  { dir: 'medium', name: '中', args: [], limit: 3 },
 ];
 type Tier = (typeof TIERS)[number];
 const unescape = (s: string) => s.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#10;/g, '\n').replace(/&amp;/g, '&');

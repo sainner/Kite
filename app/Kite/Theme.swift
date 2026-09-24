@@ -61,6 +61,8 @@ enum Metrics {
     /// iPhone 上窗口标题栏底下的留白。状态栏的安全区底下本来空着一截（iPhone 17 上约 20pt），
     /// 所以标题栏上边不留、只在下边留一点，标题看着才在状态栏和栏底之间居中。
     static let phoneHeaderBottom: CGFloat = 8
+    /// iPhone 上标题栏里按钮（拉开侧边栏）的直径，和系统导航栏里的按钮一样大。
+    static let headerButton: CGFloat = 44
     /// 拖出布局的卡片变成的圆。
     static let dragBubble: CGFloat = 40
     /// action 区：一排按钮、账号那一行，和两行之间的距离。
@@ -75,7 +77,8 @@ enum Metrics {
     static let edgeZone: CGFloat = 24
     /// 控制区一行的高度，和输入框只有一行字时一样高；还没做的窗口按它画占位。
     static let controlHeight: CGFloat = 40
-    /// 控制区那张玻璃卡片的圆角，和它离窗口左右边的距离；底下没有安全区时离底边也是这么远。
+    /// 控制区那张玻璃卡片的最小圆角（离窗口的角近的角和窗口圆角同心，可能更大），和它离窗口左右边的距离；
+    /// 底下没有安全区时离底边、打字时离键盘也是这么远。
     static let controlRadius: CGFloat = 22
     static let controlMargin: CGFloat = 12
     /// 控制区底下的安全区至少多高才放状态信息，放得下一行小字。
