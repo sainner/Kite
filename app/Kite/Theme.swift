@@ -10,8 +10,9 @@ enum Theme {
     static let strongPlaceholder = Color.black.opacity(0.16)
     /// 侧边栏里选中的一行。
     static let selection = Color.black.opacity(0.07)
-    /// 会话窗口里人发的消息的气泡。
+    /// 会话窗口里人发的消息的气泡：agent 收到了是这个底色，排队中只描边。
     static let bubble = Color(red: 0.95, green: 0.94, blue: 0.92)
+    static let bubbleStroke = Color.black.opacity(0.2)
     /// 代码、命令输出、表格的底。
     static let codeBackground = Color.black.opacity(0.04)
     /// 引用、子 agent 过程左边的竖线。
@@ -61,6 +62,8 @@ enum Metrics {
     /// iPhone 上窗口标题栏底下的留白。状态栏的安全区底下本来空着一截（iPhone 17 上约 20pt），
     /// 所以标题栏上边不留、只在下边留一点，标题看着才在状态栏和栏底之间居中。
     static let phoneHeaderBottom: CGFloat = 8
+    /// iPhone 上标题栏后面的渐变遮罩往下伸过标题栏底边多少。
+    static let topFadeOverhang: CGFloat = 20
     /// iPhone 上标题栏里按钮（拉开侧边栏）的直径，和系统导航栏里的按钮一样大。
     static let headerButton: CGFloat = 44
     /// 拖出布局的卡片变成的圆。
@@ -87,6 +90,36 @@ enum Metrics {
     static let effortTick: CGFloat = 24
     /// 会话窗口里对话那一栏最宽多少，卡片再宽也不让一行字太长。
     static let transcriptWidth: CGFloat = 720
-    /// 人发的消息的气泡，左边至少空出多少。
-    static let bubbleInset: CGFloat = 48
+    /// 对话上下的留白，和相邻两行之间的间距。
+    static let transcriptPadding: CGFloat = 12
+    static let rowSpacing: CGFloat = 14
+    /// 气泡里文字离边的距离，左右和上下。
+    static let bubblePadding = CGSize(width: 16, height: 12)
+    /// 气泡里文字和代码块之间空多少，代码块里的字离框多远。
+    static let messageSegmentGap: CGFloat = 8
+    static let codePadding: CGFloat = 8
+    /// agent 的话里块和块之间空多少；嵌套的列表每深一层往里缩多少；列表的编号占多宽（编号靠右对齐在里面）。
+    static let markdownBlockGap: CGFloat = 10
+    static let listIndent: CGFloat = 18
+    static let listMarker: CGFloat = 14
+    /// 对话里人发的消息和前后的内容之间、别的新一轮（Kite 发来的、后台任务通知）和上一轮之间，在平常的间距之外多空多少。
+    static let messageGap: CGFloat = 12
+    static let turnGap: CGFloat = 12
+    /// 气泡的圆角，右下角小一点。形状在主线程之外也会取，所以标 nonisolated。
+    nonisolated static let bubbleRadius: CGFloat = 18
+    nonisolated static let bubbleTail: CGFloat = 6
+    /// 发送时从控制区飞到对话里的融球的直径，气泡从它展开；它离控制区卡片多近时和卡片融在一起。
+    nonisolated static let sendBlob: CGFloat = 16
+    static let blobMerge: CGFloat = 16
+    /// 人发的消息折起来时显示多高，大约十行；比它高出不少才折（见 MessageBubble）。
+    static let messageFold: CGFloat = 220
+    /// 消息上面附件缩略图的高度。
+    static let attachmentHeight: CGFloat = 96
+    /// 对话里点一项弹出的操作栏：一个按钮多大，离这一项多远。Mac 上用鼠标点，小一号。
+    #if os(macOS)
+    static let actionBarButton: CGFloat = 28
+    #else
+    static let actionBarButton: CGFloat = 40
+    #endif
+    static let actionBarGap: CGFloat = 6
 }

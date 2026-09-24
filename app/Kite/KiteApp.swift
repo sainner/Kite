@@ -7,7 +7,7 @@ struct KiteApp: App {
     var body: some Scene {
         #if os(macOS)
         Window("Kite", id: "main") {
-            MainWindow().environment(model).readsWindowChrome()
+            MainWindow().environment(model).readsWindowChrome().lightOnly()
         }
         .kiteWindowStyle()
         .defaultSize(width: 1280, height: 800)
@@ -16,16 +16,24 @@ struct KiteApp: App {
         // 从侧边栏分离出来的会话，放在松手的地方
         WindowGroup("会话", id: "session", for: Int.self) { $id in
             if let id {
-                DetachedSession(id: id).environment(model).readsWindowChrome()
+                DetachedSession(id: id).environment(model).readsWindowChrome().lightOnly()
             }
         }
         .kiteWindowStyle()
         .defaultSize(width: 1000, height: 700)
         #else
         WindowGroup {
-            PhoneLayout().environment(model)
+            PhoneLayout().environment(model).lightOnly()
         }
         #endif
+    }
+}
+
+private extension View {
+    /// Theme 里的底色只有浅色一套（卡片是写死的白），系统切到深色时文字却跟着变白，看不见。
+    /// 深色配色做出来之前，每个窗口都锁在浅色。
+    func lightOnly() -> some View {
+        preferredColorScheme(.light)
     }
 }
 

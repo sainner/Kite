@@ -13,7 +13,7 @@ struct MarkdownView: View {
 
     var body: some View {
         let blocks = MarkdownBlock.parse(source)
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: Metrics.markdownBlockGap) {
             ForEach(blocks.indices, id: \.self) { index in
                 MarkdownBlockView(block: blocks[index])
             }
@@ -104,11 +104,12 @@ struct MarkdownBlock {
     }
 }
 
-private struct MarkdownBlockView: View {
+/// 一块 Markdown。iPhone 上 agent 的话里，代码块、表格、分隔线也用它排（见 SelectableMarkdown）。
+struct MarkdownBlockView: View {
     let block: MarkdownBlock
 
     var body: some View {
-        content.padding(.leading, CGFloat(max(block.depth - 1, 0)) * 18)
+        content.padding(.leading, CGFloat(max(block.depth - 1, 0)) * Metrics.listIndent)
     }
 
     @ViewBuilder
@@ -131,7 +132,7 @@ private struct MarkdownBlockView: View {
             Divider()
         case .listItem(let marker):
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(marker ?? "").monospacedDigit().frame(minWidth: 14, alignment: .trailing)
+                Text(marker ?? "").monospacedDigit().frame(minWidth: Metrics.listMarker, alignment: .trailing)
                 Text(block.text).fixedSize(horizontal: false, vertical: true)
             }
         case .table(let header, let rows):

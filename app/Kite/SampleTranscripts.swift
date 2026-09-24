@@ -3,11 +3,14 @@ import Foundation
 /// 假的会话记录，接上 kited 之前用来做会话窗口。
 /// gallery 把 Kite 会话里有的工具（kited/README.md「会话的上下文」）都调一遍，成功、出错、后台、子 agent 各种情况都有；
 /// 其余几个是会话的几种状态：回合正在跑、不写代码的项目、刚开的空会话、压缩打断出错这些边角情况。
+/// 人发的消息也穷举：带图片和文件、斜杠命令（带参数和不带）、反引号星号原样显示、贴了一大段日志要折起来、
+/// 并进回合的插话、排队中的（带附件的也有）、连着发的几条。
 /// 工具的参数照 Claude Code 2.1.280 的参数表（SDK 的 sdk-tools.d.ts）写，结果照它回给模型的原文写。
 enum SampleTranscripts {
     static let gallery = record(root: "/Users/sainner/.kite/worktrees/ledger/k7f3a2") { r in
         // 读：整个文件、一段、PDF 的几页、图片；搜；改出错后重读再改；全部替换；新建文件；测试失败再修好；检查
-        r.human("导入招商银行的账单时金额全是 0，帮我查一下，修好后跑一遍检查。")
+        r.human("导入招商银行的账单时金额全是 0，帮我查一下，修好后跑一遍检查。截图和导出的账单在这。",
+                attachments: [.image(name: "IMG_2041.PNG", width: 1179, height: 2556), .file(name: "cmb-2026-08.csv")])
         r.thinking("金额全是 0，多半是解析失败后被兜底成了 0。先看招行导入器怎么解析金额，再对照一份真实导出的账单。")
         r.text("我先看看招行的导入代码和一份样例账单。")
         r.tool("Read", ["file_path": r.path("src/import/cmb.ts")], numbered(cmbSource))
@@ -135,7 +138,7 @@ enum SampleTranscripts {
             """)
 
         // 延迟加载的工具：先经 ToolSearch 点名加载，再搜网页、看网页（一次 404）
-        r.human("我们自己写的金额解析能不能换成 csv-parse 自带的转换？查一下，再把支持的银行整理成一篇文档。")
+        r.human("我们自己写的金额解析能不能换成 `csv-parse` 自带的 `cast`？查一下，再把支持的银行整理成一篇文档，*只写已经支持的*。")
         r.tool("ToolSearch", ["query": "select:WebSearch,WebFetch", "max_results": 2], "WebSearch\nWebFetch")
         r.tool("WebSearch", ["query": "csv-parse cast 选项 自定义转换", "allowed_domains": ["csv.js.org", "github.com"]], """
             Web search results for query: "csv-parse cast 选项 自定义转换"
@@ -308,7 +311,7 @@ enum SampleTranscripts {
         r.text("两个定时任务都取消了，开发服务器和盯日志的都停了。已经让 icbc-checker 写文档，它写完会通知我。")
 
         // skill、项目自己配的 MCP 工具
-        r.human("用 simplify 过一遍今天的改动，然后在 GitHub 上开个 issue，记一下还有哪些银行没覆盖。")
+        r.human("过一遍今天的改动，然后在 GitHub 上开个 issue，记一下还有哪些银行没覆盖。", command: "/simplify")
         r.tool("Skill", ["skill": "simplify"], "Launching skill: simplify")
         r.tool("Bash", ["command": "git diff --stat main...HEAD", "description": "看今天改了哪些文件"], """
              analysis/月度汇总.ipynb          | 14 ++++----
@@ -352,8 +355,12 @@ enum SampleTranscripts {
             """)
     }
 
-    /// 回合正在跑：检查跑到一半，人又插了一句话。
-    static let running = record(root: "/Users/sainner/.kite/worktrees/kite/p2d8e1", running: true) { r in
+    /// 回合正在跑：中间插的一句话已经并进这一轮，检查跑到一半人又发了几条，还在排队。
+    static let running = record(root: "/Users/sainner/.kite/worktrees/kite/p2d8e1", running: true, pending: [
+        Message(text: "时间用「3 分钟前」这种相对的写法。"),
+        Message(text: "现在侧边栏长这样，行距太挤了，顺便调一下。",
+                attachments: [.image(name: "截屏 2026-09-24 21.40.12.png", width: 2880, height: 1800)]),
+    ]) { r in
         r.human("侧边栏的会话行现在是占位色块，改成显示会话标题和最后一条消息的时间。")
         r.thinking("会话模型里还没有标题和时间，要先加字段，再改 SessionRow。")
         r.text("我先看一下侧边栏和会话模型。")
@@ -378,18 +385,20 @@ enum SampleTranscripts {
             "old_string": "    let tint: Color\n",
             "new_string": "    let tint: Color\n    var title: String\n    var lastActive: Date\n",
         ], "The file \(r.root)/app/Kite/AppModel.swift has been updated successfully.")
+        r.human("标题太长就截断，别换行。", midTurn: true)
+        r.text("好，标题只显示一行，放不下就截断。")
         r.tool("Edit", [
             "file_path": r.path("app/Kite/Sidebar.swift"),
             "old_string": "            RoundedRectangle(cornerRadius: 4).fill(Theme.placeholder).frame(height: 10)",
             "new_string": "            Text(session.title).lineLimit(1)\n            Spacer(minLength: 4)\n            Text(session.lastActive, style: .time).foregroundStyle(.secondary)",
         ], "The file \(r.root)/app/Kite/Sidebar.swift has been updated successfully.")
         r.tool("check", [:], nil)
-        r.human("时间用「3 分钟前」这种相对的写法。", midTurn: true)
     }
 
     /// 不写代码的项目：一篇 LaTeX 论文。
     static let thesis = record(root: "/Users/sainner/.kite/worktrees/thesis/t9c4b0") { r in
-        r.human("把第二章的图注统一成「图 2-1 标题」这种格式，编号按出现顺序。")
+        r.human("导师的批注在这份 PDF 里。先把第二章的图注统一成「图 2-1 标题」这种格式，编号按出现顺序。",
+                attachments: [.file(name: "第二章批注.pdf")])
         r.tool("Bash", ["command": #"grep -n '\\caption' chapters/ch2.tex"#, "description": "找第二章所有的图注"], #"""
             42:  \caption{实验装置示意图}
             67:  \caption{Fig. 2 样品的 XRD 图谱}
@@ -437,6 +446,15 @@ enum SampleTranscripts {
 
             正文里引用这几张图用的是 `\ref`，编号会自己跟着变，不用改。
             """#)
+        r.human("", command: "/kite-onboard")
+        r.tool("Skill", ["skill": "kite-onboard"], "Launching skill: kite-onboard")
+        r.tool("Bash", ["command": "ls -a && cat .gitignore", "description": "看项目的目录和忽略规则"], """
+            .  ..  .git  .gitignore  AGENTS.md  chapters  figures  main.tex  refs.bib
+            *.aux
+            *.log
+            *.pdf
+            """)
+        r.text("项目结构符合规范，只缺一个记忆目录，已经建好了 `.kite/memory/`。")
     }
 
     /// 刚开的会话，还没说话。
@@ -456,7 +474,8 @@ enum SampleTranscripts {
         r.tool("Bash", ["command": "bun run build && bun run check-links", "description": "构建站点并检查链接"],
                "[Request interrupted by user for tool use]", error: true, interrupted: true)
         r.interrupted()
-        r.human("先别跑构建了，太慢。只翻译 README 前两节就行。")
+        r.human("先别跑构建了，太慢。")
+        r.human("只翻译 README 前两节就行。")
         r.tool("Edit", [
             "file_path": r.path("README.md"),
             "old_string": "# 我的博客\n\n用 Astro 搭的个人博客。\n\n## 写文章\n\n在 content/ 下新建 Markdown 文件。",
@@ -492,14 +511,40 @@ enum SampleTranscripts {
         r.tool("Bash", ["command": "git add README.md && git commit --no-edit", "description": "提交解决好的冲突"],
                "[kite/e5a1f6 3d9a0b2] Merge branch 'main' into kite/e5a1f6")
         r.text("冲突解决了：保留了主线新加的「部署」一节，也翻译成了英文。")
-        r.human("再把 RSS 的生成脚本跑一下。")
+        r.human("""
+            RSS 的生成脚本报错了，帮我看看：
+
+            ```
+            $ bun scripts/rss.ts
+            error: Cannot find module 'feed' from '/Users/sainner/.kite/worktrees/blog/e5a1f6/scripts/rss.ts'
+
+            Bun v1.3.14 (macOS arm64)
+                at resolve (native)
+                at requireESM (internal:modules/esm:212:18)
+                at loadModule (internal:modules/esm:180:22)
+                at scripts/rss.ts:3:1
+                  1 | import { readdir, readFile } from 'node:fs/promises';
+                  2 | import matter from 'gray-matter';
+                  3 | import { Feed } from 'feed';
+                    | ^
+                  4 |
+                  5 | const site = 'https://sainner.blog';
+                  6 | const posts = await readdir('content');
+                at processTicksAndRejections (native)
+
+            error: script "rss" exited with code 1
+            ```
+
+            昨天还是好的，可能是我升级依赖以后坏的。*别*直接降级，先查查 `feed` 是不是换了包名。
+            """)
         r.tool("Bash", ["command": "bun scripts/rss.ts", "description": "生成 RSS"], nil)
     }
 
-    private static func record(root: String, running: Bool = false, _ build: (Recorder) -> Void) -> Transcript {
+    private static func record(root: String, running: Bool = false, pending: [Message] = [],
+                               _ build: (Recorder) -> Void) -> Transcript {
         let recorder = Recorder(root: root)
         build(recorder)
-        return Transcript(root: root, records: recorder.records, running: running)
+        return Transcript(root: root, records: recorder.records, running: running, pending: pending)
     }
 
     private static let cmbSource = """
@@ -538,7 +583,9 @@ private final class Recorder {
         .string(root + "/" + relative)
     }
 
-    func human(_ text: String, midTurn: Bool = false) { add(.human(text, midTurn: midTurn)) }
+    func human(_ text: String, command: String? = nil, attachments: [Attachment] = [], midTurn: Bool = false) {
+        add(.human(Message(text: text, command: command, attachments: attachments, midTurn: midTurn)))
+    }
     func kite(_ text: String) { add(.kite(text)) }
     func notification(_ text: String) { add(.notification(text)) }
     func text(_ text: String) { add(.text(text)) }

@@ -8,7 +8,7 @@ struct PaneHeader {
 }
 
 /// 窗口的共有布局：浮在上面的标题栏、内容、浮在下面的控制区。内容从标题栏和控制区后面滚过去，
-/// 标题栏后面垫系统的滚动边缘效果（软边），控制区后面垫一层到窗口底边的渐变遮罩。Mac 上是一张卡片的内容，iPhone 上铺满窗口；各个窗口只给标题栏的信息、内容、控制区里的东西，
+/// 标题栏后面垫系统的滚动边缘效果（软边），再叠一层从窗口顶边起的渐变遮罩；控制区后面垫一层到窗口底边的渐变遮罩。Mac 上是一张卡片的内容，iPhone 上铺满窗口；各个窗口只给标题栏的信息、内容、控制区里的东西，
 /// 和控制区底下的状态信息。
 /// 控制区是一张液态玻璃卡片，左右留边，底下贴着 Home 条让出的安全区；底下没有安全区时（Mac 的卡片、iPhone 拉开抽屉）离窗口底边留一点，
 /// 打字时离键盘也留这么多。
@@ -57,8 +57,13 @@ struct PaneWindow<Content: View, Controls: View>: View {
             }
             .safeAreaBar(edge: .top, spacing: 0) {
                 HeaderBar(header: header, openSidebar: sidebarAction)
+                    #if os(iOS)
+                    .background { topFade }
+                    #endif
             }
-            // 标题栏后面垫软边；控制区后面用自己的渐变遮罩，见 bottomFade
+            // 标题栏后面垫软边，iPhone 上再叠 topFade：软边只模糊不提白，内容滚到标题后面时字会糊在一起。
+            // Mac 上标题栏矮、没有状态栏，只要软边
+            // 控制区后面用自己的渐变遮罩，见 bottomFade
             .scrollEdgeEffectStyle(.soft, for: .top)
             .scrollEdgeEffectHidden(true, for: .bottom)
     }
@@ -71,6 +76,22 @@ struct PaneWindow<Content: View, Controls: View>: View {
             openSidebar()
         }
     }
+
+    #if os(iOS)
+    /// iPhone 上标题栏后面的渐变遮罩：用窗口的底色，从窗口顶边的不透明过渡到全透明，往上伸过状态栏那一截，
+    /// 往下伸过标题栏底边 topFadeOverhang。不透明度是 1 − h²，h 是离窗口顶边的距离占整段高度的比例：
+    /// 每一处都比线性的白，越往下掉得越快，和 bottomFade 上下对称。
+    private var topFade: some View {
+        let stops = (0...10).map { i in
+            let h = Double(i) / 10
+            return Gradient.Stop(color: Theme.card.opacity(1 - h * h), location: h)
+        }
+        return LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
+            .padding(.bottom, -Metrics.topFadeOverhang)
+            .ignoresSafeArea(.container, edges: .top)
+            .allowsHitTesting(false)
+    }
+    #endif
 
     /// 控制区后面的渐变遮罩：用窗口的底色，从控制区顶边的全透明过渡到不透明，往下伸过 Home 条那一截到窗口底边，
     /// 内容滚到这里渐渐淡掉。不透明度是 1 − h²，h 是离窗口底边的距离占整段高度的比例：底下一截接近不透，越往上掉得越快。

@@ -3,19 +3,24 @@ import Foundation
 /// 会话记录在 App 里的样子，照统一格式（任务书 §5）的要点：记录按顺序只追加，块的种类跟 Claude 的消息格式
 /// （text、thinking、tool_use、tool_result），子 agent 的记录挂在发起它的那次工具调用下面。
 /// App 只认这个格式，不解析 runtime 的原生记录。统一格式还没定，kited 也还没给出记录，现在用 SampleTranscripts 里的假数据。
+/// 记录里只有已经发生的事；消息的投递状态（排队中）不是记录，单独放在 pending。
 struct Transcript {
     /// 会话的工作目录，工具参数里的绝对路径按它显示成相对路径。
     var root: String
     var records: [Record] { didSet { items = derive() } }
     /// 有回合在进行（kited 的 busy）。没有结果的工具调用这时算正在跑，否则算没跑完。
     var running: Bool { didSet { items = derive() } }
+    /// 发出去了、agent 还没收到的消息，按发出的顺序。收到的那一刻才变成一条记录，撤回的永远不进记录。
+    /// 接上 kited 后由它的事件流给出：写进了输入流、还没回显的就是这些。
+    var pending: [Message]
     /// 界面上的样子。记录或 running 变了才重新派生，视图重画时直接拿。
     private(set) var items: [Item] = []
 
-    init(root: String, records: [Record] = [], running: Bool = false) {
+    init(root: String, records: [Record] = [], running: Bool = false, pending: [Message] = []) {
         self.root = root
         self.records = records
         self.running = running
+        self.pending = pending
         items = derive()
     }
 }
@@ -27,8 +32,8 @@ struct Record {
 }
 
 enum Block {
-    /// 人发的消息。midTurn：回合进行中插的话，agent 在下一次调用模型之前收到。
-    case human(String, midTurn: Bool)
+    /// 人发的消息。
+    case human(Message)
     /// Kite 发给 agent 的消息，比如合并冲突的说明。
     case kite(String)
     /// 后台任务结束的通知，它开启新的一轮。
@@ -43,6 +48,51 @@ enum Block {
     case compacted(String)
     /// 调用模型出错。
     case apiError(String)
+}
+
+/// 人发的一条消息。id 是 App 发出时起的，kited 投递时带给 Claude Code：开启一轮的，它就是记录里那条消息的 uuid；
+/// 并进正在跑的回合的，它是插话附件上的 source_uuid。排队中和收到以后靠它认出是同一条。
+struct Message: Identifiable {
+    let id: UUID
+    /// 原文。斜杠命令时是命令后面的参数。
+    var text: String
+    /// 斜杠命令或技能，比如 /simplify。原生记录里是正文里的 <command-name> 标签，翻译时拆出来。
+    var command: String?
+    var attachments: [Attachment] = []
+    /// 并进了正在跑的回合：agent 做完手上这一步、下一次调用模型之前收到，没有自己的检查点。
+    var midTurn = false
+
+    init(id: UUID = UUID(), text: String, command: String? = nil, attachments: [Attachment] = [], midTurn: Bool = false) {
+        self.id = id
+        self.text = text
+        self.command = command
+        self.attachments = attachments
+        self.midTurn = midTurn
+    }
+
+    /// 输入框里打的样子：斜杠命令开头的，命令名拆出来。
+    init(typed: String) {
+        let parts = typed.split(maxSplits: 1, whereSeparator: \.isWhitespace)
+        if typed.hasPrefix("/"), let name = parts.first, name.count > 1 {
+            self.init(text: parts.count > 1 ? String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines) : "", command: String(name))
+        } else {
+            self.init(text: typed)
+        }
+    }
+
+    /// 放回输入框、复制时的原文：斜杠命令连同命令名。
+    var typed: String {
+        guard let command else { return text }
+        return text.isEmpty ? command : command + " " + text
+    }
+}
+
+/// 消息带的附件。
+enum Attachment {
+    /// 图片。记录里是图片数据，假数据只有名字和尺寸。
+    case image(name: String, width: Int, height: Int)
+    /// 其他文件，比如 PDF、表格。
+    case file(name: String)
 }
 
 struct ToolUse {
@@ -128,7 +178,7 @@ struct Item: Identifiable {
     var kind: Kind
 
     enum Kind {
-        case human(String, midTurn: Bool)
+        case human(Message)
         case kite(String)
         case notification(String)
         case text(String)
@@ -195,7 +245,7 @@ extension Transcript {
 
         for record in byParent[parent] ?? [] {
             switch record.block {
-            case .human(let text, let midTurn): append(.human(text, midTurn: midTurn))
+            case .human(let message): append(.human(message))
             case .kite(let text): append(.kite(text))
             case .notification(let text): append(.notification(text))
             case .text(let text): append(.text(text))
@@ -218,12 +268,36 @@ extension Transcript {
         return list
     }
 
-    /// 发一条消息。现在只记下来；接上 kited 后经它投递，回合在跑时就是插话。
-    mutating func send(_ text: String) {
-        records.append(Record(block: .human(text, midTurn: running)))
+    /// 发一条消息：先排队，agent 收到时（receive）才变成记录。现在只改假数据；接上 kited 后经它写进输入流。
+    mutating func send(_ message: Message) {
+        pending.append(message)
     }
 
-    /// 打断回合：正在跑的调用记成被打断，和 Claude Code 自己的记录一样。现在只改假数据；接上 kited 后调它的打断接口。
+    /// agent 收到了排队的这一条：回合在跑就是并进这一轮的插话，否则开启新的一轮。
+    mutating func receive(_ id: UUID) {
+        guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
+        var message = pending.remove(at: index)
+        message.midTurn = running
+        records.append(Record(block: .human(message)))
+    }
+
+    /// 撤回排队的一条，返回它。已经收到的撤不了，只能回退。接上 kited 后调 Claude Code 的 cancel_async_message。
+    mutating func withdraw(_ id: UUID) -> Message? {
+        guard let index = pending.firstIndex(where: { $0.id == id }) else { return nil }
+        return pending.remove(at: index)
+    }
+
+    /// 排队的马上发出去：回合在跑就先打断它。
+    mutating func sendNow() {
+        if running {
+            interrupt()
+        } else {
+            for message in pending { receive(message.id) }
+        }
+    }
+
+    /// 打断回合：正在跑的调用记成被打断，和 Claude Code 自己的记录一样。排队的不丢，打断后马上发出去，
+    /// 几条一起开启新的一轮，也和 Claude Code 一样。现在只改假数据；接上 kited 后调它的打断接口。
     mutating func interrupt() {
         guard running else { return }
         let answered = Set(records.compactMap { if case .toolResult(let result) = $0.block { result.call } else { nil } })
@@ -236,5 +310,15 @@ extension Transcript {
         added.append(Record(block: .interrupted))
         records += added
         running = false
+        for message in pending { receive(message.id) }
+    }
+
+    /// 回退到这条消息之前：它和它之后的对话都去掉，返回这条消息。现在直接截掉假数据；
+    /// 接上 kited 后记录照样只追加，从它前面那一条续上（resumeSessionAt），代码按快照回退。
+    mutating func rewind(before id: UUID) -> Message? {
+        guard let index = records.firstIndex(where: { if case .human(let message) = $0.block { message.id == id } else { false } }),
+              case .human(let message) = records[index].block else { return nil }
+        records.removeSubrange(index...)
+        return message
     }
 }
