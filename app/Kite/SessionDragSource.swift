@@ -8,8 +8,8 @@ import SwiftUI
 struct SessionDragSource: NSViewRepresentable {
     let tint: Color
     var onClick: () -> Void
-    /// 松手的位置，屏幕坐标，左下角是原点。
-    var onDetach: (NSPoint) -> Void
+    /// 松手的位置（屏幕坐标，左上角是原点）和主窗口的大小。
+    var onDetach: (CGPoint, CGSize) -> Void
 
     static let type = NSPasteboard.PasteboardType("com.sainner.kite.session")
 
@@ -26,7 +26,7 @@ struct SessionDragSource: NSViewRepresentable {
     final class SourceView: NSView, NSDraggingSource {
         var tint = NSColor.systemBlue
         var onClick: (() -> Void)?
-        var onDetach: ((NSPoint) -> Void)?
+        var onDetach: ((CGPoint, CGSize) -> Void)?
         private var start: NSPoint?
 
         override var mouseDownCanMoveWindow: Bool { false }
@@ -79,7 +79,9 @@ struct SessionDragSource: NSViewRepresentable {
         func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
             // 没有被别处接住，并且松在主窗口外面，才分离
             guard operation.isEmpty, let window, !window.frame.contains(screenPoint) else { return }
-            onDetach?(screenPoint)
+            // AppKit 的屏幕坐标左下角是原点，按主屏的高度翻过来
+            let height = NSScreen.screens.first?.frame.height ?? 0
+            onDetach?(CGPoint(x: screenPoint.x, y: height - screenPoint.y), window.frame.size)
         }
     }
 }

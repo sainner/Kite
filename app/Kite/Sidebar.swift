@@ -112,12 +112,12 @@ struct MacSidebar: View {
             } else {
                 model.selected = session.id
             }
-        } onDetach: { point in
+        } onDetach: { point, window in
             guard !model.detached.contains(session.id) else { return }
-            // 独立窗口和现在的内容区一样大，左上角落在指针附近
-            let content = model.current?.workspace.area.size ?? CGSize(width: 900, height: 600)
-            let size = CGSize(width: content.width + 2 * Metrics.padding, height: content.height + Metrics.windowHeader + Metrics.padding)
-            model.placements[session.id] = CGRect(x: point.x - 60, y: point.y + 16 - size.height, width: size.width, height: size.height)
+            // 独立窗口里的卡片和主窗口内容区一样大：去掉侧边栏和缝，顶上换成标题那一条；左上角落在指针附近
+            let sidebar = model.sidebarCollapsed ? Metrics.rail : model.sidebarWidth
+            let size = CGSize(width: window.width - sidebar - Metrics.gap, height: window.height - Metrics.padding + Metrics.windowHeader)
+            model.pendingPlacement = CGRect(origin: CGPoint(x: point.x - 60, y: point.y - 16), size: size)
             openWindow(id: "session", value: session.id)
         }
     }

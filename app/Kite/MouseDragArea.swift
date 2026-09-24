@@ -2,16 +2,14 @@
 import AppKit
 import SwiftUI
 
-/// 按住拖动的区域，鼠标事件由 AppKit 接。窗口没有标题栏，顶部那一条仍由系统当作标题栏：
-/// 在那里按下鼠标，窗口服务器直接拖动整个窗口，不经过应用。卡片的标题栏、卡片之间的缝都可能顶到窗口顶部，
-/// 所以指针停在这块区域上时把窗口设成不可拖动（isMovable），离开后恢复；侧边栏和别的空白处照常拖窗口。
+/// 按住拖动的区域，鼠标事件由 AppKit 接，报的是窗口坐标（左上角是原点，和 SwiftUI 的 .global 一致）。
+/// 用 AppKit 是为了声明这里按下不拖窗口；标题栏那一条另见 disablesWindowDragging。
 struct MouseDragArea: NSViewRepresentable {
     var cursor: NSCursor
     /// 拖动中的指针样式，不给就不变。
     var activeCursor: NSCursor?
     /// 挪动多少才算拖动，免得单击也算。
     var minimumDistance: CGFloat = 0
-    /// 指针位置，窗口坐标，和 SwiftUI 的 .global 一致：左上角是原点。
     var onChanged: (CGPoint) -> Void
     var onEnded: () -> Void = {}
 
@@ -34,7 +32,8 @@ struct MouseDragArea: NSViewRepresentable {
         var minimumDistance: CGFloat = 0
         var onChanged: ((CGPoint) -> Void)?
         var onEnded: (() -> Void)?
-        private var tracking = false
+        private var start: NSPoint?
+        private var dragging = false
 
         override var mouseDownCanMoveWindow: Bool { false }
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -42,6 +41,52 @@ struct MouseDragArea: NSViewRepresentable {
         override func resetCursorRects() {
             addCursorRect(bounds, cursor: cursor)
         }
+
+        override func mouseDown(with event: NSEvent) {
+            start = event.locationInWindow
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let start, let content = window?.contentView else { return }
+            let location = event.locationInWindow
+            if !dragging {
+                guard hypot(location.x - start.x, location.y - start.y) >= minimumDistance else { return }
+                dragging = true
+                activeCursor?.push()
+            }
+            let point = content.convert(location, from: nil)
+            onChanged?(content.isFlipped ? point : CGPoint(x: point.x, y: content.bounds.height - point.y))
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            if dragging {
+                if activeCursor != nil { NSCursor.pop() }
+                onEnded?()
+            }
+            start = nil
+            dragging = false
+        }
+    }
+}
+
+extension View {
+    /// 这块区域上不拖窗口。窗口没有标题栏，顶部那一条仍由系统当作标题栏：在那里按下鼠标，
+    /// 窗口服务器直接拖动整个窗口，不经过应用，普通视图挡不住。所以指针在这块区域上时把窗口设成不可拖动，
+    /// 离开后恢复；拖窗口交给侧边栏这些空白处，系统的贴边分屏、拖到别的桌面照常可用。
+    func disablesWindowDragging() -> some View {
+        background(WindowDragBlocker())
+    }
+}
+
+private struct WindowDragBlocker: NSViewRepresentable {
+    func makeNSView(context: Context) -> BlockerView {
+        BlockerView()
+    }
+
+    func updateNSView(_ view: BlockerView, context: Context) {}
+
+    final class BlockerView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
@@ -54,42 +99,12 @@ struct MouseDragArea: NSViewRepresentable {
         }
 
         override func mouseExited(with event: NSEvent) {
-            if !tracking { window?.isMovable = true }
+            window?.isMovable = true
         }
 
         override func viewWillMove(toWindow newWindow: NSWindow?) {
-            if newWindow == nil, !tracking { window?.isMovable = true }
+            if newWindow == nil { window?.isMovable = true }
             super.viewWillMove(toWindow: newWindow)
-        }
-
-        // 按下后自己跟踪到松手：拖动中这块区域可能被移出窗口（卡片脱离布局），之后的事件就不会再送到它
-        override func mouseDown(with event: NSEvent) {
-            guard let window, let content = window.contentView else { return }
-            let start = event.locationInWindow
-            var dragging = false
-            tracking = true
-            window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: .infinity, mode: .eventTracking) { event, stop in
-                guard let event, event.type == .leftMouseDragged else {
-                    if dragging {
-                        if self.activeCursor != nil { NSCursor.pop() }
-                        self.onEnded?()
-                    }
-                    stop.pointee = true
-                    return
-                }
-                let location = event.locationInWindow
-                if !dragging {
-                    guard hypot(location.x - start.x, location.y - start.y) >= self.minimumDistance else { return }
-                    dragging = true
-                    self.activeCursor?.push()
-                }
-                let point = content.convert(location, from: nil)
-                self.onChanged?(content.isFlipped ? point : CGPoint(x: point.x, y: content.bounds.height - point.y))
-            }
-            tracking = false
-            // 松手时指针还在这块区域上就保持不可拖动，否则恢复
-            let inside = self.window != nil && bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
-            window.isMovable = !inside
         }
     }
 }

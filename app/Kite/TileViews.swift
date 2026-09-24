@@ -3,16 +3,20 @@ import SwiftUI
 #if os(macOS)
 /// 内容区：各张卡片、占位、卡片之间的缝按排布算好的位置摆在同一层。卡片始终是同一个视图，
 /// 排布变了、拖出去缩成圆、松手展开，都只是它的位置和大小在变，动画连贯，不会出现新旧两份交叠。
+/// 拖动报的是窗口坐标，在这里换算成内容区里的坐标再交给窗口组。
 struct TilesLayer: View {
     @Environment(Workspace.self) private var workspace
 
     var body: some View {
         GeometryReader { geo in
-            let layout = workspace.shown?.layout(in: CGRect(origin: .zero, size: geo.size)) ?? TileLayout()
+            let bounds = CGRect(origin: .zero, size: geo.size)
+            let origin = geo.frame(in: .global).origin
+            let local = { (point: CGPoint) in CGPoint(x: point.x - origin.x, y: point.y - origin.y) }
+            let layout = workspace.shown?.layout(in: bounds) ?? TileLayout()
             ZStack(alignment: .topLeading) {
                 ForEach(layout.gaps) { gap in
                     MouseDragArea(cursor: gap.split.axis == .horizontal ? .columnResize : .rowResize) { point in
-                        workspace.resize(gap, to: point)
+                        workspace.resize(gap, to: local(point))
                     }
                     .placed(gap.rect)
                 }
@@ -25,13 +29,18 @@ struct TilesLayer: View {
                 }
                 ForEach(Pane.allCases, id: \.self) { pane in
                     if let (rect, circle) = place(pane, in: layout) {
-                        PaneCard(pane: pane, circle: circle)
-                            .placed(rect)
-                            .zIndex(workspace.drag?.pane == pane ? 1 : 0)
+                        PaneCard(pane: pane, circle: circle) { point in
+                            workspace.drag(pane, to: local(point), in: bounds)
+                        } onDrop: {
+                            workspace.drop(in: bounds)
+                        }
+                        .placed(rect)
+                        .zIndex(workspace.drag?.pane == pane ? 1 : 0)
                     }
                 }
             }
         }
+        .disablesWindowDragging()
     }
 
     /// 卡片在哪、是不是缩成了圆。拖出去的卡片不在排布里，按拖动的阶段摆。
@@ -40,7 +49,6 @@ struct TilesLayer: View {
             return layout.panes[pane].map { ($0, false) }
         }
         if case .landing(let rect) = drag.phase { return (rect, false) }
-        guard drag.collapsed else { return (drag.origin, false) }
         let size = Metrics.dragBubble
         return (CGRect(x: workspace.pointer.x - size / 2, y: workspace.pointer.y - size / 2, width: size, height: size), true)
     }
@@ -56,7 +64,9 @@ private extension View {
 struct PaneCard: View {
     let pane: Pane
     let circle: Bool
-    @Environment(Workspace.self) private var workspace
+    /// 拖动中的指针位置，窗口坐标。
+    var onDrag: (CGPoint) -> Void
+    var onDrop: () -> Void
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: circle ? Metrics.dragBubble / 2 : Metrics.cardRadius)
@@ -72,11 +82,7 @@ struct PaneCard: View {
                     .padding(.horizontal, 14)
                     .frame(height: Metrics.cardHeader)
                     .overlay {
-                        MouseDragArea(cursor: .openHand, activeCursor: .closedHand, minimumDistance: 4) { point in
-                            workspace.drag(pane, to: point)
-                        } onEnded: {
-                            workspace.drop()
-                        }
+                        MouseDragArea(cursor: .openHand, activeCursor: .closedHand, minimumDistance: 4, onChanged: onDrag, onEnded: onDrop)
                     }
                     PaneBody(pane: pane)
                         .padding([.horizontal, .bottom], 14)

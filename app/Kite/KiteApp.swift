@@ -6,33 +6,41 @@ struct KiteApp: App {
 
     var body: some Scene {
         #if os(macOS)
-        // 去掉标题栏，底色铺满整个窗口；拖动侧边栏等空白处移动窗口，卡片上不行（见 MouseDragArea）
         Window("Kite", id: "main") {
-            ContentView(model: model)
+            MainWindow().environment(model)
         }
-        .windowStyle(.hiddenTitleBar)
-        .windowBackgroundDragBehavior(.enabled)
+        .kiteWindowStyle()
         .defaultSize(width: 1280, height: 800)
         .commands { KiteCommands(model: model) }
 
-        // 从侧边栏分离出来的会话
+        // 从侧边栏分离出来的会话，放在松手的地方
         WindowGroup("会话", id: "session", for: Int.self) { $id in
             if let id {
                 DetachedSession(id: id).environment(model)
             }
         }
-        .windowStyle(.hiddenTitleBar)
-        .windowBackgroundDragBehavior(.enabled)
+        .kiteWindowStyle()
         .defaultSize(width: 1000, height: 700)
+        .defaultWindowPlacement { _, _ in
+            guard let frame = model.pendingPlacement else { return WindowPlacement() }
+            return WindowPlacement(frame.origin, size: frame.size)
+        }
         #else
         WindowGroup {
-            ContentView(model: model)
+            PhoneLayout().environment(model)
         }
         #endif
     }
 }
 
 #if os(macOS)
+private extension Scene {
+    /// 去掉标题栏，底色铺满整个窗口；拖侧边栏这些空白处移动窗口，卡片上不行（见 disablesWindowDragging）。
+    func kiteWindowStyle() -> some Scene {
+        windowStyle(.hiddenTitleBar).windowBackgroundDragBehavior(.enabled)
+    }
+}
+
 struct KiteCommands: Commands {
     let model: AppModel
     /// 当前窗口里的窗口组，排布菜单作用在它上面。

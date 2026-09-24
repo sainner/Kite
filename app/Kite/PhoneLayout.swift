@@ -18,8 +18,6 @@ struct PhoneLayout: View {
     @State private var translation: CGSize = .zero
     /// 屏幕圆角，读到之前按 0 算：铺满时窗口的角本来就被屏幕圆角盖住。
     @State private var screenRadius: CGFloat = 0
-    /// 窗口里显示的是哪个，用窗口顶部的页签切换。
-    @State private var selected: Pane = .session
 
     var body: some View {
         GeometryReader { geo in
@@ -80,8 +78,10 @@ struct PhoneLayout: View {
         // 拉 action 栏时按窗口宽度缩，上下裁掉，窗口顶边落到状态栏下面，内容上移，不留状态栏那一段空白
         let scale = (screen.height - 2 * s * pad) / screen.height * (screen.width - 2 * a * pad) / screen.width
         return VStack(alignment: .leading, spacing: 12) {
-                if let session = model.current { SessionTitle(session: session).frame(height: 24) }
-                PaneBody(pane: selected)
+                if let session = model.current {
+                    SessionTitle(session: session).frame(height: 24)
+                    PaneBody(pane: session.workspace.focused)
+                }
             }
             .padding(14)
             .padding(insets)
@@ -121,15 +121,18 @@ struct PhoneLayout: View {
             .ignoresSafeArea()
     }
 
-    /// 页签，点了切换窗口里的内容。iPhone 上只有这一个窗口，不做换位置。以后这一行还会放别的功能。
+    /// 页签：当前会话窗口组里的各个窗口，点了切过去。iPhone 上一次只显示一个窗口，不做换位置。以后这一行还会放别的功能。
+    @ViewBuilder
     private var tabBar: some View {
-        HStack(spacing: 8) {
-            ForEach(Pane.allCases, id: \.self) { pane in
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(pane.tint.opacity(pane == selected ? 1 : 0.25))
-                    .frame(width: 56, height: 28)
-                    .contentShape(Rectangle())
-                    .onTapGesture { selected = pane }
+        if let workspace = model.current?.workspace {
+            HStack(spacing: 8) {
+                ForEach(workspace.root.panes, id: \.self) { pane in
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(pane.tint.opacity(pane == workspace.focused ? 1 : 0.25))
+                        .frame(width: 56, height: 28)
+                        .contentShape(Rectangle())
+                        .onTapGesture { workspace.focused = pane }
+                }
             }
         }
     }

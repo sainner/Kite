@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 内容区里的小窗口。Mac 上每个是一张卡片，iPhone 上用页签切换。
+/// 窗口组里的一个窗口。Mac 上每个是一张卡片，iPhone 上一次显示一个，用页签切换。
 enum Pane: CaseIterable {
     case session, files, terminal, preview
 }
@@ -51,6 +51,15 @@ struct TileLayout {
 }
 
 extension Tile {
+    /// 排布里有哪些窗口，从左上到右下。
+    var panes: [Pane] {
+        switch self {
+        case .pane(let pane): [pane]
+        case .placeholder: []
+        case .split(let split): split.first.panes + split.second.panes
+        }
+    }
+
     func layout(in rect: CGRect) -> TileLayout {
         var result = TileLayout()
         place(in: rect, into: &result)
@@ -169,10 +178,6 @@ struct CardDrag {
 
     let pane: Pane
     var phase = Phase.attached
-    /// 脱离后已经缩成圆。先在原处出现、下一刻再缩，才有从卡片变成圆的过渡。
-    var collapsed = false
-    /// 脱离时卡片的位置。
-    var origin: CGRect = .zero
     /// 脱离后剩下的排布；只剩这一张卡片时为 nil。
     var rest: Tile?
     var spot: DropSpot?
@@ -180,20 +185,22 @@ struct CardDrag {
     var layout: Tile?
 }
 
+/// 一个窗口组：有哪些窗口、Mac 上怎么排、聚焦的是哪个。Mac 把它们排成卡片，iPhone 一次显示聚焦的那个。
+/// 拖动卡片的接口收内容区里的坐标和内容区的大小，换算由摆卡片的视图做。
 @Observable
 final class Workspace {
     private(set) var root: Tile
+    /// 聚焦的窗口，iPhone 上显示的就是它。
+    var focused: Pane
     private(set) var drag: CardDrag?
-    /// 指针在内容区里的位置，拖动时一直变，和 drag 分开，免得每动一下整个排布都重算。
+    /// 拖动时指针在内容区里的位置。一直在变，和 drag 分开，免得每动一下整个排布都重算。
     private(set) var pointer: CGPoint = .zero
-    /// 内容区在窗口里的位置和大小，把窗口坐标换算到内容区。
-    var area: CGRect = .zero
 
     init(_ arrangement: Arrangement = .oneAndTwo) {
-        root = arrangement.tile
+        let tile = arrangement.tile
+        root = tile
+        focused = tile.panes[0]
     }
-
-    private var bounds: CGRect { CGRect(origin: .zero, size: area.size) }
 
     /// 正在显示的排布。
     var shown: Tile? {
@@ -203,21 +210,20 @@ final class Workspace {
 
     func arrange(_ arrangement: Arrangement) {
         withAnimation(.snappy) { root = arrangement.tile }
+        if !root.panes.contains(focused) { focused = root.panes[0] }
     }
 
-    /// 拖动 gap 这道缝，point 是窗口坐标。
-    func resize(_ gap: TileLayout.Gap, to point: CGPoint) {
+    /// 拖动 gap 这道缝。
+    func resize(_ gap: TileLayout.Gap, to location: CGPoint) {
         let horizontal = gap.split.axis == .horizontal
         let available = (horizontal ? gap.region.width : gap.region.height) - Metrics.gap
         guard available > 0 else { return }
-        let position = horizontal ? point.x - area.minX - gap.region.minX : point.y - area.minY - gap.region.minY
+        let position = horizontal ? location.x - gap.region.minX : location.y - gap.region.minY
         let lower = min(Metrics.minPane / available, 0.5)
         gap.split.ratio = min(max((position - Metrics.gap / 2) / available, lower), 1 - lower)
     }
 
-    /// point 是窗口坐标。
-    func drag(_ pane: Pane, to point: CGPoint) {
-        let location = CGPoint(x: point.x - area.minX, y: point.y - area.minY)
+    func drag(_ pane: Pane, to location: CGPoint, in bounds: CGRect) {
         pointer = location
         var next = drag ?? CardDrag(pane: pane)
         switch next.phase {
@@ -227,7 +233,6 @@ final class Workspace {
             if drag == nil { drag = next }
             guard let frame = root.layout(in: bounds).panes[pane], !frame.contains(location) else { return }
             next.phase = .floating
-            next.origin = frame
             next.rest = root.removing(pane)
         case .floating:
             break
@@ -244,16 +249,12 @@ final class Workspace {
         } else {
             next.spot = nil
         }
-        let detached = drag?.phase == .attached
-        guard detached || next.spot != drag?.spot else { return }
+        guard drag?.phase == .attached || next.spot != drag?.spot else { return }
         next.layout = next.spot.flatMap { spot in next.rest?.inserting(.placeholder, beside: spot.target, on: spot.edge) } ?? next.rest
         withAnimation(.snappy) { drag = next }
-        if detached {
-            Task { withAnimation(.snappy) { self.drag?.collapsed = true } }
-        }
     }
 
-    func drop() {
+    func drop(in bounds: CGRect) {
         guard var next = drag else { return }
         guard next.phase == .floating else {
             if next.phase == .attached { drag = nil }
@@ -262,7 +263,7 @@ final class Workspace {
         // 有落点就放进去；没有就回原位，原位先换成占位，别的卡片先让回来
         let final = next.spot.flatMap { spot in next.rest?.inserting(.pane(next.pane), beside: spot.target, on: spot.edge) } ?? root
         if next.spot == nil { next.layout = root.replacing(next.pane, with: .placeholder) }
-        next.phase = .landing(final.layout(in: bounds).panes[next.pane] ?? next.origin)
+        next.phase = .landing(final.layout(in: bounds).panes[next.pane] ?? .zero)
         withAnimation(.snappy) {
             drag = next
         } completion: {
