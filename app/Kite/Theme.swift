@@ -23,6 +23,8 @@ enum Metrics {
     static let minPane: CGFloat = 160
     /// 卡片标题栏的高度，Mac 上按住它拖动卡片。
     static let cardHeader: CGFloat = 40
+    /// 拖出布局的卡片变成的圆。
+    static let dragBubble: CGFloat = 36
     /// action 区：一排按钮、账号那一行，和两行之间的距离。
     static let actionButton: CGFloat = 36
     static let accountRow: CGFloat = 36

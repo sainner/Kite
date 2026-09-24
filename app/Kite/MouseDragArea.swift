@@ -11,7 +11,7 @@ struct MouseDragArea: NSViewRepresentable {
     var activeCursor: NSCursor?
     /// 挪动多少才算拖动，免得单击也算。
     var minimumDistance: CGFloat = 0
-    /// 指针位置，相对这块区域的左上角。
+    /// 指针位置，窗口坐标，和 SwiftUI 的 .global 一致：左上角是原点。
     var onChanged: (CGPoint) -> Void
     var onEnded: () -> Void = {}
 
@@ -34,10 +34,7 @@ struct MouseDragArea: NSViewRepresentable {
         var minimumDistance: CGFloat = 0
         var onChanged: ((CGPoint) -> Void)?
         var onEnded: (() -> Void)?
-        private var start: CGPoint?
-        private var dragging = false
 
-        override var isFlipped: Bool { true }
         override var mouseDownCanMoveWindow: Bool { false }
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -45,29 +42,29 @@ struct MouseDragArea: NSViewRepresentable {
             addCursorRect(bounds, cursor: cursor)
         }
 
+        // 按下后自己跟踪到松手：拖动中这块区域可能被移出窗口（卡片脱离布局），之后的事件就不会再送到它
         override func mouseDown(with event: NSEvent) {
-            start = convert(event.locationInWindow, from: nil)
-            dragging = false
-        }
-
-        override func mouseDragged(with event: NSEvent) {
-            guard let start else { return }
-            let point = convert(event.locationInWindow, from: nil)
-            if !dragging {
-                guard hypot(point.x - start.x, point.y - start.y) >= minimumDistance else { return }
-                dragging = true
-                activeCursor?.push()
+            guard let window, let content = window.contentView else { return }
+            let start = event.locationInWindow
+            var dragging = false
+            window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: .infinity, mode: .eventTracking) { event, stop in
+                guard let event, event.type == .leftMouseDragged else {
+                    if dragging {
+                        if self.activeCursor != nil { NSCursor.pop() }
+                        self.onEnded?()
+                    }
+                    stop.pointee = true
+                    return
+                }
+                let location = event.locationInWindow
+                if !dragging {
+                    guard hypot(location.x - start.x, location.y - start.y) >= self.minimumDistance else { return }
+                    dragging = true
+                    self.activeCursor?.push()
+                }
+                let point = content.convert(location, from: nil)
+                self.onChanged?(content.isFlipped ? point : CGPoint(x: point.x, y: content.bounds.height - point.y))
             }
-            onChanged?(point)
-        }
-
-        override func mouseUp(with event: NSEvent) {
-            if dragging {
-                if activeCursor != nil { NSCursor.pop() }
-                onEnded?()
-            }
-            start = nil
-            dragging = false
         }
     }
 }

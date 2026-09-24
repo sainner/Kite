@@ -16,10 +16,13 @@ struct ContentView: View {
             .padding(.top, Metrics.titleBar - Metrics.padding)
             .padding(.leading, Metrics.sidebarLeading)
             .frame(width: Metrics.sidebarWidth)
-            TileView(tile: workspace.root)
-                .coordinateSpace(.named(Workspace.space))
-                .overlay { DropIndicator() }
-                .environment(\.tileNamespace, tiles)
+            ZStack {
+                if let tile = workspace.shown { TileView(tile: tile) }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { workspace.area = $0 }
+            .overlay { DragBubble() }
+            .environment(\.tileNamespace, tiles)
         }
         .environment(workspace)
         .padding(Metrics.padding)

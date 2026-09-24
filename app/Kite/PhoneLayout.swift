@@ -3,7 +3,8 @@ import SwiftUI
 import UIKit
 
 /// iPhone：会话窗口平时铺满屏幕，盖住 App 的底色。从左边缘往右滑，窗口缩到右边，露出底色上的侧边栏；
-/// 从窗口底部往上滑，窗口从上下两头缩小，露出底色上的 action 栏和上方的页签。缩小时四边的边距同时出现，内容不重排、超出的部分裁掉，
+/// 从窗口底部往上滑，窗口从上下两头缩小，露出底色上的 action 栏和上方的页签。缩小时四边的边距同时出现，
+/// 内容不重排，只露边距的那个方向等比缩放，让出侧边栏或 action 栏的那个方向裁掉，
 /// 圆角从屏幕圆角变成屏幕圆角减去边距。
 /// 打开时点窗口或往回拖收起。
 struct PhoneLayout: View {
@@ -64,13 +65,15 @@ struct PhoneLayout: View {
         let right = screen.width - (s + a) * pad
         let bottom = screen.height - s * pad - a * actionsHeight
         let shape = RoundedRectangle(cornerRadius: max(screenRadius - (s + a) * pad, 0))
-        // 内容保持铺满时的排版，贴着窗口左上角，超出窗口的部分裁掉。
-        // 窗口顶边落到状态栏下面时，内容上移，不留状态栏那一段空白
+        // 内容保持铺满时的排版，贴着窗口左上角等比缩小：拉侧边栏时按窗口高度缩，左右裁掉；
+        // 拉 action 栏时按窗口宽度缩，上下裁掉，窗口顶边落到状态栏下面，内容上移，不留状态栏那一段空白
+        let scale = (screen.height - 2 * s * pad) / screen.height * (screen.width - 2 * a * pad) / screen.width
         return PaneBody(pane: selected)
             .padding(14)
             .padding(insets)
             .frame(width: screen.width, height: screen.height, alignment: .topLeading)
-            .offset(y: -min(top, insets.top))
+            .scaleEffect(scale, anchor: .topLeading)
+            .offset(y: -a * insets.top * scale)
             .frame(width: right - left, height: bottom - top, alignment: .topLeading)
             .background(Theme.card)
             .clipShape(shape)

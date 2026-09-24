@@ -8,17 +8,17 @@ extension EnvironmentValues {
 
 struct TileView: View {
     let tile: Tile
-    @Environment(Workspace.self) private var workspace
     @Environment(\.tileNamespace) private var namespace
 
     var body: some View {
         switch tile {
         case .pane(let pane):
-            PaneCard(pane: pane)
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Workspace.space)) } action: {
-                    workspace.frames[pane] = $0
-                }
-                .matched(pane, in: namespace)
+            PaneCard(pane: pane).matched(pane, in: namespace)
+        case .placeholder:
+            // 拖动卡片时预览它放下后的位置
+            RoundedRectangle(cornerRadius: Metrics.cardRadius)
+                .fill(Color.accentColor.opacity(0.08))
+                .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
         case .split(let split):
             SplitView(split: split)
         }
@@ -39,23 +39,22 @@ struct SplitView: View {
     var body: some View {
         GeometryReader { geo in
             let horizontal = split.axis == .horizontal
-            let available = max((horizontal ? geo.size.width : geo.size.height) - Metrics.gap, 0)
-            let first = (available * split.ratio).rounded()
+            let total = horizontal ? geo.size.width : geo.size.height
+            let first = split.firstLength(in: total)
             let layout = horizontal ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
             layout {
                 TileView(tile: split.first)
                     .frame(width: horizontal ? first : nil, height: horizontal ? nil : first)
-                handle(horizontal: horizontal, first: first, available: available)
+                handle(horizontal: horizontal, origin: geo.frame(in: .global).origin, available: max(total - Metrics.gap, 0))
                 TileView(tile: split.second)
             }
         }
     }
 
-    private func handle(horizontal: Bool, first: CGFloat, available: CGFloat) -> some View {
+    private func handle(horizontal: Bool, origin: CGPoint, available: CGFloat) -> some View {
         MouseDragArea(cursor: horizontal ? .columnResize : .rowResize) { point in
             guard available > 0 else { return }
-            // 缝的左上角在第一块的末尾，指针在缝里的位置加上它就是在整块里的位置
-            let position = first + (horizontal ? point.x : point.y) - Metrics.gap / 2
+            let position = (horizontal ? point.x - origin.x : point.y - origin.y) - Metrics.gap / 2
             let lower = min(Metrics.minPane / available, 0.5)
             split.ratio = min(max(position / available, lower), 1 - lower)
         }
@@ -63,12 +62,10 @@ struct SplitView: View {
     }
 }
 
-/// Mac 上的一张卡片。按住标题栏拖到另一张卡片上换位置。
+/// Mac 上的一张卡片。按住标题栏拖出去换位置，见 CardDrag。
 struct PaneCard: View {
     let pane: Pane
     @Environment(Workspace.self) private var workspace
-    /// 标题栏在内容区里的位置，把指针位置换算到内容区。
-    @State private var header: CGPoint = .zero
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -78,10 +75,9 @@ struct PaneCard: View {
             }
             .padding(.horizontal, 14)
             .frame(height: Metrics.cardHeader)
-            .onGeometryChange(for: CGPoint.self) { $0.frame(in: .named(Workspace.space)).origin } action: { header = $0 }
             .overlay {
                 MouseDragArea(cursor: .openHand, activeCursor: .closedHand, minimumDistance: 4) { point in
-                    workspace.drag(pane, to: CGPoint(x: header.x + point.x, y: header.y + point.y))
+                    workspace.drag(pane, to: point)
                 } onEnded: {
                     workspace.drop()
                 }
@@ -90,30 +86,26 @@ struct PaneCard: View {
                 .padding([.horizontal, .bottom], 14)
         }
         .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.cardRadius))
-        .opacity(workspace.dragging?.pane == pane ? 0.5 : 1)
     }
 }
 
-/// 拖动卡片时，高亮松手后它会占的位置，指针旁边跟着它的标题。
-struct DropIndicator: View {
+/// 脱离布局的卡片，变成一个圆跟着指针。
+struct DragBubble: View {
     @Environment(Workspace.self) private var workspace
+    @Environment(\.tileNamespace) private var namespace
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            if let rect = workspace.dropRect {
-                RoundedRectangle(cornerRadius: Metrics.cardRadius)
-                    .fill(Color.accentColor.opacity(0.12))
-                    .overlay(RoundedRectangle(cornerRadius: Metrics.cardRadius).strokeBorder(Color.accentColor, lineWidth: 2))
-                    .frame(width: rect.width, height: rect.height)
-                    .offset(x: rect.minX, y: rect.minY)
-            }
-            if let (pane, location) = workspace.dragging {
-                PaneTitle(pane: pane).offset(x: location.x + 12, y: location.y + 12)
+        ZStack {
+            if let drag = workspace.drag, drag.detached {
+                Circle()
+                    .fill(drag.pane.tint)
+                    .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
+                    .matched(drag.pane, in: namespace)
+                    .position(workspace.pointer)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .allowsHitTesting(false)
-        .animation(.snappy(duration: 0.15), value: workspace.dropRect)
     }
 }
 #endif
