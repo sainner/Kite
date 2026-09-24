@@ -8,6 +8,7 @@ struct SessionContent: View {
 
     var body: some View {
         TilesLayer()
+            .environment(session)
             .environment(session.workspace)
             .focusedSceneValue(session.workspace)
             .id(session.id)
@@ -25,7 +26,7 @@ struct DetachedSession: View {
         if let session = model.session(id) {
             let minimum = Self.windowSize(content: session.workspace.root.minimumSize, chrome: chrome)
             VStack(spacing: 0) {
-                SessionTitle(session: session)
+                HeaderLine(header: session.header)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, chrome.leading)
                     .frame(height: chrome.top)

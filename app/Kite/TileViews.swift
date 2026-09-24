@@ -74,7 +74,7 @@ private extension View {
     }
 }
 
-/// Mac 上的一张卡片。按住标题栏拖出去换位置，见 CardDrag；拖出去后缩成圆，内容淡出，出现图标。
+/// Mac 上的一张卡片，里面是窗口（PaneWindow）。按住标题栏拖出去换位置，见 CardDrag；拖出去后缩成圆，内容淡出，出现图标。
 struct PaneCard: View {
     let pane: Pane
     let circle: Bool
@@ -88,28 +88,20 @@ struct PaneCard: View {
         shape
             .fill(circle ? pane.tint : Theme.card)
             .overlay(alignment: .topLeading) {
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack {
-                        PaneTitle(pane: pane)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 14)
-                    .frame(height: Metrics.cardHeader)
-                    .overlay {
-                        MouseDragArea(cursor: .openHand, activeCursor: .closedHand, minimumDistance: Metrics.dragThreshold) { drag in
-                            onDrag(drag.location)
-                        } onEnded: {
-                            onDrop()
-                        }
-                    }
-                    PaneBody(pane: pane)
-                        .padding([.horizontal, .bottom], 14)
+                PaneBody(pane: pane).opacity(circle ? 0 : 1)
+            }
+            .overlay(alignment: .top) {
+                // 拖动的把手：顶上和标题栏一样高的一条，不管标题栏里放了什么
+                MouseDragArea(cursor: .openHand, activeCursor: .closedHand, minimumDistance: Metrics.dragThreshold) { drag in
+                    onDrag(drag.location)
+                } onEnded: {
+                    onDrop()
                 }
-                .opacity(circle ? 0 : 1)
+                .frame(height: Metrics.header)
             }
             .overlay {
                 Image(systemName: pane.icon)
-                    .font(.system(size: 16, weight: .medium))
+                    .font(Theme.title)
                     .foregroundStyle(.white)
                     .opacity(circle ? 1 : 0)
             }
@@ -118,25 +110,16 @@ struct PaneCard: View {
 }
 #endif
 
-/// 窗口的标题。现在只有占位色块，颜色用来区分是哪个窗口。
-struct PaneTitle: View {
-    let pane: Pane
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: 4).fill(pane.tint).frame(width: 96, height: 14)
-    }
-}
-
-/// 窗口的内容。现在只有占位色块。
-struct PaneBody: View {
-    let pane: Pane
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: 8).fill(pane.tint.opacity(0.12))
-    }
-}
-
 extension Pane {
+    var name: String {
+        switch self {
+        case .session: "对话"
+        case .files: "文件"
+        case .terminal: "终端"
+        case .preview: "预览"
+        }
+    }
+
     var icon: String {
         switch self {
         case .session: "bubble.left.and.bubble.right"

@@ -13,7 +13,7 @@ struct SessionRow: View {
             Circle().fill(session.tint).frame(width: 10, height: 10)
             RoundedRectangle(cornerRadius: 4).fill(Theme.placeholder).frame(height: 10)
             if detached {
-                Image(systemName: "macwindow").font(.system(size: 11)).foregroundStyle(.secondary)
+                Image(systemName: "macwindow").font(Theme.secondary).foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 10)
@@ -22,30 +22,19 @@ struct SessionRow: View {
     }
 }
 
-/// 会话的标题和信息。现在只有占位色块。
-struct SessionTitle: View {
-    let session: Session
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Circle().fill(session.tint).frame(width: 10, height: 10)
-            RoundedRectangle(cornerRadius: 4).fill(Theme.strongPlaceholder).frame(width: 140, height: 12)
-            RoundedRectangle(cornerRadius: 4).fill(Theme.placeholder).frame(width: 80, height: 10)
-        }
-    }
-}
-
-/// action 区：第一行是一排按钮，比如会话；第二行是账号和个人设置。
-/// Mac 上在侧边栏底部，iPhone 上从窗口底部拉出来。现在只有占位色块。
+/// action 区：一排按钮，比如会话，还有用户（账号和个人设置）。现在只有占位色块。
+/// Mac 上在侧边栏底部，按钮一行、用户单独一行；iPhone 上从窗口底部拉出来，只有一行，用户是其中一个按钮。
 struct ActionArea: View {
     var body: some View {
+        #if os(iOS)
+        HStack(spacing: 8) {
+            buttons
+            Circle().fill(Theme.placeholder)
+                .frame(width: Metrics.actionButton, height: Metrics.actionButton)
+        }
+        #else
         VStack(alignment: .leading, spacing: Metrics.actionSpacing) {
-            HStack(spacing: 8) {
-                ForEach(0..<4, id: \.self) { _ in
-                    RoundedRectangle(cornerRadius: 8).fill(Theme.placeholder)
-                        .frame(width: Metrics.actionButton, height: Metrics.actionButton)
-                }
-            }
+            HStack(spacing: 8) { buttons }
             HStack(spacing: 10) {
                 Circle().fill(Theme.placeholder).frame(width: 28, height: 28)
                 RoundedRectangle(cornerRadius: 4).fill(Theme.placeholder).frame(width: 80, height: 12)
@@ -54,7 +43,14 @@ struct ActionArea: View {
             }
             .frame(height: Metrics.accountRow)
         }
-        .frame(height: Metrics.actionArea)
+        #endif
+    }
+
+    private var buttons: some View {
+        ForEach(0..<4, id: \.self) { _ in
+            RoundedRectangle(cornerRadius: 8).fill(Theme.placeholder)
+                .frame(width: Metrics.actionButton, height: Metrics.actionButton)
+        }
     }
 }
 

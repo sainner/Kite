@@ -3,8 +3,8 @@ import SwiftUI
 import UIKit
 
 /// iPhone：会话窗口平时铺满屏幕，盖住 App 的底色。从左边缘往右滑，窗口缩到右边，露出底色上的侧边栏；
-/// 从窗口底部往上滑，窗口从上下两头缩小，露出底色上的 action 栏和上方的页签。缩小时四边的边距同时出现，
-/// 内容不重排，只露边距的那个方向等比缩放，让出侧边栏或 action 栏的那个方向裁掉，
+/// 从控制区往上拖，窗口从上下两头缩小，露出底色上的 action 栏和它上面一行页签。缩小时四边的边距同时出现，
+/// 内容不重新换行，只露边距的那个方向等比缩放：让出侧边栏时右边裁掉；让出 action 栏时内容变矮，浮在底下的控制区跟着窗口底边走，
 /// 圆角从屏幕圆角变成屏幕圆角减去边距。
 /// 打开时点窗口或往回拖收起。
 /// 拉出来的是哪一侧。
@@ -18,6 +18,8 @@ struct PhoneLayout: View {
     @State private var dragging: Drawer?
     /// 屏幕圆角，读到之前按 0 算：铺满时窗口的角本来就被屏幕圆角盖住。
     @State private var screenRadius: CGFloat = 0
+    /// 页签和 action 栏合起来多高，按实际排出来的量。
+    @State private var drawerHeight: CGFloat = 0
 
     var body: some View {
         GeometryReader { geo in
@@ -26,8 +28,8 @@ struct PhoneLayout: View {
                                 height: geo.size.height + insets.top + insets.bottom)
             // 侧边栏拉开后，窗口至少留下 phoneMinWindow 宽
             let sidebarWidth = min(screen.width - Metrics.padding - Metrics.phoneMinWindow, 320)
-            // 窗口底边要升到 action 栏上面，action 栏在 Home 条上面
-            let actionsHeight = Metrics.actionArea + insets.bottom + Metrics.padding
+            // 窗口底边要升到页签上面，页签在 action 栏上面，action 栏在 Home 条上面
+            let actionsHeight = drawerHeight + insets.bottom + Metrics.padding
             let current = model.current?.id
             ZStack(alignment: .topLeading) {
                 Theme.background.ignoresSafeArea()
@@ -48,15 +50,15 @@ struct PhoneLayout: View {
                 .padding(.trailing, Metrics.gap)
                 .frame(width: sidebarWidth)
                 .opacity(showing(.sidebar) ? 1 : 0)
-                // 拉出 action 栏时，窗口上方同时露出页签那一行
-                tabBar
-                    .padding(.horizontal, Metrics.padding * 2)
-                    .frame(height: Metrics.tabBar)
-                    .opacity(showing(.actions) ? 1 : 0)
-                ActionArea()
-                    .padding(.horizontal, Metrics.padding * 2)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                    .opacity(showing(.actions) ? 1 : 0)
+                // 拉出 action 栏时，它上面同时露出页签那一行
+                VStack(alignment: .leading, spacing: Metrics.gap) {
+                    tabBar.frame(height: Metrics.tabBar)
+                    ActionArea()
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { drawerHeight = $0 }
+                .padding(.horizontal, Metrics.padding * 2)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .opacity(showing(.actions) ? 1 : 0)
             }
             // 窗口铺满整个屏幕，放在 overlay 里，不把上面这层撑出安全区，action 栏才能留在 Home 条上面
             .overlay(alignment: .topLeading) {
@@ -103,26 +105,32 @@ private struct PhoneWindow: View {
         let s = progress(.sidebar, extent: sidebarWidth)
         let a = progress(.actions, extent: actionsHeight)
         let pad = Metrics.padding
-        // 窗口缩进屏幕里，四边的边距随进度出现；拉开的那一侧让出侧边栏或 action 栏，拉出 action 栏时上边还让出页签
+        // 窗口缩进屏幕里，四边的边距随进度出现；拉开的那一侧让出侧边栏，或者让出 action 栏连同上面的页签
         let left = s * sidebarWidth + a * pad
-        let top = s * pad + a * (insets.top + Metrics.tabBar + Metrics.gap)
+        let top = (s + a) * pad
         let right = screen.width - (s + a) * pad
         let bottom = screen.height - s * pad - a * actionsHeight
         let shape = RoundedRectangle(cornerRadius: max(screenRadius - (s + a) * pad, 0))
-        // 内容保持铺满时的排版，贴着窗口左上角等比缩小：拉侧边栏时按窗口高度缩，左右裁掉；
-        // 拉 action 栏时按窗口宽度缩，上下裁掉，窗口顶边落到状态栏下面，内容上移，不留状态栏那一段空白
+        // 内容贴着窗口左上角等比缩小，宽度照铺满时排，字不重新换行：拉侧边栏时按窗口高度缩，右边裁掉；
+        // 拉 action 栏时按窗口宽度缩，高度只排到窗口底边，控制区这些浮在底下的跟着窗口底边走
         let scale = (screen.height - 2 * s * pad) / screen.height * (screen.width - 2 * a * pad) / screen.width
-        VStack(alignment: .leading, spacing: 12) {
+        // 窗口里只给状态栏、Home 条还盖着窗口的那一截让位：窗口移开多少就少让多少，换算成缩放前的尺寸
+        let covered = EdgeInsets(top: max(insets.top - top, 0) / scale,
+                                 leading: max(insets.leading - left, 0) / scale,
+                                 bottom: max(insets.bottom - (screen.height - bottom), 0) / scale,
+                                 trailing: max(insets.trailing - (screen.width - right), 0) / scale)
+        Group {
             if let session = model.current {
-                SessionTitle(session: session).frame(height: 24)
+                // 聚焦的那个窗口铺满，内容从状态栏、标题栏、控制区和 Home 条后面滚过去
                 PaneBody(pane: session.workspace.focused)
+                    .environment(session)
+                    .environment(\.drawerPull, open == nil ? pull(.actions, extent: actionsHeight) : nil)
+                    .id(session.id)
             }
         }
-        .padding(14)
-        .padding(insets)
-        .frame(width: screen.width, height: screen.height, alignment: .topLeading)
+        .safeAreaPadding(covered)
+        .frame(width: screen.width, height: (bottom - top) / scale, alignment: .topLeading)
         .scaleEffect(scale, anchor: .topLeading)
-        .offset(y: -a * insets.top * scale)
         .frame(width: right - left, height: bottom - top, alignment: .topLeading)
         .background(Theme.card)
         .clipShape(shape)
@@ -132,7 +140,7 @@ private struct PhoneWindow: View {
                 Color.clear
                     .contentShape(Rectangle())
                     .onTapGesture { settle(nil) }
-                    .gesture(drag(drawer, extent: drawer == .sidebar ? sidebarWidth : actionsHeight))
+                    .gesture(pull(drawer, extent: drawer == .sidebar ? sidebarWidth : actionsHeight).gesture)
             }
         }
         .overlay(alignment: .leading) {
@@ -140,16 +148,7 @@ private struct PhoneWindow: View {
                 Color.clear
                     .frame(width: Metrics.edgeZone)
                     .contentShape(Rectangle())
-                    .gesture(drag(.sidebar, extent: sidebarWidth))
-            }
-        }
-        .overlay(alignment: .bottom) {
-            // 盖住 Home 条那一段再往上一点。从屏幕最底边起滑仍是系统回主屏幕的手势
-            if open == nil {
-                Color.clear
-                    .frame(height: Metrics.edgeZone + insets.bottom)
-                    .contentShape(Rectangle())
-                    .gesture(drag(.actions, extent: actionsHeight))
+                    .gesture(pull(.sidebar, extent: sidebarWidth).gesture)
             }
         }
         .offset(x: left, y: top)
@@ -167,15 +166,14 @@ private struct PhoneWindow: View {
         (open == drawer ? 1 : 0) + (drawer == .sidebar ? moved.width : -moved.height) / extent
     }
 
-    private func drag(_ drawer: Drawer, extent: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 5, coordinateSpace: .global)
-            .onChanged { value in
-                if dragging != drawer { dragging = drawer }
-                translation = value.translation
-            }
-            .onEnded { value in
-                settle(fraction(drawer, moved: value.predictedEndTranslation, extent: extent) > 0.5 ? drawer : nil)
-            }
+    /// 往 drawer 那一侧拉。松手时按预计停下的位置，过半就打开，否则收回去。
+    private func pull(_ drawer: Drawer, extent: CGFloat) -> DrawerPull {
+        DrawerPull { moved in
+            if dragging != drawer { dragging = drawer }
+            translation = moved
+        } ended: { predicted in
+            settle(fraction(drawer, moved: predicted, extent: extent) > 0.5 ? drawer : nil)
+        }
     }
 
     private func settle(_ drawer: Drawer?) {

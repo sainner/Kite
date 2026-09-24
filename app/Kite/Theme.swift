@@ -10,6 +10,31 @@ enum Theme {
     static let strongPlaceholder = Color.black.opacity(0.16)
     /// 侧边栏里选中的一行。
     static let selection = Color.black.opacity(0.07)
+    /// 会话窗口里人发的消息的气泡。
+    static let bubble = Color(red: 0.95, green: 0.94, blue: 0.92)
+    /// 代码、命令输出、表格的底。
+    static let codeBackground = Color.black.opacity(0.04)
+    /// 引用、子 agent 过程左边的竖线。
+    static let rule = Color.black.opacity(0.12)
+    static let added = Color.green.opacity(0.14)
+    static let removed = Color.red.opacity(0.12)
+
+    // 字号：两端用同一套 token，每个 token 是一种系统文本样式，多大由系统按平台定，iPhone 上还跟着系统的字号设置。
+    // 视图里不写点数，都从这里取
+    /// 标题栏的标题。
+    static let title = Font.headline
+    /// 对话正文、控制区的输入框。
+    static let body = Font.body
+    /// 次要的字：标题旁边的信息、折起来的一行、会话里的事件、展开后的详情。
+    static let secondary = Font.subheadline
+    /// 比次要的字再小一号：iPhone 上标题下面的次要信息。
+    static let caption = Font.footnote
+    /// 命令、输出、代码、改动。
+    static let code = Font.system(.subheadline, design: .monospaced)
+    /// agent 回复里的各级标题。
+    static let heading1 = Font.title2.weight(.semibold)
+    static let heading2 = Font.title3.weight(.semibold)
+    static let heading3 = Font.headline
 }
 
 enum Metrics {
@@ -29,19 +54,27 @@ enum Metrics {
     static let minPane: CGFloat = 160
     /// 按下后挪动多少才算拖动，免得单击也算。
     static let dragThreshold: CGFloat = 4
-    /// 卡片标题栏的高度，Mac 上按住它拖动卡片。
-    static let cardHeader: CGFloat = 40
+    /// Mac 上窗口标题栏的高度，标题在里面垂直居中；也是卡片拖动把手的高度。
+    static let header: CGFloat = 40
+    /// iPhone 上窗口标题栏底下的留白。状态栏的安全区底下本来空着一截（iPhone 17 上约 20pt），
+    /// 所以标题栏上边不留、只在下边留一点，标题看着才在状态栏和栏底之间居中。
+    static let phoneHeaderBottom: CGFloat = 8
     /// 拖出布局的卡片变成的圆。
     static let dragBubble: CGFloat = 40
     /// action 区：一排按钮、账号那一行，和两行之间的距离。
     static let actionButton: CGFloat = 36
     static let accountRow: CGFloat = 36
     static let actionSpacing: CGFloat = 10
-    static var actionArea: CGFloat { actionButton + actionSpacing + accountRow }
     /// iPhone 上拉出侧边栏后窗口最少留多宽，要大于圆角的直径，圆角才不会变形。
     static let phoneMinWindow: CGFloat = 120
-    /// iPhone 上页签那一行的高度，拉出 action 栏时出现在窗口上方。
+    /// iPhone 上页签那一行的高度，拉出 action 栏时出现在它上面。
     static let tabBar: CGFloat = 36
-    /// iPhone 上拉出侧边栏、action 栏的手势区：左边缘多宽、底边多高。
+    /// iPhone 上拉出侧边栏的手势区，左边缘多宽。
     static let edgeZone: CGFloat = 24
+    /// 控制区一行的高度，和输入框只有一行字时一样高；还没做的窗口按它画占位。
+    static let controlHeight: CGFloat = 40
+    /// 会话窗口里对话那一栏最宽多少，卡片再宽也不让一行字太长。
+    static let transcriptWidth: CGFloat = 720
+    /// 人发的消息的气泡，左边至少空出多少。
+    static let bubbleInset: CGFloat = 48
 }
