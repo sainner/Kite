@@ -29,6 +29,8 @@ enum Theme {
     static let secondary = Font.subheadline
     /// 比次要的字再小一号：iPhone 上标题下面的次要信息。
     static let caption = Font.footnote
+    /// 最小的字：控制区底下的状态信息。
+    static let status = Font.caption
     /// 命令、输出、代码、改动。
     static let code = Font.system(.subheadline, design: .monospaced)
     /// agent 回复里的各级标题。
@@ -73,6 +75,13 @@ enum Metrics {
     static let edgeZone: CGFloat = 24
     /// 控制区一行的高度，和输入框只有一行字时一样高；还没做的窗口按它画占位。
     static let controlHeight: CGFloat = 40
+    /// 控制区那张玻璃卡片的圆角，和它离窗口左右边的距离；底下没有安全区时离底边也是这么远。
+    static let controlRadius: CGFloat = 22
+    static let controlMargin: CGFloat = 12
+    /// 控制区底下的安全区至少多高才放状态信息，放得下一行小字。
+    static let statusMinHeight: CGFloat = 20
+    /// 选 effort 的主刻度线的间距，一档占这么宽，拖过这么宽换一档。
+    static let effortTick: CGFloat = 24
     /// 会话窗口里对话那一栏最宽多少，卡片再宽也不让一行字太长。
     static let transcriptWidth: CGFloat = 720
     /// 人发的消息的气泡，左边至少空出多少。

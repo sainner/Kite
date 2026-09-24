@@ -20,6 +20,8 @@ struct PhoneLayout: View {
     @State private var screenRadius: CGFloat = 0
     /// 页签和 action 栏合起来多高，按实际排出来的量。
     @State private var drawerHeight: CGFloat = 0
+    @State private var indicatorHidden = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         GeometryReader { geo in
@@ -66,6 +68,15 @@ struct PhoneLayout: View {
                             sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius)
             }
         }
+        // 让小横条藏起来，空出来的地方放控制区底下的状态信息。它只在进 App 时（打开、从后台回来）出来一下，
+        // 碰屏幕、滚动都不再出来。系统不告诉 App 它藏没藏：实测 App 画出第一帧时它已经藏了，这里进来后等 1 秒算它藏了
+        .persistentSystemOverlays(.hidden)
+        .environment(\.homeIndicatorHidden, indicatorHidden)
+        .task(id: scenePhase) {
+            indicatorHidden = false
+            guard scenePhase == .active, (try? await Task.sleep(for: .seconds(1))) != nil else { return }
+            indicatorHidden = true
+        }
     }
 
     /// 页签：当前会话窗口组里的各个窗口，点了切过去。iPhone 上一次只显示一个窗口，不做换位置。以后这一行还会放别的功能。
@@ -100,6 +111,8 @@ private struct PhoneWindow: View {
     let screenRadius: CGFloat
     @Environment(AppModel.self) private var model
     @State private var translation: CGSize = .zero
+    /// 这次拖的方向不对，不拉抽屉，松手前都不管。
+    @State private var offAxis = false
 
     var body: some View {
         let s = progress(.sidebar, extent: sidebarWidth)
@@ -166,12 +179,22 @@ private struct PhoneWindow: View {
         (open == drawer ? 1 : 0) + (drawer == .sidebar ? moved.width : -moved.height) / extent
     }
 
-    /// 往 drawer 那一侧拉。松手时按预计停下的位置，过半就打开，否则收回去。
+    /// 往 drawer 那一侧拉。一开始往哪个方向拖就定下来：侧边栏要横着拖，action 栏要竖着拖，
+    /// 方向不对的留给拖的地方自己的手势（比如控制区里横着滑选 effort）。松手时按预计停下的位置，过半就打开，否则收回去。
     private func pull(_ drawer: Drawer, extent: CGFloat) -> DrawerPull {
         DrawerPull { moved in
-            if dragging != drawer { dragging = drawer }
+            if dragging != drawer {
+                guard !offAxis else { return }
+                guard (abs(moved.width) > abs(moved.height)) == (drawer == .sidebar) else {
+                    offAxis = true
+                    return
+                }
+                dragging = drawer
+            }
             translation = moved
         } ended: { predicted in
+            offAxis = false
+            guard dragging == drawer else { return }
             settle(fraction(drawer, moved: predicted, extent: extent) > 0.5 ? drawer : nil)
         }
     }
