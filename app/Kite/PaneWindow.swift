@@ -240,8 +240,14 @@ struct DrawerPull {
     let changed: @MainActor (CGSize) -> Void
     let ended: @MainActor (_ predicted: CGSize) -> Void
 
+    /// 一次拖动往哪个方向：挪过 dragThreshold 时看横着挪得多还是竖着挪得多，定了就不改。
+    /// 抽屉和控制区里要横着拖的控件（比如选 effort）都按它定，同一次拖动两边不会都接或都不接。
+    static func isHorizontal(_ translation: CGSize) -> Bool {
+        abs(translation.width) > abs(translation.height)
+    }
+
     var gesture: some Gesture {
-        DragGesture(minimumDistance: 5, coordinateSpace: .global)
+        DragGesture(minimumDistance: Metrics.dragThreshold, coordinateSpace: .global)
             .onChanged { changed($0.translation) }
             .onEnded { ended($0.predictedEndTranslation) }
     }

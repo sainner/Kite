@@ -159,13 +159,15 @@ private struct CallDetail: View {
 
     private var input: JSON { call.use.input }
     private var output: String { call.result?.text ?? "" }
+    /// 结果原文，空的说一句。
+    private var rawOutput: some View { CodeBlock(text: output.isEmpty ? "（没有输出）" : output) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             switch call.use.kind {
             case .command:
                 CodeBlock(text: "$ " + (input["command"]?.string ?? ""), maxLines: 6)
-                outcome { CodeBlock(text: output.isEmpty ? "（没有输出）" : output) }
+                outcome { rawOutput }
             case .read:
                 path
                 outcome {
@@ -208,7 +210,7 @@ private struct CallDetail: View {
                 outcome { CodeBlock(text: output, tint: .green) }
             default:
                 InputList(input: input)
-                outcome { CodeBlock(text: output.isEmpty ? "（没有输出）" : output) }
+                outcome { rawOutput }
             }
         }
         .font(Theme.secondary)

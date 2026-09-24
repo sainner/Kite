@@ -50,7 +50,7 @@ struct DetachedSession: View {
         CGSize(width: content.width + 2 * Metrics.padding, height: content.height + chrome.top + Metrics.padding)
     }
 }
-/// 把新开的窗口放到指定位置（左上角和大小，屏幕坐标，左上角是原点）。不用 SwiftUI 的 defaultWindowPlacement：
+/// 把新开的窗口放到指定位置（AppKit 的屏幕坐标）。不用 SwiftUI 的 defaultWindowPlacement：
 /// 同一组里已经有窗口时，系统会把新窗口错开层叠，给的位置被忽略（实测第二个窗口落在第一个右下 29pt 处）。
 private struct WindowPlacer: NSViewRepresentable {
     let frame: CGRect?
@@ -70,12 +70,9 @@ private struct WindowPlacer: NSViewRepresentable {
             super.viewDidMoveToWindow()
             guard let window, let frame = frameToApply else { return }
             frameToApply = nil
-            // AppKit 的屏幕坐标左下角是原点，按主屏的高度翻过来
-            let height = NSScreen.screens.first?.frame.height ?? 0
-            let target = NSRect(x: frame.minX, y: height - frame.maxY, width: frame.width, height: frame.height)
-            window.setFrame(target, display: true)
+            window.setFrame(frame, display: true)
             // 系统显示窗口时会再按层叠规则摆一次，下一轮再设一遍
-            DispatchQueue.main.async { window.setFrame(target, display: true) }
+            DispatchQueue.main.async { window.setFrame(frame, display: true) }
         }
     }
 }

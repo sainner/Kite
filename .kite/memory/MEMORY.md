@@ -1,3 +1,4 @@
 - [Kite 来历](kite-origin.md) — Pigeon 冻结后的替代品，交接文档在 docs/任务书.md，含三问和不做清单
 - [每会话一个工作树](session-worktree-decision.md) — 已决定：会话跑在独立工作树、完成后自动合并；四个待解问题和不带的 Pigeon 机制
 - [假数据要穷举](fake-data-exhaustive.md) — App 界面先用假数据时，每种工具和成功/出错/后台/边角情况都要有
+- [界面由用户自己预览](user-previews-ui.md) — 改完 App 界面只编译、装上、打开新 build，不自己点模拟器

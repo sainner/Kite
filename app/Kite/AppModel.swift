@@ -64,13 +64,12 @@ final class AppModel {
     var selected = 1
     /// 分离成独立窗口的会话。独立窗口出现时加进来，关掉时去掉。
     var detached: Set<Int> = []
-    /// 下一个分离出去的窗口放在哪：左上角和大小，屏幕坐标，左上角是原点（和 SwiftUI 摆窗口用的一致）。
+    /// 下一个分离出去的窗口放在哪：位置和大小，AppKit 的屏幕坐标（左下角是原点），WindowPlacer 直接拿去摆。
     var pendingPlacement: CGRect?
     var sidebarWidth = Metrics.sidebarWidth
     var sidebarCollapsed = false
     /// 主窗口内容区的大小，分离出去的窗口照它开。
     var contentSize: CGSize = .zero
-
 
     func session(_ id: Int) -> Session? {
         sessions.first { $0.id == id }

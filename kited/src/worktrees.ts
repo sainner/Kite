@@ -79,16 +79,16 @@ export async function runSetup(main: string, worktree: string, logPath: string):
   if (!existsSync(script)) return null;
   mkdirSync(dirname(logPath), { recursive: true });
   const fd = openSync(logPath, 'w');
-  let tail = '';
-  const write = (text: string) => {
-    writeSync(fd, text);
-    tail = (tail + text).slice(-4000);
-  };
   try {
-    const r = await runScript(script, { cwd: worktree, env: { ...process.env, KITE_MAIN_DIR: main }, timeoutMs: SETUP_TIMEOUT_MS, onOutput: write });
-    if (r.stopped) write(`\n.kite/setup 超过 ${SETUP_TIMEOUT_MS / 60_000} 分钟，已停止\n`);
+    const r = await runScript(script, {
+      cwd: worktree, env: { ...process.env, KITE_MAIN_DIR: main }, timeoutMs: SETUP_TIMEOUT_MS, keep: 4000,
+      onOutput: (text) => writeSync(fd, text),
+    });
+    if (!r.stopped) return { exit: r.code ?? 124, tail: r.tail };
+    const note = `\n.kite/setup 超过 ${SETUP_TIMEOUT_MS / 60_000} 分钟，已停止\n`;
+    writeSync(fd, note);
     // 超时按 timeout 命令的惯例记 124
-    return { exit: r.code ?? 124, tail };
+    return { exit: 124, tail: (r.tail + note).slice(-4000) };
   } finally {
     closeSync(fd);
   }

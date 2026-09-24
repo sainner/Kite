@@ -8,7 +8,7 @@ import SwiftUI
 struct SessionDragSource: NSViewRepresentable {
     let tint: Color
     var onClick: () -> Void
-    /// 松手的位置，屏幕坐标，左上角是原点。
+    /// 松手的位置，AppKit 的屏幕坐标，左下角是原点。
     var onDetach: (CGPoint) -> Void
 
     static let type = NSPasteboard.PasteboardType("com.sainner.kite.session")
@@ -29,17 +29,11 @@ struct SessionDragSource: NSViewRepresentable {
         var tint = NSColor.systemBlue
         var onClick: (() -> Void)?
         var onDetach: ((CGPoint) -> Void)?
-        /// 这次按下已经开始拖了，松手不算点击。
-        private var began = false
-
-        override func mouseDown(with event: NSEvent) {
-            super.mouseDown(with: event)
-            began = false
-        }
 
         override func mouseDragged(with event: NSEvent) {
-            guard !began, movedEnough(event) else { return }
-            began = true
+            guard movedEnough(event) else { return }
+            // 开始拖了，这次按下松手不算点击
+            cancelPress()
             let item = NSPasteboardItem()
             item.setString("", forType: SessionDragSource.type)
             let dragging = NSDraggingItem(pasteboardWriter: item)
@@ -63,7 +57,7 @@ struct SessionDragSource: NSViewRepresentable {
         }
 
         override func mouseUp(with event: NSEvent) {
-            if pressedAt != nil, !began { onClick?() }
+            if pressedAt != nil { onClick?() }
             super.mouseUp(with: event)
         }
 
@@ -79,9 +73,7 @@ struct SessionDragSource: NSViewRepresentable {
         func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
             // 没有被别处接住，并且松在主窗口外面，才分离
             guard operation.isEmpty, let window, !window.frame.contains(screenPoint) else { return }
-            // AppKit 的屏幕坐标左下角是原点，按主屏的高度翻过来
-            let height = NSScreen.screens.first?.frame.height ?? 0
-            onDetach?(CGPoint(x: screenPoint.x, y: height - screenPoint.y))
+            onDetach?(screenPoint)
         }
     }
 }

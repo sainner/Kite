@@ -114,9 +114,9 @@ struct MacSidebar: View {
             }
         } onDetach: { point in
             guard !model.detached.contains(session.id) else { return }
-            // 独立窗口里的卡片和主窗口内容区一样大；窗口左上角放在指针左上方，指针落在标题那一条上
-            model.pendingPlacement = CGRect(origin: CGPoint(x: point.x - 60, y: point.y - 16),
-                                            size: DetachedSession.windowSize(content: model.contentSize, chrome: chrome))
+            // 独立窗口里的卡片和主窗口内容区一样大；窗口左上角放在指针左上方，指针落在标题那一条上。AppKit 的屏幕坐标 y 朝上
+            let size = DetachedSession.windowSize(content: model.contentSize, chrome: chrome)
+            model.pendingPlacement = CGRect(x: point.x - 60, y: point.y + 16 - size.height, width: size.width, height: size.height)
             openWindow(id: "session", value: session.id)
         }
     }

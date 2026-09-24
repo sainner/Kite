@@ -19,6 +19,11 @@ class PressDragView: NSView {
         pressedAt = nil
     }
 
+    /// 这次按下不再算数：之后挪多远都不算挪够，没按着一样。
+    func cancelPress() {
+        pressedAt = nil
+    }
+
     /// 从按下到 event 挪够了距离。
     func movedEnough(_ event: NSEvent) -> Bool {
         guard let pressedAt else { return false }

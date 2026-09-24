@@ -61,8 +61,10 @@ async function record(worktree: string, sessionId: string, r: NewSnapshot, label
   const chain = (async () => {
     const parents: string[] = [];
     if (r.previous) parents.push('-p', r.previous);
-    const chained = r.head !== undefined && r.head !== null && chainedHeads.get(worktree) === r.head;
-    if (r.head && !chained && (!r.previous || !(await isAncestor(worktree, r.head, r.previous)))) parents.push('-p', r.head);
+    // HEAD 已在链上就不用再查是不是祖先
+    if (r.head && chainedHeads.get(worktree) !== r.head && (!r.previous || !(await isAncestor(worktree, r.head, r.previous)))) {
+      parents.push('-p', r.head);
+    }
     const commit = await git(worktree, ['commit-tree', r.tree, ...parents, '-F', '-'], {
       env: KITE_IDENTITY, input: message(sessionId, label, toolUseIds),
     });

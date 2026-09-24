@@ -104,19 +104,10 @@ async function run(o: RunOptions): Promise<Omit<CheckResult, 'waited'>> {
     mkdirSync(o.logDir, { recursive: true });
     env.KITE_LOG_DIR = o.logDir;
   }
-  let output = '';
-  let dropped = 0;
   const r = await runScript(scriptOf(o.worktree), {
-    args: all ? ['--all'] : [], cwd: o.worktree, env, timeoutMs: o.timeoutMs ?? CHECK_TIMEOUT_MS, ...(o.signal ? { signal: o.signal } : {}),
-    onOutput: (text) => {
-      output += text;
-      if (output.length > 2 * OUTPUT_MAX) { dropped += output.length - OUTPUT_MAX; output = output.slice(-OUTPUT_MAX); }
-    },
+    args: all ? ['--all'] : [], cwd: o.worktree, env, timeoutMs: o.timeoutMs ?? CHECK_TIMEOUT_MS, signal: o.signal, keep: OUTPUT_MAX,
   });
-  if (dropped || output.length > OUTPUT_MAX) {
-    dropped += Math.max(0, output.length - OUTPUT_MAX);
-    output = `（前面省略了 ${dropped} 个字符）\n${output.slice(-OUTPUT_MAX)}`;
-  }
+  const output = r.dropped ? `（前面省略了 ${r.dropped} 个字符）\n${r.tail}` : r.tail;
   return {
     ok: r.code === 0, code: r.code, all, base, seconds: r.seconds,
     logDir: o.logDir ?? null,
