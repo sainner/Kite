@@ -223,6 +223,10 @@ export class Runner {
         syncClaudeAiPlugins: false,
         disableClaudeAiConnectors: true,
         skillOverrides: Object.fromEntries(SKILLS_OFF.map((s) => [s, 'off' as const])),
+        // Bash 工具的 edit diff：bypassPermissions 下默认开，在 git 仓库里每次调用前后各打一次快照，把命令改了哪些文件
+        // 算成 diff，放在 SDK 消息的 tool_use_result.bashEditDiff 里给界面显示，模型看不到。每次串行约 13 条 git、
+        // 约 0.2 秒；改动由 Kite 自己的快照记录
+        bashEditDiffEnabled: false,
       },
       disallowedTools: DISALLOWED_TOOLS,
       permissionMode: 'bypassPermissions',

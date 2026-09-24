@@ -54,6 +54,7 @@ Kite 会话只带做事用的上游功能，取舍列在 `src/runner.ts` 开头�
 - 从 claude.ai 同步来的 skill、插件和连接器不带。开关经 SDK 的 `settings` 选项传入，只对这个会话生效，不动本机的文件。
 - 去掉和 Kite 自己的机制冲突的（进出工作树、Claude Code 自己的后台会话、生成 CLAUDE.md 的 init），依赖 Kite 没有的宿主（终端、桌面 App、claude.ai）的，以及用不上的（Workflow、ScheduleWakeup 和配套的 skill，画图配色、改 Claude Code 设置、启动项目 App 的 skill）。
 - 定时任务（CronCreate）保留：上游的 Stop 钩子把它算进 `session_crons`，有定时任务时 Kite 不关进程。
+- Bash 工具的 edit diff 关掉（设置 `bashEditDiffEnabled`，经 `settings` 选项传入）。它在 bypassPermissions 下默认开，在 git 仓库里每次调用前后各打一次快照，把命令改了哪些文件算成 diff，放在 SDK 消息的 `tool_use_result.bashEditDiff` 里给界面显示，模型看不到；每次串行约 13 条 git、约 0.2 秒。改动由 Kite 自己的快照记录。
 
 重新量的办法：SDK 的 `Query.getContextUsage()` 给出和 `/context` 一样的分类统计，用官方计数接口算，不耗额度，但 skill 和工具两项之间的拆分不准，只看总数；要看原文，把 `ANTHROPIC_BASE_URL` 指到假端点，抓第一次请求，同时设 `ENABLE_TOOL_SEARCH=true`，否则地址不是官方的时候不启用工具搜索，所有工具都会常驻。
 
