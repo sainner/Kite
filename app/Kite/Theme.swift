@@ -14,6 +14,10 @@ enum Metrics {
     /// 卡片之间的缝，也是拖动调整大小的把手。
     static let gap: CGFloat = 10
     static let sidebarWidth: CGFloat = 240
+    /// 侧边栏拖动调宽度的范围；拖到比 sidebarCollapse 还窄就收起。
+    static let sidebarMin: CGFloat = 200
+    static let sidebarMax: CGFloat = 400
+    static let sidebarCollapse: CGFloat = 120
     /// 侧边栏自己的左边距，加上窗口内边距，和红绿灯按钮对齐。
     static let sidebarLeading: CGFloat = 10
     /// 红绿灯按钮占的高度，侧边栏的内容从它下面开始。
@@ -24,7 +28,7 @@ enum Metrics {
     /// 卡片标题栏的高度，Mac 上按住它拖动卡片。
     static let cardHeader: CGFloat = 40
     /// 拖出布局的卡片变成的圆。
-    static let dragBubble: CGFloat = 36
+    static let dragBubble: CGFloat = 40
     /// action 区：一排按钮、账号那一行，和两行之间的距离。
     static let actionButton: CGFloat = 36
     static let accountRow: CGFloat = 36

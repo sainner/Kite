@@ -1,111 +1,95 @@
 import SwiftUI
 
 #if os(macOS)
-extension EnvironmentValues {
-    /// 卡片换位置时，用它把同一张卡片的新旧位置连起来做动画。
-    @Entry var tileNamespace: Namespace.ID?
-}
-
-struct TileView: View {
-    let tile: Tile
-    @Environment(\.tileNamespace) private var namespace
+/// 内容区：各张卡片、占位、卡片之间的缝按排布算好的位置摆在同一层。卡片始终是同一个视图，
+/// 排布变了、拖出去缩成圆、松手展开，都只是它的位置和大小在变，动画连贯，不会出现新旧两份交叠。
+struct TilesLayer: View {
+    @Environment(Workspace.self) private var workspace
 
     var body: some View {
-        switch tile {
-        case .pane(let pane):
-            PaneCard(pane: pane).matched(pane, in: namespace)
-        case .placeholder:
-            // 拖动卡片时预览它放下后的位置
-            RoundedRectangle(cornerRadius: Metrics.cardRadius)
-                .fill(Color.accentColor.opacity(0.08))
-                .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
-        case .split(let split):
-            SplitView(split: split)
+        GeometryReader { geo in
+            let layout = workspace.shown?.layout(in: CGRect(origin: .zero, size: geo.size)) ?? TileLayout()
+            ZStack(alignment: .topLeading) {
+                ForEach(layout.gaps) { gap in
+                    MouseDragArea(cursor: gap.split.axis == .horizontal ? .columnResize : .rowResize) { point in
+                        workspace.resize(gap, to: point)
+                    }
+                    .placed(gap.rect)
+                }
+                if let rect = layout.placeholder {
+                    // 拖动卡片时预览它放下后的位置
+                    RoundedRectangle(cornerRadius: Metrics.cardRadius)
+                        .fill(Color.accentColor.opacity(0.08))
+                        .strokeBorder(Color.accentColor, lineWidth: 2)
+                        .placed(rect)
+                }
+                ForEach(Pane.allCases, id: \.self) { pane in
+                    if let (rect, circle) = place(pane, in: layout) {
+                        PaneCard(pane: pane, circle: circle)
+                            .placed(rect)
+                            .zIndex(workspace.drag?.pane == pane ? 1 : 0)
+                    }
+                }
+            }
         }
+    }
+
+    /// 卡片在哪、是不是缩成了圆。拖出去的卡片不在排布里，按拖动的阶段摆。
+    private func place(_ pane: Pane, in layout: TileLayout) -> (CGRect, Bool)? {
+        guard let drag = workspace.drag, drag.pane == pane, drag.phase != .attached else {
+            return layout.panes[pane].map { ($0, false) }
+        }
+        if case .landing(let rect) = drag.phase { return (rect, false) }
+        guard drag.collapsed else { return (drag.origin, false) }
+        let size = Metrics.dragBubble
+        return (CGRect(x: workspace.pointer.x - size / 2, y: workspace.pointer.y - size / 2, width: size, height: size), true)
     }
 }
 
 private extension View {
-    @ViewBuilder
-    func matched(_ pane: Pane, in namespace: Namespace.ID?) -> some View {
-        if let namespace { matchedGeometryEffect(id: pane, in: namespace) } else { self }
+    func placed(_ rect: CGRect) -> some View {
+        frame(width: rect.width, height: rect.height).position(x: rect.midX, y: rect.midY)
     }
 }
 
-/// 两块之间留一道缝，拖动它调整比例。
-struct SplitView: View {
-    let split: Split
-
-    var body: some View {
-        GeometryReader { geo in
-            let horizontal = split.axis == .horizontal
-            let total = horizontal ? geo.size.width : geo.size.height
-            let first = split.firstLength(in: total)
-            let layout = horizontal ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
-            layout {
-                TileView(tile: split.first)
-                    .frame(width: horizontal ? first : nil, height: horizontal ? nil : first)
-                handle(horizontal: horizontal, origin: geo.frame(in: .global).origin, available: max(total - Metrics.gap, 0))
-                TileView(tile: split.second)
-            }
-        }
-    }
-
-    private func handle(horizontal: Bool, origin: CGPoint, available: CGFloat) -> some View {
-        MouseDragArea(cursor: horizontal ? .columnResize : .rowResize) { point in
-            guard available > 0 else { return }
-            let position = (horizontal ? point.x - origin.x : point.y - origin.y) - Metrics.gap / 2
-            let lower = min(Metrics.minPane / available, 0.5)
-            split.ratio = min(max(position / available, lower), 1 - lower)
-        }
-        .frame(width: horizontal ? Metrics.gap : nil, height: horizontal ? nil : Metrics.gap)
-    }
-}
-
-/// Mac 上的一张卡片。按住标题栏拖出去换位置，见 CardDrag。
+/// Mac 上的一张卡片。按住标题栏拖出去换位置，见 CardDrag；拖出去后缩成圆，内容淡出，出现图标。
 struct PaneCard: View {
     let pane: Pane
+    let circle: Bool
     @Environment(Workspace.self) private var workspace
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                PaneTitle(pane: pane)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 14)
-            .frame(height: Metrics.cardHeader)
-            .overlay {
-                MouseDragArea(cursor: .openHand, activeCursor: .closedHand, minimumDistance: 4) { point in
-                    workspace.drag(pane, to: point)
-                } onEnded: {
-                    workspace.drop()
+        let shape = RoundedRectangle(cornerRadius: circle ? Metrics.dragBubble / 2 : Metrics.cardRadius)
+        // 底下的形状定大小，内容放在 overlay 里：缩成圆时内容比圆大，不能把它撑开
+        shape
+            .fill(circle ? pane.tint : Theme.card)
+            .overlay(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        PaneTitle(pane: pane)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: Metrics.cardHeader)
+                    .overlay {
+                        MouseDragArea(cursor: .openHand, activeCursor: .closedHand, minimumDistance: 4) { point in
+                            workspace.drag(pane, to: point)
+                        } onEnded: {
+                            workspace.drop()
+                        }
+                    }
+                    PaneBody(pane: pane)
+                        .padding([.horizontal, .bottom], 14)
                 }
+                .opacity(circle ? 0 : 1)
             }
-            PaneBody(pane: pane)
-                .padding([.horizontal, .bottom], 14)
-        }
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.cardRadius))
-    }
-}
-
-/// 脱离布局的卡片，变成一个圆跟着指针。
-struct DragBubble: View {
-    @Environment(Workspace.self) private var workspace
-    @Environment(\.tileNamespace) private var namespace
-
-    var body: some View {
-        ZStack {
-            if let drag = workspace.drag, drag.detached {
-                Circle()
-                    .fill(drag.pane.tint)
-                    .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
-                    .matched(drag.pane, in: namespace)
-                    .position(workspace.pointer)
+            .overlay {
+                Image(systemName: pane.icon)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.white)
+                    .opacity(circle ? 1 : 0)
             }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .allowsHitTesting(false)
+            .clipShape(shape)
     }
 }
 #endif
@@ -129,6 +113,15 @@ struct PaneBody: View {
 }
 
 extension Pane {
+    var icon: String {
+        switch self {
+        case .session: "bubble.left.and.bubble.right"
+        case .files: "folder"
+        case .terminal: "terminal"
+        case .preview: "eye"
+        }
+    }
+
     var tint: Color {
         switch self {
         case .session: .blue
