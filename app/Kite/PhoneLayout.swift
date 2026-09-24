@@ -10,6 +10,8 @@ import UIKit
 struct PhoneLayout: View {
     private enum Drawer { case sidebar, actions }
 
+    @Environment(AppModel.self) private var model
+
     @State private var open: Drawer?
     /// 手指正在拖的一侧和拖动的距离，松手后按惯性决定打开还是收起。
     @State private var dragging: Drawer?
@@ -31,13 +33,22 @@ struct PhoneLayout: View {
             ZStack(alignment: .topLeading) {
                 Theme.background.ignoresSafeArea()
                 ScreenCornerReader { screenRadius = $0 }.ignoresSafeArea()
-                // 一次只露出一侧，另一侧藏起来，免得窗口移开时从边上露出来
-                SidebarList()
-                    .padding(.top, Metrics.padding * 2)
-                    .padding(.leading, Metrics.padding + Metrics.sidebarLeading)
-                    .padding(.trailing, Metrics.gap)
-                    .frame(width: sidebarWidth)
-                    .opacity(showing(.sidebar) ? 1 : 0)
+                // 会话列表，点一个就切过去并收起。一次只露出一侧，另一侧藏起来，免得窗口移开时从边上露出来
+                VStack(spacing: 4) {
+                    ForEach(model.sessions) { session in
+                        SessionRow(session: session, current: model.current?.id == session.id, height: 44)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                model.selected = session.id
+                                settle(nil)
+                            }
+                    }
+                }
+                .padding(.top, Metrics.padding * 2)
+                .padding(.leading, Metrics.padding + Metrics.sidebarLeading)
+                .padding(.trailing, Metrics.gap)
+                .frame(width: sidebarWidth)
+                .opacity(showing(.sidebar) ? 1 : 0)
                 // 拉出 action 栏时，窗口上方同时露出页签那一行
                 tabBar
                     .padding(.horizontal, Metrics.padding * 2)
@@ -68,7 +79,10 @@ struct PhoneLayout: View {
         // 内容保持铺满时的排版，贴着窗口左上角等比缩小：拉侧边栏时按窗口高度缩，左右裁掉；
         // 拉 action 栏时按窗口宽度缩，上下裁掉，窗口顶边落到状态栏下面，内容上移，不留状态栏那一段空白
         let scale = (screen.height - 2 * s * pad) / screen.height * (screen.width - 2 * a * pad) / screen.width
-        return PaneBody(pane: selected)
+        return VStack(alignment: .leading, spacing: 12) {
+                if let session = model.current { SessionTitle(session: session).frame(height: 24) }
+                PaneBody(pane: selected)
+            }
             .padding(14)
             .padding(insets)
             .frame(width: screen.width, height: screen.height, alignment: .topLeading)

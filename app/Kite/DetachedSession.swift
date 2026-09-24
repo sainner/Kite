@@ -24,13 +24,9 @@ struct DetachedSession: View {
     var body: some View {
         if let session = model.session(id) {
             VStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    Circle().fill(session.tint).frame(width: 10, height: 10)
-                    RoundedRectangle(cornerRadius: 4).fill(Theme.strongPlaceholder).frame(width: 140, height: 12)
-                    RoundedRectangle(cornerRadius: 4).fill(Theme.placeholder).frame(width: 80, height: 10)
-                    Spacer(minLength: 0)
-                }
-                .padding(.leading, Metrics.trafficLights)
+                SessionTitle(session: session)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, Metrics.trafficLights)
                 .frame(height: Metrics.windowHeader)
                 SessionContent(session: session)
                     .padding([.horizontal, .bottom], Metrics.padding)

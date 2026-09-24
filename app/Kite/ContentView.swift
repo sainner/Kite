@@ -27,7 +27,7 @@ struct ContentView: View {
         .background(Theme.background)
         .ignoresSafeArea()
         #else
-        PhoneLayout()
+        PhoneLayout().environment(model)
         #endif
     }
 

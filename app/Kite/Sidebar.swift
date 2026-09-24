@@ -1,12 +1,36 @@
 import SwiftUI
 
-/// 侧边栏的列表，比如会话。没有自己的底色，现在只有占位色块。
-struct SidebarList: View {
+/// 侧边栏里的一行，一个会话。没有自己的底色，选中时垫一层；现在只有占位色块，颜色区分是哪个会话。
+struct SessionRow: View {
+    let session: Session
+    let current: Bool
+    /// 分离成了独立窗口（Mac）。
+    var detached = false
+    var height: CGFloat = 32
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(0..<6, id: \.self) { _ in
-                RoundedRectangle(cornerRadius: 6).fill(Theme.placeholder).frame(height: 28)
+        HStack(spacing: 8) {
+            Circle().fill(session.tint).frame(width: 10, height: 10)
+            RoundedRectangle(cornerRadius: 4).fill(Theme.placeholder).frame(height: 10)
+            if detached {
+                Image(systemName: "macwindow").font(.system(size: 11)).foregroundStyle(.secondary)
             }
+        }
+        .padding(.horizontal, 10)
+        .frame(height: height)
+        .background(current ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// 会话的标题和信息。现在只有占位色块。
+struct SessionTitle: View {
+    let session: Session
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle().fill(session.tint).frame(width: 10, height: 10)
+            RoundedRectangle(cornerRadius: 4).fill(Theme.strongPlaceholder).frame(width: 140, height: 12)
+            RoundedRectangle(cornerRadius: 4).fill(Theme.placeholder).frame(width: 80, height: 10)
         }
     }
 }
@@ -49,17 +73,8 @@ struct MacSidebar: View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
                 ForEach(model.sessions) { session in
-                    HStack(spacing: 8) {
-                        Circle().fill(session.tint).frame(width: 10, height: 10)
-                        RoundedRectangle(cornerRadius: 4).fill(Theme.placeholder).frame(height: 10)
-                        if model.detached.contains(session.id) {
-                            Image(systemName: "macwindow").font(.system(size: 11)).foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.horizontal, 10)
-                    .frame(height: 32)
-                    .background(model.current?.id == session.id ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay { source(session) }
+                    SessionRow(session: session, current: model.current?.id == session.id, detached: model.detached.contains(session.id))
+                        .overlay { source(session) }
                 }
             }
             Spacer(minLength: Metrics.gap)
