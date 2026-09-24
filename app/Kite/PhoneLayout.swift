@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 
 /// iPhone：会话窗口平时铺满屏幕，盖住 App 的底色。从左边缘往右滑，窗口缩到右边，露出底色上的侧边栏；
-/// 从窗口底部往上滑，窗口缩到上面，露出底色上的 action 栏。缩小时四边的边距同时出现，内容不重排、超出的部分裁掉，
+/// 从窗口底部往上滑，窗口从上下两头缩小，露出底色上的 action 栏和上方的页签。缩小时四边的边距同时出现，内容不重排、超出的部分裁掉，
 /// 圆角从屏幕圆角变成屏幕圆角减去边距。
 /// 打开时点窗口或往回拖收起。
 struct PhoneLayout: View {
@@ -23,7 +23,8 @@ struct PhoneLayout: View {
             let insets = geo.safeAreaInsets
             let screen = CGSize(width: geo.size.width + insets.leading + insets.trailing,
                                 height: geo.size.height + insets.top + insets.bottom)
-            let sidebarWidth = min(screen.width * 0.8, 320)
+            // 侧边栏拉开后，窗口至少留下 phoneMinWindow 宽
+            let sidebarWidth = min(screen.width - Metrics.padding - Metrics.phoneMinWindow, 320)
             // 窗口底边要升到 action 栏上面，action 栏在 Home 条上面
             let actionsHeight = Metrics.actionArea + insets.bottom + Metrics.padding
             ZStack(alignment: .topLeading) {
@@ -36,6 +37,11 @@ struct PhoneLayout: View {
                     .padding(.trailing, Metrics.gap)
                     .frame(width: sidebarWidth)
                     .opacity(showing(.sidebar) ? 1 : 0)
+                // 拉出 action 栏时，窗口上方同时露出页签那一行
+                tabBar
+                    .padding(.horizontal, Metrics.padding * 2)
+                    .frame(height: Metrics.tabBar)
+                    .opacity(showing(.actions) ? 1 : 0)
                 ActionArea()
                     .padding(.horizontal, Metrics.padding * 2)
                     .frame(maxHeight: .infinity, alignment: .bottom)
@@ -52,16 +58,19 @@ struct PhoneLayout: View {
         let s = progress(.sidebar, extent: sidebarWidth)
         let a = progress(.actions, extent: actionsHeight)
         let pad = Metrics.padding
-        // 窗口缩进屏幕里，四边的边距随进度出现；拉开的那一侧让出侧边栏或 action 栏
+        // 窗口缩进屏幕里，四边的边距随进度出现；拉开的那一侧让出侧边栏或 action 栏，拉出 action 栏时上边还让出页签
         let left = s * sidebarWidth + a * pad
-        let top = (s + a) * pad
+        let top = s * pad + a * (insets.top + Metrics.tabBar + Metrics.gap)
         let right = screen.width - (s + a) * pad
         let bottom = screen.height - s * pad - a * actionsHeight
         let shape = RoundedRectangle(cornerRadius: max(screenRadius - (s + a) * pad, 0))
-        // 内容保持铺满时的排版，贴着窗口左上角，超出窗口的部分裁掉
-        return tabs
+        // 内容保持铺满时的排版，贴着窗口左上角，超出窗口的部分裁掉。
+        // 窗口顶边落到状态栏下面时，内容上移，不留状态栏那一段空白
+        return PaneBody(pane: selected)
+            .padding(14)
             .padding(insets)
             .frame(width: screen.width, height: screen.height, alignment: .topLeading)
+            .offset(y: -min(top, insets.top))
             .frame(width: right - left, height: bottom - top, alignment: .topLeading)
             .background(Theme.card)
             .clipShape(shape)
@@ -95,21 +104,17 @@ struct PhoneLayout: View {
             .ignoresSafeArea()
     }
 
-    /// 窗口顶部一排页签，点了切换窗口。iPhone 上只有这一个窗口，不做换位置。
-    private var tabs: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                ForEach(Pane.allCases, id: \.self) { pane in
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(pane.tint.opacity(pane == selected ? 1 : 0.25))
-                        .frame(width: 56, height: 24)
-                        .contentShape(Rectangle())
-                        .onTapGesture { selected = pane }
-                }
+    /// 页签，点了切换窗口里的内容。iPhone 上只有这一个窗口，不做换位置。以后这一行还会放别的功能。
+    private var tabBar: some View {
+        HStack(spacing: 8) {
+            ForEach(Pane.allCases, id: \.self) { pane in
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(pane.tint.opacity(pane == selected ? 1 : 0.25))
+                    .frame(width: 56, height: 28)
+                    .contentShape(Rectangle())
+                    .onTapGesture { selected = pane }
             }
-            PaneBody(pane: selected)
         }
-        .padding(14)
     }
 
     private func showing(_ drawer: Drawer) -> Bool {

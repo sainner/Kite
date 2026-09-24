@@ -1,5 +1,6 @@
 import SwiftUI
 
+#if os(macOS)
 extension EnvironmentValues {
     /// 卡片换位置时，用它把同一张卡片的新旧位置连起来做动画。
     @Entry var tileNamespace: Namespace.ID?
@@ -44,29 +45,21 @@ struct SplitView: View {
             layout {
                 TileView(tile: split.first)
                     .frame(width: horizontal ? first : nil, height: horizontal ? nil : first)
-                handle(horizontal: horizontal, available: available)
+                handle(horizontal: horizontal, first: first, available: available)
                 TileView(tile: split.second)
             }
-            .coordinateSpace(.named(ObjectIdentifier(split)))
         }
     }
 
-    private func handle(horizontal: Bool, available: CGFloat) -> some View {
-        Color.clear
-            .frame(width: horizontal ? Metrics.gap : nil, height: horizontal ? nil : Metrics.gap)
-            .contentShape(Rectangle())
-            #if os(macOS)
-            .pointerStyle(horizontal ? .columnResize : .rowResize)
-            #endif
-            .gesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .named(ObjectIdentifier(split)))
-                    .onChanged { drag in
-                        guard available > 0 else { return }
-                        let position = (horizontal ? drag.location.x : drag.location.y) - Metrics.gap / 2
-                        let lower = min(Metrics.minPane / available, 0.5)
-                        split.ratio = min(max(position / available, lower), 1 - lower)
-                    }
-            )
+    private func handle(horizontal: Bool, first: CGFloat, available: CGFloat) -> some View {
+        MouseDragArea(cursor: horizontal ? .columnResize : .rowResize) { point in
+            guard available > 0 else { return }
+            // 缝的左上角在第一块的末尾，指针在缝里的位置加上它就是在整块里的位置
+            let position = first + (horizontal ? point.x : point.y) - Metrics.gap / 2
+            let lower = min(Metrics.minPane / available, 0.5)
+            split.ratio = min(max(position / available, lower), 1 - lower)
+        }
+        .frame(width: horizontal ? Metrics.gap : nil, height: horizontal ? nil : Metrics.gap)
     }
 }
 
@@ -74,9 +67,10 @@ struct SplitView: View {
 struct PaneCard: View {
     let pane: Pane
     @Environment(Workspace.self) private var workspace
+    /// 标题栏在内容区里的位置，把指针位置换算到内容区。
+    @State private var header: CGPoint = .zero
 
     var body: some View {
-        let dragged = workspace.dragging?.pane == pane
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 PaneTitle(pane: pane)
@@ -84,20 +78,19 @@ struct PaneCard: View {
             }
             .padding(.horizontal, 14)
             .frame(height: Metrics.cardHeader)
-            .contentShape(Rectangle())
-            #if os(macOS)
-            .pointerStyle(dragged ? .grabActive : .grabIdle)
-            #endif
-            .gesture(
-                DragGesture(minimumDistance: 4, coordinateSpace: .named(Workspace.space))
-                    .onChanged { workspace.drag(pane, to: $0.location) }
-                    .onEnded { _ in workspace.drop() }
-            )
+            .onGeometryChange(for: CGPoint.self) { $0.frame(in: .named(Workspace.space)).origin } action: { header = $0 }
+            .overlay {
+                MouseDragArea(cursor: .openHand, activeCursor: .closedHand, minimumDistance: 4) { point in
+                    workspace.drag(pane, to: CGPoint(x: header.x + point.x, y: header.y + point.y))
+                } onEnded: {
+                    workspace.drop()
+                }
+            }
             PaneBody(pane: pane)
                 .padding([.horizontal, .bottom], 14)
         }
         .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.cardRadius))
-        .opacity(dragged ? 0.5 : 1)
+        .opacity(workspace.dragging?.pane == pane ? 0.5 : 1)
     }
 }
 
@@ -123,6 +116,7 @@ struct DropIndicator: View {
         .animation(.snappy(duration: 0.15), value: workspace.dropRect)
     }
 }
+#endif
 
 /// 窗口的标题。现在只有占位色块，颜色用来区分是哪个窗口。
 struct PaneTitle: View {

@@ -28,6 +28,10 @@ enum Metrics {
     static let accountRow: CGFloat = 36
     static let actionSpacing: CGFloat = 10
     static var actionArea: CGFloat { actionButton + actionSpacing + accountRow }
+    /// iPhone 上拉出侧边栏后窗口最少留多宽，要大于圆角的直径，圆角才不会变形。
+    static let phoneMinWindow: CGFloat = 120
+    /// iPhone 上页签那一行的高度，拉出 action 栏时出现在窗口上方。
+    static let tabBar: CGFloat = 36
     /// iPhone 上拉出侧边栏、action 栏的手势区：左边缘多宽、底边多高。
     static let edgeZone: CGFloat = 24
 }
