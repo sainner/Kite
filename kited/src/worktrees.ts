@@ -5,11 +5,13 @@
  * 目标经已提交的链接逃出工作树就跳过；.worktreeinclude 只复制同时被 .gitignore 忽略的文件。
  */
 import { resolveSettings } from '@anthropic-ai/claude-agent-sdk';
-import { closeSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, realpathSync, symlinkSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, realpathSync, symlinkSync, writeSync } from 'node:fs';
+import { constants, copyFile, mkdir } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { git, gitTry } from './git.ts';
 import { within } from './projects.ts';
 import { SETTING_SOURCES } from './runner.ts';
+import { runScript } from './script.ts';
 
 const SETUP_TIMEOUT_MS = 15 * 60_000;
 
@@ -50,33 +52,43 @@ async function copyIncludes(main: string, real: string): Promise<void> {
   const matched = split(await git(main, ['ls-files', '-z', '--others', '--ignored', `--exclude-from=${patterns}`]));
   if (matched.length === 0) return;
   const ignored = split((await gitTry(main, ['check-ignore', '-z', '--stdin'], { input: matched.join('\0') + '\0' })).stdout);
+  // 同一个目录只判断、只建一次；复制用异步的，文件多时不卡住 kited 的事件循环
+  const dirs = new Map<string, boolean>();
   for (const f of ignored) {
     const src = join(main, f);
     const dest = join(real, f);
-    if (lstatSync(src).isSymbolicLink() || escapes(dest, real)) continue;
-    mkdirSync(dirname(dest), { recursive: true });
+    const dir = dirname(dest);
+    if (lstatSync(src).isSymbolicLink()) continue;
+    let ok = dirs.get(dir);
+    if (ok === undefined) {
+      ok = !escapes(dest, real);
+      if (ok) await mkdir(dir, { recursive: true });
+      dirs.set(dir, ok);
+    }
     // APFS 上是克隆，不额外占空间
-    copyFileSync(src, dest, constants.COPYFILE_FICLONE);
+    if (ok) await copyFile(src, dest, constants.COPYFILE_FICLONE);
   }
 }
 
 /**
  * 跑工作树里的 .kite/setup，没有这个文件返回 null。只看退出码；主文件夹位置经 KITE_MAIN_DIR 告诉脚本，
- * 脚本不需要自己判断身份，也不写状态文件。输出写进 logPath。
+ * 脚本不需要自己判断身份，也不写状态文件。输出写进 logPath，另外留下最后 4000 个字符给事件用。
  */
-export async function runSetup(main: string, worktree: string, logPath: string): Promise<number | null> {
+export async function runSetup(main: string, worktree: string, logPath: string): Promise<{ exit: number; tail: string } | null> {
   const script = join(worktree, '.kite', 'setup');
   if (!existsSync(script)) return null;
   mkdirSync(dirname(logPath), { recursive: true });
   const fd = openSync(logPath, 'w');
+  let tail = '';
+  const write = (text: string) => {
+    writeSync(fd, text);
+    tail = (tail + text).slice(-4000);
+  };
   try {
-    const p = Bun.spawn([script], {
-      cwd: worktree, env: { ...process.env, KITE_MAIN_DIR: main }, stdin: 'ignore', stdout: fd, stderr: fd, timeout: SETUP_TIMEOUT_MS,
-    });
-    return await p.exited;
-  } catch (e) {
-    writeSync(fd, `启动 .kite/setup 失败：${(e as Error).message}\n`);
-    return 126;
+    const r = await runScript(script, { cwd: worktree, env: { ...process.env, KITE_MAIN_DIR: main }, timeoutMs: SETUP_TIMEOUT_MS, onOutput: write });
+    if (r.stopped) write(`\n.kite/setup 超过 ${SETUP_TIMEOUT_MS / 60_000} 分钟，已停止\n`);
+    // 超时按 timeout 命令的惯例记 124
+    return { exit: r.code ?? 124, tail };
   } finally {
     closeSync(fd);
   }

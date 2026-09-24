@@ -14,7 +14,9 @@ struct SessionDragSource: NSViewRepresentable {
     static let type = NSPasteboard.PasteboardType("com.sainner.kite.session")
 
     func makeNSView(context: Context) -> SourceView {
-        SourceView()
+        let view = SourceView()
+        view.minimumDistance = Metrics.dragThreshold
+        return view
     }
 
     func updateNSView(_ view: SourceView, context: Context) {
@@ -23,24 +25,21 @@ struct SessionDragSource: NSViewRepresentable {
         view.onDetach = onDetach
     }
 
-    final class SourceView: NSView, NSDraggingSource {
+    final class SourceView: PressDragView, NSDraggingSource {
         var tint = NSColor.systemBlue
         var onClick: (() -> Void)?
         var onDetach: ((CGPoint) -> Void)?
-        private var start: NSPoint?
-
-        override var mouseDownCanMoveWindow: Bool { false }
-        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        /// 这次按下已经开始拖了，松手不算点击。
+        private var began = false
 
         override func mouseDown(with event: NSEvent) {
-            start = event.locationInWindow
+            super.mouseDown(with: event)
+            began = false
         }
 
         override func mouseDragged(with event: NSEvent) {
-            guard let start else { return }
-            let location = event.locationInWindow
-            guard hypot(location.x - start.x, location.y - start.y) >= Metrics.dragThreshold else { return }
-            self.start = nil
+            guard !began, movedEnough(event) else { return }
+            began = true
             let item = NSPasteboardItem()
             item.setString("", forType: SessionDragSource.type)
             let dragging = NSDraggingItem(pasteboardWriter: item)
@@ -58,14 +57,14 @@ struct SessionDragSource: NSViewRepresentable {
                 NSBezierPath(roundedRect: NSRect(x: 10, y: 26, width: 100, height: 44), xRadius: 4, yRadius: 4).fill()
                 return true
             }
-            let point = convert(location, from: nil)
+            let point = convert(event.locationInWindow, from: nil)
             dragging.setDraggingFrame(NSRect(origin: NSPoint(x: point.x - 20, y: point.y - 12), size: size), contents: image)
             beginDraggingSession(with: [dragging], event: event, source: self)
         }
 
         override func mouseUp(with event: NSEvent) {
-            if start != nil { onClick?() }
-            start = nil
+            if pressedAt != nil, !began { onClick?() }
+            super.mouseUp(with: event)
         }
 
         func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {

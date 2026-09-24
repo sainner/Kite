@@ -7,12 +7,12 @@
  * - 结果发成 check 事件。
  */
 import { tool } from '@anthropic-ai/claude-agent-sdk';
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { gitTry, revParse } from './git.ts';
+import { runScript } from './script.ts';
 import type { ToolContext } from './tools.ts';
 
 const CHECK_TIMEOUT_MS = 10 * 60_000;
@@ -76,12 +76,6 @@ async function takeTurn(signal?: AbortSignal): Promise<(() => void) | null> {
   return turn;
 }
 
-/** 停掉整个进程组：检查命令常是 sh 包一层再起测试进程，只停最外层会留下子孙。 */
-function killGroup(pid: number): void {
-  try { process.kill(-pid, 'SIGTERM'); } catch {}
-  setTimeout(() => { try { process.kill(-pid, 'SIGKILL'); } catch {} }, 3000).unref();
-}
-
 type RunOptions = { main: string; worktree: string; all?: boolean; signal?: AbortSignal; timeoutMs?: number; logDir?: string };
 
 export async function runCheck(o: RunOptions): Promise<CheckResult> {
@@ -110,47 +104,23 @@ async function run(o: RunOptions): Promise<Omit<CheckResult, 'waited'>> {
     mkdirSync(o.logDir, { recursive: true });
     env.KITE_LOG_DIR = o.logDir;
   }
-  const started = performance.now();
-  // detached：自成一个进程组，停的时候连子孙一起停
-  const p = spawn(scriptOf(o.worktree), all ? ['--all'] : [], { cwd: o.worktree, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-
   let output = '';
   let dropped = 0;
-  const take = (d: Buffer | string) => {
-    output += d.toString();
-    if (output.length > 2 * OUTPUT_MAX) { dropped += output.length - OUTPUT_MAX; output = output.slice(-OUTPUT_MAX); }
-  };
-  p.stdout.on('data', take);
-  p.stderr.on('data', take);
-
-  let stopped: CheckResult['stopped'];
-  const stop = (why: 'timeout' | 'aborted') => {
-    if (stopped || p.exitCode !== null || p.signalCode !== null || !p.pid) return;
-    stopped = why;
-    killGroup(p.pid);
-  };
-  const timer = setTimeout(() => stop('timeout'), o.timeoutMs ?? CHECK_TIMEOUT_MS);
-  const onAbort = () => stop('aborted');
-  o.signal?.addEventListener('abort', onAbort, { once: true });
-  if (o.signal?.aborted) onAbort();
-
-  const exit = await new Promise<number | null>((resolve) => {
-    p.once('error', (e) => { take(`启动 .kite/check 失败：${e.message}\n`); resolve(126); });
-    p.once('close', (code) => resolve(code));
+  const r = await runScript(scriptOf(o.worktree), {
+    args: all ? ['--all'] : [], cwd: o.worktree, env, timeoutMs: o.timeoutMs ?? CHECK_TIMEOUT_MS, ...(o.signal ? { signal: o.signal } : {}),
+    onOutput: (text) => {
+      output += text;
+      if (output.length > 2 * OUTPUT_MAX) { dropped += output.length - OUTPUT_MAX; output = output.slice(-OUTPUT_MAX); }
+    },
   });
-  clearTimeout(timer);
-  o.signal?.removeEventListener('abort', onAbort);
-
   if (dropped || output.length > OUTPUT_MAX) {
     dropped += Math.max(0, output.length - OUTPUT_MAX);
     output = `（前面省略了 ${dropped} 个字符）\n${output.slice(-OUTPUT_MAX)}`;
   }
-  const code = stopped ? null : exit;
   return {
-    ok: code === 0, code, all, base,
-    seconds: Math.round(performance.now() - started) / 1000,
+    ok: r.code === 0, code: r.code, all, base, seconds: r.seconds,
     logDir: o.logDir ?? null,
-    output, ...(stopped ? { stopped } : {}),
+    output, ...(r.stopped ? { stopped: r.stopped } : {}),
   };
 }
 

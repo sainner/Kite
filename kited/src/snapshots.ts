@@ -18,6 +18,8 @@ export interface Snapshot { commit: string; at: number; label: string; toolUseId
 
 // 每次调用 git 约 10 毫秒，快照在每批工具调用后都要打，agent 等它打完才继续，所以尽量少调
 const indexes = new Map<string, string>();
+/** 每个工作树最近一个已经在快照链上的 HEAD：HEAD 没动就不用再问它是不是上一枚的祖先。 */
+const chainedHeads = new Map<string, string>();
 
 /** 工作树自己的 git 目录下的 kite/index。工作树的 git 目录不会变，查一次就记住。 */
 async function privateIndex(worktree: string): Promise<string> {
@@ -59,12 +61,15 @@ async function record(worktree: string, sessionId: string, r: NewSnapshot, label
   const chain = (async () => {
     const parents: string[] = [];
     if (r.previous) parents.push('-p', r.previous);
-    if (r.head && (!r.previous || !(await isAncestor(worktree, r.head, r.previous)))) parents.push('-p', r.head);
+    const chained = r.head !== undefined && r.head !== null && chainedHeads.get(worktree) === r.head;
+    if (r.head && !chained && (!r.previous || !(await isAncestor(worktree, r.head, r.previous)))) parents.push('-p', r.head);
     const commit = await git(worktree, ['commit-tree', r.tree, ...parents, '-F', '-'], {
       env: KITE_IDENTITY, input: message(sessionId, label, toolUseIds),
     });
     // 比较并交换：引用在读取之后被动过就失败，不覆盖
     await git(worktree, ['update-ref', '--no-deref', snapshotRef(sessionId), commit, r.previous ?? '']);
+    // 这枚快照之后，HEAD 已经在链上：要么本来就是祖先，要么刚挂成了父节点
+    if (r.head) chainedHeads.set(worktree, r.head);
     return commit;
   })();
   const [files, commit] = await Promise.all([count, chain]);
@@ -111,6 +116,15 @@ export async function restore(worktree: string, sessionId: string, target: strin
     ? { ...safety, created: false, changedFiles: 0 }
     : await record(worktree, sessionId, { tree, fromTree: safety.tree, previous: safety.commit }, label, []);
   return { safety, current, label };
+}
+
+/** 找本会话的一枚快照，commit 可以是缩写；不存在或不属于本会话返回 null。 */
+export async function findSnapshot(cwd: string, sessionId: string, commit: string): Promise<string | null> {
+  // 只收提交号，别的写法（分支名、以 - 开头的参数）一律不认
+  if (!/^[0-9a-f]{4,64}$/i.test(commit)) return null;
+  const r = await gitTry(cwd, ['log', '-1', '--format=%H%x1f%(trailers:key=Kite-Session,valueonly)', commit, '--']);
+  const [full, owner] = r.stdout.trim().split('\x1f');
+  return r.code === 0 && full && owner?.trim() === sessionId ? full : null;
 }
 
 /** 会话的快照链，新的在前，最多 1000 枚。沿第一父节点走，遇到不属于本会话的提交就停。 */

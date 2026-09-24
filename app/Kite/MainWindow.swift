@@ -5,13 +5,20 @@ import SwiftUI
 /// 两者之间的缝拖动调侧边栏宽度，拖到很窄就收成一列图标。
 struct MainWindow: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.windowChrome) private var chrome
+    /// 拖侧边栏边缘时，按下那一刻的宽度。
+    @State private var resizingFrom: CGFloat?
 
     var body: some View {
         HStack(spacing: 0) {
             MacSidebar()
-                .frame(width: model.sidebarShown)
-            MouseDragArea(cursor: .columnResize) { point in
-                resizeSidebar(to: point.x - Metrics.padding - Metrics.gap / 2)
+                .frame(width: sidebarWidth)
+            MouseDragArea(cursor: .columnResize) { drag in
+                let from = resizingFrom ?? sidebarWidth
+                resizingFrom = from
+                resizeSidebar(to: from + drag.translation.width)
+            } onEnded: {
+                resizingFrom = nil
             }
             .frame(width: Metrics.gap)
             .disablesWindowDragging()
@@ -25,10 +32,15 @@ struct MainWindow: View {
         }
         .padding(Metrics.padding)
         // 窗口不能小到放不下当前会话的卡片
-        .frame(minWidth: 2 * Metrics.padding + model.sidebarShown + Metrics.gap + minimum.width,
+        .frame(minWidth: 2 * Metrics.padding + sidebarWidth + Metrics.gap + minimum.width,
                minHeight: 2 * Metrics.padding + minimum.height)
         .background(Theme.background)
         .ignoresSafeArea()
+    }
+
+    /// 侧边栏实际占的宽度。收起时是一列图标，宽到放得下红绿灯按钮。
+    private var sidebarWidth: CGFloat {
+        model.sidebarCollapsed ? chrome.leading - Metrics.padding : model.sidebarWidth
     }
 
     private var minimum: CGSize {

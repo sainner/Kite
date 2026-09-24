@@ -7,7 +7,7 @@ struct KiteApp: App {
     var body: some Scene {
         #if os(macOS)
         Window("Kite", id: "main") {
-            MainWindow().environment(model)
+            MainWindow().environment(model).readsWindowChrome()
         }
         .kiteWindowStyle()
         .defaultSize(width: 1280, height: 800)
@@ -16,15 +16,11 @@ struct KiteApp: App {
         // 从侧边栏分离出来的会话，放在松手的地方
         WindowGroup("会话", id: "session", for: Int.self) { $id in
             if let id {
-                DetachedSession(id: id).environment(model)
+                DetachedSession(id: id).environment(model).readsWindowChrome()
             }
         }
         .kiteWindowStyle()
         .defaultSize(width: 1000, height: 700)
-        .defaultWindowPlacement { _, _ in
-            guard let frame = model.pendingPlacement else { return WindowPlacement() }
-            return WindowPlacement(frame.origin, size: frame.size)
-        }
         #else
         WindowGroup {
             PhoneLayout().environment(model)

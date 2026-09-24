@@ -2,15 +2,52 @@
 import AppKit
 import SwiftUI
 
-/// 按住拖动的区域，鼠标事件由 AppKit 接，报的是窗口坐标（左上角是原点，和 SwiftUI 的 .global 一致）。
-/// 用 AppKit 是为了声明这里按下不拖窗口；标题栏那一条另见 disablesWindowDragging。
+/// 按下、挪过 minimumDistance 才算拖动的 AppKit 视图，这里按下不拖窗口。卡片拖动、缝、侧边栏里的会话都从它派生。
+class PressDragView: NSView {
+    var minimumDistance: CGFloat = 0
+    /// 按下的位置，窗口坐标；没按着为 nil。
+    private(set) var pressedAt: NSPoint?
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        pressedAt = event.locationInWindow
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        pressedAt = nil
+    }
+
+    /// 从按下到 event 挪够了距离。
+    func movedEnough(_ event: NSEvent) -> Bool {
+        guard let pressedAt else { return false }
+        let at = event.locationInWindow
+        return hypot(at.x - pressedAt.x, at.y - pressedAt.y) >= minimumDistance
+    }
+
+    /// 在窗口内容里的坐标，左上角是原点，和 SwiftUI 的 .global 一致。
+    func windowPoint(_ location: NSPoint) -> CGPoint {
+        guard let content = window?.contentView else { return location }
+        let point = content.convert(location, from: nil)
+        return content.isFlipped ? point : CGPoint(x: point.x, y: content.bounds.height - point.y)
+    }
+}
+
+/// 拖动的指针位置和从按下起挪了多少，窗口坐标。
+struct MouseDrag {
+    let location: CGPoint
+    let translation: CGSize
+}
+
+/// 按住拖动的区域，鼠标事件由 AppKit 接。用 AppKit 是为了声明这里按下不拖窗口；标题栏那一条另见 disablesWindowDragging。
 struct MouseDragArea: NSViewRepresentable {
     var cursor: NSCursor
     /// 拖动中的指针样式，不给就不变。
     var activeCursor: NSCursor?
     /// 挪动多少才算拖动，免得单击也算，见 Metrics.dragThreshold。
     var minimumDistance: CGFloat = 0
-    var onChanged: (CGPoint) -> Void
+    var onChanged: (MouseDrag) -> Void
     var onEnded: () -> Void = {}
 
     func makeNSView(context: Context) -> DragView {
@@ -29,36 +66,27 @@ struct MouseDragArea: NSViewRepresentable {
         view.onEnded = onEnded
     }
 
-    final class DragView: NSView {
+    final class DragView: PressDragView {
         var cursor = NSCursor.arrow
         var activeCursor: NSCursor?
-        var minimumDistance: CGFloat = 0
-        var onChanged: ((CGPoint) -> Void)?
+        var onChanged: ((MouseDrag) -> Void)?
         var onEnded: (() -> Void)?
-        private var start: NSPoint?
         private var dragging = false
-
-        override var mouseDownCanMoveWindow: Bool { false }
-        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
         override func resetCursorRects() {
             addCursorRect(bounds, cursor: cursor)
         }
 
-        override func mouseDown(with event: NSEvent) {
-            start = event.locationInWindow
-        }
-
         override func mouseDragged(with event: NSEvent) {
-            guard let start, let content = window?.contentView else { return }
-            let location = event.locationInWindow
+            guard let pressedAt else { return }
             if !dragging {
-                guard hypot(location.x - start.x, location.y - start.y) >= minimumDistance else { return }
+                guard movedEnough(event) else { return }
                 dragging = true
                 activeCursor?.push()
             }
-            let point = content.convert(location, from: nil)
-            onChanged?(content.isFlipped ? point : CGPoint(x: point.x, y: content.bounds.height - point.y))
+            let start = windowPoint(pressedAt)
+            let location = windowPoint(event.locationInWindow)
+            onChanged?(MouseDrag(location: location, translation: CGSize(width: location.x - start.x, height: location.y - start.y)))
         }
 
         override func mouseUp(with event: NSEvent) {
@@ -66,8 +94,8 @@ struct MouseDragArea: NSViewRepresentable {
                 if activeCursor != nil { NSCursor.pop() }
                 onEnded?()
             }
-            start = nil
             dragging = false
+            super.mouseUp(with: event)
         }
     }
 }

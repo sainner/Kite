@@ -64,13 +64,15 @@ struct ActionArea: View {
 struct MacSidebar: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.windowChrome) private var chrome
 
     var body: some View {
         let current = model.current?.id
         Group {
             if model.sidebarCollapsed { rail(current) } else { expanded(current) }
         }
-        .padding(.top, Metrics.titleBar - Metrics.padding)
+        // 从红绿灯按钮那一条下面开始
+        .padding(.top, chrome.top + Metrics.gap - Metrics.padding)
     }
 
     private func expanded(_ current: Int?) -> some View {
@@ -118,7 +120,7 @@ struct MacSidebar: View {
             guard !model.detached.contains(session.id) else { return }
             // 独立窗口里的卡片和主窗口内容区一样大；窗口左上角放在指针左上方，指针落在标题那一条上
             model.pendingPlacement = CGRect(origin: CGPoint(x: point.x - 60, y: point.y - 16),
-                                            size: DetachedSession.windowSize(content: model.contentSize))
+                                            size: DetachedSession.windowSize(content: model.contentSize, chrome: chrome))
             openWindow(id: "session", value: session.id)
         }
     }

@@ -15,8 +15,8 @@ struct TilesLayer: View {
             let layout = workspace.shown?.layout(in: bounds) ?? TileLayout()
             ZStack(alignment: .topLeading) {
                 ForEach(layout.gaps) { gap in
-                    MouseDragArea(cursor: gap.split.axis == .horizontal ? .columnResize : .rowResize) { point in
-                        workspace.resize(gap, to: local(point))
+                    MouseDragArea(cursor: gap.split.axis == .horizontal ? .columnResize : .rowResize) { drag in
+                        workspace.resize(gap, to: local(drag.location))
                     }
                     .placed(gap.rect)
                 }
@@ -96,7 +96,11 @@ struct PaneCard: View {
                     .padding(.horizontal, 14)
                     .frame(height: Metrics.cardHeader)
                     .overlay {
-                        MouseDragArea(cursor: .openHand, activeCursor: .closedHand, minimumDistance: Metrics.dragThreshold, onChanged: onDrag, onEnded: onDrop)
+                        MouseDragArea(cursor: .openHand, activeCursor: .closedHand, minimumDistance: Metrics.dragThreshold) { drag in
+                            onDrag(drag.location)
+                        } onEnded: {
+                            onDrop()
+                        }
                     }
                     PaneBody(pane: pane)
                         .padding([.horizontal, .bottom], 14)

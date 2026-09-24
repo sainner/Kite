@@ -9,7 +9,7 @@ app/
 └── Kite/                                      源码和资源
 ```
 
-布局：一个会话就是一个窗口组（`Workspace`，在 `Tiles.swift`）：有哪些窗口、Mac 上怎么排、聚焦哪个。Mac 把它们排成卡片（`TileViews.swift`），按住卡片标题栏拖出去，它脱离布局变成跟着指针的圆，落到别的卡片上时用占位预览放下后的排布；iPhone 一次显示聚焦的那个，页签切换（`PhoneLayout.swift`）。Mac 主窗口左边是侧边栏（会话列表和底部的 action 区，拖右边的缝调宽度，拖到很窄收成一列图标，⌃⌘S 切换），会话从侧边栏拖到主窗口外面分离成独立窗口（`DetachedSession.swift`），关掉后回到主窗口。卡片和缝上不拖窗口，拖窗口交给侧边栏这些空白处（`MouseDragArea.swift`）。尺寸和颜色集中在 `Theme.swift`。
+布局：一个会话就是一个窗口组（`Workspace`，在 `Tiles.swift`）：有哪些窗口、Mac 上怎么排、聚焦哪个。Mac 把它们排成卡片（`TileViews.swift`），按住卡片标题栏拖出去，它脱离布局变成跟着指针的圆，落到别的卡片上时用占位预览放下后的排布；iPhone 一次显示聚焦的那个，页签切换（`PhoneLayout.swift`）。Mac 主窗口左边是侧边栏（会话列表和底部的 action 区，拖右边的缝调宽度，拖到很窄收成一列图标，⌃⌘S 切换），会话从侧边栏拖到主窗口外面分离成独立窗口（`DetachedSession.swift`），关掉后回到主窗口。卡片和缝上不拖窗口，拖窗口交给侧边栏这些空白处（`MouseDragArea.swift`）。红绿灯按钮那一条多高、让出多宽，从 AppKit 的安全区读（`WindowChrome.swift`），不写死。尺寸和颜色集中在 `Theme.swift`。
 
 ## 约定
 

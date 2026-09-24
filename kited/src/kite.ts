@@ -5,14 +5,14 @@
  * 串行，这就是「本机按项目加一把锁」。
  */
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { KiteError } from './errors.ts';
 import { type AdoptResult, Bus } from './events.ts';
 import { hasUnmerged, mainline, mergeBack } from './mainline.ts';
 import { register } from './projects.ts';
 import { Runner } from './runner.ts';
-import { capture, list, restore, type Snapshot } from './snapshots.ts';
+import { capture, findSnapshot, list, restore, type Snapshot } from './snapshots.ts';
 import type { Project, Session, Store } from './store.ts';
 import { kiteTools } from './tools.ts';
 import { addWorktree, removeWorktree, runSetup } from './worktrees.ts';
@@ -112,10 +112,9 @@ export class Kite {
   private async prepare(s: Session, project: Project, prompt: string): Promise<void> {
     try {
       await addWorktree(project.path, s.worktree, s.branch, s.base);
-      const exit = await runSetup(project.path, s.worktree, this.setupLog(s.id));
-      const log = exit === null ? '' : readFileSync(this.setupLog(s.id), 'utf8').slice(-4000);
-      this.bus.emit(s.id, { type: 'setup', exit, log });
-      if (exit !== null && exit !== 0) return this.setStatus(s, 'prepare_failed');
+      const setup = await runSetup(project.path, s.worktree, this.setupLog(s.id));
+      this.bus.emit(s.id, { type: 'setup', exit: setup?.exit ?? null, log: setup?.tail ?? '' });
+      if (setup && setup.exit !== 0) return this.setStatus(s, 'prepare_failed');
       // 起点快照：回退到「agent 动手之前」要有落点
       await this.snapshot(s, [], '会话开始');
       this.setStatus(s, 'open');
@@ -192,11 +191,10 @@ export class Kite {
   async restore(id: string, commit: string): Promise<void> {
     const s = this.mustOpen(id);
     if (this.runners.get(id)?.busy) throw new KiteError('agent 正在工作，先打断或等这一轮结束', 409);
-    const snaps = await this.snapshots(id);
-    const target = snaps.find((x) => x.commit.startsWith(commit));
-    if (!commit || !target) throw new KiteError(`这个会话没有快照 ${commit}`, 404);
+    const target = await findSnapshot(s.worktree, s.id, commit);
+    if (!target) throw new KiteError(`这个会话没有快照 ${commit}`, 404);
     await this.serial(`snap:${s.id}`, async () => {
-      const { current, label } = await restore(s.worktree, s.id, target.commit);
+      const { current, label } = await restore(s.worktree, s.id, target);
       this.emitSnapshot(s, current, label);
     });
   }

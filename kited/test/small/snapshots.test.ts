@@ -1,10 +1,10 @@
 /**
- * 快照与回退（src/snapshots.ts）：S1–S2。
+ * 快照与回退（src/snapshots.ts）：S1–S3。
  */
 import { expect, test } from 'bun:test';
 import { renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { capture, list, restore } from '../../src/snapshots.ts';
+import { capture, findSnapshot, list, restore } from '../../src/snapshots.ts';
 import { git, gitWorktree, lexists, newRepo, read, repoState, useTemp, writeFiles } from '../util.ts';
 
 const temp = useTemp();
@@ -99,4 +99,45 @@ test('restore 把工作树恢复成快照：删掉和改名的文件回来、之
   expect(lexists(join(wt, 'ren.txt'))).toBe(false);
   expect(lexists(join(wt, 'dir/inner.txt'))).toBe(false);
   expect(read(join(wt, '.env'))).toBe('SECRET=2\n');
+});
+
+/*
+ * 依赖 git：`git log -1 --format=%H%x1f%(trailers:key=Kite-Session,valueonly) <commit> --` 把缩写提交号解析成完整提交号，
+ * 按 trailer 读出快照属于哪个会话（另一个会话的 id 以本会话 id 开头，挡住按前缀比对）。分支名和修订表达式这里都让它们
+ * 指向本会话的快照，只有「只收十六进制」这一条能挡住；--output 会让 git log 往文件里写，挡住参数被当成选项。
+ */
+test('findSnapshot 用缩写提交号找到本会话较早的一枚快照、返回完整提交号；别的会话的快照、不是快照的提交、不存在的提交号、指向本会话快照的分支名和修订表达式、以 - 开头的参数都返回 null', async () => {
+  const root = temp();
+  const main = newRepo(root, 'main', { 'a.txt': 'a\n' });
+  const id = 's3';
+  const other = 's3-other';
+  const wt = gitWorktree(main, join(root, 'wt'), `kite/${id}`);
+  const otherWt = gitWorktree(main, join(root, 'wt-other'), `kite/${other}`);
+  writeFiles(wt, { 'a.txt': 'a1\n' });
+  const older = await capture(wt, id, '第一枚');
+  writeFiles(wt, { 'a.txt': 'a2\n' });
+  const newer = await capture(wt, id, '第二枚');
+  writeFiles(otherWt, { 'a.txt': 'other\n' });
+  const foreign = await capture(otherWt, other, '别的会话');
+  expect([older.created, newer.created, foreign.created]).toEqual([true, true, true]);
+
+  expect(await findSnapshot(main, id, older.commit.slice(0, 8))).toBe(older.commit);
+  expect(await findSnapshot(wt, id, newer.commit)).toBe(newer.commit);
+
+  expect(await findSnapshot(main, id, foreign.commit)).toBeNull();
+  expect(await findSnapshot(main, id, foreign.commit.slice(0, 8))).toBeNull();
+  expect(await findSnapshot(main, other, older.commit)).toBeNull();
+  expect(await findSnapshot(main, id, git(main, 'rev-parse', 'HEAD'))).toBeNull();
+  expect(await findSnapshot(main, id, 'deadbeef'.repeat(5))).toBeNull();
+
+  // 让 HEAD 和 main 都指向本会话的快照
+  git(main, 'reset', '-q', '--hard', older.commit);
+  for (const rev of ['HEAD', 'main', `refs/kite/snapshots/${id}`, `${older.commit}~0`, `${older.commit}^{commit}`]) {
+    expect(await findSnapshot(main, id, rev)).toBeNull();
+  }
+  const leak = join(root, 'leak.txt');
+  for (const arg of [`--output=${leak}`, '--all', '-1', `-${older.commit.slice(0, 8)}`]) {
+    expect(await findSnapshot(main, id, arg)).toBeNull();
+  }
+  expect(lexists(leak)).toBe(false);
 });
