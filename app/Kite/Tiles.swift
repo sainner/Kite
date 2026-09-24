@@ -182,14 +182,16 @@ struct CardDrag {
 
 @Observable
 final class Workspace {
-    private(set) var root = Arrangement.oneAndTwo.tile
+    private(set) var root: Tile
     private(set) var drag: CardDrag?
     /// 指针在内容区里的位置，拖动时一直变，和 drag 分开，免得每动一下整个排布都重算。
     private(set) var pointer: CGPoint = .zero
     /// 内容区在窗口里的位置和大小，把窗口坐标换算到内容区。
     var area: CGRect = .zero
-    var sidebarWidth = Metrics.sidebarWidth
-    var sidebarCollapsed = false
+
+    init(_ arrangement: Arrangement = .oneAndTwo) {
+        root = arrangement.tile
+    }
 
     private var bounds: CGRect { CGRect(origin: .zero, size: area.size) }
 

@@ -1,32 +1,27 @@
 import SwiftUI
 
 struct ContentView: View {
-    let workspace: Workspace
+    let model: AppModel
 
     var body: some View {
         #if os(macOS)
-        // 左边侧边栏，上面是列表，底部是 action 区；右边内容区。都铺在 App 的底色上，四周留内边距。
-        // 两者之间的缝拖动调侧边栏宽度，拖到很窄就收起
+        // 左边侧边栏，右边内容区显示选中会话的窗口组，都铺在 App 的底色上，四周留内边距。
+        // 两者之间的缝拖动调侧边栏宽度，拖到很窄就收成一列图标
         HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                SidebarList()
-                Spacer(minLength: Metrics.gap)
-                ActionArea()
-            }
-            .padding(.top, Metrics.titleBar - Metrics.padding)
-            .padding(.leading, Metrics.sidebarLeading)
-            .frame(width: workspace.sidebarCollapsed ? 0 : workspace.sidebarWidth, alignment: .leading)
-            .opacity(workspace.sidebarCollapsed ? 0 : 1)
+            MacSidebar()
+                .frame(width: model.sidebarCollapsed ? Metrics.rail : model.sidebarWidth)
             MouseDragArea(cursor: .columnResize) { point in
                 resizeSidebar(to: point.x - Metrics.padding - Metrics.gap / 2)
             }
             .frame(width: Metrics.gap)
-            TilesLayer()
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { workspace.area = $0 }
-            // 侧边栏收起后红绿灯按钮落在内容区左上角，卡片从它下面开始
-            .padding(.top, workspace.sidebarCollapsed ? Metrics.titleBar - Metrics.padding : 0)
+            if let session = model.current {
+                SessionContent(session: session)
+            } else {
+                // 会话都分离出去了
+                Color.clear
+            }
         }
-        .environment(workspace)
+        .environment(model)
         .padding(Metrics.padding)
         .frame(minWidth: 900, minHeight: 560)
         .background(Theme.background)
@@ -39,16 +34,16 @@ struct ContentView: View {
     #if os(macOS)
     private func resizeSidebar(to width: CGFloat) {
         let collapse = width < Metrics.sidebarCollapse
-        if collapse != workspace.sidebarCollapsed {
-            withAnimation(.snappy) { workspace.sidebarCollapsed = collapse }
+        if collapse != model.sidebarCollapsed {
+            withAnimation(.snappy) { model.sidebarCollapsed = collapse }
         }
         if !collapse {
-            workspace.sidebarWidth = min(max(width, Metrics.sidebarMin), Metrics.sidebarMax)
+            model.sidebarWidth = min(max(width, Metrics.sidebarMin), Metrics.sidebarMax)
         }
     }
     #endif
 }
 
 #Preview {
-    ContentView(workspace: Workspace())
+    ContentView(model: AppModel())
 }

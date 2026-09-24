@@ -33,3 +33,78 @@ struct ActionArea: View {
         .frame(height: Metrics.actionArea)
     }
 }
+
+#if os(macOS)
+/// Mac 的侧边栏。展开时上面是会话列表、底部是 action 区；收起时只留一列图标。
+/// 一行就是一个会话和它的窗口组：点一下在内容区显示，拖到主窗口外面就分离成独立窗口。
+struct MacSidebar: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        if model.sidebarCollapsed { rail } else { expanded }
+    }
+
+    private var expanded: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 4) {
+                ForEach(model.sessions) { session in
+                    HStack(spacing: 8) {
+                        Circle().fill(session.tint).frame(width: 10, height: 10)
+                        RoundedRectangle(cornerRadius: 4).fill(Theme.placeholder).frame(height: 10)
+                        if model.detached.contains(session.id) {
+                            Image(systemName: "macwindow").font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 32)
+                    .background(model.current?.id == session.id ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay { source(session) }
+                }
+            }
+            Spacer(minLength: Metrics.gap)
+            ActionArea()
+        }
+        .padding(.top, Metrics.titleBar - Metrics.padding)
+        .padding(.leading, Metrics.sidebarLeading)
+    }
+
+    private var rail: some View {
+        VStack(spacing: 8) {
+            ForEach(model.sessions) { session in
+                // 已经分离成独立窗口的画淡一点
+                Circle().fill(session.tint).frame(width: 24, height: 24)
+                    .opacity(model.detached.contains(session.id) ? 0.35 : 1)
+                    .padding(6)
+                    .background(model.current?.id == session.id ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay { source(session) }
+            }
+            Spacer(minLength: Metrics.gap)
+            ForEach(0..<4, id: \.self) { _ in
+                RoundedRectangle(cornerRadius: 8).fill(Theme.placeholder).frame(width: 32, height: 32)
+            }
+            Circle().fill(Theme.placeholder).frame(width: 28, height: 28).padding(.top, 4)
+        }
+        .padding(.top, Metrics.titleBar - Metrics.padding)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func source(_ session: Session) -> some View {
+        SessionDragSource(tint: session.tint) {
+            // 已经分离的，点一下把它的窗口提到前面
+            if model.detached.contains(session.id) {
+                openWindow(id: "session", value: session.id)
+            } else {
+                model.selected = session.id
+            }
+        } onDetach: { point in
+            guard !model.detached.contains(session.id) else { return }
+            // 独立窗口和现在的内容区一样大，左上角落在指针附近
+            let content = model.current?.workspace.area.size ?? CGSize(width: 900, height: 600)
+            let size = CGSize(width: content.width + 2 * Metrics.padding, height: content.height + Metrics.windowHeader + Metrics.padding)
+            model.placements[session.id] = CGRect(x: point.x - 60, y: point.y + 16 - size.height, width: size.width, height: size.height)
+            openWindow(id: "session", value: session.id)
+        }
+    }
+}
+#endif

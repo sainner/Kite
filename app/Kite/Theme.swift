@@ -6,6 +6,10 @@ enum Theme {
     static let card = Color.white
     /// 还没有内容时的占位色块。
     static let placeholder = Color.black.opacity(0.06)
+    /// 占位里要显眼一点的，比如标题。
+    static let strongPlaceholder = Color.black.opacity(0.16)
+    /// 侧边栏里选中的一行。
+    static let selection = Color.black.opacity(0.07)
 }
 
 enum Metrics {
@@ -18,6 +22,11 @@ enum Metrics {
     static let sidebarMin: CGFloat = 200
     static let sidebarMax: CGFloat = 400
     static let sidebarCollapse: CGFloat = 120
+    /// 侧边栏收起后的图标栏宽度，放得下红绿灯按钮。
+    static let rail: CGFloat = 60
+    /// 独立窗口顶上那一条的高度，和红绿灯按钮居中对齐；左边让出红绿灯的宽度。
+    static let windowHeader: CGFloat = 32
+    static let trafficLights: CGFloat = 80
     /// 侧边栏自己的左边距，加上窗口内边距，和红绿灯按钮对齐。
     static let sidebarLeading: CGFloat = 10
     /// 红绿灯按钮占的高度，侧边栏的内容从它下面开始。
