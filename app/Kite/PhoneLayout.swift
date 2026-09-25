@@ -14,8 +14,8 @@ struct PhoneLayout: View {
     @Environment(AppModel.self) private var model
 
     @State private var open: Drawer?
-    /// 在动的一侧：手指拖着，或者正随时间走。动的进度每一帧都变，放在 PhoneWindow 里，只有窗口跟着重画。
-    @State private var moving: Drawer?
+    /// 露出来的一侧：打开着、手指拖着或者正随时间走。动的进度每一帧都变，放在 PhoneWindow 里，只有窗口跟着重画。
+    @State private var shown: Drawer?
     /// 屏幕圆角，读到之前按 0 算：铺满时窗口的角本来就被屏幕圆角盖住。
     @State private var screenRadius: CGFloat = 0
     /// 页签和 action 栏合起来多高，按实际排出来的量。
@@ -72,7 +72,7 @@ struct PhoneLayout: View {
             }
             // 窗口铺满整个屏幕，放在 overlay 里，不把上面这层撑出安全区，action 栏才能留在 Home 条上面
             .overlay(alignment: .topLeading) {
-                PhoneWindow(open: $open, moving: $moving, screen: screen, insets: insets, homeInset: home,
+                PhoneWindow(open: $open, shown: $shown, screen: screen, insets: insets, homeInset: home,
                             sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius)
             }
         }
@@ -104,20 +104,22 @@ struct PhoneLayout: View {
     }
 
     private func showing(_ drawer: Drawer) -> Bool {
-        open == drawer || moving == drawer
+        shown == drawer
     }
 }
 
 /// 会话窗口，和拉出侧边栏、action 栏的手势。
 ///
 /// 打开、收起分两段，照系统可交互转场的做法：
-/// - 拖着：窗口跟着手指走，挪多少走多少，拖回去就收回来。推过完全打开还能再推出去一截，越推越吃力，最多 Motion.limit；收起的那头不留。
-/// - 松手：甩得够快就去甩的那头，不然过半就打开、不到一半收回去；随时间先快后慢地走过去，不过冲，起步跟上手指的速度。
-///   点按钮、点窗口收起也是这一段，只是没有手指的速度。走的途中按住就接着拖，从当时的样子接手。
+/// - 拖着：窗口跟着手指走，挪多少走多少，拖回去就收回来；越过一半时轻震一下，松手就会去这一头。
+///   推过完全打开还能再推出去一截，变形照旧接着走，越推越吃力，最多 Motion.limit；收起的那头不留。
+/// - 松手：甩得够快就去甩的那头，不然过半就打开、不到一半收回去；用弹簧带着手指的速度走过去，甩得越快回弹越多，
+///   冲过头再回来，冲出去的那截和手指推过头一样吃力。点按钮、点窗口收起也是这一段，没有速度，不回弹、不冲过头。
+///   走的途中按住就接着拖，从当时的样子接手；半路改去另一头，带着当时的速度掉头。
 private struct PhoneWindow: View {
     @Binding var open: Drawer?
-    /// 在动的一侧：手指拖着，或者正随时间走。
-    @Binding var moving: Drawer?
+    /// 露出来的一侧：打开着、手指拖着或者正随时间走。
+    @Binding var shown: Drawer?
     let screen: CGSize
     /// 屏幕四边被盖着的：状态栏、Home 条，键盘升起来时底下是键盘。
     let insets: EdgeInsets
@@ -128,63 +130,74 @@ private struct PhoneWindow: View {
     let screenRadius: CGFloat
     @Environment(AppModel.self) private var model
     @State private var motion: Motion?
+    /// 没在动时停在哪一侧打开着。窗口画在哪只看它和 motion，不看 open：open 是要去哪，
+    /// 别处改了 open 以后要到 onChange 里才起动画，按 open 画的话中间会先按走完的样子排一遍。
+    @State private var rest: Drawer?
     /// 这次拖动里，手指的位移为 0 时对应打开到几成（按 Motion.finger 的算法，推过头的不加阻尼）。
     @State private var anchor: CGFloat = 0
-    /// 在走，要一帧帧画。
-    @State private var playing = false
     /// 这次拖的方向不对，不拉抽屉，松手前都不管。
     @State private var offAxis = false
+    /// 拖着越过一半的次数，每变一次轻震一下。
+    @State private var crossings = 0
 
-    /// 从一头走到另一头多久；短的按距离的平方根缩短，不短于 minSweep。
-    private static let fullSweep = 0.35
-    private static let minSweep = 0.15
     /// 松手时甩多快（点每秒）算甩，按甩的方向定去哪头。
     private static let flickSpeed: CGFloat = 300
+    /// 松手时甩到多快（点每秒）回弹最多，最多多少。不回弹的弹簧（临界阻尼）冲过头的量也随速度变，
+    /// 但要甩到每秒几千点才看得出来，所以按速度加回弹。
+    private static let fullBounceSpeed: CGFloat = 3000
+    private static let maxBounce = 0.3
 
     var body: some View {
-        TimelineView(.animation(paused: !playing)) { context in
+        // 随时间走时一帧帧画，和 motion 同一次更新就开始；拖着时跟着手指的位移画
+        TimelineView(.animation(paused: motion == nil || motion?.finger != nil)) { context in
             window(at: context.date)
         }
-        .onChange(of: open) { old, new in
-            // 别处改的（标题栏的按钮、点窗口收起、点侧边栏里的会话）：从当时的样子随时间走过去。松手时已经定好往哪走的不管
-            guard let drawer = new ?? old else { return }
-            let to: CGFloat = new == drawer ? 1 : 0
-            let now = Date.now
-            var from = old == drawer ? 1.0 : 0
-            if let motion, motion.drawer == drawer {
-                guard motion.finger != nil || motion.to != to else { return }
-                from = motion.progress(at: now, extent: extent(drawer))
-            }
-            motion = sweep(drawer, from: from, to: to, speed: 0, at: now)
+        // 点侧边栏里的会话收起：open 在外面改的，到这里才起动画
+        .onChange(of: open) { _, new in
+            let target = motion.map { $0.to == 1 && $0.finger == nil ? $0.drawer : nil } ?? rest
+            if new != target { settle(new) }
         }
-        .onChange(of: motion?.drawer) { moving = motion?.drawer }
-        // 走完就停下，不再一帧帧画；多等一点，最后一帧落在走完以后。松手后走完就不动了
+        .onChange(of: motion?.drawer ?? rest) { _, side in shown = side }
+        .sensoryFeedback(.impact(weight: .light), trigger: crossings)
+        // 走完就停下；多等一点，最后一帧落在走完以后
         .task(id: motion) {
-            guard let motion else { return }
-            playing = motion.end > .now
-            if playing, (try? await Task.sleep(for: .seconds(motion.end.timeIntervalSinceNow + 0.05))) == nil { return }
-            playing = false
-            if motion.finger == nil { self.motion = nil }
+            guard let motion, motion.finger == nil else { return }
+            guard (try? await Task.sleep(for: .seconds(motion.end.timeIntervalSinceNow + 0.05))) != nil else { return }
+            rest = motion.to == 1 ? motion.drawer : nil
+            self.motion = nil
         }
+    }
+
+    /// 从当时的样子走到 drawer 打开，nil 是收起。正在走的带着当时的速度掉头。
+    /// 先定好怎么走再改 open，同一次更新里窗口就从原地起步。
+    private func settle(_ drawer: Drawer?) {
+        let now = Date.now
+        if let side = motion?.drawer ?? rest {
+            if side != drawer || motion != nil {
+                motion = Motion(drawer: side, from: finger(side, at: now), to: side == drawer ? 1 : 0,
+                                velocity: motion?.velocity(at: now) ?? 0, start: now)
+            }
+        } else if let drawer {
+            motion = Motion(drawer: drawer, from: 0, to: 1, start: now)
+        }
+        open = drawer
     }
 
     private func window(at now: Date) -> some View {
         let s = progress(.sidebar, at: now)
         let a = progress(.actions, at: now)
-        // 推过完全打开的那一截只往拉开的方向走：侧边栏那边窗口整个往右挪，action 栏那边窗口底边接着往上
-        let s1 = min(s, 1), a1 = min(a, 1)
         let pad = Metrics.padding
-        // 窗口缩进屏幕里，四边的边距随进度出现；拉开的那一侧让出侧边栏，或者让出 action 栏连同上面的页签
-        let beyond = (s - s1) * sidebarWidth
-        let left = s1 * sidebarWidth + a1 * pad + beyond
-        let top = (s1 + a1) * pad
-        let right = screen.width - (s1 + a1) * pad + beyond
-        let bottom = screen.height - s1 * pad - a * actionsHeight
-        let radius = max(screenRadius - (s1 + a1) * pad, 0)
+        // 窗口缩进屏幕里，四边的边距随进度出现；拉开的那一侧让出侧边栏，或者让出 action 栏连同上面的页签。
+        // 推过完全打开时照样接着变
+        let left = s * sidebarWidth + a * pad
+        let top = (s + a) * pad
+        let right = screen.width - (s + a) * pad
+        let bottom = screen.height - s * pad - a * actionsHeight
+        let radius = max(screenRadius - (s + a) * pad, 0)
         let shape = RoundedRectangle(cornerRadius: radius)
         // 内容贴着窗口左上角等比缩小，宽度照铺满时排，字不重新换行：拉侧边栏时按窗口高度缩，右边裁掉；
         // 拉 action 栏时按窗口宽度缩，高度只排到窗口底边，控制区这些浮在底下的跟着窗口底边走
-        let scale = (screen.height - 2 * s1 * pad) / screen.height * (screen.width - 2 * a1 * pad) / screen.width
+        let scale = (screen.height - 2 * s * pad) / screen.height * (screen.width - 2 * a * pad) / screen.width
         // 窗口里只给状态栏、Home 条、键盘还盖着窗口的那一截让位：窗口移开多少就少让多少，换算成缩放前的尺寸
         let covered = EdgeInsets(top: max(insets.top - top, 0) / scale,
                                  leading: max(insets.leading - left, 0) / scale,
@@ -198,7 +211,7 @@ private struct PhoneWindow: View {
                     .environment(session)
                     .environment(\.drawerPull, open == nil ? pull(.actions) : nil)
                     // 一直给着：打开时窗口上盖着一层点了收起的，按钮点不到。有无来回切的话，标题栏会被当成换了一个视图
-                    .environment(\.openSidebar, { open = .sidebar })
+                    .environment(\.openSidebar, { settle(.sidebar) })
                     .environment(\.homeIndicatorInset, coveredByHome)
                     .environment(\.keyboardShown, insets.bottom > homeInset + 1)
                     .id(session.id)
@@ -217,7 +230,7 @@ private struct PhoneWindow: View {
             if let drawer = open {
                 Color.clear
                     .contentShape(Rectangle())
-                    .onTapGesture { open = nil }
+                    .onTapGesture { settle(nil) }
                     .gesture(pull(drawer).gesture)
             }
         }
@@ -239,23 +252,19 @@ private struct PhoneWindow: View {
 
     /// now 这一刻打开到几成，0 是铺满，1 是完全打开，推过完全打开时大于 1。
     private func progress(_ drawer: Drawer, at now: Date) -> CGFloat {
-        guard let motion, motion.drawer == drawer, extent(drawer) > 0 else { return open == drawer ? 1 : 0 }
+        guard let motion, motion.drawer == drawer, extent(drawer) > 0 else { return rest == drawer ? 1 : 0 }
         return motion.progress(at: now, extent: extent(drawer))
+    }
+
+    /// now 这一刻按手指算打开到几成：推过头的那截不加阻尼。
+    private func finger(_ drawer: Drawer, at now: Date) -> CGFloat {
+        Motion.unstretch(progress(drawer, at: now), extent: extent(drawer))
     }
 
     /// 手指的位移或速度往打开的方向有多少，换算成几成。
     private func along(_ drawer: Drawer, _ size: CGSize) -> CGFloat {
         guard extent(drawer) > 0 else { return 0 }
         return (drawer == .sidebar ? size.width : -size.height) / extent(drawer)
-    }
-
-    /// 从 now 起由 from 随时间走到 to。speed 是手指往 to 那头的速度（每秒几成）：先快后慢的曲线起步是平均速度的 3 倍，
-    /// 手指快的话缩短时间让起步跟上手指。
-    private func sweep(_ drawer: Drawer, from: CGFloat, to: CGFloat, speed: CGFloat, at now: Date) -> Motion {
-        let distance = Double(abs(to - from))
-        var duration = max(Self.fullSweep * distance.squareRoot(), Self.minSweep)
-        if speed > 0 { duration = max(min(duration, 3 * distance / Double(speed)), Self.minSweep) }
-        return Motion(drawer: drawer, from: from, to: to, start: now, duration: duration)
     }
 
     /// 往 drawer 那一侧拉。一开始往哪个方向拖就定下来：侧边栏要横着拖，action 栏要竖着拖，
@@ -270,49 +279,65 @@ private struct PhoneWindow: View {
                     return
                 }
                 // 接手：从当时的样子（可能正在走）接着拖，窗口不跳
-                anchor = Motion.unstretch(progress(drawer, at: .now), extent: extent) - along(drawer, moved)
+                anchor = finger(drawer, at: .now) - along(drawer, moved)
             }
-            motion = Motion(drawer: drawer, finger: anchor + along(drawer, moved))
+            let finger = anchor + along(drawer, moved)
+            if let last = motion?.finger, (last > 0.5) != (finger > 0.5) { crossings += 1 }
+            motion = Motion(drawer: drawer, finger: finger)
         } ended: { velocity in
             offAxis = false
-            guard let motion, motion.drawer == drawer, motion.finger != nil else { return }
-            let now = Date.now
-            let current = motion.progress(at: now, extent: extent(drawer))
+            guard let finger = motion?.finger, motion?.drawer == drawer else { return }
             let speed = along(drawer, velocity)
-            let to: CGFloat = abs(speed) * extent(drawer) > Self.flickSpeed ? (speed > 0 ? 1 : 0) : (current > 0.5 ? 1 : 0)
+            let to: CGFloat = abs(speed) * extent(drawer) > Self.flickSpeed ? (speed > 0 ? 1 : 0) : (finger > 0.5 ? 1 : 0)
             // 先定好往哪走再改 open，onChange 看到方向一样就不另起一段
-            self.motion = sweep(drawer, from: current, to: to, speed: to == 1 ? speed : -speed, at: now)
+            let bounce = min(abs(speed) * extent(drawer) / Self.fullBounceSpeed, 1) * Self.maxBounce
+            motion = Motion(drawer: drawer, from: finger, to: to, velocity: speed, bounce: bounce, start: .now)
             open = to == 1 ? drawer : nil
         }
     }
 }
 
-/// 抽屉在动：手指拖着，或者松手后随时间走的一段。
+/// 抽屉在动：手指拖着，或者松手后弹簧走的一段。打开到几成都先按手指算（推过头的那截不加阻尼），显示时再加阻尼。
 private struct Motion: Equatable {
     let drawer: Drawer
-    /// 手指拖着时打开到几成，不截断：大于 1 的是推过头的手指距离，显示时按 stretch 加阻尼。松手后是 nil。
+    /// 手指拖着时打开到几成。松手后是 nil。
     var finger: CGFloat?
-    /// 松手后从 from 走到 to（0 收起，1 打开），走 duration 秒，先快后慢。from 可以大于 1：从推过头的地方走回来。
+    /// 松手后从 from 起、带着速度 velocity（每秒几成，往打开的方向为正）走到 to（0 收起，1 打开）。
     var from: CGFloat = 0
     var to: CGFloat = 0
+    var velocity: CGFloat = 0
+    /// 弹簧的回弹，0 是临界阻尼：没有速度时直接停在终点，不来回晃。
+    var bounce = 0.0
     var start = Date.distantPast
-    var duration = 0.0
 
     /// 推过完全打开最多再出去多少点。
     static let limit: CGFloat = 32
-
-    /// now 这一刻打开到几成。
-    func progress(at now: Date, extent: CGFloat) -> CGFloat {
-        if let finger {
-            return finger <= 1 ? max(finger, 0) : 1 + Self.stretch((finger - 1) * extent) / extent
-        }
-        let t = now.timeIntervalSince(start) / duration
-        return from + (to - from) * UnitCurve.easeOutCubic.value(at: min(max(t, 0), 1))
+    private var spring: Spring {
+        Spring(duration: 0.4, bounce: bounce)
     }
 
-    /// 走完的那一刻；拖着时不走。
+    /// now 这一刻按手指算打开到几成。
+    private func raw(at now: Date) -> CGFloat {
+        if let finger { return finger }
+        return from + spring.value(target: to - from, initialVelocity: velocity, time: now.timeIntervalSince(start))
+    }
+
+    /// now 这一刻打开到几成：推过完全打开的那截加上阻尼；收起的那头不过去。
+    func progress(at now: Date, extent: CGFloat) -> CGFloat {
+        let x = raw(at: now)
+        return x <= 1 ? max(x, 0) : 1 + Self.stretch((x - 1) * extent) / extent
+    }
+
+    /// now 这一刻的速度，每秒几成；拖着时按 0 算。
+    func velocity(at now: Date) -> CGFloat {
+        guard finger == nil else { return 0 }
+        return spring.velocity(target: to - from, initialVelocity: velocity, time: now.timeIntervalSince(start))
+    }
+
+    /// 走完的那一刻，差不到千分之一算停下；拖着时不走。
     var end: Date {
-        finger == nil ? start + duration : .distantPast
+        guard finger == nil else { return .distantPast }
+        return start + spring.settlingDuration(target: to - from, initialVelocity: velocity, epsilon: 0.001)
     }
 
     /// 打开到 progress 时手指该在几成：progress 反过来。
