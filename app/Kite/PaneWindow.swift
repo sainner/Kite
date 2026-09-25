@@ -38,7 +38,6 @@ struct PaneWindow<Content: View, Controls: View>: View {
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .modifier(Lifted(part: \.content))
             // 加在控制区外面这一层，点控制区不算
             .endsTyping($typing)
             .safeAreaBar(edge: .bottom, spacing: 0) {
@@ -46,7 +45,7 @@ struct PaneWindow<Content: View, Controls: View>: View {
                     // 离窗口的角近的两个角和窗口圆角同心，远的用最小圆角
                     .glassEffect(.regular, in: ConcentricRectangle(corners: .concentric(minimum: .fixed(Metrics.controlRadius))))
                     .padding(.horizontal, Metrics.controlMargin)
-                    // Home 条那一截够高就贴着它，不够的补到 controlMargin；拉开抽屉时不改这里，由 WindowLift 挪到窗口底边上面。
+                    // Home 条那一截够高就贴着它，不够的补到 controlMargin；拉开抽屉时它慢慢变没，边距跟着慢慢出来。
                     // 键盘不一样：不贴着它，照样留 controlMargin。不另加动画：keyboardShown 和键盘让出的安全区在同一次更新里变，
                     // 边距跟着键盘自己的动画走，和键盘同步
                     .padding(.bottom, keyboardShown ? Metrics.controlMargin : max(Metrics.controlMargin - homeInset, 0))
@@ -55,7 +54,6 @@ struct PaneWindow<Content: View, Controls: View>: View {
                     .overlay(alignment: .bottom) { statusLine }
                     // 打字时在输入框里上下拖是选字、滚动，不拉 action 栏
                     .pullsDrawer(enabled: !typing)
-                    .modifier(Lifted(part: \.controls))
             }
             .safeAreaBar(edge: .top, spacing: 0) {
                 HeaderBar(header: header, openSidebar: sidebarAction)
@@ -121,7 +119,6 @@ struct PaneWindow<Content: View, Controls: View>: View {
                 .offset(y: homeInset)
                 .opacity(shown ? 1 : 0)
                 .animation(.easeInOut(duration: 0.25), value: shown)
-                .modifier(StatusHiding())
                 .allowsHitTesting(false)
         }
     }
@@ -229,45 +226,13 @@ extension EnvironmentValues {
     /// PhoneLayout 从 UIKit 读了给出；Mac 上是 0。
     @Entry var homeIndicatorInset: CGFloat = 0
     /// iPhone 上键盘升起来了。PhoneLayout 在屏幕这一层比出来：SwiftUI 的安全区比 Home 条那一截高。
-    /// Mac 上总是 false。
+    /// 不能在窗口里比：拉开、收起抽屉时窗口里读到的安全区跟着动画逐帧变，还会冲过 Home 条那一截，会被当成键盘。Mac 上总是 false。
     @Entry var keyboardShown = false
 
     /// iPhone 上拉开侧边栏，标题栏左边的按钮调它。PhoneLayout 给出，没有就不显示按钮。
     @Entry var openSidebar: (@MainActor () -> Void)?
     /// iPhone 上从控制区往上拖拉出 action 栏：窗口给出拖动的处理，控制区接手势。没有就不接。
     @Entry var drawerPull: DrawerPull?
-    /// iPhone 上拉开抽屉时窗口里的东西往上挪多少，PhoneLayout 逐帧给出；Mac 上不挪。
-    @Entry var windowLift = WindowLift()
-}
-
-/// 按 WindowLift 往上挪，只改 offset，不重新排版。
-private struct Lifted: ViewModifier {
-    let part: KeyPath<WindowLift, CGFloat>
-    @Environment(\.windowLift) private var lift
-
-    func body(content: Content) -> some View {
-        content.offset(y: -lift[keyPath: part])
-    }
-}
-
-/// 拉开抽屉、Home 条那一截放不下时藏起状态信息。和 Lifted 一样单独一个修饰符。
-private struct StatusHiding: ViewModifier {
-    @Environment(\.windowLift) private var lift
-
-    func body(content: Content) -> some View {
-        content
-            .opacity(lift.hidesStatus ? 0 : 1)
-            .animation(.easeInOut(duration: 0.25), value: lift.hidesStatus)
-    }
-}
-
-/// iPhone 上拉开抽屉时窗口里的东西往上挪多少，缩放前的点。窗口里一直照铺满屏幕排，抽屉动的时候不重新排，只挪：
-/// 内容整个往上挪 content，跟着升上来的窗口底边，像键盘把对话顶上去；控制区挪 controls，停在窗口底边上面。
-struct WindowLift: Equatable {
-    var content: CGFloat = 0
-    var controls: CGFloat = 0
-    /// 窗口底下 Home 条还盖着的那一截放不下状态信息。
-    var hidesStatus = false
 }
 
 /// 拉抽屉的处理：拖动中手指的位移和速度、松手时的速度，屏幕坐标。窗口拖着缩小时拖的地方自己也在动，不能按它自己的坐标算。
