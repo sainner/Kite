@@ -7,7 +7,7 @@ private enum Drawer { case sidebar, actions }
 
 /// iPhone：会话窗口平时铺满屏幕，盖住 App 的底色。从左边缘往右滑或点标题栏左边的按钮，窗口缩到右边，露出底色上的侧边栏；
 /// 从控制区往上拖，窗口从上下两头缩小，露出底色上的 action 栏和它上面一行页签。缩小时四边的边距同时出现，
-/// 内容不重新换行，只露边距的那个方向等比缩放：让出侧边栏时右边裁掉；让出 action 栏时内容变矮，浮在底下的控制区跟着窗口底边走，
+/// 内容不重新换行，只露边距的那个方向等比缩放：让出侧边栏时右边裁掉；让出 action 栏时底下裁掉，内容和浮在底下的控制区往上挪，跟着窗口底边走，
 /// 圆角从屏幕圆角变成屏幕圆角减去边距。
 /// 打开时点窗口或往回拖收起。
 struct PhoneLayout: View {
@@ -129,10 +129,7 @@ private struct PhoneWindow: View {
     let actionsHeight: CGFloat
     let screenRadius: CGFloat
     @Environment(AppModel.self) private var model
-    @State private var motion: Motion?
-    /// 没在动时停在哪一侧打开着。窗口画在哪只看它和 motion，不看 open：open 是要去哪，
-    /// 别处改了 open 以后要到 onChange 里才起动画，按 open 画的话中间会先按走完的样子排一遍。
-    @State private var rest: Drawer?
+    @State private var drive = Drive()
     /// 这次拖动里，手指的位移为 0 时对应打开到几成（按 Motion.finger 的算法，推过头的不加阻尼）。
     @State private var anchor: CGFloat = 0
     /// 这次拖的方向不对，不拉抽屉，松手前都不管。
@@ -147,25 +144,28 @@ private struct PhoneWindow: View {
     private static let fullBounceSpeed: CGFloat = 3000
     private static let maxBounce = 0.3
 
+    private var motion: Motion? {
+        get { drive.motion }
+        nonmutating set { drive.motion = newValue }
+    }
+
+    private var rest: Drawer? {
+        get { drive.rest }
+        nonmutating set { drive.rest = newValue }
+    }
+
     var body: some View {
-        // 随时间走时一帧帧画，和 motion 同一次更新就开始；拖着时跟着手指的位移画
-        TimelineView(.animation(paused: motion == nil || motion?.finger != nil)) { context in
-            window(at: context.date)
+        // 窗口里的内容在这里建好，逐帧画时不重建。这里不读 drive，它变了这一层不重画
+        let pane = pane
+        Frames(drive: drive, shown: $shown) { now in
+            window(pane, at: now)
         }
         // 点侧边栏里的会话收起：open 在外面改的，到这里才起动画
         .onChange(of: open) { _, new in
             let target = motion.map { $0.to == 1 && $0.finger == nil ? $0.drawer : nil } ?? rest
             if new != target { settle(new) }
         }
-        .onChange(of: motion?.drawer ?? rest) { _, side in shown = side }
         .sensoryFeedback(.impact(weight: .light), trigger: crossings)
-        // 走完就停下；多等一点，最后一帧落在走完以后
-        .task(id: motion) {
-            guard let motion, motion.finger == nil else { return }
-            guard (try? await Task.sleep(for: .seconds(motion.end.timeIntervalSinceNow + 0.05))) != nil else { return }
-            rest = motion.to == 1 ? motion.drawer : nil
-            self.motion = nil
-        }
     }
 
     /// 从当时的样子走到 drawer 打开，nil 是收起。正在走的带着当时的速度掉头。
@@ -183,7 +183,26 @@ private struct PhoneWindow: View {
         open = drawer
     }
 
-    private func window(at now: Date) -> some View {
+    /// 聚焦的那个窗口，照铺满屏幕排：抽屉动的时候窗口里不重新排，只整体缩放、挪、裁，见 window。
+    @ViewBuilder
+    private var pane: some View {
+        if let session = model.current {
+            // 内容从状态栏、标题栏、控制区和 Home 条后面滚过去
+            PaneBody(pane: session.workspace.focused)
+                .environment(session)
+                .environment(\.drawerPull, open == nil ? pull(.actions) : nil)
+                // 一直给着：打开时窗口上盖着一层点了收起的，按钮点不到。有无来回切的话，标题栏会被当成换了一个视图
+                .environment(\.openSidebar, { settle(.sidebar) })
+                .environment(\.homeIndicatorInset, homeInset)
+                .environment(\.keyboardShown, insets.bottom > homeInset + 1)
+                .id(session.id)
+        }
+    }
+
+    /// now 这一刻的窗口。窗口里一直照铺满屏幕、让着状态栏和 Home 条排，抽屉动的时候只变缩放、位置、裁掉多少，
+    /// 和控制区、内容往上挪多少（WindowLift）：这些都不重新排版。让出的安全区、窗口的高度要是跟着逐帧变，
+    /// 对话每一帧都得重排、重算留白，会掉帧（实测每开关一次可见区高度变三四十次）。
+    private func window(_ pane: some View, at now: Date) -> some View {
         let s = progress(.sidebar, at: now)
         let a = progress(.actions, at: now)
         let pad = Metrics.padding
@@ -194,56 +213,47 @@ private struct PhoneWindow: View {
         let right = screen.width - (s + a) * pad
         let bottom = screen.height - s * pad - a * actionsHeight
         let radius = max(screenRadius - (s + a) * pad, 0)
-        let shape = RoundedRectangle(cornerRadius: radius)
-        // 内容贴着窗口左上角等比缩小，宽度照铺满时排，字不重新换行：拉侧边栏时按窗口高度缩，右边裁掉；
-        // 拉 action 栏时按窗口宽度缩，高度只排到窗口底边，控制区这些浮在底下的跟着窗口底边走
+        // 内容贴着窗口左上角等比缩小，字不重新换行：拉侧边栏时按窗口高度缩，右边裁掉；
+        // 拉 action 栏时按窗口宽度缩，底下裁掉，控制区和内容往上挪，跟着窗口底边走
         let scale = (screen.height - 2 * s * pad) / screen.height * (screen.width - 2 * a * pad) / screen.width
-        // 窗口里只给状态栏、Home 条、键盘还盖着窗口的那一截让位：窗口移开多少就少让多少，换算成缩放前的尺寸
-        let covered = EdgeInsets(top: max(insets.top - top, 0) / scale,
-                                 leading: max(insets.leading - left, 0) / scale,
-                                 bottom: max(insets.bottom - (screen.height - bottom), 0) / scale,
-                                 trailing: max(insets.trailing - (screen.width - right), 0) / scale)
+        // 窗口露出来多大，换算成缩放前的尺寸
+        let size = CGSize(width: (right - left) / scale, height: (bottom - top) / scale)
+        let shape = WindowShape(size: size, radius: radius / scale)
+        // 控制区平时停在 Home 条上面；窗口底边升上来以后，停在 Home 条还盖着的那一截上面，盖得不到 controlMargin 就离底边 controlMargin
+        let rise = screen.height - size.height
         let coveredByHome = max(homeInset - (screen.height - bottom), 0) / scale
-        return Group {
-            if let session = model.current {
-                // 聚焦的那个窗口铺满，内容从状态栏、标题栏、控制区和 Home 条后面滚过去
-                PaneBody(pane: session.workspace.focused)
-                    .environment(session)
-                    .environment(\.drawerPull, open == nil ? pull(.actions) : nil)
-                    // 一直给着：打开时窗口上盖着一层点了收起的，按钮点不到。有无来回切的话，标题栏会被当成换了一个视图
-                    .environment(\.openSidebar, { settle(.sidebar) })
-                    .environment(\.homeIndicatorInset, coveredByHome)
-                    .environment(\.keyboardShown, insets.bottom > homeInset + 1)
-                    .id(session.id)
+        let lift = WindowLift(content: rise, controls: rise - homeInset + max(coveredByHome, Metrics.controlMargin),
+                              hidesStatus: coveredByHome < Metrics.statusMinHeight)
+        return pane
+            .environment(\.windowLift, lift)
+            .safeAreaPadding(insets)
+            .frame(width: screen.width, height: screen.height)
+            // 窗口的形状，里面同心的圆角（控制区卡片）跟着它；在缩放前，圆角也换算成缩放前的
+            .containerShape(RoundedRectangle(cornerRadius: radius / scale))
+            .background(Theme.card)
+            .overlay(alignment: .topLeading) {
+                if let drawer = open {
+                    Color.clear
+                        .frame(width: size.width, height: size.height)
+                        .contentShape(Rectangle())
+                        .onTapGesture { settle(nil) }
+                        .gesture(pull(drawer).gesture)
+                }
             }
-        }
-        .safeAreaPadding(covered)
-        .frame(width: screen.width, height: (bottom - top) / scale, alignment: .topLeading)
-        // 窗口的形状，里面同心的圆角（控制区卡片）跟着它；在缩放前，圆角也换算成缩放前的
-        .containerShape(RoundedRectangle(cornerRadius: radius / scale))
-        .scaleEffect(scale, anchor: .topLeading)
-        .frame(width: right - left, height: bottom - top, alignment: .topLeading)
-        .background(Theme.card)
-        .clipShape(shape)
-        .contentShape(shape)
-        .overlay {
-            if let drawer = open {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture { settle(nil) }
-                    .gesture(pull(drawer).gesture)
+            .overlay(alignment: .leading) {
+                if open == nil {
+                    Color.clear
+                        .frame(width: Metrics.edgeZone)
+                        .contentShape(Rectangle())
+                        .gesture(pull(.sidebar).gesture)
+                }
             }
-        }
-        .overlay(alignment: .leading) {
-            if open == nil {
-                Color.clear
-                    .frame(width: Metrics.edgeZone)
-                    .contentShape(Rectangle())
-                    .gesture(pull(.sidebar).gesture)
-            }
-        }
-        .offset(x: left, y: top)
-        .ignoresSafeArea()
+            // 露出来的那块以外既不画也不接点按：action 栏在它下面
+            .clipShape(shape)
+            .contentShape(shape)
+            .scaleEffect(scale, anchor: .topLeading)
+            .offset(x: left, y: top)
+            .ignoresSafeArea()
     }
 
     private func extent(_ drawer: Drawer) -> CGFloat {
@@ -294,6 +304,51 @@ private struct PhoneWindow: View {
             motion = Motion(drawer: drawer, from: finger, to: to, velocity: speed, bounce: bounce, start: .now)
             open = to == 1 ? drawer : nil
         }
+    }
+}
+
+/// 抽屉停在哪、怎么动。放在引用里：只有逐帧画的那一层（Frames）读它，它变了窗口里的内容不跟着重建。
+@Observable
+private final class Drive {
+    var motion: Motion?
+    /// 没在动时停在哪一侧打开着。窗口画在哪只看它和 motion，不看 open：open 是要去哪，
+    /// 别处改了 open 以后要到 onChange 里才起动画，按 open 画的话中间会先按走完的样子排一遍。
+    var rest: Drawer?
+
+    /// 露出来的一侧：打开着、手指拖着或者正在走。
+    var side: Drawer? {
+        motion?.drawer ?? rest
+    }
+}
+
+/// 逐帧画窗口的那一层：随时间走时一帧帧画，拖着时跟着手指的位移画。drive 只在这一层读。
+private struct Frames<Content: View>: View {
+    let drive: Drive
+    @Binding var shown: Drawer?
+    @ViewBuilder let content: (Date) -> Content
+
+    var body: some View {
+        TimelineView(.animation(paused: drive.motion == nil || drive.motion?.finger != nil)) { context in
+            content(context.date)
+        }
+        .onChange(of: drive.side) { _, side in shown = side }
+        // 走完就停下；多等一点，最后一帧落在走完以后
+        .task(id: drive.motion) {
+            guard let motion = drive.motion, motion.finger == nil else { return }
+            guard (try? await Task.sleep(for: .seconds(motion.end.timeIntervalSinceNow + 0.05))) != nil else { return }
+            drive.rest = motion.to == 1 ? motion.drawer : nil
+            drive.motion = nil
+        }
+    }
+}
+
+/// 窗口露出来的那块：从左上角起 size 那么大的圆角矩形，缩放前的坐标。
+nonisolated private struct WindowShape: Shape {
+    let size: CGSize
+    let radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        Path(roundedRect: CGRect(origin: rect.origin, size: size), cornerRadius: radius, style: .continuous)
     }
 }
 
