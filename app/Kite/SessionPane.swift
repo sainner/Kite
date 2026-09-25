@@ -607,9 +607,7 @@ private struct EffortTicks: View {
     /// 一段播完要多久：展开时最后一根刻度被扫到以后长完；收起时档位名落在扫的线后面，回到左边。
     private static let unfoldDuration = slide + growDelay + grow
     private static let foldDuration = slide + vanish
-    /// 先快后慢：1 − (1 − x)³。
-    private static let easeOut = UnitCurve.bezier(startControlPoint: UnitPoint(x: 1.0 / 3, y: 1),
-                                                  endControlPoint: UnitPoint(x: 2.0 / 3, y: 1))
+    private static let easeOut = UnitCurve.easeOutCubic
 
     /// 第 index 根刻度的中心，从刻度线左边算。
     private static func center(_ index: Int) -> CGFloat {

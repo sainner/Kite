@@ -122,3 +122,9 @@ enum Metrics {
     #endif
     static let actionBarGap: CGFloat = 6
 }
+
+extension UnitCurve {
+    /// 先快后慢，不过冲：1 − (1 − x)³。随时间走的展开、收起都用它：effort 的刻度线、iPhone 的抽屉。
+    static let easeOutCubic = UnitCurve.bezier(startControlPoint: UnitPoint(x: 1.0 / 3, y: 1),
+                                               endControlPoint: UnitPoint(x: 2.0 / 3, y: 1))
+}

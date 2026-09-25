@@ -235,10 +235,10 @@ extension EnvironmentValues {
     @Entry var drawerPull: DrawerPull?
 }
 
-/// 拉抽屉的处理：拖动中和松手时手指的位移，屏幕坐标。窗口拖着缩小时拖的地方自己也在动，不能按它自己的坐标算。
+/// 拉抽屉的处理：拖动中手指的位移和速度、松手时的速度，屏幕坐标。窗口拖着缩小时拖的地方自己也在动，不能按它自己的坐标算。
 struct DrawerPull {
-    let changed: @MainActor (CGSize) -> Void
-    let ended: @MainActor (_ predicted: CGSize) -> Void
+    let changed: @MainActor (_ translation: CGSize, _ velocity: CGSize) -> Void
+    let ended: @MainActor (_ velocity: CGSize) -> Void
 
     /// 一次拖动往哪个方向：挪过 dragThreshold 时看横着挪得多还是竖着挪得多，定了就不改。
     /// 抽屉和控制区里要横着拖的控件（比如选 effort）都按它定，同一次拖动两边不会都接或都不接。
@@ -248,8 +248,8 @@ struct DrawerPull {
 
     var gesture: some Gesture {
         DragGesture(minimumDistance: Metrics.dragThreshold, coordinateSpace: .global)
-            .onChanged { changed($0.translation) }
-            .onEnded { ended($0.predictedEndTranslation) }
+            .onChanged { changed($0.translation, $0.velocity) }
+            .onEnded { ended($0.velocity) }
     }
 }
 
@@ -285,7 +285,7 @@ private struct DrawerPullModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .contentShape(Rectangle())
-            .simultaneousGesture((pull ?? DrawerPull(changed: { _ in }, ended: { _ in })).gesture,
+            .simultaneousGesture((pull ?? DrawerPull(changed: { _, _ in }, ended: { _ in })).gesture,
                                  isEnabled: enabled && pull != nil)
     }
 }
