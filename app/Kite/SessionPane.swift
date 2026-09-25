@@ -4,30 +4,12 @@ import SwiftUI
 /// 人发的消息靠右、带气泡；agent 的话铺满这一栏；两段话之间 agent 做的事折成一行，点开看每一步。
 struct SessionPane: View {
     @Environment(Session.self) private var session
-    /// 打开时停在最底下靠 defaultScrollAnchor 的 initialOffset。给一个「滚到最底下」的目标：什么目标也没有的话，
-    /// 停在最底下时不管下面给的对齐，内容、可见区一变都贴着最底下走，底下露着留白时键盘会把对话顶上去；
-    /// 这个目标只在内容变了时贴过去，可见区变了（键盘）照下面的对齐走（实测）。
-    @State private var position = ScrollPosition(edge: .bottom)
-    /// 跟着最底下：打开时是，往上翻就不是了，翻回最底下又是。
-    @State private var following = true
+    /// 对话怎么滚：跟不跟着最底下、发送后滑到哪、底下留多少空白。
+    @State private var scroll = TranscriptScroll()
     /// 刚发出、气泡还在下面、没开始往上浮的消息。
     @State private var arriving: Set<UUID> = []
     /// 点开了操作栏的那一行。
     @State private var selected: RowID?
-    /// 程序正在滚的次数（发送后往上滑、滚到最底下）。滚的时候按顶部对齐，滚的过程也不算人往上翻。
-    @State private var gliding = 0
-    /// 发送后底下留的空白，人往上翻时裁掉了多少（见 TranscriptView 的 tailHeight）。下一次发送清零。
-    @State private var trim: CGFloat = 0
-    /// 底下的空白这会儿露在可见区里。
-    @State private var blankShown = false
-    /// 人正在拖着滚或者松手后还在滑；程序滚的不算。
-    @State private var userScrolling = false
-    /// 这会儿滚到哪，按 scrollTo(y:) 的算法。只在程序滚之前、滚完时读，放在不触发重画的盒子里，滚动时不用每一帧重画。
-    @State private var offset = ScrollOffset()
-    /// 可见区这会儿多高。
-    @State private var visible: CGFloat = 0
-    /// 留白按多高的可见区算：变高时当场跟上，变矮时等一会儿再跟（见 tailHeight）。
-    @State private var heldVisible: CGFloat = 0
 
     var body: some View {
         let items = session.transcript.items
@@ -44,9 +26,7 @@ struct SessionPane: View {
                 // 标题栏、控制区和键盘让出的那一截，滚动视图照样伸到它们后面（实测）
                 GeometryReader { proxy in
                     ScrollView {
-                        TranscriptView(items: items, pending: pending, actionable: true,
-                                       tailHeight: tailHeight(visible: proxy.size.height), trim: trim,
-                                       blankShown: { blankShown = $0 })
+                        TranscriptView(items: items, pending: pending, actionable: true, tail: scroll.tail(visible: proxy.size.height))
                             .font(Theme.body)
                             .frame(maxWidth: Metrics.transcriptWidth)
                             .padding(.horizontal, 16)
@@ -54,55 +34,12 @@ struct SessionPane: View {
                             .frame(maxWidth: .infinity)
                             // 操作栏开着时，点对话里别的地方收起；点到按钮、别的气泡由它们自己接
                             .contentShape(Rectangle())
-                            .gesture(TapGesture().onEnded { withAnimation(.actionBar) { selected = nil } }, isEnabled: selected != nil)
+                            .gesture(TapGesture().onEnded { $selected.close() }, isEnabled: selected != nil)
                     }
-                    .scrollPosition($position)
-                    // 手指一滚就收起操作栏；跟着最底下的自动滚动不算
-                    .onScrollPhaseChange { old, phase in
-                        userScrolling = phase == .interacting || phase == .decelerating
-                        if phase == .interacting, selected != nil { withAnimation(.actionBar) { selected = nil } }
-                        // 人滚完也钉住（见 settle）：人滚过以后滚动位置里留着什么没试过，钉住以后照上面的对齐走
-                        if phase == .idle, old == .interacting || old == .decelerating, gliding == 0 { pin() }
+                    // 手指一滚就收起操作栏
+                    .transcriptScroll(scroll, visibleHeight: proxy.size.height) {
+                        if selected != nil { $selected.close() }
                     }
-                    .defaultScrollAnchor(.bottom, for: .initialOffset)
-                    // 内容、可见区变高变矮（展开收起一步、回复变长、键盘、底栏）时：跟着最底下就按底部对齐，最后几行贴着底边，
-                    // 不然按顶部对齐，对话不动。对齐是滚动视图排版时自己做的，跟着那一次变化的动画走，键盘升起时对话和键盘一起动。
-                    // 不在回调里自己滚：回调里滚没有动画，会先一下跳到位。滚动位置里留着滚到某一行的目标时不照这里对齐（见 settle），都是实测。
-                    // 底下露着留白时也按顶部对齐：键盘升起时留白等一会儿才缩（见 tailHeight），按底部对齐会先把对话顶上去再落回来。
-                    // 程序在滚时按顶部对齐：发送时不带动画加进去的消息和留白不能被它一下推到底，要留给那一下滑。
-                    // 换对齐和内容变化在同一次更新里也当场生效（实测）
-                    .defaultScrollAnchor(following && !blankShown && gliding == 0 ? .bottom : .top, for: .sizeChanges)
-                    // scrollTo(y:) 比 contentOffset 少算标题栏让出的那一截（实测）
-                    .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y + $0.contentInsets.top } action: { offset.y = $1 }
-                    .onScrollGeometryChange(for: ScrollState.self, of: ScrollState.init) { old, new in
-                        // 程序滚的这一阵子交给那一下滚动，这里不插手，不然会把滑到一半的一下子跳过去
-                        guard gliding == 0 else { return }
-                        if old.content == new.content && old.container == new.container {
-                            // 只是滚了：人翻上去就不跟了，翻回最底下又跟
-                            following = new.atBottom
-                        } else if following && !blankShown && !new.atBottom && !userScrolling {
-                            // 留白刚被回复填满的那一下还按顶部对齐，多出来的一截补滚过去；之后锚点按底部对齐，不会再差。
-                            // 人手还在滚的时候不跟：往上翻裁空白时内容一直在变短，跟过去会和手抢
-                            position.scrollTo(y: new.bottom)
-                        }
-                    }
-                    .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                        max(geometry.contentSize.height + geometry.contentInsets.bottom - geometry.visibleRect.maxY, 0)
-                    } action: { _, distance in
-                        // 人往上翻、底下的空白还露着：翻上去多少就裁掉多少，内容的底边一直贴着可见区的底边，
-                        // 直到最后一条内容到了底边，空白裁完。裁掉的不再长回来
-                        if userScrolling, blankShown, distance > 0.5 { trim += distance }
-                    }
-                    .onChange(of: proxy.size.height, initial: true) { visibleChanged(proxy.size.height) }
-                    .onChange(of: items.count) {
-                        // 自己发的消息总要看得到
-                        if case .human = items.last?.kind {
-                            gliding += 1
-                            withAnimation(.snappy) { position.scrollTo(edge: .bottom) }
-                            settle()
-                        }
-                    }
-                    .environment(\.visibleHeight, proxy.size.height)
                 }
             }
         } controls: { typing in
@@ -114,115 +51,10 @@ struct SessionPane: View {
         .environment(\.selectedRow, $selected)
     }
 
-    /// 最后一轮至少多高（见 TranscriptView 的 tailHeight）：可见区的高度。可见区变高时在排版里当场跟着变，
-    /// 内容和可见区一起变长，滚动位置不用动。变矮时等键盘升起的动画走完再缩（visibleChanged）：
-    /// 键盘升起的动画没走完时内容变短，滚动视图会把内容往下挪一个键盘高，同一次排版、晚一次排版、不带动画都一样；
-    /// 走完以后再缩，缩掉的留白在键盘后面，对话不动（实测）。
-    private func tailHeight(visible: CGFloat) -> CGFloat {
-        max(visible, heldVisible) - Metrics.transcriptPadding
-    }
-
-    /// 可见区高度变了。变矮时过一会儿再让留白跟上，那时已经变回去了就不缩。
-    private func visibleChanged(_ height: CGFloat) {
-        visible = height
-        if height >= heldVisible {
-            heldVisible = height
-        } else {
-            Task {
-                try? await Task.sleep(for: .seconds(0.6))
-                heldVisible = visible
-            }
-        }
-    }
-
-    /// 发一条消息：先排进队里，气泡在下面藏着。空闲时发的开启新的一轮：对话往上滑，这条消息停在可见区顶上，
-    /// 底下留出一屏的空白给回复（见 TranscriptView 的 tailHeight）。回合在跑、或者前面还排着没收到的，发的是排在后面的：
-    /// 接在最后面，对话往上滑到最底下把它顶上来，不另留空白。气泡都和滑同时从下往上浮进来。
+    /// 发一条消息：先排进队里，对话滑过去（见 TranscriptScroll.send），气泡同时从下往上浮进来。
     private func send(_ message: Message) {
         arriving.insert(message.id)
-        following = true
-        // 和加消息同一次更新：加进去的那一次排版就按顶部对齐，也钉在当前位置。
-        // 不然滚动位置里的「滚到最底下」会在内容变长时没有动画地一下跟过去（实测）
-        gliding += 1
-        pin()
-        // 不带动画地加：带动画加进去的话，紧接着的滚动整个不动，要等下一次滚动才动（实测）。气泡本来就藏着
-        let startsTurn = session.transcript.send(message)
-        // 新的一轮重新留白；排在后面的不让裁掉的空白长回来
-        if startsTurn { trim = 0 }
-        // 等新消息和它底下的留白排好再滚
-        DispatchQueue.main.async {
-            withAnimation(.glide) {
-                if startsTurn {
-                    position.scrollTo(id: TranscriptView.tailMarker, anchor: .top)
-                } else {
-                    position.scrollTo(edge: .bottom)
-                }
-            }
-            settle()
-            withAnimation(.glide) {
-                arriving.remove(message.id)
-            } completion: {
-                arrived(message.id)
-            }
-        }
-    }
-
-    /// 程序滚完一下，钉在停下的地方。滚动的目标会一直留在滚动位置里：滚到某一行的目标让上面按底部、顶部对齐都不起作用，
-    /// 滚到最底下的目标在内容变化时没有动画地跳过去；钉在一个位置的目标不碍事。
-    /// 等一秒再钉：withAnimation 的 completion 不等滚动滚完，十几毫秒就回调，这时钉住会把这一下滚动停在原地；
-    /// glide 名义上 0.5 秒，实际要 0.8 秒左右才停稳（都是实测）。
-    /// 期间又有一下滚动的，等最后一下；人已经上手滚了就不钉，那会和手抢。
-    private func settle() {
-        Task {
-            try? await Task.sleep(for: .seconds(1))
-            gliding -= 1
-            if gliding == 0, !userScrolling { pin() }
-        }
-    }
-
-    /// 钉在这会儿的位置，滚动位置里只留一个位置。
-    private func pin() {
-        position.scrollTo(y: offset.y)
-    }
-
-    /// 气泡浮到位了。回合没在跑时 agent 马上就收到；在跑时要等它做完手上这一步，
-    /// 假数据里一直排着，直到打断或者立即发送。
-    private func arrived(_ id: UUID) {
-        guard !session.transcript.running else { return }
-        Task {
-            try? await Task.sleep(for: .seconds(0.8))
-            withAnimation(.easeInOut(duration: 0.3)) { session.transcript.receive(id) }
-        }
-    }
-}
-
-/// 滚动位置的盒子：改了它不触发重画。
-private final class ScrollOffset {
-    var y: CGFloat = 0
-}
-
-private extension Animation {
-    /// 发送后对话往上滑，气泡同时浮进来。
-    static let glide = Animation.smooth(duration: 0.5)
-}
-
-/// 滚动时要看的几样：只有它们变了才回调，不是每滚一帧都回调。
-private struct ScrollState: Equatable {
-    let content: CGSize
-    let container: CGSize
-    let atBottom: Bool
-
-    init(_ geometry: ScrollGeometry) {
-        content = geometry.contentSize
-        container = geometry.containerSize
-        // 可见区域的底边在控制区后面，要减掉控制区让出的那一截
-        atBottom = geometry.visibleRect.maxY - geometry.contentInsets.bottom >= geometry.contentSize.height - 1
-    }
-
-    /// 滚到最底下时 scrollTo(y:) 给多少。containerSize 已经扣掉了上下让出的一截，scrollTo(y:) 又比 contentOffset 多算上面那一截（实测），
-    /// 两边抵掉，只剩内容比可见区高出多少。
-    var bottom: CGFloat {
-        max(content.height - container.height, 0)
+        scroll.send { session.send(message) } alongside: { arriving.remove(message.id) }
     }
 }
 
@@ -237,25 +69,17 @@ struct TranscriptView: View {
     var pending: [Message] = []
     /// 点 agent 的话弹出操作栏。主对话里是；子 agent 做的事里不是，它们的序号和主对话的会撞。
     var actionable = false
-    /// 主对话给：最后一轮（从最近一条开启新一轮的人发的消息算起）至少占多高，不够就在底下留白（见 TranscriptStack）。
-    /// 发送后滚到最后一轮顶上的标记（tailMarker），这条消息正好停在可见区顶上，上一段内容刚好滚出去，回复往下面的空白里填；
-    /// 回复长过一屏就照常跟着最底下。排在后面的消息（回合在跑、或者前面还排着别的时发的）不算：它接在那一轮后面，
+    /// 主对话给：最后一轮底下的留白（见 TranscriptStack）。发送后滚到最后一轮顶上的标记（TailSpace.marker），
+    /// 这条消息正好停在可见区顶上，上一段内容刚好滚出去，回复往下面的空白里填；回复长过一屏就照常跟着最底下。
+    /// 排在后面的消息（回合在跑、或者前面还排着别的时发的）不开启新的一轮：它接在那一轮后面，
     /// 顶到最上面的话 agent 接着写的内容就在屏幕外了。
-    var tailHeight: CGFloat?
-    /// 底下的空白裁掉多少：人往上翻多少就裁多少，裁完为止（SessionPane 记着）。
-    var trim: CGFloat = 0
-    /// 底下的空白露没露在可见区里：最后一条内容的底边在可见区底边上面就是露着。
-    var blankShown: ((Bool) -> Void)?
+    var tail: TailSpace?
     @Environment(\.selectedRow) private var selection
-    @Environment(\.visibleHeight) private var visibleHeight
-
-    /// 最后一轮顶上那个标记的 id。
-    static let tailMarker = "transcript.tail"
 
     var body: some View {
         let rows = rows
-        TranscriptStack(spacing: Metrics.rowSpacing, tailIndex: tailHeight == nil ? nil : rows.lastIndex(where: \.startsHumanTurn),
-                        tailHeight: tailHeight, trim: trim) {
+        TranscriptStack(spacing: Metrics.rowSpacing, tailIndex: tail == nil ? nil : rows.lastIndex(where: \.startsHumanTurn),
+                        tailHeight: tail?.height) {
             ForEach(rows) { row in
                 Group {
                     switch row.content {
@@ -272,14 +96,9 @@ struct TranscriptView: View {
                 // 开着操作栏的那一行垫在最上面：操作栏浮出这一行，压在前后的行上（自己的排版容器里也管用，实测）
                 .zIndex(selection.wrappedValue == row.id ? 1 : 0)
             }
-            if let tailHeight {
-                Color.clear.frame(height: 0).layoutValue(key: StackMarker.self, value: .tail).id(Self.tailMarker)
-                // .scrollView 的原点在标题栏底下，可见区的底边在 visibleHeight，最后一行的底边还要再留出对话底下的边距（实测）。
-                // 不按 tailHeight 比：可见区变矮时它要等一会儿才跟上
-                Color.clear.frame(height: 0).layoutValue(key: StackMarker.self, value: .end)
-                    .onGeometryChange(for: Bool.self) {
-                        $0.frame(in: .scrollView).minY < visibleHeight - Metrics.transcriptPadding - 1
-                    } action: { blankShown?($0) }
+            if let tail {
+                Color.clear.frame(height: 0).layoutValue(key: StackMarker.self, value: .tail).id(TailSpace.marker)
+                TailEnd(tail: tail).layoutValue(key: StackMarker.self, value: .end)
             }
         }
     }
@@ -315,14 +134,13 @@ struct TranscriptView: View {
 }
 
 /// 对话一行一行往下排，靠左，行间空 spacing，和 VStack 一样。给了 tailHeight 时，最后一轮（从 tailIndex 那一行上面、
-/// 上一行的底边算起）至少这么高，不够就在底下留白，再减去已经裁掉的 trim；标着 .tail 的空视图摆在最后一轮的顶上，发送后滚到它，
+/// 上一行的底边算起）至少这么高，不够就在底下留白；标着 .tail 的空视图摆在最后一轮的顶上，发送后滚到它，
 /// 标着 .end 的摆在最后一行的底边，用来看底下的空白露没露出来。
 /// 留白要在排版里和新消息一次算出来：量出来再补会晚一次排版，发送时滚动那一刻底下还没有留白，滚不到位。
 private struct TranscriptStack: Layout {
     let spacing: CGFloat
     let tailIndex: Int?
     let tailHeight: CGFloat?
-    let trim: CGFloat
 
     struct Cache {
         var width: CGFloat?
@@ -380,7 +198,7 @@ private struct TranscriptStack: Layout {
 
     private func extra(natural: CGFloat, tailTop: CGFloat) -> CGFloat {
         guard tailIndex != nil, let tailHeight, tailHeight.isFinite else { return 0 }
-        return max(tailTop + tailHeight - natural - trim, 0)
+        return max(tailTop + tailHeight - natural, 0)
     }
 }
 

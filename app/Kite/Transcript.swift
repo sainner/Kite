@@ -20,7 +20,12 @@ struct Transcript {
         self.root = root
         self.records = records
         self.running = running
-        self.pending = pending
+        // 排着的消息照 send 的规矩标上收到时并不并进回合
+        self.pending = pending.enumerated().map { index, message in
+            var message = message
+            message.midTurn = running || index > 0
+            return message
+        }
         items = derive()
     }
 }
@@ -60,6 +65,7 @@ struct Message: Identifiable {
     var command: String?
     var attachments: [Attachment] = []
     /// 并进了正在跑的回合：agent 做完手上这一步、下一次调用模型之前收到，没有自己的检查点。
+    /// 排队中的消息上是预计：发的时候回合在跑、或者前面还排着别的，收到时就并进那一轮（见 Transcript.send）。
     var midTurn = false
 
     init(id: UUID = UUID(), text: String, command: String? = nil, attachments: [Attachment] = [], midTurn: Bool = false) {
@@ -269,9 +275,8 @@ extension Transcript {
     }
 
     /// 发一条消息：先排队，agent 收到时（receive）才变成记录，返回它会不会开启新的一轮。
-    /// 空闲、前面也没有还没收到的才开启新的一轮；回合在跑、或者前面还排着别的，就是排在后面、收到时并进那一轮的（midTurn）。
+    /// 空闲、前面也没有排着没收到的才开启新的一轮；回合在跑、或者前面还排着别的，就是排在后面、收到时并进那一轮的（midTurn）。
     /// 现在只改假数据；接上 kited 后经它写进输入流。
-    @discardableResult
     mutating func send(_ message: Message) -> Bool {
         var message = message
         message.midTurn = running || !pending.isEmpty

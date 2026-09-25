@@ -11,7 +11,7 @@ struct MessageBubble: View {
     let message: Message
     let queued: Bool
     @Environment(Session.self) private var session
-    @Environment(\.arrivingMessages) private var arriving
+    @Environment(\.arrivingMessages) private var arrivingMessages
     @Environment(\.selectedRow) private var selection
     @State private var expanded = false
     /// 正文不折时有多高。
@@ -19,7 +19,7 @@ struct MessageBubble: View {
     @ScaledMetric(relativeTo: .body) private var foldHeight = Metrics.messageFold
 
     var body: some View {
-        let landing = arriving.contains(message.id)
+        let arriving = arrivingMessages.contains(message.id)
         // 只高出一点的不折，省得展开只多看两行
         let foldable = height > foldHeight * 1.4
         HStack(spacing: 0) {
@@ -34,8 +34,8 @@ struct MessageBubble: View {
                     #endif
             }
             // 动画跟着 SessionPane 发送时的那一下走，和对话往上滑同步
-            .offset(y: landing ? Metrics.bubbleRise : 0)
-            .opacity(landing ? 0 : 1)
+            .offset(y: arriving ? Metrics.bubbleRise : 0)
+            .opacity(arriving ? 0 : 1)
             .actionBar(.message(message.id), side: .trailing) { actions(foldable: foldable) }
         }
     }
@@ -49,7 +49,7 @@ struct MessageBubble: View {
                 LinearGradient(stops: [.init(color: .black, location: folded ? 0.7 : 1), .init(color: .black.opacity(folded ? 0 : 1), location: 1)],
                                startPoint: .top, endPoint: .bottom)
             }
-            .background { BubbleSurface(filled: queued ? 0 : 1) }
+            .background { BubbleSurface(queued: queued) }
             .clipShape(BubbleShape())
             // 排队中到收到，底色填进来
             .animation(.easeInOut(duration: 0.3), value: queued)
@@ -293,8 +293,8 @@ nonisolated struct BubbleShape: InsettableShape {
         let limit = min(rect.width, rect.height) / 2
         let radius = min(Metrics.bubbleRadius - inset, limit)
         let tail = min(Metrics.bubbleTail - inset, limit)
-        return UnevenRoundedRectangle(topLeadingRadius: max(radius, 0), bottomLeadingRadius: max(radius, 0),
-                                      bottomTrailingRadius: max(tail, 0), topTrailingRadius: max(radius, 0), style: .continuous)
+        return UnevenRoundedRectangle(topLeadingRadius: radius, bottomLeadingRadius: radius,
+                                      bottomTrailingRadius: tail, topTrailingRadius: radius, style: .continuous)
             .path(in: rect)
     }
 
@@ -305,20 +305,15 @@ nonisolated struct BubbleShape: InsettableShape {
     }
 }
 
-/// 气泡的底色和描边。filled 从 0 到 1：排队中只描边，收到了填上底色。
-private struct BubbleSurface: View, Animatable {
-    var filled: CGFloat
-
-    var animatableData: CGFloat {
-        get { filled }
-        set { filled = newValue }
-    }
+/// 气泡的底色和描边：排队中只描边，收到了填上底色。
+private struct BubbleSurface: View {
+    let queued: Bool
 
     var body: some View {
         let shape = BubbleShape()
         ZStack {
-            shape.fill(Theme.bubble).opacity(filled)
-            shape.strokeBorder(Theme.bubbleStroke, lineWidth: 1).opacity(1 - filled)
+            shape.fill(Theme.bubble).opacity(queued ? 0 : 1)
+            shape.strokeBorder(Theme.bubbleStroke, lineWidth: 1).opacity(queued ? 1 : 0)
         }
     }
 }

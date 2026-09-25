@@ -25,6 +25,19 @@ final class Session: Identifiable {
         PaneHeader(title: title, detail: project)
     }
 
+    /// 发一条消息，返回它会不会开启新的一轮（见 Transcript.send）。假数据里回合没在跑时过一会儿算 agent 收到：
+    /// 等气泡浮到位（0.5 秒）再过 0.8 秒；在跑时要等它做完手上这一步，假数据里一直排着，直到打断或者立即发送。
+    /// 接上 kited 后由它的事件流给出。
+    func send(_ message: Message) -> Bool {
+        let startsTurn = transcript.send(message)
+        Task {
+            try? await Task.sleep(for: .seconds(1.3))
+            guard !transcript.running else { return }
+            withAnimation(.easeInOut(duration: 0.3)) { transcript.receive(message.id) }
+        }
+        return startsTurn
+    }
+
     init(id: Int, tint: Color, title: String, project: String, arrangement: Arrangement, transcript: Transcript,
          context: Double? = nil, changes: (added: Int, removed: Int) = (0, 0)) {
         self.id = id
