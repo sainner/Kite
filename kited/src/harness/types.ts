@@ -122,6 +122,8 @@ export interface SessionOptions {
   tools: Tool[];
   /** 显式预算；达到时暂停，不冒充完成。 */
   maxRequestsPerTurn?: number;
+  /** 管理宿主打开旧会话时先暂停待处理输入，等 send 或 resume 明确启动。 */
+  startPaused?: boolean;
   onEvent?(event: SessionEvent): void;
   afterTools?(turnId: string, callIds: string[]): Promise<void>;
   afterTurn?(turnId: string, outcome: Outcome): Promise<void>;

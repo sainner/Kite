@@ -51,7 +51,7 @@ flowchart TD
 | `kited/src/harness/tools.ts` | 按调用次序调度、并发与排他边界、参数校验、取消与结果 |
 | `kited/src/harness/chatgpt.ts`、`auth.ts` | ChatGPT 订阅 Responses SSE 适配、只读登录缓存 |
 | `kited/src/harness/local-tools.ts`、`command.ts` | 文件读写与精确编辑、命令输出与进程组生命周期 |
-| `kited/src/harness/terminal-session.ts` | 项目指令、会话锁、元数据与进程登记 |
+| `kited/src/harness/session-host.ts` | 项目指令、会话锁、元数据与进程登记 |
 | `kited/src/harness-cli.ts` | 终端对话、插话、打断、恢复与单次任务入口 |
 
 `new HarnessSession(options)` 接收工作目录、指令、journal、model、tools 和回调。`FileJournal(path)` 放在宿主选定的 `KITE_HOME/sessions/<会话>/journal.jsonl`。这些模块不导入 Claude SDK。
@@ -177,7 +177,7 @@ shell 显式传入 env，独立进程组执行，完整输出写日志并仅返�
 
 当前交付独立内核、ChatGPT 订阅模型适配器、文件/命令工具、项目上下文装配与终端入口。运行方式见 [kited README](../kited/README.md#终端试用)。终端直接操作指定目录；现有 HTTP 默认仍使用旧 `Runner`，App 仍使用假数据。
 
-后续补 kited runtime 路由与记录事件接口、原有 check 的结构化事件、App 真实对话，再补自有认证、skill/子 agent 与上下文压缩。接 kited 时把 `afterTools`、`afterTurn` 接到工作树快照，冲突后的自动采纳只允许在正常完成且无冲突、无 pending 输入时触发。旧 Claude 会话不自动改 runtime。
+kited 已按 runtime 路由新旧会话，并将 `afterTools`、`afterTurn` 接到工作树快照；正常完成且没有 pending 输入时才尝试冲突后的自动采纳。管理打开时用 `startPaused` 防止唤醒待处理输入，归档在停止执行后才判断未采纳改动。旧 Claude 会话不自动改 runtime。后续补统一记录与历史游标、原有 check 的结构化事件、App 真实对话，再补认证刷新、skill/子 agent 与上下文压缩。
 
 ## 10. 验证
 

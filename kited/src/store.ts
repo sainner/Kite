@@ -1,6 +1,6 @@
 /**
  * Kite 自己的事实：登记了哪些项目，每个会话的工作树和它续接的原生会话。
- * 快照在项目仓库的 refs/kite/ 里，会话记录在 Claude Code 自己的目录里，都不进这里。
+ * 快照在项目仓库的 refs/kite/ 里，会话正文由各 runtime 的 journal 保存，都不进这里。
  * 进程是否在跑、回合是否进行中是运行时状态，不落库。
  */
 import { Database } from 'bun:sqlite';
@@ -29,8 +29,8 @@ export interface Session {
   branch: string;
   /** 建工作树时的起点 commit。 */
   base: string;
-  runtime: 'claude';
-  /** 当前续接的原生会话 id（Claude Code 的 session id）。 */
+  runtime: 'claude' | 'harness';
+  /** 当前续接的原生会话 id；不同 runtime 之间不能混用。 */
   nativeId: string;
   status: SessionStatus;
   createdAt: number;

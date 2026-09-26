@@ -5,7 +5,7 @@ import { readSubscriptionCredentials } from '../../src/harness/auth.ts';
 import { ChatGPTModel } from '../../src/harness/chatgpt.ts';
 import { restoreContext } from '../../src/harness/context/assembler.ts';
 import { localTools } from '../../src/harness/local-tools.ts';
-import { openTerminalSession } from '../../src/harness/terminal-session.ts';
+import { openSessionHost } from '../../src/harness/session-host.ts';
 import type { Json, JsonObject, ModelEvent, ModelRequest, Tool, ToolResult } from '../../src/harness/types.ts';
 import {
   aborted, deferred, diskRecords, input, item, ManualModel, Seen, success, tool, useHarness,
@@ -305,9 +305,9 @@ test('终端会话关闭等待执行停止，重开保留旧快照和历史并�
     cwd, sessionDir, model, env: ENV(), modelConfig: { model: 'test', reasoning: 'high' },
     tools: [tool('hold', async (_args, { signal }) => { started.resolve(signal); await aborted(signal); return stopped.promise; })],
   };
-  const opened = await openTerminalSession(options);
+  const opened = await openSessionHost(options);
   try {
-    await expect(openTerminalSession(options)).rejects.toThrow();
+    await expect(openSessionHost(options)).rejects.toThrow();
     const metadata = JSON.parse(readFileSync(join(sessionDir, 'metadata.json'), 'utf8'));
     expect(metadata).toMatchObject({ cwd, modelConfig: options.modelConfig });
     await opened.runner.send(input('保留输入'));
@@ -320,7 +320,7 @@ test('终端会话关闭等待执行停止，重开保留旧快照和历史并�
     const closing = opened.close().then(() => { closed = true; });
     await aborted(signal);
     expect(closed).toBe(false);
-    await expect(openTerminalSession(options)).rejects.toThrow();
+    await expect(openSessionHost(options)).rejects.toThrow();
     stopped.resolve(success('停止前的结果'));
     await closing;
     const journalPath = join(sessionDir, readdirSync(sessionDir).find((name) => name.endsWith('.jsonl'))!);
@@ -332,9 +332,9 @@ test('终端会话关闭等待执行停止，重开保留旧快照和历史并�
     writeFileSync(join(cwd, '.kite', 'memory', 'MEMORY.md'), '长期记忆：换成新索引');
     const elsewhere = join(root, 'elsewhere');
     mkdirSync(elsewhere);
-    await expect(openTerminalSession({ ...options, cwd: elsewhere })).rejects.toThrow();
+    await expect(openSessionHost({ ...options, cwd: elsewhere })).rejects.toThrow();
     const nextModel = new ManualModel();
-    const reopened = await openTerminalSession({ ...options, model: nextModel });
+    const reopened = await openSessionHost({ ...options, model: nextModel });
     try {
       await reopened.runner.send(input('重开输入'));
       const next = await nextModel.call(1);

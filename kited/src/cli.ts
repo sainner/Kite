@@ -12,6 +12,8 @@ const USAGE = `用法：
   kite send <会话> <消息>             发消息，跟到这一轮结束
   kite follow [会话]                  一直跟事件
   kite interrupt <会话>               打断当前回合
+  kite resume <会话>                  继续暂停的 harness 会话
+  kite recover <会话>                 确认旧执行已停止，随后用 resume 继续
   kite snapshots <会话>               列出快照
   kite restore <会话> <快照>          把工作树恢复到某一枚快照
   kite adopt <会话>                   把会话的改动合回主线
@@ -38,8 +40,35 @@ function brief(input: any): string {
   return String(v).split('\n')[0]!.slice(0, 100);
 }
 
+const streamedRequests = new Set<string>();
+
+const isHarnessPaused = (e: any): boolean => e.type === 'harness' && e.event.type === 'state'
+  && ['paused', 'needs_recovery'].includes(e.event.state.phase);
+
 function print(e: any): void {
   switch (e.type) {
+    case 'harness': {
+      const event = e.event;
+      if (event.type === 'delta') {
+        streamedRequests.add(event.requestId);
+        process.stdout.write(event.text);
+      } else if (event.type === 'record') {
+        const r = event.record;
+        if (r.type === 'model.item') {
+          if (r.item.call) console.log(`\n→ ${r.item.call.name} ${brief(r.item.call.arguments)}`);
+          else if (!streamedRequests.has(r.requestId) && Array.isArray(r.item.raw.content)) {
+            for (const part of r.item.raw.content) if (typeof part?.text === 'string') console.log(part.text);
+          }
+        }
+        if (r.type === 'tool.finished') console.log(`· 工具 ${r.result.status}\n${r.result.output.slice(-1200)}`);
+        if (r.type === 'request.completed' || r.type === 'request.failed') streamedRequests.delete(r.requestId);
+        if (r.type === 'turn.finished') console.log(`\n· ${r.outcome.kind}${r.outcome.message ? `：${r.outcome.message}` : ''}`);
+      } else if (event.type === 'error') console.log(`! ${event.message}`);
+      else if (isHarnessPaused(e)) {
+        console.log(`· 会话 ${event.state.phase}，${event.state.phase === 'needs_recovery' ? '确认旧执行停止后用 recover，再用 resume 继续' : '用 resume 继续'}`);
+      }
+      break;
+    }
     case 'sdk': {
       const m = e.message;
       if (m.type === 'assistant') {
@@ -114,7 +143,8 @@ async function follow(action: () => Promise<string | undefined>, stop: (e: any) 
   }
 }
 
-const turnOver = (e: any) => e.type === 'idle' || (e.type === 'status' && e.status === 'prepare_failed');
+const turnOver = (e: any) => e.type === 'idle' || (e.type === 'status' && e.status === 'prepare_failed')
+  || isHarnessPaused(e);
 
 const [cmd, ...args] = process.argv.slice(2);
 const need = (n: number) => { if (args.length < n) { console.log(USAGE); process.exit(1); } };
@@ -153,6 +183,15 @@ switch (cmd) {
     need(1);
     await call('POST', `/sessions/${args[0]}/interrupt`);
     break;
+  case 'resume':
+    need(1);
+    await follow(async () => { await call('POST', `/sessions/${args[0]}/resume`); return args[0]; }, turnOver, args[0]);
+    break;
+  case 'recover':
+    need(1);
+    await call('POST', `/sessions/${args[0]}/recover`);
+    console.log('· 已确认恢复，用 resume 继续');
+    break;
   case 'snapshots':
     need(1);
     for (const s of await call('GET', `/sessions/${args[0]}/snapshots`)) {
@@ -169,7 +208,8 @@ switch (cmd) {
     let conflicts = 0;
     // 冲突时 kited 把冲突交给 agent，它这一轮结束后自动重试；跟到合回主线，或第二次冲突为止
     await follow(async () => { await call('POST', `/sessions/${args[0]}/adopt`); return args[0]; },
-      (e) => e.type === 'error' || (e.type === 'adopt' && (e.result.status === 'adopted' || ++conflicts > 1)), args[0]);
+      (e) => e.type === 'error' || (e.type === 'adopt' && (e.result.status === 'adopted' || ++conflicts > 1))
+        || isHarnessPaused(e), args[0]);
     break;
   }
   case 'archive':

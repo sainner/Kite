@@ -33,7 +33,7 @@ test('kited 在回合进行中被 SIGKILL，重新启动后给同一个会话发
   kited = await spawnKited(home);
   const p = (await call(kited.url, 'POST', '/projects', { path: repo })).body;
   const hold = `d4-${randomUUID().slice(0, 8)}`;
-  const s = (await call(kited.url, 'POST', '/sessions', { project: p.id, prompt: `HOLD ${hold} 开场` })).body;
+  const s = (await call(kited.url, 'POST', '/sessions', { project: p.id, prompt: `HOLD ${hold} 开场`, runtime: 'claude' })).body;
   await api.held(hold);
 
   // kited 死后它起的 Claude Code 进程还活着：放行它的请求，等它把这一回合写进会话记录，

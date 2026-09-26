@@ -15,4 +15,4 @@ metadata:
 - 自研 harness 无需把存储格式做成 Claude Code 的格式。双方保留满足各自恢复需求的原生记录，再产生统一的 Kite 会话事件；续接模型所需的原始/opaque 字段不能因不显示而丢弃。
 - JSONL 只是一行一个 JSON 的组织方式，不等于模型网络协议。落盘记录、模型上下文、实时事件和界面显示数据相互关联但不等同；界面可以把多个记录合成一张工具卡片或一个段落。
 
-**实现边界：** 这是后续接口设计的方向，统一前端协议和 Claude Code 适配器尚未完成；不代表用户要求现在就恢复 Claude Code 接入。当前 App 仍使用假数据，旧 HTTP 仍直接转发 SDK 消息。相关后端进展见 [harness 方向](harness-direction.md)。
+**实现边界：** 这是后续接口设计的方向，统一前端协议和 Claude Code 适配器尚未完成；不代表用户要求现在就恢复 Claude Code 接入。当前 App 仍使用假数据，HTTP 目前按 runtime 转发 harness 原生事件或 SDK 消息。相关后端进展见 [harness 方向](harness-direction.md)。

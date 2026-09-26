@@ -1,14 +1,13 @@
 #!/usr/bin/env bun
 /** 自研 harness 的独立终端入口；不启动 kited 或 Claude Code。 */
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { readSubscriptionCredentials } from './harness/auth.ts';
 import { ChatGPTModel } from './harness/chatgpt.ts';
-import { openTerminalSession } from './harness/terminal-session.ts';
+import { openSessionHost, readSessionMetadata } from './harness/session-host.ts';
 import type { SessionEvent } from './harness/types.ts';
 
 const USAGE = `用法：
@@ -37,9 +36,8 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
   const id = values.resume ?? `terminal-${randomUUID().slice(0, 12)}`;
   if (!isAbsolute(id) && !/^[A-Za-z0-9_-]+$/.test(id)) throw new Error('会话 id 只能包含字母、数字、下划线和连字符');
   const directory = isAbsolute(id) ? id : join(home, 'sessions', id);
-  const metadataPath = join(directory, 'metadata.json');
-  if (values.resume && !existsSync(metadataPath)) throw new Error(`找不到会话：${id}`);
-  const saved = values.resume ? JSON.parse(readFileSync(metadataPath, 'utf8')) as { cwd: string; modelConfig?: { model?: string; reasoning?: string } } : undefined;
+  const saved = values.resume ? readSessionMetadata(directory) : undefined;
+  if (values.resume && saved === undefined) throw new Error(`找不到会话：${id}`);
   const cwd = resolve(values.cwd ?? saved?.cwd ?? process.cwd());
   const modelName = values.model ?? saved?.modelConfig?.model ?? process.env.KITE_MODEL ?? 'gpt-6-sol';
   const reasoning = values.reasoning ?? saved?.modelConfig?.reasoning ?? 'medium';
@@ -86,7 +84,7 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
       lastWasBusy = event.state.busy;
     }
   };
-  const session = await openTerminalSession({
+  const session = await openSessionHost({
     cwd, sessionDir: directory, model, env: { ...process.env }, onEvent: render,
     maxRequestsPerTurn: maxRequests, modelConfig: { model: modelName, reasoning },
   });
@@ -123,7 +121,7 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
           case '/status': status(); break;
           case '/stop': await session.runner.interrupt(); break;
           case '/resume': await session.runner.resume(); break;
-          case '/recover': await session.runner.confirmRecovery(); status(); break;
+          case '/recover': await session.confirmRecovery(); status(); break;
           case '/exit': exiting = true; rl?.close(); await session.close(); break;
           default: await session.runner.send({ id: randomUUID(), text, source: 'human' });
         }

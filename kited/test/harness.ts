@@ -6,6 +6,8 @@ import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../src/daemon.ts';
 import type { Envelope } from '../src/events.ts';
+import type { Model } from '../src/harness/types.ts';
+import type { Session } from '../src/store.ts';
 import { api } from './setup.ts';
 import { makeTemp } from './util.ts';
 
@@ -35,10 +37,10 @@ export async function call(url: string, method: string, path: string, body?: unk
   return { status: r.status, body: await r.json() };
 }
 
-export function startKited(): Kited {
+export function startKited(model?: (session: Session) => Model): Kited {
   const root = makeTemp('kited-');
   const home = join(root, 'kite');
-  const daemon = startDaemon({ home, port: 0 });
+  const daemon = startDaemon({ home, port: 0, model });
   const events: Envelope[] = [];
   const waiters: Array<{ pred: (e: Envelope) => boolean; resolve: (e: Envelope) => void }> = [];
   const unsubscribe = daemon.kite.bus.subscribe(undefined, (e) => {
@@ -77,7 +79,7 @@ export async function registerProject(k: Kited, path: string): Promise<any> {
 
 /** 新建会话，立即返回视图（准备过程看事件）。 */
 export async function createSession(k: Kited, project: string, prompt: string): Promise<any> {
-  const r = await k.call('POST', '/sessions', { project, prompt });
+  const r = await k.call('POST', '/sessions', { project, prompt, runtime: 'claude' });
   if (r.status !== 200) throw new Error(`建会话失败：${r.status} ${JSON.stringify(r.body)}`);
   return r.body;
 }

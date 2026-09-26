@@ -3,9 +3,12 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { CheckResult } from './check.ts';
 import type { RunnerState } from './runner.ts';
 import type { SessionStatus } from './store.ts';
+import type { SessionEvent } from './harness/types.ts';
 
 export type KiteEvent =
   | { type: 'sdk'; message: SDKMessage }
+  /** 自研 harness 的原生事件；统一显示记录与历史游标在下一阶段补齐。 */
+  | { type: 'harness'; event: SessionEvent }
   | { type: 'status'; status: SessionStatus }
   | { type: 'runner'; state: RunnerState; error?: string }
   /** 回合结束，之后没有新消息。 */

@@ -74,14 +74,14 @@ async function copyIncludes(main: string, real: string): Promise<void> {
  * 跑工作树里的 .kite/setup，没有这个文件返回 null。只看退出码；主文件夹位置经 KITE_MAIN_DIR 告诉脚本，
  * 脚本不需要自己判断身份，也不写状态文件。输出写进 logPath，另外留下最后 4000 个字符给事件用。
  */
-export async function runSetup(main: string, worktree: string, logPath: string): Promise<{ exit: number; tail: string } | null> {
+export async function runSetup(main: string, worktree: string, logPath: string, signal?: AbortSignal): Promise<{ exit: number; tail: string } | null> {
   const script = join(worktree, '.kite', 'setup');
   if (!existsSync(script)) return null;
   mkdirSync(dirname(logPath), { recursive: true });
   const fd = openSync(logPath, 'w');
   try {
     const r = await runScript(script, {
-      cwd: worktree, env: { ...process.env, KITE_MAIN_DIR: main }, timeoutMs: SETUP_TIMEOUT_MS, keep: 4000,
+      cwd: worktree, env: { ...process.env, KITE_MAIN_DIR: main }, timeoutMs: SETUP_TIMEOUT_MS, keep: 4000, signal,
       onOutput: (text) => writeSync(fd, text),
     });
     if (!r.stopped) return { exit: r.code ?? 124, tail: r.tail };

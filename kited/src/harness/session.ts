@@ -61,6 +61,7 @@ export class HarnessSession implements SessionRunner {
     }
     for (const row of options.journal.records) this.apply(row);
     this.recover();
+    if (options.startPaused && this.pending.size) this.paused = true;
     this.phase = this.blocked ? 'needs_recovery' : this.paused ? 'paused' : 'idle';
     this.kick();
   }
@@ -432,7 +433,6 @@ export class HarnessSession implements SessionRunner {
       finished: (call, result) => this.record({ type: 'tool.finished', ...ids, callId: call.id, result }),
       fatal: (error) => { turn.failure ??= { error }; turn.controller.abort(); },
     });
-    let completed = false;
     let needsFollowUp = false;
     let failure: { error: unknown } | undefined;
     try {
@@ -444,7 +444,7 @@ export class HarnessSession implements SessionRunner {
       }, turn.controller.signal);
       for await (const event of stream) {
         this.checkTurn(turn);
-        if (completed) throw new Error('模型在响应完成之后继续发送事件');
+        if (saved.ended) throw new Error('模型在响应完成之后继续发送事件');
         switch (event.type) {
           case 'delta': this.emit({ type: 'delta', ...ids, text: event.text }); break;
           case 'item': {
@@ -458,13 +458,12 @@ export class HarnessSession implements SessionRunner {
             this.record({ type: 'request.completed', ...ids, responseId: event.responseId,
               needsFollowUp: event.needsFollowUp ?? false, ...(event.usage ? { usage: event.usage } : {}),
             });
-            completed = true;
             needsFollowUp = event.needsFollowUp ?? false;
             break;
           default: throw new Error('未知模型流事件');
         }
       }
-      if (!completed) throw new Error('模型响应流未给出完成事件');
+      if (!saved.ended) throw new Error('模型响应流未给出完成事件');
     } catch (error) {
       failure = { error };
       if (!turn.stopRequested) turn.failure ??= failure;

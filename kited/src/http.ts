@@ -63,14 +63,20 @@ export function serve(kite: Kite, port: number) {
         GET: handle((req) => kite.sessions(new URL(req.url).searchParams.get('project') ?? undefined)),
         POST: handle(async (req) => {
           const b = await body(req);
-          return kite.createSession(str(b.project, 'project'), str(b.prompt, 'prompt'));
+          if (b.runtime !== undefined && b.runtime !== 'harness' && b.runtime !== 'claude') throw new KiteError('runtime 必须是 harness 或 claude');
+          return kite.createSession(str(b.project, 'project'), str(b.prompt, 'prompt'), b.runtime);
         }),
       },
       '/sessions/:id': { GET: handle((req) => kite.session(req.params.id)) },
       '/sessions/:id/messages': {
-        POST: handle(async (req) => kite.send(req.params.id, str((await body(req)).text, 'text'))),
+        POST: handle(async (req) => {
+          const b = await body(req);
+          return kite.send(req.params.id, str(b.text, 'text'), b.id === undefined ? undefined : str(b.id, 'id'));
+        }),
       },
       '/sessions/:id/interrupt': { POST: handle((req) => kite.interrupt(req.params.id)) },
+      '/sessions/:id/resume': { POST: handle((req) => kite.resume(req.params.id)) },
+      '/sessions/:id/recover': { POST: handle((req) => kite.recover(req.params.id)) },
       '/sessions/:id/snapshots': { GET: handle((req) => kite.snapshots(req.params.id)) },
       '/sessions/:id/restore': {
         POST: handle(async (req) => kite.restore(req.params.id, str((await body(req)).commit, 'commit'))),
