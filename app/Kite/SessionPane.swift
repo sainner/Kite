@@ -4,10 +4,11 @@ import SwiftUI
 /// 人发的消息靠右、带气泡；agent 的话铺满这一栏；两段话之间 agent 做的事折成一行，点开看每一步。
 struct SessionPane: View {
     @Environment(Session.self) private var session
+    @Environment(AppModel.self) private var model
     /// 对话怎么滚：跟不跟着最底下、发送后滑到哪、底下留多少空白。
     @State private var scroll = TranscriptScroll()
     /// 刚发出、气泡还在下面、没开始往上浮的消息。
-    @State private var arriving: Set<UUID> = []
+    @State private var arriving: Set<String> = []
     /// 点开了操作栏的那一行。
     @State private var selected: RowID?
 
@@ -47,12 +48,17 @@ struct SessionPane: View {
                 .frame(maxWidth: Metrics.transcriptWidth)
         }
         .environment(\.workingDirectory, session.transcript.root)
+        .task { await session.observe() }
         .environment(\.arrivingMessages, arriving)
         .environment(\.selectedRow, $selected)
     }
 
     /// 发一条消息：先排进队里，对话滑过去（见 TranscriptScroll.send），气泡同时从下往上浮进来。
     private func send(_ message: Message) {
+        if session.isDraft {
+            model.showNewSession = true
+            return
+        }
         arriving.insert(message.id)
         scroll.send { session.send(message) } alongside: { arriving.remove(message.id) }
     }
@@ -274,9 +280,9 @@ private struct AgentText: View {
             selection.close()
         }
         // 翻译成另一种语言，还没做
-        ActionButton("翻译", icon: "translate") { selection.close() }
+        ActionButton("翻译", icon: "translate") { selection.close() }.disabled(true)
         // 分出一个新会话，从这段话之后接着说；还没做
-        ActionButton("从这里分叉", icon: "arrow.triangle.branch") { selection.close() }
+        ActionButton("从这里分叉", icon: "arrow.triangle.branch") { selection.close() }.disabled(true)
     }
 }
 
@@ -357,7 +363,7 @@ private struct CompactedDivider: View {
 private extension Session {
     /// 控制区底下的状态信息：在不在干活、上下文用了几成、工作区改了多少行。
     var status: Text {
-        var parts = [Text(transcript.running ? "正在工作" : "空闲")]
+        var parts = [Text(statusLabel)]
         if let context {
             parts.append(Text("上下文 \(context.formatted(.percent.precision(.fractionLength(0))))"))
         }
@@ -368,8 +374,7 @@ private extension Session {
     }
 }
 
-/// 会话窗口的控制区：上面一行输入框，下面一行按钮。左边是 effort，右边是附件、斜杠命令、语音输入，
-/// 有字时多一个发送；回合在跑时发出去的是插话，多一个打断。附件、斜杠命令、语音输入还没做，点了没反应。
+/// 会话窗口的控制区：输入框与服务支持的操作。发送、打断、继续由真实状态控制，未接通的入口禁用。
 /// 发出去的字在输入框里模糊、淡掉，同时气泡在对话里从下往上浮进来（见 SessionPane.send）。
 private struct ControlArea: View {
     var typing: FocusState<Bool>.Binding
@@ -393,19 +398,26 @@ private struct ControlArea: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
             HStack(spacing: 0) {
-                EffortPicker(effort: $session.effort)
+                EffortPicker(effort: .constant(.medium))
+                    .allowsHitTesting(false)
+                    .help("推理强度设置尚未接通")
                 Spacer(minLength: 0)
-                IconButton(icon: "paperclip") {}
-                IconButton(icon: "slash.circle") {}
-                IconButton(icon: "mic") {}
+                IconButton(icon: "paperclip") {}.disabled(true)
+                IconButton(icon: "slash.circle") {}.disabled(true)
+                IconButton(icon: "mic") {}.disabled(true)
                 if running {
                     RoundButton(icon: "stop.fill", fill: Theme.strongPlaceholder) {
-                        withAnimation(.snappy) { session.transcript.interrupt() }
+                        session.control("interrupt")
                     }
+                    .disabled(!session.connected || session.state?.capabilities.interrupt != true)
                     .padding(.leading, 4)
+                }
+                if session.state?.capabilities.resume == true {
+                    Button("继续") { session.control("resume") }.disabled(!session.connected)
                 }
                 if !blank && !leaving {
                     RoundButton(icon: "arrow.up", fill: .accentColor, action: submit)
+                        .disabled(!session.canSend)
                         .padding(.leading, 4)
                 }
             }
@@ -418,9 +430,11 @@ private struct ControlArea: View {
     }
 
     private func submit() {
-        guard !blank, !leaving else { return }
+        guard !blank, !leaving, session.canSend else { return }
         let sent = session.draft
         send(Message(typed: sent.trimmingCharacters(in: .whitespacesAndNewlines)))
+        // 新会话先选择项目；关闭选择窗口时仍保留原输入。
+        guard !session.isDraft else { return }
         // 淡完才清空，输入框不在淡的时候变矮。淡的时候又打了字的，只去掉发出去的那一截
         withAnimation(.easeOut(duration: 0.3)) {
             leaving = true

@@ -446,7 +446,7 @@ export class HarnessSession implements SessionRunner {
         this.checkTurn(turn);
         if (saved.ended) throw new Error('模型在响应完成之后继续发送事件');
         switch (event.type) {
-          case 'delta': this.emit({ type: 'delta', ...ids, text: event.text }); break;
+          case 'delta': this.emit({ type: 'delta', ...ids, text: event.text, ...(event.itemId ? { itemId: event.itemId } : {}) }); break;
           case 'item': {
             if (!event.item.id || saved.items.some((item) => item.id === event.item.id)) throw new Error('模型输出条目 id 无效或重复');
             if (event.item.call && (!event.item.call.id || this.calls.has(event.item.call.id))) throw new Error('模型工具调用 id 无效或重复');

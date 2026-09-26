@@ -74,31 +74,14 @@ struct MessageBubble: View {
     @ViewBuilder
     private func actions(foldable: Bool) -> some View {
         if queued {
-            ActionButton("立即发送", icon: "arrow.up") {
-                done { session.transcript.sendNow() }
+            if session.failed.contains(message.id) {
+                ActionButton("重试发送", icon: "arrow.clockwise") { done { session.retry(message) } }
+                    .disabled(!session.connected)
             }
-            ActionButton("编辑", icon: "pencil") {
-                if let message = done({ session.transcript.withdraw(message.id) }) {
-                    session.restoreDraft(message)
-                }
-            }
-            ActionButton("取消发送", icon: "xmark", role: .destructive) {
-                done { _ = session.transcript.withdraw(message.id) }
-            }
-        } else {
-            // 回合在跑时先打断才能回退
-            Group {
-                ActionButton("编辑", icon: "pencil") { rewind(restoring: true) }
-                ActionMenu("回退到这条之前", icon: "arrow.uturn.backward") {
-                    Button("对话和代码") { rewind() }
-                    Button("只回退对话") { rewind() }
-                    // 假数据没有代码，还没做
-                    Button("只回退代码") { done {} }
-                }
-                // 分出一个新会话，从这条之前接着说；还没做
-                ActionButton("从这里分叉", icon: "arrow.triangle.branch") { done {} }
-            }
-            .disabled(session.transcript.running)
+            ActionButton("编辑", icon: "pencil") { done { session.cancel(message, editing: true) } }
+                .disabled(!session.canCancel)
+            ActionButton("取消发送", icon: "xmark", role: .destructive) { done { session.cancel(message) } }
+                .disabled(!session.canCancel)
         }
         ActionButton("复制", icon: "doc.on.doc") {
             copyToPasteboard(message.typed)
@@ -119,20 +102,6 @@ struct MessageBubble: View {
         return withAnimation(.snappy, body)
     }
 
-    /// 对话回到这条之前。restoring：原文放回输入框，改了再发。
-    private func rewind(restoring: Bool = false) {
-        guard let message = done({ session.transcript.rewind(before: message.id) }) else { return }
-        if restoring { session.restoreDraft(message) }
-    }
-
-}
-
-private extension Session {
-    /// 把一条消息的原文放回输入框。输入框里已经有字的话放在前面，另起一行接着原来的字。
-    func restoreDraft(_ message: Message) {
-        let existing = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        draft = existing.isEmpty ? message.typed : message.typed + "\n" + draft
-    }
 }
 
 /// 气泡里的正文：原样显示，``` 围起来的一段排成等宽，斜杠命令的命令名在最前面。Mac 上用它；
@@ -322,5 +291,5 @@ private struct BubbleSurface: View {
 
 extension EnvironmentValues {
     /// 刚发出、气泡还在下面藏着的消息：对话往上滑的同时，气泡从下往上浮进来。SessionPane 给出。
-    @Entry var arrivingMessages: Set<UUID> = []
+    @Entry var arrivingMessages: Set<String> = []
 }

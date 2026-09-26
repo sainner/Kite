@@ -46,7 +46,7 @@ struct PhoneLayout: View {
                 .ignoresSafeArea()
                 // 会话列表，点一个就切过去并收起。一次只露出一侧，另一侧藏起来，免得窗口移开时从边上露出来
                 VStack(spacing: 4) {
-                    ForEach(model.sessions) { session in
+                    ForEach(model.listedSessions) { session in
                         SessionRow(session: session, current: current == session.id, height: 44)
                             .contentShape(Rectangle())
                             .onTapGesture {

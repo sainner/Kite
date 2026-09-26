@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 侧边栏里的一行，一个会话。没有自己的底色，选中时垫一层；现在只有占位色块，颜色区分是哪个会话。
+/// 侧边栏里的一行，一个会话。没有自己的底色，选中时垫一层；标题来自真实会话或尚未提交的草稿。
 struct SessionRow: View {
     let session: Session
     let current: Bool
@@ -11,7 +11,8 @@ struct SessionRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Circle().fill(session.tint).frame(width: 10, height: 10)
-            RoundedRectangle(cornerRadius: 4).fill(Theme.placeholder).frame(height: 10)
+            Text(session.title).font(Theme.body).lineLimit(1)
+            Spacer(minLength: 0)
             if detached {
                 Image(systemName: "macwindow").font(Theme.secondary).foregroundStyle(.secondary)
             }
@@ -22,35 +23,67 @@ struct SessionRow: View {
     }
 }
 
-/// action 区：一排按钮，比如会话，还有用户（账号和个人设置）。现在只有占位色块。
-/// Mac 上在侧边栏底部，按钮一行、用户单独一行；iPhone 上从窗口底部拉出来，只有一行，用户是其中一个按钮。
+/// action 区保持原来的按钮槽位与底部信息行，只把已接通的入口放进对应位置。
 struct ActionArea: View {
+    var compact = false
+    @Environment(AppModel.self) private var model
+
     var body: some View {
         #if os(iOS)
         HStack(spacing: 8) {
-            buttons
-            Circle().fill(Theme.placeholder)
-                .frame(width: Metrics.actionButton, height: Metrics.actionButton)
+            buttons(size: Metrics.actionButton)
+            connection(size: Metrics.actionButton)
         }
         #else
-        VStack(alignment: .leading, spacing: Metrics.actionSpacing) {
-            HStack(spacing: 8) { buttons }
-            HStack(spacing: 10) {
-                Circle().fill(Theme.placeholder).frame(width: 28, height: 28)
-                RoundedRectangle(cornerRadius: 4).fill(Theme.placeholder).frame(width: 80, height: 12)
-                Spacer(minLength: 0)
-                RoundedRectangle(cornerRadius: 8).fill(Theme.placeholder).frame(width: 28, height: 28)
+        if compact {
+            VStack(spacing: 8) {
+                buttons(size: 32)
+                connection(size: 28).padding(.top, 4)
             }
-            .frame(height: Metrics.accountRow)
+        } else {
+            VStack(alignment: .leading, spacing: Metrics.actionSpacing) {
+                HStack(spacing: 8) { buttons(size: Metrics.actionButton) }
+                HStack(spacing: 10) {
+                    Circle().fill(Theme.placeholder).frame(width: 28, height: 28)
+                    Text(model.connected ? "已连接工作机" : "未连接工作机")
+                        .font(Theme.secondary).foregroundStyle(.secondary).lineLimit(1)
+                    Spacer(minLength: 0)
+                    connection(size: 28)
+                }
+                .frame(height: Metrics.accountRow)
+            }
         }
         #endif
     }
 
-    private var buttons: some View {
-        ForEach(0..<4, id: \.self) { _ in
-            RoundedRectangle(cornerRadius: 8).fill(Theme.placeholder)
-                .frame(width: Metrics.actionButton, height: Metrics.actionButton)
+    @ViewBuilder
+    private func buttons(size: CGFloat) -> some View {
+        Button { model.showNewSession = true } label: {
+            Image(systemName: "square.and.pencil")
+                .font(Theme.body)
+                .frame(width: size, height: size)
+                .background(Theme.placeholder, in: RoundedRectangle(cornerRadius: 8))
         }
+        .buttonStyle(.plain)
+        .help("新会话")
+        .accessibilityLabel("新会话")
+        .disabled(!model.connected)
+        ForEach(0..<3, id: \.self) { _ in
+            RoundedRectangle(cornerRadius: 8).fill(Theme.placeholder)
+                .frame(width: size, height: size)
+        }
+    }
+
+    private func connection(size: CGFloat) -> some View {
+        Button { model.showConnection = true } label: {
+            Image(systemName: "gearshape")
+                .font(Theme.secondary)
+                .frame(width: size, height: size)
+                .background(Theme.placeholder, in: RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .help("连接工作机")
+        .accessibilityLabel("连接工作机")
     }
 }
 
@@ -71,10 +104,10 @@ struct MacSidebar: View {
         .padding(.top, chrome.top + Metrics.gap - Metrics.padding)
     }
 
-    private func expanded(_ current: Int?) -> some View {
+    private func expanded(_ current: String?) -> some View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
-                ForEach(model.sessions) { session in
+                ForEach(model.listedSessions) { session in
                     SessionRow(session: session, current: current == session.id, detached: model.detached.contains(session.id))
                         .overlay { source(session) }
                 }
@@ -85,9 +118,9 @@ struct MacSidebar: View {
         .padding(.leading, Metrics.sidebarLeading)
     }
 
-    private func rail(_ current: Int?) -> some View {
+    private func rail(_ current: String?) -> some View {
         VStack(spacing: 8) {
-            ForEach(model.sessions) { session in
+            ForEach(model.listedSessions) { session in
                 // 已经分离成独立窗口的画淡一点
                 Circle().fill(session.tint).frame(width: 24, height: 24)
                     .opacity(model.detached.contains(session.id) ? 0.35 : 1)
@@ -96,10 +129,7 @@ struct MacSidebar: View {
                     .overlay { source(session) }
             }
             Spacer(minLength: Metrics.gap)
-            ForEach(0..<4, id: \.self) { _ in
-                RoundedRectangle(cornerRadius: 8).fill(Theme.placeholder).frame(width: 32, height: 32)
-            }
-            Circle().fill(Theme.placeholder).frame(width: 28, height: 28).padding(.top, 4)
+            ActionArea(compact: true)
         }
         .frame(maxWidth: .infinity)
     }
@@ -113,7 +143,7 @@ struct MacSidebar: View {
                 model.selected = session.id
             }
         } onDetach: { point in
-            guard !model.detached.contains(session.id) else { return }
+            guard !session.isDraft, !model.detached.contains(session.id) else { return }
             // 独立窗口里的卡片和主窗口内容区一样大；窗口左上角放在指针左上方，指针落在标题那一条上。AppKit 的屏幕坐标 y 朝上
             let size = DetachedSession.windowSize(content: model.contentSize, chrome: chrome)
             model.pendingPlacement = CGRect(x: point.x - 60, y: point.y + 16 - size.height, width: size.width, height: size.height)

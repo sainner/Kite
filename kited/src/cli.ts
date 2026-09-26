@@ -40,57 +40,35 @@ function brief(input: any): string {
   return String(v).split('\n')[0]!.slice(0, 100);
 }
 
-const streamedRequests = new Set<string>();
-
-const isHarnessPaused = (e: any): boolean => e.type === 'harness' && e.event.type === 'state'
-  && ['paused', 'needs_recovery'].includes(e.event.state.phase);
+const printedText = new Map<string, string>();
+const isPaused = (e: any): boolean => e.type === 'state' && ['paused', 'needs_recovery'].includes(e.state.phase);
 
 function print(e: any): void {
   switch (e.type) {
-    case 'harness': {
-      const event = e.event;
-      if (event.type === 'delta') {
-        streamedRequests.add(event.requestId);
-        process.stdout.write(event.text);
-      } else if (event.type === 'record') {
-        const r = event.record;
-        if (r.type === 'model.item') {
-          if (r.item.call) console.log(`\n→ ${r.item.call.name} ${brief(r.item.call.arguments)}`);
-          else if (!streamedRequests.has(r.requestId) && Array.isArray(r.item.raw.content)) {
-            for (const part of r.item.raw.content) if (typeof part?.text === 'string') console.log(part.text);
-          }
-        }
-        if (r.type === 'tool.finished') console.log(`· 工具 ${r.result.status}\n${r.result.output.slice(-1200)}`);
-        if (r.type === 'request.completed' || r.type === 'request.failed') streamedRequests.delete(r.requestId);
-        if (r.type === 'turn.finished') console.log(`\n· ${r.outcome.kind}${r.outcome.message ? `：${r.outcome.message}` : ''}`);
-      } else if (event.type === 'error') console.log(`! ${event.message}`);
-      else if (isHarnessPaused(e)) {
-        console.log(`· 会话 ${event.state.phase}，${event.state.phase === 'needs_recovery' ? '确认旧执行停止后用 recover，再用 resume 继续' : '用 resume 继续'}`);
-      }
+    case 'record': {
+      const r = e.record;
+      const block = r.block;
+      if (block.type === 'text') {
+        const key = `${e.session}:${r.id}`;
+        const previous = printedText.get(key) ?? '';
+        process.stdout.write(block.text.startsWith(previous) ? block.text.slice(previous.length) : `\n${block.text}`);
+        printedText.set(key, block.text);
+      } else if (block.type === 'tool_use') console.log(`\n→ ${block.name} ${brief(block.input)}`);
+      else if (block.type === 'tool_result') console.log(`· 工具 ${block.status}\n${block.output.slice(-1200)}`);
+      else if (block.type === 'error') console.log(`! ${block.text}`);
+      else if (block.type === 'interrupted') console.log('· 已打断');
       break;
     }
-    case 'sdk': {
-      const m = e.message;
-      if (m.type === 'assistant') {
-        for (const b of m.message.content) {
-          if (b.type === 'text') console.log(b.text);
-          else if (b.type === 'tool_use') console.log(`→ ${b.name} ${brief(b.input)}`);
-        }
-      } else if (m.type === 'result') {
-        console.log(`· ${m.subtype}，${(m.duration_ms / 1000).toFixed(1)} 秒${m.total_cost_usd ? `，$${m.total_cost_usd.toFixed(4)}` : ''}`);
-      } else if (m.type === 'system' && m.subtype === 'init') {
-        console.log(`· Claude Code ${m.claude_code_version}，${m.model}`);
-      }
+    case 'state':
+      if (isPaused(e)) console.log(`· 会话 ${e.state.phase}，${e.state.phase === 'needs_recovery' ? '确认旧执行停止后用 recover，再用 resume 继续' : '用 resume 继续'}`);
       break;
-    }
     case 'status': console.log(`· 会话状态：${e.status}`); break;
-    case 'runner': console.log(`· 进程：${e.state}${e.error ? `\n${e.error}` : ''}`); break;
     case 'setup':
       console.log(e.exit === null ? '· 没有初始化脚本' : `· 初始化脚本退出码 ${e.exit}${e.exit ? `\n${e.log}` : ''}`);
       break;
     case 'snapshot': console.log(`· 快照 ${e.commit.slice(0, 8)}，${e.changedFiles} 个文件：${e.label}`); break;
     case 'adopt': printAdopt(e.result); break;
-    case 'idle': console.log('· 回合结束'); break;
+    case 'idle': console.log('\n· 回合结束'); break;
     case 'error': console.log(`! ${e.message}`); break;
   }
 }
@@ -144,7 +122,7 @@ async function follow(action: () => Promise<string | undefined>, stop: (e: any) 
 }
 
 const turnOver = (e: any) => e.type === 'idle' || (e.type === 'status' && e.status === 'prepare_failed')
-  || isHarnessPaused(e);
+  || isPaused(e);
 
 const [cmd, ...args] = process.argv.slice(2);
 const need = (n: number) => { if (args.length < n) { console.log(USAGE); process.exit(1); } };
@@ -209,7 +187,7 @@ switch (cmd) {
     // 冲突时 kited 把冲突交给 agent，它这一轮结束后自动重试；跟到合回主线，或第二次冲突为止
     await follow(async () => { await call('POST', `/sessions/${args[0]}/adopt`); return args[0]; },
       (e) => e.type === 'error' || (e.type === 'adopt' && (e.result.status === 'adopted' || ++conflicts > 1))
-        || isHarnessPaused(e), args[0]);
+        || isPaused(e), args[0]);
     break;
   }
   case 'archive':

@@ -18,7 +18,7 @@ struct SessionContent: View {
 /// 从侧边栏分离出来的会话：没有侧边栏，顶上一条是会话的标题和信息，红绿灯在它左边，拖这一条移动窗口。
 /// 卡片从这一条下面开始，不会伸进系统当作标题栏的区域。关掉窗口，会话回到主窗口。
 struct DetachedSession: View {
-    let id: Int
+    let id: String
     @Environment(AppModel.self) private var model
     @Environment(\.windowChrome) private var chrome
 

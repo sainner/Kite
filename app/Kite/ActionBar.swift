@@ -4,7 +4,7 @@ import SwiftUI
 /// 点开了操作栏的那一行也这样认。
 enum RowID: Hashable {
     case item(Int)
-    case message(UUID)
+    case message(String)
 }
 
 extension EnvironmentValues {

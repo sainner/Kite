@@ -35,7 +35,7 @@ export type ContextItem =
   | { type: 'feedback'; text: string };
 
 export type ModelEvent =
-  | { type: 'delta'; text: string }
+  | { type: 'delta'; text: string; itemId?: string }
   | { type: 'item'; item: ModelItem }
   /** 必须显式给出成功完成；断流不能冒充完成。 */
   | { type: 'completed'; responseId: string; needsFollowUp?: boolean; usage?: JsonObject };
@@ -110,7 +110,7 @@ export interface SessionState {
 export type SessionEvent =
   | { type: 'state'; state: SessionState }
   | { type: 'record'; record: JournalRecord }
-  | { type: 'delta'; turnId: string; requestId: string; text: string }
+  | { type: 'delta'; turnId: string; requestId: string; text: string; itemId?: string }
   | { type: 'error'; message: string };
 
 export interface SessionOptions {

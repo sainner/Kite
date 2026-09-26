@@ -1,9 +1,7 @@
 import Foundation
 
-/// 会话记录在 App 里的样子，照统一格式（任务书 §5）的要点：记录按顺序只追加，块的种类跟 Claude 的消息格式
-/// （text、thinking、tool_use、tool_result），子 agent 的记录挂在发起它的那次工具调用下面。
-/// App 只认这个格式，不解析 runtime 的原生记录。统一格式还没定，kited 也还没给出记录，现在用 SampleTranscripts 里的假数据。
-/// 记录里只有已经发生的事；消息的投递状态（排队中）不是记录，单独放在 pending。
+/// 会话记录在 App 里的样子，由统一 Kite 协议转换；App 不解析 runtime 原生记录。
+/// 子调用通过 parent 关联；消息投递状态单独放在 pending，纳入请求后才进入记录。
 struct Transcript {
     /// 会话的工作目录，工具参数里的绝对路径按它显示成相对路径。
     var root: String
@@ -11,7 +9,7 @@ struct Transcript {
     /// 有回合在进行（kited 的 busy）。没有结果的工具调用这时算正在跑，否则算没跑完。
     var running: Bool { didSet { items = derive() } }
     /// 发出去了、agent 还没收到的消息，按发出的顺序。收到的那一刻才变成一条记录，撤回的永远不进记录。
-    /// 接上 kited 后由它的事件流给出：写进了输入流、还没回显的就是这些。
+    /// 包含服务已接收但尚未纳入模型请求的输入，以及客户端还没收到投递确认的消息。
     var pending: [Message]
     /// 界面上的样子。记录或 running 变了才重新派生，视图重画时直接拿。
     private(set) var items: [Item] = []
@@ -20,12 +18,7 @@ struct Transcript {
         self.root = root
         self.records = records
         self.running = running
-        // 排着的消息照 send 的规矩标上收到时并不并进回合
-        self.pending = pending.enumerated().map { index, message in
-            var message = message
-            message.midTurn = running || index > 0
-            return message
-        }
+        self.pending = pending
         items = derive()
     }
 }
@@ -55,20 +48,19 @@ enum Block {
     case apiError(String)
 }
 
-/// 人发的一条消息。id 是 App 发出时起的，kited 投递时带给 Claude Code：开启一轮的，它就是记录里那条消息的 uuid；
-/// 并进正在跑的回合的，它是插话附件上的 source_uuid。排队中和收到以后靠它认出是同一条。
+/// 人发的一条消息。id 由客户端给出，排队、投递确认和重连历史沿用它。
 struct Message: Identifiable {
-    let id: UUID
+    let id: String
     /// 原文。斜杠命令时是命令后面的参数。
     var text: String
     /// 斜杠命令或技能，比如 /simplify。原生记录里是正文里的 <command-name> 标签，翻译时拆出来。
     var command: String?
     var attachments: [Attachment] = []
     /// 并进了正在跑的回合：agent 做完手上这一步、下一次调用模型之前收到，没有自己的检查点。
-    /// 排队中的消息上是预计：发的时候回合在跑、或者前面还排着别的，收到时就并进那一轮（见 Transcript.send）。
+    /// 排队中的消息上是预计：发的时候回合在跑、或者前面还排着别的，收到时就并进那一轮（见 Session.send）。
     var midTurn = false
 
-    init(id: UUID = UUID(), text: String, command: String? = nil, attachments: [Attachment] = [], midTurn: Bool = false) {
+    init(id: String = UUID().uuidString, text: String, command: String? = nil, attachments: [Attachment] = [], midTurn: Bool = false) {
         self.id = id
         self.text = text
         self.command = command
@@ -272,68 +264,5 @@ extension Transcript {
             }
         }
         return list
-    }
-
-    /// 发一条消息：先排队，agent 收到时（receive）才变成记录，返回它会不会开启新的一轮。
-    /// 空闲、前面也没有排着没收到的才开启新的一轮；回合在跑、或者前面还排着别的，就是排在后面、收到时并进那一轮的（midTurn）。
-    /// 现在只改假数据；接上 kited 后经它写进输入流。
-    mutating func send(_ message: Message) -> Bool {
-        var message = message
-        message.midTurn = running || !pending.isEmpty
-        pending.append(message)
-        return !message.midTurn
-    }
-
-    /// agent 收到了排队的这一条：回合在跑、或者发的时候排在别的后面，就是并进那一轮的插话，否则开启新的一轮。
-    mutating func receive(_ id: UUID) {
-        guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
-        var message = pending.remove(at: index)
-        message.midTurn = message.midTurn || running
-        records.append(Record(block: .human(message)))
-    }
-
-    /// 撤回排队的一条，返回它。已经收到的撤不了，只能回退。接上 kited 后调 Claude Code 的 cancel_async_message。
-    /// 撤回的是要开启新一轮的那条，排在它后面的一条接着开启。
-    mutating func withdraw(_ id: UUID) -> Message? {
-        guard let index = pending.firstIndex(where: { $0.id == id }) else { return nil }
-        let message = pending.remove(at: index)
-        if !message.midTurn, index < pending.count { pending[index].midTurn = false }
-        return message
-    }
-
-    /// 排队的马上发出去：回合在跑就先打断它。
-    mutating func sendNow() {
-        if running {
-            interrupt()
-        } else {
-            for message in pending { receive(message.id) }
-        }
-    }
-
-    /// 打断回合：正在跑的调用记成被打断，和 Claude Code 自己的记录一样。排队的不丢，打断后马上发出去，
-    /// 几条一起开启新的一轮，也和 Claude Code 一样。现在只改假数据；接上 kited 后调它的打断接口。
-    mutating func interrupt() {
-        guard running else { return }
-        let answered = Set(records.compactMap { if case .toolResult(let result) = $0.block { result.call } else { nil } })
-        var added: [Record] = []
-        for record in records {
-            guard case .toolUse(let use) = record.block, !answered.contains(use.id) else { continue }
-            let result = ToolResult(call: use.id, content: [.text("[Request interrupted by user for tool use]")], isError: true, interrupted: true)
-            added.append(Record(parent: record.parent, block: .toolResult(result)))
-        }
-        added.append(Record(block: .interrupted))
-        records += added
-        running = false
-        for index in pending.indices { pending[index].midTurn = index > 0 }
-        for message in pending { receive(message.id) }
-    }
-
-    /// 回退到这条消息之前：它和它之后的对话都去掉，返回这条消息。现在直接截掉假数据；
-    /// 接上 kited 后记录照样只追加，从它前面那一条续上（resumeSessionAt），代码按快照回退。
-    mutating func rewind(before id: UUID) -> Message? {
-        guard let index = records.firstIndex(where: { if case .human(let message) = $0.block { message.id == id } else { false } }),
-              case .human(let message) = records[index].block else { return nil }
-        records.removeSubrange(index...)
-        return message
     }
 }

@@ -9,3 +9,4 @@
 - [每会话一个工作树](session-worktree-decision.md) — 已决定：会话跑在独立工作树、完成后自动合并；四个待解问题和不带的 Pigeon 机制
 - [假数据要穷举](fake-data-exhaustive.md) — App 界面先用假数据时，每种工具和成功/出错/后台/边角情况都要有
 - [界面由用户自己预览](user-previews-ui.md) — 改完 App 界面只编译、装上、打开新 build，不自己点模拟器
+- [接数据沿用原界面](feedback-preserve-ui-on-data-integration.md) — 保留卡片、侧栏和控件布局，空数据也用同一工作区

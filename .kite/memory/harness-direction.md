@@ -15,4 +15,4 @@ metadata:
 
 主循环方案见 [harness 主循环设计](../../docs/harness-主循环.md)。用户在了解 Claude Code 与 Codex 的循环后，要求修改设计并实现：分开控制入口、回合循环和流式工具调度；完整调用保存后即可执行，显式声明并发的工具可以重叠执行，排他工具形成屏障；结果和快照收齐后再请求模型。独立内核位于 `kited/src/harness/`。
 
-独立终端入口 `cd kited && bun run harness --cwd <目录>` 已接通真实 ChatGPT 订阅、文件/命令工具及会话恢复。模型循环与工具由 Kite 执行。用户明确未来要多机，并要求设备登录：通过官方登录工具为每台工作机单独授权，凭据默认放 `$KITE_HOME/auth/chatgpt/auth.json`（KITE_HOME 默认 `~/.kite`），不再默认读取日常 Codex 的凭据，也不跨机器同步 refresh token。harness 每次请求只读加载；自动刷新与系统钥匙串支持仍待完成，过期后在同一认证目录重新登录。终端直接修改指定目录；kited 新会话默认 harness，在独立工作树执行并接通快照、采纳和归档，旧会话按原 runtime 续接。App 仍是假数据，统一记录/历史接口尚待完成，不能把后端可用说成产品已经迁移完毕。
+独立终端入口 `cd kited && bun run harness --cwd <目录>` 已接通真实 ChatGPT 订阅、文件/命令工具及会话恢复。模型循环与工具由 Kite 执行。用户明确未来要多机，并要求设备登录：通过官方登录工具为每台工作机单独授权，凭据默认放 `$KITE_HOME/auth/chatgpt/auth.json`（KITE_HOME 默认 `~/.kite`），不再默认读取日常 Codex 的凭据，也不跨机器同步 refresh token。harness 每次请求只读加载；自动刷新与系统钥匙串支持仍待完成，过期后在同一认证目录重新登录。终端直接修改指定目录；kited 新会话默认 harness，在独立工作树执行并接通快照、采纳和归档，旧会话按原 runtime 续接。App 与统一显示协议的支持范围以 [会话显示协议](../../docs/会话显示协议.md) 为准；后端可用不等于所有产品操作都已迁移。

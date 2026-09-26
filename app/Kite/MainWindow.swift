@@ -26,7 +26,7 @@ struct MainWindow: View {
                 SessionContent(session: session)
                     .onGeometryChange(for: CGSize.self) { $0.size } action: { model.contentSize = $0 }
             } else {
-                // 会话都分离出去了
+                // 已有会话都分离到了独立窗口。
                 Color.clear
             }
         }

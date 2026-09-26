@@ -7,6 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { KiteError } from './errors.ts';
 import { type AdoptResult, Bus } from './events.ts';
 import { hasUnmerged, mainline, mergeBack } from './mainline.ts';
@@ -15,6 +16,8 @@ import { openRuntime, type Runtime, type RuntimeOptions } from './runtime.ts';
 import { capture, findSnapshot, list, restore, type Snapshot } from './snapshots.ts';
 import type { Project, Session, Store } from './store.ts';
 import { addWorktree, removeWorktree, runSetup } from './worktrees.ts';
+import { readJournal } from './harness/journal.ts';
+import { TranscriptFeed, TranscriptProjection, type History } from './transcript.ts';
 
 export interface SessionView extends Session {
   runner: Runtime['state'];
@@ -38,6 +41,9 @@ function conflictPrompt(branch: string, files: string[]): string {
 }
 
 export class Kite {
+  readonly events = new TranscriptFeed();
+  private transcripts = new Map<string, TranscriptProjection>();
+  private loadingTranscripts = new Map<string, Promise<TranscriptProjection>>();
   private runners = new Map<string, Runtime>();
   private queues = new Map<string, Promise<unknown>>();
   private preparations = new Map<string, AbortController>();
@@ -49,6 +55,40 @@ export class Kite {
   constructor(readonly store: Store, readonly home: string, readonly bus: Bus, private options: RuntimeOptions = {}) {
     // 上次 kited 退出时还在准备的会话，准备过程已经中断
     for (const s of store.sessions()) if (s.status === 'preparing') this.setStatus(s, 'prepare_failed');
+    bus.subscribe(undefined, (event) => {
+      const transcript = this.transcripts.get(event.session);
+      if (transcript) transcript.accept(event);
+      else if (event.type !== 'sdk' && event.type !== 'harness' && event.type !== 'runner') this.events.emit(event.session, event);
+    });
+  }
+
+  /** 只读投影。缓存先于 runtime 建立，原生记录落盘后的事件同步更新同一份历史。 */
+  async history(id: string): Promise<History> { return (await this.transcript(this.mustSession(id))).snapshot(); }
+
+  historyNow(id: string): History {
+    const transcript = this.transcripts.get(id);
+    if (!transcript) throw new KiteError('请先加载会话历史', 409);
+    return transcript.snapshot();
+  }
+
+  private transcript(s: Session): Promise<TranscriptProjection> {
+    const cached = this.transcripts.get(s.id);
+    if (cached) return Promise.resolve(cached);
+    const loading = this.loadingTranscripts.get(s.id);
+    if (loading) return loading;
+    const promise = (async () => {
+      const projection = new TranscriptProjection(s, this.events);
+      if (s.runtime === 'harness') {
+        for (const row of readJournal(join(this.home, 'sessions', s.id, 'journal.jsonl'))) projection.journal(row);
+      } else {
+        for (const row of await getSessionMessages(s.nativeId, { dir: s.worktree, includeSystemMessages: true })) projection.claude(row, s.createdAt);
+      }
+      projection.finishReplay();
+      this.transcripts.set(s.id, projection);
+      return projection;
+    })().finally(() => this.loadingTranscripts.delete(s.id));
+    this.loadingTranscripts.set(s.id, promise);
+    return promise;
   }
 
   // ── 项目 ──
@@ -152,6 +192,7 @@ export class Kite {
   private async runner(s: Session): Promise<Runtime> {
     let r = this.runners.get(s.id);
     if (r) return r;
+    await this.transcript(s);
     r = await openRuntime(s, this.home, this.project(s.projectId).path, {
       emit: (event) => this.bus.emit(s.id, event),
       label: (text) => this.turnLabels.set(s.id, firstLine(text)),
@@ -179,6 +220,14 @@ export class Kite {
       const r = await this.runner(this.mustOpen(id));
       await r.send({ id: inputId, text, source: 'human' });
       return { id: inputId };
+    });
+  }
+
+  cancel(id: string, inputId: string): Promise<void> {
+    return this.control(id, async () => {
+      const r = await this.runner(this.mustOpen(id));
+      if (!r.cancel) throw new KiteError('这个后端不支持撤回排队消息', 409);
+      await r.cancel(inputId);
     });
   }
 

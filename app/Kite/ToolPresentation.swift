@@ -64,11 +64,11 @@ enum ToolKind: Hashable {
 extension ToolUse {
     var kind: ToolKind {
         switch name {
-        case "Read": .read
-        case "Edit": .edit
+        case "Read", "read": .read
+        case "Edit", "patch": .edit
         case "NotebookEdit": .notebookEdit
         case "Write": .write
-        case "Bash": .command
+        case "Bash", "shell": .command
         case "check": .check
         case "WebSearch": .webSearch
         case "WebFetch": .webFetch
@@ -88,7 +88,12 @@ extension ToolUse {
 
     /// 读、改、写的是哪个文件。
     var file: String? {
-        input["file_path"]?.string ?? input["notebook_path"]?.string
+        input["file_path"]?.string ?? input["notebook_path"]?.string ?? input["path"]?.string ?? patchedFiles.first
+    }
+
+    var patchedFiles: [String] {
+        guard name == "patch", case .array(let operations) = input["operations"] else { return [] }
+        return operations.compactMap { $0["path"]?.string }
     }
 
     /// MCP 工具：mcp__<服务>__<工具>。
@@ -102,7 +107,7 @@ extension ToolUse {
         let fileName = file.map { ($0 as NSString).lastPathComponent } ?? ""
         switch kind {
         case .read: return "读 \(fileName)"
-        case .edit: return "改 \(fileName)"
+        case .edit: return patchedFiles.count > 1 ? "改 \(patchedFiles.count) 个文件" : "改 \(fileName)"
         case .write: return "写 \(fileName)"
         case .notebookEdit:
             switch input["edit_mode"]?.string {
@@ -143,6 +148,7 @@ extension ToolUse {
             guard let limit = input["limit"], case .number(let count) = limit else { return "从第 \(Int(start)) 行起" }
             return "第 \(Int(start))–\(Int(start + count) - 1) 行"
         case .edit:
+            if name == "patch" { return nil }
             let (added, removed) = LineDiff(old: input["old_string"]?.string ?? "", new: input["new_string"]?.string ?? "").counts
             return "+\(added) −\(removed)" + (input["replace_all"]?.bool == true ? " 全部替换" : "")
         case .write: return "\(splitLines(input["content"]?.string ?? "").count) 行"
@@ -173,7 +179,7 @@ extension Work {
         }
         let parts = appeared.compactMap { kind in
             let same = uses.filter { $0.kind.tally == kind }
-            return kind.summary(count: same.count, files: Set(same.map { $0.file ?? $0.id }).count)
+            return kind.summary(count: same.count, files: Set(same.flatMap { $0.patchedFiles.isEmpty ? [$0.file ?? $0.id] : $0.patchedFiles }).count)
         }
         return parts.isEmpty ? "加载了工具" : parts.joined(separator: "，")
     }

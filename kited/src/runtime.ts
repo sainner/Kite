@@ -20,6 +20,7 @@ export interface Runtime {
   shutdown(): Promise<void>;
   resume?(): Promise<void>;
   recover?(): Promise<void>;
+  cancel?(inputId: string): Promise<void>;
 }
 
 export interface RuntimeOptions {
@@ -108,5 +109,6 @@ export async function openRuntime(s: Session, home: string, main: string, on: Ru
       await host.runner.resume();
     },
     recover: () => host.confirmRecovery(),
+    cancel: (inputId) => host.runner.cancel(inputId),
   };
 }

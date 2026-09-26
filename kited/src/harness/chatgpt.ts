@@ -133,7 +133,7 @@ export class ChatGPTModel implements Model {
       switch (event.type) {
         case 'response.output_text.delta':
           if (typeof event.delta !== 'string') throw new Error('订阅文字增量无效');
-          yield { type: 'delta', text: event.delta };
+          yield { type: 'delta', text: event.delta, ...(typeof event.item_id === 'string' ? { itemId: event.item_id } : {}) };
           break;
         case 'response.output_item.done': {
           const raw = asObject(event.item, '输出条目');

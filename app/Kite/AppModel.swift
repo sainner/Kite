@@ -1,95 +1,268 @@
 import SwiftUI
 
-/// 一个会话和它的窗口组：会话窗口、文件、终端这些卡片怎么排。会话窗口显示假的会话记录，其余窗口还是占位。
+/// 一个真实会话和它的窗口组；显示记录的事实来自 kited，本地只保留草稿与尚未确认的发送。
 @Observable
 final class Session: Identifiable {
-    let id: Int
-    /// 占位用的颜色，区分是哪个会话。
+    let id: String
     let tint: Color
     var title: String
-    /// 会话所在的项目。
-    let project: String
-    let workspace: Workspace
+    var project: String
+    let workspace = Workspace(.oneAndTwo)
     var transcript: Transcript
-    /// 输入框里还没发出去的话，切到别的会话再回来还在。
     var draft = ""
-    /// 下一次调模型用的 effort。
-    var effort = Effort.high
-    /// 上下文窗口用了几成；还没调过模型是 nil。现在是假数据，接上 kited 后由它给。
+    var state: RemoteState?
+    var connected = false
+    var error: String?
     var context: Double?
-    /// 工作区里改了多少行，现在是假数据。
-    var changes: (added: Int, removed: Int)
+    var changes: (added: Int, removed: Int) = (0, 0)
+    private let client: KitedClient?
+    // 未识别的块保留位置，后续同 id 的记录替换仍沿用服务端顺序。
+    private var records: [Record?] = []
+    private var positions: [String: Int] = [:]
+    private var received: Set<String> = []
+    private var pending: [RemoteInput] = []
+    private var outbox: [Message] = []
+    private(set) var failed: Set<String> = []
+    private var sending: Set<String> = []
 
-    /// 会话窗口标题栏的信息：会话的标题、所在的项目。会话窗口和 Mac 独立窗口的顶栏都用它。
-    var header: PaneHeader {
-        PaneHeader(title: title, detail: project)
+    var header: PaneHeader { PaneHeader(title: title, detail: project) }
+    var isDraft: Bool { client == nil }
+    var canSend: Bool { connected && (isDraft || state?.capabilities.send == true) }
+    var canCancel: Bool { connected && state?.capabilities.cancel == true }
+    var statusLabel: String {
+        if let error { return error }
+        guard connected else { return "正在连接" }
+        if let error = state?.error { return error }
+        switch state?.status {
+        case "preparing": return "正在准备工作区"
+        case "prepare_failed": return "工作区准备失败"
+        case "archived": return "已归档"
+        default: break
+        }
+        switch state?.phase {
+        case "running": return "正在工作"
+        case "stopping", "finishing": return "正在收尾"
+        case "paused": return "已暂停"
+        case "needs_recovery": return "需要在工作机确认恢复"
+        default: return "空闲"
+        }
     }
 
-    /// 发一条消息，返回它会不会开启新的一轮（见 Transcript.send）。假数据里回合没在跑时过一会儿算 agent 收到：
-    /// 等气泡浮到位（0.5 秒）再过 0.8 秒；在跑时要等它做完手上这一步，假数据里一直排着，直到打断或者立即发送。
-    /// 接上 kited 后由它的事件流给出。
-    func send(_ message: Message) -> Bool {
-        let startsTurn = transcript.send(message)
-        Task {
-            try? await Task.sleep(for: .seconds(1.3))
-            guard !transcript.running else { return }
-            withAnimation(.easeInOut(duration: 0.3)) { transcript.receive(message.id) }
+    init(remote: RemoteSession, project: String, client: KitedClient) {
+        id = remote.id
+        tint = .blue
+        title = remote.title
+        self.project = project
+        self.client = client
+        transcript = Transcript(root: remote.worktree)
+    }
+
+    /// 尚未创建的会话沿用同一套工作区，只保存草稿，不制造后端记录。
+    init() {
+        id = "draft"
+        tint = .blue
+        title = "新会话"
+        project = "Kite"
+        client = nil
+        transcript = Transcript(root: "")
+    }
+
+    func observe() async {
+        guard let client else { return }
+        defer { connected = false }
+        while !Task.isCancelled {
+            do {
+                try await client.events(session: id) { event in try self.apply(event) }
+            } catch {
+                if Task.isCancelled { return }
+                connected = false
+                self.error = "连接中断，正在重连：\(error.localizedDescription)"
+            }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
         }
+    }
+
+    private func apply(_ event: RemoteEvent) throws {
+        switch event.type {
+        case "history":
+            guard event.version == 1 else { throw KitedError(message: "会话协议版本不兼容") }
+            let history = event.records ?? []
+            records = history.map(\.record)
+            positions = Dictionary(uniqueKeysWithValues: history.enumerated().map { ($0.element.id, $0.offset) })
+            received = Set(history.compactMap { $0.block.type == "human" ? $0.block.id : nil })
+            pending = event.pending ?? []
+            state = event.state
+            connected = true
+            error = nil
+        case "record":
+            guard let record = event.record else { return }
+            if let index = positions[record.id] { records[index] = record.record }
+            else { positions[record.id] = records.count; records.append(record.record) }
+            if record.block.type == "human", let id = record.block.id {
+                received.insert(id)
+                pending.removeAll { $0.id == id }
+            }
+        case "pending": pending = event.pending ?? []
+        case "state": state = event.state
+        case "error": error = event.message
+        default: return
+        }
+        let pendingIDs = Set(pending.map(\.id))
+        let confirmed = Set(outbox.map(\.id)).union(failed).filter { received.contains($0) || pendingIDs.contains($0) }
+        outbox.removeAll { confirmed.contains($0.id) }
+        if !failed.isDisjoint(with: confirmed) { error = nil }
+        failed.subtract(confirmed)
+        render(recordsChanged: event.type == "history" || event.type == "record")
+    }
+
+    private func render(recordsChanged: Bool = false) {
+        let running = state?.busy == true && ["running", "stopping", "finishing"].contains(state?.phase ?? "")
+        let messages = pending.filter { $0.source == "human" }.map(\.message) + outbox
+        if recordsChanged {
+            transcript = Transcript(root: transcript.root, records: records.compactMap { $0 }, running: running, pending: messages)
+        } else {
+            if transcript.running != running { transcript.running = running }
+            transcript.pending = messages
+        }
+    }
+
+    func send(_ message: Message) -> Bool {
+        guard !isDraft, canSend else { return false }
+        let startsTurn = !transcript.running && transcript.pending.isEmpty
+        var queued = message
+        queued.midTurn = !startsTurn
+        outbox.append(queued)
+        render()
+        deliver(message)
         return startsTurn
     }
 
-    init(id: Int, tint: Color, title: String, project: String, arrangement: Arrangement, transcript: Transcript,
-         context: Double? = nil, changes: (added: Int, removed: Int) = (0, 0)) {
-        self.id = id
-        self.tint = tint
-        self.title = title
-        self.project = project
-        self.workspace = Workspace(arrangement)
-        self.transcript = transcript
-        self.context = context
-        self.changes = changes
+    func retry(_ message: Message) { deliver(message) }
+
+    private func deliver(_ message: Message) {
+        guard let client, !sending.contains(message.id) else { return }
+        sending.insert(message.id)
+        failed.remove(message.id)
+        error = nil
+        Task {
+            defer { sending.remove(message.id) }
+            do { try await client.post("/sessions/\(id)/messages", body: ["id": message.id, "text": message.typed]) }
+            catch { failed.insert(message.id); self.error = "发送未确认，点消息重试：\(error.localizedDescription)" }
+        }
+    }
+
+    func cancel(_ message: Message, editing: Bool = false) {
+        guard let client, canCancel, !sending.contains(message.id) else { return }
+        Task {
+            do {
+                // HTTP 返回失败也可能已经落盘，先由服务核查是否仍能撤回。
+                try await client.post("/sessions/\(id)/messages/\(message.id)/cancel")
+                outbox.removeAll { $0.id == message.id }
+                pending.removeAll { $0.id == message.id }
+                failed.remove(message.id)
+                if editing { draft = message.typed + (draft.isEmpty ? "" : "\n" + draft) }
+                error = nil
+                render()
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    func control(_ action: String) {
+        guard let client else { return }
+        Task {
+            do { try await client.post("/sessions/\(id)/\(action)"); error = nil }
+            catch { self.error = error.localizedDescription }
+        }
     }
 }
 
-/// 调模型时的 effort：花多少力气想、写多长。Claude Code 的五档，发请求时放在 output_config 里；extra 是它的 xhigh。
-/// 按从低到高排，序号就是第几档。
+/// 预览中保留 effort 控件的档位定义；真实会话尚不提供动态模型配置。
 enum Effort: Int, CaseIterable {
     case low, medium, high, extra, max
-
-    /// 界面上直接显示档位名。
     var name: String { "\(self)" }
 }
 
 @Observable
 final class AppModel {
-    let sessions = [
-        Session(id: 1, tint: .blue, title: "修招行账单导入", project: "ledger",
-                arrangement: .oneAndTwo, transcript: SampleTranscripts.gallery, context: 0.46, changes: (126, 41)),
-        Session(id: 2, tint: .purple, title: "侧边栏显示会话标题", project: "kite",
-                arrangement: .sideBySide, transcript: SampleTranscripts.running, context: 0.72, changes: (38, 12)),
-        Session(id: 3, tint: .orange, title: "统一第二章图注", project: "thesis",
-                arrangement: .stacked, transcript: SampleTranscripts.thesis, context: 0.31, changes: (17, 17)),
-        Session(id: 4, tint: .teal, title: "新会话", project: "notes",
-                arrangement: .oneAndThree, transcript: SampleTranscripts.empty),
-        Session(id: 5, tint: .pink, title: "README 翻译成英文", project: "blog",
-                arrangement: .oneAndTwo, transcript: SampleTranscripts.edgeCases, context: 0.88, changes: (214, 198)),
-    ]
-    var selected = 1
-    /// 分离成独立窗口的会话。独立窗口出现时加进来，关掉时去掉。
-    var detached: Set<Int> = []
-    /// 下一个分离出去的窗口放在哪：位置和大小，AppKit 的屏幕坐标（左下角是原点），WindowPlacer 直接拿去摆。
+    var sessions: [Session] = []
+    let draftSession = Session()
+    var projects: [RemoteProject] = []
+    var selected = ""
+    var detached: Set<String> = []
     var pendingPlacement: CGRect?
     var sidebarWidth = Metrics.sidebarWidth
     var sidebarCollapsed = false
-    /// 主窗口内容区的大小，分离出去的窗口照它开。
     var contentSize: CGSize = .zero
+    var serverAddress = UserDefaults.standard.string(forKey: "KitedURL") ?? "http://127.0.0.1:5483"
+    var connected = false
+    private var connectedAddress: String?
+    var error: String?
+    var showConnection = false
+    var showNewSession = false
+    var client: KitedClient { KitedClient(address: serverAddress) }
 
-    func session(_ id: Int) -> Session? {
-        sessions.first { $0.id == id }
+    func connect() async {
+        if connectedAddress != serverAddress {
+            sessions = []
+            projects = []
+            detached = []
+            connectedAddress = serverAddress
+        }
+        connected = false
+        draftSession.connected = false
+        let client = client
+        UserDefaults.standard.set(serverAddress, forKey: "KitedURL")
+        while !Task.isCancelled {
+            do {
+                try await client.events { event in
+                    if ["ready", "status"].contains(event.type) { try await self.refresh(client) }
+                }
+            } catch {
+                if Task.isCancelled { return }
+                connected = false
+                self.error = "连不上 kited：\(error.localizedDescription)"
+                draftSession.connected = false
+                draftSession.error = self.error
+            }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+        }
     }
 
-    /// 主窗口内容区显示的会话：选中的那个分离出去了，就显示下一个还在主窗口里的。
+    func refresh(_ client: KitedClient) async throws {
+        async let projectRequest = client.request("/projects", as: [RemoteProject].self)
+        async let sessionRequest = client.request("/sessions", as: [RemoteSession].self)
+        let (projects, remote) = try await (projectRequest, sessionRequest)
+        try Task.checkCancellation()
+        self.projects = projects
+        let names = Dictionary(uniqueKeysWithValues: projects.map { ($0.id, $0.name) })
+        sessions = remote.reversed().map { value in
+            if let existing = session(value.id) { existing.title = value.title; return existing }
+            return Session(remote: value, project: names[value.projectId] ?? value.projectId, client: client)
+        }
+        if session(selected) == nil { selected = sessions.first?.id ?? "" }
+        connected = true
+        error = nil
+        draftSession.connected = true
+        draftSession.error = nil
+    }
+
+    func register(path: String) async throws {
+        try await client.post("/projects", body: ["path": path])
+        try await refresh(client)
+    }
+
+    func create(project: String, prompt: String) async throws {
+        let session = try await client.request("/sessions", method: "POST", body: ["project": project, "prompt": prompt], as: RemoteSession.self)
+        try await refresh(client)
+        selected = session.id
+        draftSession.draft = ""
+    }
+
+    var listedSessions: [Session] { sessions.isEmpty ? [draftSession] : sessions }
+
+    func session(_ id: String) -> Session? { id == draftSession.id ? draftSession : sessions.first { $0.id == id } }
     var current: Session? {
+        if sessions.isEmpty { return draftSession }
         if !detached.contains(selected), let session = session(selected) { return session }
         return sessions.first { !detached.contains($0.id) }
     }

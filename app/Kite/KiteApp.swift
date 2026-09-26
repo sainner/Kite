@@ -7,14 +7,14 @@ struct KiteApp: App {
     var body: some Scene {
         #if os(macOS)
         Window("Kite", id: "main") {
-            MainWindow().environment(model).readsWindowChrome().lightOnly()
+            MainWindow().modifier(ServiceConnection()).environment(model).readsWindowChrome().lightOnly()
         }
         .kiteWindowStyle()
         .defaultSize(width: 1280, height: 800)
         .commands { KiteCommands(model: model) }
 
         // 从侧边栏分离出来的会话，放在松手的地方
-        WindowGroup("会话", id: "session", for: Int.self) { $id in
+        WindowGroup("会话", id: "session", for: String.self) { $id in
             if let id {
                 DetachedSession(id: id).environment(model).readsWindowChrome().lightOnly()
             }
@@ -23,7 +23,7 @@ struct KiteApp: App {
         .defaultSize(width: 1000, height: 700)
         #else
         WindowGroup {
-            PhoneLayout().environment(model).lightOnly()
+            PhoneLayout().modifier(ServiceConnection()).environment(model).lightOnly()
         }
         #endif
     }

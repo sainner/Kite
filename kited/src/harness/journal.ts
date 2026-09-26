@@ -47,6 +47,21 @@ function writeAll(fd: number, bytes: Buffer): void {
   fsyncSync(fd);
 }
 
+function parseCompleteRecords(bytes: Buffer): { rows: JournalRecord[]; end: number } {
+  const end = bytes.lastIndexOf(10) + 1;
+  const rows = bytes.subarray(0, end).toString('utf8').split('\n').slice(0, -1).map((line, index) => {
+    const row = record.parse(JSON.parse(line));
+    if (row.seq !== index + 1) throw new Error('会话记录序号不连续');
+    return row;
+  });
+  return { rows, end };
+}
+
+/** 历史读取不取得写锁、不修复尾行，也不启动会话；只接受已完整落盘的记录。 */
+export function readJournal(path: string): JournalRecord[] {
+  return existsSync(path) ? parseCompleteRecords(readFileSync(path)).rows : [];
+}
+
 export class FileJournal implements Journal {
   private rows: JournalRecord[] = [];
   private fd: number;
@@ -59,13 +74,8 @@ export class FileJournal implements Journal {
     this.fd = openSync(path, 'a+', 0o600);
     try {
       const bytes = readFileSync(path);
-      const end = bytes.lastIndexOf(10) + 1;
-      const lines = bytes.subarray(0, end).toString('utf8').split('\n').slice(0, -1);
-      for (const line of lines) {
-        const row = record.parse(JSON.parse(line));
-        if (row.seq !== this.rows.length + 1) throw new Error('会话记录序号不连续');
-        this.rows.push(row);
-      }
+      const { rows, end } = parseCompleteRecords(bytes);
+      this.rows = rows;
       if (end < bytes.length) {
         const backup = openSync(`${path}.partial-${randomUUID()}`, 'wx', 0o600);
         try { writeAll(backup, bytes.subarray(end)); } finally { closeSync(backup); }

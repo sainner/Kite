@@ -1,6 +1,6 @@
 # kited
 
-kited 新会话默认使用自研 harness 和 ChatGPT 订阅，已接通独立工作树、快照、回退、采纳和归档。旧 Claude 会话按原 runtime 续接。终端入口仍可直接在指定目录工作；App 目前仍使用假数据，统一会话记录和断线恢复接口待补。
+kited 新会话默认使用自研 harness 和 ChatGPT 订阅，已接通独立工作树、快照、回退、采纳和归档。旧 Claude 会话按原 runtime 续接。终端入口仍可直接在指定目录工作；App 已接项目和会话列表、harness 真实对话、统一历史与 SSE 重连，协议见 [会话显示协议](../docs/会话显示协议.md)。
 
 ## 终端试用
 
@@ -168,9 +168,11 @@ SDK 加自定义工具只有进程内 MCP 服务器这一条路（`src/tools.ts`
 | POST | `/sessions/:id/restore` | 恢复到快照 `{commit}` |
 | POST | `/sessions/:id/adopt` | 合回主线，返回 `adopted` 或 `conflict` |
 | POST | `/sessions/:id/archive` | 归档 `{force?}` |
-| GET | `/events` | SSE 事件流（`?session=`）：harness 原生 SessionEvent 或 SDK 原始消息，以及 status、runner、idle、setup、snapshot、adopt、check、error |
+| GET | `/sessions/:id/history` | v1 显示历史、pending、state 和 cursor，只读，不启动 agent |
+| POST | `/sessions/:id/messages/:message/cancel` | 撤回尚未纳入模型请求的 harness 输入 |
+| GET | `/events` | SSE（`?session=`）：首帧完整 history，随后 record、pending、state 与管理事件；全局流首帧 ready |
 
-SSE 广播本身不落库，目前不支持游标重放或统一历史读取。harness 以 `sessions/<会话>/journal.jsonl` 为准，Claude 以自己的会话记录为准，快照以 git 为准，数据库只记项目和会话登记。
+SSE 广播本身不落库，每次重连用完整历史替换客户端副本，再按记录 id 接续更新。harness 以 `sessions/<会话>/journal.jsonl` 为准，Claude 以自己的会话记录为准，快照以 git 为准，数据库只记项目和会话登记。cursor、流式草稿和旧 Claude 支持范围见 [会话显示协议](../docs/会话显示协议.md)。
 
 ## 测试
 
@@ -196,7 +198,7 @@ SSE 广播本身不落库，目前不支持游标重放或统一历史读取。h
 
 - 个人偏好放哪：Kite 会话不读 `~/.claude` 的用户级配置，用户的个人偏好（比如回答用简体中文）和关于人的记忆要有 Kite 自己的位置，还没定。
 - 权限：harness 的 shell 使用当前用户权限，Claude 采用 bypassPermissions，尚无操作系统沙箱。沙箱挡不挡得住经链接写资源库、会话工作树里的 git 提交要写主仓库的 `.git`，这两件事都没验证。
-- 对话回退（`resumeSessionAt` 加 `forkSession`）和统一格式的翻译器，放到第 3 步。
+- 对话回退、分叉，以及旧 Claude 完整历史的元数据、插话附件和子 agent 适配尚未完成。
 - 多机集成（推送、被拒后重合）。第一阶段只有一台工作机。
 - 采纳的提交说明现在用会话标题，以后让 agent 写。
 - 二进制文件冲突让用户二选一，现在一律交给 agent。

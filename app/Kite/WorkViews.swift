@@ -179,9 +179,14 @@ private struct CallDetail: View {
                     }
                 }
             case .edit:
-                path
-                DiffView(diff: LineDiff(old: input["old_string"]?.string ?? "", new: input["new_string"]?.string ?? ""))
-                outcome {}
+                if call.use.name == "patch" {
+                    InputList(input: input)
+                    outcome { rawOutput }
+                } else {
+                    path
+                    DiffView(diff: LineDiff(old: input["old_string"]?.string ?? "", new: input["new_string"]?.string ?? ""))
+                    outcome {}
+                }
             case .write:
                 path
                 DiffView(diff: LineDiff(old: "", new: input["content"]?.string ?? ""))

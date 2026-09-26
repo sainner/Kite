@@ -1,6 +1,6 @@
 /** HTTP 接口，只监听本机。事件流用 SSE。 */
 import { KiteError } from './errors.ts';
-import type { Envelope } from './events.ts';
+import type { DisplayEnvelope } from './transcript.ts';
 import type { Kite } from './kite.ts';
 
 async function body(req: Request): Promise<Record<string, unknown>> {
@@ -25,22 +25,29 @@ function handle<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
 }
 
 /** 同一个事件发给几个订阅者时只序列化一次：工具结果可能很大。 */
-const encoded = new WeakMap<Envelope, string>();
-function encode(e: Envelope): string {
+const encoded = new WeakMap<DisplayEnvelope, string>();
+function encode(e: DisplayEnvelope): string {
   let text = encoded.get(e);
   if (text === undefined) {
-    text = `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`;
+    text = `id: ${e.cursor}\nevent: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`;
     encoded.set(e, text);
   }
   return text;
 }
 
-function events(kite: Kite, session: string | undefined): Response {
+async function events(kite: Kite, session: string | undefined): Promise<Response> {
+  if (session) await kite.history(session);
   let unsubscribe = () => {};
   let heartbeat: Timer | undefined;
   const stream = new ReadableStream<string>({
     start(controller) {
-      unsubscribe = kite.bus.subscribe(session, (e) => controller.enqueue(encode(e)));
+      // 订阅与快照在同一同步段，历史之后的第一条事件不会漏；重连总以当前快照替换旧副本。
+      unsubscribe = kite.events.subscribe(session, (e) => controller.enqueue(encode(e)));
+      if (session) {
+        const history = kite.historyNow(session);
+        controller.enqueue(`id: ${history.cursor}\nevent: history\ndata: ${JSON.stringify({ type: 'history', ...history })}\n\n`);
+      }
+      if (!session) controller.enqueue(`event: ready\ndata: ${JSON.stringify({ type: 'ready' })}\n\n`);
       heartbeat = setInterval(() => controller.enqueue(': \n\n'), 15_000);
       controller.enqueue(': connected\n\n');
     },
@@ -68,6 +75,7 @@ export function serve(kite: Kite, port: number) {
         }),
       },
       '/sessions/:id': { GET: handle((req) => kite.session(req.params.id)) },
+      '/sessions/:id/history': { GET: handle((req) => kite.history(req.params.id)) },
       '/sessions/:id/messages': {
         POST: handle(async (req) => {
           const b = await body(req);
@@ -75,6 +83,7 @@ export function serve(kite: Kite, port: number) {
         }),
       },
       '/sessions/:id/interrupt': { POST: handle((req) => kite.interrupt(req.params.id)) },
+      '/sessions/:id/messages/:message/cancel': { POST: handle((req) => kite.cancel(req.params.id, req.params.message)) },
       '/sessions/:id/resume': { POST: handle((req) => kite.resume(req.params.id)) },
       '/sessions/:id/recover': { POST: handle((req) => kite.recover(req.params.id)) },
       '/sessions/:id/snapshots': { GET: handle((req) => kite.snapshots(req.params.id)) },
@@ -85,7 +94,7 @@ export function serve(kite: Kite, port: number) {
       '/sessions/:id/archive': {
         POST: handle(async (req) => kite.archive(req.params.id, (await body(req)).force === true)),
       },
-      '/events': { GET: (req) => events(kite, new URL(req.url).searchParams.get('session') ?? undefined) },
+      '/events': { GET: handle((req) => events(kite, new URL(req.url).searchParams.get('session') ?? undefined)) },
     },
     fetch: () => Response.json({ error: '没有这个接口' }, { status: 404 }),
   });
