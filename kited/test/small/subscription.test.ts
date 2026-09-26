@@ -187,8 +187,8 @@ test('订阅缓存每次重新只读加载，拒绝 API key、过期和损坏且
   expect(readdirSync(root)).toEqual(['auth.json']);
 }, 1000);
 
-// 文件系统符号链接解析与写入需实际运行；越界和非唯一编辑不能留下部分副作用。
-test('文件工具读写和精确编辑落到磁盘，拒绝相邻目录及符号链接逃逸', async () => {
+// 上游补丁定位与文件版本提示、真实符号链接解析的交接需实际运行，失败不能改动文件。
+test('文件补丁保留外部修改并提示版本变化，拒绝不匹配补丁及路径逃逸', async () => {
   const root = h.root();
   const cwd = join(root, 'work');
   const outside = join(root, 'work-neighbor');
@@ -197,22 +197,28 @@ test('文件工具读写和精确编辑落到磁盘，拒绝相邻目录及符�
   writeFileSync(join(outside, 'secret.txt'), '外部内容');
   symlinkSync(outside, join(cwd, 'escape'));
   const tools = localTools({ cwd, logDir: join(root, 'logs'), env: ENV() });
-  expect((await execute(tools, 'write_file', { path: 'note.txt', content: '甲\n乙\n丙\n' }, cwd)).status).toBe('success');
-  const read = await execute(tools, 'read_file', { path: 'note.txt', offset: 2, limit: 1 }, cwd);
+  expect((await execute(tools, 'patch', { operations: [{ type: 'create_file', path: 'note.txt', diff: '+甲\n+乙\n+丙\n+' }] }, cwd)).status).toBe('success');
+  const read = await execute(tools, 'read', { path: 'note.txt', offset: 2, limit: 1 }, cwd);
   expect(read.status).toBe('success');
   expect(read.output).toContain('乙');
   expect(read.output).not.toMatch(/甲|丙/);
-  expect((await execute(tools, 'edit_file', { path: 'note.txt', old_text: '乙', new_text: '丁' }, cwd)).status).toBe('success');
-  expect(readFileSync(join(cwd, 'note.txt'), 'utf8')).toBe('甲\n丁\n丙\n');
-  writeFileSync(join(cwd, 'duplicate.txt'), '重复 重复');
-  await rejectedOperation(execute(tools, 'edit_file', { path: 'duplicate.txt', old_text: '重复', new_text: '改了' }, cwd));
-  expect(readFileSync(join(cwd, 'duplicate.txt'), 'utf8')).toBe('重复 重复');
+  writeFileSync(join(cwd, 'note.txt'), '甲由外部修改\n乙\n丙\n');
+  const patched = await execute(tools, 'patch', { operations: [{ type: 'update_file', path: 'note.txt', diff: '@@\n-乙\n+丁\n 丙' }] }, cwd);
+  expect(patched.status).toBe('success');
+  expect(patched.output).toContain('提示');
+  expect(readFileSync(join(cwd, 'note.txt'), 'utf8')).toBe('甲由外部修改\n丁\n丙\n');
+  const next = await execute(tools, 'patch', { operations: [{ type: 'update_file', path: 'note.txt', diff: '@@\n-丁\n+戊\n 丙' }] }, cwd);
+  expect(next.status).toBe('success');
+  expect(next.output).not.toContain('提示');
+  writeFileSync(join(cwd, 'note.txt'), '甲由外部修改\n目标也由外部修改\n丙\n');
+  await rejectedOperation(execute(tools, 'patch', { operations: [{ type: 'update_file', path: 'note.txt', diff: '@@\n-戊\n+不应写入\n 丙' }] }, cwd));
+  expect(readFileSync(join(cwd, 'note.txt'), 'utf8')).toBe('甲由外部修改\n目标也由外部修改\n丙\n');
   for (const path of ['../work-neighbor/secret.txt', join(outside, 'secret.txt'), 'escape/secret.txt']) {
-    await rejectedOperation(execute(tools, 'read_file', { path }, cwd));
-    await rejectedOperation(execute(tools, 'write_file', { path, content: '不应写入' }, cwd));
-    await rejectedOperation(execute(tools, 'edit_file', { path, old_text: '外部内容', new_text: '不应改动' }, cwd));
+    await rejectedOperation(execute(tools, 'read', { path }, cwd));
+    await rejectedOperation(execute(tools, 'patch', { operations: [{ type: 'update_file', path, diff: '@@\n-外部内容\n+不应改动' }] }, cwd));
+    await rejectedOperation(execute(tools, 'patch', { operations: [{ type: 'delete_file', path }] }, cwd));
   }
-  await rejectedOperation(execute(tools, 'write_file', { path: 'escape/new.txt', content: '不应创建' }, cwd));
+  await rejectedOperation(execute(tools, 'patch', { operations: [{ type: 'create_file', path: 'escape/new.txt', diff: '+不应创建' }] }, cwd));
   expect(readFileSync(join(outside, 'secret.txt'), 'utf8')).toBe('外部内容');
   expect(readdirSync(outside)).toEqual(['secret.txt']);
 }, 1000);

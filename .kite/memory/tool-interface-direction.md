@@ -1,0 +1,14 @@
+---
+name: tool-interface-direction
+description: 工具使用 read、patch、shell；patch 合并创建、修改、删除，文件状态仅提示
+metadata:
+  type: project
+---
+
+用户希望自研 harness 的工具命名尽量短，明确提出将 `read_file` 改为 `read`，后续通过同一入口接入图片、PDF 等内容，不按文件类型不断增加工具名。
+
+用户已决定使用 `patch` 合并 `write` 和 `edit`，表达创建、修改与删除；与 `read`、`shell` 组成当前工具集。补丁解析优先复用上游。当前实现使用 OpenAI Agents SDK 的 `applyDiff`，外层是普通函数工具，参数为 operations 数组，单项包含 type、path 和创建/修改时的无文件头 V4A diff；不引入上游 agent 循环。
+
+用户明确：文件读取状态和读后变化仅用于提示，不因未读或整文件 hash 不同拒绝有效补丁。补丁自身匹配失败、目录越界和新建覆盖已有文件仍是错误。不要额外为删除或整文件修改加读后版本锁。自身成功修改应刷新已知版本，避免误报为外部变化。
+
+统一入口不代表所有内容都转成字符串：接图片、PDF 时要同时考虑工具结果和模型适配器对相应内容的支持。当前仍只有文本文件工具，不能仅改名就声称支持多模态。

@@ -1,5 +1,8 @@
 - [自研 harness 与 ChatGPT 订阅](harness-direction.md) — Claude Code 后端不可用，自研 harness 提前为当前优先事项；首个模型入口用 ChatGPT 订阅
 - [协议与适配器边界](protocol-adapter-boundaries.md) — 前端会话语义统一，完整 agent 与模型 API 分别适配，原生存储无需统一
+- [工具接口方向](tool-interface-direction.md) — 已确定 read、patch、shell，文件版本变化仅提示
+- [会话观察账本设想](context-observation-ledger.md) — 文件状态仅提示；持久化账本、skill 加载与压缩重组待设计
+- [外部事件投递设想](external-event-delivery.md) — 留待以后：主动发现文件变化、请求边界合并提示，避免打断或唤醒
 - [测试要克制](test-restraint.md) — 简单配置和接入不扩充测试，优先已有检查与实际验证
 - [Kite 来历](kite-origin.md) — Pigeon 冻结后的替代品，交接文档在 docs/任务书.md，含三问和不做清单
 - [每会话一个工作树](session-worktree-decision.md) — 已决定：会话跑在独立工作树、完成后自动合并；四个待解问题和不带的 Pigeon 机制
