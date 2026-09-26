@@ -3,6 +3,7 @@ import { closeSync, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, r
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { contextSnapshotSchema } from './context/assembler.ts';
 import type { Journal, JournalEvent, JournalRecord } from './types.ts';
 
 const id = z.string().min(1);
@@ -21,7 +22,8 @@ const event = z.discriminatedUnion('type', [
   z.object({ type: z.literal('input.received'), input }),
   z.object({ type: z.literal('input.cancelled'), inputId: id }),
   z.object({ type: z.literal('turn.started'), turnId: id }),
-  z.object({ type: z.literal('request.started'), ...request, inputIds: z.array(id) }),
+  z.object({ type: z.literal('context.prepared'), snapshot: contextSnapshotSchema }),
+  z.object({ type: z.literal('request.started'), ...request, inputIds: z.array(id), contextId: id.optional() }),
   z.object({ type: z.literal('model.item'), ...request, item }),
   z.object({ type: z.literal('request.completed'), ...request, responseId: id, needsFollowUp: z.boolean(), usage: raw.optional() }),
   z.object({ type: z.literal('request.failed'), ...request, message: z.string() }),

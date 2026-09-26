@@ -1,6 +1,7 @@
 /** 自研会话循环：控制入口保持可用，单个 pump 推进模型、工具和收尾。 */
 import { randomUUID } from 'node:crypto';
 import { ToolBatch } from './tools.ts';
+import { assembleContext, literalContext } from './context/assembler.ts';
 import type {
   ContextItem, Input, JournalEvent, JournalRecord, ModelItem, Outcome, Phase,
   SessionEvent, SessionOptions, SessionRunner, SessionState, Tool, ToolResult,
@@ -33,6 +34,7 @@ export class HarnessSession implements SessionRunner {
   private inputs = new Map<string, Input>();
   private pending = new Set<string>();
   private requests = new Map<string, SavedRequest>();
+  private contexts = new Set<string>();
   private calls = new Map<string, SavedRequest>();
   private segments: Array<SavedRequest | { feedback: string }> = [];
   private openTurn?: string;
@@ -80,7 +82,6 @@ export class HarnessSession implements SessionRunner {
       return;
     }
     this.record({ type: 'input.received', input });
-    if (!this.blocked) this.paused = false;
     this.kick();
   }
 
@@ -201,8 +202,13 @@ export class HarnessSession implements SessionRunner {
         if (this.openTurn) throw new Error('记录包含重叠回合');
         this.openTurn = row.turnId;
         return;
+      case 'context.prepared':
+        if (this.contexts.has(row.snapshot.id)) throw new Error('上下文快照重复');
+        this.contexts.add(row.snapshot.id);
+        return;
       case 'request.started': {
         if (this.openTurn !== row.turnId || this.requests.has(row.requestId)) throw new Error('请求关联的回合或 id 无效');
+        if (row.contextId !== undefined && !this.contexts.has(row.contextId)) throw new Error('请求引用了未保存的上下文');
         if (this.unfinishedRequest()) throw new Error('上一请求或工具尚未结束，不能开始新请求');
         const inputs = row.inputIds.map((id) => {
           if (!this.pending.delete(id)) throw new Error('请求使用了非待处理输入');
@@ -413,8 +419,12 @@ export class HarnessSession implements SessionRunner {
     this.checkTurn(turn);
     const requestId = randomUUID();
     const ids = { turnId: turn.id, requestId };
+    const source = typeof this.options.instructions === 'function' ? this.options.instructions() : this.options.instructions;
+    const context = assembleContext(typeof source === 'string' ? literalContext(source) : source);
+    if (!this.contexts.has(context.snapshot.id)) this.record({ type: 'context.prepared', snapshot: context.snapshot });
+    this.checkTurn(turn);
     turn.hasRequest = true;
-    this.record({ type: 'request.started', ...ids, inputIds: [...this.pending] });
+    this.record({ type: 'request.started', ...ids, inputIds: [...this.pending], contextId: context.snapshot.id });
     const saved = this.requests.get(requestId)!;
     const batch = new ToolBatch({
       cwd: this.options.cwd, signal: turn.controller.signal, tools: this.tools,
@@ -429,7 +439,7 @@ export class HarnessSession implements SessionRunner {
       this.checkTurn(turn);
       const definitions = [...this.tools.values()].map(({ name, description, parameters }) => ({ name, description, parameters }));
       const stream = this.options.model.stream({
-        id: requestId, turnId: turn.id, cwd: this.options.cwd, instructions: this.options.instructions,
+        id: requestId, turnId: turn.id, cwd: this.options.cwd, instructions: context.instructions,
         history: this.history(), tools: structuredClone(definitions),
       }, turn.controller.signal);
       for await (const event of stream) {

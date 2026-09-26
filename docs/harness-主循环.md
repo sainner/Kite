@@ -46,6 +46,7 @@ flowchart TD
 |---|---|
 | `kited/src/harness/types.ts` | 模型流、工具、记录、事件与宿主回调的公开契约 |
 | `kited/src/harness/session.ts` | 控制入口、回合循环、上下文投影、恢复与收尾 |
+| `kited/src/harness/context/` | 指令组装定义、变量与条件展开、项目材料发现及指令快照 |
 | `kited/src/harness/journal.ts` | 单写者 JSONL、记录校验、同步落盘、末尾半行修复 |
 | `kited/src/harness/tools.ts` | 按调用次序调度、并发与排他边界、参数校验、取消与结果 |
 | `kited/src/harness/chatgpt.ts`、`auth.ts` | ChatGPT 订阅 Responses SSE 适配、只读登录缓存 |
@@ -79,7 +80,9 @@ flowchart TD
 
 上下文按请求分组投影：本次纳入的用户输入 → 原生模型输出（原顺序）→ 工具结果（调用顺序）。工具实际完成顺序可以不同，不能因此把结果插进尚未收完的模型输出中。停止 hook、打断、恢复和失败说明也进入上下文。保留 reasoning 等 opaque 字段，适配器负责投影成订阅端点要求的原生请求，不能从 UI 文本重建模型输入。
 
-指令由宿主提供，内核不做自动压缩、项目指令发现或 token 估算。终端宿主沿工作目录到最近仓库根目录加载 `AGENTS.md` 与 `.kite/memory/MEMORY.md`，无仓库时沿父目录查找；子目录指令与记忆正文由模型按需读取。`maxRequestsPerTurn` 是可选的显式请求预算，达到时暂停并报告原因；不是成功，也不自动唤醒。终端默认 50 次。
+指令由宿主提供字符串、结构化定义和值，或每请求调用的同步工厂。独立的[上下文组装器](harness-上下文组装.md)展开段落、变量和条件；发送前先保存 `context.prepared` 快照，`request.started.contextId` 关联当次版本，相同内容复用快照。组装失败不消费待处理输入。终端宿主每次请求沿工作目录到最近仓库根目录加载 `AGENTS.md` 与 `.kite/memory/MEMORY.md`，无仓库时沿父目录查找；子目录指令与记忆正文由模型按需读取。
+
+内核仍不做自动压缩或 token 估算。`maxRequestsPerTurn` 是可选的显式请求预算，达到时暂停并报告原因；不是成功，也不自动唤醒。终端默认 50 次。
 
 订阅适配器直接请求 `https://chatgpt.com/backend-api/codex/responses`，使用原生输出条目回传 reasoning 与 function call，再按 call id 追加工具结果。SSE 支持 UTF-8 跨块、CRLF 与多行 data；只有完整输出事件或完成响应中的完整条目进入内核，参数增量不会执行。请求取消会释放响应流；断流、失败响应和解析错误不自动重试。
 

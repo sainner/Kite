@@ -1,4 +1,5 @@
 /** 主循环的公开契约。模型传输、具体工具和工作树操作由宿主注入。 */
+import type { ContextSnapshot, ContextSource } from './context/types.ts';
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type JsonObject = { [key: string]: Json };
 
@@ -77,7 +78,9 @@ export type JournalEvent =
   | { type: 'input.received'; input: Input }
   | { type: 'input.cancelled'; inputId: string }
   | { type: 'turn.started'; turnId: string }
-  | { type: 'request.started'; turnId: string; requestId: string; inputIds: string[] }
+  | { type: 'context.prepared'; snapshot: ContextSnapshot }
+  /** 旧记录没有 contextId，仍能恢复历史，但无法还原当时的指令。 */
+  | { type: 'request.started'; turnId: string; requestId: string; inputIds: string[]; contextId?: string }
   | { type: 'model.item'; turnId: string; requestId: string; item: ModelItem }
   | { type: 'request.completed'; turnId: string; requestId: string; responseId: string; needsFollowUp: boolean; usage?: JsonObject }
   | { type: 'request.failed'; turnId: string; requestId: string; message: string }
@@ -112,7 +115,8 @@ export type SessionEvent =
 
 export interface SessionOptions {
   cwd: string;
-  instructions: string;
+  /** 同步工厂在每次请求边界求值；组装后复制、保存，再发送给模型。 */
+  instructions: string | ContextSource | (() => ContextSource);
   journal: Journal;
   model: Model;
   tools: Tool[];

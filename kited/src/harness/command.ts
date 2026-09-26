@@ -47,7 +47,7 @@ export async function runCommand(command: string, timeout: number, signal: Abort
   };
   const onOutput = (part: string) => {
     total += part.length;
-    tail = (tail + part).slice(-limit);
+    tail = limit > 0 && part.length >= limit ? part.slice(-limit) : (tail + part).slice(-limit);
     if (ioError) return;
     try {
       const bytes = Buffer.from(part);

@@ -3,11 +3,12 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync
 import { join } from 'node:path';
 import { readSubscriptionCredentials } from '../../src/harness/auth.ts';
 import { ChatGPTModel } from '../../src/harness/chatgpt.ts';
+import { restoreContext } from '../../src/harness/context/assembler.ts';
 import { localTools } from '../../src/harness/local-tools.ts';
 import { openTerminalSession } from '../../src/harness/terminal-session.ts';
 import type { Json, JsonObject, ModelEvent, ModelRequest, Tool, ToolResult } from '../../src/harness/types.ts';
 import {
-  aborted, deferred, input, item, ManualModel, Seen, success, tool, useHarness,
+  aborted, deferred, diskRecords, input, item, ManualModel, Seen, success, tool, useHarness,
 } from '../harness-loop.ts';
 import { ENV } from '../util.ts';
 
@@ -289,8 +290,8 @@ test('命令使用显式环境并保存完整日志，取消等整组退出而�
   }
 }, 1000);
 
-// 磁盘独占锁、主循环取消与重新打开交接：close 必须等工具停止，重开仍带持久上下文和项目指令。
-test('终端会话关闭等待执行停止再释放独占锁，重开保留工作目录和上下文', async () => {
+// 磁盘独占锁、主循环取消与重新打开交接：旧请求的材料快照仍可读，新请求须重新读取磁盘。
+test('终端会话关闭等待执行停止，重开保留旧快照和历史并读取新项目材料', async () => {
   const root = h.root();
   const cwd = join(root, 'project');
   const sessionDir = join(root, 'session');
@@ -322,6 +323,13 @@ test('终端会话关闭等待执行停止再释放独占锁，重开保留工�
     await expect(openTerminalSession(options)).rejects.toThrow();
     stopped.resolve(success('停止前的结果'));
     await closing;
+    const journalPath = join(sessionDir, readdirSync(sessionDir).find((name) => name.endsWith('.jsonl'))!);
+    const oldSnapshot = diskRecords(journalPath).find((record) => record.type === 'context.prepared');
+    expect(oldSnapshot?.type).toBe('context.prepared');
+    if (oldSnapshot?.type !== 'context.prepared') throw new Error('缺少旧项目材料快照');
+    expect(restoreContext(oldSnapshot.snapshot).instructions).toBe(first.request.instructions);
+    writeFileSync(join(cwd, 'AGENTS.md'), '项目专属指令：换成新规则');
+    writeFileSync(join(cwd, '.kite', 'memory', 'MEMORY.md'), '长期记忆：换成新索引');
     const elsewhere = join(root, 'elsewhere');
     mkdirSync(elsewhere);
     await expect(openTerminalSession({ ...options, cwd: elsewhere })).rejects.toThrow();
@@ -331,6 +339,17 @@ test('终端会话关闭等待执行停止再释放独占锁，重开保留工�
       await reopened.runner.send(input('重开输入'));
       const next = await nextModel.call(1);
       expect(next.request.cwd).toBe(cwd);
+      expect(next.request.instructions).toContain('项目专属指令：换成新规则');
+      expect(next.request.instructions).toContain('长期记忆：换成新索引');
+      expect(next.request.instructions).not.toContain('项目专属指令：保留这句话');
+      const records = diskRecords(journalPath);
+      const snapshots = records.filter((record) => record.type === 'context.prepared');
+      const starts = records.filter((record) => record.type === 'request.started');
+      expect(snapshots).toHaveLength(2);
+      expect(starts[0]!.contextId).toBe(oldSnapshot.snapshot.id);
+      expect(starts[1]!.contextId).toBe(snapshots[1]!.snapshot.id);
+      expect(snapshots[0]!.snapshot).toEqual(oldSnapshot.snapshot);
+      expect(next.request.instructions).toBe(restoreContext(snapshots[1]!.snapshot).instructions);
       expect(next.request.history).toContainEqual({ type: 'input', input: input('保留输入') });
       expect(next.request.history).toContainEqual({ type: 'output', item: item('held-call', 'hold') });
       expect(next.request.history).toContainEqual({ type: 'tool_result', callId: 'held-call', result: success('停止前的结果') });

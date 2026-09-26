@@ -2,6 +2,7 @@
 - [协议与适配器边界](protocol-adapter-boundaries.md) — 前端会话语义统一，完整 agent 与模型 API 分别适配，原生存储无需统一
 - [工具接口方向](tool-interface-direction.md) — 已确定 read、patch、shell，文件版本变化仅提示
 - [会话观察账本设想](context-observation-ledger.md) — 文件状态仅提示；持久化账本、skill 加载与压缩重组待设计
+- [提示词编排方向](prompt-composition-direction.md) — 按业务场景约束组装契约：双击改段落、页签看条件分支、chip 表示变量
 - [外部事件投递设想](external-event-delivery.md) — 留待以后：主动发现文件变化、请求边界合并提示，避免打断或唤醒
 - [测试要克制](test-restraint.md) — 简单配置和接入不扩充测试，优先已有检查与实际验证
 - [Kite 来历](kite-origin.md) — Pigeon 冻结后的替代品，交接文档在 docs/任务书.md，含三问和不做清单
