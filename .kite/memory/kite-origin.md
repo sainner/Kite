@@ -12,4 +12,4 @@ Kite（个人 agent 工作台，Mac/iOS 原生 App + mac mini 上的 kited daemo
 
 **Why:** Pigeon 把对话当作业、自研沙箱、替代上游能力，三个月 14 万行代码积重难返。Kite 的核心原则是「上游优先，只做薄层；存原始事实，派生视图；后端小，界面自由」。
 
-**How to apply:** 讨论架构时先对照任务书的「明确不做」清单（§18）和三问（上游有没有？约定能不能解决？几行指令能不能解决？）。第一阶段只接 Claude Code，不做 Web。同日第二轮讨论已并入任务书：产品目的与调研（§2）、快照（§7）、能力视图替代 AEC（§13）、会话工作树与集成（§21）、下一步（§22）；调研原文在 docs/research/。项目文件夹该长什么样见 kite-onboard skill（.claude/skills/kite-onboard/，项目规范做成的 skill，模板在 templates/；不引用任务书，因为任务书将来要删）。
+**How to apply:** 讨论架构时先对照任务书的「明确不做」清单（§18）和三问（上游有没有？约定能不能解决？几行指令能不能解决？）。不做 Web；原定「第一阶段只接 Claude Code」已被 2026-09-26 的决定覆盖，当前优先自研 harness，首个入口用 ChatGPT 订阅，见 [harness-direction](harness-direction.md)。2026-09-23 第二轮讨论已并入任务书：产品目的与调研（§2）、快照（§7）、能力视图替代 AEC（§13）、会话工作树与集成（§21）、下一步（§22）；调研原文在 docs/research/。项目文件夹该长什么样见 kite-onboard skill（.claude/skills/kite-onboard/，项目规范做成的 skill，模板在 templates/；不引用任务书，因为任务书将来要删）。

@@ -9,7 +9,7 @@ import { closeSync, existsSync, lstatSync, mkdirSync, openSync, realpathSync, sy
 import { constants, copyFile, mkdir } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { git, gitTry } from './git.ts';
-import { within } from './projects.ts';
+import { within } from './paths.ts';
 import { SETTING_SOURCES } from './runner.ts';
 import { runScript } from './script.ts';
 

@@ -5,19 +5,13 @@
  */
 import { existsSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join, relative, isAbsolute, sep } from 'node:path';
+import { basename, join, isAbsolute } from 'node:path';
 import { KiteError } from './errors.ts';
 import { commitAll, git, gitTry, revParse } from './git.ts';
+import { within } from './paths.ts';
 import type { CommitOwner, Project, Store } from './store.ts';
 // 模板只有一份，在项目规范（kite-onboard skill）里。文本 import：模板一改，依赖图就会选中登记相关的测试
 import GITIGNORE_TEMPLATE from '../../.claude/skills/kite-onboard/templates/gitignore' with { type: 'text' };
-
-/** a 在 b 里面，或就是 b。 */
-export function within(a: string, b: string): boolean {
-  const r = relative(b, a);
-  // 只认 .. 这一段本身：「..data」这样的名字是 b 里面的文件夹
-  return r === '' || (r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r));
-}
 
 /** 同步目录。iCloud「桌面与文稿」的判断方式未核实。 */
 function isSynced(path: string): boolean {

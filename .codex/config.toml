@@ -1,0 +1,4 @@
+# 显式注册项目角色，规则正文由角色入口按需读取。
+[agents.test-writer]
+description = "只按需求写测试，不改被测代码、不读实现函数体。交需求、接口、必须运行验证的理由、测试层级与个数上限；规则在 .claude/agents/test-writer.md。"
+config_file = "agents/test-writer.toml"

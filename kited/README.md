@@ -1,5 +1,83 @@
 # kited
 
+当前正在从 Claude Code 后端迁往自研 harness。`src/harness/` 已接通 ChatGPT 订阅、文件与命令工具，可以通过独立终端入口使用。下面原有的 HTTP 与会话流程仍描述 Claude runtime；kited 默认后端与 App 尚未切换。
+
+## 终端试用
+
+在 `kited` 目录运行，工作目录可以指定任意本地项目：
+
+```bash
+bun run harness --cwd /你的项目目录
+```
+
+默认凭据位于 `$KITE_HOME/auth/chatgpt/auth.json`（`KITE_HOME` 默认 `~/.kite`），通过设备登录独立授权，不再默认读取日常 Codex 的登录。也可用 `--auth /绝对路径/auth.json` 指定文件。
+
+授权借用官方登录工具，给它单独的认证目录；每台工作机各登录一次，不跨机器同步凭据：
+
+```bash
+mkdir -p -m 700 "${KITE_HOME:-$HOME/.kite}/auth/chatgpt"
+CODEX_HOME="${KITE_HOME:-$HOME/.kite}/auth/chatgpt" codex -c 'cli_auth_credentials_store="file"' login --device-auth
+```
+
+浏览器打开命令显示的地址并输入设备码。若 PATH 中的 `codex` 不可用，换成有效的 Codex 可执行文件路径。本机此次使用的是桌面 App 内置的 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`。
+
+harness 每次请求只读加载凭据，模型循环和工具执行不启动 Codex 或 Claude Code。自动刷新、系统钥匙串支持仍未接入；凭据过期或返回 401 时，在同一认证目录重新执行设备登录。无需 Platform API key。
+
+默认模型 `gpt-6-sol`、推理强度 `medium`，可用 `--model`、`--reasoning` 指定，模型名也可通过 `KITE_MODEL` 设置。一次任务跑完就退出：
+
+```bash
+bun run harness --cwd /你的项目目录 --prompt "读取项目说明，概括目录结构"
+```
+
+启动时打印会话 id 和记录目录；退出后可以恢复，工作目录、模型配置与上下文随会话保留：
+
+```bash
+bun run harness --resume <会话id>
+```
+
+`--resume` 也接受会话记录目录的绝对路径。记录默认位于 `~/.kite/sessions/<会话id>/`（可用 `KITE_HOME` 改变）；`journal.jsonl` 是会话正文，`commands/` 保存完整命令输出。恢复会话不能更换工作目录。
+
+| 操作 | 行为 |
+|---|---|
+| 直接输入 | 空闲时开始新回合；执行中插话，在下一次模型请求纳入 |
+| `/status` | 查看状态与上一回合结果 |
+| `/stop` 或执行中按 Ctrl+C | 打断回合，等待命令及其进程组停止 |
+| `/resume` | 继续暂停的上下文 |
+| `/recover` | 确认旧执行已经停止后解除恢复阻塞；仍需 `/resume` |
+| `/exit` 或空闲时按 Ctrl+C | 停止执行、保存记录并退出 |
+
+首版提供 `read_file`、`write_file`、`edit_file`、`shell`；读取适用的 `AGENTS.md` 和 `.kite/memory/MEMORY.md`，记忆正文按需读取。文件工具限制在工作目录内，shell 使用当前用户权限；命令输出限长并保留完整日志，后台任务暂不支持。每回合默认最多 50 次模型请求，达到后暂停，`--max-requests` 可调整。
+
+这个终端入口直接修改指定目录，尚未接入 kited 的工作树、快照和采纳流程，也没有子 agent、skill 自动发现、MCP 或上下文压缩。异常退出留下的 `lock/` 不会自动删除；先根据 `lock/owner.json` 与 `processes.json` 确认原进程及命令均已停止，再清理该会话的锁并重新打开。执行效果未知时保持暂停，不重放旧工具。
+
+## 自研 harness 主循环
+
+`HarnessSession`（`src/harness/session.ts`）直接管理输入、模型流、工具调度和回合收尾，不依赖 Claude SDK 或 Codex CLI。公开契约见 `src/harness/types.ts`，设计与恢复边界见 [harness 主循环](../docs/harness-主循环.md)。
+
+宿主创建 `FileJournal`，注入模型、工具、工作目录、指令和快照回调：
+
+```ts
+import { FileJournal } from './src/harness/journal.ts';
+import { HarnessSession } from './src/harness/session.ts';
+
+const session = new HarnessSession({
+  cwd: worktree,
+  instructions,
+  journal: new FileJournal(journalPath),
+  model, // 实现 Model.stream(request, signal)
+  tools, // 每个工具负责参数校验、取消和受管执行的停止
+  afterTools: async (_turnId, callIds) => captureToolSnapshot(callIds),
+  afterTurn: async (_turnId, outcome) => captureTurnSnapshot(outcome),
+});
+await session.send({ id: clientMessageId, text: '检查项目', source: 'human' });
+```
+
+消息可靠落盘后 `send` 才确认。完整工具调用先保存，再在响应流仍进行时调度；连续的 `parallel: true` 工具可并发，默认工具排他。工具结果按调用顺序组成下次上下文，原始输出的 opaque 字段保留。打断要等工具和宿主回调结束；关闭保留队列。断流暂停，存储故障或未知工具结果要求恢复确认，已开始的旧工具不自动重放。
+
+内核自动测试使用手动模型流；订阅适配器使用分段 SSE 夹具。另已用真实 ChatGPT 订阅验证文本回复、写文件、shell 读取，以及退出后的会话恢复和继续编辑。下一步接 kited runtime/事件接口、工作树快照与 App 对话。旧 Claude 会话保持原 runtime。
+
+## 当前 Claude runtime
+
 跑在工作机上的 Kite 后台服务。它登记项目，让每个会话在自己的 git 工作树里跑 Claude Code，每批工具调用后给工作树打一枚快照，最后把会话的改动合回主线。它没有界面，App 和 `kite` 命令行都经本机 HTTP 接口和它说话。
 
 ## 运行
