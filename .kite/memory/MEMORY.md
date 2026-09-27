@@ -6,7 +6,8 @@
 - [外部事件投递设想](external-event-delivery.md) — 留待以后：主动发现文件变化、请求边界合并提示，避免打断或唤醒
 - [测试要克制](test-restraint.md) — 简单配置和接入不扩充测试，优先已有检查与实际验证
 - [Kite 来历](kite-origin.md) — Pigeon 冻结后的替代品，交接文档在 docs/任务书.md，含三问和不做清单
-- [每会话一个工作树](session-worktree-decision.md) — 已决定：会话跑在独立工作树、完成后自动合并；四个待解问题和不带的 Pigeon 机制
+- [工作树与工作区生命周期](session-worktree-decision.md) — 可写工作区使用独立工作树并自动合并；工作区与同级工作线程解耦
 - [假数据要穷举](fake-data-exhaustive.md) — App 界面先用假数据时，每种工具和成功/出错/后台/边角情况都要有
 - [界面由用户自己预览](user-previews-ui.md) — 改完 App 界面只编译、装上、打开新 build，不自己点模拟器
 - [接数据沿用原界面](feedback-preserve-ui-on-data-integration.md) — 保留卡片、侧栏和控件布局，空数据也用同一工作区
+- [工作区、线程与插件架构](workspace-thread-plugin-architecture.md) — 工作区承载同级线程和插件窗口，同一时间只运行一个线程；终端和文件系统是系统插件
