@@ -1,0 +1,14 @@
+{
+  "name": "kite-plugin-boundary-spike",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "bun build.ts", "test": "bun test", "verify": "bun run build && bun test && bun verify-webview.ts" },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "2.0.3",
+    "@modelcontextprotocol/client": "2.2.0",
+    "@modelcontextprotocol/server": "2.2.0",
+    "@modelcontextprotocol/core": "2.2.0",
+    "deno": "2.9.6",
+    "zod": "4.3.6"
+  }
+}

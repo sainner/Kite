@@ -1,7 +1,7 @@
 #if os(macOS)
 import SwiftUI
 
-/// Mac 主窗口：左边侧边栏，右边内容区显示选中会话的窗口组，都铺在 App 的底色上，四周留内边距。
+/// Mac 主窗口：左边侧边栏，右边内容区显示选中工作区的窗口组，都铺在 App 的底色上，四周留内边距。
 /// 两者之间的缝拖动调侧边栏宽度，拖到很窄就收成一列图标。
 struct MainWindow: View {
     @Environment(AppModel.self) private var model
@@ -22,16 +22,16 @@ struct MainWindow: View {
             }
             .frame(width: Metrics.gap)
             .disablesWindowDragging()
-            if let session = model.current {
-                SessionContent(session: session)
+            if let workspace = model.current {
+                WorkspaceContent(workspace: workspace)
                     .onGeometryChange(for: CGSize.self) { $0.size } action: { model.contentSize = $0 }
             } else {
-                // 已有会话都分离到了独立窗口。
+                // 已有工作区都分离到了独立窗口。
                 Color.clear
             }
         }
         .padding(Metrics.padding)
-        // 窗口不能小到放不下当前会话的卡片
+        // 窗口不能小到放不下当前工作区的卡片
         .frame(minWidth: 2 * Metrics.padding + sidebarWidth + Metrics.gap + minimum.width,
                minHeight: 2 * Metrics.padding + minimum.height)
         .background(Theme.background)
@@ -44,7 +44,7 @@ struct MainWindow: View {
     }
 
     private var minimum: CGSize {
-        model.current?.workspace.root.minimumSize ?? .zero
+        model.current?.layout.minimumSize ?? .zero
     }
 
     private func resizeSidebar(to width: CGFloat) {

@@ -5,39 +5,46 @@ import UIKit
 /// iPhone 上人发的消息的正文，样子照 MessageText：原样显示，``` 围起来的一段排成等宽、衬一个圆角底色，
 /// 斜杠命令的命令名在最前面、主题色。手势见 SelectableTextView。inset 是气泡的边距，放在文本视图里面，整个气泡都能点、能选字。
 struct SelectableText: View {
+    @Environment(\.colorScheme) private var colorScheme
     let message: Message
     let inset: CGSize
-    let tapped: () -> Void
-    let selecting: () -> Void
+    let showActions: () -> Void
+    let dismissActions: () -> Void
 
     var body: some View {
         // 有代码块时底色占满整行，气泡按能给的最宽来；没有就贴着字
         let hasCode = message.segments.contains { if case .code = $0 { true } else { false } }
-        SelectableTextView(text: message.attributed, inset: inset, fillsWidth: hasCode, tapped: tapped, selecting: selecting)
+        SelectableTextView(text: message.attributed(colorScheme: colorScheme), inset: inset, fillsWidth: hasCode, showActions: showActions, dismissActions: dismissActions)
     }
 }
 
 /// iPhone 上 agent 说的一段话。连续的段落、标题、引用、列表项排进同一个文本视图，选字能跨着拖；
 /// 代码块、表格、分隔线照旧用 SwiftUI 排（代码块要横着滚、太长折起来，表格排不进文本视图），选字跨不过它们，
-/// 点它们一下也开关操作栏，长按是 SwiftUI 自己的整块拷贝。样子照 MarkdownView。
+/// 长按这些块也显示操作栏。样子照 MarkdownView。
 struct SelectableMarkdown: View {
+    @Environment(\.referenceScope) private var referenceScope
+    @Environment(\.colorScheme) private var colorScheme
     let source: String
-    let tapped: () -> Void
-    let selecting: () -> Void
+    @State private var document = MarkdownDocument()
+    let showActions: () -> Void
+    let dismissActions: () -> Void
 
     var body: some View {
+        let urls = document.blocks(for: source).flatMap { ReferenceText.decorate($0.text, scope: referenceScope).runs.compactMap(\.link) }
         VStack(alignment: .leading, spacing: Metrics.markdownBlockGap) {
             ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
                 switch chunk {
                 case .prose(let blocks):
-                    SelectableTextView(text: Self.attributed(blocks), inset: .zero, fillsWidth: true, tapped: tapped, selecting: selecting)
+                    SelectableTextView(text: Self.attributed(blocks, colorScheme: colorScheme, scope: referenceScope), inset: .zero, fillsWidth: true, showActions: showActions, dismissActions: dismissActions)
                 case .block(let block):
                     MarkdownBlockView(block: block)
                         .contentShape(Rectangle())
-                        .onTapGesture(perform: tapped)
+                        .highPriorityGesture(LongPressGesture(minimumDuration: 0.4, maximumDistance: 8)
+                            .onEnded { _ in showActions() })
                 }
             }
         }
+        .task(id: urls) { await ReferenceIcons.shared.load(urls) }
     }
 
     private enum Chunk {
@@ -47,7 +54,7 @@ struct SelectableMarkdown: View {
 
     private var chunks: [Chunk] {
         var chunks: [Chunk] = []
-        for block in MarkdownBlock.parse(source) {
+        for block in document.blocks(for: source) {
             switch block.kind {
             case .paragraph, .heading, .quote, .listItem:
                 if case .prose(let blocks) = chunks.last {
@@ -63,7 +70,7 @@ struct SelectableMarkdown: View {
     }
 
     /// 几块拼成一段带属性的字，块和块之间空 markdownBlockGap，标题上面再多空一点，和 MarkdownBlockView 排的一样。
-    private static func attributed(_ blocks: [MarkdownBlock]) -> NSAttributedString {
+    private static func attributed(_ blocks: [MarkdownBlock], colorScheme: ColorScheme, scope: ReferenceScope) -> NSAttributedString {
         let body = UIFont.preferredFont(forTextStyle: .body)
         let result = NSMutableAttributedString()
         for (index, block) in blocks.enumerated() {
@@ -85,7 +92,7 @@ struct SelectableMarkdown: View {
                 color = .secondaryLabel
                 style.firstLineHeadIndent = indent + 12
                 style.headIndent = indent + 12
-                decoration = BlockDecoration(kind: .quoteBar(x: indent), top: style.paragraphSpacingBefore, fill: UIColor(Theme.rule).cgColor)
+                decoration = BlockDecoration(kind: .quoteBar(x: indent), top: style.paragraphSpacingBefore, fill: Theme.rule.resolvedCGColor(for: colorScheme))
             case .listItem(let marker):
                 // 编号靠右对齐在一格里，正文从固定的位置起，折行也对齐正文
                 let text = indent + Metrics.listMarker + 6
@@ -96,7 +103,8 @@ struct SelectableMarkdown: View {
                 break
             }
             let part = NSMutableAttributedString(string: prefix, attributes: [.font: body.monospacedDigits, .foregroundColor: color])
-            part.append(inline(block.text, font: font, color: color))
+            let linkColor = UIColor.link.resolvedColor(with: UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light))
+            part.append(inline(ReferenceText.decorate(block.text, scope: scope), font: font, color: color, linkColor: linkColor))
             part.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: part.length))
             if let decoration {
                 part.addAttribute(.blockDecoration, value: decoration, range: NSRange(location: 0, length: part.length))
@@ -107,8 +115,9 @@ struct SelectableMarkdown: View {
     }
 
     /// 行内的样式：粗体、斜体、行内代码、删除线、链接，和 SwiftUI 的 Text 认的一样。
-    private static func inline(_ text: AttributedString, font: UIFont, color: UIColor) -> NSAttributedString {
+    private static func inline(_ text: AttributedString, font: UIFont, color: UIColor, linkColor: UIColor) -> NSAttributedString {
         let result = NSMutableAttributedString()
+        var previousLink: URL?
         for run in text.runs {
             var runFont = font
             var attributes: [NSAttributedString.Key: Any] = [.foregroundColor: color]
@@ -125,6 +134,21 @@ struct SelectableMarkdown: View {
                 }
                 if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
             }
+            if let url = run.link, url != previousLink {
+                let image = url.scheme == "kite"
+                    ? ReferenceIcons.file.withTintColor(linkColor, renderingMode: .alwaysOriginal)
+                    : ReferenceIcons.shared.image(for: url) ?? ReferenceIcons.webpage
+                // 间距在附件内固定留出，不受普通空格、等宽字体和断行排版影响。
+                let scaled = ReferenceIcons.scaled(image, to: runFont.pointSize * Metrics.referenceIconScale,
+                                                  trailingSpace: Metrics.referenceIconGap)
+                let attachment = NSTextAttachment()
+                attachment.image = scaled
+                attachment.bounds = CGRect(origin: CGPoint(x: 0, y: Metrics.referenceIconBaselineOffset), size: scaled.size)
+                let icon = NSMutableAttributedString(attachment: attachment)
+                icon.addAttributes([.link: url, .font: runFont], range: NSRange(location: 0, length: icon.length))
+                result.append(icon)
+            }
+            previousLink = run.link
             if let link = run.link { attributes[.link] = link }
             attributes[.font] = runFont
             result.append(NSAttributedString(string: String(text[run.range].characters), attributes: attributes))
@@ -151,17 +175,18 @@ private extension UIFont {
 }
 
 /// UIKit 的文本视图，用来在 iPhone 上选字：SwiftUI 的 Text 在 iPhone 上只能长按整段拷贝，不告诉手指下面是第几个字，
-/// 也画不了选区。点一下是 tapped（开关操作栏；点在链接上就打开链接）；长按本身什么都不做；
-/// 长按以后接着拖就是选字，从按下的那个字选到手指下面，开始选时轻震一下、调 selecting（操作栏自己收起），
+/// 也画不了选区。点一下只处理链接与取消选区；长按不动显示操作栏；
+/// 长按以后接着拖就是选字，从按下的那个字选到手指下面，开始选时轻震一下、调 dismissActions（操作栏自己收起），
 /// 松手留着选区和系统的编辑菜单。长按期间对话不滚动，所以不和滚动抢。
 /// 平时不开系统的选字，免得长按、双击时它自己选一个词、弹出编辑菜单。
 /// fillsWidth：占满给的宽度；不然贴着字的宽度，长的折行。
 struct SelectableTextView: UIViewRepresentable {
+    @Environment(\.openURL) private var openURL
     let text: NSAttributedString
     let inset: CGSize
     let fillsWidth: Bool
-    let tapped: () -> Void
-    let selecting: () -> Void
+    let showActions: () -> Void
+    let dismissActions: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -177,12 +202,16 @@ struct SelectableTextView: UIViewRepresentable {
         view.textContainer.lineFragmentPadding = 0
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.delegate = context.coordinator
+        view.linkTextAttributes = [.foregroundColor: UIColor.link]
         // 代码块的底色、引用的竖线由自己的排版片段画，要在放字之前接上
         view.textLayoutManager?.delegate = context.coordinator
         let press = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.press(_:)))
         press.minimumPressDuration = 0.4
+        press.allowableMovement = 8
         view.addGestureRecognizer(press)
-        view.addGestureRecognizer(UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tap(_:))))
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tap(_:)))
+        tap.require(toFail: press)
+        view.addGestureRecognizer(tap)
         let menu = UIEditMenuInteraction(delegate: nil)
         view.addInteraction(menu)
         context.coordinator.view = view
@@ -193,10 +222,20 @@ struct SelectableTextView: UIViewRepresentable {
     func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.parent = self
         view.textContainerInset = UIEdgeInsets(top: inset.height, left: inset.width, bottom: inset.height, right: inset.width)
-        // 字变了才换：换字会清掉选区，选字时收起操作栏也会走到这里
-        if context.coordinator.shown != text.string {
-            context.coordinator.shown = text.string
+        let textChanged = context.coordinator.shown?.string != text.string
+        // 外观变化时也换掉已经解析成 CGColor 的装饰；只换颜色时保留选区。
+        if context.coordinator.shown != text || context.coordinator.colorScheme != context.environment.colorScheme {
+            let selection = view.selectedRange
+            let selectable = view.isSelectable
+            context.coordinator.refreshingAppearance = !textChanged
+            context.coordinator.shown = text
+            context.coordinator.colorScheme = context.environment.colorScheme
             view.attributedText = text
+            if !textChanged {
+                view.isSelectable = selectable
+                view.selectedRange = selection
+            }
+            context.coordinator.refreshingAppearance = false
         }
     }
 
@@ -218,7 +257,9 @@ struct SelectableTextView: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate, NSTextLayoutManagerDelegate {
         var parent: SelectableTextView?
         /// 文本视图里现在放的字。
-        var shown: String?
+        var shown: NSAttributedString?
+        var colorScheme: ColorScheme?
+        var refreshingAppearance = false
         weak var view: UITextView?
         var menu: UIEditMenuInteraction?
         /// 长按的地方和那里的字；接着拖挪过 slop 才算选字。
@@ -229,6 +270,7 @@ struct SelectableTextView: UIViewRepresentable {
 
         @objc func tap(_ gesture: UITapGestureRecognizer) {
             guard let view else { return }
+            parent?.dismissActions()
             // 有选区时点一下只是取消选区
             if view.selectedRange.length > 0 {
                 endSelection()
@@ -236,19 +278,18 @@ struct SelectableTextView: UIViewRepresentable {
             }
             // 平时没开系统的选字，链接自己不响应，点在链接上由这里打开
             if let url = link(at: gesture.location(in: view)) {
-                UIApplication.shared.open(url)
+                parent?.openURL(url)
                 return
             }
-            parent?.tapped()
         }
 
         private func link(at point: CGPoint) -> URL? {
-            guard let view, let position = view.closestPosition(to: point),
-                  let range = view.tokenizer.rangeEnclosingPosition(position, with: .character, inDirection: .storage(.forward)) else { return nil }
-            // closestPosition 在一行字的右边空白处也会给出行尾那个字，要确认点在字上
+            guard let view, let range = view.characterRange(at: point) else { return nil }
+            // 按手指下的字符命中，不用最近插入点，避免点在链接末字右半边时落到下一个字符。
+            // UIKit 在文字以外也可能返回最近字符，要确认点在字上。
             guard view.firstRect(for: range).insetBy(dx: -4, dy: -4).contains(point) else { return nil }
             let offset = view.offset(from: view.beginningOfDocument, to: range.start)
-            guard offset < view.attributedText.length else { return nil }
+            guard offset >= 0, offset < view.attributedText.length else { return nil }
             return view.attributedText.attribute(.link, at: offset, effectiveRange: nil) as? URL
         }
 
@@ -261,12 +302,13 @@ struct SelectableTextView: UIViewRepresentable {
                 start = point
                 anchor = view.closestPosition(to: point)
                 selecting = false
+                parent?.showActions()
             case .changed:
                 if !selecting {
                     guard hypot(point.x - start.x, point.y - start.y) > Self.slop else { return }
                     selecting = true
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    parent?.selecting()
+                    parent?.dismissActions()
                     view.isSelectable = true
                     view.becomeFirstResponder()
                 }
@@ -281,14 +323,18 @@ struct SelectableTextView: UIViewRepresentable {
                     endSelection()
                 }
                 selecting = false
+                anchor = nil
             default:
+                parent?.dismissActions()
                 if selecting { endSelection() }
                 selecting = false
+                anchor = nil
             }
         }
 
         /// 系统自己把选区清掉了（点了别处、拷贝完），关回平时的样子
         func textViewDidChangeSelection(_ view: UITextView) {
+            guard !refreshingAppearance else { return }
             if !selecting, view.isSelectable, view.selectedRange.length == 0 { endSelection() }
         }
 
@@ -388,10 +434,10 @@ private nonisolated final class DecoratedFragment: NSTextLayoutFragment {
 private extension Message {
     /// 拼成一段带属性的字：文字用正文字号，代码用等宽的小一号、左右缩进留出框里的边距，斜杠命令的命令名用主题色等宽。
     /// 段和段之间空 messageSegmentGap，代码块的上下留白用段落间距撑出来。
-    var attributed: NSAttributedString {
+    func attributed(colorScheme: ColorScheme) -> NSAttributedString {
         let body = UIFont.preferredFont(forTextStyle: .body)
         let code = UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: .monospacedSystemFont(ofSize: 15, weight: .regular))
-        let fill = UIColor(Theme.codeBackground).cgColor
+        let fill = Theme.codeBackground.resolvedCGColor(for: colorScheme)
         let result = NSMutableAttributedString()
         for (index, segment) in segments.enumerated() {
             if index > 0 { result.append(NSAttributedString(string: "\n")) }
@@ -430,6 +476,13 @@ private extension Message {
             }
         }
         return result
+    }
+}
+
+private extension Color {
+    /// TextKit 的绘制片段只保存 CGColor，要在主线程按所在窗口的外观解析。
+    func resolvedCGColor(for colorScheme: ColorScheme) -> CGColor {
+        UIColor(self).resolvedColor(with: UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light)).cgColor
     }
 }
 #endif

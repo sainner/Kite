@@ -5,7 +5,7 @@ import { expect, test } from 'bun:test';
 import { join } from 'node:path';
 import { KiteError } from '../../src/errors.ts';
 import { mergeBack } from '../../src/mainline.ts';
-import type { CommitOwner } from '../../src/store.ts';
+import type { CommitOwner } from '../../src/model.ts';
 import { commitAll, git, gitOk, gitWorktree, listTree, newRepo, read, repoState, useTemp, writeFiles } from '../util.ts';
 
 const temp = useTemp();

@@ -3,22 +3,37 @@ import SwiftUI
 /// agent 回复的 Markdown。解析用 Foundation 自带的（AttributedString 的 full 语法），这里只按它标出的块逐块排版：
 /// SwiftUI 的 Text 只认行内的粗体、斜体、代码和链接，标题、列表、代码块、引用、表格这些块它不排。
 /// 正文字号跟着外面：对话里是正文，展开的工具结果里小一号。
-/// 在 body 里解析、不在 init 里：视图只存源字符串，字符串没变 SwiftUI 就不重算 body，外面重画不会跟着重新解析。
+/// 源字符串变化时才解析；布局或其他消息更新引起重画时，沿用当前视图缓存。
 struct MarkdownView: View {
     let source: String
+    @State private var document = MarkdownDocument()
 
     init(_ source: String) {
         self.source = source
     }
 
     var body: some View {
-        let blocks = MarkdownBlock.parse(source)
+        let blocks = document.blocks(for: source)
         VStack(alignment: .leading, spacing: Metrics.markdownBlockGap) {
             ForEach(blocks.indices, id: \.self) { index in
                 MarkdownBlockView(block: blocks[index])
             }
         }
         .textSelection(.enabled)
+    }
+}
+
+/// 每个消息视图缓存自己最近一次解析；其他消息更新或布局重画不重复解析已完成正文。
+final class MarkdownDocument {
+    private var source: String?
+    private var parsed: [MarkdownBlock] = []
+
+    func blocks(for source: String) -> [MarkdownBlock] {
+        if self.source != source {
+            parsed = MarkdownBlock.parse(source)
+            self.source = source
+        }
+        return parsed
     }
 }
 
@@ -100,6 +115,10 @@ struct MarkdownBlock {
             blocks.append(block)
         }
         flushTable()
+        // 只有尚未组成语法的标记时也保留原文，结束后仍由同一解析器校正。
+        if blocks.isEmpty && !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return [MarkdownBlock(kind: .paragraph, text: AttributedString(source))]
+        }
         return blocks
     }
 }
@@ -116,15 +135,15 @@ struct MarkdownBlockView: View {
     private var content: some View {
         switch block.kind {
         case .paragraph:
-            Text(block.text).fixedSize(horizontal: false, vertical: true)
+            ReferenceLabel(block.text).fixedSize(horizontal: false, vertical: true)
         case .heading(let level):
-            Text(block.text)
+            ReferenceLabel(block.text)
                 .font(level <= 1 ? Theme.heading1 : level == 2 ? Theme.heading2 : Theme.heading3)
                 .padding(.top, 4)
         case .code:
             CodeBlock(text: String(block.text.characters))
         case .quote:
-            Text(block.text)
+            ReferenceLabel(block.text)
                 .foregroundStyle(.secondary)
                 .padding(.leading, 12)
                 .overlay(alignment: .leading) { Capsule().fill(Theme.rule).frame(width: 3) }
@@ -133,7 +152,7 @@ struct MarkdownBlockView: View {
         case .listItem(let marker):
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(marker ?? "").monospacedDigit().frame(minWidth: Metrics.listMarker, alignment: .trailing)
-                Text(block.text).fixedSize(horizontal: false, vertical: true)
+                ReferenceLabel(block.text).fixedSize(horizontal: false, vertical: true)
             }
         case .table(let header, let rows):
             MarkdownTable(header: header, rows: rows)
@@ -149,12 +168,12 @@ private struct MarkdownTable: View {
         ScrollView(.horizontal, showsIndicators: false) {
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
                 GridRow {
-                    ForEach(header.indices, id: \.self) { Text(header[$0]).fontWeight(.semibold) }
+                    ForEach(header.indices, id: \.self) { ReferenceLabel(header[$0]).fontWeight(.semibold) }
                 }
                 Divider().gridCellUnsizedAxes(.horizontal)
                 ForEach(rows.indices, id: \.self) { row in
                     GridRow {
-                        ForEach(rows[row].indices, id: \.self) { Text(rows[row][$0]) }
+                        ForEach(rows[row].indices, id: \.self) { ReferenceLabel(rows[row][$0]) }
                     }
                 }
             }
@@ -198,7 +217,7 @@ struct Folded<Line, Content: View>: View {
             content(folded ? Array(lines.prefix(limit)) : lines)
             if folded {
                 Button("显示全部 \(lines.count) 行") { expanded = true }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pointingPlain)
                     .font(Theme.secondary)
                     .foregroundStyle(.secondary)
                     .padding([.horizontal, .bottom], 10)

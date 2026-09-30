@@ -1,10 +1,11 @@
 import SwiftUI
 
-/// 会话窗口：标题栏是会话的标题和所在的项目，内容是对话，控制区是输入框和一行按钮，底下的状态信息是会话此刻的情况。
+/// 会话窗口：标题栏固定显示“代理”，内容是对话，控制区包含输入框和一行按钮。
 /// 人发的消息靠右、带气泡；agent 的话铺满这一栏；两段话之间 agent 做的事折成一行，点开看每一步。
-struct SessionPane: View {
-    @Environment(Session.self) private var session
+struct ThreadPane: View {
+    @Environment(WorkThread.self) private var thread
     @Environment(AppModel.self) private var model
+    @Environment(WorkArea.self) private var area
     /// 对话怎么滚：跟不跟着最底下、发送后滑到哪、底下留多少空白。
     @State private var scroll = TranscriptScroll()
     /// 刚发出、气泡还在下面、没开始往上浮的消息。
@@ -13,9 +14,9 @@ struct SessionPane: View {
     @State private var selected: RowID?
 
     var body: some View {
-        let items = session.transcript.items
-        let pending = session.transcript.pending
-        return PaneWindow(header: session.header, status: session.status) {
+        let items = thread.transcript.items
+        let pending = thread.transcript.pending
+        return PaneWindow(header: PaneHeader(title: "代理")) {
             if items.isEmpty && pending.isEmpty {
                 Text("说说要做什么")
                     .font(Theme.body)
@@ -35,7 +36,12 @@ struct SessionPane: View {
                             .frame(maxWidth: .infinity)
                             // 操作栏开着时，点对话里别的地方收起；点到按钮、别的气泡由它们自己接
                             .contentShape(Rectangle())
+                            #if os(iOS)
+                            // 收起浮层与子视图的链接点击同时发生，不抢走引用跳转。
+                            .simultaneousGesture(TapGesture().onEnded { $selected.close() }, isEnabled: selected != nil)
+                            #else
                             .gesture(TapGesture().onEnded { $selected.close() }, isEnabled: selected != nil)
+                            #endif
                     }
                     // 手指一滚就收起操作栏
                     .transcriptScroll(scroll, visibleHeight: proxy.size.height) {
@@ -45,22 +51,38 @@ struct SessionPane: View {
             }
         } controls: { typing in
             ControlArea(typing: typing, send: send)
+                .disabled(area.creatingThread)
                 .frame(maxWidth: Metrics.transcriptWidth)
+        } status: {
+            ThreadStatusChip()
         }
-        .environment(\.workingDirectory, session.transcript.root)
-        .task { await session.observe() }
+        .environment(\.workingDirectory, thread.transcript.root)
+        .task(id: thread.previewRun) {
+            if thread.isStreamingPreview { await thread.playStreamingPreview() }
+            else { await thread.observe() }
+        }
         .environment(\.arrivingMessages, arriving)
         .environment(\.selectedRow, $selected)
     }
 
     /// 发一条消息：先排进队里，对话滑过去（见 TranscriptScroll.send），气泡同时从下往上浮进来。
     private func send(_ message: Message) {
-        if session.isDraft {
-            model.showNewSession = true
+        if thread.isDraft {
+            if area.isDraft { model.showNewWorkspace = true }
+            else {
+                guard !area.creatingThread else { return }
+                area.creatingThread = true
+                thread.error = nil
+                Task {
+                    defer { area.creatingThread = false }
+                    do { try await model.startThread(in: area, prompt: message.typed) }
+                    catch { thread.error = error.localizedDescription }
+                }
+            }
             return
         }
         arriving.insert(message.id)
-        scroll.send { session.send(message) } alongside: { arriving.remove(message.id) }
+        scroll.send { thread.send(message) } alongside: { arriving.remove(message.id) }
     }
 }
 
@@ -126,6 +148,9 @@ struct TranscriptView: View {
             rows.append(Row(id: id, content: content, gap: gap, startsHumanTurn: humanTurn))
         }
         for item in items {
+            // 隐藏结束的思考，但保留派生项身份和它分隔工具组的位置。
+            if case .thinking = item.kind, item.generation != "streaming" { continue }
+            if case .text(let text) = item.kind, text.isEmpty { continue }
             if case .human(let message) = item.kind {
                 append(.message(message.id), .message(message, queued: false), startsTurn: item.startsTurn)
             } else {
@@ -148,36 +173,23 @@ private struct TranscriptStack: Layout {
     let tailIndex: Int?
     let tailHeight: CGFloat?
 
-    struct Cache {
-        var width: CGFloat?
-        var heights: [CGFloat] = []
-    }
-
-    func makeCache(subviews: Subviews) -> Cache {
-        Cache()
-    }
-
-    func updateCache(_ cache: inout Cache, subviews: Subviews) {
-        cache = Cache()
-    }
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? rows(subviews).map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
-        let (natural, tailTop) = arrange(width: width, subviews: subviews, cache: &cache)
-        return CGSize(width: width, height: natural + extra(natural: natural, tailTop: tailTop))
+        let measured = arrange(width: width, subviews: subviews)
+        return CGSize(width: width, height: measured.natural + extra(natural: measured.natural, tailTop: measured.tailTop))
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
-        let (natural, tailTop) = arrange(width: bounds.width, subviews: subviews, cache: &cache)
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let measured = arrange(width: bounds.width, subviews: subviews)
         var y = bounds.minY
         for (index, subview) in rows(subviews).enumerated() {
-            let height = cache.heights[index]
+            let height = measured.heights[index]
             subview.place(at: CGPoint(x: bounds.minX, y: y), proposal: ProposedViewSize(width: bounds.width, height: height))
             y += height + spacing
         }
         for marker in subviews {
             guard let kind = marker[StackMarker.self] else { continue }
-            let at = kind == .tail ? tailTop : natural
+            let at = kind == .tail ? measured.tailTop : measured.natural
             marker.place(at: CGPoint(x: bounds.minX, y: bounds.minY + at), proposal: ProposedViewSize(width: bounds.width, height: 0))
         }
     }
@@ -186,20 +198,16 @@ private struct TranscriptStack: Layout {
         subviews.filter { $0[StackMarker.self] == nil }
     }
 
-    /// 不留白时多高，最后一轮的顶（上一行的底边）在哪。每行多高按宽度记下来，排的时候不再量一遍。
-    private func arrange(width: CGFloat, subviews: Subviews, cache: inout Cache) -> (natural: CGFloat, tailTop: CGFloat) {
-        let rows = rows(subviews)
-        if cache.width != width || cache.heights.count != rows.count {
-            cache.width = width
-            cache.heights = rows.map { $0.sizeThatFits(ProposedViewSize(width: width, height: nil)).height }
-        }
+    /// 内部折叠也会改变行高，不能只按宽度和行数复用上次结果。每次排版读取当前高度，子视图测量由 SwiftUI 缓存。
+    private func arrange(width: CGFloat, subviews: Subviews) -> (heights: [CGFloat], natural: CGFloat, tailTop: CGFloat) {
+        let heights = rows(subviews).map { $0.sizeThatFits(ProposedViewSize(width: width, height: nil)).height }
         var y: CGFloat = 0
         var tailTop: CGFloat = 0
-        for (index, height) in cache.heights.enumerated() {
+        for (index, height) in heights.enumerated() {
             if index == tailIndex { tailTop = index == 0 ? 0 : y - spacing }
             y += height + spacing
         }
-        return (max(y - spacing, 0), tailTop)
+        return (heights, max(y - spacing, 0), tailTop)
     }
 
     private func extra(natural: CGFloat, tailTop: CGFloat) -> CGFloat {
@@ -248,7 +256,7 @@ private extension Item {
     }
 }
 
-/// agent 说的一段话，铺满这一栏。iPhone 上点它、Mac 上右键，在左下方弹出操作栏：复制、翻译、从这里分叉（翻译、分叉还没做）。
+/// agent 说的一段话，铺满这一栏。iPhone 上长按、Mac 上右键，在左下方弹出操作栏：复制、翻译、从这里分叉（翻译、分叉还没做）。
 /// iPhone 上长按以后接着拖是选字（SelectableMarkdown），Mac 上左键选字。
 private struct AgentText: View {
     let id: RowID
@@ -264,7 +272,7 @@ private struct AgentText: View {
     @ViewBuilder
     private var content: some View {
         #if os(iOS)
-        SelectableMarkdown(source: text, tapped: { selection.toggle(id) }, selecting: { selection.close() })
+        SelectableMarkdown(source: text, showActions: { selection.show(id) }, dismissActions: { selection.close() })
         #else
         MarkdownView(text)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -307,6 +315,8 @@ private struct ItemView: View {
             EventLabel(text: text, icon: "bell")
         case .text(let text):
             MarkdownView(text)
+        case .thinking(let text):
+            ThinkingRow(text: text)
         case .work(let work):
             WorkRow(work: work)
         case .interrupted:
@@ -352,7 +362,7 @@ private struct CompactedDivider: View {
                 .foregroundStyle(.secondary)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointingPlain)
             if expanded {
                 MarkdownView(summary).font(Theme.secondary).foregroundStyle(.secondary)
             }
@@ -360,34 +370,20 @@ private struct CompactedDivider: View {
     }
 }
 
-private extension Session {
-    /// 控制区底下的状态信息：在不在干活、上下文用了几成、工作区改了多少行。
-    var status: Text {
-        var parts = [Text(statusLabel)]
-        if let context {
-            parts.append(Text("上下文 \(context.formatted(.percent.precision(.fractionLength(0))))"))
-        }
-        if changes.added + changes.removed > 0 {
-            parts.append(Text("\(Text("+\(changes.added)").foregroundStyle(.green)) \(Text("−\(changes.removed)").foregroundStyle(.red))"))
-        }
-        return parts.dropFirst().reduce(parts[0]) { Text("\($0) · \($1)") }
-    }
-}
-
 /// 会话窗口的控制区：输入框与服务支持的操作。发送、打断、继续由真实状态控制，未接通的入口禁用。
-/// 发出去的字在输入框里模糊、淡掉，同时气泡在对话里从下往上浮进来（见 SessionPane.send）。
+/// 发出去的字在输入框里模糊、淡掉，同时气泡在对话里从下往上浮进来（见 ThreadPane.send）。
 private struct ControlArea: View {
     var typing: FocusState<Bool>.Binding
     let send: (Message) -> Void
-    @Environment(Session.self) private var session
+    @Environment(WorkThread.self) private var thread
     /// 刚发出去的字正在淡掉。
     @State private var leaving = false
 
     var body: some View {
-        @Bindable var session = session
-        let running = session.transcript.running
+        @Bindable var thread = thread
+        let running = thread.transcript.running
         VStack(spacing: 2) {
-            TextField(running ? "插话，agent 做完手上这一步就会看到" : "回复", text: $session.draft, axis: .vertical)
+            TextField(running ? "插话，agent 做完手上这一步就会看到" : "回复", text: $thread.draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(Theme.body)
                 .lineLimit(1...8)
@@ -401,24 +397,32 @@ private struct ControlArea: View {
                 EffortPicker(effort: .constant(.medium))
                     .allowsHitTesting(false)
                     .help("推理强度设置尚未接通")
-                Spacer(minLength: 0)
-                IconButton(icon: "paperclip") {}.disabled(true)
-                IconButton(icon: "slash.circle") {}.disabled(true)
-                IconButton(icon: "mic") {}.disabled(true)
-                if running {
-                    RoundButton(icon: "stop.fill", fill: Theme.strongPlaceholder) {
-                        session.control("interrupt")
-                    }
-                    .disabled(!session.connected || session.state?.capabilities.interrupt != true)
-                    .padding(.leading, 4)
+                Spacer(minLength: 8)
+                if thread.isStreamingPreview {
+                    Button("重播") { thread.previewRun += 1 }
+                        .font(Theme.secondary)
+                        .padding(.trailing, 8)
                 }
-                if session.state?.capabilities.resume == true {
-                    Button("继续") { session.control("resume") }.disabled(!session.connected)
+                IconButton(icon: "paperclip") {}.disabled(true).accessibilityLabel("添加附件")
+                IconButton(icon: "mic") {}.disabled(true).accessibilityLabel("语音输入")
+                if thread.showStop {
+                    RoundButton(icon: "stop.fill", fill: Theme.strongPlaceholder) {
+                        thread.stop()
+                    }
+                    .disabled(!thread.canStop)
+                    .padding(.leading, 4)
+                    .accessibilityLabel("停止")
+                }
+                if thread.state?.capabilities.resume == true {
+                    Button("继续") { thread.control("resume") }
+                        .disabled(!thread.canSend)
+                        .accessibilityLabel("继续")
                 }
                 if !blank && !leaving {
                     RoundButton(icon: "arrow.up", fill: .accentColor, action: submit)
-                        .disabled(!session.canSend)
+                        .disabled(!thread.canSend)
                         .padding(.leading, 4)
+                        .accessibilityLabel("发送")
                 }
             }
         }
@@ -426,20 +430,21 @@ private struct ControlArea: View {
     }
 
     private var blank: Bool {
-        session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        thread.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func submit() {
-        guard !blank, !leaving, session.canSend else { return }
-        let sent = session.draft
+        guard !blank, !leaving, thread.canSend else { return }
+        let sent = thread.draft
         send(Message(typed: sent.trimmingCharacters(in: .whitespacesAndNewlines)))
         // 新会话先选择项目；关闭选择窗口时仍保留原输入。
-        guard !session.isDraft else { return }
+        guard !thread.isDraft else { return }
+        let submission = thread.beginDraftSubmission()
         // 淡完才清空，输入框不在淡的时候变矮。淡的时候又打了字的，只去掉发出去的那一截
         withAnimation(.easeOut(duration: 0.3)) {
             leaving = true
         } completion: {
-            if session.draft.hasPrefix(sent) { session.draft.removeFirst(sent.count) }
+            thread.finishDraftSubmission(submission)
             leaving = false
         }
     }
@@ -761,7 +766,7 @@ private struct EffortTicks: View {
     }
 }
 
-/// 控制区里只有图标的按钮。
+/// 控制区的无背景图标按钮，保留完整点击范围。
 private struct IconButton: View {
     let icon: String
     let action: () -> Void
@@ -774,7 +779,7 @@ private struct IconButton: View {
                 .frame(width: 32, height: 32)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointingPlain)
     }
 }
 
@@ -792,6 +797,6 @@ private struct RoundButton: View {
                 .background(fill, in: Circle())
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointingPlain)
     }
 }

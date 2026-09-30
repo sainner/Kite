@@ -4,14 +4,19 @@ import { closeSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { prepareSandbox, workspacePolicy, type ExecutionPolicy } from '../sandbox.ts';
 import type { ToolResult } from './types.ts';
 
 export interface CommandOptions {
   cwd: string;
   logDir: string;
   env: NodeJS.ProcessEnv;
+  /** 宿主已授权的资源范围；未指定时采用当前工作树的基础策略。 */
+  policy?: ExecutionPolicy;
   /** 完整命令日志保存在 logDir，回传给模型只留受限尾部。 */
   outputLimit?: number;
+  /** 输出已写入日志后通知观察者；不等待界面消费。 */
+  onOutput?(text: string, limit: number): void;
   /** 进程组登记由宿主保存，恢复时据此确认是否仍有执行。 */
   onProcess?(pid: number, active: boolean): void;
 }
@@ -33,9 +38,11 @@ export async function runCommand(command: string, timeout: number, signal: Abort
   let ioError: unknown;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   let child;
+  let sandbox: ReturnType<typeof prepareSandbox> | undefined;
   try {
-    child = spawn('/bin/sh', ['-c', command], { cwd: options.cwd, env: options.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  } catch (error) { closeSync(fd); throw error; }
+    sandbox = prepareSandbox(command, { cwd: options.cwd, env: options.env, policy: options.policy ?? workspacePolicy(options.cwd, options.env) });
+    child = spawn(sandbox.executable, sandbox.args, { cwd: options.cwd, env: sandbox.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (error) { closeSync(fd); sandbox?.dispose(); throw error; }
   const pid = child.pid;
   const stop = (reason: string) => {
     stopped ??= reason;
@@ -46,8 +53,8 @@ export async function runCommand(command: string, timeout: number, signal: Abort
     }, 200);
   };
   const onOutput = (part: string) => {
-    total += part.length;
-    tail = limit > 0 && part.length >= limit ? part.slice(-limit) : (tail + part).slice(-limit);
+    total += Array.from(part).length;
+    tail = Array.from(tail + part).slice(-limit).join('');
     if (ioError) return;
     try {
       const bytes = Buffer.from(part);
@@ -57,7 +64,8 @@ export async function runCommand(command: string, timeout: number, signal: Abort
         if (written === 0) throw new Error('命令日志写入失败');
         offset += written;
       }
-    } catch (error) { ioError = error; stop('命令日志写入失败'); }
+      options.onOutput?.(part, limit);
+    } catch (error) { ioError = error; stop('命令输出处理失败'); }
   };
   child.stdout.setEncoding('utf8').on('data', onOutput);
   child.stderr.setEncoding('utf8').on('data', onOutput);
@@ -101,5 +109,7 @@ export async function runCommand(command: string, timeout: number, signal: Abort
     if (killTimer) clearTimeout(killTimer);
     signal.removeEventListener('abort', onAbort);
     closeSync(fd);
+    // 结果未知时保留运行所需目录，避免仍存活的进程使用已经删除或复用的路径。
+    if (!pid || !processGroupAlive(pid)) sandbox.dispose();
   }
 }

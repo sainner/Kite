@@ -5,7 +5,7 @@ import Foundation
 struct Transcript {
     /// 会话的工作目录，工具参数里的绝对路径按它显示成相对路径。
     var root: String
-    var records: [Record] { didSet { items = derive() } }
+    var records: [Record] { didSet { if !replacingRecord { items = derive() } } }
     /// 有回合在进行（kited 的 busy）。没有结果的工具调用这时算正在跑，否则算没跑完。
     var running: Bool { didSet { items = derive() } }
     /// 发出去了、agent 还没收到的消息，按发出的顺序。收到的那一刻才变成一条记录，撤回的永远不进记录。
@@ -13,6 +13,8 @@ struct Transcript {
     var pending: [Message]
     /// 界面上的样子。记录或 running 变了才重新派生，视图重画时直接拿。
     private(set) var items: [Item] = []
+    private var replacingRecord = false
+    private var locations: [Int: (item: Int, call: Int?)] = [:]
 
     init(root: String, records: [Record] = [], running: Bool = false, pending: [Message] = []) {
         self.root = root
@@ -27,6 +29,7 @@ struct Record {
     /// 子 agent 的记录：发起它的那次 Agent 调用的 id。主对话里为 nil。
     var parent: String?
     var block: Block
+    var generation: String?
 }
 
 enum Block {
@@ -57,7 +60,7 @@ struct Message: Identifiable {
     var command: String?
     var attachments: [Attachment] = []
     /// 并进了正在跑的回合：agent 做完手上这一步、下一次调用模型之前收到，没有自己的检查点。
-    /// 排队中的消息上是预计：发的时候回合在跑、或者前面还排着别的，收到时就并进那一轮（见 Session.send）。
+    /// 排队中的消息上是预计：发的时候回合在跑、或者前面还排着别的，收到时就并进那一轮（见 WorkThread.send）。
     var midTurn = false
 
     init(id: String = UUID().uuidString, text: String, command: String? = nil, attachments: [Attachment] = [], midTurn: Bool = false) {
@@ -96,7 +99,20 @@ enum Attachment {
 struct ToolUse {
     let id: String
     let name: String
-    let input: JSON
+    var input: JSON
+    /// 同一次模型回复发起的调用属于同一批。没有批次信息时不猜测分组。
+    var batch: String?
+    var arguments: String?
+    var stage: String?
+    var output = ""
+    var outputTruncated = false
+    var startedAt: Double?
+    var finishedAt: Double?
+}
+
+struct ToolDiffReference: Codable {
+    let id: String
+    let paths: [String]
 }
 
 struct ToolResult {
@@ -106,6 +122,8 @@ struct ToolResult {
     let isError: Bool
     /// 人打断回合时它还在跑。原生记录里也是一条出错的结果，翻译时标出来，界面上不算出错。
     var interrupted = false
+    var unknown = false
+    var diff: ToolDiffReference?
 
     var text: String {
         content.compactMap { if case .text(let text) = $0 { text } else { nil } }.joined(separator: "\n")
@@ -169,17 +187,19 @@ extension JSON: ExpressibleByStringInterpolation, ExpressibleByIntegerLiteral, E
 
 // MARK: - 界面上的样子
 
-/// 界面上的一项。记录按顺序排下来，连续的工具调用和思考折成一项 Work，工具结果并到它的调用上。
+/// 界面上的一项。思考独立保留，连续的工具调用折成一项 Work，工具结果并到它的调用上。
 /// 记录只追加，所以序号就是稳定的 id。
 struct Item: Identifiable {
     let id: Int
     var kind: Kind
+    var generation: String?
 
     enum Kind {
         case human(Message)
         case kite(String)
         case notification(String)
         case text(String)
+        case thinking(String)
         case work(Work)
         case interrupted
         case compacted(String)
@@ -187,41 +207,33 @@ struct Item: Identifiable {
     }
 }
 
-/// 两段话之间 agent 做的事：一串工具调用和思考。
+/// 连续的工具调用；思考与正文都会分开前后的工具组。
 struct Work {
-    var steps: [Step]
-
-    var calls: [Call] {
-        steps.compactMap { if case .call(let call) = $0 { call } else { nil } }
-    }
-}
-
-enum Step {
-    case thinking(String)
-    case call(Call)
+    var calls: [Call]
 }
 
 struct Call {
-    let use: ToolUse
+    var use: ToolUse
     var result: ToolResult?
     var state: State
     /// Agent 调用里子 agent 做的事。
     var children: [Item]
 
     enum State {
-        case running, done, failed, interrupted
+        case generating, queued, running, done, failed, interrupted, unknown
         /// 没有结果，也没有回合在跑：进程在工具跑到一半时没了。
         case unfinished
     }
 }
 
 extension Transcript {
-    private func derive() -> [Item] {
-        let byParent = Dictionary(grouping: records, by: \.parent)
+    private mutating func derive() -> [Item] {
+        locations = [:]
+        let byParent = Dictionary(grouping: Array(records.enumerated()), by: { $0.element.parent })
         return derive(under: nil, byParent)
     }
 
-    private func derive(under parent: String?, _ byParent: [String?: [Record]]) -> [Item] {
+    private mutating func derive(under parent: String?, _ byParent: [String?: [(offset: Int, element: Record)]]) -> [Item] {
         var list: [Item] = []
         /// 调用的 id → 在第几项的第几步，结果来了按它找回去。
         var positions: [String: (item: Int, step: Int)] = [:]
@@ -231,17 +243,18 @@ extension Transcript {
         }
 
         /// 接到上一项 Work 后面，上一项不是 Work 就另起一项。
-        func add(_ step: Step) -> (item: Int, step: Int) {
+        func add(_ call: Call) -> (item: Int, step: Int) {
             guard case .work(var work) = list.last?.kind else {
-                append(.work(Work(steps: [step])))
+                append(.work(Work(calls: [call])))
                 return (list.count - 1, 0)
             }
-            work.steps.append(step)
+            work.calls.append(call)
             list[list.count - 1].kind = .work(work)
-            return (list.count - 1, work.steps.count - 1)
+            return (list.count - 1, work.calls.count - 1)
         }
 
-        for record in byParent[parent] ?? [] {
+        for (recordIndex, record) in byParent[parent] ?? [] {
+            let before = list.count
             switch record.block {
             case .human(let message): append(.human(message))
             case .kite(let text): append(.kite(text))
@@ -250,19 +263,57 @@ extension Transcript {
             case .interrupted: append(.interrupted)
             case .compacted(let summary): append(.compacted(summary))
             case .apiError(let message): append(.apiError(message))
-            case .thinking(let text): _ = add(.thinking(text))
+            case .thinking(let text): append(.thinking(text))
             case .toolUse(let use):
-                let call = Call(use: use, state: running ? .running : .unfinished, children: derive(under: use.id, byParent))
-                positions[use.id] = add(.call(call))
+                let call = Call(use: use, state: Self.callState(use, result: nil, running: running), children: derive(under: use.id, byParent))
+                let at = add(call)
+                positions[use.id] = at
+                if parent == nil { locations[recordIndex] = (at.item, at.step) }
             case .toolResult(let result):
-                guard let at = positions[result.call], case .work(var work) = list[at.item].kind,
-                      case .call(var call) = work.steps[at.step] else { continue }
+                guard let at = positions[result.call], case .work(var work) = list[at.item].kind else { continue }
+                var call = work.calls[at.step]
                 call.result = result
-                call.state = result.interrupted ? .interrupted : result.isError ? .failed : .done
-                work.steps[at.step] = .call(call)
+                call.state = Self.callState(call.use, result: result, running: running)
+                work.calls[at.step] = call
                 list[at.item].kind = .work(work)
+            }
+            if list.count > before {
+                list[list.count - 1].generation = record.generation
+                if parent == nil, locations[recordIndex] == nil { locations[recordIndex] = (list.count - 1, nil) }
             }
         }
         return list
+    }
+
+    /// 流式字段不改变记录顺序或种类，只刷新对应的正文/思考/工具行。
+    mutating func replaceRecord(at index: Int, with record: Record) {
+        guard records.indices.contains(index) else { return }
+        replacingRecord = true
+        records[index] = record
+        replacingRecord = false
+        guard record.parent == nil, let at = locations[index] else { items = derive(); return }
+        switch record.block {
+        case .text(let text): items[at.item].kind = .text(text)
+        case .thinking(let text): items[at.item].kind = .thinking(text)
+        case .toolUse(let use):
+            guard let step = at.call, case .work(var work) = items[at.item].kind else { items = derive(); return }
+            work.calls[step].use = use
+            work.calls[step].state = Self.callState(use, result: work.calls[step].result, running: running)
+            items[at.item].kind = .work(work)
+        default: items = derive(); return
+        }
+        items[at.item].generation = record.generation
+    }
+
+    private static func callState(_ use: ToolUse, result: ToolResult?, running: Bool) -> Call.State {
+        if let result { return result.unknown ? .unknown : result.interrupted ? .interrupted : result.isError ? .failed : .done }
+        switch use.stage {
+        case "generating": return .generating
+        case "queued": return .queued
+        case "running", "finished": return .running
+        case "not_executed": return .interrupted
+        case "unfinished": return .unfinished
+        default: return running ? .running : .unfinished
+        }
     }
 }

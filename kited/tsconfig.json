@@ -17,5 +17,5 @@
     "verbatimModuleSyntax": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src", "test", "scripts", "*.ts"]
+  "include": ["src", "test", "scripts", "examples", "*.ts"]
 }

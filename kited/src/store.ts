@@ -1,105 +1,290 @@
-/**
- * Kite 自己的事实：登记了哪些项目，每个会话的工作树和它续接的原生会话。
- * 快照在项目仓库的 refs/kite/ 里，会话正文由各 runtime 的 journal 保存，都不进这里。
- * 进程是否在跑、回合是否进行中是运行时状态，不落库。
- */
+/** 只持久化产品对象；会话正文在 journal，快照在 Git，执行状态由 runtime 管理。 */
 import { Database } from 'bun:sqlite';
-
-/** kite：Kite 初始化的文件夹，提交由 Kite 代做；user：已有仓库，提交归用户。 */
-export type CommitOwner = 'kite' | 'user';
-
-export interface Project {
-  id: string;
-  path: string;
-  commits: CommitOwner;
-  createdAt: number;
-}
-
-/**
- * preparing：正在建工作树、跑初始化脚本；prepare_failed：这两步失败了，不启动 agent；
- * open：可以对话；archived：工作树已删，快照引用保留。
- */
-export type SessionStatus = 'preparing' | 'prepare_failed' | 'open' | 'archived';
-
-export interface Session {
-  id: string;
-  projectId: string;
-  title: string;
-  worktree: string;
-  branch: string;
-  /** 建工作树时的起点 commit。 */
-  base: string;
-  runtime: 'claude' | 'harness';
-  /** 当前续接的原生会话 id；不同 runtime 之间不能混用。 */
-  nativeId: string;
-  status: SessionStatus;
-  createdAt: number;
-}
+import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
+import type { AgentInstance, Checkout, Machine, PluginInstance, Project, Thread, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
+import type { ThreadNotification } from './harness/types.ts';
 
 const SCHEMA = `
-create table if not exists projects (
-  id text primary key,
-  path text not null unique,
-  commits text not null check (commits in ('kite', 'user')),
-  created_at integer not null
+create table if not exists machine (
+  slot integer primary key check (slot = 1), id text not null unique, name text not null, created_at integer not null
 );
-create table if not exists sessions (
-  id text primary key,
-  project_id text not null references projects(id),
-  title text not null,
-  worktree text not null,
-  branch text not null,
-  base text not null,
-  runtime text not null,
-  native_id text not null,
-  status text not null,
-  created_at integer not null
+create table if not exists projects (
+  id text primary key, name text not null, created_at integer not null
+);
+create table if not exists checkouts (
+  id text primary key, project_id text not null references projects(id), machine_id text not null references machine(id),
+  path text not null, commits text not null check (commits in ('kite', 'user')), created_at integer not null,
+  unique(machine_id, path)
+);
+create table if not exists workspaces (
+  id text primary key, checkout_id text not null references checkouts(id), name text not null, cwd text not null unique,
+  kind text not null check (kind in ('root', 'worktree')), branch text, base text,
+  status text not null check (status in ('preparing', 'open', 'failed', 'archived')), created_at integer not null,
+  check ((kind = 'root' and branch is null and base is null) or (kind = 'worktree' and branch is not null and base is not null))
+);
+create unique index if not exists root_workspace on workspaces(checkout_id) where kind = 'root';
+create table if not exists plugin_instances (
+  id text primary key, workspace_id text not null references workspaces(id), definition_id text not null, title text not null,
+  config text not null, state text not null, presentation text not null check (presentation in ('window', 'inline', 'background')),
+  status text not null check (status in ('open', 'archived')), created_at integer not null, origin text
+);
+create table if not exists threads (
+  instance_id text primary key references plugin_instances(id),
+  runtime text not null check (runtime in ('claude', 'harness')), native_id text not null
+);
+create table if not exists workspace_windows (
+  id text primary key, workspace_id text not null references workspaces(id),
+  instance_id text not null references plugin_instances(id), view_id text not null,
+  state text not null check (state in ('open', 'closed')), created_at integer not null
+);
+create unique index if not exists plugin_view_window on workspace_windows(instance_id, view_id) where state = 'open';
+create table if not exists window_requests (
+  id text primary key, workspace_id text not null references workspaces(id),
+  window_id text not null references workspace_windows(id), content text not null
+);
+create table if not exists instance_notifications (
+  seq integer primary key autoincrement, id text not null unique,
+  instance_id text not null references plugin_instances(id), notification text not null
+);
+create index if not exists instance_notification_order on instance_notifications(instance_id, seq);
+create table if not exists operation_receipts (
+  caller text not null, id text not null, request text not null, result text,
+  primary key(caller, id)
 );
 `;
-
-const projectOf = (r: any): Project => ({ id: r.id, path: r.path, commits: r.commits, createdAt: r.created_at });
-const sessionOf = (r: any): Session => ({
-  id: r.id, projectId: r.project_id, title: r.title, worktree: r.worktree, branch: r.branch, base: r.base,
-  runtime: r.runtime, nativeId: r.native_id, status: r.status, createdAt: r.created_at,
+const projectOf = (r: any): Project => ({ id: r.id, name: r.name, createdAt: r.created_at });
+const checkoutOf = (r: any): Checkout => ({
+  id: r.id, projectId: r.project_id, machineId: r.machine_id, path: r.path, commits: r.commits, createdAt: r.created_at,
+});
+const workspaceOf = (r: any): Workspace => ({
+  id: r.id, checkoutId: r.checkout_id, name: r.name, cwd: r.cwd, kind: r.kind, branch: r.branch, base: r.base,
+  status: r.status, createdAt: r.created_at,
+});
+const threadOf = (r: any): Thread => ({ instanceId: r.instance_id, runtime: r.runtime, nativeId: r.native_id });
+const instanceOf = (r: any): PluginInstance => ({
+  id: r.id, workspaceId: r.workspace_id, definitionId: r.definition_id, title: r.title,
+  config: JSON.parse(r.config), state: JSON.parse(r.state), presentation: r.presentation, status: r.status, createdAt: r.created_at,
+  ...(r.origin ? { origin: JSON.parse(r.origin) } : {}),
+});
+const agentOf = (r: any): AgentInstance => ({ ...instanceOf(r), ...threadOf(r) });
+const windowOf = (r: any): WorkspaceWindow => ({
+  id: r.id, workspaceId: r.workspace_id, target: { instanceId: r.instance_id, viewId: r.view_id },
+  state: r.state, createdAt: r.created_at,
 });
 
 export class Store {
   private db: Database;
+  readonly machine: Machine;
   constructor(path: string) {
     this.db = new Database(path, { create: true, strict: true });
     this.db.exec('pragma journal_mode = wal; pragma foreign_keys = on;');
     this.db.exec(SCHEMA);
+    // 同一个数据库只属于一台工作机服务。端口、地址和主机名变化都不重建身份。
+    this.machine = this.db.transaction(() => {
+      const saved = this.db.query('select id, name, created_at from machine where slot = 1').get() as
+        { id: string; name: string; created_at: number } | null;
+      if (saved) return { id: saved.id, name: saved.name, createdAt: saved.created_at };
+      const machine: Machine = { id: randomUUID(), name: hostname(), createdAt: Date.now() };
+      this.db.query('insert into machine values (1, ?, ?, ?)').run(machine.id, machine.name, machine.createdAt);
+      return machine;
+    })();
   }
 
-  projects(): Project[] {
-    return this.db.query('select * from projects order by created_at').all().map(projectOf);
-  }
+  projects(): Project[] { return this.db.query('select * from projects order by created_at, id').all().map(projectOf); }
   project(id: string): Project | null {
     const r = this.db.query('select * from projects where id = ?').get(id);
     return r ? projectOf(r) : null;
   }
-  addProject(p: Project): void {
-    this.db.query('insert into projects (id, path, commits, created_at) values (?, ?, ?, ?)').run(p.id, p.path, p.commits, p.createdAt);
+  /** 已有项目可添加检出；新项目、检出与根工作区在同一事务中建立。 */
+  register(project: Project, checkout: Checkout, root: Workspace): void {
+    this.db.transaction(() => {
+      this.db.query('insert into projects values (?, ?, ?) on conflict(id) do nothing').run(project.id, project.name, project.createdAt);
+      this.db.query('insert into checkouts values (?, ?, ?, ?, ?, ?)')
+        .run(checkout.id, checkout.projectId, checkout.machineId, checkout.path, checkout.commits, checkout.createdAt);
+      this.addWorkspace(root);
+    })();
   }
-
-  sessions(projectId?: string): Session[] {
-    const rows = projectId
-      ? this.db.query('select * from sessions where project_id = ? order by created_at').all(projectId)
-      : this.db.query('select * from sessions order by created_at').all();
-    return rows.map(sessionOf);
+  checkouts(projectId?: string): Checkout[] {
+    return this.db.query('select * from checkouts where (? is null or project_id = ?) order by created_at, id')
+      .all(projectId ?? null, projectId ?? null).map(checkoutOf);
   }
-  session(id: string): Session | null {
-    const r = this.db.query('select * from sessions where id = ?').get(id);
-    return r ? sessionOf(r) : null;
+  checkout(id: string): Checkout | null {
+    const r = this.db.query('select * from checkouts where id = ?').get(id);
+    return r ? checkoutOf(r) : null;
   }
-  addSession(s: Session): void {
-    this.db.query(
-      `insert into sessions (id, project_id, title, worktree, branch, base, runtime, native_id, status, created_at)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(s.id, s.projectId, s.title, s.worktree, s.branch, s.base, s.runtime, s.nativeId, s.status, s.createdAt);
+  workspaces(projectId?: string): Workspace[] {
+    return this.db.query(`select w.* from workspaces w join checkouts c on c.id = w.checkout_id
+      where (? is null or c.project_id = ?) order by w.created_at, w.id`)
+      .all(projectId ?? null, projectId ?? null).map(workspaceOf);
   }
-  setStatus(id: string, status: SessionStatus): void {
-    this.db.query('update sessions set status = ? where id = ?').run(status, id);
+  workspace(id: string): Workspace | null {
+    const r = this.db.query('select * from workspaces where id = ?').get(id);
+    return r ? workspaceOf(r) : null;
+  }
+  rootWorkspaceModel(checkoutId: string): WorkspaceModel | null {
+    const r = this.db.query("select * from workspaces where checkout_id = ? and kind = 'root'").get(checkoutId);
+    return r ? this.modelOf(workspaceOf(r)) : null;
+  }
+  addWorkspace(w: Workspace, firstAgent?: { agent: AgentInstance; window: WorkspaceWindow }): void {
+    this.db.transaction(() => {
+      this.db.query('insert into workspaces values (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(w.id, w.checkoutId, w.name, w.cwd, w.kind, w.branch, w.base, w.status, w.createdAt);
+      if (firstAgent) this.addAgent(firstAgent.agent, firstAgent.window);
+    })();
+  }
+  setWorkspaceStatus(id: string, status: WorkspaceStatus): void {
+    this.db.query('update workspaces set status = ? where id = ?').run(status, id);
+  }
+  threads(workspaceId?: string): AgentInstance[] {
+    return this.db.query(`select i.*, t.* from threads t join plugin_instances i on i.id = t.instance_id
+      where (? is null or i.workspace_id = ?) order by i.created_at, i.id`)
+      .all(workspaceId ?? null, workspaceId ?? null).map(agentOf);
+  }
+  thread(id: string): AgentInstance | null {
+    const row = this.db.query('select i.*, t.* from threads t join plugin_instances i on i.id = t.instance_id where i.id = ?').get(id);
+    return row ? agentOf(row) : null;
+  }
+  addInstance(instance: PluginInstance): void {
+    this.db.query('insert into plugin_instances values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(instance.id, instance.workspaceId, instance.definitionId, instance.title, JSON.stringify(instance.config),
+        JSON.stringify(instance.state), instance.presentation, instance.status, instance.createdAt, instance.origin ? JSON.stringify(instance.origin) : null);
+  }
+  private addThread(thread: Thread): void {
+    this.db.query('insert into threads values (?, ?, ?)').run(thread.instanceId, thread.runtime, thread.nativeId);
+  }
+  /** 实例身份、会话专有记录与可选窗口原子创建。 */
+  addAgent(agent: AgentInstance, window?: WorkspaceWindow): void {
+    this.db.transaction(() => {
+      this.addInstance(agent);
+      this.addThread(agent);
+      if (window) this.addWindow(window);
+    })();
+  }
+  archiveThread(id: string): void {
+    this.db.transaction(() => {
+      this.db.query("update plugin_instances set status = 'archived' where id = ?").run(id);
+      this.db.query("update workspace_windows set state = 'closed' where instance_id = ?").run(id);
+    })();
+  }
+  renameInstance(id: string, title: string): void {
+    this.db.query('update plugin_instances set title = ? where id = ?').run(title, id);
+  }
+  setInstanceState(id: string, state: PluginInstance['state']): void {
+    this.db.query('update plugin_instances set state = ? where id = ?').run(JSON.stringify(state), id);
+  }
+  /** 配置和对应通知同事务提交；线程 journal 单独记录在哪次请求纳入了通知。 */
+  setInstanceConfig(id: string, config: PluginInstance['config'], notification?: Omit<ThreadNotification, 'sequence'>): void {
+    this.db.transaction(() => {
+      this.db.query('update plugin_instances set config = ? where id = ?').run(JSON.stringify(config), id);
+      if (notification) this.db.query('insert into instance_notifications (id, instance_id, notification) values (?, ?, ?)')
+        .run(notification.id, id, JSON.stringify(notification));
+    })();
+  }
+  instanceNotifications(id: string, after: number): ThreadNotification[] {
+    return this.db.query('select seq, notification from instance_notifications where instance_id = ? and seq > ? order by seq')
+      .all(id, after).map((row: any) => ({ ...JSON.parse(row.notification), sequence: row.seq }));
+  }
+  operationReceipt(caller: string, id: string): { request: string; result: string | null } | null {
+    return this.db.query('select request, result from operation_receipts where caller = ? and id = ?').get(caller, id) as
+      { request: string; result: string | null } | null;
+  }
+  beginOperation(caller: string, id: string, request: string): void {
+    this.db.query('insert into operation_receipts values (?, ?, ?, null)').run(caller, id, request);
+  }
+  finishOperation(caller: string, id: string, result: unknown): void {
+    this.db.query('update operation_receipts set result = ? where caller = ? and id = ?').run(JSON.stringify(result), caller, id);
+  }
+  archiveWorkspace(id: string): void {
+    this.db.transaction(() => {
+      this.setWorkspaceStatus(id, 'archived');
+      this.db.query("update plugin_instances set status = 'archived' where workspace_id = ?").run(id);
+      this.db.query("update workspace_windows set state = 'closed' where workspace_id = ?").run(id);
+    })();
+  }
+  instances(workspaceId: string): PluginInstance[] {
+    return this.db.query('select * from plugin_instances where workspace_id = ? order by created_at, id').all(workspaceId).map(instanceOf);
+  }
+  instance(id: string): PluginInstance | null {
+    const row = this.db.query('select * from plugin_instances where id = ?').get(id);
+    return row ? instanceOf(row) : null;
+  }
+  windows(workspaceId: string): WorkspaceWindow[] {
+    return this.db.query("select * from workspace_windows where workspace_id = ? and state = 'open' order by created_at, id")
+      .all(workspaceId).map(windowOf);
+  }
+  window(id: string): WorkspaceWindow | null {
+    const row = this.db.query('select * from workspace_windows where id = ?').get(id);
+    return row ? windowOf(row) : null;
+  }
+  windowRequest(id: string): { workspaceId: string; windowId: string; content: string } | null {
+    const row = this.db.query('select * from window_requests where id = ?').get(id) as any;
+    return row ? { workspaceId: row.workspace_id, windowId: row.window_id, content: row.content } : null;
+  }
+  private addWindow(w: WorkspaceWindow): void {
+    this.db.query('insert into workspace_windows values (?, ?, ?, ?, ?, ?)')
+      .run(w.id, w.workspaceId, w.target.instanceId, w.target.viewId, w.state, w.createdAt);
+  }
+  /** 即使打开的是已有窗口，也保存操作收据；迟到重试不能复活已关闭的窗口。 */
+  openWindow(w: WorkspaceWindow, request: { id: string; content: string }, instance?: PluginInstance, thread?: Thread): void {
+    this.db.transaction(() => {
+      if (instance) this.addInstance(instance);
+      if (thread) this.addThread(thread);
+      if (!this.window(w.id)) this.addWindow(w);
+      this.db.query('insert into window_requests values (?, ?, ?, ?)').run(request.id, w.workspaceId, w.id, request.content);
+    })();
+  }
+  closeWindow(id: string): void {
+    this.db.query("update workspace_windows set state = 'closed' where id = ?").run(id);
+  }
+  /** 执行上下文只需要父级关系，不读取同级线程和插件窗口。 */
+  private contextOf(workspace: Workspace) {
+    const checkout = this.checkout(workspace.checkoutId)!;
+    const project = this.project(checkout.projectId)!;
+    return { machine: this.machine, project, checkout, workspace };
+  }
+  private modelOf(workspace: Workspace): WorkspaceModel {
+    return { ...this.contextOf(workspace),
+      threads: this.db.query(`select t.* from threads t join plugin_instances i on i.id = t.instance_id
+        where i.workspace_id = ? order by i.created_at, i.id`).all(workspace.id).map(threadOf),
+      instances: this.instances(workspace.id), windows: this.windows(workspace.id) };
+  }
+  workspaceModel(id: string): WorkspaceModel | null {
+    const workspace = this.workspace(id);
+    return workspace ? this.modelOf(workspace) : null;
+  }
+  workspaceModels(projectId?: string): WorkspaceModel[] {
+    const workspaces = this.workspaces(projectId);
+    if (!workspaces.length) return [];
+    const checkouts = new Map(this.checkouts(projectId).map((c) => [c.id, c]));
+    const projects = new Map((projectId ? [this.project(projectId)!] : this.projects()).map((p) => [p.id, p]));
+    // 列表一次读齐关联记录，避免每个工作区重复查询；项目过滤同时约束子记录。
+    const threads = this.db.query(`select i.workspace_id, t.* from threads t join plugin_instances i on i.id = t.instance_id
+      join workspaces w on w.id = i.workspace_id join checkouts c on c.id = w.checkout_id
+      where (? is null or c.project_id = ?) order by i.created_at, i.id`)
+      .all(projectId ?? null, projectId ?? null).map((r: any) => ({ workspaceId: r.workspace_id as string, thread: threadOf(r) }));
+    const instances = this.db.query(`select p.* from plugin_instances p
+      join workspaces w on w.id = p.workspace_id join checkouts c on c.id = w.checkout_id
+      where (? is null or c.project_id = ?) order by p.created_at, p.id`)
+      .all(projectId ?? null, projectId ?? null).map(instanceOf);
+    const windows = this.db.query(`select p.* from workspace_windows p
+      join workspaces w on w.id = p.workspace_id join checkouts c on c.id = w.checkout_id
+      where p.state = 'open' and (? is null or c.project_id = ?) order by p.created_at, p.id`)
+      .all(projectId ?? null, projectId ?? null).map(windowOf);
+    const threadsByWorkspace = Map.groupBy(threads, (t) => t.workspaceId);
+    const instancesByWorkspace = Map.groupBy(instances, (p) => p.workspaceId);
+    const windowsByWorkspace = Map.groupBy(windows, (p) => p.workspaceId);
+    return workspaces.map((workspace) => {
+      const checkout = checkouts.get(workspace.checkoutId)!;
+      return { machine: this.machine, project: projects.get(checkout.projectId)!, checkout, workspace,
+        threads: (threadsByWorkspace.get(workspace.id) ?? []).map(({ thread }) => thread),
+        instances: instancesByWorkspace.get(workspace.id) ?? [], windows: windowsByWorkspace.get(workspace.id) ?? [] };
+    });
+  }
+  threadContext(id: string): ThreadContext | null {
+    const thread = this.thread(id);
+    if (!thread) return null;
+    return { ...thread, ...this.contextOf(this.workspace(thread.workspaceId)!) };
   }
   close(): void { this.db.close(); }
 }

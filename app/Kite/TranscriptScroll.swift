@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// 主对话怎么滚。规则：
-/// - 打开时停在最底下，跟着最底下；人往上翻就不跟了，翻回最底下又跟。
+/// - 打开时不留末尾空白，停在最后一条内容的底部，跟着最底下；人往上翻就不跟了，翻回最底下又跟。
 /// - 内容、可见区变高变矮（展开收起一步、回复变长、键盘、底栏）时：跟着最底下、底下也没露着留白，就按底部对齐，
 ///   最后几行贴着底边，键盘升起时和键盘一起顶上去；不然按顶部对齐，对话不动。
 /// - 发送：开启新一轮的消息滑到可见区顶上，最后一轮至少占满一屏，不够在底下留白（TailSpace）；
@@ -29,8 +29,8 @@ final class TranscriptScroll {
     private var following = true
     /// 底下的留白这会儿露在可见区里。
     private var blankShown = false
-    /// 留白被人往上翻裁掉了多少。
-    private var trim: CGFloat = 0
+    /// 留白被人往上翻裁掉了多少。打开时为 nil，不生成留白；发送并开启新一轮时才从 0 开始。
+    private var trim: CGFloat?
     /// 程序正在滚的次数。滚的时候按顶部对齐，回调也不插手。
     private var gliding = 0
     /// 留白按多高的可见区算：变高时当场跟上，变矮时等一会儿再跟（visibleChanged）。
@@ -50,9 +50,10 @@ final class TranscriptScroll {
         following && !blankShown && gliding == 0 ? .bottom : .top
     }
 
-    /// 给 TranscriptView 的留白，visible 是这一次排版时可见区多高。
-    func tail(visible: CGFloat) -> TailSpace {
-        TailSpace(height: max(visible, heldVisible) - Metrics.transcriptPadding - trim, scroll: self)
+    /// 给 TranscriptView 的留白，visible 是这一次排版时可见区多高。仅查看历史时没有留白。
+    func tail(visible: CGFloat) -> TailSpace? {
+        guard let trim else { return nil }
+        return TailSpace(height: max(visible, heldVisible) - Metrics.transcriptPadding - trim, scroll: self)
     }
 
     /// 发一条消息：append 不带动画地把它加进对话，返回它会不会开启新的一轮；然后滑过去，alongside 和滑同一个动画。
@@ -105,7 +106,7 @@ final class TranscriptScroll {
     fileprivate func distanceToBottomChanged(_ distance: CGFloat) {
         // 人往上翻、底下的留白还露着：翻上去多少就裁掉多少，内容的底边一直贴着可见区的底边，
         // 直到最后一条内容到了底边，留白裁完
-        if userScrolling, blankShown, distance > 0.5 { trim += distance }
+        if userScrolling, blankShown, distance > 0.5, let trim { self.trim = trim + distance }
     }
 
     /// 可见区变矮时，等它最后一次变完 0.6 秒再让留白跟上，那时已经变回去了就不缩。

@@ -36,7 +36,7 @@ flowchart TD
 - 用户输入追加并同步到磁盘后才确认接收。同 id 同内容重试去重，同 id 不同内容拒绝。
 - 工具参数不完整时不能执行；完整条目保存后，还要保存 `tool.started`，才能进入工具函数。
 - 每个已保存的调用必须得到结果：成功、错误、未执行或结果未知。调用失败是交给模型的信息；存储失败则阻止后续副作用。
-- 打断取消的是调用时正在进行的回合。工具和快照尚未收尾时始终 busy，不得回退、采纳或启动下一回合。
+- 手动停止冻结整个队列，退回未消费输入并取消当前回合。工具和快照尚未收尾时始终 busy，不得回退、采纳或启动下一回合。
 - 恢复绝不自动重跑旧调用。有开始、没结果的调用记为结果未知；宿主确认残留执行已停止前，会话保持恢复阻塞。
 - 主循环不实现凭据刷新、HTTP、git 或具体 shell 工具。模型与工具必须遵守取消契约，否则内核会继续等待，不能假装已经安全停下。
 
@@ -45,28 +45,28 @@ flowchart TD
 | 文件 | 职责 |
 |---|---|
 | `kited/src/harness/types.ts` | 模型流、工具、记录、事件与宿主回调的公开契约 |
-| `kited/src/harness/session.ts` | 控制入口、回合循环、上下文投影、恢复与收尾 |
+| `kited/src/harness/runner.ts` | 控制入口、回合循环、上下文投影、恢复与收尾 |
 | `kited/src/harness/context/` | 指令组装定义、变量与条件展开、项目材料发现及指令快照 |
 | `kited/src/harness/journal.ts` | 单写者 JSONL、记录校验、同步落盘、末尾半行修复 |
 | `kited/src/harness/tools.ts` | 按调用次序调度、并发与排他边界、参数校验、取消与结果 |
 | `kited/src/harness/chatgpt.ts`、`auth.ts` | ChatGPT 订阅 Responses SSE 适配、只读登录缓存 |
 | `kited/src/harness/local-tools.ts`、`command.ts` | 文件读写与精确编辑、命令输出与进程组生命周期 |
-| `kited/src/harness/session-host.ts` | 项目指令、会话锁、元数据与进程登记 |
+| `kited/src/harness/thread-host.ts` | 项目指令、会话锁、元数据与进程登记 |
 | `kited/src/harness-cli.ts` | 终端对话、插话、打断、恢复与单次任务入口 |
 
-`new HarnessSession(options)` 接收工作目录、指令、journal、model、tools 和回调。`FileJournal(path)` 放在宿主选定的 `KITE_HOME/sessions/<会话>/journal.jsonl`。这些模块不导入 Claude SDK。
+`new HarnessRunner(options)` 接收工作目录、指令、journal、model、tools 和回调。`FileJournal(path)` 放在宿主选定的 `KITE_HOME/sessions/<会话>/journal.jsonl`。这些模块不导入 Claude SDK。
 
 接口正文在 `types.ts`，控制方法为：
 
 - `send({id, text, source})`：可靠接收，解除普通错误暂停并推进；恢复阻塞时只能排队。
 - `cancel(inputId)`：只撤回尚未纳入请求的输入。
-- `interrupt()`：停止调用时的回合，等它的执行与收尾完全结束；后来排队的输入保留。
+- `interrupt({id, inputs?})`：冻结队列，核定客户端未确认输入，停止执行并等待收尾；返回未纳入模型请求的输入。同一停止 id 重试返回原收据，迟到的同消息 id 不重新入队。
 - `resume()`：显式继续普通错误或崩溃后暂停的上下文；不需要伪造一条用户消息。
 - `confirmRecovery()`：宿主已经确认残留执行停止后解除恢复阻塞，只变为暂停，不自动续跑。
 - `shutdown()`：停止接收，取消当前工作并等待收尾，保留未处理输入，释放 journal。
 - `settled()`：供宿主和测试等待推进停下，含排队回合与收尾。
 
-状态是 `idle / running / stopping / finishing / paused / needs_recovery / closed`，附带 busy、turnId 和上一回合结果。回合结果为 `completed / interrupted / failed / needs_recovery`。
+执行阶段只有 `idle / running / stopping / finishing`。`busy` 只表示本地正在执行或收尾；`waitingForResume` 表示等待显式推进，`recovery` 单独保存恢复阻塞原因。回合结果为 `completed / interrupted / failed`。实例生命周期单独放在 `runner.lifecycle`：`open / closing / closed`。
 
 ## 4. 模型流与上下文
 
@@ -122,7 +122,9 @@ flowchart TD
 
 版本表目前属于一次 `localTools` 实例，不落盘；终端恢复后重新建立，提示明确写「本次运行」。shell 读取不登记到版本表，shell 修改会在后续 patch 比对时体现。这个表只表示宿主已知的文件版本，不能据此推断全文仍在模型上下文中。持久化快照引用、可见范围、skill 加载和压缩后的重组留给后续上下文管理设计，不要求每次 read 提交整个工作树。
 
-shell 显式传入 env，独立进程组执行，完整输出写日志并仅返回末尾；取消或超时先 TERM 再 KILL，确认组内进程停止后才返回。无法确认停止时返回 unknown。首版不支持后台任务，shell 也不是操作系统沙箱。
+shell 显式传入经过筛选的 env，独立进程组执行，完整输出写日志并仅返回末尾；取消或超时先 TERM 再 KILL，确认组内进程停止后才返回。无法确认停止时返回 unknown。当前不支持后台任务；进程组停止确认不覆盖自行脱离进程组的任务。
+
+2026-09-30 已将 harness 的 shell 接入共用沙箱适配层，使用 Bun 1.4.2 和 `@anthropic-ai/sandbox-runtime` 0.0.78。每次执行独立启动上游宿主，隔离其全局代理与策略状态。默认工作树可读写、系统工具链可读、网络关闭；从已登记主仓库解析的 Git 元数据只读。模型连接、认证和 journal 留在可信宿主，`read`、`patch` 也检查执行策略及宿主内部路径保护。沙箱启动失败或上游报告隔离降级时拒绝执行；权限变化不自动重放命令。kited 已提供实例授权的读取与更新接口，停止确认后才可修改，配置与通知同事务保存；后续工具读取新策略，请求快照保存授权版本。App 授权编辑、Linux 验证和资源配额仍待做，自定义插件将复用同一适配层。边界见 [Agent 与插件契约 §7](Agent与插件契约.md#71-插件与-harness-共用操作系统沙箱)。
 
 ## 6. 插话、撤回与结束边界
 
@@ -134,7 +136,7 @@ shell 显式传入 env，独立进程组执行，完整输出写日志并仅返�
 | 模型生成或工具执行中 | 排队，在下一次请求边界纳入当前回合 |
 | 模型已给最终文字，但尚未裁定停止 | 有排队消息则继续当前回合 |
 | 已进入回合收尾 | 等收尾完成后开启新回合 |
-| 打断中 | 排队，旧回合收尾后开启新回合 |
+| 手动停止清理中 | 拒绝新发送；被退回的同 id 重试只去重 |
 | 普通请求失败后 | 保留队列并暂停，显式 resume 或新输入才继续 |
 | 恢复阻塞 | 只保存，不执行 |
 
@@ -144,13 +146,13 @@ shell 显式传入 env，独立进程组执行，完整输出写日志并仅返�
 
 ## 7. 打断与错误
 
-每回合一个 AbortController。打断首先阻止新调用，再取消模型和工具；不能只关闭 HTTP 连接。`interrupt()` 等待当时那个回合的完成承诺，不因后来的新回合延长等待。
+每回合一个 AbortController。打断首先阻止新调用，再取消模型和工具；不能只关闭 HTTP 连接。`interrupt()` 冻结整个队列并等待当前 pump 收尾。停止过程中拒绝新发送和继续；完成后新 id 的发送可启动新回合。
 
-若消息刚接收、还没进入第一次请求就立即打断，撤回此次待开始回合的输入。已纳入请求的输入保留在上下文中，记录中断事实。停止期间后来到达的消息不受影响。
+以 request.started 为消费边界，停止时所有未消费输入交还客户端，包括尚未到达服务端的未确认输入。已纳入请求的输入保留在上下文中，记录中断事实；被退回的消息 id 以后只去重，不重新执行。
 
 收尾不使用已取消的 signal：等工具完成、补齐结果、等待批次快照和 `afterTurn`，最后保存回合终态。busy 覆盖整个过程。通知 UI 的回调异常只报告错误，不改变执行顺序。
 
-进入 `afterTurn` 后，回合的停止裁定已经完成；此时 interrupt 只等待收尾，不再修改传给宿主的结果。宿主不能在这些等待中的回调里反过来 await 同一会话的 interrupt、shutdown 或 settled，否则会循环等待。
+进入 `afterTurn` 后，回合的停止裁定已经完成；此时 interrupt 仍退回未处理队列并等待收尾，不再修改已经传给宿主的回合结果。宿主不能在这些等待中的回调里反过来 await 同一会话的 interrupt、shutdown 或 settled，否则会循环等待。
 
 错误分开处理：工具错误通常继续；模型断流/协议错误暂停；快照回调失败暂停并报告；存储失败或结果未知进入恢复阻塞。内核不自动重试模型请求。部分响应已执行工具后，不允许通过重新请求偷偷重跑旧调用。
 
@@ -169,7 +171,7 @@ shell 显式传入 env，独立进程组执行，完整输出写日志并仅返�
 | 保存了调用但没开始记录 | 补未执行结果，不重跑 |
 | 有开始、没结果 | 补 unknown，进入恢复阻塞 |
 | 工具结果已保存 | 原样复用，后续模型请求看到相同结果 |
-| 上次正常 shutdown 留了排队输入 | 新实例继续处理这些输入 |
+| 上次正常 shutdown 留了排队输入 | 保留队列；管理宿主以 startPaused 打开，等待新输入或 resume |
 
 不承诺外部副作用 exactly-once。记录 unknown 不能证明残留进程已经停止；`confirmRecovery()` 只能由已完成实际清理/检查的宿主调用。journal 已写失败时不允许就地确认，须重新打开并检查恢复状态。
 

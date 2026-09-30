@@ -3,10 +3,11 @@ import { afterEach } from 'bun:test';
 import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { FileJournal } from '../src/harness/journal.ts';
-import { HarnessSession } from '../src/harness/session.ts';
+import { HarnessRunner } from '../src/harness/runner.ts';
+import type { ContextSource } from '../src/harness/context/types.ts';
 import type {
   Input, Journal, JournalRecord, Model, ModelEvent, ModelItem, ModelRequest,
-  SessionEvent, SessionOptions, Tool, ToolResult,
+  HarnessEvent, HarnessOptions, Tool, ToolResult,
 } from '../src/harness/types.ts';
 import { makeTemp } from './util.ts';
 
@@ -111,15 +112,25 @@ export const tool = (name: string, execute: Tool['execute'], parallel = false): 
   validate() {}, execute,
 });
 
-/** 每个测试自建文件；失败也先释放宿主闸门，再关闭会话并删目录。 */
+type RunnerOptions = Partial<Pick<HarnessOptions,
+  'journal' | 'startPaused' | 'onEvent' | 'afterTools' | 'afterTurn' | 'beforeStop'
+>> & {
+  model?: Model;
+  tools?: Tool[];
+  instructions?: string | ContextSource | (() => ContextSource);
+  maxRequestsPerTurn?: number;
+  prepareRequest?: HarnessOptions['prepareRequest'];
+};
+
+/** 每个测试自建文件；失败也先释放宿主闸门，再关闭主循环并删目录。 */
 export function useHarness() {
-  const sessions: HarnessSession[] = [];
+  const runners: HarnessRunner[] = [];
   const journals: Journal[] = [];
   const roots: string[] = [];
   const releases: Array<() => void> = [];
   afterEach(async () => {
     for (const release of releases.splice(0)) release();
-    await Promise.all(sessions.splice(0).map((session) => session.shutdown().catch(() => {})));
+    await Promise.all(runners.splice(0).map((runner) => runner.shutdown().catch(() => {})));
     for (const journal of journals.splice(0)) journal.close();
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
@@ -131,21 +142,32 @@ export function useHarness() {
     },
     root() { const root = makeTemp('harness-'); roots.push(root); return root; },
     open(path: string) { const journal = new FileJournal(path); journals.push(journal); return journal; },
-    session(root: string, options: Partial<SessionOptions> = {}) {
+    runner(root: string, options: RunnerOptions = {}) {
       const path = join(root, 'journal.jsonl');
       const journal = options.journal ?? this.open(path);
       const model = options.model ?? new ManualModel();
-      const events = new Seen<SessionEvent>();
-      const session = new HarnessSession({
-        cwd: root, instructions: '测试主循环', journal, model, tools: [], ...options,
+      const events = new Seen<HarnessEvent>();
+      const runner = new HarnessRunner({
+        cwd: root, journal,
+        prepareRequest: options.prepareRequest ?? (() => ({
+          model,
+          tools: options.tools ?? [],
+          instructions: typeof options.instructions === 'function'
+            ? options.instructions() : options.instructions ?? '测试主循环',
+          settings: { maxRequestsPerTurn: options.maxRequestsPerTurn },
+        })),
+        startPaused: options.startPaused,
+        afterTools: options.afterTools,
+        afterTurn: options.afterTurn,
+        beforeStop: options.beforeStop,
         onEvent(event) { events.add(event); options.onEvent?.(event); },
       });
-      sessions.push(session);
-      return { session, journal, model, events, path };
+      runners.push(runner);
+      return { runner, journal, model, events, path };
     },
   };
 }
 
 export const diskRecords = (path: string): JournalRecord[] => readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line) as JournalRecord);
-export const waitRecord = (events: Seen<SessionEvent>, predicate: (record: JournalRecord) => boolean) =>
+export const waitRecord = (events: Seen<HarnessEvent>, predicate: (record: JournalRecord) => boolean) =>
   events.wait((event) => event.type === 'record' && predicate(event.record));

@@ -1,20 +1,8 @@
 import Foundation
 
-struct RemoteProject: Decodable, Identifiable {
-    let id: String
-    let path: String
-    var name: String { (path as NSString).lastPathComponent }
-}
-
-struct RemoteSession: Decodable, Identifiable {
-    let id: String
-    let projectId: String
-    let title: String
-    let worktree: String
-    let status: String
-}
-
 struct RemoteState: Decodable {
+    struct Outcome: Decodable { let kind: String; var message: String? }
+    struct Recovery: Decodable { let message: String }
     struct Capabilities: Decodable {
         let send: Bool
         let interrupt: Bool
@@ -23,18 +11,42 @@ struct RemoteState: Decodable {
     }
     let phase: String
     let busy: Bool
+    var waitingForResume = false
+    var lastOutcome: Outcome?
+    var recovery: Recovery?
+    var context: ContextUsage?
     let status: String
     let error: String?
     let capabilities: Capabilities
 }
 
-struct RemoteInput: Decodable {
+/// 最近一次完成请求的测量值，不把待发送文字和当前生成内容估算成 token。
+struct ContextUsage: Decodable {
+    let requestId: String
+    let inputTokens: Int
+    var windowTokens: Int?
+    let measuredAt: Double
+
+    var fraction: Double? {
+        guard inputTokens >= 0, let windowTokens, windowTokens > 0 else { return nil }
+        return Double(inputTokens) / Double(windowTokens)
+    }
+}
+
+struct RemoteInput: Codable {
     let id: String
     let text: String
     let source: String
-    let midTurn: Bool
-    var message: Message { Message(id: id, text: text, midTurn: midTurn) }
+    var midTurn: Bool? = nil
+    var message: Message { Message(id: id, text: text, midTurn: midTurn ?? false) }
 }
+
+struct StopRequest: Encodable {
+    let id: String
+    let inputs: [RemoteInput]
+}
+
+struct StopResponse: Decodable { let returned: [RemoteInput] }
 
 struct RemoteRecord: Decodable, Identifiable {
     struct Content: Decodable {
@@ -44,13 +56,23 @@ struct RemoteRecord: Decodable, Identifiable {
         var midTurn: Bool?
         var name: String?
         var input: JSON?
+        var batch: String?
         var call: String?
         var output: String?
         var status: String?
+        var parts: [String]?
+        var arguments: String?
+        var stage: String?
+        var outputLimit: Int?
+        var outputTruncated: Bool?
+        var startedAt: Double?
+        var finishedAt: Double?
+        var diff: ToolDiffReference?
     }
     let id: String
     let parent: String?
-    let block: Content
+    var generation: String?
+    var block: Content
 
     var record: Record? {
         let content: Block
@@ -66,37 +88,91 @@ struct RemoteRecord: Decodable, Identifiable {
         case "interrupted": content = .interrupted
         case "tool_use":
             guard let call = block.id, let name = block.name else { return nil }
-            content = .toolUse(ToolUse(id: call, name: name, input: block.input ?? .null))
+            content = .toolUse(ToolUse(id: call, name: name, input: block.input ?? .null, batch: block.batch,
+                                      arguments: block.arguments, stage: block.stage, output: block.output ?? "",
+                                      outputTruncated: block.outputTruncated ?? false, startedAt: block.startedAt, finishedAt: block.finishedAt))
         case "tool_result":
             guard let call = block.call else { return nil }
             content = .toolResult(ToolResult(call: call, content: [.text(block.output ?? "")],
-                                             isError: block.status != "success", interrupted: block.status == "not_executed"))
+                                             isError: block.status != "success", interrupted: block.status == "not_executed", unknown: block.status == "unknown", diff: block.diff))
         default: return nil
         }
-        return Record(parent: parent, block: content)
+        return Record(parent: parent, block: content, generation: generation)
+    }
+}
+
+/// 增量只修改已存在的记录；断线重连始终从完整快照建立基线。
+struct RemoteDelta: Decodable {
+    let id: String
+    let field: String
+    let text: String
+    var part: Int?
+    var replace: Bool?
+    var limit: Int?
+    var input: JSON?
+}
+
+extension RemoteRecord {
+    mutating func apply(_ delta: RemoteDelta) throws {
+        guard delta.id == id else { throw KitedError(message: "流式记录身份不匹配") }
+        switch delta.field {
+        case "text" where block.type == "text" || block.type == "thinking":
+            guard generation == "streaming" else { throw KitedError(message: "已结束的内容收到增量") }
+            let index = delta.part ?? 0
+            guard (0...1024).contains(index) else { throw KitedError(message: "流式分段序号无效") }
+            var parts = block.parts ?? [block.text ?? ""]
+            while parts.count <= index { parts.append("") }
+            parts[index] = delta.replace == true ? delta.text : parts[index] + delta.text
+            block.parts = parts
+            block.text = parts.joined(separator: "\n\n")
+        case "arguments" where block.type == "tool_use":
+            guard generation == "streaming" else { throw KitedError(message: "已结束的参数收到增量") }
+            block.arguments = delta.replace == true ? delta.text : (block.arguments ?? "") + delta.text
+            // 服务端解析出的草稿字段只用于摘要，工具执行仍由后端完整参数校验决定。
+            if let input = delta.input { block.input = input }
+        case "output" where block.type == "tool_use":
+            guard block.stage == "running", let limit = delta.limit, limit > 0 else {
+                throw KitedError(message: "工具输出阶段或上限无效")
+            }
+            let output = (block.output ?? "") + delta.text
+            let scalars = output.unicodeScalars
+            block.outputTruncated = block.outputTruncated == true || scalars.count > limit
+            block.output = String(String.UnicodeScalarView(scalars.suffix(limit)))
+            block.outputLimit = limit
+        default: throw KitedError(message: "流式字段与记录类型不匹配")
+        }
     }
 }
 
 struct RemoteEvent: Decodable {
     let type: String
     var version: Int?
-    var session: String?
+    var threadId: String?
+    var workspaces: [RemoteWorkspace]?
     var cursor: String?
     var records: [RemoteRecord]?
     var record: RemoteRecord?
+    var delta: RemoteDelta?
     var pending: [RemoteInput]?
     var state: RemoteState?
     var message: String?
 }
 
+enum KitedEventScope {
+    case catalog
+    case thread(String)
+}
+
 struct KitedError: LocalizedError {
     let message: String
+    var status: Int? = nil
     var errorDescription: String? { message }
 }
 
 /// Mac 和模拟器默认连工作机本地服务；地址由连接面板保存。网络层只处理 Kite 协议。
-struct KitedClient {
+struct KitedClient: Equatable {
     let address: String
+    var machineID: String? = nil
 
     private func url(_ path: String) throws -> URL {
         guard let base = URL(string: address), ["http", "https"].contains(base.scheme), base.host != nil,
@@ -106,8 +182,17 @@ struct KitedClient {
         return url
     }
 
-    func request<T: Decodable>(_ path: String, method: String = "GET", body: [String: String]? = nil, as type: T.Type) async throws -> T {
+    func request<T: Decodable>(_ path: String, method: String = "GET", body: (any Encodable)? = nil, as type: T.Type) async throws -> T {
+        try await requestWithCursor(path, method: method, body: body, as: type).value
+    }
+
+    func requestWithCursor<T: Decodable>(_ path: String, method: String = "GET", body: (any Encodable)? = nil,
+                                       as type: T.Type) async throws -> (value: T, cursor: String?) {
         var request = URLRequest(url: try url(path))
+        if path != "/machine" {
+            guard let machineID else { throw KitedError(message: "请先连接工作机") }
+            request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
+        }
         request.httpMethod = method
         request.timeoutInterval = 30
         if let body {
@@ -116,21 +201,32 @@ struct KitedClient {
         }
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response, data: data)
-        return try JSONDecoder().decode(T.self, from: data)
+        return (try JSONDecoder().decode(T.self, from: data),
+                (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Kite-Cursor"))
     }
 
     func post(_ path: String, body: [String: String]? = nil) async throws {
         let _: JSON = try await request(path, method: "POST", body: body, as: JSON.self)
     }
 
-    /// 每次连接的首帧是完整 history；取消任务时关闭 URLSession，避免切会话留下流连接。
-    func events(session: String? = nil, receive: (RemoteEvent) async throws -> Void) async throws {
+    /// 首帧包含所选范围的完整快照；取消任务时关闭 URLSession。
+    func events(scope: KitedEventScope = .catalog, receive: (RemoteEvent) async throws -> Void) async throws {
+        guard let machineID else { throw KitedError(message: "请先连接工作机") }
         let connection = URLSession(configuration: .ephemeral)
         defer { connection.invalidateAndCancel() }
-        var request = URLRequest(url: try url(session.map { "/events?session=\($0)" } ?? "/events"))
+        var components = URLComponents(url: try url("/events"), resolvingAgainstBaseURL: true)!
+        switch scope {
+        case .catalog: break
+        case .thread(let id): components.queryItems = [URLQueryItem(name: "thread", value: id)]
+        }
+        var request = URLRequest(url: components.url!)
         request.timeoutInterval = 60
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
         let (bytes, response) = try await connection.bytes(for: request)
+        if (response as? HTTPURLResponse)?.statusCode == 409 {
+            throw KitedError(message: "连接地址对应的工作机已改变，请重新连接")
+        }
         try validate(response)
         // kited 每个事件固定用一条 data 行，正文换行已由 JSON 转义。
         // AsyncBytes.lines 会略过空行，不能拿空行当它的事件结束标记。
@@ -147,7 +243,7 @@ struct KitedClient {
         guard let http = response as? HTTPURLResponse else { throw KitedError(message: "服务响应无效") }
         guard (200..<300).contains(http.statusCode) else {
             let error = data.flatMap { try? JSONDecoder().decode([String: String].self, from: $0)["error"] }
-            throw KitedError(message: error ?? "服务返回 \(http.statusCode)")
+            throw KitedError(message: error ?? "服务返回 \(http.statusCode)", status: http.statusCode)
         }
     }
 }

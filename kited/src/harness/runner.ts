@@ -1,16 +1,19 @@
-/** 自研会话循环：控制入口保持可用，单个 pump 推进模型、工具和收尾。 */
+/** 单个线程的执行实例：控制入口保持可用，单个 pump 推进模型、工具和收尾。 */
 import { randomUUID } from 'node:crypto';
 import { ToolBatch } from './tools.ts';
-import { assembleContext, literalContext } from './context/assembler.ts';
+import { assembleContext, literalContext, restoreContext } from './context/assembler.ts';
+import { contextUpdateContext } from './context/notifications.ts';
+import { notificationSchema, requestSnapshot } from './request-config.ts';
 import type {
-  ContextItem, Input, JournalEvent, JournalRecord, ModelItem, Outcome, Phase,
-  SessionEvent, SessionOptions, SessionRunner, SessionState, Tool, ToolResult,
+  ContextItem, Input, JournalEvent, JournalRecord, ModelItem, Outcome, Phase, Recovery, StopRequest,
+  HarnessEvent, HarnessOptions, RequestSnapshot, ThreadRunner, ThreadState, Tool, ToolDefinition, ToolResult,
 } from './types.ts';
 
 interface SavedRequest {
   id: string;
   turnId: string;
   inputs: Input[];
+  notifications: Extract<ContextItem, { type: 'notification' }>[];
   items: ModelItem[];
   started: Set<string>;
   results: Map<string, ToolResult>;
@@ -20,21 +23,24 @@ interface SavedRequest {
 interface Turn {
   id: string;
   controller: AbortController;
-  done: Promise<void>;
-  resolve(): void;
   stopRequested: boolean;
-  initialInputs: string[];
-  hasRequest: boolean;
   failure?: { error: unknown };
 }
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-export class HarnessSession implements SessionRunner {
+export class HarnessRunner implements ThreadRunner {
   private inputs = new Map<string, Input>();
   private pending = new Set<string>();
   private requests = new Map<string, SavedRequest>();
-  private contexts = new Set<string>();
+  /** 已保存快照的展开结果；模型请求复用正文，完整定义由 journal 保留。 */
+  private contexts = new Map<string, string>();
+  private configurations = new Map<string, RequestSnapshot>();
+  private baseContext?: string;
+  private currentContext?: string;
+  private baseConfiguration?: string;
+  private notificationCursor = 0;
+  private deliveredNotifications = new Set<string>();
   private calls = new Map<string, SavedRequest>();
   private segments: Array<SavedRequest | { feedback: string }> = [];
   private openTurn?: string;
@@ -42,37 +48,34 @@ export class HarnessSession implements SessionRunner {
   private pumping?: Promise<void>;
   private phase: Phase = 'idle';
   private lastOutcome?: Outcome;
-  private paused = false;
-  private blocked = false;
+  private waitingForResume = false;
+  private recovery?: Recovery;
+  private stopping?: string;
+  private stops = new Map<string, Input[]>();
   private storageFailed = false;
   private closing = false;
   private closed = false;
   private forceRun = false;
-  private tools = new Map<string, Tool>();
 
-  constructor(private options: SessionOptions) {
-    if (options.maxRequestsPerTurn !== undefined &&
-      (!Number.isSafeInteger(options.maxRequestsPerTurn) || options.maxRequestsPerTurn < 1)) {
-      throw new Error('模型请求预算必须是正整数');
-    }
-    for (const tool of options.tools) {
-      if (this.tools.has(tool.name)) throw new Error(`工具名重复：${tool.name}`);
-      this.tools.set(tool.name, tool);
-    }
+  constructor(private options: HarnessOptions) {
     for (const row of options.journal.records) this.apply(row);
     this.recover();
-    if (options.startPaused && this.pending.size) this.paused = true;
-    this.phase = this.blocked ? 'needs_recovery' : this.paused ? 'paused' : 'idle';
+    if (options.startPaused && this.pending.size) this.waitingForResume = true;
+    this.phase = 'idle';
     this.kick();
   }
 
-  get state(): SessionState {
+  get state(): ThreadState {
     return {
-      phase: this.phase, busy: !!this.active || !!this.pumping || this.blocked,
+      phase: this.phase, busy: !!this.active || !!this.pumping,
+      waitingForResume: this.waitingForResume,
+      ...(this.recovery ? { recovery: structuredClone(this.recovery) } : {}),
       ...(this.active ? { turnId: this.active.id } : {}),
       ...(this.lastOutcome ? { lastOutcome: structuredClone(this.lastOutcome) } : {}),
     };
   }
+
+  get lifecycle(): 'open' | 'closing' | 'closed' { return this.closed ? 'closed' : this.closing ? 'closing' : 'open'; }
 
   async send(input: Input): Promise<void> {
     this.assertOpen();
@@ -82,6 +85,8 @@ export class HarnessSession implements SessionRunner {
       if (previous.text !== input.text || previous.source !== input.source) throw new Error(`输入 id 冲突：${input.id}`);
       return;
     }
+    if (this.stopping) throw new Error('会话正在停止，请稍后发送');
+    if (this.recovery) throw new Error('会话需要先确认恢复');
     this.record({ type: 'input.received', input });
     this.kick();
   }
@@ -92,35 +97,51 @@ export class HarnessSession implements SessionRunner {
     this.record({ type: 'input.cancelled', inputId });
   }
 
-  async interrupt(): Promise<void> {
+  async interrupt(request: StopRequest = { id: randomUUID() }): Promise<Input[]> {
+    this.assertOpen();
+    if (!request.id) throw new Error('停止请求必须有 id');
+    const previous = this.stops.get(request.id);
+    if (previous) {
+      if (this.stopping === request.id) await this.settled();
+      return structuredClone(previous);
+    }
+    if (this.stopping) throw new Error('会话正在停止，请重试原停止请求');
+    const returned = new Map([...this.pending].map((id) => [id, this.inputs.get(id)!]));
+    for (const input of request.inputs ?? []) {
+      if (!input.id || !input.text.trim() || !['human', 'kite'].includes(input.source)) throw new Error('待核定输入无效');
+      const known = this.inputs.get(input.id) ?? returned.get(input.id);
+      if (known && (known.text !== input.text || known.source !== input.source)) throw new Error(`输入 id 冲突：${input.id}`);
+      if (!known) returned.set(input.id, input);
+    }
+    // 冻结后再落盘；同步事件观察者也不能趁这段窗口提交下一回合。
+    this.stopping = request.id;
+    this.forceRun = false;
+    try {
+      this.record({ type: 'thread.stopped', id: request.id, returned: [...returned.values()] });
+      this.stopActive();
+      await this.settled();
+      return structuredClone(this.stops.get(request.id)!);
+    } finally {
+      this.stopping = undefined;
+      if (!this.active && !this.pumping) this.setPhase('idle');
+    }
+  }
+
+  private stopActive(): void {
     const turn = this.active;
-    if (!turn) {
-      // pump 还没开始时，将此刻等待首个请求的输入撤回；后来到达的输入不受影响。
-      if (this.pumping) {
-        for (const inputId of [...this.pending]) this.record({ type: 'input.cancelled', inputId });
-        this.forceRun = false;
-      }
-      return;
-    }
-    if (this.phase !== 'finishing') {
-      turn.stopRequested = true;
-      if (!turn.hasRequest && !this.closing) {
-        for (const inputId of turn.initialInputs) {
-          if (this.pending.has(inputId)) this.record({ type: 'input.cancelled', inputId });
-        }
-      }
-      this.setPhase('stopping');
-      turn.controller.abort();
-    }
-    await turn.done;
+    if (!turn || this.phase === 'finishing') return;
+    turn.stopRequested = true;
+    this.setPhase('stopping');
+    turn.controller.abort();
   }
 
   async resume(): Promise<void> {
     this.assertOpen();
-    if (this.blocked) throw new Error('会话需要先确认恢复');
+    if (this.recovery) throw new Error('会话需要先确认恢复');
+    if (this.stopping) throw new Error('会话正在停止，请稍后继续');
     if (this.active) return;
     if (!this.pending.size && !this.segments.length) throw new Error('没有可以继续的会话内容');
-    this.paused = false;
+    this.waitingForResume = false;
     this.forceRun = true;
     this.kick();
   }
@@ -129,20 +150,20 @@ export class HarnessSession implements SessionRunner {
     this.assertOpen();
     if (this.active || this.pumping) throw new Error('执行尚未停止，不能确认恢复');
     if (this.storageFailed) throw new Error('记录写入失败，须重新打开并检查会话');
-    if (!this.blocked) return;
+    if (!this.recovery) return;
     this.record({ type: 'recovery.confirmed' });
-    this.setPhase('paused');
+    this.setPhase('idle');
   }
 
   async shutdown(): Promise<void> {
     if (this.closed) return;
     this.closing = true;
-    if (this.active) await this.interrupt();
+    this.stopActive();
     await this.settled();
     if (!this.closed) {
       this.closed = true;
       this.options.journal.close();
-      this.setPhase('closed');
+      this.setPhase('idle');
     }
   }
 
@@ -155,7 +176,7 @@ export class HarnessSession implements SessionRunner {
     if (this.storageFailed) throw new Error('会话记录写入失败，须重新打开');
   }
 
-  private emit(event: SessionEvent): void {
+  private emit(event: HarnessEvent): void {
     try { this.options.onEvent?.(structuredClone(event)); }
     catch (error) {
       // 观察者不拥有执行控制权；避免 UI 异常让已保存的调用失去结果。
@@ -174,13 +195,13 @@ export class HarnessSession implements SessionRunner {
     try { row = this.options.journal.append(event); }
     catch (error) {
       this.storageFailed = true;
-      this.blocked = true;
-      this.lastOutcome = { kind: 'needs_recovery', message: `会话记录写入失败：${message(error)}` };
+      this.recovery = { message: `会话记录写入失败：${message(error)}` };
+      this.lastOutcome = { kind: 'failed', message: this.recovery.message };
       if (this.active) {
         this.active.failure ??= { error };
         this.active.controller.abort();
       }
-      this.setPhase('needs_recovery');
+      this.emit({ type: 'state', state: this.state });
       throw error;
     }
     this.apply(row);
@@ -194,28 +215,61 @@ export class HarnessSession implements SessionRunner {
         if (this.inputs.has(row.input.id)) throw new Error('记录包含重复输入');
         this.inputs.set(row.input.id, structuredClone(row.input));
         this.pending.add(row.input.id);
-        if (!this.blocked) this.paused = false;
+        if (!this.recovery) this.waitingForResume = false;
         return;
       case 'input.cancelled':
         if (!this.pending.delete(row.inputId)) throw new Error('记录撤回了非待处理输入');
         return;
+      case 'thread.stopped':
+        if (this.stops.has(row.id)) throw new Error('停止收据重复');
+        for (const input of row.returned) {
+          const known = this.inputs.get(input.id);
+          if (known && (!this.pending.has(input.id) || known.text !== input.text || known.source !== input.source)) throw new Error('停止收据包含已消费或冲突输入');
+          this.inputs.set(input.id, structuredClone(input));
+          this.pending.delete(input.id);
+        }
+        this.stops.set(row.id, structuredClone(row.returned));
+        this.waitingForResume = false;
+        if (!this.openTurn) this.lastOutcome = { kind: 'interrupted' };
+        return;
       case 'turn.started':
         if (this.openTurn) throw new Error('记录包含重叠回合');
         this.openTurn = row.turnId;
+        this.lastOutcome = undefined;
         return;
       case 'context.prepared':
         if (this.contexts.has(row.snapshot.id)) throw new Error('上下文快照重复');
-        this.contexts.add(row.snapshot.id);
+        this.contexts.set(row.snapshot.id, restoreContext(row.snapshot).instructions);
+        return;
+      case 'request.configured':
+        if (this.configurations.has(row.snapshot.id)) throw new Error('请求配置快照重复');
+        this.configurations.set(row.snapshot.id, structuredClone(row.snapshot));
         return;
       case 'request.started': {
         if (this.openTurn !== row.turnId || this.requests.has(row.requestId)) throw new Error('请求关联的回合或 id 无效');
         if (row.contextId !== undefined && !this.contexts.has(row.contextId)) throw new Error('请求引用了未保存的上下文');
+        if (row.configurationId !== undefined && !this.configurations.has(row.configurationId)) throw new Error('请求引用了未保存的配置');
         if (this.unfinishedRequest()) throw new Error('上一请求或工具尚未结束，不能开始新请求');
+        const notifications = (row.notifications ?? []).map(({ context, ...notification }) => ({
+          type: 'notification' as const, notification, text: restoreContext(context).instructions,
+        }));
+        for (const { notification } of notifications) {
+          if (this.deliveredNotifications.has(notification.id)) throw new Error('通知重复投递');
+          if (notification.sequence !== undefined) {
+            if (notification.sequence <= this.notificationCursor) throw new Error('通知游标未递增');
+            this.notificationCursor = notification.sequence;
+          }
+          this.deliveredNotifications.add(notification.id);
+        }
+        this.baseContext ??= row.contextId;
+        this.currentContext = row.contextId;
+        this.baseConfiguration ??= row.configurationId;
         const inputs = row.inputIds.map((id) => {
           if (!this.pending.delete(id)) throw new Error('请求使用了非待处理输入');
           return this.inputs.get(id)!;
         });
-        const request: SavedRequest = { id: row.requestId, turnId: row.turnId, inputs, items: [], started: new Set(), results: new Map(), ended: false };
+        const request: SavedRequest = { id: row.requestId, turnId: row.turnId, inputs, notifications,
+          items: [], started: new Set(), results: new Map(), ended: false };
         this.requests.set(row.requestId, request);
         this.segments.push(request);
         return;
@@ -247,7 +301,7 @@ export class HarnessSession implements SessionRunner {
         const request = this.mustCall(row);
         if (request.results.has(row.callId)) throw new Error('工具重复结束');
         request.results.set(row.callId, structuredClone(row.result));
-        if (row.result.status === 'unknown') this.blocked = true;
+        if (row.result.status === 'unknown') this.recovery = { message: row.result.output || '存在执行结果未知的工具，等待确认残留执行停止' };
         return;
       }
       case 'turn.feedback':
@@ -259,8 +313,8 @@ export class HarnessSession implements SessionRunner {
         if (this.unfinishedRequest()?.turnId === row.turnId) throw new Error('回合结束时仍有未完成的请求或工具');
         this.openTurn = undefined;
         this.lastOutcome = row.outcome;
-        this.paused = row.outcome.kind === 'failed' || row.outcome.kind === 'needs_recovery';
-        if (row.outcome.kind === 'needs_recovery') this.blocked = true;
+        this.waitingForResume = row.outcome.kind === 'failed';
+        if (row.recovery) this.recovery = structuredClone(row.recovery);
         if (row.outcome.kind !== 'completed') this.segments.push({
           feedback: row.outcome.kind === 'interrupted'
             ? '上一回合被打断。已完成的工具操作没有被撤销；请根据实际结果继续。'
@@ -269,8 +323,8 @@ export class HarnessSession implements SessionRunner {
         return;
       case 'recovery.confirmed':
         if (this.openTurn) throw new Error('回合尚未收尾，不能确认恢复');
-        this.blocked = false;
-        this.paused = true;
+        this.recovery = undefined;
+        this.waitingForResume = true;
         this.segments.push({ feedback: '宿主已确认先前的执行停止。结果未知的操作仍需检查实际效果，不能假定已回滚。' });
         return;
     }
@@ -311,15 +365,16 @@ export class HarnessSession implements SessionRunner {
         } });
       }
     }
-    this.record({ type: 'turn.finished', turnId, outcome: this.blocked
-      ? { kind: 'needs_recovery', message: '存在执行结果未知的工具，等待宿主确认残留执行停止' }
-      : { kind: 'failed', message: '宿主退出中断了上一回合，等待显式继续' } });
+    this.record({ type: 'turn.finished', turnId, outcome: { kind: 'failed',
+      message: this.recovery?.message ?? '宿主退出中断了上一回合，等待显式继续' },
+      ...(this.recovery ? { recovery: this.recovery } : {}) });
   }
 
   private history(): ContextItem[] {
     const history: ContextItem[] = [];
     for (const segment of this.segments) {
       if ('feedback' in segment) { history.push({ type: 'feedback', text: segment.feedback }); continue; }
+      history.push(...segment.notifications);
       for (const input of segment.inputs) history.push({ type: 'input', input });
       for (const item of segment.items) history.push({ type: 'output', item });
       for (const item of segment.items) {
@@ -332,19 +387,19 @@ export class HarnessSession implements SessionRunner {
   }
 
   private canRun(): boolean {
-    return !this.closing && !this.blocked && !this.paused && (this.pending.size > 0 || this.forceRun);
+    return !this.closing && !this.stopping && !this.recovery && !this.waitingForResume && (this.pending.size > 0 || this.forceRun);
   }
 
   private kick(): void {
     if (this.pumping || !this.canRun()) return;
     // 先登记 pump 再广播状态，允许观察者同步插话、打断或关闭。
     this.pumping = Promise.resolve().then(() => this.pump()).catch((error: unknown) => {
-      this.paused = true;
+      this.waitingForResume = true;
       this.emit({ type: 'error', message: message(error) });
     }).then(() => {
       this.pumping = undefined;
       if (this.canRun()) this.kick();
-      else this.setPhase(this.blocked ? 'needs_recovery' : this.paused ? 'paused' : 'idle');
+      else this.setPhase('idle');
     });
     this.setPhase('running');
   }
@@ -352,11 +407,8 @@ export class HarnessSession implements SessionRunner {
   private async pump(): Promise<void> {
     while (this.canRun()) {
       this.forceRun = false;
-      let resolve!: () => void;
-      const done = new Promise<void>((r) => { resolve = r; });
       const turn: Turn = {
-        id: randomUUID(), controller: new AbortController(), done, resolve, stopRequested: false,
-        initialInputs: [...this.pending], hasRequest: false,
+        id: randomUUID(), controller: new AbortController(), stopRequested: false,
       };
       this.active = turn;
       this.setPhase('running');
@@ -365,7 +417,6 @@ export class HarnessSession implements SessionRunner {
         await this.runTurn(turn);
       } finally {
         this.active = undefined;
-        turn.resolve();
       }
     }
   }
@@ -381,10 +432,7 @@ export class HarnessSession implements SessionRunner {
     try {
       while (true) {
         this.checkTurn(turn);
-        if (this.options.maxRequestsPerTurn !== undefined && requests >= this.options.maxRequestsPerTurn) {
-          throw new Error(`达到本回合 ${this.options.maxRequestsPerTurn} 次模型请求预算`);
-        }
-        const followUp = await this.sample(turn);
+        const followUp = await this.sample(turn, requests);
         requests++;
         this.checkTurn(turn);
         if (followUp || this.pending.size) continue;
@@ -400,53 +448,89 @@ export class HarnessSession implements SessionRunner {
     this.setPhase('finishing');
     try { await this.options.afterTurn?.(turn.id, outcome); }
     catch (error) {
-      if (outcome.kind !== 'needs_recovery') outcome = { kind: 'failed', message: `回合收尾失败：${message(error)}` };
+      outcome = { kind: 'failed', message: `回合收尾失败：${message(error)}` };
     }
-    if (this.storageFailed) outcome = { kind: 'needs_recovery', message: '会话记录写入失败，必须重新打开并检查' };
+    if (this.storageFailed) outcome = { kind: 'failed', message: this.recovery!.message };
     this.lastOutcome = outcome;
-    this.paused = outcome.kind === 'failed' || outcome.kind === 'needs_recovery';
-    if (outcome.kind === 'needs_recovery') this.blocked = true;
-    if (!this.storageFailed) this.record({ type: 'turn.finished', turnId: turn.id, outcome });
+    this.waitingForResume = outcome.kind === 'failed';
+    if (!this.storageFailed) this.record({ type: 'turn.finished', turnId: turn.id, outcome,
+      ...(this.recovery ? { recovery: this.recovery } : {}) });
   }
 
   private classify(turn: Turn, error: unknown): Outcome {
-    if (this.blocked) return { kind: 'needs_recovery', message: message(error) };
+    if (this.recovery) return { kind: 'failed', message: this.recovery.message };
     if (turn.failure) return { kind: 'failed', message: message(turn.failure.error) };
     if (turn.stopRequested) return { kind: 'interrupted' };
     return { kind: 'failed', message: message(error) };
   }
 
-  private async sample(turn: Turn): Promise<boolean> {
+  private async sample(turn: Turn, requests: number): Promise<boolean> {
     this.checkTurn(turn);
     const requestId = randomUUID();
     const ids = { turnId: turn.id, requestId };
-    const source = typeof this.options.instructions === 'function' ? this.options.instructions() : this.options.instructions;
+    const prepared = this.options.prepareRequest({ afterNotification: this.notificationCursor });
+    const source = prepared.instructions;
     const context = assembleContext(typeof source === 'string' ? literalContext(source) : source);
+    const tools = new Map<string, Tool>();
+    for (const tool of prepared.tools) {
+      if (tools.has(tool.name)) throw new Error(`工具名重复：${tool.name}`);
+      tools.set(tool.name, tool);
+    }
+    const definitions = this.baseConfiguration ? this.configurations.get(this.baseConfiguration)!.tools
+      : prepared.toolDefinitions ?? prepared.tools.map(({ name, description, parameters }) => ({ name, description, parameters }));
+    const declarations = new Map<string, ToolDefinition>();
+    for (const definition of definitions) if (!declarations.has(definition.name)) declarations.set(definition.name, definition);
+    for (const tool of tools.values()) {
+      const declared = declarations.get(tool.name);
+      if (!declared || JSON.stringify(declared.parameters) !== JSON.stringify(tool.parameters) || declared.description !== tool.description) {
+        throw new Error(`工具 ${tool.name} 未声明或定义已变化，请新建会话使用新的工具定义`);
+      }
+    }
+    const configuration = requestSnapshot({ ...prepared.settings, allowedTools: [...tools.keys()] }, definitions);
+    const budget = configuration.settings.maxRequestsPerTurn;
+    if (budget !== undefined && requests >= budget) throw new Error(`达到本回合 ${budget} 次模型请求预算`);
+    const notifications = (prepared.notifications ?? []).map((notification) => notificationSchema.parse(notification));
+    let cursor = this.notificationCursor;
+    const seen = new Set(this.deliveredNotifications);
+    for (const notification of notifications) {
+      if (seen.has(notification.id)) throw new Error('宿主重复提供已投递通知');
+      seen.add(notification.id);
+      if (notification.sequence !== undefined) {
+        if (notification.sequence <= cursor) throw new Error('宿主通知顺序无效');
+        cursor = notification.sequence;
+      }
+    }
+    if (this.baseContext && this.currentContext !== context.snapshot.id) notifications.push({
+      id: randomUUID(), kind: 'context.updated', source: 'host.context', authority: 'instruction',
+      context: assembleContext(contextUpdateContext(context.instructions)).snapshot,
+    });
     if (!this.contexts.has(context.snapshot.id)) this.record({ type: 'context.prepared', snapshot: context.snapshot });
+    if (!this.configurations.has(configuration.id)) this.record({ type: 'request.configured', snapshot: configuration });
     this.checkTurn(turn);
-    turn.hasRequest = true;
-    this.record({ type: 'request.started', ...ids, inputIds: [...this.pending], contextId: context.snapshot.id });
+    this.record({ type: 'request.started', ...ids, inputIds: [...this.pending], contextId: context.snapshot.id,
+      configurationId: configuration.id, notifications });
     const saved = this.requests.get(requestId)!;
     const batch = new ToolBatch({
-      cwd: this.options.cwd, signal: turn.controller.signal, tools: this.tools,
+      cwd: this.options.cwd, signal: turn.controller.signal, turnId: turn.id, tools,
       started: (call) => this.record({ type: 'tool.started', ...ids, callId: call.id }),
       finished: (call, result) => this.record({ type: 'tool.finished', ...ids, callId: call.id, result }),
+      output: (call, text, limit) => this.emit({ type: 'tool.output', ...ids, callId: call.id, text, limit }),
       fatal: (error) => { turn.failure ??= { error }; turn.controller.abort(); },
     });
     let needsFollowUp = false;
     let failure: { error: unknown } | undefined;
     try {
       this.checkTurn(turn);
-      const definitions = [...this.tools.values()].map(({ name, description, parameters }) => ({ name, description, parameters }));
-      const stream = this.options.model.stream({
-        id: requestId, turnId: turn.id, cwd: this.options.cwd, instructions: context.instructions,
-        history: this.history(), tools: structuredClone(definitions),
+      const stream = prepared.model.stream({
+        id: requestId, turnId: turn.id, cwd: this.options.cwd,
+        instructions: this.contexts.get(this.baseContext!)!,
+        history: this.history(), tools: structuredClone(configuration.tools), allowedTools: [...tools.keys()],
       }, turn.controller.signal);
       for await (const event of stream) {
         this.checkTurn(turn);
         if (saved.ended) throw new Error('模型在响应完成之后继续发送事件');
         switch (event.type) {
-          case 'delta': this.emit({ type: 'delta', ...ids, text: event.text, ...(event.itemId ? { itemId: event.itemId } : {}) }); break;
+          case 'item.started': case 'delta': this.emit({ ...event, ...ids }); break;
           case 'item': {
             if (!event.item.id || saved.items.some((item) => item.id === event.item.id)) throw new Error('模型输出条目 id 无效或重复');
             if (event.item.call && (!event.item.call.id || this.calls.has(event.item.call.id))) throw new Error('模型工具调用 id 无效或重复');

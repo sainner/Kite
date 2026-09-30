@@ -8,13 +8,18 @@ enum RowID: Hashable {
 }
 
 extension EnvironmentValues {
-    /// 对话里点开了操作栏的那一行，一次只有一行。SessionPane 给出，点别处、滚动时收起。
+    /// 对话里点开了操作栏的那一行，一次只有一行。ThreadPane 给出，点别处、滚动时收起。
     @Entry var selectedRow: Binding<RowID?> = .constant(nil)
-    /// 对话里没被标题栏、控制区挡住的那一段有多高，从标题栏底下算起。操作栏按它决定放在上面还是底下。SessionPane 给出。
+    /// 对话里没被标题栏、控制区挡住的那一段有多高，从标题栏底下算起。操作栏按它决定放在上面还是底下。ThreadPane 给出。
     @Entry var visibleHeight = CGFloat.infinity
 }
 
 extension Binding where Value == RowID? {
+    /// 长按显示这一行的操作栏；继续拖动选字时由文本组件收起。
+    func show(_ id: RowID) {
+        withAnimation(.actionBar) { wrappedValue = id }
+    }
+
     /// 点了这一行：没开就打开它的操作栏（别的收起），开着就收起。
     func toggle(_ id: RowID) {
         withAnimation(.actionBar) { wrappedValue = wrappedValue == id ? nil : id }
@@ -32,9 +37,9 @@ extension Animation {
 }
 
 extension View {
-    /// 在这里打开这一行的操作栏，开着就收起：iPhone 上点一下，Mac 上右键（或按住 Control 点）。
+    /// 在这里打开这一行的操作栏：iPhone 上长按，Mac 上右键（或按住 Control 点）开关。
     /// Mac 上左键留给选字：开着文字选择的字会把单击整个吃掉，点击手势收不到（实测）。
-    /// iPhone 上不用长按：长按是选字，两件事会一起来。
+    /// iPhone 的可选文字由 SelectableTextView 协调长按和拖动选字，不再额外挂这个手势。
     func opensActionBar(_ id: RowID) -> some View {
         modifier(OpensActionBar(id: id))
     }
@@ -55,7 +60,7 @@ private struct OpensActionBar: ViewModifier {
         #if os(macOS)
         content.overlay { SecondaryClickArea { selection.toggle(id) } }
         #else
-        content.onTapGesture { selection.toggle(id) }
+        content.onLongPressGesture(minimumDuration: 0.4, maximumDistance: 8) { selection.show(id) }
         #endif
     }
 }
@@ -183,7 +188,7 @@ struct ActionButton: View {
         Button(role: role, action: action) {
             ActionIcon(icon: icon, destructive: role == .destructive)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointingPlain)
         .opacity(enabled ? 1 : 0.35)
         .help(title)
         .accessibilityLabel(title)
@@ -210,7 +215,7 @@ struct ActionMenu<Content: View>: View {
             ActionIcon(icon: icon, destructive: false)
         }
         .menuStyle(.button)
-        .buttonStyle(.plain)
+        .buttonStyle(.pointingPlain)
         .menuIndicator(.hidden)
         .fixedSize()
         .opacity(enabled ? 1 : 0.35)

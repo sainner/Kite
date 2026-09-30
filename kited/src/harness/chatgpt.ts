@@ -1,4 +1,4 @@
-/** ChatGPT 订阅 Responses 传输。循环与工具执行仍由 HarnessSession 管理。 */
+/** ChatGPT 订阅 Responses 传输。循环与工具执行仍由 HarnessRunner 管理。 */
 import { z } from 'zod';
 import type { SubscriptionModelOptions } from './subscription-types.ts';
 import type { JsonObject, Model, ModelEvent, ModelItem, ModelRequest } from './types.ts';
@@ -62,6 +62,7 @@ async function* events(body: ReadableStream<Uint8Array>, signal: AbortSignal): A
 function outputItem(raw: JsonObject, fallbackId: string): ModelItem {
   const id = typeof raw.id === 'string' && raw.id ? raw.id : fallbackId;
   if (raw.type === 'function_call') {
+    if (raw.status === 'incomplete') throw new Error('工具参数生成未完成');
     const callId = text(raw.call_id, 'call_id');
     let arguments_: unknown;
     try { arguments_ = JSON.parse(text(raw.arguments, '工具参数')); }
@@ -92,6 +93,10 @@ export class ChatGPTModel implements Model {
           output: entry.result.status === 'success' ? entry.result.output : `[${entry.result.status}] ${entry.result.output}`,
         };
         case 'feedback': return { role: 'developer', content: [{ type: 'input_text', text: entry.text }] };
+        case 'notification': return {
+          role: entry.notification.authority === 'instruction' ? 'developer' : 'user',
+          content: [{ type: 'input_text', text: entry.text }],
+        };
       }
     });
     const response = await (this.options.fetch ?? fetch)(ENDPOINT, {
@@ -100,15 +105,18 @@ export class ChatGPTModel implements Model {
         authorization: `Bearer ${auth.accessToken}`, 'ChatGPT-Account-Id': auth.accountId,
         'content-type': 'application/json', accept: 'text/event-stream',
         originator: 'kite', 'user-agent': 'kite-harness/0.1',
-        session_id: this.options.sessionId,
+        session_id: this.options.threadId,
       },
       body: JSON.stringify({
         model: this.options.model, instructions: request.instructions, input,
         tools: request.tools.map((tool) => ({ type: 'function', ...tool, strict: false })),
-        tool_choice: 'auto', parallel_tool_calls: true, store: false, stream: true,
+        tool_choice: request.allowedTools === undefined || request.allowedTools.length === request.tools.length ? 'auto'
+          : request.allowedTools.length === 0 ? 'none' : { type: 'allowed_tools', mode: 'auto',
+            tools: request.allowedTools.map((name) => ({ type: 'function', name })) },
+        parallel_tool_calls: true, store: false, stream: true,
         include: ['reasoning.encrypted_content'],
         reasoning: { effort: this.options.reasoning ?? 'medium', summary: 'auto' },
-        prompt_cache_key: this.options.sessionId,
+        prompt_cache_key: this.options.threadId,
       }),
     });
     if (!response.ok) {
@@ -131,10 +139,36 @@ export class ChatGPTModel implements Model {
       const event = asObject(value, '事件');
       if (completed) throw new Error('订阅响应完成后仍收到事件');
       switch (event.type) {
-        case 'response.output_text.delta':
-          if (typeof event.delta !== 'string') throw new Error('订阅文字增量无效');
-          yield { type: 'delta', text: event.delta, ...(typeof event.item_id === 'string' ? { itemId: event.item_id } : {}) };
+        case 'response.output_item.added': {
+          const raw = asObject(event.item, '输出条目');
+          const kind = raw.type === 'reasoning' ? 'thinking' : raw.type === 'function_call' ? 'tool_use'
+            : raw.type === 'message' ? 'text' : undefined;
+          if (!kind) break;
+          const itemId = text(raw.id, 'item id');
+          yield { type: 'item.started', itemId, kind,
+            ...(kind === 'tool_use' ? { callId: text(raw.call_id, 'call_id'), name: text(raw.name, '工具名') } : {}) };
+          if (kind === 'tool_use' && typeof raw.arguments === 'string' && raw.arguments) {
+            yield { type: 'delta', itemId, field: 'arguments', text: raw.arguments, replace: true };
+          }
           break;
+        }
+        case 'response.output_text.delta': case 'response.output_text.done':
+        case 'response.reasoning_summary_text.delta': case 'response.reasoning_summary_text.done':
+        case 'response.function_call_arguments.delta': case 'response.function_call_arguments.done': {
+          const replace = event.type.endsWith('.done');
+          const field = event.type.includes('function_call_arguments') ? 'arguments'
+            : event.type.includes('reasoning_summary') ? 'thinking' : 'text';
+          const value = replace ? event[field === 'arguments' ? 'arguments' : 'text'] : event.delta;
+          if (typeof value !== 'string') throw new Error('订阅内容增量无效');
+          const part = field === 'thinking' ? event.summary_index : event.content_index;
+          if (part !== undefined && (typeof part !== 'number' || !Number.isSafeInteger(part) || part < 0)) {
+            throw new Error('订阅内容分段序号无效');
+          }
+          yield { type: 'delta', text: value, field,
+            ...(typeof event.item_id === 'string' ? { itemId: event.item_id } : {}),
+            ...(typeof part === 'number' ? { part } : {}), ...(replace ? { replace: true } : {}) };
+          break;
+        }
         case 'response.output_item.done': {
           const raw = asObject(event.item, '输出条目');
           const item = outputItem(raw, `${request.id}:${event.output_index ?? index}`);
@@ -163,7 +197,7 @@ export class ChatGPTModel implements Model {
           // 不回显未知服务端正文，避免诊断意外带入请求或凭据。
           throw new Error(`订阅模型返回 ${event.type}，本次请求未成功完成`);
         default:
-          // created、in_progress、参数增量及推理展示事件不改变执行状态。
+          // 其余生命周期事件不改变执行状态。
           break;
       }
     }

@@ -3,39 +3,57 @@ import SwiftUI
 /// 窗口标题栏里的信息。不放图标，靠标题区分是哪个窗口。
 struct PaneHeader {
     var title: String
-    /// 次要信息，比如会话所在的项目：Mac 上在标题右边，iPhone 上在标题下面。
+    /// 可选的次要信息：Mac 上在标题右边，iPhone 上在标题下面。
     var detail: String?
 }
 
 /// 窗口的共有布局：浮在上面的标题栏、内容、浮在下面的控制区。内容从标题栏和控制区后面滚过去，
 /// 标题栏后面垫系统的滚动边缘效果（软边），再叠一层从窗口顶边起的渐变遮罩；控制区后面垫一层到窗口底边的渐变遮罩。Mac 上是一张卡片的内容，iPhone 上铺满窗口；各个窗口只给标题栏的信息、内容、控制区里的东西，
-/// 和控制区底下的状态信息。
+/// 状态信息在 Mac 标题右侧，iPhone 底部安全区内。
 /// 控制区是一张液态玻璃卡片，左右留边，底下贴着 Home 条让出的安全区；底下没有安全区时（Mac 的卡片、iPhone 拉开抽屉）离窗口底边留一点，
 /// 打字时离键盘也留这么多。
-/// 状态信息只看不点，放在控制区底下的安全区里，iPhone 上小横条藏起来以后才显示（它只在进 App 时出来一下），打字时不显示。
 /// 控制区里的输入框拿 typing 绑定焦点。iPhone 上打字时点控制区以外的地方收起键盘；不打字时从控制区往上拖拉出 action 栏。
 /// iPhone 上标题栏左边有个按钮拉开侧边栏。
-struct PaneWindow<Content: View, Controls: View>: View {
+struct PaneWindow<Content: View, Controls: View, Status: View>: View {
     let header: PaneHeader
-    let status: Text?
     let content: Content
     let controls: (FocusState<Bool>.Binding) -> Controls
+    let status: Status
     @FocusState private var typing: Bool
     /// 窗口底下被 Home 条盖着的那一截，不含键盘。
     @Environment(\.homeIndicatorInset) private var homeInset
     @Environment(\.keyboardShown) private var keyboardShown
-    @Environment(\.homeIndicatorHidden) private var indicatorHidden
     @Environment(\.openSidebar) private var openSidebar
+    #if os(macOS)
+    @Environment(\.windowChrome) private var chrome
+    #endif
 
-    init(header: PaneHeader, status: Text? = nil, @ViewBuilder content: () -> Content,
-         @ViewBuilder controls: @escaping (_ typing: FocusState<Bool>.Binding) -> Controls) {
+    init(header: PaneHeader, @ViewBuilder content: () -> Content,
+         @ViewBuilder controls: @escaping (_ typing: FocusState<Bool>.Binding) -> Controls,
+         @ViewBuilder status: () -> Status = { EmptyView() }) {
         self.header = header
-        self.status = status
         self.content = content()
         self.controls = controls
+        self.status = status()
     }
 
     var body: some View {
+        #if os(macOS)
+        GeometryReader { geometry in
+            // 滚动区让开系统标题栏，额外留 1pt，避免贴边时加入主窗口共用的软边合成组。
+            // 顶栏减少同等占位并保持底部对齐，标题和正文起点仍在原处。
+            let topInset = max(0, chrome.top + 1 - geometry.frame(in: .global).minY)
+            paneContent(topInset: topInset)
+                .padding(.top, topInset)
+                // 几何值已跟随重排动画更新；再次插值会滞后，让滚动区短暂越界。
+                .animation(nil, value: topInset)
+        }
+        #else
+        paneContent(topInset: 0)
+        #endif
+    }
+
+    private func paneContent(topInset: CGFloat) -> some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // 加在控制区外面这一层，点控制区不算
@@ -51,12 +69,24 @@ struct PaneWindow<Content: View, Controls: View>: View {
                     .padding(.bottom, keyboardShown ? Metrics.controlMargin : max(Metrics.controlMargin - homeInset, 0))
                     .frame(maxWidth: .infinity)
                     .background { bottomFade }
-                    .overlay(alignment: .bottom) { statusLine }
+                    #if os(iOS)
+                    .overlay(alignment: .bottom) {
+                        if !keyboardShown && homeInset >= 20 {
+                            status
+                                .frame(maxWidth: .infinity)
+                                .frame(height: homeInset)
+                                .offset(y: homeInset)
+                        }
+                    }
+                    #endif
                     // 打字时在输入框里上下拖是选字、滚动，不拉 action 栏
                     .pullsDrawer(enabled: !typing)
             }
             .safeAreaBar(edge: .top, spacing: 0) {
-                HeaderBar(header: header, openSidebar: sidebarAction)
+                HeaderBar(header: header, status: status, openSidebar: sidebarAction)
+                    #if os(macOS)
+                    .frame(height: max(0, Metrics.header - topInset), alignment: .bottom)
+                    #endif
                     #if os(iOS)
                     .background { topFade }
                     #endif
@@ -105,36 +135,25 @@ struct PaneWindow<Content: View, Controls: View>: View {
             .allowsHitTesting(false)
     }
 
-    /// 状态信息：挪到控制区下面，在 Home 条那一截里垂直居中。那一截放不下一行字（拉开抽屉）时不显示。
-    @ViewBuilder
-    private var statusLine: some View {
-        if let status {
-            let shown = indicatorHidden && !typing && !keyboardShown && homeInset >= Metrics.statusMinHeight
-            status
-                .font(Theme.status)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .padding(.horizontal, Metrics.controlMargin)
-                .frame(height: homeInset)
-                .offset(y: homeInset)
-                .opacity(shown ? 1 : 0)
-                .animation(.easeInOut(duration: 0.25), value: shown)
-                .allowsHitTesting(false)
-        }
-    }
 }
 
 /// 标题栏。Mac 上标题、次要信息排成一行靠左，固定高度垂直居中；卡片的拖动把手由卡片自己叠在上面。
 /// iPhone 上居中，次要信息在标题下面，左边是拉开侧边栏的按钮；状态栏的安全区底下本来空着一截，所以上边不留、下边留一点。
-private struct HeaderBar: View {
+private struct HeaderBar<Status: View>: View {
     let header: PaneHeader
+    let status: Status
+    @Environment(\.paneHeaderTrailingInset) private var trailingInset
     /// iPhone 上拉开侧边栏，Mac 上不用。
     let openSidebar: (@MainActor () -> Void)?
 
     var body: some View {
         #if os(macOS)
-        HeaderLine(header: header)
+        HStack(spacing: 8) {
+            HeaderLine(header: header)
+            status
+        }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.trailing, trailingInset)
             .padding(.horizontal, 14)
             .frame(height: Metrics.header)
         #else
@@ -150,7 +169,6 @@ private struct HeaderBar: View {
             .frame(maxWidth: .infinity)
             // 标题只是显示，点它落到下面的内容上：打字时点这里也收起键盘
             .allowsHitTesting(false)
-            // 右边垫一个一样宽的空位，标题才在窗口正中
             sidebarButton.hidden()
         }
         .padding(.horizontal, 14)
@@ -167,7 +185,7 @@ private struct HeaderBar: View {
                     .font(Theme.body)
                     .frame(width: Metrics.headerButton, height: Metrics.headerButton)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointingPlain)
             .glassEffect(.regular.interactive(), in: .circle)
         }
     }
@@ -191,26 +209,33 @@ struct HeaderLine: View {
 }
 #endif
 
-/// 窗口的内容，会话在环境里。会话窗口见 SessionPane，其余还是占位。
+/// 每个窗口按目标引用取得自己的线程或插件实例，不共享“当前线程”槽位。
 struct PaneBody: View {
     let pane: Pane
+    @Environment(WorkArea.self) private var area
 
     var body: some View {
-        if pane == .session {
-            SessionPane()
-        } else {
-            PlaceholderPane(pane: pane)
+        let renderer = area.view(in: pane)?.renderer
+        Group {
+            if let thread = area.thread(in: pane) {
+                ThreadPane().environment(thread).id(thread.id)
+            } else if let browser = area.files(in: pane), renderer == "files" {
+                FilePane(browser: browser).id(pane.id)
+            } else {
+                PlaceholderPane(appearance: area.appearance(of: pane))
+            }
         }
+        .modifier(ReferenceNavigation())
     }
 }
 
-/// 还没做的窗口：标题栏是窗口的名字，内容是占位色块，控制区是一张空卡片。
+/// 插件内容接入之前仍使用原来的窗口占位。
 private struct PlaceholderPane: View {
-    let pane: Pane
+    let appearance: WindowAppearance
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: pane.name)) {
-            RoundedRectangle(cornerRadius: 8).fill(pane.tint.opacity(0.12))
+        PaneWindow(header: PaneHeader(title: appearance.name)) {
+            RoundedRectangle(cornerRadius: 8).fill(appearance.tint.opacity(0.12))
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)
         } controls: { _ in
@@ -220,8 +245,8 @@ private struct PlaceholderPane: View {
 }
 
 extension EnvironmentValues {
-    /// iPhone 上小横条（Home 条）这会儿藏起来了，控制区底下那一截空出来放状态信息。PhoneLayout 给出，Mac 上总是 false。
-    @Entry var homeIndicatorHidden = false
+    /// Mac 标题栏出现窗口操作按钮时，标题为右侧按钮留出的宽度。
+    @Entry var paneHeaderTrailingInset: CGFloat = 0
     /// 窗口底下被 Home 条盖着的那一截，不含键盘。SwiftUI 的安全区读出来是合在一起的，分不出键盘，
     /// PhoneLayout 从 UIKit 读了给出；Mac 上是 0。
     @Entry var homeIndicatorInset: CGFloat = 0

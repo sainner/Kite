@@ -10,6 +10,11 @@
 - kited 里起子进程一律显式传 env。`Bun.spawn` 不传 env 时用的是进程启动时的环境，不是改过的 `process.env`，测试里换掉的隔离环境会失效。
 - Codex 开发环境的记忆、子 agent 和 skill 入口见 `docs/Codex-开发环境.md`。
 
+## 项目阶段
+
+- 目前项目处于在研期间，暂不部署。
+- 编写代码时无需考虑兼容性。
+
 ## 测试
 
 改完代码跑 `.kite/check`，退出码为 0 才算通过。测试一律交给 test-writer 子 agent 写，规则正文在 `.claude/agents/test-writer.md`，Codex 入口在 `.codex/agents/test-writer.toml`；当前 agent 工具没有自动发现这个定义时，显式读取规则并交给写测试的子 agent。自己接着写实现，写完一起跑检查。

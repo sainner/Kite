@@ -6,13 +6,13 @@
 import { existsSync } from 'node:fs';
 import { KiteError } from './errors.ts';
 import { commitAll, commitIdentity, gitTry, isAncestor, isDirty, revParse, unmergedPaths } from './git.ts';
-import type { Project } from './store.ts';
+import type { Checkout } from './model.ts';
 
 /**
  * 主线当前的 commit。Kite 代管提交的项目，先把主文件夹里没提交的改动存成一个版本：
  * 非技术用户会直接在主文件夹改文件，不存的话新会话看不到，合回主线时也可能被覆盖。
  */
-export async function mainline(p: Pick<Project, 'path' | 'commits'>): Promise<string> {
+export async function mainline(p: Pick<Checkout, 'path' | 'commits'>): Promise<string> {
   if (p.commits === 'kite' && (await isDirty(p.path))) await commitAll(p.path, ['-m', 'Kite：保存主文件夹里的改动']);
   const head = await revParse(p.path, 'HEAD');
   if (!head) throw new KiteError(`主文件夹没有可用的提交：${p.path}`, 409);
@@ -25,7 +25,7 @@ export type MergeBack =
   | { status: 'conflict'; files: string[]; fresh: boolean };
 
 /** 把会话工作树的全部改动合回主线。message 用作会话里未提交改动的提交说明。 */
-export async function mergeBack(p: Pick<Project, 'path' | 'commits'>, worktree: string, message: string): Promise<MergeBack> {
+export async function mergeBack(p: Pick<Checkout, 'path' | 'commits'>, worktree: string, message: string): Promise<MergeBack> {
   const merging = await revParse(worktree, 'MERGE_HEAD');
   if (merging) {
     const files = await unmergedPaths(worktree);

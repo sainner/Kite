@@ -1,14 +1,15 @@
 /**
- * 经 HTTP 驱动本进程里的 kited，会话起真实的 Claude Code，模型换成假端点：D1、D7，以及会话的 check 工具。
+ * 经 HTTP 驱动本进程里的 kited，会话起真实的 Claude Code，模型换成假端点：D1，以及会话的 check 工具。
  */
 import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { chmodSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { startCli } from '../cli.ts';
 import {
-  after, api, createSession, type Kited, listSnapshots, mark, registerProject, sendMessage, startKited, waitRunner,
+  after, api, createWorkspace, type Kited, listSnapshots, mark, registerCheckout, startKited, waitRunner,
 } from '../harness.ts';
-import { commitAll, git, gitOk, newRepo, read, transcript, until, writeFiles } from '../util.ts';
+import { commitAll, git, gitOk, newRepo, writeFiles } from '../util.ts';
 
 setDefaultTimeout(20_000);
 
@@ -24,7 +25,7 @@ const toolResult = (l: { body: any }, id: string) => (l.body.messages as any[])
   .flatMap((x) => (Array.isArray(x.content) ? x.content : []))
   .find((c: any) => c.type === 'tool_result' && c.tool_use_id === id);
 
-test('一条完整的会话：第一条消息到达 agent，「会话开始」是最早的快照，一批并行工具调用一枚快照，回合结束关闭，再发消息续接同一个原生会话，带 force 归档后工作树和分支删掉、快照留下、不能再发消息；项目里有 .kite/check 时 agent 常驻一个名为 check 的工具，调用它（带 all）跑检查，结果发成 check 事件、输出回到模型', async () => {
+test('一条完整的会话：第一条消息到达 agent，「工作区开始」是最早的快照，一批并行工具调用一枚快照，回合结束关闭，再发消息续接同一个原生会话，带 force 归档后工作树和分支删掉、快照留下、不能再发消息；项目里有 .kite/check 时 agent 常驻一个名为 check 的工具，调用它（带 all）跑检查，结果发成 check 事件、输出回到模型', async () => {
   // 地址不是官方的时候上游默认不开工具搜索，所有工具都常驻；打开它，「check 常驻、不经 ToolSearch」才验得出来
   process.env.ENABLE_TOOL_SEARCH = 'true';
   k = startKited();
@@ -38,11 +39,11 @@ test('一条完整的会话：第一条消息到达 agent，「会话开始」�
   });
   chmodSync(join(repo, '.kite/check'), 0o755);
   const head = commitAll(repo, '加检查命令');
-  const p = await registerProject(kk, repo);
+  const p = await registerCheckout(kk, repo);
 
   const a = token('标记D1A');
   const firstLine = `并行写两个文件 ${a}`;
-  const s = await createSession(kk, p.id, `${firstLine}\nPAR echo a > p1.txt ;; echo b > p2.txt`);
+  const s = await createWorkspace(kk, p.checkout.id, `${firstLine}\nPAR echo a > p1.txt ;; echo b > p2.txt`);
   const req1 = await api.waitRequest((l) => l.main && l.lastUserText.includes(a));
   expect(req1.toolUseIds).toHaveLength(2);
   /*
@@ -58,8 +59,8 @@ test('一条完整的会话：第一条消息到达 agent，「会话开始」�
   expect(checkTool.defer_loading).toBeFalsy();
   await waitRunner(kk, s.id, 'closed');
 
-  const snaps = await listSnapshots(kk, s.id);
-  expect(snaps.at(-1)!.label).toBe('会话开始');
+  const snaps = await listSnapshots(kk, s.workspace.id);
+  expect(snaps.at(-1)!.label).toBe('工作区开始');
   const batch = snaps.filter((x) => x.label === firstLine);
   expect(batch).toHaveLength(1);
   expect([...batch[0]!.toolUseIds].sort()).toEqual([...req1.toolUseIds].sort());
@@ -69,78 +70,34 @@ test('一条完整的会话：第一条消息到达 agent，「会话开始」�
   // 再发一条：进程已关闭，续接同一个原生会话，历史还在；这一回合 agent 调 check
   const m = mark(kk);
   const b = token('标记D1B');
-  await sendMessage(kk, s.id, `第二条 ${b}\nCALL check {"all":true}`);
-  const req2 = await api.waitRequest((l) => l.main && l.lastUserText.includes(b));
-  expect(history(req2)).toContain(a);
-  expect(req2.toolUseIds).toHaveLength(1);
-  const callId = req2.toolUseIds[0]!;
-  const back = await api.waitRequest((l) => l.main && !!toolResult(l, callId));
-  const result = toolResult(back, callId);
-  expect(JSON.stringify(result.content)).toContain(`${out} args=[--all]`);
-  expect(result.is_error).toBeFalsy();
-  const checked = await kk.waitEvent((e) => e.session === s.id && e.type === 'check' && after(kk, m)(e));
-  expect(checked.type === 'check' && checked.result).toMatchObject({ ok: true, code: 0, all: true, base: head });
-  const init = await kk.waitEvent((e) => e.session === s.id && e.type === 'sdk' && e.message.type === 'system' && e.message.subtype === 'init' && after(kk, m)(e));
-  expect(init.type === 'sdk' && init.message.session_id).toBe(s.nativeId);
-  await waitRunner(kk, s.id, 'closed', m);
+  const sending = startCli(kk.url, 'send', s.id, `第二条 ${b}\nCALL check {"all":true}`);
+  try {
+    const req2 = await api.waitRequest((l) => l.main && l.lastUserText.includes(b));
+    expect(history(req2)).toContain(a);
+    expect(req2.toolUseIds).toHaveLength(1);
+    const callId = req2.toolUseIds[0]!;
+    const back = await api.waitRequest((l) => l.main && !!toolResult(l, callId));
+    const result = toolResult(back, callId);
+    expect(JSON.stringify(result.content)).toContain(`${out} args=[--all]`);
+    expect(result.is_error).toBeFalsy();
+    const checked = await kk.waitEvent((e) => e.type === 'check' && e.threadId === s.id && after(kk, m)(e));
+    expect(checked.type === 'check' && checked.result).toMatchObject({ ok: true, code: 0, all: true, base: head });
+    const init = await kk.waitEvent((e) => e.type === 'sdk' && e.threadId === s.id && e.message.type === 'system' && e.message.subtype === 'init' && after(kk, m)(e));
+    expect(init.type === 'sdk' && init.message.session_id).toBe(s.nativeId);
+    await waitRunner(kk, s.id, 'closed', m);
+    expect(await sending.finished()).toMatchObject({ code: 0, stderr: '' });
+  } finally {
+    await sending.stop();
+  }
 
   // 归档：有没合回的改动，带 force
-  const archived = await kk.call('POST', `/sessions/${s.id}/archive`, { force: true });
+  const archived = await kk.call('POST', `/workspaces/${s.workspace.id}/archive`, { force: true });
   expect(archived.status).toBe(200);
-  expect(existsSync(s.worktree)).toBe(false);
-  expect(gitOk(repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${s.branch}`)).toBe(false);
-  expect(gitOk(repo, 'rev-parse', '--verify', '--quiet', `refs/kite/snapshots/${s.id}`)).toBe(true);
-  const kept = (await listSnapshots(kk, s.id)).map((x) => x.commit);
+  expect(existsSync(s.workspace.cwd)).toBe(false);
+  expect(gitOk(repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${s.workspace.branch}`)).toBe(false);
+  expect(gitOk(repo, 'rev-parse', '--verify', '--quiet', `refs/kite/snapshots/${s.workspace.id}`)).toBe(true);
+  const kept = (await listSnapshots(kk, s.workspace.id)).map((x) => x.commit);
   expect(kept).toEqual(expect.arrayContaining(snaps.map((x) => x.commit)));
-  const late = await kk.call('POST', `/sessions/${s.id}/messages`, { text: '还在吗' });
+  const late = await kk.call('POST', `/threads/${s.id}/messages`, { text: '还在吗' });
   expect(late.status).toBe(409);
-});
-
-/** 会话记录里 type 为 user 的条目和它的文本。 */
-function userEntries(nativeId: string): Array<{ entry: any; text: string }> {
-  return transcript(nativeId).filter((e) => e.type === 'user').map((entry) => {
-    const c = entry.message?.content;
-    const text = typeof c === 'string' ? c : Array.isArray(c) ? c.filter((x: any) => x.type === 'text').map((x: any) => x.text).join('\n') : '';
-    return { entry, text };
-  });
-}
-
-test('采纳冲突：返回冲突文件并把说明交给 agent，这一回合结束后自动重试、合回会话一侧；会话记录里人发的消息带 origin human，冲突说明不带', async () => {
-  k = startKited();
-  const kk = k;
-  const repo = newRepo(kk.root, 'proj', { 'c.txt': 'base\n' });
-  const p = await registerProject(kk, repo);
-  const h = token('标记D7');
-  // 第一回合只回显、不调工具；会话一侧的改动由测试直接写进会话工作树，采纳时 kited 先把工作树里未提交的改动提交到会话分支，效果和 agent 写的一样
-  const s = await createSession(kk, p.id, `改一下 c.txt ${h}`);
-  await waitRunner(kk, s.id, 'closed');
-  writeFiles(s.worktree, { 'c.txt': 'session\n' });
-
-  writeFiles(repo, { 'c.txt': 'main\n' });
-  const mainCommit = commitAll(repo, '主线改了 c');
-  const m = mark(kk);
-  const sent = Date.now();
-  const r = await kk.call('POST', `/sessions/${s.id}/adopt`);
-  expect(r.status).toBe(200);
-  expect(r.body.status).toBe('conflict');
-  expect(r.body.files).toEqual(['c.txt']);
-  expect(git(repo, 'rev-parse', 'HEAD')).toBe(mainCommit);
-
-  await api.waitRequest((l) => l.main && l.at >= sent && l.lastUserText.includes('冲突'));
-  const ev = await kk.waitEvent((e) => e.session === s.id && e.type === 'adopt' && e.result.status === 'adopted' && after(kk, m)(e));
-  expect(ev.type === 'adopt' && ev.result.status === 'adopted' && ev.result.commit).toBe(git(repo, 'rev-parse', 'HEAD'));
-  expect(gitOk(repo, 'merge-base', '--is-ancestor', mainCommit, 'HEAD')).toBe(true);
-  expect(read(join(repo, 'c.txt'))).toBe('session\n');
-  expect(git(repo, 'status', '--porcelain')).toBe('');
-
-  const entries = await until(() => {
-    const all = userEntries(s.nativeId);
-    return all.some((u) => u.text.includes('冲突')) && all;
-  }, '冲突说明写进会话记录');
-  const human = entries.filter((u) => u.text.includes(h));
-  const note = entries.filter((u) => u.text.includes('冲突'));
-  expect(human.length).toBeGreaterThan(0);
-  expect(note.length).toBeGreaterThan(0);
-  for (const u of human) expect(u.entry.origin).toEqual({ kind: 'human' });
-  for (const u of note) expect(u.entry.origin).toBeUndefined();
 });

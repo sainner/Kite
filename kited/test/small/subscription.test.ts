@@ -3,10 +3,13 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync
 import { join } from 'node:path';
 import { readSubscriptionCredentials } from '../../src/harness/auth.ts';
 import { ChatGPTModel } from '../../src/harness/chatgpt.ts';
-import { restoreContext } from '../../src/harness/context/assembler.ts';
+import { assembleContext, restoreContext } from '../../src/harness/context/assembler.ts';
+import { contextUpdateContext } from '../../src/harness/context/notifications.ts';
+import { projectContext } from '../../src/harness/context/project.ts';
+import type { ContextSource } from '../../src/harness/context/types.ts';
 import { localTools } from '../../src/harness/local-tools.ts';
-import { openSessionHost } from '../../src/harness/session-host.ts';
-import type { Json, JsonObject, ModelEvent, ModelRequest, Tool, ToolResult } from '../../src/harness/types.ts';
+import { openThreadHost } from '../../src/harness/thread-host.ts';
+import type { Json, JsonObject, ModelEvent, ModelRequest, ThreadNotification, Tool, ToolResult } from '../../src/harness/types.ts';
 import {
   aborted, deferred, diskRecords, input, item, ManualModel, Seen, success, tool, useHarness,
 } from '../harness-loop.ts';
@@ -48,10 +51,11 @@ async function collect(model: ChatGPTModel, signal = new AbortController().signa
   return values;
 }
 
-async function execute(tools: Tool[], name: string, args: Json, cwd: string, signal = new AbortController().signal): Promise<ToolResult> {
+async function execute(tools: Tool[], name: string, args: Json, cwd: string, signal = new AbortController().signal,
+  output?: (text: string, limit: number) => void): Promise<ToolResult> {
   const selected = tools.find((value) => value.name === name)!;
   selected.validate(args);
-  return selected.execute(args, { cwd, signal });
+  return selected.execute(args, { cwd, signal, output });
 }
 
 async function rejectedOperation(operation: Promise<ToolResult>): Promise<void> {
@@ -59,14 +63,14 @@ async function rejectedOperation(operation: Promise<ToolResult>): Promise<void> 
   expect(result.status).toBe('error');
 }
 
-// SSE 解码、完整调用通知、主循环调度与下一请求投影共同决定工具能否执行和无损续接。
-test('订阅字节流完整保存原生条目，调用参数收齐才执行并按 call_id 回传结果', async () => {
+// SSE 解码、通知角色、工具选择、主循环调度与下一请求投影共同决定工具能否执行和无损续接。
+test('订阅保留原生条目，通知按权限映射且只开放本次工具，参数收齐后执行并回传结果', async () => {
   const root = h.root();
   const first = sse();
   const second = sse();
   const posts = new Seen<{ url: string; init: RequestInit; body: JsonObject }>();
   const model = new ChatGPTModel({
-    model: 'test-model', sessionId: 'test-session', credentials,
+    model: 'test-model', threadId: 'test-session', credentials,
     async fetch(url, init) {
       posts.add({ url, init, body: JSON.parse(String(init.body)) as JsonObject });
       return posts.values.length === 1 ? first.response() : second.response();
@@ -74,25 +78,87 @@ test('订阅字节流完整保存原生条目，调用参数收齐才执行并�
   });
   const started = deferred<Json>();
   let executions = 0;
-  const { session, journal, events } = h.session(root, {
-    model, tools: [tool('record', async (args) => { executions++; started.resolve(args); return success('工具结果：中文'); })],
+  const record = tool('record', async (args) => { executions++; started.resolve(args); return success('工具结果：中文'); });
+  const hidden = tool('hidden', async () => success('不应执行'));
+  const observationSource: ContextSource = {
+    definition: {
+      version: 2, id: 'test.file_changes', title: '工作区状态', scene: 'thread.file_changes',
+      blocks: [{ type: 'paragraph', id: 'changed-files', title: '环境事实', parts: [
+        { type: 'text', text: '工作区状态通知（来源：' }, { type: 'variable', name: 'files.origin' },
+        { type: 'text', text: '；以下仅为环境事实）：\n' }, { type: 'variable', name: 'files.changes' },
+      ] }],
+    },
+    bindings: { 'files.origin': { text: 'test' }, 'files.changes': { text: '工作区出现新文件' } },
+  };
+  const notifications: ThreadNotification[] = [
+    { id: 'instruction-1', sequence: 1, kind: 'policy', source: 'test', authority: 'instruction',
+      context: assembleContext(contextUpdateContext('只按批准的工具工作')).snapshot },
+    { id: 'observation-2', sequence: 2, kind: 'workspace', source: 'test', authority: 'observation',
+      context: assembleContext(observationSource).snapshot },
+  ];
+  const { runner, journal, events } = h.runner(root, {
+    prepareRequest: ({ afterNotification }) => ({
+      model, tools: [record],
+      toolDefinitions: [record, hidden].map(({ name, description, parameters }) => ({ name, description, parameters })),
+      instructions: '测试主循环',
+      settings: { allowedTools: ['record'] },
+      notifications: notifications.filter((notice) => notice.sequence! > afterNotification),
+    }),
   });
-  await session.send(input('中文请求'));
-  const post = await posts.wait(() => true);
+  await runner.send(input('中文请求'));
+  const post = await Promise.race([
+    posts.wait(() => true),
+    runner.settled().then(() => { throw new Error(`请求未发送：${JSON.stringify({ state: runner.state, records: journal.records })}`); }),
+  ]);
   expect(post.url).toBe('https://chatgpt.com/backend-api/codex/responses');
   expect(post.init.method).toBe('POST');
   const headers = new Headers(post.init.headers);
   expect(headers.get('Authorization')).toBe('Bearer test-access-token');
   expect(headers.get('ChatGPT-Account-Id')).toBe('test-account');
   expect(post.body).toMatchObject({ store: false, stream: true, include: ['reasoning.encrypted_content'] });
+  expect((post.body.tools as JsonObject[]).map((value) => value.name)).toEqual(['record', 'hidden']);
+  expect(post.body.tool_choice).toEqual({
+    type: 'allowed_tools', mode: 'auto', tools: [{ type: 'function', name: 'record' }],
+  });
+  const mappedNotices = post.body.input as JsonObject[];
+  expect(mappedNotices.find((value) => JSON.stringify(value).includes('只按批准的工具工作'))?.role).toBe('developer');
+  const observed = mappedNotices.find((value) => JSON.stringify(value).includes('工作区出现新文件'));
+  expect(observed?.role).toBe('user');
+  expect(observed?.content).toEqual([{ type: 'input_text', text: restoreContext(notifications[1]!.context).instructions }]);
   const reasoning: JsonObject = { id: 'reasoning-1', type: 'reasoning', encrypted_content: '不透明串', extra: { bytes: [0, 255] } };
+  const answer: JsonObject = { id: 'answer-stream', type: 'message', role: 'assistant', content: [
+    { type: 'output_text', text: '正文一' }, { type: 'output_text', text: '第二段' },
+  ] };
   const call: JsonObject = {
     id: 'item-id', type: 'function_call', call_id: 'external-call-id', name: 'record',
     arguments: JSON.stringify({ text: '中文参数' }), future_field: ['照原样保留'],
   };
+  // 上游的多段正文、摘要和参数事件交错到达；done 用完整分段校正，不能再次追加全文。
+  first.event({ type: 'response.output_item.added', item: { id: 'reasoning-1', type: 'reasoning', summary: [] } });
+  first.event({ type: 'response.reasoning_summary_part.added', item_id: 'reasoning-1', summary_index: 0,
+    part: { type: 'summary_text', text: '' } });
+  first.event({ type: 'response.reasoning_summary_text.delta', item_id: 'reasoning-1', summary_index: 0, delta: '思考' });
+  first.event({ type: 'response.output_item.added', item: { id: answer.id, type: 'message', role: 'assistant', content: [] } });
+  first.event({ type: 'response.output_text.delta', item_id: answer.id, content_index: 0, delta: '正' });
+  first.event({ type: 'response.output_text.delta', item_id: answer.id, content_index: 0, delta: '文' });
+  first.event({ type: 'response.output_text.done', item_id: answer.id, content_index: 0, text: '正文一' });
+  first.event({ type: 'response.output_text.delta', item_id: answer.id, content_index: 1, delta: '第二' });
+  first.event({ type: 'response.reasoning_summary_text.done', item_id: 'reasoning-1', summary_index: 0, text: '思考完成' });
+  first.event({ type: 'response.output_text.done', item_id: answer.id, content_index: 1, text: '第二段' });
+  await events.wait((event) => event.type === 'delta' && event.itemId === answer.id
+    && event.field === 'text' && event.part === 1 && event.replace === true && event.text === '第二段');
+  expect(events.values.filter((event) => event.type === 'item.started').map((event) => event.itemId)).toEqual(['reasoning-1', 'answer-stream']);
+  expect(events.values.some((event) => event.type === 'delta' && event.itemId === 'reasoning-1'
+    && event.field === 'thinking' && event.replace === true && event.text === '思考完成')).toBe(true);
   first.event({ type: 'response.output_item.done', item: reasoning });
+  first.event({ type: 'response.output_item.done', item: answer });
   first.event({ type: 'response.output_item.added', item: { ...call, arguments: '' } });
   first.event({ type: 'response.function_call_arguments.delta', item_id: call.id, delta: '{"text":"中' });
+  await events.wait((event) => event.type === 'delta' && event.itemId === call.id && event.field === 'arguments'
+    && event.text === '{"text":"中');
+  expect(executions).toBe(0);
+  first.event({ type: 'response.function_call_arguments.delta', item_id: call.id, delta: '文参数"}' });
+  first.event({ type: 'response.function_call_arguments.done', item_id: call.id, arguments: call.arguments });
   first.event({ type: 'response.output_text.delta', delta: '中文增量' });
   await events.wait((event) => event.type === 'delta' && event.text === '中文增量');
   expect(executions).toBe(0);
@@ -100,20 +166,25 @@ test('订阅字节流完整保存原生条目，调用参数收齐才执行并�
   expect(await started.promise).toEqual({ text: '中文参数' });
   expect(journal.records.some((record) => record.type === 'request.completed')).toBe(false);
   const fallback: JsonObject = { id: 'only-completed', type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '完成', annotations: [] }], future: '保留' };
-  first.event({ type: 'response.completed', response: { id: 'response-1', status: 'completed', output: [reasoning, call, fallback] } });
+  first.event({ type: 'response.completed', response: { id: 'response-1', status: 'completed', output: [reasoning, answer, call, fallback] } });
   first.close();
   const next = await posts.wait((value) => value !== post);
+  expect(next.body.tools).toEqual(post.body.tools);
+  expect(next.body.tool_choice).toEqual(post.body.tool_choice);
+  expect((next.body.input as JsonObject[]).filter((value) => JSON.stringify(value).includes('只按批准的工具工作'))).toHaveLength(1);
+  expect((next.body.input as JsonObject[]).filter((value) => JSON.stringify(value).includes('工作区出现新文件'))).toHaveLength(1);
   expect(next.body.input).toContainEqual(reasoning);
+  expect(next.body.input).toContainEqual(answer);
   expect(next.body.input).toContainEqual(call);
   expect(next.body.input).toContainEqual(fallback);
   expect(next.body.input).toContainEqual({ type: 'function_call_output', call_id: 'external-call-id', output: '工具结果：中文' });
   const outputItems = journal.records.filter((record) => record.type === 'model.item');
-  expect(outputItems.map((record) => record.item.raw)).toEqual([reasoning, call, fallback]);
+  expect(outputItems.map((record) => record.item.raw)).toEqual([reasoning, answer, call, fallback]);
   expect(executions).toBe(1);
   second.event({ type: 'response.completed', response: { id: 'response-2', status: 'completed', output: [] } });
   second.close();
-  await session.settled();
-  expect(session.state.lastOutcome).toEqual({ kind: 'completed' });
+  await runner.settled();
+  expect(runner.state.lastOutcome).toEqual({ kind: 'completed' });
 }, 1000);
 
 // ReadableStream 的 EOF、cancel 和 AbortSignal 是运行时交接：已有文字不能掩盖失败，也不能重试副作用。
@@ -130,7 +201,7 @@ test('订阅失败与提前断流不会完成或重试，取消会释放正在�
     const stream = sse();
     let requests = 0;
     const model = new ChatGPTModel({
-      model: 'test', sessionId: 'failure', credentials,
+      model: 'test', threadId: 'failure', credentials,
       async fetch() { requests++; return stream.response(); },
     });
     stream.event({ type: 'response.output_text.delta', delta: '有文字也没成功' });
@@ -144,7 +215,7 @@ test('订阅失败与提前断流不会完成或重试，取消会释放正在�
   const fetching = deferred();
   let requests = 0;
   const model = new ChatGPTModel({
-    model: 'test', sessionId: 'cancel', credentials,
+    model: 'test', threadId: 'cancel', credentials,
     async fetch() { requests++; fetching.resolve(); return stream.response(); },
   });
   const collecting = collect(model, controller.signal);
@@ -229,6 +300,7 @@ test('命令使用显式环境并保存完整日志，取消等整组退出而�
   const root = h.root();
   const logDir = join(root, 'logs');
   const processes = new Seen<{ pid: number; active: boolean }>();
+  const output = new Seen<{ text: string; limit: number }>();
   const tools = localTools({
     cwd: root, logDir, env: { ...ENV(), KITE_SUBSCRIPTION_TEST_ENV: '仅由显式env传入' }, outputLimit: 64,
     onProcess(pid, active) { processes.add({ pid, active }); },
@@ -236,7 +308,8 @@ test('命令使用显式环境并保存完整日志，取消等整组退出而�
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
   const longOutput = '完整输出'.repeat(120);
   const command = `${quote(process.execPath)} -e ${quote('process.stdout.write(process.env.KITE_SUBSCRIPTION_TEST_ENV + "\\n" + ' + JSON.stringify(longOutput) + '); process.stderr.write("错误流也保存");')}`;
-  const result = await execute(tools, 'shell', { command }, root);
+  const observe = (text: string, limit: number) => output.add({ text, limit });
+  const result = await execute(tools, 'shell', { description: '检查命令环境和日志', command }, root, undefined, observe);
   expect(result.status).toBe('success');
   const logs = readdirSync(logDir).map((name) => join(logDir, name));
   const contents = logs.map((path) => readFileSync(path, 'utf8')).join('');
@@ -245,20 +318,50 @@ test('命令使用显式环境并保存完整日志，取消等整组退出而�
   expect(contents).toContain('错误流也保存');
   expect(result.output).not.toContain(longOutput);
   expect(logs.some((path) => result.output.includes(path))).toBe(true);
+  expect(output.values.map((part) => part.text).join('')).toContain(longOutput);
+  expect(output.values.every((part) => part.limit === 64)).toBe(true);
   expect(processes.values.filter((value) => value.active)).toHaveLength(1);
   expect(processes.values.at(-1)?.active).toBe(false);
+
+  // shell 的 UTF-8 解码、日志落盘和输出回调跨进程交接；第一段到达时命令仍在运行。
+  const fixture = join(root, 'stream-output.ts');
+  writeFileSync(fixture, [
+    'import { writeSync } from "node:fs";',
+    'const hold = setInterval(() => {}, 1000);',
+    'const write = (bytes: Uint8Array) => {',
+    '  let offset = 0;',
+    '  while (offset < bytes.length) offset += writeSync(1, bytes, offset, bytes.length - offset);',
+    '};',
+    'process.on("SIGUSR1", () => {',
+    '  write(Buffer.concat([Buffer.from("中文").subarray(1), Buffer.from("完成")]));',
+    '  clearInterval(hold);',
+    '});',
+    'write(Buffer.concat([Buffer.from(`PID:${process.pid}\\n先到\\n`), Buffer.from("中文").subarray(0, 1)]));',
+  ].join('\n'));
+  const outputStart = output.values.length;
+  let finished = false;
+  const streaming = execute(tools, 'shell', { description: '检查流式中文输出',
+    command: `exec ${quote(process.execPath)} ${quote(fixture)}` }, root, undefined, observe).finally(() => { finished = true; });
+  await output.wait((part) => output.values.indexOf(part) >= outputStart && part.text.includes('先到'));
+  expect(finished).toBe(false);
+  expect(readdirSync(logDir).some((name) => readFileSync(join(logDir, name), 'utf8').includes('先到'))).toBe(true);
+  const fixturePid = /PID:(\d+)/.exec(output.values.slice(outputStart).map((part) => part.text).join(''));
+  expect(fixturePid).not.toBeNull();
+  process.kill(Number(fixturePid![1]), 'SIGUSR1');
+  expect((await streaming).status).toBe('success');
+  expect(output.values.slice(outputStart).map((part) => part.text).join('')).toContain('先到\n中文完成');
 
   const before = processes.values.length;
   const preCancelled = new AbortController();
   preCancelled.abort();
-  await rejectedOperation(execute(tools, 'shell', { command: 'touch forbidden-start' }, root, preCancelled.signal));
+  await rejectedOperation(execute(tools, 'shell', { description: '检查预先取消的命令', command: 'touch forbidden-start' }, root, preCancelled.signal));
   expect(existsSync(join(root, 'forbidden-start'))).toBe(false);
   expect(processes.values).toHaveLength(before);
 
   const marker = join(root, 'descendants.json');
-  const fixture = join(root, 'hold-processes.ts');
-  const childSource = 'process.on("SIGTERM", () => {}); Bun.serve({ port: 0, fetch() { return new Response("等待取消"); } }); console.log(process.pid);';
-  writeFileSync(fixture, [
+  const processFixture = join(root, 'hold-processes.ts');
+  const childSource = 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); console.log(process.pid);';
+  writeFileSync(processFixture, [
     'import { writeFileSync } from "node:fs";',
     'process.on("SIGTERM", () => {});',
     `const child = Bun.spawn([process.execPath, "-e", ${JSON.stringify(childSource)}], { env: process.env, stdout: "pipe", stderr: "ignore" });`,
@@ -272,7 +375,7 @@ test('命令使用显式环境并保存完整日志，取消等整组退出而�
   const controller = new AbortController();
   let pids: number[] = [];
   try {
-    const execution = execute(tools, 'shell', { command: `${quote(process.execPath)} ${quote(fixture)}` }, root, controller.signal);
+    const execution = execute(tools, 'shell', { description: '检查进程组取消', command: `${quote(process.execPath)} ${quote(processFixture)}` }, root, controller.signal);
     await ready.promise;
     const written = JSON.parse(readFileSync(marker, 'utf8')) as { parent: number; child: number };
     pids = [written.parent, written.child];
@@ -291,25 +394,31 @@ test('命令使用显式环境并保存完整日志，取消等整组退出而�
 }, 1000);
 
 // 磁盘独占锁、主循环取消与重新打开交接：旧请求的材料快照仍可读，新请求须重新读取磁盘。
-test('终端会话关闭等待执行停止，重开保留旧快照和历史并读取新项目材料', async () => {
+test('终端线程关闭等待执行停止，重开保留旧快照和历史并读取新项目材料', async () => {
   const root = h.root();
   const cwd = join(root, 'project');
-  const sessionDir = join(root, 'session');
+  const threadDir = join(root, 'thread');
   mkdirSync(join(cwd, '.kite', 'memory'), { recursive: true });
   writeFileSync(join(cwd, 'AGENTS.md'), '项目专属指令：保留这句话');
   writeFileSync(join(cwd, '.kite', 'memory', 'MEMORY.md'), '长期记忆：保留这条索引');
   const model = new ManualModel();
+  let currentModel = model;
   const started = deferred<AbortSignal>();
   const stopped = h.gate(success('停止前的结果'));
   const options = {
-    cwd, sessionDir, model, env: ENV(), modelConfig: { model: 'test', reasoning: 'high' },
-    tools: [tool('hold', async (_args, { signal }) => { started.resolve(signal); await aborted(signal); return stopped.promise; })],
+    cwd, threadDir, env: ENV(),
+    prepareRequest: () => ({
+      model: currentModel,
+      instructions: projectContext(cwd),
+      tools: [tool('hold', async (_args, { signal }) => { started.resolve(signal); await aborted(signal); return stopped.promise; })],
+      settings: { model: { model: 'test', reasoning: 'high' } },
+    }),
   };
-  const opened = await openSessionHost(options);
+  const opened = await openThreadHost(options);
   try {
-    await expect(openSessionHost(options)).rejects.toThrow();
-    const metadata = JSON.parse(readFileSync(join(sessionDir, 'metadata.json'), 'utf8'));
-    expect(metadata).toMatchObject({ cwd, modelConfig: options.modelConfig });
+    await expect(openThreadHost(options)).rejects.toThrow();
+    const metadata = JSON.parse(readFileSync(join(threadDir, 'metadata.json'), 'utf8'));
+    expect(metadata.cwd).toBe(cwd);
     await opened.runner.send(input('保留输入'));
     const first = await model.call(1);
     expect(first.request.instructions).toContain('项目专属指令：保留这句话');
@@ -320,10 +429,10 @@ test('终端会话关闭等待执行停止，重开保留旧快照和历史并�
     const closing = opened.close().then(() => { closed = true; });
     await aborted(signal);
     expect(closed).toBe(false);
-    await expect(openSessionHost(options)).rejects.toThrow();
+    await expect(openThreadHost(options)).rejects.toThrow();
     stopped.resolve(success('停止前的结果'));
     await closing;
-    const journalPath = join(sessionDir, readdirSync(sessionDir).find((name) => name.endsWith('.jsonl'))!);
+    const journalPath = join(threadDir, readdirSync(threadDir).find((name) => name.endsWith('.jsonl'))!);
     const oldSnapshot = diskRecords(journalPath).find((record) => record.type === 'context.prepared');
     expect(oldSnapshot?.type).toBe('context.prepared');
     if (oldSnapshot?.type !== 'context.prepared') throw new Error('缺少旧项目材料快照');
@@ -332,24 +441,32 @@ test('终端会话关闭等待执行停止，重开保留旧快照和历史并�
     writeFileSync(join(cwd, '.kite', 'memory', 'MEMORY.md'), '长期记忆：换成新索引');
     const elsewhere = join(root, 'elsewhere');
     mkdirSync(elsewhere);
-    await expect(openSessionHost({ ...options, cwd: elsewhere })).rejects.toThrow();
+    await expect(openThreadHost({ ...options, cwd: elsewhere })).rejects.toThrow();
     const nextModel = new ManualModel();
-    const reopened = await openSessionHost({ ...options, model: nextModel });
+    currentModel = nextModel;
+    const reopened = await openThreadHost(options);
     try {
       await reopened.runner.send(input('重开输入'));
       const next = await nextModel.call(1);
       expect(next.request.cwd).toBe(cwd);
-      expect(next.request.instructions).toContain('项目专属指令：换成新规则');
-      expect(next.request.instructions).toContain('长期记忆：换成新索引');
-      expect(next.request.instructions).not.toContain('项目专属指令：保留这句话');
+      expect(next.request.instructions).toBe(first.request.instructions);
+      const updates = next.request.history.filter((entry) => entry.type === 'notification');
+      expect(updates).toHaveLength(1);
+      expect(updates[0]!.text).toContain('项目专属指令：换成新规则');
+      expect(updates[0]!.text).toContain('长期记忆：换成新索引');
       const records = diskRecords(journalPath);
       const snapshots = records.filter((record) => record.type === 'context.prepared');
       const starts = records.filter((record) => record.type === 'request.started');
+      const delivered = starts[1]!.notifications?.[0];
+      if (!delivered) throw new Error('缺少已投递项目材料快照');
+      const { context, ...metadata } = delivered;
+      expect(updates[0]!.notification).toEqual(metadata);
+      expect(updates[0]!.text).toBe(restoreContext(context).instructions);
       expect(snapshots).toHaveLength(2);
       expect(starts[0]!.contextId).toBe(oldSnapshot.snapshot.id);
       expect(starts[1]!.contextId).toBe(snapshots[1]!.snapshot.id);
       expect(snapshots[0]!.snapshot).toEqual(oldSnapshot.snapshot);
-      expect(next.request.instructions).toBe(restoreContext(snapshots[1]!.snapshot).instructions);
+      expect(updates[0]!.text).toContain(restoreContext(snapshots[1]!.snapshot).instructions);
       expect(next.request.history).toContainEqual({ type: 'input', input: input('保留输入') });
       expect(next.request.history).toContainEqual({ type: 'output', item: item('held-call', 'hold') });
       expect(next.request.history).toContainEqual({ type: 'tool_result', callId: 'held-call', result: success('停止前的结果') });

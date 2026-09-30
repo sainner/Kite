@@ -1,13 +1,13 @@
 /**
  * 在本进程里起一个 kited（startDaemon），KITE_HOME 是临时目录；Claude Code 指向 setup.ts 起的假端点。
- * 另有 spawnKited：按路径起 kited 子进程，只给「kited 被 SIGKILL」那种测试用。
+ * 另有 spawnKited：按路径起 kited 子进程，供进程被杀和启动时环境隔离的测试使用。
  */
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../src/daemon.ts';
 import type { Envelope } from '../src/events.ts';
 import type { Model } from '../src/harness/types.ts';
-import type { Session } from '../src/store.ts';
+import type { Machine, Project, Thread, ThreadContext, WorkspaceModel } from '../src/model.ts';
 import { api } from './setup.ts';
 import { makeTemp } from './util.ts';
 
@@ -19,7 +19,7 @@ export interface Kited {
   home: string;
   url: string;
   daemon: Daemon;
-  /** 收到的事件（全部会话），按发生顺序。 */
+  /** 收到的内部事件，按发生顺序。 */
   events: Envelope[];
   call(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }>;
   /** 等满足条件的事件（已收到的也算）。 */
@@ -28,19 +28,31 @@ export interface Kited {
   stop(): Promise<void>;
 }
 
-export async function call(url: string, method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
+export async function machine(url: string): Promise<Machine> {
+  const response = await fetch(url + '/machine');
+  if (response.status !== 200) throw new Error(`读取工作机失败：${response.status}`);
+  return await response.json() as Machine;
+}
+
+export async function call(
+  url: string, method: string, path: string, body?: unknown, machineId?: string | Promise<string>,
+): Promise<{ status: number; body: any }> {
+  const headers: Record<string, string> = {};
+  if (path !== '/machine') headers['X-Kite-Machine'] = machineId === undefined ? (await machine(url)).id : await machineId;
+  if (body !== undefined) headers['content-type'] = 'application/json';
   const r = await fetch(url + path, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { status: r.status, body: await r.json() };
 }
 
-export function startKited(model?: (session: Session) => Model): Kited {
+export function startKited(model?: (thread: ThreadContext) => Model): Kited {
   const root = makeTemp('kited-');
   const home = join(root, 'kite');
   const daemon = startDaemon({ home, port: 0, model });
+  let machineId: Promise<string> | undefined;
   const events: Envelope[] = [];
   const waiters: Array<{ pred: (e: Envelope) => boolean; resolve: (e: Envelope) => void }> = [];
   const unsubscribe = daemon.kite.bus.subscribe(undefined, (e) => {
@@ -50,7 +62,7 @@ export function startKited(model?: (session: Session) => Model): Kited {
   return {
     root, home, daemon, events,
     url: daemon.url,
-    call: (method, path, body) => call(daemon.url, method, path, body),
+    call: (method, path, body) => call(daemon.url, method, path, body, machineId ??= machine(daemon.url).then((value) => value.id)),
     waitEvent(pred, timeoutMs = 10_000) {
       const hit = events.find(pred);
       if (hit) return Promise.resolve(hit);
@@ -71,26 +83,32 @@ export function startKited(model?: (session: Session) => Model): Kited {
 
 // ---- 接口的常用组合 ----
 
-export async function registerProject(k: Kited, path: string): Promise<any> {
-  const r = await k.call('POST', '/projects', { path });
+export async function registerCheckout(k: Kited, path: string, project?: Project): Promise<WorkspaceModel> {
+  const r = await k.call('POST', '/checkouts', { path, project });
   if (r.status !== 200) throw new Error(`登记 ${path} 失败：${r.status} ${JSON.stringify(r.body)}`);
-  return r.body;
+  return r.body as WorkspaceModel;
 }
 
-/** 新建会话，立即返回视图（准备过程看事件）。 */
-export async function createSession(k: Kited, project: string, prompt: string): Promise<any> {
-  const r = await k.call('POST', '/sessions', { project, prompt, runtime: 'claude' });
-  if (r.status !== 200) throw new Error(`建会话失败：${r.status} ${JSON.stringify(r.body)}`);
-  return r.body;
+/** 新建工作区及首线程；返回线程控制和运行时所需的完整上下文。 */
+export async function createWorkspace(
+  k: Kited, checkout: string, prompt: string, runtime: Thread['runtime'] = 'claude',
+): Promise<ThreadContext> {
+  const r = await k.call('POST', '/workspaces', { checkout, prompt, runtime });
+  if (r.status !== 200) throw new Error(`建工作区失败：${r.status} ${JSON.stringify(r.body)}`);
+  const thread = (r.body as WorkspaceModel).threads[0];
+  if (!thread) throw new Error('建工作区后没有首线程');
+  const view = await k.call('GET', `/threads/${thread.instanceId}`);
+  if (view.status !== 200) throw new Error(`取线程 ${thread.instanceId} 失败：${view.status} ${JSON.stringify(view.body)}`);
+  return view.body as ThreadContext;
 }
 
-export async function sendMessage(k: Kited, id: string, text: string): Promise<void> {
-  const r = await k.call('POST', `/sessions/${id}/messages`, { text });
+export async function sendThreadMessage(k: Kited, id: string, text: string): Promise<void> {
+  const r = await k.call('POST', `/threads/${id}/messages`, { text });
   if (r.status !== 200) throw new Error(`发消息失败：${r.status} ${JSON.stringify(r.body)}`);
 }
 
-export async function listSnapshots(k: Kited, id: string): Promise<Array<{ commit: string; at: number; label: string; toolUseIds: string[] }>> {
-  const r = await k.call('GET', `/sessions/${id}/snapshots`);
+export async function listSnapshots(k: Kited, workspaceId: string): Promise<Array<{ commit: string; at: number; label: string; toolUseIds: string[] }>> {
+  const r = await k.call('GET', `/workspaces/${workspaceId}/snapshots`);
   if (r.status !== 200) throw new Error(`取快照失败：${r.status} ${JSON.stringify(r.body)}`);
   return r.body;
 }
@@ -102,7 +120,7 @@ export const after = (k: Kited, since: number) => (e: Envelope) => k.events.inde
 /** 等 since 之后这个会话的 runner 变为 state。 */
 export function waitRunner(k: Kited, id: string, state: string, since = 0, timeoutMs?: number) {
   const isAfter = after(k, since);
-  return k.waitEvent((e) => e.session === id && e.type === 'runner' && e.state === state && isAfter(e), timeoutMs);
+  return k.waitEvent((e) => e.type === 'runner' && e.threadId === id && e.state === state && isAfter(e), timeoutMs);
 }
 
 // ---- kited 子进程 ----

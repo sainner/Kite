@@ -14,16 +14,14 @@ struct PhoneLayout: View {
     @Environment(AppModel.self) private var model
 
     @State private var open: Drawer?
-    /// 露出来的一侧：打开着、手指拖着或者正随时间走。动的进度每一帧都变，放在 PhoneWindow 里，只有窗口跟着重画。
+    /// 露出来的一侧：打开着、手指拖着或者正随时间走。动画进度由窗口的修饰器处理，不更新侧栏。
     @State private var shown: Drawer?
     /// 屏幕圆角，读到之前按 0 算：铺满时窗口的角本来就被屏幕圆角盖住。
     @State private var screenRadius: CGFloat = 0
     /// 页签和 action 栏合起来多高，按实际排出来的量。
     @State private var drawerHeight: CGFloat = 0
-    @State private var indicatorHidden = false
     /// Home 条让出的那一截，不含键盘，从 UIKit 读；读到之前按 SwiftUI 的算。
     @State private var homeInset: CGFloat?
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         GeometryReader { geo in
@@ -45,22 +43,24 @@ struct PhoneLayout: View {
                 }
                 .ignoresSafeArea()
                 // 会话列表，点一个就切过去并收起。一次只露出一侧，另一侧藏起来，免得窗口移开时从边上露出来
-                VStack(spacing: 4) {
-                    ForEach(model.listedSessions) { session in
-                        SessionRow(session: session, current: current == session.id, height: 44)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                model.selected = session.id
-                                open = nil
-                            }
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 4) {
+                        ForEach(model.listedWorkspaces) { workspace in
+                            WorkspaceRow(workspace: workspace, current: current == workspace.id, height: 44)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    model.selected = workspace.id
+                                    open = nil
+                                }
+                        }
                     }
+                    .padding(.top, Metrics.padding * 2)
+                    .padding(.leading, Metrics.padding + Metrics.sidebarLeading)
+                    .padding(.trailing, Metrics.gap)
                 }
-                .padding(.top, Metrics.padding * 2)
-                .padding(.leading, Metrics.padding + Metrics.sidebarLeading)
-                .padding(.trailing, Metrics.gap)
                 .frame(width: sidebarWidth)
                 .opacity(showing(.sidebar) ? 1 : 0)
-                // 拉出 action 栏时，它上面同时露出页签那一行
+                // 拉出 action 栏时，它上面同时露出折叠窗口那一行
                 VStack(alignment: .leading, spacing: Metrics.gap) {
                     tabBar.frame(height: Metrics.tabBar)
                     ActionArea()
@@ -76,29 +76,31 @@ struct PhoneLayout: View {
                             sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius)
             }
         }
-        // 让小横条藏起来，空出来的地方放控制区底下的状态信息。它只在进 App 时（打开、从后台回来）出来一下，
-        // 碰屏幕、滚动都不再出来。系统不告诉 App 它藏没藏：实测 App 画出第一帧时它已经藏了，这里进来后等 1 秒算它藏了
+        // 保留 Home 条自动隐藏；状态 chip 已移到控制区，不再推测系统何时隐藏它。
         .persistentSystemOverlays(.hidden)
-        .environment(\.homeIndicatorHidden, indicatorHidden)
-        .task(id: scenePhase) {
-            indicatorHidden = false
-            guard scenePhase == .active, (try? await Task.sleep(for: .seconds(1))) != nil else { return }
-            indicatorHidden = true
-        }
     }
 
-    /// 页签：当前会话窗口组里的各个窗口，点了切过去。iPhone 上一次只显示一个窗口，不做换位置。以后这一行还会放别的功能。
+    /// 其余窗口折叠在底部；点击后展开它，原来的窗口回到这一栏，始终只展开一个。
     @ViewBuilder
     private var tabBar: some View {
-        if let workspace = model.current?.workspace {
-            HStack(spacing: 8) {
-                ForEach(workspace.root.panes, id: \.self) { pane in
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(pane.tint.opacity(pane == workspace.focused ? 1 : 0.25))
-                        .frame(width: 56, height: 28)
-                        .contentShape(Rectangle())
-                        .onTapGesture { workspace.focused = pane }
+        if let area = model.current {
+            let workspace = area.layout
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Metrics.gap) {
+                    ForEach(workspace.panes.filter { $0 != workspace.focused }, id: \.self) { pane in
+                        Button {
+                            workspace.focus(pane)
+                            open = nil
+                        } label: {
+                            PaneBubble(pane: pane)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("展开\(area.appearance(of: pane).name)窗口")
+                        .contextMenu { Button("关闭窗口") { model.closeWindow(pane, in: area) } }
+                    }
+                    AddWindowButton()
                 }
+                .environment(area)
             }
         }
     }
@@ -114,11 +116,13 @@ struct PhoneLayout: View {
 /// - 拖着：窗口跟着手指走，挪多少走多少，拖回去就收回来；越过一半时轻震一下，松手就会去这一头。
 ///   推过完全打开还能再推出去一截，变形照旧接着走，越推越吃力，最多 Openness.limit；收起的那头不留。
 /// - 松手：甩得够快就去甩的那头，不然过半就打开、不到一半收回去；用弹簧带着手指的速度走过去，甩得越快回弹越多，
-///   冲过头再回来，冲出去的那截和手指推过头一样吃力。点按钮、点窗口收起也是这一段，没有速度，不回弹、不冲过头。
+///   回弹交给系统弹簧。点按钮、点窗口收起也是这一段，没有速度，不回弹、不冲过头。
 ///   走的途中按住就接着拖，从当时的样子接手；半路改去另一头，带着当时的速度掉头。
-/// 照 Apple 的做法（WWDC24「Enhance your UI animations and transitions」）都交给 SwiftUI 的弹簧动画，由它逐帧插值（WindowPlacement）：
+/// 照 Apple 的做法（WWDC24「Enhance your UI animations and transitions」）都交给 SwiftUI 的弹簧动画：
 /// 拖着时每挪一下用 interactiveSpring 改一次，一个接着一个；松手用 spring，它接着拖动时的速度走，不用自己算初速度。
-/// 自己按时间逐帧算的话，松手后掉帧，拖着时不掉。
+/// WindowPlacement 只计算目标布局；窗口固定在全屏容器内，只动画四边 inset，位置和宽高由同一次布局确定。
+/// WindowProgress 只读取系统弹簧的进度供续拖，不再单独平移窗口。
+/// 不把整套布局做成 Animatable，否则每一帧都会重新计算视图、写入安全区和容器形状。
 private struct PhoneWindow: View {
     @Binding var open: Drawer?
     /// 露出来的一侧：打开着、手指拖着或者正在走。
@@ -134,7 +138,7 @@ private struct PhoneWindow: View {
     @Environment(AppModel.self) private var model
     /// 每一侧要打开到几成：拖着时是手指处，松手后是 0 或 1。都带着动画改，窗口实际摆到哪见 presented。
     @State private var target = Openness()
-    /// 这一帧窗口实际摆到几成，WindowPlacement 每一帧写进来。手指半路接住时从这里接着拖。
+    /// 这一帧弹簧走到几成，WindowProgress 读回来。手指半路接住时从这里接着拖。
     @State private var presented = Presented()
     /// 手指正拖着的一侧。
     @State private var dragging: Drawer?
@@ -155,16 +159,24 @@ private struct PhoneWindow: View {
     private static let duration = 0.4
 
     var body: some View {
-        Group {
-            if let session = model.current {
-                // 聚焦的那个窗口铺满，内容从状态栏、标题栏、控制区和 Home 条后面滚过去
-                PaneBody(pane: session.workspace.focused)
-                    .environment(session)
+        // 外壳的身份不随会话改变，保留边距和缩放的动画状态。
+        // Group 会把外面的修饰器分发给成员，成员换掉时各段动画可能从不同进度重新开始。
+        ZStack(alignment: .topLeading) {
+            if let workspace = model.current {
+                Group {
+                    if let pane = workspace.layout.focused { PaneBody(pane: pane) }
+                    else {
+                        PaneWindow(header: workspace.header) {
+                            Text("从添加按钮打开一个窗口").font(Theme.body).foregroundStyle(.secondary)
+                        } controls: { _ in AddWindowButton() }
+                    }
+                }
+                    .environment(workspace)
                     .environment(\.drawerPull, open == nil ? pull(.actions) : nil)
                     // 一直给着：打开时窗口上盖着一层点了收起的，按钮点不到。有无来回切的话，标题栏会被当成换了一个视图
                     .environment(\.openSidebar, { settle(.sidebar) })
                     .environment(\.keyboardShown, insets.bottom > homeInset + 1)
-                    .id(session.id)
+                    .id(workspace.id)
             }
         }
         .modifier(WindowPlacement(openness: target, screen: screen, insets: insets, homeInset: homeInset,
@@ -263,7 +275,7 @@ private struct PhoneWindow: View {
     }
 }
 
-/// 两侧各打开到几成，0 是铺满，1 是完全打开。按手指算：推过完全打开的那截不加阻尼，摆的时候再加（shown(_:extent:)）。
+/// 两侧各打开到几成，0 是铺满，1 是完全打开。按手指算，计算目标边距时再给越界部分加阻尼。
 private struct Openness: Equatable {
     var sidebar: CGFloat = 0
     var actions: CGFloat = 0
@@ -281,7 +293,7 @@ private struct Openness: Equatable {
         sidebar == 1 ? .sidebar : actions == 1 ? .actions : nil
     }
 
-    /// 摆出来打开到几成：推过完全打开的那截加上阻尼，起初跟手，越推越吃力，最多出去 limit 点；收起的那头不过去。
+    /// 目标边距对应的打开进度：推过完全打开的那截加上阻尼，起初跟手，越推越吃力，最多出去 limit 点。
     static func shown(_ x: CGFloat, extent: CGFloat) -> CGFloat {
         guard x > 1, extent > 0 else { return max(x, 0) }
         let over = (x - 1) * extent
@@ -289,14 +301,30 @@ private struct Openness: Equatable {
     }
 }
 
-/// 这一帧窗口实际摆到几成。放在引用里，WindowPlacement 每一帧写，不引起重画。
+/// 这一帧窗口实际摆到几成。只供手势接手时读取，不引起视图更新。
 private final class Presented {
     var openness = Openness()
 }
 
-/// 按两侧打开到几成摆窗口。动画途中 SwiftUI 每一帧插值 openness 再调一次 body。
-private struct WindowPlacement<Overlay: View>: ViewModifier, Animatable {
+/// 只读取系统弹簧的当前进度供手势接手，不修改绘制位置，也不逐帧重建视图。
+private struct WindowProgress: GeometryEffect {
     var openness: Openness
+    let presented: Presented
+
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(openness.sidebar, openness.actions) }
+        set { openness = Openness(sidebar: newValue.first, actions: newValue.second) }
+    }
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        presented.openness = openness
+        return ProjectionTransform(.identity)
+    }
+}
+
+/// 只在目标进度变化时计算布局，帧间插值交给 frame、padding、scaleEffect 和圆角本身。
+private struct WindowPlacement<Overlay: View>: ViewModifier {
+    let openness: Openness
     let screen: CGSize
     let insets: EdgeInsets
     let homeInset: CGFloat
@@ -306,46 +334,44 @@ private struct WindowPlacement<Overlay: View>: ViewModifier, Animatable {
     let presented: Presented
     let overlay: Overlay
 
-    var animatableData: AnimatablePair<CGFloat, CGFloat> {
-        get { AnimatablePair(openness.sidebar, openness.actions) }
-        set { openness = Openness(sidebar: newValue.first, actions: newValue.second) }
-    }
-
     func body(content: Content) -> some View {
-        presented.openness = openness
         let s = Openness.shown(openness.sidebar, extent: sidebarWidth)
         let a = Openness.shown(openness.actions, extent: actionsHeight)
         let pad = Metrics.padding
         // 窗口缩进屏幕里，四边的边距随进度出现；拉开的那一侧让出侧边栏，或者让出 action 栏连同上面的页签。
         // 推过完全打开时照样接着变
-        let left = s * sidebarWidth + a * pad
-        let top = (s + a) * pad
-        let right = screen.width - (s + a) * pad
-        let bottom = screen.height - s * pad - a * actionsHeight
-        let radius = max(screenRadius - (s + a) * pad, 0)
+        let margin = (s + a) * pad
+        let windowInsets = EdgeInsets(top: margin, leading: s * sidebarWidth + a * pad,
+                                      bottom: s * pad + a * actionsHeight, trailing: margin)
+        let radius = max(screenRadius - margin, 0)
         let shape = RoundedRectangle(cornerRadius: radius)
-        // 内容贴着窗口左上角等比缩小，宽度照铺满时排，字不重新换行：拉侧边栏时按窗口高度缩，右边裁掉；
-        // 拉 action 栏时按窗口宽度缩，高度只排到窗口底边，控制区这些浮在底下的跟着窗口底边走
+        // 内容贴着窗口左下角等比缩小，宽度照铺满时排，字不重新换行：拉侧边栏时按窗口高度缩，右边裁掉；
+        // 拉 action 栏时按窗口宽度缩。内容和缩放都对齐底边，控制区的位置由容器底部 inset 决定。
         let scale = (screen.height - 2 * s * pad) / screen.height * (screen.width - 2 * a * pad) / screen.width
         // 窗口里只给状态栏、Home 条、键盘还盖着窗口的那一截让位：窗口移开多少就少让多少，换算成缩放前的尺寸
-        let covered = EdgeInsets(top: max(insets.top - top, 0) / scale,
-                                 leading: max(insets.leading - left, 0) / scale,
-                                 bottom: max(insets.bottom - (screen.height - bottom), 0) / scale,
-                                 trailing: max(insets.trailing - (screen.width - right), 0) / scale)
-        let coveredByHome = max(homeInset - (screen.height - bottom), 0) / scale
+        let covered = EdgeInsets(top: max(insets.top - windowInsets.top, 0) / scale,
+                                 leading: max(insets.leading - windowInsets.leading, 0) / scale,
+                                 bottom: max(insets.bottom - windowInsets.bottom, 0) / scale,
+                                 trailing: max(insets.trailing - windowInsets.trailing, 0) / scale)
+        let coveredByHome = max(homeInset - windowInsets.bottom, 0) / scale
         return content
             .environment(\.homeIndicatorInset, coveredByHome)
             .safeAreaPadding(covered)
-            .frame(width: screen.width, height: (bottom - top) / scale, alignment: .topLeading)
+            .frame(width: screen.width, height: (screen.height - windowInsets.top - windowInsets.bottom) / scale,
+                   alignment: .bottomLeading)
             // 窗口的形状，里面同心的圆角（控制区卡片）跟着它；在缩放前，圆角也换算成缩放前的
             .containerShape(RoundedRectangle(cornerRadius: radius / scale))
-            .scaleEffect(scale, anchor: .topLeading)
-            .frame(width: right - left, height: bottom - top, alignment: .topLeading)
+            .scaleEffect(scale, anchor: .bottomLeading)
+            // 接受 inset 后容器给出的尺寸，内容贴着底边；正文保持原宽度，多出来的部分由窗口裁掉。
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .bottomLeading)
             .background(Theme.card)
             .clipShape(shape)
             .contentShape(shape)
             .overlay { overlay }
-            .offset(x: left, y: top)
+            // 位置和尺寸来自同一组边距，右边、底边贴着容器，不再分别动画尺寸和 offset。
+            .padding(windowInsets)
+            .frame(width: screen.width, height: screen.height, alignment: .bottomTrailing)
+            .modifier(WindowProgress(openness: openness, presented: presented))
             .ignoresSafeArea()
     }
 }

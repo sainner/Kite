@@ -1,7 +1,7 @@
 import Foundation
 
-/// 一次工具调用在界面上怎么说：图标、一句以动词开头的话（前面加「正在」就是跑着时的说法）、补充说明，
-/// 以及折成一行时归到哪一类计数。工具名只在 ToolUse.kind 里认一次，之后都按这个类型分派。
+/// 工具行的名字、摘要、信息 chip，以及汇总折叠时归到哪一类计数。
+/// 工具名只在 ToolUse.kind 里认一次，之后都按这个类型分派。
 /// Kite 会话里有哪些工具见 kited/README.md「会话的上下文」；没列到的（项目自己配的 MCP、以后新加的）
 /// 按通用的方式显示：名字、参数、结果。
 enum ToolKind: Hashable {
@@ -38,10 +38,10 @@ enum ToolKind: Hashable {
     /// 折成一行时这一类怎么说。count 是次数，files 是涉及几个不同的文件。加载工具是 agent 自己的准备，不提。
     func summary(count: Int, files: Int) -> String? {
         switch self {
-        case .read: "读了 \(files) 个文件"
-        case .edit, .notebookEdit: "改了 \(files) 个文件"
+        case .read: "读取了 \(files) 个文件"
+        case .edit, .notebookEdit: "修改了 \(files) 个文件"
         case .write: "写了 \(files) 个文件"
-        case .command: "跑了 \(count) 条命令"
+        case .command: "执行了 \(count) 条命令"
         case .check: "跑了 \(count) 次检查"
         case .webSearch: "搜了 \(count) 次网页"
         case .webFetch: "看了 \(count) 个网页"
@@ -103,11 +103,79 @@ extension ToolUse {
         return (parts[1], parts[2...].joined(separator: "__"))
     }
 
+    /// 工具名和本次调用摘要分开，名字不会随参数流式生成而变化。
+    var displayName: String {
+        switch kind {
+        case .read: "读取"
+        case .edit, .notebookEdit: "编辑"
+        case .write: "写入"
+        case .command: "执行"
+        case .check: "检查"
+        case .webSearch: "搜索"
+        case .webFetch: "网页"
+        case .agent: "子 agent"
+        case .skill: "技能"
+        case .tools: "工具"
+        case .cronCreate: "创建定时任务"
+        case .cronDelete: "删除定时任务"
+        case .cronList: "定时任务"
+        case .monitor: "监视"
+        case .taskStop: "停止任务"
+        case .listAgents: "agent 列表"
+        case .sendMessage: "发消息"
+        case .mcp, .other: mcp?.tool ?? name
+        }
+    }
+
+    func rowSummary(relativeTo root: String, generating: Bool) -> String {
+        let path = file.map { relativePath($0, to: root) } ?? ""
+        switch kind {
+        case .read:
+            guard !path.isEmpty else { return "" }
+            // 当前 read 的默认值来自文件工具；参数还在生成时，不提前补默认范围。
+            guard !generating || (input["offset"] != nil && input["limit"] != nil) else { return path }
+            if case .number(let offset) = input["offset"] ?? .number(1),
+               case .number(let limit) = input["limit"] ?? .number(200),
+               offset.isFinite, limit.isFinite, (offset + limit - 1).isFinite {
+                let format = FloatingPointFormatStyle<Double>.number.grouping(.never).precision(.fractionLength(0))
+                return "\(path):\(offset.formatted(format))-\((offset + limit - 1).formatted(format))"
+            }
+            return path
+        case .edit:
+            let paths = patchedFiles.isEmpty ? (path.isEmpty ? [] : [path]) : patchedFiles.map { relativePath($0, to: root) }
+            return paths.joined(separator: " · ")
+        case .command:
+            return input["description"]?.string ?? firstLine(input["command"]?.string)
+        default:
+            return input["description"]?.string ?? input["query"]?.string ?? input["url"]?.string
+                ?? input["skill"]?.string ?? input["to"]?.string ?? (path.isEmpty ? mcp?.server ?? "" : path)
+        }
+    }
+
+    /// 统计参数中明确给出的补丁行，不代表已经写入的改动或 shell 的工作区 diff。
+    /// 删除整个文件没有旧正文，整批计数因此保持未知；参数预览也尚未包含 diff。
+    var diffSummary: String? {
+        guard name == "patch", case .array(let operations) = input["operations"], !operations.isEmpty else { return nil }
+        var added = 0, removed = 0
+        for operation in operations {
+            guard let diff = operation["diff"]?.string else { return nil }
+            let lines = splitLines(diff)
+            if operation["type"]?.string == "create_file" {
+                let content = lines.filter { $0.hasPrefix("+") }.map { String($0.dropFirst()) }.joined(separator: "\n")
+                added += splitLines(content).count
+            } else {
+                added += lines.count { $0.hasPrefix("+") }
+                removed += lines.count { $0.hasPrefix("-") }
+            }
+        }
+        return "+\(added) −\(removed)"
+    }
+
     var title: String {
         let fileName = file.map { ($0 as NSString).lastPathComponent } ?? ""
         switch kind {
-        case .read: return "读 \(fileName)"
-        case .edit: return patchedFiles.count > 1 ? "改 \(patchedFiles.count) 个文件" : "改 \(fileName)"
+        case .read: return "读取 \(fileName)"
+        case .edit: return patchedFiles.count > 1 ? "修改 \(patchedFiles.count) 个文件" : "修改 \(fileName)"
         case .write: return "写 \(fileName)"
         case .notebookEdit:
             switch input["edit_mode"]?.string {
@@ -115,7 +183,7 @@ extension ToolUse {
             case "delete": return "删掉 \(fileName) 里的一格"
             default: return "改 \(fileName) 里的一格"
             }
-        case .command: return input["description"]?.string ?? firstLine(input["command"]?.string)
+        case .command: return "执行 \(input["description"]?.string ?? firstLine(input["command"]?.string))"
         case .check: return input["all"]?.bool == true ? "跑全量检查" : "跑检查"
         case .webSearch: return "搜索「\(input["query"]?.string ?? "")」"
         case .webFetch: return "看 \(URL(string: input["url"]?.string ?? "")?.host() ?? "网页")"
@@ -184,16 +252,6 @@ extension Work {
         return parts.isEmpty ? "加载了工具" : parts.joined(separator: "，")
     }
 
-    /// 摘要前面的图标：出现过的几类，按先后，最多三个。只加载了工具时才显示加载工具的图标。
-    var icons: [String] {
-        let kinds = appeared
-        var icons: [String] = []
-        for kind in kinds where kind != .tools || kinds.count == 1 {
-            if !icons.contains(kind.icon) { icons.append(kind.icon) }
-        }
-        return Array(icons.prefix(3))
-    }
-
     /// 出现过的几类工具，按先后，算在一起的归成一类。
     private var appeared: [ToolKind] {
         var seen: [ToolKind] = []
@@ -204,11 +262,8 @@ extension Work {
     func count(_ state: Call.State) -> Int { calls.count { $0.state == state } }
 
     /// 正在跑的那次调用。
-    var running: Call? { calls.first { $0.state == .running } }
+    var running: Call? { calls.first { [.generating, .queued, .running].contains($0.state) } }
 
-    var thinking: [String] {
-        steps.compactMap { if case .thinking(let text) = $0 { text } else { nil } }
-    }
 }
 
 func firstLine(_ text: String?) -> String {
@@ -269,5 +324,34 @@ struct LineDiff {
             case .same: total
             }
         }
+    }
+}
+
+
+extension Call {
+    var stageLabel: String {
+        switch state {
+        case .generating: "生成中"
+        case .queued: "等待中"
+        case .running: "执行中"
+        case .done: ""
+        case .failed: "失败"
+        case .interrupted: "已停止"
+        case .unknown: "结果未知"
+        case .unfinished: "未完成"
+        }
+    }
+}
+
+
+extension Call {
+    /// 修改引用只取实际工具结果；生成中的参数不冒充已保存的历史差异。
+    var fileReferences: [FileReference] {
+        if let diff = result?.diff { return diff.paths.map { FileReference(path: $0, diffID: diff.id) } }
+        guard use.kind == .read, let path = use.file else { return [] }
+        let start: Int? = { if case .number(let value) = use.input["offset"] { return Int(exactly: value) }; return 1 }()
+        let count: Int? = { if case .number(let value) = use.input["limit"] { return Int(exactly: value) }; return 200 }()
+        guard let start, start > 0, let count, count > 0, start <= Int.max - count else { return [FileReference(path: path)] }
+        return [FileReference(path: path, startLine: start, endLine: start + count - 1)]
     }
 }

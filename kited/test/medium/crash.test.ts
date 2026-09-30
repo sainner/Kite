@@ -31,9 +31,10 @@ test('kited 在回合进行中被 SIGKILL，重新启动后给同一个会话发
   const home = join(root, 'kite');
   const repo = newRepo(root, 'proj', { 'a.txt': 'a\n' });
   kited = await spawnKited(home);
-  const p = (await call(kited.url, 'POST', '/projects', { path: repo })).body;
+  const p = (await call(kited.url, 'POST', '/checkouts', { path: repo })).body;
   const hold = `d4-${randomUUID().slice(0, 8)}`;
-  const s = (await call(kited.url, 'POST', '/sessions', { project: p.id, prompt: `HOLD ${hold} 开场`, runtime: 'claude' })).body;
+  const workspace = (await call(kited.url, 'POST', '/workspaces', { checkout: p.checkout.id, prompt: `HOLD ${hold} 开场`, runtime: 'claude' })).body;
+  const s = workspace.threads[0];
   await api.held(hold);
 
   // kited 死后它起的 Claude Code 进程还活着：放行它的请求，等它把这一回合写进会话记录，
@@ -47,13 +48,13 @@ test('kited 在回合进行中被 SIGKILL，重新启动后给同一个会话发
 
   kited = await spawnKited(home);
   const b = `标记D4-${randomUUID().slice(0, 8)}`;
-  const sent = await call(kited.url, 'POST', `/sessions/${s.id}/messages`, { text: `续接 ${b}` });
+  const sent = await call(kited.url, 'POST', `/threads/${s.instanceId}/messages`, { text: `续接 ${b}` });
   expect(sent.status).toBe(200);
   const req = await api.waitRequest((l) => l.main && l.lastUserText.includes(b));
   expect(JSON.stringify(req.body.messages)).toContain(hold);
-  const v = (await call(kited.url, 'GET', `/sessions/${s.id}`)).body;
+  const v = (await call(kited.url, 'GET', `/threads/${s.instanceId}`)).body;
   expect(v.status).toBe('open');
   expect(v.nativeId).toBe(s.nativeId);
   // 等这一回合收口、进程退出，再停 kited
-  await until(async () => (await call(kited!.url, 'GET', `/sessions/${s.id}`)).body.runner === 'closed', 'runner 关闭');
+  await until(async () => (await call(kited!.url, 'GET', `/threads/${s.instanceId}`)).body.runner === 'closed', 'runner 关闭');
 });

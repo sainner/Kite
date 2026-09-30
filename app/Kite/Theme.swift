@@ -2,21 +2,24 @@ import SwiftUI
 
 enum Theme {
     /// 整个 App 的底色，侧边栏直接铺在它上面，没有自己的底色。
-    static let background = Color(red: 0.93, green: 0.92, blue: 0.90)
-    static let card = Color.white
+    // 颜色资源带浅色、深色两套值，由当前窗口的外观解析。
+    static let background = Color("WorkspaceBackground")
+    static let card = Color("CardBackground")
     /// 还没有内容时的占位色块。
-    static let placeholder = Color.black.opacity(0.06)
+    static let placeholder = Color("Placeholder")
     /// 占位里要显眼一点的，比如标题。
-    static let strongPlaceholder = Color.black.opacity(0.16)
+    static let strongPlaceholder = Color("StrongPlaceholder")
     /// 侧边栏里选中的一行。
-    static let selection = Color.black.opacity(0.07)
+    static let selection = Color("Selection")
     /// 会话窗口里人发的消息的气泡：agent 收到了是这个底色，排队中只描边。
-    static let bubble = Color(red: 0.95, green: 0.94, blue: 0.92)
-    static let bubbleStroke = Color.black.opacity(0.2)
+    static let bubble = Color("MessageBackground")
+    static let bubbleStroke = Color("MessageStroke")
     /// 代码、命令输出、表格的底。
-    static let codeBackground = Color.black.opacity(0.04)
+    static let codeBackground = Color("CodeBackground")
     /// 引用、子 agent 过程左边的竖线。
-    static let rule = Color.black.opacity(0.12)
+    static let rule = Color("Rule")
+    /// 工具列表的描边与分割线更浅一些。
+    static let toolRule = rule.opacity(0.65)
     static let added = Color.green.opacity(0.14)
     static let removed = Color.red.opacity(0.12)
 
@@ -30,7 +33,7 @@ enum Theme {
     static let secondary = Font.subheadline
     /// 比次要的字再小一号：iPhone 上标题下面的次要信息。
     static let caption = Font.footnote
-    /// 最小的字：控制区底下的状态信息。
+    /// 最小的字：控制区中的状态 chip。
     static let status = Font.caption
     /// 命令、输出、代码、改动。
     static let code = Font.system(.subheadline, design: .monospaced)
@@ -57,8 +60,13 @@ enum Metrics {
     static let minPane: CGFloat = 160
     /// 按下后挪动多少才算拖动，免得单击也算。
     static let dragThreshold: CGFloat = 4
+    /// Mac 内容区外缘的拖放范围，在这里沿整个窗口组分栏。
+    static let windowEdgeDrop: CGFloat = 32
     /// Mac 上窗口标题栏的高度，标题在里面垂直居中；也是卡片拖动把手的高度。
     static let header: CGFloat = 40
+    /// Mac 标题栏右侧窗口操作按钮的尺寸和间距。
+    static let headerAction: CGFloat = 24
+    static let headerActionSpacing: CGFloat = 4
     /// iPhone 上窗口标题栏底下的留白。状态栏的安全区底下本来空着一截（iPhone 17 上约 20pt），
     /// 所以标题栏上边不留、只在下边留一点，标题看着才在状态栏和栏底之间居中。
     static let phoneHeaderBottom: CGFloat = 8
@@ -68,6 +76,8 @@ enum Metrics {
     static let headerButton: CGFloat = 44
     /// 拖出布局的卡片变成的圆。
     static let dragBubble: CGFloat = 40
+    /// Mac 右侧停靠栏，圆形窗口两边各留一份内边距。
+    static let dockWidth: CGFloat = dragBubble + 2 * padding
     /// action 区：一排按钮、账号那一行，和两行之间的距离。
     static let actionButton: CGFloat = 36
     static let accountRow: CGFloat = 36
@@ -75,7 +85,7 @@ enum Metrics {
     /// iPhone 上拉出侧边栏后窗口最少留多宽，要大于圆角的直径，圆角才不会变形。
     static let phoneMinWindow: CGFloat = 120
     /// iPhone 上页签那一行的高度，拉出 action 栏时出现在它上面。
-    static let tabBar: CGFloat = 36
+    static let tabBar: CGFloat = dragBubble
     /// iPhone 上拉出侧边栏的手势区，左边缘多宽。
     static let edgeZone: CGFloat = 24
     /// 控制区一行的高度，和输入框只有一行字时一样高；还没做的窗口按它画占位。
@@ -84,8 +94,6 @@ enum Metrics {
     /// 底下没有安全区时离底边、打字时离键盘也是这么远。
     static let controlRadius: CGFloat = 22
     static let controlMargin: CGFloat = 12
-    /// 控制区底下的安全区至少多高才放状态信息，放得下一行小字。
-    static let statusMinHeight: CGFloat = 20
     /// 选 effort 的主刻度线的间距，一档占这么宽，拖过这么宽换一档。
     static let effortTick: CGFloat = 24
     /// 会话窗口里对话那一栏最宽多少，卡片再宽也不让一行字太长。
@@ -93,6 +101,14 @@ enum Metrics {
     /// 对话上下的留白，和相邻两行之间的间距。
     static let transcriptPadding: CGFloat = 12
     static let rowSpacing: CGFloat = 14
+    /// 工具列表的行内边距。
+    static let toolRowInset: CGFloat = 10
+    /// 工具标题行统一高度，视图中随系统字号缩放。
+    static let toolRowHeight: CGFloat = 34
+    static let toolIcon: CGFloat = 16
+    /// 图标、名字、摘要之间使用相同的间距。
+    static let toolLabelGap: CGFloat = 6
+    static let toolGroupRadius: CGFloat = 8
     /// 气泡里文字离边的距离，左右和上下。
     static let bubblePadding = CGSize(width: 16, height: 12)
     /// 气泡里文字和代码块之间空多少，代码块里的字离框多远。
@@ -102,6 +118,15 @@ enum Metrics {
     static let markdownBlockGap: CGFloat = 10
     static let listIndent: CGFloat = 18
     static let listMarker: CGFloat = 14
+    /// 文件图标与 favicon 到链接文字的统一间距。
+    static let referenceIconGap: CGFloat = 2
+    static let referenceIconScale: CGFloat = 0.85
+    /// 两端文本渲染不同：Mac 沿用基线，iPhone 向下微调。
+    #if os(iOS)
+    static let referenceIconBaselineOffset: CGFloat = -1
+    #else
+    static let referenceIconBaselineOffset: CGFloat = 0
+    #endif
     /// 对话里人发的消息和前后的内容之间、别的新一轮（Kite 发来的、后台任务通知）和上一轮之间，在平常的间距之外多空多少。
     static let messageGap: CGFloat = 12
     static let turnGap: CGFloat = 12

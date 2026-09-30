@@ -2,7 +2,7 @@
 
 目标是直接展示并编辑某个时机的上下文组装结构：段落双击编辑，条件分支显示为页签，动态内容显示为 chip。界面和后端使用同一份定义；不是另外维护一份只供展示的提示词说明，也不要求用户先为会话选择工作模式。
 
-当前实现位于 `kited/src/harness/context/`，已用于终端 harness 的每次模型请求。核心是一份组装契约及其薄的展开函数；目前接入可编辑的**指令层**，历史、工具调用结果和工具定义仍是完整请求中的独立结构。前端编辑器、配置存储、HTTP 接口、文件通知投递、压缩和 token 预算尚未接入。
+当前实现位于 `kited/src/harness/context/`，已用于终端 harness 的每次模型请求。核心是一份组装契约及其薄的展开函数，覆盖基础指令和通知正文；历史、工具调用结果和工具定义仍保留完整请求中的原有结构。agent 配置已绑定到实例并提供 HTTP 入口；配置与上下文变化通过追加通知接入。前端编辑器、普通文件通知、压缩和 token 预算尚未接入。
 
 ## 场景契约
 
@@ -10,8 +10,12 @@
 
 | 场景 | 可用变量 | 业务调用方的用途 |
 |---|---|---|
-| `session.create`（创建会话） | `environment.cwd`、`environment.date`、`project.documents` | 为会话建立基础上下文；终端在后续请求中继续使用这份定义并重新取值 |
-| `session.file_changes`（会话中文件变化） | `files.changes`、`files.origin` | 表达变化列表和来源；目前只定义契约，事件收集与投递尚未实现 |
+| `thread.create`（创建会话） | `environment.cwd`、`environment.date`、`project.documents` | 为会话建立基础上下文；后续重新取值，变化以通知追加 |
+| `thread.file_changes`（会话中文件变化） | `files.changes`、`files.origin` | 表达变化列表和来源；目前只定义契约，事件收集与投递尚未实现 |
+| `thread.configuration_changed`（会话配置变更） | `agent.revision`、`agent.model`、`agent.reasoning`、`agent.tools`、`agent.max_requests_per_turn` | 展开配置变更说明，随配置原子保存 |
+| `thread.context_updated`（基础上下文更新） | `context.instructions` | 展开更新生效范围及新的基础上下文，在请求边界追加 |
+
+场景统一使用 `thread.*`，在研阶段不为旧 `session.*` 名称保留兼容分支。
 
 新组装定义包含 `scene`，不再包含自定义 `variables`。`id` 标识某份定义，`scene` 规定它适用的场景；同一场景可以有多份不同定义。前端从场景表获得名称及 chip 列表，后端按同一张表校验段落、条件和绑定中的变量。
 
@@ -27,7 +31,12 @@ flowchart LR
   A --> P[展开文本与分支选择，供预览]
   A --> S[定义和值的快照]
   S --> J[会话记录]
-  P --> R[模型请求的 instructions]
+  P --> R[首次 instructions / 后续上下文更新通知]
+  N[通知的场景定义与变量] --> A
+  S --> NS[通知内保存组装快照]
+  NS --> J
+  NS --> NR[还原通知正文]
+  NR --> RQ
   H[主循环维护的结构化历史] --> RQ[完整模型请求]
   T[实际注册的工具定义] --> RQ
   R --> RQ
@@ -74,7 +83,7 @@ flowchart LR
 const source = projectContext(cwd, editedDefinition);
 const assembly = assembleContext(source);
 
-assembly.instructions; // 实际发送的指令
+assembly.instructions; // 首次请求的指令，或后续上下文更新通知的正文
 assembly.blocks;       // 选中的 branchId、段落、chip 的展开值及来源
 assembly.snapshot;     // 完整定义及本次绑定，保留未选中分支供查看
 
@@ -87,29 +96,42 @@ const historical = restoreContext(savedSnapshot); // 校验摘要并还原已保
 
 ## 请求边界与记录
 
-`SessionOptions.instructions` 接受原有字符串、`ContextSource`，或同步工厂 `() => ContextSource`。字符串也会转成一段定义，走同一条记录路径。工厂在每次模型请求前调用：
+`HarnessOptions.prepareRequest` 在每次自然请求前同步取得模型、工具、设置、上下文来源和待投递通知：
 
-1. 取出定义与变量，验证并完成组装；失败则暂停回合，不消费待处理输入，也不调用模型。
-2. 定义与变量产生内容摘要。该摘要首次出现时，将 `context.prepared`（含完整快照）写入 journal；内容相同就复用。
-3. 写入 `request.started`，同时记录 `contextId` 和此次纳入的 `inputIds`。
-4. 使用刚才组装的 `instructions`，连同主循环的 `history` 和实际工具的 `tools` 发起请求。
+1. 校验配置、工具和上下文；失败则暂停回合，不消费待处理输入，也不调用模型。
+2. 首次出现的上下文保存为 `context.prepared`，实际设置与工具声明保存为 `request.configured`。
+3. 首次请求固定基础上下文；后续内容摘要变化时生成 `context.updated` 通知，正文明确替代范围。
+4. 一条 `request.started` 同时保存 `contextId`、`configurationId`、输入 ID 与此次纳入的通知，再调用模型。
+5. 请求继续使用首次 `instructions`，后续更新作为独立消息追加到历史。工具声明保持固定，通过允许集合与宿主执行器限制实际权限。
+
+通知不启动模型；请求边界是一次同步截取，当前请求期间发生的变化留给下一次自然请求。详细的来源持久化、游标与恢复规则见 [线程通知投递](线程通知投递.md)。
+
+## 通知正文
+
+`notifications.ts` 提供配置变更和基础上下文更新的默认定义，以及将业务值投影为 `ContextBinding` 的函数。说明文字、段落和变量都在定义中，调用方只传实际配置或新指令内容。与 `projectContext` 一样，函数可接受同场景的其他定义；尚未提供通知定义的编辑 UI 或持久配置入口。
+
+`ThreadNotification.context` 保存完整 `ContextSnapshot`。配置通知在配置提交时组装，随配置写入 SQLite；基础上下文更新在请求边界组装，随 `request.started.notifications` 写入 journal。通知内的快照与基础上下文的 `context.prepared` 快照分别保存，前者能独立还原当时的通知段落、条件选择和变量值。
+
+Runner 在消费输入、推进通知游标之前确认快照可完整展开，纳入请求或重放记录时还原一次正文。后续模型请求复用首次指令和通知的展开文本，通知只携带元数据与正文，完整定义及变量留在 journal 供预览。订阅适配器只映射角色和协议，不再拼接通知说明。来源标记、环境事实提示也应由相应场景定义表达。已投递的通知不读取当前模板或最新材料，后续修改不会改变已有历史前缀。
+
+正文定义不能改变通知权限或执行配置。`authority` 仍由宿主确定，工具、模型参数和请求预算仍由执行层应用。
 
 快照沿用现有 journal 的同步落盘，不另建数据库或文件存储。已有的模型输出、用户输入、工具结果仍在原记录中，不为每次请求重复保存整段历史。旧 journal 中没有 `contextId` 的请求可以正常恢复，只是无法还原当时未保存的指令。新请求若引用不存在的快照，或快照摘要不匹配，则拒绝当作完整记录恢复。
 
 已经保存的 `version: 1` 快照保留其中的变量声明，通过 `restoreContext` 读取，内容及 id 原样保留。实时 `assembleContext` 只接受新版定义，旧格式不能作为绕过场景约束的入口。journal 的记录版本与定义版本独立，这次没有更改 journal 格式版本。
 
-该快照准确记录的是指令定义和材料，不是完整的网络请求归档。工具定义目前没有另存版本；历史中的恢复反馈也仍由主循环生成。以后若要展示、编辑这些部分，须保留各自的结构与协议约束，不能把 reasoning 原始字段或工具结果拍平成可任意拼接的文本。
+上下文快照保存指令定义和材料；请求配置快照另外保存模型设置、预算和工具声明。它们不保存凭据或执行闭包；历史中的恢复反馈仍由主循环生成。以后若要展示、编辑这些部分，须保留各自的结构与协议约束，不能把 reasoning 原始字段或工具结果拍平成可任意拼接的文本。
 
 ## 终端宿主接入
 
-`project.ts` 的 `defaultContextDefinition` 归属 `session.create`，承接原有默认提示词，其中工作目录、UTC 日期和项目材料变为变量；项目材料的有无变为显式条件。变量由 `projectContext` 提供，绑定类型从场景表派生；该宿主不接受文件变化场景的定义。
+`project.ts` 的 `defaultContextDefinition` 归属 `thread.create`，承接原有默认提示词，其中工作目录、UTC 日期和项目材料变为变量；项目材料的有无变为显式条件。变量由 `projectContext` 提供，绑定类型从场景表派生；该宿主不接受文件变化场景的定义。
 
 每次请求沿工作目录向上找到最近仓库根目录；无仓库则走到文件系统根。按照由外到内的顺序读取 `AGENTS.md` 和 `.kite/memory/MEMORY.md`，保存当次读取的文本和文件摘要。子目录规则、记忆正文仍按需读取。多个文件暂时合并在 `project.documents` 这一枚 chip 中，来源列表保留各文件路径。
 
-`openSessionHost` 的可选 `contextDefinition` 接受一份定义或返回定义的同步工厂，未来配置宿主可以在下一次请求切换定义。它只负责运行时注入，尚不负责编辑稿保存、全局/项目覆盖或恢复配置选择；重新打开时由宿主再次提供当前定义，旧快照用于历史查看。
+`openThreadHost.prepareRequest` 接收宿主提供的受管工具与通知游标，调用方返回当次配置。kited 从实例读取绑定配置，终端从自身 metadata 恢复入口设置；已投递的上下文与通知按 journal 原顺序还原。
 
-项目材料的变化只在自然请求边界反映，不监听文件、不打断当前请求、不唤醒空闲会话。历史查看始终用已保存的文本，磁盘后续变化不会改变旧快照。
+项目材料的变化只在自然请求边界发现，不监听文件、不打断当前请求、不唤醒空闲会话。基础指令保持原样，变化追加成独立通知。历史查看始终用已保存的文本，磁盘后续变化不会改变旧快照。
 
 ## 验证范围
 
-小测试覆盖工厂、组装器、journal 与模型请求的交接，包括请求进行中修改定义和材料、相同材料复用快照、组装失败后保留待处理输入、关闭重开后保留原生历史和工具结果，以及真实旧格式快照在升级后仍可还原并续接新版请求。没有为枚举、查表、文字连接或单个条件判断逐项增加测试。
+小测试覆盖工厂、组装器、journal 与模型请求的交接，包括请求进行中修改定义和材料、相同材料复用快照、组装失败后保留待处理输入、关闭重开后保留原生历史和工具结果，以及上下文更新追加后保持已有历史前缀。没有为枚举、查表、文字连接或单个条件判断逐项增加测试。

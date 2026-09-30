@@ -10,7 +10,7 @@
  * 测试自己起子进程一律显式传 env（见 util.ts 的 ENV）。
  */
 import { afterAll } from 'bun:test';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { startFakeApi } from './fake-api.ts';
@@ -22,9 +22,20 @@ for (const d of ['home', 'claude']) mkdirSync(join(root, d));
 /** 整个测试进程共用的假端点。 */
 export const api = startFakeApi(join(root, 'bg'));
 
+// macOS 的 /usr/bin/git 是 xcrun shim；使用系统选中的同一份 Apple Git，省去每次调用的 shim 开销。
+let developerDir: string | undefined;
+if (process.platform === 'darwin') {
+  try {
+    const selected = realpathSync('/var/select/developer_dir');
+    if (existsSync(join(selected, 'usr', 'bin', 'git'))) developerDir = selected;
+  } catch { /* 没有系统开发工具时沿用原 PATH。 */ }
+}
+
 for (const k of Object.keys(process.env)) delete process.env[k];
 Object.assign(process.env, {
-  PATH: `${dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
+  PATH: [dirname(process.execPath), ...(developerDir ? [join(developerDir, 'usr', 'bin')] : []),
+    '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':'),
+  ...(developerDir ? { DEVELOPER_DIR: developerDir } : {}),
   HOME: join(root, 'home'),
   CLAUDE_CONFIG_DIR: join(root, 'claude'),
   TMPDIR,

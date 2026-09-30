@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// 侧边栏里的一行，一个会话。没有自己的底色，选中时垫一层；标题来自真实会话或尚未提交的草稿。
-struct SessionRow: View {
-    let session: Session
+/// 侧边栏里的一行，一个工作区。没有自己的底色，选中时垫一层；空列表显示尚未提交的草稿。
+struct WorkspaceRow: View {
+    let workspace: WorkArea
     let current: Bool
     /// 分离成了独立窗口（Mac）。
     var detached = false
@@ -10,8 +10,8 @@ struct SessionRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Circle().fill(session.tint).frame(width: 10, height: 10)
-            Text(session.title).font(Theme.body).lineLimit(1)
+            Circle().fill(workspace.tint).frame(width: 10, height: 10)
+            Text(workspace.title).font(Theme.body).lineLimit(1)
             Spacer(minLength: 0)
             if detached {
                 Image(systemName: "macwindow").font(Theme.secondary).foregroundStyle(.secondary)
@@ -58,13 +58,13 @@ struct ActionArea: View {
 
     @ViewBuilder
     private func buttons(size: CGFloat) -> some View {
-        Button { model.showNewSession = true } label: {
+        Button { model.showNewWorkspace = true } label: {
             Image(systemName: "square.and.pencil")
                 .font(Theme.body)
                 .frame(width: size, height: size)
                 .background(Theme.placeholder, in: RoundedRectangle(cornerRadius: 8))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointingPlain)
         .help("新会话")
         .accessibilityLabel("新会话")
         .disabled(!model.connected)
@@ -81,9 +81,9 @@ struct ActionArea: View {
                 .frame(width: size, height: size)
                 .background(Theme.placeholder, in: RoundedRectangle(cornerRadius: 8))
         }
-        .buttonStyle(.plain)
-        .help("连接工作机")
-        .accessibilityLabel("连接工作机")
+        .buttonStyle(.pointingPlain)
+        .help("设置")
+        .accessibilityLabel("设置")
     }
 }
 
@@ -107,9 +107,9 @@ struct MacSidebar: View {
     private func expanded(_ current: String?) -> some View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
-                ForEach(model.listedSessions) { session in
-                    SessionRow(session: session, current: current == session.id, detached: model.detached.contains(session.id))
-                        .overlay { source(session) }
+                ForEach(model.listedWorkspaces) { workspace in
+                    WorkspaceRow(workspace: workspace, current: current == workspace.id, detached: model.detached.contains(workspace.id))
+                        .overlay { source(workspace) }
                 }
             }
             Spacer(minLength: Metrics.gap)
@@ -120,13 +120,13 @@ struct MacSidebar: View {
 
     private func rail(_ current: String?) -> some View {
         VStack(spacing: 8) {
-            ForEach(model.listedSessions) { session in
+            ForEach(model.listedWorkspaces) { workspace in
                 // 已经分离成独立窗口的画淡一点
-                Circle().fill(session.tint).frame(width: 24, height: 24)
-                    .opacity(model.detached.contains(session.id) ? 0.35 : 1)
+                Circle().fill(workspace.tint).frame(width: 24, height: 24)
+                    .opacity(model.detached.contains(workspace.id) ? 0.35 : 1)
                     .padding(6)
-                    .background(current == session.id ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay { source(session) }
+                    .background(current == workspace.id ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay { source(workspace) }
             }
             Spacer(minLength: Metrics.gap)
             ActionArea(compact: true)
@@ -134,20 +134,20 @@ struct MacSidebar: View {
         .frame(maxWidth: .infinity)
     }
 
-    private func source(_ session: Session) -> some View {
-        SessionDragSource(tint: session.tint) {
+    private func source(_ workspace: WorkArea) -> some View {
+        WorkspaceDragSource(tint: workspace.tint) {
             // 已经分离的，点一下把它的窗口提到前面
-            if model.detached.contains(session.id) {
-                openWindow(id: "session", value: session.id)
+            if model.detached.contains(workspace.id) {
+                openWindow(id: "workspace", value: workspace.id)
             } else {
-                model.selected = session.id
+                model.selected = workspace.id
             }
         } onDetach: { point in
-            guard !session.isDraft, !model.detached.contains(session.id) else { return }
+            guard !workspace.isDraft, !model.detached.contains(workspace.id) else { return }
             // 独立窗口里的卡片和主窗口内容区一样大；窗口左上角放在指针左上方，指针落在标题那一条上。AppKit 的屏幕坐标 y 朝上
-            let size = DetachedSession.windowSize(content: model.contentSize, chrome: chrome)
+            let size = DetachedWorkspace.windowSize(content: model.contentSize, chrome: chrome)
             model.pendingPlacement = CGRect(x: point.x - 60, y: point.y + 16 - size.height, width: size.width, height: size.height)
-            openWindow(id: "session", value: session.id)
+            openWindow(id: "workspace", value: workspace.id)
         }
     }
 }

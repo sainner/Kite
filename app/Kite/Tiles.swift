@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// 窗口组里的一个窗口。Mac 上每个是一张卡片，iPhone 上一次显示一个，用页签切换。
-enum Pane: CaseIterable {
-    case session, files, terminal, preview
+struct Pane: Hashable, Codable {
+    let id: String
+    init(_ id: String) { self.id = id }
 }
 
 /// 卡片的排布：一块地方要么放一张卡片，要么沿一个方向切成两块，每块再照此细分。
@@ -121,9 +122,14 @@ extension Tile {
 
     /// 从 target 的 edge 那边切一刀，把 tile 放进去，两半各占一半。
     func inserting(_ tile: Tile, beside target: Pane, on edge: Edge) -> Tile {
+        replacing(target, with: Tile.pane(target).inserting(tile, on: edge))
+    }
+
+    /// 在整个排布外面切一刀，原来的窗口一起放在另一侧。
+    func inserting(_ tile: Tile, on edge: Edge, ratio: CGFloat = 0.5) -> Tile {
         let axis: Axis = edge == .leading || edge == .trailing ? .horizontal : .vertical
         let before = edge == .leading || edge == .top
-        return replacing(target, with: .split(Split(axis, 0.5, before ? tile : .pane(target), before ? .pane(target) : tile)))
+        return .split(Split(axis, ratio, before ? tile : self, before ? self : tile))
     }
 
     /// 两边都没变就沿用原来的这一刀：它的缝的视图不用重建，比例也还是同一份。
@@ -148,82 +154,249 @@ enum Arrangement: String, CaseIterable {
     case oneAndTwo = "左一右二"
     case oneAndThree = "左一右三"
 
-    var tile: Tile {
-        switch self {
-        case .sideBySide:
-            .split(Split(.horizontal, 0.6, .pane(.session), .pane(.files)))
-        case .stacked:
-            .split(Split(.vertical, 0.65, .pane(.session), .pane(.terminal)))
-        case .oneAndTwo:
-            .split(Split(.horizontal, 0.6, .pane(.session),
-                         .split(Split(.vertical, 0.5, .pane(.files), .pane(.terminal)))))
-        case .oneAndThree:
-            .split(Split(.horizontal, 0.55, .pane(.session),
-                         .split(Split(.vertical, 1.0 / 3, .pane(.files),
-                                      .split(Split(.vertical, 0.5, .pane(.terminal), .pane(.preview)))))))
+    func tile(for panes: [Pane]) -> Tile? {
+        guard let first = panes.first else { return nil }
+        let count = min(panes.count, self == .oneAndThree ? 4 : self == .oneAndTwo ? 3 : 2)
+        guard count > 1 else { return .pane(first) }
+        if self == .sideBySide || self == .stacked {
+            return .split(Split(self == .sideBySide ? .horizontal : .vertical, 0.6, .pane(first), .pane(panes[1])))
         }
+        func column(_ remaining: ArraySlice<Pane>) -> Tile {
+            guard remaining.count > 1 else { return .pane(remaining.first!) }
+            return .split(Split(.vertical, 1 / CGFloat(remaining.count), .pane(remaining.first!), column(remaining.dropFirst())))
+        }
+        return .split(Split(.horizontal, 0.6, .pane(first), column(panes[1..<count])))
     }
 }
 
-/// 松手后卡片放在哪：另一张卡片某条边的那一侧。
-struct DropSpot: Equatable {
-    let target: Pane
-    let edge: Edge
+/// 内容区和右侧停靠栏使用同一坐标系，拖动时不跨视图换算落点。
+struct WindowRegions {
+    let canvas: CGRect
+    let dock: CGRect
+
+    init(in bounds: CGRect) {
+        canvas = CGRect(x: bounds.minX, y: bounds.minY,
+                        width: max(0, bounds.width - Metrics.dockWidth - Metrics.gap), height: bounds.height)
+        dock = CGRect(x: bounds.maxX - Metrics.dockWidth, y: bounds.minY,
+                      width: Metrics.dockWidth, height: bounds.height)
+    }
+
+    func dockFrame(at index: Int) -> CGRect {
+        CGRect(x: dock.midX - Metrics.dragBubble / 2,
+               y: dock.minY + Metrics.padding + CGFloat(index) * (Metrics.dragBubble + Metrics.gap),
+               width: Metrics.dragBubble, height: Metrics.dragBubble)
+    }
+
+    func dockIndex(at point: CGPoint, count: Int) -> Int {
+        min(max(Int((point.y - dock.minY - Metrics.padding) / (Metrics.dragBubble + Metrics.gap)), 0), count)
+    }
+
+    func canvasEdge(at point: CGPoint) -> Edge? {
+        guard canvas.contains(point) else { return nil }
+        let distances: [(Edge, CGFloat)] = [
+            (.leading, point.x - canvas.minX), (.trailing, canvas.maxX - point.x),
+            (.top, point.y - canvas.minY), (.bottom, canvas.maxY - point.y)
+        ]
+        return distances.filter { $0.1 <= Metrics.windowEdgeDrop }.min { $0.1 < $1.1 }?.0
+    }
 }
 
-/// 拖动卡片：指针离开这张卡片后，它脱离布局，在原处缩成一个圆跟着指针；指针落在别的卡片上时，
-/// 在离指针最近的那条边插进占位，按放下后的样子预览；松手时圆展开进占位，没有占位就展开回原位。
+/// 松手后放在整个内容区的一侧、另一张卡片旁、空内容区，或者停靠栏中。
+enum DropSpot: Equatable {
+    case edge(Edge)
+    case beside(Pane, Edge)
+    case canvas
+    case dock(Int)
+}
+
+/// 拖动卡片：标题栏拖够一段距离后，卡片脱离布局并缩成圆跟着指针；指针落在卡片上时，
+/// 在离指针最近的那条边插进占位；靠近内容区外缘时占满整条边，也可放进右侧停靠栏；没有落点就回原位。
 struct CardDrag {
-    enum Phase: Equatable {
-        /// 指针还在这张卡片里，什么都不变。
-        case attached
-        /// 脱离布局，跟着指针。
-        case floating
-        /// 松手后正展开到这个位置，展开完才定下排布。
-        case landing(CGRect)
-    }
-
     let pane: Pane
-    var phase = Phase.attached
     /// 脱离后剩下的排布；只剩这一张卡片时为 nil。
     var rest: Tile?
     var spot: DropSpot?
     /// 拖动中显示的排布：剩下的，或者插了占位的预览。
     var layout: Tile?
+    /// 拖动期间的停靠顺序，包含落点占位所对应的窗口。
+    var docked: [Pane] = []
 
     /// 把 tile 放到落点上的排布；没有落点时为 nil。
-    func placing(_ tile: Tile) -> Tile? {
-        guard let spot, let rest else { return nil }
-        return rest.inserting(tile, beside: spot.target, on: spot.edge)
+    func placing(_ tile: Tile, in canvas: CGRect) -> Tile? {
+        switch spot {
+        case .edge(let edge):
+            guard let rest else { return nil }
+            let horizontal = edge == .leading || edge == .trailing
+            let before = edge == .leading || edge == .top
+            let length = { (size: CGSize) in horizontal ? size.width : size.height }
+            let available = length(canvas.size) - Metrics.gap
+            // 优先各占一半；其余窗口嵌套较深时，给它们留足最小尺寸。
+            let first = length(before ? tile.minimumSize : rest.minimumSize)
+            let second = length(before ? rest.minimumSize : tile.minimumSize)
+            let ratio = min(max(0.5, first / available), 1 - second / available)
+            return rest.inserting(tile, on: edge, ratio: ratio)
+        case .beside(let target, let edge): return rest?.inserting(tile, beside: target, on: edge)
+        case .canvas: return tile
+        default: return nil
+        }
     }
 }
 
 /// 一个窗口组：有哪些窗口、Mac 上怎么排、聚焦的是哪个。Mac 把它们排成卡片，iPhone 一次显示聚焦的那个。
 /// 拖动卡片的接口收内容区里的坐标和内容区的大小，换算由摆卡片的视图做。
 @Observable
-final class Workspace {
-    private(set) var root: Tile
-    /// 聚焦的窗口，iPhone 上显示的就是它。
-    var focused: Pane
+final class WindowLayout {
+    private(set) var root: Tile?
+    /// 缩小的窗口仍属于这个工作区，按停靠顺序保存。
+    private(set) var docked: [Pane] = []
+    /// 聚焦的窗口，iPhone 上显示的就是它；窗口组为空时没有焦点。
+    private(set) var focused: Pane?
     private(set) var drag: CardDrag?
     /// 拖动时指针在内容区里的位置。一直在变，和 drag 分开，免得每动一下整个排布都重算。
     private(set) var pointer: CGPoint = .zero
 
-    init(_ arrangement: Arrangement) {
-        let tile = arrangement.tile
-        root = tile
-        focused = tile.panes[0]
+    @ObservationIgnored private let storageKey: String?
+    @ObservationIgnored private let defaults: UserDefaults
+
+    init(panes: [Pane] = [], arrangement: Arrangement = .oneAndTwo,
+         storageKey: String? = nil, defaults: UserDefaults = .standard) {
+        self.storageKey = storageKey
+        self.defaults = defaults
+        if let storageKey, let data = defaults.data(forKey: storageKey),
+           let saved = try? JSONDecoder().decode(SavedLayout.self, from: data) {
+            root = saved.root?.tile
+            docked = saved.docked
+            focused = saved.focused
+            reconcile(panes)
+        } else {
+            root = arrangement.tile(for: panes)
+            docked = panes.filter { !(root?.panes.contains($0) ?? false) }
+            focused = panes.first
+            save()
+        }
+    }
+
+    /// 服务端决定窗口是否存在。本机只保留这些 ID 的位置，新窗口默认收进停靠栏。
+    func reconcile(_ available: [Pane]) {
+        let allowed = Set(available)
+        guard Set(panes) != allowed else { return }
+        drag = nil
+        let hadWindows = !panes.isEmpty
+        for pane in panes where !allowed.contains(pane) { root = root?.removing(pane) }
+        docked.removeAll { !allowed.contains($0) }
+        let known = Set(panes)
+        let added = available.filter { !known.contains($0) }
+        if root == nil && docked.isEmpty, let first = added.first {
+            root = .pane(first)
+            docked = Array(added.dropFirst())
+        } else {
+            docked += added
+        }
+        if !hadWindows || focused.map({ !allowed.contains($0) }) != false { focusVisiblePane() }
+        save()
+    }
+
+    /// 当前设备主动打开窗口时，让它出现在内容区；远端添加仅由 reconcile 收入停靠栏。
+    func activate(_ pane: Pane) {
+        guard panes.contains(pane) else { return }
+        drag = nil
+        if docked.contains(pane) {
+            if let root { self.root = root.inserting(.pane(pane), on: .trailing) }
+            else { root = .pane(pane) }
+            docked.removeAll { $0 == pane }
+        }
+        focused = pane
+        save()
+    }
+
+    func focus(_ pane: Pane) {
+        guard focused != pane, panes.contains(pane) else { return }
+        focused = pane
+        save()
+    }
+
+    private func save() {
+        guard let storageKey else { return }
+        let saved = SavedLayout(root: root.map(SavedTile.init), docked: docked, focused: focused)
+        if let data = try? JSONEncoder().encode(saved) { defaults.set(data, forKey: storageKey) }
+    }
+
+    var panes: [Pane] { (root?.panes ?? []) + docked }
+
+    var minimumSize: CGSize {
+        let content = root?.minimumSize ?? CGSize(width: Metrics.minPane, height: Metrics.minPane)
+        let dockHeight = 2 * Metrics.padding + CGFloat(docked.count + 1) * (Metrics.dragBubble + Metrics.gap) - Metrics.gap
+        return CGSize(width: content.width + Metrics.gap + Metrics.dockWidth,
+                      height: max(content.height, dockHeight))
     }
 
     /// 正在显示的排布。
     var shown: Tile? {
-        guard let drag, drag.phase != .attached else { return root }
+        guard let drag else { return root }
         return drag.layout
     }
 
+    var shownDock: [Pane] {
+        drag?.docked ?? docked
+    }
+
     func arrange(_ arrangement: Arrangement) {
-        withAnimation(.snappy) { root = arrangement.tile }
-        if !root.panes.contains(focused) { focused = root.panes[0] }
+        let tile = arrangement.tile(for: panes)
+        let remaining = panes.filter { !(tile?.panes.contains($0) ?? false) }
+        withAnimation(.snappy) {
+            drag = nil
+            root = tile
+            docked = remaining
+            focusVisiblePane()
+        }
+        save()
+    }
+
+    /// 收进停靠栏，保留窗口和内容。
+    func minimize(_ pane: Pane) {
+        guard root?.panes.contains(pane) == true else { return }
+        withAnimation(.snappy) {
+            drag = nil
+            root = root?.removing(pane)
+            docked.append(pane)
+            focusVisiblePane()
+        }
+        save()
+    }
+
+    /// 当前窗口铺满内容区，其余窗口依次收进停靠栏。
+    func expand(_ pane: Pane) {
+        guard let root, root.panes.contains(pane) else { return }
+        withAnimation(.snappy) {
+            drag = nil
+            docked += root.panes.filter { $0 != pane }
+            self.root = .pane(pane)
+            focused = pane
+        }
+        save()
+    }
+
+    /// 点击停靠的圆时恢复窗口；空间不足时由窗口最小尺寸为新卡片让位。
+    func restore(_ pane: Pane, in bounds: CGRect) {
+        guard drag == nil, docked.contains(pane) else { return }
+        let restored: Tile
+        if let root, let target = focused.flatMap({ root.panes.contains($0) ? $0 : nil }) ?? root.panes.first {
+            let frame = root.layout(in: WindowRegions(in: bounds).canvas).panes[target] ?? .zero
+            let edge: Edge = frame.width >= 2 * Metrics.minPane + Metrics.gap ? .trailing : .bottom
+            restored = root.inserting(.pane(pane), beside: target, on: edge)
+        } else { restored = .pane(pane) }
+        withAnimation(.snappy) {
+            root = restored
+            docked.removeAll { $0 == pane }
+            focused = pane
+        }
+        save()
+    }
+
+    private func focusVisiblePane() {
+        let visible = root?.panes ?? []
+        if let focused, visible.contains(focused) { return }
+        focused = visible.first ?? docked.first
     }
 
     /// 拖动 gap 这道缝。两边都不小于各自的最小尺寸，里面再切过的也算上。
@@ -239,24 +412,25 @@ final class Workspace {
         split.ratio = min(max(position, lower), upper) / available
     }
 
+    /// 分栏拖动只改内存，松手后保存最终比例。
+    func finishResize() { save() }
+
+    /// 手势层达到起拖距离后调用，布局层从第一次调用起就接管窗口排布。
     func drag(_ pane: Pane, to location: CGPoint, in bounds: CGRect) {
+        guard panes.contains(pane), drag == nil || drag?.pane == pane else { return }
         pointer = location
-        var next = drag ?? CardDrag(pane: pane)
-        switch next.phase {
-        case .landing:
-            return
-        case .attached:
-            if drag == nil { drag = next }
-            guard let frame = root.layout(in: bounds).panes[pane], !frame.contains(location) else { return }
-            next.phase = .floating
-            next.rest = root.removing(pane)
-        case .floating:
-            break
-        }
+        let regions = WindowRegions(in: bounds)
+        var next = drag ?? CardDrag(pane: pane, rest: root?.removing(pane))
         // 按脱离后、插占位之前的排布判断落点：预览一变卡片就挪位置，按预览判断会来回跳。
         // 指针在卡片之间的缝里时保持原来的落点，出了内容区才取消
-        if let rest = next.rest, bounds.contains(location) {
-            if let (target, frame) = rest.layout(in: bounds).panes.first(where: { $0.value.contains(location) }) {
+        let remainingDock = docked.filter { $0 != pane }
+        if regions.dock.contains(location) {
+            next.spot = .dock(regions.dockIndex(at: location, count: remainingDock.count))
+        } else if regions.canvas.contains(location), let rest = next.rest {
+            if let edge = regions.canvasEdge(at: location) {
+                let minimum = rest.inserting(.placeholder, on: edge).minimumSize
+                next.spot = minimum.width <= regions.canvas.width && minimum.height <= regions.canvas.height ? .edge(edge) : nil
+            } else if let (target, frame) = rest.layout(in: regions.canvas).panes.first(where: { $0.value.contains(location) }) {
                 // 离哪条边近放哪边；这张卡片在那个方向上不够切成两张的，那条边不算
                 let x = (location.x - frame.minX) / frame.width
                 let y = (location.y - frame.minY) / frame.height
@@ -264,32 +438,72 @@ final class Workspace {
                 let tall = frame.height >= 2 * Metrics.minPane + Metrics.gap
                 let edges: [(Edge, CGFloat)] = [(.leading, x), (.trailing, 1 - x), (.top, y), (.bottom, 1 - y)]
                     .filter { $0.0 == .leading || $0.0 == .trailing ? wide : tall }
-                next.spot = edges.min { $0.1 < $1.1 }.map { DropSpot(target: target, edge: $0.0) }
+                next.spot = edges.min { $0.1 < $1.1 }.map { .beside(target, $0.0) }
+            } else if case .beside = next.spot {
+                // 卡片之间的缝里保留上一个分割落点。
+            } else {
+                next.spot = nil
             }
+        } else if regions.canvas.contains(location), next.rest == nil {
+            next.spot = .canvas
         } else {
             next.spot = nil
         }
-        guard drag?.phase == .attached || next.spot != drag?.spot else { return }
-        next.layout = next.placing(.placeholder) ?? next.rest
+        guard drag == nil || next.spot != drag?.spot else { return }
+        next.layout = next.placing(.placeholder, in: regions.canvas) ?? next.rest
+        next.docked = remainingDock
+        if case .dock(let index) = next.spot { next.docked.insert(pane, at: index) }
         withAnimation(.snappy) { drag = next }
     }
 
     func drop(in bounds: CGRect) {
-        guard var next = drag else { return }
-        guard next.phase == .floating else {
-            if next.phase == .attached { drag = nil }
-            return
-        }
-        // 有落点就放进去；没有就回原位，原位先换成占位，别的卡片先让回来
-        let final = next.placing(.pane(next.pane)) ?? root
-        if next.spot == nil { next.layout = root.replacing(next.pane, with: .placeholder) }
-        next.phase = .landing(final.layout(in: bounds).panes[next.pane] ?? .zero)
+        guard let next = drag else { return }
+        // 一次提交树和停靠顺序；同一张 CardSlot 在圆和卡片之间直接动画，不留下延迟回调覆盖新拖动。
         withAnimation(.snappy) {
-            drag = next
-        } completion: {
-            // 展开后和占位一样大，定下排布时卡片不用再动
-            self.root = final
-            self.drag = nil
+            switch next.spot {
+            case .dock:
+                root = next.rest
+                docked = next.docked
+            case .edge, .beside, .canvas:
+                root = next.placing(.pane(next.pane), in: WindowRegions(in: bounds).canvas)
+                docked.removeAll { $0 == next.pane }
+                focused = next.pane
+            case nil:
+                break
+            }
+            drag = nil
+            focusVisiblePane()
+        }
+        save()
+    }
+}
+
+/// 本地文件只记录窗口 ID 和布局数值，不缓存窗口目标或业务对象。
+private struct SavedLayout: Codable {
+    let root: SavedTile?
+    let docked: [Pane]
+    let focused: Pane?
+}
+
+private indirect enum SavedTile: Codable {
+    case pane(Pane)
+    case split(horizontal: Bool, ratio: Double, first: SavedTile, second: SavedTile)
+
+    init(_ tile: Tile) {
+        switch tile {
+        case .pane(let pane): self = .pane(pane)
+        case .split(let split):
+            self = .split(horizontal: split.axis == .horizontal, ratio: split.ratio,
+                          first: SavedTile(split.first), second: SavedTile(split.second))
+        case .placeholder: preconditionFailure("拖动预览不能持久化")
+        }
+    }
+
+    var tile: Tile {
+        switch self {
+        case .pane(let pane): return .pane(pane)
+        case .split(let horizontal, let ratio, let first, let second):
+            return .split(Split(horizontal ? .horizontal : .vertical, min(max(ratio, 0.05), 0.95), first.tile, second.tile))
         }
     }
 }

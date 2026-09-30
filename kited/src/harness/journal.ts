@@ -3,7 +3,9 @@ import { closeSync, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, r
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { diffReferenceSchema } from '../file-diffs.ts';
 import { contextSnapshotSchema } from './context/assembler.ts';
+import { notificationSchema, requestSnapshotSchema } from './request-config.ts';
 import type { Journal, JournalEvent, JournalRecord } from './types.ts';
 
 const id = z.string().min(1);
@@ -11,7 +13,7 @@ const raw = z.record(z.string(), z.json());
 const input = z.object({ id, text: z.string(), source: z.enum(['human', 'kite']) });
 const call = z.object({ id, name: id, arguments: z.json() });
 const item = z.object({ id, raw, call: call.optional() });
-const result = z.object({ status: z.enum(['success', 'error', 'not_executed', 'unknown']), output: z.string() });
+const result = z.object({ status: z.enum(['success', 'error', 'not_executed', 'unknown']), output: z.string(), diff: diffReferenceSchema.optional() });
 const outcome = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }), z.object({ kind: z.literal('interrupted') }),
   z.object({ kind: z.literal('failed'), message: z.string() }),
@@ -21,21 +23,30 @@ const request = { turnId: id, requestId: id };
 const event = z.discriminatedUnion('type', [
   z.object({ type: z.literal('input.received'), input }),
   z.object({ type: z.literal('input.cancelled'), inputId: id }),
+  z.object({ type: z.literal('thread.stopped'), id, returned: z.array(input) }),
   z.object({ type: z.literal('turn.started'), turnId: id }),
   z.object({ type: z.literal('context.prepared'), snapshot: contextSnapshotSchema }),
-  z.object({ type: z.literal('request.started'), ...request, inputIds: z.array(id), contextId: id.optional() }),
+  z.object({ type: z.literal('request.configured'), snapshot: requestSnapshotSchema }),
+  z.object({ type: z.literal('request.started'), ...request, inputIds: z.array(id), contextId: id.optional(),
+    configurationId: id.optional(), notifications: z.array(notificationSchema).optional() }),
   z.object({ type: z.literal('model.item'), ...request, item }),
   z.object({ type: z.literal('request.completed'), ...request, responseId: id, needsFollowUp: z.boolean(), usage: raw.optional() }),
   z.object({ type: z.literal('request.failed'), ...request, message: z.string() }),
   z.object({ type: z.literal('tool.started'), ...request, callId: id }),
   z.object({ type: z.literal('tool.finished'), ...request, callId: id, result }),
   z.object({ type: z.literal('turn.feedback'), turnId: id, text: z.string() }),
-  z.object({ type: z.literal('turn.finished'), turnId: id, outcome }),
+  z.object({ type: z.literal('turn.finished'), turnId: id, outcome, recovery: z.object({ message: z.string() }).optional() }),
   z.object({ type: z.literal('recovery.confirmed') }),
 ]);
 const record = z.intersection(
   z.object({ version: z.literal(1), seq: z.number().int().positive(), at: z.number().int().nonnegative() }), event,
-);
+).transform((row): JournalRecord => {
+  // 旧记录只在读取边界拆分结果与恢复阻塞，不改写原始日志。
+  if (row.type === 'turn.finished' && row.outcome.kind === 'needs_recovery') {
+    return { ...row, outcome: { kind: 'failed', message: row.outcome.message }, recovery: { message: row.outcome.message } };
+  }
+  return row as JournalRecord;
+});
 
 function writeAll(fd: number, bytes: Buffer): void {
   let offset = 0;

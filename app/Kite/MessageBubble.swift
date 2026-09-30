@@ -4,13 +4,13 @@ import SwiftUI
 /// 从排队中到收到，底色直接填进来，气泡大小不变。
 /// 正文原样显示，不解析 Markdown，只把 ``` 围起来的一段排成等宽；斜杠命令开头的命令名用主题色等宽字。
 /// 太长的折起来，底下渐隐。图片和文件排在气泡上面，靠右。
-/// 气泡里不放按钮，大小固定。iPhone 上点它、Mac 上右键弹出操作栏（见 ActionBar.swift），再来一下收起，和消息右边对齐：
+/// 气泡里不放按钮，大小固定。iPhone 上长按、Mac 上右键弹出操作栏（见 ActionBar.swift），和消息右边对齐：
 /// 排队中的是立即发送、编辑、取消发送；收到了的是编辑、回退、分叉。都有复制，折起来的还有展开全文。
-/// 刚发出去时气泡连同附件在下面一点藏着，对话往上滑的同时从下往上浮进来、淡显（见 SessionPane.send）。
+/// 刚发出去时气泡连同附件在下面一点藏着，对话往上滑的同时从下往上浮进来、淡显（见 ThreadPane.send）。
 struct MessageBubble: View {
     let message: Message
     let queued: Bool
-    @Environment(Session.self) private var session
+    @Environment(WorkThread.self) private var thread
     @Environment(\.arrivingMessages) private var arrivingMessages
     @Environment(\.selectedRow) private var selection
     @State private var expanded = false
@@ -33,7 +33,7 @@ struct MessageBubble: View {
                     .opensActionBar(.message(message.id))
                     #endif
             }
-            // 动画跟着 SessionPane 发送时的那一下走，和对话往上滑同步
+            // 动画跟着 ThreadPane 发送时的那一下走，和对话往上滑同步
             .offset(y: arriving ? Metrics.bubbleRise : 0)
             .opacity(arriving ? 0 : 1)
             .actionBar(.message(message.id), side: .trailing) { actions(foldable: foldable) }
@@ -56,14 +56,14 @@ struct MessageBubble: View {
             .contentShape(BubbleShape())
     }
 
-    /// 气泡里的正文连同边距。iPhone 上点一下开关操作栏；长按以后接着拖是选字，操作栏自己收起。
+    /// 气泡里的正文连同边距。iPhone 上长按显示操作栏；接着拖是选字，操作栏自己收起。
     /// Mac 上右键开关操作栏（opensActionBar），左键选字。
     @ViewBuilder
     private var content: some View {
         #if os(iOS)
         SelectableText(message: message, inset: Metrics.bubblePadding,
-                       tapped: { selection.toggle(.message(message.id)) },
-                       selecting: { selection.close() })
+                       showActions: { selection.show(.message(message.id)) },
+                       dismissActions: { selection.close() })
         #else
         MessageText(message: message)
             .padding(.horizontal, Metrics.bubblePadding.width)
@@ -74,14 +74,14 @@ struct MessageBubble: View {
     @ViewBuilder
     private func actions(foldable: Bool) -> some View {
         if queued {
-            if session.failed.contains(message.id) {
-                ActionButton("重试发送", icon: "arrow.clockwise") { done { session.retry(message) } }
-                    .disabled(!session.connected)
+            if thread.failed.contains(message.id) {
+                ActionButton("重试发送", icon: "arrow.clockwise") { done { thread.retry(message) } }
+                    .disabled(!thread.connected)
             }
-            ActionButton("编辑", icon: "pencil") { done { session.cancel(message, editing: true) } }
-                .disabled(!session.canCancel)
-            ActionButton("取消发送", icon: "xmark", role: .destructive) { done { session.cancel(message) } }
-                .disabled(!session.canCancel)
+            ActionButton("编辑", icon: "pencil") { done { thread.cancel(message, editing: true) } }
+                .disabled(!thread.canCancel)
+            ActionButton("取消发送", icon: "xmark", role: .destructive) { done { thread.cancel(message) } }
+                .disabled(!thread.canCancel)
         }
         ActionButton("复制", icon: "doc.on.doc") {
             copyToPasteboard(message.typed)
@@ -290,6 +290,6 @@ private struct BubbleSurface: View {
 // MARK: - 发送动画
 
 extension EnvironmentValues {
-    /// 刚发出、气泡还在下面藏着的消息：对话往上滑的同时，气泡从下往上浮进来。SessionPane 给出。
+    /// 刚发出、气泡还在下面藏着的消息：对话往上滑的同时，气泡从下往上浮进来。ThreadPane 给出。
     @Entry var arrivingMessages: Set<String> = []
 }

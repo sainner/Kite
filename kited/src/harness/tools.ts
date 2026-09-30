@@ -4,8 +4,10 @@ import type { Tool, ToolCall, ToolResult } from './types.ts';
 export interface BatchOptions {
   cwd: string;
   signal: AbortSignal;
+  turnId?: string;
   tools: ReadonlyMap<string, Tool>;
   started(call: ToolCall): void;
+  output?(call: ToolCall, text: string, limit: number): void;
   finished(call: ToolCall, result: ToolResult): void;
   /** 存储故障或结果未知时停止当前请求与其余工具。 */
   fatal(error: unknown): void;
@@ -58,11 +60,14 @@ export class ToolBatch {
       return;
     }
     let result: ToolResult;
+    let acceptingOutput = true;
     try {
-      result = await tool.execute(call.arguments, { cwd: o.cwd, signal: o.signal });
+      result = await tool.execute(call.arguments, { cwd: o.cwd, signal: o.signal, callId: call.id, turnId: o.turnId,
+        output: (text, limit) => { if (acceptingOutput) o.output?.(call, text, limit); } });
     } catch (error) {
       result = { status: o.signal.aborted ? 'unknown' : 'error', output: String(error) };
     }
+    acceptingOutput = false;
     o.finished(call, result);
     if (result.status === 'unknown') o.fatal(new Error(`工具 ${call.id} 的执行结果未知，需要确认恢复`));
   }

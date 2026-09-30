@@ -24,7 +24,7 @@ const TOTAL_MAX = 15;
  * 这些变了依赖图看不出影响范围，跑全量。test/setup.ts 是 bunfig.toml 里的 preload，fake-api.ts 是它引的：
  * 测试文件不 import 它们，bun test --changed 看不出所有测试都受影响。
  */
-const FULL_TRIGGERS = ['kited/package.json', 'kited/bun.lock', 'kited/tsconfig.json', 'kited/bunfig.toml', 'kited/test/setup.ts', 'kited/test/fake-api.ts'];
+const FULL_TRIGGERS = ['kited/package.json', 'kited/bun.lock', 'kited/tsconfig.json', 'kited/bunfig.toml', 'kited/test/setup.ts', 'kited/test/fake-api.ts', 'kited/scripts/check.ts'];
 
 writeFileSync(LOG, '');
 const log = (text: string) => writeFileSync(LOG, text, { flag: 'a' });
@@ -97,8 +97,8 @@ const passed = app ? '类型检查、lint 和 App 编译通过' : '类型检查�
 // 3. 跑测试。小测试只调 git、互不相干，按文件分到多个进程并行跑；
 // 中测试每个都起 Claude Code，并行就是同时起好几个，照旧按顺序跑
 const TIERS = [
-  { dir: 'small', name: '小', args: ['--parallel'], limit: 1 },
-  { dir: 'medium', name: '中', args: [], limit: 3 },
+  { dir: 'small', name: '小', workers: 2, limit: 1 },
+  { dir: 'medium', name: '中', workers: 1, limit: 3 },
 ];
 type Tier = (typeof TIERS)[number];
 const unescape = (s: string) => s.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#10;/g, '\n').replace(/&amp;/g, '&');
@@ -107,13 +107,13 @@ interface Case { name: string; file: string; time: number; tier: Tier; failure?:
 const cases: Case[] = [];
 const problems: string[] = [];
 const started = performance.now();
-for (const tier of TIERS) {
-  const report = join(LOG_DIR, `${tier.dir}.xml`);
-  const tests = await run(['bun', 'test', ...tier.args, ...(full ? [] : [base ? `--changed=${base}` : '--changed']), `test/${tier.dir}`, '--reporter=junit', `--reporter-outfile=${report}`]);
+async function runTests(tier: Tier, path: string, index: number): Promise<void> {
+  const report = join(LOG_DIR, `${tier.dir}-${index}.xml`);
+  const tests = await run(['bun', 'test', ...(full ? [] : [base ? `--changed=${base}` : '--changed']), path, '--reporter=junit', `--reporter-outfile=${report}`]);
   // 没有受影响的测试时 bun 不写报告，退出码为 0
   if (!existsSync(report)) {
     if (tests.code !== 0) problems.push(`${tier.name}测试没跑起来：`, ...tail(tests.out));
-    continue;
+    return;
   }
   const xml = readFileSync(report, 'utf8');
   const before = cases.length;
@@ -133,6 +133,18 @@ for (const tier of TIERS) {
   if (tests.code !== 0 && !cases.slice(before).some((c) => c.failure !== undefined)) {
     problems.push('测试进程出错退出：', ...tail(tests.out));
   }
+}
+for (const tier of TIERS) {
+  const paths = tier.workers === 1 ? [`test/${tier.dir}`]
+    : [...new Bun.Glob(`test/${tier.dir}/**/*.test.ts`).scanSync({ cwd: KITED })].sort();
+  let next = 0;
+  // Bun test 没有 --parallel；独立进程隔离各文件的 preload、环境变量与模块级清理。
+  await Promise.all(Array.from({ length: tier.workers }, async () => {
+    while (next < paths.length) {
+      const index = next++;
+      await runTests(tier, paths[index]!, index);
+    }
+  }));
 }
 const seconds = (performance.now() - started) / 1000;
 

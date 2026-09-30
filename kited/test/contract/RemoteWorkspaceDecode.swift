@@ -1,0 +1,256 @@
+import Foundation
+
+@main
+struct RemoteWorkspaceDecode {
+    @MainActor static func main() throws {
+        guard CommandLine.arguments.count == 12 else {
+            throw DecodeError.usage
+        }
+        let url = URL(fileURLWithPath: CommandLine.arguments[1])
+        let machineURL = URL(fileURLWithPath: CommandLine.arguments[2])
+        let otherMachineURL = URL(fileURLWithPath: CommandLine.arguments[3])
+        let localProjectsURL = URL(fileURLWithPath: CommandLine.arguments[4])
+        let remoteProjectsURL = URL(fileURLWithPath: CommandLine.arguments[5])
+        let machine = try JSONDecoder().decode(RemoteMachine.self, from: Data(contentsOf: machineURL))
+        let otherMachine = try JSONDecoder().decode(RemoteMachine.self, from: Data(contentsOf: otherMachineURL))
+        let localProjects = try JSONDecoder().decode([RemoteProject].self, from: Data(contentsOf: localProjectsURL))
+        let remoteProjects = try JSONDecoder().decode([RemoteProject].self, from: Data(contentsOf: remoteProjectsURL))
+        let workspaces = try JSONDecoder().decode([RemoteWorkspace].self, from: Data(contentsOf: url))
+        let cursorFixture = try JSONDecoder().decode(CatalogCursorFixture.self,
+            from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[8])))
+        let archivedWorkspaces = try JSONDecoder().decode([RemoteWorkspace].self,
+            from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[9])))
+        let definitions = try JSONDecoder().decode([RemotePluginDefinition].self,
+            from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[10])))
+        let files = try JSONDecoder().decode(FileFixture.self,
+            from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[11])))
+        guard let root = workspaces.first(where: { $0.workspace.kind == .root }),
+              let worktree = workspaces.first(where: { $0.workspace.kind == .worktree }) else {
+            throw DecodeError.missingWorkspaceKind
+        }
+        guard root.threads.isEmpty,
+              root.instances.isEmpty,
+              root.machine.id == machine.id,
+              worktree.machine.id == machine.id,
+              root.checkout.machineId == machine.id,
+              worktree.checkout.machineId == machine.id,
+              worktree.project.id == root.project.id,
+              worktree.checkout.id == root.checkout.id,
+              worktree.threads.count >= 2,
+              Set(worktree.threads.map(\.instanceId)).count == worktree.threads.count,
+              worktree.threads.allSatisfy({ $0.runtime == .harness && !$0.nativeId.isEmpty }) else {
+            throw DecodeError.invalidRelationships
+        }
+        let threadInstanceIDs = Set(worktree.threads.map(\.instanceId))
+        let agentInstances = worktree.instances.filter { $0.definitionId == "kite.agent.coding" }
+        guard Set(agentInstances.map(\.id)) == threadInstanceIDs,
+              agentInstances.allSatisfy({ $0.workspaceId == worktree.workspace.id && $0.status == .open && $0.presentation == .window }),
+              agentInstances.allSatisfy({ $0.state?.path == nil && $0.state?.revision == nil }),
+              let filesInstance = worktree.instances.first(where: { $0.definitionId == "kite.files" }),
+              filesInstance.workspaceId == worktree.workspace.id,
+              filesInstance.status == .open,
+              filesInstance.presentation == .window else {
+            throw DecodeError.invalidRelationships
+        }
+        try verifyFiles(files, instance: filesInstance)
+        let fileViews = worktree.windows.filter { $0.target.instanceId == filesInstance.id }
+        let agentViews = worktree.windows.filter { threadInstanceIDs.contains($0.target.instanceId) }
+        guard fileViews.count == 1,
+              fileViews[0].target.viewId == "files",
+              fileViews.allSatisfy({ $0.workspaceId == worktree.workspace.id && $0.state == .open }),
+              Set(agentViews.map { $0.target.instanceId }) == threadInstanceIDs,
+              Set(agentViews.map { $0.target.viewId }) == ["conversation"],
+              agentViews.allSatisfy({ $0.workspaceId == worktree.workspace.id && $0.state == .open }) else {
+            throw DecodeError.invalidRelationships
+        }
+        guard let agentDefinition = definitions.first(where: { $0.id == "kite.agent.coding" }),
+              agentDefinition.defaultView == "conversation",
+              agentDefinition.agent?.runtime == .harness,
+              agentDefinition.views.map(\.id) == ["conversation"],
+              let filesDefinition = definitions.first(where: { $0.id == "kite.files" }),
+              filesDefinition.defaultView == "files",
+              filesDefinition.views.map(\.id) == ["files"] else {
+            throw DecodeError.invalidRelationships
+        }
+        try verifyConnections(
+            machine: machine,
+            address: CommandLine.arguments[6],
+            otherMachine: otherMachine,
+            otherAddress: CommandLine.arguments[7],
+            localProjects: localProjects,
+            remoteProjects: remoteProjects
+        )
+        try verifyCatalog(initial: workspaces, archived: archivedWorkspaces, cursors: cursorFixture)
+        print("已解码 \(workspaces.count) 个工作区聚合")
+    }
+
+    private static func verifyFiles(_ files: FileFixture, instance: RemotePluginInstance) throws {
+        guard files.directory.entries.contains(where: {
+                  $0.name == "base.txt" && $0.path == "base.txt" && $0.kind == "file"
+              }),
+              files.directory.total >= files.directory.entries.count,
+              files.page.path == "base.txt",
+              files.page.text.contains("原始"),
+              files.page.offset == 1,
+              files.page.totalLines >= 1,
+              !files.page.version.isEmpty,
+              files.before.path == nil,
+              files.selected.path == "base.txt",
+              files.selected.revision != files.before.revision,
+              files.after == files.selected,
+              instance.state?.path == files.selected.path,
+              instance.state?.revision == files.selected.revision else {
+            throw DecodeError.invalidFiles
+        }
+        print("已解码文件目录、文本页、选择状态及插件实例状态")
+    }
+
+    @MainActor private static func verifyCatalog(
+        initial: [RemoteWorkspace], archived: [RemoteWorkspace], cursors: CatalogCursorFixture
+    ) throws {
+        guard let before = EventCursor(cursors.before),
+              let after = EventCursor(cursors.after),
+              let other = EventCursor(cursors.other),
+              cursors.archived.count == 3,
+              after.covers(before), !before.covers(after), !after.covers(other),
+              archived.contains(where: { workspace in
+                  guard workspace.workspace.kind == .worktree, workspace.threads.count == 2 else { return false }
+                  let ids = Set(workspace.threads.map(\.instanceId))
+                  let agents = workspace.instances.filter { $0.definitionId == "kite.agent.coding" }
+                  return Set(agents.map(\.id)) == ids && workspace.instances.allSatisfy({ $0.status == .archived })
+              }) else {
+            throw DecodeError.invalidCatalog
+        }
+        let notifications = try cursors.archived.map { raw -> EventCursor in
+            guard let value = EventCursor(raw) else { throw DecodeError.invalidCatalog }
+            return value
+        }
+        let refresh = CatalogRefresh()
+        let firstGeneration = refresh.generation
+        var displayed = ""
+        var reads = 0
+        guard refresh.apply(before, generation: firstGeneration, update: { displayed = "before" }),
+              notifications.allSatisfy({ refresh.needsRefresh($0) }) else {
+            throw DecodeError.invalidCatalog
+        }
+        guard refresh.apply(after, generation: firstGeneration, update: { displayed = "after"; reads += 1 }),
+              reads == 1,
+              notifications.allSatisfy({ !refresh.needsRefresh($0) }),
+              !refresh.apply(before, generation: firstGeneration, update: { displayed = "stale" }),
+              !refresh.apply(other, generation: firstGeneration, update: { displayed = "wrong-machine" }),
+              displayed == "after" else {
+            throw DecodeError.invalidCatalog
+        }
+
+        let reconnected = refresh.reset()
+        guard refresh.needsRefresh(before),
+              refresh.apply(before, generation: reconnected, update: { displayed = "reconnected" }),
+              !refresh.apply(after, generation: firstGeneration, update: { displayed = "old-connection" }),
+              displayed == "reconnected" else {
+            throw DecodeError.invalidCatalog
+        }
+        let switched = refresh.reset()
+        guard refresh.apply(other, generation: switched, update: { displayed = "other-machine" }),
+              !refresh.apply(after, generation: switched, update: { displayed = "old-machine" }),
+              displayed == "other-machine" else {
+            throw DecodeError.invalidCatalog
+        }
+        print("已核对目录游标、合并刷新、乱序响应与连接切换")
+    }
+
+    // 用独立 suite 走真实 UserDefaults 写入、重载和切换，不触碰用户的默认配置。
+    private static func verifyConnections(
+        machine: RemoteMachine, address: String, otherMachine: RemoteMachine, otherAddress: String,
+        localProjects: [RemoteProject], remoteProjects: [RemoteProject]
+    ) throws {
+        guard localProjects.count == 1,
+              remoteProjects.count == 2,
+              remoteProjects.contains(where: { $0.id == localProjects[0].id }),
+              remoteProjects.contains(where: { $0.id != localProjects[0].id && $0.name == localProjects[0].name }) else {
+            throw DecodeError.invalidConnections
+        }
+        let suite = "kite-contract-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { throw DecodeError.invalidConnections }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func reload() throws -> MachineConnections {
+            defaults.synchronize()
+            guard let reader = UserDefaults(suiteName: suite) else { throw DecodeError.invalidConnections }
+            return MachineConnections.load(from: reader)
+        }
+
+        var connections = MachineConnections()
+        connections.remember(machine, address: address)
+        connections.updateProjects(localProjects, on: machine.id)
+        try connections.save(to: defaults)
+        connections = try reload()
+        guard connections.entries.count == 1,
+              connections.selectedID == machine.id,
+              connections.selected?.address == address,
+              connections.selected?.projects == localProjects else { throw DecodeError.invalidConnections }
+
+        let changedAddress = address + "/"
+        connections.remember(machine, address: changedAddress)
+        try connections.save(to: defaults)
+        connections = try reload()
+        guard connections.entries.count == 1,
+              connections.selected?.address == changedAddress,
+              connections.selected?.projects == localProjects else { throw DecodeError.invalidConnections }
+
+        connections.remember(otherMachine, address: otherAddress)
+        connections.updateProjects(remoteProjects, on: otherMachine.id)
+        try connections.save(to: defaults)
+        connections = try reload()
+        guard connections.entries.count == 2,
+              connections.selectedID == otherMachine.id,
+              connections.selected?.address == otherAddress,
+              connections.selected?.projects == remoteProjects,
+              connections.knownProjects.count == remoteProjects.count,
+              Set(connections.knownProjects.map(\.id)) == Set(remoteProjects.map(\.id)) else {
+            throw DecodeError.invalidConnections
+        }
+
+        connections.select(machine.id)
+        try connections.save(to: defaults)
+        connections = try reload()
+        guard connections.selectedID == machine.id,
+              connections.selected?.address == changedAddress,
+              connections.selected?.projects == localProjects,
+              connections.entries.first(where: { $0.id == otherMachine.id })?.address == otherAddress else {
+            throw DecodeError.invalidConnections
+        }
+        let distinctProject = remoteProjects.first(where: { $0.id != localProjects[0].id })!
+        connections.updateProjects([distinctProject], on: otherMachine.id)
+        try connections.save(to: defaults)
+        connections = try reload()
+        guard connections.selectedID == machine.id,
+              connections.selected?.address == changedAddress,
+              connections.entries.first(where: { $0.id == otherMachine.id })?.projects == [distinctProject] else {
+            throw DecodeError.invalidConnections
+        }
+        print("已恢复两台工作机的连接地址、项目身份缓存与选中状态")
+    }
+}
+
+private struct CatalogCursorFixture: Decodable {
+    let before: String
+    let after: String
+    let other: String
+    let archived: [String]
+}
+
+private struct FileFixture: Decodable {
+    let directory: FileDirectory
+    let page: FilePage
+    let before: FileSelection
+    let selected: FileSelection
+    let after: FileSelection
+}
+
+private enum DecodeError: Error {
+    case usage
+    case missingWorkspaceKind
+    case invalidRelationships
+    case invalidConnections
+    case invalidCatalog
+    case invalidFiles
+}

@@ -22,7 +22,8 @@ const block: z.ZodType<ContextBlock> = z.lazy(() => z.discriminatedUnion('type',
 ]));
 
 function variablesFor(definition: ContextSnapshot['definition']) {
-  return definition.version === 1 ? definition.variables : contextScenes[definition.scene].variables;
+  if (definition.version === 1) return definition.variables;
+  return contextScenes[definition.scene].variables;
 }
 
 function validateDefinition(definition: ContextSnapshot['definition'], ctx: z.RefinementCtx): void {
@@ -138,7 +139,7 @@ function renderContext(snapshot: ContextSnapshot): ContextAssembly {
 export function literalContext(text: string): ContextSource {
   return {
     definition: {
-      version: 2, id: 'literal', title: '宿主指令', scene: 'session.create',
+      version: 2, id: 'literal', title: '宿主指令', scene: 'thread.create',
       blocks: [{ type: 'paragraph', id: 'instructions', title: '指令', parts: [{ type: 'text', text }] }],
     },
     bindings: {},

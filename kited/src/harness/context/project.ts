@@ -10,7 +10,7 @@ const paragraph = (id: string, title: string, text: string): ContextBlock => ({
 });
 
 export const defaultContextDefinition: ContextDefinition = {
-  version: 2, id: 'kite.work', title: '工作会话', scene: 'session.create',
+  version: 2, id: 'kite.work', title: '工作会话', scene: 'thread.create',
   blocks: [
     paragraph('identity', '基础行为', '你是 Kite 的本地编程助手。使用简体中文交流，按用户要求完成工作并验证结果。'),
     { type: 'paragraph', id: 'environment', title: '运行环境', parts: [
@@ -22,7 +22,7 @@ export const defaultContextDefinition: ContextDefinition = {
     paragraph('project-rules', '项目约定', '进入子目录前读取适用的 AGENTS.md。项目记忆只使用 .kite/memory，不新建另一份。'),
     paragraph('commands', '命令执行', 'shell 命令直接在当前目录执行，不要启动后台任务或脱离进程组的守护进程。'),
     paragraph('verification', '验证和交付', '修改文件后做与任务相关的检查。不要擅自提交、推送或部署。'),
-    paragraph('capabilities', '当前能力', '当前提供文件和 shell 工具，没有子 agent 或 MCP 工具；项目要求这些能力时如实说明限制，不声称已经调用。'),
+    paragraph('capabilities', '当前能力', '以本次请求实际开放的工具为准。只有提供 agent 工具的宿主才支持创建和管理其他 agent；共享工作区的执行互斥仍然适用。没有 MCP 工具，不声称已经调用未开放的能力。'),
     {
       type: 'condition', id: 'documents', title: '项目材料', variable: 'project.documents',
       cases: [{ id: 'documents-absent', title: '没有项目材料', equals: '', blocks: [] }],
@@ -58,12 +58,12 @@ function documents(cwd: string): ContextBinding {
 
 /** 每次请求获取一份材料；没有监听器，不主动打断或唤醒会话。 */
 export function projectContext(cwd: string, definition: ContextDefinition = defaultContextDefinition): ContextSource {
-  if (definition.scene !== 'session.create') throw new Error('项目基础上下文须使用 session.create 场景');
+  if (definition.scene !== 'thread.create') throw new Error('项目基础上下文须使用 thread.create 场景');
   const directory = realpathSync(cwd);
   const bindings = {
     'environment.cwd': { text: directory },
     'environment.date': { text: new Date().toISOString().slice(0, 10) },
     'project.documents': documents(directory),
-  } satisfies Record<ContextVariable<'session.create'>, ContextBinding>;
+  } satisfies Record<ContextVariable<'thread.create'>, ContextBinding>;
   return { definition, bindings };
 }

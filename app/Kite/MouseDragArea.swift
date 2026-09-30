@@ -54,6 +54,7 @@ struct MouseDragArea: NSViewRepresentable {
     var minimumDistance: CGFloat = 0
     var onChanged: (MouseDrag) -> Void
     var onEnded: () -> Void = {}
+    var onClick: (() -> Void)?
 
     func makeNSView(context: Context) -> DragView {
         DragView()
@@ -69,6 +70,7 @@ struct MouseDragArea: NSViewRepresentable {
         view.minimumDistance = minimumDistance
         view.onChanged = onChanged
         view.onEnded = onEnded
+        view.onClick = onClick
     }
 
     final class DragView: PressDragView {
@@ -76,6 +78,7 @@ struct MouseDragArea: NSViewRepresentable {
         var activeCursor: NSCursor?
         var onChanged: ((MouseDrag) -> Void)?
         var onEnded: (() -> Void)?
+        var onClick: (() -> Void)?
         private var dragging = false
 
         override func resetCursorRects() {
@@ -98,7 +101,7 @@ struct MouseDragArea: NSViewRepresentable {
             if dragging {
                 if activeCursor != nil { NSCursor.pop() }
                 onEnded?()
-            }
+            } else if pressedAt != nil { onClick?() }
             dragging = false
             super.mouseUp(with: event)
         }
