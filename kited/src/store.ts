@@ -4,6 +4,15 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import type { AgentInstance, Checkout, Machine, PluginInstance, Project, Thread, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
 import type { ThreadNotification } from './harness/types.ts';
+import type { ContextDefinition } from './harness/context/types.ts';
+
+export interface ThreadTitle {
+  title: string;
+  mode: 'auto' | 'manual';
+  revision: string;
+  generatedAt: number | null;
+  through: string | null;
+}
 
 const SCHEMA = `
 create table if not exists machine (
@@ -33,9 +42,15 @@ create table if not exists threads (
   instance_id text primary key references plugin_instances(id),
   runtime text not null check (runtime in ('claude', 'harness')), native_id text not null
 );
+create table if not exists thread_titles (
+  instance_id text primary key references threads(instance_id) on delete cascade,
+  mode text not null check (mode in ('auto', 'manual')), revision text not null,
+  generated_at integer, through_record text
+);
 create table if not exists workspace_windows (
   id text primary key, workspace_id text not null references workspaces(id),
-  instance_id text not null references plugin_instances(id), view_id text not null,
+  -- 关闭记录和收据比业务实例活得更久，目标 ID 不设置级联外键。
+  instance_id text not null, view_id text not null,
   state text not null check (state in ('open', 'closed')), created_at integer not null
 );
 create unique index if not exists plugin_view_window on workspace_windows(instance_id, view_id) where state = 'open';
@@ -51,6 +66,9 @@ create index if not exists instance_notification_order on instance_notifications
 create table if not exists operation_receipts (
   caller text not null, id text not null, request text not null, result text,
   primary key(caller, id)
+);
+create table if not exists context_templates (
+  id text primary key, definition text not null
 );
 `;
 const projectOf = (r: any): Project => ({ id: r.id, name: r.name, createdAt: r.created_at });
@@ -76,6 +94,7 @@ const windowOf = (r: any): WorkspaceWindow => ({
 export class Store {
   private db: Database;
   readonly machine: Machine;
+  transaction<T>(action: () => T): T { return this.db.transaction(action)(); }
   constructor(path: string) {
     this.db = new Database(path, { create: true, strict: true });
     this.db.exec('pragma journal_mode = wal; pragma foreign_keys = on;');
@@ -92,6 +111,18 @@ export class Store {
   }
 
   projects(): Project[] { return this.db.query('select * from projects order by created_at, id').all().map(projectOf); }
+  contextTemplates(): ContextDefinition[] {
+    return this.db.query('select definition from context_templates order by id').all()
+      .map((row: any) => JSON.parse(row.definition));
+  }
+  contextTemplate(id: string): ContextDefinition | undefined {
+    const row = this.db.query('select definition from context_templates where id = ?').get(id) as { definition: string } | null;
+    return row ? JSON.parse(row.definition) : undefined;
+  }
+  saveContextTemplate(definition: ContextDefinition): void {
+    this.db.query('insert into context_templates values (?, ?) on conflict(id) do update set definition = excluded.definition')
+      .run(definition.id, JSON.stringify(definition));
+  }
   project(id: string): Project | null {
     const r = this.db.query('select * from projects where id = ?').get(id);
     return r ? projectOf(r) : null;
@@ -168,7 +199,29 @@ export class Store {
     })();
   }
   renameInstance(id: string, title: string): void {
-    this.db.query('update plugin_instances set title = ? where id = ?').run(title, id);
+    const current = this.threadTitle(id);
+    if (current) this.saveThreadTitle(id, current.revision, { ...current, title });
+    else this.db.query('update plugin_instances set title = ? where id = ?').run(title, id);
+  }
+  threadTitle(id: string): ThreadTitle | null {
+    const row = this.db.query(`select i.title, t.mode, t.revision, t.generated_at, t.through_record
+      from threads h join plugin_instances i on i.id = h.instance_id
+      left join thread_titles t on t.instance_id = h.instance_id where h.instance_id = ?`).get(id) as
+      { title: string; mode: ThreadTitle['mode'] | null; revision: string | null; generated_at: number | null; through_record: string | null } | null;
+    return row ? { title: row.title, mode: row.mode ?? 'auto', revision: row.revision ?? 'initial',
+      generatedAt: row.generated_at, through: row.through_record } : null;
+  }
+  /** 标题与生成进度原子保存；手动修改和切回自动都会使旧生成结果失效。 */
+  saveThreadTitle(id: string, expectedRevision: string, next: Omit<ThreadTitle, 'revision'>): boolean {
+    return this.db.transaction(() => {
+      if (this.threadTitle(id)?.revision !== expectedRevision) return false;
+      this.db.query('update plugin_instances set title = ? where id = ?').run(next.title, id);
+      this.db.query(`insert into thread_titles values (?, ?, ?, ?, ?)
+        on conflict(instance_id) do update set mode = excluded.mode, revision = excluded.revision,
+        generated_at = excluded.generated_at, through_record = excluded.through_record`)
+        .run(id, next.mode, randomUUID(), next.generatedAt, next.through);
+      return true;
+    })();
   }
   setInstanceState(id: string, state: PluginInstance['state']): void {
     this.db.query('update plugin_instances set state = ? where id = ?').run(JSON.stringify(state), id);
@@ -209,6 +262,9 @@ export class Store {
     const row = this.db.query('select * from plugin_instances where id = ?').get(id);
     return row ? instanceOf(row) : null;
   }
+  hasInstanceWindows(id: string): boolean {
+    return this.db.query('select 1 from workspace_windows where instance_id = ? limit 1').get(id) !== null;
+  }
   windows(workspaceId: string): WorkspaceWindow[] {
     return this.db.query("select * from workspace_windows where workspace_id = ? and state = 'open' order by created_at, id")
       .all(workspaceId).map(windowOf);
@@ -236,6 +292,11 @@ export class Store {
   }
   closeWindow(id: string): void {
     this.db.query("update workspace_windows set state = 'closed' where id = ?").run(id);
+  }
+  /** 关闭窗口及请求收据保留原目标 ID；业务实例、配置和状态不再保留。 */
+  deleteInstance(id: string): void {
+    this.db.query('delete from instance_notifications where instance_id = ?').run(id);
+    this.db.query('delete from plugin_instances where id = ?').run(id);
   }
   /** 执行上下文只需要父级关系，不读取同级线程和插件窗口。 */
   private contextOf(workspace: Workspace) {

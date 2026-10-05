@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, parse } from 'node:path';
+import { contextDefinitionSchema } from './assembler.ts';
 import type { ContextVariable } from './scenes.ts';
 import type { ContextBinding, ContextBlock, ContextDefinition, ContextSource } from './types.ts';
 
@@ -58,12 +59,25 @@ function documents(cwd: string): ContextBinding {
 
 /** 每次请求获取一份材料；没有监听器，不主动打断或唤醒会话。 */
 export function projectContext(cwd: string, definition: ContextDefinition = defaultContextDefinition): ContextSource {
+  definition = contextDefinitionSchema.parse(definition);
   if (definition.scene !== 'thread.create') throw new Error('项目基础上下文须使用 thread.create 场景');
-  const directory = realpathSync(cwd);
-  const bindings = {
-    'environment.cwd': { text: directory },
-    'environment.date': { text: new Date().toISOString().slice(0, 10) },
-    'project.documents': documents(directory),
-  } satisfies Record<ContextVariable<'thread.create'>, ContextBinding>;
+  const sources = {
+    'environment.cwd': () => ({ text: realpathSync(cwd) }),
+    'environment.date': () => ({ text: new Date().toISOString().slice(0, 10) }),
+    'project.documents': () => documents(realpathSync(cwd)),
+  } satisfies Record<ContextVariable<'thread.create'>, () => ContextBinding>;
+  const bindings: Record<string, ContextBinding> = {};
+  const binding = (name: string) => bindings[name] ??= sources[name as keyof typeof sources]();
+  const collect = (blocks: ContextBlock[]) => {
+    for (const block of blocks) {
+      if (block.type === 'paragraph') {
+        for (const part of block.parts) if (part.type === 'variable') binding(part.name);
+      } else {
+        const value = binding(block.variable).text;
+        collect((block.cases.find((branch) => branch.equals === value) ?? block.otherwise).blocks);
+      }
+    }
+  };
+  collect(definition.blocks);
   return { definition, bindings };
 }

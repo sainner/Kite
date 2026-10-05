@@ -1,20 +1,30 @@
 #if os(iOS)
+import CoreText
 import SwiftUI
 import UIKit
 
-/// iPhone 上人发的消息的正文，样子照 MessageText：原样显示，``` 围起来的一段排成等宽、衬一个圆角底色，
-/// 斜杠命令的命令名在最前面、主题色。手势见 SelectableTextView。inset 是气泡的边距，放在文本视图里面，整个气泡都能点、能选字。
+/// iPhone 用户消息的一段普通文字，斜杠命令的命令名在最前面；颜色由气泡状态决定。
+/// 独立代码块由 MessageText 使用共用 CodeBlock 排版。
 struct SelectableText: View {
-    @Environment(\.colorScheme) private var colorScheme
-    let message: Message
-    let inset: CGSize
+    let text: String
+    let command: String?
+    let color: UIColor
     let showActions: () -> Void
     let dismissActions: () -> Void
 
     var body: some View {
-        // 有代码块时底色占满整行，气泡按能给的最宽来；没有就贴着字
-        let hasCode = message.segments.contains { if case .code = $0 { true } else { false } }
-        SelectableTextView(text: message.attributed(colorScheme: colorScheme), inset: inset, fillsWidth: hasCode, showActions: showActions, dismissActions: dismissActions)
+        SelectableTextView(text: attributed, inset: .zero, fillsWidth: false, showActions: showActions, dismissActions: dismissActions)
+    }
+
+    private var attributed: NSAttributedString {
+        let result = NSMutableAttributedString()
+        if let command {
+            let code = UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: .monospacedSystemFont(ofSize: 15, weight: .regular))
+            result.append(NSAttributedString(string: command, attributes: [.font: code, .foregroundColor: color]))
+            if !text.isEmpty { result.append(NSAttributedString(string: " ")) }
+        }
+        result.append(NSAttributedString(string: text, attributes: [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: color]))
+        return result
     }
 }
 
@@ -35,7 +45,11 @@ struct SelectableMarkdown: View {
             ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
                 switch chunk {
                 case .prose(let blocks):
-                    SelectableTextView(text: Self.attributed(blocks, colorScheme: colorScheme, scope: referenceScope), inset: .zero, fillsWidth: true, showActions: showActions, dismissActions: dismissActions)
+                    // 文本视图为背景留出绘制余量，外层抵消这段边距，正文宽度与起点不变。
+                    SelectableTextView(text: Self.attributed(blocks, colorScheme: colorScheme, scope: referenceScope),
+                                       inset: CGSize(width: Metrics.inlineCodePadding, height: 0), fillsWidth: true,
+                                       showActions: showActions, dismissActions: dismissActions)
+                        .padding(.horizontal, -Metrics.inlineCodePadding)
                 case .block(let block):
                     MarkdownBlockView(block: block)
                         .contentShape(Rectangle())
@@ -76,6 +90,7 @@ struct SelectableMarkdown: View {
         for (index, block) in blocks.enumerated() {
             if index > 0 { result.append(NSAttributedString(string: "\n")) }
             let style = NSMutableParagraphStyle()
+            style.lineSpacing = Metrics.markdownLineSpacing
             style.paragraphSpacingBefore = index > 0 ? Metrics.markdownBlockGap : 0
             let indent = CGFloat(max(block.depth - 1, 0)) * Metrics.listIndent
             style.firstLineHeadIndent = indent
@@ -83,7 +98,7 @@ struct SelectableMarkdown: View {
             var font = body
             var color = UIColor.label
             var prefix = ""
-            var decoration: BlockDecoration?
+            var decoration: QuoteDecoration?
             switch block.kind {
             case .heading(let level):
                 font = level <= 1 ? .semibold(.title2) : level == 2 ? .semibold(.title3) : .preferredFont(forTextStyle: .headline)
@@ -92,7 +107,7 @@ struct SelectableMarkdown: View {
                 color = .secondaryLabel
                 style.firstLineHeadIndent = indent + 12
                 style.headIndent = indent + 12
-                decoration = BlockDecoration(kind: .quoteBar(x: indent), top: style.paragraphSpacingBefore, fill: Theme.rule.resolvedCGColor(for: colorScheme))
+                decoration = QuoteDecoration(x: indent, top: style.paragraphSpacingBefore, fill: Theme.rule.resolvedCGColor(for: colorScheme))
             case .listItem(let marker):
                 // 编号靠右对齐在一格里，正文从固定的位置起，折行也对齐正文
                 let text = indent + Metrics.listMarker + 6
@@ -104,10 +119,11 @@ struct SelectableMarkdown: View {
             }
             let part = NSMutableAttributedString(string: prefix, attributes: [.font: body.monospacedDigits, .foregroundColor: color])
             let linkColor = UIColor.link.resolvedColor(with: UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light))
-            part.append(inline(ReferenceText.decorate(block.text, scope: scope), font: font, color: color, linkColor: linkColor))
+            part.append(inline(ReferenceText.decorate(block.text, scope: scope), font: font, color: color, linkColor: linkColor,
+                               codeFill: Theme.codeBackground.resolvedCGColor(for: colorScheme)))
             part.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: part.length))
             if let decoration {
-                part.addAttribute(.blockDecoration, value: decoration, range: NSRange(location: 0, length: part.length))
+                part.addAttribute(.quoteDecoration, value: decoration, range: NSRange(location: 0, length: part.length))
             }
             result.append(part)
         }
@@ -115,16 +131,19 @@ struct SelectableMarkdown: View {
     }
 
     /// 行内的样式：粗体、斜体、行内代码、删除线、链接，和 SwiftUI 的 Text 认的一样。
-    private static func inline(_ text: AttributedString, font: UIFont, color: UIColor, linkColor: UIColor) -> NSAttributedString {
+    private static func inline(_ text: AttributedString, font: UIFont, color: UIColor, linkColor: UIColor, codeFill: CGColor) -> NSAttributedString {
+        let text = InlineCodeSpacing.apply(to: text)
         let result = NSMutableAttributedString()
+        let codeDecoration = InlineCodeDecoration(fill: codeFill)
         var previousLink: URL?
         for run in text.runs {
             var runFont = font
             var attributes: [NSAttributedString.Key: Any] = [.foregroundColor: color]
+            if let kern = run.swiftUI.kern { attributes[.kern] = kern }
             if let intent = run.inlinePresentationIntent {
                 if intent.contains(.code) {
-                    runFont = .monospacedSystemFont(ofSize: font.pointSize * 0.9, weight: .regular)
-                    attributes[.backgroundColor] = UIColor(Theme.codeBackground)
+                    runFont = InlineCodeStyle.font(relativeTo: font)
+                    attributes[.inlineCodeDecoration] = codeDecoration
                 }
                 var traits: UIFontDescriptor.SymbolicTraits = []
                 if intent.contains(.stronglyEmphasized) { traits.insert(.traitBold) }
@@ -145,7 +164,11 @@ struct SelectableMarkdown: View {
                 attachment.image = scaled
                 attachment.bounds = CGRect(origin: CGPoint(x: 0, y: Metrics.referenceIconBaselineOffset), size: scaled.size)
                 let icon = NSMutableAttributedString(attachment: attachment)
+                icon.append(NSAttributedString(string: ReferenceIcons.nameJoiner))
                 icon.addAttributes([.link: url, .font: runFont], range: NSRange(location: 0, length: icon.length))
+                if run.inlinePresentationIntent?.contains(.code) == true {
+                    icon.addAttribute(.inlineCodeDecoration, value: codeDecoration, range: NSRange(location: 0, length: icon.length))
+                }
                 result.append(icon)
             }
             previousLink = run.link
@@ -203,7 +226,7 @@ struct SelectableTextView: UIViewRepresentable {
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.delegate = context.coordinator
         view.linkTextAttributes = [.foregroundColor: UIColor.link]
-        // 代码块的底色、引用的竖线由自己的排版片段画，要在放字之前接上
+        // 行内代码的底色、引用的竖线由自己的排版片段画，要在放字之前接上
         view.textLayoutManager?.delegate = context.coordinator
         let press = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.press(_:)))
         press.minimumPressDuration = 0.4
@@ -345,13 +368,23 @@ struct SelectableTextView: UIViewRepresentable {
             view.resignFirstResponder()
         }
 
-        // TextKit 的回调不在主线程隔离里，要用的都跟着字放在属性里（BlockDecoration）
+        // TextKit 的回调不在主线程隔离里，绘制参数都跟着字放在不可变属性里。
         nonisolated func textLayoutManager(_ textLayoutManager: NSTextLayoutManager, textLayoutFragmentFor location: any NSTextLocation,
                                            in textElement: NSTextElement) -> NSTextLayoutFragment {
             let paragraph = (textElement as? NSTextParagraph)?.attributedString
-            if let paragraph, paragraph.length > 0,
-               let decoration = paragraph.attribute(.blockDecoration, at: 0, effectiveRange: nil) as? BlockDecoration {
-                return DecoratedFragment(textElement: textElement, range: textElement.elementRange, decoration: decoration)
+            if let paragraph, paragraph.length > 0 {
+                let decoration = paragraph.attribute(.quoteDecoration, at: 0, effectiveRange: nil) as? QuoteDecoration
+                var hasInlineCode = false
+                paragraph.enumerateAttribute(.inlineCodeDecoration, in: NSRange(location: 0, length: paragraph.length)) { value, _, stop in
+                    if value is InlineCodeDecoration {
+                        hasInlineCode = true
+                        stop.pointee = true
+                    }
+                }
+                if decoration != nil || hasInlineCode {
+                    return DecoratedFragment(textElement: textElement, range: textElement.elementRange,
+                                             decoration: decoration, hasInlineCode: hasInlineCode)
+                }
             }
             return NSTextLayoutFragment(textElement: textElement, range: textElement.elementRange)
         }
@@ -359,123 +392,121 @@ struct SelectableTextView: UIViewRepresentable {
 }
 
 extension NSAttributedString.Key {
-    /// 这一段落要在字底下画点东西，值是 BlockDecoration。
-    fileprivate nonisolated static let blockDecoration = NSAttributedString.Key("kite.blockDecoration")
+    fileprivate nonisolated static let quoteDecoration = NSAttributedString.Key("kite.quoteDecoration")
+    fileprivate nonisolated static let inlineCodeDecoration = NSAttributedString.Key("kite.inlineCodeDecoration")
 }
 
-/// 一个段落在字底下画什么：代码块的底色（占满文本区的整宽，块的第一行上面两个角、最后一行下面两个角是圆的），
-/// 或者引用左边的竖线。top 是段落的框上面和前一段的间隔，从它下面画起。
-private nonisolated final class BlockDecoration: NSObject, Sendable {
-    enum Kind {
-        case codeBox(first: Bool, last: Bool)
-        /// 竖线离文本区左边多远。
-        case quoteBar(x: CGFloat)
-    }
+private nonisolated final class InlineCodeDecoration: NSObject, Sendable {
+    let fill: CGColor
+    init(fill: CGColor) { self.fill = fill }
+}
 
-    let kind: Kind
+/// 引用竖线：x 是文本容器坐标，top 是段落上方的间隔。
+private nonisolated final class QuoteDecoration: NSObject, Sendable {
+    let x: CGFloat
     let top: CGFloat
     let fill: CGColor
 
-    init(kind: Kind, top: CGFloat, fill: CGColor) {
-        self.kind = kind
+    init(x: CGFloat, top: CGFloat, fill: CGColor) {
+        self.x = x
         self.top = top
         self.fill = fill
     }
 }
 
-/// 先画 BlockDecoration 再画字。段落前后的间距算在片段的框里，片段自己只到字的末尾宽（实测）：
-/// 所以底色从 top 画到框底、宽度取文本区的整宽；代码块几行的底色上下接在一起，成一个框。
+/// 先画引用竖线和行内代码背景，再画原生文字。
+/// 行内代码只覆盖系统排版返回的文字范围，每次折行分别绘制圆角。
 private nonisolated final class DecoratedFragment: NSTextLayoutFragment {
-    private let decoration: BlockDecoration
+    private let decoration: QuoteDecoration?
+    private let hasInlineCode: Bool
 
-    init(textElement: NSTextElement, range: NSTextRange?, decoration: BlockDecoration) {
+    init(textElement: NSTextElement, range: NSTextRange?, decoration: QuoteDecoration?, hasInlineCode: Bool) {
         self.decoration = decoration
+        self.hasInlineCode = hasInlineCode
         super.init(textElement: textElement, range: range)
     }
 
     required init?(coder: NSCoder) { nil }
 
     private var box: CGRect {
-        let top = decoration.top
-        switch decoration.kind {
-        case .codeBox:
-            let width = textLayoutManager?.textContainer?.size.width ?? layoutFragmentFrame.width
-            return CGRect(x: 0, y: top, width: width, height: layoutFragmentFrame.height - top)
-        case .quoteBar(let x):
-            return CGRect(x: x, y: top, width: 3, height: layoutFragmentFrame.height - top)
-        }
+        guard let decoration else { return .null }
+        // 绘制原点已包含段落缩进，将容器坐标换成片段局部坐标。
+        return CGRect(x: decoration.x - layoutFragmentFrame.minX, y: decoration.top,
+                      width: 3, height: layoutFragmentFrame.height - decoration.top)
     }
 
     override var renderingSurfaceBounds: CGRect {
-        super.renderingSurfaceBounds.union(box)
+        let bounds = super.renderingSurfaceBounds.union(box)
+        return hasInlineCode ? bounds.insetBy(dx: -Metrics.inlineCodePadding, dy: 0) : bounds
     }
 
     override func draw(at point: CGPoint, in context: CGContext) {
+        if let decoration { drawBlock(decoration, at: point, in: context) }
+        drawInlineCode(at: point, in: context)
+        super.draw(at: point, in: context)
+    }
+
+    private func drawBlock(_ decoration: QuoteDecoration, at point: CGPoint, in context: CGContext) {
         let rect = box.offsetBy(dx: point.x, dy: point.y)
-        let path: UIBezierPath
-        switch decoration.kind {
-        case .codeBox(let first, let last):
-            var corners: UIRectCorner = []
-            if first { corners.formUnion([.topLeft, .topRight]) }
-            if last { corners.formUnion([.bottomLeft, .bottomRight]) }
-            path = UIBezierPath(roundedRect: rect, byRoundingCorners: corners, cornerRadii: CGSize(width: 8, height: 8))
-        case .quoteBar:
-            path = UIBezierPath(roundedRect: rect, cornerRadius: rect.width / 2)
-        }
         context.saveGState()
-        context.addPath(path.cgPath)
+        context.addPath(CGPath(roundedRect: rect, cornerWidth: rect.width / 2, cornerHeight: rect.width / 2, transform: nil))
         context.setFillColor(decoration.fill)
         context.fillPath()
         context.restoreGState()
-        super.draw(at: point, in: context)
     }
-}
 
-private extension Message {
-    /// 拼成一段带属性的字：文字用正文字号，代码用等宽的小一号、左右缩进留出框里的边距，斜杠命令的命令名用主题色等宽。
-    /// 段和段之间空 messageSegmentGap，代码块的上下留白用段落间距撑出来。
-    func attributed(colorScheme: ColorScheme) -> NSAttributedString {
-        let body = UIFont.preferredFont(forTextStyle: .body)
-        let code = UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: .monospacedSystemFont(ofSize: 15, weight: .regular))
-        let fill = Theme.codeBackground.resolvedCGColor(for: colorScheme)
-        let result = NSMutableAttributedString()
-        for (index, segment) in segments.enumerated() {
-            if index > 0 { result.append(NSAttributedString(string: "\n")) }
-            let gap = index > 0 ? Metrics.messageSegmentGap : 0
-            switch segment {
-            case .text(let text):
-                let part = NSMutableAttributedString()
-                if index == 0, let command {
-                    part.append(NSAttributedString(string: command, attributes: [.font: code, .foregroundColor: UIColor.tintColor]))
-                    if !text.isEmpty { part.append(NSAttributedString(string: " ")) }
+    private func drawInlineCode(at point: CGPoint, in context: CGContext) {
+        guard hasInlineCode else { return }
+        context.saveGState()
+        defer { context.restoreGState() }
+        for line in textLineFragments {
+            // segment 是选区边界，会吸收部分 kern 和中英文间距，不能当作字形边界。
+            // 沿用 TextKit 的断行，只向 CoreText 取得这一行的字形位置。
+            let typesetter = CTTypesetterCreateWithAttributedString(line.attributedString)
+            let range = line.characterRange
+            let shaped = CTTypesetterCreateLine(typesetter, CFRange(location: range.location, length: range.length))
+            var box = CGRect.null
+            var fill: CGColor?
+            func drawBox() {
+                guard !box.isNull, let fill else { return }
+                let rect = box.offsetBy(dx: point.x + line.typographicBounds.minX,
+                                        dy: point.y + line.typographicBounds.minY)
+                    .insetBy(dx: -Metrics.inlineCodePadding, dy: 0)
+                context.addPath(CGPath(roundedRect: rect, cornerWidth: Metrics.inlineCodeRadius,
+                                       cornerHeight: Metrics.inlineCodeRadius, transform: nil))
+                context.setFillColor(fill)
+                context.fillPath()
+            }
+            for run in CTLineGetGlyphRuns(shaped) as! [CTRun] {
+                let attributes = CTRunGetAttributes(run) as NSDictionary
+                guard let decoration = attributes[NSAttributedString.Key.inlineCodeDecoration.rawValue] as? InlineCodeDecoration else {
+                    drawBox()
+                    box = .null
+                    fill = nil
+                    continue
                 }
-                part.append(NSAttributedString(string: text, attributes: [.font: body, .foregroundColor: UIColor.label]))
-                // 这一段的第一个段落前面空 gap，后面接着的段落不再空
-                let first = NSMutableParagraphStyle()
-                first.paragraphSpacingBefore = gap
-                let firstLength = (part.string as NSString).range(of: "\n").location
-                part.addAttribute(.paragraphStyle, value: first,
-                                  range: NSRange(location: 0, length: firstLength == NSNotFound ? part.length : firstLength + 1))
-                result.append(part)
-            case .code(let text):
-                let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-                for (number, content) in lines.enumerated() {
-                    let first = number == 0
-                    let last = number == lines.count - 1
-                    let decoration = BlockDecoration(kind: .codeBox(first: first, last: last), top: first ? gap : 0, fill: fill)
-                    let style = NSMutableParagraphStyle()
-                    style.firstLineHeadIndent = Metrics.codePadding
-                    style.headIndent = Metrics.codePadding
-                    style.tailIndent = -Metrics.codePadding
-                    style.paragraphSpacingBefore = first ? gap + Metrics.codePadding : 0
-                    style.paragraphSpacing = last ? Metrics.codePadding : 0
-                    result.append(NSAttributedString(string: String(content) + (last ? "" : "\n"), attributes: [
-                        .font: code, .foregroundColor: UIColor.label, .paragraphStyle: style, .blockDecoration: decoration,
-                    ]))
+                fill = decoration.fill
+                let count = CTRunGetGlyphCount(run)
+                var positions = [CGPoint](repeating: .zero, count: count)
+                var advances = [CGSize](repeating: .zero, count: count)
+                CTRunGetPositions(run, CFRange(), &positions)
+                CTRunGetAdvances(run, CFRange(), &advances)
+                var widths = advances
+                if attributes[NSAttributedString.Key.attachment.rawValue] == nil {
+                    let font = attributes[kCTFontAttributeName] as! CTFont
+                    var glyphs = [CGGlyph](repeating: 0, count: count)
+                    CTRunGetGlyphs(run, CFRange(), &glyphs)
+                    // 字体原始宽度不含外侧 kern；附件则保留图标本身的排版宽度。
+                    CTFontGetAdvancesForGlyphs(font, .horizontal, &glyphs, &widths, count)
+                }
+                // 跳过 WORD JOINER 等零宽字形，不让它们撑大背景。
+                for index in 0..<count where advances[index].width > 0 && widths[index].width > 0 {
+                    box = box.union(CGRect(x: positions[index].x, y: 0, width: widths[index].width,
+                                           height: line.typographicBounds.height))
                 }
             }
+            drawBox()
         }
-        return result
     }
 }
 

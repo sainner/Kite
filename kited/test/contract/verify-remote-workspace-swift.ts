@@ -5,7 +5,7 @@
  *
  * 不放进 small：它需要编译 Swift；脚本自行生成临时仓库、kited home、JSON fixture 和二进制。
  */
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startDaemon } from '../../src/daemon.ts';
@@ -13,6 +13,7 @@ import type { Envelope } from '../../src/events.ts';
 import type { Model } from '../../src/harness/types.ts';
 import type { Machine, Project, ThreadContext, WorkspaceModel, WorkspaceWindow } from '../../src/model.ts';
 import type { PluginDefinition } from '../../src/plugins.ts';
+import { bunPluginSource } from '../fixtures/bun-plugin-source.ts';
 import { newRepo } from '../util.ts';
 import { command } from './command.ts';
 
@@ -69,12 +70,25 @@ function cursor(raw: string | null): string {
 
 const completeModel: Model = { async *stream() { yield { type: 'completed', responseId: 'fixture' }; } };
 
+// 编译真实 JSON Codable 声明，不在合同里复制解码规则。
+function declaration(source: string, signature: string): string {
+  const start = source.indexOf(signature);
+  if (start < 0 || source.indexOf(signature, start + 1) >= 0) throw new Error(`Swift 声明不唯一：${signature}`);
+  const open = source.indexOf('{', start);
+  let depth = 0;
+  for (let index = open; index < source.length; index++) {
+    if (source[index] === '{') depth++;
+    if (source[index] === '}' && --depth === 0) return source.slice(start, index + 1);
+  }
+  throw new Error(`Swift 声明未闭合：${signature}`);
+}
+
 async function main() {
   const root = mkdtempSync(join(tmpdir(), 'swift-workspace-contract-'));
   const home = join(root, 'kite');
   const repository = newRepo(root, 'project', { 'base.txt': '原始\n' });
-  const daemon = startDaemon({ home, port: 0, model: () => completeModel });
-  const otherDaemon = startDaemon({ home: join(root, 'other-kite'), port: 0, model: () => completeModel });
+  const daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => completeModel });
+  const otherDaemon = startDaemon({ home: join(root, 'other-kite'), port: 0, lightTasks: false, model: () => completeModel });
   const events: Envelope[] = [];
   const waiters: Array<{ predicate: (event: Envelope) => boolean; resolve: () => void }> = [];
   const unsubscribe = daemon.kite.bus.subscribe(undefined, (event) => {
@@ -161,6 +175,26 @@ async function main() {
       throw new Error(`保存文件选择失败：${selected.status}/${afterSelection.status}`);
     }
 
+    // 真实插件 SDK 修改业务状态，再从工作区聚合解码；资源刷新依赖这个 JSON 值而非目录游标。
+    const pluginEntry = join(root, 'plugin.ts');
+    symlinkSync(join(import.meta.dir, '..', '..', 'node_modules'), join(root, 'node_modules'));
+    writeFileSync(pluginEntry, bunPluginSource);
+    const built = await Bun.build({ entrypoints: [pluginEntry], target: 'bun', format: 'esm', minify: true });
+    if (!built.success || built.outputs.length !== 1) throw new Error(`插件状态 fixture 打包失败：${built.logs.join('\n')}`);
+    const installed = await call<unknown>(daemon.url, 'POST', '/plugin-definitions', {
+      id: 'custom.decode-state', title: '状态解码合同', bundle: await built.outputs[0]!.text(), lifetime: 'persistent',
+    }, machine.body.id);
+    const pluginID = crypto.randomUUID();
+    const plugin = await call<unknown>(daemon.url, 'POST', `/workspaces/${workspace.body.workspace.id}/plugin-instances`, {
+      id: pluginID, definitionId: 'custom.decode-state', title: '状态解码合同',
+    }, machine.body.id);
+    const incremented = await call<unknown>(daemon.url, 'POST', `/instances/${pluginID}/plugin/tools/state`, {
+      operationId: 'decode-state-increment', arguments: { action: 'increment' },
+    }, machine.body.id);
+    if ([installed.status, plugin.status, incremented.status].some((status) => status !== 200)) {
+      throw new Error('真实插件业务状态未写入合同工作区');
+    }
+
     catalog = await openCatalog(daemon.url, machine.body.id);
     if ((await catalog.next()).type !== 'catalog.snapshot') throw new Error('目录流未先返回完整快照');
     const workspaces = await call<WorkspaceModel[]>(daemon.url, 'GET', '/workspaces', undefined, machine.body.id);
@@ -220,10 +254,18 @@ async function main() {
     const sdk = await command(['xcrun', '--show-sdk-path'], root);
     const architecture = await command(['uname', '-m'], root);
     const decoder = join(root, 'decode-remote-workspace');
+    const app = join(import.meta.dir, '..', '..', '..', 'app', 'Kite');
+    const jsonCodable = join(root, 'JSONCodable.swift');
+    writeFileSync(jsonCodable, `import Foundation\n\n${
+      declaration(readFileSync(join(app, 'KitedClient.swift'), 'utf8'), 'extension JSON: Codable')
+    }\n`);
     await command([
       compiler,
       '-sdk', sdk,
       '-target', `${architecture}-apple-macosx26.0`,
+      join(app, 'Transcript.swift'), jsonCodable,
+      join(app, 'AgentConfiguration.swift'),
+      join(app, 'PluginManagementModels.swift'),
       join(import.meta.dir, '..', '..', '..', 'app', 'Kite', 'RemoteWorkspace.swift'),
       join(import.meta.dir, '..', '..', '..', 'app', 'Kite', 'MachineConnections.swift'),
       join(import.meta.dir, '..', '..', '..', 'app', 'Kite', 'CatalogRefresh.swift'),

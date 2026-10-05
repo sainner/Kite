@@ -76,7 +76,119 @@ private struct WindowDockContract {
         try canvasEdgesPreviewAndCommit()
         try headerActionsPreserveWindowsAndCancelDrag()
         try persistedLayoutReconcilesRemoteWindows()
-        print("窗口停靠五组手动合同验证通过")
+        try automaticPlacementPreservesFramesAndWindows()
+        print("窗口停靠六组手动合同验证通过")
+    }
+
+    // 自动放置、真实 frame、焦点、dock 与 UserDefaults 交接；树的最小尺寸不足以保证嵌套分栏比例可用。
+    private static func automaticPlacementPreservesFramesAndWindows() throws {
+        let suite = "kite-window-contract-placement-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            throw DockContractError.failed("无法建立自动放置的独立 UserDefaults suite")
+        }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let initial = fixturePanes("placement", count: 3)
+        let a = initial[0], b = initial[1], opened = initial[2]
+        let minimum = Metrics.minPane
+        let gap = Metrics.gap
+
+        // 三列能放下时，新窗口占根级右侧全高；原两列在新子树里的实际宽度也须达标。
+        let wide = placementBounds(canvasWidth: minimum * 3 + gap * 2 + 20,
+                                   canvasHeight: minimum * 2 + gap + 30)
+        let columns = WindowLayout(panes: initial, arrangement: .sideBySide,
+                                   storageKey: "columns", defaults: defaults)
+        columns.focus(b)
+        columns.activate(opened, in: wide)
+        let columnState = LayoutState(columns, in: wide)
+        let canvas = WindowRegions(in: wide).canvas
+        guard let newColumn = columnState.frames[opened] else {
+            throw DockContractError.failed("可容纳三列时新增窗口仍在 dock")
+        }
+        try require(abs(newColumn.minY - canvas.minY) < 0.001
+                    && abs(newColumn.height - canvas.height) < 0.001
+                    && abs(newColumn.maxX - canvas.maxX) < 0.001,
+                    "新增窗口没有成为根级右侧全高列")
+        try require([a, b].allSatisfy { pane in
+            guard let frame = columnState.frames[pane] else { return false }
+            return frame.maxX + gap <= newColumn.minX + 0.001
+        }, "新增列插进了旧窗口的局部分栏")
+        try require(columns.focused == opened && columns.docked.isEmpty
+                    && Set(columns.panes) == Set(initial), "新增列改变了窗口集合、dock 或焦点")
+        try requireMinimumFrames(columns, in: wide, "新增根级列")
+        try requireComplete(columns, "新增根级列")
+
+        let remote = Pane("contract-placement-remote")
+        columns.reconcile(initial + [remote])
+        try require(LayoutState(columns, in: wide).frames == columnState.frames
+                    && columns.docked == [remote] && columns.focused == opened,
+                    "远端新增窗口改变活动分栏或抢走焦点")
+        try requirePlacementPersists(columns, panes: initial + [remote], key: "columns",
+                                     defaults: defaults, suite: suite, in: wide)
+
+        // 宽度只能容纳两列时，恢复窗口优先放在可分栏的聚焦窗口下方。
+        let tall = placementBounds(canvasWidth: minimum * 2 + gap,
+                                   canvasHeight: minimum * 2 + gap)
+        let below = WindowLayout(panes: initial, arrangement: .sideBySide,
+                                 storageKey: "below", defaults: defaults)
+        below.focus(b)
+        let beforeBelow = LayoutState(below, in: tall)
+        below.restore(opened, in: tall)
+        let belowState = LayoutState(below, in: tall)
+        guard let focusedFrame = belowState.frames[b], let restoredFrame = belowState.frames[opened] else {
+            throw DockContractError.failed("恢复窗口没有进入聚焦窗口的分栏")
+        }
+        try require(belowState.frames[a] == beforeBelow.frames[a]
+                    && abs(focusedFrame.minX - restoredFrame.minX) < 0.001
+                    && abs(focusedFrame.width - restoredFrame.width) < 0.001
+                    && abs(focusedFrame.maxY + gap - restoredFrame.minY) < 0.001,
+                    "恢复窗口未放在聚焦窗口下方，或改变了另一列")
+        try require(below.focused == opened && below.docked.isEmpty
+                    && Set(below.panes) == Set(initial), "下方分栏改变了窗口集合、dock 或焦点")
+        try requireMinimumFrames(below, in: tall, "恢复到聚焦窗口下方")
+        try requireComplete(below, "恢复到聚焦窗口下方")
+        try requirePlacementPersists(below, panes: initial, key: "below",
+                                     defaults: defaults, suite: suite, in: tall)
+
+        // 两列都不能再分割时，保留聚焦窗口，把非聚焦窗口收进 dock 并让新窗口接住原位置。
+        let tight = placementBounds(canvasWidth: minimum * 2 + gap, canvasHeight: minimum)
+        let replacement = WindowLayout(panes: initial, arrangement: .sideBySide,
+                                       storageKey: "replacement", defaults: defaults)
+        replacement.focus(b)
+        let beforeReplacement = LayoutState(replacement, in: tight)
+        replacement.activate(opened, in: tight)
+        let replaced = LayoutState(replacement, in: tight)
+        try require(replaced.frames[opened] == beforeReplacement.frames[a]
+                    && replaced.frames[b] == beforeReplacement.frames[b]
+                    && replacement.docked == [a] && replacement.focused == opened
+                    && Set(replacement.panes) == Set(initial),
+                    "放不下时未替换非聚焦窗口的原位置，或丢失了窗口")
+        try requireMinimumFrames(replacement, in: tight, "替换非聚焦窗口")
+        try requireComplete(replacement, "替换非聚焦窗口")
+        try requirePlacementPersists(replacement, panes: initial, key: "replacement",
+                                     defaults: defaults, suite: suite, in: tight)
+    }
+
+    private static func placementBounds(canvasWidth: CGFloat, canvasHeight: CGFloat) -> CGRect {
+        let canvas = WindowRegions(in: bounds).canvas
+        return CGRect(x: 0, y: 0, width: canvasWidth + bounds.width - canvas.width,
+                      height: canvasHeight + bounds.height - canvas.height)
+    }
+
+    private static func requireMinimumFrames(_ layout: WindowLayout, in bounds: CGRect, _ step: String) throws {
+        for (pane, frame) in LayoutState(layout, in: bounds).frames {
+            try require(frame.width + 0.001 >= Metrics.minPane && frame.height + 0.001 >= Metrics.minPane,
+                        "\(step) 后 \(pane.id) 的实际 frame 小于 minPane：\(frame)")
+        }
+    }
+
+    private static func requirePlacementPersists(_ layout: WindowLayout, panes: [Pane], key: String,
+                                               defaults: UserDefaults, suite: String, in bounds: CGRect) throws {
+        let committed = LayoutState(layout, in: bounds)
+        defaults.synchronize()
+        let rebuilt = WindowLayout(panes: panes, arrangement: .stacked, storageKey: key,
+                                   defaults: UserDefaults(suiteName: suite)!)
+        try requireSame(rebuilt, as: committed, in: bounds, "自动放置的 \(key) 重建")
+        try requireComplete(rebuilt, "自动放置的 \(key) 重建")
     }
 
     // 卡片树、dock、焦点和恢复在连续转移中保持同一组窗口；最后一张卡片可离开树。

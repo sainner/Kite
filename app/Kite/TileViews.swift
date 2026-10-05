@@ -2,7 +2,7 @@ import SwiftUI
 
 #if os(macOS)
 /// 内容区：各张卡片、占位、卡片之间的缝按排布算好的位置摆在同一层。卡片始终是同一个视图，
-/// 排布变了、拖出去缩成圆、松手展开，都只是它的位置和大小在变，动画连贯，不会出现新旧两份交叠。
+/// 排布变了、拖出去缩成停靠形状、松手展开，都只是它的位置和大小在变，动画连贯，不会出现新旧两份交叠。
 /// 拖动报的是窗口坐标，在这里换算成内容区里的坐标再交给窗口组。
 struct TilesLayer: View {
     @Environment(WindowLayout.self) private var workspace
@@ -41,17 +41,22 @@ struct TilesLayer: View {
                         workspace.restore(pane, in: bounds)
                     }
                     .zIndex(workspace.drag?.pane == pane ? 1 : 0)
+                    .transition(.scale(scale: 0.92).combined(with: .opacity))
                 }
             }
+            .animation(.snappy, value: workspace.panes)
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { workspace.availableSize = $0 }
         }
         .disablesWindowDragging()
+        .modifier(InstanceSettingsPresentation())
     }
 }
 
-/// 停靠栏沿用工作区底色，只放添加入口和拖动落点；圆形窗口仍由原来的 CardSlot 呈现。
+/// 最小化窗口和添加入口在上方，无窗口实例在底部；停靠栏沿用工作区底色。
 private struct DockRail: View {
     let regions: WindowRegions
     @Environment(WindowLayout.self) private var workspace
+    @Environment(WorkArea.self) private var area
 
     private var dropIndex: Int? {
         if case .dock(let index) = workspace.drag?.spot { index } else { nil }
@@ -61,8 +66,15 @@ private struct DockRail: View {
         ZStack(alignment: .topLeading) {
             AddWindowButton()
                 .placed(regions.dockFrame(at: workspace.shownDock.count))
-            if let index = dropIndex {
-                Circle()
+            VStack(spacing: Metrics.gap) {
+                ForEach(area.windowlessInstances) { instance in
+                    InstanceDockButton(instance: instance)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .placed(regions.dock)
+            if let index = dropIndex, let pane = workspace.drag?.pane {
+                RoundedRectangle(cornerRadius: area.appearance(of: pane).minimizedCornerRadius)
                     .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
                     .placed(regions.dockFrame(at: index))
                     .allowsHitTesting(false)
@@ -71,7 +83,7 @@ private struct DockRail: View {
     }
 }
 
-/// 一张卡片摆在哪。进入布局拖动后缩成圆跟着指针，松手后展开到落点。
+/// 一张卡片摆在哪。进入布局拖动后缩成停靠形状跟着指针，松手后展开到落点。
 /// 只有它读指针位置，指针一动只重画这一张，不重算整个排布。
 private struct CardSlot: View {
     let pane: Pane
@@ -84,8 +96,8 @@ private struct CardSlot: View {
     @Environment(WindowLayout.self) private var workspace
 
     var body: some View {
-        if let (frame, circle) = place {
-            PaneCard(pane: pane, circle: circle, onDrag: onDrag, onDrop: onDrop, onActivate: onActivate)
+        if let (frame, minimized) = place {
+            PaneCard(pane: pane, minimized: minimized, onDrag: onDrag, onDrop: onDrop, onActivate: onActivate)
                 .placed(frame)
         }
     }
@@ -105,69 +117,72 @@ private extension View {
     }
 }
 
-/// Mac 上的一张卡片，里面是窗口（PaneWindow）。按住标题栏拖够一段距离后缩成圆，内容淡出，出现图标。
+/// Mac 上的一张卡片，里面是窗口（PaneWindow）。按住标题栏拖够一段距离后缩成停靠形状，内容淡出，出现图标。
 struct PaneCard: View {
     let pane: Pane
-    let circle: Bool
+    let minimized: Bool
     @Environment(WindowLayout.self) private var workspace
     @Environment(WorkArea.self) private var area
     @Environment(AppModel.self) private var model
-    @State private var headerHovered = false
+    @State private var cardHovered = false
+    @State private var menuWidth: CGFloat = 0
+    @State private var controlsSize: CGSize = .zero
+    @State private var headerHeight: CGFloat = 0
+    @State private var headerNavigationBounds: CGRect?
     private var appearance: WindowAppearance { area.appearance(of: pane) }
     /// 拖动中的指针位置，窗口坐标。
     var onDrag: (CGPoint) -> Void
     var onDrop: () -> Void
     var onActivate: () -> Void
 
-    private var actionsShown: Bool { headerHovered && !circle && workspace.drag == nil }
+    private var actionsShown: Bool { cardHovered && !minimized && workspace.drag == nil }
     private var canExpand: Bool { (workspace.root?.panes.count ?? 0) > 1 }
-    private var headerActionsWidth: CGFloat {
-        let count: CGFloat = canExpand ? 3 : 2
-        return count * Metrics.headerAction + (count - 1) * Metrics.headerActionSpacing
-    }
-
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: circle ? Metrics.dragBubble / 2 : Metrics.cardRadius)
-        // 底下的形状定大小，内容放在 overlay 里：缩成圆时内容比圆大，不能把它撑开
+        let shape = RoundedRectangle(cornerRadius: minimized ? appearance.minimizedCornerRadius : Metrics.cardRadius)
+        // 底下的形状定大小，内容放在 overlay 里：缩小时内容比停靠形状大，不能把它撑开
         shape
-            .fill(circle ? appearance.tint : Theme.card)
+            .fill(minimized ? appearance.tint : Theme.card)
             .overlay(alignment: .topLeading) {
                 PaneBody(pane: pane)
-                    .environment(\.paneHeaderTrailingInset, actionsShown ? headerActionsWidth + Metrics.gap : 0)
-                    // 卡片的形状，里面同心的圆角（控制区卡片）跟着它
+                    .environment(\.paneHeaderControlsInset, actionsShown ? controlsSize.width + Metrics.paneButtonGap : 0)
+                    .environment(\.paneHeaderMinHeight, controlsSize.height)
+                    // 卡片的形状，里面同心的圆角（控制区输入框）跟着它
                     .containerShape(RoundedRectangle(cornerRadius: Metrics.cardRadius))
-                    .opacity(circle ? 0 : 1)
-                    .allowsHitTesting(!circle)
-                    .accessibilityHidden(circle)
+                    .opacity(minimized ? 0 : 1)
+                    .allowsHitTesting(!minimized)
+                    .accessibilityHidden(minimized)
             }
             .overlay(alignment: .top) {
                 ZStack(alignment: .trailing) {
                     // 展开窗口移动一个标题栏高度后进入布局；按钮所在的位置不接拖动。
                     dragArea
 
-                    if !circle {
+                    if !minimized {
                         headerActions
-                            .padding(.trailing, 14)
+                            .padding(.trailing, Metrics.paneMargin + (menuWidth > 0 ? menuWidth + Metrics.paneButtonGap : 0))
                             .opacity(actionsShown ? 1 : 0)
                             .allowsHitTesting(actionsShown)
                             .accessibilityHidden(!actionsShown)
                     }
                 }
-                .frame(height: Metrics.header)
-                .contentShape(Rectangle())
-                .onHover { headerHovered = $0 }
+                .frame(height: headerHeight)
             }
             .overlay {
                 Image(systemName: appearance.icon)
                     .font(Theme.title)
                     .foregroundStyle(.white)
-                    .opacity(circle ? 1 : 0)
+                    .opacity(minimized ? 1 : 0)
                     .allowsHitTesting(false)
             }
             .clipShape(shape)
-            .help(circle ? "展开\(appearance.name)窗口；拖动可调整位置" : "拖动标题栏调整窗口位置")
+            // 在整张卡片上跟踪悬停，指针经过标题栏、正文或控制区时都显示窗口操作。
+            .onHover { cardHovered = $0 }
+            .onPreferenceChange(PaneHeaderActionsWidth.self) { menuWidth = $0 }
+            .onPreferenceChange(PaneHeaderHeight.self) { headerHeight = $0 }
+            .onPreferenceChange(PaneHeaderNavigationBounds.self) { headerNavigationBounds = $0 }
+            .help(minimized ? "展开\(appearance.name)窗口；拖动可调整位置" : "拖动标题栏调整窗口位置")
             .accessibilityActions {
-                if circle {
+                if minimized {
                     Button("展开窗口", action: onActivate)
                 } else {
                     Button("缩小窗口") { workspace.minimize(pane) }
@@ -178,19 +193,35 @@ struct PaneCard: View {
     }
 
     private var dragArea: some View {
-        MouseDragArea(cursor: circle ? .pointingHand : .openHand, activeCursor: .closedHand,
-                      minimumDistance: circle ? Metrics.dragThreshold : Metrics.header) { drag in
+        MouseDragArea(cursor: minimized ? .pointingHand : .openHand, activeCursor: .closedHand,
+                      minimumDistance: minimized ? Metrics.dragThreshold : headerHeight) { drag in
             onDrag(drag.location)
         } onEnded: {
             onDrop()
         } onClick: {
-            if circle { onActivate() }
+            if minimized { onActivate() }
         }
-        .padding(.trailing, actionsShown ? headerActionsWidth + 14 : 0)
+        .contextMenu {
+            if let target = area.windows.first(where: { $0.id == pane.id })?.target,
+               let instance = area.instances.first(where: { $0.id == target.instanceId }) {
+                InstanceActions(instance: instance)
+                Button("关闭窗口") { model.closeWindow(pane, in: area) }
+            }
+        }
+        .padding(.trailing, minimized ? 0 : menuWidth + (actionsShown ? controlsSize.width + Metrics.paneButtonGap : 0) + Metrics.paneMargin)
+        .frame(height: headerDragRegion.height)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: headerDragRegion.alignment)
+    }
+
+    /// 可点击文字可能在主标题或次级信息行，剩下较高的一侧用于拖动。
+    private var headerDragRegion: (height: CGFloat?, alignment: Alignment) {
+        guard !minimized, let bounds = headerNavigationBounds else { return (nil, .topLeading) }
+        let below = max(0, headerHeight - bounds.maxY)
+        return bounds.minY >= below ? (bounds.minY, .topLeading) : (below, .bottomLeading)
     }
 
     private var headerActions: some View {
-        HStack(spacing: Metrics.headerActionSpacing) {
+        PaneHeaderButtonGroup {
             headerButton("缩小", icon: "minus") { workspace.minimize(pane) }
             if canExpand {
                 headerButton("展开", icon: "arrow.up.left.and.arrow.down.right") { workspace.expand(pane) }
@@ -198,17 +229,14 @@ struct PaneCard: View {
             headerButton("关闭", icon: "xmark") { model.closeWindow(pane, in: area) }
                 .disabled(area.isDraft || area.changingWindows)
         }
+        // 按系统控件的实际尺寸安排标题栏并避让拖动，避免固定标签尺寸再次撑大按钮。
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { controlsSize = $0 }
     }
 
     private func headerButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: icon)
-                .font(Theme.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: Metrics.headerAction, height: Metrics.headerAction)
-                .contentShape(Rectangle())
+            PaneHeaderButtonLabel(title, systemImage: icon)
         }
-        .buttonStyle(.pointingPlain)
         .help(title)
         .accessibilityLabel(title)
     }
@@ -220,70 +248,86 @@ struct PaneCard: View {
 struct AddWindowButton: View {
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
+    @State private var presented = false
+    @State private var error: String?
 
     private var canAdd: Bool {
-        !area.changingWindows && area.pendingWindowRequest == nil &&
+        !area.changingWindows && area.pendingWindowRequest == nil && area.pendingInstanceRequest == nil &&
             (area.isDraft || area.isSample || (model.connected && area.remote?.workspace.status == .open))
     }
 
     var body: some View {
         @Bindable var area = area
-        Menu {
-            if area.pendingWindowRequest != nil {
-                Button("重试添加") { model.retryOpenWindow(in: area) }
-                    .disabled(area.changingWindows)
-            }
-            Group {
-                Button("新会话") { model.openWindow(.create("kite.agent.coding"), in: area) }
-                Menu("插件窗口") {
-                    ForEach(area.definitions.filter { $0.agent == nil }) { definition in
-                        Button(definition.title) { model.openWindow(.create(definition.id), in: area) }
-                    }
-                }
-                .disabled(area.isDraft)
-                if !area.instances.isEmpty {
-                    Menu("打开已有") {
-                        ForEach(area.instances.filter { $0.status == .open }) { instance in
-                            Menu(instance.title) {
-                                ForEach(area.definition(of: instance)?.views ?? []) { view in
-                                    Button(view.title) {
-                                        model.openWindow(.open(WindowTarget(instanceId: instance.id, viewId: view.id)), in: area)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .disabled(!canAdd)
-        } label: {
+        Button { presented = true } label: {
             Image(systemName: "plus")
                 .font(Theme.title)
                 .foregroundStyle(.secondary)
                 .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
-                .contentShape(Circle())
+                .overlay { RoundedRectangle(cornerRadius: Metrics.dockRadius).strokeBorder(.secondary.opacity(0.4), lineWidth: 1) }
+                .contentShape(RoundedRectangle(cornerRadius: Metrics.dockRadius))
         }
-        .menuStyle(.borderlessButton)
-        .clickPointer()
-        .menuIndicator(.hidden)
+        .buttonStyle(.pointingPlain)
         .fixedSize()
-        .help("添加会话窗口或插件窗口")
+        .help("创建实例")
         .accessibilityLabel("添加")
+        .popover(isPresented: $presented) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("创建实例").font(.headline)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if area.isDraft {
+                            Button("创建工作区") { presented = false; model.showNewWorkspace = true }
+                        } else {
+                            ForEach(area.definitions) { definition in
+                                Button {
+                                    model.createInstance(definition, in: area)
+                                    presented = false
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(definition.title)
+                                            Text(definition.views.isEmpty ? "后台实例" : definition.views.map(\.title).joined(separator: "、"))
+                                                .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Image(systemName: "plus")
+                                    }.padding(.vertical, 6).contentShape(Rectangle())
+                                }.buttonStyle(.pointingPlain)
+                            }
+                        }
+                    }.disabled(!canAdd)
+                }.frame(maxHeight: 340)
+                if area.pendingWindowRequest != nil {
+                    Button("重试创建") { model.retryOpenWindow(in: area); presented = false }.disabled(area.changingWindows)
+                }
+                if area.pendingInstanceRequest != nil {
+                    Button("重试创建") { model.retryCreateInstance(in: area); presented = false }.disabled(area.changingWindows)
+                }
+                if let error { Text(error).font(.caption).foregroundStyle(.red) }
+            }
+            .padding(16).frame(width: 280)
+            .toastHost()
+            .presentationCompactAdaptation(.popover)
+            .task {
+                guard !area.isSample, !area.isDraft else { return }
+                do { try await model.refreshDefinitions(model.activeClient()); error = nil }
+                catch { self.error = error.localizedDescription }
+            }
+        }
         .alert("窗口操作失败", isPresented: Binding(get: { area.windowError != nil }, set: { if !$0 { area.windowError = nil } })) {
             if area.pendingWindowRequest != nil { Button("重试添加") { model.retryOpenWindow(in: area) } }
+            if area.pendingInstanceRequest != nil { Button("重试添加") { model.retryCreateInstance(in: area) } }
             Button("好", role: .cancel) { area.windowError = nil }
         } message: { Text(area.windowError ?? "") }
     }
 }
 
-/// iPhone 底部的折叠窗口，沿用 Mac 卡片拖动时的圆形、颜色和图标。
+/// 最小化窗口：agent 用圆形，其余窗口用圆角矩形。
 struct PaneBubble: View {
-    let pane: Pane
-    @Environment(WorkArea.self) private var area
+    let appearance: WindowAppearance
 
     var body: some View {
-        let appearance = area.appearance(of: pane)
-        Circle()
+        RoundedRectangle(cornerRadius: appearance.minimizedCornerRadius)
             .fill(appearance.tint)
             .overlay {
                 Image(systemName: appearance.icon).font(Theme.title).foregroundStyle(.white)

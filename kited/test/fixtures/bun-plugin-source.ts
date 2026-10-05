@@ -16,6 +16,23 @@ const stateReplace = (expectedRevision, value) => server.server.request({
 }, stateSchema);
 const result = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value });
 
+// 这些资源经过真实 SDK 的 resources/read 传输，用于核对 HTTP 视图契约。
+for (const name of ['state', 'unlisted', 'non-html', 'missing', 'multiple', 'wrong-uri', 'network', 'permissions', 'oversized']) {
+  const resourceUri = 'ui://test/' + name + '.html';
+  server.registerResource(name, resourceUri, { mimeType: 'text/html;profile=mcp-app' }, async () => {
+    if (name === 'missing') return { contents: [] };
+    const before = await stateGet();
+    const content = {
+      uri: name === 'wrong-uri' ? 'ui://test/another.html' : resourceUri,
+      mimeType: name === 'non-html' ? 'text/plain' : 'text/html;profile=mcp-app',
+      text: name === 'oversized' ? '界'.repeat(700_000) : '<main>计数：' + Number(before.value.count ?? 0) + '</main>',
+    };
+    if (name === 'network') content._meta = { ui: { csp: { connectDomains: ['https://example.com'] } } };
+    if (name === 'permissions') content._meta = { ui: { permissions: { camera: {} } } };
+    return { contents: name === 'multiple' ? [content, content] : [content] };
+  });
+}
+
 server.registerTool('state', { inputSchema: z.object({
   action: z.enum(['read', 'increment', 'stale']), expectedRevision: z.string().optional(),
 }) }, async ({ action, expectedRevision }) => {

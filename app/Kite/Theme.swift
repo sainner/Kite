@@ -12,10 +12,16 @@ enum Theme {
     /// 侧边栏里选中的一行。
     static let selection = Color("Selection")
     /// 会话窗口里人发的消息的气泡：agent 收到了是这个底色，排队中只描边。
-    static let bubble = Color("MessageBackground")
-    static let bubbleStroke = Color("MessageStroke")
-    /// 代码、命令输出、表格的底。
+    static let bubble = Color.accentColor
+    static let bubbleStroke = Color.accentColor.opacity(0.4)
+    static let bubbleShape = UnevenRoundedRectangle(
+        topLeadingRadius: Metrics.messageRadius, bottomLeadingRadius: Metrics.messageRadius,
+        bottomTrailingRadius: Metrics.bubbleTail, topTrailingRadius: Metrics.messageRadius,
+        style: .continuous)
+    /// 代码、命令输出的底。
     static let codeBackground = Color("CodeBackground")
+    /// 主题色用户气泡内的不透明蓝色代码底，随深浅外观调整。
+    static let userCodeBackground = Color("UserCodeBackground")
     /// 引用、子 agent 过程左边的竖线。
     static let rule = Color("Rule")
     /// 工具列表的描边与分割线更浅一些。
@@ -53,31 +59,49 @@ enum Metrics {
     static let sidebarMin: CGFloat = 200
     static let sidebarMax: CGFloat = 400
     static let sidebarCollapse: CGFloat = 120
-    /// 侧边栏自己的左边距，加上窗口内边距，和红绿灯按钮对齐。
-    static let sidebarLeading: CGFloat = 10
-    static let cardRadius: CGFloat = 12
+    /// 最小化插件窗口的圆角；agent 仍使用圆形。
+    static let dockRadius: CGFloat = 12
     /// 卡片拖小时的下限。
     static let minPane: CGFloat = 160
     /// 按下后挪动多少才算拖动，免得单击也算。
     static let dragThreshold: CGFloat = 4
     /// Mac 内容区外缘的拖放范围，在这里沿整个窗口组分栏。
     static let windowEdgeDrop: CGFloat = 32
-    /// Mac 上窗口标题栏的高度，标题在里面垂直居中；也是卡片拖动把手的高度。
-    static let header: CGFloat = 40
-    /// Mac 标题栏右侧窗口操作按钮的尺寸和间距。
-    static let headerAction: CGFloat = 24
-    static let headerActionSpacing: CGFloat = 4
-    /// iPhone 上窗口标题栏底下的留白。状态栏的安全区底下本来空着一截（iPhone 17 上约 20pt），
-    /// 所以标题栏上边不留、只在下边留一点，标题看着才在状态栏和栏底之间居中。
-    static let phoneHeaderBottom: CGFloat = 8
+    /// 输入区内部和工具条的点击区：Mac 使用紧凑尺寸，iPhone 保留触控尺寸。
+    /// 独立玻璃入口通过系统 controlSize 决定。
+    #if os(macOS)
+    static let paneButton: CGFloat = 28
+    /// 标题栏的窗口操作与会话菜单共用尺寸。
+    static let paneHeaderButton: CGFloat = 36
+    #else
+    static let paneButton: CGFloat = 44
+    #endif
+    static let paneButtonGap: CGFloat = 10
+    /// 按钮到所属工具条容器的四边留白。
+    static let paneToolbarInset: CGFloat = 8
+    static let paneToolbarHeight: CGFloat = paneButton + 2 * paneToolbarInset
+    /// 窗口四边的固定最小留白；已让出的安全区只补到这个值，不重复叠加。
+    #if os(macOS)
+    static let paneMargin: CGFloat = 8
+    /// Mac 标题组在窗口边距内额外向右留白。
+    static let paneTitleInset: CGFloat = 8
+    static let paneTitleSpacing: CGFloat = 0
+    #else
+    static let paneMargin: CGFloat = 14
+    static let paneTitleSpacing: CGFloat = 1
+    #endif
+    #if os(macOS)
+    /// 窗口与输入框的圆角按两者之间的留白保持同心。
+    static let cardRadius: CGFloat = controlRadius + paneMargin
+    #else
+    static let cardRadius: CGFloat = 20
+    #endif
     /// iPhone 上标题栏后面的渐变遮罩往下伸过标题栏底边多少。
     static let topFadeOverhang: CGFloat = 20
-    /// iPhone 上标题栏里按钮（拉开侧边栏）的直径，和系统导航栏里的按钮一样大。
-    static let headerButton: CGFloat = 44
-    /// 拖出布局的卡片变成的圆。
+    /// 拖出布局或最小化后的窗口图标尺寸。
     static let dragBubble: CGFloat = 40
-    /// Mac 右侧停靠栏，圆形窗口两边各留一份内边距。
-    static let dockWidth: CGFloat = dragBubble + 2 * padding
+    /// Mac 右侧停靠栏与窗口图标同宽。
+    static let dockWidth: CGFloat = dragBubble
     /// action 区：一排按钮、账号那一行，和两行之间的距离。
     static let actionButton: CGFloat = 36
     static let accountRow: CGFloat = 36
@@ -88,12 +112,20 @@ enum Metrics {
     static let tabBar: CGFloat = dragBubble
     /// iPhone 上拉出侧边栏的手势区，左边缘多宽。
     static let edgeZone: CGFloat = 24
-    /// 控制区一行的高度，和输入框只有一行字时一样高；还没做的窗口按它画占位。
-    static let controlHeight: CGFloat = 40
-    /// 控制区那张玻璃卡片的最小圆角（离窗口的角近的角和窗口圆角同心，可能更大），和它离窗口左右边的距离；
-    /// 底下没有安全区时离底边、打字时离键盘也是这么远。
-    static let controlRadius: CGFloat = 22
-    static let controlMargin: CGFloat = 12
+    /// 会话输入栏的顶部和左右内边距。
+    static let controlInset: CGFloat = 8
+    /// 会话输入栏的底部内边距。
+    #if os(macOS)
+    static let controlBottomInset: CGFloat = 6
+    #else
+    static let controlBottomInset: CGFloat = controlInset
+    #endif
+    /// 控制区输入框的圆角，玻璃、交互范围与悬停轮廓共用。
+    #if os(macOS)
+    static let controlRadius: CGFloat = 16
+    #else
+    static let controlRadius: CGFloat = 28
+    #endif
     /// 选 effort 的主刻度线的间距，一档占这么宽，拖过这么宽换一档。
     static let effortTick: CGFloat = 24
     /// 会话窗口里对话那一栏最宽多少，卡片再宽也不让一行字太长。
@@ -103,19 +135,32 @@ enum Metrics {
     static let rowSpacing: CGFloat = 14
     /// 工具列表的行内边距。
     static let toolRowInset: CGFloat = 10
-    /// 工具标题行统一高度，视图中随系统字号缩放。
-    static let toolRowHeight: CGFloat = 34
+    /// 工具标题行高度，视图中随系统字号缩放。
+    #if os(macOS)
+    static let toolRowHeight: CGFloat = 32
+    #else
+    static let toolRowHeight: CGFloat = 36
+    #endif
     static let toolIcon: CGFloat = 16
     /// 图标、名字、摘要之间使用相同的间距。
     static let toolLabelGap: CGFloat = 6
     static let toolGroupRadius: CGFloat = 8
     /// 气泡里文字离边的距离，左右和上下。
     static let bubblePadding = CGSize(width: 16, height: 12)
-    /// 气泡里文字和代码块之间空多少，代码块里的字离框多远。
+    /// 气泡里文字和代码块之间的间距。
     static let messageSegmentGap: CGFloat = 8
-    static let codePadding: CGFloat = 8
+    /// 行内代码背景的内边距、与正文的外间距，以及统一字号比例。
+    nonisolated static let inlineCodePadding: CGFloat = 4
+    nonisolated static let inlineCodeGap: CGFloat = 2
+    nonisolated static let inlineCodeRadius: CGFloat = 4
+    static let inlineCodeFontScale: CGFloat = 0.9
     /// agent 的话里块和块之间空多少；嵌套的列表每深一层往里缩多少；列表的编号占多宽（编号靠右对齐在里面）。
     static let markdownBlockGap: CGFloat = 10
+    static let markdownLineSpacing: CGFloat = 4
+    /// 独立代码块的圆角。
+    static let codeBlockRadius: CGFloat = 18
+    /// 代码块标题栏的上下留白，以及左侧额外留白。
+    static let codeHeaderInset: CGFloat = 4
     static let listIndent: CGFloat = 18
     static let listMarker: CGFloat = 14
     /// 文件图标与 favicon 到链接文字的统一间距。
@@ -130,21 +175,18 @@ enum Metrics {
     /// 对话里人发的消息和前后的内容之间、别的新一轮（Kite 发来的、后台任务通知）和上一轮之间，在平常的间距之外多空多少。
     static let messageGap: CGFloat = 12
     static let turnGap: CGFloat = 12
-    /// 气泡的圆角，右下角小一点。形状在主线程之外也会取，所以标 nonisolated。
-    nonisolated static let bubbleRadius: CGFloat = 18
+    /// 消息气泡的圆角；右下角小一点。
+    nonisolated static let messageRadius: CGFloat = 18
     nonisolated static let bubbleTail: CGFloat = 6
     /// 发送时气泡从多低的地方往上浮进来。
     static let bubbleRise: CGFloat = 32
     /// 人发的消息折起来时显示多高，大约十行；比它高出不少才折（见 MessageBubble）。
     static let messageFold: CGFloat = 220
+    /// 折叠内容仅在末端短渐隐，展开按钮位于渐隐外。
+    static let messageFoldFade: CGFloat = 20
     /// 消息上面附件缩略图的高度。
     static let attachmentHeight: CGFloat = 96
-    /// 对话里点一项弹出的操作栏：一个按钮多大，离这一项多远。Mac 上用鼠标点，小一号。
-    #if os(macOS)
-    static let actionBarButton: CGFloat = 28
-    #else
-    static let actionBarButton: CGFloat = 40
-    #endif
+    /// 对话浮动操作栏离消息的距离。
     static let actionBarGap: CGFloat = 6
 }
 

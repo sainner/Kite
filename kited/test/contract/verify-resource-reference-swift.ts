@@ -28,7 +28,9 @@ try {
   const diffTypes = join(root, 'LineDiff.swift');
   writeFileSync(diffTypes, `import Foundation\n\n${[
     'func splitLines(', 'struct LineDiff',
-  ].map((signature) => declaration(diffSource, signature)).join('\n\n')}\n`);
+  ].map((signature) => declaration(diffSource, signature)).join('\n\n')}\n\n${
+    declaration(readFileSync(join(app, 'KitedClient.swift'), 'utf8'), 'extension JSON: Codable')
+  }\n`);
   const fixture = join(root, 'ResourceReferenceContract.swift');
   writeFileSync(fixture, String.raw`
 import Foundation
@@ -177,6 +179,9 @@ struct ResourceReferenceContract {
   const executable = join(root, 'resource-reference-contract');
   await command([
     compiler, '-sdk', sdk, '-target', `${architecture}-apple-macosx26.0`, '-parse-as-library',
+    join(app, 'Transcript.swift'),
+    join(app, 'AgentConfiguration.swift'),
+    join(app, 'PluginManagementModels.swift'),
     join(app, 'ResourceReference.swift'), join(app, 'RemoteWorkspace.swift'),
     join(app, 'FileBrowser.swift'), diffTypes, fixture, '-o', executable,
   ], root);

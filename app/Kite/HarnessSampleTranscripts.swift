@@ -231,6 +231,138 @@ enum HarnessSampleTranscripts {
         r.human("代码下一轮再改。")
         r.thinking("这轮只需要文字说明，不调用文件工具。")
         r.text("好的，这轮只整理了说明，没有修改文件。")
+        r.human("展示一条包含常见 Markdown 样式的消息，方便检查排版。")
+        r.text(#"""
+            # Markdown 渲染展示
+
+            这是一条静态展示消息。普通段落可以包含中文、English、数字 12345，以及标点：逗号、句号和（括号）。较长的文字会自然换行，用来观察行高、段间距和文本选择。
+
+            ## 文字样式
+
+            普通文字、**粗体文字**、*斜体文字*、***粗斜体文字***、~~删除线文字~~，以及同一句话中的 **重点说明** 和 `inline code`。
+
+            ### 三级标题与 `cornerRadius`
+
+            这一段用于对比三级标题和普通正文之间的字号、字重与间距。
+
+            ## 列表与引用
+
+            - 第一项是短句。
+            - 第二项包含 **强调** 和 `configuration`。
+              - 这是一项嵌套列表。
+              - 这是一项较长的嵌套列表，用来观察自动换行之后的文字是否与正文起点对齐。
+            - 最后一项回到第一层。
+
+            1. 阅读当前配置。
+            2. 修改 `cornerRadius`，保留其他设置。
+            3. 编译并打开预览。
+
+            > 这是一段引用，包含 **强调文字** 和 `quotedCode`。
+            > 较长的引用内容应当自然换行，并保留左侧装饰线和相同的文本缩进。
+
+            ## 链接与文件引用
+
+            网页链接：[Swift 官网](https://www.swift.org) 和 [Apple 开发者文档](https://developer.apple.com/documentation/)。
+
+            本地文件引用：README.md:1-6；带标题的链接：[查看说明文件](README.md:1-6)。
+
+            ## 独立代码块
+
+            ```swift
+            struct PreviewStyle {
+                var cornerRadius: Double = 4
+                var horizontalPadding: Double = 6
+
+                func describe() -> String {
+                    "圆角：\(cornerRadius)，水平边距：\(horizontalPadding)"
+                }
+            }
+            let longMessage = "这是一行刻意写得很长的代码，用于检查代码块中的横向滚动，以及背景、内边距和相邻正文之间的关系。"
+            ```
+
+            代码块之后继续接普通正文，观察它们之间的间距。
+
+            ## 表格
+
+            | 样式 | 示例 | 说明 |
+            |---|---|---|
+            | 普通文字 | 中文与 English | 基础排版 |
+            | 行内代码 | `cornerRadius = 4` | 等宽字体与背景 |
+            | 强调文字 | **重点**、*补充* | 字重和倾斜 |
+            | 链接 | [Swift](https://www.swift.org) | 图标、基线与点击 |
+
+            同词对照：正文中的 `cornerRadius`、**`cornerRadius`** 和 *`cornerRadius`*。
+
+            | 普通表头 | `cornerRadius` | **`cornerRadius`** |
+            |---|---|---|
+            | 普通代码 | `cornerRadius` | 与正文的同词对照 |
+            | 强调代码 | **`cornerRadius`**、*`cornerRadius`* | 保留粗体与斜体 |
+            | 文件引用 | `README.md:1-6` | 图标包含在代码背景中 |
+
+            - 列表中的同词对照：`cornerRadius` 和 `README.md:1-6`。
+
+            > 引用中的同词对照：`cornerRadius` 和 `README.md:1-6`。
+
+            ---
+
+            ## 行内代码细节
+
+            代码中的文件引用：`README.md:1-6`；嵌在命令中的引用：`cat README.md:1-6`；网页引用：`https://www.swift.org`。
+
+            短代码：`x`、`id`、`input`、`result`，前后紧接标点。
+
+            连续代码：`let` `value` `=` `42`，观察相邻背景之间的空隙。
+
+            中英混排：正文中的 `用户名称`、`message.text` 和 `count + 1` 应与周围文字对齐。
+
+            带符号的代码：`{"enabled":true,"label":"预览"}`，以及包含反引号的 ``const text = `hello`;``。
+
+            较长代码：`renderPreview(message, cornerRadius: 4, horizontalPadding: 6, verticalPadding: 2, preserveTextSelection: true)`，用于观察窄窗口中行内背景换行的表现。
+
+            段落末尾也放一段代码，方便直接对照：`inlineCodeBackground`。
+            """#)
+        r.human(#"""
+            用户消息中的代码块也使用相同样式：
+            ```swift
+            struct Greeting {
+                let name = "Kite"
+                // 保留缩进、中文和符号
+                func text() -> String { "Hello, \(name)!" }
+            }
+            ```
+            """#)
+        r.text(#"""
+            ## 独立代码块对照
+
+            ```swift
+            struct Greeting {
+                let name = "Kite"
+                // 保留缩进、中文和符号
+                func text() -> String { "Hello, \(name)!" }
+            }
+            ```
+
+            ```bash
+            # 终端按钮首版仅展示
+            printf '%s\n' 'Hello, Kite!'
+            ```
+
+            ```json
+            {"name": "Kite", "enabled": true, "count": 3}
+            ```
+
+            ```
+            未标注语言的代码保留纯文本。
+                缩进仍然保留。
+            ```
+            """#)
+        r.human("长消息展开预览（纯文本）\n\n" + (1...24).map {
+            "第 \($0) 行：这是长用户消息，用于预览展开、收起与后续消息的位置。"
+        }.joined(separator: "\n") + "\n\n纯文本末尾标记：展开后应能看到这里。")
+        r.human("长消息展开预览（包含代码）\n\n```swift\n" + (1...24).map {
+            "let sampleValue\($0) = \"第 \($0) 行代码\""
+        }.joined(separator: "\n") + "\n```\n\n代码末尾标记：展开全文后应能看到第 24 行代码和这段正文。")
+        r.text("上方两条消息用于预览用户气泡的折叠、展开和代码背景。")
     }
 
     static let errors = record("errors") { r in

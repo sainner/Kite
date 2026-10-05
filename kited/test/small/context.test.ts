@@ -1,5 +1,8 @@
 import { expect, test } from 'bun:test';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { restoreContext } from '../../src/harness/context/assembler.ts';
+import { projectContext } from '../../src/harness/context/project.ts';
 import type { ContextSnapshot, ContextSource } from '../../src/harness/context/types.ts';
 import { diskRecords, input, item, ManualModel, success, tool, useHarness } from '../harness-loop.ts';
 
@@ -83,18 +86,86 @@ test('首次指令固定，后续上下文变化落盘并作为通知追加到�
   expect(factoryCalls).toBe(2);
   second.response.complete();
   await runner.settled();
+  source.bindings['project.documents']!.sources![0]!.sha256 = 'c'.repeat(64);
   await runner.send(input('same-context'));
   const third = await model.call(3);
   const reusedRecords = diskRecords(path);
   const reusedSnapshots = reusedRecords.filter((record) => record.type === 'context.prepared');
   const reusedStarts = reusedRecords.filter((record) => record.type === 'request.started');
-  expect(reusedSnapshots).toHaveLength(2);
+  expect(reusedSnapshots).toHaveLength(3);
   expect(reusedStarts).toHaveLength(3);
-  expect(reusedStarts[2]!.contextId).toBe(reusedSnapshots[1]!.snapshot.id);
+  expect(reusedStarts[2]!.contextId).toBe(reusedSnapshots[2]!.snapshot.id);
   expect(third.request.instructions).toBe(second.request.instructions);
   expect(third.request.history.filter((entry) => entry.type === 'notification')).toEqual(updates);
   expect(reusedStarts[2]!.notifications ?? []).toEqual([]);
   expect(factoryCalls).toBe(3);
+  third.response.complete();
+  await runner.settled();
+  await runner.shutdown();
+  const reopenedModel = new ManualModel();
+  const reopened = h.runner(root, { model: reopenedModel, instructions: () => source });
+  await reopened.runner.send(input('after-reopen'));
+  const fourth = await reopenedModel.call(1);
+  expect(fourth.request.instructions).toBe(first.request.instructions);
+  expect(fourth.request.history.filter((entry) => entry.type === 'notification')).toEqual(updates);
+  const reopenedRecords = diskRecords(path);
+  expect(reopenedRecords.filter((record) => record.type === 'context.prepared')).toHaveLength(3);
+  expect(reopenedRecords.filter((record) => record.type === 'request.started').at(-1)!.notifications ?? []).toEqual([]);
+  fourth.response.complete();
+  await reopened.runner.settled();
+}, 1000);
+
+// 已实测的跨模块 bug：未引用的 AGENTS 变化仍改变摘要、追加同正文通知；隐藏分支也不得读取过大材料。
+test('固定文字和隐藏分支不读取未使用项目材料，也不向模型重复通知', async () => {
+  const root = h.root();
+  mkdirSync(join(root, '.git'));
+  const agents = join(root, 'AGENTS.md');
+  writeFileSync(agents, '最初的项目规则');
+  const source: ContextSource = {
+    definition: {
+      version: 2, id: 'fixed', title: '固定规则', scene: 'thread.create',
+      blocks: [{ type: 'paragraph', id: 'fixed', title: '固定规则',
+        parts: [{ type: 'text', text: '仅遵守这一段固定文字。' }] }],
+    },
+    bindings: {},
+  };
+  const model = new ManualModel();
+  const { runner, path } = h.runner(root, {
+    model, instructions: () => projectContext(root, source.definition),
+  });
+  await runner.send(input('fixed-first'));
+  const first = await model.call(1);
+  expect(first.request.instructions).toBe('仅遵守这一段固定文字。');
+  expect(diskRecords(path).find((record) => record.type === 'context.prepared')!.snapshot.bindings).toEqual({});
+  first.response.complete();
+  await runner.settled();
+
+  writeFileSync(agents, '改变后且过大的项目规则'.repeat(200_000));
+  await runner.send(input('unused-material-changed'));
+  const second = await Promise.race([
+    model.call(2),
+    runner.settled().then(() => { throw new Error('未引用项目材料导致请求未启动'); }),
+  ]);
+  expect(second.request.instructions).toBe(first.request.instructions);
+  expect(second.request.history.filter((entry) => entry.type === 'notification')).toEqual([]);
+  expect(diskRecords(path).filter((record) => record.type === 'context.prepared')).toHaveLength(1);
+  second.response.complete();
+  await runner.settled();
+
+  source.definition.blocks = [{
+    type: 'condition', id: 'selected', title: '实际路径', variable: 'environment.cwd',
+    cases: [{ id: 'hidden', title: '隐藏材料', equals: '另一个项目',
+      blocks: [{ type: 'paragraph', id: 'documents', title: '项目材料',
+        parts: [{ type: 'variable', name: 'project.documents' }] }] }],
+    otherwise: { id: 'fixed-branch', title: '固定规则', blocks: [{ type: 'paragraph', id: 'fixed', title: '固定规则',
+      parts: [{ type: 'text', text: '仅遵守这一段固定文字。' }] }] },
+  }];
+  expect(Object.keys(projectContext(root, source.definition).bindings)).toEqual(['environment.cwd']);
+  await runner.send(input('hidden-material'));
+  const third = await model.call(3);
+  expect(third.request.instructions).toBe(first.request.instructions);
+  expect(third.request.history.filter((entry) => entry.type === 'notification')).toEqual([]);
+  expect(diskRecords(path).filter((record) => record.type === 'request.started').at(-1)!.notifications ?? []).toEqual([]);
   third.response.complete();
   await runner.settled();
 }, 1000);

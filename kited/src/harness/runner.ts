@@ -6,7 +6,7 @@ import { contextUpdateContext } from './context/notifications.ts';
 import { notificationSchema, requestSnapshot } from './request-config.ts';
 import type {
   ContextItem, Input, JournalEvent, JournalRecord, ModelItem, Outcome, Phase, Recovery, StopRequest,
-  HarnessEvent, HarnessOptions, RequestSnapshot, ThreadRunner, ThreadState, Tool, ToolDefinition, ToolResult,
+  HarnessEvent, HarnessOptions, ThreadRunner, ThreadState, Tool, ToolDefinition, ToolResult,
 } from './types.ts';
 
 interface SavedRequest {
@@ -33,12 +33,12 @@ export class HarnessRunner implements ThreadRunner {
   private inputs = new Map<string, Input>();
   private pending = new Set<string>();
   private requests = new Map<string, SavedRequest>();
-  /** 已保存快照的展开结果；模型请求复用正文，完整定义由 journal 保留。 */
-  private contexts = new Map<string, string>();
-  private configurations = new Map<string, RequestSnapshot>();
-  private baseContext?: string;
-  private currentContext?: string;
-  private baseConfiguration?: string;
+  /** 完整快照留在 journal；运行中只保留固定前缀和当前有效正文。 */
+  private contexts = new Set<string>();
+  private configurations = new Set<string>();
+  private baseInstructions?: string;
+  private currentInstructions?: string;
+  private toolDefinitions?: ToolDefinition[];
   private notificationCursor = 0;
   private deliveredNotifications = new Set<string>();
   private calls = new Map<string, SavedRequest>();
@@ -58,7 +58,18 @@ export class HarnessRunner implements ThreadRunner {
   private forceRun = false;
 
   constructor(private options: HarnessOptions) {
-    for (const row of options.journal.records) this.apply(row);
+    const records = options.journal.records;
+    for (const row of records) this.apply(row);
+    const first = records.find((row) => row.type === 'request.started');
+    const last = records.findLast((row) => row.type === 'request.started');
+    if (first && last) {
+      const base = records.find((row) => row.type === 'context.prepared' && row.snapshot.id === first.contextId);
+      const current = records.find((row) => row.type === 'context.prepared' && row.snapshot.id === last.contextId);
+      const configuration = records.find((row) => row.type === 'request.configured' && row.snapshot.id === first.configurationId);
+      if (base?.type === 'context.prepared') this.baseInstructions = restoreContext(base.snapshot).instructions;
+      if (current?.type === 'context.prepared') this.currentInstructions = restoreContext(current.snapshot).instructions;
+      if (configuration?.type === 'request.configured') this.toolDefinitions = structuredClone(configuration.snapshot.tools);
+    }
     this.recover();
     if (options.startPaused && this.pending.size) this.waitingForResume = true;
     this.phase = 'idle';
@@ -239,16 +250,17 @@ export class HarnessRunner implements ThreadRunner {
         return;
       case 'context.prepared':
         if (this.contexts.has(row.snapshot.id)) throw new Error('上下文快照重复');
-        this.contexts.set(row.snapshot.id, restoreContext(row.snapshot).instructions);
+        restoreContext(row.snapshot);
+        this.contexts.add(row.snapshot.id);
         return;
       case 'request.configured':
         if (this.configurations.has(row.snapshot.id)) throw new Error('请求配置快照重复');
-        this.configurations.set(row.snapshot.id, structuredClone(row.snapshot));
+        this.configurations.add(row.snapshot.id);
         return;
       case 'request.started': {
         if (this.openTurn !== row.turnId || this.requests.has(row.requestId)) throw new Error('请求关联的回合或 id 无效');
-        if (row.contextId !== undefined && !this.contexts.has(row.contextId)) throw new Error('请求引用了未保存的上下文');
-        if (row.configurationId !== undefined && !this.configurations.has(row.configurationId)) throw new Error('请求引用了未保存的配置');
+        if (!this.contexts.has(row.contextId)) throw new Error('请求引用了未保存的上下文');
+        if (!this.configurations.has(row.configurationId)) throw new Error('请求引用了未保存的配置');
         if (this.unfinishedRequest()) throw new Error('上一请求或工具尚未结束，不能开始新请求');
         const notifications = (row.notifications ?? []).map(({ context, ...notification }) => ({
           type: 'notification' as const, notification, text: restoreContext(context).instructions,
@@ -261,9 +273,6 @@ export class HarnessRunner implements ThreadRunner {
           }
           this.deliveredNotifications.add(notification.id);
         }
-        this.baseContext ??= row.contextId;
-        this.currentContext = row.contextId;
-        this.baseConfiguration ??= row.configurationId;
         const inputs = row.inputIds.map((id) => {
           if (!this.pending.delete(id)) throw new Error('请求使用了非待处理输入');
           return this.inputs.get(id)!;
@@ -476,8 +485,8 @@ export class HarnessRunner implements ThreadRunner {
       if (tools.has(tool.name)) throw new Error(`工具名重复：${tool.name}`);
       tools.set(tool.name, tool);
     }
-    const definitions = this.baseConfiguration ? this.configurations.get(this.baseConfiguration)!.tools
-      : prepared.toolDefinitions ?? prepared.tools.map(({ name, description, parameters }) => ({ name, description, parameters }));
+    const definitions = this.toolDefinitions ?? prepared.toolDefinitions
+      ?? prepared.tools.map(({ name, description, parameters }) => ({ name, description, parameters }));
     const declarations = new Map<string, ToolDefinition>();
     for (const definition of definitions) if (!declarations.has(definition.name)) declarations.set(definition.name, definition);
     for (const tool of tools.values()) {
@@ -500,15 +509,18 @@ export class HarnessRunner implements ThreadRunner {
         cursor = notification.sequence;
       }
     }
-    if (this.baseContext && this.currentContext !== context.snapshot.id) notifications.push({
+    if (this.currentInstructions !== undefined && this.currentInstructions !== context.instructions) notifications.push({
       id: randomUUID(), kind: 'context.updated', source: 'host.context', authority: 'instruction',
-      context: assembleContext(contextUpdateContext(context.instructions)).snapshot,
+      context: assembleContext(contextUpdateContext(context.instructions, prepared.contextUpdateTemplate)).snapshot,
     });
     if (!this.contexts.has(context.snapshot.id)) this.record({ type: 'context.prepared', snapshot: context.snapshot });
     if (!this.configurations.has(configuration.id)) this.record({ type: 'request.configured', snapshot: configuration });
     this.checkTurn(turn);
     this.record({ type: 'request.started', ...ids, inputIds: [...this.pending], contextId: context.snapshot.id,
       configurationId: configuration.id, notifications });
+    this.baseInstructions ??= context.instructions;
+    this.currentInstructions = context.instructions;
+    this.toolDefinitions ??= structuredClone(configuration.tools);
     const saved = this.requests.get(requestId)!;
     const batch = new ToolBatch({
       cwd: this.options.cwd, signal: turn.controller.signal, turnId: turn.id, tools,
@@ -523,7 +535,7 @@ export class HarnessRunner implements ThreadRunner {
       this.checkTurn(turn);
       const stream = prepared.model.stream({
         id: requestId, turnId: turn.id, cwd: this.options.cwd,
-        instructions: this.contexts.get(this.baseContext!)!,
+        instructions: this.baseInstructions!,
         history: this.history(), tools: structuredClone(configuration.tools), allowedTools: [...tools.keys()],
       }, turn.controller.signal);
       for await (const event of stream) {

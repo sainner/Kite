@@ -117,7 +117,7 @@ private struct ActionBarPlacement<Bar: View>: ViewModifier {
             // .scrollView 的原点在标题栏底下，没被挡住的一段是 0 到 visibleHeight（实测）
             .onGeometryChange(for: Bool.self) { proxy in
                 let frame = proxy.frame(in: .scrollView)
-                let room = Metrics.actionBarGap + Metrics.actionBarButton
+                let room = Metrics.actionBarGap + Metrics.paneToolbarHeight
                 return frame.maxY + room > visibleHeight && frame.minY - room >= 0
             } action: { above = $0 }
             .overlay(alignment: Alignment(horizontal: side == .leading ? .leading : .trailing, vertical: above ? .top : .bottom)) {
@@ -148,8 +148,8 @@ struct ActionBar<Content: View>: View {
         // 外面垫一层 ZStack：放它的地方给的对齐参考线要加在不随 shown 变的这一层才认
         ZStack {
             if shown {
-                HStack(spacing: 0) { content() }
-                    .padding(.horizontal, Metrics.actionBarButton / 10)
+                HStack(spacing: Metrics.paneButtonGap) { content() }
+                    .padding(Metrics.paneToolbarInset)
                     .glassEffect(.regular.interactive(), in: .capsule)
                     .fixedSize()
                     .transition(.scale(scale: 0.3, anchor: corner).combined(with: .opacity))
@@ -175,7 +175,6 @@ struct ActionButton: View {
     let icon: String
     var role: ButtonRole?
     let action: () -> Void
-    @Environment(\.isEnabled) private var enabled
 
     init(_ title: String, icon: String, role: ButtonRole? = nil, action: @escaping () -> Void) {
         self.title = title
@@ -186,10 +185,9 @@ struct ActionButton: View {
 
     var body: some View {
         Button(role: role, action: action) {
-            ActionIcon(icon: icon, destructive: role == .destructive)
+            Image(systemName: icon)
         }
-        .buttonStyle(.pointingPlain)
-        .opacity(enabled ? 1 : 0.35)
+        .buttonStyle(PaneButtonStyle(foreground: role == .destructive ? .red : .primary))
         .help(title)
         .accessibilityLabel(title)
     }
@@ -200,7 +198,6 @@ struct ActionMenu<Content: View>: View {
     let title: String
     let icon: String
     @ViewBuilder let content: Content
-    @Environment(\.isEnabled) private var enabled
 
     init(_ title: String, icon: String, @ViewBuilder content: () -> Content) {
         self.title = title
@@ -212,37 +209,27 @@ struct ActionMenu<Content: View>: View {
         Menu {
             Section(title) { content }
         } label: {
-            ActionIcon(icon: icon, destructive: false)
+            Image(systemName: icon)
         }
         .menuStyle(.button)
-        .buttonStyle(.pointingPlain)
+        .buttonStyle(PaneButtonStyle(foreground: .primary))
         .menuIndicator(.hidden)
         .fixedSize()
-        .opacity(enabled ? 1 : 0.35)
         .help(title)
         .accessibilityLabel(title)
     }
 }
 
-private struct ActionIcon: View {
-    let icon: String
-    let destructive: Bool
-
-    var body: some View {
-        Image(systemName: icon)
-            .font(Theme.body)
-            .foregroundStyle(destructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
-            .frame(width: Metrics.actionBarButton, height: Metrics.actionBarButton)
-            .contentShape(Rectangle())
-    }
-}
-
 /// 复制到剪贴板。
-func copyToPasteboard(_ text: String) {
+func copyToPasteboard(_ text: String, toast: ToastCenter?) {
     #if os(macOS)
     NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
+    guard NSPasteboard.general.setString(text, forType: .string) else {
+        toast?.show("复制失败", systemImage: "exclamationmark.triangle")
+        return
+    }
     #else
     UIPasteboard.general.string = text
     #endif
+    toast?.show("已复制", systemImage: "checkmark")
 }

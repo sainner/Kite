@@ -86,6 +86,7 @@ struct RemotePluginInstance: Decodable, Identifiable {
         let path: String?
         let revision: String?
         var diffId: String? = nil
+        var plugin: JSON? = nil
     }
     let id: String
     let workspaceId: String
@@ -95,6 +96,7 @@ struct RemotePluginInstance: Decodable, Identifiable {
     let presentation: RemotePresentation
     let createdAt: Int
     var state: State? = nil
+    var config: InstanceAgentConfig? = nil
 }
 
 struct FileSelection: Decodable, Equatable {
@@ -131,12 +133,18 @@ struct RemotePluginDefinition: Decodable, Identifiable {
         let title: String
         let renderer: String
     }
-    struct Agent: Decodable { let runtime: RemoteRuntime }
+    struct Agent: Decodable {
+        let runtime: RemoteRuntime
+        var model: AgentModelConfiguration? = nil
+    }
     let id: String
     let title: String
+    let lifetime: PluginLifetime
     let views: [PluginView]
     let defaultView: String
     let agent: Agent?
+    var runtime: String? = nil
+    var operations: [String] = []
 }
 
 /// 所有窗口统一引用实例和已声明的视图。

@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from 'bun:test';
+import { afterAll, expect, spyOn, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, watch, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import type { Json, ModelItem } from '../../src/harness/types.ts';
 import type { PluginDefinition } from '../../src/plugins.ts';
 import { call, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
+import { editNotificationTemplate } from '../notification-templates.ts';
 import { bunPluginSource } from '../fixtures/bun-plugin-source.ts';
 import { makeTemp, newRepo } from '../util.ts';
 
@@ -29,8 +30,8 @@ async function workspace(k: Kited, repo: string) {
   return registered.workspace.id;
 }
 
-async function install(k: Kited) {
-  const pack = { id: 'custom.test', title: '测试', bundle: await bundle };
+async function install(k: Kited, views?: { id: string; title: string; resourceUri: string }[], lifetime: 'window' | 'persistent' = 'persistent') {
+  const pack = { id: 'custom.test', title: '测试', bundle: await bundle, views, lifetime };
   const installed = await k.call('POST', '/plugin-definitions', pack);
   expect(installed.status).toBe(200);
   const definition = installed.body as PluginDefinition;
@@ -93,6 +94,143 @@ function waitFile(path: string) {
     if (existsSync(path)) { clearTimeout(timer); watcher.close(); resolve(); }
   });
 }
+
+// 真实 MCP SDK 的资源内容和 _meta 经 stdio 到 HTTP；关窗与运行进程的生命周期必须在一起验证。
+test('声明的 MCP App 视图读取本实例资源，拒绝不安全内容，关窗后实例继续运行', async () => {
+  const k = startKited();
+  try {
+    const repo = newRepo(k.root, 'project', { 'note.txt': '原始\n' });
+    const workspaceId = await workspace(k, repo);
+    const invalid = ['non-html', 'missing', 'multiple', 'wrong-uri', 'network', 'permissions', 'oversized'];
+    await install(k, ['state', ...invalid].map((id) => ({
+      id, title: id, resourceUri: `ui://test/${id}.html`,
+    })));
+    const instanceId = await createInstance(k, workspaceId);
+    const readView = (id: string) => k.call('GET', `/instances/${instanceId}/plugin/views/${id}`);
+    expect(await readView('state')).toEqual({
+      status: 200, body: { html: '<main>计数：0</main>', resourceUri: 'ui://test/state.html' },
+    });
+    output(await tool(k, instanceId, 'state', 'view-increment', { action: 'increment' }));
+    expect((await readView('state')).body).toEqual({
+      html: '<main>计数：1</main>', resourceUri: 'ui://test/state.html',
+    });
+    for (const id of ['unlisted', ...invalid]) {
+      const rejected = await readView(id);
+      expect(rejected.status, `${id} 不应成为可加载视图`).not.toBe(200);
+    }
+
+    const windowId = randomUUID();
+    const opened = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
+      id: windowId, content: { kind: 'open', instanceId, viewId: 'state' },
+    });
+    expect(opened.status).toBe(200);
+    expect(opened.body.target.instanceId).toBe(instanceId);
+    const beforeClose = output(await tool(k, instanceId, 'state', 'view-opened', { action: 'read' }));
+    expect((await k.call('DELETE', `/workspaces/${workspaceId}/windows/${windowId}`)).status).toBe(200);
+    const afterClose = output(await tool(k, instanceId, 'state', 'view-closed', { action: 'read' }));
+    expect(afterClose).toMatchObject({ pid: beforeClose.pid, value: { count: 1 } });
+  } finally {
+    await k.stop();
+  }
+}, 1000);
+
+// SQLite 多视图窗口、宿主清理失败和真实 MCP 阻塞调用/后代退出交接；最后关窗不能留下可唤醒的实例。
+test('随窗口插件等最后视图关闭才回收，清理失败可重试且回收等待阻塞调用与后代退出', async () => {
+  const k = startKited();
+  let stopFailure: ReturnType<typeof spyOn> | undefined;
+  try {
+    const repo = newRepo(k.root, 'project', { 'note.txt': '原始\n' });
+    const workspaceId = await workspace(k, repo);
+    await install(k, ['state', 'unlisted'].map((id) => ({
+      id, title: id, resourceUri: `ui://test/${id}.html`,
+    })), 'window');
+    const rejected = await k.call('POST', `/workspaces/${workspaceId}/plugin-instances`, {
+      id: randomUUID(), definitionId: 'custom.test',
+    });
+    expect(rejected.status).toBe(400);
+
+    const creation = { id: randomUUID(), content: { kind: 'create', definitionId: 'custom.test' } };
+    const main = await k.call('POST', `/workspaces/${workspaceId}/windows`, creation);
+    expect(main.status).toBe(200);
+    const mainWindow = structuredClone(main.body);
+    const instanceId = mainWindow.target.instanceId as string;
+    const second = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
+      id: randomUUID(), content: { kind: 'open', instanceId, viewId: 'unlisted' },
+    });
+    expect(second.status).toBe(200);
+    const before = output(await tool(k, instanceId, 'state', 'lifetime-increment', { action: 'increment' }));
+    const caller = await k.call('POST', `/workspaces/${workspaceId}/operations/agent.start`, {
+      operationId: 'lifetime-agent', definitionId: 'kite.agent.coding', presentation: 'background',
+    });
+    expect(caller.status).toBe(200);
+    const grantsPath = `/instances/${caller.body.instanceId}/operation-grants`;
+    const grants = await k.call('GET', grantsPath);
+    expect((await k.call('PUT', grantsPath, {
+      expectedRevision: grants.body.revision,
+      grants: [{ operation: 'agent.list' }, { operation: 'plugin.call', instanceId, tools: ['state'] }],
+    })).status).toBe(200);
+    expect((await k.call('DELETE', `/workspaces/${workspaceId}/windows/${mainWindow.id}`)).status).toBe(200);
+    const retained = output(await tool(k, instanceId, 'state', 'lifetime-retained', { action: 'read' }));
+    expect(retained).toMatchObject({ pid: before.pid, value: { count: 1 } });
+    const aggregate = () => k.call('GET', '/workspaces').then((response) =>
+      response.body.find((value: { workspace: { id: string } }) => value.workspace.id === workspaceId));
+    expect((await aggregate()).windows.map((value: { id: string }) => value.id)).toEqual([second.body.id]);
+
+    const marker = join('/private/tmp', 'kite-lifetime-block-' + randomUUID());
+    // 沙箱只允许自身 TMPDIR；取现有 fixture 的真实临时目录，避免增加专用探针协议。
+    const probe = output(await tool(k, instanceId, 'probe', 'lifetime-tmpdir', {
+      workspaceFile: join(repo, 'note.txt'), externalFile: marker, hostFile: marker, port: 1,
+    }));
+    const blockMarker = join(probe.tmpdir, 'lifetime-' + randomUUID());
+    const pending = tool(k, instanceId, 'block', 'lifetime-block', { marker: blockMarker });
+    await waitFile(blockMarker);
+    const pids = JSON.parse(readFileSync(blockMarker, 'utf8')) as { parent: number; child: number };
+
+    stopFailure = spyOn(k.daemon.kite.plugins, 'stop').mockRejectedValueOnce(new Error('模拟进程清理失败'));
+    expect((await k.call('DELETE', `/workspaces/${workspaceId}/windows/${second.body.id}`)).status).not.toBe(200);
+    const afterFailure = await aggregate();
+    expect(afterFailure.windows.map((value: { id: string }) => value.id)).toEqual([second.body.id]);
+    expect(afterFailure.instances.find((value: { id: string }) => value.id === instanceId))
+      .toMatchObject({ state: { plugin: { count: 1 } } });
+    expect(() => process.kill(pids.parent, 0)).not.toThrow();
+    stopFailure.mockRestore();
+    stopFailure = undefined;
+
+    expect((await k.call('DELETE', `/workspaces/${workspaceId}/windows/${second.body.id}`)).status).toBe(200);
+    expect(await pending).toMatchObject({ status: 409, body: { outcome: 'unknown' } });
+    expect(() => process.kill(pids.parent, 0)).toThrow();
+    expect(() => process.kill(pids.child, 0)).toThrow();
+    expect(existsSync(blockMarker)).toBe(false);
+    const recycled = await aggregate();
+    expect(recycled.instances.map((value: { id: string }) => value.id)).toEqual([caller.body.instanceId]);
+    expect(recycled.windows).toEqual([]);
+    const remaining = await k.call('GET', grantsPath);
+    expect(remaining.body.grants).toEqual([{ operation: 'agent.list' }]);
+    expect((await k.call('PUT', grantsPath, {
+      expectedRevision: remaining.body.revision, grants: remaining.body.grants,
+    })).status).toBe(200);
+    expect((await k.call('DELETE', `/workspaces/${workspaceId}/windows/${second.body.id}`)).status).toBe(200);
+    expect((await k.call('POST', `/workspaces/${workspaceId}/windows`, creation)).status).toBe(409);
+    expect((await k.call('POST', `/workspaces/${workspaceId}/windows`, {
+      id: randomUUID(), content: { kind: 'open', instanceId, viewId: 'state' },
+    })).status).toBe(404);
+    for (const endpoint of ['tools', 'views/state']) {
+      expect((await k.call('GET', `/instances/${instanceId}/plugin/${endpoint}`)).status).toBe(404);
+    }
+    expect((await tool(k, instanceId, 'state', 'lifetime-after-recycle', { action: 'read' })).status).toBe(404);
+    expect(k.daemon.kite.store.instance(instanceId)).toBeNull();
+    expect(existsSync(join(k.home, 'sessions', instanceId))).toBe(false);
+    expect((await k.call('POST', '/plugin-definitions', {
+      id: 'custom.persistent', title: '持久插件', lifetime: 'persistent', bundle: await bundle,
+    })).status).toBe(200);
+    expect((await k.call('POST', `/workspaces/${workspaceId}/plugin-instances`, {
+      id: instanceId, definitionId: 'custom.persistent',
+    })).status).toBe(409);
+  } finally {
+    stopFailure?.mockRestore();
+    await k.stop();
+  }
+}, 1000);
 
 // 真实 Bun SDK 双向 stdio、宿主授权与 SQLite 状态收据必须一起运行才能发现交接错误。
 test('Bun 插件的状态和工具收据跨进程重启保留，工作区回调随授权即时变化', async () => {
@@ -272,15 +410,15 @@ test('模型按实例授权调用同名 Bun 工具，原始参数 schema 拦住�
   }
 }, 1000);
 
-// 模型响应与 HTTP 撤权并发，随后要经过 journal、SQLite 和 daemon 重启；旧响应不能绕过执行时授权。
-test('撤权拒绝旧模型调用，固定工具目录与独立收据在恢复授权和重启后保留', async () => {
+// 目录模板、模型响应与撤权并发，随后经 journal、SQLite 和重启；通知快照与执行时授权各自保持。
+test('撤权拒绝旧模型调用，工具通知按生成时模板冻结且目录与收据跨重启保留', async () => {
   const root = makeTemp('plugin-model-');
   const home = join(root, 'kite');
   const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
   const model = new ManualModel();
   let daemon: Daemon | undefined;
   try {
-    daemon = startDaemon({ home, port: 0, model: () => model });
+    daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => model });
     const events = new Seen<Envelope>();
     daemon.kite.bus.subscribe(undefined, (event) => events.add(event));
     const apiCall = (method: string, path: string, body?: unknown) => call(daemon!.url, method, path, body);
@@ -288,7 +426,7 @@ test('撤权拒绝旧模型调用，固定工具目录与独立收据在恢复�
     expect(registered.status).toBe(200);
     const workspaceId = registered.body.workspace.id as string;
     expect((await apiCall('POST', '/plugin-definitions', {
-      id: 'custom.test', title: '测试', bundle: await bundle,
+      id: 'custom.test', title: '测试', bundle: await bundle, lifetime: 'persistent',
     })).status).toBe(200);
     const targetId = randomUUID();
     expect((await apiCall('POST', `/workspaces/${workspaceId}/plugin-instances`, {
@@ -299,6 +437,8 @@ test('撤权拒绝旧模型调用，固定工具目录与独立收据在恢复�
     });
     expect(opened.status).toBe(200);
     const agentId = opened.body.target.instanceId as string;
+    const oldToolsTemplate = await editNotificationTemplate(apiCall,
+      'kite.plugin-tools', '插件通知旧模板', 'plugin.tools');
     const grants = await apiCall('GET', `/instances/${agentId}/operation-grants`);
     const granted = await apiCall('PUT', `/instances/${agentId}/operation-grants`, {
       expectedRevision: grants.body.revision,
@@ -320,12 +460,20 @@ test('撤权拒绝旧模型调用，固定工具目录与独立收据在恢复�
     })).status).toBe(200);
     const first = await model.call(1);
     expect(first.request.allowedTools).toContain(pin.modelName);
+    expect(first.request.history.some((entry) => entry.type === 'notification'
+      && entry.text.includes('插件通知旧模板') && entry.text.includes(pin.modelName) && entry.text.includes(targetId))).toBe(true);
     const revoked = await apiCall('PUT', `/instances/${agentId}/operation-grants`, {
       expectedRevision: granted.body.revision, grants: [],
     });
     expect(revoked.status).toBe(200);
     expect(model.calls.values).toHaveLength(1);
     expect(first.signal.aborted).toBe(false);
+    const pending = structuredClone(daemon.kite.store.instanceNotifications(agentId, 0));
+    expect(pending.at(-1)!.context.definition).toEqual(oldToolsTemplate.definition);
+    await editNotificationTemplate(apiCall, 'kite.plugin-tools', '插件通知新模板', 'plugin.tools');
+    expect(daemon.kite.store.instanceNotifications(agentId, 0)).toEqual(pending);
+    expect((await apiCall('GET', `/instances/${agentId}/operation-grants`)).body).toEqual(revoked.body);
+    expect(model.calls.values).toHaveLength(1);
     await first.response.emit({ type: 'item', item: modelItem('stale-call', pin.modelName, { action: 'increment' }) });
     first.response.complete();
     const second = await model.call(2);
@@ -337,6 +485,12 @@ test('撤权拒绝旧模型调用，固定工具目录与独立收据在恢复�
     expect(second.request.history).toContainEqual(expect.objectContaining({
       type: 'notification', notification: expect.objectContaining({ kind: 'plugin.tools.changed' }),
     }));
+    const previousToolsUpdates = second.request.history.filter((entry) => entry.type === 'notification')
+      .filter((entry) => entry.notification.kind === 'plugin.tools.changed');
+    for (const update of previousToolsUpdates) {
+      expect(update.text).toContain('插件通知旧模板');
+      expect(update.text).not.toContain('插件通知新模板');
+    }
     expect((await apiCall('POST', `/instances/${targetId}/plugin/tools/state`, {
       operationId: 'read-after-revoke', arguments: { action: 'read' },
     })).body.structuredContent.value.count ?? 0).toBe(0);
@@ -362,6 +516,11 @@ test('撤权拒绝旧模型调用，固定工具目录与独立收据在恢复�
     const third = await model.call(3);
     expect(third.request.tools.map((value) => value.name)).toEqual(first.request.tools.map((value) => value.name));
     expect(third.request.allowedTools).toContain(pin.modelName);
+    const toolsUpdates = third.request.history.filter((entry) => entry.type === 'notification')
+      .filter((entry) => entry.notification.kind === 'plugin.tools.changed');
+    expect(toolsUpdates.slice(0, previousToolsUpdates.length)).toEqual(previousToolsUpdates);
+    expect(toolsUpdates.at(-1)!.text).toContain('插件通知新模板');
+    expect(toolsUpdates.at(-1)!.text).toContain(pin.modelName);
     await third.response.emit({ type: 'item', item: modelItem('shared-receipt', pin.modelName, { action: 'increment' }) });
     third.response.complete();
     const fourth = await model.call(4);
@@ -381,11 +540,13 @@ test('撤权拒绝旧模型调用，固定工具目录与独立收据在恢复�
     const journalPath = join(home, 'sessions', agentId, 'journal.jsonl');
     const configured = diskRecords(journalPath).filter((record) => record.type === 'request.configured');
     expect(configured[0]).toMatchObject({ snapshot: { settings: { pluginTools: [projection] } } });
+    await editNotificationTemplate(apiCall, 'kite.plugin-tools', '插件通知未来模板', 'plugin.tools');
+    expect(model.calls.values).toHaveLength(4);
     await daemon.stop();
     daemon = undefined;
 
     const resumedModel = new ManualModel();
-    daemon = startDaemon({ home, port: 0, model: () => resumedModel });
+    daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => resumedModel });
     const persisted = await apiCall('GET', `/threads/${agentId}`);
     expect(persisted.body.config.pluginTools).toEqual(thread.body.config.pluginTools);
     const retriedModelCall = await daemon.kite.operations.invoke({
@@ -405,6 +566,8 @@ test('撤权拒绝旧模型调用，固定工具目录与独立收据在恢复�
     const afterRestart = await resumedModel.call(1);
     expect(afterRestart.request.tools.map((value) => value.name)).toEqual(first.request.tools.map((value) => value.name));
     expect(afterRestart.request.allowedTools).toContain(pin.modelName);
+    expect(afterRestart.request.history.filter((entry) => entry.type === 'notification'
+      && entry.notification.kind === 'plugin.tools.changed')).toEqual(toolsUpdates);
     const latest = diskRecords(journalPath).filter((record) => record.type === 'request.configured').at(-1);
     expect(latest).toMatchObject({ snapshot: { settings: { pluginTools: [projection] } } });
     afterRestart.response.complete();

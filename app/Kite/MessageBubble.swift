@@ -2,9 +2,9 @@ import SwiftUI
 
 /// 人发的一条消息：靠右的气泡，右下角圆角小一点，靠它看出是谁说的，所以长消息左边不留白，可以占满整栏。两种状态：排队中（agent 还没收到）只描边，收到了填上底色；
 /// 从排队中到收到，底色直接填进来，气泡大小不变。
-/// 正文原样显示，不解析 Markdown，只把 ``` 围起来的一段排成等宽；斜杠命令开头的命令名用主题色等宽字。
-/// 太长的折起来，底下渐隐。图片和文件排在气泡上面，靠右。
-/// 气泡里不放按钮，大小固定。iPhone 上长按、Mac 上右键弹出操作栏（见 ActionBar.swift），和消息右边对齐：
+/// 正文原样显示，不解析 Markdown，只把 ``` 围起来的一段排成等宽；斜杠命令开头的命令名用等宽字。
+/// 太长的折起来，底下短渐隐，并提供直接展开、收起的按钮。图片和文件排在气泡上面，靠右。
+/// 代码块共用语言标题和操作按钮。iPhone 上长按、Mac 上右键弹出消息操作栏（见 ActionBar.swift），和消息右边对齐：
 /// 排队中的是立即发送、编辑、取消发送；收到了的是编辑、回退、分叉。都有复制，折起来的还有展开全文。
 /// 刚发出去时气泡连同附件在下面一点藏着，对话往上滑的同时从下往上浮进来、淡显（见 ThreadPane.send）。
 struct MessageBubble: View {
@@ -13,6 +13,7 @@ struct MessageBubble: View {
     @Environment(WorkThread.self) private var thread
     @Environment(\.arrivingMessages) private var arrivingMessages
     @Environment(\.selectedRow) private var selection
+    @Environment(\.toast) private var toast
     @State private var expanded = false
     /// 正文不折时有多高。
     @State private var height: CGFloat = 0
@@ -28,7 +29,7 @@ struct MessageBubble: View {
                 if !message.attachments.isEmpty {
                     AttachmentRow(attachments: message.attachments)
                 }
-                bubble(folded: foldable && !expanded)
+                bubble(foldable: foldable)
                     #if os(macOS)
                     .opensActionBar(.message(message.id))
                     #endif
@@ -40,35 +41,58 @@ struct MessageBubble: View {
         }
     }
 
-    private func bubble(folded: Bool) -> some View {
-        content
-            .fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
-            .frame(maxHeight: folded ? foldHeight : nil, alignment: .top)
-            .mask {
-                LinearGradient(stops: [.init(color: .black, location: folded ? 0.7 : 1), .init(color: .black.opacity(folded ? 0 : 1), location: 1)],
-                               startPoint: .top, endPoint: .bottom)
+    private func bubble(foldable: Bool) -> some View {
+        let folded = foldable && !expanded
+        return Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+            content
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+                .frame(maxHeight: folded ? foldHeight : nil, alignment: .topLeading)
+                .clipped()
+                .contentShape(Rectangle())
+                .mask {
+                    GeometryReader { proxy in
+                        // 单一遮罩没有拼接边界，避免弹簧动画中矩形与渐变分开过渡、露出底色。
+                        let fadeStart = max(0, 1 - Metrics.messageFoldFade / max(proxy.size.height, 1))
+                        LinearGradient(stops: [
+                            .init(color: .black, location: 0),
+                            .init(color: .black, location: fadeStart),
+                            .init(color: folded ? .clear : .black, location: 1),
+                        ], startPoint: .top, endPoint: .bottom)
+                    }
+                }
+            if foldable {
+                Button { done { expanded.toggle() } } label: {
+                    HStack(spacing: 6) {
+                        Text(expanded ? "收起" : "展开全文")
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    }
+                    .font(Theme.secondary)
+                    .foregroundStyle(queued ? Color.primary : .white)
+                    .padding(.horizontal, Metrics.bubblePadding.width)
+                    .padding(.vertical, Metrics.bubblePadding.height)
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.pointingPlain)
+                // 底部按钮跟随正文宽度，不反过来把气泡撑满整栏。
+                .gridCellUnsizedAxes(.horizontal)
             }
-            .background { BubbleSurface(queued: queued) }
-            .clipShape(BubbleShape())
-            // 排队中到收到，底色填进来
-            .animation(.easeInOut(duration: 0.3), value: queued)
-            .contentShape(BubbleShape())
+        }
+        .background { BubbleSurface(queued: queued) }
+        .clipShape(Theme.bubbleShape)
+        // 排队中到收到，底色填进来
+        .animation(.easeInOut(duration: 0.3), value: queued)
+        .contentShape(Theme.bubbleShape)
     }
 
     /// 气泡里的正文连同边距。iPhone 上长按显示操作栏；接着拖是选字，操作栏自己收起。
     /// Mac 上右键开关操作栏（opensActionBar），左键选字。
     @ViewBuilder
     private var content: some View {
-        #if os(iOS)
-        SelectableText(message: message, inset: Metrics.bubblePadding,
-                       showActions: { selection.show(.message(message.id)) },
-                       dismissActions: { selection.close() })
-        #else
-        MessageText(message: message)
+        MessageText(message: message, queued: queued)
             .padding(.horizontal, Metrics.bubblePadding.width)
             .padding(.vertical, Metrics.bubblePadding.height)
-        #endif
     }
 
     @ViewBuilder
@@ -84,7 +108,7 @@ struct MessageBubble: View {
                 .disabled(!thread.canCancel)
         }
         ActionButton("复制", icon: "doc.on.doc") {
-            copyToPasteboard(message.typed)
+            copyToPasteboard(message.typed, toast: toast)
             done {}
         }
         if foldable {
@@ -104,31 +128,46 @@ struct MessageBubble: View {
 
 }
 
-/// 气泡里的正文：原样显示，``` 围起来的一段排成等宽，斜杠命令的命令名在最前面。Mac 上用它；
-/// iPhone 上要长按接着拖选字，用 UIKit 的文本视图排（SelectableText），样子照这里。
+/// 用户正文保持原样；独立代码块和 agent 共用 CodeBlock。
+/// iPhone 的普通文字继续用 UIKit 处理长按与拖动选字。
 private struct MessageText: View {
     let message: Message
+    let queued: Bool
+    @Environment(\.selectedRow) private var selection
 
     var body: some View {
         VStack(alignment: .leading, spacing: Metrics.messageSegmentGap) {
             ForEach(Array(message.segments.enumerated()), id: \.offset) { index, segment in
                 switch segment {
                 case .text(let text):
+                    #if os(iOS)
+                    SelectableText(text: text, command: index == 0 ? message.command : nil,
+                                   color: queued ? .label : .white,
+                                   showActions: { selection.show(.message(message.id)) },
+                                   dismissActions: { selection.close() })
+                    #else
                     if index == 0, let command = message.command {
-                        let name = Text(command).font(Theme.code).foregroundStyle(.tint)
+                        let name = Text(command).font(Theme.code)
                         text.isEmpty ? name : Text("\(name) \(text)")
                     } else {
                         Text(text)
                     }
-                case .code(let code):
-                    Text(code)
-                        .font(Theme.code)
-                        .padding(8)
-                        .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 8))
+                    #endif
+                case .code(let code, let language):
+                    // 整条消息统一折叠；代码不再单独截断，展开全文后一次看完。
+                    CodeBlock(text: code, language: language, maxLines: nil, background: Theme.userCodeBackground)
+                        .foregroundStyle(Color.primary)
+                        #if os(iOS)
+                        .onLongPressGesture(minimumDuration: 0.4, maximumDistance: 8) {
+                            selection.show(.message(message.id))
+                        }
+                        #endif
                 }
             }
         }
         .font(Theme.body)
+        // 已接收的实色气泡恒用白字；排队中的透明描边气泡仍跟随系统文字色。
+        .foregroundStyle(queued ? Color.primary : .white)
         .multilineTextAlignment(.leading)
         .textSelection(.enabled)
     }
@@ -137,7 +176,7 @@ private struct MessageText: View {
 /// 气泡里的正文按 ``` 切成的一段：文字，或者等宽排的代码。
 enum MessageSegment {
     case text(String)
-    case code(String)
+    case code(String, language: String?)
 }
 
 extension Message {
@@ -147,19 +186,22 @@ extension Message {
         var list: [MessageSegment] = []
         var lines: [Substring] = []
         var inCode = false
+        var language: String?
         func flush() {
             let joined = lines.joined(separator: "\n")
             if inCode {
-                list.append(.code(joined))
+                list.append(.code(joined, language: language))
             } else if !joined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 list.append(.text(joined.trimmingCharacters(in: .newlines)))
             }
             lines = []
         }
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") {
                 flush()
                 inCode.toggle()
+                language = inCode ? trimmed.drop(while: { $0 == "`" }).split(whereSeparator: \.isWhitespace).first.map(String.init) : nil
             } else {
                 lines.append(line)
             }
@@ -253,33 +295,12 @@ private struct TrailingFlow: Layout {
 
 // MARK: - 形状
 
-/// 气泡的形状：右下角圆角小一点。
-nonisolated struct BubbleShape: InsettableShape {
-    var inset: CGFloat = 0
-
-    func path(in rect: CGRect) -> Path {
-        let rect = rect.insetBy(dx: inset, dy: inset)
-        let limit = min(rect.width, rect.height) / 2
-        let radius = min(Metrics.bubbleRadius - inset, limit)
-        let tail = min(Metrics.bubbleTail - inset, limit)
-        return UnevenRoundedRectangle(topLeadingRadius: radius, bottomLeadingRadius: radius,
-                                      bottomTrailingRadius: tail, topTrailingRadius: radius, style: .continuous)
-            .path(in: rect)
-    }
-
-    func inset(by amount: CGFloat) -> BubbleShape {
-        var shape = self
-        shape.inset += amount
-        return shape
-    }
-}
-
 /// 气泡的底色和描边：排队中只描边，收到了填上底色。
 private struct BubbleSurface: View {
     let queued: Bool
 
     var body: some View {
-        let shape = BubbleShape()
+        let shape = Theme.bubbleShape
         ZStack {
             shape.fill(Theme.bubble).opacity(queued ? 0 : 1)
             shape.strokeBorder(Theme.bubbleStroke, lineWidth: 1).opacity(queued ? 1 : 0)

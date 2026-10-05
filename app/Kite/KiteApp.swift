@@ -8,7 +8,7 @@ struct KiteApp: App {
         #if os(macOS)
         Window("Kite", id: "main") {
             MainWindow().connectsToService()
-                .environment(model).readsWindowChrome().appAppearance()
+                .environment(model).readsWindowChrome().toastHost().appAppearance()
         }
         .kiteWindowStyle()
         .defaultSize(width: 1280, height: 800)
@@ -17,14 +17,14 @@ struct KiteApp: App {
         // 从侧边栏分离出来的工作区，放在松手的地方
         WindowGroup("工作区", id: "workspace", for: String.self) { $id in
             if let id {
-                DetachedWorkspace(id: id).environment(model).readsWindowChrome().appAppearance()
+                DetachedWorkspace(id: id).environment(model).readsWindowChrome().toastHost().appAppearance()
             }
         }
         .kiteWindowStyle()
         .defaultSize(width: 1000, height: 700)
         #else
         WindowGroup {
-            PhoneLayout().connectsToService().environment(model).appAppearance()
+            PhoneLayout().connectsToService().environment(model).toastHost().appAppearance()
         }
         #endif
     }

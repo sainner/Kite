@@ -4,6 +4,7 @@ import SwiftUI
 /// - 打开时不留末尾空白，停在最后一条内容的底部，跟着最底下；人往上翻就不跟了，翻回最底下又跟。
 /// - 内容、可见区变高变矮（展开收起一步、回复变长、键盘、底栏）时：跟着最底下、底下也没露着留白，就按底部对齐，
 ///   最后几行贴着底边，键盘升起时和键盘一起顶上去；不然按顶部对齐，对话不动。
+///   收起后旧坐标超出内容范围时收回新末尾；从手指按下到惯性结束，暂停程序定位和尺寸对齐。
 /// - 发送：开启新一轮的消息滑到可见区顶上，最后一轮至少占满一屏，不够在底下留白（TailSpace）；
 ///   排在后面的消息接在最后面，滑到最底下把它顶上来，不另留空白。
 /// - 留白：人往上翻多少裁掉多少，裁到最后一条内容为止，下一次开启新一轮才重新留；回复把它填满以后照常跟着最底下。
@@ -13,8 +14,9 @@ import SwiftUI
 ///   在回调里自己滚没有动画，会先一下跳到位。换对齐和内容变化在同一次更新里也当场生效。
 /// - 滚动位置（ScrollPosition）里的目标会一直留着：滚到某一行的目标让对齐不起作用；滚到最底下的目标在内容变了时
 ///   没有动画地跳过去，可见区变了不管；什么目标都没有时，停在最底下就一直贴着最底下，也不管对齐。
-///   所以平时只留一个钉住的位置（pin）：程序滚完、人滚完都钉住。打开时先给滚到最底下：打开时本来就停在最底下，
+///   程序滚完钉住位置（pin）；人滚完只在正文中部钉住，边缘由系统回弹，不重新夹正位置。打开时先给滚到最底下：打开时本来就停在最底下，
 ///   它只在内容变了时跳，比什么都没有强。和键盘升起同一次更新里钉住的话底部对齐不起作用，所以键盘动之前不钉。
+///   用户进入 tracking 时用 isPositionedByUser 清除旧目标；回到 idle 后更新跟随状态，边缘不写定位目标。
 /// - withAnimation 的 completion 对滚动十几毫秒就回调，不等滚完，这时钉住会把滚动停在原地；glide 名义上 0.5 秒，
 ///   实际 0.8 秒左右才停稳，所以滚完一秒再钉（settle）。
 /// - 键盘升起的动画没走完时内容变短，滚动视图会把对话往下挪一个键盘高，同一次排版、晚一次排版、不带动画都一样；
@@ -37,17 +39,19 @@ final class TranscriptScroll {
     private var heldVisible: CGFloat = 0
     /// 可见区这会儿多高。
     @ObservationIgnored private var visible: CGFloat = 0
-    /// 人正在拖着滚或者松手后还在滑；程序滚的不算。
-    @ObservationIgnored private var userScrolling = false
-    /// 这会儿滚到哪，按 scrollTo(y:) 的算法。滚动时每一帧都变，不触发重画。
-    @ObservationIgnored private var offset: CGFloat = 0
+    /// 从手指按下到惯性结束都交给用户；此时也暂停尺寸变化的自动对齐。
+    private var phase = ScrollPhase.idle
+    private var userScrolling: Bool { phase == .tracking || phase == .interacting || phase == .decelerating }
+    /// 同一次回调里的尺寸和位置，避免分开读取时混用折叠前后的坐标。
+    @ObservationIgnored private var geometry: ScrollGeometry?
     /// 等着让留白跟上变矮的可见区。
     @ObservationIgnored private var shrinking: Task<Void, Never>?
 
     /// 内容、可见区变了时怎么对齐。底下露着留白时按顶部对齐：键盘升起时留白要等一会儿才缩，按底部对齐会先把对话顶上去再落回来。
     /// 程序在滚时按顶部对齐：发送时不带动画加进去的消息和留白不能被它一下推到底，要留给那一下滑。
-    fileprivate var anchor: UnitPoint {
-        following && !blankShown && gliding == 0 ? .bottom : .top
+    fileprivate var anchor: UnitPoint? {
+        guard !userScrolling else { return nil }
+        return following && !blankShown && gliding == 0 ? .bottom : .top
     }
 
     /// 给 TranscriptView 的留白，visible 是这一次排版时可见区多高。仅查看历史时没有留白。
@@ -79,34 +83,46 @@ final class TranscriptScroll {
         }
     }
 
-    fileprivate func phaseChanged(from old: ScrollPhase, to phase: ScrollPhase) {
-        userScrolling = phase == .interacting || phase == .decelerating
-        // 人滚过以后滚动位置里留着什么没试过，钉住以后照对齐走
-        if phase == .idle, old == .interacting || old == .decelerating, gliding == 0 { pin() }
-    }
-
-    fileprivate func offsetChanged(_ y: CGFloat) {
-        offset = y
-    }
-
-    fileprivate func stateChanged(from old: ScrollState, to new: ScrollState) {
-        // 程序滚的这一阵子交给那一下滚动，不插手，不然会把滑到一半的一下子跳过去
-        guard gliding == 0 else { return }
-        if old.content == new.content && old.container == new.container {
-            // 只是滚了：翻上去就不跟了，翻回最底下又跟
-            following = new.atBottom
-        } else if following && !blankShown && !new.atBottom && !userScrolling {
-            // 留白刚被回复填满的那一下还按顶部对齐，多出来的一截补滚过去；之后按底部对齐，不会再差。
-            // 人手还在滚的时候不跟：往上翻裁留白时内容一直在变短，跟过去会和手抢
-            position.scrollTo(y: new.bottom)
+    fileprivate func phaseChanged(from old: ScrollPhase, to phase: ScrollPhase, geometry: ScrollGeometry) {
+        self.geometry = geometry
+        let wasUserScrolling = userScrolling
+        self.phase = phase
+        if userScrolling && !wasUserScrolling {
+            // 进入 tracking 就解除首次贴底或上一次程序滚动留下的目标，不和手势争位置。
+            position.isPositionedByUser = true
+        }
+        if phase == .idle, wasUserScrolling {
+            following = geometry.atBottom
+            // 原生回弹尚可能停在边界外；此时写夹正后的坐标会让内容突然跳到边缘。
+            if gliding == 0, geometry.scrollOffset > 1, geometry.scrollOffset < geometry.bottom - 1 {
+                pin()
+            }
         }
     }
 
-    /// distance：内容底边在可见区底边下面多远。
-    fileprivate func distanceToBottomChanged(_ distance: CGFloat) {
-        // 人往上翻、底下的留白还露着：翻上去多少就裁掉多少，内容的底边一直贴着可见区的底边，
-        // 直到最后一条内容到了底边，留白裁完
-        if userScrolling, blankShown, distance > 0.5, let trim { self.trim = trim + distance }
+    fileprivate func geometryChanged(from old: ScrollGeometry, to new: ScrollGeometry) {
+        geometry = new
+        if userScrolling {
+            following = new.atBottom
+            // 人往上翻、底下的留白还露着：翻上去多少就裁掉多少。
+            if phase != .tracking, blankShown, new.distanceToBottom > 0.5,
+               new.distanceToBottom != old.distanceToBottom, let trim {
+                self.trim = trim + new.distanceToBottom
+            }
+            return
+        }
+        // 程序滚的这一阵子交给那一下滚动，不插手，不然会把滑到一半的一下子跳过去
+        guard gliding == 0 else { return }
+        if old.contentSize == new.contentSize && old.containerSize == new.containerSize && old.contentInsets == new.contentInsets {
+            // 只是滚了：翻上去就不跟了，翻回最底下又跟
+            following = new.atBottom
+        } else if max(new.scrollOffset, position.y ?? 0) > new.bottom + 1 {
+            // 原生视图可能先夹正可见位置，绑定的旧目标却仍然越界；两者都要收回新末尾。
+            position.scrollTo(y: new.bottom)
+        } else if following && !blankShown && !new.atBottom {
+            // 留白刚被回复填满的那一下还按顶部对齐，多出来的一截补滚过去；之后按底部对齐，不会再差。
+            position.scrollTo(y: new.bottom)
+        }
     }
 
     /// 可见区变矮时，等它最后一次变完 0.6 秒再让留白跟上，那时已经变回去了就不缩。
@@ -139,7 +155,8 @@ final class TranscriptScroll {
 
     /// 钉在这会儿的位置，滚动位置里只留一个位置。
     private func pin() {
-        position.scrollTo(y: offset)
+        guard let geometry else { return }
+        position.scrollTo(y: min(max(geometry.scrollOffset, 0), geometry.bottom))
     }
 }
 
@@ -192,43 +209,32 @@ private struct TranscriptScrolling: ViewModifier {
     func body(content: Content) -> some View {
         content
             .scrollPosition($scroll.position)
-            .onScrollPhaseChange { old, phase in
-                scroll.phaseChanged(from: old, to: phase)
+            .onScrollPhaseChange { old, phase, context in
+                scroll.phaseChanged(from: old, to: phase, geometry: context.geometry)
                 if phase == .interacting { userScrollBegan() }
             }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(scroll.anchor, for: .sizeChanges)
-            // scrollTo(y:) 比 contentOffset 少算标题栏让出的那一截（实测）
-            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y + $0.contentInsets.top } action: { scroll.offsetChanged($1) }
-            .onScrollGeometryChange(for: ScrollState.self, of: ScrollState.init) { scroll.stateChanged(from: $0, to: $1) }
-            .onScrollGeometryChange(for: CGFloat.self) { max($0.distanceToBottom, 0) } action: { scroll.distanceToBottomChanged($1) }
+            .onScrollGeometryChange(for: ScrollGeometry.self) { $0 } action: { scroll.geometryChanged(from: $0, to: $1) }
             .onChange(of: visibleHeight, initial: true) { scroll.visibleChanged(visibleHeight) }
             .environment(\.visibleHeight, visibleHeight)
     }
 }
 
 private extension ScrollGeometry {
+    /// scrollTo(y:) 比 contentOffset 少算标题栏让出的那一截（实测）。
+    var scrollOffset: CGFloat { contentOffset.y + contentInsets.top }
+
     /// 内容底边在可见区底边下面多远，滚过了头是负的。可见区的底边在控制区后面，要减掉控制区让出的那一截。
     var distanceToBottom: CGFloat {
         contentSize.height + contentInsets.bottom - visibleRect.maxY
     }
-}
 
-/// 滚动时要看的几样：只有它们变了才回调，不是每滚一帧都回调。
-private struct ScrollState: Equatable {
-    let content: CGSize
-    let container: CGSize
-    let atBottom: Bool
-
-    init(_ geometry: ScrollGeometry) {
-        content = geometry.contentSize
-        container = geometry.containerSize
-        atBottom = geometry.distanceToBottom <= 1
-    }
+    var atBottom: Bool { distanceToBottom <= 1 }
 
     /// 滚到最底下时 scrollTo(y:) 给多少。containerSize 已经扣掉了上下让出的一截，scrollTo(y:) 又比 contentOffset 多算上面那一截（实测），
     /// 两边抵掉，只剩内容比可见区高出多少。
     var bottom: CGFloat {
-        max(content.height - container.height, 0)
+        max(contentSize.height - containerSize.height, 0)
     }
 }

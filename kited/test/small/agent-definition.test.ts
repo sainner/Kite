@@ -11,6 +11,7 @@ import { operationToolNames } from '../../src/operation-contract.ts';
 import { pluginDefinition } from '../../src/plugins.ts';
 import { call, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
+import { editNotificationTemplate } from '../notification-templates.ts';
 import { makeTemp, newRepo, read } from '../util.ts';
 
 let kited: Kited | undefined;
@@ -120,15 +121,16 @@ test('运行中换配置不唤醒或取消请求，旧工具完成后下一请�
   await kk.waitEvent((event) => event.type === 'idle' && event.threadId === threadId);
 }, 1000);
 
-// SQLite 通知游标与 journal 原子落盘要跨重启去重；review 的工具限制还要经过真实工作树执行验证。
-test('闲置时改配置跨重启只投递一次，review 输出 patch 和 shell 也不能改文件', async () => {
+// 模板目录、SQLite 排队快照与 journal 跨重启交接；缓存 Runner 仅在正文变化时读取新基础通知模板。
+test('通知模板更新不改跨重启快照，缓存请求在正文变化时才生成新通知且 review 保持只读', async () => {
   const root = makeTemp();
   const home = join(root, 'kite');
   const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
   const firstModel = new ManualModel();
   let daemon: Daemon | undefined;
   try {
-    daemon = startDaemon({ home, port: 0, model: () => firstModel });
+    daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => firstModel });
+    const apiCall = (method: string, path: string, body?: unknown) => call(daemon!.url, method, path, body);
     const firstEvents = new Seen<Envelope>();
     daemon.kite.bus.subscribe(undefined, (event) => firstEvents.add(event));
     const checkout = await call(daemon.url, 'POST', '/checkouts', { path: repo });
@@ -143,6 +145,8 @@ test('闲置时改配置跨重启只投递一次，review 输出 patch 和 shell
     const first = await firstModel.call(1);
     first.response.complete();
     await firstEvents.wait((event) => event.type === 'idle' && event.threadId === codingId);
+    const oldConfigurationTemplate = await editNotificationTemplate(apiCall,
+      'kite.agent-configuration', '配置通知旧模板', 'agent.model');
     const initial = await call(daemon.url, 'GET', `/instances/${codingId}/agent-config`);
     const changed = revisedAgent(structuredClone(initial.body.instance.config.agent) as AgentDefinition, 'after-restart', ['read']);
     const updated = await call(daemon.url, 'PUT', `/instances/${codingId}/agent-config`, {
@@ -155,12 +159,19 @@ test('闲置时改配置跨重启只投递一次，review 输出 patch 和 shell
     const firstNotice = pending[0]!;
     expect(firstNotice.sequence).toBeGreaterThan(0);
     expect(restoreContext(firstNotice.context).instructions).toContain('after-restart');
+    expect(firstNotice.context.definition).toEqual(oldConfigurationTemplate.definition);
+    expect(restoreContext(firstNotice.context).instructions).toContain('配置通知旧模板\nafter-restart');
+    const newConfigurationTemplate = await editNotificationTemplate(apiCall,
+      'kite.agent-configuration', '配置通知新模板', 'agent.model');
+    expect(daemon.kite.store.instanceNotifications(codingId, 0)).toEqual(pending);
+    expect((await apiCall('GET', `/instances/${codingId}/agent-config`)).body).toEqual(updated.body);
+    expect(firstModel.calls.values).toHaveLength(1);
     await daemon.stop();
     daemon = undefined;
 
     const resumedModel = new ManualModel();
     const reviewModel = new ManualModel();
-    daemon = startDaemon({ home, port: 0, model: (thread) => thread.definitionId === 'kite.agent.review' ? reviewModel : resumedModel });
+    daemon = startDaemon({ home, port: 0, lightTasks: false, model: (thread) => thread.definitionId === 'kite.agent.review' ? reviewModel : resumedModel });
     expect(daemon.kite.store.instanceNotifications(codingId, 0)).toEqual(pending);
     const secondEvents = new Seen<Envelope>();
     daemon.kite.bus.subscribe(undefined, (event) => secondEvents.add(event));
@@ -172,6 +183,8 @@ test('闲置时改配置跨重启只投递一次，review 输出 patch 和 shell
     const durableUpdates = updates.filter((entry) => entry.notification.sequence !== undefined);
     expect(durableUpdates).toHaveLength(1);
     expect(durableUpdates[0]!.notification).toEqual(notificationMetadata(firstNotice));
+    expect(durableUpdates[0]!.text).toContain('配置通知旧模板\nafter-restart');
+    expect(durableUpdates[0]!.text).not.toContain('配置通知新模板');
     const deliveredAfterRestart = diskRecords(join(home, 'sessions', codingId, 'journal.jsonl'))
       .filter((record) => record.type === 'request.started').at(-1)!.notifications ?? [];
     expect(deliveredAfterRestart).toHaveLength(updates.length);
@@ -184,6 +197,26 @@ test('闲置时改配置跨重启只投递一次，review 输出 patch 和 shell
     expect(updates.some((entry) => entry.text.includes('新规则：只读取'))).toBe(true);
     second.response.complete();
     await secondEvents.wait((event) => event.type === 'idle' && event.threadId === codingId);
+
+    const journalPath = join(home, 'sessions', codingId, 'journal.jsonl');
+    const beforeTemplateEdit = diskRecords(journalPath);
+    const beforeTemplateEditNotifications = structuredClone(daemon.kite.store.instanceNotifications(codingId, 0));
+    const newContextTemplate = await editNotificationTemplate(apiCall,
+      'kite.context-update', '基础通知新模板', 'context.instructions');
+    expect(diskRecords(journalPath)).toEqual(beforeTemplateEdit);
+    expect(daemon.kite.store.instanceNotifications(codingId, 0)).toEqual(beforeTemplateEditNotifications);
+    expect(resumedModel.calls.values).toHaveLength(1);
+    const unchangedEventStart = secondEvents.values.length;
+    expect((await apiCall('POST', `/threads/${codingId}/messages`, {
+      id: randomUUID(), text: '正文未变，模板更新也不生成通知',
+    })).status).toBe(200);
+    const unchanged = await resumedModel.call(2);
+    expect(unchanged.request.instructions).toBe(first.request.instructions);
+    expect(unchanged.request.history.filter((entry) => entry.type === 'notification')).toEqual(updates);
+    expect(diskRecords(journalPath).filter((record) => record.type === 'request.started').at(-1)!.notifications ?? []).toEqual([]);
+    unchanged.response.complete();
+    await secondEvents.wait((event) => event.type === 'idle' && event.threadId === codingId
+      && secondEvents.values.indexOf(event) >= unchangedEventStart);
 
     const threadView = await call(daemon.url, 'GET', `/threads/${codingId}`);
     const cwd = threadView.body.workspace.cwd as string;
@@ -204,18 +237,30 @@ test('闲置时改配置跨重启只投递一次，review 输出 patch 和 shell
     });
     expect(laterUpdated.status).toBe(200);
     expect(daemon.kite.store.instanceNotifications(codingId, 0)[0]).toEqual(firstNotice);
+    const latestConfigurationNotice = daemon.kite.store.instanceNotifications(codingId, firstNotice.sequence!).at(-1)!;
+    expect(latestConfigurationNotice.context.definition).toEqual(newConfigurationTemplate.definition);
 
     const thirdEventStart = secondEvents.values.length;
     expect((await call(daemon.url, 'POST', `/threads/${codingId}/messages`, { id: randomUUID(), text: '再继续一次' })).status).toBe(200);
-    const third = await resumedModel.call(2);
+    const third = await resumedModel.call(3);
+    expect(third.request.instructions).toBe(first.request.instructions);
     expect(third.request.history.filter((entry) => entry.type === 'notification' && entry.notification.id === firstNotice.id))
       .toEqual([durableUpdates[0]!]);
     expect(third.request.history.some((entry) => entry.type === 'notification' && entry.text.includes('后续材料：只供第三次请求读取'))).toBe(true);
+    expect(third.request.history.some((entry) => entry.type === 'notification'
+      && entry.text.includes('配置通知新模板\nlater-model'))).toBe(true);
+    const contextUpdate = third.request.history.find((entry) => entry.type === 'notification'
+      && entry.text.includes('基础通知新模板'));
+    if (contextUpdate?.type !== 'notification') throw new Error('缓存 Runner 未使用更新后的基础通知模板');
+    expect(contextUpdate.text).toContain('后续材料：只供第三次请求读取');
     const codingRecords = diskRecords(join(home, 'sessions', codingId, 'journal.jsonl'));
     const codingStarts = codingRecords.filter((record) => record.type === 'request.started');
-    expect(codingStarts.at(-2)!.notifications).toEqual(deliveredAfterRestart);
+    expect(codingStarts.at(-3)!.notifications).toEqual(deliveredAfterRestart);
+    expect(codingStarts.at(-2)!.notifications ?? []).toEqual([]);
     expect(codingStarts.at(-1)!.notifications?.some((notice) => notice.id === firstNotice.id)).toBe(false);
     expect(codingStarts.at(-1)!.notifications?.some((notice) => notice.sequence! > firstNotice.sequence!)).toBe(true);
+    expect(codingStarts.at(-1)!.notifications?.find((notice) => notice.id === contextUpdate.notification.id)?.context.definition)
+      .toEqual(newContextTemplate.definition);
     const contextRecords = codingRecords.filter((record) => record.type === 'context.prepared');
     const latestContext = restoreContext(contextRecords.at(-1)!.snapshot);
     expect(latestContext.instructions).toContain('条件分支：当前工作区');

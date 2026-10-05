@@ -1,0 +1,9 @@
+{
+  "defaultTier": "sol",
+  "models": [
+    { "id": "gpt-6-astra", "tier": "astra" },
+    { "id": "gpt-6.1-sol", "tier": "sol" },
+    { "id": "gpt-5.6-terra", "tier": "terra" },
+    { "id": "gpt-6-luna", "tier": "luna" }
+  ]
+}

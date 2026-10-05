@@ -55,7 +55,7 @@ struct PhoneLayout: View {
                         }
                     }
                     .padding(.top, Metrics.padding * 2)
-                    .padding(.leading, Metrics.padding + Metrics.sidebarLeading)
+                    .padding(.leading, Metrics.padding)
                     .padding(.trailing, Metrics.gap)
                 }
                 .frame(width: sidebarWidth)
@@ -92,16 +92,27 @@ struct PhoneLayout: View {
                             workspace.focus(pane)
                             open = nil
                         } label: {
-                            PaneBubble(pane: pane)
+                            PaneBubble(appearance: area.appearance(of: pane))
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("展开\(area.appearance(of: pane).name)窗口")
-                        .contextMenu { Button("关闭窗口") { model.closeWindow(pane, in: area) } }
+                        .contextMenu {
+                            if let target = area.windows.first(where: { $0.id == pane.id })?.target,
+                               let instance = area.instances.first(where: { $0.id == target.instanceId }) {
+                                InstanceActions(instance: instance)
+                            }
+                            Button("关闭窗口") { model.closeWindow(pane, in: area) }
+                        }
                     }
                     AddWindowButton()
+                    ForEach(area.windowlessInstances) { instance in
+                        InstanceDockButton(instance: instance, opened: { open = nil })
+                    }
                 }
                 .environment(area)
             }
+            .modifier(InstanceSettingsPresentation())
+            .environment(area)
         }
     }
 
@@ -164,13 +175,20 @@ private struct PhoneWindow: View {
         ZStack(alignment: .topLeading) {
             if let workspace = model.current {
                 Group {
-                    if let pane = workspace.layout.focused { PaneBody(pane: pane) }
+                    if let pane = workspace.layout.focused {
+                        PaneBody(pane: pane).id(pane)
+                            .transition(.opacity)
+                    }
                     else {
                         PaneWindow(header: workspace.header) {
                             Text("从添加按钮打开一个窗口").font(Theme.body).foregroundStyle(.secondary)
-                        } controls: { _ in AddWindowButton() }
+                        } controls: { _ in
+                            AddWindowButton()
+                                .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: Metrics.dockRadius))
+                        }
                     }
                 }
+                    .animation(.snappy, value: workspace.layout.focused)
                     .environment(workspace)
                     .environment(\.drawerPull, open == nil ? pull(.actions) : nil)
                     // 一直给着：打开时窗口上盖着一层点了收起的，按钮点不到。有无来回切的话，标题栏会被当成换了一个视图
@@ -348,18 +366,21 @@ private struct WindowPlacement<Overlay: View>: ViewModifier {
         // 内容贴着窗口左下角等比缩小，宽度照铺满时排，字不重新换行：拉侧边栏时按窗口高度缩，右边裁掉；
         // 拉 action 栏时按窗口宽度缩。内容和缩放都对齐底边，控制区的位置由容器底部 inset 决定。
         let scale = (screen.height - 2 * s * pad) / screen.height * (screen.width - 2 * a * pad) / screen.width
-        // 窗口里只给状态栏、Home 条、键盘还盖着窗口的那一截让位：窗口移开多少就少让多少，换算成缩放前的尺寸
+        // 底栏展开时，Home 条安全区随窗口一起保留；侧边栏仍只让出实际覆盖窗口的高度。
+        // 换算成缩放前的尺寸，保证缩放后保留的高度不变。
+        let coveredByHome = max(homeInset - s * pad, 0) / scale
+        // 状态栏、键盘等仍只给覆盖窗口的那一截让位，底部至少保留 Home 条安全区。
         let covered = EdgeInsets(top: max(insets.top - windowInsets.top, 0) / scale,
                                  leading: max(insets.leading - windowInsets.leading, 0) / scale,
-                                 bottom: max(insets.bottom - windowInsets.bottom, 0) / scale,
+                                 bottom: max(max(insets.bottom - windowInsets.bottom, 0) / scale, coveredByHome),
                                  trailing: max(insets.trailing - windowInsets.trailing, 0) / scale)
-        let coveredByHome = max(homeInset - windowInsets.bottom, 0) / scale
         return content
             .environment(\.homeIndicatorInset, coveredByHome)
+            .environment(\.paneTopSafeInset, covered.top)
             .safeAreaPadding(covered)
             .frame(width: screen.width, height: (screen.height - windowInsets.top - windowInsets.bottom) / scale,
                    alignment: .bottomLeading)
-            // 窗口的形状，里面同心的圆角（控制区卡片）跟着它；在缩放前，圆角也换算成缩放前的
+            // 窗口的形状，里面同心的圆角（控制区输入框）跟着它；在缩放前，圆角也换算成缩放前的
             .containerShape(RoundedRectangle(cornerRadius: radius / scale))
             .scaleEffect(scale, anchor: .bottomLeading)
             // 接受 inset 后容器给出的尺寸，内容贴着底边；正文保持原宽度，多出来的部分由窗口裁掉。

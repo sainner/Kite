@@ -6,6 +6,7 @@ import type { ExecutionGrants } from '../../src/execution-grants.ts';
 import type { Json, ModelItem } from '../../src/harness/types.ts';
 import { after, mark, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { diskRecords, item, ManualModel } from '../harness-loop.ts';
+import { editNotificationTemplate } from '../notification-templates.ts';
 import { newRepo } from '../util.ts';
 
 let kited: Kited | undefined;
@@ -33,8 +34,8 @@ function result(history: Awaited<ReturnType<ManualModel['call']>>['request']['hi
   return entry.result;
 }
 
-// HTTP 版本校验、运行状态、SQLite 通知和 journal 请求快照必须在同一次授权更新后保持一致。
-test('执行授权仅在空闲时提交，重试不重复通知且下次请求保留旧上下文前缀', async () => {
+// HTTP 授权提交与 SQLite 通知快照交接；排队后编辑目录不得重渲染旧通知或改变执行权限。
+test('执行授权仅在空闲时提交，排队通知保留旧模板且重试不重复投递或改变上下文前缀', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
   const k = kited;
@@ -43,6 +44,8 @@ test('执行授权仅在空闲时提交，重试不重复通知且下次请求�
   expect(initial.status).toBe(200);
   expect(initial.body.grants).toEqual({ workspace: 'write', read: [], write: [], network: [] });
   const readOnly: ExecutionGrants = { workspace: 'read', read: [], write: [], network: [] };
+  const oldTemplate = await editNotificationTemplate(k.call,
+    'kite.execution-permissions', '权限通知旧模板', 'execution.grants');
 
   expect((await k.call('POST', `/threads/${id}/messages`, { id: randomUUID(), text: '先执行' })).status).toBe(200);
   const first = await model.call(1);
@@ -71,14 +74,27 @@ test('执行授权仅在空闲时提交，重试不重复通知且下次请求�
   expect(repeated.body).toEqual(updated.body);
   expect((await k.call('GET', grantsPath(id))).body).toEqual(updated.body);
   expect(model.calls.values).toHaveLength(1);
+  const pending = structuredClone(k.daemon.kite.store.instanceNotifications(id, 0));
+  const permissionsNotice = pending.find((notice) => notice.context.definition.scene === 'thread.execution_permissions_changed');
+  if (!permissionsNotice) throw new Error('缺少排队中的执行授权通知');
+  expect(permissionsNotice.context.definition).toEqual(oldTemplate.definition);
+  expect(JSON.parse(permissionsNotice.context.bindings['execution.grants']!.text)).toEqual(readOnly);
+  await editNotificationTemplate(k.call, 'kite.execution-permissions', '权限通知新模板', 'execution.grants');
+  expect(k.daemon.kite.store.instanceNotifications(id, 0)).toEqual(pending);
+  expect((await k.call('GET', grantsPath(id))).body).toEqual(updated.body);
+  expect(model.calls.values).toHaveLength(1);
 
   const since = mark(k);
   expect((await k.call('POST', `/threads/${id}/messages`, { id: randomUUID(), text: '继续执行' })).status).toBe(200);
   const second = await model.call(2);
   expect(second.request.instructions).toBe(first.request.instructions);
   expect(second.request.history.slice(0, first.request.history.length)).toEqual(first.request.history);
-  expect(second.request.history.filter((entry) => entry.type === 'notification'
-    && entry.notification.kind === 'execution.permissions.changed')).toHaveLength(1);
+  const permissionUpdates = second.request.history.filter((entry) => entry.type === 'notification')
+    .filter((entry) => entry.notification.kind === 'execution.permissions.changed');
+  expect(permissionUpdates).toHaveLength(1);
+  expect(permissionUpdates[0]!.text).toContain('权限通知旧模板');
+  expect(permissionUpdates[0]!.text).toContain(permissionsNotice.context.bindings['execution.grants']!.text);
+  expect(permissionUpdates[0]!.text).not.toContain('权限通知新模板');
   const configured = diskRecords(join(k.home, 'sessions', id, 'journal.jsonl'))
     .filter((record) => record.type === 'request.configured');
   expect(configured.at(-1)!.snapshot.settings.execution).toEqual({ revision: updated.body.revision, grants: readOnly });

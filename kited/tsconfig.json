@@ -3,7 +3,7 @@
     "target": "ESNext",
     "module": "Preserve",
     "moduleResolution": "bundler",
-    "lib": ["ESNext"],
+    "lib": ["ESNext", "DOM"],
     "types": ["bun"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -17,5 +17,5 @@
     "verbatimModuleSyntax": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src", "test", "scripts", "examples", "*.ts"]
+  "include": ["src", "test", "scripts", "examples", "web", "*.ts"]
 }

@@ -1,9 +1,9 @@
 import Foundation
 
-struct RemoteState: Decodable {
-    struct Outcome: Decodable { let kind: String; var message: String? }
-    struct Recovery: Decodable { let message: String }
-    struct Capabilities: Decodable {
+nonisolated struct RemoteState: Decodable, Equatable, Sendable {
+    nonisolated struct Outcome: Decodable, Equatable, Sendable { let kind: String; var message: String? }
+    nonisolated struct Recovery: Decodable, Equatable, Sendable { let message: String }
+    nonisolated struct Capabilities: Decodable, Equatable, Sendable {
         let send: Bool
         let interrupt: Bool
         let resume: Bool
@@ -21,7 +21,7 @@ struct RemoteState: Decodable {
 }
 
 /// 最近一次完成请求的测量值，不把待发送文字和当前生成内容估算成 token。
-struct ContextUsage: Decodable {
+nonisolated struct ContextUsage: Decodable, Equatable, Sendable {
     let requestId: String
     let inputTokens: Int
     var windowTokens: Int?
@@ -47,6 +47,11 @@ struct StopRequest: Encodable {
 }
 
 struct StopResponse: Decodable { let returned: [RemoteInput] }
+
+struct ThreadTitleSnapshot: Decodable {
+    let title: String
+    let revision: String
+}
 
 struct RemoteRecord: Decodable, Identifiable {
     struct Content: Decodable {
@@ -182,19 +187,20 @@ struct KitedClient: Equatable {
         return url
     }
 
-    func request<T: Decodable>(_ path: String, method: String = "GET", body: (any Encodable)? = nil, as type: T.Type) async throws -> T {
-        try await requestWithCursor(path, method: method, body: body, as: type).value
+    func request<T: Decodable>(_ path: String, method: String = "GET", body: (any Encodable)? = nil,
+                               timeout: TimeInterval = 30, as type: T.Type) async throws -> T {
+        try await requestWithCursor(path, method: method, body: body, timeout: timeout, as: type).value
     }
 
     func requestWithCursor<T: Decodable>(_ path: String, method: String = "GET", body: (any Encodable)? = nil,
-                                       as type: T.Type) async throws -> (value: T, cursor: String?) {
+                                       timeout: TimeInterval = 30, as type: T.Type) async throws -> (value: T, cursor: String?) {
         var request = URLRequest(url: try url(path))
         if path != "/machine" {
             guard let machineID else { throw KitedError(message: "请先连接工作机") }
             request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
         }
         request.httpMethod = method
-        request.timeoutInterval = 30
+        request.timeoutInterval = timeout
         if let body {
             request.httpBody = try JSONEncoder().encode(body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -248,8 +254,20 @@ struct KitedClient: Equatable {
     }
 }
 
-extension JSON: Decodable {
-    init(from decoder: Decoder) throws {
+extension JSON: Codable {
+    nonisolated func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .null: try container.encodeNil()
+        case .bool(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .string(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
+        case .object(let value): try container.encode(value)
+        }
+    }
+
+    nonisolated init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if container.decodeNil() { self = .null }
         else if let value = try? container.decode(Bool.self) { self = .bool(value) }

@@ -10,7 +10,6 @@ struct WorkspaceRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Circle().fill(workspace.tint).frame(width: 10, height: 10)
             Text(workspace.title).font(Theme.body).lineLimit(1)
             Spacer(minLength: 0)
             if detached {
@@ -100,35 +99,39 @@ struct MacSidebar: View {
         Group {
             if model.sidebarCollapsed { rail(current) } else { expanded(current) }
         }
-        // 从红绿灯按钮那一条下面开始
-        .padding(.top, chrome.top + Metrics.gap - Metrics.padding)
+        // 只让开系统红绿灯按钮所在的区域。
+        .padding(.top, chrome.top)
     }
 
     private func expanded(_ current: String?) -> some View {
-        VStack(spacing: 0) {
-            VStack(spacing: 4) {
-                ForEach(model.listedWorkspaces) { workspace in
-                    WorkspaceRow(workspace: workspace, current: current == workspace.id, detached: model.detached.contains(workspace.id))
-                        .overlay { source(workspace) }
+        VStack(spacing: Metrics.gap) {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 4) {
+                    ForEach(model.listedWorkspaces) { workspace in
+                        WorkspaceRow(workspace: workspace, current: current == workspace.id, detached: model.detached.contains(workspace.id))
+                            .overlay { source(workspace) }
+                    }
                 }
             }
-            Spacer(minLength: Metrics.gap)
             ActionArea()
         }
-        .padding(.leading, Metrics.sidebarLeading)
     }
 
     private func rail(_ current: String?) -> some View {
-        VStack(spacing: 8) {
-            ForEach(model.listedWorkspaces) { workspace in
-                // 已经分离成独立窗口的画淡一点
-                Circle().fill(workspace.tint).frame(width: 24, height: 24)
-                    .opacity(model.detached.contains(workspace.id) ? 0.35 : 1)
-                    .padding(6)
-                    .background(current == workspace.id ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay { source(workspace) }
+        VStack(spacing: Metrics.gap) {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 8) {
+                    ForEach(model.listedWorkspaces) { workspace in
+                        // 已经分离成独立窗口的画淡一点
+                        Circle().fill(workspace.tint).frame(width: 24, height: 24)
+                            .opacity(model.detached.contains(workspace.id) ? 0.35 : 1)
+                            .padding(6)
+                            .background(current == workspace.id ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 10))
+                            .overlay { source(workspace) }
+                    }
+                }
+                .frame(maxWidth: .infinity)
             }
-            Spacer(minLength: Metrics.gap)
             ActionArea(compact: true)
         }
         .frame(maxWidth: .infinity)

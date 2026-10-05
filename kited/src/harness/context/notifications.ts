@@ -13,8 +13,9 @@ export const pluginToolsContextDefinition: ContextDefinition = {
   ] }],
 };
 
-export function pluginToolsContext(tools: PluginToolSource[]): ContextSource {
-  return { definition: pluginToolsContextDefinition, bindings: {
+export function pluginToolsContext(tools: PluginToolSource[], definition: ContextDefinition = pluginToolsContextDefinition): ContextSource {
+  if (definition.scene !== 'thread.plugin_tools_changed') throw new Error('插件工具通知须使用 thread.plugin_tools_changed 场景');
+  return { definition, bindings: {
     'plugin.tools': { text: JSON.stringify(tools) },
   } satisfies Record<ContextVariable<'thread.plugin_tools_changed'>, ContextBinding> };
 }
@@ -30,8 +31,11 @@ export const executionPermissionsContextDefinition: ContextDefinition = {
   ] }],
 };
 
-export function executionPermissionsContext(revision: string, grants: ExecutionGrants): ContextSource {
-  return { definition: executionPermissionsContextDefinition, bindings: {
+export function executionPermissionsContext(
+  revision: string, grants: ExecutionGrants, definition: ContextDefinition = executionPermissionsContextDefinition,
+): ContextSource {
+  if (definition.scene !== 'thread.execution_permissions_changed') throw new Error('执行授权通知须使用 thread.execution_permissions_changed 场景');
+  return { definition, bindings: {
     'execution.revision': { text: revision }, 'execution.grants': { text: JSON.stringify(grants) },
   } satisfies Record<ContextVariable<'thread.execution_permissions_changed'>, ContextBinding> };
 }

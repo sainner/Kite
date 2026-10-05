@@ -10,11 +10,15 @@ const name = z.string().regex(/^[a-z][a-z0-9._-]{0,79}$/);
 export const pluginPackageSchema = z.object({
   id: name.refine((id) => !id.startsWith('kite.'), 'kite.* 只供宿主登记'),
   title: z.string().trim().min(1).max(100),
+  lifetime: z.enum(['window', 'persistent']),
   bundle: z.string().min(1).max(4 * 1024 * 1024).refine((value) => Buffer.byteLength(value) <= 4 * 1024 * 1024, '包超过 4 MiB'),
-  views: z.array(z.object({ id: name, title: z.string().trim().min(1).max(100) }).strict()).max(16).default([]),
+  views: z.array(z.object({ id: name, title: z.string().trim().min(1).max(100),
+    resourceUri: z.url().refine((uri) => uri.startsWith('ui://'), '视图资源须使用 ui:// URI'),
+  }).strict()).max(16).default([]),
   defaultView: name.optional(),
 }).strict().refine((value) => new Set(value.views.map((view) => view.id)).size === value.views.length
-  && (value.defaultView === undefined || value.views.some((view) => view.id === value.defaultView)), '默认视图或视图 ID 无效');
+  && (value.defaultView === undefined || value.views.some((view) => view.id === value.defaultView)), '默认视图或视图 ID 无效')
+  .refine((value) => value.lifetime !== 'window' || value.views.length > 0, '随窗口回收的插件必须声明视图');
 export type PluginPackage = z.infer<typeof pluginPackageSchema>;
 export const packageRevision = (value: PluginPackage): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
@@ -60,7 +64,7 @@ export class PluginCatalog {
     return structuredClone(definition);
   }
   private definition(value: PluginPackage): PluginDefinition {
-    return { id: value.id, title: value.title, runtime: 'bun', revision: packageRevision(value), operations: ['plugin.call'],
+    return { id: value.id, title: value.title, lifetime: value.lifetime, runtime: 'bun', revision: packageRevision(value), operations: ['plugin.call'],
       views: value.views.map((view) => ({ ...view, renderer: 'web' })), defaultView: value.defaultView ?? value.views[0]?.id ?? '' };
   }
 }

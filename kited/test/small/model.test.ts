@@ -232,7 +232,7 @@ test('重启后保留项目到线程的 SQLite 关系，归档工作区删除工
   const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
   const secondRepo = newRepo(root, 'second-project-dir', { 'base.txt': '第二检出\n' });
   const model = new ManualModel();
-  restarted = startDaemon({ home, port: 0, model: () => model });
+  restarted = startDaemon({ home, port: 0, lightTasks: false, model: () => model });
 
   const project = await call(restarted.url, 'POST', '/checkouts', { path: repo });
   expect(project.status).toBe(200);
@@ -254,7 +254,7 @@ test('重启后保留项目到线程的 SQLite 关系，归档工作区删除工
   await restarted.stop();
   restarted = undefined;
 
-  restarted = startDaemon({ home, port: 0, model: () => new ManualModel() });
+  restarted = startDaemon({ home, port: 0, lightTasks: false, model: () => new ManualModel() });
   expect(await machine(restarted.url)).toEqual(firstMachine);
   const listed = await call(restarted.url, 'GET', '/workspaces');
   expect(listed.status).toBe(200);
@@ -418,14 +418,14 @@ test('同一项目的两个同步目录各有独立 Git 历史，身份冲突不
 
 /*
  * 依赖 HTTP 命令收据、SQLite 事务、工作区 SSE 首帧和服务重启的配合：同一命令重试
- * 不能重复建实例或窗口；返回已有窗口的收据也不能在窗口关闭后复活它。
+ * 不能重复建实例或窗口；随窗口实例回收后，关闭记录和请求收据在重启后仍不能复活旧目标。
  */
-test('插件窗口命令去重，工作区 SSE 重连和重启后保留打开窗口与插件实例', async () => {
+test('插件窗口命令去重，重连保留打开目标且回收后的关窗收据跨重启不复活实例', async () => {
   const root = makeTemp('window-model-');
   roots.push(root);
   const home = join(root, 'kite');
   const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
-  restarted = startDaemon({ home, port: 0 });
+  restarted = startDaemon({ home, port: 0, lightTasks: false });
   const daemon = restarted;
   const internal = new Seen<Envelope>();
   const unsubscribe = daemon.kite.bus.subscribe(undefined, (event) => internal.add(event));
@@ -521,7 +521,7 @@ test('插件窗口命令去重，工作区 SSE 重连和重启后保留打开窗
     await daemon.stop();
     restarted = undefined;
 
-    restarted = startDaemon({ home, port: 0 });
+    restarted = startDaemon({ home, port: 0, lightTasks: false });
     const restored = await call(restarted.url, 'GET', '/workspaces', undefined, machineId);
     expect(restored.status).toBe(200);
     const persisted = restored.body.find((entry: any) => entry.workspace.id === workspace.workspace.id);
@@ -542,12 +542,20 @@ test('插件窗口命令去重，工作区 SSE 重连和重启后保留打开窗
     const reopened = await call(restarted.url, 'POST', `/workspaces/${workspace.workspace.id}/windows`, {
       id: randomUUID(), content: { kind: 'open', instanceId: target.instanceId, viewId: target.viewId },
     }, machineId);
-    expect(reopened.status).toBe(200);
-    expect(reopened.body.id).not.toBe(mainWindow.id);
+    expect(reopened.status).toBe(404);
     const openOnly = await call(restarted.url, 'GET', '/workspaces', undefined, machineId);
     const afterClose = openOnly.body.find((entry: any) => entry.workspace.id === workspace.workspace.id);
-    expect(afterClose.instances).toHaveLength(1);
-    expect(afterClose.windows.map((window: any) => window.id)).toEqual([reopened.body.id]);
+    expect(afterClose.instances).toEqual([]);
+    expect(afterClose.windows).toEqual([]);
+    await restarted.stop();
+    restarted = startDaemon({ home, port: 0, lightTasks: false });
+    expect((await call(restarted.url, 'DELETE', `/workspaces/${workspace.workspace.id}/windows/${mainWindow.id}`, undefined, machineId)).status).toBe(200);
+    expect((await call(restarted.url, 'POST', `/workspaces/${workspace.workspace.id}/windows`, {
+      id: requestId, content: { kind: 'create', definitionId: 'kite.files' },
+    }, machineId)).status).toBe(409);
+    const afterRestart = await call(restarted.url, 'GET', '/workspaces', undefined, machineId);
+    expect(afterRestart.body.find((entry: any) => entry.workspace.id === workspace.workspace.id))
+      .toMatchObject({ instances: [], windows: [] });
     expect((await call(restarted.url, 'POST', `/workspaces/${workspace.workspace.id}/archive`, { force: true }, machineId)).status).toBe(200);
     expect((await call(restarted.url, 'POST', `/workspaces/${workspace.workspace.id}/windows`, {
       id: randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },

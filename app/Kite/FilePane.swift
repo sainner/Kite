@@ -3,52 +3,101 @@ import SwiftUI
 /// 文件目录、原文、渲染与历史差异共用一个窗口；行号定位仅属于当前设备。
 struct FilePane: View {
     let browser: FileBrowser
+    @Environment(WorkArea.self) private var area
+
+    private var header: PaneHeader {
+        let filePath = browser.displayingFile ? browser.selection.path : nil
+        let directory = filePath.map { ($0 as NSString).deletingLastPathComponent } ?? browser.directoryPath
+        let root = area.remote.map { ($0.workspace.cwd as NSString).lastPathComponent } ?? "工作区"
+        return PaneHeader(title: "文件", detail: .path(root: root.isEmpty ? "工作区" : root,
+            directory: directory, file: filePath.map { ($0 as NSString).lastPathComponent }, open: { path in
+                Task { await browser.openDirectory(path) }
+            }))
+    }
 
     var body: some View {
-        @Bindable var browser = browser
-        PaneWindow(header: PaneHeader(title: "文件", detail: browser.selection.path)) {
+        PaneWindow(header: header) {
             GeometryReader { geometry in
                 HStack(spacing: 0) {
                     if browser.showDirectory {
                         directory
-                            .frame(width: browser.selection.path == nil || geometry.size.width < 600 ? nil : 210)
+                            .frame(width: !browser.displayingFile || geometry.size.width < 600 ? nil : 210)
                     }
-                    if !browser.showDirectory || (browser.selection.path != nil && geometry.size.width >= 600) {
+                    if !browser.showDirectory || (browser.displayingFile && geometry.size.width >= 600) {
                         if browser.showDirectory { Divider() }
                         preview
                     }
                 }
             }
         } controls: { _ in
-            HStack(spacing: 12) {
-                Button { browser.showDirectory.toggle() } label: { Image(systemName: "folder") }
-                    .help("显示或隐藏文件目录")
-                if browser.selection.diffId != nil {
-                    Text("历史差异").foregroundStyle(.secondary)
-                    Button("当前文件") {
-                        if let path = browser.selection.path { Task { try? await browser.navigate(FileReference(path: path)) } }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Metrics.paneButtonGap) {
+                    directoryControls
+                    Spacer(minLength: 0)
+                    fileControls
+                }
+                VStack(alignment: .leading, spacing: Metrics.paneButtonGap) {
+                    directoryControls
+                    HStack {
+                        Spacer(minLength: 0)
+                        fileControls
                     }
-                } else if browser.selection.path != nil {
-                    Picker("显示方式", selection: $browser.rendered) {
-                        Text("原文").tag(false)
-                        Text("预览").tag(true)
-                    }.pickerStyle(.segmented).clickPointer().frame(maxWidth: 140)
                 }
-                Spacer(minLength: 0)
-                if let page = browser.page, browser.selection.diffId == nil {
-                    Button { Task { await browser.read(offset: max(1, page.offset - 200)) } } label: { Image(systemName: "chevron.left") }
-                        .disabled(page.offset <= 1)
-                    Button { if let offset = page.nextOffset { Task { await browser.read(offset: offset) } } } label: { Image(systemName: "chevron.right") }
-                        .disabled(page.nextOffset == nil)
-                }
-                Button { Task { await browser.loadSelection() } } label: { Image(systemName: "arrow.clockwise") }
-                    .disabled(browser.loadingText || browser.selection.path == nil)
             }
-            .buttonStyle(.pointingPlain).font(Theme.secondary)
-            .padding(.horizontal, 14).frame(minHeight: Metrics.controlHeight)
         }
         .task(id: browser.connectionRevision) { await browser.list() }
         .task(id: browser.requestKey) { await browser.loadSelection() }
+    }
+
+    private var directoryControls: some View {
+        PaneButtonGroup {
+            Button {
+                browser.showDirectory.toggle()
+                browser.directoryOnly = false
+            } label: { PaneButtonLabel("显示或隐藏文件目录", systemImage: "folder") }
+                .buttonBorderShape(.circle)
+                .accessibilityLabel("显示或隐藏文件目录")
+                .help("显示或隐藏文件目录")
+            if browser.displayingFile, browser.selection.diffId != nil {
+                Text("历史差异").font(Theme.secondary).foregroundStyle(.secondary)
+                Button {
+                    if let path = browser.selection.path { Task { try? await browser.navigate(FileReference(path: path)) } }
+                } label: { PaneButtonLabel("当前文件") }
+            } else if browser.displayingFile {
+                Button { browser.rendered = false } label: { PaneButtonLabel("原文") }
+                    .fontWeight(!browser.rendered ? .semibold : .regular)
+                    .foregroundStyle(!browser.rendered ? .primary : .secondary)
+                    .accessibilityAddTraits(!browser.rendered ? .isSelected : [])
+                Button { browser.rendered = true } label: { PaneButtonLabel("预览") }
+                    .fontWeight(browser.rendered ? .semibold : .regular)
+                    .foregroundStyle(browser.rendered ? .primary : .secondary)
+                    .accessibilityAddTraits(browser.rendered ? .isSelected : [])
+            }
+        }
+    }
+
+    private var fileControls: some View {
+        PaneButtonGroup {
+            if browser.displayingFile, let page = browser.page, browser.selection.diffId == nil {
+                Button { Task { await browser.read(offset: max(1, page.offset - 200)) } } label: { PaneButtonLabel("上一页", systemImage: "chevron.left") }
+                    .buttonBorderShape(.circle)
+                    .disabled(page.offset <= 1)
+                    .accessibilityLabel("上一页")
+                Button { if let offset = page.nextOffset { Task { await browser.read(offset: offset) } } } label: { PaneButtonLabel("下一页", systemImage: "chevron.right") }
+                    .buttonBorderShape(.circle)
+                    .disabled(page.nextOffset == nil)
+                    .accessibilityLabel("下一页")
+            }
+            Button {
+                Task {
+                    if browser.displayingFile { await browser.loadSelection() }
+                    else { await browser.list() }
+                }
+            } label: { PaneButtonLabel("刷新", systemImage: "arrow.clockwise") }
+                .buttonBorderShape(.circle)
+                .disabled(browser.displayingFile ? browser.loadingText : browser.loadingDirectory)
+                .accessibilityLabel("刷新")
+        }
     }
 
     private var directory: some View {
@@ -57,12 +106,11 @@ struct FilePane: View {
                 HStack {
                     Button("上一级", systemImage: "arrow.up") {
                         let parent = (browser.directoryPath as NSString).deletingLastPathComponent
-                        Task { await browser.list(parent.isEmpty ? "." : parent, offset: 0) }
+                        Task { await browser.openDirectory(parent.isEmpty ? "." : parent) }
                     }.disabled(browser.directoryPath == ".")
                     Spacer()
                     Button { Task { await browser.list() } } label: { Image(systemName: "arrow.clockwise") }
                 }.buttonStyle(.pointingPlain)
-                Text(browser.directoryPath).foregroundStyle(.secondary)
                 if let error = browser.directoryError { Text(error).foregroundStyle(.secondary) }
                 if browser.loadingDirectory { ProgressView() }
                 if let directory = browser.directory {
@@ -70,7 +118,7 @@ struct FilePane: View {
                     ForEach(directory.entries) { entry in
                         Button {
                             Task {
-                                if entry.kind == "directory" { await browser.list(entry.path, offset: 0) }
+                                if entry.kind == "directory" { await browser.openDirectory(entry.path) }
                                 else { try? await browser.navigate(FileReference(path: entry.path)) }
                             }
                         } label: {

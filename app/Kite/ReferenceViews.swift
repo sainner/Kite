@@ -23,6 +23,8 @@ extension EnvironmentValues {
     static let shared = ReferenceIcons()
     static let file = symbol("doc.text", size: 14)
     static let webpage = symbol("globe", size: 14)
+    /// 展示用的零宽连接符，禁止在图标和名称开头之间断行。
+    static let nameJoiner = "\u{2060}"
     private var images: [String: ReferenceImage] = [:]
     private var attempted: Set<String> = []
     private var loading: [String: Task<Void, Never>] = [:]
@@ -178,29 +180,35 @@ struct ReferenceLabel: View {
     init(_ source: String, compact: Bool = true) { self.source = AttributedString(source); self.compact = compact }
 
     var body: some View {
-        let decorated = ReferenceText.decorate(source, scope: scope, compact: compact)
+        let decorated = InlineCodeSpacing.apply(to: ReferenceText.decorate(source, scope: scope, compact: compact))
         let urls = decorated.runs.compactMap(\.link)
-        inline(decorated).referencePointer()
+        inline(decorated)
+            .modifier(InlineCodeBackground())
+            .referencePointer()
             .task(id: urls) { await ReferenceIcons.shared.load(urls) }
     }
 
     private func inline(_ value: AttributedString) -> Text {
         let resolved = (font ?? .body).resolve(in: fontContext)
-        let height = resolved.pointSize * Metrics.referenceIconScale
+        let codeFont = InlineCodeStyle.font(relativeTo: resolved)
         return value.runs[\.link].reduce(Text("")) { result, run in
             let (url, range) = run
-            let text = Text(AttributedString(value[range])).referenceLink(url != nil)
+            let text = Text(inline: AttributedString(value[range]), codeFont: codeFont).referenceLink(url != nil)
             guard let url, compact else { return Text("\(result)\(text)") }
             let local = url.scheme == "kite"
             let image = local ? ReferenceIcons.file : ReferenceIcons.shared.image(for: url) ?? ReferenceIcons.webpage
+            let isCode = value[range].runs.first?.inlinePresentationIntent?.contains(.code) == true
+            let height = resolved.pointSize * (isCode ? Metrics.inlineCodeFontScale : 1) * Metrics.referenceIconScale
             let scaled = ReferenceIcons.scaled(image, to: height, trailingSpace: Metrics.referenceIconGap)
             #if os(macOS)
             let rendered = Image(nsImage: scaled)
             #else
             let rendered = Image(uiImage: scaled)
             #endif
-            let icon = (local ? Text(rendered.renderingMode(.template)).foregroundStyle(.tint) : Text(rendered))
+            var icon = (local ? Text(rendered.renderingMode(.template)).foregroundStyle(.tint) : Text(rendered))
                 .baselineOffset(Metrics.referenceIconBaselineOffset)
+            icon = Text("\(icon)\(ReferenceIcons.nameJoiner)")
+            if isCode { icon = icon.font(codeFont).customAttribute(InlineCodeAttribute()) }
             return Text("\(result)\(icon)\(text)")
         }
     }

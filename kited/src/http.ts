@@ -1,12 +1,12 @@
 /** HTTP 接口，只监听本机。事件流用 SSE。 */
-import { KiteError } from './errors.ts';
+import { KiteError, OperationError } from './errors.ts';
 import type { EventScope } from './events.ts';
 import { inScope } from './transcript.ts';
 import { z } from 'zod';
 import type { Kite } from './kite.ts';
 import type { Project, RuntimeKind } from './model.ts';
 import { operationCatalog } from './operation-contract.ts';
-import { OperationError } from './operations.ts';
+import { contextTemplateSelection } from './context-templates.ts';
 
 async function body(req: Request): Promise<Record<string, unknown>> {
   try { return (await req.json()) as Record<string, unknown>; } catch { throw new KiteError('请求体不是 JSON'); }
@@ -128,19 +128,28 @@ export function serve(kite: Kite, port: number) {
           const b = await body(req);
           const runtime = runtimeKind(b.runtime);
           return kite.createWorkspace(str(b.checkout, 'checkout'), b.name === undefined ? '' : str(b.name, 'name'),
-            b.prompt === undefined ? undefined : str(b.prompt, 'prompt'), runtime);
+            b.prompt === undefined ? undefined : str(b.prompt, 'prompt'), runtime, contextTemplateSelection(b.contextTemplate));
         }),
       },
       '/plugin-definitions': {
         GET: bound(() => kite.catalog.definitions()),
         POST: bound(async (req) => kite.catalog.install(await body(req))),
       },
+      '/context-templates': {
+        GET: bound(() => kite.contextTemplates.list()),
+        POST: bound(async (req) => kite.contextTemplates.create((await body(req)).definition)),
+      },
+      '/context-templates/:id': { PUT: bound(async (req) => {
+        const b = await body(req);
+        return kite.contextTemplates.update(req.params.id, str(b.expectedRevision, 'expectedRevision'), b.definition);
+      }) },
       '/workspaces/:id/plugin-instances': { POST: bound(async (req) => {
         const parsed = z.object({ id: z.uuid(), definitionId: z.string().min(1), title: z.string().trim().min(1).optional() }).strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('插件实例请求无效');
         return kite.createPluginInstance(req.params.id, parsed.data.id, parsed.data.definitionId, parsed.data.title);
       }) },
       '/instances/:id/plugin/tools': { GET: bound((req) => kite.plugins.tools(req.params.id)) },
+      '/instances/:id/plugin/views/:view': { GET: bound((req) => kite.plugins.view(req.params.id, req.params.view)) },
       '/instances/:id/plugin/tools/:tool': { POST: bound(async (req) => {
         const parsed = z.object({ operationId: z.string().min(1), arguments: z.record(z.string(), z.unknown()) }).strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('插件工具调用无效');
@@ -161,6 +170,29 @@ export function serve(kite: Kite, port: number) {
         kite.operations.invoke({ kind: 'ui' }, req.params.id, req.params.operation, await body(req), req.signal)) },
       '/workspaces/:id': { GET: bound((req) => kite.workspace(req.params.id)) },
       '/threads/:id': { GET: bound((req) => kite.thread(req.params.id)) },
+      '/threads/:id/title': {
+        GET: bound((req) => kite.threadTitle(req.params.id)),
+        PUT: bound(async (req) => {
+          const revision = { expectedRevision: z.string().min(1) };
+          const parsed = z.discriminatedUnion('mode', [
+            z.object({ ...revision, mode: z.literal('auto') }).strict(),
+            z.object({ ...revision, mode: z.literal('manual'), title: z.string().trim().min(1).max(80) }).strict(),
+          ]).safeParse(await body(req));
+          if (!parsed.success) throw new KiteError('标题设置无效');
+          return kite.configureThreadTitle(req.params.id, parsed.data.expectedRevision, parsed.data);
+        }),
+      },
+      '/threads/:id/state': { GET: bound((req) => kite.threadState(req.params.id)) },
+      '/threads/:id/title/regenerate': { POST: (req, server) => {
+        // 轻任务有自己的取消和超时；排队时间不受普通 HTTP 空闲上限截断。
+        server.timeout(req, 0);
+        const id = req.params.id;
+        return bound(async (req) => {
+          const parsed = z.object({ expectedRevision: z.string().min(1) }).strict().safeParse(await body(req));
+          if (!parsed.success) throw new KiteError('标题重新生成请求无效');
+          return kite.regenerateThreadTitle(id, parsed.data.expectedRevision);
+        })(req);
+      } },
       '/instances/:id/agent-config': {
         GET: bound((req) => kite.agentConfig(req.params.id)),
         PUT: bound(async (req) => {
@@ -168,6 +200,12 @@ export function serve(kite: Kite, port: number) {
           return kite.configureAgent(req.params.id, str(b.expectedRevision, 'expectedRevision'), b.agent);
         }),
       },
+      '/instances/:id/context-template': { PUT: bound(async (req) => {
+        const b = await body(req);
+        return kite.configureContextTemplate(req.params.id, str(b.expectedRevision, 'expectedRevision'), {
+          id: str(b.templateId, 'templateId'), revision: str(b.templateRevision, 'templateRevision'),
+        });
+      }) },
       '/instances/:id/operation-grants': {
         GET: bound((req) => kite.operations.grants(req.params.id)),
         PUT: bound(async (req) => {
@@ -188,7 +226,7 @@ export function serve(kite: Kite, port: number) {
         POST: bound(async (req) => {
           const b = await body(req);
           const runtime = runtimeKind(b.runtime);
-          return kite.createThread(req.params.id, str(b.prompt, 'prompt'), runtime);
+          return kite.createThread(req.params.id, str(b.prompt, 'prompt'), runtime, contextTemplateSelection(b.contextTemplate));
         }),
       },
       '/workspaces/:id/windows': { POST: bound(async (req) => {

@@ -10,7 +10,7 @@ import { prepareSandbox } from './sandbox.ts';
 import { processGroupAlive } from './harness/command.ts';
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-export async function startPluginProcess(options: {
+export async function startPluginProcess({ bundle, configure, onProcess }: {
   bundle: string;
   configure(client: Client): void;
   onProcess(pid: number, active: boolean): void;
@@ -21,7 +21,7 @@ export async function startPluginProcess(options: {
   try {
     const entry = join(directory, 'main.mjs');
     const bunfig = join(directory, 'bunfig.toml');
-    writeFileSync(entry, options.bundle, { mode: 0o400 });
+    writeFileSync(entry, bundle, { mode: 0o400 });
     writeFileSync(bunfig, '[run]\nshell = "system"\n', { mode: 0o400 });
     // 插件不继承宿主 HOME、PATH、认证信息或 Bun 自动加载配置。
     const env = { HOME: directory, PATH: '/usr/bin:/bin', LANG: 'en_US.UTF-8' };
@@ -41,7 +41,7 @@ export async function startPluginProcess(options: {
     const pid = child.pid;
     const cleanup = () => {
       if (pid && processGroupAlive(pid)) return;
-      if (pid) options.onProcess(pid, false);
+      if (pid) onProcess(pid, false);
       sandbox!.dispose();
       rmSync(directory, { recursive: true, force: true });
     };
@@ -65,8 +65,8 @@ export async function startPluginProcess(options: {
     child.on('error', () => { void close().catch(() => {}); });
     child.once('exit', () => { void close().catch(() => {}); });
     try {
-      if (pid) options.onProcess(pid, true);
-      options.configure(client);
+      if (pid) onProcess(pid, true);
+      configure(client);
       await client.connect(transport, { timeout: 5000 });
       if (closed) throw new Error('插件在握手后退出');
       return { client, close, get closed() { return closed; } };

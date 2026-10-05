@@ -24,9 +24,9 @@ struct DetachedWorkspace: View {
 
     var body: some View {
         if let workspace = model.workspace(id) {
-            let minimum = Self.windowSize(content: workspace.layout.minimumSize, chrome: chrome)
+            let minimum = Self.windowSize(content: workspace.minimumSize, chrome: chrome)
             VStack(spacing: 0) {
-                HeaderLine(header: workspace.header)
+                PaneHeaderTitle(header: workspace.header)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, chrome.leading)
                     .frame(height: chrome.top)

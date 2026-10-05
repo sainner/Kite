@@ -7,8 +7,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TranscriptFeed, TranscriptProjection, type DisplayDelta, type DisplayRecord } from '../../src/transcript.ts';
+import { assembleContext, literalContext } from '../../src/harness/context/assembler.ts';
 import { FileJournal } from '../../src/harness/journal.ts';
 import { localTools } from '../../src/harness/local-tools.ts';
+import { requestSnapshot } from '../../src/harness/request-config.ts';
 import type { JournalEvent, JournalRecord, ModelItem, ToolResult } from '../../src/harness/types.ts';
 import type { ThreadContext } from '../../src/model.ts';
 import { command } from './command.ts';
@@ -79,7 +81,11 @@ function thought(id: string, text: string): ModelItem {
 const turnId = 'fixture-turn';
 const requestId = 'fixture-request';
 const patchResult = await persistedPatchResult();
-journal({ type: 'request.started', turnId, requestId, inputIds: [] });
+const context = assembleContext(literalContext('显示投影合同')).snapshot;
+const configuration = requestSnapshot({}, []);
+journal({ type: 'context.prepared', snapshot: context });
+journal({ type: 'request.configured', snapshot: configuration });
+journal({ type: 'request.started', turnId, requestId, inputIds: [], contextId: context.id, configurationId: configuration.id });
 for (const item of [
   tool('top-before'), thought('top-thought', '顶层思考'), tool('top-after'),
   tool('child-before'), thought('child-thought', '子调用思考'), tool('child-after'),
@@ -110,7 +116,8 @@ const records: DisplayRecord[] = measured.records.map((record) => {
   return child ? { ...record, parent: 'top-after' } : record;
 });
 
-journal({ type: 'request.started', turnId, requestId: 'unmeasured-request', inputIds: [] });
+journal({ type: 'request.started', turnId, requestId: 'unmeasured-request', inputIds: [],
+  contextId: context.id, configurationId: configuration.id });
 const stillMeasured = projection.snapshot();
 if (JSON.stringify(stillMeasured.state.context) !== JSON.stringify(measured.state.context)) {
   throw new Error('下一请求开始时丢失上次测量');
@@ -122,7 +129,8 @@ if (invalid.state.context !== undefined) throw new Error('无效用量未清除�
 
 // 实际投影生成开始和分段增量；Swift 解码后逐条应用，并用完整记录校正同一个 id。
 const streamingRequest = 'fixture-stream-request';
-journal({ type: 'request.started', turnId, requestId: streamingRequest, inputIds: [] });
+journal({ type: 'request.started', turnId, requestId: streamingRequest, inputIds: [],
+  contextId: context.id, configurationId: configuration.id });
 function stream(event: { type: 'item.started'; itemId: string; kind: 'text' | 'thinking' | 'tool_use'; callId?: string; name?: string }
   | { type: 'delta'; itemId: string; field: 'text' | 'thinking' | 'arguments'; text: string; part?: number; replace?: boolean }) {
   projection.accept({ type: 'harness', threadId: thread.id, at: 2_000 + deltas.length,
@@ -165,10 +173,12 @@ if (!toolDraft || toolDraft.block.type !== 'tool_use' || toolDraft.block.output 
 journal({ type: 'tool.finished', turnId, requestId: streamingRequest, callId: 'stream-call',
   result: { status: 'success', output: '中文执行完成' } });
 const toolComplete = projection.snapshot().records.find((record) => record.id === 'call:stream-call');
+const toolResultComplete = projection.snapshot().records.find((record) => record.block.type === 'tool_result'
+  && record.block.call === 'stream-call');
 if (!toolComplete || toolComplete.block.type !== 'tool_use' || toolComplete.block.stage !== 'finished') {
   throw new Error('工具未用同 id 完成');
 }
-if (!toolQueued || !toolRunning) throw new Error('工具阶段记录缺失');
+if (!toolQueued || !toolRunning || !toolResultComplete) throw new Error('工具阶段或结果记录缺失');
 
 // 上游 JSON 流解析器跨块保留 token 状态；投影只发送已收到的摘要字段，原始参数仍逐字累计。
 function draftInput(callId: string): Record<string, unknown> {
@@ -266,7 +276,7 @@ try {
   const extracted = join(root, 'RemoteTranscriptTypes.swift');
   writeFileSync(extracted, `import Foundation\n\n${[
     'struct RemoteState:', 'struct ContextUsage:', 'struct RemoteRecord:', 'struct RemoteDelta:',
-    'struct KitedError:', 'extension RemoteRecord', 'extension JSON: Decodable',
+    'struct KitedError:', 'extension RemoteRecord', 'extension JSON: Codable',
   ].map((signature) => declaration(clientSource, signature)).join('\n\n')}\n`);
   const recordsPath = join(root, 'records.json');
   const statesPath = join(root, 'states.json');
@@ -277,7 +287,7 @@ try {
     thoughtStart, thoughtDeltas: deltas.filter((delta) => delta.id === thoughtStart.id), thoughtComplete,
     toolStart, argumentDeltas: deltas.filter((delta) => delta.id === toolStart.id && delta.field === 'arguments'),
     toolQueued, toolRunning, outputDeltas: deltas.filter((delta) => delta.id === toolStart.id && delta.field === 'output'),
-    toolDraft, toolComplete,
+    toolDraft, toolComplete, toolResultComplete,
   }));
   const fixture = join(root, 'TranscriptContract.swift');
   writeFileSync(fixture, String.raw`
@@ -298,6 +308,7 @@ private struct StreamFixture: Decodable {
     let outputDeltas: [RemoteDelta]
     let toolDraft: RemoteRecord
     let toolComplete: RemoteRecord
+    let toolResultComplete: RemoteRecord
 }
 
 @main
@@ -311,7 +322,7 @@ struct TranscriptContract {
         require(states[0].context?.requestId == "fixture-request"
             && states[0].context?.inputTokens == 321
             && states[0].context?.windowTokens == nil
-            && states[0].context?.measuredAt == 1012,
+            && states[0].context?.measuredAt == 1014,
             "有效上下文未正确解码")
         require(states[1].context?.requestId == states[0].context?.requestId,
             "运行中不应把上次测量改属新请求")
@@ -357,10 +368,43 @@ struct TranscriptContract {
         live.records.append(startedTool)
         live.replaceRecord(at: 1, with: generatedTool.record!)
         live.replaceRecord(at: 1, with: queuedTool)
+        guard case .work(let queuedWork) = live.items[1].kind else { fatalError("等待工具未归入工具组") }
+        require(queuedWork.calls.count == 1 && queuedWork.calls[0].state == .queued,
+            "原工具记录校正为 queued 后显示状态未更新")
         live.replaceRecord(at: 1, with: runningRecord)
+        guard case .work(let runningWork) = live.items[1].kind else { fatalError("运行工具未归入工具组") }
+        require(runningWork.calls[0].state == .running && runningWork.calls[0].use.output == "输出前段后段",
+            "原工具记录校正为 running 后状态或输出未更新")
         live.replaceRecord(at: 1, with: completedTool)
         guard case .toolUse(let finalTool) = live.records[1].block else { fatalError("完成工具记录类型错误") }
         require(finalTool.id == "stream-call" && finalTool.stage == "finished", "工具完成时身份或阶段变化")
+        guard let finalToolResult = stream.toolResultComplete.record else { fatalError("工具结果转换失败") }
+        live.records.append(finalToolResult)
+        guard case .work(let finishedWork) = live.items[1].kind else { fatalError("完成工具未归入工具组") }
+        require(finishedWork.calls.count == 1 && finishedWork.calls[0].state == .done
+            && finishedWork.calls[0].result?.text == "中文执行完成",
+            "原工具记录校正为 finished 后未完成或重复了调用")
+
+        var correctedText = Transcript(root: "/fixture", records: [Record(block: .text("文字草稿"), generation: "streaming")])
+        correctedText.replaceRecord(at: 0, with: Record(block: .text("最终文字"), generation: "complete"))
+        guard correctedText.items.count == 1, case .text(let finalText) = correctedText.items[0].kind else {
+            fatalError("最终文字校正改变了记录数量或种类")
+        }
+        require(finalText == "最终文字" && correctedText.items[0].generation == "complete",
+            "最终文字没有替换草稿或清除生成状态")
+        correctedText.records.append(completedTool)
+        correctedText.replaceRecord(at: 0, with: Record(block: .thinking("改种类的思考")))
+        guard case .thinking(let changedKind) = correctedText.items[0].kind else {
+            fatalError("种类变化未重建显示分组")
+        }
+        require(changedKind == "改种类的思考", "种类变化保留了旧正文")
+        correctedText.replaceRecord(at: 0, with: Record(parent: "stream-call", block: .thinking("改父级的思考")))
+        guard correctedText.items.count == 1, case .work(let reparentedWork) = correctedText.items[0].kind,
+              reparentedWork.calls[0].children.count == 1,
+              case .thinking(let reparentedText) = reparentedWork.calls[0].children[0].kind else {
+            fatalError("parent 变化未把记录移入正确工具的子调用")
+        }
+        require(reparentedText == "改父级的思考", "parent 变化丢失或重复了记录")
 
         var transcript = Transcript(root: "/fixture")
         for remote in records {
@@ -375,7 +419,21 @@ struct TranscriptContract {
         }
         verify(transcript, before: "top-before", thought: "顶层思考", after: "top-after")
         verifyChild(transcript)
+        guard let resultIndex = records.firstIndex(where: { $0.block.type == "tool_result" && $0.block.call == "top-before" }),
+              case .toolResult(let savedResult) = transcript.records[resultIndex].block else {
+            fatalError("缺少可校正的工具结果记录")
+        }
+        let correctedResult = ToolResult(call: savedResult.call, content: [.text("完成 top-before，结果已校正")],
+            isError: savedResult.isError, interrupted: savedResult.interrupted,
+            unknown: savedResult.unknown, diff: savedResult.diff)
+        transcript.replaceRecord(at: resultIndex,
+            with: Record(parent: transcript.records[resultIndex].parent, block: .toolResult(correctedResult)))
+        require(transcript.records.count == records.count, "同种结果校正新增了记录")
+        verify(transcript, before: "top-before", thought: "顶层思考", after: "top-after")
+        verifyChild(transcript)
         guard case .work(let firstWork) = transcript.items[0].kind else { fatalError("缺少首个工具组") }
+        require(firstWork.calls[0].result?.text == "完成 top-before，结果已校正",
+            "同种结果校正没有归并回原工具调用")
         require(firstWork.calls[0].result?.diff?.id == CommandLine.arguments[4]
             && firstWork.calls[0].result?.diff?.paths == ["目录/带 空格.ts"],
             "journal 和显示投影中的 diff 引用未抵达 Swift 工具结果")

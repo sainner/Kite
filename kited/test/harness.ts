@@ -8,6 +8,7 @@ import { startDaemon, type Daemon } from '../src/daemon.ts';
 import type { Envelope } from '../src/events.ts';
 import type { Model } from '../src/harness/types.ts';
 import type { Machine, Project, Thread, ThreadContext, WorkspaceModel } from '../src/model.ts';
+import type { RuntimeOptions } from '../src/runtime.ts';
 import { api } from './setup.ts';
 import { makeTemp } from './util.ts';
 
@@ -48,10 +49,10 @@ export async function call(
   return { status: r.status, body: await r.json() };
 }
 
-export function startKited(model?: (thread: ThreadContext) => Model): Kited {
+export function startKited(model?: (thread: ThreadContext) => Model, lightTasks: RuntimeOptions['lightTasks'] = false): Kited {
   const root = makeTemp('kited-');
   const home = join(root, 'kite');
-  const daemon = startDaemon({ home, port: 0, model });
+  const daemon = startDaemon({ home, port: 0, model, lightTasks });
   let machineId: Promise<string> | undefined;
   const events: Envelope[] = [];
   const waiters: Array<{ pred: (e: Envelope) => boolean; resolve: (e: Envelope) => void }> = [];

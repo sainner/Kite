@@ -1,5 +1,12 @@
 /** 场景及可用变量的唯一目录。这里只描述契约；触发、取值和投递由业务调用方负责。 */
 export const contextScenes = {
+  'thread.title': {
+    title: '生成会话标题',
+    variables: [
+      { name: 'thread.title', title: '当前标题' },
+      { name: 'thread.messages', title: '近期对话正文' },
+    ],
+  },
   'thread.plugin_tools_changed': {
     title: '插件工具授权变更',
     variables: [{ name: 'plugin.tools', title: '当前获准的插件工具' }],

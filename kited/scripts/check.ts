@@ -65,13 +65,17 @@ const scope = full ? '全量' : '受影响的';
 // 编译缓存用 Xcode 的默认位置：系统框架的预编译模块各工程共用，新工作树第一次编译约 5 秒；
 // 关掉索引，每个工作树的缓存约 9 MB，不关约 70 MB
 const APP = join(root, 'app');
-const buildApp = all || changed.some((f) => f.startsWith('app/'));
+const buildApp = full || changed.some((f) => f.startsWith('app/') || f.startsWith('kited/web/') || f === 'kited/scripts/build-plugin-web.ts');
 const [tsc, lint, app] = await Promise.all([
   run(['bunx', 'tsc', '--noEmit']),
   run(['bunx', '--bun', 'eslint', '--format', 'json', '.']),
-  buildApp ? run(['xcodebuild', '-project', 'Kite.xcodeproj', '-scheme', 'Kite',
-    '-destination', 'generic/platform=macOS', '-destination', 'generic/platform=iOS Simulator',
-    'build', '-quiet', 'COMPILER_INDEX_STORE_ENABLE=NO'], APP) : undefined,
+  buildApp ? (async () => {
+    const web = await run(['bun', 'scripts/build-plugin-web.ts']);
+    if (web.code !== 0) return { ...web, stage: '插件宿主页构建' };
+    return { ...await run(['xcodebuild', '-project', 'Kite.xcodeproj', '-scheme', 'Kite',
+      '-destination', 'generic/platform=macOS', '-destination', 'generic/platform=iOS Simulator',
+      'build', '-quiet', 'COMPILER_INDEX_STORE_ENABLE=NO'], APP), stage: 'App 编译' };
+  })() : undefined,
 ]);
 const early: string[] = [];
 if (tsc.code !== 0) {
@@ -88,8 +92,8 @@ if (lint.code !== 0) {
 if (app && app.code !== 0) {
   // 两端各报一遍同样的错，去重
   const errors = [...new Set(app.out.split('\n').filter((l) => l.includes(': error:')).map((l) => l.replace(`${APP}/`, 'app/')))];
-  if (errors.length) early.push(`App 编译没通过，${errors.length} 处错误：`, ...head(errors));
-  else early.push('App 编译没通过：', ...tail(app.out));
+  if (errors.length) early.push(`${app.stage}没通过，${errors.length} 处错误：`, ...head(errors));
+  else early.push(`${app.stage}没通过：`, ...tail(app.out));
 }
 if (early.length) fail(early);
 const passed = app ? '类型检查、lint 和 App 编译通过' : '类型检查和 lint 通过';

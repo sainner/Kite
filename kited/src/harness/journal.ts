@@ -1,5 +1,5 @@
 /** 单写者 JSONL。同步落盘让输入交接与副作用放行处于同一个短同步段。 */
-import { closeSync, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, readSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -17,7 +17,6 @@ const result = z.object({ status: z.enum(['success', 'error', 'not_executed', 'u
 const outcome = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }), z.object({ kind: z.literal('interrupted') }),
   z.object({ kind: z.literal('failed'), message: z.string() }),
-  z.object({ kind: z.literal('needs_recovery'), message: z.string() }),
 ]);
 const request = { turnId: id, requestId: id };
 const event = z.discriminatedUnion('type', [
@@ -27,8 +26,8 @@ const event = z.discriminatedUnion('type', [
   z.object({ type: z.literal('turn.started'), turnId: id }),
   z.object({ type: z.literal('context.prepared'), snapshot: contextSnapshotSchema }),
   z.object({ type: z.literal('request.configured'), snapshot: requestSnapshotSchema }),
-  z.object({ type: z.literal('request.started'), ...request, inputIds: z.array(id), contextId: id.optional(),
-    configurationId: id.optional(), notifications: z.array(notificationSchema).optional() }),
+  z.object({ type: z.literal('request.started'), ...request, inputIds: z.array(id), contextId: id,
+    configurationId: id, notifications: z.array(notificationSchema).optional() }),
   z.object({ type: z.literal('model.item'), ...request, item }),
   z.object({ type: z.literal('request.completed'), ...request, responseId: id, needsFollowUp: z.boolean(), usage: raw.optional() }),
   z.object({ type: z.literal('request.failed'), ...request, message: z.string() }),
@@ -40,13 +39,7 @@ const event = z.discriminatedUnion('type', [
 ]);
 const record = z.intersection(
   z.object({ version: z.literal(1), seq: z.number().int().positive(), at: z.number().int().nonnegative() }), event,
-).transform((row): JournalRecord => {
-  // 旧记录只在读取边界拆分结果与恢复阻塞，不改写原始日志。
-  if (row.type === 'turn.finished' && row.outcome.kind === 'needs_recovery') {
-    return { ...row, outcome: { kind: 'failed', message: row.outcome.message }, recovery: { message: row.outcome.message } };
-  }
-  return row as JournalRecord;
-});
+);
 
 function writeAll(fd: number, bytes: Buffer): void {
   let offset = 0;
@@ -58,19 +51,68 @@ function writeAll(fd: number, bytes: Buffer): void {
   fsyncSync(fd);
 }
 
+function parseRecord(line: string, seq: number): JournalRecord {
+  const row = record.parse(JSON.parse(line));
+  if (row.seq !== seq) throw new Error('会话记录序号不连续');
+  return row;
+}
+
 function parseCompleteRecords(bytes: Buffer): { rows: JournalRecord[]; end: number } {
   const end = bytes.lastIndexOf(10) + 1;
-  const rows = bytes.subarray(0, end).toString('utf8').split('\n').slice(0, -1).map((line, index) => {
-    const row = record.parse(JSON.parse(line));
-    if (row.seq !== index + 1) throw new Error('会话记录序号不连续');
-    return row;
-  });
+  const rows = bytes.subarray(0, end).toString('utf8').split('\n').slice(0, -1).map((line, index) => parseRecord(line, index + 1));
   return { rows, end };
 }
 
 /** 历史读取不取得写锁、不修复尾行，也不启动会话；只接受已完整落盘的记录。 */
 export function readJournal(path: string): JournalRecord[] {
   return existsSync(path) ? parseCompleteRecords(readFileSync(path)).rows : [];
+}
+
+/** 只索引首次请求配置；完整日志的校验与尾行恢复仍由 FileJournal 负责。 */
+export class JournalIndex {
+  private entries = new Map<string, { version: string; configurationId: string | undefined }>();
+
+  firstConfiguration(path: string): string | undefined {
+    let fd: number;
+    try { fd = openSync(path, 'r'); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      this.entries.delete(path);
+      return undefined;
+    }
+    try {
+      const stat = fstatSync(fd, { bigint: true });
+      const version = [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+      const cached = this.entries.get(path);
+      if (cached?.version === version) return cached.configurationId;
+      const configurationId = this.scan(fd, Number(stat.size));
+      this.entries.set(path, { version, configurationId });
+      return configurationId;
+    } finally { closeSync(fd); }
+  }
+
+  private scan(fd: number, size: number): string | undefined {
+    const block = Buffer.allocUnsafe(64 * 1024);
+    let parts: Buffer[] = [];
+    let seq = 1;
+    let offset = 0;
+    while (offset < size) {
+      const count = readSync(fd, block, 0, Math.min(block.length, size - offset), offset);
+      if (count === 0) break;
+      offset += count;
+      const bytes = block.subarray(0, count);
+      let start = 0;
+      for (let end = bytes.indexOf(10); end !== -1; end = bytes.indexOf(10, start)) {
+        const line = bytes.subarray(start, end);
+        const row = parseRecord((parts.length ? Buffer.concat([...parts, line]) : line).toString('utf8'), seq++);
+        if (row.type === 'request.configured') return row.snapshot.id;
+        parts = [];
+        start = end + 1;
+      }
+      // 跨块行保留原始字节，UTF-8 字符也可能跨块；未换行的尾部不解析。
+      if (start < count) parts.push(Buffer.from(bytes.subarray(start)));
+    }
+    return undefined;
+  }
 }
 
 export class FileJournal implements Journal {

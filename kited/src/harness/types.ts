@@ -1,6 +1,6 @@
 /** 主循环的公开契约。模型传输、具体工具和工作树操作由宿主注入。 */
 import type { DiffReference } from '../file-diffs.ts';
-import type { ContextSnapshot, ContextSource } from './context/types.ts';
+import type { ContextDefinition, ContextSnapshot, ContextSource } from './context/types.ts';
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type JsonObject = { [key: string]: Json };
 
@@ -69,6 +69,8 @@ export interface HarnessRequest {
   /** 声明目录在首次请求固定；tools 是本次实际可执行的子集。 */
   toolDefinitions?: ToolDefinition[];
   instructions: string | ContextSource;
+  /** 本次基础上下文变化时使用的通知模板；独立宿主未指定时使用内置定义。 */
+  contextUpdateTemplate?: ContextDefinition;
   settings: RequestSettings;
   notifications?: ThreadNotification[];
 }
@@ -128,9 +130,8 @@ export type JournalEvent =
   | { type: 'turn.started'; turnId: string }
   | { type: 'context.prepared'; snapshot: ContextSnapshot }
   | { type: 'request.configured'; snapshot: RequestSnapshot }
-  /** 旧记录没有 contextId，仍能恢复历史，但无法还原当时的指令。 */
-  | { type: 'request.started'; turnId: string; requestId: string; inputIds: string[]; contextId?: string;
-      configurationId?: string; notifications?: ThreadNotification[] }
+  | { type: 'request.started'; turnId: string; requestId: string; inputIds: string[]; contextId: string;
+      configurationId: string; notifications?: ThreadNotification[] }
   | { type: 'model.item'; turnId: string; requestId: string; item: ModelItem }
   | { type: 'request.completed'; turnId: string; requestId: string; responseId: string; needsFollowUp: boolean; usage?: JsonObject }
   | { type: 'request.failed'; turnId: string; requestId: string; message: string }

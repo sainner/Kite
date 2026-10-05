@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { join } from 'node:path';
 import { FileDiffStore } from './file-diffs.ts';
-import { KiteError } from './errors.ts';
+import { KiteError, OperationError, operationError } from './errors.ts';
 import type { Kite } from './kite.ts';
 import type { PluginInstance } from './model.ts';
 import { operationContracts, operationGrantsSchema, type OperationCaller, type OperationGrant, type OperationInput, type OperationName } from './operation-contract.ts';
@@ -18,12 +18,6 @@ export interface OperationToolSelection {
   sources: PluginToolSource[];
 }
 
-export class OperationError extends KiteError {
-  constructor(message: string, readonly outcome: 'denied' | 'failed' | 'cancelled' | 'unknown', status = 409) { super(message, status); }
-}
-const operationError = (error: unknown): OperationError => error instanceof OperationError ? error : error instanceof KiteError
-  ? new OperationError(error.message, 'failed', error.status)
-  : new OperationError(`操作结果尚未确认：${String(error)}`, 'unknown');
 const revision = (grants: OperationGrant[]) => createHash('sha256').update(JSON.stringify(grants)).digest('hex');
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value);
@@ -36,7 +30,6 @@ const pluginArguments = z.record(z.string(), z.unknown());
 
 export class InstanceOperations {
   private active = new Set<Promise<unknown>>();
-  private receipts = new Map<string, Promise<unknown>>();
   private closing = false;
   constructor(private kite: Kite) {}
 
@@ -123,34 +116,10 @@ export class InstanceOperations {
     const run = async () => contract.output.parse(await this.perform(caller, workspaceId, name, args, check, signal));
     // 消息和停止已有 journal 收据，直接复用，避免另记一份停止结果。
     if (contract.retry !== 'receipt') return run();
-    const id = args.operationId as string;
-    const actor = callerKey(caller);
-    const key = JSON.stringify([actor, id]);
-    const request = JSON.stringify({ workspaceId, name, args });
-    const saved = this.kite.store.operationReceipt(actor, id);
-    if (saved) {
-      if (saved.request !== request) throw new OperationError('operationId 已用于其他参数', 'denied');
-      const active = this.receipts.get(key);
-      if (active) return active;
-      if (saved.result === null) throw new OperationError('上次操作的结果尚未确认；请查询实例状态后使用新 operationId', 'unknown');
-      const result = JSON.parse(saved.result);
-      if (result.error) throw new OperationError(result.error, result.outcome, result.status);
-      return contract.output.parse(result.value);
-    }
-    this.kite.store.beginOperation(actor, id, request);
-    const execution = (async () => {
-      try {
-        const value = await run();
-        this.kite.store.finishOperation(actor, id, { value });
-        return value;
-      } catch (error) {
-        const failure = operationError(error);
-        this.kite.store.finishOperation(actor, id, { error: failure.message, outcome: failure.outcome, status: failure.status });
-        throw failure;
-      }
-    })();
-    this.receipts.set(key, execution);
-    try { return await execution; } finally { this.receipts.delete(key); }
+    return contract.output.parse(await this.kite.receipts.run({
+      actor: callerKey(caller), id: args.operationId as string,
+      request: JSON.stringify({ workspaceId, name, args }), execute: run,
+    }));
   }
 
   private async perform(caller: OperationCaller, workspaceId: string, name: OperationName, args: Record<string, unknown>, check: () => void, signal?: AbortSignal): Promise<unknown> {

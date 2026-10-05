@@ -1,19 +1,27 @@
 - [自研 harness 与 ChatGPT 订阅](harness-direction.md) — Claude Code 后端不可用，自研 harness 提前为当前优先事项；首个模型入口用 ChatGPT 订阅
+- [辅助轻任务方向](light-task-direction.md) — 标题及后续摘要、标签共用轻量模型入口，业务规则各自保留
 - [协议与适配器边界](protocol-adapter-boundaries.md) — 前端会话语义统一，完整 agent 与模型 API 分别适配，原生存储无需统一
 - [工具接口方向](tool-interface-direction.md) — read、patch、shell；文件版本变化仅提示，抽象工具由 agent 填调用用途
 - [会话观察账本设想](context-observation-ledger.md) — 文件状态仅提示；持久化账本、skill 加载与压缩重组待设计
-- [提示词编排方向](prompt-composition-direction.md) — 基础指令与通知正文共用场景契约；段落可编辑、条件用页签、变量用 chip
+- [提示词编排方向](prompt-composition-direction.md) — 统一编排旨在提供用户编辑途径，标题等轻任务也适用；设置编辑，新会话选择
 - [配置与工作区事件投递](external-event-delivery.md) — 请求边界追加通知、保留历史前缀；普通通知不打断或唤醒
 - [测试要克制](test-restraint.md) — 简单配置和接入不扩充测试，优先已有检查与实际验证
+- [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行路径和数据流判断，不能只看引用
 - [Kite 来历](kite-origin.md) — Pigeon 冻结后的替代品，交接文档在 docs/任务书.md，含三问和不做清单
 - [工作树与工作区生命周期](session-worktree-decision.md) — 可写工作区使用独立工作树并自动合并；工作区与同级工作线程解耦
 - [假数据要穷举](fake-data-exhaustive.md) — 按当前 harness 覆盖工具和异常状态，未支持能力不混入正常样本
-- [界面由用户自己预览](user-previews-ui.md) — 纯样式只编译、不跑 check；打开后用户看效果，Mac 先关旧预览
-- [视觉风格意向](visual-style-direction.md) — handcraft、蜡笔、风筝；状态动效围绕这些意向探索，用户预览定稿
+- [同类控件统一交互](shared-control-interaction.md) — 菜单采用 iPhone UIKit、Mac SwiftUI；Mac 标题栏 36pt、输入区 28pt；代码块复用输入区按钮与 body 字号，header 上下各 4pt；共用玻璃与 toast
+- [表格字体来源](table-font-source.md) — 系统衬线体；iPhone 中文宋体使用苹果按需下载与系统缓存，行内代码保持等宽
+- [窗口标题信息](window-header-information.md) — 不带图标；Mac 和 iPhone 均左对齐两行，会话名为主标题、窗口类别为次级信息，文件次级信息为路径
+- [界面由用户自己预览](user-previews-ui.md) — 尺寸样式直接改，不开子 agent／探针；只编译打开，Mac 先关旧预览
+- [视觉风格意向](visual-style-direction.md) — handcraft、蜡笔、风筝；彩色像素扫掠及五色配色已定稿，作为唯一工具执行动效
 - [停止会话的语义](session-stop-behavior.md) — 手动停止后，未纳入请求的队列退回输入框；不等同于 paused 状态
 - [思考与状态展示](thinking-display.md) — 仅显示当前正在生成的思考行；统一消息流的流式展示，chip 专注主状态和结果
 - [接数据沿用原界面](feedback-preserve-ui-on-data-integration.md) — 保留卡片、侧栏和控件布局，空数据也用同一工作区
 - [工作区、线程与插件架构](workspace-thread-plugin-architecture.md) — agent 统一为插件实例，Thread 保留专有数据；自定义插件支持界面、逻辑和工作区能力
 - [统一执行沙箱](sandbox-execution-direction.md) — 插件与 harness 共用操作系统沙箱，继续使用 Bun，优先复用上游
 - [窗口的跨端同步](workspace-window-sync.md) — kited 统一管理窗口集合，添加和关闭同步；布局、停靠和焦点按设备管理
+- [实例管理入口](instance-management-entrypoints.md) — 定义放设置，无窗口实例也进侧栏，添加弹窗只创建实例并打开视图
+- [插件实例回收](plugin-instance-lifetime.md) — 按是否独立存续声明生命周期，临时实例随最后一个窗口关闭回收
+- [新窗口放置](new-window-placement.md) — Mac 优先新增列，横向不足改上下分栏，仍不足则收起一个旧窗口
 - [统一资源引用](resource-reference-direction.md) — 文件、diff 与插件内容共用引用；明确 diffId 保证历史可回看；iPhone 单击引用、长按操作栏

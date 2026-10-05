@@ -379,7 +379,7 @@ test('重启后只读历史保持记录 id 和排队输入，重复发送及取�
   const home = join(root, 'kite');
   const repo = newRepo(root, 'project', { 'base.txt': '初始\n' });
   const firstModel = new ManualModel();
-  daemon = startDaemon({ home, port: 0, model: () => firstModel });
+  daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => firstModel });
   const project = await call(daemon.url, 'POST', '/checkouts', { path: repo });
   expect(project.status).toBe(200);
   const created = await call(daemon.url, 'POST', '/workspaces', { checkout: project.body.checkout.id, prompt: '保持挂起' });
@@ -396,7 +396,7 @@ test('重启后只读历史保持记录 id 和排队输入，重复发送及取�
   expect(active.signal.aborted).toBe(true);
 
   const secondModel = new ManualModel();
-  daemon = startDaemon({ home, port: 0, model: () => secondModel });
+  daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => secondModel });
   const restored = await call(daemon.url, 'GET', `/threads/${id}/history`);
   expect(restored.status).toBe(200);
   expect(restored.body.records.slice(0, before.body.records.length)).toEqual(before.body.records);

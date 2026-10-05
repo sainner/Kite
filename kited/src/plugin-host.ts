@@ -5,8 +5,7 @@ import { join } from 'node:path';
 import type { Client, JsonSchemaType, JsonSchemaValidator, Tool as McpTool } from '@modelcontextprotocol/client';
 import { z } from 'zod';
 import type { Kite } from './kite.ts';
-import { KiteError } from './errors.ts';
-import { OperationError } from './operations.ts';
+import { KiteError, OperationError } from './errors.ts';
 import { processGroupAlive } from './harness/command.ts';
 import type { startPluginProcess } from './plugin-process.ts';
 import type { OperationCaller, OperationGrant } from './operation-contract.ts';
@@ -20,19 +19,22 @@ const revision = (value: unknown) => createHash('sha256').update(JSON.stringify(
 
 export class PluginHost {
   private processes = new Map<string, Promise<PluginProcess>>();
-  private calls = new Map<string, Promise<unknown>>();
+  private calls = new Set<Promise<unknown>>();
   private stopping = new Set<string>();
+  private closingInstances = new Set<string>();
   private closingWorkspaces = new Set<string>();
   private closing = false;
   private validators = new Map<string, JsonSchemaValidator<unknown>>();
   constructor(private kite: Kite) {}
 
   private instance(id: string) {
-    if (this.closing || this.stopping.has(id)) throw new KiteError('插件正在停止', 409);
+    if (this.closing || this.stopping.has(id) || this.closingInstances.has(id)) throw new KiteError('插件正在停止', 409);
     const instance = this.kite.store.instance(id);
     if (!instance) throw new KiteError('没有这个插件实例', 404);
     if (this.closingWorkspaces.has(instance.workspaceId)) throw new KiteError('工作区正在归档', 409);
-    if (instance.status !== 'open' || this.kite.workspace(instance.workspaceId).workspace.status !== 'open') throw new KiteError('插件或工作区尚未打开', 409);
+    const workspace = this.kite.store.workspace(instance.workspaceId);
+    if (!workspace) throw new KiteError(`没有这个工作区：${instance.workspaceId}`, 404);
+    if (instance.status !== 'open' || workspace.status !== 'open') throw new KiteError('插件或工作区尚未打开', 409);
     const installed = this.kite.catalog.get(instance.definitionId);
     if (installed.runtime !== 'bun' || instance.config.packageRevision !== installed.revision) throw new KiteError('实例绑定的插件包与已安装内容不符', 409);
     return instance;
@@ -117,6 +119,25 @@ export class PluginHost {
   async tools(id: string) { return this.listTools(await this.open(id)); }
   async resource(id: string, uri: string) { const process = await this.open(id); return process.client.readResource({ uri }, { timeout: 5000 }); }
 
+  async view(id: string, viewId: string): Promise<{ html: string; resourceUri: string }> {
+    const instance = this.instance(id);
+    const view = this.kite.catalog.get(instance.definitionId).views.find((view) => view.id === viewId);
+    if (!view?.resourceUri) throw new KiteError('插件未声明这个 Web 视图', 404);
+    const { RESOURCE_MIME_TYPE } = await import('@modelcontextprotocol/ext-apps/server');
+    const { contents } = await this.resource(id, view.resourceUri);
+    this.instance(id);
+    const resource = contents[0];
+    if (contents.length !== 1 || !resource || resource.uri !== view.resourceUri || resource.mimeType !== RESOURCE_MIME_TYPE
+      || !('text' in resource) || Buffer.byteLength(resource.text) > 2 * 1024 * 1024) throw new KiteError('插件视图须返回一个不超过 2 MiB 的 MCP Apps HTML 资源');
+    // 首期只接内联界面，外部网络、嵌套页面和设备权限尚未提供授权入口。
+    const ui = z.object({ csp: z.record(z.string(), z.array(z.string())).optional(),
+      permissions: z.record(z.string(), z.unknown()).optional() }).passthrough().parse(resource._meta?.ui ?? {});
+    if (Object.values(ui.csp ?? {}).some((domains) => domains.length > 0) || Object.keys(ui.permissions ?? {}).length > 0) {
+      throw new KiteError('此插件视图需要尚未开放的网络或设备权限');
+    }
+    return { html: resource.text, resourceUri: view.resourceUri };
+  }
+
   private async validator(tool: McpTool): Promise<JsonSchemaValidator<unknown>> {
     const key = toolRevision(tool);
     const cached = this.validators.get(key);
@@ -158,53 +179,37 @@ export class PluginHost {
     check();
     if (signal?.aborted) throw new OperationError('插件操作提交前已取消', 'cancelled');
     const actor = `${caller.kind === 'ui' ? 'ui' : `${caller.kind}:${caller.instanceId}`}:plugin:${id}`;
-    const key = JSON.stringify([actor, operationId]);
-    const request = JSON.stringify({ name, args });
-    const saved = this.kite.store.operationReceipt(actor, operationId);
-    if (saved) {
-      if (saved.request !== request) throw new OperationError('operationId 已用于其他参数', 'denied');
-      const active = this.calls.get(key);
-      if (active) return active;
-      if (saved.result === null) throw new OperationError('上次插件操作结果尚未确认；请查询状态，不能自动重放', 'unknown');
-      const result = JSON.parse(saved.result);
-      if (result.error) throw new OperationError(result.error, result.outcome, result.status);
-      return result.value;
-    }
-    this.kite.store.beginOperation(actor, operationId, request);
-    const execution = (async () => {
-      let process: PluginProcess | undefined;
-      let submitted = false;
-      try {
-        process = await this.open(id);
-        const tool = (await this.listTools(process, signal)).tools.find((tool) => tool.name === name);
-        if (!tool || !toolVisible(tool, caller.kind === 'ui' ? 'app' : 'model')) throw new OperationError('插件工具不存在或未向调用方开放', 'denied', 403);
-        if (binding && (binding.packageRevision !== this.instance(id).config.packageRevision || binding.toolRevision !== toolRevision(tool))) {
-          throw new OperationError('插件工具声明已变化，请重新授权；已有会话需要新建', 'denied');
-        }
-        const validation = (await this.validator(tool))(args);
-        if (!validation.valid) throw new OperationError(`插件工具参数无效：${validation.errorMessage}`, 'denied', 400);
-        this.instance(id);
-        check();
-        submitted = true;
-        const result = await process.client.callTool({ name, arguments: args }, { timeout: 30_000, signal, toolDefinition: tool });
-        this.kite.store.finishOperation(actor, operationId, { value: result });
-        return result;
-      } catch (error) {
-        if (!submitted) {
-          const failure = error instanceof OperationError ? error : signal?.aborted ? new OperationError('插件操作提交前已取消', 'cancelled')
+    let process: PluginProcess | undefined;
+    const execution = this.kite.receipts.run({
+      actor, id: operationId, request: JSON.stringify({ name, args }),
+      onPersistenceFailure: async () => { await process?.close(); },
+      execute: async () => {
+        let submitted = false;
+        try {
+          process = await this.open(id);
+          const tool = (await this.listTools(process, signal)).tools.find((tool) => tool.name === name);
+          if (!tool || !toolVisible(tool, caller.kind === 'ui' ? 'app' : 'model')) throw new OperationError('插件工具不存在或未向调用方开放', 'denied', 403);
+          if (binding && (binding.packageRevision !== this.instance(id).config.packageRevision || binding.toolRevision !== toolRevision(tool))) {
+            throw new OperationError('插件工具声明已变化，请重新授权；已有会话需要新建', 'denied');
+          }
+          const validation = (await this.validator(tool))(args);
+          if (!validation.valid) throw new OperationError(`插件工具参数无效：${validation.errorMessage}`, 'denied', 400);
+          this.instance(id);
+          check();
+          submitted = true;
+          return await process.client.callTool({ name, arguments: args }, { timeout: 30_000, signal, toolDefinition: tool });
+        } catch (error) {
+          if (!submitted) throw error instanceof OperationError ? error : signal?.aborted ? new OperationError('插件操作提交前已取消', 'cancelled')
             : new OperationError(`插件操作未提交：${String(error)}`, 'denied');
-          this.kite.store.finishOperation(actor, operationId, { error: failure.message, outcome: failure.outcome, status: failure.status });
-          throw failure;
+          let message = `插件操作结果尚未确认：${String(error)}`;
+          // 只关闭这次调用使用的进程，不能让旧调用的迟到失败停止后来新建的执行器。
+          try { await process?.close(); } catch (stopError) { message += `；${String(stopError)}`; }
+          throw new OperationError(message, 'unknown');
         }
-        let message = `插件操作结果尚未确认：${String(error)}`;
-        // 只关闭这次调用使用的进程，不能让旧调用的迟到失败停止后来新建的执行器。
-        try { await process?.close(); } catch (stopError) { message += `；${String(stopError)}`; }
-        this.kite.store.finishOperation(actor, operationId, { error: message, outcome: 'unknown' });
-        throw new OperationError(message, 'unknown');
-      }
-    })();
-    this.calls.set(key, execution);
-    try { return await execution; } finally { this.calls.delete(key); }
+      },
+    });
+    this.calls.add(execution);
+    try { return await execution; } finally { this.calls.delete(execution); }
   }
   async stop(id: string): Promise<void> {
     this.stopping.add(id);
@@ -227,9 +232,16 @@ export class PluginHost {
       return release;
     } catch (error) { release(); throw error; }
   }
+  /** 进程停止后继续阻止启动和能力回调，直到宿主提交实例回收。 */
+  async closeInstance(id: string): Promise<() => void> {
+    this.closingInstances.add(id);
+    const release = () => { this.closingInstances.delete(id); };
+    try { await this.stop(id); return release; }
+    catch (error) { release(); throw error; }
+  }
   async close(): Promise<void> {
     this.closing = true;
     await Promise.all([...this.processes.keys()].map((id) => this.stop(id)));
-    await Promise.allSettled([...this.calls.values()]);
+    await Promise.allSettled([...this.calls]);
   }
 }

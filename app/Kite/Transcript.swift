@@ -137,7 +137,7 @@ enum ResultPart {
 }
 
 /// 工具参数：模型给的 JSON 原样保留，显示时按工具取需要的字段。
-enum JSON: Equatable {
+nonisolated enum JSON: Equatable, Sendable {
     case string(String)
     case number(Double)
     case bool(Bool)
@@ -285,17 +285,18 @@ extension Transcript {
         return list
     }
 
-    /// 流式字段不改变记录顺序或种类，只刷新对应的正文/思考/工具行。
+    /// 同种记录只刷新对应行；归属、种类或工具分组变化时重新派生。
     mutating func replaceRecord(at index: Int, with record: Record) {
         guard records.indices.contains(index) else { return }
+        let previous = records[index]
         replacingRecord = true
         records[index] = record
         replacingRecord = false
-        guard record.parent == nil, let at = locations[index] else { items = derive(); return }
-        switch record.block {
-        case .text(let text): items[at.item].kind = .text(text)
-        case .thinking(let text): items[at.item].kind = .thinking(text)
-        case .toolUse(let use):
+        guard record.parent == nil, previous.parent == nil, let at = locations[index] else { items = derive(); return }
+        switch (previous.block, record.block) {
+        case (.text, .text(let text)): items[at.item].kind = .text(text)
+        case (.thinking, .thinking(let text)): items[at.item].kind = .thinking(text)
+        case (.toolUse(let old), .toolUse(let use)) where old.id == use.id && old.batch == use.batch:
             guard let step = at.call, case .work(var work) = items[at.item].kind else { items = derive(); return }
             work.calls[step].use = use
             work.calls[step].state = Self.callState(use, result: work.calls[step].result, running: running)

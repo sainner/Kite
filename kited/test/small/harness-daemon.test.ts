@@ -124,7 +124,7 @@ test('同一 home 重启后用原 nativeId 续接旧 opaque 历史且不重执�
   const home = join(root, 'kite');
   const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
   const firstModel = new ManualModel();
-  let daemon = startDaemon({ home, port: 0, model: () => firstModel });
+  let daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => firstModel });
   restarted = daemon;
   let events = new Seen<Envelope>();
   daemon.kite.bus.subscribe(undefined, (event) => events.add(event));
@@ -147,7 +147,7 @@ test('同一 home 重启后用原 nativeId 续接旧 opaque 历史且不重执�
   restarted = undefined;
 
   const secondModel = new ManualModel();
-  daemon = startDaemon({ home, port: 0, model: () => secondModel });
+  daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => secondModel });
   restarted = daemon;
   events = new Seen<Envelope>();
   daemon.kite.bus.subscribe(undefined, (event) => events.add(event));
@@ -173,7 +173,7 @@ test('挂起请求关闭后直接归档不会执行排队消息，工作树仍�
   const home = join(root, 'kite');
   const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
   const firstModel = new ManualModel();
-  let daemon = startDaemon({ home, port: 0, model: () => firstModel });
+  let daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => firstModel });
   restarted = daemon;
   const project = await call(daemon.url, 'POST', '/checkouts', { path: repo });
   expect(project.status).toBe(200);
@@ -188,7 +188,7 @@ test('挂起请求关闭后直接归档不会执行排队消息，工作树仍�
   expect(pending.signal.aborted).toBe(true);
 
   const secondModel = new ManualModel();
-  daemon = startDaemon({ home, port: 0, model: () => secondModel });
+  daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => secondModel });
   restarted = daemon;
   const archived = await call(daemon.url, 'POST', `/workspaces/${session.workspace.id}/archive`, { force: true });
   expect(archived.status).toBe(200);

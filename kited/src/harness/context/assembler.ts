@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { contextScenes, type ContextScene } from './scenes.ts';
 import type {
-  ContextAssembly, ContextBlock, ContextDefinition, ContextSnapshot, ContextSource, LegacyContextDefinition, ResolvedContextBlock,
+  ContextAssembly, ContextBlock, ContextDefinition, ContextSnapshot, ContextSource, ResolvedContextBlock,
 } from './types.ts';
 
 const name = z.string().min(1);
@@ -21,18 +21,12 @@ const block: z.ZodType<ContextBlock> = z.lazy(() => z.discriminatedUnion('type',
   }).strict(),
 ]));
 
-function variablesFor(definition: ContextSnapshot['definition']) {
-  if (definition.version === 1) return definition.variables;
-  return contextScenes[definition.scene].variables;
-}
-
 function validateDefinition(definition: ContextSnapshot['definition'], ctx: z.RefinementCtx): void {
-  const variables = new Set<string>();
+  const variables = new Set<string>(contextScenes[definition.scene].variables.map((variable) => variable.name));
   const ids = new Set<string>();
   const error = (message: string) => ctx.addIssue({ code: 'custom', message });
-  for (const variable of variablesFor(definition)) {
-    if (variables.has(variable.name)) error(`变量重复：${variable.name}`);
-    variables.add(variable.name);
+  if ((definition.scene === 'thread.title') !== (definition.input !== undefined)) {
+    error('会话标题模板须同时包含命名规则与材料，其他场景仅使用正文');
   }
   const reference = (variable: string) => {
     if (!variables.has(variable)) error(`当前定义不支持变量：${variable}`);
@@ -58,19 +52,14 @@ function validateDefinition(definition: ContextSnapshot['definition'], ctx: z.Re
     }
   };
   visit(definition.blocks);
+  if (definition.input) visit(definition.input);
 }
 
 export const contextDefinitionSchema: z.ZodType<ContextDefinition> = z.object({
   version: z.literal(2), id: name, title: name,
   scene: z.enum(Object.keys(contextScenes) as ContextScene[]),
   blocks: z.array(block),
-}).strict().superRefine(validateDefinition);
-
-// 保持旧字段及其顺序，旧快照的内容摘要不能因升级而改变。
-const legacyDefinitionSchema: z.ZodType<LegacyContextDefinition> = z.object({
-  version: z.literal(1), id: name, title: name,
-  variables: z.array(z.object({ name, title: name }).strict()),
-  blocks: z.array(block),
+  input: z.array(block).optional(),
 }).strict().superRefine(validateDefinition);
 
 const sourceFields = {
@@ -81,7 +70,7 @@ const sourceFields = {
 };
 type StoredSource = Pick<ContextSnapshot, 'definition' | 'bindings'>;
 function validateBindings(source: StoredSource, ctx: z.RefinementCtx): void {
-  const variables = new Set(variablesFor(source.definition).map((variable) => variable.name));
+  const variables = new Set<string>(contextScenes[source.definition.scene].variables.map((variable) => variable.name));
   for (const key of Object.keys(source.bindings)) {
     if (!variables.has(key)) ctx.addIssue({ code: 'custom', message: `绑定了当前定义不支持的变量：${key}` });
   }
@@ -95,12 +84,12 @@ function snapshotId(source: StoredSource): string {
 }
 
 export const contextSnapshotSchema: z.ZodType<ContextSnapshot> = z.object({
-  id: digest, ...sourceFields, definition: z.union([contextDefinitionSchema, legacyDefinitionSchema]),
+  id: digest, ...sourceFields,
 }).strict()
   .superRefine(validateBindings)
   .refine((snapshot) => snapshot.id === snapshotId(snapshot), { message: '上下文快照摘要不匹配' });
 
-/** 实时组装只接受受场景约束的新定义，旧格式不能绕过场景校验。 */
+/** 实时组装和历史还原使用同一份场景契约。 */
 export function assembleContext(source: ContextSource): ContextAssembly {
   const parsed = contextSourceSchema.parse(source);
   return renderContext({ id: snapshotId(parsed), ...parsed });
@@ -116,21 +105,24 @@ function renderContext(snapshot: ContextSnapshot): ContextAssembly {
     if (!Object.hasOwn(snapshot.bindings, variable)) throw new Error(`上下文变量未提供：${variable}`);
     return snapshot.bindings[variable]!;
   };
-  const paragraphs: string[] = [];
-  const render = (blocks: ContextBlock[]): ResolvedContextBlock[] => blocks.map((item) => {
+  const render = (blocks: ContextBlock[], paragraphs: string[]): ResolvedContextBlock[] => blocks.map((item) => {
     if (item.type === 'condition') {
       const value = binding(item.variable).text;
       const branch = item.cases.find((candidate) => candidate.equals === value) ?? item.otherwise;
-      return { type: 'condition', id: item.id, branchId: branch.id, blocks: render(branch.blocks) };
+      return { type: 'condition', id: item.id, branchId: branch.id, blocks: render(branch.blocks, paragraphs) };
     }
     const parts = item.parts.map((part) => part.type === 'text' ? part : { ...part, ...binding(part.name) });
     const text = parts.map((part) => part.text).join('');
     if (text.length > 0) paragraphs.push(text);
     return { type: 'paragraph', id: item.id, text, parts };
   });
-  const blocks = render(snapshot.definition.blocks);
+  const paragraphs: string[] = [];
+  const blocks = render(snapshot.definition.blocks, paragraphs);
+  const input: string[] = [];
+  const inputBlocks = snapshot.definition.input === undefined ? undefined : render(snapshot.definition.input, input);
   return {
     instructions: paragraphs.join('\n\n'), blocks,
+    ...(inputBlocks === undefined ? {} : { input: input.join('\n\n'), inputBlocks }),
     snapshot,
   };
 }

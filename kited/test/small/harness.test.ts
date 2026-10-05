@@ -1,7 +1,9 @@
 import { expect, test } from 'bun:test';
-import { appendFileSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { FileJournal } from '../../src/harness/journal.ts';
+import { assembleContext, literalContext } from '../../src/harness/context/assembler.ts';
+import { FileJournal, JournalIndex } from '../../src/harness/journal.ts';
+import { requestSnapshot } from '../../src/harness/request-config.ts';
 import type { Journal, JournalEvent, JournalRecord } from '../../src/harness/types.ts';
 import {
   aborted, deferred, diskRecords, input, item, ManualModel, Seen, success, tool,
@@ -9,6 +11,11 @@ import {
 } from '../harness-loop.ts';
 
 const h = useHarness();
+
+const configurationRecord = (model: string, seq = 1): Extract<JournalRecord, { type: 'request.configured' }> => ({
+  version: 1, seq, at: 1, type: 'request.configured',
+  snapshot: requestSnapshot({ model: { model, reasoning: 'medium' } }, []),
+});
 
 // 流消费、工具副作用、同步文件写入和宿主快照四方交接：不能靠各函数单独正确来保证。
 test('完整调用先落盘再执行，流未结束就启动，工具和快照结束后才请求下一轮', async () => {
@@ -366,7 +373,12 @@ test('恢复复用已保存结果并补未知和未执行，宿主确认后仍�
   const ids = { turnId: 'crashed-turn', requestId: 'crashed-request' };
   journal.append({ type: 'input.received', input: input('before-crash') });
   journal.append({ type: 'turn.started', turnId: ids.turnId });
-  journal.append({ type: 'request.started', ...ids, inputIds: ['before-crash'] });
+  const context = assembleContext(literalContext('测试主循环')).snapshot;
+  const configuration = requestSnapshot({}, [{ name: 'write', description: '测试工具', parameters: { type: 'object' } }]);
+  journal.append({ type: 'context.prepared', snapshot: context });
+  journal.append({ type: 'request.configured', snapshot: configuration });
+  journal.append({ type: 'request.started', ...ids, inputIds: ['before-crash'],
+    contextId: context.id, configurationId: configuration.id });
   journal.append({ type: 'model.item', ...ids, item: saved });
   journal.append({ type: 'tool.started', ...ids, callId: saved.id });
   journal.append({ type: 'tool.finished', ...ids, callId: saved.id, result: success('磁盘中的结果') });
@@ -413,13 +425,7 @@ test('恢复复用已保存结果并补未知和未执行，宿主确认后仍�
       outcome: { kind: 'needs_recovery', message: '旧版恢复提示' } },
   ].map((record) => JSON.stringify(record)).join('\n') + '\n';
   writeFileSync(legacyPath, oldBytes);
-  const legacy = h.runner(legacyRoot, { model: new ManualModel() });
-  await legacy.runner.settled();
-  expect(legacy.runner.state).toMatchObject({ phase: 'idle', busy: false, waitingForResume: true,
-    lastOutcome: { kind: 'failed', message: '旧版恢复提示' }, recovery: { message: '旧版恢复提示' } });
-  expect(legacy.journal.records.find((record) => record.type === 'turn.finished')).toMatchObject({
-    outcome: { kind: 'failed', message: '旧版恢复提示' }, recovery: { message: '旧版恢复提示' },
-  });
+  expect(() => new FileJournal(legacyPath)).toThrow();
   expect(readFileSync(legacyPath, 'utf8')).toBe(oldBytes);
 }, 1000);
 
@@ -449,3 +455,105 @@ test('JSONL 尾部半行先保留诊断副本再修复，中间损坏则拒绝�
     expect(readFileSync(path, 'utf8')).toBe(contents);
   }
 });
+
+// 文件尾行可能尚未写完，且写入器已持锁；只读查询必须保留字节，首次配置后的正文交给恢复读取校验。
+test('首次配置查询忽略未换行尾行且不争写锁，后续损坏留到 journal 恢复时校验', () => {
+  const root = h.root();
+  const path = join(root, 'query.jsonl');
+  const index = new JournalIndex();
+  const emptyDirectory = readdirSync(root);
+  expect(index.firstConfiguration(path)).toBeUndefined();
+  expect(readdirSync(root)).toEqual(emptyDirectory);
+  writeFileSync(path, '');
+  expect(index.firstConfiguration(path)).toBeUndefined();
+  expect(readFileSync(path, 'utf8')).toBe('');
+
+  const partial = JSON.stringify(configurationRecord('completed-on-newline'));
+  writeFileSync(path, partial);
+  const before = readdirSync(root);
+  expect(index.firstConfiguration(path)).toBeUndefined();
+  expect(index.firstConfiguration(path)).toBeUndefined();
+  expect(readFileSync(path, 'utf8')).toBe(partial);
+  expect(readdirSync(root)).toEqual(before);
+  appendFileSync(path, '\n');
+  expect(index.firstConfiguration(path)).toBe(configurationRecord('completed-on-newline').snapshot.id);
+
+  for (const malformed of [
+    '不是 JSON',
+    JSON.stringify(configurationRecord('sequence-gap', 2)),
+    JSON.stringify({ ...configurationRecord('invalid-schema'), snapshot: { id: 'invalid-schema' } }),
+  ]) {
+    writeFileSync(path, malformed + '\n');
+    expect(() => index.firstConfiguration(path)).toThrow();
+    expect(readFileSync(path, 'utf8')).toBe(malformed + '\n');
+  }
+
+  const lockedPath = join(root, 'locked.jsonl');
+  const writer = h.open(lockedPath);
+  writer.append({ type: 'input.received', input: input('before-configuration') });
+  writer.append({ type: 'request.configured', snapshot: configurationRecord('first-configuration').snapshot });
+  // 大输出和后续损坏都在首条配置之后；查询不会解析它们，恢复读取仍必须拒绝损坏。
+  writer.append({ type: 'tool.finished', turnId: 'turn', requestId: 'request', callId: 'large-output',
+    result: success('工具输出'.repeat(100_000)) });
+  appendFileSync(lockedPath, '损坏的后续记录\n');
+  const lockedBytes = readFileSync(lockedPath, 'utf8');
+  const lockedFiles = readdirSync(root);
+  expect(index.firstConfiguration(lockedPath)).toBe(configurationRecord('first-configuration').snapshot.id);
+  expect(readFileSync(lockedPath, 'utf8')).toBe(lockedBytes);
+  expect(readdirSync(root)).toEqual(lockedFiles);
+  writer.close();
+  expect(() => new FileJournal(lockedPath)).toThrow();
+  expect(readFileSync(lockedPath, 'utf8')).toBe(lockedBytes);
+
+  const splitPath = join(root, 'split-block.jsonl');
+  const prefix: JournalRecord = { version: 1, seq: 1, at: 1, type: 'input.received',
+    input: { ...input('split-block'), text: '' } };
+  const template = JSON.stringify(prefix);
+  const textAt = Buffer.byteLength(template.slice(0, template.indexOf('"text":""') + '"text":"'.length));
+  const firstPadding = 'a'.repeat(65_535 - textAt) + '风筝';
+  const lineLength = Buffer.byteLength(JSON.stringify({ ...prefix, input: { ...prefix.input, text: firstPadding } })) + 1;
+  prefix.input.text = firstPadding + 'a'.repeat(131_072 - 50 - lineLength);
+  // 「风」的三个 UTF-8 字节跨 64 KiB 边界；配置行从 128 KiB 边界前 50 字节开始。
+  const configuration = configurationRecord('cross-block', 2);
+  writeFileSync(splitPath, JSON.stringify(prefix) + '\n' + JSON.stringify(configuration) + '\n');
+  expect(index.firstConfiguration(splitPath)).toBe(configuration.snapshot.id);
+}, 1000);
+
+// 真实文件追加、同 inode 改写与原子替换会改变 stat 版本；缓存中的 undefined 和已找到的 ID 都须重验。
+test('首次配置缓存随补齐尾行、同 inode 改写截断和原子换文件更新，重启可重建', () => {
+  const root = h.root();
+  const path = join(root, 'changing.jsonl');
+  const index = new JournalIndex();
+  const prefix: JournalRecord = { version: 1, seq: 1, at: 1, type: 'input.received', input: input('prefix') };
+  writeFileSync(path, JSON.stringify(prefix) + '\n');
+  expect(index.firstConfiguration(path)).toBeUndefined();
+  appendFileSync(path, JSON.stringify(configurationRecord('first-one', 2)));
+  expect(index.firstConfiguration(path)).toBeUndefined();
+  appendFileSync(path, '\n');
+  expect(index.firstConfiguration(path)).toBe(configurationRecord('first-one', 2).snapshot.id);
+  expect(index.firstConfiguration(path)).toBe(configurationRecord('first-one', 2).snapshot.id);
+  appendFileSync(path, JSON.stringify(configurationRecord('later-one', 3)) + '\n');
+  expect(index.firstConfiguration(path)).toBe(configurationRecord('first-one', 2).snapshot.id);
+
+  const original = statSync(path);
+  const rewritten = [prefix, configurationRecord('first-two', 2), configurationRecord('later-one', 3)]
+    .map((record) => JSON.stringify(record)).join('\n') + '\n';
+  writeFileSync(path, rewritten);
+  expect(statSync(path).ino).toBe(original.ino);
+  expect(statSync(path).size).toBe(original.size);
+  expect(index.firstConfiguration(path)).toBe(configurationRecord('first-two', 2).snapshot.id);
+  writeFileSync(path, '');
+  expect(statSync(path).ino).toBe(original.ino);
+  expect(index.firstConfiguration(path)).toBeUndefined();
+  appendFileSync(path, JSON.stringify(configurationRecord('third-one')));
+  expect(index.firstConfiguration(path)).toBeUndefined();
+  appendFileSync(path, '\n');
+  expect(index.firstConfiguration(path)).toBe(configurationRecord('third-one').snapshot.id);
+
+  const replacement = join(root, 'replacement.jsonl');
+  writeFileSync(replacement, JSON.stringify(configurationRecord('fourth-id')) + '\n');
+  renameSync(replacement, path);
+  expect(statSync(path).ino).not.toBe(original.ino);
+  expect(index.firstConfiguration(path)).toBe(configurationRecord('fourth-id').snapshot.id);
+  expect(new JournalIndex().firstConfiguration(path)).toBe(configurationRecord('fourth-id').snapshot.id);
+}, 1000);

@@ -11,10 +11,12 @@ import { openThreadHost } from './harness/thread-host.ts';
 import { harnessPolicy } from './harness/execution-policy.ts';
 import { applyExecutionGrants, executionRevision, instanceExecutionGrants } from './execution-grants.ts';
 import { projectContext } from './harness/context/project.ts';
+import type { ContextDefinition } from './harness/context/types.ts';
 import { agentRevision, instanceAgent } from './agent-definition.ts';
 import { pluginDefinition } from './plugins.ts';
 import type { OperationToolSelection } from './operations.ts';
 import type { Input, Model, Phase, Recovery, StopRequest, ThreadNotification, Tool } from './harness/types.ts';
+import type { LightTaskOptions } from './light-tasks.ts';
 
 export interface Runtime {
   readonly state: RunnerState | Phase;
@@ -31,6 +33,8 @@ export interface Runtime {
 export interface RuntimeOptions {
   /** 本地模型入口，可在集成测试中替换为可控模型流。 */
   model?(thread: ThreadContext): Model;
+  /** 后台轻任务独立选模型；false 关闭，测试可注入受控模型。 */
+  lightTasks?: false | Partial<LightTaskOptions>;
 }
 
 export interface RuntimeEvents {
@@ -42,7 +46,8 @@ export interface RuntimeEvents {
 
 export async function openRuntime(s: ThreadContext, home: string, main: string, on: RuntimeEvents, options: RuntimeOptions,
   currentThread: () => ThreadContext, notifications: (after: number) => ThreadNotification[],
-  operations: { tools: Tool[]; prepare(instance: PluginInstance): OperationToolSelection }): Promise<Runtime> {
+  operations: { tools: Tool[]; prepare(instance: PluginInstance): OperationToolSelection },
+  contextUpdateTemplate: () => ContextDefinition): Promise<Runtime> {
   const { id, nativeId, title, runtime, definitionId, workspace: { cwd, id: workspaceId } } = s;
   if (runtime === 'claude') {
     const runner = new Runner({
@@ -90,6 +95,7 @@ export async function openRuntime(s: ThreadContext, home: string, main: string, 
           ...plugins.filter((tool) => granted.has(tool.name))],
         toolDefinitions: [...declared, ...plugins].map(({ name, description, parameters }) => ({ name, description, parameters })),
         instructions: projectContext(current.workspace.cwd, agent.context),
+        contextUpdateTemplate: contextUpdateTemplate(),
         settings: { model: agent.model, maxRequestsPerTurn: agent.maxRequestsPerTurn,
           execution: { grants: execution, revision: executionRevision(execution) },
           agent: { definitionId: current.definitionId, revision: agentRevision(agent) },

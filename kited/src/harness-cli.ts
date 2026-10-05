@@ -11,6 +11,7 @@ import { openThreadHost, readThreadMetadata } from './harness/thread-host.ts';
 import { harnessPolicy } from './harness/execution-policy.ts';
 import { projectContext } from './harness/context/project.ts';
 import type { HarnessEvent } from './harness/types.ts';
+import { defaultAgentModel } from './agent-models.ts';
 
 const USAGE = `用法：
   bun run harness --cwd <目录>                     开始对话
@@ -18,7 +19,7 @@ const USAGE = `用法：
   bun run harness --resume <会话 id 或绝对路径>     恢复已有会话
 
 选项：
-  --model <名称>         默认 gpt-6-sol，可用 KITE_MODEL 设置
+  --model <名称>         默认 ${defaultAgentModel}，可用 KITE_MODEL 设置
   --reasoning <强度>     默认 medium
   --auth <文件>         ChatGPT 登录凭据，默认 $KITE_HOME/auth/chatgpt/auth.json（KITE_HOME 默认 ~/.kite）
   --max-requests <次数>  每回合请求预算，默认 50
@@ -41,7 +42,7 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
   const saved = values.resume ? readThreadMetadata(directory) : undefined;
   if (values.resume && saved === undefined) throw new Error(`找不到会话：${id}`);
   const cwd = resolve(values.cwd ?? saved?.cwd ?? process.cwd());
-  const modelName = values.model ?? saved?.settings?.model?.model ?? process.env.KITE_MODEL ?? 'gpt-6-sol';
+  const modelName = values.model ?? saved?.settings?.model?.model ?? process.env.KITE_MODEL ?? defaultAgentModel;
   const reasoning = values.reasoning ?? saved?.settings?.model?.reasoning ?? 'medium';
   const maxRequests = Number(values['max-requests'] ?? saved?.settings?.maxRequestsPerTurn ?? 50);
   if (!Number.isSafeInteger(maxRequests) || maxRequests < 1) throw new Error('--max-requests 必须为正整数');

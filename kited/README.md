@@ -30,7 +30,7 @@ CODEX_HOME="${KITE_HOME:-$HOME/.kite}/auth/chatgpt" codex -c 'cli_auth_credentia
 
 harness 每次请求只读加载凭据，模型循环和工具执行不启动 Codex 或 Claude Code。自动刷新、系统钥匙串支持仍未接入；凭据过期或返回 401 时，在同一认证目录重新执行设备登录。无需 Platform API key。
 
-默认模型 `gpt-6-sol`、推理强度 `medium`，可用 `--model`、`--reasoning` 指定，模型名也可通过 `KITE_MODEL` 设置。一次任务跑完就退出：
+模型清单由仓库根目录 `shared/agent-models.json` 统一维护，App、工作机和 CLI 共用，每个 tier 只列当前选定版本。默认模型 `gpt-6.1-sol`、推理强度 `medium`，可用 `--model`、`--reasoning` 指定，模型名也可通过 `KITE_MODEL` 设置。一次任务跑完就退出：
 
 ```bash
 bun run harness --cwd /你的项目目录 --prompt "读取项目说明，概括目录结构"
@@ -57,11 +57,11 @@ bun run harness --resume <会话id>
 
 `shell` 每次调用必须填写非空白的 `description`，用简短的话说明命令用途，不指定语言，前端直接显示为这次调用的描述；原始命令保留在详情里。`read`、`patch` 的摘要可由文件路径和操作生成，不要求模型另填描述。
 
-每次请求前读取适用的 `AGENTS.md` 和 `.kite/memory/MEMORY.md`，由独立的上下文组装器展开段落、变量和条件分支。首次顶部指令固定；之后材料发生变化时，将更新追加到历史，保持已发送的前缀。定义引用场景，可用变量统一由场景表约束；终端使用 `thread.create` 场景。配置变更及基础上下文更新的通知正文也由场景定义组装，通知保存定义与变量快照，历史从快照还原。记忆正文按需读取。设计与接口见 [上下文组装器](../docs/harness-上下文组装.md)，前端编辑器和文件变化通知投递尚未接入。
+每次请求前按实际选中的上下文路径采集变量；引用项目材料时读取适用的 `AGENTS.md` 和 `.kite/memory/MEMORY.md`，由独立的上下文组装器展开段落、变量和条件分支。首次顶部指令固定；之后有效指令正文发生变化时，将更新追加到历史，保持已发送的前缀。定义引用场景，可用变量统一由场景表约束；终端使用 `thread.create` 场景。配置变更及基础上下文更新的通知正文也由场景定义组装，通知保存定义与变量快照，历史从快照还原。记忆正文按需读取。设计与接口见 [上下文组装器](../docs/harness-上下文组装.md)。App 已接创建会话模板的选择，以及创建会话、标题生成和四类通知模板的目录编辑；新通知使用当前保存的模板，已有待投递通知与历史保留快照。独立终端仍沿用自身入口定义。文件变化通知投递尚未接入。
 
 文件工具限制在工作目录内，并和 shell 共用执行策略。shell 已通过 `@anthropic-ai/sandbox-runtime` 0.0.78 进入操作系统沙箱：默认工作树可读写、必要系统工具链可读、网络关闭；每次调用有独立配置、网络代理和临时目录。登录凭据、数据库和会话记录禁止模型工具读写；Git 元数据只读，快照与采纳由宿主执行。缺失依赖、隔离能力降级或配置错误会拒绝启动。
 
-macOS 使用 Seatbelt；Linux 使用 bubblewrap，需要 `bwrap`、`socat`、`rg` 及上游 seccomp 支持，目前只在 macOS 验证。kited 的 harness 实例可通过 `GET / PUT /instances/:id/execution-grants` 保存和编辑工作区读写、额外目录及网络许可，须先停止并确认执行结果；变更在下一次自然模型请求追加通知，不唤醒或重放命令。App 编辑界面及独立终端的授权编辑尚未接入。本机 HTTP 尚未鉴权，当前不允许通过授权编辑开放回环地址。完整规则见 [实例执行授权](../docs/实例操作.md#实例执行授权)。命令输出限长并保留完整日志，后台任务暂不支持。每回合默认最多 50 次模型请求，达到后暂停，`--max-requests` 可调整。
+macOS 使用 Seatbelt；Linux 使用 bubblewrap，需要 `bwrap`、`socat`、`rg` 及上游 seccomp 支持，目前只在 macOS 验证。kited 的 harness 实例可通过 `GET / PUT /instances/:id/execution-grants` 保存和编辑工作区读写、额外目录及网络许可，须先停止并确认执行结果；变更在下一次自然模型请求追加通知，不唤醒或重放命令。App 在实例设置的「执行授权」页编辑 harness 授权；独立终端的授权编辑尚未接入。本机 HTTP 尚未鉴权，当前不允许通过授权编辑开放回环地址。完整规则见 [实例执行授权](../docs/实例操作.md#实例执行授权)。命令输出限长并保留完整日志，后台任务暂不支持。每回合默认最多 50 次模型请求，达到后暂停，`--max-requests` 可调整。
 
 这个终端入口直接修改指定目录。要使用独立工作树、快照和采纳流程，请通过下面的 kited HTTP 或 `kite` 客户端创建会话。独立终端未接 agent 协作工具；harness 的 skill 自动发现、MCP 和上下文压缩仍待实现。异常退出留下的 `lock/` 不会自动删除；先根据 `lock/owner.json` 与 `processes.json` 确认原进程及命令均已停止，再清理该会话的锁并重新打开。执行效果未知时保持暂停，不重放旧工具。
 
@@ -100,9 +100,33 @@ await runner.send({ id: clientMessageId, text: '检查项目', source: 'human' }
 
 每批工具的结果与快照完成后才请求下一次模型，回合结束后再补快照；快照失败会暂停 harness。恢复 journal 保留原始模型输出和工具结果，已完成的工具不会重跑。管理操作串行执行，归档先停止执行再判断是否有未采纳改动，打开旧会话做管理操作不会自动执行排队输入。
 
-`harness` 的 AgentDefinition 保存于 `PluginInstance.config.agent`，创建时绑定模型、工具、上下文和回合请求预算。内置编程定义声明 read / patch / shell 及五个 agent 操作工具，实际调用受实例授权限制；只读审查定义只有 read。新实例可通过 `KITE_MODEL` 选模型，默认 `gpt-6-sol`、`medium`，每回合最多 50 次请求；重启沿用绑定配置。独立终端仍在自己的 metadata 保存入口设置。配置更新通过通知在自然请求边界纳入，接口和恢复规则见 [线程通知投递](../docs/线程通知投递.md)。认证固定读当前 kited home 下的 `auth/chatgpt/auth.json`。异常退出的锁仍须人工核查、清理；`recover` 只确认恢复，随后用 `resume` 继续。正常停机后重新发消息即可续接。
+`harness` 的 AgentDefinition 保存于 `PluginInstance.config.agent`，创建时绑定模型、工具、上下文和回合请求预算。内置编程定义声明 read / patch / shell 及五个 agent 操作工具，实际调用受实例授权限制；只读审查定义只有 read。新实例可通过 `KITE_MODEL` 选模型，默认 `gpt-6.1-sol`、`medium`，每回合最多 50 次请求；重启沿用绑定配置。独立终端仍在自己的 metadata 保存入口设置。配置更新通过通知在自然请求边界纳入，接口和恢复规则见 [线程通知投递](../docs/线程通知投递.md)。认证固定读当前 kited home 下的 `auth/chatgpt/auth.json`。异常退出的锁仍须人工核查、清理；`recover` 只确认恢复，随后用 `resume` 继续。正常停机后重新发消息即可续接。
 
 ## 运行
+
+### 轻任务与会话标题
+
+`LightTasks` 复用模型适配器做一次性文本生成，供标题及后续摘要、标签等功能使用。后台请求串行执行，默认 30 秒超时，不提供工具，不创建线程，不写入主会话历史；只有模型完整完成才接收结果。日志只记用途、耗时、用量及错误，不记录输入正文。kited 关闭时取消正在执行与排队的任务并等待退出。
+
+辅助模型与主会话模型独立配置，凭据复用当前工作机的 ChatGPT 授权：
+
+| 环境变量 | 默认值 | 用途 |
+|---|---|---|
+| `KITE_LIGHT_MODEL` | 共享模型清单的 `luna` 档 | 轻任务模型 |
+| `KITE_LIGHT_REASONING` | `low` | 轻任务推理强度 |
+| `KITE_LIGHT_TASKS` | 开启 | 设为 `0` 关闭自动轻任务 |
+
+会话首轮完成后后台生成标题，原首条消息标题作为即时占位。后续有新增消息且距离上次成功生成至少 6 小时才更新。材料取近 3 天、最多 20 轮用户请求及完成的回复正文，JSON 总长度最多 12,000 字符；省略工具、思考及代码块，每轮请求最多 1,200 字符、回复保留末尾 1,600 字符。没有近期材料不改名。
+
+标题使用一份可编辑的 `thread.title` 模板 `kite.thread-title.generate`，命名规则和材料在同一编辑器内分区展示，共用一份 revision 并一起保存。规则区 `blocks` 用作模型指令，材料区 `input` 用作输入正文；两区均可编辑段落、条件和变量（当前标题、近期对话）。自动生成与点击刷新在每次生成开始时读取已保存的模板并组装；编辑不影响已在途的请求，重启不会覆盖保存内容。标题模板按固定用途使用，不参与创建会话的模板选择；单行、80 字符等结果约束仍由标题业务校验。
+
+手动命名后停止自动覆盖，`agent.start` 显式传入的标题也按手动命名处理。`GET /threads/:id/title` 返回 `title`、`mode`、`revision`、`generatedAt` 和 `through`；`PUT` 同路径传 `{expectedRevision, mode: "manual", title}` 修改标题，或 `{expectedRevision, mode: "auto"}` 恢复自动生成。标题须为 1～80 字符的单行文本；版本冲突返回 409。切回自动立即检查已有消息，执行中则等下一次回合完成。App 沿现有事件同步标题，并在 header 次级信息处显示真实会话标题与小刷新图标；点击标题或图标重新生成。手动命名与模式切换目前通过 HTTP 提供。
+
+`POST /threads/:id/title/regenerate` 传 `{expectedRevision}`，等本次生成完成后返回标题快照。显式重生跳过自动间隔、相同消息位置及失败退避，沿用原有 auto/manual 模式；主会话执行期间也可按已有完整消息生成，不打断会话。受理时只推进标题版本，使更早的在途结果失效，模型调用在工作区锁外等待。失败返回错误并保留原题及生成进度；生成期间被其他操作改名则返回 409。App 等待期间禁用重复点击，错误在原窗口提示。
+
+生成期间发生的手动改名或模式切换会使旧结果失效；新增消息留给下次检查，成功生成的时间和消息截止位置持久保存。失败保留原题，同版本至少间隔 5 分钟再尝试，不升级到主模型。自动更新只在完成回合或显式切回自动时检查，不定时扫描全部历史会话。
+
+### 启动服务
 
 ```bash
 cd kited && bun install
@@ -180,16 +204,21 @@ SDK 加自定义工具只有进程内 MCP 服务器这一条路（`src/tools.ts`
 | GET | `/machine` | 读取这台工作机服务的持久身份，无需请求头 |
 | GET | `/projects` | 列出本机已登记的项目身份 |
 | GET/POST | `/checkouts` | 列出本机检出（`?project=`）；登记 `{path, project?}`，返回根工作区聚合 |
-| GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, runtime?}`，准备过程看事件 |
+| GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, runtime?, contextTemplate?}`，准备过程看事件 |
 | GET | `/workspaces/:id` | 工作区上下文及 instances、threads、windows 的完整聚合 |
 | GET | `/plugin-definitions` | 内置插件定义、agent 配置、视图及目标实例声明的操作 |
 | GET | `/operations` | 操作输入、输出、错误 schema，以及重试与取消规则 |
 | POST | `/workspaces/:id/operations/:operation` | 调用 agent.start / list / send / resume / stop 或 files.list / read / state / select；修改操作必须带 operationId |
 | GET / PUT | `/instances/:id/agent-config` | 读取绑定配置及 revision；以 expectedRevision 和完整 agent 配置更新 |
+| GET / POST | `/context-templates` | 列出创建会话、标题及四类通知模板和场景变量；以 `{definition}` 新建创建会话模板 |
+| PUT | `/context-templates/:id` | 以 `{expectedRevision, definition}` 更新模板；不修改已有实例 |
+| PUT | `/instances/:id/context-template` | 以 `{expectedRevision, templateId, templateRevision}` 为实例绑定模板内容；保留其他配置 |
+| GET / PUT | `/threads/:id/title` | 读取标题与生成进度；以 expectedRevision 手动改名或恢复自动标题 |
+| POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不占主会话控制锁 |
 | GET / PUT | `/instances/:id/operation-grants` | 读取实例操作授权及 revision；以 expectedRevision 和 grants 更新 |
 | POST | `/workspaces/:id/windows` | 创建实例及默认窗口，或打开已有实例视图；请求使用稳定 id |
-| DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口，保留实例与后台执行 |
-| POST | `/workspaces/:id/threads` | 在已有工作区创建线程 `{prompt, runtime?}`，默认 harness |
+| DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口；最后窗口按插件生命周期回收实例或保留 |
+| POST | `/workspaces/:id/threads` | 在已有工作区创建线程 `{prompt, runtime?, contextTemplate?}`，默认 harness；模板选择为 `{id, revision}` |
 | GET | `/threads/:id` | 线程和上下文，附带 `runner`、`busy` |
 | GET | `/threads/:id/history` | v1 显示历史、pending、state 和 cursor，只读 |
 | POST | `/threads/:id/messages` | 发消息 `{text, id?}`，返回 `{id}`；harness 落盘后确认，同 id 和内容去重 |
@@ -206,9 +235,9 @@ SDK 加自定义工具只有进程内 MCP 服务器这一条路（`src/tools.ts`
 | GET | `/events?workspace=<id>` | 工作区 SSE：首帧 `workspace.model`，随后工作区操作与所属线程概要 |
 | GET | `/events?thread=<id>` | 线程 SSE：首帧 `thread.history`，随后线程显示与状态事件 |
 
-窗口创建请求为 `{id, content: {kind: "create", definitionId}}`；打开已有视图为 `{id, content: {kind: "open", instanceId, viewId}}`。`id` 使用 UUID。内置 `kite.agent.coding` 提供 `conversation`；`kite.files` 提供 `files` 和 `preview`；`kite.terminal`、`kite.preview` 分别提供同名视图。创建空 agent 同时写入实例、Thread 和窗口，不调用模型。服务核对工作区、实例生命周期和视图声明。
+窗口创建请求为 `{id, content: {kind: "create", definitionId}}`；打开已有视图为 `{id, content: {kind: "open", instanceId, viewId}}`。`id` 使用 UUID。内置 agent 提供 `conversation`，文件提供 `files`，终端占位提供 `terminal`；文件视图包含预览。创建空 agent 同时写入实例、Thread 和窗口，不调用模型。服务核对工作区、实例生命周期和视图声明。
 
-窗口响应包含 `{id, workspaceId, target: {instanceId, viewId}, state, createdAt}`。同一目标再次打开返回已有窗口；同一操作 id 重试读取持久收据，内容改变或窗口已关闭时拒绝，迟到重试不会复活窗口。关闭不停止业务执行；归档 agent 更新实例生命周期并关闭其窗口。
+窗口响应包含 `{id, workspaceId, target: {instanceId, viewId}, state, createdAt}`。同一目标再次打开返回已有窗口；同一操作 id 重试读取持久收据，内容改变或窗口已关闭时拒绝，迟到重试不会复活窗口。定义必填 `lifetime: "window" | "persistent"`。文件和终端占位随最后一个窗口关闭回收；agent 与待办独立存续。回收先确认插件进程停止，再原子关闭窗口、撤掉关联授权并删除实例及状态；关闭记录和收据保留，工作区文件及历史 diff 保留。清理失败保留窗口供重试，最小化和设备断线不触发回收。归档 agent 更新实例生命周期并关闭其窗口。
 
 工作区聚合的 Thread 只有 `{instanceId, runtime, nativeId}`，实例保存标题、工作区归属、definitionId、config、state、presentation、status、创建时间及可选的 origin 创建来源。`/threads/:id` 的 id 就是实例 ID，返回联表组装的执行上下文，不另存一份共有字段。journal 仍在 `sessions/<instanceId>/`。
 
@@ -247,7 +276,7 @@ SDK 加自定义工具只有进程内 MCP 服务器这一条路（`src/tools.ts`
 ## 还没做的
 
 - 个人偏好放哪：Kite 会话不读 `~/.claude` 的用户级配置，用户的个人偏好（比如回答用简体中文）和关于人的记忆要有 Kite 自己的位置，还没定。
-- 权限：harness 已接共享沙箱、宿主文件授权检查与实例授权管理接口；App 编辑界面、独立终端授权编辑、Linux 实机验证、CPU 和内存配额仍待做。Git 元数据只读，合并冲突后的暂存与提交还需宿主操作入口，当前需用户在工作树内完成。现有停止确认针对进程组，尚不支持脱离进程组的后台任务。Claude 仍采用原有 bypassPermissions 执行路径，未接本沙箱。见 [执行边界](../docs/Agent与插件契约.md#71-插件与-harness-共用操作系统沙箱)。
+- 权限：harness 已接共享沙箱、宿主文件授权检查、实例授权管理接口和 App 编辑页面；独立终端授权编辑、Linux 实机验证、CPU 和内存配额仍待做。Git 元数据只读，合并冲突后的暂存与提交还需宿主操作入口，当前需用户在工作树内完成。现有停止确认针对进程组，尚不支持脱离进程组的后台任务。Claude 仍采用原有 bypassPermissions 执行路径，未接本沙箱。见 [执行边界](../docs/Agent与插件契约.md#71-插件与-harness-共用操作系统沙箱)。
 - 对话回退、分叉，以及旧 Claude 完整历史的元数据、插话附件和子 agent 适配尚未完成。
 - 多机集成（推送、被拒后重合）。第一阶段只有一台工作机。
 - 采纳的提交说明现在用会话标题，以后让 agent 写。
@@ -262,4 +291,4 @@ SDK 加自定义工具只有进程内 MCP 服务器这一条路（`src/tools.ts`
 
 ## Bun 自定义插件
 
-预构建单文件插件通过 `POST /plugin-definitions` 登记；可创建后台实例，经 MCP 调用工具、资源和宿主授权能力。插件与 harness 共用 OS 沙箱，实例状态和工具收据由宿主持久保存。通过 `operation-grants` 给新 agent 授权具体实例和工具后，宿主从 MCP 声明生成模型工具；首次请求固定目录，后续撤权立即阻止执行，并在下一次自然请求追加通知。`kited/examples/todo-plugin.ts` 提供待办样例。接口、停止及未知结果处理见 [Bun 插件宿主](../docs/Bun插件.md)。App Web 视图、插件安装界面和资源配额仍待接入。
+预构建单文件插件通过 `POST /plugin-definitions` 登记；可创建后台实例，经 MCP 调用工具、资源和宿主授权能力。插件与 harness 共用 OS 沙箱，实例状态和工具收据由宿主持久保存。通过 `operation-grants` 给新 agent 授权具体实例和工具后，宿主从 MCP 声明生成模型工具；首次请求固定目录，后续撤权立即阻止执行，并在下一次自然请求追加通知。`kited/examples/todo-plugin.ts` 提供待办样例。接口、停止及未知结果处理见 [Bun 插件宿主](../docs/Bun插件.md)。App 已接 Web 视图、插件安装与实例授权界面；资源配额仍待接入。

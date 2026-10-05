@@ -26,15 +26,8 @@ export interface ContextDefinition {
   title: string;
   scene: ContextScene;
   blocks: ContextBlock[];
-}
-
-/** 只用于还原旧快照，新的实时定义不能自行声明变量。 */
-export interface LegacyContextDefinition {
-  version: 1;
-  id: string;
-  title: string;
-  variables: Array<{ name: string; title: string }>;
-  blocks: ContextBlock[];
+  /** 需要独立输入材料的场景，与规则一同编辑和保存。 */
+  input?: ContextBlock[];
 }
 
 export interface ContextBinding {
@@ -51,7 +44,7 @@ export interface ContextSource {
 export interface ContextSnapshot {
   /** 定义和变量值的内容摘要。同一份内容在会话中只保存一次。 */
   id: string;
-  definition: ContextDefinition | LegacyContextDefinition;
+  definition: ContextDefinition;
   bindings: Record<string, ContextBinding>;
 }
 
@@ -64,7 +57,9 @@ export type ResolvedContextBlock =
 
 export interface ContextAssembly {
   instructions: string;
+  input?: string;
   /** 定义保留全部页签，这里只记录实际选择的分支及 chip 的展开值。 */
   blocks: ResolvedContextBlock[];
+  inputBlocks?: ResolvedContextBlock[];
   snapshot: ContextSnapshot;
 }

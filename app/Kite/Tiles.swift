@@ -86,7 +86,12 @@ extension Tile {
             let horizontal = split.axis == .horizontal
             let edge: CGRectEdge = horizontal ? .minXEdge : .minYEdge
             let available = max((horizontal ? rect.width : rect.height) - Metrics.gap, 0)
-            let (a, rest) = rect.divided(atDistance: (available * split.ratio).rounded(), from: edge)
+            let firstMinimum = horizontal ? split.first.minimumSize.width : split.first.minimumSize.height
+            let secondMinimum = horizontal ? split.second.minimumSize.width : split.second.minimumSize.height
+            let requested = (available * split.ratio).rounded()
+            let length = available >= firstMinimum + secondMinimum
+                ? min(max(requested, firstMinimum), available - secondMinimum) : requested
+            let (a, rest) = rect.divided(atDistance: length, from: edge)
             let (gap, b) = rest.divided(atDistance: Metrics.gap, from: edge)
             result.gaps.append(TileLayout.Gap(split: split, rect: gap, region: rect))
             split.first.place(in: a, into: &result)
@@ -183,12 +188,12 @@ struct WindowRegions {
 
     func dockFrame(at index: Int) -> CGRect {
         CGRect(x: dock.midX - Metrics.dragBubble / 2,
-               y: dock.minY + Metrics.padding + CGFloat(index) * (Metrics.dragBubble + Metrics.gap),
+               y: dock.minY + CGFloat(index) * (Metrics.dragBubble + Metrics.gap),
                width: Metrics.dragBubble, height: Metrics.dragBubble)
     }
 
     func dockIndex(at point: CGPoint, count: Int) -> Int {
-        min(max(Int((point.y - dock.minY - Metrics.padding) / (Metrics.dragBubble + Metrics.gap)), 0), count)
+        min(max(Int((point.y - dock.minY) / (Metrics.dragBubble + Metrics.gap)), 0), count)
     }
 
     func canvasEdge(at point: CGPoint) -> Edge? {
@@ -257,6 +262,8 @@ final class WindowLayout {
 
     @ObservationIgnored private let storageKey: String?
     @ObservationIgnored private let defaults: UserDefaults
+    /// 由当前窗口内容区提供；不随布局写入共享数据或持久化。
+    @ObservationIgnored var availableSize: CGSize?
 
     init(panes: [Pane] = [], arrangement: Arrangement = .oneAndTwo,
          storageKey: String? = nil, defaults: UserDefaults = .standard) {
@@ -297,15 +304,18 @@ final class WindowLayout {
     }
 
     /// 当前设备主动打开窗口时，让它出现在内容区；远端添加仅由 reconcile 收入停靠栏。
-    func activate(_ pane: Pane) {
+    func activate(_ pane: Pane, in bounds: CGRect? = nil) {
         guard panes.contains(pane) else { return }
-        drag = nil
-        if docked.contains(pane) {
-            if let root { self.root = root.inserting(.pane(pane), on: .trailing) }
-            else { root = .pane(pane) }
-            docked.removeAll { $0 == pane }
+        withAnimation(.snappy) {
+            drag = nil
+            if docked.contains(pane) {
+                #if os(macOS)
+                place(pane, in: bounds ?? availableSize.map { CGRect(origin: .zero, size: $0) })
+                docked.removeAll { $0 == pane }
+                #endif
+            }
+            focused = pane
         }
-        focused = pane
         save()
     }
 
@@ -376,21 +386,29 @@ final class WindowLayout {
         save()
     }
 
-    /// 点击停靠的圆时恢复窗口；空间不足时由窗口最小尺寸为新卡片让位。
+    /// 点击停靠窗口与新建窗口使用同一放置顺序和展开动画。
     func restore(_ pane: Pane, in bounds: CGRect) {
         guard drag == nil, docked.contains(pane) else { return }
-        let restored: Tile
-        if let root, let target = focused.flatMap({ root.panes.contains($0) ? $0 : nil }) ?? root.panes.first {
-            let frame = root.layout(in: WindowRegions(in: bounds).canvas).panes[target] ?? .zero
-            let edge: Edge = frame.width >= 2 * Metrics.minPane + Metrics.gap ? .trailing : .bottom
-            restored = root.inserting(.pane(pane), beside: target, on: edge)
-        } else { restored = .pane(pane) }
-        withAnimation(.snappy) {
-            root = restored
-            docked.removeAll { $0 == pane }
-            focused = pane
+        activate(pane, in: bounds)
+    }
+
+    private func place(_ pane: Pane, in bounds: CGRect?) {
+        guard let root else { self.root = .pane(pane); return }
+        let column = root.inserting(.pane(pane), on: .trailing)
+        guard let bounds else { self.root = column; return }
+        let canvas = WindowRegions(in: bounds).canvas
+        let fits = { (tile: Tile) in tile.minimumSize.width <= canvas.width && tile.minimumSize.height <= canvas.height }
+        if fits(column) { self.root = column; return }
+        let targets = root.panes.sorted { $0 == focused && $1 != focused }
+        for target in targets {
+            let rows = root.inserting(.pane(pane), beside: target, on: .bottom)
+            if fits(rows) { self.root = rows; return }
         }
-        save()
+        // 保留当前聚焦窗口；容量已满时，用一个非聚焦窗口的位置接住新窗口。
+        if let victim = root.panes.first(where: { $0 != focused }) ?? root.panes.first {
+            self.root = root.replacing(victim, with: .pane(pane))
+            docked.append(victim)
+        }
     }
 
     private func focusVisiblePane() {

@@ -25,7 +25,10 @@ final class FileBrowser {
     private(set) var focus: FileReference?
     private(set) var focusID = UUID()
     var showDirectory = true
+    /// 点标题栏路径时只展开目录页，文件选择仍保留给当前实例。
+    var directoryOnly = false
     var rendered = false
+    var displayingFile: Bool { selection.path != nil && !directoryOnly }
     var requestKey: String { connectionRevision.uuidString + selection.revision + focusID.uuidString }
     var locationMessage: String? {
         guard let start = focus?.startLine else { return nil }
@@ -167,7 +170,14 @@ final class FileBrowser {
         focus = reference
         focusID = UUID()
         showDirectory = false
+        directoryOnly = false
         rendered = false
+    }
+
+    func openDirectory(_ path: String) async {
+        showDirectory = true
+        directoryOnly = true
+        await list(path, offset: 0)
     }
 
     func select(_ path: String, diffID: String? = nil) async -> Bool {

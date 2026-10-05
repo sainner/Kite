@@ -49,9 +49,12 @@ struct RemoteWorkspaceDecode {
               let filesInstance = worktree.instances.first(where: { $0.definitionId == "kite.files" }),
               filesInstance.workspaceId == worktree.workspace.id,
               filesInstance.status == .open,
-              filesInstance.presentation == .window else {
+              filesInstance.presentation == .window,
+              let customInstance = worktree.instances.first(where: { $0.definitionId == "custom.decode-state" }),
+              customInstance.state?.plugin == .object(["count": .number(1)]) else {
             throw DecodeError.invalidRelationships
         }
+        print("已解码真实自定义插件业务状态，保留 JSON 比较输入")
         try verifyFiles(files, instance: filesInstance)
         let fileViews = worktree.windows.filter { $0.target.instanceId == filesInstance.id }
         let agentViews = worktree.windows.filter { threadInstanceIDs.contains($0.target.instanceId) }
@@ -64,10 +67,14 @@ struct RemoteWorkspaceDecode {
             throw DecodeError.invalidRelationships
         }
         guard let agentDefinition = definitions.first(where: { $0.id == "kite.agent.coding" }),
+              agentDefinition.lifetime == .persistent,
               agentDefinition.defaultView == "conversation",
               agentDefinition.agent?.runtime == .harness,
+              agentDefinition.agent?.model != nil,
+              agentInstances.allSatisfy({ $0.config?.agent?.model == agentDefinition.agent?.model }),
               agentDefinition.views.map(\.id) == ["conversation"],
               let filesDefinition = definitions.first(where: { $0.id == "kite.files" }),
+              filesDefinition.lifetime == .window,
               filesDefinition.defaultView == "files",
               filesDefinition.views.map(\.id) == ["files"] else {
             throw DecodeError.invalidRelationships

@@ -17,6 +17,7 @@ enum SampleWorkspace {
         let model = AppModel()
         guard enabled else { return model }
         model.workspaces = [
+            pluginSidebar(),
             workspace("references", title: "引用 · 文件与历史差异", transcript: ReferenceSamples.transcript, outcome: "completed"),
             workspace("stream-live", title: "流式会话 · 动态预览", transcript: HarnessSampleTranscripts.empty),
             workspace("tool-styles", title: "工具行 · 样式与动画", transcript: HarnessSampleTranscripts.toolStyles),
@@ -40,8 +41,50 @@ enum SampleWorkspace {
             workspace("streaming", title: "回复生成中", transcript: HarnessSampleTranscripts.streaming),
             workspace("empty", title: "空白会话", transcript: HarnessSampleTranscripts.empty),
         ]
-        model.selected = model.workspaces[0].id
+        model.selected = "sample-plugin-sidebar"
         return model
+    }
+
+    /// 同时展示收起窗口、多视图实例、无窗口 agent 和纯后台实例，供两端预览停靠栏。
+    private static func pluginSidebar() -> WorkArea {
+        let area = workspace("plugin-sidebar", title: "插件 · 侧栏样式", transcript: HarnessSampleTranscripts.empty)
+        let mainWindow = area.windows[0]
+        area.definitions += [
+            .init(id: "sample.plugin.todo", title: "待办（样式样本）", lifetime: .persistent,
+                  views: [.init(id: "list", title: "待办列表", renderer: "web"),
+                          .init(id: "completed", title: "已完成", renderer: "web")],
+                  defaultView: "list", agent: nil, runtime: "bun"),
+            .init(id: "sample.plugin.background", title: "后台插件（样式样本）", lifetime: .persistent,
+                  views: [], defaultView: "", agent: nil, runtime: "bun"),
+        ]
+        let threads = ["检查侧栏布局", "整理窗口交互反馈"].map { title in
+            let thread = WorkThread(workspace: area.remote?.workspace.cwd ?? "", project: "插件 · 样式样本")
+            thread.title = title
+            thread.transcript = HarnessSampleTranscripts.empty
+            thread.connected = true
+            return thread
+        }
+        area.threads += threads
+        area.instances += threads.map { thread in
+            .init(id: thread.id, workspaceId: area.id, definitionId: "kite.agent.coding", title: thread.title,
+                  status: .open, presentation: .window, createdAt: 0, config: .init(agent: sampleAgent))
+        }
+        area.instances += [
+            .init(id: "sample-todo-windows", workspaceId: area.id, definitionId: "sample.plugin.todo",
+                  title: "待办 · 多视图（样式样本）", status: .open, presentation: .window, createdAt: 0),
+            .init(id: "sample-todo-windowless", workspaceId: area.id, definitionId: "sample.plugin.todo",
+                  title: "待办 · 无窗口（样式样本）", status: .open, presentation: .window, createdAt: 0),
+            .init(id: "sample-background", workspaceId: area.id, definitionId: "sample.plugin.background",
+                  title: "后台插件（样式样本）", status: .open, presentation: .background, createdAt: 0),
+        ]
+        for target in [WindowTarget(instanceId: threads[0].id, viewId: "conversation"),
+                       WindowTarget(instanceId: "sample-todo-windows", viewId: "list"),
+                       WindowTarget(instanceId: "sample-todo-windows", viewId: "completed")] {
+            openWindow(.init(id: UUID().uuidString, content: .open(target)), in: area)
+        }
+        area.layout.expand(Pane(mainWindow.id))
+        area.layout.activate(Pane(mainWindow.id))
+        return area
     }
 
     private static func workspace(_ id: String, title: String, transcript: Transcript,
@@ -85,7 +128,7 @@ enum SampleWorkspace {
         }
         area.threads = [thread]
         area.instances = [.init(id: thread.id, workspaceId: area.id, definitionId: "kite.agent.coding", title: title,
-                                status: .open, presentation: .window, createdAt: 0)]
+                                status: .open, presentation: .window, createdAt: 0, config: .init(agent: sampleAgent))]
         openWindow(.init(id: UUID().uuidString, content: .open(WindowTarget(instanceId: thread.id, viewId: "conversation"))), in: area)
         openWindow(.init(id: UUID().uuidString, content: .create("kite.files")), in: area)
         openWindow(.init(id: UUID().uuidString, content: .create("kite.terminal")), in: area)
@@ -94,12 +137,16 @@ enum SampleWorkspace {
         return area
     }
     /// 预览中的定义与工作机声明同形，预览时不请求网络。
+    private static let sampleAgent = AgentConfiguration(runtime: "harness",
+        model: .init(model: AgentModelCatalog.bundled.defaultModel.id, reasoning: "medium"), tools: ["read", "patch", "shell"],
+        context: ["version": 2, "id": "sample", "title": "样式样本", "scene": "thread.create", "blocks": []], maxRequestsPerTurn: 50)
+
     static let definitions: [RemotePluginDefinition] = [
-        .init(id: "kite.agent.coding", title: "代理", views: [.init(id: "conversation", title: "会话", renderer: "conversation")],
-              defaultView: "conversation", agent: .init(runtime: .harness)),
-        .init(id: "kite.files", title: "文件", views: [.init(id: "files", title: "文件", renderer: "files")],
+        .init(id: "kite.agent.coding", title: "代理", lifetime: .persistent, views: [.init(id: "conversation", title: "会话", renderer: "conversation")],
+              defaultView: "conversation", agent: .init(runtime: .harness, model: sampleAgent.model)),
+        .init(id: "kite.files", title: "文件", lifetime: .window, views: [.init(id: "files", title: "文件", renderer: "files")],
               defaultView: "files", agent: nil),
-        .init(id: "kite.terminal", title: "终端", views: [.init(id: "terminal", title: "终端", renderer: "terminal")], defaultView: "terminal", agent: nil),
+        .init(id: "kite.terminal", title: "终端", lifetime: .window, views: [.init(id: "terminal", title: "终端", renderer: "terminal")], defaultView: "terminal", agent: nil),
     ]
 
     /// 静态预览中的添加与关闭只修改内存，使用和真实窗口相同的目标绑定。
@@ -119,10 +166,15 @@ enum SampleWorkspace {
                 title = thread.title
             } else {
                 id = UUID().uuidString
-                title = definition.title + " \(area.instances.filter { $0.definitionId == definitionID }.count + 1)"
+                let titles = Set(area.instances.filter { $0.definitionId == definitionID }.map(\.title))
+                var number = 1
+                while titles.contains("\(definition.title) \(number)") { number += 1 }
+                title = "\(definition.title) \(number)"
             }
             area.instances.append(.init(id: id, workspaceId: area.id, definitionId: definitionID, title: title,
-                                        status: .open, presentation: .window, createdAt: 0))
+                                        status: .open, presentation: definition.views.isEmpty ? .background : .window, createdAt: 0,
+                                        config: definition.agent == nil ? nil : .init(agent: sampleAgent)))
+            guard !definition.views.isEmpty else { return }
             target = WindowTarget(instanceId: id, viewId: definition.defaultView)
         case .open(let existing): target = existing
         }
@@ -130,6 +182,19 @@ enum SampleWorkspace {
         area.layout.reconcile(area.windows.map { Pane($0.id) })
         area.updateFiles()
         area.layout.activate(Pane(request.id))
+    }
+
+    static func closeWindow(_ pane: Pane, in area: WorkArea) {
+        guard let window = area.windows.first(where: { $0.id == pane.id }) else { return }
+        area.windows.removeAll { $0.id == pane.id }
+        if let instance = area.instances.first(where: { $0.id == window.target.instanceId }),
+           area.definition(of: instance)?.lifetime == .window,
+           !area.windows.contains(where: { $0.target.instanceId == instance.id }) {
+            area.instances.removeAll { $0.id == instance.id }
+            if area.settingsInstance?.id == instance.id { area.settingsInstance = nil }
+        }
+        area.updateFiles()
+        area.layout.reconcile(area.windows.map { Pane($0.id) })
     }
 
 }

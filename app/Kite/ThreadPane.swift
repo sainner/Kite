@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 会话窗口：标题栏固定显示“代理”，内容是对话，控制区包含输入框和一行按钮。
+/// 会话窗口：主标题显示会话名称，次级信息显示“代理”，控制区包含输入框和一行按钮。
 /// 人发的消息靠右、带气泡；agent 的话铺满这一栏；两段话之间 agent 做的事折成一行，点开看每一步。
 struct ThreadPane: View {
     @Environment(WorkThread.self) private var thread
@@ -12,15 +12,21 @@ struct ThreadPane: View {
     @State private var arriving: Set<String> = []
     /// 点开了操作栏的那一行。
     @State private var selected: RowID?
+    @State private var titleError: String?
 
     var body: some View {
         let items = thread.transcript.items
         let pending = thread.transcript.pending
-        return PaneWindow(header: PaneHeader(title: "代理")) {
+        return PaneWindow(header: PaneHeader(title: thread.title, detail: .text("代理"), titleRefresh: .init(
+            actionLabel: "重新生成会话标题", progressLabel: "正在重新生成会话标题",
+            isRefreshing: thread.regeneratingTitle, enabled: thread.canRegenerateTitle, action: regenerateTitle))) {
             if items.isEmpty && pending.isEmpty {
-                Text("说说要做什么")
-                    .font(Theme.body)
-                    .foregroundStyle(.secondary)
+                VStack(spacing: 20) {
+                    Text("说说要做什么")
+                        .font(Theme.body)
+                        .foregroundStyle(.secondary)
+                    NewThreadContextTemplate()
+                }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
             } else {
@@ -51,10 +57,15 @@ struct ThreadPane: View {
             }
         } controls: { typing in
             ControlArea(typing: typing, send: send)
-                .disabled(area.creatingThread)
+                .disabled(area.creatingThread || thread.configuringTemplate)
                 .frame(maxWidth: Metrics.transcriptWidth)
         } status: {
+            #if os(iOS)
             ThreadStatusChip()
+                .offset(y: -1)
+            #endif
+        } headerActions: {
+            ThreadHeaderActions()
         }
         .environment(\.workingDirectory, thread.transcript.root)
         .task(id: thread.previewRun) {
@@ -63,6 +74,18 @@ struct ThreadPane: View {
         }
         .environment(\.arrivingMessages, arriving)
         .environment(\.selectedRow, $selected)
+        .alert("重新生成标题失败", isPresented: Binding(
+            get: { titleError != nil }, set: { if !$0 { titleError = nil } }
+        )) {
+            Button("好", role: .cancel) { titleError = nil }
+        } message: { Text(titleError ?? "") }
+    }
+
+    private func regenerateTitle() {
+        Task {
+            do { try await thread.regenerateTitle() }
+            catch { titleError = error.localizedDescription }
+        }
     }
 
     /// 发一条消息：先排进队里，对话滑过去（见 TranscriptScroll.send），气泡同时从下往上浮进来。
@@ -262,6 +285,7 @@ private struct AgentText: View {
     let id: RowID
     let text: String
     @Environment(\.selectedRow) private var selection
+    @Environment(\.toast) private var toast
 
     var body: some View {
         content
@@ -284,7 +308,7 @@ private struct AgentText: View {
     @ViewBuilder
     private var actions: some View {
         ActionButton("复制", icon: "doc.on.doc") {
-            copyToPasteboard(text)
+            copyToPasteboard(text, toast: toast)
             selection.close()
         }
         // 翻译成另一种语言，还没做
@@ -376,12 +400,14 @@ private struct ControlArea: View {
     var typing: FocusState<Bool>.Binding
     let send: (Message) -> Void
     @Environment(WorkThread.self) private var thread
+    @Environment(\.paneInstance) private var instance
     /// 刚发出去的字正在淡掉。
     @State private var leaving = false
 
     var body: some View {
         @Bindable var thread = thread
         let running = thread.transcript.running
+        let shape = RoundedRectangle(cornerRadius: Metrics.controlRadius, style: .continuous)
         VStack(spacing: 2) {
             TextField(running ? "插话，agent 做完手上这一步就会看到" : "回复", text: $thread.draft, axis: .vertical)
                 .textFieldStyle(.plain)
@@ -393,45 +419,67 @@ private struct ControlArea: View {
                 .opacity(leaving ? 0 : 1)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
-            HStack(spacing: 0) {
-                EffortPicker(effort: .constant(.medium))
-                    .allowsHitTesting(false)
-                    .help("推理强度设置尚未接通")
-                Spacer(minLength: 8)
+            HStack(spacing: Metrics.paneButtonGap) {
+                if let effort = Effort.allCases.first(where: { $0.name == reasoning }) {
+                    EffortPicker(effort: .constant(effort))
+                        .allowsHitTesting(false)
+                        .help("推理强度设置尚未接通")
+                } else {
+                    Text(reasoning).font(Theme.secondary).foregroundStyle(.secondary).padding(.horizontal, 8)
+                }
+                Spacer(minLength: Metrics.paneButtonGap)
                 if thread.isStreamingPreview {
                     Button("重播") { thread.previewRun += 1 }
-                        .font(Theme.secondary)
-                        .padding(.trailing, 8)
+                        .buttonStyle(PaneButtonStyle(text: true))
                 }
-                IconButton(icon: "paperclip") {}.disabled(true).accessibilityLabel("添加附件")
-                IconButton(icon: "mic") {}.disabled(true).accessibilityLabel("语音输入")
+                #if os(macOS)
+                ThreadStatusChip(ringOnRight: true)
+                #endif
+                HStack(spacing: 0) {
+                    Button {} label: { Image(systemName: "paperclip") }
+                        .buttonStyle(PaneButtonStyle())
+                        .disabled(true).accessibilityLabel("添加附件")
+                    Button {} label: { Image(systemName: "mic") }
+                        .buttonStyle(PaneButtonStyle())
+                        .disabled(true).accessibilityLabel("语音输入")
+                }
                 if thread.showStop {
-                    RoundButton(icon: "stop.fill", fill: Theme.strongPlaceholder) {
+                    Button {
                         thread.stop()
-                    }
+                    } label: { Image(systemName: "stop.fill") }
+                    .buttonStyle(PaneButtonStyle(fill: Theme.strongPlaceholder))
                     .disabled(!thread.canStop)
-                    .padding(.leading, 4)
                     .accessibilityLabel("停止")
                 }
                 if thread.state?.capabilities.resume == true {
                     Button("继续") { thread.control("resume") }
+                        .buttonStyle(PaneButtonStyle(text: true))
                         .disabled(!thread.canSend)
                         .accessibilityLabel("继续")
                 }
                 if !blank && !leaving {
-                    RoundButton(icon: "arrow.up", fill: .accentColor, action: submit)
+                    Button(action: submit) { Image(systemName: "arrow.up") }
+                        .buttonStyle(PaneButtonStyle(fill: .accentColor))
                         .disabled(!thread.canSend)
-                        .padding(.leading, 4)
                         .accessibilityLabel("发送")
                 }
             }
         }
-        .padding(8)
+        .padding([.top, .horizontal], Metrics.controlInset)
+        .padding(.bottom, Metrics.controlBottomInset)
+        // 交互玻璃的同心形状有高光退回胶囊的复现；玻璃与交互轮廓统一使用明确圆角。
+        .contentShape(.interaction, shape)
+        #if os(iOS)
+        .contentShape(.hoverEffect, shape)
+        #endif
+        .glassEffect(.regular.interactive(), in: shape)
     }
 
     private var blank: Bool {
         thread.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+
+    private var reasoning: String { instance?.config?.agent?.model.reasoning ?? "medium" }
 
     private func submit() {
         guard !blank, !leaving, thread.canSend else { return }
@@ -499,7 +547,7 @@ private struct EffortPicker: View {
                 .font(Theme.secondary)
                 .foregroundStyle(showsTicks ? .primary : .secondary)
                 .padding(.horizontal, 8)
-                .frame(height: 32)
+                .frame(height: Metrics.paneButton)
         }
         .contentShape(Rectangle())
         .gesture(press)
@@ -763,40 +811,5 @@ private struct EffortTicks: View {
         var end: Date {
             start + (unfolding ? EffortTicks.unfoldDuration : EffortTicks.foldDuration) - skip
         }
-    }
-}
-
-/// 控制区的无背景图标按钮，保留完整点击范围。
-private struct IconButton: View {
-    let icon: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(Theme.body)
-                .foregroundStyle(.secondary)
-                .frame(width: 32, height: 32)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.pointingPlain)
-    }
-}
-
-private struct RoundButton: View {
-    let icon: String
-    let fill: Color
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(Theme.secondary.weight(.bold))
-                .foregroundStyle(.white)
-                .frame(width: 28, height: 28)
-                .background(fill, in: Circle())
-                .contentShape(Circle())
-        }
-        .buttonStyle(.pointingPlain)
     }
 }

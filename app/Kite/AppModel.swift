@@ -9,11 +9,14 @@ final class WorkThread: Identifiable {
     var project: String
     var transcript: Transcript
     var draft = ""
+    var contextTemplate: ContextTemplate?
+    var configuringTemplate = false
     var isStreamingPreview = false
     var previewRun = 0
     var state: RemoteState?
     var connected = false
     var error: String?
+    private(set) var regeneratingTitle = false
     private let client: KitedClient?
     // 未识别的块保留位置，后续同 id 的记录替换仍沿用服务端顺序。
     private var remoteRecords: [RemoteRecord] = []
@@ -34,8 +37,10 @@ final class WorkThread: Identifiable {
     var isDraft: Bool { client == nil }
     var canSend: Bool { stopRequest == nil && connected && (state?.capabilities.send ?? isDraft) }
     var canStop: Bool { connected && !stopping && showStop }
+    var hasUnconfirmedStop: Bool { stopRequest != nil }
     var showStop: Bool { stopRequest != nil || !outbox.isEmpty || state?.capabilities.interrupt == true }
     var canCancel: Bool { stopRequest == nil && connected && state?.capabilities.cancel == true }
+    var canRegenerateTitle: Bool { !isDraft && connected && state?.status == "open" && !regeneratingTitle }
     var statusPhase: String { stopping ? "stopping" : state?.phase ?? "idle" }
     var statusLabel: String {
         if let error { return error }
@@ -101,6 +106,7 @@ final class WorkThread: Identifiable {
     func apply(_ event: RemoteEvent) throws {
         guard event.threadId == id else { return }
         if event.type != "thread.record.delta" { flushStreaming() }
+        var recordsChanged = false
         switch event.type {
         case "thread.history":
             guard event.version == 1 else { throw KitedError(message: "会话协议版本不兼容") }
@@ -112,13 +118,20 @@ final class WorkThread: Identifiable {
             state = event.state
             connected = true
             error = nil
+            recordsChanged = true
         case "thread.record":
             guard let record = event.record else { return }
             if let index = positions[record.id] {
                 remoteRecords[index] = record
+                if let visibleIndex = visiblePositions[index], let visible = record.record {
+                    transcript.replaceRecord(at: visibleIndex, with: visible)
+                } else {
+                    recordsChanged = true
+                }
             } else {
                 positions[record.id] = remoteRecords.count
                 remoteRecords.append(record)
+                recordsChanged = true
             }
             if record.block.type == "human", let id = record.block.id {
                 received.insert(id)
@@ -148,7 +161,7 @@ final class WorkThread: Identifiable {
         outbox.removeAll { confirmed.contains($0.id) }
         if !failed.isDisjoint(with: confirmed) { error = nil }
         failed.subtract(confirmed)
-        render(recordsChanged: event.type == "thread.history" || event.type == "thread.record")
+        render(recordsChanged: recordsChanged)
     }
 
     private func flushStreaming() {
@@ -243,13 +256,24 @@ final class WorkThread: Identifiable {
     }
 
     func stop() {
-        guard let client, canStop else { return }
+        guard canStop else { return }
+        _ = try? startStop()
+    }
+
+    /// 设置页也能停止没有展开窗口的会话，沿用同一收据与队列退回逻辑。
+    func stopAndWait() async throws {
+        try await startStop().value
+    }
+
+    private func startStop() throws -> Task<Void, Error> {
+        guard let client, !stopping else { throw KitedError(message: "会话尚不可停止，请刷新状态后重试") }
         let request = stopRequest ?? StopRequest(id: UUID().uuidString, inputs: outbox.map {
             RemoteInput(id: $0.id, text: $0.typed, source: "human")
         })
+        // 同步冻结收据，点击停止后立即阻止继续发送或重复停止。
         stopRequest = request
         stopping = true
-        Task {
+        return Task {
             defer { stopping = false }
             do {
                 let response = try await client.request("/threads/\(id)/interrupt", method: "POST", body: request, as: StopResponse.self)
@@ -264,8 +288,21 @@ final class WorkThread: Identifiable {
                 render()
             } catch {
                 self.error = "停止尚未确认，请再次点停止重试：\(error.localizedDescription)"
+                throw error
             }
         }
+    }
+
+    func regenerateTitle() async throws {
+        guard let client, canRegenerateTitle else { return }
+        regeneratingTitle = true
+        defer { regeneratingTitle = false }
+        let path = "/threads/\(id)/title"
+        let snapshot = try await client.request(path, as: ThreadTitleSnapshot.self)
+        guard connected, state?.status == "open" else { throw KitedError(message: "会话连接或状态已变化，请重试") }
+        // 标题正文沿目录事件同步，避免迟到的 HTTP 响应覆盖更新的远端标题。
+        let _: ThreadTitleSnapshot = try await client.request(path + "/regenerate", method: "POST",
+            body: ["expectedRevision": snapshot.revision], timeout: 120, as: ThreadTitleSnapshot.self)
     }
 
     func control(_ action: String) {
@@ -293,20 +330,25 @@ final class WorkArea: Identifiable {
     var instances: [RemotePluginInstance] = []
     var files: [String: FileBrowser] = [:]
     var definitions: [RemotePluginDefinition] = []
+    private(set) var pluginClient: KitedClient?
+    private(set) var pluginConnection: UUID
     let draftThread: WorkThread
     let layout: WindowLayout
     var creatingThread = false
     var changingWindows = false
     var pendingWindowRequest: OpenWindowRequest?
+    var pendingInstanceRequest: CreatePluginInstance?
     var windowError: String?
+    var settingsInstance: RemotePluginInstance?
     var tint: Color { .blue }
     var title: String { remote?.workspace.name ?? "新工作区" }
-    var header: PaneHeader { PaneHeader(title: title, detail: remote?.project.name ?? "Kite") }
+    var header: PaneHeader { PaneHeader(title: title, detail: .text(remote?.project.name ?? "Kite")) }
     var isDraft: Bool { remote == nil }
     var isSample: Bool { SampleWorkspace.enabled && remote?.machine.id == "sample" }
 
-    init(remote: RemoteWorkspace? = nil, client: KitedClient? = nil, definitions: [RemotePluginDefinition] = []) {
+    init(remote: RemoteWorkspace? = nil, client: KitedClient? = nil, definitions: [RemotePluginDefinition] = [], connection: UUID = UUID()) {
         id = remote?.id ?? "draft-workspace"
+        pluginConnection = connection
         self.remote = remote
         self.definitions = definitions
         draftThread = WorkThread(workspace: remote?.workspace.cwd ?? "", project: remote?.project.name ?? "Kite")
@@ -322,11 +364,13 @@ final class WorkArea: Identifiable {
             windows = [draft]
             layout = WindowLayout(panes: [Pane(draft.id)])
         }
-        if let remote, let client { update(remote, client: client) }
+        if let remote, let client { update(remote, client: client, connection: connection) }
     }
 
-    func update(_ remote: RemoteWorkspace, client: KitedClient) {
+    func update(_ remote: RemoteWorkspace, client: KitedClient, connection: UUID) {
         self.remote = remote
+        pluginClient = client
+        pluginConnection = connection
         let previous = Dictionary(uniqueKeysWithValues: threads.map { ($0.id, $0) })
         let instancesByID = Dictionary(uniqueKeysWithValues: remote.instances.map { ($0.id, $0) })
         threads = remote.threads.compactMap { value in
@@ -335,6 +379,9 @@ final class WorkArea: Identifiable {
             return WorkThread(remote: value, instance: instance, workspace: remote.workspace, project: remote.project.name, client: client)
         }
         instances = remote.instances
+        if let settingsInstance, !instances.contains(where: { $0.id == settingsInstance.id && $0.status == .open }) {
+            self.settingsInstance = nil
+        }
         windows = remote.windows.filter { $0.state == .open }
         layout.reconcile(windows.map { Pane($0.id) })
         draftThread.connected = remote.workspace.status == .open
@@ -365,6 +412,18 @@ final class WorkArea: Identifiable {
         definitions.first { $0.id == instance.definitionId }
     }
 
+    var windowlessInstances: [RemotePluginInstance] {
+        let shown = Set(windows.map { $0.target.instanceId })
+        return instances.filter { $0.status == .open && !shown.contains($0.id) }
+    }
+
+    var minimumSize: CGSize {
+        let content = layout.minimumSize
+        let entries = layout.docked.count + windowlessInstances.count + 1
+        return CGSize(width: content.width, height: max(content.height,
+            2 * Metrics.padding + CGFloat(entries) * (Metrics.dragBubble + Metrics.gap) - Metrics.gap))
+    }
+
     func view(in pane: Pane) -> RemotePluginDefinition.PluginView? {
         guard let target = windows.first(where: { $0.id == pane.id })?.target,
               let instance = instances.first(where: { $0.id == target.instanceId }) else { return nil }
@@ -372,7 +431,7 @@ final class WorkArea: Identifiable {
     }
 
     func appearance(of pane: Pane) -> WindowAppearance {
-        if let thread = thread(in: pane) { return .init(name: thread.title, icon: "bubble.left.and.bubble.right", tint: thread.tint) }
+        if let thread = thread(in: pane) { return .init(name: thread.title, icon: "bubble.left.and.bubble.right", tint: thread.tint, isAgent: true) }
         if let target = windows.first(where: { $0.id == pane.id })?.target,
            let instance = instances.first(where: { $0.id == target.instanceId }) {
             let view = view(in: pane)
@@ -392,6 +451,8 @@ struct WindowAppearance {
     var name: String
     let icon: String
     let tint: Color
+    var isAgent = false
+    var minimizedCornerRadius: CGFloat { isAgent ? Metrics.dragBubble / 2 : Metrics.dockRadius }
 
     static func renderer(_ id: String) -> Self {
         switch id {
@@ -407,6 +468,8 @@ struct WindowAppearance {
 final class AppModel {
     var workspaces: [WorkArea] = []
     var definitions: [RemotePluginDefinition] = []
+    var contextTemplates: ContextTemplateCatalog?
+    @ObservationIgnored var contextTemplatesRequest: (connection: UUID, task: Task<Void, Error>)?
     let draftWorkspace = WorkArea()
     var selected = ""
     var detached: Set<String> = []
@@ -423,13 +486,57 @@ final class AppModel {
     var showConnection = false
     var showNewWorkspace = false
     private let catalogRefresh = CatalogRefresh()
+    private var definitionsRequest = UUID()
     private var client: KitedClient? {
         connections.selected.map { KitedClient(address: $0.address, machineID: $0.machine.id) }
     }
 
-    private func activeClient() throws -> KitedClient {
+    func activeClient() throws -> KitedClient {
         guard let client else { throw KitedError(message: "请先连接工作机") }
         return client
+    }
+
+    func refreshDefinitions(_ client: KitedClient) async throws {
+        let revision = connectionRevision
+        let request = UUID()
+        definitionsRequest = request
+        let values = try await client.request("/plugin-definitions", as: [RemotePluginDefinition].self)
+        try Task.checkCancellation()
+        guard client == self.client, revision == connectionRevision else { throw KitedError(message: "工作机已切换") }
+        guard request == definitionsRequest else { return }
+        definitions = values
+        for area in workspaces { area.definitions = values }
+    }
+
+    func createInstance(_ definition: RemotePluginDefinition, in area: WorkArea) {
+        if !definition.views.isEmpty { openWindow(.create(definition.id), in: area); return }
+        if area.isSample {
+            SampleWorkspace.openWindow(.init(id: UUID().uuidString, content: .create(definition.id)), in: area)
+            return
+        }
+        guard !area.changingWindows, area.pendingWindowRequest == nil, area.pendingInstanceRequest == nil else { return }
+        area.pendingInstanceRequest = CreatePluginInstance(id: UUID().uuidString.lowercased(), definitionId: definition.id)
+        retryCreateInstance(in: area)
+    }
+
+    func retryCreateInstance(in area: WorkArea) {
+        guard let request = area.pendingInstanceRequest, !area.changingWindows else { return }
+        area.changingWindows = true
+        area.windowError = nil
+        Task {
+            defer { area.changingWindows = false }
+            do {
+                let client = try activeClient()
+                guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
+                let _: RemotePluginInstance = try await client.request("/workspaces/\(area.id)/plugin-instances", method: "POST", body: request, as: RemotePluginInstance.self)
+                try await refresh(client)
+                guard client == self.client else { return }
+                area.pendingInstanceRequest = nil
+            } catch {
+                if let status = (error as? KitedError)?.status, (400..<500).contains(status) { area.pendingInstanceRequest = nil }
+                area.windowError = error.localizedDescription
+            }
+        }
     }
 
     private func use(_ saved: MachineConnections) throws {
@@ -442,6 +549,10 @@ final class AppModel {
         error = nil
         workspaces = []
         definitions = []
+        contextTemplates = nil
+        contextTemplatesRequest?.task.cancel()
+        contextTemplatesRequest = nil
+        draftWorkspace.draftThread.contextTemplate = nil
         detached = []
         selected = ""
         draftWorkspace.draftThread.connected = false
@@ -492,9 +603,8 @@ final class AppModel {
                     connections = saved
                 }
                 let client = try activeClient()
-                let definitions = try await client.request("/plugin-definitions", as: [RemotePluginDefinition].self)
+                try await refreshDefinitions(client)
                 guard revision == connectionRevision, generation == catalogRefresh.generation else { return }
-                self.definitions = definitions
                 try await client.events { event in
                     try Task.checkCancellation()
                     guard revision == self.connectionRevision, generation == self.catalogRefresh.generation else { return }
@@ -547,8 +657,8 @@ final class AppModel {
             }
             let previous = Dictionary(uniqueKeysWithValues: workspaces.map { ($0.id, $0) })
             workspaces = remote.filter { $0.workspace.status != .archived }.reversed().map { value in
-                if let area = previous[value.id] { area.definitions = definitions; area.update(value, client: client); return area }
-                return WorkArea(remote: value, client: client, definitions: definitions)
+                if let area = previous[value.id] { area.definitions = definitions; area.update(value, client: client, connection: generation); return area }
+                return WorkArea(remote: value, client: client, definitions: definitions, connection: generation)
             }
             detached.formIntersection(Set(workspaces.map(\.id)))
             if workspace(selected) == nil { selected = workspaces.first?.id ?? "" }
@@ -574,21 +684,25 @@ final class AppModel {
 
     func create(checkout: String, prompt: String) async throws {
         let client = try activeClient()
-        let area = try await client.request("/workspaces", method: "POST", body: ["checkout": checkout, "prompt": prompt], as: RemoteWorkspace.self)
+        let area = try await client.request("/workspaces", method: "POST",
+            body: CreateThreadRequest(prompt: prompt, checkout: checkout, contextTemplate: draftWorkspace.draftThread.contextTemplate?.selection), as: RemoteWorkspace.self)
         try await refresh(client)
         guard client == self.client else { throw KitedError(message: "工作机已切换") }
         selected = area.id
         draftWorkspace.draftThread.draft = ""
+        draftWorkspace.draftThread.contextTemplate = nil
     }
 
     func startThread(in area: WorkArea, prompt: String) async throws {
         let client = try activeClient()
         guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
-        let thread = try await client.request("/workspaces/\(area.id)/threads", method: "POST", body: ["prompt": prompt], as: RemoteThread.self)
+        let thread = try await client.request("/workspaces/\(area.id)/threads", method: "POST",
+            body: CreateThreadRequest(prompt: prompt, contextTemplate: area.draftThread.contextTemplate?.selection), as: RemoteThread.self)
         try await refresh(client)
         guard client == self.client else { throw KitedError(message: "工作机已切换") }
         area.activateWindow(for: WindowTarget(instanceId: thread.instanceId, viewId: "conversation"))
         area.draftThread.draft = ""
+        area.draftThread.contextTemplate = nil
     }
 
     func openWindow(_ content: OpenWindowRequest.Content, in area: WorkArea) {
@@ -596,6 +710,10 @@ final class AppModel {
         guard !area.changingWindows else { return }
         if case .open(let target) = content, area.windows.contains(where: { $0.target == target }) {
             area.activateWindow(for: target)
+            return
+        }
+        guard area.pendingWindowRequest == nil, area.pendingInstanceRequest == nil else {
+            area.windowError = "请先重试并确认上一次创建操作"
             return
         }
         area.pendingWindowRequest = OpenWindowRequest(id: UUID().uuidString.lowercased(), content: content)
@@ -634,6 +752,7 @@ final class AppModel {
     /// 引用只选择资源；窗口身份仍按现有实例与视图复用。
     func openFileReference(_ reference: FileReference, in area: WorkArea) async throws {
         guard !area.changingWindows else { throw KitedError(message: "窗口正在更新，请稍后重试") }
+        guard area.pendingInstanceRequest == nil else { throw KitedError(message: "请先重试并确认上一次创建操作") }
         guard !area.isDraft else { throw KitedError(message: "请先创建工作区") }
         area.changingWindows = true
         defer { area.changingWindows = false }
@@ -684,8 +803,7 @@ final class AppModel {
     func closeWindow(_ pane: Pane, in area: WorkArea) {
         guard !area.isDraft, !area.changingWindows else { return }
         if area.isSample {
-            area.windows.removeAll { $0.id == pane.id }
-            area.layout.reconcile(area.windows.map { Pane($0.id) })
+            SampleWorkspace.closeWindow(pane, in: area)
             return
         }
         area.changingWindows = true

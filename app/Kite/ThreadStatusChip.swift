@@ -2,23 +2,29 @@ import SwiftUI
 
 /// 圆环只表达主状态与上下文占比；文字显示状态或结果，执行内容留在消息流。
 struct ThreadStatusChip: View {
+    var ringOnRight = false
     @Environment(WorkThread.self) private var thread
 
     var body: some View {
         HStack(spacing: 6) {
-            ContextRing(phase: thread.statusPhase, fraction: thread.state?.context?.fraction)
+            if !ringOnRight { ring }
             Text(thread.statusLabel)
                 .font(Theme.status)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+            if ringOnRight { ring }
         }
         .frame(height: 20)
-        .padding(.leading, 6)
-        .padding(.trailing, 8)
+        .padding(.leading, ringOnRight ? 8 : 6)
+        .padding(.trailing, ringOnRight ? 6 : 8)
         .background(Theme.codeBackground, in: Capsule())
         .help(thread.statusLabel + "\n" + contextDescription)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(thread.statusLabel + "，" + contextDescription)
+    }
+
+    private var ring: some View {
+        ContextRing(phase: thread.statusPhase, fraction: thread.state?.context?.fraction)
     }
 
     private var contextDescription: String {

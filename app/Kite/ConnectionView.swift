@@ -11,6 +11,14 @@ struct AppSettings: View {
         NavigationStack {
             Form {
                 Section("外观") { AppearancePicker() }
+                Section("插件") {
+                    NavigationLink("管理插件定义") { PluginLibrary().id(model.connectionRevision) }
+                        .disabled(SampleWorkspace.enabled || !model.connected)
+                }
+                Section("上下文") {
+                    NavigationLink("管理上下文模板") { ContextTemplateLibrary().id(model.connectionRevision) }
+                        .disabled(!SampleWorkspace.enabled && !model.connected)
+                }
                 if !model.connections.entries.isEmpty {
                     Section("已保存的工作机") {
                         ForEach(model.connections.entries) { connection in
@@ -134,7 +142,7 @@ struct ServiceConnection: ViewModifier {
             .task(id: "\(model.connectionRevision):\(phase == .active)") {
                 if !SampleWorkspace.enabled, phase == .active { await model.connect() }
             }
-            .sheet(isPresented: $model.showConnection) { AppSettings().environment(model).appAppearance() }
-            .sheet(isPresented: $model.showNewWorkspace) { NewWorkspace().environment(model).appAppearance() }
+            .sheet(isPresented: $model.showConnection) { AppSettings().environment(model).toastHost().appAppearance() }
+            .sheet(isPresented: $model.showNewWorkspace) { NewWorkspace().environment(model).toastHost().appAppearance() }
     }
 }

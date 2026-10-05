@@ -4,11 +4,13 @@ import type { AgentDefinition } from './agent-definition.ts';
 import { defaultContextDefinition } from './harness/context/project.ts';
 import { operationToolNames, type OperationName } from './operation-contract.ts';
 import type { ExecutionGrants } from './execution-grants.ts';
+import { defaultAgentModel } from './agent-models.ts';
 
 export interface PluginDefinition {
   id: string;
   title: string;
-  views: { id: string; title: string; renderer: string }[];
+  lifetime: 'window' | 'persistent';
+  views: { id: string; title: string; renderer: string; resourceUri?: string }[];
   defaultView: string;
   agent?: AgentDefinition;
   runtime?: 'bun';
@@ -18,7 +20,7 @@ export interface PluginDefinition {
 }
 
 const coding: AgentDefinition = {
-  runtime: 'harness', model: { model: 'gpt-6-sol', reasoning: 'medium' },
+  runtime: 'harness', model: { model: defaultAgentModel, reasoning: 'medium' },
   tools: ['read', 'patch', 'shell', ...operationToolNames], context: defaultContextDefinition, maxRequestsPerTurn: 50,
 };
 const review: AgentDefinition = {
@@ -30,16 +32,16 @@ const review: AgentDefinition = {
 };
 
 const definitions: PluginDefinition[] = [
-  { id: 'kite.agent.coding', title: '代理', defaultView: 'conversation',
+  { id: 'kite.agent.coding', title: '代理', lifetime: 'persistent', defaultView: 'conversation',
     execution: { workspace: 'write', read: [], write: [], network: [] },
     agent: coding, operations: ['agent.send', 'agent.resume', 'agent.stop'], views: [{ id: 'conversation', title: '会话', renderer: 'conversation' }] },
-  { id: 'kite.agent.review', title: '只读审查', defaultView: 'conversation',
+  { id: 'kite.agent.review', title: '只读审查', lifetime: 'persistent', defaultView: 'conversation',
     execution: { workspace: 'read', read: [], write: [], network: [] },
     agent: review, operations: ['agent.send', 'agent.resume', 'agent.stop'], views: [{ id: 'conversation', title: '会话', renderer: 'conversation' }] },
-  { id: 'kite.files', title: '文件', defaultView: 'files', operations: ['files.list', 'files.read', 'files.diff', 'files.state', 'files.select'], views: [
+  { id: 'kite.files', title: '文件', lifetime: 'window', defaultView: 'files', operations: ['files.list', 'files.read', 'files.diff', 'files.state', 'files.select'], views: [
     { id: 'files', title: '文件', renderer: 'files' },
   ] },
-  { id: 'kite.terminal', title: '终端', defaultView: 'terminal', operations: [], views: [{ id: 'terminal', title: '终端', renderer: 'terminal' }] },
+  { id: 'kite.terminal', title: '终端', lifetime: 'window', defaultView: 'terminal', operations: [], views: [{ id: 'terminal', title: '终端', renderer: 'terminal' }] },
 ];
 
 export const pluginDefinitions = (): readonly PluginDefinition[] => structuredClone(definitions);

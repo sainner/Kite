@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{font:15px -apple-system,BlinkMacSystemFont,sans-serif;color-scheme:light dark;color:light-dark(#303030,#ededed)}
+body{margin:0;padding:18px}form{display:flex;gap:8px}input{min-width:0;flex:1}input,button{font:inherit;padding:8px 10px;border:1px solid light-dark(#ddd,#555);border-radius:8px;background:transparent;color:inherit}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}ul{padding:0;list-style:none}li{display:flex;align-items:baseline;gap:10px;padding:10px 0;border-bottom:1px solid light-dark(#eee,#444)}li button{padding:2px 6px;border:0}li span{overflow-wrap:anywhere}.completed span{text-decoration:line-through;opacity:.5}footer{display:flex;align-items:center;justify-content:space-between;margin:14px 0;color:light-dark(#777,#aaa);font-size:13px}#error{color:light-dark(#b22,#ff9393);white-space:pre-wrap;font-size:13px}
+</style></head><body>
+<form><input aria-label="新待办" placeholder="添加一项待办" maxlength="200" required><button type="submit">添加</button></form>
+<footer><span id="status">正在读取</span><button id="refresh" type="button">刷新</button></footer>
+<p id="error" role="alert"></p><ul aria-label="待办列表"></ul>
+<!--script-->
+</body></html>

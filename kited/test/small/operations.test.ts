@@ -2,10 +2,13 @@ import { afterEach, expect, test } from 'bun:test';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
+import { OperationError } from '../../src/errors.ts';
 import type { Json, ModelItem } from '../../src/harness/types.ts';
 import { operationContracts } from '../../src/operation-contract.ts';
+import { OperationReceipts } from '../../src/operation-receipts.ts';
+import { Store } from '../../src/store.ts';
 import { call, registerCheckout, startKited, type Kited } from '../harness.ts';
-import { diskRecords, item, ManualModel } from '../harness-loop.ts';
+import { deferred, diskRecords, item, ManualModel } from '../harness-loop.ts';
 import { makeTemp, newRepo } from '../util.ts';
 
 let kited: Kited | undefined;
@@ -23,6 +26,100 @@ function calledItem(id: string, name: string, args: Json): ModelItem {
   return { ...item(id, name), call: { id, name, arguments: args } };
 }
 
+// Promise 并发、SQLite 重开和落盘失败后的异步清理共同决定是否重放副作用，单看任一模块不能验证。
+test('并发收据共享一次执行，重开保留结果与错误，落盘失败等清理后保持 unknown', async () => {
+  const root = makeTemp('operation-receipts-');
+  const database = join(root, 'store.sqlite');
+  let store = new Store(database);
+  const value = { count: 1 };
+  const completed = deferred<typeof value>();
+  const started = deferred();
+  const releases = [() => completed.resolve(value)];
+  let executed = 0;
+  const request = { actor: 'actor', id: 'shared', request: '{"count":1}' };
+  const execute = () => { executed++; started.resolve(); return completed.promise; };
+  const neverReplay = async (): Promise<typeof value> => { executed++; throw new Error('不应重放已登记操作'); };
+  try {
+    const receipts = new OperationReceipts(store);
+    const first = receipts.run({ ...request, execute });
+    await started.promise;
+    expect(store.operationReceipt(request.actor, request.id)).toEqual({ request: request.request, result: null });
+    const second = receipts.run({ ...request, execute });
+    await expect(receipts.run({ ...request, request: '{"count":2}', execute: neverReplay }))
+      .rejects.toMatchObject({ outcome: 'denied' });
+    expect(await receipts.run({ ...request, actor: 'other-actor', execute: async () => ({ count: 2 }) }))
+      .toEqual({ count: 2 });
+    expect(executed).toBe(1);
+    completed.resolve(value);
+    expect(await Promise.all([first, second])).toEqual([value, value]);
+    expect(await new OperationReceipts(store).run({ ...request, execute: neverReplay })).toEqual(value);
+
+    const unfinished = { actor: 'actor', id: 'unfinished', request: '{}' };
+    store.beginOperation(unfinished.actor, unfinished.id, unfinished.request);
+    store.close();
+    store = new Store(database);
+    const reopened = new OperationReceipts(store);
+    expect(await reopened.run({ ...request, execute: neverReplay })).toEqual(value);
+    await expect(reopened.run({ ...unfinished, execute: neverReplay })).rejects.toMatchObject({ outcome: 'unknown' });
+    expect(executed).toBe(1);
+
+    const syncFailure = { actor: 'actor', id: 'sync-failure', request: '{}' };
+    let syncAttempts = 0;
+    await expect(reopened.run({ ...syncFailure, execute() { syncAttempts++; throw new Error('同步执行异常'); } }))
+      .rejects.toMatchObject({ outcome: 'unknown' });
+    await expect(reopened.run({ ...syncFailure, execute: neverReplay })).rejects.toMatchObject({ outcome: 'unknown' });
+    expect(syncAttempts).toBe(1);
+    const denied = { actor: 'actor', id: 'business-denied', request: '{}' };
+    await expect(reopened.run({ ...denied, execute() { throw new OperationError('权限已撤回', 'denied', 403); } }))
+      .rejects.toMatchObject({ outcome: 'denied', status: 403 });
+    await expect(new OperationReceipts(store).run({ ...denied, execute: neverReplay }))
+      .rejects.toMatchObject({ outcome: 'denied', status: 403 });
+
+    for (const outcome of ['success', 'denied'] as const) {
+      const cleanupStarted = deferred();
+      const cleanupDone = deferred();
+      releases.push(() => cleanupDone.resolve());
+      const failedWrite = { actor: 'actor', id: `disk-full-${outcome}`, request: '{}' };
+      const failing = new OperationReceipts({
+        operationReceipt: (actor, id) => store.operationReceipt(actor, id),
+        beginOperation: (actor, id, encoded) => store.beginOperation(actor, id, encoded),
+        finishOperation() { throw new Error('模拟 SQLite 落盘失败'); },
+      });
+      let failureExecutions = 0;
+      let settled = false;
+      let retrySettled = false;
+      const attempt = failing.run({
+        ...failedWrite,
+        execute() {
+          failureExecutions++;
+          if (outcome === 'denied') throw new OperationError('权限已撤回', 'denied', 403);
+          return Promise.resolve(value);
+        },
+        async onPersistenceFailure() { cleanupStarted.resolve(); await cleanupDone.promise; },
+      }).then(() => { settled = true; return undefined; }, (error: unknown) => { settled = true; return error; });
+      await cleanupStarted.promise;
+      const retry = failing.run({ ...failedWrite, execute: neverReplay })
+        .then(() => { retrySettled = true; return undefined; }, (error: unknown) => { retrySettled = true; return error; });
+      // 等一个事件循环检查点，让已排队的 Promise 都有机会完成；清理闸门仍未放行。
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      expect(retrySettled).toBe(false);
+      expect(store.operationReceipt(failedWrite.actor, failedWrite.id)).toEqual({ request: '{}', result: null });
+      cleanupDone.resolve();
+      expect(await attempt).toMatchObject({ outcome: 'unknown' });
+      expect(await retry).toMatchObject({ outcome: 'unknown' });
+      await expect(new OperationReceipts(store).run({ ...failedWrite, execute: neverReplay }))
+        .rejects.toMatchObject({ outcome: 'unknown' });
+      expect(failureExecutions).toBe(1);
+    }
+    expect(executed).toBe(1);
+  } finally {
+    for (const release of releases) release();
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 1000);
+
 // HTTP、SQLite 收据和窗口目录跨重启交接：同一创建操作只生成一个实例和窗口，查询不能唤醒线程。
 test('agent.start 跨重启重试复用实例与窗口，后台实例不建窗口且 list 只读', async () => {
   const root = makeTemp();
@@ -31,7 +128,7 @@ test('agent.start 跨重启重试复用实例与窗口，后台实例不建窗�
   const model = new ManualModel();
   let daemon: Daemon | undefined;
   try {
-    daemon = startDaemon({ home, port: 0, model: () => model });
+    daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => model });
     const checkout = await call(daemon.url, 'POST', '/checkouts', { path: repo });
     expect(checkout.status).toBe(200);
     const workspaceId = checkout.body.workspace.id as string;
@@ -70,7 +167,7 @@ test('agent.start 跨重启重试复用实例与窗口，后台实例不建窗�
     await daemon.stop();
     daemon = undefined;
 
-    daemon = startDaemon({ home, port: 0, model: () => model });
+    daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => model });
     expect((await call(daemon.url, 'GET', `/instances/${codingId}/execution-grants`)).body).toEqual(revisedExecution.body);
     expect((await call(daemon.url, 'GET', `/instances/${reviewId}/execution-grants`)).body).toEqual(reviewExecution.body);
     const retriedWindow = await call(daemon.url, 'POST', operationPath(workspaceId, 'agent.start'), windowRequest);

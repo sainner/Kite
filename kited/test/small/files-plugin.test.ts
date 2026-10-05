@@ -79,14 +79,14 @@ test('文件插件与模型 read 读取同一工作区文本，并拒绝真实�
   }
 }, 1000);
 
-// SQLite 收据、窗口生命周期和服务重启交接实例状态；实际 patch 结果须在源文件删除后仍可读取历史 diff。
-test('文件选择和历史 diff 跨窗口与服务重启保留，重试不重复写入且插件读取受授权约束', async () => {
+// SQLite 收据和服务重启交接实例状态；实际 patch 结果须在文件实例回收后仍可由新实例读取历史 diff。
+test('文件选择跨服务重启保留，回收后新实例读取历史 diff 且重试不重复写入', async () => {
   const root = makeTemp('files-plugin-');
   const home = join(root, 'kite');
   const repo = newRepo(root, 'project', { 'docs/one.txt': '可读内容\n' });
   let daemon: Daemon | undefined;
   try {
-    daemon = startDaemon({ home, port: 0 });
+    daemon = startDaemon({ home, port: 0, lightTasks: false });
     const events = new Seen<Envelope>();
     daemon.kite.bus.subscribe(undefined, (event) => events.add(event));
     const checkout = await call(daemon.url, 'POST', '/checkouts', { path: repo });
@@ -198,17 +198,10 @@ test('文件选择和历史 diff 跨窗口与服务重启保留，重试不重�
     expect(historicalSelection.status).toBe(200);
     expect(structuredClone(historicalSelection.body)).toMatchObject({ path: filePath, diffId: firstPatch.diff!.id });
 
-    expect((await call(daemon.url, 'DELETE', `/workspaces/${workspaceId}/windows/${targetWindow.body.id}`)).status).toBe(200);
-    const reopened = await call(daemon.url, 'POST', `/workspaces/${workspaceId}/windows`, {
-      id: randomUUID(), content: { kind: 'open', instanceId: targetId, viewId: 'files' },
-    });
-    expect(reopened.status).toBe(200);
-    const afterWindow = await call(daemon.url, 'POST', operationPath(workspaceId, 'files.state'), { instanceId: targetId });
-    expect(afterWindow.body).toEqual(historicalSelection.body);
     await daemon.stop();
     daemon = undefined;
 
-    daemon = startDaemon({ home, port: 0 });
+    daemon = startDaemon({ home, port: 0, lightTasks: false });
     const restored = await call(daemon.url, 'POST', operationPath(workspaceId, 'files.state'), { instanceId: targetId });
     expect(restored.status).toBe(200);
     expect(restored.body).toEqual(historicalSelection.body);
@@ -217,9 +210,18 @@ test('文件选择和历史 diff 跨窗口与服务重启保留，重试不重�
     expect(retriedAfterRestart.body).toEqual(selected.body);
     expect((await call(daemon.url, 'POST', operationPath(workspaceId, 'files.state'), { instanceId: targetId })).body)
       .toEqual(historicalSelection.body);
+    expect((await call(daemon.url, 'DELETE', `/workspaces/${workspaceId}/windows/${targetWindow.body.id}`)).status).toBe(200);
+    expect((await call(daemon.url, 'POST', operationPath(workspaceId, 'files.state'), { instanceId: targetId })).status).toBe(404);
+    const replacement = await call(daemon.url, 'POST', `/workspaces/${workspaceId}/windows`, {
+      id: randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },
+    });
+    expect(replacement.status).toBe(200);
+    const replacementId = replacement.body.target.instanceId as string;
+    expect(replacementId).not.toBe(targetId);
+    expect((await call(daemon.url, 'POST', operationPath(workspaceId, 'files.state'), { instanceId: replacementId })).body.path).toBeNull();
     for (const { result, files } of history) {
       const readDiff = await call(daemon.url, 'POST', operationPath(workspaceId, 'files.diff'), {
-        instanceId: targetId, diffId: result.diff!.id,
+        instanceId: replacementId, diffId: result.diff!.id,
       });
       if (readDiff.status !== 200) throw new Error(`重建服务后读取历史 diff 失败：${readDiff.status} ${JSON.stringify(readDiff.body)}`);
       expect(readDiff.body).toEqual({ id: result.diff!.id, files });

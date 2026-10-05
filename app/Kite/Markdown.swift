@@ -41,7 +41,7 @@ struct MarkdownBlock {
     enum Kind {
         case paragraph
         case heading(Int)
-        case code
+        case code(language: String?)
         case quote
         case rule
         /// marker 是「•」或「3.」；同一项的第二段没有 marker。
@@ -95,8 +95,8 @@ struct MarkdownBlock {
             var block = MarkdownBlock(kind: .paragraph, text: text, depth: lists.count)
             switch first.kind {
             case .header(let level): block.kind = .heading(level)
-            case .codeBlock:
-                block.kind = .code
+            case .codeBlock(let language):
+                block.kind = .code(language: language)
                 block.text = AttributedString(String(text.characters).trimmingCharacters(in: .newlines))
             case .blockQuote: block.kind = .quote
             case .thematicBreak: block.kind = .rule
@@ -128,7 +128,9 @@ struct MarkdownBlockView: View {
     let block: MarkdownBlock
 
     var body: some View {
-        content.padding(.leading, CGFloat(max(block.depth - 1, 0)) * Metrics.listIndent)
+        content
+            .lineSpacing(Metrics.markdownLineSpacing)
+            .padding(.leading, CGFloat(max(block.depth - 1, 0)) * Metrics.listIndent)
     }
 
     @ViewBuilder
@@ -140,8 +142,8 @@ struct MarkdownBlockView: View {
             ReferenceLabel(block.text)
                 .font(level <= 1 ? Theme.heading1 : level == 2 ? Theme.heading2 : Theme.heading3)
                 .padding(.top, 4)
-        case .code:
-            CodeBlock(text: String(block.text.characters))
+        case .code(let language):
+            CodeBlock(text: String(block.text.characters), language: language).lineSpacing(0)
         case .quote:
             ReferenceLabel(block.text)
                 .foregroundStyle(.secondary)
@@ -163,61 +165,189 @@ struct MarkdownBlockView: View {
 private struct MarkdownTable: View {
     let header: [AttributedString]
     let rows: [[AttributedString]]
+    @Environment(\.font) private var font
+    @Environment(\.fontResolutionContext) private var fontContext
+    #if os(iOS)
+    @Environment(\.scenePhase) private var scenePhase
+    #endif
 
     var body: some View {
+        let base = (font ?? .body).resolve(in: fontContext)
+        let serif = Font.system(size: base.pointSize, weight: base.weight, design: .serif)
+        let tableFont = base.isItalic ? serif.italic() : serif
         ScrollView(.horizontal, showsIndicators: false) {
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
                 GridRow {
-                    ForEach(header.indices, id: \.self) { ReferenceLabel(header[$0]).fontWeight(.semibold) }
+                    ForEach(header.indices, id: \.self) { cell(header[$0], font: tableFont.weight(.semibold)) }
                 }
                 Divider().gridCellUnsizedAxes(.horizontal)
                 ForEach(rows.indices, id: \.self) { row in
                     GridRow {
-                        ForEach(rows[row].indices, id: \.self) { ReferenceLabel(rows[row][$0]) }
+                        ForEach(rows[row].indices, id: \.self) { cell(rows[row][$0], font: tableFont) }
                     }
                 }
             }
-            .padding(12)
         }
-        .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 8))
+        .padding(.vertical, 12)
+        #if os(iOS)
+        .task(id: scenePhase) {
+            if scenePhase == .active { TableFont.shared.prepare() }
+        }
+        #endif
+    }
+
+    private func cell(_ text: AttributedString, font: Font) -> some View {
+        #if os(iOS)
+        let text = TableFont.shared.applying(to: text, font: font, in: fontContext)
+        #endif
+        // 只设置基础字体，行内代码仍可用自己的等宽字体覆盖。
+        return ReferenceLabel(text).font(font)
     }
 }
 
 /// 等宽的一段，比如命令、输出、代码。太长的先只显示开头几行，点了再展开；太宽的横着滚。
 struct CodeBlock: View {
     let text: String
-    var tint: Color?
-    var maxLines = 14
+    var language: String?
+    var maxLines: Int? = 14
+    var background: Color = Theme.codeBackground
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.fontResolutionContext) private var fontContext
+    @Environment(\.toast) private var toast
+    @Namespace private var cardSpace
+    @State private var cardSize: CGSize = .zero
+    @State private var copyButtonFrame: CGRect = .zero
+    @State private var pressLocation = UnitPoint.center
+    @State private var pressSequence = 0
+
+    private var languageLabel: String {
+        language?.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? "text"
+    }
+
+    private var isShell: Bool {
+        ["bash", "sh", "shell", "zsh", "ksh", "fish"].contains(languageLabel.lowercased())
+    }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Metrics.codeBlockRadius, style: .continuous)
+        let iconSize = Theme.body.resolve(in: fontContext).pointSize
+        let tiltX = Double((0.5 - pressLocation.y) * 5)
+        let tiltY = Double((pressLocation.x - 0.5) * 5)
+        let pressAnchor = pressLocation
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: Metrics.paneButtonGap) {
+                Text(languageLabel)
+                    .font(.system(.caption, design: .monospaced))
+                Spacer(minLength: 12)
+                HStack(spacing: 0) {
+                    if isShell {
+                        Button {} label: {
+                            CodeHeaderIcon("CodeTerminal", size: iconSize)
+                        }
+                        .disabled(true)
+                        .help("在终端中执行（尚未接入）")
+                        .accessibilityLabel("在终端中执行")
+                    }
+                    Button(action: copy) {
+                        CodeHeaderIcon("CodeCopy", size: iconSize)
+                    }
+                    .help("复制代码")
+                    .accessibilityLabel("复制代码")
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(cardSpace)) } action: {
+                        copyButtonFrame = $0
+                    }
+                }
+                .buttonStyle(PaneButtonStyle())
+            }
+            .foregroundStyle(.secondary)
+            .padding(.leading, (Metrics.paneButton - iconSize) / 2 + Metrics.codeHeaderInset)
+            .padding(.trailing, Metrics.paneToolbarInset)
+            .padding(.vertical, Metrics.codeHeaderInset)
+            .overlay(alignment: .bottom) { Divider() }
+            CodeBlockContent(text: text, language: language, maxLines: maxLines).equatable()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(background, in: shape)
+        .clipShape(shape)
+        .buttonStyle(.pointingPlain)
+        .coordinateSpace(name: cardSpace)
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { cardSize = $0 }
+        .keyframeAnimator(initialValue: CGFloat.zero, trigger: pressSequence) { content, amount in
+            content
+                .rotation3DEffect(.degrees(tiltX * amount), axis: (x: 1, y: 0, z: 0), perspective: 0.4)
+                .rotation3DEffect(.degrees(tiltY * amount), axis: (x: 0, y: 1, z: 0), perspective: 0.4)
+                .scaleEffect(1 - amount * 0.012, anchor: pressAnchor)
+        } keyframes: { _ in
+            CubicKeyframe(1, duration: 0.1)
+            SpringKeyframe(0, duration: 0.35, spring: .smooth)
+        }
+    }
+
+    private func press(at point: CGPoint) {
+        guard !reduceMotion, cardSize.width > 0, cardSize.height > 0 else { return }
+        pressLocation = UnitPoint(x: min(1, max(0, point.x / cardSize.width)),
+                                  y: min(1, max(0, point.y / cardSize.height)))
+        pressSequence += 1
+    }
+
+    private func copy() {
+        copyToPasteboard(text, toast: toast)
+        // 复制和动效共用原生按钮动作，避免另加手势抢占点击。
+        press(at: CGPoint(x: copyButtonFrame.midX, y: copyButtonFrame.midY))
+    }
+}
+
+/// 几何与按压状态不影响代码正文；输入没变时不重新拆行、拼接。
+private struct CodeBlockContent: View, Equatable {
+    let text: String
+    let language: String?
+    let maxLines: Int?
 
     var body: some View {
         Folded(lines: splitLines(text), limit: maxLines) { shown in
             ScrollView(.horizontal, showsIndicators: false) {
-                Text(shown.joined(separator: "\n"))
+                HighlightedCode(text: shown.joined(separator: "\n"), language: language)
                     .font(Theme.code)
                     .textSelection(.enabled)
                     .fixedSize()
                     .padding(10)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tint?.opacity(0.08) ?? Theme.codeBackground, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// 代码块图标跟随正文字号，点击范围由统一按钮样式提供。
+private struct CodeHeaderIcon: View {
+    let asset: String
+    let size: CGFloat
+
+    init(_ asset: String, size: CGFloat) {
+        self.asset = asset
+        self.size = size
+    }
+
+    var body: some View {
+        Image(asset)
+            .resizable()
+            .scaledToFit()
+            .frame(width: size, height: size)
     }
 }
 
 /// 太长的先只显示开头 limit 行，点「显示全部」再展开。只多出几行的不折，省得点一下只多看两行。
 struct Folded<Line, Content: View>: View {
     let lines: [Line]
-    let limit: Int
+    let limit: Int?
     @ViewBuilder let content: ([Line]) -> Content
     @State private var expanded = false
 
     var body: some View {
+        let limit = limit ?? lines.count
         let folded = !expanded && lines.count > limit + 4
         VStack(alignment: .leading, spacing: 0) {
             content(folded ? Array(lines.prefix(limit)) : lines)
             if folded {
                 Button("显示全部 \(lines.count) 行") { expanded = true }
-                    .buttonStyle(.pointingPlain)
                     .font(Theme.secondary)
                     .foregroundStyle(.secondary)
                     .padding([.horizontal, .bottom], 10)
