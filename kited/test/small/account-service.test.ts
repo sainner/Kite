@@ -1,8 +1,11 @@
 import { expect, test } from 'bun:test';
-import { rmSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { GitHosting } from '../../src/account/git-hosting.ts';
 import { createAccountService } from '../../src/account/service.ts';
+import { credentialEnv } from '../../src/git-credential.ts';
 import type { Checkout, Machine, Project, Workspace } from '../../src/model.ts';
+import { normalizeRemote } from '../../src/remote-url.ts';
 import { makeTemp } from '../util.ts';
 
 interface Login { token: string; user: { id: string; email: string } }
@@ -10,9 +13,13 @@ interface Device { id: string; name: string; role: 'controller' | 'worker' }
 interface Enrollment { device: Device; controlURL: string; authKey: string }
 interface HeadscaleUser { id: string; name: string }
 interface PreAuthKey { id: string; key: string; user: string }
-interface CatalogSnapshot { machine: Machine; projects: Project[]; checkouts: Checkout[]; workspaces: Workspace[] }
+type CatalogCheckout = Checkout & { remote?: string };
+interface CatalogSnapshot { machine: Machine; projects: Project[]; checkouts: CatalogCheckout[]; workspaces: Workspace[] }
 interface CatalogEntry { device: Device; machineId: string; updatedAt: number | null; revision: number; snapshot: CatalogSnapshot | null }
 interface Publisher { deviceId: string; url: string; token: string }
+interface Worker extends Publisher { machineId: string }
+interface ProjectRecord { id: string; name: string; remote: string; url: string; hosted: boolean; createdAt: number }
+interface GitHubFake { webURL: string; apiURL: string }
 interface Node {
   id: string;
   name: string;
@@ -25,7 +32,7 @@ interface Node {
 const password = 'Kite-test-password-2026';
 const controlURL = 'https://network.kite.test';
 
-async function setup() {
+async function setup(options: { github?: GitHubFake } = {}) {
   const root = makeTemp('kite-account-');
   const users: HeadscaleUser[] = [];
   const keys: PreAuthKey[] = [];
@@ -74,16 +81,20 @@ async function setup() {
       return Response.json({ error: '未知的 Headscale 请求' }, { status: 404 });
     },
   });
-  const baseURL = 'http://127.0.0.1:5484';
+  // 托管仓库要让真实 git 走 HTTP，服务挂在本机端口上，baseURL 就是这个地址。
   let service: Awaited<ReturnType<typeof createAccountService>>;
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: (request) => service.fetch(request) });
+  const baseURL = server.url.origin;
   try {
     service = await createAccountService({
       databasePath: join(root, 'account.sqlite'), baseURL,
       secret: 'kite-test-secret-2026-with-enough-entropy',
       headscale: { url: headscale.url.origin, apiKey: 'headscale-test-key', controlURL },
+      git: options.github ? { github: { clientId: 'kite-test-client', ...options.github } } : undefined,
       now: () => now,
     });
   } catch (error) {
+    await server.stop(true);
     await headscale.stop(true);
     rmSync(root, { recursive: true, force: true });
     throw error;
@@ -141,12 +152,21 @@ async function setup() {
     expect(response.status).toBe(200);
     return response.body;
   }
+  let workerIP = 0;
+  /** 已入网并取得目录上报（工作机）凭据的工作机；token 是登录会话，每台工作机用自己的会话。 */
+  async function worker(token: string, name: string): Promise<Worker> {
+    const enrollment = await enroll(token, name, 'worker');
+    expectSuccess(await complete(token, enrollment, node(enrollment, `100.64.9.${++workerIP}`)));
+    const machineId = crypto.randomUUID();
+    return { ...await publisher(token, enrollment, machineId), machineId };
+  }
   return {
-    call, signUp, enroll, node, complete, session, publisher, catalog, deletedNodes, expiredAuthKeys,
+    baseURL, root, call, signUp, enroll, node, complete, session, publisher, catalog, worker, deletedNodes, expiredAuthKeys,
     advance(ms: number) { now += ms; },
     async stop() {
       try { await service.close(); }
       finally {
+        await server.stop(true);
         await headscale.stop(true);
         rmSync(root, { recursive: true, force: true });
       }
@@ -164,10 +184,11 @@ function expectRejected(response: { status: number }) {
   expect(response.status).toBeLessThan(500);
 }
 
-function snapshot(machineId: string, project: Project): CatalogSnapshot {
-  const checkout: Checkout = {
+function snapshot(machineId: string, project: Project, remote?: string): CatalogSnapshot {
+  const checkout: CatalogCheckout = {
     id: crypto.randomUUID(), machineId, projectId: project.id,
     path: `/workspace/${machineId}`, commits: 'kite', createdAt: project.createdAt,
+    ...(remote === undefined ? {} : { remote }),
   };
   return {
     machine: { id: machineId, name: '目录工作机', createdAt: project.createdAt }, projects: [project], checkouts: [checkout],
@@ -398,4 +419,281 @@ test('目录发布只授权已绑定的本机工作机会话，专用凭据不�
     expectRejected(await k.call('PUT', path, rotated.token, { revision: 3, snapshot: catalog }));
     expect((await k.catalog(controller.token)).some((entry) => entry.device.id === worker.device.id)).toBe(false);
   } finally { await k.stop(); }
+}, 1_000);
+
+/**
+ * 测试自己起的 git 用的环境：全局配置指向临时文件，不读系统配置（Xcode 自带的 osxkeychain 助手），不弹提示。
+ * git 的网络请求要由本进程里的 Bun.serve 应答，所以只能异步起进程，不能 spawnSync 卡住事件循环。
+ */
+function gitEnv(home: string, global: string): Record<string, string> {
+  const env: Record<string, string> = {
+    PATH: process.env.PATH!, HOME: home, LANG: 'en_US.UTF-8',
+    GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: global, GIT_TERMINAL_PROMPT: '0',
+    GIT_AUTHOR_NAME: '测试者', GIT_AUTHOR_EMAIL: 'tester@example.com',
+    GIT_COMMITTER_NAME: '测试者', GIT_COMMITTER_EMAIL: 'tester@example.com',
+  };
+  if (process.env.DEVELOPER_DIR) env.DEVELOPER_DIR = process.env.DEVELOPER_DIR;
+  return env;
+}
+
+async function gitRun(cwd: string, env: Record<string, string>, args: string[], input?: string) {
+  const child = Bun.spawn(['git', ...args], {
+    cwd, env, stdin: input === undefined ? 'ignore' : new Blob([input]), stdout: 'pipe', stderr: 'pipe',
+  });
+  const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  return { code, out: out.trim(), err };
+}
+
+async function gitDo(cwd: string, env: Record<string, string>, ...args: string[]): Promise<string> {
+  const result = await gitRun(cwd, env, args);
+  if (result.code !== 0) throw new Error(`git ${args.join(' ')} 失败：${result.err}`);
+  return result.out;
+}
+
+function basic(username: string, password: string) {
+  return `Basic ${btoa(`${username}:${password}`)}`;
+}
+
+// 依赖 git 的两条行为：收到 401 + WWW-Authenticate: Basic 才调凭据助手；GIT_CONFIG_COUNT 注入的空 credential.helper
+// 清空全局配置里已有的助手列表，带地址的 credential.<url>.helper 只对该主机生效。服务端依赖 git http-backend 的 CGI 转接。
+test('工作机取托管凭据后真实 git 能 clone 空托管仓库并推送再 clone，全局旧助手不抢先，无凭据或他人凭据被拒', async () => {
+  const k = await setup();
+  const work = makeTemp('kite-hosted-git-');
+  try {
+    const alice = await k.signUp('hosted-alice');
+    const bob = await k.signUp('hosted-bob');
+    const aliceWorker = await k.worker(alice.token, 'Alice 工作机');
+    const bobWorker = await k.worker(bob.token, 'Bob 工作机');
+    const created = await k.call('POST', '/api/projects', aliceWorker.token, { hosted: { name: 'notes' } });
+    expect(created.status).toBe(201);
+    const project = created.body as ProjectRecord;
+    expect(project.hosted).toBe(true);
+    expect(project.url).toBe(`${k.baseURL}/git/${project.id}.git`);
+
+    // 全局配置里有一个对所有主机生效、给出错误口令的助手，模拟用户钥匙串里的旧凭据。
+    const global = join(work, 'global.gitconfig');
+    writeFileSync(global, '[credential]\n\thelper = "!f() { echo username=stale; echo password=stale; }; f"\n');
+    const env = gitEnv(work, global);
+    const issued = await k.call('POST', '/api/git/credential', aliceWorker.token, { url: project.url });
+    expect(issued.status).toBe(200);
+    expect(typeof issued.body.expiresAt).toBe('number');
+    const aliceEnv = { ...env, ...credentialEnv(project.url, { username: issued.body.username, password: issued.body.password }) };
+
+    await gitDo(work, aliceEnv, 'clone', '-q', project.url, 'first');
+    const first = join(work, 'first');
+    writeFileSync(join(first, 'README.md'), '托管仓库\n');
+    await gitDo(first, aliceEnv, 'add', '-A');
+    await gitDo(first, aliceEnv, 'commit', '-q', '-m', '第一个提交');
+    const head = await gitDo(first, aliceEnv, 'rev-parse', 'HEAD');
+    await gitDo(first, aliceEnv, 'push', '-q', 'origin', 'HEAD:refs/heads/main');
+    await gitDo(work, aliceEnv, 'clone', '-q', project.url, 'second');
+    expect(await gitDo(join(work, 'second'), aliceEnv, 'rev-parse', 'HEAD')).toBe(head);
+
+    // 注入的助手只对托管地址生效：别的主机仍走全局助手。
+    const other = await gitRun(work, aliceEnv, ['credential', 'fill'], 'protocol=https\nhost=example.com\n\n');
+    expect(other.code).toBe(0);
+    expect(other.out).toContain('password=stale');
+    expect(other.out).not.toContain(issued.body.password);
+
+    expect((await gitRun(work, { ...env, ...credentialEnv(project.url, null) }, ['ls-remote', project.url])).code).not.toBe(0);
+    const foreign = await k.call('POST', '/api/git/credential', bobWorker.token, { url: project.url });
+    expect(foreign.status).toBe(200);
+    const bobEnv = { ...env, ...credentialEnv(project.url, { username: foreign.body.username, password: foreign.body.password }) };
+    expect((await gitRun(work, bobEnv, ['ls-remote', project.url])).code).not.toBe(0);
+    expect((await gitRun(first, bobEnv, ['push', '-q', project.url, 'HEAD:refs/heads/stolen'])).code).not.toBe(0);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+    await k.stop();
+  }
+}, 1_000);
+
+// 归一化依赖 WHATWG URL 对 scp 写法、大小写主机和结尾 .git 的解析，项目 ID 依赖登记表按（账号，归一化地址）唯一。
+test('两台工作机用 SSH 与 HTTPS 写法登记同一仓库得到同一项目，其他账号另得项目，托管地址只能找回本账号已有项目', async () => {
+  const k = await setup();
+  try {
+    const alice = await k.signUp('registry-alice');
+    const peer = await k.session(alice.token);
+    const bob = await k.signUp('registry-bob');
+    const left = await k.worker(alice.token, '左工作机');
+    const right = await k.worker(peer.token, '右工作机');
+    const outsider = await k.worker(bob.token, 'Bob 工作机');
+
+    const ssh = await k.call('POST', '/api/projects', left.token, { remote: 'git@github.com:Owner/Repo.git' });
+    expect(ssh.status).toBe(201);
+    const https = await k.call('POST', '/api/projects', right.token, { remote: 'https://GitHub.com/owner/repo' });
+    expect(https.status).toBe(200);
+    expect(https.body.id).toBe(ssh.body.id);
+    expect(https.body.remote).toBe(ssh.body.remote);
+    const foreign = await k.call('POST', '/api/projects', outsider.token, { remote: 'https://github.com/owner/repo.git' });
+    expect(foreign.status).toBe(201);
+    expect(foreign.body.id).not.toBe(ssh.body.id);
+    expect((await k.call('GET', `/api/projects/${ssh.body.id}`, bob.token)).status).toBe(404);
+
+    const own = await k.call('POST', '/api/projects', alice.token, { hosted: { name: 'mine' } });
+    expect(own.status).toBe(201);
+    const theirs = await k.call('POST', '/api/projects', bob.token, { hosted: { name: 'theirs' } });
+    expect(theirs.status).toBe(201);
+    expect((await k.call('POST', '/api/projects', left.token, { remote: theirs.body.url })).status).toBe(404);
+    expect((await k.call('POST', '/api/projects', left.token, { remote: `${k.baseURL}/git/${crypto.randomUUID()}.git` })).status).toBe(404);
+    const found = await k.call('POST', '/api/projects', right.token, { remote: own.body.url });
+    expect(found.status).toBe(200);
+    expect(found.body.id).toBe(own.body.id);
+    const listed = await k.call('GET', '/api/projects', left.token);
+    expect(listed.status).toBe(200);
+    expect(listed.body.map((project: ProjectRecord) => project.id).sort()).toEqual([ssh.body.id, own.body.id].sort());
+  } finally { await k.stop(); }
+}, 1_000);
+
+// 迁移跨托管仓库、绑定凭据、git push 到另一台 HTTP 服务与目录快照里的检出远程：推送失败不能改项目，
+// 迁移后托管仓库只读，直到所有工作机上报的检出都换成新地址才删除。
+test('托管项目迁移把全部分支和标签用绑定的凭据推到新远程，失败不改项目，迁移后只读，检出都换地址后删除托管仓库', async () => {
+  const k = await setup();
+  const work = makeTemp('kite-migrate-');
+  const target = new GitHosting(join(work, 'target'), process.env.PATH);
+  await target.create('r');
+  const destination = Bun.serve({
+    hostname: '127.0.0.1', port: 0,
+    fetch(request) {
+      const match = /^\/o\/r\.git(\/.*)$/.exec(new URL(request.url).pathname);
+      if (!match) return new Response('不存在', { status: 404 });
+      if (request.headers.get('authorization') !== basic('migrator', 'right-token')) {
+        return new Response('需要凭据', { status: 401, headers: { 'www-authenticate': 'Basic realm="target"' } });
+      }
+      return target.serve(request, 'r', match[1]!, 'migrator', true);
+    },
+  });
+  try {
+    const alice = await k.signUp('migrate-alice');
+    const box = await k.worker(alice.token, '迁移工作机');
+    const created = await k.call('POST', '/api/projects', alice.token, { hosted: { name: 'draft' } });
+    expect(created.status).toBe(201);
+    const hosted = created.body as ProjectRecord;
+    const env = gitEnv(work, join(work, 'empty.gitconfig'));
+    writeFileSync(join(work, 'empty.gitconfig'), '');
+    async function hostedEnv() {
+      const issued = await k.call('POST', '/api/git/credential', box.token, { url: hosted.url });
+      expect(issued.status).toBe(200);
+      return { ...env, ...credentialEnv(hosted.url, { username: issued.body.username, password: issued.body.password }) };
+    }
+
+    const local = join(work, 'local');
+    await gitDo(work, env, 'init', '-q', '-b', 'main', local);
+    writeFileSync(join(local, 'a.txt'), 'main\n');
+    await gitDo(local, env, 'add', '-A');
+    await gitDo(local, env, 'commit', '-q', '-m', '主线');
+    await gitDo(local, env, 'tag', 'v1');
+    await gitDo(local, env, 'checkout', '-q', '-b', 'feature');
+    writeFileSync(join(local, 'b.txt'), 'feature\n');
+    await gitDo(local, env, 'add', '-A');
+    await gitDo(local, env, 'commit', '-q', '-m', '分支');
+    await gitDo(local, await hostedEnv(), 'push', '-q', hosted.url, 'refs/heads/*:refs/heads/*', 'refs/tags/*:refs/tags/*');
+    const refs = await gitDo(local, env, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', 'refs/tags');
+
+    const project: Project = { id: hosted.id, name: hosted.name, createdAt: hosted.createdAt };
+    const before = snapshot(box.machineId, project, hosted.remote);
+    expectSuccess(await k.call('PUT', `/api/catalog/${box.deviceId}`, box.token, { revision: 1, snapshot: before }));
+
+    const host = destination.url.host;
+    const newURL = `${destination.url.origin}/o/r.git`;
+    expectSuccess(await k.call('PUT', `/api/git/accounts/${host}`, alice.token, { username: 'migrator', token: 'wrong-token' }));
+    expect((await k.call('POST', `/api/projects/${hosted.id}/migrate`, alice.token, { remote: newURL })).status).toBe(409);
+    const unchanged = await k.call('GET', `/api/projects/${hosted.id}`, alice.token);
+    expect(unchanged.body.remote).toBe(hosted.remote);
+    expect(unchanged.body.url).toBe(hosted.url);
+
+    expectSuccess(await k.call('PUT', `/api/git/accounts/${host}`, alice.token, { username: 'migrator', token: 'right-token' }));
+    expectSuccess(await k.call('POST', `/api/projects/${hosted.id}/migrate`, alice.token, { remote: newURL }));
+    const moved = await k.call('GET', `/api/projects/${hosted.id}`, alice.token);
+    expect(moved.body.id).toBe(hosted.id);
+    expect(moved.body.remote).toBe(normalizeRemote(newURL)!);
+    const migrated = await gitDo(work, env, '--git-dir', join(work, 'target', 'r.git'),
+      'for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', 'refs/tags');
+    expect(migrated).toBe(refs);
+
+    // 仍有检出指向旧地址：托管仓库保留，可拉取，不可推送。
+    const readEnv = await hostedEnv();
+    const remoteRefs = await gitDo(local, readEnv, 'ls-remote', '--heads', '--tags', hosted.url);
+    expect(remoteRefs.split('\n')).toHaveLength(3);
+    writeFileSync(join(local, 'c.txt'), 'late\n');
+    await gitDo(local, env, 'add', '-A');
+    await gitDo(local, env, 'commit', '-q', '-m', '迁移后');
+    expect((await gitRun(local, readEnv, ['push', '-q', hosted.url, 'feature'])).code).not.toBe(0);
+
+    const after = { ...before, checkouts: before.checkouts.map((checkout) => ({ ...checkout, remote: normalizeRemote(newURL)! })) };
+    expectSuccess(await k.call('PUT', `/api/catalog/${box.deviceId}`, box.token, { revision: 2, snapshot: after }));
+    const issued = await k.call('POST', '/api/git/credential', box.token, { url: hosted.url });
+    const gone = await fetch(`${hosted.url}/info/refs?service=git-upload-pack`, {
+      headers: { authorization: basic(issued.body.username, issued.body.password) },
+    });
+    expect(gone.status).toBe(404);
+  } finally {
+    await destination.stop(true);
+    rmSync(work, { recursive: true, force: true });
+    await k.stop();
+  }
+}, 1_000);
+
+// 服务端代跑 GitHub OAuth 设备码轮询，token 加密存入账号，再由同账号工作机按 SSH 写法的地址取用。
+test('GitHub 设备码授权先等待后成功，同账号工作机按 SSH 地址取到该 token，其他账号取不到', async () => {
+  let polls = 0;
+  const github = Bun.serve({
+    hostname: '127.0.0.1', port: 0,
+    async fetch(request) {
+      const url = new URL(request.url);
+      if (url.pathname === '/login/device/code' && request.method === 'POST') {
+        const form = new URLSearchParams(await request.text());
+        if (form.get('client_id') !== 'kite-test-client') return Response.json({ error: 'incorrect_client_credentials' });
+        return Response.json({
+          device_code: 'device-code-1', user_code: 'KITE-1234', verification_uri: 'https://github.com/login/device',
+          expires_in: 900, interval: 5,
+        });
+      }
+      if (url.pathname === '/login/oauth/access_token' && request.method === 'POST') {
+        const form = new URLSearchParams(await request.text());
+        if (form.get('device_code') !== 'device-code-1') return Response.json({ error: 'incorrect_device_code' });
+        polls += 1;
+        return Response.json(polls === 1 ? { error: 'authorization_pending' } : { access_token: 'gho_device_token', token_type: 'bearer', scope: 'repo' });
+      }
+      if (url.pathname === '/user' && request.method === 'GET') {
+        const auth = request.headers.get('authorization') ?? '';
+        if (!auth.endsWith('gho_device_token')) return Response.json({ message: 'Bad credentials' }, { status: 401 });
+        return Response.json({ login: 'octo-kite', id: 1 });
+      }
+      return Response.json({ message: 'Not Found' }, { status: 404 });
+    },
+  });
+  const k = await setup({ github: { webURL: github.url.origin, apiURL: github.url.origin } });
+  try {
+    const alice = await k.signUp('github-alice');
+    const peer = await k.session(alice.token);
+    const bob = await k.signUp('github-bob');
+    const box = await k.worker(peer.token, 'Alice 工作机');
+    const outsider = await k.worker(bob.token, 'Bob 工作机');
+
+    const started = await k.call('POST', '/api/git/accounts/github.com/device', alice.token);
+    expectSuccess(started);
+    expect(started.body.userCode).toBe('KITE-1234');
+    expect(started.body.verificationURI).toBe('https://github.com/login/device');
+    const poll = `/api/git/accounts/github.com/device/${started.body.flow}`;
+    k.advance(started.body.interval * 1_000);
+    const waiting = await k.call('POST', poll, alice.token);
+    expectSuccess(waiting);
+    expect(waiting.body.status).toBe('pending');
+    k.advance(started.body.interval * 1_000);
+    const done = await k.call('POST', poll, alice.token);
+    expectSuccess(done);
+    expect(done.body.status).toBe('authorized');
+
+    const accounts = await k.call('GET', '/api/git/accounts', alice.token);
+    expect(accounts.status).toBe(200);
+    expect(JSON.stringify(accounts.body)).toContain('octo-kite');
+    expect(JSON.stringify(accounts.body)).not.toContain('gho_device_token');
+    const credential = await k.call('POST', '/api/git/credential', box.token, { url: 'git@github.com:o/r.git' });
+    expect(credential.status).toBe(200);
+    expect(credential.body).toEqual({ username: 'octo-kite', password: 'gho_device_token', expiresAt: null });
+    expect((await k.call('POST', '/api/git/credential', outsider.token, { url: 'git@github.com:o/r.git' })).status).toBe(404);
+  } finally {
+    await k.stop();
+    await github.stop(true);
+  }
 }, 1_000);

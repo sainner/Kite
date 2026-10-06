@@ -78,7 +78,9 @@ spec:
     spec:
       containers:
         - name: account
-          image: oven/bun:1.4.2-alpine
+          # 由同目录 Dockerfile 在服务器上构建并导入 k3s，见 README。
+          image: kite-account:1.4.2-git
+          imagePullPolicy: Never
           command: [bun, /app/main.js]
           ports:
             - {containerPort: 5484, name: http}
@@ -95,7 +97,7 @@ spec:
             httpGet: {path: /health, port: http}
           resources:
             requests: {cpu: 50m, memory: 64Mi}
-            limits: {memory: 256Mi}
+            limits: {memory: 512Mi}
       volumes:
         - name: source
           configMap: {name: account-source}
@@ -149,3 +151,28 @@ spec:
             pathType: Prefix
             backend:
               service: {name: headscale, port: {number: 8080}}
+---
+# 托管 Git 远程：推送需要更大的请求体，且不缓冲整个请求，与 /api 的 2 MiB 限制分开。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kite-git
+  namespace: kite
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "2g"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [hs.sainner.top]
+      secretName: kite-tls
+  rules:
+    - host: hs.sainner.top
+      http:
+        paths:
+          - path: /git
+            pathType: Prefix
+            backend:
+              service: {name: account, port: {number: 5484}}
