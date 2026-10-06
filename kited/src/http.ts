@@ -25,7 +25,6 @@ function runtimeKind(value: unknown): RuntimeKind | undefined {
   throw new KiteError('runtime 必须是 harness 或 claude');
 }
 
-/** 跨工作机关联使用完整项目身份；名称只用于显示，不参与推断。 */
 /** 登记本机文件夹写 path；clone 远程写 remote，path 可选，默认放在 ~/code/<域名>/<owner>/<repo>。 */
 const checkoutRequest = z.union([
   z.object({ path: z.string().min(1) }).strict(),
@@ -41,6 +40,14 @@ function handle<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
       const status = e instanceof KiteError ? e.status : 500;
       return Response.json({ error: (e as Error).message, ...(e instanceof OperationError ? { outcome: e.outcome } : {}) }, { status });
     }
+  };
+}
+
+/** Git 网络操作和轻任务可能长时间没有响应数据，由各自的生命周期控制结束。 */
+function long<R extends Request>(fn: (req: R) => Promise<Response>) {
+  return (req: R, server: Server<undefined>) => {
+    server.timeout(req, 0);
+    return fn(req);
   };
 }
 
@@ -109,8 +116,6 @@ export interface Listen {
   /** 本机监听管理此设备的组网状态。 */
   network?: Network;
   publisher?: CatalogPublisher;
-  /** 加入账号或更换凭据后，立即对照一次项目登记表。 */
-  accountChanged?: () => void;
   /** 仅 kite-net 持有；代理已核验来源和本节点属于同一组网用户。 */
   proxyToken?: string;
 }
@@ -136,7 +141,7 @@ export function serve(kite: Kite, listen: Listen) {
     if (!listen.network) throw new KiteError('这个服务没有组网', 404);
     return listen.network;
   };
-  const server: Server<undefined> = Bun.serve({
+  return Bun.serve({
     hostname: listen.hostname,
     port: listen.port,
     idleTimeout: 60,
@@ -148,7 +153,6 @@ export function serve(kite: Kite, listen: Listen) {
           const parsed = publisherConfig.safeParse(await body(req));
           if (!parsed.success) throw new KiteError('目录上报设置无效');
           await listen.publisher.configure(parsed.data);
-          listen.accountChanged?.();
           return listen.publisher.status();
         })),
       },
@@ -172,22 +176,19 @@ export function serve(kite: Kite, listen: Listen) {
       },
       '/checkouts': {
         GET: bound((req) => kite.checkouts(new URL(req.url).searchParams.get('project') ?? undefined)),
-        POST: bound(async (req) => {
+        POST: long(bound(async (req) => {
           const parsed = checkoutRequest.safeParse(await body(req));
           if (!parsed.success) throw new KiteError('登记检出要写 path（本机文件夹）或 remote（远程地址）');
-          // clone 大仓库可能长时间没有响应数据，不受空闲超时限制。
-          if ('remote' in parsed.data) server.timeout(req, 0);
           return kite.registerCheckout(parsed.data);
-        }),
+        })),
       },
       '/checkouts/:id/sync': { GET: bound((req) => kite.checkoutSync(req.params.id)) },
       '/checkouts/:id/push': {
-        POST: bound(async (req) => {
+        POST: long(bound(async (req) => {
           const parsed = z.object({ message: z.string().max(10_000).optional() }).strict().safeParse(await body(req));
           if (!parsed.success) throw new KiteError('推送请求无效');
-          server.timeout(req, 0);
           return kite.pushCheckout(req.params.id, parsed.data.message);
-        }),
+        })),
       },
       '/workspaces': {
         GET: bound((req) => {
@@ -254,16 +255,11 @@ export function serve(kite: Kite, listen: Listen) {
         }),
       },
       '/threads/:id/state': { GET: bound((req) => kite.threadState(req.params.id)) },
-      '/threads/:id/title/regenerate': { POST: (req, server) => {
-        // 轻任务有自己的取消和超时；排队时间不受普通 HTTP 空闲上限截断。
-        server.timeout(req, 0);
-        const id = req.params.id;
-        return bound(async (req) => {
-          const parsed = z.object({ expectedRevision: z.string().min(1) }).strict().safeParse(await body(req));
-          if (!parsed.success) throw new KiteError('标题重新生成请求无效');
-          return kite.regenerateThreadTitle(id, parsed.data.expectedRevision);
-        })(req);
-      } },
+      '/threads/:id/title/regenerate': { POST: long(bound(async (req) => {
+        const parsed = z.object({ expectedRevision: z.string().min(1) }).strict().safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('标题重新生成请求无效');
+        return kite.regenerateThreadTitle(req.params.id, parsed.data.expectedRevision);
+      })) },
       '/instances/:id/agent-config': {
         GET: bound((req) => kite.agentConfig(req.params.id)),
         PUT: bound(async (req) => {
@@ -348,12 +344,11 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/restore': {
         POST: bound(async (req) => kite.restore(req.params.id, str((await body(req)).commit, 'commit'))),
       },
-      '/workspaces/:id/adopt': { POST: bound((req) => { server.timeout(req, 0); return kite.adopt(req.params.id); }) },
+      '/workspaces/:id/adopt': { POST: long(bound((req) => kite.adopt(req.params.id))) },
       '/threads/:id/archive': { POST: bound((req) => kite.archiveThread(req.params.id)) },
       '/workspaces/:id/archive': { POST: bound(async (req) => kite.archiveWorkspace(req.params.id, (await body(req)).force === true)) },
       '/events': { GET: bound((req) => events(kite, eventScope(req.url))) },
     },
     fetch: () => Response.json({ error: '没有这个接口' }, { status: 404 }),
   });
-  return server;
 }

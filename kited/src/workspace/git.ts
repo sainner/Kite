@@ -52,7 +52,8 @@ export async function commitAll(cwd: string, args: string[]): Promise<void> {
 
 /** 工作树里有没有未提交的改动（含未跟踪、不含被忽略的文件）。 */
 export async function isDirty(cwd: string): Promise<boolean> {
-  return (await git(cwd, ['status', '--porcelain', '--untracked-files=all'])) !== '';
+  // 读取状态不刷新磁盘索引，避免界面查询与提交争用索引锁。
+  return (await git(cwd, ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all'])) !== '';
 }
 
 /** 未合并（冲突中）的文件。 */

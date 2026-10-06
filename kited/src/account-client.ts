@@ -25,7 +25,8 @@ export class AccountClient {
 
   get linked(): boolean { return !!this.link(); }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> {
+  /** 非 2xx 一律抛错，状态码随 KiteError 带出；401 表示工作机授权失效。 */
+  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const link = this.link();
     if (!link) throw new KiteError('这台工作机还没有加入 Kite 账号，请先在 App 中登录', 409);
     let response: Response;
@@ -40,29 +41,26 @@ export class AccountClient {
     }
     const data = await response.json().catch(() => ({})) as T & { error?: string };
     if (response.status === 401) throw new KiteError('工作机的账号授权已失效，请在 App 中重新登录', 409);
-    if (!response.ok && response.status !== 404) throw new KiteError(data.error ?? `账号服务返回 ${response.status}`, response.status >= 500 ? 502 : 409);
-    return { status: response.status, body: data };
+    if (!response.ok) throw new KiteError(data.error ?? `账号服务返回 ${response.status}`, response.status === 404 ? 404 : response.status >= 500 ? 502 : 409);
+    return data;
   }
 
   /** 按远程地址登记；同一远程总是得到同一个项目。 */
-  async register(remote: string): Promise<RegisteredProject> {
-    const r = await this.request<RegisteredProject & { error?: string }>('POST', '/api/projects', { remote });
-    if (r.status === 404) throw new KiteError(r.body.error ?? '找不到这个项目', 404);
-    return r.body;
-  }
+  register(remote: string): Promise<RegisteredProject> { return this.request('POST', '/api/projects', { remote }); }
 
   /** 为没有远程的文件夹新建托管项目。 */
-  async createHosted(name: string): Promise<RegisteredProject> {
-    return (await this.request<RegisteredProject>('POST', '/api/projects', { hosted: { name } })).body;
-  }
+  createHosted(name: string): Promise<RegisteredProject> { return this.request('POST', '/api/projects', { hosted: { name } }); }
 
-  async projects(): Promise<RegisteredProject[]> {
-    return (await this.request<RegisteredProject[]>('GET', '/api/projects')).body;
-  }
+  projects(): Promise<RegisteredProject[]> { return this.request('GET', '/api/projects'); }
 
   /** 访问某个 HTTPS 远程的凭据；账号没有绑定这个平台时为 null，交给用户本机的 git 配置。 */
   async credential(url: string): Promise<GitCredential | null> {
-    const r = await this.request<GitCredential>('POST', '/api/git/credential', { url });
-    return r.status === 404 ? null : { username: r.body.username, password: r.body.password };
+    try {
+      const { username, password } = await this.request<GitCredential>('POST', '/api/git/credential', { url });
+      return { username, password };
+    } catch (error) {
+      if (error instanceof KiteError && error.status === 404) return null;
+      throw error;
+    }
   }
 }

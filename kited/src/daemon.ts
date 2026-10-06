@@ -37,9 +37,9 @@ export function startDaemon(opts: DaemonOptions): Daemon {
   const store = new Store(join(opts.home, 'kite.db'));
   const account = new AccountClient((): AccountLink | undefined => publisher.link());
   const kite = new Kite(store, opts.home, new Bus(), opts, account);
-  const publisher: CatalogPublisher = new CatalogPublisher(join(opts.home, 'catalog-publisher.json'), kite);
   // 迁移远程由用户在 App 中操作，工作机定期对照登记表；离线的工作机上线后在下一轮赶上。
   const sync = () => { kite.syncProjects().catch((error: unknown) => console.error(`[项目同步] ${(error as Error).message}`)); };
+  const publisher: CatalogPublisher = new CatalogPublisher(join(opts.home, 'catalog-publisher.json'), kite, sync);
   const syncTimer = setInterval(sync, PROJECT_SYNC_MS);
   syncTimer.unref();
   sync();
@@ -52,7 +52,7 @@ export function startDaemon(opts: DaemonOptions): Daemon {
     hostname: `kite-${kite.machine().name.split('.')[0]}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-+$/, '').slice(0, 63),
     port: opts.port || 5483, target: remote.port!, proxyToken,
   });
-  const server = serve(kite, { hostname: '127.0.0.1', port: opts.port, network, publisher, accountChanged: sync });
+  const server = serve(kite, { hostname: '127.0.0.1', port: opts.port, network, publisher });
   return {
     url: `http://127.0.0.1:${server.port}`,
     remoteUrl: `http://127.0.0.1:${remote.port}`,

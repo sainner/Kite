@@ -14,8 +14,10 @@ enum SampleWorkspace {
     }
 
     static func makeModel() -> AppModel {
-        let model = AppModel()
-        guard enabled else { return model }
+        guard enabled else { return AppModel() }
+        let transport = SampleGitTransport()
+        let model = AppModel(account: KiteAccount(transport: transport.account),
+                             previewClient: KitedClient(address: "https://preview.invalid", machineID: "sample", transport: transport.worker))
         model.workspaces = [
             pluginSidebar(),
             dotGallery(),

@@ -69,9 +69,9 @@ test('现场有未提交改动时建工作区不自动提交，集成和远程�
 
 /*
  * 经真实 git fetch/merge/push 与 http-backend：远程领先、现场干净时推送只把现场快进到远程；
- * 现场有新改动时提交并推送，跟踪引用随之更新，sync 只看本地跟踪引用也显示与远程一致。
+ * 现场有新改动时提交并推送；切换到远程尚无的新分支时也能建立分支，跟踪引用与 sync 随之更新。
  */
-test('现场推送在远程领先时快进到远程，现场领先时提交并推送，sync 显示与远程一致', async () => {
+test('现场推送在远程领先时快进，现场领先时提交并推送，也能建立远程缺少的分支，sync 显示一致', async () => {
   kited = startKited();
   const { folder, model, bare, branch } = await hostedCheckout(kited, 'site', { 'a.txt': 'a\n' });
   const remoteHead = advanceRemote(bare, branch, '另一台机器的提交');
@@ -86,6 +86,14 @@ test('现场推送在远程领先时快进到远程，现场领先时提交并�
   expect(git(folder, 'rev-parse', 'HEAD^')).toBe(remoteHead);
   expect(git(bare, 'rev-parse', `refs/heads/${branch}`)).toBe(git(folder, 'rev-parse', 'HEAD'));
   expect((await kited.call('GET', `/checkouts/${model.checkout.id}/sync`)).body).toEqual(pushed.body);
+
+  git(folder, 'switch', '-q', '-c', 'new-branch');
+  expect(gitOk(bare, 'show-ref', '--verify', 'refs/heads/new-branch')).toBe(false);
+  const created = await kited.call('POST', `/checkouts/${model.checkout.id}/push`, {});
+  expect(created.status).toBe(200);
+  expect(created.body).toEqual({ branch: 'new-branch', dirty: false, ahead: 0, behind: 0 });
+  expect(git(bare, 'rev-parse', 'refs/heads/new-branch')).toBe(git(folder, 'rev-parse', 'HEAD'));
+  expect((await kited.call('GET', `/checkouts/${model.checkout.id}/sync`)).body).toEqual(created.body);
 });
 
 /*

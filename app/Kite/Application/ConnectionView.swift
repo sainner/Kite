@@ -43,7 +43,7 @@ struct NewWorkspace: View {
     @State private var source = Source.folder
     @State private var path = ""
     @State private var remote = ""
-    @State private var repositories: [GitHubRepository] = []
+    @State private var repositories: [GitHubRepository]?
     @State private var working = false
     @State private var error: String?
 
@@ -79,7 +79,7 @@ struct NewWorkspace: View {
                     case .remote:
                         HStack {
                             TextField("远程地址，如 github.com/me/repo", text: $remote).autocorrectionDisabled()
-                            if !repositories.isEmpty {
+                            if let repositories, !repositories.isEmpty {
                                 Menu("从 GitHub 选择") {
                                     ForEach(repositories) { repository in
                                         Button(repository.fullName + (repository.private ? "（私有）" : "")) { remote = repository.url }
@@ -116,8 +116,8 @@ struct NewWorkspace: View {
             prompt = model.draftWorkspace.draftThread.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         .task(id: source) {
-            guard source == .remote, repositories.isEmpty else { return }
-            repositories = (try? await model.account.gitHubRepositories()) ?? []
+            guard source == .remote, repositories == nil else { return }
+            repositories = try? await model.account.gitHubRepositories()
         }
         #if os(macOS)
         .frame(width: 520, height: 480)

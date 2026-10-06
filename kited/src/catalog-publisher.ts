@@ -20,7 +20,7 @@ export class CatalogPublisher {
   private timer: Timer;
   private unsubscribe: () => void;
 
-  constructor(private file: string, private kite: Kite) {
+  constructor(private file: string, private kite: Kite, private onLinked: () => void = () => {}) {
     if (existsSync(file)) this.config = JSON.parse(readFileSync(file, 'utf8'));
     this.unsubscribe = kite.bus.subscribe((event) => event.type === 'checkout.changed' || event.type === 'workspace.changed', () => this.schedule());
     // 在线状态由组网服务提供；目录空闲时不反复上传，只重试失败的发布。
@@ -36,17 +36,16 @@ export class CatalogPublisher {
 
   async configure(config: z.infer<typeof publisherConfig>): Promise<void> {
     // 本机配置响应丢失后的重试不能把同一凭据的版本退回零。
-    if (this.config?.deviceId === config.deviceId && this.config.url === config.url && this.config.token === config.token) {
-      this.schedule();
-      return;
+    if (this.config?.deviceId !== config.deviceId || this.config.url !== config.url || this.config.token !== config.token) {
+      this.abort?.abort();
+      await this.pending;
+      this.config = { ...config, revision: 0 };
+      this.error = undefined;
+      this.needsAuthorization = false;
+      this.save();
     }
-    this.abort?.abort();
-    await this.pending;
-    this.config = { ...config, revision: 0 };
-    this.error = undefined;
-    this.needsAuthorization = false;
-    this.save();
     this.schedule();
+    this.onLinked();
   }
 
   private save() {

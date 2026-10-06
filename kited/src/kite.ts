@@ -5,13 +5,13 @@ import { existsSync } from 'node:fs';
 import { FileDiffStore } from './workspace/file-diffs.ts';
 import { join, relative } from 'node:path';
 import { KiteError } from './errors.ts';
-import { type AdoptResult, Bus } from './events.ts';
+import { type AdoptResult, Bus, type PushOutcome } from './events.ts';
 import { hasUnmerged, mainline, mergeBack } from './workspace/mainline.ts';
-import { cloneCheckout, register } from './workspace/projects.ts';
+import { cloneRemote, cloneTarget, register } from './workspace/projects.ts';
 import { AccountClient } from './account-client.ts';
 import { normalizeRemote } from './remote-url.ts';
-import { commitAll, git, isAncestor, isDirty, revParse } from './workspace/git.ts';
-import { checkoutSync, currentBranch, fetchBranch, originURL, pushBranch, type CheckoutSync } from './workspace/remote.ts';
+import { commitAll, git, isAncestor, isDirty } from './workspace/git.ts';
+import { checkoutSync, currentBranch, fetchBranch, originAccess, originURL, pushBranch, type CheckoutSync, type RemoteAccess } from './workspace/remote.ts';
 import { openRuntime, type Runtime, type RuntimeOptions } from './runtime.ts';
 import { capture, findSnapshot, list, restore, type Snapshot } from './workspace/snapshots.ts';
 import type { Store } from './store.ts';
@@ -71,6 +71,10 @@ export class Kite {
   private stopping = false;
   private turnLabels = new Map<string, string>();
   private adoptAfterTurn = new Set<string>();
+  /** 正在 clone 的目标目录，clone 期间不持登记锁。 */
+  private cloning = new Set<string>();
+  /** 含锁外网络操作的项目任务，关闭时仍需等待它们完成登记。 */
+  private projectOperations = new Set<Promise<unknown>>();
 
   constructor(readonly store: Store, readonly home: string, readonly bus: Bus, private options: RuntimeOptions = {},
     readonly account = new AccountClient(() => undefined)) {
@@ -121,15 +125,30 @@ export class Kite {
   checkouts(projectId?: string): Checkout[] { return this.store.checkouts(projectId); }
   /** 登记本机文件夹（path）或 clone 远程（remote，path 可选）。 */
   registerCheckout(request: { path: string; remote?: undefined } | { remote: string; path?: string }): Promise<WorkspaceModel> {
-    this.assertRunning();
-    // realpath 和目录重叠检查也在锁内，两个别名不能登记出重复检出。
-    return this.serial('register', async () => {
-      const model = request.remote === undefined
-        ? await register(this.store, this.home, this.account, request.path)
-        : await cloneCheckout(this.store, this.home, this.account, request.remote, request.path);
-      this.bus.emit({ type: 'checkout.changed', projectId: model.project.id, checkoutId: model.checkout.id });
-      this.changed(model.workspace.id);
-      return model;
+    return this.projectOperation(async () => {
+      // realpath 和目录重叠检查也在锁内，两个别名不能登记出重复检出。
+      const registered = (model: WorkspaceModel) => {
+        this.bus.emit({ type: 'checkout.changed', projectId: model.project.id, checkoutId: model.checkout.id });
+        this.changed(model.workspace.id);
+        return model;
+      };
+      if (request.remote === undefined) {
+        return this.serial('register', async () => registered(await register(this.store, this.home, this.account, request.path, { cloning: this.cloning })));
+      }
+      // clone 可能很久，放在登记锁外；目标目录先占位，其他登记不能与它重叠。
+      const { remote, path } = request;
+      const dest = await this.serial('register', async () => {
+        const dest = cloneTarget(this.store, this.home, remote, path, this.cloning);
+        this.cloning.add(dest);
+        return dest;
+      });
+      try {
+        const project = await cloneRemote(this.account, remote, dest);
+        return await this.serial('register', async () => {
+          this.cloning.delete(dest);
+          return registered(await register(this.store, this.home, this.account, dest, { cloned: project, cloning: this.cloning }));
+        });
+      } finally { this.cloning.delete(dest); }
     });
   }
   /**
@@ -138,34 +157,35 @@ export class Kite {
    */
   syncProjects(): Promise<void> {
     if (!this.account.linked || this.stopping) return Promise.resolve();
-    return this.serial('register', async () => {
-      const registered = new Map((await this.account.projects()).map((p) => [p.id, p]));
-      for (const project of this.store.projects()) {
-        const latest = registered.get(project.id);
-        if (!latest) continue;
-        if (latest.remote !== project.remote || latest.name !== project.name) {
-          this.store.saveProject({ ...project, name: latest.name, remote: latest.remote });
-        }
-        for (const checkout of this.store.checkouts(project.id)) {
-          if (checkout.remote === latest.remote || !existsSync(checkout.path)) continue;
-          try {
-            const origin = await originURL(checkout.path);
-            if (!origin || normalizeRemote(origin) !== latest.remote) await git(checkout.path, ['remote', 'set-url', 'origin', latest.url]);
-          } catch (error) {
-            console.error(`[项目同步] 更新 ${checkout.path} 的 origin 失败：${(error as Error).message}`);
-            continue;
+    // 登记表在锁外取，账号服务不通时不挡住本机登记。
+    return this.projectOperation(async () => {
+      const projects = await this.account.projects();
+      await this.serial('register', async () => {
+        const registered = new Map(projects.map((p) => [p.id, p]));
+        for (const project of this.store.projects()) {
+          const latest = registered.get(project.id);
+          if (!latest) continue;
+          if (latest.remote !== project.remote || latest.name !== project.name) {
+            this.store.saveProject({ ...project, name: latest.name, remote: latest.remote });
           }
-          this.store.setCheckoutRemote(checkout.id, latest.remote);
-          this.bus.emit({ type: 'checkout.changed', projectId: project.id, checkoutId: checkout.id });
+          for (const checkout of this.store.checkouts(project.id)) {
+            if (checkout.remote === latest.remote || !existsSync(checkout.path)) continue;
+            try {
+              const origin = await originURL(checkout.path);
+              if (!origin || normalizeRemote(origin) !== latest.remote) await git(checkout.path, ['remote', 'set-url', 'origin', latest.url]);
+            } catch (error) {
+              console.error(`[项目同步] 更新 ${checkout.path} 的 origin 失败：${(error as Error).message}`);
+              continue;
+            }
+            this.store.setCheckoutRemote(checkout.id, latest.remote);
+            this.bus.emit({ type: 'checkout.changed', projectId: project.id, checkoutId: checkout.id });
+          }
         }
-      }
+      });
     });
   }
-  /** 现场与远程的关系，基于最近一次拉取的结果。 */
-  checkoutSync(id: string): Promise<CheckoutSync> {
-    const c = this.checkoutOf(id);
-    return this.serial(`checkout:${c.id}`, () => checkoutSync(c.path));
-  }
+  /** 现场与远程的关系，基于最近一次拉取的结果。只读，不排在集成与推送的网络操作后面。 */
+  checkoutSync(id: string): Promise<CheckoutSync> { return checkoutSync(this.checkoutOf(id).path); }
   /**
    * 现场的「提交并推送」，由用户触发。远程落后时把现场改动提交（message 为提交说明）后推送；
    * 远程领先而现场没有新东西时快进；两边都有新东西时不在现场合并，请用户新建工作区处理。
@@ -178,8 +198,9 @@ export class Kite {
       if (!branch) throw new KiteError('检出现场不在任何分支上，先切回主线分支', 409);
       const dirty = await isDirty(c.path);
       if (dirty && !message?.trim()) throw new KiteError('现场有未提交的改动，请填写提交说明', 400);
-      const upstream = await fetchBranch(c.path, branch, this.account);
-      const head = (await revParse(c.path, 'HEAD'))!;
+      const access = await originAccess(c.path, this.account);
+      const upstream = await fetchBranch(c.path, branch, access);
+      const head = await mainline(c);
       if (upstream && !(await isAncestor(c.path, upstream, head))) {
         if (dirty || !(await isAncestor(c.path, head, upstream))) {
           throw new KiteError('远程有新的提交，和现场的改动分叉了。请新建工作区，在工作区里集成', 409);
@@ -188,7 +209,7 @@ export class Kite {
         return checkoutSync(c.path);
       }
       if (dirty) await commitAll(c.path, ['-m', message!.trim()]);
-      if (await pushBranch(c.path, branch, this.account) === 'rejected') throw new KiteError('远程刚有新的提交，请重试', 409);
+      if (await pushBranch(c.path, branch, access) === 'rejected') throw new KiteError('远程刚有新的提交，请重试', 409);
       return checkoutSync(c.path);
     });
   }
@@ -237,6 +258,12 @@ export class Kite {
     this.queues.set(key, tail);
     return next;
   }
+  private projectOperation<T>(fn: () => Promise<T>): Promise<T> {
+    this.assertRunning();
+    const pending = Promise.resolve().then(fn).finally(() => this.projectOperations.delete(pending));
+    this.projectOperations.add(pending);
+    return pending;
+  }
   /** 文件操作和线程控制共用工作区锁；模型回合不持锁，忙闲由 runtime 明确报告。 */
   private control<T>(workspace: string, fn: () => Promise<T>): Promise<T> {
     this.assertRunning();
@@ -253,8 +280,7 @@ export class Kite {
   /** 可以先建空工作区；带首条消息时，准备完成才启动首个线程。 */
   async createWorkspace(checkoutId: string, name: string, prompt?: string, runtime: RuntimeKind = 'harness', template?: ContextTemplateSelection): Promise<WorkspaceModel> {
     this.assertRunning();
-    const c = this.store.checkout(checkoutId);
-    if (!c) throw new KiteError(`没有这个检出：${checkoutId}`, 404);
+    const c = this.checkoutOf(checkoutId);
     if (prompt !== undefined && !prompt.trim()) throw new KiteError('第一条消息不能为空');
     const base = await this.serial(`checkout:${c.id}`, () => mainline(c));
     this.assertRunning();
@@ -578,13 +604,19 @@ export class Kite {
         if (await isDirty(checkout.path)) throw new KiteError('检出现场有未提交的改动，先在现场提交或清理后再集成', 409);
         const branch = await currentBranch(checkout.path);
         if (!branch) throw new KiteError('检出现场不在任何分支上，先切回主线分支再集成', 409);
+        // 拿不到远程时照常合回本地主线，结果里报告推送失败。
+        let access: RemoteAccess | undefined;
+        let offline: string | undefined;
+        try { access = await originAccess(checkout.path, this.account); }
+        catch (error) { offline = (error as Error).message; }
         // 推送被拒说明远程刚有新提交：重新拉取、合并后再推，冲突同样留在工作区。
         for (let attempt = 1; ; attempt++) {
           let upstream: string | null = null;
-          let offline: string | undefined;
           // 用跟踪分支名合并，合并提交的说明里写的是 origin/<分支> 而不是一串哈希。
-          try { if (await fetchBranch(checkout.path, branch, this.account)) upstream = `origin/${branch}`; }
-          catch (error) { offline = (error as Error).message; }
+          if (access) {
+            try { if (await fetchBranch(checkout.path, branch, access)) upstream = `origin/${branch}`; }
+            catch (error) { offline = (error as Error).message; }
+          }
           const r = await mergeBack(checkout, w.cwd, w.name, { stageResolved: afterResolution, upstream });
           if (r.status === 'conflict') {
             const t = threads.findLast((t) => t.status === 'open');
@@ -595,14 +627,12 @@ export class Kite {
             }
             return { status: 'conflict', files: r.files };
           }
-          if (offline) return { status: 'adopted', commit: r.commit, push: { status: 'failed', message: offline } };
-          let pushed: 'pushed' | 'rejected';
-          try { pushed = await pushBranch(checkout.path, branch, this.account); }
-          catch (error) { return { status: 'adopted', commit: r.commit, push: { status: 'failed', message: (error as Error).message } }; }
-          if (pushed === 'pushed') return { status: 'adopted', commit: r.commit, push: { status: 'pushed' } };
-          if (attempt === PUSH_ATTEMPTS) {
-            return { status: 'adopted', commit: r.commit, push: { status: 'failed', message: '远程持续有新的提交，推送多次被拒，请稍后再集成' } };
-          }
+          const adopted = (push: PushOutcome): AdoptResult => ({ status: 'adopted', commit: r.commit, push });
+          const failed = (message: string) => adopted({ status: 'failed', message });
+          if (!access || offline) return failed(offline ?? '无法访问远程');
+          try { if (await pushBranch(checkout.path, branch, access) === 'pushed') return adopted({ status: 'pushed' }); }
+          catch (error) { return failed((error as Error).message); }
+          if (attempt === PUSH_ATTEMPTS) return failed('远程持续有新的提交，推送多次被拒，请稍后再集成');
         }
       });
       this.bus.emit({ type: 'workspace.adopt', workspaceId: id, originThreadId, result });
@@ -657,6 +687,7 @@ export class Kite {
     await this.plugins.close();
     await this.operations.close();
     for (const c of this.preparations.values()) c.abort();
+    await Promise.allSettled(this.projectOperations);
     await Promise.allSettled([...this.queues.values(), ...this.openingRunners.values()]);
     await Promise.all([...this.runners.values()].map((r) => r.shutdown()));
   }

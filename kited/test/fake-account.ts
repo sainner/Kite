@@ -28,6 +28,8 @@ export interface FakeAccount {
    * 使这次推送在客户端被判为非快进而被拒。
    */
   beforePush?: (projectId: string) => void | Promise<void>;
+  /** 拉取引用广告前调用，测试可以挂起 clone/fetch，或返回失败响应。 */
+  beforeFetch?: (projectId: string) => void | Response | Promise<void | Response>;
   /** 把项目的远程改为 url，模拟迁移完成；不推送内容。 */
   migrate(id: string, url: string): RegisteredProject;
   stop(): void;
@@ -54,6 +56,10 @@ export function startFakeAccount(root: string): FakeAccount {
         if (!project?.hosted) return json({ error: '找不到托管仓库' }, 404);
         if (repository[2] === '/info/refs' && new URL(request.url).searchParams.get('service') === 'git-receive-pack') {
           await account.beforePush?.(project.id);
+        }
+        if (repository[2] === '/info/refs' && new URL(request.url).searchParams.get('service') === 'git-upload-pack') {
+          const response = await account.beforeFetch?.(project.id);
+          if (response) return response;
         }
         return hosting.serve(request, project.id, repository[2]!, 'kite', true);
       }

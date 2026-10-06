@@ -11,6 +11,7 @@ final class AppModel {
     var sidebarCollapsed = false
     var contentSize: CGSize = .zero
     let account: KiteAccount
+    private let previewClient: KitedClient?
     private(set) var connections: [String: WorkerConnection] = [:]
     private var connectionRun: UUID?
     private let emptyConnection = UUID()
@@ -39,7 +40,10 @@ final class AppModel {
     var scenePush: WorkArea?
     var archiveRequest: WorkArea?
 
-    init(account: KiteAccount = KiteAccount()) { self.account = account }
+    init(account: KiteAccount = KiteAccount(), previewClient: KitedClient? = nil) {
+        self.account = account
+        self.previewClient = previewClient
+    }
 
     func connection(for area: WorkArea? = nil) -> WorkerConnection? {
         guard let area, !area.isDraft else { return activeConnection }
@@ -50,6 +54,7 @@ final class AppModel {
     func isConnected(_ area: WorkArea) -> Bool { area.isSample || connection(for: area)?.connected == true }
 
     func activeClient(in area: WorkArea? = nil) throws -> KitedClient {
+        if let previewClient, (area ?? current)?.remote?.machine.id == previewClient.machineID { return previewClient }
         guard let connection = connection(for: area), connection.connected else { throw KitedError(message: "所属工作机未连接") }
         return connection.client
     }

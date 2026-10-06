@@ -37,6 +37,7 @@ private struct AccountLogin: Codable {
 @Observable final class KiteAccount {
     static let server = "https://hs.sainner.top"
     private let http = AccountHTTP.makeSession()
+    private let transport: HTTPTransport?
     private var login: AccountLogin?
     private(set) var devices: [AccountDevice] = []
     private(set) var catalogs: [HostedCatalog] = []
@@ -49,7 +50,9 @@ private struct AccountLogin: Codable {
     var role: String? { login?.enrollment?.device.role }
     var workers: [AccountDevice] { devices.filter { $0.role == "worker" && $0.joined } }
 
-    init() {
+    init(transport: HTTPTransport? = nil) {
+        self.transport = transport
+        guard transport == nil else { return }
         login = AccountVault.load()
         if let user = login?.user {
             let directory = AccountDirectory.load(user.id)
@@ -61,6 +64,7 @@ private struct AccountLogin: Codable {
     #if DEBUG
     /// 手动验收使用临时账号目录，不触及当前用户的钥匙串。
     init(verificationLogin: Data, directory: AccountDirectory) throws {
+        transport = nil
         login = try JSONDecoder().decode(AccountLogin.self, from: verificationLogin)
         devices = directory.devices
         catalogs = directory.catalogs
@@ -76,7 +80,9 @@ private struct AccountLogin: Codable {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token = login?.token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let body { request.httpBody = try JSONEncoder().encode(body) }
-        let (data, response) = try await http.data(for: request)
+        let (data, response): (Data, URLResponse)
+        if let transport { (data, response) = try await transport.send(request) }
+        else { (data, response) = try await http.data(for: request) }
         try Task.checkCancellation()
         guard login?.token == expectedToken else { throw CancellationError() }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0

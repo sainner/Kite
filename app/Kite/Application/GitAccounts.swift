@@ -4,7 +4,6 @@ import SwiftUI
 struct GitAccount: Decodable, Identifiable, Equatable {
     let host: String
     let account: String
-    let createdAt: Int
     var id: String { host }
 }
 
@@ -13,9 +12,7 @@ struct AccountProject: Decodable, Identifiable, Equatable {
     let id: String
     let name: String
     let remote: String
-    let url: String
     let hosted: Bool
-    let createdAt: Int
 }
 
 struct GitHubDevice: Decodable, Equatable {
@@ -34,24 +31,20 @@ struct GitHubRepository: Decodable, Identifiable, Equatable {
 
 extension KiteAccount {
     func gitAccounts() async throws -> [GitAccount] {
-        if SampleWorkspace.enabled { return GitSamples.accounts }
         return try await request("/api/git/accounts", as: [GitAccount].self)
     }
 
     func bindToken(host: String, username: String, token: String) async throws {
-        if SampleWorkspace.enabled { throw KitedError(message: "预览数据不能修改绑定") }
         var body = ["token": token]
         if !username.isEmpty { body["username"] = username }
         let _: JSON = try await request("/api/git/accounts/\(host)", method: "PUT", body: body, as: JSON.self)
     }
 
     func unbind(host: String) async throws {
-        if SampleWorkspace.enabled { throw KitedError(message: "预览数据不能修改绑定") }
         let _: JSON = try await request("/api/git/accounts/\(host)", method: "DELETE", as: JSON.self)
     }
 
     func startGitHub() async throws -> GitHubDevice {
-        if SampleWorkspace.enabled { return GitSamples.device }
         return try await request("/api/git/accounts/github.com/device", method: "POST", as: GitHubDevice.self)
     }
 
@@ -63,13 +56,11 @@ extension KiteAccount {
 
     /// 没有绑定 GitHub 时为空。
     func gitHubRepositories() async throws -> [GitHubRepository] {
-        if SampleWorkspace.enabled { return GitSamples.repositories }
         do { return try await request("/api/git/accounts/github.com/repos", as: [GitHubRepository].self) }
         catch let error as KitedError where error.status == 404 { return [] }
     }
 
     func projects() async throws -> [AccountProject] {
-        if SampleWorkspace.enabled { return GitSamples.projects }
         return try await request("/api/projects", as: [AccountProject].self)
     }
 
@@ -77,25 +68,6 @@ extension KiteAccount {
     func migrate(_ project: String, to remote: String) async throws -> AccountProject {
         try await request("/api/projects/\(project)/migrate", method: "POST", body: ["remote": remote], timeout: 600, as: AccountProject.self)
     }
-}
-
-/// 预览用的账号数据，覆盖已绑定的两类平台、托管与正式远程的项目。
-enum GitSamples {
-    static let accounts = [
-        GitAccount(host: "github.com", account: "sainner", createdAt: 0),
-        GitAccount(host: "gitlab.com", account: "oauth2", createdAt: 0),
-    ]
-    static let device = GitHubDevice(flow: "sample", userCode: "WDJB-MJHT", verificationURI: "https://github.com/login/device", interval: 5)
-    static let repositories = [
-        GitHubRepository(fullName: "sainner/thesis", url: "https://github.com/sainner/thesis.git", private: true),
-        GitHubRepository(fullName: "sainner/kite-notes", url: "https://github.com/sainner/kite-notes.git", private: false),
-    ]
-    static let projects = [
-        AccountProject(id: "sample-hosted", name: "论文草稿", remote: "hs.sainner.top/git/sample-hosted",
-                       url: "https://hs.sainner.top/git/sample-hosted.git", hosted: true, createdAt: 0),
-        AccountProject(id: "sample", name: "harness", remote: "github.com/sample/harness",
-                       url: "https://github.com/sample/harness.git", hosted: false, createdAt: 0),
-    ]
 }
 
 struct GitAccountsSection: View {
@@ -164,7 +136,7 @@ struct GitAccountsSection: View {
 
     /// 按服务端给的间隔轮询，授权完成、拒绝或过期即停。
     private func poll() async {
-        guard let device, !SampleWorkspace.enabled else { return }
+        guard let device else { return }
         var interval = device.interval
         while self.device?.flow == device.flow {
             try? await Task.sleep(for: .seconds(interval))
@@ -241,7 +213,6 @@ struct AccountProjectsSection: View {
 
     private func migrate(_ project: AccountProject) {
         guard let remote = targets[project.id]?.trimmingCharacters(in: .whitespaces), !remote.isEmpty else { return }
-        if SampleWorkspace.enabled { error = "预览数据不能迁移"; return }
         migrating = project.id
         error = nil
         Task {

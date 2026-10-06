@@ -4,7 +4,6 @@ import SwiftUI
 struct RemoteAdoptResult: Decodable {
     struct Push: Decodable { let status: String; let message: String? }
     let status: String
-    let commit: String?
     let files: [String]?
     let push: Push?
 
@@ -35,29 +34,8 @@ struct CheckoutSync: Decodable, Equatable {
     }
 }
 
-/// 预览依次给出各种结果，覆盖推送成功、推送失败、冲突与现场的几种状态。
-enum WorkspaceGitSamples {
-    nonisolated(unsafe) static var turn = 0
-    static let adoptions: [RemoteAdoptResult] = [
-        .init(status: "adopted", commit: "8dc7ad4", files: nil, push: .init(status: "pushed", message: nil)),
-        .init(status: "adopted", commit: "8dc7ad4", files: nil, push: .init(status: "failed", message: "推送失败：连不上 github.com")),
-        .init(status: "conflict", commit: nil, files: ["src/main.ts", "README.md"], push: nil),
-    ]
-    static let syncs: [CheckoutSync] = [
-        .init(branch: "main", dirty: true, ahead: 0, behind: 0),
-        .init(branch: "main", dirty: false, ahead: 2, behind: 0),
-        .init(branch: "main", dirty: true, ahead: 1, behind: 3),
-        .init(branch: "main", dirty: false, ahead: nil, behind: nil),
-    ]
-    static func next<T>(_ values: [T]) -> T {
-        defer { turn += 1 }
-        return values[turn % values.count]
-    }
-}
-
 extension AppModel {
     func adopt(_ area: WorkArea) async throws -> RemoteAdoptResult {
-        if area.isSample { return WorkspaceGitSamples.next(WorkspaceGitSamples.adoptions) }
         guard let remote = area.remote else { throw KitedError(message: "工作区尚未创建") }
         let client = try activeClient(in: area)
         let result = try await client.request("/workspaces/\(remote.workspace.id)/adopt", method: "POST", timeout: 600, as: RemoteAdoptResult.self)
@@ -66,7 +44,6 @@ extension AppModel {
     }
 
     func archive(_ area: WorkArea, force: Bool) async throws {
-        if area.isSample { throw KitedError(message: "预览数据不能归档") }
         guard let remote = area.remote else { return }
         struct Archive: Encodable { let force: Bool }
         let client = try activeClient(in: area)
@@ -75,15 +52,11 @@ extension AppModel {
     }
 
     func checkoutSync(_ area: WorkArea) async throws -> CheckoutSync {
-        if area.isSample { return WorkspaceGitSamples.next(WorkspaceGitSamples.syncs) }
         guard let remote = area.remote else { throw KitedError(message: "工作区尚未创建") }
         return try await activeClient(in: area).request("/checkouts/\(remote.checkout.id)/sync", as: CheckoutSync.self)
     }
 
     func pushCheckout(_ area: WorkArea, message: String) async throws -> CheckoutSync {
-        if area.isSample {
-            throw KitedError(message: "远程有新的提交，和现场的改动分叉了。请新建工作区，在工作区里集成", status: 409)
-        }
         guard let remote = area.remote else { throw KitedError(message: "工作区尚未创建") }
         struct Push: Encodable { let message: String? }
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -179,6 +179,7 @@ struct KitedClient: Equatable {
     let identity = UUID()
     let address: String
     var machineID: String? = nil
+    var transport: HTTPTransport? = nil
 
     private func url(_ path: String) throws -> URL {
         guard let base = URL(string: address), ["http", "https"].contains(base.scheme), base.host != nil,
@@ -206,8 +207,12 @@ struct KitedClient: Equatable {
             request.httpBody = try JSONEncoder().encode(body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        let session = Tailnet.covers(address) ? try await Tailnet.shared.urlSession() : URLSession.shared
-        let (data, response) = try await session.data(for: request)
+        let (data, response): (Data, URLResponse)
+        if let transport { (data, response) = try await transport.send(request) }
+        else {
+            let session = Tailnet.covers(address) ? try await Tailnet.shared.urlSession() : URLSession.shared
+            (data, response) = try await session.data(for: request)
+        }
         try validate(response, data: data)
         return (try JSONDecoder().decode(T.self, from: data),
                 (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Kite-Cursor"))
@@ -219,6 +224,7 @@ struct KitedClient: Equatable {
 
     /// 首帧包含所选范围的完整快照；取消任务时关闭 URLSession。
     func events(scope: KitedEventScope = .catalog, receive: (RemoteEvent) async throws -> Void) async throws {
+        guard transport == nil else { throw KitedError(message: "此连接不提供实时事件流") }
         guard let machineID else { throw KitedError(message: "请先连接工作机") }
         // 组网会话的配置带着节点的代理设置。
         let connection = URLSession(configuration: Tailnet.covers(address) ? try await Tailnet.shared.urlSession().configuration : .ephemeral)

@@ -3,18 +3,24 @@
  * kited 与账号服务替身、托管仓库（git http-backend）和目录上报之间的交接。集成与现场推送见 integration.test.ts。
  */
 import { afterEach, expect, test } from 'bun:test';
-import { realpathSync, rmSync } from 'node:fs';
+import { realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { AccountClient } from '../../src/account-client.ts';
+import { Bus } from '../../src/events.ts';
+import { Kite } from '../../src/kite.ts';
 import type { Checkout, Project, WorkspaceModel } from '../../src/model.ts';
+import { Store } from '../../src/store.ts';
 import { type FakeAccount, startFakeAccount } from '../fake-account.ts';
 import { call, type Kited, type KitedProcess, registerCheckout, spawnKited, startKited } from '../harness.ts';
-import { git, lexists, makeTemp, newDir, read, until } from '../util.ts';
+import { git, lexists, makeTemp, newDir, newRepo, read, until } from '../util.ts';
 
 let kited: Kited | undefined;
 let child: KitedProcess | undefined;
 let account: FakeAccount | undefined;
 const dirs: string[] = [];
+const releases: Array<() => void> = [];
 afterEach(async () => {
+  for (const release of releases.splice(0)) release();
   await kited?.stop();
   kited = undefined;
   await child?.kill('SIGTERM');
@@ -108,3 +114,98 @@ test('同步目录里的普通文件夹把仓库放进 Kite 目录，按托管�
   expect(((await call(child.url, 'GET', '/checkouts')).body as Checkout[]).map((c) => c.id).sort())
     .toEqual([first.body.checkout.id, model.checkout.id].sort());
 });
+
+/*
+ * git clone 在 HTTP 引用广告前挂起时，独立目录必须继续登记；真实父子仓库和符号链接需要与目录占位一起判断。
+ * 远程失败让 git 子进程退出后，同一路径必须可重试，不能留下永久占位。
+ */
+test('clone 等远程时独立 clone 和本地登记可完成，父子目录及别名拒绝登记，失败后原路径可重试', async () => {
+  kited = startKited();
+  const running = kited;
+  const source = newDir(running.root, 'source', { 'a.txt': '原始\n' });
+  const first = await registerCheckout(running, source);
+  const remote = running.account.projects.get(first.project.id)!.url;
+  const parent = newRepo(running.root, 'parent', { 'parent.txt': '父目录\n' });
+  const target = join(parent, 'cloned');
+  const alias = join(running.root, 'alias');
+  symlinkSync(parent, alias);
+  const held = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void | Response>();
+  releases.push(() => release.resolve());
+  let fetches = 0;
+  running.account.beforeFetch = () => {
+    if (fetches++ !== 0) return;
+    held.resolve();
+    return release.promise;
+  };
+  const cloning = running.call('POST', '/checkouts', { remote, path: target });
+  try {
+    await held.promise;
+    const nested = newRepo(target, 'nested', { 'nested.txt': '子目录\n' });
+    const independent = newRepo(running.root, 'local', { 'local.txt': '本地\n' });
+    const [otherClone, local, ...overlapping] = await Promise.all([
+      running.call('POST', '/checkouts', { remote, path: join(running.root, 'other-clone') }),
+      running.call('POST', '/checkouts', { path: independent }),
+      ...[target, parent, nested, join(alias, 'cloned')].map((path) => running.call('POST', '/checkouts', { path })),
+      running.call('POST', '/checkouts', { remote, path: join(alias, 'cloned', 'another') }),
+    ]);
+    expect(otherClone.status).toBe(200);
+    expect(otherClone.body.project.id).toBe(first.project.id);
+    expect(local.status).toBe(200);
+    expect(overlapping.map((response) => response.status)).toEqual([409, 409, 409, 409, 409]);
+    expect(running.daemon.kite.checkouts()).toHaveLength(3);
+    release.resolve(new Response('模拟远程暂时不可用', { status: 503 }));
+    expect((await cloning).status).toBeGreaterThanOrEqual(400);
+    const retried = await running.call('POST', '/checkouts', { remote, path: target });
+    expect(retried.status).toBe(200);
+    expect(retried.body.project.id).toBe(first.project.id);
+    expect(read(join(target, 'a.txt'))).toBe('原始\n');
+    expect(running.daemon.kite.checkouts()).toHaveLength(4);
+  } finally {
+    release.resolve();
+    await cloning;
+  }
+}, 1_000);
+
+/*
+ * HTTP 挂起的 git 子进程、登记入库与关闭交错：直接进入 Kite.shutdown，排除服务外围收尾碰巧等够了的假通过。
+ * 调用方在 shutdown 返回时立刻关 SQLite，已接收的 clone 仍必须完成登记。
+ */
+test('关闭等待已经接收的 clone 登记完成后才允许关闭数据库', async () => {
+  const root = makeTemp('shutdown-clone-');
+  dirs.push(root);
+  const home = newDir(root, 'kite');
+  account = startFakeAccount(join(root, 'account'));
+  const fake = account;
+  const store = new Store(join(home, 'kite.sqlite'));
+  const kite = new Kite(store, home, new Bus(), { lightTasks: false },
+    new AccountClient(() => ({ url: fake.url, token: fake.token })));
+  const held = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  releases.push(() => release.resolve());
+  const completed: string[] = [];
+  let stopping: Promise<void> | undefined;
+  try {
+    const source = newDir(root, 'source', { 'a.txt': '关闭前收到的 clone\n' });
+    const first = await kite.registerCheckout({ path: source });
+    const remote = fake.projects.get(first.project.id)!.url;
+    const target = join(root, 'cloned');
+    fake.beforeFetch = () => { held.resolve(); return release.promise; };
+    const cloning = kite.registerCheckout({ remote, path: target }).then((model) => {
+      completed.push('registered');
+      return model;
+    });
+    await held.promise;
+    stopping = kite.shutdown().then(() => { store.close(); completed.push('stopped'); });
+    release.resolve();
+    const [model] = await Promise.all([cloning, stopping]);
+    expect(model.project.id).toBe(first.project.id);
+    expect(model.checkout.path).toBe(target);
+    expect(read(join(target, 'a.txt'))).toBe('关闭前收到的 clone\n');
+    expect(completed).toEqual(['registered', 'stopped']);
+  } finally {
+    release.resolve();
+    if (stopping) await stopping;
+    else { await kite.shutdown(); store.close(); }
+  }
+}, 1_000);
