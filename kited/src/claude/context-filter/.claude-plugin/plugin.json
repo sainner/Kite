@@ -1,0 +1,5 @@
+{
+  "name": "kite-context-filter",
+  "version": "0.1.0",
+  "description": "过滤 Claude Code 自动附加的日期、环境和预算提示"
+}

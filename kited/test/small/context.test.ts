@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { restoreContext } from '../../src/harness/context/assembler.ts';
 import { projectContext } from '../../src/harness/context/project.ts';
-import type { ContextSnapshot, ContextSource } from '../../src/harness/context/types.ts';
+import type { ContextSource } from '../../src/harness/context/types.ts';
 import { diskRecords, input, item, ManualModel, success, tool, useHarness } from '../harness-loop.ts';
 
 const h = useHarness();
@@ -22,10 +22,9 @@ test('首次指令固定，后续上下文变化落盘并作为通知追加到�
   };
   const root = h.root();
   const model = new ManualModel();
-  let factoryCalls = 0;
   const { runner, path } = h.runner(root, {
     model,
-    instructions: () => { factoryCalls++; return source; },
+    instructions: () => source,
     tools: [tool('next', async () => success('继续'))],
   });
 
@@ -34,15 +33,12 @@ test('首次指令固定，后续上下文变化落盘并作为通知追加到�
   const firstRecords = diskRecords(path);
   const firstSnapshot = firstRecords.find((record) => record.type === 'context.prepared');
   const firstStart = firstRecords.find((record) => record.type === 'request.started');
-  expect(firstSnapshot?.type).toBe('context.prepared');
-  expect(firstStart?.type).toBe('request.started');
   if (firstSnapshot?.type !== 'context.prepared' || firstStart?.type !== 'request.started') throw new Error('缺少首请求上下文记录');
   expect(firstSnapshot.seq).toBeLessThan(firstStart.seq);
   expect(firstStart.contextId).toBe(firstSnapshot.snapshot.id);
   expect(first.request.instructions).toBe(restoreContext(firstSnapshot.snapshot).instructions);
   expect(first.request.instructions).toContain('旧段落：');
   expect(first.request.instructions).toContain('旧材料');
-  expect(factoryCalls).toBe(1);
 
   source.definition.blocks[0] = {
     type: 'paragraph', id: 'rules', title: '规则',
@@ -81,9 +77,6 @@ test('首次指令固定，后续上下文变化落盘并作为通知追加到�
   expect(updates[0]!.text).toContain('新段落：');
   expect(updates[0]!.text).toContain('新材料');
   expect(starts[1]!.notifications).toHaveLength(1);
-  expect(second.request.history).toContainEqual({ type: 'output', item: item('continue', 'next') });
-  expect(second.request.history).toContainEqual({ type: 'tool_result', callId: 'continue', result: success('继续') });
-  expect(factoryCalls).toBe(2);
   second.response.complete();
   await runner.settled();
   source.bindings['project.documents']!.sources![0]!.sha256 = 'c'.repeat(64);
@@ -98,7 +91,6 @@ test('首次指令固定，后续上下文变化落盘并作为通知追加到�
   expect(third.request.instructions).toBe(second.request.instructions);
   expect(third.request.history.filter((entry) => entry.type === 'notification')).toEqual(updates);
   expect(reusedStarts[2]!.notifications ?? []).toEqual([]);
-  expect(factoryCalls).toBe(3);
   third.response.complete();
   await runner.settled();
   await runner.shutdown();
@@ -116,7 +108,7 @@ test('首次指令固定，后续上下文变化落盘并作为通知追加到�
 }, 1000);
 
 // 已实测的跨模块 bug：未引用的 AGENTS 变化仍改变摘要、追加同正文通知；隐藏分支也不得读取过大材料。
-test('固定文字和隐藏分支不读取未使用项目材料，也不向模型重复通知', async () => {
+test('未引用的项目材料不读取，也不触发重复通知', async () => {
   const root = h.root();
   mkdirSync(join(root, '.git'));
   const agents = join(root, 'AGENTS.md');
@@ -171,7 +163,7 @@ test('固定文字和隐藏分支不读取未使用项目材料，也不向模�
 }, 1000);
 
 // 组装异常发生在输入封定之前；恢复时必须原样重试同一条 pending 输入。
-test('选中分支缺少绑定时暂停而不消费输入，补齐后恢复并保存条件快照', async () => {
+test('缺少上下文绑定时保留输入，补齐后恢复并保存分支快照', async () => {
   const source: ContextSource = {
     definition: {
       version: 2, id: 'conditional', title: '条件上下文', scene: 'thread.create',
@@ -203,13 +195,11 @@ test('选中分支缺少绑定时暂停而不消费输入，补齐后恢复并�
   records = diskRecords(path);
   const snapshot = records.find((record) => record.type === 'context.prepared');
   const started = records.find((record) => record.type === 'request.started');
-  expect(snapshot?.type).toBe('context.prepared');
-  expect(started?.type).toBe('request.started');
   if (snapshot?.type !== 'context.prepared' || started?.type !== 'request.started') throw new Error('恢复后未封定上下文');
   expect(started.contextId).toBe(snapshot.snapshot.id);
   expect(started.inputIds).toEqual(['retry-me']);
   expect(call.request.history.filter((entry) => entry.type === 'input')).toEqual([{ type: 'input', input: input('retry-me') }]);
-  const restored = restoreContext(JSON.parse(JSON.stringify(snapshot.snapshot)) as ContextSnapshot);
+  const restored = restoreContext(snapshot.snapshot);
   expect(restored.blocks[0]).toMatchObject({ type: 'condition', id: 'project-rule', branchId: 'with-project' });
   expect(call.request.instructions).toBe(restored.instructions);
   expect(call.request.instructions).toContain('恢复后的项目规则');

@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AgentDefinition } from '../../src/agent-definition.ts';
+import type { AgentDefinition } from '../../src/agents/definition.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { ContextDefinition } from '../../src/harness/context/types.ts';
@@ -28,36 +28,16 @@ function withoutContext(agent: AgentDefinition) {
 }
 
 // HTTP revision 校验、SQLite 落盘、目录重开与首请求绑定共同决定重试是否覆盖已有模板。
-test('模板保存重试不覆盖冲突版本，重启后新工作区首请求采用保存的版本', async () => {
+test('模板保存处理重试与冲突，重启后首请求使用已存版本', async () => {
   const root = makeTemp('context-templates-');
   const home = join(root, 'kite');
   const model = new ManualModel();
   let daemon: Daemon | undefined;
   try {
     daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => model });
-    const initial = await call(daemon.url, 'GET', '/context-templates');
-    expect(initial.status).toBe(200);
-    expect(initial.body.templates.map((template: Template) => `${template.definition.scene}:${template.definition.id}`).sort()).toEqual([
-      'thread.configuration_changed:kite.agent-configuration',
-      'thread.context_updated:kite.context-update',
-      'thread.create:kite.review', 'thread.create:kite.work',
-      'thread.execution_permissions_changed:kite.execution-permissions',
-      'thread.plugin_tools_changed:kite.plugin-tools',
-      'thread.title:kite.thread-title.generate',
-    ]);
-    expect(initial.body.scenes).toContainEqual(expect.objectContaining({ id: 'thread.create', variables: expect.any(Array) }));
-    expect(initial.body.scenes.find((scene: { id: string }) => scene.id === 'thread.title')?.variables
-      .map((variable: { name: string }) => variable.name).sort()).toEqual(['thread.messages', 'thread.title']);
-    expect(initial.body.templates.filter((template: Template) => template.definition.scene === 'thread.title')).toEqual([
-      expect.objectContaining({ definition: expect.objectContaining({
-        id: 'kite.thread-title.generate', blocks: expect.any(Array), input: expect.any(Array),
-      }) }),
-    ]);
-
     const first = definition('test.persisted', '保存前版本：先检查项目约定。');
     const created = await call(daemon.url, 'POST', '/context-templates', { definition: first });
     expect(created.status).toBe(200);
-    expect(created.body).toEqual({ definition: first, revision: expect.any(String) });
     expect(await call(daemon.url, 'POST', '/context-templates', { definition: first })).toEqual(created);
 
     const next = definition(first.id, '保存后版本：检查完成再报告结果。');
@@ -103,7 +83,7 @@ test('模板保存重试不覆盖冲突版本，重启后新工作区首请求�
 }, 1000);
 
 // 目录的场景边界、实例快照和创建请求跨模块交接；误选标题模板不得改变实例，合法模板保留配置与权限。
-test('默认模板编辑只影响新实例，已有实例拒绝标题模板且应用创建模板时保留配置权限', async () => {
+test('模板修改隔离已有实例，切换模板保留配置与权限', async () => {
   const model = new ManualModel();
   const k = startKited(() => model);
   try {

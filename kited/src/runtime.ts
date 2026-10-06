@@ -1,20 +1,22 @@
-/** kited 的执行入口：旧会话沿用 Claude，新会话由本地 harness 执行。 */
+/** kited 的执行入口：Claude 与自研 harness 各自负责完整 agent 循环，共用 Kite 的能力。 */
 import { join } from 'node:path';
 import { KiteError } from './errors.ts';
 import type { RuntimeEvent } from './events.ts';
-import { Runner, type RunnerState } from './runner.ts';
+import type { RunnerState } from './claude/runner.ts';
+import { openClaudeHost } from './claude/host.ts';
+import { assembleContext, restoreContext } from './harness/context/assembler.ts';
+import { contextUpdateContext } from './harness/context/notifications.ts';
 import type { PluginInstance, ThreadContext } from './model.ts';
-import { kiteTools } from './tools.ts';
 import { readSubscriptionCredentials } from './harness/auth.ts';
 import { ChatGPTModel } from './harness/chatgpt.ts';
 import { openThreadHost } from './harness/thread-host.ts';
-import { harnessPolicy } from './harness/execution-policy.ts';
-import { applyExecutionGrants, executionRevision, instanceExecutionGrants } from './execution-grants.ts';
+import { harnessPolicy } from './execution/policy.ts';
+import { applyExecutionGrants, executionRevision, instanceExecutionGrants } from './execution/grants.ts';
 import { projectContext } from './harness/context/project.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
-import { agentRevision, instanceAgent } from './agent-definition.ts';
-import { pluginDefinition } from './plugins.ts';
-import type { OperationToolSelection } from './operations.ts';
+import { agentRevision, instanceAgent } from './agents/definition.ts';
+import { pluginDefinition } from './plugins/definitions.ts';
+import type { OperationToolSelection } from './operations/operations.ts';
 import type { Input, Model, Phase, Recovery, StopRequest, ThreadNotification, Tool } from './harness/types.ts';
 import type { LightTaskOptions } from './light-tasks.ts';
 
@@ -50,27 +52,24 @@ export async function openRuntime(s: ThreadContext, home: string, main: string, 
   contextUpdateTemplate: () => ContextDefinition): Promise<Runtime> {
   const { id, nativeId, title, runtime, definitionId, workspace: { cwd, id: workspaceId } } = s;
   if (runtime === 'claude') {
-    const runner = new Runner({
-      cwd, nativeId, title,
-      tools: () => kiteTools({ main, worktree: cwd, checkLogs: join(home, 'sessions', id, 'checks'),
-        onCheck: (result) => on.emit({ type: 'check', result }) }),
-    }, {
-      message: (message) => on.emit({ type: 'sdk', message }),
-      turnStart: (prompt, source) => on.label(source === 'system' ? '后台任务完成' : prompt),
-      toolBatch: (input) => on.snapshot(input.tool_calls.map((call) => call.tool_use_id)),
-      turnEnd: () => on.snapshot([]),
-      idle: () => on.idle(true),
-      state: (state, error) => on.emit({ type: 'runner', state, ...(error ? { error } : {}) }),
+    const basePolicy = await harnessPolicy({ cwd, env: process.env, home, repository: main });
+    return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir: join(home, 'diffs', workspaceId),
+      policy: () => applyExecutionGrants(basePolicy, cwd, instanceExecutionGrants(currentThread())),
+      prepare(afterNotification) {
+        const current = currentThread();
+        const agent = instanceAgent(current);
+        const selected = operations.prepare(current);
+        const operationNames = new Set(operations.tools.map((tool) => tool.name));
+        const allowed = new Set([...agent.tools.filter((name) => !operationNames.has(name) || selected.allowed.has(name)),
+          ...selected.plugins.filter((tool) => selected.allowed.has(tool.name)).map((tool) => tool.name)]);
+        const updates = notifications(afterNotification);
+        const instructions = assembleContext(projectContext(cwd, agent.context)).instructions;
+        return { agent, instructions, contextUpdate: assembleContext(contextUpdateContext(instructions, contextUpdateTemplate())).instructions,
+          tools: [...operations.tools, ...selected.plugins], allowed,
+          notificationText: updates.map((notification) => restoreContext(notification.context).instructions).join('\n\n'),
+          through: updates.at(-1)?.sequence ?? afterNotification };
+      }, events: on,
     });
-    return {
-      get state() { return runner.state; }, get busy() { return runner.busy; },
-      async send(input) { runner.send({ text: input.text, human: input.source === 'human' }); },
-      async interrupt() { await runner.interrupt(); return []; },
-      async shutdown() {
-        if (runner.busy) await runner.interrupt();
-        await runner.shutdown();
-      },
-    };
   }
   if (runtime !== 'harness') throw new KiteError(`不支持的会话后端：${runtime}`, 409);
   const threadDir = join(home, 'sessions', id);

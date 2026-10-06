@@ -20,7 +20,7 @@ const root = realpathSync(mkdtempSync(join(TMPDIR, 'kited-test-env-')));
 for (const d of ['home', 'claude']) mkdirSync(join(root, d));
 
 /** 整个测试进程共用的假端点。 */
-export const api = startFakeApi(join(root, 'bg'));
+export const api = startFakeApi();
 
 // macOS 的 /usr/bin/git 是 xcrun shim；使用系统选中的同一份 Apple Git，省去每次调用的 shim 开销。
 let developerDir: string | undefined;

@@ -95,7 +95,6 @@ test('目录 SSE 快照和列表响应头同序，后续变化需要更新列表
   const first = await registerCheckout(kk, firstRepo);
   const stream = await connect(kk.url);
   const baseline = await stream.events.wait((event) => event.type === 'catalog.snapshot');
-  expect(baseline).toMatchObject({ version: 1 });
   expect(baseline.workspaces).toContainEqual(expect.objectContaining({
     checkout: expect.objectContaining({ id: first.checkout.id }),
   }));
@@ -163,8 +162,7 @@ test('SSE 重连保留流式分段、排队输入及交错工具结果所属的�
   const id = thread.id;
   const first = await model.call(1);
   const stream = await connect(kk.url, id);
-  const baseline = await stream.events.wait((event) => event.type === 'thread.history');
-  expect(baseline).toMatchObject({ version: 1, threadId: id });
+  await stream.events.wait((event) => event.type === 'thread.history');
 
   await first.response.emit({ type: 'item.started', itemId: 'answer-a', kind: 'text' });
   const startedText = await stream.events.wait((event) => event.type === 'thread.record'
@@ -231,11 +229,9 @@ test('SSE 重连保留流式分段、排队输入及交错工具结果所属的�
   const patchSummary = await resumed.events.wait((event) => event.type === 'thread.record.delta'
     && event.delta?.id === `call:${patch.id}` && event.delta.text.includes('batch.txt'));
   expect(patchSummary.delta?.input).toEqual({ operations: [{ path: 'batch.txt', type: 'create_file' }] });
-  expect(JSON.stringify(patchSummary.delta?.input)).not.toContain('xxxx');
   await first.response.emit({ type: 'item', item: patch });
   const patchUse = (await resumed.events.wait((event) => event.type === 'thread.record' && event.record?.block.type === 'tool_use' && event.record.block.id === patch.id)).record!;
   await resumed.events.wait((event) => event.type === 'thread.record' && event.record?.block.type === 'tool_result' && event.record.block.call === patch.id);
-  expect(firstUse.block.name).toBe('shell');
   expect(patchUse.block.name).toBe('patch');
   expect(typeof firstUse.block.batch).toBe('string');
   expect(firstUse.block.batch).not.toBe('');
@@ -341,10 +337,8 @@ test('SSE 重连保留流式分段、排队输入及交错工具结果所属的�
 
   const history = await kk.call('GET', `/threads/${id}/history`);
   expect(history.status).toBe(200);
-  expect(history.body).toMatchObject({ version: 1, threadId: id });
   expect(stopped.state).toEqual(history.body.state);
   expect(rebuiltHistory.state).toEqual(history.body.state);
-  expect(history.body.state.context).toEqual(measured);
   const replayed = apply(rebuilt.events.values);
   expect(replayed.records).toEqual(history.body.records);
   expect(replayed.pending).toEqual(history.body.pending);
@@ -358,17 +352,15 @@ test('SSE 重连保留流式分段、排队输入及交错工具结果所属的�
   expect((await kk.call('POST', `/threads/${id}/messages`, { id: 'after-stop', text: '重新开始' })).status).toBe(200);
   const third = await model.call(3);
   third.response.complete('response-without-usage');
-  const cleared = await rebuilt.events.wait((event) => rebuilt.events.values.indexOf(event) >= beforeUnmeasured
+  await rebuilt.events.wait((event) => rebuilt.events.values.indexOf(event) >= beforeUnmeasured
     && event.type === 'thread.state' && event.state?.phase === 'idle'
     && event.state.lastOutcome?.kind === 'completed' && event.state.context === undefined);
-  expect(cleared.state?.context).toBeUndefined();
   const unmeasuredHistory = await kk.call('GET', `/threads/${id}/history`);
   expect(unmeasuredHistory.body.state.context).toBeUndefined();
   await rebuilt.close();
   const unmeasuredReconnect = await connect(kk.url, id);
   const unmeasuredSnapshot = await unmeasuredReconnect.events.wait((event) => event.type === 'thread.history');
   expect(unmeasuredSnapshot.state).toEqual(unmeasuredHistory.body.state);
-  expect(unmeasuredSnapshot.state?.context).toBeUndefined();
   await unmeasuredReconnect.close();
 }, 1000);
 

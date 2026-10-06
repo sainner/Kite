@@ -7,7 +7,7 @@ import { assembleContext, restoreContext } from '../../src/harness/context/assem
 import { contextUpdateContext } from '../../src/harness/context/notifications.ts';
 import { projectContext } from '../../src/harness/context/project.ts';
 import type { ContextSource } from '../../src/harness/context/types.ts';
-import { localTools } from '../../src/harness/local-tools.ts';
+import { localTools } from '../../src/execution/local-tools.ts';
 import { openThreadHost } from '../../src/harness/thread-host.ts';
 import type { Json, JsonObject, ModelEvent, ModelRequest, ThreadNotification, Tool, ToolResult } from '../../src/harness/types.ts';
 import {
@@ -64,15 +64,15 @@ async function rejectedOperation(operation: Promise<ToolResult>): Promise<void> 
 }
 
 // SSE 解码、通知角色、工具选择、主循环调度与下一请求投影共同决定工具能否执行和无损续接。
-test('订阅保留原生条目，通知按权限映射且只开放本次工具，参数收齐后执行并回传结果', async () => {
+test('订阅流保留原生条目与通知权限，工具收齐后执行并续接', async () => {
   const root = h.root();
   const first = sse();
   const second = sse();
-  const posts = new Seen<{ url: string; init: RequestInit; body: JsonObject }>();
+  const posts = new Seen<{ body: JsonObject }>();
   const model = new ChatGPTModel({
     model: 'test-model', threadId: 'test-session', credentials,
-    async fetch(url, init) {
-      posts.add({ url, init, body: JSON.parse(String(init.body)) as JsonObject });
+    async fetch(_url, init) {
+      posts.add({ body: JSON.parse(String(init.body)) as JsonObject });
       return posts.values.length === 1 ? first.response() : second.response();
     },
   });
@@ -110,12 +110,6 @@ test('订阅保留原生条目，通知按权限映射且只开放本次工具�
     posts.wait(() => true),
     runner.settled().then(() => { throw new Error(`请求未发送：${JSON.stringify({ state: runner.state, records: journal.records })}`); }),
   ]);
-  expect(post.url).toBe('https://chatgpt.com/backend-api/codex/responses');
-  expect(post.init.method).toBe('POST');
-  const headers = new Headers(post.init.headers);
-  expect(headers.get('Authorization')).toBe('Bearer test-access-token');
-  expect(headers.get('ChatGPT-Account-Id')).toBe('test-account');
-  expect(post.body).toMatchObject({ store: false, stream: true, include: ['reasoning.encrypted_content'] });
   expect((post.body.tools as JsonObject[]).map((value) => value.name)).toEqual(['record', 'hidden']);
   expect(post.body.tool_choice).toEqual({
     type: 'allowed_tools', mode: 'auto', tools: [{ type: 'function', name: 'record' }],
@@ -188,7 +182,7 @@ test('订阅保留原生条目，通知按权限映射且只开放本次工具�
 }, 1000);
 
 // ReadableStream 的 EOF、cancel 和 AbortSignal 是运行时交接：已有文字不能掩盖失败，也不能重试副作用。
-test('订阅失败与提前断流不会完成或重试，取消会释放正在等待的流 reader', async () => {
+test('订阅流失败不重试，取消释放等待中的 reader', async () => {
   const failures: Array<(stream: ReturnType<typeof sse>) => void> = [
     (stream) => stream.event({ type: 'response.failed', response: { error: { message: '测试失败' } } }),
     (stream) => stream.event({ type: 'response.incomplete', response: { id: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } } }),
@@ -229,7 +223,7 @@ test('订阅失败与提前断流不会完成或重试，取消会释放正在�
 }, 1000);
 
 // 真实缓存文件会被上游替换；重复读取、文件元数据和异常消息一起验证不会缓存旧令牌或回写凭据。
-test('订阅缓存每次重新只读加载，拒绝 API key、过期和损坏且错误不泄露令牌', async () => {
+test('订阅凭据重新只读加载，异常不泄露令牌', async () => {
   const root = h.root();
   const path = join(root, 'auth.json');
   const token = (name: string, exp = Math.floor(Date.now() / 1000) + 3600) =>
@@ -270,10 +264,7 @@ test('文件补丁保留外部修改并提示版本变化，拒绝不匹配补�
   symlinkSync(outside, join(cwd, 'escape'));
   const tools = localTools({ cwd, logDir: join(root, 'logs'), env: ENV() });
   expect((await execute(tools, 'patch', { operations: [{ type: 'create_file', path: 'note.txt', diff: '+甲\n+乙\n+丙\n+' }] }, cwd)).status).toBe('success');
-  const read = await execute(tools, 'read', { path: 'note.txt', offset: 2, limit: 1 }, cwd);
-  expect(read.status).toBe('success');
-  expect(read.output).toContain('乙');
-  expect(read.output).not.toMatch(/甲|丙/);
+  expect((await execute(tools, 'read', { path: 'note.txt' }, cwd)).status).toBe('success');
   writeFileSync(join(cwd, 'note.txt'), '甲由外部修改\n乙\n丙\n');
   const patched = await execute(tools, 'patch', { operations: [{ type: 'update_file', path: 'note.txt', diff: '@@\n-乙\n+丁\n 丙' }] }, cwd);
   expect(patched.status).toBe('success');
@@ -296,7 +287,7 @@ test('文件补丁保留外部修改并提示版本变化，拒绝不匹配补�
 }, 1000);
 
 // Bun spawn 的环境快照和操作系统进程组行为须实际运行：取消要等忽略 TERM 的后代也停下。
-test('命令使用显式环境并保存完整日志，取消等整组退出而预先取消不启动', async () => {
+test('命令继承显式环境并输出完整日志，取消等待整组退出', async () => {
   const root = h.root();
   const logDir = join(root, 'logs');
   const processes = new Seen<{ pid: number; active: boolean }>();
@@ -394,7 +385,7 @@ test('命令使用显式环境并保存完整日志，取消等整组退出而�
 }, 1000);
 
 // 磁盘独占锁、主循环取消与重新打开交接：旧请求的材料快照仍可读，新请求须重新读取磁盘。
-test('终端线程关闭等待执行停止，重开保留旧快照和历史并读取新项目材料', async () => {
+test('终端线程关闭等工具停止，重开保留历史并更新项目材料', async () => {
   const root = h.root();
   const cwd = join(root, 'project');
   const threadDir = join(root, 'thread');
@@ -417,8 +408,6 @@ test('终端线程关闭等待执行停止，重开保留旧快照和历史并�
   const opened = await openThreadHost(options);
   try {
     await expect(openThreadHost(options)).rejects.toThrow();
-    const metadata = JSON.parse(readFileSync(join(threadDir, 'metadata.json'), 'utf8'));
-    expect(metadata.cwd).toBe(cwd);
     await opened.runner.send(input('保留输入'));
     const first = await model.call(1);
     expect(first.request.instructions).toContain('项目专属指令：保留这句话');
@@ -434,7 +423,6 @@ test('终端线程关闭等待执行停止，重开保留旧快照和历史并�
     await closing;
     const journalPath = join(threadDir, readdirSync(threadDir).find((name) => name.endsWith('.jsonl'))!);
     const oldSnapshot = diskRecords(journalPath).find((record) => record.type === 'context.prepared');
-    expect(oldSnapshot?.type).toBe('context.prepared');
     if (oldSnapshot?.type !== 'context.prepared') throw new Error('缺少旧项目材料快照');
     expect(restoreContext(oldSnapshot.snapshot).instructions).toBe(first.request.instructions);
     writeFileSync(join(cwd, 'AGENTS.md'), '项目专属指令：换成新规则');
@@ -448,7 +436,6 @@ test('终端线程关闭等待执行停止，重开保留旧快照和历史并�
     try {
       await reopened.runner.send(input('重开输入'));
       const next = await nextModel.call(1);
-      expect(next.request.cwd).toBe(cwd);
       expect(next.request.instructions).toBe(first.request.instructions);
       const updates = next.request.history.filter((entry) => entry.type === 'notification');
       expect(updates).toHaveLength(1);

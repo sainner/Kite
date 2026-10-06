@@ -1,0 +1,184 @@
+/** 实例配置、执行授权和操作授权的版本校验与通知；控制队列及运行时生命周期由 Kite 提供。 */
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { agentCapabilities, configurationBoundary } from './agents/capabilities.ts';
+import { agentRevision, bindAgentContext, instanceAgent, parseAgentDefinition, type AgentDefinition } from './agents/definition.ts';
+import type { ContextTemplateSelection } from './context-templates.ts';
+import { KiteError } from './errors.ts';
+import { applyExecutionGrants, executionRevision, instanceExecutionGrants, normalizeExecutionGrants } from './execution/grants.ts';
+import { harnessPolicy } from './execution/policy.ts';
+import { assembleContext } from './harness/context/assembler.ts';
+import {
+  agentConfigurationContext, agentConfigurationContextDefinition,
+  executionPermissionsContext, executionPermissionsContextDefinition, pluginToolsContext, pluginToolsContextDefinition,
+} from './harness/context/notifications.ts';
+import { JournalIndex } from './harness/journal.ts';
+import type { Kite } from './kite.ts';
+import type { AgentInstance, PluginInstance, ThreadContext } from './model.ts';
+import type { OperationGrant } from './operations/contract.ts';
+import { mergePluginTools, pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding } from './plugins/tools.ts';
+import type { Runtime } from './runtime.ts';
+
+type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates'>;
+
+interface ConfigurationControl {
+  run<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
+  context(id: string): ThreadContext;
+  openThread(id: string): ThreadContext;
+  runtime(thread: AgentInstance): Promise<Runtime | undefined>;
+  changed(workspaceId: string): void;
+}
+
+export class InstanceConfiguration {
+  private journalIndex = new JournalIndex();
+  private capabilityCatalog = new Map<string, { at: number; value: ReturnType<typeof agentCapabilities> }>();
+
+  constructor(private kite: ConfigurationServices, private control: ConfigurationControl) {}
+
+  async configureOperationGrants(id: string, expectedRevision: string, value: unknown) {
+    const instance = this.kite.store.instance(id);
+    if (!instance) throw new KiteError('没有这个实例', 404);
+    if (instance.status !== 'open' || this.kite.workspace(instance.workspaceId).workspace.status !== 'open') throw new KiteError('实例或工作区尚未打开', 409);
+    const { revision, grants: oldGrants } = this.kite.operations.grants(id);
+    if (revision !== expectedRevision) throw new KiteError('授权已变化，请重新读取后修改', 409);
+    const grants = this.kite.operations.validateGrants(instance, value);
+    const retained = pluginToolBindings(instance).filter((binding) => pluginToolGranted(binding, oldGrants) && pluginToolGranted(binding, grants));
+    const reuseBindings = grants.every((grant) => grant.operation !== 'plugin.call'
+      || grant.tools.every((name) => retained.some((binding) => binding.instanceId === grant.instanceId && binding.toolName === name)));
+    // MCP 发现可能回调工作区能力；不能占着工作区控制队列等待插件。
+    // 撤权保留已有声明，不等待被保留的插件响应，避免故障插件阻塞权限收回。
+    const selected = reuseBindings ? retained : await this.kite.plugins.bindings(grants);
+    return this.control.run(instance.workspaceId, async () => {
+      const current = this.kite.store.instance(id);
+      if (!current) throw new KiteError('没有这个实例', 404);
+      if (current.status !== 'open' || this.kite.workspace(current.workspaceId).workspace.status !== 'open') throw new KiteError('实例或工作区尚未打开', 409);
+      const { revision } = this.kite.operations.grants(id);
+      if (revision !== expectedRevision) throw new KiteError('授权已变化，请重新读取后修改', 409);
+      this.kite.operations.validateGrants(current, grants);
+      this.saveOperationGrants(current, grants, selected);
+      this.control.changed(current.workspaceId);
+      return this.kite.operations.grants(id);
+    });
+  }
+
+  private saveOperationGrants(instance: PluginInstance, grants: OperationGrant[], selected: PluginToolBinding[]): void {
+    const previous = pluginToolBindings(instance);
+    const isAgent = !!this.kite.catalog.get(instance.definitionId).agent;
+    const frozen = isAgent && (previous.length > 0 || selected.length > 0)
+      && this.journalIndex.firstConfiguration(join(this.kite.home, 'sessions', instance.id, 'journal.jsonl')) !== undefined;
+    const pluginTools = mergePluginTools(previous, selected, frozen);
+    const allowed = pluginTools.filter((binding) => pluginToolGranted(binding, grants)).map(pluginToolSource);
+    const currentGrants = this.kite.operations.grants(instance.id).grants;
+    const before = previous.filter((binding) => pluginToolGranted(binding, currentGrants)).map((binding) => binding.modelName);
+    const changed = JSON.stringify(before) !== JSON.stringify(allowed.map((binding) => binding.modelName));
+    this.kite.store.setInstanceConfig(instance.id, { ...instance.config, grants, pluginTools }, isAgent && changed ? {
+      id: randomUUID(), kind: 'plugin.tools.changed', source: 'host', authority: 'instruction',
+      context: assembleContext(pluginToolsContext(allowed,
+        this.kite.contextTemplates.get(pluginToolsContextDefinition.id, pluginToolsContextDefinition.scene).definition)).snapshot,
+    } : undefined);
+  }
+
+  /** 由实例回收在工作区锁和删除事务内调用；已固定的模型工具声明沿用撤权规则，避免改写历史前缀。 */
+  revokeInstanceGrants(target: PluginInstance): void {
+    for (const instance of this.kite.store.instances(target.workspaceId)) {
+      if (instance.id === target.id) continue;
+      const { grants: previous } = this.kite.operations.grants(instance.id);
+      const grants = previous.flatMap((grant): OperationGrant[] => {
+        if (grant.operation === 'plugin.call' && grant.instanceId === target.id) return [];
+        if ('targets' in grant && grant.targets.kind === 'instances') {
+          const instanceIds = grant.targets.instanceIds.filter((id) => id !== target.id);
+          return instanceIds.length ? [{ ...grant, targets: { kind: 'instances', instanceIds } }] : [];
+        }
+        return [grant];
+      });
+      if (JSON.stringify(previous) === JSON.stringify(grants)) continue;
+      this.saveOperationGrants(instance, grants, pluginToolBindings(instance).filter((binding) => pluginToolGranted(binding, grants)));
+    }
+  }
+
+  executionGrants(id: string) {
+    const instance = this.control.context(id);
+    const grants = instanceExecutionGrants(instance);
+    return { grants, revision: executionRevision(grants) };
+  }
+  configureExecutionGrants(id: string, expectedRevision: string, value: unknown) {
+    return this.control.run(this.control.context(id).workspaceId, async () => {
+      const instance = this.control.openThread(id);
+      const { revision } = this.executionGrants(id);
+      if (revision !== expectedRevision) throw new KiteError('执行授权已变化，请重新读取后修改', 409);
+      const grants = await normalizeExecutionGrants(value);
+      const nextRevision = executionRevision(grants);
+      if (nextRevision === revision) return { grants, revision };
+      const runtime = await this.control.runtime(instance);
+      if (runtime?.busy || runtime?.recovery || runtime?.state === 'stopping') throw new KiteError('请先停止实例并确认执行结果，再修改执行授权', 409);
+      const base = await harnessPolicy({ cwd: instance.workspace.cwd, env: process.env, home: this.kite.home, repository: instance.checkout.path });
+      applyExecutionGrants(base, instance.workspace.cwd, grants);
+      this.kite.store.setInstanceConfig(id, { ...instance.config, execution: grants }, {
+        id: randomUUID(), kind: 'execution.permissions.changed', source: `instance:${id}`, authority: 'instruction',
+        context: assembleContext(executionPermissionsContext(nextRevision, grants,
+          this.kite.contextTemplates.get(executionPermissionsContextDefinition.id, executionPermissionsContextDefinition.scene).definition)).snapshot,
+      });
+      this.control.changed(instance.workspaceId);
+      return this.executionGrants(id);
+    });
+  }
+
+  agentConfig(id: string) {
+    this.control.context(id);
+    const instance = this.kite.store.instance(id)!;
+    const agent = instanceAgent(instance);
+    return { instance, revision: agentRevision(agent), configurationBoundary: configurationBoundary(agent.runtime) };
+  }
+  agentCapabilities(id: string) {
+    const thread = this.control.context(id);
+    const key = `${thread.definitionId}:${thread.workspace.cwd}`;
+    const cached = this.capabilityCatalog.get(key);
+    if (cached && Date.now() - cached.at < 60_000) return cached.value;
+    const value = agentCapabilities(this.kite.catalog.get(thread.definitionId).agent!, thread.workspace.cwd);
+    this.capabilityCatalog.set(key, { at: Date.now(), value });
+    void value.catch(() => { if (this.capabilityCatalog.get(key)?.value === value) this.capabilityCatalog.delete(key); });
+    return value;
+  }
+  configureAgent(id: string, expectedRevision: string, value: unknown) {
+    return this.updateAgentConfiguration(id, expectedRevision, () => value);
+  }
+  configureContextTemplate(id: string, expectedRevision: string, template: ContextTemplateSelection) {
+    return this.updateAgentConfiguration(id, expectedRevision, (agent) => ({ ...agent,
+      context: bindAgentContext(this.kite.contextTemplates.get(template.id, 'thread.create', template.revision).definition, this.control.context(id).workspace.kind),
+    }));
+  }
+  private updateAgentConfiguration(id: string, expectedRevision: string, update: (agent: AgentDefinition) => unknown) {
+    return this.control.run(this.control.context(id).workspaceId, async () => {
+      this.control.openThread(id);
+      const snapshot = this.agentConfig(id);
+      const { instance, revision } = snapshot;
+      if (revision !== expectedRevision) throw new KiteError('配置已变化，请重新读取后修改', 409);
+      const agent = parseAgentDefinition(update(instanceAgent(instance)));
+      if (agent.runtime !== this.control.context(id).runtime) throw new KiteError('不能更换已有会话的执行后端，请新建会话');
+      if (agent.runtime === 'claude') {
+        const running = await this.control.runtime(this.control.context(id));
+        if (running?.busy || running?.recovery || running?.state === 'stopping') throw new KiteError('请先停止会话并确认执行结果，再修改 Claude 配置', 409);
+        if (!['default', 'low', 'medium', 'high', 'xhigh', 'max'].includes(agent.model.reasoning)) throw new KiteError('Claude 思考强度无效');
+        const previous = instanceAgent(instance).model;
+        if (agent.model.model !== previous.model || agent.model.reasoning !== previous.reasoning) {
+          const capabilities = await this.agentCapabilities(id);
+          const selected = capabilities.models.find((model) => model.id === agent.model.model
+            || ('resolvedModel' in model && model.resolvedModel === agent.model.model));
+          if (selected && agent.model.reasoning !== 'default' && !selected.reasoning.includes(agent.model.reasoning)) throw new KiteError('这个模型不支持所选思考强度');
+        }
+      }
+      const declared = this.kite.catalog.get(instance.definitionId).agent!;
+      if (agent.tools.some((tool) => !declared.tools.includes(tool))) throw new KiteError('配置包含此定义未开放的工具');
+      const nextRevision = agentRevision(agent);
+      if (nextRevision === revision) return snapshot;
+      this.kite.store.setInstanceConfig(id, { ...instance.config, agent }, {
+        id: randomUUID(), kind: 'agent.configuration.changed', source: `instance:${id}`, authority: 'instruction',
+        context: assembleContext(agentConfigurationContext({
+          revision: nextRevision, ...agent.model, tools: agent.tools, maxRequestsPerTurn: agent.maxRequestsPerTurn,
+        }, this.kite.contextTemplates.get(agentConfigurationContextDefinition.id, agentConfigurationContextDefinition.scene).definition)).snapshot,
+      });
+      this.control.changed(instance.workspaceId);
+      return this.agentConfig(id);
+    });
+  }
+}

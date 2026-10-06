@@ -1,10 +1,10 @@
 /**
- * 会话工作树（src/worktrees.ts）：W2、W3。
+ * 工作树初始化时的忽略文件复制和上游设置加载。
  */
 import { expect, test } from 'bun:test';
 import { realpathSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { addWorktree } from '../../src/worktrees.ts';
+import { addWorktree } from '../../src/workspace/worktrees.ts';
 import { git, isSymlink, lexists, newRepo, read, useTemp, writeFiles } from '../util.ts';
 
 const temp = useTemp();
@@ -13,7 +13,7 @@ const temp = useTemp();
  * 依赖代码之外的行为：哪些文件算匹配由 git 按忽略规则的语法判定；
  * 规则照 Claude Code 2.1.280 自己建工作树时的做法（匹配且被 .gitignore 忽略的才复制，符号链接不复制）。
  */
-test('.worktreeinclude 按 gitignore 语法匹配：匹配且被忽略的文件复制进工作树，匹配但未被忽略的保持检出版本，符号链接不复制', async () => {
+test('.worktreeinclude 按 Git 规则复制忽略文件，保留检出版本且不复制符号链接', async () => {
   const root = temp();
   const main = newRepo(root, 'main', {
     '.gitignore': '.env\nsecrets/\n*.local\n*.log\n*.secret\n',
@@ -60,7 +60,7 @@ test('.worktreeinclude 按 gitignore 语法匹配：匹配且被忽略的文件�
 });
 
 /* 依赖上游：SDK 的 resolveSettings 从项目设置里读出 worktree.symlinkDirectories。 */
-test('项目 .claude/settings.json 里 worktree.symlinkDirectories 写的目录，在工作树里是指向主文件夹里那个目录的软链接', async () => {
+test('工作树按项目的 worktree.symlinkDirectories 设置链接主文件夹目录', async () => {
   const root = temp();
   const main = newRepo(root, 'main', {
     '.gitignore': 'node_modules/\ndata/\n',

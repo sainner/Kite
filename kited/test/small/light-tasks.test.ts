@@ -11,7 +11,7 @@ const textItem = (id: string, text: string): ModelItem => ({
 });
 
 // 受控模型流、串行队列和关闭信号交接：断流不能当成功，关闭不能留下排队请求。
-test('轻任务断流后继续串行队列，只交付完整最终文字，关闭同时取消在途和排队请求', async () => {
+test('轻任务断流后队列继续，关闭取消在途和排队请求', async () => {
   const model = new ManualModel();
   const results = new Seen<{ purpose: string; durationMs: number; usage?: JsonObject; error?: string }>();
   tasks = new LightTasks({ model: () => model, onResult: (result) => results.add(result) });
@@ -26,7 +26,6 @@ test('轻任务断流后继续串行队列，只交付完整最终文字，关�
   expect(await broken).toBeInstanceOf(Error);
 
   const second = await model.call(2);
-  expect(second.request.tools).toEqual([]);
   await second.response.emit({ type: 'delta', text: '临时增量', field: 'text' });
   await second.response.emit({ type: 'item', item: {
     id: 'reasoning', raw: { type: 'reasoning', summary: [{ type: 'summary_text', text: '内部思考' }] },

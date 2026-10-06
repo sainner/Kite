@@ -1,8 +1,8 @@
 /** 通知正文复用场景、段落和变量契约；来源、权限与投递时机由宿主决定。 */
 import type { ContextVariable } from './scenes.ts';
 import type { ContextBinding, ContextDefinition, ContextSource } from './types.ts';
-import type { ExecutionGrants } from '../../execution-grants.ts';
-import type { PluginToolSource } from '../../plugin-tools.ts';
+import type { ExecutionGrants } from '../../execution/grants.ts';
+import type { PluginToolSource } from '../../plugins/tools.ts';
 
 export const pluginToolsContextDefinition: ContextDefinition = {
   version: 2, id: 'kite.plugin-tools', title: '插件工具授权变更', scene: 'thread.plugin_tools_changed',

@@ -64,7 +64,7 @@ export function startKited(model?: (thread: ThreadContext) => Model, lightTasks:
     root, home, daemon, events,
     url: daemon.url,
     call: (method, path, body) => call(daemon.url, method, path, body, machineId ??= machine(daemon.url).then((value) => value.id)),
-    waitEvent(pred, timeoutMs = 10_000) {
+    waitEvent(pred, timeoutMs = 3_000) {
       const hit = events.find(pred);
       if (hit) return Promise.resolve(hit);
       return new Promise((resolve, reject) => {
@@ -76,8 +76,8 @@ export function startKited(model?: (thread: ThreadContext) => Model, lightTasks:
     async stop() {
       api.releaseAll();
       unsubscribe();
-      await daemon.stop();
-      rmSync(root, { recursive: true, force: true });
+      try { await daemon.stop(); }
+      finally { rmSync(root, { recursive: true, force: true }); }
     },
   };
 }
@@ -141,20 +141,34 @@ export async function spawnKited(home: string): Promise<KitedProcess> {
     stderr: 'inherit',
   });
   const reader = proc.stdout.getReader();
-  const decoder = new TextDecoder();
-  let out = '';
-  while (!out.includes('\n')) {
-    const { value, done } = await reader.read();
-    if (done) throw new Error(`kited 没有启动：${out}`);
-    out += decoder.decode(value, { stream: true });
+  try {
+    const decoder = new TextDecoder();
+    let out = '';
+    while (!out.includes('\n')) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error(`kited 没有启动：${out}`);
+      out += decoder.decode(value, { stream: true });
+    }
+    const m = /http:\/\/127\.0\.0\.1:\d+/.exec(out.split('\n')[0]!);
+    if (!m) throw new Error(`kited 第一行输出里没有地址：${out}`);
+    // 之后的输出照样读走，免得管道写满卡住 kited；停进程时等待读完。
+    const reading = (async () => {
+      try { while (!(await reader.read()).done); }
+      finally { reader.releaseLock(); }
+    })();
+    return {
+      url: m[0],
+      pid: proc.pid,
+      async kill(signal) {
+        if (proc.exitCode === null) proc.kill(signal);
+        await Promise.all([proc.exited, reading]);
+      },
+    };
+  } catch (error) {
+    if (proc.exitCode === null) proc.kill('SIGKILL');
+    await proc.exited;
+    await reader.cancel();
+    reader.releaseLock();
+    throw error;
   }
-  // 之后的输出照样读走，免得管道写满卡住 kited
-  void (async () => { try { while (!(await reader.read()).done); } catch { /* 进程已退出 */ } })();
-  const m = /http:\/\/127\.0\.0\.1:\d+/.exec(out.split('\n')[0]!);
-  if (!m) throw new Error(`kited 第一行输出里没有地址：${out}`);
-  return {
-    url: m[0],
-    pid: proc.pid,
-    async kill(signal) { proc.kill(signal); await proc.exited; },
-  };
 }

@@ -1,6 +1,6 @@
 /** 已知样例预构建：输出可通过安装 API 接收的完整包，安装不执行构建。 */
 import { join } from 'node:path';
-import type { PluginPackage } from '../src/plugin-catalog.ts';
+import type { PluginPackage } from '../src/plugins/catalog.ts';
 
 export async function buildTodoPackage(): Promise<PluginPackage> {
   const root = join(import.meta.dir, '../examples');

@@ -1,42 +1,39 @@
 import type { Input, StopRequest } from './harness/types.ts';
 /** 工作区负责文件、快照和采纳；线程负责模型执行及独立的对话记录。 */
 import { randomUUID } from 'node:crypto';
-import { existsSync, rmSync } from 'node:fs';
-import { FileDiffStore } from './file-diffs.ts';
+import { existsSync } from 'node:fs';
+import { FileDiffStore } from './workspace/file-diffs.ts';
 import { join, relative } from 'node:path';
-import { getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { KiteError } from './errors.ts';
 import { type AdoptResult, Bus } from './events.ts';
-import { hasUnmerged, mainline, mergeBack } from './mainline.ts';
-import { register } from './projects.ts';
+import { hasUnmerged, mainline, mergeBack } from './workspace/mainline.ts';
+import { register } from './workspace/projects.ts';
 import { openRuntime, type Runtime, type RuntimeOptions } from './runtime.ts';
-import { capture, findSnapshot, list, restore, type Snapshot } from './snapshots.ts';
+import { capture, findSnapshot, list, restore, type Snapshot } from './workspace/snapshots.ts';
 import type { Store } from './store.ts';
-import type { AgentInstance, Checkout, Machine, OpenWindowRequest, PluginInstance, Project, RuntimeKind, Thread, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
-import { PluginCatalog } from './plugin-catalog.ts';
-import { PluginHost } from './plugin-host.ts';
-import { agentRevision, bindAgentDefinition, bindAgentContext, instanceAgent, parseAgentDefinition, type AgentDefinition } from './agent-definition.ts';
+import type { AgentInstance, Checkout, Machine, OpenWindowRequest, PluginInstance, Project, RuntimeKind, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
+import { PluginCatalog } from './plugins/catalog.ts';
+import { PluginHost } from './plugins/host.ts';
+import { InstanceConfiguration } from './instance-configuration.ts';
+import { InstanceLifecycle } from './instance-lifecycle.ts';
 import { ContextTemplates, type ContextTemplateSelection } from './context-templates.ts';
-import { addWorktree, removeWorktree, runSetup } from './worktrees.ts';
-import { JournalIndex, readJournal } from './harness/journal.ts';
-import { assembleContext } from './harness/context/assembler.ts';
+import { addWorktree, removeWorktree, runSetup } from './workspace/worktrees.ts';
 import {
-  agentConfigurationContext, agentConfigurationContextDefinition, contextUpdateContextDefinition,
-  executionPermissionsContext, executionPermissionsContextDefinition, pluginToolsContext, pluginToolsContextDefinition,
+  agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, pluginToolsContextDefinition,
 } from './harness/context/notifications.ts';
-import { harnessPolicy } from './harness/execution-policy.ts';
-import { applyExecutionGrants, executionRevision, instanceExecutionGrants, normalizeExecutionGrants } from './execution-grants.ts';
-import { InstanceOperations } from './operations.ts';
-import { OperationReceipts } from './operation-receipts.ts';
-import { defaultOperationGrants, type OperationGrant, type OperationInput } from './operation-contract.ts';
-import { mergePluginTools, pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding } from './plugin-tools.ts';
-import { WorkspaceFiles, fileSelection } from './files.ts';
-import { TranscriptFeed, TranscriptProjection, type DisplayState, type History } from './transcript.ts';
+import { instanceExecutionGrants } from './execution/grants.ts';
+import { InstanceOperations } from './operations/operations.ts';
+import { OperationReceipts } from './operations/receipts.ts';
+import type { OperationInput } from './operations/contract.ts';
+import { WorkspaceFiles, fileSelection } from './workspace/files.ts';
+import { TranscriptFeed } from './transcript/feed.ts';
+import { TranscriptHistory } from './transcript/history.ts';
+import type { DisplayState, History } from './transcript/protocol.ts';
 import { LightTasks } from './light-tasks.ts';
 import { ThreadTitles, titleTemplate } from './thread-titles.ts';
 import { ChatGPTModel } from './harness/chatgpt.ts';
 import { readSubscriptionCredentials } from './harness/auth.ts';
-import { agentModels } from './agent-models.ts';
+import { agentModels } from './agents/models.ts';
 
 export interface ThreadView extends ThreadContext { runner: Runtime['state']; busy: boolean }
 const firstLine = (text: string) => text.trim().split('\n')[0]!.trim() || '（空消息）';
@@ -57,9 +54,9 @@ export class Kite {
   readonly plugins: PluginHost;
   readonly lightTasks?: LightTasks;
   readonly titles?: ThreadTitles;
-  private transcripts = new Map<string, TranscriptProjection>();
-  private journalIndex = new JournalIndex();
-  private loadingTranscripts = new Map<string, Promise<TranscriptProjection>>();
+  private readonly transcripts: TranscriptHistory;
+  private readonly configuration: InstanceConfiguration;
+  private readonly instances: InstanceLifecycle;
   private runners = new Map<string, Runtime>();
   private queues = new Map<string, Promise<unknown>>();
   private preparations = new Map<string, AbortController>();
@@ -77,6 +74,17 @@ export class Kite {
     this.receipts = new OperationReceipts(store);
     this.operations = new InstanceOperations(this);
     this.plugins = new PluginHost(this);
+    this.configuration = new InstanceConfiguration(this, {
+      run: (workspaceId, action) => this.control(workspaceId, action),
+      context: (id) => this.context(id), openThread: (id) => this.openThread(id),
+      runtime: (thread) => this.runnerForManagement(thread),
+      changed: (workspaceId) => this.changed(workspaceId),
+    });
+    this.instances = new InstanceLifecycle(this, {
+      run: (workspaceId, action) => this.control(workspaceId, action),
+      changed: (workspaceId) => this.changed(workspaceId),
+      revokeGrants: (instance) => this.configuration.revokeInstanceGrants(instance),
+    });
     if (options.lightTasks !== false && process.env.KITE_LIGHT_TASKS !== '0') {
       const light = options.lightTasks;
       this.lightTasks = new LightTasks({
@@ -96,31 +104,7 @@ export class Kite {
       });
     }
     for (const w of store.workspaces()) if (w.status === 'preparing') store.setWorkspaceStatus(w.id, 'failed');
-    bus.subscribe(undefined, (event) => {
-      switch (event.type) {
-        case 'workspace.changed':
-        case 'workspace.error':
-          for (const t of this.store.threads(event.workspaceId)) {
-            const transcript = this.transcripts.get(t.id);
-            if (event.type === 'workspace.changed') transcript?.lifecycle(event.status, t.status);
-            else transcript?.workspaceError(event.message);
-          }
-          this.events.emit(event);
-          break;
-        case 'thread.changed':
-          this.transcripts.get(event.threadId)?.lifecycle(this.store.workspace(event.workspaceId)!.status, event.status);
-          this.events.emit(event);
-          break;
-        case 'checkout.changed':
-        case 'workspace.setup':
-        case 'workspace.snapshot':
-        case 'workspace.adopt':
-          this.events.emit(event);
-          break;
-        default:
-          this.transcripts.get(event.threadId)?.accept(event);
-      }
-    });
+    this.transcripts = new TranscriptHistory(store, home, bus, this.events);
   }
 
   machine(): Machine { return this.store.machine; }
@@ -184,23 +168,9 @@ export class Kite {
   private controlThread<T>(id: string, fn: () => Promise<T>): Promise<T> {
     return this.control(this.context(id).workspaceId, fn);
   }
-  private newInstance(workspaceId: string, definitionId: string, title: string, kind: Workspace['kind'], template?: ContextTemplateSelection): PluginInstance {
-    const definition = this.catalog.get(definitionId);
-    const agent = definition.agent && { ...definition.agent,
-      context: this.contextTemplates.get(template?.id ?? definition.agent.context.id, 'thread.create', template?.revision).definition };
-    return { id: randomUUID(), workspaceId, definitionId, title,
-      config: agent ? { agent: bindAgentDefinition(agent, kind), grants: defaultOperationGrants(definitionId), execution: definition.execution } : definition.runtime === 'bun' ? { packageRevision: definition.revision, grants: [] } : {}, state: {},
-      presentation: 'window', status: 'open', createdAt: Date.now() };
-  }
   private newThread(workspaceId: string, prompt: string, runtime: RuntimeKind, kind: Workspace['kind'], template?: ContextTemplateSelection): AgentInstance {
-    if (template && runtime !== 'harness') throw new KiteError('此执行后端不支持上下文模板');
-    const instance = this.newInstance(workspaceId, 'kite.agent.coding', titleOf(prompt), kind, template);
-    if (runtime === 'claude') instance.config = {};
+    const instance = this.instances.newInstance(workspaceId, runtime === 'claude' ? 'kite.agent.claude' : 'kite.agent.coding', titleOf(prompt), kind, template);
     return { ...instance, instanceId: instance.id, runtime, nativeId: randomUUID() };
-  }
-  private newWindow(instance: PluginInstance, id: string = randomUUID(), viewId = this.catalog.get(instance.definitionId).defaultView): WorkspaceWindow {
-    if (!viewId) throw new KiteError('此插件没有窗口视图，请创建后台实例');
-    return { id, workspaceId: instance.workspaceId, target: { instanceId: instance.id, viewId }, state: 'open', createdAt: Date.now() };
   }
 
   /** 可以先建空工作区；带首条消息时，准备完成才启动首个线程。 */
@@ -216,7 +186,7 @@ export class Kite {
       cwd: join(this.home, 'worktrees', c.projectId, id), kind: 'worktree', branch: `kite/${id}`, base,
       status: 'preparing', createdAt: Date.now() };
     const t = prompt === undefined ? undefined : this.newThread(id, prompt, runtime, w.kind, template);
-    this.store.addWorkspace(w, t ? { agent: t, window: this.newWindow(t) } : undefined);
+    this.store.addWorkspace(w, t ? { agent: t, window: this.instances.newWindow(t) } : undefined);
     const controller = new AbortController();
     this.preparations.set(id, controller);
     void this.serial(`workspace:${id}`, async () => {
@@ -230,9 +200,8 @@ export class Kite {
         controller.signal.throwIfAborted();
         this.setWorkspaceStatus(id, 'open');
         if (t) {
-          const r = await this.runner(this.context(t.id));
-          controller.signal.throwIfAborted();
-          await r.send({ id: randomUUID(), text: prompt!, source: 'human' });
+          await this.sendInput(this.context(t.id), { id: randomUUID(), text: prompt!, source: 'human' },
+            () => controller.signal.throwIfAborted());
         }
       } catch (e) {
         this.bus.emit({ type: 'workspace.error', workspaceId: id, originThreadId: t?.id, message: (e as Error).message });
@@ -252,10 +221,9 @@ export class Kite {
       await this.assertIdle(workspaceId);
       await this.snapshot(workspace, [], '线程开始');
       const t = this.newThread(workspaceId, prompt, runtime, workspace.kind, template);
-      this.store.addAgent(t, this.newWindow(t));
+      this.store.addAgent(t, this.instances.newWindow(t));
       this.threadChanged(t);
-      const r = await this.runner(this.context(t.id));
-      await r.send({ id: randomUUID(), text: prompt, source: 'human' });
+      await this.sendInput(this.context(t.id), { id: randomUUID(), text: prompt, source: 'human' });
       return this.thread(t.id);
     });
   }
@@ -273,21 +241,21 @@ export class Kite {
         await this.snapshot(workspace, [], '线程开始');
       }
       check();
-      const instance = this.newInstance(workspaceId, definition.id, input.title ?? (input.prompt ? titleOf(input.prompt) : '新会话'), workspace.kind);
+      const instance = this.instances.newInstance(workspaceId, definition.id, input.title ?? (input.prompt ? titleOf(input.prompt) : '新会话'), workspace.kind);
       instance.presentation = input.presentation;
       instance.origin = origin;
       if (origin && instanceExecutionGrants(this.store.instance(origin.instanceId)!).workspace === 'read') {
         instance.config.execution = { ...instanceExecutionGrants(instance), workspace: 'read' };
       }
       const agent: AgentInstance = { ...instance, instanceId: instance.id, runtime: definition.agent.runtime, nativeId: randomUUID() };
-      const window = instance.presentation === 'window' ? this.newWindow(instance) : undefined;
+      const window = instance.presentation === 'window' ? this.instances.newWindow(instance) : undefined;
       this.store.addAgent(agent, window);
       if (input.title !== undefined) this.store.saveThreadTitle(agent.id, 'initial', {
         title: instance.title, mode: 'manual', generatedAt: null, through: null,
       });
       this.threadChanged(agent);
       this.changed(workspaceId);
-      if (input.prompt !== undefined) await (await this.runner(this.context(agent.id))).send({
+      if (input.prompt !== undefined) await this.sendInput(this.context(agent.id), {
         id: input.operationId, text: input.prompt, source: origin ? 'kite' : 'human',
       });
       return { instanceId: instance.id, ...(window ? { windowId: window.id } : {}) };
@@ -325,218 +293,33 @@ export class Kite {
     });
   }
 
-  async configureOperationGrants(id: string, expectedRevision: string, value: unknown) {
-    const instance = this.store.instance(id);
-    if (!instance) throw new KiteError('没有这个实例', 404);
-    if (instance.status !== 'open' || this.workspace(instance.workspaceId).workspace.status !== 'open') throw new KiteError('实例或工作区尚未打开', 409);
-    const { revision, grants: oldGrants } = this.operations.grants(id);
-    if (revision !== expectedRevision) throw new KiteError('授权已变化，请重新读取后修改', 409);
-    const grants = this.operations.validateGrants(instance, value);
-    if (this.store.thread(id)?.runtime === 'claude' && grants.some((grant) => grant.operation === 'plugin.call')) throw new KiteError('插件模型工具只支持 harness 会话', 409);
-    const retained = pluginToolBindings(instance).filter((binding) => pluginToolGranted(binding, oldGrants) && pluginToolGranted(binding, grants));
-    const reuseBindings = grants.every((grant) => grant.operation !== 'plugin.call'
-      || grant.tools.every((name) => retained.some((binding) => binding.instanceId === grant.instanceId && binding.toolName === name)));
-    // MCP 发现可能回调工作区能力；不能占着工作区控制队列等待插件。
-    // 撤权保留已有声明，不等待被保留的插件响应，避免故障插件阻塞权限收回。
-    const selected = reuseBindings ? retained : await this.plugins.bindings(grants);
-    return this.control(instance.workspaceId, async () => {
-      const current = this.store.instance(id);
-      if (!current) throw new KiteError('没有这个实例', 404);
-      if (current.status !== 'open' || this.workspace(current.workspaceId).workspace.status !== 'open') throw new KiteError('实例或工作区尚未打开', 409);
-      const { revision } = this.operations.grants(id);
-      if (revision !== expectedRevision) throw new KiteError('授权已变化，请重新读取后修改', 409);
-      this.operations.validateGrants(current, grants);
-      this.saveOperationGrants(current, grants, selected);
-      this.changed(current.workspaceId);
-      return this.operations.grants(id);
-    });
+  configureOperationGrants(id: string, expectedRevision: string, value: unknown) {
+    return this.configuration.configureOperationGrants(id, expectedRevision, value);
   }
-
-  private saveOperationGrants(instance: PluginInstance, grants: OperationGrant[], selected: PluginToolBinding[]): void {
-    const previous = pluginToolBindings(instance);
-    const isAgent = !!this.catalog.get(instance.definitionId).agent;
-    const frozen = isAgent && (previous.length > 0 || selected.length > 0)
-      && this.journalIndex.firstConfiguration(join(this.home, 'sessions', instance.id, 'journal.jsonl')) !== undefined;
-    const pluginTools = mergePluginTools(previous, selected, frozen);
-    const allowed = pluginTools.filter((binding) => pluginToolGranted(binding, grants)).map(pluginToolSource);
-    const currentGrants = this.operations.grants(instance.id).grants;
-    const before = previous.filter((binding) => pluginToolGranted(binding, currentGrants)).map((binding) => binding.modelName);
-    const changed = JSON.stringify(before) !== JSON.stringify(allowed.map((binding) => binding.modelName));
-    this.store.setInstanceConfig(instance.id, { ...instance.config, grants, pluginTools }, isAgent && changed ? {
-      id: randomUUID(), kind: 'plugin.tools.changed', source: 'host', authority: 'instruction',
-      context: assembleContext(pluginToolsContext(allowed,
-        this.contextTemplates.get(pluginToolsContextDefinition.id, pluginToolsContextDefinition.scene).definition)).snapshot,
-    } : undefined);
-  }
-
-  /** 回收目标时撤掉关联授权；已固定的模型工具声明沿用撤权规则，避免改写历史前缀。 */
-  private revokeInstanceGrants(target: PluginInstance): void {
-    for (const instance of this.store.instances(target.workspaceId)) {
-      if (instance.id === target.id) continue;
-      const { grants: previous } = this.operations.grants(instance.id);
-      const grants = previous.flatMap((grant): OperationGrant[] => {
-        if (grant.operation === 'plugin.call' && grant.instanceId === target.id) return [];
-        if ('targets' in grant && grant.targets.kind === 'instances') {
-          const instanceIds = grant.targets.instanceIds.filter((id) => id !== target.id);
-          return instanceIds.length ? [{ ...grant, targets: { kind: 'instances', instanceIds } }] : [];
-        }
-        return [grant];
-      });
-      if (JSON.stringify(previous) === JSON.stringify(grants)) continue;
-      this.saveOperationGrants(instance, grants, pluginToolBindings(instance).filter((binding) => pluginToolGranted(binding, grants)));
-    }
-  }
-
-  executionGrants(id: string) {
-    const instance = this.context(id);
-    if (instance.runtime !== 'harness') throw new KiteError('此实例尚未接入执行授权', 409);
-    const grants = instanceExecutionGrants(instance);
-    return { grants, revision: executionRevision(grants) };
-  }
+  executionGrants(id: string) { return this.configuration.executionGrants(id); }
   configureExecutionGrants(id: string, expectedRevision: string, value: unknown) {
-    return this.controlThread(id, async () => {
-      const instance = this.openThread(id);
-      const { revision } = this.executionGrants(id);
-      if (revision !== expectedRevision) throw new KiteError('执行授权已变化，请重新读取后修改', 409);
-      const grants = await normalizeExecutionGrants(value);
-      const nextRevision = executionRevision(grants);
-      if (nextRevision === revision) return { grants, revision };
-      const runtime = await this.runnerForManagement(instance);
-      if (runtime?.busy || runtime?.recovery || runtime?.state === 'stopping') throw new KiteError('请先停止实例并确认执行结果，再修改执行授权', 409);
-      const base = await harnessPolicy({ cwd: instance.workspace.cwd, env: process.env, home: this.home, repository: instance.checkout.path });
-      applyExecutionGrants(base, instance.workspace.cwd, grants);
-      this.store.setInstanceConfig(id, { ...instance.config, execution: grants }, {
-        id: randomUUID(), kind: 'execution.permissions.changed', source: `instance:${id}`, authority: 'instruction',
-        context: assembleContext(executionPermissionsContext(nextRevision, grants,
-          this.contextTemplates.get(executionPermissionsContextDefinition.id, executionPermissionsContextDefinition.scene).definition)).snapshot,
-      });
-      this.changed(instance.workspaceId);
-      return this.executionGrants(id);
-    });
+    return this.configuration.configureExecutionGrants(id, expectedRevision, value);
   }
 
-  /** 新实例和首窗口原子登记；空会话不启动模型。 */
   openWindow(workspaceId: string, request: OpenWindowRequest): Promise<WorkspaceWindow> {
-    return this.control(workspaceId, async () => {
-      const model = this.workspace(workspaceId);
-      if (model.workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
-      const key = JSON.stringify(request.content);
-      const saved = this.store.windowRequest(request.id);
-      if (saved) {
-        const window = this.store.window(saved.windowId)!;
-        if (saved.workspaceId !== workspaceId || saved.content !== key || window.state !== 'open') {
-          throw new KiteError('窗口请求已使用或窗口已关闭', 409);
-        }
-        return window;
-      }
-      if (this.store.window(request.id)) throw new KiteError('窗口 ID 已使用', 409);
-      let created: PluginInstance | undefined;
-      let thread: Thread | undefined;
-      let window: WorkspaceWindow;
-      const content = request.content;
-      if (content.kind === 'create') {
-        const definition = this.catalog.get(content.definitionId);
-        const titles = new Set(model.instances.filter((p) => p.definitionId === definition.id).map((p) => p.title));
-        let number = 1;
-        while (titles.has(`${definition.title} ${number}`)) number++;
-        created = this.newInstance(workspaceId, definition.id, definition.agent ? '新会话' : `${definition.title} ${number}`, model.workspace.kind);
-        if (definition.agent) thread = { instanceId: created.id, runtime: definition.agent.runtime, nativeId: randomUUID() };
-        window = this.newWindow(created, request.id);
-      } else {
-        const instance = this.store.instance(content.instanceId);
-        if (!instance || instance.workspaceId !== workspaceId) throw new KiteError('工作区内没有这个实例', 404);
-        if (instance.status !== 'open') throw new KiteError('实例已经归档', 409);
-        if (!this.catalog.get(instance.definitionId).views.some((view) => view.id === content.viewId)) throw new KiteError('插件未声明这个视图');
-        window = this.newWindow(instance, request.id, content.viewId);
-      }
-      const { target } = window;
-      const existing = model.windows.find((w) => w.target.instanceId === target.instanceId && w.target.viewId === target.viewId);
-      window = existing ?? window;
-      this.store.openWindow(window, { id: request.id, content: key }, created, thread);
-      this.changed(workspaceId);
-      return window;
-    });
+    return this.instances.openWindow(workspaceId, request);
   }
 
   createPluginInstance(workspaceId: string, id: string, definitionId: string, title?: string) {
-    return this.control(workspaceId, async () => {
-      const { workspace } = this.workspace(workspaceId);
-      if (workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
-      const definition = this.catalog.get(definitionId);
-      if (definition.runtime !== 'bun') throw new KiteError('此入口用于创建 Bun 插件实例');
-      if (definition.lifetime === 'window') throw new KiteError('此插件随窗口回收，请同时创建实例和窗口');
-      const existing = this.store.instance(id);
-      if (existing) {
-        if (existing.workspaceId !== workspaceId || existing.definitionId !== definitionId || existing.title !== (title ?? definition.title)
-          || existing.status !== 'open') throw new KiteError('实例 ID 已用于其他创建请求', 409);
-        return existing;
-      }
-      if (this.store.hasInstanceWindows(id)) throw new KiteError('实例 ID 已回收，不能重新使用', 409);
-      const instance = { ...this.newInstance(workspaceId, definitionId, title ?? definition.title, workspace.kind), id, presentation: 'background' as const };
-      this.store.addInstance(instance);
-      this.changed(workspaceId);
-      return instance;
-    });
+    return this.instances.createPluginInstance(workspaceId, id, definitionId, title);
   }
 
   closeWindow(workspaceId: string, id: string): Promise<void> {
-    return this.control(workspaceId, async () => {
-      if (this.workspace(workspaceId).workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
-      const window = this.store.window(id);
-      if (!window || window.workspaceId !== workspaceId) throw new KiteError('工作区内没有这个窗口', 404);
-      if (window.state === 'closed') return;
-      const instance = this.store.instance(window.target.instanceId)!;
-      const definition = this.catalog.get(instance.definitionId);
-      const collect = definition.lifetime === 'window'
-        && !this.store.windows(workspaceId).some((other) => other.id !== id && other.target.instanceId === instance.id);
-      if (collect) {
-        const release = await this.plugins.closeInstance(instance.id);
-        try {
-          rmSync(join(this.home, 'sessions', instance.id), { recursive: true, force: true });
-          this.store.transaction(() => {
-            this.store.closeWindow(id);
-            this.revokeInstanceGrants(instance);
-            this.store.deleteInstance(instance.id);
-          });
-        } finally { release(); }
-      } else this.store.closeWindow(id);
-      this.changed(workspaceId);
-    });
+    return this.instances.closeWindow(workspaceId, id);
   }
 
-  agentConfig(id: string) {
-    const thread = this.context(id);
-    if (thread.runtime !== 'harness') throw new KiteError('此执行后端不支持 agent 配置', 409);
-    const instance = this.store.instance(id)!;
-    return { instance, revision: agentRevision(instanceAgent(instance)) };
-  }
+  agentConfig(id: string) { return this.configuration.agentConfig(id); }
+  agentCapabilities(id: string) { return this.configuration.agentCapabilities(id); }
   configureAgent(id: string, expectedRevision: string, value: unknown) {
-    return this.updateAgentConfiguration(id, expectedRevision, () => value);
+    return this.configuration.configureAgent(id, expectedRevision, value);
   }
   configureContextTemplate(id: string, expectedRevision: string, template: ContextTemplateSelection) {
-    return this.updateAgentConfiguration(id, expectedRevision, (agent) => ({ ...agent,
-      context: bindAgentContext(this.contextTemplates.get(template.id, 'thread.create', template.revision).definition, this.context(id).workspace.kind),
-    }));
-  }
-  private updateAgentConfiguration(id: string, expectedRevision: string, update: (agent: AgentDefinition) => unknown) {
-    return this.controlThread(id, async () => {
-      this.openThread(id);
-      const { instance, revision } = this.agentConfig(id);
-      if (revision !== expectedRevision) throw new KiteError('配置已变化，请重新读取后修改', 409);
-      const agent = parseAgentDefinition(update(instanceAgent(instance)));
-      const declared = this.catalog.get(instance.definitionId).agent!;
-      if (agent.tools.some((tool) => !declared.tools.includes(tool))) throw new KiteError('配置包含此定义未开放的工具');
-      const nextRevision = agentRevision(agent);
-      if (nextRevision === revision) return { instance, revision };
-      this.store.setInstanceConfig(id, { ...instance.config, agent }, {
-        id: randomUUID(), kind: 'agent.configuration.changed', source: `instance:${id}`, authority: 'instruction',
-        context: assembleContext(agentConfigurationContext({
-          revision: nextRevision, ...agent.model, tools: agent.tools, maxRequestsPerTurn: agent.maxRequestsPerTurn,
-        }, this.contextTemplates.get(agentConfigurationContextDefinition.id, agentConfigurationContextDefinition.scene).definition)).snapshot,
-      });
-      this.changed(instance.workspaceId);
-      return this.agentConfig(id);
-    });
+    return this.configuration.configureContextTemplate(id, expectedRevision, template);
   }
 
   threadTitle(id: string) {
@@ -571,39 +354,14 @@ export class Kite {
       return this.store.threadTitle(id)!;
     });
   }
-  async history(id: string): Promise<History> { return (await this.transcript(this.context(id))).snapshot(); }
-  async threadState(id: string): Promise<DisplayState> { return (await this.transcript(this.context(id))).state(); }
-  historyNow(id: string): History {
-    const t = this.transcripts.get(id);
-    if (!t) throw new KiteError('请先加载线程历史', 409);
-    return t.snapshot();
-  }
-  private transcript(t: ThreadContext): Promise<TranscriptProjection> {
-    const cached = this.transcripts.get(t.id);
-    if (cached) return Promise.resolve(cached);
-    const loading = this.loadingTranscripts.get(t.id);
-    if (loading) return loading;
-    const promise = (async () => {
-      const projection = new TranscriptProjection(t, this.events);
-      if (t.runtime === 'harness') {
-        for (const row of readJournal(join(this.home, 'sessions', t.id, 'journal.jsonl'))) projection.journal(row);
-      } else {
-        for (const row of await getSessionMessages(t.nativeId, { dir: t.workspace.cwd, includeSystemMessages: true })) projection.claude(row, t.createdAt);
-      }
-      const current = this.context(t.id);
-      projection.lifecycle(current.workspace.status, current.status);
-      projection.finishReplay();
-      this.transcripts.set(t.id, projection);
-      return projection;
-    })().finally(() => this.loadingTranscripts.delete(t.id));
-    this.loadingTranscripts.set(t.id, promise);
-    return promise;
-  }
+  async history(id: string): Promise<History> { return (await this.transcripts.load(this.context(id))).snapshot(); }
+  async threadState(id: string): Promise<DisplayState> { return (await this.transcripts.load(this.context(id))).state(); }
+  historyNow(id: string): History { return this.transcripts.snapshot(id); }
   private async runner(t: ThreadContext): Promise<Runtime> {
     const { id, workspaceId, workspace, title } = t;
     const existing = this.runners.get(id);
     if (existing) return existing;
-    await this.transcript(t);
+    await this.transcripts.load(t);
     const r = await openRuntime(t, this.home, t.checkout.path, {
       emit: (event) => this.bus.emit({ ...event, threadId: id }),
       label: (text) => this.turnLabels.set(id, firstLine(text)),
@@ -611,7 +369,6 @@ export class Kite {
       idle: (completed) => {
         this.bus.emit({ type: 'idle', threadId: id });
         if (completed && !this.stopping) {
-          void this.titles?.refresh(id);
           if (this.adoptAfterTurn.delete(id)) {
             this.adopt(workspaceId, id).catch((e) => this.bus.emit({ type: 'workspace.error', workspaceId, originThreadId: id, message: `自动采纳失败：${(e as Error).message}` }));
           }
@@ -625,7 +382,7 @@ export class Kite {
   }
   /** 恢复检查只打开 journal，不执行旧输入；共享 cwd 的并行执行在工具调度接入后开放。 */
   private async runnerForManagement(t: AgentInstance): Promise<Runtime | undefined> {
-    return this.runners.get(t.id) ?? (t.runtime === 'harness' && t.status === 'open' && existsSync(join(this.home, 'sessions', t.id))
+    return this.runners.get(t.id) ?? (t.status === 'open' && existsSync(join(this.home, 'sessions', t.id))
       ? await this.runner(this.context(t.id)) : undefined);
   }
   private async assertIdle(workspaceId: string, except?: string): Promise<void> {
@@ -642,15 +399,20 @@ export class Kite {
       check();
       const t = this.openThread(id);
       await this.assertIdle(t.workspaceId, id);
-      const runner = await this.runner(t);
-      check();
-      await runner.send({ id: inputId, text, source });
-      if (t.title === '新会话' && this.store.threadTitle(id)?.mode === 'auto') {
-        this.store.renameInstance(t.id, titleOf(text));
-        this.threadChanged(t);
-      }
+      await this.sendInput(t, { id: inputId, text, source }, check);
       return { id: inputId };
     });
+  }
+  private async sendInput(thread: ThreadContext, input: Input, check: () => void = () => {}): Promise<void> {
+    const runner = await this.runner(thread);
+    check();
+    await runner.send(input);
+    if (thread.title === '新会话' && this.store.threadTitle(thread.id)?.mode === 'auto') {
+      this.store.renameInstance(thread.id, titleOf(input.text));
+      this.threadChanged(thread);
+    }
+    // 输入受理后即与主会话并行，标题材料包含尚未交给主模型的排队消息。
+    void this.titles?.refresh(thread.id);
   }
   cancel(id: string, inputId: string): Promise<void> {
     return this.controlThread(id, async () => {
@@ -726,7 +488,7 @@ export class Kite {
         const t = threads.findLast((t) => t.status === 'open');
         if (r.fresh && t) {
           this.adoptAfterTurn.add(t.id);
-          await (await this.runner(this.context(t.id))).send({ id: randomUUID(), text: conflictPrompt(w.branch!, r.files), source: 'kite' });
+          await this.sendInput(this.context(t.id), { id: randomUUID(), text: conflictPrompt(w.branch!, r.files), source: 'kite' });
         }
         return { status: 'conflict', files: r.files };
       });

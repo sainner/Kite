@@ -1,11 +1,15 @@
 /** 原生运行事件只在宿主内部流转；业务事件按实际归属标识工作区或线程。 */
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { CheckResult } from './check.ts';
-import type { RunnerState } from './runner.ts';
+import type { RunnerState } from './claude/runner.ts';
 import type { PluginInstance, WorkspaceStatus } from './model.ts';
 import type { HarnessEvent } from './harness/types.ts';
+import type { ClaudeState } from './claude/control.ts';
 
 export type RuntimeEvent =
+  | { type: 'claude.control'; state: ClaudeState }
+  | { type: 'claude.tool'; callId: string; stage: 'running' | 'finished'; at: number }
+  | { type: 'claude.output'; callId: string; text: string; limit: number }
   | { type: 'sdk'; message: SDKMessage }
   | { type: 'harness'; event: HarnessEvent }
   | { type: 'runner'; state: RunnerState; error?: string }

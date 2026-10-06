@@ -15,7 +15,7 @@ const USAGE = `用法：
   kite follow [线程]                  跟线程正文；省略时跟目录概要
   kite follow-workspace <工作区>      跟工作区操作事件
   kite interrupt <线程>               停止会话并退回排队消息
-  kite resume <线程>                  继续等待中的 harness 线程
+  kite resume <线程>                  继续等待中的线程
   kite recover <线程>                 确认旧执行已停止，随后用 resume 继续
   kite snapshots <工作区>               列出快照
   kite restore <工作区> <快照>          把工作树恢复到某一枚快照

@@ -1,19 +1,16 @@
 /**
- * check 工具：跑会话工作树里的 .kite/check（契约见 kite-onboard skill）。
+ * 项目检查执行器：跑会话工作树里的 .kite/check（契约见 kite-onboard skill）。
+ * Claude 的空工具基线暂不接入；保留执行与排队逻辑供后续宿主能力使用。
  * 怎么跑由这里定，项目的检查命令只管查什么、怎么报：
  * - KITE_BASE：取会话分支和主线的分叉点，会话里已经提交的改动也算进受影响的范围；
  * - KITE_LOG_DIR：每次检查一个日志目录，按会话留在 Kite 的目录里，App 能找到；
  * - 排队：一台机器上一次只跑一个检查；
- * - 结果发成 check 事件。
+ * - 返回结构化检查结果。
  */
-import { tool } from '@anthropic-ai/claude-agent-sdk';
-import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { z } from 'zod';
-import { gitTry, revParse } from './git.ts';
+import { gitTry, revParse } from './workspace/git.ts';
 import { runScript } from './script.ts';
-import type { ToolContext } from './tools.ts';
 
 const CHECK_TIMEOUT_MS = 10 * 60_000;
 /** 检查命令本该只输出结论；万一刷屏只留结尾，失败项和日志路径通常在那里。 */
@@ -40,10 +37,6 @@ export interface CheckResult {
 }
 
 const scriptOf = (worktree: string) => join(worktree, '.kite', 'check');
-
-export function hasCheck(worktree: string): boolean {
-  return existsSync(scriptOf(worktree));
-}
 
 /** 会话分支和主线（主文件夹当前的 HEAD）的分叉点。 */
 async function forkPoint(main: string, worktree: string): Promise<string | null> {
@@ -113,28 +106,4 @@ async function run(o: RunOptions): Promise<Omit<CheckResult, 'waited'>> {
     logDir: o.logDir ?? null,
     output, ...(r.stopped ? { stopped: r.stopped } : {}),
   };
-}
-
-/** 送回模型的文字：检查命令自己的输出，停下或没输出时补一句。 */
-function report(r: CheckResult): string {
-  const out = r.output.trim();
-  if (r.stopped === 'aborted') return '检查被打断。';
-  const text = r.stopped === 'timeout' ? ['检查超时，已停止。', out].filter(Boolean).join('\n')
-    : out || (r.ok ? '检查通过。' : `检查没通过，退出码 ${r.code}，没有输出。`);
-  return r.waited >= 1 ? `${text}\n（排队等了 ${Math.round(r.waited)} 秒，别的检查在跑）` : text;
-}
-
-export function checkTool(o: ToolContext) {
-  return tool(
-    'check',
-    '跑项目的检查（.kite/check），判断这个项目改坏了没有；代码项目通常是类型检查加受改动影响的测试。改完用它确认，通过才算完成。'
-      + '受影响的范围按这个会话相对主线的全部改动算，提交过的也算；在 Bash 里直接跑 .kite/check 只看还没提交的改动。',
-    { all: z.boolean().optional().describe('跑全部测试，不只是受影响的') },
-    async ({ all }, extra) => {
-      const logDir = join(o.checkLogs, `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 4)}`);
-      const r = await runCheck({ main: o.main, worktree: o.worktree, all, logDir, signal: (extra as { signal?: AbortSignal }).signal });
-      o.onCheck(r);
-      return { content: [{ type: 'text', text: report(r) }], ...(r.ok ? {} : { isError: true }) };
-    },
-  );
 }

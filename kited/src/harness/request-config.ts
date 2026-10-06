@@ -1,8 +1,8 @@
 /** 请求配置快照保存实际设置和工具声明；不会保存模型对象、执行闭包或凭据。 */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { executionGrantsSchema } from '../execution-grants.ts';
-import { pluginToolSourceSchema } from '../plugin-tools.ts';
+import { executionGrantsSchema } from '../execution/grants.ts';
+import { pluginToolSourceSchema } from '../plugins/tools.ts';
 import { contextSnapshotSchema, restoreContext } from './context/assembler.ts';
 import type { RequestSettings, RequestSnapshot, ThreadNotification, ToolDefinition } from './types.ts';
 

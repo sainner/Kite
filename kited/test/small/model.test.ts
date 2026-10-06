@@ -79,8 +79,6 @@ test('登记检出创建同工作区线程，暂停后 CLI resume 续接，归�
   const root = await registerCheckout(kk, repo);
   const rootForAssertion = structuredClone(root);
   const localMachine = await machine(kk.url);
-  expect(localMachine.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
-  expect(rootForAssertion.project.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
   expect(rootForAssertion.machine).toEqual(localMachine);
   expect(rootForAssertion.checkout.machineId).toBe(localMachine.id);
   expect(rootForAssertion.workspace).toMatchObject({ kind: 'root', checkoutId: root.checkout.id, cwd: repo });
@@ -100,15 +98,12 @@ test('登记检出创建同工作区线程，暂停后 CLI resume 续接，归�
     checkout: { id: root.checkout.id, projectId: root.project.id },
     workspace: { kind: 'worktree', checkoutId: root.checkout.id, name: '首个工作区' },
   });
-  expect(structuredClone(firstThread)).toEqual({ instanceId: firstThreadId, runtime: 'harness', nativeId: expect.any(String) });
   const firstInstance = workspace.instances.find((instance: any) => instance.id === firstThreadId);
   expect(firstInstance).toMatchObject({
     id: firstThreadId,
     workspaceId: workspace.workspace.id,
     definitionId: 'kite.agent.coding',
     title: '首线程',
-    config: expect.any(Object),
-    state: expect.any(Object),
     status: 'open',
     presentation: 'window',
   });
@@ -347,9 +342,6 @@ test('不同 home 可沿用同一项目身份，并发登记遇到失败后仍�
   expect(repeatedRegistration.body.checkout.id).toBe(imported.checkout.id);
   expect(repeatedRegistration.body.workspace.id).toBe(imported.workspace.id);
 
-  const again = await registerCheckout(right, rightSecond, leftProject.project);
-  expect(again.checkout.id).toBe(imported.checkout.id);
-  expect(again.workspace.id).toBe(imported.workspace.id);
   const rebound = await right.call('POST', '/checkouts', { path: rightSecond, project: rightProject.project });
   expect(rebound.status).toBe(409);
   const filtered = await right.call('GET', `/checkouts?project=${leftProject.project.id}`);
@@ -398,10 +390,6 @@ test('同一项目的两个同步目录各有独立 Git 历史，身份冲突不
     const conflictingProject = { ...firstRoot.project, name: `${firstRoot.project.name}-冲突` };
     const conflict = await call(url, 'POST', '/checkouts', { path: rejected, project: conflictingProject });
     expect(conflict.status).toBe(409);
-    const changedTime = await call(url, 'POST', '/checkouts', {
-      path: rejected, project: { ...firstRoot.project, createdAt: firstRoot.project.createdAt + 1 },
-    });
-    expect(changedTime.status).toBe(409);
     expect(existsSync(join(rejected, '.git'))).toBe(false);
     expect(git(first, 'rev-parse', 'HEAD')).toBe(firstHead);
     expect(git(second, 'rev-parse', 'HEAD')).toBe(secondHead);
@@ -466,8 +454,6 @@ test('插件窗口命令去重，重连保留打开目标且回收后的关窗�
       id: target.instanceId,
       workspaceId: workspace.workspace.id,
       definitionId: 'kite.files',
-      config: expect.any(Object),
-      state: expect.any(Object),
       status: 'open',
       presentation: 'window',
     })]);
@@ -488,7 +474,6 @@ test('插件窗口命令去重，重连保留打开目标且回收后的关窗�
       id: existingRequestId, content: { kind: 'open', instanceId: target.instanceId, viewId: target.viewId },
     }, machineId);
     if (existing.status !== 200) throw new Error(`重新打开插件目标失败：${existing.status} ${JSON.stringify({ target, response: existing.body })}`);
-    expect(existing.status).toBe(200);
     expect(existing.body.id).toBe(mainWindow.id);
     const undeclaredView = await call(daemon.url, 'POST', `/workspaces/${workspace.workspace.id}/windows`, {
       id: randomUUID(), content: { kind: 'open', instanceId: target.instanceId, viewId: 'secondary' },

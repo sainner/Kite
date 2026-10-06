@@ -1,5 +1,5 @@
 /** 主循环的公开契约。模型传输、具体工具和工作树操作由宿主注入。 */
-import type { DiffReference } from '../file-diffs.ts';
+import type { DiffReference } from '../workspace/file-diffs.ts';
 import type { ContextDefinition, ContextSnapshot, ContextSource } from './context/types.ts';
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type JsonObject = { [key: string]: Json };
@@ -49,12 +49,12 @@ export interface ThreadNotification {
 }
 
 export interface RequestSettings {
-  execution?: { revision: string; grants: import('../execution-grants.ts').ExecutionGrants };
+  execution?: { revision: string; grants: import('../execution/grants.ts').ExecutionGrants };
   model?: { model: string; reasoning: string };
   maxRequestsPerTurn?: number;
   agent?: { definitionId: string; revision: string };
   allowedTools?: string[];
-  pluginTools?: import('../plugin-tools.ts').PluginToolSource[];
+  pluginTools?: import('../plugins/tools.ts').PluginToolSource[];
 }
 
 export interface RequestSnapshot {

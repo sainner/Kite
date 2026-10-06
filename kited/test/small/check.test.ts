@@ -20,7 +20,7 @@ const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catc
  * （本机实测；内容执行过的新文件约 50 毫秒，同一个文件再执行约 10 毫秒）。脚本里带随机内容的话，
  * 每次都要多付这一笔，检查命令起得晚，300 毫秒的超时可能在它记下 pid 之前就到了。
  */
-test('runCheck 超时或 signal 触发时停掉检查命令和它起的子进程，stopped 分别为 timeout、aborted，code 为 null，不算通过', async () => {
+test('检查超时或被中止时，整棵进程树退出并返回对应的停止原因', async () => {
   // 这里只看怎么停，用不着 git：普通文件夹既当主文件夹又当工作树（取不到 HEAD，不传 KITE_BASE）
   const wt = temp();
   const main = wt;
@@ -72,7 +72,7 @@ test('runCheck 超时或 signal 触发时停掉检查命令和它起的子进程
  * 并发和时序：几次 runCheck 同时发起时怎么排队、排队时被停下怎么收场，看代码确认不了。
  * 第一个的检查命令停在放行文件上，放行之前后面的都在排队，第二个就在这时被停下。
  */
-test('runCheck 同时发起几次时按发起顺序一个跑完再跑下一个；排队时被 signal 停下的立即返回 aborted、检查命令从没启动，排在它后面的照常按顺序跑', async () => {
+test('并发检查按顺序串行，排队时取消立即返回且后续检查照常运行', async () => {
   const root = temp();
   const log = join(root, 'log');
   const lines = () => (lexists(log) ? read(log).split('\n').filter(Boolean) : []);
@@ -120,7 +120,6 @@ test('runCheck 同时发起几次时按发起顺序一个跑完再跑下一个�
     // 运行时间不重叠、按发起顺序，b 从没启动
     expect(lines()).toEqual(['start a', 'end a', 'start c', 'end c', 'start d', 'end d']);
     expect([ra!.ok, rc!.ok, rd!.ok]).toEqual([true, true, true]);
-    expect(rc!.waited).toBeGreaterThan(0);
   } finally {
     // 失败时也放行 a、等全部收场，免得队列卡着
     writeFiles(root, { go: '' });

@@ -8,10 +8,10 @@ import { parseArgs } from 'node:util';
 import { defaultAuthFile, readSubscriptionCredentials } from './harness/auth.ts';
 import { ChatGPTModel } from './harness/chatgpt.ts';
 import { openThreadHost, readThreadMetadata } from './harness/thread-host.ts';
-import { harnessPolicy } from './harness/execution-policy.ts';
+import { harnessPolicy } from './execution/policy.ts';
 import { projectContext } from './harness/context/project.ts';
 import type { HarnessEvent } from './harness/types.ts';
-import { defaultAgentModel } from './agent-models.ts';
+import { defaultAgentModel } from './agents/models.ts';
 
 const USAGE = `用法：
   bun run harness --cwd <目录>                     开始对话

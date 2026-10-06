@@ -2,7 +2,7 @@
 name: table-font-source
 description: 表格使用系统衬线体，iPhone 缺少的中文宋体由苹果按需下载并缓存
 metadata:
-  type: project
+  type: decision
 ---
 
 表格使用系统默认衬线体，行内代码始终保持等宽。2026-10-03，用户明确选择由苹果按需下载 iPhone 上缺少的宋体，首次联网取得后由系统缓存。

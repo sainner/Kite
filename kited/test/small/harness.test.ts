@@ -18,7 +18,7 @@ const configurationRecord = (model: string, seq = 1): Extract<JournalRecord, { t
 });
 
 // 流消费、工具副作用、同步文件写入和宿主快照四方交接：不能靠各函数单独正确来保证。
-test('完整调用先落盘再执行，流未结束就启动，工具和快照结束后才请求下一轮', async () => {
+test('工具调用先落盘并在流结束前启动，下一请求等待工具与快照', async () => {
   const root = h.root();
   const model = new ManualModel();
   const toolDone = h.gate(success('写入完成'));
@@ -66,7 +66,7 @@ test('完整调用先落盘再执行，流未结束就启动，工具和快照�
 }, 1000);
 
 // 工具完成顺序故意与调用顺序不同，验证并发队列、排他屏障与上下文投影配合。
-test('连续并发工具一起启动但不能越过排他调用，历史始终按调用顺序排列', async () => {
+test('并发工具遵守排他屏障，历史保留调用顺序', async () => {
   const model = new ManualModel();
   const starts = new Seen<string>();
   const gates = new Map(['A', 'B', 'C', 'D'].map((id) => [id, h.gate(success(id))]));
@@ -143,7 +143,7 @@ test('最终文字后的插话和停止反馈继续同回合，收尾期间的�
 }, 1000);
 
 // 停止信号先到，受管工具、快照和回合收尾稍后确认；用户停止退还队列，shutdown 保留队列。
-test('用户停止等待工具与收尾后退还排队输入，shutdown 重开仍保留未封定输入', async () => {
+test('用户停止等收尾后退还输入，关闭重开保留未封定输入', async () => {
   const root = h.root();
   const model = new ManualModel();
   const toolStarted = deferred<AbortSignal>();
@@ -234,7 +234,7 @@ test('用户停止等待工具与收尾后退还排队输入，shutdown 重开�
 }, 1000);
 
 // send 的接收、请求封定、停止记录和重开交错；同一停止 ID 必须重放原结果，迟到输入不能入模型。
-test('停止按顺序退还未封定及未确认输入，同 ID 重试与重开不重复执行', async () => {
+test('停止按序退还输入，同 ID 重试与重开不重复执行', async () => {
   const root = h.root();
   const model = new ManualModel();
   const { runner, journal } = h.runner(root, { model });
@@ -278,7 +278,7 @@ test('停止按顺序退还未封定及未确认输入，同 ID 重试与重开�
 }, 1000);
 
 // 流异常会与排队输入/持久化交错；失败必须停住，不能因为有文字或 completed 就误判成功。
-test('断流和完成后多余事件都会暂停，工具或回合记录写失败就进入恢复阻塞', async () => {
+test('异常流暂停请求，写盘失败阻塞恢复与副作用', async () => {
   for (const extraAfterCompleted of [false, true]) {
     const model = new ManualModel();
     let executed = 0;
@@ -363,7 +363,7 @@ test('断流和完成后多余事件都会暂停，工具或回合记录写失�
 }, 1000);
 
 // 通过公开 append 写入真实崩溃事实，验证重新读盘、补结果与上下文重建，绝不启动旧副作用。
-test('恢复复用已保存结果并补未知和未执行，宿主确认后仍须显式继续且不重跑工具', async () => {
+test('崩溃恢复补齐工具结果，确认后仍须继续且不重跑副作用', async () => {
   const root = h.root();
   const path = join(root, 'journal.jsonl');
   const journal = h.open(path);
@@ -416,17 +416,6 @@ test('恢复复用已保存结果并补未知和未执行，宿主确认后仍�
   expect(executed).toBe(0);
   resumed.response.complete();
   await recovered.runner.settled();
-
-  const legacyRoot = h.root();
-  const legacyPath = join(legacyRoot, 'journal.jsonl');
-  const oldBytes = [
-    { version: 1, seq: 1, at: 1, type: 'turn.started', turnId: 'old-recovery-turn' },
-    { version: 1, seq: 2, at: 2, type: 'turn.finished', turnId: 'old-recovery-turn',
-      outcome: { kind: 'needs_recovery', message: '旧版恢复提示' } },
-  ].map((record) => JSON.stringify(record)).join('\n') + '\n';
-  writeFileSync(legacyPath, oldBytes);
-  expect(() => new FileJournal(legacyPath)).toThrow();
-  expect(readFileSync(legacyPath, 'utf8')).toBe(oldBytes);
 }, 1000);
 
 // Bun/Node 文件 IO 的真实截断、复制与重新追加语义，验证故障文件不会悄悄丢中间记录。
@@ -457,7 +446,7 @@ test('JSONL 尾部半行先保留诊断副本再修复，中间损坏则拒绝�
 });
 
 // 文件尾行可能尚未写完，且写入器已持锁；只读查询必须保留字节，首次配置后的正文交给恢复读取校验。
-test('首次配置查询忽略未换行尾行且不争写锁，后续损坏留到 journal 恢复时校验', () => {
+test('首次配置查询不改尾行、不争写锁，并跨块读取 UTF-8', () => {
   const root = h.root();
   const path = join(root, 'query.jsonl');
   const index = new JournalIndex();
@@ -520,7 +509,7 @@ test('首次配置查询忽略未换行尾行且不争写锁，后续损坏留�
 }, 1000);
 
 // 真实文件追加、同 inode 改写与原子替换会改变 stat 版本；缓存中的 undefined 和已找到的 ID 都须重验。
-test('首次配置缓存随补齐尾行、同 inode 改写截断和原子换文件更新，重启可重建', () => {
+test('首次配置缓存跟随追加、原地改写和换文件更新', () => {
   const root = h.root();
   const path = join(root, 'changing.jsonl');
   const index = new JournalIndex();

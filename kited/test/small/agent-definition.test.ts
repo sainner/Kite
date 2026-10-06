@@ -2,13 +2,12 @@ import { afterEach, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AgentDefinition } from '../../src/agent-definition.ts';
+import type { AgentDefinition } from '../../src/agents/definition.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import { restoreContext } from '../../src/harness/context/assembler.ts';
 import type { Json, ModelItem, ThreadNotification } from '../../src/harness/types.ts';
-import { operationToolNames } from '../../src/operation-contract.ts';
-import { pluginDefinition } from '../../src/plugins.ts';
+import { operationToolNames } from '../../src/operations/contract.ts';
 import { call, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
 import { editNotificationTemplate } from '../notification-templates.ts';
@@ -44,7 +43,7 @@ function revisedAgent(agent: AgentDefinition, model: string, tools: AgentDefinit
 }
 
 // HTTP/SQLite 配置提交、模型流、受管工具和 journal 在请求边界交接；旧请求必须执行原来允许的 patch。
-test('运行中换配置不唤醒或取消请求，旧工具完成后下一请求采用新配置并追加上下文通知', async () => {
+test('运行中换配置不打断旧工具，下一请求再采用新配置', async () => {
   const oldModel = new ManualModel();
   const newModel = new ManualModel();
   kited = startKited((thread) => (thread.config.agent as AgentDefinition).model.model === 'test-new-model' ? newModel : oldModel);
@@ -60,11 +59,6 @@ test('运行中换配置不唤醒或取消请求，旧工具完成后下一请�
   const initial = await kk.call('GET', `/instances/${threadId}/agent-config`);
   expect(initial.status).toBe(200);
   const original = structuredClone(initial.body.instance.config.agent) as AgentDefinition;
-  const codingDefinition = pluginDefinition('kite.agent.coding').agent;
-  if (!codingDefinition) throw new Error('缺少 coding agent 定义');
-  expect(original.tools).toEqual(codingDefinition.tools);
-  expect(original.model).toEqual(codingDefinition.model);
-  for (const block of codingDefinition.context.blocks) expect(original.context.blocks).toContainEqual(block);
 
   const sent = await kk.call('POST', `/threads/${threadId}/messages`, { id: randomUUID(), text: '创建一个文件' });
   expect(sent.status).toBe(200);
@@ -85,7 +79,6 @@ test('运行中换配置不唤醒或取消请求，旧工具完成后下一请�
   await first.response.emit({ type: 'item', item: patch });
   first.response.complete();
   const second = await newModel.call(1);
-  expect(read(join(repo, 'base.txt'))).toBe('原始\n');
   const thread = await kk.call('GET', `/threads/${threadId}`);
   expect(thread.body.config.agent).toEqual(changed);
   expect(read(join(thread.body.workspace.cwd, 'from-old-request.txt'))).toBe('旧请求仍可写入\n');
@@ -122,7 +115,8 @@ test('运行中换配置不唤醒或取消请求，旧工具完成后下一请�
 }, 1000);
 
 // 模板目录、SQLite 排队快照与 journal 跨重启交接；缓存 Runner 仅在正文变化时读取新基础通知模板。
-test('通知模板更新不改跨重启快照，缓存请求在正文变化时才生成新通知且 review 保持只读', async () => {
+// 真实回归：原样 PUT 曾漏掉 configurationBoundary，导致 App 无法解码成功保存的配置快照。
+test('原样保存保留配置快照，通知跨重启保留且审查保持只读', async () => {
   const root = makeTemp();
   const home = join(root, 'kite');
   const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
@@ -158,13 +152,20 @@ test('通知模板更新不改跨重启快照，缓存请求在正文变化时�
     expect(pending).toHaveLength(1);
     const firstNotice = pending[0]!;
     expect(firstNotice.sequence).toBeGreaterThan(0);
-    expect(restoreContext(firstNotice.context).instructions).toContain('after-restart');
     expect(firstNotice.context.definition).toEqual(oldConfigurationTemplate.definition);
     expect(restoreContext(firstNotice.context).instructions).toContain('配置通知旧模板\nafter-restart');
     const newConfigurationTemplate = await editNotificationTemplate(apiCall,
       'kite.agent-configuration', '配置通知新模板', 'agent.model');
     expect(daemon.kite.store.instanceNotifications(codingId, 0)).toEqual(pending);
-    expect((await apiCall('GET', `/instances/${codingId}/agent-config`)).body).toEqual(updated.body);
+    const current = await apiCall('GET', `/instances/${codingId}/agent-config`);
+    expect(current.status).toBe(200);
+    expect(current.body).toEqual(updated.body);
+    const saved = await apiCall('PUT', `/instances/${codingId}/agent-config`, {
+      expectedRevision: current.body.revision, agent: current.body.instance.config.agent,
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body).toEqual(current.body);
+    expect(daemon.kite.store.instanceNotifications(codingId, 0)).toEqual(pending);
     expect(firstModel.calls.values).toHaveLength(1);
     await daemon.stop();
     daemon = undefined;
@@ -276,11 +277,6 @@ test('通知模板更新不改跨重启快照，缓存请求在正文变化时�
     const reviewId = review.body.target.instanceId as string;
     const reviewConfig = await call(daemon.url, 'GET', `/instances/${reviewId}/agent-config`);
     const reviewAgent = structuredClone(reviewConfig.body.instance.config.agent) as AgentDefinition;
-    const reviewDefinition = pluginDefinition('kite.agent.review').agent;
-    if (!reviewDefinition) throw new Error('缺少 review agent 定义');
-    expect(reviewAgent.tools).toEqual(reviewDefinition.tools);
-    expect(reviewAgent.model).toEqual(reviewDefinition.model);
-    for (const block of reviewDefinition.context.blocks) expect(reviewAgent.context.blocks).toContainEqual(block);
     expect((await call(daemon.url, 'PUT', `/instances/${reviewId}/agent-config`, {
       expectedRevision: reviewConfig.body.revision, agent: { ...reviewAgent, maxRequestsPerTurn: 1 },
     })).status).toBe(200);

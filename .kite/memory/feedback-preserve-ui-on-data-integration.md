@@ -1,5 +1,5 @@
 ---
-name: preserve-ui-on-data-integration
+name: feedback-preserve-ui-on-data-integration
 description: App 接真实数据时保留已做好的界面结构，不另换空状态页面或控件布局
 metadata:
   type: feedback

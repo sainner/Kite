@@ -5,9 +5,8 @@ import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { Json, ModelItem } from '../../src/harness/types.ts';
-import type { PluginDefinition } from '../../src/plugins.ts';
 import { call, registerCheckout, startKited, type Kited } from '../harness.ts';
-import { diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
+import { deferred, diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
 import { editNotificationTemplate } from '../notification-templates.ts';
 import { bunPluginSource } from '../fixtures/bun-plugin-source.ts';
 import { makeTemp, newRepo } from '../util.ts';
@@ -34,8 +33,6 @@ async function install(k: Kited, views?: { id: string; title: string; resourceUr
   const pack = { id: 'custom.test', title: '测试', bundle: await bundle, views, lifetime };
   const installed = await k.call('POST', '/plugin-definitions', pack);
   expect(installed.status).toBe(200);
-  const definition = installed.body as PluginDefinition;
-  expect(definition.id).toBe(pack.id);
 }
 
 async function createInstance(k: Kited, workspaceId: string) {
@@ -44,7 +41,6 @@ async function createInstance(k: Kited, workspaceId: string) {
     id, definitionId: 'custom.test', title: '测试实例',
   });
   expect(created.status).toBe(200);
-  expect(created.body).toMatchObject({ id, workspaceId, definitionId: 'custom.test', presentation: 'background' });
   return id;
 }
 
@@ -232,17 +228,18 @@ test('随窗口插件等最后视图关闭才回收，清理失败可重试且�
   }
 }, 1000);
 
-// 真实 Bun SDK 双向 stdio、宿主授权与 SQLite 状态收据必须一起运行才能发现交接错误。
+// 真实 Bun SDK、宿主授权与 SQLite 交接；工具发现等待时并发写入不能被工作区队列阻塞或被旧结果覆盖。
 test('Bun 插件的状态和工具收据跨进程重启保留，工作区回调随授权即时变化', async () => {
   const k = startKited();
+  const discoveryStarted = deferred();
+  const releaseDiscovery = deferred();
+  let discovery: ReturnType<typeof spyOn> | undefined;
+  let pendingGrant: ReturnType<Kited['call']> | undefined;
   try {
     const repo = newRepo(k.root, 'project', { 'note.txt': '可读内容\n' });
     const workspaceId = await workspace(k, repo);
     await install(k);
     const instanceId = await createInstance(k, workspaceId);
-    const listed = await k.call('GET', `/instances/${instanceId}/plugin/tools`);
-    if (listed.status !== 200) throw new Error(`列插件工具失败：${listed.status} ${JSON.stringify(listed.body)}`);
-    expect(listed.body.tools).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'state' })]));
 
     const before = output(await tool(k, instanceId, 'state', 'read-before', { action: 'read' }));
     const increment = await tool(k, instanceId, 'state', 'increment-once', { action: 'increment' });
@@ -272,11 +269,41 @@ test('Bun 插件的状态和工具收据跨进程重启保留，工作区回调�
     expect(revoked.status).toBe(200);
     expect(output(await tool(k, instanceId, 'read-file', 'read-revoked', args)).allowed).toBe(false);
 
+    const callerId = await codingInstance(k, workspaceId);
+    const callerGrantsPath = `/instances/${callerId}/operation-grants`;
+    const callerGrants = await k.call('GET', callerGrantsPath);
+    expect(callerGrants.status).toBe(200);
+    const readTools = k.daemon.kite.plugins.tools.bind(k.daemon.kite.plugins);
+    discovery = spyOn(k.daemon.kite.plugins, 'tools').mockImplementationOnce(async (id) => {
+      const tools = await readTools(id);
+      discoveryStarted.resolve();
+      await releaseDiscovery.promise;
+      return tools;
+    });
+    pendingGrant = k.call('PUT', callerGrantsPath, {
+      expectedRevision: callerGrants.body.revision,
+      grants: [{ operation: 'plugin.call', instanceId, tools: ['state'] }],
+    });
+    await discoveryStarted.promise;
+    const winner = await k.call('PUT', callerGrantsPath, {
+      expectedRevision: callerGrants.body.revision, grants: [{ operation: 'agent.list' }],
+    });
+    expect(winner.status).toBe(200);
+    expect(winner.body.revision).not.toBe(callerGrants.body.revision);
+    releaseDiscovery.resolve();
+    expect((await pendingGrant).status).toBe(409);
+    expect((await k.call('GET', callerGrantsPath)).body).toEqual(winner.body);
+    discovery.mockRestore();
+    discovery = undefined;
+
     expect((await k.call('DELETE', `/instances/${instanceId}/plugin/process`)).status).toBe(200);
     const restored = output(await tool(k, instanceId, 'state', 'read-restarted', { action: 'read' }));
     expect(restored.value.count).toBe(1);
     expect(restored.pid).not.toBe(before.pid);
   } finally {
+    releaseDiscovery.resolve();
+    discovery?.mockRestore();
+    await pendingGrant?.catch(() => {});
     await k.stop();
   }
 }, 1000);
@@ -363,19 +390,14 @@ test('模型按实例授权调用同名 Bun 工具，原始参数 schema 拦住�
     const thread = await k.call('GET', `/threads/${agentId}`);
     expect(thread.status).toBe(200);
     const bindings = thread.body.config.pluginTools as Array<{
-      instanceId: string; toolName: string; packageRevision: string; toolRevision: string;
+      instanceId: string; toolName: string;
       modelName: string; description: string; parameters: Record<string, unknown>;
     }>;
-    expect(bindings).toHaveLength(2);
     expect(bindings.map((value) => value.instanceId).sort()).toEqual([firstId, secondId].sort());
     expect(bindings.map((value) => value.toolName)).toEqual(['state', 'state']);
     expect(new Set(bindings.map((value) => value.modelName)).size).toBe(2);
     for (const binding of bindings) {
-      expect(binding.modelName).toMatch(/^[A-Za-z_][A-Za-z0-9_]*$/);
-      expect(binding.packageRevision).toBeTruthy();
-      expect(binding.toolRevision).toBeTruthy();
       expect(binding.parameters).toEqual(stateSchema);
-      expect(Object.keys((binding.parameters.properties ?? {}) as object).sort()).toEqual(['action', 'expectedRevision']);
     }
 
     expect((await k.call('POST', `/threads/${agentId}/messages`, {

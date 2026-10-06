@@ -2,10 +2,10 @@ import { expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
-import { runCommand } from '../../src/harness/command.ts';
-import { harnessPolicy } from '../../src/harness/execution-policy.ts';
-import { localTools } from '../../src/harness/local-tools.ts';
-import { workspacePolicy } from '../../src/sandbox.ts';
+import { runCommand } from '../../src/execution/command.ts';
+import { harnessPolicy } from '../../src/execution/policy.ts';
+import { localTools } from '../../src/execution/local-tools.ts';
+import { workspacePolicy } from '../../src/execution/sandbox.ts';
 import { gitWorktree, newRepo, useTemp } from '../util.ts';
 
 const temp = useTemp();

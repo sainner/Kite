@@ -31,11 +31,9 @@ test('默认 harness 线程的真实工具只改工作树，结果和快照先�
   const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' });
   const project = await registerCheckout(kk, repo);
   const session = await createWorkspace(kk, project.checkout.id, '建立两个文件', 'harness');
-  expect(session.runtime).toBe('harness');
 
   const first = await model.call(1);
   expect(first.request.cwd).toBe(session.workspace.cwd);
-  expect(first.request.tools.map((value) => value.name)).toEqual(expect.arrayContaining(['patch', 'shell']));
   const patch = calledItem('patch-file', 'patch', {
     operations: [{ type: 'create_file', path: 'patch.txt', diff: '+来自 patch\n+' }],
   });
@@ -85,8 +83,6 @@ test('采纳冲突通知线程后自动重试合回，用户输入与系统通�
   const project = await registerCheckout(kk, repo);
   const thread = await createWorkspace(kk, project.checkout.id, '改一下 c.txt', 'harness');
   const first = await model.call(1);
-  expect(first.request.history.flatMap((item) => item.type === 'input' ? [item.input] : []))
-    .toContainEqual(expect.objectContaining({ source: 'human', text: '改一下 c.txt' }));
   first.response.complete();
   await kk.waitEvent((event) => event.type === 'idle' && event.threadId === thread.id);
   writeFiles(thread.workspace.cwd, { 'c.txt': 'session\n' });

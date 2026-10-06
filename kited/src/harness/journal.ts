@@ -3,7 +3,7 @@ import { closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, 
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { diffReferenceSchema } from '../file-diffs.ts';
+import { diffReferenceSchema } from '../workspace/file-diffs.ts';
 import { contextSnapshotSchema } from './context/assembler.ts';
 import { notificationSchema, requestSnapshotSchema } from './request-config.ts';
 import type { Journal, JournalEvent, JournalRecord } from './types.ts';

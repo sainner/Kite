@@ -4,9 +4,9 @@ import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { FileJournal } from './journal.ts';
 import { HarnessRunner } from './runner.ts';
-import { localTools } from './local-tools.ts';
-import { processGroupAlive } from './command.ts';
-import { commandEnvironment, workspacePolicy, type ExecutionPolicy } from '../sandbox.ts';
+import { localTools } from '../execution/local-tools.ts';
+import { processGroupAlive } from '../execution/command.ts';
+import { commandEnvironment, workspacePolicy, type ExecutionPolicy } from '../execution/sandbox.ts';
 import type { HarnessRequest, RequestSettings, HarnessOptions, ThreadRunner, Tool } from './types.ts';
 
 export interface ThreadHostOptions extends Pick<HarnessOptions, 'onEvent' | 'afterTools' | 'afterTurn' | 'beforeStop' | 'startPaused'> {

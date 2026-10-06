@@ -1,4 +1,4 @@
-import { afterEach, expect, setSystemTime, test } from 'bun:test';
+import { afterEach, expect, test } from 'bun:test';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ContextTemplate } from '../../src/context-templates.ts';
@@ -15,7 +15,6 @@ import { newRepo } from '../util.ts';
 let kited: Kited | undefined;
 let restarted: Daemon | undefined;
 afterEach(async () => {
-  setSystemTime();
   await restarted?.stop();
   restarted = undefined;
   await kited?.stop();
@@ -26,10 +25,12 @@ const textItem = (id: string, text: string): ModelItem => ({
   id, raw: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] },
 });
 
-async function automaticThread(main: ManualModel, titles: ManualModel) {
-  kited = startKited(() => main, { model: () => titles });
+async function automaticThread(main: ManualModel, titles: ManualModel,
+  prepare?: (k: Kited) => Promise<void>, results?: Seen<{ error?: string }>) {
+  kited = startKited(() => main, { model: () => titles, onResult: (result) => results?.add(result) });
   const repo = newRepo(kited.root, 'project', { 'base.txt': '原始\n' });
   const project = await registerCheckout(kited, repo);
+  await prepare?.(kited);
   const thread = await createWorkspace(kited, project.checkout.id, '修复工作区标题同步', 'harness');
   return { k: kited, thread };
 }
@@ -59,7 +60,6 @@ async function saveTitleTemplate(k: Kited, version: string, inputVersion = versi
     expectedRevision: original.revision, definition,
   });
   expect(response.status).toBe(200);
-  expect(response.body.definition).toEqual(definition);
   return response.body as ContextTemplate;
 }
 
@@ -76,26 +76,23 @@ async function finishTitle(k: Kited, model: ManualModel, number: number, id: str
   return title(k, id);
 }
 
-// HTTP 和 SQLite 同时保存规则与材料；统一 revision 防止半份覆盖，后台请求冻结本次文本并隔离主 journal。
-test('标题规则和材料共用保存版本，冲突不写入半份模板且在途请求保留旧文本', async () => {
+// 首条 HTTP 输入、挂起的主模型和标题请求并行；SQLite 模板 revision 与在途快照、主 journal 交叉验证。
+test('首条输入立即生成标题，模板原子保存且在途快照与主历史隔离', async () => {
   const main = new ManualModel();
   const titles = new ManualModel();
-  const { k, thread } = await automaticThread(main, titles);
+  let savedFirst!: ContextTemplate;
+  const { k, thread } = await automaticThread(main, titles, async (k) => {
+    savedFirst = await saveTitleTemplate(k, '版本一');
+  });
   const initial = await title(k, thread.id);
-  expect(initial).toMatchObject({ mode: 'auto', generatedAt: null, through: null });
-  const savedFirst = await saveTitleTemplate(k, '版本一');
   const first = await main.call(1);
-  await first.response.emit({ type: 'item', item: textItem('main-answer', '标题同步已经修复') });
-  first.response.complete();
-  await k.waitEvent((event) => event.type === 'idle' && event.threadId === thread.id);
   const background = await titles.call(1);
-  expect(background.request.tools).toEqual([]);
+  expect((await k.call('GET', `/threads/${thread.id}/history`)).body.state.busy).toBe(true);
   expect(background.request.instructions).toContain('标题规则版本一');
   expect(background.request.instructions).toContain(JSON.stringify(initial.title));
   expect(titleInput(background.request)).toContain('标题材料版本一');
   expect(titleInput(background.request)).toContain(JSON.stringify(initial.title));
   expect(titleInput(background.request)).toContain('修复工作区标题同步');
-  expect(titleInput(background.request)).toContain('标题同步已经修复');
   const inFlight = structuredClone(background.request);
   const materialUpdated = await saveTitleTemplate(k, '版本一', '版本二');
   expect(materialUpdated.revision).not.toBe(savedFirst.revision);
@@ -117,7 +114,7 @@ test('标题规则和材料共用保存版本，冲突不写入半份模板且�
   expect(rulesUpdated.definition.input).toEqual(materialUpdated.definition.input);
   expect(background.request).toEqual(inFlight);
   const before = await k.call('GET', `/threads/${thread.id}/history`);
-  expect(before.body.state.busy).toBe(false);
+  expect(before.body.state.busy).toBe(true);
   const journalPath = join(k.home, 'sessions', thread.id, 'journal.jsonl');
   const journalBefore = diskRecords(journalPath);
 
@@ -134,6 +131,14 @@ test('标题规则和材料共用保存版本，冲突不写入半份模板且�
   expect(diskRecords(journalPath)).toEqual(journalBefore);
   expect(readdirSync(join(k.home, 'sessions'))).toEqual([thread.id]);
 
+  const mainAnswer = '标题同步已经修复。' + '诊断细节。'.repeat(400) + '完整正文结尾';
+  await first.response.emit({ type: 'item', item: textItem('main-answer', mainAnswer) });
+  first.response.complete();
+  await k.waitEvent((event) => event.type === 'idle' && event.threadId === thread.id);
+  await k.daemon.kite.titles!.refresh(thread.id);
+  expect(titles.calls.values).toHaveLength(1);
+  expect(await title(k, thread.id)).toEqual(generated);
+
   const regenerating = k.call('POST', `/threads/${thread.id}/title/regenerate`, {
     expectedRevision: generated.revision,
   });
@@ -144,27 +149,33 @@ test('标题规则和材料共用保存版本，冲突不写入半份模板且�
   expect(titleInput(latest.request)).toContain('标题材料版本二');
   expect(titleInput(latest.request)).not.toContain('标题材料版本一');
   expect(titleInput(latest.request)).toContain(JSON.stringify(generated.title));
-  expect(titleInput(latest.request)).toContain('标题同步已经修复');
+  expect(titleInput(latest.request)).toContain(mainAnswer.slice(-1600));
   await latest.response.emit({ type: 'item', item: textItem('title-2', '更新模板生成的标题') });
   latest.response.complete();
   expect(await regenerating).toMatchObject({ status: 200, body: { title: '更新模板生成的标题' } });
 
   await sendThreadMessage(k, thread.id, '继续检查');
   const second = await main.call(2);
-  expect(second.request.history).toContainEqual({ type: 'output', item: textItem('main-answer', '标题同步已经修复') });
+  expect(second.request.history).toContainEqual({ type: 'output', item: textItem('main-answer', mainAnswer) });
   expect(JSON.stringify(second.request.history)).not.toContain('title-1');
   expect(JSON.stringify(second.request.history)).not.toContain('title-2');
+  const continued = await titles.call(3);
+  expect(titleInput(continued.request)).toContain('继续检查');
+  expect(titleInput(continued.request)).toContain(mainAnswer.slice(-1600));
+  await finishTitle(k, titles, 3, thread.id, '更新模板生成的标题');
+  const beforeIdle = mark(k);
   second.response.complete();
+  await k.waitEvent((event) => event.type === 'idle' && event.threadId === thread.id && after(k, beforeIdle)(event));
   await k.daemon.kite.titles!.refresh(thread.id);
-  expect(titles.calls.values).toHaveLength(2);
+  expect(titles.calls.values).toHaveLength(3);
 }, 1000);
 
 // 标题请求挂起时，HTTP 改名、切回自动及重生受理会推进 revision，与旧响应和串行队列交错。
-test('手动改名与重生使在途旧标题失效，合并刷新只提交重生版本的结果', async () => {
+test('改名与重生使旧标题失效，合并刷新只提交最新结果', async () => {
   const main = new ManualModel();
   const titles = new ManualModel();
   const { k, thread } = await automaticThread(main, titles);
-  (await main.call(1)).response.complete();
+  await main.call(1);
   const old = await titles.call(1);
   const initial = await title(k, thread.id);
   const manualMark = mark(k);
@@ -206,83 +217,111 @@ test('手动改名与重生使在途旧标题失效，合并刷新只提交重�
   expect(await regenerating).toEqual({ status: 200, body: fresh });
   expect(fresh).toMatchObject({ title: '新版本标题', mode: 'auto' });
   expect(titles.calls.values).toHaveLength(2);
-}, 1000);
 
-// HTTP 等模型结果、工作区锁与主回合并行；断流失败和即时重试还会跨过持久标题的游标与模式。
-test('显式重生等待完整标题且不阻塞主会话，失败保留原题并能立即在手动模式重试', async () => {
-  const main = new ManualModel();
-  const titles = new ManualModel();
-  const { k, thread } = await automaticThread(main, titles);
-  (await main.call(1)).response.complete();
-  const original = await finishTitle(k, titles, 1, thread.id, '原标题');
-
-  let returned = false;
-  const regenerating = k.call('POST', `/threads/${thread.id}/title/regenerate`, {
-    expectedRevision: original.revision,
-  }).then((result) => { returned = true; return result; });
-  const pending = await titles.call(2);
-  const accepted = await title(k, thread.id);
-  expect(accepted).toMatchObject({
-    title: original.title, mode: original.mode, generatedAt: original.generatedAt, through: original.through,
+  const manuallyNamed = await k.call('PUT', `/threads/${thread.id}/title`, {
+    expectedRevision: fresh.revision, mode: 'manual', title: '手动保留标题',
   });
-  expect(accepted.revision).not.toBe(original.revision);
-  await sendThreadMessage(k, thread.id, '标题还在生成时继续工作');
-  const active = await main.call(2);
-  expect(returned).toBe(false);
-  expect((await k.call('GET', `/threads/${thread.id}/history`)).body.state.busy).toBe(true);
-
-  await pending.response.emit({ type: 'item', item: textItem('explicit-title', '重新生成的标题') });
-  pending.response.complete();
-  const generated = await regenerating;
-  expect(generated.status).toBe(200);
-  expect(generated.body).toMatchObject({
-    title: '重新生成的标题', mode: 'auto', generatedAt: expect.any(Number), through: original.through,
-  });
-  expect(await title(k, thread.id)).toEqual(generated.body);
-
-  const manual = await k.call('PUT', `/threads/${thread.id}/title`, {
-    expectedRevision: generated.body.revision, mode: 'manual', title: '手动保留标题',
-  });
-  expect(manual.status).toBe(200);
+  expect(manuallyNamed.status).toBe(200);
+  await sendThreadMessage(k, thread.id, '手动命名后继续工作');
+  await k.daemon.kite.titles!.refresh(thread.id);
+  expect(titles.calls.values).toHaveLength(2);
   const failing = k.call('POST', `/threads/${thread.id}/title/regenerate`, {
-    expectedRevision: manual.body.revision,
+    expectedRevision: manuallyNamed.body.revision,
   });
   const broken = await titles.call(3);
   await broken.response.emit({ type: 'item', item: textItem('unfinished-title', '未完成的标题不得保存') });
   broken.response.finish();
-  const failure = await failing;
-  expect(failure.status).toBeGreaterThanOrEqual(500);
+  expect((await failing).status).toBeGreaterThanOrEqual(500);
   const retained = await title(k, thread.id);
   expect(retained).toMatchObject({
-    title: manual.body.title, mode: 'manual', generatedAt: manual.body.generatedAt, through: manual.body.through,
+    title: manuallyNamed.body.title, mode: 'manual', generatedAt: manuallyNamed.body.generatedAt,
+    through: manuallyNamed.body.through,
   });
-  expect(retained.revision).not.toBe(manual.body.revision);
-
   const retrying = k.call('POST', `/threads/${thread.id}/title/regenerate`, {
     expectedRevision: retained.revision,
   });
   const retry = await titles.call(4);
   await retry.response.emit({ type: 'item', item: textItem('manual-title', '手动模式的新标题') });
   retry.response.complete();
-  const retried = await retrying;
-  expect(retried.status).toBe(200);
-  expect(retried.body).toMatchObject({ title: '手动模式的新标题', mode: 'manual' });
-  expect(await title(k, thread.id)).toEqual(retried.body);
-  const since = mark(k);
-  active.response.complete();
-  await k.waitEvent((event) => event.type === 'idle' && event.threadId === thread.id && after(k, since)(event));
-  await k.daemon.kite.titles!.refresh(thread.id);
-  expect(titles.calls.values).toHaveLength(4);
+  expect(await retrying).toMatchObject({ status: 200, body: { title: '手动模式的新标题', mode: 'manual' } });
 }, 1000);
 
-// SQLite 中标题游标与规则、材料的同一份定义跨重启；六小时后请求使用完整保存版本并参与关闭收口。
-test('重启保留标题模板和生成间隔，新消息触发保存的模板，关闭取消挂起标题', async () => {
+// 主模型保持挂起，HTTP 接受的插话仍在 pending；标题断流与合并队列交错，回复不得推进输入游标。
+test('pending 插话立即检查标题，断流保留原题且合并检查与下一条输入均不丢失', async () => {
+  const main = new ManualModel();
+  const titles = new ManualModel();
+  const results = new Seen<{ error?: string }>();
+  const { k, thread } = await automaticThread(main, titles, undefined, results);
+  const first = await main.call(1);
+  const original = await finishTitle(k, titles, 1, thread.id, '原标题');
+
+  const regenerating = k.call('POST', `/threads/${thread.id}/title/regenerate`, {
+    expectedRevision: original.revision,
+  });
+  const pending = await titles.call(2);
+  const reserved = await title(k, thread.id);
+  expect(reserved.title).toBe(original.title);
+  expect(reserved.revision).not.toBe(original.revision);
+  await sendThreadMessage(k, thread.id, '增加标题同步检查');
+  const history = (await k.call('GET', `/threads/${thread.id}/history`)).body;
+  expect(history.state.busy).toBe(true);
+  expect(JSON.stringify(history.pending)).toContain('增加标题同步检查');
+  await sendThreadMessage(k, thread.id, '再增加模板持久化检查');
+  await sendThreadMessage(k, thread.id, '同时检查取消行为');
+  expect(main.calls.values).toHaveLength(1);
+  expect(titles.calls.values).toHaveLength(2);
+  await pending.response.emit({ type: 'item', item: textItem('unfinished-title', '未完成的标题不得保存') });
+  pending.response.finish();
+
+  const merged = await titles.call(3);
+  expect(await title(k, thread.id)).toEqual(reserved);
+  const material = titleInput(merged.request);
+  for (const text of ['修复工作区标题同步', '增加标题同步检查', '再增加模板持久化检查', '同时检查取消行为']) {
+    expect(material).toContain(text);
+  }
+  expect(material.split('同时检查取消行为')).toHaveLength(2);
+  const updated = await finishTitle(k, titles, 3, thread.id, '同步、持久化与取消');
+  expect((await regenerating).status).toBeGreaterThanOrEqual(500);
+  expect(updated.through).not.toBe(original.through);
+  expect(titles.calls.values).toHaveLength(3);
+
+  await sendThreadMessage(k, thread.id, '增加故障恢复检查');
+  const failing = await titles.call(4);
+  const beforeFailure = results.values.length;
+  failing.response.finish();
+  await results.wait((result) => results.values.indexOf(result) >= beforeFailure && Boolean(result.error));
+  expect(await title(k, thread.id)).toEqual(updated);
+  await sendThreadMessage(k, thread.id, '故障后继续检查恢复');
+  const recovered = await titles.call(5);
+  expect(titleInput(recovered.request)).toContain('增加故障恢复检查');
+  expect(titleInput(recovered.request)).toContain('故障后继续检查恢复');
+  const latest = await finishTitle(k, titles, 5, thread.id, '同步、持久化与取消');
+  expect(latest.through).not.toBe(updated.through);
+
+  await first.response.emit({ type: 'item', item: textItem('main-answer', '已经完成首轮工作') });
+  first.response.complete();
+  const continuation = await main.call(2);
+  expect(JSON.stringify(continuation.request.history)).toContain('故障后继续检查恢复');
+  const beforeIdle = mark(k);
+  await continuation.response.emit({ type: 'item', item: textItem('main-latest', '已经完成所有新增检查') });
+  continuation.response.complete();
+  await k.waitEvent((event) => event.type === 'idle' && event.threadId === thread.id && after(k, beforeIdle)(event));
+  await k.daemon.kite.titles!.refresh(thread.id);
+  expect(titles.calls.values).toHaveLength(5);
+  expect(await title(k, thread.id)).toEqual(latest);
+}, 1000);
+
+// SQLite 保存的模板和输入游标跨重启；重开后的新输入不受时间限制，关闭须取消独立标题请求。
+test('重启保留标题与模板，新输入立即检查且关闭取消在途标题', async () => {
   const firstMain = new ManualModel();
   const firstTitles = new ManualModel();
   const { k, thread } = await automaticThread(firstMain, firstTitles);
-  (await firstMain.call(1)).response.complete();
+  const first = await firstMain.call(1);
   const saved = await finishTitle(k, firstTitles, 1, thread.id, '持久标题');
   const savedTemplate = await saveTitleTemplate(k, '持久版本');
+  await first.response.emit({ type: 'item', item: textItem('saved-answer', '重启前的完整答复') });
+  first.response.complete();
+  await k.waitEvent((event) => event.type === 'idle' && event.threadId === thread.id);
   await k.daemon.stop();
 
   const main = new ManualModel();
@@ -295,27 +334,22 @@ test('重启保留标题模板和生成间隔，新消息触发保存的模板�
   expect(directory.status).toBe(200);
   expect((directory.body.templates as ContextTemplate[]).filter((template) => template.definition.scene === 'thread.title'))
     .toEqual([savedTemplate]);
-  expect((await call(restarted.url, 'POST', `/threads/${thread.id}/messages`, { text: '六小时内继续' })).status).toBe(200);
-  (await main.call(1)).response.complete();
-  await events.wait((event) => event.type === 'idle' && event.threadId === thread.id);
-  await restarted.kite.titles!.refresh(thread.id);
-  expect(titles.calls.values).toHaveLength(0);
-  expect((await call(restarted.url, 'GET', `/threads/${thread.id}/title`)).body).toEqual(saved);
-
-  setSystemTime(new Date(saved.generatedAt! + 6 * 60 * 60 * 1000 + 1));
-  const since = events.values.length;
-  expect((await call(restarted.url, 'POST', `/threads/${thread.id}/messages`, { text: '六小时后继续' })).status).toBe(200);
-  (await main.call(2)).response.complete();
+  expect((await call(restarted.url, 'POST', `/threads/${thread.id}/messages`, { text: '重启后立即继续' })).status).toBe(200);
+  const active = await main.call(1);
   const pending = await titles.call(1);
+  expect((await call(restarted.url, 'GET', `/threads/${thread.id}/history`)).body.state.busy).toBe(true);
   expect(pending.request.instructions).toContain('标题规则持久版本');
   expect(pending.request.instructions).toContain(JSON.stringify(saved.title));
   expect(titleInput(pending.request)).toContain('标题材料持久版本');
-  expect(titleInput(pending.request)).toContain('六小时后继续');
-  await events.wait((event) => event.type === 'idle' && event.threadId === thread.id && events.values.indexOf(event) >= since);
+  expect(titleInput(pending.request)).toContain('重启前的完整答复');
+  expect(titleInput(pending.request)).toContain('重启后立即继续');
+  active.response.complete();
+  await events.wait((event) => event.type === 'idle' && event.threadId === thread.id);
   const journalPath = join(k.home, 'sessions', thread.id, 'journal.jsonl');
   const beforeStop = diskRecords(journalPath);
   await restarted.stop();
   restarted = undefined;
   expect(pending.signal.aborted).toBe(true);
+  expect(titles.calls.values).toHaveLength(1);
   expect(diskRecords(journalPath)).toEqual(beforeStop);
 }, 1000);

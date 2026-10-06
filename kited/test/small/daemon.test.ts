@@ -1,5 +1,5 @@
 /**
- * 经 HTTP 驱动本进程里的 kited，只走不起 Claude Code 的路径：D10。
+ * 经 HTTP 和 CLI 驱动本进程里的 kited，不启动 Claude Code。
  */
 import { afterEach, expect, test } from 'bun:test';
 import { chmodSync, writeFileSync } from 'node:fs';

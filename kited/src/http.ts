@@ -1,11 +1,11 @@
 /** HTTP 接口，只监听本机。事件流用 SSE。 */
 import { KiteError, OperationError } from './errors.ts';
 import type { EventScope } from './events.ts';
-import { inScope } from './transcript.ts';
+import { inScope } from './transcript/feed.ts';
 import { z } from 'zod';
 import type { Kite } from './kite.ts';
 import type { Project, RuntimeKind } from './model.ts';
-import { operationCatalog } from './operation-contract.ts';
+import { operationCatalog } from './operations/contract.ts';
 import { contextTemplateSelection } from './context-templates.ts';
 
 async function body(req: Request): Promise<Record<string, unknown>> {
@@ -108,6 +108,7 @@ export function serve(kite: Kite, port: number) {
     idleTimeout: 60,
     routes: {
       '/machine': { GET: handle(() => kite.machine()) },
+      '/instances/:id/agent-capabilities': { GET: bound((req) => kite.agentCapabilities(req.params.id)) },
       '/projects': {
         GET: bound(() => kite.projects()),
       },

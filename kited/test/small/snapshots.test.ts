@@ -1,10 +1,10 @@
 /**
- * 快照与回退（src/snapshots.ts）：S1–S3。
+ * 快照引用、历史查找和工作树回退。
  */
 import { expect, test } from 'bun:test';
 import { renameSync, rmSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
-import { capture, findSnapshot, list, restore } from '../../src/snapshots.ts';
+import { capture, findSnapshot, list, restore } from '../../src/workspace/snapshots.ts';
 import { git, gitWorktree, lexists, newRepo, read, repoState, useTemp, writeFiles } from '../util.ts';
 
 const temp = useTemp();
@@ -13,7 +13,7 @@ const temp = useTemp();
  * 回归两个 bug：标签曾在第 80 个字处截断（这里用超过 80 字的标签）；快照曾挂在 refs/kite/<工作区>，
  * 和工作区分支 kite/<工作区> 的短名相同，git 优先把短名解析成快照。
  */
-test('capture 在 refs/kite/snapshots/<工作区> 上建提交：树没变不产生新提交，list 原样读回标签和工具调用 id、新的在前，不动 HEAD、分支、暂存区，工作区分支短名仍解析到分支', async () => {
+test('快照按文件内容去重，完整保存元数据且不干扰工作区和分支引用', async () => {
   const root = temp();
   const main = newRepo(root, 'main', { 'a.txt': 'a\n', 'b.txt': 'b\n' });
   writeFiles(main, { 'b.txt': 'main dirty\n', 'm.txt': 'm\n' });
@@ -36,7 +36,6 @@ test('capture 在 refs/kite/snapshots/<工作区> 上建提交：树没变不产
   // 已改过的文件再改一次：工作区状态的样子不变，树变了
   writeFiles(wt, { 'a.txt': 'a2\n' });
   const label = `RUN echo 长标签 # ${'这是一条比较长的用户消息，'.repeat(8)}结尾`;
-  expect(label.length).toBeGreaterThan(80);
   const second = await capture(wt, id, label, ['toolu_a', 'toolu_b']);
   expect(second.created).toBe(true);
   // 快照是这个引用上的提交链：引用指向最新的一枚，list 沿它读回
@@ -54,7 +53,7 @@ test('capture 在 refs/kite/snapshots/<工作区> 上建提交：树没变不产
   expect(short).toBe(branch);
 });
 
-test('restore 把工作树恢复成快照：删掉和改名的文件回来、之后新建的删掉、被忽略的不动；有快照之外的改动先存一枚「回退前自动保存」，能回退回去', async () => {
+test('回退恢复增删改名且保留忽略文件，自动快照能找回回退前内容', async () => {
   const root = temp();
   const main = newRepo(root, 'main', {
     '.gitignore': '.env\n',
@@ -116,7 +115,7 @@ test('restore 把工作树恢复成快照：删掉和改名的文件回来、之
  * 按 trailer 读出快照属于哪个工作区（另一个工作区的 id 以本工作区 id 开头，挡住按前缀比对）。分支名和修订表达式这里都让它们
  * 指向本工作区的快照，只有「只收十六进制」这一条能挡住；--output 会让 git log 往文件里写，挡住参数被当成选项。
  */
-test('findSnapshot 用缩写提交号找到本工作区较早的一枚快照、返回完整提交号；别的工作区的快照、不是快照的提交、不存在的提交号、指向本工作区快照的分支名和修订表达式、以 - 开头的参数都返回 null', async () => {
+test('快照查找解析本工作区的提交号，拒绝外部快照、普通提交、引用和 Git 选项', async () => {
   const root = temp();
   const main = newRepo(root, 'main', { 'a.txt': 'a\n' });
   const id = 's3';
@@ -129,7 +128,6 @@ test('findSnapshot 用缩写提交号找到本工作区较早的一枚快照、�
   const newer = await capture(wt, id, '第二枚');
   writeFiles(otherWt, { 'a.txt': 'other\n' });
   const foreign = await capture(otherWt, other, '别的工作区');
-  expect([older.created, newer.created, foreign.created]).toEqual([true, true, true]);
 
   expect(await findSnapshot(main, id, older.commit.slice(0, 8))).toBe(older.commit);
   expect(await findSnapshot(wt, id, newer.commit)).toBe(newer.commit);

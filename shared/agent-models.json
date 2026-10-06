@@ -1,5 +1,10 @@
 {
   "defaultTier": "sol",
+  "claude": [
+    { "id": "fable", "tier": "fable" },
+    { "id": "opus", "tier": "opus" },
+    { "id": "sonnet", "tier": "sonnet" }
+  ],
   "models": [
     { "id": "gpt-6-astra", "tier": "astra" },
     { "id": "gpt-6.1-sol", "tier": "sol" },

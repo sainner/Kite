@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ExecutionGrants } from '../../src/execution-grants.ts';
+import type { ExecutionGrants } from '../../src/execution/grants.ts';
 import type { Json, ModelItem } from '../../src/harness/types.ts';
 import { after, mark, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { diskRecords, item, ManualModel } from '../harness-loop.ts';
@@ -35,14 +35,13 @@ function result(history: Awaited<ReturnType<ManualModel['call']>>['request']['hi
 }
 
 // HTTP 授权提交与 SQLite 通知快照交接；排队后编辑目录不得重渲染旧通知或改变执行权限。
-test('执行授权仅在空闲时提交，排队通知保留旧模板且重试不重复投递或改变上下文前缀', async () => {
+test('空闲时授权保留通知快照，重试不重复投递或改动历史', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
   const k = kited;
   const { id } = await codingInstance(k);
   const initial = await k.call('GET', grantsPath(id));
   expect(initial.status).toBe(200);
-  expect(initial.body.grants).toEqual({ workspace: 'write', read: [], write: [], network: [] });
   const readOnly: ExecutionGrants = { workspace: 'read', read: [], write: [], network: [] };
   const oldTemplate = await editNotificationTemplate(k.call,
     'kite.execution-permissions', '权限通知旧模板', 'execution.grants');
@@ -103,7 +102,7 @@ test('执行授权仅在空闲时提交，排队通知保留旧模板且重试�
 }, 1000);
 
 // 缓存 Runner、OS 沙箱与模型创建子实例跨请求交接；额外目录许可不能提升受管工具或子实例权限。
-test('已缓存实例执行新授权，额外目录只供 shell 且模型子实例不继承提权', async () => {
+test('缓存实例采用新授权，额外目录不提升受管工具和子实例权限', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
   const k = kited;
