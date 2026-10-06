@@ -236,6 +236,8 @@ nonisolated struct FigureMotion: Hashable, Sendable {
         case float(Double)
         /// 闪烁：每周期亮 duty 那一段，熄掉时露出底下的格子或静息的点。
         case blink(duty: Double)
+        /// 每周期在 duration 内从点长成满格再收回，形变量线性变化。
+        case pulse(duration: TimeInterval)
     }
 
     var kind = Kind.still
@@ -248,6 +250,9 @@ nonisolated struct FigureMotion: Hashable, Sendable {
     }
     static func blink(period: TimeInterval, duty: Double = 0.5, phase: Double = 0) -> FigureMotion {
         FigureMotion(kind: .blink(duty: duty), period: period, phase: phase)
+    }
+    static func pulse(period: TimeInterval, duration: TimeInterval, phase: Double = 0) -> FigureMotion {
+        FigureMotion(kind: .pulse(duration: duration), period: period, phase: phase)
     }
 
     var isStill: Bool { kind == .still }
@@ -264,11 +269,20 @@ nonisolated struct FigureMotion: Hashable, Sendable {
         return sin(cycle(at: date) * 2 * .pi) * points * amplitude / Double(DotMetrics.pitch)
     }
 
-    /// 亮度（0–1）：闪烁时亮灭两头各有 0.08 秒的过渡；amplitude 为 0 时一直亮着。
+    /// 展开程度（0–1）：无底层时控制点与满格的形变，有底层时与它交接；amplitude 为 0 时完全展开。
     func visibility(at date: Date, amplitude: Double) -> Double {
-        guard case .blink(let duty) = kind, amplitude > 0 else { return 1 }
-        let elapsed = cycle(at: date) * period, edge = 0.08
-        let lit = smoothstep(elapsed / edge) * (1 - smoothstep((elapsed - duty * period) / edge))
+        guard amplitude > 0 else { return 1 }
+        let elapsed = cycle(at: date) * period
+        let lit: Double
+        switch kind {
+        case .blink(let duty):
+            let edge = 0.08
+            lit = smoothstep(elapsed / edge) * (1 - smoothstep((elapsed - duty * period) / edge))
+        case .pulse(let duration):
+            lit = max(0, 1 - abs(elapsed - duration / 2) / (duration / 2))
+        case .still, .float:
+            return 1
+        }
         return 1 - amplitude * (1 - lit)
     }
 }

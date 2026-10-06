@@ -21,6 +21,7 @@
 - [停止会话的语义](session-stop-behavior.md) — 手动停止退回未纳入请求的消息，不等于保留 paused 状态
 - [统一资源引用](resource-reference-direction.md) — 统一资源引用保留稳定内容身份，历史 diff 不随当前文件变化
 - [窗口标题信息](window-header-information.md) — 窗口标题两行，突出会话名称，次级信息为各窗口自定的文字
+- [初始配置与设备角色](onboarding-device-roles.md) — 本机执行或仅远程控制都入网，进入 App 后发现 kited 工作机
 - [思考与状态展示](thinking-display.md) — 仅显示当前生成的思考，状态 chip 不承担实时活动或思考正文
 - [视觉风格来源与取舍](visual-style-direction.md) — 参考色板与用户拍板的视觉取舍，规范正文在 docs/视觉风格.md
 - [表格字体来源](table-font-source.md) — 表格使用系统衬线体，iPhone 缺少的中文宋体由苹果按需下载并缓存

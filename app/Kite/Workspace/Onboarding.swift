@@ -125,7 +125,7 @@ struct Onboarding: View {
 
     private static let inset = Metrics.padding * 2
     /// 完成一步时的波比发送消息的慢，配合标志形变。
-    private static let wavePace = 0.15
+    private static let wavePace = 0.24
     /// 标题与卡片那一栏的宽度：窄窗口里居中，宽窗口里靠右。
     private static let columnWidth: CGFloat = 504
 
@@ -350,9 +350,11 @@ struct Onboarding: View {
     private func refreshLogo() {
         guard let logo else { return }
         let previous = stage.shownFigure()
+        let previousFrame = stage.figureFrame()
         stage.show(logo.figure, in: logo.area, breathing: logo.breathing)
-        // 连上工作机是完成的时刻，标志换成下一个时从它的外沿推开一道波
-        if phase == .create, previous != logo.figure, logo.figure != nil, let frame = stage.figureFrame() {
+        // 连上工作机时从刚完成的连接标志发波；扫码流程用切换前的二维码范围。
+        if phase == .create, previous != logo.figure, logo.figure != nil,
+           let frame = previousFrame ?? stage.figureFrame() {
             stage.emitWave(from: frame, pace: Self.wavePace)
         }
     }
@@ -723,7 +725,7 @@ struct Onboarding: View {
         #endif
     }
 
-    /// 扫到码是完成的时刻，从取景框外沿推开一道波。
+    /// 扫到码时从镜头取景框外沿推开一道波，连接成功后再从二维码标志发波。
     private func emitScanWave() {
         #if os(iOS)
         if let logoArea { stage.emitWave(from: scanFrame(in: logoArea), pace: Self.wavePace) }
@@ -857,7 +859,7 @@ private enum OnboardingLogos {
          "Y": DotColor(hex: 0xFFE08A), "D": DotColor(hex: 0xF5C95C)]
     }
 
-    /// 这一步的标志，各配一个小动画：风筝各自浮动，显示器的光标闪烁，连接线上一段亮光从手机走向工作机，二维码的黄格错开闪烁，
+    /// 这一步的标志，各配一个小动画：风筝各自浮动，显示器的光标闪烁，连接线逐格长成方块再收回，二维码的黄格错开闪烁，
     /// 文件夹的加号慢闪。扫码时标志区让给取景框，没有标志。正在连接时沿用发起连接那一步的标志，在等待里呼吸。
     static func figure(for phase: Onboarding.Phase, colors: [Character: DotColor]) -> DotFigure? {
         func part(_ lines: [String], _ motion: FigureMotion = .still) -> DotFigure {
@@ -882,11 +884,11 @@ private enum OnboardingLogos {
             return part(map(desktop) { cursor($0, $1) ? "L" : $2 })
                 .adding(part(map(desktop) { cursor($0, $1) ? $2 : "." }, .blink(period: 1.1)), column: 0, row: 0)
         case .connect(.manual), .connecting(.manual):
-            // 手机与工作机之间是一条连续的线，一段亮光从手机走向工作机，像信号在走
-            let line = Array(7..<12)
+            // 相邻两格错开半个脉冲时长：前一格收回时，下一格同时长大，形变量连续交接。
+            let line = Array(7..<11)
             return line.enumerated().reduce(part(link)) { figure, cell in
-                figure.adding(part(map(link) { column, row, _ in row == 8 && column == cell.element ? "Y" : "." },
-                                   .blink(period: 1.4, duty: 0.22, phase: -Double(cell.offset) * 0.1)), column: 0, row: 0)
+                figure.adding(part(map(link) { column, row, _ in row == 5 && column == cell.element ? "Y" : "." },
+                                   .pulse(period: 2.4, duration: 0.6, phase: -Double(cell.offset) * 0.125)), column: 0, row: 0)
             }
         case .connect(.scan):
             return nil
@@ -902,13 +904,12 @@ private enum OnboardingLogos {
         }
     }
 
-    /// 步骤点，紧挨着：大小表示完成没有，走过的满格，当前这步和还没到的半格；当前这步主题色，还没到的 Dewy Blue。
+    /// 步骤点紧挨着：当前与已完成的满格，当前 Sunwashed 黄、已完成主题色；未到的半格 Dewy Blue。
     static func steps(current: Int, count: Int, colors: [Character: DotColor]) -> DotFigure {
-        let cells = (0..<count).map { $0 < current ? "B" : $0 == current ? "b" : "l" }
+        let cells = (0..<count).map { $0 < current ? "B" : $0 == current ? "Y" : "l" }
         var colors = colors
-        colors["b"] = colors["B"]
         colors["l"] = colors["L"]
-        return DotFigure([cells.joined()], colors: colors, shapes: ["b": 0.5, "l": 0.5])
+        return DotFigure([cells.joined()], colors: colors, shapes: ["l": 0.5])
     }
 
     /// 启动时风筝旁边的小风筝。
@@ -996,25 +997,19 @@ private enum OnboardingLogos {
         ".......................",
     ]
 
-    /// 连接：手机、一条连线、矮而宽的工作机显示器。
+    /// 连接：左侧主机与右侧带底座的显示器等高，连线由独立动画层绘制。
     static let link = [
-        "BBBBBBB....................",
-        "BBBBBBB....................",
-        "BLLLLLB....................",
-        "BLLLLLB.....BBBBBBBBBBBBBBB",
-        "BLLLLLB.....BLLLLLLLLLLLLLB",
-        "BLLLLLB.....BLLLLLLLLLLLLLB",
-        "BLLLLLB.....BLLLLLLLLLLLLLB",
-        "BLLLLLB.....BLLLLLLLLLLLLLB",
-        "BLLLLLBMMMMMBLLLLLLLLLLLLLB",
-        "BLLLLLB.....BLLLLLLLLLLLLLB",
-        "BLLLLLB.....BLLLLLLLLLLLLLB",
-        "BLLLLLB.....BBBBBBBBBBBBBBB",
-        "BLLLLLB............B.......",
-        "BLLLLLB.........BBBBBBB....",
-        "BBBBBBB....................",
-        "BLLYLLB....................",
-        "BBBBBBB....................",
+        "BBBBBBB....BBBBBBBBBBBBBBB",
+        "BBBBBBB....BLLLLLLLLLLLLLB",
+        "BLLLLLB....BLLLLLLLLLLLLLB",
+        "BLLLLLB....BLLLLLLLLLLLLLB",
+        "BLLLLLB....BLLLLLLLLLLLLLB",
+        "BLLLLLB....BLLLLLLLLLLLLLB",
+        "BLLLLLB....BLLLLLLLLLLLLLB",
+        "BLLLLLB....BLLLLLLLLLLLLLB",
+        "BBBBBBB....BBBBBBBBBBBBBBB",
+        "BLLYLLB...........B.......",
+        "BBBBBBB........BBBBBBB....",
     ]
 
     /// 扫码后正在连接：二维码。
