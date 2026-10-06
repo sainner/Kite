@@ -118,10 +118,10 @@ enum SampleWorkspace {
                                   inputTokens: Int? = nil, windowTokens: Int? = nil) -> WorkArea {
         let remote = RemoteWorkspace(
             machine: RemoteMachine(id: "sample", name: "预览工作机", createdAt: 0),
-            project: RemoteProject(id: "sample", name: "harness · 假数据", createdAt: 0),
+            project: RemoteProject(id: "sample", name: "harness · 假数据", remote: "github.com/sample/harness", createdAt: 0),
             // 侧栏每个检出只列一个根工作区，样本各占一个检出才能都列出来
             checkout: RemoteCheckout(id: "sample-" + id, projectId: "sample", machineId: "sample",
-                                     path: transcript.root, commits: .user, createdAt: 0),
+                                     path: transcript.root, remote: "github.com/sample/harness", createdAt: 0),
             workspace: WorkspaceInfo(id: "sample-" + id, checkoutId: "sample-" + id, name: title, cwd: transcript.root,
                                      kind: .root, branch: nil, base: nil, status: .open, createdAt: 0),
             threads: [], instances: [], windows: []

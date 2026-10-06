@@ -67,11 +67,12 @@ private struct AccountLogin: Codable {
     }
     #endif
 
-    private func request<T: Decodable>(_ path: String, method: String = "GET", body: [String: String]? = nil, as: T.Type) async throws -> T {
+    func request<T: Decodable>(_ path: String, method: String = "GET", body: [String: String]? = nil,
+                               timeout: TimeInterval = 25, as: T.Type) async throws -> T {
         let expectedToken = login?.token
         var request = URLRequest(url: URL(string: Self.server + path)!)
         request.httpMethod = method
-        request.timeoutInterval = 25
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token = login?.token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let body { request.httpBody = try JSONEncoder().encode(body) }

@@ -3,9 +3,10 @@ import { chmodSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { WorkspaceModel } from '../../src/model.ts';
-import { call, createWorkspace, machine, registerCheckout, startKited, type Kited } from '../harness.ts';
+import type { FakeAccount } from '../fake-account.ts';
+import { call, createWorkspace, linkNewAccount, machine, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { item, ManualModel, Seen } from '../harness-loop.ts';
-import { commitAll, makeTemp, newDir, newRepo } from '../util.ts';
+import { commitAll, makeTemp, newRepo } from '../util.ts';
 
 type RecordView = { id: string; at: number; block: { type: string; [key: string]: unknown }; parent?: string;
   generation?: 'streaming' | 'complete' | 'interrupted' };
@@ -41,12 +42,14 @@ const roots: string[] = [];
 const streams: Array<{ close(): Promise<void> }> = [];
 let kited: Kited | undefined;
 let daemon: Daemon | undefined;
+const accounts: FakeAccount[] = [];
 afterEach(async () => {
   await Promise.all(streams.splice(0).map((stream) => stream.close()));
   await daemon?.stop();
   daemon = undefined;
   await kited?.stop();
   kited = undefined;
+  for (const account of accounts.splice(0)) account.stop();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -126,7 +129,7 @@ test('目录 SSE 快照和列表响应头同序，后续变化需要更新列表
   expect(opened.cursor.split(':')[0]).toBe(before.cursor.split(':')[0]);
   expect(Number(opened.cursor.split(':')[1])).toBeLessThanOrEqual(Number(before.cursor.split(':')[1]));
 
-  const secondRepo = newDir(kk.root, 'second', { 'base.txt': '二\n' });
+  const secondRepo = newRepo(kk.root, 'second', { 'base.txt': '二\n' });
   const second = await registerCheckout(kk, secondRepo);
   const later = await stream.events.wait((event) => event.type === 'checkout.changed' && event.checkoutId === second.checkout.id);
   expect(later.cursor.split(':')[0]).toBe(before.cursor.split(':')[0]);
@@ -369,6 +372,7 @@ test('重启后只读历史保持记录 id 和排队输入，重复发送及取�
   const root = makeTemp('transcript-');
   roots.push(root);
   const home = join(root, 'kite');
+  accounts.push(linkNewAccount(home));
   const repo = newRepo(root, 'project', { 'base.txt': '初始\n' });
   const firstModel = new ManualModel();
   daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => firstModel });

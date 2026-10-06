@@ -91,3 +91,21 @@ export class GitHubDeviceFlow {
     throw new Error(`GitHub 授权失败：${r.error ?? '未知错误'}`);
   }
 }
+
+export interface GitHubRepository {
+  fullName: string;
+  url: string;
+  private: boolean;
+  pushedAt: string | null;
+}
+
+/** 已绑定 GitHub 账号能访问的仓库，按最近更新排序，只取第一页，供添加项目时挑选。 */
+export async function gitHubRepositories(token: string, apiURL = 'https://api.github.com'): Promise<GitHubRepository[]> {
+  const response = await fetch(`${apiURL}/user/repos?per_page=100&sort=pushed`, {
+    headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15_000),
+  });
+  if (response.status === 401) throw new Error('GitHub 授权已失效，请重新绑定');
+  if (!response.ok) throw new Error(`GitHub 返回 ${response.status}`);
+  return (await response.json() as Array<{ full_name: string; clone_url: string; private: boolean; pushed_at: string | null }>)
+    .map((r) => ({ fullName: r.full_name, url: r.clone_url, private: r.private, pushedAt: r.pushed_at }));
+}

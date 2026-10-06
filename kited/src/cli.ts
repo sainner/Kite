@@ -7,7 +7,8 @@ const BASE = process.env.KITE_URL ?? `http://127.0.0.1:${process.env.KITE_PORT ?
 
 const USAGE = `用法：
   kite projects                       列出项目
-  kite add <文件夹> [项目]            登记检出，可关联已有项目
+  kite add <文件夹>                   登记本机文件夹，没有远程的建托管远程
+  kite clone <远程地址> [文件夹]      clone 远程并登记，默认放在 ~/code/<域名>/<owner>/<repo>
   kite checkouts [项目]               列出本机检出
   kite ls [项目]                      列出工作区和线程
   kite new <检出> <消息>              开新工作区，跟到这一轮结束
@@ -19,7 +20,8 @@ const USAGE = `用法：
   kite recover <线程>                 确认旧执行已停止，随后用 resume 继续
   kite snapshots <工作区>               列出快照
   kite restore <工作区> <快照>          把工作树恢复到某一枚快照
-  kite adopt <工作区>                   把工作区的改动合回主线
+  kite adopt <工作区>                   把工作区的改动合回主线并推送
+  kite push <检出> [提交说明]           提交检出现场的改动并推送
   kite archive <工作区> [--force]       归档工作区，删掉工作树
   kite net [up|down]                  查看、开启或关闭已登录设备的组网`;
 
@@ -120,7 +122,10 @@ function print(e: any): void {
 }
 
 function printAdopt(r: any): void {
-  if (r.status === 'adopted') console.log(`· 已合回主线：${r.commit.slice(0, 8)}`);
+  if (r.status === 'adopted') {
+    console.log(`· 已合回主线：${r.commit.slice(0, 8)}`);
+    console.log(r.push.status === 'pushed' ? '· 已推送到远程' : `! 推送失败：${r.push.message}`);
+  }
   else console.log(`· 合并冲突，已交给 agent 解决：${r.files.join('、')}`);
 }
 
@@ -181,14 +186,24 @@ async function main(): Promise<void> {
 
   switch (cmd) {
     case 'projects':
-      for (const p of await call('GET', '/projects')) console.log(`${p.id}\t${p.name}`);
+      for (const p of await call('GET', '/projects')) console.log(`${p.id}\t${p.name}\t${p.remote}`);
       break;
     case 'add': {
       need(1);
-      const project = args[1] ? (await call('GET', '/projects')).find((p: { id: string }) => p.id === args[1]) : undefined;
-      if (args[1] && !project) { console.error('没有这个项目，请先用 kite projects 查看'); process.exit(1); }
-      const m = await call('POST', '/checkouts', { path: resolve(args[0]!), project });
-      console.log(`已登记 ${m.project.name}：${m.checkout.path}\n检出 ${m.checkout.id}`);
+      const m = await call('POST', '/checkouts', { path: resolve(args[0]!) });
+      console.log(`已登记 ${m.project.name}（${m.project.remote}）：${m.checkout.path}\n检出 ${m.checkout.id}`);
+      break;
+    }
+    case 'push': {
+      need(1);
+      const r = await call('POST', `/checkouts/${args[0]}/push`, args[1] ? { message: args[1] } : {});
+      console.log(`· ${r.branch}：领先 ${r.ahead ?? '?'}，落后 ${r.behind ?? '?'}${r.dirty ? '，有未提交的改动' : ''}`);
+      break;
+    }
+    case 'clone': {
+      need(1);
+      const m = await call('POST', '/checkouts', { remote: args[0], ...(args[1] ? { path: resolve(args[1]) } : {}) });
+      console.log(`已 clone ${m.project.name}（${m.project.remote}）：${m.checkout.path}\n检出 ${m.checkout.id}`);
       break;
     }
     case 'checkouts':

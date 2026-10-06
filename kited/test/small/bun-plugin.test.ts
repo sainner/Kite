@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { Json, ModelItem } from '../../src/harness/types.ts';
-import { call, registerCheckout, startKited, type Kited } from '../harness.ts';
+import { call, linkNewAccount, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { deferred, diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
 import { editNotificationTemplate } from '../notification-templates.ts';
 import { bunPluginSource } from '../fixtures/bun-plugin-source.ts';
@@ -436,6 +436,7 @@ test('模型按实例授权调用同名 Bun 工具，原始参数 schema 拦住�
 test('撤权拒绝旧模型调用，工具通知按生成时模板冻结且目录与收据跨重启保留', async () => {
   const root = makeTemp('plugin-model-');
   const home = join(root, 'kite');
+  const account = linkNewAccount(home);
   const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
   const model = new ManualModel();
   let daemon: Daemon | undefined;
@@ -595,6 +596,7 @@ test('撤权拒绝旧模型调用，工具通知按生成时模板冻结且目�
     afterRestart.response.complete();
   } finally {
     await daemon?.stop();
+    account.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }, 1000);

@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { httpsRemote, normalizeRemote, remoteHost, remoteName } from '../remote-url.ts';
 import type { GitCredential } from '../git-credential.ts';
 import { catalogPublication, type CatalogSnapshot } from './catalog.ts';
-import { CredentialCipher, GitHubDeviceFlow, type GitHubOptions } from './credentials.ts';
+import { CredentialCipher, GitHubDeviceFlow, gitHubRepositories, type GitHubOptions } from './credentials.ts';
 import { GitHosting } from './git-hosting.ts';
 
 interface Options {
@@ -343,6 +343,12 @@ export async function createAccountService(options: Options) {
     if (path === '/api/git/accounts' && request.method === 'GET') {
       return result(db.query<{ host: string; account: string; createdAt: number }, [string]>(
         'SELECT host, account, createdAt FROM kite_git_credential WHERE userId = ? ORDER BY host').all(login.user.id));
+    }
+    if (path === '/api/git/accounts/github.com/repos' && request.method === 'GET') {
+      const credential = storedCredential(login.user.id, 'github.com');
+      if (!credential) throw new RequestError('尚未绑定 GitHub 账号', 404);
+      try { return result(await gitHubRepositories(credential.password, options.git?.github?.apiURL)); }
+      catch (error) { throw new RequestError((error as Error).message, 502); }
     }
     const deviceFlow = /^\/api\/git\/accounts\/github\.com\/device(?:\/([^/]+))?$/.exec(path);
     if (deviceFlow && request.method === 'POST') {

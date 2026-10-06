@@ -15,7 +15,7 @@ function setup(files: Record<string, string>) {
   const root = temp();
   const main = newRepo(root, 'main', files);
   const wt = gitWorktree(main, join(root, 'wt'), 'kite/s');
-  return { main, wt, project: { path: main, commits: 'user' as const } };
+  return { main, wt, project: { path: main } };
 }
 
 const head = (dir: string) => git(dir, 'rev-parse', 'HEAD');

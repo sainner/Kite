@@ -6,7 +6,7 @@ import type { AgentDefinition } from '../../src/agents/definition.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { ContextDefinition } from '../../src/harness/context/types.ts';
-import { call, registerCheckout, startKited } from '../harness.ts';
+import { call, linkNewAccount, registerCheckout, startKited } from '../harness.ts';
 import { ManualModel, Seen } from '../harness-loop.ts';
 import { makeTemp, newRepo } from '../util.ts';
 
@@ -31,6 +31,7 @@ function withoutContext(agent: AgentDefinition) {
 test('模板保存处理重试与冲突，重启后首请求使用已存版本', async () => {
   const root = makeTemp('context-templates-');
   const home = join(root, 'kite');
+  const account = linkNewAccount(home);
   const model = new ManualModel();
   let daemon: Daemon | undefined;
   try {
@@ -78,6 +79,7 @@ test('模板保存处理重试与冲突，重启后首请求使用已存版本',
     await events.wait((event) => event.type === 'idle' && event.threadId === id);
   } finally {
     await daemon?.stop();
+    account.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }, 1000);

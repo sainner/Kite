@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import { z } from 'zod';
 import type { Kite } from './kite.ts';
 import type { CatalogSnapshot } from './account/catalog.ts';
+import type { AccountLink } from './account-client.ts';
 
 export const publisherConfig = z.object({ url: z.url().startsWith('https://'), deviceId: z.uuid(), token: z.string().min(32) }).strict();
 type Config = z.infer<typeof publisherConfig> & { revision: number };
@@ -29,6 +30,9 @@ export class CatalogPublisher {
   }
 
   status() { return { deviceId: this.config?.deviceId, error: this.error, needsAuthorization: this.needsAuthorization }; }
+
+  /** 项目登记与凭据分发复用目录上报的工作机凭据。 */
+  link(): AccountLink | undefined { return this.config && { url: this.config.url, token: this.config.token }; }
 
   async configure(config: z.infer<typeof publisherConfig>): Promise<void> {
     // 本机配置响应丢失后的重试不能把同一凭据的版本退回零。

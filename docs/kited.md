@@ -105,24 +105,25 @@ bun src/main.ts
 
 `KITE_HOME` 指定数据目录，默认 `~/.kite`；保存工作区、会话、登录及服务数据。`KITE_PORT` 默认是 5483，监听 127.0.0.1；组网与远程监听见下节。
 
-同一数据目录重启或更换端口后，工作机身份保持不变；新数据目录生成新身份。名称初始取主机名，地址由账号目录发现并在客户端缓存。项目关系通过稳定 ID 显式关联，不按文件夹名推断。
+同一数据目录重启或更换端口后，工作机身份保持不变；新数据目录生成新身份。名称初始取主机名，地址由账号目录发现并在客户端缓存。
 
-同一项目可以在本机或其他工作机登记多个检出。关联时提供完整项目身份 `{id, name, createdAt}`，关联后的目录属于同一项目，各自保有工作区。每台 kited 只保存本机的目录、工作区、线程与执行记录；关联不复制文件，不克隆或同步 Git 仓库。App 登记目录时可选择此前访问过的项目。
+项目以远程仓库为身份，项目 ID 由账号服务的项目登记表分配，规格见 [项目与远程仓库](项目与远程仓库.md)。登记检出要求工作机已加入 Kite 账号，否则返回 409。同一远程在本机或其他工作机的多个检出自动归入同一项目，各自保有工作区。每台 kited 只保存本机的目录、工作区、线程与执行记录。
 
 默认 harness 使用前文独立授权的 ChatGPT 凭据。只有 `claude` 会话需要 Claude 登录，开放范围见下文附加功能清单。Claude 会话不自动读取用户、项目或本地设置，OAuth 与钥匙串认证保留。
 
 命令行是薄客户端：
 
 ```bash
-bun src/cli.ts add ~/thesis        # 新建项目并登记检出，返回检出 id
-bun src/cli.ts add ~/thesis-copy <项目> # 将目录关联到本机已有项目 ID
+bun src/cli.ts add ~/thesis        # 登记本机文件夹，返回检出 id
+bun src/cli.ts clone github.com/me/thesis  # clone 远程到 ~/code/github.com/me/thesis 并登记
 bun src/cli.ts checkouts <项目>    # 列出该项目在本机的检出
 bun src/cli.ts new <检出> "把第二章的图注统一成中文"
 bun src/cli.ts send <线程> "再检查一遍参考文献"
 bun src/cli.ts resume <线程>       # 继续暂停的上下文
 bun src/cli.ts snapshots <工作区>
 bun src/cli.ts restore <工作区> <快照>
-bun src/cli.ts adopt <工作区>
+bun src/cli.ts adopt <工作区>       # 合回主线并推送
+bun src/cli.ts push <检出> "提交说明"  # 提交现场改动并推送
 bun src/cli.ts archive <工作区>
 bun src/cli.ts net up              # 开启已登录设备的组网
 ```
@@ -141,17 +142,18 @@ Kite 托管账号与组网。Mac 和 iPhone 在 App 中使用账号密码登录�
 
 | 操作 | 行为与限制 |
 |---|---|
-| 登记检出 | 新建或显式关联项目，建立直接使用登记目录的根工作区，不创建线程。已有 Git 仓库由用户管理提交；普通文件夹由 Kite 初始化并代管提交 |
-| 创建独立工作区 | 从检出当前 HEAD 建立独立工作树；Kite 代管提交时先保存主目录改动。可以先建空工作区，也可在准备完成后运行首条消息 |
+| 登记检出 | 按目录的 origin 归入项目，建立直接使用登记目录的根工作区，不创建线程。没有 origin 时建托管远程并推送，普通文件夹先由 Kite 初始化仓库并提交初始版本 |
+| 创建独立工作区 | 从检出当前 HEAD 建立独立工作树；现场未提交的改动不带入，也不由 Kite 代为提交。可以先建空工作区，也可在准备完成后运行首条消息 |
 | 添加线程 | 根工作区和独立工作区都可有多个线程，各自保存对话；当前同一 cwd 有执行或恢复阻塞时，不能启动另一线程 |
 | 快照与回退 | 每批工具后与回合结束时保存变更，快照不改变 HEAD、分支或暂存区。回退先保存现状，再恢复文件；执行或恢复阻塞期间不允许回退 |
-| 采纳 | 将独立工作区改动合回检出主线。同一检出的采纳串行执行，冲突留在独立工作树；采纳后工作区与线程仍可继续使用 |
+| 采纳（集成） | 将独立工作区改动合回检出主线并推送到远程。现场有未提交的改动或不在分支上时拒绝。同一检出的采纳串行执行，冲突留在独立工作树；采纳后工作区与线程仍可继续使用 |
+| 现场提交并推送 | 由用户触发，把现场改动提交后推送。远程领先而现场没有新内容时快进；两边都有新内容时拒绝，提示新建工作区集成 |
 | 归档线程 | 停止该线程，保留工作区、文件、其他线程和快照 |
 | 归档工作区 | 停止所有线程、保存最后快照，回收独立工作树和分支，归档实例并关闭共享窗口。未采纳改动须显式 `force`；根工作区不能通过此操作删除 |
 
 工作树准备可用 `worktree.symlinkDirectories` 链接依赖目录，用 `.worktreeinclude` 带入指定的忽略文件；随后运行项目的 `.kite/setup`，通过 `KITE_MAIN_DIR` 提供检出目录。准备失败或被打断时工作区为 `failed`；成功后保存初始快照并开放使用。准备中的首个线程被打断也会中止初始化。
 
-采纳冲突交给独立工作区中的一个打开线程处理，主目录不进入冲突状态。agent 仅编辑文件，Git 合并由宿主完成；解决回合正常完成后自动重试一次，仍有冲突则报告，等待用户手动重试。
+采纳先拉取远程主线，把本地主线和远程主线依次合进工作区分支，主目录快进后推送；推送被拒时重新拉取、合并再推，最多三次。拉取或推送失败不撤销本地主线，结果中的 `push` 报告失败原因，下次采纳或现场推送时一并推上去。采纳冲突交给独立工作区中的一个打开线程处理，主目录不进入冲突状态。agent 仅编辑文件，Git 合并由宿主完成；解决回合正常完成后自动重试一次，仍有冲突则报告，等待用户手动重试。
 
 发送、停止、队列退回和恢复属于线程控制，见 [会话状态机](会话状态机.md)。回退只恢复文件，不回退或分叉对话历史。
 
@@ -199,7 +201,7 @@ harness 与 Claude 均通过共享 shell 执行项目的 `.kite/check`。项目�
 | GET/PUT | `/catalog/account` | 仅本机：查询上报状态，或用 `{deviceId, url, token}` 设置目录上报凭据；签发与版本约定见 [托管账号与设备](托管账号与设备.md) |
 | GET/PUT | `/network` | 仅本机：组网状态；`{enabled}` 开启或关闭组网节点 |
 | GET | `/projects` | 列出本机已登记的项目身份 |
-| GET/POST | `/checkouts` | 列出本机检出（`?project=`）；登记 `{path, project?}`，返回根工作区聚合 |
+| GET/POST | `/checkouts` | 列出本机检出（`?project=`）；登记本机文件夹 `{path}` 或 clone 远程 `{remote, path?}`，返回根工作区聚合 |
 | GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, runtime?, contextTemplate?}`，准备过程看事件 |
 | GET | `/workspaces/:id` | 工作区上下文及 instances、threads、windows 的完整聚合 |
 | GET / POST | `/plugin-definitions` | 读取定义或登记自定义包；包格式见 Bun 插件契约 |
@@ -228,7 +230,9 @@ harness 与 Claude 均通过共享 shell 执行项目的 `.kite/check`。项目�
 | POST | `/threads/:id/archive` | 归档线程，保留所属工作区 |
 | GET | `/workspaces/:id/snapshots` | 工作区快照，新的在前 |
 | POST | `/workspaces/:id/restore` | 恢复文件到快照 `{commit}` |
-| POST | `/workspaces/:id/adopt` | 合回主线，返回 `adopted` 或 `conflict` |
+| POST | `/workspaces/:id/adopt` | 合回主线并推送，返回 `{status: "adopted", commit, push}` 或 `{status: "conflict", files}`；`push` 为 `{status: "pushed"}` 或 `{status: "failed", message}` |
+| GET | `/checkouts/:id/sync` | 现场的 `{branch, dirty, ahead, behind}`，按最近一次拉取的远程分支计算，不访问网络；未拉取过时 `ahead`、`behind` 为 null |
+| POST | `/checkouts/:id/push` | 现场提交并推送，`{message?}`；有未提交改动时必须带说明。分叉返回 409，成功返回新的同步状态 |
 | POST | `/workspaces/:id/archive` | 归档独立工作区 `{force?}` |
 | GET | `/events` | 目录 SSE：首帧 `catalog.snapshot`，随后检出、工作区和线程概要变更 |
 | GET | `/events?workspace=<id>` | 工作区 SSE：首帧 `workspace.model`，随后工作区操作与所属线程概要 |
@@ -240,7 +244,15 @@ harness 与 Claude 均通过共享 shell 执行项目的 `.kite/check`。项目�
 
 `/threads/:id` 使用 agent 实例 ID；原生后端 ID 不用于此接口。工作区聚合包含所属实例、线程与共享窗口，具体类型见 [领域模型](../kited/src/model.ts)。实例操作的参数、授权和收据统一见 [实例操作](实例操作.md)，文件引用见 [资源引用](资源引用.md)。
 
-`POST /checkouts` 的 `project` 为 `{id, name, createdAt}`，可直接使用另一台工作机返回的项目身份；省略则创建新项目。同 ID 的名称或创建时间冲突、已登记目录试图改属另一项目时返回 409，在修改目录之前拒绝。重复登记同一目录和项目返回原检出及根工作区。
+`POST /checkouts` 登记本机文件夹时：
+
+- 目录是仓库根且有 origin：按 origin 向账号登记，不访问 Git 远程。origin 无法识别为平台地址（如本地路径）时返回 400。
+- 没有 origin：在托管服务建远程，写入 origin，并在托管远程为空时推送全部分支与标签。普通文件夹先初始化仓库、写入 `.gitignore` 模板并提交初始版本；放在同步目录里的，仓库本体放到 Kite 目录。中途失败可以重试，已写入的 origin 会找回同一个托管项目。
+- 仓库没有任何提交、目录位于仓库内部、与已有检出重叠时拒绝。重复登记同一目录返回原检出及根工作区。
+
+clone 远程时 `path` 默认为 `~/code/<域名>/<owner>/<repo>`，目标已有内容时返回 409；clone 期间请求不受空闲超时限制。访问远程时，账号为该平台绑定了凭据则临时改用 HTTPS 并注入凭据，否则照原样使用 origin 与用户自己的 Git 配置；kited 不改写 origin 的写法。
+
+kited 在启动、加入账号后和每 5 分钟对照一次项目登记表。项目远程迁移后，各检出的 origin 改为新地址，目录上报随之带上新远程，托管服务据此回收托管仓库。
 
 连接时先读 `GET /machine`。其余接口（包括 SSE）必须带 `X-Kite-Machine: <id>`：缺失返回 400，和服务身份不符返回 409，并在执行请求前拒绝。这个检查用于防止地址复用时操作错机器，不承担认证。本机监听的接口只接受 `Host` 为 `127.0.0.1` 或 `localhost` 的请求，其他主机名返回 403，用于阻止网页借 DNS 重绑定访问本机服务；远程监听只接受已核验身份的组网代理，见[远程连接](#远程连接)。App 会保存身份，重连时继续使用原 ID；CLI 在一次命令内固定目标 ID。
 

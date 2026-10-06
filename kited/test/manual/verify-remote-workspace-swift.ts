@@ -13,6 +13,7 @@ import type { Envelope } from '../../src/events.ts';
 import type { Model } from '../../src/harness/types.ts';
 import type { Machine, Project, ThreadContext, WorkspaceModel, WorkspaceWindow } from '../../src/model.ts';
 import type { PluginDefinition } from '../../src/plugins/definitions.ts';
+import { linkAccount, startFakeAccount } from '../fake-account.ts';
 import { bunPluginSource } from '../fixtures/bun-plugin-source.ts';
 import { newRepo } from '../util.ts';
 import { command } from './command.ts';
@@ -86,9 +87,14 @@ function declaration(source: string, signature: string): string {
 async function main() {
   const root = mkdtempSync(join(tmpdir(), 'swift-workspace-contract-'));
   const home = join(root, 'kite');
-  const repository = newRepo(root, 'project', { 'base.txt': '原始\n' });
+  const repository = newRepo(root, 'project', { 'base.txt': '原始\n' }, null);
+  // 两台工作机加入同一账号：项目 ID 由账号的项目登记表按远程分配。
+  const account = startFakeAccount(join(root, 'account'));
+  const otherHome = join(root, 'other-kite');
+  linkAccount(home, account);
+  linkAccount(otherHome, account);
   const daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => completeModel });
-  const otherDaemon = startDaemon({ home: join(root, 'other-kite'), port: 0, lightTasks: false, model: () => completeModel });
+  const otherDaemon = startDaemon({ home: otherHome, port: 0, lightTasks: false, model: () => completeModel });
   const events: Envelope[] = [];
   const waiters: Array<{ predicate: (event: Envelope) => boolean; resolve: () => void }> = [];
   const unsubscribe = daemon.kite.bus.subscribe(undefined, (event) => {
@@ -121,11 +127,12 @@ async function main() {
     const separateParent = join(root, 'remote-separate');
     mkdirSync(sharedParent);
     mkdirSync(separateParent);
+    // 同一项目：clone 第一台登记时建好的托管远程；同名的另一个普通文件夹是另一个托管项目。
     const shared = await call<WorkspaceModel>(otherDaemon.url, 'POST', '/checkouts', {
-      path: newRepo(sharedParent, 'project', { 'base.txt': '原始\n' }), project: project.body.project,
+      remote: account.projects.get(project.body.project.id)!.url, path: join(sharedParent, 'project'),
     }, otherMachine.body.id);
     const separate = await call<WorkspaceModel>(otherDaemon.url, 'POST', '/checkouts', {
-      path: newRepo(separateParent, 'project', { 'base.txt': '原始\n' }),
+      path: newRepo(separateParent, 'project', { 'base.txt': '原始\n' }, null),
     }, otherMachine.body.id);
     if (shared.status !== 200 || separate.status !== 200) throw new Error('第二台工作机登记项目失败');
     const workspace = await call<WorkspaceModel>(daemon.url, 'POST', '/workspaces', {
@@ -279,6 +286,7 @@ async function main() {
     unsubscribe();
     await otherDaemon.stop();
     await daemon.stop();
+    account.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }

@@ -8,7 +8,7 @@ import type { Envelope } from '../../src/events.ts';
 import { restoreContext } from '../../src/harness/context/assembler.ts';
 import type { Json, ModelItem, ThreadNotification } from '../../src/harness/types.ts';
 import { operationToolNames } from '../../src/operations/contract.ts';
-import { call, registerCheckout, startKited, type Kited } from '../harness.ts';
+import { call, linkNewAccount, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
 import { editNotificationTemplate } from '../notification-templates.ts';
 import { makeTemp, newRepo, read } from '../util.ts';
@@ -119,6 +119,7 @@ test('运行中换配置不打断旧工具，下一请求再采用新配置', as
 test('原样保存保留配置快照，通知跨重启保留且审查保持只读', async () => {
   const root = makeTemp();
   const home = join(root, 'kite');
+  const account = linkNewAccount(home);
   const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
   const firstModel = new ManualModel();
   let daemon: Daemon | undefined;
@@ -298,6 +299,7 @@ test('原样保存保留配置快照，通知跨重启保留且审查保持只�
     expect(reviewRecords.filter((record) => record.type === 'tool.finished').every((record) => record.result.status !== 'success')).toBe(true);
   } finally {
     await daemon?.stop();
+    account.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }, 1000);

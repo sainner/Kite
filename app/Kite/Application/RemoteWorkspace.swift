@@ -6,10 +6,6 @@ struct RemoteMachine: Codable, Identifiable, Equatable {
     let createdAt: Int
 }
 
-enum RemoteCommitOwner: String, Codable {
-    case kite, user
-}
-
 enum RemoteWorkspaceKind: String, Codable {
     case root, worktree
 }
@@ -34,9 +30,11 @@ enum RemoteWindowState: String, Decodable {
     case open, closed
 }
 
+/// 项目以远程仓库为身份；remote 是归一化地址（域名/owner/repo）。
 struct RemoteProject: Codable, Identifiable, Equatable {
     let id: String
     let name: String
+    let remote: String
     let createdAt: Int
 }
 
@@ -46,7 +44,7 @@ struct RemoteCheckout: Codable, Identifiable {
     let projectId: String
     let machineId: String
     let path: String
-    let commits: RemoteCommitOwner
+    let remote: String
     let createdAt: Int
 }
 

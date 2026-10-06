@@ -35,6 +35,9 @@ final class AppModel {
     #endif
     var showConnection = false
     var showNewWorkspace = false
+    /// 侧栏菜单发起的现场推送与归档确认，由 WorkspaceGitPresentation 呈现。
+    var scenePush: WorkArea?
+    var archiveRequest: WorkArea?
 
     init(account: KiteAccount = KiteAccount()) { self.account = account }
 
@@ -299,16 +302,22 @@ final class AppModel {
         if workspace(selected) == nil { selected = workspaces.first?.id ?? "" }
     }
 
-    func registerCheckout(path: String, projectID: String, machineID: String) async throws -> String {
-        struct Registration: Encodable {
-            let path: String
-            let project: RemoteProject?
-        }
+    /// 项目由工作机按目录的远程登记；没有远程的目录由工作机建托管远程。
+    func registerCheckout(path: String, machineID: String) async throws -> String {
+        struct Registration: Encodable { let path: String }
+        return try await addCheckout(Registration(path: path), machineID: machineID, timeout: 120)
+    }
+
+    /// 在工作机上 clone 远程并登记；path 为空时放在工作机的 ~/code/域名/owner/repo。
+    func cloneCheckout(remote: String, path: String?, machineID: String) async throws -> String {
+        struct Clone: Encodable { let remote: String; let path: String? }
+        return try await addCheckout(Clone(remote: remote.trimmingCharacters(in: .whitespaces), path: path), machineID: machineID, timeout: 1800)
+    }
+
+    private func addCheckout(_ body: any Encodable, machineID: String, timeout: TimeInterval) async throws -> String {
         guard let connection = connections[machineID], connection.connected else { throw KitedError(message: "工作机未连接") }
         let client = connection.client
-        let project = knownProjects.first { $0.id == projectID }
-        if !projectID.isEmpty && project == nil { throw KitedError(message: "找不到选中的项目，请重新选择") }
-        let result = try await client.request("/checkouts", method: "POST", body: Registration(path: path, project: project), as: RemoteWorkspace.self)
+        let result = try await client.request("/checkouts", method: "POST", body: body, timeout: timeout, as: RemoteWorkspace.self)
         try await refresh(client)
         guard accepts(client) else { throw KitedError(message: "工作机已切换") }
         return result.checkout.id

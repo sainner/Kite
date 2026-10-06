@@ -19,11 +19,11 @@ create table if not exists machine (
   slot integer primary key check (slot = 1), id text not null unique, name text not null, created_at integer not null
 );
 create table if not exists projects (
-  id text primary key, name text not null, created_at integer not null
+  id text primary key, name text not null, remote text not null, created_at integer not null
 );
 create table if not exists checkouts (
   id text primary key, project_id text not null references projects(id), machine_id text not null references machine(id),
-  path text not null, commits text not null check (commits in ('kite', 'user')), created_at integer not null,
+  path text not null, remote text not null, created_at integer not null,
   unique(machine_id, path)
 );
 create table if not exists workspaces (
@@ -71,9 +71,9 @@ create table if not exists context_templates (
   id text primary key, definition text not null
 );
 `;
-const projectOf = (r: any): Project => ({ id: r.id, name: r.name, createdAt: r.created_at });
+const projectOf = (r: any): Project => ({ id: r.id, name: r.name, remote: r.remote, createdAt: r.created_at });
 const checkoutOf = (r: any): Checkout => ({
-  id: r.id, projectId: r.project_id, machineId: r.machine_id, path: r.path, commits: r.commits, createdAt: r.created_at,
+  id: r.id, projectId: r.project_id, machineId: r.machine_id, path: r.path, remote: r.remote, createdAt: r.created_at,
 });
 const workspaceOf = (r: any): Workspace => ({
   id: r.id, checkoutId: r.checkout_id, name: r.name, cwd: r.cwd, kind: r.kind, branch: r.branch, base: r.base,
@@ -98,6 +98,7 @@ export class Store {
   constructor(path: string) {
     this.db = new Database(path, { create: true, strict: true });
     this.db.exec('pragma journal_mode = wal; pragma foreign_keys = on;');
+    this.dropLocalProjects();
     this.db.exec(SCHEMA);
     // 同一个数据库只属于一台工作机服务。端口、地址和主机名变化都不重建身份。
     this.machine = this.db.transaction(() => {
@@ -108,6 +109,17 @@ export class Store {
       this.db.query('insert into machine values (1, ?, ?, ?)').run(machine.id, machine.name, machine.createdAt);
       return machine;
     })();
+  }
+
+  /**
+   * 项目改以远程为身份前的库没有 remote 列。在研期间不做迁移：表是空的就重建，否则请用户清掉旧数据。
+   */
+  private dropLocalProjects(): void {
+    const columns = this.db.query("select name from pragma_table_info('projects')").all() as Array<{ name: string }>;
+    if (!columns.length || columns.some((c) => c.name === 'remote')) return;
+    const used = this.db.query('select 1 from checkouts limit 1').get();
+    if (used) throw new Error('数据库里有项目改以远程为身份之前登记的检出，请删除 KITE_HOME 下的 kite.db 后重新登记');
+    this.db.exec('drop table checkouts; drop table projects;');
   }
 
   projects(): Project[] { return this.db.query('select * from projects order by created_at, id').all().map(projectOf); }
@@ -127,14 +139,21 @@ export class Store {
     const r = this.db.query('select * from projects where id = ?').get(id);
     return r ? projectOf(r) : null;
   }
-  /** 已有项目可添加检出；新项目、检出与根工作区在同一事务中建立。 */
+  /** 已有项目可添加检出；新项目、检出与根工作区在同一事务中建立。项目名称与远程以登记表为准。 */
   register(project: Project, checkout: Checkout, root: Workspace): void {
     this.db.transaction(() => {
-      this.db.query('insert into projects values (?, ?, ?) on conflict(id) do nothing').run(project.id, project.name, project.createdAt);
+      this.saveProject(project);
       this.db.query('insert into checkouts values (?, ?, ?, ?, ?, ?)')
-        .run(checkout.id, checkout.projectId, checkout.machineId, checkout.path, checkout.commits, checkout.createdAt);
+        .run(checkout.id, checkout.projectId, checkout.machineId, checkout.path, checkout.remote, checkout.createdAt);
       this.addWorkspace(root);
     })();
+  }
+  saveProject(project: Project): void {
+    this.db.query('insert into projects values (?, ?, ?, ?) on conflict(id) do update set name = excluded.name, remote = excluded.remote')
+      .run(project.id, project.name, project.remote, project.createdAt);
+  }
+  setCheckoutRemote(id: string, remote: string): void {
+    this.db.query('update checkouts set remote = ? where id = ?').run(remote, id);
   }
   checkouts(projectId?: string): Checkout[] {
     return this.db.query('select * from checkouts where (? is null or project_id = ?) order by created_at, id')

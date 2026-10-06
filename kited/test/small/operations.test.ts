@@ -6,7 +6,7 @@ import { OperationError } from '../../src/errors.ts';
 import type { Json, ModelItem } from '../../src/harness/types.ts';
 import { OperationReceipts } from '../../src/operations/receipts.ts';
 import { Store } from '../../src/store.ts';
-import { call, registerCheckout, startKited, type Kited } from '../harness.ts';
+import { call, linkNewAccount, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { deferred, diskRecords, item, ManualModel } from '../harness-loop.ts';
 import { makeTemp, newRepo } from '../util.ts';
 
@@ -123,6 +123,7 @@ test('并发收据共享一次执行，重开保留结果与错误，落盘失�
 test('agent.start 跨重启重试复用实例与窗口，后台实例不建窗口且 list 只读', async () => {
   const root = makeTemp();
   const home = join(root, 'kite');
+  const account = linkNewAccount(home);
   const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
   const model = new ManualModel();
   let daemon: Daemon | undefined;
@@ -178,6 +179,7 @@ test('agent.start 跨重启重试复用实例与窗口，后台实例不建窗�
     expect(model.calls.values).toHaveLength(0);
   } finally {
     await daemon?.stop();
+    account.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }, 1000);

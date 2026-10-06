@@ -7,12 +7,12 @@ const named = { id, name: z.string().min(1).max(512), createdAt: time };
 /** 目录仅包含导航摘要；严格拒绝会话正文、插件配置和文件内容。 */
 export const catalogSnapshot = z.object({
   machine: z.object(named).strict(),
-  projects: z.array(z.object({ ...named, remote: z.string().max(2048).optional() }).strict()).max(10_000),
+  projects: z.array(z.object({ ...named, remote: z.string().min(1).max(2048) }).strict()).max(10_000),
   checkouts: z.array(z.object({
     id, projectId: id, machineId: id, path: z.string().startsWith('/').max(4096),
-    commits: z.enum(['kite', 'user']), createdAt: time,
+    createdAt: time,
     /** 检出实际使用的远程（归一化）；托管仓库迁移后据此判断各检出是否已切换。 */
-    remote: z.string().max(2048).optional(),
+    remote: z.string().min(1).max(2048),
   }).strict()).max(10_000),
   workspaces: z.array(z.object({
     id, checkoutId: id, name: named.name, cwd: z.string().startsWith('/').max(4096),

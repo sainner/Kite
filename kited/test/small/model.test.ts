@@ -4,19 +4,21 @@
  */
 import { afterEach, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { existsSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import { startCli } from '../cli.ts';
-import { after, call, machine, mark, registerCheckout, spawnKited, startKited, type Kited, type KitedProcess } from '../harness.ts';
+import { type FakeAccount, startFakeAccount } from '../fake-account.ts';
+import { after, call, linkNewAccount, machine, mark, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { ManualModel, Seen } from '../harness-loop.ts';
-import { commitAll, git, makeTemp, newDir, newRepo } from '../util.ts';
+import { git, makeTemp, newRepo } from '../util.ts';
 
 let kited: Kited | undefined;
 let otherKited: Kited | undefined;
 let restarted: Daemon | undefined;
 const roots: string[] = [];
+const accounts: FakeAccount[] = [];
 afterEach(async () => {
   await restarted?.stop();
   restarted = undefined;
@@ -24,6 +26,7 @@ afterEach(async () => {
   kited = undefined;
   await otherKited?.stop();
   otherKited = undefined;
+  for (const account of accounts.splice(0)) account.stop();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -218,21 +221,23 @@ test('登记检出创建同工作区线程，暂停后 CLI resume 续接，归�
 
 /*
  * 依赖 SQLite 外键重建和 git worktree 清理的配合：重启后仍须按 project→checkout→workspace→thread
- * 找到同一聚合；归档工作区才是删除其工作树的操作。
+ * 找到同一聚合；归档工作区才是删除其工作树的操作。同一项目的第二个检出 clone 自托管远程。
  */
 test('重启后保留项目到线程的 SQLite 关系，归档工作区删除工作树', async () => {
   const root = makeTemp('model-');
   roots.push(root);
   const home = join(root, 'kite');
-  const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
-  const secondRepo = newRepo(root, 'second-project-dir', { 'base.txt': '第二检出\n' });
+  const account = linkNewAccount(home);
+  accounts.push(account);
+  const repo = newRepo(root, 'project', { 'base.txt': '原始\n' }, null);
+  const secondRepo = join(root, 'second-project-dir');
   const model = new ManualModel();
   restarted = startDaemon({ home, port: 0, lightTasks: false, model: () => model });
 
   const project = await call(restarted.url, 'POST', '/checkouts', { path: repo });
   expect(project.status).toBe(200);
   const secondCheckout = await call(restarted.url, 'POST', '/checkouts', {
-    path: secondRepo, project: project.body.project,
+    remote: account.projects.get(project.body.project.id)!.url, path: secondRepo,
   });
   expect(secondCheckout.status).toBe(200);
   expect(secondCheckout.body.checkout.id).not.toBe(project.body.checkout.id);
@@ -295,18 +300,23 @@ test('重启后保留项目到线程的 SQLite 关系，归档工作区删除工
 });
 
 /*
- * 两份 SQLite 数据库和 HTTP 目标校验共同决定身份：同名目录不能把两台机器的项目合并，
- * 错误目标的写请求必须在登记前拒绝。并发请求还要经过同一登记队列和 SQLite/Git 操作，
- * 其中一次失败不能影响排在后面的重复登记。
+ * 两份 SQLite 数据库经同一账号的项目登记表决定身份：两台机器上 origin 指向同一远程（SSH 与 HTTPS 写法）的检出
+ * 自动归入同一项目，不再手动关联；错误目标的写请求必须在登记前拒绝。并发请求还要经过同一登记队列、
+ * 账号服务和 SQLite/Git 操作，其中一次失败不能影响排在后面的重复登记。
  */
-test('不同 home 可沿用同一项目身份，并发登记遇到失败后仍幂等且不能重绑检出', async () => {
-  kited = startKited();
-  otherKited = startKited();
+test('两台工作机登记同一远程的检出自动得到同一项目 ID，并发登记遇到失败后仍幂等', async () => {
+  const accountRoot = makeTemp('model-account-');
+  roots.push(accountRoot);
+  const account = startFakeAccount(accountRoot);
+  accounts.push(account);
+  kited = startKited(undefined, false, account);
+  otherKited = startKited(undefined, false, account);
   const left = kited;
   const right = otherKited;
-  const leftRepo = newRepo(left.root, 'project', { 'base.txt': '左\n' });
-  const rightRepo = newRepo(right.root, 'project', { 'base.txt': '右\n' });
-  const rightSecond = newRepo(right.root, 'second', { 'base.txt': '右二\n' });
+  // 按 origin 登记不访问远程，地址只需能归一化。
+  const leftRepo = newRepo(left.root, 'project', { 'base.txt': '左\n' }, 'https://example.test/Owner/Project.git');
+  const rightRepo = newRepo(right.root, 'checkout', { 'base.txt': '右\n' }, 'git@example.test:owner/project.git');
+  const rightSecond = newRepo(right.root, 'second', { 'base.txt': '右二\n' }, 'https://example.test/owner/second.git');
   const leftMachine = await machine(left.url);
   const rightMachine = await machine(right.url);
   expect(leftMachine.id).not.toBe(rightMachine.id);
@@ -321,87 +331,32 @@ test('不同 home 可沿用同一项目身份，并发登记遇到失败后仍�
 
   const leftProject = await registerCheckout(left, leftRepo);
   const rightProject = await registerCheckout(right, rightRepo);
-  expect(leftProject.project.name).toBe(rightProject.project.name);
-  expect(leftProject.project.id).not.toBe(rightProject.project.id);
+  expect(rightProject.project).toEqual(leftProject.project);
+  expect(leftProject.project.remote).toBe('example.test/owner/project');
+  expect(leftProject.checkout.remote).toBe(leftProject.project.remote);
+  expect(rightProject.checkout.remote).toBe(leftProject.project.remote);
   expect(leftProject.checkout.machineId).toBe(leftMachine.id);
   expect(rightProject.checkout.machineId).toBe(rightMachine.id);
+  expect(git(rightRepo, 'remote', 'get-url', 'origin')).toBe('git@example.test:owner/project.git');
 
   const [firstRegistration, failedRegistration, repeatedRegistration] = await Promise.all([
-    right.call('POST', '/checkouts', { path: rightSecond, project: leftProject.project }),
-    right.call('POST', '/checkouts', { path: join(right.root, 'missing-checkout'), project: leftProject.project }),
-    right.call('POST', '/checkouts', { path: rightSecond, project: leftProject.project }),
+    right.call('POST', '/checkouts', { path: rightSecond }),
+    right.call('POST', '/checkouts', { path: join(right.root, 'missing-checkout') }),
+    right.call('POST', '/checkouts', { path: rightSecond }),
   ]);
   expect(firstRegistration.status).toBe(200);
   expect(failedRegistration.status).toBeGreaterThanOrEqual(400);
   expect(failedRegistration.status).toBeLessThan(500);
   expect(repeatedRegistration.status).toBe(200);
-  const imported = firstRegistration.body;
-  expect(imported.project).toEqual(leftProject.project);
-  expect(imported.checkout.machineId).toBe(rightMachine.id);
-  expect(imported.checkout.id).not.toBe(leftProject.checkout.id);
-  expect(repeatedRegistration.body.checkout.id).toBe(imported.checkout.id);
-  expect(repeatedRegistration.body.workspace.id).toBe(imported.workspace.id);
+  const second = firstRegistration.body;
+  expect(second.project.id).not.toBe(leftProject.project.id);
+  expect(repeatedRegistration.body.checkout.id).toBe(second.checkout.id);
+  expect(repeatedRegistration.body.workspace.id).toBe(second.workspace.id);
 
-  const rebound = await right.call('POST', '/checkouts', { path: rightSecond, project: rightProject.project });
-  expect(rebound.status).toBe(409);
   const filtered = await right.call('GET', `/checkouts?project=${leftProject.project.id}`);
-  expect(filtered.body.map((checkout: any) => checkout.id)).toEqual([imported.checkout.id]);
+  expect(filtered.body.map((checkout: any) => checkout.id)).toEqual([rightProject.checkout.id]);
   expect((await right.call('GET', '/checkouts')).body).toHaveLength(2);
-});
-
-/*
- * 两个同步目录都是普通文件夹时，Kite 的 git init 与 SQLite 一对多登记必须配合：
- * 各自的 gitdir 和 HEAD 保持独立；项目身份冲突要在碰新目录之前拒绝。
- */
-test('同一项目的两个同步目录各有独立 Git 历史，身份冲突不初始化第三个目录', async () => {
-  // Bun 在启动时缓存 homedir()；子进程必须从启动起就继承 setup.ts 的隔离 HOME。
-  const root = makeTemp('dropbox-checkouts-');
-  const home = join(root, 'kite');
-  let dropbox: string | undefined;
-  let child: KitedProcess | undefined;
-  try {
-    dropbox = newDir(process.env.HOME!, `Dropbox/kite-model-${randomUUID()}`);
-    const first = newDir(dropbox, 'project-a', { 'base.txt': 'A\n' });
-    const second = newDir(dropbox, 'project-b', { 'base.txt': 'B\n' });
-    const rejected = newDir(dropbox, 'project-c', { 'base.txt': 'C\n' });
-    child = await spawnKited(home);
-    const url = child.url;
-
-    const firstRegistration = await call(url, 'POST', '/checkouts', { path: first });
-    if (firstRegistration.status !== 200) throw new Error(`登记同步目录失败：${firstRegistration.status} ${JSON.stringify(firstRegistration.body)}`);
-    const firstRoot = firstRegistration.body;
-    const secondRegistration = await call(url, 'POST', '/checkouts', { path: second, project: firstRoot.project });
-    expect(secondRegistration.status).toBe(200);
-    const secondRoot = secondRegistration.body;
-    expect(firstRoot.project.id).toBe(secondRoot.project.id);
-    const firstGitDir = git(first, 'rev-parse', '--absolute-git-dir');
-    const secondGitDir = git(second, 'rev-parse', '--absolute-git-dir');
-    expect(firstGitDir).toBe(realpathSync(join(home, 'repos', `${firstRoot.checkout.id}.git`)));
-    expect(secondGitDir).toBe(realpathSync(join(home, 'repos', `${secondRoot.checkout.id}.git`)));
-    expect(firstGitDir).not.toBe(secondGitDir);
-    writeFileSync(join(first, 'local.txt'), '只在 A\n');
-    const firstHead = commitAll(first, 'A 的提交');
-    writeFileSync(join(second, 'local.txt'), '只在 B\n');
-    const secondHead = commitAll(second, 'B 的提交');
-    expect(firstHead).not.toBe(secondHead);
-    expect(git(first, 'show', 'HEAD:local.txt')).toBe('只在 A');
-    expect(git(second, 'show', 'HEAD:local.txt')).toBe('只在 B');
-
-    const conflictingProject = { ...firstRoot.project, name: `${firstRoot.project.name}-冲突` };
-    const conflict = await call(url, 'POST', '/checkouts', { path: rejected, project: conflictingProject });
-    expect(conflict.status).toBe(409);
-    expect(existsSync(join(rejected, '.git'))).toBe(false);
-    expect(git(first, 'rev-parse', 'HEAD')).toBe(firstHead);
-    expect(git(second, 'rev-parse', 'HEAD')).toBe(secondHead);
-    expect((await call(url, 'GET', '/projects')).body).toEqual([firstRoot.project]);
-    expect((await call(url, 'GET', '/checkouts')).body).toHaveLength(2);
-  } finally {
-    try { await child?.kill('SIGTERM'); }
-    finally {
-      if (dropbox) rmSync(dropbox, { recursive: true, force: true });
-      rmSync(root, { recursive: true, force: true });
-    }
-  }
+  expect(account.projects.size).toBe(2);
 });
 
 /*
@@ -412,6 +367,7 @@ test('插件窗口命令去重，重连保留打开目标且回收后的关窗�
   const root = makeTemp('window-model-');
   roots.push(root);
   const home = join(root, 'kite');
+  accounts.push(linkNewAccount(home));
   const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
   restarted = startDaemon({ home, port: 0, lightTasks: false });
   const daemon = restarted;

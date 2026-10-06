@@ -1,14 +1,16 @@
 /**
  * 在本进程里起一个 kited（startDaemon），KITE_HOME 是临时目录；Claude Code 指向 setup.ts 起的假端点。
+ * 每个 kited 默认接上自己的账号服务替身（fake-account.ts），登记项目要用；模拟同一账号的多台工作机时传入共享的替身。
  * 另有 spawnKited：按路径起 kited 子进程，供进程被杀和启动时环境隔离的测试使用。
  */
 import { rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { startDaemon, type Daemon } from '../src/daemon.ts';
 import type { Envelope } from '../src/events.ts';
 import type { Model } from '../src/harness/types.ts';
-import type { Machine, Project, Thread, ThreadContext, WorkspaceModel } from '../src/model.ts';
+import type { Machine, Thread, ThreadContext, WorkspaceModel } from '../src/model.ts';
 import type { RuntimeOptions } from '../src/runtime.ts';
+import { type FakeAccount, linkAccount, startFakeAccount } from './fake-account.ts';
 import { api } from './setup.ts';
 import { makeTemp } from './util.ts';
 
@@ -20,12 +22,14 @@ export interface Kited {
   home: string;
   url: string;
   daemon: Daemon;
+  /** 这个 kited 加入的账号服务替身。 */
+  account: FakeAccount;
   /** 收到的内部事件，按发生顺序。 */
   events: Envelope[];
   call(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }>;
   /** 等满足条件的事件（已收到的也算）。 */
   waitEvent(pred: (e: Envelope) => boolean, timeoutMs?: number): Promise<Envelope>;
-  /** 放行假端点上挂着的请求，停掉 kited，删掉临时目录。 */
+  /** 放行假端点上挂着的请求，停掉 kited 和它自己起的账号替身（传入的共享替身由调用方停），删掉临时目录。 */
   stop(): Promise<void>;
 }
 
@@ -49,9 +53,13 @@ export async function call(
   return { status: r.status, body: await r.json() };
 }
 
-export function startKited(model?: (thread: ThreadContext) => Model, lightTasks: RuntimeOptions['lightTasks'] = false): Kited {
+export function startKited(
+  model?: (thread: ThreadContext) => Model, lightTasks: RuntimeOptions['lightTasks'] = false, shared?: FakeAccount,
+): Kited {
   const root = makeTemp('kited-');
   const home = join(root, 'kite');
+  const account = shared ?? startFakeAccount(join(root, 'account'));
+  linkAccount(home, account);
   const daemon = startDaemon({ home, port: 0, model, lightTasks });
   let machineId: Promise<string> | undefined;
   const events: Envelope[] = [];
@@ -61,7 +69,7 @@ export function startKited(model?: (thread: ThreadContext) => Model, lightTasks:
     for (const w of [...waiters]) if (w.pred(e)) { waiters.splice(waiters.indexOf(w), 1); w.resolve(e); }
   });
   return {
-    root, home, daemon, events,
+    root, home, daemon, account, events,
     url: daemon.url,
     call: (method, path, body) => call(daemon.url, method, path, body, machineId ??= machine(daemon.url).then((value) => value.id)),
     waitEvent(pred, timeoutMs = 3_000) {
@@ -77,15 +85,25 @@ export function startKited(model?: (thread: ThreadContext) => Model, lightTasks:
       api.releaseAll();
       unsubscribe();
       try { await daemon.stop(); }
-      finally { rmSync(root, { recursive: true, force: true }); }
+      finally {
+        if (!shared) account.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
     },
   };
 }
 
+/** 自己在 home 上 startDaemon 的测试用：新起一个账号替身（数据放在 home 旁边）并让 home 加入它。替身由调用方停。 */
+export function linkNewAccount(home: string): FakeAccount {
+  const account = startFakeAccount(join(dirname(home), `account-${crypto.randomUUID()}`));
+  linkAccount(home, account);
+  return account;
+}
+
 // ---- 接口的常用组合 ----
 
-export async function registerCheckout(k: Kited, path: string, project?: Project): Promise<WorkspaceModel> {
-  const r = await k.call('POST', '/checkouts', { path, project });
+export async function registerCheckout(k: Kited, path: string): Promise<WorkspaceModel> {
+  const r = await k.call('POST', '/checkouts', { path });
   if (r.status !== 200) throw new Error(`登记 ${path} 失败：${r.status} ${JSON.stringify(r.body)}`);
   return r.body as WorkspaceModel;
 }
@@ -132,8 +150,9 @@ export interface KitedProcess {
   kill(signal: NodeJS.Signals): Promise<void>;
 }
 
-/** 按路径起 kited 子进程（bun src/main.ts），等它在标准输出报出地址。 */
-export async function spawnKited(home: string): Promise<KitedProcess> {
+/** 按路径起 kited 子进程（bun src/main.ts），等它在标准输出报出地址。传入 account 时先让它加入这个账号替身。 */
+export async function spawnKited(home: string, account?: FakeAccount): Promise<KitedProcess> {
+  if (account) linkAccount(home, account);
   const main = join(import.meta.dir, '..', 'src', 'main.ts');
   const proc = Bun.spawn([process.execPath, main], {
     env: { ...(process.env as Record<string, string>), KITE_HOME: home, KITE_PORT: '0' },

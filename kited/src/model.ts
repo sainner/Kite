@@ -1,5 +1,4 @@
-/** 项目是逻辑身份；检出定位机器目录；工作区拥有文件和快照；线程拥有对话及执行。 */
-export type CommitOwner = 'kite' | 'user';
+/** 项目以远程仓库为身份；检出是某台机器上的 clone；工作区拥有文件和快照；线程拥有对话及执行。 */
 export type WorkspaceStatus = 'preparing' | 'open' | 'failed' | 'archived';
 export type RuntimeKind = 'claude' | 'harness';
 
@@ -10,9 +9,12 @@ export interface Machine {
   createdAt: number;
 }
 
+/** 项目 ID 由账号服务的项目登记表分配，同一账号、同一远程总是同一个 ID。 */
 export interface Project {
   id: string;
   name: string;
+  /** 归一化的远程地址（`域名/owner/repo`），迁移后随登记表更新。 */
+  remote: string;
   createdAt: number;
 }
 
@@ -21,7 +23,8 @@ export interface Checkout {
   projectId: string;
   machineId: string;
   path: string;
-  commits: CommitOwner;
+  /** 检出 origin 当前指向的远程（归一化）；托管仓库迁移后，账号服务据此判断各检出是否已切换。 */
+  remote: string;
   createdAt: number;
 }
 

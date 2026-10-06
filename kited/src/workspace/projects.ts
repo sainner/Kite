@@ -1,16 +1,20 @@
 /**
- * 登记项目在本机的检出。已有仓库直接用，提交归用户；
- * 普通文件夹由 Kite git init、写入 .gitignore 模板并提交初始版本，此后提交由 Kite 代做。
+ * 登记项目在本机的检出。项目以远程为身份，项目 ID 由账号服务的登记表分配。
+ * 已有 origin 的仓库按 origin 登记；普通文件夹或没有 origin 的仓库，由 Kite 补齐 git 与初始版本，
+ * 在托管服务建远程并推送。现场的提交始终归用户，Kite 不代为提交。
  * 放在 iCloud、Dropbox 这类同步目录里的，仓库本体放到 Kite 目录，文件夹里只留 .git 指针文件。
  */
-import { existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join, isAbsolute } from 'node:path';
+import { basename, dirname, join, isAbsolute } from 'node:path';
 import { KiteError } from '../errors.ts';
 import { commitAll, git, gitTry, revParse } from './git.ts';
 import { within } from '../paths.ts';
+import { normalizeRemote } from '../remote-url.ts';
+import { clone, originURL, seedRemote } from './remote.ts';
+import type { AccountClient, RegisteredProject } from '../account-client.ts';
 import type { Store } from '../store.ts';
-import type { CommitOwner, Project, Checkout, Workspace, WorkspaceModel } from '../model.ts';
+import type { Project, Checkout, Workspace, WorkspaceModel } from '../model.ts';
 import { randomUUID } from 'node:crypto';
 // 模板只有一份，在项目规范（kite-onboard skill）里。文本 import：模板一改，依赖图就会选中登记相关的测试
 import GITIGNORE_TEMPLATE from '../../../.claude/skills/kite-onboard/templates/gitignore' with { type: 'text' };
@@ -25,45 +29,83 @@ function isSynced(path: string): boolean {
   return roots.some((r) => within(path, r));
 }
 
-export async function register(store: Store, home: string, rawPath: string, identity?: Project): Promise<WorkspaceModel> {
+function realDirectory(rawPath: string): string {
   if (!isAbsolute(rawPath)) throw new KiteError('路径要写绝对路径');
   let path: string;
   try { path = realpathSync(rawPath); } catch { throw new KiteError(`找不到文件夹：${rawPath}`, 404); }
   if (!statSync(path).isDirectory()) throw new KiteError(`不是文件夹：${path}`);
+  return path;
+}
 
-  const known = identity && store.project(identity.id);
-  if (identity && known && (known.name !== identity.name || known.createdAt !== identity.createdAt)) {
-    throw new KiteError('这个项目 ID 已有不同的名称或创建时间，请使用已登记的项目身份', 409);
-  }
-  const checkouts = store.checkouts();
-  const same = checkouts.find((p) => p.path === path);
-  if (same) {
-    if (identity && identity.id !== same.projectId) throw new KiteError('这个目录已属于另一个项目', 409);
-    return store.rootWorkspaceModel(same.id)!;
-  }
-  const overlap = checkouts.find((p) => within(path, p.path) || within(p.path, path));
+/** 新检出不能和已登记的检出或 Kite 自己的目录重叠。 */
+function assertFree(store: Store, home: string, path: string): void {
+  const overlap = store.checkouts().find((p) => within(path, p.path) || within(p.path, path));
   if (overlap) throw new KiteError(`和已登记的检出 ${overlap.id}（${overlap.path}）重叠`, 409);
   if (within(path, home) || within(home, path)) throw new KiteError('不能登记 Kite 自己的目录');
+}
 
-  const project: Project = known || identity || { id: randomUUID(), name: basename(path).trim() || '未命名项目', createdAt: Date.now() };
+const projectOf = (r: RegisteredProject): Project => ({ id: r.id, name: r.name, remote: r.remote, createdAt: r.createdAt });
+
+export async function register(store: Store, home: string, account: AccountClient, rawPath: string): Promise<WorkspaceModel> {
+  const path = realDirectory(rawPath);
+  const same = store.checkouts().find((p) => p.path === path);
+  if (same) return store.rootWorkspaceModel(same.id)!;
+  assertFree(store, home, path);
+  if (!account.linked) throw new KiteError('这台工作机还没有加入 Kite 账号，请先在 App 中登录', 409);
+
   const checkoutId = randomUUID();
   const top = await gitTry(path, ['rev-parse', '--show-toplevel']);
-  let commits: CommitOwner;
+  let origin: string | null = null;
   if (top.code === 0) {
     const root = realpathSync(top.stdout.trim());
     if (root !== path) throw new KiteError(`这个文件夹在仓库 ${root} 里面，请登记仓库根目录`);
     if (!(await revParse(path, 'HEAD'))) throw new KiteError('仓库还没有任何提交，先提交一次再登记');
-    commits = 'user';
+    origin = await originURL(path);
   } else {
     // 同一项目可以有多个检出，独立 Git 目录按检出 ID 命名。
     await initFolder(path, home, checkoutId);
-    commits = 'kite';
   }
-  const checkout: Checkout = { id: checkoutId, projectId: project.id, machineId: store.machine.id, path, commits, createdAt: Date.now() };
+  let registered: RegisteredProject;
+  if (origin) {
+    if (!normalizeRemote(origin)) throw new KiteError(`无法识别 origin 的地址：${origin}，请使用 GitHub、GitLab 等平台的仓库地址`);
+    registered = await account.register(origin);
+  } else {
+    registered = await account.createHosted(basename(path).trim() || '未命名项目');
+    await git(path, ['remote', 'add', 'origin', registered.url]);
+  }
+  // 托管远程由 Kite 创建，初始内容来自第一份检出；上次推送失败后重试时，origin 已指向托管地址，在这里补推。
+  if (registered.hosted) await seedRemote(path, account);
+
+  const project = projectOf(registered);
+  const checkout: Checkout = { id: checkoutId, projectId: project.id, machineId: store.machine.id, path,
+    remote: project.remote, createdAt: Date.now() };
   const workspace: Workspace = { id: randomUUID(), checkoutId: checkout.id, name: basename(path), cwd: path,
     kind: 'root', branch: null, base: null, status: 'open', createdAt: checkout.createdAt };
   store.register(project, checkout, workspace);
   return store.workspaceModel(workspace.id)!;
+}
+
+/** 远程在本机的默认位置：~/code/<域名>/<owner>/<repo>。 */
+export function defaultClonePath(remote: string): string {
+  const normalized = normalizeRemote(remote);
+  if (!normalized) throw new KiteError('远程地址格式无法识别');
+  return join(homedir(), 'code', ...normalized.split('/'));
+}
+
+/** clone 远程并登记。目标目录可以不存在或为空，其他情况拒绝，避免覆盖用户文件。 */
+export async function cloneCheckout(store: Store, home: string, account: AccountClient, remote: string, rawPath?: string): Promise<WorkspaceModel> {
+  if (!normalizeRemote(remote)) throw new KiteError('远程地址格式无法识别');
+  const dest = rawPath ?? defaultClonePath(remote);
+  if (!isAbsolute(dest)) throw new KiteError('路径要写绝对路径');
+  if (existsSync(dest) && (!statSync(dest).isDirectory() || readdirSync(dest).length)) {
+    throw new KiteError(`目标位置已有内容：${dest}`, 409);
+  }
+  mkdirSync(dirname(dest), { recursive: true });
+  assertFree(store, home, join(realpathSync(dirname(dest)), basename(dest)));
+  // 先登记再 clone：远程地址无效或不属于本账号时，不留下半成品目录。
+  await account.register(remote);
+  await clone(remote, dest, account);
+  return register(store, home, account, dest);
 }
 
 async function initFolder(path: string, home: string, id: string): Promise<void> {

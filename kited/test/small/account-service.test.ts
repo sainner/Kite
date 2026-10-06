@@ -13,8 +13,7 @@ interface Device { id: string; name: string; role: 'controller' | 'worker' }
 interface Enrollment { device: Device; controlURL: string; authKey: string }
 interface HeadscaleUser { id: string; name: string }
 interface PreAuthKey { id: string; key: string; user: string }
-type CatalogCheckout = Checkout & { remote?: string };
-interface CatalogSnapshot { machine: Machine; projects: Project[]; checkouts: CatalogCheckout[]; workspaces: Workspace[] }
+interface CatalogSnapshot { machine: Machine; projects: Project[]; checkouts: Checkout[]; workspaces: Workspace[] }
 interface CatalogEntry { device: Device; machineId: string; updatedAt: number | null; revision: number; snapshot: CatalogSnapshot | null }
 interface Publisher { deviceId: string; url: string; token: string }
 interface Worker extends Publisher { machineId: string }
@@ -184,11 +183,10 @@ function expectRejected(response: { status: number }) {
   expect(response.status).toBeLessThan(500);
 }
 
-function snapshot(machineId: string, project: Project, remote?: string): CatalogSnapshot {
-  const checkout: CatalogCheckout = {
+function snapshot(machineId: string, project: Project): CatalogSnapshot {
+  const checkout: Checkout = {
     id: crypto.randomUUID(), machineId, projectId: project.id,
-    path: `/workspace/${machineId}`, commits: 'kite', createdAt: project.createdAt,
-    ...(remote === undefined ? {} : { remote }),
+    path: `/workspace/${machineId}`, remote: project.remote, createdAt: project.createdAt,
   };
   return {
     machine: { id: machineId, name: '目录工作机', createdAt: project.createdAt }, projects: [project], checkouts: [checkout],
@@ -324,7 +322,7 @@ test('两台工作机共享项目身份且离线目录保留，快照替换清�
     const leftNode = k.node(left, '100.64.4.1');
     expectSuccess(await k.complete(owner.token, left, leftNode));
     expectSuccess(await k.complete(peer.token, right, k.node(right, '100.64.4.2')));
-    const project = { id: crypto.randomUUID(), name: '共同项目', createdAt: 1_700_000_000_000 };
+    const project = { id: crypto.randomUUID(), name: '共同项目', remote: 'example.test/owner/shared', createdAt: 1_700_000_000_000 };
     const leftSnapshot = snapshot(crypto.randomUUID(), project);
     const rightSnapshot = snapshot(crypto.randomUUID(), project);
     const leftPublisher = await k.publisher(owner.token, left, leftSnapshot.machine.id);
@@ -402,7 +400,7 @@ test('目录发布只授权已绑定的本机工作机会话，专用凭据不�
       expect((await k.call('GET', path, grant.token)).status).toBe(401);
     }
     expectRejected(await k.call('POST', grantPath, grant.token, { machineId }));
-    const project = { id: crypto.randomUUID(), name: '私有项目', createdAt: 1_700_000_000_000 };
+    const project = { id: crypto.randomUUID(), name: '私有项目', remote: 'example.test/owner/private', createdAt: 1_700_000_000_000 };
     const catalog = snapshot(machineId, project);
     const path = `/api/catalog/${worker.device.id}`;
     expectRejected(await k.call('PUT', path, owner.token, { revision: 1, snapshot: catalog }));
@@ -589,8 +587,8 @@ test('托管项目迁移把全部分支和标签用绑定的凭据推到新远�
     await gitDo(local, await hostedEnv(), 'push', '-q', hosted.url, 'refs/heads/*:refs/heads/*', 'refs/tags/*:refs/tags/*');
     const refs = await gitDo(local, env, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', 'refs/tags');
 
-    const project: Project = { id: hosted.id, name: hosted.name, createdAt: hosted.createdAt };
-    const before = snapshot(box.machineId, project, hosted.remote);
+    const project: Project = { id: hosted.id, name: hosted.name, remote: hosted.remote, createdAt: hosted.createdAt };
+    const before = snapshot(box.machineId, project);
     expectSuccess(await k.call('PUT', `/api/catalog/${box.deviceId}`, box.token, { revision: 1, snapshot: before }));
 
     const host = destination.url.host;
@@ -633,9 +631,11 @@ test('托管项目迁移把全部分支和标签用绑定的凭据推到新远�
   }
 }, 1_000);
 
-// 服务端代跑 GitHub OAuth 设备码轮询，token 加密存入账号，再由同账号工作机按 SSH 写法的地址取用。
-test('GitHub 设备码授权先等待后成功，同账号工作机按 SSH 地址取到该 token，其他账号取不到', async () => {
+// 服务端代跑 GitHub OAuth 设备码轮询，token 加密存入账号，再由同账号工作机按 SSH 写法的地址取用；
+// 添加项目时用这个 token 代为请求 GitHub 仓库列表，GitHub 拒绝 token 时转为 502。
+test('GitHub 设备码授权先等待后成功，同账号工作机取到 token 并能列出仓库，其他账号取不到也列不出', async () => {
   let polls = 0;
+  let revoked = false;
   const github = Bun.serve({
     hostname: '127.0.0.1', port: 0,
     async fetch(request) {
@@ -659,6 +659,12 @@ test('GitHub 设备码授权先等待后成功，同账号工作机按 SSH 地�
         if (!auth.endsWith('gho_device_token')) return Response.json({ message: 'Bad credentials' }, { status: 401 });
         return Response.json({ login: 'octo-kite', id: 1 });
       }
+      if (url.pathname === '/user/repos' && request.method === 'GET') {
+        const auth = request.headers.get('authorization') ?? '';
+        if (revoked || !auth.endsWith('gho_device_token')) return Response.json({ message: 'Bad credentials' }, { status: 401 });
+        return Response.json([{ full_name: 'octo-kite/site', clone_url: 'https://github.com/octo-kite/site.git', private: true,
+          pushed_at: '2026-10-01T00:00:00Z', owner: { login: 'octo-kite' } }]);
+      }
       return Response.json({ message: 'Not Found' }, { status: 404 });
     },
   });
@@ -669,6 +675,7 @@ test('GitHub 设备码授权先等待后成功，同账号工作机按 SSH 地�
     const bob = await k.signUp('github-bob');
     const box = await k.worker(peer.token, 'Alice 工作机');
     const outsider = await k.worker(bob.token, 'Bob 工作机');
+    expect((await k.call('GET', '/api/git/accounts/github.com/repos', alice.token)).status).toBe(404);
 
     const started = await k.call('POST', '/api/git/accounts/github.com/device', alice.token);
     expectSuccess(started);
@@ -692,6 +699,14 @@ test('GitHub 设备码授权先等待后成功，同账号工作机按 SSH 地�
     expect(credential.status).toBe(200);
     expect(credential.body).toEqual({ username: 'octo-kite', password: 'gho_device_token', expiresAt: null });
     expect((await k.call('POST', '/api/git/credential', outsider.token, { url: 'git@github.com:o/r.git' })).status).toBe(404);
+
+    const repos = await k.call('GET', '/api/git/accounts/github.com/repos', peer.token);
+    expect(repos.status).toBe(200);
+    expect(repos.body).toEqual([{ fullName: 'octo-kite/site', url: 'https://github.com/octo-kite/site.git', private: true,
+      pushedAt: '2026-10-01T00:00:00Z' }]);
+    expect((await k.call('GET', '/api/git/accounts/github.com/repos', bob.token)).status).toBe(404);
+    revoked = true;
+    expect((await k.call('GET', '/api/git/accounts/github.com/repos', alice.token)).status).toBe(502);
   } finally {
     await k.stop();
     await github.stop(true);

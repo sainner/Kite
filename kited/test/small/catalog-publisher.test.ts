@@ -1,11 +1,13 @@
 import { expect, test } from 'bun:test';
 import { mkdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { AccountClient } from '../../src/account-client.ts';
 import { CatalogPublisher } from '../../src/catalog-publisher.ts';
 import { Bus, type Envelope } from '../../src/events.ts';
 import { Kite } from '../../src/kite.ts';
 import type { Checkout, Machine, Project, Workspace } from '../../src/model.ts';
 import { Store } from '../../src/store.ts';
+import { startFakeAccount } from '../fake-account.ts';
 import { aborted, deferred, ManualModel, Seen } from '../harness-loop.ts';
 import { ENV, makeTemp, newRepo } from '../util.ts';
 
@@ -37,12 +39,15 @@ test('目录发布在请求期间保留后续变更且只发摘要，停止取�
   const events = new Seen<Envelope>();
   const unsubscribe = bus.subscribe(undefined, (event) => events.add(event));
   const model = new ManualModel();
-  const kite = new Kite(store, home, bus, { lightTasks: false, model: () => model });
+  // 登记检出要向账号的项目登记表要项目 ID；目录上报另发给上面的端点，便于挂起请求。
+  const account = startFakeAccount(join(root, 'account'));
+  const kite = new Kite(store, home, bus, { lightTasks: false, model: () => model },
+    new AccountClient(() => ({ url: account.url, token: account.token })));
   let publisher: CatalogPublisher | undefined;
   let child: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | undefined;
   let closed = false;
   try {
-    const first = await kite.registerCheckout(newRepo(root, 'first', { 'base.txt': '目录测试\n' }));
+    const first = await kite.registerCheckout({ path: newRepo(root, 'first', { 'base.txt': '目录测试\n' }) });
     const privateBody = '私密会话正文不得上传到托管目录';
     const privateConfig = '私密会话配置不得上传到托管目录';
     const workspace = await kite.createWorkspace(first.checkout.id, '公开工作区', privateBody, 'harness');
@@ -61,7 +66,7 @@ test('目录发布在请求期间保留后续变更且只发摘要，停止取�
     expect([initial.method, initial.path, initial.authorization]).toEqual(['PUT', `/api/catalog/${deviceId}`, `Bearer ${token}`]);
     expect(statSync(file).mode & 0o777).toBe(0o600);
 
-    const second = await kite.registerCheckout(newRepo(root, 'second', { 'base.txt': '另一个检出\n' }));
+    const second = await kite.registerCheckout({ path: newRepo(root, 'second', { 'base.txt': '另一个检出\n' }) });
     await kite.archiveWorkspace(workspace.workspace.id, true);
     const expected = { machine: kite.machine(), projects: kite.projects(), checkouts: kite.checkouts(),
       workspaces: kite.workspaces().map((model) => model.workspace) };
@@ -129,6 +134,7 @@ test('目录发布在请求期间保留后续变更且只发摘要，停止取�
     unsubscribe();
     if (!closed) { await kite.shutdown(); store.close(); }
     await endpoint.stop(true);
+    account.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }, 1_000);

@@ -6,7 +6,7 @@ import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import { localTools } from '../../src/execution/local-tools.ts';
 import type { Json, ToolResult } from '../../src/harness/types.ts';
-import { call, registerCheckout, startKited, type Kited } from '../harness.ts';
+import { call, linkNewAccount, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { Seen } from '../harness-loop.ts';
 import { ENV, makeTemp, newRepo } from '../util.ts';
 
@@ -81,6 +81,7 @@ test('文件插件与模型 read 读取同一工作区文本，并拒绝真实�
 test('文件选择跨服务重启保留，回收后新实例读取历史 diff 且重试不重复写入', async () => {
   const root = makeTemp('files-plugin-');
   const home = join(root, 'kite');
+  const account = linkNewAccount(home);
   const repo = newRepo(root, 'project', { 'docs/one.txt': '可读内容\n' });
   let daemon: Daemon | undefined;
   try {
@@ -224,6 +225,7 @@ test('文件选择跨服务重启保留，回收后新实例读取历史 diff �
     }
   } finally {
     await daemon?.stop();
+    account.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }, 1000);

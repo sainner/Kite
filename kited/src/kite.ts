@@ -7,7 +7,11 @@ import { join, relative } from 'node:path';
 import { KiteError } from './errors.ts';
 import { type AdoptResult, Bus } from './events.ts';
 import { hasUnmerged, mainline, mergeBack } from './workspace/mainline.ts';
-import { register } from './workspace/projects.ts';
+import { cloneCheckout, register } from './workspace/projects.ts';
+import { AccountClient } from './account-client.ts';
+import { normalizeRemote } from './remote-url.ts';
+import { commitAll, git, isAncestor, isDirty, revParse } from './workspace/git.ts';
+import { checkoutSync, currentBranch, fetchBranch, originURL, pushBranch, type CheckoutSync } from './workspace/remote.ts';
 import { openRuntime, type Runtime, type RuntimeOptions } from './runtime.ts';
 import { capture, findSnapshot, list, restore, type Snapshot } from './workspace/snapshots.ts';
 import type { Store } from './store.ts';
@@ -39,8 +43,10 @@ export interface ThreadView extends ThreadContext { runner: Runtime['state']; bu
 const firstLine = (text: string) => text.trim().split('\n')[0]!.trim() || '（空消息）';
 const titleOf = (prompt: string) => firstLine(prompt).slice(0, 80);
 
+const PUSH_ATTEMPTS = 3;
+
 function conflictPrompt(branch: string, files: string[]): string {
-  return [`Kite 正在把工作区的改动合回主线。主线有了新提交，把它合进 ${branch} 时这些文件冲突了：`,
+  return [`Kite 正在把工作区的改动合回主线。主线（本机或远程）有了新提交，把它合进 ${branch} 时这些文件冲突了：`,
     ...files.map((f) => `- ${f}`), '',
     '请直接编辑这些文件解决冲突，保留双方意图，并删除全部冲突标记；需要删除的文件直接删除。',
     'Git 元数据由 Kite 管理，不要运行 git add 或 git commit。本回合正常结束后，Kite 会提交合并并继续合回主线。'].join('\n');
@@ -66,7 +72,8 @@ export class Kite {
   private turnLabels = new Map<string, string>();
   private adoptAfterTurn = new Set<string>();
 
-  constructor(readonly store: Store, readonly home: string, readonly bus: Bus, private options: RuntimeOptions = {}) {
+  constructor(readonly store: Store, readonly home: string, readonly bus: Bus, private options: RuntimeOptions = {},
+    readonly account = new AccountClient(() => undefined)) {
     this.catalog = new PluginCatalog(join(home, 'plugins'));
     this.contextTemplates = new ContextTemplates(store, [
       ...this.catalog.definitions().flatMap((definition) => definition.agent ? [definition.agent.context] : []),
@@ -112,15 +119,83 @@ export class Kite {
   machine(): Machine { return this.store.machine; }
   projects(): Project[] { return this.store.projects(); }
   checkouts(projectId?: string): Checkout[] { return this.store.checkouts(projectId); }
-  registerCheckout(path: string, project?: Project): Promise<WorkspaceModel> {
+  /** 登记本机文件夹（path）或 clone 远程（remote，path 可选）。 */
+  registerCheckout(request: { path: string; remote?: undefined } | { remote: string; path?: string }): Promise<WorkspaceModel> {
     this.assertRunning();
     // realpath 和目录重叠检查也在锁内，两个别名不能登记出重复检出。
     return this.serial('register', async () => {
-      const model = await register(this.store, this.home, path, project);
+      const model = request.remote === undefined
+        ? await register(this.store, this.home, this.account, request.path)
+        : await cloneCheckout(this.store, this.home, this.account, request.remote, request.path);
       this.bus.emit({ type: 'checkout.changed', projectId: model.project.id, checkoutId: model.checkout.id });
       this.changed(model.workspace.id);
       return model;
     });
+  }
+  /**
+   * 按账号的项目登记表更新本机项目。远程迁移后把各检出的 origin 改到新地址，
+   * 目录上报随 checkout.changed 带上新远程，账号服务据此删除托管仓库。
+   */
+  syncProjects(): Promise<void> {
+    if (!this.account.linked || this.stopping) return Promise.resolve();
+    return this.serial('register', async () => {
+      const registered = new Map((await this.account.projects()).map((p) => [p.id, p]));
+      for (const project of this.store.projects()) {
+        const latest = registered.get(project.id);
+        if (!latest) continue;
+        if (latest.remote !== project.remote || latest.name !== project.name) {
+          this.store.saveProject({ ...project, name: latest.name, remote: latest.remote });
+        }
+        for (const checkout of this.store.checkouts(project.id)) {
+          if (checkout.remote === latest.remote || !existsSync(checkout.path)) continue;
+          try {
+            const origin = await originURL(checkout.path);
+            if (!origin || normalizeRemote(origin) !== latest.remote) await git(checkout.path, ['remote', 'set-url', 'origin', latest.url]);
+          } catch (error) {
+            console.error(`[项目同步] 更新 ${checkout.path} 的 origin 失败：${(error as Error).message}`);
+            continue;
+          }
+          this.store.setCheckoutRemote(checkout.id, latest.remote);
+          this.bus.emit({ type: 'checkout.changed', projectId: project.id, checkoutId: checkout.id });
+        }
+      }
+    });
+  }
+  /** 现场与远程的关系，基于最近一次拉取的结果。 */
+  checkoutSync(id: string): Promise<CheckoutSync> {
+    const c = this.checkoutOf(id);
+    return this.serial(`checkout:${c.id}`, () => checkoutSync(c.path));
+  }
+  /**
+   * 现场的「提交并推送」，由用户触发。远程落后时把现场改动提交（message 为提交说明）后推送；
+   * 远程领先而现场没有新东西时快进；两边都有新东西时不在现场合并，请用户新建工作区处理。
+   */
+  pushCheckout(id: string, message?: string): Promise<CheckoutSync> {
+    this.assertRunning();
+    const c = this.checkoutOf(id);
+    return this.serial(`checkout:${c.id}`, async () => {
+      const branch = await currentBranch(c.path);
+      if (!branch) throw new KiteError('检出现场不在任何分支上，先切回主线分支', 409);
+      const dirty = await isDirty(c.path);
+      if (dirty && !message?.trim()) throw new KiteError('现场有未提交的改动，请填写提交说明', 400);
+      const upstream = await fetchBranch(c.path, branch, this.account);
+      const head = (await revParse(c.path, 'HEAD'))!;
+      if (upstream && !(await isAncestor(c.path, upstream, head))) {
+        if (dirty || !(await isAncestor(c.path, head, upstream))) {
+          throw new KiteError('远程有新的提交，和现场的改动分叉了。请新建工作区，在工作区里集成', 409);
+        }
+        await git(c.path, ['merge', '-q', '--ff-only', upstream]);
+        return checkoutSync(c.path);
+      }
+      if (dirty) await commitAll(c.path, ['-m', message!.trim()]);
+      if (await pushBranch(c.path, branch, this.account) === 'rejected') throw new KiteError('远程刚有新的提交，请重试', 409);
+      return checkoutSync(c.path);
+    });
+  }
+  private checkoutOf(id: string): Checkout {
+    const c = this.store.checkout(id);
+    if (!c) throw new KiteError(`没有这个检出：${id}`, 404);
+    return c;
   }
   workspaces(projectId?: string): WorkspaceModel[] { return this.store.workspaceModels(projectId); }
   workspace(id: string): WorkspaceModel {
@@ -500,15 +575,35 @@ export class Kite {
       if (w.kind === 'root' || w.status !== 'open') throw new KiteError('只能采纳已打开的独立工作区', 409);
       await this.assertIdle(id);
       const result = await this.serial(`checkout:${checkout.id}`, async (): Promise<AdoptResult> => {
-        const r = await mergeBack(checkout, w.cwd, w.name, { stageResolved: afterResolution });
-        if (r.status === 'merged') return { status: 'adopted', commit: r.commit };
-        const t = threads.findLast((t) => t.status === 'open');
-        // 手动重试遗留冲突同样转交，处理回合被打断后仍能继续。
-        if (!afterResolution && t) {
-          this.adoptAfterTurn.add(t.id);
-          await this.sendInput(this.context(t.id), { id: randomUUID(), text: conflictPrompt(w.branch!, r.files), source: 'kite' });
+        if (await isDirty(checkout.path)) throw new KiteError('检出现场有未提交的改动，先在现场提交或清理后再集成', 409);
+        const branch = await currentBranch(checkout.path);
+        if (!branch) throw new KiteError('检出现场不在任何分支上，先切回主线分支再集成', 409);
+        // 推送被拒说明远程刚有新提交：重新拉取、合并后再推，冲突同样留在工作区。
+        for (let attempt = 1; ; attempt++) {
+          let upstream: string | null = null;
+          let offline: string | undefined;
+          // 用跟踪分支名合并，合并提交的说明里写的是 origin/<分支> 而不是一串哈希。
+          try { if (await fetchBranch(checkout.path, branch, this.account)) upstream = `origin/${branch}`; }
+          catch (error) { offline = (error as Error).message; }
+          const r = await mergeBack(checkout, w.cwd, w.name, { stageResolved: afterResolution, upstream });
+          if (r.status === 'conflict') {
+            const t = threads.findLast((t) => t.status === 'open');
+            // 手动重试遗留冲突同样转交，处理回合被打断后仍能继续。
+            if (!afterResolution && t) {
+              this.adoptAfterTurn.add(t.id);
+              await this.sendInput(this.context(t.id), { id: randomUUID(), text: conflictPrompt(w.branch!, r.files), source: 'kite' });
+            }
+            return { status: 'conflict', files: r.files };
+          }
+          if (offline) return { status: 'adopted', commit: r.commit, push: { status: 'failed', message: offline } };
+          let pushed: 'pushed' | 'rejected';
+          try { pushed = await pushBranch(checkout.path, branch, this.account); }
+          catch (error) { return { status: 'adopted', commit: r.commit, push: { status: 'failed', message: (error as Error).message } }; }
+          if (pushed === 'pushed') return { status: 'adopted', commit: r.commit, push: { status: 'pushed' } };
+          if (attempt === PUSH_ATTEMPTS) {
+            return { status: 'adopted', commit: r.commit, push: { status: 'failed', message: '远程持续有新的提交，推送多次被拒，请稍后再集成' } };
+          }
         }
-        return { status: 'conflict', files: r.files };
       });
       this.bus.emit({ type: 'workspace.adopt', workspaceId: id, originThreadId, result });
       return result;

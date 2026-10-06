@@ -14,6 +14,7 @@ import { startDaemon } from '../../src/daemon.ts';
 import type { ExecutionGrants } from '../../src/execution/grants.ts';
 import type { Model } from '../../src/harness/types.ts';
 import type { OperationGrant } from '../../src/operations/contract.ts';
+import { linkAccount, startFakeAccount } from '../fake-account.ts';
 import { bunPluginSource } from '../fixtures/bun-plugin-source.ts';
 import { newRepo } from '../util.ts';
 import { command } from './command.ts';
@@ -40,6 +41,9 @@ function declaration(source: string, signature: string): string {
 const root = mkdtempSync(join(tmpdir(), 'plugin-management-contract-'));
 let modelCalls = 0;
 const model: Model = { async *stream() { modelCalls++; yield { type: 'completed', responseId: 'fixture' }; } };
+// 登记项目要向账号的项目登记表要 ID，接上账号服务替身。
+const account = startFakeAccount(join(root, 'account'));
+linkAccount(join(root, 'kite'), account);
 const daemon = startDaemon({ home: join(root, 'kite'), port: 0, lightTasks: false, model: () => model });
 let machineID = '';
 
@@ -199,5 +203,6 @@ try {
   console.log('Swift 解码原样保存的完整快照，与 Bun 共享默认模型，模型切换保留配置且拒绝旧 revision，不唤醒模型');
 } finally {
   await daemon.stop();
+  account.stop();
   rmSync(root, { recursive: true, force: true });
 }

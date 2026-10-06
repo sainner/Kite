@@ -8,7 +8,7 @@ import type { ThreadContext } from '../../src/model.ts';
 import type { DisplayEnvelope, History } from '../../src/transcript/protocol.ts';
 import { api, call, type Kited, registerCheckout, startKited } from '../harness.ts';
 import { ManualModel, Seen } from '../harness-loop.ts';
-import { newDir } from '../util.ts';
+import { newRepo } from '../util.ts';
 import { writeClaudeHistory } from '../claude-history.ts';
 
 let kited: Kited | undefined;
@@ -21,7 +21,7 @@ afterEach(async () => {
 
 async function emptyThread() {
   kited = startKited();
-  const repo = newDir(kited.root, 'project');
+  const repo = newRepo(kited.root, 'project', { 'base.txt': '原始\n' });
   const workspace = await registerCheckout(kited, repo);
   const opened = await kited.call('POST', `/workspaces/${workspace.workspace.id}/windows`, {
     id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent.claude' },

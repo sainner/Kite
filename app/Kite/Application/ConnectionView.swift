@@ -17,6 +17,10 @@ struct AppSettings: View {
                         .disabled(!SampleWorkspace.enabled && !model.connected)
                 }
                 if !SampleWorkspace.enabled { AccountDevices() }
+                if SampleWorkspace.enabled || model.account.signedIn {
+                    GitAccountsSection()
+                    AccountProjectsSection()
+                }
                 if let error = model.account.error { Text(error).foregroundStyle(Theme.danger) }
                 if let error = model.error { Text(error).foregroundStyle(Theme.danger) }
             }
@@ -35,9 +39,11 @@ struct NewWorkspace: View {
     @Environment(\.dismiss) private var dismiss
     @State private var checkoutID = ""
     @State private var machineID = ""
-    @State private var projectID = ""
     @State private var prompt = ""
+    @State private var source = Source.folder
     @State private var path = ""
+    @State private var remote = ""
+    @State private var repositories: [GitHubRepository] = []
     @State private var working = false
     @State private var error: String?
 
@@ -56,18 +62,41 @@ struct NewWorkspace: View {
                         }
                     }
                     .clickPointer()
-                    Picker("登记到", selection: $projectID) {
-                        Text("新建项目").tag("")
-                        ForEach(model.knownProjects) { project in Text(model.projectLabel(project)).tag(project.id) }
+                    Picker("来源", selection: $source) {
+                        Text("本机文件夹").tag(Source.folder)
+                        Text("远程仓库").tag(Source.remote)
                     }
-                    .clickPointer()
-                    TextField("工作机上的文件夹绝对路径", text: $path).autocorrectionDisabled()
-                    Button("登记目录") {
-                        perform {
-                            checkoutID = try await model.registerCheckout(path: path, projectID: projectID, machineID: machineID)
-                            path = ""
+                    .pickerStyle(.segmented)
+                    switch source {
+                    case .folder:
+                        TextField("工作机上的文件夹绝对路径", text: $path).autocorrectionDisabled()
+                        Button("登记目录") {
+                            perform {
+                                checkoutID = try await model.registerCheckout(path: path, machineID: machineID)
+                                path = ""
+                            }
+                        }.disabled(working || machineID.isEmpty || !path.hasPrefix("/"))
+                    case .remote:
+                        HStack {
+                            TextField("远程地址，如 github.com/me/repo", text: $remote).autocorrectionDisabled()
+                            if !repositories.isEmpty {
+                                Menu("从 GitHub 选择") {
+                                    ForEach(repositories) { repository in
+                                        Button(repository.fullName + (repository.private ? "（私有）" : "")) { remote = repository.url }
+                                    }
+                                }
+                                .fixedSize()
+                            }
                         }
-                    }.disabled(working || machineID.isEmpty || !path.hasPrefix("/"))
+                        TextField("存放位置（可选，默认 ~/code/域名/owner/repo）", text: $path).autocorrectionDisabled()
+                        Button(working ? "正在克隆…" : "克隆并登记") {
+                            perform {
+                                checkoutID = try await model.cloneCheckout(remote: remote, path: path.isEmpty ? nil : path, machineID: machineID)
+                                remote = ""; path = ""
+                            }
+                        }.disabled(working || machineID.isEmpty || remote.trimmingCharacters(in: .whitespaces).isEmpty
+                                   || !(path.isEmpty || path.hasPrefix("/")))
+                    }
                 }
                 Section("开始会话") {
                     TextField("说说要做什么", text: $prompt, axis: .vertical).lineLimit(3...8)
@@ -86,10 +115,16 @@ struct NewWorkspace: View {
             machineID = (model.activeConnection?.connected == true ? model.machine?.id : nil) ?? model.availableWorkers.first?.id ?? ""
             prompt = model.draftWorkspace.draftThread.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        .task(id: source) {
+            guard source == .remote, repositories.isEmpty else { return }
+            repositories = (try? await model.account.gitHubRepositories()) ?? []
+        }
         #if os(macOS)
-        .frame(width: 520, height: 440)
+        .frame(width: 520, height: 480)
         #endif
     }
+
+    private enum Source { case folder, remote }
 
     private func perform(_ action: @escaping () async throws -> Void) {
         working = true
@@ -133,5 +168,6 @@ struct ServiceConnection: ViewModifier {
             #endif
             .sheet(isPresented: $model.showConnection) { AppSettings().environment(model).toastHost().appAppearance() }
             .sheet(isPresented: $model.showNewWorkspace) { NewWorkspace().environment(model).toastHost().appAppearance() }
+            .modifier(WorkspaceGitPresentation())
     }
 }

@@ -5,6 +5,7 @@ import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { readClaudeControl } from '../../src/claude/control.ts';
+import { type FakeAccount, startFakeAccount } from '../fake-account.ts';
 import { api, call, type KitedProcess, spawnKited } from '../harness.ts';
 import { ENV, newRepo, transcript, until, useTemp } from '../util.ts';
 
@@ -12,6 +13,7 @@ setDefaultTimeout(3_000);
 
 // 先停 kited 再删临时目录：afterEach 按登记的先后执行
 let kited: KitedProcess | undefined;
+let account: FakeAccount | undefined;
 const orphans: number[] = [];
 afterEach(async () => {
   api.releaseAll();
@@ -19,6 +21,8 @@ afterEach(async () => {
     await kited?.kill('SIGTERM');
   } finally {
     kited = undefined;
+    account?.stop();
+    account = undefined;
     await stopOrphans();
   }
 });
@@ -49,7 +53,8 @@ test('kited 被 SIGKILL 后保留未知输入，确认恢复仍禁止普通发�
   const root = temp();
   const home = join(root, 'kite');
   const repo = newRepo(root, 'proj', { 'a.txt': 'a\n' });
-  kited = await spawnKited(home);
+  account = startFakeAccount(join(root, 'account'));
+  kited = await spawnKited(home, account);
   const p = (await call(kited.url, 'POST', '/checkouts', { path: repo })).body;
   const hold = `崩溃-${randomUUID().slice(0, 8)}`;
   const workspace = (await call(kited.url, 'POST', '/workspaces', { checkout: p.checkout.id, prompt: `HOLD ${hold} 开场`, runtime: 'claude' })).body;

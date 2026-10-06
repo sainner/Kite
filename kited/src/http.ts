@@ -3,8 +3,9 @@ import { KiteError, OperationError } from './errors.ts';
 import type { EventScope } from './events.ts';
 import { inScope } from './transcript/feed.ts';
 import { z } from 'zod';
+import type { Server } from 'bun';
 import type { Kite } from './kite.ts';
-import type { Project, RuntimeKind } from './model.ts';
+import type { RuntimeKind } from './model.ts';
 import { operationCatalog } from './operations/contract.ts';
 import { contextTemplateSelection } from './context-templates.ts';
 import type { Network } from './network.ts';
@@ -25,17 +26,11 @@ function runtimeKind(value: unknown): RuntimeKind | undefined {
 }
 
 /** 跨工作机关联使用完整项目身份；名称只用于显示，不参与推断。 */
-function projectIdentity(value: unknown): Project | undefined {
-  if (value === undefined) return undefined;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new KiteError('project 必须是项目身份对象');
-  const p = value as Record<string, unknown>;
-  const id = str(p.id, 'project.id');
-  const name = str(p.name, 'project.name');
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw new KiteError('project.id 必须是 UUID');
-  if (!name.trim()) throw new KiteError('项目名称不能为空');
-  if (typeof p.createdAt !== 'number' || !Number.isSafeInteger(p.createdAt) || p.createdAt < 0) throw new KiteError('project.createdAt 必须是毫秒时间戳');
-  return { id, name, createdAt: p.createdAt };
-}
+/** 登记本机文件夹写 path；clone 远程写 remote，path 可选，默认放在 ~/code/<域名>/<owner>/<repo>。 */
+const checkoutRequest = z.union([
+  z.object({ path: z.string().min(1) }).strict(),
+  z.object({ remote: z.string().trim().min(1).max(2048), path: z.string().min(1).optional() }).strict(),
+]);
 
 function handle<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
   return async (req: R) => {
@@ -114,6 +109,8 @@ export interface Listen {
   /** 本机监听管理此设备的组网状态。 */
   network?: Network;
   publisher?: CatalogPublisher;
+  /** 加入账号或更换凭据后，立即对照一次项目登记表。 */
+  accountChanged?: () => void;
   /** 仅 kite-net 持有；代理已核验来源和本节点属于同一组网用户。 */
   proxyToken?: string;
 }
@@ -139,7 +136,7 @@ export function serve(kite: Kite, listen: Listen) {
     if (!listen.network) throw new KiteError('这个服务没有组网', 404);
     return listen.network;
   };
-  return Bun.serve({
+  const server: Server<undefined> = Bun.serve({
     hostname: listen.hostname,
     port: listen.port,
     idleTimeout: 60,
@@ -151,6 +148,7 @@ export function serve(kite: Kite, listen: Listen) {
           const parsed = publisherConfig.safeParse(await body(req));
           if (!parsed.success) throw new KiteError('目录上报设置无效');
           await listen.publisher.configure(parsed.data);
+          listen.accountChanged?.();
           return listen.publisher.status();
         })),
       },
@@ -175,8 +173,20 @@ export function serve(kite: Kite, listen: Listen) {
       '/checkouts': {
         GET: bound((req) => kite.checkouts(new URL(req.url).searchParams.get('project') ?? undefined)),
         POST: bound(async (req) => {
-          const b = await body(req);
-          return kite.registerCheckout(str(b.path, 'path'), projectIdentity(b.project));
+          const parsed = checkoutRequest.safeParse(await body(req));
+          if (!parsed.success) throw new KiteError('登记检出要写 path（本机文件夹）或 remote（远程地址）');
+          // clone 大仓库可能长时间没有响应数据，不受空闲超时限制。
+          if ('remote' in parsed.data) server.timeout(req, 0);
+          return kite.registerCheckout(parsed.data);
+        }),
+      },
+      '/checkouts/:id/sync': { GET: bound((req) => kite.checkoutSync(req.params.id)) },
+      '/checkouts/:id/push': {
+        POST: bound(async (req) => {
+          const parsed = z.object({ message: z.string().max(10_000).optional() }).strict().safeParse(await body(req));
+          if (!parsed.success) throw new KiteError('推送请求无效');
+          server.timeout(req, 0);
+          return kite.pushCheckout(req.params.id, parsed.data.message);
         }),
       },
       '/workspaces': {
@@ -338,11 +348,12 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/restore': {
         POST: bound(async (req) => kite.restore(req.params.id, str((await body(req)).commit, 'commit'))),
       },
-      '/workspaces/:id/adopt': { POST: bound((req) => kite.adopt(req.params.id)) },
+      '/workspaces/:id/adopt': { POST: bound((req) => { server.timeout(req, 0); return kite.adopt(req.params.id); }) },
       '/threads/:id/archive': { POST: bound((req) => kite.archiveThread(req.params.id)) },
       '/workspaces/:id/archive': { POST: bound(async (req) => kite.archiveWorkspace(req.params.id, (await body(req)).force === true)) },
       '/events': { GET: bound((req) => events(kite, eventScope(req.url))) },
     },
     fetch: () => Response.json({ error: '没有这个接口' }, { status: 404 }),
   });
+  return server;
 }

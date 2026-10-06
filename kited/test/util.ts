@@ -65,11 +65,17 @@ export function newDir(parent: string, name: string, files: Record<string, strin
   return dir;
 }
 
-/** 建一个已有提交的 git 仓库（分支 main）。 */
-export function newRepo(parent: string, name: string, files: Record<string, string>): string {
+/**
+ * 建一个已有提交的 git 仓库（分支 main）。origin 默认指向一个不存在的示例远程，各仓库互不相同：
+ * 登记时按 origin 向账号登记成各自的项目，不访问网络，也省去托管远程的建库和推送（每次约 0.1 秒）。
+ * 要没有远程的仓库（登记时走托管远程）传 null。
+ */
+export function newRepo(parent: string, name: string, files: Record<string, string>,
+  origin: string | null = `https://example.test/kite-test/${crypto.randomUUID()}.git`): string {
   const dir = newDir(parent, name, files);
-  // 一次起一个 shell 做完，比分三次跑 git 快
-  const r = Bun.spawnSync(['sh', '-c', 'git init -q -b main && git add -A && git commit -q -m init'], { cwd: dir, env: ENV(), stderr: 'pipe' });
+  // 一次起一个 shell 做完，比分几次跑 git 快
+  const script = 'git init -q -b main && git add -A && git commit -q -m init' + (origin === null ? '' : ' && git remote add origin "$1"');
+  const r = Bun.spawnSync(['sh', '-c', script, 'sh', origin ?? ''], { cwd: dir, env: ENV(), stderr: 'pipe' });
   if (r.exitCode !== 0) throw new Error(`建仓库 ${dir} 失败：${r.stderr.toString()}`);
   return dir;
 }

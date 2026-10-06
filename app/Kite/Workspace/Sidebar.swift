@@ -86,9 +86,9 @@ struct WorkspaceList<Row: View>: View {
                         .padding(.top, group.id == groups.first?.id ? 0 : 8)
                 }
                 ForEach(group.checkouts) { checkout in
-                    if let root = checkout.root { row(root) }
+                    if let root = checkout.root { row(root).contextMenu { WorkspaceGitActions(workspace: root) } }
                     ForEach(checkout.workspaces) { workspace in
-                        row(workspace).padding(.leading, 12)
+                        row(workspace).padding(.leading, 12).contextMenu { WorkspaceGitActions(workspace: workspace) }
                     }
                 }
             }

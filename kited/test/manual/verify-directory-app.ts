@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Machine, WorkspaceModel } from '../../src/model.ts';
+import { linkAccount, startFakeAccount } from '../fake-account.ts';
 import { newRepo } from '../util.ts';
 
 async function call(url: string, method: string, path: string, body?: unknown, machineId?: string) {
@@ -51,18 +52,21 @@ async function main() {
   let holdB = false;
   let completed = false;
   let control: Bun.Server<undefined> | undefined;
+  // 两台工作机加入同一账号，项目 ID 由账号的项目登记表按远程分配。
+  const account = startFakeAccount(join(root, 'account'));
   try {
     for (const name of ['a', 'b']) {
+      linkAccount(join(root, `kite-${name}`), account);
       daemons.push(startDaemon({ home: join(root, `kite-${name}`), port: 0, lightTasks: false,
         model: () => ({ async *stream() { yield { type: 'completed', responseId: 'directory-verification' }; } }) }));
     }
     const [a, b] = daemons as [Daemon, Daemon];
     const [machineA, machineB] = await Promise.all([machine(a.url), machine(b.url)]);
-    const first = await call(a.url, 'POST', '/checkouts', { path: newRepo(root, 'repo-a', { 'base.txt': 'A\n' }) }, machineA.id);
+    const first = await call(a.url, 'POST', '/checkouts', { path: newRepo(root, 'repo-a', { 'base.txt': 'A\n' }, null) }, machineA.id);
     if (first.status !== 200) throw new Error('登记 A 检出失败');
     const shared = first.body as WorkspaceModel;
     const second = await call(b.url, 'POST', '/checkouts', {
-      path: newRepo(root, 'repo-b', { 'base.txt': 'B\n' }), project: shared.project,
+      remote: account.projects.get(shared.project.id)!.url, path: join(root, 'repo-b'),
     }, machineB.id);
     if (second.status !== 200) throw new Error('登记 B 的同身份项目失败');
     const other = second.body as WorkspaceModel;
@@ -163,6 +167,7 @@ async function main() {
     await Promise.all(proxies.map((server) => server.stop(true)));
     await control?.stop(true);
     await Promise.all(daemons.map((daemon) => daemon.stop()));
+    account.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }
