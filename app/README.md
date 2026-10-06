@@ -23,7 +23,7 @@ Mac 和 iPhone 共用一个 SwiftUI 工程、一个多平台 target。使用 Swi
 
 ## 编译和运行
 
-仓库根目录运行 `./package-mac.command` 生成 Mac Release App 与独立安装包，`./install.command` 构建后安装 App 和后台服务。签名范围、系统要求和升级方式见 [macOS 安装与打包](../docs/macOS安装与打包.md)。
+仓库根目录运行 `./package-mac.command` 生成 Mac Release App 与独立安装包，`./install.command` 构建后安装 App，首次配置选择本机执行时安装后台服务。签名范围、系统要求和升级方式见 [macOS 安装与打包](../docs/macOS安装与打包.md)。
 
 用 Xcode 打开 `app/Kite.xcodeproj`，选择 My Mac 或 iPhone 模拟器。首次使用 Xcode 时，若缺少 Metal Toolchain，先运行 `xcodebuild -downloadComponent MetalToolchain`。
 

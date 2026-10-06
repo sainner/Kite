@@ -58,15 +58,46 @@ async function main(): Promise<void> {
       await run(['/usr/bin/codesign', '--verify', '--deep', '--strict', join(bundle, 'Kite.app')]);
     }
     writeFileSync(join(runtime, 'manifest.json'), JSON.stringify({ platform: 'darwin', arch: process.arch,
-      bun: Bun.version, app: !serviceOnly, builtAt: new Date().toISOString() }, null, 2) + '\n');
-    writeFileSync(join(bundle, '安装.command'), `#!/bin/bash
+      bun: Bun.version, builtAt: new Date().toISOString() }, null, 2) + '\n');
+    if (!serviceOnly) {
+      const resources = join(bundle, 'Kite.app/Contents/Resources/Service');
+      mkdirSync(resources, { recursive: true });
+      renameSync(runtime, join(resources, 'runtime'));
+      await run(['/usr/bin/codesign', '--force', '--deep', '--sign', '-', join(bundle, 'Kite.app')]);
+      await run(['/usr/bin/codesign', '--verify', '--deep', '--strict', join(bundle, 'Kite.app')]);
+    }
+    writeFileSync(join(bundle, '安装.command'), serviceOnly ? `#!/bin/bash
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 exec "$HERE/runtime/bin/bun" run --no-env-file --no-install "$HERE/runtime/kited/scripts/install-macos.ts" install
+` : `#!/bin/bash
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+DESTINATION="\${KITE_APPLICATIONS_DIR:-$HOME/Applications}"
+mkdir -p "$DESTINATION"
+if /bin/ps -axo command= | /usr/bin/grep -F "$DESTINATION/Kite.app/Contents/MacOS/Kite" | /usr/bin/grep -v grep >/dev/null; then
+  echo "请先退出 Kite App，再重新安装。"
+  exit 1
+fi
+/usr/bin/codesign --verify --deep --strict "$HERE/Kite.app"
+STAGING="$(mktemp -d "$DESTINATION/.kite-install.XXXXXX")"
+trap 'rm -rf "$STAGING"' EXIT
+/usr/bin/ditto "$HERE/Kite.app" "$STAGING/Kite.app"
+/usr/bin/codesign --verify --deep --strict "$STAGING/Kite.app"
+if [ -e "$DESTINATION/Kite.app" ]; then mv "$DESTINATION/Kite.app" "$STAGING/previous.app"; fi
+if ! mv "$STAGING/Kite.app" "$DESTINATION/Kite.app"; then
+  if [ -e "$STAGING/previous.app" ] && ! mv "$STAGING/previous.app" "$DESTINATION/Kite.app"; then
+    trap - EXIT
+    echo "恢复旧 App 失败，已保留备份：$STAGING/previous.app"
+  fi
+  exit 1
+fi
+echo "Kite App 已安装；首次配置选择本机执行时会安装 kited。"
+if [ "\${KITE_NO_OPEN:-0}" != "1" ]; then /usr/bin/open "$DESTINATION/Kite.app"; fi
 `, { mode: 0o755 });
     writeFileSync(join(bundle, '安装说明.txt'), `Kite 本地安装包（${process.arch}）
 
-解压后双击「安装.command」，安装当前用户的后台服务${serviceOnly ? '' : '和 ~/Applications/Kite.app'}。
+解压后双击「安装.command」，${serviceOnly ? '安装当前用户的 kited 后台服务' : '安装 ~/Applications/Kite.app；登录后选择本机执行才会安装 kited，仅远程控制不会安装服务'}。
 需要 macOS ${serviceOnly ? '及 Git' : '26 或更新版本及 Git'}，不需要安装 Bun${serviceOnly ? '' : '或完整 Xcode'}。缺少 Git 时先运行 xcode-select --install。
 安装后可移走此目录。重复运行安装器可升级；数据与登录保留在 ~/.kite。
 ~/.local/bin/kite-service 提供 status、start、stop、restart 和 uninstall。卸载保留数据与登录。

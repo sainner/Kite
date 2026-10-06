@@ -263,7 +263,7 @@ struct AddWindowButton: View {
 
     private var canAdd: Bool {
         !area.changingWindows && area.pendingWindowRequest == nil && area.pendingInstanceRequest == nil &&
-            (area.isDraft || area.isSample || (model.connected && area.remote?.workspace.status == .open))
+            (area.isDraft || area.isSample || (model.isConnected(area) && area.remote?.workspace.status == .open))
     }
 
     var body: some View {
@@ -320,7 +320,7 @@ struct AddWindowButton: View {
             .presentationCompactAdaptation(.popover)
             .task {
                 guard !area.isSample, !area.isDraft else { return }
-                do { try await model.refreshDefinitions(model.activeClient()); error = nil }
+                do { try await model.refreshDefinitions(model.activeClient(in: area)); error = nil }
                 catch { self.error = error.localizedDescription }
             }
         }

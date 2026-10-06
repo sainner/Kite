@@ -18,7 +18,7 @@ final class WorkThread: Identifiable {
     var connected = false
     var error: String?
     private(set) var regeneratingTitle = false
-    private let client: KitedClient?
+    private(set) var client: KitedClient?
     // 未识别的块保留位置，后续同 id 的记录替换仍沿用服务端顺序。
     private var remoteRecords: [RemoteRecord] = []
     private var visiblePositions: [Int: Int] = [:]
@@ -89,14 +89,24 @@ final class WorkThread: Identifiable {
         transcript = Transcript(root: workspace)
     }
 
+    func use(_ client: KitedClient) {
+        guard self.client != client else { return }
+        self.client = client
+        connected = false
+    }
+
     func observe() async {
         guard let client else { return }
-        defer { flushStreaming(); connected = false }
-        while !Task.isCancelled {
+        defer { if self.client == client { flushStreaming(); connected = false } }
+        while !Task.isCancelled && self.client == client {
             do {
-                try await client.events(scope: .thread(id)) { event in try self.apply(event) }
+                try await client.events(scope: .thread(id)) { event in
+                    try Task.checkCancellation()
+                    guard self.client == client else { return }
+                    try self.apply(event)
+                }
             } catch {
-                if Task.isCancelled { return }
+                if Task.isCancelled || self.client != client { return }
                 flushStreaming()
                 connected = false
                 self.error = "连接中断，正在重连：\(error.localizedDescription)"

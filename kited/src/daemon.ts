@@ -9,6 +9,7 @@ import { serve } from './http.ts';
 import { Kite } from './kite.ts';
 import { Network } from './network.ts';
 import { Store } from './store.ts';
+import { CatalogPublisher } from './catalog-publisher.ts';
 import type { RuntimeOptions } from './runtime.ts';
 
 export interface Daemon {
@@ -26,29 +27,30 @@ export interface DaemonOptions extends RuntimeOptions {
   port: number;
   /** kite-net 可执行文件；默认用 kited/net/bin 中构建出的那个。 */
   networkBinary?: string;
-  /** 组网控制服务器，省略时用 Tailscale 官方服务。 */
-  controlURL?: string;
 }
 
 export function startDaemon(opts: DaemonOptions): Daemon {
   mkdirSync(opts.home, { recursive: true });
   const store = new Store(join(opts.home, 'kite.db'));
   const kite = new Kite(store, opts.home, new Bus(), opts);
-  // 远程监听只绑回环地址，由 kite-net 从组网转发进来；它只认配对令牌。
-  const remote = serve(kite, { hostname: '127.0.0.1', port: 0, remote: true });
+  const publisher = new CatalogPublisher(join(opts.home, 'catalog-publisher.json'), kite);
+  // kite-net 核验组网身份；随机内部凭据阻止绕过代理伪造同账号请求。
+  const proxyToken = crypto.randomUUID();
+  const remote = serve(kite, { hostname: '127.0.0.1', port: 0, remote: true, proxyToken });
   const network = new Network({
     dir: join(opts.home, 'tailnet'),
     binary: opts.networkBinary ?? join(import.meta.dir, '../net/bin/kite-net'),
     hostname: `kite-${kite.machine().name.split('.')[0]}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-+$/, '').slice(0, 63),
-    port: opts.port || 5483, target: remote.port!, controlURL: opts.controlURL,
+    port: opts.port || 5483, target: remote.port!, proxyToken,
   });
-  const server = serve(kite, { hostname: '127.0.0.1', port: opts.port, network });
+  const server = serve(kite, { hostname: '127.0.0.1', port: opts.port, network, publisher });
   return {
     url: `http://127.0.0.1:${server.port}`,
     remoteUrl: `http://127.0.0.1:${remote.port}`,
     network,
     kite,
     async stop() {
+      await publisher.stop();
       await network.stop();
       await kite.shutdown();
       await Promise.all([server.stop(true), remote.stop(true)]);

@@ -1,5 +1,4 @@
 import Foundation
-import Observation
 import os
 import TailscaleKit
 #if os(iOS)
@@ -11,38 +10,41 @@ import UIKit
 actor Tailnet {
     static let shared = Tailnet()
 
-    /// 界面读取的节点状态；等待登录时给出登录网址。
-    @MainActor @Observable final class Status {
-        var loginURL: URL?
-        var running = false
-    }
-    @MainActor static let status = Status()
-
     private var node: TailscaleNode?
-    private var processor: MessageProcessor?
     private var session: URLSession?
     private var starting: Task<URLSession, Error>?
-    /// 扫码带来的一次性入网密钥，下次上线时代替浏览器登录。
+    /// 账号服务签发的一次性入网密钥，节点成功上线后清除。
     private var pendingAuthKey: String?
+    private var controlURL: String?
+    private var deviceID: String?
+    private var workerPort: Int?
 
-    /// 控制服务器，留空用 Tailscale 官方服务；自建 headscale 时填它的地址。
-    nonisolated static var controlURL: String {
-        get { UserDefaults.standard.string(forKey: "KiteTailnetControlURL").flatMap { $0.isEmpty ? nil : $0 } ?? kDefaultControlURL }
-        set {
-            let value = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            UserDefaults.standard.set(value == kDefaultControlURL ? "" : value, forKey: "KiteTailnetControlURL")
-        }
+    /// 入网配置以账号会话为准；设备或密钥变化时重新启动节点。
+    func configure(controlURL: String, authKey: String? = nil, deviceID: String) async {
+        let changed = self.controlURL != controlURL || self.deviceID != deviceID || workerPort != nil
+        self.controlURL = controlURL
+        self.deviceID = deviceID
+        workerPort = nil
+        if let authKey { pendingAuthKey = authKey }
+        if authKey != nil || changed { await stop() }
     }
 
-    /// 自建的控制服务器地址；用官方服务时为空，供输入框显示。
-    nonisolated static var customControlURL: String { UserDefaults.standard.string(forKey: "KiteTailnetControlURL") ?? "" }
+    func useWorker(port: Int) async {
+        guard workerPort != port || session == nil else { return }
+        await stop()
+        workerPort = port
+        deviceID = nil
+        let config = URLSessionConfiguration.ephemeral
+        config.connectionProxyDictionary = ["SOCKSEnable": 1, "SOCKSProxy": "127.0.0.1", "SOCKSPort": port]
+        session = URLSession(configuration: config)
+    }
 
-    /// 改了控制服务器或带来入网密钥时关闭当前节点，下次连接按新设置上线。
-    func configure(controlURL: String, authKey: String? = nil) async {
-        let previous = Self.controlURL
-        Self.controlURL = controlURL.isEmpty ? kDefaultControlURL : controlURL
-        if let authKey { pendingAuthKey = authKey }
-        if Self.controlURL != previous || authKey != nil { await stop() }
+    func address() async throws -> String {
+        _ = try await urlSession()
+        guard let node else { throw KitedError(message: "网络节点未启动") }
+        let status = try await LocalAPIClient(localNode: node, logger: TailnetLog()).backendStatus()
+        guard let ip = status.SelfStatus?.TailscaleIPs?.first(where: { !$0.contains(":") }) else { throw KitedError(message: "尚未取得设备地址，请重试") }
+        return ip
     }
 
     /// Tailscale 的 IPv4 段 100.64.0.0/10、IPv6 段和 MagicDNS 名称经组网访问，其他地址直连。
@@ -53,7 +55,7 @@ actor Tailnet {
         return octets.count == 4 && octets[0] == 100 && (64...127).contains(octets[1])
     }
 
-    /// 节点首次上线要在浏览器登录，期间调用方一直等待。
+    /// 并发请求共用同一次节点启动。
     func urlSession() async throws -> URLSession {
         if let session { return session }
         if let starting { return try await starting.value }
@@ -67,33 +69,35 @@ actor Tailnet {
 
     func stop() async {
         starting?.cancel()
-        processor?.cancel()
-        processor = nil
         session?.invalidateAndCancel()
         session = nil
         if let node { try? await node.close() }
         node = nil
-        await MainActor.run { Tailnet.status.running = false }
     }
 
     private func start() async throws -> URLSession {
-        // 每个控制服务器一份节点状态，切换后各自登录。
-        let control = Self.controlURL
+        guard let deviceID, let controlURL else { throw KitedError(message: "设备网络尚未就绪，请稍后重试") }
+        // 每次设备入网独立保存状态，退出再登录不会复用旧节点身份。
         let directory = URL.applicationSupportDirectory
-            .appending(path: "Tailnet/\(URL(string: control)?.host() ?? "default")", directoryHint: .isDirectory)
+            .appending(path: "Tailnet/\(deviceID)", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let hostName = await Self.hostName
         let node = try TailscaleNode(config: TailscaleKit.Configuration(
-            hostName: hostName, path: directory.path(percentEncoded: false), authKey: pendingAuthKey, controlURL: control), logger: TailnetLog())
+            hostName: hostName, path: directory.path(percentEncoded: false), authKey: pendingAuthKey, controlURL: controlURL), logger: TailnetLog())
         self.node = node
-        processor = try await LocalAPIClient(localNode: node, logger: TailnetLog())
-            .watchIPNBus(mask: [.initialState, .noPrivateKeys], consumer: LoginWatcher())
-        try await node.up()
-        pendingAuthKey = nil
-        await MainActor.run {
-            Tailnet.status.loginURL = nil
-            Tailnet.status.running = true
+        // 上游 up 等到登录成功才返回；超时关闭节点，让失败回到可重试的表单。
+        let timeout = Task {
+            do { try await Task.sleep(for: .seconds(45)); try? await node.close() }
+            catch { /* 登录完成会取消超时。 */ }
         }
+        defer { timeout.cancel() }
+        do { try await node.up() }
+        catch {
+            self.node = nil
+            throw KitedError(message: "设备入网失败或超时，请检查网络后重试")
+        }
+        try Task.checkCancellation()
+        pendingAuthKey = nil
         return URLSession(configuration: try await URLSessionConfiguration.tailscaleSession(node).0)
     }
 
@@ -117,14 +121,4 @@ private struct TailnetLog: LogSink {
         print("Tailnet: \(message)")
         #endif
     }
-}
-
-/// 只关心登录网址；连接状态以请求结果为准。
-private actor LoginWatcher: MessageConsumer {
-    func notify(_ notify: Ipn.Notify) {
-        guard let text = notify.BrowseToURL, let url = URL(string: text) else { return }
-        Task { @MainActor in Tailnet.status.loginURL = url }
-    }
-
-    func error(_ error: Error) {}
 }

@@ -2,7 +2,24 @@ import SwiftUI
 
 @main
 struct KiteApp: App {
-    @State private var model = SampleWorkspace.makeModel()
+    @State private var model: AppModel
+
+    init() {
+        #if DEBUG
+        if DirectoryVerification.isRequested {
+            do {
+                let model = AppModel(account: try DirectoryVerification.account())
+                _model = State(initialValue: model)
+                Task { await DirectoryVerification.run(model: model) }
+                return
+            } catch {
+                print("目录验收启动失败：\(error)")
+                exit(1)
+            }
+        }
+        #endif
+        _model = State(initialValue: SampleWorkspace.makeModel())
+    }
 
     var body: some Scene {
         #if os(macOS)

@@ -1,6 +1,6 @@
 # macOS 安装与打包
 
-适用于当前本地开发版：把 kited 安装成当前用户的后台服务，并生成、安装 Mac Release App。暂不发布到公共下载渠道；安装包尚未进行 Developer ID 签名与 Apple 公证。
+适用于当前本地开发版：生成、安装 Mac Release App，并按用户选择将 kited 安装成当前用户的后台服务。暂不发布到公共下载渠道；安装包尚未进行 Developer ID 签名与 Apple 公证。
 
 ## 从源码一键安装
 
@@ -32,7 +32,7 @@
 
 也可使用 `./install.command --package`。只打包，不安装、启动或替换正在使用的服务。
 
-产物在 `build/Kite-macOS-<架构>/` 和同名 `.zip`，仅服务版本使用 `kited-macOS-<架构>`。完整包包含 `Kite.app`、`安装.command`、运行目录和安装说明。Bun、生产依赖、沙箱与 Claude 适配资源随包携带，安装后不依赖源码仓库，也不依赖打包机上的依赖目录。包中不含开发依赖、`.env`、登录凭据或用户数据库。
+产物在 `build/Kite-macOS-<架构>/` 和同名 `.zip`，仅服务版本使用 `kited-macOS-<架构>`。完整包包含 `Kite.app`、`安装.command` 和安装说明；可选服务运行目录嵌在 App 资源中。Bun、生产依赖、沙箱与 Claude 适配资源随包携带，安装后不依赖源码仓库，也不依赖打包机上的依赖目录。包中不含开发依赖、`.env`、登录凭据或用户数据库。
 
 目前按构建机的架构出包：Apple Silicon 为 `arm64`，Intel 为 `x64`；不同架构分别在相应机器构建。解压后双击 `安装.command`，目标机器需要 Git，完整包还需要 macOS 26 或更新版本；无需下载依赖、安装 Bun 或完整 Xcode。缺少 Git 时先运行 `xcode-select --install`。安装成功后可移走解压目录与源码仓库。
 
@@ -49,11 +49,11 @@ App 使用临时签名，打包时验证签名完整性。此签名适合本机�
 | 标准输出、错误日志 | `~/Library/Logs/Kite/kited.log`、`kited.error.log` |
 | 数据与模型登录 | `~/.kite`，沿用 `KITE_HOME` |
 
-服务由当前用户的 launchd 托管，安装后立即启动、登录后自动启动，进程退出后会重新拉起；退出 Mac App 不停止服务。它只监听 `127.0.0.1`，默认端口 5483。远程设备经内嵌组网连接：安装后运行 `kite net up` 并按提示登录，组网程序 kite-net 由安装器用 Go 构建，因此源码安装需要先装 Go。安装时设置 `KITE_CONTROL_URL` 可改用自建的 headscale，安装记录保留此设置，设为空字符串再安装即改回 Tailscale 官方服务；配对与认证见 [远程连接](kited.md#远程连接)。launchd 的用户 Agent 生命周期参考 [Apple 官方说明](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)。
+完整包初次安装只复制 App。登录后选择本机执行才安装 kited；仅远程控制不安装服务。服务由当前用户的 launchd 托管，安装后立即启动、登录后自动启动，进程退出后会重新拉起；退出 Mac App 不停止服务。它只监听 `127.0.0.1`，默认端口 5483。远程设备通过托管账号入网，组网与授权见 [托管账号与设备](托管账号与设备.md)。launchd 的用户 Agent 生命周期参考 [Apple 官方说明](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)。
 
 后台环境显式提供 Bun、常见开发工具目录和用户的 `~/.local/bin`，不读取 shell 配置，也不保存发起安装的终端中的密钥或代理环境。项目使用额外工具链时，仍须让其在这些路径中可访问。
 
-首次使用模型需在这台工作机完成设备登录，见 [工作机授权说明](kited.md#终端试用)。安装包不携带其他机器的登录。App 默认连接本机 5483；改端口后在 App 设置中修改连接地址。
+首次使用模型需在这台工作机完成设备登录，见 [工作机授权说明](kited.md#终端试用)。安装包不携带其他机器的登录。App 的本机执行模式使用本机 5483；自定义端口的独立服务目前不由 App 初始配置管理。
 
 ## 管理、升级和卸载
 
@@ -67,15 +67,15 @@ App 使用临时签名，打包时验证签名完整性。此签名适合本机�
 
 `stop` 停止当前服务，保留登录自启。`status` 显示系统中的服务状态；安装、启动和重启在 HTTP 接口可用后才报告成功。`~/.local/bin` 已在 PATH 中时可省略路径；安装器不会自动修改 shell 配置。
 
-升级前结束正在执行的任务并退出已安装的 App，然后重新运行源码安装入口或新安装包中的 `安装.command`。升级失败时恢复旧运行文件和自启配置。沿用数据、凭据及安装记录中的路径和端口；这是运行文件回退，不是数据库或业务副作用回退。已有同标识的手工 launchd 服务可以被替换；命令目录里若存在其他来源的 `kite`，安装器会报出冲突，须先自行移走或指定其他命令目录。
+升级前结束正在执行的任务并退出已安装的 App，然后重新运行源码安装入口或新安装包中的 `安装.command`。后台服务升级失败时恢复旧运行文件和自启配置；App 升级后由本机执行模式同步更新服务。沿用数据、凭据及安装记录中的路径和端口；这是运行文件回退，不是数据库或业务副作用回退。已有同标识的手工 launchd 服务可以被替换；命令目录里若存在其他来源的 `kite`，安装器会报出冲突，须先自行移走或指定其他命令目录。
 
-退出 App 后卸载：
+如果安装了 kited，退出 App 后卸载服务：
 
 ```bash
 ~/.local/bin/kite-service uninstall
 ```
 
-移除安装的 App、运行文件、命令入口和登录自启，保留数据库、工作区、对话、登录及日志。卸载不操作源码仓库或其他位置的 App。
+移除服务运行文件、命令入口和登录自启，保留数据库、工作区、对话、登录及日志。新完整包的 App 独立放置，可从 Applications 移到废纸篓；仅远程控制模式直接移除 App 即可。
 
 ## 自定义位置
 

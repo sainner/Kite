@@ -6,7 +6,7 @@ Kite 的工作机服务，管理项目、检出、工作区、插件实例和线
 
 ## 启动服务
 
-macOS 安装成登录自启服务，在仓库根目录运行 `./install.command --service-only`；同时安装 Mac App 则使用 `./install.command`。独立安装包、升级和卸载见 [macOS 安装与打包](../docs/macOS安装与打包.md)。
+macOS 安装成登录自启服务，在仓库根目录运行 `./install.command --service-only`；完整 App 使用 `./install.command`，首次配置选择本机执行后安装 kited。独立安装包、升级和卸载见 [macOS 安装与打包](../docs/macOS安装与打包.md)。
 
 开发时仍可从源码前台运行：
 
@@ -36,6 +36,7 @@ bun run harness --resume <会话id>
 | 路径 | 职责 |
 |---|---|
 | `src/main.ts`、`daemon.ts`、`http.ts`、`cli.ts` | 服务与客户端入口、HTTP 和 SSE |
+| `src/account/`、`catalog-publisher.ts` | 托管账号与目录服务、工作机目录上报；契约见 [托管账号与设备](../docs/托管账号与设备.md) |
 | `src/kite.ts`、`model.ts`、`store.ts`、`events.ts` | 业务编排、领域对象、持久化与事件 |
 | `src/instance-lifecycle.ts` | 实例与窗口创建、请求去重及回收 |
 | `src/instance-configuration.ts` | 实例配置、授权变更与对应通知 |

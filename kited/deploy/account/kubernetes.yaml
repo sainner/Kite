@@ -1,0 +1,151 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kite
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: headscale-data
+  namespace: kite
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: account-data
+  namespace: kite
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: headscale
+  namespace: kite
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: kite-headscale}
+  template:
+    metadata:
+      labels: {app: kite-headscale}
+    spec:
+      containers:
+        - name: headscale
+          image: headscale/headscale:0.29.4
+          args: [serve]
+          ports:
+            - {containerPort: 8080, name: http}
+            - {containerPort: 3478, hostPort: 3478, protocol: UDP, name: stun}
+          volumeMounts:
+            - {name: config, mountPath: /etc/headscale, readOnly: true}
+            - {name: data, mountPath: /data}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+      volumes:
+        - name: config
+          configMap: {name: headscale-config}
+        - name: data
+          persistentVolumeClaim: {claimName: headscale-data}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: account
+  namespace: kite
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: kite-account}
+  template:
+    metadata:
+      labels: {app: kite-account}
+    spec:
+      containers:
+        - name: account
+          image: oven/bun:1.4.2-alpine
+          command: [bun, /app/main.js]
+          ports:
+            - {containerPort: 5484, name: http}
+          env:
+            - {name: NODE_ENV, value: production}
+            - {name: KITE_ACCOUNT_URL, value: 'https://hs.sainner.top'}
+            - {name: HEADSCALE_API_URL, value: 'http://headscale:8080'}
+          envFrom:
+            - secretRef: {name: account-secrets}
+          volumeMounts:
+            - {name: source, mountPath: /app, readOnly: true}
+            - {name: data, mountPath: /data}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+      volumes:
+        - name: source
+          configMap: {name: account-source}
+        - name: data
+          persistentVolumeClaim: {claimName: account-data}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: headscale
+  namespace: kite
+spec:
+  selector: {app: kite-headscale}
+  ports:
+    - {name: http, port: 8080, targetPort: http}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: account
+  namespace: kite
+spec:
+  selector: {app: kite-account}
+  ports:
+    - {name: http, port: 5484, targetPort: http}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kite
+  namespace: kite
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "2m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [hs.sainner.top]
+      secretName: kite-tls
+  rules:
+    - host: hs.sainner.top
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service: {name: account, port: {number: 5484}}
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: headscale, port: {number: 8080}}

@@ -69,7 +69,7 @@ struct ThreadPane: View {
             ThreadHeaderActions()
         }
         .environment(\.workingDirectory, thread.transcript.root)
-        .task(id: thread.previewRun) {
+        .task(id: "\(thread.previewRun):\(thread.client?.identity.uuidString ?? "")") {
             if thread.isStreamingPreview { await thread.playStreamingPreview() }
             else { await thread.observe() }
         }

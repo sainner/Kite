@@ -66,9 +66,9 @@ const scope = full ? '全量' : '受影响的';
 // 关掉索引，每个工作树的缓存约 9 MB，不关约 70 MB
 const APP = join(root, 'app');
 const buildApp = full || changed.some((f) => f.startsWith('app/') || f.startsWith('kited/web/') || f === 'kited/scripts/build-plugin-web.ts');
-// App 与工作机之间的 JSON 字段两边各自手写；这几项用真实的工作机输出编译真实的 Swift 解码代码，各约 2 秒，
+// App 与工作机之间的 JSON 合同及原生账号 HTTP 行为：编译真实 Swift，连接真实后端，各约 2 秒，
 // 两边任一处改动都跑。其余需要原生界面或 WebKit 的验证仍在 test/manual/ 手动运行
-const CONTRACTS = ['verify-transcript-swift.ts', 'verify-remote-workspace-swift.ts', 'verify-resource-reference-swift.ts'];
+const CONTRACTS = ['verify-transcript-swift.ts', 'verify-remote-workspace-swift.ts', 'verify-resource-reference-swift.ts', 'verify-account-http-swift.ts'];
 const checkContracts = buildApp || changed.some((f) => f.startsWith('kited/src/') || f.startsWith('kited/test/manual/'));
 const [tsc, lint, app, ...contracts] = await Promise.all([
   run(['bunx', 'tsc', '--noEmit']),

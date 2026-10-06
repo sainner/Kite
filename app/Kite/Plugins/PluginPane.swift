@@ -10,6 +10,7 @@ struct PluginPane: View {
     let connection: UUID
     @Environment(\.colorScheme) private var colorScheme
     @Environment(AppModel.self) private var model
+    @Environment(WorkArea.self) private var area
     @State private var loadState = LoadState.loading
     @State private var generation = UUID()
 
@@ -34,7 +35,7 @@ struct PluginPane: View {
                 }
         } controls: { _ in
             HStack(spacing: Metrics.paneButtonGap) {
-                Text(loadState.error ?? (model.connected ? "" : "连接已断开，正在重连"))
+                Text(loadState.error ?? (model.isConnected(area) ? "" : "连接已断开，正在重连"))
                     .font(Theme.secondary).foregroundStyle(loadState.error == nil ? Color.secondary : Theme.danger)
                     .lineLimit(2)
                 Spacer(minLength: Metrics.paneButtonGap)

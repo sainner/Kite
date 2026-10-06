@@ -8,13 +8,10 @@ interface Installation {
   root: string;
   home: string;
   port: number;
-  /** 自建组网控制服务器（如 headscale）；省略时用 Tailscale 官方服务。 */
-  controlURL?: string;
   label: string;
   plist: string;
   logs: string;
   bin: string;
-  app?: string;
 }
 
 const command = process.argv[2] ?? 'status';
@@ -41,8 +38,7 @@ function plist(c: Installation): string {
   // launchd 不读取 shell 配置，也不保存发起安装的终端中的凭据或代理。
   const env = { HOME: homedir(), USER: userInfo().username, LOGNAME: userInfo().username, SHELL: '/bin/zsh', LANG: 'en_US.UTF-8',
     PATH: [join(runtime, 'bin'), join(homedir(), '.local/bin'), join(homedir(), '.bun/bin'), '/opt/homebrew/bin', '/opt/homebrew/sbin',
-      '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':'), KITE_HOME: c.home, KITE_PORT: String(c.port),
-    ...(c.controlURL ? { KITE_CONTROL_URL: c.controlURL } : {}) };
+      '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':'), KITE_HOME: c.home, KITE_PORT: String(c.port) };
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -106,9 +102,8 @@ function launcher(c: Installation, service: boolean): string {
 async function install(): Promise<void> {
   const source = resolve(import.meta.dir, '../..');
   if (source === runtime) throw new Error('升级请重新运行新安装包中的「安装.command」。');
-  const manifest = JSON.parse(readFileSync(join(source, 'manifest.json'), 'utf8')) as { platform: string; arch: string; bun: string; app: boolean };
+  const manifest = JSON.parse(readFileSync(join(source, 'manifest.json'), 'utf8')) as { platform: string; arch: string; bun: string };
   if (manifest.platform !== process.platform || manifest.arch !== process.arch || manifest.bun !== Bun.version) throw new Error('安装包与当前平台、架构或运行时不匹配。');
-  if (manifest.app && Number((await run(['/usr/bin/sw_vers', '-productVersion'])).split('.')[0]) < 26) throw new Error('Kite App 需要 macOS 26 或更新版本。');
   if (!await run(['/usr/bin/xcrun', '--find', 'git'], true)) throw new Error('请先运行 xcode-select --install 安装 Git 和命令行工具，再重新安装。');
   const old = saved();
   const label = old?.label ?? process.env.KITE_SERVICE_LABEL ?? 'com.sainner.kited';
@@ -116,21 +111,14 @@ async function install(): Promise<void> {
   const c: Installation = { root,
     home: resolve(process.env.KITE_HOME ?? old?.home ?? join(homedir(), '.kite')),
     port: Number(process.env.KITE_PORT ?? old?.port ?? 5483), label,
-    // 设为空字符串可改回 Tailscale 官方服务。
-    controlURL: (process.env.KITE_CONTROL_URL ?? old?.controlURL)?.trim() || undefined,
     plist: old?.plist ?? join(resolve(process.env.KITE_LAUNCH_AGENTS_DIR ?? join(homedir(), 'Library/LaunchAgents')), `${label}.plist`),
     logs: old?.logs ?? resolve(process.env.KITE_LOG_DIR ?? join(homedir(), 'Library/Logs/Kite')),
-    bin: old?.bin ?? resolve(process.env.KITE_BIN_DIR ?? join(homedir(), '.local/bin')),
-    app: manifest.app ? old?.app ?? join(resolve(process.env.KITE_APPLICATIONS_DIR ?? join(homedir(), 'Applications')), 'Kite.app') : old?.app };
+    bin: old?.bin ?? resolve(process.env.KITE_BIN_DIR ?? join(homedir(), '.local/bin')) };
   if (!Number.isInteger(c.port) || c.port < 1 || c.port > 65535) throw new Error('KITE_PORT 必须是 1～65535 的端口号。');
   if (c.home === root || c.home.startsWith(root + '/')) throw new Error('数据目录必须位于安装目录之外，以免升级或卸载影响数据。');
   for (const file of ['kite', 'kite-service']) {
     const path = join(c.bin, file);
     if (existsSync(path) && !readFileSync(path, 'utf8').includes(marker)) throw new Error(`已有其他命令占用 ${path}，请用 KITE_BIN_DIR 指定安装位置。`);
-  }
-  if (manifest.app && c.app && existsSync(c.app)) {
-    const processes = await run(['/bin/ps', '-axo', 'command=']);
-    if (processes.split('\n').some((line) => line.startsWith(join(c.app!, 'Contents/MacOS/Kite')))) throw new Error('请先退出已安装的 Kite App，再重新安装。');
   }
   for (const path of [root, dirname(c.plist), c.logs, c.bin, c.home]) mkdirSync(path, { recursive: true });
   const stage = mkdtempSync(join(root, '.install-'));
@@ -142,18 +130,10 @@ async function install(): Promise<void> {
   const wasLoaded = await loaded(c);
   let stopped = false;
   let runtimeMoved = false;
-  let appMoved = false;
-  let appStage: string | undefined;
   let preserveStage = false;
   try {
     console.log('复制运行文件…');
     await run(['/usr/bin/ditto', source, join(stage, 'runtime')]);
-    if (manifest.app && c.app) {
-      mkdirSync(dirname(c.app), { recursive: true });
-      appStage = mkdtempSync(join(dirname(c.app), '.kite-install-'));
-      await run(['/usr/bin/ditto', join(dirname(source), 'Kite.app'), join(appStage, 'Kite.app')]);
-      await run(['/usr/bin/codesign', '--verify', '--deep', '--strict', join(appStage, 'Kite.app')]);
-    }
     writeFileSync(join(stage, 'service.plist'), plist(c), { mode: 0o644 });
     await run(['/usr/bin/plutil', '-lint', join(stage, 'service.plist')]);
     console.log('安装后台服务…');
@@ -163,11 +143,6 @@ async function install(): Promise<void> {
     if (existsSync(runtime)) renameSync(runtime, join(stage, 'previous-runtime'));
     runtimeMoved = true;
     renameSync(join(stage, 'runtime'), runtime);
-    if (appStage && c.app) {
-      if (existsSync(c.app)) renameSync(c.app, join(appStage, 'previous.app'));
-      appMoved = true;
-      renameSync(join(appStage, 'Kite.app'), c.app);
-    }
     copyFileSync(join(stage, 'service.plist'), c.plist);
     await start(c);
     for (const name of ['kite', 'kite-service']) writeFileSync(join(c.bin, name), launcher(c, name === 'kite-service'), { mode: 0o755 });
@@ -180,10 +155,6 @@ async function install(): Promise<void> {
           rmSync(runtime, { recursive: true, force: true });
           if (existsSync(join(stage, 'previous-runtime'))) renameSync(join(stage, 'previous-runtime'), runtime);
         }
-        if (appMoved && c.app && appStage) {
-          rmSync(c.app, { recursive: true, force: true });
-          if (existsSync(join(appStage, 'previous.app'))) renameSync(join(appStage, 'previous.app'), c.app);
-        }
         if (previousPlist) writeFileSync(c.plist, previousPlist); else rmSync(c.plist, { force: true });
         if (previousReceipt) writeFileSync(receipt, previousReceipt); else rmSync(receipt, { force: true });
         for (const [path, content] of previousCommands) {
@@ -193,26 +164,22 @@ async function install(): Promise<void> {
       }
     } catch (rollbackError) {
       preserveStage = true;
-      throw new Error(`安装失败：${String(error)}；回退未完成：${String(rollbackError)}。保留的安装备份：${stage}${appStage ? `、${appStage}` : ''}`);
+      throw new Error(`安装失败：${String(error)}；回退未完成：${String(rollbackError)}。保留的安装备份：${stage}`);
     }
     throw error;
   } finally {
-    if (!preserveStage) {
-      rmSync(stage, { recursive: true, force: true });
-      if (appStage) rmSync(appStage, { recursive: true, force: true });
-    }
+    if (!preserveStage) rmSync(stage, { recursive: true, force: true });
   }
-  console.log(`安装完成：http://127.0.0.1:${c.port}，远程设备先用 kite net up 开启组网\n数据：${c.home}\n管理：${join(c.bin, 'kite-service')} status\n日志：${c.logs}`);
+  console.log(`安装完成：http://127.0.0.1:${c.port}，在 Kite App 中登录并加入设备网络\n数据：${c.home}\n管理：${join(c.bin, 'kite-service')} status\n日志：${c.logs}`);
   if (!(process.env.PATH ?? '').split(':').includes(c.bin)) console.log(`命令目录尚未加入 PATH，可使用完整路径，或在 shell 配置中加入：export PATH=${quote(c.bin)}:"$PATH"`);
   if (!existsSync(join(c.home, 'auth/chatgpt/auth.json'))) console.log('首次使用模型还需设备登录，见项目 docs/kited.md 的「终端试用」。');
-  if (manifest.app && c.app && process.env.KITE_NO_OPEN !== '1') await run(['/usr/bin/open', c.app]);
 }
 
 async function main(): Promise<void> {
   if (process.platform !== 'darwin' || process.getuid!() === 0) throw new Error('请在 macOS 中使用当前登录用户运行，不要使用 sudo。');
   if (command === 'install') { await install(); return; }
   if (['--help', '-h', 'help'].includes(command)) {
-    console.log('用法：kite-service status | start | stop | restart | uninstall\n卸载只移除安装文件、App 和登录自启；保留数据与登录。'); return;
+    console.log('用法：kite-service status | start | stop | restart | uninstall\n卸载只移除服务文件、命令和登录自启；保留数据与登录。'); return;
   }
   if (!['status', 'start', 'stop', 'restart', 'uninstall'].includes(command)) throw new Error(`未知命令：${command}`);
   const c = saved();
@@ -224,11 +191,6 @@ async function main(): Promise<void> {
   if (command === 'start' || command === 'restart') { await start(c); console.log(`服务已就绪：http://127.0.0.1:${c.port}`); }
   if (command === 'stop') console.log('后台服务已停止；登录后仍会自动启动。');
   if (command === 'uninstall') {
-    if (c.app && existsSync(c.app)) {
-      const processes = await run(['/bin/ps', '-axo', 'command=']);
-      if (processes.split('\n').some((line) => line.startsWith(join(c.app!, 'Contents/MacOS/Kite')))) throw new Error('请退出 Kite App 后重新卸载；后台服务已停止。');
-      rmSync(c.app, { recursive: true });
-    }
     rmSync(c.plist, { force: true });
     for (const name of ['kite', 'kite-service']) {
       const path = join(c.bin, name);

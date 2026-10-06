@@ -3,27 +3,32 @@ import Foundation
 @main
 struct RemoteWorkspaceDecode {
     @MainActor static func main() throws {
-        guard CommandLine.arguments.count == 12 else {
+        guard CommandLine.arguments.count == 9 else {
             throw DecodeError.usage
         }
         let url = URL(fileURLWithPath: CommandLine.arguments[1])
         let machineURL = URL(fileURLWithPath: CommandLine.arguments[2])
-        let otherMachineURL = URL(fileURLWithPath: CommandLine.arguments[3])
-        let localProjectsURL = URL(fileURLWithPath: CommandLine.arguments[4])
-        let remoteProjectsURL = URL(fileURLWithPath: CommandLine.arguments[5])
+        let localProjectsURL = URL(fileURLWithPath: CommandLine.arguments[3])
+        let remoteProjectsURL = URL(fileURLWithPath: CommandLine.arguments[4])
         let machine = try JSONDecoder().decode(RemoteMachine.self, from: Data(contentsOf: machineURL))
-        let otherMachine = try JSONDecoder().decode(RemoteMachine.self, from: Data(contentsOf: otherMachineURL))
         let localProjects = try JSONDecoder().decode([RemoteProject].self, from: Data(contentsOf: localProjectsURL))
         let remoteProjects = try JSONDecoder().decode([RemoteProject].self, from: Data(contentsOf: remoteProjectsURL))
         let workspaces = try JSONDecoder().decode([RemoteWorkspace].self, from: Data(contentsOf: url))
         let cursorFixture = try JSONDecoder().decode(CatalogCursorFixture.self,
-            from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[8])))
+            from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[5])))
         let archivedWorkspaces = try JSONDecoder().decode([RemoteWorkspace].self,
-            from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[9])))
+            from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[6])))
         let definitions = try JSONDecoder().decode([RemotePluginDefinition].self,
-            from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[10])))
+            from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[7])))
         let files = try JSONDecoder().decode(FileFixture.self,
-            from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[11])))
+            from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[8])))
+        guard localProjects.count == 1,
+              remoteProjects.count == 2,
+              remoteProjects.contains(where: { $0.id == localProjects[0].id }),
+              remoteProjects.contains(where: { $0.id != localProjects[0].id && $0.name == localProjects[0].name }) else {
+            throw DecodeError.invalidProjects
+        }
+        print("已解码跨工作机共享项目身份及同名独立项目")
         guard let root = workspaces.first(where: { $0.workspace.kind == .root }),
               let worktree = workspaces.first(where: { $0.workspace.kind == .worktree }) else {
             throw DecodeError.missingWorkspaceKind
@@ -79,14 +84,6 @@ struct RemoteWorkspaceDecode {
               filesDefinition.views.map(\.id) == ["files"] else {
             throw DecodeError.invalidRelationships
         }
-        try verifyConnections(
-            machine: machine,
-            address: CommandLine.arguments[6],
-            otherMachine: otherMachine,
-            otherAddress: CommandLine.arguments[7],
-            localProjects: localProjects,
-            remoteProjects: remoteProjects
-        )
         try verifyCatalog(initial: workspaces, archived: archivedWorkspaces, cursors: cursorFixture)
         print("已解码 \(workspaces.count) 个工作区聚合")
     }
@@ -165,77 +162,6 @@ struct RemoteWorkspaceDecode {
         print("已核对目录游标、合并刷新、乱序响应与连接切换")
     }
 
-    // 用独立 suite 走真实 UserDefaults 写入、重载和切换，不触碰用户的默认配置。
-    private static func verifyConnections(
-        machine: RemoteMachine, address: String, otherMachine: RemoteMachine, otherAddress: String,
-        localProjects: [RemoteProject], remoteProjects: [RemoteProject]
-    ) throws {
-        guard localProjects.count == 1,
-              remoteProjects.count == 2,
-              remoteProjects.contains(where: { $0.id == localProjects[0].id }),
-              remoteProjects.contains(where: { $0.id != localProjects[0].id && $0.name == localProjects[0].name }) else {
-            throw DecodeError.invalidConnections
-        }
-        let suite = "kite-contract-\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suite) else { throw DecodeError.invalidConnections }
-        defer { defaults.removePersistentDomain(forName: suite) }
-        func reload() throws -> MachineConnections {
-            defaults.synchronize()
-            guard let reader = UserDefaults(suiteName: suite) else { throw DecodeError.invalidConnections }
-            return MachineConnections.load(from: reader)
-        }
-
-        var connections = MachineConnections()
-        connections.remember(machine, address: address)
-        connections.updateProjects(localProjects, on: machine.id)
-        try connections.save(to: defaults)
-        connections = try reload()
-        guard connections.entries.count == 1,
-              connections.selectedID == machine.id,
-              connections.selected?.address == address,
-              connections.selected?.projects == localProjects else { throw DecodeError.invalidConnections }
-
-        let changedAddress = address + "/"
-        connections.remember(machine, address: changedAddress)
-        try connections.save(to: defaults)
-        connections = try reload()
-        guard connections.entries.count == 1,
-              connections.selected?.address == changedAddress,
-              connections.selected?.projects == localProjects else { throw DecodeError.invalidConnections }
-
-        connections.remember(otherMachine, address: otherAddress)
-        connections.updateProjects(remoteProjects, on: otherMachine.id)
-        try connections.save(to: defaults)
-        connections = try reload()
-        guard connections.entries.count == 2,
-              connections.selectedID == otherMachine.id,
-              connections.selected?.address == otherAddress,
-              connections.selected?.projects == remoteProjects,
-              connections.knownProjects.count == remoteProjects.count,
-              Set(connections.knownProjects.map(\.id)) == Set(remoteProjects.map(\.id)) else {
-            throw DecodeError.invalidConnections
-        }
-
-        connections.select(machine.id)
-        try connections.save(to: defaults)
-        connections = try reload()
-        guard connections.selectedID == machine.id,
-              connections.selected?.address == changedAddress,
-              connections.selected?.projects == localProjects,
-              connections.entries.first(where: { $0.id == otherMachine.id })?.address == otherAddress else {
-            throw DecodeError.invalidConnections
-        }
-        let distinctProject = remoteProjects.first(where: { $0.id != localProjects[0].id })!
-        connections.updateProjects([distinctProject], on: otherMachine.id)
-        try connections.save(to: defaults)
-        connections = try reload()
-        guard connections.selectedID == machine.id,
-              connections.selected?.address == changedAddress,
-              connections.entries.first(where: { $0.id == otherMachine.id })?.projects == [distinctProject] else {
-            throw DecodeError.invalidConnections
-        }
-        print("已恢复两台工作机的连接地址、项目身份缓存与选中状态")
-    }
 }
 
 private struct CatalogCursorFixture: Decodable {
@@ -257,7 +183,7 @@ private enum DecodeError: Error {
     case usage
     case missingWorkspaceKind
     case invalidRelationships
-    case invalidConnections
+    case invalidProjects
     case invalidCatalog
     case invalidFiles
 }

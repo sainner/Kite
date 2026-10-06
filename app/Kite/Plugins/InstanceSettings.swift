@@ -22,7 +22,7 @@ struct InstanceSettings: View {
     private var editable: Bool { definition?.runtime == "bun" || definition?.agent != nil }
     private var changed: Bool { draft?.grants != saved?.grants }
     private var available: Bool {
-        model.connected && area.remote?.machine.id == model.machine?.id && area.instances.contains { $0.id == instance.id && $0.status == .open }
+        model.isConnected(area) && area.instances.contains { $0.id == instance.id && $0.status == .open }
     }
     private var targets: [RemotePluginInstance] { area.instances.filter { $0.status == .open } }
 
@@ -188,7 +188,7 @@ struct InstanceSettings: View {
     }
 
     private func boundClient() throws -> KitedClient {
-        let current = try model.activeClient()
+        let current = try model.activeClient(in: area)
         guard available, current.machineID == area.remote?.machine.id, client == nil || client == current else {
             throw KitedError(message: "工作机或实例已变化，请重新打开实例设置")
         }
@@ -259,7 +259,7 @@ struct InstanceSettingsPresentation: ViewModifier {
         content.sheet(item: $area.settingsInstance) { instance in
             InstanceSettings(instance: instance).environment(model).environment(area).toastHost().appAppearance()
         }
-        .onChange(of: model.connectionRevision) { area.settingsInstance = nil }
+        .onChange(of: model.revision(for: area)) { area.settingsInstance = nil }
     }
 }
 

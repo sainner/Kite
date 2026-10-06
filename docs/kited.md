@@ -105,7 +105,7 @@ bun src/main.ts
 
 `KITE_HOME` 指定数据目录，默认 `~/.kite`；保存工作区、会话、登录及服务数据。`KITE_PORT` 默认是 5483，监听 127.0.0.1；组网与远程监听见下节。
 
-同一数据目录重启或更换端口后，工作机身份保持不变；新数据目录生成新身份。名称初始取主机名，地址由客户端保存。项目关系通过稳定 ID 显式关联，不按文件夹名推断。
+同一数据目录重启或更换端口后，工作机身份保持不变；新数据目录生成新身份。名称初始取主机名，地址由账号目录发现并在客户端缓存。项目关系通过稳定 ID 显式关联，不按文件夹名推断。
 
 同一项目可以在本机或其他工作机登记多个检出。关联时提供完整项目身份 `{id, name, createdAt}`，关联后的目录属于同一项目，各自保有工作区。每台 kited 只保存本机的目录、工作区、线程与执行记录；关联不复制文件，不克隆或同步 Git 仓库。App 登记目录时可选择此前访问过的项目。
 
@@ -124,23 +124,18 @@ bun src/cli.ts snapshots <工作区>
 bun src/cli.ts restore <工作区> <快照>
 bun src/cli.ts adopt <工作区>
 bun src/cli.ts archive <工作区>
-bun src/cli.ts net up              # 开启组网，首次按提示登录
-bun src/cli.ts pair                # 生成远程设备的配对码
-bun src/cli.ts devices             # 列出已配对设备
-bun src/cli.ts revoke <设备>       # 撤销设备
+bun src/cli.ts net up              # 开启已登录设备的组网
 ```
 
 ## 远程连接
 
-手机和其他电脑经内嵌组网节点连接工作机，无需另装 Tailscale 客户端，也不占用系统 VPN。链路加密由 WireGuard 承担，kited 负责设备认证。控制服务器默认使用 Tailscale；自建 headscale 时，kited 设置 `KITE_CONTROL_URL`，App 在连接页填写控制服务器。
+Kite 托管账号与组网。Mac 和 iPhone 在 App 中使用账号密码登录，或扫描已登录设备的一次性二维码。两种 Mac 角色都入网，同账号设备可直接控制工作机；账号、设备发现与撤销的完整约定见 [托管账号与设备](托管账号与设备.md)。
 
-- **组网。** `kite net up` 开启，`kite net` 查看状态，`kite net down` 停止并保留登录。首次按返回网址登录；headscale 的登录页可能要求在服务器执行注册命令。服务重启沿用开启状态和登录，密钥过期后重新登录。`GET /network` 与 `PUT /network {enabled}` 仅本机开放，返回 `{enabled, state, loginURL?, ips?, name?, address?, error?}`；上线后的 address 可交给远程设备。
-- **headscale 管理密钥。** `kite net admin <API 密钥> [用户]` 校验并保存密钥，供工作机签发一次性入网密钥。入网密钥有效期 10 分钟。管理密钥仅本用户可读，不向插件或模型工具开放；Tailscale 官方服务不支持此入口。
-- **配对。** 在工作机执行 `kite pair`，或本机 App 的「远程设备 → 添加设备」。配对码为 8 位，10 分钟内有效、仅用一次，服务重启后失效。组网上线后可生成 `kite://pair?address=…&code=…&control=…&key=…` 邀请：控制服务器和入网密钥按需提供。iPhone 扫码后连接；未提供入网密钥时首次连接需浏览器登录。邀请相当于一次性密码，只在本机显示。远程客户端以 `POST /pair {code, name}` 换取 `{machine, device, token}`。
-- **认证。** 远程监听除 `/pair` 外的接口（含 `/machine` 和 SSE）均需 `Authorization: Bearer <token>`；机器身份头另按下文接口规则发送。每台设备的令牌持续有效，直到撤销；缺失或撤销返回 401。配对码生成、设备列表和撤销仅本机开放，远程设备不能管理令牌。App 将令牌保存在本机钥匙串。
-- **撤销与恢复。** `kite revoke <设备>` 或 App 撤销后，已有事件流立即断开，后续请求返回 401。网络错误和服务重启可重连；401 停止自动重试并提示重新配对，409 表示地址背后的工作机不符。同一机器地址变化时保留身份和令牌，只更新地址。App 回到前台后重新连接。
+工作机由 kite-net（tsnet）接入网络，控制端由 App 内的 TailscaleKit 接入，不占用系统 VPN。本机执行模式的 App 复用 kited 的 SOCKS 入口，只维护一个网络节点。链路加密由 WireGuard 承担，Headscale 策略限制同账号互通；kite-net 还通过 WhoIs 核验请求来源与本节点属于同一用户。内部代理使用进程内随机凭据，外部传入的同名字段被覆盖。
 
-本机接口与远程认证边界见 [接口](#接口)，SSE 重连见 [会话显示协议](会话显示协议.md#历史与连接)。iPhone 真机经组网连接的完整验收尚未完成。
+`kite net` 查看状态；已登录后可用 `kite net up`、`kite net down` 开启或暂停组网。新设备的入网密钥来自账号服务，工作机不保存 Headscale 管理密钥。移除设备会撤销其网络节点和账号会话；已有远程请求随撤销传播而关闭。网络错误和服务重启可以重连，401 提示重新登录，409 表示目标工作机身份不符。
+
+本机接口边界见 [接口](#接口)，SSE 重连见 [会话显示协议](会话显示协议.md#历史与连接)。原生 iPhone 的新账号流程、前后台重连和蜂窝网络仍需真机验收。
 
 ## 工作区与线程的生命周期
 
@@ -199,13 +194,10 @@ harness 与 Claude 均通过共享 shell 执行项目的 `.kite/check`。项目�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/machine` | 读取这台工作机服务的持久身份，无需 `X-Kite-Machine`；远程监听需带令牌 |
-| POST | `/pairings` | 仅本机：生成配对码，返回 `{code, expiresAt, address, invite}`；组网未上线时 `address`、`invite` 为 null |
-| PUT | `/network/admin` | 仅本机：`{apiKey, user}` 校验并保存 headscale 管理密钥 |
+| GET | `/machine` | 读取这台工作机服务的持久身份，无需 `X-Kite-Machine`；远程访问须通过同账号组网认证 |
+| PUT | `/network/account` | 仅本机：`{deviceId, controlURL, authKey}`，接收账号服务的一次性入网授权 |
+| GET/PUT | `/catalog/account` | 仅本机：查询上报状态，或用 `{deviceId, url, token}` 设置目录上报凭据；签发与版本约定见 [托管账号与设备](托管账号与设备.md) |
 | GET/PUT | `/network` | 仅本机：组网状态；`{enabled}` 开启或关闭组网节点 |
-| GET | `/devices` | 仅本机：列出已配对设备 `{id, name, createdAt, lastSeenAt}` |
-| DELETE | `/devices/:id` | 仅本机：撤销设备并断开它的事件流 |
-| POST | `/pair` | 仅远程，无需令牌：`{code, name?}` 换取 `{machine, device, token}`，配对码无效返回 401 |
 | GET | `/projects` | 列出本机已登记的项目身份 |
 | GET/POST | `/checkouts` | 列出本机检出（`?project=`）；登记 `{path, project?}`，返回根工作区聚合 |
 | GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, runtime?, contextTemplate?}`，准备过程看事件 |
@@ -250,7 +242,7 @@ harness 与 Claude 均通过共享 shell 执行项目的 `.kite/check`。项目�
 
 `POST /checkouts` 的 `project` 为 `{id, name, createdAt}`，可直接使用另一台工作机返回的项目身份；省略则创建新项目。同 ID 的名称或创建时间冲突、已登记目录试图改属另一项目时返回 409，在修改目录之前拒绝。重复登记同一目录和项目返回原检出及根工作区。
 
-连接时先读 `GET /machine`。其余接口（包括 SSE）必须带 `X-Kite-Machine: <id>`：缺失返回 400，和服务身份不符返回 409，并在执行请求前拒绝。这个检查用于防止地址复用时操作错机器，不承担认证。本机监听的接口只接受 `Host` 为 `127.0.0.1` 或 `localhost` 的请求，其他主机名返回 403，用于阻止网页借 DNS 重绑定访问本机服务；远程监听改用配对令牌认证，见[远程连接](#远程连接)。App 会保存身份，重连时继续使用原 ID；CLI 在一次命令内固定目标 ID。
+连接时先读 `GET /machine`。其余接口（包括 SSE）必须带 `X-Kite-Machine: <id>`：缺失返回 400，和服务身份不符返回 409，并在执行请求前拒绝。这个检查用于防止地址复用时操作错机器，不承担认证。本机监听的接口只接受 `Host` 为 `127.0.0.1` 或 `localhost` 的请求，其他主机名返回 403，用于阻止网页借 DNS 重绑定访问本机服务；远程监听只接受已核验身份的组网代理，见[远程连接](#远程连接)。App 会保存身份，重连时继续使用原 ID；CLI 在一次命令内固定目标 ID。
 
 工作区聚合和线程上下文包含 `machine`，检出包含 `machineId`。SSE 按目录、工作区和线程分别订阅，每次重连从完整快照恢复；事件、游标与流式内容统一见 [会话显示协议](会话显示协议.md)。
 

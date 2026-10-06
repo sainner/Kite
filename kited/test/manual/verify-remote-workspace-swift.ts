@@ -211,8 +211,6 @@ async function main() {
     }));
     const machineFixture = join(root, 'machine.json');
     await Bun.write(machineFixture, JSON.stringify(machine.body));
-    const otherMachineFixture = join(root, 'other-machine.json');
-    await Bun.write(otherMachineFixture, JSON.stringify(otherMachine.body));
     const localProjects = await call<Project[]>(daemon.url, 'GET', '/projects', undefined, machine.body.id);
     const remoteProjects = await call<Project[]>(otherDaemon.url, 'GET', '/projects', undefined, otherMachine.body.id);
     if (localProjects.status !== 200 || remoteProjects.status !== 200) throw new Error('读取项目身份失败');
@@ -268,14 +266,13 @@ async function main() {
       join(app, 'Conversation', 'AgentConfiguration.swift'),
       join(app, 'Plugins', 'PluginManagementModels.swift'),
       join(import.meta.dir, '..', '..', '..', 'app', 'Kite', 'Application', 'RemoteWorkspace.swift'),
-      join(import.meta.dir, '..', '..', '..', 'app', 'Kite', 'Application', 'MachineConnections.swift'),
       join(import.meta.dir, '..', '..', '..', 'app', 'Kite', 'Application', 'CatalogRefresh.swift'),
       join(import.meta.dir, 'RemoteWorkspaceDecode.swift'),
       '-o', decoder,
     ], root);
     console.log(await command([
-      decoder, fixture, machineFixture, otherMachineFixture, localProjectsFixture, remoteProjectsFixture,
-      daemon.url, otherDaemon.url, cursorsFixture, archivedFixture, definitionsFixture, filesFixture,
+      decoder, fixture, machineFixture, localProjectsFixture, remoteProjectsFixture,
+      cursorsFixture, archivedFixture, definitionsFixture, filesFixture,
     ], root));
   } finally {
     await catalog?.close();

@@ -36,19 +36,19 @@ struct ThreadHeaderActions: View {
         return availableModels.first { modelName == $0.id || modelName == $0.resolvedModel }?.title ?? modelName
     }
     private var canChangeModel: Bool {
-        instance != nil && (area.isSample || model.connected) && !savingModel
+        instance != nil && (area.isSample || model.isConnected(area)) && !savingModel
             && (area.isSample || thread.agentCapabilities?.canEdit(thread.state) == true)
     }
 
     var body: some View {
         menuGroup
-            .task(id: "\(model.connectionRevision)-\(model.connected)") {
-                guard !area.isSample, model.connected, let instance else { return }
+            .task(id: "\(model.revision(for: area))-\(model.isConnected(area))") {
+                guard !area.isSample, model.isConnected(area), let instance else { return }
                 do {
-                    let client = try model.activeClient()
-                    let revision = model.connectionRevision
+                    let client = try model.activeClient(in: area)
+                    let revision = model.revision(for: area)
                     let capabilities = try await client.request("/instances/\(instance.id)/agent-capabilities", as: AgentCapabilities.self)
-                    guard revision == model.connectionRevision, !Task.isCancelled else { return }
+                    guard revision == model.revision(for: area), !Task.isCancelled else { return }
                     thread.agentCapabilities = capabilities
                 } catch { modelError = error.localizedDescription }
             }
@@ -84,7 +84,7 @@ struct ThreadHeaderActions: View {
         var general: [ThreadHeaderCommand] = []
         if let instance {
             general.append(.init(title: "实例设置与授权", symbol: "slider.horizontal.3",
-                                 enabled: !area.isSample && model.connected) { area.settingsInstance = instance })
+                                 enabled: !area.isSample && model.isConnected(area)) { area.settingsInstance = instance })
         }
         general.append(.init(title: "复制工作目录", symbol: "folder", enabled: !thread.transcript.root.isEmpty) {
             copyToPasteboard(thread.transcript.root, toast: toast)
@@ -96,7 +96,7 @@ struct ThreadHeaderActions: View {
         if !area.isSample {
             if thread.state?.recovery != nil {
                 execution.append(.init(title: "确认恢复", symbol: "arrow.clockwise",
-                                       enabled: model.connected && thread.state?.busy != true) { confirmingRecovery = true })
+                                       enabled: model.isConnected(area) && thread.state?.busy != true) { confirmingRecovery = true })
             }
             if thread.showStop {
                 execution.append(.init(title: "停止执行", symbol: "stop", enabled: thread.canStop) { thread.stop() })

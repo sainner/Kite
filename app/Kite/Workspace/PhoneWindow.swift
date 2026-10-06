@@ -58,7 +58,9 @@ struct PhoneWindow: View {
         ZStack(alignment: .topLeading) {
             if let workspace = model.current {
                 Group {
-                    if let pane = workspace.layout.focused {
+                    if !workspace.isSample, workspace.pluginClient == nil {
+                        DirectoryStatus(workspace: workspace)
+                    } else if let pane = workspace.layout.focused {
                         PaneBody(pane: pane).id(pane)
                             .transition(.opacity)
                     }
@@ -78,6 +80,8 @@ struct PhoneWindow: View {
                     .environment(\.openSidebar, { settle(.sidebar) })
                     .environment(\.keyboardShown, insets.bottom > homeInset + 1)
                     .id(workspace.id)
+            } else {
+                DirectoryStatus().environment(\.openSidebar, { settle(.sidebar) })
             }
         }
         .modifier(WindowPlacement(openness: target, screen: screen, insets: insets, homeInset: homeInset,

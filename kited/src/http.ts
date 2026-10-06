@@ -1,4 +1,4 @@
-/** HTTP 接口：本机监听信任回环客户端，远程监听只接受已配对设备。事件流用 SSE。 */
+/** HTTP 接口：本机监听信任回环客户端，远程监听只接受已核验组网身份的内部代理。事件流用 SSE。 */
 import { KiteError, OperationError } from './errors.ts';
 import type { EventScope } from './events.ts';
 import { inScope } from './transcript/feed.ts';
@@ -8,6 +8,7 @@ import type { Project, RuntimeKind } from './model.ts';
 import { operationCatalog } from './operations/contract.ts';
 import { contextTemplateSelection } from './context-templates.ts';
 import type { Network } from './network.ts';
+import { publisherConfig, type CatalogPublisher } from './catalog-publisher.ts';
 
 async function body(req: Request): Promise<Record<string, unknown>> {
   try { return (await req.json()) as Record<string, unknown>; } catch { throw new KiteError('请求体不是 JSON'); }
@@ -69,18 +70,15 @@ function eventScope(url: string): EventScope {
   return key === 'workspace' ? { workspaceId: id } : { threadId: id };
 }
 
-async function events(kite: Kite, scope: EventScope, device?: string): Promise<Response> {
+async function events(kite: Kite, scope: EventScope): Promise<Response> {
   if (scope !== 'catalog') {
     if ('threadId' in scope) await kite.threadState(scope.threadId);
     else kite.workspace(scope.workspaceId);
   }
   let unsubscribe = () => {};
-  let unwatch = () => {};
   let heartbeat: Timer | undefined;
   const stream = new ReadableStream<string>({
     start(controller) {
-      // 撤销设备时立即断开它已建立的事件流。
-      if (device) unwatch = kite.store.devices.watch(device, () => { unsubscribe(); unwatch(); clearInterval(heartbeat); controller.close(); });
       // 首帧与订阅在同一同步段，重连总用当前快照替换旧副本。
       const meta = { version: 1, cursor: kite.events.cursor, at: Date.now() };
       const initial = scope === 'catalog'
@@ -93,7 +91,7 @@ async function events(kite: Kite, scope: EventScope, device?: string): Promise<R
       heartbeat = setInterval(() => controller.enqueue(': \n\n'), 15_000);
       controller.enqueue(': connected\n\n');
     },
-    cancel() { unsubscribe(); unwatch(); clearInterval(heartbeat); },
+    cancel() { unsubscribe(); clearInterval(heartbeat); },
   });
   return new Response(stream, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' } });
 }
@@ -111,24 +109,20 @@ function local<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
 export interface Listen {
   hostname: string;
   port: number;
-  /** remote 监听要求配对令牌，不做本机主机名检查。 */
+  /** remote 监听要求内部代理凭据，不做本机主机名检查。 */
   remote?: boolean;
-  /** 本机监听管理组网，生成配对码时一并给出组网地址。 */
+  /** 本机监听管理此设备的组网状态。 */
   network?: Network;
+  publisher?: CatalogPublisher;
+  /** 仅 kite-net 持有；代理已核验来源和本节点属于同一组网用户。 */
+  proxyToken?: string;
 }
 
-/** 远程请求经认证后记下设备，事件流据此登记撤销时的断开。 */
-const requestDevice = new WeakMap<Request, string>();
-
 export function serve(kite: Kite, listen: Listen) {
-  const devices = kite.store.devices;
-  // 配对令牌承担远程认证；随后的身份检查只防止地址复用时操作错工作机。
+  // 代理负责同账号认证，工作机身份检查防止地址复用时操作错机器。
   const access = <R extends Request>(fn: (req: R) => Promise<unknown> | unknown) => listen.remote
     ? handle((req: R) => {
-      const token = /^Bearer (\S+)$/.exec(req.headers.get('Authorization') ?? '')?.[1];
-      const device = token && devices.authenticate(token);
-      if (!device) throw new KiteError('这台设备尚未配对或授权已撤销，请重新配对', 401);
-      requestDevice.set(req, device.id);
+      if (!listen.proxyToken || req.headers.get('X-Kite-Network') !== listen.proxyToken) throw new KiteError('设备未通过组网认证', 401);
       return fn(req);
     })
     : local(fn);
@@ -138,10 +132,9 @@ export function serve(kite: Kite, listen: Listen) {
     if (machine !== kite.machine().id) throw new KiteError('连接地址对应的工作机已改变，请重新选择工作机', 409);
     return fn(req);
   });
-  // 配对码和设备管理只在本机发起，远程令牌不能再签发或撤销令牌；配对只在远程监听上开放。
-  const only = (remote: boolean) => <R extends Request>(fn: (req: R) => Promise<Response>) =>
-    remote === !!listen.remote ? fn : handle<R>(() => { throw new KiteError('没有这个接口', 404); });
-  const [localOnly, remoteOnly] = [only(false), only(true)];
+  // 本机网络设置不对远程设备开放。
+  const localOnly = <R extends Request>(fn: (req: R) => Promise<Response>) =>
+    listen.remote ? handle<R>(() => { throw new KiteError('没有这个接口', 404); }) : fn;
   const network = () => {
     if (!listen.network) throw new KiteError('这个服务没有组网', 404);
     return listen.network;
@@ -151,24 +144,16 @@ export function serve(kite: Kite, listen: Listen) {
     port: listen.port,
     idleTimeout: 60,
     routes: {
-      '/pair': { POST: remoteOnly(handle(async (req) => {
-        const b = await body(req);
-        const paired = devices.pair(str(b.code, 'code'), b.name === undefined ? '' : str(b.name, 'name'));
-        return { machine: kite.machine(), ...paired };
-      })) },
-      '/pairings': { POST: localOnly(bound(async () => {
-        const pairing = devices.createPairing();
-        const address = listen.network?.status().address;
-        if (!address) return { ...pairing, address: null, invite: null };
-        // 邀请链接一次带齐组网地址、配对码、控制服务器和入网密钥，扫码即可连接；它和配对码一样只在本机显示。
-        const invite = new URL('kite://pair');
-        invite.searchParams.set('address', address);
-        invite.searchParams.set('code', pairing.code);
-        if (listen.network!.controlURL) invite.searchParams.set('control', listen.network!.controlURL);
-        const key = await listen.network!.authKey();
-        if (key) invite.searchParams.set('key', key);
-        return { ...pairing, address, invite: invite.href };
-      })) },
+      '/catalog/account': {
+        GET: localOnly(bound(() => listen.publisher?.status() ?? {})),
+        PUT: localOnly(bound(async (req) => {
+          if (!listen.publisher) throw new KiteError('此服务不支持目录上报', 404);
+          const parsed = publisherConfig.safeParse(await body(req));
+          if (!parsed.success) throw new KiteError('目录上报设置无效');
+          await listen.publisher.configure(parsed.data);
+          return listen.publisher.status();
+        })),
+      },
       '/network': {
         GET: localOnly(bound(() => network().status())),
         PUT: localOnly(bound(async (req) => {
@@ -177,13 +162,11 @@ export function serve(kite: Kite, listen: Listen) {
           return parsed.data.enabled ? network().enable() : network().disable();
         })),
       },
-      '/network/admin': { PUT: localOnly(bound(async (req) => {
-        const parsed = z.object({ apiKey: z.string().min(1), user: z.string().min(1) }).strict().safeParse(await body(req));
-        if (!parsed.success) throw new KiteError('headscale 管理设置无效');
-        return network().configureAdmin(parsed.data.apiKey, parsed.data.user);
+      '/network/account': { PUT: localOnly(bound(async (req) => {
+        const config = z.object({ deviceId: z.uuid(), controlURL: z.url().startsWith('https://'), authKey: z.string().min(1) }).strict().safeParse(await body(req));
+        if (!config.success) throw new KiteError('入网设置无效');
+        return network().joinAccount(config.data);
       })) },
-      '/devices': { GET: localOnly(bound(() => devices.list())) },
-      '/devices/:id': { DELETE: localOnly(bound((req) => { devices.revoke(req.params.id); return { ok: true }; })) },
       '/machine': { GET: access(() => kite.machine()) },
       '/instances/:id/agent-capabilities': { GET: bound((req) => kite.agentCapabilities(req.params.id)) },
       '/projects': {
@@ -358,7 +341,7 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/adopt': { POST: bound((req) => kite.adopt(req.params.id)) },
       '/threads/:id/archive': { POST: bound((req) => kite.archiveThread(req.params.id)) },
       '/workspaces/:id/archive': { POST: bound(async (req) => kite.archiveWorkspace(req.params.id, (await body(req)).force === true)) },
-      '/events': { GET: bound((req) => events(kite, eventScope(req.url), requestDevice.get(req))) },
+      '/events': { GET: bound((req) => events(kite, eventScope(req.url))) },
     },
     fetch: () => Response.json({ error: '没有这个接口' }, { status: 404 }),
   });

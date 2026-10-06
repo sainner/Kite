@@ -21,7 +21,7 @@ final class WindowLayout {
     @ObservationIgnored var availableSize: CGSize?
 
     init(panes: [Pane] = [], arrangement: Arrangement = .oneAndTwo,
-         storageKey: String? = nil, defaults: UserDefaults = .standard) {
+         storageKey: String? = nil, defaults: UserDefaults = .standard, reconcileOnLoad: Bool = true) {
         self.storageKey = storageKey
         self.defaults = defaults
         if let storageKey, let data = defaults.data(forKey: storageKey),
@@ -29,7 +29,8 @@ final class WindowLayout {
             root = saved.root?.tile
             docked = saved.docked
             focused = saved.focused
-            reconcile(panes)
+            // 托管目录尚未加载窗口；此时不能把未知窗口当成已删除。
+            if reconcileOnLoad { reconcile(panes) }
         } else {
             root = arrangement.tile(for: panes)
             docked = panes.filter { !(root?.panes.contains($0) ?? false) }

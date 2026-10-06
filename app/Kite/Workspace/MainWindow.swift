@@ -34,6 +34,8 @@ struct MainWindow: View {
                     .onGeometryChange(for: CGSize.self) { $0.size } action: { model.contentSize = $0 }
                     .padding(.top, Metrics.padding)
                     .allowsHitTesting(resizingFrom == nil)
+            } else if model.workspaces.isEmpty {
+                DirectoryStatus().padding(.top, Metrics.padding)
             } else {
                 // 已有工作区都分离到了独立窗口。
                 Color.clear

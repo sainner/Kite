@@ -8,9 +8,20 @@ struct WorkspaceRow: View {
     var detached = false
     var height: CGFloat = 32
 
+    @Environment(AppModel.self) private var model
+    private var isRoot: Bool { workspace.remote?.workspace.kind == .root }
+    private var title: String {
+        guard isRoot, let remote = workspace.remote else { return workspace.title }
+        return "\(remote.machine.name) · \(remote.checkout.path)"
+    }
+
     var body: some View {
         HStack(spacing: 8) {
-            Text(workspace.title).font(Theme.body).lineLimit(1)
+            if isRoot { Image(systemName: "folder").foregroundStyle(.secondary) }
+            Text(title).font(isRoot ? Theme.secondary : Theme.body).lineLimit(1).truncationMode(.middle)
+            if !workspace.isSample && !model.isConnected(workspace) {
+                Text("离线").font(Theme.caption).foregroundStyle(.secondary)
+            }
             Spacer(minLength: 0)
             if detached {
                 Image(systemName: "macwindow").font(Theme.secondary).foregroundStyle(.secondary)
@@ -22,11 +33,11 @@ struct WorkspaceRow: View {
     }
 }
 
-/// 侧栏的一组：一个项目下的工作区。同一项目有多个检出时再按检出分一层，只有一个时检出没有标题。
+/// 检出行直接打开根工作区，下面只列独立工作区。
 struct WorkspaceGroup: Identifiable {
     struct Checkout: Identifiable {
         let id: String
-        var title: String?
+        var root: WorkArea?
         var workspaces: [WorkArea]
     }
     let id: String
@@ -45,28 +56,20 @@ extension AppModel {
             }
             let group = groups.firstIndex { $0.id == remote.project.id }!
             if let checkout = groups[group].checkouts.firstIndex(where: { $0.id == remote.checkout.id }) {
-                groups[group].checkouts[checkout].workspaces.append(area)
+                if remote.workspace.kind == .root { groups[group].checkouts[checkout].root = area }
+                else { groups[group].checkouts[checkout].workspaces.append(area) }
             } else {
-                groups[group].checkouts.append(.init(id: remote.checkout.id, title: remote.checkout.path, workspaces: [area]))
-            }
-        }
-        for index in groups.indices {
-            let checkouts = groups[index].checkouts
-            // 检出用目录名区分，目录名相同的才显示完整路径。
-            let names = checkouts.map { ($0.title ?? "").split(separator: "/").last.map(String.init) ?? "" }
-            for (offset, name) in names.enumerated() {
-                groups[index].checkouts[offset].title = checkouts.count == 1 ? nil
-                    : names.filter { $0 == name }.count > 1 || name.isEmpty ? checkouts[offset].title : name
+                groups[group].checkouts.append(.init(id: remote.checkout.id, root: remote.workspace.kind == .root ? area : nil, workspaces: remote.workspace.kind == .root ? [] : [area]))
             }
         }
         return groups
     }
 
     /// 收起的侧栏没有标题，按分组后的顺序排。
-    var groupedWorkspaces: [WorkArea] { workspaceGroups.flatMap { $0.checkouts.flatMap(\.workspaces) } }
+    var groupedWorkspaces: [WorkArea] { workspaceGroups.flatMap { $0.checkouts.flatMap { [$0.root].compactMap { $0 } + $0.workspaces } } }
 }
 
-/// 侧栏的工作区列表：项目标题下列出它的工作区，多个检出时检出标题下的工作区再缩进一级。
+/// 侧栏按项目分组；每个检出行进入根工作区，其他工作区缩进一级。
 struct WorkspaceList<Row: View>: View {
     var headerHeight: CGFloat = 24
     @ViewBuilder let row: (WorkArea) -> Row
@@ -83,14 +86,9 @@ struct WorkspaceList<Row: View>: View {
                         .padding(.top, group.id == groups.first?.id ? 0 : 8)
                 }
                 ForEach(group.checkouts) { checkout in
-                    if let title = checkout.title {
-                        Label(title, systemImage: "folder").font(Theme.caption).foregroundStyle(.tertiary).lineLimit(1)
-                            .truncationMode(.middle)
-                            .padding(.horizontal, 10)
-                            .frame(height: headerHeight)
-                    }
+                    if let root = checkout.root { row(root) }
                     ForEach(checkout.workspaces) { workspace in
-                        row(workspace).padding(.leading, checkout.title == nil ? 0 : 12)
+                        row(workspace).padding(.leading, 12)
                     }
                 }
             }
@@ -120,7 +118,7 @@ struct ActionArea: View {
                 HStack(spacing: 8) { buttons(size: Metrics.actionButton) }
                 HStack(spacing: 10) {
                     Circle().fill(Theme.placeholder).frame(width: 28, height: 28)
-                    Text(model.connected ? "已连接工作机" : "未连接工作机")
+                    Text("\(model.availableWorkers.count) 台工作机在线")
                         .font(Theme.secondary).foregroundStyle(.secondary).lineLimit(1)
                     Spacer(minLength: 0)
                     connection(size: 28)
@@ -142,7 +140,7 @@ struct ActionArea: View {
         .buttonStyle(.pointingPlain)
         .help("新会话")
         .accessibilityLabel("新会话")
-        .disabled(!model.connected)
+        .disabled(model.availableWorkers.isEmpty)
         ForEach(0..<3, id: \.self) { _ in
             RoundedRectangle(cornerRadius: 8).fill(Theme.placeholder)
                 .frame(width: size, height: size)

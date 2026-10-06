@@ -72,7 +72,7 @@ struct NewThreadContextTemplate: View {
     private var instance: RemotePluginInstance? { area.instances.first { $0.id == thread.id } }
     private var templateID: String? { thread.contextTemplate?.id ?? instance?.config?.agent?.context["id"]?.string }
     private var templates: [ContextTemplate] {
-        (model.contextTemplates?.templates ?? []).filter { $0.definition.scene == "thread.create" }
+        (model.templates(in: area)?.templates ?? []).filter { $0.definition.scene == "thread.create" }
     }
     private var title: String {
         thread.contextTemplate?.definition.title ?? instance?.config?.agent?.context["title"]?.string ?? "默认模板"
@@ -81,7 +81,7 @@ struct NewThreadContextTemplate: View {
         templates.first { $0.id == templateID } ?? templates.first
     }
     private var available: Bool {
-        !thread.configuringTemplate && (area.isSample || model.connected)
+        !thread.configuringTemplate && (area.isSample || model.isConnected(area))
             && (instance?.config?.agent != nil || thread.isDraft)
     }
 
@@ -95,7 +95,7 @@ struct NewThreadContextTemplate: View {
                     }
                 }
             } label: { Label(title, systemImage: "text.document") }
-                .disabled(!available || model.contextTemplates == nil)
+                .disabled(!available || model.templates(in: area) == nil)
             Button("基于此模板新建…") {
                 if let source { edit = .init(definition: source.definition.copy()) }
             }.disabled(!available || source == nil)
@@ -107,14 +107,14 @@ struct NewThreadContextTemplate: View {
         }
         .buttonStyle(.bordered)
         .sheet(item: $edit) { request in
-            ContextTemplateEditor(request: request, connection: model.connectionRevision) { template in apply(template) }
+            ContextTemplateEditor(request: request, connection: model.revision(for: area)) { template in apply(template) }
                 .environment(model)
         }
-        .task(id: model.connectionRevision) { await load() }
+        .task(id: model.revision(for: area)) { await load() }
     }
 
     private func load() async {
-        do { try await model.refreshContextTemplates(); error = nil }
+        do { try await model.refreshContextTemplates(in: area); error = nil }
         catch is CancellationError { }
         catch { self.error = error.localizedDescription }
     }
@@ -123,7 +123,7 @@ struct NewThreadContextTemplate: View {
         guard available else { return }
         thread.configuringTemplate = true
         error = nil
-        let revision = model.connectionRevision
+        let revision = model.revision(for: area)
         Task {
             defer { thread.configuringTemplate = false }
             do { try await model.applyContextTemplate(template, to: thread, in: area, connection: revision) }

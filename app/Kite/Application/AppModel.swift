@@ -3,9 +3,6 @@ import SwiftUI
 @Observable
 final class AppModel {
     var workspaces: [WorkArea] = []
-    var definitions: [RemotePluginDefinition] = []
-    var contextTemplates: ContextTemplateCatalog?
-    @ObservationIgnored var contextTemplatesRequest: (connection: UUID, task: Task<Void, Error>)?
     let draftWorkspace = WorkArea()
     var selected = ""
     var detached: Set<String> = []
@@ -13,38 +10,60 @@ final class AppModel {
     var sidebarWidth = Metrics.sidebarWidth
     var sidebarCollapsed = false
     var contentSize: CGSize = .zero
-    private(set) var connections = MachineConnections.load()
-    private(set) var connectionRevision = UUID()
-    var serverAddress: String { connections.selected?.address ?? "http://127.0.0.1:5483" }
-    var machine: RemoteMachine? { connections.selected?.machine }
-    var connected = false
+    let account: KiteAccount
+    private(set) var connections: [String: WorkerConnection] = [:]
+    private var connectionRun: UUID?
+    private let emptyConnection = UUID()
+    private var sampleTemplates: ContextTemplateCatalog?
+    var activeConnection: WorkerConnection? {
+        if let id = current?.remote?.machine.id { return connections[id] }
+        return connections.values.sorted { $0.machine.id < $1.machine.id }.first(where: { $0.connected })
+    }
+    var machine: RemoteMachine? { activeConnection?.machine }
+    var connected: Bool { activeConnection?.connected == true }
+    var connectionRevision: UUID { activeConnection?.catalog.generation ?? emptyConnection }
+    var definitions: [RemotePluginDefinition] { activeConnection?.definitions ?? [] }
+    var contextTemplates: ContextTemplateCatalog? {
+        get { SampleWorkspace.enabled ? sampleTemplates : activeConnection?.templates }
+        set { if SampleWorkspace.enabled { sampleTemplates = newValue } else { activeConnection?.templates = newValue } }
+    }
     var error: String?
     /// 扫码连接的进度；后台重连的错误不覆盖它。
     enum InviteState: Equatable { case joining, failed(String) }
     var invite: InviteState?
     var showConnection = false
     var showNewWorkspace = false
-    private let catalogRefresh = CatalogRefresh()
-    private var definitionsRequest = UUID()
-    private var client: KitedClient? {
-        connections.selected.map { KitedClient(address: $0.address, machineID: $0.machine.id, token: $0.token) }
+
+    init(account: KiteAccount = KiteAccount()) { self.account = account }
+
+    func connection(for area: WorkArea? = nil) -> WorkerConnection? {
+        guard let area, !area.isDraft else { return activeConnection }
+        return area.remote.flatMap { connections[$0.machine.id] }
     }
 
-    func activeClient() throws -> KitedClient {
-        guard let client else { throw KitedError(message: "请先连接工作机") }
-        return client
+    func revision(for area: WorkArea) -> UUID { connection(for: area)?.catalog.generation ?? emptyConnection }
+    func isConnected(_ area: WorkArea) -> Bool { area.isSample || connection(for: area)?.connected == true }
+
+    func activeClient(in area: WorkArea? = nil) throws -> KitedClient {
+        guard let connection = connection(for: area), connection.connected else { throw KitedError(message: "所属工作机未连接") }
+        return connection.client
+    }
+
+    func accepts(_ client: KitedClient) -> Bool {
+        guard let id = client.machineID else { return false }
+        return connections[id]?.client == client && account.ready
     }
 
     func refreshDefinitions(_ client: KitedClient) async throws {
-        let revision = connectionRevision
+        guard let id = client.machineID, let connection = connections[id] else { return }
+        let revision = connection.catalog.generation
         let request = UUID()
-        definitionsRequest = request
+        connection.definitionsRequest = request
         let values = try await client.request("/plugin-definitions", as: [RemotePluginDefinition].self)
         try Task.checkCancellation()
-        guard client == self.client, revision == connectionRevision else { throw KitedError(message: "工作机已切换") }
-        guard request == definitionsRequest else { return }
-        definitions = values
-        for area in workspaces { area.definitions = values }
+        guard accepts(client), revision == connection.catalog.generation, connection.definitionsRequest == request else { return }
+        connection.definitions = values
+        for area in workspaces where area.remote?.machine.id == id { area.definitions = values }
     }
 
     func createInstance(_ definition: RemotePluginDefinition, in area: WorkArea) {
@@ -65,11 +84,11 @@ final class AppModel {
         Task {
             defer { area.changingWindows = false }
             do {
-                let client = try activeClient()
+                let client = try activeClient(in: area)
                 guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
                 let _: RemotePluginInstance = try await client.request("/workspaces/\(area.id)/plugin-instances", method: "POST", body: request, as: RemotePluginInstance.self)
                 try await refresh(client)
-                guard client == self.client else { return }
+                guard accepts(client) else { return }
                 area.pendingInstanceRequest = nil
             } catch {
                 if let status = (error as? KitedError)?.status, (400..<500).contains(status) { area.pendingInstanceRequest = nil }
@@ -78,217 +97,245 @@ final class AppModel {
         }
     }
 
-    private func use(_ saved: MachineConnections) throws {
-        let changed = saved.selected != connections.selected
-        try saved.save()
-        connections = saved
-        guard changed else { return }
-        catalogRefresh.reset()
-        connected = false
-        error = nil
-        workspaces = []
-        definitions = []
-        contextTemplates = nil
-        contextTemplatesRequest?.task.cancel()
-        contextTemplatesRequest = nil
-        draftWorkspace.draftThread.contextTemplate = nil
-        detached = []
-        selected = ""
-        draftWorkspace.draftThread.connected = false
-        connectionRevision = UUID()
-    }
-
-    /// 配对码为空时按已保存的令牌或本机服务连接；填写时向远程监听换取这台设备的令牌。
-    func addConnection(address: String, code: String = "") async throws {
-        let address = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        let code = code.trimmingCharacters(in: .whitespacesAndNewlines)
-        var saved = connections
-        if code.isEmpty {
-            let token = connections.entries.first { $0.address == address }?.token
-            let machine: RemoteMachine
-            do { machine = try await KitedClient(address: address, token: token).request("/machine", as: RemoteMachine.self) }
-            catch let error as KitedError where error.status == 401 {
-                throw KitedError(message: "这台工作机需要配对码：在工作机上运行 kite pair，或在它的 Kite 设置中生成", status: 401)
-            }
-            try Task.checkCancellation()
-            saved.remember(machine, address: address)
-        } else {
-            struct Pair: Encodable { let code: String; let name: String }
-            struct Paired: Decodable { let machine: RemoteMachine; let token: String }
-            let paired = try await KitedClient(address: address)
-                .request("/pair", method: "POST", body: Pair(code: code, name: Self.deviceName), as: Paired.self)
-            try DeviceTokens.save(paired.token, for: paired.machine.id)
-            saved.remember(paired.machine, address: address, token: paired.token)
-        }
-        try use(saved)
-    }
-
-    /// 扫配对二维码打开的 kite://pair 链接：按其中的控制服务器和入网密钥上线组网，再用配对码连接。
+    /// 新设备扫描已登录设备显示的二维码，获得独立账号会话。
     func acceptInvite(_ url: URL) async {
-        guard url.scheme == "kite", url.host() == "pair",
-              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return }
-        let value = { (name: String) in items.first { $0.name == name }?.value }
-        guard let address = value("address"), let code = value("code") else {
-            error = "配对链接不完整，请在工作机上重新生成"
-            return
-        }
-        guard invite == nil else { return }
+        guard url.scheme == "kite", url.host() == "join", invite != .joining else { return }
         invite = .joining
-        defer { if case .joining = invite { invite = nil } }
-        await Tailnet.shared.configure(controlURL: value("control") ?? "", authKey: value("key"))
-        do { try await addConnection(address: address, code: code) }
-        catch {
-            invite = .failed(error.localizedDescription)
-            #if DEBUG
-            print("Kite invite failed: \(error)")
+        do {
+            try await account.accept(url)
+            #if os(iOS)
+            try await account.join(role: "controller", name: Self.deviceName)
             #endif
-        }
+            invite = nil
+        } catch { invite = .failed(error.localizedDescription) }
     }
 
     #if os(macOS)
-    private static var deviceName: String { Host.current().localizedName ?? "Mac" }
+    static var deviceName: String { Host.current().localizedName ?? "Mac" }
     #else
-    private static var deviceName: String { UIDevice.current.name }
+    static var deviceName: String { UIDevice.current.name }
     #endif
 
-    func selectConnection(_ id: String) throws {
-        var saved = connections
-        saved.select(id)
-        try use(saved)
+    func clearAccountConnections() {
+        connectionRun = nil
+        stopConnections()
+        connections = [:]
+        workspaces = []
+        detached = []
+        selected = ""
+        draftWorkspace.draftThread.contextTemplate = nil
+        draftWorkspace.draftThread.connected = false
     }
+
     var checkouts: [RemoteCheckout] {
         var seen = Set<String>()
         return workspaces.compactMap(\.remote?.checkout).filter { seen.insert($0.id).inserted }
     }
-    var knownProjects: [RemoteProject] { connections.knownProjects }
+    var knownProjects: [RemoteProject] {
+        var seen = Set<String>()
+        return (account.catalogs.flatMap { $0.snapshot?.projects ?? [] } + workspaces.compactMap(\.remote?.project))
+            .filter { seen.insert($0.id).inserted }
+    }
+    var availableWorkers: [WorkerConnection] { connections.values.filter(\.connected).sorted { $0.machine.name < $1.machine.name } }
 
     func projectLabel(_ project: RemoteProject) -> String {
-        let machines = connections.entries.filter { $0.projects.contains { $0.id == project.id } }.map(\.machine.name)
-        let name = knownProjects.filter { $0.name == project.name }.count > 1
-            ? "\(project.name)（\(project.id.prefix(8))）" : project.name
-        return ([name] + machines).joined(separator: " · ")
+        knownProjects.filter { $0.name == project.name }.count > 1 ? "\(project.name)（\(project.id.prefix(8))）" : project.name
     }
 
+    /// 账号目录决定设备集合；各机事件流、错误与游标独立存续。
     func connect() async {
-        let revision = connectionRevision
-        connected = false
-        while !Task.isCancelled && revision == connectionRevision {
-            let generation = catalogRefresh.reset()
-            do {
-                if client == nil {
-                    let address = serverAddress
-                    let machine = try await KitedClient(address: address).request("/machine", as: RemoteMachine.self)
-                    try Task.checkCancellation()
-                    guard revision == connectionRevision else { return }
-                    var saved = connections
-                    saved.remember(machine, address: address)
-                    try saved.save()
-                    connections = saved
+        guard account.ready else { return }
+        let run = UUID()
+        connectionRun = run
+        mergeDirectory()
+        startConnections()
+        defer { if connectionRun == run { stopConnections(); connectionRun = nil } }
+        while !Task.isCancelled && account.ready && connectionRun == run {
+            do { try await account.resume() }
+            catch { account.error = error.localizedDescription }
+            guard !Task.isCancelled, account.ready, connectionRun == run else { return }
+            mergeDirectory()
+            startConnections()
+            let unknown = account.workers.filter { device in !connections.values.contains { $0.deviceID == device.id } }
+            await withTaskGroup(of: Void.self) { group in
+                for device in unknown {
+                    group.addTask { await self.discover(device) }
                 }
-                let client = try activeClient()
+            }
+            guard !Task.isCancelled, account.ready, connectionRun == run else { return }
+            startConnections()
+            do { try await Task.sleep(for: .seconds(15)) } catch { return }
+        }
+    }
+
+    func startConnections() {
+        for connection in connections.values where connection.task == nil {
+            connection.task = Task { await self.follow(connection) }
+        }
+    }
+
+    private func address(_ device: AccountDevice) -> String? {
+        device.id == account.deviceID && account.role == "worker" ? "http://127.0.0.1:5483" : device.address
+    }
+
+    private func discover(_ device: AccountDevice) async {
+        guard let address = address(device) else { return }
+        do {
+            let machine = try await KitedClient(address: address).request("/machine", timeout: 10, as: RemoteMachine.self)
+            try Task.checkCancellation()
+            guard account.workers.contains(where: { $0.id == device.id }), connections[machine.id] == nil else { return }
+            connections[machine.id] = WorkerConnection(deviceID: device.id, machine: machine, address: address)
+            startConnections()
+        } catch { /* 单台工作机暂不可达不阻塞其他设备的目录。 */ }
+    }
+
+    func mergeDirectory() {
+        let devices = Set(account.devices.map(\.id))
+        for (id, connection) in connections where !devices.contains(connection.deviceID) {
+            connection.task?.cancel()
+            connection.catalog.reset()
+            connections.removeValue(forKey: id)
+            workspaces.removeAll { $0.remote?.machine.id == id }
+        }
+        for entry in account.catalogs {
+            guard let snapshot = entry.snapshot, let address = address(entry.device) else { continue }
+            let connection = connections[entry.machineId] ?? WorkerConnection(deviceID: entry.device.id, machine: snapshot.machine, address: address)
+            if connection.client.address != address {
+                connection.task?.cancel(); connection.task = nil
+                connection.catalog.reset(); connection.connected = false
+                connection.client = KitedClient(address: address, machineID: entry.machineId)
+            }
+            connections[entry.machineId] = connection
+            connection.updatedAt = entry.updatedAt
+            if !connection.hasLiveCatalog {
+                let previous = Dictionary(uniqueKeysWithValues: workspaces.filter { $0.remote?.machine.id == entry.machineId }.map { ($0.id, $0) })
+                let summaries = snapshot.summaries.filter { $0.workspace.status != .archived }
+                let areas = summaries.map { remote -> WorkArea in
+                    let area = previous[remote.id] ?? WorkArea(remote: remote)
+                    area.remote = remote
+                    area.draftThread.connected = false
+                    return area
+                }
+                replaceWorkspaces(areas, on: entry.machineId)
+            }
+        }
+        detached.formIntersection(Set(workspaces.map(\.id)))
+        if workspace(selected) == nil { selected = workspaces.first?.id ?? "" }
+    }
+
+    private func stopConnections() {
+        for connection in connections.values {
+            connection.task?.cancel(); connection.task = nil
+            connection.templatesRequest?.task.cancel(); connection.templatesRequest = nil
+            connection.catalog.reset(); connection.connected = false
+            for area in workspaces where area.remote?.machine.id == connection.id { area.draftThread.connected = false }
+        }
+    }
+
+    private func follow(_ connection: WorkerConnection) async {
+        let client = connection.client
+        while !Task.isCancelled && accepts(client) {
+            let generation = connection.catalog.reset()
+            do {
                 try await refreshDefinitions(client)
-                guard revision == connectionRevision, generation == catalogRefresh.generation else { return }
                 try await client.events { event in
                     try Task.checkCancellation()
-                    guard revision == self.connectionRevision, generation == self.catalogRefresh.generation else { return }
+                    guard self.accepts(client), generation == connection.catalog.generation else { return }
                     guard ["catalog.snapshot", "checkout.changed", "workspace.changed", "thread.changed"].contains(event.type) else { return }
-                    guard let cursor = event.cursor.flatMap(EventCursor.init) else {
-                        throw KitedError(message: "工作区事件数据无效")
-                    }
+                    guard let cursor = event.cursor.flatMap(EventCursor.init) else { throw KitedError(message: "工作区事件数据无效") }
                     if event.type == "catalog.snapshot" {
-                        guard event.version == 1, let remote = event.workspaces else {
-                            throw KitedError(message: "工作区快照无效")
-                        }
+                        guard event.version == 1, let remote = event.workspaces else { throw KitedError(message: "工作区快照无效") }
                         try self.apply(remote, from: client, cursor: cursor, generation: generation)
-                    } else if self.catalogRefresh.needsRefresh(cursor) {
-                        try await self.refresh(client)
-                    }
+                    } else if connection.catalog.needsRefresh(cursor) { try await self.refresh(client) }
                 }
             } catch {
-                if generation == catalogRefresh.generation { catalogRefresh.reset() }
-                if Task.isCancelled || revision != connectionRevision { return }
-                connected = false
-                for workspace in workspaces { workspace.draftThread.connected = false }
-                draftWorkspace.draftThread.connected = false
-                // 授权失效不会自行恢复，停止重试，等用户重新配对。
-                if (error as? KitedError)?.status == 401 {
-                    self.error = "这台设备的授权已失效，请在工作机上生成配对码后重新配对"
-                    if !workspaces.isEmpty { showConnection = true }
-                    return
-                }
-                self.error = "连不上 kited：\(error.localizedDescription)"
+                guard !Task.isCancelled, accepts(client), generation == connection.catalog.generation else { return }
+                connection.connected = false
+                connection.error = error.localizedDescription
+                for area in workspaces where area.remote?.machine.id == connection.id { area.draftThread.connected = false }
             }
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
         }
     }
 
     func refresh(_ client: KitedClient) async throws {
-        guard client == self.client else { return }
-        let generation = catalogRefresh.generation
+        guard let id = client.machineID, let connection = connections[id], accepts(client) else { return }
+        let generation = connection.catalog.generation
         let result = try await client.requestWithCursor("/workspaces", as: [RemoteWorkspace].self)
-        guard let cursor = result.cursor.flatMap(EventCursor.init) else {
-            throw KitedError(message: "工作区列表响应无效")
-        }
+        guard let cursor = result.cursor.flatMap(EventCursor.init) else { throw KitedError(message: "工作区列表响应无效") }
         try apply(result.value, from: client, cursor: cursor, generation: generation)
     }
 
     private func apply(_ remote: [RemoteWorkspace], from client: KitedClient, cursor: EventCursor, generation: UUID) throws {
         try Task.checkCancellation()
-        guard client == self.client else { return }
-        try catalogRefresh.apply(cursor, generation: generation) {
-            var seenProjects = Set<String>()
-            let projects = remote.map(\.project).filter { seenProjects.insert($0.id).inserted }
-            if let machineID = client.machineID, connections.selected?.projects != projects {
-                var saved = connections
-                saved.updateProjects(projects, on: machineID)
-                try saved.save()
-                connections = saved
+        guard let id = client.machineID, let connection = connections[id], accepts(client) else { return }
+        guard remote.allSatisfy({ $0.machine.id == id && $0.checkout.machineId == id }) else { throw KitedError(message: "工作区所属机器不匹配") }
+        try connection.catalog.apply(cursor, generation: generation) {
+            let previous = Dictionary(uniqueKeysWithValues: workspaces.filter { $0.remote?.machine.id == id }.map { ($0.id, $0) })
+            let areas = remote.filter { $0.workspace.status != .archived }.reversed().map { value in
+                if let area = previous[value.id] {
+                    area.definitions = connection.definitions
+                    area.update(value, client: client, connection: generation)
+                    return area
+                }
+                return WorkArea(remote: value, client: client, definitions: connection.definitions, connection: generation)
             }
-            let previous = Dictionary(uniqueKeysWithValues: workspaces.map { ($0.id, $0) })
-            workspaces = remote.filter { $0.workspace.status != .archived }.reversed().map { value in
-                if let area = previous[value.id] { area.definitions = definitions; area.update(value, client: client, connection: generation); return area }
-                return WorkArea(remote: value, client: client, definitions: definitions, connection: generation)
-            }
-            detached.formIntersection(Set(workspaces.map(\.id)))
-            if workspace(selected) == nil { selected = workspaces.first?.id ?? "" }
-            connected = true
-            error = nil
-            draftWorkspace.draftThread.connected = true
+            replaceWorkspaces(areas, on: id)
+            connection.hasLiveCatalog = true
+            connection.connected = true
+            connection.error = nil
         }
     }
 
-    func registerCheckout(path: String, projectID: String) async throws -> String {
+    private func replaceWorkspaces(_ areas: [WorkArea], on machine: String) {
+        workspaces = workspaces.filter { $0.remote?.machine.id != machine } + areas
+        workspaces.sort {
+            let left = $0.remote?.workspace.createdAt ?? 0, right = $1.remote?.workspace.createdAt ?? 0
+            return left == right ? $0.id < $1.id : left > right
+        }
+        detached.formIntersection(Set(workspaces.map(\.id)))
+        if workspace(selected) == nil { selected = workspaces.first?.id ?? "" }
+    }
+
+    func registerCheckout(path: String, projectID: String, machineID: String) async throws -> String {
         struct Registration: Encodable {
             let path: String
             let project: RemoteProject?
         }
-        let client = try activeClient()
+        guard let connection = connections[machineID], connection.connected else { throw KitedError(message: "工作机未连接") }
+        let client = connection.client
         let project = knownProjects.first { $0.id == projectID }
         if !projectID.isEmpty && project == nil { throw KitedError(message: "找不到选中的项目，请重新选择") }
         let result = try await client.request("/checkouts", method: "POST", body: Registration(path: path, project: project), as: RemoteWorkspace.self)
         try await refresh(client)
-        guard client == self.client else { throw KitedError(message: "工作机已切换") }
+        guard accepts(client) else { throw KitedError(message: "工作机已切换") }
         return result.checkout.id
     }
 
     func create(checkout: String, prompt: String) async throws {
-        let client = try activeClient()
+        guard let machine = checkouts.first(where: { $0.id == checkout })?.machineId,
+              let connection = connections[machine], connection.connected else { throw KitedError(message: "检出所属工作机未连接") }
+        let client = connection.client
+        let template = draftWorkspace.draftThread.contextTemplate
+        if let template, connection.templates?.templates.contains(where: { $0.id == template.id && $0.revision == template.revision }) != true {
+            throw KitedError(message: "所选上下文模板不属于这台工作机，请重新选择")
+        }
         let area = try await client.request("/workspaces", method: "POST",
-            body: CreateThreadRequest(prompt: prompt, checkout: checkout, contextTemplate: draftWorkspace.draftThread.contextTemplate?.selection), as: RemoteWorkspace.self)
+            body: CreateThreadRequest(prompt: prompt, checkout: checkout, contextTemplate: template?.selection), as: RemoteWorkspace.self)
         try await refresh(client)
-        guard client == self.client else { throw KitedError(message: "工作机已切换") }
+        guard accepts(client) else { throw KitedError(message: "工作机已切换") }
         selected = area.id
         draftWorkspace.draftThread.draft = ""
         draftWorkspace.draftThread.contextTemplate = nil
     }
 
     func startThread(in area: WorkArea, prompt: String) async throws {
-        let client = try activeClient()
+        let client = try activeClient(in: area)
         guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
         let thread = try await client.request("/workspaces/\(area.id)/threads", method: "POST",
             body: CreateThreadRequest(prompt: prompt, contextTemplate: area.draftThread.contextTemplate?.selection), as: RemoteThread.self)
         try await refresh(client)
-        guard client == self.client else { throw KitedError(message: "工作机已切换") }
+        guard accepts(client) else { throw KitedError(message: "工作机已切换") }
         area.activateWindow(for: WindowTarget(instanceId: thread.instanceId, viewId: "conversation"))
         area.draftThread.draft = ""
         area.draftThread.contextTemplate = nil
@@ -321,11 +368,11 @@ final class AppModel {
         Task {
             defer { area.changingWindows = false }
             do {
-                let client = try activeClient()
+                let client = try activeClient(in: area)
                 guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
                 let window = try await client.request("/workspaces/\(area.id)/windows", method: "POST", body: request, as: RemoteWorkspaceWindow.self)
                 try await refresh(client)
-                guard client == self.client else { return }
+                guard accepts(client) else { return }
                 area.layout.activate(Pane(window.id))
                 area.pendingWindowRequest = nil
             } catch {
@@ -375,12 +422,12 @@ final class AppModel {
             guard let window = area.windows.first(where: { $0.id == request.id }) else { throw KitedError(message: "无法打开样本文件窗口") }
             return window
         }
-        let client = try activeClient()
+        let client = try activeClient(in: area)
         guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
         do {
             let window = try await client.request("/workspaces/\(area.id)/windows", method: "POST", body: request, as: RemoteWorkspaceWindow.self)
             try await refresh(client)
-            guard client == self.client else { throw KitedError(message: "工作机已切换") }
+            guard accepts(client) else { throw KitedError(message: "工作机已切换") }
             area.layout.activate(Pane(window.id))
             return window
         } catch {
@@ -400,7 +447,7 @@ final class AppModel {
         Task {
             defer { area.changingWindows = false }
             do {
-                let client = try activeClient()
+                let client = try activeClient(in: area)
                 guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
                 struct Closed: Decodable { let ok: Bool }
                 _ = try await client.request("/workspaces/\(area.id)/windows/\(pane.id)", method: "DELETE", as: Closed.self)

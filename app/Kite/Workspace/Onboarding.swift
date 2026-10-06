@@ -1,12 +1,12 @@
 import SwiftUI
 
 extension AppModel {
-    /// 没有项目时整个 App 是初始配置；样本模式不进入，初始配置预览一律进入。
-    var needsOnboarding: Bool { OnboardingPreview.enabled || (workspaces.isEmpty && !SampleWorkspace.enabled) }
+    /// 初始配置以账号和设备入网为准；完成后进入统一项目目录。
+    var needsOnboarding: Bool { OnboardingPreview.enabled || (!account.ready && !SampleWorkspace.enabled) }
 }
 
 /// Debug build 带 --onboarding-preview 启动，或编译时开启 KITE_ONBOARDING_PREVIEW，从头走一遍初始配置：
-/// 不连接服务，启动、连接、扫码和创建都只模拟一段等待，创建完回到开头。
+/// 不连接服务，登录和入网只模拟等待，完成后可回到开头。
 enum OnboardingPreview {
     static var enabled: Bool {
         #if DEBUG && KITE_ONBOARDING_PREVIEW
@@ -19,7 +19,7 @@ enum OnboardingPreview {
     }
 }
 
-/// 两端的根视图：没有项目时显示初始配置，有了项目才进入工作区布局。
+/// 两端完成设备入网后，直接浏览所有工作机的项目与检出。
 struct AppRoot: View {
     @Environment(AppModel.self) private var model
 
@@ -36,13 +36,12 @@ struct AppRoot: View {
     }
 }
 
-/// 首次使用的配置流程，两端都铺满整个窗口。没有工作区时侧栏和窗口区都没有内容可放，所以不沿用工作区布局。
+/// 首次使用的账号与设备配置，两端都铺满整个窗口。
 /// 从上到下：点阵在背景上拼出这一步的标志，进入下一步时逐格形变成下一个；标题直接压在背景上；
 /// 底部的卡片只放这一步要填的、要做的，高度随内容，没有要操作的步骤不出卡片。
-/// 流程是准备工作机、连接（扫码或手动填写）、正在连接、创建第一个项目；启动时先自动连一次已保存的工作机或本机服务，
-/// 连上就直接创建项目。登记同时建立项目、检出和根工作区，App 随即回到工作区布局，并在根工作区打开一个空白会话。
+/// 先登录或扫码加入账号，Mac 再选择执行任务或仅远程控制；项目创建留在进入 App 之后。
 struct Onboarding: View {
-    /// 连接工作机的两种方式。扫码只在 iPhone 上有：Mac 通常就是工作机自己。
+    /// 登录账号的两种方式；扫码只在 iPhone 上提供。
     fileprivate enum Method: Hashable { case scan, manual }
 
     /// 当前这一步，各有自己的标志。
@@ -54,18 +53,6 @@ struct Onboarding: View {
         /// 扫码或手动发起连接之后，直到连上或失败。
         case connecting(Method)
         case create
-
-        static let stepCount = 3
-
-        /// 在三步中的第几步；启动时不显示步骤。
-        var step: Int? {
-            switch self {
-            case .launching: nil
-            case .prepare: 0
-            case .connect, .connecting: 1
-            case .create: 2
-            }
-        }
 
         /// 正在连接时没有要操作的，不出卡片。
         var hasCard: Bool {
@@ -84,21 +71,16 @@ struct Onboarding: View {
 
     @Environment(AppModel.self) private var model
     @Environment(\.self) private var environment
-    @Environment(\.toast) private var toast
     @State private var stage = DotStage()
     /// 连接之前停在哪一页：准备工作机或连接。
-    @State private var page = Phase.prepare
+    @State private var page = Phase.connect(.manual)
     @State private var address = ""
     @State private var code = ""
-    @State private var controlURL = Tailnet.customControlURL
-    /// 组网服务器一律先收起，大多数人用默认的；已经填过自建的，收起时写出它的地址。
-    @State private var showsControlURL = false
-    @State private var path = ""
+    @State private var registering = false
+    @State private var role = "worker"
     /// 正在填的输入框；点卡片外、输入框外收起键盘。
     @FocusState private var focus: String?
     @State private var working = false
-    /// 用户用哪种方式发起的连接还没有结果；成功后服务重连期间仍算正在连接。
-    @State private var connectingBy: Method?
     @State private var error: String?
     /// 标志区在窗口坐标中的范围：标题以上露出背景的那块。
     @State private var logoArea: CGRect?
@@ -106,8 +88,6 @@ struct Onboarding: View {
     @State private var bodyHeight: CGFloat = 0
     /// 标题连同上下留白的高度，卡片最多占到它下面。
     @State private var titleHeight: CGFloat = 0
-    /// 步骤点那一格在窗口坐标中的范围，点阵在这里拼出步骤点。
-    @State private var stepArea: CGRect?
     @State private var footerHeight: CGFloat = 0
     #if os(iOS)
     @State private var screenRadius: CGFloat = 0
@@ -178,26 +158,16 @@ struct Onboarding: View {
         .resizesByModule()
         #endif
         .onAppear {
-            address = model.serverAddress
-            // 已配对过的工作机连不上或授权失效，直接回到连接这一步
-            if model.connections.selected?.token != nil { page = .connect(.manual) }
+
             #if DEBUG
             if OnboardingPreview.enabled { restartPreview() }
             #endif
         }
-        .onChange(of: model.connected) { error = nil }
-        // 后台连接报错就退回连接页，带着错误
-        .onChange(of: model.error) { _, message in if message != nil { connectingBy = nil } }
         .onChange(of: model.invite) { _, invite in
-            switch invite {
             // 也可能是用系统相机扫的码，从链接打开
-            case .joining: connectingBy = .scan
-            case .failed: connectingBy = nil; page = .connect(.scan)
-            case nil: break
-            }
+            if case .failed(let message) = invite { error = message; page = .connect(.scan) }
         }
         .onChange(of: logo, initial: true) { refreshLogo() }
-        .onChange(of: phase, initial: true) { refreshSteps() }
         .animation(.snappy, value: phase)
     }
 
@@ -206,7 +176,7 @@ struct Onboarding: View {
         #if DEBUG
         if let simulation { return simulation.connected }
         #endif
-        return model.connected
+        return model.account.ready
     }
 
     private var joining: Bool {
@@ -221,7 +191,7 @@ struct Onboarding: View {
         #if DEBUG
         if let simulation { return simulation.launching }
         #endif
-        return model.error == nil
+        return false
     }
 
     private var previewing: Bool {
@@ -233,11 +203,14 @@ struct Onboarding: View {
     }
 
     private var phase: Phase {
-        if connected { return .create }
-        if joining { return .connecting(.scan) }
-        if let connectingBy, working || awaitingService { return .connecting(connectingBy) }
-        if awaitingService { return .launching }
-        return page
+        if previewing {
+            if connected { return .create }
+            if awaitingService { return .launching }
+        }
+        if joining || model.account.joining { return .connecting(.scan) }
+        if working { return .connecting(.manual) }
+        if model.account.signedIn { return .prepare }
+        return page == .prepare ? .connect(.manual) : page
     }
 
     // MARK: 排布
@@ -359,14 +332,6 @@ struct Onboarding: View {
         }
     }
 
-    /// 在标题上方那一格拼出步骤点；没有步骤时退回点。
-    private func refreshSteps() {
-        let colors = OnboardingLogos.colors(accent: DotColor(Color.accentColor.resolve(in: environment)))
-        let figure = phase.step.map { OnboardingLogos.steps(current: $0, count: Phase.stepCount, colors: colors) }
-        stage.show(stepArea == nil ? nil : figure, in: stepArea ?? .zero, placement: .leading,
-                   breathing: !phase.hasCard, slot: "steps")
-    }
-
     #if os(iOS)
     /// 扫码时取景框占住标志区：正方形，边落在模块线上。
     private func scanFrame(in area: CGRect) -> CGRect {
@@ -390,95 +355,45 @@ struct Onboarding: View {
 
     // MARK: 标题
 
-    /// 步骤、标题与说明，直接压在背景上；换步骤时新的标题从下面浮上来，旧的淡掉，步骤点逐格形变。
+    /// 标题与说明直接压在背景上；换步骤时新的标题从下面浮上来，旧的淡掉。
     private var titleBlock: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let step = phase.step { stepRow(step) }
-            ZStack(alignment: .bottomLeading) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(title).font(Theme.display)
-                        .fixedSize(horizontal: false, vertical: true)
-                    detail
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .waitingBreath(!phase.hasCard)
-                .id(phase)
-                .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 16)), removal: .opacity))
+        ZStack(alignment: .bottomLeading) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(title).font(Theme.display)
+                    .fixedSize(horizontal: false, vertical: true)
+                detail
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .waitingBreath(!phase.hasCard)
+            .id(phase)
+            .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 16)), removal: .opacity))
         }
-    }
-
-    /// 背景上拼出的步骤点相对留出位置的偏移。
-    private var stepOffset: CGSize {
-        guard let stepArea, let frame = stage.figureFrame("steps") else { return .zero }
-        return CGSize(width: frame.minX - stepArea.minX, height: frame.midY - stepArea.midY)
-    }
-
-    /// 前面是背景点阵拼出的步骤点，这里只留出它的位置，后面写「1/3」。步骤点左边贴着标题。
-    private func stepRow(_ step: Int) -> some View {
-        HStack(spacing: 8) {
-            Color.clear
-                .frame(width: CGFloat(Phase.stepCount) * DotMetrics.pitch, height: DotMetrics.pitch)
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
-                    stepArea = $0
-                    refreshSteps()
-                }
-                .onDisappear {
-                    stepArea = nil
-                    refreshSteps()
-                }
-            Text("\(step + 1)/\(Phase.stepCount)")
-                .font(Theme.caption.weight(.semibold).monospacedDigit())
-                .foregroundStyle(.secondary)
-                .contentTransition(.numericText())
-                // 点吸附在点阵的格子上，可能和留出的位置差半格；文字跟着挪，左右间距不变，上下对齐点的中线
-                .offset(stepOffset)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("第 \(step + 1) 步，共 \(Phase.stepCount) 步")
     }
 
     private var title: String {
         switch phase {
-        case .launching, .connecting: "正在连接工作机"
-        case .prepare: "准备工作机"
-        case .connect(.scan): "扫码连接"
-        case .connect(.manual): "连接工作机"
-        case .create: "创建第一个项目"
+        case .launching: "正在准备 Kite"
+        case .connecting: model.account.signedIn ? "正在加入设备" : "正在登录"
+        case .prepare: "这台设备用来做什么"
+        case .connect(.scan): "扫码登录 Kite"
+        case .connect(.manual): registering ? "创建 Kite 账号" : "登录 Kite"
+        case .create: "已准备就绪"
         }
     }
 
     @ViewBuilder
     private var detail: some View {
         switch phase {
-        case .launching:
-            Text(model.serverAddress).font(Theme.code).foregroundStyle(.secondary)
-        case .connecting(let method):
-            if method == .scan {
-                note("正在加入组网并配对…")
-            } else {
-                Text(address).font(Theme.code).foregroundStyle(.secondary)
-            }
-            // 组网节点等待登录时，连接会一直停在这里。
-            if let url = Tailnet.status.loginURL {
-                Link(destination: url) {
-                    Label("在浏览器中登录组网后继续", systemImage: "safari").font(Theme.secondary)
-                }
-                .buttonStyle(.pointingPlain)
-                .foregroundStyle(Color.accentColor)
-            }
+        case .launching, .connecting:
+            note("正在完成账号登录和设备入网，请稍候。")
         case .prepare:
-            #if os(macOS)
-            note("项目和会话都在工作机上。这台 Mac 还没有运行 Kite 后台服务，在 Kite 源码目录安装后会自动连上。")
-            #else
-            note("项目和会话都在工作机上。在作为工作机的 Mac 上完成下面三件事。")
-            #endif
+            note("同一账号下的设备会自动加入网络，随时可以选择工作机。")
         case .connect(.scan):
-            note("扫描工作机上的配对二维码，App 会自动加入组网并完成配对。")
+            note("扫描已登录设备在“我的设备”中显示的二维码。")
         case .connect(.manual):
-            note("填写工作机的组网地址。远程设备第一次连接还要填配对码，连接时会打开浏览器登录组网。")
+            note("使用一个账号管理你的设备，无需准备服务器。")
         case .create:
-            note("项目对应工作机上的一个文件夹。Kite 为它建立工作区，创建后直接在里面开始会话。")
+            note("现在可以查看工作机，并选择要使用的项目。")
         }
     }
 
@@ -535,7 +450,7 @@ struct Onboarding: View {
             page = .connect(method)
         }) {
             Text("扫码").tag(Method.scan)
-            Text("手动填写").tag(Method.manual)
+            Text("账号密码").tag(Method.manual)
         }
         .pickerStyle(.segmented)
         .labelsHidden()
@@ -548,54 +463,33 @@ struct Onboarding: View {
             EmptyView()
         case .prepare:
             #if os(macOS)
-            CommandRow(command: "./install.command --service-only")
-            Text("使用安装包时，双击其中的「安装.command」。")
-                .font(Theme.secondary).foregroundStyle(.secondary)
+            Picker("设备用途", selection: Binding(get: { model.account.role ?? role }, set: { role = $0 })) {
+                Text("在这台 Mac 上运行任务").tag("worker")
+                Text("仅远程控制").tag("controller")
+            }.pickerStyle(.radioGroup).disabled(model.account.role != nil)
+            note((model.account.role ?? role) == "worker" ? "安装 kited，让任务在这台 Mac 上运行。你也可以控制其他工作机。" : "加入设备网络，控制账号下的工作机。这台 Mac 不安装 kited。")
             #else
-            instruction(1, "安装 Kite 后台服务")
-            instruction(2, "开启组网，并在浏览器中登录", command: "kite net up")
-            instruction(3, "显示这台 iPhone 的配对二维码，也可以在工作机 Kite 设置的「远程设备」中生成", command: "kite pair")
+            note("这台 iPhone 用来控制账号下的工作机。")
             #endif
         case .connect(.scan):
-            Text("二维码在工作机终端运行 kite pair 后显示，五分钟内有效。")
-                .font(Theme.secondary).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            note("二维码五分钟内有效，只能使用一次。")
             if case .failed(let message) = model.invite {
                 callout(message, systemImage: "exclamationmark.triangle.fill", tint: Theme.danger)
             }
-            #if DEBUG
-            if simulation != nil {
-                callout("预览：轻点取景框模拟扫到二维码", systemImage: "hand.tap", tint: .accentColor)
-            }
-            #endif
         case .connect(.manual):
-            OnboardingField(label: "工作机地址", prompt: "http://100.64.0.1:5483", text: $address, focus: $focus,
-                            monospaced: true, submit: connect)
-            OnboardingField(label: "配对码", prompt: "远程设备首次连接时填写", text: $code, focus: $focus,
-                            monospaced: true, submit: connect)
-            if showsControlURL {
-                OnboardingField(label: "组网服务器", prompt: "自建 headscale 的地址，留空用 Tailscale",
-                                text: $controlURL, focus: $focus, monospaced: true, submit: connect)
-                    .transition(.opacity)
-            } else {
-                Button { withAnimation(.snappy) { showsControlURL = true } } label: {
-                    let custom = controlURL.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if custom.isEmpty {
-                        Label("使用自建组网服务器", systemImage: "plus.circle")
-                    } else {
-                        Label("组网服务器：\(URL(string: custom)?.host() ?? custom)", systemImage: "pencil.circle")
-                    }
-                }
-                .font(Theme.secondary)
-                .buttonStyle(.pointingPlain)
-                .foregroundStyle(Color.accentColor)
+            OnboardingField(label: "邮箱", prompt: "you@example.com", text: $address, focus: $focus, submit: connect)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("密码").font(Theme.secondary).foregroundStyle(.secondary)
+                SecureField(registering ? "至少 10 个字符" : "账号密码", text: $code)
+                    .textContentType(registering ? .newPassword : .password)
+                    .font(Theme.body).textFieldStyle(.plain).padding(12)
+                    .background(Theme.background, in: RoundedRectangle(cornerRadius: 12))
+                    .onSubmit(connect)
             }
-            if error == nil, let message = model.error {
-                callout(message, systemImage: "info.circle", tint: .secondary)
-            }
+            Button(registering ? "已有账号，去登录" : "没有账号，创建一个") { registering.toggle(); error = nil }
+                .buttonStyle(.pointingPlain).font(Theme.secondary)
         case .create:
-            OnboardingField(label: "项目文件夹", prompt: "工作机上的绝对路径，如 /Users/me/Projects/app",
-                            text: $path, focus: $focus, monospaced: true, submit: createProject)
+            note("设备已加入你的账号。")
         }
         if let error {
             callout(error, systemImage: "exclamationmark.triangle.fill", tint: Theme.danger)
@@ -608,33 +502,15 @@ struct Onboarding: View {
         case .launching, .connecting:
             EmptyView()
         case .prepare:
-            #if os(macOS)
-            buttons(primary: nil, enabled: false, action: {}, secondary: "连接另一台工作机") { go(.connect(.manual)) }
-            #else
-            buttons(primary: "下一步", enabled: true) { go(.connect(Self.defaultMethod)) }
-            #endif
-        case .connect(.scan):
-            buttons(primary: nil, enabled: false, action: {}, secondary: "返回") { go(.prepare) }
-        case .connect(.manual):
-            buttons(primary: "连接", enabled: !address.trimmingCharacters(in: .whitespaces).isEmpty, action: connect,
-                    secondary: "返回") { go(.prepare) }
-        case .create:
-            buttons(primary: working ? "正在创建…" : "创建项目", enabled: !working && path.hasPrefix("/"), action: createProject)
-        }
-    }
-
-    private func instruction(_ number: Int, _ text: String, command: String? = nil) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text("\(number)")
-                .font(Theme.secondary.weight(.semibold).monospacedDigit())
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 26, height: 26)
-                .background(Color.accentColor.opacity(0.14), in: Circle())
-            VStack(alignment: .leading, spacing: 8) {
-                Text(text).font(Theme.body).fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 2)
-                if let command { CommandRow(command: command) }
+            buttons(primary: "加入设备", enabled: !working, action: joinDevice, secondary: "退出登录") {
+                perform { try await model.account.signOut() } simulated: { restartPreview() }
             }
+        case .connect(.scan):
+            buttons(primary: nil, enabled: false, action: {}, secondary: "使用账号密码") { go(.connect(.manual)) }
+        case .connect(.manual):
+            buttons(primary: registering ? "创建账号" : "登录", enabled: !working && address.contains("@") && (registering ? code.count >= 10 : !code.isEmpty), action: connect)
+        case .create:
+            buttons(primary: "进入 Kite", enabled: true, action: createProject)
         }
     }
 
@@ -686,21 +562,38 @@ struct Onboarding: View {
     }
 
     private func connect() {
-        guard !address.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        connectingBy = .manual
         perform {
-            await Tailnet.shared.configure(controlURL: controlURL.trimmingCharacters(in: .whitespacesAndNewlines))
-            try await model.addConnection(address: address, code: code)
+            try await model.account.signIn(email: address, password: code, register: registering)
+            code = ""
+            #if os(iOS)
+            try await model.account.join(role: "controller", name: AppModel.deviceName)
+            #endif
         } simulated: {
+            #if DEBUG
             simulation?.connected = true
+            #endif
         }
     }
 
-    /// 只认 kite://pair 链接；扫到别的码提示一下，取景框继续扫。
+    private func joinDevice() {
+        perform {
+            #if os(macOS)
+            try await model.account.join(role: role, name: AppModel.deviceName)
+            #else
+            try await model.account.join(role: "controller", name: AppModel.deviceName)
+            #endif
+        } simulated: {
+            #if DEBUG
+            simulation?.connected = true
+            #endif
+        }
+    }
+
+    /// 只认 kite://join 链接；扫到别的码提示一下，取景框继续扫。
     private func scanned(_ text: String) {
-        guard !joining, connectingBy == nil, let url = URL(string: text) else { return }
-        guard url.scheme == "kite", url.host() == "pair" else {
-            error = "这不是 Kite 的配对二维码"
+        guard !joining, let url = URL(string: text) else { return }
+        guard url.scheme == "kite", url.host() == "join" else {
+            error = "这不是 Kite 的登录二维码"
             return
         }
         error = nil
@@ -733,18 +626,9 @@ struct Onboarding: View {
     }
 
     private func createProject() {
-        guard path.hasPrefix("/") else { return }
-        perform {
-            let checkout = try await model.registerCheckout(path: path, projectID: "")
-            // 根工作区刚登记时还没有窗口，打开一个空白会话作为起点
-            guard let area = model.workspaces.first(where: { $0.remote?.checkout.id == checkout && $0.remote?.workspace.kind == .root })
-            else { return }
-            model.selected = area.id
-            if let agent = area.definitions.first(where: { $0.id == "kite.agent.coding" }) { model.createInstance(agent, in: area) }
-        } simulated: {
-            restartPreview()
-            toast?.show("预览走完了，已回到开头", systemImage: "checkmark")
-        }
+        #if DEBUG
+        if previewing { restartPreview() }
+        #endif
     }
 
     /// simulated 只用于预览：不执行 action，等一会儿后改模拟的状态。
@@ -763,7 +647,6 @@ struct Onboarding: View {
             #endif
             do { try await action() } catch {
                 self.error = error.localizedDescription
-                connectingBy = nil
             }
         }
     }
@@ -773,10 +656,8 @@ struct Onboarding: View {
         #if DEBUG
         simulation = Simulation()
         page = .prepare
-        connectingBy = nil
         error = nil
         code = ""
-        path = ""
         Task {
             try? await Task.sleep(for: .seconds(1.5))
             simulation?.launching = false
@@ -791,7 +672,6 @@ private struct OnboardingField: View {
     let prompt: String
     @Binding var text: String
     var focus: FocusState<String?>.Binding
-    var monospaced = false
     let submit: () -> Void
 
     #if os(macOS)
@@ -807,7 +687,7 @@ private struct OnboardingField: View {
             Text(label).font(Theme.caption.weight(.medium)).foregroundStyle(.secondary)
             TextField(prompt, text: $text)
                 .textFieldStyle(.plain)
-                .font(monospaced ? Theme.code : Theme.body)
+                .font(Theme.body)
                 .autocorrectionDisabled()
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
@@ -826,31 +706,6 @@ private struct OnboardingField: View {
     }
 }
 
-/// 一行要在工作机终端里运行的命令，右边复制。
-private struct CommandRow: View {
-    let command: String
-    @Environment(\.toast) private var toast
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text("$").foregroundStyle(.tertiary)
-            Text(command).textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button { copyToPasteboard(command, toast: toast) } label: {
-                Image("CodeCopy").resizable().scaledToFit().frame(width: 16, height: 16)
-            }
-            .buttonStyle(PaneButtonStyle())
-            .help("复制命令")
-            .accessibilityLabel("复制命令")
-        }
-        .font(Theme.code)
-        .padding(.leading, 12)
-        .padding(.trailing, 4)
-        .padding(.vertical, 2)
-        .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-}
-
 /// 每一步的点阵标志，23×23 格，逐行字符画：B 主题色，M Morning Breeze，L Dewy Blue，Y Sunwashed，D Sunwashed 深一档，
 /// . 是静息的点。同一尺寸的标志之间逐格形变，格子对得上。
 private enum OnboardingLogos {
@@ -859,7 +714,7 @@ private enum OnboardingLogos {
          "Y": DotColor(hex: 0xFFE08A), "D": DotColor(hex: 0xF5C95C)]
     }
 
-    /// 这一步的标志，各配一个小动画：风筝各自浮动，显示器的光标闪烁，连接线逐格长成方块再收回，二维码的黄格错开闪烁，
+    /// 这一步的标志，各配一个小动画：风筝各自浮动，显示器的光标闪烁，二维码的黄格错开闪烁，
     /// 文件夹的加号慢闪。扫码时标志区让给取景框，没有标志。正在连接时沿用发起连接那一步的标志，在等待里呼吸。
     static func figure(for phase: Onboarding.Phase, colors: [Character: DotColor]) -> DotFigure? {
         func part(_ lines: [String], _ motion: FigureMotion = .still) -> DotFigure {
@@ -872,7 +727,7 @@ private enum OnboardingLogos {
             }
         }
         switch phase {
-        case .launching:
+        case .launching, .connect(.manual), .connecting(.manual):
             return DotFigure(columns: 29, rows: 23)
                 .adding(part(kite, .float(4, period: 5)), column: 3, row: 0)
                 .adding(part(smallKite, .float(6, period: 3.6, phase: 0.3)), column: 0, row: 0)
@@ -883,13 +738,6 @@ private enum OnboardingLogos {
             let cursor = { (column: Int, row: Int) in row == 9 && (8..<12).contains(column) }
             return part(map(desktop) { cursor($0, $1) ? "L" : $2 })
                 .adding(part(map(desktop) { cursor($0, $1) ? $2 : "." }, .blink(period: 1.1)), column: 0, row: 0)
-        case .connect(.manual), .connecting(.manual):
-            // 相邻两格错开半个脉冲时长：前一格收回时，下一格同时长大，形变量连续交接。
-            let line = Array(7..<11)
-            return line.enumerated().reduce(part(link)) { figure, cell in
-                figure.adding(part(map(link) { column, row, _ in row == 5 && column == cell.element ? "Y" : "." },
-                                   .pulse(period: 2.4, duration: 0.6, phase: -Double(cell.offset) * 0.125)), column: 0, row: 0)
-            }
         case .connect(.scan):
             return nil
         case .connecting(.scan):
@@ -904,15 +752,7 @@ private enum OnboardingLogos {
         }
     }
 
-    /// 步骤点紧挨着：当前与已完成的满格，当前 Sunwashed 黄、已完成主题色；未到的半格 Dewy Blue。
-    static func steps(current: Int, count: Int, colors: [Character: DotColor]) -> DotFigure {
-        let cells = (0..<count).map { $0 < current ? "B" : $0 == current ? "Y" : "l" }
-        var colors = colors
-        colors["l"] = colors["L"]
-        return DotFigure([cells.joined()], colors: colors, shapes: ["l": 0.5])
-    }
-
-    /// 启动时风筝旁边的小风筝。
+    /// 登录时主风筝旁边的小风筝。
     static let smallKite = [
         "..B..",
         ".BYB.",
@@ -943,31 +783,31 @@ private enum OnboardingLogos {
         "D..",
     ]
 
-    /// 启动时自动连接：Kite 的风筝。
+    /// 启动与登录时：主风筝向右倾斜，笔画仍落在点阵格位上。
     static let kite = [
-        "...........B...........",
-        "..........BBB..........",
-        ".........BYBLB.........",
-        "........BYYBLLB........",
-        ".......BYYYBLLLB.......",
-        "......BYYYYBLLLLB......",
-        ".....BYYYYYBLLLLLB.....",
-        "....BBBBBBBBBBBBBBB....",
-        ".....BLLLLLBYYYYYB.....",
-        "......BLLLLBYYYYB......",
-        "......BLLLLBYYYYB......",
-        ".......BLLLBYYYB.......",
-        "........BLLBYYB........",
-        ".........BLBYB.........",
-        ".........BLBYB.........",
-        "..........BBB..........",
-        "...........B...........",
-        "...........B...........",
-        "...........DBD.........",
-        "............B..........",
-        "...........B...........",
-        ".........DBD...........",
-        "..........B............",
+        ".......................",
+        "...............B.......",
+        "...........BBYBB.......",
+        ".......BBYYYYYBLB......",
+        "......BBYYYYYBLLB......",
+        "......BBBYYYYBLLB......",
+        "......BLLBBYBLLLB......",
+        "......BLLLLBBLLLB......",
+        "......BLLLLBYBLLB......",
+        "......BLLLBYYYBBB......",
+        "......BLLLBYYYYYBB.....",
+        ".......BLBYYYYYBB......",
+        ".......BLBYYYYBB.......",
+        ".......BBYBBBB.........",
+        ".......BBYB............",
+        ".......B...............",
+        "......B................",
+        ".....DBD...............",
+        ".....BB................",
+        "...DBD.................",
+        "...B...................",
+        ".......................",
+        ".......................",
     ]
 
     /// 准备工作机：带提示符的显示器。
@@ -995,21 +835,6 @@ private enum OnboardingLogos {
         ".......................",
         ".......................",
         ".......................",
-    ]
-
-    /// 连接：左侧主机与右侧带底座的显示器等高，连线由独立动画层绘制。
-    static let link = [
-        "BBBBBBB....BBBBBBBBBBBBBBB",
-        "BBBBBBB....BLLLLLLLLLLLLLB",
-        "BLLLLLB....BLLLLLLLLLLLLLB",
-        "BLLLLLB....BLLLLLLLLLLLLLB",
-        "BLLLLLB....BLLLLLLLLLLLLLB",
-        "BLLLLLB....BLLLLLLLLLLLLLB",
-        "BLLLLLB....BLLLLLLLLLLLLLB",
-        "BLLLLLB....BLLLLLLLLLLLLLB",
-        "BBBBBBB....BBBBBBBBBBBBBBB",
-        "BLLYLLB...........B.......",
-        "BBBBBBB........BBBBBBB....",
     ]
 
     /// 扫码后正在连接：二维码。

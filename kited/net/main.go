@@ -1,26 +1,33 @@
 // kite-net 把 kited 接入组网：用 tsnet 以独立节点上线，不依赖系统 VPN。
-// 组网端口上收到的连接原样转给 kited 的远程监听，认证仍由 kited 的配对令牌负责。
+// 只转发同账号设备的 HTTP 请求，来源身份由 tsnet 的 WhoIs 提供。
 // 节点状态以 JSON 行写到标准输出，供 kited 显示登录网址和组网地址。
 package main
 
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"log"
 	"net"
+	"net/http"
+	"net/http/httputil"
 	"net/netip"
+	"net/url"
 	"os"
+	"sync"
+	"tailscale.com/client/local"
+	"tailscale.com/net/socks5"
+	"time"
 
 	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 )
 
 type status struct {
-	State    string   `json:"state"`
-	LoginURL string   `json:"loginURL,omitempty"`
-	IPs      []string `json:"ips,omitempty"`
-	Name     string   `json:"name,omitempty"`
+	State     string   `json:"state"`
+	LoginURL  string   `json:"loginURL,omitempty"`
+	IPs       []string `json:"ips,omitempty"`
+	Name      string   `json:"name,omitempty"`
+	SocksPort int      `json:"socksPort,omitempty"`
 }
 
 func main() {
@@ -46,35 +53,75 @@ func main() {
 	if err := srv.Start(); err != nil {
 		log.Fatalf("组网节点启动失败：%v", err)
 	}
-	go watch(srv)
+	lc, err := srv.LocalClient()
+	if err != nil {
+		log.Fatal(err)
+	}
+	socks, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer socks.Close()
+	go (&socks5.Server{Dialer: srv.Dial}).Serve(socks)
+	var active sync.Map
+	changed := func() {
+		active.Range(func(key, value any) bool {
+			request := key.(*http.Request)
+			if !authorized(lc, request) {
+				if _, present := active.LoadAndDelete(key); present {
+					value.(context.CancelFunc)()
+					log.Print("远程设备已失去网络授权，关闭连接")
+				}
+			}
+			return true
+		})
+	}
+	go watch(srv, socks.Addr().(*net.TCPAddr).Port, changed)
+	go func() {
+		for range time.Tick(time.Second) {
+			changed()
+		}
+	}()
 	ln, err := srv.Listen("tcp", ":"+env("KITE_NET_PORT"))
 	if err != nil {
 		log.Fatalf("组网端口监听失败：%v", err)
 	}
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Fatalf("组网监听已关闭：%v", err)
-		}
-		go forward(conn, target)
+	targetURL, err := url.Parse("http://" + target)
+	if err != nil {
+		log.Fatal(err)
 	}
+	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	proxy.FlushInterval = -1
+	token := env("KITE_NET_PROXY_TOKEN")
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(lc, r) {
+			http.Error(w, "设备不属于本账号或授权已撤销", http.StatusUnauthorized)
+			return
+		}
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		active.Store(r, cancel)
+		defer active.Delete(r)
+		// 外部传入的身份字段一律覆盖，内部端口也不能独立信任这些字段。
+		r.Header.Set("X-Kite-Network", token)
+		proxy.ServeHTTP(w, r.WithContext(ctx))
+	})
+	log.Fatal(http.Serve(ln, handler))
 }
 
-func forward(conn net.Conn, target string) {
-	defer conn.Close()
-	upstream, err := net.Dial("tcp", target)
-	if err != nil {
-		return
+func authorized(lc *local.Client, r *http.Request) bool {
+	peer, err := lc.WhoIs(r.Context(), r.RemoteAddr)
+	if err != nil || peer.Node == nil || len(peer.Node.Tags) != 0 || peer.Node.Expired ||
+		(!peer.Node.KeyExpiry.IsZero() && !peer.Node.KeyExpiry.After(time.Now())) {
+		return false
 	}
-	defer upstream.Close()
-	done := make(chan struct{}, 2)
-	go func() { io.Copy(upstream, conn); done <- struct{}{} }()
-	go func() { io.Copy(conn, upstream); done <- struct{}{} }()
-	<-done
+	self, err := lc.StatusWithoutPeers(r.Context())
+	return err == nil && self.BackendState == ipn.Running.String() && self.Self != nil && !self.Self.Expired &&
+		self.Self.UserID != 0 && peer.Node.User == self.Self.UserID
 }
 
 // watch 跟随节点状态。需要登录而还没有登录网址时主动请求一次，例如运行中节点密钥过期。
-func watch(srv *tsnet.Server) {
+func watch(srv *tsnet.Server, socksPort int, changed func()) {
 	ctx := context.Background()
 	lc, err := srv.LocalClient()
 	if err != nil {
@@ -93,6 +140,10 @@ func watch(srv *tsnet.Server) {
 			log.Fatalf("节点状态中断：%v", err)
 		}
 		next := current
+		next.SocksPort = socksPort
+		if n.State != nil {
+			changed()
+		}
 		if n.State != nil {
 			next.State = n.State.String()
 		}

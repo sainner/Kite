@@ -37,7 +37,8 @@ final class WorkArea: Identifiable {
             windows = openWindows
             instances = remote.instances
             layout = WindowLayout(panes: openWindows.map { Pane($0.id) },
-                                  storageKey: remote.machine.id == "sample" ? nil : "KiteWindowLayout.\(remote.machine.id).\(remote.id)")
+                                  storageKey: remote.machine.id == "sample" ? nil : "KiteWindowLayout.\(remote.machine.id).\(remote.id)",
+                                  reconcileOnLoad: client != nil || remote.machine.id == "sample")
         } else {
             let draft = RemoteWorkspaceWindow(id: "draft-window", workspaceId: id,
                                              target: WindowTarget(instanceId: draftThread.id, viewId: "conversation"), state: .open, createdAt: 0)
@@ -55,7 +56,11 @@ final class WorkArea: Identifiable {
         let instancesByID = Dictionary(uniqueKeysWithValues: remote.instances.map { ($0.id, $0) })
         threads = remote.threads.compactMap { value in
             guard let instance = instancesByID[value.instanceId], instance.status == .open else { return nil }
-            if let thread = previous[value.instanceId] { thread.title = instance.title; thread.project = remote.project.name; return thread }
+            if let thread = previous[value.instanceId] {
+                thread.title = instance.title; thread.project = remote.project.name
+                thread.use(client)
+                return thread
+            }
             return WorkThread(remote: value, instance: instance, workspace: remote.workspace, project: remote.project.name, client: client)
         }
         instances = remote.instances

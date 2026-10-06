@@ -22,6 +22,7 @@
 - [统一资源引用](resource-reference-direction.md) — 统一资源引用保留稳定内容身份，历史 diff 不随当前文件变化
 - [窗口标题信息](window-header-information.md) — 窗口标题两行，突出会话名称，次级信息为各窗口自定的文字
 - [初始配置与设备角色](onboarding-device-roles.md) — 本机执行或仅远程控制都入网，进入 App 后发现 kited 工作机
+- [托管账号与组网](hosted-network-direction.md) — 我们托管，用户账号密码登录或扫描已登录设备二维码加入；规格见 docs
 - [思考与状态展示](thinking-display.md) — 仅显示当前生成的思考，状态 chip 不承担实时活动或思考正文
 - [视觉风格来源与取舍](visual-style-direction.md) — 参考色板与用户拍板的视觉取舍，规范正文在 docs/视觉风格.md
 - [表格字体来源](table-font-source.md) — 表格使用系统衬线体，iPhone 缺少的中文宋体由苹果按需下载并缓存
@@ -47,7 +48,7 @@
 - [待办：真实终端插件](todo-terminal-plugin.md) — 真实终端插件的未解决事项、来源与完成条件
 - [待办：长会话上下文能力](todo-context-capabilities.md) — 长会话上下文能力的未解决事项、来源与完成条件
 - [待办：执行隔离与资源管理](todo-execution-boundaries.md) — 执行隔离与资源管理的未解决事项、来源与完成条件
-- [待办：远程连接与多机关系](todo-remote-connections.md) — 配对认证已实现，组网真机验收与多机同步候选待处理
+- [待办：远程连接与多机关系](todo-remote-connections.md) — 跨机器目录和账号的真机验收、文件同步候选
 - [待办：订阅凭据续期](todo-subscription-auth.md) — 订阅凭据续期的未解决事项、来源与完成条件
 - [待办：开发工作流待补齐项](todo-development-workflow.md) — 开发工作流待补齐项的未解决事项、来源与完成条件
 - [待办：产品中的个人偏好存放位置](todo-personal-preferences.md) — 产品中的个人偏好存放位置的未解决事项、来源与完成条件
@@ -55,4 +56,4 @@
 
 ## 资料入口
 
-- [自建 headscale（lisa）](reference-headscale-lisa.md) — Kite 组网控制服务器的部署位置、nginx 分流与排查要点
+- [旧个人 Headscale（lisa）](reference-headscale-lisa.md) — 旧实验服务位置、nginx 分流与清理入口

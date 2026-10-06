@@ -100,61 +100,66 @@ struct CreateThreadRequest: Encodable {
 }
 
 extension AppModel {
-    func refreshContextTemplates() async throws {
+    func templates(in area: WorkArea) -> ContextTemplateCatalog? {
+        area.isSample ? contextTemplates : connection(for: area)?.templates
+    }
+
+    func templateConnection(_ revision: UUID) -> WorkerConnection? {
+        connections.values.first { $0.catalog.generation == revision }
+    }
+
+    func refreshContextTemplates(in area: WorkArea? = nil) async throws {
         if SampleWorkspace.enabled {
             if contextTemplates == nil { contextTemplates = SampleContextTemplates.catalog }
             return
         }
-        let revision = connectionRevision
-        if let request = contextTemplatesRequest, request.connection == revision {
-            try await request.task.value
-            return
-        }
-        let client = try activeClient()
-        // 多个空会话共用在途读取；结束后清掉，下一次刷新仍读取工作机。
+        guard let connection = connection(for: area), connection.connected else { throw KitedError(message: "所属工作机未连接") }
+        let revision = connection.catalog.generation
+        if let request = connection.templatesRequest, request.connection == revision { try await request.task.value; return }
+        let client = connection.client
         let task = Task {
-            defer {
-                if contextTemplatesRequest?.connection == revision { contextTemplatesRequest = nil }
-            }
+            defer { if connection.templatesRequest?.connection == revision { connection.templatesRequest = nil } }
             let result = try await client.request("/context-templates", as: ContextTemplateCatalog.self)
             try Task.checkCancellation()
-            guard revision == connectionRevision, client == (try activeClient()) else { throw KitedError(message: "工作机已切换") }
-            contextTemplates = result
+            guard revision == connection.catalog.generation, accepts(client) else { throw KitedError(message: "工作机连接已变化") }
+            connection.templates = result
         }
-        contextTemplatesRequest = (revision, task)
+        connection.templatesRequest = (revision, task)
         try await task.value
     }
 
     func saveContextTemplate(_ definition: ContextDefinition, expectedRevision: String?, connection: UUID) async throws -> ContextTemplate {
-        guard connection == connectionRevision else { throw KitedError(message: "工作机已切换，请返回模板列表") }
         let result: ContextTemplate
         if SampleWorkspace.enabled {
             let existing = contextTemplates?.templates.first { $0.id == definition.id }
             guard existing?.revision == expectedRevision else { throw KitedError(message: "模板已变化，请重新读取") }
             result = .init(definition: definition, revision: UUID().uuidString)
+            contextTemplates?.templates.removeAll { $0.id == result.id }
+            contextTemplates?.templates.append(result)
         } else {
-            let client = try activeClient()
+            guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请返回模板列表") }
+            let client = target.client
             let component = definition.id.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~")))!
             let path = expectedRevision == nil ? "/context-templates" : "/context-templates/\(component)"
             result = try await client.request(path, method: expectedRevision == nil ? "POST" : "PUT",
                 body: ContextTemplateSave(definition: definition, expectedRevision: expectedRevision), as: ContextTemplate.self)
-            guard connection == connectionRevision, client == (try activeClient()) else { throw KitedError(message: "工作机已切换，请返回模板列表") }
+            guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回模板列表") }
+            target.templates?.templates.removeAll { $0.id == result.id }
+            target.templates?.templates.append(result)
         }
-        contextTemplates?.templates.removeAll { $0.id == result.id }
-        contextTemplates?.templates.append(result)
         return result
     }
 
     func applyContextTemplate(_ template: ContextTemplate, to thread: WorkThread, in area: WorkArea, connection: UUID) async throws {
-        guard connectionRevision == connection else { throw KitedError(message: "工作机已切换") }
+        guard revision(for: area) == connection else { throw KitedError(message: "工作机已切换") }
         if area.isSample {
             if let index = area.instances.firstIndex(where: { $0.id == thread.id }) {
                 area.instances[index].config?.agent?.context = try template.definition.json
             }
         } else if let instance = area.instances.first(where: { $0.id == thread.id }) {
-            let client = try activeClient()
+            let client = try activeClient(in: area)
             @MainActor func requireCurrent() throws {
-                guard connectionRevision == connection, client == (try activeClient()),
+                guard revision(for: area) == connection, client == (try activeClient(in: area)),
                       area.remote?.machine.id == client.machineID,
                       area.instances.contains(where: { $0.id == instance.id && $0.status == .open }) else {
                     throw KitedError(message: "工作机或会话已变化，请重新选择模板")

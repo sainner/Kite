@@ -114,7 +114,7 @@ struct ThreadControls: View {
     }
     private var canChangeEffort: Bool {
         instance != nil && !savingEffort && !availableEfforts.isEmpty
-            && (area.isSample || (model.connected && thread.agentCapabilities?.canEdit(thread.state) == true))
+            && (area.isSample || (model.isConnected(area) && thread.agentCapabilities?.canEdit(thread.state) == true))
     }
     private func saveEffort() {
         guard canChangeEffort, let effortDraft, effortDraft.name != reasoning, let instance else { self.effortDraft = nil; return }

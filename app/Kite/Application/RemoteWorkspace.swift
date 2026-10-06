@@ -6,15 +6,15 @@ struct RemoteMachine: Codable, Identifiable, Equatable {
     let createdAt: Int
 }
 
-enum RemoteCommitOwner: String, Decodable {
+enum RemoteCommitOwner: String, Codable {
     case kite, user
 }
 
-enum RemoteWorkspaceKind: String, Decodable {
+enum RemoteWorkspaceKind: String, Codable {
     case root, worktree
 }
 
-enum RemoteWorkspaceStatus: String, Decodable {
+enum RemoteWorkspaceStatus: String, Codable {
     case preparing, open, failed, archived
 }
 
@@ -41,7 +41,7 @@ struct RemoteProject: Codable, Identifiable, Equatable {
 }
 
 /// 工作机上的项目目录；同一检出可拥有根工作区和独立工作区。
-struct RemoteCheckout: Decodable, Identifiable {
+struct RemoteCheckout: Codable, Identifiable {
     let id: String
     let projectId: String
     let machineId: String
@@ -62,7 +62,7 @@ struct RemoteWorkspace: Decodable, Identifiable {
     var id: String { workspace.id }
 }
 
-struct WorkspaceInfo: Decodable, Identifiable {
+struct WorkspaceInfo: Codable, Identifiable {
     let id: String
     let checkoutId: String
     let name: String

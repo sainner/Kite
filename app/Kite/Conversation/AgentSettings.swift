@@ -18,7 +18,7 @@ struct AgentSettings: View {
 
     private var changed: Bool { draft != saved?.instance.config.agent }
     private var available: Bool {
-        model.connected && area.remote?.machine.id == model.machine?.id && area.remote?.workspace.status == .open
+        model.isConnected(area) && area.remote?.workspace.status == .open
             && area.instances.contains { $0.id == instance.id && $0.status == .open }
     }
     private var levels: [String] { capabilities?.model(draft?.model.model ?? "")?.reasoning ?? [] }
@@ -93,7 +93,7 @@ struct AgentSettings: View {
     }
 
     private func boundClient() throws -> KitedClient {
-        let current = try model.activeClient()
+        let current = try model.activeClient(in: area)
         guard available, current.machineID == area.remote?.machine.id, client == nil || client == current else {
             throw KitedError(message: "工作机或实例已变化，请重新打开会话配置")
         }
@@ -131,10 +131,10 @@ struct AgentSettings: View {
 extension AppModel {
     /// 快捷控件每次从最新配置改一个字段；设置页使用自己的草稿与版本。
     func updateAgent(in area: WorkArea, id: String, change: (inout AgentConfiguration) -> Void) async throws {
-        let revision = connectionRevision
-        let client = try activeClient()
+        let revision = self.revision(for: area)
+        let client = try activeClient(in: area)
         func requireCurrent() throws {
-            guard connectionRevision == revision, connected, client == (try activeClient()), client.machineID == area.remote?.machine.id,
+            guard self.revision(for: area) == revision, isConnected(area), client == (try activeClient(in: area)), client.machineID == area.remote?.machine.id,
                   area.remote?.workspace.status == .open, area.instances.contains(where: { $0.id == id && $0.status == .open }) else {
                 throw KitedError(message: "工作机或实例已变化，请重新修改配置")
             }

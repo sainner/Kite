@@ -7,7 +7,11 @@ struct WorkspaceContent: View {
     let workspace: WorkArea
 
     var body: some View {
-        TilesLayer()
+        Group {
+            if !workspace.isSample, !workspace.isDraft, workspace.pluginClient == nil {
+                DirectoryStatus(workspace: workspace)
+            } else { TilesLayer() }
+        }
             .environment(workspace)
             .environment(workspace.layout)
             .focusedSceneValue(workspace.layout)

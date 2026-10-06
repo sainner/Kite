@@ -174,12 +174,11 @@ struct KitedError: LocalizedError {
     var errorDescription: String? { message }
 }
 
-/// Mac 和模拟器默认连工作机本地服务；地址由连接面板保存。网络层只处理 Kite 协议。
+/// 地址来自账号目录；每个连接实例拥有身份，旧账号的迟到响应不能被新连接接收。
 struct KitedClient: Equatable {
+    let identity = UUID()
     let address: String
     var machineID: String? = nil
-    /// 远程工作机的配对令牌；本机服务不需要。
-    var token: String? = nil
 
     private func url(_ path: String) throws -> URL {
         guard let base = URL(string: address), ["http", "https"].contains(base.scheme), base.host != nil,
@@ -197,7 +196,6 @@ struct KitedClient: Equatable {
     func requestWithCursor<T: Decodable>(_ path: String, method: String = "GET", body: (any Encodable)? = nil,
                                        timeout: TimeInterval = 30, as type: T.Type) async throws -> (value: T, cursor: String?) {
         var request = URLRequest(url: try url(path))
-        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if path != "/machine" && path != "/pair" {
             guard let machineID else { throw KitedError(message: "请先连接工作机") }
             request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
@@ -234,11 +232,10 @@ struct KitedClient: Equatable {
         request.timeoutInterval = 60
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
-        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let (bytes, response) = try await connection.bytes(for: request)
         switch (response as? HTTPURLResponse)?.statusCode {
         case 409: throw KitedError(message: "连接地址对应的工作机已改变，请重新连接", status: 409)
-        case 401: throw KitedError(message: "这台设备的授权已失效，请在工作机上生成配对码后重新配对", status: 401)
+        case 401: throw KitedError(message: "这台设备的授权已失效，请重新登录 Kite", status: 401)
         default: break
         }
         try validate(response)

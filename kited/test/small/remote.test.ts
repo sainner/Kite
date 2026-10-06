@@ -1,117 +1,95 @@
-/**
- * 远程设备配对与认证：本进程里起带远程监听的 kited，经两个 HTTP 监听驱动，不启动 Claude Code。
- */
-import { afterEach, expect, test } from 'bun:test';
+/** 真实 HTTP 监听与组网代理的认证边界，不启动组网或模型进程。 */
+import { expect, test } from 'bun:test';
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { startDaemon, type Daemon } from '../../src/daemon.ts';
+import { startDaemon } from '../../src/daemon.ts';
+import { serve } from '../../src/http.ts';
 import { call, machine } from '../harness.ts';
-import { useTemp } from '../util.ts';
+import { makeTemp } from '../util.ts';
 
-const temp = useTemp();
-let daemon: Daemon | undefined;
-afterEach(async () => { await daemon?.stop(); daemon = undefined; });
-
-function start(): Daemon {
-  daemon = startDaemon({ home: join(temp(), 'kite'), port: 0, lightTasks: false });
-  return daemon;
+function start() {
+  const root = makeTemp('kite-remote-');
+  const daemon = startDaemon({ home: join(root, 'kite'), port: 0, lightTasks: false });
+  return {
+    daemon,
+    async stop() {
+      try { await daemon.stop(); }
+      finally { rmSync(root, { recursive: true, force: true }); }
+    },
+  };
 }
 
-/** 请求远程监听；token 省略时不带 Authorization，machineId 省略时不带 X-Kite-Machine。 */
-function remote(d: Daemon, method: string, path: string, opts: { token?: string; machineId?: string; body?: unknown; signal?: AbortSignal } = {}) {
+function remote(url: string, path: string, opts: {
+  method?: string; token?: string; proxyToken?: string; machineId?: string; signal?: AbortSignal;
+} = {}) {
   const headers: Record<string, string> = {};
   if (opts.token) headers.authorization = `Bearer ${opts.token}`;
+  if (opts.proxyToken) headers['X-Kite-Network'] = opts.proxyToken;
   if (opts.machineId) headers['X-Kite-Machine'] = opts.machineId;
-  if (opts.body !== undefined) headers['content-type'] = 'application/json';
-  return fetch(d.remoteUrl! + path, {
-    method, headers, signal: opts.signal, body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
-  });
+  return fetch(url + path, { method: opts.method ?? 'GET', headers, signal: opts.signal });
 }
 
-/** 本机生成配对码，远程用它换取令牌。 */
-async function pair(d: Daemon, name: string, transform = (code: string) => code) {
-  const created = await call(d.url, 'POST', '/pairings');
-  expect(created.status).toBe(200);
-  const res = await remote(d, 'POST', '/pair', { body: { code: transform(created.body.code), name } });
-  return { pairing: created.body as { code: string; expiresAt: number; address: string }, res };
-}
-
-/*
- * 两个 Bun.serve 监听共用一套路由：本机管理设备的接口和远程配对接口只能各在一边出现，
- * 远程除配对外一律要令牌（含 /machine 与 SSE），配对码换过一次就作废。
- */
-test('远程监听未带令牌一律 401，设备管理与配对接口互不跨监听，配对码不分大小写和短横线且只能用一次', async () => {
-  const d = start();
-  expect(d.remoteUrl).toBeDefined();
-  const machineId = (await machine(d.url)).id;
-
-  expect((await remote(d, 'GET', '/machine')).status).toBe(401);
-  expect((await remote(d, 'GET', '/events', { machineId })).status).toBe(401);
-  expect((await remote(d, 'GET', '/machine', { token: 'not-a-token' })).status).toBe(401);
-  expect((await fetch(`${d.url}/pair`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: 'AAAA-BBBB', name: '本机' }),
-  })).status).toBe(404);
-
-  const { pairing, res } = await pair(d, '我的 iPhone', (code) => code.toLowerCase().replace('-', ''));
-  // 不用 toMatchObject 加 expect.any：Bun（1.3.14、1.4.2 实测）会把非对称匹配器写回被比较的对象。
-  expect([typeof pairing.code, typeof pairing.expiresAt]).toEqual(['string', 'number']);
-  // 组网未开启时没有可告诉远程设备的地址。
-  expect(pairing.address).toBeNull();
-  expect(res.status).toBe(200);
-  const paired = await res.json() as { machine: { id: string }; device: { id: string; name: string }; token: string };
-  expect(paired.machine.id).toBe(machineId);
-  expect(paired.device.name).toBe('我的 iPhone');
-
-  const reused = await remote(d, 'POST', '/pair', { body: { code: pairing.code, name: '另一台' } });
-  expect(reused.status).toBe(401);
-
-  const token = paired.token;
-  const machineRes = await remote(d, 'GET', '/machine', { token });
-  expect(machineRes.status).toBe(200);
-  expect((await machineRes.json() as { id: string }).id).toBe(machineId);
-  const ctl = new AbortController();
+// startDaemon 必须把运行时生成的代理凭据接入真实远程监听；客户端 bearer 与伪造网络头不能穿透它。
+test('真实远程监听拒绝外部 bearer 和伪造网络凭据，本机不再提供旧逐机配对接口', async () => {
+  const k = start();
   try {
-    const events = await remote(d, 'GET', '/events', { token, machineId, signal: ctl.signal });
-    expect(events.status).toBe(200);
-  } finally { ctl.abort(); }
+    const d = k.daemon;
+    const machineId = (await machine(d.url)).id;
+    for (const credentials of [
+      {}, { token: 'external-account-session' },
+      { proxyToken: 'fixture-secret' },
+      { token: 'external-account-session', proxyToken: 'fixture-secret' },
+    ]) {
+      for (const path of ['/machine', '/events']) {
+        expect((await remote(d.remoteUrl, path, { ...credentials, machineId })).status).toBe(401);
+      }
+    }
+    for (const [method, path] of [
+      ['POST', '/pair'], ['POST', '/pairings'], ['GET', '/devices'], ['DELETE', '/devices/old-device'],
+    ] as const) {
+      expect((await call(d.url, method, path, undefined, machineId)).status).toBe(404);
+    }
+  } finally { await k.stop(); }
+}, 1_000);
 
-  for (const [method, path] of [['POST', '/pairings'], ['GET', '/devices'], ['DELETE', `/devices/${paired.device.id}`]] as const) {
-    expect({ path, status: (await remote(d, method, path, { token, machineId })).status }).toEqual({ path, status: 404 });
-  }
-  const listed = await call(d.url, 'GET', '/devices');
-  expect(listed.status).toBe(200);
-  expect(JSON.stringify(listed.body)).toContain(paired.device.id);
-});
-
-/* 撤销要跨到另一监听上已建立的 ReadableStream：Devices.watch 登记的关闭须让客户端读到结束，而不是等下一次请求。 */
-test('撤销设备后它已建立的远程事件流立即结束，此后令牌失效', async () => {
-  const d = start();
-  const machineId = (await machine(d.url)).id;
-  const { res } = await pair(d, '要撤销的设备');
-  expect(res.status).toBe(200);
-  const { device, token } = await res.json() as { device: { id: string }; token: string };
-
-  const ctl = new AbortController();
+// 已验证的代理和机器身份检查、仅本机管理路由、SSE 订阅共用 HTTP 路由，认证成功不能绕过其余边界。
+test('受信代理仍需正确机器身份且不能管理组网，目录事件流可读并可取消', async () => {
+  const k = start();
+  let proxy: ReturnType<typeof serve> | undefined;
+  const controller = new AbortController();
   try {
-    const events = await remote(d, 'GET', '/events', { token, machineId, signal: ctl.signal });
+    const d = k.daemon;
+    const machineId = (await machine(d.url)).id;
+    proxy = serve(d.kite, { hostname: '127.0.0.1', port: 0, remote: true, proxyToken: 'fixture-secret' });
+    const url = proxy.url.origin;
+    expect((await remote(url, '/machine', { token: 'fixture-secret' })).status).toBe(401);
+    expect((await remote(url, '/machine', { proxyToken: 'wrong-secret' })).status).toBe(401);
+    const verified = await remote(url, '/machine', { proxyToken: 'fixture-secret' });
+    expect(verified.status).toBe(200);
+    expect((await verified.json() as { id: string }).id).toBe(machineId);
+
+    expect((await remote(url, '/events', { proxyToken: 'fixture-secret' })).status).toBe(400);
+    expect((await remote(url, '/events', { proxyToken: 'fixture-secret', machineId: 'wrong-machine' })).status).toBe(409);
+    for (const method of ['GET', 'PUT']) {
+      expect((await remote(url, '/network', { method, proxyToken: 'fixture-secret', machineId })).status).toBe(404);
+    }
+    const events = await remote(url, '/events', { proxyToken: 'fixture-secret', machineId, signal: controller.signal });
     expect(events.status).toBe(200);
     const reader = events.body!.pipeThrough(new TextDecoderStream()).getReader();
-    let buf = '';
-    while (!buf.includes('\n\n')) {
-      const { value, done } = await reader.read();
-      if (done) throw new Error('撤销前事件流就结束了');
-      buf += value;
-    }
-    expect(buf).toContain('catalog.snapshot');
-
-    expect((await call(d.url, 'DELETE', `/devices/${device.id}`)).status).toBe(200);
-    while (true) {
-      const { done } = await reader.read();
-      if (done) break;
-    }
-  } finally { ctl.abort(); }
-
-  expect((await remote(d, 'GET', '/machine', { token })).status).toBe(401);
-  expect((await remote(d, 'GET', '/events', { token, machineId })).status).toBe(401);
-  const listed = await call(d.url, 'GET', '/devices');
-  expect(JSON.stringify(listed.body)).not.toContain(device.id);
-});
+    try {
+      let first = '';
+      while (!first.includes('\n\n')) {
+        const next = await reader.read();
+        if (next.done) throw new Error('收到目录快照前事件流已结束');
+        first += next.value;
+      }
+      expect(first).toContain('catalog.snapshot');
+      await reader.cancel();
+      expect((await reader.read()).done).toBe(true);
+    } finally { reader.releaseLock(); }
+  } finally {
+    controller.abort();
+    try { await proxy?.stop(true); }
+    finally { await k.stop(); }
+  }
+}, 1_000);
