@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 会话窗口：主标题显示会话名称，次级信息显示“代理”，控制区包含输入框和一行按钮。
+/// 会话窗口：标题显示会话名称，控制区包含输入框和一行按钮。
 /// 人发的消息靠右、带气泡；agent 的话铺满这一栏；两段话之间 agent 做的事折成一行，点开看每一步。
 struct ThreadPane: View {
     @Environment(WorkThread.self) private var thread

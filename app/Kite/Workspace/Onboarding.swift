@@ -39,35 +39,24 @@ struct AppRoot: View {
 /// 首次使用的账号与设备配置，两端都铺满整个窗口。
 /// 从上到下：点阵在背景上拼出这一步的标志，进入下一步时逐格形变成下一个；标题直接压在背景上；
 /// 底部的卡片只放这一步要填的、要做的，高度随内容，没有要操作的步骤不出卡片。
-/// 先登录或扫码加入账号，Mac 再选择执行任务或仅远程控制；项目创建留在进入 App 之后。
+/// 先登录或扫码加入账号，Mac 再选择执行任务或仅远程控制；入网完成直接进入 App，项目创建留在之后。
 struct Onboarding: View {
     /// 登录账号的两种方式；扫码只在 iPhone 上提供。
     fileprivate enum Method: Hashable { case scan, manual }
 
     /// 当前这一步，各有自己的标志。
+    /// 入网完成后直接进入 App，没有收尾页。
     fileprivate enum Phase: Hashable {
-        /// 启动时自动连接，有结果之前还不知道要走哪一步。
-        case launching
         case prepare
         case connect(Method)
         /// 扫码或手动发起连接之后，直到连上或失败。
         case connecting(Method)
-        case create
 
         /// 正在连接时没有要操作的，不出卡片。
         var hasCard: Bool {
-            switch self {
-            case .launching, .connecting: false
-            default: true
-            }
+            if case .connecting = self { false } else { true }
         }
     }
-
-    #if os(iOS)
-    private static let defaultMethod = Method.scan
-    #else
-    private static let defaultMethod = Method.manual
-    #endif
 
     @Environment(AppModel.self) private var model
     @Environment(\.self) private var environment
@@ -94,11 +83,10 @@ struct Onboarding: View {
     @State private var homeInset: CGFloat = 0
     #endif
     #if DEBUG
-    /// 预览时代替真实的连接状态。
+    /// 预览时代替真实的账号状态；入网完成时回到开头。
     private struct Simulation: Equatable {
-        var launching = true
+        var signedIn = false
         var joining = false
-        var connected = false
     }
     @State private var simulation: Simulation?
     #endif
@@ -163,35 +151,33 @@ struct Onboarding: View {
             if OnboardingPreview.enabled { restartPreview() }
             #endif
         }
+        #if os(iOS)
         .onChange(of: model.invite) { _, invite in
             // 也可能是用系统相机扫的码，从链接打开
             if case .failed(let message) = invite { error = message; page = .connect(.scan) }
         }
+        #endif
         .onChange(of: logo, initial: true) { refreshLogo() }
         .animation(.snappy, value: phase)
     }
 
-    /// 连接状态：预览时用模拟的。
-    private var connected: Bool {
+    /// 账号状态：预览时用模拟的。
+    private var signedIn: Bool {
         #if DEBUG
-        if let simulation { return simulation.connected }
+        if let simulation { return simulation.signedIn }
         #endif
-        return model.account.ready
+        return model.account.signedIn
     }
 
     private var joining: Bool {
         #if DEBUG
         if let simulation { return simulation.joining }
         #endif
+        #if os(iOS)
         return model.invite == .joining
-    }
-
-    /// 服务还没回话：启动时的自动连接，或连接成功后服务重连期间。
-    private var awaitingService: Bool {
-        #if DEBUG
-        if let simulation { return simulation.launching }
-        #endif
+        #else
         return false
+        #endif
     }
 
     private var previewing: Bool {
@@ -203,13 +189,9 @@ struct Onboarding: View {
     }
 
     private var phase: Phase {
-        if previewing {
-            if connected { return .create }
-            if awaitingService { return .launching }
-        }
         if joining || model.account.joining { return .connecting(.scan) }
         if working { return .connecting(.manual) }
-        if model.account.signedIn { return .prepare }
+        if signedIn { return .prepare }
         return page == .prepare ? .connect(.manual) : page
     }
 
@@ -302,7 +284,7 @@ struct Onboarding: View {
 
     private var logo: Logo? {
         guard let logoArea else { return nil }
-        let colors = OnboardingLogos.colors(accent: DotColor(Color.accentColor.resolve(in: environment)))
+        let colors = DotFigure.letters(accent: DotColor(Color.accentColor.resolve(in: environment)))
         let figure = OnboardingLogos.figure(for: phase, colors: colors)?.trimmed()
         // 标志区放不下时往上借到窗口顶边（iPhone 上是状态栏那一截背景），还放不下才退回点
         let tall = CGRect(x: logoArea.minX, y: 0, width: logoArea.width, height: logoArea.maxY)
@@ -311,12 +293,7 @@ struct Onboarding: View {
                 CGFloat(figure.rows) * DotMetrics.pitch <= $0.height && CGFloat(figure.columns) * DotMetrics.pitch <= $0.width
             }
         }
-        let waiting = switch phase {
-        case .launching, .connecting: true
-        case .create: working
-        case .prepare, .connect: false
-        }
-        return Logo(figure: area == nil ? nil : figure, area: area ?? logoArea, breathing: waiting)
+        return Logo(figure: area == nil ? nil : figure, area: area ?? logoArea, breathing: !phase.hasCard)
     }
 
     /// 按当前状态摆标志；同一个标志在同一处时什么也不做。
@@ -325,18 +302,22 @@ struct Onboarding: View {
         let previous = stage.shownFigure()
         let previousFrame = stage.figureFrame()
         stage.show(logo.figure, in: logo.area, breathing: logo.breathing)
-        // 连上工作机时从刚完成的连接标志发波；扫码流程用切换前的二维码范围。
-        if phase == .create, previous != logo.figure, logo.figure != nil,
-           let frame = previousFrame ?? stage.figureFrame() {
+        // 登录完成、换到选择用途时，从刚完成的登录标志发波。
+        if phase == .prepare, previous != nil, previous != logo.figure, logo.figure != nil, let frame = previousFrame {
             stage.emitWave(from: frame, pace: Self.wavePace)
         }
     }
 
     #if os(iOS)
     /// 扫码时取景框占住标志区：正方形，边落在模块线上。
+    /// 中线取离区域中线最近的模块线或模块中线，边长的模块数随之取奇偶，两侧露出的点数相同，不会一边宽一边窄。
     private func scanFrame(in area: CGRect) -> CGRect {
-        let side = DotMetrics.snapDown(min(area.width - Metrics.padding * 2, area.height - Metrics.padding * 2, 336))
-        return CGRect(x: DotMetrics.snapDown(area.midX - side / 2), y: DotMetrics.snapDown(area.midY - side / 2),
+        let half = DotMetrics.module / 2
+        let center = (area.midX / half).rounded()
+        var modules = Int(min(area.width - Metrics.padding * 2, area.height - Metrics.padding * 2, 336) / DotMetrics.module)
+        if (Int(center) - modules) % 2 != 0 { modules -= 1 }
+        let side = CGFloat(modules) * DotMetrics.module
+        return CGRect(x: center * half - side / 2, y: DotMetrics.snapDown(area.midY - side / 2),
                       width: side, height: side)
     }
 
@@ -372,19 +353,17 @@ struct Onboarding: View {
 
     private var title: String {
         switch phase {
-        case .launching: "正在准备 Kite"
-        case .connecting: model.account.signedIn ? "正在加入设备" : "正在登录"
+        case .connecting: signedIn ? "正在加入设备" : "正在登录"
         case .prepare: "这台设备用来做什么"
         case .connect(.scan): "扫码登录 Kite"
         case .connect(.manual): registering ? "创建 Kite 账号" : "登录 Kite"
-        case .create: "已准备就绪"
         }
     }
 
     @ViewBuilder
     private var detail: some View {
         switch phase {
-        case .launching, .connecting:
+        case .connecting:
             note("正在完成账号登录和设备入网，请稍候。")
         case .prepare:
             note("同一账号下的设备会自动加入网络，随时可以选择工作机。")
@@ -392,8 +371,6 @@ struct Onboarding: View {
             note("扫描已登录设备在“我的设备”中显示的二维码。")
         case .connect(.manual):
             note("使用一个账号管理你的设备，无需准备服务器。")
-        case .create:
-            note("现在可以查看工作机，并选择要使用的项目。")
         }
     }
 
@@ -419,7 +396,9 @@ struct Onboarding: View {
         return VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if case .connect = phase, Self.defaultMethod == .scan { methodPicker }
+                    #if os(iOS)
+                    if case .connect = phase { methodPicker }
+                    #endif
                     VStack(alignment: .leading, spacing: 16) { cardBody }
                         .id(phase)
                         .transition(.opacity)
@@ -440,10 +419,11 @@ struct Onboarding: View {
         .animation(.snappy, value: total)
     }
 
+    #if os(iOS)
     /// 扫码与手动填写之间切换，切换时清掉上一种方式留下的错误。
     private var methodPicker: some View {
         Picker("连接方式", selection: Binding {
-            if case .connect(let method) = page { method } else { Self.defaultMethod }
+            if case .connect(let method) = page { method } else { Method.scan }
         } set: { method in
             error = nil
             model.invite = nil
@@ -455,11 +435,12 @@ struct Onboarding: View {
         .pickerStyle(.segmented)
         .labelsHidden()
     }
+    #endif
 
     @ViewBuilder
     private var cardBody: some View {
         switch phase {
-        case .launching, .connecting:
+        case .connecting:
             EmptyView()
         case .prepare:
             #if os(macOS)
@@ -473,9 +454,11 @@ struct Onboarding: View {
             #endif
         case .connect(.scan):
             note("二维码五分钟内有效，只能使用一次。")
+            #if os(iOS)
             if case .failed(let message) = model.invite {
                 callout(message, systemImage: "exclamationmark.triangle.fill", tint: Theme.danger)
             }
+            #endif
         case .connect(.manual):
             OnboardingField(label: "邮箱", prompt: "you@example.com", text: $address, focus: $focus, submit: connect)
             VStack(alignment: .leading, spacing: 8) {
@@ -488,8 +471,6 @@ struct Onboarding: View {
             }
             Button(registering ? "已有账号，去登录" : "没有账号，创建一个") { registering.toggle(); error = nil }
                 .buttonStyle(.pointingPlain).font(Theme.secondary)
-        case .create:
-            note("设备已加入你的账号。")
         }
         if let error {
             callout(error, systemImage: "exclamationmark.triangle.fill", tint: Theme.danger)
@@ -499,7 +480,7 @@ struct Onboarding: View {
     @ViewBuilder
     private var footer: some View {
         switch phase {
-        case .launching, .connecting:
+        case .connecting:
             EmptyView()
         case .prepare:
             buttons(primary: "加入设备", enabled: !working, action: joinDevice, secondary: "退出登录") {
@@ -509,8 +490,6 @@ struct Onboarding: View {
             buttons(primary: nil, enabled: false, action: {}, secondary: "使用账号密码") { go(.connect(.manual)) }
         case .connect(.manual):
             buttons(primary: registering ? "创建账号" : "登录", enabled: !working && address.contains("@") && (registering ? code.count >= 10 : !code.isEmpty), action: connect)
-        case .create:
-            buttons(primary: "进入 Kite", enabled: true, action: createProject)
         }
     }
 
@@ -557,7 +536,9 @@ struct Onboarding: View {
 
     private func go(_ page: Phase) {
         error = nil
+        #if os(iOS)
         model.invite = nil
+        #endif
         self.page = page
     }
 
@@ -569,8 +550,10 @@ struct Onboarding: View {
             try await model.account.join(role: "controller", name: AppModel.deviceName)
             #endif
         } simulated: {
-            #if DEBUG
-            simulation?.connected = true
+            #if DEBUG && os(macOS)
+            simulation?.signedIn = true
+            #elseif os(iOS)
+            restartPreview()
             #endif
         }
     }
@@ -582,13 +565,10 @@ struct Onboarding: View {
             #else
             try await model.account.join(role: "controller", name: AppModel.deviceName)
             #endif
-        } simulated: {
-            #if DEBUG
-            simulation?.connected = true
-            #endif
-        }
+        } simulated: { restartPreview() }
     }
 
+    #if os(iOS)
     /// 只认 kite://join 链接；扫到别的码提示一下，取景框继续扫。
     private func scanned(_ text: String) {
         guard !joining, let url = URL(string: text) else { return }
@@ -612,24 +592,16 @@ struct Onboarding: View {
         simulation?.joining = true
         Task {
             try? await Task.sleep(for: .seconds(2.5))
-            simulation?.joining = false
-            simulation?.connected = true
+            restartPreview()
         }
         #endif
     }
 
-    /// 扫到码时从镜头取景框外沿推开一道波，连接成功后再从二维码标志发波。
+    /// 扫到码时从镜头取景框外沿推开一道波。
     private func emitScanWave() {
-        #if os(iOS)
         if let logoArea { stage.emitWave(from: scanFrame(in: logoArea), pace: Self.wavePace) }
-        #endif
     }
-
-    private func createProject() {
-        #if DEBUG
-        if previewing { restartPreview() }
-        #endif
-    }
+    #endif
 
     /// simulated 只用于预览：不执行 action，等一会儿后改模拟的状态。
     private func perform(_ action: @escaping () async throws -> Void, simulated: @escaping () -> Void) {
@@ -651,17 +623,13 @@ struct Onboarding: View {
         }
     }
 
-    /// 预览从启动时的自动连接开始，一会儿后按连不上处理，进入准备工作机。
+    /// 预览从未登录开始，入网完成后回到这里。
     private func restartPreview() {
         #if DEBUG
         simulation = Simulation()
-        page = .prepare
+        page = .connect(.manual)
         error = nil
         code = ""
-        Task {
-            try? await Task.sleep(for: .seconds(1.5))
-            simulation?.launching = false
-        }
         #endif
     }
 }
@@ -706,16 +674,10 @@ private struct OnboardingField: View {
     }
 }
 
-/// 每一步的点阵标志，23×23 格，逐行字符画：B 主题色，M Morning Breeze，L Dewy Blue，Y Sunwashed，D Sunwashed 深一档，
-/// . 是静息的点。同一尺寸的标志之间逐格形变，格子对得上。
+/// 每一步的点阵标志，逐行字符画，字母表见 DotFigure.letters。显示器与二维码 23×23 格，登录的风筝组 29×23 格。
 private enum OnboardingLogos {
-    static func colors(accent: DotColor) -> [Character: DotColor] {
-        ["B": accent, "M": DotColor(hex: 0x7FA8D6), "L": DotColor(hex: 0xA8C6E7),
-         "Y": DotColor(hex: 0xFFE08A), "D": DotColor(hex: 0xF5C95C)]
-    }
-
-    /// 这一步的标志，各配一个小动画：风筝各自浮动，显示器的光标闪烁，二维码的黄格错开闪烁，
-    /// 文件夹的加号慢闪。扫码时标志区让给取景框，没有标志。正在连接时沿用发起连接那一步的标志，在等待里呼吸。
+    /// 这一步的标志，各配一个小动画：风筝各自浮动，显示器的光标闪烁，二维码的黄格错开闪烁。
+    /// 扫码时标志区让给取景框，没有标志。正在连接时沿用发起连接那一步的标志，在等待里呼吸。
     static func figure(for phase: Onboarding.Phase, colors: [Character: DotColor]) -> DotFigure? {
         func part(_ lines: [String], _ motion: FigureMotion = .still) -> DotFigure {
             DotFigure(lines, colors: colors, motion: motion)
@@ -727,7 +689,7 @@ private enum OnboardingLogos {
             }
         }
         switch phase {
-        case .launching, .connect(.manual), .connecting(.manual):
+        case .connect(.manual), .connecting(.manual):
             return DotFigure(columns: 29, rows: 23)
                 .adding(part(kite, .float(4, period: 5)), column: 3, row: 0)
                 .adding(part(smallKite, .float(6, period: 3.6, phase: 0.3)), column: 0, row: 0)
@@ -746,9 +708,6 @@ private enum OnboardingLogos {
                 figure.adding(part(map(qr) { $2 == "Y" && ($1 * 7 + $0) % 3 == group ? $2 : "." },
                                    .blink(period: 1.8, duty: 0.6, phase: -Double(group) / 3)), column: 0, row: 0)
             }
-        case .create:
-            return part(map(folder) { $2 == "Y" ? "L" : $2 })
-                .adding(part(map(folder) { $2 == "Y" ? $2 : "." }, .blink(period: 1.6, duty: 0.6)), column: 0, row: 0)
         }
     }
 
@@ -783,7 +742,7 @@ private enum OnboardingLogos {
         "D..",
     ]
 
-    /// 启动与登录时：主风筝向右倾斜，笔画仍落在点阵格位上。
+    /// 登录时：主风筝向右倾斜，笔画仍落在点阵格位上。
     static let kite = [
         ".......................",
         "...............B.......",
@@ -862,32 +821,5 @@ private enum OnboardingLogos {
         "B.BBB.B.B..BBBYB..BBB.B",
         "B.....B..B.B....B......",
         "BBBBBBB...YBB.....B....",
-    ]
-
-    /// 创建项目：加号文件夹。
-    static let folder = [
-        ".......................",
-        ".......................",
-        ".......................",
-        ".BBBBBBBB..............",
-        ".BLLLLLLLB.............",
-        ".BBBBBBBBBBBBBBBBBBBBB.",
-        ".BLLLLLLLLLLLLLLLLLLLB.",
-        ".BLLLLLLLLLLLLLLLLLLLB.",
-        ".BLLLLLLLLLLLLLLLLLLLB.",
-        ".BLLLLLLLLYYYLLLLLLLLB.",
-        ".BLLLLLLLLYYYLLLLLLLLB.",
-        ".BLLLLLLYYYYYYYLLLLLLB.",
-        ".BLLLLLLYYYYYYYLLLLLLB.",
-        ".BLLLLLLYYYYYYYLLLLLLB.",
-        ".BLLLLLLLLYYYLLLLLLLLB.",
-        ".BLLLLLLLLYYYLLLLLLLLB.",
-        ".BLLLLLLLLLLLLLLLLLLLB.",
-        ".BLLLLLLLLLLLLLLLLLLLB.",
-        ".BLLLLLLLLLLLLLLLLLLLB.",
-        ".BBBBBBBBBBBBBBBBBBBBB.",
-        ".......................",
-        ".......................",
-        ".......................",
     ]
 }

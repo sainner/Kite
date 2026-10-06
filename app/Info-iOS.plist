@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- 与 Xcode 生成的 Info.plist 合并；这里只放构建设置表达不了的项。iPhone 用 Info-iOS.plist，另注册扫码登录的 kite://。
+<!-- iPhone 版，与 Xcode 生成的 Info.plist 合并，Mac 版见 Info.plist。扫码登录只在 iPhone 上提供，kite:// 与相机说明只放这里。
      kited 是明文 HTTP：远程经 App 内组网节点的代理（链路由 WireGuard 加密），本机只到 127.0.0.1。
      经代理的请求即使目标是 IP 也受 ATS 限制，所以放开明文加载。 -->
 <plist version="1.0">
@@ -10,5 +10,18 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>扫描已登录设备上的登录二维码</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.sainner.kite</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>kite</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

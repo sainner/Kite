@@ -98,6 +98,7 @@ private struct AccountLogin: Codable {
         error = nil
     }
 
+    #if os(iOS)
     func accept(_ url: URL) async throws {
         guard !signedIn, url.scheme == "kite", url.host() == "join",
               let token = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "token" })?.value else {
@@ -107,6 +108,7 @@ private struct AccountLogin: Codable {
         try AccountVault.save(value)
         login = value
     }
+    #endif
 
     func invitation() async throws -> URL {
         struct Invitation: Decodable { let token: String }

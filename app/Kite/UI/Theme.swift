@@ -119,10 +119,8 @@ enum Metrics {
     #else
     static let paneMargin: CGFloat = 14
     #endif
-    /// 次级信息与主标题之间的间距。
-    static let paneTitleSpacing: CGFloat = 0
     /// 主标题与尾部刷新图标之间的间距。
-    static let titleRefreshGap: CGFloat = 1
+    static let titleRefreshGap: CGFloat = 3
     /// 刷新图标的命中与悬停范围向外扩出的距离，不影响排版；iPhone 保留触控尺寸。
     #if os(macOS)
     static let titleRefreshOutset: CGFloat = 4

@@ -19,6 +19,7 @@ enum SampleWorkspace {
         model.workspaces = [
             pluginSidebar(),
             dotGallery(),
+            dotStudio(),
             workspace("references", title: "引用 · 文件与历史差异", transcript: ReferenceSamples.transcript, outcome: "completed"),
             workspace("stream-live", title: "流式会话 · 动态预览", transcript: HarnessSampleTranscripts.empty),
             workspace("tool-styles", title: "工具行 · 样式与动画", transcript: HarnessSampleTranscripts.toolStyles),
@@ -100,15 +101,28 @@ enum SampleWorkspace {
         return area
     }
 
+    /// 图案创造台，窗口只在预览中存在。
+    private static func dotStudio() -> WorkArea {
+        let area = workspace("dot-studio", title: "点阵 · 图案创造台", transcript: HarnessSampleTranscripts.empty)
+        area.definitions.append(.init(id: "sample.dotStudio", title: "图案创造台（预览工具）", lifetime: .window,
+                                      views: [.init(id: "studio", title: "图案创造台", renderer: DotStudio.renderer)],
+                                      defaultView: "studio", agent: nil))
+        let id = UUID().uuidString
+        openWindow(.init(id: id, content: .create("sample.dotStudio")), in: area)
+        area.layout.expand(Pane(id))
+        return area
+    }
+
     private static func workspace(_ id: String, title: String, transcript: Transcript,
                                   phase: String? = nil, outcome: String? = nil, recovery: String? = nil,
                                   inputTokens: Int? = nil, windowTokens: Int? = nil) -> WorkArea {
         let remote = RemoteWorkspace(
             machine: RemoteMachine(id: "sample", name: "预览工作机", createdAt: 0),
             project: RemoteProject(id: "sample", name: "harness · 假数据", createdAt: 0),
-            checkout: RemoteCheckout(id: "sample", projectId: "sample", machineId: "sample",
+            // 侧栏每个检出只列一个根工作区，样本各占一个检出才能都列出来
+            checkout: RemoteCheckout(id: "sample-" + id, projectId: "sample", machineId: "sample",
                                      path: transcript.root, commits: .user, createdAt: 0),
-            workspace: WorkspaceInfo(id: "sample-" + id, checkoutId: "sample", name: title, cwd: transcript.root,
+            workspace: WorkspaceInfo(id: "sample-" + id, checkoutId: "sample-" + id, name: title, cwd: transcript.root,
                                      kind: .root, branch: nil, base: nil, status: .open, createdAt: 0),
             threads: [], instances: [], windows: []
         )

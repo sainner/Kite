@@ -6,7 +6,7 @@ import SwiftUI
 /// 点阵只在 App 背景上，卡片是不透明的面，盖住它；窗口内部不显示点阵。整片点阵只有一套相位，卡片移动时点不跟着挪。
 /// 事件（如发送消息的波）只在一段时间里抬高经过的格子，结束后格子退回静息的点。
 /// 背景上还可以拼出图形（如初始配置每一步的标志和步骤点），每个图形占一个位置（slot），格子一直长着，换图形时逐格形变过去；
-/// 图形的各层可以有自己的小动画（浮动、闪烁）：格子始终在格位上，浮动时动的是各格从图形内容里分到的形变量
+/// 图形的各层可以有自己的小动画（浮动、闪烁、脉冲、帧序列）：格子始终在格位上，浮动时动的是各格从图形内容里分到的形变量
 /// （亚格重采样，同 Pigeon 的格阵）。换图形时先停下，形变完再动起来。
 @MainActor @Observable
 final class DotStage {
@@ -128,7 +128,14 @@ nonisolated struct DotWave: Sendable {
 }
 
 /// 点阵在背景上拼出的图形，逐行用字符画写；字符在 colors 里对应一格的颜色，其余字符是静息的点。
+/// 图形尺寸不限，摆放时按内容居中；换图形时按窗口格位逐格形变，新旧图形大小不必一致。
 nonisolated struct DotFigure: Hashable, Sendable {
+    /// 图形共用的字母表：B 主题色，M Morning Breeze，L Dewy Blue，Y Sunwashed，D Sunwashed 深一档，
+    /// 习惯用 . 写静息的点。颜色可以任意给，新图形优先沿用这张表。
+    static func letters(accent: DotColor) -> [Character: DotColor] {
+        ["B": accent, "M": .morningBreeze, "L": .dewyBlue, "Y": .sunwashed, "D": .sunwashedDeep]
+    }
+
     /// 换图形时逐格形变：沿对角线从左上到右下依次出发，每格形变一次，整段多长。
     static let stagger: TimeInterval = 0.3
     static let transition = stagger + DotMetrics.morphDuration
@@ -144,12 +151,26 @@ nonisolated struct DotFigure: Hashable, Sendable {
         var shape = 1.0
         var layer: Int
         /// 叠上来之前这里原有的格子：这一层闪烁熄掉时露出它，而不是露出静息的点。
-        var under: Under?
+        var under: Look?
+        /// 帧序列的层里这一格每帧的样子，nil 是静息的点；color 与 shape 取首帧。其他层为空。
+        var frames: [Look?] = []
+
+        var look: Look { Look(color: color, shape: shape) }
     }
 
-    struct Under: Hashable, Sendable {
+    struct Look: Hashable, Sendable {
         var color: DotColor
         var shape: Double
+
+        /// 从 a 过渡到 b 走到 t；静息的点一侧按 shape 0、颜色取另一侧。
+        static func blend(_ a: Look?, _ b: Look?, by t: Double) -> Look? {
+            switch (a, b) {
+            case (nil, nil): nil
+            case (let a?, nil): Look(color: a.color, shape: a.shape * (1 - t))
+            case (nil, let b?): Look(color: b.color, shape: b.shape * t)
+            case (let a?, let b?): Look(color: a.color.mixed(with: b.color, by: t), shape: a.shape + (b.shape - a.shape) * t)
+            }
+        }
     }
 
     private(set) var columns: Int
@@ -173,6 +194,37 @@ nonisolated struct DotFigure: Hashable, Sendable {
         layers = [Layer(motion: motion)]
     }
 
+    /// 帧序列的图形：frames 是逐帧的字符画，第 i 帧停 holds[i] 秒，再用 transition 秒逐格过渡到下一帧，末帧接回首帧。
+    /// stagger 是过渡里沿对角线从左上到右下错开的总时长，不超过 transition。各帧大小可以不同，左上角对齐。
+    /// 减少动态效果或换图形时停在首帧。
+    init(frames: [[String]], colors: [Character: DotColor], shapes: [Character: Double] = [:], holds: [TimeInterval],
+         transition: TimeInterval = DotMetrics.morphDuration, stagger: TimeInterval = 0, phase: Double = 0) {
+        precondition(!frames.isEmpty && frames.count == holds.count, "每帧要有一个停留时长")
+        let width = frames.flatMap { $0.map(\.count) }.max() ?? 0
+        let height = frames.map(\.count).max() ?? 0
+        let grids = frames.map { $0.map(Array.init) }
+        columns = width
+        rows = height
+        cells = (0..<height).flatMap { row in
+            (0..<width).map { column -> Cell? in
+                let looks = grids.map { grid -> Look? in
+                    guard row < grid.count, column < grid[row].count, let color = colors[grid[row][column]] else { return nil }
+                    return Look(color: color, shape: shapes[grid[row][column]] ?? 1)
+                }
+                guard let shown = looks.first(where: { $0 != nil }) ?? nil else { return nil }
+                return Cell(color: shown.color, shape: looks[0]?.shape ?? 0, layer: 0, frames: looks)
+            }
+        }
+        layers = [Layer(motion: .frames(holds: holds, transition: transition, stagger: min(stagger, transition), phase: phase))]
+    }
+
+    /// 每帧停留同样久的帧序列。
+    init(frames: [[String]], colors: [Character: DotColor], shapes: [Character: Double] = [:], hold: TimeInterval,
+         transition: TimeInterval = DotMetrics.morphDuration, stagger: TimeInterval = 0, phase: Double = 0) {
+        self.init(frames: frames, colors: colors, shapes: shapes, holds: Array(repeating: hold, count: frames.count),
+                  transition: transition, stagger: stagger, phase: phase)
+    }
+
     /// 空白的画布，用 adding 往上叠。
     init(columns: Int, rows: Int) {
         self.columns = columns
@@ -192,7 +244,7 @@ nonisolated struct DotFigure: Hashable, Sendable {
                 guard var cell = other.cells[r * other.columns + c] else { continue }
                 let index = (row + r) * result.columns + column + c
                 cell.layer += layers.count
-                cell.under = result.cells[index].map { Under(color: $0.color, shape: $0.shape) }
+                cell.under = result.cells[index]?.look
                 result.cells[index] = cell
             }
         }
@@ -238,6 +290,8 @@ nonisolated struct FigureMotion: Hashable, Sendable {
         case blink(duty: Double)
         /// 每周期在 duration 内从点长成满格再收回，形变量线性变化。
         case pulse(duration: TimeInterval)
+        /// 帧序列：第 i 帧停 holds[i]，再用 transition 逐格过渡到下一帧，末帧接回首帧；stagger 让过渡沿对角线错开。
+        case frames(holds: [TimeInterval], transition: TimeInterval, stagger: TimeInterval)
     }
 
     var kind = Kind.still
@@ -253,6 +307,10 @@ nonisolated struct FigureMotion: Hashable, Sendable {
     }
     static func pulse(period: TimeInterval, duration: TimeInterval, phase: Double = 0) -> FigureMotion {
         FigureMotion(kind: .pulse(duration: duration), period: period, phase: phase)
+    }
+    static func frames(holds: [TimeInterval], transition: TimeInterval, stagger: TimeInterval = 0, phase: Double = 0) -> FigureMotion {
+        FigureMotion(kind: .frames(holds: holds, transition: transition, stagger: stagger),
+                     period: max(holds.reduce(0, +) + Double(holds.count) * transition, 0.01), phase: phase)
     }
 
     var isStill: Bool { kind == .still }
@@ -280,10 +338,33 @@ nonisolated struct FigureMotion: Hashable, Sendable {
             lit = smoothstep(elapsed / edge) * (1 - smoothstep((elapsed - duty * period) / edge))
         case .pulse(let duration):
             lit = max(0, 1 - abs(elapsed - duration / 2) / (duration / 2))
-        case .still, .float:
+        case .still, .float, .frames:
             return 1
         }
         return 1 - amplitude * (1 - lit)
+    }
+
+    /// 帧序列此刻这一格的样子；delay（0–1）是这一格在过渡里按对角线位置晚出发多少。
+    /// amplitude 从 0 到 1 时由首帧过渡到当前帧，为 0 时停在首帧。不是帧序列的层原样返回首帧。
+    func look(of cell: DotFigure.Cell, at date: Date, delay: Double, amplitude: Double) -> DotFigure.Look? {
+        guard case .frames(let holds, let transition, let stagger) = kind, !cell.frames.isEmpty, amplitude > 0 else {
+            return cell.frames.isEmpty ? cell.look : cell.frames[0]
+        }
+        var elapsed = cycle(at: date) * period
+        var current = cell.frames[0]
+        for (index, hold) in holds.enumerated() {
+            current = cell.frames[index]
+            guard elapsed >= hold else { break }
+            elapsed -= hold
+            if elapsed < transition {
+                // 和换图形一样缓出；最晚出发的那一格正好在 transition 结束时到位
+                let t = min(max((elapsed - delay * stagger) / max(transition - stagger, 0.01), 0), 1)
+                current = DotFigure.Look.blend(current, cell.frames[(index + 1) % holds.count], by: 1 - pow(1 - t, 3))
+                break
+            }
+            elapsed -= transition
+        }
+        return amplitude < 1 ? DotFigure.Look.blend(cell.frames[0], current, by: amplitude) : current
     }
 }
 
@@ -328,11 +409,14 @@ nonisolated struct PlacedFigure: Hashable, Sendable {
             let v0 = v.rounded(.down), fv = v - v0
             let lit = layer.motion.visibility(at: date, amplitude: amplitude)
             func tap(_ dv: Int, _ w: Double) {
-                guard w > 1e-6, let cell = figure[x, Int(v0) + dv], cell.layer == index else { return }
+                let r = Int(v0) + dv
+                guard w > 1e-6, let cell = figure[x, r], cell.layer == index else { return }
+                let delay = Double(x + r) / Double(max(figure.columns + figure.rows - 2, 1))
+                guard let look = layer.motion.look(of: cell, at: date, delay: delay, amplitude: amplitude) else { return }
                 // 熄掉的那部分换成底下的格子
-                let own = w * cell.shape * lit, below = w * (cell.under?.shape ?? 0) * (1 - lit)
+                let own = w * look.shape * lit, below = w * (cell.under?.shape ?? 0) * (1 - lit)
                 shape += own + below
-                if own > strongest { strongest = own; color = cell.color }
+                if own > strongest { strongest = own; color = look.color }
                 if below > strongest, let under = cell.under { strongest = below; color = under.color }
             }
             tap(0, 1 - fv)

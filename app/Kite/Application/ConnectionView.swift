@@ -127,8 +127,8 @@ struct ServiceConnection: ViewModifier {
             .onChange(of: model.account.signedIn) { _, signedIn in
                 if !signedIn { model.clearAccountConnections(); Task { await Tailnet.shared.stop() } }
             }
-            .onOpenURL { url in Task { await model.acceptInvite(url) } }
             #if os(iOS)
+            .onOpenURL { url in Task { await model.acceptInvite(url) } }
             .onChange(of: phase) { _, phase in if phase == .background { Task { await Tailnet.shared.stop() } } }
             #endif
             .sheet(isPresented: $model.showConnection) { AppSettings().environment(model).toastHost().appAppearance() }

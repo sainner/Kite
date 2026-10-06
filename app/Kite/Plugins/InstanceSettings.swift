@@ -284,7 +284,7 @@ struct InstanceDockButton: View {
     @Environment(WorkArea.self) private var area
     private var definition: RemotePluginDefinition? { area.definition(of: instance) }
     private var appearance: WindowAppearance {
-        definition?.agent != nil ? .init(name: instance.title, kind: "代理", icon: "bubble.left.and.bubble.right", tint: Palette.breeze)
+        definition?.agent != nil ? .init(name: instance.title, icon: "bubble.left.and.bubble.right", tint: Palette.breeze)
             : .renderer(definition?.views.first?.renderer ?? "")
     }
     var body: some View {

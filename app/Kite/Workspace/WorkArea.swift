@@ -22,7 +22,7 @@ final class WorkArea: Identifiable {
     var settingsInstance: RemotePluginInstance?
     var tint: Color { Palette.breeze }
     var title: String { remote?.workspace.name ?? "新工作区" }
-    var header: PaneHeader { PaneHeader(title: title, detail: .text(remote?.project.name ?? "Kite")) }
+    var header: PaneHeader { PaneHeader(title: title) }
     var isDraft: Bool { remote == nil }
     var isSample: Bool { SampleWorkspace.enabled && remote?.machine.id == "sample" }
 
@@ -116,7 +116,7 @@ final class WorkArea: Identifiable {
     }
 
     func appearance(of pane: Pane) -> WindowAppearance {
-        if let thread = thread(in: pane) { return .init(name: thread.title, kind: "代理", icon: "bubble.left.and.bubble.right", tint: thread.tint, isAgent: true) }
+        if let thread = thread(in: pane) { return .init(name: thread.title, icon: "bubble.left.and.bubble.right", tint: thread.tint, isAgent: true) }
         if let target = windows.first(where: { $0.id == pane.id })?.target,
            let instance = instances.first(where: { $0.id == target.instanceId }) {
             let view = view(in: pane)
@@ -124,7 +124,7 @@ final class WorkArea: Identifiable {
             result.name = instance.title + (target.viewId == definition(of: instance)?.defaultView ? "" : " · " + (view?.title ?? target.viewId))
             return result
         }
-        return .init(name: "窗口", kind: "窗口", icon: "rectangle", tint: Palette.stone)
+        return .init(name: "窗口", icon: "rectangle", tint: Palette.stone)
     }
 
     func activateWindow(for target: WindowTarget) {
@@ -134,8 +134,6 @@ final class WorkArea: Identifiable {
 
 struct WindowAppearance {
     var name: String
-    /// 窗口类型，与图标一起显示在标题栏的次级信息里。
-    let kind: String
     let icon: String
     let tint: Color
     var isAgent = false
@@ -143,10 +141,10 @@ struct WindowAppearance {
 
     static func renderer(_ id: String) -> Self {
         switch id {
-        case "files": .init(name: "文件", kind: "文件", icon: "folder", tint: Palette.sunwashed)
-        case "terminal": .init(name: "终端", kind: "终端", icon: "terminal", tint: Palette.stone)
-        case "preview": .init(name: "预览", kind: "预览", icon: "eye", tint: Palette.dewy)
-        default: .init(name: "插件", kind: "插件", icon: "puzzlepiece.extension", tint: Palette.buttercup)
+        case "files": .init(name: "文件", icon: "folder", tint: Palette.sunwashed)
+        case "terminal": .init(name: "终端", icon: "terminal", tint: Palette.stone)
+        case "preview": .init(name: "预览", icon: "eye", tint: Palette.dewy)
+        default: .init(name: "插件", icon: "puzzlepiece.extension", tint: Palette.buttercup)
         }
     }
 }

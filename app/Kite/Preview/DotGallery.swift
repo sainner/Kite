@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 点阵视觉语言的样式样本：形变、终态切换、颜色与整片点阵。只在预览样本中出现，不连接服务。
+/// 点阵视觉语言的样式样本：形变、终态切换、颜色、帧序列与整片点阵。只在预览样本中出现，不连接服务。
 struct DotGallery: View {
     static let renderer = "sample.dots"
     let title: String
@@ -25,6 +25,7 @@ struct DotGallery: View {
                     shapeSection
                     formSection
                     colorSection
+                    framesSection
                     matrixSection
                 }
                 .padding(.horizontal, Metrics.paneMargin + 6)
@@ -81,6 +82,28 @@ struct DotGallery: View {
                 Text("alpha").font(Theme.secondary).foregroundStyle(.secondary)
                 Slider(value: $alpha, in: 0...1)
             }
+        }
+    }
+
+    /// 风筝尾巴左右摆：四帧循环，帧之间逐格过渡。
+    private var framesSection: some View {
+        let tail = [[".D...", "..D..", ".D..."], ["..D..", "..D..", "..D.."], ["...D.", "..D..", "...D."], ["..D..", "..D..", "..D.."]]
+        let body = ["..B..", ".BYB.", "BYBLB", ".BLB.", "..B..", "..D.."]
+        let accent = DotColor(Color.accentColor.resolve(in: environment))
+        let figure = DotFigure(frames: tail.map { body + $0 }, colors: DotFigure.letters(accent: accent),
+                               hold: 0.25, transition: 0.35, stagger: 0.1)
+        let placed = PlacedFigure(figure, in: CGRect(x: 0, y: 0, width: 5 * DotMetrics.pitch, height: 9 * DotMetrics.pitch),
+                                  placement: .leading)
+        return section("帧序列", detail: "4 帧 · 停 0.25s · 过渡 0.35s") {
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { timeline in
+                let rest = DotColor.rest(in: environment)
+                DotMatrix(columns: 5, rows: 9) { column, row in
+                    guard let cell = placed.sample(column: column, row: row, at: timeline.date,
+                                                   amplitude: reduceMotion ? 0 : 1) else { return Dot(color: rest) }
+                    return Dot(.square, shape: cell.shape, color: cell.color)
+                }
+            }
+            .frame(maxWidth: .infinity)
         }
     }
 

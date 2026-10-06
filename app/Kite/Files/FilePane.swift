@@ -10,12 +10,9 @@ struct FilePane: View {
         let directory = filePath.map { ($0 as NSString).deletingLastPathComponent } ?? browser.directoryPath
         let cwd = area.remote.map { ($0.workspace.cwd as NSString).lastPathComponent } ?? ""
         let root = cwd.isEmpty ? "工作区" : cwd
-        // 主标题是当前文件或目录的名字，次级信息是所在目录的可点击路径
+        // 主标题是当前文件或目录的名字
         return PaneHeader(title: filePath.map { ($0 as NSString).lastPathComponent }
-            ?? (directory == "." ? root : (directory as NSString).lastPathComponent),
-            detail: .path(root: root, directory: directory) { path in
-                Task { await browser.openDirectory(path) }
-            })
+            ?? (directory == "." ? root : (directory as NSString).lastPathComponent))
     }
 
     var body: some View {

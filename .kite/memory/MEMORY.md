@@ -22,7 +22,7 @@
 - [新窗口放置](new-window-placement.md) — Mac 新窗口优先新列，其次上下分栏，空间仍不足再收起旧窗口
 - [停止会话的语义](session-stop-behavior.md) — 手动停止退回未纳入请求的消息，不等于保留 paused 状态
 - [统一资源引用](resource-reference-direction.md) — 统一资源引用保留稳定内容身份，历史 diff 不随当前文件变化
-- [窗口标题信息](window-header-information.md) — 窗口标题两行，突出会话名称，次级信息为各窗口自定的文字
+- [窗口标题信息](window-header-information.md) — 窗口标题单行只显示主标题，突出会话名称，不带次级信息
 - [初始配置与设备角色](onboarding-device-roles.md) — 本机执行或仅远程控制都入网，进入 App 后发现 kited 工作机
 - [托管账号与组网](hosted-network-direction.md) — 我们托管，用户账号密码登录或扫描已登录设备二维码加入；规格见 docs
 - [思考与状态展示](thinking-display.md) — 仅显示当前生成的思考，状态 chip 不承担实时活动或思考正文

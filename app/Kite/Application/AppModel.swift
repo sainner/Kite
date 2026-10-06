@@ -28,9 +28,11 @@ final class AppModel {
         set { if SampleWorkspace.enabled { sampleTemplates = newValue } else { activeConnection?.templates = newValue } }
     }
     var error: String?
-    /// 扫码连接的进度；后台重连的错误不覆盖它。
+    #if os(iOS)
+    /// 扫码登录的进度；后台重连的错误不覆盖它。
     enum InviteState: Equatable { case joining, failed(String) }
     var invite: InviteState?
+    #endif
     var showConnection = false
     var showNewWorkspace = false
 
@@ -97,18 +99,18 @@ final class AppModel {
         }
     }
 
-    /// 新设备扫描已登录设备显示的二维码，获得独立账号会话。
+    #if os(iOS)
+    /// iPhone 扫描已登录设备显示的二维码，获得独立账号会话并入网。
     func acceptInvite(_ url: URL) async {
         guard url.scheme == "kite", url.host() == "join", invite != .joining else { return }
         invite = .joining
         do {
             try await account.accept(url)
-            #if os(iOS)
             try await account.join(role: "controller", name: Self.deviceName)
-            #endif
             invite = nil
         } catch { invite = .failed(error.localizedDescription) }
     }
+    #endif
 
     #if os(macOS)
     static var deviceName: String { Host.current().localizedName ?? "Mac" }

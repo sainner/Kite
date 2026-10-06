@@ -241,7 +241,14 @@ nonisolated struct DotColor: Hashable, Codable, Sendable {
 
     /// 效果色，与执行扫掠同一组：参考色中在浅底上看得清的三色，加上 Sunwashed 深一档和主题色。
     /// Buttercup Sky 与 Cloud Puff 太浅，只用作面。
-    static let palette: [DotColor] = [0x7FA8D6, 0xA8C6E7, 0xFFE08A, 0xF5C95C, 0x5B88C2].map { DotColor(hex: $0) }
+    static let palette: [DotColor] = [morningBreeze, dewyBlue, sunwashed, sunwashedDeep, accent]
+    static let morningBreeze = DotColor(hex: 0x7FA8D6)
+    static let dewyBlue = DotColor(hex: 0xA8C6E7)
+    static let sunwashed = DotColor(hex: 0xFFE08A)
+    /// Sunwashed 深一档。
+    static let sunwashedDeep = DotColor(hex: 0xF5C95C)
+    /// 主题色的默认取值；随外观变化的地方用解析后的 accentColor。
+    static let accent = DotColor(hex: 0x5B88C2)
 
     /// 某一格固定取五色中的哪一色，同一格始终同色，避免逐帧闪色。
     static func palette(column: Int, row: Int, in colors: [DotColor] = palette) -> DotColor {
