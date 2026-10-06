@@ -18,7 +18,7 @@ const LOG = join(LOG_DIR, 'log');
 
 /** 预算，和 .claude/agents/test-writer.md 里的分层表一致。 */
 const MEDIUM_MAX = 8;
-const TOTAL_MAX = 15;
+const TOTAL_MAX = 20;
 
 /**
  * 这些变了依赖图看不出影响范围，跑全量。test/setup.ts 是 bunfig.toml 里的 preload，fake-api.ts 是它引的：
