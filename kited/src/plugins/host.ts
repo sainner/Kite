@@ -11,6 +11,8 @@ import type { startPluginProcess } from './process.ts';
 import type { OperationCaller, OperationGrant } from '../operations/contract.ts';
 import { bindPluginTool, toolRevision, toolVisible, type PluginToolBinding } from './tools.ts';
 
+type PluginServices = Pick<Kite, 'store' | 'home' | 'bus' | 'catalog' | 'workspace' | 'operations' | 'receipts'>;
+
 const object = z.record(z.string(), z.unknown());
 const stateSchema = z.object({ revision: z.string(), value: object }).strict();
 const processMarkerSchema = z.object({ pid: z.number().int().min(2) }).strict();
@@ -25,7 +27,7 @@ export class PluginHost {
   private closingWorkspaces = new Set<string>();
   private closing = false;
   private validators = new Map<string, JsonSchemaValidator<unknown>>();
-  constructor(private kite: Kite) {}
+  constructor(private kite: PluginServices) {}
 
   private instance(id: string) {
     if (this.closing || this.stopping.has(id) || this.closingInstances.has(id)) throw new KiteError('插件正在停止', 409);

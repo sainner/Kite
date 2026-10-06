@@ -75,6 +75,8 @@ test('默认 harness 线程的真实工具只改工作树，结果和快照先�
 }, 1000);
 
 // HTTP 采纳、git 冲突状态、自研 harness 输入来源及回合结束后的自动重试必须连起来验证。
+// 真实 bug：agent 的命令跑在沙箱里，Git 元数据只读，只能改文件不能 add/commit；原来自动重试只认已提交的解决，
+// 冲突永远合不回去。这里只改工作树文件模拟 agent，不在沙箱外替它跑 git。
 test('采纳冲突通知线程后自动重试合回，用户输入与系统通知保持不同来源', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
@@ -99,9 +101,8 @@ test('采纳冲突通知线程后自动重试合回，用户输入与系统通�
   const inputs = notice.request.history.flatMap((item) => item.type === 'input' ? [item.input] : []);
   expect(inputs).toContainEqual(expect.objectContaining({ source: 'human', text: '改一下 c.txt' }));
   expect(inputs).toContainEqual(expect.objectContaining({ source: 'kite', text: expect.stringContaining('冲突') }));
-  // 模拟 agent 采用会话一侧解决冲突；完成这个回合后 kited 才能自动重试采纳。
-  git(thread.workspace.cwd, 'checkout', '--ours', '--', 'c.txt');
-  commitAll(thread.workspace.cwd, '解决冲突');
+  // 模拟沙箱里的 agent 采用会话一侧：只把文件改成去掉冲突标记的内容，不碰 git；完成这个回合后 kited 才能自动重试采纳。
+  writeFiles(thread.workspace.cwd, { 'c.txt': 'session\n' });
   notice.response.complete();
   const adopted = await kk.waitEvent((event) => event.type === 'workspace.adopt' && event.workspaceId === thread.workspace.id
     && event.result.status === 'adopted' && after(kk, since)(event));
@@ -111,6 +112,34 @@ test('采纳冲突通知线程后自动重试合回，用户输入与系统通�
   expect(read(join(repo, 'c.txt'))).toBe('session\n');
   expect(git(repo, 'status', '--porcelain')).toBe('');
   await kk.waitEvent((event) => event.type === 'idle' && event.threadId === thread.id && after(kk, since)(event));
+}, 1000);
+
+// 真实 bug：不带 force 归档时先停止所有线程再检查未采纳改动，「先试探、收到 409 再问用户」的流程
+// 会把正在工作的 agent 打断后才拒绝。HTTP 请求、工作区锁、runner 生命周期与挂起的模型请求之间的时序要跑起来才能确认。
+test('有未采纳改动时不带 force 归档直接拒绝，正在工作的线程不被打断并正常完成回合', async () => {
+  const model = new ManualModel();
+  kited = startKited(() => model);
+  const kk = kited;
+  const repo = newRepo(kk.root, 'proj', { 'a.txt': 'base\n' });
+  const project = await registerCheckout(kk, repo);
+  const thread = await createWorkspace(kk, project.checkout.id, '改一下 a.txt', 'harness');
+  const pending = await model.call(1);
+  writeFiles(thread.workspace.cwd, { 'a.txt': 'session\n' });
+
+  const since = mark(kk);
+  const refused = await kk.call('POST', `/workspaces/${thread.workspace.id}/archive`, {});
+  expect(refused.status).toBe(409);
+  expect(pending.signal.aborted).toBe(false);
+
+  pending.response.complete();
+  const finished = await kk.waitEvent((event) => event.type === 'harness' && event.threadId === thread.id
+    && event.event.type === 'record' && event.event.record.type === 'turn.finished' && after(kk, since)(event));
+  expect(finished.type === 'harness' && finished.event.type === 'record' && finished.event.record.type === 'turn.finished'
+    && finished.event.record.outcome).toEqual({ kind: 'completed' });
+  await kk.waitEvent((event) => event.type === 'idle' && event.threadId === thread.id && after(kk, since)(event));
+  const view = await kk.call('GET', `/workspaces/${thread.workspace.id}`);
+  expect(view.body.workspace.status).toBe('open');
+  expect(read(join(thread.workspace.cwd, 'a.txt'))).toBe('session\n');
 }, 1000);
 
 // 真实 SQLite/journal 关闭重开后，opaque 输出与工具结果必须续接，已完成工具不能重跑。

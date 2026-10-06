@@ -1,6 +1,6 @@
 # 手动验证
 
-这些验证需要 Swift 编译器、原生界面或 WKWebView，手动运行，不计入 `small` / `medium` 的数量与耗时预算。以下命令从仓库根目录运行；需要 macOS 和 Xcode 开发工具。
+这些验证需要 Swift 编译器、原生界面或 WKWebView，不计入 `small` / `medium` 的数量与耗时预算；其中哪些由 `.kite/check` 自动运行见 `kited/scripts/check.ts`。以下命令从仓库根目录运行；需要 macOS 和 Xcode 开发工具。
 
 先按 [工作机开发入口](../../README.md#启动服务) 安装依赖，再在仓库根目录选择项目固定的 Bun：
 

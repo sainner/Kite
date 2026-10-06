@@ -94,9 +94,19 @@ async function events(kite: Kite, scope: EventScope): Promise<Response> {
   return new Response(stream, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' } });
 }
 
+/** 只监听回环地址仍挡不住 DNS 重绑定：网页换成同源后可读 /machine 再发请求，因此只接受回环主机名。 */
+function local<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
+  return handle((req: R) => {
+    let host = '';
+    try { host = new URL(`http://${req.headers.get('host') ?? ''}`).hostname; } catch { /* 按非本机地址拒绝。 */ }
+    if (host !== '127.0.0.1' && host !== 'localhost') throw new KiteError('只接受本机地址的请求', 403);
+    return fn(req);
+  });
+}
+
 export function serve(kite: Kite, port: number) {
   // 身份检查只防止地址复用时操作错工作机；网络认证由远程接入层另行承担。
-  const bound = <R extends Request>(fn: (req: R) => Promise<unknown> | unknown) => handle((req: R) => {
+  const bound = <R extends Request>(fn: (req: R) => Promise<unknown> | unknown) => local((req: R) => {
     const machine = req.headers.get('X-Kite-Machine');
     if (!machine) throw new KiteError('缺少 X-Kite-Machine，请先读取 /machine');
     if (machine !== kite.machine().id) throw new KiteError('连接地址对应的工作机已改变，请重新选择工作机', 409);
@@ -107,7 +117,7 @@ export function serve(kite: Kite, port: number) {
     port,
     idleTimeout: 60,
     routes: {
-      '/machine': { GET: handle(() => kite.machine()) },
+      '/machine': { GET: local(() => kite.machine()) },
       '/instances/:id/agent-capabilities': { GET: bound((req) => kite.agentCapabilities(req.params.id)) },
       '/projects': {
         GET: bound(() => kite.projects()),

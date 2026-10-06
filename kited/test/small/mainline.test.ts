@@ -2,6 +2,7 @@
  * 合回主线时的 Git 历史、冲突和未提交改动。
  */
 import { expect, test } from 'bun:test';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { KiteError } from '../../src/errors.ts';
 import { mergeBack } from '../../src/workspace/mainline.ts';
@@ -42,10 +43,12 @@ test('合回保留两边的新提交，主线快进到工作树 HEAD', async () 
 });
 
 /*
- * 依赖 git 合并冲突时的状态：冲突留在会话工作树里，下一次调用时还在，主文件夹不受影响；
- * 在工作树里解决并提交之后，同样的合并能完成。
+ * 依赖 git 合并中的状态和 add -A、commit 对未合并条目的效果：冲突留在会话工作树里，下一次调用时还在，
+ * 主文件夹不受影响。agent 在沙箱里不能写 Git 元数据，只能改文件（真实 bug：原来只认 agent 自己
+ * add 并提交的解决，沙箱里永远合不回去）；只改文件时，宿主标记解决（stageResolved）后才提交合并，
+ * 仍带冲突标记的文件不放行，删掉的文件算已解决。
  */
-test('合回冲突留在工作树，重试不再报新冲突，解决后可合回', async () => {
+test('合回冲突留在工作树，agent 只改文件时由宿主标记解决后合回，仍带冲突标记的文件不放行', async () => {
   const { main, wt, project } = setup({ 'c.txt': 'base\n', 'd.txt': 'base-d\n', 'o.txt': 'o\n' });
   writeFiles(wt, { 'c.txt': 'session\n', 'd.txt': 'session-d\n', 'o.txt': 'session-o\n' });
   writeFiles(main, { 'c.txt': 'main\n', 'd.txt': 'main-d\n' });
@@ -54,7 +57,7 @@ test('合回冲突留在工作树，重试不再报新冲突，解决后可合�
   const mainState = repoState(main);
 
   const r1 = await mergeBack(project, wt, '会话');
-  expect(r1).toMatchObject({ status: 'conflict', fresh: true });
+  expect(r1.status).toBe('conflict');
   if (r1.status !== 'conflict') return;
   expect([...r1.files].sort()).toEqual(['c.txt', 'd.txt']);
   expect(repoState(main)).toBe(mainState);
@@ -64,20 +67,30 @@ test('合回冲突留在工作树，重试不再报新冲突，解决后可合�
   expect(r2.status).toBe('conflict');
   if (r2.status !== 'conflict') return;
   expect([...r2.files].sort()).toEqual(['c.txt', 'd.txt']);
-  expect(r2.fresh).toBe(false);
   expect(repoState(main)).toBe(mainState);
 
-  // 以会话一侧解决冲突并提交
-  git(wt, 'checkout', '--ours', '--', '.');
-  commitAll(wt, '解决冲突');
+  // 模拟沙箱里的 agent：只改文件内容去掉 c.txt 的冲突标记，不碰 git；d.txt 仍带标记。
+  writeFiles(wt, { 'c.txt': 'session\n' });
   const r3 = await mergeBack(project, wt, '会话');
-  expect(r3.status).toBe('merged');
+  expect(r3.status).toBe('conflict');
+  if (r3.status !== 'conflict') return;
+  expect([...r3.files].sort()).toEqual(['c.txt', 'd.txt']);
+  const r4 = await mergeBack(project, wt, '会话', { stageResolved: true });
+  expect(r4).toEqual({ status: 'conflict', files: ['d.txt'] });
+  expect(repoState(main)).toBe(mainState);
+
+  // d.txt 以删除作出取舍
+  rmSync(join(wt, 'd.txt'));
+  const r5 = await mergeBack(project, wt, '会话', { stageResolved: true });
+  expect(r5.status).toBe('merged');
   const [mainHead, sessionHead] = git(main, 'rev-parse', 'HEAD', 'kite/s').split('\n');
   expect(mainHead).toBe(sessionHead);
   expect(gitOk(main, 'merge-base', '--is-ancestor', mainCommit, 'HEAD')).toBe(true);
   expect(read(join(main, 'c.txt'))).toBe('session\n');
   expect(read(join(main, 'o.txt'))).toBe('session-o\n');
+  expect(existsSync(join(main, 'd.txt'))).toBe(false);
   expect(clean(main)).toBe(true);
+  expect(clean(wt)).toBe(true);
 });
 
 /*

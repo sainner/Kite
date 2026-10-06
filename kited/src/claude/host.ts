@@ -25,9 +25,11 @@ export function openClaudeHost(options: {
   const lock = join(options.directory, 'claude-lock');
   mkdirSync(options.directory, { recursive: true, mode: 0o700 });
   if (existsSync(lock)) {
-    const pid = Number(readFileSync(join(lock, 'owner'), 'utf8'));
-    let alive = true;
-    try { process.kill(pid, 0); } catch (error) { alive = (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
+    // 建锁与写 owner 之间退出会留下没有 owner 的锁；残留命令另由进程组登记阻止恢复。
+    let pid = 0;
+    try { pid = Number(readFileSync(join(lock, 'owner'), 'utf8')); } catch { /* 视为无主的旧锁。 */ }
+    let alive = Number.isSafeInteger(pid) && pid > 0;
+    if (alive) try { process.kill(pid, 0); } catch (error) { alive = (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
     if (alive) throw new KiteError('Claude 会话仍被另一个宿主占用', 409);
     rmSync(lock, { recursive: true });
   }

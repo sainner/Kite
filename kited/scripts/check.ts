@@ -1,6 +1,6 @@
 /**
  * Kite 仓库的检查命令，由 .kite/check 调用，契约见 kite-onboard skill（.claude/skills/kite-onboard/SKILL.md）。
- * 先同时做类型检查和 lint（App 有改动时加上 App 的编译），再跑受影响的测试（--all 跑全量），最后按测试规则的预算核对耗时。
+ * 先同时做类型检查和 lint（App 有改动时加上 App 的编译，App 或工作机有改动时加上解码合同），再跑受影响的测试（--all 跑全量），最后按测试规则的预算核对耗时。
  * 受影响的测试从 KITE_BASE 起算改动，没有这个变量就看还没提交的改动；依赖或配置变了跑全量。
  * 输出只报结论、失败项和超预算项。完整日志写进 KITE_LOG_DIR（Kite 的 check 工具给的目录）；手动跑时没有这个变量，
  * 每次建一个新的临时目录，通过就删掉，没通过就留着并给出路径。
@@ -66,7 +66,11 @@ const scope = full ? '全量' : '受影响的';
 // 关掉索引，每个工作树的缓存约 9 MB，不关约 70 MB
 const APP = join(root, 'app');
 const buildApp = full || changed.some((f) => f.startsWith('app/') || f.startsWith('kited/web/') || f === 'kited/scripts/build-plugin-web.ts');
-const [tsc, lint, app] = await Promise.all([
+// App 与工作机之间的 JSON 字段两边各自手写；这几项用真实的工作机输出编译真实的 Swift 解码代码，各约 2 秒，
+// 两边任一处改动都跑。其余需要原生界面或 WebKit 的验证仍在 test/manual/ 手动运行
+const CONTRACTS = ['verify-transcript-swift.ts', 'verify-remote-workspace-swift.ts', 'verify-resource-reference-swift.ts'];
+const checkContracts = buildApp || changed.some((f) => f.startsWith('kited/src/') || f.startsWith('kited/test/manual/'));
+const [tsc, lint, app, ...contracts] = await Promise.all([
   run(['bunx', 'tsc', '--noEmit']),
   run(['bunx', '--bun', 'eslint', '--format', 'json', '.']),
   buildApp ? (async () => {
@@ -76,6 +80,7 @@ const [tsc, lint, app] = await Promise.all([
       '-destination', 'generic/platform=macOS', '-destination', 'generic/platform=iOS Simulator',
       'build', '-quiet', 'COMPILER_INDEX_STORE_ENABLE=NO'], APP), stage: 'App 编译' };
   })() : undefined,
+  ...(checkContracts ? CONTRACTS.map(async (name) => ({ ...await run(['bun', `test/manual/${name}`]), name })) : []),
 ]);
 const early: string[] = [];
 if (tsc.code !== 0) {
@@ -95,8 +100,12 @@ if (app && app.code !== 0) {
   if (errors.length) early.push(`${app.stage}没通过，${errors.length} 处错误：`, ...head(errors));
   else early.push(`${app.stage}没通过：`, ...tail(app.out));
 }
+for (const contract of contracts) {
+  if (contract.code !== 0) early.push(`App 解码合同 ${contract.name} 没通过：`, ...tail(contract.out));
+}
 if (early.length) fail(early);
-const passed = app ? '类型检查、lint 和 App 编译通过' : '类型检查和 lint 通过';
+const stages = ['类型检查', 'lint', ...(app ? ['App 编译'] : []), ...(contracts.length ? ['解码合同'] : [])].join('、');
+const passed = `${stages}${/[a-z]$/i.test(stages) ? ' ' : ''}通过`;
 
 // 3. 跑测试。小测试只调 git、互不相干，按文件分到多个进程并行跑；
 // 中测试每个都起 Claude Code，并行就是同时起好几个，照旧按顺序跑

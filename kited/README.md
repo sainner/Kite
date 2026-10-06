@@ -56,13 +56,13 @@ bun run harness --resume <会话id>
 
 ## 检查与测试
 
-在仓库根目录运行 `.kite/check`，加 `--all` 跑全量。它先做类型检查和 lint，App 有改动时编译 Mac 与 iPhone，再按 import 关系运行受影响测试。规则见 [test-writer](../.claude/agents/test-writer.md)。
+在仓库根目录运行 `.kite/check`，加 `--all` 跑全量；检查内容见 `scripts/check.ts`。规则见 [test-writer](../.claude/agents/test-writer.md)。
 
 | 路径 | 用途 |
 |---|---|
 | `test/small/` | 模块、临时 Git 仓库及集成逻辑，不起 Claude Code |
 | `test/medium/` | 真实 Claude Code 进程与隔离的假模型端点 |
-| `test/manual/` | Swift、原生运行时和 WebKit 的手动验证，见 [入口表](test/manual/README.md) |
+| `test/manual/` | Swift 解码合同、原生运行时和 WebKit 的验证，见 [入口表](test/manual/README.md) |
 | `test/fixtures/` | 插件与协议探针输入 |
 | `test/setup.ts`、`fake-api.ts`、`harness.ts` 等 | 测试隔离环境、假端点与公共辅助代码 |
 

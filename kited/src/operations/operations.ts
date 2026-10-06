@@ -12,6 +12,8 @@ import { WorkspaceFiles, fileSelection } from '../workspace/files.ts';
 import { assertFileAccess, hostPrivatePaths } from '../execution/sandbox.ts';
 import { pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding, type PluginToolSource } from '../plugins/tools.ts';
 
+type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'interrupt' | 'resume' | 'selectFile'>;
+
 export interface OperationToolSelection {
   plugins: Tool[];
   allowed: Set<string>;
@@ -31,7 +33,7 @@ const pluginArguments = z.record(z.string(), z.unknown());
 export class InstanceOperations {
   private active = new Set<Promise<unknown>>();
   private closing = false;
-  constructor(private kite: Kite) {}
+  constructor(private kite: OperationServices) {}
 
   grants(id: string) {
     const instance = this.kite.store.instance(id);

@@ -46,60 +46,72 @@ export interface RuntimeEvents {
   idle(completed: boolean): void;
 }
 
-export async function openRuntime(s: ThreadContext, home: string, main: string, on: RuntimeEvents, options: RuntimeOptions,
-  currentThread: () => ThreadContext, notifications: (after: number) => ThreadNotification[],
-  operations: { tools: Tool[]; prepare(instance: PluginInstance): OperationToolSelection },
-  contextUpdateTemplate: () => ContextDefinition): Promise<Runtime> {
+export interface RuntimeHost {
+  home: string;
+  /** 检出主目录，用来解析 Git 元数据。 */
+  repository: string;
+  events: RuntimeEvents;
+  options: RuntimeOptions;
+  /** 每次请求重新读取，配置和授权变化在下一次请求生效。 */
+  current(): ThreadContext;
+  notifications(after: number): ThreadNotification[];
+  operations: { tools: Tool[]; prepare(instance: PluginInstance): OperationToolSelection };
+  contextUpdateTemplate(): ContextDefinition;
+}
+
+/** 两个后端共用的工具筛选：agent 配置声明的工具中，操作工具还须获得授权；插件工具只看授权。 */
+function selectTools(current: ThreadContext, operations: RuntimeHost['operations']) {
+  const agent = instanceAgent(current);
+  const selection = operations.prepare(current);
+  const operationNames = new Set(operations.tools.map((tool) => tool.name));
+  const configured = new Set<string>(agent.tools);
+  const permitted = (name: string) => configured.has(name) && (!operationNames.has(name) || selection.allowed.has(name));
+  const plugins = selection.plugins.filter((tool) => selection.allowed.has(tool.name));
+  return { agent, selection, permitted, plugins };
+}
+
+export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<Runtime> {
+  const { home, events: on, options, operations } = host;
   const { id, nativeId, title, runtime, definitionId, workspace: { cwd, id: workspaceId } } = s;
+  if (runtime !== 'claude' && runtime !== 'harness') throw new KiteError(`不支持的会话后端：${runtime}`, 409);
+  const basePolicy = await harnessPolicy({ cwd, env: process.env, home, repository: host.repository });
+  const policy = () => applyExecutionGrants(basePolicy, cwd, instanceExecutionGrants(host.current()));
+  const diffDir = join(home, 'diffs', workspaceId);
   if (runtime === 'claude') {
-    const basePolicy = await harnessPolicy({ cwd, env: process.env, home, repository: main });
-    return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir: join(home, 'diffs', workspaceId),
-      policy: () => applyExecutionGrants(basePolicy, cwd, instanceExecutionGrants(currentThread())),
+    return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy,
       prepare(afterNotification) {
-        const current = currentThread();
-        const agent = instanceAgent(current);
-        const selected = operations.prepare(current);
-        const operationNames = new Set(operations.tools.map((tool) => tool.name));
-        const allowed = new Set([...agent.tools.filter((name) => !operationNames.has(name) || selected.allowed.has(name)),
-          ...selected.plugins.filter((tool) => selected.allowed.has(tool.name)).map((tool) => tool.name)]);
-        const updates = notifications(afterNotification);
+        const { agent, permitted, plugins } = selectTools(host.current(), operations);
+        const allowed = new Set([...agent.tools.filter(permitted), ...plugins.map((tool) => tool.name)]);
+        const updates = host.notifications(afterNotification);
         const instructions = assembleContext(projectContext(cwd, agent.context)).instructions;
-        return { agent, instructions, contextUpdate: assembleContext(contextUpdateContext(instructions, contextUpdateTemplate())).instructions,
-          tools: [...operations.tools, ...selected.plugins], allowed,
+        return { agent, instructions, contextUpdate: assembleContext(contextUpdateContext(instructions, host.contextUpdateTemplate())).instructions,
+          tools: [...operations.tools, ...plugins], allowed,
           notificationText: updates.map((notification) => restoreContext(notification.context).instructions).join('\n\n'),
           through: updates.at(-1)?.sequence ?? afterNotification };
       }, events: on,
     });
   }
-  if (runtime !== 'harness') throw new KiteError(`不支持的会话后端：${runtime}`, 409);
-  const threadDir = join(home, 'sessions', id);
   const declaredTools = new Set<string>(pluginDefinition(definitionId).agent!.tools);
   const inputs = new Map<string, string>();
-  const operationNames = new Set(operations.tools.map((tool) => tool.name));
-  const basePolicy = await harnessPolicy({ cwd, env: process.env, home, repository: main });
-  const host = await openThreadHost({
-    cwd, threadDir, diffDir: join(home, 'diffs', workspaceId), env: { ...process.env }, startPaused: true,
-    policy: () => applyExecutionGrants(basePolicy, cwd, instanceExecutionGrants(currentThread())),
+  const thread = await openThreadHost({
+    cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, startPaused: true, policy,
     prepareRequest(tools, { afterNotification }) {
-      const current = currentThread();
+      const current = host.current();
       const execution = instanceExecutionGrants(current);
-      const agent = instanceAgent(current);
-      const allowed = new Set<string>(agent.tools);
-      const { plugins, allowed: granted, sources } = operations.prepare(current);
+      const { agent, selection, permitted, plugins } = selectTools(current, operations);
       const declared = [...tools, ...operations.tools].filter((tool) => declaredTools.has(tool.name));
       return {
         model: options.model?.(current) ?? new ChatGPTModel({ ...agent.model, threadId: current.nativeId,
           credentials: () => readSubscriptionCredentials(join(home, 'auth', 'chatgpt', 'auth.json')) }),
-        tools: [...declared.filter((tool) => allowed.has(tool.name) && (!operationNames.has(tool.name) || granted.has(tool.name))),
-          ...plugins.filter((tool) => granted.has(tool.name))],
-        toolDefinitions: [...declared, ...plugins].map(({ name, description, parameters }) => ({ name, description, parameters })),
+        tools: [...declared.filter((tool) => permitted(tool.name)), ...plugins],
+        toolDefinitions: [...declared, ...selection.plugins].map(({ name, description, parameters }) => ({ name, description, parameters })),
         instructions: projectContext(current.workspace.cwd, agent.context),
-        contextUpdateTemplate: contextUpdateTemplate(),
+        contextUpdateTemplate: host.contextUpdateTemplate(),
         settings: { model: agent.model, maxRequestsPerTurn: agent.maxRequestsPerTurn,
           execution: { grants: execution, revision: executionRevision(execution) },
           agent: { definitionId: current.definitionId, revision: agentRevision(agent) },
-          pluginTools: sources },
-        notifications: notifications(afterNotification),
+          pluginTools: selection.sources },
+        notifications: host.notifications(afterNotification),
       };
     },
     afterTools: (_turnId, ids) => on.snapshot(ids),
@@ -121,15 +133,15 @@ export async function openRuntime(s: ThreadContext, home: string, main: string, 
     },
   });
   return {
-    get state() { return host.runner.state.phase; }, get busy() { return host.runner.state.busy; },
-    get recovery() { return host.runner.state.recovery; },
-    send: (input) => host.runner.send(input),
-    interrupt: (request) => host.runner.interrupt(request), shutdown: () => host.close(),
+    get state() { return thread.runner.state.phase; }, get busy() { return thread.runner.state.busy; },
+    get recovery() { return thread.runner.state.recovery; },
+    send: (input) => thread.runner.send(input),
+    interrupt: (request) => thread.runner.interrupt(request), shutdown: () => thread.close(),
     resume: async () => {
-      if (host.runner.state.recovery) throw new KiteError('请先确认旧执行已停止，再恢复会话', 409);
-      await host.runner.resume();
+      if (thread.runner.state.recovery) throw new KiteError('请先确认旧执行已停止，再恢复会话', 409);
+      await thread.runner.resume();
     },
-    recover: () => host.confirmRecovery(),
-    cancel: (inputId) => host.runner.cancel(inputId),
+    recover: () => thread.confirmRecovery(),
+    cancel: (inputId) => thread.runner.cancel(inputId),
   };
 }

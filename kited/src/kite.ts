@@ -1,5 +1,5 @@
-import type { Input, StopRequest } from './harness/types.ts';
 /** 工作区负责文件、快照和采纳；线程负责模型执行及独立的对话记录。 */
+import type { Input, StopRequest } from './harness/types.ts';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { FileDiffStore } from './workspace/file-diffs.ts';
@@ -42,7 +42,8 @@ const titleOf = (prompt: string) => firstLine(prompt).slice(0, 80);
 function conflictPrompt(branch: string, files: string[]): string {
   return [`Kite 正在把工作区的改动合回主线。主线有了新提交，把它合进 ${branch} 时这些文件冲突了：`,
     ...files.map((f) => `- ${f}`), '',
-    '请解决冲突，保留双方意图，然后 git add 并 git commit 完成合并。完成后 Kite 会自动继续合回主线。'].join('\n');
+    '请直接编辑这些文件解决冲突，保留双方意图，并删除全部冲突标记；需要删除的文件直接删除。',
+    'Git 元数据由 Kite 管理，不要运行 git add 或 git commit。本回合正常结束后，Kite 会提交合并并继续合回主线。'].join('\n');
 }
 
 export class Kite {
@@ -58,6 +59,7 @@ export class Kite {
   private readonly configuration: InstanceConfiguration;
   private readonly instances: InstanceLifecycle;
   private runners = new Map<string, Runtime>();
+  private openingRunners = new Map<string, Promise<Runtime>>();
   private queues = new Map<string, Promise<unknown>>();
   private preparations = new Map<string, AbortController>();
   private stopping = false;
@@ -357,26 +359,40 @@ export class Kite {
   async history(id: string): Promise<History> { return (await this.transcripts.load(this.context(id))).snapshot(); }
   async threadState(id: string): Promise<DisplayState> { return (await this.transcripts.load(this.context(id))).state(); }
   historyNow(id: string): History { return this.transcripts.snapshot(id); }
-  private async runner(t: ThreadContext): Promise<Runtime> {
+  private runner(t: ThreadContext): Promise<Runtime> {
+    const existing = this.runners.get(t.id);
+    if (existing) return Promise.resolve(existing);
+    // 同一线程只打开一个 runtime；并发的打开请求共用同一次初始化，不依赖调用方持有工作区锁。
+    let opening = this.openingRunners.get(t.id);
+    if (!opening) {
+      opening = this.openRunner(t).finally(() => this.openingRunners.delete(t.id));
+      this.openingRunners.set(t.id, opening);
+    }
+    return opening;
+  }
+  private async openRunner(t: ThreadContext): Promise<Runtime> {
     const { id, workspaceId, workspace, title } = t;
-    const existing = this.runners.get(id);
-    if (existing) return existing;
     await this.transcripts.load(t);
-    const r = await openRuntime(t, this.home, t.checkout.path, {
-      emit: (event) => this.bus.emit({ ...event, threadId: id }),
-      label: (text) => this.turnLabels.set(id, firstLine(text)),
-      snapshot: (ids) => this.snapshot(workspace, ids, this.turnLabels.get(id) ?? title, id),
-      idle: (completed) => {
-        this.bus.emit({ type: 'idle', threadId: id });
-        if (completed && !this.stopping) {
-          if (this.adoptAfterTurn.delete(id)) {
-            this.adopt(workspaceId, id).catch((e) => this.bus.emit({ type: 'workspace.error', workspaceId, originThreadId: id, message: `自动采纳失败：${(e as Error).message}` }));
+    const r = await openRuntime(t, {
+      home: this.home, repository: t.checkout.path, options: this.options,
+      events: {
+        emit: (event) => this.bus.emit({ ...event, threadId: id }),
+        label: (text) => this.turnLabels.set(id, firstLine(text)),
+        snapshot: (ids) => this.snapshot(workspace, ids, this.turnLabels.get(id) ?? title, id),
+        idle: (completed) => {
+          this.bus.emit({ type: 'idle', threadId: id });
+          if (completed && !this.stopping) {
+            if (this.adoptAfterTurn.delete(id)) {
+              this.adopt(workspaceId, id, true).catch((e) => this.bus.emit({ type: 'workspace.error', workspaceId, originThreadId: id, message: `自动采纳失败：${(e as Error).message}` }));
+            }
           }
-        }
+        },
       },
-    }, this.options, () => this.context(id), (after) => this.store.instanceNotifications(id, after), {
-      tools: this.operations.tools(id), prepare: (instance) => this.operations.prepareTools(instance),
-    }, () => this.contextTemplates.get(contextUpdateContextDefinition.id, contextUpdateContextDefinition.scene).definition);
+      current: () => this.context(id),
+      notifications: (after) => this.store.instanceNotifications(id, after),
+      operations: { tools: this.operations.tools(id), prepare: (instance) => this.operations.prepareTools(instance) },
+      contextUpdateTemplate: () => this.contextTemplates.get(contextUpdateContextDefinition.id, contextUpdateContextDefinition.scene).definition,
+    });
     this.runners.set(id, r);
     return r;
   }
@@ -476,17 +492,19 @@ export class Kite {
       this.changed(id);
     });
   }
-  adopt(id: string, originThreadId?: string): Promise<AdoptResult> {
+  /** afterResolution：线程处理冲突的回合已正常结束，由宿主提交其结果；这次仍失败不再转交，避免往复。 */
+  adopt(id: string, originThreadId?: string, afterResolution = false): Promise<AdoptResult> {
     return this.control(id, async () => {
       const { workspace: w, checkout } = this.workspace(id);
       const threads = this.store.threads(id);
       if (w.kind === 'root' || w.status !== 'open') throw new KiteError('只能采纳已打开的独立工作区', 409);
       await this.assertIdle(id);
       const result = await this.serial(`checkout:${checkout.id}`, async (): Promise<AdoptResult> => {
-        const r = await mergeBack(checkout, w.cwd, w.name);
+        const r = await mergeBack(checkout, w.cwd, w.name, { stageResolved: afterResolution });
         if (r.status === 'merged') return { status: 'adopted', commit: r.commit };
         const t = threads.findLast((t) => t.status === 'open');
-        if (r.fresh && t) {
+        // 手动重试遗留冲突同样转交，处理回合被打断后仍能继续。
+        if (!afterResolution && t) {
           this.adoptAfterTurn.add(t.id);
           await this.sendInput(this.context(t.id), { id: randomUUID(), text: conflictPrompt(w.branch!, r.files), source: 'kite' });
         }
@@ -521,8 +539,13 @@ export class Kite {
       const { workspace: w, checkout } = this.workspace(id);
       const threads = this.store.threads(id);
       if (w.status === 'archived') return;
+      // 先检查再停止，拒绝归档时不打断正在工作的线程；停止期间写入的改动再检查一次。
+      const assertMerged = async () => {
+        if (!force && await hasUnmerged(checkout.path, w.cwd)) throw new KiteError('工作区有没合回主线的改动；确定丢弃就加 force', 409);
+      };
+      await assertMerged();
       for (const t of threads) if (t.status !== 'archived') await this.stopThread(t);
-      if (!force && await hasUnmerged(checkout.path, w.cwd)) throw new KiteError('工作区有没合回主线的改动；确定丢弃就加 force', 409);
+      await assertMerged();
       if (existsSync(w.cwd)) await this.snapshot(w, [], '归档前保存');
       const releasePlugins = await this.plugins.closeWorkspace(id);
       try {
@@ -539,7 +562,7 @@ export class Kite {
     await this.plugins.close();
     await this.operations.close();
     for (const c of this.preparations.values()) c.abort();
-    await Promise.allSettled([...this.queues.values()]);
+    await Promise.allSettled([...this.queues.values(), ...this.openingRunners.values()]);
     await Promise.all([...this.runners.values()].map((r) => r.shutdown()));
   }
 }
