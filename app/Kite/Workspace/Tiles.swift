@@ -70,13 +70,14 @@ extension Tile {
         }
     }
 
-    func layout(in rect: CGRect) -> TileLayout {
+    /// 每一刀都吸附到模块线上；free 是正在拖的那一刀，跟手不吸附，松手后再吸附。
+    func layout(in rect: CGRect, free: Split? = nil) -> TileLayout {
         var result = TileLayout()
-        place(in: rect, into: &result)
+        place(in: rect, free: free, into: &result)
         return result
     }
 
-    private func place(in rect: CGRect, into result: inout TileLayout) {
+    private func place(in rect: CGRect, free: Split?, into result: inout TileLayout) {
         switch self {
         case .pane(let pane):
             result.panes[pane] = rect
@@ -88,14 +89,15 @@ extension Tile {
             let available = max((horizontal ? rect.width : rect.height) - Metrics.gap, 0)
             let firstMinimum = horizontal ? split.first.minimumSize.width : split.first.minimumSize.height
             let secondMinimum = horizontal ? split.second.minimumSize.width : split.second.minimumSize.height
-            let requested = (available * split.ratio).rounded()
+            // 比例照常保存，窗口变大变小时按比例分；排出来的长度取整到模块。
+            let requested = split === free ? (available * split.ratio).rounded() : DotMetrics.snap(available * split.ratio)
             let length = available >= firstMinimum + secondMinimum
                 ? min(max(requested, firstMinimum), available - secondMinimum) : requested
             let (a, rest) = rect.divided(atDistance: length, from: edge)
             let (gap, b) = rest.divided(atDistance: Metrics.gap, from: edge)
             result.gaps.append(TileLayout.Gap(split: split, rect: gap, region: rect))
-            split.first.place(in: a, into: &result)
-            split.second.place(in: b, into: &result)
+            split.first.place(in: a, free: free, into: &result)
+            split.second.place(in: b, free: free, into: &result)
         }
     }
 
@@ -179,11 +181,13 @@ struct WindowRegions {
     let canvas: CGRect
     let dock: CGRect
 
+    /// 内容区从模块线开始；尺寸不是模块整数倍时，余下的不足一格留在右边和下边。
     init(in bounds: CGRect) {
+        let width = DotMetrics.snapDown(bounds.width), height = DotMetrics.snapDown(bounds.height)
         canvas = CGRect(x: bounds.minX, y: bounds.minY,
-                        width: max(0, bounds.width - Metrics.dockWidth - Metrics.gap), height: bounds.height)
-        dock = CGRect(x: bounds.maxX - Metrics.dockWidth, y: bounds.minY,
-                      width: Metrics.dockWidth, height: bounds.height)
+                        width: max(0, width - Metrics.dockWidth - Metrics.gap), height: height)
+        dock = CGRect(x: bounds.minX + width - Metrics.dockWidth, y: bounds.minY,
+                      width: Metrics.dockWidth, height: height)
     }
 
     func dockFrame(at index: Int) -> CGRect {

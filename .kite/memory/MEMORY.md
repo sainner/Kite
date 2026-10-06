@@ -20,9 +20,9 @@
 - [新窗口放置](new-window-placement.md) — Mac 新窗口优先新列，其次上下分栏，空间仍不足再收起旧窗口
 - [停止会话的语义](session-stop-behavior.md) — 手动停止退回未纳入请求的消息，不等于保留 paused 状态
 - [统一资源引用](resource-reference-direction.md) — 统一资源引用保留稳定内容身份，历史 diff 不随当前文件变化
-- [窗口标题信息](window-header-information.md) — 窗口标题统一两行，突出会话名称而非工作区名或窗口类别
+- [窗口标题信息](window-header-information.md) — 窗口标题两行，突出会话名称，次级信息为各窗口自定的文字
 - [思考与状态展示](thinking-display.md) — 仅显示当前生成的思考，状态 chip 不承担实时活动或思考正文
-- [视觉风格意向](visual-style-direction.md) — handcraft、蜡笔、风筝意向；五色像素扫掠为已认可的唯一执行动效
+- [视觉风格来源与取舍](visual-style-direction.md) — 参考色板与用户拍板的视觉取舍，规范正文在 docs/视觉风格.md
 - [表格字体来源](table-font-source.md) — 表格使用系统衬线体，iPhone 缺少的中文宋体由苹果按需下载并缓存
 
 ## 协作反馈
@@ -31,6 +31,8 @@
 - [界面由用户自己预览](user-previews-ui.md) — 样式按用户意见改，编译安装并打开后由用户预览，Mac 替换旧实例
 - [接数据沿用原界面](feedback-preserve-ui-on-data-integration.md) — App 接真实数据时保留已做好的界面结构，不另换空状态页面或控件布局
 - [假数据要穷举](fake-data-exhaustive.md) — 预览覆盖当前后端真实工具与异常，未支持能力单独标注
+- [对话用中文](feedback-chat-language.md) — 回复、计划与交付说明都用简体中文
+- [大改动先给方案](feedback-plan-before-large-changes.md) — 新视觉体系或全局布局先交方案与待决问题，确认后实现
 - [测试要克制](test-restraint.md) — 简单配置与接入不扩充测试，跑检查与新增测试分开判断
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 扫描无用逻辑时沿实际执行和数据流判断，不能只看引用
 - [文档只写现状](feedback-docs-current-state.md) — 改文档直接陈述当前状态，不追加更新说明
@@ -44,8 +46,12 @@
 - [待办：真实终端插件](todo-terminal-plugin.md) — 真实终端插件的未解决事项、来源与完成条件
 - [待办：长会话上下文能力](todo-context-capabilities.md) — 长会话上下文能力的未解决事项、来源与完成条件
 - [待办：执行隔离与资源管理](todo-execution-boundaries.md) — 执行隔离与资源管理的未解决事项、来源与完成条件
-- [待办：远程连接与多机关系](todo-remote-connections.md) — 远程连接与多机关系的未解决事项、来源与完成条件
+- [待办：远程连接与多机关系](todo-remote-connections.md) — 配对认证已实现，组网真机验收与多机同步候选待处理
 - [待办：订阅凭据续期](todo-subscription-auth.md) — 订阅凭据续期的未解决事项、来源与完成条件
 - [待办：开发工作流待补齐项](todo-development-workflow.md) — 开发工作流待补齐项的未解决事项、来源与完成条件
 - [待办：产品中的个人偏好存放位置](todo-personal-preferences.md) — 产品中的个人偏好存放位置的未解决事项、来源与完成条件
 - [待办：工作区公共上下文变量](todo-workspace-context.md) — 工作区公共上下文变量的未解决事项、来源与完成条件
+
+## 资料入口
+
+- [自建 headscale（lisa）](reference-headscale-lisa.md) — Kite 组网控制服务器的部署位置、nginx 分流与排查要点

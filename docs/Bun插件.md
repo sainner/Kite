@@ -4,7 +4,7 @@
 
 ## 安装与创建
 
-管理 API 沿用 `X-Kite-Machine`。HTTP 当前只信任本机客户端；插件进程不能访问本机 HTTP，也不继承宿主认证环境。
+管理 API 沿用 `X-Kite-Machine`。HTTP 信任本机客户端和已配对的远程设备；插件进程不能访问本机 HTTP，也不继承宿主认证环境。
 
 `POST /plugin-definitions` 接收：
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 /** kite 命令行：kited 的薄客户端，第 2 步没有界面时用它走通流程。 */
 import { resolve } from 'node:path';
+import QRCode from 'qrcode';
 import type { EventScope } from './events.ts';
 
 const BASE = process.env.KITE_URL ?? `http://127.0.0.1:${process.env.KITE_PORT ?? 5483}`;
@@ -20,7 +21,12 @@ const USAGE = `用法：
   kite snapshots <工作区>               列出快照
   kite restore <工作区> <快照>          把工作树恢复到某一枚快照
   kite adopt <工作区>                   把工作区的改动合回主线
-  kite archive <工作区> [--force]       归档工作区，删掉工作树`;
+  kite archive <工作区> [--force]       归档工作区，删掉工作树
+  kite net [up|down]                  查看、开启或关闭组网；首次开启后按提示登录
+  kite net admin <API 密钥> [用户]    保存 headscale 管理密钥，之后入网不再经浏览器
+  kite pair                           生成远程设备的配对二维码和一次性配对码
+  kite devices                        列出已配对的远程设备
+  kite revoke <设备>                  撤销设备授权并断开它的连接`;
 
 function unreachable(): never {
   console.error(`连不上 kited（${BASE}）`);
@@ -252,6 +258,45 @@ async function main(): Promise<void> {
       need(1);
       await call('POST', `/workspaces/${args[0]}/archive`, { force: args.includes('--force') });
       console.log('· 已归档');
+      break;
+    case 'pair': {
+      const p = await call('POST', '/pairings');
+      if (p.invite) console.log(`用 iPhone 相机扫码，Kite 会自动连接：\n${await QRCode.toString(p.invite, { type: 'terminal', small: true })}`);
+      console.log(`配对码 ${p.code}，${new Date(p.expiresAt).toLocaleTimeString('zh-CN')} 前有效，只能使用一次`);
+      console.log(p.address ? `也可以在 App 中手动填写地址 ${p.address} 和这个配对码` : '组网尚未上线，远程设备暂时连不上；先运行 kite net up');
+      break;
+    }
+    case 'net': {
+      if (args[0] === 'admin') {
+        need(2);
+        await call('PUT', '/network/admin', { apiKey: args[1], user: args[2] ?? process.env.USER ?? '' });
+        console.log('已保存 headscale 管理密钥');
+        break;
+      }
+      if (args[0] === 'up' || args[0] === 'down') await call('PUT', '/network', { enabled: args[0] === 'up' });
+      else if (args[0]) { console.log(USAGE); process.exit(1); }
+      let s = await call('GET', '/network');
+      // 开启后等节点给出登录网址或上线，最多 30 秒。
+      for (let i = 0; args[0] === 'up' && i < 60 && !s.loginURL && s.state !== 'Running' && !s.error; i++) {
+        await Bun.sleep(500);
+        s = await call('GET', '/network');
+      }
+      if (!s.enabled) console.log('组网已关闭');
+      else if (s.state === 'Running') console.log(`组网已上线：${s.name ?? ''}\n远程地址 ${s.address}，用 kite pair 生成配对码`);
+      else if (s.loginURL) console.log(`在浏览器中打开以登录组网：\n${s.loginURL}`);
+      else console.log(`组网状态：${s.state}${s.error ? `\n${s.error}` : ''}`);
+      break;
+    }
+    case 'devices':
+      for (const d of await call('GET', '/devices')) {
+        const seen = d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString('zh-CN') : '未使用';
+        console.log(`${d.id}\t${d.name}\t最近 ${seen}`);
+      }
+      break;
+    case 'revoke':
+      need(1);
+      await call('DELETE', `/devices/${args[0]}`);
+      console.log('· 已撤销');
       break;
     default:
       console.log(USAGE);

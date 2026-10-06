@@ -18,6 +18,8 @@ struct PaneBody: View {
                 PluginPane(target: target, title: area.appearance(of: pane).name, client: client,
                            state: instance.state?.plugin, connection: area.pluginConnection)
                     .id(pane.id)
+            } else if renderer == DotGallery.renderer {
+                DotGallery(title: area.appearance(of: pane).name)
             } else {
                 PlaceholderPane(appearance: area.appearance(of: pane))
             }
@@ -25,6 +27,7 @@ struct PaneBody: View {
         .environment(\.paneInstance, area.windows.first(where: { $0.id == pane.id }).flatMap { window in
             area.instances.first { $0.id == window.target.instanceId }
         })
+        .environment(\.paneAppearance, area.appearance(of: pane))
         .modifier(ReferenceNavigation())
     }
 }

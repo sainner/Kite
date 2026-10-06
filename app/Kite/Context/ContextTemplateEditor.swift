@@ -48,7 +48,7 @@ struct ContextTemplateEditor: View {
                         ContextBlocksEditor(blocks: $draft.blocks, variables: variables)
                     }
                     if !available { Text("工作机连接已变化，请返回后重新打开模板。草稿尚未保存。").foregroundStyle(.secondary) }
-                    if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+                    if let error { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) }
                     if working { ProgressView() }
                 }
                 .padding(20)

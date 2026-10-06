@@ -49,7 +49,7 @@ App 使用临时签名，打包时验证签名完整性。此签名适合本机�
 | 标准输出、错误日志 | `~/Library/Logs/Kite/kited.log`、`kited.error.log` |
 | 数据与模型登录 | `~/.kite`，沿用 `KITE_HOME` |
 
-服务由当前用户的 launchd 托管，安装后立即启动、登录后自动启动，进程退出后会重新拉起；退出 Mac App 不停止服务。它仍只监听 `127.0.0.1`，默认端口 5483；此安装流程不开放远程连接。launchd 的用户 Agent 生命周期参考 [Apple 官方说明](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)。
+服务由当前用户的 launchd 托管，安装后立即启动、登录后自动启动，进程退出后会重新拉起；退出 Mac App 不停止服务。它只监听 `127.0.0.1`，默认端口 5483。远程设备经内嵌组网连接：安装后运行 `kite net up` 并按提示登录，组网程序 kite-net 由安装器用 Go 构建，因此源码安装需要先装 Go。安装时设置 `KITE_CONTROL_URL` 可改用自建的 headscale，安装记录保留此设置，设为空字符串再安装即改回 Tailscale 官方服务；配对与认证见 [远程连接](kited.md#远程连接)。launchd 的用户 Agent 生命周期参考 [Apple 官方说明](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)。
 
 后台环境显式提供 Bun、常见开发工具目录和用户的 `~/.local/bin`，不读取 shell 配置，也不保存发起安装的终端中的密钥或代理环境。项目使用额外工具链时，仍须让其在这些路径中可访问。
 

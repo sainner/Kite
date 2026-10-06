@@ -178,6 +178,8 @@ struct KitedError: LocalizedError {
 struct KitedClient: Equatable {
     let address: String
     var machineID: String? = nil
+    /// 远程工作机的配对令牌；本机服务不需要。
+    var token: String? = nil
 
     private func url(_ path: String) throws -> URL {
         guard let base = URL(string: address), ["http", "https"].contains(base.scheme), base.host != nil,
@@ -195,7 +197,8 @@ struct KitedClient: Equatable {
     func requestWithCursor<T: Decodable>(_ path: String, method: String = "GET", body: (any Encodable)? = nil,
                                        timeout: TimeInterval = 30, as type: T.Type) async throws -> (value: T, cursor: String?) {
         var request = URLRequest(url: try url(path))
-        if path != "/machine" {
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if path != "/machine" && path != "/pair" {
             guard let machineID else { throw KitedError(message: "请先连接工作机") }
             request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
         }
@@ -205,7 +208,8 @@ struct KitedClient: Equatable {
             request.httpBody = try JSONEncoder().encode(body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let session = Tailnet.covers(address) ? try await Tailnet.shared.urlSession() : URLSession.shared
+        let (data, response) = try await session.data(for: request)
         try validate(response, data: data)
         return (try JSONDecoder().decode(T.self, from: data),
                 (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Kite-Cursor"))
@@ -218,7 +222,8 @@ struct KitedClient: Equatable {
     /// 首帧包含所选范围的完整快照；取消任务时关闭 URLSession。
     func events(scope: KitedEventScope = .catalog, receive: (RemoteEvent) async throws -> Void) async throws {
         guard let machineID else { throw KitedError(message: "请先连接工作机") }
-        let connection = URLSession(configuration: .ephemeral)
+        // 组网会话的配置带着节点的代理设置。
+        let connection = URLSession(configuration: Tailnet.covers(address) ? try await Tailnet.shared.urlSession().configuration : .ephemeral)
         defer { connection.invalidateAndCancel() }
         var components = URLComponents(url: try url("/events"), resolvingAgainstBaseURL: true)!
         switch scope {
@@ -229,9 +234,12 @@ struct KitedClient: Equatable {
         request.timeoutInterval = 60
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let (bytes, response) = try await connection.bytes(for: request)
-        if (response as? HTTPURLResponse)?.statusCode == 409 {
-            throw KitedError(message: "连接地址对应的工作机已改变，请重新连接")
+        switch (response as? HTTPURLResponse)?.statusCode {
+        case 409: throw KitedError(message: "连接地址对应的工作机已改变，请重新连接", status: 409)
+        case 401: throw KitedError(message: "这台设备的授权已失效，请在工作机上生成配对码后重新配对", status: 401)
+        default: break
         }
         try validate(response)
         // kited 每个事件固定用一条 data 行，正文换行已由 JSON 转义。

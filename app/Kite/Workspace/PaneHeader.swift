@@ -3,22 +3,23 @@ import SwiftUI
 /// 窗口标题与第二行次级信息，两端共用。
 struct PaneHeader {
     var title: String
+    /// 次级信息由各窗口自定，例如会话的层级；不给时显示窗口类型。
     var detail: Detail?
     var titleRefresh: TitleRefresh?
 
-    /// 主标题与尾部刷新图标共用点击范围，生成期间保持原题。
+    enum Detail {
+        case text(String)
+        /// 路径相对于工作区，每一级目录都可点击。
+        case path(root: String, directory: String, open: (String) -> Void)
+    }
+
+    /// 由主标题尾部的刷新图标触发，生成期间保持原题。
     struct TitleRefresh {
         var actionLabel: String
         var progressLabel: String
         var isRefreshing: Bool
         var enabled: Bool
         var action: () -> Void
-    }
-
-    enum Detail {
-        case text(String)
-        /// 路径相对于工作区；目录可点击，末尾文件名只展示。
-        case path(root: String, directory: String, file: String?, open: (String) -> Void)
     }
 }
 
@@ -72,39 +73,24 @@ struct PaneHeaderBar<Actions: View>: View {
     #endif
 }
 
-/// 所有窗口共用同一套标题排版，次级信息可为文字或目录导航。
+/// 所有窗口共用同一套标题排版：主标题下面是次级信息。
 struct PaneHeaderTitle: View {
     let header: PaneHeader
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.paneAppearance) private var appearance
 
     var body: some View {
         VStack(alignment: .leading, spacing: Metrics.paneTitleSpacing) {
-            title
             detail
+            title
         }
         .lineLimit(1)
     }
 
     private var title: some View {
-        Group {
+        HStack(spacing: Metrics.titleRefreshGap) {
+            Text(header.title)
             if let refresh = header.titleRefresh {
-                Button(action: refresh.action) {
-                    HStack(spacing: 4) {
-                        Text(header.title)
-                        Image(systemName: "arrow.clockwise")
-                            .imageScale(.small)
-                            .symbolEffect(.rotate, options: .repeating, isActive: refresh.isRefreshing && !reduceMotion)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.pointingPlain)
-                .disabled(!refresh.enabled)
-                .help(refresh.isRefreshing ? refresh.progressLabel : "点击\(refresh.actionLabel)")
-                .accessibilityLabel(refresh.actionLabel)
-                .accessibilityValue(header.title)
-                .background { interactiveBoundary }
-            } else {
-                Text(header.title)
+                PaneTitleRefreshButton(refresh: refresh, title: header.title)
             }
         }
         #if os(macOS)
@@ -116,28 +102,72 @@ struct PaneHeaderTitle: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let detail = header.detail {
+        if let detail = header.detail ?? appearance.map({ .text($0.kind) }) {
             Group {
                 switch detail {
                 case .text(let text):
                     Text(text)
-                case .path(let root, let directory, let file, let open):
-                    PaneHeaderPath(root: root, directory: directory, file: file, open: open)
-                        .background { interactiveBoundary }
+                case .path(let root, let directory, let open):
+                    PaneHeaderPath(root: root, directory: directory, open: open)
+                        .reportsHeaderInteraction()
                 }
             }
             .font(Theme.status)
             .foregroundStyle(.secondary)
         }
     }
+}
 
-    @ViewBuilder
-    private var interactiveBoundary: some View {
-        #if os(macOS)
-        GeometryReader { proxy in
-            Color.clear.preference(key: PaneHeaderNavigationBounds.self,
-                value: proxy.frame(in: .named("pane-header")))
+/// 标题尾部的刷新图标是唯一的触发入口，悬停与按压只作用在图标上；生成期间保持原题并转动图标。
+/// 命中范围向外扩出一圈，不改变标题行的排版。
+private struct PaneTitleRefreshButton: View {
+    let refresh: PaneHeader.TitleRefresh
+    let title: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button(action: refresh.action) {
+            Image(systemName: "arrow.clockwise")
+                .imageScale(.small)
+                .symbolEffect(.rotate, options: .repeating, isActive: refresh.isRefreshing && !reduceMotion)
         }
+        .buttonStyle(PaneTitleIconButtonStyle())
+        .disabled(!refresh.enabled)
+        .help(refresh.isRefreshing ? refresh.progressLabel : refresh.actionLabel)
+        .accessibilityLabel(refresh.actionLabel)
+        .accessibilityValue(title)
+    }
+}
+
+private struct PaneTitleIconButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    private var outset: CGFloat { Metrics.titleRefreshOutset }
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.secondary)
+            .padding(outset)
+            .modifier(PaneButtonHover(inset: 0, isPressed: configuration.isPressed))
+            .opacity(!isEnabled ? 0.45 : configuration.isPressed ? 0.7 : 1)
+            .clickPointer()
+            .reportsHeaderInteraction()
+            .padding(-outset)
+    }
+}
+
+private extension View {
+    /// Mac 卡片的拖动层在这块范围上挖空，点击交给标题栏里的控件。
+    @ViewBuilder
+    func reportsHeaderInteraction() -> some View {
+        #if os(macOS)
+        background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: PaneHeaderInteractiveRects.self,
+                    value: [proxy.frame(in: .named("pane-header"))])
+            }
+        }
+        #else
+        self
         #endif
     }
 }
@@ -145,7 +175,6 @@ struct PaneHeaderTitle: View {
 private struct PaneHeaderPath: View {
     let root: String
     let directory: String
-    let file: String?
     let open: (String) -> Void
 
     private var components: [String] {
@@ -159,10 +188,6 @@ private struct PaneHeaderPath: View {
                 ForEach(Array(components.enumerated()), id: \.offset) { index, name in
                     Text("/").foregroundStyle(.tertiary)
                     directoryButton(name, path: components.prefix(index + 1).joined(separator: "/"))
-                }
-                if let file {
-                    Text("/").foregroundStyle(.tertiary)
-                    Text(file)
                 }
             }
             .fixedSize()
@@ -191,6 +216,8 @@ extension EnvironmentValues {
     @Entry var paneHeaderControlsInset: CGFloat = 0
     /// 隐藏的窗口操作组仍为标题栏保留系统按钮需要的高度，悬停时标题栏不跳动。
     @Entry var paneHeaderMinHeight: CGFloat = 0
+    /// 窗口外观，给出默认的次级信息（窗口类型）；PaneBody 给出。
+    @Entry var paneAppearance: WindowAppearance?
 }
 
 /// 卡片拖动层按菜单的实际宽度留空，菜单接收自己的点击。
@@ -205,8 +232,8 @@ nonisolated struct PaneHeaderHeight: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
-/// 标题栏中可点击文字的范围，Mac 的拖动把手避开这一行。
-nonisolated struct PaneHeaderNavigationBounds: PreferenceKey {
-    static let defaultValue: CGRect? = nil
-    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) { value = nextValue() ?? value }
+/// 标题栏中可点击控件的范围，Mac 的拖动层在这些范围上挖空，其余部分都可拖动。
+nonisolated struct PaneHeaderInteractiveRects: PreferenceKey {
+    static let defaultValue: [CGRect] = []
+    static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) { value += nextValue() }
 }

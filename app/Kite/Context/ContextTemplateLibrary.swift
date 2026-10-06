@@ -34,7 +34,7 @@ struct ContextTemplateLibrary: View {
                 }
             }
             if loading { ProgressView() }
-            if let error { Text(error).foregroundStyle(.red) }
+            if let error { Text(error).foregroundStyle(Theme.danger) }
         }
         .formStyle(.grouped)
         .navigationTitle("上下文模板")
@@ -101,7 +101,7 @@ struct NewThreadContextTemplate: View {
             }.disabled(!available || source == nil)
             if thread.configuringTemplate { ProgressView() }
             if let error {
-                Text(error).font(.caption).foregroundStyle(.red)
+                Text(error).font(.caption).foregroundStyle(Theme.danger)
                 Button("重新读取模板") { Task { await load() } }
             }
         }

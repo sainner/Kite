@@ -21,7 +21,7 @@ struct WorkRow: View {
                         Text(work.summary)
                     }
                     if failed > 0 {
-                        Text("\(failed) 步出错").foregroundStyle(.red)
+                        Text("\(failed) 步出错").foregroundStyle(Theme.danger)
                     }
                     if unfinished > 0 {
                         Text("\(unfinished) 步没跑完")
@@ -112,21 +112,21 @@ private struct CallRow: View {
                                 #if os(iOS)
                                 .imageScale(.small)
                                 #endif
-                                .foregroundStyle(failed ? .red : .secondary)
+                                .foregroundStyle(failed ? Theme.danger : .secondary)
                                 .frame(width: Metrics.toolIcon)
                             Text(call.use.displayName).fontWeight(.semibold)
-                                .foregroundStyle(failed ? .red : .primary)
+                                .foregroundStyle(failed ? Theme.danger : .primary)
                         }
                         .fixedSize(horizontal: true, vertical: false)
                         .allowsHitTesting(false)
                         if call.state != .generating, !call.fileReferences.isEmpty {
                             ToolReferenceSummary(references: call.fileReferences)
-                                .foregroundStyle(failed ? .red : .secondary)
-                                .tint(failed ? .red : .secondary)
+                                .foregroundStyle(failed ? Theme.danger : .secondary)
+                                .tint(failed ? Theme.danger : .secondary)
                         } else {
                             Text(verbatim: summary)
                                 .truncationMode(call.use.kind == .command ? .tail : .middle)
-                                .foregroundStyle(failed ? .red : .secondary)
+                                .foregroundStyle(failed ? Theme.danger : .secondary)
                                 .allowsHitTesting(false)
                         }
                     }

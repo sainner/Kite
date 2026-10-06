@@ -37,6 +37,9 @@ async function main(): Promise<void> {
     for (const file of ['package.json', 'bun.lock']) copyFileSync(join(root, 'kited', file), join(kited, file));
     copyFileSync(join(import.meta.dir, 'install-macos.ts'), join(kited, 'scripts/install-macos.ts'));
     writeFileSync(join(kited, 'bunfig.toml'), '[run]\nshell = "system"\n');
+    console.log('构建组网程序 kite-net…');
+    if (!Bun.which('go')) throw new Error('构建组网程序需要 Go，请先安装（如 brew install go）');
+    await run(['go', 'build', '-trimpath', '-o', join(kited, 'net/bin/kite-net'), '.'], join(root, 'kited/net'));
     await run([process.execPath, 'install', '--production', '--frozen-lockfile', '--ignore-scripts'], kited);
     // 在独立目录加载入口依赖，尽早发现仓库外模板或运行资源漏装；不启动服务或读取用户数据库。
     await run([join(runtime, 'bin/bun'), '--no-env-file', '--no-install', '-e', 'await import("./src/daemon.ts")'], kited);
@@ -44,6 +47,7 @@ async function main(): Promise<void> {
     if (!serviceOnly) {
       console.log('构建 Mac Release App…');
       await Bun.write(join(root, 'app/Kite/Resources/Generated/PluginHost.html'), await buildPluginHost());
+      if (!existsSync(join(root, 'app/Vendor/TailscaleKit.xcframework'))) await run([join(root, 'app/scripts/build-tailscalekit.sh')]);
       const derived = join(build, 'macos-derived');
       await run(['xcodebuild', '-project', join(root, 'app/Kite.xcodeproj'), '-scheme', 'Kite',
         '-configuration', 'Release', '-destination', 'generic/platform=macOS', '-derivedDataPath', derived,

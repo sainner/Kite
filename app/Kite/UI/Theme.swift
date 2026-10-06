@@ -11,7 +11,7 @@ enum Theme {
     static let strongPlaceholder = Color("StrongPlaceholder")
     /// 侧边栏里选中的一行。
     static let selection = Color("Selection")
-    /// 会话窗口里人发的消息的气泡：agent 收到了是这个底色，排队中只描边。
+    /// 会话窗口里人发的消息的气泡：agent 收到了是主题色配白字，排队中只描边。
     static let bubble = Color.accentColor
     static let bubbleStroke = Color.accentColor.opacity(0.4)
     static let bubbleShape = UnevenRoundedRectangle(
@@ -26,8 +26,17 @@ enum Theme {
     static let rule = Color("Rule")
     /// 工具列表的描边与分割线更浅一些。
     static let toolRule = rule.opacity(0.65)
-    static let added = Color.green.opacity(0.14)
-    static let removed = Color.red.opacity(0.12)
+    /// 点阵静息那颗点的颜色：墨蓝（深色雾白）叠透明度，与格子颜色在预乘透明度的 oklab 中混合。
+    static let dotRest = Color("DotRest")
+    /// 参考色只有黄蓝两个色相：新增用天空蓝，删除用错误色。
+    static let added = Palette.breeze.opacity(0.22)
+    static let removed = danger.opacity(0.14)
+    /// 错误、删除与危险操作，参考色以外唯一的例外。
+    static let danger = Color("Danger")
+    /// 停止中、警示，取 Sunwashed 的深一档。
+    static let warning = Color("Warning")
+    /// 浅色填充（停靠图标、最小化窗口）上的图标色。
+    static let ink = Color(red: 0.173, green: 0.271, blue: 0.4)
 
     // 字号：两端用同一套 token，每个 token 是一种系统文本样式，多大由系统按平台定，iPhone 上还跟着系统的字号设置。
     // 视图里不写点数，都从这里取
@@ -43,26 +52,48 @@ enum Theme {
     static let status = Font.caption
     /// 命令、输出、代码、改动。
     static let code = Font.system(.subheadline, design: .monospaced)
+    /// 初始配置这类整页的大标题，直接压在背景上。
+    static let display = Font.largeTitle.weight(.bold)
     /// agent 回复里的各级标题。
     static let heading1 = Font.title2.weight(.semibold)
     static let heading2 = Font.title3.weight(.semibold)
     static let heading3 = Font.headline
 }
 
+/// 视觉参考色（规范见 docs/视觉风格.md）。界面里的彩色都从这里或由它派生的颜色资源取，不直接用系统色。
+enum Palette {
+    static let buttercup = Color(hex: 0xFFF2B2)
+    static let dewy = Color(hex: 0xA8C6E7)
+    static let sunwashed = Color(hex: 0xFFE08A)
+    static let cloud = Color(hex: 0xFFF7D6)
+    static let breeze = Color(hex: 0x7FA8D6)
+    /// 中性的窗口类别色，终端等没有专属色的窗口用。
+    static let stone = Color(hex: 0xDAD5C8)
+}
+
+extension Color {
+    init(hex: UInt32) {
+        self.init(.sRGB, red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255,
+                  blue: Double(hex & 0xFF) / 255)
+    }
+}
+
 enum Metrics {
-    /// 窗口内边距。
-    static let padding: CGFloat = 10
-    /// 卡片之间的缝，也是拖动调整大小的把手。
-    static let gap: CGFloat = 10
+    // 布局尺寸以 DotMetrics.module（12）为模数：边距、缝、侧栏、停靠栏和卡片最小尺寸都取它的整数倍，
+    // 从窗口左上角排起，卡片与侧栏的边界都落在模块线上，缝里正好露出一列点。
+    /// 窗口内边距，一个模块。
+    static let padding: CGFloat = 12
+    /// 卡片之间的缝，也是拖动调整大小的把手，一个模块。
+    static let gap: CGFloat = 12
     static let sidebarWidth: CGFloat = 240
-    /// 侧边栏拖动调宽度的范围；拖到比 sidebarCollapse 还窄就收起。
-    static let sidebarMin: CGFloat = 200
-    static let sidebarMax: CGFloat = 400
+    /// 侧边栏拖动调宽度的范围；拖到比 sidebarCollapse 还窄就收起。松手后宽度吸附到模块。
+    static let sidebarMin: CGFloat = 204
+    static let sidebarMax: CGFloat = 396
     static let sidebarCollapse: CGFloat = 120
     /// 最小化插件窗口的圆角；agent 仍使用圆形。
     static let dockRadius: CGFloat = 12
     /// 卡片拖小时的下限。
-    static let minPane: CGFloat = 160
+    static let minPane: CGFloat = 168
     /// 按下后挪动多少才算拖动，免得单击也算。
     static let dragThreshold: CGFloat = 4
     /// Mac 内容区外缘的拖放范围，在这里沿整个窗口组分栏。
@@ -84,11 +115,19 @@ enum Metrics {
     #if os(macOS)
     static let paneMargin: CGFloat = 8
     /// Mac 标题组在窗口边距内额外向右留白。
-    static let paneTitleInset: CGFloat = 8
-    static let paneTitleSpacing: CGFloat = 0
+    static let paneTitleInset: CGFloat = 6
     #else
     static let paneMargin: CGFloat = 14
-    static let paneTitleSpacing: CGFloat = 1
+    #endif
+    /// 次级信息与主标题之间的间距。
+    static let paneTitleSpacing: CGFloat = 0
+    /// 主标题与尾部刷新图标之间的间距。
+    static let titleRefreshGap: CGFloat = 1
+    /// 刷新图标的命中与悬停范围向外扩出的距离，不影响排版；iPhone 保留触控尺寸。
+    #if os(macOS)
+    static let titleRefreshOutset: CGFloat = 4
+    #else
+    static let titleRefreshOutset: CGFloat = 12
     #endif
     #if os(macOS)
     /// 窗口与输入框的圆角按两者之间的留白保持同心。
@@ -98,8 +137,12 @@ enum Metrics {
     #endif
     /// iPhone 上标题栏后面的渐变遮罩往下伸过标题栏底边多少。
     static let topFadeOverhang: CGFloat = 20
-    /// 拖出布局或最小化后的窗口图标尺寸。
-    static let dragBubble: CGFloat = 40
+    /// 拖出布局或最小化后的窗口图标尺寸：Mac 三个模块，iPhone 四个模块，保留触控尺寸。
+    #if os(macOS)
+    static let dragBubble: CGFloat = 36
+    #else
+    static let dragBubble: CGFloat = 48
+    #endif
     /// Mac 右侧停靠栏与窗口图标同宽。
     static let dockWidth: CGFloat = dragBubble
     /// action 区：一排按钮、账号那一行，和两行之间的距离。

@@ -10,11 +10,7 @@ struct ToolRowActivity: ViewModifier {
         if reduceMotion {
             content
         } else if state == .queued {
-            TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
-                let phase = timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2.8) / 2.8
-                let breath = (sin(phase * .pi * 2) + 1) / 2
-                content.opacity(0.45 + 0.55 * breath)
-            }
+            content.waitingBreath()
         } else if state == .running {
             TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
                 // 先在 Double 中收敛到一周期，再传入 Metal，避免大时间戳损失逐帧精度。

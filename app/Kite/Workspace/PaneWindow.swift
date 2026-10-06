@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// 窗口的共有布局：浮在上面的标题栏、内容、浮在下面的控制区。内容从标题栏和控制区后面滚过去，
-/// Mac 标题栏后面垫卡片自己的系统栏材料，iPhone 用系统滚动软边叠渐变；控制区后面垫一层到窗口底边的渐变遮罩。Mac 上是一张卡片的内容，iPhone 上铺满窗口；各个窗口只给标题栏的信息、内容、控制区里的东西，
+/// 标题栏后面垫系统滚动软边，iPhone 的软边是渐进模糊，再叠一层渐变；控制区后面垫一层到窗口底边的渐变遮罩。Mac 上是一张卡片的内容，iPhone 上铺满窗口；各个窗口只给标题栏的信息、内容、控制区里的东西，
 /// 会话状态在 Mac 输入区，iPhone 底部安全区内。
 /// 控制区是液态玻璃容器，各个窗口给内部控件提供玻璃形状；左右留边，底部总边距统一取固定留白与安全区高度的较大值。
 /// 安全区已由窗口容器让出，控制区补足差额；打字时在键盘上方保留固定留白。
@@ -36,8 +36,8 @@ struct PaneWindow<Content: View, Controls: View, Status: View, HeaderActions: Vi
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // 加在控制区外面这一层，点控制区不算
-            .endsTyping($typing)
-            .paneBar(edge: .bottom) {
+            .endsTyping(typing) { typing = false }
+            .safeAreaBar(edge: .bottom, spacing: 0) {
                 GlassEffectContainer(spacing: Metrics.paneButtonGap) {
                     controls($typing)
                 }
@@ -60,7 +60,7 @@ struct PaneWindow<Content: View, Controls: View, Status: View, HeaderActions: Vi
                     // 打字时在输入框里上下拖是选字、滚动，不拉 action 栏
                     .pullsDrawer(enabled: !typing)
             }
-            .paneBar(edge: .top) {
+            .safeAreaBar(edge: .top, spacing: 0) {
                 PaneHeaderBar(header: header, actions: headerActions, openSidebar: sidebarAction)
                     .padding(.top, max(Metrics.paneMargin, topInset) - topInset)
                     .padding(.bottom, Metrics.paneMargin)
@@ -71,8 +71,6 @@ struct PaneWindow<Content: View, Controls: View, Status: View, HeaderActions: Vi
                             Color.clear.preference(key: PaneHeaderHeight.self, value: proxy.size.height)
                         }
                     }
-                    .background(.bar, in: Rectangle())
-                    .overlay(alignment: .bottom) { Divider().opacity(0.5) }
                     #endif
                     #if os(iOS)
                     .background { topFade }
@@ -80,13 +78,8 @@ struct PaneWindow<Content: View, Controls: View, Status: View, HeaderActions: Vi
                     .onTapGesture { typing = false }
                     #endif
             }
-            // Mac 的模糊材料只属于当前卡片，避免系统把贴近窗口顶边的多个滚动区合并到同一个软边合成组。
-            // iPhone 继续叠系统软边；滚动区都铺到顶边，不用额外留出无法滚入的空白。
-            #if os(macOS)
-            .scrollEdgeEffectHidden(true, for: .top)
-            #else
+            // 窗口内容里的滚动区要用 separateScrollPocket，Mac 上贴着窗口顶边的卡片才不会互相串色
             .scrollEdgeEffectStyle(.soft, for: .top)
-            #endif
             // 控制区后面用自己的渐变遮罩，见 bottomFade
             .scrollEdgeEffectHidden(true, for: .bottom)
     }
@@ -128,18 +121,6 @@ struct PaneWindow<Content: View, Controls: View, Status: View, HeaderActions: Vi
 
 }
 
-private extension View {
-    /// Mac 的栏只调整安全区，不向系统标题栏登记滚动边缘效果。
-    @ViewBuilder
-    func paneBar<Bar: View>(edge: VerticalEdge, @ViewBuilder content: () -> Bar) -> some View {
-        #if os(macOS)
-        safeAreaInset(edge: edge, spacing: 0, content: content)
-        #else
-        safeAreaBar(edge: edge, spacing: 0, content: content)
-        #endif
-    }
-}
-
 extension EnvironmentValues {
     /// 窗口底部为 Home 条保留的高度，不含键盘；底栏展开时仍保留。SwiftUI 的安全区读出来是合在一起的，分不出键盘，
     /// PhoneLayout 从 UIKit 读了给出；Mac 上是 0。
@@ -175,16 +156,6 @@ struct DrawerPull {
 }
 
 private extension View {
-    /// 打字时点这里收起键盘，只在 iPhone 上。和这里原有的点按（展开折起来的一行等）同时生效，不抢它们。
-    @ViewBuilder
-    func endsTyping(_ typing: FocusState<Bool>.Binding) -> some View {
-        #if os(iOS)
-        simultaneousGesture(TapGesture().onEnded { typing.wrappedValue = false }, isEnabled: typing.wrappedValue)
-        #else
-        self
-        #endif
-    }
-
     /// 在这里往上拖拉出 action 栏，只在 iPhone 上。和控制区里的点按、输入同时生效，不抢它们。
     @ViewBuilder
     func pullsDrawer(enabled: Bool) -> some View {

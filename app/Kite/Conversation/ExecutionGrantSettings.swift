@@ -89,7 +89,7 @@ struct ExecutionGrantSettings: View {
                 }
             }
             if let notice { Text(notice).foregroundStyle(.secondary) }
-            if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            if let error { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) }
             if working { ProgressView() }
         }
         .formStyle(.grouped)

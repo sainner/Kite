@@ -26,7 +26,7 @@ struct WorkspaceDragSource: NSViewRepresentable {
     }
 
     final class SourceView: PressDragView, NSDraggingSource {
-        var tint = NSColor.systemBlue
+        var tint = NSColor(Palette.breeze)
         var onClick: (() -> Void)?
         var onDetach: ((CGPoint) -> Void)?
 

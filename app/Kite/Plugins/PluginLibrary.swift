@@ -58,7 +58,7 @@ struct PluginLibrary: View {
             Section("内置插件") {
                 ForEach(model.definitions.filter { $0.runtime != "bun" }) { definitionRow($0) }
             }
-            if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            if let error { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) }
             if working { ProgressView() }
         }
         .formStyle(.grouped)

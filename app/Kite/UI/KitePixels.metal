@@ -29,13 +29,13 @@ static float kiteSweep(float2 position, float4 bounds, float travel) {
             pixel += layer.sample(center + float2(column, row) * cell / 3.0) / 9.0h;
         }
     }
-    // 珊瑚橙、暖黄、薄荷绿、天空蓝、葡萄紫；同一格始终取同一色，避免逐帧闪色。
+    // 效果色，与 DotColor.palette 同一组（见 docs/视觉风格.md）；同一格始终取同一色，避免逐帧闪色。
     constexpr half3 palette[5] = {
-        half3(255.0h, 120.0h, 102.0h) / 255.0h, // #FF7866
-        half3(255.0h, 200.0h,  87.0h) / 255.0h, // #FFC857
-        half3( 50.0h, 205.0h, 170.0h) / 255.0h, // #32CDAA
-        half3( 77.0h, 159.0h, 255.0h) / 255.0h, // #4D9FFF
-        half3(173.0h, 124.0h, 255.0h) / 255.0h, // #AD7CFF
+        half3(127.0h, 168.0h, 214.0h) / 255.0h, // #7FA8D6 Morning Breeze
+        half3(168.0h, 198.0h, 231.0h) / 255.0h, // #A8C6E7 Dewy Blue
+        half3(255.0h, 224.0h, 138.0h) / 255.0h, // #FFE08A Sunwashed
+        half3(245.0h, 201.0h,  92.0h) / 255.0h, // #F5C95C Sunwashed 深一档
+        half3( 91.0h, 136.0h, 194.0h) / 255.0h, // #5B88C2 主题色
     };
     float noise = fract(sin(dot(grid, float2(127.1, 311.7))) * 43758.5453);
     uint colorIndex = uint(noise * 5.0);

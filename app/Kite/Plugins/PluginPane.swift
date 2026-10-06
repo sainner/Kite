@@ -35,7 +35,7 @@ struct PluginPane: View {
         } controls: { _ in
             HStack(spacing: Metrics.paneButtonGap) {
                 Text(loadState.error ?? (model.connected ? "" : "连接已断开，正在重连"))
-                    .font(Theme.secondary).foregroundStyle(loadState.error == nil ? Color.secondary : .red)
+                    .font(Theme.secondary).foregroundStyle(loadState.error == nil ? Color.secondary : Theme.danger)
                     .lineLimit(2)
                 Spacer(minLength: Metrics.paneButtonGap)
                 Button {

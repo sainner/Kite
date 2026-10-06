@@ -52,6 +52,8 @@ struct MouseDragArea: NSViewRepresentable {
     var activeCursor: NSCursor?
     /// 挪动多少才算拖动，免得单击也算，见 Metrics.dragThreshold。
     var minimumDistance: CGFloat = 0
+    /// 不接鼠标的范围，本区域的坐标、左上角为原点。落在这里的点击交给下面的 SwiftUI 控件，指针样式也不变。
+    var excluded: [CGRect] = []
     var onChanged: (MouseDrag) -> Void
     var onEnded: () -> Void = {}
     var onClick: (() -> Void)?
@@ -71,6 +73,7 @@ struct MouseDragArea: NSViewRepresentable {
         view.onChanged = onChanged
         view.onEnded = onEnded
         view.onClick = onClick
+        view.excluded = excluded
     }
 
     final class DragView: PressDragView {
@@ -79,10 +82,39 @@ struct MouseDragArea: NSViewRepresentable {
         var onChanged: ((MouseDrag) -> Void)?
         var onEnded: (() -> Void)?
         var onClick: (() -> Void)?
+        var excluded: [CGRect] = [] {
+            didSet { if excluded != oldValue { window?.invalidateCursorRects(for: self) } }
+        }
         private var dragging = false
 
+        // 与 SwiftUI 一致，左上角为原点，excluded 不用换算
+        override var isFlipped: Bool { true }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            let local = convert(point, from: superview)
+            return excluded.contains { $0.contains(local) } ? nil : super.hitTest(point)
+        }
+
         override func resetCursorRects() {
-            addCursorRect(bounds, cursor: cursor)
+            for rect in Self.subtract(excluded, from: bounds) {
+                addCursorRect(rect, cursor: cursor)
+            }
+        }
+
+        /// rect 去掉 holes 后剩下的部分，拆成互不重叠的矩形。
+        private static func subtract(_ holes: [CGRect], from rect: CGRect) -> [CGRect] {
+            holes.reduce([rect]) { pieces, hole in
+                pieces.flatMap { piece -> [CGRect] in
+                    let cut = piece.intersection(hole)
+                    guard !cut.isEmpty else { return [piece] }
+                    return [
+                        CGRect(x: piece.minX, y: piece.minY, width: piece.width, height: cut.minY - piece.minY),
+                        CGRect(x: piece.minX, y: cut.maxY, width: piece.width, height: piece.maxY - cut.maxY),
+                        CGRect(x: piece.minX, y: cut.minY, width: cut.minX - piece.minX, height: cut.height),
+                        CGRect(x: cut.maxX, y: cut.minY, width: piece.maxX - cut.maxX, height: cut.height),
+                    ].filter { !$0.isEmpty }
+                }
+            }
         }
 
         override func mouseDragged(with event: NSEvent) {

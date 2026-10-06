@@ -4,3 +4,5 @@ node_modules/
 .claude/scheduled_tasks.lock
 xcuserdata/
 /build/
+kited/net/bin/
+/app/Vendor/

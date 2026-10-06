@@ -9,6 +9,9 @@ struct ThreadControls: View {
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @Environment(\.paneInstance) private var instance
+    @Environment(\.dotStage) private var stage
+    /// 控制区在窗口坐标中的位置，发送时点阵的波从这里推开。
+    @State private var frame: CGRect = .zero
     /// 刚发出去的字正在淡掉。
     @State private var leaving = false
     @State private var effortDraft: Effort?
@@ -46,7 +49,10 @@ struct ThreadControls: View {
                 }
                 Spacer(minLength: Metrics.paneButtonGap)
                 if thread.isStreamingPreview {
-                    Button("重播") { thread.previewRun += 1 }
+                    Button("重播") {
+                        thread.previewRun += 1
+                        stage?.emitWave(from: frame)
+                    }
                         .buttonStyle(PaneButtonStyle(text: true))
                 }
                 #if os(macOS)
@@ -90,6 +96,7 @@ struct ThreadControls: View {
         .contentShape(.hoverEffect, shape)
         #endif
         .glassEffect(.regular.interactive(), in: shape)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
         .alert("修改思考强度失败", isPresented: Binding(get: { effortError != nil }, set: { if !$0 { effortError = nil } })) {
             Button("好", role: .cancel) { effortError = nil }
         } message: { Text(effortError ?? "") }
@@ -130,6 +137,7 @@ struct ThreadControls: View {
         send(Message(typed: sent.trimmingCharacters(in: .whitespacesAndNewlines)))
         // 新会话先选择项目；关闭选择窗口时仍保留原输入。
         guard !thread.isDraft else { return }
+        stage?.emitWave(from: frame)
         let submission = thread.beginDraftSubmission()
         // 淡完才清空，输入框不在淡的时候变矮。淡的时候又打了字的，只去掉发出去的那一截
         withAnimation(.easeOut(duration: 0.3)) {

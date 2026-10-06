@@ -19,6 +19,10 @@ struct PhoneLayout: View {
     @State private var drawerHeight: CGFloat = 0
     /// Home 条让出的那一截，不含键盘，从 UIKit 读；读到之前按 SwiftUI 的算。
     @State private var homeInset: CGFloat?
+    @State private var stage = DotStage()
+    #if DEBUG
+    @State private var tuningShown = false
+    #endif
 
     var body: some View {
         GeometryReader { geo in
@@ -28,12 +32,17 @@ struct PhoneLayout: View {
                                 height: geo.size.height + insets.top + insets.bottom)
             let home = homeInset ?? insets.bottom
             // 侧边栏拉开后，窗口至少留下 phoneMinWindow 宽
-            let sidebarWidth = min(screen.width - Metrics.padding - Metrics.phoneMinWindow, 320)
+            let sidebarWidth = DotMetrics.snapDown(min(screen.width - Metrics.padding - Metrics.phoneMinWindow, 312))
             // 窗口底边要升到页签上面，页签在 action 栏上面，action 栏在 Home 条上面
             let actionsHeight = drawerHeight + home + Metrics.padding
             let current = model.current?.id
             ZStack(alignment: .topLeading) {
-                Theme.background.ignoresSafeArea()
+                ZStack {
+                    Theme.background
+                    // 拉出侧边栏或 action 栏时露出背景上的点阵
+                    DotCanvas()
+                }
+                .ignoresSafeArea()
                 ScreenReader { radius, bottom in
                     screenRadius = radius
                     homeInset = bottom
@@ -41,19 +50,22 @@ struct PhoneLayout: View {
                 .ignoresSafeArea()
                 // 会话列表，点一个就切过去并收起。一次只露出一侧，另一侧藏起来，免得窗口移开时从边上露出来
                 ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 4) {
-                        ForEach(model.listedWorkspaces) { workspace in
-                            WorkspaceRow(workspace: workspace, current: current == workspace.id, height: 44)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    model.selected = workspace.id
-                                    open = nil
-                                }
-                        }
+                    WorkspaceList(headerHeight: 32) { workspace in
+                        WorkspaceRow(workspace: workspace, current: current == workspace.id, height: 44)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                model.selected = workspace.id
+                                open = nil
+                            }
                     }
                     .padding(.top, Metrics.padding * 2)
                     .padding(.leading, Metrics.padding)
                     .padding(.trailing, Metrics.gap)
+                    #if DEBUG
+                    Button("点阵调试") { tuningShown = true }
+                        .font(Theme.secondary)
+                        .padding(Metrics.padding)
+                    #endif
                 }
                 .frame(width: sidebarWidth)
                 .opacity(showing(.sidebar) ? 1 : 0)
@@ -75,6 +87,15 @@ struct PhoneLayout: View {
         }
         // 保留 Home 条自动隐藏；状态 chip 已移到控制区，不再推测系统何时隐藏它。
         .persistentSystemOverlays(.hidden)
+        .environment(\.dotStage, stage)
+        #if DEBUG
+        // 半屏，拉开侧边栏时上面还能看到背景上的点阵
+        .sheet(isPresented: $tuningShown) {
+            DotTuningPanel()
+                .presentationDetents([.medium, .large])
+                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+        }
+        #endif
     }
 
     /// 其余窗口折叠在底部；点击后展开它，原来的窗口回到这一栏，始终只展开一个。
@@ -122,7 +143,7 @@ struct PhoneLayout: View {
 /// - 屏幕圆角：圆角和容器同心的 UIView，它的实际圆角就是屏幕圆角（iOS 26 起的公开接口）。
 /// - Home 条让出的那一截：UIKit 的安全区不含键盘，键盘另有 keyboardLayoutGuide。
 ///   SwiftUI 的安全区分成 container 和 keyboard 两区，但只能按区忽略，读出来的是合在一起的。
-private struct ScreenReader: UIViewRepresentable {
+struct ScreenReader: UIViewRepresentable {
     let onRead: (_ radius: CGFloat, _ bottom: CGFloat) -> Void
 
     func makeUIView(context: Context) -> Probe {

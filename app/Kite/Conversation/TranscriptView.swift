@@ -239,7 +239,7 @@ private struct ItemView: View {
         case .compacted(let summary):
             CompactedDivider(summary: summary)
         case .apiError(let message):
-            EventLabel(text: message, icon: "exclamationmark.triangle", tint: .red)
+            EventLabel(text: message, icon: "exclamationmark.triangle", tint: Theme.danger)
         }
     }
 }

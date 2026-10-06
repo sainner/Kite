@@ -5,6 +5,7 @@ import { hostname } from 'node:os';
 import type { AgentInstance, Checkout, Machine, PluginInstance, Project, Thread, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
 import type { ThreadNotification } from './harness/types.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
+import { Devices } from './devices.ts';
 
 export interface ThreadTitle {
   title: string;
@@ -94,6 +95,7 @@ const windowOf = (r: any): WorkspaceWindow => ({
 export class Store {
   private db: Database;
   readonly machine: Machine;
+  readonly devices: Devices;
   transaction<T>(action: () => T): T { return this.db.transaction(action)(); }
   constructor(path: string) {
     this.db = new Database(path, { create: true, strict: true });
@@ -108,6 +110,7 @@ export class Store {
       this.db.query('insert into machine values (1, ?, ?, ?)').run(machine.id, machine.name, machine.createdAt);
       return machine;
     })();
+    this.devices = new Devices(this.db);
   }
 
   projects(): Project[] { return this.db.query('select * from projects order by created_at, id').all().map(projectOf); }

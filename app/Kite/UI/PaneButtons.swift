@@ -1,11 +1,13 @@
 import SwiftUI
 
-/// 独立玻璃按钮共用字体与辅助功能；Mac 标签使用内容的自然尺寸。
-/// iPhone 保留触控按钮的标签占位，玻璃与交互由系统负责。
+/// 独立玻璃按钮共用字体、标签占位与辅助功能：图标占正方形，文字同高，同组按钮尺寸一致；
+/// iPhone 的占位保留触控尺寸，玻璃与交互由系统负责。
 struct PaneButtonLabel: View {
     let title: String
     var systemImage: String?
-    #if os(iOS)
+    #if os(macOS)
+    @ScaledMetric(relativeTo: .body) private var extent: CGFloat = 16
+    #else
     @ScaledMetric(relativeTo: .body) private var extent: CGFloat = 18
     #endif
 
@@ -23,9 +25,7 @@ struct PaneButtonLabel: View {
             }
         }
         .font(Theme.body)
-        #if os(iOS)
         .frame(width: systemImage == nil ? nil : extent, height: extent)
-        #endif
         .accessibilityLabel(title)
     }
 }

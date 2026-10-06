@@ -18,6 +18,7 @@ enum SampleWorkspace {
         guard enabled else { return model }
         model.workspaces = [
             pluginSidebar(),
+            dotGallery(),
             workspace("references", title: "引用 · 文件与历史差异", transcript: ReferenceSamples.transcript, outcome: "completed"),
             workspace("stream-live", title: "流式会话 · 动态预览", transcript: HarnessSampleTranscripts.empty),
             workspace("tool-styles", title: "工具行 · 样式与动画", transcript: HarnessSampleTranscripts.toolStyles),
@@ -84,6 +85,18 @@ enum SampleWorkspace {
         }
         area.layout.expand(Pane(mainWindow.id))
         area.layout.activate(Pane(mainWindow.id))
+        return area
+    }
+
+    /// 点阵视觉语言的样式样本，窗口只在预览中存在。
+    private static func dotGallery() -> WorkArea {
+        let area = workspace("dots", title: "点阵 · 视觉语言", transcript: HarnessSampleTranscripts.empty)
+        area.definitions.append(.init(id: "sample.dots", title: "点阵（样式样本）", lifetime: .window,
+                                      views: [.init(id: "gallery", title: "点阵", renderer: DotGallery.renderer)],
+                                      defaultView: "gallery", agent: nil))
+        let id = UUID().uuidString
+        openWindow(.init(id: id, content: .create("sample.dots")), in: area)
+        area.layout.expand(Pane(id))
         return area
     }
 

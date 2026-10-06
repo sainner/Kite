@@ -16,7 +16,7 @@ Mac 和 iPhone 共用一个 SwiftUI 工程、一个多平台 target。使用 Swi
 | `Kite/Files/` | 文件浏览、内容预览与资源引用 |
 | `Kite/Plugins/` | 插件管理、实例设置、插件窗口与原生 Web 桥 |
 | `Kite/Context/` | 上下文模板模型、目录与编辑器 |
-| `Kite/UI/` | 主题、公共控件、文本渲染与 Metal 动效 |
+| `Kite/UI/` | 主题、公共控件、点阵视觉语言、文本渲染与 Metal 动效 |
 | `Kite/Preview/` | 样本数据与动态预览 |
 | `Kite/Resources/Generated/` | 生成的插件宿主页；源码在 `kited/web/plugin-host.ts` |
 | `Kite.xcodeproj/` | 多平台工程、共享 scheme 与固定的 Swift Package 版本 |
@@ -35,6 +35,8 @@ node_modules/.bin/bun run build:plugin-web
 cd ..
 xcodebuild -project app/Kite.xcodeproj -scheme Kite -destination 'generic/platform=macOS' -destination 'generic/platform=iOS Simulator' build -quiet
 ```
+
+App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `app/scripts/build-tailscalekit.sh` 从固定版本的 libtailscale 构建，需要 Go；`.kite/check` 和打包在缺少时自动构建。Mac 端只编 arm64。
 
 生成的 `PluginHost.html` 随仓库提交，直接打开 Xcode 也能取得该资源。修改宿主页应编辑 `kited/web/plugin-host.ts` 后重新构建。
 

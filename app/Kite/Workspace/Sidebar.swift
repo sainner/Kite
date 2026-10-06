@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 侧边栏里的一行，一个工作区。没有自己的底色，选中时垫一层；空列表显示尚未提交的草稿。
+/// 侧边栏里的一行，一个工作区。没有自己的底色，选中时垫一层。
 struct WorkspaceRow: View {
     let workspace: WorkArea
     let current: Bool
@@ -19,6 +19,82 @@ struct WorkspaceRow: View {
         .padding(.horizontal, 10)
         .frame(height: height)
         .background(current ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// 侧栏的一组：一个项目下的工作区。同一项目有多个检出时再按检出分一层，只有一个时检出没有标题。
+struct WorkspaceGroup: Identifiable {
+    struct Checkout: Identifiable {
+        let id: String
+        var title: String?
+        var workspaces: [WorkArea]
+    }
+    let id: String
+    let title: String?
+    var checkouts: [Checkout]
+}
+
+extension AppModel {
+    /// 沿用工作区列表的顺序，项目和检出排在其中第一个工作区出现的位置。草稿不是工作区，不列出。
+    var workspaceGroups: [WorkspaceGroup] {
+        var groups: [WorkspaceGroup] = []
+        for area in workspaces {
+            guard let remote = area.remote else { continue }
+            if !groups.contains(where: { $0.id == remote.project.id }) {
+                groups.append(.init(id: remote.project.id, title: projectLabel(remote.project), checkouts: []))
+            }
+            let group = groups.firstIndex { $0.id == remote.project.id }!
+            if let checkout = groups[group].checkouts.firstIndex(where: { $0.id == remote.checkout.id }) {
+                groups[group].checkouts[checkout].workspaces.append(area)
+            } else {
+                groups[group].checkouts.append(.init(id: remote.checkout.id, title: remote.checkout.path, workspaces: [area]))
+            }
+        }
+        for index in groups.indices {
+            let checkouts = groups[index].checkouts
+            // 检出用目录名区分，目录名相同的才显示完整路径。
+            let names = checkouts.map { ($0.title ?? "").split(separator: "/").last.map(String.init) ?? "" }
+            for (offset, name) in names.enumerated() {
+                groups[index].checkouts[offset].title = checkouts.count == 1 ? nil
+                    : names.filter { $0 == name }.count > 1 || name.isEmpty ? checkouts[offset].title : name
+            }
+        }
+        return groups
+    }
+
+    /// 收起的侧栏没有标题，按分组后的顺序排。
+    var groupedWorkspaces: [WorkArea] { workspaceGroups.flatMap { $0.checkouts.flatMap(\.workspaces) } }
+}
+
+/// 侧栏的工作区列表：项目标题下列出它的工作区，多个检出时检出标题下的工作区再缩进一级。
+struct WorkspaceList<Row: View>: View {
+    var headerHeight: CGFloat = 24
+    @ViewBuilder let row: (WorkArea) -> Row
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let groups = model.workspaceGroups
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(groups) { group in
+                if let title = group.title {
+                    Text(title).font(Theme.caption.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
+                        .padding(.horizontal, 10)
+                        .frame(height: headerHeight)
+                        .padding(.top, group.id == groups.first?.id ? 0 : 8)
+                }
+                ForEach(group.checkouts) { checkout in
+                    if let title = checkout.title {
+                        Label(title, systemImage: "folder").font(Theme.caption).foregroundStyle(.tertiary).lineLimit(1)
+                            .truncationMode(.middle)
+                            .padding(.horizontal, 10)
+                            .frame(height: headerHeight)
+                    }
+                    ForEach(checkout.workspaces) { workspace in
+                        row(workspace).padding(.leading, checkout.title == nil ? 0 : 12)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -106,11 +182,9 @@ struct MacSidebar: View {
     private func expanded(_ current: String?) -> some View {
         VStack(spacing: Metrics.gap) {
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 4) {
-                    ForEach(model.listedWorkspaces) { workspace in
-                        WorkspaceRow(workspace: workspace, current: current == workspace.id, detached: model.detached.contains(workspace.id))
-                            .overlay { source(workspace) }
-                    }
+                WorkspaceList { workspace in
+                    WorkspaceRow(workspace: workspace, current: current == workspace.id, detached: model.detached.contains(workspace.id))
+                        .overlay { source(workspace) }
                 }
             }
             ActionArea()
@@ -121,7 +195,7 @@ struct MacSidebar: View {
         VStack(spacing: Metrics.gap) {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 8) {
-                    ForEach(model.listedWorkspaces) { workspace in
+                    ForEach(model.groupedWorkspaces) { workspace in
                         // 已经分离成独立窗口的画淡一点
                         Circle().fill(workspace.tint).frame(width: 24, height: 24)
                             .opacity(model.detached.contains(workspace.id) ? 0.35 : 1)

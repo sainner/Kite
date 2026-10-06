@@ -48,8 +48,8 @@ private struct ContextRing: View {
     private var color: Color {
         switch phase {
         case "running": .accentColor
-        case "stopping": .orange
-        case "finishing": .purple
+        case "stopping": Theme.warning
+        case "finishing": Palette.dewy
         default: .secondary
         }
     }

@@ -109,7 +109,7 @@ export PATH="$PWD/node_modules/.bin:$PATH"
 bun src/main.ts
 ```
 
-`KITE_HOME` 默认是 `~/.kite`，里面放数据库 `kite.db`、工作树 `worktrees/<项目>/<工作区>/`、初始化日志 `workspaces/<工作区>/setup.log` 和线程记录 `sessions/<线程>/`。`KITE_PORT` 默认是 5483，只监听 127.0.0.1。
+`KITE_HOME` 默认是 `~/.kite`，里面放数据库 `kite.db`、工作树 `worktrees/<项目>/<工作区>/`、初始化日志 `workspaces/<工作区>/setup.log` 和线程记录 `sessions/<线程>/`。`KITE_PORT` 默认是 5483，监听 127.0.0.1；组网与远程监听见下节。
 
 工作机服务的 `Machine.id` 首次启动时生成 UUID，保存到 `kite.db`，同一数据目录重启或更换端口时保持不变；新数据目录生成新身份。名称初始取主机名，地址由客户端保存。检出通过 `machineId` 引用所属机器；项目也使用 UUID，不按文件夹名推断跨机器的项目关系。
 
@@ -130,7 +130,24 @@ bun src/cli.ts snapshots <工作区>
 bun src/cli.ts restore <工作区> <快照>
 bun src/cli.ts adopt <工作区>
 bun src/cli.ts archive <工作区>
+bun src/cli.ts net up              # 开启组网，首次按提示登录
+bun src/cli.ts pair                # 生成远程设备的配对码
+bun src/cli.ts devices             # 列出已配对设备
+bun src/cli.ts revoke <设备>       # 撤销设备
 ```
+
+## 远程连接
+
+手机和其他电脑经组网连接工作机。kited 与 App 都内嵌组网节点（Tailscale 的 tsnet / TailscaleKit），各自以独立节点上线，不需要安装 Tailscale 客户端，也不占用系统 VPN。链路加密由 WireGuard 承担，kited 负责认证设备。控制服务器默认是 Tailscale 官方服务；kited 可用 `KITE_CONTROL_URL` 改用自建的 headscale，App 端暂未提供此设置。
+
+- **组网节点。** `kite net up` 开启组网，kited 启动 `kite-net`（`kited/net`，Go 编写，需单独构建），首次上线需要登录：已保存 headscale 管理密钥时 kited 自己签发入网密钥自动登录，否则给出登录网址，在浏览器登录一次（headscale 的登录页需在服务器上执行页面所示的注册命令）。登录后节点保持登录。`kite net` 查看状态，`kite net down` 停止节点但保留登录。节点状态与登录凭据在 `KITE_HOME/tailnet/`，开启与否也记在这里，服务重启后沿用；kite-net 异常退出时 5 秒后重启。节点名为 `kite-<主机名>`。Tailscale 节点密钥默认会定期过期，过期后按同样方式重新登录。
+- **headscale 管理密钥。** `kite net admin <API 密钥> [用户]` 校验并保存 headscale 的 API 密钥（`headscale apikeys create` 生成），存于 `KITE_HOME/tailnet/headscale.json`，仅本用户可读，不开放给插件或模型工具。之后 kited 按需签发归该用户的一次性入网密钥，10 分钟有效。使用 Tailscale 官方服务时不支持。
+- **监听。** 远程监听只绑回环地址的随机端口，kite-net 把组网 5483（同 `KITE_PORT`）端口上的连接原样转给它。远程监听不做主机名检查，只认配对令牌；本机监听不变。`GET /network` 和 `PUT /network {enabled}` 只在本机开放，返回 `{enabled, state, loginURL?, ips?, name?, address?, error?}`，`address` 是上线后供远程设备填写的 `http://<组网 IPv4>:5483`。
+- **配对。** 配对码只能在本机生成：`kite pair`，或 Mac App 连本机服务时在设置的「远程设备」中点「添加设备」。配对码 8 位，10 分钟内有效，只能使用一次，只存在内存，服务重启即失效。组网上线后同时给出二维码，内容是邀请链接 `kite://pair?address=…&code=…&control=…&key=…`：组网地址、配对码、控制服务器（自建时）和入网密钥（有管理密钥时）。iPhone 用相机扫码打开 Kite，App 按链接设置组网、用入网密钥上线，再用配对码连接，全程无需输入或浏览器登录。邀请链接相当于一次性密码，只在本机显示。远程客户端用 `POST /pair {code, name}` 换取 `{machine, device, token}`。
+- **认证。** 远程监听上除 `/pair` 外的接口（含 `/machine` 和 SSE）都要带 `Authorization: Bearer <token>`，再按本机规则带 `X-Kite-Machine`。每台设备一个令牌，不过期；服务只保存摘要。缺少令牌或令牌已撤销时返回 401。配对码生成、设备列表和撤销只在本机监听开放，远程令牌不能签发或撤销令牌。
+- **撤销。** `kite revoke <设备>` 或 App 中撤销后，该设备已建立的事件流立即断开，之后的请求返回 401。
+- **连接恢复。** 网络错误和服务重启按原有方式重连：重新订阅后以首帧快照替换本地副本，控制请求依靠请求 ID 去重。401 不会自行恢复，客户端停止重试，提示重新配对；409 表示地址背后换了工作机。同一工作机的组网地址变化时，客户端保留机器身份和令牌，只更新地址。
+- **客户端。** App 把令牌存进钥匙串（仅本机、首次解锁后可读），不写进偏好设置。连接地址是组网地址（100.64.0.0/10、Tailscale IPv6 段或 `.ts.net` 名称）时，App 先让自己的组网节点上线，再经节点的本机代理发请求；没有入网密钥时首次上线自动打开浏览器登录。手动连接时可在连接页或设置中填写自建的控制服务器。iOS 挂起后系统会回收节点的本机代理，App 进入后台时关闭节点，回到前台重连时重新上线。经代理的请求即使目标是 IP 也受 ATS 限制，App 因此放开明文加载；kited 的远程流量由 WireGuard 加密，本机连接只到 127.0.0.1。
 
 ## 工作区与线程的生命周期
 
@@ -197,7 +214,13 @@ harness 与 Claude 都通过共享 shell 执行 `.kite/check`，不再注册独�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/machine` | 读取这台工作机服务的持久身份，无需请求头 |
+| GET | `/machine` | 读取这台工作机服务的持久身份，无需 `X-Kite-Machine`；远程监听需带令牌 |
+| POST | `/pairings` | 仅本机：生成配对码，返回 `{code, expiresAt, address, invite}`；组网未上线时 `address`、`invite` 为 null |
+| PUT | `/network/admin` | 仅本机：`{apiKey, user}` 校验并保存 headscale 管理密钥 |
+| GET/PUT | `/network` | 仅本机：组网状态；`{enabled}` 开启或关闭组网节点 |
+| GET | `/devices` | 仅本机：列出已配对设备 `{id, name, createdAt, lastSeenAt}` |
+| DELETE | `/devices/:id` | 仅本机：撤销设备并断开它的事件流 |
+| POST | `/pair` | 仅远程，无需令牌：`{code, name?}` 换取 `{machine, device, token}`，配对码无效返回 401 |
 | GET | `/projects` | 列出本机已登记的项目身份 |
 | GET/POST | `/checkouts` | 列出本机检出（`?project=`）；登记 `{path, project?}`，返回根工作区聚合 |
 | GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, runtime?, contextTemplate?}`，准备过程看事件 |
@@ -246,7 +269,7 @@ harness 与 Claude 都通过共享 shell 执行 `.kite/check`，不再注册独�
 
 `POST /checkouts` 的 `project` 为 `{id, name, createdAt}`，可直接使用另一台工作机返回的项目身份；省略则创建新项目。同 ID 的名称或创建时间冲突、已登记目录试图改属另一项目时返回 409，在修改目录之前拒绝。重复登记同一目录和项目返回原检出及根工作区。
 
-连接时先读 `GET /machine`。其余接口（包括 SSE）必须带 `X-Kite-Machine: <id>`：缺失返回 400，和服务身份不符返回 409，并在执行请求前拒绝。这个检查用于防止地址复用时操作错机器；远程网络认证仍待实现。所有接口只接受 `Host` 为 `127.0.0.1` 或 `localhost` 的请求，其他主机名返回 403，用于阻止网页借 DNS 重绑定访问本机服务。App 会保存身份，重连时继续使用原 ID；CLI 在一次命令内固定目标 ID。
+连接时先读 `GET /machine`。其余接口（包括 SSE）必须带 `X-Kite-Machine: <id>`：缺失返回 400，和服务身份不符返回 409，并在执行请求前拒绝。这个检查用于防止地址复用时操作错机器，不承担认证。本机监听的接口只接受 `Host` 为 `127.0.0.1` 或 `localhost` 的请求，其他主机名返回 403，用于阻止网页借 DNS 重绑定访问本机服务；远程监听改用配对令牌认证，见[远程连接](#远程连接)。App 会保存身份，重连时继续使用原 ID；CLI 在一次命令内固定目标 ID。
 
 工作区聚合和线程上下文包含 `machine`，检出包含 `machineId`。目录流中的 `checkout.changed`、`workspace.changed`、`thread.changed` 通知客户端重新读取聚合；工作区操作和线程正文按各自范围订阅。SSE 广播本身不落库，每次重连用对应范围的完整快照替换客户端副本，再按记录 id 更新。harness 以 `sessions/<线程>/journal.jsonl` 为准，Claude 以自己的会话记录为准，快照以 Git 为准。SQLite 保存领域对象、窗口操作收据及 start / resume / files.select 操作请求与结果，不保存线程对话历史。cursor、流式草稿和 Claude 支持范围见 [会话显示协议](会话显示协议.md)。
 
@@ -266,7 +289,7 @@ harness 与 Claude 都通过共享 shell 执行 `.kite/check`，不再注册独�
 
 ## 当前能力边界
 
-当前服务只监听本机，机器身份校验不能替代远程认证。Linux 沙箱实机验证、资源配额、独立终端授权编辑和脱离进程组的后台任务尚未完成；Git 元数据只读，不能假设模型工具可直接暂存或提交。文件快照回退已提供，会话历史的回退与分叉尚未提供。
+远程连接需要组网，iPhone 真机经组网连接的完整验收尚未完成。Linux 沙箱实机验证、资源配额、独立终端授权编辑和脱离进程组的后台任务尚未完成；Git 元数据只读，不能假设模型工具可直接暂存或提交。文件快照回退已提供，会话历史的回退与分叉尚未提供。
 
 持续待办、待验证事项和候选产品决定已归入 [项目记忆](../.kite/memory/MEMORY.md)，不在本文重复维护排期。Claude 原生能力的开放范围以本文专节和当前接入决定为准。
 

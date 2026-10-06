@@ -78,7 +78,7 @@ struct InstanceSettings: View {
                         else { instanceGrants(target) }
                     }
                 }
-                if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+                if let error { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) }
                 if working { ProgressView() }
             }
             .formStyle(.grouped)
@@ -174,7 +174,7 @@ struct InstanceSettings: View {
             }
             Button(loadingTools.contains(target.id) ? "正在读取…" : "读取可用工具") { Task { await readTools(target.id) } }
                 .disabled(!available || loadingTools.contains(target.id))
-            if let message = toolErrors[target.id] { Text(message).font(.caption).foregroundStyle(.red) }
+            if let message = toolErrors[target.id] { Text(message).font(.caption).foregroundStyle(Theme.danger) }
             if tools[target.id] != nil && names.isEmpty { Text("没有可授予的工具").foregroundStyle(.secondary) }
         }
     }
@@ -284,7 +284,7 @@ struct InstanceDockButton: View {
     @Environment(WorkArea.self) private var area
     private var definition: RemotePluginDefinition? { area.definition(of: instance) }
     private var appearance: WindowAppearance {
-        definition?.agent != nil ? .init(name: instance.title, icon: "bubble.left.and.bubble.right", tint: .blue)
+        definition?.agent != nil ? .init(name: instance.title, kind: "代理", icon: "bubble.left.and.bubble.right", tint: Palette.breeze)
             : .renderer(definition?.views.first?.renderer ?? "")
     }
     var body: some View {

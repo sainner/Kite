@@ -72,7 +72,7 @@ final class WorkThread: Identifiable {
 
     init(remote: RemoteThread, instance: RemotePluginInstance, workspace: WorkspaceInfo, project: String, client: KitedClient) {
         id = remote.instanceId
-        tint = .blue
+        tint = Palette.breeze
         title = instance.title
         self.project = project
         self.client = client
@@ -82,7 +82,7 @@ final class WorkThread: Identifiable {
     /// 尚未创建的会话沿用同一套工作区，只保存草稿，不制造后端记录。
     init(workspace: String = "", project: String = "Kite") {
         id = "draft-" + workspace
-        tint = .blue
+        tint = Palette.breeze
         title = "新会话"
         self.project = project
         client = nil

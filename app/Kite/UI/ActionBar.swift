@@ -56,7 +56,7 @@ struct ActionButton: View {
         Button(role: role, action: action) {
             Image(systemName: icon)
         }
-        .buttonStyle(PaneButtonStyle(foreground: role == .destructive ? .red : .primary))
+        .buttonStyle(PaneButtonStyle(foreground: role == .destructive ? Theme.danger : .primary))
         .help(title)
         .accessibilityLabel(title)
     }

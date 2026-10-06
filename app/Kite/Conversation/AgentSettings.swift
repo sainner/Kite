@@ -63,7 +63,7 @@ struct AgentSettings: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
-            if let error { Section { Text(error).foregroundStyle(.red).textSelection(.enabled) } }
+            if let error { Section { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) } }
             if let notice { Section { Text(notice).foregroundStyle(.secondary) } }
         }
         .formStyle(.grouped)

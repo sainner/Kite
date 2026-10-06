@@ -8,6 +8,8 @@ interface Installation {
   root: string;
   home: string;
   port: number;
+  /** 自建组网控制服务器（如 headscale）；省略时用 Tailscale 官方服务。 */
+  controlURL?: string;
   label: string;
   plist: string;
   logs: string;
@@ -39,7 +41,8 @@ function plist(c: Installation): string {
   // launchd 不读取 shell 配置，也不保存发起安装的终端中的凭据或代理。
   const env = { HOME: homedir(), USER: userInfo().username, LOGNAME: userInfo().username, SHELL: '/bin/zsh', LANG: 'en_US.UTF-8',
     PATH: [join(runtime, 'bin'), join(homedir(), '.local/bin'), join(homedir(), '.bun/bin'), '/opt/homebrew/bin', '/opt/homebrew/sbin',
-      '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':'), KITE_HOME: c.home, KITE_PORT: String(c.port) };
+      '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':'), KITE_HOME: c.home, KITE_PORT: String(c.port),
+    ...(c.controlURL ? { KITE_CONTROL_URL: c.controlURL } : {}) };
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -113,6 +116,8 @@ async function install(): Promise<void> {
   const c: Installation = { root,
     home: resolve(process.env.KITE_HOME ?? old?.home ?? join(homedir(), '.kite')),
     port: Number(process.env.KITE_PORT ?? old?.port ?? 5483), label,
+    // 设为空字符串可改回 Tailscale 官方服务。
+    controlURL: (process.env.KITE_CONTROL_URL ?? old?.controlURL)?.trim() || undefined,
     plist: old?.plist ?? join(resolve(process.env.KITE_LAUNCH_AGENTS_DIR ?? join(homedir(), 'Library/LaunchAgents')), `${label}.plist`),
     logs: old?.logs ?? resolve(process.env.KITE_LOG_DIR ?? join(homedir(), 'Library/Logs/Kite')),
     bin: old?.bin ?? resolve(process.env.KITE_BIN_DIR ?? join(homedir(), '.local/bin')),
@@ -197,7 +202,7 @@ async function install(): Promise<void> {
       if (appStage) rmSync(appStage, { recursive: true, force: true });
     }
   }
-  console.log(`安装完成：http://127.0.0.1:${c.port}\n数据：${c.home}\n管理：${join(c.bin, 'kite-service')} status\n日志：${c.logs}`);
+  console.log(`安装完成：http://127.0.0.1:${c.port}，远程设备先用 kite net up 开启组网\n数据：${c.home}\n管理：${join(c.bin, 'kite-service')} status\n日志：${c.logs}`);
   if (!(process.env.PATH ?? '').split(':').includes(c.bin)) console.log(`命令目录尚未加入 PATH，可使用完整路径，或在 shell 配置中加入：export PATH=${quote(c.bin)}:"$PATH"`);
   if (!existsSync(join(c.home, 'auth/chatgpt/auth.json'))) console.log('首次使用模型还需设备登录，见项目 docs/kited.md 的「终端试用」。');
   if (manifest.app && c.app && process.env.KITE_NO_OPEN !== '1') await run(['/usr/bin/open', c.app]);

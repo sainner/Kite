@@ -8,11 +8,14 @@ struct FilePane: View {
     private var header: PaneHeader {
         let filePath = browser.displayingFile ? browser.selection.path : nil
         let directory = filePath.map { ($0 as NSString).deletingLastPathComponent } ?? browser.directoryPath
-        let root = area.remote.map { ($0.workspace.cwd as NSString).lastPathComponent } ?? "工作区"
-        return PaneHeader(title: "文件", detail: .path(root: root.isEmpty ? "工作区" : root,
-            directory: directory, file: filePath.map { ($0 as NSString).lastPathComponent }, open: { path in
+        let cwd = area.remote.map { ($0.workspace.cwd as NSString).lastPathComponent } ?? ""
+        let root = cwd.isEmpty ? "工作区" : cwd
+        // 主标题是当前文件或目录的名字，次级信息是所在目录的可点击路径
+        return PaneHeader(title: filePath.map { ($0 as NSString).lastPathComponent }
+            ?? (directory == "." ? root : (directory as NSString).lastPathComponent),
+            detail: .path(root: root, directory: directory) { path in
                 Task { await browser.openDirectory(path) }
-            }))
+            })
     }
 
     var body: some View {
@@ -135,6 +138,7 @@ struct FilePane: View {
                     }.buttonStyle(.pointingPlain)
                 }
             }.font(Theme.secondary).padding(14).frame(maxWidth: .infinity, alignment: .leading)
+            .separateScrollPocket()
         }
     }
 
@@ -182,6 +186,7 @@ struct FilePane: View {
                 }
                 .font(Theme.code).textSelection(.enabled).padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .separateScrollPocket()
             }
             .task(id: browser.contentRevision) {
                 await Task.yield()
@@ -197,7 +202,7 @@ struct FilePane: View {
     }
 
     private func diffRow(_ row: FileDiffRow) -> some View {
-        let color: Color = row.kind == .added ? .green : row.kind == .removed ? .red : .primary
+        let color: Color = row.kind == .added ? Color.accentColor : row.kind == .removed ? Theme.danger : .primary
         let focused = highlight(row.newLine)
         return HStack(alignment: .top, spacing: 8) {
             Text(row.oldLine.map(String.init) ?? "").frame(width: 40, alignment: .trailing)

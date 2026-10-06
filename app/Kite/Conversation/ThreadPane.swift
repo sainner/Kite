@@ -17,7 +17,7 @@ struct ThreadPane: View {
     var body: some View {
         let items = thread.transcript.items
         let pending = thread.transcript.pending
-        return PaneWindow(header: PaneHeader(title: thread.title, detail: .text("代理"), titleRefresh: .init(
+        return PaneWindow(header: PaneHeader(title: thread.title, titleRefresh: .init(
             actionLabel: "重新生成会话标题", progressLabel: "正在重新生成会话标题",
             isRefreshing: thread.regeneratingTitle, enabled: thread.canRegenerateTitle, action: regenerateTitle))) {
             if items.isEmpty && pending.isEmpty {
@@ -48,6 +48,7 @@ struct ThreadPane: View {
                             #else
                             .gesture(TapGesture().onEnded { $selected.close() }, isEnabled: selected != nil)
                             #endif
+                            .separateScrollPocket()
                     }
                     // 手指一滚就收起操作栏
                     .transcriptScroll(scroll, visibleHeight: proxy.size.height) {

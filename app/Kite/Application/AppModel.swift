@@ -19,12 +19,15 @@ final class AppModel {
     var machine: RemoteMachine? { connections.selected?.machine }
     var connected = false
     var error: String?
+    /// 扫码连接的进度；后台重连的错误不覆盖它。
+    enum InviteState: Equatable { case joining, failed(String) }
+    var invite: InviteState?
     var showConnection = false
     var showNewWorkspace = false
     private let catalogRefresh = CatalogRefresh()
     private var definitionsRequest = UUID()
     private var client: KitedClient? {
-        connections.selected.map { KitedClient(address: $0.address, machineID: $0.machine.id) }
+        connections.selected.map { KitedClient(address: $0.address, machineID: $0.machine.id, token: $0.token) }
     }
 
     func activeClient() throws -> KitedClient {
@@ -95,14 +98,58 @@ final class AppModel {
         connectionRevision = UUID()
     }
 
-    func addConnection(address: String) async throws {
+    /// 配对码为空时按已保存的令牌或本机服务连接；填写时向远程监听换取这台设备的令牌。
+    func addConnection(address: String, code: String = "") async throws {
         let address = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        let machine = try await KitedClient(address: address).request("/machine", as: RemoteMachine.self)
-        try Task.checkCancellation()
+        let code = code.trimmingCharacters(in: .whitespacesAndNewlines)
         var saved = connections
-        saved.remember(machine, address: address)
+        if code.isEmpty {
+            let token = connections.entries.first { $0.address == address }?.token
+            let machine: RemoteMachine
+            do { machine = try await KitedClient(address: address, token: token).request("/machine", as: RemoteMachine.self) }
+            catch let error as KitedError where error.status == 401 {
+                throw KitedError(message: "这台工作机需要配对码：在工作机上运行 kite pair，或在它的 Kite 设置中生成", status: 401)
+            }
+            try Task.checkCancellation()
+            saved.remember(machine, address: address)
+        } else {
+            struct Pair: Encodable { let code: String; let name: String }
+            struct Paired: Decodable { let machine: RemoteMachine; let token: String }
+            let paired = try await KitedClient(address: address)
+                .request("/pair", method: "POST", body: Pair(code: code, name: Self.deviceName), as: Paired.self)
+            try DeviceTokens.save(paired.token, for: paired.machine.id)
+            saved.remember(paired.machine, address: address, token: paired.token)
+        }
         try use(saved)
     }
+
+    /// 扫配对二维码打开的 kite://pair 链接：按其中的控制服务器和入网密钥上线组网，再用配对码连接。
+    func acceptInvite(_ url: URL) async {
+        guard url.scheme == "kite", url.host() == "pair",
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return }
+        let value = { (name: String) in items.first { $0.name == name }?.value }
+        guard let address = value("address"), let code = value("code") else {
+            error = "配对链接不完整，请在工作机上重新生成"
+            return
+        }
+        guard invite == nil else { return }
+        invite = .joining
+        defer { if case .joining = invite { invite = nil } }
+        await Tailnet.shared.configure(controlURL: value("control") ?? "", authKey: value("key"))
+        do { try await addConnection(address: address, code: code) }
+        catch {
+            invite = .failed(error.localizedDescription)
+            #if DEBUG
+            print("Kite invite failed: \(error)")
+            #endif
+        }
+    }
+
+    #if os(macOS)
+    private static var deviceName: String { Host.current().localizedName ?? "Mac" }
+    #else
+    private static var deviceName: String { UIDevice.current.name }
+    #endif
 
     func selectConnection(_ id: String) throws {
         var saved = connections
@@ -161,9 +208,15 @@ final class AppModel {
                 if generation == catalogRefresh.generation { catalogRefresh.reset() }
                 if Task.isCancelled || revision != connectionRevision { return }
                 connected = false
-                self.error = "连不上 kited：\(error.localizedDescription)"
                 for workspace in workspaces { workspace.draftThread.connected = false }
                 draftWorkspace.draftThread.connected = false
+                // 授权失效不会自行恢复，停止重试，等用户重新配对。
+                if (error as? KitedError)?.status == 401 {
+                    self.error = "这台设备的授权已失效，请在工作机上生成配对码后重新配对"
+                    if !workspaces.isEmpty { showConnection = true }
+                    return
+                }
+                self.error = "连不上 kited：\(error.localizedDescription)"
             }
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
         }
@@ -356,10 +409,8 @@ final class AppModel {
         }
     }
 
-    var listedWorkspaces: [WorkArea] { workspaces.isEmpty ? [draftWorkspace] : workspaces }
     func workspace(_ id: String) -> WorkArea? { id == draftWorkspace.id ? draftWorkspace : workspaces.first { $0.id == id } }
     var current: WorkArea? {
-        if workspaces.isEmpty { return draftWorkspace }
         if !detached.contains(selected), let area = workspace(selected) { return area }
         return workspaces.first { !detached.contains($0.id) }
     }

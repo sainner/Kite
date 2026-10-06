@@ -10,6 +10,8 @@ final class WindowLayout {
     /// 聚焦的窗口，iPhone 上显示的就是它；窗口组为空时没有焦点。
     private(set) var focused: Pane?
     private(set) var drag: CardDrag?
+    /// 正在拖的那道缝，跟手不吸附；松手后清空，排布吸附到模块。
+    private(set) var resizing: Split?
     /// 拖动时指针在内容区里的位置。一直在变，和 drag 分开，免得每动一下整个排布都重算。
     private(set) var pointer: CGPoint = .zero
 
@@ -180,11 +182,15 @@ final class WindowLayout {
         let upper = available - length(split.second.minimumSize)
         guard available > 0, lower <= upper else { return }
         let position = (horizontal ? location.x - gap.region.minX : location.y - gap.region.minY) - Metrics.gap / 2
+        resizing = split
         split.ratio = min(max(position, lower), upper) / available
     }
 
-    /// 分栏拖动只改内存，松手后保存最终比例。
-    func finishResize() { save() }
+    /// 分栏拖动只改内存，松手后吸附到模块并保存最终比例。
+    func finishResize() {
+        withAnimation(.snappy) { resizing = nil }
+        save()
+    }
 
     /// 手势层达到起拖距离后调用，布局层从第一次调用起就接管窗口排布。
     func drag(_ pane: Pane, to location: CGPoint, in bounds: CGRect) {

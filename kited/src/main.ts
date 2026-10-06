@@ -1,6 +1,7 @@
 /**
  * kited：跑在工作机上的 Kite 后台服务。
  * KITE_HOME（默认 ~/.kite）放数据库、会话工作树、初始化日志；KITE_PORT（默认 5483）是本机 HTTP 端口。
+ * 组网用 kite net up 开启；KITE_CONTROL_URL 可改用自建的 headscale。
  * 新会话默认使用 harness 与 Kite 独立授权的 ChatGPT 凭据，旧会话保留各自的 runtime。
  */
 import { homedir } from 'node:os';
@@ -8,7 +9,7 @@ import { join } from 'node:path';
 import { startDaemon } from './daemon.ts';
 
 const home = process.env.KITE_HOME ?? join(homedir(), '.kite');
-const daemon = startDaemon({ home, port: Number(process.env.KITE_PORT ?? 5483) });
+const daemon = startDaemon({ home, port: Number(process.env.KITE_PORT ?? 5483), controlURL: process.env.KITE_CONTROL_URL || undefined });
 console.log(`kited 在 ${daemon.url}，数据在 ${home}`);
 
 let stopping = false;
