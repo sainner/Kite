@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// 一个 App 窗口里的点阵舞台：管点阵上的事件，图像由窗口背景里唯一那张点阵画布（DotCanvas）来画。
+/// 点阵舞台：持有事件和图形，由对应的 DotCanvas 绘制。窗口背景与空状态画板分别持有，图案不跨页面存续。
 /// 坐标统一用窗口坐标（SwiftUI 的 .global）：原点是窗口左上角，每个模块（步距 p）的中心一颗点，布局边界都落在模块线上。
 ///
-/// 点阵只在 App 背景上，卡片是不透明的面，盖住它；窗口内部不显示点阵。整片点阵只有一套相位，卡片移动时点不跟着挪。
+/// 静息网点只铺在 App 背景上，空状态画板只画自己的图形与轨迹。各层格位一致，卡片移动时格位不跟着挪。
 /// 事件（如发送消息的波）只在一段时间里抬高经过的格子，结束后格子退回静息的点。
 /// 背景上还可以拼出图形（如初始配置每一步的标志和步骤点），每个图形占一个位置（slot），格子一直长着，换图形时逐格形变过去；
 /// 图形的各层可以有自己的小动画（浮动、闪烁、脉冲、帧序列）：格子始终在格位上，浮动时动的是各格从图形内容里分到的形变量
@@ -16,7 +16,7 @@ final class DotStage {
     private var carriers: [String: DotCarrier] = [:]
     /// 指针或手指在空白画板上划过时点亮的格子，键是格位，值是点亮的时刻。
     @ObservationIgnored private var sparks: [DotCell: Date] = [:]
-    /// 画布在窗口里的范围，调试面板从它的底部中间发测试波。
+    /// 画布在窗口里的范围。
     @ObservationIgnored var bounds: CGRect = .zero
     /// 有波或形变在走时为 true。
     private var ticking = false
@@ -35,15 +35,11 @@ final class DotStage {
     @ObservationIgnored private var activeUntil = Date.distantPast
     @ObservationIgnored private var settle: Task<Void, Never>?
 
-    init() {
-        DotTuning.shared.attach(self)
-    }
-
-    /// 从 origin（窗口坐标）向四周推开一道波；不给 form 时取调过的终态。pace 小于 1 时整道波放慢，用于不赶时间的场景。
+    /// 从 origin（窗口坐标）向四周推开一道波；不给 form 时取方格终态。pace 小于 1 时整道波放慢，用于不赶时间的场景。
     func emitWave(from origin: CGRect, form: DotForm? = nil, pace: Double = 1) {
-        let wave = DotWave(origin: origin, start: .now, form: form ?? DotTuning.shared.values.form, pace: pace)
+        let wave = DotWave(origin: origin, start: .now, form: form ?? .square, pace: pace)
         waves.append(wave)
-        keepAnimating(for: wave.duration(DotTuning.shared.values.wave))
+        keepAnimating(for: wave.duration(DotWave.Parameters()))
     }
 
     /// 在 slot 上按 placement 把 figure 摆进 area（窗口坐标），nil 让图形退回静息的点。换成另一个图形时逐格形变过去；
@@ -76,17 +72,21 @@ final class DotStage {
         keepAnimating(for: DotFigure.transition)
     }
 
-    /// 在 point（窗口坐标）所在的格子留下一点轨迹，随后慢慢退回静息的点；周围一圈跟着亮一点。
+    /// 在 point（窗口坐标）附近留下轨迹，越远越淡，随后慢慢退回静息的点。
     func trace(at point: CGPoint) {
         let column = Int((point.x / DotMetrics.pitch).rounded(.down)), row = Int((point.y / DotMetrics.pitch).rounded(.down))
         let now = Date.now
         sparks = sparks.filter { now.timeIntervalSince($0.value) < DotSpark.duration }
         sparks[DotCell(column: column, row: row)] = now
-        // 周围一圈晚一点出发，看起来是笔尖晕开
-        for (dc, dr) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-            let cell = DotCell(column: column + dc, row: row + dr)
-            if sparks[cell].map({ now.timeIntervalSince($0) > DotSpark.halo }) ?? true {
-                sparks[cell] = now - DotSpark.halo
+        for dr in -DotSpark.radius...DotSpark.radius {
+            for dc in -DotSpark.radius...DotSpark.radius {
+                let distance = hypot(Double(dc), Double(dr))
+                guard distance > 0, distance <= Double(DotSpark.radius) else { continue }
+                let age = DotSpark.halo * distance
+                let cell = DotCell(column: column + dc, row: row + dr)
+                if sparks[cell].map({ now.timeIntervalSince($0) > age }) ?? true {
+                    sparks[cell] = now - age
+                }
             }
         }
         keepAnimating(for: DotSpark.duration)
@@ -94,9 +94,9 @@ final class DotStage {
 
     /// date 时刻的取值快照，供一帧绘制使用。live 为 false（静息或减少动态效果）时不呼吸。
     func field(at date: Date, rest: DotColor, live: Bool) -> DotField {
-        let values = DotTuning.shared.values
-        return DotField(waves: waves.filter { $0.isActive(at: date, values.wave) }, wave: values.wave,
-                        palette: values.waveColor.map { [$0] } ?? values.palette, rest: rest,
+        let wave = DotWave.Parameters()
+        return DotField(waves: waves.filter { $0.isActive(at: date, wave) }, wave: wave,
+                        palette: DotColor.palette, rest: rest,
                         slots: slots.map { key, slot in carriers[key]?.carry(slot, moving: live) ?? slot },
                         breath: live ? WaitingBreath.opacity(at: date) : 1, moving: live,
                         sparks: live ? sparks : [:])
@@ -109,7 +109,7 @@ final class DotStage {
         settle = Task { [weak self] in
             try? await Task.sleep(for: .seconds(max(0, (self?.activeUntil.timeIntervalSinceNow ?? 0)) + 0.05))
             guard let self, !Task.isCancelled else { return }
-            let wave = DotTuning.shared.values.wave
+            let wave = DotWave.Parameters()
             waves.removeAll { !$0.isActive(at: .now, wave) }
             sparks = sparks.filter { Date.now.timeIntervalSince($0.value) < DotSpark.duration }
             for key in slots.keys { slots[key]?.previous = nil }
@@ -187,7 +187,8 @@ final class DotCarrier {
 /// 画板上划过留下的轨迹：一下长到 peak，再缓缓收回静息的点。
 nonisolated enum DotSpark {
     static let duration: TimeInterval = 1.4
-    /// 周围那一圈从这么晚的地方开始，长得小一些。
+    static let radius = 2
+    /// 每离中心一格，多衰减这么久，边缘的格子就更小。
     static let halo: TimeInterval = 0.5
     static let peak = 0.7
 
@@ -710,8 +711,8 @@ extension EnvironmentValues {
     @Entry var dotCarrier: DotCarrier?
 }
 
-/// 一个 App 窗口里唯一的点阵画布，铺满窗口、放在 App 底色之上，卡片盖在它上面。不参与点击和读屏。
-/// 实色卡片会盖住底下的图形，卡片里再垫一层只画图形的（figuresOnly），格子与底下的画布对齐；这一层不改舞台范围。
+/// 点阵画布，格子按窗口坐标对齐，不参与点击和读屏。
+/// 背景画布铺满窗口；空状态画板用自己的舞台绘制图形（figuresOnly），与底下的格子对齐，不改舞台范围。
 /// 像素由 Metal 着色器（DotField.metal）画，CPU 每帧只算图形和轨迹那几格。
 struct DotCanvas: View {
     var figuresOnly = false

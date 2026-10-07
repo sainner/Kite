@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 内容区没有窗口时的画板。整个 App 的背景就是一块点阵画板，空着的内容区直接画在上面，不另放窗口卡片：
+/// 内容区没有窗口时的画板。图案由当前画板持有和绘制，不写入窗口共享的背景点阵：
 /// - 内容区是一张半透明的空白卡片（浅色白、深色黑），圆角同卡片，与同在点阵上的侧栏分界；打开窗口后卡片盖住它。
 /// - 场景图形用风筝和线讲连接状态：人握着线，风筝在远处飞。标题、说明和操作按钮直接放在上面。
 /// - 指针划过（触屏是手指拖过）空白处留下一道慢慢退去的轨迹。
@@ -11,7 +11,7 @@ struct EmptyStage: View {
     var error: String?
     var actions: [StageAction] = []
 
-    @Environment(\.dotStage) private var stage
+    @State private var stage = DotStage()
     @Environment(\.dotCarrier) private var carrier
     @Environment(\.self) private var environment
     @Environment(\.openSidebar) private var openSidebar
@@ -73,6 +73,7 @@ struct EmptyStage: View {
             }
         }
         .stageCard(showsFigures: true)
+        .environment(\.dotStage, stage)
         // 容器给出侧边栏入口时（iPhone），左上角放按钮，位置同窗口标题栏
         .overlay(alignment: .topLeading) {
             if let openSidebar {
@@ -90,14 +91,8 @@ struct EmptyStage: View {
         .onChange(of: scene) { old, new in
             refresh()
             // 连上了：从刚才的图形发出一道慢波
-            if old == .connecting, new != .unreachable, let frame = stage?.figureFrame(Self.sceneSlot) {
-                stage?.emitWave(from: frame, pace: Self.wavePace)
-            }
-        }
-        .onDisappear {
-            // 换工作区时新画板先出现、摆好自己的图形，旧画板淡出后才走到这里；位置上已不是自己的图形就不清
-            if stage?.shownFigure(Self.sceneSlot) == sceneFigure {
-                stage?.show(nil, in: .zero, slot: Self.sceneSlot)
+            if old == .connecting, new != .unreachable, let frame = stage.figureFrame(Self.sceneSlot) {
+                stage.emitWave(from: frame, pace: Self.wavePace)
             }
         }
     }
@@ -150,7 +145,6 @@ struct EmptyStage: View {
 
     /// 按当前范围摆场景图形；同一图形在同一处时 DotStage 什么也不做。
     private func refresh() {
-        guard let stage else { return }
         if let figureArea, let figure = sceneFigure {
             stage.show(figure, in: figureArea, breathing: scene == .unreachable, slot: Self.sceneSlot, carrier: carrier)
         } else {
@@ -160,7 +154,7 @@ struct EmptyStage: View {
 
     /// 指针移得快时两次事件隔得远，中间按格补上，轨迹连成一条。
     private func trace(to point: CGPoint) {
-        guard let stage, let canvas, canvas.insetBy(dx: DotMetrics.pitch, dy: DotMetrics.pitch).contains(point) else {
+        guard let canvas, canvas.insetBy(dx: DotMetrics.pitch, dy: DotMetrics.pitch).contains(point) else {
             lastTrace = nil
             return
         }

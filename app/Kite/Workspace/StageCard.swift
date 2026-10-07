@@ -17,8 +17,11 @@ private struct StageCard: ViewModifier {
             let shape = RoundedRectangle(cornerRadius: Metrics.cardRadius, style: .continuous)
             content
                 .background {
-                    shape.fill(colorScheme == .dark ? Color.black.opacity(0.3) : Color.white.opacity(0.5))
-                        .allowsHitTesting(false)
+                    ZStack {
+                        if showsFigures { DotCanvas(figuresOnly: true) }
+                        shape.fill(colorScheme == .dark ? Color.black.opacity(0.3) : Color.white.opacity(0.5))
+                    }
+                    .allowsHitTesting(false)
                 }
                 .clipShape(shape)
         }

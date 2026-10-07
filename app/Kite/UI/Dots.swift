@@ -240,11 +240,9 @@ nonisolated struct DotColor: Hashable, Codable, Sendable {
                   alpha: Double(resolved.opacity))
     }
 
-    /// 静息点色随深浅外观变化，按当前环境取值；调试面板调过的优先。
+    /// 静息点色随深浅外观变化，按当前环境解析颜色资源。
     @MainActor static func rest(in environment: EnvironmentValues) -> DotColor {
-        let values = DotTuning.shared.values
-        return (environment.colorScheme == .dark ? values.restDark : values.restLight)
-            ?? DotColor(Theme.dotRest.resolve(in: environment))
+        DotColor(Theme.dotRest.resolve(in: environment))
     }
 
     /// 效果色，与执行扫掠同一组：参考色中在浅底上看得清的三色，加上 Sunwashed 深一档和主题色。

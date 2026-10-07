@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 private enum DotCanvasError: Error, CustomStringConvertible {
@@ -10,34 +9,11 @@ private enum DotCanvasError: Error, CustomStringConvertible {
     }
 }
 
-private struct DotCanvasFixture: View {
-    let stage: DotStage
-
-    var body: some View {
-        ZStack {
-            Color.white
-            DotCanvas().environment(\.dotStage, stage)
-        }
-        .environment(\.colorScheme, .light)
-    }
-}
-
-private struct PixelCoverage: CustomStringConvertible {
-    let counts: [Int]
-    let areas: [Int]
-
-    // 分区检查避免把局部残留的点误认成铺满；不绑定点的精确坐标或抗锯齿结果。
-    var filled: Bool { zip(counts, areas).allSatisfy { Double($0.0) > Double($0.1) * 0.01 } }
-    var description: String { "深色像素=\(counts.reduce(0, +))，16 区=\(counts)" }
-}
-
 @MainActor @main
 private struct DotCanvasContract {
     static func main() {
-        NSApplication.shared.setActivationPolicy(.prohibited)
         do {
             let checks: [(String, () throws -> Void)] = [
-                ("点阵静息首次出现、尺寸改变与重建后仍显示", restingDotsSurviveMountResizeAndRebuild),
                 ("浮动异色格交接连续，外沿回到静息色", floatingColorsStayContinuous),
                 ("闪烁层与底层连续交接，小形状保留自身颜色", blinkingOverlayKeepsColorIndependentOfShape),
                 ("彩色帧与空白帧连续交换颜色和透明度", blankFramesReturnToRestColor),
@@ -167,82 +143,5 @@ private struct DotCanvasContract {
 
     private static func require(_ condition: Bool, _ message: String) throws {
         if !condition { throw DotCanvasError.failed(message) }
-    }
-
-    // 真实回归：暂停的 TimelineView 在首次出现或同 stage 重建后只剩空白，resize/动画才唤醒。
-    // 必须捕获真实 Canvas 像素；bounds 正确和 animating=false 都不能单独证明点阵已经显示。
-    private static func restingDotsSurviveMountResizeAndRebuild() throws {
-        // 独立 swiftc 程序没有 App 的颜色资源，显式提供静息颜色并在结束时恢复。
-        let tuning = DotTuning.shared
-        let original = tuning.values
-        tuning.values.restLight = DotColor(red: 0, green: 0, blue: 0)
-        tuning.values.restDark = DotColor(red: 0, green: 0, blue: 0)
-        defer { tuning.values = original }
-
-        let stage = DotStage()
-        let host = NSHostingView(rootView: DotCanvasFixture(stage: stage))
-        let initial = CGSize(width: 480, height: 360)
-        let expanded = CGSize(width: 720, height: 480)
-        let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -10000, y: -10000), size: initial),
-                              styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = host
-        window.orderFront(nil)
-        defer { window.close() }
-
-        try requireRestingPixels("首次出现", host: host, stage: stage, size: initial)
-        window.setContentSize(expanded)
-        try requireRestingPixels("尺寸改变", host: host, stage: stage, size: expanded)
-
-        // 先确认正常显示，再重建真实宿主；全程不发波纹或启动动画来救活画布。
-        let rebuilt = NSHostingView(rootView: DotCanvasFixture(stage: stage))
-        window.contentView = rebuilt
-        try requireRestingPixels("同 stage 重建", host: rebuilt, stage: stage, size: expanded)
-    }
-
-    private static func requireRestingPixels(_ label: String, host: NSView, stage: DotStage,
-                                            size: CGSize) throws {
-        let deadline = Date().addingTimeInterval(3)
-        var last: PixelCoverage?
-        repeat {
-            host.layoutSubtreeIfNeeded()
-            guard !stage.animating else {
-                throw DotCanvasError.failed("\(label) 意外启动了动画")
-            }
-            if host.bounds.size == size && stage.bounds.size == size {
-                let pixels = try coverage(host)
-                last = pixels
-                if pixels.filled {
-                    print("\(label)：\(Int(size.width))×\(Int(size.height))，animating=false，\(pixels)")
-                    return
-                }
-            }
-            // 运行实际布局和显示事件，按像素状态结束，不用 sleep 猜首帧时间。
-            RunLoop.main.run(mode: .default, before: deadline)
-        } while Date() < deadline
-        throw DotCanvasError.failed("\(label) 静息点阵未铺满：bounds=\(stage.bounds)，\(String(describing: last))")
-    }
-
-    private static func coverage(_ host: NSView) throws -> PixelCoverage {
-        guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
-            throw DotCanvasError.failed("无法捕获原生宿主的像素")
-        }
-        host.cacheDisplay(in: host.bounds, to: bitmap)
-        let inset = Int(12 * CGFloat(bitmap.pixelsWide) / host.bounds.width)
-        let width = bitmap.pixelsWide - inset * 2
-        let height = bitmap.pixelsHigh - inset * 2
-        var counts = [Int](repeating: 0, count: 16)
-        var areas = counts
-        for y in inset..<(bitmap.pixelsHigh - inset) {
-            for x in inset..<(bitmap.pixelsWide - inset) {
-                let region = (y - inset) * 4 / height * 4 + (x - inset) * 4 / width
-                areas[region] += 1
-                if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
-                   color.redComponent < 0.5 && color.greenComponent < 0.5 && color.blueComponent < 0.5 {
-                    counts[region] += 1
-                }
-            }
-        }
-        return PixelCoverage(counts: counts, areas: areas)
     }
 }

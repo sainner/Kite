@@ -24,9 +24,6 @@ struct CompactLayout: View {
     /// Home 条让出的那一截，不含键盘，从 UIKit 读；读到之前按 SwiftUI 的算。
     @State private var homeInset: CGFloat?
     @State private var stage = DotStage()
-    #if DEBUG
-    @State private var tuningShown = false
-    #endif
 
     var body: some View {
         GeometryReader { geo in
@@ -84,11 +81,6 @@ struct CompactLayout: View {
                         case .extensions, .settings:
                             SectionPages { open = nil }
                         }
-                        #if DEBUG
-                        Button("点阵调试") { tuningShown = true }
-                            .font(Theme.secondary)
-                            .padding(Metrics.padding)
-                        #endif
                     }
                     .fadesScrollEdges()
                     SidebarUserBar()
@@ -130,14 +122,6 @@ struct CompactLayout: View {
             if was, !now { open = nil }
         }
         .environment(\.dotStage, stage)
-        #if DEBUG
-        // 半屏，拉开侧边栏时上面还能看到背景上的点阵
-        .sheet(isPresented: $tuningShown) {
-            DotTuningPanel()
-                .presentationDetents([.medium, .large])
-                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-        }
-        #endif
     }
 
     /// 其余窗口折叠在底部；点击后展开它，原来的窗口回到这一栏，始终只展开一个。

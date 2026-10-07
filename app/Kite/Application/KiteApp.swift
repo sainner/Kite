@@ -40,13 +40,6 @@ struct KiteApp: App {
         .kiteWindowStyle()
         .defaultSize(width: 996, height: 696)
 
-        #if DEBUG
-        Window("点阵调试", id: "dot-tuning") {
-            DotTuningPanel().frame(minWidth: 320, minHeight: 480).appAppearance()
-        }
-        .defaultSize(width: 360, height: 720)
-        .windowLevel(.floating)
-        #endif
         #else
         WindowGroup {
             AppRoot().connectsToService().environment(model).toastHost().appAppearance()
@@ -67,7 +60,6 @@ struct KiteCommands: Commands {
     let model: AppModel
     /// 当前窗口里的窗口组，排布菜单作用在它上面。
     @FocusedValue(WindowLayout.self) private var workspace
-    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(before: .toolbar) {
@@ -84,12 +76,6 @@ struct KiteCommands: Commands {
                     .disabled(workspace == nil)
             }
         }
-        #if DEBUG
-        CommandMenu("调试") {
-            Button("点阵调试…") { openWindow(id: "dot-tuning") }
-                .keyboardShortcut("d", modifiers: [.option, .command])
-        }
-        #endif
     }
 }
 #endif

@@ -21,7 +21,6 @@ try {
     join(source, 'Workspace', 'Tiles.swift'),
     join(source, 'Workspace', 'WindowLayout.swift'),
     join(source, 'UI', 'Dots.swift'),
-    join(source, 'UI', 'DotTuning.swift'),
     join(source, 'UI', 'DotStage.swift'),
     join(source, 'UI', 'WaitingBreath.swift'),
     join(source, 'UI', 'InterfaceMode.swift'),
