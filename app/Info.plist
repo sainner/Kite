@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- 与 Xcode 生成的 Info.plist 合并；这里只放构建设置表达不了的项。iPhone 用 Info-iOS.plist，另注册扫码登录的 kite://。
+<!-- 与 Xcode 生成的 Info.plist 合并；这里只放构建设置表达不了的项。iPhone 与 iPad 用 Info-iOS.plist，另注册扫码登录的 kite://。
      kited 是明文 HTTP：远程经 App 内组网节点的代理（链路由 WireGuard 加密），本机只到 127.0.0.1。
      经代理的请求即使目标是 IP 也受 ATS 限制，所以放开明文加载。 -->
 <plist version="1.0">

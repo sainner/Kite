@@ -37,9 +37,14 @@ private struct LayoutState {
 }
 
 private func requireSame(_ layout: WindowLayout, as before: LayoutState, in bounds: CGRect, _ step: String) throws {
+    try requireArrangement(layout, as: before, in: bounds, step)
+    try require(layout.focused == before.focused, "\(step) 改变了已提交的焦点")
+}
+
+private func requireArrangement(_ layout: WindowLayout, as before: LayoutState, in bounds: CGRect, _ step: String) throws {
     let after = LayoutState(layout, in: bounds)
     try require(after.empty == before.empty && after.active == before.active && after.docked == before.docked
-                && after.all == before.all && after.focused == before.focused && after.frames == before.frames,
+                && after.all == before.all && after.frames == before.frames,
                 "\(step) 改变了已提交的窗口布局")
 }
 
@@ -53,6 +58,13 @@ private func requireComplete(_ layout: WindowLayout, _ step: String) throws {
     } else {
         try require(layout.panes.isEmpty, "\(step) 仍有窗口但焦点为空")
     }
+}
+
+private func requireProjectionComplete(_ layout: WindowLayout, _ step: String) throws {
+    try requireComplete(layout, step)
+    let projected = (layout.shown?.panes ?? []) + layout.shownDock
+    try require(projected.count == layout.panes.count && Set(projected) == Set(layout.panes),
+                "\(step) 的视口与停靠栏遗漏或重复了窗口")
 }
 
 private func dock(_ pane: Pane, layout: WindowLayout, in bounds: CGRect) {
@@ -77,7 +89,213 @@ private struct WindowDockContract {
         try headerActionsPreserveWindowsAndCancelDrag()
         try persistedLayoutReconcilesRemoteWindows()
         try automaticPlacementPreservesFramesAndWindows()
-        print("窗口停靠六组手动合同验证通过")
+        try compactFocusPreservesTiledArrangement()
+        try viewportDockPreservesSavedArrangement()
+        try viewportChangesKeepUserLayoutEdits()
+        print("窗口停靠九组手动合同验证通过")
+    }
+
+    // 紧凑视口、焦点切换与 UserDefaults 交接：选择原 dock 窗口不能把单卡片投影写成原宽屏排布。
+    private static func compactFocusPreservesTiledArrangement() throws {
+        let suite = "kite-window-contract-compact-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            throw DockContractError.failed("无法建立紧凑视口的独立 UserDefaults suite")
+        }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let panes = fixturePanes("compact", count: 5)
+        let layout = WindowLayout(panes: panes, arrangement: .oneAndThree,
+                                  storageKey: "layout", defaults: defaults)
+        let wide = roomyBounds
+        let compact = CGRect(x: 0, y: 0, width: 360, height: 760)
+        layout.updateViewport(wide.size, presentation: .tiled)
+        let canvas = WindowRegions(in: wide).canvas
+        guard let gap = layout.root?.layout(in: canvas).gaps.first,
+              let docked = layout.docked.first else {
+            throw DockContractError.failed("紧凑往返需要已分栏的活动窗口和 dock 窗口")
+        }
+        layout.resize(gap, to: CGPoint(x: gap.rect.midX + 40, y: gap.rect.midY))
+        layout.finishResize()
+        layout.focus(panes[1])
+        let original = LayoutState(layout, in: wide)
+
+        layout.updateViewport(compact.size, presentation: .compact)
+        try requireSame(layout, as: original, in: wide, "进入紧凑视口")
+        layout.activate(docked, in: compact)
+        try require(layout.focused == docked, "紧凑视口选择 dock 窗口没有聚焦它")
+        try requireArrangement(layout, as: original, in: wide, "紧凑视口选择 dock 窗口")
+        layout.updateViewport(wide.size, presentation: .tiled)
+        try requireArrangement(layout, as: original, in: wide, "聚焦 dock 窗口后恢复宽屏")
+        try require(layout.focused == docked && (layout.shown?.panes ?? []).contains(docked),
+                    "紧凑视口选中的 dock 窗口回到宽屏后不可见")
+        try requireProjectionComplete(layout, "宽屏临时显示聚焦的 dock 窗口")
+        layout.minimize(docked)
+        try requireArrangement(layout, as: original, in: wide, "收起临时显示的 dock 窗口")
+        try require(layout.shown?.layout(in: canvas).panes == original.frames && layout.shownDock == original.docked,
+                    "收起临时显示的 dock 窗口后没有恢复原宽屏排布")
+        try requireProjectionComplete(layout, "收起临时显示的 dock 窗口后")
+        layout.updateViewport(compact.size, presentation: .compact)
+        layout.focus(panes[2])
+        try require(layout.focused == panes[2], "紧凑视口再次切换焦点没有更新当前卡片")
+        try requireArrangement(layout, as: original, in: wide, "紧凑视口切回原活动窗口")
+        try requireComplete(layout, "紧凑视口切换焦点后")
+
+        defaults.synchronize()
+        let rebuilt = WindowLayout(panes: panes, arrangement: .stacked, storageKey: "layout",
+                                   defaults: UserDefaults(suiteName: suite)!)
+        rebuilt.updateViewport(compact.size, presentation: .compact)
+        try requireArrangement(rebuilt, as: original, in: wide, "紧凑视口重建")
+        try require(rebuilt.focused == panes[2], "紧凑视口重建没有保留新焦点")
+        for current in [layout, rebuilt] {
+            current.updateViewport(wide.size, presentation: .tiled)
+            try requireArrangement(current, as: original, in: wide, "恢复宽屏")
+            try require(current.focused == panes[2] && current.shown?.layout(in: canvas).panes == original.frames
+                        && current.shownDock == original.docked,
+                        "恢复宽屏没有恢复原分栏比例、dock 与当前焦点")
+            try requireProjectionComplete(current, "紧凑往返后")
+        }
+    }
+
+    // 尺寸投影、临时停靠与持久化交接：空间不足不能永久收起卡片，重建后仍须能恢复原排布。
+    private static func viewportDockPreservesSavedArrangement() throws {
+        let suite = "kite-window-contract-viewport-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            throw DockContractError.failed("无法建立视口投影的独立 UserDefaults suite")
+        }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let panes = fixturePanes("viewport", count: 5)
+        let layout = WindowLayout(panes: panes, arrangement: .oneAndThree,
+                                  storageKey: "layout", defaults: defaults)
+        let wide = roomyBounds
+        let tight = placementBounds(canvasWidth: Metrics.minPane * 2 + Metrics.gap,
+                                    canvasHeight: Metrics.minPane)
+        layout.updateViewport(wide.size, presentation: .tiled)
+        layout.focus(panes[2])
+        let original = LayoutState(layout, in: wide)
+        layout.updateViewport(tight.size, presentation: .tiled)
+        try requireSame(layout, as: original, in: wide, "缩小宽屏空间")
+        let visible = layout.shown?.panes ?? []
+        let temporarilyDocked = original.active.filter { !visible.contains($0) }
+        try require(!temporarilyDocked.isEmpty && visible.contains(panes[2])
+                    && temporarilyDocked.allSatisfy { layout.shownDock.contains($0) }
+                    && original.docked.allSatisfy { layout.shownDock.contains($0) },
+                    "空间不足时没有保留聚焦卡片，或临时收起的卡片未进入停靠栏")
+        let frames = layout.shown?.layout(in: WindowRegions(in: tight).canvas).panes ?? [:]
+        for frame in frames.values {
+            try require(frame.width + 0.001 >= Metrics.minPane && frame.height + 0.001 >= Metrics.minPane,
+                        "投影仍把放不下的卡片挤在内容区")
+        }
+        try requireProjectionComplete(layout, "空间不足时")
+
+        defaults.synchronize()
+        let rebuilt = WindowLayout(panes: panes, arrangement: .stacked, storageKey: "layout",
+                                   defaults: UserDefaults(suiteName: suite)!)
+        rebuilt.updateViewport(tight.size, presentation: .tiled)
+        try requireSame(rebuilt, as: original, in: wide, "空间不足时重建")
+        try requireProjectionComplete(rebuilt, "空间不足时重建")
+        for current in [layout, rebuilt] {
+            current.updateViewport(wide.size, presentation: .tiled)
+            try requireSame(current, as: original, in: wide, "空间恢复")
+            try require(current.shown?.layout(in: WindowRegions(in: wide).canvas).panes == original.frames
+                        && current.shownDock == original.docked,
+                        "空间恢复后临时停靠仍占用了原活动窗口")
+            try requireProjectionComplete(current, "空间恢复后")
+        }
+    }
+
+    // 暂时停靠时调整分栏、点击、拖放与视口往返交接：投影不能吞掉用户动作，也不能覆盖已提交排布。
+    private static func viewportChangesKeepUserLayoutEdits() throws {
+        let panes = fixturePanes("viewport-edits", count: 4)
+        let wide = roomyBounds
+        let tight = placementBounds(canvasWidth: Metrics.minPane * 2 + Metrics.gap + 160,
+                                    canvasHeight: Metrics.minPane)
+        let activation = WindowLayout(panes: panes, arrangement: .oneAndThree)
+        activation.updateViewport(wide.size, presentation: .tiled)
+        let beforeResize = LayoutState(activation, in: wide)
+        activation.updateViewport(tight.size, presentation: .tiled)
+        let tightCanvas = WindowRegions(in: tight).canvas
+        guard let projected = activation.shown?.layout(in: tightCanvas), let gap = projected.gaps.first else {
+            throw DockContractError.failed("临时停靠后没有保留可调整的分栏")
+        }
+        try require((activation.shown?.panes.count ?? 0) < beforeResize.active.count,
+                    "分栏调整验证没有临时省略任何活动窗口")
+        activation.resize(gap, to: CGPoint(x: gap.rect.midX + 40, y: gap.rect.midY))
+        activation.finishResize()
+        try require(activation.shown?.layout(in: tightCanvas).panes != projected.panes,
+                    "临时停靠时调整分栏没有改变当前卡片帧")
+        let afterResize = LayoutState(activation, in: wide)
+        try require(afterResize.frames != beforeResize.frames,
+                    "投影分栏已调整，但原宽屏排布仍保留旧比例")
+        activation.updateViewport(wide.size, presentation: .tiled)
+        try requireSame(activation, as: afterResize, in: wide, "投影分栏调整后恢复宽屏")
+        try require(activation.shown?.layout(in: WindowRegions(in: wide).canvas).panes == afterResize.frames
+                    && activation.shown?.panes == beforeResize.active
+                    && activation.shownDock == beforeResize.docked,
+                    "恢复宽屏没有同时保留原窗口与调整后的分栏比例")
+        activation.updateViewport(tight.size, presentation: .tiled)
+        guard let activated = activation.shownDock.first(where: { !activation.docked.contains($0) }) else {
+            throw DockContractError.failed("用户操作验证没有暂时停靠的窗口")
+        }
+        activation.activate(activated, in: tight)
+        try require(activation.focused == activated && (activation.shown?.panes ?? []).contains(activated),
+                    "激活暂时停靠的窗口后没有展开并聚焦它")
+        try requireProjectionComplete(activation, "激活暂时停靠的窗口后")
+
+        let layout = WindowLayout(panes: panes, arrangement: .oneAndThree)
+        layout.updateViewport(wide.size, presentation: .tiled)
+        layout.updateViewport(tight.size, presentation: .tiled)
+        guard let restored = layout.shownDock.first(where: { !layout.docked.contains($0) }) else {
+            throw DockContractError.failed("没有暂时停靠的窗口供点击恢复")
+        }
+        layout.restore(restored, in: tight)
+        try require(layout.focused == restored && (layout.shown?.panes ?? []).contains(restored),
+                    "恢复暂时停靠的窗口后没有展开并聚焦它")
+        try requireProjectionComplete(layout, "恢复暂时停靠的窗口后")
+
+        let dockFrame = WindowRegions(in: tight).dockFrame(at: layout.shownDock.count)
+        layout.drag(restored, to: dockFrame.center, in: tight)
+        layout.drop(in: tight)
+        try require(layout.docked.contains(restored) && !(layout.root?.panes ?? []).contains(restored),
+                    "用户主动拖进停靠栏的窗口没有从保存排布中移出")
+        let committed = LayoutState(layout, in: wide)
+        layout.updateViewport(wide.size, presentation: .tiled)
+        try requireSame(layout, as: committed, in: wide, "拖动后恢复宽屏")
+        try require(layout.shownDock.contains(restored) && !(layout.shown?.panes ?? []).contains(restored),
+                    "恢复宽屏撤销了用户主动停靠")
+        layout.restore(restored, in: wide)
+        try require(layout.focused == restored && !layout.docked.contains(restored)
+                    && (layout.shown?.panes ?? []).contains(restored),
+                    "用户主动恢复停靠窗口没有更新排布")
+        let afterRestore = LayoutState(layout, in: wide)
+        layout.updateViewport(CGSize(width: 360, height: 760), presentation: .compact)
+        layout.updateViewport(wide.size, presentation: .tiled)
+        try requireSame(layout, as: afterRestore, in: wide, "恢复卡片后切换布局")
+        try requireProjectionComplete(layout, "用户修改排布后切换布局")
+
+        // 系统在手势中途调整尺寸或模式时，旧落点与占位不能成为新视口的已提交排布。
+        let canvas = WindowRegions(in: wide).canvas
+        let destinations: [(CGSize, WorkspacePresentation)] = [
+            (tight.size, .tiled), (CGSize(width: 360, height: 760), .compact),
+        ]
+        for (size, presentation) in destinations {
+            layout.updateViewport(wide.size, presentation: .tiled)
+            layout.drag(restored, to: CGPoint(x: canvas.minX + 1, y: canvas.midY), in: wide)
+            try require(layout.drag != nil && layout.shown?.layout(in: canvas).placeholder != nil,
+                        "视口切换前没有形成未提交的拖动占位")
+            layout.updateViewport(size, presentation: presentation)
+            try require(layout.drag == nil, "视口变化没有取消未提交拖动")
+            try requireSame(layout, as: afterRestore, in: wide, "拖动中改变视口")
+            layout.drop(in: CGRect(origin: .zero, size: size))
+            try requireSame(layout, as: afterRestore, in: wide, "视口变化后松开旧拖动")
+        }
+        layout.updateViewport(wide.size, presentation: .tiled)
+        try require(layout.shown?.layout(in: canvas).placeholder == nil,
+                    "拖动中切换视口后仍残留占位")
+        try requireProjectionComplete(layout, "视口变化取消拖动后")
+    }
+
+    private static var roomyBounds: CGRect {
+        placementBounds(canvasWidth: Metrics.minPane * 3 + Metrics.gap * 2 + 120,
+                        canvasHeight: Metrics.minPane * 3 + Metrics.gap * 2 + 120)
     }
 
     // 自动放置、真实 frame、焦点、dock 与 UserDefaults 交接；树的最小尺寸不足以保证嵌套分栏比例可用。

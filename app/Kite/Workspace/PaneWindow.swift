@@ -64,14 +64,12 @@ struct PaneWindow<Content: View, Controls: View, Status: View, HeaderActions: Vi
                 PaneHeaderBar(header: header, actions: headerActions, openSidebar: sidebarAction)
                     .padding(.top, max(Metrics.paneMargin, topInset) - topInset)
                     .padding(.bottom, Metrics.paneMargin)
-                    #if os(macOS)
                     .coordinateSpace(name: "pane-header")
                     .background {
                         GeometryReader { proxy in
                             Color.clear.preference(key: PaneHeaderHeight.self, value: proxy.size.height)
                         }
                     }
-                    #endif
                     #if os(iOS)
                     .background { topFade }
                     .contentShape(Rectangle())
@@ -123,15 +121,15 @@ struct PaneWindow<Content: View, Controls: View, Status: View, HeaderActions: Vi
 
 extension EnvironmentValues {
     /// 窗口底部为 Home 条保留的高度，不含键盘；底栏展开时仍保留。SwiftUI 的安全区读出来是合在一起的，分不出键盘，
-    /// PhoneLayout 从 UIKit 读了给出；Mac 上是 0。
+    /// CompactLayout 从 UIKit 读了给出；Mac 上是 0。
     @Entry var homeIndicatorInset: CGFloat = 0
     /// 窗口容器已让出的顶部安全区，标题栏只补足固定边距；Mac 为 0。
     @Entry var paneTopSafeInset: CGFloat = 0
-    /// iPhone 上键盘升起来了。PhoneLayout 在屏幕这一层比出来：SwiftUI 的安全区比 Home 条那一截高。
+    /// iPhone 上键盘升起来了。CompactLayout 在屏幕这一层比出来：SwiftUI 的安全区比 Home 条那一截高。
     /// 不能在窗口里比：拉开、收起抽屉时窗口里读到的安全区跟着动画逐帧变，还会冲过 Home 条那一截，会被当成键盘。Mac 上总是 false。
     @Entry var keyboardShown = false
 
-    /// iPhone 上拉开侧边栏，标题栏左边的按钮调它。PhoneLayout 给出，没有就不显示按钮。
+    /// iPhone 上拉开侧边栏，标题栏左边的按钮调它。CompactLayout 给出，没有就不显示按钮。
     @Entry var openSidebar: (@MainActor () -> Void)?
     /// iPhone 上从控制区往上拖拉出 action 栏：窗口给出拖动的处理，控制区接手势。没有就不接。
     @Entry var drawerPull: DrawerPull?

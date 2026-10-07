@@ -1,6 +1,5 @@
 import SwiftUI
 
-#if os(macOS)
 /// 内容区：各张卡片、占位、卡片之间的缝按排布算好的位置摆在同一层。卡片始终是同一个视图，
 /// 排布变了、拖出去缩成停靠形状、松手展开，都只是它的位置和大小在变，动画连贯，不会出现新旧两份交叠。
 /// 拖动报的是窗口坐标，在这里换算成内容区里的坐标再交给窗口组。
@@ -14,12 +13,15 @@ struct TilesLayer: View {
             let origin = geo.frame(in: .global).origin
             let local = { (point: CGPoint) in CGPoint(x: point.x - origin.x, y: point.y - origin.y) }
             let layout = workspace.shown?.layout(in: regions.canvas, free: workspace.resizing) ?? TileLayout()
+            let docked = workspace.shownDock
             ZStack(alignment: .topLeading) {
-                DockRail(regions: regions)
+                DockRail(regions: regions, paneCount: docked.count)
                 ForEach(layout.gaps) { gap in
-                    MouseDragArea(cursor: gap.split.axis == .horizontal ? .columnResize : .rowResize) { drag in
+                    LayoutDragArea(cursor: gap.split.axis == .horizontal ? .columnResize : .rowResize) { drag in
                         workspace.resize(gap, to: local(drag.location))
                     } onEnded: {
+                        workspace.finishResize()
+                    } onCancelled: {
                         workspace.finishResize()
                     }
                     .placed(gap.rect)
@@ -32,7 +34,7 @@ struct TilesLayer: View {
                         .placed(rect)
                 }
                 ForEach(workspace.panes, id: \.self) { pane in
-                    let dockFrame = workspace.shownDock.firstIndex(of: pane).map { regions.dockFrame(at: $0) }
+                    let dockFrame = docked.firstIndex(of: pane).map { regions.dockFrame(at: $0) }
                     CardSlot(pane: pane, rect: layout.panes[pane], dockFrame: dockFrame) { point in
                         workspace.drag(pane, to: local(point), in: bounds)
                     } onDrop: {
@@ -47,7 +49,7 @@ struct TilesLayer: View {
                 }
             }
             .animation(.snappy, value: workspace.panes)
-            .onGeometryChange(for: CGSize.self) { $0.size } action: { workspace.availableSize = $0 }
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { workspace.updateViewport($0, presentation: .tiled) }
         }
         .disablesWindowDragging()
         .modifier(InstanceSettingsPresentation())
@@ -57,6 +59,7 @@ struct TilesLayer: View {
 /// 最小化窗口和添加入口在上方，无窗口实例在底部；停靠栏沿用工作区底色。
 private struct DockRail: View {
     let regions: WindowRegions
+    let paneCount: Int
     @Environment(WindowLayout.self) private var workspace
     @Environment(WorkArea.self) private var area
 
@@ -67,7 +70,7 @@ private struct DockRail: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             AddWindowButton()
-                .placed(regions.dockFrame(at: workspace.shownDock.count))
+                .placed(regions.dockFrame(at: paneCount))
             VStack(spacing: Metrics.gap) {
                 ForEach(area.windowlessInstances) { instance in
                     InstanceDockButton(instance: instance)
@@ -99,7 +102,8 @@ private struct CardSlot: View {
 
     var body: some View {
         if let (frame, minimized) = place {
-            PaneCard(pane: pane, minimized: minimized, onDrag: onDrag, onDrop: onDrop, onActivate: onActivate)
+            PaneCard(pane: pane, minimized: minimized, width: frame.width,
+                     onDrag: onDrag, onDrop: onDrop, onActivate: onActivate)
                 .placed(frame)
         }
     }
@@ -119,10 +123,11 @@ private extension View {
     }
 }
 
-/// Mac 上的一张卡片，里面是窗口（PaneWindow）。按住标题栏拖够一段距离后缩成停靠形状，内容淡出，出现图标。
+/// 宽屏布局中的一张卡片，里面是窗口（PaneWindow）。按住标题栏拖够一段距离后缩成停靠形状，内容淡出，出现图标。
 struct PaneCard: View {
     let pane: Pane
     let minimized: Bool
+    let width: CGFloat
     @Environment(WindowLayout.self) private var workspace
     @Environment(WorkArea.self) private var area
     @Environment(AppModel.self) private var model
@@ -137,8 +142,30 @@ struct PaneCard: View {
     var onDrop: () -> Void
     var onActivate: () -> Void
 
-    private var actionsShown: Bool { cardHovered && !minimized && workspace.drag == nil && workspace.resizing == nil }
-    private var canExpand: Bool { (workspace.root?.panes.count ?? 0) > 1 }
+    private var actionsShown: Bool { !controlsInMenu && InputMode.current.revealsControls(hovered: cardHovered) && !minimized && workspace.drag == nil && workspace.resizing == nil }
+    private var canExpand: Bool { (workspace.shown?.panes.count ?? 0) > 1 }
+
+    private var controlsInMenu: Bool {
+        #if os(macOS)
+        guard !minimized, area.thread(in: pane) != nil, menuWidth > 0 else { return false }
+        // 按完整控制组计算，不能随悬停显隐改变判断；标题至少保留两个按钮宽的空间。
+        let required = 2 * Metrics.paneMargin + menuWidth + controlsSize.width
+            + 2 * Metrics.paneButtonGap + 2 * Metrics.paneHeaderButton
+        return width < required
+        #else
+        return false
+        #endif
+    }
+
+    private var windowActions: PaneWindowActions {
+        let expand: (@MainActor () -> Void)?
+        if canExpand { expand = { workspace.expand(pane) } }
+        else { expand = nil }
+        return PaneWindowActions(minimize: { workspace.minimize(pane) }, expand: expand,
+                                 close: { model.closeWindow(pane, in: area) },
+                                 canClose: !area.isDraft && !area.changingWindows)
+    }
+
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: minimized ? appearance.minimizedCornerRadius : Metrics.cardRadius)
         // 底下的形状定大小，内容放在 overlay 里：缩小时内容比停靠形状大，不能把它撑开
@@ -147,6 +174,7 @@ struct PaneCard: View {
             .fill(minimized ? appearance.tint : Theme.card)
             .overlay(alignment: .topLeading) {
                 PaneBody(pane: pane)
+                    .environment(\.paneOverflowActions, controlsInMenu ? windowActions : nil)
                     .environment(\.paneHeaderControlsInset, actionsShown ? controlsSize.width + Metrics.paneButtonGap : 0)
                     .environment(\.paneHeaderMinHeight, controlsSize.height)
                     // 卡片的形状，里面同心的圆角（控制区输入框）跟着它
@@ -154,6 +182,7 @@ struct PaneCard: View {
                     .opacity(minimized ? 0 : 1)
                     .allowsHitTesting(!minimized)
                     .accessibilityHidden(minimized)
+                    .simultaneousGesture(TapGesture().onEnded { workspace.focus(pane) })
             }
             // 图标画在拖动层下面：盖在 AppKit 视图上的 SwiftUI 内容会挡住点到它的鼠标
             .overlay {
@@ -199,16 +228,17 @@ struct PaneCard: View {
 
     private var dragArea: some View {
         let excluded = minimized ? [] : headerInteractiveRects
-        return MouseDragArea(cursor: minimized ? .pointingHand : .openHand, activeCursor: .closedHand,
+        return LayoutDragArea(cursor: minimized ? .pointingHand : .openHand, activeCursor: .closedHand,
                       minimumDistance: minimized ? Metrics.dragThreshold : headerHeight, excluded: excluded) { drag in
             onDrag(drag.location)
         } onEnded: {
             onDrop()
+        } onCancelled: {
+            workspace.cancelDrag()
         } onClick: {
             if minimized { onActivate() }
+            else { workspace.focus(pane) }
         }
-        // SwiftUI 的命中也在可点控件上挖空，与 AppKit 视图的 hitTest 一致
-        .contentShape(HeaderDragShape(holes: excluded), eoFill: true)
         .contextMenu {
             if let target = area.windows.first(where: { $0.id == pane.id })?.target,
                let instance = area.instances.first(where: { $0.id == target.instanceId }) {
@@ -220,13 +250,14 @@ struct PaneCard: View {
     }
 
     private var headerActions: some View {
-        PaneHeaderButtonGroup {
-            headerButton("缩小", icon: "minus") { workspace.minimize(pane) }
-            if canExpand {
-                headerButton("展开", icon: "arrow.up.left.and.arrow.down.right") { workspace.expand(pane) }
+        let actions = windowActions
+        return PaneHeaderButtonGroup {
+            headerButton("缩小", icon: "minus", action: actions.minimize)
+            if let expand = actions.expand {
+                headerButton("展开", icon: "arrow.up.left.and.arrow.down.right", action: expand)
             }
-            headerButton("关闭", icon: "xmark") { model.closeWindow(pane, in: area) }
-                .disabled(area.isDraft || area.changingWindows)
+            headerButton("关闭", icon: "xmark", action: actions.close)
+                .disabled(!actions.canClose)
         }
         // 按系统控件的实际尺寸安排标题栏并避让拖动，避免固定标签尺寸再次撑大按钮。
         .onGeometryChange(for: CGSize.self) { $0.size } action: { controlsSize = $0 }
@@ -241,20 +272,7 @@ struct PaneCard: View {
     }
 }
 
-/// 标题栏拖动层的形状：整块减去可点控件，按奇偶规则填充。
-nonisolated private struct HeaderDragShape: Shape {
-    let holes: [CGRect]
-
-    func path(in rect: CGRect) -> Path {
-        var path = Path(rect)
-        holes.forEach { path.addRect($0) }
-        return path
-    }
-}
-
-#endif
-
-/// 同一个添加菜单用于 Mac 停靠栏和 iPhone 折叠窗口栏。
+/// 宽屏停靠栏与紧凑布局的窗口栏共用添加入口。
 struct AddWindowButton: View {
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area

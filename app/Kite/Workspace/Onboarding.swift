@@ -27,11 +27,7 @@ struct AppRoot: View {
         if model.needsOnboarding {
             Onboarding()
         } else {
-            #if os(macOS)
-            MainWindow()
-            #else
-            PhoneLayout()
-            #endif
+            AdaptiveWorkspace()
         }
     }
 }
@@ -41,7 +37,7 @@ struct AppRoot: View {
 /// 底部的卡片只放这一步要填的、要做的，高度随内容，没有要操作的步骤不出卡片。
 /// 先登录或扫码加入账号，Mac 再选择执行任务或仅远程控制；入网完成直接进入 App，项目创建留在之后。
 struct Onboarding: View {
-    /// 登录账号的两种方式；扫码只在 iPhone 上提供。
+    /// 登录账号的两种方式；扫码在 iPhone 和 iPad 上提供。
     fileprivate enum Method: Hashable { case scan, manual }
 
     /// 当前这一步，各有自己的标志。
@@ -243,7 +239,7 @@ struct Onboarding: View {
         .padding(.vertical, Metrics.padding)
     }
 
-    /// 露出背景、拼标志的那块；iPhone 扫码时放取景框。
+    /// 露出背景、拼标志的那块；iPhone 和 iPad 扫码时放取景框。
     private var logoSpace: some View {
         Color.clear
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -370,7 +366,7 @@ struct Onboarding: View {
         case .connect(.scan):
             note("扫描已登录设备在“我的设备”中显示的二维码。")
         case .connect(.manual):
-            note("使用一个账号管理你的设备，无需准备服务器。")
+            note("使用一个账号管理你的设备。")
         }
     }
 
@@ -396,9 +392,6 @@ struct Onboarding: View {
         return VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    #if os(iOS)
-                    if case .connect = phase { methodPicker }
-                    #endif
                     VStack(alignment: .leading, spacing: 16) { cardBody }
                         .id(phase)
                         .transition(.opacity)
@@ -419,24 +412,6 @@ struct Onboarding: View {
         .animation(.snappy, value: total)
     }
 
-    #if os(iOS)
-    /// 扫码与手动填写之间切换，切换时清掉上一种方式留下的错误。
-    private var methodPicker: some View {
-        Picker("连接方式", selection: Binding {
-            if case .connect(let method) = page { method } else { Method.scan }
-        } set: { method in
-            error = nil
-            model.invite = nil
-            page = .connect(method)
-        }) {
-            Text("扫码").tag(Method.scan)
-            Text("账号密码").tag(Method.manual)
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-    }
-    #endif
-
     @ViewBuilder
     private var cardBody: some View {
         switch phase {
@@ -450,7 +425,7 @@ struct Onboarding: View {
             }.pickerStyle(.radioGroup).disabled(model.account.role != nil)
             note((model.account.role ?? role) == "worker" ? "安装 kited，让任务在这台 Mac 上运行。你也可以控制其他工作机。" : "加入设备网络，控制账号下的工作机。这台 Mac 不安装 kited。")
             #else
-            note("这台 iPhone 用来控制账号下的工作机。")
+            note("这台设备用来控制账号下的工作机。")
             #endif
         case .connect(.scan):
             note("二维码五分钟内有效，只能使用一次。")
@@ -460,17 +435,22 @@ struct Onboarding: View {
             }
             #endif
         case .connect(.manual):
-            OnboardingField(label: "邮箱", prompt: "you@example.com", text: $address, focus: $focus, submit: connect)
+            OnboardingField(label: "邮箱", prompt: "you@example.com", text: $address, focus: $focus,
+                            submit: connect, scan: { registering = false; go(.connect(.scan)) })
             VStack(alignment: .leading, spacing: 8) {
                 Text("密码").font(Theme.secondary).foregroundStyle(.secondary)
                 SecureField(registering ? "至少 10 个字符" : "账号密码", text: $code)
                     .textContentType(registering ? .newPassword : .password)
+                    .focused($focus, equals: "密码")
                     .font(Theme.body).textFieldStyle(.plain).padding(12)
                     .background(Theme.background, in: RoundedRectangle(cornerRadius: 12))
                     .onSubmit(connect)
+                    .typingTarget()
             }
-            Button(registering ? "已有账号，去登录" : "没有账号，创建一个") { registering.toggle(); error = nil }
+            Button(registering ? "已有账号，去登录" : "没有账号？创建一个") { registering.toggle(); error = nil }
                 .buttonStyle(.pointingPlain).font(Theme.secondary)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
         }
         if let error {
             callout(error, systemImage: "exclamationmark.triangle.fill", tint: Theme.danger)
@@ -487,7 +467,7 @@ struct Onboarding: View {
                 perform { try await model.account.signOut() } simulated: { restartPreview() }
             }
         case .connect(.scan):
-            buttons(primary: nil, enabled: false, action: {}, secondary: "使用账号密码") { go(.connect(.manual)) }
+            buttons(primary: "账号密码登录", enabled: !working, action: { go(.connect(.manual)) }, prominent: false)
         case .connect(.manual):
             buttons(primary: registering ? "创建账号" : "登录", enabled: !working && address.contains("@") && (registering ? code.count >= 10 : !code.isEmpty), action: connect)
         }
@@ -506,6 +486,7 @@ struct Onboarding: View {
     }
 
     private func buttons(primary: String?, enabled: Bool, action: @escaping () -> Void,
+                         prominent: Bool = true,
                          secondary: String? = nil, secondaryAction: @escaping () -> Void = {}) -> some View {
         GlassEffectContainer(spacing: Metrics.paneButtonGap) {
             HStack(spacing: Metrics.paneButtonGap) {
@@ -515,11 +496,15 @@ struct Onboarding: View {
                         .disabled(working)
                 }
                 if let primary {
-                    Button(action: action) {
+                    let button = Button(action: action) {
                         Text(primary).frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.glassProminent)
                     .disabled(!enabled)
+                    if prominent {
+                        button.buttonStyle(.glassProminent)
+                    } else {
+                        button.buttonStyle(.glass)
+                    }
                 }
             }
             .font(Theme.body.weight(.semibold))
@@ -535,6 +520,7 @@ struct Onboarding: View {
     // MARK: 操作
 
     private func go(_ page: Phase) {
+        focus = nil
         error = nil
         #if os(iOS)
         model.invite = nil
@@ -641,6 +627,7 @@ private struct OnboardingField: View {
     @Binding var text: String
     var focus: FocusState<String?>.Binding
     let submit: () -> Void
+    let scan: () -> Void
 
     #if os(macOS)
     private static let height: CGFloat = 36
@@ -653,23 +640,32 @@ private struct OnboardingField: View {
         let focused = focus.wrappedValue == label
         VStack(alignment: .leading, spacing: 6) {
             Text(label).font(Theme.caption.weight(.medium)).foregroundStyle(.secondary)
-            TextField(prompt, text: $text)
-                .textFieldStyle(.plain)
-                .font(Theme.body)
-                .autocorrectionDisabled()
+            HStack(spacing: 0) {
+                TextField(prompt, text: $text)
+                    .textFieldStyle(.plain)
+                    .font(Theme.body)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                    .focused(focus, equals: label)
+                    .onSubmit(submit)
+                    .padding(.horizontal, 12)
+                    .frame(height: Self.height)
+                    .contentShape(Rectangle())
+                    .onTapGesture { focus.wrappedValue = label }
+                    .typingTarget()
                 #if os(iOS)
-                .textInputAutocapitalization(.never)
+                Button(action: scan) {
+                    PaneButtonLabel("扫码登录", systemImage: "qrcode.viewfinder")
+                }
+                .buttonStyle(PaneButtonStyle())
+                .padding(.trailing, 4)
                 #endif
-                .focused(focus, equals: label)
-                .onSubmit(submit)
-                .padding(.horizontal, 12)
-                .frame(height: Self.height)
-                .background(Theme.codeBackground, in: shape)
-                .overlay { shape.strokeBorder(Color.accentColor.opacity(focused ? 0.8 : 0), lineWidth: 1.5) }
-                .contentShape(shape)
-                .onTapGesture { focus.wrappedValue = label }
-                .typingTarget()
-                .animation(.easeOut(duration: 0.15), value: focused)
+            }
+            .background(Theme.codeBackground, in: shape)
+            .overlay { shape.strokeBorder(Color.accentColor.opacity(focused ? 0.8 : 0), lineWidth: 1.5) }
+            .animation(.easeOut(duration: 0.15), value: focused)
         }
     }
 }

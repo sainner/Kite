@@ -1,15 +1,11 @@
 import SwiftUI
 
 /// 独立玻璃按钮共用字体、标签占位与辅助功能：图标占正方形，文字同高，同组按钮尺寸一致；
-/// iPhone 的占位保留触控尺寸，玻璃与交互由系统负责。
+/// 触屏模式保留触控尺寸，玻璃与交互由系统负责。
 struct PaneButtonLabel: View {
     let title: String
     var systemImage: String?
-    #if os(macOS)
-    @ScaledMetric(relativeTo: .body) private var extent: CGFloat = 16
-    #else
-    @ScaledMetric(relativeTo: .body) private var extent: CGFloat = 18
-    #endif
+    @ScaledMetric(relativeTo: .body) private var extent: CGFloat = InputMode.current.labelExtent
 
     init(_ title: String, systemImage: String? = nil) {
         self.title = title
@@ -48,8 +44,7 @@ struct PaneButtonGroup<Content: View>: View {
     }
 }
 
-#if os(macOS)
-/// Mac 标题栏的窗口操作与会话菜单共用一块玻璃的分组规则。
+/// 标题栏的窗口操作与会话菜单共用一块玻璃的分组规则。
 struct PaneHeaderButtonGroup<Content: View>: View {
     @ViewBuilder var content: Content
     @Namespace private var glass
@@ -82,7 +77,7 @@ private struct PaneHeaderButtonStyle: ButtonStyle {
     }
 }
 
-/// Mac 标题栏按钮统一为 36pt 高；文字两侧各留 8pt，图标入口使用正方形点击区。
+/// 标题栏按钮按输入方式选择高度，图标入口使用正方形点击区。
 struct PaneHeaderButtonLabel: View {
     let title: String
     var systemImage: String?
@@ -100,7 +95,6 @@ struct PaneHeaderButtonLabel: View {
             .contentShape(.capsule)
     }
 }
-#endif
 
 /// 控制区和工具条共用尺寸、字体、命中范围和交互反馈；玻璃由所属容器提供。
 struct PaneButtonStyle: ButtonStyle {
@@ -133,9 +127,7 @@ struct PaneButtonHover: ViewModifier {
     @State private var hovered = false
 
     private var feedback: Color {
-        #if os(macOS)
         if isPressed && isEnabled { return Color.gray.opacity(0.20) }
-        #endif
         return Color.gray.opacity(hovered && isEnabled ? 0.10 : 0)
     }
 

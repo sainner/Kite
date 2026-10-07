@@ -1,8 +1,7 @@
-#if os(iOS)
 import SwiftUI
 
 /// 拉出来的是哪一侧。
-enum PhoneDrawer { case sidebar, actions }
+enum WorkspaceDrawer { case sidebar, actions }
 
 /// 会话窗口，和拉出侧边栏、action 栏的手势。
 ///
@@ -17,10 +16,10 @@ enum PhoneDrawer { case sidebar, actions }
 /// WindowPlacement 只计算目标布局；窗口固定在全屏容器内，只动画四边 inset，位置和宽高由同一次布局确定。
 /// WindowProgress 只读取系统弹簧的进度供续拖，不再单独平移窗口。
 /// 不把整套布局做成 Animatable，否则每一帧都会重新计算视图、写入安全区和容器形状。
-struct PhoneWindow: View {
-    @Binding var open: PhoneDrawer?
+struct CompactWindow: View {
+    @Binding var open: WorkspaceDrawer?
     /// 露出来的一侧：打开着、手指拖着或者正在走。
-    @Binding var shown: PhoneDrawer?
+    @Binding var shown: WorkspaceDrawer?
     let screen: CGSize
     /// 屏幕四边被盖着的：状态栏、Home 条，键盘升起来时底下是键盘。
     let insets: EdgeInsets
@@ -35,7 +34,7 @@ struct PhoneWindow: View {
     /// 这一帧弹簧走到几成，WindowProgress 读回来。手指半路接住时从这里接着拖。
     @State private var presented = Presented()
     /// 手指正拖着的一侧。
-    @State private var dragging: PhoneDrawer?
+    @State private var dragging: WorkspaceDrawer?
     /// 这次拖动里，手指的位移为 0 时对应打开到几成。
     @State private var anchor: CGFloat = 0
     /// 这次拖的方向不对，不拉抽屉，松手前都不管。
@@ -112,9 +111,9 @@ struct PhoneWindow: View {
     }
 
     /// 从当时的样子走到 drawer 打开，nil 是收起：点按钮、点窗口收起、点侧边栏里的会话。正在走的带着当时的速度掉头（SwiftUI 的弹簧自己接）。
-    private func settle(_ drawer: PhoneDrawer?) {
+    private func settle(_ drawer: WorkspaceDrawer?) {
         let spring = Animation.spring(duration: Self.duration, bounce: 0)
-        for side in [PhoneDrawer.sidebar, .actions] where side != drawer && target[side] != 0 {
+        for side in [WorkspaceDrawer.sidebar, .actions] where side != drawer && target[side] != 0 {
             animate(side, to: 0, with: spring)
         }
         if let drawer, target[drawer] != 1 {
@@ -124,7 +123,7 @@ struct PhoneWindow: View {
     }
 
     /// 带着动画让 drawer 那一侧走到 value。收起的走完了才藏起那一侧。
-    private func animate(_ drawer: PhoneDrawer, to value: CGFloat, with animation: Animation) {
+    private func animate(_ drawer: WorkspaceDrawer, to value: CGFloat, with animation: Animation) {
         shown = drawer
         withAnimation(animation, completionCriteria: .removed) {
             target[drawer] = value
@@ -134,21 +133,21 @@ struct PhoneWindow: View {
         }
     }
 
-    private func extent(_ drawer: PhoneDrawer) -> CGFloat {
+    private func extent(_ drawer: WorkspaceDrawer) -> CGFloat {
         drawer == .sidebar ? sidebarWidth : actionsHeight
     }
 
     /// 手指的位移或速度往打开的方向有多少，换算成几成。
-    private func along(_ drawer: PhoneDrawer, _ size: CGSize) -> CGFloat {
+    private func along(_ drawer: WorkspaceDrawer, _ size: CGSize) -> CGFloat {
         guard extent(drawer) > 0 else { return 0 }
         return (drawer == .sidebar ? size.width : -size.height) / extent(drawer)
     }
 
     /// 往 drawer 那一侧拉。一开始往哪个方向拖就定下来：侧边栏要横着拖，action 栏要竖着拖，
     /// 方向不对的留给拖的地方自己的手势（比如控制区里横着滑选 effort）。另一侧没收好时也不接。
-    private func pull(_ drawer: PhoneDrawer) -> DrawerPull {
+    private func pull(_ drawer: WorkspaceDrawer) -> DrawerPull {
         DrawerPull { moved, _ in
-            let other: PhoneDrawer = drawer == .sidebar ? .actions : .sidebar
+            let other: WorkspaceDrawer = drawer == .sidebar ? .actions : .sidebar
             let holding = dragging == drawer
             if !holding {
                 guard !offAxis else { return }
@@ -188,13 +187,13 @@ private struct Openness: Equatable {
     /// 推过完全打开最多再出去多少点。
     static let limit: CGFloat = 32
 
-    subscript(drawer: PhoneDrawer) -> CGFloat {
+    subscript(drawer: WorkspaceDrawer) -> CGFloat {
         get { drawer == .sidebar ? sidebar : actions }
         set { if drawer == .sidebar { sidebar = newValue } else { actions = newValue } }
     }
 
     /// 完全打开着的一侧。
-    var opened: PhoneDrawer? {
+    var opened: WorkspaceDrawer? {
         sidebar == 1 ? .sidebar : actions == 1 ? .actions : nil
     }
 
@@ -283,4 +282,3 @@ private struct WindowPlacement<Overlay: View>: ViewModifier {
             .ignoresSafeArea()
     }
 }
-#endif

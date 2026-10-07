@@ -93,59 +93,37 @@ enum Metrics {
     /// 最小化插件窗口的圆角；agent 仍使用圆形。
     static let dockRadius: CGFloat = 12
     /// 卡片拖小时的下限。
-    static let minPane: CGFloat = 168
+    static var minPane: CGFloat { InputMode.current.isTouch ? 360 : 168 }
     /// 按下后挪动多少才算拖动，免得单击也算。
     static let dragThreshold: CGFloat = 4
     /// Mac 内容区外缘的拖放范围，在这里沿整个窗口组分栏。
     static let windowEdgeDrop: CGFloat = 32
     /// 输入区内部和工具条的点击区：Mac 使用紧凑尺寸，iPhone 保留触控尺寸。
     /// 独立玻璃入口通过系统 controlSize 决定。
-    #if os(macOS)
-    static let paneButton: CGFloat = 28
-    /// 标题栏的窗口操作与会话菜单共用尺寸。
-    static let paneHeaderButton: CGFloat = 36
-    #else
-    static let paneButton: CGFloat = 44
-    #endif
+    static var paneButton: CGFloat { InputMode.current.button }
+    static var paneHeaderButton: CGFloat { InputMode.current.headerButton }
     static let paneButtonGap: CGFloat = 10
     /// 按钮到所属工具条容器的四边留白。
     static let paneToolbarInset: CGFloat = 8
     static let paneToolbarHeight: CGFloat = paneButton + 2 * paneToolbarInset
     /// 窗口四边的固定最小留白；已让出的安全区只补到这个值，不重复叠加。
-    #if os(macOS)
-    static let paneMargin: CGFloat = 8
-    /// Mac 标题组在窗口边距内额外向右留白。
+    static var paneMargin: CGFloat { InputMode.current.paneMargin }
     static let paneTitleInset: CGFloat = 6
-    #else
-    static let paneMargin: CGFloat = 14
-    #endif
     /// 主标题与尾部刷新图标之间的间距。
     static let titleRefreshGap: CGFloat = 3
     /// 刷新图标的命中与悬停范围向外扩出的距离，不影响排版；iPhone 保留触控尺寸。
-    #if os(macOS)
-    static let titleRefreshOutset: CGFloat = 4
-    #else
-    static let titleRefreshOutset: CGFloat = 12
-    #endif
-    #if os(macOS)
-    /// 窗口与输入框的圆角按两者之间的留白保持同心。
-    static let cardRadius: CGFloat = controlRadius + paneMargin
-    #else
-    static let cardRadius: CGFloat = 20
-    #endif
+    static var titleRefreshOutset: CGFloat { InputMode.current.titleOutset }
+    /// 卡片和内部输入框保持同心。
+    static var cardRadius: CGFloat { controlRadius + paneMargin }
     /// iPhone 上标题栏后面的渐变遮罩往下伸过标题栏底边多少。
     static let topFadeOverhang: CGFloat = 20
     /// 拖出布局或最小化后的窗口图标尺寸：Mac 三个模块，iPhone 四个模块，保留触控尺寸。
-    #if os(macOS)
-    static let dragBubble: CGFloat = 36
-    #else
-    static let dragBubble: CGFloat = 48
-    #endif
+    static var dragBubble: CGFloat { InputMode.current.dockItem }
     /// Mac 右侧停靠栏与窗口图标同宽。
     static let dockWidth: CGFloat = dragBubble
     /// action 区：一排按钮、账号那一行，和两行之间的距离。
-    static let actionButton: CGFloat = 36
-    static let accountRow: CGFloat = 36
+    static var actionButton: CGFloat { InputMode.current.isTouch ? 44 : 36 }
+    static var accountRow: CGFloat { max(36, paneButton) }
     static let actionSpacing: CGFloat = 10
     /// iPhone 上拉出侧边栏后窗口最少留多宽，要大于圆角的直径，圆角才不会变形。
     static let phoneMinWindow: CGFloat = 120
@@ -156,17 +134,9 @@ enum Metrics {
     /// 会话输入栏的顶部和左右内边距。
     static let controlInset: CGFloat = 8
     /// 会话输入栏的底部内边距。
-    #if os(macOS)
-    static let controlBottomInset: CGFloat = 6
-    #else
-    static let controlBottomInset: CGFloat = controlInset
-    #endif
-    /// 控制区输入框的圆角，玻璃、交互范围与悬停轮廓共用。
-    #if os(macOS)
-    static let controlRadius: CGFloat = 16
-    #else
-    static let controlRadius: CGFloat = 28
-    #endif
+    static var controlBottomInset: CGFloat { InputMode.current.isTouch ? controlInset : 6 }
+    /// 玻璃、交互范围与悬停轮廓共用。
+    static var controlRadius: CGFloat { InputMode.current.controlRadius }
     /// 选 effort 的主刻度线的间距，一档占这么宽，拖过这么宽换一档。
     static let effortTick: CGFloat = 24
     /// 会话窗口里对话那一栏最宽多少，卡片再宽也不让一行字太长。
@@ -177,11 +147,7 @@ enum Metrics {
     /// 工具列表的行内边距。
     static let toolRowInset: CGFloat = 10
     /// 工具标题行高度，视图中随系统字号缩放。
-    #if os(macOS)
-    static let toolRowHeight: CGFloat = 32
-    #else
-    static let toolRowHeight: CGFloat = 36
-    #endif
+    static var toolRowHeight: CGFloat { InputMode.current.isTouch ? 36 : 32 }
     static let toolIcon: CGFloat = 16
     /// 图标、名字、摘要之间使用相同的间距。
     static let toolLabelGap: CGFloat = 6

@@ -1,12 +1,12 @@
 # Kite App
 
-Mac 和 iPhone 共用一个 SwiftUI 工程、一个多平台 target。使用 Swift 6，最低 macOS 26、iOS 26；工程语言为简体中文。
+Mac、iPhone 和 iPad 共用一个 SwiftUI 工程、一个多平台 target。使用 Swift 6，最低 macOS 26、iOS 26；工程语言为简体中文。
 
 界面行为、跨端交互、流式展示与预览约定见 [App：界面与使用约定](../docs/App.md)。
 
 ## 代码地图
 
-`Kite/` 是 Xcode 同步文件夹，增删、移动源码会自动反映到工程。各功能内共用两端代码，平台差异用条件编译表达。
+`Kite/` 是 Xcode 同步文件夹，增删、移动源码会自动反映到工程。各功能共用代码；窗口空间决定布局，输入方式决定交互尺寸与操作入口，系统 API 差异保留条件编译。
 
 | 目录 | 职责 |
 |---|---|
@@ -25,7 +25,7 @@ Mac 和 iPhone 共用一个 SwiftUI 工程、一个多平台 target。使用 Swi
 
 仓库根目录运行 `./package-mac.command` 生成 Mac Release App 与独立安装包，`./install.command` 构建后安装 App，首次配置选择本机执行时安装后台服务。签名范围、系统要求和升级方式见 [macOS 安装与打包](../docs/macOS安装与打包.md)。
 
-用 Xcode 打开 `app/Kite.xcodeproj`，选择 My Mac 或 iPhone 模拟器。首次使用 Xcode 时，若缺少 Metal Toolchain，先运行 `xcodebuild -downloadComponent MetalToolchain`。
+用 Xcode 打开 `app/Kite.xcodeproj`，选择 My Mac、iPhone 或 iPad 模拟器。首次使用 Xcode 时，若缺少 Metal Toolchain，先运行 `xcodebuild -downloadComponent MetalToolchain`。
 
 仓库根目录的 `.kite/check` 会在 App 有改动时先重建插件宿主页，再编译两端。手动编译时也先生成资源：
 

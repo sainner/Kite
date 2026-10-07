@@ -1,13 +1,13 @@
 import SwiftUI
 
-/// 一个窗口组：有哪些窗口、Mac 上怎么排、聚焦的是哪个。Mac 把它们排成卡片，iPhone 一次显示聚焦的那个。
+/// 一个窗口组：窗口集合、本机排布与焦点。宽屏排成卡片，紧凑布局只显示聚焦窗口。
 /// 拖动卡片的接口收内容区里的坐标和内容区的大小，换算由摆卡片的视图做。
 @Observable
 final class WindowLayout {
     private(set) var root: Tile?
     /// 缩小的窗口仍属于这个工作区，按停靠顺序保存。
     private(set) var docked: [Pane] = []
-    /// 聚焦的窗口，iPhone 上显示的就是它；窗口组为空时没有焦点。
+    /// 紧凑布局显示聚焦窗口；宽屏空间不足时优先保留它。
     private(set) var focused: Pane?
     private(set) var drag: CardDrag?
     /// 正在拖的那道缝，跟手不吸附；松手后清空，排布吸附到模块。
@@ -18,7 +18,26 @@ final class WindowLayout {
     @ObservationIgnored private let storageKey: String?
     @ObservationIgnored private let defaults: UserDefaults
     /// 由当前窗口内容区提供；不随布局写入共享数据或持久化。
-    @ObservationIgnored var availableSize: CGSize?
+    var availableSize: CGSize?
+    private(set) var presentation: WorkspacePresentation = .tiled
+    /// 紧凑布局里正在看的停靠窗口，回到宽屏后继续显示，但不改写原排布。
+    private var carriedFocus: Pane?
+
+    /// 窄屏只改变呈现，不把暂时放不下的卡片写成永久停靠。
+    func updateViewport(_ size: CGSize, presentation: WorkspacePresentation) {
+        let nextSize: CGSize? = presentation == .tiled ? size : nil
+        if self.presentation != presentation || availableSize != nextSize {
+            cancelDrag()
+            if resizing != nil { finishResize() }
+        }
+        if self.presentation == .compact && presentation == .tiled {
+            carriedFocus = focused.flatMap { docked.contains($0) ? $0 : nil }
+        }
+        self.presentation = presentation
+        availableSize = nextSize
+    }
+
+    func cancelDrag() { drag = nil }
 
     init(panes: [Pane] = [], arrangement: Arrangement = .oneAndTwo,
          storageKey: String? = nil, defaults: UserDefaults = .standard, reconcileOnLoad: Bool = true) {
@@ -64,11 +83,12 @@ final class WindowLayout {
         guard panes.contains(pane) else { return }
         withAnimation(.snappy) {
             drag = nil
+            carriedFocus = nil
             if docked.contains(pane) {
-                #if os(macOS)
-                place(pane, in: bounds ?? availableSize.map { CGRect(origin: .zero, size: $0) })
-                docked.removeAll { $0 == pane }
-                #endif
+                if presentation == .tiled {
+                    place(pane, in: bounds ?? availableSize.map { CGRect(origin: .zero, size: $0) })
+                    docked.removeAll { $0 == pane }
+                }
             }
             focused = pane
         }
@@ -78,6 +98,7 @@ final class WindowLayout {
     func focus(_ pane: Pane) {
         guard focused != pane, panes.contains(pane) else { return }
         focused = pane
+        if carriedFocus != pane { carriedFocus = nil }
         save()
     }
 
@@ -98,12 +119,35 @@ final class WindowLayout {
 
     /// 正在显示的排布。
     var shown: Tile? {
-        guard let drag else { return root }
+        guard let drag else { return fittedRoot }
         return drag.layout
     }
 
     var shownDock: [Pane] {
-        drag?.docked ?? docked
+        guard let drag else { return dockedPanes(outside: fittedRoot) }
+        return drag.docked
+    }
+
+    private var fittedRoot: Tile? {
+        guard presentation == .tiled, let availableSize else { return root }
+        let canvas = WindowRegions(in: CGRect(origin: .zero, size: availableSize)).canvas
+        var tile = root
+        if let carriedFocus, carriedFocus == focused, docked.contains(carriedFocus) {
+            tile = tile?.inserting(.pane(carriedFocus), on: .trailing) ?? .pane(carriedFocus)
+        }
+        let candidates = (tile?.panes ?? []).filter { $0 != focused }
+        for pane in candidates {
+            guard let current = tile, current.panes.count > 1 else { break }
+            let minimum = current.minimumSize
+            if minimum.width <= canvas.width && minimum.height <= canvas.height { break }
+            tile = current.removing(pane, preservingSource: true)
+        }
+        return tile
+    }
+
+    private func dockedPanes(outside tile: Tile?) -> [Pane] {
+        let visible = Set(tile?.panes ?? [])
+        return (docked + (root?.panes ?? [])).filter { !visible.contains($0) }
     }
 
     func arrange(_ arrangement: Arrangement) {
@@ -111,6 +155,7 @@ final class WindowLayout {
         let remaining = panes.filter { !(tile?.panes.contains($0) ?? false) }
         withAnimation(.snappy) {
             drag = nil
+            carriedFocus = nil
             root = tile
             docked = remaining
             focusVisiblePane()
@@ -120,6 +165,12 @@ final class WindowLayout {
 
     /// 收进停靠栏，保留窗口和内容。
     func minimize(_ pane: Pane) {
+        if carriedFocus == pane {
+            carriedFocus = nil
+            focusVisiblePane()
+            save()
+            return
+        }
         guard root?.panes.contains(pane) == true else { return }
         withAnimation(.snappy) {
             drag = nil
@@ -132,10 +183,11 @@ final class WindowLayout {
 
     /// 当前窗口铺满内容区，其余窗口依次收进停靠栏。
     func expand(_ pane: Pane) {
-        guard let root, root.panes.contains(pane) else { return }
+        guard shown?.panes.contains(pane) == true else { return }
         withAnimation(.snappy) {
             drag = nil
-            docked += root.panes.filter { $0 != pane }
+            carriedFocus = nil
+            docked = docked.filter { $0 != pane } + (root?.panes ?? []).filter { $0 != pane }
             self.root = .pane(pane)
             focused = pane
         }
@@ -144,7 +196,7 @@ final class WindowLayout {
 
     /// 点击停靠窗口与新建窗口使用同一放置顺序和展开动画。
     func restore(_ pane: Pane, in bounds: CGRect) {
-        guard drag == nil, docked.contains(pane) else { return }
+        guard drag == nil, shownDock.contains(pane) else { return }
         activate(pane, in: bounds)
     }
 
@@ -183,7 +235,7 @@ final class WindowLayout {
         let upper = available - length(split.second.minimumSize)
         guard available > 0, lower <= upper else { return }
         let position = (horizontal ? location.x - gap.region.minX : location.y - gap.region.minY) - Metrics.gap / 2
-        resizing = split
+        resizing = split.source ?? split
         split.ratio = min(max(position, lower), upper) / available
     }
 
@@ -198,10 +250,11 @@ final class WindowLayout {
         guard panes.contains(pane), drag == nil || drag?.pane == pane else { return }
         pointer = location
         let regions = WindowRegions(in: bounds)
-        var next = drag ?? CardDrag(pane: pane, rest: root?.removing(pane))
+        let fitted = fittedRoot
+        var next = drag ?? CardDrag(pane: pane, rest: fitted?.removing(pane))
         // 按脱离后、插占位之前的排布判断落点：预览一变卡片就挪位置，按预览判断会来回跳。
         // 指针在卡片之间的缝里时保持原来的落点，出了内容区才取消
-        let remainingDock = docked.filter { $0 != pane }
+        let remainingDock = dockedPanes(outside: fitted).filter { $0 != pane }
         if regions.dock.contains(location) {
             next.spot = .dock(regions.dockIndex(at: location, count: remainingDock.count))
         } else if regions.canvas.contains(location), let rest = next.rest {
@@ -240,11 +293,13 @@ final class WindowLayout {
         withAnimation(.snappy) {
             switch next.spot {
             case .dock:
+                carriedFocus = nil
                 root = next.rest
                 docked = next.docked
             case .edge, .beside, .canvas:
+                carriedFocus = nil
                 root = next.placing(.pane(next.pane), in: WindowRegions(in: bounds).canvas)
-                docked.removeAll { $0 == next.pane }
+                docked = next.docked.filter { $0 != next.pane && !(root?.panes.contains($0) ?? false) }
                 focused = next.pane
             case nil:
                 break

@@ -6,7 +6,7 @@ struct WorkspaceRow: View {
     let current: Bool
     /// 分离成了独立窗口（Mac）。
     var detached = false
-    var height: CGFloat = 32
+    var height: CGFloat = InputMode.current.rowHeight
 
     @Environment(AppModel.self) private var model
     private var isRoot: Bool { workspace.remote?.workspace.kind == .root }
@@ -100,18 +100,18 @@ struct WorkspaceList<Row: View>: View {
 struct ActionArea: View {
     var compact = false
     @Environment(AppModel.self) private var model
+    @Environment(\.workspacePresentation) private var presentation
 
     var body: some View {
-        #if os(iOS)
-        HStack(spacing: 8) {
-            buttons(size: Metrics.actionButton)
-            connection(size: Metrics.actionButton)
-        }
-        #else
-        if compact {
+        if presentation == .compact {
+            HStack(spacing: 8) {
+                buttons(size: Metrics.actionButton)
+                connection(size: Metrics.actionButton)
+            }
+        } else if compact {
             VStack(spacing: 8) {
-                buttons(size: 32)
-                connection(size: 28).padding(.top, 4)
+                buttons(size: max(32, Metrics.paneButton))
+                connection(size: Metrics.paneButton).padding(.top, 4)
             }
         } else {
             VStack(alignment: .leading, spacing: Metrics.actionSpacing) {
@@ -121,12 +121,11 @@ struct ActionArea: View {
                     Text("\(model.availableWorkers.count) 台工作机在线")
                         .font(Theme.secondary).foregroundStyle(.secondary).lineLimit(1)
                     Spacer(minLength: 0)
-                    connection(size: 28)
+                    connection(size: Metrics.paneButton)
                 }
                 .frame(height: Metrics.accountRow)
             }
         }
-        #endif
     }
 
     @ViewBuilder
@@ -160,13 +159,14 @@ struct ActionArea: View {
     }
 }
 
-#if os(macOS)
-/// Mac 的侧边栏。展开时上面是会话列表、底部是 action 区；收起时只留一列图标。
+/// 宽屏侧边栏。展开时上面是会话列表、底部是 action 区；收起时只留一列图标。
 /// 一行就是一个会话和它的窗口组：点一下在内容区显示，拖到主窗口外面就分离成独立窗口。
-struct MacSidebar: View {
+struct WorkspaceSidebar: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
+    #if os(macOS)
     @Environment(\.windowChrome) private var chrome
+    #endif
 
     var body: some View {
         let current = model.current?.id
@@ -174,7 +174,11 @@ struct MacSidebar: View {
             if model.sidebarCollapsed { rail(current) } else { expanded(current) }
         }
         // 只让开系统红绿灯按钮所在的区域。
+        #if os(macOS)
         .padding(.top, chrome.top)
+        #else
+        .padding(.top, Metrics.padding)
+        #endif
     }
 
     private func expanded(_ current: String?) -> some View {
@@ -185,6 +189,7 @@ struct MacSidebar: View {
                         .overlay { source(workspace) }
                 }
             }
+            sidebarToggle
             ActionArea()
         }
     }
@@ -197,19 +202,31 @@ struct MacSidebar: View {
                         // 已经分离成独立窗口的画淡一点
                         Circle().fill(workspace.tint).frame(width: 24, height: 24)
                             .opacity(model.detached.contains(workspace.id) ? 0.35 : 1)
-                            .padding(6)
+                            .frame(width: max(36, Metrics.paneButton), height: max(36, Metrics.paneButton))
                             .background(current == workspace.id ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 10))
                             .overlay { source(workspace) }
                     }
                 }
                 .frame(maxWidth: .infinity)
             }
+            sidebarToggle
             ActionArea(compact: true)
         }
         .frame(maxWidth: .infinity)
     }
 
+    private var sidebarToggle: some View {
+        Button {
+            withAnimation(.snappy) { model.sidebarCollapsed.toggle() }
+        } label: {
+            Image(systemName: "sidebar.left")
+        }
+        .buttonStyle(PaneButtonStyle())
+        .accessibilityLabel(model.sidebarCollapsed ? "展开侧边栏" : "收起侧边栏")
+    }
+
     private func source(_ workspace: WorkArea) -> some View {
+        #if os(macOS)
         WorkspaceDragSource(tint: workspace.tint) {
             // 已经分离的，点一下把它的窗口提到前面
             if model.detached.contains(workspace.id) {
@@ -224,6 +241,9 @@ struct MacSidebar: View {
             model.pendingPlacement = CGRect(x: point.x - 60, y: point.y + 16 - size.height, width: size.width, height: size.height)
             openWindow(id: "workspace", value: workspace.id)
         }
+        #else
+        Color.clear.contentShape(Rectangle())
+            .onTapGesture { model.selected = workspace.id }
+        #endif
     }
 }
-#endif

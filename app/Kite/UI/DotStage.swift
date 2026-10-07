@@ -162,14 +162,12 @@ nonisolated struct DotFigure: Hashable, Sendable {
         var color: DotColor
         var shape: Double
 
-        /// 从 a 过渡到 b 走到 t；静息的点一侧按 shape 0、颜色取另一侧。
-        static func blend(_ a: Look?, _ b: Look?, by t: Double) -> Look? {
-            switch (a, b) {
-            case (nil, nil): nil
-            case (let a?, nil): Look(color: a.color, shape: a.shape * (1 - t))
-            case (nil, let b?): Look(color: b.color, shape: b.shape * t)
-            case (let a?, let b?): Look(color: a.color.mixed(with: b.color, by: t), shape: a.shape + (b.shape - a.shape) * t)
-            }
+        /// 从 a 过渡到 b 走到 t；空白帧同时回到静息点的形状与颜色。
+        static func blend(_ a: Look?, _ b: Look?, by t: Double, rest: DotColor) -> Look? {
+            guard a != nil || b != nil else { return nil }
+            let from = a ?? Look(color: rest, shape: 0)
+            let to = b ?? Look(color: rest, shape: 0)
+            return Look(color: from.color.mixed(with: to.color, by: t), shape: from.shape + (to.shape - from.shape) * t)
         }
     }
 
@@ -346,7 +344,7 @@ nonisolated struct FigureMotion: Hashable, Sendable {
 
     /// 帧序列此刻这一格的样子；delay（0–1）是这一格在过渡里按对角线位置晚出发多少。
     /// amplitude 从 0 到 1 时由首帧过渡到当前帧，为 0 时停在首帧。不是帧序列的层原样返回首帧。
-    func look(of cell: DotFigure.Cell, at date: Date, delay: Double, amplitude: Double) -> DotFigure.Look? {
+    func look(of cell: DotFigure.Cell, at date: Date, delay: Double, amplitude: Double, rest: DotColor) -> DotFigure.Look? {
         guard case .frames(let holds, let transition, let stagger) = kind, !cell.frames.isEmpty, amplitude > 0 else {
             return cell.frames.isEmpty ? cell.look : cell.frames[0]
         }
@@ -359,12 +357,12 @@ nonisolated struct FigureMotion: Hashable, Sendable {
             if elapsed < transition {
                 // 和换图形一样缓出；最晚出发的那一格正好在 transition 结束时到位
                 let t = min(max((elapsed - delay * stagger) / max(transition - stagger, 0.01), 0), 1)
-                current = DotFigure.Look.blend(current, cell.frames[(index + 1) % holds.count], by: 1 - pow(1 - t, 3))
+                current = DotFigure.Look.blend(current, cell.frames[(index + 1) % holds.count], by: 1 - pow(1 - t, 3), rest: rest)
                 break
             }
             elapsed -= transition
         }
-        return amplitude < 1 ? DotFigure.Look.blend(cell.frames[0], current, by: amplitude) : current
+        return amplitude < 1 ? DotFigure.Look.blend(cell.frames[0], current, by: amplitude, rest: rest) : current
     }
 }
 
@@ -395,35 +393,40 @@ nonisolated struct PlacedFigure: Hashable, Sendable {
 
     /// 窗口点阵上 (column, row) 这一格从图形内容里分到多少形变、什么颜色；一点都没分到是 nil。
     /// 浮动的层按此刻的位移把这一格的中心反算回图形坐标，由上下相邻两格按线性权重分配形变量；
-    /// 颜色取分得最多的那一格的，不混合——黄蓝相混会发灰，图形只用色板里的颜色。闪烁的层按亮度在自己和底下的格子之间换。
+    /// 颜色按相同的空间权重在 oklab 中混合，未覆盖的部分取静息点色；闪烁的层连续交接给底层或静息点。
     /// 幅度为 0 时正好取回原来那一格。
-    func sample(column: Int, row: Int, at date: Date, amplitude: Double) -> (shape: Double, color: DotColor)? {
+    func sample(column: Int, row: Int, at date: Date, amplitude: Double, rest: DotColor) -> (shape: Double, color: DotColor)? {
         let x = column - self.column
         // 格的中心，以格为单位、相对图形左上角；浮动至多偏出一格
         let y = Double(row - self.row) + 0.5
         guard x >= 0, x < figure.columns, y > -1, y < Double(figure.rows) + 1 else { return nil }
-        var shape = 0.0, strongest = 0.0
-        var color: DotColor?
+        var shape = 0.0, coverage = 0.0
+        var color = DotColor.Oklab.zero
+        func contribute(_ look: DotFigure.Look, weight: Double) {
+            shape += look.shape * weight
+            coverage += weight
+            color += look.color.oklab.scaled(by: weight)
+        }
         for (index, layer) in figure.layers.enumerated() {
             let v = y - layer.motion.offset(at: date, amplitude: amplitude) - 0.5
             let v0 = v.rounded(.down), fv = v - v0
             let lit = layer.motion.visibility(at: date, amplitude: amplitude)
             func tap(_ dv: Int, _ w: Double) {
                 let r = Int(v0) + dv
-                guard w > 1e-6, let cell = figure[x, r], cell.layer == index else { return }
+                guard w > 0, let cell = figure[x, r], cell.layer == index else { return }
                 let delay = Double(x + r) / Double(max(figure.columns + figure.rows - 2, 1))
-                guard let look = layer.motion.look(of: cell, at: date, delay: delay, amplitude: amplitude) else { return }
+                let look = layer.motion.look(of: cell, at: date, delay: delay, amplitude: amplitude, rest: rest)
                 // 熄掉的那部分换成底下的格子
-                let own = w * look.shape * lit, below = w * (cell.under?.shape ?? 0) * (1 - lit)
-                shape += own + below
-                if own > strongest { strongest = own; color = look.color }
-                if below > strongest, let under = cell.under { strongest = below; color = under.color }
+                if let look { contribute(look, weight: w * lit) }
+                if let under = cell.under { contribute(under, weight: w * (1 - lit)) }
             }
             tap(0, 1 - fv)
             tap(1, fv)
         }
-        guard let color else { return nil }
-        return (min(shape, 1), color)
+        guard coverage > 0 else { return nil }
+        // shape 是图案作者给定的大小，不当作颜色权重，避免小格子本来饱满的颜色被冲淡。
+        color += rest.oklab.scaled(by: max(1 - coverage, 0))
+        return (min(shape, 1), DotColor(color.scaled(by: 1 / max(coverage, 1))))
     }
 }
 
@@ -460,13 +463,14 @@ nonisolated struct DotField: Sendable {
                 form = wave.form
             }
         }
-        // 图形的格子比波高时取图形，波从图形外沿经过、不改它的颜色。
-        if let cell = slots.lazy.compactMap({ figureCell(in: $0, column: column, row: row, at: date) }).first,
-           cell.shape >= shape {
-            return Dot(.square, shape: cell.shape, color: cell.color)
-        }
         var target = DotColor.palette(column: column, row: row, in: palette)
         target.alpha *= wave.opacity
+        if let cell = slots.lazy.compactMap({ figureCell(in: $0, column: column, row: row, at: date) }).first {
+            // 波只占图形之外剩余的幅度，交接处不因大小刚好反超而跳色；满格图形保留原色。
+            guard shape > cell.shape else { return Dot(.square, shape: cell.shape, color: cell.color) }
+            let amount = (shape - cell.shape) / (1 - cell.shape)
+            return Dot(form, shape: shape, color: cell.color.mixed(with: target, by: amount))
+        }
         let color = shape > 0 ? rest.mixed(with: target, by: shape) : rest
         return Dot(form, shape: shape, color: color)
     }
@@ -477,9 +481,9 @@ nonisolated struct DotField: Sendable {
         let figure = slot.figure, previousFigure = slot.previous
         let elapsed = date.timeIntervalSince(slot.start)
         let to = figure?.sample(column: column, row: row, at: date,
-                                amplitude: moving ? smoothstep((elapsed - DotFigure.transition) / 0.8) : 0)
+                                amplitude: moving ? smoothstep((elapsed - DotFigure.transition) / 0.8) : 0, rest: rest)
         let from = previousFigure?.sample(column: column, row: row, at: date,
-                                          amplitude: moving ? 1 - smoothstep(elapsed / 0.3) : 0)
+                                          amplitude: moving ? 1 - smoothstep(elapsed / 0.3) : 0, rest: rest)
         guard to != nil || from != nil else { return nil }
         var eased = 1.0
         if let previousFigure, let figure {
@@ -515,7 +519,7 @@ nonisolated struct DotField: Sendable {
                 let rect = CGRect(x: CGFloat(column) * pitch + inset - frame.minX,
                                   y: CGFloat(row) * pitch + inset - frame.minY,
                                   width: DotMetrics.cell, height: DotMetrics.cell)
-                if dot.shape <= 1.0 / 512 {
+                if dot.shape <= 1.0 / 512, dot.color == rest {
                     resting.addPath(dot.path(in: rect))
                 } else {
                     context.fill(dot.path(in: rect), with: .color(dot.color.color))
@@ -541,24 +545,24 @@ struct DotCanvas: View {
     @Environment(\.dotStage) private var stage
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.self) private var environment
-    @State private var frame: CGRect = .zero
 
     var body: some View {
-        Group {
+        GeometryReader { proxy in
+            let origin = proxy.frame(in: .global).origin
             if let stage {
                 let live = stage.animating && !reduceMotion
                 TimelineView(.animation(paused: !live)) { timeline in
                     // 静息或减少动态效果时取波都已结束的时刻，直接画出静息的点。
                     let date = live ? timeline.date : .distantFuture
                     let field = stage.field(at: date, rest: .rest(in: environment), live: live)
-                    Canvas { context, _ in
-                        field.draw(in: &context, frame: frame, at: date)
+                    Canvas { context, size in
+                        // 首帧就使用实际画布尺寸，静息点阵不等待几何回调或下一次动画刷新。
+                        field.draw(in: &context, frame: CGRect(origin: origin, size: size), at: date)
                     }
                 }
             }
         }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
-            frame = $0
             stage?.bounds = $0
         }
         .allowsHitTesting(false)

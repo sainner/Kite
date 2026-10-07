@@ -1,5 +1,5 @@
 /**
- * 手动合同验证：直接编译真实窗口排布类型，检查拖动、停靠与预设切换的状态交接。
+ * 手动合同验证：直接编译真实窗口排布类型，检查拖动、停靠、视口与持久化的状态交接。
  * 运行：bun kited/test/manual/verify-window-dock.ts
  */
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -20,6 +20,11 @@ try {
     '-target', `${architecture}-apple-macosx26.0`,
     join(source, 'Workspace', 'Tiles.swift'),
     join(source, 'Workspace', 'WindowLayout.swift'),
+    join(source, 'UI', 'Dots.swift'),
+    join(source, 'UI', 'DotTuning.swift'),
+    join(source, 'UI', 'DotStage.swift'),
+    join(source, 'UI', 'WaitingBreath.swift'),
+    join(source, 'UI', 'InterfaceMode.swift'),
     join(source, 'UI', 'Theme.swift'),
     join(import.meta.dir, 'WindowDock.swift'),
     '-o', executable,

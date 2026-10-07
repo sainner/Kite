@@ -1,12 +1,12 @@
 # Kite
 
-个人 agent 工作台：Mac 和 iPhone 上的原生 App，加上跑在工作机上的后台服务 kited，让 agent 在任意文件夹上工作。目前处于在研阶段，暂不部署。
+个人 agent 工作台：Mac、iPhone 和 iPad 上的原生 App，加上跑在工作机上的后台服务 kited，让 agent 在任意文件夹上工作。目前处于在研阶段，暂不部署。
 
 ## 项目入口
 
 | 目录 | 职责 | 入口 |
 |---|---|---|
-| `app/` | Mac、iPhone 共用的 SwiftUI App | [编译与代码地图](app/README.md) |
+| `app/` | Mac、iPhone、iPad 共用的 SwiftUI App | [编译与代码地图](app/README.md) |
 | `kited/` | 工作机服务、命令行、自研 harness 与 Claude 适配 | [运行与代码地图](kited/README.md) |
 | `shared/` | App 与工作机共用的数据，目前是模型清单 | [agent-models.json](shared/agent-models.json) |
 | `docs/` | 产品设计、协议、机制与开发说明 | [文档索引](docs/README.md) |

@@ -10,6 +10,7 @@ struct ThreadControls: View {
     @Environment(WorkArea.self) private var area
     @Environment(\.paneInstance) private var instance
     @Environment(\.dotStage) private var stage
+    @Environment(\.workspacePresentation) private var presentation
     /// 控制区在窗口坐标中的位置，发送时点阵的波从这里推开。
     @State private var frame: CGRect = .zero
     /// 刚发出去的字正在淡掉。
@@ -33,58 +34,18 @@ struct ThreadControls: View {
                 .opacity(leaving ? 0 : 1)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
-            HStack(spacing: Metrics.paneButtonGap) {
-                if let effort = Effort.allCases.first(where: { $0.name == reasoning }) {
-                    EffortPicker(effort: Binding(get: { effortDraft ?? effort }, set: { effortDraft = $0 }),
-                                 allowed: availableEfforts, commit: saveEffort, cancel: { effortDraft = nil })
-                        .allowsHitTesting(canChangeEffort)
-                        .help(thread.agentCapabilities?.explanation ?? "正在读取模型能力")
-                } else {
-                    Menu {
-                        ForEach(availableEfforts, id: \.self) { value in
-                            Button(value.name) { effortDraft = value; saveEffort() }
-                        }
-                    } label: { Text(reasoning == "default" ? "自动" : reasoning).font(Theme.secondary).foregroundStyle(.secondary).padding(.horizontal, 8) }
-                        .disabled(!canChangeEffort)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Metrics.paneButtonGap) {
+                    effortControl.fixedSize()
+                    Spacer(minLength: 0)
+                    statusAndActions.fixedSize()
                 }
-                Spacer(minLength: Metrics.paneButtonGap)
-                if thread.isStreamingPreview {
-                    Button("重播") {
-                        thread.previewRun += 1
-                        stage?.emitWave(from: frame)
+                VStack(alignment: .leading, spacing: 2) {
+                    effortControl
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        statusAndActions
                     }
-                        .buttonStyle(PaneButtonStyle(text: true))
-                }
-                #if os(macOS)
-                ThreadStatusChip(ringOnRight: true)
-                #endif
-                HStack(spacing: 0) {
-                    Button {} label: { Image(systemName: "paperclip") }
-                        .buttonStyle(PaneButtonStyle())
-                        .disabled(true).accessibilityLabel("添加附件")
-                    Button {} label: { Image(systemName: "mic") }
-                        .buttonStyle(PaneButtonStyle())
-                        .disabled(true).accessibilityLabel("语音输入")
-                }
-                if thread.showStop {
-                    Button {
-                        thread.stop()
-                    } label: { Image(systemName: "stop.fill") }
-                    .buttonStyle(PaneButtonStyle(fill: Theme.strongPlaceholder))
-                    .disabled(!thread.canStop)
-                    .accessibilityLabel("停止")
-                }
-                if thread.state?.capabilities.resume == true {
-                    Button("继续") { thread.control("resume") }
-                        .buttonStyle(PaneButtonStyle(text: true))
-                        .disabled(!thread.canResume)
-                        .accessibilityLabel("继续")
-                }
-                if !blank && !leaving {
-                    Button(action: submit) { Image(systemName: "arrow.up") }
-                        .buttonStyle(PaneButtonStyle(fill: .accentColor))
-                        .disabled(!thread.canSend)
-                        .accessibilityLabel("发送")
                 }
             }
         }
@@ -100,6 +61,76 @@ struct ThreadControls: View {
         .alert("修改思考强度失败", isPresented: Binding(get: { effortError != nil }, set: { if !$0 { effortError = nil } })) {
             Button("好", role: .cancel) { effortError = nil }
         } message: { Text(effortError ?? "") }
+    }
+
+    @ViewBuilder
+    private var effortControl: some View {
+        if let effort = Effort.allCases.first(where: { $0.name == reasoning }) {
+            EffortPicker(effort: Binding(get: { effortDraft ?? effort }, set: { effortDraft = $0 }),
+                         allowed: availableEfforts, commit: saveEffort, cancel: { effortDraft = nil })
+                .allowsHitTesting(canChangeEffort)
+                .help(thread.agentCapabilities?.explanation ?? "正在读取模型能力")
+        } else {
+            Menu {
+                ForEach(availableEfforts, id: \.self) { value in
+                    Button(value.name) { effortDraft = value; saveEffort() }
+                }
+            } label: { Text(reasoning == "default" ? "自动" : reasoning).font(Theme.secondary).foregroundStyle(.secondary).padding(.horizontal, 8) }
+                .disabled(!canChangeEffort)
+        }
+    }
+
+    private var actionButtons: some View {
+        HStack(spacing: Metrics.paneButtonGap) {
+            if thread.isStreamingPreview {
+                Button("重播") {
+                    thread.previewRun += 1
+                    stage?.emitWave(from: frame)
+                }
+                    .buttonStyle(PaneButtonStyle(text: true))
+            }
+
+            HStack(spacing: 0) {
+                Button {} label: { Image(systemName: "paperclip") }
+                    .buttonStyle(PaneButtonStyle())
+                    .disabled(true).accessibilityLabel("添加附件")
+                Button {} label: { Image(systemName: "mic") }
+                    .buttonStyle(PaneButtonStyle())
+                    .disabled(true).accessibilityLabel("语音输入")
+            }
+            if thread.showStop {
+                Button {
+                    thread.stop()
+                } label: { Image(systemName: "stop.fill") }
+                .buttonStyle(PaneButtonStyle(fill: Theme.strongPlaceholder))
+                .disabled(!thread.canStop)
+                .accessibilityLabel("停止")
+            }
+            if thread.state?.capabilities.resume == true {
+                Button("继续") { thread.control("resume") }
+                    .buttonStyle(PaneButtonStyle(text: true))
+                    .disabled(!thread.canResume)
+                    .accessibilityLabel("继续")
+            }
+            if !blank && !leaving {
+                Button(action: submit) { Image(systemName: "arrow.up") }
+                    .buttonStyle(PaneButtonStyle(fill: .accentColor))
+                    .disabled(!thread.canSend)
+                    .accessibilityLabel("发送")
+            }
+        }
+    }
+
+    private var statusAndActions: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: Metrics.paneButtonGap) {
+                if presentation == .tiled || !InputMode.current.isTouch {
+                    ThreadStatusChip(ringOnRight: true)
+                }
+                actionButtons
+            }
+            actionButtons
+        }
     }
 
     private var blank: Bool {

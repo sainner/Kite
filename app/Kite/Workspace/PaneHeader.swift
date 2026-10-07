@@ -15,19 +15,29 @@ struct PaneHeader {
     }
 }
 
-/// 卡片标题栏按平台排列标题、侧栏入口与窗口菜单。
+/// 卡片标题栏按容器排列标题、侧栏入口与窗口菜单。
 struct PaneHeaderBar<Actions: View>: View {
     let header: PaneHeader
     let actions: Actions
     @Environment(\.paneHeaderControlsInset) private var controlsInset
     @Environment(\.paneHeaderMinHeight) private var controlsHeight
     let openSidebar: (@MainActor () -> Void)?
+
     var body: some View {
-        #if os(macOS)
         HStack(spacing: Metrics.paneButtonGap) {
+            if let openSidebar {
+                PaneButtonGroup {
+                    Button(action: openSidebar) {
+                        PaneButtonLabel("侧边栏", systemImage: "sidebar.left")
+                    }
+                    .buttonBorderShape(.circle)
+                }
+            }
             PaneHeaderTitle(header: header)
-                .padding(.leading, Metrics.paneTitleInset)
-            Spacer(minLength: 0)
+            // 窗口操作出现时由标题区让出宽度，不能让内容的最小宽度把右侧菜单推出窗口。
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .clipped()
             actions
                 .background {
                     GeometryReader { proxy in
@@ -35,34 +45,13 @@ struct PaneHeaderBar<Actions: View>: View {
                     }
                 }
                 .padding(.leading, controlsInset)
+                .layoutPriority(1)
         }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, Metrics.paneMargin)
-            .frame(minHeight: controlsHeight)
-        #else
-        HStack(spacing: Metrics.paneButtonGap) {
-            sidebarButton
-            PaneHeaderTitle(header: header)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            actions
-        }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
         .padding(.horizontal, Metrics.paneMargin)
-        #endif
+        .frame(minHeight: controlsHeight)
     }
 
-    #if os(iOS)
-    @ViewBuilder
-    private var sidebarButton: some View {
-        if let openSidebar {
-            PaneButtonGroup {
-                Button(action: openSidebar) {
-                    PaneButtonLabel("侧边栏", systemImage: "sidebar.left")
-                }
-                .buttonBorderShape(.circle)
-            }
-        }
-    }
-    #endif
 }
 
 /// 所有窗口共用同一套标题排版：单行主标题，可带尾部刷新图标。
@@ -77,11 +66,7 @@ struct PaneHeaderTitle: View {
             }
         }
         .lineLimit(1)
-        #if os(macOS)
-        .font(Theme.title.weight(.semibold))
-        #else
-        .font(Theme.secondary.weight(.semibold))
-        #endif
+        .font((InputMode.current.isTouch ? Theme.secondary : Theme.title).weight(.semibold))
     }
 }
 
@@ -123,24 +108,30 @@ private struct PaneTitleIconButtonStyle: ButtonStyle {
 }
 
 private extension View {
-    /// Mac 卡片的拖动层在这块范围上挖空，点击交给标题栏里的控件。
+    /// 卡片的拖动层在这块范围上挖空，点击交给标题栏里的控件。
     @ViewBuilder
     func reportsHeaderInteraction() -> some View {
-        #if os(macOS)
         background {
             GeometryReader { proxy in
                 Color.clear.preference(key: PaneHeaderInteractiveRects.self,
                     value: [proxy.frame(in: .named("pane-header"))])
             }
         }
-        #else
-        self
-        #endif
     }
 }
 
+/// 标题栏与更多菜单共用当前卡片的窗口动作。
+struct PaneWindowActions {
+    let minimize: @MainActor () -> Void
+    let expand: (@MainActor () -> Void)?
+    let close: @MainActor () -> Void
+    let canClose: Bool
+}
+
 extension EnvironmentValues {
-    /// Mac 窗口操作按钮位于标题与菜单之间，出现时在菜单前留出的宽度。
+    /// 卡片宽度不足时，把窗口操作交给更多菜单。
+    @Entry var paneOverflowActions: PaneWindowActions?
+    /// 窗口操作按钮位于标题与菜单之间，出现时在菜单前留出的宽度。
     @Entry var paneHeaderControlsInset: CGFloat = 0
     /// 隐藏的窗口操作组仍为标题栏保留系统按钮需要的高度，悬停时标题栏不跳动。
     @Entry var paneHeaderMinHeight: CGFloat = 0
@@ -152,13 +143,13 @@ nonisolated struct PaneHeaderActionsWidth: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
-/// 标题栏高度跟随系统控件，Mac 的拖动和悬停范围使用同一实际高度。
+/// 标题栏高度跟随系统控件，卡片拖动范围使用同一实际高度。
 nonisolated struct PaneHeaderHeight: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
-/// 标题栏中可点击控件的范围，Mac 的拖动层在这些范围上挖空，其余部分都可拖动。
+/// 标题栏中可点击控件的范围，卡片拖动层在这些范围上挖空，其余部分都可拖动。
 nonisolated struct PaneHeaderInteractiveRects: PreferenceKey {
     static let defaultValue: [CGRect] = []
     static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) { value += nextValue() }

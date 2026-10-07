@@ -1,18 +1,22 @@
-#if os(iOS)
 import SwiftUI
+#if os(iOS)
 import UIKit
+#endif
 
-/// iPhone：会话窗口平时铺满屏幕，盖住 App 的底色。从左边缘往右滑或点标题栏左边的按钮，窗口缩到右边，露出底色上的侧边栏；
+/// 紧凑布局：会话窗口平时铺满窗口，盖住 App 的底色。从左边缘往右滑或点标题栏左边的按钮，窗口缩到右边，露出底色上的侧边栏；
 /// 从控制区往上拖，窗口从上下两头缩小，露出底色上的 action 栏和它上面一行页签。缩小时四边的边距同时出现，
 /// 内容不重新换行，只露边距的那个方向等比缩放：让出侧边栏时右边裁掉；让出 action 栏时内容变矮，浮在底下的控制区跟着窗口底边走，
 /// 圆角从屏幕圆角变成屏幕圆角减去边距。
 /// 打开时点窗口或往回拖收起。
-struct PhoneLayout: View {
+struct CompactLayout: View {
     @Environment(AppModel.self) private var model
+    #if os(macOS)
+    @Environment(\.windowChrome) private var chrome
+    #endif
 
-    @State private var open: PhoneDrawer?
+    @State private var open: WorkspaceDrawer?
     /// 露出来的一侧：打开着、手指拖着或者正随时间走。动画进度由窗口的修饰器处理，不更新侧栏。
-    @State private var shown: PhoneDrawer?
+    @State private var shown: WorkspaceDrawer?
     /// 屏幕圆角，读到之前按 0 算：铺满时窗口的角本来就被屏幕圆角盖住。
     @State private var screenRadius: CGFloat = 0
     /// 页签和 action 栏合起来多高，按实际排出来的量。
@@ -27,9 +31,15 @@ struct PhoneLayout: View {
     var body: some View {
         GeometryReader { geo in
             // SwiftUI 的安全区把状态栏、Home 条和键盘合在一起（分区只能用来忽略，读不出各占多少）
-            let insets = geo.safeAreaInsets
-            let screen = CGSize(width: geo.size.width + insets.leading + insets.trailing,
-                                height: geo.size.height + insets.top + insets.bottom)
+            let safe = geo.safeAreaInsets
+            #if os(macOS)
+            let insets = EdgeInsets(top: max(safe.top, chrome.top), leading: safe.leading,
+                                    bottom: safe.bottom, trailing: safe.trailing)
+            #else
+            let insets = safe
+            #endif
+            let screen = CGSize(width: geo.size.width + safe.leading + safe.trailing,
+                                height: geo.size.height + safe.top + safe.bottom)
             let home = homeInset ?? insets.bottom
             // 侧边栏拉开后，窗口至少留下 phoneMinWindow 宽
             let sidebarWidth = DotMetrics.snapDown(min(screen.width - Metrics.padding - Metrics.phoneMinWindow, 312))
@@ -43,15 +53,17 @@ struct PhoneLayout: View {
                     DotCanvas()
                 }
                 .ignoresSafeArea()
+                #if os(iOS)
                 ScreenReader { radius, bottom in
                     screenRadius = radius
                     homeInset = bottom
                 }
                 .ignoresSafeArea()
+                #endif
                 // 会话列表，点一个就切过去并收起。一次只露出一侧，另一侧藏起来，免得窗口移开时从边上露出来
                 ScrollView(.vertical, showsIndicators: false) {
                     WorkspaceList(headerHeight: 32) { workspace in
-                        WorkspaceRow(workspace: workspace, current: current == workspace.id, height: 44)
+                        WorkspaceRow(workspace: workspace, current: current == workspace.id)
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 model.selected = workspace.id
@@ -81,12 +93,17 @@ struct PhoneLayout: View {
             }
             // 窗口铺满整个屏幕，放在 overlay 里，不把上面这层撑出安全区，action 栏才能留在 Home 条上面
             .overlay(alignment: .topLeading) {
-                PhoneWindow(open: $open, shown: $shown, screen: screen, insets: insets, homeInset: home,
+                CompactWindow(open: $open, shown: $shown, screen: screen, insets: insets, homeInset: home,
                             sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius)
             }
         }
         // 保留 Home 条自动隐藏；状态 chip 已移到控制区，不再推测系统何时隐藏它。
+        #if os(iOS)
         .persistentSystemOverlays(.hidden)
+        #endif
+        .onChange(of: model.current?.id, initial: true) { _, _ in
+            model.current?.layout.updateViewport(.zero, presentation: .compact)
+        }
         .environment(\.dotStage, stage)
         #if DEBUG
         // 半屏，拉开侧边栏时上面还能看到背景上的点阵
@@ -134,11 +151,12 @@ struct PhoneLayout: View {
         }
     }
 
-    private func showing(_ drawer: PhoneDrawer) -> Bool {
+    private func showing(_ drawer: WorkspaceDrawer) -> Bool {
         shown == drawer
     }
 }
 
+#if os(iOS)
 /// 用一个铺满屏幕的 UIView 读 SwiftUI 读不到的两样：
 /// - 屏幕圆角：圆角和容器同心的 UIView，它的实际圆角就是屏幕圆角（iOS 26 起的公开接口）。
 /// - Home 条让出的那一截：UIKit 的安全区不含键盘，键盘另有 keyboardLayoutGuide。

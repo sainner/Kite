@@ -18,13 +18,23 @@ enum Tile {
 final class Split {
     let axis: Axis
     /// 第一块占的比例，拖动两块之间的缝时改变。
-    var ratio: CGFloat
+    private var storedRatio: CGFloat
+    /// 临时省略卡片时仍调整原分栏；视口恢复后沿用用户拖过的比例。
+    let source: Split?
+    var ratio: CGFloat {
+        get { source?.ratio ?? storedRatio }
+        set {
+            if let source { source.ratio = newValue }
+            else { storedRatio = newValue }
+        }
+    }
     let first: Tile
     let second: Tile
 
-    init(_ axis: Axis, _ ratio: CGFloat, _ first: Tile, _ second: Tile) {
+    init(_ axis: Axis, _ ratio: CGFloat, _ first: Tile, _ second: Tile, source: Split? = nil) {
         self.axis = axis
-        self.ratio = ratio
+        self.storedRatio = ratio
+        self.source = source
         self.first = first
         self.second = second
     }
@@ -42,7 +52,7 @@ struct TileLayout {
         let rect: CGRect
         /// 这一刀切的整块地方。
         let region: CGRect
-        var id: ObjectIdentifier { ObjectIdentifier(split) }
+        var id: ObjectIdentifier { ObjectIdentifier(split.source ?? split) }
     }
 }
 
@@ -90,7 +100,7 @@ extension Tile {
             let firstMinimum = horizontal ? split.first.minimumSize.width : split.first.minimumSize.height
             let secondMinimum = horizontal ? split.second.minimumSize.width : split.second.minimumSize.height
             // 比例照常保存，窗口变大变小时按比例分；排出来的长度取整到模块。
-            let requested = split === free ? (available * split.ratio).rounded() : DotMetrics.snap(available * split.ratio)
+            let requested = (split.source ?? split) === free ? (available * split.ratio).rounded() : DotMetrics.snap(available * split.ratio)
             let length = available >= firstMinimum + secondMinimum
                 ? min(max(requested, firstMinimum), available - secondMinimum) : requested
             let (a, rest) = rect.divided(atDistance: length, from: edge)
@@ -102,16 +112,16 @@ extension Tile {
     }
 
     /// 拿掉一张卡片，它所在的那一刀由另一半补上。
-    func removing(_ pane: Pane) -> Tile? {
+    func removing(_ pane: Pane, preservingSource: Bool = false) -> Tile? {
         switch self {
         case .pane(let p):
             return p == pane ? nil : self
         case .placeholder:
             return self
         case .split(let split):
-            guard let first = split.first.removing(pane) else { return split.second }
-            guard let second = split.second.removing(pane) else { return first }
-            return rebuilt(split, first, second)
+            guard let first = split.first.removing(pane, preservingSource: preservingSource) else { return split.second }
+            guard let second = split.second.removing(pane, preservingSource: preservingSource) else { return first }
+            return rebuilt(split, first, second, preservingSource: preservingSource)
         }
     }
 
@@ -140,8 +150,9 @@ extension Tile {
     }
 
     /// 两边都没变就沿用原来的这一刀：它的缝的视图不用重建，比例也还是同一份。
-    private func rebuilt(_ split: Split, _ first: Tile, _ second: Tile) -> Tile {
-        first.isSame(split.first) && second.isSame(split.second) ? self : .split(Split(split.axis, split.ratio, first, second))
+    private func rebuilt(_ split: Split, _ first: Tile, _ second: Tile, preservingSource: Bool = false) -> Tile {
+        first.isSame(split.first) && second.isSame(split.second) ? self
+            : .split(Split(split.axis, split.ratio, first, second, source: preservingSource ? (split.source ?? split) : nil))
     }
 
     private func isSame(_ other: Tile) -> Bool {

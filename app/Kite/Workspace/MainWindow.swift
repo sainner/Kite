@@ -1,31 +1,48 @@
-#if os(macOS)
 import SwiftUI
 
-/// Mac 主窗口：左边侧边栏，右边内容区显示选中工作区的窗口组；左右侧栏共用底部内边距。
-/// 两者之间的缝拖动调侧边栏宽度，拖到很窄就收成一列图标。
+/// 宽屏工作台：左侧项目栏、中间卡片、右侧停靠栏。输入方式只改变控件与手势。
 struct MainWindow: View {
+    var availableWidth: CGFloat = 1272
     @Environment(AppModel.self) private var model
+    #if os(macOS)
     @Environment(\.windowChrome) private var chrome
-    /// 拖侧边栏边缘时，按下那一刻的宽度。
+    #endif
     @State private var resizingFrom: CGFloat?
     @State private var stage = DotStage()
 
     var body: some View {
+        GeometryReader { proxy in
+            let top = proxy.frame(in: .global).minY
+            // 安全区高度不一定是模块的整数倍；只补到窗口网格线，不移动背景点阵的原点。
+            content.padding(.top, DotMetrics.snapUp(top) - top)
+        }
+        .background {
+            ZStack {
+                Theme.background
+                DotCanvas()
+            }
+            .ignoresSafeArea()
+        }
+        .environment(\.dotStage, stage)
+        #if os(macOS)
+        .ignoresSafeArea()
+        .resizesByModule()
+        #endif
+    }
+
+    private var content: some View {
         HStack(spacing: 0) {
-            MacSidebar()
+            WorkspaceSidebar()
                 .frame(width: sidebarWidth)
-                // 拖动调宽时指针会扫过两边，期间不响应悬停和点击
                 .allowsHitTesting(resizingFrom == nil)
-            MouseDragArea(cursor: .columnResize) { drag in
+            LayoutDragArea(cursor: .columnResize) { drag in
                 let from = resizingFrom ?? sidebarWidth
                 resizingFrom = from
                 resizeSidebar(to: from + drag.translation.width)
             } onEnded: {
-                // 跟手拖完再吸附到模块
-                withAnimation(.snappy) {
-                    resizingFrom = nil
-                    model.sidebarWidth = DotMetrics.snap(model.sidebarWidth)
-                }
+                finishResize()
+            } onCancelled: {
+                finishResize()
             }
             .frame(width: Metrics.gap)
             .disablesWindowDragging()
@@ -37,34 +54,30 @@ struct MainWindow: View {
             } else if model.workspaces.isEmpty {
                 DirectoryStatus().padding(.top, Metrics.padding)
             } else {
-                // 已有工作区都分离到了独立窗口。
                 Color.clear
             }
         }
         .padding([.horizontal, .bottom], Metrics.padding)
-        // 窗口不能小到放不下当前工作区的卡片
-        .frame(minWidth: 2 * Metrics.padding + sidebarWidth + Metrics.gap + minimum.width,
-               minHeight: 2 * Metrics.padding + minimum.height)
-        .background {
-            // 点阵铺满窗口背景，卡片盖在上面
-            ZStack {
-                Theme.background
-                DotCanvas()
-            }
-        }
-        .ignoresSafeArea()
-        .environment(\.dotStage, stage)
-        .resizesByModule()
     }
 
-    /// 侧边栏实际占的宽度，取模块的整数倍。收起时是一列图标，宽到放得下红绿灯按钮；拖动时跟手。
     private var sidebarWidth: CGFloat {
-        if model.sidebarCollapsed { return DotMetrics.snapUp(chrome.leading - Metrics.padding) }
-        return resizingFrom == nil ? DotMetrics.snap(model.sidebarWidth) : model.sidebarWidth
+        if model.sidebarCollapsed {
+            #if os(macOS)
+            return DotMetrics.snapUp(chrome.leading - Metrics.padding)
+            #else
+            return Metrics.dragBubble
+            #endif
+        }
+        let requested = resizingFrom == nil ? DotMetrics.snap(model.sidebarWidth) : model.sidebarWidth
+        let remaining = availableWidth - 2 * Metrics.padding - 2 * Metrics.gap - Metrics.dockWidth - Metrics.minPane
+        return min(requested, max(Metrics.sidebarMin, remaining))
     }
 
-    private var minimum: CGSize {
-        model.current?.minimumSize ?? .zero
+    private func finishResize() {
+        withAnimation(.snappy) {
+            resizingFrom = nil
+            model.sidebarWidth = DotMetrics.snap(model.sidebarWidth)
+        }
     }
 
     private func resizeSidebar(to width: CGFloat) {
@@ -81,4 +94,3 @@ struct MainWindow: View {
 #Preview {
     MainWindow().environment(AppModel())
 }
-#endif

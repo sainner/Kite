@@ -267,7 +267,7 @@ struct DotStudio: View {
                     let rest = DotColor.rest(in: environment)
                     DotMatrix(columns: figure.columns, rows: figure.rows) { column, row in
                         guard let cell = placed.sample(column: column, row: row, at: timeline.date,
-                                                       amplitude: reduceMotion ? 0 : 1) else { return Dot(color: rest) }
+                                                       amplitude: reduceMotion ? 0 : 1, rest: rest) else { return Dot(color: rest) }
                         return Dot(.square, shape: cell.shape, color: cell.color)
                     }
                 }
