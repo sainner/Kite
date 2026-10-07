@@ -3,6 +3,7 @@ import SwiftUI
 /// 窗口标题，两端共用。
 struct PaneHeader {
     var title: String
+    var subtitle: String?
     var titleRefresh: TitleRefresh?
 
     /// 由主标题尾部的刷新图标触发，生成期间保持原题。
@@ -15,58 +16,80 @@ struct PaneHeader {
     }
 }
 
-/// 卡片标题栏按容器排列标题、侧栏入口与窗口菜单。
-struct PaneHeaderBar<Actions: View>: View {
+/// 卡片标题栏按容器排列标题、侧栏入口与窗口菜单。标题前是信息区；容器给出侧栏入口时，
+/// 入口与信息区合成一块标题栏玻璃，任何窗口排在第一个时行为相同。
+struct PaneHeaderBar<Status: View, Actions: View>: View {
     let header: PaneHeader
+    let status: Status
     let actions: Actions
     @Environment(\.paneHeaderControlsInset) private var controlsInset
     @Environment(\.paneHeaderMinHeight) private var controlsHeight
     let openSidebar: (@MainActor () -> Void)?
 
     var body: some View {
-        HStack(spacing: Metrics.paneButtonGap) {
-            if let openSidebar {
-                PaneButtonGroup {
-                    Button(action: openSidebar) {
-                        PaneButtonLabel("侧边栏", systemImage: "sidebar.left")
+        // 合进玻璃的信息缩小；环境要在拆分子视图之前给出
+        Group(subviews: status.environment(\.paneHeaderStatusGrouped, openSidebar != nil)) { statusViews in
+            HStack(spacing: 0) {
+                if let openSidebar {
+                    PaneHeaderButtonGroup {
+                        Button(action: openSidebar) {
+                            PaneHeaderButtonLabel("侧边栏", systemImage: "sidebar.left")
+                        }
+                        .reportsHeaderInteraction()
+                        ForEach(statusViews) { $0 }
                     }
-                    .buttonBorderShape(.circle)
+                } else {
+                    ForEach(statusViews) { statusView in
+                        statusView.fixedSize()
+                    }
+                }
+                HStack(spacing: Metrics.paneButtonGap) {
+                    PaneHeaderTitle(header: header)
+                    // 标题前统一留一个按钮间距；单独显示的信息按圆环方框计算，扣掉方框里已有的空白
+                    .padding(.leading, statusViews.isEmpty || openSidebar != nil
+                             ? Metrics.paneButtonGap : Metrics.paneButtonGap - Metrics.statusRingMargin)
+                    // 窗口操作出现时由标题区让出宽度，不能让内容的最小宽度把右侧菜单推出窗口。
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .clipped()
+                    actions
+                        .background {
+                            GeometryReader { proxy in
+                                Color.clear.preference(key: PaneHeaderActionsWidth.self, value: proxy.size.width)
+                            }
+                        }
+                        .padding(.leading, controlsInset)
+                        .layoutPriority(1)
                 }
             }
-            PaneHeaderTitle(header: header)
-            // 窗口操作出现时由标题区让出宽度，不能让内容的最小宽度把右侧菜单推出窗口。
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .clipped()
-            actions
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear.preference(key: PaneHeaderActionsWidth.self, value: proxy.size.width)
-                    }
-                }
-                .padding(.leading, controlsInset)
-                .layoutPriority(1)
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
+            .padding(.horizontal, Metrics.paneMargin)
+            .frame(minHeight: controlsHeight)
         }
-        .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
-        .padding(.horizontal, Metrics.paneMargin)
-        .frame(minHeight: controlsHeight)
     }
 
 }
 
-/// 所有窗口共用同一套标题排版：单行主标题，可带尾部刷新图标。
+/// 主标题与下方的窗口类型左对齐，主标题可带尾部刷新图标。
 struct PaneHeaderTitle: View {
     let header: PaneHeader
 
     var body: some View {
-        HStack(spacing: Metrics.titleRefreshGap) {
-            Text(header.title)
-            if let refresh = header.titleRefresh {
-                PaneTitleRefreshButton(refresh: refresh, title: header.title)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: Metrics.titleRefreshGap) {
+                Text(header.title)
+                if let refresh = header.titleRefresh {
+                    PaneTitleRefreshButton(refresh: refresh, title: header.title)
+                }
+            }
+            .font((InputMode.current.isTouch ? Theme.secondary : Theme.title).weight(.semibold))
+            if let subtitle = header.subtitle {
+                Text(subtitle)
+                    .font(Theme.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .lineLimit(1)
-        .font((InputMode.current.isTouch ? Theme.secondary : Theme.title).weight(.semibold))
     }
 }
 
@@ -135,6 +158,8 @@ extension EnvironmentValues {
     @Entry var paneHeaderControlsInset: CGFloat = 0
     /// 隐藏的窗口操作组仍为标题栏保留系统按钮需要的高度，悬停时标题栏不跳动。
     @Entry var paneHeaderMinHeight: CGFloat = 0
+    /// 信息区与侧栏入口合在一块玻璃里，信息缩到按钮图标的尺度。
+    @Entry var paneHeaderStatusGrouped = false
 }
 
 /// 卡片拖动层按菜单的实际宽度留空，菜单接收自己的点击。

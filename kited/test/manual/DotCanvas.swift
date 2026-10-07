@@ -126,7 +126,7 @@ private struct DotCanvasContract {
     private static func field(_ figure: DotFigure, moving: Bool = true) -> (DotField, PlacedFigure) {
         let placed = PlacedFigure(figure, in: CGRect(x: 120, y: 120, width: 120, height: 120), placement: .leading)
         return (DotField(waves: [], wave: .init(), palette: [DotColor(hex: 0x2878D0)], rest: restColor,
-                         slots: [FigureSlot(figure: placed)], breath: 1, moving: moving), placed)
+                         slots: [FigureSlot(figure: placed)], breath: 1, moving: moving, sparks: [:]), placed)
     }
 
     private static func cycle(_ field: DotField, column: Int, row: Int, duration: TimeInterval) -> [Dot] {

@@ -46,24 +46,39 @@ struct MainWindow: View {
             }
             .frame(width: Metrics.gap)
             .disablesWindowDragging()
-            if let workspace = model.current {
-                WorkspaceContent(workspace: workspace)
-                    .onGeometryChange(for: CGSize.self) { $0.size } action: { model.contentSize = $0 }
-                    .padding(.top, Metrics.padding)
-                    .allowsHitTesting(resizingFrom == nil)
-            } else if model.workspaces.isEmpty {
-                DirectoryStatus().padding(.top, Metrics.padding)
-            } else {
-                Color.clear
+            Group {
+                if model.sidebarSection != .workspaces {
+                    // 工作区以外的栏是单页，自带半透明卡片
+                    SectionContent()
+                        .padding(.top, Metrics.padding)
+                } else if let workspace = model.current {
+                    WorkspaceContent(workspace: workspace)
+                        .onGeometryChange(for: CGSize.self) { $0.size } action: { model.contentSize = $0 }
+                        .padding(.top, Metrics.padding)
+                        .allowsHitTesting(resizingFrom == nil)
+                } else if model.workspaces.isEmpty {
+                    DirectoryStatus().padding(.top, Metrics.padding)
+                } else {
+                    EmptyStage(scene: .idle, title: "选择一个工作区", details: ["从左侧列表打开一个工作区。"])
+                        .padding(.top, Metrics.padding)
+                }
             }
+            // 侧栏收起后，展开按钮移到内容区第一个窗口的标题栏
+            .environment(\.openSidebar, expandSidebar)
         }
         .padding([.horizontal, .bottom], Metrics.padding)
+    }
+
+    private var expandSidebar: (@MainActor () -> Void)? {
+        guard model.sidebarCollapsed else { return nil }
+        return { withAnimation(.snappy) { model.sidebarCollapsed = false } }
     }
 
     private var sidebarWidth: CGFloat {
         if model.sidebarCollapsed {
             #if os(macOS)
-            return DotMetrics.snapUp(chrome.leading - Metrics.padding)
+            // 图标栏只放一列圆点，四个模块；标题栏在红绿灯下方，不必让开它的宽度
+            return 4 * DotMetrics.module
             #else
             return Metrics.dragBubble
             #endif

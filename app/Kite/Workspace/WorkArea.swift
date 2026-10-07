@@ -22,7 +22,7 @@ final class WorkArea: Identifiable {
     var settingsInstance: RemotePluginInstance?
     var tint: Color { Palette.breeze }
     var title: String { remote?.workspace.name ?? "新工作区" }
-    var header: PaneHeader { PaneHeader(title: title) }
+    var header: PaneHeader { PaneHeader(title: title, subtitle: "工作区") }
     var isDraft: Bool { remote == nil }
     var isSample: Bool { SampleWorkspace.enabled && remote?.machine.id == "sample" }
 

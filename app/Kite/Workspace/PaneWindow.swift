@@ -2,16 +2,16 @@ import SwiftUI
 
 /// 窗口的共有布局：浮在上面的标题栏、内容、浮在下面的控制区。内容从标题栏和控制区后面滚过去，
 /// 标题栏后面垫系统滚动软边，iPhone 的软边是渐进模糊，再叠一层渐变；控制区后面垫一层到窗口底边的渐变遮罩。Mac 上是一张卡片的内容，iPhone 上铺满窗口；各个窗口只给标题栏的信息、内容、控制区里的东西，
-/// 会话状态在 Mac 输入区，iPhone 底部安全区内。
+/// 标题前的信息区由窗口给出（会话是状态圆环），两端相同。
 /// 控制区是液态玻璃容器，各个窗口给内部控件提供玻璃形状；左右留边，底部总边距统一取固定留白与安全区高度的较大值。
 /// 安全区已由窗口容器让出，控制区补足差额；打字时在键盘上方保留固定留白。
 /// 控制区里的输入框拿 typing 绑定焦点。iPhone 上打字时点控制区以外的地方收起键盘；不打字时从控制区往上拖拉出 action 栏。
-/// iPhone 上标题栏左边有个按钮拉开侧边栏。
-struct PaneWindow<Content: View, Controls: View, Status: View, HeaderActions: View>: View {
+/// 紧凑布局和宽屏侧栏收起时，标题栏左边有个按钮拉开侧边栏，与信息区合在一块玻璃里。
+struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActions: View>: View {
     let header: PaneHeader
     let content: Content
     let controls: (FocusState<Bool>.Binding) -> Controls
-    let status: Status
+    let headerStatus: HeaderStatus
     let headerActions: HeaderActions
     @FocusState private var typing: Bool
     /// 窗口底部为 Home 条保留的高度，不含键盘；底栏展开时仍保留。
@@ -22,12 +22,12 @@ struct PaneWindow<Content: View, Controls: View, Status: View, HeaderActions: Vi
 
     init(header: PaneHeader, @ViewBuilder content: () -> Content,
          @ViewBuilder controls: @escaping (_ typing: FocusState<Bool>.Binding) -> Controls,
-         @ViewBuilder status: () -> Status = { EmptyView() },
+         @ViewBuilder headerStatus: () -> HeaderStatus = { EmptyView() },
          @ViewBuilder headerActions: () -> HeaderActions = { EmptyView() }) {
         self.header = header
         self.content = content()
         self.controls = controls
-        self.status = status()
+        self.headerStatus = headerStatus()
         self.headerActions = headerActions()
     }
 
@@ -47,21 +47,11 @@ struct PaneWindow<Content: View, Controls: View, Status: View, HeaderActions: Vi
                     .padding(.bottom, max(Metrics.paneMargin, bottomSafeArea) - bottomSafeArea)
                     .frame(maxWidth: .infinity)
                     .background { bottomFade }
-                    #if os(iOS)
-                    .overlay(alignment: .bottom) {
-                        if !keyboardShown && homeInset >= 20 {
-                            status
-                                .frame(maxWidth: .infinity)
-                                .frame(height: homeInset)
-                                .offset(y: homeInset)
-                        }
-                    }
-                    #endif
                     // 打字时在输入框里上下拖是选字、滚动，不拉 action 栏
                     .pullsDrawer(enabled: !typing)
             }
             .safeAreaBar(edge: .top, spacing: 0) {
-                PaneHeaderBar(header: header, actions: headerActions, openSidebar: sidebarAction)
+                PaneHeaderBar(header: header, status: headerStatus, actions: headerActions, openSidebar: sidebarAction)
                     .padding(.top, max(Metrics.paneMargin, topInset) - topInset)
                     .padding(.bottom, Metrics.paneMargin)
                     .coordinateSpace(name: "pane-header")
@@ -129,7 +119,8 @@ extension EnvironmentValues {
     /// 不能在窗口里比：拉开、收起抽屉时窗口里读到的安全区跟着动画逐帧变，还会冲过 Home 条那一截，会被当成键盘。Mac 上总是 false。
     @Entry var keyboardShown = false
 
-    /// iPhone 上拉开侧边栏，标题栏左边的按钮调它。CompactLayout 给出，没有就不显示按钮。
+    /// 拉开侧边栏，标题栏左边的按钮调它。紧凑布局由 CompactLayout 给出；宽屏侧栏收起时由主窗口给出，
+    /// 只交给排在左上角的窗口。没有就不显示按钮。
     @Entry var openSidebar: (@MainActor () -> Void)?
     /// iPhone 上从控制区往上拖拉出 action 栏：窗口给出拖动的处理，控制区接手势。没有就不接。
     @Entry var drawerPull: DrawerPull?

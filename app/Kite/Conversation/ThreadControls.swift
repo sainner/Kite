@@ -10,7 +10,6 @@ struct ThreadControls: View {
     @Environment(WorkArea.self) private var area
     @Environment(\.paneInstance) private var instance
     @Environment(\.dotStage) private var stage
-    @Environment(\.workspacePresentation) private var presentation
     /// 控制区在窗口坐标中的位置，发送时点阵的波从这里推开。
     @State private var frame: CGRect = .zero
     /// 刚发出去的字正在淡掉。
@@ -38,13 +37,13 @@ struct ThreadControls: View {
                 HStack(spacing: Metrics.paneButtonGap) {
                     effortControl.fixedSize()
                     Spacer(minLength: 0)
-                    statusAndActions.fixedSize()
+                    actionButtons.fixedSize()
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     effortControl
                     HStack(spacing: 0) {
                         Spacer(minLength: 0)
-                        statusAndActions
+                        actionButtons
                     }
                 }
             }
@@ -118,18 +117,6 @@ struct ThreadControls: View {
                     .disabled(!thread.canSend)
                     .accessibilityLabel("发送")
             }
-        }
-    }
-
-    private var statusAndActions: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: Metrics.paneButtonGap) {
-                if presentation == .tiled || !InputMode.current.isTouch {
-                    ThreadStatusChip(ringOnRight: true)
-                }
-                actionButtons
-            }
-            actionButtons
         }
     }
 

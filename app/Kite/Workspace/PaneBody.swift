@@ -23,7 +23,7 @@ struct PaneBody: View {
             } else if renderer == DotStudio.renderer {
                 DotStudio(title: area.appearance(of: pane).name)
             } else {
-                PlaceholderPane(appearance: area.appearance(of: pane))
+                PlaceholderPane(appearance: area.appearance(of: pane), kind: WindowAppearance.renderer(renderer ?? "").name)
             }
         }
         .environment(\.paneInstance, area.windows.first(where: { $0.id == pane.id }).flatMap { window in
@@ -36,9 +36,10 @@ struct PaneBody: View {
 /// 插件内容接入之前仍使用原来的窗口占位。
 private struct PlaceholderPane: View {
     let appearance: WindowAppearance
+    let kind: String
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: appearance.name)) {
+        PaneWindow(header: PaneHeader(title: appearance.name, subtitle: kind)) {
             RoundedRectangle(cornerRadius: 8).fill(appearance.tint.opacity(0.12))
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)

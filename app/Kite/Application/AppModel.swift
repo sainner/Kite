@@ -9,6 +9,10 @@ final class AppModel {
     var pendingPlacement: CGRect?
     var sidebarWidth = Metrics.sidebarWidth
     var sidebarCollapsed = false
+    /// 各订阅账号（如 ChatGPT、Claude）本周还剩多少额度；后端还没上报，目前只有预览数据填它。
+    var subscriptionQuotas: [SubscriptionQuota] = []
+    /// 侧栏底部一级导航选中的一栏。
+    var sidebarSection = SidebarSection.workspaces
     var contentSize: CGSize = .zero
     let account: KiteAccount
     private let previewClient: KitedClient?
@@ -34,8 +38,18 @@ final class AppModel {
     enum InviteState: Equatable { case joining, failed(String) }
     var invite: InviteState?
     #endif
-    var showConnection = false
-    var showNewWorkspace = false
+    /// 正在打开的新建表单：添加项目或开始会话。
+    var newWorkspace: NewWorkspace.Mode?
+    /// 扩展一栏在内容区显示的页面。
+    var extensionPage = ExtensionLibrary.plugins
+    /// 设置一栏在内容区显示的页面。
+    var settingsPage = SettingsPage.appearance
+
+    /// 切到设置一栏。
+    func openSettings(_ page: SettingsPage? = nil) {
+        sidebarSection = .settings
+        if let page { settingsPage = page }
+    }
     /// 侧栏菜单发起的现场推送与归档确认，由 WorkspaceGitPresentation 呈现。
     var scenePush: WorkArea?
     var archiveRequest: WorkArea?
@@ -358,7 +372,7 @@ final class AppModel {
     }
 
     func openWindow(_ content: OpenWindowRequest.Content, in area: WorkArea) {
-        if area.isDraft { showNewWorkspace = true; return }
+        if area.isDraft { newWorkspace = .session; return }
         guard !area.changingWindows else { return }
         if case .open(let target) = content, area.windows.contains(where: { $0.target == target }) {
             area.activateWindow(for: target)
@@ -477,4 +491,11 @@ final class AppModel {
         if !detached.contains(selected), let area = workspace(selected) { return area }
         return workspaces.first { !detached.contains($0.id) }
     }
+}
+
+/// 一个订阅账号本周剩余的额度，0...1。
+struct SubscriptionQuota: Identifiable {
+    let provider: String
+    let remaining: Double
+    var id: String { provider }
 }

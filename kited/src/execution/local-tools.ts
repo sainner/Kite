@@ -5,9 +5,10 @@ import { dirname, join, relative } from 'node:path';
 import { applyDiff } from '@openai/agents-core/utils';
 import { z } from 'zod';
 import { WorkspaceFiles, readFileArgs } from '../workspace/files.ts';
+import { PDF_PAGE_SPAN, PdfReader, fileKind, readImage } from '../workspace/documents.ts';
 import { FileDiffStore, type FileDiff } from '../workspace/file-diffs.ts';
 import { runCommand, type CommandOptions } from './command.ts';
-import { assertFileAccess, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
+import { assertFileAccess, commandEnvironment, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
 import type { Json, JsonObject, Tool, ToolResult } from '../harness/types.ts';
 
 export const patchArgs = z.object({ operations: z.array(z.discriminatedUnion('type', [
@@ -15,6 +16,10 @@ export const patchArgs = z.object({ operations: z.array(z.discriminatedUnion('ty
   z.object({ type: z.literal('update_file'), path: z.string().min(1), diff: z.string().min(1) }).strict(),
   z.object({ type: z.literal('delete_file'), path: z.string().min(1) }).strict(),
 ])).min(1) }).strict();
+const readArgs = readFileArgs.extend({
+  pages: z.string().regex(/^\d+(-\d+)?$/, 'pages 须为页码或范围，如 "3" 或 "3-5"').optional()
+    .describe(`只用于 PDF：要读取的页码或范围，如 "3" 或 "3-5"，一次最多 ${PDF_PAGE_SPAN} 页；省略时从第 1 页开始。`),
+}).strict();
 const shellArgs = z.object({
   description: z.string().min(1).regex(/\S/, 'description 不能为空白')
     .describe('用简短的话说明本次命令的用途，直接展示给用户，不重复命令文本。'),
@@ -32,6 +37,11 @@ diff 使用无文件头的 V4A 格式，不含 *** Begin Patch、*** Update File
 整批先检查路径并计算补丁再写入；磁盘写入失败可能留下已完成的修改，结果会列明，不能盲目重试整批。
 结果中的 path:diffId 是这次已完成修改的历史引用，可直接在回复中使用；可写 path:diffId:10-20 定位修改后的文件行号，不需要区分旧侧和新侧。`;
 
+const readDescription = `读取当前工作目录内的文件，按内容自动区分：
+文本按行返回并带行号，offset 从 1 开始，默认最多 200 行。
+图片（PNG、JPEG、WebP、GIF、BMP、TIFF、HEIC）附给你直接查看，过大时先缩放。
+PDF 转为 Markdown 按页返回，用 pages 选页；结果会说明总页数和续读的 pages。没有文本层的扫描页给出 OCR 结果并附上页面图片。`;
+
 export function localTools(options: Omit<CommandOptions, 'policy'> & { diffDir?: string; policy?: ExecutionPolicy | (() => ExecutionPolicy) }): Tool[] {
   const files = new WorkspaceFiles(options.cwd);
   const root = files.root;
@@ -41,6 +51,7 @@ export function localTools(options: Omit<CommandOptions, 'policy'> & { diffDir?:
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('工具输出限制必须为正整数');
   // 只记录本次运行中读取或修改后已知的版本；不代表整文件仍在模型上下文里。
   const versions = new Map<string, string>();
+  const pdfs = new PdfReader(commandEnvironment(options.env));
   const hash = (content: string) => createHash('sha256').update(content).digest('hex');
   const make = <T extends z.ZodType>(name: string, description: string, schema: T,
     execute: (args: z.output<T>, signal: AbortSignal, output: Parameters<Tool['execute']>[1]['output']) => Promise<ToolResult>, parallel = false): Tool => ({
@@ -49,8 +60,24 @@ export function localTools(options: Omit<CommandOptions, 'policy'> & { diffDir?:
     execute: async (args, { signal, output }) => { signal.throwIfAborted(); return execute(schema.parse(args), signal, output); },
   });
   return [
-    make('read', '按行读取当前工作目录内的文本文件；offset 从 1 开始，默认最多 200 行。', readFileArgs, async (args) => {
-      assertFileAccess(files.resolve(args.path), 'read', policy());
+    make('read', readDescription, readArgs, async ({ pages, ...args }, signal) => {
+      const target = files.resolve(args.path);
+      assertFileAccess(target, 'read', policy());
+      const kind = fileKind(target);
+      if (kind !== 'pdf' && pages !== undefined) throw new Error('pages 只用于 PDF');
+      if (kind !== 'text' && (args.offset !== undefined || args.limit !== undefined)) throw new Error('offset 和 limit 只用于文本文件');
+      if (kind !== 'text') {
+        try {
+          if (kind === 'pdf') return { status: 'success', ...await pdfs.read(target, pages, limit, signal) };
+          const { image, width, height, source } = await readImage(target);
+          const size = width === source.width && height === source.height ? `${width}×${height}` : `原始 ${source.width}×${source.height}，已缩放到 ${width}×${height}`;
+          return { status: 'success', output: `图片 ${relative(root, target)}（${source.format.toUpperCase()}，${size}），已附上供查看。`, images: [image] };
+        } catch (error) {
+          // 读取没有副作用，停止时按普通错误结束，不进入结果未知的恢复流程。
+          if (signal.aborted) return { status: 'error', output: '读取已停止' };
+          throw error;
+        }
+      }
       const result = files.read(args);
       const selected = result.offset > result.totalLines ? '' : result.text.split('\n').map((line, i) => `${result.offset + i}: ${line}`).join('\n');
       const output = selected.length > limit ? `${selected.slice(0, limit)}\n（输出已截断，请缩小读取范围）` : selected;

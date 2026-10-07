@@ -28,6 +28,14 @@ export interface ToolResult {
   diff?: DiffReference;
   status: 'success' | 'error' | 'not_executed' | 'unknown';
   output: string;
+  /** 附给模型查看的图片，随记录持久保存，适配器按各自协议转换。 */
+  images?: ToolImage[];
+}
+
+export interface ToolImage {
+  mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
+  /** base64 正文。 */
+  data: string;
 }
 
 export type ContextItem =

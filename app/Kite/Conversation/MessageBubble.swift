@@ -155,12 +155,11 @@ private struct MessageText: View {
                     #endif
                 case .code(let code, let language):
                     // 整条消息统一折叠；代码不再单独截断，展开全文后一次看完。
-                    CodeBlock(text: code, language: language, maxLines: nil, background: Theme.userCodeBackground)
+                    CodeBlock(text: code, language: language, maxLines: nil, background: Theme.userCodeBackground,
+                              radius: Metrics.nestedRadius(inset: Metrics.bubblePadding.height))
                         .foregroundStyle(Color.primary)
                         #if os(iOS)
-                        .onLongPressGesture(minimumDuration: 0.4, maximumDistance: 8) {
-                            selection.show(.message(message.id))
-                        }
+                        .environment(\.blockCardLongPress) { selection.show(.message(message.id)) }
                         #endif
                 }
             }
@@ -224,7 +223,7 @@ private struct AttachmentRow: View {
                 switch attachment {
                 case .image(let name, let width, let height):
                     // 假数据没有图片本身，按尺寸画个框
-                    RoundedRectangle(cornerRadius: 12)
+                    RoundedRectangle(cornerRadius: Metrics.contentRadius, style: .continuous)
                         .fill(Theme.codeBackground)
                         .frame(width: min(Metrics.attachmentHeight * CGFloat(width) / CGFloat(max(height, 1)), Metrics.attachmentHeight * 2),
                                height: Metrics.attachmentHeight)
@@ -237,7 +236,7 @@ private struct AttachmentRow: View {
                     }
                     .padding(.horizontal, 12)
                     .frame(height: 44)
-                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.rule))
+                    .overlay(RoundedRectangle(cornerRadius: Metrics.contentRadius, style: .continuous).strokeBorder(Theme.rule))
                 }
             }
         }

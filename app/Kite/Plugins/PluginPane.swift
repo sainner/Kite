@@ -24,7 +24,7 @@ struct PluginPane: View {
     }
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: title)) {
+        PaneWindow(header: PaneHeader(title: title, subtitle: "插件")) {
             PluginWebView(target: target, client: client, theme: colorScheme == .dark ? "dark" : "light",
                           state: state, connection: connection, report: { [loadState = $loadState] message in
                               loadState.wrappedValue = message.map(LoadState.failed) ?? .ready

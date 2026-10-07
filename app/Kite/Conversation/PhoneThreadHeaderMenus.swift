@@ -10,7 +10,7 @@ struct PhoneThreadHeaderMenus: UIViewRepresentable {
     let modelEnabled: Bool
     let commands: [[ThreadHeaderCommand]]
     let onSelectModel: (String) -> Void
-    @ScaledMetric(relativeTo: .body) private var controlHeight: CGFloat = 48
+    @ScaledMetric(relativeTo: .body) private var controlHeight = Metrics.paneHeaderButton
 
     func makeUIView(context: Context) -> PhoneThreadMenuButton { PhoneThreadMenuButton() }
     func updateUIView(_ button: PhoneThreadMenuButton, context: Context) { button.update(self) }

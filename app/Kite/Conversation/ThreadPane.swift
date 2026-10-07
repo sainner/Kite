@@ -17,7 +17,7 @@ struct ThreadPane: View {
     var body: some View {
         let items = thread.transcript.items
         let pending = thread.transcript.pending
-        return PaneWindow(header: PaneHeader(title: thread.title, titleRefresh: .init(
+        return PaneWindow(header: PaneHeader(title: thread.title, subtitle: "会话", titleRefresh: .init(
             actionLabel: "重新生成会话标题", progressLabel: "正在重新生成会话标题",
             isRefreshing: thread.regeneratingTitle, enabled: thread.canRegenerateTitle, action: regenerateTitle))) {
             if items.isEmpty && pending.isEmpty {
@@ -60,11 +60,8 @@ struct ThreadPane: View {
             ThreadControls(typing: typing, send: send)
                 .disabled(area.creatingThread || thread.configuringTemplate)
                 .frame(maxWidth: Metrics.transcriptWidth)
-        } status: {
-            #if os(iOS)
-            ThreadStatusChip()
-                .offset(y: -1)
-            #endif
+        } headerStatus: {
+            ThreadStatusRing()
         } headerActions: {
             ThreadHeaderActions()
         }
@@ -92,7 +89,7 @@ struct ThreadPane: View {
     /// 发一条消息：先排进队里，对话滑过去（见 TranscriptScroll.send），气泡同时从下往上浮进来。
     private func send(_ message: Message) {
         if thread.isDraft {
-            if area.isDraft { model.showNewWorkspace = true }
+            if area.isDraft { model.newWorkspace = .session }
             else {
                 guard !area.creatingThread else { return }
                 area.creatingThread = true

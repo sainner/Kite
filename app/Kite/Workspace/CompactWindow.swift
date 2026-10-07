@@ -3,6 +3,9 @@ import SwiftUI
 /// 拉出来的是哪一侧。
 enum WorkspaceDrawer { case sidebar, actions }
 
+/// 底栏跟着窗口怎么动：开着窗口时可以展开收起；工作区没有窗口时一直展开，只在拉开侧边栏时让开；单页没有底栏。
+enum ActionsRule { case free, pinned, none }
+
 /// 会话窗口，和拉出侧边栏、action 栏的手势。
 ///
 /// 打开、收起分两段，照系统可交互转场的做法：
@@ -16,6 +19,7 @@ enum WorkspaceDrawer { case sidebar, actions }
 /// WindowPlacement 只计算目标布局；窗口固定在全屏容器内，只动画四边 inset，位置和宽高由同一次布局确定。
 /// WindowProgress 只读取系统弹簧的进度供续拖，不再单独平移窗口。
 /// 不把整套布局做成 Animatable，否则每一帧都会重新计算视图、写入安全区和容器形状。
+/// 没有窗口时（单页、工作区里没开窗口、目录未载入）窗口里放占位内容，行为与普通窗口相同，只有底栏按 ActionsRule 走。
 struct CompactWindow: View {
     @Binding var open: WorkspaceDrawer?
     /// 露出来的一侧：打开着、手指拖着或者正在走。
@@ -28,11 +32,16 @@ struct CompactWindow: View {
     let sidebarWidth: CGFloat
     let actionsHeight: CGFloat
     let screenRadius: CGFloat
+    /// 工作区开着窗口；否则放占位内容。
+    let windowed: Bool
+    let actionsRule: ActionsRule
     @Environment(AppModel.self) private var model
     /// 每一侧要打开到几成：拖着时是手指处，松手后是 0 或 1。都带着动画改，窗口实际摆到哪见 presented。
     @State private var target = Openness()
     /// 这一帧弹簧走到几成，WindowProgress 读回来。手指半路接住时从这里接着拖。
     @State private var presented = Presented()
+    /// 窗口这一帧实际在哪，报给窗口里摆在点阵上的图形，见 DotCarrier。
+    @State private var carrier = DotCarrier()
     /// 手指正拖着的一侧。
     @State private var dragging: WorkspaceDrawer?
     /// 这次拖动里，手指的位移为 0 时对应打开到几成。
@@ -51,52 +60,104 @@ struct CompactWindow: View {
     /// 弹簧走完大约多久。
     private static let duration = 0.4
 
+    /// 一出现就停在该在的位置（侧栏开着、底栏钉着），不先铺满再缩。
+    init(open: Binding<WorkspaceDrawer?>, shown: Binding<WorkspaceDrawer?>, screen: CGSize, insets: EdgeInsets, homeInset: CGFloat,
+         sidebarWidth: CGFloat, actionsHeight: CGFloat, screenRadius: CGFloat, windowed: Bool, actionsRule: ActionsRule) {
+        _open = open
+        _shown = shown
+        self.screen = screen
+        self.insets = insets
+        self.homeInset = homeInset
+        self.sidebarWidth = sidebarWidth
+        self.actionsHeight = actionsHeight
+        self.screenRadius = screenRadius
+        self.windowed = windowed
+        self.actionsRule = actionsRule
+        var start = Openness()
+        if open.wrappedValue == .sidebar { start.sidebar = 1 }
+        else if actionsRule == .pinned { start.actions = 1 }
+        _target = State(initialValue: start)
+        let presented = Presented()
+        presented.openness = start
+        _presented = State(initialValue: presented)
+    }
+
     var body: some View {
         // 外壳的身份不随会话改变，保留边距和缩放的动画状态。
         // Group 会把外面的修饰器分发给成员，成员换掉时各段动画可能从不同进度重新开始。
         ZStack(alignment: .topLeading) {
-            if let workspace = model.current {
+            if windowed, let workspace = model.current {
                 Group {
-                    if !workspace.isSample, workspace.pluginClient == nil {
-                        DirectoryStatus(workspace: workspace)
-                    } else if let pane = workspace.layout.focused {
+                    if let pane = workspace.layout.focused {
                         PaneBody(pane: pane).id(pane)
                             .transition(.opacity)
-                    }
-                    else {
-                        PaneWindow(header: workspace.header) {
-                            Text("从添加按钮打开一个窗口").font(Theme.body).foregroundStyle(.secondary)
-                        } controls: { _ in
-                            AddWindowButton()
-                                .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: Metrics.dockRadius))
-                        }
                     }
                 }
                     .animation(.snappy, value: workspace.layout.focused)
                     .environment(workspace)
-                    .environment(\.drawerPull, open == nil ? pull(.actions) : nil)
+                    .environment(\.drawerPull, open == nil && actionsRule == .free ? pull(.actions) : nil)
                     // 一直给着：打开时窗口上盖着一层点了收起的，按钮点不到。有无来回切的话，标题栏会被当成换了一个视图
                     .environment(\.openSidebar, { settle(.sidebar) })
                     .environment(\.keyboardShown, insets.bottom > homeInset + 1)
                     .id(workspace.id)
             } else {
-                DirectoryStatus().environment(\.openSidebar, { settle(.sidebar) })
+                placeholder
+                    .environment(\.openSidebar, { settle(.sidebar) })
+                    .environment(\.keyboardShown, insets.bottom > homeInset + 1)
+                    .transition(.opacity)
             }
         }
+        .animation(.snappy, value: windowed)
+        .environment(\.dotCarrier, carrier)
         .modifier(WindowPlacement(openness: target, screen: screen, insets: insets, homeInset: homeInset,
                                   sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius,
-                                  presented: presented, overlay: catcher))
+                                  presented: presented, carrier: carrier, overlay: catcher))
         // 点侧边栏里的会话收起：open 在外面改的，到这里才起动画
         .onChange(of: open) { _, new in
             if new != target.opened { settle(new) }
         }
+        // 规则变了就回到新规则下的收起状态：关掉最后一个窗口时底栏展开，进单页时收起，开出窗口时窗口铺满
+        .onChange(of: actionsRule) { _, _ in
+            settle(open == .sidebar ? .sidebar : nil)
+        }
+        .onAppear {
+            if actionsRule == .pinned, open == nil {
+                open = .actions
+                shown = .actions
+            }
+        }
         .sensoryFeedback(.impact(weight: .light), trigger: crossings)
     }
 
-    /// 盖在窗口上接手势的：打开时点了收起、拖了往回收；铺满时左边缘往右拖拉出侧边栏。
+    /// 收起时停在哪：底栏钉着时是展开的底栏。
+    private var rest: WorkspaceDrawer? { actionsRule == .pinned ? .actions : nil }
+
+    /// 没有窗口时放的占位内容：单页、目录状态，或工作区没有窗口时的画板。
+    @ViewBuilder
+    private var placeholder: some View {
+        if model.sidebarSection != .workspaces {
+            SectionContent()
+        } else if let area = model.current {
+            Group {
+                if let scene = SampleWorkspace.stageScene(of: area) {
+                    DirectoryStatus(workspace: area, previewScene: scene)
+                } else if !area.isSample, area.pluginClient == nil {
+                    DirectoryStatus(workspace: area)
+                } else {
+                    WindowlessStage(dock: "底栏")
+                }
+            }
+            .environment(area)
+            .id(area.id)
+        } else {
+            DirectoryStatus()
+        }
+    }
+
+    /// 盖在窗口上接手势的：打开时点了收起、拖了往回收；铺满（或底栏钉着）时左边缘往右拖拉出侧边栏。
     @ViewBuilder
     private var catcher: some View {
-        if let drawer = open {
+        if let drawer = open, drawer != rest {
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture { settle(nil) }
@@ -112,6 +173,7 @@ struct CompactWindow: View {
 
     /// 从当时的样子走到 drawer 打开，nil 是收起：点按钮、点窗口收起、点侧边栏里的会话。正在走的带着当时的速度掉头（SwiftUI 的弹簧自己接）。
     private func settle(_ drawer: WorkspaceDrawer?) {
+        let drawer = drawer ?? rest
         let spring = Animation.spring(duration: Self.duration, bounce: 0)
         for side in [WorkspaceDrawer.sidebar, .actions] where side != drawer && target[side] != 0 {
             animate(side, to: 0, with: spring)
@@ -125,9 +187,11 @@ struct CompactWindow: View {
     /// 带着动画让 drawer 那一侧走到 value。收起的走完了才藏起那一侧。
     private func animate(_ drawer: WorkspaceDrawer, to value: CGFloat, with animation: Animation) {
         shown = drawer
+        carrier.began()
         withAnimation(animation, completionCriteria: .removed) {
             target[drawer] = value
         } completion: {
+            carrier.ended()
             // 中间又拉开、又拖起来的不藏
             if target[drawer] == 0, dragging != drawer, shown == drawer { shown = nil }
         }
@@ -146,15 +210,20 @@ struct CompactWindow: View {
     /// 往 drawer 那一侧拉。一开始往哪个方向拖就定下来：侧边栏要横着拖，action 栏要竖着拖，
     /// 方向不对的留给拖的地方自己的手势（比如控制区里横着滑选 effort）。另一侧没收好时也不接。
     private func pull(_ drawer: WorkspaceDrawer) -> DrawerPull {
-        DrawerPull { moved, _ in
+        // 底栏钉着或没有底栏时不能拖
+        if drawer == .actions, actionsRule != .free { return DrawerPull { _, _ in } ended: { _ in } }
+        return DrawerPull { moved, _ in
             let other: WorkspaceDrawer = drawer == .sidebar ? .actions : .sidebar
             let holding = dragging == drawer
             if !holding {
                 guard !offAxis else { return }
-                guard DrawerPull.isHorizontal(moved) == (drawer == .sidebar), presented.openness[other] < 0.001 else {
+                // 钉着的底栏不算没收好：拉侧边栏时它让开
+                let otherPinned = other == rest
+                guard DrawerPull.isHorizontal(moved) == (drawer == .sidebar), otherPinned || presented.openness[other] < 0.001 else {
                     offAxis = true
                     return
                 }
+                if otherPinned { animate(other, to: 0, with: .spring(duration: Self.duration, bounce: 0)) }
                 // 接手：从这一帧实际摆到的地方（可能正在走）接着拖，窗口不跳
                 dragging = drawer
                 shown = drawer
@@ -163,7 +232,12 @@ struct CompactWindow: View {
             let finger = anchor + along(drawer, moved)
             if holding, (target[drawer] > 0.5) != (finger > 0.5) { crossings += 1 }
             // 每挪一下接着上一个弹簧走；接手时正在走的动画也带着当时的速度转过来
-            withAnimation(.interactiveSpring) { target[drawer] = finger }
+            carrier.began()
+            withAnimation(.interactiveSpring, completionCriteria: .removed) {
+                target[drawer] = finger
+            } completion: {
+                carrier.ended()
+            }
         } ended: { velocity in
             offAxis = false
             guard dragging == drawer else { return }
@@ -174,7 +248,12 @@ struct CompactWindow: View {
             let bounce = min(abs(speed) * extent(drawer) / Self.fullBounceSpeed, 1) * Self.maxBounce
             // 速度由 SwiftUI 从拖动时的 interactiveSpring 接过来
             animate(drawer, to: to, with: .spring(duration: Self.duration, bounce: bounce))
-            open = to == 1 ? drawer : nil
+            if to == 0, let rest, rest != drawer {
+                animate(rest, to: 1, with: .spring(duration: Self.duration, bounce: 0))
+                open = rest
+            } else {
+                open = to == 1 ? drawer : nil
+            }
         }
     }
 }
@@ -210,10 +289,15 @@ private final class Presented {
     var openness = Openness()
 }
 
-/// 只读取系统弹簧的当前进度供手势接手，不修改绘制位置，也不逐帧重建视图。
+/// 只读取系统弹簧的当前进度供手势接手，并把窗口这一帧相对停下时的位置报给 carrier；不修改绘制位置，也不逐帧重建视图。
 private struct WindowProgress: GeometryEffect {
     var openness: Openness
+    /// 弹簧要去的进度，布局按它排。
+    let target: Openness
     let presented: Presented
+    let carrier: DotCarrier
+    /// 某个进度下卡片坐标到窗口坐标的换算。
+    let card: (Openness) -> DotCarrier.Mapping
 
     var animatableData: AnimatablePair<CGFloat, CGFloat> {
         get { AnimatablePair(openness.sidebar, openness.actions) }
@@ -222,6 +306,7 @@ private struct WindowProgress: GeometryEffect {
 
     func effectValue(size: CGSize) -> ProjectionTransform {
         presented.openness = openness
+        carrier.update(current: card(openness), final: card(target))
         return ProjectionTransform(.identity)
     }
 }
@@ -236,22 +321,33 @@ private struct WindowPlacement<Overlay: View>: ViewModifier {
     let actionsHeight: CGFloat
     let screenRadius: CGFloat
     let presented: Presented
+    let carrier: DotCarrier
     let overlay: Overlay
 
-    func body(content: Content) -> some View {
+    /// openness 下窗口让出的四边与内容的缩放。
+    private static func layout(_ openness: Openness, screen: CGSize, sidebarWidth: CGFloat,
+                               actionsHeight: CGFloat) -> (insets: EdgeInsets, scale: CGFloat) {
         let s = Openness.shown(openness.sidebar, extent: sidebarWidth)
         let a = Openness.shown(openness.actions, extent: actionsHeight)
         let pad = Metrics.padding
         // 窗口缩进屏幕里，四边的边距随进度出现；拉开的那一侧让出侧边栏，或者让出 action 栏连同上面的页签。
         // 推过完全打开时照样接着变
         let margin = (s + a) * pad
-        let windowInsets = EdgeInsets(top: margin, leading: s * sidebarWidth + a * pad,
-                                      bottom: s * pad + a * actionsHeight, trailing: margin)
-        let radius = max(screenRadius - margin, 0)
-        let shape = RoundedRectangle(cornerRadius: radius)
+        let insets = EdgeInsets(top: margin, leading: s * sidebarWidth + a * pad,
+                                bottom: s * pad + a * actionsHeight, trailing: margin)
         // 内容贴着窗口左下角等比缩小，宽度照铺满时排，字不重新换行：拉侧边栏时按窗口高度缩，右边裁掉；
         // 拉 action 栏时按窗口宽度缩。内容和缩放都对齐底边，控制区的位置由容器底部 inset 决定。
         let scale = (screen.height - 2 * s * pad) / screen.height * (screen.width - 2 * a * pad) / screen.width
+        return (insets, scale)
+    }
+
+    func body(content: Content) -> some View {
+        let s = Openness.shown(openness.sidebar, extent: sidebarWidth)
+        let pad = Metrics.padding
+        let (windowInsets, scale) = Self.layout(openness, screen: screen, sidebarWidth: sidebarWidth,
+                                                actionsHeight: actionsHeight)
+        let radius = max(screenRadius - windowInsets.top, 0)
+        let shape = RoundedRectangle(cornerRadius: radius)
         // 底栏展开时，Home 条安全区随窗口一起保留；侧边栏仍只让出实际覆盖窗口的高度。
         // 换算成缩放前的尺寸，保证缩放后保留的高度不变。
         let coveredByHome = max(homeInset - s * pad, 0) / scale
@@ -266,6 +362,8 @@ private struct WindowPlacement<Overlay: View>: ViewModifier {
             .safeAreaPadding(covered)
             .frame(width: screen.width, height: (screen.height - windowInsets.top - windowInsets.bottom) / scale,
                    alignment: .bottomLeading)
+            // 卡片坐标：缩放前的内容，摆在卡片上的点阵图形按它换算到窗口，见 DotCarrier
+            .coordinateSpace(.named(DotCarrier.space))
             // 窗口的形状，里面同心的圆角（控制区输入框）跟着它；在缩放前，圆角也换算成缩放前的
             .containerShape(RoundedRectangle(cornerRadius: radius / scale))
             .scaleEffect(scale, anchor: .bottomLeading)
@@ -278,7 +376,12 @@ private struct WindowPlacement<Overlay: View>: ViewModifier {
             // 位置和尺寸来自同一组边距，右边、底边贴着容器，不再分别动画尺寸和 offset。
             .padding(windowInsets)
             .frame(width: screen.width, height: screen.height, alignment: .bottomTrailing)
-            .modifier(WindowProgress(openness: openness, presented: presented))
+            .modifier(WindowProgress(openness: openness, target: openness, presented: presented, carrier: carrier) {
+                [screen, sidebarWidth, actionsHeight] openness in
+                let layout = Self.layout(openness, screen: screen, sidebarWidth: sidebarWidth, actionsHeight: actionsHeight)
+                // 窗口铺满屏幕的容器从窗口坐标原点排起；内容贴着窗口左下角缩放，卡片坐标原点落在窗口左上角
+                return DotCarrier.Mapping(origin: CGPoint(x: layout.insets.leading, y: layout.insets.top), scale: layout.scale)
+            })
             .ignoresSafeArea()
     }
 }

@@ -15,4 +15,4 @@ metadata:
 需求正文与待定事项见 [项目与远程仓库](../../docs/项目与远程仓库.md)，凭据见 [[credential-service-direction]]。
 
 **Why:** 只登记机器上的文件，能看到内容却做不了版本管理，不符合 Kite 让 Git 在底下隐形工作的初衷；多机协作也依赖共享远程。托管让没有 Git 账号的普通用户也能立即开始。
-**How to apply:** 设计项目、检出、登记接口与添加项目流程时，以远程为项目身份，检出是工作机上的 clone；不再以手动关联 UUID 作为多机归属的主机制。不要为托管远程单独设计一套使用方式。实现时同步改写 [kited 说明](../../docs/kited.md) 与 [App](../../docs/App.md) 的现状描述；多机验收见 [[todo-remote-connections]]，工作区与线程关系见 [[session-worktree-decision]]。
+**How to apply:** 设计项目、检出、登记接口与添加项目流程时，以远程为项目身份，检出是工作机上的 clone；不再以手动关联 UUID 作为多机归属的主机制。不要为托管远程单独设计一套使用方式。设计或契约变化时更新对应主文档；多机验收见 [[todo-remote-connections]]，工作区与线程关系见 [[session-worktree-decision]]。

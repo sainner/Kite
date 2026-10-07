@@ -60,49 +60,74 @@ struct CompactLayout: View {
                 }
                 .ignoresSafeArea()
                 #endif
-                // 会话列表，点一个就切过去并收起。一次只露出一侧，另一侧藏起来，免得窗口移开时从边上露出来
-                ScrollView(.vertical, showsIndicators: false) {
-                    WorkspaceList(headerHeight: 32) { workspace in
-                        WorkspaceRow(workspace: workspace, current: current == workspace.id)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                model.selected = workspace.id
-                                open = nil
+                // 侧栏：一级导航选中的那一栏；点一个工作区就切过去并收起。
+                // 一次只露出一侧，另一侧藏起来，免得窗口移开时从边上露出来
+                VStack(alignment: .leading, spacing: 0) {
+                    // 顶部是标志栏（只有搜索按钮），下面是一级导航和当前一栏的列表；
+                    // 底部是用户栏，与窗口控制区底边对齐
+                    SidebarLogoBar { EmptyView() }
+                        .padding(.top, logoBarTop(screen: screen, insets: insets))
+                        .padding(.bottom, Metrics.gap)
+                    SidebarNavigation()
+                        .padding(.bottom, 8)
+                    ScrollView(.vertical, showsIndicators: false) {
+                        switch model.sidebarSection {
+                        case .workspaces, .drive:
+                            WorkspaceList(headerHeight: 32) { workspace in
+                                WorkspaceRow(workspace: workspace, current: current == workspace.id)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        model.selected = workspace.id
+                                        open = nil
+                                    }
                             }
+                        case .extensions, .settings:
+                            SectionPages { open = nil }
+                        }
+                        #if DEBUG
+                        Button("点阵调试") { tuningShown = true }
+                            .font(Theme.secondary)
+                            .padding(Metrics.padding)
+                        #endif
                     }
-                    .padding(.top, Metrics.padding * 2)
-                    .padding(.leading, Metrics.padding)
-                    .padding(.trailing, Metrics.gap)
-                    #if DEBUG
-                    Button("点阵调试") { tuningShown = true }
-                        .font(Theme.secondary)
-                        .padding(Metrics.padding)
-                    #endif
+                    .fadesScrollEdges()
+                    SidebarUserBar()
                 }
+                .padding(.leading, Metrics.padding)
+                .padding(.trailing, Metrics.gap)
                 .frame(width: sidebarWidth)
                 .opacity(showing(.sidebar) ? 1 : 0)
-                // 拉出 action 栏时，它上面同时露出折叠窗口那一行
+                // 底栏：折叠的窗口那一行
                 VStack(alignment: .leading, spacing: Metrics.gap) {
-                    tabBar.frame(height: Metrics.tabBar)
-                    ActionArea()
+                    if model.sidebarSection == .workspaces {
+                        tabBar.frame(height: Metrics.tabBar)
+                            .padding(.horizontal, Metrics.padding)
+                    }
                 }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { drawerHeight = $0 }
-                .padding(.horizontal, Metrics.padding * 2)
+                .padding(.horizontal, Metrics.padding)
                 .frame(maxHeight: .infinity, alignment: .bottom)
                 .opacity(showing(.actions) ? 1 : 0)
             }
             // 窗口铺满整个屏幕，放在 overlay 里，不把上面这层撑出安全区，action 栏才能留在 Home 条上面
+            // 没有窗口时窗口里放占位内容，见 CompactWindow
             .overlay(alignment: .topLeading) {
                 CompactWindow(open: $open, shown: $shown, screen: screen, insets: insets, homeInset: home,
-                            sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius)
+                              sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius,
+                              windowed: windowed,
+                              actionsRule: windowed ? .free : model.sidebarSection == .workspaces ? .pinned : .none)
             }
         }
-        // 保留 Home 条自动隐藏；状态 chip 已移到控制区，不再推测系统何时隐藏它。
+        // 保留 Home 条自动隐藏，不推测系统何时隐藏它。
         #if os(iOS)
         .persistentSystemOverlays(.hidden)
         #endif
         .onChange(of: model.current?.id, initial: true) { _, _ in
             model.current?.layout.updateViewport(.zero, presentation: .compact)
+        }
+        // 刚开出第一个窗口（新建，或在侧栏换到有窗口的工作区）：窗口从底栏上方展开铺满
+        .onChange(of: model.current?.layout.focused == nil) { was, now in
+            if was, !now { open = nil }
         }
         .environment(\.dotStage, stage)
         #if DEBUG
@@ -151,8 +176,26 @@ struct CompactLayout: View {
         }
     }
 
+    /// 标志栏与侧边栏拉开后窗口标题栏的按钮同高：窗口顶边让出一个边距，内容按高度缩小，标题栏在补足的安全区下面。
+    /// 返回相对安全区顶边的距离，见 WindowPlacement 与 PaneWindow。
+    private func logoBarTop(screen: CGSize, insets: EdgeInsets) -> CGFloat {
+        let pad = Metrics.padding
+        let scale = (screen.height - 2 * pad) / screen.height
+        let covered = max(insets.top - pad, 0) / scale
+        let button = Metrics.paneHeaderButton
+        let center = pad + max(Metrics.paneMargin, covered) * scale + button * scale / 2
+        return center - button / 2 - insets.top
+    }
+
     private func showing(_ drawer: WorkspaceDrawer) -> Bool {
         shown == drawer
+    }
+
+    /// 工作区开着窗口：底栏可以展开收起。其余情况窗口里放占位内容，见 CompactWindow。
+    private var windowed: Bool {
+        guard model.sidebarSection == .workspaces, let area = model.current, area.layout.focused != nil,
+              SampleWorkspace.stageScene(of: area) == nil else { return false }
+        return area.isSample || area.pluginClient != nil
     }
 }
 

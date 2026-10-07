@@ -2,7 +2,7 @@
 
 Mac、iPhone 和 iPad 共用一个 SwiftUI 工程、一个多平台 target。使用 Swift 6，最低 macOS 26、iOS 26；工程语言为简体中文。
 
-界面行为、跨端交互、流式展示与预览约定见 [App：界面与使用约定](../docs/App.md)。
+客户端职责、跨端状态与业务边界见 [App 设计原则](../docs/App.md)。
 
 ## 代码地图
 
@@ -42,6 +42,8 @@ App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `
 
 ## 预览和验证
 
-Debug build 带 `--sample-data` 启动可预览样本；需要从测试机桌面反复启动时，编译参数使用 `KITE_PREVIEW_FLAGS=KITE_SAMPLE_DATA`。具体场景见 [会话预览假数据](../docs/会话预览假数据.md)，设备安装与签名见 [App 开发说明](../docs/App.md#签名)。
+Debug build 带 `--sample-data` 启动可预览样本；需要从测试机桌面反复启动时，编译参数使用 `KITE_PREVIEW_FLAGS=KITE_SAMPLE_DATA`。初始配置预览使用 `--onboarding-preview` 或编译参数 `KITE_PREVIEW_FLAGS=KITE_ONBOARDING_PREVIEW`。样本的隔离要求与证据边界见 [预览与验证原则](../docs/会话预览假数据.md)。
 
 Swift 类型、窗口排布、草稿交接、滚动与 WebKit 验证统一在 [手动验证目录](../kited/test/manual/README.md)。移动或拆分 Swift 文件时同步更新这些脚本引用的源码路径。
+
+工程使用自动签名。本机配置有效开发团队并连接测试 iPhone 或 iPad 后，按设备 ID 构建，再用 Xcode 或 `devicectl device install app` 安装、`devicectl device process launch` 打开。签名身份以工程当前配置和本机证书为准，不在文档复制一份机器状态。

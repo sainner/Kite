@@ -14,6 +14,10 @@ try {
   const architecture = await command(['uname', '-m'], root);
   const source = join(import.meta.dir, '..', '..', '..', 'app', 'Kite', 'UI');
   const executable = join(root, 'verify-dot-canvas');
+  // 点阵由着色器画；命令行程序的主 bundle 是可执行文件所在目录，ShaderLibrary.default 从这里取 default.metallib。
+  const air = join(root, 'DotField.air');
+  await command(['xcrun', '-sdk', 'macosx', 'metal', '-c', join(source, 'DotField.metal'), '-o', air], root, 60_000);
+  await command(['xcrun', '-sdk', 'macosx', 'metallib', air, '-o', join(root, 'default.metallib')], root, 60_000);
   await command([
     compiler, '-sdk', sdk, '-target', `${architecture}-apple-macosx26.0`,
     ...['DotStage', 'Dots', 'DotTuning', 'WaitingBreath', 'Theme', 'InterfaceMode']

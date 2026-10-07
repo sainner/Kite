@@ -88,10 +88,14 @@ export class ChatGPTModel implements Model {
       switch (entry.type) {
         case 'input': return { role: 'user', content: [{ type: 'input_text', text: entry.input.text }] };
         case 'output': return entry.item.raw;
-        case 'tool_result': return {
-          type: 'function_call_output', call_id: entry.callId,
-          output: entry.result.status === 'success' ? entry.result.output : `[${entry.result.status}] ${entry.result.output}`,
-        };
+        case 'tool_result': {
+          const { status, output, images } = entry.result;
+          const text = status === 'success' ? output : `[${status}] ${output}`;
+          return { type: 'function_call_output', call_id: entry.callId, output: images?.length
+            ? [{ type: 'input_text', text }, ...images.map((image) => ({
+              type: 'input_image', image_url: `data:${image.mediaType};base64,${image.data}`, detail: 'high' }))]
+            : text };
+        }
         case 'feedback': return { role: 'developer', content: [{ type: 'input_text', text: entry.text }] };
         case 'notification': return {
           role: entry.notification.authority === 'instruction' ? 'developer' : 'user',

@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// 扩展一栏的单页，操作在标题栏。
 struct ContextTemplateLibrary: View {
     @Environment(AppModel.self) private var model
     @State private var edit: ContextTemplateEdit?
@@ -7,6 +8,21 @@ struct ContextTemplateLibrary: View {
     @State private var loading = false
 
     var body: some View {
+        SectionPage(header: PaneHeader(title: "上下文模板", subtitle: "扩展")) {
+            form
+        } actions: {
+            PaneHeaderButtonGroup {
+                Button { Task { await refresh() } } label: { PaneHeaderButtonLabel("刷新", systemImage: "arrow.clockwise") }
+                    .help("刷新")
+                    .disabled(loading)
+                Button { edit = .init(definition: .empty()) } label: { PaneHeaderButtonLabel("新建模板", systemImage: "plus") }
+                    .help("新建模板")
+                    .disabled(model.contextTemplates == nil)
+            }
+        }
+    }
+
+    private var form: some View {
         Form {
             Section {
                 Text("模板保存在当前工作机。创建会话模板用于之后的新会话；标题模板在下次生成时生效；通知模板用于之后生成的通知，已生成的内容保留原样。")
@@ -37,14 +53,7 @@ struct ContextTemplateLibrary: View {
             if let error { Text(error).foregroundStyle(Theme.danger) }
         }
         .formStyle(.grouped)
-        .navigationTitle("上下文模板")
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button("刷新", systemImage: "arrow.clockwise") { Task { await refresh() } }.disabled(loading)
-                Button("新建模板", systemImage: "plus") { edit = .init(definition: .empty()) }
-                    .disabled(model.contextTemplates == nil)
-            }
-        }
+        .scrollContentBackground(.hidden)
         .sheet(item: $edit) { request in
             ContextTemplateEditor(request: request, connection: model.connectionRevision).environment(model)
         }

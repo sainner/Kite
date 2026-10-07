@@ -225,7 +225,7 @@ private struct ItemView: View {
             .foregroundStyle(.secondary)
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.rule))
+            .overlay(RoundedRectangle(cornerRadius: Metrics.contentRadius, style: .continuous).strokeBorder(Theme.rule))
         case .notification(let text):
             EventLabel(text: text, icon: "bell")
         case .text(let text):

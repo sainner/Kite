@@ -10,4 +10,4 @@ metadata:
 用户明确文件未读或整文件版本变化只提示，不拒绝仍能匹配当前内容的有效补丁；修改和删除都不额外加读后版本锁。补丁匹配失败、目录越界、新建覆盖已有文件仍是错误。
 
 **Why:** 整文件版本锁会误拒绝互不重叠的局部修改。短工具名减少入口分散；shell 等抽象工具还需要告诉用户这次调用的用途。
-**How to apply:** patch 与 write/edit 是表达方式，一致性策略是另一维度，不能从名称推断保障。抽象工具由 agent 填写简短 description，不指定语言；可由参数生成摘要的工具不重复要求。统一 read 入口不等于已支持多模态，需同时核对结果与模型适配。实现细节查 [harness 主循环](../../docs/harness-主循环.md)，持久观察设想见 [[context-observation-ledger]]。
+**How to apply:** patch 与 write/edit 是表达方式，一致性策略是另一维度，不能从名称推断保障。抽象工具由 agent 填写简短 description，不指定语言；可由参数生成摘要的工具不重复要求。read 按内容分派文本、图片与 PDF；PDF 转 Markdown 按页读取是用户 2026-10-07 的要求，转换方案见 [[pdf-read-direction]]。新增文件类型时同时核对结果与各模型适配。实现细节查 [harness 主循环](../../docs/harness-主循环.md)，持久观察设想见 [[context-observation-ledger]]。

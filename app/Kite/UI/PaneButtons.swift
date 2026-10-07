@@ -44,40 +44,35 @@ struct PaneButtonGroup<Content: View>: View {
     }
 }
 
-/// 标题栏的窗口操作与会话菜单共用一块玻璃的分组规则。
+/// 标题栏的窗口操作与会话菜单共用一块玻璃，与 iPhone 的组合菜单按钮同一规则：
+/// 相邻内容之间隔一个按钮间距，两端留出图标在按钮高度里的空白，单个图标入口仍是圆形。
 struct PaneHeaderButtonGroup<Content: View>: View {
     @ViewBuilder var content: Content
-    @Namespace private var glass
 
     var body: some View {
-        GlassEffectContainer {
-            HStack(spacing: 0) {
-                Group(subviews: content) { subviews in
-                    ForEach(subviews) { subview in
-                        subview
-                            .glassEffect(.regular.interactive(), in: .capsule)
-                            .glassEffectUnion(id: "header-controls", namespace: glass)
-                    }
-                }
-            }
-            .menuStyle(.button)
-            .buttonStyle(PaneHeaderButtonStyle())
-            .controlSize(.large)
-            .menuIndicator(.hidden)
+        HStack(spacing: 0) {
+            content
         }
+        .padding(.horizontal, Metrics.paneHeaderGroupInset)
+        .menuStyle(.button)
+        .buttonStyle(PaneHeaderButtonStyle())
+        .controlSize(.large)
+        .menuIndicator(.hidden)
+        .glassEffect(.regular.interactive(), in: .capsule)
         .fixedSize()
     }
 }
 
 /// 原生菜单展开时沿用按钮的按下状态，背景随菜单收起自动清除。
+/// 按钮只带半个间距，反馈向两侧多出一点，图标入口的反馈仍是圆形。
 private struct PaneHeaderButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .modifier(PaneButtonHover(inset: 4, isPressed: configuration.isPressed))
+            .modifier(PaneButtonHover(inset: 4, horizontalInset: -1, isPressed: configuration.isPressed))
     }
 }
 
-/// 标题栏按钮按输入方式选择高度，图标入口使用正方形点击区。
+/// 标题栏按钮按输入方式选择高度；左右各带半个按钮间距，两端由所在的组补齐。
 struct PaneHeaderButtonLabel: View {
     let title: String
     var systemImage: String?
@@ -89,9 +84,8 @@ struct PaneHeaderButtonLabel: View {
 
     var body: some View {
         PaneButtonLabel(title, systemImage: systemImage)
-            .padding(.horizontal, systemImage == nil ? Metrics.paneToolbarInset : 0)
-            .frame(width: systemImage == nil ? nil : Metrics.paneHeaderButton, height: Metrics.paneHeaderButton)
-            .frame(minWidth: Metrics.paneHeaderButton)
+            .padding(.horizontal, Metrics.paneButtonGap / 2)
+            .frame(height: Metrics.paneHeaderButton)
             .contentShape(.capsule)
     }
 }
@@ -121,6 +115,8 @@ struct PaneButtonStyle: ButtonStyle {
 /// 控制区和工具条共用圆形／药丸的完整命中范围和禁用、悬停处理。
 struct PaneButtonHover: ViewModifier {
     var inset: CGFloat = 2
+    /// 左右与上下不同时给出。
+    var horizontalInset: CGFloat?
     var fill: Color?
     var isPressed = false
     @Environment(\.isEnabled) private var isEnabled
@@ -136,14 +132,16 @@ struct PaneButtonHover: ViewModifier {
             .background {
                 Capsule()
                     .fill(fill ?? feedback)
-                    .padding(inset)
+                    .padding(.vertical, inset)
+                    .padding(.horizontal, horizontalInset ?? inset)
                     .allowsHitTesting(false)
             }
             .overlay {
                 if fill != nil {
                     Capsule()
                         .fill(feedback)
-                        .padding(inset)
+                        .padding(.vertical, inset)
+                        .padding(.horizontal, horizontalInset ?? inset)
                         .allowsHitTesting(false)
                 }
             }

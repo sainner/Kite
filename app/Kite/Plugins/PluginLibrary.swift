@@ -19,7 +19,7 @@ private nonisolated struct ImportedPluginPackage: Decodable, Sendable {
     }
 }
 
-/// 插件定义属于工作机；安装后可在各工作区创建实例。
+/// 插件定义属于工作机；安装后可在各工作区创建实例。扩展一栏的单页，操作在标题栏。
 struct PluginLibrary: View {
     private struct PendingPackage {
         let contents: ImportedPluginPackage
@@ -34,8 +34,25 @@ struct PluginLibrary: View {
     @State private var importClient: KitedClient?
 
     var body: some View {
+        SectionPage(header: PaneHeader(title: "插件", subtitle: model.machine.map { "工作机：\($0.name)" } ?? "扩展")) {
+            form
+        } actions: {
+            PaneHeaderButtonGroup {
+                Button { perform { try await refresh() } } label: { PaneHeaderButtonLabel("刷新", systemImage: "arrow.clockwise") }
+                    .help("刷新")
+                    .disabled(working || !model.connected)
+                Button {
+                    do { importClient = try model.activeClient(); importing = true }
+                    catch { self.error = error.localizedDescription }
+                } label: { PaneHeaderButtonLabel("导入插件", systemImage: "plus") }
+                    .help("导入插件")
+                    .disabled(working || !model.connected)
+            }
+        }
+    }
+
+    private var form: some View {
         Form {
-            if let machine = model.machine { Text("工作机：\(machine.name)").foregroundStyle(.secondary) }
             if let package = pendingPackage?.contents.preview {
                 Section("待安装") {
                     Text(package.title).font(.headline)
@@ -62,19 +79,8 @@ struct PluginLibrary: View {
             if working { ProgressView() }
         }
         .formStyle(.grouped)
-        .navigationTitle("插件")
+        .scrollContentBackground(.hidden)
         .disabled(working)
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button("刷新", systemImage: "arrow.clockwise") { perform { try await refresh() } }
-                    .disabled(working || !model.connected)
-                Button("导入插件", systemImage: "plus") {
-                    do { importClient = try model.activeClient(); importing = true }
-                    catch { self.error = error.localizedDescription }
-                }
-                .disabled(working || !model.connected)
-            }
-        }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
             perform {
                 guard let client = importClient else { return }

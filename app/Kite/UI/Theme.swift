@@ -15,8 +15,8 @@ enum Theme {
     static let bubble = Color.accentColor
     static let bubbleStroke = Color.accentColor.opacity(0.4)
     static let bubbleShape = UnevenRoundedRectangle(
-        topLeadingRadius: Metrics.messageRadius, bottomLeadingRadius: Metrics.messageRadius,
-        bottomTrailingRadius: Metrics.bubbleTail, topTrailingRadius: Metrics.messageRadius,
+        topLeadingRadius: Metrics.contentRadius, bottomLeadingRadius: Metrics.contentRadius,
+        bottomTrailingRadius: Metrics.bubbleTail, topTrailingRadius: Metrics.contentRadius,
         style: .continuous)
     /// 代码、命令输出的底。
     static let codeBackground = Color("CodeBackground")
@@ -48,7 +48,7 @@ enum Theme {
     static let secondary = Font.subheadline
     /// 比次要的字再小一号：iPhone 上标题下面的次要信息。
     static let caption = Font.footnote
-    /// 最小的字：控制区中的状态 chip。
+    /// 最小的字：状态 chip、工具信息与预览标注。
     static let status = Font.caption
     /// 命令、输出、代码、改动。
     static let code = Font.system(.subheadline, design: .monospaced)
@@ -58,6 +58,13 @@ enum Theme {
     static let heading1 = Font.title2.weight(.semibold)
     static let heading2 = Font.title3.weight(.semibold)
     static let heading3 = Font.headline
+    /// 侧栏的「Kite」字标：思源宋体半粗，大小与 title3 相同并随系统字号缩放。
+    /// 字体只含英文字符，按 OFL 改名为 Kite Wordmark，许可见 Resources/Fonts。
+    #if os(macOS)
+    static let wordmark = Font.custom("KiteWordmark-SemiBold", size: 15, relativeTo: .title3)
+    #else
+    static let wordmark = Font.custom("KiteWordmark-SemiBold", size: 20, relativeTo: .title3)
+    #endif
 }
 
 /// 视觉参考色（规范见 docs/视觉风格.md）。界面里的彩色都从这里或由它派生的颜色资源取，不直接用系统色。
@@ -102,13 +109,17 @@ enum Metrics {
     /// 独立玻璃入口通过系统 controlSize 决定。
     static var paneButton: CGFloat { InputMode.current.button }
     static var paneHeaderButton: CGFloat { InputMode.current.headerButton }
+    /// 标题栏按钮组两端的留白：图标在按钮高度里的空白，减去按钮自带的半个间距。
+    static var paneHeaderGroupInset: CGFloat { (paneHeaderButton - InputMode.current.labelExtent - paneButtonGap) / 2 }
     static let paneButtonGap: CGFloat = 10
     /// 按钮到所属工具条容器的四边留白。
     static let paneToolbarInset: CGFloat = 8
     static let paneToolbarHeight: CGFloat = paneButton + 2 * paneToolbarInset
     /// 窗口四边的固定最小留白；已让出的安全区只补到这个值，不重复叠加。
     static var paneMargin: CGFloat { InputMode.current.paneMargin }
-    static let paneTitleInset: CGFloat = 6
+    /// 标题栏状态圆环占按钮方框的比例；方框每侧留下的空白计入圆环与标题之间的按钮间距。
+    static let statusRingScale: CGFloat = 0.75
+    static var statusRingMargin: CGFloat { paneHeaderButton * (1 - statusRingScale) / 2 }
     /// 主标题与尾部刷新图标之间的间距。
     static let titleRefreshGap: CGFloat = 3
     /// 刷新图标的命中与悬停范围向外扩出的距离，不影响排版；iPhone 保留触控尺寸。
@@ -149,9 +160,10 @@ enum Metrics {
     /// 工具标题行高度，视图中随系统字号缩放。
     static var toolRowHeight: CGFloat { InputMode.current.isTouch ? 36 : 32 }
     static let toolIcon: CGFloat = 16
+    /// 工具组和工具详情卡片的圆角，比会话内容块小，不随 contentRadius 变化。
+    static let toolGroupRadius: CGFloat = 8
     /// 图标、名字、摘要之间使用相同的间距。
     static let toolLabelGap: CGFloat = 6
-    static let toolGroupRadius: CGFloat = 8
     /// 气泡里文字离边的距离，左右和上下。
     static let bubblePadding = CGSize(width: 16, height: 12)
     /// 气泡里文字和代码块之间的间距。
@@ -161,11 +173,10 @@ enum Metrics {
     nonisolated static let inlineCodeGap: CGFloat = 2
     nonisolated static let inlineCodeRadius: CGFloat = 4
     static let inlineCodeFontScale: CGFloat = 0.9
-    /// agent 的话里块和块之间空多少；嵌套的列表每深一层往里缩多少；列表的编号占多宽（编号靠右对齐在里面）。
-    static let markdownBlockGap: CGFloat = 10
-    static let markdownLineSpacing: CGFloat = 4
-    /// 独立代码块的圆角。
-    static let codeBlockRadius: CGFloat = 18
+    /// agent 的话里行距与块距随正文字号缩放：中文行高约为字号的 1.85 倍，块和块之间约空一个字，标题上方再多空半个块距。
+    static func markdownLineSpacing(_ fontSize: CGFloat) -> CGFloat { (fontSize * 0.45).rounded() }
+    static func markdownBlockGap(_ fontSize: CGFloat) -> CGFloat { (fontSize * 0.9).rounded() }
+    /// 嵌套的列表每深一层往里缩多少；列表的编号占多宽（编号靠右对齐在里面）。
     /// 代码块标题栏的上下留白，以及左侧额外留白。
     static let codeHeaderInset: CGFloat = 4
     static let listIndent: CGFloat = 18
@@ -182,9 +193,11 @@ enum Metrics {
     /// 对话里人发的消息和前后的内容之间、别的新一轮（Kite 发来的、后台任务通知）和上一轮之间，在平常的间距之外多空多少。
     static let messageGap: CGFloat = 12
     static let turnGap: CGFloat = 12
-    /// 消息气泡的圆角；右下角小一点。
-    nonisolated static let messageRadius: CGFloat = 18
+    /// 会话里的内容块（消息气泡、代码块、表格、附件、Kite 发的消息）共用的圆角；气泡右下角小一点。
+    nonisolated static let contentRadius: CGFloat = 18
     nonisolated static let bubbleTail: CGFloat = 6
+    /// 嵌在内容块里的块与外框同心：圆角是外框圆角减去两者间距，最小与气泡右下角一样。
+    static func nestedRadius(inset: CGFloat) -> CGFloat { max(contentRadius - inset, bubbleTail) }
     /// 发送时气泡从多低的地方往上浮进来。
     static let bubbleRise: CGFloat = 32
     /// 人发的消息折起来时显示多高，大约十行；比它高出不少才折（见 MessageBubble）。

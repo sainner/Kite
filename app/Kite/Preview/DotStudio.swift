@@ -20,7 +20,7 @@ struct DotStudio: View {
 
     var body: some View {
         let accent = DotColor(Color.accentColor.resolve(in: environment))
-        PaneWindow(header: PaneHeader(title: title)) {
+        PaneWindow(header: PaneHeader(title: title, subtitle: "预览")) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 32) {
                     sourceSection

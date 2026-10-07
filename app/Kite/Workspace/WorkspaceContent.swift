@@ -6,7 +6,9 @@ struct WorkspaceContent: View {
 
     var body: some View {
         Group {
-            if !workspace.isSample, !workspace.isDraft, workspace.pluginClient == nil {
+            if let scene = SampleWorkspace.stageScene(of: workspace) {
+                DirectoryStatus(workspace: workspace, previewScene: scene)
+            } else if !workspace.isSample, !workspace.isDraft, workspace.pluginClient == nil {
                 DirectoryStatus(workspace: workspace)
             } else { TilesLayer() }
         }

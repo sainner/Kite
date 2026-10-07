@@ -485,7 +485,7 @@ struct Onboarding: View {
         .background(tint.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private func buttons(primary: String?, enabled: Bool, action: @escaping () -> Void,
+    private func buttons(primary: String, enabled: Bool, action: @escaping () -> Void,
                          prominent: Bool = true,
                          secondary: String? = nil, secondaryAction: @escaping () -> Void = {}) -> some View {
         GlassEffectContainer(spacing: Metrics.paneButtonGap) {
@@ -495,16 +495,14 @@ struct Onboarding: View {
                         .buttonStyle(.glass)
                         .disabled(working)
                 }
-                if let primary {
-                    let button = Button(action: action) {
-                        Text(primary).frame(maxWidth: .infinity)
-                    }
-                    .disabled(!enabled)
-                    if prominent {
-                        button.buttonStyle(.glassProminent)
-                    } else {
-                        button.buttonStyle(.glass)
-                    }
+                let button = Button(action: action) {
+                    Text(primary).frame(maxWidth: .infinity)
+                }
+                .disabled(!enabled)
+                if prominent {
+                    button.buttonStyle(.glassProminent)
+                } else {
+                    button.buttonStyle(.glass)
                 }
             }
             .font(Theme.body.weight(.semibold))

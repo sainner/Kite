@@ -12,16 +12,26 @@ import SwiftUI
 final class DotStage {
     private var waves: [DotWave] = []
     private var slots: [String: FigureSlot] = [:]
+    /// 图形摆在会移动的卡片上时，那张卡片这一帧实际挪到哪，见 DotCarrier。
+    private var carriers: [String: DotCarrier] = [:]
+    /// 指针或手指在空白画板上划过时点亮的格子，键是格位，值是点亮的时刻。
+    @ObservationIgnored private var sparks: [DotCell: Date] = [:]
     /// 画布在窗口里的范围，调试面板从它的底部中间发测试波。
     @ObservationIgnored var bounds: CGRect = .zero
     /// 有波或形变在走时为 true。
     private var ticking = false
-    /// 画布只在有事件走、图形呼吸或图形在动时逐帧刷新，静息时不耗电。
-    var animating: Bool { ticking || slots.values.contains { $0.breathing || $0.figure?.figure.moves == true } }
+    /// 画布只在有事件走、图形呼吸、图形在动或所在卡片在走时逐帧刷新，静息时不耗电。
+    var animating: Bool {
+        ticking || slots.values.contains { $0.breathing || $0.figure?.figure.moves == true }
+            || carriers.values.contains { $0.moving }
+    }
     /// slot 上正拼着的图形。
     func shownFigure(_ slot: String = FigureSlot.main) -> DotFigure? { slots[slot]?.figure?.figure }
     /// slot 上的图形在窗口坐标中占的范围。
-    func figureFrame(_ slot: String = FigureSlot.main) -> CGRect? { slots[slot]?.figure?.frame }
+    func figureFrame(_ slot: String = FigureSlot.main) -> CGRect? {
+        guard let shown = slots[slot] else { return nil }
+        return (carriers[slot]?.carry(shown, moving: false) ?? shown).figure?.frame
+    }
     @ObservationIgnored private var activeUntil = Date.distantPast
     @ObservationIgnored private var settle: Task<Void, Never>?
 
@@ -38,10 +48,16 @@ final class DotStage {
 
     /// 在 slot 上按 placement 把 figure 摆进 area（窗口坐标），nil 让图形退回静息的点。换成另一个图形时逐格形变过去；
     /// 只是区域变了（窗口改大小）就直接挪过去。breathing 时图形按等待呼吸起伏。
+    /// 摆在会移动的卡片上时给出 carrier，area 用卡片坐标（DotCarrier.space）：卡片走着的时候图形随它在点阵上滑过去。
     func show(_ figure: DotFigure?, in area: CGRect, placement: PlacedFigure.Placement = .center,
-              breathing: Bool = false, slot: String = FigureSlot.main) {
+              breathing: Bool = false, slot: String = FigureSlot.main, carrier: DotCarrier? = nil) {
+        let carrier = figure == nil ? nil : carrier
+        if carriers[slot] !== carrier { carriers[slot] = carrier }
         var current = slots[slot] ?? FigureSlot()
-        let placed = figure.map { PlacedFigure($0, in: area, placement: placement) }
+        let placed = figure.map { figure in
+            carrier.map { PlacedFigure(figure, in: $0.final.apply(area), placement: placement, area: area) }
+                ?? PlacedFigure(figure, in: area, placement: placement)
+        }
         current.breathing = breathing && placed != nil
         if placed == current.figure {
             if slots[slot]?.breathing != current.breathing { slots[slot] = current }
@@ -60,12 +76,30 @@ final class DotStage {
         keepAnimating(for: DotFigure.transition)
     }
 
+    /// 在 point（窗口坐标）所在的格子留下一点轨迹，随后慢慢退回静息的点；周围一圈跟着亮一点。
+    func trace(at point: CGPoint) {
+        let column = Int((point.x / DotMetrics.pitch).rounded(.down)), row = Int((point.y / DotMetrics.pitch).rounded(.down))
+        let now = Date.now
+        sparks = sparks.filter { now.timeIntervalSince($0.value) < DotSpark.duration }
+        sparks[DotCell(column: column, row: row)] = now
+        // 周围一圈晚一点出发，看起来是笔尖晕开
+        for (dc, dr) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let cell = DotCell(column: column + dc, row: row + dr)
+            if sparks[cell].map({ now.timeIntervalSince($0) > DotSpark.halo }) ?? true {
+                sparks[cell] = now - DotSpark.halo
+            }
+        }
+        keepAnimating(for: DotSpark.duration)
+    }
+
     /// date 时刻的取值快照，供一帧绘制使用。live 为 false（静息或减少动态效果）时不呼吸。
     func field(at date: Date, rest: DotColor, live: Bool) -> DotField {
         let values = DotTuning.shared.values
         return DotField(waves: waves.filter { $0.isActive(at: date, values.wave) }, wave: values.wave,
                         palette: values.waveColor.map { [$0] } ?? values.palette, rest: rest,
-                        slots: Array(slots.values), breath: live ? WaitingBreath.opacity(at: date) : 1, moving: live)
+                        slots: slots.map { key, slot in carriers[key]?.carry(slot, moving: live) ?? slot },
+                        breath: live ? WaitingBreath.opacity(at: date) : 1, moving: live,
+                        sparks: live ? sparks : [:])
     }
 
     private func keepAnimating(for duration: TimeInterval) {
@@ -77,9 +111,90 @@ final class DotStage {
             guard let self, !Task.isCancelled else { return }
             let wave = DotTuning.shared.values.wave
             waves.removeAll { !$0.isActive(at: .now, wave) }
+            sparks = sparks.filter { Date.now.timeIntervalSince($0.value) < DotSpark.duration }
             for key in slots.keys { slots[key]?.previous = nil }
             ticking = false
         }
+    }
+}
+
+/// 窗口点阵上的一格。
+nonisolated struct DotCell: Hashable, Sendable {
+    let column: Int
+    let row: Int
+}
+
+/// 一张会移动的卡片（iPhone 的窗口）。卡片里的内容按卡片自己的坐标（space）排，
+/// 卡片的动画逐帧报来这一帧实际在哪（current）和要去哪（final），两者都是卡片坐标到窗口坐标的换算。
+/// 摆在卡片上的图形按 final 落到整格，再按 current 与 final 之差把亚格偏移分给相邻的格子（同浮动），
+/// 不跟着卡片整块平移；格位和偏移取自同一帧的换算，不等卡片里的布局回报。
+@MainActor @Observable
+final class DotCarrier {
+    /// 卡片内容的坐标空间。
+    static let space = "dot.carrier"
+
+    /// 卡片坐标到窗口坐标：p × scale + origin。
+    nonisolated struct Mapping: Equatable, Sendable {
+        var origin = CGPoint.zero
+        var scale: CGFloat = 1
+
+        func apply(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: origin.x + point.x * scale, y: origin.y + point.y * scale)
+        }
+
+        func apply(_ rect: CGRect) -> CGRect {
+            CGRect(origin: apply(rect.origin), size: CGSize(width: rect.width * scale, height: rect.height * scale))
+        }
+    }
+
+    /// 正在走的动画数；有在走的时，点阵逐帧刷新。
+    private var runs = 0
+    @ObservationIgnored private(set) var current = Mapping()
+    @ObservationIgnored private(set) var final = Mapping()
+
+    var moving: Bool { runs > 0 }
+
+    /// 一段动画开始与结束，成对调用。
+    func began() { runs += 1 }
+    func ended() { runs = max(runs - 1, 0) }
+
+    /// 由卡片的动画逐帧写入，不引起视图更新。
+    func update(current: Mapping, final: Mapping) {
+        self.current = current
+        self.final = final
+    }
+
+    /// slot 上的图形（area 是卡片坐标）按卡片停下时的位置落到整格；moving 时再加上这一帧还差的亚格偏移。图形本身不缩放。
+    func carry(_ slot: FigureSlot, moving: Bool) -> FigureSlot {
+        func carried(_ placed: PlacedFigure) -> PlacedFigure {
+            guard let area = placed.area else { return placed }
+            var result = PlacedFigure(placed.figure, in: final.apply(area), placement: placed.placement)
+            if moving {
+                let center = CGPoint(x: area.midX, y: area.midY)
+                let now = current.apply(center), then = final.apply(center)
+                result.shiftX = Double((now.x - then.x) / DotMetrics.pitch)
+                result.shiftY = Double((now.y - then.y) / DotMetrics.pitch)
+            }
+            return result
+        }
+        var slot = slot
+        slot.figure = slot.figure.map(carried)
+        slot.previous = slot.previous.map(carried)
+        return slot
+    }
+}
+
+/// 画板上划过留下的轨迹：一下长到 peak，再缓缓收回静息的点。
+nonisolated enum DotSpark {
+    static let duration: TimeInterval = 1.4
+    /// 周围那一圈从这么晚的地方开始，长得小一些。
+    static let halo: TimeInterval = 0.5
+    static let peak = 0.7
+
+    static func shape(since start: Date, at date: Date) -> Double {
+        let t = date.timeIntervalSince(start) / duration
+        guard t >= 0, t < 1 else { return 0 }
+        return peak * pow(1 - t, 2)
     }
 }
 
@@ -371,13 +486,21 @@ nonisolated struct PlacedFigure: Hashable, Sendable {
     let figure: DotFigure
     let column: Int
     let row: Int
+    let placement: Placement
+    /// 摆在会移动的卡片上时，卡片坐标里的范围，见 DotCarrier。
+    let area: CGRect?
+    /// 随所在卡片挪动时偏出格位多少（格）；停着时为 0。
+    var shiftX = 0.0
+    var shiftY = 0.0
 
     /// center 让图形中心尽量落在 area 中心；leading 让左边贴着 area 左边、上下居中。
     enum Placement: Sendable { case center, leading }
 
     /// 按 placement 摆进 area（窗口坐标），格子对齐窗口的点阵。
-    init(_ figure: DotFigure, in area: CGRect, placement: Placement = .center) {
+    init(_ figure: DotFigure, in area: CGRect, placement: Placement = .center, area local: CGRect? = nil) {
         self.figure = figure
+        self.placement = placement
+        self.area = local
         let pitch = Double(DotMetrics.pitch)
         column = switch placement {
         case .center: Int((Double(area.midX) / pitch - Double(figure.columns) / 2).rounded())
@@ -392,14 +515,15 @@ nonisolated struct PlacedFigure: Hashable, Sendable {
     }
 
     /// 窗口点阵上 (column, row) 这一格从图形内容里分到多少形变、什么颜色；一点都没分到是 nil。
-    /// 浮动的层按此刻的位移把这一格的中心反算回图形坐标，由上下相邻两格按线性权重分配形变量；
+    /// 浮动的层和随卡片挪动的图形按此刻的位移把这一格的中心反算回图形坐标，由相邻格按双线性权重分配形变量；
     /// 颜色按相同的空间权重在 oklab 中混合，未覆盖的部分取静息点色；闪烁的层连续交接给底层或静息点。
-    /// 幅度为 0 时正好取回原来那一格。
+    /// 幅度为 0、没有挪动时正好取回原来那一格。
     func sample(column: Int, row: Int, at date: Date, amplitude: Double, rest: DotColor) -> (shape: Double, color: DotColor)? {
-        let x = column - self.column
         // 格的中心，以格为单位、相对图形左上角；浮动至多偏出一格
-        let y = Double(row - self.row) + 0.5
-        guard x >= 0, x < figure.columns, y > -1, y < Double(figure.rows) + 1 else { return nil }
+        let x = Double(column - self.column) + 0.5 - shiftX
+        let y = Double(row - self.row) + 0.5 - shiftY
+        guard x > -1, x < Double(figure.columns) + 1, y > -1, y < Double(figure.rows) + 1 else { return nil }
+        let u = x - 0.5, u0 = u.rounded(.down), fu = u - u0
         var shape = 0.0, coverage = 0.0
         var color = DotColor.Oklab.zero
         func contribute(_ look: DotFigure.Look, weight: Double) {
@@ -411,17 +535,19 @@ nonisolated struct PlacedFigure: Hashable, Sendable {
             let v = y - layer.motion.offset(at: date, amplitude: amplitude) - 0.5
             let v0 = v.rounded(.down), fv = v - v0
             let lit = layer.motion.visibility(at: date, amplitude: amplitude)
-            func tap(_ dv: Int, _ w: Double) {
-                let r = Int(v0) + dv
-                guard w > 0, let cell = figure[x, r], cell.layer == index else { return }
-                let delay = Double(x + r) / Double(max(figure.columns + figure.rows - 2, 1))
+            func tap(_ du: Int, _ dv: Int, _ w: Double) {
+                let c = Int(u0) + du, r = Int(v0) + dv
+                guard w > 0, let cell = figure[c, r], cell.layer == index else { return }
+                let delay = Double(c + r) / Double(max(figure.columns + figure.rows - 2, 1))
                 let look = layer.motion.look(of: cell, at: date, delay: delay, amplitude: amplitude, rest: rest)
                 // 熄掉的那部分换成底下的格子
                 if let look { contribute(look, weight: w * lit) }
                 if let under = cell.under { contribute(under, weight: w * (1 - lit)) }
             }
-            tap(0, 1 - fv)
-            tap(1, fv)
+            tap(0, 0, (1 - fu) * (1 - fv))
+            tap(1, 0, fu * (1 - fv))
+            tap(0, 1, (1 - fu) * fv)
+            tap(1, 1, fu * fv)
         }
         guard coverage > 0 else { return nil }
         // shape 是图案作者给定的大小，不当作颜色权重，避免小格子本来饱满的颜色被冲淡。
@@ -451,6 +577,7 @@ nonisolated struct DotField: Sendable {
 
     /// 图形在动（不是静息、没开减少动态效果）。
     let moving: Bool
+    let sparks: [DotCell: Date]
 
     func dot(column: Int, row: Int, at date: Date) -> Dot {
         let square = DotMetrics.square(column: column, row: row)
@@ -462,6 +589,9 @@ nonisolated struct DotField: Sendable {
                 shape = value
                 form = wave.form
             }
+        }
+        if let start = sparks[DotCell(column: column, row: row)] {
+            shape = max(shape, DotSpark.shape(since: start, at: date))
         }
         var target = DotColor.palette(column: column, row: row, in: palette)
         target.alpha *= wave.opacity
@@ -504,29 +634,67 @@ nonisolated struct DotField: Sendable {
         return (shape, (from?.color ?? rest).mixed(with: target, by: eased))
     }
 
-    /// 把落在 frame（窗口坐标）里的格子画到以 frame 左上角为原点的画布上。
-    /// 静息的点合成一条路径，一整片点阵只需一次填充。
-    func draw(in context: inout GraphicsContext, frame: CGRect, at date: Date) {
-        let pitch = DotMetrics.pitch
-        let first = (column: Int((frame.minX / pitch).rounded(.down)), row: Int((frame.minY / pitch).rounded(.down)))
-        let last = (column: Int((frame.maxX / pitch).rounded(.up)) - 1, row: Int((frame.maxY / pitch).rounded(.up)) - 1)
-        guard last.column >= first.column, last.row >= first.row else { return }
-        let inset = (pitch - DotMetrics.cell) / 2
-        var resting = Path()
-        for row in first.row...last.row {
-            for column in first.column...last.column {
-                let dot = dot(column: column, row: row, at: date)
-                let rect = CGRect(x: CGFloat(column) * pitch + inset - frame.minX,
-                                  y: CGFloat(row) * pitch + inset - frame.minY,
-                                  width: DotMetrics.cell, height: DotMetrics.cell)
-                if dot.shape <= 1.0 / 512, dot.color == rest {
-                    resting.addPath(dot.path(in: rect))
-                } else {
-                    context.fill(dot.path(in: rect), with: .color(dot.color.color))
+    /// 这一帧交给着色器（DotField.metal）的样子。图形与轨迹覆盖到的格子在这里按 dot 算好，放进按格位散列的表；
+    /// 其余格子只有经过的波和静息的点，由着色器逐像素算，静息时 CPU 不碰整片点阵。
+    /// origin 是画布左上角的窗口坐标，scale 是画布坐标到窗口坐标的缩放，pixel 是一像素合多少窗口点。
+    /// drawsRest 为 false 时不画静息的点，只留图形、波和轨迹。
+    func shader(origin: CGPoint, scale: CGFloat, pixel: CGFloat, at date: Date, drawsRest: Bool = true) -> Shader {
+        var waveFloats = waves.flatMap { wave -> [Float] in
+            let front = date.timeIntervalSince(wave.start) * self.wave.speed * wave.pace
+            return [wave.origin.minX, wave.origin.minY, wave.origin.width, wave.origin.height, front, wave.form.index]
+                .map { Float($0) }
+        }
+        if waveFloats.isEmpty { waveFloats = [0] }
+        let colors = palette.isEmpty ? DotColor.palette : palette
+        return ShaderLibrary.dotField(
+            .float4(origin.x, origin.y, scale, pixel), rest.shaderValue, .float(drawsRest ? 1 : 0),
+            .floatArray(cellTable(at: date)), .floatArray(waveFloats),
+            .float4(wave.width, wave.reach, wave.fadeStart, wave.peak), .float(wave.opacity),
+            .floatArray(colors.flatMap { [Float($0.red), Float($0.green), Float($0.blue), Float($0.alpha)] }),
+            .floatArray(DotForm.shaderProfiles))
+    }
+
+    /// 格表每格的数：列、行、终态序号（-1 是空位）、shape、不预乘的 sRGB 与透明度。
+    static let cellStride = 8
+
+    /// 开放寻址的格表，容量是 2 的幂且至少空一半，着色器按 slot 取位、顺次往后找。
+    /// 只收图形可能占到的格子（浮动、随卡片挪动至多偏出一格）和轨迹，算出来是静息的点就不收。
+    private func cellTable(at date: Date) -> [Float] {
+        var cells = Set(sparks.keys)
+        for slot in slots {
+            for placed in [slot.figure, slot.previous].compactMap(\.self) {
+                let dx = Int(placed.shiftX.rounded(.down)), dy = Int(placed.shiftY.rounded(.down))
+                for row in (placed.row + dy - 1)...(placed.row + dy + placed.figure.rows + 1) {
+                    for column in (placed.column + dx - 1)...(placed.column + dx + placed.figure.columns + 1) {
+                        cells.insert(DotCell(column: column, row: row))
+                    }
                 }
             }
         }
-        context.fill(resting, with: .color(rest.color))
+        let dots = cells.compactMap { cell -> (DotCell, Dot)? in
+            let dot = dot(column: cell.column, row: cell.row, at: date)
+            return dot.shape <= 1.0 / 512 && dot.color == rest ? nil : (cell, dot)
+        }
+        var capacity = 2
+        while capacity < dots.count * 2 { capacity *= 2 }
+        let stride = Self.cellStride
+        var table = [Float](repeating: 0, count: capacity * stride)
+        for slot in 0..<capacity { table[slot * stride + 2] = -1 }
+        let mask = UInt32(capacity - 1)
+        for (cell, dot) in dots {
+            var slot = Int(Self.slot(column: cell.column, row: cell.row) & mask)
+            while table[slot * stride + 2] >= 0 { slot = (slot + 1) & Int(mask) }
+            let values = [Double(cell.column), Double(cell.row), dot.form.index, dot.shape,
+                          dot.color.red, dot.color.green, dot.color.blue, dot.color.alpha]
+            for (offset, value) in values.enumerated() { table[slot * stride + offset] = Float(value) }
+        }
+        return table
+    }
+
+    /// 格位的散列，与 DotField.metal 的 cellHash 一致。
+    static func slot(column: Int, row: Int) -> UInt32 {
+        let h = (UInt32(truncatingIfNeeded: column) &* 73_856_093) ^ (UInt32(truncatingIfNeeded: row) &* 19_349_663)
+        return h ^ (h >> 16)
     }
 }
 
@@ -538,32 +706,43 @@ nonisolated private func smoothstep(_ x: Double) -> Double {
 extension EnvironmentValues {
     /// 当前 App 窗口的点阵舞台；预览样本等没有舞台的地方为 nil。
     @Entry var dotStage: DotStage?
+    /// 所在卡片会移动时（iPhone 的窗口），报告卡片这一帧实际在哪；不动的地方为 nil。
+    @Entry var dotCarrier: DotCarrier?
 }
 
 /// 一个 App 窗口里唯一的点阵画布，铺满窗口、放在 App 底色之上，卡片盖在它上面。不参与点击和读屏。
+/// 实色卡片会盖住底下的图形，卡片里再垫一层只画图形的（figuresOnly），格子与底下的画布对齐；这一层不改舞台范围。
+/// 像素由 Metal 着色器（DotField.metal）画，CPU 每帧只算图形和轨迹那几格。
 struct DotCanvas: View {
+    var figuresOnly = false
     @Environment(\.dotStage) private var stage
+    @Environment(\.dotCarrier) private var carrier
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.displayScale) private var displayScale
     @Environment(\.self) private var environment
 
     var body: some View {
         GeometryReader { proxy in
-            let origin = proxy.frame(in: .global).origin
+            let global = proxy.frame(in: .global)
+            // 放在缩放的窗口里时（figuresOnly），按屏幕上的实际大小画，格子和底下的画布对齐
+            let scale = figuresOnly && proxy.size.width > 0 ? global.width / proxy.size.width : 1
+            let local = proxy.frame(in: .named(DotCarrier.space)).origin
             if let stage {
-                let live = stage.animating && !reduceMotion
+                let live = (stage.animating || carrier?.moving == true) && !reduceMotion
                 TimelineView(.animation(paused: !live)) { timeline in
                     // 静息或减少动态效果时取波都已结束的时刻，直接画出静息的点。
                     let date = live ? timeline.date : .distantFuture
                     let field = stage.field(at: date, rest: .rest(in: environment), live: live)
-                    Canvas { context, size in
-                        // 首帧就使用实际画布尺寸，静息点阵不等待几何回调或下一次动画刷新。
-                        field.draw(in: &context, frame: CGRect(origin: origin, size: size), at: date)
-                    }
+                    // 在移动的卡片里时按卡片这一帧的实际位置换算，画出来的格子仍落在窗口的点阵上
+                    let mapping = live ? carrier?.current : carrier?.final
+                    Rectangle().fill(field.shader(origin: mapping?.apply(local) ?? global.origin,
+                                                  scale: mapping?.scale ?? scale, pixel: 1 / max(displayScale, 1),
+                                                  at: date, drawsRest: !figuresOnly))
                 }
             }
         }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
-            stage?.bounds = $0
+            if !figuresOnly { stage?.bounds = $0 }
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)

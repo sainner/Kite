@@ -11,12 +11,12 @@ struct SelectableMarkdown: View {
     @Environment(\.colorScheme) private var colorScheme
     let source: String
     @State private var document = MarkdownDocument()
-    let showActions: () -> Void
+    let showActions: @MainActor () -> Void
     let dismissActions: () -> Void
 
     var body: some View {
         let urls = document.blocks(for: source).flatMap { ReferenceText.decorate($0.text, scope: referenceScope).runs.compactMap(\.link) }
-        VStack(alignment: .leading, spacing: Metrics.markdownBlockGap) {
+        VStack(alignment: .leading, spacing: Metrics.markdownBlockGap(UIFont.preferredFont(forTextStyle: .body).pointSize)) {
             ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
                 switch chunk {
                 case .prose(let blocks):
@@ -26,10 +26,17 @@ struct SelectableMarkdown: View {
                                        showActions: showActions, dismissActions: dismissActions)
                         .padding(.horizontal, -Metrics.inlineCodePadding)
                 case .block(let block):
-                    MarkdownBlockView(block: block)
-                        .contentShape(Rectangle())
-                        .highPriorityGesture(LongPressGesture(minimumDuration: 0.4, maximumDistance: 8)
-                            .onEnded { _ in showActions() })
+                    switch block.kind {
+                    case .code, .table:
+                        // 卡片只在内容区接长按，标题栏按钮保留按下状态
+                        MarkdownBlockView(block: block)
+                            .environment(\.blockCardLongPress, showActions)
+                    default:
+                        MarkdownBlockView(block: block)
+                            .contentShape(Rectangle())
+                            .highPriorityGesture(LongPressGesture(minimumDuration: 0.4, maximumDistance: 8)
+                                .onEnded { _ in showActions() })
+                    }
                 }
             }
         }
@@ -61,12 +68,13 @@ struct SelectableMarkdown: View {
     /// 几块拼成一段带属性的字，块和块之间空 markdownBlockGap，标题上面再多空一点，和 MarkdownBlockView 排的一样。
     private static func attributed(_ blocks: [MarkdownBlock], colorScheme: ColorScheme, scope: ReferenceScope) -> NSAttributedString {
         let body = UIFont.preferredFont(forTextStyle: .body)
+        let blockGap = Metrics.markdownBlockGap(body.pointSize)
         let result = NSMutableAttributedString()
         for (index, block) in blocks.enumerated() {
             if index > 0 { result.append(NSAttributedString(string: "\n")) }
             let style = NSMutableParagraphStyle()
-            style.lineSpacing = Metrics.markdownLineSpacing
-            style.paragraphSpacingBefore = index > 0 ? Metrics.markdownBlockGap : 0
+            style.lineSpacing = Metrics.markdownLineSpacing(body.pointSize)
+            style.paragraphSpacingBefore = index > 0 ? blockGap : 0
             let indent = CGFloat(max(block.depth - 1, 0)) * Metrics.listIndent
             style.firstLineHeadIndent = indent
             style.headIndent = indent
@@ -77,7 +85,7 @@ struct SelectableMarkdown: View {
             switch block.kind {
             case .heading(let level):
                 font = level <= 1 ? .semibold(.title2) : level == 2 ? .semibold(.title3) : .preferredFont(forTextStyle: .headline)
-                style.paragraphSpacingBefore += 4
+                style.paragraphSpacingBefore += blockGap / 2
             case .quote:
                 color = .secondaryLabel
                 style.firstLineHeadIndent = indent + 12

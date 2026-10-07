@@ -19,7 +19,7 @@ struct DotGallery: View {
     }
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: title)) {
+        PaneWindow(header: PaneHeader(title: title, subtitle: "预览")) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 32) {
                     shapeSection

@@ -5,6 +5,7 @@ import SwiftUI
 /// 拖动报的是窗口坐标，在这里换算成内容区里的坐标再交给窗口组。
 struct TilesLayer: View {
     @Environment(WindowLayout.self) private var workspace
+    @Environment(\.openSidebar) private var openSidebar
 
     var body: some View {
         GeometryReader { geo in
@@ -14,8 +15,15 @@ struct TilesLayer: View {
             let local = { (point: CGPoint) in CGPoint(x: point.x - origin.x, y: point.y - origin.y) }
             let layout = workspace.shown?.layout(in: regions.canvas, free: workspace.resizing) ?? TileLayout()
             let docked = workspace.shownDock
+            // 侧栏入口只放在左上角的窗口：先比顶边，再比左边
+            let first = layout.panes.min { ($0.value.minY, $0.value.minX) < ($1.value.minY, $1.value.minX) }?.key
             ZStack(alignment: .topLeading) {
                 DockRail(regions: regions, paneCount: docked.count)
+                if layout.panes.isEmpty && workspace.drag == nil {
+                    WindowlessStage(dock: "右侧停靠栏")
+                        .placed(regions.canvas)
+                        .transition(.opacity)
+                }
                 ForEach(layout.gaps) { gap in
                     LayoutDragArea(cursor: gap.split.axis == .horizontal ? .columnResize : .rowResize) { drag in
                         workspace.resize(gap, to: local(drag.location))
@@ -42,6 +50,7 @@ struct TilesLayer: View {
                     } onActivate: {
                         workspace.restore(pane, in: bounds)
                     }
+                    .environment(\.openSidebar, pane == first ? openSidebar : nil)
                     .zIndex(workspace.drag?.pane == pane ? 1 : 0)
                     // 拖缝调整大小时指针会快速扫过卡片，期间卡片不响应悬停和点击
                     .allowsHitTesting(workspace.resizing == nil)
@@ -148,9 +157,9 @@ struct PaneCard: View {
     private var controlsInMenu: Bool {
         #if os(macOS)
         guard !minimized, area.thread(in: pane) != nil, menuWidth > 0 else { return false }
-        // 按完整控制组计算，不能随悬停显隐改变判断；标题至少保留两个按钮宽的空间。
+        // 按完整控制组计算，不能随悬停显隐改变判断；圆环占一个按钮宽，标题至少保留两个按钮宽。
         let required = 2 * Metrics.paneMargin + menuWidth + controlsSize.width
-            + 2 * Metrics.paneButtonGap + 2 * Metrics.paneHeaderButton
+            + 3 * Metrics.paneButtonGap + 3 * Metrics.paneHeaderButton
         return width < required
         #else
         return false
@@ -274,18 +283,10 @@ struct PaneCard: View {
 
 /// 宽屏停靠栏与紧凑布局的窗口栏共用添加入口。
 struct AddWindowButton: View {
-    @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @State private var presented = false
-    @State private var error: String?
-
-    private var canAdd: Bool {
-        !area.changingWindows && area.pendingWindowRequest == nil && area.pendingInstanceRequest == nil &&
-            (area.isDraft || area.isSample || (model.isConnected(area) && area.remote?.workspace.status == .open))
-    }
 
     var body: some View {
-        @Bindable var area = area
         Button { presented = true } label: {
             Image(systemName: "plus")
                 .font(Theme.title)
@@ -298,55 +299,86 @@ struct AddWindowButton: View {
         .fixedSize()
         .help("创建实例")
         .accessibilityLabel("添加")
-        .popover(isPresented: $presented) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("创建实例").font(.headline)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 6) {
-                        if area.isDraft {
-                            Button("创建工作区") { presented = false; model.showNewWorkspace = true }
-                        } else {
-                            ForEach(area.definitions) { definition in
-                                Button {
-                                    model.createInstance(definition, in: area)
-                                    presented = false
-                                } label: {
-                                    HStack {
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            Text(definition.title)
-                                            Text(definition.views.isEmpty ? "后台实例" : definition.views.map(\.title).joined(separator: "、"))
-                                                .font(.caption).foregroundStyle(.secondary)
-                                        }
-                                        Spacer()
-                                        Image(systemName: "plus")
-                                    }.padding(.vertical, 6).contentShape(Rectangle())
-                                }.buttonStyle(.pointingPlain)
-                            }
+        .popover(isPresented: $presented) { CreateInstanceMenu(presented: $presented) }
+        .modifier(WindowErrorAlert())
+    }
+}
+
+/// 创建实例的菜单，由添加入口弹出。
+struct CreateInstanceMenu: View {
+    @Binding var presented: Bool
+    @Environment(AppModel.self) private var model
+    @Environment(WorkArea.self) private var area
+    @State private var error: String?
+
+    private var canAdd: Bool { area.canAddWindows(connected: model.isConnected(area)) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("创建实例").font(.headline)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    if area.isDraft {
+                        Button("创建工作区") { presented = false; model.newWorkspace = .session }
+                    } else {
+                        ForEach(area.definitions) { definition in
+                            Button {
+                                model.createInstance(definition, in: area)
+                                presented = false
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(definition.title)
+                                        Text(definition.views.isEmpty ? "后台实例" : definition.views.map(\.title).joined(separator: "、"))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "plus")
+                                }.padding(.vertical, 6).contentShape(Rectangle())
+                            }.buttonStyle(.pointingPlain)
                         }
-                    }.disabled(!canAdd)
-                }.frame(maxHeight: 340)
-                if area.pendingWindowRequest != nil {
-                    Button("重试创建") { model.retryOpenWindow(in: area); presented = false }.disabled(area.changingWindows)
-                }
-                if area.pendingInstanceRequest != nil {
-                    Button("重试创建") { model.retryCreateInstance(in: area); presented = false }.disabled(area.changingWindows)
-                }
-                if let error { Text(error).font(.caption).foregroundStyle(Theme.danger) }
+                    }
+                }.disabled(!canAdd)
+            }.frame(maxHeight: 340)
+            if area.pendingWindowRequest != nil {
+                Button("重试创建") { model.retryOpenWindow(in: area); presented = false }.disabled(area.changingWindows)
             }
-            .padding(16).frame(width: 280)
-            .toastHost()
-            .presentationCompactAdaptation(.popover)
-            .task {
-                guard !area.isSample, !area.isDraft else { return }
-                do { try await model.refreshDefinitions(model.activeClient(in: area)); error = nil }
-                catch { self.error = error.localizedDescription }
+            if area.pendingInstanceRequest != nil {
+                Button("重试创建") { model.retryCreateInstance(in: area); presented = false }.disabled(area.changingWindows)
             }
+            if let error { Text(error).font(.caption).foregroundStyle(Theme.danger) }
         }
-        .alert("窗口操作失败", isPresented: Binding(get: { area.windowError != nil }, set: { if !$0 { area.windowError = nil } })) {
-            if area.pendingWindowRequest != nil { Button("重试添加") { model.retryOpenWindow(in: area) } }
-            if area.pendingInstanceRequest != nil { Button("重试添加") { model.retryCreateInstance(in: area) } }
-            Button("好", role: .cancel) { area.windowError = nil }
-        } message: { Text(area.windowError ?? "") }
+        .padding(16).frame(width: 280)
+        .toastHost()
+        .presentationCompactAdaptation(.popover)
+        .task {
+            guard !area.isSample, !area.isDraft else { return }
+            do { try await model.refreshDefinitions(model.activeClient(in: area)); error = nil }
+            catch { self.error = error.localizedDescription }
+        }
+    }
+}
+
+extension WorkArea {
+    /// 没有窗口请求在路上、工作区在线且未归档时才能再加窗口。
+    func canAddWindows(connected: Bool) -> Bool {
+        !changingWindows && pendingWindowRequest == nil && pendingInstanceRequest == nil &&
+            (isDraft || isSample || (connected && remote?.workspace.status == .open))
+    }
+}
+
+/// 窗口操作失败时的提示，可以重试。
+struct WindowErrorAlert: ViewModifier {
+    @Environment(AppModel.self) private var model
+    @Environment(WorkArea.self) private var area
+
+    func body(content: Content) -> some View {
+        content
+            .alert("窗口操作失败", isPresented: Binding(get: { area.windowError != nil }, set: { if !$0 { area.windowError = nil } })) {
+                if area.pendingWindowRequest != nil { Button("重试添加") { model.retryOpenWindow(in: area) } }
+                if area.pendingInstanceRequest != nil { Button("重试添加") { model.retryCreateInstance(in: area) } }
+                Button("好", role: .cancel) { area.windowError = nil }
+            } message: { Text(area.windowError ?? "") }
     }
 }
 

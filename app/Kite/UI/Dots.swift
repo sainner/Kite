@@ -85,6 +85,14 @@ nonisolated enum DotForm: String, CaseIterable, Hashable, Codable, Sendable {
         return DotProfile(radii: unit.map { scale * (1 + ($0 - 1) * s) })
     }
 
+    /// 在 allCases 里的序号，着色器按它取轮廓。
+    var index: Double { Double(Self.allCases.firstIndex(of: self) ?? 0) }
+
+    /// 各终态满格时的轮廓按 allCases 顺序首尾相接，交给着色器。
+    static let shaderProfiles: [Float] = allCases.flatMap { form in
+        (unitProfiles[form] ?? []).map { Float($0) }
+    }
+
     private static let unitProfiles: [DotForm: [Double]] = Dictionary(uniqueKeysWithValues: allCases.map { form in
         (form, form.outline.map(radii) ?? Array(repeating: 1, count: DotProfile.count))
     })
@@ -251,8 +259,16 @@ nonisolated struct DotColor: Hashable, Codable, Sendable {
     static let accent = DotColor(hex: 0x5B88C2)
 
     /// 某一格固定取五色中的哪一色，同一格始终同色，避免逐帧闪色。
+    /// 取法与 DotField.metal 一致，CPU 算的格子与着色器算的格子取到同一色。
     static func palette(column: Int, row: Int, in colors: [DotColor] = palette) -> DotColor {
-        colors.isEmpty ? palette[0] : colors[abs((column &* 73_856_093) ^ (row &* 19_349_663)) % colors.count]
+        guard !colors.isEmpty else { return palette[0] }
+        let h = (UInt32(truncatingIfNeeded: column) &* 73_856_093) ^ (UInt32(truncatingIfNeeded: row) &* 19_349_663)
+        return colors[Int(h % UInt32(colors.count))]
+    }
+
+    /// 交给着色器的值：不预乘的 sRGB 与透明度。
+    var shaderValue: Shader.Argument {
+        .float4(red, green, blue, alpha)
     }
 
     /// 十六进制写法，不含透明度。

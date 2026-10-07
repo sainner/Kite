@@ -13,12 +13,15 @@ enum SampleWorkspace {
         #endif
     }
 
+    static let user = AccountUser(id: "sample", email: "preview@kite.local", name: "预览用户")
+
     static func makeModel() -> AppModel {
         guard enabled else { return AppModel() }
         let transport = SampleGitTransport()
         let model = AppModel(account: KiteAccount(transport: transport.account),
                              previewClient: KitedClient(address: "https://preview.invalid", machineID: "sample", transport: transport.worker))
-        model.workspaces = [
+        model.subscriptionQuotas = [SubscriptionQuota(provider: "GPT", remaining: 0.64), SubscriptionQuota(provider: "Claude", remaining: 0.12)]
+        model.workspaces = stageSamples() + [
             pluginSidebar(),
             dotGallery(),
             dotStudio(),
@@ -30,10 +33,10 @@ enum SampleWorkspace {
             workspace("notes", title: "文档整理", transcript: HarnessSampleTranscripts.markdown, outcome: "completed"),
             workspace("logs", title: "日志排查", transcript: HarnessSampleTranscripts.errors, outcome: "failed"),
             workspace("draft", title: "空白草稿", transcript: HarnessSampleTranscripts.empty),
-            workspace("chip-running", title: "chip · 运行中（样式样本）", transcript: HarnessSampleTranscripts.streaming, inputTokens: 46000, windowTokens: 100000),
-            workspace("chip-idle", title: "chip · 空闲（样式样本）", transcript: HarnessSampleTranscripts.empty, inputTokens: 0, windowTokens: 100000),
-            workspace("chip-stopping", title: "chip · 停止中（样式样本）", transcript: HarnessSampleTranscripts.running, phase: "stopping", inputTokens: 100000, windowTokens: 100000),
-            workspace("chip-finishing", title: "chip · 收尾中（样式样本）", transcript: HarnessSampleTranscripts.gallery, phase: "finishing", inputTokens: 99000, windowTokens: 100000),
+            workspace("status-running", title: "状态环 · 运行中（样式样本）", transcript: HarnessSampleTranscripts.streaming, inputTokens: 46000, windowTokens: 100000),
+            workspace("status-idle", title: "状态环 · 空闲（样式样本）", transcript: HarnessSampleTranscripts.empty, inputTokens: 0, windowTokens: 100000),
+            workspace("status-stopping", title: "状态环 · 停止中（样式样本）", transcript: HarnessSampleTranscripts.running, phase: "stopping", inputTokens: 100000, windowTokens: 100000),
+            workspace("status-finishing", title: "状态环 · 收尾中（样式样本）", transcript: HarnessSampleTranscripts.gallery, phase: "finishing", inputTokens: 99000, windowTokens: 100000),
             workspace("batches", title: "工具批次", transcript: HarnessSampleTranscripts.batches, outcome: "completed"),
             workspace("gallery", title: "工具与消息", transcript: HarnessSampleTranscripts.gallery, outcome: "completed"),
             workspace("running", title: "工作中与排队", transcript: HarnessSampleTranscripts.running),
@@ -45,7 +48,7 @@ enum SampleWorkspace {
             workspace("streaming", title: "回复生成中", transcript: HarnessSampleTranscripts.streaming),
             workspace("empty", title: "空白会话", transcript: HarnessSampleTranscripts.empty),
         ]
-        model.selected = "sample-plugin-sidebar"
+        model.selected = "sample-stage-empty"
         return model
     }
 
@@ -91,6 +94,32 @@ enum SampleWorkspace {
         return area
     }
 
+    /// 空画板的几种场景各占一个工作区，单列一个项目：没有窗口的工作区，以及没有项目、连接中和断线时的画板。
+    private static let stageProject = (id: "sample-stage", name: "画板 · 空状态样本")
+    private static let stageScenes: [String: StageScene] = [
+        "sample-stage-grounded": .grounded,
+        "sample-stage-add-project": .addProject,
+        "sample-stage-connecting": .connecting,
+        "sample-stage-unreachable": .unreachable,
+    ]
+
+    /// 预览样本里指定了画板场景的工作区。
+    static func stageScene(of area: WorkArea) -> StageScene? {
+        guard area.isSample else { return nil }
+        return stageScenes[area.id]
+    }
+
+    private static func stageSamples() -> [WorkArea] {
+        let empty = workspace("stage-empty", title: "没有窗口", transcript: HarnessSampleTranscripts.empty, project: stageProject)
+        for window in empty.windows { closeWindow(Pane(window.id), in: empty) }
+        return [empty] + [
+            ("stage-grounded", "还没有工作机"),
+            ("stage-add-project", "添加第一个项目"),
+            ("stage-connecting", "正在连接"),
+            ("stage-unreachable", "工作机暂不可达"),
+        ].map { workspace($0.0, title: $0.1, transcript: HarnessSampleTranscripts.empty, project: stageProject) }
+    }
+
     /// 点阵视觉语言的样式样本，窗口只在预览中存在。
     private static func dotGallery() -> WorkArea {
         let area = workspace("dots", title: "点阵 · 视觉语言", transcript: HarnessSampleTranscripts.empty)
@@ -117,12 +146,13 @@ enum SampleWorkspace {
 
     private static func workspace(_ id: String, title: String, transcript: Transcript,
                                   phase: String? = nil, outcome: String? = nil, recovery: String? = nil,
-                                  inputTokens: Int? = nil, windowTokens: Int? = nil) -> WorkArea {
+                                  inputTokens: Int? = nil, windowTokens: Int? = nil,
+                                  project: (id: String, name: String) = ("sample", "harness · 假数据")) -> WorkArea {
         let remote = RemoteWorkspace(
             machine: RemoteMachine(id: "sample", name: "预览工作机", createdAt: 0),
-            project: RemoteProject(id: "sample", name: "harness · 假数据", remote: "github.com/sample/harness", createdAt: 0),
+            project: RemoteProject(id: project.id, name: project.name, remote: "github.com/sample/harness", createdAt: 0),
             // 侧栏每个检出只列一个根工作区，样本各占一个检出才能都列出来
-            checkout: RemoteCheckout(id: "sample-" + id, projectId: "sample", machineId: "sample",
+            checkout: RemoteCheckout(id: "sample-" + id, projectId: project.id, machineId: "sample",
                                      path: transcript.root, remote: "github.com/sample/harness", createdAt: 0),
             workspace: WorkspaceInfo(id: "sample-" + id, checkoutId: "sample-" + id, name: title, cwd: transcript.root,
                                      kind: .root, branch: nil, base: nil, status: .open, createdAt: 0),
@@ -146,7 +176,7 @@ enum SampleWorkspace {
                                    capabilities: .init(send: false, interrupt: transcript.running, resume: outcome == "failed" && recovery == nil, cancel: false))
         thread.connected = true
         thread.isStreamingPreview = id == "stream-live"
-        // 仅用于 chip 样式预览；100000 是虚构窗口上限，不代表任何真实模型。
+        // 仅用于状态环样式预览；100000 是虚构窗口上限，不代表任何真实模型。
         thread.state?.context = inputTokens.map {
             ContextUsage(requestId: "sample-" + id, inputTokens: $0, windowTokens: windowTokens,
                          measuredAt: Date.now.timeIntervalSince1970 * 1000)

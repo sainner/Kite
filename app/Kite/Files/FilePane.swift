@@ -12,7 +12,7 @@ struct FilePane: View {
         let root = cwd.isEmpty ? "工作区" : cwd
         // 主标题是当前文件或目录的名字
         return PaneHeader(title: filePath.map { ($0 as NSString).lastPathComponent }
-            ?? (directory == "." ? root : (directory as NSString).lastPathComponent))
+            ?? (directory == "." ? root : (directory as NSString).lastPathComponent), subtitle: "文件")
     }
 
     var body: some View {

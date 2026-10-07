@@ -20,7 +20,7 @@
 ./install.command --service-only
 ```
 
-该模式不编译或安装 App，因此不需要完整 Xcode；仍需 Git 和 macOS 命令行工具。已安装的 App 不受仅服务升级影响。
+该模式不编译或安装 App，因此不需要完整 Xcode；仍需 Git 和 macOS 命令行工具，后者也用于首次读取 PDF 时编译转换程序。已安装的 App 不受仅服务升级影响。
 
 ## 生成 Mac 安装包
 

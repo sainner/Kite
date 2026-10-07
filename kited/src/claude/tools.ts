@@ -35,8 +35,10 @@ export function claudeToolServer(options: {
       if (callId) options.finished(callId, result);
       const structured = entry.name !== 'read';
       // 上游 isError 分支只转发 content；两种分支都保留结构化执行结果。
-      return { content: [{ type: 'text' as const, text: structured ? JSON.stringify(result) : result.output }],
-        ...(structured ? { structuredContent: { ...result } } : {}), ...(result.status === 'success' ? {} : { isError: true }) };
+      const { images, ...rest } = result;
+      return { content: [{ type: 'text' as const, text: structured ? JSON.stringify(rest) : result.output },
+        ...(images ?? []).map((image) => ({ type: 'image' as const, data: image.data, mimeType: image.mediaType }))],
+        ...(structured ? { structuredContent: { ...rest } } : {}), ...(result.status === 'success' ? {} : { isError: true }) };
     }, { annotations: { readOnlyHint: entry.parallel === true, destructiveHint: entry.parallel !== true, openWorldHint: true } });
   }) });
 }

@@ -13,7 +13,8 @@ const raw = z.record(z.string(), z.json());
 const input = z.object({ id, text: z.string(), source: z.enum(['human', 'kite']) });
 const call = z.object({ id, name: id, arguments: z.json() });
 const item = z.object({ id, raw, call: call.optional() });
-const result = z.object({ status: z.enum(['success', 'error', 'not_executed', 'unknown']), output: z.string(), diff: diffReferenceSchema.optional() });
+const result = z.object({ status: z.enum(['success', 'error', 'not_executed', 'unknown']), output: z.string(), diff: diffReferenceSchema.optional(),
+  images: z.array(z.object({ mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp']), data: z.string().min(1) })).optional() });
 const outcome = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }), z.object({ kind: z.literal('interrupted') }),
   z.object({ kind: z.literal('failed'), message: z.string() }),
