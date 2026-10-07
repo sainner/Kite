@@ -39,7 +39,9 @@ final class AppModel {
     #endif
     /// 正在打开的新建表单：添加项目或开始会话。
     var newWorkspace: NewWorkspace.Mode?
-    /// 扩展一栏在内容区显示的页面。
+    /// 设备与文件一栏在内容区显示的页面。
+    var drivePage = DrivePage.devices
+    /// 自定义资产一栏在内容区显示的页面。
     var extensionPage = ExtensionLibrary.plugins
     /// 设置一栏在内容区显示的页面。
     var settingsPage = SettingsPage.appearance
@@ -59,10 +61,19 @@ final class AppModel {
         selected = id
     }
 
+    /// 进入设置前所在的一栏，从设置返回时回到这里。
+    private var sectionBeforeSettings = SidebarSection.workspaces
+
     /// 切到设置一栏。
     func openSettings(_ page: SettingsPage? = nil) {
+        if sidebarSection != .settings { sectionBeforeSettings = sidebarSection }
         sidebarSection = .settings
         if let page { settingsPage = page }
+    }
+
+    /// 从设置回到进入前的一栏。
+    func closeSettings() {
+        sidebarSection = sectionBeforeSettings
     }
     /// 侧栏菜单发起的现场推送与归档确认，由 WorkspaceGitPresentation 呈现。
     var scenePush: WorkArea?
@@ -180,6 +191,9 @@ final class AppModel {
         guard account.ready else { return }
         let run = UUID()
         connectionRun = run
+        // 先配置组网，各机连接一开始就能等待节点上线，不必先失败一次。
+        await account.configureNetwork()
+        guard connectionRun == run else { return }
         mergeDirectory()
         startConnections()
         defer { if connectionRun == run { stopConnections(); connectionRun = nil } }
@@ -267,27 +281,41 @@ final class AppModel {
 
     private func follow(_ connection: WorkerConnection) async {
         let client = connection.client
+        // 刚开始或从正常连接断开后立即重试一次，之后再按间隔重试。
+        var immediate = true
         while !Task.isCancelled && accepts(client) {
             let generation = connection.catalog.reset()
             do {
-                try await refreshDefinitions(client)
-                try await client.events { event in
-                    try Task.checkCancellation()
-                    guard self.accepts(client), generation == connection.catalog.generation else { return }
-                    guard ["catalog.snapshot", "checkout.changed", "workspace.changed", "thread.changed"].contains(event.type) else { return }
-                    guard let cursor = event.cursor.flatMap(EventCursor.init) else { throw KitedError(message: "工作区事件数据无效") }
-                    if event.type == "catalog.snapshot" {
-                        guard event.version == 1, let remote = event.workspaces else { throw KitedError(message: "工作区快照无效") }
-                        try self.apply(remote, from: client, cursor: cursor, generation: generation)
-                    } else if connection.catalog.needsRefresh(cursor) { try await self.refresh(client) }
+                // 插件定义和事件流并行请求，任一失败都按断线重连。
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask { try await self.refreshDefinitions(client) }
+                    group.addTask { try await self.events(client, connection: connection, generation: generation) }
+                    while try await group.next() != nil {}
                 }
             } catch {
                 guard !Task.isCancelled, accepts(client), generation == connection.catalog.generation else { return }
+                if connection.connected { immediate = true }
                 connection.connected = false
                 connection.error = error.localizedDescription
+                TimingTrace.mark("工作机 \(connection.machine.name) 连接失败：\(error.localizedDescription)")
                 for area in workspaces where area.remote?.machine.id == connection.id { area.draftThread.connected = false }
             }
+            if immediate { immediate = false; continue }
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
+        }
+    }
+
+    private func events(_ client: KitedClient, connection: WorkerConnection, generation: UUID) async throws {
+        try await client.events { event in
+            try Task.checkCancellation()
+            guard self.accepts(client), generation == connection.catalog.generation else { return }
+            guard ["catalog.snapshot", "checkout.changed", "workspace.changed", "thread.changed"].contains(event.type) else { return }
+            guard let cursor = event.cursor.flatMap(EventCursor.init) else { throw KitedError(message: "工作区事件数据无效") }
+            if event.type == "catalog.snapshot" {
+                guard event.version == 1, let remote = event.workspaces else { throw KitedError(message: "工作区快照无效") }
+                try self.apply(remote, from: client, cursor: cursor, generation: generation)
+                TimingTrace.mark("工作机 \(connection.machine.name) 目录快照已应用")
+            } else if connection.catalog.needsRefresh(cursor) { try await self.refresh(client) }
         }
     }
 
@@ -337,9 +365,10 @@ final class AppModel {
     }
 
     /// 在工作机上 clone 远程并登记；path 为空时放在工作机的 ~/code/域名/owner/repo。
-    func cloneCheckout(remote: String, path: String?, machineID: String) async throws -> String {
-        struct Clone: Encodable { let remote: String; let path: String? }
-        return try await addCheckout(Clone(remote: remote.trimmingCharacters(in: .whitespaces), path: path), machineID: machineID, timeout: 1800)
+    /// 克隆到工作机的默认仓库位置。
+    func cloneCheckout(remote: String, machineID: String) async throws -> String {
+        struct Clone: Encodable { let remote: String }
+        return try await addCheckout(Clone(remote: remote.trimmingCharacters(in: .whitespaces)), machineID: machineID, timeout: 1800)
     }
 
     private func addCheckout(_ body: any Encodable, machineID: String, timeout: TimeInterval) async throws -> String {

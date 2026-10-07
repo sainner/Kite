@@ -38,8 +38,12 @@ struct CompactLayout: View {
             let screen = CGSize(width: geo.size.width + safe.leading + safe.trailing,
                                 height: geo.size.height + safe.top + safe.bottom)
             let home = homeInset ?? insets.bottom
-            // 侧边栏拉开后，窗口至少留下 phoneMinWindow 宽
-            let sidebarWidth = DotMetrics.snapDown(min(screen.width - Metrics.padding - Metrics.phoneMinWindow, 312))
+            // 侧边栏拉开后，窗口收成竖着的胶囊：宽度等于此时圆角（屏幕圆角减去边距）的直径，其余宽度都给侧边栏。
+            // 没有屏幕圆角（Mac、还没读到）或圆角小到点不着时，窗口留 phoneMinWindow 宽，侧边栏不超过 312
+            let capsule = 2 * (screenRadius - Metrics.padding)
+            let sidebarWidth = capsule >= Metrics.phoneMinCapsule
+                ? screen.width - Metrics.padding - capsule
+                : DotMetrics.snapDown(min(screen.width - Metrics.padding - Metrics.phoneMinWindow, 312))
             // 窗口底边要升到页签上面，页签在 action 栏上面，action 栏在 Home 条上面
             let actionsHeight = drawerHeight + home + Metrics.padding
             let current = model.current?.id
@@ -69,7 +73,7 @@ struct CompactLayout: View {
                         .padding(.bottom, 8)
                     ScrollView(.vertical, showsIndicators: false) {
                         switch model.sidebarSection {
-                        case .workspaces, .drive:
+                        case .workspaces:
                             WorkspaceList(onSelectProject: { open = nil }) { workspace in
                                 WorkspaceRow(workspace: workspace, current: current == workspace.id) {
                                     Color.clear.contentShape(Rectangle())
@@ -79,7 +83,7 @@ struct CompactLayout: View {
                                     }
                                 }
                             }
-                        case .extensions, .settings:
+                        case .drive, .extensions, .settings:
                             SectionPages { open = nil }
                         }
                     }
@@ -106,7 +110,7 @@ struct CompactLayout: View {
             .overlay(alignment: .topLeading) {
                 CompactWindow(open: $open, shown: $shown, screen: screen, insets: insets, homeInset: home,
                               sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius,
-                              actionsRule: windowed ? .free : model.sidebarSection == .workspaces && model.selectedProject == nil ? .pinned : .none)
+                              actionsRule: windowed ? .free : windowless ? .pinned : .none)
             }
         }
         // 保留 Home 条自动隐藏，不推测系统何时隐藏它。
@@ -178,6 +182,12 @@ struct CompactLayout: View {
     private var windowed: Bool {
         guard model.sidebarSection == .workspaces, let area = model.current, area.layout.focused != nil else { return false }
         return area.pluginClient != nil
+    }
+
+    /// 工作区内容已载入但没开窗口：底栏钉着，新建窗口的入口在那里。目录状态（添加项目、连接中等）没有可用的底栏，同单页一样铺满。
+    private var windowless: Bool {
+        guard model.sidebarSection == .workspaces, model.selectedProject == nil, let area = model.current else { return false }
+        return area.layout.focused == nil && area.pluginClient != nil
     }
 }
 

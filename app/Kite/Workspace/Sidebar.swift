@@ -470,9 +470,9 @@ enum SidebarSection: CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .workspaces: "空间"
-        case .drive: "文件"
-        case .extensions: "扩展"
+        case .workspaces: "工作空间"
+        case .drive: "设备与文件"
+        case .extensions: "自定义资产"
         case .settings: "设置"
         }
     }
@@ -486,11 +486,11 @@ enum SidebarSection: CaseIterable, Identifiable {
         }
     }
 
-    var available: Bool { self != .drive }
+    var available: Bool { true }
     /// 设置不在一级导航里，从用户栏末尾的设置按钮进入。
     var navigable: Bool { self != .settings }
 
-    /// 导航行尾的数字：工作区数量，文件一栏是在线的机器数。
+    /// 导航行尾的数字：工作区数量，设备与文件一栏是在线的机器数。
     @MainActor func count(in model: AppModel) -> Int? {
         switch self {
         case .workspaces: model.workspaces.count
@@ -520,7 +520,8 @@ private struct SidebarRowStyle: ButtonStyle {
         configuration.label
             .environment(\.sidebarButtonHovered, !InputMode.current.isTouch && hovered && isEnabled && !selected)
             .padding(.leading, Metrics.sidebarItemInset)
-            .padding(.trailing, 8)
+            // 胶囊行的行尾数字自己占一个与行同高的方格，见 SidebarRowLabel
+            .padding(.trailing, capsule ? 0 : 8)
             .frame(height: InputMode.current.rowHeight)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -546,6 +547,8 @@ private struct SidebarRowLabel: View {
     let title: String
     let systemImage: String
     var note: String?
+    /// 行尾注释居中在与行同高的方格里，与胶囊的圆头同心。
+    var concentricNote = false
     /// 选中时图标换实心，白字配合主题色胶囊。
     var selected = false
     var weight: Font.Weight = .bold
@@ -561,6 +564,7 @@ private struct SidebarRowLabel: View {
             if let note {
                 Text(note).font(Theme.caption).monospacedDigit()
                     .foregroundStyle(selected ? Color.white.opacity(0.8) : Color.secondary)
+                    .frame(minWidth: concentricNote ? InputMode.current.rowHeight : nil)
             }
         }
         .modifier(SidebarIconTint(foreground: selected ? Color.white : Color.primary, allowsHover: !selected))
@@ -593,7 +597,7 @@ struct SidebarNavigation: View {
                             .opacity(section.available ? 1 : 0.45)
                     } else {
                         SidebarRowLabel(title: section.title, systemImage: section.symbol, note: section.count(in: model).map(String.init),
-                                        selected: selected)
+                                        concentricNote: true, selected: selected)
                     }
                 }
                 .disabled(!section.available)
@@ -678,17 +682,18 @@ struct SidebarAvatar: View {
     }
 }
 
-/// 用户栏与收起的侧栏共用设置入口。
+/// 用户栏与收起的侧栏共用设置入口；在设置一栏里时变成返回，回到进入设置前的一栏。
 struct SidebarSettingsButton: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         let selected = model.sidebarSection == .settings
+        let title = selected ? "返回" : "设置"
         PaneHeaderButtonGroup(selected: selected) {
-            Button { withAnimation(.snappy) { model.openSettings() } } label: {
-                PaneHeaderButtonLabel("设置", systemImage: "gearshape")
+            Button { withAnimation(.snappy) { selected ? model.closeSettings() : model.openSettings() } } label: {
+                PaneHeaderButtonLabel(title, systemImage: selected ? "chevron.backward" : "gearshape")
             }
-            .help("设置")
+            .help(title)
             .accessibilityAddTraits(selected ? .isSelected : [])
         }
     }
@@ -725,9 +730,10 @@ struct SectionPages: View {
     var body: some View {
         @Bindable var model = model
         switch model.sidebarSection {
+        case .drive: SidebarPageList(selection: $model.drivePage, onSelect: onSelect)
         case .extensions: SidebarPageList(selection: $model.extensionPage, onSelect: onSelect)
         case .settings: SidebarPageList(selection: $model.settingsPage, onSelect: onSelect)
-        case .workspaces, .drive: EmptyView()
+        case .workspaces: EmptyView()
         }
     }
 }
@@ -738,14 +744,15 @@ struct SectionContent: View {
 
     var body: some View {
         switch model.sidebarSection {
+        case .drive: DriveContent()
         case .extensions: ExtensionContent()
         case .settings: SettingsContent()
-        case .workspaces, .drive: EmptyView()
+        case .workspaces: EmptyView()
         }
     }
 }
 
-/// 扩展一栏的内容区：侧栏选中的那一页。
+/// 自定义资产一栏的内容区：侧栏选中的那一页。
 struct ExtensionContent: View {
     @Environment(AppModel.self) private var model
 
@@ -761,7 +768,7 @@ struct ExtensionContent: View {
     }
 }
 
-/// 扩展一栏里的各页。
+/// 自定义资产一栏里的各页。
 nonisolated enum ExtensionLibrary: String, SidebarPage {
     case plugins, contexts, skills
 
@@ -844,17 +851,16 @@ struct SidebarLogoBar<Buttons: View>: View {
 
     private var controlPanel: some View {
         // 玻璃间距与控件间距一致，让关闭按钮从面板分裂出来，停稳后仍是两块玻璃。
+        // 面板始终是同一个视图，只随状态伸缩；拆进两个分支会变成移除再插入，iOS 上只剩模糊淡入。
         GlassEffectContainer(spacing: Metrics.paneButtonGap) {
             HStack(spacing: Metrics.paneButtonGap) {
+                searchPanel
                 if searchPresented {
-                    searchPanel
                     PaneHeaderButtonGroup {
                         closeSearchButton
                     }
                     .glassEffectID("search-close", in: glass)
                     .glassEffectTransition(.matchedGeometry)
-                } else {
-                    searchPanel
                 }
             }
         }
@@ -874,8 +880,8 @@ struct SidebarLogoBar<Buttons: View>: View {
 
     @ViewBuilder private var searchControls: some View {
         Button {
-            // 玻璃过渡会同时保留新旧视图，等旧视图移除后再把焦点交给新的输入框。
-            withAnimation(completionCriteria: .removed) {
+            // 面板展开停稳后再把焦点交给输入框。
+            withAnimation {
                 searchPresented = true
             } completion: {
                 if searchPresented { searchFocused = true }
@@ -936,13 +942,13 @@ struct WorkspaceSidebar: View {
                 .padding(.bottom, 8)
             ScrollView(.vertical, showsIndicators: false) {
                 switch model.sidebarSection {
-                case .workspaces, .drive:
+                case .workspaces:
                     WorkspaceList { workspace in
                         WorkspaceRow(workspace: workspace, current: current == workspace.id, detached: model.detached.contains(workspace.id)) {
                             source(workspace)
                         }
                     }
-                case .extensions, .settings:
+                case .drive, .extensions, .settings:
                     SectionPages()
                 }
             }
@@ -972,9 +978,10 @@ struct WorkspaceSidebar: View {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 8) {
                     switch model.sidebarSection {
+                    case .drive: railPages(selection: $model.drivePage)
                     case .extensions: railPages(selection: $model.extensionPage)
                     case .settings: railPages(selection: $model.settingsPage)
-                    case .workspaces, .drive: EmptyView()
+                    case .workspaces: EmptyView()
                     }
                     ForEach(Array((model.sidebarSection == .workspaces ? model.workspaceGroups : []).enumerated()), id: \.element.id) { index, group in
                         if index > 0 {

@@ -19,10 +19,9 @@ derp:
     private_key_path: /data/derp_server_private.key
     automatically_add_embedded_derp_region: true
     ipv4: 103.61.39.246
-  urls:
-    - https://controlplane.tailscale.com/derpmap/default
-  auto_update_enabled: true
-  update_frequency: 3h
+  # 只用自建的香港区域。多区域时，节点上报的主中继可能过时，对端会按它回包而丢失首次握手。
+  urls: []
+  auto_update_enabled: false
 database:
   type: sqlite
   sqlite:

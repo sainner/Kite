@@ -52,7 +52,7 @@
 - [待办：真实终端插件](todo-terminal-plugin.md) — 真实终端插件的未解决事项、来源与完成条件
 - [待办：长会话上下文能力](todo-context-capabilities.md) — 长会话上下文能力的未解决事项、来源与完成条件
 - [待办：执行隔离与资源管理](todo-execution-boundaries.md) — 执行隔离与资源管理的未解决事项、来源与完成条件
-- [待办：远程连接与多机关系](todo-remote-connections.md) — 跨机器目录和账号的真机验收、文件同步候选
+- [待办：远程连接与多机关系](todo-remote-connections.md) — 跨机器目录和账号的真机验收、iPhone 重连提速遗留问题、文件同步候选
 - [待办：订阅凭据续期](todo-subscription-auth.md) — 订阅凭据续期的未解决事项、来源与完成条件
 - [待办：开发工作流待补齐项](todo-development-workflow.md) — 开发工作流待补齐项的未解决事项、来源与完成条件
 - [待办：产品中的个人偏好存放位置](todo-personal-preferences.md) — 产品中的个人偏好存放位置的未解决事项、来源与完成条件

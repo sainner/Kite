@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 扩展一栏的单页，操作在标题栏。
+/// 自定义资产一栏的单页，操作在标题栏。
 struct ContextTemplateLibrary: View {
     @Environment(AppModel.self) private var model
     @State private var edit: ContextTemplateEdit?
@@ -8,7 +8,7 @@ struct ContextTemplateLibrary: View {
     @State private var loading = false
 
     var body: some View {
-        SectionPage(header: PaneHeader(title: "上下文模板", subtitle: "扩展")) {
+        SectionPage(header: PaneHeader(title: "上下文模板", subtitle: SidebarSection.extensions.title)) {
             form
         } actions: {
             PaneHeaderButtonGroup {

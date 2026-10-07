@@ -3,7 +3,7 @@ import SwiftUI
 /// 拉出来的是哪一侧。
 enum WorkspaceDrawer { case sidebar, actions }
 
-/// 底栏跟着窗口怎么动：开着窗口时可以展开收起；工作区没有窗口时一直展开，只在拉开侧边栏时让开；单页没有底栏。
+/// 底栏跟着窗口怎么动：开着窗口时可以展开收起；工作区载入后没有窗口时一直展开，只在拉开侧边栏时让开；单页和目录状态没有底栏。
 enum ActionsRule { case free, pinned, none }
 
 /// 会话窗口，和拉出侧边栏、action 栏的手势。
@@ -109,7 +109,7 @@ struct CompactWindow: View {
         .animation(.snappy, value: windowed)
         .environment(\.dotCarrier, carrier)
         .modifier(WindowPlacement(openness: target, screen: screen, insets: insets, homeInset: homeInset,
-                                  sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius,
+                                  avoidsKeyboard: avoidsKeyboard, sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius,
                                   presented: presented, carrier: carrier, overlay: catcher))
         // 点侧边栏里的会话收起：open 在外面改的，到这里才起动画
         .onChange(of: open) { _, new in
@@ -130,6 +130,11 @@ struct CompactWindow: View {
 
     /// 收起时停在哪：底栏钉着时是展开的底栏。
     private var rest: WorkspaceDrawer? { actionsRule == .pinned ? .actions : nil }
+
+    /// 窗口和单页里有输入框，要给键盘让位；目录状态和空画板只展示信息，弹窗里打字时不跟着键盘变形。
+    private var avoidsKeyboard: Bool {
+        windowed || model.sidebarSection != .workspaces || model.selectedProject != nil
+    }
 
     /// 没有窗口时放的占位内容：单页、目录状态，或工作区没有窗口时的画板。
     @ViewBuilder
@@ -316,6 +321,7 @@ private struct WindowPlacement<Overlay: View>: ViewModifier {
     let screen: CGSize
     let insets: EdgeInsets
     let homeInset: CGFloat
+    let avoidsKeyboard: Bool
     let sidebarWidth: CGFloat
     let actionsHeight: CGFloat
     let screenRadius: CGFloat
@@ -350,10 +356,11 @@ private struct WindowPlacement<Overlay: View>: ViewModifier {
         // 底栏展开时，Home 条安全区随窗口一起保留；侧边栏仍只让出实际覆盖窗口的高度。
         // 换算成缩放前的尺寸，保证缩放后保留的高度不变。
         let coveredByHome = max(homeInset - s * pad, 0) / scale
-        // 状态栏、键盘等仍只给覆盖窗口的那一截让位，底部至少保留 Home 条安全区。
+        // 状态栏、键盘等仍只给覆盖窗口的那一截让位，底部至少保留 Home 条安全区；不让键盘时底部只算 Home 条。
+        let bottom = avoidsKeyboard ? insets.bottom : min(insets.bottom, homeInset)
         let covered = EdgeInsets(top: max(insets.top - windowInsets.top, 0) / scale,
                                  leading: max(insets.leading - windowInsets.leading, 0) / scale,
-                                 bottom: max(max(insets.bottom - windowInsets.bottom, 0) / scale, coveredByHome),
+                                 bottom: max(max(bottom - windowInsets.bottom, 0) / scale, coveredByHome),
                                  trailing: max(insets.trailing - windowInsets.trailing, 0) / scale)
         return content
             .environment(\.homeIndicatorInset, coveredByHome)

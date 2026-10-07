@@ -46,13 +46,7 @@ struct DirectoryStatus: View {
     }
 
     private var actions: [StageAction] {
-        var actions: [StageAction] = []
-        if scene == .addProject {
-            actions.append(StageAction(title: "添加项目", prominent: true) { model.newWorkspace = .project })
-        }
-        if scene != .connecting {
-            actions.append(StageAction(title: "设置") { model.openSettings() })
-        }
-        return actions
+        guard scene == .addProject else { return [] }
+        return [StageAction(title: "添加项目", prominent: true) { model.newWorkspace = .project }]
     }
 }

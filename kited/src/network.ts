@@ -19,7 +19,18 @@ export interface NetworkStatus {
   address?: string;
   /** App 复用 kited 的节点访问其他工作机，避免同一台 Mac 登记两次。 */
   socksPort?: number;
+  /** 对端设备及当前连接方式，上线后由 kite-net 每秒采样。 */
+  peers?: NetworkPeer[];
   error?: string;
+}
+
+export interface NetworkPeer {
+  name: string;
+  ip?: string;
+  /** direct 点对点直连，relay 经中继，idle 近两分钟无流量、尚未确定路径。 */
+  connection: 'direct' | 'relay' | 'idle';
+  /** 直连时为对端实际地址，中继时为 DERP 区域或对端中继地址。 */
+  endpoint?: string;
 }
 
 export interface NetworkOptions {

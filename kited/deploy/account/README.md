@@ -6,7 +6,7 @@
 
 - `kubernetes.yaml`：两个单副本 Deployment、持久卷、内部服务和两个 Ingress。SQLite 服务更新使用 Recreate，避免两个实例同时写同一文件。`/git` 单独一个 Ingress，放宽请求体上限并关闭请求缓冲，供推送使用。
 - `Dockerfile`：账号服务镜像，在官方 Bun 镜像上加装 git。镜像在服务器上构建并导入 k3s，不经镜像仓库。
-- `headscale.yaml`、`policy.json`：组网控制、香港 DERP 中继及同账号互通策略；UDP 3478 使用宿主端口。
+- `headscale.yaml`、`policy.json`：组网控制、同账号互通策略，以及作为唯一中继区域的香港 DERP；UDP 3478 使用宿主端口。
 - `account-source` ConfigMap：由 `src/account/main.ts` 用项目 Bun 编译出的单文件。修改源码后须重新编译和更新，不能只重启旧内容。
 - `account-secrets` Secret：`KITE_ACCOUNT_SECRET` 是稳定的账号服务密钥，用户绑定的 Git 凭据也用它派生的密钥加密；`HEADSCALE_API_KEY` 是服务间管理凭据；可选的 `GITHUB_CLIENT_ID` 是 GitHub OAuth App 的客户端 ID（需开启 Device Flow），未设置时不能用设备码绑定 GitHub。不要打印到日志、提交 Git 或写进 App。
 - `account-data` 卷的 `/data/account.sqlite` 保存账号、设备、导航目录、项目登记与加密的 Git 凭据，`/data/repos/` 保存托管远程的裸仓库；`headscale-data` 卷保存网络节点和私钥。删除 Pod 不清数据；不要在升级时删除 PVC。

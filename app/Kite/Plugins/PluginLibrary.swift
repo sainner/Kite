@@ -19,7 +19,7 @@ private nonisolated struct ImportedPluginPackage: Decodable, Sendable {
     }
 }
 
-/// 插件定义属于工作机；安装后可在各工作区创建实例。扩展一栏的单页，操作在标题栏。
+/// 插件定义属于工作机；安装后可在各工作区创建实例。自定义资产一栏的单页，操作在标题栏。
 struct PluginLibrary: View {
     private struct PendingPackage {
         let contents: ImportedPluginPackage
@@ -34,7 +34,7 @@ struct PluginLibrary: View {
     @State private var importClient: KitedClient?
 
     var body: some View {
-        SectionPage(header: PaneHeader(title: "插件", subtitle: model.machine.map { "工作机：\($0.name)" } ?? "扩展")) {
+        SectionPage(header: PaneHeader(title: "插件", subtitle: model.machine.map { "工作机：\($0.name)" } ?? SidebarSection.extensions.title)) {
             form
         } actions: {
             PaneHeaderButtonGroup {

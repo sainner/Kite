@@ -20,6 +20,8 @@ bun run start
 
 默认监听 `127.0.0.1:5483`，`KITE_PORT` 可改端口；`KITE_HOME` 默认 `~/.kite`，保存数据库、工作树与线程记录。命令行客户端入口是 `src/cli.ts`，用法见 [启动服务与 CLI](../docs/kited.md#启动服务)。
 
+排查组网连接时，在节点目录 `$KITE_HOME/tailnet/accounts/<设备 ID>/` 下新建空文件 `debug.log`，组网程序 kite-net 下次启动时会把组网库日志带时间追加写进去；删除文件并重启组网即关闭。重启组网可以用 `kite net down` 再 `kite net up`，或结束 kite-net 进程，kited 会自动拉起。可与 App 的 TimingTrace（见 [App 说明](../app/README.md#预览和验证)）对照时间，iPhone 的时钟可能与工作机有偏差。
+
 ## 终端试用
 
 先按 [设备登录说明](../docs/kited.md#终端试用) 为这台工作机授权，凭据保存于 `$KITE_HOME/auth/chatgpt/auth.json`；然后运行：

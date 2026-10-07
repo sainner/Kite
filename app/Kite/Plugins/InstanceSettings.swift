@@ -1,6 +1,9 @@
 import SwiftUI
 
 struct InstanceSettings: View {
+    /// 实例设置和两个子页面共用的弹窗尺寸。
+    static let size = CGSize(width: 560, height: 640)
+
     let instance: RemotePluginInstance
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
@@ -16,6 +19,10 @@ struct InstanceSettings: View {
     @State private var working = false
     @State private var error: String?
     @State private var discardAction: String?
+    /// 弹窗里当前的子页面，nil 是实例设置本身。
+    @State private var page: Page?
+
+    private enum Page { case agent, grants }
 
     private var definition: RemotePluginDefinition? { area.definition(of: instance) }
     private var caller: String { definition?.agent == nil ? "plugin" : "model" }
@@ -26,24 +33,40 @@ struct InstanceSettings: View {
     }
     private var targets: [RemotePluginInstance] { area.instances.filter { $0.status == .open } }
 
+    private var thread: WorkThread? {
+        guard area.remote?.threads.contains(where: { $0.instanceId == instance.id }) == true else { return nil }
+        return area.threads.first { $0.id == instance.id }
+    }
+
     var body: some View {
-        NavigationStack {
+        Group {
+            switch page {
+            case .agent?:
+                if let thread { AgentSettings(instance: instance, thread: thread, back: { page = nil }) }
+            case .grants?:
+                if let thread { ExecutionGrantSettings(instance: instance, thread: thread, back: { page = nil }) }
+            case nil:
+                main
+            }
+        }
+        .animation(.snappy, value: page)
+        // 挂在外层：从子页面返回时不重新读取，主页的草稿保留
+        .task { perform { try await load() } }
+    }
+
+    private var main: some View {
+        CardSheet(title: "实例设置与授权", subtitle: instance.title, form: true, size: Self.size,
+                  close: { if changed { discardAction = "close" } else { dismiss() } }) {
             Form {
                 Section("实例") {
-                    LabeledContent("名称", value: instance.title)
                     LabeledContent("插件", value: definition?.title ?? instance.definitionId)
                     LabeledContent("工作区", value: area.title)
                     if let definition {
                         Text(definition.lifetime.explanation).font(.footnote).foregroundStyle(.secondary)
                     }
-                    if area.remote?.threads.contains(where: { $0.instanceId == instance.id }) == true,
-                       let thread = area.threads.first(where: { $0.id == instance.id }) {
-                        NavigationLink("会话配置") {
-                            AgentSettings(instance: instance, thread: thread)
-                        }.disabled(!available)
-                        NavigationLink("执行授权") {
-                            ExecutionGrantSettings(instance: instance, thread: thread)
-                        }.disabled(!available)
+                    if thread != nil {
+                        Button("会话配置") { page = .agent }.disabled(!available)
+                        Button("执行授权") { page = .grants }.disabled(!available)
                     }
                     ForEach(definition?.views ?? []) { view in
                         Button("打开\(view.title)") {
@@ -83,19 +106,15 @@ struct InstanceSettings: View {
             }
             .formStyle(.grouped)
             .disabled(working)
-            .navigationTitle("实例设置与授权")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { if changed { discardAction = "close" } else { dismiss() } }.disabled(working)
-                }
-                ToolbarItemGroup(placement: .confirmationAction) {
-                    Button("重新读取") {
-                        if changed { discardAction = "reload" } else { perform { try await load() } }
-                    }.disabled(working || !available)
-                    if editable {
-                        Button("保存") { perform { try await save() } }
-                            .disabled(working || !available || !changed || draft == nil)
-                    }
+        } actions: {
+            CardSheetAction(title: "重新读取", systemImage: "arrow.clockwise") {
+                if changed { discardAction = "reload" } else { perform { try await load() } }
+            }
+            .disabled(working || !available)
+        } footer: {
+            if editable {
+                CardActions(primary: "保存", enabled: !working && available && changed && draft != nil) {
+                    perform { try await save() }
                 }
             }
         }
@@ -107,10 +126,6 @@ struct InstanceSettings: View {
                 if action == "close" { dismiss() } else { perform { try await load() } }
             }
         }
-        .task { perform { try await load() } }
-        #if os(macOS)
-        .frame(width: 560, height: 640)
-        #endif
     }
 
     private var processLabel: String {

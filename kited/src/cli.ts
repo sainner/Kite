@@ -279,7 +279,13 @@ async function main(): Promise<void> {
         s = await call('GET', '/network');
       }
       if (!s.enabled) console.log('组网已关闭');
-      else if (s.state === 'Running') console.log(`组网已上线：${s.name ?? ''}\n远程地址 ${s.address}，同账号设备可直接访问`);
+      else if (s.state === 'Running') {
+        console.log(`组网已上线：${s.name ?? ''}\n远程地址 ${s.address}，同账号设备可直接访问`);
+        const labels: Record<string, string> = { direct: '直连', relay: '中继', idle: '空闲' };
+        for (const peer of s.peers ?? []) {
+          console.log(`  ${peer.name}${peer.ip ? ` ${peer.ip}` : ''}：${labels[peer.connection] ?? peer.connection}${peer.endpoint ? ` ${peer.endpoint}` : ''}`);
+        }
+      }
       else if (s.loginURL) console.log(`在浏览器中打开以登录组网：\n${s.loginURL}`);
       else console.log(`组网状态：${s.state}${s.error ? `\n${s.error}` : ''}`);
       break;

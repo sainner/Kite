@@ -3,9 +3,10 @@ import SwiftUI
 struct ExecutionGrantSettings: View {
     let instance: RemotePluginInstance
     let thread: WorkThread
+    /// 回到实例设置。
+    let back: () -> Void
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
-    @Environment(\.dismiss) private var dismiss
     @State private var client: KitedClient?
     @State private var saved: InstanceExecutionGrants?
     @State private var draft: ExecutionGrantDraft?
@@ -29,83 +30,79 @@ struct ExecutionGrantSettings: View {
     }
 
     var body: some View {
-        Form {
-            Section("当前执行") {
-                LabeledContent("实例", value: instance.title)
-                LabeledContent("状态", value: statusLabel)
-                if let recovery = state?.recovery {
-                    Text(recovery.message).font(.footnote).foregroundStyle(.secondary)
-                    Button("确认上次执行结果…") { confirmingRecovery = true }
-                        .disabled(!available || state?.busy == true || thread.stopping || thread.hasUnconfirmedStop)
-                }
-                if thread.hasUnconfirmedStop || state?.capabilities.interrupt == true {
-                    Button(thread.hasUnconfirmedStop ? "重试停止" : "停止执行") {
-                        perform {
-                            _ = try boundClient()
-                            try await thread.stopAndWait()
-                            try await readState()
-                        }
-                    }.disabled(!available || thread.stopping)
-                }
-                Button("刷新执行状态") { perform { try await readState() } }.disabled(!available)
-            }
-            if draft != nil {
-                Section {
-                    if let path = area.remote?.workspace.cwd {
-                        Text(path).font(.callout.monospaced()).textSelection(.enabled)
+        CardSheet(title: "执行授权", subtitle: instance.title, back: true, form: true, size: InstanceSettings.size,
+                  close: { if changed { discardAction = .back } else { back() } }) {
+            Form {
+                Section("当前执行") {
+                    LabeledContent("状态", value: statusLabel)
+                    if let recovery = state?.recovery {
+                        Text(recovery.message).font(.footnote).foregroundStyle(.secondary)
+                        Button("确认上次执行结果…") { confirmingRecovery = true }
+                            .disabled(!available || state?.busy == true || thread.stopping || thread.hasUnconfirmedStop)
                     }
-                    Picker("访问权限", selection: field(\.workspace, fallback: .read)) {
-                        Text("只读").tag(ExecutionGrants.WorkspaceAccess.read)
-                        Text("读写").tag(ExecutionGrants.WorkspaceAccess.write)
-                    }.pickerStyle(.segmented)
-                } header: { Text("工作区") }
-                    footer: { Text("系统工具链保留基础读取权限；宿主数据和 Git 元数据仍受保护。") }
-
-                Section {
-                    TextField("额外只读路径", text: field(\.readPaths, fallback: ""), axis: .vertical)
-                        .lineLimit(2...5)
-                    TextField("额外读写路径", text: field(\.writePaths, fallback: ""), axis: .vertical)
-                        .lineLimit(2...5)
-                } header: { Text("额外文件与目录") }
-                    footer: { Text("每行填写一个工作机上已存在的绝对路径，读写包含读取。命令可访问这些路径；文件读取和补丁工具仍限于工作区。") }
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
-
-                Section {
-                    TextField("例如 registry.npmjs.org:443", text: field(\.networkDomains, fallback: ""), axis: .vertical)
-                        .lineLimit(2...5)
-                } header: { Text("允许访问的网络地址") }
-                    footer: { Text("每行一个域名或 IP，可带端口，支持 *.example.com。留空禁止网络；不支持全网通配或本机回环地址。") }
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
-
-                Section {
-                    Text("先停止执行并确认结果，再保存授权。保存后用于后续工具调用，并在下一次模型请求追加通知。")
-                        .font(.footnote).foregroundStyle(.secondary)
+                    if thread.hasUnconfirmedStop || state?.capabilities.interrupt == true {
+                        Button(thread.hasUnconfirmedStop ? "重试停止" : "停止执行") {
+                            perform {
+                                _ = try boundClient()
+                                try await thread.stopAndWait()
+                                try await readState()
+                            }
+                        }.disabled(!available || thread.stopping)
+                    }
+                    Button("刷新执行状态") { perform { try await readState() } }.disabled(!available)
                 }
+                if draft != nil {
+                    Section {
+                        if let path = area.remote?.workspace.cwd {
+                            Text(path).font(.callout.monospaced()).textSelection(.enabled)
+                        }
+                        Picker("访问权限", selection: field(\.workspace, fallback: .read)) {
+                            Text("只读").tag(ExecutionGrants.WorkspaceAccess.read)
+                            Text("读写").tag(ExecutionGrants.WorkspaceAccess.write)
+                        }.pickerStyle(.segmented)
+                    } header: { Text("工作区") }
+                        footer: { Text("系统工具链保留基础读取权限；宿主数据和 Git 元数据仍受保护。") }
+
+                    Section {
+                        TextField("额外只读路径", text: field(\.readPaths, fallback: ""), axis: .vertical)
+                            .lineLimit(2...5)
+                        TextField("额外读写路径", text: field(\.writePaths, fallback: ""), axis: .vertical)
+                            .lineLimit(2...5)
+                    } header: { Text("额外文件与目录") }
+                        footer: { Text("每行填写一个工作机上已存在的绝对路径，读写包含读取。命令可访问这些路径；文件读取和补丁工具仍限于工作区。") }
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
+
+                    Section {
+                        TextField("例如 registry.npmjs.org:443", text: field(\.networkDomains, fallback: ""), axis: .vertical)
+                            .lineLimit(2...5)
+                    } header: { Text("允许访问的网络地址") }
+                        footer: { Text("每行一个域名或 IP，可带端口，支持 *.example.com。留空禁止网络；不支持全网通配或本机回环地址。") }
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
+
+                    Section {
+                        Text("先停止执行并确认结果，再保存授权。保存后用于后续工具调用，并在下一次模型请求追加通知。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                if let notice { Text(notice).foregroundStyle(.secondary) }
+                if let error { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) }
+                if working { ProgressView() }
             }
-            if let notice { Text(notice).foregroundStyle(.secondary) }
-            if let error { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) }
-            if working { ProgressView() }
-        }
-        .formStyle(.grouped)
-        .disabled(working)
-        .navigationTitle("执行授权")
-        .navigationBarBackButtonHidden()
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("返回") { if changed { discardAction = .back } else { dismiss() } }.disabled(working)
+            .formStyle(.grouped)
+            .disabled(working)
+        } actions: {
+            CardSheetAction(title: "重新读取", systemImage: "arrow.clockwise") {
+                if changed { discardAction = .reload } else { perform { try await load() } }
             }
-            ToolbarItemGroup(placement: .confirmationAction) {
-                Button("重新读取") {
-                    if changed { discardAction = .reload } else { perform { try await load() } }
-                }.disabled(working || !available)
-                Button("保存") { perform { try await save() } }.disabled(!canSave)
-            }
+            .disabled(working || !available)
+        } footer: {
+            CardActions(primary: "保存", enabled: canSave) { perform { try await save() } }
         }
         .interactiveDismissDisabled(working || changed)
         .confirmationDialog("放弃未保存的执行授权修改？", isPresented: Binding(
@@ -114,7 +111,7 @@ struct ExecutionGrantSettings: View {
             Button("放弃修改", role: .destructive) {
                 let action = discardAction
                 discardAction = nil
-                if action == .back { dismiss() } else { perform { try await load() } }
+                if action == .back { back() } else { perform { try await load() } }
             }
         }
         .confirmationDialog("确认上次执行结果？", isPresented: $confirmingRecovery, titleVisibility: .visible) {

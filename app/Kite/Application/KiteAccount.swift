@@ -166,11 +166,31 @@ private struct AccountLogin: Codable {
         return try await Tailnet.shared.address()
     }
 
+    /// 控制端用本机保存的入网信息配置组网，无需等账号核验。作为工作机的 Mac 复用 kited 的节点，见 resume。
+    func configureNetwork() async {
+        guard ready, let device = login?.enrollment?.device, let controlURL = login?.enrollment?.controlURL else { return }
+        #if os(macOS)
+        if device.role == "worker" { return }
+        #endif
+        await Tailnet.shared.configure(controlURL: controlURL, deviceID: device.id)
+    }
+
     func resume() async throws {
         guard ready, let enrollment = login?.enrollment else { return }
-        // 先核验账号会话，已被移除的设备不能重新启动网络。
-        do { try await refresh() }
+        // 控制端的组网与账号核验同时进行：已移除设备的节点已从 Headscale 删除，无法上线；
+        // 核验返回 401 时清空登录，界面随之关闭网络。
+        await configureNetwork()
+        var network: Task<URLSession, Error>?
+        #if os(macOS)
+        if enrollment.device.role != "worker" { network = Task { try await Tailnet.shared.urlSession() } }
+        #else
+        network = Task { try await Tailnet.shared.urlSession() }
+        #endif
+        let session = TimingTrace.span("组网会话")
+        let verified = TimingTrace.span("账号核验")
+        do { try await refresh(); verified("完成") }
         catch {
+            verified("失败：\(error.localizedDescription)")
             if !signedIn || error is CancellationError { throw error }
             self.error = error.localizedDescription
         }
@@ -189,8 +209,8 @@ private struct AccountLogin: Codable {
             return
         }
         #endif
-        await Tailnet.shared.configure(controlURL: enrollment.controlURL, deviceID: enrollment.device.id)
-        _ = try await Tailnet.shared.urlSession()
+        _ = try await network?.value
+        session("就绪")
     }
 
     func refresh() async throws {
@@ -237,6 +257,20 @@ private struct AccountLogin: Codable {
     }
     #endif
 
+    /// 本机到各对端的连接方式，按组网 IPv4 索引。作为工作机的 Mac 与 kited 共用节点，从 kited 读取。
+    func peerConnections() async -> [String: PeerConnection] {
+        #if os(macOS)
+        if role == "worker" {
+            guard let machine = try? await KitedClient(address: "http://127.0.0.1:5483").request("/machine", as: RemoteMachine.self),
+                  let network = try? await KitedClient(address: "http://127.0.0.1:5483", machineID: machine.id).request("/network", as: LocalNetwork.self)
+            else { return [:] }
+            return Dictionary((network.peers ?? []).compactMap { peer in peer.ip.map { ($0, PeerConnection(connection: peer.connection, endpoint: peer.endpoint)) } },
+                              uniquingKeysWith: { first, _ in first })
+        }
+        #endif
+        return await Tailnet.shared.peers()
+    }
+
     func remove(_ id: String) async throws {
         let _: JSON = try await request("/api/devices/\(id)", method: "DELETE", as: JSON.self)
         if id == deviceID { clear(); await Tailnet.shared.stop() }
@@ -259,9 +293,11 @@ private struct AccountLogin: Codable {
 }
 
 private struct LocalNetwork: Decodable {
+    struct Peer: Decodable { let ip: String?; let connection: String; let endpoint: String? }
     let state: String
     let ips: [String]?
     let socksPort: Int?
+    let peers: [Peer]?
     let error: String?
 }
 

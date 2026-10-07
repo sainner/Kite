@@ -112,38 +112,33 @@ struct ScenePushSheet: View {
     @State private var message = ""
     @State private var working = false
     @State private var error: String?
+    @FocusState private var typing: Bool
+
+    private var canPush: Bool {
+        !working && sync != nil && !(sync?.dirty == true && message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("现场") {
-                    Text(workspace.remote.map { "\($0.machine.name) · \($0.checkout.path)" } ?? workspace.title)
-                        .lineLimit(1).truncationMode(.middle)
-                    if let sync { Text(sync.summary).foregroundStyle(.secondary) } else { ProgressView() }
-                }
-                Section {
-                    TextField("提交说明", text: $message, axis: .vertical).lineLimit(2...6)
-                } footer: {
-                    Text("现场的改动由你自己决定何时提交。远程有新提交而现场没有新内容时直接更新；两边都有新内容时不在现场合并，请新建工作区处理。")
-                }
-                if let error { Text(error).foregroundStyle(Theme.danger) }
+        CardSheet(title: "提交并推送", subtitle: workspace.remote.map { "\($0.machine.name) · \($0.checkout.path)" } ?? workspace.title,
+                  typing: typing, close: { dismiss() }) {
+            if let sync { Text(sync.summary).font(Theme.body).foregroundStyle(.secondary) } else { ProgressView() }
+            CardField(label: "提交说明", focused: typing) {
+                TextField("说明这次改了什么", text: $message, axis: .vertical).lineLimit(2...6)
+                    .focused($typing)
+                    .cardInput { typing = true }
             }
-            .formStyle(.grouped)
-            .navigationTitle("提交并推送")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(working ? "正在推送…" : "推送") { push() }
-                        .disabled(working || sync == nil || (sync?.dirty == true && message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
-                }
-            }
+            Text("现场的改动由你自己决定何时提交。远程有新提交而现场没有新内容时直接更新；两边都有新内容时不在现场合并，请新建工作区处理。")
+                .font(Theme.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 12)
+            if let error { CardCallout(text: error) }
+        } footer: {
+            CardActions(primary: working ? "正在推送…" : "推送", enabled: canPush, action: push)
         }
+        .endsTyping(typing) { typing = false }
         .task {
             do { sync = try await model.checkoutSync(workspace) } catch { self.error = error.localizedDescription }
         }
-        #if os(macOS)
-        .frame(width: 460, height: 360)
-        #endif
     }
 
     private func push() {

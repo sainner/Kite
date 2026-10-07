@@ -134,7 +134,7 @@ Kite 托管账号与组网。Mac 和 iPhone 在 App 中使用账号密码登录�
 
 工作机由 kite-net（tsnet）接入网络，控制端由 App 内的 TailscaleKit 接入，不占用系统 VPN。本机执行模式的 App 复用 kited 的 SOCKS 入口，只维护一个网络节点。链路加密由 WireGuard 承担，Headscale 策略限制同账号互通；kite-net 还通过 WhoIs 核验请求来源与本节点属于同一用户。内部代理使用进程内随机凭据，外部传入的同名字段被覆盖。
 
-`kite net` 查看状态；已登录后可用 `kite net up`、`kite net down` 开启或暂停组网。新设备的入网密钥来自账号服务，工作机不保存 Headscale 管理密钥。移除设备会撤销其网络节点和账号会话；已有远程请求随撤销传播而关闭。网络错误和服务重启可以重连，401 提示重新登录，409 表示目标工作机身份不符。
+`kite net` 查看状态及各对端是直连还是经中继；已登录后可用 `kite net up`、`kite net down` 开启或暂停组网。新设备的入网密钥来自账号服务，工作机不保存 Headscale 管理密钥。移除设备会撤销其网络节点和账号会话；已有远程请求随撤销传播而关闭。网络错误和服务重启可以重连，401 提示重新登录，409 表示目标工作机身份不符。
 
 本机接口边界见 [接口](#接口)，SSE 重连见 [会话显示协议](会话显示协议.md#历史与连接)。原生 iPhone 的新账号流程、前后台重连和蜂窝网络仍需真机验收。
 
@@ -199,7 +199,7 @@ harness 与 Claude 均通过共享 shell 执行项目的 `.kite/check`。项目�
 | GET | `/machine` | 读取这台工作机服务的持久身份，无需 `X-Kite-Machine`；远程访问须通过同账号组网认证 |
 | PUT | `/network/account` | 仅本机：`{deviceId, controlURL, authKey}`，接收账号服务的一次性入网授权 |
 | GET/PUT | `/catalog/account` | 仅本机：查询上报状态，或用 `{deviceId, url, token}` 设置目录上报凭据；签发与版本约定见 [托管账号与设备](托管账号与设备.md) |
-| GET/PUT | `/network` | 仅本机：组网状态；`{enabled}` 开启或关闭组网节点 |
+| GET/PUT | `/network` | 仅本机：组网状态，上线后 `peers` 列出对端设备的连接方式（`direct` 直连、`relay` 经中继、`idle` 近期无流量）；`{enabled}` 开启或关闭组网节点 |
 | GET | `/projects` | 列出本机已登记的项目身份 |
 | GET/POST | `/checkouts` | 列出本机检出（`?project=`）；登记本机文件夹 `{path}` 或 clone 远程 `{remote, path?}`，返回根工作区聚合 |
 | GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, runtime?, contextTemplate?}`，准备过程看事件 |

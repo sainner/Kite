@@ -206,8 +206,12 @@ struct KitedClient: Equatable {
             request.httpBody = try JSONEncoder().encode(body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
+        let trace = TimingTrace.span("\(method) \(path)")
         let session = Tailnet.covers(address) ? try await Tailnet.shared.urlSession() : URLSession.shared
-        let (data, response) = try await session.data(for: request)
+        let data: Data, response: URLResponse
+        do { (data, response) = try await session.data(for: request) }
+        catch { trace("失败：\(error.localizedDescription)"); throw error }
+        trace("\((response as? HTTPURLResponse)?.statusCode ?? 0)")
         try validate(response, data: data)
         return (try JSONDecoder().decode(T.self, from: data),
                 (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Kite-Cursor"))
@@ -232,7 +236,12 @@ struct KitedClient: Equatable {
         request.timeoutInterval = 60
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
-        let (bytes, response) = try await connection.bytes(for: request)
+        let trace = TimingTrace.span("事件流 \(components.url?.query ?? "目录")")
+        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
+        do { (bytes, response) = try await connection.bytes(for: request) }
+        catch { trace("失败：\(error.localizedDescription)"); throw error }
+        trace("已建立 \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+        var first = true
         switch (response as? HTTPURLResponse)?.statusCode {
         case 409: throw KitedError(message: "连接地址对应的工作机已改变，请重新连接", status: 409)
         case 401: throw KitedError(message: "这台设备的授权已失效，请重新登录 Kite", status: 401)
@@ -244,6 +253,7 @@ struct KitedClient: Equatable {
         for try await line in bytes.lines {
             try Task.checkCancellation()
             guard line.hasPrefix("data:") else { continue }
+            if first { first = false; TimingTrace.mark("事件流 \(components.url?.query ?? "目录") 首帧") }
             let event = try JSONDecoder().decode(RemoteEvent.self, from: Data(line.dropFirst(5).utf8))
             try await receive(event)
         }

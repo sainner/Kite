@@ -87,7 +87,7 @@ struct Onboarding: View {
     @State private var simulation: Simulation?
     #endif
 
-    private static let inset = Metrics.padding * 2
+    private static let inset = CardMetrics.inset
     /// 完成一步时的波比发送消息的慢，配合标志形变。
     private static let wavePace = 0.24
     /// 标题与卡片那一栏的宽度：窄窗口里居中，宽窗口里靠右。
@@ -437,15 +437,12 @@ struct Onboarding: View {
         case .connect(.manual):
             OnboardingField(label: "邮箱", prompt: "you@example.com", text: $address, focus: $focus,
                             submit: connect, scan: { registering = false; go(.connect(.scan)) })
-            VStack(alignment: .leading, spacing: 8) {
-                Text("密码").font(Theme.secondary).foregroundStyle(.secondary)
+            CardField(label: "密码", focused: focus == "密码") {
                 SecureField(registering ? "至少 10 个字符" : "账号密码", text: $code)
                     .textContentType(registering ? .newPassword : .password)
                     .focused($focus, equals: "密码")
-                    .font(Theme.body).textFieldStyle(.plain).padding(12)
-                    .background(Theme.background, in: RoundedRectangle(cornerRadius: 12))
                     .onSubmit(connect)
-                    .typingTarget()
+                    .cardInput { focus = "密码" }
             }
             Button(registering ? "已有账号，去登录" : "没有账号？创建一个") { registering.toggle(); error = nil }
                 .buttonStyle(.pointingPlain).font(Theme.secondary)
@@ -474,45 +471,14 @@ struct Onboarding: View {
     }
 
     private func callout(_ text: String, systemImage: String, tint: Color) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: systemImage).foregroundStyle(tint)
-            Text(text).foregroundStyle(tint == .secondary ? .secondary : .primary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .font(Theme.secondary)
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tint.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        CardCallout(text: text, systemImage: systemImage, tint: tint)
     }
 
     private func buttons(primary: String, enabled: Bool, action: @escaping () -> Void,
                          prominent: Bool = true,
                          secondary: String? = nil, secondaryAction: @escaping () -> Void = {}) -> some View {
-        GlassEffectContainer(spacing: Metrics.paneButtonGap) {
-            HStack(spacing: Metrics.paneButtonGap) {
-                if let secondary {
-                    Button(secondary, action: secondaryAction)
-                        .buttonStyle(.glass)
-                        .disabled(working)
-                }
-                let button = Button(action: action) {
-                    Text(primary).frame(maxWidth: .infinity)
-                }
-                .disabled(!enabled)
-                if prominent {
-                    button.buttonStyle(.glassProminent)
-                } else {
-                    button.buttonStyle(.glass)
-                }
-            }
-            .font(Theme.body.weight(.semibold))
-            #if os(macOS)
-            .controlSize(.extraLarge)
-            #else
-            .controlSize(.large)
-            #endif
-        }
-        .frame(maxWidth: .infinity, alignment: .trailing)
+        CardActions(primary: primary, enabled: enabled, prominent: prominent, secondary: secondary,
+                    secondaryEnabled: !working, action: action, secondaryAction: secondaryAction)
     }
 
     // MARK: 操作
@@ -618,7 +584,7 @@ struct Onboarding: View {
     }
 }
 
-/// 卡片里的输入框：上面一行标签，下面是不带边框的填充框，聚焦时描主题色。焦点由整页共用，按标签区分。
+/// 卡片里的邮箱输入框，iPhone 上右侧带扫码登录。焦点由整页共用，按标签区分。
 private struct OnboardingField: View {
     let label: String
     let prompt: String
@@ -627,32 +593,17 @@ private struct OnboardingField: View {
     let submit: () -> Void
     let scan: () -> Void
 
-    #if os(macOS)
-    private static let height: CGFloat = 36
-    #else
-    private static let height: CGFloat = 48
-    #endif
-
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
-        let focused = focus.wrappedValue == label
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label).font(Theme.caption.weight(.medium)).foregroundStyle(.secondary)
+        CardField(label: label, focused: focus.wrappedValue == label) {
             HStack(spacing: 0) {
                 TextField(prompt, text: $text)
-                    .textFieldStyle(.plain)
-                    .font(Theme.body)
                     .autocorrectionDisabled()
                     #if os(iOS)
                     .textInputAutocapitalization(.never)
                     #endif
                     .focused(focus, equals: label)
                     .onSubmit(submit)
-                    .padding(.horizontal, 12)
-                    .frame(height: Self.height)
-                    .contentShape(Rectangle())
-                    .onTapGesture { focus.wrappedValue = label }
-                    .typingTarget()
+                    .cardInput { focus.wrappedValue = label }
                 #if os(iOS)
                 Button(action: scan) {
                     PaneButtonLabel("扫码登录", systemImage: "qrcode.viewfinder")
@@ -661,9 +612,6 @@ private struct OnboardingField: View {
                 .padding(.trailing, 4)
                 #endif
             }
-            .background(Theme.codeBackground, in: shape)
-            .overlay { shape.strokeBorder(Color.accentColor.opacity(focused ? 0.8 : 0), lineWidth: 1.5) }
-            .animation(.easeOut(duration: 0.15), value: focused)
         }
     }
 }

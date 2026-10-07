@@ -52,6 +52,7 @@ struct SectionPage<Content: View, Actions: View>: View {
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .scrollDismissesKeyboard(.interactively)
             .safeAreaBar(edge: .top, spacing: 0) {
                 PaneHeaderBar(header: header, status: EmptyView(), actions: actions, openSidebar: openSidebar)
                     .padding(.top, max(Metrics.paneMargin, topInset) - topInset)

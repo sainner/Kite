@@ -170,7 +170,9 @@ enum Metrics {
     static var dragBubble: CGFloat { InputMode.current.dockItem }
     /// Mac 右侧停靠栏与窗口图标同宽。
     static let dockWidth: CGFloat = dragBubble
-    /// iPhone 上拉出侧边栏后窗口最少留多宽，要大于圆角的直径，圆角才不会变形。
+    /// iPhone 上拉出侧边栏后窗口收成胶囊，宽度是圆角的直径；直径小于这个值时点不着，改留 phoneMinWindow 宽。
+    static let phoneMinCapsule: CGFloat = 44
+    /// 没有屏幕圆角可用时，拉出侧边栏后窗口留多宽。
     static let phoneMinWindow: CGFloat = 120
     /// iPhone 上页签那一行的高度，拉出 action 栏时出现在它上面。
     static let tabBar: CGFloat = dragBubble

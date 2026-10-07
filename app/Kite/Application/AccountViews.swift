@@ -35,6 +35,7 @@ struct AccountDevices: View {
     @State private var invitation: (image: Image?, expiresAt: Date)?
     @State private var error: String?
     @State private var working = false
+    @State private var peers: [String: PeerConnection] = [:]
 
     var body: some View {
         Section {
@@ -42,7 +43,7 @@ struct AccountDevices: View {
                 HStack {
                     VStack(alignment: .leading) {
                         Text(device.name + (device.id == model.account.deviceID ? "（本机）" : ""))
-                        Text("\(device.role == "worker" ? "工作机" : "控制端") · \(device.online ? "在线" : "离线")")
+                        Text("\(device.role == "worker" ? "工作机" : "控制端") · \(device.online ? "在线" : "离线")\(connection(device))")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -54,6 +55,12 @@ struct AccountDevices: View {
                 }
             }
             if let error { Text(error).foregroundStyle(Theme.danger) }
+        }
+        .task {
+            while !Task.isCancelled {
+                peers = await model.account.peerConnections()
+                try? await Task.sleep(for: .seconds(2))
+            }
         }
         Section {
             if let invitation {
@@ -74,6 +81,18 @@ struct AccountDevices: View {
         }
         .disabled(working)
         .task { perform { try await model.account.refresh() } }
+    }
+
+    /// 账号服务只给工作机地址，按其组网 IP 对应本机节点看到的连接方式。
+    private func connection(_ device: AccountDevice) -> String {
+        guard device.online, device.id != model.account.deviceID,
+              let ip = device.address.flatMap({ URL(string: $0)?.host() }), let peer = peers[ip] else { return "" }
+        let endpoint = peer.endpoint.map { " \($0)" } ?? ""
+        return switch peer.connection {
+        case "direct": " · 直连\(endpoint)"
+        case "relay": " · 经中继\(endpoint)"
+        default: " · 空闲"
+        }
     }
 
     private func qrCode(_ text: String) -> Image? {

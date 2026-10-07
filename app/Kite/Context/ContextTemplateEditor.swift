@@ -17,6 +17,8 @@ struct ContextTemplateEditor: View {
     @State private var working = false
     @State private var error: String?
     @State private var discard = false
+    /// 只跟踪模板名称；段落编辑器里的输入框由拖动收起键盘。
+    @FocusState private var typing: Bool
 
     init(request: ContextTemplateEdit, connection: UUID, onSaved: @escaping (ContextTemplate) -> Void = { _ in }) {
         self.request = request
@@ -32,46 +34,38 @@ struct ContextTemplateEditor: View {
     private var available: Bool { model.templateConnection(connection)?.connected == true }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    TextField("模板名称", text: $draft.title).font(.title3.weight(.semibold))
-                    Text("双击段落编辑文字。变量在运行时填入；条件页签用于编辑各个分支。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    if let input = Binding($draft.input) {
-                        Text("命名规则").font(.headline)
-                        ContextBlocksEditor(blocks: $draft.blocks, variables: variables)
-                        Divider()
-                        Text("材料").font(.headline)
-                        ContextBlocksEditor(blocks: input, variables: variables)
-                    } else {
-                        ContextBlocksEditor(blocks: $draft.blocks, variables: variables)
-                    }
-                    if !available { Text("工作机连接已变化，请返回后重新打开模板。草稿尚未保存。").foregroundStyle(.secondary) }
-                    if let error { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) }
-                    if working { ProgressView() }
+        CardSheet(title: request.original == nil ? "新建上下文模板" : "编辑上下文模板",
+                  subtitle: "双击段落编辑文字。变量在运行时填入；条件页签用于编辑各个分支。",
+                  typing: typing, size: CGSize(width: 720, height: 680),
+                  close: { if changed { discard = true } else { dismiss() } }) {
+            Group {
+                CardField(label: "模板名称", focused: typing) {
+                    TextField("模板名称", text: $draft.title)
+                        .focused($typing)
+                        .cardInput { typing = true }
                 }
-                .padding(20)
-                .disabled(working || !available)
-            }
-            .navigationTitle(request.original == nil ? "新建上下文模板" : "编辑上下文模板")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { if changed { discard = true } else { dismiss() } }.disabled(working)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") { save() }
-                        .disabled(working || !available || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if let input = Binding($draft.input) {
+                    Text("命名规则").font(.headline)
+                    ContextBlocksEditor(blocks: $draft.blocks, variables: variables)
+                    Divider()
+                    Text("材料").font(.headline)
+                    ContextBlocksEditor(blocks: input, variables: variables)
+                } else {
+                    ContextBlocksEditor(blocks: $draft.blocks, variables: variables)
                 }
             }
+            .disabled(working || !available)
+            if !available { CardCallout(text: "工作机连接已变化，请返回后重新打开模板。草稿尚未保存。", systemImage: "info.circle", tint: .secondary) }
+            if let error { CardCallout(text: error) }
+        } footer: {
+            CardActions(primary: working ? "正在保存…" : "保存",
+                        enabled: !working && available && !draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                        action: save)
         }
         .interactiveDismissDisabled(working || changed)
         .confirmationDialog("放弃未保存的模板修改？", isPresented: $discard, titleVisibility: .visible) {
             Button("放弃修改", role: .destructive) { dismiss() }
         }
-        #if os(macOS)
-        .frame(minWidth: 640, idealWidth: 720, minHeight: 580, idealHeight: 680)
-        #endif
     }
 
     private func save() {
