@@ -18,7 +18,7 @@ struct KiteApp: App {
             }
         }
         #endif
-        _model = State(initialValue: SampleWorkspace.makeModel())
+        _model = State(initialValue: AppModel())
     }
 
     var body: some Scene {

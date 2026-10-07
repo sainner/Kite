@@ -17,7 +17,6 @@ Mac、iPhone 和 iPad 共用一个 SwiftUI 工程、一个多平台 target。使
 | `Kite/Plugins/` | 插件管理、实例设置、插件窗口与原生 Web 桥 |
 | `Kite/Context/` | 上下文模板模型、目录与编辑器 |
 | `Kite/UI/` | 主题、公共控件、点阵视觉语言、文本渲染与 Metal 动效 |
-| `Kite/Preview/` | 样本数据与动态预览 |
 | `Kite/Resources/Generated/` | 生成的插件宿主页；源码在 `kited/web/plugin-host.ts` |
 | `Kite.xcodeproj/` | 多平台工程、共享 scheme 与固定的 Swift Package 版本 |
 
@@ -42,7 +41,7 @@ App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `
 
 ## 预览和验证
 
-Debug build 带 `--sample-data` 启动可预览样本；需要从测试机桌面反复启动时，编译参数使用 `KITE_PREVIEW_FLAGS=KITE_SAMPLE_DATA`。初始配置预览使用 `--onboarding-preview` 或编译参数 `KITE_PREVIEW_FLAGS=KITE_ONBOARDING_PREVIEW`。样本的隔离要求与证据边界见 [预览与验证原则](../docs/会话预览假数据.md)。
+初始配置预览使用 Debug build 带 `--onboarding-preview` 启动，需要从测试机桌面反复启动时，编译参数使用 `KITE_PREVIEW_FLAGS=KITE_ONBOARDING_PREVIEW`。界面在真实工作机和数据上迭代。
 
 Swift 类型、窗口排布、草稿交接、滚动与 WebKit 验证统一在 [手动验证目录](../kited/test/manual/README.md)。移动或拆分 Swift 文件时同步更新这些脚本引用的源码路径。
 

@@ -18,10 +18,6 @@ struct PaneBody: View {
                 PluginPane(target: target, title: area.appearance(of: pane).name, client: client,
                            state: instance.state?.plugin, connection: area.pluginConnection)
                     .id(pane.id)
-            } else if renderer == DotGallery.renderer {
-                DotGallery(title: area.appearance(of: pane).name)
-            } else if renderer == DotStudio.renderer {
-                DotStudio(title: area.appearance(of: pane).name)
             } else {
                 PlaceholderPane(appearance: area.appearance(of: pane), kind: WindowAppearance.renderer(renderer ?? "").name)
             }

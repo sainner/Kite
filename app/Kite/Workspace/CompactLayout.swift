@@ -176,9 +176,8 @@ struct CompactLayout: View {
 
     /// 工作区开着窗口：底栏可以展开收起。其余情况窗口里放占位内容，见 CompactWindow。
     private var windowed: Bool {
-        guard model.sidebarSection == .workspaces, let area = model.current, area.layout.focused != nil,
-              SampleWorkspace.stageScene(of: area) == nil else { return false }
-        return area.isSample || area.pluginClient != nil
+        guard model.sidebarSection == .workspaces, let area = model.current, area.layout.focused != nil else { return false }
+        return area.pluginClient != nil
     }
 }
 

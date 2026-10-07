@@ -10,22 +10,10 @@ struct ThreadHeaderActions: View {
     @State private var savingModel = false
     @State private var modelError: String?
     @State private var confirmingRecovery = false
-    private let catalog = AgentModelCatalog.bundled
-    private var availableModels: [AgentCapabilities.Model] {
-        if let capabilities = thread.agentCapabilities { return capabilities.models }
-        guard area.isSample else { return [] }
-        return (runtime == .claude ? catalog.claude : catalog.models).map {
-            .init(id: $0.id, title: $0.tier, reasoning: Effort.allCases.map(\.name))
-        }
-    }
-
-    private var runtime: RemoteRuntime {
-        area.remote?.threads.first { $0.instanceId == thread.id }?.runtime
-            ?? instance.flatMap { area.definition(of: $0)?.agent?.runtime } ?? .harness
-    }
+    private var availableModels: [AgentCapabilities.Model] { thread.agentCapabilities?.models ?? [] }
     private var modelName: String? {
         if let name = instance?.config?.agent?.model.model { return name }
-        if area.isSample || thread.isDraft {
+        if thread.isDraft {
             return area.definitions.first { $0.id == (instance?.definitionId ?? "kite.agent.coding") }?.agent?.model?.model
         }
         return nil
@@ -36,14 +24,14 @@ struct ThreadHeaderActions: View {
         return availableModels.first { modelName == $0.id || modelName == $0.resolvedModel }?.title ?? modelName
     }
     private var canChangeModel: Bool {
-        instance != nil && (area.isSample || model.isConnected(area)) && !savingModel
-            && (area.isSample || thread.agentCapabilities?.canEdit(thread.state) == true)
+        instance != nil && model.isConnected(area) && !savingModel
+            && thread.agentCapabilities?.canEdit(thread.state) == true
     }
 
     var body: some View {
         menuGroup
             .task(id: "\(model.revision(for: area))-\(model.isConnected(area))") {
-                guard !area.isSample, model.isConnected(area), let instance else { return }
+                guard model.isConnected(area), let instance else { return }
                 do {
                     let client = try model.activeClient(in: area)
                     let revision = model.revision(for: area)
@@ -84,26 +72,21 @@ struct ThreadHeaderActions: View {
         var general: [ThreadHeaderCommand] = []
         if let instance {
             general.append(.init(title: "实例设置与授权", symbol: "slider.horizontal.3",
-                                 enabled: !area.isSample && model.isConnected(area)) { area.settingsInstance = instance })
+                                 enabled: model.isConnected(area)) { area.settingsInstance = instance })
         }
         general.append(.init(title: "复制工作目录", symbol: "folder", enabled: !thread.transcript.root.isEmpty) {
             copyToPasteboard(thread.transcript.root, toast: toast)
         })
-        if thread.isStreamingPreview {
-            general.append(.init(title: "重播会话", symbol: "arrow.clockwise") { thread.previewRun += 1 })
-        }
         var execution: [ThreadHeaderCommand] = []
-        if !area.isSample {
-            if thread.state?.recovery != nil {
-                execution.append(.init(title: "确认恢复", symbol: "arrow.clockwise",
-                                       enabled: model.isConnected(area) && thread.state?.busy != true) { confirmingRecovery = true })
-            }
-            if thread.showStop {
-                execution.append(.init(title: "停止执行", symbol: "stop", enabled: thread.canStop) { thread.stop() })
-            }
-            if thread.state?.capabilities.resume == true {
-                execution.append(.init(title: "继续执行", symbol: "play", enabled: thread.canResume) { thread.control("resume") })
-            }
+        if thread.state?.recovery != nil {
+            execution.append(.init(title: "确认恢复", symbol: "arrow.clockwise",
+                                   enabled: model.isConnected(area) && thread.state?.busy != true) { confirmingRecovery = true })
+        }
+        if thread.showStop {
+            execution.append(.init(title: "停止执行", symbol: "stop", enabled: thread.canStop) { thread.stop() })
+        }
+        if thread.state?.capabilities.resume == true {
+            execution.append(.init(title: "继续执行", symbol: "play", enabled: thread.canResume) { thread.control("resume") })
         }
         return [general, execution].filter { !$0.isEmpty }
     }
@@ -115,20 +98,8 @@ struct ThreadHeaderActions: View {
         Task {
             defer { savingModel = false }
             do {
-                let config: InstanceAgentConfig
-                if area.isSample {
-                    guard var current = area.instances.first(where: { $0.id == instance.id })?.config,
-                          current.agent != nil else { throw KitedError(message: "此样本没有模型配置") }
-                    current.agent?.model.model = name
-                    config = current
-                } else {
-                    try await model.updateAgent(in: area, id: instance.id) { agent in
-                        agent.model.selectModel(name, supportedReasoning: thread.agentCapabilities?.model(name)?.reasoning ?? [])
-                    }
-                    return
-                }
-                if let index = area.instances.firstIndex(where: { $0.id == instance.id }) {
-                    area.instances[index].config = config
+                try await model.updateAgent(in: area, id: instance.id) { agent in
+                    agent.model.selectModel(name, supportedReasoning: thread.agentCapabilities?.model(name)?.reasoning ?? [])
                 }
             } catch { modelError = error.localizedDescription }
         }

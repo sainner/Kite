@@ -3,14 +3,11 @@ import SwiftUI
 /// 目录尚未载入内容时内容区的画板，宽屏和 iPhone 相同。
 struct DirectoryStatus: View {
     var workspace: WorkArea? = nil
-    /// 预览样本直接指定场景。
-    var previewScene: StageScene?
     @Environment(AppModel.self) private var model
 
     private var connection: WorkerConnection? { workspace.flatMap { model.connection(for: $0) } }
 
     private var scene: StageScene {
-        if let previewScene { return previewScene }
         if workspace != nil { return connection?.error == nil ? .connecting : .unreachable }
         if model.account.workers.isEmpty { return .grounded }
         if !model.availableWorkers.isEmpty { return .addProject }

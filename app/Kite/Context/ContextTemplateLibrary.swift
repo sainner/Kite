@@ -90,7 +90,7 @@ struct NewThreadContextTemplate: View {
         templates.first { $0.id == templateID } ?? templates.first
     }
     private var available: Bool {
-        !thread.configuringTemplate && (area.isSample || model.isConnected(area))
+        !thread.configuringTemplate && model.isConnected(area)
             && (instance?.config?.agent != nil || thread.isDraft)
     }
 

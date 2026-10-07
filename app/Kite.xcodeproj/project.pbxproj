@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		4B1E00000000000000000014 /* agent-models.json in Resources */ = {isa = PBXBuildFile; fileRef = 4B1E00000000000000000013 /* agent-models.json */; };
 		4B1E00000000000000000012 /* Highlighter in Frameworks */ = {isa = PBXBuildFile; productRef = 4B1E00000000000000000011 /* Highlighter */; };
 		4B1E00000000000000000016 /* TailscaleKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4B1E00000000000000000015 /* TailscaleKit.xcframework */; };
 		4B1E00000000000000000017 /* TailscaleKit.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4B1E00000000000000000015 /* TailscaleKit.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -28,7 +27,6 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		4B1E00000000000000000013 /* agent-models.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = ../shared/agent-models.json; sourceTree = SOURCE_ROOT; };
 		4B1E00000000000000000015 /* TailscaleKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Vendor/TailscaleKit.xcframework; sourceTree = "<group>"; };
 		4B1E00000000000000000001 /* Kite.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Kite.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -58,7 +56,6 @@
 			isa = PBXGroup;
 			children = (
 				4B1E00000000000000000002 /* Kite */,
-				4B1E00000000000000000013 /* agent-models.json */,
 				4B1E00000000000000000015 /* TailscaleKit.xcframework */,
 				4B1E00000000000000000005 /* Products */,
 			);
@@ -141,7 +138,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				4B1E00000000000000000014 /* agent-models.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

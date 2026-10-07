@@ -27,9 +27,9 @@ struct ContextTemplateEditor: View {
 
     private var changed: Bool { draft != request.definition }
     private var variables: [ContextScene.Variable] {
-        (SampleWorkspace.enabled ? model.contextTemplates : model.templateConnection(connection)?.templates)?.scenes.first { $0.id == draft.scene }?.variables ?? []
+        model.templateConnection(connection)?.templates?.scenes.first { $0.id == draft.scene }?.variables ?? []
     }
-    private var available: Bool { SampleWorkspace.enabled || model.templateConnection(connection)?.connected == true }
+    private var available: Bool { model.templateConnection(connection)?.connected == true }
 
     var body: some View {
         NavigationStack {

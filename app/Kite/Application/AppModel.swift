@@ -16,11 +16,9 @@ final class AppModel {
     var sidebarSection = SidebarSection.workspaces
     var contentSize: CGSize = .zero
     let account: KiteAccount
-    private let previewClient: KitedClient?
     private(set) var connections: [String: WorkerConnection] = [:]
     private var connectionRun: UUID?
     private let emptyConnection = UUID()
-    private var sampleTemplates: ContextTemplateCatalog?
     var activeConnection: WorkerConnection? {
         if let id = current?.remote?.machine.id { return connections[id] }
         return connections.values.sorted { $0.machine.id < $1.machine.id }.first(where: { $0.connected })
@@ -30,8 +28,8 @@ final class AppModel {
     var connectionRevision: UUID { activeConnection?.catalog.generation ?? emptyConnection }
     var definitions: [RemotePluginDefinition] { activeConnection?.definitions ?? [] }
     var contextTemplates: ContextTemplateCatalog? {
-        get { SampleWorkspace.enabled ? sampleTemplates : activeConnection?.templates }
-        set { if SampleWorkspace.enabled { sampleTemplates = newValue } else { activeConnection?.templates = newValue } }
+        get { activeConnection?.templates }
+        set { activeConnection?.templates = newValue }
     }
     var error: String?
     #if os(iOS)
@@ -70,9 +68,8 @@ final class AppModel {
     var scenePush: WorkArea?
     var archiveRequest: WorkArea?
 
-    init(account: KiteAccount = KiteAccount(), previewClient: KitedClient? = nil) {
+    init(account: KiteAccount = KiteAccount()) {
         self.account = account
-        self.previewClient = previewClient
     }
 
     func connection(for area: WorkArea? = nil) -> WorkerConnection? {
@@ -81,10 +78,9 @@ final class AppModel {
     }
 
     func revision(for area: WorkArea) -> UUID { connection(for: area)?.catalog.generation ?? emptyConnection }
-    func isConnected(_ area: WorkArea) -> Bool { area.isSample || connection(for: area)?.connected == true }
+    func isConnected(_ area: WorkArea) -> Bool { connection(for: area)?.connected == true }
 
     func activeClient(in area: WorkArea? = nil) throws -> KitedClient {
-        if let previewClient, (area ?? current)?.isSample == true { return previewClient }
         guard let connection = connection(for: area), connection.connected else { throw KitedError(message: "所属工作机未连接") }
         return connection.client
     }
@@ -108,10 +104,6 @@ final class AppModel {
 
     func createInstance(_ definition: RemotePluginDefinition, in area: WorkArea) {
         if !definition.views.isEmpty { openWindow(.create(definition.id), in: area); return }
-        if area.isSample {
-            SampleWorkspace.openWindow(.init(id: UUID().uuidString, content: .create(definition.id)), in: area)
-            return
-        }
         guard !area.changingWindows, area.pendingWindowRequest == nil, area.pendingInstanceRequest == nil else { return }
         area.pendingInstanceRequest = CreatePluginInstance(id: UUID().uuidString.lowercased(), definitionId: definition.id)
         retryCreateInstance(in: area)
@@ -405,11 +397,6 @@ final class AppModel {
 
     func retryOpenWindow(in area: WorkArea) {
         guard let request = area.pendingWindowRequest, !area.changingWindows else { return }
-        if area.isSample {
-            SampleWorkspace.openWindow(request, in: area)
-            area.pendingWindowRequest = nil
-            return
-        }
         area.changingWindows = true
         area.windowError = nil
         Task {
@@ -464,11 +451,6 @@ final class AppModel {
     }
 
     private func openReferenceWindow(_ request: OpenWindowRequest, in area: WorkArea) async throws -> RemoteWorkspaceWindow {
-        if area.isSample {
-            SampleWorkspace.openWindow(request, in: area)
-            guard let window = area.windows.first(where: { $0.id == request.id }) else { throw KitedError(message: "无法打开样本文件窗口") }
-            return window
-        }
         let client = try activeClient(in: area)
         guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
         do {
@@ -485,10 +467,6 @@ final class AppModel {
 
     func closeWindow(_ pane: Pane, in area: WorkArea) {
         guard !area.isDraft, !area.changingWindows else { return }
-        if area.isSample {
-            SampleWorkspace.closeWindow(pane, in: area)
-            return
-        }
         area.changingWindows = true
         area.windowError = nil
         Task {

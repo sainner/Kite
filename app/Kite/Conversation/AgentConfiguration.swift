@@ -1,25 +1,5 @@
 import Foundation
 
-/// 与工作机共用打包进 App 的清单，不在界面里重复维护型号。
-nonisolated struct AgentModelCatalog: Decodable, Sendable {
-    struct Entry: Decodable, Identifiable, Sendable {
-        let id: String
-        let tier: String
-    }
-    let defaultTier: String
-    let models: [Entry]
-    let claude: [Entry]
-    var defaultModel: Entry { models.first { $0.tier == defaultTier }! }
-
-    static let bundled: AgentModelCatalog = {
-        guard let url = Bundle.main.url(forResource: "agent-models", withExtension: "json") else {
-            preconditionFailure("App 缺少内置模型清单")
-        }
-        do { return try JSONDecoder().decode(Self.self, from: Data(contentsOf: url)) }
-        catch { preconditionFailure("内置模型清单无效：\(error)") }
-    }()
-}
-
 nonisolated struct AgentModelConfiguration: Codable, Equatable, Sendable {
     var model: String
     var reasoning: String

@@ -2,7 +2,7 @@ import SwiftUI
 
 extension AppModel {
     /// 初始配置以账号和设备入网为准；完成后进入统一项目目录。
-    var needsOnboarding: Bool { OnboardingPreview.enabled || (!account.ready && !SampleWorkspace.enabled) }
+    var needsOnboarding: Bool { OnboardingPreview.enabled || !account.ready }
 }
 
 /// Debug build 带 --onboarding-preview 启动，或编译时开启 KITE_ONBOARDING_PREVIEW，从头走一遍初始配置：

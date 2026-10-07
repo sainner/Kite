@@ -36,12 +36,34 @@ try {
   writeFileSync(fixture, String.raw`
 import Foundation
 
-// sample 模式不应调用网络；若误走客户端，合同立即失败。
+// 工作机替身只提供当前文件和两份历史 diff，按真实接口的路径和字段应答。
 final class KitedClient: Equatable {
     static func == (lhs: KitedClient, rhs: KitedClient) -> Bool { lhs === rhs }
+    let current: String
+    let diffs: [String: (before: String, after: String)]
+    private var revision = 0
+    init(current: String, diffs: [String: (before: String, after: String)]) {
+        self.current = current
+        self.diffs = diffs
+    }
     func request<Value: Decodable>(_ path: String, method: String,
         body: any Encodable, as type: Value.Type) async throws -> Value {
-        throw KitedError(message: "sample 导航误调用网络")
+        let input = try JSONSerialization.jsonObject(with: JSONEncoder().encode(body)) as! [String: Any]
+        let output: Any
+        switch path.split(separator: ".").last {
+        case "select":
+            revision += 1
+            output = ["path": input["path"]!, "revision": "r\(revision)", "diffId": input["diffId"] ?? NSNull()]
+        case "read":
+            let lines = current.components(separatedBy: "\n")
+            output = ["path": input["path"]!, "text": current, "offset": 1, "totalLines": lines.count, "version": "fixture"]
+        case "diff":
+            let id = input["diffId"] as! String
+            guard let diff = diffs[id] else { throw KitedError(message: "这份历史差异已不存在") }
+            output = ["id": id, "files": [["path": "README.md", "before": diff.before, "after": diff.after]]]
+        default: throw KitedError(message: "未预期的请求：" + path)
+        }
+        return try JSONDecoder().decode(Value.self, from: JSONSerialization.data(withJSONObject: output))
     }
 }
 
@@ -117,8 +139,10 @@ struct ResourceReferenceContract {
         let originalText = "# Kite\n\n个人 agent 工作台。\n\n先阅读文件。\n"
         let firstText = "# Kite\n\n个人 agent 工作台。\n\n文件与预览共用一个窗口。\n"
         let currentText = "# Kite\n\n个人 agent 工作台。\n\n文件、预览和 diff 共用一个窗口。\n历史引用可以回看每次修改。\n"
-        let browser = FileBrowser(instanceID: "fixture-files", workspaceID: scope.workspaceID,
-            client: nil, sample: true)
+        let client = KitedClient(current: currentText, diffs: [
+            "diff_sample1": (originalText, firstText), "diff_sample2": (firstText, currentText),
+        ])
+        let browser = FileBrowser(instanceID: "fixture-files", workspaceID: scope.workspaceID, client: client)
         guard let firstReference = FileReference.parse("README.md:diff_sample1:5"),
               let secondReference = FileReference.parse("README.md:diff_sample2:5"),
               let currentReference = FileReference.parse("README.md:1-6") else { fatalError("导航夹具引用无效") }

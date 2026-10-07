@@ -8,7 +8,7 @@
 |---|---|---|
 | `app/` | Mac、iPhone、iPad 共用的 SwiftUI App | [编译与代码地图](app/README.md) |
 | `kited/` | 工作机服务、命令行、自研 harness 与 Claude 适配 | [运行与代码地图](kited/README.md) |
-| `shared/` | App 与工作机共用的数据，目前是模型清单 | [agent-models.json](shared/agent-models.json) |
+| `shared/` | 工作机与验证脚本共用的数据，目前是模型清单 | [agent-models.json](shared/agent-models.json) |
 | `docs/` | 产品设计、协议、机制与开发说明 | [文档索引](docs/README.md) |
 | `spikes/` | 保留当时结论的验证实验 | 不作为产品代码维护 |
 

@@ -20,6 +20,17 @@ private struct ExecutionFixture: Decodable {
     let writePath: String
 }
 
+/// 共享模型清单的 Swift 解码形状，用来与真实后端默认配置交叉校验。
+private struct AgentModelCatalog: Decodable {
+    struct Entry: Decodable {
+        let id: String
+        let tier: String
+    }
+    let defaultTier: String
+    let models: [Entry]
+    var defaultModel: Entry { models.first { $0.tier == defaultTier }! }
+}
+
 // 手动跨层合同：真实后端 JSON 经 Swift Codable 修改后，再由脚本交回严格的 HTTP PUT。
 @main
 private struct PluginManagementContract {

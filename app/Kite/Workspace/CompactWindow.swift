@@ -140,9 +140,7 @@ struct CompactWindow: View {
             ProjectSettingsPage(project: project).id(project.id)
         } else if let area = model.current {
             Group {
-                if let scene = SampleWorkspace.stageScene(of: area) {
-                    DirectoryStatus(workspace: area, previewScene: scene)
-                } else if !area.isSample, area.pluginClient == nil {
+                if area.pluginClient == nil {
                     DirectoryStatus(workspace: area)
                 } else {
                     WindowlessStage(dock: "底栏")

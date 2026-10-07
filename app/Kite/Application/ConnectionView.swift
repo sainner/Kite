@@ -41,23 +41,14 @@ struct SettingsContent: View {
                 case .appearance:
                     Section { AppearancePicker() }
                 case .account:
-                    if SampleWorkspace.enabled {
-                        Section { Text(SampleWorkspace.user.email) }
-                        Text("预览数据不连接账号。").foregroundStyle(.secondary)
-                    } else {
-                        KiteAccountSection()
-                    }
+                    KiteAccountSection()
                 case .linked:
                     if !model.subscriptionQuotas.isEmpty { SubscriptionSection() }
-                    if SampleWorkspace.enabled || model.account.signedIn { GitAccountsSection() }
+                    if model.account.signedIn { GitAccountsSection() }
                 case .devices:
-                    if SampleWorkspace.enabled {
-                        Text("预览数据不连接账号。").foregroundStyle(.secondary)
-                    } else {
-                        AccountDevices()
-                    }
+                    AccountDevices()
                 case .projects:
-                    if SampleWorkspace.enabled || model.account.signedIn { AccountProjectsSection() }
+                    if model.account.signedIn { AccountProjectsSection() }
                 }
                 if let error = model.account.error { Text(error).foregroundStyle(Theme.danger) }
                 if let error = model.error { Text(error).foregroundStyle(Theme.danger) }
@@ -213,6 +204,12 @@ struct NewWorkspace: View {
     }
 }
 
+extension View {
+    func connectsToService() -> some View {
+        modifier(ServiceConnection())
+    }
+}
+
 struct ServiceConnection: ViewModifier {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var phase
@@ -233,7 +230,7 @@ struct ServiceConnection: ViewModifier {
                 #if DEBUG
                 if DirectoryVerification.isRequested { return }
                 #endif
-                guard !SampleWorkspace.enabled, !OnboardingPreview.enabled, shouldConnect else { return }
+                guard !OnboardingPreview.enabled, shouldConnect else { return }
                 await model.connect()
             }
             .onChange(of: model.account.signedIn) { _, signedIn in

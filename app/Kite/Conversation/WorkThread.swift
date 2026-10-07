@@ -11,8 +11,6 @@ final class WorkThread: Identifiable {
     var draft = ""
     var contextTemplate: ContextTemplate?
     var configuringTemplate = false
-    var isStreamingPreview = false
-    var previewRun = 0
     var state: RemoteState?
     var agentCapabilities: AgentCapabilities?
     var connected = false

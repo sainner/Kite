@@ -82,14 +82,6 @@ struct ThreadControls: View {
 
     private var actionButtons: some View {
         HStack(spacing: Metrics.paneButtonGap) {
-            if thread.isStreamingPreview {
-                Button("重播") {
-                    thread.previewRun += 1
-                    stage?.emitWave(from: frame)
-                }
-                    .buttonStyle(PaneButtonStyle(text: true))
-            }
-
             HStack(spacing: 0) {
                 Button {} label: { Image(systemName: "paperclip") }
                     .buttonStyle(PaneButtonStyle())
@@ -127,13 +119,12 @@ struct ThreadControls: View {
 
     private var reasoning: String { instance?.config?.agent?.model.reasoning ?? "medium" }
     private var availableEfforts: [Effort] {
-        if area.isSample { return Effort.allCases }
         let levels = thread.agentCapabilities?.model(instance?.config?.agent?.model.model ?? "")?.reasoning ?? []
         return Effort.allCases.filter { levels.contains($0.name) }
     }
     private var canChangeEffort: Bool {
         instance != nil && !savingEffort && !availableEfforts.isEmpty
-            && (area.isSample || (model.isConnected(area) && thread.agentCapabilities?.canEdit(thread.state) == true))
+            && model.isConnected(area) && thread.agentCapabilities?.canEdit(thread.state) == true
     }
     private func saveEffort() {
         guard canChangeEffort, let effortDraft, effortDraft.name != reasoning, let instance else { self.effortDraft = nil; return }
@@ -141,11 +132,7 @@ struct ThreadControls: View {
         Task {
             defer { savingEffort = false; self.effortDraft = nil }
             do {
-                if area.isSample, let index = area.instances.firstIndex(where: { $0.id == instance.id }) {
-                    area.instances[index].config?.agent?.model.reasoning = effortDraft.name
-                } else {
-                    try await model.updateAgent(in: area, id: instance.id) { $0.model.reasoning = effortDraft.name }
-                }
+                try await model.updateAgent(in: area, id: instance.id) { $0.model.reasoning = effortDraft.name }
             } catch { effortError = error.localizedDescription }
         }
     }

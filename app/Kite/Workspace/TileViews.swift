@@ -351,7 +351,7 @@ struct CreateInstanceMenu: View {
         .toastHost()
         .presentationCompactAdaptation(.popover)
         .task {
-            guard !area.isSample, !area.isDraft else { return }
+            guard !area.isDraft else { return }
             do { try await model.refreshDefinitions(model.activeClient(in: area)); error = nil }
             catch { self.error = error.localizedDescription }
         }
@@ -362,7 +362,7 @@ extension WorkArea {
     /// 没有窗口请求在路上、工作区在线且未归档时才能再加窗口。
     func canAddWindows(connected: Bool) -> Bool {
         !changingWindows && pendingWindowRequest == nil && pendingInstanceRequest == nil &&
-            (isDraft || isSample || (connected && remote?.workspace.status == .open))
+            (isDraft || (connected && remote?.workspace.status == .open))
     }
 }
 

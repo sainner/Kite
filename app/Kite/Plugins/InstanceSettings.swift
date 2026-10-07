@@ -273,7 +273,7 @@ struct InstanceActions: View {
             Button("打开\(view.title)") { model.openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area) }
                 .disabled(area.changingWindows || area.pendingWindowRequest != nil || area.pendingInstanceRequest != nil)
         }
-        Button("实例设置与授权") { area.settingsInstance = instance }.disabled(area.isSample)
+        Button("实例设置与授权") { area.settingsInstance = instance }
     }
 }
 

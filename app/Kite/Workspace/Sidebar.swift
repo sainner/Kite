@@ -18,7 +18,7 @@ struct WorkspaceRow<Interaction: View>: View {
                 Text(workspace.title).font(Theme.sidebarWorkspace)
                     .fontWeight(current ? .bold : .regular)
                     .lineLimit(1).truncationMode(.middle)
-                if !workspace.isSample && !model.isConnected(workspace) {
+                if !model.isConnected(workspace) {
                     Text("离线").font(Theme.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
@@ -610,7 +610,7 @@ struct SidebarNavigation: View {
 struct SidebarUserBar: View {
     @Environment(AppModel.self) private var model
 
-    private var user: AccountUser? { model.account.user ?? (SampleWorkspace.enabled ? SampleWorkspace.user : nil) }
+    private var user: AccountUser? { model.account.user }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -666,7 +666,7 @@ struct SidebarUserBar: View {
 struct SidebarAvatar: View {
     @Environment(AppModel.self) private var model
 
-    private var user: AccountUser? { model.account.user ?? (SampleWorkspace.enabled ? SampleWorkspace.user : nil) }
+    private var user: AccountUser? { model.account.user }
 
     var body: some View {
         Text(user?.email.first.map { String($0).uppercased() } ?? "?")

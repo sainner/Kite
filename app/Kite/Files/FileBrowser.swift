@@ -6,7 +6,6 @@ import Observation
 final class FileBrowser {
     let instanceID: String
     let workspaceID: String
-    let sample: Bool
     private var client: KitedClient?
     private var directoryRequest = UUID()
     private var textRequest = UUID()
@@ -47,11 +46,10 @@ final class FileBrowser {
     var directoryError: String?
     var textError: String?
 
-    init(instanceID: String, workspaceID: String, client: KitedClient?, sample: Bool) {
+    init(instanceID: String, workspaceID: String, client: KitedClient?) {
         self.instanceID = instanceID
         self.workspaceID = workspaceID
         self.client = client
-        self.sample = sample
     }
 
     func update(_ instance: RemotePluginInstance, client: KitedClient?) {
@@ -68,7 +66,7 @@ final class FileBrowser {
             loadingDirectory = false
             loadingText = false
         }
-        if !sample { receive(FileSelection(path: instance.state?.path, revision: instance.state?.revision ?? "initial", diffId: instance.state?.diffId)) }
+        receive(FileSelection(path: instance.state?.path, revision: instance.state?.revision ?? "initial", diffId: instance.state?.diffId))
     }
 
     private func receive(_ value: FileSelection) {
@@ -107,9 +105,7 @@ final class FileBrowser {
         loadingDirectory = true
         defer { if directoryRequest == request { loadingDirectory = false } }
         do {
-            let value: FileDirectory
-            if sample { value = SampleFiles.list(path) }
-            else { value = try await operation("list", body: PathRequest(instanceId: instanceID, path: path, offset: offset), as: FileDirectory.self) }
+            let value = try await operation("list", body: PathRequest(instanceId: instanceID, path: path, offset: offset), as: FileDirectory.self)
             guard directoryRequest == request, !Task.isCancelled else { return }
             directory = value
             directoryPath = value.path
@@ -127,9 +123,7 @@ final class FileBrowser {
         loadingText = true
         defer { if textRequest == request { loadingText = false } }
         do {
-            let value: FilePage
-            if sample { value = try SampleFiles.read(path, offset: offset) }
-            else { value = try await operation("read", body: PathRequest(instanceId: instanceID, path: path, offset: offset), as: FilePage.self) }
+            let value = try await operation("read", body: PathRequest(instanceId: instanceID, path: path, offset: offset), as: FilePage.self)
             guard textRequest == request, !Task.isCancelled else { return }
             if offset > 1 && offset > value.totalLines {
                 await read(offset: 1)
@@ -150,9 +144,7 @@ final class FileBrowser {
         textError = nil
         defer { if textRequest == request { loadingText = false } }
         do {
-            let value: FileDiffRecord
-            if sample { value = try SampleFiles.diff(id) }
-            else { value = try await operation("diff", body: ["instanceId": instanceID, "diffId": id], as: FileDiffRecord.self) }
+            let value = try await operation("diff", body: ["instanceId": instanceID, "diffId": id], as: FileDiffRecord.self)
             guard textRequest == request, !Task.isCancelled else { return }
             guard let file = value.files.first(where: { $0.path == selection.path }) else { throw KitedError(message: "这份差异中没有指定文件") }
             diff = value
@@ -188,18 +180,9 @@ final class FileBrowser {
         let before = selection.revision
         let connection = connectionRevision
         do {
-            let value: FileSelection
-            if sample {
-                if let diffID {
-                    guard try SampleFiles.diff(diffID).files.contains(where: { $0.path == path }) else { throw KitedError(message: "这份差异中没有指定文件") }
-                } else { _ = try SampleFiles.read(path) }
-                value = FileSelection(path: path, revision: UUID().uuidString, diffId: diffID)
-            }
-            else {
-                var body = ["instanceId": instanceID, "operationId": UUID().uuidString, "expectedRevision": before, "path": path]
-                if let diffID { body["diffId"] = diffID }
-                value = try await operation("select", body: body, as: FileSelection.self)
-            }
+            var body = ["instanceId": instanceID, "operationId": UUID().uuidString, "expectedRevision": before, "path": path]
+            if let diffID { body["diffId"] = diffID }
+            let value = try await operation("select", body: body, as: FileSelection.self)
             guard connectionRevision == connection, !Task.isCancelled else { return false }
             // 工作区通知可能已经带来另一端的新选择，迟到的操作响应不能覆盖它。
             if selection.revision == before { receive(value) }
@@ -240,34 +223,6 @@ struct FileDiffRow: Identifiable {
                 defer { oldLine += 1 }
                 return Self(id: index, oldLine: oldLine, newLine: nil, text: text, kind: .removed)
             }
-        }
-    }
-}
-
-/// 样本文件和历史差异可实际打开；当前文本已经是第二次修改后的版本。
-enum SampleFiles {
-    static let original = "# Kite\n\n个人 agent 工作台。\n\n先阅读文件。\n"
-    static let first = "# Kite\n\n个人 agent 工作台。\n\n文件与预览共用一个窗口。\n"
-    static let current = "# Kite\n\n个人 agent 工作台。\n\n文件、预览和 diff 共用一个窗口。\n历史引用可以回看每次修改。\n"
-    static let texts = ["README.md": current, "docs/窗口.md": "# 工作区窗口\n\n窗口集合由工作机保存。\n布局、滚动和焦点由当前设备管理。\n"]
-    static func list(_ path: String) -> FileDirectory {
-        let entries: [FileDirectory.Entry] = path == "." ? [
-            .init(name: "docs", path: "docs", kind: "directory"), .init(name: "README.md", path: "README.md", kind: "file"),
-        ] : [.init(name: "窗口.md", path: "docs/窗口.md", kind: "file")]
-        return .init(path: path, entries: entries, total: entries.count, nextOffset: nil)
-    }
-    static func read(_ path: String, offset: Int = 1) throws -> FilePage {
-        guard let text = texts[path] else { throw KitedError(message: "样本中没有这个文件：" + path) }
-        let lines = text.components(separatedBy: "\n")
-        let end = min(lines.count, offset - 1 + 200)
-        return .init(path: path, text: lines.dropFirst(offset - 1).prefix(200).joined(separator: "\n"), offset: offset,
-                     totalLines: lines.count, nextOffset: end < lines.count ? end + 1 : nil, version: "sample")
-    }
-    static func diff(_ id: String) throws -> FileDiffRecord {
-        switch id {
-        case "diff_sample1": .init(id: id, files: [.init(path: "README.md", before: original, after: first)])
-        case "diff_sample2": .init(id: id, files: [.init(path: "README.md", before: first, after: current)])
-        default: throw KitedError(message: "这份历史差异已不存在")
         }
     }
 }
