@@ -17,9 +17,8 @@ struct LayoutDragArea: View {
     var body: some View {
         #if os(macOS)
         MouseDragArea(cursor: cursor.native, activeCursor: activeCursor?.native,
-                      minimumDistance: minimumDistance, excluded: excluded) { drag in
-            onChanged(LayoutDrag(location: drag.location, translation: drag.translation))
-        } onEnded: { onEnded() } onClick: { onClick?() }
+                      minimumDistance: minimumDistance, excluded: excluded,
+                      onChanged: onChanged, onEnded: onEnded, onClick: onClick)
         // SwiftUI 的命中也在可点控件上挖空，与 AppKit 视图的 hitTest 一致。
         .contentShape(DragShape(holes: excluded), eoFill: true)
         #else
@@ -49,6 +48,7 @@ struct LayoutDragArea: View {
     }
 }
 
+/// 拖动的指针位置和从按下起挪了多少，窗口坐标。
 struct LayoutDrag {
     let location: CGPoint
     let translation: CGSize

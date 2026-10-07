@@ -25,10 +25,16 @@ struct HostedCatalog: Codable {
     let snapshot: CatalogSnapshot?
 }
 
+struct ProjectAppearance: Codable, Equatable {
+    var icon = "folder"
+    var color = "primary"
+}
+
 /// 账号各自缓存导航目录，不包含文件、会话正文或登录凭据。
 struct AccountDirectory: Codable {
     var devices: [AccountDevice] = []
     var catalogs: [HostedCatalog] = []
+    var projectAppearances: [String: ProjectAppearance] = [:]
 
     private static func file(_ user: String) -> URL {
         URL.applicationSupportDirectory.appending(path: "Kite/目录/\(Data(user.utf8).base64EncodedString().replacingOccurrences(of: "/", with: "_" )).json")

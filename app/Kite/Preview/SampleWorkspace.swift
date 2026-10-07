@@ -14,6 +14,9 @@ enum SampleWorkspace {
     }
 
     static let user = AccountUser(id: "sample", email: "preview@kite.local", name: "预览用户")
+    private static let primaryMachine = RemoteMachine(id: "sample", name: "MacBook Pro", createdAt: 0)
+    private static let secondaryMachine = RemoteMachine(id: "sample-secondary", name: "Mac mini", createdAt: 0)
+    static let machineIDs: Set<String> = [primaryMachine.id, secondaryMachine.id]
 
     static func makeModel() -> AppModel {
         guard enabled else { return AppModel() }
@@ -21,7 +24,7 @@ enum SampleWorkspace {
         let model = AppModel(account: KiteAccount(transport: transport.account),
                              previewClient: KitedClient(address: "https://preview.invalid", machineID: "sample", transport: transport.worker))
         model.subscriptionQuotas = [SubscriptionQuota(provider: "GPT", remaining: 0.64), SubscriptionQuota(provider: "Claude", remaining: 0.12)]
-        model.workspaces = stageSamples() + [
+        model.workspaces = sidebarSamples() + stageSamples() + [
             pluginSidebar(),
             dotGallery(),
             dotStudio(),
@@ -50,6 +53,37 @@ enum SampleWorkspace {
         ]
         model.selected = "sample-stage-empty"
         return model
+    }
+
+    /// 同一检出的根工作区与独立工作区，以及同一项目在两台工作机上的检出。
+    private static func sidebarSamples() -> [WorkArea] {
+        let single = (id: "sample-sidebar-kite", name: "Kite")
+        let shared = (id: "sample-sidebar-zcms", name: "ZCMS / MAIN")
+        func checkout(_ id: String, project: String, machine: RemoteMachine, path: String, remote: String) -> RemoteCheckout {
+            RemoteCheckout(id: id, projectId: project, machineId: machine.id, path: path, remote: remote, createdAt: 0)
+        }
+        let kite = checkout("sample-checkout-kite", project: single.id, machine: primaryMachine,
+                            path: "/Users/preview/Projects/Kite", remote: "github.com/sample/kite")
+        let left = checkout("sample-checkout-zcms-macbook", project: shared.id, machine: primaryMachine,
+                            path: "/Users/preview/Projects/ZCMS", remote: "github.com/sample/zcms")
+        let right = checkout("sample-checkout-zcms-mini", project: shared.id, machine: secondaryMachine,
+                             path: "/Users/preview/code/ZCMS", remote: "github.com/sample/zcms")
+        func area(_ id: String, title: String, project: (id: String, name: String), checkout: RemoteCheckout,
+                  machine: RemoteMachine = primaryMachine, branch: String? = nil) -> WorkArea {
+            workspace(id, title: title, transcript: HarnessSampleTranscripts.empty, project: project,
+                      machine: machine, checkout: checkout, kind: branch == nil ? .root : .worktree, branch: branch ?? "main")
+        }
+        return [
+            area("sidebar-kite-main", title: "main", project: single, checkout: kite),
+            area("sidebar-kite-01", title: "workspace01", project: single, checkout: kite, branch: "codex/sidebar"),
+            area("sidebar-kite-02", title: "workspace02", project: single, checkout: kite, branch: "codex/composer"),
+            area("sidebar-zcms-left-main", title: "main", project: shared, checkout: left),
+            area("sidebar-zcms-left-01", title: "workspace01", project: shared, checkout: left, branch: "codex/search"),
+            area("sidebar-zcms-left-02", title: "workspace02", project: shared, checkout: left, branch: "codex/navigation"),
+            area("sidebar-zcms-right-main", title: "main", project: shared, checkout: right, machine: secondaryMachine),
+            area("sidebar-zcms-right-03", title: "workspace03", project: shared, checkout: right, machine: secondaryMachine, branch: "codex/editor"),
+            area("sidebar-zcms-right-04", title: "workspace04", project: shared, checkout: right, machine: secondaryMachine, branch: "codex/preview"),
+        ]
     }
 
     /// 同时展示收起窗口、多视图实例、无窗口 agent 和纯后台实例，供两端预览停靠栏。
@@ -147,15 +181,18 @@ enum SampleWorkspace {
     private static func workspace(_ id: String, title: String, transcript: Transcript,
                                   phase: String? = nil, outcome: String? = nil, recovery: String? = nil,
                                   inputTokens: Int? = nil, windowTokens: Int? = nil,
-                                  project: (id: String, name: String) = ("sample", "harness · 假数据")) -> WorkArea {
+                                  project: (id: String, name: String) = ("sample", "harness · 假数据"),
+                                  machine: RemoteMachine = primaryMachine, checkout: RemoteCheckout? = nil,
+                                  kind: RemoteWorkspaceKind = .root, branch: String? = nil) -> WorkArea {
+        let checkout = checkout ?? RemoteCheckout(id: "sample-" + id, projectId: project.id, machineId: machine.id,
+                                                  path: transcript.root, remote: "github.com/sample/harness", createdAt: 0)
+        let cwd = kind == .root ? checkout.path : "/Users/preview/.kite/workspaces/\(id)"
         let remote = RemoteWorkspace(
-            machine: RemoteMachine(id: "sample", name: "预览工作机", createdAt: 0),
-            project: RemoteProject(id: project.id, name: project.name, remote: "github.com/sample/harness", createdAt: 0),
-            // 侧栏每个检出只列一个根工作区，样本各占一个检出才能都列出来
-            checkout: RemoteCheckout(id: "sample-" + id, projectId: project.id, machineId: "sample",
-                                     path: transcript.root, remote: "github.com/sample/harness", createdAt: 0),
-            workspace: WorkspaceInfo(id: "sample-" + id, checkoutId: "sample-" + id, name: title, cwd: transcript.root,
-                                     kind: .root, branch: nil, base: nil, status: .open, createdAt: 0),
+            machine: machine,
+            project: RemoteProject(id: project.id, name: project.name, remote: checkout.remote, createdAt: 0),
+            checkout: checkout,
+            workspace: WorkspaceInfo(id: "sample-" + id, checkoutId: checkout.id, name: title, cwd: cwd,
+                                     kind: kind, branch: branch, base: kind == .worktree ? "main" : nil, status: .open, createdAt: 0),
             threads: [], instances: [], windows: []
         )
         let area = WorkArea(remote: remote, definitions: definitions)

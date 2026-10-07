@@ -41,6 +41,8 @@ private struct AccountLogin: Codable {
     private var login: AccountLogin?
     private(set) var devices: [AccountDevice] = []
     private(set) var catalogs: [HostedCatalog] = []
+    private(set) var projectAppearances: [String: ProjectAppearance] = [:]
+    private var appearanceRevision = 0
     var error: String?
     var joining = false
     var signedIn: Bool { login != nil }
@@ -58,6 +60,7 @@ private struct AccountLogin: Codable {
             let directory = AccountDirectory.load(user.id)
             devices = directory.devices
             catalogs = directory.catalogs
+            projectAppearances = directory.projectAppearances
         }
     }
 
@@ -68,6 +71,7 @@ private struct AccountLogin: Codable {
         login = try JSONDecoder().decode(AccountLogin.self, from: verificationLogin)
         devices = directory.devices
         catalogs = directory.catalogs
+        projectAppearances = directory.projectAppearances
     }
     #endif
 
@@ -197,14 +201,33 @@ private struct AccountLogin: Codable {
 
     func refresh() async throws {
         let expectedToken = login?.token
+        let revision = appearanceRevision
         async let devices = request("/api/devices", as: [AccountDevice].self)
         async let catalogs = request("/api/catalog", as: [HostedCatalog].self)
-        let directory = try await AccountDirectory(devices: devices, catalogs: catalogs)
+        async let projects = request("/api/projects", as: [ProjectStyle].self)
+        var directory = try await AccountDirectory(devices: devices, catalogs: catalogs,
+                                                   projectAppearances: Dictionary(uniqueKeysWithValues: projects.map { ($0.id, ProjectAppearance(icon: $0.icon, color: $0.color)) }))
         guard expectedToken == login?.token else { throw CancellationError() }
         self.devices = directory.devices
         self.catalogs = directory.catalogs
+        // 更换外观期间发出的旧目录请求不能把刚保存的选择覆盖掉。
+        if revision == appearanceRevision { projectAppearances = directory.projectAppearances }
+        else { directory.projectAppearances = projectAppearances }
         if let user { try directory.save(user.id) }
         error = nil
+    }
+
+    private struct ProjectStyle: Decodable {
+        let id: String
+        let icon: String
+        let color: String
+    }
+
+    func setProjectAppearance(_ values: [String: String], projectID: String) async throws {
+        let project = try await request("/api/projects/\(projectID)/appearance", method: "PUT", body: values, as: ProjectStyle.self)
+        projectAppearances[project.id] = ProjectAppearance(icon: project.icon, color: project.color)
+        appearanceRevision += 1
+        if let user { try AccountDirectory(devices: devices, catalogs: catalogs, projectAppearances: projectAppearances).save(user.id) }
     }
 
     #if os(macOS)
@@ -237,7 +260,7 @@ private struct AccountLogin: Codable {
     private func save() throws { if let login { try AccountVault.save(login) } }
     private func clear() {
         if let user { AccountDirectory.clear(user.id) }
-        login = nil; devices = []; catalogs = []; AccountVault.clear()
+        login = nil; devices = []; catalogs = []; projectAppearances = [:]; appearanceRevision += 1; AccountVault.clear()
     }
 }
 

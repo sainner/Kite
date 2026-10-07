@@ -39,12 +39,6 @@ class PressDragView: NSView {
     }
 }
 
-/// 拖动的指针位置和从按下起挪了多少，窗口坐标。
-struct MouseDrag {
-    let location: CGPoint
-    let translation: CGSize
-}
-
 /// 按住拖动的区域，鼠标事件由 AppKit 接。用 AppKit 是为了声明这里按下不拖窗口；标题栏那一条另见 disablesWindowDragging。
 struct MouseDragArea: NSViewRepresentable {
     var cursor: NSCursor
@@ -54,7 +48,7 @@ struct MouseDragArea: NSViewRepresentable {
     var minimumDistance: CGFloat = 0
     /// 不接鼠标的范围，本区域的坐标、左上角为原点。落在这里的点击交给下面的 SwiftUI 控件，指针样式也不变。
     var excluded: [CGRect] = []
-    var onChanged: (MouseDrag) -> Void
+    var onChanged: (LayoutDrag) -> Void
     var onEnded: () -> Void = {}
     var onClick: (() -> Void)?
 
@@ -79,7 +73,7 @@ struct MouseDragArea: NSViewRepresentable {
     final class DragView: PressDragView {
         var cursor = NSCursor.arrow
         var activeCursor: NSCursor?
-        var onChanged: ((MouseDrag) -> Void)?
+        var onChanged: ((LayoutDrag) -> Void)?
         var onEnded: (() -> Void)?
         var onClick: (() -> Void)?
         var excluded: [CGRect] = [] {
@@ -126,7 +120,7 @@ struct MouseDragArea: NSViewRepresentable {
             }
             let start = windowPoint(pressedAt)
             let location = windowPoint(event.locationInWindow)
-            onChanged?(MouseDrag(location: location, translation: CGSize(width: location.x - start.x, height: location.y - start.y)))
+            onChanged?(LayoutDrag(location: location, translation: CGSize(width: location.x - start.x, height: location.y - start.y)))
         }
 
         override func mouseUp(with event: NSEvent) {

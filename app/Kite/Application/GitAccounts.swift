@@ -13,6 +13,8 @@ struct AccountProject: Decodable, Identifiable, Equatable {
     let name: String
     let remote: String
     let hosted: Bool
+    let icon: String?
+    let color: String?
 }
 
 struct GitHubDevice: Decodable, Equatable {

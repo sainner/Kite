@@ -24,7 +24,7 @@ final class WorkArea: Identifiable {
     var title: String { remote?.workspace.name ?? "新工作区" }
     var header: PaneHeader { PaneHeader(title: title, subtitle: "工作区") }
     var isDraft: Bool { remote == nil }
-    var isSample: Bool { SampleWorkspace.enabled && remote?.machine.id == "sample" }
+    var isSample: Bool { SampleWorkspace.enabled && remote.map { SampleWorkspace.machineIDs.contains($0.machine.id) } == true }
 
     init(remote: RemoteWorkspace? = nil, client: KitedClient? = nil, definitions: [RemotePluginDefinition] = [], connection: UUID = UUID()) {
         id = remote?.id ?? "draft-workspace"
@@ -33,12 +33,13 @@ final class WorkArea: Identifiable {
         self.definitions = definitions
         draftThread = WorkThread(workspace: remote?.workspace.cwd ?? "", project: remote?.project.name ?? "Kite")
         if let remote {
+            let sample = SampleWorkspace.machineIDs.contains(remote.machine.id)
             let openWindows = remote.windows.filter { $0.state == .open }
             windows = openWindows
             instances = remote.instances
             layout = WindowLayout(panes: openWindows.map { Pane($0.id) },
-                                  storageKey: remote.machine.id == "sample" ? nil : "KiteWindowLayout.\(remote.machine.id).\(remote.id)",
-                                  reconcileOnLoad: client != nil || remote.machine.id == "sample")
+                                  storageKey: sample ? nil : "KiteWindowLayout.\(remote.machine.id).\(remote.id)",
+                                  reconcileOnLoad: client != nil || sample)
         } else {
             let draft = RemoteWorkspaceWindow(id: "draft-window", workspaceId: id,
                                              target: WindowTarget(instanceId: draftThread.id, viewId: "conversation"), state: .open, createdAt: 0)

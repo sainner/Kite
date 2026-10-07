@@ -114,7 +114,7 @@ function helper(env: NodeJS.ProcessEnv): Promise<string> {
 
 const headerLine = z.object({ pages: z.number().int().nonnegative() });
 const pageLine = z.object({ page: z.number().int().positive(), markdown: z.string(), textLayer: z.boolean(), image: z.string().nullable().optional() });
-interface PdfPage { markdown: string; textLayer: boolean; image?: Uint8Array }
+interface PdfPage { markdown: string; image?: Uint8Array }
 
 /** 一次转换进程：逐页输出，读够了就停止，剩余页不再识别。 */
 class Conversion {
@@ -184,6 +184,11 @@ export class PdfReader {
       for (let number = first; number <= last; number++) {
         if (total !== undefined && number > total) break;
         let page = this.pages.get(`${key}:${number}`);
+        // 命中缓存时结束旧流，后续缺页从自身页码重新转换，避免沿用停在缓存页前的游标。
+        if (page && conversion) {
+          await conversion.stop();
+          conversion = undefined;
+        }
         if (!page) {
           if (!conversion) {
             conversion = await Conversion.start(await helper(this.env), path, number, last, this.env);
@@ -194,7 +199,7 @@ export class PdfReader {
           }
           const line = await conversion.next(pageLine);
           if (line.page !== number) throw new KiteError('PDF 转换输出的页码顺序不符');
-          page = { markdown: line.markdown, textLayer: line.textLayer, ...(line.image ? { image: Buffer.from(line.image, 'base64') } : {}) };
+          page = { markdown: line.markdown, ...(line.image ? { image: Buffer.from(line.image, 'base64') } : {}) };
           this.pages.set(`${key}:${number}`, page);
           if (this.pages.size > 32) this.pages.delete(this.pages.keys().next().value!);
         }

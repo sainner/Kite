@@ -38,7 +38,7 @@ enum Theme {
     /// 浅色填充（停靠图标、最小化窗口）上的图标色。
     static let ink = Color(red: 0.173, green: 0.271, blue: 0.4)
 
-    // 字号：两端用同一套 token，每个 token 是一种系统文本样式，多大由系统按平台定，iPhone 上还跟着系统的字号设置。
+    // 字号：两端共用 token，常规文字采用系统文本样式，侧栏层级使用指定字号。
     // 视图里不写点数，都从这里取
     /// 标题栏的标题。
     static let title = Font.headline
@@ -50,6 +50,12 @@ enum Theme {
     static let caption = Font.footnote
     /// 最小的字：状态 chip、工具信息与预览标注。
     static let status = Font.caption
+    /// 侧栏项目与菜单标题。
+    static let sidebarHeading = Font.system(size: 13, weight: .bold)
+    /// 侧栏工作区名称。
+    static let sidebarWorkspace = Font.system(size: 12)
+    /// 侧栏检出所属的工作机名称。
+    static let sidebarCheckout = Font.system(size: 10)
     /// 命令、输出、代码、改动。
     static let code = Font.system(.subheadline, design: .monospaced)
     /// 初始配置这类整页的大标题，直接压在背景上。
@@ -78,6 +84,35 @@ enum Palette {
     static let stone = Color(hex: 0xDAD5C8)
 }
 
+/// 项目默认跟随系统文字色。自选主题色用来区分项目，是参考色板之外的例外：色相尽量拉开，
+/// 避开错误色；明度取中等，在浅色和深色背景上都约有 3:1 的对比度，两种外观用同一个颜色，色板所见即所得。
+enum ProjectTheme: String, CaseIterable, Identifiable {
+    case primary, accent, green, purple, orange, pink
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .primary: "文字色"
+        case .accent: "主题蓝"
+        case .green: "草绿"
+        case .purple: "紫"
+        case .orange: "橙"
+        case .pink: "粉"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .primary: .primary
+        case .accent: .accentColor
+        case .green: Color(hex: 0x4E9A5C)
+        case .purple: Color(hex: 0x9670C8)
+        case .orange: Color(hex: 0xC98420)
+        case .pink: Color(hex: 0xCC6A9A)
+        }
+    }
+}
+
 extension Color {
     init(hex: UInt32) {
         self.init(.sRGB, red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255,
@@ -93,6 +128,8 @@ enum Metrics {
     static let gap: CGFloat = 12
     /// 侧栏左右的外侧留白。
     static let sidebarInset: CGFloat = 12
+    /// 菜单项与项目列表内容共用的左内边距。
+    static let sidebarItemInset: CGFloat = 10
     static let sidebarWidth: CGFloat = 240
     /// 侧边栏拖动调宽度的范围；拖到比 sidebarCollapse 还窄就收起。松手后宽度吸附到模块。
     static let sidebarMin: CGFloat = 204
@@ -133,20 +170,16 @@ enum Metrics {
     static var dragBubble: CGFloat { InputMode.current.dockItem }
     /// Mac 右侧停靠栏与窗口图标同宽。
     static let dockWidth: CGFloat = dragBubble
-    /// action 区：一排按钮、账号那一行，和两行之间的距离。
-    static var actionButton: CGFloat { InputMode.current.isTouch ? 44 : 36 }
-    static var accountRow: CGFloat { max(36, paneButton) }
-    static let actionSpacing: CGFloat = 10
     /// iPhone 上拉出侧边栏后窗口最少留多宽，要大于圆角的直径，圆角才不会变形。
     static let phoneMinWindow: CGFloat = 120
     /// iPhone 上页签那一行的高度，拉出 action 栏时出现在它上面。
     static let tabBar: CGFloat = dragBubble
     /// iPhone 上拉出侧边栏的手势区，左边缘多宽。
     static let edgeZone: CGFloat = 24
-    /// 会话输入栏的顶部和左右内边距。
+    /// 会话输入栏的顶部留白，文字左右在此基础上增加留白。
     static let controlInset: CGFloat = 8
-    /// 会话输入栏的底部内边距。
-    static var controlBottomInset: CGFloat { InputMode.current.isTouch ? controlInset : 6 }
+    /// 按钮行左右和底部的留白，让末端按钮与玻璃面板的圆角同心。
+    static var controlButtonInset: CGFloat { controlRadius - paneButton / 2 }
     /// 玻璃、交互范围与悬停轮廓共用。
     static var controlRadius: CGFloat { InputMode.current.controlRadius }
     /// 选 effort 的主刻度线的间距，一档占这么宽，拖过这么宽换一档。

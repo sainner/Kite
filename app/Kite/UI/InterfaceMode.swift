@@ -23,6 +23,7 @@ enum InputMode {
     var dockItem: CGFloat { isTouch ? 48 : 36 }
     var controlRadius: CGFloat { isTouch ? 28 : 18 }
     var rowHeight: CGFloat { isTouch ? 44 : 32 }
+    var workspaceRowHeight: CGFloat { isTouch ? 44 : 24 }
 }
 
 /// 按当前窗口可用空间选择布局，键盘只压缩内容，不改变布局类别。

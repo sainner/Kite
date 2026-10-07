@@ -4,9 +4,6 @@ import SwiftUI
 struct MainWindow: View {
     var availableWidth: CGFloat = 1272
     @Environment(AppModel.self) private var model
-    #if os(macOS)
-    @Environment(\.windowChrome) private var chrome
-    #endif
     @State private var resizingFrom: CGFloat?
     @State private var stage = DotStage()
 
@@ -50,6 +47,10 @@ struct MainWindow: View {
                 if model.sidebarSection != .workspaces {
                     // 工作区以外的栏是单页，自带半透明卡片
                     SectionContent()
+                        .padding(.top, Metrics.padding)
+                } else if let project = model.selectedProject {
+                    ProjectSettingsPage(project: project)
+                        .id(project.id)
                         .padding(.top, Metrics.padding)
                 } else if let workspace = model.current {
                     WorkspaceContent(workspace: workspace)

@@ -34,7 +34,7 @@
 ## 协作反馈
 
 - [同类控件统一交互](shared-control-interaction.md) — 统一尺寸、命中与反馈，保留控件已有的专门触屏交互
-- [界面由用户自己预览](user-previews-ui.md) — 样式按用户意见改，编译安装并打开后由用户预览，Mac 替换旧实例
+- [界面由用户自己预览](user-previews-ui.md) — 样式不写测试，当前仅更新 Mac 供用户预览，iPhone 等用户重新要求
 - [接数据沿用原界面](feedback-preserve-ui-on-data-integration.md) — App 接真实数据时保留已做好的界面结构，不另换空状态页面或控件布局
 - [假数据要穷举](fake-data-exhaustive.md) — 预览覆盖当前后端真实工具与异常，未支持能力单独标注
 - [对话用中文](feedback-chat-language.md) — 回复、计划与交付说明都用简体中文

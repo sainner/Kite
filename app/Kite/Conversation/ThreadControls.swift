@@ -31,7 +31,7 @@ struct ThreadControls: View {
                 .onSubmit(submit)
                 .blur(radius: leaving ? 6 : 0)
                 .opacity(leaving ? 0 : 1)
-                .padding(.horizontal, 8)
+                .padding(.horizontal, Metrics.controlInset + 8)
                 .padding(.vertical, 6)
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: Metrics.paneButtonGap) {
@@ -47,9 +47,10 @@ struct ThreadControls: View {
                     }
                 }
             }
+            .padding(.horizontal, Metrics.controlButtonInset)
         }
-        .padding([.top, .horizontal], Metrics.controlInset)
-        .padding(.bottom, Metrics.controlBottomInset)
+        .padding(.top, Metrics.controlInset)
+        .padding(.bottom, Metrics.controlButtonInset)
         // 交互玻璃的同心形状有高光退回胶囊的复现；玻璃与交互轮廓统一使用明确圆角。
         .contentShape(.interaction, shape)
         #if os(iOS)

@@ -4,6 +4,7 @@ import Foundation
 /// 未提供的接口明确拒绝，不回退到真实网络。
 final class SampleGitTransport {
     private var positions: [String: Int] = [:]
+    private var projectAppearances: [String: ProjectAppearance] = [:]
 
     var account: HTTPTransport { HTTPTransport(send: accountResponse) }
     var worker: HTTPTransport { HTTPTransport(send: workerResponse) }
@@ -37,6 +38,15 @@ final class SampleGitTransport {
             ])
         default:
             let parts = path.split(separator: "/")
+            if method == "PUT", parts.count == 4, parts.prefix(2) == ["api", "projects"], parts.last == "appearance",
+               let data = request.httpBody, let body = try JSONSerialization.jsonObject(with: data) as? [String: String] {
+                let id = String(parts[2])
+                var appearance = projectAppearances[id] ?? ProjectAppearance()
+                if let icon = body["icon"] { appearance.icon = icon }
+                if let color = body["color"] { appearance.color = color }
+                projectAppearances[id] = appearance
+                return try response(request, ["id": .string(id), "icon": .string(appearance.icon), "color": .string(appearance.color)])
+            }
             if ["PUT", "DELETE"].contains(method), parts.count == 4, parts.prefix(3) == ["api", "git", "accounts"] {
                 return try response(request, ["error": "预览数据不能修改绑定"], status: 409)
             }

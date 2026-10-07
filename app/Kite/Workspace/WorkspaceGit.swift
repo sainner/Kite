@@ -68,21 +68,37 @@ extension AppModel {
 /// 侧栏工作区行的右键菜单：独立工作区集成与归档，检出现场提交并推送。
 struct WorkspaceGitActions: View {
     let workspace: WorkArea
+    var showsWorkspaceMenu = false
     @Environment(AppModel.self) private var model
     @Environment(\.toast) private var toast
 
     var body: some View {
-        if workspace.remote?.workspace.kind == .root {
+        if showsWorkspaceMenu {
+            Button("集成改动") { integrate() }
+                .disabled(workspace.remote?.workspace.kind != .worktree || !model.isConnected(workspace))
+            Button("合入现场改动") { }
+                .disabled(true)
+                .help("尚未接通")
+            Button("丢弃改动", role: .destructive) { }
+                .disabled(true)
+                .help("尚未接通")
+            Divider()
+            Button("删除工作区", role: .destructive) { }
+                .disabled(true)
+                .help("尚未接通")
+        } else if workspace.remote?.workspace.kind == .root {
             Button("提交并推送…") { model.scenePush = workspace }
         } else if workspace.remote != nil {
-            Button("集成到主线并推送") {
-                let toast = toast
-                Task {
-                    do { toast?.show(try await model.adopt(workspace).summary) }
-                    catch { toast?.show(error.localizedDescription, systemImage: "exclamationmark.triangle") }
-                }
-            }
+            Button("集成到主线并推送") { integrate() }
             Button("归档工作区…", role: .destructive) { model.archiveRequest = workspace }
+        }
+    }
+
+    private func integrate() {
+        let toast = toast
+        Task {
+            do { toast?.show(try await model.adopt(workspace).summary) }
+            catch { toast?.show(error.localizedDescription, systemImage: "exclamationmark.triangle") }
         }
     }
 }

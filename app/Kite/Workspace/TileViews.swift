@@ -223,7 +223,6 @@ struct PaneCard: View {
             .onPreferenceChange(PaneHeaderActionsWidth.self) { menuWidth = $0 }
             .onPreferenceChange(PaneHeaderHeight.self) { headerHeight = $0 }
             .onPreferenceChange(PaneHeaderInteractiveRects.self) { headerInteractiveRects = $0 }
-            .help(minimized ? "展开\(appearance.name)窗口；拖动可调整位置" : "拖动标题栏调整窗口位置")
             .accessibilityActions {
                 if minimized {
                     Button("展开窗口", action: onActivate)

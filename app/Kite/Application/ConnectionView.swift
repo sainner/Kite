@@ -87,9 +87,15 @@ private struct SubscriptionSection: View {
 
 /// 新建分成两个入口：添加项目在工作机上登记目录或克隆远程仓库；开始会话在已登记的检出上建工作区。
 struct NewWorkspace: View {
-    enum Mode: String, Identifiable {
-        case project, session
-        var id: Self { self }
+    enum Mode: Equatable, Identifiable {
+        case project, session, checkout(String)
+        var id: String {
+            switch self {
+            case .project: "project"
+            case .session: "session"
+            case .checkout(let id): "checkout:\(id)"
+            }
+        }
     }
 
     let mode: Mode
@@ -110,7 +116,7 @@ struct NewWorkspace: View {
             Form {
                 switch mode {
                 case .project: projectSection
-                case .session: sessionSection
+                case .session, .checkout: sessionSection
                 }
                 if let error { Text(error).foregroundStyle(Theme.danger) }
             }
@@ -119,7 +125,8 @@ struct NewWorkspace: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
         }
         .onAppear {
-            checkoutID = model.checkouts.first(where: { model.connections[$0.machineId]?.connected == true })?.id ?? ""
+            if case .checkout(let id) = mode { checkoutID = id }
+            else { checkoutID = model.checkouts.first(where: { model.connections[$0.machineId]?.connected == true })?.id ?? "" }
             machineID = (model.activeConnection?.connected == true ? model.machine?.id : nil) ?? model.availableWorkers.first?.id ?? ""
             prompt = model.draftWorkspace.draftThread.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         }

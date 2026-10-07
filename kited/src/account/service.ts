@@ -32,6 +32,7 @@ interface Catalog {
   deviceId: string; machineId: string; digest: string; revision: number; snapshot: string | null; updatedAt: number | null;
 }
 interface ProjectRow { id: string; userId: string; remote: string; name: string; hostedRepo: number; createdAt: number }
+interface ProjectAppearance { icon: string | null; color: string | null }
 class RequestError extends Error {
   constructor(message: string, readonly status: number) { super(message); }
 }
@@ -82,6 +83,10 @@ export async function createAccountService(options: Options) {
     CREATE TABLE IF NOT EXISTS kite_project (
       id TEXT PRIMARY KEY, userId TEXT NOT NULL, remote TEXT NOT NULL, name TEXT NOT NULL,
       hostedRepo INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL, UNIQUE(userId, remote)
+    );
+    CREATE TABLE IF NOT EXISTS kite_project_appearance (
+      projectId TEXT PRIMARY KEY REFERENCES kite_project(id) ON DELETE CASCADE,
+      icon TEXT NOT NULL DEFAULT 'folder', color TEXT NOT NULL DEFAULT 'primary'
     );
     CREATE TABLE IF NOT EXISTS kite_git_credential (
       userId TEXT NOT NULL, host TEXT NOT NULL, account TEXT NOT NULL, secret TEXT NOT NULL, createdAt INTEGER NOT NULL,
@@ -171,10 +176,13 @@ export async function createAccountService(options: Options) {
     if (!login) throw new RequestError('请登录 Kite', 401);
     return { userId: login.user.id, worker: false };
   }
-  function projectView(row: ProjectRow) {
+  function projectView(row: ProjectRow, appearance?: ProjectAppearance) {
     const hosted = row.remote === hostedRemote(row.id);
+    const style = appearance ?? db.query<ProjectAppearance, [string]>(
+      'SELECT icon, color FROM kite_project_appearance WHERE projectId = ?').get(row.id);
     return { id: row.id, name: row.name, remote: row.remote, url: hosted ? hostedURL(row.id) : `https://${row.remote}.git`,
-      hosted, createdAt: row.createdAt };
+      hosted, createdAt: row.createdAt,
+      icon: style?.icon ?? 'folder', color: style?.color ?? 'primary' };
   }
   function ownedProject(id: string, userId: string): ProjectRow {
     const row = db.query<ProjectRow, [string, string]>('SELECT * FROM kite_project WHERE id = ? AND userId = ?').get(id, userId);
@@ -288,7 +296,9 @@ export async function createAccountService(options: Options) {
     if (path === '/api/projects' || path.startsWith('/api/projects/')) {
       const { userId, worker: fromWorker } = await owner(request);
       if (path === '/api/projects' && request.method === 'GET') {
-        return result(db.query<ProjectRow, [string]>('SELECT * FROM kite_project WHERE userId = ? ORDER BY createdAt, rowid').all(userId).map(projectView));
+        const projects = db.query<ProjectRow & ProjectAppearance, [string]>(`SELECT p.*, a.icon, a.color FROM kite_project p
+          LEFT JOIN kite_project_appearance a ON a.projectId = p.id WHERE p.userId = ? ORDER BY p.createdAt, p.rowid`).all(userId);
+        return result(projects.map((row) => projectView(row, row)));
       }
       if (path === '/api/projects' && request.method === 'POST') {
         const body = projectCreation.parse(await request.json());
@@ -309,6 +319,19 @@ export async function createAccountService(options: Options) {
           .run(crypto.randomUUID(), userId, remote, remoteName(body.remote), now());
         const row = db.query<ProjectRow, [string, string]>('SELECT * FROM kite_project WHERE userId = ? AND remote = ?').get(userId, remote)!;
         return result(projectView(row), 201);
+      }
+      const appearance = /^\/api\/projects\/([^/]+)\/appearance$/.exec(path);
+      if (appearance && request.method === 'PUT') {
+        if (fromWorker) throw new RequestError('项目外观须由用户在 App 中修改', 403);
+        const project = ownedProject(appearance[1]!, userId);
+        const body = z.object({
+          icon: z.string().min(1).max(100).regex(/^[a-zA-Z0-9.]+$/).optional(),
+          color: z.enum(['primary', 'accent', 'green', 'purple', 'orange', 'pink']).optional(),
+        }).strict().refine((value) => value.icon !== undefined || value.color !== undefined).parse(await request.json());
+        db.query(`INSERT INTO kite_project_appearance (projectId, icon, color) VALUES (?, COALESCE(?, 'folder'), COALESCE(?, 'primary'))
+          ON CONFLICT(projectId) DO UPDATE SET icon = COALESCE(?, icon), color = COALESCE(?, color)`)
+          .run(project.id, body.icon ?? null, body.color ?? null, body.icon ?? null, body.color ?? null);
+        return result(projectView(project));
       }
       const match = /^\/api\/projects\/([^/]+)(\/migrate)?$/.exec(path);
       if (match && !match[2] && request.method === 'GET') return result(projectView(ownedProject(match[1]!, userId)));

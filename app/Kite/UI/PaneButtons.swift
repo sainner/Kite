@@ -46,20 +46,28 @@ struct PaneButtonGroup<Content: View>: View {
 
 /// 标题栏的窗口操作与会话菜单共用一块玻璃，与 iPhone 的组合菜单按钮同一规则：
 /// 相邻内容之间隔一个按钮间距，两端留出图标在按钮高度里的空白，单个图标入口仍是圆形。
+/// 选中时玻璃使用主题色，内容统一为白色。
 struct PaneHeaderButtonGroup<Content: View>: View {
+    var expands = false
+    var selected = false
     @ViewBuilder var content: Content
 
     var body: some View {
         HStack(spacing: 0) {
-            content
+            if selected {
+                content.foregroundStyle(.white)
+            } else {
+                content
+            }
         }
         .padding(.horizontal, Metrics.paneHeaderGroupInset)
+        .frame(maxWidth: expands ? .infinity : nil)
         .menuStyle(.button)
         .buttonStyle(PaneHeaderButtonStyle())
         .controlSize(.large)
         .menuIndicator(.hidden)
-        .glassEffect(.regular.interactive(), in: .capsule)
-        .fixedSize()
+        .glassEffect(.regular.tint(selected ? .accentColor : nil).interactive(), in: .capsule)
+        .fixedSize(horizontal: !expands, vertical: true)
     }
 }
 
@@ -69,6 +77,7 @@ private struct PaneHeaderButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .modifier(PaneButtonHover(inset: 4, horizontalInset: -1, isPressed: configuration.isPressed))
+            .clickPointer()
     }
 }
 
@@ -95,17 +104,19 @@ struct PaneButtonStyle: ButtonStyle {
     var text = false
     var fill: Color?
     var foreground: Color = .secondary
+    var size: CGFloat?
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
+        let size = size ?? Metrics.paneButton
+        return configuration.label
             .font(fill == nil ? Theme.body : Theme.body.weight(.bold))
             .foregroundStyle(fill == nil ? foreground : .white)
             .lineLimit(1)
             .fixedSize(horizontal: text, vertical: false)
             .padding(.horizontal, text ? Metrics.paneToolbarInset : 0)
-            .frame(width: text ? nil : Metrics.paneButton, height: Metrics.paneButton)
-            .frame(minWidth: Metrics.paneButton)
+            .frame(width: text ? nil : size, height: size)
+            .frame(minWidth: size)
             .modifier(PaneButtonHover(inset: 2, fill: fill, isPressed: configuration.isPressed))
             .opacity(!isEnabled ? 0.45 : configuration.isPressed ? 0.7 : 1)
             .clickPointer()

@@ -32,9 +32,9 @@ struct CompactWindow: View {
     let sidebarWidth: CGFloat
     let actionsHeight: CGFloat
     let screenRadius: CGFloat
-    /// 工作区开着窗口；否则放占位内容。
-    let windowed: Bool
     let actionsRule: ActionsRule
+    /// 工作区开着窗口；否则放占位内容。
+    private var windowed: Bool { actionsRule == .free }
     @Environment(AppModel.self) private var model
     /// 每一侧要打开到几成：拖着时是手指处，松手后是 0 或 1。都带着动画改，窗口实际摆到哪见 presented。
     @State private var target = Openness()
@@ -62,7 +62,7 @@ struct CompactWindow: View {
 
     /// 一出现就停在该在的位置（侧栏开着、底栏钉着），不先铺满再缩。
     init(open: Binding<WorkspaceDrawer?>, shown: Binding<WorkspaceDrawer?>, screen: CGSize, insets: EdgeInsets, homeInset: CGFloat,
-         sidebarWidth: CGFloat, actionsHeight: CGFloat, screenRadius: CGFloat, windowed: Bool, actionsRule: ActionsRule) {
+         sidebarWidth: CGFloat, actionsHeight: CGFloat, screenRadius: CGFloat, actionsRule: ActionsRule) {
         _open = open
         _shown = shown
         self.screen = screen
@@ -71,7 +71,6 @@ struct CompactWindow: View {
         self.sidebarWidth = sidebarWidth
         self.actionsHeight = actionsHeight
         self.screenRadius = screenRadius
-        self.windowed = windowed
         self.actionsRule = actionsRule
         var start = Openness()
         if open.wrappedValue == .sidebar { start.sidebar = 1 }
@@ -137,6 +136,8 @@ struct CompactWindow: View {
     private var placeholder: some View {
         if model.sidebarSection != .workspaces {
             SectionContent()
+        } else if let project = model.selectedProject {
+            ProjectSettingsPage(project: project).id(project.id)
         } else if let area = model.current {
             Group {
                 if let scene = SampleWorkspace.stageScene(of: area) {

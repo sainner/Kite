@@ -70,13 +70,14 @@ struct CompactLayout: View {
                     ScrollView(.vertical, showsIndicators: false) {
                         switch model.sidebarSection {
                         case .workspaces, .drive:
-                            WorkspaceList(headerHeight: 32) { workspace in
-                                WorkspaceRow(workspace: workspace, current: current == workspace.id)
-                                    .contentShape(Rectangle())
+                            WorkspaceList(onSelectProject: { open = nil }) { workspace in
+                                WorkspaceRow(workspace: workspace, current: current == workspace.id) {
+                                    Color.clear.contentShape(Rectangle())
                                     .onTapGesture {
-                                        model.selected = workspace.id
+                                        model.selectWorkspace(workspace.id)
                                         open = nil
                                     }
+                                }
                             }
                         case .extensions, .settings:
                             SectionPages { open = nil }
@@ -90,7 +91,7 @@ struct CompactLayout: View {
                 .opacity(showing(.sidebar) ? 1 : 0)
                 // 底栏：折叠的窗口那一行
                 VStack(alignment: .leading, spacing: Metrics.gap) {
-                    if model.sidebarSection == .workspaces {
+                    if model.sidebarSection == .workspaces, model.selectedProject == nil {
                         tabBar.frame(height: Metrics.tabBar)
                             .padding(.horizontal, Metrics.padding)
                     }
@@ -105,8 +106,7 @@ struct CompactLayout: View {
             .overlay(alignment: .topLeading) {
                 CompactWindow(open: $open, shown: $shown, screen: screen, insets: insets, homeInset: home,
                               sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius,
-                              windowed: windowed,
-                              actionsRule: windowed ? .free : model.sidebarSection == .workspaces ? .pinned : .none)
+                              actionsRule: windowed ? .free : model.sidebarSection == .workspaces && model.selectedProject == nil ? .pinned : .none)
             }
         }
         // 保留 Home 条自动隐藏，不推测系统何时隐藏它。

@@ -5,6 +5,7 @@ final class AppModel {
     var workspaces: [WorkArea] = []
     let draftWorkspace = WorkArea()
     var selected = ""
+    var selectedProjectID: String?
     var detached: Set<String> = []
     var pendingPlacement: CGRect?
     var sidebarWidth = Metrics.sidebarWidth
@@ -45,6 +46,21 @@ final class AppModel {
     /// 设置一栏在内容区显示的页面。
     var settingsPage = SettingsPage.appearance
 
+    var selectedProject: RemoteProject? {
+        guard let selectedProjectID else { return nil }
+        return knownProjects.first { $0.id == selectedProjectID }
+    }
+
+    func selectProject(_ id: String) {
+        sidebarSection = .workspaces
+        selectedProjectID = id
+    }
+
+    func selectWorkspace(_ id: String) {
+        selectedProjectID = nil
+        selected = id
+    }
+
     /// 切到设置一栏。
     func openSettings(_ page: SettingsPage? = nil) {
         sidebarSection = .settings
@@ -68,7 +84,7 @@ final class AppModel {
     func isConnected(_ area: WorkArea) -> Bool { area.isSample || connection(for: area)?.connected == true }
 
     func activeClient(in area: WorkArea? = nil) throws -> KitedClient {
-        if let previewClient, (area ?? current)?.remote?.machine.id == previewClient.machineID { return previewClient }
+        if let previewClient, (area ?? current)?.isSample == true { return previewClient }
         guard let connection = connection(for: area), connection.connected else { throw KitedError(message: "所属工作机未连接") }
         return connection.client
     }
@@ -146,6 +162,7 @@ final class AppModel {
         connections = [:]
         workspaces = []
         detached = []
+        selectedProjectID = nil
         selected = ""
         draftWorkspace.draftThread.contextTemplate = nil
         draftWorkspace.draftThread.connected = false
@@ -354,7 +371,7 @@ final class AppModel {
             body: CreateThreadRequest(prompt: prompt, checkout: checkout, contextTemplate: template?.selection), as: RemoteWorkspace.self)
         try await refresh(client)
         guard accepts(client) else { throw KitedError(message: "工作机已切换") }
-        selected = area.id
+        selectWorkspace(area.id)
         draftWorkspace.draftThread.draft = ""
         draftWorkspace.draftThread.contextTemplate = nil
     }
@@ -488,6 +505,7 @@ final class AppModel {
 
     func workspace(_ id: String) -> WorkArea? { id == draftWorkspace.id ? draftWorkspace : workspaces.first { $0.id == id } }
     var current: WorkArea? {
+        guard selectedProject == nil else { return nil }
         if !detached.contains(selected), let area = workspace(selected) { return area }
         return workspaces.first { !detached.contains($0.id) }
     }

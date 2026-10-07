@@ -1,42 +1,136 @@
 import SwiftUI
 
-/// 侧边栏里的一行，一个工作区。没有自己的底色，选中时垫一层。
-/// 检出行（根工作区）主文字是目录名，账号下有几台机器时行尾附上所属机器；独立工作区前面是分支图标。完整路径在悬停提示里。
-struct WorkspaceRow: View {
+/// 点击与拖动只覆盖文字区，右侧操作保留独立的命中范围。
+struct WorkspaceRow<Interaction: View>: View {
     let workspace: WorkArea
     let current: Bool
-    /// 分离成了独立窗口（Mac）。
     var detached = false
-    var height: CGFloat = InputMode.current.rowHeight
+    @ViewBuilder var interaction: () -> Interaction
 
     @Environment(AppModel.self) private var model
-    private var isRoot: Bool { workspace.remote?.workspace.kind == .root }
+    @Environment(\.sidebarProjectTint) private var tint
+    @Environment(\.sidebarHighlight) private var highlight
+    @State private var hovered = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: isRoot ? "folder" : "arrow.triangle.branch")
-                .font(Theme.secondary).foregroundStyle(.secondary)
-                .frame(width: InputMode.current.labelExtent)
-            Text(workspace.title).font(Theme.body).lineLimit(1).truncationMode(.middle)
-            if !workspace.isSample && !model.isConnected(workspace) {
-                Text("离线").font(Theme.caption).foregroundStyle(.secondary)
+        HStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Text(workspace.title).font(Theme.sidebarWorkspace)
+                    .fontWeight(current ? .bold : .regular)
+                    .lineLimit(1).truncationMode(.middle)
+                if !workspace.isSample && !model.isConnected(workspace) {
+                    Text("离线").font(Theme.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                if detached { Image(systemName: "macwindow").font(Theme.caption) }
             }
-            Spacer(minLength: 0)
-            if isRoot, model.showsMachineNames, let machine = workspace.remote?.machine.name {
-                Text(machine).font(Theme.caption).foregroundStyle(.secondary).lineLimit(1)
+            .frame(maxWidth: .infinity, minHeight: InputMode.current.workspaceRowHeight)
+            .contentShape(Rectangle())
+            .overlay { interaction() }
+            .contextMenu { WorkspaceGitActions(workspace: workspace, showsWorkspaceMenu: !InputMode.current.isTouch) }
+            HStack(spacing: 0) {
+                #if os(macOS)
+                Button { model.archiveRequest = workspace } label: {
+                    Image(systemName: "archivebox")
+                }
+                .disabled(workspace.remote?.workspace.kind != .worktree || !model.isConnected(workspace))
+                .help("归档工作区")
+                .accessibilityLabel("归档工作区")
+                Menu {
+                    WorkspaceGitActions(workspace: workspace, showsWorkspaceMenu: true)
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .help("更多操作")
+                .accessibilityLabel("更多操作")
+                #else
+                Menu {
+                    WorkspaceGitActions(workspace: workspace)
+                } label: {
+                    Image(systemName: "arrow.triangle.branch")
+                }
+                .help("版本操作")
+                .accessibilityLabel("版本操作")
+                Menu {
+                    Button("创建工作区…") {
+                        if let checkout = workspace.remote?.checkout { model.newWorkspace = .checkout(checkout.id) }
+                    }
+                    Divider()
+                    WorkspaceGitActions(workspace: workspace)
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .help("更多操作")
+                .accessibilityLabel("更多操作")
+                #endif
             }
-            if detached {
-                Image(systemName: "macwindow").font(Theme.secondary).foregroundStyle(.secondary)
-            }
+            .menuStyle(.button)
+            .menuIndicator(.hidden)
+            .buttonStyle(SidebarButtonStyle(foreground: tint,
+                                           size: InputMode.current.workspaceRowHeight))
+            .opacity(current || InputMode.current.revealsControls(hovered: hovered) ? 1 : 0)
+            .allowsHitTesting(current || InputMode.current.revealsControls(hovered: hovered))
+            .accessibilityHidden(!current && !InputMode.current.revealsControls(hovered: hovered))
         }
-        .padding(.horizontal, 8)
-        .frame(height: height)
-        .background(current ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 8))
+        .foregroundStyle(current && !InputMode.current.isTouch ? highlight : tint.opacity(current || hovered ? 1 : 0.78))
+        .fontWeight(current && InputMode.current.isTouch ? .medium : .regular)
+        .padding(.trailing, 4)
+        .onHover { hovered = $0 }
+        .accessibilityAddTraits(current ? .isSelected : [])
         .help(workspace.remote.map { "\($0.machine.name) · \($0.workspace.cwd)" } ?? workspace.title)
     }
 }
 
-/// 检出行直接打开根工作区，下面只列独立工作区。
+private extension EnvironmentValues {
+    @Entry var sidebarProjectTint: Color = .primary
+    /// 选中与悬停的强调色：项目内用项目主题色，项目用默认文字色或在项目之外时用 App 主题色。
+    @Entry var sidebarHighlight: Color = .accentColor
+    @Entry var sidebarButtonHovered = false
+}
+
+/// 侧栏悬停只改变图标颜色，保留按钮的尺寸与点击范围。
+private struct SidebarButtonStyle: ButtonStyle {
+    var foreground: Color = .secondary
+    var size: CGFloat?
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.sidebarHighlight) private var highlight
+    @State private var hovered = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        #if os(macOS)
+        configuration.label
+            .font(Theme.body)
+            .frame(width: size, height: size)
+            .foregroundStyle(hovered && isEnabled ? highlight : foreground)
+            .environment(\.sidebarButtonHovered, hovered && isEnabled)
+            .contentShape(Capsule())
+            .opacity(!isEnabled ? 0.45 : configuration.isPressed ? 0.7 : 1)
+            .onHover { hovered = $0 }
+            .clickPointer()
+        #else
+        if let size {
+            PaneButtonStyle(foreground: foreground, size: size).makeBody(configuration: configuration)
+        } else {
+            configuration.label
+                .opacity(!isEnabled ? 0.45 : configuration.isPressed ? 0.7 : 1)
+                .clickPointer()
+        }
+        #endif
+    }
+}
+
+private struct SidebarIconTint: ViewModifier {
+    var foreground: Color
+    var allowsHover = true
+    @Environment(\.sidebarButtonHovered) private var hovered
+    @Environment(\.sidebarHighlight) private var highlight
+
+    func body(content: Content) -> some View {
+        content.foregroundStyle(hovered && allowsHover ? highlight : foreground)
+    }
+}
+
+/// 项目内保留检出归属，根工作区和独立工作区都可直接进入。
 struct WorkspaceGroup: Identifiable {
     struct Checkout: Identifiable {
         let id: String
@@ -70,34 +164,301 @@ extension AppModel {
         return groups
     }
 
-    /// 工作区分布在不止一台机器上时，检出行才标出机器。
-    var showsMachineNames: Bool { Set(workspaces.compactMap { $0.remote?.machine.id }).count > 1 }
 }
 
-/// 侧栏按项目分组；每个检出行进入根工作区，其他工作区缩进一级。
+/// 项目、机器与工作区共享一根树干，文字起点保持一致。
 struct WorkspaceList<Row: View>: View {
-    var headerHeight: CGFloat = 24
+    var onSelectProject: () -> Void = {}
     @ViewBuilder let row: (WorkArea) -> Row
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        let groups = model.workspaceGroups
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(groups) { group in
-                if let title = group.title {
-                    Text(title).font(Theme.secondary.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
-                        .padding(.horizontal, 8)
-                        .frame(height: headerHeight)
-                        .padding(.top, group.id == groups.first?.id ? 0 : 12)
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(model.workspaceGroups) { group in
+                WorkspaceProjectSection(group: group, onSelect: onSelectProject, row: row)
+            }
+        }
+        #if os(iOS)
+        .padding(.top, 12)
+        #endif
+        .padding(.bottom, 12)
+    }
+}
+
+private struct WorkspaceProjectSection<Row: View>: View {
+    let group: WorkspaceGroup
+    var onSelect: () -> Void = {}
+    @ViewBuilder let row: (WorkArea) -> Row
+    @Environment(AppModel.self) private var model
+    @State private var hovered = false
+    @State private var isExpanded = true
+    @State private var hoveredCheckoutID: String?
+    @State private var editingAppearance = false
+
+    private var theme: ProjectTheme {
+        ProjectTheme(rawValue: model.account.projectAppearances[group.id]?.color ?? "primary") ?? .primary
+    }
+    private var tint: Color { theme.color }
+    private var highlight: Color { theme == .primary ? .accentColor : tint }
+    private var treeColor: Color { tint.mix(with: Theme.background, by: 0.8) }
+    private var checkoutLinkColor: Color { tint.mix(with: Theme.background, by: 0.92) }
+
+    var body: some View {
+        let checkouts = group.checkouts
+        let current = InputMode.current.isTouch ? nil : model.current?.id
+        let selected = model.selectedProjectID == group.id || group.workspaces.contains { $0.id == current }
+        let weight: Font.Weight = selected ? .bold : .semibold
+        let foreground = selected || (!InputMode.current.isTouch && hovered) ? highlight : tint
+        let textInset: CGFloat = Metrics.sidebarItemInset + 8 + InputMode.current.labelExtent
+        let treeInset: CGFloat = Metrics.sidebarItemInset + InputMode.current.labelExtent / 2
+        SidebarStickySection(headerHeight: InputMode.current.rowHeight) {
+            HStack(spacing: 0) {
+                #if os(macOS)
+                Button { editingAppearance = true } label: {
+                    Image(systemName: model.account.projectAppearances[group.id]?.icon ?? "folder")
+                        .font(Theme.sidebarHeading.weight(weight))
+                        .frame(width: InputMode.current.labelExtent, height: InputMode.current.rowHeight)
                 }
-                ForEach(group.checkouts) { checkout in
-                    if let root = checkout.root { row(root).contextMenu { WorkspaceGitActions(workspace: root) } }
-                    ForEach(checkout.workspaces) { workspace in
-                        row(workspace).padding(.leading, 16).contextMenu { WorkspaceGitActions(workspace: workspace) }
+                .buttonStyle(SidebarButtonStyle(foreground: foreground))
+                .help("编辑图标与主题颜色")
+                .accessibilityLabel("编辑\(group.title ?? "项目")的图标与主题颜色")
+                .popover(isPresented: $editingAppearance) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("项目外观").font(Theme.body)
+                        ProjectAppearanceOptions(projectID: group.id)
+                    }
+                    .padding(12)
+                    .frame(width: 232)
+                }
+                #endif
+                Button {
+                    model.selectProject(group.id)
+                    onSelect()
+                } label: {
+                    HStack(spacing: 8) {
+                        #if os(iOS)
+                        Image(systemName: model.account.projectAppearances[group.id]?.icon ?? "folder")
+                            .font(Theme.sidebarHeading.weight(weight))
+                            .frame(width: InputMode.current.labelExtent)
+                        #endif
+                        Text(group.title ?? "项目")
+                            .font(Theme.sidebarHeading.weight(weight)).lineLimit(1)
+                            .foregroundStyle(foreground)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.leading, InputMode.current.isTouch ? 0 : 8)
+                    .frame(height: InputMode.current.rowHeight)
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(SidebarButtonStyle(foreground: foreground))
+                .help("项目配置")
+                .accessibilityAddTraits(selected ? .isSelected : [])
+                Button {
+                    if let checkout = group.checkouts.first(where: { checkout in
+                        (checkout.root.map { model.isConnected($0) } ?? false)
+                            || checkout.workspaces.contains(where: { model.isConnected($0) })
+                    }) ?? group.checkouts.first {
+                        model.newWorkspace = .checkout(checkout.id)
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(SidebarButtonStyle(foreground: foreground, size: InputMode.current.isTouch ? Metrics.paneButton : InputMode.current.workspaceRowHeight))
+                .help("创建工作区")
+                .accessibilityLabel("在\(group.title ?? "项目")中创建工作区")
+                .opacity(InputMode.current.revealsControls(hovered: hovered) ? 1 : 0)
+                .allowsHitTesting(InputMode.current.revealsControls(hovered: hovered))
+                .accessibilityHidden(!InputMode.current.revealsControls(hovered: hovered))
+                #if os(macOS)
+                Button { isExpanded.toggle() } label: {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                }
+                .buttonStyle(SidebarButtonStyle(foreground: foreground, size: Metrics.paneButton))
+                .help(isExpanded ? "收起项目" : "展开项目")
+                .accessibilityLabel("\(isExpanded ? "收起" : "展开")\(group.title ?? "项目")")
+                #endif
+            }
+            .foregroundStyle(foreground)
+            .padding(.leading, Metrics.sidebarItemInset)
+            .padding(.trailing, InputMode.current.isTouch ? 8 : 4)
+            .frame(height: InputMode.current.rowHeight)
+            .background(selected ? highlight.opacity(0.12) : tint.opacity(hovered ? 0.06 : 0), in: Capsule())
+            .onHover { hovered = $0 }
+        } content: {
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(checkouts) { checkout in
+                        let workspaces = [checkout.root].compactMap { $0 } + checkout.workspaces
+                        let selectedIndex = workspaces.firstIndex { $0.id == current }
+                        SidebarStickySection(enabled: selectedIndex != nil && checkouts.count > 1,
+                                             topInset: InputMode.current.rowHeight,
+                                             headerHeight: checkouts.count > 1 ? 8 + InputMode.current.workspaceRowHeight : 0) {
+                            if checkouts.count > 1 {
+                                HStack(spacing: 8) {
+                                    Circle().fill(selectedIndex == nil ? tint.mix(with: Theme.background, by: 0.6) : highlight)
+                                        .frame(width: selectedIndex == nil ? 6 : 8, height: selectedIndex == nil ? 6 : 8)
+                                        .frame(width: InputMode.current.labelExtent)
+                                    Text(workspaces.first?.remote?.machine.name ?? "工作机").font(Theme.sidebarCheckout)
+                                        .fontWeight(selectedIndex == nil ? .regular : .bold)
+                                        .foregroundStyle(selectedIndex == nil ? tint.opacity(0.5) : highlight).lineLimit(1)
+                                    Spacer(minLength: 0)
+                                    #if os(macOS)
+                                    Button { model.newWorkspace = .checkout(checkout.id) } label: {
+                                        Image(systemName: "plus")
+                                    }
+                                    .buttonStyle(SidebarButtonStyle(foreground: selectedIndex == nil ? tint : highlight, size: InputMode.current.workspaceRowHeight))
+                                    .help("创建工作区")
+                                    .accessibilityLabel("在此检出中创建工作区")
+                                    .opacity(hoveredCheckoutID == checkout.id ? 1 : 0)
+                                    .allowsHitTesting(hoveredCheckoutID == checkout.id)
+                                    .accessibilityHidden(hoveredCheckoutID != checkout.id)
+                                    #endif
+                                }
+                                .padding(.leading, Metrics.sidebarItemInset)
+                                .padding(.trailing, InputMode.current.isTouch ? 0 : 4)
+                                .frame(height: InputMode.current.workspaceRowHeight)
+                                .accessibilityAddTraits(selectedIndex == nil ? [] : .isSelected)
+                                .onHover { hovering in
+                                    if hovering { hoveredCheckoutID = checkout.id }
+                                    else if hoveredCheckoutID == checkout.id { hoveredCheckoutID = nil }
+                                }
+                                .padding(.top, 8)
+                            }
+                        } content: {
+                            SidebarWorkspaceRows(workspaces: workspaces, selectedIndex: selectedIndex,
+                                                 hasCheckout: checkouts.count > 1, color: treeColor,
+                                                 textInset: textInset, treeInset: treeInset, row: row)
+                        }
+                        .zIndex(selectedIndex != nil ? 1 : 0)
+                    }
+                }
+                .background(alignment: .leading) {
+                    if checkouts.count > 1 {
+                        Rectangle().fill(checkoutLinkColor).frame(width: 1)
+                            .padding(.leading, treeInset - 0.5)
+                            // 在末行弯折的起点结束，避免直线穿过弯折露出尾巴。
+                            .padding(.bottom, InputMode.current.workspaceRowHeight / 2 + 10)
+                            .allowsHitTesting(false)
+                            .modifier(SidebarScrollingClip(topOverflow: 0))
                     }
                 }
             }
         }
+        .environment(\.sidebarProjectTint, tint)
+        .environment(\.sidebarHighlight, highlight)
+    }
+}
+
+/// 普通行共用裁切，选中行独立吸顶；占位保留列表高度，连接线随选中行置于最上层。
+private struct SidebarWorkspaceRows<Row: View>: View {
+    let workspaces: [WorkArea]
+    let selectedIndex: Int?
+    let hasCheckout: Bool
+    let color: Color
+    let textInset: CGFloat
+    let treeInset: CGFloat
+    @ViewBuilder let row: (WorkArea) -> Row
+    @Environment(\.sidebarStickyRegions) private var regions
+
+    private var selectedRegion: SidebarStickyRegion? {
+        guard let selectedIndex, let checkout = regions.last else { return nil }
+        let rowHeight = InputMode.current.workspaceRowHeight
+        return SidebarStickyRegion(space: checkout.space,
+                                   start: checkout.height + CGFloat(selectedIndex) * rowHeight,
+                                   height: rowHeight,
+                                   topInset: InputMode.current.rowHeight + checkout.height)
+    }
+
+    var body: some View {
+        let rowHeight = InputMode.current.workspaceRowHeight
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(workspaces.enumerated()), id: \.element.id) { index, workspace in
+                if index == selectedIndex {
+                    Color.clear.frame(height: rowHeight)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                } else {
+                    connectedRow(workspace, index: index, selected: false)
+                }
+            }
+        }
+        .modifier(SidebarScrollingClip(topOverflow: hasCheckout ? rowHeight / 2 : 0,
+                                      additionalRegions: selectedRegion.map { [$0] } ?? []))
+        .overlay(alignment: .topLeading) {
+            if let selectedIndex, let selectedRegion {
+                connectedRow(workspaces[selectedIndex], index: selectedIndex, selected: true)
+                    .modifier(SidebarStickyHeader(region: selectedRegion,
+                                                  topOverflow: CGFloat(selectedIndex + 1) * rowHeight))
+                    .padding(.top, CGFloat(selectedIndex) * rowHeight)
+            }
+        }
+    }
+
+    private func connectedRow(_ workspace: WorkArea, index: Int, selected: Bool) -> some View {
+        row(workspace)
+            .padding(.leading, textInset)
+            .background(alignment: .leading) {
+                SidebarWorkspaceLink(index: index, hasCheckout: hasCheckout,
+                                     checkoutSelected: selectedIndex != nil,
+                                     selected: selected, color: color)
+                    .frame(width: textInset - treeInset + 6)
+                    .padding(.leading, treeInset)
+                    .allowsHitTesting(false)
+            }
+    }
+}
+
+/// 每行直接连接所属标题，固定后缩短到吸顶标题；整条连接随该行一起参与层叠与裁切。
+private struct SidebarWorkspaceLink: View {
+    let index: Int
+    let hasCheckout: Bool
+    let checkoutSelected: Bool
+    let selected: Bool
+    let color: Color
+    @Environment(\.sidebarStickyRegions) private var regions
+    @Environment(\.sidebarStickyHeader) private var movingHeader
+    @Environment(\.sidebarHighlight) private var highlight
+
+    var body: some View {
+        let rowHeight = InputMode.current.workspaceRowHeight
+        let checkoutExtension = hasCheckout ? rowHeight / 2 - (checkoutSelected ? 4 : 3) : 0
+        let fullExtension = CGFloat(index) * rowHeight + checkoutExtension
+        if selected {
+            GeometryReader { proxy in
+                let topExtension: CGFloat = {
+                    #if os(macOS)
+                    if let parent = regions.last(where: { $0.height > 0 }), let frame = parent.renderedFrame(in: proxy) {
+                        let top = proxy.frame(in: .scrollView(axis: .vertical)).minY + (movingHeader?.offset(in: proxy) ?? 0)
+                        return max(0, top - frame.maxY + checkoutExtension)
+                    }
+                    #endif
+                    return fullExtension
+                }()
+                branch(topExtension)
+            }
+        } else {
+            branch(fullExtension)
+        }
+    }
+
+    private func branch(_ topExtension: CGFloat) -> some View {
+        SidebarTreeBranch(topExtension: topExtension)
+            .stroke(selected ? highlight : color, style: StrokeStyle(lineWidth: 1, lineCap: .round))
+    }
+}
+
+private nonisolated struct SidebarTreeBranch: Shape {
+    var topExtension: CGFloat = 0
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let middle = rect.midY
+        let radius = min(10, middle)
+        path.move(to: CGPoint(x: 0, y: -topExtension))
+        path.addLine(to: CGPoint(x: 0, y: middle - radius))
+        path.addQuadCurve(to: CGPoint(x: radius, y: middle), control: CGPoint(x: 0, y: middle))
+        path.addLine(to: CGPoint(x: rect.maxX - 12, y: middle))
+        return path
     }
 }
 
@@ -109,7 +470,7 @@ enum SidebarSection: CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .workspaces: "工作区"
+        case .workspaces: "空间"
         case .drive: "文件"
         case .extensions: "扩展"
         case .settings: "设置"
@@ -118,7 +479,7 @@ enum SidebarSection: CaseIterable, Identifiable {
 
     var symbol: String {
         switch self {
-        case .workspaces: "square.stack"
+        case .workspaces: "cube"
         case .drive: "externaldrive"
         case .extensions: "puzzlepiece.extension"
         case .settings: "gearshape"
@@ -126,7 +487,7 @@ enum SidebarSection: CaseIterable, Identifiable {
     }
 
     var available: Bool { self != .drive }
-    /// 设置不在一级导航里，从用户栏的头像进入。
+    /// 设置不在一级导航里，从用户栏末尾的设置按钮进入。
     var navigable: Bool { self != .settings }
 
     /// 导航行尾的数字：工作区数量，文件一栏是在线的机器数。
@@ -146,7 +507,7 @@ protocol SidebarPage: Hashable, Identifiable, CaseIterable where AllCases == [Se
     var available: Bool { get }
 }
 
-/// 侧栏里的一行入口，与工作区行同高、同样左对齐图标列；一级导航的悬停、按下和选中共用胶囊轮廓。
+/// 侧栏里的一行入口，与工作区行同高；Mac 悬停时图标和标题一起变色，并显示淡色背景反馈。
 private struct SidebarRowStyle: ButtonStyle {
     var selected = false
     var capsule = false
@@ -154,9 +515,12 @@ private struct SidebarRowStyle: ButtonStyle {
     @State private var hovered = false
 
     func makeBody(configuration: Configuration) -> some View {
-        let highlight = Color.gray.opacity(!isEnabled ? 0 : configuration.isPressed ? 0.2 : hovered ? 0.1 : 0)
+        let hovering = hovered && isEnabled
+        let highlight = Color.gray.opacity(!isEnabled ? 0 : configuration.isPressed ? 0.2 : hovering ? 0.1 : 0)
         configuration.label
-            .padding(.horizontal, 8)
+            .environment(\.sidebarButtonHovered, !InputMode.current.isTouch && hovered && isEnabled && !selected)
+            .padding(.leading, Metrics.sidebarItemInset)
+            .padding(.trailing, 8)
             .frame(height: InputMode.current.rowHeight)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -164,7 +528,7 @@ private struct SidebarRowStyle: ButtonStyle {
                 if capsule {
                     Capsule().fill(selected ? Color.accentColor : highlight)
                         .overlay {
-                            Capsule().fill(Color.black.opacity(!selected ? 0 : configuration.isPressed ? 0.12 : hovered ? 0.06 : 0))
+                            Capsule().fill(Color.black.opacity(!selected ? 0 : configuration.isPressed ? 0.12 : hovering ? 0.06 : 0))
                         }
                 } else {
                     RoundedRectangle(cornerRadius: 8)
@@ -184,28 +548,27 @@ private struct SidebarRowLabel: View {
     var note: String?
     /// 选中时图标换实心，白字配合主题色胶囊。
     var selected = false
-    var weight: Font.Weight = .regular
+    var weight: Font.Weight = .bold
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: systemImage)
-                .font(Theme.secondary.weight(weight))
+                .font(Theme.sidebarHeading.weight(weight))
                 .symbolVariant(selected ? .fill : .none)
-                .foregroundStyle(selected ? Color.white : Color.secondary)
                 .frame(width: InputMode.current.labelExtent)
-            Text(title).font(Theme.body.weight(weight)).lineLimit(1)
-                .foregroundStyle(selected ? Color.white : Color.primary)
+            Text(title).font(Theme.sidebarHeading.weight(weight)).lineLimit(1)
             Spacer(minLength: 0)
             if let note {
                 Text(note).font(Theme.caption).monospacedDigit()
                     .foregroundStyle(selected ? Color.white.opacity(0.8) : Color.secondary)
             }
         }
+        .modifier(SidebarIconTint(foreground: selected ? Color.white : Color.primary, allowsHover: !selected))
     }
 }
 
 /// 一级导航：标志栏下面一列全宽按钮，选中项用主题色胶囊配白字；没接通的置灰。两端相同，iPhone 放在侧栏抽屉顶部。
-/// 设置不在这里，入口是用户栏的头像。
+/// 设置不在这里，入口是用户栏末尾的设置按钮。
 /// 收起的侧栏里只留图标竖着排。
 struct SidebarNavigation: View {
     /// 收起的图标栏里只要图标。
@@ -221,29 +584,29 @@ struct SidebarNavigation: View {
                 } label: {
                     if iconsOnly {
                         Image(systemName: section.symbol)
-                            .font(Theme.body)
+                            .font(Theme.sidebarHeading)
                             .symbolVariant(selected ? .fill : .none)
-                            .foregroundStyle(selected ? Color.white : Color.secondary)
+                            .modifier(SidebarIconTint(foreground: selected ? Color.white : Color.primary, allowsHover: !selected))
                             .frame(width: max(36, Metrics.paneButton), height: max(36, Metrics.paneButton))
                             .background(selected ? Color.accentColor : .clear, in: Capsule())
                             .contentShape(Rectangle())
                             .opacity(section.available ? 1 : 0.45)
                     } else {
                         SidebarRowLabel(title: section.title, systemImage: section.symbol, note: section.count(in: model).map(String.init),
-                                        selected: selected, weight: .semibold)
+                                        selected: selected)
                     }
                 }
                 .disabled(!section.available)
                 .help(section.available ? section.title : "\(section.title)（尚未接通）")
                 .accessibilityAddTraits(selected ? .isSelected : [])
-                if iconsOnly { button.buttonStyle(.pointingPlain) }
+                if iconsOnly { button.buttonStyle(SidebarButtonStyle()) }
                 else { button.buttonStyle(SidebarRowStyle(selected: selected, capsule: true)) }
             }
         }
     }
 }
 
-/// 侧栏底部的用户栏：左边邮箱和各订阅账号的剩余周额度，右边头像，点头像进入设置。
+/// 侧栏底部的用户栏：左边头像和账号信息，末尾的按钮进入设置。
 struct SidebarUserBar: View {
     @Environment(AppModel.self) private var model
 
@@ -251,10 +614,10 @@ struct SidebarUserBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            SidebarAvatar()
             VStack(alignment: .leading, spacing: 6) {
                 Text(user?.email ?? "未登录")
                     .font(Theme.body).lineLimit(1).truncationMode(.middle)
-                    .padding(.leading, 6)
                 HStack(spacing: 4) {
                     if model.subscriptionQuotas.isEmpty {
                         chip { Text("无账号") }
@@ -265,7 +628,7 @@ struct SidebarUserBar: View {
                 }
             }
             Spacer(minLength: 0)
-            SidebarAvatar()
+            SidebarSettingsButton()
         }
         // 左右贴着侧栏边缘，底边与旁边窗口的底边对齐
         .padding(.top, 10)
@@ -299,25 +662,35 @@ struct SidebarUserBar: View {
     }
 }
 
-/// 用户头像，邮箱首字母；点一下进入设置。收起的侧栏里放在图标栏底部。
+/// 用户头像，显示邮箱首字母。
 struct SidebarAvatar: View {
     @Environment(AppModel.self) private var model
 
     private var user: AccountUser? { model.account.user ?? (SampleWorkspace.enabled ? SampleWorkspace.user : nil) }
 
     var body: some View {
-        Button { withAnimation(.snappy) { model.openSettings() } } label: {
-            Text(user?.email.first.map { String($0).uppercased() } ?? "?")
-                .font(Theme.body.weight(.semibold))
-                .foregroundStyle(.white)
-                .frame(width: Metrics.paneHeaderButton, height: Metrics.paneHeaderButton)
-                .background(Color.accentColor, in: Circle())
-                .contentShape(Circle())
+        Text(user?.email.first.map { String($0).uppercased() } ?? "?")
+            .font(Theme.body.weight(.semibold))
+            .foregroundStyle(.white)
+            .frame(width: Metrics.paneHeaderButton, height: Metrics.paneHeaderButton)
+            .background(Color.accentColor, in: Circle())
+            .accessibilityLabel("用户头像")
+    }
+}
+
+/// 用户栏与收起的侧栏共用设置入口。
+struct SidebarSettingsButton: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let selected = model.sidebarSection == .settings
+        PaneHeaderButtonGroup(selected: selected) {
+            Button { withAnimation(.snappy) { model.openSettings() } } label: {
+                PaneHeaderButtonLabel("设置", systemImage: "gearshape")
+            }
+            .help("设置")
+            .accessibilityAddTraits(selected ? .isSelected : [])
         }
-        .buttonStyle(.pointingPlain)
-        .help("设置")
-        .accessibilityLabel("设置")
-        .accessibilityAddTraits(model.sidebarSection == .settings ? .isSelected : [])
     }
 }
 
@@ -413,26 +786,22 @@ nonisolated enum ExtensionLibrary: String, SidebarPage {
     var available: Bool { self != .skills }
 }
 
-/// 侧栏列表滚动时，上方或下方还有内容的那一头渐隐；滚到头的那一头不淡。
+/// 侧栏顶部保持硬边，下方还有内容时底部渐隐。
 private struct ScrollEdgeFade: ViewModifier {
-    @State private var above = false
     @State private var below = false
     private static let length: CGFloat = 24
 
     func body(content: Content) -> some View {
         content
-            .onScrollGeometryChange(for: [Bool].self) { geometry in
-                [geometry.visibleRect.minY > 0.5, geometry.visibleRect.maxY < geometry.contentSize.height - 0.5]
-            } action: { _, edges in
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.visibleRect.maxY < geometry.contentSize.height - 0.5
+            } action: { _, hasMoreBelow in
                 withAnimation(.easeOut(duration: 0.15)) {
-                    above = edges[0]
-                    below = edges[1]
+                    below = hasMoreBelow
                 }
             }
             .mask {
                 VStack(spacing: 0) {
-                    LinearGradient(colors: [.black.opacity(above ? 0 : 1), .black], startPoint: .top, endPoint: .bottom)
-                        .frame(height: Self.length)
                     Color.black
                     LinearGradient(colors: [.black, .black.opacity(below ? 0 : 1)], startPoint: .top, endPoint: .bottom)
                         .frame(height: Self.length)
@@ -446,9 +815,13 @@ extension View {
 }
 
 /// 标志栏：Kite 字标，右端一组标题栏玻璃按钮，搜索在前，宽屏后面跟侧边栏按钮。字标与侧栏行的文字左对齐，与按钮底对齐。
-/// 两端都有，iPhone 放在侧栏抽屉顶部。搜索尚未接通，先置灰。
+/// 两端都有，iPhone 放在侧栏抽屉顶部。搜索展开时用输入框替换侧栏按钮。
 struct SidebarLogoBar<Buttons: View>: View {
     @ViewBuilder var buttons: Buttons
+    @State private var searchPresented = false
+    @State private var searchText = ""
+    @FocusState private var searchFocused: Bool
+    @Namespace private var glass
 
     var body: some View {
         // Mac 上字标与按钮底部对齐，iPhone 上垂直居中
@@ -459,16 +832,85 @@ struct SidebarLogoBar<Buttons: View>: View {
         #endif
         return HStack(alignment: alignment, spacing: Metrics.paneButtonGap) {
             Text("Kite").font(Theme.wordmark)
-            Spacer(minLength: 0)
-            PaneHeaderButtonGroup {
-                Button {} label: { PaneHeaderButtonLabel("搜索", systemImage: "magnifyingglass") }
-                    .disabled(true)
-                    .help("搜索（尚未接通）")
-                buttons
-            }
+            controlPanel
+                #if os(macOS)
+                .padding(.leading, searchPresented ? Metrics.padding : 0)
+                #endif
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.leading, 8)
         .frame(height: Metrics.paneHeaderButton)
+    }
+
+    private var controlPanel: some View {
+        // 玻璃间距与控件间距一致，让关闭按钮从面板分裂出来，停稳后仍是两块玻璃。
+        GlassEffectContainer(spacing: Metrics.paneButtonGap) {
+            HStack(spacing: Metrics.paneButtonGap) {
+                if searchPresented {
+                    searchPanel
+                    PaneHeaderButtonGroup {
+                        closeSearchButton
+                    }
+                    .glassEffectID("search-close", in: glass)
+                    .glassEffectTransition(.matchedGeometry)
+                } else {
+                    searchPanel
+                }
+            }
+        }
+    }
+
+    private var searchPanel: some View {
+        searchPanelContent
+            .glassEffectID("search-panel", in: glass)
+            .glassEffectTransition(.matchedGeometry)
+    }
+
+    private var searchPanelContent: some View {
+        PaneHeaderButtonGroup(expands: searchPresented) {
+            searchControls
+        }
+    }
+
+    @ViewBuilder private var searchControls: some View {
+        Button {
+            // 玻璃过渡会同时保留新旧视图，等旧视图移除后再把焦点交给新的输入框。
+            withAnimation(completionCriteria: .removed) {
+                searchPresented = true
+            } completion: {
+                if searchPresented { searchFocused = true }
+            }
+        } label: {
+            PaneHeaderButtonLabel("搜索", systemImage: "magnifyingglass")
+        }
+        .help("搜索")
+        if searchPresented {
+            TextField("搜索", text: $searchText)
+                .textFieldStyle(.plain)
+                .font(Theme.body)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity)
+                .frame(height: Metrics.paneHeaderButton)
+                .focused($searchFocused)
+                #if os(macOS)
+                .onExitCommand(perform: closeSearch)
+                #endif
+        } else {
+            buttons
+        }
+    }
+
+    private var closeSearchButton: some View {
+        Button(action: closeSearch) {
+            PaneHeaderButtonLabel("关闭搜索", systemImage: "xmark")
+        }
+        .help("关闭搜索")
+    }
+
+    private func closeSearch() {
+        searchFocused = false
+        searchText = ""
+        withAnimation { searchPresented = false }
     }
 }
 
@@ -496,8 +938,9 @@ struct WorkspaceSidebar: View {
                 switch model.sidebarSection {
                 case .workspaces, .drive:
                     WorkspaceList { workspace in
-                        WorkspaceRow(workspace: workspace, current: current == workspace.id, detached: model.detached.contains(workspace.id))
-                            .overlay { source(workspace) }
+                        WorkspaceRow(workspace: workspace, current: current == workspace.id, detached: model.detached.contains(workspace.id)) {
+                            source(workspace)
+                        }
                     }
                 case .extensions, .settings:
                     SectionPages()
@@ -520,7 +963,7 @@ struct WorkspaceSidebar: View {
         #endif
     }
 
-    /// 收起时侧栏按钮移到第一个窗口的标题栏，见 PaneHeaderBar。列出当前一栏的图标：工作区按项目分组，组间隔一道短线；底部是头像。
+    /// 收起时侧栏按钮移到第一个窗口的标题栏，见 PaneHeaderBar。列出当前一栏的图标：工作区按项目分组，组间隔一道短线；底部是设置按钮。
     private func rail(_ current: String?) -> some View {
         @Bindable var model = model
         return VStack(spacing: Metrics.gap) {
@@ -552,7 +995,7 @@ struct WorkspaceSidebar: View {
             }
             .fadesScrollEdges()
             // 设置的入口，底边与旁边窗口的底边对齐
-            SidebarAvatar()
+            SidebarSettingsButton()
         }
         .frame(maxWidth: .infinity)
         // 只让开系统红绿灯按钮所在的区域。
@@ -569,12 +1012,12 @@ struct WorkspaceSidebar: View {
             Button { selection.wrappedValue = page } label: {
                 Image(systemName: page.symbol)
                     .font(Theme.body)
-                    .foregroundStyle(selection.wrappedValue == page ? Color.accentColor : Color.secondary)
+                    .modifier(SidebarIconTint(foreground: selection.wrappedValue == page ? Color.accentColor : Color.secondary))
                     .frame(width: max(36, Metrics.paneButton), height: max(36, Metrics.paneButton))
                     .background(selection.wrappedValue == page ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 10))
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.pointingPlain)
+            .buttonStyle(SidebarButtonStyle())
             .help(page.title)
         }
     }
@@ -596,7 +1039,7 @@ struct WorkspaceSidebar: View {
             if model.detached.contains(workspace.id) {
                 openWindow(id: "workspace", value: workspace.id)
             } else {
-                model.selected = workspace.id
+                model.selectWorkspace(workspace.id)
             }
         } onDetach: { point in
             guard !workspace.isDraft, !model.detached.contains(workspace.id) else { return }
@@ -607,7 +1050,7 @@ struct WorkspaceSidebar: View {
         }
         #else
         Color.clear.contentShape(Rectangle())
-            .onTapGesture { model.selected = workspace.id }
+            .onTapGesture { model.selectWorkspace(workspace.id) }
         #endif
     }
 }

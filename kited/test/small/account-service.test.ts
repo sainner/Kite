@@ -506,7 +506,8 @@ test('工作机取托管凭据后真实 git 能 clone 空托管仓库并推送�
 }, 1_000);
 
 // 归一化依赖 WHATWG URL 对 scp 写法、大小写主机和结尾 .git 的解析，项目 ID 依赖登记表按（账号，归一化地址）唯一。
-test('两台工作机用 SSH 与 HTTPS 写法登记同一仓库得到同一项目，其他账号另得项目，托管地址只能找回本账号已有项目', async () => {
+// 列表依赖 Bun SQLite 关联可选外观行：缺少外观的项目仍保留默认值，有外观的项目按创建顺序返回且不串账号。
+test('两台工作机用 SSH 与 HTTPS 写法登记同一仓库得到同一项目，其他账号另得项目，托管地址只能找回本账号已有项目，列表按创建顺序保留默认与自选外观', async () => {
   const k = await setup();
   try {
     const alice = await k.signUp('registry-alice');
@@ -527,6 +528,7 @@ test('两台工作机用 SSH 与 HTTPS 写法登记同一仓库得到同一项�
     expect(foreign.body.id).not.toBe(ssh.body.id);
     expect((await k.call('GET', `/api/projects/${ssh.body.id}`, bob.token)).status).toBe(404);
 
+    k.advance(1);
     const own = await k.call('POST', '/api/projects', alice.token, { hosted: { name: 'mine' } });
     expect(own.status).toBe(201);
     const theirs = await k.call('POST', '/api/projects', bob.token, { hosted: { name: 'theirs' } });
@@ -536,9 +538,14 @@ test('两台工作机用 SSH 与 HTTPS 写法登记同一仓库得到同一项�
     const found = await k.call('POST', '/api/projects', right.token, { remote: own.body.url });
     expect(found.status).toBe(200);
     expect(found.body.id).toBe(own.body.id);
+    expectSuccess(await k.call('PUT', `/api/projects/${own.body.id}/appearance`, alice.token, { icon: 'terminal', color: 'green' }));
     const listed = await k.call('GET', '/api/projects', left.token);
     expect(listed.status).toBe(200);
     expect(listed.body.map((project: ProjectRecord) => project.id).sort()).toEqual([ssh.body.id, own.body.id].sort());
+    expect(listed.body).toEqual([
+      expect.objectContaining({ id: ssh.body.id, icon: 'folder', color: 'primary' }),
+      expect.objectContaining({ id: own.body.id, icon: 'terminal', color: 'green' }),
+    ]);
   } finally { await k.stop(); }
 }, 1_000);
 

@@ -274,7 +274,7 @@ private struct EffortTicks: View {
                     // 没长时高度等于宽度，是个小圆点
                     .frame(width: width, height: width + (height - width) * look.grow[index])
                     .opacity(look.fade[index])
-                    .frame(width: Self.step, height: 32)
+                    .frame(width: Self.step, height: Metrics.paneButton)
             }
         }
         .padding(.horizontal, Self.inset)
