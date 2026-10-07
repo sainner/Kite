@@ -86,12 +86,13 @@ extension Color {
 }
 
 enum Metrics {
-    // 布局尺寸以 DotMetrics.module（12）为模数：边距、缝、侧栏、停靠栏和卡片最小尺寸都取它的整数倍，
-    // 从窗口左上角排起，卡片与侧栏的边界都落在模块线上，缝里正好露出一列点。
+    // 主要布局尺寸以 DotMetrics.module（12）为模数；侧栏水平留白单独设置。
     /// 窗口内边距，一个模块。
     static let padding: CGFloat = 12
     /// 卡片之间的缝，也是拖动调整大小的把手，一个模块。
     static let gap: CGFloat = 12
+    /// 侧栏左右的外侧留白。
+    static let sidebarInset: CGFloat = 12
     static let sidebarWidth: CGFloat = 240
     /// 侧边栏拖动调宽度的范围；拖到比 sidebarCollapse 还窄就收起。松手后宽度吸附到模块。
     static let sidebarMin: CGFloat = 204

@@ -85,8 +85,7 @@ struct CompactLayout: View {
                     .fadesScrollEdges()
                     SidebarUserBar()
                 }
-                .padding(.leading, Metrics.padding)
-                .padding(.trailing, Metrics.gap)
+                .padding(.horizontal, Metrics.sidebarInset)
                 .frame(width: sidebarWidth)
                 .opacity(showing(.sidebar) ? 1 : 0)
                 // 底栏：折叠的窗口那一行

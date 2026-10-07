@@ -44,7 +44,7 @@ struct MainWindow: View {
             } onCancelled: {
                 finishResize()
             }
-            .frame(width: Metrics.gap)
+            .frame(width: Metrics.sidebarInset)
             .disablesWindowDragging()
             Group {
                 if model.sidebarSection != .workspaces {
@@ -66,7 +66,8 @@ struct MainWindow: View {
             // 侧栏收起后，展开按钮移到内容区第一个窗口的标题栏
             .environment(\.openSidebar, expandSidebar)
         }
-        .padding([.horizontal, .bottom], Metrics.padding)
+        .padding(.leading, Metrics.sidebarInset)
+        .padding([.trailing, .bottom], Metrics.padding)
     }
 
     private var expandSidebar: (@MainActor () -> Void)? {
@@ -84,7 +85,7 @@ struct MainWindow: View {
             #endif
         }
         let requested = resizingFrom == nil ? DotMetrics.snap(model.sidebarWidth) : model.sidebarWidth
-        let remaining = availableWidth - 2 * Metrics.padding - 2 * Metrics.gap - Metrics.dockWidth - Metrics.minPane
+        let remaining = availableWidth - 2 * Metrics.sidebarInset - Metrics.padding - Metrics.gap - Metrics.dockWidth - Metrics.minPane
         return min(requested, max(Metrics.sidebarMin, remaining))
     }
 

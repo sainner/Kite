@@ -29,7 +29,7 @@ struct WorkspaceRow: View {
                 Image(systemName: "macwindow").font(Theme.secondary).foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 8)
         .frame(height: height)
         .background(current ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 8))
         .help(workspace.remote.map { "\($0.machine.name) · \($0.workspace.cwd)" } ?? workspace.title)
@@ -86,7 +86,7 @@ struct WorkspaceList<Row: View>: View {
             ForEach(groups) { group in
                 if let title = group.title {
                     Text(title).font(Theme.secondary.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
-                        .padding(.horizontal, 10)
+                        .padding(.horizontal, 8)
                         .frame(height: headerHeight)
                         .padding(.top, group.id == groups.first?.id ? 0 : 12)
                 }
@@ -156,7 +156,7 @@ private struct SidebarRowStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let highlight = Color.gray.opacity(!isEnabled ? 0 : configuration.isPressed ? 0.2 : hovered ? 0.1 : 0)
         configuration.label
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 8)
             .frame(height: InputMode.current.rowHeight)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -254,6 +254,7 @@ struct SidebarUserBar: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(user?.email ?? "未登录")
                     .font(Theme.body).lineLimit(1).truncationMode(.middle)
+                    .padding(.leading, 6)
                 HStack(spacing: 4) {
                     if model.subscriptionQuotas.isEmpty {
                         chip { Text("无账号") }
@@ -266,8 +267,7 @@ struct SidebarUserBar: View {
             Spacer(minLength: 0)
             SidebarAvatar()
         }
-        // 左边略留空隙，右边和底边贴着侧栏边缘，底边与旁边窗口的底边对齐
-        .padding(.leading, 4)
+        // 左右贴着侧栏边缘，底边与旁边窗口的底边对齐
         .padding(.top, 10)
     }
 
@@ -467,7 +467,7 @@ struct SidebarLogoBar<Buttons: View>: View {
                 buttons
             }
         }
-        .padding(.leading, 10)
+        .padding(.leading, 8)
         .frame(height: Metrics.paneHeaderButton)
     }
 }
