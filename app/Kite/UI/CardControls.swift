@@ -158,6 +158,33 @@ private struct CardDisclosureStyle: DisclosureGroupStyle {
     }
 }
 
+/// 按钮里的加载转圈：照系统转圈的样子画辐条，颜色跟着按钮文字。
+/// 不用 ProgressView：Mac 上它按外观自己取色，在玻璃按钮上会先灰后黑。
+struct CardSpinner: View {
+    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 16
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let spokes = 8
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / Double(spokes), paused: reduceMotion)) { timeline in
+            // 一秒转一圈，最亮的一根顺时针前进，后面的逐根变淡
+            let lead = reduceMotion ? 0 : Int(timeline.date.timeIntervalSinceReferenceDate * Double(spokes)) % spokes
+            ZStack {
+                ForEach(0..<spokes, id: \.self) { index in
+                    let age = (lead - index + spokes) % spokes
+                    Capsule()
+                        .frame(width: size * 0.13, height: size * 0.3)
+                        .offset(y: -size * 0.32)
+                        .rotationEffect(.degrees(Double(index) * 360 / Double(spokes)))
+                        .opacity(1 - Double(age) / Double(spokes) * 0.8)
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityLabel("正在处理")
+    }
+}
+
 /// 设置组里的操作：主题色文字，整行可点。
 private struct CardRowButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
@@ -286,7 +313,7 @@ extension Binding where Value == CardPhase {
 
 /// 卡片底部的按钮：主按钮占满剩下的宽度，次要按钮在它左边。
 /// 给了 phase 时主按钮跟着进度变：加载中转圈；成功打勾，直到再次能提交（又改了内容）才变回来；
-/// 失败变成错误色，按钮里写原因，点它收起，左边冒出圆形的重试。几个状态之间的形变交给玻璃效果的容器。
+/// 失败变成错误色，按钮里一行写原因，点它把完整原因复制到剪贴板，左边冒出圆形的重试。几个状态之间的形变交给玻璃效果的容器。
 struct CardActions: View {
     let primary: String
     var enabled: Bool
@@ -298,6 +325,8 @@ struct CardActions: View {
     let action: () -> Void
     var secondaryAction: () -> Void
     @Namespace private var glass
+    /// 刚复制了报错，按钮里短暂换成已复制。
+    @State private var copied = false
 
     init(primary: String, enabled: Bool = true, prominent: Bool = true, secondary: String? = nil, secondaryEnabled: Bool = true,
          phase: Binding<CardPhase> = .constant(.idle), succeeded: String = "已保存",
@@ -350,26 +379,28 @@ struct CardActions: View {
 
     @ViewBuilder private func main(_ state: CardPhase) -> some View {
         let button = Button {
-            if state.error != nil { phase.wrappedValue = .idle } else { action() }
+            if let message = state.error { copy(message) } else { action() }
         } label: {
-            Group {
+            ZStack {
                 switch state {
                 case .idle:
-                    Text(primary)
+                    Text(primary).transition(.blurReplace)
                 case .working:
-                    ProgressView().controlSize(.small).tint(prominent ? .white : nil)
+                    CardSpinner().transition(.blurReplace)
                 case .succeeded:
-                    Label(succeeded, systemImage: "checkmark")
+                    Label(succeeded, systemImage: "checkmark").transition(.blurReplace)
                 case .failed(let message, _):
                     Label {
-                        Text(message).lineLimit(3).multilineTextAlignment(.leading)
+                        Text(copied ? "已复制报错" : message).lineLimit(1).truncationMode(.tail)
+                            .contentTransition(.interpolate)
                     } icon: {
-                        Image(systemName: "exclamationmark.triangle.fill")
+                        Image(systemName: copied ? "checkmark" : "exclamationmark.triangle.fill")
+                            .contentTransition(.symbolEffect(.replace))
                     }
-                    .help(message)
+                    .help("\(message)\n点按复制")
+                    .transition(.blurReplace)
                 }
             }
-            .transition(.blurReplace)
             .frame(maxWidth: .infinity)
         }
         // 加载和成功时不可点但不变灰
@@ -380,6 +411,15 @@ struct CardActions: View {
             button.buttonStyle(.glassProminent)
         } else {
             button.buttonStyle(.glass)
+        }
+    }
+
+    private func copy(_ message: String) {
+        copyToPasteboard(message, toast: nil)
+        withAnimation(.snappy) { copied = true }
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            withAnimation(.snappy) { copied = false }
         }
     }
 }
@@ -555,5 +595,51 @@ struct CardSheetAction: View {
             Button(action: action) { PaneHeaderButtonLabel(title, systemImage: systemImage) }
                 .help(title)
         }
+    }
+}
+
+#if DEBUG
+/// Debug build 带 --card-actions-preview 启动，窗口里只放底部按钮的演示，不连接服务：
+/// 保存模拟一次 1.5 秒的请求，结果按选的来；成功后打开「有改动」变回保存。
+struct CardActionsPreview: View {
+    static var enabled: Bool { ProcessInfo.processInfo.arguments.contains("--card-actions-preview") }
+
+    @State private var phase = CardPhase.idle
+    @State private var fails = true
+    @State private var changed = true
+    @State private var secondary = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Toggle("请求失败", isOn: $fails)
+            Toggle("有改动（成功后打开，按钮变回保存）", isOn: $changed)
+            Toggle("带次要按钮", isOn: $secondary)
+            Spacer(minLength: 0)
+            CardActions(primary: "保存", enabled: changed, secondary: secondary ? "返回" : nil, phase: $phase) {
+                $phase.run(succeeds: true) {
+                    try await Task.sleep(for: .seconds(1.5))
+                    if fails { throw KitedError(message: "工作机连接已断开：请求 /instances/agent/execution-grants 超时（25 秒），请检查组网状态与 kited 是否仍在运行后重试。") }
+                    changed = false
+                }
+            }
+        }
+        .padding(CardMetrics.sheetInset)
+        .frame(maxWidth: 400, maxHeight: 320)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.contentRadius, style: .continuous))
+        .padding(CardMetrics.sheetInset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.background)
+    }
+}
+#endif
+
+extension View {
+    /// Debug build 带 --card-actions-preview 启动时用按钮演示换掉整个窗口的内容，原内容（连同其中的服务连接）不再创建。
+    @ViewBuilder func cardActionsPreview() -> some View {
+        #if DEBUG
+        if CardActionsPreview.enabled { CardActionsPreview() } else { self }
+        #else
+        self
+        #endif
     }
 }
