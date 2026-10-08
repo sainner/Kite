@@ -220,7 +220,7 @@ private struct AccountLogin: Codable {
         async let catalogs = request("/api/catalog", as: [HostedCatalog].self)
         async let projects = request("/api/projects", as: [ProjectStyle].self)
         var directory = try await AccountDirectory(devices: devices, catalogs: catalogs,
-                                                   projectAppearances: Dictionary(uniqueKeysWithValues: projects.map { ($0.id, ProjectAppearance(icon: $0.icon, color: $0.color)) }))
+                                                   projectAppearances: Dictionary(uniqueKeysWithValues: projects.map { ($0.id, $0.appearance) }))
         guard expectedToken == login?.token else { throw CancellationError() }
         self.devices = directory.devices
         self.catalogs = directory.catalogs
@@ -233,13 +233,20 @@ private struct AccountLogin: Codable {
 
     private struct ProjectStyle: Decodable {
         let id: String
-        let icon: String
-        let color: String
+        let icon: String?
+        let color: String?
+
+        var appearance: ProjectAppearance {
+            var value = ProjectAppearance()
+            if let icon { value.icon = icon }
+            if let color { value.color = color }
+            return value
+        }
     }
 
     func setProjectAppearance(_ values: [String: String], projectID: String) async throws {
         let project = try await request("/api/projects/\(projectID)/appearance", method: "PUT", body: values, as: ProjectStyle.self)
-        projectAppearances[project.id] = ProjectAppearance(icon: project.icon, color: project.color)
+        projectAppearances[project.id] = project.appearance
         appearanceRevision += 1
         if let user { try AccountDirectory(devices: devices, catalogs: catalogs, projectAppearances: projectAppearances).save(user.id) }
     }

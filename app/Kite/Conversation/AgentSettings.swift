@@ -12,9 +12,7 @@ struct AgentSettings: View {
     @State private var saved: AgentConfigurationSnapshot?
     @State private var draft: AgentConfiguration?
     @State private var capabilities: AgentCapabilities?
-    @State private var working = false
-    @State private var error: String?
-    @State private var notice: String?
+    @State private var phase = CardPhase.idle
     @State private var discard: String?
     @FocusState private var editingLimit: Bool
 
@@ -23,6 +21,7 @@ struct AgentSettings: View {
         model.isConnected(area) && area.remote?.workspace.status == .open
             && area.instances.contains { $0.id == instance.id && $0.status == .open }
     }
+    private var working: Bool { phase.working }
     private var levels: [String] { capabilities?.model(draft?.model.model ?? "")?.reasoning ?? [] }
 
     private var canSave: Bool {
@@ -31,52 +30,51 @@ struct AgentSettings: View {
     }
 
     var body: some View {
-        CardSheet(title: "会话配置", subtitle: instance.title, back: true, form: true, size: InstanceSettings.size,
+        CardSheet(title: "会话配置", subtitle: instance.title, typing: editingLimit, back: true, size: InstanceSettings.size,
                   close: { if changed { discard = "back" } else { back() } }) {
-            Form {
+            Group {
                 if draft != nil, let capabilities {
-                    Section("模型") {
-                        Picker("模型", selection: Binding(get: { draft!.model.model }, set: { id in
-                            draft?.model.selectModel(id, supportedReasoning: capabilities.model(id)?.reasoning ?? [])
-                        })) {
-                            if let current = draft?.model.model, !capabilities.models.contains(where: { $0.id == current }) {
-                                Text(current).tag(current)
+                    CardSection("模型", note: capabilities.explanation
+                        + (capabilities.toolCatalogBoundary == "idle" ? "新增插件工具在下次执行时加入。" : "首次请求后工具目录固定；新增插件工具需要新会话。")) {
+                        LabeledContent("模型") {
+                            Picker("模型", selection: Binding(get: { draft!.model.model }, set: { id in
+                                draft?.model.selectModel(id, supportedReasoning: capabilities.model(id)?.reasoning ?? [])
+                            })) {
+                                if let current = draft?.model.model, !capabilities.models.contains(where: { $0.id == current }) {
+                                    Text(current).tag(current)
+                                }
+                                ForEach(capabilities.models) { entry in Text(entry.title).tag(entry.id) }
                             }
-                            ForEach(capabilities.models) { entry in Text(entry.title).tag(entry.id) }
+                            .labelsHidden().fixedSize()
                         }
-                        Picker("思考强度", selection: Binding(get: { draft!.model.reasoning }, set: { draft?.model.reasoning = $0 })) {
-                            if levels.isEmpty || draft?.model.reasoning == "default" { Text("自动").tag("default") }
-                            if let current = draft?.model.reasoning, current != "default", !levels.contains(current) { Text(current).tag(current) }
-                            ForEach(levels, id: \.self) { Text($0).tag($0) }
-                        }.disabled(levels.isEmpty)
-                        Text(capabilities.explanation).font(.footnote).foregroundStyle(.secondary)
-                        Text(capabilities.toolCatalogBoundary == "idle" ? "新增插件工具在下次执行时加入。" : "首次请求后工具目录固定；新增插件工具需要新会话。")
-                            .font(.footnote).foregroundStyle(.secondary)
+                        LabeledContent("思考强度") {
+                            Picker("思考强度", selection: Binding(get: { draft!.model.reasoning }, set: { draft?.model.reasoning = $0 })) {
+                                if levels.isEmpty || draft?.model.reasoning == "default" { Text("自动").tag("default") }
+                                if let current = draft?.model.reasoning, current != "default", !levels.contains(current) { Text(current).tag(current) }
+                                ForEach(levels, id: \.self) { Text($0).tag($0) }
+                            }
+                            .labelsHidden().fixedSize()
+                            .disabled(levels.isEmpty)
+                        }
                     }
-                    Section("可用工具") {
+                    CardSection("可用工具", note: "实例授权仍然有效；勾选工具不会增加文件、网络或其他实例的访问权限。") {
                         ForEach(capabilities.tools, id: \.self) { name in
                             Toggle(name, isOn: Binding(get: { draft?.tools.contains(name) == true }, set: { enabled in
                                 draft?.tools.removeAll { $0 == name }
                                 if enabled { draft?.tools.append(name) }
                             }))
                         }
-                        Text("实例授权仍然有效；勾选工具不会增加文件、网络或其他实例的访问权限。")
-                            .font(.footnote).foregroundStyle(.secondary)
                     }
-                    Section("执行上限") {
-                        TextField("每回合最多模型请求数", value: Binding(get: { draft!.maxRequestsPerTurn }, set: { draft?.maxRequestsPerTurn = $0 }), format: .number)
+                    CardField(label: "每回合最多模型请求数", focused: editingLimit, note: "达到上限后停止，保留已经产生的结果。") {
+                        TextField("", value: Binding(get: { draft!.maxRequestsPerTurn }, set: { draft?.maxRequestsPerTurn = $0 }), format: .number)
                             .focused($editingLimit)
                             #if os(iOS)
                             .keyboardType(.numberPad)
                             #endif
-                        Text("达到上限后停止，保留已经产生的结果。")
-                            .font(.footnote).foregroundStyle(.secondary)
+                            .cardInput { editingLimit = true }
                     }
                 }
-                if let error { Section { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) } }
-                if let notice { Section { Text(notice).foregroundStyle(.secondary) } }
             }
-            .formStyle(.grouped)
             .disabled(working || !available)
         } actions: {
             CardSheetAction(title: "重新载入", systemImage: "arrow.clockwise") {
@@ -84,12 +82,13 @@ struct AgentSettings: View {
             }
             .disabled(working || !available)
         } footer: {
-            CardActions(primary: "保存", enabled: canSave) { perform { try await save() } }
+            CardActions(primary: "保存", enabled: canSave, phase: $phase) { perform(succeeds: true) { try await save() } }
         }
         #if os(iOS)
         // 数字键盘没有换行键，键盘上方给一个完成
         .toolbar { ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("完成") { editingLimit = false } } }
         #endif
+        .endsTyping(editingLimit) { editingLimit = false }
         .interactiveDismissDisabled(working || changed)
         .confirmationDialog("放弃未保存的会话配置？", isPresented: Binding(get: { discard != nil }, set: { if !$0 { discard = nil } }), titleVisibility: .visible) {
             Button("放弃修改", role: .destructive) {
@@ -125,15 +124,9 @@ struct AgentSettings: View {
         _ = try boundClient()
         self.saved = value; self.draft = value.instance.config.agent
         if let index = area.instances.firstIndex(where: { $0.id == instance.id }) { area.instances[index].config = value.instance.config }
-        notice = "会话配置已保存。"
     }
-    private func perform(_ action: @escaping () async throws -> Void) {
-        guard !working else { return }
-        working = true; error = nil; notice = nil
-        Task {
-            defer { working = false }
-            do { try await action() } catch { self.error = error.localizedDescription }
-        }
+    private func perform(succeeds: Bool = false, _ action: @escaping () async throws -> Void) {
+        $phase.run(succeeds: succeeds, action)
     }
 }
 

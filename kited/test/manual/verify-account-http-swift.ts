@@ -1,11 +1,24 @@
 /**
- * 编译真实 AccountHTTP，验证 Foundation Cookie 行为与生产模式 Better Auth 的配合。
+ * 编译真实 AccountHTTP 与账号刷新方法，验证 Cookie 隔离及项目外观缺省的原生解码。
  * 运行：bun kited/test/manual/verify-account-http-swift.ts；不需要编译完整 App 或访问公网。
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { command } from './command.ts';
+
+// 与其他 Swift 合同验证一致，编译真实声明与方法，不在夹具中复写解码或刷新规则。
+function declaration(source: string, signature: string): string {
+  const start = source.indexOf(signature);
+  if (start < 0 || source.indexOf(signature, start + 1) >= 0) throw new Error(`Swift 声明不唯一：${signature}`);
+  const open = source.indexOf('{', start);
+  let depth = 0;
+  for (let index = open; index < source.length; index++) {
+    if (source[index] === '{') depth++;
+    if (source[index] === '}' && --depth === 0) return source.slice(start, index + 1);
+  }
+  throw new Error(`Swift 声明未闭合：${signature}`);
+}
 
 // Better Auth 测试模式会跳过来源检查；必须在导入账号服务之前明确使用生产模式。
 process.env.NODE_ENV = 'production';
@@ -57,6 +70,20 @@ try {
     }
   }
   console.log(output);
+
+  // 真实回归：已部署账号服务的项目响应没有 icon/color，Swift 严格解码曾使整个目录刷新失败。
+  const accountSource = readFileSync(join(import.meta.dir, '../../../app/Kite/Application/KiteAccount.swift'), 'utf8');
+  const catalogSource = readFileSync(join(import.meta.dir, '../../../app/Kite/Application/HostedCatalog.swift'), 'utf8');
+  const projectFixture = join(root, 'AccountProjectStyleVerify.swift');
+  writeFileSync(projectFixture, readFileSync(join(import.meta.dir, 'AccountProjectStyleVerify.swift'), 'utf8')
+    .replace('// ACCOUNT_DEVICE', declaration(accountSource, 'struct AccountDevice:'))
+    .replace('// PROJECT_APPEARANCE', declaration(catalogSource, 'struct ProjectAppearance:'))
+    .replace('// PROJECT_STYLE', declaration(accountSource, 'private struct ProjectStyle:'))
+    .replace('// ACCOUNT_REFRESH', declaration(accountSource, 'func refresh() async throws')));
+  const projectExecutable = join(root, 'account-project-style-contract');
+  await command([compiler, '-sdk', sdk, '-target', `${architecture}-apple-macosx26.0`, '-parse-as-library',
+    projectFixture, '-o', projectExecutable], root, 45_000);
+  console.log(await command([projectExecutable], root, 15_000));
 } finally {
   await server.stop(true);
   await service?.close();

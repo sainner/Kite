@@ -16,8 +16,7 @@ struct InstanceSettings: View {
     @State private var toolErrors: [String: String] = [:]
     @State private var loadingTools: Set<String> = []
     @State private var phase: String?
-    @State private var working = false
-    @State private var error: String?
+    @State private var progress = CardPhase.idle
     @State private var discardAction: String?
     /// 弹窗里当前的子页面，nil 是实例设置本身。
     @State private var page: Page?
@@ -28,6 +27,7 @@ struct InstanceSettings: View {
     private var caller: String { definition?.agent == nil ? "plugin" : "model" }
     private var editable: Bool { definition?.runtime == "bun" || definition?.agent != nil }
     private var changed: Bool { draft?.grants != saved?.grants }
+    private var working: Bool { progress.working }
     private var available: Bool {
         model.isConnected(area) && area.instances.contains { $0.id == instance.id && $0.status == .open }
     }
@@ -55,26 +55,25 @@ struct InstanceSettings: View {
     }
 
     private var main: some View {
-        CardSheet(title: "实例设置与授权", subtitle: instance.title, form: true, size: Self.size,
+        CardSheet(title: "实例设置与授权", subtitle: instance.title, size: Self.size,
                   close: { if changed { discardAction = "close" } else { dismiss() } }) {
-            Form {
-                Section("实例") {
-                    LabeledContent("插件", value: definition?.title ?? instance.definitionId)
-                    LabeledContent("工作区", value: area.title)
-                    if let definition {
-                        Text(definition.lifetime.explanation).font(.footnote).foregroundStyle(.secondary)
-                    }
+            Group {
+                CardSection("实例", note: definition?.lifetime.explanation) {
+                    LabeledContent("插件") { Text(definition?.title ?? instance.definitionId).foregroundStyle(.secondary) }
+                    LabeledContent("工作区") { Text(area.title).foregroundStyle(.secondary) }
                     if thread != nil {
-                        Button("会话配置") { page = .agent }.disabled(!available)
-                        Button("执行授权") { page = .grants }.disabled(!available)
+                        CardLink("会话配置") { page = .agent }.disabled(!available)
+                        CardLink("执行授权") { page = .grants }.disabled(!available)
                     }
                     ForEach(definition?.views ?? []) { view in
                         Button("打开\(view.title)") {
                             model.openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area)
                         }.disabled(!available || area.changingWindows || area.pendingWindowRequest != nil || area.pendingInstanceRequest != nil)
                     }
-                    if definition?.runtime == "bun" {
-                        LabeledContent("进程", value: processLabel)
+                }
+                if definition?.runtime == "bun" {
+                    CardSection("进程", note: "停止进程保留实例和数据，后续调用会按需启动。") {
+                        LabeledContent("状态") { Text(processLabel).foregroundStyle(.secondary) }
                         Button("刷新状态") { perform { try await readProcess() } }
                         Button("停止进程") {
                             perform {
@@ -83,28 +82,18 @@ struct InstanceSettings: View {
                                 try await readProcess()
                             }
                         }.disabled(!available || phase == nil || phase == "stopped")
-                        Text("停止进程保留实例和数据，后续调用会按需启动。")
-                            .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
                 if editable, draft != nil {
-                    Section {
-                        Text("选择这个实例可以调用的能力。修改后保存，撤回对后续调用立即生效。")
-                        if definition?.agent != nil {
-                            Text("撤回授权立即阻止后续调用。新增工具的生效时机见会话配置。")
-                        }
-                    } header: { Text("可用能力") }
-                        .font(.footnote).foregroundStyle(.secondary)
+                    CardSection("可用能力", note: "选择这个实例可以调用的能力。修改后保存，撤回对后续调用立即生效。"
+                        + (definition?.agent != nil ? "撤回授权立即阻止后续调用。新增工具的生效时机见会话配置。" : ""))
                     workspaceGrants
                     ForEach(targets) { target in
                         if area.definition(of: target)?.runtime == "bun" { pluginGrants(target) }
                         else { instanceGrants(target) }
                     }
                 }
-                if let error { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) }
-                if working { ProgressView() }
             }
-            .formStyle(.grouped)
             .disabled(working)
         } actions: {
             CardSheetAction(title: "重新读取", systemImage: "arrow.clockwise") {
@@ -112,9 +101,10 @@ struct InstanceSettings: View {
             }
             .disabled(working || !available)
         } footer: {
-            if editable {
-                CardActions(primary: "保存", enabled: !working && available && changed && draft != nil) {
-                    perform { try await save() }
+            // 不能编辑的实例没有保存，出错时也借这里显示原因和重试
+            if editable || progress.error != nil {
+                CardActions(primary: "保存", enabled: editable && !working && available && changed && draft != nil, phase: $progress) {
+                    perform(succeeds: true) { try await save() }
                 }
             }
         }
@@ -138,7 +128,7 @@ struct InstanceSettings: View {
     }
 
     @ViewBuilder private var workspaceGrants: some View {
-        Section("工作区") {
+        CardSection("工作区") {
             if operations.contains(where: { $0.name == "agent.list" && $0.callers.contains(caller) }) {
                 let grant = OperationGrant(operation: "agent.list")
                 Toggle("查询代理", isOn: selection({ $0.grants.contains(grant) }, { $0.set(grant, enabled: $1) }))
@@ -163,7 +153,7 @@ struct InstanceSettings: View {
                 && !(target.id == instance.id && $0.name.hasPrefix("agent."))
         }
         if !allowed.isEmpty {
-            Section(target.title) {
+            CardSection(target.title) {
                 ForEach(allowed) { operation in
                     Toggle(operation.title, isOn: selection({ $0.includesTarget(operation: operation.name, instanceID: target.id) },
                         { $0.setTarget(operation: operation.name, instanceID: target.id, enabled: $1) }))
@@ -177,19 +167,19 @@ struct InstanceSettings: View {
         let existing = draft?.grants.filter { $0.operation == "plugin.call" && $0.instanceId == target.id }.flatMap { $0.tools ?? [] } ?? []
         let discovered = tools[target.id] ?? []
         let names = Set(existing + discovered.filter(\.canGrant).map(\.name)).sorted()
-        return Section(target.title) {
+        return CardSection(target.title) {
             ForEach(names, id: \.self) { name in
                 let tool = discovered.first { $0.name == name }
                 Toggle(isOn: selection({ $0.includesTool(instanceID: target.id, name: name) }, { $0.setTool(instanceID: target.id, name: name, enabled: $1) })) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(tool?.title ?? name)
-                        if let description = tool?.description { Text(description).font(.caption).foregroundStyle(.secondary) }
+                        if let description = tool?.description { Text(description).font(Theme.caption).foregroundStyle(.secondary) }
                     }
                 }.disabled(!available || (tool?.canGrant != true && draft?.includesTool(instanceID: target.id, name: name) != true))
             }
             Button(loadingTools.contains(target.id) ? "正在读取…" : "读取可用工具") { Task { await readTools(target.id) } }
                 .disabled(!available || loadingTools.contains(target.id))
-            if let message = toolErrors[target.id] { Text(message).font(.caption).foregroundStyle(Theme.danger) }
+            if let message = toolErrors[target.id] { Text(message).font(Theme.caption).foregroundStyle(Theme.danger) }
             if tools[target.id] != nil && names.isEmpty { Text("没有可授予的工具").foregroundStyle(.secondary) }
         }
     }
@@ -255,14 +245,8 @@ struct InstanceSettings: View {
         } catch { toolErrors[id] = error.localizedDescription }
     }
 
-    private func perform(_ action: @escaping () async throws -> Void) {
-        guard !working else { return }
-        working = true
-        error = nil
-        Task {
-            defer { working = false }
-            do { try await action() } catch { self.error = error.localizedDescription }
-        }
+    private func perform(succeeds: Bool = false, _ action: @escaping () async throws -> Void) {
+        $progress.run(succeeds: succeeds, action)
     }
 }
 

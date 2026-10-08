@@ -14,8 +14,7 @@ struct ContextTemplateEditor: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var draft: ContextDefinition
-    @State private var working = false
-    @State private var error: String?
+    @State private var phase = CardPhase.idle
     @State private var discard = false
     /// 只跟踪模板名称；段落编辑器里的输入框由拖动收起键盘。
     @FocusState private var typing: Bool
@@ -56,11 +55,10 @@ struct ContextTemplateEditor: View {
             }
             .disabled(working || !available)
             if !available { CardCallout(text: "工作机连接已变化，请返回后重新打开模板。草稿尚未保存。", systemImage: "info.circle", tint: .secondary) }
-            if let error { CardCallout(text: error) }
         } footer: {
-            CardActions(primary: working ? "正在保存…" : "保存",
+            CardActions(primary: "保存",
                         enabled: !working && available && !draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                        action: save)
+                        phase: $phase, action: save)
         }
         .interactiveDismissDisabled(working || changed)
         .confirmationDialog("放弃未保存的模板修改？", isPresented: $discard, titleVisibility: .visible) {
@@ -68,16 +66,14 @@ struct ContextTemplateEditor: View {
         }
     }
 
+    private var working: Bool { phase.working }
+
+    /// 保存成功后弹窗直接关掉。
     private func save() {
-        working = true
-        error = nil
-        Task {
-            defer { working = false }
-            do {
-                let saved = try await model.saveContextTemplate(draft, expectedRevision: request.original?.revision, connection: connection)
-                onSaved(saved)
-                dismiss()
-            } catch { self.error = error.localizedDescription }
+        $phase.run {
+            let saved = try await model.saveContextTemplate(draft, expectedRevision: request.original?.revision, connection: connection)
+            onSaved(saved)
+            dismiss()
         }
     }
 }

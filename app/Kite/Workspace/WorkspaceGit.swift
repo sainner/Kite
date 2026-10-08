@@ -110,9 +110,9 @@ struct ScenePushSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var sync: CheckoutSync?
     @State private var message = ""
-    @State private var working = false
-    @State private var error: String?
+    @State private var phase = CardPhase.idle
     @FocusState private var typing: Bool
+    private var working: Bool { phase.working }
 
     private var canPush: Bool {
         !working && sync != nil && !(sync?.dirty == true && message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -121,7 +121,7 @@ struct ScenePushSheet: View {
     var body: some View {
         CardSheet(title: "提交并推送", subtitle: workspace.remote.map { "\($0.machine.name) · \($0.checkout.path)" } ?? workspace.title,
                   typing: typing, close: { dismiss() }) {
-            if let sync { Text(sync.summary).font(Theme.body).foregroundStyle(.secondary) } else { ProgressView() }
+            Text(sync?.summary ?? "正在读取现场状态…").font(Theme.body).foregroundStyle(.secondary)
             CardField(label: "提交说明", focused: typing) {
                 TextField("说明这次改了什么", text: $message, axis: .vertical).lineLimit(2...6)
                     .focused($typing)
@@ -131,25 +131,18 @@ struct ScenePushSheet: View {
                 .font(Theme.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 12)
-            if let error { CardCallout(text: error) }
         } footer: {
-            CardActions(primary: working ? "正在推送…" : "推送", enabled: canPush, action: push)
+            CardActions(primary: "推送", enabled: canPush, phase: $phase, action: push)
         }
         .endsTyping(typing) { typing = false }
-        .task {
-            do { sync = try await model.checkoutSync(workspace) } catch { self.error = error.localizedDescription }
-        }
+        .task { $phase.run { sync = try await model.checkoutSync(workspace) } }
     }
 
+    /// 推送成功后弹窗直接关掉。
     private func push() {
-        working = true
-        error = nil
-        Task {
-            defer { working = false }
-            do {
-                sync = try await model.pushCheckout(workspace, message: message)
-                message = ""
-            } catch { self.error = error.localizedDescription }
+        $phase.run {
+            _ = try await model.pushCheckout(workspace, message: message)
+            dismiss()
         }
     }
 }

@@ -11,14 +11,16 @@ struct ExecutionGrantSettings: View {
     @State private var saved: InstanceExecutionGrants?
     @State private var draft: ExecutionGrantDraft?
     @State private var state: RemoteState?
-    @State private var working = false
-    @State private var error: String?
-    @State private var notice: String?
+    @State private var phase = CardPhase.idle
     @State private var discardAction: DiscardAction?
     @State private var confirmingRecovery = false
+    @FocusState private var focus: Field?
+
+    private enum Field { case read, write, network }
 
     private enum DiscardAction { case back, reload }
     private var changed: Bool { draft?.grants != saved?.grants }
+    private var working: Bool { phase.working }
     private var available: Bool {
         model.isConnected(area) && area.remote?.workspace.status == .open
             && area.instances.contains { $0.id == instance.id && $0.status == .open }
@@ -30,13 +32,12 @@ struct ExecutionGrantSettings: View {
     }
 
     var body: some View {
-        CardSheet(title: "执行授权", subtitle: instance.title, back: true, form: true, size: InstanceSettings.size,
+        CardSheet(title: "执行授权", subtitle: instance.title, typing: focus != nil, back: true, size: InstanceSettings.size,
                   close: { if changed { discardAction = .back } else { back() } }) {
-            Form {
-                Section("当前执行") {
-                    LabeledContent("状态", value: statusLabel)
-                    if let recovery = state?.recovery {
-                        Text(recovery.message).font(.footnote).foregroundStyle(.secondary)
+            Group {
+                CardSection("当前执行", note: state?.recovery?.message) {
+                    LabeledContent("状态") { Text(statusLabel).foregroundStyle(.secondary) }
+                    if state?.recovery != nil {
                         Button("确认上次执行结果…") { confirmingRecovery = true }
                             .disabled(!available || state?.busy == true || thread.stopping || thread.hasUnconfirmedStop)
                     }
@@ -52,49 +53,44 @@ struct ExecutionGrantSettings: View {
                     Button("刷新执行状态") { perform { try await readState() } }.disabled(!available)
                 }
                 if draft != nil {
-                    Section {
+                    CardSection("工作区", note: "系统工具链保留基础读取权限；宿主数据和 Git 元数据仍受保护。") {
                         if let path = area.remote?.workspace.cwd {
-                            Text(path).font(.callout.monospaced()).textSelection(.enabled)
+                            Text(path).font(Theme.code).foregroundStyle(.secondary).textSelection(.enabled)
                         }
-                        Picker("访问权限", selection: field(\.workspace, fallback: .read)) {
-                            Text("只读").tag(ExecutionGrants.WorkspaceAccess.read)
-                            Text("读写").tag(ExecutionGrants.WorkspaceAccess.write)
-                        }.pickerStyle(.segmented)
-                    } header: { Text("工作区") }
-                        footer: { Text("系统工具链保留基础读取权限；宿主数据和 Git 元数据仍受保护。") }
-
-                    Section {
-                        TextField("额外只读路径", text: field(\.readPaths, fallback: ""), axis: .vertical)
-                            .lineLimit(2...5)
-                        TextField("额外读写路径", text: field(\.writePaths, fallback: ""), axis: .vertical)
-                            .lineLimit(2...5)
-                    } header: { Text("额外文件与目录") }
-                        footer: { Text("每行填写一个工作机上已存在的绝对路径，读写包含读取。命令可访问这些路径；文件读取和补丁工具仍限于工作区。") }
-                        .autocorrectionDisabled()
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
-
-                    Section {
-                        TextField("例如 registry.npmjs.org:443", text: field(\.networkDomains, fallback: ""), axis: .vertical)
-                            .lineLimit(2...5)
-                    } header: { Text("允许访问的网络地址") }
-                        footer: { Text("每行一个域名或 IP，可带端口，支持 *.example.com。留空禁止网络；不支持全网通配或本机回环地址。") }
-                        .autocorrectionDisabled()
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
-
-                    Section {
-                        Text("先停止执行并确认结果，再保存授权。保存后用于后续工具调用，并在下一次模型请求追加通知。")
-                            .font(.footnote).foregroundStyle(.secondary)
+                        LabeledContent("访问权限") {
+                            Picker("访问权限", selection: field(\.workspace, fallback: .read)) {
+                                Text("只读").tag(ExecutionGrants.WorkspaceAccess.read)
+                                Text("读写").tag(ExecutionGrants.WorkspaceAccess.write)
+                            }
+                            .pickerStyle(.segmented).labelsHidden().fixedSize()
+                        }
                     }
+                    Group {
+                        CardField(label: "额外只读路径", focused: focus == .read) {
+                            TextField("每行一个绝对路径", text: field(\.readPaths, fallback: ""), axis: .vertical)
+                                .lineLimit(2...5).focused($focus, equals: .read)
+                                .cardInput { focus = .read }
+                        }
+                        CardField(label: "额外读写路径", focused: focus == .write,
+                                  note: "每行填写一个工作机上已存在的绝对路径，读写包含读取。命令可访问这些路径；文件读取和补丁工具仍限于工作区。") {
+                            TextField("每行一个绝对路径", text: field(\.writePaths, fallback: ""), axis: .vertical)
+                                .lineLimit(2...5).focused($focus, equals: .write)
+                                .cardInput { focus = .write }
+                        }
+                        CardField(label: "允许访问的网络地址", focused: focus == .network,
+                                  note: "每行一个域名或 IP，可带端口，支持 *.example.com。留空禁止网络；不支持全网通配或本机回环地址。") {
+                            TextField("例如 registry.npmjs.org:443", text: field(\.networkDomains, fallback: ""), axis: .vertical)
+                                .lineLimit(2...5).focused($focus, equals: .network)
+                                .cardInput { focus = .network }
+                        }
+                    }
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                    CardNote("先停止执行并确认结果，再保存授权。保存后用于后续工具调用，并在下一次模型请求追加通知。")
                 }
-                if let notice { Text(notice).foregroundStyle(.secondary) }
-                if let error { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) }
-                if working { ProgressView() }
             }
-            .formStyle(.grouped)
             .disabled(working)
         } actions: {
             CardSheetAction(title: "重新读取", systemImage: "arrow.clockwise") {
@@ -102,8 +98,9 @@ struct ExecutionGrantSettings: View {
             }
             .disabled(working || !available)
         } footer: {
-            CardActions(primary: "保存", enabled: canSave) { perform { try await save() } }
+            CardActions(primary: "保存", enabled: canSave, phase: $phase) { perform(succeeds: true) { try await save() } }
         }
+        .endsTyping(focus != nil) { focus = nil }
         .interactiveDismissDisabled(working || changed)
         .confirmationDialog("放弃未保存的执行授权修改？", isPresented: Binding(
             get: { discardAction != nil }, set: { if !$0 { discardAction = nil } }
@@ -180,17 +177,9 @@ struct ExecutionGrantSettings: View {
         _ = try boundClient()
         saved = value
         self.draft = ExecutionGrantDraft(snapshot: value)
-        notice = "执行授权已保存。"
     }
 
-    private func perform(_ action: @escaping () async throws -> Void) {
-        guard !working else { return }
-        working = true
-        error = nil
-        notice = nil
-        Task {
-            defer { working = false }
-            do { try await action() } catch { self.error = error.localizedDescription }
-        }
+    private func perform(succeeds: Bool = false, _ action: @escaping () async throws -> Void) {
+        $phase.run(succeeds: succeeds, action)
     }
 }

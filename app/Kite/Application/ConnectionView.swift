@@ -142,9 +142,9 @@ struct NewWorkspace: View {
     @State private var path = ""
     @State private var remote = ""
     @State private var repositories: [GitHubRepository]?
-    @State private var working = false
-    @State private var error: String?
+    @State private var phase = CardPhase.idle
     @FocusState private var focus: Field?
+    private var working: Bool { phase.working }
 
     private var title: String { mode == .project ? "添加项目" : "开始会话" }
     private var subtitle: String { mode == .project ? "克隆远程仓库，或登记工作机上已有的目录" : "在已登记的工作目录上新建工作区" }
@@ -155,9 +155,8 @@ struct NewWorkspace: View {
             case .project: projectFields
             case .session, .checkout: sessionFields
             }
-            if let error { CardCallout(text: error) }
         } footer: {
-            CardActions(primary: primary.title, enabled: primary.enabled, action: primary.run)
+            CardActions(primary: primary.title, enabled: primary.enabled, phase: $phase, action: primary.run)
         }
         .endsTyping(focus != nil) { focus = nil }
         .onAppear {
@@ -273,7 +272,7 @@ struct NewWorkspace: View {
                 }
             })
         case .project:
-            return (working ? "正在克隆…" : "克隆并登记",
+            return ("克隆并登记",
                     !working && !machineID.isEmpty && !remote.trimmingCharacters(in: .whitespaces).isEmpty, {
                 perform {
                     _ = try await model.cloneCheckout(remote: remote, machineID: machineID)
@@ -281,7 +280,7 @@ struct NewWorkspace: View {
                 }
             })
         case .session, .checkout:
-            return (working ? "正在创建…" : "创建工作区",
+            return ("创建工作区",
                     !working && !checkoutID.isEmpty && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, {
                 perform { try await model.create(checkout: checkoutID, prompt: prompt); dismiss() }
             })
@@ -299,13 +298,9 @@ struct NewWorkspace: View {
         var symbol: String { self == .folder ? "folder" : "globe" }
     }
 
+    /// 成功后弹窗直接关掉。
     private func perform(_ action: @escaping () async throws -> Void) {
-        working = true
-        error = nil
-        Task {
-            defer { working = false }
-            do { try await action() } catch { self.error = error.localizedDescription }
-        }
+        $phase.run(action)
     }
 }
 
