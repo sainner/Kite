@@ -26,7 +26,7 @@ const token = (name: string) => `${name}-${randomUUID().slice(0, 8)}`;
 const readTool = 'mcp__kite__read';
 const patchTool = 'mcp__kite__patch';
 const shellTool = 'mcp__kite__shell';
-const expectedTools = [readTool, patchTool, shellTool,
+const expectedTools = [readTool, patchTool, shellTool, 'mcp__kite__credentials',
   ...['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop'].map((name) => `mcp__kite__${name}`)].sort();
 const tools = (request: Logged): string[] => (request.body.tools ?? []).map((tool: { name: string }) => tool.name);
 const resultFor = (request: Logged, id: string) => request.body.messages

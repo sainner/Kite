@@ -8,7 +8,6 @@ struct DetachedWorkspace: View {
     let id: String
     @Environment(AppModel.self) private var model
     @Environment(\.windowChrome) private var chrome
-    @State private var stage = DotStage()
 
     var body: some View {
         if let workspace = model.workspace(id) {
@@ -22,14 +21,8 @@ struct DetachedWorkspace: View {
                     .padding([.horizontal, .bottom], Metrics.padding)
             }
             .frame(minWidth: minimum.width, minHeight: minimum.height)
-            .background {
-                ZStack {
-                    Theme.background
-                    DotCanvas()
-                }
-            }
+            .appDotBackground()
             .ignoresSafeArea()
-            .environment(\.dotStage, stage)
             .resizesByModule()
             .background(WindowPlacer(frame: model.pendingPlacement))
             .onAppear {

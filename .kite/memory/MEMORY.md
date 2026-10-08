@@ -14,7 +14,7 @@
 - [配置与工作区事件投递](external-event-delivery.md) — 配置和环境变化在自然请求边界追加通知，减少缓存损失与工作打断
 - [统一执行沙箱](sandbox-execution-direction.md) — 插件与 harness 共用操作系统沙箱，正式运行时继续使用 Bun
 - [项目以远程仓库为身份](project-remote-identity.md) — 项目以远程为身份、托管远程与集成推送的决定来源，正文在 docs
-- [凭据分发服务](credential-service-direction.md) — Git 凭据随账号分发，harness 按引用注入凭据而不进上下文
+- [凭据分发服务](credential-service-direction.md) — Git 授权与共享密钥归入资源库的凭据，随账号分发、宿主按引用注入
 - [工作树与工作区生命周期](session-worktree-decision.md) — 独立工作树用于隔离并行改动，生命周期属于工作区而非单个线程
 - [工作区、线程与插件架构](workspace-thread-plugin-architecture.md) — 工作区承载同级实例，agent 统一为插件，自定义插件需要界面、逻辑与工作区能力
 - [窗口的跨端同步](workspace-window-sync.md) — 同一工作区共享窗口集合，各设备独立布局与焦点
@@ -23,18 +23,18 @@
 - [新窗口放置](new-window-placement.md) — Mac 新窗口优先新列，其次上下分栏，空间仍不足再收起旧窗口
 - [停止会话的语义](session-stop-behavior.md) — 手动停止退回未纳入请求的消息，不等于保留 paused 状态
 - [统一资源引用](resource-reference-direction.md) — 统一资源引用保留稳定内容身份，历史 diff 不随当前文件变化
-- [窗口标题信息](window-header-information.md) — 标题前公共信息区两端统一放状态圆环，侧栏入口出现时合成一块玻璃
-- [侧栏一级导航](sidebar-navigation.md) — 每栏切换整套侧栏与内容区，单页不做窗口或模态框，空内容区只展示信息
+- [窗口标题信息](window-header-information.md) — 标题前公共信息区放状态圆环，手机会话点击圆环打开侧栏
+- [侧栏一级导航](sidebar-navigation.md) — 空间、设备、资源库的导航分层；设备下账号与文件并列；账号页允许固定窗口分区
 - [初始配置与设备角色](onboarding-device-roles.md) — 本机执行或仅远程控制都入网，进入 App 后发现 kited 工作机
 - [托管账号与组网](hosted-network-direction.md) — 我们托管，用户账号密码登录或扫描已登录设备二维码加入；规格见 docs
 - [思考与状态展示](thinking-display.md) — 仅显示当前生成的思考，状态指示不承担实时活动或思考正文
-- [视觉风格来源与取舍](visual-style-direction.md) — 参考色板与用户预览后确认的取舍，当前呈现核对代码
+- [视觉风格来源与取舍](visual-style-direction.md) — 参考色板、树状子项与用户预览后确认的取舍，当前呈现核对代码
 - [宋体尝试](serif-font-trial.md) — 先只把侧栏字标换成思源宋体，表格与其他文字保持系统字体；扩大范围先确认体积
 
 ## 协作反馈
 
 - [同类控件统一交互](shared-control-interaction.md) — 统一尺寸、命中与反馈，保留控件已有的专门触屏交互
-- [界面由用户自己预览](user-previews-ui.md) — 样式不写测试，当前仅更新 Mac 供用户预览，iPhone 等用户重新要求
+- [界面由用户自己预览](user-previews-ui.md) — Mac 整体替换 Release；面向 iPhone 的触控改动安装并打开已连接真机
 - [接数据沿用原界面](feedback-preserve-ui-on-data-integration.md) — App 接真实数据时保留已做好的界面结构，不另换空状态页面或控件布局
 - [Xcode 用 27.2](feedback-xcode-version.md) — 打开 Xcode 界面用 Xcode-beta.app（27.2），不按名字开到 27.0
 - [对话用中文](feedback-chat-language.md) — 回复、计划与交付说明都用简体中文

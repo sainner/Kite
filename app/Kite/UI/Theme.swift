@@ -148,7 +148,11 @@ enum Metrics {
     static var paneButton: CGFloat { InputMode.current.button }
     static var paneHeaderButton: CGFloat { InputMode.current.headerButton }
     /// 标题栏按钮组两端的留白：图标在按钮高度里的空白，减去按钮自带的半个间距。
-    static var paneHeaderGroupInset: CGFloat { (paneHeaderButton - InputMode.current.labelExtent - paneButtonGap) / 2 }
+    static var paneHeaderGroupInset: CGFloat { (paneHeaderButton - InputMode.current.labelExtent - paneHeaderButtonGap) / 2 }
+    /// 触屏组内每个图标入口至少留出完整按钮宽度，避免只增加高度后仍挤在一起。
+    static var paneHeaderButtonGap: CGFloat {
+        InputMode.current.isTouch ? max(paneButtonGap, paneButton - InputMode.current.labelExtent) : paneButtonGap
+    }
     static let paneButtonGap: CGFloat = 10
     /// 按钮到所属工具条容器的四边留白。
     static let paneToolbarInset: CGFloat = 8

@@ -98,7 +98,7 @@ struct PaneHeaderButtonLabel: View {
 
     var body: some View {
         PaneButtonLabel(title, systemImage: systemImage)
-            .padding(.horizontal, Metrics.paneButtonGap / 2)
+            .padding(.horizontal, Metrics.paneHeaderButtonGap / 2)
             .frame(height: Metrics.paneHeaderButton)
             .contentShape(.capsule)
     }

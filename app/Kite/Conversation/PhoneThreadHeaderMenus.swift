@@ -35,7 +35,7 @@ final class PhoneThreadMenuButton: UIButton {
         appearance.baseForegroundColor = .label
         appearance.image = UIImage(systemName: "ellipsis")
         appearance.imagePlacement = .trailing
-        appearance.imagePadding = Metrics.paneButtonGap
+        appearance.imagePadding = Metrics.paneHeaderButtonGap
         appearance.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 15, bottom: 0, trailing: 15)
         appearance.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(textStyle: .body)
         appearance.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// 内容区没有窗口时的画板。图案由当前画板持有和绘制，不写入窗口共享的背景点阵：
-/// - 内容区是一张半透明的空白卡片（浅色白、深色黑），圆角同卡片，与同在点阵上的侧栏分界；打开窗口后卡片盖住它。
+/// - 聚焦时接管点阵，图形画在卡片底色上方；打开窗口后画板退出。
 /// - 场景图形用风筝和线讲连接状态：人握着线，风筝在远处飞。标题、说明和操作按钮直接放在上面。
 /// - 指针划过（触屏是手指拖过）空白处留下一道慢慢退去的轨迹。
 struct EmptyStage: View {
@@ -72,7 +72,7 @@ struct EmptyStage: View {
                 }
             }
         }
-        .stageCard(showsFigures: true)
+        .stageCard(usesDots: true)
         .environment(\.dotStage, stage)
         // 容器给出侧边栏入口时（iPhone），左上角放按钮，位置同窗口标题栏
         .overlay(alignment: .topLeading) {

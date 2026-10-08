@@ -10,8 +10,6 @@ final class AppModel {
     var pendingPlacement: CGRect?
     var sidebarWidth = Metrics.sidebarWidth
     var sidebarCollapsed = false
-    /// 各订阅账号（如 ChatGPT、Claude）本周还剩多少额度；后端还没上报，目前只有预览数据填它。
-    var subscriptionQuotas: [SubscriptionQuota] = []
     /// 侧栏底部一级导航选中的一栏。
     var sidebarSection = SidebarSection.workspaces
     var contentSize: CGSize = .zero
@@ -39,12 +37,16 @@ final class AppModel {
     #endif
     /// 正在打开的新建表单：添加项目或开始会话。
     var newWorkspace: NewWorkspace.Mode?
-    /// 设备与文件一栏在内容区显示的页面。
-    var drivePage = DrivePage.devices
-    /// 自定义资产一栏在内容区显示的页面。
+    /// 设备一栏在内容区显示的页面。
+    var drivePage = DrivePage.accounts
+    /// 资源库一栏在内容区显示的页面。
     var extensionPage = ExtensionLibrary.plugins
     /// 设置一栏在内容区显示的页面。
     var settingsPage = SettingsPage.appearance
+    var accountMachineID: String?
+    let accountWindows = WindowLayout(fixed: .split(Split(.horizontal, 0.5,
+        .split(Split(.vertical, 0.5, .pane(Pane("chatgpt")), .pane(Pane("claude")))),
+        .pane(Pane("api")))))
 
     var selectedProject: RemoteProject? {
         guard let selectedProjectID else { return nil }
@@ -163,6 +165,7 @@ final class AppModel {
         connectionRun = nil
         stopConnections()
         connections = [:]
+        accountMachineID = nil
         workspaces = []
         detached = []
         selectedProjectID = nil
@@ -285,6 +288,8 @@ final class AppModel {
         var immediate = true
         while !Task.isCancelled && accepts(client) {
             let generation = connection.catalog.reset()
+            let accountsTask = Task { await self.followModelAccounts(connection) }
+            defer { accountsTask.cancel() }
             do {
                 // 插件定义和事件流并行请求，任一失败都按断线重连。
                 try await withThrowingTaskGroup(of: Void.self) { group in
@@ -516,11 +521,4 @@ final class AppModel {
         if !detached.contains(selected), let area = workspace(selected) { return area }
         return workspaces.first { !detached.contains($0.id) }
     }
-}
-
-/// 一个订阅账号本周剩余的额度，0...1。
-struct SubscriptionQuota: Identifiable {
-    let provider: String
-    let remaining: Double
-    var id: String { provider }
 }

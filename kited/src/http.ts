@@ -10,6 +10,7 @@ import { operationCatalog } from './operations/contract.ts';
 import { contextTemplateSelection } from './context-templates.ts';
 import type { Network } from './network.ts';
 import { publisherConfig, type CatalogPublisher } from './catalog-publisher.ts';
+import { readModelAccounts } from './model-accounts.ts';
 
 async function body(req: Request): Promise<Record<string, unknown>> {
   try { return (await req.json()) as Record<string, unknown>; } catch { throw new KiteError('请求体不是 JSON'); }
@@ -170,6 +171,17 @@ export function serve(kite: Kite, listen: Listen) {
         return network().joinAccount(config.data);
       })) },
       '/machine': { GET: access(() => kite.machine()) },
+      '/subscription-logins': { POST: bound(async (req) => {
+        const parsed = z.object({ id: z.uuid(), provider: z.enum(['chatgpt', 'claude']) }).strict().safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('订阅登录请求无效');
+        return Response.json(kite.subscriptionLogins.start(parsed.data.provider, parsed.data.id), { headers: { 'Cache-Control': 'no-store' } });
+      }) },
+      '/subscription-logins/:id': {
+        GET: bound((req) => Response.json(kite.subscriptionLogins.get(req.params.id), { headers: { 'Cache-Control': 'no-store' } })),
+        POST: bound(async (req) => { kite.subscriptionLogins.submit(req.params.id, str((await body(req)).code, 'code')); return { ok: true }; }),
+        DELETE: bound(async (req) => { await kite.subscriptionLogins.cancel(req.params.id); return { ok: true }; }),
+      },
+      '/model-accounts': { GET: bound(async () => Response.json(await readModelAccounts(kite.home), { headers: { 'Cache-Control': 'no-store' } })) },
       '/instances/:id/agent-capabilities': { GET: bound((req) => kite.agentCapabilities(req.params.id)) },
       '/projects': {
         GET: bound(() => kite.projects()),

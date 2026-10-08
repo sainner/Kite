@@ -18,6 +18,10 @@ export async function readSubscriptionCredentials(authFile = defaultAuthFile()):
   let data: unknown;
   try { data = JSON.parse(await readFile(authFile, 'utf8')); }
   catch { throw new Error(`无法读取 ChatGPT 登录凭据：${authFile}。请先在 Kite 的独立认证目录完成设备登录，或用 --auth 指定文件。`); }
+  return parseSubscriptionCredentials(data);
+}
+
+export function parseSubscriptionCredentials(data: unknown): SubscriptionCredentials {
   const parsed = credentials.safeParse(data);
   // 不输出 Zod 诊断或文件内容，避免错误报告带上凭据。
   if (!parsed.success) throw new Error('需要 ChatGPT 订阅登录凭据；不接受 API key。请重新完成设备登录。');

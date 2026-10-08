@@ -6,11 +6,14 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { prepareSandbox, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
 import type { ToolResult } from '../harness/types.ts';
+import type { SecretValue } from '../secrets.ts';
 
 export interface CommandOptions {
   cwd: string;
   logDir: string;
   env: NodeJS.ProcessEnv;
+  /** 仅本次进程使用；带凭据的命令输出完全隐藏，不写入日志或发送给观察者。 */
+  credentials?: Record<string, SecretValue>;
   /** 宿主已授权的资源范围；未指定时采用当前工作树的基础策略。 */
   policy?: ExecutionPolicy;
   /** 完整命令日志保存在 logDir，回传给模型只留受限尾部。 */
@@ -31,6 +34,7 @@ export async function runCommand(command: string, timeout: number, signal: Abort
   mkdirSync(options.logDir, { recursive: true });
   const log = join(options.logDir, `${randomUUID()}.log`);
   const fd = openSync(log, 'wx', 0o600);
+  const confidential = Object.keys(options.credentials ?? {}).length > 0;
   const limit = options.outputLimit ?? 20_000;
   let tail = '';
   let total = 0;
@@ -40,7 +44,7 @@ export async function runCommand(command: string, timeout: number, signal: Abort
   let child;
   let sandbox: ReturnType<typeof prepareSandbox> | undefined;
   try {
-    sandbox = prepareSandbox(command, { cwd: options.cwd, env: options.env, policy: options.policy ?? workspacePolicy(options.cwd, options.env) });
+    sandbox = prepareSandbox(command, { cwd: options.cwd, env: options.env, policy: options.policy ?? workspacePolicy(options.cwd, options.env), credentials: options.credentials });
     child = spawn(sandbox.executable, sandbox.args, { cwd: options.cwd, env: sandbox.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (error) { closeSync(fd); sandbox?.dispose(); throw error; }
   const pid = child.pid;
@@ -53,6 +57,7 @@ export async function runCommand(command: string, timeout: number, signal: Abort
     }, 200);
   };
   const onOutput = (part: string) => {
+    if (confidential) return;
     total += Array.from(part).length;
     tail = Array.from(tail + part).slice(-limit).join('');
     if (ioError) return;
@@ -100,8 +105,9 @@ export async function runCommand(command: string, timeout: number, signal: Abort
       status,
       output: [
         alive ? '无法确认进程组已停止，需要人工检查。' : stopped ?? `退出码：${code}`,
+        confidential ? '凭据命令的输出已隐藏；标准输出和错误输出不会保存到日志或会话。' : '',
         total > limit ? `（前面省略 ${total - limit} 个字符）` : '', tail,
-        `完整日志：${log}`,
+        confidential ? '' : `完整日志：${log}`,
       ].filter(Boolean).join('\n'),
     };
   } finally {

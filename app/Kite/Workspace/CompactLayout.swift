@@ -23,7 +23,6 @@ struct CompactLayout: View {
     @State private var drawerHeight: CGFloat = 0
     /// Home 条让出的那一截，不含键盘，从 UIKit 读；读到之前按 SwiftUI 的算。
     @State private var homeInset: CGFloat?
-    @State private var stage = DotStage()
 
     var body: some View {
         GeometryReader { geo in
@@ -48,12 +47,6 @@ struct CompactLayout: View {
             let actionsHeight = drawerHeight + home + Metrics.padding
             let current = model.current?.id
             ZStack(alignment: .topLeading) {
-                ZStack {
-                    Theme.background
-                    // 拉出侧边栏或 action 栏时露出背景上的点阵
-                    DotCanvas()
-                }
-                .ignoresSafeArea()
                 #if os(iOS)
                 ScreenReader { radius, bottom in
                     screenRadius = radius
@@ -69,12 +62,16 @@ struct CompactLayout: View {
                     SidebarLogoBar { EmptyView() }
                         .padding(.top, logoBarTop(screen: screen, insets: insets))
                         .padding(.bottom, Metrics.gap)
-                    SidebarNavigation()
-                        .padding(.bottom, 8)
+                    if model.sidebarSection != .settings {
+                        SidebarNavigation()
+                            .padding(.top, 8)
+                            .padding(.bottom, 24)
+                    }
+                    SidebarListHeader()
                     ScrollView(.vertical, showsIndicators: false) {
                         switch model.sidebarSection {
                         case .workspaces:
-                            WorkspaceList(onSelectProject: { open = nil }) { workspace in
+                            WorkspaceList(onSelect: { open = nil }) { workspace in
                                 WorkspaceRow(workspace: workspace, current: current == workspace.id) {
                                     Color.clear.contentShape(Rectangle())
                                     .onTapGesture {
@@ -95,7 +92,7 @@ struct CompactLayout: View {
                 .opacity(showing(.sidebar) ? 1 : 0)
                 // 底栏：折叠的窗口那一行
                 VStack(alignment: .leading, spacing: Metrics.gap) {
-                    if model.sidebarSection == .workspaces, model.selectedProject == nil {
+                    if model.paneGroup != nil {
                         tabBar.frame(height: Metrics.tabBar)
                             .padding(.horizontal, Metrics.padding)
                     }
@@ -105,6 +102,7 @@ struct CompactLayout: View {
                 .frame(maxHeight: .infinity, alignment: .bottom)
                 .opacity(showing(.actions) ? 1 : 0)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             // 窗口铺满整个屏幕，放在 overlay 里，不把上面这层撑出安全区，action 栏才能留在 Home 条上面
             // 没有窗口时窗口里放占位内容，见 CompactWindow
             .overlay(alignment: .topLeading) {
@@ -117,33 +115,45 @@ struct CompactLayout: View {
         #if os(iOS)
         .persistentSystemOverlays(.hidden)
         #endif
-        .onChange(of: model.current?.id, initial: true) { _, _ in
-            model.current?.layout.updateViewport(.zero, presentation: .compact)
+        .onChange(of: model.paneGroup?.id, initial: true) { _, _ in
+            model.paneGroup?.layout.updateViewport(.zero, presentation: .compact)
         }
         // 刚开出第一个窗口（新建，或在侧栏换到有窗口的工作区）：窗口从底栏上方展开铺满
-        .onChange(of: model.current?.layout.focused == nil) { was, now in
+        .onChange(of: model.paneGroup?.layout.focused == nil) { was, now in
             if was, !now { open = nil }
         }
-        .environment(\.dotStage, stage)
+        .appDotBackground()
     }
 
     /// 其余窗口折叠在底部；点击后展开它，原来的窗口回到这一栏，始终只展开一个。
     @ViewBuilder
     private var tabBar: some View {
-        if let area = model.current {
-            let workspace = area.layout
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Metrics.gap) {
-                    ForEach(workspace.panes.filter { $0 != workspace.focused }, id: \.self) { pane in
-                        Button {
-                            workspace.focus(pane)
-                            open = nil
-                        } label: {
-                            PaneBubble(appearance: area.appearance(of: pane))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("展开\(area.appearance(of: pane).name)窗口")
-                        .contextMenu {
+        if let group = model.paneGroup {
+            if let area = group.workspace {
+                tabs(in: group)
+                    .modifier(InstanceSettingsPresentation())
+                    .environment(area)
+            } else {
+                tabs(in: group)
+            }
+        }
+    }
+
+    private func tabs(in group: PaneGroup) -> some View {
+        let workspace = group.layout
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Metrics.gap) {
+                ForEach(workspace.panes.filter { $0 != workspace.focused }, id: \.self) { pane in
+                    Button {
+                        workspace.focus(pane)
+                        open = nil
+                    } label: {
+                        PaneBubble(appearance: group.appearance(of: pane))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("展开\(group.appearance(of: pane).name)窗口")
+                    .contextMenu {
+                        if let area = group.workspace {
                             if let target = area.windows.first(where: { $0.id == pane.id })?.target,
                                let instance = area.instances.first(where: { $0.id == target.instanceId }) {
                                 InstanceActions(instance: instance)
@@ -151,15 +161,14 @@ struct CompactLayout: View {
                             Button("关闭窗口") { model.closeWindow(pane, in: area) }
                         }
                     }
+                }
+                if let area = group.workspace {
                     AddWindowButton()
                     ForEach(area.windowlessInstances) { instance in
                         InstanceDockButton(instance: instance, opened: { open = nil })
                     }
                 }
-                .environment(area)
             }
-            .modifier(InstanceSettingsPresentation())
-            .environment(area)
         }
     }
 
@@ -178,10 +187,10 @@ struct CompactLayout: View {
         shown == drawer
     }
 
-    /// 工作区开着窗口：底栏可以展开收起。其余情况窗口里放占位内容，见 CompactWindow。
+    /// 当前窗口组有可用窗口时，底栏可以展开收起。
     private var windowed: Bool {
-        guard model.sidebarSection == .workspaces, let area = model.current, area.layout.focused != nil else { return false }
-        return area.pluginClient != nil
+        guard let group = model.paneGroup, group.layout.focused != nil else { return false }
+        return group.canShowWindows
     }
 
     /// 工作区内容已载入但没开窗口：底栏钉着，新建窗口的入口在那里。目录状态（添加项目、连接中等）没有可用的底栏，同单页一样铺满。

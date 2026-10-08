@@ -37,6 +37,7 @@ import { LightTasks } from './light-tasks.ts';
 import { ThreadTitles, titleTemplate } from './thread-titles.ts';
 import { ChatGPTModel } from './harness/chatgpt.ts';
 import { readSubscriptionCredentials } from './harness/auth.ts';
+import { SubscriptionLogins } from './subscription-logins.ts';
 import { agentModels } from './agents/models.ts';
 
 export interface ThreadView extends ThreadContext { runner: Runtime['state']; busy: boolean }
@@ -54,6 +55,7 @@ function conflictPrompt(branch: string, files: string[]): string {
 
 export class Kite {
   readonly events = new TranscriptFeed();
+  readonly subscriptionLogins: SubscriptionLogins;
   readonly operations: InstanceOperations;
   readonly receipts: OperationReceipts;
   readonly catalog: PluginCatalog;
@@ -78,6 +80,7 @@ export class Kite {
 
   constructor(readonly store: Store, readonly home: string, readonly bus: Bus, private options: RuntimeOptions = {},
     readonly account = new AccountClient(() => undefined)) {
+    this.subscriptionLogins = new SubscriptionLogins(home);
     this.catalog = new PluginCatalog(join(home, 'plugins'));
     this.contextTemplates = new ContextTemplates(store, [
       ...this.catalog.definitions().flatMap((definition) => definition.agent ? [definition.agent.context] : []),
@@ -475,7 +478,7 @@ export class Kite {
     const { id, workspaceId, workspace, title } = t;
     await this.transcripts.load(t);
     const r = await openRuntime(t, {
-      home: this.home, repository: t.checkout.path, options: this.options,
+      home: this.home, account: this.account, repository: t.checkout.path, options: this.options,
       events: {
         emit: (event) => this.bus.emit({ ...event, threadId: id }),
         label: (text) => this.turnLabels.set(id, firstLine(text)),
@@ -683,7 +686,7 @@ export class Kite {
   }
   async shutdown(): Promise<void> {
     this.stopping = true;
-    await Promise.all([this.titles?.close(), this.lightTasks?.close()]);
+    await Promise.all([this.titles?.close(), this.lightTasks?.close(), this.subscriptionLogins.close()]);
     await this.plugins.close();
     await this.operations.close();
     for (const c of this.preparations.values()) c.abort();

@@ -8,8 +8,10 @@ import { z } from 'zod';
 import { httpsRemote, normalizeRemote, remoteHost, remoteName } from '../remote-url.ts';
 import type { GitCredential } from '../git-credential.ts';
 import { catalogPublication, type CatalogSnapshot } from './catalog.ts';
-import { CredentialCipher, GitHubDeviceFlow, gitHubRepositories, type GitHubOptions } from './credentials.ts';
+import { GitHubDeviceFlow, gitHubRepositories, type GitHubOptions } from './credentials.ts';
 import { GitHosting } from './git-hosting.ts';
+import { SecretStore } from './secret-store.ts';
+import { secretName, secretReference, secretValue } from '../secrets.ts';
 
 interface Options {
   databasePath: string;
@@ -21,7 +23,7 @@ interface Options {
   now?: () => number;
 }
 interface Device {
-  id: string; userId: string; sessionId: string; name: string; role: 'controller' | 'worker';
+  id: string; userId: string; sessionId: string; name: string; role: 'controller' | 'worker'; kind: string;
   headscaleUser: string; keyId: string; nodeId: string | null; port: number; createdAt: number;
 }
 interface Node {
@@ -37,7 +39,9 @@ class RequestError extends Error {
   constructor(message: string, readonly status: number) { super(message); }
 }
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
-const enrollment = z.object({ name: z.string().trim().min(1).max(80), role: z.enum(['controller', 'worker']) });
+const deviceKind = z.enum(['phone', 'tablet', 'computer', 'unknown']);
+const deviceMetadata = z.object({ kind: deviceKind }).strict();
+const enrollment = z.object({ name: z.string().trim().min(1).max(80), role: z.enum(['controller', 'worker']), kind: deviceKind.default('unknown') });
 const completion = z.object({ ip: z.ipv4(), port: z.number().int().min(1).max(65535).default(5483) });
 const invitation = z.object({ token: z.string().min(32).max(128) });
 const projectCreation = z.union([
@@ -67,7 +71,7 @@ export async function createAccountService(options: Options) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS kite_device (
       id TEXT PRIMARY KEY, userId TEXT NOT NULL, sessionId TEXT NOT NULL UNIQUE,
-      name TEXT NOT NULL, role TEXT NOT NULL, headscaleUser TEXT NOT NULL,
+      name TEXT NOT NULL, role TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'unknown', headscaleUser TEXT NOT NULL,
       keyId TEXT NOT NULL, nodeId TEXT UNIQUE, port INTEGER NOT NULL DEFAULT 5483, createdAt INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS kite_device_user ON kite_device(userId);
@@ -88,14 +92,14 @@ export async function createAccountService(options: Options) {
       projectId TEXT PRIMARY KEY REFERENCES kite_project(id) ON DELETE CASCADE,
       icon TEXT NOT NULL DEFAULT 'folder', color TEXT NOT NULL DEFAULT 'primary'
     );
-    CREATE TABLE IF NOT EXISTS kite_git_credential (
-      userId TEXT NOT NULL, host TEXT NOT NULL, account TEXT NOT NULL, secret TEXT NOT NULL, createdAt INTEGER NOT NULL,
-      PRIMARY KEY (userId, host)
-    );
     CREATE TABLE IF NOT EXISTS kite_git_token (digest TEXT PRIMARY KEY, userId TEXT NOT NULL, expiresAt INTEGER NOT NULL);
   `);
+  // 已登记的设备在下次启动 App 时补报类型。
+  if (!db.query<{ name: string }, []>('PRAGMA table_info(kite_device)').all().some((column) => column.name === 'kind')) {
+    db.exec("ALTER TABLE kite_device ADD COLUMN kind TEXT NOT NULL DEFAULT 'unknown'");
+  }
   const hosting = new GitHosting(options.git?.reposPath ?? join(dirname(options.databasePath), 'repos'));
-  const cipher = new CredentialCipher(options.secret);
+  const secrets = new SecretStore(db, options.secret);
   const github = options.git?.github && new GitHubDeviceFlow(options.git.github);
   const flows = new Map<string, { userId: string; deviceCode: string; expiresAt: number }>();
   /** 迁移中的托管仓库只读，推送到新远程期间不能再有人写入。 */
@@ -147,7 +151,7 @@ export async function createAccountService(options: Options) {
     const node = all.find((n) => String(n.id) === device.nodeId && String(n.user.id) === device.headscaleUser);
     const ip = node?.ipAddresses.find((ip) => !ip.includes(':'));
     return {
-      id: device.id, name: device.name, role: device.role, online: node?.online ?? false,
+      id: device.id, name: device.name, role: device.role, kind: device.kind, online: node?.online ?? false,
       joined: !!node, createdAt: device.createdAt,
       ...(ip && device.role === 'worker' ? { address: `http://${ip}:${device.port}` } : {}),
     };
@@ -190,13 +194,19 @@ export async function createAccountService(options: Options) {
     return row;
   }
   function storedCredential(userId: string, host: string): GitCredential | null {
-    const row = db.query<{ secret: string }, [string, string]>('SELECT secret FROM kite_git_credential WHERE userId = ? AND host = ?').get(userId, host);
-    return row && JSON.parse(cipher.open(userId, host, row.secret));
+    const value = secrets.get(userId, 'git', host);
+    return value ? JSON.parse(value.value) as GitCredential : null;
   }
   function saveCredential(userId: string, host: string, account: string, credential: GitCredential) {
-    db.query(`INSERT INTO kite_git_credential VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(userId, host) DO UPDATE SET account=excluded.account, secret=excluded.secret, createdAt=excluded.createdAt`)
-      .run(userId, host, account, cipher.seal(userId, host, JSON.stringify(credential)), now());
+    secrets.set(userId, 'git', host, { kind: 'text', value: JSON.stringify(credential) }, now(), account);
+  }
+  function secretScope(userId: string, projectId?: string): string {
+    if (projectId) ownedProject(projectId, userId);
+    return projectId ? `project:${projectId}` : 'account';
+  }
+  function secretList(userId: string, projectId?: string) {
+    return secrets.list(userId, secretScope(userId, projectId))
+      .map(({ name, kind, updatedAt }) => ({ name, kind, updatedAt, projectId: projectId ?? null }));
   }
   /** 已迁移的托管仓库，等账号下所有检出都改用新地址后删除；已移除设备的目录不再计入。 */
   function retireHostedRepos() {
@@ -274,6 +284,46 @@ export async function createAccountService(options: Options) {
       })();
       retireHostedRepos();
       return result({ ok: true });
+    }
+    if (path === '/api/secrets/resolve' && request.method === 'POST') {
+      const found = await worker(bearerToken(request));
+      if (!found) throw new RequestError('请使用工作机凭据', 401);
+      const userId = found.device.userId;
+      const body = z.object({ projectId: z.uuid().optional(), references: z.array(secretReference).min(1).max(32) }).strict().parse(await request.json());
+      if (body.projectId) ownedProject(body.projectId, userId);
+      return result([...new Set(body.references)].map((reference) => {
+        const [scope, name] = reference.slice(1, -1).split('.') as [string, string];
+        if (scope === 'project' && !body.projectId) throw new RequestError('当前执行没有绑定项目', 409);
+        const value = secrets.get(userId, scope === 'project' ? `project:${body.projectId}` : 'account', name);
+        if (!value) throw new RequestError(`找不到密钥 ${reference}`, 404);
+        return { reference, ...value };
+      }));
+    }
+    if (path === '/api/secrets/available' && request.method === 'GET') {
+      const found = await worker(bearerToken(request));
+      if (!found) throw new RequestError('请使用工作机凭据', 401);
+      const userId = found.device.userId;
+      const projectId = z.uuid().optional().parse(new URL(request.url).searchParams.get('projectId') ?? undefined);
+      return result([...secretList(userId), ...(projectId ? secretList(userId, projectId) : [])]
+        .map((entry) => ({ ...entry, reference: `{${entry.projectId ? 'project' : 'account'}.${entry.name}}` })));
+    }
+    if (path === '/api/secrets' || path.startsWith('/api/secrets/')) {
+      const user = await owner(request);
+      if (user.worker) throw new RequestError('密钥管理需要登录 Kite 账号', 403);
+      const projectId = z.uuid().optional().parse(new URL(request.url).searchParams.get('projectId') ?? undefined);
+      if (path === '/api/secrets' && request.method === 'GET') return result(secretList(user.userId, projectId));
+      const name = secretName.parse(path.slice('/api/secrets/'.length));
+      if (request.method === 'PUT') {
+        const body = secretValue.extend({ projectId: z.uuid().optional() }).strict().parse(await request.json());
+        if (projectId !== undefined) throw new RequestError('保存密钥请在正文指定项目', 400);
+        secrets.set(user.userId, secretScope(user.userId, body.projectId), name, body, now());
+        return result({ ok: true });
+      }
+      if (request.method === 'DELETE') {
+        secrets.delete(user.userId, secretScope(user.userId, projectId), name);
+        return result({ ok: true });
+      }
+      throw new RequestError('未知的密钥接口', 404);
     }
     if (path === '/api/git/credential' && request.method === 'POST') {
       const found = await worker(bearerToken(request));
@@ -364,8 +414,7 @@ export async function createAccountService(options: Options) {
     if (!login) throw new RequestError('请登录 Kite', 401);
     if (path === '/api/account' && request.method === 'GET') return result({ user: login.user });
     if (path === '/api/git/accounts' && request.method === 'GET') {
-      return result(db.query<{ host: string; account: string; createdAt: number }, [string]>(
-        'SELECT host, account, createdAt FROM kite_git_credential WHERE userId = ? ORDER BY host').all(login.user.id));
+      return result(secrets.list(login.user.id, 'git').map(({ name, label, updatedAt }) => ({ host: name, account: label, createdAt: updatedAt })));
     }
     if (path === '/api/git/accounts/github.com/repos' && request.method === 'GET') {
       const credential = storedCredential(login.user.id, 'github.com');
@@ -402,7 +451,7 @@ export async function createAccountService(options: Options) {
         return result({ host, account: body.username });
       }
       if (request.method === 'DELETE') {
-        db.query('DELETE FROM kite_git_credential WHERE userId = ? AND host = ?').run(login.user.id, host);
+        secrets.delete(login.user.id, 'git', host);
         return result({ ok: true });
       }
     }
@@ -448,9 +497,10 @@ export async function createAccountService(options: Options) {
       })).preAuthKey;
       if (old) await headscale('preauthkey/expire', 'POST', { id: old.keyId });
       const id = old?.id ?? crypto.randomUUID();
-      db.query(`INSERT INTO kite_device VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 5483, ?)
-        ON CONFLICT(sessionId) DO UPDATE SET name=excluded.name, role=excluded.role, keyId=excluded.keyId`).run(
-        id, login.user.id, login.session.id, body.name, body.role, user, String(key.id), now(),
+      db.query(`INSERT INTO kite_device (id, userId, sessionId, name, role, kind, headscaleUser, keyId, nodeId, port, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 5483, ?)
+        ON CONFLICT(sessionId) DO UPDATE SET name=excluded.name, role=excluded.role, kind=excluded.kind, keyId=excluded.keyId`).run(
+        id, login.user.id, login.session.id, body.name, body.role, body.kind, user, String(key.id), now(),
       );
       return result({ device: { id, ...body }, controlURL: options.headscale.controlURL, authKey: key.key });
     }
@@ -473,6 +523,12 @@ export async function createAccountService(options: Options) {
         }
         db.query('UPDATE kite_device SET nodeId = ?, port = ? WHERE id = ?').run(String(node.id), body.port, device.id);
         return result(view({ ...device, nodeId: String(node.id), port: body.port }, all));
+      }
+      if (!match[2] && request.method === 'PATCH') {
+        if (device.sessionId !== login.session.id) throw new RequestError('请在设备自身上报类型', 403);
+        const body = deviceMetadata.parse(await request.json());
+        db.query('UPDATE kite_device SET kind = ? WHERE id = ?').run(body.kind, device.id);
+        return result({ ok: true });
       }
       if (!match[2] && request.method === 'DELETE') {
         // 上游失败时保留记录，允许重试，不把尚有网络权限的设备从列表隐藏。

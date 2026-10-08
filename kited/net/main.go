@@ -18,6 +18,7 @@ import (
 	"sort"
 	"sync"
 	"tailscale.com/client/local"
+	"tailscale.com/net/netns"
 	"tailscale.com/net/socks5"
 	"time"
 
@@ -64,6 +65,8 @@ func (r *reporter) update(change func(*status)) {
 
 func main() {
 	log.SetFlags(0)
+	// tsnet 不创建系统隧道，无需绑物理网卡来防止路由回环；交给系统路由才能使用代理的虚拟地址。
+	netns.SetDisableBindConnToInterface(log.Printf, true)
 	env := func(key string) string {
 		value := os.Getenv(key)
 		if value == "" && key != "KITE_NET_CONTROL_URL" {

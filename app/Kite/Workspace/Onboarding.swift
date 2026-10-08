@@ -65,8 +65,8 @@ struct Onboarding: View {
     @State private var role = "worker"
     /// 正在填的输入框；点卡片外、输入框外收起键盘。
     @FocusState private var focus: String?
-    @State private var working = false
-    @State private var error: String?
+    @State private var progress = CardPhase.idle
+    private var working: Bool { progress.working }
     /// 标志区在窗口坐标中的范围：标题以上露出背景的那块。
     @State private var logoArea: CGRect?
     /// 卡片正文与底部按钮的高度，卡片按它们定高，放不下时正文滚动。
@@ -148,9 +148,14 @@ struct Onboarding: View {
             #endif
         }
         #if os(iOS)
-        .onChange(of: model.invite) { _, invite in
+        .onChange(of: model.invite, initial: true) { _, invite in
             // 也可能是用系统相机扫的码，从链接打开
-            if case .failed(let message) = invite { error = message; page = .connect(.scan) }
+            if case .failed(let message) = invite {
+                page = .connect(.scan)
+                progress = .failed(message) {
+                    if signedIn { joinDevice() } else { go(.connect(.scan)) }
+                }
+            }
         }
         #endif
         .onChange(of: logo, initial: true) { refreshLogo() }
@@ -429,11 +434,6 @@ struct Onboarding: View {
             #endif
         case .connect(.scan):
             note("二维码五分钟内有效，只能使用一次。")
-            #if os(iOS)
-            if case .failed(let message) = model.invite {
-                callout(message, systemImage: "exclamationmark.triangle.fill", tint: Theme.danger)
-            }
-            #endif
         case .connect(.manual):
             OnboardingField(label: "邮箱", prompt: "you@example.com", text: $address, focus: $focus,
                             submit: connect, scan: { registering = false; go(.connect(.scan)) })
@@ -444,13 +444,10 @@ struct Onboarding: View {
                     .onSubmit(connect)
                     .cardInput { focus = "密码" }
             }
-            Button(registering ? "已有账号，去登录" : "没有账号？创建一个") { registering.toggle(); error = nil }
+            Button(registering ? "已有账号，去登录" : "没有账号？创建一个") { registering.toggle(); progress = .idle }
                 .buttonStyle(.pointingPlain).font(Theme.secondary)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
-        }
-        if let error {
-            callout(error, systemImage: "exclamationmark.triangle.fill", tint: Theme.danger)
         }
     }
 
@@ -470,22 +467,18 @@ struct Onboarding: View {
         }
     }
 
-    private func callout(_ text: String, systemImage: String, tint: Color) -> some View {
-        CardCallout(text: text, systemImage: systemImage, tint: tint)
-    }
-
     private func buttons(primary: String, enabled: Bool, action: @escaping () -> Void,
                          prominent: Bool = true,
                          secondary: String? = nil, secondaryAction: @escaping () -> Void = {}) -> some View {
         CardActions(primary: primary, enabled: enabled, prominent: prominent, secondary: secondary,
-                    secondaryEnabled: !working, action: action, secondaryAction: secondaryAction)
+                    secondaryEnabled: !working, phase: $progress, action: action, secondaryAction: secondaryAction)
     }
 
     // MARK: 操作
 
     private func go(_ page: Phase) {
         focus = nil
-        error = nil
+        progress = .idle
         #if os(iOS)
         model.invite = nil
         #endif
@@ -494,8 +487,11 @@ struct Onboarding: View {
 
     private func connect() {
         perform {
-            try await model.account.signIn(email: address, password: code, register: registering)
-            code = ""
+            // iPhone 登录成功后还要入网；入网失败重试时沿用已保存的登录，不再使用已清空的密码。
+            if !model.account.signedIn {
+                try await model.account.signIn(email: address, password: code, register: registering)
+                code = ""
+            }
             #if os(iOS)
             try await model.account.join(role: "controller", name: AppModel.deviceName)
             #endif
@@ -523,10 +519,10 @@ struct Onboarding: View {
     private func scanned(_ text: String) {
         guard !joining, let url = URL(string: text) else { return }
         guard url.scheme == "kite", url.host() == "join" else {
-            error = "这不是 Kite 的登录二维码"
+            progress = .failed("这不是 Kite 的登录二维码") { go(.connect(.scan)) }
             return
         }
-        error = nil
+        progress = .idle
         #if DEBUG
         if simulation != nil { simulateScan(); return }
         #endif
@@ -555,11 +551,7 @@ struct Onboarding: View {
 
     /// simulated 只用于预览：不执行 action，等一会儿后改模拟的状态。
     private func perform(_ action: @escaping () async throws -> Void, simulated: @escaping () -> Void) {
-        guard !working else { return }
-        working = true
-        error = nil
-        Task {
-            defer { working = false }
+        $progress.run {
             #if DEBUG
             if simulation != nil {
                 try? await Task.sleep(for: .seconds(2.5))
@@ -567,9 +559,7 @@ struct Onboarding: View {
                 return
             }
             #endif
-            do { try await action() } catch {
-                self.error = error.localizedDescription
-            }
+            try await action()
         }
     }
 
@@ -578,7 +568,7 @@ struct Onboarding: View {
         #if DEBUG
         simulation = Simulation()
         page = .connect(.manual)
-        error = nil
+        progress = .idle
         code = ""
         #endif
     }

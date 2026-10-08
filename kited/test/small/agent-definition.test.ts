@@ -63,7 +63,7 @@ test('运行中换配置不打断旧工具，下一请求再采用新配置', as
   const sent = await kk.call('POST', `/threads/${threadId}/messages`, { id: randomUUID(), text: '创建一个文件' });
   expect(sent.status).toBe(200);
   const first = await oldModel.call(1);
-  expect(first.request.allowedTools).toEqual(['read', 'patch', 'shell', ...operationToolNames]);
+  expect(first.request.allowedTools).toEqual(['read', 'patch', 'shell', 'credentials', ...operationToolNames]);
   const changed = revisedAgent(original, 'test-new-model', ['read']);
   const updated = await kk.call('PUT', `/instances/${threadId}/agent-config`, {
     expectedRevision: initial.body.revision, agent: changed,
@@ -106,7 +106,7 @@ test('运行中换配置不打断旧工具，下一请求再采用新配置', as
     expect(entry.text).toBe(restoreContext(source.context).instructions);
   }
   expect(starts.map((record) => record.configurationId)).toEqual(configurations.map((record) => record.snapshot.id));
-  expect(configurations[0]!.snapshot.settings.allowedTools).toEqual(['read', 'patch', 'shell', ...operationToolNames]);
+  expect(configurations[0]!.snapshot.settings.allowedTools).toEqual(['read', 'patch', 'shell', 'credentials', ...operationToolNames]);
   expect(configurations[1]!.snapshot.settings).toMatchObject({
     model: { model: 'test-new-model', reasoning: 'high' }, maxRequestsPerTurn: 2, allowedTools: ['read'],
   });

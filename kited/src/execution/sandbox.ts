@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { SandboxRuntimeConfig } from '@anthropic-ai/sandbox-runtime';
 import { within } from '../paths.ts';
+import { secretEnvironmentName, type SecretValue } from '../secrets.ts';
 
 export interface ExecutionPolicy {
   read: string[];
@@ -70,7 +71,7 @@ function paths(values: string[]): string[] {
   }))];
 }
 
-export function prepareSandbox(command: string, options: { cwd: string; env: NodeJS.ProcessEnv; policy: ExecutionPolicy }) {
+export function prepareSandbox(command: string, options: { cwd: string; env: NodeJS.ProcessEnv; policy: ExecutionPolicy; credentials?: Record<string, SecretValue> }) {
   if (process.platform !== 'darwin' && process.platform !== 'linux') throw new Error('当前工作机不支持 Kite 沙箱，命令未启动');
   if (!Bun.semver.satisfies(Bun.version, '>=1.4.2')) throw new Error('Kite 沙箱需要 Bun 1.4.2 或更新版本，请使用 kited/node_modules/.bin/bun 启动');
   // macOS 的 Unix socket 路径很短；不能使用可能很长的工作区 TMPDIR 放上游代理 socket。
@@ -117,6 +118,15 @@ export function prepareSandbox(command: string, options: { cwd: string; env: Nod
     for (const key of Object.keys(env)) {
       if (/^(?:LD_|DYLD_|SRT_)/.test(key) || /^(?:BUN_OPTIONS|NODE_OPTIONS|NODE_PATH|ENV|BASH_ENV)$/i.test(key)
         || /^(?:https?|all|no)_proxy$/i.test(key)) delete env[key];
+    }
+    for (const [key, credential] of Object.entries(options.credentials ?? {})) {
+      // 专用变量前缀避免凭据改写 PATH、运行时加载选项或沙箱代理设置。
+      if (!secretEnvironmentName.safeParse(key).success) throw new Error('凭据环境变量名称无效');
+      if (credential.kind === 'file') {
+        const path = join(scratch, key);
+        writeFileSync(path, credential.value, { mode: 0o600, flag: 'wx' });
+        env[key] = path;
+      } else env[key] = credential.value;
     }
     // 可信 CLI 在沙箱外初始化代理；用户命令直到进入 OS 沙箱后才由 sh 解释。
     const cli = fileURLToPath(new URL('./sandbox-host.ts', import.meta.url));

@@ -17,20 +17,34 @@ struct PaneHeader {
 }
 
 /// 卡片标题栏按容器排列标题、侧栏入口与窗口菜单。标题前是信息区；容器给出侧栏入口时，
-/// 入口与信息区合成一块标题栏玻璃，任何窗口排在第一个时行为相同。
+/// 入口与信息区合成一块标题栏玻璃；紧凑触屏布局直接点击信息区打开侧栏。
 struct PaneHeaderBar<Status: View, Actions: View>: View {
     let header: PaneHeader
     let status: Status
     let actions: Actions
     @Environment(\.paneHeaderControlsInset) private var controlsInset
     @Environment(\.paneHeaderMinHeight) private var controlsHeight
+    @Environment(\.workspacePresentation) private var presentation
     let openSidebar: (@MainActor () -> Void)?
+
+    private var statusOpensSidebar: Bool { InputMode.current.isTouch && presentation == .compact }
 
     var body: some View {
         // 合进玻璃的信息缩小；环境要在拆分子视图之前给出
-        Group(subviews: status.environment(\.paneHeaderStatusGrouped, openSidebar != nil)) { statusViews in
+        Group(subviews: status.environment(\.paneHeaderStatusGrouped, openSidebar != nil && !statusOpensSidebar)) { statusViews in
+            let showsSidebarButton = openSidebar != nil && (!statusOpensSidebar || statusViews.isEmpty)
             HStack(spacing: 0) {
-                if let openSidebar {
+                if let openSidebar, statusOpensSidebar, !statusViews.isEmpty {
+                    Button(action: openSidebar) {
+                        HStack(spacing: 0) {
+                            ForEach(statusViews) { $0 }
+                        }
+                        .contentShape(.circle)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("打开侧边栏")
+                    .reportsHeaderInteraction()
+                } else if let openSidebar {
                     PaneHeaderButtonGroup {
                         Button(action: openSidebar) {
                             PaneHeaderButtonLabel("侧边栏", systemImage: "sidebar.left")
@@ -46,7 +60,7 @@ struct PaneHeaderBar<Status: View, Actions: View>: View {
                 HStack(spacing: Metrics.paneButtonGap) {
                     PaneHeaderTitle(header: header)
                     // 标题前统一留一个按钮间距；单独显示的信息按圆环方框计算，扣掉方框里已有的空白
-                    .padding(.leading, statusViews.isEmpty || openSidebar != nil
+                    .padding(.leading, statusViews.isEmpty || showsSidebarButton
                              ? Metrics.paneButtonGap : Metrics.paneButtonGap - Metrics.statusRingMargin)
                     // 窗口操作出现时由标题区让出宽度，不能让内容的最小宽度把右侧菜单推出窗口。
                     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
@@ -78,6 +92,8 @@ struct PaneHeaderTitle: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: Metrics.titleRefreshGap) {
                 Text(header.title)
+                    .id(header.title)
+                    .transition(.blurReplace)
                 if let refresh = header.titleRefresh {
                     PaneTitleRefreshButton(refresh: refresh, title: header.title)
                 }
@@ -87,9 +103,13 @@ struct PaneHeaderTitle: View {
                 Text(subtitle)
                     .font(Theme.caption)
                     .foregroundStyle(.secondary)
+                    .id(subtitle)
+                    .transition(.blurReplace)
             }
         }
         .lineLimit(1)
+        .animation(.snappy, value: header.title)
+        .animation(.snappy, value: header.subtitle)
     }
 }
 

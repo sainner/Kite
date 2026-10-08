@@ -55,6 +55,7 @@ struct EffortPicker: View {
                 .frame(height: Metrics.paneButton)
         }
         .contentShape(Rectangle())
+        .reservesPaneSwipe()
         .gesture(press)
         .onChange(of: down) { _, down in
             // 松手时 onEnded 已经收过尾；被系统打断时不调它，在这里收

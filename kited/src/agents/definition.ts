@@ -10,7 +10,7 @@ import type { ContextDefinition } from '../harness/context/types.ts';
 export const agentDefinitionSchema = z.object({
   runtime: z.enum(['harness', 'claude']),
   model: z.object({ model: z.string().trim().min(1), reasoning: z.string().trim().min(1) }).strict(),
-  tools: z.array(z.enum(['read', 'patch', 'shell', ...operationToolNames])).refine((tools) => new Set(tools).size === tools.length, '工具名重复'),
+  tools: z.array(z.enum(['read', 'patch', 'shell', 'credentials', ...operationToolNames])).refine((tools) => new Set(tools).size === tools.length, '工具名重复'),
   context: contextDefinitionSchema.refine((context) => context.scene === 'thread.create', '基础上下文须使用 thread.create 场景'),
   maxRequestsPerTurn: z.number().int().positive(),
 }).strict();

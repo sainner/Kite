@@ -8,61 +8,49 @@ struct KiteAccountSection: View {
     @State private var working = false
 
     var body: some View {
-        Section {
-            if let user = model.account.user { Text(user.email) }
-            Button("退出登录", role: .destructive) {
-                guard !working else { return }
-                error = nil
-                working = true
-                Task {
-                    defer { working = false }
-                    do {
-                        try await model.account.signOut()
-                        model.clearAccountConnections()
-                        model.sidebarSection = .workspaces
-                    } catch { self.error = error.localizedDescription }
+        CardSection("Kite") {
+            HStack(spacing: 12) {
+                SidebarAvatar()
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(model.account.user?.email ?? "未登录").font(Theme.title).textSelection(.enabled)
+                    Text("Kite 账号").font(Theme.caption).foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 0)
+                Button("退出登录", role: .destructive) {
+                    guard !working else { return }
+                    error = nil
+                    working = true
+                    Task {
+                        defer { working = false }
+                        do {
+                            try await model.account.signOut()
+                            model.clearAccountConnections()
+                            model.sidebarSection = .workspaces
+                        } catch { self.error = error.localizedDescription }
+                    }
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Theme.danger)
+                .disabled(!model.account.signedIn)
             }
+            .padding(.vertical, 8)
+            LabeledContent("额度", value: "暂无额度信息")
+                .foregroundStyle(.secondary)
             if let error { Text(error).foregroundStyle(Theme.danger) }
         }
         .disabled(working)
     }
 }
 
-/// 账号下的设备：扫码让新设备登录，列出各台设备并可移除本机以外的。
-struct AccountDevices: View {
+/// 为新设备生成一次性登录二维码。
+struct AccountDeviceInvitation: View {
     @Environment(AppModel.self) private var model
     @State private var invitation: (image: Image?, expiresAt: Date)?
     @State private var error: String?
     @State private var working = false
-    @State private var peers: [String: PeerConnection] = [:]
 
     var body: some View {
-        Section {
-            ForEach(model.account.devices) { device in
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text(device.name + (device.id == model.account.deviceID ? "（本机）" : ""))
-                        Text("\(device.role == "worker" ? "工作机" : "控制端") · \(device.online ? "在线" : "离线")\(connection(device))")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if device.id != model.account.deviceID {
-                        Button("移除", role: .destructive) {
-                            perform { try await model.account.remove(device.id); model.mergeDirectory() }
-                        }
-                    }
-                }
-            }
-            if let error { Text(error).foregroundStyle(Theme.danger) }
-        }
-        .task {
-            while !Task.isCancelled {
-                peers = await model.account.peerConnections()
-                try? await Task.sleep(for: .seconds(2))
-            }
-        }
-        Section {
+        CardSection("新设备登录") {
             if let invitation {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     if context.date < invitation.expiresAt, let image = invitation.image {
@@ -72,6 +60,7 @@ struct AccountDevices: View {
                     } else { Text("二维码已过期，请重新生成").foregroundStyle(.secondary) }
                 }
             }
+            if let error { Text(error).foregroundStyle(Theme.danger) }
             Button("让新设备扫码登录") {
                 perform {
                     let url = try await model.account.invitation()
@@ -79,20 +68,7 @@ struct AccountDevices: View {
                 }
             }
         }
-        .disabled(working)
-        .task { perform { try await model.account.refresh() } }
-    }
-
-    /// 账号服务只给工作机地址，按其组网 IP 对应本机节点看到的连接方式。
-    private func connection(_ device: AccountDevice) -> String {
-        guard device.online, device.id != model.account.deviceID,
-              let ip = device.address.flatMap({ URL(string: $0)?.host() }), let peer = peers[ip] else { return "" }
-        let endpoint = peer.endpoint.map { " \($0)" } ?? ""
-        return switch peer.connection {
-        case "direct": " · 直连\(endpoint)"
-        case "relay": " · 经中继\(endpoint)"
-        default: " · 空闲"
-        }
+        .disabled(working || !model.account.signedIn)
     }
 
     private func qrCode(_ text: String) -> Image? {

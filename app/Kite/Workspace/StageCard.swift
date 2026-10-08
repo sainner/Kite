@@ -1,35 +1,27 @@
 import SwiftUI
 
 /// 内容区不放窗口时的占位卡片，上面放两种内容：没有窗口时的画板（EmptyStage），和一栏只有一页的单页（SectionPage）。
-/// - 宽屏：半透明（浅色白、深色黑，不描边），点阵从底下透出来，与同在点阵上的侧栏分界。
-/// - 紧凑布局：放在窗口里，底色和形状都是窗口的；只有空状态画板绘制图案，普通单页不接管背景点阵。
+/// 宽屏使用不透明窗口底色，紧凑布局沿用窗口外壳。点阵画在底色上方。
 private struct StageCard: ViewModifier {
-    var showsFigures = false
-    @Environment(\.colorScheme) private var colorScheme
+    var usesDots = false
+    @Environment(\.dotStage) private var stage
     @Environment(\.workspacePresentation) private var presentation
 
     func body(content: Content) -> some View {
         if presentation == .compact {
-            content.background {
-                if showsFigures { DotCanvas(figuresOnly: true) }
-            }
+            content.windowDots(usesDots, stage: stage)
         } else {
             let shape = RoundedRectangle(cornerRadius: Metrics.cardRadius, style: .continuous)
             content
-                .background {
-                    ZStack {
-                        if showsFigures { DotCanvas(figuresOnly: true) }
-                        shape.fill(colorScheme == .dark ? Color.black.opacity(0.3) : Color.white.opacity(0.5))
-                    }
-                    .allowsHitTesting(false)
-                }
+                .windowDots(usesDots, stage: stage)
+                .background(shape.fill(Theme.card))
                 .clipShape(shape)
         }
     }
 }
 
 extension View {
-    func stageCard(showsFigures: Bool = false) -> some View { modifier(StageCard(showsFigures: showsFigures)) }
+    func stageCard(usesDots: Bool = false) -> some View { modifier(StageCard(usesDots: usesDots)) }
 }
 
 
@@ -37,14 +29,16 @@ extension View {
 /// 标题栏沿用窗口标题栏的样子，容器给出侧边栏入口时左边带按钮（iPhone）；内容从标题栏后面滚过去。
 struct SectionPage<Content: View, Actions: View>: View {
     let header: PaneHeader
+    let usesDots: Bool
     let content: Content
     let actions: Actions
     @Environment(\.openSidebar) private var openSidebar
     /// 窗口已让出的顶部安全区（iPhone），标题栏同窗口一样只补足固定边距。
     @Environment(\.paneTopSafeInset) private var topInset
 
-    init(header: PaneHeader, @ViewBuilder content: () -> Content, @ViewBuilder actions: () -> Actions = { EmptyView() }) {
+    init(header: PaneHeader, usesDots: Bool = false, @ViewBuilder content: () -> Content, @ViewBuilder actions: () -> Actions = { EmptyView() }) {
         self.header = header
+        self.usesDots = usesDots
         self.content = content()
         self.actions = actions()
     }
@@ -59,7 +53,7 @@ struct SectionPage<Content: View, Actions: View>: View {
                     .padding(.bottom, Metrics.paneMargin)
             }
             .scrollEdgeEffectStyle(.soft, for: .top)
-            .stageCard()
+            .stageCard(usesDots: usesDots)
     }
 }
 

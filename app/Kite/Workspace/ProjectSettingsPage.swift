@@ -14,11 +14,10 @@ struct ProjectSettingsPage: View {
     var body: some View {
         SectionPage(header: PaneHeader(title: model.projectLabel(project), subtitle: "项目配置")) {
             Form {
-                #if os(iOS)
                 Section("外观") {
                     ProjectAppearanceOptions(projectID: project.id)
+                        .frame(maxWidth: 280, alignment: .leading)
                 }
-                #endif
                 Section("远程仓库") {
                     LabeledContent("名称", value: project.name)
                     LabeledContent("地址") {

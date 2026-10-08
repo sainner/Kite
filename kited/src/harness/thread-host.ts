@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { FileJournal } from './journal.ts';
 import { HarnessRunner } from './runner.ts';
 import { localTools } from '../execution/local-tools.ts';
+import type { SecretProvider } from '../secrets.ts';
 import { processGroupAlive } from '../execution/command.ts';
 import { commandEnvironment, workspacePolicy, type ExecutionPolicy } from '../execution/sandbox.ts';
 import type { HarnessRequest, RequestSettings, HarnessOptions, ThreadRunner, Tool } from './types.ts';
@@ -14,6 +15,7 @@ export interface ThreadHostOptions extends Pick<HarnessOptions, 'onEvent' | 'aft
   threadDir: string;
   diffDir?: string;
   env: NodeJS.ProcessEnv;
+  secrets?: SecretProvider;
   policy?: ExecutionPolicy | (() => ExecutionPolicy);
   prepareRequest(tools: Tool[], cursor: { afterNotification: number }): HarnessRequest;
   /** 独立终端的配置来源；kited 使用实例配置，不在 metadata 重复保存。 */
@@ -76,7 +78,7 @@ export async function openThreadHost(options: ThreadHostOptions): Promise<Thread
     const env = commandEnvironment(options.env);
     const policy = () => typeof options.policy === 'function' ? options.policy() : options.policy ?? workspacePolicy(cwd, env);
     const tools = localTools({
-      cwd, logDir: join(directory, 'commands'), diffDir: options.diffDir ?? join(directory, 'diffs'), env,
+      cwd, secrets: options.secrets, logDir: join(directory, 'commands'), diffDir: options.diffDir ?? join(directory, 'diffs'), env,
       policy: () => {
         const current = policy();
         return { ...current, denyRead: [...(current.denyRead ?? []), directory], denyWrite: [...(current.denyWrite ?? []), directory] };

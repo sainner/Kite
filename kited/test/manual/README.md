@@ -19,11 +19,18 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 | `verify-thread-draft-swift.ts` | 停止退回草稿与发送淡出回调交错时不丢字、不重复 | `bun kited/test/manual/verify-thread-draft-swift.ts` |
 | `verify-transcript-scroll-swift.ts` | SwiftUI 动画收起与滚动阶段的定位交接 | `bun kited/test/manual/verify-transcript-scroll-swift.ts` |
 | `verify-dot-canvas-swift.ts` | 真实 DotField 浮动、闪烁与空白帧交接的颜色连续性 | `bun kited/test/manual/verify-dot-canvas-swift.ts` |
+| `verify-dot-background-swift.ts` | 真实 SwiftUI 环境与 preference 在窗口聚焦、失焦、停用与移除时的点阵占用交接 | `bun kited/test/manual/verify-dot-background-swift.ts` |
+| `verify-compact-pane-stack-swift.ts` | 真实 SwiftUI 卡片连续左右切换后的入口恢复与原生按钮命中，含玻璃控制区和持续动画重绘；仅手动运行 | `bun kited/test/manual/verify-compact-pane-stack-swift.ts` |
+| `verify-card-sheet-sizing-swift.ts` | 同一次真实 SwiftUI sheet 随生产 CardSheet 内容增减长高、缩短；只读取窗口尺寸，仅手动运行 | `bun kited/test/manual/verify-card-sheet-sizing-swift.ts` |
 | `verify-transcript-swift.ts` | 显示投影 JSON 的 Swift 解码、思考和工具结果关联 | `bun kited/test/manual/verify-transcript-swift.ts` |
 | `verify-window-dock.ts` | 窗口拖动、停靠、宽窄视口切换、临时收起与状态恢复 | `bun kited/test/manual/verify-window-dock.ts` |
 | `verify-plugin-web.ts` | 真实 WKWebView 与 MCP Apps SDK 的隔离和生命周期 | `bun kited/test/manual/verify-plugin-web.ts`；iOS 加 `--ios <模拟器 UDID>` |
 
 `PluginWebProbe.swift` 是 `verify-plugin-web.ts` 编译和启动的原生探针，不单独运行。其余 Swift 文件是同名验证使用的夹具；`command.ts` 提供共用子进程执行入口。
+
+`verify-compact-pane-stack-swift.ts` 直接编译生产 `CompactPaneStack.swift`，用最小两页模型和离屏 `NSHostingView` 验证两个场景：静态卡片，以及带 `safeAreaBar`、`GlassEffectContainer`、重复状态动画和 `TimelineView` 重绘的卡片。复杂场景使用新卡片首次观测到的环境入口立即反向；每次正向、反向切换后都要求从宿主命中原生 `NSButton` 才发送动作；不截图、不打开或操作用户 App。该验证覆盖卡片容器的命中交接，不涵盖真实触控手势识别或完整业务页面；脚本可接受 Swift 源文件路径作为第一个参数，用于编译保留的回归快照。
+
+`verify-card-sheet-sizing-swift.ts` 直接编译生产 `CardControls.swift` 和共享 UI 依赖，由真实 `SwiftUI.App` scene 呈现 `.sheet`；测试窗口透明且不接收鼠标。同一窗口的内容由一行增至十二行再恢复一行，随后增至一百行，要求窗口不超出屏幕可用范围并能恢复短高度。读取 `NSWindow` 尺寸并确认没有替换弹窗；通过原生帧与有界超时等待，不截图、不操作用户 App。覆盖共享弹窗的动态尺寸与限高，不涵盖登录服务、实际滚动手势或视觉验收。可传入保留的 `CardControls.swift` 路径作为第一个参数比较修复前后。
 
 `verify-account-http-swift.ts` 直接编译真实 `AccountHTTP.swift`，连接本机真实账号服务和临时 SQLite；Foundation shared Cookie 存储也隔离到临时目录。服务启用生产模式的来源检查，旧客户端与新客户端使用不同的夹具 IP 避免互相消耗登录限流额度；不访问公网，不测试限流策略。预期拒绝旧 Cookie 请求时，Better Auth 会输出 `Missing or null Origin` 与 `Invalid origin` 日志，脚本最终退出码为 0 才算通过。
 

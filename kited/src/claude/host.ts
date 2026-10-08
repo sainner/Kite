@@ -7,6 +7,7 @@ import { Runner } from './runner.ts';
 import { readClaudeMessages } from './history.ts';
 import { claudeToolServer } from './tools.ts';
 import { claudeState, readClaudeControl, sameInput, saveClaudeControl } from './control.ts';
+import type { SecretProvider } from '../secrets.ts';
 import { KiteError } from '../errors.ts';
 import { localTools } from '../execution/local-tools.ts';
 import { commandEnvironment, type ExecutionPolicy } from '../execution/sandbox.ts';
@@ -18,6 +19,7 @@ import type { Runtime, RuntimeEvents } from '../runtime.ts';
 export function openClaudeHost(options: {
   cwd: string; directory: string; diffDir: string; nativeId: string; title: string;
   policy(): ExecutionPolicy;
+  secrets?: SecretProvider;
   prepare(afterNotification: number): { agent: AgentDefinition; instructions: string; contextUpdate: string; tools: Tool[]; allowed: Set<string>; notificationText: string; through: number };
   events: RuntimeEvents;
 }): Runtime {
@@ -64,7 +66,7 @@ export function openClaudeHost(options: {
   };
   if (data.processes.some(processGroupAlive)) data.recovery = { message: 'Claude 的命令进程组仍可能运行，请先核查再恢复。' };
   const tools = localTools({ cwd: options.cwd, diffDir: options.diffDir, logDir: join(options.directory, 'commands'),
-    env: commandEnvironment(process.env), policy: options.policy,
+    env: commandEnvironment(process.env), policy: options.policy, secrets: options.secrets,
     onProcess(pid, active) {
       data.processes = active ? [...new Set([...data.processes, pid])] : data.processes.filter((value) => value !== pid);
       save();

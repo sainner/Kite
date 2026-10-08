@@ -10,6 +10,7 @@ import { FileDiffStore, type FileDiff } from '../workspace/file-diffs.ts';
 import { runCommand, type CommandOptions } from './command.ts';
 import { assertFileAccess, commandEnvironment, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
 import type { Json, JsonObject, Tool, ToolResult } from '../harness/types.ts';
+import { secretBindings, secretValue, type SecretProvider, type SecretValue } from '../secrets.ts';
 
 export const patchArgs = z.object({ operations: z.array(z.discriminatedUnion('type', [
   z.object({ type: z.literal('create_file'), path: z.string().min(1), diff: z.string() }).strict(),
@@ -24,6 +25,7 @@ const shellArgs = z.object({
   description: z.string().min(1).regex(/\S/, 'description 不能为空白')
     .describe('用简短的话说明本次命令的用途，直接展示给用户，不重复命令文本。'),
   command: z.string().min(1),
+  secrets: secretBindings.optional().describe('密钥引用绑定，如 {"KITE_SECRET_TOKEN":"{account.api_key}"}。命令中用 "$KITE_SECRET_TOKEN"；文件类型变量是临时文件路径。先用 credentials 查看可用引用。'),
   timeout_ms: z.number().int().min(1).max(600_000).optional(),
 }).strict();
 
@@ -42,7 +44,7 @@ const readDescription = `读取当前工作目录内的文件，按内容自动�
 图片（PNG、JPEG、WebP、GIF、BMP、TIFF、HEIC）附给你直接查看，过大时先缩放。
 PDF 转为 Markdown 按页返回，用 pages 选页；结果会说明总页数和续读的 pages。没有文本层的扫描页给出 OCR 结果并附上页面图片。`;
 
-export function localTools(options: Omit<CommandOptions, 'policy'> & { diffDir?: string; policy?: ExecutionPolicy | (() => ExecutionPolicy) }): Tool[] {
+export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials'> & { diffDir?: string; policy?: ExecutionPolicy | (() => ExecutionPolicy); secrets?: SecretProvider }): Tool[] {
   const files = new WorkspaceFiles(options.cwd);
   const root = files.root;
   const policy = () => typeof options.policy === 'function' ? options.policy() : options.policy ?? workspacePolicy(root, options.env);
@@ -145,7 +147,28 @@ export function localTools(options: Omit<CommandOptions, 'policy'> & { diffDir?:
       }
       return { status: 'success', output: output.join('\n'), diff: reference() };
     }),
-    make('shell', '在当前工作目录的操作系统沙箱中运行 shell 命令，可用 rg 搜索、运行构建及 .kite/check。网络和工作区外的资源仅按宿主授权访问；禁止时说明所需权限，不自行绕过或重放。不支持后台任务。Git 元数据只读，快照与采纳由宿主执行。输出过长时查看完整日志。', shellArgs,
-      ({ command, timeout_ms = 120_000 }, signal, output) => runCommand(command, timeout_ms, signal, { ...options, cwd: root, policy: policy(), onOutput: output ?? options.onOutput })),
+    make('shell', '在当前工作目录的操作系统沙箱中运行 shell 命令，可用 rg 搜索、运行构建及 .kite/check。网络和工作区外的资源仅按宿主授权访问；禁止时说明所需权限，不自行绕过或重放。不支持后台任务。Git 元数据只读，快照与采纳由宿主执行。输出过长时查看完整日志。使用 secrets 绑定密钥时只返回执行状态，隐藏全部标准输出和错误输出；不要把密钥写入工作区文件、命令参数或日志。', shellArgs,
+      async ({ command, secrets, timeout_ms = 120_000 }, signal, output) => {
+        const credentials: Record<string, SecretValue> = {};
+        if (secrets && Object.keys(secrets).length) {
+          if (!options.secrets) throw new Error('当前宿主未连接凭据服务');
+          const references = [...new Set(Object.values(secrets))];
+          const resolved = await options.secrets.resolve(references, signal);
+          signal.throwIfAborted();
+          for (const [key, reference] of Object.entries(secrets)) {
+            const found = resolved.find((entry) => entry.reference === reference);
+            const parsed = found && secretValue.safeParse({ kind: found.kind, value: found.value });
+            if (!parsed?.success) throw new Error(`无法使用密钥 ${reference}`);
+            credentials[key] = parsed.data;
+          }
+        }
+        return runCommand(command, timeout_ms, signal, { ...options, cwd: root, policy: policy(), credentials, onOutput: output ?? options.onOutput });
+      }),
+    make('credentials', '列出本账号共享和当前项目的可用密钥引用及类型，不返回密钥内容。仅在 shell 的 secrets 参数里使用这些引用，项目身份由宿主固定。', z.object({}).strict(), async (_, signal) => {
+      if (!options.secrets?.list) throw new Error('当前宿主未连接凭据服务');
+      const entries = await options.secrets.list(signal);
+      // 即使服务误带额外字段，也不能将明文作为工具结果返回。
+      return { status: 'success', output: JSON.stringify(entries.map(({ reference, kind }) => ({ reference, kind }))) };
+    }, true),
   ];
 }

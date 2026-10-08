@@ -1,5 +1,6 @@
 /** kited 的执行入口：Claude 与自研 harness 各自负责完整 agent 循环，共用 Kite 的能力。 */
 import { join } from 'node:path';
+import type { AccountClient } from './account-client.ts';
 import { KiteError } from './errors.ts';
 import type { RuntimeEvent } from './events.ts';
 import type { RunnerState } from './claude/runner.ts';
@@ -48,6 +49,7 @@ export interface RuntimeEvents {
 
 export interface RuntimeHost {
   home: string;
+  account?: AccountClient;
   /** 检出主目录，用来解析 Git 元数据。 */
   repository: string;
   events: RuntimeEvents;
@@ -72,13 +74,18 @@ function selectTools(current: ThreadContext, operations: RuntimeHost['operations
 
 export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<Runtime> {
   const { home, events: on, options, operations } = host;
-  const { id, nativeId, title, runtime, definitionId, workspace: { cwd, id: workspaceId } } = s;
+  const { id, nativeId, title, runtime, definitionId, project: { id: projectId }, workspace: { cwd, id: workspaceId } } = s;
   if (runtime !== 'claude' && runtime !== 'harness') throw new KiteError(`不支持的会话后端：${runtime}`, 409);
   const basePolicy = await harnessPolicy({ cwd, env: process.env, home, repository: host.repository });
   const policy = () => applyExecutionGrants(basePolicy, cwd, instanceExecutionGrants(host.current()));
+  const account = host.account;
+  const secrets = account ? {
+    list: (signal: AbortSignal) => account.listSecrets(projectId, signal),
+    resolve: (references: string[], signal: AbortSignal) => account.resolveSecrets(references, projectId, signal),
+  } : undefined;
   const diffDir = join(home, 'diffs', workspaceId);
   if (runtime === 'claude') {
-    return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy,
+    return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy, secrets,
       prepare(afterNotification) {
         const { agent, permitted, plugins } = selectTools(host.current(), operations);
         const allowed = new Set([...agent.tools.filter(permitted), ...plugins.map((tool) => tool.name)]);
@@ -94,7 +101,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   const declaredTools = new Set<string>(pluginDefinition(definitionId).agent!.tools);
   const inputs = new Map<string, string>();
   const thread = await openThreadHost({
-    cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, startPaused: true, policy,
+    cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, startPaused: true, policy, secrets,
     prepareRequest(tools, { afterNotification }) {
       const current = host.current();
       const execution = instanceExecutionGrants(current);

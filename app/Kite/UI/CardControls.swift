@@ -322,6 +322,7 @@ struct CardActions: View {
     var secondaryEnabled: Bool
     var phase: Binding<CardPhase>
     var succeeded: String
+    var working: String?
     let action: () -> Void
     var secondaryAction: () -> Void
     @Namespace private var glass
@@ -329,7 +330,7 @@ struct CardActions: View {
     @State private var copied = false
 
     init(primary: String, enabled: Bool = true, prominent: Bool = true, secondary: String? = nil, secondaryEnabled: Bool = true,
-         phase: Binding<CardPhase> = .constant(.idle), succeeded: String = "已保存",
+         phase: Binding<CardPhase>, succeeded: String = "已保存", working: String? = nil,
          action: @escaping () -> Void, secondaryAction: @escaping () -> Void = {}) {
         self.primary = primary
         self.enabled = enabled
@@ -338,6 +339,7 @@ struct CardActions: View {
         self.secondaryEnabled = secondaryEnabled
         self.phase = phase
         self.succeeded = succeeded
+        self.working = working
         self.action = action
         self.secondaryAction = secondaryAction
     }
@@ -386,7 +388,11 @@ struct CardActions: View {
                 case .idle:
                     Text(primary).transition(.blurReplace)
                 case .working:
-                    CardSpinner().transition(.blurReplace)
+                    HStack(spacing: 8) {
+                        CardSpinner()
+                        if let working { Text(working) }
+                    }
+                    .transition(.blurReplace)
                 case .succeeded:
                     Label(succeeded, systemImage: "checkmark").transition(.blurReplace)
                 case .failed(let message, _):
@@ -436,6 +442,8 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
     var typing = false
     /// 子页面：左上角是返回而不是关闭。
     var back = false
+    /// 需要把操作组放在关闭按钮旁边的弹窗使用；其他 Mac 弹窗沿用左侧操作区。
+    var trailingActions = false
     var size: CGSize?
     let close: () -> Void
     let content: Content
@@ -447,13 +455,14 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
     /// 弹窗自身的底部安全区，不含键盘。
     @State private var bottomSafeArea: CGFloat = 0
 
-    init(title: String, subtitle: String? = nil, typing: Bool = false, back: Bool = false, size: CGSize? = nil,
+    init(title: String, subtitle: String? = nil, typing: Bool = false, back: Bool = false, trailingActions: Bool = false, size: CGSize? = nil,
          close: @escaping () -> Void, @ViewBuilder content: () -> Content,
          @ViewBuilder actions: () -> Actions = { EmptyView() }, @ViewBuilder footer: () -> Footer = { EmptyView() }) {
         self.titleText = title
         self.subtitle = subtitle
         self.typing = typing
         self.back = back
+        self.trailingActions = trailingActions
         self.size = size
         self.close = close
         self.content = content()
@@ -484,19 +493,25 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
     private var footerBottom: CGFloat { bottomSafeArea }
     #endif
 
-    /// Mac 上按内容定高的弹窗按理想尺寸开出来：放得下时三段直接排列，理想尺寸就是内容本身，不用量，打开时不会从零撑开；
-    /// 超出窗口高度时才换成滚动的版本。iPhone 上按量出的高度给 detent，键盘升起时正文滚动。
+    /// Mac 首次按理想尺寸打开，后续用三段的实际高度更新同一个 sheet；放不下时正文滚动。
+    /// iPhone 上按量出的高度给 detent，键盘升起时正文滚动。
     var body: some View {
         #if os(macOS)
         Group {
             if let size {
                 scrolling.frame(width: size.width, height: size.height)
             } else {
-                ViewThatFits(in: .vertical) {
-                    VStack(spacing: 0) { header; page; footerBar }
-                    scrolling
+                Group {
+                    if bodyHeight == 0 {
+                        // 首次尚未量出正文，用内容本身给出理想高度，避免从空滚动区撑开。
+                        VStack(spacing: 0) { header; page; footerBar }
+                    } else {
+                        // 保持同一个滚动容器，长内容缩回后仍能读到新的完整高度。
+                        scrolling.frame(idealHeight: headerHeight + bodyHeight + footerHeight)
+                    }
                 }
                 .frame(width: 480)
+                .background(CardSheetWindowSize(height: headerHeight + bodyHeight + footerHeight))
             }
         }
         .presentationBackground(Theme.card)
@@ -522,18 +537,14 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
     private var scrolling: some View {
         ScrollView {
             page
-                // 第一次量到的高度直接用，之后内容变化（切换来源、出现报错）才带动画
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { old, new in
-                    if old == 0 { bodyHeight = new } else { withAnimation(.snappy) { bodyHeight = new } }
-                }
         }
         .scrollBounceBehavior(.basedOnSize)
             .scrollDismissesKeyboard(.interactively)
             .safeAreaBar(edge: .top, spacing: 0) {
-                header.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
+                header
             }
             .safeAreaBar(edge: .bottom, spacing: 0) {
-                footerBar.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { footerHeight = $0 }
+                footerBar
             }
             .scrollEdgeEffectStyle(.soft, for: .top)
     }
@@ -546,9 +557,10 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
                 title
                 actions
             } else {
-                actions
+                if !trailingActions { actions }
                 // 左边没有操作按钮时，标题和正文左边对齐
-                title.padding(.leading, Actions.self == EmptyView.self ? CardMetrics.sheetInset - Metrics.paneMargin : 0)
+                title.padding(.leading, trailingActions || Actions.self == EmptyView.self ? CardMetrics.sheetInset - Metrics.paneMargin : 0)
+                if trailingActions { actions }
                 dismissButton
             }
             #else
@@ -560,6 +572,7 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
         .padding(.leading, Metrics.paneMargin)
         // 窗口标题栏的边距在 Mac 上偏紧，弹窗标题栏上下和右边至少留 padding，角上的关闭按钮离两边一样远
         .padding([.vertical, .trailing], max(Metrics.paneMargin, Metrics.padding))
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
     }
 
     private var page: some View {
@@ -567,13 +580,17 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, CardMetrics.sheetInset)
             .padding(.vertical, Metrics.padding)
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { old, new in
+                if old == 0 { bodyHeight = new } else { withAnimation(.snappy) { bodyHeight = new } }
+            }
     }
 
-    /// 没有主按钮时只留底边的安全距离。
+    /// 没有主按钮时，正文已有一段底边留白，只补足剩下的安全距离。
     private var footerBar: some View {
         Group(subviews: footer) { buttons in
             if buttons.isEmpty {
-                Color.clear.frame(height: footerBottom)
+                Color.clear.frame(height: max(0, footerBottom - Metrics.padding))
             } else {
                 VStack(spacing: 0) { buttons }
                     .padding(.horizontal, CardMetrics.sheetInset)
@@ -581,8 +598,56 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
                     .padding(.bottom, footerBottom)
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { footerHeight = $0 }
     }
 }
+
+#if os(macOS)
+/// 系统有时只更新 sheet 的尺寸约束，既有窗口仍停留在初始高度；按内容更新原窗口，不重建登录流程。
+private struct CardSheetWindowSize: NSViewRepresentable {
+    let height: CGFloat
+
+    func makeNSView(context: Context) -> Reader { Reader() }
+
+    func updateNSView(_ view: Reader, context: Context) {
+        view.contentHeight = height
+        view.scheduleResize()
+    }
+
+    final class Reader: NSView {
+        var contentHeight: CGFloat = 0
+        private var scheduled = false
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); scheduleResize() }
+        override func layout() { super.layout(); scheduleResize() }
+
+        func scheduleResize() {
+            guard !scheduled else { return }
+            scheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.scheduled = false
+                self.resizeSheet()
+            }
+        }
+
+        private func resizeSheet() {
+            guard contentHeight > 0, let window, let parent = window.sheetParent else { return }
+            let current = window.contentRect(forFrameRect: window.frame)
+            let decoration = window.frame.height - current.height
+            let screen = parent.screen ?? window.screen
+            let available = screen.map { max(1, window.frame.maxY - $0.visibleFrame.minY - decoration) } ?? contentHeight
+            let height = min(contentHeight, available)
+            guard abs(current.height - height) > 0.5 else { return }
+            var frame = window.frame
+            frame.origin.y = frame.maxY - height - decoration
+            frame.size.height = height + decoration
+            window.setFrame(frame, display: true)
+        }
+    }
+}
+#endif
 
 /// 标题栏上的图标操作，如重新读取。
 struct CardSheetAction: View {

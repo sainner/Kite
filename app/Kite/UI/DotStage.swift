@@ -3,7 +3,7 @@ import SwiftUI
 /// 点阵舞台：持有事件和图形，由对应的 DotCanvas 绘制。窗口背景与空状态画板分别持有，图案不跨页面存续。
 /// 坐标统一用窗口坐标（SwiftUI 的 .global）：原点是窗口左上角，每个模块（步距 p）的中心一颗点，布局边界都落在模块线上。
 ///
-/// 静息网点只铺在 App 背景上，空状态画板只画自己的图形与轨迹。各层格位一致，卡片移动时格位不跟着挪。
+/// 静息网点由 App 背景或聚焦的点阵窗口绘制。各层格位一致，卡片移动时格位不跟着挪。
 /// 事件（如发送消息的波）只在一段时间里抬高经过的格子，结束后格子退回静息的点。
 /// 背景上还可以拼出图形（如初始配置每一步的标志和步骤点），每个图形占一个位置（slot），格子一直长着，换图形时逐格形变过去；
 /// 图形的各层可以有自己的小动画（浮动、闪烁、脉冲、帧序列）：格子始终在格位上，浮动时动的是各格从图形内容里分到的形变量
@@ -705,17 +705,16 @@ nonisolated private func smoothstep(_ x: Double) -> Double {
 }
 
 extension EnvironmentValues {
-    /// 当前 App 窗口的点阵舞台；预览样本等没有舞台的地方为 nil。
+    /// 最近一层点阵背景的舞台；选择点阵的窗口持有自己的舞台。
     @Entry var dotStage: DotStage?
     /// 所在卡片会移动时（iPhone 的窗口），报告卡片这一帧实际在哪；不动的地方为 nil。
     @Entry var dotCarrier: DotCarrier?
 }
 
 /// 点阵画布，格子按窗口坐标对齐，不参与点击和读屏。
-/// 背景画布铺满窗口；空状态画板用自己的舞台绘制图形（figuresOnly），与底下的格子对齐，不改舞台范围。
+/// App 背景与选择点阵的窗口各自绘制完整网点、图形与轨迹。
 /// 像素由 Metal 着色器（DotField.metal）画，CPU 每帧只算图形和轨迹那几格。
 struct DotCanvas: View {
-    var figuresOnly = false
     @Environment(\.dotStage) private var stage
     @Environment(\.dotCarrier) private var carrier
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -725,8 +724,8 @@ struct DotCanvas: View {
     var body: some View {
         GeometryReader { proxy in
             let global = proxy.frame(in: .global)
-            // 放在缩放的窗口里时（figuresOnly），按屏幕上的实际大小画，格子和底下的画布对齐
-            let scale = figuresOnly && proxy.size.width > 0 ? global.width / proxy.size.width : 1
+            // 放在缩放的窗口里时，按屏幕上的实际大小画，格子仍与 App 网格对齐。
+            let scale = proxy.size.width > 0 ? global.width / proxy.size.width : 1
             let local = proxy.frame(in: .named(DotCarrier.space)).origin
             if let stage {
                 let live = (stage.animating || carrier?.moving == true) && !reduceMotion
@@ -738,12 +737,12 @@ struct DotCanvas: View {
                     let mapping = live ? carrier?.current : carrier?.final
                     Rectangle().fill(field.shader(origin: mapping?.apply(local) ?? global.origin,
                                                   scale: mapping?.scale ?? scale, pixel: 1 / max(displayScale, 1),
-                                                  at: date, drawsRest: !figuresOnly))
+                                                  at: date, drawsRest: true))
                 }
             }
         }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
-            if !figuresOnly { stage?.bounds = $0 }
+            stage?.bounds = $0
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)

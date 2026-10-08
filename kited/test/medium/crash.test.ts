@@ -27,7 +27,7 @@ afterEach(async () => {
   }
 });
 const temp = useTemp();
-const expectedTools = ['read', 'patch', 'shell', 'agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop']
+const expectedTools = ['read', 'patch', 'shell', 'credentials', 'agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop']
   .map((name) => `mcp__kite__${name}`).sort();
 
 /** pid 的直接子进程。 */

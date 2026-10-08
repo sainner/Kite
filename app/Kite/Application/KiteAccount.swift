@@ -1,12 +1,16 @@
 import Foundation
 import Observation
 import Security
+#if os(iOS)
+import UIKit
+#endif
 
 struct AccountUser: Codable { let id: String; let email: String; let name: String }
 struct AccountDevice: Codable, Identifiable, Equatable {
     let id: String
     let name: String
     let role: String
+    let kind: String?
     let online: Bool
     let joined: Bool
     let address: String?
@@ -42,6 +46,7 @@ private struct AccountLogin: Codable {
     private(set) var catalogs: [HostedCatalog] = []
     private(set) var projectAppearances: [String: ProjectAppearance] = [:]
     private var appearanceRevision = 0
+    private var reportedKindDeviceID: String?
     var error: String?
     var joining = false
     var signedIn: Bool { login != nil }
@@ -50,6 +55,18 @@ private struct AccountLogin: Codable {
     var deviceID: String? { login?.enrollment?.device.id }
     var role: String? { login?.enrollment?.device.role }
     var workers: [AccountDevice] { devices.filter { $0.role == "worker" && $0.joined } }
+
+    static var localDeviceKind: String {
+        #if os(iOS)
+        switch UIDevice.current.userInterfaceIdiom {
+        case .phone: "phone"
+        case .pad: "tablet"
+        default: "unknown"
+        }
+        #else
+        "computer"
+        #endif
+    }
 
     init() {
         login = AccountVault.load()
@@ -128,7 +145,7 @@ private struct AccountLogin: Codable {
         joining = true
         defer { joining = false }
         if login?.enrollment == nil {
-            let enrollment = try await request("/api/devices/enroll", method: "POST", body: ["name": name, "role": role], as: AccountEnrollment.self)
+            let enrollment = try await request("/api/devices/enroll", method: "POST", body: ["name": name, "role": role, "kind": Self.localDeviceKind], as: AccountEnrollment.self)
             login?.enrollment = enrollment
             try save()
         }
@@ -188,6 +205,7 @@ private struct AccountLogin: Codable {
         #endif
         let session = TimingTrace.span("组网会话")
         let verified = TimingTrace.span("账号核验")
+        await reportDeviceKind()
         do { try await refresh(); verified("完成") }
         catch {
             verified("失败：\(error.localizedDescription)")
@@ -211,6 +229,15 @@ private struct AccountLogin: Codable {
         #endif
         _ = try await network?.value
         session("就绪")
+    }
+
+    /// 类型补报独立于目录读取；服务暂不可达时下一轮重试。
+    private func reportDeviceKind() async {
+        guard let id = deviceID, reportedKindDeviceID != id else { return }
+        do {
+            let _: JSON = try await request("/api/devices/\(id)", method: "PATCH", body: ["kind": Self.localDeviceKind], as: JSON.self)
+            if deviceID == id { reportedKindDeviceID = id }
+        } catch { /* 保留未知类型，等待下次连接补报。 */ }
     }
 
     func refresh() async throws {

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 自定义资产一栏的单页，操作在标题栏。
+/// 资源库一栏的单页，操作在标题栏。
 struct ContextTemplateLibrary: View {
     @Environment(AppModel.self) private var model
     @State private var edit: ContextTemplateEdit?

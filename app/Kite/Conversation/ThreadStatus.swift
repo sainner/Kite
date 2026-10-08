@@ -15,7 +15,7 @@ struct ThreadStatusRing: View {
             .padding(lineWidth / 2)
             .frame(width: ring, height: ring)
             // 合进按钮组时排在组尾：前面同按钮一样带半个间距，后面让圆环与胶囊端头同心
-            .padding(.leading, grouped ? Metrics.paneButtonGap / 2 : 0)
+            .padding(.leading, grouped ? Metrics.paneHeaderButtonGap / 2 : 0)
             .padding(.trailing, grouped ? (diameter - ring) / 2 - Metrics.paneHeaderGroupInset : 0)
             .frame(width: grouped ? nil : diameter, height: diameter)
             .help(thread.statusLabel + "\n" + thread.contextDescription)

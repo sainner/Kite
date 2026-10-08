@@ -2,7 +2,7 @@ import SwiftUI
 
 /// 设置一栏里的各页。
 nonisolated enum SettingsPage: String, SidebarPage {
-    case appearance, account, linked, projects
+    case appearance, account, projects
 
     var id: Self { self }
 
@@ -10,17 +10,15 @@ nonisolated enum SettingsPage: String, SidebarPage {
         switch self {
         case .appearance: "外观"
         case .account: "Kite 账号"
-        case .linked: "关联账号"
         case .projects: "项目"
         }
     }
 
-    var symbol: String {
+    var icon: TablerSymbol {
         switch self {
-        case .appearance: "paintbrush"
-        case .account: "person.crop.circle"
-        case .linked: "link"
-        case .projects: "folder"
+        case .appearance: .palette
+        case .account: .user
+        case .projects: .folder
         }
     }
 
@@ -34,88 +32,77 @@ struct SettingsContent: View {
     var body: some View {
         let page = model.settingsPage
         SectionPage(header: PaneHeader(title: page.title, subtitle: "设置")) {
-            Form {
-                switch page {
-                case .appearance:
-                    Section { AppearancePicker() }
-                    #if os(iOS)
-                    Section { KeepAwakeToggle() }
-                    #endif
-                case .account:
-                    KiteAccountSection()
-                case .linked:
-                    if !model.subscriptionQuotas.isEmpty { SubscriptionSection() }
-                    if model.account.signedIn { GitAccountsSection() }
-                case .projects:
-                    if model.account.signedIn { AccountProjectsSection() }
+            if page == .account {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 28) {
+                        KiteAccountSection()
+                        AccountDeviceInvitation()
+                    }
+                        .frame(maxWidth: DotMetrics.module * 84, alignment: .leading)
+                        .padding(CardMetrics.inset)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if let error = model.account.error { Text(error).foregroundStyle(Theme.danger) }
-                if let error = model.error { Text(error).foregroundStyle(Theme.danger) }
+            } else {
+                Form {
+                    switch page {
+                    case .appearance:
+                        Section { AppearancePicker() }
+                        #if os(iOS)
+                        Section { KeepAwakeToggle() }
+                        #endif
+                    case .account: EmptyView()
+                    case .projects:
+                        if model.account.signedIn { AccountProjectsSection() }
+                    }
+                    if let error = model.account.error { Text(error).foregroundStyle(Theme.danger) }
+                    if let error = model.error { Text(error).foregroundStyle(Theme.danger) }
+                }
+                .formStyle(.grouped)
+                .scrollContentBackground(.hidden)
             }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
         }
         .id(page)
     }
 }
 
-/// 设备与文件一栏里的各页。文件尚未接通。
+/// 每台工作机的子页。文件尚未接通。
 nonisolated enum DrivePage: String, SidebarPage {
-    case devices, files
+    case accounts, files
 
     var id: Self { self }
 
     var title: String {
         switch self {
-        case .devices: "设备列表"
+        case .accounts: "账号"
         case .files: "文件"
         }
     }
 
-    var symbol: String {
+    var icon: TablerSymbol {
         switch self {
-        case .devices: "laptopcomputer.and.iphone"
-        case .files: "folder"
+        case .accounts: .user
+        case .files: .folder
         }
     }
 
     var available: Bool { self != .files }
 }
 
-/// 设备与文件一栏的单页：侧栏选中的那一页。
+/// 模型账号按工作机隔离，账号页使用固定分区。
 struct DriveContent: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        let page = model.drivePage
-        SectionPage(header: PaneHeader(title: page.title, subtitle: SidebarSection.drive.title)) {
-            Form {
-                switch page {
-                case .devices: AccountDevices()
-                case .files: EmptyView()
-                }
-                if let error = model.account.error { Text(error).foregroundStyle(Theme.danger) }
-            }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
-        }
-        .id(page)
-    }
-}
-
-/// 模型订阅账号与本周剩余额度，与用户栏的 chip 同源。
-private struct SubscriptionSection: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        Section("模型订阅") {
-            ForEach(model.subscriptionQuotas) { quota in
-                LabeledContent(quota.provider) {
-                    Text("本周剩余 \(quota.remaining.formatted(.percent.precision(.fractionLength(0))))")
-                        .foregroundStyle(quota.remaining < 0.2 ? Theme.warning : .secondary)
+        Group {
+            switch model.drivePage {
+            case .accounts: TilesLayer(group: .accounts(model.accountWindows))
+            case .files:
+                SectionPage(header: PaneHeader(title: model.accountWorker?.machine.name ?? "设备", subtitle: model.drivePage.title)) {
+                    EmptyView()
                 }
             }
         }
+        .id(model.drivePage)
     }
 }
 

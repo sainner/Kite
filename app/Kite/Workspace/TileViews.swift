@@ -4,13 +4,14 @@ import SwiftUI
 /// 排布变了、拖出去缩成停靠形状、松手展开，都只是它的位置和大小在变，动画连贯，不会出现新旧两份交叠。
 /// 拖动报的是窗口坐标，在这里换算成内容区里的坐标再交给窗口组。
 struct TilesLayer: View {
-    @Environment(WindowLayout.self) private var workspace
+    let group: PaneGroup
+    private var workspace: WindowLayout { group.layout }
     @Environment(\.openSidebar) private var openSidebar
 
     var body: some View {
         GeometryReader { geo in
             let bounds = CGRect(origin: .zero, size: geo.size)
-            let regions = WindowRegions(in: bounds)
+            let regions = workspace.regions(in: bounds)
             let origin = geo.frame(in: .global).origin
             let local = { (point: CGPoint) in CGPoint(x: point.x - origin.x, y: point.y - origin.y) }
             let layout = workspace.shown?.layout(in: regions.canvas, free: workspace.resizing) ?? TileLayout()
@@ -18,13 +19,16 @@ struct TilesLayer: View {
             // 侧栏入口只放在左上角的窗口：先比顶边，再比左边
             let first = layout.panes.min { ($0.value.minY, $0.value.minX) < ($1.value.minY, $1.value.minX) }?.key
             ZStack(alignment: .topLeading) {
-                DockRail(regions: regions, paneCount: docked.count)
+                if let area = group.workspace {
+                    DockRail(regions: regions, paneCount: docked.count)
+                        .environment(area)
+                }
                 if layout.panes.isEmpty && workspace.drag == nil {
                     WindowlessStage(dock: "右侧停靠栏")
                         .placed(regions.canvas)
                         .transition(.opacity)
                 }
-                ForEach(layout.gaps) { gap in
+                ForEach(workspace.isFixed ? [] : layout.gaps) { gap in
                     LayoutDragArea(cursor: gap.split.axis == .horizontal ? .columnResize : .rowResize) { drag in
                         workspace.resize(gap, to: local(drag.location))
                     } onEnded: {
@@ -43,7 +47,7 @@ struct TilesLayer: View {
                 }
                 ForEach(workspace.panes, id: \.self) { pane in
                     let dockFrame = docked.firstIndex(of: pane).map { regions.dockFrame(at: $0) }
-                    CardSlot(pane: pane, rect: layout.panes[pane], dockFrame: dockFrame) { point in
+                    CardSlot(group: group, pane: pane, rect: layout.panes[pane], dockFrame: dockFrame) { point in
                         workspace.drag(pane, to: local(point), in: bounds)
                     } onDrop: {
                         workspace.drop(in: bounds)
@@ -54,14 +58,14 @@ struct TilesLayer: View {
                     .zIndex(workspace.drag?.pane == pane ? 1 : 0)
                     // 拖缝调整大小时指针会快速扫过卡片，期间卡片不响应悬停和点击
                     .allowsHitTesting(workspace.resizing == nil)
-                    .transition(.scale(scale: 0.92).combined(with: .opacity))
+                    .transition(.scale(scale: 0.92).combined(with: .paneFade))
                 }
             }
             .animation(.snappy, value: workspace.panes)
             .onGeometryChange(for: CGSize.self) { $0.size } action: { workspace.updateViewport($0, presentation: .tiled) }
         }
+        .environment(workspace)
         .disablesWindowDragging()
-        .modifier(InstanceSettingsPresentation())
     }
 }
 
@@ -100,6 +104,7 @@ private struct DockRail: View {
 /// 一张卡片摆在哪。进入布局拖动后缩成停靠形状跟着指针，松手后展开到落点。
 /// 只有它读指针位置，指针一动只重画这一张，不重算整个排布。
 private struct CardSlot: View {
+    let group: PaneGroup
     let pane: Pane
     /// 在排布里的位置，不在排布里为 nil。
     let rect: CGRect?
@@ -111,7 +116,7 @@ private struct CardSlot: View {
 
     var body: some View {
         if let (frame, minimized) = place {
-            PaneCard(pane: pane, minimized: minimized, width: frame.width,
+            PaneCard(group: group, pane: pane, minimized: minimized, width: frame.width,
                      onDrag: onDrag, onDrop: onDrop, onActivate: onActivate)
                 .placed(frame)
         }
@@ -134,29 +139,29 @@ private extension View {
 
 /// 宽屏布局中的一张卡片，里面是窗口（PaneWindow）。按住标题栏拖够一段距离后缩成停靠形状，内容淡出，出现图标。
 struct PaneCard: View {
+    let group: PaneGroup
     let pane: Pane
     let minimized: Bool
     let width: CGFloat
     @Environment(WindowLayout.self) private var workspace
-    @Environment(WorkArea.self) private var area
     @Environment(AppModel.self) private var model
     @State private var cardHovered = false
     @State private var menuWidth: CGFloat = 0
     @State private var controlsSize: CGSize = .zero
     @State private var headerHeight: CGFloat = 0
     @State private var headerInteractiveRects: [CGRect] = []
-    private var appearance: WindowAppearance { area.appearance(of: pane) }
+    private var appearance: WindowAppearance { group.appearance(of: pane) }
     /// 拖动中的指针位置，窗口坐标。
     var onDrag: (CGPoint) -> Void
     var onDrop: () -> Void
     var onActivate: () -> Void
 
-    private var actionsShown: Bool { !controlsInMenu && InputMode.current.revealsControls(hovered: cardHovered) && !minimized && workspace.drag == nil && workspace.resizing == nil }
+    private var actionsShown: Bool { !workspace.isFixed && !controlsInMenu && InputMode.current.revealsControls(hovered: cardHovered) && !minimized && workspace.drag == nil && workspace.resizing == nil }
     private var canExpand: Bool { (workspace.shown?.panes.count ?? 0) > 1 }
 
     private var controlsInMenu: Bool {
         #if os(macOS)
-        guard !minimized, area.thread(in: pane) != nil, menuWidth > 0 else { return false }
+        guard !minimized, group.workspace?.thread(in: pane) != nil, menuWidth > 0 else { return false }
         // 按完整控制组计算，不能随悬停显隐改变判断；圆环占一个按钮宽，标题至少保留两个按钮宽。
         let required = 2 * Metrics.paneMargin + menuWidth + controlsSize.width
             + 3 * Metrics.paneButtonGap + 3 * Metrics.paneHeaderButton
@@ -166,7 +171,8 @@ struct PaneCard: View {
         #endif
     }
 
-    private var windowActions: PaneWindowActions {
+    private var windowActions: PaneWindowActions? {
+        guard let area = group.workspace else { return nil }
         let expand: (@MainActor () -> Void)?
         if canExpand { expand = { workspace.expand(pane) } }
         else { expand = nil }
@@ -182,16 +188,16 @@ struct PaneCard: View {
         shape
             .fill(minimized ? appearance.tint : Theme.card)
             .overlay(alignment: .topLeading) {
-                PaneBody(pane: pane)
+                PaneBody(group: group, pane: pane)
+                    .paneFocus(pane, in: workspace, enabled: !minimized)
                     .environment(\.paneOverflowActions, controlsInMenu ? windowActions : nil)
                     .environment(\.paneHeaderControlsInset, actionsShown ? controlsSize.width + Metrics.paneButtonGap : 0)
                     .environment(\.paneHeaderMinHeight, controlsSize.height)
                     // 卡片的形状，里面同心的圆角（控制区输入框）跟着它
                     .containerShape(RoundedRectangle(cornerRadius: Metrics.cardRadius))
-                    .opacity(minimized ? 0 : 1)
+                    .modifier(PaneFade(visible: !minimized))
                     .allowsHitTesting(!minimized)
                     .accessibilityHidden(minimized)
-                    .simultaneousGesture(TapGesture().onEnded { workspace.focus(pane) })
             }
             // 图标画在拖动层下面：盖在 AppKit 视图上的 SwiftUI 内容会挡住点到它的鼠标
             .overlay {
@@ -204,9 +210,9 @@ struct PaneCard: View {
             .overlay(alignment: .top) {
                 ZStack(alignment: .trailing) {
                     // 展开窗口移动一个标题栏高度后进入布局；按钮所在的位置不接拖动。
-                    dragArea
+                    if !workspace.isFixed { dragArea }
 
-                    if !minimized {
+                    if !minimized, !workspace.isFixed {
                         headerActions
                             .padding(.trailing, Metrics.paneMargin + (menuWidth > 0 ? menuWidth + Metrics.paneButtonGap : 0))
                             .opacity(actionsShown ? 1 : 0)
@@ -226,7 +232,7 @@ struct PaneCard: View {
             .accessibilityActions {
                 if minimized {
                     Button("展开窗口", action: onActivate)
-                } else {
+                } else if let area = group.workspace {
                     Button("缩小窗口") { workspace.minimize(pane) }
                     if canExpand { Button("展开窗口") { workspace.expand(pane) } }
                     Button("关闭窗口") { model.closeWindow(pane, in: area) }
@@ -248,7 +254,8 @@ struct PaneCard: View {
             else { workspace.focus(pane) }
         }
         .contextMenu {
-            if let target = area.windows.first(where: { $0.id == pane.id })?.target,
+            if let area = group.workspace,
+               let target = area.windows.first(where: { $0.id == pane.id })?.target,
                let instance = area.instances.first(where: { $0.id == target.instanceId }) {
                 InstanceActions(instance: instance)
                 Button("关闭窗口") { model.closeWindow(pane, in: area) }
@@ -257,18 +264,20 @@ struct PaneCard: View {
         .padding(.trailing, minimized ? 0 : menuWidth + (actionsShown ? controlsSize.width + Metrics.paneButtonGap : 0) + Metrics.paneMargin)
     }
 
+    @ViewBuilder
     private var headerActions: some View {
-        let actions = windowActions
-        return PaneHeaderButtonGroup {
-            headerButton("缩小", icon: "minus", action: actions.minimize)
-            if let expand = actions.expand {
-                headerButton("展开", icon: "arrow.up.left.and.arrow.down.right", action: expand)
+        if let actions = windowActions {
+            PaneHeaderButtonGroup {
+                headerButton("缩小", icon: "minus", action: actions.minimize)
+                if let expand = actions.expand {
+                    headerButton("展开", icon: "arrow.up.left.and.arrow.down.right", action: expand)
+                }
+                headerButton("关闭", icon: "xmark", action: actions.close)
+                    .disabled(!actions.canClose)
             }
-            headerButton("关闭", icon: "xmark", action: actions.close)
-                .disabled(!actions.canClose)
+            // 按系统控件的实际尺寸安排标题栏并避让拖动，避免固定标签尺寸再次撑大按钮。
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { controlsSize = $0 }
         }
-        // 按系统控件的实际尺寸安排标题栏并避让拖动，避免固定标签尺寸再次撑大按钮。
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { controlsSize = $0 }
     }
 
     private func headerButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {

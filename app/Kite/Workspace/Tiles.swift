@@ -193,12 +193,13 @@ struct WindowRegions {
     let dock: CGRect
 
     /// 内容区从模块线开始；尺寸不是模块整数倍时，余下的不足一格留在右边和下边。
-    init(in bounds: CGRect) {
+    init(in bounds: CGRect, showsDock: Bool = true) {
         let width = DotMetrics.snapDown(bounds.width), height = DotMetrics.snapDown(bounds.height)
+        let dockWidth = showsDock ? Metrics.dockWidth : 0
         canvas = CGRect(x: bounds.minX, y: bounds.minY,
-                        width: max(0, width - Metrics.dockWidth - Metrics.gap), height: height)
-        dock = CGRect(x: bounds.minX + width - Metrics.dockWidth, y: bounds.minY,
-                      width: Metrics.dockWidth, height: height)
+                        width: max(0, width - dockWidth - (showsDock ? Metrics.gap : 0)), height: height)
+        dock = CGRect(x: bounds.minX + width - dockWidth, y: bounds.minY,
+                      width: dockWidth, height: height)
     }
 
     func dockFrame(at index: Int) -> CGRect {

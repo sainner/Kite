@@ -1,7 +1,22 @@
 import SwiftUI
 
-/// 每个窗口按目标引用取得自己的线程或插件实例，不共享“当前线程”槽位。
 struct PaneBody: View {
+    let group: PaneGroup
+    let pane: Pane
+
+    var body: some View {
+        Group {
+            switch group {
+            case .workspace(let area): WorkspacePaneBody(pane: pane).environment(area)
+            case .accounts: ModelAccountPane(pane: pane)
+            }
+        }
+        .environment(\.headerPane, pane)
+    }
+}
+
+/// 每个工作区窗口按目标引用取得自己的线程或插件实例，不共享“当前线程”槽位。
+private struct WorkspacePaneBody: View {
     let pane: Pane
     @Environment(WorkArea.self) private var area
 

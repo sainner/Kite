@@ -1,33 +1,4 @@
-/**
- * Git 凭据的加密存储与 GitHub 设备码授权。
- * 加密密钥从账号服务密钥派生，不另设密钥；密文绑定账号与主机，整行挪到别的账号或主机下无法解密。
- */
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
-
-export class CredentialCipher {
-  private readonly key: Buffer;
-
-  constructor(secret: string) {
-    this.key = Buffer.from(hkdfSync('sha256', secret, 'kite-account', 'git-credentials', 32));
-  }
-
-  seal(userId: string, host: string, plain: string): string {
-    const iv = randomBytes(12);
-    const cipher = createCipheriv('aes-256-gcm', this.key, iv);
-    cipher.setAAD(Buffer.from(`${userId}\n${host}`));
-    const body = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
-    return Buffer.concat([iv, cipher.getAuthTag(), body]).toString('base64');
-  }
-
-  open(userId: string, host: string, sealed: string): string {
-    const raw = Buffer.from(sealed, 'base64');
-    const decipher = createDecipheriv('aes-256-gcm', this.key, raw.subarray(0, 12));
-    decipher.setAAD(Buffer.from(`${userId}\n${host}`));
-    decipher.setAuthTag(raw.subarray(12, 28));
-    return Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString('utf8');
-  }
-}
-
+/** GitHub 设备码授权与仓库列表。 */
 export interface GitHubOptions {
   clientId: string;
   /** 测试替换用；默认 GitHub 官方地址。 */

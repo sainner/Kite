@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
-import { rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { AccountClient } from '../../src/account-client.ts';
 import { GitHosting } from '../../src/account/git-hosting.ts';
 import { createAccountService } from '../../src/account/service.ts';
 import { credentialEnv } from '../../src/git-credential.ts';
@@ -9,7 +10,12 @@ import { normalizeRemote } from '../../src/remote-url.ts';
 import { makeTemp } from '../util.ts';
 
 interface Login { token: string; user: { id: string; email: string } }
-interface Device { id: string; name: string; role: 'controller' | 'worker' }
+interface Device {
+  id: string;
+  name: string;
+  role: 'controller' | 'worker';
+  kind: 'phone' | 'tablet' | 'computer' | 'unknown';
+}
 interface Enrollment { device: Device; controlURL: string; authKey: string }
 interface HeadscaleUser { id: string; name: string }
 interface PreAuthKey { id: string; key: string; user: string }
@@ -84,14 +90,15 @@ async function setup(options: { github?: GitHubFake } = {}) {
   let service: Awaited<ReturnType<typeof createAccountService>>;
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: (request) => service.fetch(request) });
   const baseURL = server.url.origin;
+  const serviceOptions = {
+    databasePath: join(root, 'account.sqlite'), baseURL,
+    secret: 'kite-test-secret-2026-with-enough-entropy',
+    headscale: { url: headscale.url.origin, apiKey: 'headscale-test-key', controlURL },
+    git: options.github ? { github: { clientId: 'kite-test-client', ...options.github } } : undefined,
+    now: () => now,
+  };
   try {
-    service = await createAccountService({
-      databasePath: join(root, 'account.sqlite'), baseURL,
-      secret: 'kite-test-secret-2026-with-enough-entropy',
-      headscale: { url: headscale.url.origin, apiKey: 'headscale-test-key', controlURL },
-      git: options.github ? { github: { clientId: 'kite-test-client', ...options.github } } : undefined,
-      now: () => now,
-    });
+    service = await createAccountService(serviceOptions);
   } catch (error) {
     await server.stop(true);
     await headscale.stop(true);
@@ -112,8 +119,8 @@ async function setup(options: { github?: GitHubFake } = {}) {
     expect(response.status).toBe(200);
     return response.body;
   }
-  async function enroll(token: string, name: string, role: Device['role']): Promise<Enrollment> {
-    const response = await call('POST', '/api/devices/enroll', token, { name, role });
+  async function enroll(token: string, name: string, role: Device['role'], kind?: Device['kind']): Promise<Enrollment> {
+    const response = await call('POST', '/api/devices/enroll', token, { name, role, kind });
     expect(response.status).toBeGreaterThanOrEqual(200);
     expect(response.status).toBeLessThan(300);
     return response.body;
@@ -162,6 +169,10 @@ async function setup(options: { github?: GitHubFake } = {}) {
   return {
     baseURL, root, call, signUp, enroll, node, complete, session, publisher, catalog, worker, deletedNodes, expiredAuthKeys,
     advance(ms: number) { now += ms; },
+    async restart() {
+      await service.close();
+      service = await createAccountService(serviceOptions);
+    },
     async stop() {
       try { await service.close(); }
       finally {
@@ -183,6 +194,15 @@ function expectRejected(response: { status: number }) {
   expect(response.status).toBeLessThan(500);
 }
 
+function expectEncrypted(root: string, values: string[]) {
+  const files = readdirSync(root).filter((name) => name.startsWith('account.sqlite'));
+  expect(files).toContain('account.sqlite');
+  for (const file of files) {
+    const bytes = readFileSync(join(root, file));
+    for (const value of values) expect(bytes.includes(Buffer.from(value))).toBe(false);
+  }
+}
+
 function snapshot(machineId: string, project: Project): CatalogSnapshot {
   const checkout: Checkout = {
     id: crypto.randomUUID(), machineId, projectId: project.id,
@@ -194,6 +214,125 @@ function snapshot(machineId: string, project: Project): CatalogSnapshot {
       kind: 'root', branch: 'main', base: null, status: 'open', createdAt: project.createdAt }],
   };
 }
+
+// Better Auth 会话、工作机令牌和 SQLite 项目归属跨接口配合；同名凭据不能串账号、串项目或向账号回退。
+test('账号和项目的同名密钥独立分发，管理列表只返回所选范围的元数据，缺失引用整批失败', async () => {
+  const k = await setup();
+  try {
+    const alice = await k.signUp('secret-scope-alice');
+    const bob = await k.signUp('secret-scope-bob');
+    const box = await k.worker(alice.token, '密钥工作机');
+    const outsider = await k.worker(bob.token, '其他账号工作机');
+    const first = await k.call('POST', '/api/projects', box.token, { remote: 'https://example.test/secret/first.git' });
+    const second = await k.call('POST', '/api/projects', box.token, { remote: 'https://example.test/secret/second.git' });
+    const foreign = await k.call('POST', '/api/projects', outsider.token, { remote: 'https://example.test/secret/first.git' });
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(foreign.status).toBe(201);
+
+    const accountValue = '账号共享假秘密-9a3f26';
+    const projectValue = '项目文件假秘密-72c151\n第二行';
+    expectSuccess(await k.call('PUT', '/api/secrets/api_key', alice.token, { kind: 'text', value: accountValue }));
+    expectSuccess(await k.call('PUT', '/api/secrets/api_key', alice.token,
+      { kind: 'file', value: projectValue, projectId: first.body.id }));
+    const account = await k.call('GET', '/api/secrets', alice.token);
+    const project = await k.call('GET', `/api/secrets?projectId=${first.body.id}`, alice.token);
+    expect(account.status).toBe(200);
+    expect(project.status).toBe(200);
+    expect(account.body).toEqual([{ name: 'api_key', kind: 'text', projectId: null, updatedAt: expect.any(Number) }]);
+    expect(project.body).toEqual([{ name: 'api_key', kind: 'file', projectId: first.body.id, updatedAt: expect.any(Number) }]);
+    expect((await k.call('GET', `/api/secrets?projectId=${second.body.id}`, alice.token)).body).toEqual([]);
+    expect((await k.call('GET', '/api/secrets', bob.token)).body).toEqual([]);
+    for (const response of [account, project]) {
+      expect(JSON.stringify(response.body)).not.toContain(accountValue);
+      expect(JSON.stringify(response.body)).not.toContain(projectValue);
+    }
+
+    const request = { projectId: first.body.id, references: ['{account.api_key}', '{project.api_key}'] };
+    const resolved = await k.call('POST', '/api/secrets/resolve', box.token, request);
+    expect(resolved.status).toBe(200);
+    expect(resolved.body).toEqual([
+      { reference: '{account.api_key}', kind: 'text', value: accountValue },
+      { reference: '{project.api_key}', kind: 'file', value: projectValue },
+    ]);
+    const available = await new AccountClient(() => ({ url: k.baseURL, token: box.token })).listSecrets(first.body.id);
+    expect(available).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reference: '{account.api_key}', name: 'api_key', kind: 'text', projectId: null }),
+      expect.objectContaining({ reference: '{project.api_key}', name: 'api_key', kind: 'file', projectId: first.body.id }),
+    ]));
+    expect(available).toHaveLength(2);
+    expect(JSON.stringify(available)).not.toContain(accountValue);
+    expect(JSON.stringify(available)).not.toContain(projectValue);
+    expect((await k.call('GET', `/api/secrets/available?projectId=${first.body.id}`, outsider.token)).status).toBe(404);
+    expect((await k.call('GET', '/api/secrets/available', outsider.token)).body).toEqual([]);
+    expectRejected(await k.call('GET', '/api/secrets', box.token));
+    expectRejected(await k.call('PUT', '/api/secrets/api_key', box.token, { kind: 'text', value: '工作机不能改写' }));
+    expectRejected(await k.call('DELETE', '/api/secrets/api_key', box.token));
+    expectRejected(await k.call('POST', '/api/secrets/resolve', alice.token, request));
+    expect((await k.call('GET', `/api/secrets?projectId=${foreign.body.id}`, alice.token)).status).toBe(404);
+    expect((await k.call('PUT', '/api/secrets/api_key', alice.token,
+      { kind: 'text', value: '不能写他人项目', projectId: foreign.body.id })).status).toBe(404);
+    expect((await k.call('DELETE', `/api/secrets/api_key?projectId=${foreign.body.id}`, alice.token)).status).toBe(404);
+
+    for (const [token, body] of [
+      [outsider.token, request],
+      [outsider.token, { references: ['{account.api_key}'] }],
+      [box.token, { projectId: foreign.body.id, references: ['{project.api_key}'] }],
+      [box.token, { projectId: second.body.id, references: ['{account.api_key}', '{project.api_key}'] }],
+      [box.token, { projectId: first.body.id, references: ['{account.api_key}', '{project.missing}'] }],
+    ] as const) {
+      const missing = await k.call('POST', '/api/secrets/resolve', token, body);
+      expect({ body, status: missing.status }).toEqual({ body, status: 404 });
+      expect(JSON.stringify(missing.body)).not.toContain(accountValue);
+      expect(JSON.stringify(missing.body)).not.toContain(projectValue);
+    }
+    expect((await k.call('POST', '/api/secrets/resolve', box.token, { references: ['{project.api_key}'] })).status).toBe(409);
+    expectSuccess(await k.call('DELETE', `/api/secrets/api_key?projectId=${first.body.id}`, alice.token));
+    expect((await k.call('GET', `/api/secrets?projectId=${first.body.id}`, alice.token)).body).toEqual([]);
+    expect((await k.call('POST', '/api/secrets/resolve', box.token, request)).status).toBe(404);
+    expect((await k.call('POST', '/api/secrets/resolve', box.token, { references: ['{account.api_key}'] })).body)
+      .toEqual([{ reference: '{account.api_key}', kind: 'text', value: accountValue }]);
+  } finally { await k.stop(); }
+}, 1_000);
+
+// Bun SQLite 的落盘/重开、HTTP 客户端与工作机认证必须共同生效：轮换或撤销后不能拿缓存中的密钥。
+test('密钥以密文持久化，客户端每次取最新值，工作机凭据轮换和撤销后立即拒绝读取', async () => {
+  const k = await setup();
+  try {
+    const owner = await k.signUp('secret-rotation-owner');
+    const peer = await k.session(owner.token);
+    const enrollment = await k.enroll(peer.token, '可撤销的密钥工作机', 'worker');
+    expectSuccess(await k.complete(peer.token, enrollment, k.node(enrollment, '100.64.8.1')));
+    const machineId = crypto.randomUUID();
+    const grant = await k.publisher(peer.token, enrollment, machineId);
+    let link = { url: k.baseURL, token: grant.token };
+    const client = new AccountClient(() => link);
+    const firstValue = '持久化假秘密-88254b';
+    const nextValue = '轮换后的假秘密-4cc95e';
+    const references = ['{account.shared_key}'];
+    expectSuccess(await k.call('PUT', '/api/secrets/shared_key', owner.token, { kind: 'text', value: firstValue }));
+    expect(await client.resolveSecrets(references)).toEqual([{ reference: references[0]!, kind: 'text', value: firstValue }]);
+    expectEncrypted(k.root, [firstValue]);
+    await k.restart();
+    expect(await client.resolveSecrets(references)).toEqual([{ reference: references[0]!, kind: 'text', value: firstValue }]);
+
+    k.advance(1);
+    expectSuccess(await k.call('PUT', '/api/secrets/shared_key', owner.token, { kind: 'text', value: nextValue }));
+    expect(await client.resolveSecrets(references)).toEqual([{ reference: references[0]!, kind: 'text', value: nextValue }]);
+    expectEncrypted(k.root, [firstValue, nextValue]);
+    const rotated = await k.publisher(peer.token, enrollment, machineId);
+    expect(rotated.token).not.toBe(grant.token);
+    expect((await k.call('POST', '/api/secrets/resolve', grant.token, { references })).status).toBe(401);
+    await expect(client.resolveSecrets(references)).rejects.toThrow();
+    link = { url: k.baseURL, token: rotated.token };
+    expect(await client.resolveSecrets(references)).toEqual([{ reference: references[0]!, kind: 'text', value: nextValue }]);
+    expectSuccess(await k.call('DELETE', `/api/devices/${enrollment.device.id}`, owner.token));
+    expect((await k.call('POST', '/api/secrets/resolve', rotated.token, { references })).status).toBe(401);
+    await expect(client.resolveSecrets(references)).rejects.toThrow();
+    expectSuccess(await k.call('DELETE', '/api/secrets/shared_key', owner.token));
+    expect((await k.call('GET', '/api/secrets', owner.token)).body).toEqual([]);
+  } finally { await k.stop(); }
+}, 1_000);
 
 // 真实 Better Auth 密码校验与 Bun bearer 请求头、SQLite 用户记录、Headscale 节点归属必须共同生效。
 test('密码登录后只能枚举本账号设备，伪造节点的用户或入网密钥都不能绑定', async () => {
@@ -229,8 +368,9 @@ test('密码登录后只能枚举本账号设备，伪造节点的用户或入�
   } finally { await k.stop(); }
 }, 1_000);
 
-// 邀请并发消费跨 SQLite 状态与 Better Auth 会话创建，必须只提交一次且不能复用来源会话。
-test('同一邀请并发接受只成功一次，新设备取得本账号的独立会话', async () => {
+// 邀请并发消费跨 SQLite 状态与 Better Auth 会话创建，必须只提交一次且不能复用来源会话；
+// 设备类型补报须按登记会话归属授权，登记与补报的类型在账号服务重开后仍能从 SQLite 读出。
+test('同一邀请并发接受只成功一次，新设备取得独立会话且只能补报自己的类型，服务重启后保留', async () => {
   const k = await setup();
   try {
     const owner = await k.signUp('owner');
@@ -247,13 +387,25 @@ test('同一邀请并发接受只成功一次，新设备取得本账号的独�
     expect(invited.token).not.toBe(owner.token);
 
     const original = await k.enroll(owner.token, '原设备', 'controller');
-    const scanned = await k.enroll(invited.token, '扫码设备', 'worker');
+    const scanned = await k.enroll(invited.token, '扫码设备', 'worker', 'phone');
     expect(original.device.id).not.toBe(scanned.device.id);
+    expect(original.device.kind).toBe('unknown');
+    expect(scanned.device.kind).toBe('phone');
     expectSuccess(await k.complete(owner.token, original, k.node(original, '100.64.1.1')));
     expectSuccess(await k.complete(invited.token, scanned, k.node(scanned, '100.64.1.2')));
+    const reported = await k.call('PATCH', `/api/devices/${original.device.id}`, owner.token, { kind: 'computer' });
+    expect(reported.status).toBe(200);
+    expect(reported.body).toEqual({ ok: true });
+    expect((await k.call('PATCH', `/api/devices/${original.device.id}`, invited.token, { kind: 'tablet' })).status).toBe(403);
+    expect((await k.call('PATCH', `/api/devices/${scanned.device.id}`, owner.token, { kind: 'tablet' })).status).toBe(403);
+    await k.restart();
     const devices = await k.call('GET', '/api/devices', invited.token);
     expect(devices.status).toBe(200);
     expect(devices.body.map((device: Device) => device.id).sort()).toEqual([original.device.id, scanned.device.id].sort());
+    expect(devices.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: original.device.id, kind: 'computer' }),
+      expect.objectContaining({ id: scanned.device.id, kind: 'phone' }),
+    ]));
     expect((await k.call('GET', '/api/devices', owner.token)).status).toBe(200);
   } finally { await k.stop(); }
 }, 1_000);
@@ -639,8 +791,8 @@ test('托管项目迁移把全部分支和标签用绑定的凭据推到新远�
 }, 1_000);
 
 // 服务端代跑 GitHub OAuth 设备码轮询，token 加密存入账号，再由同账号工作机按 SSH 写法的地址取用；
-// 添加项目时用这个 token 代为请求 GitHub 仓库列表，GitHub 拒绝 token 时转为 502。
-test('GitHub 设备码授权先等待后成功，同账号工作机取到 token 并能列出仓库，其他账号取不到也列不出', async () => {
+// Git 与通用密钥经同一账号服务重开后保留密文，管理列表不能把 Git token 暴露成 agent 可引用的密钥。
+test('GitHub 授权与通用密钥重启后保留密文，同账号工作机取到 token 并能列出仓库，其他账号取不到也列不出', async () => {
   let polls = 0;
   let revoked = false;
   const github = Bun.serve({
@@ -698,10 +850,22 @@ test('GitHub 设备码授权先等待后成功，同账号工作机取到 token 
     expectSuccess(done);
     expect(done.body.status).toBe('authorized');
 
+    const sharedValue = '与Git并存的假秘密-213da4';
+    expectSuccess(await k.call('PUT', '/api/secrets/shared_key', alice.token, { kind: 'text', value: sharedValue }));
+    expectEncrypted(k.root, ['gho_device_token', sharedValue]);
+    await k.restart();
+
     const accounts = await k.call('GET', '/api/git/accounts', alice.token);
     expect(accounts.status).toBe(200);
     expect(JSON.stringify(accounts.body)).toContain('octo-kite');
     expect(JSON.stringify(accounts.body)).not.toContain('gho_device_token');
+    const secrets = await k.call('GET', '/api/secrets', alice.token);
+    expect(secrets.status).toBe(200);
+    expect(secrets.body).toEqual([{ name: 'shared_key', kind: 'text', projectId: null, updatedAt: expect.any(Number) }]);
+    expect(JSON.stringify(secrets.body)).not.toContain('gho_device_token');
+    expect(JSON.stringify(secrets.body)).not.toContain(sharedValue);
+    expect((await k.call('POST', '/api/secrets/resolve', box.token, { references: ['{account.shared_key}'] })).body)
+      .toEqual([{ reference: '{account.shared_key}', kind: 'text', value: sharedValue }]);
     const credential = await k.call('POST', '/api/git/credential', box.token, { url: 'git@github.com:o/r.git' });
     expect(credential.status).toBe(200);
     expect(credential.body).toEqual({ username: 'octo-kite', password: 'gho_device_token', expiresAt: null });

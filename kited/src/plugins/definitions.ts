@@ -21,7 +21,7 @@ export interface PluginDefinition {
 
 const coding: AgentDefinition = {
   runtime: 'harness', model: { model: defaultAgentModel, reasoning: 'medium' },
-  tools: ['read', 'patch', 'shell', ...operationToolNames], context: defaultContextDefinition, maxRequestsPerTurn: 50,
+  tools: ['read', 'patch', 'shell', 'credentials', ...operationToolNames], context: defaultContextDefinition, maxRequestsPerTurn: 50,
 };
 const review: AgentDefinition = {
   ...coding, tools: ['read'], context: { ...defaultContextDefinition, id: 'kite.review', title: '只读审查', blocks: [

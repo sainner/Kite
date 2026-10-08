@@ -19,7 +19,7 @@ private nonisolated struct ImportedPluginPackage: Decodable, Sendable {
     }
 }
 
-/// 插件定义属于工作机；安装后可在各工作区创建实例。自定义资产一栏的单页，操作在标题栏。
+/// 插件定义属于工作机；安装后可在各工作区创建实例。资源库一栏的单页，操作在标题栏。
 struct PluginLibrary: View {
     private struct PendingPackage {
         let contents: ImportedPluginPackage

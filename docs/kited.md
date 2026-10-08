@@ -53,11 +53,11 @@ bun run harness --resume <会话id>
 | `/recover` | 确认旧执行已经停止后解除恢复阻塞；仍需 `/resume` |
 | `/exit` 或空闲时按 Ctrl+C | 停止执行、保存记录并退出 |
 
-当前提供 `read`、`patch`、`shell`，参数、失败和取消语义见 [基础工具契约](harness-主循环.md#工具执行约定)。上下文的编辑与生效见 [上下文模板](harness-上下文组装.md)。
+当前提供 `read`、`patch`、`shell`、`credentials`，参数、失败和取消语义见 [基础工具契约](harness-主循环.md#工具执行约定)。上下文的编辑与生效见 [上下文模板](harness-上下文组装.md)。
 
 文件工具限制在工作目录内，shell 使用操作系统沙箱。默认工作区可读写、必要工具链可读、网络关闭；宿主凭据和内部记录受保护，Git 元数据只读。授权范围和平台限制见 [执行边界](Agent与插件契约.md#71-插件与-harness-共用操作系统沙箱)。独立终端尚无授权编辑入口，服务中的实例可在 App「执行授权」页编辑，见 [实例执行授权](实例操作.md#实例执行授权)。每回合的请求上限可用 `--max-requests` 调整，达到上限后等待显式继续。
 
-这个终端入口直接修改指定目录。需要独立工作树、快照与采纳时，通过 kited 创建工作区。独立终端未接 agent 协作工具；harness 的 skill 自动发现、MCP 和上下文压缩仍待实现。
+这个终端入口直接修改指定目录。需要独立工作树、快照与采纳时，通过 kited 创建工作区。独立终端未接 agent 协作工具与账号凭据服务；harness 的 skill 自动发现、MCP 和上下文压缩仍待实现。
 
 异常退出留下的 `lock/` 不会自动删除。先根据会话目录中的 `lock/owner.json` 与 `processes.json` 确认原进程及命令均已停止，再清理锁并重新打开。执行效果未知时先核查，不重放旧工具。
 
@@ -192,11 +192,39 @@ App、HTTP 和 CLI 的显示与控制能力见 [会话显示协议](会话显示
 
 harness 与 Claude 均通过共享 shell 执行项目的 `.kite/check`。项目检查入口与输出约定见 [kited README](../kited/README.md#检查与测试)，不另设模型专用检查工具。
 
+## 模型账号与额度
+
+`GET /model-accounts` 只查询工作机本身持有的授权，不登录、不续期、不分发模型凭据，也不发送模型请求。ChatGPT 使用前文的 Kite 专用认证目录；Claude 使用 Claude Code 原生登录存储（包括 macOS 钥匙串与显式指定的配置目录），或 `CLAUDE_CODE_OAUTH_TOKEN`。缺失和过期凭据分别返回未配置和需要重新授权，不借用日常 Codex 的登录。
+
+App 的订阅登录由所选工作机执行原生登录工具，凭据不经过 App 或账号服务：ChatGPT 复用 [官方设备码登录](https://developers.openai.com/codex/auth)，写入 Kite 专用认证目录；Claude 复用 [原生 `auth login --claudeai`](https://code.claude.com/docs/en/cli-reference)，保留 Claude 自身的凭据存储。工作机须有可用的 Codex CLI；Claude 登录工具随固定版本的 Agent SDK 提供。登录完成不等于额度接口必定可用，额度查询失败单独显示。
+
+| 方法与路径 | 调用约定 |
+|---|---|
+| `POST /subscription-logins` | `{id, provider}`，`id` 为客户端生成的 UUID，`provider` 为 `chatgpt` 或 `claude`；同 ID 幂等，同供应商已有活动登录时返回 409 |
+| `GET /subscription-logins/:id` | 返回 `status`（`starting`、`waiting`、`complete`、`failed`、`cancelled`、`expired`）、`expiresAt`（Unix 秒）、`acceptsCode`，以及可选的官方授权 `url`、ChatGPT `userCode`、错误 `message`；不返回令牌或原始工具输出，服务重启后返回 404 |
+| `POST /subscription-logins/:id` | `{code}` 提交 Claude 的单行授权码，最多 4096 字符；不接受输入的状态返回 409，格式错误返回 400 |
+| `DELETE /subscription-logins/:id` | 幂等取消指定登录并结束等待中的进程；先取消后迟到的启动也不会创建进程；不撤销已完成的订阅授权 |
+
+这些接口沿用工作机身份与同账号组网鉴权。弹窗关闭时取消登录，超时十分钟或服务正常关闭时也结束等待。自动续期仍未接入。
+
+
+API 查询读取 kited 进程环境中的 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`DEEPSEEK_API_KEY`；查询 OpenAI、Anthropic 的组织费用还需对应的 `OPENAI_ADMIN_KEY`、`ANTHROPIC_ADMIN_KEY`。这些变量须显式提供给服务进程，默认安装器不复制发起安装的终端密钥。账号读取不代表该 API 已被配置为会话的模型后端。
+
+`GET /model-accounts` 仍要求工作机身份与同账号访问授权，返回 `{checkedAt, accounts}`。每个账号包含 `id`、`provider`、`kind`（`subscription` 或 `api`）、`status`、`quotas`，以及可获得的 `identity`、`plan`、`message`。状态为 `ready`、`unconfigured`、`reauthentication` 或 `unavailable`；`ready` 表示凭据已配置或查询成功，不保证供应商开放余额查询。各提供方独立失败，HTTP 200 不代表所有账号均查询成功。响应不缓存，不包含令牌、API Key 或上游错误正文。
+
+- `quotas` 中的 `remainingPercent` 是周期剩余百分比，`windowMinutes` 是窗口长度，`resetsAt` 是 Unix 秒。窗口缺失表示未知，不能当成零或无限；不同模型的额度分开返回。
+- ChatGPT 的 `credits` 使用供应商的额度单位；`unlimited` 仅在上游明确返回时成立，未返回金额时省略 `value`。
+- API 的 `cost` 是 UTC 当月到查询时刻的**组织费用**（`value`、`currency`、`from`、`to`），取完所有分页才返回；不是余额，也不是单个 API Key 的费用。普通调用 Key 没有组织费用权限时明确提示，不能推算余额。来源见 [OpenAI Costs](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs) 与 [Anthropic Usage and Cost](https://platform.claude.com/docs/en/manage-claude/usage-cost-api)。
+- DeepSeek 的 `balances` 保留各币种的可用余额 `total`、赠金 `granted`、充值余额 `toppedUp`，不混合人民币和美元；余额不足仍保留供应商实际返回值。来源见 [DeepSeek 查询余额](https://api-docs.deepseek.com/zh-cn/api/get-user-balance/)。
+
+查询失败后可重试；限流时应等待下一次刷新，不自动密集重试。每轮请求有总超时，不因一个提供方失败撤销其他查询。账号数据属于工作机，离线时上次结果只能作为历史信息。
+
 ## 接口
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/machine` | 读取这台工作机服务的持久身份，无需 `X-Kite-Machine`；远程访问须通过同账号组网认证 |
+| GET | `/model-accounts` | 只读查询本机模型账号、订阅额度与 API 费用/余额；凭据和额度的含义见下文 |
 | PUT | `/network/account` | 仅本机：`{deviceId, controlURL, authKey}`，接收账号服务的一次性入网授权 |
 | GET/PUT | `/catalog/account` | 仅本机：查询上报状态，或用 `{deviceId, url, token}` 设置目录上报凭据；签发与版本约定见 [托管账号与设备](托管账号与设备.md) |
 | GET/PUT | `/network` | 仅本机：组网状态，上线后 `peers` 列出对端设备的连接方式（`direct` 直连、`relay` 经中继、`idle` 近期无流量）；`{enabled}` 开启或关闭组网节点 |

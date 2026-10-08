@@ -4,11 +4,14 @@ import SwiftUI
 /// 标题栏后面垫系统滚动软边，iPhone 的软边是渐进模糊，再叠一层渐变；控制区后面垫一层到窗口底边的渐变遮罩。Mac 上是一张卡片的内容，iPhone 上铺满窗口；各个窗口只给标题栏的信息、内容、控制区里的东西，
 /// 标题前的信息区由窗口给出（会话是状态圆环），两端相同。
 /// 控制区是液态玻璃容器，各个窗口给内部控件提供玻璃形状；左右留边，底部总边距统一取固定留白与安全区高度的较大值。
+/// 控制区始终存在；内容为空时保留交互范围，只省略内容背后的渐变遮罩。
 /// 安全区已由窗口容器让出，控制区补足差额；打字时在键盘上方保留固定留白。
 /// 控制区里的输入框拿 typing 绑定焦点。iPhone 上打字时点控制区以外的地方收起键盘；不打字时从控制区往上拖拉出 action 栏。
-/// 紧凑布局和宽屏侧栏收起时，标题栏左边有个按钮拉开侧边栏，与信息区合在一块玻璃里。
+/// 窄屏控制区左右滑动切换窗口，键盘显示或控制区已聚焦时禁用。
+/// 标题栏左侧负责打开侧栏；紧凑触屏布局由会话状态圆环承接，其他情况显示侧栏按钮。
 struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActions: View>: View {
     let header: PaneHeader
+    let usesDots: Bool
     let content: Content
     let controls: (FocusState<Bool>.Binding) -> Controls
     let headerStatus: HeaderStatus
@@ -16,15 +19,18 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
     @FocusState private var typing: Bool
     /// 窗口底部为 Home 条保留的高度，不含键盘；底栏展开时仍保留。
     @Environment(\.homeIndicatorInset) private var homeInset
-    @Environment(\.paneTopSafeInset) private var topInset
+    @Environment(\.headerPane) private var headerPane
+    @Environment(\.sharedPaneHeaderHeight) private var sharedHeaderHeight
+    @Environment(\.self) private var environment
     @Environment(\.keyboardShown) private var keyboardShown
     @Environment(\.openSidebar) private var openSidebar
 
-    init(header: PaneHeader, @ViewBuilder content: () -> Content,
+    init(header: PaneHeader, usesDots: Bool = false, @ViewBuilder content: () -> Content,
          @ViewBuilder controls: @escaping (_ typing: FocusState<Bool>.Binding) -> Controls,
          @ViewBuilder headerStatus: () -> HeaderStatus = { EmptyView() },
          @ViewBuilder headerActions: () -> HeaderActions = { EmptyView() }) {
         self.header = header
+        self.usesDots = usesDots
         self.content = content()
         self.controls = controls
         self.headerStatus = headerStatus()
@@ -38,38 +44,55 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
             // 加在控制区外面这一层，点控制区不算
             .endsTyping(typing) { typing = false }
             .safeAreaBar(edge: .bottom, spacing: 0) {
-                GlassEffectContainer(spacing: Metrics.paneButtonGap) {
-                    controls($typing)
-                }
-                    .padding(.horizontal, Metrics.paneMargin)
-                    // 总底边距取 max(固定留白, 安全区)，容器已经让出的安全区只计算一次。
-                    // 键盘显示时容器已让出键盘，在它上方补固定留白；和键盘自己的动画同步。
-                    .padding(.bottom, max(Metrics.paneMargin, bottomSafeArea) - bottomSafeArea)
-                    .frame(maxWidth: .infinity)
-                    .background { bottomFade }
-                    // 打字时在输入框里上下拖是选字、滚动，不拉 action 栏
-                    .pullsDrawer(enabled: !typing)
-            }
-            .safeAreaBar(edge: .top, spacing: 0) {
-                PaneHeaderBar(header: header, status: headerStatus, actions: headerActions, openSidebar: sidebarAction)
-                    .padding(.top, max(Metrics.paneMargin, topInset) - topInset)
-                    .padding(.bottom, Metrics.paneMargin)
-                    .coordinateSpace(name: "pane-header")
-                    .background {
-                        GeometryReader { proxy in
-                            Color.clear.preference(key: PaneHeaderHeight.self, value: proxy.size.height)
+                Group(subviews: controls($typing)) { controlViews in
+                    GlassEffectContainer(spacing: Metrics.paneButtonGap) {
+                        // 空控制区仍保留命中范围，继续承接上拉与横滑手势。
+                        if controlViews.isEmpty {
+                            Color.clear.frame(height: Metrics.paneToolbarHeight)
+                        } else {
+                            ForEach(controlViews) { $0 }
                         }
                     }
-                    #if os(iOS)
-                    .background { topFade }
-                    .contentShape(Rectangle())
-                    .onTapGesture { typing = false }
-                    #endif
+                        .padding(.horizontal, Metrics.paneMargin)
+                        // 总底边距取 max(固定留白, 安全区)，容器已经让出的安全区只计算一次。
+                        // 键盘显示时容器已让出键盘，在它上方补固定留白；和键盘自己的动画同步。
+                        .padding(.bottom, max(Metrics.paneMargin, bottomSafeArea) - bottomSafeArea)
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                        .background {
+                            if !controlViews.isEmpty { bottomFade }
+                        }
+                        // 打字时在输入框里上下拖是选字、滚动，不拉 action 栏
+                        .pullsDrawer(enabled: !typing)
+                        .modifier(PaneControlSwipe(typing: typing))
+                }
+            }
+            .safeAreaBar(edge: .top, spacing: 0) {
+                if let sharedHeaderHeight, headerPane != nil {
+                    Color.clear.frame(height: sharedHeaderHeight).allowsHitTesting(false)
+                } else {
+                    PaneHeaderBar(header: header, status: headerStatus, actions: headerActions, openSidebar: sidebarAction)
+                        .modifier(PaneHeaderPlacement(endTyping: { typing = false }))
+                }
+            }
+            .background {
+                Group(subviews: headerStatus) { statusViews in
+                    Color.clear.preference(key: CompactPaneHeaders.self, value: sharedHeader(hasStatus: !statusViews.isEmpty))
+                }
             }
             // 窗口内容里的滚动区要用 separateScrollPocket，Mac 上贴着窗口顶边的卡片才不会互相串色
             .scrollEdgeEffectStyle(.soft, for: .top)
             // 控制区后面用自己的渐变遮罩，见 bottomFade
             .scrollEdgeEffectHidden(true, for: .bottom)
+            .windowDots(usesDots)
+    }
+
+    private func sharedHeader(hasStatus: Bool) -> [CompactPaneHeader] {
+        guard sharedHeaderHeight != nil, let pane = headerPane else { return [] }
+        return [CompactPaneHeader(pane: pane, header: header,
+                                  status: hasStatus ? AnyView(headerStatus) : nil,
+                                  actions: AnyView(headerActions), environment: environment,
+                                  openSidebar: sidebarAction, endTyping: { typing = false })]
     }
 
     /// 标题栏左边按钮的动作：先收起键盘，再拉开侧边栏。
@@ -80,20 +103,6 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
             openSidebar()
         }
     }
-
-    #if os(iOS)
-    /// 标题栏遮罩从窗口顶边的不透明渐变到透明，与底部遮罩上下对称。
-    private var topFade: some View {
-        let stops = (0...10).map { i in
-            let h = Double(i) / 10
-            return Gradient.Stop(color: Theme.card.opacity(1 - h * h), location: h)
-        }
-        return LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
-            .padding(.bottom, -Metrics.topFadeOverhang)
-            .ignoresSafeArea(.container, edges: .top)
-            .allowsHitTesting(false)
-    }
-    #endif
 
     /// 控制区后面的渐变遮罩：用窗口的底色，从控制区顶边的全透明过渡到不透明，往下伸过 Home 条那一截到窗口底边，
     /// 内容滚到这里渐渐淡掉。不透明度是 1 − h²，h 是离窗口底边的距离占整段高度的比例：底下一截接近不透，越往上掉得越快。
@@ -107,6 +116,23 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
             .allowsHitTesting(false)
     }
 
+}
+
+/// 含有窗口的视图淡入淡出时用蒙版，不用 opacity，也不留给动画里插入视图时默认的 opacity 转场。
+/// 标题栏登记给滚动软边时，SwiftUI 按当时祖先的透明度报一次，之后只有标题栏自身变化才重报；
+/// 从 opacity 0 渐入的窗口，Mac 的标题栏软边会一直按“元素不可见”隐藏（macOS 26 实测）。
+struct PaneFade: ViewModifier {
+    let visible: Bool
+
+    func body(content: Content) -> some View {
+        content.mask { Rectangle().opacity(visible ? 1 : 0) }
+    }
+}
+
+extension AnyTransition {
+    static var paneFade: AnyTransition {
+        .modifier(active: PaneFade(visible: false), identity: PaneFade(visible: true))
+    }
 }
 
 extension EnvironmentValues {

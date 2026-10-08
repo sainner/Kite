@@ -8,7 +8,10 @@ struct WorkspaceContent: View {
         Group {
             if !workspace.isDraft, workspace.pluginClient == nil {
                 DirectoryStatus(workspace: workspace)
-            } else { TilesLayer() }
+            } else {
+                TilesLayer(group: .workspace(workspace))
+                    .modifier(InstanceSettingsPresentation())
+            }
         }
             .environment(workspace)
             .environment(workspace.layout)

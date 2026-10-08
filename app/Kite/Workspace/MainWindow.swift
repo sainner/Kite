@@ -5,7 +5,6 @@ struct MainWindow: View {
     var availableWidth: CGFloat = 1272
     @Environment(AppModel.self) private var model
     @State private var resizingFrom: CGFloat?
-    @State private var stage = DotStage()
 
     var body: some View {
         GeometryReader { proxy in
@@ -13,14 +12,7 @@ struct MainWindow: View {
             // 安全区高度不一定是模块的整数倍；只补到窗口网格线，不移动背景点阵的原点。
             content.padding(.top, DotMetrics.snapUp(top) - top)
         }
-        .background {
-            ZStack {
-                Theme.background
-                DotCanvas()
-            }
-            .ignoresSafeArea()
-        }
-        .environment(\.dotStage, stage)
+        .appDotBackground()
         #if os(macOS)
         .ignoresSafeArea()
         .resizesByModule()
@@ -45,7 +37,7 @@ struct MainWindow: View {
             .disablesWindowDragging()
             Group {
                 if model.sidebarSection != .workspaces {
-                    // 工作区以外的栏是单页，自带半透明卡片
+                    // 设备、资源库和设置页各自负责内容分区与底色。
                     SectionContent()
                         .padding(.top, Metrics.padding)
                 } else if let project = model.selectedProject {
@@ -64,6 +56,8 @@ struct MainWindow: View {
                         .padding(.top, Metrics.padding)
                 }
             }
+            // 切换栏目在动画里进行，换页不用默认的 opacity 转场，见 PaneFade
+            .transition(.paneFade)
             // 侧栏收起后，展开按钮移到内容区第一个窗口的标题栏
             .environment(\.openSidebar, expandSidebar)
         }

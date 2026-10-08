@@ -85,20 +85,15 @@ struct CompactWindow: View {
         // 外壳的身份不随会话改变，保留边距和缩放的动画状态。
         // Group 会把外面的修饰器分发给成员，成员换掉时各段动画可能从不同进度重新开始。
         ZStack(alignment: .topLeading) {
-            if windowed, let workspace = model.current {
-                Group {
-                    if let pane = workspace.layout.focused {
-                        PaneBody(pane: pane).id(pane)
-                            .transition(.opacity)
-                    }
-                }
-                    .animation(.snappy, value: workspace.layout.focused)
-                    .environment(workspace)
+            if windowed, let group = model.paneGroup {
+                CompactPaneStack(group: group, width: screen.width, canSwitch: open == nil && shown == nil)
+                    .modifier(CompactPaneHeaderHost(focused: group.layout.focused))
+                    .environment(group.layout)
                     .environment(\.drawerPull, open == nil && actionsRule == .free ? pull(.actions) : nil)
                     // 一直给着：打开时窗口上盖着一层点了收起的，按钮点不到。有无来回切的话，标题栏会被当成换了一个视图
                     .environment(\.openSidebar, { settle(.sidebar) })
                     .environment(\.keyboardShown, insets.bottom > homeInset + 1)
-                    .id(workspace.id)
+                    .id(group.id)
             } else {
                 placeholder
                     .environment(\.openSidebar, { settle(.sidebar) })
@@ -107,6 +102,7 @@ struct CompactWindow: View {
             }
         }
         .animation(.snappy, value: windowed)
+        .environment(\.windowDotsFocused, shown == nil || (shown == .actions && actionsRule == .pinned))
         .environment(\.dotCarrier, carrier)
         .modifier(WindowPlacement(openness: target, screen: screen, insets: insets, homeInset: homeInset,
                                   avoidsKeyboard: avoidsKeyboard, sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius,
