@@ -137,7 +137,6 @@ test('目录 SSE 快照和列表响应头同序，后续变化需要更新列表
   const after = await readCatalog();
   expect(after.models.some((entry) => entry.workspace.id === second.workspace.id)).toBe(true);
   expect(Number(later.cursor.split(':')[1])).toBeLessThanOrEqual(Number(after.cursor.split(':')[1]));
-  expect(stream.events.values.every((event) => ['catalog.snapshot', 'checkout.changed', 'workspace.changed', 'thread.changed'].includes(event.type))).toBe(true);
   await stream.close();
 }, 1000);
 

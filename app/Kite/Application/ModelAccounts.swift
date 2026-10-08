@@ -77,29 +77,18 @@ extension AppModel {
         }
     }
 
+    /// 让工作机重新查询上游。结果和会话带回的额度一样经目录事件流到达，避免较早的响应覆盖较新的推送。
     func refreshModelAccounts(_ connection: WorkerConnection) async {
         guard !connection.readingModelAccounts else { return }
         let client = connection.client
         connection.readingModelAccounts = true
         defer { connection.readingModelAccounts = false }
         do {
-            let value = try await client.request("/model-accounts", timeout: 25, as: ModelAccountsSnapshot.self)
-            try Task.checkCancellation()
-            guard accepts(client) else { return }
-            connection.modelAccounts = value
-            connection.modelAccountsError = nil
+            try await client.post("/model-accounts/refresh")
         } catch is CancellationError { }
         catch {
             guard !Task.isCancelled, accepts(client) else { return }
             connection.modelAccountsError = error.localizedDescription
-        }
-    }
-
-    /// 额度查询不参与会话连接的成败，断线时跟随连接任务取消。
-    func followModelAccounts(_ connection: WorkerConnection) async {
-        while !Task.isCancelled {
-            await refreshModelAccounts(connection)
-            do { try await Task.sleep(for: .seconds(60)) } catch { return }
         }
     }
 }

@@ -12,6 +12,11 @@ struct ModelAccountPane: View {
             .sheet(item: $login) { request in
                 SubscriptionLoginSheet(request: request).environment(model).appAppearance()
             }
+            // 平时额度跟随会话推送，打开账号页时才让工作机查一次上游。
+            .task(id: "\(model.accountWorker?.id ?? ""):\(model.accountWorker?.connected == true)") {
+                guard let connection = model.accountWorker, connection.connected else { return }
+                await model.refreshModelAccounts(connection)
+            }
     }
 
     private func accountWindow(title: String, subscriptionID: String?) -> some View {

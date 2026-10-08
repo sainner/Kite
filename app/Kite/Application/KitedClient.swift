@@ -161,6 +161,7 @@ struct RemoteEvent: Decodable {
     var pending: [RemoteInput]?
     var state: RemoteState?
     var message: String?
+    var modelAccounts: ModelAccountsSnapshot?
 }
 
 enum KitedEventScope {

@@ -10,7 +10,6 @@ import { operationCatalog } from './operations/contract.ts';
 import { contextTemplateSelection } from './context-templates.ts';
 import type { Network } from './network.ts';
 import { publisherConfig, type CatalogPublisher } from './catalog-publisher.ts';
-import { readModelAccounts } from './model-accounts.ts';
 
 async function body(req: Request): Promise<Record<string, unknown>> {
   try { return (await req.json()) as Record<string, unknown>; } catch { throw new KiteError('请求体不是 JSON'); }
@@ -85,12 +84,14 @@ async function events(kite: Kite, scope: EventScope): Promise<Response> {
       // 首帧与订阅在同一同步段，重连总用当前快照替换旧副本。
       const meta = { version: 1, cursor: kite.events.cursor, at: Date.now() };
       const initial = scope === 'catalog'
-        ? { ...meta, type: 'catalog.snapshot', workspaces: kite.workspaces() }
+        ? { ...meta, type: 'catalog.snapshot', workspaces: kite.workspaces(), modelAccounts: kite.modelAccounts.current() ?? null }
         : 'workspaceId' in scope
           ? { ...meta, type: 'workspace.model', workspaceId: scope.workspaceId, model: kite.workspace(scope.workspaceId) }
           : { ...meta, type: 'thread.history', ...kite.historyNow(scope.threadId) };
       controller.enqueue(encode(initial));
       unsubscribe = kite.events.subscribe((e) => inScope(e, scope), (e) => controller.enqueue(encode(e)));
+      // 额度不随客户端轮询：首次有客户端连上时查一次，之后靠会话响应和显式刷新推送。
+      if (scope === 'catalog') kite.modelAccounts.ensure();
       heartbeat = setInterval(() => controller.enqueue(': \n\n'), 15_000);
       controller.enqueue(': connected\n\n');
     },
@@ -181,7 +182,8 @@ export function serve(kite: Kite, listen: Listen) {
         POST: bound(async (req) => { kite.subscriptionLogins.submit(req.params.id, str((await body(req)).code, 'code')); return { ok: true }; }),
         DELETE: bound(async (req) => { await kite.subscriptionLogins.cancel(req.params.id); return { ok: true }; }),
       },
-      '/model-accounts': { GET: bound(async () => Response.json(await readModelAccounts(kite.home), { headers: { 'Cache-Control': 'no-store' } })) },
+      '/model-accounts': { GET: bound(async () => Response.json(kite.modelAccounts.current() ?? await kite.modelAccounts.refresh(), { headers: { 'Cache-Control': 'no-store' } })) },
+      '/model-accounts/refresh': { POST: bound(async () => Response.json(await kite.modelAccounts.refresh(), { headers: { 'Cache-Control': 'no-store' } })) },
       '/instances/:id/agent-capabilities': { GET: bound((req) => kite.agentCapabilities(req.params.id)) },
       '/projects': {
         GET: bound(() => kite.projects()),

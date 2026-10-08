@@ -5,6 +5,7 @@ import type { RunnerState } from './claude/runner.ts';
 import type { PluginInstance, WorkspaceStatus } from './model.ts';
 import type { HarnessEvent } from './harness/types.ts';
 import type { ClaudeState } from './claude/control.ts';
+import type { ModelAccountsSnapshot } from './model-accounts.ts';
 
 export type RuntimeEvent =
   | { type: 'claude.control'; state: ClaudeState }
@@ -21,6 +22,7 @@ export type DomainEvent =
   | { type: 'checkout.changed'; projectId: string; checkoutId: string }
   | { type: 'workspace.changed'; workspaceId: string; status: WorkspaceStatus }
   | { type: 'thread.changed'; workspaceId: string; threadId: string; status: PluginInstance['status'] }
+  | { type: 'model-accounts.changed'; modelAccounts: ModelAccountsSnapshot }
   | ({ workspaceId: string; originThreadId?: string } & (
     | { type: 'workspace.setup'; exit: number | null; log: string }
     | { type: 'workspace.snapshot'; commit: string; label: string; changedFiles: number }

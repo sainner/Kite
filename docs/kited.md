@@ -194,7 +194,7 @@ harness 与 Claude 均通过共享 shell 执行项目的 `.kite/check`。项目�
 
 ## 模型账号与额度
 
-`GET /model-accounts` 只查询工作机本身持有的授权，不登录、不续期、不分发模型凭据，也不发送模型请求。ChatGPT 使用前文的 Kite 专用认证目录；Claude 使用 Claude Code 原生登录存储（包括 macOS 钥匙串与显式指定的配置目录），或 `CLAUDE_CODE_OAUTH_TOKEN`。缺失和过期凭据分别返回未配置和需要重新授权，不借用日常 Codex 的登录。
+额度查询只使用工作机本身持有的授权，不登录、不续期、不分发模型凭据，也不发送模型请求。ChatGPT 使用前文的 Kite 专用认证目录；Claude 使用 Claude Code 原生登录存储（包括 macOS 钥匙串与显式指定的配置目录），或 `CLAUDE_CODE_OAUTH_TOKEN`。缺失和过期凭据分别返回未配置和需要重新授权，不借用日常 Codex 的登录。
 
 App 的订阅登录由所选工作机执行原生登录工具，凭据不经过 App 或账号服务：ChatGPT 复用 [官方设备码登录](https://developers.openai.com/codex/auth)，写入 Kite 专用认证目录；Claude 复用 [原生 `auth login --claudeai`](https://code.claude.com/docs/en/cli-reference)，保留 Claude 自身的凭据存储。工作机须有可用的 Codex CLI；Claude 登录工具随固定版本的 Agent SDK 提供。登录完成不等于额度接口必定可用，额度查询失败单独显示。
 
@@ -210,21 +210,24 @@ App 的订阅登录由所选工作机执行原生登录工具，凭据不经过 
 
 API 查询读取 kited 进程环境中的 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`DEEPSEEK_API_KEY`；查询 OpenAI、Anthropic 的组织费用还需对应的 `OPENAI_ADMIN_KEY`、`ANTHROPIC_ADMIN_KEY`。这些变量须显式提供给服务进程，默认安装器不复制发起安装的终端密钥。账号读取不代表该 API 已被配置为会话的模型后端。
 
-`GET /model-accounts` 仍要求工作机身份与同账号访问授权，返回 `{checkedAt, accounts}`。每个账号包含 `id`、`provider`、`kind`（`subscription` 或 `api`）、`status`、`quotas`，以及可获得的 `identity`、`plan`、`message`。状态为 `ready`、`unconfigured`、`reauthentication` 或 `unavailable`；`ready` 表示凭据已配置或查询成功，不保证供应商开放余额查询。各提供方独立失败，HTTP 200 不代表所有账号均查询成功。响应不缓存，不包含令牌、API Key 或上游错误正文。
+额度不由客户端轮询。kited 在内存中保留本机最新的账号快照：首个客户端订阅目录事件流时，若还没有快照就查询一次上游；之后只在显式刷新时查询。会话响应带回的额度按观测时间覆盖对应周期：Claude 取 SDK `rate_limit_event` 中的 5 小时与每周周期，ChatGPT 取订阅响应头中的主要、次要周期与 credits。按模型分开的周额度、ChatGPT 附加额度和 API 费用/余额没有会话来源，保留上次查询结果。快照变化时在目录事件流推送 `model-accounts.changed`（`modelAccounts` 字段），目录首帧 `catalog.snapshot` 也带当前快照，缓存为空时为 `null`。
+
+`GET /model-accounts` 返回当前快照，缓存为空时先查询；`POST /model-accounts/refresh` 立即查询上游，进行中的查询会被复用，结果同时经事件流推送。二者都要求工作机身份与同账号访问授权，返回 `{checkedAt, accounts}`，`checkedAt` 是快照中最新数据的观测时间。每个账号包含 `id`、`provider`、`kind`（`subscription` 或 `api`）、`status`、`quotas`，以及可获得的 `identity`、`plan`、`message`。状态为 `ready`、`unconfigured`、`reauthentication` 或 `unavailable`；`ready` 表示凭据已配置或查询成功，不保证供应商开放余额查询。各提供方独立失败，HTTP 200 不代表所有账号均查询成功；查询之后有会话成功时，该账号按会话结果视为可用。响应不包含令牌、API Key 或上游错误正文。
 
 - `quotas` 中的 `remainingPercent` 是周期剩余百分比，`windowMinutes` 是窗口长度，`resetsAt` 是 Unix 秒。窗口缺失表示未知，不能当成零或无限；不同模型的额度分开返回。
 - ChatGPT 的 `credits` 使用供应商的额度单位；`unlimited` 仅在上游明确返回时成立，未返回金额时省略 `value`。
 - API 的 `cost` 是 UTC 当月到查询时刻的**组织费用**（`value`、`currency`、`from`、`to`），取完所有分页才返回；不是余额，也不是单个 API Key 的费用。普通调用 Key 没有组织费用权限时明确提示，不能推算余额。来源见 [OpenAI Costs](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs) 与 [Anthropic Usage and Cost](https://platform.claude.com/docs/en/manage-claude/usage-cost-api)。
 - DeepSeek 的 `balances` 保留各币种的可用余额 `total`、赠金 `granted`、充值余额 `toppedUp`，不混合人民币和美元；余额不足仍保留供应商实际返回值。来源见 [DeepSeek 查询余额](https://api-docs.deepseek.com/zh-cn/api/get-user-balance/)。
 
-查询失败后可重试；限流时应等待下一次刷新，不自动密集重试。每轮请求有总超时，不因一个提供方失败撤销其他查询。账号数据属于工作机，离线时上次结果只能作为历史信息。
+查询失败后可重试；限流时应等待下一次刷新，不自动重试。每轮请求有总超时，不因一个提供方失败撤销其他查询。账号数据属于工作机，离线时上次结果只能作为历史信息。
 
 ## 接口
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/machine` | 读取这台工作机服务的持久身份，无需 `X-Kite-Machine`；远程访问须通过同账号组网认证 |
-| GET | `/model-accounts` | 只读查询本机模型账号、订阅额度与 API 费用/余额；凭据和额度的含义见下文 |
+| GET | `/model-accounts` | 读取本机模型账号、订阅额度与 API 费用/余额的当前快照；凭据、额度与更新方式见下文 |
+| POST | `/model-accounts/refresh` | 立即查询上游并推送新快照 |
 | PUT | `/network/account` | 仅本机：`{deviceId, controlURL, authKey}`，接收账号服务的一次性入网授权 |
 | GET/PUT | `/catalog/account` | 仅本机：查询上报状态，或用 `{deviceId, url, token}` 设置目录上报凭据；签发与版本约定见 [托管账号与设备](托管账号与设备.md) |
 | GET/PUT | `/network` | 仅本机：组网状态，上线后 `peers` 列出对端设备的连接方式（`direct` 直连、`relay` 经中继、`idle` 近期无流量）；`{enabled}` 开启或关闭组网节点 |

@@ -32,6 +32,7 @@ export class TranscriptHistory {
           this.feed.emit(event);
           break;
         case 'checkout.changed':
+        case 'model-accounts.changed':
         case 'workspace.setup':
         case 'workspace.snapshot':
         case 'workspace.adopt':

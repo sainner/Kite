@@ -54,6 +54,8 @@ export interface RuntimeHost {
   repository: string;
   events: RuntimeEvents;
   options: RuntimeOptions;
+  /** ChatGPT 订阅响应带回的额度。 */
+  chatgptLimits?(headers: Headers): void;
   /** 每次请求重新读取，配置和授权变化在下一次请求生效。 */
   current(): ThreadContext;
   notifications(after: number): ThreadNotification[];
@@ -109,7 +111,8 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       const declared = [...tools, ...operations.tools].filter((tool) => declaredTools.has(tool.name));
       return {
         model: options.model?.(current) ?? new ChatGPTModel({ ...agent.model, threadId: current.nativeId,
-          credentials: () => readSubscriptionCredentials(join(home, 'auth', 'chatgpt', 'auth.json')) }),
+          credentials: () => readSubscriptionCredentials(join(home, 'auth', 'chatgpt', 'auth.json')),
+          observeLimits: host.chatgptLimits }),
         tools: [...declared.filter((tool) => permitted(tool.name)), ...plugins],
         toolDefinitions: [...declared, ...selection.plugins].map(({ name, description, parameters }) => ({ name, description, parameters })),
         instructions: projectContext(current.workspace.cwd, agent.context),

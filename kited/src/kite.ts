@@ -38,6 +38,7 @@ import { ThreadTitles, titleTemplate } from './thread-titles.ts';
 import { ChatGPTModel } from './harness/chatgpt.ts';
 import { readSubscriptionCredentials } from './harness/auth.ts';
 import { SubscriptionLogins } from './subscription-logins.ts';
+import { ModelAccounts } from './model-accounts.ts';
 import { agentModels } from './agents/models.ts';
 
 export interface ThreadView extends ThreadContext { runner: Runtime['state']; busy: boolean }
@@ -56,6 +57,7 @@ function conflictPrompt(branch: string, files: string[]): string {
 export class Kite {
   readonly events = new TranscriptFeed();
   readonly subscriptionLogins: SubscriptionLogins;
+  readonly modelAccounts: ModelAccounts;
   readonly operations: InstanceOperations;
   readonly receipts: OperationReceipts;
   readonly catalog: PluginCatalog;
@@ -81,6 +83,7 @@ export class Kite {
   constructor(readonly store: Store, readonly home: string, readonly bus: Bus, private options: RuntimeOptions = {},
     readonly account = new AccountClient(() => undefined)) {
     this.subscriptionLogins = new SubscriptionLogins(home);
+    this.modelAccounts = new ModelAccounts(home, (modelAccounts) => bus.emit({ type: 'model-accounts.changed', modelAccounts }));
     this.catalog = new PluginCatalog(join(home, 'plugins'));
     this.contextTemplates = new ContextTemplates(store, [
       ...this.catalog.definitions().flatMap((definition) => definition.agent ? [definition.agent.context] : []),
@@ -108,6 +111,7 @@ export class Kite {
           model: process.env.KITE_LIGHT_MODEL ?? agentModels.models.find((model) => model.tier === 'luna')!.id,
           reasoning: process.env.KITE_LIGHT_REASONING ?? 'low', threadId: id,
           credentials: () => readSubscriptionCredentials(join(home, 'auth', 'chatgpt', 'auth.json')),
+          observeLimits: (headers) => this.modelAccounts.observeChatGPT(headers),
         })),
         timeoutMs: light?.timeoutMs,
         onResult: light?.onResult ?? (({ usage, ...result }) => console.info('[轻任务]', JSON.stringify({
@@ -479,8 +483,12 @@ export class Kite {
     await this.transcripts.load(t);
     const r = await openRuntime(t, {
       home: this.home, account: this.account, repository: t.checkout.path, options: this.options,
+      chatgptLimits: (headers) => this.modelAccounts.observeChatGPT(headers),
       events: {
-        emit: (event) => this.bus.emit({ ...event, threadId: id }),
+        emit: (event) => {
+          if (event.type === 'sdk' && event.message.type === 'rate_limit_event') this.modelAccounts.observeClaude(event.message.rate_limit_info);
+          this.bus.emit({ ...event, threadId: id });
+        },
         label: (text) => this.turnLabels.set(id, firstLine(text)),
         snapshot: (ids) => this.snapshot(workspace, ids, this.turnLabels.get(id) ?? title, id),
         idle: (completed) => {

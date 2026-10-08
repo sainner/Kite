@@ -288,8 +288,6 @@ final class AppModel {
         var immediate = true
         while !Task.isCancelled && accepts(client) {
             let generation = connection.catalog.reset()
-            let accountsTask = Task { await self.followModelAccounts(connection) }
-            defer { accountsTask.cancel() }
             do {
                 // 插件定义和事件流并行请求，任一失败都按断线重连。
                 try await withThrowingTaskGroup(of: Void.self) { group in
@@ -314,6 +312,12 @@ final class AppModel {
         try await client.events { event in
             try Task.checkCancellation()
             guard self.accepts(client), generation == connection.catalog.generation else { return }
+            // 额度不属于目录版本，按到达顺序直接替换；工作机缓存为空时首帧不带额度，稍后单独推送。
+            if let accounts = event.modelAccounts {
+                connection.modelAccounts = accounts
+                connection.modelAccountsError = nil
+            }
+            if event.type == "model-accounts.changed" { return }
             guard ["catalog.snapshot", "checkout.changed", "workspace.changed", "thread.changed"].contains(event.type) else { return }
             guard let cursor = event.cursor.flatMap(EventCursor.init) else { throw KitedError(message: "工作区事件数据无效") }
             if event.type == "catalog.snapshot" {

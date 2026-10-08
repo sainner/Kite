@@ -123,6 +123,8 @@ export class ChatGPTModel implements Model {
         prompt_cache_key: this.options.threadId,
       }),
     });
+    // 限流的 429 也带额度头。
+    this.options.observeLimits?.(response.headers);
     if (!response.ok) {
       await response.body?.cancel();
       if (response.status === 401) throw new Error('订阅认证失败（401），请在当前凭据所属的认证目录重新登录后重试。');

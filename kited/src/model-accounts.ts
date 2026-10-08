@@ -54,6 +54,24 @@ const claudeUsage = z.object({ five_hour: claudeWindow.nullish(), seven_day: cla
   seven_day_opus: claudeWindow.nullish(), seven_day_sonnet: claudeWindow.nullish(),
 }).refine((value) => Object.keys(value).length > 0);
 
+const claudeWindows = { five_hour: ['5 小时', 300], seven_day: ['每周', 10080],
+  seven_day_opus: ['Opus · 每周', 10080], seven_day_sonnet: ['Sonnet · 每周', 10080] } as const;
+type ClaudeWindow = keyof typeof claudeWindows;
+
+/** 查询接口和会话响应共用同一组周期 ID，会话只更新它带回的周期。 */
+function claudeQuota(key: ClaudeWindow, usedPercent: number, resetsAt?: number): AccountQuota {
+  const [label, windowMinutes] = claudeWindows[key];
+  return { id: key, label, remainingPercent: remaining(usedPercent), windowMinutes, ...(resetsAt !== undefined ? { resetsAt } : {}) };
+}
+
+function chatgptQuota(bucket: { id: string; label: string }, key: 'primary_window' | 'secondary_window',
+  usedPercent: number, minutes?: number, resetsAt?: number): AccountQuota {
+  const period = minutes === undefined ? (key === 'primary_window' ? '主要额度' : '次要额度')
+    : minutes === 10080 ? '每周' : minutes >= 60 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
+  return { id: `${bucket.id}:${key}`, label: [bucket.label, period].filter(Boolean).join(' · '),
+    remainingPercent: remaining(usedPercent), windowMinutes: minutes, resetsAt };
+}
+
 class AccountReadError extends Error {
   constructor(message: string, readonly status: ModelAccount['status'] = 'unavailable') { super(message); }
 }
@@ -153,11 +171,8 @@ export async function readModelAccounts(home: string, options: AccountReadOption
         for (const key of ['primary_window', 'secondary_window'] as const) {
           const window = bucket.limit?.[key];
           if (!window) continue;
-          const minutes = window.limit_window_seconds == null ? undefined : window.limit_window_seconds / 60;
-          const period = minutes === undefined ? (key === 'primary_window' ? '主要额度' : '次要额度')
-            : minutes === 10080 ? '每周' : minutes >= 60 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
-          account.quotas.push({ id: `${bucket.id}:${key}`, label: [bucket.label, period].filter(Boolean).join(' · '),
-            remainingPercent: remaining(window.used_percent), windowMinutes: minutes, resetsAt: window.reset_at ?? undefined });
+          account.quotas.push(chatgptQuota(bucket, key, window.used_percent,
+            window.limit_window_seconds == null ? undefined : window.limit_window_seconds / 60, window.reset_at ?? undefined));
         }
       }
       const credits = parsed.data.credits;
@@ -182,15 +197,11 @@ export async function readModelAccounts(home: string, options: AccountReadOption
       const parsed = claudeUsage.safeParse(usage);
       if (!parsed.success) throw new AccountReadError('服务返回的订阅额度格式无法识别。');
       account.identity = text(record(profile?.account).email);
-      const windows: Array<[keyof z.infer<typeof claudeUsage>, string, number]> = [
-        ['five_hour', '5 小时', 300], ['seven_day', '每周', 10080],
-        ['seven_day_opus', 'Opus · 每周', 10080], ['seven_day_sonnet', 'Sonnet · 每周', 10080],
-      ];
-      for (const [key, label, windowMinutes] of windows) {
+      for (const key of Object.keys(claudeWindows) as ClaudeWindow[]) {
         const window = parsed.data[key];
         if (!window) continue;
-        account.quotas.push({ id: key, label, remainingPercent: remaining(window.utilization), windowMinutes,
-          ...(window.resets_at != null ? { resetsAt: Date.parse(window.resets_at) / 1000 } : {}) });
+        account.quotas.push(claudeQuota(key, window.utilization,
+          window.resets_at != null ? Date.parse(window.resets_at) / 1000 : undefined));
       }
       account.status = 'ready';
       if (!account.quotas.length) account.message = '服务未返回可查询的订阅额度。';
@@ -265,4 +276,136 @@ export async function readModelAccounts(home: string, options: AccountReadOption
     })),
   ]);
   return { checkedAt, accounts };
+}
+
+const finite = (value: string | null): number | undefined => {
+  if (value === null || !value.trim()) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+const claudeLimit = z.object({ utilization: z.number().finite(), resetsAt: z.number().finite().nullish() });
+/** SDK 的 rate_limit_event 中 utilization 是 0–1 的比例；unifiedWindows 不在公开类型里，固定版本的 SDK 会附带。 */
+const claudeRateLimit = z.object({
+  rateLimitType: z.string().nullish(), utilization: z.number().finite().nullish(), resetsAt: z.number().finite().nullish(),
+  unifiedWindows: z.object({ five_hour: claudeLimit.nullish(), seven_day: claudeLimit.nullish() }).nullish(),
+});
+
+interface Observation {
+  quotas: Map<string, { at: number; quota: AccountQuota }>;
+  /** null 表示响应明确没有可用 credits。 */
+  credits?: { at: number; value: ModelAccount['credits'] | null };
+}
+
+/**
+ * 本机账号与额度的最新结果。主动查询给出完整快照；会话响应带回的周期按观测时间覆盖查询值，
+ * 会话不带的周期（按模型分开的周额度、ChatGPT 附加额度、API 余额）保留上次查询的结果。
+ */
+export class ModelAccounts {
+  private base?: ModelAccountsSnapshot;
+  private observed = new Map<string, Observation>();
+  private reading?: Promise<ModelAccountsSnapshot>;
+  private published?: { accounts: string; checkedAt: number };
+
+  constructor(private home: string, private emit: (snapshot: ModelAccountsSnapshot) => void,
+    private read: (home: string) => Promise<ModelAccountsSnapshot> = readModelAccounts) {}
+
+  current(): ModelAccountsSnapshot | undefined {
+    if (!this.base) return undefined;
+    let checkedAt = this.base.checkedAt;
+    const accounts = this.base.accounts.map((account) => {
+      const seen = this.observed.get(account.id);
+      if (!seen || (!seen.quotas.size && !seen.credits)) return account;
+      const merged: ModelAccount = { ...account, quotas: [...account.quotas] };
+      for (const { at, quota } of seen.quotas.values()) {
+        const index = merged.quotas.findIndex((item) => item.id === quota.id);
+        if (index < 0) merged.quotas.push(quota);
+        else merged.quotas[index] = quota;
+        checkedAt = Math.max(checkedAt, at);
+      }
+      if (seen.credits) {
+        if (seen.credits.value) merged.credits = seen.credits.value;
+        else delete merged.credits;
+        checkedAt = Math.max(checkedAt, seen.credits.at);
+      }
+      // 会话请求在查询之后成功，说明登录可用，查询失败时的状态和提示不再适用。
+      merged.status = 'ready';
+      delete merged.message;
+      return merged;
+    });
+    return { checkedAt: Math.floor(checkedAt), accounts };
+  }
+
+  /** 查询上游；进行中的查询被复用，完成后总会推送一次。 */
+  refresh(): Promise<ModelAccountsSnapshot> {
+    this.reading ??= this.read(this.home).then((snapshot) => {
+      this.base = snapshot;
+      for (const seen of this.observed.values()) {
+        for (const [id, item] of seen.quotas) if (item.at < snapshot.checkedAt) seen.quotas.delete(id);
+        if (seen.credits && seen.credits.at < snapshot.checkedAt) delete seen.credits;
+      }
+      this.published = undefined;
+      this.publish();
+      return this.current()!;
+    }).finally(() => { this.reading = undefined; });
+    return this.reading;
+  }
+
+  /** 还没有快照时查一次上游，之后只靠会话响应和显式刷新更新。 */
+  ensure(): void {
+    if (!this.base) this.refresh().catch((error) => console.error('[额度] 查询失败', error));
+  }
+
+  observeClaude(info: unknown): void {
+    const parsed = claudeRateLimit.safeParse(info);
+    if (!parsed.success) return;
+    const { unifiedWindows, rateLimitType, utilization, resetsAt } = parsed.data;
+    const quotas: AccountQuota[] = [];
+    if (unifiedWindows) {
+      for (const key of ['five_hour', 'seven_day'] as const) {
+        const window = unifiedWindows[key];
+        if (window) quotas.push(claudeQuota(key, window.utilization * 100, window.resetsAt ?? undefined));
+      }
+    } else if (rateLimitType && Object.hasOwn(claudeWindows, rateLimitType) && utilization != null) {
+      // 公开字段只描述当前起作用的那个周期。
+      quotas.push(claudeQuota(rateLimitType as ClaudeWindow, utilization * 100, resetsAt ?? undefined));
+    }
+    this.observe('claude', quotas);
+  }
+
+  /** Codex 后端在每个响应头里带回主要、次要周期与 credits。 */
+  observeChatGPT(headers: Headers): void {
+    const quotas = (['primary', 'secondary'] as const).flatMap((prefix) => {
+      const used = finite(headers.get(`x-codex-${prefix}-used-percent`));
+      return used === undefined ? [] : [chatgptQuota({ id: 'codex', label: '' }, `${prefix}_window`, used,
+        finite(headers.get(`x-codex-${prefix}-window-minutes`)), finite(headers.get(`x-codex-${prefix}-reset-at`)))];
+    });
+    let credits: ModelAccount['credits'] | null | undefined;
+    const has = headers.get('x-codex-credits-has-credits');
+    if (has !== null) {
+      const unlimited = headers.get('x-codex-credits-unlimited') === 'true';
+      const value = finite(headers.get('x-codex-credits-balance'));
+      credits = has === 'true' || unlimited ? { unlimited, ...(value !== undefined ? { value } : {}) } : null;
+    }
+    this.observe('chatgpt', quotas, credits);
+  }
+
+  private observe(id: string, quotas: AccountQuota[], credits?: ModelAccount['credits'] | null): void {
+    if (!quotas.length && credits === undefined) return;
+    const at = Date.now() / 1000;
+    let seen = this.observed.get(id);
+    if (!seen) this.observed.set(id, seen = { quotas: new Map() });
+    for (const quota of quotas) seen.quotas.set(quota.id, { at, quota });
+    if (credits !== undefined) seen.credits = { at, value: credits };
+    this.publish();
+  }
+
+  private publish(): void {
+    const snapshot = this.current();
+    if (!snapshot) return;
+    const accounts = JSON.stringify(snapshot.accounts);
+    // 数值没变时最多每分钟推一次，只为让客户端知道数据仍是新的。
+    if (accounts === this.published?.accounts && snapshot.checkedAt - this.published.checkedAt < 60) return;
+    this.published = { accounts, checkedAt: snapshot.checkedAt };
+    this.emit(snapshot);
+  }
 }
