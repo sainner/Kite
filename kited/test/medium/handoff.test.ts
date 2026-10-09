@@ -3,11 +3,10 @@
  * Claude 一侧是真实 Claude Code 进程，模型换成假端点；harness 一侧用手动模型流。
  */
 import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
-import { randomUUID } from 'node:crypto';
 import type { AgentDefinition } from '../../src/agents/definition.ts';
 import type { ContextItem, ModelItem } from '../../src/harness/types.ts';
 import type { History } from '../../src/transcript/protocol.ts';
-import { after, api, type Kited, mark, registerCheckout, startKited } from '../harness.ts';
+import { after, api, type Kited, mark, openAgent, registerCheckout, startKited } from '../harness.ts';
 import { item, ManualModel } from '../harness-loop.ts';
 import { newRepo } from '../util.ts';
 
@@ -28,16 +27,12 @@ const inputIds = (history: ContextItem[]) => history.flatMap((entry) => entry.ty
 // 能力目录查询只做 SDK 初始化，不发模型请求。
 // 配合：HTTP 配置、两份原生记录的增量交接、harness journal 重放与压缩、压缩后整体重组 Claude 会话、
 // 显示投影拼接（去掉重组条目、按导入标记排序）与输入 id 去重，单看各部分都确认不了。
-test('来回切换后端时双方都按顺序看到对方各段一次，harness 压缩后切到 Claude 只接续压缩后的上下文，能力目录跟随后端，显示不重复且旧输入 id 不再投递', async () => {
+test('来回切换后端时双方都按顺序看到对方各段一次，harness 压缩后切到 Claude 只接续压缩后的上下文，配置边界跟随后端而模型目录不变，显示不重复且旧输入 id 不再投递', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
   const k = kited;
   const workspace = await registerCheckout(k, newRepo(k.root, 'project', { 'base.txt': '基线文件正文\n' }));
-  const opened = await k.call('POST', `/workspaces/${workspace.workspace.id}/windows`, {
-    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent.coding' },
-  });
-  expect(opened.status).toBe(200);
-  const id = opened.body.target.instanceId as string;
+  const id = await openAgent(k.call, workspace.workspace.id);
   const configPath = `/instances/${id}/agent-config`;
   const capabilitiesPath = `/instances/${id}/agent-capabilities`;
   const initial = await k.call('GET', configPath);
@@ -75,7 +70,9 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
   await switchTo(claudeAgent);
   const claudeCapabilities = await k.call('GET', capabilitiesPath);
   expect(claudeCapabilities.status).toBe(200);
-  expect(claudeCapabilities.body.models.map((entry: { title: string }) => entry.title.toLowerCase()).sort()).toEqual(['fable', 'opus', 'sonnet']);
+  // 模型目录按厂商列全部模型，不随后端变化；跟着后端变的是配置与工具目录的生效边界。
+  expect(harnessCapabilities.body).toMatchObject({ configurationBoundary: 'request', toolCatalogBoundary: 'session' });
+  expect(claudeCapabilities.body).toEqual({ ...harnessCapabilities.body, configurationBoundary: 'idle', toolCatalogBoundary: 'idle' });
   expect(api.log).toHaveLength(beforeClaude);
   since = mark(k);
   expect((await k.call('POST', `/threads/${id}/messages`, { id: 'claude-1', text: '第二段交给 Claude\nREAD {"path":"base.txt"}' })).status).toBe(200);

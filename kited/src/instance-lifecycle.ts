@@ -2,22 +2,18 @@
 import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { bindAgentDefinition, chooseAgentModel, type AgentDefinition } from './agents/definition.ts';
-import type { ContextTemplateSelection } from './context-templates.ts';
 import { KiteError } from './errors.ts';
 import type { Kite } from './kite.ts';
-import type { OpenWindowRequest, PluginInstance, RuntimeKind, Thread, Workspace, WorkspaceWindow } from './model.ts';
-import { defaultOperationGrants } from './operations/contract.ts';
+import type { OpenWindowRequest, PluginInstance, Thread, Workspace, WorkspaceWindow } from './model.ts';
+import { defaultOperationGrants, operationContracts } from './operations/contract.ts';
+import { defaultRoleId, roleAgent, toolLimits, type RoleChoice } from './roles.ts';
 
-/** 新会话在本机草稿里选好的初始参数，创建时一次写入实例配置。 */
-export interface AgentChoice {
-  definitionId?: string;
-  runtime?: RuntimeKind;
-  model?: AgentDefinition['model'];
-  template?: ContextTemplateSelection;
+/** 新代理在本机草稿里选好的角色与初始参数，创建时一次写入实例配置；省略 revision 时用角色的最新版本。 */
+export interface AgentChoice extends RoleChoice {
+  role?: { id: string; revision?: string };
 }
 
-type InstanceServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'workspace' | 'plugins' | 'contextTemplates'>;
+type InstanceServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'workspace' | 'plugins' | 'roles'>;
 
 interface InstanceControl {
   run<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
@@ -30,10 +26,12 @@ export class InstanceLifecycle {
 
   newInstance(workspaceId: string, definitionId: string, title: string, kind: Workspace['kind'], choice: AgentChoice = {}): PluginInstance {
     const definition = this.kite.catalog.get(definitionId);
-    const agent = definition.agent && chooseAgentModel(bindAgentDefinition({ ...definition.agent,
-      context: this.kite.contextTemplates.get(choice.template?.id ?? definition.agent.context.id, 'thread.create', choice.template?.revision).definition }, kind), choice);
+    const bound = definition.agent && roleAgent(definition.agent, this.kite.roles.get(choice.role?.id ?? defaultRoleId, choice.role?.revision), kind, choice);
+    // 协作操作的默认授权只给角色允许使用对应工具的代理，例如只读审查不带。
+    const permitted = bound && toolLimits(definition.agent!.tools, bound.role.tools).permitted;
+    const grants = permitted ? defaultOperationGrants(definitionId).filter((grant) => permitted.includes(operationContracts[grant.operation].tool ?? '')) : [];
     return { id: randomUUID(), workspaceId, definitionId, title,
-      config: agent ? { agent, grants: defaultOperationGrants(definitionId), execution: definition.execution } : definition.runtime === 'bun' ? { packageRevision: definition.revision, grants: [] } : {}, state: {},
+      config: bound ? { ...bound, grants, execution: definition.execution } : definition.runtime === 'bun' ? { packageRevision: definition.revision, grants: [] } : {}, state: {},
       presentation: 'window', status: 'open', createdAt: Date.now() };
   }
 
@@ -66,7 +64,7 @@ export class InstanceLifecycle {
         const titles = new Set(model.instances.filter((p) => p.definitionId === definition.id).map((p) => p.title));
         let number = 1;
         while (titles.has(`${definition.title} ${number}`)) number++;
-        created = this.newInstance(workspaceId, definition.id, definition.agent ? '新会话' : `${definition.title} ${number}`, model.workspace.kind);
+        created = this.newInstance(workspaceId, definition.id, definition.agent ? '新代理' : `${definition.title} ${number}`, model.workspace.kind);
         if (definition.agent) thread = { instanceId: created.id, runtime: definition.agent.runtime, nativeId: randomUUID() };
         window = this.newWindow(created, request.id);
       } else {

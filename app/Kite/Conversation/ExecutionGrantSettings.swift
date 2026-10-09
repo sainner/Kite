@@ -119,7 +119,7 @@ struct ExecutionGrantSettings: View {
                 }
             }
         } message: {
-            Text("请先核对文件改动，并确认残留命令已停止。确认后可修改授权；会话等待你显式继续。")
+            Text("请先核对文件改动，并确认残留命令已停止。确认后可修改授权；代理等待你显式继续。")
         }
         .task { perform { try await load() } }
         .onChange(of: thread.state) { _, value in

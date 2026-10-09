@@ -14,8 +14,8 @@ struct ThreadPane: View {
     @State private var selected: RowID?
     @State private var titleError: String?
     /// 标题栏模板菜单里「基于…新建模板」打开的编辑器，与模板读取、套用失败的说明。
-    @State private var templateEdit: ContextTemplateEdit?
-    @State private var templateError: String?
+    @State private var roleEdit: RoleEdit?
+    @State private var roleError: String?
     /// 空会话铺在窗口上的点阵签名，见 NewThreadStage。
     @State private var patternSlot = "pattern.\(UUID().uuidString)"
     @Environment(\.dotStage) private var stage
@@ -26,7 +26,7 @@ struct ThreadPane: View {
         let initial = items.isEmpty && pending.isEmpty
         return PaneWindow(header: header(initial: initial), usesDots: true) {
             if initial {
-                NewThreadStage(slot: patternSlot, templateError: $templateError)
+                NewThreadStage(slot: patternSlot, roleError: $roleError)
             } else {
                 // 可见区多高在排版时当场算出来（GeometryReader），留白和它同一次排好。这里的尺寸已经扣掉了
                 // 标题栏、控制区和键盘让出的那一截，滚动视图照样伸到它们后面（实测）
@@ -81,29 +81,29 @@ struct ThreadPane: View {
         )) {
             Button("好", role: .cancel) { titleError = nil }
         } message: { Text(titleError ?? "") }
-        .sheet(item: $templateEdit) { request in
-            ContextTemplateEditor(request: request, connection: model.revision(for: area)) { selectTemplate($0) }
+        .sheet(item: $roleEdit) { request in
+            RoleEditor(request: request, connection: model.revision(for: area)) { selectRole($0) }
                 .environment(model)
         }
     }
 
-    /// 副标题是会话的上下文模板。还没有对话时副标题带下拉箭头，在这里换模板；标题还没生成，不给重新生成。
+    /// 副标题是代理的角色。还没有对话时副标题带下拉箭头，在这里换角色；标题还没生成，不给重新生成。
     private func header(initial: Bool) -> PaneHeader {
-        PaneHeader(title: thread.title, subtitle: model.templateTitle(for: thread, in: area),
-            subtitleMenu: initial ? .init(label: "上下文模板", isBusy: thread.configuringTemplate,
-                enabled: model.canSelectTemplate(for: thread, in: area),
-                content: AnyView(NewThreadTemplateMenu(select: selectTemplate) { templateEdit = .init(definition: $0.definition.copy()) }))
+        PaneHeader(title: thread.title, subtitle: model.roleTitle(for: thread, in: area),
+            subtitleMenu: initial ? .init(label: "角色", isBusy: thread.configuringTemplate,
+                enabled: model.canSelectRole(for: thread, in: area),
+                content: AnyView(NewThreadRoleMenu(select: selectRole) { roleEdit = .init(role: $0.role.copy()) }))
                 : nil,
             titleRefresh: initial ? nil : .init(
-                actionLabel: "重新生成会话标题", progressLabel: "正在重新生成会话标题",
+                actionLabel: "重新生成标题", progressLabel: "正在重新生成标题",
                 isRefreshing: thread.regeneratingTitle, enabled: thread.canRegenerateTitle, action: regenerateTitle))
     }
 
-    private func selectTemplate(_ template: ContextTemplate) {
-        templateError = nil
+    private func selectRole(_ role: AgentRole) {
+        roleError = nil
         Task {
-            do { try await model.selectNewThreadTemplate(template, for: thread, in: area) }
-            catch { templateError = error.localizedDescription }
+            do { try await model.selectNewThreadRole(role, for: thread, in: area) }
+            catch { roleError = error.localizedDescription }
         }
     }
 

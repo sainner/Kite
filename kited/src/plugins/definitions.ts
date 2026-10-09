@@ -19,29 +19,18 @@ export interface PluginDefinition {
   operations: OperationName[];
 }
 
-const coding: AgentDefinition = {
+export const agentDefinitionId = 'kite.agent';
+
+/** 代理插件声明的全部工具与兜底默认值；提示词、工具规则与默认模型由角色决定。 */
+const agent: AgentDefinition = {
   runtime: 'harness', model: { model: defaultAgentModel, reasoning: 'medium' },
   tools: ['read', 'patch', 'shell', 'credentials', ...operationToolNames], context: defaultContextDefinition, maxRequestsPerTurn: 50,
 };
-const review: AgentDefinition = {
-  ...coding, tools: ['read'], context: { ...defaultContextDefinition, id: 'kite.review', title: '只读审查', blocks: [
-    { type: 'paragraph', id: 'identity', title: '审查职责', parts: [{ type: 'text',
-      text: '你是 Kite 的只读审查助手。使用简体中文，读取用户指定的文件，报告有证据的问题、影响与修改建议。当前只有 read 工具；需要目录或 diff 时请用户提供，不声称已执行修改或检查命令。' }] },
-    ...defaultContextDefinition.blocks.filter((block) => ['environment', 'project-rules', 'documents'].includes(block.id)),
-  ] },
-};
 
 const definitions: PluginDefinition[] = [
-  { id: 'kite.agent.coding', title: '代理', lifetime: 'persistent', defaultView: 'conversation',
+  { id: agentDefinitionId, title: '代理', lifetime: 'persistent', defaultView: 'conversation',
     execution: { workspace: 'write', read: [], write: [], network: [] },
-    agent: coding, operations: ['agent.send', 'agent.resume', 'agent.stop'], views: [{ id: 'conversation', title: '会话', renderer: 'conversation' }] },
-  { id: 'kite.agent.review', title: '只读审查', lifetime: 'persistent', defaultView: 'conversation',
-    execution: { workspace: 'read', read: [], write: [], network: [] },
-    agent: review, operations: ['agent.send', 'agent.resume', 'agent.stop'], views: [{ id: 'conversation', title: '会话', renderer: 'conversation' }] },
-  { id: 'kite.agent.claude', title: 'Claude', lifetime: 'persistent', defaultView: 'conversation',
-    execution: { workspace: 'write', read: [], write: [], network: [] },
-    agent: { ...coding, runtime: 'claude', model: { model: 'sonnet', reasoning: 'medium' } },
-    operations: ['agent.send', 'agent.resume', 'agent.stop'], views: [{ id: 'conversation', title: '会话', renderer: 'conversation' }] },
+    agent, operations: ['agent.send', 'agent.resume', 'agent.stop'], views: [{ id: 'conversation', title: '代理窗口', renderer: 'conversation' }] },
   { id: 'kite.files', title: '文件', lifetime: 'window', defaultView: 'files', operations: ['files.list', 'files.read', 'files.diff', 'files.state', 'files.select'], views: [
     { id: 'files', title: '文件', renderer: 'files' },
   ] },

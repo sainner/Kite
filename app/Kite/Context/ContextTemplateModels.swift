@@ -8,14 +8,6 @@ nonisolated struct ContextDefinition: Codable, Equatable, Identifiable, Sendable
     var scene = "thread.create"
     var blocks: [ContextBlock]
     var input: [ContextBlock]? = nil
-
-    static func empty() -> Self { .init(id: UUID().uuidString.lowercased(), title: "新模板", blocks: []) }
-    func copy() -> Self {
-        var result = self
-        result.id = UUID().uuidString.lowercased()
-        result.title += " 副本"
-        return result
-    }
 }
 
 nonisolated struct ContextBlock: Codable, Equatable, Identifiable, Sendable {
@@ -67,16 +59,10 @@ nonisolated struct ContextScene: Decodable, Identifiable, Sendable {
 nonisolated struct ContextTemplate: Decodable, Identifiable, Sendable {
     var definition: ContextDefinition
     var revision: String
-    /// 创建会话模板的点阵签名，其他场景没有。
-    var emblem: TemplateEmblem?
-    /// ready、stale、missing、generating 或 failed。
-    var emblemState: String?
-    var emblemError: String?
     var id: String { definition.id }
-    var selection: ContextTemplateSelection { .init(id: id, revision: revision) }
 }
 
-/// 点阵签名的设计：一行表达式、正负两种颜色（字母见 DotFigure.letters）和点的形状。
+/// 角色点阵签名的设计：一行表达式、正负两种颜色（字母见 DotFigure.letters）和点的形状。
 nonisolated struct EmblemDesign: Codable, Equatable, Sendable {
     var expression: String
     var positive: String
@@ -119,11 +105,6 @@ nonisolated struct EmblemStatus: Decodable, Sendable {
 struct EmblemSave: Encodable { let emblem: EmblemDesign }
 struct EmblemGenerate: Encodable { let force: Bool }
 
-nonisolated struct ContextTemplateSelection: Encodable, Sendable {
-    let id: String
-    let revision: String
-}
-
 nonisolated struct ContextTemplateCatalog: Decodable, Sendable {
     var templates: [ContextTemplate]
     let scenes: [ContextScene]
@@ -131,22 +112,17 @@ nonisolated struct ContextTemplateCatalog: Decodable, Sendable {
 
 struct ContextTemplateSave: Encodable {
     let definition: ContextDefinition
-    let expectedRevision: String?
-}
-
-struct ApplyContextTemplate: Encodable {
     let expectedRevision: String
-    let templateId: String
-    let templateRevision: String
 }
 
+/// 新代理连同草稿里的角色与改过的参数一次创建；新工作区带首条消息时只带角色。
 struct CreateThreadRequest: Encodable {
     let prompt: String
     var checkout: String? = nil
-    var contextTemplate: ContextTemplateSelection? = nil
-    var definitionId: String? = nil
-    var runtime: String? = nil
+    var role: RoleSelection? = nil
     var model: AgentModelConfiguration? = nil
+    var tools: [String]? = nil
+    var maxRequestsPerTurn: Int? = nil
 }
 
 extension AppModel {
@@ -182,68 +158,16 @@ extension AppModel {
         try await task.value
     }
 
-    func saveContextTemplate(_ definition: ContextDefinition, expectedRevision: String?, connection: UUID) async throws -> ContextTemplate {
+    /// 模板只能修改，各场景的模板由工作机提供。
+    func saveContextTemplate(_ definition: ContextDefinition, expectedRevision: String, connection: UUID) async throws -> ContextTemplate {
         guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请返回模板列表") }
         let client = target.client
         let component = definition.id.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~")))!
-        let path = expectedRevision == nil ? "/context-templates" : "/context-templates/\(component)"
-        let result = try await client.request(path, method: expectedRevision == nil ? "POST" : "PUT",
+        let result = try await client.request("/context-templates/\(component)", method: "PUT",
             body: ContextTemplateSave(definition: definition, expectedRevision: expectedRevision), as: ContextTemplate.self)
         guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回模板列表") }
         target.templates?.templates.removeAll { $0.id == result.id }
         target.templates?.templates.append(result)
         return result
-    }
-
-    func saveTemplateEmblem(_ design: EmblemDesign, for template: ContextTemplate, connection: UUID) async throws {
-        guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请返回模板列表") }
-        let client = target.client
-        let result = try await client.request("/context-templates/\(Self.pathComponent(template.id))/emblem", method: "PUT",
-            body: EmblemSave(emblem: design), as: ContextTemplate.self)
-        guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回模板列表") }
-        if let index = target.templates?.templates.firstIndex(where: { $0.id == result.id }) { target.templates?.templates[index] = result }
-    }
-
-    /// 请工作机生成签名；force 时连手改的一起重新生成。结果随模板变化事件送达。
-    func generateTemplateEmblem(_ template: ContextTemplate, force: Bool, connection: UUID) async throws {
-        guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化") }
-        let client = target.client
-        let status = try await client.request("/context-templates/\(Self.pathComponent(template.id))/emblem/generate", method: "POST",
-            body: EmblemGenerate(force: force), as: EmblemStatus.self)
-        guard target.catalog.generation == connection, accepts(client) else { return }
-        if let index = target.templates?.templates.firstIndex(where: { $0.id == template.id }) {
-            target.templates?.templates[index].emblem = status.emblem
-            target.templates?.templates[index].emblemState = status.emblemState
-            target.templates?.templates[index].emblemError = status.emblemError
-        }
-    }
-
-    private static func pathComponent(_ id: String) -> String {
-        id.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~")))!
-    }
-
-    func applyContextTemplate(_ template: ContextTemplate, to thread: WorkThread, in area: WorkArea, connection: UUID) async throws {
-        guard revision(for: area) == connection else { throw KitedError(message: "工作机已切换") }
-        if let instance = area.instances.first(where: { $0.id == thread.id }) {
-            let client = try activeClient(in: area)
-            @MainActor func requireCurrent() throws {
-                guard revision(for: area) == connection, client == (try activeClient(in: area)),
-                      area.remote?.machine.id == client.machineID,
-                      area.instances.contains(where: { $0.id == instance.id && $0.status == .open }) else {
-                    throw KitedError(message: "工作机或会话已变化，请重新选择模板")
-                }
-            }
-            try requireCurrent()
-            let config = try await client.request("/instances/\(instance.id)/agent-config", as: AgentConfigurationSnapshot.self)
-            try requireCurrent()
-            let updated = try await client.request("/instances/\(instance.id)/context-template", method: "PUT",
-                body: ApplyContextTemplate(expectedRevision: config.revision, templateId: template.id, templateRevision: template.revision),
-                as: AgentConfigurationSnapshot.self)
-            try requireCurrent()
-            if let index = area.instances.firstIndex(where: { $0.id == instance.id }) {
-                area.instances[index].config = updated.instance.config
-            }
-        }
-        thread.contextTemplate = template
     }
 }

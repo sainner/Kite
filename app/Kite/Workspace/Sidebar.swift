@@ -1052,6 +1052,7 @@ struct ExtensionContent: View {
         Group {
             switch model.extensionPage {
             case .plugins: PluginLibrary()
+            case .roles: RoleLibrary()
             case .contexts: ContextTemplateLibrary()
             case .credentials: CredentialsLibrary()
             case .skills: EmptyView()
@@ -1066,13 +1067,14 @@ struct ExtensionContent: View {
 
 /// 资源库一栏里的各页。
 nonisolated enum ExtensionLibrary: String, SidebarPage {
-    case plugins, contexts, credentials, skills
+    case plugins, roles, contexts, credentials, skills
 
     var id: Self { self }
 
     var title: String {
         switch self {
         case .plugins: "插件"
+        case .roles: "角色"
         case .contexts: "上下文模板"
         case .credentials: "凭据"
         case .skills: "Skill"
@@ -1082,6 +1084,7 @@ nonisolated enum ExtensionLibrary: String, SidebarPage {
     var icon: TablerSymbol {
         switch self {
         case .plugins: .puzzle
+        case .roles: .user
         case .contexts: .fileText
         case .credentials: .link
         case .skills: .sparkles

@@ -9,8 +9,11 @@ final class WorkThread: Identifiable {
     var project: String
     var transcript: Transcript
     var draft = ""
-    var contextTemplate: ContextTemplate?
+    /// 草稿里选好的角色；已有代理的角色记在实例配置里。
+    var role: AgentRole?
     var draftChoice: DraftAgentChoice?
+    /// 草稿的模型目录与各角色可开的工具，按工作区读取。
+    var agentOptions: AgentOptions?
     var configuringTemplate = false
     var state: RemoteState?
     var agentCapabilities: AgentCapabilities?
@@ -86,7 +89,7 @@ final class WorkThread: Identifiable {
     init(workspace: String = "", project: String = "Kite") {
         id = "draft-" + workspace
         tint = Palette.breeze
-        title = "新会话"
+        title = "新代理"
         self.project = project
         client = nil
         transcript = Transcript(root: workspace)
@@ -290,7 +293,7 @@ final class WorkThread: Identifiable {
     }
 
     private func startStop() throws -> Task<Void, Error> {
-        guard let client, !stopping else { throw KitedError(message: "会话尚不可停止，请刷新状态后重试") }
+        guard let client, !stopping else { throw KitedError(message: "代理尚不可停止，请刷新状态后重试") }
         let request = stopRequest ?? StopRequest(id: UUID().uuidString, inputs: outbox.map {
             RemoteInput(id: $0.id, text: $0.typed, source: "human")
         })
@@ -323,7 +326,7 @@ final class WorkThread: Identifiable {
         defer { regeneratingTitle = false }
         let path = "/threads/\(id)/title"
         let snapshot = try await client.request(path, as: ThreadTitleSnapshot.self)
-        guard connected, state?.status == "open" else { throw KitedError(message: "会话连接或状态已变化，请重试") }
+        guard connected, state?.status == "open" else { throw KitedError(message: "代理连接或状态已变化，请重试") }
         // 标题正文沿目录事件同步，避免迟到的 HTTP 响应覆盖更新的远端标题。
         let _: ThreadTitleSnapshot = try await client.request(path + "/regenerate", method: "POST",
             body: ["expectedRevision": snapshot.revision], timeout: 120, as: ThreadTitleSnapshot.self)

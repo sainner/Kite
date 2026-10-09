@@ -92,6 +92,7 @@ export class TranscriptHistory {
         case 'checkout.changed':
         case 'model-accounts.changed':
         case 'context-templates.changed':
+        case 'roles.changed':
         case 'workspace.setup':
         case 'workspace.snapshot':
         case 'workspace.adopt':

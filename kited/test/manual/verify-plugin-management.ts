@@ -72,7 +72,7 @@ try {
     });
     return window.target.instanceId;
   };
-  const callerID = await openBuiltin('kite.agent.coding');
+  const callerID = await openBuiltin('kite.agent');
   await request('GET', `/threads/${callerID}/state`);
   if (modelCalls !== 0) throw new Error('读取空闲线程状态启动了模型');
   const filesID = await openBuiltin('kite.files');

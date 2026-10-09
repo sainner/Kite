@@ -35,7 +35,7 @@ final class AppModel {
     enum InviteState: Equatable { case joining, failed(String) }
     var invite: InviteState?
     #endif
-    /// 正在打开的新建表单：添加项目或开始会话。
+    /// 正在打开的新建表单：添加项目或新建工作区。
     var newWorkspace: NewWorkspace.Mode?
     /// 设备一栏在内容区显示的页面。
     var drivePage = DrivePage.accounts
@@ -171,7 +171,7 @@ final class AppModel {
         detached = []
         selectedProjectID = nil
         selected = ""
-        draftWorkspace.draftThread.contextTemplate = nil
+        draftWorkspace.draftThread.role = nil
         draftWorkspace.draftThread.connected = false
     }
 
@@ -278,6 +278,7 @@ final class AppModel {
         for connection in connections.values {
             connection.task?.cancel(); connection.task = nil
             connection.templatesRequest?.task.cancel(); connection.templatesRequest = nil
+            connection.rolesRequest?.task.cancel(); connection.rolesRequest = nil
             connection.catalog.reset(); connection.connected = false
             for area in workspaces where area.remote?.machine.id == connection.id { area.draftThread.connected = false }
         }
@@ -321,6 +322,10 @@ final class AppModel {
             if event.type == "model-accounts.changed" { return }
             if event.type == "context-templates.changed" {
                 if connection.templates != nil { Task { try? await self.refreshTemplates(of: connection, fresh: true) } }
+                return
+            }
+            if event.type == "roles.changed" {
+                if connection.roles != nil { Task { try? await self.refreshRoles(of: connection, fresh: true) } }
                 return
             }
             guard ["catalog.snapshot", "checkout.changed", "workspace.changed", "thread.changed"].contains(event.type) else { return }
@@ -398,27 +403,27 @@ final class AppModel {
         guard let machine = checkouts.first(where: { $0.id == checkout })?.machineId,
               let connection = connections[machine], connection.connected else { throw KitedError(message: "检出所属工作机未连接") }
         let client = connection.client
-        let template = draftWorkspace.draftThread.contextTemplate
-        if let template, connection.templates?.templates.contains(where: { $0.id == template.id && $0.revision == template.revision }) != true {
-            throw KitedError(message: "所选上下文模板不属于这台工作机，请重新选择")
+        let role = draftWorkspace.draftThread.role
+        if let role, connection.roles?.roles.contains(where: { $0.id == role.id && $0.revision == role.revision }) != true {
+            throw KitedError(message: "所选角色不属于这台工作机，请重新选择")
         }
         let area = try await client.request("/workspaces", method: "POST",
-            body: CreateThreadRequest(prompt: prompt, checkout: checkout, contextTemplate: template?.selection), as: RemoteWorkspace.self)
+            body: CreateThreadRequest(prompt: prompt, checkout: checkout, role: role?.selection), as: RemoteWorkspace.self)
         try await refresh(client)
         guard accepts(client) else { throw KitedError(message: "工作机已切换") }
         selectWorkspace(area.id)
         draftWorkspace.draftThread.draft = ""
-        draftWorkspace.draftThread.contextTemplate = nil
+        draftWorkspace.draftThread.role = nil
     }
 
     func startThread(in area: WorkArea, prompt: String) async throws {
         let client = try activeClient(in: area)
         guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
         let draft = area.draftThread
+        let choice = draft.draftChoice
         let thread = try await client.request("/workspaces/\(area.id)/threads", method: "POST",
-            body: CreateThreadRequest(prompt: prompt, contextTemplate: draft.contextTemplate?.selection,
-                                      definitionId: draft.draftChoice?.definitionId, runtime: draft.draftChoice?.runtime,
-                                      model: draft.draftChoice?.changedModel), as: RemoteThread.self)
+            body: CreateThreadRequest(prompt: prompt, role: newThreadRole(for: draft, in: area)?.selection, model: choice?.model,
+                                      tools: choice?.tools, maxRequestsPerTurn: choice?.maxRequestsPerTurn), as: RemoteThread.self)
         try await refresh(client)
         guard accepts(client) else { throw KitedError(message: "工作机已切换") }
         area.finishDraft(into: WindowTarget(instanceId: thread.instanceId, viewId: "conversation"))

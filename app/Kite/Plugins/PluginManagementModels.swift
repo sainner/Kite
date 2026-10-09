@@ -16,7 +16,7 @@ nonisolated struct OperationGrant: Codable, Equatable, Sendable {
         var instanceIds: [String]? = nil
     }
     let operation: String
-    var definitionIds: [String]? = nil
+    var roleIds: [String]? = nil
     var targets: Targets? = nil
     var instanceId: String? = nil
     var tools: [String]? = nil
@@ -61,15 +61,15 @@ struct PluginGrantDraft {
         if !ids.isEmpty { grants.append(OperationGrant(operation: operation, targets: .init(kind: "instances", instanceIds: ids.sorted()))) }
     }
 
-    func includesDefinition(_ id: String) -> Bool {
-        grants.contains { $0.operation == "agent.start" && ($0.definitionIds?.contains(id) ?? false) }
+    func includesRole(_ id: String) -> Bool {
+        grants.contains { $0.operation == "agent.start" && ($0.roleIds?.contains(id) ?? false) }
     }
 
-    mutating func setDefinition(_ id: String, enabled: Bool) {
-        var ids = Set(grants.filter { $0.operation == "agent.start" }.flatMap { $0.definitionIds ?? [] })
+    mutating func setRole(_ id: String, enabled: Bool) {
+        var ids = Set(grants.filter { $0.operation == "agent.start" }.flatMap { $0.roleIds ?? [] })
         if enabled { ids.insert(id) } else { ids.remove(id) }
         grants.removeAll { $0.operation == "agent.start" }
-        if !ids.isEmpty { grants.append(OperationGrant(operation: "agent.start", definitionIds: ids.sorted())) }
+        if !ids.isEmpty { grants.append(OperationGrant(operation: "agent.start", roleIds: ids.sorted())) }
     }
 
     mutating func set(_ grant: OperationGrant, enabled: Bool) {

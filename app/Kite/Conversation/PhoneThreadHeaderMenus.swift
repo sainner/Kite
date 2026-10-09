@@ -48,7 +48,7 @@ final class PhoneThreadMenuButton: UIButton {
         showsMenuAsPrimaryAction = true
         isAccessibilityElement = false
         modelElement.accessibilityLabel = "模型"
-        moreElement.accessibilityLabel = "更多会话操作"
+        moreElement.accessibilityLabel = "更多操作"
         moreElement.accessibilityTraits = .button
         modelElement.activate = { [weak self] in self?.openAccessibleMenu(.model) ?? false }
         moreElement.activate = { [weak self] in self?.openAccessibleMenu(.more) ?? false }

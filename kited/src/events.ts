@@ -25,6 +25,7 @@ export type DomainEvent =
   | { type: 'model-accounts.changed'; modelAccounts: ModelAccountsSnapshot }
   /** 模板或点阵签名有变化，客户端重新读取模板列表。 */
   | { type: 'context-templates.changed' }
+  | { type: 'roles.changed' }
   | ({ workspaceId: string; originThreadId?: string } & (
     | { type: 'workspace.setup'; exit: number | null; log: string }
     | { type: 'workspace.snapshot'; commit: string; label: string; changedFiles: number }

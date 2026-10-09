@@ -48,9 +48,9 @@ struct MacThreadHeaderMenus: View {
                 }
             }
         } label: {
-            PaneHeaderButtonLabel("更多会话操作", systemImage: "ellipsis")
+            PaneHeaderButtonLabel("更多操作", systemImage: "ellipsis")
         }
-        .help("更多会话操作")
+        .help("更多操作")
     }
 }
 #endif

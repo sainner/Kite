@@ -136,7 +136,7 @@ async function main() {
     }, otherMachine.body.id);
     if (shared.status !== 200 || separate.status !== 200) throw new Error('第二台工作机登记项目失败');
     const workspace = await call<WorkspaceModel>(daemon.url, 'POST', '/workspaces', {
-      checkout: project.body.checkout.id, prompt: '首线程', runtime: 'harness',
+      checkout: project.body.checkout.id, prompt: '首线程',
     }, machine.body.id);
     if (workspace.status !== 200) throw new Error(`创建工作区失败：${workspace.status}`);
     const firstThread = workspace.body.threads[0];
@@ -144,7 +144,7 @@ async function main() {
     await waitEvent((event) => event.type === 'idle' && event.threadId === firstThread.instanceId);
 
     const secondThread = await call<ThreadContext>(daemon.url, 'POST', `/workspaces/${workspace.body.workspace.id}/threads`, {
-      prompt: '第二线程', runtime: 'harness',
+      prompt: '第二线程',
     }, machine.body.id);
     if (secondThread.status !== 200) throw new Error(`创建第二线程失败：${secondThread.status}`);
     if (secondThread.body.workspace.cwd !== workspace.body.workspace.cwd) throw new Error('第二线程没有继承工作区 cwd');

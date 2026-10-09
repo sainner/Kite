@@ -8,7 +8,7 @@ import type { Envelope } from '../../src/events.ts';
 import { restoreContext } from '../../src/harness/context/assembler.ts';
 import type { Json, ModelItem, ThreadNotification } from '../../src/harness/types.ts';
 import { operationToolNames } from '../../src/operations/contract.ts';
-import { call, linkNewAccount, registerCheckout, startKited, type Kited } from '../harness.ts';
+import { call, linkNewAccount, openAgent, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
 import { editNotificationTemplate } from '../notification-templates.ts';
 import { makeTemp, newRepo, read } from '../util.ts';
@@ -51,11 +51,7 @@ test('运行中换配置不打断旧工具，下一请求再采用新配置', as
   const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' });
   const registered = await registerCheckout(kk, repo);
   const workspaceId = registered.workspace.id;
-  const opened = await kk.call('POST', `/workspaces/${workspaceId}/windows`, {
-    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent.coding' },
-  });
-  expect(opened.status).toBe(200);
-  const threadId = opened.body.target.instanceId as string;
+  const threadId = await openAgent(kk.call, workspaceId);
   const initial = await kk.call('GET', `/instances/${threadId}/agent-config`);
   expect(initial.status).toBe(200);
   const original = structuredClone(initial.body.instance.config.agent) as AgentDefinition;
@@ -114,9 +110,9 @@ test('运行中换配置不打断旧工具，下一请求再采用新配置', as
   await kk.waitEvent((event) => event.type === 'idle' && event.threadId === threadId);
 }, 1000);
 
-// HTTP 参数、实例创建时的定义绑定（含 KITE_MODEL 覆盖）、窗口建立与运行时取模型要一起成立：草稿显式选的模型
-// 必须压过定义默认值和环境变量，并且就是运行时实际拿到的模型；参数不成立的请求要在建实例前拒绝，不留实例或窗口。
-test('按草稿选择创建会话时显式模型压过定义默认值和 KITE_MODEL 并同时建窗口，换后端不给模型时拒绝且不留实例', async () => {
+// HTTP 参数、实例创建时的角色绑定（含 KITE_MODEL 覆盖）、窗口建立与运行时取模型要一起成立：草稿显式选的模型
+// 必须压过角色默认值和环境变量，并且就是运行时实际拿到的模型；参数不成立的请求要在建实例前拒绝，不留实例或窗口。
+test('按草稿选择创建代理时显式模型压过角色默认值和 KITE_MODEL 并同时建窗口，工具超出角色时拒绝且不留实例', async () => {
   const previous = process.env.KITE_MODEL;
   process.env.KITE_MODEL = 'env-override-model';
   try {
@@ -134,17 +130,18 @@ test('按草稿选择创建会话时显式模型压过定义默认值和 KITE_MO
       expect(response.status).toBe(200);
       return response.body as { instances: { id: string }[]; windows: { id: string; target: { instanceId: string; viewId: string } }[] };
     };
+    const roles = await kk.call('GET', '/roles');
+    const review = (roles.body.roles as Array<{ role: { id: string }; revision: string }>).find((entry) => entry.role.id === 'kite.review')!;
+    const role = { id: review.role.id, revision: review.revision };
 
     const chosen = { model: 'draft-chosen-model', reasoning: 'low' };
-    const created = await kk.call('POST', `/workspaces/${workspaceId}/threads`, {
-      prompt: '审查一下', definitionId: 'kite.agent.review', model: chosen,
-    });
+    const created = await kk.call('POST', `/workspaces/${workspaceId}/threads`, { prompt: '审查一下', role, model: chosen });
     expect(created.status).toBe(200);
     const id = created.body.instanceId as string;
     const first = await model.call(1);
     expect(runtimeModels).toEqual([chosen]);
     const thread = await kk.call('GET', `/threads/${id}`);
-    expect(thread.body).toMatchObject({ definitionId: 'kite.agent.review', runtime: 'harness' });
+    expect(thread.body).toMatchObject({ definitionId: 'kite.agent', runtime: 'harness' });
     expect(thread.body.config.agent.model).toEqual(chosen);
     const withThread = await aggregate();
     expect(withThread.instances.map((value) => value.id)).toEqual([id]);
@@ -153,7 +150,7 @@ test('按草稿选择创建会话时显式模型压过定义默认值和 KITE_MO
     await kk.waitEvent((event) => event.type === 'idle' && event.threadId === id);
 
     const rejected = await kk.call('POST', `/workspaces/${workspaceId}/threads`, {
-      prompt: '换到 Claude 但没选模型', definitionId: 'kite.agent.review', runtime: 'claude',
+      prompt: '只读审查却要开 shell', role, tools: ['read', 'shell'],
     });
     expect(rejected.status).toBe(400);
     expect(await aggregate()).toMatchObject({ instances: withThread.instances, windows: withThread.windows });
@@ -181,11 +178,7 @@ test('原样保存保留配置快照，通知跨重启保留且审查保持只�
     const checkout = await call(daemon.url, 'POST', '/checkouts', { path: repo });
     expect(checkout.status).toBe(200);
     const workspaceId = checkout.body.workspace.id as string;
-    const opened = await call(daemon.url, 'POST', `/workspaces/${workspaceId}/windows`, {
-      id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent.coding' },
-    });
-    expect(opened.status).toBe(200);
-    const codingId = opened.body.target.instanceId as string;
+    const codingId = await openAgent(apiCall, workspaceId);
     expect((await call(daemon.url, 'POST', `/threads/${codingId}/messages`, { id: randomUUID(), text: '先建立历史' })).status).toBe(200);
     const first = await firstModel.call(1);
     first.response.complete();
@@ -223,7 +216,7 @@ test('原样保存保留配置快照，通知跨重启保留且审查保持只�
 
     const resumedModel = new ManualModel();
     const reviewModel = new ManualModel();
-    daemon = startDaemon({ home, port: 0, lightTasks: false, model: (thread) => thread.definitionId === 'kite.agent.review' ? reviewModel : resumedModel });
+    daemon = startDaemon({ home, port: 0, lightTasks: false, model: (thread) => (thread.config.role as { id: string } | undefined)?.id === 'kite.review' ? reviewModel : resumedModel });
     expect(daemon.kite.store.instanceNotifications(codingId, 0)).toEqual(pending);
     const secondEvents = new Seen<Envelope>();
     daemon.kite.bus.subscribe(undefined, (event) => secondEvents.add(event));
@@ -321,17 +314,14 @@ test('原样保存保留配置快照，通知跨重启保留且审查保持只�
     await secondEvents.wait((event) => event.type === 'idle' && event.threadId === codingId
       && secondEvents.values.indexOf(event) >= thirdEventStart);
 
-    const review = await call(daemon.url, 'POST', `/workspaces/${workspaceId}/windows`, {
-      id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent.review' },
+    // 只读审查只靠角色的工具白名单：模型越权发出的 patch 与 shell 都不能落到工作区
+    const roles = await apiCall('GET', '/roles');
+    const reviewRole = (roles.body.roles as Array<{ role: { id: string }; revision: string }>).find((entry) => entry.role.id === 'kite.review')!;
+    const review = await apiCall('POST', `/workspaces/${workspaceId}/threads`, {
+      prompt: '只审查', role: { id: 'kite.review', revision: reviewRole.revision }, maxRequestsPerTurn: 1,
     });
     expect(review.status).toBe(200);
-    const reviewId = review.body.target.instanceId as string;
-    const reviewConfig = await call(daemon.url, 'GET', `/instances/${reviewId}/agent-config`);
-    const reviewAgent = structuredClone(reviewConfig.body.instance.config.agent) as AgentDefinition;
-    expect((await call(daemon.url, 'PUT', `/instances/${reviewId}/agent-config`, {
-      expectedRevision: reviewConfig.body.revision, agent: { ...reviewAgent, maxRequestsPerTurn: 1 },
-    })).status).toBe(200);
-    expect((await call(daemon.url, 'POST', `/threads/${reviewId}/messages`, { id: randomUUID(), text: '只审查' })).status).toBe(200);
+    const reviewId = review.body.instanceId as string;
     const malicious = await reviewModel.call(1);
     expect(malicious.request.allowedTools).toEqual(['read']);
     void malicious.response.emit({ type: 'item', item: calledItem('review-patch', 'patch', {

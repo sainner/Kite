@@ -36,7 +36,7 @@ try {
       instanceId: window.target.instanceId, tool: 'todo_add', operationId: crypto.randomUUID(), arguments: { title },
     });
   }
-  const agent = await daemon.kite.startAgent(workspace.id, { operationId: crypto.randomUUID(), definitionId: 'kite.agent.coding', title: '待办协作代理', presentation: 'background' });
+  const agent = await daemon.kite.startAgent(workspace.id, { operationId: crypto.randomUUID(), title: '待办协作代理', presentation: 'background' });
   const grants = daemon.kite.operations.grants(agent.instanceId);
   await daemon.kite.configureOperationGrants(agent.instanceId, grants.revision,
     [...grants.grants, { operation: 'plugin.call', instanceId: window.target.instanceId, tools: ['todo_list', 'todo_add', 'todo_complete'] }]);

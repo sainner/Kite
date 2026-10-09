@@ -7,6 +7,7 @@ import type { ThreadNotification } from './harness/types.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
 import type { HourlyUsage, UsageDay, UsageStore } from './account-usage.ts';
 import type { TemplateEmblem } from './template-emblems.ts';
+import type { Role } from './roles.ts';
 
 export interface ThreadTitle {
   title: string;
@@ -72,8 +73,12 @@ create table if not exists operation_receipts (
 create table if not exists context_templates (
   id text primary key, definition text not null
 );
+-- 角色的点阵签名，沿用创建会话模板时期的表名。
 create table if not exists template_emblems (
   template_id text primary key, emblem text not null
+);
+create table if not exists roles (
+  id text primary key, role text not null
 );
 create table if not exists usage_hours (
   account text not null, day text not null, hour integer not null, tokens integer not null, primary key(account, day, hour)
@@ -108,6 +113,7 @@ export class Store implements UsageStore {
     this.db.exec('pragma journal_mode = wal; pragma foreign_keys = on;');
     this.dropLocalProjects();
     this.db.exec(SCHEMA);
+    this.mergeAgentDefinitions();
     // 同一个数据库只属于一台工作机服务。端口、地址和主机名变化都不重建身份。
     this.machine = this.db.transaction(() => {
       const saved = this.db.query('select id, name, created_at from machine where slot = 1').get() as
@@ -128,6 +134,29 @@ export class Store implements UsageStore {
     const used = this.db.query('select 1 from checkouts limit 1').get();
     if (used) throw new Error('数据库里有项目改以远程为身份之前登记的检出，请删除 KITE_HOME 下的 kite.db 后重新登记');
     this.db.exec('drop table checkouts; drop table projects;');
+  }
+
+  /**
+   * 三个内置 agent 定义合并为「代理」，差别改由角色表达。在研期间只把已有实例改指新定义，
+   * 补上当时定义对应的角色约束，并把按定义授权的 agent.start 改为按角色授权。
+   */
+  private mergeAgentDefinitions(): void {
+    const roles: Record<string, string> = { 'kite.agent.coding': 'kite.work', 'kite.agent.claude': 'kite.work', 'kite.agent.review': 'kite.review' };
+    const rows = this.db.query(`select id, definition_id, config from plugin_instances
+      where definition_id in ('kite.agent.coding', 'kite.agent.claude', 'kite.agent.review') or config like '%"definitionIds"%'`).all() as
+      Array<{ id: string; definition_id: string; config: string }>;
+    this.db.transaction(() => {
+      for (const row of rows) {
+        const config = JSON.parse(row.config);
+        config.grants = (config.grants ?? []).map((grant: any) => grant.operation === 'agent.start' && grant.definitionIds
+          ? { operation: 'agent.start', roleIds: [...new Set<string>(grant.definitionIds.map((id: string) => roles[id] ?? id))] } : grant);
+        const legacy = roles[row.definition_id];
+        if (legacy && config.agent && !config.role) config.role = { id: config.agent.context?.id ?? legacy, revision: '',
+          tools: legacy === 'kite.review' ? { mode: 'allow', tools: ['read'], required: ['read'] } : { mode: 'deny', tools: [], required: [] } };
+        this.db.query('update plugin_instances set definition_id = ?, config = ? where id = ?')
+          .run(legacy ? 'kite.agent' : row.definition_id, JSON.stringify(config), row.id);
+      }
+    })();
   }
 
   mergeUsageHours(account: string, usage: HourlyUsage): void {
@@ -165,6 +194,19 @@ export class Store implements UsageStore {
   saveTemplateEmblem(id: string, emblem: TemplateEmblem): void {
     this.db.query('insert into template_emblems values (?, ?) on conflict(template_id) do update set emblem = excluded.emblem')
       .run(id, JSON.stringify(emblem));
+  }
+  deleteContextTemplate(id: string): void {
+    this.db.query('delete from context_templates where id = ?').run(id);
+  }
+  roles(): Role[] {
+    return this.db.query('select role from roles order by id').all().map((row: any) => JSON.parse(row.role));
+  }
+  role(id: string): Role | undefined {
+    const row = this.db.query('select role from roles where id = ?').get(id) as { role: string } | null;
+    return row ? JSON.parse(row.role) : undefined;
+  }
+  saveRole(role: Role): void {
+    this.db.query('insert into roles values (?, ?) on conflict(id) do update set role = excluded.role').run(role.id, JSON.stringify(role));
   }
   saveContextTemplate(definition: ContextDefinition): void {
     this.db.query('insert into context_templates values (?, ?) on conflict(id) do update set definition = excluded.definition')

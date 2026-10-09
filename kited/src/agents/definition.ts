@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { KiteError } from '../errors.ts';
 import { contextDefinitionSchema } from '../harness/context/assembler.ts';
+import { runtimeOfModel } from './models.ts';
 import type { PluginInstance, Workspace } from '../model.ts';
 import { operationToolNames } from '../operations/contract.ts';
 import type { ContextDefinition } from '../harness/context/types.ts';
@@ -31,10 +32,9 @@ export function bindAgentDefinition(definition: AgentDefinition, kind: Workspace
 
 export const claudeReasoning = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-/** 创建时选定的后端与模型优先于定义默认值和环境变量覆盖；换后端必须同时给出该后端的模型。 */
-export function chooseAgentModel(agent: AgentDefinition, choice: { runtime?: AgentDefinition['runtime']; model?: AgentDefinition['model'] }): AgentDefinition {
-  if (choice.runtime && choice.runtime !== agent.runtime && !choice.model) throw new KiteError('切换后端时须同时选择模型');
-  const chosen = parseAgentDefinition({ ...agent, runtime: choice.runtime ?? agent.runtime, model: choice.model ?? agent.model });
+/** 换用指定模型，后端随模型的厂商确定；Claude 的思考强度另有档位。 */
+export function chooseAgentModel(agent: AgentDefinition, model?: AgentDefinition['model']): AgentDefinition {
+  const chosen = parseAgentDefinition({ ...agent, ...(model ? { model, runtime: runtimeOfModel(model.model) } : {}) });
   if (chosen.runtime === 'claude' && !claudeReasoning.includes(chosen.model.reasoning)) throw new KiteError('Claude 思考强度无效');
   return chosen;
 }

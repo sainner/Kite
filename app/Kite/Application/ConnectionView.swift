@@ -106,7 +106,7 @@ struct DriveContent: View {
     }
 }
 
-/// 新建分成两个入口：添加项目在工作机上登记目录或克隆远程仓库；开始会话在已登记的检出上建工作区。
+/// 新建分成两个入口：添加项目在工作机上登记目录或克隆远程仓库；新建工作区在已登记的检出上建工作区。
 struct NewWorkspace: View {
     enum Mode: Equatable, Identifiable {
         case project, session, checkout(String)
@@ -133,7 +133,7 @@ struct NewWorkspace: View {
     @FocusState private var focus: Field?
     private var working: Bool { phase.working }
 
-    private var title: String { mode == .project ? "添加项目" : "开始会话" }
+    private var title: String { mode == .project ? "添加项目" : "新建工作区" }
     private var subtitle: String { mode == .project ? "克隆远程仓库，或登记工作机上已有的目录" : "在已登记的工作目录上新建工作区" }
 
     var body: some View {

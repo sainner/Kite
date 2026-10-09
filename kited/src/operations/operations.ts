@@ -10,9 +10,11 @@ import { operationContracts, operationGrantsSchema, type OperationCaller, type O
 import type { JsonObject, Tool, ToolResult } from '../harness/types.ts';
 import { WorkspaceFiles, fileSelection } from '../workspace/files.ts';
 import { assertFileAccess, hostPrivatePaths } from '../execution/sandbox.ts';
+import { instanceAgent } from '../agents/definition.ts';
+import { defaultRoleId, instanceRole } from '../roles.ts';
 import { pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding, type PluginToolSource } from '../plugins/tools.ts';
 
-type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'interrupt' | 'resume' | 'selectFile'>;
+type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'interrupt' | 'resume' | 'selectFile'>;
 
 export interface OperationToolSelection {
   plugins: Tool[];
@@ -50,9 +52,7 @@ export class InstanceOperations {
           throw new KiteError('插件工具授权目标须是同一工作区内已打开的 Bun 插件实例');
         }
       }
-      if ('definitionIds' in grant) for (const id of grant.definitionIds) {
-        if (!this.kite.catalog.get(id).agent) throw new KiteError('只能授权创建 agent 定义');
-      }
+      if ('roleIds' in grant) for (const id of grant.roleIds) this.kite.roles.get(id);
       if ('targets' in grant && grant.targets.kind === 'instances') for (const id of grant.targets.instanceIds) {
         const target = this.kite.store.instance(id);
         if (!target || target.workspaceId !== instance.workspaceId || (target.id === instance.id && grant.operation.startsWith('agent.'))
@@ -97,7 +97,7 @@ export class InstanceOperations {
       ? pluginToolGranted({ instanceId: target!.id, toolName: args.tool as string }, grants)
       : grants.some((grant) => {
         if (grant.operation !== name) return false;
-        if ('definitionIds' in grant) return grant.definitionIds.includes(args.definitionId as string);
+        if ('roleIds' in grant) return grant.roleIds.includes((args.role as string | undefined) ?? defaultRoleId);
         if ('targets' in grant) return target !== undefined && (grant.targets.kind === 'created'
           ? target.origin?.instanceId === source.id : grant.targets.instanceIds.includes(target.id));
         return true;
@@ -145,7 +145,9 @@ export class InstanceOperations {
           const operations = this.kite.catalog.get(instance.definitionId).operations.filter((operation) => {
             try { this.authorize(caller, workspaceId, operation, { instanceId: instance.id }); return true; } catch { return false; }
           });
+          const role = instanceRole(instance);
           return { instanceId: instance.id, definitionId: instance.definitionId, title: instance.title,
+            role: role ? { id: role.id, title: instanceAgent(instance).context.title } : null,
             presentation: instance.presentation, status: instance.status, phase: state.phase, busy: state.busy,
             waitingForResume: state.waitingForResume, recovery: state.recovery?.message ?? null, operations };
         }));

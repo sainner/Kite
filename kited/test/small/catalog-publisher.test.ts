@@ -50,7 +50,7 @@ test('目录发布在请求期间保留后续变更且只发摘要，停止取�
     const first = await kite.registerCheckout({ path: newRepo(root, 'first', { 'base.txt': '目录测试\n' }) });
     const privateBody = '私密会话正文不得上传到托管目录';
     const privateConfig = '私密会话配置不得上传到托管目录';
-    const workspace = await kite.createWorkspace(first.checkout.id, '公开工作区', privateBody, 'harness');
+    const workspace = await kite.createWorkspace(first.checkout.id, '公开工作区', privateBody);
     const threadId = workspace.threads[0]!.instanceId;
     (await model.call(1)).response.complete();
     await events.wait((event) => event.type === 'idle' && event.threadId === threadId);

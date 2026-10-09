@@ -1,18 +1,18 @@
 import SwiftUI
 
-/// 模板编辑器里的点阵签名：动画预览、表达式、正负两种颜色与点的形状。手改后随模板一起保存，之后不再被自动生成替换；
-/// 「重新生成」交给模型按模板内容重画，连手改过的一起替换。
+/// 角色编辑器里的点阵签名：动画预览、表达式、正负两种颜色与点的形状。手改后随角色一起保存，之后不再被自动生成替换；
+/// 「重新生成」交给模型按提示词重画，连手改过的一起替换。
 struct TemplateEmblemField: View {
     @Binding var design: EmblemDesign
-    /// 工作机上的最新状态；新模板还没有。
-    let template: ContextTemplate?
+    /// 工作机上的最新状态；新角色还没有。
+    let role: AgentRole?
     var regenerate: (() -> Void)?
     @Environment(\.self) private var environment
     /// 表达式改到一半无效时，预览停在上一个有效的图案。
     @State private var shown: DotPattern?
     @State private var error: String?
 
-    private var generating: Bool { template?.emblemState == "generating" }
+    private var generating: Bool { role?.emblemState == "generating" }
 
     var body: some View {
         CardField(label: "点阵签名", note: note) {
@@ -56,13 +56,13 @@ struct TemplateEmblemField: View {
 
     private var note: String {
         let help = "变量：t 秒，x y 格坐标，r a 极坐标，d 到指针的距离，k 打字活跃度。"
-        switch template?.emblemState {
-        case "generating": return "正在按模板内容生成签名。" + help
-        case "failed": return "生成失败：\(template?.emblemError ?? "未知原因")。" + help
-        case "stale": return "模板内容已修改，签名会随之重新生成。" + help
+        switch role?.emblemState {
+        case "generating": return "正在按提示词生成签名。" + help
+        case "failed": return "生成失败：\(role?.emblemError ?? "未知原因")。" + help
+        case "stale": return "提示词已修改，签名会随之重新生成。" + help
         default:
-            if template == nil || template?.emblem == nil { return "保存后由模型按模板内容生成；手改后保留手改的版本。" + help }
-            if template?.emblem?.source == "manual" { return "手改过的签名不会被自动替换。" + help }
+            if role == nil || role?.emblem == nil { return "保存后由模型按提示词生成；手改后保留手改的版本。" + help }
+            if role?.emblem?.source == "manual" { return "手改过的签名不会被自动替换。" + help }
             return help
         }
     }

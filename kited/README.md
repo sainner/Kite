@@ -50,8 +50,10 @@ bun run harness --resume <会话id>
 | `src/workspace/` | 项目登记、工作树、Git、快照、文件与历史差异 |
 | `src/plugins/` | 插件定义、安装目录、实例宿主、进程与工具绑定 |
 | `src/operations/` | 实例操作契约、授权入口与操作收据 |
-| `src/agents/` | Agent 定义、后端能力与共享模型清单入口 |
-| `src/context-templates.ts` | 上下文模板目录 |
+| `src/agents/` | Agent 定义、工具的逐层约束、后端能力与共享模型清单入口 |
+| `src/roles.ts` | 角色目录，以及由角色生成代理初始配置 |
+| `src/context-templates.ts` | 后台场景的上下文模板目录 |
+| `src/template-emblems.ts` | 角色的点阵签名 |
 | `src/light-tasks.ts`、`thread-titles.ts` | 辅助模型任务与会话标题 |
 | `web/` | 随 App 打包的可信插件宿主页源码 |
 | `examples/` | 待办插件与视图样例 |

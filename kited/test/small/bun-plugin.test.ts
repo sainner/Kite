@@ -64,7 +64,7 @@ async function filesTarget(k: Kited, workspaceId: string) {
 
 async function codingInstance(k: Kited, workspaceId: string) {
   const opened = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
-    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent.coding' },
+    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent' },
   });
   expect(opened.status).toBe(200);
   return opened.body.target.instanceId as string;
@@ -193,7 +193,7 @@ test('随窗口插件等最后视图关闭才回收，清理失败可重试且�
     expect(second.status).toBe(200);
     const before = output(await tool(k, instanceId, 'state', 'lifetime-increment', { action: 'increment' }));
     const caller = await k.call('POST', `/workspaces/${workspaceId}/operations/agent.start`, {
-      operationId: 'lifetime-agent', definitionId: 'kite.agent.coding', presentation: 'background',
+      operationId: 'lifetime-agent', role: 'kite.work', presentation: 'background',
     });
     expect(caller.status).toBe(200);
     const grantsPath = `/instances/${caller.body.instanceId}/operation-grants`;
@@ -493,7 +493,7 @@ test('撤权拒绝旧模型调用，工具通知按生成时模板冻结且目�
       id: targetId, definitionId: 'custom.test', title: '目标',
     })).status).toBe(200);
     const opened = await apiCall('POST', `/workspaces/${workspaceId}/windows`, {
-      id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent.coding' },
+      id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent' },
     });
     expect(opened.status).toBe(200);
     const agentId = opened.body.target.instanceId as string;

@@ -18,7 +18,7 @@ async function codingInstance(k: Kited) {
   const repo = newRepo(k.root, 'project', { 'base.txt': '原始内容\n' });
   const registered = await registerCheckout(k, repo);
   const opened = await k.call('POST', `/workspaces/${registered.workspace.id}/windows`, {
-    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent.coding' },
+    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent' },
   });
   expect(opened.status).toBe(200);
   return { id: opened.body.target.instanceId as string, cwd: registered.workspace.cwd };
@@ -146,7 +146,7 @@ test('缓存实例采用新授权，额外目录不提升受管工具和子实�
     command: `printf denied > '${join(cwd, 'blocked-shell.txt')}' 2>/dev/null; printf allowed > '${join(outside, 'allowed.txt')}'`,
   }) });
   await second.response.emit({ type: 'item', item: calledItem('create-child', 'agent_start', {
-    definitionId: 'kite.agent.coding', presentation: 'background',
+    role: 'kite.work', presentation: 'background',
   }) });
   second.response.complete();
 
@@ -162,7 +162,7 @@ test('缓存实例采用新授权，额外目录不提升受管工具和子实�
   const aggregate = await k.call('GET', '/workspaces');
   const child = aggregate.body.flatMap((workspace: { instances: Array<{ id: string; origin?: { callId: string } }> }) => workspace.instances)
     .find((instance: { origin?: { callId: string } }) => instance.origin?.callId === 'create-child');
-  if (!child) throw new Error('模型没有创建 coding 子实例');
+  if (!child) throw new Error('模型没有创建工作角色的子实例');
   expect((await k.call('GET', grantsPath(child.id))).body.grants).toEqual({ workspace: 'read', read: [], write: [], network: [] });
   third.response.complete();
   await k.waitEvent((event) => event.type === 'idle' && event.threadId === id && after(k, since)(event));

@@ -65,11 +65,11 @@ bun run harness --resume <会话id>
 
 自研 harness 与 Claude 各自负责完整 agent 循环，Kite 宿主负责工作区、共享工具、授权、快照与显示协议。执行进程关闭后会话仍可继续，两种后端保留各自的原生恢复记录。
 
-会话可通过 `/instances/:id/agent-config` 更换 `agent.runtime` 及对应模型，保留实例、窗口和其他配置；能力目录按实例当前后端返回。`state.capabilities.switchRuntime` 表示当前能否切换：须空闲、没有排队或交接未确认的输入、没有恢复阻塞，否则返回 409。服务端在同一控制队列中检查状态、交接上下文并保存后端与配置。
+后端由模型的厂商决定：Claude 模型经 Claude Code 订阅运行，其他厂商的模型由自研 harness 运行，调用方不单独指定后端。代理可通过 `/instances/:id/agent-config` 换用另一厂商的模型，后端随之更换，保留实例、窗口和其他配置；只改思考强度等、模型不变时后端不变。能力目录列出全部厂商的模型。`state.capabilities.switchRuntime` 表示当前能否换到另一厂商：须空闲、没有排队或交接未确认的输入、没有恢复阻塞，否则返回 409。服务端在同一控制队列中检查状态、交接上下文并保存后端与配置。
 
 切换在回合边界交接上下文。两种后端在线程内各保留一份原生记录；切换时把来源后端自上次交接以来产生的内容翻译后追加到目标后端的记录，并标明来源位置。已有记录不改写，重复切换不重复导入，翻译失败时不切换。harness 一侧在上次交接之后压缩或撤销过压缩时，改为整体重组 Claude 会话：在会话文件末尾追加压缩分界与按 harness 当前上下文合成的完整历史，原条目留作显示，Claude 从分界之后接续。人发消息、Kite 通知、助手文字、工具调用与结果及图片按目标后端的原生形态交接；推理内容只保留在产生它的后端记录中，不跨厂商传递，提示缓存在切换后重新建立。历史显示按段拼接两份记录，每段只取自产生它的后端，显示记录不作为原生恢复数据。Claude 会话文件的合成依赖锁定版本 CLI 的内部格式，升级 SDK 时按 [实验记录](research/2026-10-08-跨后端上下文翻译.md) 重新验证。
 
-agent 配置绑定到实例，重启沿用已保存内容。默认编程定义提供 read、patch、shell 及 agent 操作，只读审查定义提供 read；工具选择不能扩大授权。默认型号见 [共享模型目录](../shared/agent-models.json)，配置生效见 [线程通知投递](线程通知投递.md)，执行与恢复要求见 [harness 执行约定](harness-主循环.md) 和 [会话状态机](会话状态机.md)。
+代理配置由创建时的角色加草稿里的调整得来，绑定到实例，重启沿用已保存内容。内置角色「工作」可用全部工具（read、patch、shell、credentials 及 agent 操作），「只读审查」只用 read 且 read 为必需；工具的逐层约束见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)，工具选择不能扩大授权。默认型号见 [共享模型目录](../shared/agent-models.json)，配置生效见 [线程通知投递](线程通知投递.md)，执行与恢复要求见 [harness 执行约定](harness-主循环.md) 和 [会话状态机](会话状态机.md)。
 
 ## 运行
 
@@ -97,11 +97,11 @@ agent 配置绑定到实例，重启沿用已保存内容。默认编程定义�
 
 显式重生不受相同消息位置的限制，使更早的在途标题结果失效。标题生成不打断或阻塞主会话控制。
 
-### 模板点阵签名
+### 角色点阵签名
 
-每个创建会话模板有一枚点阵签名，App 在新会话的空白内容区按它铺满动画。签名是 `{expression, positive, negative, form}`：一行算式，客户端每帧对每格求值，结果截到 −1～1，绝对值为点的大小、正负选 `positive` 或 `negative` 颜色（参考色板字母 `B M L Y D`），`form` 为点的终态形状。算式只解析求值、不执行代码，语法以 `kited/src/emblem-expression.ts` 为准，App 的 `DotExpression.swift` 与之保持一致。
+每个角色有一枚点阵签名，App 在新代理的空白内容区按它铺满动画。签名是 `{expression, positive, negative, form}`：一行算式，客户端每帧对每格求值，结果截到 −1～1，绝对值为点的大小、正负选 `positive` 或 `negative` 颜色（参考色板字母 `B M L Y D`），`form` 为点的终态形状。算式只解析求值、不执行代码，语法以 `kited/src/emblem-expression.ts` 为准，App 的 `DotExpression.swift` 与之保持一致。
 
-模板保存后用轻任务按模板正文生成，提示词是可编辑的「点阵签名」模板。回复不可用时附上原因重试一次，仍失败记为 `failed`，客户端沿用默认图案。手改的签名不被自动生成替换，只有 `force` 重新生成会覆盖；生成期间发生的手改也不会被在途结果覆盖。模板列表中创建会话模板带 `emblem`、`emblemState`（`ready`、`stale`、`missing`、`generating`、`failed`）与失败时的 `emblemError`；`stale` 表示模板内容已变、签名尚未更新。模板或签名状态变化时，目录事件流推送 `context-templates.changed`，客户端据此重新读取模板列表。
+角色保存后用轻任务按角色名称与提示词生成，生成规则是可编辑的「点阵签名」模板。签名只随提示词过期，只改工具、模型或预算不会重新生成。回复不可用时附上原因重试一次，仍失败记为 `failed`，客户端沿用默认图案。手改的签名不被自动生成替换，只有 `force` 重新生成会覆盖；生成期间发生的手改也不会被在途结果覆盖。角色列表中每项带 `emblem`、`emblemState`（`ready`、`stale`、`missing`、`generating`、`failed`）与失败时的 `emblemError`；`stale` 表示提示词已变、签名尚未更新。角色或签名状态变化时，目录事件流推送 `roles.changed`，客户端据此重新读取角色列表；后台场景模板变化推送 `context-templates.changed`。
 
 ### 启动服务
 
@@ -154,7 +154,7 @@ Kite 托管账号与组网。Mac 和 iPhone 在 App 中使用账号密码登录�
 |---|---|
 | 登记检出 | 按目录的 origin 归入项目，建立直接使用登记目录的根工作区，不创建线程。没有 origin 时建托管远程并推送，普通文件夹先由 Kite 初始化仓库并提交初始版本 |
 | 创建独立工作区 | 从检出当前 HEAD 建立独立工作树；现场未提交的改动不带入，也不由 Kite 代为提交。可以先建空工作区，也可在准备完成后运行首条消息 |
-| 添加线程 | 根工作区和独立工作区都可有多个线程，各自保存对话；当前同一 cwd 有执行或恢复阻塞时，不能启动另一线程。App 的新会话草稿只在本机，第一条消息连同所选定义、后端、模型和模板一次创建实例、线程与窗口 |
+| 添加线程 | 根工作区和独立工作区都可有多个线程，各自保存对话；当前同一 cwd 有执行或恢复阻塞时，不能启动另一线程。App 的新代理草稿只在本机，第一条消息连同所选角色和调整过的模型、工具、预算一次创建实例、线程与窗口 |
 | 快照与回退 | 每批工具后与回合结束时保存变更，快照不改变 HEAD、分支或暂存区。回退先保存现状，再恢复文件；执行或恢复阻塞期间不允许回退 |
 | 采纳（集成） | 将独立工作区改动合回检出主线并推送到远程。现场有未提交的改动或不在分支上时拒绝。同一检出的采纳串行执行，冲突留在独立工作树；采纳后工作区与线程仍可继续使用 |
 | 现场提交并推送 | 由用户触发，把现场改动提交后推送。远程领先而现场没有新内容时快进；两边都有新内容时拒绝，提示新建工作区集成 |
@@ -247,26 +247,28 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | GET/PUT | `/network` | 仅本机：组网状态，上线后 `peers` 列出对端设备的连接方式（`direct` 直连、`relay` 经中继、`idle` 近期无流量）；`{enabled}` 开启或关闭组网节点 |
 | GET | `/projects` | 列出本机已登记的项目身份 |
 | GET/POST | `/checkouts` | 列出本机检出（`?project=`）；登记本机文件夹 `{path}` 或 clone 远程 `{remote, path?}`，返回根工作区聚合 |
-| GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, runtime?, contextTemplate?}`，准备过程看事件 |
+| GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, role?}`，`role` 为 `{id, revision}`，准备过程看事件 |
 | GET | `/workspaces/:id` | 工作区上下文及 instances、threads、windows 的完整聚合 |
 | GET / POST | `/plugin-definitions` | 读取定义或登记自定义包；包格式见 Bun 插件契约 |
 | GET | `/operations` | 操作输入、输出、错误 schema，以及重试与取消规则 |
 | POST | `/workspaces/:id/operations/:operation` | 调用 agent.start / list / send / resume / stop 或 files.list / read / state / select；修改操作必须带 operationId |
-| GET | `/instances/:id/agent-capabilities` | 模型与思考档位、工具选择及配置生效边界；不发模型请求 |
-| GET | `/plugin-definitions/:id/agent-capabilities` | 尚无实例的新会话草稿按定义读取同样的能力，`?runtime=` 选择后端 |
-| GET / PUT | `/instances/:id/agent-config` | 读取绑定配置及 revision；以 expectedRevision 和完整 agent 配置更新 |
-| GET / POST | `/context-templates` | 列出创建会话、标题、上下文压缩及五类通知模板和场景变量；以 `{definition}` 新建创建会话模板 |
-| PUT | `/context-templates/:id` | 以 `{expectedRevision, definition}` 更新模板；不修改已有实例 |
-| PUT | `/context-templates/:id/emblem` | 以 `{emblem}` 保存手改的点阵签名，返回带签名状态的模板；表达式不可用时 400 |
-| POST | `/context-templates/:id/emblem/generate` | `{force}`：为 `true` 时连手改的签名一起重新生成，否则只补缺失或过期的签名；立即返回 `{emblem?, emblemState, emblemError?}`，结果随 `context-templates.changed` 送达；未启用轻任务时 503 |
-| PUT | `/instances/:id/context-template` | 以 `{expectedRevision, templateId, templateRevision}` 为实例绑定模板内容；保留其他配置 |
+| GET | `/instances/:id/agent-capabilities` | 按厂商分组的模型与思考档位、这个代理可开的工具（`tools`）与角色必需的工具（`required`），以及配置生效边界；不发模型请求 |
+| GET | `/workspaces/:id/agent-options` | 尚无实例的新代理草稿读取模型目录，以及各角色在这个工作区可开的工具；必需工具不可用的角色带 `unavailable` 原因 |
+| GET / PUT | `/instances/:id/agent-config` | 读取绑定配置及 revision；以 expectedRevision 和完整 agent 配置更新，工具不能超出创建时角色的规则，也不能关闭必需工具 |
+| GET / POST | `/roles` | 列出角色（带签名状态），附代理插件的全部工具、提示词变量与模型目录；以 `{role}` 新建角色 |
+| PUT | `/roles/:id` | 以 `{expectedRevision, role}` 更新角色；不修改已有代理 |
+| PUT | `/roles/:id/emblem` | 以 `{emblem}` 保存手改的点阵签名，返回带签名状态的角色；表达式不可用时 400 |
+| POST | `/roles/:id/emblem/generate` | `{force}`：为 `true` 时连手改的签名一起重新生成，否则只补缺失或过期的签名；立即返回 `{emblem?, emblemState, emblemError?}`，结果随 `roles.changed` 送达；未启用轻任务时 503 |
+| PUT | `/instances/:id/role` | 以 `{expectedRevision, roleId, roleRevision}` 为代理改选角色，换上角色的提示词、工具、默认模型与预算；授权不变 |
+| GET | `/context-templates` | 列出标题、上下文压缩、点阵签名及五类通知模板和场景变量 |
+| PUT | `/context-templates/:id` | 以 `{expectedRevision, definition}` 更新模板；模板由工作机提供，不能新建 |
 | GET / PUT | `/threads/:id/title` | 读取标题与生成进度；以 expectedRevision 手动改名或恢复自动标题 |
 | POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不阻塞主会话控制 |
 | GET / PUT | `/instances/:id/execution-grants` | 读取或修改执行授权；须停止且无恢复阻塞 |
 | GET / PUT | `/instances/:id/operation-grants` | 读取实例操作授权及 revision；以 expectedRevision 和 grants 更新 |
 | POST | `/workspaces/:id/windows` | 创建实例及默认窗口，或打开已有实例视图；请求使用稳定 id |
 | DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口；最后窗口按插件生命周期回收实例或保留 |
-| POST | `/workspaces/:id/threads` | 在已有工作区创建线程并打开窗口 `{prompt, definitionId?, runtime?, model?, contextTemplate?}`；省略 definitionId 时按 runtime 选内置定义，默认 harness。`model` 为 `{model, reasoning}`，优先于定义默认值；runtime 与定义不同时必须同时给出 model。模板选择为 `{id, revision}` |
+| POST | `/workspaces/:id/threads` | 在已有工作区创建代理并打开窗口 `{prompt, role?, model?, tools?, maxRequestsPerTurn?}`；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具 |
 | GET | `/threads/:id` | 线程和上下文，附带 `runner`、`busy` |
 | GET | `/threads/:id/state` | 只读执行与恢复状态，不启动模型 |
 | GET | `/threads/:id/history` | v1 显示历史、pending、state 和 cursor，只读 |
@@ -288,7 +290,7 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | GET | `/events?workspace=<id>` | 工作区 SSE：首帧 `workspace.model`，随后工作区操作与所属线程概要 |
 | GET | `/events?thread=<id>` | 线程 SSE：首帧 `thread.history`，随后线程显示与状态事件 |
 
-窗口创建请求为 `{id, content: {kind: "create", definitionId}}`；打开已有视图为 `{id, content: {kind: "open", instanceId, viewId}}`。`id` 使用 UUID。内置 agent 提供 `conversation`，文件提供 `files`，终端占位提供 `terminal`；文件视图包含预览。新建的空 agent 不调用模型；目标实例须属于当前工作区且处于可用状态，视图须由定义声明。
+窗口创建请求为 `{id, content: {kind: "create", definitionId}}`；打开已有视图为 `{id, content: {kind: "open", instanceId, viewId}}`。`id` 使用 UUID。内置代理（`kite.agent`）提供 `conversation`，文件提供 `files`，终端占位提供 `terminal`；文件视图包含预览。新建的空 agent 不调用模型；目标实例须属于当前工作区且处于可用状态，视图须由定义声明。
 
 窗口响应包含 `{id, workspaceId, target: {instanceId, viewId}, state, createdAt}`。同一请求 ID 重试返回原结果，内容改变或窗口已关闭时拒绝，迟到重试不会复活窗口。实例回收与跨端布局的完整规则见 [Agent 与插件契约](Agent与插件契约.md#34-workspacewindow实例的一种呈现)。
 

@@ -12,7 +12,7 @@ import { Runner } from '../../src/claude/runner.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { ThreadContext } from '../../src/model.ts';
 import type { DisplayBlock, DisplayEnvelope, History } from '../../src/transcript/protocol.ts';
-import { api, type Kited, mark, registerCheckout, startKited, waitIdle } from '../harness.ts';
+import { api, claudeModel, type Kited, mark, openAgent, registerCheckout, startKited, waitIdle } from '../harness.ts';
 import { deferred, Seen } from '../harness-loop.ts';
 import { ENV, newRepo, transcript } from '../util.ts';
 
@@ -52,11 +52,7 @@ test('Claude 线程压缩中间两轮：摘要在不落盘的分叉上按主会�
   query.mockResolvedValueOnce(undefined);
   const repo = newRepo(kk.root, 'project', { 'a.txt': '压缩测试文件第一行\n压缩测试文件第二行\n' });
   const workspace = await registerCheckout(kk, repo);
-  const opened = await kk.call('POST', `/workspaces/${workspace.workspace.id}/windows`, {
-    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent.claude' },
-  });
-  expect(opened.status).toBe(200);
-  const id = opened.body.target.instanceId as string;
+  const id = await openAgent(kk.call, workspace.workspace.id, claudeModel);
   const updates = new Seen<DisplayEnvelope>();
   kk.daemon.kite.events.subscribe((event) => 'threadId' in event && event.threadId === id, (event) => updates.add(event));
   const thread = (await kk.call('GET', `/threads/${id}`)).body as ThreadContext;

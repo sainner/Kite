@@ -9,7 +9,7 @@ const input = z.object({ id, text, source: z.enum(['human', 'kite']) }).strict()
 const target = z.object({ operationId: id, instanceId: id }).strict();
 const ok = z.object({ ok: z.literal(true) }).strict();
 const summary = z.object({
-  instanceId: id, definitionId: id, title: z.string(), presentation: z.enum(['window', 'inline', 'background']),
+  instanceId: id, definitionId: id, title: z.string(), role: z.object({ id, title: z.string() }).strict().nullable(), presentation: z.enum(['window', 'inline', 'background']),
   status: z.enum(['open', 'archived']), phase: z.enum(['idle', 'running', 'stopping', 'finishing']),
   busy: z.boolean(), waitingForResume: z.boolean(), recovery: z.string().nullable(), operations: z.array(id),
 }).strict();
@@ -21,9 +21,9 @@ export const operationContracts = {
     input: target.extend({ tool: id, arguments: z.record(z.string(), z.unknown()) }).strict(), output: z.unknown(),
   },
   'agent.start': {
-    title: '创建 agent', description: '在当前工作区创建 agent 实例。省略 prompt 只创建空会话；共享工作区已有线程运行时不能启动另一线程。',
+    title: '创建 agent', description: '在当前工作区按角色创建 agent 实例。role 是角色 ID，省略时用默认角色 kite.work（工作）；内置的还有 kite.review（只读审查）。省略 prompt 只创建空会话；共享工作区已有线程运行时不能启动另一线程。',
     tool: 'agent_start', effect: 'create', retry: 'receipt',
-    input: z.object({ operationId: id, definitionId: id, title: text.optional(), prompt: text.optional(),
+    input: z.object({ operationId: id, role: id.optional(), title: text.optional(), prompt: text.optional(),
       presentation: z.enum(['window', 'inline', 'background']).default('window') }).strict(),
     output: z.object({ instanceId: id, windowId: id.optional() }).strict(),
   },
@@ -86,7 +86,7 @@ const targets = z.discriminatedUnion('kind', [
 ]);
 export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('plugin.call'), instanceId: id, tools: z.array(id).min(1) }).strict(),
-  z.object({ operation: z.literal('agent.start'), definitionIds: z.array(id) }).strict(),
+  z.object({ operation: z.literal('agent.start'), roleIds: z.array(id) }).strict(),
   z.object({ operation: z.literal('agent.list') }).strict(),
   ...(['agent.send', 'agent.resume', 'agent.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
   ...(['files.list', 'files.read', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
@@ -94,10 +94,10 @@ export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
 ]));
 export type OperationGrant = z.infer<typeof operationGrantsSchema>[number];
 
-/** 仅宿主登记的编码定义获得默认授权；自定义 manifest 不能自行授予。 */
+/** 仅宿主登记的代理获得默认授权，可按内置角色创建代理；自定义 manifest 不能自行授予。 */
 export function defaultOperationGrants(definitionId: string): OperationGrant[] {
-  return ['kite.agent.coding', 'kite.agent.claude'].includes(definitionId) ? [
-    { operation: 'agent.list' }, { operation: 'agent.start', definitionIds: ['kite.agent.coding', 'kite.agent.review', 'kite.agent.claude'] },
+  return definitionId === 'kite.agent' ? [
+    { operation: 'agent.list' }, { operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] },
     { operation: 'agent.send', targets: { kind: 'created' } },
     { operation: 'agent.resume', targets: { kind: 'created' } },
     { operation: 'agent.stop', targets: { kind: 'created' } },

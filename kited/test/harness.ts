@@ -7,8 +7,10 @@ import { rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { startDaemon, type Daemon } from '../src/daemon.ts';
 import type { Envelope } from '../src/events.ts';
+import type { AgentDefinition } from '../src/agents/definition.ts';
 import type { Model } from '../src/harness/types.ts';
 import type { Machine, Thread, ThreadContext, WorkspaceModel } from '../src/model.ts';
+import type { Role } from '../src/roles.ts';
 import type { RuntimeOptions } from '../src/runtime.ts';
 import { type FakeAccount, linkAccount, startFakeAccount } from './fake-account.ts';
 import { api } from './setup.ts';
@@ -108,11 +110,48 @@ export async function registerCheckout(k: Kited, path: string): Promise<Workspac
   return r.body as WorkspaceModel;
 }
 
-/** 新建工作区及首线程；返回线程控制和运行时所需的完整上下文。 */
+/** 原内置 Claude 定义的默认模型；后端由模型推出，传这个模型就得到 Claude 线程。 */
+export const claudeModel: AgentDefinition['model'] = { model: 'sonnet', reasoning: 'medium' };
+
+type Request = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
+
+/** 默认模型为 Claude 的测试角色，其余照抄内置的工作角色；同样内容重复保存是幂等的。返回选择角色用的 {id, revision}。 */
+export async function claudeRole(request: Request): Promise<{ id: string; revision: string }> {
+  const catalog = await request('GET', '/roles');
+  if (catalog.status !== 200) throw new Error(`取角色失败：${catalog.status} ${JSON.stringify(catalog.body)}`);
+  const work = (catalog.body.roles as Array<{ role: Role }>).find((entry) => entry.role.id === 'kite.work');
+  if (!work) throw new Error('缺少内置的工作角色');
+  const saved = await request('POST', '/roles', { role: { ...work.role, id: 'test.claude', title: 'Claude', model: claudeModel } });
+  if (saved.status !== 200) throw new Error(`存 Claude 角色失败：${saved.status} ${JSON.stringify(saved.body)}`);
+  return { id: saved.body.role.id, revision: saved.body.revision };
+}
+
+/**
+ * 打开一个新代理窗口，返回实例 ID。窗口请求只带插件定义，新代理按默认角色建在自研后端；
+ * 给出 model 时随即改配置换模型，后端随模型换（传 claudeModel 得到空的 Claude 线程）。
+ */
+export async function openAgent(request: Request, workspaceId: string, model?: AgentDefinition['model']): Promise<string> {
+  const opened = await request('POST', `/workspaces/${workspaceId}/windows`, {
+    id: crypto.randomUUID(), content: { kind: 'create', definitionId: 'kite.agent' },
+  });
+  if (opened.status !== 200) throw new Error(`开代理窗口失败：${opened.status} ${JSON.stringify(opened.body)}`);
+  const id = opened.body.target.instanceId as string;
+  if (model) {
+    const config = await request('GET', `/instances/${id}/agent-config`);
+    const changed = await request('PUT', `/instances/${id}/agent-config`, {
+      expectedRevision: config.body.revision, agent: { ...config.body.instance.config.agent, model },
+    });
+    if (changed.status !== 200) throw new Error(`换模型失败：${changed.status} ${JSON.stringify(changed.body)}`);
+  }
+  return id;
+}
+
+/** 新建工作区及首线程；返回线程控制和运行时所需的完整上下文。建工作区只能选角色，Claude 首线程用 claudeRole。 */
 export async function createWorkspace(
   k: Kited, checkout: string, prompt: string, runtime: Thread['runtime'] = 'claude',
 ): Promise<ThreadContext> {
-  const r = await k.call('POST', '/workspaces', { checkout, prompt, runtime });
+  const role = runtime === 'claude' ? await claudeRole(k.call) : undefined;
+  const r = await k.call('POST', '/workspaces', { checkout, prompt, ...(role ? { role } : {}) });
   if (r.status !== 200) throw new Error(`建工作区失败：${r.status} ${JSON.stringify(r.body)}`);
   const thread = (r.body as WorkspaceModel).threads[0];
   if (!thread) throw new Error('建工作区后没有首线程');

@@ -5,9 +5,8 @@ import { inScope } from './transcript/feed.ts';
 import { z } from 'zod';
 import type { Server } from 'bun';
 import type { Kite } from './kite.ts';
-import type { RuntimeKind } from './model.ts';
 import { operationCatalog } from './operations/contract.ts';
-import { contextTemplateSelection } from './context-templates.ts';
+import { roleSelection } from './roles.ts';
 import { agentDefinitionSchema } from './agents/definition.ts';
 import type { Network } from './network.ts';
 import { publisherConfig, type CatalogPublisher } from './catalog-publisher.ts';
@@ -20,11 +19,6 @@ const str = (v: unknown, name: string): string => {
   if (typeof v !== 'string') throw new KiteError(`缺少 ${name}`);
   return v;
 };
-
-function runtimeKind(value: unknown): RuntimeKind | undefined {
-  if (value === undefined || value === 'harness' || value === 'claude') return value;
-  throw new KiteError('runtime 必须是 harness 或 claude');
-}
 
 /** 登记本机文件夹写 path；clone 远程写 remote，path 可选，默认放在 ~/code/<域名>/<owner>/<repo>。 */
 const checkoutRequest = z.union([
@@ -213,28 +207,30 @@ export function serve(kite: Kite, listen: Listen) {
         }),
         POST: bound(async (req) => {
           const b = await body(req);
-          const runtime = runtimeKind(b.runtime);
           return kite.createWorkspace(str(b.checkout, 'checkout'), b.name === undefined ? '' : str(b.name, 'name'),
-            b.prompt === undefined ? undefined : str(b.prompt, 'prompt'), runtime, contextTemplateSelection(b.contextTemplate));
+            b.prompt === undefined ? undefined : str(b.prompt, 'prompt'), roleSelection(b.role));
         }),
       },
       '/plugin-definitions': {
         GET: bound(() => kite.catalog.definitions()),
         POST: bound(async (req) => kite.catalog.install(await body(req))),
       },
-      '/plugin-definitions/:id/agent-capabilities': {
-        GET: bound((req) => kite.definitionCapabilities(req.params.id, runtimeKind(new URL(req.url).searchParams.get('runtime') ?? undefined))),
-      },
-      '/context-templates': {
-        GET: bound(() => kite.emblems.catalog()),
-        POST: bound(async (req) => kite.createContextTemplate((await body(req)).definition)),
-      },
+      '/workspaces/:id/agent-options': { GET: bound((req) => kite.agentOptions(req.params.id)) },
+      '/context-templates': { GET: bound(() => kite.contextTemplates.list()) },
       '/context-templates/:id': { PUT: bound(async (req) => {
         const b = await body(req);
         return kite.updateContextTemplate(req.params.id, str(b.expectedRevision, 'expectedRevision'), b.definition);
       }) },
-      '/context-templates/:id/emblem': { PUT: bound(async (req) => kite.emblems.save(req.params.id, (await body(req)).emblem)) },
-      '/context-templates/:id/emblem/generate': { POST: bound(async (req) => {
+      '/roles': {
+        GET: bound(() => kite.roleCatalog()),
+        POST: bound(async (req) => kite.createRole((await body(req)).role)),
+      },
+      '/roles/:id': { PUT: bound(async (req) => {
+        const b = await body(req);
+        return kite.updateRole(req.params.id, str(b.expectedRevision, 'expectedRevision'), b.role);
+      }) },
+      '/roles/:id/emblem': { PUT: bound(async (req) => kite.emblems.save(req.params.id, (await body(req)).emblem)) },
+      '/roles/:id/emblem/generate': { POST: bound(async (req) => {
         const b = await body(req);
         return kite.emblems.generate(req.params.id, b.force === true);
       }) },
@@ -290,10 +286,10 @@ export function serve(kite: Kite, listen: Listen) {
           return kite.configureAgent(req.params.id, str(b.expectedRevision, 'expectedRevision'), b.agent);
         }),
       },
-      '/instances/:id/context-template': { PUT: bound(async (req) => {
+      '/instances/:id/role': { PUT: bound(async (req) => {
         const b = await body(req);
-        return kite.configureContextTemplate(req.params.id, str(b.expectedRevision, 'expectedRevision'), {
-          id: str(b.templateId, 'templateId'), revision: str(b.templateRevision, 'templateRevision'),
+        return kite.configureRole(req.params.id, str(b.expectedRevision, 'expectedRevision'), {
+          id: str(b.roleId, 'roleId'), revision: str(b.roleRevision, 'roleRevision'),
         });
       }) },
       '/instances/:id/operation-grants': {
@@ -315,11 +311,11 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/threads': {
         POST: bound(async (req) => {
           const b = await body(req);
-          const choice = z.object({ definitionId: z.string().trim().min(1).optional(), model: agentDefinitionSchema.shape.model.optional() })
-            .safeParse({ definitionId: b.definitionId, model: b.model });
-          if (!choice.success) throw new KiteError('会话创建参数无效');
-          return kite.createThread(req.params.id, str(b.prompt, 'prompt'),
-            { ...choice.data, runtime: runtimeKind(b.runtime), template: contextTemplateSelection(b.contextTemplate) });
+          const choice = z.object({ model: agentDefinitionSchema.shape.model.optional(), tools: agentDefinitionSchema.shape.tools.optional(),
+            maxRequestsPerTurn: agentDefinitionSchema.shape.maxRequestsPerTurn.optional() })
+            .safeParse({ model: b.model, tools: b.tools, maxRequestsPerTurn: b.maxRequestsPerTurn });
+          if (!choice.success) throw new KiteError('代理创建参数无效');
+          return kite.createThread(req.params.id, str(b.prompt, 'prompt'), { ...choice.data, role: roleSelection(b.role) });
         }),
       },
       '/workspaces/:id/windows': { POST: bound(async (req) => {

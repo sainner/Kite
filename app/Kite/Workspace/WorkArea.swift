@@ -13,7 +13,7 @@ final class WorkArea: Identifiable {
     private(set) var pluginClient: KitedClient?
     private(set) var pluginConnection: UUID
     let draftThread: WorkThread
-    /// 已有工作区里的新会话草稿只在本机打开，不同步到其他设备；关闭即丢弃，工作机上不留实例。
+    /// 已有工作区里的新代理草稿只在本机打开，不同步到其他设备；关闭即丢弃，工作机上不留实例。
     private(set) var draftOpen = false
     static let draftWindowID = "draft-window"
     let layout: WindowLayout
@@ -138,14 +138,12 @@ final class WorkArea: Identifiable {
                               target: WindowTarget(instanceId: thread.id, viewId: "conversation"), state: .open, createdAt: 0)
     }
 
-    /// 添加 agent 时先打开本机草稿；已有草稿时沿用它，换了 agent 类型才重置选择。
+    /// 添加代理时先打开本机草稿；已有草稿时沿用其中的选择。
     func openDraft(_ definition: RemotePluginDefinition) {
-        guard !isDraft, let choice = DraftAgentChoice(definition) else { return }
-        if !draftOpen || draftThread.draftChoice?.definitionId != definition.id {
-            draftThread.draftChoice = choice
-            draftThread.agentCapabilities = nil
-        }
+        guard !isDraft, definition.agent != nil else { return }
         if !draftOpen {
+            draftThread.draftChoice = DraftAgentChoice()
+            draftThread.agentCapabilities = nil
             draftOpen = true
             windows.append(Self.draftWindow(workspace: id, thread: draftThread))
             layout.reconcile(windows.map { Pane($0.id) })
@@ -170,9 +168,10 @@ final class WorkArea: Identifiable {
     private func dropDraft() -> [RemoteWorkspaceWindow] {
         draftOpen = false
         draftThread.draft = ""
-        draftThread.contextTemplate = nil
+        draftThread.role = nil
         draftThread.draftChoice = nil
         draftThread.agentCapabilities = nil
+        draftThread.agentOptions = nil
         draftThread.error = nil
         windows.removeAll { $0.id == Self.draftWindowID }
         return windows

@@ -6,7 +6,7 @@ import { readClaudeControl } from '../../src/claude/control.ts';
 import { Runner } from '../../src/claude/runner.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { History } from '../../src/transcript/protocol.ts';
-import { api, call, type Kited, mark, registerCheckout, startKited, waitRunner } from '../harness.ts';
+import { api, call, claudeModel, type Kited, mark, openAgent, registerCheckout, startKited, waitRunner } from '../harness.ts';
 import { deferred } from '../harness-loop.ts';
 import { newRepo, transcript, until, writeFiles } from '../util.ts';
 
@@ -45,11 +45,7 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
   const updatedRule = tag('运行中项目规则更新');
   const repo = newRepo(kk.root, 'project', { 'a.txt': `${streamingTag}\n`, 'AGENTS.md': oldRule });
   const p = await registerCheckout(kk, repo);
-  const opened = await kk.call('POST', `/workspaces/${p.workspace.id}/windows`, {
-    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent.claude' },
-  });
-  expect(opened.status).toBe(200);
-  const id = opened.body.target.instanceId as string;
+  const id = await openAgent(kk.call, p.workspace.id, claudeModel);
   const getHistory = async () => (await kk.call('GET', `/threads/${id}/history`)).body as History;
   const sdkMessages = () => kk.events.flatMap((event) => event.type === 'sdk' && event.threadId === id ? [event.message as any] : []);
   const isLifecycle = (message: any, uuid: string, state: string) => message.type === 'command_lifecycle'
@@ -141,11 +137,11 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
   expect(changed.status).toBe(200);
   const grants = await kk.call('GET', `/instances/${id}/operation-grants`);
   expect((await kk.call('PUT', `/instances/${id}/operation-grants`, {
-    expectedRevision: grants.body.revision, grants: [{ operation: 'agent.start', definitionIds: ['kite.agent.claude'] }],
+    expectedRevision: grants.body.revision, grants: [{ operation: 'agent.start', roleIds: ['kite.work'] }],
   })).status).toBe(200);
   const opTag = tag('创建空会话');
   const hold = tag('操作结果');
-  const operation = { id: 'operation-client-input', text: `${opTag}\nAGENT_START {"definitionId":"kite.agent.claude","presentation":"background"}\nHOLD_RESULT ${hold}` };
+  const operation = { id: 'operation-client-input', text: `${opTag}\nAGENT_START {"role":"kite.work","presentation":"background"}\nHOLD_RESULT ${hold}` };
   expect((await kk.call('POST', `/threads/${id}/messages`, operation)).status).toBe(200);
   const request = await api.waitRequest((entry) => entry.main && entry.lastUserText.includes(opTag));
   expect(request.body.tools.map((tool: { name: string }) => tool.name)).toEqual(['mcp__kite__agent_start']);

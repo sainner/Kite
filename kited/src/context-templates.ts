@@ -1,6 +1,5 @@
-/** 工作机共享的可编辑上下文；会话绑定内容，轻任务和通知在生成时读取并固定快照。 */
+/** 工作机共享的可编辑上下文：标题、压缩、签名等轻任务与各类通知，在生成时读取并固定快照。代理的提示词属于角色，见 roles.ts。 */
 import { createHash } from 'node:crypto';
-import { z } from 'zod';
 import { KiteError } from './errors.ts';
 import { contextDefinitionSchema } from './harness/context/assembler.ts';
 import { contextScenes, type ContextScene } from './harness/context/scenes.ts';
@@ -8,19 +7,11 @@ import type { ContextDefinition } from './harness/context/types.ts';
 import type { Store } from './store.ts';
 
 export interface ContextTemplate { definition: ContextDefinition; revision: string }
-export interface ContextTemplateSelection { id: string; revision: string }
 const editableScenes = [
-  'thread.create', 'thread.title', 'thread.compact', 'thread.configuration_changed', 'thread.context_updated',
+  'thread.title', 'thread.compact', 'thread.configuration_changed', 'thread.context_updated',
   'thread.execution_permissions_changed', 'thread.plugin_tools_changed', 'thread.file_changes',
   'template.emblem',
 ] as const;
-
-export function contextTemplateSelection(value: unknown): ContextTemplateSelection | undefined {
-  if (value === undefined) return undefined;
-  const parsed = z.object({ id: z.string().min(1), revision: z.string().min(1) }).strict().safeParse(value);
-  if (!parsed.success) throw new KiteError('模板选择须包含 id 和 revision');
-  return parsed.data;
-}
 
 const snapshot = (definition: ContextDefinition): ContextTemplate => ({
   definition, revision: createHash('sha256').update(JSON.stringify(definition)).digest('hex'),
@@ -37,7 +28,7 @@ export class ContextTemplates {
   private readonly fixedTemplates: Set<string>;
 
   constructor(private store: Store, defaults: ContextDefinition[]) {
-    this.fixedTemplates = new Set(defaults.filter((definition) => definition.scene !== 'thread.create').map((definition) => definition.id));
+    this.fixedTemplates = new Set(defaults.map((definition) => definition.id));
     store.transaction(() => {
       for (const definition of defaults) {
         if (!store.contextTemplate(definition.id)) store.saveContextTemplate(parse(definition));
@@ -52,6 +43,9 @@ export class ContextTemplates {
     };
   }
 
+  /** 不在模板列表里的场景（如角色提示词使用的创建会话场景）也按同一目录给出变量。 */
+  sceneVariables(scene: ContextScene) { return contextScenes[scene].variables; }
+
   get(id: string, scene: ContextScene, revision?: string): ContextTemplate {
     const definition = this.store.contextTemplate(id);
     if (!definition || !this.available(definition)) throw new KiteError('上下文模板不存在，请刷新列表', 404);
@@ -59,18 +53,6 @@ export class ContextTemplates {
     const value = snapshot(definition);
     if (revision !== undefined && revision !== value.revision) throw new KiteError('模板已更新，请刷新后重新选择', 409);
     return value;
-  }
-
-  create(value: unknown): ContextTemplate {
-    const definition = parse(value);
-    if (!this.available(definition)) throw new KiteError('该场景请编辑已有模板');
-    return this.store.transaction(() => {
-      const saved = this.store.contextTemplate(definition.id);
-      if (saved && snapshot(saved).revision !== snapshot(definition).revision) throw new KiteError('模板 ID 已存在，请另存为新模板', 409);
-      if (definition.scene !== 'thread.create' && !saved) throw new KiteError('该场景请编辑已有模板');
-      if (!saved) this.store.saveContextTemplate(definition);
-      return snapshot(definition);
-    });
   }
 
   update(id: string, expectedRevision: string, value: unknown): ContextTemplate {
@@ -84,6 +66,6 @@ export class ContextTemplates {
   }
 
   private available(definition: ContextDefinition): boolean {
-    return definition.scene === 'thread.create' || this.fixedTemplates.has(definition.id);
+    return this.fixedTemplates.has(definition.id);
   }
 }

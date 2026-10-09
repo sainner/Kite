@@ -16,14 +16,16 @@ import { openRuntime, type Runtime, type RuntimeOptions } from './runtime.ts';
 import { capture, changesBetween, findSnapshot, list, restore, type Snapshot } from './workspace/snapshots.ts';
 import { compactTemplate } from './harness/compaction.ts';
 import type { Store } from './store.ts';
-import type { AgentInstance, Checkout, Machine, OpenWindowRequest, PluginInstance, Project, RuntimeKind, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
+import type { AgentInstance, Checkout, Machine, OpenWindowRequest, PluginInstance, Project, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
 import { PluginCatalog } from './plugins/catalog.ts';
 import { PluginHost } from './plugins/host.ts';
 import { InstanceConfiguration } from './instance-configuration.ts';
 import { handOff } from './handoff/handoff.ts';
 import { instanceAgent, type AgentDefinition } from './agents/definition.ts';
 import { InstanceLifecycle, type AgentChoice } from './instance-lifecycle.ts';
-import { ContextTemplates, type ContextTemplate, type ContextTemplateSelection } from './context-templates.ts';
+import { ContextTemplates } from './context-templates.ts';
+import { defaultRoleId, Roles, type RoleSelection, type RoleSnapshot } from './roles.ts';
+import { agentDefinitionId } from './plugins/definitions.ts';
 import { addWorktree, removeWorktree, runSetup } from './workspace/worktrees.ts';
 import {
   agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
@@ -45,6 +47,7 @@ import { readSubscriptionCredentials } from './harness/auth.ts';
 import { SubscriptionLogins } from './subscription-logins.ts';
 import { ModelAccounts, readModelAccounts } from './model-accounts.ts';
 import { agentModels } from './agents/models.ts';
+import { agentModelCatalog } from './agents/capabilities.ts';
 
 export interface ThreadView extends ThreadContext { runner: Runtime['state']; busy: boolean }
 const firstLine = (text: string) => text.trim().split('\n')[0]!.trim() || '（空消息）';
@@ -67,6 +70,7 @@ export class Kite {
   readonly receipts: OperationReceipts;
   readonly catalog: PluginCatalog;
   readonly contextTemplates: ContextTemplates;
+  readonly roles: Roles;
   readonly plugins: PluginHost;
   readonly lightTasks?: LightTasks;
   readonly titles?: ThreadTitles;
@@ -92,8 +96,8 @@ export class Kite {
     this.modelAccounts = new ModelAccounts(home, (modelAccounts) => bus.emit({ type: 'model-accounts.changed', modelAccounts }),
       (home) => readModelAccounts(home, { usage: store, apiKeys: async () => this.account.linked ? this.account.apiKeys() : [] }));
     this.catalog = new PluginCatalog(join(home, 'plugins'));
+    this.roles = new Roles(store, this.catalog.get(agentDefinitionId).agent!.tools);
     this.contextTemplates = new ContextTemplates(store, [
-      ...this.catalog.definitions().flatMap((definition) => definition.agent ? [definition.agent.context] : []),
       titleTemplate, compactTemplate, emblemTemplate,
       agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
       pluginToolsContextDefinition,
@@ -132,23 +136,29 @@ export class Kite {
         history: (id) => this.history(id), changed: (thread) => this.threadChanged(thread),
       });
     }
-    this.emblems = new TemplateEmblems(store, this.contextTemplates, this.lightTasks,
-      () => bus.emit({ type: 'context-templates.changed' }));
+    this.emblems = new TemplateEmblems(store, this.roles, this.contextTemplates, this.lightTasks,
+      () => bus.emit({ type: 'roles.changed' }));
     for (const w of store.workspaces()) if (w.status === 'preparing') store.setWorkspaceStatus(w.id, 'failed');
     this.transcripts = new TranscriptHistory(store, home, bus, this.events);
   }
 
   machine(): Machine { return this.store.machine; }
-  createContextTemplate(definition: unknown) {
-    return this.templateSaved(this.contextTemplates.create(definition));
-  }
   updateContextTemplate(id: string, expectedRevision: string, definition: unknown) {
-    return this.templateSaved(this.contextTemplates.update(id, expectedRevision, definition));
-  }
-  /** 模板保存后通知各端刷新，创建会话模板随之更新点阵签名。 */
-  private templateSaved(saved: ContextTemplate) {
+    const saved = this.contextTemplates.update(id, expectedRevision, definition);
     this.bus.emit({ type: 'context-templates.changed' });
-    this.emblems.templateSaved(saved);
+    return saved;
+  }
+  /** 角色列表带上点阵签名状态，以及角色编辑器要用的代理插件全部工具、提示词变量和模型目录。 */
+  roleCatalog() {
+    return { roles: this.roles.list().map((role) => this.emblems.decorate(role)), tools: this.catalog.get(agentDefinitionId).agent!.tools,
+      variables: this.contextTemplates.sceneVariables('thread.create'), ...agentModelCatalog() };
+  }
+  createRole(role: unknown) { return this.roleSaved(this.roles.create(role)); }
+  updateRole(id: string, expectedRevision: string, role: unknown) { return this.roleSaved(this.roles.update(id, expectedRevision, role)); }
+  /** 角色保存后通知各端刷新，并随提示词更新点阵签名。 */
+  private roleSaved(saved: RoleSnapshot) {
+    this.bus.emit({ type: 'roles.changed' });
+    this.emblems.roleSaved(saved);
     return this.emblems.decorate(saved);
   }
   projects(): Project[] { return this.store.projects(); }
@@ -303,14 +313,12 @@ export class Kite {
     return this.control(this.context(id).workspaceId, fn);
   }
   private newThread(workspaceId: string, prompt: string, kind: Workspace['kind'], choice: AgentChoice): AgentInstance {
-    const definitionId = choice.definitionId ?? (choice.runtime === 'claude' ? 'kite.agent.claude' : 'kite.agent.coding');
-    if (!this.catalog.get(definitionId).agent) throw new KiteError('只能用 agent 定义创建会话');
-    const instance = this.instances.newInstance(workspaceId, definitionId, titleOf(prompt), kind, choice);
+    const instance = this.instances.newInstance(workspaceId, agentDefinitionId, titleOf(prompt), kind, choice);
     return { ...instance, instanceId: instance.id, runtime: instanceAgent(instance).runtime, nativeId: randomUUID() };
   }
 
   /** 可以先建空工作区；带首条消息时，准备完成才启动首个线程。 */
-  async createWorkspace(checkoutId: string, name: string, prompt?: string, runtime: RuntimeKind = 'harness', template?: ContextTemplateSelection): Promise<WorkspaceModel> {
+  async createWorkspace(checkoutId: string, name: string, prompt?: string, role?: RoleSelection): Promise<WorkspaceModel> {
     this.assertRunning();
     const c = this.checkoutOf(checkoutId);
     if (prompt !== undefined && !prompt.trim()) throw new KiteError('第一条消息不能为空');
@@ -320,7 +328,7 @@ export class Kite {
     const w: Workspace = { id, checkoutId: c.id, name: name.trim() || (prompt ? titleOf(prompt) : '新工作区'),
       cwd: join(this.home, 'worktrees', c.projectId, id), kind: 'worktree', branch: `kite/${id}`, base,
       status: 'preparing', createdAt: Date.now() };
-    const t = prompt === undefined ? undefined : this.newThread(id, prompt, w.kind, { runtime, template });
+    const t = prompt === undefined ? undefined : this.newThread(id, prompt, w.kind, { role });
     this.store.addWorkspace(w, t ? { agent: t, window: this.instances.newWindow(t) } : undefined);
     const controller = new AbortController();
     this.preparations.set(id, controller);
@@ -370,20 +378,19 @@ export class Kite {
       check();
       const { workspace } = this.workspace(workspaceId);
       if (workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
-      const definition = this.catalog.get(input.definitionId);
-      if (!definition.agent) throw new KiteError('只能通过 agent.start 创建 agent');
       if (input.prompt !== undefined) {
         await this.assertIdle(workspaceId);
         await this.snapshot(workspace, [], '线程开始');
       }
       check();
-      const instance = this.instances.newInstance(workspaceId, definition.id, input.title ?? (input.prompt ? titleOf(input.prompt) : '新会话'), workspace.kind);
+      const instance = this.instances.newInstance(workspaceId, agentDefinitionId, input.title ?? (input.prompt ? titleOf(input.prompt) : '新代理'), workspace.kind,
+        { role: { id: input.role ?? defaultRoleId } });
       instance.presentation = input.presentation;
       instance.origin = origin;
       if (origin && instanceExecutionGrants(this.store.instance(origin.instanceId)!).workspace === 'read') {
         instance.config.execution = { ...instanceExecutionGrants(instance), workspace: 'read' };
       }
-      const agent: AgentInstance = { ...instance, instanceId: instance.id, runtime: definition.agent.runtime, nativeId: randomUUID() };
+      const agent: AgentInstance = { ...instance, instanceId: instance.id, runtime: instanceAgent(instance).runtime, nativeId: randomUUID() };
       const window = instance.presentation === 'window' ? this.instances.newWindow(instance) : undefined;
       this.store.addAgent(agent, window);
       if (input.title !== undefined) this.store.saveThreadTitle(agent.id, 'initial', {
@@ -451,12 +458,12 @@ export class Kite {
 
   agentConfig(id: string) { return this.configuration.agentConfig(id); }
   agentCapabilities(id: string) { return this.configuration.agentCapabilities(id); }
-  definitionCapabilities(definitionId: string, runtime?: RuntimeKind) { return this.configuration.definitionCapabilities(definitionId, runtime); }
+  agentOptions(workspaceId: string) { return this.configuration.agentOptions(workspaceId); }
   configureAgent(id: string, expectedRevision: string, value: unknown) {
     return this.configuration.configureAgent(id, expectedRevision, value);
   }
-  configureContextTemplate(id: string, expectedRevision: string, template: ContextTemplateSelection) {
-    return this.configuration.configureContextTemplate(id, expectedRevision, template);
+  configureRole(id: string, expectedRevision: string, role: RoleSelection) {
+    return this.configuration.configureRole(id, expectedRevision, role);
   }
 
   threadTitle(id: string) {
@@ -584,7 +591,7 @@ export class Kite {
     const runner = await this.runner(thread);
     check();
     await runner.send(input);
-    if (thread.title === '新会话' && this.store.threadTitle(thread.id)?.mode === 'auto') {
+    if (thread.title === '新代理' && this.store.threadTitle(thread.id)?.mode === 'auto') {
       this.store.renameInstance(thread.id, titleOf(input.text));
       this.threadChanged(thread);
     }

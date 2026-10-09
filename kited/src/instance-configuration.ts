@@ -1,9 +1,8 @@
 /** 实例配置、执行授权和操作授权的版本校验与通知；控制队列及运行时生命周期由 Kite 提供。 */
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { agentCapabilities, configurationBoundary } from './agents/capabilities.ts';
-import { agentRevision, bindAgentContext, claudeReasoning, instanceAgent, parseAgentDefinition, type AgentDefinition } from './agents/definition.ts';
-import type { ContextTemplateSelection } from './context-templates.ts';
+import { agentCapabilities, agentModelCatalog, configurationBoundary } from './agents/capabilities.ts';
+import { agentRevision, chooseAgentModel, claudeReasoning, instanceAgent, parseAgentDefinition, type AgentDefinition } from './agents/definition.ts';
 import { KiteError } from './errors.ts';
 import { applyExecutionGrants, executionRevision, instanceExecutionGrants, normalizeExecutionGrants } from './execution/grants.ts';
 import { harnessPolicy } from './execution/policy.ts';
@@ -17,9 +16,11 @@ import type { Kite } from './kite.ts';
 import type { AgentInstance, PluginInstance, ThreadContext } from './model.ts';
 import type { OperationGrant } from './operations/contract.ts';
 import { mergePluginTools, pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding } from './plugins/tools.ts';
+import { agentDefinitionId } from './plugins/definitions.ts';
+import { checkTools, instanceRole, roleAgent, toolLimits, type RoleBinding, type RoleSelection } from './roles.ts';
 import type { Runtime } from './runtime.ts';
 
-type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates'>;
+type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates' | 'roles'>;
 
 interface ConfigurationControl {
   run<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
@@ -129,41 +130,53 @@ export class InstanceConfiguration {
     const agent = instanceAgent(instance);
     return { instance, revision: agentRevision(agent), configurationBoundary: configurationBoundary(agent.runtime) };
   }
+  /** 这个代理可开的工具：代理插件声明的全部工具，经创建时角色的规则约束。 */
+  private toolLimits(instance: PluginInstance) {
+    return toolLimits(this.kite.catalog.get(instance.definitionId).agent!.tools, instanceRole(instance)?.tools);
+  }
   agentCapabilities(id: string) {
     const thread = this.control.context(id);
-    return agentCapabilities({ ...this.kite.catalog.get(thread.definitionId).agent!, runtime: instanceAgent(thread).runtime });
+    return agentCapabilities(instanceAgent(thread).runtime, this.toolLimits(thread));
   }
-  /** 新会话草稿还没有实例，按定义和选定后端给出可选模型。 */
-  definitionCapabilities(definitionId: string, runtime?: AgentDefinition['runtime']) {
-    const agent = this.kite.catalog.get(definitionId).agent;
-    if (!agent) throw new KiteError('此插件不是 agent');
-    return agentCapabilities({ ...agent, runtime: runtime ?? agent.runtime });
+  /** 新代理的草稿还没有实例：给出模型目录，以及各角色在这个工作区可开的工具；必需工具不可用的角色附上原因。 */
+  agentOptions(workspaceId: string) {
+    this.kite.workspace(workspaceId);
+    const universe = this.kite.catalog.get(agentDefinitionId).agent!.tools;
+    return { ...agentModelCatalog(), roles: this.kite.roles.list().map(({ role, revision }) => {
+      const limits = toolLimits(universe, role.tools);
+      return { id: role.id, revision, tools: limits.permitted, required: limits.required,
+        ...(limits.missing.length ? { unavailable: `需要的工具不可用：${limits.missing.join('、')}` } : {}) };
+    }) };
   }
   configureAgent(id: string, expectedRevision: string, value: unknown) {
     return this.updateAgentConfiguration(id, expectedRevision, () => value);
   }
-  configureContextTemplate(id: string, expectedRevision: string, template: ContextTemplateSelection) {
-    return this.updateAgentConfiguration(id, expectedRevision, (agent) => ({ ...agent,
-      context: bindAgentContext(this.kite.contextTemplates.get(template.id, 'thread.create', template.revision).definition, this.control.context(id).workspace.kind),
-    }));
+  /** 改选角色：提示词、工具、默认模型与预算一起换成角色的，并记下新的角色约束。 */
+  configureRole(id: string, expectedRevision: string, selection: RoleSelection) {
+    const thread = this.control.context(id);
+    const bound = roleAgent(this.kite.catalog.get(thread.definitionId).agent!, this.kite.roles.get(selection.id, selection.revision), thread.workspace.kind);
+    return this.updateAgentConfiguration(id, expectedRevision, () => bound.agent, bound.role);
   }
-  private updateAgentConfiguration(id: string, expectedRevision: string, update: (agent: AgentDefinition) => unknown) {
+  private updateAgentConfiguration(id: string, expectedRevision: string, update: (agent: AgentDefinition) => unknown, role?: RoleBinding) {
     return this.control.run(this.control.context(id).workspaceId, async () => {
       this.control.openThread(id);
       const snapshot = this.agentConfig(id);
       const { instance, revision } = snapshot;
       if (revision !== expectedRevision) throw new KiteError('配置已变化，请重新读取后修改', 409);
-      const agent = parseAgentDefinition(update(instanceAgent(instance)));
+      const current = instanceAgent(instance);
+      const requested = parseAgentDefinition(update(current));
+      // 后端由模型推出；模型没换时沿用原后端，环境变量覆盖的目录外模型不会被误判为换了厂商。
+      const agent = requested.model.model === current.model.model ? { ...requested, runtime: current.runtime } : chooseAgentModel(requested, requested.model);
       const runtimeChanged = agent.runtime !== this.control.context(id).runtime;
       if (agent.runtime === 'claude') {
         const running = await this.control.runtime(this.control.context(id));
         if (running?.busy || running?.recovery || running?.state === 'stopping') throw new KiteError('请先停止会话并确认执行结果，再修改 Claude 配置', 409);
         if (!claudeReasoning.includes(agent.model.reasoning)) throw new KiteError('Claude 思考强度无效');
       }
-      const declared = this.kite.catalog.get(instance.definitionId).agent!;
-      if (agent.tools.some((tool) => !declared.tools.includes(tool))) throw new KiteError('配置包含此定义未开放的工具');
+      checkTools(agent.tools, role ? toolLimits(this.kite.catalog.get(instance.definitionId).agent!.tools, role.tools) : this.toolLimits(instance));
       const nextRevision = agentRevision(agent);
-      if (nextRevision === revision) return snapshot;
+      const roleChanged = role !== undefined && JSON.stringify(role) !== JSON.stringify(instanceRole(instance));
+      if (nextRevision === revision && !roleChanged) return snapshot;
       const notification = {
         id: randomUUID(), kind: 'agent.configuration.changed', source: `instance:${id}`, authority: 'instruction',
         context: assembleContext(agentConfigurationContext({
@@ -172,7 +185,8 @@ export class InstanceConfiguration {
       } as const;
       const save = () => this.kite.store.transaction(() => {
         if (runtimeChanged) this.kite.store.setThreadRuntime(id, agent.runtime);
-        this.kite.store.setInstanceConfig(id, { ...instance.config, agent }, notification);
+        this.kite.store.setInstanceConfig(id, { ...instance.config, agent, ...(role ? { role } : {}) },
+          nextRevision === revision ? undefined : notification);
       });
       if (runtimeChanged) await this.control.switchRuntime(id, agent, save);
       else save();

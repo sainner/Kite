@@ -63,7 +63,7 @@ struct InstanceSettings: View {
                     LabeledContent("插件") { Text(definition?.title ?? instance.definitionId).foregroundStyle(.secondary) }
                     LabeledContent("工作区") { Text(area.title).foregroundStyle(.secondary) }
                     if thread != nil {
-                        CardLink("会话配置") { page = .agent }.disabled(!available)
+                        CardLink("代理配置") { page = .agent }.disabled(!available)
                         CardLink("执行授权") { page = .grants }.disabled(!available)
                     }
                     ForEach(definition?.views ?? []) { view in
@@ -92,7 +92,7 @@ struct InstanceSettings: View {
                 }
                 if editable, draft != nil {
                     CardSection("可用能力", note: "选择这个实例可以调用的能力。修改后保存，撤回对后续调用立即生效。"
-                        + (definition?.agent != nil ? "撤回授权立即阻止后续调用。新增工具的生效时机见会话配置。" : ""))
+                        + (definition?.agent != nil ? "撤回授权立即阻止后续调用。新增工具的生效时机见代理配置。" : ""))
                     workspaceGrants
                     ForEach(targets) { target in
                         if area.definition(of: target)?.runtime == "bun" { pluginGrants(target) }
@@ -140,9 +140,9 @@ struct InstanceSettings: View {
                 let grant = OperationGrant(operation: "agent.list")
                 Toggle("查询代理", isOn: selection({ $0.grants.contains(grant) }, { $0.set(grant, enabled: $1) }))
             }
-            DisclosureGroup("创建代理") {
-                ForEach(area.definitions.filter { $0.agent != nil }) { definition in
-                    Toggle(definition.title, isOn: selection({ $0.includesDefinition(definition.id) }, { $0.setDefinition(definition.id, enabled: $1) }))
+            DisclosureGroup("按角色创建代理") {
+                ForEach(model.roles(in: area)?.roles ?? []) { role in
+                    Toggle(role.role.title, isOn: selection({ $0.includesRole(role.id) }, { $0.setRole(role.id, enabled: $1) }))
                 }
             }
             DisclosureGroup("自己创建的代理") {
@@ -218,6 +218,8 @@ struct InstanceSettings: View {
             saved = value
             draft = PluginGrantDraft(snapshot: value)
             operations = definitions
+            // 「按角色创建代理」列出的是工作机上的角色。
+            if model.roles(in: area) == nil { try await model.refreshRoles(in: area) }
         }
         if definition?.runtime == "bun" { try await readProcess() }
     }

@@ -11,7 +11,7 @@ const paragraph = (id: string, title: string, text: string): ContextBlock => ({
 });
 
 export const defaultContextDefinition: ContextDefinition = {
-  version: 2, id: 'kite.work', title: '工作会话', scene: 'thread.create',
+  version: 2, id: 'kite.work', title: '工作', scene: 'thread.create',
   blocks: [
     paragraph('identity', '基础行为', '你是 Kite 的本地编程助手。使用简体中文交流，按用户要求完成工作并验证结果。'),
     { type: 'paragraph', id: 'environment', title: '运行环境', parts: [

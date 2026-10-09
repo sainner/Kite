@@ -13,4 +13,6 @@ metadata:
 - 动画铺满会话窗口的整块内容区，标题压在中间（模板选择后来移到标题栏副标题，见 [[window-header-information]]），背后图案收弱。同日用户追加要求连标题栏和输入区后面也铺上：标题栏一带稍收弱，玻璃输入区不收弱。
 
 **Why:** 用户要求界面更生动，且延续「上下文可编辑」的方向（[[prompt-composition-direction]]），生成走常驻 ChatGPT 轻任务（[[light-task-direction]]）。
-**How to apply:** 契约与接口见 docs/kited.md「模板点阵签名」；颜色只用参考色板字母，遵守 [[visual-style-direction]]。调整空白页或签名时不退回静态按钮或固定字符画。
+同日创建会话模板并入角色（[[agent-role-direction]]），签名改为每个角色一枚，只随提示词过期。
+
+**How to apply:** 契约与接口见 docs/kited.md「角色点阵签名」；颜色只用参考色板字母，遵守 [[visual-style-direction]]。调整空白页或签名时不退回静态按钮或固定字符画。

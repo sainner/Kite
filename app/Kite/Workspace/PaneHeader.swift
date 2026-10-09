@@ -4,7 +4,7 @@ import SwiftUI
 struct PaneHeader {
     var title: String
     var subtitle: String?
-    /// 副标题后跟下拉箭头，点开是窗口给的菜单，例如新会话选用上下文模板。
+    /// 副标题后跟下拉箭头，点开是窗口给的菜单，例如新代理选用角色。
     var subtitleMenu: SubtitleMenu?
     var titleRefresh: TitleRefresh?
     /// 主标题右边的小标签，例如订阅账号的档位。

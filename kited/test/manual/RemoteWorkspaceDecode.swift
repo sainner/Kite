@@ -47,7 +47,7 @@ struct RemoteWorkspaceDecode {
             throw DecodeError.invalidRelationships
         }
         let threadInstanceIDs = Set(worktree.threads.map(\.instanceId))
-        let agentInstances = worktree.instances.filter { $0.definitionId == "kite.agent.coding" }
+        let agentInstances = worktree.instances.filter { $0.definitionId == "kite.agent" }
         guard Set(agentInstances.map(\.id)) == threadInstanceIDs,
               agentInstances.allSatisfy({ $0.workspaceId == worktree.workspace.id && $0.status == .open && $0.presentation == .window }),
               agentInstances.allSatisfy({ $0.state?.path == nil && $0.state?.revision == nil }),
@@ -71,7 +71,7 @@ struct RemoteWorkspaceDecode {
               agentViews.allSatisfy({ $0.workspaceId == worktree.workspace.id && $0.state == .open }) else {
             throw DecodeError.invalidRelationships
         }
-        guard let agentDefinition = definitions.first(where: { $0.id == "kite.agent.coding" }),
+        guard let agentDefinition = definitions.first(where: { $0.id == "kite.agent" }),
               agentDefinition.lifetime == .persistent,
               agentDefinition.defaultView == "conversation",
               agentDefinition.agent?.runtime == .harness,
@@ -120,7 +120,7 @@ struct RemoteWorkspaceDecode {
               archived.contains(where: { workspace in
                   guard workspace.workspace.kind == .worktree, workspace.threads.count == 2 else { return false }
                   let ids = Set(workspace.threads.map(\.instanceId))
-                  let agents = workspace.instances.filter { $0.definitionId == "kite.agent.coding" }
+                  let agents = workspace.instances.filter { $0.definitionId == "kite.agent" }
                   return Set(agents.map(\.id)) == ids && workspace.instances.allSatisfy({ $0.status == .archived })
               }) else {
             throw DecodeError.invalidCatalog

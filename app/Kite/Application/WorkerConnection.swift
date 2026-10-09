@@ -14,10 +14,12 @@ import Observation
     var definitions: [RemotePluginDefinition] = []
     var definitionsRequest = UUID()
     var templates: ContextTemplateCatalog?
+    var roles: RoleCatalog?
     var modelAccounts: ModelAccountsSnapshot?
     var modelAccountsError: String?
     var readingModelAccounts = false
     @ObservationIgnored var templatesRequest: (connection: UUID, task: Task<Void, Error>)?
+    @ObservationIgnored var rolesRequest: (connection: UUID, task: Task<Void, Error>)?
     @ObservationIgnored var task: Task<Void, Never>?
     var id: String { machine.id }
 

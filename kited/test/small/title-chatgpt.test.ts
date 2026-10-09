@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { ThreadContext } from '../../src/model.ts';
 import { writeClaudeHistory } from '../claude-history.ts';
-import { api, call, type Kited, registerCheckout, sendThreadMessage, startKited } from '../harness.ts';
+import { api, call, claudeModel, type Kited, openAgent, registerCheckout, sendThreadMessage, startKited } from '../harness.ts';
 import { ManualModel } from '../harness-loop.ts';
 import { newRepo, writeFiles } from '../util.ts';
 
@@ -24,12 +24,9 @@ test('Claude 与自研线程的默认标题均通过 ChatGPT HTTP 生成且不�
   const k = kited;
   const workspace = await registerCheckout(k, newRepo(k.root, 'project', { 'base.txt': '原始\n' }));
   const threads: ThreadContext[] = [];
-  for (const definitionId of ['kite.agent.claude', 'kite.agent.coding']) {
-    const opened = await k.call('POST', `/workspaces/${workspace.workspace.id}/windows`, {
-      id: randomUUID(), content: { kind: 'create', definitionId },
-    });
-    expect(opened.status).toBe(200);
-    const thread = (await k.call('GET', `/threads/${opened.body.target.instanceId}`)).body as ThreadContext;
+  for (const model of [claudeModel, undefined]) {
+    const id = await openAgent(k.call, workspace.workspace.id, model);
+    const thread = (await k.call('GET', `/threads/${id}`)).body as ThreadContext;
     threads.push(thread);
   }
   const claude = threads[0]!;

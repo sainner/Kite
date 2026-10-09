@@ -6,7 +6,7 @@ import { readClaudeMessages } from '../../src/claude/history.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { ThreadContext } from '../../src/model.ts';
 import type { DisplayEnvelope, History } from '../../src/transcript/protocol.ts';
-import { api, call, type Kited, registerCheckout, startKited } from '../harness.ts';
+import { api, call, claudeModel, type Kited, openAgent, registerCheckout, startKited } from '../harness.ts';
 import { ManualModel, Seen } from '../harness-loop.ts';
 import { newRepo } from '../util.ts';
 import { writeClaudeHistory } from '../claude-history.ts';
@@ -23,11 +23,7 @@ async function emptyThread() {
   kited = startKited();
   const repo = newRepo(kited.root, 'project', { 'base.txt': '原始\n' });
   const workspace = await registerCheckout(kited, repo);
-  const opened = await kited.call('POST', `/workspaces/${workspace.workspace.id}/windows`, {
-    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent.claude' },
-  });
-  expect(opened.status).toBe(200);
-  const id = opened.body.target.instanceId as string;
+  const id = await openAgent(kited.call, workspace.workspace.id, claudeModel);
   const thread = (await kited.call('GET', `/threads/${id}`)).body as ThreadContext;
   await kited.daemon.stop();
   return { k: kited, id, thread, directory: join(kited.home, 'sessions', id) };

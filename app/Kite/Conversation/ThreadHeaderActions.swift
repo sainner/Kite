@@ -12,17 +12,14 @@ struct ThreadHeaderActions: View {
     @State private var modelError: String?
     @State private var confirmingRecovery = false
     @State private var showingModels = false
+    @State private var showingDraftSettings = false
     private var availableModels: [AgentCapabilities.Model] { thread.agentCapabilities?.models ?? [] }
-    /// 草稿还没有实例，模型与后端改的是本机选择，随第一条消息一起提交。
+    /// 草稿还没有实例，模型改的是本机选择，随第一条消息一起提交。
     private var choice: DraftAgentChoice? { instance == nil ? thread.draftChoice : nil }
-    private var modelName: String? {
-        if let name = instance?.config?.agent?.model.model { return name }
-        if let choice { return choice.model?.model }
-        if thread.isDraft {
-            return area.definitions.first { $0.id == (instance?.definitionId ?? "kite.agent.coding") }?.agent?.model?.model
-        }
-        return nil
-    }
+    private var role: AgentRole? { model.newThreadRole(for: thread, in: area) }
+    /// 草稿没改过模型时用角色的默认模型。
+    private var draftModel: AgentModelConfiguration? { choice.flatMap { $0.model ?? role?.role.model } }
+    private var modelName: String? { instance?.config?.agent?.model.model ?? draftModel?.model }
 
     private var modelTier: String {
         guard let modelName else { return "模型" }
@@ -33,9 +30,9 @@ struct ThreadHeaderActions: View {
         return instance != nil && model.isConnected(area) && !savingModel
             && thread.agentCapabilities?.canEdit(thread.state) == true
     }
-    private var runtimeName: String { instance?.config?.agent?.runtime ?? choice?.runtime ?? "harness" }
     private var canOpenModels: Bool { (instance != nil || choice != nil) && model.isConnected(area) }
-    private var canChangeRuntime: Bool {
+    /// 换到另一厂商的模型就是换后端，运行中、有排队消息或等待恢复确认时不能换。
+    private var canChangeVendor: Bool {
         if choice != nil { return canOpenModels }
         return canOpenModels && !savingModel && !thread.showStop && thread.state?.capabilities.switchRuntime == true
     }
@@ -43,16 +40,19 @@ struct ThreadHeaderActions: View {
     var body: some View {
         menuGroup
             .popover(isPresented: $showingModels, arrowEdge: .top) {
-                ThreadModelMenu(runtime: runtimeName, modelName: modelName, models: availableModels,
-                    runtimeEnabled: canChangeRuntime, modelEnabled: canChangeModel, saving: savingModel,
+                ThreadModelMenu(modelName: modelName, vendors: thread.agentCapabilities?.vendors ?? [], models: availableModels,
+                    vendorEnabled: canChangeVendor, modelEnabled: canChangeModel, saving: savingModel,
                     loading: loadingModels,
-                    runtimeExplanation: thread.state?.capabilities.switchRuntime == false
-                        ? "运行中、有排队消息或等待恢复确认时不能切换。" : nil,
-                    onSelectRuntime: selectRuntime, onSelectModel: selectModel)
+                    vendorExplanation: thread.state?.capabilities.switchRuntime == false
+                        ? "运行中、有排队消息或等待恢复确认时不能换到其他厂商的模型。" : nil,
+                    onSelectModel: selectModel)
                     .presentationCompactAdaptation(.popover)
             }
-            .task(id: "\(model.revision(for: area))-\(model.isConnected(area))-\(runtimeName)-\(choice?.definitionId ?? "")") {
-                if let choice { await loadDraftCapabilities(choice); return }
+            .sheet(isPresented: $showingDraftSettings) {
+                DraftAgentSettings().environment(model).environment(area).environment(thread)
+            }
+            .task(id: "\(model.revision(for: area))-\(model.isConnected(area))-\(instance?.config?.agent?.runtime ?? "draft:\(role?.id ?? "")")") {
+                if choice != nil { await loadDraftOptions(); return }
                 guard model.isConnected(area), let instance else { return }
                 thread.agentCapabilities = nil
                 loadingModels = true
@@ -60,7 +60,7 @@ struct ThreadHeaderActions: View {
                 do {
                     let client = try model.activeClient(in: area)
                     let revision = model.revision(for: area)
-                    let runtime = runtimeName
+                    let runtime = instance.config?.agent?.runtime
                     let capabilities = try await client.request("/instances/\(instance.id)/agent-capabilities", as: AgentCapabilities.self)
                     guard revision == model.revision(for: area), !Task.isCancelled,
                           area.instances.first(where: { $0.id == instance.id })?.config?.agent?.runtime == runtime else { return }
@@ -74,7 +74,7 @@ struct ThreadHeaderActions: View {
             )) {
                 Button("好", role: .cancel) { modelError = nil }
             } message: { Text(modelError ?? "") }
-            .alert("确认恢复会话", isPresented: $confirmingRecovery) {
+            .alert("确认恢复代理", isPresented: $confirmingRecovery) {
                 Button("取消", role: .cancel) {}
                 Button("已核查，解除阻塞") { thread.control("recover") }
             } message: {
@@ -100,8 +100,12 @@ struct ThreadHeaderActions: View {
         if let instance {
             general.append(.init(title: "实例设置与授权", symbol: "slider.horizontal.3",
                                  enabled: model.isConnected(area)) { area.settingsInstance = instance })
-            general.append(.init(title: "归档会话", symbol: "archivebox",
+            general.append(.init(title: "归档代理", symbol: "archivebox",
                                  enabled: model.isConnected(area)) { area.archiveRequest = instance })
+        }
+        if choice != nil {
+            general.append(.init(title: "代理配置", symbol: "slider.horizontal.3",
+                                 enabled: thread.agentCapabilities != nil) { showingDraftSettings = true })
         }
         general.append(.init(title: "复制工作目录", symbol: "folder", enabled: !thread.transcript.root.isEmpty) {
             copyToPasteboard(thread.transcript.root, toast: toast)
@@ -120,29 +124,28 @@ struct ThreadHeaderActions: View {
         return [general, execution].filter { !$0.isEmpty }
     }
 
-    private func loadDraftCapabilities(_ choice: DraftAgentChoice) async {
+    /// 草稿按工作区读取模型目录与各角色可开的工具，再按所选角色给出能力。
+    private func loadDraftOptions() async {
         guard model.isConnected(area) else { return }
-        thread.agentCapabilities = nil
         loadingModels = true
         defer { if !Task.isCancelled { loadingModels = false } }
         do {
             let client = try model.activeClient(in: area)
-            let capabilities = try await client.request(
-                "/plugin-definitions/\(choice.definitionId)/agent-capabilities?runtime=\(choice.runtime)", as: AgentCapabilities.self)
-            guard !Task.isCancelled, thread.draftChoice?.definitionId == choice.definitionId,
-                  thread.draftChoice?.runtime == choice.runtime else { return }
-            thread.agentCapabilities = capabilities
+            let options = try await client.request("/workspaces/\(area.id)/agent-options", as: AgentOptions.self)
+            guard !Task.isCancelled, thread.draftChoice != nil else { return }
+            thread.agentOptions = options
+            if let role { thread.agentCapabilities = options.capabilities(for: role.id) }
         } catch {
             if !Task.isCancelled { showingModels = false; modelError = error.localizedDescription }
         }
     }
 
     private func selectModel(_ name: String) {
+        let levels = thread.agentCapabilities?.model(name)?.reasoning ?? []
         if choice != nil {
-            guard canChangeModel, availableModels.contains(where: { $0.id == name }) else { return }
-            let levels = thread.agentCapabilities?.model(name)?.reasoning ?? []
-            if thread.draftChoice?.model == nil { thread.draftChoice?.model = .init(model: name, reasoning: "medium") }
-            thread.draftChoice?.model?.selectModel(name, supportedReasoning: levels)
+            guard canChangeModel, availableModels.contains(where: { $0.id == name }), var selected = draftModel else { return }
+            selected.selectModel(name, supportedReasoning: levels)
+            thread.draftChoice?.model = selected
             showingModels = false
             return
         }
@@ -153,59 +156,43 @@ struct ThreadHeaderActions: View {
         Task {
             defer { savingModel = false }
             do {
+                // 换厂商即换后端，由工作机按模型推出。
                 try await model.updateAgent(in: area, id: instance.id) { agent in
-                    agent.model.selectModel(name, supportedReasoning: thread.agentCapabilities?.model(name)?.reasoning ?? [])
-                }
-            } catch { modelError = error.localizedDescription }
-        }
-    }
-
-    private func selectRuntime(_ runtime: String) {
-        if choice != nil {
-            guard canChangeRuntime, runtime != runtimeName else { return }
-            thread.draftChoice?.runtime = runtime
-            thread.draftChoice?.model = area.definitions.first(where: { $0.agent?.runtime.rawValue == runtime })?.agent?.model
-            return
-        }
-        guard canChangeRuntime, runtime != runtimeName, let instance,
-              let defaults = area.definitions.first(where: { $0.agent?.runtime.rawValue == runtime })?.agent?.model else { return }
-        savingModel = true
-        Task {
-            defer { savingModel = false }
-            do {
-                try await model.updateAgent(in: area, id: instance.id) { agent in
-                    agent.runtime = runtime
-                    agent.model = defaults
+                    agent.model.selectModel(name, supportedReasoning: levels)
                 }
             } catch { modelError = error.localizedDescription }
         }
     }
 }
 
-/// 模型弹出菜单共用系统分段选择器；切换后按当前后端重新读取模型目录。
+/// 模型弹出菜单：系统分段选择器按厂商分类，列出该厂商的模型；后端随所选模型确定，不单独出现。
 private struct ThreadModelMenu: View {
-    let runtime: String
     let modelName: String?
+    let vendors: [AgentCapabilities.Vendor]
     let models: [AgentCapabilities.Model]
-    let runtimeEnabled: Bool
+    let vendorEnabled: Bool
     let modelEnabled: Bool
     let saving: Bool
     let loading: Bool
-    let runtimeExplanation: String?
-    let onSelectRuntime: (String) -> Void
+    let vendorExplanation: String?
     let onSelectModel: (String) -> Void
+    /// 正在浏览的厂商；没翻过时停在当前模型所属的厂商。
+    @State private var browsing: String?
+
+    private var current: String? { models.first { $0.id == modelName }?.vendor }
+    private var vendor: String { browsing ?? current ?? vendors.first?.id ?? "" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Picker("执行后端", selection: Binding(get: { runtime }, set: onSelectRuntime)) {
-                Text("Kite").tag("harness")
-                Text("Claude").tag("claude")
+            if vendors.count > 1 {
+                Picker("厂商", selection: Binding(get: { vendor }, set: { browsing = $0 })) {
+                    ForEach(vendors) { Text($0.title).tag($0.id) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .disabled(!runtimeEnabled)
-            if let runtimeExplanation {
-                Text(runtimeExplanation).font(.caption).foregroundStyle(.secondary)
+            if vendor != current, !vendorEnabled, let vendorExplanation {
+                Text(vendorExplanation).font(.caption).foregroundStyle(.secondary)
             }
             Divider()
             if saving || loading {
@@ -216,7 +203,7 @@ private struct ThreadModelMenu: View {
             } else if models.isEmpty {
                 Text("暂无可用模型").foregroundStyle(.secondary)
             } else {
-                ForEach(models) { model in
+                ForEach(models.filter { $0.vendor == vendor }) { model in
                     Button { onSelectModel(model.id) } label: {
                         HStack {
                             Text(model.name)
@@ -229,7 +216,7 @@ private struct ThreadModelMenu: View {
                         .padding(.vertical, 5)
                     }
                     .buttonStyle(.pointingPlain)
-                    .disabled(!modelEnabled)
+                    .disabled(!modelEnabled || (model.vendor != current && !vendorEnabled))
                 }
             }
         }

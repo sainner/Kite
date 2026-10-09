@@ -89,7 +89,7 @@ test('登记检出创建同工作区线程，暂停后 CLI resume 续接，归�
   expect(rootForAssertion.instances).toEqual([]);
   expect(rootForAssertion.threads).toEqual([]);
   const created = await kk.call('POST', '/workspaces', {
-    checkout: root.checkout.id, name: '首个工作区', prompt: '首线程', runtime: 'harness',
+    checkout: root.checkout.id, name: '首个工作区', prompt: '首线程',
   });
   expect(created.status).toBe(200);
   const workspace = structuredClone(created.body);
@@ -105,7 +105,7 @@ test('登记检出创建同工作区线程，暂停后 CLI resume 续接，归�
   expect(firstInstance).toMatchObject({
     id: firstThreadId,
     workspaceId: workspace.workspace.id,
-    definitionId: 'kite.agent.coding',
+    definitionId: 'kite.agent',
     title: '首线程',
     status: 'open',
     presentation: 'window',
@@ -127,14 +127,14 @@ test('登记检出创建同工作区线程，暂停后 CLI resume 续接，归�
   expect(first.request.cwd).toBe(workspace.workspace.cwd);
 
   const busy = await kk.call('POST', `/workspaces/${workspace.workspace.id}/threads`, {
-    prompt: '不应并行启动', runtime: 'harness',
+    prompt: '不应并行启动',
   });
   expect(busy.status).toBe(409);
 
   first.response.complete();
   await kk.waitEvent((event) => event.type === 'idle' && event.threadId === firstThreadId);
   const secondCreated = await kk.call('POST', `/workspaces/${workspace.workspace.id}/threads`, {
-    prompt: '第二线程', runtime: 'harness',
+    prompt: '第二线程',
   });
   expect(secondCreated.status).toBe(200);
   const secondThread = structuredClone(secondCreated.body);
@@ -244,7 +244,7 @@ test('重启后保留项目到线程的 SQLite 关系，归档工作区删除工
   expect(secondCheckout.body.workspace.id).not.toBe(project.body.workspace.id);
   const firstMachine = await machine(restarted.url);
   const created = await call(restarted.url, 'POST', '/workspaces', {
-    checkout: project.body.checkout.id, prompt: '可恢复线程', runtime: 'harness',
+    checkout: project.body.checkout.id, prompt: '可恢复线程',
   });
   expect(created.status).toBe(200);
   const workspace = created.body;
@@ -268,7 +268,7 @@ test('重启后保留项目到线程的 SQLite 关系，归档工作区删除工
     instances: [expect.objectContaining({
       id: thread.instanceId,
       workspaceId: workspace.workspace.id,
-      definitionId: 'kite.agent.coding',
+      definitionId: 'kite.agent',
       status: 'open',
       presentation: 'window',
     })],
@@ -525,7 +525,7 @@ test('运行中的线程关闭窗口后继续执行，重新打开目标且归�
     && event.workspaceId === workspace.workspace.id && event.status === 'open');
 
   const opened = await kk.call('POST', `/workspaces/${workspace.workspace.id}/windows`, {
-    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent.coding' },
+    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent' },
   });
   expect(opened.status).toBe(200);
   const openedWindow = structuredClone(opened.body);
@@ -543,7 +543,7 @@ test('运行中的线程关闭窗口后继续执行，重新打开目标且归�
   expect(createdAggregate.instances).toEqual([expect.objectContaining({
     id: threadId,
     workspaceId: workspace.workspace.id,
-    definitionId: 'kite.agent.coding',
+    definitionId: 'kite.agent',
     status: 'open',
     presentation: 'window',
   })]);

@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { readClaudeControl } from '../../src/claude/control.ts';
 import { type FakeAccount, startFakeAccount } from '../fake-account.ts';
-import { api, call, type KitedProcess, spawnKited } from '../harness.ts';
+import { api, call, claudeRole, type KitedProcess, spawnKited } from '../harness.ts';
 import { ENV, newRepo, transcript, until, useTemp } from '../util.ts';
 
 setDefaultTimeout(3_000);
@@ -57,7 +57,9 @@ test('kited 被 SIGKILL 后保留未知输入，确认恢复仍禁止普通发�
   kited = await spawnKited(home, account);
   const p = (await call(kited.url, 'POST', '/checkouts', { path: repo })).body;
   const hold = `崩溃-${randomUUID().slice(0, 8)}`;
-  const workspace = (await call(kited.url, 'POST', '/workspaces', { checkout: p.checkout.id, prompt: `HOLD ${hold} 开场`, runtime: 'claude' })).body;
+  const url = kited.url;
+  const role = await claudeRole((method, path, body) => call(url, method, path, body));
+  const workspace = (await call(url, 'POST', '/workspaces', { checkout: p.checkout.id, prompt: `HOLD ${hold} 开场`, role })).body;
   const s = workspace.threads[0];
   const first = await api.held(hold);
   expect(first.body.tools.map((tool: { name: string }) => tool.name).sort()).toEqual(expectedTools);

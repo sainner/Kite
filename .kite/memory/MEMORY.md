@@ -6,6 +6,10 @@
 
 - [自研 harness 与 ChatGPT 订阅](harness-direction.md) — Claude 账号受阻后提前自研 harness，首个模型入口使用 ChatGPT 订阅
 - [Claude Code 重新接入](claude-integration-direction.md) — 先清空工具与附加功能再逐项接入，插话沿用原生 stdin
+- [模型厂商决定后端](model-vendor-backend.md) — 界面不暴露后端；Claude 模型走 Claude Code 订阅，其余走自研 harness，菜单按厂商分
+- [代理与角色](agent-role-direction.md) — 代理=角色+实例配置，三个 agent 定义合一，工具黑白名单逐层求交，角色可标必需
+- [项目约束](project-constraints-direction.md) — 存账号服务按项目分发，kited 执行并缓存，收紧即时生效，不放仓库
+- [资源库随账号保存](library-account-storage.md) — 资源库内容随账号分发，分机保存的放设备下各工作机页面
 - [协议与适配器边界](protocol-adapter-boundaries.md) — 统一前端会话语义，区分完整 agent 与模型 API 适配，保留原生恢复记录
 - [工具接口方向](tool-interface-direction.md) — 短工具名与统一读写入口，版本变化仅提示，抽象调用才填写用途
 - [PDF 读取方案](pdf-read-direction.md) — PDF 转 Markdown 用 macOS Vision，不用 Docling 或 pdf.js，不留兜底
@@ -24,14 +28,14 @@
 - [新窗口放置](new-window-placement.md) — Mac 新窗口优先新列，其次上下分栏，空间仍不足再收起旧窗口
 - [停止会话的语义](session-stop-behavior.md) — 手动停止退回未纳入请求的消息，不等于保留 paused 状态
 - [统一资源引用](resource-reference-direction.md) — 统一资源引用保留稳定内容身份，历史 diff 不随当前文件变化
-- [窗口标题信息](window-header-information.md) — 状态圆环在标题前；会话副标题是上下文模板，新会话在此选模板
+- [窗口标题信息](window-header-information.md) — 状态圆环在标题前；代理窗口副标题是角色，新代理在此选角色
 - [侧栏一级导航](sidebar-navigation.md) — 空间、设备、资源库的导航分层；设备下账号与文件并列；账号页允许固定窗口分区
 - [初始配置与设备角色](onboarding-device-roles.md) — 本机执行或仅远程控制都入网，进入 App 后发现 kited 工作机
 - [托管账号与组网](hosted-network-direction.md) — 我们托管，用户账号密码登录或扫描已登录设备二维码加入；规格见 docs
 - [账号用量与额度展示](account-usage-direction.md) — 圆环看额度，正文热力图配某天 24 小时柱状图；按天能取上游就读，按小时由 kited 扫本机存
 - [思考与状态展示](thinking-display.md) — 仅显示当前生成的思考，状态指示不承担实时活动或思考正文
 - [视觉风格来源与取舍](visual-style-direction.md) — 参考色板、树状子项与用户预览后确认的取舍，当前呈现核对代码
-- [模板点阵签名](template-emblem-direction.md) — 新会话空白页铺满模板专属的 AI 生成表达式动画，可手改，保存后自动生成
+- [模板点阵签名](template-emblem-direction.md) — 新代理空白页铺满角色专属的 AI 生成表达式动画，可手改，保存后自动生成
 - [宋体尝试](serif-font-trial.md) — 先只把侧栏字标换成思源宋体，表格与其他文字保持系统字体；扩大范围先确认体积
 
 ## 协作反馈
@@ -50,6 +54,7 @@
 
 ## 待办与未决事项
 
+- [待办：代理与角色三期](todo-agent-roles.md) — 角色与代理合一、资源库迁账号、项目约束的分期与完成条件
 - [待决策：会话观察账本](context-observation-ledger.md) — 记录模型观察与压缩后上下文的账本设想，尚未确定完整设计
 - [待办：插件跨端验收](todo-plugin-device-validation.md) — 插件跨端验收的未解决事项、来源与完成条件
 - [待办：共享工作区协作](todo-workspace-collaboration.md) — 共享工作区协作的未解决事项、来源与完成条件

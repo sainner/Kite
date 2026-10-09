@@ -1,51 +1,36 @@
 import SwiftUI
 
 struct ContextTemplateEdit: Identifiable {
-    let definition: ContextDefinition
-    var original: ContextTemplate? = nil
-    var id: String { definition.id }
+    let template: ContextTemplate
+    var id: String { template.id }
 }
 
-/// 设置与新会话共用的模板编辑器；保存失败或冲突时保留草稿。
+/// 后台场景（标题、压缩、签名与各类通知）的模板编辑器；保存失败或冲突时保留草稿。代理的提示词在角色编辑器里改。
 struct ContextTemplateEditor: View {
     let request: ContextTemplateEdit
     @State private var connection: UUID
-    var onSaved: (ContextTemplate) -> Void = { _ in }
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var draft: ContextDefinition
-    /// 创建会话模板的点阵签名草稿；与 emblemBase 不同即为手改，保存模板后一并保存。
-    @State private var emblem: EmblemDesign
-    /// 工作机上签名的最新版本；没改过草稿时，重新生成的结果直接替换草稿。
-    @State private var emblemBase: EmblemDesign
     @State private var phase = CardPhase.idle
     @State private var discard = false
     /// 只跟踪模板名称；段落编辑器里的输入框由拖动收起键盘。
     @FocusState private var typing: Bool
 
-    init(request: ContextTemplateEdit, connection: UUID, onSaved: @escaping (ContextTemplate) -> Void = { _ in }) {
+    init(request: ContextTemplateEdit, connection: UUID) {
         self.request = request
         _connection = State(initialValue: connection)
-        self.onSaved = onSaved
-        _draft = State(initialValue: request.definition)
-        let emblem = request.original?.emblem?.design ?? .fallback
-        _emblem = State(initialValue: emblem)
-        _emblemBase = State(initialValue: emblem)
+        _draft = State(initialValue: request.template.definition)
     }
 
-    private var changed: Bool { draft != request.definition || emblemEdited }
-    private var emblemEdited: Bool { draft.scene == "thread.create" && emblem != emblemBase }
-    /// 工作机目录里这个模板的最新状态，签名生成的进度从这里来。
-    private var current: ContextTemplate? {
-        request.original.flatMap { original in model.templateConnection(connection)?.templates?.templates.first { $0.id == original.id } }
-    }
+    private var changed: Bool { draft != request.template.definition }
     private var variables: [ContextScene.Variable] {
         model.templateConnection(connection)?.templates?.scenes.first { $0.id == draft.scene }?.variables ?? []
     }
     private var available: Bool { model.templateConnection(connection)?.connected == true }
 
     var body: some View {
-        CardSheet(title: request.original == nil ? "新建上下文模板" : "编辑上下文模板",
+        CardSheet(title: "编辑上下文模板",
                   subtitle: "双击段落编辑文字。变量在运行时填入；条件页签用于编辑各个分支。",
                   typing: typing, size: CGSize(width: 720, height: 680),
                   close: { if changed { discard = true } else { dismiss() } }) {
@@ -64,17 +49,8 @@ struct ContextTemplateEditor: View {
                 } else {
                     ContextBlocksEditor(blocks: $draft.blocks, variables: variables)
                 }
-                if draft.scene == "thread.create" {
-                    TemplateEmblemField(design: $emblem, template: current,
-                                        regenerate: current.map { template in { regenerateEmblem(template) } })
-                }
             }
             .disabled(working || !available)
-            .onChange(of: current?.emblem?.design) { _, design in
-                guard let design else { return }
-                if emblem == emblemBase { emblem = design }
-                emblemBase = design
-            }
             if !available { CardCallout(text: "工作机连接已变化，请返回后重新打开模板。草稿尚未保存。", systemImage: "info.circle", tint: .secondary) }
         } footer: {
             CardActions(primary: "保存",
@@ -89,24 +65,17 @@ struct ContextTemplateEditor: View {
 
     private var working: Bool { phase.working }
 
-    /// 交给模型重画；草稿里手改的部分随之作废。
-    private func regenerateEmblem(_ template: ContextTemplate) {
-        emblem = emblemBase
-        Task { try? await model.generateTemplateEmblem(template, force: true, connection: connection) }
-    }
-
     /// 保存成功后弹窗直接关掉。
     private func save() {
         $phase.run {
-            let saved = try await model.saveContextTemplate(draft, expectedRevision: request.original?.revision, connection: connection)
-            if emblemEdited { try await model.saveTemplateEmblem(emblem, for: saved, connection: connection) }
-            onSaved(saved)
+            _ = try await model.saveContextTemplate(draft, expectedRevision: request.template.revision, connection: connection)
             dismiss()
         }
     }
 }
 
-private struct ContextBlocksEditor: View {
+/// 模板与角色提示词共用的段落、条件编辑器。
+struct ContextBlocksEditor: View {
     @Binding var blocks: [ContextBlock]
     let variables: [ContextScene.Variable]
 

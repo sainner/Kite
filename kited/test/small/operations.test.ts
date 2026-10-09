@@ -133,8 +133,8 @@ test('agent.start 跨重启重试复用实例与窗口，后台实例不建窗�
     expect(checkout.status).toBe(200);
     const workspaceId = checkout.body.workspace.id as string;
 
-    const windowRequest = { operationId: 'create-window', definitionId: 'kite.agent.coding', title: '编码线程' };
-    const backgroundRequest = { operationId: 'create-background', definitionId: 'kite.agent.review', presentation: 'background' };
+    const windowRequest = { operationId: 'create-window', title: '编码线程' };
+    const backgroundRequest = { operationId: 'create-background', role: 'kite.review', presentation: 'background' };
     const window = await call(daemon.url, 'POST', operationPath(workspaceId, 'agent.start'), windowRequest);
     const background = await call(daemon.url, 'POST', operationPath(workspaceId, 'agent.start'), backgroundRequest);
     expect(window.status).toBe(200);
@@ -153,7 +153,8 @@ test('agent.start 跨重启重试复用实例与窗口，后台实例不建窗�
     const journalPath = join(home, 'sessions', codingId, 'journal.jsonl');
     const listed = await call(daemon.url, 'POST', operationPath(workspaceId, 'agent.list'), {});
     expect(listed.status).toBe(200);
-    expect(listed.body.agents.map((agent: { instanceId: string }) => agent.instanceId).sort()).toEqual([codingId, reviewId].sort());
+    expect(Object.fromEntries(listed.body.agents.map((agent: { instanceId: string; role: { id: string } | null }) => [agent.instanceId, agent.role?.id])))
+      .toEqual({ [codingId]: 'kite.work', [reviewId]: 'kite.review' });
     expect(model.calls.values).toHaveLength(0);
     expect(existsSync(journalPath)).toBe(false);
     await daemon.stop();
@@ -192,10 +193,10 @@ test('模型创建记录来源并受工作区与目标授权约束，撤权即�
   const { workspaceId } = await emptyWorkspace(kk, 'main');
   const { workspaceId: otherWorkspaceId } = await emptyWorkspace(kk, 'other');
   const parent = await kk.call('POST', operationPath(workspaceId, 'agent.start'), {
-    operationId: 'parent-agent', definitionId: 'kite.agent.coding',
+    operationId: 'parent-agent', role: 'kite.work',
   });
   const unrelated = await kk.call('POST', operationPath(workspaceId, 'agent.start'), {
-    operationId: 'unrelated-agent', definitionId: 'kite.agent.coding', presentation: 'inline',
+    operationId: 'unrelated-agent', role: 'kite.work', presentation: 'inline',
   });
   expect(parent.status).toBe(200);
   expect(unrelated.status).toBe(200);
@@ -207,19 +208,20 @@ test('模型创建记录来源并受工作区与目标授权约束，撤权即�
   const first = await model.call(1);
   expect(first.request.allowedTools).toContain('agent_start');
   await first.response.emit({ type: 'item', item: calledItem('create-review', 'agent_start', {
-    definitionId: 'kite.agent.review', presentation: 'background',
+    role: 'kite.review', presentation: 'background',
   }) });
   first.response.complete();
   const second = await model.call(2);
   const aggregate = await kk.call('GET', '/workspaces');
   const workspace = aggregate.body.find((entry: { workspace: { id: string } }) => entry.workspace.id === workspaceId);
-  const child = workspace.instances.find((instance: { definitionId: string }) => instance.definitionId === 'kite.agent.review');
+  const child = workspace.instances.find((instance: { origin?: { callId: string } }) => instance.origin?.callId === 'create-review');
   if (!child) throw new Error('模型没有创建审查实例');
+  // 审查角色的子实例照样带着代理的默认授权，挡住它的是角色白名单：协作工具不在它的工具里
+  expect(child.config.role.id).toBe('kite.review');
+  expect(child.config.agent.tools).toEqual(['read']);
   expect(child.origin).toMatchObject({ instanceId: parentId, callId: 'create-review' });
   const modelCaller = { kind: 'model' as const, instanceId: parentId, turnId: first.request.turnId, callId: 'authorization' };
   await expect(kk.daemon.kite.operations.invoke(modelCaller, otherWorkspaceId, 'agent.list', {}))
-    .rejects.toMatchObject({ outcome: 'denied' });
-  await expect(kk.daemon.kite.operations.invoke({ kind: 'model', instanceId: child.id }, workspaceId, 'agent.list', {}))
     .rejects.toMatchObject({ outcome: 'denied' });
   await expect(kk.daemon.kite.operations.invoke(modelCaller, workspaceId, 'agent.send', {
     operationId: 'send-unrelated', instanceId: unrelatedId, text: '不应发送',
@@ -248,7 +250,7 @@ test('新旧发送停止入口共用收据并退回草稿，resume 重试不会�
   const kk = kited;
   const { workspaceId } = await emptyWorkspace(kk, 'project');
   const created = await kk.call('POST', operationPath(workspaceId, 'agent.start'), {
-    operationId: 'stop-test-agent', definitionId: 'kite.agent.coding',
+    operationId: 'stop-test-agent',
   });
   expect(created.status).toBe(200);
   const instanceId = created.body.instanceId as string;

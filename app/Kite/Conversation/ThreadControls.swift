@@ -119,7 +119,10 @@ struct ThreadControls: View {
 
     /// 草稿还没有实例，思考强度改的是本机选择，随第一条消息一起提交。
     private var choice: DraftAgentChoice? { instance == nil ? thread.draftChoice : nil }
-    private var agentModel: AgentModelConfiguration? { instance?.config?.agent?.model ?? choice?.model }
+    /// 草稿没改过模型时用角色的默认模型。
+    private var agentModel: AgentModelConfiguration? {
+        instance?.config?.agent?.model ?? choice.flatMap { $0.model ?? model.newThreadRole(for: thread, in: area)?.role.model }
+    }
     private var reasoning: String { agentModel?.reasoning ?? "medium" }
     private var availableEfforts: [Effort] {
         let levels = thread.agentCapabilities?.model(agentModel?.model ?? "")?.reasoning ?? []
@@ -132,7 +135,10 @@ struct ThreadControls: View {
     }
     private func saveEffort() {
         if choice != nil {
-            if canChangeEffort, let effortDraft { thread.draftChoice?.model?.reasoning = effortDraft.name }
+            if canChangeEffort, let effortDraft, var selected = agentModel {
+                selected.reasoning = effortDraft.name
+                thread.draftChoice?.model = selected
+            }
             self.effortDraft = nil
             return
         }

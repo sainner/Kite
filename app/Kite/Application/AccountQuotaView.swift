@@ -116,7 +116,7 @@ struct ModelAccountPane: View {
 
     /// 额度只在点刷新或会话带回时更新，打开页面不查询。
     private func pendingNotice(_ connection: WorkerConnection) -> some View {
-        Text(connection.connected ? "尚未取得账号数据，会话运行后自动更新，也可在侧栏的账号行刷新" : "工作机离线，连接后可查看账号与额度")
+        Text(connection.connected ? "尚未取得账号数据，代理运行后自动更新，也可在侧栏的账号行刷新" : "工作机离线，连接后可查看账号与额度")
             .font(Theme.secondary).foregroundStyle(.secondary)
     }
 }
