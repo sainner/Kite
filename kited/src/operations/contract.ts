@@ -104,6 +104,21 @@ export function defaultOperationGrants(definitionId: string): OperationGrant[] {
   ] : [];
 }
 
+/**
+ * 协作操作的授权只给角色允许使用对应工具的代理，例如只读审查不带。创建和改选角色都按此调整：
+ * 去掉新角色用不了的；旧角色用不了、新角色能用的补上默认授权。两个角色都能用的保持原样，用户撤回的不会被补回。
+ * 插件与文件授权不经模型工具，不受影响。
+ */
+export function roleOperationGrants(definitionId: string, grants: OperationGrant[], before: readonly string[], after: readonly string[]): OperationGrant[] {
+  const usable = (grant: OperationGrant, tools: readonly string[]) => {
+    const tool = operationContracts[grant.operation].tool;
+    return !tool || tools.includes(tool);
+  };
+  const kept = grants.filter((grant) => usable(grant, after));
+  return [...kept, ...defaultOperationGrants(definitionId).filter((grant) => usable(grant, after) && !usable(grant, before)
+    && !kept.some((other) => other.operation === grant.operation))];
+}
+
 export const operationToolNames = ['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop'] as const;
 const failure = z.object({ error: z.string(), outcome: z.enum(['denied', 'failed', 'cancelled', 'unknown']) }).strict();
 

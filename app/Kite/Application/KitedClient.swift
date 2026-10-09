@@ -185,6 +185,13 @@ struct KitedError: LocalizedError {
     var errorDescription: String? { message }
 }
 
+extension String {
+    /// 作为请求路径里的一段，ID 中的斜杠等字符一并转义。
+    nonisolated var pathComponent: String {
+        addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~")))!
+    }
+}
+
 /// 地址来自账号目录；每个连接实例拥有身份，旧账号的迟到响应不能被新连接接收。
 struct KitedClient: Equatable {
     let identity = UUID()

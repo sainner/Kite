@@ -116,7 +116,7 @@ final class AppModel {
     }
 
     func createInstance(_ definition: RemotePluginDefinition, in area: WorkArea) {
-        if definition.agent != nil { area.openDraft(definition); return }
+        if definition.agent != nil { area.openDraft(); return }
         if !definition.views.isEmpty { openWindow(.create(definition.id), in: area); return }
         guard !area.changingWindows, area.pendingWindowRequest == nil, area.pendingInstanceRequest == nil else { return }
         area.pendingInstanceRequest = CreatePluginInstance(id: UUID().uuidString.lowercased(), definitionId: definition.id)

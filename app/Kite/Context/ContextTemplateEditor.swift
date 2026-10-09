@@ -1,13 +1,8 @@
 import SwiftUI
 
-struct ContextTemplateEdit: Identifiable {
-    let template: ContextTemplate
-    var id: String { template.id }
-}
-
 /// 后台场景（标题、压缩、签名与各类通知）的模板编辑器；保存失败或冲突时保留草稿。代理的提示词在角色编辑器里改。
 struct ContextTemplateEditor: View {
-    let request: ContextTemplateEdit
+    let template: ContextTemplate
     @State private var connection: UUID
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -17,13 +12,13 @@ struct ContextTemplateEditor: View {
     /// 只跟踪模板名称；段落编辑器里的输入框由拖动收起键盘。
     @FocusState private var typing: Bool
 
-    init(request: ContextTemplateEdit, connection: UUID) {
-        self.request = request
+    init(template: ContextTemplate, connection: UUID) {
+        self.template = template
         _connection = State(initialValue: connection)
-        _draft = State(initialValue: request.template.definition)
+        _draft = State(initialValue: template.definition)
     }
 
-    private var changed: Bool { draft != request.template.definition }
+    private var changed: Bool { draft != template.definition }
     private var variables: [ContextScene.Variable] {
         model.templateConnection(connection)?.templates?.scenes.first { $0.id == draft.scene }?.variables ?? []
     }
@@ -68,7 +63,7 @@ struct ContextTemplateEditor: View {
     /// 保存成功后弹窗直接关掉。
     private func save() {
         $phase.run {
-            _ = try await model.saveContextTemplate(draft, expectedRevision: request.template.revision, connection: connection)
+            _ = try await model.saveContextTemplate(draft, expectedRevision: template.revision, connection: connection)
             dismiss()
         }
     }

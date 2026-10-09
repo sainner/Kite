@@ -14,14 +14,17 @@ import {
 import { JournalIndex } from './harness/journal.ts';
 import type { Kite } from './kite.ts';
 import type { AgentInstance, PluginInstance, ThreadContext } from './model.ts';
-import type { OperationGrant } from './operations/contract.ts';
+import { roleOperationGrants, type OperationGrant } from './operations/contract.ts';
 import { mergePluginTools, pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding } from './plugins/tools.ts';
-import { agentDefinitionId } from './plugins/definitions.ts';
+import { agentTools } from './plugins/definitions.ts';
 import { permittedTools } from './agents/tool-policy.ts';
 import { checkTools, instanceRole, roleAgent, toolLimits, type ProjectToolRule, type RoleBinding, type RoleSelection } from './roles.ts';
 import type { Runtime } from './runtime.ts';
 
-type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates' | 'roles'>;
+/** 代理配置里的工具经项目约束实时过滤后的有效集。 */
+const effectiveTools = (agent: AgentDefinition, project: ProjectToolRule | undefined) => permittedTools(agent.tools, project ? [project] : []);
+
+type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates' | 'roles' | 'history'>;
 
 interface ConfigurationControl {
   run<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
@@ -133,11 +136,11 @@ export class InstanceConfiguration {
   }
   /** 项目当前的工具约束，以账号服务为准，这里读本机缓存。 */
   private projectRule(workspaceId: string) {
-    return this.kite.store.projectConstraints(this.kite.workspace(workspaceId).project.id)?.tools;
+    return this.kite.store.workspaceConstraints(workspaceId)?.tools;
   }
   /** 这个代理可开的工具：代理插件声明的全部工具，经创建时角色的规则约束；项目约束另作实时过滤。 */
   private toolLimits(instance: PluginInstance) {
-    return toolLimits(this.kite.catalog.get(instance.definitionId).agent!.tools, instanceRole(instance)?.tools, this.projectRule(instance.workspaceId));
+    return toolLimits(agentTools, instanceRole(instance)?.tools, this.projectRule(instance.workspaceId));
   }
   agentCapabilities(id: string) {
     const thread = this.control.context(id);
@@ -146,9 +149,8 @@ export class InstanceConfiguration {
   /** 新代理的草稿还没有实例：给出模型目录，以及各角色在这个工作区可开的工具与被项目禁用的工具；必需工具被禁的角色附上原因。 */
   agentOptions(workspaceId: string) {
     const project = this.projectRule(workspaceId);
-    const universe = this.kite.catalog.get(agentDefinitionId).agent!.tools;
     return { ...agentModelCatalog(), roles: this.kite.roles.list().map(({ role, revision }) => {
-      const limits = toolLimits(universe, role.tools, project);
+      const limits = toolLimits(agentTools, role.tools, project);
       return { id: role.id, revision, tools: limits.allowed, required: limits.required, blocked: limits.blocked,
         ...(limits.missing.length ? { unavailable: `项目约束禁用了必需的 ${limits.missing.join('、')}` } : {}) };
     }) };
@@ -156,30 +158,31 @@ export class InstanceConfiguration {
   /** 项目约束变化后，有效工具随之改变的代理在下一次请求收到配置通知。 */
   constraintsChanged(projectId: string, before?: ProjectToolRule) {
     const after = this.kite.store.projectConstraints(projectId)?.tools;
-    for (const checkout of this.kite.store.checkouts(projectId)) {
-      for (const workspace of this.kite.store.workspaces().filter((workspace) => workspace.checkoutId === checkout.id && workspace.status === 'open')) {
-        for (const instance of this.kite.store.threads(workspace.id).filter((thread) => thread.status === 'open')) {
-          const agent = instanceAgent(instance);
-          const effective = (rule?: ProjectToolRule) => rule ? permittedTools(agent.tools, [rule]) : agent.tools;
-          if (JSON.stringify(effective(before)) === JSON.stringify(effective(after))) continue;
-          this.kite.store.setInstanceConfig(instance.id, instance.config, {
-            id: randomUUID(), kind: 'agent.configuration.changed', source: 'host', authority: 'instruction',
-            context: assembleContext(agentConfigurationContext({
-              revision: agentRevision(agent), ...agent.model, tools: effective(after), maxRequestsPerTurn: agent.maxRequestsPerTurn,
-            }, this.kite.contextTemplates.get(agentConfigurationContextDefinition.id, agentConfigurationContextDefinition.scene).definition)).snapshot,
-          });
-        }
-        this.control.changed(workspace.id);
+    for (const workspace of this.kite.store.workspaces(projectId).filter((workspace) => workspace.status === 'open')) {
+      for (const instance of this.kite.store.threads(workspace.id).filter((thread) => thread.status === 'open')) {
+        const agent = instanceAgent(instance);
+        if (JSON.stringify(effectiveTools(agent, before)) === JSON.stringify(effectiveTools(agent, after))) continue;
+        this.kite.store.setInstanceConfig(instance.id, instance.config, this.configurationNotice('host', agent, after));
       }
+      this.control.changed(workspace.id);
     }
+  }
+  /** 配置变化通知；告诉模型的工具已按项目约束过滤，被禁的不算可用。 */
+  private configurationNotice(source: string, agent: AgentDefinition, project: ProjectToolRule | undefined) {
+    return {
+      id: randomUUID(), kind: 'agent.configuration.changed', source, authority: 'instruction',
+      context: assembleContext(agentConfigurationContext({
+        revision: agentRevision(agent), ...agent.model, tools: effectiveTools(agent, project), maxRequestsPerTurn: agent.maxRequestsPerTurn,
+      }, this.kite.contextTemplates.get(agentConfigurationContextDefinition.id, agentConfigurationContextDefinition.scene).definition)).snapshot,
+    } as const;
   }
   configureAgent(id: string, expectedRevision: string, value: unknown) {
     return this.updateAgentConfiguration(id, expectedRevision, () => value);
   }
-  /** 改选角色：提示词、工具、默认模型与预算一起换成角色的，并记下新的角色约束。 */
+  /** 改选角色：提示词、工具、默认模型、预算与协作授权一起换成角色的，并记下新的角色约束。只在还没有对话时可用。 */
   configureRole(id: string, expectedRevision: string, selection: RoleSelection) {
     const thread = this.control.context(id);
-    const bound = roleAgent(this.kite.catalog.get(thread.definitionId).agent!, this.kite.roles.get(selection.id, selection.revision), thread.workspace.kind,
+    const bound = roleAgent(agentTools, this.kite.roles.get(selection.id, selection.revision), thread.workspace.kind,
       {}, this.projectRule(thread.workspaceId));
     return this.updateAgentConfiguration(id, expectedRevision, () => bound.agent, bound.role);
   }
@@ -189,6 +192,11 @@ export class InstanceConfiguration {
       const snapshot = this.agentConfig(id);
       const { instance, revision } = snapshot;
       if (revision !== expectedRevision) throw new KiteError('配置已变化，请重新读取后修改', 409);
+      // 换提示词等于换了一个代理，已有对话是在旧角色下进行的；与发送消息共用工作区锁，检查与保存之间不会插进新消息。
+      if (role) {
+        const { records, pending } = await this.kite.history(id);
+        if (records.length || pending.length) throw new KiteError('对话开始后不能改选角色，请新建代理', 409);
+      }
       const current = instanceAgent(instance);
       const requested = parseAgentDefinition(update(current));
       // 后端由模型推出；模型没换时沿用原后端，环境变量覆盖的目录外模型不会被误判为换了厂商。
@@ -199,19 +207,16 @@ export class InstanceConfiguration {
         if (running?.busy || running?.recovery || running?.state === 'stopping') throw new KiteError('请先停止会话并确认执行结果，再修改 Claude 配置', 409);
         if (!claudeReasoning.includes(agent.model.reasoning)) throw new KiteError('Claude 思考强度无效');
       }
-      checkTools(agent.tools, role ? toolLimits(this.kite.catalog.get(instance.definitionId).agent!.tools, role.tools) : this.toolLimits(instance));
+      checkTools(agent.tools, role ? toolLimits(agentTools, role.tools) : this.toolLimits(instance));
       const nextRevision = agentRevision(agent);
       const roleChanged = role !== undefined && JSON.stringify(role) !== JSON.stringify(instanceRole(instance));
       if (nextRevision === revision && !roleChanged) return snapshot;
-      const notification = {
-        id: randomUUID(), kind: 'agent.configuration.changed', source: `instance:${id}`, authority: 'instruction',
-        context: assembleContext(agentConfigurationContext({
-          revision: nextRevision, ...agent.model, tools: agent.tools, maxRequestsPerTurn: agent.maxRequestsPerTurn,
-        }, this.kite.contextTemplates.get(agentConfigurationContextDefinition.id, agentConfigurationContextDefinition.scene).definition)).snapshot,
-      } as const;
+      const notification = this.configurationNotice(`instance:${id}`, agent, this.projectRule(instance.workspaceId));
       const save = () => this.kite.store.transaction(() => {
         if (runtimeChanged) this.kite.store.setThreadRuntime(id, agent.runtime);
-        this.kite.store.setInstanceConfig(id, { ...instance.config, agent, ...(role ? { role } : {}) },
+        this.kite.store.setInstanceConfig(id, { ...instance.config, agent,
+          ...(role ? { role, grants: roleOperationGrants(instance.definitionId, this.kite.operations.grants(id).grants,
+            toolLimits(agentTools, instanceRole(instance)?.tools).allowed, toolLimits(agentTools, role.tools).allowed) } : {}) },
           nextRevision === revision ? undefined : notification);
       });
       if (runtimeChanged) await this.control.switchRuntime(id, agent, save);

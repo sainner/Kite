@@ -53,7 +53,7 @@ export function instanceRole(instance: PluginInstance): RoleBinding | undefined 
 export function toolLimits(universe: readonly string[], rule: Pick<ToolRule, 'mode' | 'tools' | 'required'> = allTools, project?: ProjectToolRule) {
   const allowed = permittedTools(universe, [rule]);
   const permitted = project ? permittedTools(allowed, [project]) : allowed;
-  return { allowed, permitted, blocked: allowed.filter((name) => !permitted.includes(name)), required: rule.required,
+  return { allowed, blocked: allowed.filter((name) => !permitted.includes(name)), required: rule.required,
     missing: missingRequired(rule.required, permitted) };
 }
 
@@ -65,9 +65,9 @@ export function checkTools(tools: readonly string[], limits: ReturnType<typeof t
 }
 
 /** 新代理的初始配置：角色给默认值，草稿的选择覆盖它们；后端由模型推出。必需工具被项目约束禁用时角色不可用。 */
-export function roleAgent(base: AgentDefinition, { role, revision }: RoleSnapshot, kind: Workspace['kind'], choice: RoleChoice = {},
+export function roleAgent(universe: readonly string[], { role, revision }: RoleSnapshot, kind: Workspace['kind'], choice: RoleChoice = {},
   project?: ProjectToolRule) {
-  const limits = toolLimits(base.tools, role.tools, project);
+  const limits = toolLimits(universe, role.tools, project);
   if (limits.missing.length) throw new KiteError(`角色「${role.title}」需要的工具被项目约束禁用：${limits.missing.join('、')}`);
   // 角色允许的工具是代理插件声明工具的子集；被项目禁掉的也留在配置里，约束放宽后恢复。
   const tools = choice.tools ?? limits.allowed as AgentDefinition['tools'];
@@ -129,8 +129,8 @@ export class Roles {
     return value;
   }
 
-  create(value: unknown): RoleSnapshot {
-    const role = this.parse(value);
+  /** role 已经过 parse。 */
+  create(role: Role): RoleSnapshot {
     return this.store.transaction(() => {
       const saved = this.store.role(role.id);
       if (saved && snapshot(saved).revision !== snapshot(role).revision) throw new KiteError('角色 ID 已存在，请另存为新角色', 409);
@@ -147,11 +147,10 @@ export class Roles {
     return role;
   }
 
-  update(id: string, expectedRevision: string, value: unknown): RoleSnapshot {
-    const role = this.parse(value);
-    if (id !== role.id) throw new KiteError('角色 ID 与请求目标不一致');
+  /** role 已经过 validate；写账号期间本机缓存可能被拉取更新，事务里再核对一次版本。 */
+  update(expectedRevision: string, role: Role): RoleSnapshot {
     return this.store.transaction(() => {
-      this.get(id, expectedRevision);
+      this.get(role.id, expectedRevision);
       this.store.saveRole(role);
       return snapshot(role);
     });

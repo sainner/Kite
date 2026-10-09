@@ -5,8 +5,10 @@ import { join } from 'node:path';
 import { KiteError } from './errors.ts';
 import type { Kite } from './kite.ts';
 import type { OpenWindowRequest, PluginInstance, Thread, Workspace, WorkspaceWindow } from './model.ts';
-import { defaultOperationGrants, operationContracts } from './operations/contract.ts';
+import { roleOperationGrants } from './operations/contract.ts';
 import { defaultRoleId, roleAgent, toolLimits, type RoleChoice } from './roles.ts';
+import { agentTools } from './plugins/definitions.ts';
+import { instanceAgent } from './agents/definition.ts';
 
 /** 新代理在本机草稿里选好的角色与初始参数，创建时一次写入实例配置；省略 revision 时用角色的最新版本。 */
 export interface AgentChoice extends RoleChoice {
@@ -27,11 +29,9 @@ export class InstanceLifecycle {
   /** projectId 供尚未入库的新工作区使用，其余情况从工作区查出。 */
   newInstance(workspaceId: string, definitionId: string, title: string, kind: Workspace['kind'], choice: AgentChoice = {}, projectId?: string): PluginInstance {
     const definition = this.kite.catalog.get(definitionId);
-    const project = definition.agent && this.kite.store.projectConstraints(projectId ?? this.kite.workspace(workspaceId).project.id)?.tools;
-    const bound = definition.agent && roleAgent(definition.agent, this.kite.roles.get(choice.role?.id ?? defaultRoleId, choice.role?.revision), kind, choice, project);
-    // 协作操作的默认授权只给角色允许使用对应工具的代理，例如只读审查不带。
-    const permitted = bound && toolLimits(definition.agent!.tools, bound.role.tools).allowed;
-    const grants = permitted ? defaultOperationGrants(definitionId).filter((grant) => permitted.includes(operationContracts[grant.operation].tool ?? '')) : [];
+    const project = definition.agent && (projectId ? this.kite.store.projectConstraints(projectId) : this.kite.store.workspaceConstraints(workspaceId))?.tools;
+    const bound = definition.agent && roleAgent(agentTools, this.kite.roles.get(choice.role?.id ?? defaultRoleId, choice.role?.revision), kind, choice, project);
+    const grants = bound ? roleOperationGrants(definitionId, [], [], toolLimits(agentTools, bound.role.tools).allowed) : [];
     return { id: randomUUID(), workspaceId, definitionId, title,
       config: bound ? { ...bound, grants, execution: definition.execution } : definition.runtime === 'bun' ? { packageRevision: definition.revision, grants: [] } : {}, state: {},
       presentation: 'window', status: 'open', createdAt: Date.now() };
@@ -67,7 +67,7 @@ export class InstanceLifecycle {
         let number = 1;
         while (titles.has(`${definition.title} ${number}`)) number++;
         created = this.newInstance(workspaceId, definition.id, definition.agent ? '新代理' : `${definition.title} ${number}`, model.workspace.kind);
-        if (definition.agent) thread = { instanceId: created.id, runtime: definition.agent.runtime, nativeId: randomUUID() };
+        if (definition.agent) thread = { instanceId: created.id, runtime: instanceAgent(created).runtime, nativeId: randomUUID() };
         window = this.newWindow(created, request.id);
       } else {
         const instance = this.kite.store.instance(content.instanceId);

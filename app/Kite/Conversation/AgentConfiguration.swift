@@ -28,15 +28,34 @@ struct DraftAgentChoice: Equatable {
     var maxRequestsPerTurn: Int?
 }
 
-/// 角色的工具规则：白名单只准列出的，黑名单排除列出的；required 是角色离不开、不能关闭的工具。
-nonisolated struct ToolRule: Codable, Equatable, Sendable {
+/// 工具的黑白名单：白名单只准列出的，黑名单排除列出的。角色规则与项目约束共用，开关的含义都是「能用这个工具」。
+nonisolated protocol ToolFilter {
+    var mode: String { get set }
+    var tools: [String] { get set }
+}
+
+nonisolated extension ToolFilter {
+    func allows(_ name: String) -> Bool { (mode == "allow") == tools.contains(name) }
+    func permitted(in universe: [String]) -> [String] { universe.filter(allows) }
+
+    /// 换规则方向时保持当前能用的工具不变；方向只决定以后新增的工具默认是否可用。
+    mutating func setMode(_ mode: String, in universe: [String]) {
+        let enabled = permitted(in: universe)
+        self.mode = mode
+        tools = mode == "allow" ? enabled : universe.filter { !enabled.contains($0) }
+    }
+
+    mutating func setEnabled(_ name: String, _ enabled: Bool) {
+        tools.removeAll { $0 == name }
+        if enabled == (mode == "allow") { tools.append(name) }
+    }
+}
+
+/// 角色的工具规则；required 是角色离不开、不能关闭的工具。
+nonisolated struct ToolRule: Codable, Equatable, Sendable, ToolFilter {
     var mode: String
     var tools: [String]
     var required: [String]
-
-    static let all = ToolRule(mode: "deny", tools: [], required: [])
-    /// 按规则算出全集里可用的工具。
-    func permitted(in universe: [String]) -> [String] { universe.filter { (mode == "allow") == tools.contains($0) } }
 }
 
 nonisolated struct InstanceAgentConfig: Decodable, Sendable {

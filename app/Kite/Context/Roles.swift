@@ -10,13 +10,11 @@ nonisolated struct RoleDefinition: Codable, Equatable, Identifiable, Sendable {
     var model: AgentModelConfiguration
     var maxRequestsPerTurn: Int
 
-    /// 基于已有角色另存为新角色；提示词的 ID 与名称随角色。
+    /// 基于已有角色另存为新角色；提示词的 ID 与名称由工作机保存时随角色改写。
     func copy() -> Self {
         var result = self
         result.id = UUID().uuidString.lowercased()
         result.title += " 副本"
-        result.context.id = result.id
-        result.context.title = result.title
         return result
     }
 }
@@ -69,29 +67,14 @@ extension AppModel {
         try await refreshRoles(of: connection)
     }
 
-    /// fresh 时不复用进行中的请求：它可能早于这次变化发出，等它完成后再读一次。
     func refreshRoles(of connection: WorkerConnection, fresh: Bool = false) async throws {
-        let revision = connection.catalog.generation
-        if let request = connection.rolesRequest, request.connection == revision {
-            if fresh { try? await request.task.value } else { try await request.task.value; return }
-            if let request = connection.rolesRequest, request.connection == revision { try await request.task.value; return }
-        }
-        let client = connection.client
-        let task = Task {
-            defer { if connection.rolesRequest?.connection == revision { connection.rolesRequest = nil } }
-            let result = try await client.request("/roles", as: RoleCatalog.self)
-            try Task.checkCancellation()
-            guard revision == connection.catalog.generation, accepts(client) else { throw KitedError(message: "工作机连接已变化") }
-            connection.roles = result
-        }
-        connection.rolesRequest = (revision, task)
-        try await task.value
+        try await refreshCatalog("/roles", of: connection, fresh: fresh, request: \.rolesRequest, into: \.roles)
     }
 
     func saveRole(_ role: RoleDefinition, expectedRevision: String?, connection: UUID) async throws -> AgentRole {
         guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
         let client = target.client
-        let path = expectedRevision == nil ? "/roles" : "/roles/\(Self.roleComponent(role.id))"
+        let path = expectedRevision == nil ? "/roles" : "/roles/\(role.id.pathComponent)"
         let result = try await client.request(path, method: expectedRevision == nil ? "POST" : "PUT",
             body: RoleSave(role: role, expectedRevision: expectedRevision), as: AgentRole.self)
         guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
@@ -103,7 +86,7 @@ extension AppModel {
     func saveRoleEmblem(_ design: EmblemDesign, for role: AgentRole, connection: UUID) async throws {
         guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
         let client = target.client
-        let result = try await client.request("/roles/\(Self.roleComponent(role.id))/emblem", method: "PUT",
+        let result = try await client.request("/roles/\(role.id.pathComponent)/emblem", method: "PUT",
             body: EmblemSave(emblem: design), as: AgentRole.self)
         guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
         if let index = target.roles?.roles.firstIndex(where: { $0.id == result.id }) { target.roles?.roles[index] = result }
@@ -113,7 +96,7 @@ extension AppModel {
     func generateRoleEmblem(_ role: AgentRole, force: Bool, connection: UUID) async throws {
         guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化") }
         let client = target.client
-        let status = try await client.request("/roles/\(Self.roleComponent(role.id))/emblem/generate", method: "POST",
+        let status = try await client.request("/roles/\(role.id.pathComponent)/emblem/generate", method: "POST",
             body: EmblemGenerate(force: force), as: EmblemStatus.self)
         guard target.catalog.generation == connection, accepts(client) else { return }
         if let index = target.roles?.roles.firstIndex(where: { $0.id == role.id }) {
@@ -121,10 +104,6 @@ extension AppModel {
             target.roles?.roles[index].emblemState = status.emblemState
             target.roles?.roles[index].emblemError = status.emblemError
         }
-    }
-
-    private static func roleComponent(_ id: String) -> String {
-        id.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~")))!
     }
 
     /// 新代理选用的角色，取工作机目录里的最新版本；没选过时用默认角色。
@@ -137,8 +116,7 @@ extension AppModel {
     /// 草稿取本机选好的角色，已有代理取实例配置里记下的角色。
     func selectedRoleID(for thread: WorkThread, in area: WorkArea) -> String? {
         if let role = thread.role { return role.id }
-        let config = area.instances.first { $0.id == thread.id }?.config
-        return config?.role?.id ?? config?.agent?.context["id"]?.string
+        return area.instances.first { $0.id == thread.id }?.config?.role?.id
     }
 
     func roleTitle(for thread: WorkThread, in area: WorkArea) -> String {

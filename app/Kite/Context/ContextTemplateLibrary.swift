@@ -3,7 +3,7 @@ import SwiftUI
 /// 资源库一栏的单页，操作在标题栏。这里只有后台场景的模板；代理的提示词属于角色。
 struct ContextTemplateLibrary: View {
     @Environment(AppModel.self) private var model
-    @State private var edit: ContextTemplateEdit?
+    @State private var edit: ContextTemplate?
     @State private var error: String?
     @State private var loading = false
 
@@ -28,7 +28,7 @@ struct ContextTemplateLibrary: View {
             ForEach(model.contextTemplates?.scenes ?? []) { scene in
                 Section(scene.title) {
                     ForEach((model.contextTemplates?.templates ?? []).filter { $0.definition.scene == scene.id }) { template in
-                        Button { edit = .init(template: template) } label: {
+                        Button { edit = template } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(template.definition.title)
                                 Text("\(template.definition.blocks.count + (template.definition.input?.count ?? 0)) 个内容块")
@@ -45,8 +45,8 @@ struct ContextTemplateLibrary: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
-        .sheet(item: $edit) { request in
-            ContextTemplateEditor(request: request, connection: model.connectionRevision).environment(model)
+        .sheet(item: $edit) { template in
+            ContextTemplateEditor(template: template, connection: model.connectionRevision).environment(model)
         }
         .task(id: model.connectionRevision) { await refresh() }
     }

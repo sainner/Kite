@@ -14,8 +14,10 @@ export type ToolRule = z.infer<typeof toolRuleSchema>;
 
 export const allTools: ToolRule = { mode: 'deny', tools: [], required: [] };
 
+export const ruleAllows = (rule: Pick<ToolRule, 'mode' | 'tools'>, name: string): boolean => (rule.mode === 'allow') === rule.tools.includes(name);
+
 export function permittedTools(universe: readonly string[], rules: readonly Pick<ToolRule, 'mode' | 'tools'>[]): string[] {
-  return universe.filter((name) => rules.every((rule) => (rule.mode === 'allow') === rule.tools.includes(name)));
+  return universe.filter((name) => rules.every((rule) => ruleAllows(rule, name)));
 }
 
 /** 必需工具中不在有效集里的那些；非空即角色在这一处不可用。 */

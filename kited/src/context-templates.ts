@@ -25,11 +25,10 @@ function parse(value: unknown): ContextDefinition {
 }
 
 export class ContextTemplates {
-  private readonly fixedTemplates: Set<string>;
+  /** 内置模板的 ID 与默认内容的版本；只有这些模板可编辑。 */
   private readonly defaults: Map<string, string>;
 
   constructor(private store: Store, defaults: ContextDefinition[]) {
-    this.fixedTemplates = new Set(defaults.map((definition) => definition.id));
     this.defaults = new Map(defaults.map((definition) => [definition.id, snapshot(parse(definition)).revision]));
     store.transaction(() => {
       for (const definition of defaults) {
@@ -65,7 +64,7 @@ export class ContextTemplates {
   /** 账号里拉来的版本直接替换本机缓存；不是本机已知场景的跳过，返回是否有变化。 */
   cache(value: unknown): boolean {
     const definition = parse(value);
-    if (!this.fixedTemplates.has(definition.id)) return false;
+    if (!this.defaults.has(definition.id)) return false;
     const saved = this.store.contextTemplate(definition.id);
     if (saved && snapshot(saved).revision === snapshot(definition).revision) return false;
     this.store.saveContextTemplate(definition);
@@ -80,17 +79,16 @@ export class ContextTemplates {
     return definition;
   }
 
-  update(id: string, expectedRevision: string, value: unknown): ContextTemplate {
-    const definition = parse(value);
-    if (id !== definition.id) throw new KiteError('模板 ID 与请求目标不一致');
+  /** definition 已经过 validate；写账号期间本机缓存可能被拉取更新，事务里再核对一次版本。 */
+  update(expectedRevision: string, definition: ContextDefinition): ContextTemplate {
     return this.store.transaction(() => {
-      this.get(id, definition.scene, expectedRevision);
+      this.get(definition.id, definition.scene, expectedRevision);
       this.store.saveContextTemplate(definition);
       return snapshot(definition);
     });
   }
 
   private available(definition: ContextDefinition): boolean {
-    return this.fixedTemplates.has(definition.id);
+    return this.defaults.has(definition.id);
   }
 }

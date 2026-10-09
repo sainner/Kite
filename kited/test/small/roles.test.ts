@@ -9,6 +9,7 @@ import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import { contextDefinitionSchema } from '../../src/harness/context/assembler.ts';
 import type { ContextDefinition } from '../../src/harness/context/types.ts';
+import type { OperationGrant } from '../../src/operations/contract.ts';
 import type { Role } from '../../src/roles.ts';
 import type { EmblemDesign, EmblemStatus } from '../../src/template-emblems.ts';
 import { call, claudeModel, linkNewAccount, openAgent, registerCheckout, startKited } from '../harness.ts';
@@ -36,6 +37,16 @@ const findRole = (body: { roles: Entry[] }, id: string) => {
   if (!found) throw new Error(`角色目录里没有 ${id}`);
   return found;
 };
+
+/** 代理的默认协作授权，对应模型工具 agent_*。 */
+const collaboration: OperationGrant[] = [
+  { operation: 'agent.list' }, { operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] },
+  { operation: 'agent.send', targets: { kind: 'created' } },
+  { operation: 'agent.resume', targets: { kind: 'created' } },
+  { operation: 'agent.stop', targets: { kind: 'created' } },
+];
+/** 授权按操作名排序后比较；顺序不是约定。 */
+const byOperation = (grants: OperationGrant[]) => [...grants].sort((a, b) => a.operation.localeCompare(b.operation));
 
 // HTTP revision 校验、SQLite 落盘、重开后的角色目录与首请求绑定共同决定重试是否覆盖已有角色。
 test('角色保存处理重试与冲突，重启后按所选版本创建的首请求使用已存提示词', async () => {
@@ -96,8 +107,9 @@ test('角色保存处理重试与冲突，重启后按所选版本创建的首�
 }, 1000);
 
 // 角色目录、实例快照、改选角色与创建请求跨模块交接：改角色只影响之后创建的代理；改选角色把提示词、工具、
-// 默认模型与预算一起换成角色的并记下新的角色约束，执行授权与操作授权不动；版本过期的请求不改变实例。
-test('改角色不影响已有代理，改选角色换上角色的配置并保留授权，过期的角色版本或配置版本都不改变实例', async () => {
+// 默认模型与预算一起换成角色的并记下新的角色约束，执行授权不动；新旧角色都允许协作工具，操作授权（含用户收窄过的）
+// 也保持原样；版本过期的请求不改变实例。
+test('改角色不影响已有代理，改选到同样允许协作工具的角色换上角色的配置并保留执行与操作授权，过期的角色版本或配置版本都不改变实例', async () => {
   const model = new ManualModel();
   const k = startKited(() => model);
   try {
@@ -249,6 +261,125 @@ test('只读审查角色建的代理只有 read，改配置加 shell 或关掉�
     expect(model.calls.values).toHaveLength(1);
   } finally {
     await k.stop();
+  }
+}, 1000);
+
+// 真实出过的 bug：协作授权只在创建时按角色过滤，改选角色不调整，只读审查建的空代理改选成工作后 agent_* 工具配上了
+// 却没有授权，用不了。要 HTTP 路由、角色快照、实例配置与授权读取几处接上才对：改选时去掉新角色用不了的、补上旧角色
+// 用不了而新角色能用的；两个角色都能用的保持原样，用户撤回或收窄的不被补回；文件授权不经模型工具，不受影响。
+test('只读审查的空代理改选为工作后拿到协作授权，再改选同样能协作的角色不补回用户撤回的，改回只读审查只去掉协作授权', async () => {
+  const k = startKited(() => new ManualModel());
+  try {
+    const registered = await registerCheckout(k, newRepo(k.root, 'project', { 'base.txt': '原始内容\n' }));
+    const workspaceId = registered.workspace.id;
+    const catalog = (await k.call('GET', '/roles')).body;
+    const work = findRole(catalog, 'kite.work');
+    const review = findRole(catalog, 'kite.review');
+    const noShell = await k.call('POST', '/roles', {
+      role: { ...work.role, id: 'test.no-shell', title: '不开 shell', tools: { mode: 'deny', tools: ['shell'], required: [] } },
+    });
+    expect(noShell.status).toBe(200);
+
+    const started = await k.call('POST', `/workspaces/${workspaceId}/operations/agent.start`, {
+      operationId: 'empty-review', role: 'kite.review',
+    });
+    expect(started.status).toBe(200);
+    const id = started.body.instanceId as string;
+    const files = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
+      id: crypto.randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },
+    });
+    expect(files.status).toBe(200);
+    const filesGrant: OperationGrant = { operation: 'files.read', targets: { kind: 'instances', instanceIds: [files.body.target.instanceId] } };
+
+    const operationsPath = `/instances/${id}/operation-grants`;
+    const grants = async () => {
+      const current = await k.call('GET', operationsPath);
+      expect(current.status).toBe(200);
+      return current;
+    };
+    let revision = (await k.call('GET', `/instances/${id}/agent-config`)).body.revision as string;
+    const choose = async (roleId: string, roleRevision: string) => {
+      const chosen = await k.call('PUT', `/instances/${id}/role`, { expectedRevision: revision, roleId, roleRevision });
+      expect(chosen.status).toBe(200);
+      expect(chosen.body.instance.config.role).toMatchObject({ id: roleId, revision: roleRevision });
+      revision = chosen.body.revision;
+    };
+
+    const initial = await grants();
+    expect(initial.body.grants).toEqual([]);
+    expect((await k.call('PUT', operationsPath, { expectedRevision: initial.body.revision, grants: [filesGrant] })).status).toBe(200);
+
+    await choose('kite.work', work.revision);
+    const granted = await grants();
+    expect(byOperation(granted.body.grants)).toEqual(byOperation([filesGrant, ...collaboration]));
+
+    // 用户在工作角色下撤回停止，把创建收窄到只读审查。
+    const narrowed = byOperation([filesGrant, ...collaboration.filter((grant) => grant.operation !== 'agent.stop')
+      .map((grant) => grant.operation === 'agent.start' ? { ...grant, roleIds: ['kite.review'] } : grant)]);
+    expect((await k.call('PUT', operationsPath, { expectedRevision: granted.body.revision, grants: narrowed })).status).toBe(200);
+    await choose('test.no-shell', noShell.body.revision);
+    expect(byOperation((await grants()).body.grants)).toEqual(narrowed);
+
+    await choose('kite.review', review.revision);
+    expect((await grants()).body.grants).toEqual([filesGrant]);
+  } finally {
+    await k.stop();
+  }
+}, 1000);
+
+// 新需求：对话开始后（有对话记录或排队消息）不能改选角色。检查要和发送消息共用工作区锁，并认得磁盘上的对话记录：
+// 消息刚落盘时回合可能还没开始，重启后对话记录还没载入内存，两处只看内存状态都会放行。
+test('发出第一条消息后改选角色返回 409，回合进行中与重启后都不改变实例配置和授权', async () => {
+  const root = makeTemp('roles-started-');
+  const home = join(root, 'kite');
+  const account = linkNewAccount(home);
+  const model = new ManualModel();
+  let daemon: Daemon | undefined;
+  try {
+    daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => model });
+    const request = (method: string, path: string, body?: unknown) => call(daemon!.url, method, path, body);
+    const events = new Seen<Envelope>();
+    daemon.kite.bus.subscribe(undefined, (event) => events.add(event));
+    const checkout = await request('POST', '/checkouts', { path: newRepo(root, 'project', { 'base.txt': '原始内容\n' }) });
+    expect(checkout.status).toBe(200);
+    const id = await openAgent(request, checkout.body.workspace.id);
+    // 改选成只读审查本会去掉协作授权，授权不变才说明拒绝发生在调整之前。
+    const review = findRole((await request('GET', '/roles')).body, 'kite.review');
+    const configPath = `/instances/${id}/agent-config`;
+    const operations = await request('GET', `/instances/${id}/operation-grants`);
+    const execution = await request('GET', `/instances/${id}/execution-grants`);
+    expect(operations.body.grants).toEqual(expect.arrayContaining(collaboration));
+    const rejectedRole = async () => {
+      const config = await request('GET', configPath);
+      expect(config.status).toBe(200);
+      const rejected = await request('PUT', `/instances/${id}/role`, {
+        expectedRevision: config.body.revision, roleId: 'kite.review', roleRevision: review.revision,
+      });
+      expect(rejected.status).toBe(409);
+      expect(rejected.body.error).toContain('对话开始后');
+      expect((await request('GET', configPath)).body).toEqual(config.body);
+      expect((await request('GET', `/instances/${id}/operation-grants`)).body).toEqual(operations.body);
+      expect((await request('GET', `/instances/${id}/execution-grants`)).body).toEqual(execution.body);
+      return config.body;
+    };
+
+    expect((await request('POST', `/threads/${id}/messages`, { text: '先看看项目' })).status).toBe(200);
+    const during = await rejectedRole();
+    expect(during.instance.config.role.id).toBe('kite.work');
+    const first = await model.call(1);
+    first.response.complete();
+    await events.wait((event) => event.type === 'idle' && event.threadId === id);
+    await daemon.stop();
+    daemon = undefined;
+
+    daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => model });
+    const reopened = await rejectedRole();
+    expect(reopened.instance.config.role.id).toBe('kite.work');
+    expect(model.calls.values).toHaveLength(1);
+  } finally {
+    await daemon?.stop();
+    account.stop();
+    rmSync(root, { recursive: true, force: true });
   }
 }, 1000);
 

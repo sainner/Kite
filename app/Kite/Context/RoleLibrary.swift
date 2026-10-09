@@ -22,7 +22,6 @@ struct RoleLibrary: View {
                 Button {
                     guard var role = base?.role.copy() else { return }
                     role.title = "新角色"
-                    role.context.title = role.title
                     edit = .init(role: role)
                 } label: { PaneHeaderButtonLabel("新建角色", systemImage: "plus") }
                     .help("新建角色")

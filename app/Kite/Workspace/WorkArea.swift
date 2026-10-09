@@ -139,8 +139,8 @@ final class WorkArea: Identifiable {
     }
 
     /// 添加代理时先打开本机草稿；已有草稿时沿用其中的选择。
-    func openDraft(_ definition: RemotePluginDefinition) {
-        guard !isDraft, definition.agent != nil else { return }
+    func openDraft() {
+        guard !isDraft else { return }
         if !draftOpen {
             draftThread.draftChoice = DraftAgentChoice()
             draftThread.agentCapabilities = nil

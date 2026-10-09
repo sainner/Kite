@@ -22,7 +22,6 @@ struct AgentSettings: View {
             && area.instances.contains { $0.id == instance.id && $0.status == .open }
     }
     private var working: Bool { phase.working }
-    private var levels: [String] { capabilities?.model(draft?.model.model ?? "")?.reasoning ?? [] }
 
     private var canSave: Bool {
         !working && available && changed && (draft?.maxRequestsPerTurn ?? 0) >= 1
@@ -36,41 +35,11 @@ struct AgentSettings: View {
                 if draft != nil, let capabilities {
                     CardSection("模型", note: capabilities.explanation
                         + (capabilities.toolCatalogBoundary == "idle" ? "新增插件工具在下次执行时加入。" : "首次请求后工具目录固定；新增插件工具需要新代理。")) {
-                        LabeledContent("模型") {
-                            Picker("模型", selection: Binding(get: { draft!.model.model }, set: { id in
-                                draft?.model.selectModel(id, supportedReasoning: capabilities.model(id)?.reasoning ?? [])
-                            })) {
-                                if let current = draft?.model.model, !capabilities.models.contains(where: { $0.id == current }) {
-                                    Text(current).tag(current)
-                                }
-                                ForEach(capabilities.vendors) { vendor in
-                                    Section(vendor.title) {
-                                        ForEach(capabilities.models.filter { $0.vendor == vendor.id }) { entry in Text(entry.title).tag(entry.id) }
-                                    }
-                                }
-                            }
-                            .labelsHidden().fixedSize()
-                        }
-                        LabeledContent("思考强度") {
-                            Picker("思考强度", selection: Binding(get: { draft!.model.reasoning }, set: { draft?.model.reasoning = $0 })) {
-                                if levels.isEmpty || draft?.model.reasoning == "default" { Text("自动").tag("default") }
-                                if let current = draft?.model.reasoning, current != "default", !levels.contains(current) { Text(current).tag(current) }
-                                ForEach(levels, id: \.self) { Text($0).tag($0) }
-                            }
-                            .labelsHidden().fixedSize()
-                            .disabled(levels.isEmpty)
-                        }
+                        AgentModelFields(configuration: Binding(get: { draft!.model }, set: { draft?.model = $0 }),
+                                         vendors: capabilities.vendors, models: capabilities.models)
                     }
                     CardSection("可用工具", note: "可开的工具由创建时的角色决定，角色必需的不能关闭；项目约束禁用的工具暂不可用，约束放宽后恢复。实例授权仍然有效；勾选工具不会增加文件、网络或其他实例的访问权限。") {
-                        ForEach(capabilities.tools, id: \.self) { name in
-                            let blocked = capabilities.blocked.contains(name)
-                            Toggle(capabilities.toolLabel(name), isOn: Binding(get: { draft?.tools.contains(name) == true && !blocked }, set: { enabled in
-                                draft?.tools.removeAll { $0 == name }
-                                if enabled { draft?.tools.append(name) }
-                            }))
-                            .strikethrough(blocked)
-                            .disabled(blocked || capabilities.required.contains(name))
-                        }
+                        AgentToolToggles(capabilities: capabilities, tools: Binding(get: { draft?.tools ?? [] }, set: { draft?.tools = $0 }))
                     }
                     CardField(label: "每回合最多模型请求数", focused: editingLimit, note: "达到上限后停止，保留已经产生的结果。") {
                         TextField("", value: Binding(get: { draft!.maxRequestsPerTurn }, set: { draft?.maxRequestsPerTurn = $0 }), format: .number)
@@ -181,15 +150,7 @@ struct DraftAgentSettings: View {
                   close: { dismiss() }) {
             if let capabilities {
                 CardSection("可用工具", note: "可开的工具由角色决定，角色必需的不能关闭，项目约束禁用的暂不可用。") {
-                    ForEach(capabilities.tools, id: \.self) { name in
-                        let blocked = capabilities.blocked.contains(name)
-                        Toggle(capabilities.toolLabel(name), isOn: Binding(get: { tools.contains(name) && !blocked }, set: { enabled in
-                            tools.removeAll { $0 == name }
-                            if enabled { tools.append(name) }
-                        }))
-                        .strikethrough(blocked)
-                        .disabled(blocked || capabilities.required.contains(name))
-                    }
+                    AgentToolToggles(capabilities: capabilities, tools: $tools)
                 }
                 CardField(label: "每回合最多模型请求数", focused: editingLimit, note: "达到上限后停止，保留已经产生的结果。") {
                     TextField("", value: $budget, format: .number)
@@ -222,5 +183,59 @@ struct DraftAgentSettings: View {
         thread.draftChoice?.tools = selected == capabilities.tools ? nil : selected
         thread.draftChoice?.maxRequestsPerTurn = budget == roleBudget ? nil : budget
         dismiss()
+    }
+}
+
+/// 模型按厂商分组，连同思考强度；不在目录里的当前值也列出，选择器不丢值。
+struct AgentModelFields: View {
+    @Binding var configuration: AgentModelConfiguration
+    let vendors: [AgentCapabilities.Vendor]
+    let models: [AgentCapabilities.Model]
+
+    private var levels: [String] { models.first { $0.id == configuration.model }?.reasoning ?? [] }
+
+    var body: some View {
+        LabeledContent("模型") {
+            Picker("模型", selection: Binding(get: { configuration.model }, set: { id in
+                configuration.selectModel(id, supportedReasoning: models.first { $0.id == id }?.reasoning ?? [])
+            })) {
+                if !models.contains(where: { $0.id == configuration.model }) { Text(configuration.model).tag(configuration.model) }
+                ForEach(vendors) { vendor in
+                    Section(vendor.title) {
+                        ForEach(models.filter { $0.vendor == vendor.id }) { entry in Text(entry.name).tag(entry.id) }
+                    }
+                }
+            }
+            .labelsHidden().fixedSize()
+        }
+        LabeledContent("思考强度") {
+            Picker("思考强度", selection: $configuration.reasoning) {
+                if levels.isEmpty || configuration.reasoning == "default" { Text("自动").tag("default") }
+                if configuration.reasoning != "default", !levels.contains(configuration.reasoning) {
+                    Text(configuration.reasoning).tag(configuration.reasoning)
+                }
+                ForEach(levels, id: \.self) { Text($0).tag($0) }
+            }
+            .labelsHidden().fixedSize()
+            .disabled(levels.isEmpty)
+        }
+    }
+}
+
+/// 代理可开的工具：角色必需的不能关闭，项目约束禁用的划掉并暂不可用。
+struct AgentToolToggles: View {
+    let capabilities: AgentCapabilities
+    @Binding var tools: [String]
+
+    var body: some View {
+        ForEach(capabilities.tools, id: \.self) { name in
+            let blocked = capabilities.blocked.contains(name)
+            Toggle(capabilities.toolLabel(name), isOn: Binding(get: { tools.contains(name) && !blocked }, set: { enabled in
+                tools.removeAll { $0 == name }
+                if enabled { tools.append(name) }
+            }))
+            .strikethrough(blocked)
+            .disabled(blocked || capabilities.required.contains(name))
+        }
     }
 }

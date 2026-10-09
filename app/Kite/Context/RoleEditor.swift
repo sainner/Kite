@@ -44,7 +44,6 @@ struct RoleEditor: View {
     private var emblemEdited: Bool { emblem != emblemBase }
     private var available: Bool { model.templateConnection(connection)?.connected == true }
     private var working: Bool { phase.working }
-    private var levels: [String] { catalog?.models.first { $0.id == draft.model.model }?.reasoning ?? [] }
 
     var body: some View {
         CardSheet(title: request.original == nil ? "新建角色" : "编辑角色",
@@ -90,7 +89,7 @@ struct RoleEditor: View {
     private var tools: some View {
         CardSection("工具", note: "必需的工具在代理里不能关闭；被其他约束禁用时，这个角色不可选。") {
             LabeledContent("以后新增的工具") {
-                Picker("以后新增的工具", selection: Binding(get: { draft.tools.mode }, set: setMode)) {
+                Picker("以后新增的工具", selection: Binding(get: { draft.tools.mode }, set: { draft.tools.setMode($0, in: universe) })) {
                     Text("默认可用").tag("deny")
                     Text("默认不可用").tag("allow")
                 }
@@ -116,32 +115,7 @@ struct RoleEditor: View {
     private var defaults: some View {
         Group {
             CardSection("默认模型") {
-                LabeledContent("模型") {
-                    Picker("模型", selection: Binding(get: { draft.model.model }, set: { id in
-                        draft.model.selectModel(id, supportedReasoning: catalog?.models.first { $0.id == id }?.reasoning ?? [])
-                    })) {
-                        if let catalog, !catalog.models.contains(where: { $0.id == draft.model.model }) {
-                            Text(draft.model.model).tag(draft.model.model)
-                        }
-                        ForEach(catalog?.vendors ?? []) { vendor in
-                            Section(vendor.title) {
-                                ForEach(catalog?.models.filter { $0.vendor == vendor.id } ?? []) { entry in Text(entry.name).tag(entry.id) }
-                            }
-                        }
-                    }
-                    .labelsHidden().fixedSize()
-                }
-                LabeledContent("思考强度") {
-                    Picker("思考强度", selection: $draft.model.reasoning) {
-                        if levels.isEmpty || draft.model.reasoning == "default" { Text("自动").tag("default") }
-                        if draft.model.reasoning != "default", !levels.contains(draft.model.reasoning) {
-                            Text(draft.model.reasoning).tag(draft.model.reasoning)
-                        }
-                        ForEach(levels, id: \.self) { Text($0).tag($0) }
-                    }
-                    .labelsHidden().fixedSize()
-                    .disabled(levels.isEmpty)
-                }
+                AgentModelFields(configuration: $draft.model, vendors: catalog?.vendors ?? [], models: catalog?.models ?? [])
             }
             CardField(label: "每回合最多模型请求数", focused: focus == .budget, note: "达到上限后停止，保留已经产生的结果。") {
                 TextField("", value: $draft.maxRequestsPerTurn, format: .number)
@@ -154,16 +128,9 @@ struct RoleEditor: View {
         }
     }
 
-    /// 换规则方向时保持当前能用的工具不变。
-    private func setMode(_ mode: String) {
-        let enabled = draft.tools.permitted(in: universe)
-        draft.tools.mode = mode
-        draft.tools.tools = mode == "allow" ? enabled : universe.filter { !enabled.contains($0) }
-    }
-
+    /// 关掉的工具不再算必需。
     private func setEnabled(_ name: String, _ enabled: Bool) {
-        draft.tools.tools.removeAll { $0 == name }
-        if enabled == (draft.tools.mode == "allow") { draft.tools.tools.append(name) }
+        draft.tools.setEnabled(name, enabled)
         if !enabled { draft.tools.required.removeAll { $0 == name } }
     }
 
@@ -181,10 +148,7 @@ struct RoleEditor: View {
     /// 保存成功后弹窗直接关掉。
     private func save() {
         $phase.run {
-            var role = draft
-            role.context.id = role.id
-            role.context.title = role.title
-            let saved = try await model.saveRole(role, expectedRevision: request.original?.revision, connection: connection)
+            let saved = try await model.saveRole(draft, expectedRevision: request.original?.revision, connection: connection)
             if emblemEdited { try await model.saveRoleEmblem(emblem, for: saved, connection: connection) }
             onSaved(saved)
             dismiss()

@@ -139,22 +139,30 @@ extension AppModel {
         try await refreshTemplates(of: connection)
     }
 
-    /// fresh 时不复用进行中的请求：它可能早于这次变化发出，等它完成后再读一次。
     func refreshTemplates(of connection: WorkerConnection, fresh: Bool = false) async throws {
+        try await refreshCatalog("/context-templates", of: connection, fresh: fresh, request: \.templatesRequest, into: \.templates)
+    }
+
+    /// 读取工作机上的目录，同一连接上进行中的请求复用。fresh 时不复用：进行中的请求可能早于这次变化发出，等它完成后再读一次。
+    func refreshCatalog<Value: Decodable & Sendable>(
+        _ path: String, of connection: WorkerConnection, fresh: Bool,
+        request: ReferenceWritableKeyPath<WorkerConnection, (connection: UUID, task: Task<Void, Error>)?>,
+        into value: ReferenceWritableKeyPath<WorkerConnection, Value?>
+    ) async throws {
         let revision = connection.catalog.generation
-        if let request = connection.templatesRequest, request.connection == revision {
-            if fresh { try? await request.task.value } else { try await request.task.value; return }
-            if let request = connection.templatesRequest, request.connection == revision { try await request.task.value; return }
+        if let pending = connection[keyPath: request], pending.connection == revision {
+            if fresh { try? await pending.task.value } else { try await pending.task.value; return }
+            if let pending = connection[keyPath: request], pending.connection == revision { try await pending.task.value; return }
         }
         let client = connection.client
         let task = Task {
-            defer { if connection.templatesRequest?.connection == revision { connection.templatesRequest = nil } }
-            let result = try await client.request("/context-templates", as: ContextTemplateCatalog.self)
+            defer { if connection[keyPath: request]?.connection == revision { connection[keyPath: request] = nil } }
+            let result = try await client.request(path, as: Value.self)
             try Task.checkCancellation()
             guard revision == connection.catalog.generation, accepts(client) else { throw KitedError(message: "工作机连接已变化") }
-            connection.templates = result
+            connection[keyPath: value] = result
         }
-        connection.templatesRequest = (revision, task)
+        connection[keyPath: request] = (revision, task)
         try await task.value
     }
 
@@ -162,8 +170,7 @@ extension AppModel {
     func saveContextTemplate(_ definition: ContextDefinition, expectedRevision: String, connection: UUID) async throws -> ContextTemplate {
         guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请返回模板列表") }
         let client = target.client
-        let component = definition.id.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~")))!
-        let result = try await client.request("/context-templates/\(component)", method: "PUT",
+        let result = try await client.request("/context-templates/\(definition.id.pathComponent)", method: "PUT",
             body: ContextTemplateSave(definition: definition, expectedRevision: expectedRevision), as: ContextTemplate.self)
         guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回模板列表") }
         target.templates?.templates.removeAll { $0.id == result.id }

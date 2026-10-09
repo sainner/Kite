@@ -30,14 +30,11 @@ export class Library {
     )`);
   }
 
-  /** 插件包的代码只在单独读取时给出，列表里只有元数据。 */
+  /** 插件包的代码只在单独读取时给出，列表里只有元数据；代码在 SQL 里去掉，不解析整个包。 */
   list(userId: string): LibraryItem[] {
-    return this.db.query<Row, [string]>('SELECT kind, id, revision, updatedAt, body FROM kite_library WHERE userId = ? ORDER BY kind, id').all(userId)
-      .map((row) => {
-        const body = JSON.parse(row.body) as Record<string, unknown>;
-        if (row.kind === 'plugin') delete body.bundle;
-        return { kind: row.kind, id: row.id, revision: row.revision, updatedAt: row.updatedAt, body };
-      });
+    return this.db.query<Row, [string]>(`SELECT kind, id, revision, updatedAt,
+      CASE kind WHEN 'plugin' THEN json_remove(body, '$.bundle') ELSE body END AS body FROM kite_library WHERE userId = ? ORDER BY kind, id`).all(userId)
+      .map((row) => ({ ...row, body: JSON.parse(row.body) }));
   }
 
   get(userId: string, kind: LibraryKind, id: string): LibraryItem | undefined {

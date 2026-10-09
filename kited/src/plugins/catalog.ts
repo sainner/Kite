@@ -45,7 +45,7 @@ export class PluginCatalog {
   }
   installed(id: string): boolean { return this.packages.has(id); }
   /** 本机装过的包，资源库同步时上传账号里还没有的。 */
-  installedPackages(): PluginPackage[] { return [...this.packages.values()].map((entry) => structuredClone(entry.value)); }
+  installedIds(): string[] { return [...this.packages.keys()]; }
   /** 账号里各包的元数据（不含代码）与版本；格式不合本机契约的跳过。 */
   setRemote(entries: Array<{ meta: unknown; revision: string }>): void {
     this.remote = new Map(entries.flatMap(({ meta, revision }) => {

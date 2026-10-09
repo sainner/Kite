@@ -16,11 +16,12 @@ import { applyExecutionGrants, executionRevision, instanceExecutionGrants } from
 import { projectContext } from './harness/context/project.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
 import { agentRevision, instanceAgent } from './agents/definition.ts';
-import { pluginDefinition } from './plugins/definitions.ts';
+import { agentTools } from './plugins/definitions.ts';
 import type { OperationToolSelection } from './operations/operations.ts';
 import type { CompactionRequest, Input, Model, Phase, Recovery, StopRequest, ThreadNotification, Tool } from './harness/types.ts';
 import type { LightTaskOptions } from './light-tasks.ts';
 import type { ProjectToolRule } from './roles.ts';
+import { ruleAllows } from './agents/tool-policy.ts';
 
 export interface Runtime {
   readonly state: RunnerState | Phase;
@@ -73,7 +74,7 @@ export interface RuntimeHost {
   toolConstraint(): ProjectToolRule | undefined;
 }
 
-const constraintAllows = (rule: ProjectToolRule | undefined, name: string) => !rule || (rule.mode === 'allow') === rule.tools.includes(name);
+const constraintAllows = (rule: ProjectToolRule | undefined, name: string) => !rule || ruleAllows(rule, name);
 
 /** 两个后端共用的工具筛选：agent 配置声明的工具中，须未被项目约束禁用，操作工具还须获得授权；插件工具只看授权。 */
 function selectTools(current: ThreadContext, operations: RuntimeHost['operations'], constraint: ProjectToolRule | undefined) {
@@ -89,7 +90,7 @@ function selectTools(current: ThreadContext, operations: RuntimeHost['operations
 
 export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<Runtime> {
   const { home, events: on, options, operations } = host;
-  const { id, nativeId, title, runtime, definitionId, project: { id: projectId }, workspace: { cwd, id: workspaceId } } = s;
+  const { id, nativeId, title, runtime, project: { id: projectId }, workspace: { cwd, id: workspaceId } } = s;
   if (runtime !== 'claude' && runtime !== 'harness') throw new KiteError(`不支持的会话后端：${runtime}`, 409);
   const basePolicy = await harnessPolicy({ cwd, env: process.env, home, repository: host.repository });
   const policy = () => applyExecutionGrants(basePolicy, cwd, instanceExecutionGrants(host.current()));
@@ -114,7 +115,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       compaction: { templates: () => host.compactionTemplates(), files: (range) => host.compactionFiles(range) },
     });
   }
-  const declaredTools = new Set<string>(pluginDefinition(definitionId).agent!.tools);
+  const declaredTools = new Set<string>(agentTools);
   const inputs = new Map<string, string>();
   const thread = await openThreadHost({
     cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, startPaused: true, policy, secrets,

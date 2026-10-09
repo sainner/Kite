@@ -204,6 +204,12 @@ export class Store implements UsageStore {
     const row = this.db.query('select constraints from project_constraints where project_id = ?').get(projectId) as { constraints: string } | null;
     return row ? JSON.parse(row.constraints) : undefined;
   }
+  /** 工作区所在项目的约束，按工作区直接查，不必组装整个工作区模型。 */
+  workspaceConstraints(workspaceId: string): ProjectConstraints | undefined {
+    const row = this.db.query(`select p.constraints from workspaces w join checkouts c on c.id = w.checkout_id
+      join project_constraints p on p.project_id = c.project_id where w.id = ?`).get(workspaceId) as { constraints: string } | null;
+    return row ? JSON.parse(row.constraints) : undefined;
+  }
   saveProjectConstraints(projectId: string, constraints: ProjectConstraints): void {
     this.db.query('insert into project_constraints values (?, ?) on conflict(project_id) do update set constraints = excluded.constraints')
       .run(projectId, JSON.stringify(constraints));

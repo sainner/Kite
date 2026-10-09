@@ -26,7 +26,7 @@ import { InstanceLifecycle, type AgentChoice } from './instance-lifecycle.ts';
 import { ContextTemplates } from './context-templates.ts';
 import { defaultRoleId, Roles, type RoleSelection, type RoleSnapshot } from './roles.ts';
 import { LibrarySync, type LibraryChanges } from './library-sync.ts';
-import { agentDefinitionId } from './plugins/definitions.ts';
+import { agentDefinitionId, agentTools } from './plugins/definitions.ts';
 import { addWorktree, removeWorktree, runSetup } from './workspace/worktrees.ts';
 import {
   agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
@@ -98,7 +98,7 @@ export class Kite {
     this.modelAccounts = new ModelAccounts(home, (modelAccounts) => bus.emit({ type: 'model-accounts.changed', modelAccounts }),
       (home) => readModelAccounts(home, { usage: store, apiKeys: async () => this.account.linked ? this.account.apiKeys() : [] }));
     this.catalog = new PluginCatalog(join(home, 'plugins'));
-    this.roles = new Roles(store, this.catalog.get(agentDefinitionId).agent!.tools);
+    this.roles = new Roles(store, agentTools);
     this.contextTemplates = new ContextTemplates(store, [
       titleTemplate, compactTemplate, emblemTemplate,
       agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
@@ -151,13 +151,13 @@ export class Kite {
   async updateContextTemplate(id: string, expectedRevision: string, definition: unknown) {
     const valid = this.contextTemplates.validate(id, expectedRevision, definition);
     await this.library.write('template', id, valid, expectedRevision);
-    const saved = this.contextTemplates.update(id, expectedRevision, valid);
+    const saved = this.contextTemplates.update(expectedRevision, valid);
     this.bus.emit({ type: 'context-templates.changed' });
     return saved;
   }
   /** 角色列表带上点阵签名状态，以及角色编辑器要用的代理插件全部工具、提示词变量和模型目录。 */
   roleCatalog() {
-    return { roles: this.roles.list().map((role) => this.emblems.decorate(role)), tools: this.catalog.get(agentDefinitionId).agent!.tools,
+    return { roles: this.roles.list().map((role) => this.emblems.decorate(role)), tools: agentTools,
       variables: this.contextTemplates.sceneVariables('thread.create'), ...agentModelCatalog() };
   }
   async createRole(value: unknown) {
@@ -168,7 +168,7 @@ export class Kite {
   async updateRole(id: string, expectedRevision: string, value: unknown) {
     const role = this.roles.validate(id, expectedRevision, value);
     await this.library.write('role', id, role, expectedRevision);
-    return this.roleSaved(this.roles.update(id, expectedRevision, role));
+    return this.roleSaved(this.roles.update(expectedRevision, role));
   }
   /** 插件包先存到账号资源库，再装到本机；其他工作机用到时再下载。 */
   async installPlugin(raw: unknown) {

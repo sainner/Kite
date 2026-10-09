@@ -21,10 +21,13 @@ export interface PluginDefinition {
 
 export const agentDefinitionId = 'kite.agent';
 
-/** 代理插件声明的全部工具与兜底默认值；提示词、工具规则与默认模型由角色决定。 */
+/** 代理插件声明的全部工具，是角色、项目约束与实例配置逐层筛选的全集。 */
+export const agentTools: AgentDefinition['tools'] = ['read', 'patch', 'shell', 'credentials', ...operationToolNames];
+
+/** 定义上的 agent 只标明这是代理插件；提示词、工具规则与默认模型由角色决定。 */
 const agent: AgentDefinition = {
   runtime: 'harness', model: { model: defaultAgentModel, reasoning: 'medium' },
-  tools: ['read', 'patch', 'shell', 'credentials', ...operationToolNames], context: defaultContextDefinition, maxRequestsPerTurn: 50,
+  tools: agentTools, context: defaultContextDefinition, maxRequestsPerTurn: 50,
 };
 
 const definitions: PluginDefinition[] = [
