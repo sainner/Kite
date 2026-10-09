@@ -54,7 +54,6 @@ export class TranscriptProjection {
       context: (context) => {
         this.contextRuntime = 'claude';
         this.context = context;
-        this.applyClaudeWindow();
         this.emit({ type: 'thread.state', state: this.state() });
       },
     });
@@ -71,7 +70,6 @@ export class TranscriptProjection {
   configureModel(model: string): void {
     if (this.configuredModel === model) return;
     this.configuredModel = model;
-    this.applyClaudeWindow();
     this.emit({ type: 'thread.state', state: this.state() });
   }
 
@@ -108,11 +106,17 @@ export class TranscriptProjection {
     const open = status === 'open';
     const interactive = open;
     const error = this.recovery?.message ?? this.error;
+    let context = this.context;
+    // 控制查询可能晚于用量消息，只给同一模型和请求的 Claude 测量补窗口；harness 自带请求快照中的窗口。
+    if (context && this.contextRuntime === 'claude' && this.claudeWindow?.model === this.configuredModel
+      && this.claudeWindow.requestId === context.requestId) {
+      context = { ...context, windowTokens: this.claudeWindow.tokens };
+    }
     return { phase: this.phase, busy: this.busy, ...(this.compacting ? { compacting: true } : {}), waitingForResume: this.waitingForResume, status,
       ...(this.lastOutcome ? { lastOutcome: this.lastOutcome } : {}),
       ...(this.recovery ? { recovery: this.recovery } : {}),
       ...(error ? { error } : {}),
-      ...(this.context ? { context: this.context } : {}),
+      ...(context ? { context } : {}),
       capabilities: { send: interactive && !this.recovery && this.phase !== 'stopping'
           && !this.claudeProjection.hasUnconfirmedInput,
         interrupt: interactive && (this.busy || this.pending.size > 0) && this.phase !== 'stopping',
@@ -384,7 +388,6 @@ export class TranscriptProjection {
 
   claudeControl(state: ClaudeState): void {
     this.claudeWindow = state.contextWindow;
-    this.applyClaudeWindow();
     this.phase = state.phase; this.busy = state.busy; this.compacting = state.compacting === true; this.waitingForResume = state.waitingForResume;
     this.lastOutcome = state.lastOutcome; this.recovery = state.recovery;
     this.error = state.recovery?.message ?? (state.lastOutcome?.kind === 'failed' ? state.lastOutcome.message : undefined);
@@ -392,15 +395,6 @@ export class TranscriptProjection {
     this.claudeProjection.syncInputs(state, this.pending);
     if (state.phase === 'idle') this.endDrafts();
     this.emitPending(); this.emit({ type: 'thread.state', state: this.state() });
-  }
-
-  /** 控制查询可能晚于用量消息；只补到同一请求，不把旧窗口配给新模型，也不恢复压缩后已清除的测量。 */
-  private applyClaudeWindow(): void {
-    if (!this.context || this.contextRuntime !== 'claude') return;
-    const { windowTokens: _previous, ...context } = this.context;
-    const window = this.claudeWindow?.model === this.configuredModel && this.claudeWindow.requestId === context.requestId
-      ? this.claudeWindow.tokens : undefined;
-    this.context = { ...context, ...(window !== undefined ? { windowTokens: window } : {}) };
   }
 
   claude(value: unknown, at: number): void { this.claudeProjection.message(value, at); }

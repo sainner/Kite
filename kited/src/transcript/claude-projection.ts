@@ -1,6 +1,7 @@
 /** Claude 原生消息、输入身份与分块序号的显示转换；记录与增量由公共投影保存。 */
 import type { ClaudeState } from '../claude/control.ts';
 import { claudeToolName, claudeToolResult, object, structuredClaudeTool } from '../claude/tools.ts';
+import { claudeInputTokens } from '../claude/usage.ts';
 import type { DisplayBlock, DisplayDelta, DisplayRecord, DisplayState, PendingInput } from './protocol.ts';
 
 interface ClaudeProjectionTarget {
@@ -133,8 +134,7 @@ export class ClaudeProjection {
   }
 
   private updateContext(requestId: string, usage: Record<string, any>, at: number): void {
-    const tokens = [usage.input_tokens, usage.cache_read_input_tokens ?? 0, usage.cache_creation_input_tokens ?? 0];
-    this.target.context(tokens.every((value) => Number.isSafeInteger(value) && value >= 0)
-      ? { requestId, inputTokens: tokens.reduce((total, value) => total + value, 0), measuredAt: at } : undefined);
+    const inputTokens = claudeInputTokens(usage);
+    this.target.context(inputTokens === undefined ? undefined : { requestId, inputTokens, measuredAt: at });
   }
 }

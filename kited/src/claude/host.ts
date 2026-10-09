@@ -7,6 +7,7 @@ import { Runner } from './runner.ts';
 import { readClaudeMessages } from './history.ts';
 import { claudeToolServer } from './tools.ts';
 import { claudeState, readClaudeControl, sameInput, saveClaudeControl } from './control.ts';
+import { claudeInputTokens } from './usage.ts';
 import type { SecretProvider } from '../secrets.ts';
 import { KiteError } from '../errors.ts';
 import { localTools } from '../execution/local-tools.ts';
@@ -142,14 +143,12 @@ export function openClaudeHost(options: {
     const query = new AbortController();
     windowQuery = query;
     controller.abort();
-    await waitTools();
-    if (query.signal.aborted || closing || driver !== running) {
-      if (windowQuery === query) windowQuery = undefined;
-      return;
-    }
     let usage: Awaited<ReturnType<Runner['contextUsage']>>;
-    try { usage = await running.contextUsage(query.signal); }
-    finally { if (windowQuery === query) windowQuery = undefined; }
+    try {
+      await waitTools();
+      if (query.signal.aborted || closing || driver !== running) return;
+      usage = await running.contextUsage(query.signal);
+    } finally { if (windowQuery === query) windowQuery = undefined; }
     if (query.signal.aborted || closing || driver !== running) return;
     const window = usage?.window ?? (data.contextWindow?.model === currentModel ? data.contextWindow.tokens : undefined);
     if (measured && window !== undefined) data.contextWindow = { model: currentModel, tokens: window, requestId: measured.requestId };
@@ -303,10 +302,8 @@ export function openClaudeHost(options: {
     }, {
       message(message) {
         if (message.type === 'assistant' && message.parent_tool_use_id === null) {
-          const usage = message.message.usage;
-          const tokens = usage && [usage.input_tokens, usage.cache_creation_input_tokens ?? 0, usage.cache_read_input_tokens ?? 0];
-          measured = tokens?.every((value) => Number.isSafeInteger(value) && value >= 0)
-            ? { requestId: message.message.id, tokens: tokens.reduce((sum, value) => sum + value, 0) } : undefined;
+          const tokens = claudeInputTokens(message.message.usage);
+          measured = tokens === undefined ? undefined : { requestId: message.message.id, tokens };
         }
         if (message.type === 'result') terminal = message.is_error
           ? { kind: 'failed', message: 'errors' in message ? message.errors.join('\n') : 'Claude 执行失败' } : { kind: 'completed' };
