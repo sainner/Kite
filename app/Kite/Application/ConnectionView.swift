@@ -56,8 +56,7 @@ struct SettingsContent: View {
                     }
                     if let error = model.error { Text(error).foregroundStyle(Theme.danger) }
                 }
-                .formStyle(.grouped)
-                .scrollContentBackground(.hidden)
+                .pageForm()
             }
         }
         .id(page)

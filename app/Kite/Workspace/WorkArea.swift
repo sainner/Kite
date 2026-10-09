@@ -12,16 +12,14 @@ final class WorkArea: Identifiable {
     var definitions: [RemotePluginDefinition] = []
     private(set) var pluginClient: KitedClient?
     private(set) var pluginConnection: UUID
-    let draftThread: WorkThread
-    /// 已有工作区里的新代理草稿只在本机打开，不同步到其他设备；关闭即丢弃，工作机上不留实例。
-    private(set) var draftOpen = false
-    static let draftWindowID = "draft-window"
+    /// 新代理草稿。已有工作区里的草稿只在本机打开，不同步到其他设备；关闭即丢弃，工作机上不留实例。
+    /// 发出第一条消息、工作机建好实例后，这个对象原地变成那个代理、进入 threads，这里换上新的草稿对象（见 update）。
+    private(set) var draftThread: WorkThread
+    /// 草稿窗口的 ID，没打开草稿时为 nil。由本机生成，就是工作机要为这个代理建的窗口 ID，建好后排布和卡片都不动。
+    private(set) var draftWindow: String?
     let layout: WindowLayout
-    /// 草稿发出后将换成的窗口，ID 由本机生成。结果返回前它先不进排布，由 finishDraft 放到草稿的位置，
-    /// 不先收进停靠栏再展开；请求失败时再照常收进停靠栏。其他新窗口不受影响。
-    var creatingWindow: String? {
-        didSet { if creatingWindow == nil { layout.reconcile(windows.map { Pane($0.id) }) } }
-    }
+    /// 正在发出的草稿窗口：期间输入区禁用，草稿不能关。
+    var creatingWindow: String?
     var changingWindows = false
     var pendingWindowRequest: OpenWindowRequest?
     var pendingInstanceRequest: CreatePluginInstance?
@@ -34,7 +32,7 @@ final class WorkArea: Identifiable {
     /// 本机看过的回合收尾时间，按实例 ID；收尾时间比它新、窗口又不在本机台面上的，停靠栏标「完成待查看」。不跨设备同步。
     private(set) var seenTurns: [String: Double] = [:]
     @ObservationIgnored private var visibleInstances: Set<String> = []
-    /// 停靠栏里展开的文件夹或家族格，外层在前；只在本机，不保存。
+    /// 停靠栏里展开的「更多」或家族格，外层在前；只在本机，不保存。
     var dockExpansion: [String] = []
     /// 指针停在停靠栏哪一格上，Mac 据此在左侧浮出名字与状态。
     var dockHover: DockHover?
@@ -48,7 +46,8 @@ final class WorkArea: Identifiable {
         pluginConnection = connection
         self.remote = remote
         self.definitions = definitions
-        draftThread = WorkThread(workspace: remote?.workspace.cwd ?? "", project: remote?.project.name ?? "Kite")
+        let draftThread = WorkThread(workspace: remote?.workspace.cwd ?? "", project: remote?.project.name ?? "Kite")
+        self.draftThread = draftThread
         if let remote {
             let openWindows = remote.windows.filter { $0.state == .open }
             windows = openWindows
@@ -57,7 +56,8 @@ final class WorkArea: Identifiable {
                                   storageKey: "KiteWindowLayout.\(remote.machine.id).\(remote.id)",
                                   reconcileOnLoad: client != nil)
         } else {
-            let draft = Self.draftWindow(workspace: id, thread: draftThread)
+            let draft = Self.draftWindow(Self.newWindowID(), workspace: id, thread: draftThread)
+            draftWindow = draft.id
             windows = [draft]
             layout = WindowLayout(panes: [Pane(draft.id)])
         }
@@ -74,21 +74,28 @@ final class WorkArea: Identifiable {
         pluginConnection = connection
         let previous = Dictionary(uniqueKeysWithValues: threads.map { ($0.id, $0) })
         let instancesByID = Dictionary(uniqueKeysWithValues: remote.instances.map { ($0.id, $0) })
+        // 工作机建好了草稿的窗口：窗口指向的实例就是草稿变成的代理，由草稿对象接着当，不另建
+        let drafted = draftWindow.flatMap { id in remote.windows.first { $0.id == id && $0.state == .open } }?.target.instanceId
         threads = remote.threads.compactMap { value in
             guard let instance = instancesByID[value.instanceId], instance.status == .open else { return nil }
-            if let thread = previous[value.instanceId] {
+            if let thread = previous[value.instanceId] ?? (value.instanceId == drafted ? draftThread : nil) {
+                if thread === draftThread { thread.adopt(instance: value.instanceId) }
                 thread.title = instance.title; thread.project = remote.project.name
                 thread.use(client)
                 return thread
             }
             return WorkThread(remote: value, instance: instance, workspace: remote.workspace, project: remote.project.name, client: client)
         }
+        // 草稿已经变成代理，留一个新的草稿对象，免得之后按草稿改它的连接状态
+        if drafted != nil, !draftThread.isDraft {
+            draftWindow = nil
+            draftThread = WorkThread(workspace: remote.workspace.cwd, project: remote.project.name)
+        }
         instances = remote.instances
         if let settingsInstance, !instances.contains(where: { $0.id == settingsInstance.id && $0.status == .open }) {
             self.settingsInstance = nil
         }
-        windows = remote.windows.filter { $0.state == .open } + (draftOpen ? [Self.draftWindow(workspace: id, thread: draftThread)] : [])
-        layout.reconcile(windows.map { Pane($0.id) }.filter { $0.id != creatingWindow || layout.panes.contains($0) })
+        rebuildWindows()
         draftThread.connected = remote.workspace.status == .open
         updateFiles(client: client)
     }
@@ -117,14 +124,11 @@ final class WorkArea: Identifiable {
         definitions.first { $0.id == instance.definitionId }
     }
 
-    /// 停靠栏要放下添加入口、每一格和两组之间的分隔；无窗口的代理都收在文件夹里，只占一格。
+    /// 停靠栏要放下添加入口、每一格和两组之间的分隔；家族格更长，无窗口的代理每四个小头像占一格，最多两格。
     var minimumSize: CGSize {
         let content = layout.minimumSize
-        let dock = dockModel(docked: layout.docked, onStage: [])
-        let cells = 1 + dock.agents.count + dock.tools.count
-        let divider = dock.agents.isEmpty || dock.tools.isEmpty ? 0 : DockGeometry.dividerExtra
-        return CGSize(width: content.width, height: max(content.height,
-            2 * Metrics.padding + CGFloat(cells) * (Metrics.dragBubble + Metrics.gap) - Metrics.gap + divider))
+        let dock = DockGeometry.length(of: dockModel(docked: layout.docked, onStage: []))
+        return CGSize(width: content.width, height: max(content.height, 2 * Metrics.padding + dock))
     }
 
     func view(in pane: Pane) -> RemotePluginDefinition.PluginView? {
@@ -142,7 +146,7 @@ final class WorkArea: Identifiable {
             result.name = instance.title + (target.viewId == definition(of: instance)?.defaultView ? "" : " · " + (view?.title ?? target.viewId))
             return result
         }
-        return .init(name: "窗口", icon: "rectangle", tint: Palette.stone)
+        return .init(name: "窗口", icon: "rectangle")
     }
 
     /// 快照里的摘要只在比已收到的推送新时采用；工作机重启后游标换了一轮，以快照为准。
@@ -200,64 +204,65 @@ final class WorkArea: Identifiable {
         if let window = windows.first(where: { $0.target == target }) { layout.activate(Pane(window.id)) }
     }
 
-    private static func draftWindow(workspace: String, thread: WorkThread) -> RemoteWorkspaceWindow {
-        RemoteWorkspaceWindow(id: draftWindowID, workspaceId: workspace,
+    /// 窗口集合是工作机上打开的窗口加本机草稿。
+    private func rebuildWindows() {
+        guard let remote else { return }
+        windows = remote.windows.filter { $0.state == .open && $0.id != draftWindow }
+            + (draftWindow.map { [Self.draftWindow($0, workspace: id, thread: draftThread)] } ?? [])
+        layout.reconcile(windows.map { Pane($0.id) })
+    }
+
+    private static func newWindowID() -> String { UUID().uuidString.lowercased() }
+
+    private static func draftWindow(_ id: String, workspace: String, thread: WorkThread) -> RemoteWorkspaceWindow {
+        RemoteWorkspaceWindow(id: id, workspaceId: workspace,
                               target: WindowTarget(instanceId: thread.id, viewId: "conversation"), state: .open, createdAt: 0)
     }
 
     /// 添加代理时先打开本机草稿；已有草稿时沿用其中的选择。
+    /// 每次新开一个草稿对象：关掉的草稿淡出时仍显示原来的模型与输入，不闪成「模型」和空输入框。
     func openDraft() {
-        guard !isDraft else { return }
-        if !draftOpen {
-            draftThread.draft = ""
-            draftThread.role = nil
+        guard let remote else { return }
+        if draftWindow == nil {
+            draftThread = WorkThread(workspace: remote.workspace.cwd, project: remote.project.name)
             draftThread.draftChoice = DraftAgentChoice()
-            draftThread.agentCapabilities = nil
-            draftThread.agentOptions = nil
-            draftThread.error = nil
-            draftOpen = true
-            windows.append(Self.draftWindow(workspace: id, thread: draftThread))
-            layout.reconcile(windows.map { Pane($0.id) })
+            draftThread.connected = remote.workspace.status == .open
+            draftWindow = Self.newWindowID()
+            rebuildWindows()
         }
-        layout.activate(Pane(Self.draftWindowID))
+        if let draftWindow { layout.activate(Pane(draftWindow)) }
     }
 
+    /// 正在发出的草稿不能关：工作机可能已经建好了代理。
     func closeDraft() {
-        guard draftOpen else { return }
-        layout.reconcile(dropDraft().map { Pane($0.id) })
-    }
-
-    /// 草稿发出后由新建的真实窗口接替原来的位置和焦点。
-    func finishDraft(into id: String) {
-        guard windows.contains(where: { $0.id == id }) else { return }
-        let draft = Pane(Self.draftWindowID)
-        if layout.panes.contains(draft) { layout.replace(draft, with: Pane(id)) }
-        else { layout.activate(Pane(id)) }
-        layout.reconcile(dropDraft().map { Pane($0.id) })
-    }
-
-    /// 草稿的内容留到下次 openDraft 再清：窗口淡出时仍显示原来的模型与输入，不闪成「模型」和空输入框。
-    private func dropDraft() -> [RemoteWorkspaceWindow] {
-        draftOpen = false
-        windows.removeAll { $0.id == Self.draftWindowID }
-        return windows
+        guard draftWindow != nil, creatingWindow == nil else { return }
+        draftWindow = nil
+        rebuildWindows()
     }
 }
+
+#if DEBUG
+extension WorkArea {
+    /// 停靠栏预览直接给出各代理的活动摘要，不经工作机。
+    func setPreviewActivities(_ value: [String: ThreadActivity]) { activities = value }
+}
+#endif
 
 struct WindowAppearance {
     var name: String
     let icon: String
-    let tint: Color
+    /// 颜色留给代理的状态，代理以外的窗口都用同一种中性色。
+    var tint = Palette.stone
     var isAgent = false
     /// 最小化后的圆角：代理是圆，其余是圆角矩形。
     func minimizedCornerRadius(width: CGFloat = Metrics.dragBubble) -> CGFloat { isAgent ? width / 2 : Metrics.dockRadius }
 
     static func renderer(_ id: String) -> Self {
         switch id {
-        case "files": .init(name: "文件", icon: "folder", tint: Palette.sunwashed)
-        case "terminal": .init(name: "终端", icon: "terminal", tint: Palette.stone)
-        case "preview": .init(name: "预览", icon: "eye", tint: Palette.dewy)
-        default: .init(name: "插件", icon: "puzzlepiece.extension", tint: Palette.buttercup)
+        case "files": .init(name: "文件", icon: "folder")
+        case "terminal": .init(name: "终端", icon: "terminal")
+        case "preview": .init(name: "预览", icon: "eye")
+        default: .init(name: "插件", icon: "puzzlepiece.extension")
         }
     }
 }

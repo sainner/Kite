@@ -155,6 +155,8 @@ extension EnvironmentValues {
     @Entry var paneWindowFrame: CGRect?
     /// 窗口容器已让出的顶部安全区，标题栏只补足固定边距；Mac 为 0。
     @Entry var paneTopSafeInset: CGFloat = 0
+    /// iPhone 根视图的左右边距，CompactLayout 从 UIKit 读了给窗口，单页的分组表单按它固定，见 pageForm；其他情况为 nil。
+    @Entry var formMargin: CGFloat?
     /// iPhone 上键盘升起来了。CompactLayout 在屏幕这一层比出来：SwiftUI 的安全区比 Home 条那一截高。
     /// 不能在窗口里比：拉开、收起抽屉时窗口里读到的安全区跟着动画逐帧变，还会冲过 Home 条那一截，会被当成键盘。Mac 上总是 false。
     @Entry var keyboardShown = false

@@ -10,8 +10,9 @@ constant float dotRestScale = 0.2;
 constant int profileCount = 120;
 // 格表每格 8 个数：列、行、终态序号（-1 是空位）、shape、不预乘的 sRGB 与透明度。
 constant int cellStride = 8;
-// 波每道 6 个数：起点区域 x、y、宽、高，波前已走的距离，终态序号。
-constant int waveStride = 6;
+// 波每道 10 个数：起点区域 x、y、宽、高，波前已走的距离，终态序号，波前的半宽，波前正中的 shape，波的颜色的不透明度，
+// 弓形的圆心在起点区域顶边中点往下多远（负数是不是弓形）。都是这一帧的取值，见 DotWave.front 与 DotWave.distance。
+constant int waveStride = 10;
 // 图案每块 28 个数，布局见 ResolvedPattern.appendShaderData。
 constant int patternStride = 28;
 // 同 PatternMotion.morphSpread 与 DotMetrics.morphDuration。
@@ -114,7 +115,6 @@ static PatternDot patternDot(int column, int row, device const float *patterns, 
 [[ stitchable ]] half4 dotField(float2 position, float4 frame, float4 rest, float drawsRest,
                                 device const float *cells, int cellFloats,
                                 device const float *waves, int waveFloats,
-                                float4 wave, float waveOpacity,
                                 device const float *palette, int paletteFloats,
                                 device const float *profiles, int profileFloats,
                                 device const float *patterns, int patternFloats,
@@ -149,29 +149,33 @@ static PatternDot patternDot(int column, int row, device const float *patterns, 
     }
 
     PatternDot pattern = { 0.0, 0, float4(0.0), 0.0 };
-    float waveAmount = 0.0;
+    float waveAmount = 0.0, waveOpacity = 0.0;
     if (!found) {
         pattern = patternDot(column, row, patterns, patternFloats, values);
         shape = pattern.shape;
         form = pattern.form;
-        // wave：(半宽, 走到多远消失, 从几成处变弱, 波前正中的 shape)
         float waveShape = 0.0;
         int waveForm = 0;
         float2 squareMin = float2(column, row) * dotPitch, squareMax = squareMin + dotPitch;
+        float2 squareCenter = squareMin + dotPitch * 0.5;
         for (int i = 0; i + waveStride <= waveFloats; i += waveStride) {
             float2 originMin = float2(waves[i], waves[i + 1]);
             float2 originMax = originMin + float2(waves[i + 2], waves[i + 3]);
-            float front = waves[i + 4];
-            if (front < 0.0 || front >= wave.y + wave.x || wave.x <= 0.0) continue;
-            float2 gap = max(max(originMin - squareMax, squareMin - originMax), 0.0);
-            float x = abs(length(gap) - front) / wave.x;
+            float front = waves[i + 4], width = waves[i + 6], bow = waves[i + 9];
+            if (width <= 0.0) continue;
+            float distance;
+            if (bow >= 0.0) {
+                distance = length(squareCenter - float2((originMin.x + originMax.x) * 0.5, originMin.y + bow)) - bow;
+            } else {
+                distance = length(max(max(originMin - squareMax, squareMin - originMax), 0.0));
+            }
+            float x = abs(distance - front) / width;
             if (x >= 1.0) continue;
-            float fadeFrom = wave.y * wave.z;
-            float fade = 1.0 - smoothUnit((front - fadeFrom) / max(wave.y - fadeFrom, 1.0));
-            float value = (1.0 - smoothUnit(x)) * fade * wave.w;
+            float value = (1.0 - smoothUnit(x)) * waves[i + 7];
             if (value > waveShape) {
                 waveShape = value;
                 waveForm = int(waves[i + 5]);
+                waveOpacity = waves[i + 8];
             }
         }
         // 波按取大叠在图案上（DotBlend.lighten）：只长出比图案大的那段，颜色只在超出的那段混向波的颜色。

@@ -24,7 +24,7 @@ struct KiteApp: App {
     var body: some Scene {
         #if os(macOS)
         Window("Kite", id: "main") {
-            AppRoot().connectsToService().cardActionsPreview()
+            AppRoot().dockPreview().connectsToService().cardActionsPreview()
                 .environment(model).readsWindowChrome().toastHost().appAppearance()
         }
         .kiteWindowStyle()
@@ -42,7 +42,7 @@ struct KiteApp: App {
 
         #else
         WindowGroup {
-            AppRoot().connectsToService().cardActionsPreview().environment(model).toastHost().appAppearance()
+            AppRoot().dockPreview().connectsToService().cardActionsPreview().environment(model).toastHost().appAppearance()
         }
         #endif
     }

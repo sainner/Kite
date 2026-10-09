@@ -128,7 +128,7 @@ struct Onboarding: View {
                 Theme.background
                 DotCanvas()
                 #if os(iOS)
-                ScreenReader { radius, bottom in
+                ScreenReader { radius, bottom, _ in
                     screenRadius = radius
                     homeInset = bottom
                 }

@@ -7,6 +7,16 @@ extension View {
         modifier(EndsTyping(typing: typing, end: end))
     }
 
+    /// iPhone 键盘上方的「完成」，给没有换行键可收键盘的输入框；Mac 上什么都不加。
+    @ViewBuilder
+    func keyboardDoneButton(_ end: @escaping () -> Void) -> some View {
+        #if os(iOS)
+        toolbar { ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("完成", action: end) } }
+        #else
+        self
+        #endif
+    }
+
     /// 标出一块输入框：点它是要打字，所在区域的 endsTyping 不收键盘。
     func typingTarget() -> some View {
         background {

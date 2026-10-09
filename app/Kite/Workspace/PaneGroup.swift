@@ -31,9 +31,9 @@ enum PaneGroup: Identifiable {
     func appearance(of pane: Pane) -> WindowAppearance {
         if let workspace { return workspace.appearance(of: pane) }
         switch pane.id {
-        case "chatgpt": return .init(name: "ChatGPT", icon: "person.crop.circle", tint: Palette.dewy)
-        case "claude": return .init(name: "Claude", icon: "person.crop.circle", tint: Palette.buttercup)
-        default: return .init(name: "API 账号", icon: "key", tint: Palette.stone)
+        case "chatgpt": return .init(name: "ChatGPT", icon: "person.crop.circle")
+        case "claude": return .init(name: "Claude", icon: "person.crop.circle")
+        default: return .init(name: "API 账号", icon: "key")
         }
     }
 }

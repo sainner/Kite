@@ -2,13 +2,13 @@
 import SwiftUI
 import UIKit
 
-/// 模型打开 SwiftUI 分段选择弹窗，更多操作保留原生菜单；两个入口共用标题栏玻璃。
+/// 模型与更多入口共用一个原生菜单控件和标题栏玻璃，按点在哪一侧决定弹出哪份菜单。
 struct PhoneThreadHeaderMenus: UIViewRepresentable {
     let modelTitle: String
     let modelName: String?
     let modelEnabled: Bool
+    let models: ThreadModelMenu
     let commands: [[ThreadHeaderCommand]]
-    let onOpenModel: () -> Void
     @ScaledMetric(relativeTo: .body) private var controlHeight = Metrics.paneHeaderButton
 
     func makeUIView(context: Context) -> PhoneThreadMenuButton { PhoneThreadMenuButton() }
@@ -23,6 +23,7 @@ struct PhoneThreadHeaderMenus: UIViewRepresentable {
 final class PhoneThreadMenuButton: UIButton {
     private enum MenuKind { case model, more }
     private var content: PhoneThreadHeaderMenus?
+    private var activeMenu: MenuKind = .model
     private var accessibilityMenu: MenuKind?
     private lazy var modelElement = PhoneMenuAccessibilityElement(accessibilityContainer: self)
     private lazy var moreElement = PhoneMenuAccessibilityElement(accessibilityContainer: self)
@@ -86,19 +87,13 @@ final class PhoneThreadMenuButton: UIButton {
         configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
         let kind = accessibilityMenu ?? (location.x < menuBoundary ? .model : .more)
         accessibilityMenu = nil
-        if kind == .model {
-            if content?.modelEnabled == true { content?.onOpenModel() }
-            return nil
-        }
+        guard kind != .model || content?.modelEnabled == true else { return nil }
+        activeMenu = kind
         return super.contextMenuInteraction(interaction, configurationForMenuAtLocation: location)
     }
 
     private func openAccessibleMenu(_ kind: MenuKind) -> Bool {
         guard window != nil, !isHeld, kind != .model || content?.modelEnabled == true else { return false }
-        if kind == .model {
-            content?.onOpenModel()
-            return true
-        }
         accessibilityMenu = kind
         performPrimaryAction()
         return true
@@ -106,11 +101,30 @@ final class PhoneThreadMenuButton: UIButton {
 
     private func menuElements() -> [UIMenuElement] {
         guard let content else { return [] }
-        return content.commands.map { section in
-            UIMenu(options: .displayInline, children: section.map { command in
-                UIAction(title: command.title, image: UIImage(systemName: command.symbol),
-                    attributes: command.enabled ? [] : .disabled) { _ in command.action() }
-            })
+        switch activeMenu {
+        case .model:
+            let models = content.models
+            var elements: [UIMenuElement] = []
+            if let status = models.status {
+                elements.append(UIAction(title: status, attributes: .disabled) { _ in })
+            }
+            elements += models.vendors.map { vendor in
+                UIMenu(title: vendor.title ?? "", options: .displayInline, children: vendor.models.map { model in
+                    UIAction(title: model.name, attributes: model.enabled ? [] : .disabled,
+                        state: model.selected ? .on : .off) { _ in models.select(model.id) }
+                })
+            }
+            if let note = models.note {
+                elements.append(UIMenu(options: .displayInline, children: [UIAction(title: note, attributes: .disabled) { _ in }]))
+            }
+            return elements
+        case .more:
+            return content.commands.map { section in
+                UIMenu(options: .displayInline, children: section.map { command in
+                    UIAction(title: command.title, image: UIImage(systemName: command.symbol),
+                        attributes: command.enabled ? [] : .disabled) { _ in command.action() }
+                })
+            }
         }
     }
 

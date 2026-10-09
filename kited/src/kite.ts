@@ -389,8 +389,8 @@ export class Kite {
   }
 
   /** 新会话的草稿只在 App 本地；第一条消息连同草稿里选好的参数一次创建实例、会话和窗口。
-   * windowId 由 App 生成，窗口经事件先到时 App 也认得出是草稿换成的那个。 */
-  createThread(workspaceId: string, prompt: string, choice: AgentChoice = {}, windowId?: string): Promise<ThreadView> {
+   * windowId 与 messageId 由 App 生成：窗口经事件先到时 App 认得出是草稿变成的那个，第一条消息也和草稿里显示的是同一条。 */
+  createThread(workspaceId: string, prompt: string, choice: AgentChoice = {}, windowId?: string, messageId?: string): Promise<ThreadView> {
     return this.control(workspaceId, async () => {
       const { workspace } = this.workspace(workspaceId);
       if (workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
@@ -401,7 +401,7 @@ export class Kite {
       const t = this.newThread(workspaceId, prompt, workspace.kind, choice);
       this.store.addAgent(t, this.instances.newWindow(t, windowId));
       this.threadChanged(t);
-      await this.sendInput(this.context(t.id), { id: randomUUID(), text: prompt, source: 'human' });
+      await this.sendInput(this.context(t.id), { id: messageId ?? randomUUID(), text: prompt, source: 'human' });
       return this.thread(t.id);
     });
   }

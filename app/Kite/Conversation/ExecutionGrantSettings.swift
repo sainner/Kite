@@ -102,22 +102,17 @@ struct ExecutionGrantSettings: View {
         }
         .endsTyping(focus != nil) { focus = nil }
         .interactiveDismissDisabled(working || changed)
-        .confirmationDialog("放弃未保存的执行授权修改？", isPresented: Binding(
-            get: { discardAction != nil }, set: { if !$0 { discardAction = nil } }
-        ), titleVisibility: .visible) {
-            Button("放弃修改", role: .destructive) {
-                let action = discardAction
-                discardAction = nil
-                if action == .back { back() } else { perform { try await load() } }
-            }
+        .discardAlert("放弃未保存的执行授权修改？", item: $discardAction) { action in
+            if action == .back { back() } else { perform { try await load() } }
         }
-        .confirmationDialog("确认上次执行结果？", isPresented: $confirmingRecovery, titleVisibility: .visible) {
+        .alert("确认上次执行结果？", isPresented: $confirmingRecovery) {
             Button("已核对，确认结果") {
                 perform {
                     try await boundClient().post("/threads/\(instance.id)/recover")
                     try await readState()
                 }
             }
+            Button("取消", role: .cancel) {}
         } message: {
             Text("请先核对文件改动，并确认残留命令已停止。确认后可修改授权；代理等待你显式继续。")
         }

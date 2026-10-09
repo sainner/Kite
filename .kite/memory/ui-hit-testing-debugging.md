@@ -1,6 +1,6 @@
 ---
 name: ui-hit-testing-debugging
-description: 点击、悬停、触摸命中问题怎么在本机复现：Mac 进程内合成点击，iPhone 用模拟器探针比 hitTest 落点
+description: 点击、悬停、触摸命中问题怎么在本机复现：Mac 进程内合成点击，iPhone 用模拟器探针比 hitTest 落点；simctl 探针曾两次引发内核 panic
 metadata:
   node_type: memory
   type: context
@@ -15,6 +15,8 @@ metadata:
 - 窗口内容在 AppKit 层的 `hitTest` 正常，不代表 SwiftUI 内部没有被遮挡。在可疑的几层分别挂悬停记录，就能看出指针下实际收到事件的是哪一层。
 
 2026-10-09 排查 iPhone 账号窗口控制区横滑无效时的经验：本机没有 idb 等触摸合成工具，也不能用辅助功能。用 `swiftc` 按 iOS 模拟器目标编一个最小 UIKit 探针 App（手写 Info.plist、`codesign -s -`），`simctl install` 后 `simctl launch --console-pty` 运行，在里面对几种写法分别调用 `window.hitTest` 并打印落点视图链，就能比出触摸会交给哪一层。命中测试不能证明手势一定触发，交付后仍需用户在真机上试。
+
+**警告：** 2026-10-09 22:12 和 22:15 本机连续两次内核 panic 后自动重启，两次 panic 记录里出事的进程都是 `simctl`（内核 data abort，macOS 27.2 26B5101f）。当时都有会话在用 `timeout 8 xcrun simctl launch --console-pty …` 跑探针，第二次是这个会话重启后又跑了一遍。还没单独验证是 `--console-pty`、被 `timeout` 强杀，还是同时开着两台模拟器引起的。在弄清之前不要再用这种组合，改用 `simctl launch --stdout=<文件> --stderr=<文件>` 启动、`simctl terminate` 结束，这个做法同样没有验证过。panic 记录在 `/Library/Logs/DiagnosticReports/Retired/panic-full-*.panic`。
 
 **Why:** 当次先用不可靠的真实鼠标实验得出错误结论，绕了几轮。
 **How to apply:** 再遇到「某处点不到」时，先用进程内合成点击复现，再用环境变量逐个关掉可疑层做对比。相关协作反馈见 [[feedback-confirm-ui-target]]。

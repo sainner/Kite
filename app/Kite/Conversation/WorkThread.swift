@@ -3,7 +3,8 @@ import SwiftUI
 /// 一个真实线程；显示记录的事实来自 kited，本地只保留草稿与尚未确认的发送。
 @Observable
 final class WorkThread: Identifiable {
-    let id: String
+    /// 草稿的 id 是本地的，工作机建好实例后换成实例 ID，见 adopt。
+    private(set) var id: String
     let tint: Color
     var title: String
     var project: String
@@ -32,8 +33,6 @@ final class WorkThread: Identifiable {
     private var received: Set<String> = []
     private var pending: [RemoteInput] = []
     private var outbox: [Message] = []
-    /// 见 showAccepted。这条消息的 id 由工作机生成、本地对不上，所以不进 outbox，历史一到整段由历史接替。
-    private var accepted: Message?
     private(set) var failed: Set<String> = []
     private var sending: Set<String> = []
     private var returned: Set<String> = []
@@ -108,6 +107,16 @@ final class WorkThread: Identifiable {
         connected = false
     }
 
+    /// 草稿发出后工作机建好了实例：同一个对象接着当这个代理，窗口里的对话、排着的第一条消息和动画都不换。
+    /// 角色与参数此后以实例配置为准；接着 use 工作机连接，就不再是草稿。
+    func adopt(instance: String) {
+        guard isDraft else { return }
+        id = instance
+        role = nil
+        draftChoice = nil
+        agentOptions = nil
+    }
+
     func observe() async {
         guard let client else { return }
         defer { if self.client == client { flushStreaming(); connected = false } }
@@ -140,7 +149,6 @@ final class WorkThread: Identifiable {
             positions = Dictionary(uniqueKeysWithValues: history.enumerated().map { ($0.element.id, $0.offset) })
             received = Set(history.compactMap { $0.block.type == "human" ? $0.block.id : nil })
             pending = event.pending ?? []
-            accepted = nil
             state = event.state
             connected = true
             error = nil
@@ -203,7 +211,7 @@ final class WorkThread: Identifiable {
 
     private func render(recordsChanged: Bool = false) {
         let running = state?.busy == true && ["running", "stopping", "finishing"].contains(state?.phase ?? "")
-        let messages = pending.filter { $0.source == "human" }.map(\.message) + (accepted.map { [$0] } ?? []) + outbox
+        let messages = pending.filter { $0.source == "human" }.map(\.message) + outbox
         if recordsChanged {
             var records: [Record] = []
             visiblePositions.removeAll(keepingCapacity: true)
@@ -227,8 +235,9 @@ final class WorkThread: Identifiable {
         }
     }
 
+    /// 草稿没有连接，排着的第一条消息由创建请求带上（见 ThreadPane.send），不在这里投递。
     func send(_ message: Message) -> Bool {
-        guard !isDraft, canSend else { return false }
+        guard canSend else { return false }
         let startsTurn = !transcript.running && transcript.pending.isEmpty
         var queued = message
         queued.midTurn = !startsTurn
@@ -240,11 +249,24 @@ final class WorkThread: Identifiable {
 
     func retry(_ message: Message) { deliver(message) }
 
-    /// 草稿的第一条消息工作机已经收下；历史到达前先显示在待发送区，新窗口不先闪空白页。
-    func showAccepted(_ message: Message) {
-        guard !connected, remoteRecords.isEmpty else { return }
-        accepted = message
-        render()
+    /// 草稿的第一条消息随创建请求发出，请求失败时：还是草稿就撤回消息，字退回输入框，好改了角色或参数再发；
+    /// 工作机已经建好代理的，照普通消息标成未确认，点消息重试。
+    func firstMessageFailed(_ message: Message, error: String) {
+        if isDraft {
+            outbox.removeAll { $0.id == message.id }
+            render()
+            restoreDraft([message.typed])
+            self.error = error
+        } else if outbox.contains(where: { $0.id == message.id }) {
+            markUnconfirmed(message, error)
+        }
+    }
+
+    /// 发送没得到确认、工作机也还没收到这条时，标成未确认，点消息重试。
+    private func markUnconfirmed(_ message: Message, _ error: String) {
+        guard !received.contains(message.id), !pending.contains(where: { $0.id == message.id }) else { return }
+        failed.insert(message.id)
+        self.error = "发送未确认，点消息重试：\(error)"
     }
 
     private func deliver(_ message: Message) {
@@ -256,9 +278,8 @@ final class WorkThread: Identifiable {
             defer { sending.remove(message.id) }
             do { try await client.post("/threads/\(id)/messages", body: ["id": message.id, "text": message.typed]) }
             catch {
-                guard !returned.contains(message.id), !received.contains(message.id),
-                      !pending.contains(where: { $0.id == message.id }) else { return }
-                failed.insert(message.id); self.error = "发送未确认，点消息重试：\(error.localizedDescription)"
+                guard !returned.contains(message.id) else { return }
+                markUnconfirmed(message, error.localizedDescription)
             }
         }
     }

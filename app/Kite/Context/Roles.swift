@@ -10,6 +10,9 @@ nonisolated struct RoleDefinition: Codable, Equatable, Identifiable, Sendable {
     var model: AgentModelConfiguration
     var maxRequestsPerTurn: Int
 
+    /// 有名称、每回合至少能发一次请求才能保存。
+    var isSavable: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && maxRequestsPerTurn >= 1 }
+
     /// 基于已有角色另存为新角色；提示词的 ID 与名称由工作机保存时随角色改写。
     func copy() -> Self {
         var result = self

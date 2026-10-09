@@ -14,7 +14,7 @@ struct ThreadPane: View {
     @State private var selected: RowID?
     @State private var titleError: String?
     /// 标题栏模板菜单里「基于…新建模板」打开的编辑器，与模板读取、套用失败的说明。
-    @State private var roleEdit: RoleEdit?
+    @State private var roleEdit: RoleDefinition?
     @State private var roleError: String?
     /// 空会话铺在窗口上的点阵签名，见 NewThreadStage。
     @State private var patternSlot = "pattern.\(UUID().uuidString)"
@@ -32,7 +32,7 @@ struct ThreadPane: View {
                 // 标题栏、控制区和键盘让出的那一截，滚动视图照样伸到它们后面（实测）
                 GeometryReader { proxy in
                     ScrollView {
-                        TranscriptView(items: items, pending: pending, actionable: true, tail: scroll.tail(visible: proxy.size.height))
+                        TranscriptView(items: items, pending: pending, actionable: true, lazy: Self.lazyTranscript, tail: scroll.tail(visible: proxy.size.height))
                             .font(Theme.body)
                             .frame(maxWidth: Metrics.transcriptWidth)
                             .padding(.horizontal, 16)
@@ -81,18 +81,26 @@ struct ThreadPane: View {
         )) {
             Button("好", role: .cancel) { titleError = nil }
         } message: { Text(titleError ?? "") }
-        .sheet(item: $roleEdit) { request in
-            RoleEditor(request: request, connection: model.revision(for: area)) { selectRole($0) }
+        .sheet(item: $roleEdit) { role in
+            RoleEditor(role: role, connection: model.revision(for: area)) { selectRole($0) }
                 .environment(model)
         }
     }
+
+    /// 只在 Mac 上按需排版：长会话改窗口宽度时只重排看得见的。iPhone 上窗口宽度不变，省不下重排；
+    /// 按需排版后在底部展开工具行出现过先原地跳一下、再往下展开（2026-10-09 用户在 iPhone 上实测），所以仍整个排。
+    #if os(macOS)
+    private static let lazyTranscript = true
+    #else
+    private static let lazyTranscript = false
+    #endif
 
     /// 副标题是代理的角色。还没有对话时副标题带下拉箭头，在这里换角色；标题还没生成，不给重新生成。
     private func header(initial: Bool) -> PaneHeader {
         PaneHeader(title: thread.title, subtitle: model.roleTitle(for: thread, in: area),
             subtitleMenu: initial ? .init(label: "角色", isBusy: thread.configuringTemplate,
                 enabled: model.canSelectRole(for: thread, in: area),
-                content: AnyView(NewThreadRoleMenu(select: selectRole) { roleEdit = .init(role: $0.role.copy()) }))
+                content: AnyView(NewThreadRoleMenu(select: selectRole) { roleEdit = $0.role.copy() }))
                 : nil,
             titleRefresh: initial ? nil : .init(
                 actionLabel: "重新生成标题", progressLabel: "正在重新生成标题",
@@ -115,21 +123,19 @@ struct ThreadPane: View {
     }
 
     /// 发一条消息：先排进队里，对话滑过去（见 TranscriptScroll.send），气泡同时从下往上浮进来。
+    /// 草稿的第一条也这样走，同时创建代理；建好后同一个会话对象原地变成这个代理，窗口不换，失败时消息退回输入框。
     private func send(_ message: Message) {
         if thread.isDraft {
-            if area.isDraft { model.newWorkspace = .session }
-            else {
-                guard area.creatingWindow == nil else { return }
-                let window = UUID().uuidString.lowercased()
-                area.creatingWindow = window
-                thread.error = nil
-                Task {
-                    defer { area.creatingWindow = nil }
-                    do { try await model.startThread(in: area, message: message, window: window) }
-                    catch { thread.error = error.localizedDescription }
-                }
+            if area.isDraft { model.newWorkspace = .session; return }
+            guard area.creatingWindow == nil, let window = area.draftWindow else { return }
+            area.creatingWindow = window
+            thread.error = nil
+            let draft = thread
+            Task {
+                defer { area.creatingWindow = nil }
+                do { try await model.startThread(in: area, message: message, window: window) }
+                catch { draft.firstMessageFailed(message, error: error.localizedDescription) }
             }
-            return
         }
         arriving.insert(message.id)
         scroll.send { thread.send(message) } alongside: { arriving.remove(message.id) }

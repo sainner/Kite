@@ -10,6 +10,7 @@ struct ThreadControls: View {
     @Environment(WorkArea.self) private var area
     @Environment(\.paneInstance) private var instance
     @Environment(\.dotStage) private var stage
+    @Environment(\.dotScope) private var dotScope
     /// 控制区在窗口坐标中的位置，发送时点阵的波从这里推开。
     @State private var frame: CGRect = .zero
     /// 刚发出去的字正在淡掉。
@@ -149,13 +150,21 @@ struct ThreadControls: View {
         }
     }
 
+    /// 发送时从控制区推开的波：弓形，中间先走，和对话往上滑同一条弹簧朝窗口顶边走，像把对话推上去；
+    /// 从窄到宽、越走越淡，到窗口上部已经很淡。
+    private static func sendWave(from frame: CGRect, reach: CGFloat) -> DotWave.Parameters {
+        DotWave.Parameters(spring: .glide, width: 24, widthEnd: 144, reach: reach, bow: frame.width * 0.75, fadeEnd: 0.85)
+    }
+
     private func submit() {
         guard !blank, !leaving, thread.canSend else { return }
         let sent = thread.draft
         send(Message(typed: sent.trimmingCharacters(in: .whitespacesAndNewlines)))
-        // 新会话先选择项目；关闭选择窗口时仍保留原输入。
-        guard !thread.isDraft else { return }
-        stage?.emitWave(from: frame)
+        // 新工作区先选择项目；关闭选择窗口时仍保留原输入。
+        guard !area.isDraft else { return }
+        // 波只画在窗口里，朝窗口顶边走
+        let reach = frame.minY - (dotScope?.frame.minY ?? frame.minY)
+        stage?.emitWave(from: frame, parameters: Self.sendWave(from: frame, reach: reach), in: dotScope)
         let submission = thread.beginDraftSubmission()
         // 淡完才清空，输入框不在淡的时候变矮。淡的时候又打了字的，只去掉发出去的那一截
         withAnimation(.easeOut(duration: 0.3)) {

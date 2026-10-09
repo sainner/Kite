@@ -150,6 +150,7 @@ struct CreateThreadRequest: Encodable {
     var tools: [String]? = nil
     var maxRequestsPerTurn: Int? = nil
     var windowId: String? = nil
+    var messageId: String? = nil
 }
 
 extension AppModel {

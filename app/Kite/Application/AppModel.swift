@@ -41,6 +41,10 @@ final class AppModel {
     var drivePage = DrivePage.accounts
     /// 资源库一栏在内容区显示的页面。
     var extensionPage = ExtensionLibrary.plugins
+    /// 资源库角色页选中的角色，见 libraryRoleID。
+    var selectedLibraryRole: String?
+    /// 资源库里改过还没保存的角色，按侧栏里的先后排。
+    var roleDrafts: [RoleDraft] = []
     /// 设置一栏在内容区显示的页面。
     var settingsPage = SettingsPage.appearance
     var accountMachineID: String?
@@ -433,17 +437,13 @@ final class AppModel {
         guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
         let draft = area.draftThread
         let choice = draft.draftChoice
-        let thread = try await client.request("/workspaces/\(area.id)/threads", method: "POST",
+        _ = try await client.request("/workspaces/\(area.id)/threads", method: "POST",
             body: CreateThreadRequest(prompt: message.typed, role: newThreadRole(for: draft, in: area)?.selection, model: choice?.model,
-                                      tools: choice?.tools, maxRequestsPerTurn: choice?.maxRequestsPerTurn, windowId: window), as: RemoteThread.self)
+                                      tools: choice?.tools, maxRequestsPerTurn: choice?.maxRequestsPerTurn, windowId: window,
+                                      messageId: message.id), as: RemoteThread.self)
+        // 读回的窗口指向新实例，草稿对象由 WorkArea.update 认领，接着当这个代理
         try await refresh(client)
         guard accepts(client) else { throw KitedError(message: "工作机已切换") }
-        // 新窗口接着显示草稿里的消息和模型目录，不等历史与能力读回来，免得先闪空白页和模型原名。
-        if let created = area.threads.first(where: { $0.id == thread.instanceId }) {
-            created.showAccepted(message)
-            if created.agentCapabilities == nil { created.agentCapabilities = draft.agentCapabilities }
-        }
-        area.finishDraft(into: window)
     }
 
     /// 归档保留会话与数据，工作机停止执行并关闭它的全部窗口。
@@ -541,7 +541,7 @@ final class AppModel {
 
     func closeWindow(_ pane: Pane, in area: WorkArea) {
         guard !area.isDraft else { return }
-        if pane.id == WorkArea.draftWindowID { area.closeDraft(); return }
+        if pane.id == area.draftWindow { area.closeDraft(); return }
         guard !area.changingWindows else { return }
         area.changingWindows = true
         area.windowError = nil

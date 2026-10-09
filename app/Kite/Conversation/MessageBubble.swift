@@ -35,8 +35,7 @@ struct MessageBubble: View {
                     #endif
             }
             // 动画跟着 ThreadPane 发送时的那一下走，和对话往上滑同步
-            .offset(y: arriving ? Metrics.bubbleRise : 0)
-            .opacity(arriving ? 0 : 1)
+            .modifier(Rising(progress: arriving ? 1 : 0))
             .actionBar(.message(message.id), side: .trailing) { actions(foldable: foldable) }
         }
     }
@@ -147,6 +146,7 @@ private struct MessageText: View {
     let message: Message
     let queued: Bool
     @Environment(\.selectedRow) private var selection
+    @Environment(\.messageTextSelectable) private var selectable
 
     var body: some View {
         VStack(alignment: .leading, spacing: Metrics.messageSegmentGap) {
@@ -181,7 +181,7 @@ private struct MessageText: View {
         // 已接收的实色气泡恒用白字；排队中的透明描边气泡仍跟随系统文字色。
         .foregroundStyle(queued ? Color.primary : .white)
         .multilineTextAlignment(.leading)
-        .textSelection(.enabled)
+        .textSelectable(selectable)
     }
 }
 
@@ -325,4 +325,32 @@ private struct BubbleSurface: View {
 extension EnvironmentValues {
     /// 刚发出、气泡还在下面藏着的消息：对话往上滑的同时，气泡从下往上浮进来。ThreadPane 给出。
     @Entry var arrivingMessages: Set<String> = []
+    /// 消息正文能不能选字，见 Rising。
+    @Entry fileprivate var messageTextSelectable = true
+}
+
+/// 气泡从下面 bubbleRise 处浮上来、淡显，progress 从 1 走到 0。
+/// 浮的过程中正文不能选字：Mac 上能选字的文字由单独一层 AppKit 视图画，和对话往上滑同时动画时，它不跟着气泡上浮；
+/// 按普通文字画就和气泡在同一层里一起走。用动画自己的进度判断浮完：withAnimation 的 completion 对滚动会提前回调。
+private struct Rising: ViewModifier, Animatable {
+    var progress: CGFloat
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .offset(y: progress * Metrics.bubbleRise)
+            .opacity(1 - progress)
+            .environment(\.messageTextSelectable, progress == 0)
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func textSelectable(_ enabled: Bool) -> some View {
+        if enabled { textSelection(.enabled) } else { textSelection(.disabled) }
+    }
 }

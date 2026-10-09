@@ -2,7 +2,7 @@ import SwiftUI
 
 /// 对话里的一行认谁：人发的消息按消息的 id（排队中和收到了是同一行），其余按记录派生出来的序号。
 /// 点开了操作栏的那一行也这样认。
-enum RowID: Hashable {
+nonisolated enum RowID: Hashable {
     case item(Int)
     case message(String)
 }
@@ -117,7 +117,7 @@ private struct ActionBarPlacement<Bar: View>: ViewModifier {
             // .scrollView 的原点在标题栏底下，没被挡住的一段是 0 到 visibleHeight（实测）
             .onGeometryChange(for: Bool.self) { proxy in
                 let frame = proxy.frame(in: .scrollView)
-                let room = Metrics.actionBarGap + Metrics.paneToolbarHeight
+                let room = Metrics.actionBarGap + Metrics.paneHeaderButton
                 return frame.maxY + room > visibleHeight && frame.minY - room >= 0
             } action: { above = $0 }
             .overlay(alignment: Alignment(horizontal: side == .leading ? .leading : .trailing, vertical: above ? .top : .bottom)) {

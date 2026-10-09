@@ -305,6 +305,26 @@ extension Binding where Value == CardPhase {
     }
 }
 
+extension View {
+    /// 放弃未保存修改前的确认：居中的警告框，放弃标成危险操作，另有取消。
+    func discardAlert(_ title: String, isPresented: Binding<Bool>, discardLabel: String = "放弃修改",
+                      discard: @escaping () -> Void) -> some View {
+        alert(title, isPresented: isPresented) {
+            Button(discardLabel, role: .destructive, action: discard)
+            Button("取消", role: .cancel) {}
+        }
+    }
+
+    /// 同上，item 记着放弃之后要接着做的事，关掉警告框时清空。
+    func discardAlert<Item>(_ title: String, item: Binding<Item?>, discard: @escaping (Item) -> Void) -> some View {
+        alert(title, isPresented: Binding(get: { item.wrappedValue != nil }, set: { if !$0 { item.wrappedValue = nil } }),
+              presenting: item.wrappedValue) { value in
+            Button("放弃修改", role: .destructive) { discard(value) }
+            Button("取消", role: .cancel) {}
+        }
+    }
+}
+
 /// 卡片底部的按钮：主按钮占满剩下的宽度，次要按钮在它左边。
 /// 给了 phase 时主按钮跟着进度变：加载中转圈；成功打勾，直到再次能提交（又改了内容）才变回来；
 /// 失败变成错误色，按钮里一行写原因，点它把完整原因复制到剪贴板，左边冒出圆形的重试。几个状态之间的形变交给玻璃效果的容器。

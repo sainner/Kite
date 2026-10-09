@@ -43,8 +43,7 @@ struct ContextTemplateLibrary: View {
             if loading { ProgressView() }
             if let error { Text(error).foregroundStyle(Theme.danger) }
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+        .pageForm()
         .sheet(item: $edit) { template in
             ContextTemplateEditor(template: template, connection: model.connectionRevision).environment(model)
         }

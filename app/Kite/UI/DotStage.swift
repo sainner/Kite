@@ -162,10 +162,13 @@ final class DotStage {
     }
 
     /// 从 origin（窗口坐标）向四周推开一道波；不给 form 时取方格终态。pace 小于 1 时整道波放慢，用于不赶时间的场景。
-    func emitWave(from origin: CGRect, form: DotForm? = nil, pace: Double = 1) {
-        let wave = DotWave(origin: origin, start: .now, form: form ?? .square, pace: pace)
+    /// 给出 scope 时波只画在那个窗口里，App 背景和别的窗口不画，见 DotScope。
+    func emitWave(from origin: CGRect, form: DotForm? = nil, pace: Double = 1, parameters: DotWave.Parameters = .init(),
+                  in scope: DotScope? = nil) {
+        let wave = DotWave(origin: origin, start: .now, form: form ?? .square, pace: pace, parameters: parameters,
+                           scope: scope.map(ObjectIdentifier.init))
         waves.append(wave)
-        keepAnimating(for: wave.duration(DotWave.Parameters()))
+        keepAnimating(for: wave.duration)
     }
 
     /// 在 slot 上按 placement 把 figure 摆进 area（窗口坐标），nil 让图形退回静息的点。换成另一个图形时逐格形变过去；
@@ -270,10 +273,10 @@ final class DotStage {
     }
 
     /// date 时刻的取值快照，供一帧绘制使用。live 为 false（静息或减少动态效果）时不呼吸；
-    /// patterns 为 false 时不含图案，逐格求值的图案只由画它的取景框算。
-    func field(at date: Date, rest: DotColor, live: Bool, patterns drawsPatterns: Bool = true) -> DotField {
-        let wave = DotWave.Parameters()
-        return DotField(waves: waves.filter { $0.isActive(at: date, wave) }, wave: wave,
+    /// patterns 为 false 时不含图案，逐格求值的图案只由画它的取景框算。scope 是取景框所在的窗口，只含不限窗口的波和这个窗口的波。
+    func field(at date: Date, rest: DotColor, live: Bool, patterns drawsPatterns: Bool = true, scope: DotScope? = nil) -> DotField {
+        let scope = scope.map(ObjectIdentifier.init)
+        return DotField(waves: waves.filter { $0.isActive(at: date) && ($0.scope == nil || $0.scope == scope) },
                         palette: DotColor.palette, rest: rest,
                         slots: slots.map { key, slot in (carriers[key]?.carry(slot, moving: live) ?? slot).settled(at: date, live: live) }
                             .sorted { $0.order < $1.order },
@@ -288,8 +291,7 @@ final class DotStage {
         settle = Task { [weak self] in
             try? await Task.sleep(for: .seconds(max(0, (self?.activeUntil.timeIntervalSinceNow ?? 0)) + 0.05))
             guard let self, !Task.isCancelled else { return }
-            let wave = DotWave.Parameters()
-            waves.removeAll { !$0.isActive(at: .now, wave) }
+            waves.removeAll { !$0.isActive(at: .now) }
             sparks = sparks.filter { Date.now.timeIntervalSince($0.value) < DotSpark.duration }
             for key in slots.keys { slots[key]?.previous = nil }
             slots = slots.filter { $0.value.figure != nil }
@@ -378,6 +380,8 @@ nonisolated enum DotSpark {
     /// 每离中心一格，多衰减这么久，边缘的格子就更小。
     static let halo: TimeInterval = 0.5
     static let peak = 0.7
+    /// 轨迹的颜色在正中的不透明度，同默认的波。
+    static let opacity = DotWave.Parameters().opacity
 
     static func shape(since start: Date, at date: Date) -> Double {
         let t = date.timeIntervalSince(start) / duration
@@ -393,40 +397,65 @@ nonisolated struct DotWave: Sendable {
     let form: DotForm
     /// 时间倍率，1 是约定的速度。
     var pace = 1.0
+    let parameters: Parameters
+    /// 只画在这个窗口里（DotScope），nil 时各个取景框都画。
+    let scope: ObjectIdentifier?
 
-    /// 波的参数，默认值即约定（见 docs/视觉风格.md）。
-    struct Parameters: Codable, Equatable, Sendable {
+    /// 波的参数，默认值给初始配置完成一步、扫到码、连接成功时的慢波（再按 pace 放慢）；发送消息的波见 ThreadControls。
+    struct Parameters: Equatable, Sendable {
         /// 每秒推进多少点。
         var speed = 420.0
+        /// 波前按这个弹簧从起点走向 reach，和用同一弹簧的动画一起走；给出时不看 speed。
+        var spring: Spring?
         /// 波前的半宽（点），三个模块。
         var width = 36.0
-        /// 波前走到这么远（点）时完全消失，十个模块。
+        /// 走到 reach 时的半宽，一路从 width 匀着变过去；nil 是不变。
+        var widthEnd: Double?
+        /// 波前走到这么远（点）为止，十个模块。
         var reach = 120.0
+        /// 弓形的波：波前是一段圆弧，圆心在起点区域顶边中点往下这么远（点），中间先走、两边落后；
+        /// nil 时波前与起点区域的边缘平行。
+        var bow: Double?
         /// 走到 reach 的几成处开始变弱；0 是一出发就渐弱。
         var fadeStart = 0.0
+        /// 走到 reach 的几成处淡尽。
+        var fadeEnd = 1.0
         /// 波前正中那一格长到多大（shape）。
         var peak = 1.0
         /// 波的颜色在波前正中的不透明度，压低后波不那么抢眼。
         var opacity = 0.4
-
-        var duration: TimeInterval { (reach + width) / max(speed, 1) }
     }
 
-    func duration(_ parameters: Parameters) -> TimeInterval { parameters.duration / max(pace, 0.01) }
+    var duration: TimeInterval {
+        (parameters.spring?.settlingDuration ?? parameters.reach / max(parameters.speed, 1)) / max(pace, 0.01)
+    }
 
-    func isActive(at date: Date, _ parameters: Parameters) -> Bool {
+    func isActive(at date: Date) -> Bool {
         let elapsed = date.timeIntervalSince(start)
-        return elapsed >= 0 && elapsed < duration(parameters)
+        return elapsed >= 0 && elapsed < duration
     }
 
-    func shape(at square: CGRect, date: Date, _ parameters: Parameters) -> Double {
-        let front = date.timeIntervalSince(start) * parameters.speed * pace
-        guard front >= 0, front < parameters.reach + parameters.width, parameters.width > 0 else { return 0 }
-        let x = abs(Double(DotMetrics.distance(between: square, and: origin)) - front) / parameters.width
+    /// date 时刻波前离起点多远（点）、半宽多少、正中那一格多大；不在走或已经淡尽时为 nil。
+    func front(at date: Date) -> (distance: Double, width: Double, amplitude: Double)? {
+        let time = date.timeIntervalSince(start) * pace
+        let travelled = parameters.spring.map { $0.value(target: 1.0, time: time) } ?? time * parameters.speed / max(parameters.reach, 1)
+        let width = parameters.width + ((parameters.widthEnd ?? parameters.width) - parameters.width) * travelled
+        guard time >= 0, travelled < min(parameters.fadeEnd, 1), width > 0 else { return nil }
+        let fade = 1 - smoothstep((travelled - parameters.fadeStart) / max(parameters.fadeEnd - parameters.fadeStart, 0.001))
+        return (parameters.reach * travelled, width, fade * parameters.peak)
+    }
+
+    /// 格子离起点多远（点）：到起点区域的距离；弓形的波是格心到起点圆弧的距离，在弧里面为负。
+    func distance(to square: CGRect) -> Double {
+        guard let bow = parameters.bow else { return Double(DotMetrics.distance(between: square, and: origin)) }
+        return hypot(square.midX - origin.midX, square.midY - origin.minY - bow) - bow
+    }
+
+    func shape(at square: CGRect, date: Date) -> Double {
+        guard let front = front(at: date) else { return 0 }
+        let x = abs(distance(to: square) - front.distance) / front.width
         guard x < 1 else { return 0 }
-        let fadeFrom = parameters.reach * parameters.fadeStart
-        let fade = 1 - smoothstep((front - fadeFrom) / max(parameters.reach - fadeFrom, 1))
-        return (1 - smoothstep(x)) * fade * parameters.peak
+        return (1 - smoothstep(x)) * front.amplitude
     }
 }
 
@@ -837,7 +866,6 @@ nonisolated struct FigureSlot: Sendable {
 /// 一帧的取值：静息的点，加上背景上的图形和经过的波。
 nonisolated struct DotField: Sendable {
     let waves: [DotWave]
-    let wave: DotWave.Parameters
     let palette: [DotColor]
     let rest: DotColor
     let slots: [FigureSlot]
@@ -864,18 +892,24 @@ nonisolated struct DotField: Sendable {
         let square = DotMetrics.square(column: column, row: row)
         var shape = 0.0
         var form = DotForm.square
+        var opacity = 0.0
         for wave in waves {
-            let value = wave.shape(at: square, date: date, self.wave)
+            let value = wave.shape(at: square, date: date)
             if value > shape {
                 shape = value
                 form = wave.form
+                opacity = wave.parameters.opacity
             }
         }
         if let start = sparks[DotCell(column: column, row: row)] {
-            shape = max(shape, DotSpark.shape(since: start, at: date))
+            let spark = DotSpark.shape(since: start, at: date)
+            if spark > shape {
+                shape = spark
+                opacity = DotSpark.opacity
+            }
         }
         var target = DotColor.palette(column: column, row: row, in: palette)
-        target.alpha *= wave.opacity
+        target.alpha *= opacity
         // 波只占图案之外剩余的幅度，交接处不因大小刚好反超而跳色；满格图案保留原色。
         let lit = DotBlend.lighten.composite(DotSample(shape: shape, color: target, coverage: 1), over: dot)
         return shape > dot.shape ? Dot(form, shape: lit.shape, color: lit.color) : dot
@@ -920,8 +954,9 @@ nonisolated struct DotField: Sendable {
     func shader(origin: CGPoint, scale: CGFloat, pixel: CGFloat, bounds: CGRect, at date: Date, drawsRest: Bool = true,
                 hidden: [CGRect] = []) -> Shader {
         var waveFloats = waves.flatMap { wave -> [Float] in
-            let front = date.timeIntervalSince(wave.start) * self.wave.speed * wave.pace
-            return [wave.origin.minX, wave.origin.minY, wave.origin.width, wave.origin.height, front, wave.form.index]
+            guard let front = wave.front(at: date) else { return [] }
+            return [wave.origin.minX, wave.origin.minY, wave.origin.width, wave.origin.height, front.distance, wave.form.index,
+                    front.width, front.amplitude, wave.parameters.opacity, wave.parameters.bow ?? -1]
                 .map { Float($0) }
         }
         if waveFloats.isEmpty { waveFloats = [0] }
@@ -938,7 +973,6 @@ nonisolated struct DotField: Sendable {
         return ShaderLibrary.dotField(
             .float4(origin.x, origin.y, scale, pixel), rest.shaderValue, .float(drawsRest ? 1 : 0),
             .floatArray(cellTable(at: date, in: visible, hidden: hiddenCells)), .floatArray(waveFloats),
-            .float4(wave.width, wave.reach, wave.fadeStart, wave.peak), .float(wave.opacity),
             .floatArray(colors.flatMap { [Float($0.red), Float($0.green), Float($0.blue), Float($0.alpha)] }),
             .floatArray(DotForm.shaderProfiles),
             .floatArray(patternFloats.isEmpty ? [0] : patternFloats), .floatArray(patternValues.isEmpty ? [0] : patternValues),
@@ -1142,6 +1176,7 @@ struct DotCanvas: View {
     var excluding: [CGRect] = []
     @Environment(\.dotStage) private var stage
     @Environment(\.dotCarrier) private var carrier
+    @Environment(\.dotScope) private var scope
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.displayScale) private var displayScale
     @Environment(\.self) private var environment
@@ -1159,7 +1194,7 @@ struct DotCanvas: View {
                 TimelineView(.animation(paused: !live)) { timeline in
                     // 静息或减少动态效果时取波都已结束的时刻，直接画出静息的点。
                     let date = live ? timeline.date : .distantFuture
-                    let field = stage.field(at: date, rest: .rest(in: environment), live: live, patterns: drawsPatterns)
+                    let field = stage.field(at: date, rest: .rest(in: environment), live: live, patterns: drawsPatterns, scope: scope)
                     // 在移动的卡片里时按卡片这一帧的实际位置换算，画出来的格子仍落在窗口的点阵上
                     let mapping = live ? carrier?.current : carrier?.final
                     let origin = mapping?.apply(local) ?? global.origin, canvasScale = mapping?.scale ?? scale

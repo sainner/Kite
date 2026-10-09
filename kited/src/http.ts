@@ -312,11 +312,12 @@ export function serve(kite: Kite, listen: Listen) {
         POST: bound(async (req) => {
           const b = await body(req);
           const parsed = z.object({ model: agentDefinitionSchema.shape.model.optional(), tools: agentDefinitionSchema.shape.tools.optional(),
-            maxRequestsPerTurn: agentDefinitionSchema.shape.maxRequestsPerTurn.optional(), windowId: z.uuid().optional() })
-            .safeParse({ model: b.model, tools: b.tools, maxRequestsPerTurn: b.maxRequestsPerTurn, windowId: b.windowId });
+            maxRequestsPerTurn: agentDefinitionSchema.shape.maxRequestsPerTurn.optional(), windowId: z.uuid().optional(),
+            messageId: z.uuid().optional() })
+            .safeParse({ model: b.model, tools: b.tools, maxRequestsPerTurn: b.maxRequestsPerTurn, windowId: b.windowId, messageId: b.messageId });
           if (!parsed.success) throw new KiteError('代理创建参数无效');
-          const { windowId, ...choice } = parsed.data;
-          return kite.createThread(req.params.id, str(b.prompt, 'prompt'), { ...choice, role: roleSelection(b.role) }, windowId);
+          const { windowId, messageId, ...choice } = parsed.data;
+          return kite.createThread(req.params.id, str(b.prompt, 'prompt'), { ...choice, role: roleSelection(b.role) }, windowId, messageId);
         }),
       },
       '/workspaces/:id/windows': { POST: bound(async (req) => {

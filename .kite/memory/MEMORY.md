@@ -6,7 +6,7 @@
 
 - [自研 harness 与 ChatGPT 订阅](harness-direction.md) — Claude 账号受阻后提前自研 harness，首个模型入口使用 ChatGPT 订阅
 - [Claude Code 重新接入](claude-integration-direction.md) — 先清空工具与附加功能再逐项接入，插话沿用原生 stdin
-- [模型厂商决定后端](model-vendor-backend.md) — 界面不暴露后端；Claude 模型走 Claude Code 订阅，其余走自研 harness，菜单按厂商分
+- [模型厂商决定后端](model-vendor-backend.md) — 界面不暴露后端；Claude 模型走 Claude Code 订阅，其余走自研 harness，原生菜单按厂商分节
 - [代理与角色](agent-role-direction.md) — 代理=角色+实例配置，三个 agent 定义合一，工具黑白名单逐层求交，角色可标必需
 - [项目约束](project-constraints-direction.md) — 存账号服务按项目分发，kited 执行并缓存，收紧即时生效，不放仓库
 - [资源库随账号保存](library-account-storage.md) — 资源库随账号分发，服务推送变化、重连先同步；内置只存改过的；分机内容放各工作机页面
@@ -25,12 +25,12 @@
 - [窗口的跨端同步](workspace-window-sync.md) — 同一工作区共享窗口集合，各设备独立布局与焦点
 - [插件实例回收](plugin-instance-lifetime.md) — 按是否需要独立存续决定回收，关闭窗口不再一律保留实例
 - [实例管理入口](instance-management-entrypoints.md) — 定义在设置中管理，添加 agent 先开本机草稿，存续实例可找到、可归档
-- [停靠栏设计](dock-design.md) — 分组顺序、签名头像、文件夹与子代理家族格、无窗口样式的用户决定
+- [停靠栏设计](dock-design.md) — 分组顺序、签名头像、没有窗口即小头像（代理与工具）、子代理家族格的用户决定
 - [新窗口放置](new-window-placement.md) — Mac 新窗口优先新列，其次上下分栏，空间仍不足再收起旧窗口
 - [停止会话的语义](session-stop-behavior.md) — 手动停止退回未纳入请求的消息，不等于保留 paused 状态
 - [统一资源引用](resource-reference-direction.md) — 统一资源引用保留稳定内容身份，历史 diff 不随当前文件变化
 - [窗口标题信息](window-header-information.md) — 标题前信息区展示窗口当前状态，上游提示盖住圆环；代理窗口副标题是角色
-- [侧栏一级导航](sidebar-navigation.md) — 空间、设备、资源库的导航分层；设备下账号与文件并列；账号页允许固定窗口分区
+- [侧栏一级导航](sidebar-navigation.md) — 空间、设备、资源库的导航分层；设备下账号与文件并列；角色列成树、内容区编辑；账号页可固定分区
 - [初始配置与设备角色](onboarding-device-roles.md) — 本机执行或仅远程控制都入网，进入 App 后发现 kited 工作机
 - [托管账号与组网](hosted-network-direction.md) — 我们托管，用户账号密码登录或扫描已登录设备二维码加入；规格见 docs
 - [账号用量与额度展示](account-usage-direction.md) — 圆环看额度，正文热力图配某天 24 小时柱状图；按天能取上游就读，按小时由 kited 扫本机存
@@ -41,7 +41,7 @@
 
 ## 协作反馈
 
-- [同类控件统一交互](shared-control-interaction.md) — 统一尺寸、命中与反馈，保留控件已有的专门触屏交互
+- [同类控件统一交互](shared-control-interaction.md) — 统一尺寸、命中、反馈与选中样式，确认框用居中警告框，保留专门的触屏交互
 - [界面由用户自己预览](user-previews-ui.md) — 边改边看用 Mac Debug 快速预览，确认时整装 Release；iPhone 触控改动装真机
 - [接数据沿用原界面](feedback-preserve-ui-on-data-integration.md) — App 接真实数据时保留已做好的界面结构，不另换空状态页面或控件布局
 - [Xcode 用 27.2](feedback-xcode-version.md) — 打开 Xcode 界面用 Xcode-beta.app（27.2），不按名字开到 27.0
@@ -49,6 +49,7 @@
 - [大改动先给方案](feedback-plan-before-large-changes.md) — 新视觉或全局布局先交方案；已确认的多期计划连续做完
 - [测试要克制](test-restraint.md) — 简单配置与接入不扩充测试，跑检查与新增测试分开判断
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 扫描无用逻辑时沿实际执行和数据流判断，不能只看引用
+- [同一对象换状态](feedback-same-object-states.md) — 前后连贯的界面用同一对象和视图换状态，不拆两个组件再替换
 - [先确认是哪个控件](feedback-confirm-ui-target.md) — 「侧边栏」可能指右侧停靠栏；同名按钮有多处时先确认位置
 - [文档只写现状](feedback-docs-current-state.md) — 改文档直接陈述当前状态，不追加更新说明
 - [文档只写设计原则](feedback-docs-principles-only.md) — 用户要求清理界面细节的反馈来源，正式规则见 AGENTS.md
@@ -71,6 +72,6 @@
 
 ## 资料入口
 
-- [界面命中问题的调试](ui-hit-testing-debugging.md) — Mac 进程内合成点击；iPhone 用模拟器探针比 hitTest；悬停需用户实测
-- [界面瞬时问题的录屏排查](ui-transient-recording.md) — 录屏抽帧、几何日志、iPhone 真机日志回传、模拟器最小探针；注意别的会话的预览
+- [界面命中问题的调试](ui-hit-testing-debugging.md) — Mac 进程内合成点击；iPhone 模拟器探针比 hitTest，simctl 曾两次致死机；悬停需用户实测
+- [界面瞬时问题的录屏排查](ui-transient-recording.md) — 录屏抽帧、几何日志、iPhone 真机日志回传、模拟器探针；截屏无权限时离屏渲染经 stderr 取图
 - [旧个人 Headscale（lisa）](reference-headscale-lisa.md) — 旧实验服务位置、nginx 分流与清理入口

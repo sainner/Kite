@@ -24,6 +24,8 @@ struct CompactWindow: View {
     @Binding var open: WorkspaceDrawer?
     /// 露出来的一侧：打开着、手指拖着或者正在走。
     @Binding var shown: WorkspaceDrawer?
+    /// 侧边栏跟着窗口滑，和 target 同一次动画改。
+    let sidebarProgress: SidebarProgress
     let screen: CGSize
     /// 屏幕四边被盖着的：状态栏、Home 条，键盘升起来时底下是键盘。
     let insets: EdgeInsets
@@ -61,10 +63,12 @@ struct CompactWindow: View {
     private static let duration = 0.4
 
     /// 一出现就停在该在的位置（侧栏开着、底栏钉着），不先铺满再缩。
-    init(open: Binding<WorkspaceDrawer?>, shown: Binding<WorkspaceDrawer?>, screen: CGSize, insets: EdgeInsets, homeInset: CGFloat,
-         sidebarWidth: CGFloat, actionsHeight: CGFloat, screenRadius: CGFloat, actionsRule: ActionsRule) {
+    init(open: Binding<WorkspaceDrawer?>, shown: Binding<WorkspaceDrawer?>, sidebarProgress: SidebarProgress, screen: CGSize,
+         insets: EdgeInsets, homeInset: CGFloat, sidebarWidth: CGFloat, actionsHeight: CGFloat, screenRadius: CGFloat,
+         actionsRule: ActionsRule) {
         _open = open
         _shown = shown
+        self.sidebarProgress = sidebarProgress
         self.screen = screen
         self.insets = insets
         self.homeInset = homeInset
@@ -193,12 +197,18 @@ struct CompactWindow: View {
         shown = drawer
         carrier.began()
         withAnimation(animation, completionCriteria: .removed) {
-            target[drawer] = value
+            move(drawer, to: value)
         } completion: {
             carrier.ended()
             // 中间又拉开、又拖起来的不藏
             if target[drawer] == 0, dragging != drawer, shown == drawer { shown = nil }
         }
+    }
+
+    /// 只在动画里调用：侧边栏的进度和窗口一起改，两边才走同一个弹簧。
+    private func move(_ drawer: WorkspaceDrawer, to value: CGFloat) {
+        target[drawer] = value
+        if drawer == .sidebar { sidebarProgress.openness = value }
     }
 
     private func extent(_ drawer: WorkspaceDrawer) -> CGFloat {
@@ -238,7 +248,7 @@ struct CompactWindow: View {
             // 每挪一下接着上一个弹簧走；接手时正在走的动画也带着当时的速度转过来
             carrier.began()
             withAnimation(.interactiveSpring, completionCriteria: .removed) {
-                target[drawer] = finger
+                move(drawer, to: finger)
             } completion: {
                 carrier.ended()
             }
@@ -285,6 +295,22 @@ private struct Openness: Equatable {
         guard x > 1, extent > 0 else { return max(x, 0) }
         let over = (x - 1) * extent
         return 1 + limit * over / (over + limit) / extent
+    }
+}
+
+/// 侧边栏打开到几成，与窗口的 target 一起改。单独放一个对象，进度变化只更新 SidebarSlide，不重算整个侧栏。
+@Observable final class SidebarProgress {
+    var openness: CGFloat = 0
+}
+
+/// 侧边栏贴着窗口左边从左滑入：按窗口同样的进度（含推过头的阻尼）平移，右边缘始终挨着窗口左边。
+/// 平移量和窗口的左边距对进度都是线性的，同一个弹簧插值下逐帧对齐。
+struct SidebarSlide: ViewModifier {
+    let progress: SidebarProgress
+    let width: CGFloat
+
+    func body(content: Content) -> some View {
+        content.offset(x: (Openness.shown(progress.openness, extent: width) - 1) * width)
     }
 }
 

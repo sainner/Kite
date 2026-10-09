@@ -158,10 +158,11 @@ struct WorkspaceGitPresentation: ViewModifier {
             .sheet(item: $model.scenePush) { area in
                 ScenePushSheet(workspace: area).environment(model).appAppearance()
             }
-            .confirmationDialog("归档工作区", isPresented: Binding { model.archiveRequest != nil } set: { if !$0 { model.archiveRequest = nil } },
-                                presenting: model.archiveRequest) { area in
+            .alert("归档工作区", isPresented: Binding { model.archiveRequest != nil } set: { if !$0 { model.archiveRequest = nil } },
+                   presenting: model.archiveRequest) { area in
                 Button("归档", role: .destructive) { archive(area, force: false) }
                 Button("丢弃未集成的改动并归档", role: .destructive) { archive(area, force: true) }
+                Button("取消", role: .cancel) {}
             } message: { area in
                 Text("归档「\(area.title)」会停止其中的线程并回收工作树。还没集成到主线的改动只有选择丢弃时才会删除。")
             }

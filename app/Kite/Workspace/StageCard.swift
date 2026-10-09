@@ -21,6 +21,22 @@ private struct StageCard: ViewModifier {
 
 extension View {
     func stageCard(usesDots: Bool = false) -> some View { modifier(StageCard(usesDots: usesDots)) }
+
+    /// 单页里的分组表单，底色透出卡片。
+    func pageForm() -> some View { modifier(PageForm()) }
+}
+
+/// iPhone 上分组表单由 UIKit 托管，左右边距从根视图继承，只有表单盖住屏幕边上那一截边距时才继承得到。
+/// 紧凑布局拉开侧边栏时窗口右移，左边距就退回 UIKit 默认的 8 点，所以按 formMargin 固定；没给时用系统默认。
+private struct PageForm: ViewModifier {
+    @Environment(\.formMargin) private var margin
+
+    func body(content: Content) -> some View {
+        content
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .contentMargins(.horizontal, margin, for: .scrollContent)
+    }
 }
 
 

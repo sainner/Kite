@@ -5,6 +5,14 @@ extension EnvironmentValues {
     @Entry var windowDotsFocused = true
     /// 所在窗口选择了点阵，由 windowDots 给出。
     @Entry var windowUsesDots = false
+    /// 所在的窗口，由 windowDots 给出；窗口没选点阵时也有，限定在这个窗口里的波就哪儿都不画。
+    @Entry var dotScope: DotScope?
+}
+
+/// 一个窗口在点阵上的范围：限定在窗口里的波（见 DotStage.emitWave）只由窗口里的取景框画，App 背景和别的窗口不画。
+/// frame 是窗口在窗口坐标中的范围，随布局更新，不引起视图更新。
+@MainActor final class DotScope {
+    fileprivate(set) var frame: CGRect = .zero
 }
 
 /// 标题栏底下另画点阵的范围（窗口坐标），窗口的取景框在这里挖空，同一格不画两遍。
@@ -33,7 +41,7 @@ extension View {
     }
 
     /// 每个 App 窗口持有唯一的点阵舞台，背景是它的取景框。焦点在窗口区、有窗口画着静息的点时，背景让出静息的点，
-    /// 波和轨迹照常画；焦点回到侧栏时背景接回来。图案总由所在窗口画，背景不画。
+    /// 波和轨迹照常画；焦点回到侧栏时背景接回来。图案和限定在窗口里的波总由所在窗口画，背景不画。
     func appDotBackground() -> some View {
         modifier(AppDotBackground())
     }
@@ -43,6 +51,7 @@ private struct WindowDotBackground: ViewModifier {
     let enabled: Bool
     @Environment(\.windowDotsFocused) private var focused
     @State private var edges: [CGRect] = []
+    @State private var scope = DotScope()
 
     func body(content: Content) -> some View {
         content
@@ -50,7 +59,9 @@ private struct WindowDotBackground: ViewModifier {
                 if enabled { DotCanvas(drawsRest: focused, excluding: edges) }
             }
             .onPreferenceChange(ScrollEdgeDotsArea.self) { edges = $0 }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { scope.frame = $0 }
             .environment(\.windowUsesDots, enabled)
+            .environment(\.dotScope, scope)
             .preference(key: WindowDotsActive.self, value: enabled && focused)
     }
 }

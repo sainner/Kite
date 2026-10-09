@@ -116,12 +116,8 @@ struct InstanceSettings: View {
         }
         .interactiveDismissDisabled(working || changed)
         .modifier(ArchiveInstanceConfirmation(instance: $archiving, archived: { dismiss() }))
-        .confirmationDialog("放弃未保存的授权修改？", isPresented: Binding(get: { discardAction != nil }, set: { if !$0 { discardAction = nil } }), titleVisibility: .visible) {
-            Button("放弃修改", role: .destructive) {
-                let action = discardAction
-                discardAction = nil
-                if action == "close" { dismiss() } else { perform { try await load() } }
-            }
+        .discardAlert("放弃未保存的授权修改？", item: $discardAction) { action in
+            if action == "close" { dismiss() } else { perform { try await load() } }
         }
     }
 
@@ -283,9 +279,10 @@ struct ArchiveInstanceConfirmation: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .confirmationDialog("归档「\(instance?.title ?? "")」？", isPresented: Binding(get: { instance != nil }, set: { if !$0 { instance = nil } }),
-                                titleVisibility: .visible, presenting: instance) { target in
+            .alert("归档「\(instance?.title ?? "")」？", isPresented: Binding(get: { instance != nil }, set: { if !$0 { instance = nil } }),
+                   presenting: instance) { target in
                 Button("归档", role: .destructive) { archive(target) }
+                Button("取消", role: .cancel) {}
             } message: { _ in
                 Text("归档会停止它正在进行的执行并关闭它的窗口，会话和数据保留在工作机上。目前还不能在界面里查看或恢复已归档的实例。")
             }
@@ -317,7 +314,7 @@ struct InstanceActions: View {
         }
         Button("实例设置与授权") { area.settingsInstance = instance }
         if area.definition(of: instance)?.lifetime == .persistent {
-            Button("归档…", role: .destructive) { area.archiveRequest = instance }
+            Button("归档", role: .destructive) { area.archiveRequest = instance }
                 .disabled(!model.isConnected(area))
         }
     }

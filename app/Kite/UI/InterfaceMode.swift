@@ -24,6 +24,8 @@ enum InputMode {
     var controlRadius: CGFloat { isTouch ? 28 : 18 }
     var rowHeight: CGFloat { isTouch ? 44 : 32 }
     var workspaceRowHeight: CGFloat { isTouch ? 44 : 24 }
+    /// 侧栏行尾的小按钮（添加、刷新）。
+    var sidebarControl: CGFloat { isTouch ? button : workspaceRowHeight }
     /// 卡片里输入框与选择框的高度。
     var fieldHeight: CGFloat { isTouch ? 48 : 36 }
     /// 卡片底部与空白页主操作按钮的尺寸。

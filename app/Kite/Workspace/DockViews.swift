@@ -7,7 +7,7 @@ struct DockHover: Equatable {
 }
 
 extension DockModel {
-    /// 按 ID 找到一格，文件夹和家族里的也算；家族的父代理按实例找。
+    /// 按 ID 找到一格，「更多」和家族里的也算；家族的父代理按实例找。
     func entry(_ id: String) -> DockEntry? {
         func search(_ entries: [DockEntry]) -> DockEntry? {
             for entry in entries {
@@ -22,7 +22,7 @@ extension DockModel {
 }
 
 extension WorkArea {
-    /// 点开或收起文件夹、家族格；depth 是它所在的层，外层在前。
+    /// 点开或收起「更多」、家族格；depth 是它所在的层，外层在前。
     func toggleDock(_ id: String, depth: Int) {
         withAnimation(.snappy) {
             if dockExpansion.count > depth, dockExpansion[depth] == id { dockExpansion = Array(dockExpansion.prefix(depth)) }
@@ -47,51 +47,43 @@ extension WorkArea {
     }
 }
 
-/// 一个窗口或实例在停靠栏里的样子，连同运行外圈与角标。
+/// 一个窗口或实例在停靠栏里的样子，连同进行中的脉冲波。
+/// 窗口正看得到时头像模糊、画上指向它的箭头，不显示状态：宽屏台面上的父代理向左，紧凑布局的当前窗口向上。
 struct DockEntryFace: View {
     enum Subject {
         case pane(Pane)
         case instance(RemotePluginInstance)
-        /// 家族格里的父代理：窗口在台面上时是模糊头像加左箭头。
+        /// 家族格里的父代理。
         case parent(DockFamily)
     }
 
     let subject: Subject
-    var ring = true
+    /// 家族格里叠在后面的子代理只露一截，不发脉冲。
+    var pulse = true
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
+    @Environment(\.dockCurrentPane) private var current
 
     var body: some View {
-        let id = instanceID
-        face(id)
-            .overlay { if ring, !onStage { DockStatusMarks(instance: id) } }
+        let id = instanceID, arrow = self.arrow
+        DockFace(look: look, running: area.isRunning(id), tint: area.attention(of: id)?.color, arrow: arrow)
+            .overlay { if pulse, arrow == nil { DockPulse(instance: id) } }
     }
 
-    @ViewBuilder
-    private func face(_ id: String) -> some View {
+    private var arrow: String? {
         switch subject {
-        case .pane(let pane):
-            DockFace(look: look(pane: pane), running: area.isRunning(id))
-        case .instance(let instance):
-            DockFace(look: look(instance), windowless: true, running: area.isRunning(id))
-        case .parent(let family):
-            if family.onStage {
-                ZStack {
-                    Circle().fill(Theme.card)
-                    AgentAvatar(design: model.emblem(for: family.parent.id, in: area), instance: family.parent.id)
-                        .blur(radius: 3).opacity(0.55).clipShape(Circle())
-                    Image(systemName: "arrow.left").font(Theme.title).foregroundStyle(Theme.ink)
-                }
-            } else if let pane = family.pane {
-                DockFace(look: look(pane: pane), running: area.isRunning(id))
-            } else {
-                DockFace(look: look(family.parent), windowless: true, running: area.isRunning(id))
-            }
+        case .pane(let pane): pane == current ? "arrow.up" : nil
+        case .instance: nil
+        case .parent(let family): family.onStage ? "arrow.left" : family.pane.map { $0 == current } == true ? "arrow.up" : nil
         }
     }
 
-    private var onStage: Bool {
-        if case .parent(let family) = subject { family.onStage } else { false }
+    private var look: DockFace.Look {
+        switch subject {
+        case .pane(let pane): look(pane: pane)
+        case .instance(let instance): look(instance)
+        case .parent(let family): look(family.parent)
+        }
     }
 
     private var instanceID: String {
@@ -113,150 +105,122 @@ struct DockEntryFace: View {
     }
 }
 
-/// 运行外圈与角标，不含头像；最小化的窗口卡片自己画头像，这些画在卡片上面。
-struct DockStatusMarks: View {
+/// 进行中（运行、正在停止、正在收尾）从头像向外扩散的实心脉冲，颜色和节奏随阶段，大小头像按比例；不含头像。
+/// 只填头像外面的一圈，画在上面也不盖住头像：最小化的窗口卡片自己画头像，脉冲画在卡片上面。
+struct DockPulse: View {
     let instance: String
     @Environment(WorkArea.self) private var area
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// 波传出去的距离占头像直径的比例。
+    private static let reach: CGFloat = 9 / 36
 
     var body: some View {
-        ZStack {
-            if area.isRunning(instance) {
-                ContextRing(phase: area.activities[instance]?.phase ?? "idle", fraction: nil, lineWidth: 2)
-                    .padding(-4)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(alignment: .bottomTrailing) {
-            if let attention = area.attention(of: instance) { DockBadge(color: attention.color) }
-        }
-        .allowsHitTesting(false)
-    }
-}
-
-/// 角标：一颗带底色描边的小圆点；count 大于 1 时写上个数。
-struct DockBadge: View {
-    let color: Color
-    var count = 1
-
-    var body: some View {
-        let size = Metrics.dragBubble / 4
-        Group {
-            if count > 1 {
-                Text("\(count)").font(.system(size: size * 0.75, weight: .bold)).monospacedDigit()
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, size * 0.3)
-                    .frame(minWidth: size, minHeight: size)
-                    .background(Capsule().fill(color))
-            } else {
-                Circle().fill(color).frame(width: size, height: size)
-            }
-        }
-        .overlay { Capsule().strokeBorder(Theme.background, lineWidth: 2).padding(-1.5) }
-        .offset(x: size / 4, y: size / 4)
-        .allowsHitTesting(false)
-    }
-}
-
-/// 家族格的装饰：右上角的子代理小头像与包住父子的描边。父代理的头像另画：最小化时是窗口卡片，否则在下面。
-struct DockFamilyDecoration: View {
-    let family: DockFamily
-    let size: CGFloat
-    @Environment(WorkArea.self) private var area
-
-    var body: some View {
-        let cell = CGRect(x: 0, y: 0, width: size, height: size)
-        let child = DockGeometry.childFrame(in: cell)
-        ZStack(alignment: .topLeading) {
-            NotchedCircle(corner: DockGeometry.familyCornerRadius(size))
-                .strokeBorder(Color.secondary.opacity(0.5), lineWidth: 1)
-            if let first = featured {
-                // 多于一个子代理时在后面叠一层
-                if family.children.count > 1 {
-                    Circle().fill(Theme.background).overlay(Circle().strokeBorder(Color.secondary.opacity(0.5), lineWidth: 1))
-                        .frame(width: child.width, height: child.height)
-                        .offset(x: child.minX - child.width * 0.18, y: child.minY + child.height * 0.18)
+        if area.isRunning(instance) {
+            let phase = area.activities[instance]?.phase ?? "idle"
+            let color = ContextRing.color(phase), period = max(ContextRing.period(phase), 1)
+            let margin = Metrics.dragBubble * Self.reach
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { timeline in
+                let time = timeline.date.timeIntervalSinceReferenceDate / period
+                Canvas { canvas, size in
+                    let side = min(size.width, size.height) - 2 * margin
+                    let center = CGPoint(x: size.width / 2, y: size.height / 2)
+                    let circle = { (radius: CGFloat) in
+                        Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius))
+                    }
+                    // 一次一个波，前一个散尽再发下一个；减弱动态时停在半路，只留一圈淡晕
+                    let progress = reduceMotion ? 0.5 : time.truncatingRemainder(dividingBy: 1)
+                    var disc = circle(side / 2 + side * Self.reach * progress)
+                    disc.addPath(circle(side / 2))
+                    canvas.fill(disc, with: .color(color.opacity(0.6 * (1 - progress))), style: FillStyle(eoFill: true))
                 }
-                miniFace(first)
-                    .frame(width: child.width, height: child.height)
-                    .background(Circle().fill(Theme.background).padding(-1.5))
-                    .offset(x: child.minX, y: child.minY)
             }
+            .padding(-margin)
+            .allowsHitTesting(false)
         }
-        .frame(width: size, height: size)
-        .allowsHitTesting(false)
-    }
-
-    /// 角上放运行中或需要处理的子代理，其次是最近活动的。
-    private var featured: RemotePluginInstance? {
-        let instances = family.children.compactMap(\.leadInstance)
-        return instances.first { area.isRunning($0.id) || area.attention(of: $0.id) != nil } ?? instances.first
-    }
-
-    private func miniFace(_ instance: RemotePluginInstance) -> some View {
-        DockEntryFace(subject: .instance(instance), ring: false)
-            .overlay { if let attention = area.attention(of: instance.id) { Circle().strokeBorder(attention.color, lineWidth: 1.5) } }
     }
 }
 
-/// 文件夹：没有窗口的代理，2×2 小头像；超过四个时右下角换成「更多」。
-struct DockFolderFace: View {
+/// 家族格：一格宽的长胶囊。父代理在最前面（竖排在上，横排在右），子代理和它一样大，
+/// 一个压一个叠在后面往后错开，各露出一截；最多露三个，再多不再变长。
+struct DockFamilyFace: View {
+    let family: DockFamily
+    /// 胶囊的宽，头像按它算。
+    let width: CGFloat
+    var axis: Axis = .vertical
+    /// 宽屏上最小化的父代理由窗口卡片画在它的位置，这里只画后面的子代理和描边。
+    var drawsParent = true
+
+    static let shownChildren = 3
+    static func inset(_ width: CGFloat) -> CGFloat { width * 3 / 36 }
+    static func length(_ family: DockFamily, width: CGFloat) -> CGFloat {
+        width * (1 + CGFloat(min(family.children.count, shownChildren)) / 3)
+    }
+
+    var body: some View {
+        let length = Self.length(family, width: width), inset = Self.inset(width), size = width - 2 * inset
+        // 第几个头像的位置，父代理是 0，往后每个错开三分之一格
+        let offset = { (index: Int) -> CGSize in
+            let along = inset + CGFloat(index) * width / 3
+            return axis == .vertical ? CGSize(width: inset, height: along) : CGSize(width: length - along - size, height: inset)
+        }
+        ZStack(alignment: .topLeading) {
+            // 越往后越压在下面
+            ForEach(Array(family.children.prefix(Self.shownChildren).enumerated()).reversed(), id: \.element.id) { index, child in
+                if let instance = child.leadInstance {
+                    DockEntryFace(subject: .instance(instance), pulse: false)
+                        .frame(width: size, height: size)
+                        .offset(offset(index + 1))
+                }
+            }
+            if drawsParent {
+                DockEntryFace(subject: .parent(family))
+                    .frame(width: size, height: size)
+                    .offset(offset(0))
+            }
+        }
+        .frame(width: axis == .vertical ? width : length, height: axis == .vertical ? length : width, alignment: .topLeading)
+        .overlay { Capsule().strokeBorder(Color.secondary.opacity(0.5), lineWidth: 1) }
+    }
+}
+
+/// 小头像排不下时的最后一个位置：省略号；里面有需要处理的，省略号和描边换成最要紧的那种颜色。
+struct DockMoreFace: View {
     let entries: [DockEntry]
     @Environment(WorkArea.self) private var area
 
     var body: some View {
-        GeometryReader { geo in
-            let inset = geo.size.width * 4 / 36, gap = geo.size.width * 2 / 36
-            let mini = (geo.size.width - 2 * inset - gap) / 2
-            let shown = entries.count > 4 ? Array(entries.prefix(3)) : entries
-            ZStack(alignment: .topLeading) {
-                ForEach(Array(shown.enumerated()), id: \.element.id) { index, entry in
-                    miniFace(entry)
-                        .frame(width: mini, height: mini)
-                        .offset(x: inset + CGFloat(index % 2) * (mini + gap), y: inset + CGFloat(index / 2) * (mini + gap))
-                }
-                if entries.count > 4 {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: mini * 0.6, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: mini, height: mini)
-                        .offset(x: inset + mini + gap, y: inset + mini + gap)
-                }
+        Image(systemName: "ellipsis")
+            .font(.system(size: DockGeometry.miniSize * 0.5, weight: .bold))
+            .foregroundStyle(attention.map { AnyShapeStyle($0.color) } ?? AnyShapeStyle(.secondary))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background { Circle().fill(Theme.background) }
+            .overlay {
+                if let attention { Circle().strokeBorder(attention.color, lineWidth: 1.5) }
+                else { Circle().strokeBorder(Color.secondary.opacity(0.5), lineWidth: 1) }
             }
-        }
-        .windowlessPlate(RoundedRectangle(cornerRadius: Metrics.dragBubble * 14 / 36, style: .continuous), tint: Palette.breeze)
-        .overlay(alignment: .bottomTrailing) {
-            if let (attention, count) = area.attention(in: entries) { DockBadge(color: attention.color, count: count) }
-        }
     }
 
-    @ViewBuilder
-    private func miniFace(_ entry: DockEntry) -> some View {
-        if let instance = entry.leadInstance { DockEntryFace(subject: .instance(instance), ring: false) }
-    }
+    private var attention: DockAttention? { area.attention(in: entries) }
 }
 
-/// 收起时的一格：家族、文件夹或没有窗口的实例。最小化的窗口由窗口卡片自己画，不在这里。
+/// 收起时的一格：家族、「更多」或没有窗口的实例。最小化的窗口由窗口卡片自己画，不在这里。
+/// mini 是排在停靠栏末尾的小头像，家族按比例缩小，占一列两个位置，胶囊从父代理那头排起。
 struct DockCell: View {
     let entry: DockEntry
+    var mini = false
     @Environment(\.dockCardsDrawPanes) private var cardsDrawPanes
+    @Environment(\.dockAxis) private var axis
 
     var body: some View {
         switch entry {
         case .family(let family):
-            // 宽屏上父代理最小化时，窗口卡片和装饰画在这一格上面（见 DockOverlay），这里只接点击
-            if cardsDrawPanes, family.pane != nil, !family.onStage {
-                Color.clear
-            } else {
-                let parent = DockGeometry.parentFrame(in: CGRect(x: 0, y: 0, width: Metrics.dragBubble, height: Metrics.dragBubble))
-                ZStack(alignment: .topLeading) {
-                    DockEntryFace(subject: .parent(family))
-                        .frame(width: parent.width, height: parent.height)
-                        .offset(x: parent.minX, y: parent.minY)
-                    DockFamilyDecoration(family: family, size: Metrics.dragBubble)
-                }
-            }
-        case .folder(let entries):
-            DockFolderFace(entries: entries)
+            // 宽屏上父代理最小化时，窗口卡片画在胶囊最上面，脉冲见 DockOverlay
+            DockFamilyFace(family: family, width: mini ? DockGeometry.miniSize : Metrics.dragBubble, axis: axis,
+                           drawsParent: !(cardsDrawPanes && family.pane != nil && !family.onStage))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: axis == .vertical ? .top : .trailing)
+        case .more(let entries):
+            DockMoreFace(entries: entries)
         case .instance(let instance):
             DockEntryFace(subject: .instance(instance))
         case .pane(let pane):
@@ -266,18 +230,21 @@ struct DockCell: View {
 
 }
 
-/// 一格的点击：展开文件夹与家族格，打开没有窗口的实例。
+/// 一格的点击：展开「更多」与家族格，打开没有窗口的实例。
 struct DockCellButton: View {
     let entry: DockEntry
     let depth: Int
+    var mini = false
     var hoverFrame: CGRect?
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
+    @Environment(\.dockAxis) private var axis
 
     var body: some View {
+        let size = DockGeometry.cellSize(entry, mini: mini, axis: axis)
         Button(action: activate) {
-            DockCell(entry: entry)
-                .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
+            DockCell(entry: entry, mini: mini)
+                .frame(width: size.width, height: size.height)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.pointingPlain)
@@ -290,7 +257,7 @@ struct DockCellButton: View {
 
     private func activate() {
         switch entry {
-        case .family, .folder: area.toggleDock(entry.id, depth: depth)
+        case .family, .more: area.toggleDock(entry.id, depth: depth)
         case .instance(let instance):
             model.openDockInstance(instance, in: area)
             area.collapseDock()
@@ -322,13 +289,13 @@ struct DockEntryMenu: View {
         case .pane(let pane):
             if let instance = area.instance(of: pane) { InstanceActions(instance: instance) }
             Button("关闭窗口") { model.closeWindow(pane, in: area) }
-        case .folder:
+        case .more:
             EmptyView()
         }
     }
 }
 
-/// 展开的文件夹或家族格：原地拉长，里面的图标放大排开；里面再展开的家族嵌在描边里。
+/// 展开的「更多」或家族格：原地拉长，里面的图标放大排开；里面再展开的家族嵌在描边里。
 /// 宽屏竖排，紧凑布局横排；横排和底栏一样倒着排，第一项在右端。
 struct DockPanel: View {
     let entry: DockEntry
@@ -348,7 +315,7 @@ struct DockPanel: View {
         var total = 2 * padding + Metrics.gap * CGFloat(max(members.count - 1, 0))
         for member in members {
             if member.expands, path.first == member.id { total += extent(member, path: path.dropFirst()) }
-            else { total += Metrics.dragBubble }
+            else { total += DockGeometry.cellSize(member).height }
         }
         return total
     }
@@ -378,21 +345,11 @@ struct DockPanel: View {
                 .modifier(DockDimmed(dimmed: path.first.map { $0 != member.id } ?? false))
             }
         }
+        .environment(\.dockAxis, axis)
         .padding(Self.padding)
-        .background { background }
-    }
-
-    @ViewBuilder
-    private var background: some View {
-        if case .folder = entry {
-            Color.clear.windowlessPlate(RoundedRectangle(cornerRadius: Metrics.dragBubble * 14 / 36 + Self.padding, style: .continuous),
-                                        tint: Palette.breeze)
-        } else {
-            let radius = Metrics.dragBubble / 2 + Self.padding
-            let shape = UnevenRoundedRectangle(topLeadingRadius: radius, bottomLeadingRadius: radius, bottomTrailingRadius: radius,
-                                               topTrailingRadius: DockGeometry.familyCornerRadius(Metrics.dragBubble) + Self.padding, style: .continuous)
-            shape.fill(Theme.background)
-                .overlay { shape.strokeBorder(Color.secondary.opacity(0.5), lineWidth: 1) }
+        .background {
+            Capsule(style: .continuous).fill(Theme.background)
+                .overlay { Capsule(style: .continuous).strokeBorder(Color.secondary.opacity(0.5), lineWidth: 1) }
         }
     }
 
@@ -443,6 +400,10 @@ private struct DockItemHover: ViewModifier {
 extension EnvironmentValues {
     /// 宽屏上最小化的窗口由卡片画在停靠格里；紧凑布局的底栏没有卡片，自己画。
     @Entry var dockCardsDrawPanes = false
+    /// 停靠格排列的方向：宽屏停靠栏竖排，紧凑布局的底栏横排；家族胶囊顺着它拉长。
+    @Entry var dockAxis: Axis = .vertical
+    /// 紧凑布局的底栏里正显示的窗口，它的头像换成向上的箭头。
+    @Entry var dockCurrentPane: Pane?
 }
 
 /// 停靠栏和内容区共用的坐标系名字。
@@ -482,18 +443,21 @@ struct DockHoverLabel: View {
     }
 }
 
-/// 加号：宽屏是圆、右上角与窗口右上角同心，和家族格是同一种形状；紧凑布局的底栏边上没有窗口角，是正圆。
+/// 加号：宽屏是圆、右上角与窗口右上角同心；紧凑布局的底栏边上没有窗口角，是正圆。
 struct AddWindowButton: View {
     var concentric = true
     @Environment(WorkArea.self) private var area
     @State private var presented = false
+
+    /// 右上角与窗口同心时圆角的下限，窗口角太小时不至于变成尖角。
+    private static var minimumCorner: CGFloat { Metrics.dragBubble * 19 / 72 }
 
     var body: some View {
         let size = Metrics.dragBubble, radius = size / 2
         Button { presented = true } label: {
             if concentric {
                 face(ConcentricRectangle(topLeadingCorner: .fixed(radius),
-                                         topTrailingCorner: .concentric(minimum: .fixed(DockGeometry.familyCornerRadius(size))),
+                                         topTrailingCorner: .concentric(minimum: .fixed(Self.minimumCorner)),
                                          bottomLeadingCorner: .fixed(radius), bottomTrailingCorner: .fixed(radius)))
             } else {
                 face(Circle())
@@ -524,12 +488,13 @@ struct DockSelection: View {
     }
 }
 
-/// 紧凑布局的底栏：与宽屏停靠栏同样的分组与样式，横着倒序排、靠右，加号在最右端，当前窗口也在里面。
-/// 文件夹与家族格原地拉宽展开，其余的模糊淡出。
+/// 紧凑布局的底栏：与宽屏停靠栏同样的分组与样式，横着倒序排、靠右，加号在最右端，当前窗口也在里面；
+/// 没有窗口的代理和工具排成两行小头像贴着左端。「更多」与家族格原地拉宽展开，其余的模糊淡出。
 struct CompactDockBar: View {
     @Binding var open: WorkspaceDrawer?
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
+    @State private var width: CGFloat = 0
 
     var body: some View {
         let layout = area.layout
@@ -538,6 +503,10 @@ struct CompactDockBar: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Metrics.gap) {
+                    if !dock.minis.isEmpty {
+                        minis(dock.minis, cells: dock.miniCells, dimmed: dimmed)
+                        Spacer(minLength: 0)
+                    }
                     ForEach(dock.tools.reversed()) { item($0, dimmed: dimmed) }
                     if !dock.agents.isEmpty && !dock.tools.isEmpty {
                         Rectangle().fill(Theme.rule)
@@ -549,11 +518,16 @@ struct CompactDockBar: View {
                         .modifier(DockDimmed(dimmed: dimmed))
                 }
                 .frame(height: Metrics.dragBubble)
+                .environment(\.dockAxis, .horizontal)
+                .environment(\.dockCurrentPane, layout.focused)
+                // 至少和底栏一样宽，小头像才能隔着空白贴到左端
+                .frame(minWidth: width)
                 .animation(.snappy, value: dock.all.map(\.id))
             }
             // 排不满时靠右，排满时停在右端，增减格子时右端不动
             .defaultScrollAnchor(.trailing)
             .scrollClipDisabled()
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
             .onChange(of: area.dockExpansion.first) { _, id in
                 if let id { withAnimation(.snappy) { proxy.scrollTo(id, anchor: .center) } }
             }
@@ -582,6 +556,28 @@ struct CompactDockBar: View {
         }
         .id(entry.id)
         .modifier(DockDimmed(dimmed: dimmed && !expanded))
+    }
+
+    /// 小头像每格两列两行，从左端往右排：宽屏的每一行在这里是一列，先排左边一列，列内从上到下；
+    /// 家族横着占一行两个位置。展开的那项接在后面向右拉宽。
+    @ViewBuilder
+    private func minis(_ minis: [DockMini], cells: Int, dimmed: Bool) -> some View {
+        let expanded = area.dockExpansion.first, step = DockGeometry.miniSize + DockGeometry.miniGap
+        ForEach(0..<cells, id: \.self) { cell in
+            ZStack(alignment: .topLeading) {
+                ForEach(minis.filter { $0.cell == cell }) { mini in
+                    DockCellButton(entry: mini.entry, depth: 0, mini: true)
+                        .offset(x: CGFloat(mini.row) * step, y: CGFloat(mini.column) * step)
+                        .modifier(DockDimmed(dimmed: dimmed && expanded != mini.id))
+                }
+            }
+            .frame(width: Metrics.dragBubble, height: Metrics.dragBubble, alignment: .topLeading)
+        }
+        if let entry = minis.first(where: { $0.id == expanded })?.entry {
+            DockPanel(entry: entry, depth: 0, axis: .horizontal, showPane: show)
+                .transition(.scale(scale: 0.7, anchor: .leading).combined(with: .opacity))
+                .id(entry.id)
+        }
     }
 
     private func paneButton(_ pane: Pane) -> some View {

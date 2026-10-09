@@ -1,6 +1,7 @@
 #!/bin/bash
 # 改界面时的快速预览：增量编译 Mac Debug 版，退出正在运行的 Kite 后打开新 build。
 # Debug 版不带 kited，直接连本机已安装的服务；交付确认仍用 install.command 整体安装 Release。
+# 参数原样传给 App，例如 --dock-preview 打开停靠栏预览。
 set -euo pipefail
 APP="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$APP"
@@ -15,4 +16,4 @@ for _ in $(seq 40); do
   sleep 0.5
 done
 if pgrep -xq Kite; then echo '旧的 Kite 没有退出，请手动退出后重试。' >&2; exit 1; fi
-open "$PRODUCTS/Kite.app"
+if (( $# )); then open "$PRODUCTS/Kite.app" --args "$@"; else open "$PRODUCTS/Kite.app"; fi

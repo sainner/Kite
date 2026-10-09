@@ -54,8 +54,7 @@ struct CredentialsLibrary: View {
                     }
                 }
             }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
+            .pageForm()
         }
     }
 }

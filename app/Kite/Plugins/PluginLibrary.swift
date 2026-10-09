@@ -78,8 +78,7 @@ struct PluginLibrary: View {
             if let error { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) }
             if working { ProgressView() }
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+        .pageForm()
         .disabled(working)
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
             perform {

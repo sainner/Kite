@@ -5,8 +5,8 @@ import SwiftUI
 /// - 内容、可见区变高变矮（展开收起一步、回复变长、键盘、底栏）时：跟着最底下、底下也没露着留白，就按底部对齐，
 ///   最后几行贴着底边，键盘升起时和键盘一起顶上去；不然按顶部对齐，对话不动。
 ///   收起后旧坐标超出内容范围时收回新末尾；从手指按下到惯性结束，暂停程序定位和尺寸对齐。
-/// - 发送：开启新一轮的消息滑到可见区顶上，最后一轮至少占满一屏，不够在底下留白（TailSpace）；
-///   排在后面的消息接在最后面，滑到最底下把它顶上来，不另留空白。
+/// - 发送：都滑到最底下。开启新一轮的，最后一轮连同对话底下的边距至少比可见区高一个模数，不够在底下留白（TailSpace），
+///   滑到底时上一轮的末尾滚出可见区顶边再多一个模数；排在后面的消息接在最后面，滑到最底下把它顶上来，不另留空白。
 /// - 留白：人往上翻多少裁掉多少，裁到最后一条内容为止，下一次开启新一轮才重新留；回复把它填满以后照常跟着最底下。
 ///
 /// 下面的做法都是在 iPhone 模拟器上用单独的探针 app 逐帧记位置试出来的，改之前先看：
@@ -21,7 +21,7 @@ import SwiftUI
 ///   实际 0.8 秒左右才停稳，所以滚完一秒再钉（settle）。
 /// - 键盘升起的动画没走完时内容变短，滚动视图会把对话往下挪一个键盘高，同一次排版、晚一次排版、不带动画都一样；
 ///   所以可见区变矮时留白等 0.6 秒再缩，缩掉的在键盘后面。变高时留白在排版里当场跟着变，内容和可见区一起变长，不用动。
-/// - 留白要在排版里和新消息一次算出来（TranscriptStack）：量出来再补会晚一次排版，滑的那一刻底下还没有留白，滑不到位。
+/// - 留白要在排版里和新消息一次算出来（最后一组的最小高度，见 TranscriptView）：量出来再补会晚一次排版，滑的那一刻底下还没有留白，滑不到位。
 /// - 带动画加进内容的话，紧接着的滚动整个不动；所以发送时不带动画地加，下一拍再滑。
 ///
 /// macOS 上在会话窗口里加探针逐帧记位置，另外试出来：
@@ -61,13 +61,15 @@ final class TranscriptScroll {
     }
 
     /// 给 TranscriptView 的留白，visible 是这一次排版时可见区多高。仅查看历史时没有留白。
+    /// 最后一轮（从上一轮的底边算起）比可见区再多一个模数，发送后滑到最底下，这个模数就是上一轮的末尾滚过可见区顶边的那一截。
     func tail(visible: CGFloat) -> TailSpace? {
         guard let trim else { return nil }
-        return TailSpace(height: max(visible, heldVisible) - Metrics.transcriptPadding - trim, scroll: self)
+        return TailSpace(height: max(visible, heldVisible) - Metrics.transcriptPadding + DotMetrics.module - trim, scroll: self)
     }
 
-    /// 发一条消息：append 不带动画地把它加进对话，返回它会不会开启新的一轮；然后滑过去，alongside 和滑同一个动画。
-    /// 开启新一轮的滑到最后一轮顶上的标记，底下重新留白；排在后面的滑到最底下，裁掉的留白不长回来。
+    /// 发一条消息：append 不带动画地把它加进对话，返回它会不会开启新的一轮；然后滑到最底下，alongside 和滑同一个动画。
+    /// 开启新一轮的底下重新留白，滑到底时这条消息停在可见区顶上；这一轮长过一屏时停在它的末尾，和回复长过一屏时一样跟着最底下。
+    /// 排在后面的，裁掉的留白不长回来。
     func send(_ append: () -> Bool, alongside: @escaping () -> Void) {
         following = true
         // 和加消息同一次更新：加进去的那一次排版就按顶部对齐，也钉在当前位置，不然开头给的滚到最底下会在内容变长时一下跟过去
@@ -78,11 +80,7 @@ final class TranscriptScroll {
         // 等新消息和它底下的留白排好再滑
         DispatchQueue.main.async {
             withAnimation(.glide) {
-                if startsTurn {
-                    self.position.scrollTo(id: TailSpace.marker, anchor: .top)
-                } else {
-                    self.position.scrollTo(edge: .bottom)
-                }
+                self.position.scrollTo(edge: .bottom)
                 alongside()
             }
             self.settle()
@@ -175,21 +173,26 @@ final class TranscriptScroll {
     }
 }
 
+extension Spring {
+    /// 发送后对话往上滑，气泡同时浮进来；控制区推开的波也按它走（见 ThreadControls.sendWave）。
+    static let glide = Spring.smooth(duration: 0.5)
+}
+
 private extension Animation {
-    /// 发送后对话往上滑，气泡同时浮进来。
-    static let glide = Animation.smooth(duration: 0.5)
+    static let glide = Animation.spring(.glide)
 }
 
 /// 主对话最后一轮底下的留白：最后一轮（从最近一条开启新一轮的人发的消息算起）至少多高，不够就在底下留白。
-/// TranscriptScroll 给出，TranscriptView 排（见 TranscriptStack）：最后一轮顶上放一个 id 是 marker 的标记，发送后滑到它；
-/// 最后一行的底边放一个 TailEnd。
+/// TranscriptScroll 给出，TranscriptView 排：最后一轮那一组至少这么高，最后一行的底边放一个 TailEnd。
 struct TailSpace {
     /// 最后一轮至少多高，已经减掉了人往上翻时裁掉的。
     var height: CGFloat
     let scroll: TranscriptScroll
 
-    /// 最后一轮顶上那个标记的 id。
-    static let marker = "transcript.tail"
+    /// 给最后一组的最小高度；可见区还没量出来时不限。
+    var minimum: CGFloat? {
+        height.isFinite ? max(height, 0) : nil
+    }
 }
 
 /// 最后一行底边的标记：报告底下的留白露没露在可见区里，最后一条内容的底边在可见区底边上面就是露着。

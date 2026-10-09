@@ -12,7 +12,6 @@ struct ThreadHeaderActions: View {
     @State private var loadingModels = false
     @State private var modelError: String?
     @State private var confirmingRecovery = false
-    @State private var showingModels = false
     @State private var showingDraftSettings = false
     private var availableModels: [AgentCapabilities.Model] { thread.agentCapabilities?.models ?? [] }
     /// 草稿还没有实例，模型改的是本机选择，随第一条消息一起提交。
@@ -40,15 +39,6 @@ struct ThreadHeaderActions: View {
 
     var body: some View {
         menuGroup
-            .popover(isPresented: $showingModels, arrowEdge: .top) {
-                ThreadModelMenu(modelName: modelName, vendors: thread.agentCapabilities?.vendors ?? [], models: availableModels,
-                    vendorEnabled: canChangeVendor, modelEnabled: canChangeModel, saving: savingModel,
-                    loading: loadingModels,
-                    vendorExplanation: thread.state?.capabilities.switchRuntime == false
-                        ? "运行中、有排队消息或等待恢复确认时不能换到其他厂商的模型。" : nil,
-                    onSelectModel: selectModel)
-                    .presentationCompactAdaptation(.popover)
-            }
             .sheet(isPresented: $showingDraftSettings) {
                 DraftAgentSettings().environment(model).environment(area).environment(thread)
             }
@@ -67,7 +57,7 @@ struct ThreadHeaderActions: View {
                           area.instances.first(where: { $0.id == instance.id })?.config?.agent?.runtime == runtime else { return }
                     thread.agentCapabilities = capabilities
                 } catch {
-                    if !Task.isCancelled { showingModels = false; modelError = error.localizedDescription }
+                    if !Task.isCancelled { modelError = error.localizedDescription }
                 }
             }
             .alert("切换模型失败", isPresented: Binding(
@@ -86,13 +76,31 @@ struct ThreadHeaderActions: View {
     private var menuGroup: some View {
         #if os(iOS)
         PhoneThreadHeaderMenus(modelTitle: modelTier, modelName: modelName,
-            modelEnabled: canOpenModels, commands: moreCommands, onOpenModel: { showingModels = true })
+            modelEnabled: canOpenModels, models: modelMenu, commands: moreCommands)
             .fixedSize()
         #else
         MacThreadHeaderMenus(modelTitle: modelTier, modelName: modelName,
-            modelEnabled: canOpenModels, commands: moreCommands, onOpenModel: { showingModels = true })
+            modelEnabled: canOpenModels, models: modelMenu, commands: moreCommands)
             .fixedSize()
         #endif
+    }
+
+    /// 每个厂商一节，当前模型打勾；换厂商受限时其他厂商的模型置灰，并在末尾说明原因。
+    private var modelMenu: ThreadModelMenu {
+        let status = savingModel ? "正在切换…" : loadingModels ? "正在读取模型…" : availableModels.isEmpty ? "暂无可用模型" : nil
+        let vendors = thread.agentCapabilities?.vendors ?? []
+        let current = availableModels.first { $0.id == modelName }?.vendor
+        let sections = vendors.map { vendor in
+            ThreadModelMenu.Vendor(id: vendor.id, title: vendors.count > 1 ? vendor.title : nil,
+                models: availableModels.filter { $0.vendor == vendor.id }.map { model in
+                    .init(id: model.id, name: model.name, selected: model.id == modelName,
+                          enabled: canChangeModel && (model.vendor == current || canChangeVendor))
+                })
+        }.filter { !$0.models.isEmpty }
+        let locked = !canChangeVendor && thread.state?.capabilities.switchRuntime == false && sections.count > 1
+        return ThreadModelMenu(vendors: status == nil ? sections : [], status: status,
+                               note: status == nil && locked ? "运行中、有排队消息或待确认恢复时不能换厂商" : nil,
+                               select: selectModel)
     }
 
     /// 两端菜单使用相同的可用状态和业务动作；卡片太窄时窗口操作也收在这里，排最前。
@@ -137,7 +145,7 @@ struct ThreadHeaderActions: View {
             thread.agentOptions = options
             if let role { thread.agentCapabilities = options.capabilities(for: role.id) }
         } catch {
-            if !Task.isCancelled { showingModels = false; modelError = error.localizedDescription }
+            if !Task.isCancelled { modelError = error.localizedDescription }
         }
     }
 
@@ -147,13 +155,11 @@ struct ThreadHeaderActions: View {
             guard canChangeModel, availableModels.contains(where: { $0.id == name }), var selected = agentModel else { return }
             selected.selectModel(name, supportedReasoning: levels)
             thread.draftChoice?.model = selected
-            showingModels = false
             return
         }
         guard canChangeModel, name != modelName, availableModels.contains(where: { $0.id == name }),
               let instance else { return }
         savingModel = true
-        showingModels = false
         Task {
             defer { savingModel = false }
             do {
@@ -166,64 +172,26 @@ struct ThreadHeaderActions: View {
     }
 }
 
-/// 模型弹出菜单：系统分段选择器按厂商分类，列出该厂商的模型；后端随所选模型确定，不单独出现。
-private struct ThreadModelMenu: View {
-    let modelName: String?
-    let vendors: [AgentCapabilities.Vendor]
-    let models: [AgentCapabilities.Model]
-    let vendorEnabled: Bool
-    let modelEnabled: Bool
-    let saving: Bool
-    let loading: Bool
-    let vendorExplanation: String?
-    let onSelectModel: (String) -> Void
-    /// 正在浏览的厂商；没翻过时停在当前模型所属的厂商。
-    @State private var browsing: String?
-
-    private var current: String? { models.first { $0.id == modelName }?.vendor }
-    private var vendor: String { browsing ?? current ?? vendors.first?.id ?? "" }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if vendors.count > 1 {
-                Picker("厂商", selection: Binding(get: { vendor }, set: { browsing = $0 })) {
-                    ForEach(vendors) { Text($0.title).tag($0.id) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-            }
-            if vendor != current, !vendorEnabled, let vendorExplanation {
-                Text(vendorExplanation).font(.caption).foregroundStyle(.secondary)
-            }
-            Divider()
-            if saving || loading {
-                HStack {
-                    ProgressView().controlSize(.small)
-                    Text(saving ? "正在切换…" : "正在读取模型…").foregroundStyle(.secondary)
-                }
-            } else if models.isEmpty {
-                Text("暂无可用模型").foregroundStyle(.secondary)
-            } else {
-                ForEach(models.filter { $0.vendor == vendor }) { model in
-                    Button { onSelectModel(model.id) } label: {
-                        HStack {
-                            Text(model.name)
-                            Spacer()
-                            if modelName == model.id {
-                                Image(systemName: "checkmark")
-                            }
-                        }
-                        .contentShape(Rectangle())
-                        .padding(.vertical, 5)
-                    }
-                    .buttonStyle(.pointingPlain)
-                    .disabled(!modelEnabled || (model.vendor != current && !vendorEnabled))
-                }
-            }
-        }
-        .padding(16)
-        .frame(width: 280)
+/// 模型菜单的内容，两端原生菜单共用：按厂商分节列出模型，后端随所选模型确定，不单独出现。
+struct ThreadModelMenu {
+    struct Vendor: Identifiable {
+        let id: String
+        /// 只有一个厂商时不加节标题。
+        let title: String?
+        let models: [Model]
     }
+    struct Model: Identifiable {
+        let id: String
+        let name: String
+        let selected: Bool
+        let enabled: Bool
+    }
+    let vendors: [Vendor]
+    /// 读取、切换中或没有模型时代替列表的说明。
+    let status: String?
+    /// 不能换到其他厂商的原因。
+    let note: String?
+    let select: (String) -> Void
 }
 
 struct ThreadHeaderCommand: Identifiable {

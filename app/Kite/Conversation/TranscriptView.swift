@@ -6,43 +6,77 @@ extension EnvironmentValues {
 }
 
 /// 一串记录排下来，排队中的消息接在最后。主对话和子 agent 做的事都用它。
+/// 按人开启的每一轮分组，一组里的行竖着排。主对话按需排版，只排可见区附近的几组：长会话改窗口宽度时只重排看得见的，
+/// 没排到的组等滚到附近再按当时的宽度排。一行从出现起就待在同一组里，后面又开了一轮也不换组，展开收起这些状态不会丢。
 struct TranscriptView: View {
     let items: [Item]
     var pending: [Message] = []
     /// 点 agent 的话弹出操作栏。主对话里是；子 agent 做的事里不是，它们的序号和主对话的会撞。
     var actionable = false
-    /// 主对话给：最后一轮底下的留白（见 TranscriptStack）。发送后滚到最后一轮顶上的标记（TailSpace.marker），
-    /// 这条消息正好停在可见区顶上，上一段内容刚好滚出去，回复往下面的空白里填；回复长过一屏就照常跟着最底下。
+    /// 主对话按需排版。嵌在一行里的（压缩前的原文、子 agent 做的事）跟着那一行整个排。
+    var lazy = false
+    /// 主对话给：最后一轮底下的留白。最后一轮就是最后一组，它至少 tail.height 高（从上一组的底边算起），不够就在底下留白；
+    /// 留白是这一组的最小高度，和新消息同一次排版算出来，量出来再补会晚一次排版，发送时滚动那一刻底下还没有留白，滚不到位。
+    /// 发送后滑到最底下（见 TranscriptScroll.send），这条消息停在可见区顶上，上一段内容滚出去，回复往下面的空白里填；
+    /// 回复长过一屏就照常跟着最底下。
     /// 排在后面的消息（回合在跑、或者前面还排着别的时发的）不开启新的一轮：它接在那一轮后面，
-    /// 顶到最上面的话 agent 接着写的内容就在屏幕外了。
+    /// 顶到最上面的话 agent 接着写的内容就在屏幕外了。最后一行的底边放一个 TailEnd，用来看底下的空白露没露出来。
     var tail: TailSpace?
     @Environment(\.selectedRow) private var selection
 
     var body: some View {
-        let rows = rows
-        TranscriptStack(spacing: Metrics.rowSpacing, tailIndex: tail == nil ? nil : rows.lastIndex(where: \.startsHumanTurn),
-                        tailHeight: tail?.height) {
-            ForEach(rows) { row in
-                Group {
-                    switch row.content {
-                    case .item(let item):
-                        if actionable, case .text(let text) = item.kind {
-                            AgentText(id: row.id, text: text)
-                        } else {
-                            ItemView(item: item)
+        let turns = turns
+        if lazy {
+            LazyVStack(alignment: .leading, spacing: 0) { content(turns) }
+        } else {
+            VStack(alignment: .leading, spacing: 0) { content(turns) }
+        }
+    }
+
+    private func content(_ turns: [Turn]) -> some View {
+        ForEach(turns) { turn in
+            let last = turn.id == turns.last?.id
+            VStack(alignment: .leading, spacing: Metrics.rowSpacing) {
+                ForEach(turn.rows) { row in
+                    Group {
+                        switch row.content {
+                        case .item(let item):
+                            if actionable, case .text(let text) = item.kind {
+                                AgentText(id: row.id, text: text)
+                            } else {
+                                ItemView(item: item)
+                            }
+                        case .message(let message, let queued): MessageBubble(message: message, queued: queued)
                         }
-                    case .message(let message, let queued): MessageBubble(message: message, queued: queued)
                     }
+                    .padding(.top, row.gap)
+                    // 开着操作栏的那一行垫在最上面：操作栏浮出这一行，压在前后的行上（自己的排版容器里也管用，实测）
+                    .zIndex(selection.wrappedValue == row.id ? 1 : 0)
                 }
-                .padding(.top, row.gap)
-                // 开着操作栏的那一行垫在最上面：操作栏浮出这一行，压在前后的行上（自己的排版容器里也管用，实测）
-                .zIndex(selection.wrappedValue == row.id ? 1 : 0)
             }
-            if let tail {
-                Color.clear.frame(height: 0).layoutValue(key: StackMarker.self, value: .tail).id(TailSpace.marker)
-                TailEnd(tail: tail).layoutValue(key: StackMarker.self, value: .end)
+            .overlay(alignment: .bottomLeading) {
+                if last, let tail { TailEnd(tail: tail) }
+            }
+            // 组和组之间的行距算在后一组顶上，最后一组的顶就是上一组的底边，最小高度从这里算
+            .padding(.top, turn.id == turns.first?.id ? 0 : Metrics.rowSpacing)
+            // 改最小高度不换分支：这一组不再是最后一组时还是同一个视图
+            .frame(maxWidth: .infinity, minHeight: last && turn.startsHumanTurn ? tail?.minimum : nil, alignment: .topLeading)
+            // 操作栏也要压在后面几组上
+            .zIndex(turn.rows.contains { $0.id == selection.wrappedValue } ? 1 : 0)
+        }
+    }
+
+    /// 从每一条开启新一轮的人发的消息起另开一组。
+    private var turns: [Turn] {
+        var turns: [Turn] = []
+        for row in rows {
+            if turns.isEmpty || row.startsHumanTurn {
+                turns.append(Turn(rows: [row]))
+            } else {
+                turns[turns.count - 1].rows.append(row)
             }
         }
+        return turns
     }
 
     /// 人发的消息按消息的 id 认，排队中和收到了走同一个分支：从排队中变成收到，还是同一个气泡，底色直接填进来。
@@ -78,66 +112,12 @@ struct TranscriptView: View {
     }
 }
 
-/// 对话一行一行往下排，靠左，行间空 spacing，和 VStack 一样。给了 tailHeight 时，最后一轮（从 tailIndex 那一行上面、
-/// 上一行的底边算起）至少这么高，不够就在底下留白；标着 .tail 的空视图摆在最后一轮的顶上，发送后滚到它，
-/// 标着 .end 的摆在最后一行的底边，用来看底下的空白露没露出来。
-/// 留白要在排版里和新消息一次算出来：量出来再补会晚一次排版，发送时滚动那一刻底下还没有留白，滚不到位。
-private struct TranscriptStack: Layout {
-    let spacing: CGFloat
-    let tailIndex: Int?
-    let tailHeight: CGFloat?
+/// 一轮：开启它的那一行和后面跟着的行。id 是第一行的 id，后面接着来的行不改变它。
+private struct Turn: Identifiable {
+    var rows: [Row]
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? rows(subviews).map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
-        let measured = arrange(width: width, subviews: subviews)
-        return CGSize(width: width, height: measured.natural + extra(natural: measured.natural, tailTop: measured.tailTop))
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let measured = arrange(width: bounds.width, subviews: subviews)
-        var y = bounds.minY
-        for (index, subview) in rows(subviews).enumerated() {
-            let height = measured.heights[index]
-            subview.place(at: CGPoint(x: bounds.minX, y: y), proposal: ProposedViewSize(width: bounds.width, height: height))
-            y += height + spacing
-        }
-        for marker in subviews {
-            guard let kind = marker[StackMarker.self] else { continue }
-            let at = kind == .tail ? measured.tailTop : measured.natural
-            marker.place(at: CGPoint(x: bounds.minX, y: bounds.minY + at), proposal: ProposedViewSize(width: bounds.width, height: 0))
-        }
-    }
-
-    private func rows(_ subviews: Subviews) -> [LayoutSubview] {
-        subviews.filter { $0[StackMarker.self] == nil }
-    }
-
-    /// 内部折叠也会改变行高，不能只按宽度和行数复用上次结果。每次排版读取当前高度，子视图测量由 SwiftUI 缓存。
-    private func arrange(width: CGFloat, subviews: Subviews) -> (heights: [CGFloat], natural: CGFloat, tailTop: CGFloat) {
-        let heights = rows(subviews).map { $0.sizeThatFits(ProposedViewSize(width: width, height: nil)).height }
-        var y: CGFloat = 0
-        var tailTop: CGFloat = 0
-        for (index, height) in heights.enumerated() {
-            if index == tailIndex { tailTop = index == 0 ? 0 : y - spacing }
-            y += height + spacing
-        }
-        return (heights, max(y - spacing, 0), tailTop)
-    }
-
-    private func extra(natural: CGFloat, tailTop: CGFloat) -> CGFloat {
-        guard tailIndex != nil, let tailHeight, tailHeight.isFinite else { return 0 }
-        return max(tailTop + tailHeight - natural, 0)
-    }
-}
-
-/// TranscriptStack 里不是一行、是个标记的空视图：最后一轮的顶，最后一行的底边。
-private nonisolated struct StackMarker: LayoutValueKey {
-    enum Kind {
-        case tail
-        case end
-    }
-
-    static let defaultValue: Kind? = nil
+    var id: RowID { rows[0].id }
+    var startsHumanTurn: Bool { rows[0].startsHumanTurn }
 }
 
 private struct Row: Identifiable {

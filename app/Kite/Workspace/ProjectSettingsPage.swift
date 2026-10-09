@@ -52,8 +52,7 @@ struct ProjectSettingsPage: View {
                 }
                 if let error { Text(error).foregroundStyle(Theme.danger) }
             }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
+            .pageForm()
             .task(id: project.id) {
                 do { accountProject = try await model.account.projects().first { $0.id == project.id } }
                 catch is CancellationError { }

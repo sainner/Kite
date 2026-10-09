@@ -28,5 +28,10 @@ metadata:
 - 真机上要用户配合时，尽量让探针自动完成操作（例如用 `.task(id:)` 等窗口载入后再开合抽屉），只请用户打开对应界面。
 - 关于 SwiftUI 本身的结论，用模拟器上的最小探针 App 来比（按 [[ui-hit-testing-debugging]] 的方式手写 Info.plist），一轮几十秒，不用登录。实测：滚动视图的内边距或尺寸哪怕只变 0.01pt，越界的位置也会被夹回边界；SwiftUI 的动画是叠加的，不带动画地改值打断不了正在进行的弹簧。
 
+2026-10-10 截屏、录屏都报「could not create image」时补充（静态样式问题）：
+
+- 在 Debug 探针里用 `ImageRenderer` 把要看的 SwiftUI 视图离屏渲染（`scale = 4`，环境对象要显式传进去），PNG 转 base64 写到 stderr，用 `open --env 变量=1 --stderr 日志 App路径 --args …` 启动后从日志里解出来，再用 `sips` 裁剪后看图。App 有沙盒，写不到会话临时目录，`~/Library/Containers/com.sainner.kite` 也读不到；`print` 到 stdout 是块缓冲，退出 App 后才写出。
+- ScrollView 这类平台视图渲染不出来，要挑里面的部分单独渲染。这次靠它看出工具小头像被图标的排版尺寸撑宽，只看代码和日志里的格子尺寸都没发现。
+
 **Why:** 这类问题截一张图抓不到，只看代码猜了几轮都没有结论，录屏抽帧加 frame 日志才定位到原因。
 **How to apply:** 遇到「刚打开时」「动画过程中」才出现的界面问题，先录屏抽帧确认现象，再用探针逐个关掉可疑逻辑做对比；纯样式修改仍按 [[user-previews-ui]] 交给用户自己预览。

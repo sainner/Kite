@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 点对话里的一行弹出的操作栏：一排只有图标的按钮，装在一个液态玻璃胶囊里。
+/// 点对话里的一行弹出的操作栏：一排只有图标的按钮，和标题栏的玻璃按钮组同一套尺寸与构件（PaneHeaderButtonGroup）。
 /// 出现时整条从贴着这一行、靠 side 那边的角等比放大，带一点回弹，边放大边淡显；收起时缩回那个角，不回弹，边缩边淡出。
 /// 关着时什么都不画。
 /// 和系统的编辑菜单（UIEditMenuInteraction）一个做法：按原本的大小排好一次，动画只改整体的缩放，不改尺寸，
@@ -17,10 +17,7 @@ struct ActionBar<Content: View>: View {
         // 外面垫一层 ZStack：放它的地方给的对齐参考线要加在不随 shown 变的这一层才认
         ZStack {
             if shown {
-                HStack(spacing: Metrics.paneButtonGap) { content() }
-                    .padding(Metrics.paneToolbarInset)
-                    .glassEffect(.regular.interactive(), in: .capsule)
-                    .fixedSize()
+                PaneHeaderButtonGroup { content() }
                     .transition(.scale(scale: 0.3, anchor: corner).combined(with: .opacity))
             }
         }
@@ -54,11 +51,10 @@ struct ActionButton: View {
 
     var body: some View {
         Button(role: role, action: action) {
-            Image(systemName: icon)
+            PaneHeaderButtonLabel(title, systemImage: icon)
         }
-        .buttonStyle(PaneButtonStyle(foreground: role == .destructive ? Theme.danger : .primary))
+        .foregroundStyle(role == .destructive ? Theme.danger : Color.primary)
         .help(title)
-        .accessibilityLabel(title)
     }
 }
 
@@ -78,14 +74,10 @@ struct ActionMenu<Content: View>: View {
         Menu {
             Section(title) { content }
         } label: {
-            Image(systemName: icon)
+            PaneHeaderButtonLabel(title, systemImage: icon)
         }
-        .menuStyle(.button)
-        .buttonStyle(PaneButtonStyle(foreground: .primary))
-        .menuIndicator(.hidden)
         .fixedSize()
         .help(title)
-        .accessibilityLabel(title)
     }
 }
 

@@ -31,7 +31,11 @@ struct ContextRing: View {
     let lineWidth: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var color: Color {
+    private var color: Color { Self.color(phase) }
+    private var period: Double { Self.period(phase) }
+
+    /// 各阶段的颜色与动画周期，停靠栏的脉冲波也用这一套。
+    static func color(_ phase: String) -> Color {
         switch phase {
         case "running": .accentColor
         case "stopping": Theme.warning
@@ -40,7 +44,7 @@ struct ContextRing: View {
         }
     }
 
-    private var period: Double {
+    static func period(_ phase: String) -> Double {
         switch phase {
         case "running": 2.4
         case "stopping": 1

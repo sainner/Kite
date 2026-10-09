@@ -84,12 +84,18 @@ extension WorkerConnection {
     }
 }
 
-/// 侧栏只展示在线工作机的有效额度，详情仍按机器保留，避免同名供应商覆盖不同账号。
+/// 侧栏按厂商汇总在线工作机的订阅额度，每个账号按限制最紧的周期计。
 struct SubscriptionQuota: Identifiable {
-    let id: String
+    struct Account {
+        let name: String
+        let quota: String
+        let remaining: Double
+    }
     let provider: String
-    let remaining: Double
-    let detail: String
+    let accounts: [Account]
+    var id: String { provider }
+    /// 上游不给各账号额度的绝对大小，按等额合计。
+    var remaining: Double { accounts.map(\.remaining).reduce(0, +) / Double(accounts.count) }
 }
 
 extension AppModel {
@@ -104,16 +110,27 @@ extension AppModel {
     }
 
     var subscriptionQuotas: [SubscriptionQuota] {
-        availableWorkers.flatMap { connection in
-            (connection.modelAccounts?.accounts ?? []).compactMap { account in
-                guard account.kind == "subscription", account.status == "ready",
-                      connection.modelAccountsError == nil,
-                      let quota = account.quotas.filter({ $0.resetsAt.map { $0 > Date.now.timeIntervalSince1970 } ?? true })
-                        .min(by: { $0.remaining < $1.remaining }) else { return nil }
-                return SubscriptionQuota(id: "\(connection.id):\(account.id)", provider: account.provider,
-                                         remaining: quota.remaining, detail: "\(connection.machine.name) · \(quota.title)")
+        let now = Date.now.timeIntervalSince1970
+        // 同一账号登录在几台工作机上只算一次，取最近一次查询的结果；身份未知的无法判断，各算一个。
+        var accounts: [String: (checkedAt: Double, provider: String, account: SubscriptionQuota.Account)] = [:]
+        for connection in availableWorkers where connection.modelAccountsError == nil {
+            guard let snapshot = connection.modelAccounts else { continue }
+            for account in snapshot.accounts where account.kind == "subscription" && account.status == "ready" {
+                // 已过重置时间的周期已恢复整额
+                let quotas = account.quotas.map { ($0, $0.isExpired(now: now) ? 1 : $0.remaining) }
+                guard let tightest = quotas.min(by: { $0.1 < $1.1 }) else { continue }
+                let key = account.identity.map { [account.provider, $0, account.plan ?? ""] }
+                    ?? [connection.id, account.id]
+                let id = key.joined(separator: "\n")
+                guard accounts[id].map({ $0.checkedAt < snapshot.checkedAt }) ?? true else { continue }
+                let name = [account.identity ?? connection.machine.name, account.planTitle].compactMap(\.self).joined(separator: " · ")
+                accounts[id] = (snapshot.checkedAt, account.provider,
+                                .init(name: name, quota: tightest.0.title, remaining: tightest.1))
             }
         }
+        return Dictionary(grouping: accounts.values, by: \.provider)
+            .map { SubscriptionQuota(provider: $0.key, accounts: $0.value.map(\.account).sorted { $0.name < $1.name }) }
+            .sorted { $0.provider < $1.provider }
     }
 
     /// 账号里的 API Key 变了，各台在线工作机都要重新领取。

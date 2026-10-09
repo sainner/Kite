@@ -6,8 +6,8 @@ indirect enum DockEntry: Identifiable {
     case pane(Pane)
     /// 父代理和它没有窗口的子代理合成一格。
     case family(DockFamily)
-    /// 所有没有窗口的代理。
-    case folder([DockEntry])
+    /// 小头像排不下的，占最后一个小头像的位置。
+    case more([DockEntry])
     /// 没有窗口的实例。
     case instance(RemotePluginInstance)
 
@@ -15,18 +15,18 @@ indirect enum DockEntry: Identifiable {
         switch self {
         case .pane(let pane): "pane:\(pane.id)"
         case .family(let family): Self.familyID(family.parent.id)
-        case .folder: Self.folderID
+        case .more: Self.moreID
         case .instance(let instance): "instance:\(instance.id)"
         }
     }
 
-    static let folderID = "folder"
+    static let moreID = "more"
     static func familyID(_ instance: String) -> String { "family:\(instance)" }
 
-    /// 展开后看到的各项：文件夹是里面的代理，家族是父代理和子代理。
+    /// 展开后看到的各项：「更多」是放不下的小头像，家族是父代理和子代理。
     var members: [DockEntry] {
         switch self {
-        case .folder(let entries): entries
+        case .more(let entries): entries
         case .family(let family): [.instance(family.parent)] + family.children
         default: []
         }
@@ -43,7 +43,7 @@ indirect enum DockEntry: Identifiable {
 
     var expands: Bool {
         switch self {
-        case .folder, .family: true
+        case .more, .family: true
         default: false
         }
     }
@@ -52,7 +52,7 @@ indirect enum DockEntry: Identifiable {
 /// 子代理不随父代理回收，只是挂在它下面显示；有窗口的子代理独立成格。
 struct DockFamily {
     let parent: RemotePluginInstance
-    /// 父代理在本机的窗口；没有窗口时整家收在文件夹里。
+    /// 父代理在本机的窗口；没有窗口时整家占一个小头像。
     let pane: Pane?
     /// 父代理的窗口在台面上，格子里以箭头代替头像。
     let onStage: Bool
@@ -60,14 +60,55 @@ struct DockFamily {
     let children: [DockEntry]
 }
 
-/// 代理组在上，有子代理的优先；工具组在下。
+/// 代理组在上，有子代理的优先；工具组在下；没有窗口的代理和工具排成小头像，在最后。
 struct DockModel {
+    /// 小头像最多两格，每格两行两列；再多时最后一个位置换成「更多」。
+    static let miniLimit = 8
+
     var agents: [DockEntry] = []
     var tools: [DockEntry] = []
-    var all: [DockEntry] { agents + tools }
+    /// 没有窗口的代理和工具按创建先后排，状态变化不挪位置；小头像就表示没有窗口。
+    var minis: [DockMini] = []
+    var all: [DockEntry] { agents + tools + minis.map(\.entry) }
+    /// 小头像占的格数。
+    var miniCells: Int { minis.map { $0.cell + 1 }.max() ?? 0 }
+
+    /// 按先后放进两格的八个位置，每个放进第一个空着的位置；家族要同一列上下两个位置都空着。
+    /// 全放得下就都排开，放不下时最后一个位置换成「更多」，从第一个放不下的起都收进去。
+    static func pack(_ entries: [DockEntry]) -> [DockMini] {
+        func place(in slots: Int) -> (placed: [DockMini], rest: [DockEntry]) {
+            var used = Set<Int>(), placed: [DockMini] = []
+            for (index, entry) in entries.enumerated() {
+                let tall = if case .family = entry { true } else { false }
+                let free = { (slot: Int) in !used.contains(slot) && (!tall || slot % 4 < 2 && slot + 2 < slots && !used.contains(slot + 2)) }
+                guard let slot = (0..<slots).first(where: free) else { return (placed, Array(entries[index...])) }
+                used.formUnion(tall ? [slot, slot + 2] : [slot])
+                placed.append(DockMini(entry: entry, slot: slot))
+            }
+            return (placed, [])
+        }
+        let all = place(in: miniLimit)
+        guard !all.rest.isEmpty else { return all.placed }
+        let some = place(in: miniLimit - 1)
+        return some.placed + [DockMini(entry: .more(some.rest), slot: miniLimit - 1)]
+    }
 }
 
-/// 停靠格的角标，同时只显示一个，按这个顺序取。
+/// 一个小头像的位置。slot 是两格八个位置里的序号：每格先排挨着末端的一行，行内从左到右；
+/// 家族占 slot 所在那一列的两个位置。
+struct DockMini: Identifiable {
+    let entry: DockEntry
+    let slot: Int
+    var id: String { entry.id }
+    /// 在第几格。
+    var cell: Int { slot / 4 }
+    /// 格里的第几行，0 是挨着末端的那一行。
+    var row: Int { slot % 4 / 2 }
+    /// 行内从左数第几个。
+    var column: Int { slot % 2 }
+}
+
+/// 需要处理的状态，换掉头像本色；同时只显示一个，按这个顺序取。
 enum DockAttention: Int, Comparable {
     case unseen, waiting, failed
 
@@ -75,7 +116,7 @@ enum DockAttention: Int, Comparable {
         switch self {
         case .failed: Theme.danger
         case .waiting: Theme.warning
-        case .unseen: .accentColor
+        case .unseen: Theme.unseen
         }
     }
 
@@ -91,22 +132,24 @@ extension WorkArea {
     func isAgent(_ instance: RemotePluginInstance) -> Bool { definition(of: instance)?.agent != nil }
 
     func isAgentPane(_ pane: Pane) -> Bool {
-        pane.id == Self.draftWindowID || instance(of: pane).map(isAgent) == true
+        pane.id == draftWindow || instance(of: pane).map(isAgent) == true
     }
 
     /// docked 是停靠栏里按顺序放的窗口，onStage 是台面上的窗口（只用来找带着子代理的父代理）。
-    /// closing 是正要关窗口的实例，按已经没有窗口来排，用来算关窗口时卡片要飞去哪一格。
-    func dockModel(docked: [Pane], onStage: Set<Pane>, closing: String? = nil) -> DockModel {
+    /// windowless 是按没有窗口来排的实例：正要关窗口的，用来算卡片飞去哪一格；或正从停靠栏打开、窗口还没放上台面的。
+    func dockModel(docked: [Pane], onStage: Set<Pane>, windowless: String? = nil) -> DockModel {
         let open = instances.filter { $0.status == .open }
         let byID = Dictionary(open.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var windowed = Set(windows.map(\.target.instanceId))
-        if let closing { windowed.remove(closing) }
-        // 子代理挂在仍然存在的父代理下面；父代理归档后提升为文件夹里的顶层项。
+        if let windowless { windowed.remove(windowless) }
+        // 子代理挂在仍然存在的父代理下面；父代理归档后提升为顶层的小头像。
         func parent(of instance: RemotePluginInstance) -> RemotePluginInstance? {
             instance.origin.flatMap { byID[$0.instanceId] }.flatMap { isAgent($0) ? $0 : nil }
         }
         let windowlessAgents = open.filter { isAgent($0) && !windowed.contains($0.id) }
         let childrenOf = Dictionary(grouping: windowlessAgents.filter { parent(of: $0) != nil }) { parent(of: $0)!.id }
+        // 没有窗口的都排成小头像：子代理挂在父代理下面，其余各占一个
+        let loose = open.filter { !windowed.contains($0.id) && !(isAgent($0) && parent(of: $0) != nil) }
         func recent(_ instance: RemotePluginInstance) -> Double {
             activities[instance.id]?.changedAt ?? Double(instance.createdAt)
         }
@@ -134,7 +177,7 @@ extension WorkArea {
             let kids = children(of: instance.id)
             if !kids.isEmpty { families.append(.family(.init(parent: instance, pane: pane, onStage: true, children: kids))) }
         }
-        for pane in docked {
+        for pane in docked where dockInstanceID(pane) != windowless {
             if isAgentPane(pane) {
                 if let instance = instance(of: pane), case let kids = children(of: instance.id), !kids.isEmpty {
                     families.append(.family(.init(parent: instance, pane: pane, onStage: false, children: kids)))
@@ -146,10 +189,16 @@ extension WorkArea {
             }
         }
         model.agents = families + agentPanes
-        let folder = ordered(windowlessAgents.filter { parent(of: $0) == nil }.sorted { recent($0) > recent($1) }.map(entry))
-        if !folder.isEmpty { model.agents.append(.folder(folder)) }
-        model.tools += open.filter { !isAgent($0) && !windowed.contains($0.id) }.map(DockEntry.instance)
+        model.minis = DockModel.pack(loose.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }.map(entry))
         return model
+    }
+
+    /// 正从停靠栏打开窗口的实例。工作机建好的窗口先收进停靠栏，放上台面前仍按没有窗口来排，卡片从它原来那一格展开。
+    /// 实例已经有别的窗口时不算。
+    var openingInstance: String? {
+        guard case .open(let target) = pendingWindowRequest?.content else { return nil }
+        let panes = layout.panes.filter { dockInstanceID($0) == target.instanceId }
+        return panes.count <= 1 && panes.allSatisfy(layout.docked.contains) ? target.instanceId : nil
     }
 
     /// 按窗口集合的顺序取出台面上的窗口，结果稳定。
@@ -164,25 +213,24 @@ extension WorkArea {
         return unseen(id) ? .unseen : nil
     }
 
-    /// 文件夹与家族里最要紧的一项，以及需要处理的个数。
-    func attention(in entries: [DockEntry]) -> (DockAttention, Int)? {
+    /// 「更多」与家族里最要紧的一项。
+    func attention(in entries: [DockEntry]) -> DockAttention? {
         var top: DockAttention?
-        var count = 0
         func visit(_ entry: DockEntry) {
             switch entry {
             case .instance(let instance):
-                if let value = attention(of: instance.id) { top = max(top ?? value, value); count += 1 }
+                if let value = attention(of: instance.id) { top = max(top ?? value, value) }
             case .family(let family):
                 visit(.instance(family.parent))
                 family.children.forEach(visit)
-            case .folder(let entries):
+            case .more(let entries):
                 entries.forEach(visit)
             case .pane:
                 break
             }
         }
         entries.forEach(visit)
-        return top.map { ($0, count) }
+        return top
     }
 
     func isRunning(_ id: String) -> Bool {
@@ -205,8 +253,8 @@ extension WorkArea {
             return name + " · " + statusText(of: instance.id)
         case .family(let family):
             return family.parent.title + " · \(family.children.count) 个子代理"
-        case .folder(let entries):
-            return "没有窗口的代理 · \(entries.count) 个"
+        case .more(let entries):
+            return "还有 \(entries.count) 项没有窗口"
         case .instance(let instance):
             guard isAgent(instance) else {
                 return instance.title + ((definition(of: instance)?.views.isEmpty ?? true) ? " · 后台" : " · 没有窗口")
@@ -237,14 +285,20 @@ extension AppModel {
     }
 }
 
-/// 宽屏停靠栏每一格的位置：添加入口固定在最上面，然后是代理组、分隔线、工具组。坐标与内容区相同。
+/// 宽屏停靠栏每一格的位置：添加入口固定在最上面，然后是代理组、分隔线、工具组，没有窗口的代理排成小头像贴着底边。
+/// 坐标与内容区相同。
 struct DockGeometry {
     /// 两组之间多出的一个模块，分隔线画在两组正中。
     static var dividerExtra: CGFloat { Metrics.gap }
+    /// 小头像两行两列正好占一格。
+    static var miniGap: CGFloat { Metrics.dragBubble * 4 / 36 }
+    static var miniSize: CGFloat { (Metrics.dragBubble - miniGap) / 2 }
 
     let add: CGRect
     private(set) var cells: [(entry: DockEntry, frame: CGRect)] = []
+    private(set) var minis: [(entry: DockEntry, frame: CGRect)] = []
     private(set) var divider: CGFloat?
+    var allCells: [(entry: DockEntry, frame: CGRect)] { cells + minis }
 
     init(model: DockModel, regions: WindowRegions) {
         let size = Metrics.dragBubble, step = size + Metrics.gap
@@ -252,34 +306,57 @@ struct DockGeometry {
         var y = regions.dock.minY
         add = CGRect(x: x, y: y, width: size, height: size)
         y += step
-        for entry in model.agents {
-            cells.append((entry, CGRect(x: x, y: y, width: size, height: size)))
-            y += step
+        for (index, entry) in (model.agents + model.tools).enumerated() {
+            // 工具组的第一格前面有代理时，先空出分隔线
+            if index == model.agents.count && index > 0 {
+                divider = y - Metrics.gap / 2 + Self.dividerExtra / 2
+                y += Self.dividerExtra
+            }
+            let height = Self.cellSize(entry).height
+            cells.append((entry, CGRect(x: x, y: y, width: size, height: height)))
+            y += height + Metrics.gap
         }
-        if !model.agents.isEmpty && !model.tools.isEmpty {
-            divider = y - Metrics.gap / 2 + Self.dividerExtra / 2
-            y += Self.dividerExtra
-        }
-        for entry in model.tools {
-            cells.append((entry, CGRect(x: x, y: y, width: size, height: size)))
-            y += step
+        // 小头像从底边往上排，每格先排下面一行，行内从左到右；高度不够时紧跟在前面的格子后面，不叠上去
+        let count = model.miniCells, mini = Self.miniSize, gap = Self.miniGap
+        let top = max(y, regions.dock.maxY - CGFloat(count) * step + Metrics.gap)
+        for item in model.minis {
+            let bottom = top + CGFloat(count - item.cell) * step - Metrics.gap
+            let height = Self.cellSize(item.entry, mini: true).height
+            minis.append((item.entry, CGRect(x: x + CGFloat(item.column) * (mini + gap), y: bottom - height - CGFloat(item.row) * (mini + gap),
+                                             width: mini, height: height)))
         }
     }
 
-    /// 某个没有窗口的实例落在哪一格：它自己，或装着它的文件夹、家族格。
+    /// 一格的大小：家族沿排列方向更长，小头像里的家族占一列两个位置。
+    static func cellSize(_ entry: DockEntry, mini: Bool = false, axis: Axis = .vertical) -> CGSize {
+        let width = mini ? miniSize : Metrics.dragBubble
+        var length = width
+        if case .family(let family) = entry { length = mini ? Metrics.dragBubble : DockFamilyFace.length(family, width: width) }
+        return axis == .vertical ? CGSize(width: width, height: length) : CGSize(width: length, height: width)
+    }
+
+    /// 从添加入口到最后一格的总长，窗口最小高度据此算。
+    static func length(of model: DockModel) -> CGFloat {
+        let lengths = [Metrics.dragBubble] + (model.agents + model.tools).map { cellSize($0).height }
+            + Array(repeating: Metrics.dragBubble, count: model.miniCells)
+        let divider = model.agents.isEmpty || model.tools.isEmpty ? 0 : dividerExtra
+        return lengths.reduce(0, +) + CGFloat(lengths.count - 1) * Metrics.gap + divider
+    }
+
+    /// 某个没有窗口的实例落在哪一格：它自己，或装着它的「更多」、家族格。
     func frame(containing instance: String) -> CGRect? {
         func contains(_ entry: DockEntry) -> Bool {
             switch entry {
             case .instance(let value): value.id == instance
             case .family(let family): family.parent.id == instance || family.children.contains(where: contains)
-            case .folder(let entries): entries.contains(where: contains)
+            case .more(let entries): entries.contains(where: contains)
             case .pane: false
             }
         }
-        return cells.first { contains($0.entry) }?.frame
+        return allCells.first { contains($0.entry) }?.frame
     }
 
-    /// 窗口缩小后画在哪：普通窗口占满一格，家族格里的父代理缩在左下角，给角上的子代理留位置。
+    /// 窗口缩小后画在哪：普通窗口占满一格，家族格里的父代理在胶囊最上面。
     func paneFrame(_ pane: Pane) -> CGRect? {
         for (entry, frame) in cells {
             switch entry {
@@ -291,33 +368,9 @@ struct DockGeometry {
         return nil
     }
 
+    /// 竖排家族格里父代理的位置，胶囊最上面。
     static func parentFrame(in cell: CGRect) -> CGRect {
-        let size = cell.width * 26 / 36, inset = cell.width * 3 / 36
-        return CGRect(x: cell.minX + inset, y: cell.maxY - inset - size, width: size, height: size)
+        let inset = DockFamilyFace.inset(cell.width), size = cell.width - 2 * inset
+        return CGRect(x: cell.minX + inset, y: cell.minY + inset, width: size, height: size)
     }
-
-    static func childFrame(in cell: CGRect) -> CGRect {
-        let size = cell.width * 15 / 36, inset = cell.width * 2 / 36
-        return CGRect(x: cell.maxX - inset - size, y: cell.minY + inset, width: size, height: size)
-    }
-
-    /// 家族格描边的右上角与角上的子代理同心。
-    static func familyCornerRadius(_ cell: CGFloat) -> CGFloat {
-        cell * 15 / 36 / 2 + cell * 2 / 36
-    }
-}
-
-/// 加号与家族格共用的形状：圆，右上角圆角略小。
-nonisolated struct NotchedCircle: InsettableShape {
-    var corner: CGFloat
-    var inset: CGFloat = 0
-
-    func path(in rect: CGRect) -> Path {
-        let rect = rect.insetBy(dx: inset, dy: inset)
-        let radius = min(rect.width, rect.height) / 2
-        return UnevenRoundedRectangle(topLeadingRadius: radius, bottomLeadingRadius: radius, bottomTrailingRadius: radius,
-                                      topTrailingRadius: max(min(corner - inset, radius), 0), style: .continuous).path(in: rect)
-    }
-
-    func inset(by amount: CGFloat) -> Self { var copy = self; copy.inset += amount; return copy }
 }

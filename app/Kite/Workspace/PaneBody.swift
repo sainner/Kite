@@ -30,7 +30,8 @@ private struct WorkspacePaneBody: View {
         let renderer = area.view(in: pane)?.renderer
         Group {
             if let thread = area.thread(in: pane) {
-                ThreadPane().environment(thread).id(thread.id)
+                // 不按线程 id 区分身份：草稿发出后同一个会话对象变成真实代理，id 随之改变，窗口内容不能跟着重建
+                ThreadPane().environment(thread)
             } else if let browser = area.files(in: pane), renderer == "files" {
                 FilePane(browser: browser).id(pane.id)
             } else if renderer == "web", let target = area.windows.first(where: { $0.id == pane.id })?.target,

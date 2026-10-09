@@ -53,9 +53,7 @@ struct ContextTemplateEditor: View {
                         phase: $phase, action: save)
         }
         .interactiveDismissDisabled(working || changed)
-        .confirmationDialog("放弃未保存的模板修改？", isPresented: $discard, titleVisibility: .visible) {
-            Button("放弃修改", role: .destructive) { dismiss() }
-        }
+        .discardAlert("放弃未保存的模板修改？", isPresented: $discard) { dismiss() }
     }
 
     private var working: Bool { phase.working }

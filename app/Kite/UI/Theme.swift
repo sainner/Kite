@@ -31,14 +31,16 @@ enum Theme {
     /// 参考色只有黄蓝两个色相：新增用天空蓝，删除用错误色。
     static let added = Palette.breeze.opacity(0.22)
     static let removed = danger.opacity(0.14)
-    /// 错误、删除与危险操作，参考色以外唯一的例外。
+    /// 错误、删除与危险操作，参考色以外的例外。
     static let danger = Color("Danger")
     /// 停止中、警示，取 Sunwashed 的深一档。
     static let warning = Color("Warning")
+    /// 完成未查看。代理头像的本色只有黄蓝两个色相，用参考色以外的草绿才分得开。
+    static let unseen = ProjectTheme.green.color
     /// 浅色填充（停靠图标、最小化窗口）上的图标色。
     static let ink = Color(red: 0.173, green: 0.271, blue: 0.4)
 
-    // 字号：两端共用 token，常规文字采用系统文本样式，侧栏层级使用指定字号。
+    // 字号：两端共用 token，每个 token 是一种系统文本样式，多大由系统按平台定，iPhone 上还跟着系统的字号设置。
     // 视图里不写点数，都从这里取
     /// 标题栏的标题。
     static let title = Font.headline
@@ -50,14 +52,14 @@ enum Theme {
     static let caption = Font.footnote
     /// 最小的字：状态 chip、工具信息与预览标注。
     static let status = Font.caption
-    /// 侧栏项目与菜单标题。
-    static let sidebarHeading = Font.system(size: 13, weight: .bold)
+    /// 侧栏项目与菜单标题。侧栏三级字号在 Mac 上是 13、12、10 点，iPhone 上是 17、16、13 点。
+    static let sidebarHeading = Font.headline
     /// 侧栏工作区名称。
-    static let sidebarWorkspace = Font.system(size: 12)
+    static let sidebarWorkspace = Font.callout
     /// 账号额度圆环悬停时浮出的外圈剩余百分比。
     static let ringValue = Font.system(size: 11, weight: .bold).monospacedDigit()
     /// 侧栏检出所属的工作机名称。
-    static let sidebarCheckout = Font.system(size: 10)
+    static let sidebarCheckout = Font.footnote
     /// 命令、输出、代码、改动。
     static let code = Font.system(.subheadline, design: .monospaced)
     /// 初始配置这类整页的大标题，直接压在背景上。
@@ -82,7 +84,7 @@ enum Palette {
     static let sunwashed = Color(hex: 0xFFE08A)
     static let cloud = Color(hex: 0xFFF7D6)
     static let breeze = Color(hex: 0x7FA8D6)
-    /// 中性的窗口类别色，终端等没有专属色的窗口用。
+    /// 中性的窗口色，代理以外的窗口都用它。
     static let stone = Color(hex: 0xDAD5C8)
 }
 

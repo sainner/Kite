@@ -54,18 +54,12 @@ struct AgentSettings: View {
         } footer: {
             CardActions(primary: "保存", enabled: canSave, phase: $phase) { perform(succeeds: true) { try await save() } }
         }
-        #if os(iOS)
         // 数字键盘没有换行键，键盘上方给一个完成
-        .toolbar { ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("完成") { editingLimit = false } } }
-        #endif
+        .keyboardDoneButton { editingLimit = false }
         .endsTyping(editingLimit) { editingLimit = false }
         .interactiveDismissDisabled(working || changed)
-        .confirmationDialog("放弃未保存的代理配置？", isPresented: Binding(get: { discard != nil }, set: { if !$0 { discard = nil } }), titleVisibility: .visible) {
-            Button("放弃修改", role: .destructive) {
-                let action = discard
-                discard = nil
-                if action == "back" { back() } else { perform { try await load() } }
-            }
+        .discardAlert("放弃未保存的代理配置？", item: $discard) { action in
+            if action == "back" { back() } else { perform { try await load() } }
         }
         .task { perform { try await load() } }
     }
@@ -153,9 +147,7 @@ struct DraftAgentSettings: View {
         } footer: {
             CardActions(primary: "完成", enabled: capabilities != nil && budget >= 1, phase: $phase, succeeded: "已更新") { save() }
         }
-        #if os(iOS)
-        .toolbar { ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("完成") { editingLimit = false } } }
-        #endif
+        .keyboardDoneButton { editingLimit = false }
         .endsTyping(editingLimit) { editingLimit = false }
         .onAppear {
             tools = thread.draftChoice?.tools ?? capabilities?.tools ?? []
