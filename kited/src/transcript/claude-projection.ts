@@ -1,7 +1,7 @@
 /** Claude 原生消息、输入身份与分块序号的显示转换；记录与增量由公共投影保存。 */
-import { diffReferenceSchema, type DiffReference } from '../workspace/file-diffs.ts';
 import type { ClaudeState } from '../claude/control.ts';
-import { claudeToolName } from '../claude/tools.ts';
+import { claudeToolName, claudeToolResult, object, structuredClaudeTool } from '../claude/tools.ts';
+import { contextWindow } from '../agents/models.ts';
 import type { DisplayBlock, DisplayDelta, DisplayRecord, DisplayState, PendingInput } from './protocol.ts';
 
 interface ClaudeProjectionTarget {
@@ -15,7 +15,6 @@ interface ClaudeProjectionTarget {
   context(value: DisplayState['context']): void;
 }
 
-const object = (value: unknown): Record<string, any> => value && typeof value === 'object' ? value as Record<string, any> : {};
 const textParts = (value: unknown, separator = ''): string => Array.isArray(value)
   ? value.map((part) => object(part).text).filter((text) => typeof text === 'string').join(separator) : '';
 
@@ -27,6 +26,7 @@ export class ClaudeProjection {
   private offsets = new Map<string, number>();
   private rows = new Map<string, number>();
   private usage: Record<string, number> = {};
+  private model = '';
 
   constructor(private target: ClaudeProjectionTarget) {}
 
@@ -60,6 +60,7 @@ export class ClaudeProjection {
       const event = object(row.event);
       if (event.type === 'message_start') {
         this.messageId = object(event.message).id; this.index = 0; this.usage = object(object(event.message).usage);
+        this.model = String(object(event.message).model ?? '');
       }
       if (!this.messageId) return;
       const id = `claude:${this.messageId}:${event.index}`;
@@ -87,6 +88,7 @@ export class ClaudeProjection {
     }
     if (typeof row.uuid !== 'string') return;
     const message = object(row.message);
+    if (row.type === 'assistant' && typeof message.model === 'string') this.model = message.model;
     if (row.type === 'assistant' && message.usage) this.updateContext(message.id ?? row.uuid, object(message.usage), at);
     const parent = typeof row.parent_tool_use_id === 'string' ? row.parent_tool_use_id : undefined;
     const content = typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : message.content;
@@ -111,25 +113,16 @@ export class ClaudeProjection {
       } else if (block.type === 'thinking' && typeof block.thinking === 'string') put(id, { type: 'thinking', text: block.thinking });
       else if (block.type === 'tool_use') {
         const name = claudeToolName(block.name);
-        if (block.name.startsWith('mcp__kite__') && name !== 'read') this.structuredCalls.add(block.id);
+        if (structuredClaudeTool(block.name)) this.structuredCalls.add(block.id);
         const previous = this.target.records.get(`call:${block.id}`)?.block;
         put(`call:${block.id}`, { ...(previous?.type === 'tool_use' ? previous : {}), type: 'tool_use', id: block.id,
           name, input: block.input, arguments: JSON.stringify(block.input), batch: message.id,
           stage: previous?.type === 'tool_use' && ['running', 'finished'].includes(previous.stage ?? '') ? previous.stage : 'queued' });
       } else if (block.type === 'tool_result') {
-        let output = typeof block.content === 'string' ? block.content : textParts(block.content);
-        let diff: DiffReference | undefined;
-        let status: Extract<DisplayBlock, { type: 'tool_result' }>['status'] = block.is_error ? 'error' : 'success';
-        if (this.structuredCalls.has(block.tool_use_id)) {
-          try {
-            const result = object(JSON.parse(output));
-            if (typeof result.output === 'string') {
-              output = result.output;
-              diff = diffReferenceSchema.safeParse(result.diff).data;
-              if (['success', 'error', 'not_executed', 'unknown'].includes(result.status)) status = result.status;
-            }
-          } catch { /* 参数校验失败时保留上游错误文本。 */ }
-        }
+        let result: ReturnType<typeof claudeToolResult>;
+        try { result = claudeToolResult(block, this.structuredCalls.has(block.tool_use_id)); }
+        catch { result = { status: block.is_error ? 'error' : 'success', output: typeof block.content === 'string' ? block.content : textParts(block.content) }; }
+        const { output, diff, status } = result;
         const call = this.target.records.get(`call:${block.tool_use_id}`);
         if (call?.block.type === 'tool_use') this.target.put({ ...call, block: { ...call.block, stage: 'finished' } });
         put(`result:${block.tool_use_id}`, { type: 'tool_result', call: block.tool_use_id, output, ...(diff ? { diff } : {}), status });
@@ -145,7 +138,9 @@ export class ClaudeProjection {
 
   private updateContext(requestId: string, usage: Record<string, any>, at: number): void {
     const tokens = [usage.input_tokens, usage.cache_read_input_tokens ?? 0, usage.cache_creation_input_tokens ?? 0];
+    const windowTokens = contextWindow(this.model);
+    const window = windowTokens ? { windowTokens } : {};
     this.target.context(tokens.every((value) => Number.isSafeInteger(value) && value >= 0)
-      ? { requestId, inputTokens: tokens.reduce((total, value) => total + value, 0), measuredAt: at } : undefined);
+      ? { requestId, inputTokens: tokens.reduce((total, value) => total + value, 0), ...window, measuredAt: at } : undefined);
   }
 }

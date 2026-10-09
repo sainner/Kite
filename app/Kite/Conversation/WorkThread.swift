@@ -16,6 +16,8 @@ final class WorkThread: Identifiable {
     var connected = false
     var error: String?
     private(set) var regeneratingTitle = false
+    /// 选好的压缩起点（一条人发消息的 id），等在这条或之后的消息上选终点。
+    var compactionStart: String?
     private(set) var client: KitedClient?
     // 未识别的块保留位置，后续同 id 的记录替换仍沿用服务端顺序。
     private var remoteRecords: [RemoteRecord] = []
@@ -40,6 +42,7 @@ final class WorkThread: Identifiable {
     var hasUnconfirmedStop: Bool { stopRequest != nil }
     var showStop: Bool { stopRequest != nil || !outbox.isEmpty || state?.capabilities.interrupt == true }
     var canCancel: Bool { stopRequest == nil && connected && state?.capabilities.cancel == true }
+    var canCompact: Bool { !isDraft && connected && state?.capabilities.compact == true }
     var canRegenerateTitle: Bool { !isDraft && connected && state?.status == "open" && !regeneratingTitle }
     var statusPhase: String { stopping ? "stopping" : state?.phase ?? "idle" }
     var statusLabel: String {
@@ -48,6 +51,7 @@ final class WorkThread: Identifiable {
         guard connected else { return "正在连接" }
         if stopping { return "正在停止" }
         if let recovery = state?.recovery { return recovery.message }
+        if state?.compacting == true { return "正在压缩上下文" }
         if let error = state?.error { return error }
         switch state?.status {
         case "preparing": return "正在准备工作区"
@@ -133,7 +137,8 @@ final class WorkThread: Identifiable {
             guard let record = event.record else { return }
             if let index = positions[record.id] {
                 remoteRecords[index] = record
-                if let visibleIndex = visiblePositions[index], let visible = record.record {
+                // 压缩记录的变化（撤销）牵动整段收起，重新派生。
+                if record.block.type != "compacted", let visibleIndex = visiblePositions[index], let visible = record.record {
                     transcript.replaceRecord(at: visibleIndex, with: visible)
                 } else {
                     recordsChanged = true
@@ -190,8 +195,16 @@ final class WorkThread: Identifiable {
         if recordsChanged {
             var records: [Record] = []
             visiblePositions.removeAll(keepingCapacity: true)
+            // 每次压缩收起首尾记录之间的一段；后来的压缩包含先前的，覆盖它的收起。
+            var folds: [Int: String] = [:]
+            for remote in remoteRecords where remote.block.type == "compacted" && remote.block.reverted != true {
+                guard let fold = remote.block.id, let from = remote.block.from, let through = remote.block.through,
+                      let first = positions[from], let last = positions[through], first <= last else { continue }
+                for index in first...last { folds[index] = fold }
+            }
             for (index, remote) in remoteRecords.enumerated() {
-                guard let record = remote.record else { continue }
+                guard var record = remote.record else { continue }
+                if record.parent == nil { record.folded = folds[index] }
                 visiblePositions[index] = records.count
                 records.append(record)
             }
@@ -313,6 +326,26 @@ final class WorkThread: Identifiable {
         // 标题正文沿目录事件同步，避免迟到的 HTTP 响应覆盖更新的远端标题。
         let _: ThreadTitleSnapshot = try await client.request(path + "/regenerate", method: "POST",
             body: ["expectedRevision": snapshot.revision], timeout: 120, as: ThreadTitleSnapshot.self)
+    }
+
+    /// 压缩从起点那条消息到终点那条消息所在的一轮；结果经会话事件送达，失败显示在状态里。
+    func compact(through message: String) {
+        guard let client, let start = compactionStart, canCompact else { return }
+        compactionStart = nil
+        Task {
+            do {
+                try await client.post("/threads/\(id)/compactions", body: ["id": UUID().uuidString, "from": start, "through": message])
+                error = nil
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    func revertCompaction(_ compaction: String) {
+        guard let client, canCompact else { return }
+        Task {
+            do { let _: JSON = try await client.request("/threads/\(id)/compactions/\(compaction)", method: "DELETE", as: JSON.self); error = nil }
+            catch { self.error = error.localizedDescription }
+        }
     }
 
     func control(_ action: String) {

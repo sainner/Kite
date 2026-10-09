@@ -9,13 +9,30 @@ nonisolated struct ModelAccount: Decodable, Identifiable {
     struct Quota: Decodable, Identifiable {
         let id: String
         let label: String
+        /// 只限某个模型或功能的额度；缺省是整个账号共用。
+        let model: String?
         let remainingPercent: Double
         let windowMinutes: Double?
         let resetsAt: Double?
         var remaining: Double { min(1, max(0, remainingPercent / 100)) }
+        var title: String { [model, label].compactMap(\.self).joined(separator: " · ") }
     }
     struct Credits: Decodable { let value: Double?; let unlimited: Bool }
+    /// Claude 的额外用量，超出套餐额度后按金额计费。
+    struct ExtraUsage: Decodable { let enabled: Bool; let currency: String?; let used: Double?; let limit: Double?; let balance: Double? }
     struct Cost: Decodable { let value: Double; let currency: String; let from: Double; let to: Double }
+    /// 按天的 token 用量；scope 为 account 时是整个账号在所有设备上的用量，machine 只含这台工作机的记录。
+    struct Usage: Decodable {
+        struct Day: Decodable {
+            let date: String
+            let tokens: Double
+            /// 本地时间 0–23 时每小时的 token，只来自工作机本机的记录；没有时为 nil。
+            let hours: [Double]?
+        }
+        let scope: String
+        let days: [Day]
+        let lifetimeTokens: Double
+    }
     struct Balance: Decodable, Identifiable {
         let currency: String
         let total: Double
@@ -32,8 +49,15 @@ nonisolated struct ModelAccount: Decodable, Identifiable {
     let message: String?
     let quotas: [Quota]
     let credits: Credits?
+    let extraUsage: ExtraUsage?
     let cost: Cost?
     let balances: [Balance]?
+    let usage: Usage?
+
+    /// 整个账号共用的周期，窗口长的在前；标题前的圆环外圈是第一个。
+    var sharedQuotas: [Quota] {
+        quotas.filter { $0.model == nil }.sorted { ($0.windowMinutes ?? 0) > ($1.windowMinutes ?? 0) }
+    }
 
     var statusTitle: String {
         switch status {
@@ -42,6 +66,21 @@ nonisolated struct ModelAccount: Decodable, Identifiable {
         case "reauthentication": "需重新授权"
         default: "暂不可查询"
         }
+    }
+
+    /// 档位首字母大写，例如 max 20x 显示为 Max 20x。
+    var planTitle: String? { plan.map { $0.prefix(1).uppercased() + $0.dropFirst() } }
+
+    /// 暂时查询失败时工作机沿用上次的数据，界面按旧数据显示。
+    var showsPreviousData: Bool {
+        status == "unavailable" && (!quotas.isEmpty || credits != nil || cost != nil || balances != nil)
+    }
+}
+
+extension WorkerConnection {
+    /// 账号按旧数据显示：工作机离线、这次更新失败，或工作机沿用了上次的数据。
+    func showsStaleData(_ account: ModelAccount) -> Bool {
+        !connected || modelAccountsError != nil || account.showsPreviousData
     }
 }
 
@@ -72,9 +111,14 @@ extension AppModel {
                       let quota = account.quotas.filter({ $0.resetsAt.map { $0 > Date.now.timeIntervalSince1970 } ?? true })
                         .min(by: { $0.remaining < $1.remaining }) else { return nil }
                 return SubscriptionQuota(id: "\(connection.id):\(account.id)", provider: account.provider,
-                                         remaining: quota.remaining, detail: "\(connection.machine.name) · \(quota.label)")
+                                         remaining: quota.remaining, detail: "\(connection.machine.name) · \(quota.title)")
             }
         }
+    }
+
+    /// 账号里的 API Key 变了，各台在线工作机都要重新领取。
+    func refreshAllModelAccounts() {
+        for connection in availableWorkers { Task { await refreshModelAccounts(connection) } }
     }
 
     /// 让工作机重新查询上游。结果和会话带回的额度一样经目录事件流到达，避免较早的响应覆盖较新的推送。

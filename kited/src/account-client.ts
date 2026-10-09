@@ -21,6 +21,15 @@ export interface RegisteredProject {
   createdAt: number;
 }
 
+/** 账号里的一把模型 API Key；OpenAI、Anthropic 可以只有组织管理 Key。 */
+export interface ApiKey {
+  id: string;
+  name: string;
+  provider: 'openai' | 'anthropic' | 'deepseek';
+  key?: string;
+  adminKey?: string;
+}
+
 export class AccountClient {
   constructor(private readonly link: () => AccountLink | undefined) {}
 
@@ -48,12 +57,15 @@ export class AccountClient {
   }
 
   resolveSecrets(references: string[], projectId?: string, signal?: AbortSignal): Promise<ResolvedSecret[]> {
-    return this.request('POST', '/api/secrets/resolve', { references, projectId }, signal);
+    return this.request('POST', '/api/credentials/resolve', { references, projectId }, signal);
   }
 
   listSecrets(projectId?: string, signal?: AbortSignal): Promise<Array<SecretMetadata & { reference: string }>> {
-    return this.request('GET', `/api/secrets/available${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`, undefined, signal);
+    return this.request('GET', `/api/credentials/available${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`, undefined, signal);
   }
+
+  /** 账号保存的模型 API Key，只用于查询额度。 */
+  apiKeys(signal?: AbortSignal): Promise<ApiKey[]> { return this.request('GET', '/api/credentials/api', undefined, signal); }
 
   /** 按远程地址登记；同一远程总是得到同一个项目。 */
   register(remote: string): Promise<RegisteredProject> { return this.request('POST', '/api/projects', { remote }); }

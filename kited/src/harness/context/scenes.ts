@@ -7,6 +7,20 @@ export const contextScenes = {
       { name: 'thread.messages', title: '近期对话正文' },
     ],
   },
+  'thread.compact': {
+    title: '压缩上下文',
+    variables: [
+      { name: 'compaction.range', title: '压缩范围' },
+      { name: 'compaction.summary', title: '摘要正文' },
+    ],
+  },
+  'template.emblem': {
+    title: '生成点阵签名',
+    variables: [
+      { name: 'template.title', title: '模板名称' },
+      { name: 'template.content', title: '模板正文' },
+    ],
+  },
   'thread.plugin_tools_changed': {
     title: '插件工具授权变更',
     variables: [{ name: 'plugin.tools', title: '当前获准的插件工具' }],

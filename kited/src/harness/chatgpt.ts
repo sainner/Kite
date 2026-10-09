@@ -77,6 +77,18 @@ function outputItem(raw: JsonObject, fallbackId: string): ModelItem {
   return { id, raw };
 }
 
+/**
+ * Claude 段导入的条目。thinking 的签名只有 Anthropic 能校验，只带摘要的 reasoning 条目会被订阅端点静默丢弃
+ * （2026-10-08 实测），所以跨厂商不传推理。
+ */
+function anthropicItem(item: ModelItem): JsonObject | [] {
+  if (item.call) return { type: 'function_call', call_id: item.call.id, name: item.call.name, arguments: JSON.stringify(item.call.arguments) };
+  if (item.raw.type === 'text') return typeof item.raw.text === 'string' && item.raw.text
+    ? { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: item.raw.text }] } : [];
+  if (item.raw.type === 'thinking' || item.raw.type === 'redacted_thinking') return [];
+  throw new Error(`不能把 Claude 条目 ${String(item.raw.type)} 交给订阅模型`);
+}
+
 export class ChatGPTModel implements Model {
   constructor(private options: SubscriptionModelOptions) {}
 
@@ -84,10 +96,10 @@ export class ChatGPTModel implements Model {
     signal.throwIfAborted();
     const auth = await this.options.credentials(signal);
     signal.throwIfAborted();
-    const input = request.history.map((entry): JsonObject => {
+    const input = request.history.flatMap((entry): JsonObject | [] => {
       switch (entry.type) {
         case 'input': return { role: 'user', content: [{ type: 'input_text', text: entry.input.text }] };
-        case 'output': return entry.item.raw;
+        case 'output': return entry.item.format === 'anthropic' ? anthropicItem(entry.item) : entry.item.raw;
         case 'tool_result': {
           const { status, output, images } = entry.result;
           const text = status === 'success' ? output : `[${status}] ${output}`;

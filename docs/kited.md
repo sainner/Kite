@@ -57,13 +57,17 @@ bun run harness --resume <会话id>
 
 文件工具限制在工作目录内，shell 使用操作系统沙箱。默认工作区可读写、必要工具链可读、网络关闭；宿主凭据和内部记录受保护，Git 元数据只读。授权范围和平台限制见 [执行边界](Agent与插件契约.md#71-插件与-harness-共用操作系统沙箱)。独立终端尚无授权编辑入口，服务中的实例可在 App「执行授权」页编辑，见 [实例执行授权](实例操作.md#实例执行授权)。每回合的请求上限可用 `--max-requests` 调整，达到上限后等待显式继续。
 
-这个终端入口直接修改指定目录。需要独立工作树、快照与采纳时，通过 kited 创建工作区。独立终端未接 agent 协作工具与账号凭据服务；harness 的 skill 自动发现、MCP 和上下文压缩仍待实现。
+这个终端入口直接修改指定目录。需要独立工作树、快照与采纳时，通过 kited 创建工作区。独立终端未接 agent 协作工具与账号凭据服务；harness 的 skill 自动发现和 MCP 仍待实现；上下文压缩只有自动触发，没有手动入口。
 
 异常退出留下的 `lock/` 不会自动删除。先根据会话目录中的 `lock/owner.json` 与 `processes.json` 确认原进程及命令均已停止，再清理锁并重新打开。执行效果未知时先核查，不重放旧工具。
 
 ## 会话后端与宿主边界
 
 自研 harness 与 Claude 各自负责完整 agent 循环，Kite 宿主负责工作区、共享工具、授权、快照与显示协议。执行进程关闭后会话仍可继续，两种后端保留各自的原生恢复记录。
+
+会话可通过 `/instances/:id/agent-config` 更换 `agent.runtime` 及对应模型，保留实例、窗口和其他配置；能力目录按实例当前后端返回。`state.capabilities.switchRuntime` 表示当前能否切换：须空闲、没有排队或交接未确认的输入、没有恢复阻塞，否则返回 409。服务端在同一控制队列中检查状态、交接上下文并保存后端与配置。
+
+切换在回合边界交接上下文。两种后端在线程内各保留一份原生记录；切换时把来源后端自上次交接以来产生的内容翻译后追加到目标后端的记录，并标明来源位置。已有记录不改写，重复切换不重复导入，翻译失败时不切换。harness 一侧在上次交接之后压缩或撤销过压缩时，改为整体重组 Claude 会话：在会话文件末尾追加压缩分界与按 harness 当前上下文合成的完整历史，原条目留作显示，Claude 从分界之后接续。人发消息、Kite 通知、助手文字、工具调用与结果及图片按目标后端的原生形态交接；推理内容只保留在产生它的后端记录中，不跨厂商传递，提示缓存在切换后重新建立。历史显示按段拼接两份记录，每段只取自产生它的后端，显示记录不作为原生恢复数据。Claude 会话文件的合成依赖锁定版本 CLI 的内部格式，升级 SDK 时按 [实验记录](research/2026-10-08-跨后端上下文翻译.md) 重新验证。
 
 agent 配置绑定到实例，重启沿用已保存内容。默认编程定义提供 read、patch、shell 及 agent 操作，只读审查定义提供 read；工具选择不能扩大授权。默认型号见 [共享模型目录](../shared/agent-models.json)，配置生效见 [线程通知投递](线程通知投递.md)，执行与恢复要求见 [harness 执行约定](harness-主循环.md) 和 [会话状态机](会话状态机.md)。
 
@@ -92,6 +96,12 @@ agent 配置绑定到实例，重启沿用已保存内容。默认编程定义�
 标题须为 1～80 字符的单行文本。版本冲突返回 409。手动命名后停止自动覆盖，创建 agent 时显式给出的标题也视为手动命名。生成期间发生的改名或模式切换不能被旧结果覆盖；显式重生期间被其他操作改名则返回 409。生成失败保留原题与进度，后续新消息仍可触发检查。
 
 显式重生不受相同消息位置的限制，使更早的在途标题结果失效。标题生成不打断或阻塞主会话控制。
+
+### 模板点阵签名
+
+每个创建会话模板有一枚点阵签名，App 在新会话的空白内容区按它铺满动画。签名是 `{expression, positive, negative, form}`：一行算式，客户端每帧对每格求值，结果截到 −1～1，绝对值为点的大小、正负选 `positive` 或 `negative` 颜色（参考色板字母 `B M L Y D`），`form` 为点的终态形状。算式只解析求值、不执行代码，语法以 `kited/src/emblem-expression.ts` 为准，App 的 `DotExpression.swift` 与之保持一致。
+
+模板保存后用轻任务按模板正文生成，提示词是可编辑的「点阵签名」模板。回复不可用时附上原因重试一次，仍失败记为 `failed`，客户端沿用默认图案。手改的签名不被自动生成替换，只有 `force` 重新生成会覆盖；生成期间发生的手改也不会被在途结果覆盖。模板列表中创建会话模板带 `emblem`、`emblemState`（`ready`、`stale`、`missing`、`generating`、`failed`）与失败时的 `emblemError`；`stale` 表示模板内容已变、签名尚未更新。模板或签名状态变化时，目录事件流推送 `context-templates.changed`，客户端据此重新读取模板列表。
 
 ### 启动服务
 
@@ -165,7 +175,7 @@ Claude 负责模型循环与原生对话恢复；Kite 负责工具、项目上�
 
 模型、工具、基础上下文与请求预算绑定到实例；`KITE_CLAUDE_MODEL` 可覆盖创建时的模型。配置和执行授权须在空闲且无恢复阻塞时修改；可选型号与思考档位通过能力接口获取。项目规则与记忆索引仅由 Kite 的模板提供，Claude 不自行扫描。具体生效时机见 [线程通知投递](线程通知投递.md#claude-的交接边界)。
 
-运行中插话沿用 Claude 原生输入队列，在自然请求边界纳入，不要求等整轮结束。发送确认、撤回、停止与异常恢复遵守 [会话状态机](会话状态机.md#手动停止与消息交接)；已有原生记录不能重复投递，未知执行效果不能自动重放。
+Claude Code 进程随实例常驻：首次需要时启动，回合结束后不退出，在实例归档、切换后端、手动停止或 kited 退出时结束；回合之间意外退出的，下一条消息到来时恢复原生会话。运行中插话沿用 Claude 原生输入队列，在自然请求边界纳入，不要求等整轮结束。发送确认、撤回、停止与异常恢复遵守 [会话状态机](会话状态机.md#手动停止与消息交接)；已有原生记录不能重复投递，未知执行效果不能自动重放。
 
 App、HTTP 和 CLI 的显示与控制能力见 [会话显示协议](会话显示协议.md#当前边界)。搜索网页、定时任务、原生 Claude 子 agent 和附件尚未开放。Kite 工具受沙箱限制不表示整个 Claude SDK 进程已被隔离。
 
@@ -177,7 +187,7 @@ App、HTTP 和 CLI 的显示与控制能力见 [会话显示协议](会话显示
 |---|---|
 | 基础提示、日期、环境、模型与技能说明 | 由 Kite 模板提供；关闭 Claude 默认提示与可关闭的自动附加内容 |
 | 项目指令、hooks、记忆和后台整理 | 不自动加载用户、项目或本地配置；仅使用 Kite 显式提供的材料与回调 |
-| 上下文压缩与文件检查点 | 关闭 Claude 的自动行为；文件快照由 Kite 负责，长上下文压缩尚未接入 |
+| 上下文压缩与文件检查点 | 关闭 Claude 的自动行为；文件快照与上下文压缩由 Kite 负责，Claude 线程在回合之间重组会话，见 [上下文压缩](harness-主循环.md#上下文压缩) |
 | 工具、技能、命令、子 agent 与插件 | 仅开放宿主明确接入的能力；不继承用户和项目插件 |
 | 后台任务、定时、工作流与自动续跑 | 关闭，不因通知、额度恢复或中断回合自行启动工作 |
 | 外部连接与同步 | 关闭自动 IDE、浏览器、Remote Control、channels、会话上传及云端同步 |
@@ -208,14 +218,18 @@ App 的订阅登录由所选工作机执行原生登录工具，凭据不经过 
 这些接口沿用工作机身份与同账号组网鉴权。弹窗关闭时取消登录，超时十分钟或服务正常关闭时也结束等待。自动续期仍未接入。
 
 
-API 查询读取 kited 进程环境中的 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`DEEPSEEK_API_KEY`；查询 OpenAI、Anthropic 的组织费用还需对应的 `OPENAI_ADMIN_KEY`、`ANTHROPIC_ADMIN_KEY`。这些变量须显式提供给服务进程，默认安装器不复制发起安装的终端密钥。账号读取不代表该 API 已被配置为会话的模型后端。
+API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管账号与设备.md#凭据服务)），每把 Key 一个账号，`id` 为 `api:<凭据ID>`，`identity` 为用户起的名称；每次查询前重新领取；领取失败时无法得知有哪些账号，改为返回一条 `id` 为 `account-api`、状态为 `unavailable` 的账号说明原因。工作机还没加入 Kite 账号时不领取。kited 进程环境中的 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`DEEPSEEK_API_KEY` 与组织管理凭据 `OPENAI_ADMIN_KEY`、`ANTHROPIC_ADMIN_KEY` 另作为本机账号查询，`id` 为 `<供应商>-api`，未设置时不列出。查询 OpenAI、Anthropic 的组织费用需要管理 Key。账号读取不代表该 API 已被配置为会话的模型后端。
 
-额度不由客户端轮询。kited 在内存中保留本机最新的账号快照：首个客户端订阅目录事件流时，若还没有快照就查询一次上游；之后只在显式刷新时查询。会话响应带回的额度按观测时间覆盖对应周期：Claude 取 SDK `rate_limit_event` 中的 5 小时与每周周期，ChatGPT 取订阅响应头中的主要、次要周期与 credits。按模型分开的周额度、ChatGPT 附加额度和 API 费用/余额没有会话来源，保留上次查询结果。快照变化时在目录事件流推送 `model-accounts.changed`（`modelAccounts` 字段），目录首帧 `catalog.snapshot` 也带当前快照，缓存为空时为 `null`。
+额度不由客户端轮询，打开账号页也不查询。kited 在内存中保留本机最新的账号快照：首个客户端订阅目录事件流时，若还没有查询过就查询一次上游；之后只在显式刷新时查询。会话响应带回的额度按观测时间覆盖对应周期；查询结果到达之前，快照只含会话观测到的订阅账号及其周期：Claude 取 SDK `rate_limit_event` 中的 5 小时与每周周期，ChatGPT 取订阅响应头中的主要、次要周期与 credits。按模型分开的周额度、ChatGPT 附加额度和 API 费用/余额没有会话来源，保留上次查询结果。刷新时某个账号暂时查询失败（限流、超时、服务错误等，状态为 `unavailable`），该账号沿用上次查询结果与会话观测，只更新状态与提示；未登录或需要重新授权时不沿用。快照变化时在目录事件流推送 `model-accounts.changed`（`modelAccounts` 字段），目录首帧 `catalog.snapshot` 也带当前快照，缓存为空时为 `null`。
 
 `GET /model-accounts` 返回当前快照，缓存为空时先查询；`POST /model-accounts/refresh` 立即查询上游，进行中的查询会被复用，结果同时经事件流推送。二者都要求工作机身份与同账号访问授权，返回 `{checkedAt, accounts}`，`checkedAt` 是快照中最新数据的观测时间。每个账号包含 `id`、`provider`、`kind`（`subscription` 或 `api`）、`status`、`quotas`，以及可获得的 `identity`、`plan`、`message`。状态为 `ready`、`unconfigured`、`reauthentication` 或 `unavailable`；`ready` 表示凭据已配置或查询成功，不保证供应商开放余额查询。各提供方独立失败，HTTP 200 不代表所有账号均查询成功；查询之后有会话成功时，该账号按会话结果视为可用。响应不包含令牌、API Key 或上游错误正文。
 
-- `quotas` 中的 `remainingPercent` 是周期剩余百分比，`windowMinutes` 是窗口长度，`resetsAt` 是 Unix 秒。窗口缺失表示未知，不能当成零或无限；不同模型的额度分开返回。
+- `quotas` 中的 `label` 是周期名称，`remainingPercent` 是周期剩余百分比，`windowMinutes` 是窗口长度，`resetsAt` 是 Unix 秒。窗口缺失表示未知，不能当成零或无限；只限某个模型或功能的额度分开返回，并以 `model` 标明范围，缺省表示整个账号共用。
+- 订阅的 `plan` 是小写档位名。Claude 取 profile 接口中组织的当前订阅（如 `max 20x`），登录凭据缓存的 `subscriptionType` 升级后不更新，只在 profile 不可用时使用。
+- `usage` 是按天的 token 用量：`days` 为最近 53 周里有用量的日期（`date` 为 `YYYY-MM-DD`，升序）及当天 `tokens`，`lifetimeTokens` 为累计。`scope` 为 `account` 时按天的数字是供应商给出的整个账号在所有设备上的用量，不在 kited 保存：ChatGPT 取 Codex 官方客户端使用的个人统计接口，没有公开文档，格式可能变化，统计有延迟，比它最后一天还新的日子用本机记录的合计；OpenAI、Anthropic 有组织管理凭据时取其按天用量接口（日期按 UTC）。`scope` 为 `machine` 时只含这台工作机的记录。
+- 某天的 `hours` 是本地时间 0–23 时每小时的 token，只来自这台工作机的会话记录，`scope` 为 `account` 时与当天合计可能不一致；没有本机记录的日子省略。上游没有的部分由 kited 在每次查询时扫描本机记录、按小时存入数据库，同一小时取较大值，本地记录被清理后历史仍保留：Claude 扫 Claude Code 会话记录（含 Kite 的 Claude 会话），汇总输入、输出与缓存 token，按天的数字也由此而来；ChatGPT 扫 Kite 自研 harness 的线程日志与 Codex CLI 会话记录。其他 API 账号目前没有用量来源，不返回 `usage`。
 - ChatGPT 的 `credits` 使用供应商的额度单位；`unlimited` 仅在上游明确返回时成立，未返回金额时省略 `value`。
+- Claude 的 `extraUsage` 是额外用量（超出套餐额度后按金额计费）：`enabled` 表示是否开启，`used`、`limit`、`balance` 是按币种小数位换算后的金额，`currency` 为币种；上游没给的项省略。
 - API 的 `cost` 是 UTC 当月到查询时刻的**组织费用**（`value`、`currency`、`from`、`to`），取完所有分页才返回；不是余额，也不是单个 API Key 的费用。普通调用 Key 没有组织费用权限时明确提示，不能推算余额。来源见 [OpenAI Costs](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs) 与 [Anthropic Usage and Cost](https://platform.claude.com/docs/en/manage-claude/usage-cost-api)。
 - DeepSeek 的 `balances` 保留各币种的可用余额 `total`、赠金 `granted`、充值余额 `toppedUp`，不混合人民币和美元；余额不足仍保留供应商实际返回值。来源见 [DeepSeek 查询余额](https://api-docs.deepseek.com/zh-cn/api/get-user-balance/)。
 
@@ -240,8 +254,10 @@ API 查询读取 kited 进程环境中的 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`
 | POST | `/workspaces/:id/operations/:operation` | 调用 agent.start / list / send / resume / stop 或 files.list / read / state / select；修改操作必须带 operationId |
 | GET | `/instances/:id/agent-capabilities` | 模型与思考档位、工具选择及配置生效边界；不发模型请求 |
 | GET / PUT | `/instances/:id/agent-config` | 读取绑定配置及 revision；以 expectedRevision 和完整 agent 配置更新 |
-| GET / POST | `/context-templates` | 列出创建会话、标题及四类通知模板和场景变量；以 `{definition}` 新建创建会话模板 |
+| GET / POST | `/context-templates` | 列出创建会话、标题、上下文压缩及五类通知模板和场景变量；以 `{definition}` 新建创建会话模板 |
 | PUT | `/context-templates/:id` | 以 `{expectedRevision, definition}` 更新模板；不修改已有实例 |
+| PUT | `/context-templates/:id/emblem` | 以 `{emblem}` 保存手改的点阵签名，返回带签名状态的模板；表达式不可用时 400 |
+| POST | `/context-templates/:id/emblem/generate` | `{force}`：为 `true` 时连手改的签名一起重新生成，否则只补缺失或过期的签名；立即返回 `{emblem?, emblemState, emblemError?}`，结果随 `context-templates.changed` 送达；未启用轻任务时 503 |
 | PUT | `/instances/:id/context-template` | 以 `{expectedRevision, templateId, templateRevision}` 为实例绑定模板内容；保留其他配置 |
 | GET / PUT | `/threads/:id/title` | 读取标题与生成进度；以 expectedRevision 手动改名或恢复自动标题 |
 | POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不阻塞主会话控制 |
@@ -258,6 +274,8 @@ API 查询读取 kited 进程环境中的 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`
 | POST | `/threads/:id/interrupt` | 停止会话，返回尚未纳入请求的队列；请求 `{id, inputs?}`，响应 `{returned}` |
 | POST | `/threads/:id/resume` | 继续暂停的线程；可带 operationId 以安全重试 |
 | POST | `/threads/:id/recover` | 确认恢复，不自动执行 |
+| POST | `/threads/:id/compactions` | 手动压缩上下文 `{id, from, through}`，起止为输入 id；校验通过即返回，结果经显示事件送达 |
+| DELETE | `/threads/:id/compactions/:compaction` | 撤销最外层的一次压缩 |
 | POST | `/threads/:id/archive` | 归档线程，保留所属工作区 |
 | GET | `/workspaces/:id/snapshots` | 工作区快照，新的在前 |
 | POST | `/workspaces/:id/restore` | 恢复文件到快照 `{commit}` |
@@ -301,7 +319,8 @@ kited 在启动、加入账号后和每 5 分钟对照一次项目登记表。�
 2. 检查发给模型的实际请求，不能只看 SDK 消息流：首轮、工具调用后与原生恢复只能带入 Kite 模板明确提供的上下文，不自动附加 Claude 的日期、环境、模型说明、技能、项目指令或自动记忆。单独验证高用量时的提醒，区分客户端与服务端注入。人发的消息仍带 `origin: human`，宿主工具和回调可用。
 3. 再发一条消息：进程重新 resume，记下从发消息到进程就绪、到首条回复各用多久。
 4. 归档：工作树被回收，线程历史仍可查看。
-5. 核对新建和恢复后的工具集合；默认是 read / patch / shell 和五个 agent 操作工具，项目 `.mcp.json` 不自动增加能力。撤回操作或插件授权后执行被拒绝，新增插件授权在下次空闲后启动进程时生效。验证排队取消、停止退回、模型及上下文更新，以及异常退出后的确认恢复。
+5. 核对新建和恢复后的工具集合；默认是 read / patch / shell 和五个 agent 操作工具，项目 `.mcp.json` 不自动增加能力。撤回操作或插件授权后执行被拒绝，新增插件授权在下一回合开始前重启进程后生效。验证排队取消、停止退回、模型及上下文更新，以及异常退出后的确认恢复。
+6. Claude 的可选模型与上下文窗口写在 [共享模型目录](../shared/agent-models.json)，运行时不向 CLI 查询：用 SDK 的 `supportedModels()` 核对各档位的模型名与思考强度，用 `getContextUsage({ detail: 'summary' })` 核对窗口（不发模型请求），有变化时手动更新。
 
 ## 当前能力边界
 

@@ -8,9 +8,9 @@ import { localTools } from '../execution/local-tools.ts';
 import type { SecretProvider } from '../secrets.ts';
 import { processGroupAlive } from '../execution/command.ts';
 import { commandEnvironment, workspacePolicy, type ExecutionPolicy } from '../execution/sandbox.ts';
-import type { HarnessRequest, RequestSettings, HarnessOptions, ThreadRunner, Tool } from './types.ts';
+import type { HarnessRequest, JournalEvent, JournalRecord, RequestSettings, HarnessOptions, ThreadRunner, Tool } from './types.ts';
 
-export interface ThreadHostOptions extends Pick<HarnessOptions, 'onEvent' | 'afterTools' | 'afterTurn' | 'beforeStop' | 'startPaused'> {
+export interface ThreadHostOptions extends Pick<HarnessOptions, 'onEvent' | 'afterTools' | 'afterTurn' | 'beforeStop' | 'startPaused' | 'compactionFiles'> {
   cwd: string;
   threadDir: string;
   diffDir?: string;
@@ -49,6 +49,32 @@ function save(path: string, data: unknown): void {
   finally { rmSync(temp, { force: true }); }
   const directory = openSync(dirname(path), 'r');
   try { fsyncSync(directory); } finally { closeSync(directory); }
+}
+
+/** 宿主未打开时追加记录（跨后端导入）；沿用宿主的锁，不能与运行中的宿主并发写。 */
+export function appendThreadJournal(threadDir: string, event: JournalEvent): JournalRecord {
+  const release = lockThread(threadDir);
+  try {
+    const journal = new FileJournal(join(threadDir, 'journal.jsonl'));
+    try { return journal.append(event); } finally { journal.close(); }
+  } finally { release(); }
+}
+
+/** 宿主未打开时在 journal 上做一段工作（Claude 线程的压缩）；期间持有宿主的锁。 */
+export async function withThreadJournal<T>(threadDir: string, work: (journal: FileJournal) => Promise<T>): Promise<T> {
+  const release = lockThread(threadDir);
+  try {
+    const journal = new FileJournal(join(threadDir, 'journal.jsonl'));
+    try { return await work(journal); } finally { journal.close(); }
+  } finally { release(); }
+}
+
+function lockThread(threadDir: string): () => void {
+  mkdirSync(threadDir, { recursive: true, mode: 0o700 });
+  const lock = join(threadDir, 'lock');
+  try { mkdirSync(lock, { mode: 0o700 }); }
+  catch { throw new Error(`会话已被占用，或上次异常退出留下了锁：${lock}。确认旧进程和命令均已停止后才能删除该锁。`); }
+  return () => rmSync(lock, { recursive: true });
 }
 
 export async function openThreadHost(options: ThreadHostOptions): Promise<ThreadHost> {
@@ -90,6 +116,7 @@ export async function openThreadHost(options: ThreadHostOptions): Promise<Thread
       onEvent: options.onEvent,
       startPaused: options.startPaused,
       afterTools: options.afterTools, afterTurn: options.afterTurn, beforeStop: options.beforeStop,
+      compactionFiles: options.compactionFiles,
     });
     let closing: Promise<void> | undefined;
     return {

@@ -1,0 +1,5 @@
+{
+  "name": "kite-compaction-spike",
+  "version": "0.1.0",
+  "description": "实验：接管 session.compact，保留首尾两轮原消息，中间一轮换成分叉写的摘要"
+}

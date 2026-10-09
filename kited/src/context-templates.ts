@@ -10,8 +10,9 @@ import type { Store } from './store.ts';
 export interface ContextTemplate { definition: ContextDefinition; revision: string }
 export interface ContextTemplateSelection { id: string; revision: string }
 const editableScenes = [
-  'thread.create', 'thread.title', 'thread.configuration_changed', 'thread.context_updated',
-  'thread.execution_permissions_changed', 'thread.plugin_tools_changed',
+  'thread.create', 'thread.title', 'thread.compact', 'thread.configuration_changed', 'thread.context_updated',
+  'thread.execution_permissions_changed', 'thread.plugin_tools_changed', 'thread.file_changes',
+  'template.emblem',
 ] as const;
 
 export function contextTemplateSelection(value: unknown): ContextTemplateSelection | undefined {

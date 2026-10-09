@@ -21,6 +21,8 @@ export interface ModelItem {
   id: string;
   /** 原生完整条目，包括 reasoning 等不用于界面显示的字段。 */
   raw: JsonObject;
+  /** raw 的协议；缺省为当前模型适配器自己的格式，跨后端导入的条目原样保留来源格式，由适配器转换。 */
+  format?: 'anthropic';
   call?: ToolCall;
 }
 
@@ -79,6 +81,10 @@ export interface HarnessRequest {
   instructions: string | ContextSource;
   /** 本次基础上下文变化时使用的通知模板；独立宿主未指定时使用内置定义。 */
   contextUpdateTemplate?: ContextDefinition;
+  /** 压缩指令与摘要包装（thread.compact）及净文件变化通知（thread.file_changes）；未指定时使用内置定义。 */
+  compactionTemplates?: { compact?: ContextDefinition; fileChanges?: ContextDefinition };
+  /** 估算用量达到该值时先自动压缩再请求；不提供时不自动压缩。 */
+  autoCompactTokens?: number;
   settings: RequestSettings;
   notifications?: ThreadNotification[];
 }
@@ -147,7 +153,18 @@ export type JournalEvent =
   | { type: 'tool.finished'; turnId: string; requestId: string; callId: string; result: ToolResult }
   | { type: 'turn.feedback'; turnId: string; text: string }
   | { type: 'turn.finished'; turnId: string; outcome: Outcome; recovery?: Recovery }
-  | { type: 'recovery.confirmed' };
+  | { type: 'recovery.confirmed' }
+  /** 切换后端时导入另一后端在本段产生的上下文；through 指向来源原生记录中已导入的最后位置。 */
+  | { type: 'context.imported'; id: string; source: { runtime: 'claude'; through: string }; items: ContextItem[];
+      /** 来源后端已交接的通知游标与当前基础上下文，避免切换后重复投递。 */
+      notificationCursor: number; instructions?: string }
+  /**
+   * 用 items 替换历史中 seq 位于 [from, until) 的段；until 缺省表示到这条记录为止的全部历史。
+   * 段指请求、反馈与导入，以产生它的记录 seq 标识。summary 是模型给出的摘要正文，供界面显示。
+   */
+  | { type: 'context.compacted'; id: string; range: { from: number; until?: number }; automatic: boolean;
+      items: ContextItem[]; summary: string; usage?: JsonObject }
+  | { type: 'context.compaction.reverted'; id: string };
 
 export type JournalRecord = JournalEvent & { version: 1; seq: number; at: number };
 
@@ -163,6 +180,8 @@ export type Phase = 'idle' | 'running' | 'stopping' | 'finishing';
 export interface ThreadState {
   phase: Phase;
   busy: boolean;
+  /** 正在生成压缩摘要。 */
+  compacting?: boolean;
   waitingForResume: boolean;
   recovery?: Recovery;
   turnId?: string;
@@ -188,7 +207,12 @@ export interface HarnessOptions {
   afterTurn?(turnId: string, outcome: Outcome): Promise<void>;
   /** 返回非空反馈表示继续；计入同一模型请求预算。 */
   beforeStop?(turnId: string): Promise<string | undefined>;
+  /** 压缩范围起止两个时刻（毫秒）之间工作区的净文件变化，作为通知正文的变量；没有变化或无从比较时返回 undefined。 */
+  compactionFiles?(range: { from: number; to: number }, signal: AbortSignal): Promise<string | undefined>;
 }
+
+/** 手动压缩时 from、through 是范围首尾两条输入的 id；自动压缩覆盖全部已有历史。 */
+export type CompactionRequest = { id: string } & ({ from: string; through: string } | { automatic: true });
 
 /** 驱动一个 Thread 的执行实例；实例关闭后，同一 Thread 仍可从原记录恢复。 */
 export interface ThreadRunner {
@@ -201,6 +225,10 @@ export interface ThreadRunner {
   resume(): Promise<void>;
   /** 宿主必须先确认残留进程已停止；只解除恢复阻塞，不自动执行。 */
   confirmRecovery(): Promise<void>;
+  /** 校验范围并开始压缩后返回；结果以记录送达，失败以 error 事件报告。 */
+  compact(request: CompactionRequest): Promise<void>;
+  /** 撤销最外层的一次压缩。 */
+  revertCompaction(id: string): Promise<void>;
   shutdown(): Promise<void>;
   /** 等到当前推进（含排队回合及收尾）停下；不触发新工作。 */
   settled(): Promise<void>;

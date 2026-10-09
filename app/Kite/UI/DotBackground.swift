@@ -1,27 +1,39 @@
 import SwiftUI
 
 extension EnvironmentValues {
-    /// 容器给出窗口焦点；单独显示的空状态和单页默认获得焦点。
+    /// 焦点在窗口区：宽屏点按窗口区以外的侧栏时为 false；移动端拉开侧边栏或底栏时为 false。
     @Entry var windowDotsFocused = true
+    /// 所在窗口选择了点阵，由 windowDots 给出。
+    @Entry var windowUsesDots = false
 }
 
-/// 从当前视图树汇总，窗口失焦、收起或移除后自动归还 App 点阵。
+/// 标题栏底下另画点阵的范围（窗口坐标），窗口的取景框在这里挖空，同一格不画两遍。
+struct ScrollEdgeDotsArea: PreferenceKey {
+    static let defaultValue: [CGRect] = []
+
+    static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) {
+        value += nextValue()
+    }
+}
+
+/// 有开了点阵的窗口在焦点区里画着静息的点；从视图树汇总，窗口失焦、移除后自动归还给 App 背景。
 struct WindowDotsActive: PreferenceKey {
     static let defaultValue = false
 
     static func reduce(value: inout Bool, nextValue: () -> Bool) {
-        let next = nextValue()
-        value = value || next
+        value = value || nextValue()
     }
 }
 
 extension View {
-    /// 窗口选择使用点阵；图案与事件通过内部的 dotStage 环境发出，也可传入已有舞台。
-    func windowDots(_ enabled: Bool = true, stage: DotStage? = nil) -> some View {
-        modifier(WindowDotBackground(enabled: enabled, suppliedStage: stage))
+    /// 窗口选择使用点阵：卡片上开一个取景框，画出所在 App 窗口那一套点阵落在卡片里的部分。
+    /// 焦点不在窗口区时不画静息的点，图案照常显示。
+    func windowDots(_ enabled: Bool = true) -> some View {
+        modifier(WindowDotBackground(enabled: enabled))
     }
 
-    /// 每个 App 窗口各自持有背景舞台，并响应其中聚焦窗口的点阵占用。
+    /// 每个 App 窗口持有唯一的点阵舞台，背景是它的取景框。焦点在窗口区、有窗口画着静息的点时，背景让出静息的点，
+    /// 图案、波和轨迹照常画；焦点回到侧栏时背景接回来。
     func appDotBackground() -> some View {
         modifier(AppDotBackground())
     }
@@ -29,18 +41,35 @@ extension View {
 
 private struct WindowDotBackground: ViewModifier {
     let enabled: Bool
-    let suppliedStage: DotStage?
-    @State private var stage = DotStage()
-    @Environment(\.dotStage) private var inheritedStage
     @Environment(\.windowDotsFocused) private var focused
+    @State private var edges: [CGRect] = []
 
     func body(content: Content) -> some View {
         content
             .background {
-                if enabled && focused { DotCanvas() }
+                if enabled { DotCanvas(drawsRest: focused, excluding: edges) }
             }
-            .environment(\.dotStage, enabled ? suppliedStage ?? stage : inheritedStage)
+            .onPreferenceChange(ScrollEdgeDotsArea.self) { edges = $0 }
+            .environment(\.windowUsesDots, enabled)
             .preference(key: WindowDotsActive.self, value: enabled && focused)
+    }
+}
+
+/// 宽屏标题栏底下再开一个取景框。窗口里有滚动区时，滚动软边压在窗口点阵上面把点阵一起糊掉；
+/// 这里画在软边之上、标题栏控件之下，标题栏和窗口的点阵连成一片，窗口的取景框在这块挖空。
+/// 窄屏的软边只糊标题栏下面那一截，不补画。窗口没选点阵时什么也不画。
+struct ScrollEdgeDots: View {
+    @Environment(\.windowUsesDots) private var usesDots
+    @Environment(\.windowDotsFocused) private var focused
+    @Environment(\.workspacePresentation) private var presentation
+
+    var body: some View {
+        if usesDots && presentation != .compact {
+            DotCanvas(drawsRest: focused)
+                .background {
+                    GeometryReader { Color.clear.preference(key: ScrollEdgeDotsArea.self, value: [$0.frame(in: .global)]) }
+                }
+        }
     }
 }
 
@@ -53,7 +82,7 @@ private struct AppDotBackground: ViewModifier {
             .background {
                 ZStack {
                     Theme.background
-                    if !occupied { DotCanvas() }
+                    DotCanvas(drawsRest: !occupied)
                 }
                 .ignoresSafeArea()
             }

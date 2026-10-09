@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// 内容区没有窗口时的画板。图案由当前画板持有和绘制，不写入窗口共享的背景点阵：
-/// - 聚焦时接管点阵，图形画在卡片底色上方；打开窗口后画板退出。
+/// 内容区没有窗口时的画板。场景图形摆在所在 App 窗口的点阵上，画板离场或消失时逐格收回：
+/// - 图形画在卡片底色上方；打开窗口后画板退出。
 /// - 场景图形用风筝和线讲连接状态：人握着线，风筝在远处飞。标题、说明和操作按钮直接放在上面。
 /// - 指针划过（触屏是手指拖过）空白处留下一道慢慢退去的轨迹。
 struct EmptyStage: View {
@@ -11,7 +11,7 @@ struct EmptyStage: View {
     var error: String?
     var actions: [StageAction] = []
 
-    @State private var stage = DotStage()
+    @Environment(\.dotStage) private var stage
     @Environment(\.dotCarrier) private var carrier
     @Environment(\.self) private var environment
     @Environment(\.openSidebar) private var openSidebar
@@ -22,7 +22,7 @@ struct EmptyStage: View {
     @State private var sizeIndex: Int?
     @State private var lastTrace: CGPoint?
 
-    private static let sceneSlot = "stage.scene"
+    @State private var sceneSlot = "stage.scene.\(UUID().uuidString)"
     /// 场景切换（如连接成功）时发出的慢波，与初始配置完成一步相同。
     private static let wavePace = 0.24
 
@@ -54,7 +54,7 @@ struct EmptyStage: View {
                             .frame(width: figureSize.width, height: figureSize.height)
                             // 在会移动的卡片里时用卡片坐标，图形的位置由点阵按卡片每一帧的位置换算
                             .onGeometryChange(for: CGRect.self) {
-                                $0.frame(in: carrier == nil ? .global : .named(DotCarrier.space))
+                                $0.frame(in: DotCarrier.coordinateSpace(carrier))
                             } action: {
                                 figureArea = $0
                                 refresh()
@@ -73,7 +73,8 @@ struct EmptyStage: View {
             }
         }
         .stageCard(usesDots: true)
-        .environment(\.dotStage, stage)
+        .onDisappear { stage?.show(nil, in: .zero, slot: sceneSlot) }
+        .preference(key: DotSlots.self, value: [sceneSlot])
         // 容器给出侧边栏入口时（iPhone），左上角放按钮，位置同窗口标题栏
         .overlay(alignment: .topLeading) {
             if let openSidebar {
@@ -91,8 +92,8 @@ struct EmptyStage: View {
         .onChange(of: scene) { old, new in
             refresh()
             // 连上了：从刚才的图形发出一道慢波
-            if old == .connecting, new != .unreachable, let frame = stage.figureFrame(Self.sceneSlot) {
-                stage.emitWave(from: frame, pace: Self.wavePace)
+            if old == .connecting, new != .unreachable, let frame = stage?.figureFrame(sceneSlot) {
+                stage?.emitWave(from: frame, pace: Self.wavePace)
             }
         }
     }
@@ -146,9 +147,9 @@ struct EmptyStage: View {
     /// 按当前范围摆场景图形；同一图形在同一处时 DotStage 什么也不做。
     private func refresh() {
         if let figureArea, let figure = sceneFigure {
-            stage.show(figure, in: figureArea, breathing: scene == .unreachable, slot: Self.sceneSlot, carrier: carrier)
+            stage?.show(figure, in: figureArea, breathing: scene == .unreachable, slot: sceneSlot, carrier: carrier)
         } else {
-            stage.show(nil, in: .zero, slot: Self.sceneSlot)
+            stage?.show(nil, in: .zero, slot: sceneSlot)
         }
     }
 
@@ -162,7 +163,7 @@ struct EmptyStage: View {
         let steps = max(1, Int((hypot(point.x - from.x, point.y - from.y) / (DotMetrics.pitch / 2)).rounded(.up)))
         for step in 1...steps {
             let t = CGFloat(step) / CGFloat(steps)
-            stage.trace(at: CGPoint(x: from.x + (point.x - from.x) * t, y: from.y + (point.y - from.y) * t))
+            stage?.trace(at: CGPoint(x: from.x + (point.x - from.x) * t, y: from.y + (point.y - from.y) * t))
         }
         lastTrace = point
     }

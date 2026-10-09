@@ -1,14 +1,13 @@
 #if os(macOS)
 import SwiftUI
 
-/// Mac 使用 SwiftUI 原生菜单，并由系统把两个按钮的玻璃合成一组。
+/// Mac 的模型入口打开分段选择弹窗，更多操作沿用原生菜单。
 struct MacThreadHeaderMenus: View {
     let modelTitle: String
     let modelName: String?
-    let modelIDs: [String]
     let modelEnabled: Bool
     let commands: [[ThreadHeaderCommand]]
-    let onSelectModel: (String) -> Void
+    let onOpenModel: () -> Void
     @Environment(\.paneOverflowActions) private var windowActions
     var body: some View {
         PaneHeaderButtonGroup {
@@ -18,21 +17,7 @@ struct MacThreadHeaderMenus: View {
     }
 
     private var modelMenu: some View {
-        Menu {
-            Picker("模型", selection: Binding(
-                get: { modelName },
-                set: { name in
-                    guard modelEnabled, let name else { return }
-                    onSelectModel(name)
-                }
-            )) {
-                ForEach(modelIDs, id: \.self) { name in
-                    Text(name).tag(Optional(name))
-                }
-            }
-            .pickerStyle(.inline)
-            .labelsHidden()
-        } label: {
+        Button(action: onOpenModel) {
             PaneHeaderButtonLabel(modelTitle)
         }
         .disabled(!modelEnabled)

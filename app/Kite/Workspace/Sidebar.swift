@@ -69,9 +69,7 @@ struct WorkspaceRow<Interaction: View>: View {
                 .menuIndicator(.hidden)
                 .buttonStyle(SidebarButtonStyle(foreground: current ? highlight : tint,
                                                size: InputMode.current.workspaceRowHeight))
-                .opacity(current || InputMode.current.revealsControls(hovered: hovered) ? 1 : 0)
-                .allowsHitTesting(current || InputMode.current.revealsControls(hovered: hovered))
-                .accessibilityHidden(!current && !InputMode.current.revealsControls(hovered: hovered))
+                .modifier(SidebarRevealedControl(shown: current || InputMode.current.revealsControls(hovered: hovered)))
             }
         }
         .help(workspace.remote.map { "\($0.machine.name) · \($0.workspace.cwd)" } ?? workspace.title)
@@ -124,6 +122,35 @@ private struct SidebarIconTint: ViewModifier {
 
     func body(content: Content) -> some View {
         content.foregroundStyle(hovered && allowsHover ? highlight : foreground)
+    }
+}
+
+/// 行尾操作只在悬停或触屏时出现，隐藏时同时让出点击与辅助功能。
+private struct SidebarRevealedControl: ViewModifier {
+    let shown: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(shown ? 1 : 0)
+            .allowsHitTesting(shown)
+            .accessibilityHidden(!shown)
+    }
+}
+
+/// 一级行末尾展开或收起树状子项。
+private struct SidebarDisclosureButton: View {
+    let title: String
+    let noun: String
+    @Binding var isExpanded: Bool
+    let foreground: Color
+
+    var body: some View {
+        Button { isExpanded.toggle() } label: {
+            TablerIcon(isExpanded ? .tablerChevronDown : .tablerChevronRight)
+        }
+        .buttonStyle(SidebarButtonStyle(foreground: foreground, size: InputMode.current.workspaceRowHeight))
+        .help(isExpanded ? "收起\(noun)" : "展开\(noun)")
+        .accessibilityLabel("\(isExpanded ? "收起" : "展开")\(title)")
     }
 }
 
@@ -275,8 +302,6 @@ private struct WorkspaceProjectSection<Row: View>: View {
         let checkouts = group.checkouts
         let current = InputMode.current.isTouch ? nil : model.current?.id
         let selected = model.selectedProjectID == group.id || group.workspaces.contains { $0.id == current }
-        let textInset: CGFloat = Metrics.sidebarItemInset + 8 + InputMode.current.labelExtent
-        let treeInset: CGFloat = Metrics.sidebarItemInset + InputMode.current.labelExtent / 2
         SidebarStickySection(headerHeight: InputMode.current.rowHeight) {
             SidebarListRow(selected: selected) { foreground, hovered in
                 Button {
@@ -329,16 +354,9 @@ private struct WorkspaceProjectSection<Row: View>: View {
                 .buttonStyle(SidebarButtonStyle(foreground: foreground, size: InputMode.current.isTouch ? Metrics.paneButton : InputMode.current.workspaceRowHeight))
                 .help("创建工作区")
                 .accessibilityLabel("在\(group.title ?? "项目")中创建工作区")
-                .opacity(InputMode.current.revealsControls(hovered: hovered) ? 1 : 0)
-                .allowsHitTesting(InputMode.current.revealsControls(hovered: hovered))
-                .accessibilityHidden(!InputMode.current.revealsControls(hovered: hovered))
+                .modifier(SidebarRevealedControl(shown: InputMode.current.revealsControls(hovered: hovered)))
                 #if os(macOS)
-                Button { isExpanded.toggle() } label: {
-                    TablerIcon(isExpanded ? .tablerChevronDown : .tablerChevronRight)
-                }
-                .buttonStyle(SidebarButtonStyle(foreground: foreground, size: InputMode.current.workspaceRowHeight))
-                .help(isExpanded ? "收起项目" : "展开项目")
-                .accessibilityLabel("\(isExpanded ? "收起" : "展开")\(group.title ?? "项目")")
+                SidebarDisclosureButton(title: group.title ?? "项目", noun: "项目", isExpanded: $isExpanded, foreground: foreground)
                 #endif
             }
         } content: {
@@ -381,9 +399,7 @@ private struct WorkspaceProjectSection<Row: View>: View {
                                     .buttonStyle(SidebarButtonStyle(foreground: checkoutSelected ? highlight : tint, size: InputMode.current.workspaceRowHeight))
                                     .help("创建工作区")
                                     .accessibilityLabel("在此检出中创建工作区")
-                                    .opacity(hoveredCheckoutID == checkout.id ? 1 : 0)
-                                    .allowsHitTesting(hoveredCheckoutID == checkout.id)
-                                    .accessibilityHidden(hoveredCheckoutID != checkout.id)
+                                    .modifier(SidebarRevealedControl(shown: hoveredCheckoutID == checkout.id))
                                     #endif
                                 }
                                 .padding(.leading, Metrics.sidebarItemInset)
@@ -397,9 +413,8 @@ private struct WorkspaceProjectSection<Row: View>: View {
                                 .padding(.top, 8)
                             }
                         } content: {
-                            SidebarWorkspaceRows(workspaces: workspaces, selectedIndex: selectedIndex,
-                                                 hasCheckout: checkouts.count > 1, color: treeColor,
-                                                 textInset: textInset, treeInset: treeInset, row: row)
+                            SidebarTreeRows(items: workspaces, selectedIndex: selectedIndex,
+                                            hasCheckout: checkouts.count > 1, color: treeColor, row: row)
                         }
                         .zIndex(checkoutSelected ? 1 : 0)
                     }
@@ -407,7 +422,7 @@ private struct WorkspaceProjectSection<Row: View>: View {
                 .background(alignment: .leading) {
                     if checkouts.count > 1 {
                         Rectangle().fill(checkoutLinkColor).frame(width: 1)
-                            .padding(.leading, treeInset - 0.5)
+                            .padding(.leading, SidebarTree.treeInset - 0.5)
                             // 在末行弯折的起点结束，避免直线穿过弯折露出尾巴。
                             .padding(.bottom, InputMode.current.workspaceRowHeight / 2 + 10)
                             .allowsHitTesting(false)
@@ -430,36 +445,41 @@ private struct WorkspaceProjectSection<Row: View>: View {
     }
 }
 
+/// 树状子项的文字起点与树干位置，与一级行的图标列对齐。
+private enum SidebarTree {
+    static var textInset: CGFloat { Metrics.sidebarItemInset + 8 + InputMode.current.labelExtent }
+    static var treeInset: CGFloat { Metrics.sidebarItemInset + InputMode.current.labelExtent / 2 }
+}
+
+/// 一级行下的树状子项，须放在 SidebarStickySection 的内容里，所属标题取最近一层分区。
 /// 普通行共用裁切，选中行独立吸顶；占位保留列表高度，连接线随选中行置于最上层。
-private struct SidebarWorkspaceRows<Row: View>: View {
-    let workspaces: [WorkArea]
+private struct SidebarTreeRows<Item: Identifiable, Row: View>: View {
+    let items: [Item]
     let selectedIndex: Int?
-    let hasCheckout: Bool
+    var hasCheckout = false
     let color: Color
-    let textInset: CGFloat
-    let treeInset: CGFloat
-    @ViewBuilder let row: (WorkArea) -> Row
+    @ViewBuilder let row: (Item) -> Row
     @Environment(\.sidebarStickyRegions) private var regions
 
     private var selectedRegion: SidebarStickyRegion? {
-        guard let selectedIndex, let checkout = regions.last else { return nil }
+        guard let selectedIndex, let parent = regions.last else { return nil }
         let rowHeight = InputMode.current.workspaceRowHeight
-        return SidebarStickyRegion(space: checkout.space,
-                                   start: checkout.height + CGFloat(selectedIndex) * rowHeight,
+        return SidebarStickyRegion(space: parent.space,
+                                   start: parent.height + CGFloat(selectedIndex) * rowHeight,
                                    height: rowHeight,
-                                   topInset: InputMode.current.rowHeight + checkout.height)
+                                   topInset: parent.topInset + parent.height)
     }
 
     var body: some View {
         let rowHeight = InputMode.current.workspaceRowHeight
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(workspaces.enumerated()), id: \.element.id) { index, workspace in
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 if index == selectedIndex {
                     Color.clear.frame(height: rowHeight)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
                 } else {
-                    connectedRow(workspace, index: index, selected: false)
+                    connectedRow(item, index: index, selected: false)
                 }
             }
         }
@@ -467,7 +487,7 @@ private struct SidebarWorkspaceRows<Row: View>: View {
                                       additionalRegions: selectedRegion.map { [$0] } ?? []))
         .overlay(alignment: .topLeading) {
             if let selectedIndex, let selectedRegion {
-                connectedRow(workspaces[selectedIndex], index: selectedIndex, selected: true)
+                connectedRow(items[selectedIndex], index: selectedIndex, selected: true)
                     .modifier(SidebarStickyHeader(region: selectedRegion,
                                                   topOverflow: CGFloat(selectedIndex + 1) * rowHeight))
                     .padding(.top, CGFloat(selectedIndex) * rowHeight)
@@ -475,22 +495,22 @@ private struct SidebarWorkspaceRows<Row: View>: View {
         }
     }
 
-    private func connectedRow(_ workspace: WorkArea, index: Int, selected: Bool) -> some View {
-        row(workspace)
-            .padding(.leading, textInset)
+    private func connectedRow(_ item: Item, index: Int, selected: Bool) -> some View {
+        row(item)
+            .padding(.leading, SidebarTree.textInset)
             .background(alignment: .leading) {
-                SidebarWorkspaceLink(index: index, hasCheckout: hasCheckout,
-                                     checkoutSelected: selectedIndex != nil,
-                                     selected: selected, color: color)
-                    .frame(width: textInset - treeInset + 6)
-                    .padding(.leading, treeInset)
+                SidebarTreeLink(index: index, hasCheckout: hasCheckout,
+                                checkoutSelected: selectedIndex != nil,
+                                selected: selected, color: color)
+                    .frame(width: SidebarTree.textInset - SidebarTree.treeInset + 6)
+                    .padding(.leading, SidebarTree.treeInset)
                     .allowsHitTesting(false)
             }
     }
 }
 
 /// 每行直接连接所属标题，固定后缩短到吸顶标题；整条连接随该行一起参与层叠与裁切。
-private struct SidebarWorkspaceLink: View {
+private struct SidebarTreeLink: View {
     let index: Int
     let hasCheckout: Bool
     let checkoutSelected: Bool
@@ -871,7 +891,7 @@ private struct DeviceStatusIcon: View {
     }
 }
 
-/// 每台工作机下并列账号、文件，复用空间的行样式与树枝。
+/// 每台工作机下并列账号、文件，与空间共用吸顶分区和树状子项。
 private struct DeviceSidebar: View {
     var onSelect: () -> Void
     @Environment(AppModel.self) private var model
@@ -900,15 +920,13 @@ private struct DeviceSidebar: View {
                 let connection = model.connections.values.first { $0.deviceID == device.id }
                 let selected = connection.map { model.accountWorker?.id == $0.id } ?? false
                 let status = DeviceStatus(device: device, connection: connection)
-                VStack(spacing: 0) {
+                let isExpanded = expanded(device.id)
+                SidebarStickySection(headerHeight: InputMode.current.rowHeight) {
                     SidebarListRow(selected: selected) { foreground, hovered in
                         DeviceStatusIcon(device: device, connection: connection)
                             .frame(width: InputMode.current.labelExtent)
                         if connection != nil {
-                            Button {
-                                if collapsed.contains(device.id) { collapsed.remove(device.id) }
-                                else { collapsed.insert(device.id) }
-                            } label: {
+                            Button { isExpanded.wrappedValue.toggle() } label: {
                                 SidebarListLabel(title: device.name, selected: selected).padding(.leading, 8)
                             }
                             .buttonStyle(SidebarButtonStyle(foreground: foreground))
@@ -923,24 +941,15 @@ private struct DeviceSidebar: View {
                             .help("删除设备")
                             .accessibilityLabel("删除\(device.name)")
                             .disabled(removing.contains(device.id))
-                            .opacity(InputMode.current.revealsControls(hovered: hovered) ? 1 : 0)
-                            .allowsHitTesting(InputMode.current.revealsControls(hovered: hovered))
-                            .accessibilityHidden(!InputMode.current.revealsControls(hovered: hovered))
+                            .modifier(SidebarRevealedControl(shown: InputMode.current.revealsControls(hovered: hovered)))
                         }
                         if connection != nil {
-                            Button {
-                                if collapsed.contains(device.id) { collapsed.remove(device.id) }
-                                else { collapsed.insert(device.id) }
-                            } label: {
-                                TablerIcon(collapsed.contains(device.id) ? .tablerChevronRight : .tablerChevronDown)
-                            }
-                            .buttonStyle(SidebarButtonStyle(foreground: foreground, size: InputMode.current.workspaceRowHeight))
-                            .help(collapsed.contains(device.id) ? "展开设备" : "收起设备")
-                            .accessibilityLabel("\(collapsed.contains(device.id) ? "展开" : "收起")\(device.name)")
+                            SidebarDisclosureButton(title: device.name, noun: "设备", isExpanded: isExpanded, foreground: foreground)
                         }
                     }
-                    if let connection, !collapsed.contains(device.id) {
-                        pages(connection, color: status.tint.mix(with: Theme.background, by: 0.8))
+                } content: {
+                    if let connection, isExpanded.wrappedValue {
+                        pages(connection, tint: status.tint)
                     }
                 }
                 .environment(\.sidebarProjectTint, status.tint)
@@ -965,13 +974,22 @@ private struct DeviceSidebar: View {
         }
     }
 
-    private func pages(_ connection: WorkerConnection, color: Color) -> some View {
-        let textInset = Metrics.sidebarItemInset + 8 + InputMode.current.labelExtent
-        let treeInset = Metrics.sidebarItemInset + InputMode.current.labelExtent / 2
-        return VStack(spacing: 0) {
-            ForEach(Array([DrivePage.accounts, .files].enumerated()), id: \.element) { index, page in
-                let selected = model.drivePage == page && model.accountWorker?.id == connection.id
-                SidebarTreeRow(selected: selected) { _ in
+    private func expanded(_ id: String) -> Binding<Bool> {
+        Binding {
+            !collapsed.contains(id)
+        } set: { expanded in
+            if expanded { collapsed.remove(id) } else { collapsed.insert(id) }
+        }
+    }
+
+    private func pages(_ connection: WorkerConnection, tint: Color) -> some View {
+        let current = model.accountWorker?.id == connection.id
+        return SidebarTreeRows(items: DrivePage.allCases,
+                               selectedIndex: current ? DrivePage.allCases.firstIndex(of: model.drivePage) : nil,
+                               color: tint.mix(with: Theme.background, by: 0.8)) { page in
+            let selected = current && model.drivePage == page
+            SidebarTreeRow(selected: selected) { hovered in
+                HStack(spacing: 0) {
                     Button {
                         model.accountMachineID = connection.id
                         model.drivePage = page
@@ -987,18 +1005,28 @@ private struct DeviceSidebar: View {
                     }
                     .buttonStyle(.plain)
                     .clickPointer()
-                }
-                .disabled(!page.available)
-                .padding(.leading, textInset)
-                .background(alignment: .leading) {
-                    SidebarWorkspaceLink(index: index, hasCheckout: false, checkoutSelected: false,
-                                         selected: selected, color: color)
-                        .frame(width: textInset - treeInset + 6)
-                        .padding(.leading, treeInset)
-                        .allowsHitTesting(false)
+                    if page == .accounts {
+                        refreshAccounts(connection, foreground: tint)
+                            .modifier(SidebarRevealedControl(shown: selected || connection.readingModelAccounts
+                                                             || InputMode.current.revealsControls(hovered: hovered)))
+                    }
                 }
             }
+            .disabled(!page.available)
         }
+    }
+
+    /// 工作机一次查询自己的全部订阅与 API 账号，结果经目录事件推回。
+    private func refreshAccounts(_ connection: WorkerConnection, foreground: Color) -> some View {
+        Button {
+            Task { await model.refreshModelAccounts(connection) }
+        } label: {
+            if connection.readingModelAccounts { CardSpinner() } else { TablerIcon(.tablerRefresh, size: 14) }
+        }
+        .buttonStyle(SidebarButtonStyle(foreground: foreground, size: InputMode.current.isTouch ? Metrics.paneButton : InputMode.current.workspaceRowHeight))
+        .disabled(!connection.connected || connection.readingModelAccounts)
+        .help("刷新这台工作机所有账号的额度")
+        .accessibilityLabel("刷新\(connection.machine.name)的账号额度")
     }
 }
 

@@ -60,6 +60,24 @@ export const agentConfigurationContextDefinition: ContextDefinition = {
   }],
 };
 
+export const fileChangesContextDefinition: ContextDefinition = {
+  version: 2, id: 'kite.file-changes', title: '会话中文件变化', scene: 'thread.file_changes',
+  blocks: [{ type: 'paragraph', id: 'changes', title: '净变化', parts: [
+    { type: 'text', text: '在被压缩的那段对话期间，工作区文件有以下净变化（' },
+    { type: 'variable', name: 'files.origin' },
+    { type: 'text', text: '）：\n' },
+    { type: 'variable', name: 'files.changes' },
+    { type: 'text', text: '\n这里只列出文件与增减行数；需要具体内容时重新读取文件。' },
+  ] }],
+};
+
+export function fileChangesContext(changes: string, origin: string, definition: ContextDefinition = fileChangesContextDefinition): ContextSource {
+  if (definition.scene !== 'thread.file_changes') throw new Error('文件变化通知须使用 thread.file_changes 场景');
+  return { definition, bindings: {
+    'files.changes': { text: changes }, 'files.origin': { text: origin },
+  } satisfies Record<ContextVariable<'thread.file_changes'>, ContextBinding> };
+}
+
 export const contextUpdateContextDefinition: ContextDefinition = {
   version: 2, id: 'kite.context-update', title: '基础上下文更新', scene: 'thread.context_updated',
   blocks: [

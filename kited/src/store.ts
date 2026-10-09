@@ -1,10 +1,12 @@
-/** 只持久化产品对象；会话正文在 journal，快照在 Git，执行状态由 runtime 管理。 */
+/** 只持久化产品对象和 kited 自己保存的账号用量；会话正文在 journal，快照在 Git，执行状态由 runtime 管理。 */
 import { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import type { AgentInstance, Checkout, Machine, PluginInstance, Project, Thread, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
 import type { ThreadNotification } from './harness/types.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
+import type { HourlyUsage, UsageDay, UsageStore } from './account-usage.ts';
+import type { TemplateEmblem } from './template-emblems.ts';
 
 export interface ThreadTitle {
   title: string;
@@ -70,6 +72,12 @@ create table if not exists operation_receipts (
 create table if not exists context_templates (
   id text primary key, definition text not null
 );
+create table if not exists template_emblems (
+  template_id text primary key, emblem text not null
+);
+create table if not exists usage_hours (
+  account text not null, day text not null, hour integer not null, tokens integer not null, primary key(account, day, hour)
+);
 `;
 const projectOf = (r: any): Project => ({ id: r.id, name: r.name, remote: r.remote, createdAt: r.created_at });
 const checkoutOf = (r: any): Checkout => ({
@@ -91,7 +99,7 @@ const windowOf = (r: any): WorkspaceWindow => ({
   state: r.state, createdAt: r.created_at,
 });
 
-export class Store {
+export class Store implements UsageStore {
   private db: Database;
   readonly machine: Machine;
   transaction<T>(action: () => T): T { return this.db.transaction(action)(); }
@@ -122,6 +130,25 @@ export class Store {
     this.db.exec('drop table checkouts; drop table projects;');
   }
 
+  mergeUsageHours(account: string, usage: HourlyUsage): void {
+    const upsert = this.db.query('insert into usage_hours values (?, ?, ?, ?) on conflict(account, day, hour) do update set tokens = max(tokens, excluded.tokens)');
+    this.db.transaction(() => {
+      for (const [day, hours] of usage) hours.forEach((tokens, hour) => { if (tokens > 0) upsert.run(account, day, hour, tokens); });
+    })();
+  }
+
+  usageDays(account: string): UsageDay[] {
+    const rows = this.db.query('select day, hour, tokens from usage_hours where account = ? order by day').all(account) as Array<{ day: string; hour: number; tokens: number }>;
+    const days = new Map<string, UsageDay>();
+    for (const row of rows) {
+      const day = days.get(row.day) ?? { date: row.day, tokens: 0, hours: Array<number>(24).fill(0) };
+      day.tokens += row.tokens;
+      day.hours![row.hour]! += row.tokens;
+      days.set(row.day, day);
+    }
+    return [...days.values()];
+  }
+
   projects(): Project[] { return this.db.query('select * from projects order by created_at, id').all().map(projectOf); }
   contextTemplates(): ContextDefinition[] {
     return this.db.query('select definition from context_templates order by id').all()
@@ -130,6 +157,14 @@ export class Store {
   contextTemplate(id: string): ContextDefinition | undefined {
     const row = this.db.query('select definition from context_templates where id = ?').get(id) as { definition: string } | null;
     return row ? JSON.parse(row.definition) : undefined;
+  }
+  templateEmblem(id: string): TemplateEmblem | undefined {
+    const row = this.db.query('select emblem from template_emblems where template_id = ?').get(id) as { emblem: string } | null;
+    return row ? JSON.parse(row.emblem) : undefined;
+  }
+  saveTemplateEmblem(id: string, emblem: TemplateEmblem): void {
+    this.db.query('insert into template_emblems values (?, ?) on conflict(template_id) do update set emblem = excluded.emblem')
+      .run(id, JSON.stringify(emblem));
   }
   saveContextTemplate(definition: ContextDefinition): void {
     this.db.query('insert into context_templates values (?, ?) on conflict(id) do update set definition = excluded.definition')
@@ -202,6 +237,9 @@ export class Store {
   }
   private addThread(thread: Thread): void {
     this.db.query('insert into threads values (?, ?, ?)').run(thread.instanceId, thread.runtime, thread.nativeId);
+  }
+  setThreadRuntime(id: string, runtime: Thread['runtime']): void {
+    this.db.query('update threads set runtime = ? where instance_id = ?').run(runtime, id);
   }
   /** 实例身份、会话专有记录与可选窗口原子创建。 */
   addAgent(agent: AgentInstance, window?: WorkspaceWindow): void {

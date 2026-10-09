@@ -1,13 +1,18 @@
 import type { Stamped, ThreadEvent } from '../events.ts';
 import type { JournalRecord, Phase, Outcome, Recovery, ModelStreamEvent } from '../harness/types.ts';
 import type { PluginInstance, ThreadContext, WorkspaceStatus } from '../model.ts';
+import { contextWindow } from '../agents/models.ts';
 import { ClaudeProjection } from './claude-projection.ts';
+import { object } from '../claude/tools.ts';
 import type { ClaudeState } from '../claude/control.ts';
 import { ToolInputPreview } from './tool-input-preview.ts';
 import type { TranscriptFeed } from './feed.ts';
 import type { DisplayBlock, DisplayRecord, DisplayDelta, PendingInput, DisplayState, History, ThreadDisplayEvent } from './protocol.ts';
 
-const object = (value: unknown): Record<string, any> => value && typeof value === 'object' ? value as Record<string, any> : {};
+const windowTokens = (model: string | undefined) => {
+  const window = model ? contextWindow(model) : undefined;
+  return window ? { windowTokens: window } : {};
+};
 const textParts = (value: unknown, separator = ''): string => Array.isArray(value)
   ? value.map((part) => object(part).text).filter((text) => typeof text === 'string').join(separator) : '';
 
@@ -17,6 +22,11 @@ export class TranscriptProjection {
   private streamIds = new Map<string, string>();
   private inputPreviews = new Map<string, ToolInputPreview>();
   private requests = new Set<string>();
+  private configuredModels = new Map<string, string>();
+  private requestModels = new Map<string, string>();
+  /** 段的首条输入：压缩范围按输入的显示记录定位，Claude 段的内容来自另一份记录，按 seq 对不上位置。 */
+  private segmentInputs = new Map<number, string>();
+  private compacting = false;
   private readonly claudeProjection: ClaudeProjection;
   private lastSeq = 0;
   private replaying = true;
@@ -86,7 +96,7 @@ export class TranscriptProjection {
     const open = status === 'open';
     const interactive = open;
     const error = this.recovery?.message ?? this.error;
-    return { phase: this.phase, busy: this.busy, waitingForResume: this.waitingForResume, status,
+    return { phase: this.phase, busy: this.busy, ...(this.compacting ? { compacting: true } : {}), waitingForResume: this.waitingForResume, status,
       ...(this.lastOutcome ? { lastOutcome: this.lastOutcome } : {}),
       ...(this.recovery ? { recovery: this.recovery } : {}),
       ...(error ? { error } : {}),
@@ -94,7 +104,10 @@ export class TranscriptProjection {
       capabilities: { send: interactive && !this.recovery && this.phase !== 'stopping'
           && !this.claudeProjection.hasUnconfirmedInput,
         interrupt: interactive && (this.busy || this.pending.size > 0) && this.phase !== 'stopping',
-        resume: interactive && !this.busy && !this.recovery && this.waitingForResume, cancel: interactive } };
+        resume: interactive && !this.busy && !this.recovery && this.waitingForResume, cancel: interactive,
+        switchRuntime: open && !this.busy && !this.recovery && this.phase === 'idle' && this.pending.size === 0
+          && !this.claudeProjection.hasUnconfirmedInput,
+        compact: open && !this.busy && !this.recovery && this.phase === 'idle' && !this.claudeProjection.hasUnconfirmedInput } };
   }
   private emit(event: ThreadDisplayEvent): void { if (!this.replaying) this.feed.emit({ ...event, threadId: this.threadId }); }
   private put(record: DisplayRecord): void {
@@ -118,7 +131,7 @@ export class TranscriptProjection {
         const e = event.event;
         if (e.type === 'record') this.journal(e.record);
         else if (e.type === 'state') {
-          this.phase = e.state.phase; this.busy = e.state.busy;
+          this.phase = e.state.phase; this.busy = e.state.busy; this.compacting = e.state.compacting === true;
           this.waitingForResume = e.state.waitingForResume;
           this.lastOutcome = e.state.lastOutcome;
           this.recovery = e.state.recovery;
@@ -155,11 +168,19 @@ export class TranscriptProjection {
   journal(row: JournalRecord): void {
     if (row.seq <= this.lastSeq) return;
     this.lastSeq = row.seq;
+    const input = row.type === 'request.started' ? row.inputIds[0]
+      : row.type === 'context.imported' ? row.items.find((item) => item.type === 'input')?.input.id : undefined;
+    if (input) this.segmentInputs.set(row.seq, input);
+    this.journalRow(row);
+  }
+
+  private journalRow(row: JournalRecord): void {
     const put = (id: string, block: DisplayBlock) => this.put({ id, at: row.at, block });
     switch (row.type) {
       case 'input.received':
         if (!this.recovery) this.waitingForResume = false;
-        this.pending.set(row.input.id, { ...row.input, midTurn: this.busy || this.pending.size > 0 }); this.emitPending(); break;
+        this.pending.set(row.input.id, { ...row.input, midTurn: this.busy || this.pending.size > 0 }); this.emitPending();
+        this.emit({ type: 'thread.state', state: this.state() }); break;
       case 'input.cancelled': this.pending.delete(row.inputId); this.emitPending(); break;
       case 'thread.stopped':
         for (const input of row.returned) this.pending.delete(input.id);
@@ -170,7 +191,14 @@ export class TranscriptProjection {
       case 'turn.started':
         this.phase = 'running'; this.busy = true; this.waitingForResume = false;
         this.lastOutcome = undefined; this.error = undefined; break;
+      case 'request.configured': {
+        const model = row.snapshot.settings.model?.model;
+        if (model) this.configuredModels.set(row.snapshot.id, model);
+        break;
+      }
       case 'request.started': {
+        const model = this.configuredModels.get(row.configurationId);
+        if (model) this.requestModels.set(row.requestId, model);
         const midTurn = this.requests.has(row.turnId);
         this.requests.add(row.turnId);
         row.inputIds.forEach((id, index) => {
@@ -204,7 +232,7 @@ export class TranscriptProjection {
         this.endDrafts(row.requestId);
         const tokens = row.usage?.input_tokens;
         this.context = typeof tokens === 'number' && Number.isSafeInteger(tokens) && tokens >= 0
-          ? { requestId: row.requestId, inputTokens: tokens, measuredAt: row.at } : undefined;
+          ? { requestId: row.requestId, inputTokens: tokens, ...windowTokens(this.requestModels.get(row.requestId)), measuredAt: row.at } : undefined;
         this.emit({ type: 'thread.state', state: this.state() });
         break;
       }
@@ -235,6 +263,28 @@ export class TranscriptProjection {
         this.phase = 'idle'; this.busy = false; this.waitingForResume = true;
         this.recovery = undefined;
         this.error = this.lastOutcome?.kind === 'failed' ? this.lastOutcome.message : undefined; break;
+      case 'context.compacted': {
+        const ids = [...this.records.keys()];
+        const at = (seq: number | undefined) => {
+          const input = seq === undefined ? undefined : this.segmentInputs.get(seq);
+          return input === undefined ? -1 : ids.indexOf(`input:${input}`);
+        };
+        // 自动压缩从会话开头算起；范围到最新时取到这条记录之前。
+        const first = row.automatic ? 0 : at(row.range.from);
+        const end = row.range.until === undefined ? ids.length : at(row.range.until);
+        const range = first >= 0 && end > first ? { from: ids[first]!, through: ids[end - 1]! } : {};
+        put(`compaction:${row.id}`, { type: 'compacted', id: row.id, text: row.summary, automatic: row.automatic, ...range });
+        this.context = undefined;
+        this.emit({ type: 'thread.state', state: this.state() });
+        break;
+      }
+      case 'context.compaction.reverted': {
+        const record = this.records.get(`compaction:${row.id}`);
+        if (record?.block.type === 'compacted') this.put({ ...record, block: { ...record.block, reverted: true } });
+        this.context = undefined;
+        this.emit({ type: 'thread.state', state: this.state() });
+        break;
+      }
     }
   }
 
@@ -315,8 +365,11 @@ export class TranscriptProjection {
     else for (const key of this.streamIds.keys()) if (key.startsWith(`${requestId}:`)) this.streamIds.delete(key);
   }
 
+  /** 切到 harness 之后的旧 Claude 段只需要输入身份，执行状态以当前后端为准。 */
+  claudeInputs(state: ClaudeState): void { this.claudeProjection.syncInputs(state, new Map()); }
+
   claudeControl(state: ClaudeState): void {
-    this.phase = state.phase; this.busy = state.busy; this.waitingForResume = state.waitingForResume;
+    this.phase = state.phase; this.busy = state.busy; this.compacting = state.compacting === true; this.waitingForResume = state.waitingForResume;
     this.lastOutcome = state.lastOutcome; this.recovery = state.recovery;
     this.error = state.recovery?.message ?? (state.lastOutcome?.kind === 'failed' ? state.lastOutcome.message : undefined);
     this.pending.clear();

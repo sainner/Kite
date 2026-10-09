@@ -11,7 +11,7 @@ import { openThreadHost, readThreadMetadata } from './harness/thread-host.ts';
 import { harnessPolicy } from './execution/policy.ts';
 import { projectContext } from './harness/context/project.ts';
 import type { HarnessEvent } from './harness/types.ts';
-import { defaultAgentModel } from './agents/models.ts';
+import { contextWindow, defaultAgentModel } from './agents/models.ts';
 
 const USAGE = `用法：
   bun run harness --cwd <目录>                     开始对话
@@ -76,6 +76,7 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
           for (const part of content) if (part && typeof part === 'object' && !Array.isArray(part) && typeof part.text === 'string') line(part.text);
         }
       }
+      if (record.type === 'context.compacted') line('\n· 已压缩上下文');
       if (record.type === 'tool.finished') line(`· 工具 ${record.result.status}\n${record.result.output.slice(-1200)}`);
       if (record.type === 'turn.finished') {
         const outcome = record.outcome;
@@ -88,10 +89,12 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
     }
   };
   const settings = { model: { model: modelName, reasoning }, maxRequestsPerTurn: maxRequests };
+  const window = contextWindow(modelName);
   const host = await openThreadHost({
     cwd, threadDir: directory, env: { ...process.env }, onEvent: render, settings,
     policy: await harnessPolicy({ cwd, env: process.env, home, authFile: resolve(values.auth ?? defaultAuthFile()) }),
-    prepareRequest: (tools) => ({ model, tools, instructions: projectContext(cwd), settings }),
+    prepareRequest: (tools) => ({ model, tools, instructions: projectContext(cwd), settings,
+      ...(window ? { autoCompactTokens: Math.floor(window * 0.85) } : {}) }),
   });
   const status = () => line(JSON.stringify(host.runner.state, null, 2));
   line(`Kite · ${modelName} · ${reasoning}\n工作目录：${cwd}\n会话：${basename(directory)}\n记录：${directory}`);

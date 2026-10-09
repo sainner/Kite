@@ -9,12 +9,13 @@
 - [协议与适配器边界](protocol-adapter-boundaries.md) — 统一前端会话语义，区分完整 agent 与模型 API 适配，保留原生恢复记录
 - [工具接口方向](tool-interface-direction.md) — 短工具名与统一读写入口，版本变化仅提示，抽象调用才填写用途
 - [PDF 读取方案](pdf-read-direction.md) — PDF 转 Markdown 用 macOS Vision，不用 Docling 或 pdf.js，不留兜底
+- [上下文压缩方向](compaction-direction.md) — 自己实现、按范围选择性压缩的来由；Claude 回合中途压缩等上游稳定再接
 - [提示词编排方向](prompt-composition-direction.md) — 上下文编排的核心是用户可编辑，包含轻任务与通知正文
 - [辅助轻任务方向](light-task-direction.md) — 辅助生成统一使用常驻 ChatGPT 订阅直调，业务材料与校验各自负责
 - [配置与工作区事件投递](external-event-delivery.md) — 配置和环境变化在自然请求边界追加通知，减少缓存损失与工作打断
 - [统一执行沙箱](sandbox-execution-direction.md) — 插件与 harness 共用操作系统沙箱，正式运行时继续使用 Bun
 - [项目以远程仓库为身份](project-remote-identity.md) — 项目以远程为身份、托管远程与集成推送的决定来源，正文在 docs
-- [凭据分发服务](credential-service-direction.md) — Git 授权与共享密钥归入资源库的凭据，随账号分发、宿主按引用注入
+- [凭据分发服务](credential-service-direction.md) — Git、共享密钥与模型 API Key 归入资源库凭据，随账号分发、按类型取用
 - [工作树与工作区生命周期](session-worktree-decision.md) — 独立工作树用于隔离并行改动，生命周期属于工作区而非单个线程
 - [工作区、线程与插件架构](workspace-thread-plugin-architecture.md) — 工作区承载同级实例，agent 统一为插件，自定义插件需要界面、逻辑与工作区能力
 - [窗口的跨端同步](workspace-window-sync.md) — 同一工作区共享窗口集合，各设备独立布局与焦点
@@ -27,8 +28,10 @@
 - [侧栏一级导航](sidebar-navigation.md) — 空间、设备、资源库的导航分层；设备下账号与文件并列；账号页允许固定窗口分区
 - [初始配置与设备角色](onboarding-device-roles.md) — 本机执行或仅远程控制都入网，进入 App 后发现 kited 工作机
 - [托管账号与组网](hosted-network-direction.md) — 我们托管，用户账号密码登录或扫描已登录设备二维码加入；规格见 docs
+- [账号用量与额度展示](account-usage-direction.md) — 圆环看额度，正文热力图配某天 24 小时柱状图；按天能取上游就读，按小时由 kited 扫本机存
 - [思考与状态展示](thinking-display.md) — 仅显示当前生成的思考，状态指示不承担实时活动或思考正文
 - [视觉风格来源与取舍](visual-style-direction.md) — 参考色板、树状子项与用户预览后确认的取舍，当前呈现核对代码
+- [模板点阵签名](template-emblem-direction.md) — 新会话空白页铺满模板专属的 AI 生成表达式动画，可手改，保存后自动生成
 - [宋体尝试](serif-font-trial.md) — 先只把侧栏字标换成思源宋体，表格与其他文字保持系统字体；扩大范围先确认体积
 
 ## 协作反馈
@@ -41,6 +44,7 @@
 - [大改动先给方案](feedback-plan-before-large-changes.md) — 新视觉或全局布局先交方案；已确认的多期计划连续做完
 - [测试要克制](test-restraint.md) — 简单配置与接入不扩充测试，跑检查与新增测试分开判断
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 扫描无用逻辑时沿实际执行和数据流判断，不能只看引用
+- [先确认是哪个控件](feedback-confirm-ui-target.md) — 「侧边栏」可能指右侧停靠栏；同名按钮有多处时先确认位置
 - [文档只写现状](feedback-docs-current-state.md) — 改文档直接陈述当前状态，不追加更新说明
 - [文档只写设计原则](feedback-docs-principles-only.md) — 用户要求清理界面细节的反馈来源，正式规则见 AGENTS.md
 
@@ -61,4 +65,5 @@
 
 ## 资料入口
 
+- [界面命中问题的调试](ui-hit-testing-debugging.md) — 进程内合成点击可靠复现；悬停无法合成，需用户实测加日志
 - [旧个人 Headscale（lisa）](reference-headscale-lisa.md) — 旧实验服务位置、nginx 分流与清理入口

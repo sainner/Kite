@@ -18,7 +18,9 @@ import type { ContextDefinition } from './harness/context/types.ts';
 import { agentRevision, instanceAgent } from './agents/definition.ts';
 import { pluginDefinition } from './plugins/definitions.ts';
 import type { OperationToolSelection } from './operations/operations.ts';
-import type { Input, Model, Phase, Recovery, StopRequest, ThreadNotification, Tool } from './harness/types.ts';
+import type { CompactionRequest, Input, Model, Phase, Recovery, StopRequest, ThreadNotification, Tool } from './harness/types.ts';
+import { contextWindow } from './agents/models.ts';
+import { AUTO_COMPACT_RATIO } from './harness/compaction.ts';
 import type { LightTaskOptions } from './light-tasks.ts';
 
 export interface Runtime {
@@ -31,7 +33,11 @@ export interface Runtime {
   resume?(): Promise<void>;
   recover?(): Promise<void>;
   cancel?(inputId: string): Promise<void>;
+  compact?(request: CompactionRequest): Promise<void>;
+  revertCompaction?(id: string): Promise<void>;
 }
+
+
 
 export interface RuntimeOptions {
   /** 本地模型入口，可在集成测试中替换为可控模型流。 */
@@ -61,6 +67,9 @@ export interface RuntimeHost {
   notifications(after: number): ThreadNotification[];
   operations: { tools: Tool[]; prepare(instance: PluginInstance): OperationToolSelection };
   contextUpdateTemplate(): ContextDefinition;
+  compactionTemplates(): { compact: ContextDefinition; fileChanges: ContextDefinition };
+  /** 两个时刻之间工作区的净文件变化。 */
+  compactionFiles(range: { from: number; to: number }): Promise<string | undefined>;
 }
 
 /** 两个后端共用的工具筛选：agent 配置声明的工具中，操作工具还须获得授权；插件工具只看授权。 */
@@ -98,6 +107,8 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
           notificationText: updates.map((notification) => restoreContext(notification.context).instructions).join('\n\n'),
           through: updates.at(-1)?.sequence ?? afterNotification };
       }, events: on,
+      compaction: { templates: () => host.compactionTemplates(), files: (range) => host.compactionFiles(range),
+        window: (model) => contextWindow(model) },
     });
   }
   const declaredTools = new Set<string>(pluginDefinition(definitionId).agent!.tools);
@@ -109,6 +120,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       const execution = instanceExecutionGrants(current);
       const { agent, selection, permitted, plugins } = selectTools(current, operations);
       const declared = [...tools, ...operations.tools].filter((tool) => declaredTools.has(tool.name));
+      const window = contextWindow(agent.model.model);
       return {
         model: options.model?.(current) ?? new ChatGPTModel({ ...agent.model, threadId: current.nativeId,
           credentials: () => readSubscriptionCredentials(join(home, 'auth', 'chatgpt', 'auth.json')),
@@ -117,6 +129,8 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         toolDefinitions: [...declared, ...selection.plugins].map(({ name, description, parameters }) => ({ name, description, parameters })),
         instructions: projectContext(current.workspace.cwd, agent.context),
         contextUpdateTemplate: host.contextUpdateTemplate(),
+        compactionTemplates: host.compactionTemplates(),
+        ...(window ? { autoCompactTokens: Math.floor(window * AUTO_COMPACT_RATIO) } : {}),
         settings: { model: agent.model, maxRequestsPerTurn: agent.maxRequestsPerTurn,
           execution: { grants: execution, revision: executionRevision(execution) },
           agent: { definitionId: current.definitionId, revision: agentRevision(agent) },
@@ -126,6 +140,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
     },
     afterTools: (_turnId, ids) => on.snapshot(ids),
     afterTurn: () => on.snapshot([]),
+    compactionFiles: (range) => host.compactionFiles(range),
     onEvent(event) {
       if (event.type === 'record') {
         const row = event.record;
@@ -153,5 +168,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
     },
     recover: () => thread.confirmRecovery(),
     cancel: (inputId) => thread.runner.cancel(inputId),
+    compact: (request) => thread.runner.compact(request),
+    revertCompaction: (id) => thread.runner.revertCompaction(id),
   };
 }

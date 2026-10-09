@@ -3,21 +3,11 @@ import SwiftUI
 /// 标题栏圆环表达主状态与上下文占比，悬停提示和辅助功能保留状态与结果说明。
 struct ThreadStatusRing: View {
     @Environment(WorkThread.self) private var thread
-    @Environment(\.paneHeaderStatusGrouped) private var grouped
-    @ScaledMetric(relativeTo: .body) private var scaledDiameter = Metrics.paneHeaderButton
-    private var diameter: CGFloat { InputMode.current.isTouch ? scaledDiameter : Metrics.paneHeaderButton }
     private let lineWidth: CGFloat = 3
 
     var body: some View {
-        // 和侧栏入口同在一块玻璃里时缩小，给玻璃边缘留出余量
-        let ring = diameter * (grouped ? 0.6 : Metrics.statusRingScale)
         ContextRing(phase: thread.statusPhase, fraction: thread.state?.context?.fraction, lineWidth: lineWidth)
-            .padding(lineWidth / 2)
-            .frame(width: ring, height: ring)
-            // 合进按钮组时排在组尾：前面同按钮一样带半个间距，后面让圆环与胶囊端头同心
-            .padding(.leading, grouped ? Metrics.paneHeaderButtonGap / 2 : 0)
-            .padding(.trailing, grouped ? (diameter - ring) / 2 - Metrics.paneHeaderGroupInset : 0)
-            .frame(width: grouped ? nil : diameter, height: diameter)
+            .paneHeaderRing(lineWidth: lineWidth)
             .help(thread.statusLabel + "\n" + thread.contextDescription)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(thread.statusLabel + "，" + thread.contextDescription)

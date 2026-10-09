@@ -67,9 +67,57 @@ nonisolated struct ContextScene: Decodable, Identifiable, Sendable {
 nonisolated struct ContextTemplate: Decodable, Identifiable, Sendable {
     var definition: ContextDefinition
     var revision: String
+    /// 创建会话模板的点阵签名，其他场景没有。
+    var emblem: TemplateEmblem?
+    /// ready、stale、missing、generating 或 failed。
+    var emblemState: String?
+    var emblemError: String?
     var id: String { definition.id }
     var selection: ContextTemplateSelection { .init(id: id, revision: revision) }
 }
+
+/// 点阵签名的设计：一行表达式、正负两种颜色（字母见 DotFigure.letters）和点的形状。
+nonisolated struct EmblemDesign: Codable, Equatable, Sendable {
+    var expression: String
+    var positive: String
+    var negative: String
+    var form: String
+
+    static let letters = ["B", "M", "L", "Y", "D"]
+    static let letterTitles = ["B": "主题色", "M": "晨风蓝", "L": "露水蓝", "Y": "阳光黄", "D": "深阳光黄"]
+    /// 没有签名或签名还在生成时用的图案。
+    static let fallback = EmblemDesign(expression: "sin(x/5 + t*0.6) * cos(y/4 - t*0.4) * 0.55 + 0.4*max(0, 1 - d/6)*sin(d - t*3)",
+                                       positive: "B", negative: "L", form: "circle")
+
+    /// 主题色按所在环境解析；表达式无效时为 nil。
+    func pattern(accent: DotColor) -> DotPattern? {
+        guard let expression = try? DotExpression(expression) else { return nil }
+        let letters = DotFigure.letters(accent: accent)
+        return DotPattern(expression: expression, positive: positive.first.flatMap { letters[$0] } ?? accent,
+                          negative: negative.first.flatMap { letters[$0] } ?? accent, form: DotForm(rawValue: form) ?? .circle)
+    }
+}
+
+nonisolated struct TemplateEmblem: Decodable, Equatable, Sendable {
+    var design: EmblemDesign
+    /// generated 或 manual。
+    var source: String
+
+    private enum CodingKeys: String, CodingKey { case source }
+    init(from decoder: Decoder) throws {
+        design = try EmblemDesign(from: decoder)
+        source = try decoder.container(keyedBy: CodingKeys.self).decode(String.self, forKey: .source)
+    }
+}
+
+nonisolated struct EmblemStatus: Decodable, Sendable {
+    var emblem: TemplateEmblem?
+    var emblemState: String
+    var emblemError: String?
+}
+
+struct EmblemSave: Encodable { let emblem: EmblemDesign }
+struct EmblemGenerate: Encodable { let force: Bool }
 
 nonisolated struct ContextTemplateSelection: Encodable, Sendable {
     let id: String
@@ -109,8 +157,16 @@ extension AppModel {
 
     func refreshContextTemplates(in area: WorkArea? = nil) async throws {
         guard let connection = connection(for: area), connection.connected else { throw KitedError(message: "所属工作机未连接") }
+        try await refreshTemplates(of: connection)
+    }
+
+    /// fresh 时不复用进行中的请求：它可能早于这次变化发出，等它完成后再读一次。
+    func refreshTemplates(of connection: WorkerConnection, fresh: Bool = false) async throws {
         let revision = connection.catalog.generation
-        if let request = connection.templatesRequest, request.connection == revision { try await request.task.value; return }
+        if let request = connection.templatesRequest, request.connection == revision {
+            if fresh { try? await request.task.value } else { try await request.task.value; return }
+            if let request = connection.templatesRequest, request.connection == revision { try await request.task.value; return }
+        }
         let client = connection.client
         let task = Task {
             defer { if connection.templatesRequest?.connection == revision { connection.templatesRequest = nil } }
@@ -134,6 +190,33 @@ extension AppModel {
         target.templates?.templates.removeAll { $0.id == result.id }
         target.templates?.templates.append(result)
         return result
+    }
+
+    func saveTemplateEmblem(_ design: EmblemDesign, for template: ContextTemplate, connection: UUID) async throws {
+        guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请返回模板列表") }
+        let client = target.client
+        let result = try await client.request("/context-templates/\(Self.pathComponent(template.id))/emblem", method: "PUT",
+            body: EmblemSave(emblem: design), as: ContextTemplate.self)
+        guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回模板列表") }
+        if let index = target.templates?.templates.firstIndex(where: { $0.id == result.id }) { target.templates?.templates[index] = result }
+    }
+
+    /// 请工作机生成签名；force 时连手改的一起重新生成。结果随模板变化事件送达。
+    func generateTemplateEmblem(_ template: ContextTemplate, force: Bool, connection: UUID) async throws {
+        guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化") }
+        let client = target.client
+        let status = try await client.request("/context-templates/\(Self.pathComponent(template.id))/emblem/generate", method: "POST",
+            body: EmblemGenerate(force: force), as: EmblemStatus.self)
+        guard target.catalog.generation == connection, accepts(client) else { return }
+        if let index = target.templates?.templates.firstIndex(where: { $0.id == template.id }) {
+            target.templates?.templates[index].emblem = status.emblem
+            target.templates?.templates[index].emblemState = status.emblemState
+            target.templates?.templates[index].emblemError = status.emblemError
+        }
+    }
+
+    private static func pathComponent(_ id: String) -> String {
+        id.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~")))!
     }
 
     func applyContextTemplate(_ template: ContextTemplate, to thread: WorkThread, in area: WorkArea, connection: UUID) async throws {

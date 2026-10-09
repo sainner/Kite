@@ -1,10 +1,10 @@
 import SwiftUI
 
 /// 窗口的共有布局：浮在上面的标题栏、内容、浮在下面的控制区。内容从标题栏和控制区后面滚过去，
-/// 标题栏后面垫系统滚动软边，iPhone 的软边是渐进模糊，再叠一层渐变；控制区后面垫一层到窗口底边的渐变遮罩。Mac 上是一张卡片的内容，iPhone 上铺满窗口；各个窗口只给标题栏的信息、内容、控制区里的东西，
+/// 标题栏后面垫系统滚动软边，iPhone 的软边是渐进模糊，再叠一层渐变。Mac 上是一张卡片的内容，iPhone 上铺满窗口；各个窗口只给标题栏的信息、内容、控制区里的东西，
 /// 标题前的信息区由窗口给出（会话是状态圆环），两端相同。
 /// 控制区是液态玻璃容器，各个窗口给内部控件提供玻璃形状；左右留边，底部总边距统一取固定留白与安全区高度的较大值。
-/// 控制区始终存在；内容为空时保留交互范围，只省略内容背后的渐变遮罩。
+/// 控制区始终存在；内容为空时仍保留交互范围。
 /// 安全区已由窗口容器让出，控制区补足差额；打字时在键盘上方保留固定留白。
 /// 控制区里的输入框拿 typing 绑定焦点。iPhone 上打字时点控制区以外的地方收起键盘；不打字时从控制区往上拖拉出 action 栏。
 /// 窄屏控制区左右滑动切换窗口，键盘显示或控制区已聚焦时禁用。
@@ -24,6 +24,9 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
     @Environment(\.self) private var environment
     @Environment(\.keyboardShown) private var keyboardShown
     @Environment(\.openSidebar) private var openSidebar
+    @Environment(\.dotCarrier) private var carrier
+    /// 整个窗口（连同标题栏与控制区）的范围，交给内容里要铺满整个窗口的点阵图案。
+    @State private var frame: CGRect?
 
     init(header: PaneHeader, usesDots: Bool = false, @ViewBuilder content: () -> Content,
          @ViewBuilder controls: @escaping (_ typing: FocusState<Bool>.Binding) -> Controls,
@@ -41,6 +44,7 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
         let bottomSafeArea = keyboardShown ? 0 : homeInset
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .environment(\.paneWindowFrame, frame)
             // 加在控制区外面这一层，点控制区不算
             .endsTyping(typing) { typing = false }
             .safeAreaBar(edge: .bottom, spacing: 0) {
@@ -59,9 +63,6 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
                         .padding(.bottom, max(Metrics.paneMargin, bottomSafeArea) - bottomSafeArea)
                         .frame(maxWidth: .infinity)
                         .contentShape(Rectangle())
-                        .background {
-                            if !controlViews.isEmpty { bottomFade }
-                        }
                         // 打字时在输入框里上下拖是选字、滚动，不拉 action 栏
                         .pullsDrawer(enabled: !typing)
                         .modifier(PaneControlSwipe(typing: typing))
@@ -82,9 +83,12 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
             }
             // 窗口内容里的滚动区要用 separateScrollPocket，Mac 上贴着窗口顶边的卡片才不会互相串色
             .scrollEdgeEffectStyle(.soft, for: .top)
-            // 控制区后面用自己的渐变遮罩，见 bottomFade
+            // 控制区后面的内容保持完整显示。
             .scrollEdgeEffectHidden(true, for: .bottom)
             .windowDots(usesDots)
+            .onGeometryChange(for: CGRect.self) {
+                $0.frame(in: DotCarrier.coordinateSpace(carrier))
+            } action: { frame = $0 }
     }
 
     private func sharedHeader(hasStatus: Bool) -> [CompactPaneHeader] {
@@ -104,18 +108,6 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
         }
     }
 
-    /// 控制区后面的渐变遮罩：用窗口的底色，从控制区顶边的全透明过渡到不透明，往下伸过 Home 条那一截到窗口底边，
-    /// 内容滚到这里渐渐淡掉。不透明度是 1 − h²，h 是离窗口底边的距离占整段高度的比例：底下一截接近不透，越往上掉得越快。
-    private var bottomFade: some View {
-        let stops = (0...10).map { i in
-            let h = 1 - Double(i) / 10
-            return Gradient.Stop(color: Theme.card.opacity(1 - h * h), location: 1 - h)
-        }
-        return LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
-            .padding(.bottom, -homeInset)
-            .allowsHitTesting(false)
-    }
-
 }
 
 /// 含有窗口的视图淡入淡出时用蒙版，不用 opacity，也不留给动画里插入视图时默认的 opacity 转场。
@@ -126,6 +118,7 @@ struct PaneFade: ViewModifier {
 
     func body(content: Content) -> some View {
         content.mask { Rectangle().opacity(visible ? 1 : 0) }
+            .modifier(DotsPresence(presented: visible))
     }
 }
 
@@ -139,6 +132,8 @@ extension EnvironmentValues {
     /// 窗口底部为 Home 条保留的高度，不含键盘；底栏展开时仍保留。SwiftUI 的安全区读出来是合在一起的，分不出键盘，
     /// CompactLayout 从 UIKit 读了给出；Mac 上是 0。
     @Entry var homeIndicatorInset: CGFloat = 0
+    /// 所在窗口连同标题栏与控制区的范围：窗口坐标，在会移动的卡片里是卡片坐标。由 PaneWindow 给内容。
+    @Entry var paneWindowFrame: CGRect?
     /// 窗口容器已让出的顶部安全区，标题栏只补足固定边距；Mac 为 0。
     @Entry var paneTopSafeInset: CGFloat = 0
     /// iPhone 上键盘升起来了。CompactLayout 在屏幕这一层比出来：SwiftUI 的安全区比 Home 条那一截高。

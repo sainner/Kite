@@ -232,24 +232,27 @@ test('账号和项目的同名密钥独立分发，管理列表只返回所选�
 
     const accountValue = '账号共享假秘密-9a3f26';
     const projectValue = '项目文件假秘密-72c151\n第二行';
-    expectSuccess(await k.call('PUT', '/api/secrets/api_key', alice.token, { kind: 'text', value: accountValue }));
-    expectSuccess(await k.call('PUT', '/api/secrets/api_key', alice.token,
-      { kind: 'file', value: projectValue, projectId: first.body.id }));
-    const account = await k.call('GET', '/api/secrets', alice.token);
-    const project = await k.call('GET', `/api/secrets?projectId=${first.body.id}`, alice.token);
+    const shared = await k.call('POST', '/api/credentials', alice.token,
+      { type: 'secret', name: 'api_key', meta: { kind: 'text' }, secret: { value: accountValue } });
+    const scoped = await k.call('POST', '/api/credentials', alice.token,
+      { type: 'secret', name: 'api_key', projectId: first.body.id, meta: { kind: 'file' }, secret: { value: projectValue } });
+    expect(shared.status).toBe(201);
+    expect(scoped.status).toBe(201);
+    const account = await k.call('GET', '/api/credentials', alice.token);
+    const project = await k.call('GET', `/api/credentials?projectId=${first.body.id}`, alice.token);
     expect(account.status).toBe(200);
     expect(project.status).toBe(200);
-    expect(account.body).toEqual([{ name: 'api_key', kind: 'text', projectId: null, updatedAt: expect.any(Number) }]);
-    expect(project.body).toEqual([{ name: 'api_key', kind: 'file', projectId: first.body.id, updatedAt: expect.any(Number) }]);
-    expect((await k.call('GET', `/api/secrets?projectId=${second.body.id}`, alice.token)).body).toEqual([]);
-    expect((await k.call('GET', '/api/secrets', bob.token)).body).toEqual([]);
+    expect(account.body).toEqual([expect.objectContaining({ id: shared.body.id, type: 'secret', name: 'api_key', meta: { kind: 'text' }, projectId: null })]);
+    expect(project.body).toEqual([expect.objectContaining({ id: scoped.body.id, type: 'secret', name: 'api_key', meta: { kind: 'file' }, projectId: first.body.id })]);
+    expect((await k.call('GET', `/api/credentials?projectId=${second.body.id}`, alice.token)).body).toEqual([]);
+    expect((await k.call('GET', '/api/credentials', bob.token)).body).toEqual([]);
     for (const response of [account, project]) {
       expect(JSON.stringify(response.body)).not.toContain(accountValue);
       expect(JSON.stringify(response.body)).not.toContain(projectValue);
     }
 
     const request = { projectId: first.body.id, references: ['{account.api_key}', '{project.api_key}'] };
-    const resolved = await k.call('POST', '/api/secrets/resolve', box.token, request);
+    const resolved = await k.call('POST', '/api/credentials/resolve', box.token, request);
     expect(resolved.status).toBe(200);
     expect(resolved.body).toEqual([
       { reference: '{account.api_key}', kind: 'text', value: accountValue },
@@ -263,16 +266,20 @@ test('账号和项目的同名密钥独立分发，管理列表只返回所选�
     expect(available).toHaveLength(2);
     expect(JSON.stringify(available)).not.toContain(accountValue);
     expect(JSON.stringify(available)).not.toContain(projectValue);
-    expect((await k.call('GET', `/api/secrets/available?projectId=${first.body.id}`, outsider.token)).status).toBe(404);
-    expect((await k.call('GET', '/api/secrets/available', outsider.token)).body).toEqual([]);
-    expectRejected(await k.call('GET', '/api/secrets', box.token));
-    expectRejected(await k.call('PUT', '/api/secrets/api_key', box.token, { kind: 'text', value: '工作机不能改写' }));
-    expectRejected(await k.call('DELETE', '/api/secrets/api_key', box.token));
-    expectRejected(await k.call('POST', '/api/secrets/resolve', alice.token, request));
-    expect((await k.call('GET', `/api/secrets?projectId=${foreign.body.id}`, alice.token)).status).toBe(404);
-    expect((await k.call('PUT', '/api/secrets/api_key', alice.token,
-      { kind: 'text', value: '不能写他人项目', projectId: foreign.body.id })).status).toBe(404);
-    expect((await k.call('DELETE', `/api/secrets/api_key?projectId=${foreign.body.id}`, alice.token)).status).toBe(404);
+    expect((await k.call('GET', `/api/credentials/available?projectId=${first.body.id}`, outsider.token)).status).toBe(404);
+    expect((await k.call('GET', '/api/credentials/available', outsider.token)).body).toEqual([]);
+    expect((await k.call('GET', '/api/credentials', box.token)).status).toBe(403);
+    expect((await k.call('POST', '/api/credentials', box.token,
+      { type: 'secret', name: 'by_worker', meta: { kind: 'text' }, secret: { value: '工作机不能新建' } })).status).toBe(403);
+    expect((await k.call('PUT', `/api/credentials/${shared.body.id}`, box.token, { secret: { value: '工作机不能改写' } })).status).toBe(403);
+    expect((await k.call('DELETE', `/api/credentials/${shared.body.id}`, box.token)).status).toBe(403);
+    expectRejected(await k.call('POST', '/api/credentials/resolve', alice.token, request));
+    expect((await k.call('GET', `/api/credentials?projectId=${foreign.body.id}`, alice.token)).status).toBe(404);
+    expect((await k.call('POST', '/api/credentials', alice.token,
+      { type: 'secret', name: 'api_key', projectId: foreign.body.id, meta: { kind: 'text' }, secret: { value: '不能写他人项目' } })).status).toBe(404);
+    // 其他账号拿到凭据 ID 也不能替换或删除。
+    expect((await k.call('PUT', `/api/credentials/${shared.body.id}`, bob.token, { secret: { value: '他人不能改写' } })).status).toBe(404);
+    expectSuccess(await k.call('DELETE', `/api/credentials/${shared.body.id}`, bob.token));
 
     for (const [token, body] of [
       [outsider.token, request],
@@ -281,17 +288,48 @@ test('账号和项目的同名密钥独立分发，管理列表只返回所选�
       [box.token, { projectId: second.body.id, references: ['{account.api_key}', '{project.api_key}'] }],
       [box.token, { projectId: first.body.id, references: ['{account.api_key}', '{project.missing}'] }],
     ] as const) {
-      const missing = await k.call('POST', '/api/secrets/resolve', token, body);
+      const missing = await k.call('POST', '/api/credentials/resolve', token, body);
       expect({ body, status: missing.status }).toEqual({ body, status: 404 });
       expect(JSON.stringify(missing.body)).not.toContain(accountValue);
       expect(JSON.stringify(missing.body)).not.toContain(projectValue);
     }
-    expect((await k.call('POST', '/api/secrets/resolve', box.token, { references: ['{project.api_key}'] })).status).toBe(409);
-    expectSuccess(await k.call('DELETE', `/api/secrets/api_key?projectId=${first.body.id}`, alice.token));
-    expect((await k.call('GET', `/api/secrets?projectId=${first.body.id}`, alice.token)).body).toEqual([]);
-    expect((await k.call('POST', '/api/secrets/resolve', box.token, request)).status).toBe(404);
-    expect((await k.call('POST', '/api/secrets/resolve', box.token, { references: ['{account.api_key}'] })).body)
+    expect((await k.call('POST', '/api/credentials/resolve', box.token, { references: ['{project.api_key}'] })).status).toBe(409);
+    expectSuccess(await k.call('DELETE', `/api/credentials/${scoped.body.id}`, alice.token));
+    expect((await k.call('GET', `/api/credentials?projectId=${first.body.id}`, alice.token)).body).toEqual([]);
+    expect((await k.call('POST', '/api/credentials/resolve', box.token, request)).status).toBe(404);
+    expect((await k.call('POST', '/api/credentials/resolve', box.token, { references: ['{account.api_key}'] })).body)
       .toEqual([{ reference: '{account.api_key}', kind: 'text', value: accountValue }]);
+  } finally { await k.stop(); }
+}, 1_000);
+
+// 三类凭据共用一张表，类型是安全边界：API Key 只能由工作机整组领取，Git token 只能按远程地址领取，
+// 两者都不能被命令里的 {account.名称} 引用出来；整组领取也不能串到其他账号。
+test('同一供应商的两把 API Key 只由本账号工作机整组领取，API Key 与 Git 凭据不能按共享密钥引用领取', async () => {
+  const k = await setup();
+  try {
+    const alice = await k.signUp('api-key-alice');
+    const bob = await k.signUp('api-key-bob');
+    const box = await k.worker(alice.token, 'API 工作机');
+    const create = (token: string, body: unknown) => k.call('POST', '/api/credentials', token, body);
+    const keys = ['sk-openai-main-假密钥-1a2b', 'sk-openai-side-假密钥-3c4d'];
+    for (const [index, name] of ['openai_main', 'openai_side'].entries()) {
+      expect((await create(alice.token, { type: 'api', name, meta: { provider: 'openai' }, secret: { key: keys[index] } })).status).toBe(201);
+    }
+    expect((await create(bob.token, { type: 'api', name: 'openai_main', meta: { provider: 'openai' }, secret: { key: 'sk-bob-假密钥-9z' } })).status).toBe(201);
+    expect((await create(alice.token, { type: 'git', name: 'gitea', meta: { username: 'kite' }, secret: { token: 'git-假令牌-5e6f' } })).status).toBe(201);
+    expect((await create(alice.token, { type: 'api', name: 'deepseek_admin', meta: { provider: 'deepseek' },
+      secret: { key: 'sk-ds-假密钥', adminKey: 'sk-ds-admin-假密钥' } })).status).toBe(400);
+
+    const leased = await new AccountClient(() => ({ url: k.baseURL, token: box.token })).apiKeys();
+    expect(leased.map(({ name, provider, key }) => ({ name, provider, key })).sort((a, b) => a.name.localeCompare(b.name))).toEqual([
+      { name: 'openai_main', provider: 'openai', key: keys[0] },
+      { name: 'openai_side', provider: 'openai', key: keys[1] },
+    ]);
+    expect(JSON.stringify((await k.call('GET', '/api/credentials', alice.token)).body)).not.toContain('假密钥');
+    for (const reference of ['{account.openai_main}', '{account.gitea}']) {
+      const resolved = await k.call('POST', '/api/credentials/resolve', box.token, { references: [reference] });
+      expect({ reference, status: resolved.status }).toEqual({ reference, status: 404 });
+    }
   } finally { await k.stop(); }
 }, 1_000);
 
@@ -310,27 +348,29 @@ test('密钥以密文持久化，客户端每次取最新值，工作机凭据�
     const firstValue = '持久化假秘密-88254b';
     const nextValue = '轮换后的假秘密-4cc95e';
     const references = ['{account.shared_key}'];
-    expectSuccess(await k.call('PUT', '/api/secrets/shared_key', owner.token, { kind: 'text', value: firstValue }));
+    const created = await k.call('POST', '/api/credentials', owner.token,
+      { type: 'secret', name: 'shared_key', meta: { kind: 'text' }, secret: { value: firstValue } });
+    expect(created.status).toBe(201);
     expect(await client.resolveSecrets(references)).toEqual([{ reference: references[0]!, kind: 'text', value: firstValue }]);
     expectEncrypted(k.root, [firstValue]);
     await k.restart();
     expect(await client.resolveSecrets(references)).toEqual([{ reference: references[0]!, kind: 'text', value: firstValue }]);
 
     k.advance(1);
-    expectSuccess(await k.call('PUT', '/api/secrets/shared_key', owner.token, { kind: 'text', value: nextValue }));
+    expectSuccess(await k.call('PUT', `/api/credentials/${created.body.id}`, owner.token, { secret: { value: nextValue } }));
     expect(await client.resolveSecrets(references)).toEqual([{ reference: references[0]!, kind: 'text', value: nextValue }]);
     expectEncrypted(k.root, [firstValue, nextValue]);
     const rotated = await k.publisher(peer.token, enrollment, machineId);
     expect(rotated.token).not.toBe(grant.token);
-    expect((await k.call('POST', '/api/secrets/resolve', grant.token, { references })).status).toBe(401);
+    expect((await k.call('POST', '/api/credentials/resolve', grant.token, { references })).status).toBe(401);
     await expect(client.resolveSecrets(references)).rejects.toThrow();
     link = { url: k.baseURL, token: rotated.token };
     expect(await client.resolveSecrets(references)).toEqual([{ reference: references[0]!, kind: 'text', value: nextValue }]);
     expectSuccess(await k.call('DELETE', `/api/devices/${enrollment.device.id}`, owner.token));
-    expect((await k.call('POST', '/api/secrets/resolve', rotated.token, { references })).status).toBe(401);
+    expect((await k.call('POST', '/api/credentials/resolve', rotated.token, { references })).status).toBe(401);
     await expect(client.resolveSecrets(references)).rejects.toThrow();
-    expectSuccess(await k.call('DELETE', '/api/secrets/shared_key', owner.token));
-    expect((await k.call('GET', '/api/secrets', owner.token)).body).toEqual([]);
+    expectSuccess(await k.call('DELETE', `/api/credentials/${created.body.id}`, owner.token));
+    expect((await k.call('GET', '/api/credentials', owner.token)).body).toEqual([]);
   } finally { await k.stop(); }
 }, 1_000);
 
@@ -752,13 +792,15 @@ test('托管项目迁移把全部分支和标签用绑定的凭据推到新远�
 
     const host = destination.url.host;
     const newURL = `${destination.url.origin}/o/r.git`;
-    expectSuccess(await k.call('PUT', `/api/git/accounts/${host}`, alice.token, { username: 'migrator', token: 'wrong-token' }));
+    const bound = await k.call('POST', '/api/credentials', alice.token,
+      { type: 'git', name: host, meta: { username: 'migrator' }, secret: { token: 'wrong-token' } });
+    expect(bound.status).toBe(201);
     expect((await k.call('POST', `/api/projects/${hosted.id}/migrate`, alice.token, { remote: newURL })).status).toBe(409);
     const unchanged = await k.call('GET', `/api/projects/${hosted.id}`, alice.token);
     expect(unchanged.body.remote).toBe(hosted.remote);
     expect(unchanged.body.url).toBe(hosted.url);
 
-    expectSuccess(await k.call('PUT', `/api/git/accounts/${host}`, alice.token, { username: 'migrator', token: 'right-token' }));
+    expectSuccess(await k.call('PUT', `/api/credentials/${bound.body.id}`, alice.token, { secret: { token: 'right-token' } }));
     expectSuccess(await k.call('POST', `/api/projects/${hosted.id}/migrate`, alice.token, { remote: newURL }));
     const moved = await k.call('GET', `/api/projects/${hosted.id}`, alice.token);
     expect(moved.body.id).toBe(hosted.id);
@@ -834,13 +876,13 @@ test('GitHub 授权与通用密钥重启后保留密文，同账号工作机取�
     const bob = await k.signUp('github-bob');
     const box = await k.worker(peer.token, 'Alice 工作机');
     const outsider = await k.worker(bob.token, 'Bob 工作机');
-    expect((await k.call('GET', '/api/git/accounts/github.com/repos', alice.token)).status).toBe(404);
+    expect((await k.call('GET', '/api/git/github/repos', alice.token)).status).toBe(404);
 
-    const started = await k.call('POST', '/api/git/accounts/github.com/device', alice.token);
+    const started = await k.call('POST', '/api/git/github/device', alice.token);
     expectSuccess(started);
     expect(started.body.userCode).toBe('KITE-1234');
     expect(started.body.verificationURI).toBe('https://github.com/login/device');
-    const poll = `/api/git/accounts/github.com/device/${started.body.flow}`;
+    const poll = `/api/git/github/device/${started.body.flow}`;
     k.advance(started.body.interval * 1_000);
     const waiting = await k.call('POST', poll, alice.token);
     expectSuccess(waiting);
@@ -851,33 +893,34 @@ test('GitHub 授权与通用密钥重启后保留密文，同账号工作机取�
     expect(done.body.status).toBe('authorized');
 
     const sharedValue = '与Git并存的假秘密-213da4';
-    expectSuccess(await k.call('PUT', '/api/secrets/shared_key', alice.token, { kind: 'text', value: sharedValue }));
+    expect((await k.call('POST', '/api/credentials', alice.token,
+      { type: 'secret', name: 'shared_key', meta: { kind: 'text' }, secret: { value: sharedValue } })).status).toBe(201);
     expectEncrypted(k.root, ['gho_device_token', sharedValue]);
     await k.restart();
 
-    const accounts = await k.call('GET', '/api/git/accounts', alice.token);
+    const accounts = await k.call('GET', '/api/credentials?type=git', alice.token);
     expect(accounts.status).toBe(200);
-    expect(JSON.stringify(accounts.body)).toContain('octo-kite');
-    expect(JSON.stringify(accounts.body)).not.toContain('gho_device_token');
-    const secrets = await k.call('GET', '/api/secrets', alice.token);
-    expect(secrets.status).toBe(200);
-    expect(secrets.body).toEqual([{ name: 'shared_key', kind: 'text', projectId: null, updatedAt: expect.any(Number) }]);
-    expect(JSON.stringify(secrets.body)).not.toContain('gho_device_token');
-    expect(JSON.stringify(secrets.body)).not.toContain(sharedValue);
-    expect((await k.call('POST', '/api/secrets/resolve', box.token, { references: ['{account.shared_key}'] })).body)
+    expect(accounts.body).toEqual([expect.objectContaining({ type: 'git', name: 'github.com', meta: expect.objectContaining({ username: 'octo-kite' }) })]);
+    const listed = await k.call('GET', '/api/credentials', alice.token);
+    expect(listed.status).toBe(200);
+    expect(JSON.stringify(listed.body)).not.toContain('gho_device_token');
+    expect(JSON.stringify(listed.body)).not.toContain(sharedValue);
+    const available = await k.call('GET', '/api/credentials/available', box.token);
+    expect(available.body).toEqual([expect.objectContaining({ name: 'shared_key', reference: '{account.shared_key}' })]);
+    expect((await k.call('POST', '/api/credentials/resolve', box.token, { references: ['{account.shared_key}'] })).body)
       .toEqual([{ reference: '{account.shared_key}', kind: 'text', value: sharedValue }]);
     const credential = await k.call('POST', '/api/git/credential', box.token, { url: 'git@github.com:o/r.git' });
     expect(credential.status).toBe(200);
     expect(credential.body).toEqual({ username: 'octo-kite', password: 'gho_device_token', expiresAt: null });
     expect((await k.call('POST', '/api/git/credential', outsider.token, { url: 'git@github.com:o/r.git' })).status).toBe(404);
 
-    const repos = await k.call('GET', '/api/git/accounts/github.com/repos', peer.token);
+    const repos = await k.call('GET', '/api/git/github/repos', peer.token);
     expect(repos.status).toBe(200);
     expect(repos.body).toEqual([{ fullName: 'octo-kite/site', url: 'https://github.com/octo-kite/site.git', private: true,
       pushedAt: '2026-10-01T00:00:00Z' }]);
-    expect((await k.call('GET', '/api/git/accounts/github.com/repos', bob.token)).status).toBe(404);
+    expect((await k.call('GET', '/api/git/github/repos', bob.token)).status).toBe(404);
     revoked = true;
-    expect((await k.call('GET', '/api/git/accounts/github.com/repos', alice.token)).status).toBe(502);
+    expect((await k.call('GET', '/api/git/github/repos', alice.token)).status).toBe(502);
   } finally {
     await k.stop();
     await github.stop(true);

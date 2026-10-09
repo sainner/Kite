@@ -75,6 +75,14 @@ struct PaneHeaderPlacement: ViewModifier {
                     Color.clear.preference(key: PaneHeaderHeight.self, value: proxy.size.height)
                 }
             }
+            // 软边会糊掉后面的点阵，标题栏底下再画一次，铺到和 topFade 一样大
+            .background {
+                ScrollEdgeDots()
+                    #if os(iOS)
+                    .padding(.bottom, -Metrics.topFadeOverhang)
+                    .ignoresSafeArea(.container, edges: .top)
+                    #endif
+            }
             #if os(iOS)
             .background { topFade }
             .contentShape(Rectangle())

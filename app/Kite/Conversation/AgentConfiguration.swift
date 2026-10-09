@@ -14,7 +14,7 @@ nonisolated struct AgentModelConfiguration: Codable, Equatable, Sendable {
 
 /// 编辑模型时保留其余配置；上下文继续按原有结构往返，不转成纯文本。
 nonisolated struct AgentConfiguration: Codable, Equatable, Sendable {
-    let runtime: String
+    var runtime: String
     var model: AgentModelConfiguration
     var tools: [String]
     var context: JSON
@@ -36,7 +36,7 @@ nonisolated struct AgentCapabilities: Decodable, Sendable {
     struct Model: Decodable, Identifiable, Sendable {
         let id: String
         let title: String
-        var resolvedModel: String?
+        let name: String
         let reasoning: [String]
     }
     let models: [Model]
@@ -44,7 +44,7 @@ nonisolated struct AgentCapabilities: Decodable, Sendable {
     let configurationBoundary: String
     let toolCatalogBoundary: String
 
-    func model(_ id: String) -> Model? { models.first { $0.id == id || $0.resolvedModel == id } }
+    func model(_ id: String) -> Model? { models.first { $0.id == id } }
     func canEdit(_ state: RemoteState?) -> Bool {
         guard let state, state.status == "open", state.recovery == nil, state.phase != "stopping" else { return false }
         return configurationBoundary == "request" || !state.busy

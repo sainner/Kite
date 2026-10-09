@@ -5,6 +5,8 @@ struct PaneHeader {
     var title: String
     var subtitle: String?
     var titleRefresh: TitleRefresh?
+    /// 主标题右边的小标签，例如订阅账号的档位。
+    var badge: String?
 
     /// 由主标题尾部的刷新图标触发，生成期间保持原题。
     struct TitleRefresh {
@@ -94,6 +96,17 @@ struct PaneHeaderTitle: View {
                 Text(header.title)
                     .id(header.title)
                     .transition(.blurReplace)
+                if let badge = header.badge {
+                    Text(badge)
+                        .font(Theme.status.weight(.medium))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.accentColor.opacity(0.12), in: Capsule())
+                        .padding(.leading, 6 - Metrics.titleRefreshGap)
+                        .id(badge)
+                        .transition(.blurReplace)
+                }
                 if let refresh = header.titleRefresh {
                     PaneTitleRefreshButton(refresh: refresh, title: header.title)
                 }
@@ -110,6 +123,7 @@ struct PaneHeaderTitle: View {
         .lineLimit(1)
         .animation(.snappy, value: header.title)
         .animation(.snappy, value: header.subtitle)
+        .animation(.snappy, value: header.badge)
     }
 }
 
@@ -180,6 +194,30 @@ extension EnvironmentValues {
     @Entry var paneHeaderMinHeight: CGFloat = 0
     /// 信息区与侧栏入口合在一块玻璃里，信息缩到按钮图标的尺度。
     @Entry var paneHeaderStatusGrouped = false
+}
+
+extension View {
+    /// 标题前的状态圆环（会话状态、账号额度）：单独时占一个按钮位，和侧栏入口合在一块玻璃里时缩小。
+    func paneHeaderRing(lineWidth: CGFloat) -> some View { modifier(PaneHeaderRing(lineWidth: lineWidth)) }
+}
+
+private struct PaneHeaderRing: ViewModifier {
+    let lineWidth: CGFloat
+    @Environment(\.paneHeaderStatusGrouped) private var grouped
+    @ScaledMetric(relativeTo: .body) private var scaledDiameter = Metrics.paneHeaderButton
+    private var diameter: CGFloat { InputMode.current.isTouch ? scaledDiameter : Metrics.paneHeaderButton }
+
+    func body(content: Content) -> some View {
+        // 和侧栏入口同在一块玻璃里时缩小，给玻璃边缘留出余量
+        let ring = diameter * (grouped ? 0.6 : Metrics.statusRingScale)
+        content
+            .padding(lineWidth / 2)
+            .frame(width: ring, height: ring)
+            // 合进按钮组时排在组尾：前面同按钮一样带半个间距，后面让圆环与胶囊端头同心
+            .padding(.leading, grouped ? Metrics.paneHeaderButtonGap / 2 : 0)
+            .padding(.trailing, grouped ? (diameter - ring) / 2 - Metrics.paneHeaderGroupInset : 0)
+            .frame(width: grouped ? nil : diameter, height: diameter)
+    }
 }
 
 /// 卡片拖动层按菜单的实际宽度留空，菜单接收自己的点击。

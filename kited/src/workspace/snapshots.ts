@@ -41,7 +41,8 @@ async function resolve(cwd: string, names: string[]): Promise<(string | null)[]>
 
 /** 标签是一行字，原样作为提交说明的第一行，列快照时读回来的和事件里的一致。 */
 function message(workspaceId: string, label: string, toolUseIds: string[]): string {
-  return [label, '', `Kite-Workspace: ${workspaceId}`, ...toolUseIds.map((id) => `Kite-Tool-Use: ${id}`)].join('\n');
+  // 提交时间只到秒；毫秒时间用来与会话记录对齐（压缩范围的净变化）。
+  return [label, '', `Kite-Workspace: ${workspaceId}`, `Kite-At: ${Date.now()}`, ...toolUseIds.map((id) => `Kite-Tool-Use: ${id}`)].join('\n');
 }
 
 interface NewSnapshot {
@@ -136,16 +137,47 @@ export async function findSnapshot(cwd: string, workspaceId: string, commit: str
 
 /** 会话的快照链，新的在前，最多 1000 枚。沿第一父节点走，遇到不属于本会话的提交就停。 */
 export async function list(cwd: string, workspaceId: string): Promise<Snapshot[]> {
-  const fmt = '%H%x1f%ct%x1f%s%x1f%(trailers:key=Kite-Workspace,valueonly,separator=%x2C)%x1f%(trailers:key=Kite-Tool-Use,valueonly,separator=%x2C)%x1e';
+  const fmt = '%H%x1f%ct%x1f%s%x1f%(trailers:key=Kite-Workspace,valueonly,separator=%x2C)%x1f%(trailers:key=Kite-Tool-Use,valueonly,separator=%x2C)%x1f%(trailers:key=Kite-At,valueonly)%x1e';
   // 还没有快照时引用不存在，log 失败
   const r = await gitTry(cwd, ['log', '--first-parent', '-n1000', `--format=${fmt}`, snapshotRef(workspaceId)]);
   if (r.code !== 0) return [];
   const out = r.stdout.trim();
   const snaps: Snapshot[] = [];
   for (const rec of out.split('\x1e')) {
-    const [commit, at, label, owner, tools] = rec.trim().split('\x1f');
+    const [commit, at, label, owner, tools, ms] = rec.trim().split('\x1f');
     if (!commit || owner?.trim() !== workspaceId) break;
-    snaps.push({ commit, at: Number(at) * 1000, label: label ?? '', toolUseIds: (tools ?? '').split(',').map((s) => s.trim()).filter(Boolean) });
+    snaps.push({ commit, at: Number(ms?.trim()) || Number(at) * 1000, label: label ?? '', toolUseIds: (tools ?? '').split(',').map((s) => s.trim()).filter(Boolean) });
   }
   return snaps;
+}
+
+/**
+ * 两个时刻之间工作区的净变化：各取当时最近的一枚快照比较，每行「状态 路径 (+增 -删)」，最多 limit 行。
+ * 没有更早的快照或两枚相同时返回 undefined。
+ */
+export async function changesBetween(cwd: string, workspaceId: string, from: number, to: number, limit = 200): Promise<string | undefined> {
+  const snaps = await list(cwd, workspaceId);
+  const base = snaps.find((snap) => snap.at <= from);
+  const end = snaps.find((snap) => snap.at <= to);
+  if (!base || !end || base.commit === end.commit) return undefined;
+  const [status, numstat] = await Promise.all([
+    git(cwd, ['diff-tree', '-r', '--no-renames', '--name-status', '-z', base.commit, end.commit]),
+    git(cwd, ['diff-tree', '-r', '--no-renames', '--numstat', '-z', base.commit, end.commit]),
+  ]);
+  const counts = new Map<string, string>();
+  const stats = numstat.split('\0');
+  for (let index = 0; index + 1 < stats.length; index += 1) {
+    const [added, deleted, path] = stats[index]!.split('\t');
+    if (path === undefined) continue;
+    counts.set(path, added === '-' ? '二进制' : `+${added} -${deleted}`);
+  }
+  const names: Record<string, string> = { A: '新增', M: '修改', D: '删除', T: '类型变化' };
+  const fields = status.split('\0').filter(Boolean);
+  const lines: string[] = [];
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const path = fields[index + 1]!;
+    lines.push(`${names[fields[index]!] ?? fields[index]} ${path}${counts.has(path) ? ` (${counts.get(path)})` : ''}`);
+  }
+  if (!lines.length) return undefined;
+  return (lines.length > limit ? [...lines.slice(0, limit), `……另有 ${lines.length - limit} 个文件`] : lines).join('\n');
 }

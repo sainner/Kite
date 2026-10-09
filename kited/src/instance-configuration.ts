@@ -26,12 +26,12 @@ interface ConfigurationControl {
   context(id: string): ThreadContext;
   openThread(id: string): ThreadContext;
   runtime(thread: AgentInstance): Promise<Runtime | undefined>;
+  switchRuntime(id: string, agent: AgentDefinition, commit: () => void): Promise<void>;
   changed(workspaceId: string): void;
 }
 
 export class InstanceConfiguration {
   private journalIndex = new JournalIndex();
-  private capabilityCatalog = new Map<string, { at: number; value: ReturnType<typeof agentCapabilities> }>();
 
   constructor(private kite: ConfigurationServices, private control: ConfigurationControl) {}
 
@@ -131,13 +131,7 @@ export class InstanceConfiguration {
   }
   agentCapabilities(id: string) {
     const thread = this.control.context(id);
-    const key = `${thread.definitionId}:${thread.workspace.cwd}`;
-    const cached = this.capabilityCatalog.get(key);
-    if (cached && Date.now() - cached.at < 60_000) return cached.value;
-    const value = agentCapabilities(this.kite.catalog.get(thread.definitionId).agent!, thread.workspace.cwd);
-    this.capabilityCatalog.set(key, { at: Date.now(), value });
-    void value.catch(() => { if (this.capabilityCatalog.get(key)?.value === value) this.capabilityCatalog.delete(key); });
-    return value;
+    return agentCapabilities({ ...this.kite.catalog.get(thread.definitionId).agent!, runtime: instanceAgent(thread).runtime });
   }
   configureAgent(id: string, expectedRevision: string, value: unknown) {
     return this.updateAgentConfiguration(id, expectedRevision, () => value);
@@ -154,29 +148,28 @@ export class InstanceConfiguration {
       const { instance, revision } = snapshot;
       if (revision !== expectedRevision) throw new KiteError('配置已变化，请重新读取后修改', 409);
       const agent = parseAgentDefinition(update(instanceAgent(instance)));
-      if (agent.runtime !== this.control.context(id).runtime) throw new KiteError('不能更换已有会话的执行后端，请新建会话');
+      const runtimeChanged = agent.runtime !== this.control.context(id).runtime;
       if (agent.runtime === 'claude') {
         const running = await this.control.runtime(this.control.context(id));
         if (running?.busy || running?.recovery || running?.state === 'stopping') throw new KiteError('请先停止会话并确认执行结果，再修改 Claude 配置', 409);
         if (!['default', 'low', 'medium', 'high', 'xhigh', 'max'].includes(agent.model.reasoning)) throw new KiteError('Claude 思考强度无效');
-        const previous = instanceAgent(instance).model;
-        if (agent.model.model !== previous.model || agent.model.reasoning !== previous.reasoning) {
-          const capabilities = await this.agentCapabilities(id);
-          const selected = capabilities.models.find((model) => model.id === agent.model.model
-            || ('resolvedModel' in model && model.resolvedModel === agent.model.model));
-          if (selected && agent.model.reasoning !== 'default' && !selected.reasoning.includes(agent.model.reasoning)) throw new KiteError('这个模型不支持所选思考强度');
-        }
       }
       const declared = this.kite.catalog.get(instance.definitionId).agent!;
       if (agent.tools.some((tool) => !declared.tools.includes(tool))) throw new KiteError('配置包含此定义未开放的工具');
       const nextRevision = agentRevision(agent);
       if (nextRevision === revision) return snapshot;
-      this.kite.store.setInstanceConfig(id, { ...instance.config, agent }, {
+      const notification = {
         id: randomUUID(), kind: 'agent.configuration.changed', source: `instance:${id}`, authority: 'instruction',
         context: assembleContext(agentConfigurationContext({
           revision: nextRevision, ...agent.model, tools: agent.tools, maxRequestsPerTurn: agent.maxRequestsPerTurn,
         }, this.kite.contextTemplates.get(agentConfigurationContextDefinition.id, agentConfigurationContextDefinition.scene).definition)).snapshot,
+      } as const;
+      const save = () => this.kite.store.transaction(() => {
+        if (runtimeChanged) this.kite.store.setThreadRuntime(id, agent.runtime);
+        this.kite.store.setInstanceConfig(id, { ...instance.config, agent }, notification);
       });
+      if (runtimeChanged) await this.control.switchRuntime(id, agent, save);
+      else save();
       this.control.changed(instance.workspaceId);
       return this.agentConfig(id);
     });

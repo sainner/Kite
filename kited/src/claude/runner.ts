@@ -1,7 +1,8 @@
 /**
  * 一个会话的 Claude Code 进程。消息直接写进进程的输入流；进程已关闭就用原生会话 id 就地 resume。
  *
- * 收口判据（沿用 Pigeon，依据官方 hooks 文档「Stop input」一节）：回合结束时看 Stop 钩子输入里的
+ * 常驻（resident）时进程随宿主存续：回合结束只报告空闲，不关闭输入流，由宿主在实例结束时 shutdown。
+ * 非常驻时沿用 Pigeon 的收口判据（依据官方 hooks 文档「Stop input」一节）：回合结束时看 Stop 钩子输入里的
  * background_tasks 和 session_crons，两份都是空数组才关闭输入流，让进程退出；读不到不当空处理。
  * Stop 之后又来了消息就不关，CLI 会接着开下一轮。关闭期间来的消息先存着，进程退出后带着它们重新 resume。
  * 进程被杀、崩溃等同于关闭，下一条消息到来时 resume。
@@ -79,8 +80,8 @@ export interface RunnerConfig {
   /** 只注入 Kite 已开放的能力；每次启动进程重新创建 SDK MCP 服务器。 */
   mcpServers?: () => Options['mcpServers'];
   configuration?: () => Pick<Options, 'model' | 'effort' | 'maxTurns' | 'systemPrompt'>;
-  /** 宿主关闭了后台功能，结果收齐且没有未处理输入时即可收口。 */
-  closeWhenIdle?: boolean;
+  /** 进程随宿主常驻：回合结束、输入收齐后只报告空闲，不关闭输入流。 */
+  resident?: boolean;
 }
 
 export class Runner {
@@ -113,6 +114,8 @@ export class Runner {
     if (this.disposed) throw new Error('runner 已关闭');
     if (this.stopping) throw new Error('runner 正在停止');
     if (m.id) this.inputStates.set(m.id, undefined);
+    // 常驻进程上的新一轮：上一轮的结果不能当作这一轮已经收口。
+    if (!this.busy) this.hadResult = false;
     this.busy = true;
     this.sentAfterStop = true;
     if (this.state === 'running') this.inbox!.push(m);
@@ -219,10 +222,8 @@ export class Runner {
           this.on.input?.(lifecycle.command_uuid, lifecycle.state);
           for (const resolve of this.inputWaiters) resolve();
           this.inputWaiters.clear();
-          if (this.cfg.closeWhenIdle && this.hadResult && !this.turnActive && this.state === 'running'
-            && [...this.inputStates.values()].every((state) => state === 'completed' || state === 'cancelled')) {
-            this.setState('closing'); inbox.close();
-          }
+          // 主输入的 completed 可在 result 之后才到：常驻进程在这时才算空闲。
+          if (this.cfg.resident && this.busy && this.hadResult && !this.turnActive && this.state === 'running' && this.settled()) this.becomeIdle();
         }
         this.on.message(m);
         if (m.type === 'result') {
@@ -260,14 +261,34 @@ export class Runner {
     const idle = this.stopIdle;
     this.stopIdle = null;
     // Stop 之后又来了消息：CLI 会接着开下一轮
-    if (!this.stopping && ([...this.inputStates.values()].some((state) => state === undefined || state === 'queued' || state === 'started')
-      || (idle !== null && this.sentAfterStop))) return;
+    if (!this.stopping && (!this.settled() || (idle !== null && this.sentAfterStop))) return;
+    if (this.cfg.resident && !this.stopping) { this.becomeIdle(); return; }
     this.busy = false;
-    if (idle || this.cfg.closeWhenIdle) {
+    if (idle) {
       this.setState('closing');
       inbox.close();
     }
     this.on.idle();
+  }
+
+  /** 已投递的输入都有了终态（完成或撤回）。 */
+  private settled(): boolean {
+    return [...this.inputStates.values()].every((state) => state === 'completed' || state === 'cancelled');
+  }
+
+  /** 常驻进程回合收口：清掉已终结的输入状态，进程留着等下一轮。 */
+  private becomeIdle(): void {
+    this.busy = false;
+    this.inputStates.clear();
+    this.on.idle();
+  }
+
+  /** CLI 估算的上下文用量与它认定的窗口，不发模型请求；进程不在或查询失败时为 undefined。 */
+  async contextUsage(): Promise<{ tokens: number; window: number } | undefined> {
+    try {
+      const usage = await this.q?.getContextUsage({ detail: 'summary' });
+      return usage ? { tokens: usage.totalTokens, window: usage.rawMaxTokens } : undefined;
+    } catch { return undefined; }
   }
 
   private options(resume: boolean): Options {

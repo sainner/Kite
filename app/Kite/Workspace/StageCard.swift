@@ -4,16 +4,15 @@ import SwiftUI
 /// 宽屏使用不透明窗口底色，紧凑布局沿用窗口外壳。点阵画在底色上方。
 private struct StageCard: ViewModifier {
     var usesDots = false
-    @Environment(\.dotStage) private var stage
     @Environment(\.workspacePresentation) private var presentation
 
     func body(content: Content) -> some View {
         if presentation == .compact {
-            content.windowDots(usesDots, stage: stage)
+            content.windowDots(usesDots)
         } else {
             let shape = RoundedRectangle(cornerRadius: Metrics.cardRadius, style: .continuous)
             content
-                .windowDots(usesDots, stage: stage)
+                .windowDots(usesDots)
                 .background(shape.fill(Theme.card))
                 .clipShape(shape)
         }
@@ -51,6 +50,7 @@ struct SectionPage<Content: View, Actions: View>: View {
                 PaneHeaderBar(header: header, status: EmptyView(), actions: actions, openSidebar: openSidebar)
                     .padding(.top, max(Metrics.paneMargin, topInset) - topInset)
                     .padding(.bottom, Metrics.paneMargin)
+                    .background { ScrollEdgeDots() }
             }
             .scrollEdgeEffectStyle(.soft, for: .top)
             .stageCard(usesDots: usesDots)

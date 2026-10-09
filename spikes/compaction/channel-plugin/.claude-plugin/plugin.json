@@ -1,0 +1,5 @@
+{
+  "name": "kite-channel-spike",
+  "version": "0.1.0",
+  "description": "实验：回合结束时经 $.mcp.call 调用宿主的内部 MCP 工具"
+}

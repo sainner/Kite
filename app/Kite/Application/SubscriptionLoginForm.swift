@@ -10,7 +10,7 @@ struct SubscriptionLoginState: Decodable {
     var finished: Bool { ["complete", "failed", "cancelled", "expired"].contains(status) }
 }
 
-/// 实际登录与样式预览使用同一份呈现，授权流程只由调用方驱动。
+/// 登录弹窗的呈现，授权流程由调用方驱动。
 struct SubscriptionLoginForm: View {
     let name: String
     let machine: String
@@ -93,7 +93,7 @@ struct SubscriptionLoginForm: View {
                 CardActions(primary: "提交", enabled: !trimmedCode.isEmpty,
                             phase: .constant(actionPhase), succeeded: "登录成功",
                             working: provider == "chatgpt" ? "等待授权完成…" : "正在提交…",
-                            action: submit)
+                            action: submit, succeededAction: close)
             }
         }
         .endsTyping(typing) { typing = false }
@@ -116,17 +116,23 @@ struct SubscriptionLoginForm: View {
 
     private func deviceCode(_ value: String) -> some View {
         HStack(spacing: 6) {
-            ForEach(Array(value.filter { $0 != "-" }.enumerated()), id: \.offset) { _, character in
-                Button { copyToPasteboard(value, toast: toast) } label: {
-                    Text(String(character))
+            ForEach(Array(value.enumerated()), id: \.offset) { _, character in
+                if character == "-" {
+                    Text("-")
                         .font(Theme.heading2.monospaced())
-                        .frame(maxWidth: .infinity, minHeight: 48)
-                        .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button { copyToPasteboard(value, toast: toast) } label: {
+                        Text(String(character))
+                            .font(Theme.heading2.monospaced())
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                            .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(.pointingPlain)
+                    .help("复制设备码")
+                    .accessibilityLabel("\(String(character))，复制完整设备码")
+                    .accessibilityValue(value)
                 }
-                .buttonStyle(.pointingPlain)
-                .help("复制设备码")
-                .accessibilityLabel("\(String(character))，复制完整设备码")
-                .accessibilityValue(value)
             }
         }
     }

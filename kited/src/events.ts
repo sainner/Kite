@@ -23,6 +23,8 @@ export type DomainEvent =
   | { type: 'workspace.changed'; workspaceId: string; status: WorkspaceStatus }
   | { type: 'thread.changed'; workspaceId: string; threadId: string; status: PluginInstance['status'] }
   | { type: 'model-accounts.changed'; modelAccounts: ModelAccountsSnapshot }
+  /** 模板或点阵签名有变化，客户端重新读取模板列表。 */
+  | { type: 'context-templates.changed' }
   | ({ workspaceId: string; originThreadId?: string } & (
     | { type: 'workspace.setup'; exit: number | null; log: string }
     | { type: 'workspace.snapshot'; commit: string; label: string; changedFiles: number }

@@ -7,6 +7,7 @@ import type { FakeAccount } from '../fake-account.ts';
 import { call, createWorkspace, linkNewAccount, machine, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { item, ManualModel, Seen } from '../harness-loop.ts';
 import { commitAll, makeTemp, newRepo } from '../util.ts';
+import modelCatalog from '../../../shared/agent-models.json';
 
 type RecordView = { id: string; at: number; block: { type: string; [key: string]: unknown }; parent?: string;
   generation?: 'streaming' | 'complete' | 'interrupted' };
@@ -248,7 +249,18 @@ test('SSE 重连保留流式分段、排队输入及交错工具结果所属的�
   if (completedRecord.type !== 'harness' || completedRecord.event.type !== 'record'
     || completedRecord.event.record.type !== 'request.completed') throw new Error('缺少首请求完成记录');
   expect(completedRecord.event.record.usage).toEqual({ input_tokens: 123 });
-  const measured = { requestId: first.request.id, inputTokens: 123, measuredAt: completedRecord.event.record.at };
+  // 上下文窗口按该请求实际配置的模型查共享目录：request.started 指向 request.configured 快照。
+  const harnessRecords = kk.events.flatMap((event) => event.type === 'harness' && event.threadId === id
+    && event.event.type === 'record' ? [event.event.record] : []);
+  const started = harnessRecords.find((record) => record.type === 'request.started' && record.requestId === first.request.id);
+  if (started?.type !== 'request.started') throw new Error('缺少首请求开始记录');
+  const configured = harnessRecords.find((record) => record.type === 'request.configured'
+    && record.snapshot.id === started.configurationId);
+  if (configured?.type !== 'request.configured') throw new Error('缺少首请求配置记录');
+  const requestModel = modelCatalog.models.find((entry) => entry.id === configured.snapshot.settings.model?.model);
+  expect(requestModel).toBeDefined();
+  const measured = { requestId: first.request.id, inputTokens: 123, windowTokens: requestModel!.contextWindow,
+    measuredAt: completedRecord.event.record.at };
   await resumed.events.wait((event) => resumed.events.values.indexOf(event) >= beforeFirstCompletion
     && event.type === 'thread.state' && event.state?.context?.requestId === first.request.id);
   const second = await model.call(2);

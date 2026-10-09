@@ -5,6 +5,7 @@ struct ModelAccountPane: View {
     let pane: Pane
     @Environment(AppModel.self) private var model
     @State private var login: SubscriptionLoginRequest?
+    @State private var addingApiKey = false
 
     var body: some View {
         accountWindow(title: PaneGroup.accounts(model.accountWindows).appearance(of: pane).name,
@@ -12,20 +13,20 @@ struct ModelAccountPane: View {
             .sheet(item: $login) { request in
                 SubscriptionLoginSheet(request: request).environment(model).appAppearance()
             }
-            // 平时额度跟随会话推送，打开账号页时才让工作机查一次上游。
-            .task(id: "\(model.accountWorker?.id ?? ""):\(model.accountWorker?.connected == true)") {
-                guard let connection = model.accountWorker, connection.connected else { return }
-                await model.refreshModelAccounts(connection)
+            .sheet(isPresented: $addingApiKey) {
+                ApiKeySheet().environment(model).appAppearance()
             }
     }
 
     private func accountWindow(title: String, subscriptionID: String?) -> some View {
         let connection = model.accountWorker
         let account = connection?.modelAccounts?.accounts.first { $0.id == subscriptionID }
-        let status = account.map {
-            connection?.connected != true || connection?.modelAccountsError != nil ? "上次数据" : $0.statusTitle
-        }
-        return PaneWindow(header: PaneHeader(title: title, subtitle: status), usesDots: true) {
+        let stale = account.map { connection?.showsStaleData($0) ?? true } ?? false
+        // 订阅窗口的档位是标题右边的标签，副行是账号邮箱，状态异常写在正文顶部；还没有身份时副行退回状态。
+        let subtitle = account.map { $0.identity ?? (stale ? "上次数据" : $0.statusTitle) }
+        // API 窗口的副行说明密钥存放位置。
+        return PaneWindow(header: PaneHeader(title: title, subtitle: subscriptionID == nil ? "API Key 保存在资源库的凭据中" : subtitle,
+                                             badge: account?.planTitle), usesDots: subscriptionID != nil) {
             ScrollView {
                 VStack(alignment: .leading, spacing: DotMetrics.module * 2) {
                     if let connection {
@@ -42,29 +43,32 @@ struct ModelAccountPane: View {
                 .padding(CardMetrics.inset)
                 .separateScrollPocket()
             }
+            .dotClip()
         } controls: { _ in
             EmptyView()
+        } headerStatus: {
+            if let account, !account.sharedQuotas.isEmpty {
+                AccountQuotaRing(quotas: account.sharedQuotas, stale: stale)
+            }
         } headerActions: {
-            if let connection {
+            if let connection, let account {
+                let title = account.status == "ready" ? "重新登录" : "登录"
                 PaneHeaderButtonGroup {
-                    if let subscriptionID,
-                       let account = connection.modelAccounts?.accounts.first(where: { $0.id == subscriptionID }) {
-                        let title = account.status == "ready" ? "重新登录" : "登录"
-                        Button {
-                            login = SubscriptionLoginRequest(account: account, connection: connection)
-                        } label: {
-                            PaneHeaderButtonLabel(title, systemImage: "person.crop.circle")
-                        }
-                        .disabled(!connection.connected)
-                        .help(title)
-                    }
                     Button {
-                        Task { await model.refreshModelAccounts(connection) }
+                        login = SubscriptionLoginRequest(account: account, connection: connection)
                     } label: {
-                        PaneHeaderButtonLabel("刷新", systemImage: "arrow.clockwise")
+                        PaneHeaderButtonLabel(title, systemImage: "person.crop.circle")
                     }
-                    .disabled(!connection.connected || connection.readingModelAccounts)
-                    .help("刷新这台工作机的账号与额度")
+                    .disabled(!connection.connected)
+                    .help(title)
+                }
+            } else if subscriptionID == nil {
+                PaneHeaderButtonGroup {
+                    Button { addingApiKey = true } label: {
+                        PaneHeaderButtonLabel("添加", systemImage: "plus")
+                    }
+                    .disabled(!model.account.signedIn)
+                    .help(model.account.signedIn ? "添加 API Key" : "登录 Kite 账号后添加 API Key")
                 }
             }
         }
@@ -77,167 +81,257 @@ struct ModelAccountPane: View {
                 if let subscriptionID { $0.id == subscriptionID }
                 else { $0.kind == "api" }
             }
+            if accounts.isEmpty {
+                if subscriptionID == nil {
+                    Text("还没有 API 账号，点「添加」保存 API Key 后即可查询额度与余额")
+                        .font(Theme.secondary).foregroundStyle(.secondary)
+                } else {
+                    pendingNotice(connection)
+                }
+            }
             ForEach(accounts) { account in
-                if account.id != accounts.first?.id { Divider() }
-                ModelAccountRow(account: account, showsProvider: subscriptionID == nil,
-                                stale: !connection.connected || connection.modelAccountsError != nil)
+                let stale = connection.showsStaleData(account)
+                if subscriptionID == nil {
+                    if account.id != accounts.first?.id { Divider() }
+                    ApiAccountRow(account: account, stale: stale)
+                } else {
+                    ModelAccountRow(account: account, stale: stale)
+                }
             }
             Text("更新于 \(Date(timeIntervalSince1970: snapshot.checkedAt).formatted(date: .abbreviated, time: .shortened))")
-                .font(Theme.caption).foregroundStyle(.secondary)
+                .font(Theme.caption).foregroundStyle(.tertiary)
         } else if connection.readingModelAccounts {
             HStack(spacing: DotMetrics.module) {
                 ProgressView().controlSize(.small)
                 Text("正在读取账号与额度…").font(Theme.secondary).foregroundStyle(.secondary)
             }
         } else {
-            Text(connection.connected ? "尚未取得账号数据" : "工作机离线，连接后可查看账号与额度")
-                .font(Theme.secondary).foregroundStyle(.secondary)
+            pendingNotice(connection)
         }
         if let error = connection.modelAccountsError {
             Text("本次更新失败：\(error)").font(Theme.caption).foregroundStyle(Theme.warning)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
+
+    /// 额度只在点刷新或会话带回时更新，打开页面不查询。
+    private func pendingNotice(_ connection: WorkerConnection) -> some View {
+        Text(connection.connected ? "尚未取得账号数据，会话运行后自动更新，也可在侧栏的账号行刷新" : "工作机离线，连接后可查看账号与额度")
+            .font(Theme.secondary).foregroundStyle(.secondary)
+    }
 }
 
+/// 订阅账号：额度在标题前的圆环里，正文是状态提示、用量统计、额度重置时间、按模型的周期与额外额度。
 private struct ModelAccountRow: View {
     let account: ModelAccount
-    let showsProvider: Bool
     let stale: Bool
 
-    private var isSubscription: Bool { account.kind == "subscription" }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: isSubscription ? DotMetrics.module * 2 : DotMetrics.module) {
-            if showsProvider {
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: DotMetrics.module * 2) {
-                        identity
-                        Spacer(minLength: 0)
-                        status
-                    }
-                    VStack(alignment: .leading, spacing: DotMetrics.module) {
-                        identity
-                        status
-                    }
-                }
-            } else if account.plan != nil || account.identity != nil {
-                identity
+        VStack(alignment: .leading, spacing: DotMetrics.module * 2) {
+            notice
+            // 整个账号共用的周期在标题前的圆环里，悬停看外圈的数字；正文先是用量统计。
+            if let usage = account.usage {
+                AccountUsageSection(usage: usage, stale: stale)
             }
             if !account.quotas.isEmpty {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: DotMetrics.module * 20), spacing: DotMetrics.module * 3, alignment: .top)],
-                          alignment: .leading, spacing: DotMetrics.module * 2) {
-                    ForEach(account.quotas) { quota in
-                        quotaRow(quota)
+                // 重置时间按剩余时长显示，每分钟跟着走一次。
+                TimelineView(.everyMinute) { context in
+                    let now = context.date.timeIntervalSince1970
+                    VStack(alignment: .leading, spacing: DotMetrics.module * 2) {
+                        if !account.sharedQuotas.isEmpty { resets(now: now) }
+                        if account.quotas.contains(where: { $0.model != nil }) { scopedQuotas(now: now) }
                     }
                 }
             }
             if let credits = account.credits {
                 LabeledContent("额外额度") {
                     if credits.unlimited { Text("不限额") }
-                    else if let value = credits.value { Text(value, format: .number).monospacedDigit() }
+                    else if let value = credits.value { Text(value, format: .number.precision(.fractionLength(0...2))).monospacedDigit() }
                     else { Text("余额未返回").foregroundStyle(.secondary) }
                 }
                 .font(Theme.secondary)
             }
-            if let cost = account.cost {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("本月组织费用").font(Theme.secondary)
-                        Text("\(Date(timeIntervalSince1970: cost.from).formatted(date: .abbreviated, time: .omitted)) 起 · UTC")
-                            .font(Theme.caption).foregroundStyle(.secondary)
+            if let extra = account.extraUsage {
+                if extra.enabled {
+                    let money = { (value: Double) in extra.currency.map { value.formatted(.currency(code: $0)) } ?? value.formatted() }
+                    LabeledContent("额外用量") {
+                        Text([extra.used.map { "已用 \(money($0))" }, extra.limit.map { "上限 \(money($0))" }, extra.balance.map { "余额 \(money($0))" }]
+                            .compactMap(\.self).joined(separator: " · ")).monospacedDigit()
                     }
-                    Spacer()
-                    Text(cost.value, format: .currency(code: cost.currency))
-                        .font(Theme.heading2).monospacedDigit()
+                    .font(Theme.secondary)
+                } else {
+                    Text("额外用量未开启").font(Theme.caption).foregroundStyle(.secondary)
                 }
-            }
-            ForEach(account.balances ?? []) { balance in
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("可用余额").font(Theme.secondary).foregroundStyle(.secondary)
-                        Spacer()
-                        Text(balance.total, format: .currency(code: balance.currency))
-                            .font(Theme.heading2).monospacedDigit()
-                    }
-                    Text("充值 \(balance.toppedUp.formatted(.currency(code: balance.currency))) · 赠金 \(balance.granted.formatted(.currency(code: balance.currency)))")
-                        .font(Theme.caption).foregroundStyle(.secondary)
-                }
-            }
-            if let message = account.message {
-                Text(message).font(Theme.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if account.status == "unconfigured" {
-                Text(account.kind == "api" ? "这台工作机尚未配置此 API 账号。" : "这台工作机尚未登录此订阅账号。")
-                    .font(Theme.caption).foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var identity: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: DotMetrics.module) {
-                if showsProvider {
-                    Text(account.provider).font(Theme.title)
-                }
-                if let plan = account.plan {
-                    Text(plan)
-                        .font(Theme.caption.weight(.medium))
-                        .foregroundStyle(Color.accentColor)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Palette.dewy.opacity(0.18), in: Capsule())
+    /// 订阅窗口的标题副行只放身份和档位；未登录、需要重新授权、沿用旧数据这些状态写在额度上方。
+    @ViewBuilder
+    private var notice: some View {
+        let unconfigured = account.status == "unconfigured"
+        let warns = stale || account.status == "reauthentication" || account.status == "unavailable"
+        let detail = unconfigured ? "这台工作机尚未登录此订阅账号。" : account.message
+        if unconfigured || warns {
+            HStack(alignment: .firstTextBaseline, spacing: DotMetrics.module / 2) {
+                Image(systemName: unconfigured ? "person.crop.circle.badge.questionmark" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(warns ? Theme.warning : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(stale ? "显示的是上次数据" : account.statusTitle).font(Theme.secondary.weight(.medium))
+                    if let detail {
+                        Text(detail).font(Theme.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
-            if let identity = account.identity {
-                Text(identity).font(Theme.secondary).foregroundStyle(.secondary)
-                    .textSelection(.enabled).lineLimit(2)
+        } else if let message = account.message {
+            Text(message).font(Theme.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private static let columns = [GridItem(.adaptive(minimum: DotMetrics.module * 20), spacing: DotMetrics.module * 3, alignment: .top)]
+
+    /// 圆环里整个账号共用的周期各自何时重置，排法和用量汇总一样。
+    private func resets(now: Double) -> some View {
+        HStack(alignment: .top, spacing: DotMetrics.module * 3) {
+            ForEach(account.sharedQuotas) { quota in
+                let expired = quota.isExpired(now: now)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(quota.label)额度重置").font(Theme.caption).foregroundStyle(.secondary)
+                    Text(expired ? "等待刷新" : quota.resetMoment(now: now) ?? "—")
+                        .font(Theme.heading2).monospacedDigit()
+                        .foregroundStyle(expired ? .secondary : .primary)
+                }
+                .lineLimit(1)
             }
         }
     }
 
-    private var status: some View {
-        Text(stale ? "上次数据" : account.statusTitle)
-            .font(Theme.caption)
-            .foregroundStyle(stale || account.status == "reauthentication" || account.status == "unavailable" ? Theme.warning : .secondary)
-            .fixedSize()
+    /// 只限某个模型的周期归到一组，每个一行。
+    private func scopedQuotas(now: Double) -> some View {
+        VStack(alignment: .leading, spacing: DotMetrics.module) {
+            Text("按模型").font(Theme.caption).foregroundStyle(.secondary)
+            LazyVGrid(columns: Self.columns, alignment: .leading, spacing: DotMetrics.module) {
+                ForEach(account.quotas.filter { $0.model != nil }) { quotaLine($0, now: now) }
+            }
+        }
     }
 
-    private func quotaRow(_ quota: ModelAccount.Quota) -> some View {
-        let expired = quota.resetsAt.map { $0 <= Date.now.timeIntervalSince1970 } ?? false
-        let tint = quota.remaining < 0.2 ? Theme.warning : Color.accentColor
-        return VStack(alignment: .leading, spacing: DotMetrics.module) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(quota.label).foregroundStyle(.secondary)
-                Spacer()
-                if expired { Text("等待刷新").foregroundStyle(.secondary) }
-                else {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("剩余").font(Theme.caption).foregroundStyle(.secondary)
-                        Text(quota.remaining.formatted(.percent.precision(.fractionLength(0))))
-                            .font(Theme.heading1).monospacedDigit()
-                            .foregroundStyle(stale ? .secondary : tint)
+    private func percent(_ quota: ModelAccount.Quota) -> String {
+        quota.remaining.formatted(.percent.precision(.fractionLength(0)))
+    }
+
+    private func quotaLine(_ quota: ModelAccount.Quota, now: Double) -> some View {
+        let expired = quota.isExpired(now: now), tint = quota.tint(stale: stale, now: now)
+        let name = HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(quota.model ?? "").font(Theme.secondary)
+            Text(quota.label).font(Theme.caption).foregroundStyle(.secondary)
+        }
+        let value = Text(expired ? "等待刷新" : percent(quota))
+            .font(expired ? Theme.caption : Theme.secondary.weight(.semibold)).monospacedDigit()
+            .foregroundStyle(tint)
+        return VStack(alignment: .leading, spacing: DotMetrics.module / 2) {
+            // 放不下时先省掉重置时间，名称和百分比总在。
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: DotMetrics.module) {
+                    name
+                    Spacer(minLength: 0)
+                    if !expired, let reset = quota.resetText(now: now) {
+                        Text(reset).font(Theme.caption).foregroundStyle(.secondary)
                     }
+                    value
                 }
+                .lineLimit(1)
+                HStack(alignment: .firstTextBaseline, spacing: DotMetrics.module) {
+                    name
+                    Spacer(minLength: 0)
+                    value
+                }
+                .lineLimit(1)
             }
-            .font(Theme.secondary)
             if !expired {
-                AccountQuotaDots(remaining: quota.remaining, tint: stale ? .secondary : tint)
-                    .accessibilityLabel("\(quota.label)剩余额度")
-                    .accessibilityValue(quota.remaining.formatted(.percent.precision(.fractionLength(0))))
-            }
-            if let reset = quota.resetsAt {
-                Text("重置时间 \(Date(timeIntervalSince1970: reset).formatted(date: .abbreviated, time: .shortened))")
-                    .font(Theme.caption).foregroundStyle(.secondary)
+                AccountQuotaDots(remaining: quota.remaining, tint: tint)
+                    .accessibilityLabel("\(quota.title)剩余额度")
+                    .accessibilityValue(percent(quota))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-/// 五行点阵按列填满，最多一百格；窄处减少列数，百分比仍由旁边的文字准确表达。
+/// API 账号：供应商与 Key 名称、状态，主数字是余额或本月组织费用，下面是明细、用量统计和提示。
+private struct ApiAccountRow: View {
+    let account: ModelAccount
+    let stale: Bool
+
+    private var warns: Bool { stale || account.status == "reauthentication" || account.status == "unavailable" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DotMetrics.module) {
+            HStack(alignment: .firstTextBaseline, spacing: DotMetrics.module) {
+                Text(account.provider).font(Theme.title)
+                if let identity = account.identity {
+                    Text(identity).font(Theme.secondary).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                }
+                Spacer(minLength: 0)
+                status
+            }
+            ForEach(account.balances ?? []) { balance in
+                figure(balance.total.formatted(.currency(code: balance.currency)), title: "可用余额",
+                       detail: "充值 \(balance.toppedUp.formatted(.currency(code: balance.currency))) · 赠金 \(balance.granted.formatted(.currency(code: balance.currency)))")
+            }
+            if let cost = account.cost {
+                figure(cost.value.formatted(.currency(code: cost.currency)), title: "本月组织费用",
+                       detail: "\(Date(timeIntervalSince1970: cost.from).formatted(.dateTime.month().day())) 起，按 UTC 计 · 组织合计，不是余额")
+            }
+            if let usage = account.usage {
+                AccountUsageSection(usage: usage, stale: stale)
+                    .padding(.top, DotMetrics.module)
+            }
+            if let message = account.message {
+                Label(message, systemImage: warns ? "exclamationmark.triangle.fill" : "info.circle")
+                    .font(Theme.caption)
+                    .foregroundStyle(.secondary)
+                    .symbolRenderingMode(.monochrome)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, DotMetrics.module / 2)
+    }
+
+    /// 大号金额，旁边一行小字写它是什么，下面一行写明细。
+    private func figure(_ value: String, title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: DotMetrics.module) {
+                Text(value).font(Theme.display).monospacedDigit()
+                    .foregroundStyle(stale ? .secondary : .primary)
+                    .lineLimit(1).minimumScaleFactor(0.6)
+                Text(title).font(Theme.secondary).foregroundStyle(.secondary)
+            }
+            Text(detail).font(Theme.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// 状态用一个小圆点加文字：可用为主题色，需要处理为警示色，只确认了配置为灰色。
+    private var status: some View {
+        let hasData = account.cost != nil || account.balances != nil
+        let color: Color = warns ? Theme.warning : account.status == "ready" && hasData ? .accentColor : .secondary
+        return HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(stale ? "上次数据" : account.statusTitle)
+        }
+        .font(Theme.caption)
+        .foregroundStyle(warns ? Theme.warning : .secondary)
+        .fixedSize()
+    }
+}
+
+/// 一行从左往右填满，最多一百格；窄处减少格数，百分比仍由旁边的文字准确表达。
+/// 只占位，额度画在窗口那一套点阵上：剩余的格子长成 tint 色的方块，最后一格按零头长一部分，其余是轨道色的点。
 private struct AccountQuotaDots: View {
     let remaining: Double
     let tint: Color
@@ -245,16 +339,21 @@ private struct AccountQuotaDots: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let columns = max(1, min(20, DotMatrix.columns(fitting: geometry.size.width)))
-            let rows = 5
-            DotMatrix(columns: columns, rows: rows) { column, row in
-                let index = column * rows + (rows - row - 1)
-                let fraction = min(1, max(0, remaining * Double(columns * rows) - Double(index)))
-                return Dot(.circle, shape: 0.12 + 0.63 * fraction,
-                           color: DotColor(Theme.rule.mix(with: tint, by: fraction).resolve(in: environment)))
-            }
+            DotMask(figure: figure(columns: max(1, min(100, Int(geometry.size.width / DotMetrics.pitch)))))
         }
-        .frame(height: DotMetrics.pitch * 5 - DotMetrics.gap)
+        .frame(height: DotMetrics.pitch)
         .accessibilityElement(children: .ignore)
+    }
+
+    private func figure(columns: Int) -> DotFigure {
+        let filled = remaining * Double(columns)
+        let part = filled - filled.rounded(.down)
+        let line = String((0..<columns).map { column -> Character in
+            Double(column) + 1 <= filled ? "F" : Double(column) < filled ? "P" : "T"
+        })
+        let full = 0.75, track = 0.12
+        let tint = DotColor(tint.resolve(in: environment)), rule = DotColor(Theme.rule.resolve(in: environment))
+        return DotFigure([line], colors: ["F": tint, "P": rule.mixed(with: tint, by: part), "T": rule],
+                         shapes: ["F": full, "P": track + (full - track) * part, "T": track])
     }
 }

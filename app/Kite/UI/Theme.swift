@@ -54,6 +54,8 @@ enum Theme {
     static let sidebarHeading = Font.system(size: 13, weight: .bold)
     /// 侧栏工作区名称。
     static let sidebarWorkspace = Font.system(size: 12)
+    /// 账号额度圆环悬停时浮出的外圈剩余百分比。
+    static let ringValue = Font.system(size: 11, weight: .bold).monospacedDigit()
     /// 侧栏检出所属的工作机名称。
     static let sidebarCheckout = Font.system(size: 10)
     /// 命令、输出、代码、改动。

@@ -318,6 +318,10 @@ final class AppModel {
                 connection.modelAccountsError = nil
             }
             if event.type == "model-accounts.changed" { return }
+            if event.type == "context-templates.changed" {
+                if connection.templates != nil { Task { try? await self.refreshTemplates(of: connection, fresh: true) } }
+                return
+            }
             guard ["catalog.snapshot", "checkout.changed", "workspace.changed", "thread.changed"].contains(event.type) else { return }
             guard let cursor = event.cursor.flatMap(EventCursor.init) else { throw KitedError(message: "工作区事件数据无效") }
             if event.type == "catalog.snapshot" {

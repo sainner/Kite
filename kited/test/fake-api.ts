@@ -8,6 +8,8 @@
  * READ <JSON 对象或数组> 调一次或一批 Kite read，下一次请求回显工具结果，不调用其他工具。
  * PATCH、SHELL <JSON 对象或数组> 同样调用 Kite patch、shell；HOLD_RESULT <标记> 把工具后的请求挂起，供测试核对快照时序。
  * AGENT_START 等 AGENT_* 命令调用对应 Kite 操作工具，使用同一参数和回显协议。
+ * USAGE <JSON 对象> 把对象并入这次回复 message_start 的 usage，供测试报出指定的输入用量（如缓存读写的 token 数）。
+ * 正文不由测试决定的请求（如压缩摘要指令）用 holdNext 按条件挂起。
  * 非流式的辅助请求一律回一句短文本。工具集合可以为空，不能用它判断是不是主循环。
  */
 
@@ -33,6 +35,8 @@ export interface FakeApi {
   held(tag: string, timeoutMs?: number): Promise<Logged>;
   /** 放行 HOLD <标记> 挂着的请求；之后同标记的请求不再挂起。 */
   release(tag: string): void;
+  /** 下一次满足条件的请求按标记挂起（只挂一次），之后同样用 held、release。 */
+  holdNext(tag: string, pred: (l: Logged) => boolean): void;
   /** 放行所有挂着的请求，测试收尾用。 */
   releaseAll(): void;
   /** 关掉端点，连同还开着的连接。 */
@@ -55,11 +59,11 @@ function lastUser(body: any, skipResults = false): { text: string; results: any[
 
 let seq = 0;
 type Reply = { type: 'text'; text: string } | { type: 'tool_use'; id: string; name: string; input: unknown };
-function sse(model: string, content: Reply[], stop: string): string {
+function sse(model: string, content: Reply[], stop: string, usage: Record<string, unknown> = {}): string {
   const ev: Array<[string, unknown]> = [
     ['message_start', { type: 'message_start', message: {
       id: `msg_fake_${++seq}`, type: 'message', role: 'assistant', model, content: [],
-      stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 },
+      stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1, ...usage },
     } }],
   ];
   content.forEach((block, index) => {
@@ -82,6 +86,7 @@ export function startFakeApi(): FakeApi {
   const waiters: Array<{ pred: (l: Logged) => boolean; resolve: (l: Logged) => void }> = [];
   const released = new Set<string>();
   const holding = new Map<string, Array<() => void>>();
+  const holdRules: Array<{ tag: string; pred: (l: Logged) => boolean }> = [];
 
   const notify = (l: Logged) => {
     for (const w of [...waiters]) if (w.pred(l)) { waiters.splice(waiters.indexOf(w), 1); w.resolve(l); }
@@ -135,8 +140,14 @@ export function startFakeApi(): FakeApi {
         ? /^STREAM_RESULT (\S+)/m.exec(lastUser(body, true).text)
         : /^STREAM (\S+)/m.exec(text));
       const tag = match ? match[1] : streaming ? streaming[1] : undefined;
-      const hold = tag && !released.has(tag) ? tag : undefined;
-      const entry: Logged = { at: Date.now(), main, body, lastUserText: text, toolUseIds, hold };
+      let hold = tag && !released.has(tag) ? tag : undefined;
+      const entry: Logged = { at: Date.now(), main, body, lastUserText: text, toolUseIds };
+      const rule = hold ? undefined : holdRules.find((r) => r.pred(entry));
+      if (rule) {
+        holdRules.splice(holdRules.indexOf(rule), 1);
+        if (!released.has(rule.tag)) hold = rule.tag;
+      }
+      entry.hold = hold;
       log.push(entry);
       let go: Promise<void> | undefined;
       if (hold) {
@@ -152,7 +163,8 @@ export function startFakeApi(): FakeApi {
           content, stop_reason: stop, stop_sequence: null,
           usage: { input_tokens: 10, output_tokens: 5 } });
       }
-      const response = sse(model, content, stop);
+      const usage = !results.length ? /^USAGE (\{.*\})$/m.exec(text) : null;
+      const response = sse(model, content, stop, usage ? JSON.parse(usage[1]!) : {});
       const headers = { 'content-type': 'text/event-stream' };
       if (streaming && hold && go) {
         const bytes = new TextEncoder();
@@ -180,7 +192,11 @@ export function startFakeApi(): FakeApi {
     waitRequest,
     held: (tag, timeoutMs) => waitRequest((l) => l.hold === tag, timeoutMs),
     release,
-    releaseAll() { for (const tag of holding.keys()) release(tag); },
+    holdNext(tag, pred) { holdRules.push({ tag, pred }); },
+    releaseAll() {
+      holdRules.length = 0;
+      for (const tag of holding.keys()) release(tag);
+    },
     stop: () => server.stop(true),
   };
 }

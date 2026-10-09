@@ -13,22 +13,18 @@ struct ThreadPane: View {
     /// 点开了操作栏的那一行。
     @State private var selected: RowID?
     @State private var titleError: String?
+    /// 空会话铺在窗口上的点阵签名，见 NewThreadStage。
+    @State private var patternSlot = "pattern.\(UUID().uuidString)"
+    @Environment(\.dotStage) private var stage
 
     var body: some View {
         let items = thread.transcript.items
         let pending = thread.transcript.pending
         return PaneWindow(header: PaneHeader(title: thread.title, subtitle: "会话", titleRefresh: .init(
             actionLabel: "重新生成会话标题", progressLabel: "正在重新生成会话标题",
-            isRefreshing: thread.regeneratingTitle, enabled: thread.canRegenerateTitle, action: regenerateTitle))) {
+            isRefreshing: thread.regeneratingTitle, enabled: thread.canRegenerateTitle, action: regenerateTitle)), usesDots: true) {
             if items.isEmpty && pending.isEmpty {
-                VStack(spacing: 20) {
-                    Text("说说要做什么")
-                        .font(Theme.body)
-                        .foregroundStyle(.secondary)
-                    NewThreadContextTemplate()
-                }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .contentShape(Rectangle())
+                NewThreadStage(slot: patternSlot)
             } else {
                 // 可见区多高在排版时当场算出来（GeometryReader），留白和它同一次排好。这里的尺寸已经扣掉了
                 // 标题栏、控制区和键盘让出的那一截，滚动视图照样伸到它们后面（实测）
@@ -65,6 +61,13 @@ struct ThreadPane: View {
         } headerActions: {
             ThreadHeaderActions()
         }
+        #if os(macOS)
+        // 指针移到标题栏、输入区上时图案照样跟着
+        .onContinuousHover(coordinateSpace: .global) { phase in
+            if case .active(let point) = phase { stage?.patternPointer(point, slot: patternSlot) }
+            else { stage?.patternPointer(nil, slot: patternSlot) }
+        }
+        #endif
         .environment(\.workingDirectory, thread.transcript.root)
         .task(id: thread.client?.identity) {
             await thread.observe()

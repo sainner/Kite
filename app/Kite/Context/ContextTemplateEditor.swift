@@ -14,6 +14,10 @@ struct ContextTemplateEditor: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var draft: ContextDefinition
+    /// 创建会话模板的点阵签名草稿；与 emblemBase 不同即为手改，保存模板后一并保存。
+    @State private var emblem: EmblemDesign
+    /// 工作机上签名的最新版本；没改过草稿时，重新生成的结果直接替换草稿。
+    @State private var emblemBase: EmblemDesign
     @State private var phase = CardPhase.idle
     @State private var discard = false
     /// 只跟踪模板名称；段落编辑器里的输入框由拖动收起键盘。
@@ -24,9 +28,17 @@ struct ContextTemplateEditor: View {
         _connection = State(initialValue: connection)
         self.onSaved = onSaved
         _draft = State(initialValue: request.definition)
+        let emblem = request.original?.emblem?.design ?? .fallback
+        _emblem = State(initialValue: emblem)
+        _emblemBase = State(initialValue: emblem)
     }
 
-    private var changed: Bool { draft != request.definition }
+    private var changed: Bool { draft != request.definition || emblemEdited }
+    private var emblemEdited: Bool { draft.scene == "thread.create" && emblem != emblemBase }
+    /// 工作机目录里这个模板的最新状态，签名生成的进度从这里来。
+    private var current: ContextTemplate? {
+        request.original.flatMap { original in model.templateConnection(connection)?.templates?.templates.first { $0.id == original.id } }
+    }
     private var variables: [ContextScene.Variable] {
         model.templateConnection(connection)?.templates?.scenes.first { $0.id == draft.scene }?.variables ?? []
     }
@@ -44,16 +56,25 @@ struct ContextTemplateEditor: View {
                         .cardInput { typing = true }
                 }
                 if let input = Binding($draft.input) {
-                    Text("命名规则").font(.headline)
+                    Text(draft.scene == "thread.compact" ? "摘要指令" : draft.scene == "template.emblem" ? "设计规则" : "命名规则").font(.headline)
                     ContextBlocksEditor(blocks: $draft.blocks, variables: variables)
                     Divider()
-                    Text("材料").font(.headline)
+                    Text(draft.scene == "thread.compact" ? "摘要包装" : "材料").font(.headline)
                     ContextBlocksEditor(blocks: input, variables: variables)
                 } else {
                     ContextBlocksEditor(blocks: $draft.blocks, variables: variables)
                 }
+                if draft.scene == "thread.create" {
+                    TemplateEmblemField(design: $emblem, template: current,
+                                        regenerate: current.map { template in { regenerateEmblem(template) } })
+                }
             }
             .disabled(working || !available)
+            .onChange(of: current?.emblem?.design) { _, design in
+                guard let design else { return }
+                if emblem == emblemBase { emblem = design }
+                emblemBase = design
+            }
             if !available { CardCallout(text: "工作机连接已变化，请返回后重新打开模板。草稿尚未保存。", systemImage: "info.circle", tint: .secondary) }
         } footer: {
             CardActions(primary: "保存",
@@ -68,10 +89,17 @@ struct ContextTemplateEditor: View {
 
     private var working: Bool { phase.working }
 
+    /// 交给模型重画；草稿里手改的部分随之作废。
+    private func regenerateEmblem(_ template: ContextTemplate) {
+        emblem = emblemBase
+        Task { try? await model.generateTemplateEmblem(template, force: true, connection: connection) }
+    }
+
     /// 保存成功后弹窗直接关掉。
     private func save() {
         $phase.run {
             let saved = try await model.saveContextTemplate(draft, expectedRevision: request.original?.revision, connection: connection)
+            if emblemEdited { try await model.saveTemplateEmblem(emblem, for: saved, connection: connection) }
             onSaved(saved)
             dismiss()
         }

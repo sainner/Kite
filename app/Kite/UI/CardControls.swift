@@ -324,6 +324,7 @@ struct CardActions: View {
     var succeeded: String
     var working: String?
     let action: () -> Void
+    var succeededAction: (() -> Void)?
     var secondaryAction: () -> Void
     @Namespace private var glass
     /// 刚复制了报错，按钮里短暂换成已复制。
@@ -331,7 +332,7 @@ struct CardActions: View {
 
     init(primary: String, enabled: Bool = true, prominent: Bool = true, secondary: String? = nil, secondaryEnabled: Bool = true,
          phase: Binding<CardPhase>, succeeded: String = "已保存", working: String? = nil,
-         action: @escaping () -> Void, secondaryAction: @escaping () -> Void = {}) {
+         action: @escaping () -> Void, secondaryAction: @escaping () -> Void = {}, succeededAction: (() -> Void)? = nil) {
         self.primary = primary
         self.enabled = enabled
         self.prominent = prominent
@@ -341,6 +342,7 @@ struct CardActions: View {
         self.succeeded = succeeded
         self.working = working
         self.action = action
+        self.succeededAction = succeededAction
         self.secondaryAction = secondaryAction
     }
 
@@ -381,7 +383,9 @@ struct CardActions: View {
 
     @ViewBuilder private func main(_ state: CardPhase) -> some View {
         let button = Button {
-            if let message = state.error { copy(message) } else { action() }
+            if let message = state.error { copy(message) }
+            else if state == .succeeded { succeededAction?() }
+            else { action() }
         } label: {
             ZStack {
                 switch state {
@@ -409,9 +413,9 @@ struct CardActions: View {
             }
             .frame(maxWidth: .infinity)
         }
-        // 加载和成功时不可点但不变灰
+        // 成功状态只在调用方提供后续动作时可点。
         .disabled(state == .idle && !enabled)
-        .allowsHitTesting(state != .working && state != .succeeded)
+        .allowsHitTesting(state != .working && (state != .succeeded || succeededAction != nil))
         .tint(state.error != nil ? Theme.danger : nil)
         if prominent || state.error != nil {
             button.buttonStyle(.glassProminent)

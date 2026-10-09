@@ -12,7 +12,7 @@ const id = z.string().min(1);
 const raw = z.record(z.string(), z.json());
 const input = z.object({ id, text: z.string(), source: z.enum(['human', 'kite']) });
 const call = z.object({ id, name: id, arguments: z.json() });
-const item = z.object({ id, raw, call: call.optional() });
+const item = z.object({ id, raw, format: z.literal('anthropic').optional(), call: call.optional() });
 const result = z.object({ status: z.enum(['success', 'error', 'not_executed', 'unknown']), output: z.string(), diff: diffReferenceSchema.optional(),
   images: z.array(z.object({ mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp']), data: z.string().min(1) })).optional() });
 const outcome = z.discriminatedUnion('kind', [
@@ -20,6 +20,14 @@ const outcome = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('failed'), message: z.string() }),
 ]);
 const request = { turnId: id, requestId: id };
+const contextItem = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('input'), input }),
+  z.object({ type: z.literal('output'), item }),
+  z.object({ type: z.literal('tool_result'), callId: id, result }),
+  z.object({ type: z.literal('feedback'), text: z.string() }),
+  z.object({ type: z.literal('notification'), text: z.string(), notification: z.object({ id, sequence: z.number().int().optional(), kind: id,
+    source: id, authority: z.enum(['instruction', 'observation']) }) }),
+]);
 const event = z.discriminatedUnion('type', [
   z.object({ type: z.literal('input.received'), input }),
   z.object({ type: z.literal('input.cancelled'), inputId: id }),
@@ -37,6 +45,11 @@ const event = z.discriminatedUnion('type', [
   z.object({ type: z.literal('turn.feedback'), turnId: id, text: z.string() }),
   z.object({ type: z.literal('turn.finished'), turnId: id, outcome, recovery: z.object({ message: z.string() }).optional() }),
   z.object({ type: z.literal('recovery.confirmed') }),
+  z.object({ type: z.literal('context.imported'), id, source: z.object({ runtime: z.literal('claude'), through: id }),
+    items: z.array(contextItem), notificationCursor: z.number().int().nonnegative(), instructions: z.string().optional() }),
+  z.object({ type: z.literal('context.compacted'), id, range: z.object({ from: z.number().int().positive(), until: z.number().int().positive().optional() }),
+    automatic: z.boolean(), items: z.array(contextItem), summary: z.string(), usage: raw.optional() }),
+  z.object({ type: z.literal('context.compaction.reverted'), id }),
 ]);
 const record = z.intersection(
   z.object({ version: z.literal(1), seq: z.number().int().positive(), at: z.number().int().nonnegative() }), event,

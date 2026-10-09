@@ -1,12 +1,5 @@
 import SwiftUI
 
-/// 账号绑定的 Git 平台；凭据只在托管服务和工作机之间流转，App 只看到主机与账号名。
-struct GitAccount: Decodable, Identifiable, Equatable {
-    let host: String
-    let account: String
-    var id: String { host }
-}
-
 /// 账号的项目登记表。托管项目可以迁移到正式远程，项目 ID 不变。
 struct AccountProject: Decodable, Identifiable, Equatable {
     let id: String
@@ -32,33 +25,19 @@ struct GitHubRepository: Decodable, Identifiable, Equatable {
 }
 
 extension KiteAccount {
-    func gitAccounts() async throws -> [GitAccount] {
-        return try await request("/api/git/accounts", as: [GitAccount].self)
-    }
-
-    func bindToken(host: String, username: String, token: String) async throws {
-        var body = ["token": token]
-        if !username.isEmpty { body["username"] = username }
-        let _: JSON = try await request("/api/git/accounts/\(host)", method: "PUT", body: body, as: JSON.self)
-    }
-
-    func unbind(host: String) async throws {
-        let _: JSON = try await request("/api/git/accounts/\(host)", method: "DELETE", as: JSON.self)
-    }
-
     func startGitHub() async throws -> GitHubDevice {
-        return try await request("/api/git/accounts/github.com/device", method: "POST", as: GitHubDevice.self)
+        return try await request("/api/git/github/device", method: "POST", as: GitHubDevice.self)
     }
 
     /// 返回 pending、slow_down、expired、denied 或 authorized。
     func pollGitHub(_ flow: String) async throws -> String {
         struct Poll: Decodable { let status: String }
-        return try await request("/api/git/accounts/github.com/device/\(flow)", method: "POST", as: Poll.self).status
+        return try await request("/api/git/github/device/\(flow)", method: "POST", as: Poll.self).status
     }
 
     /// 没有绑定 GitHub 时为空。
     func gitHubRepositories() async throws -> [GitHubRepository] {
-        do { return try await request("/api/git/accounts/github.com/repos", as: [GitHubRepository].self) }
+        do { return try await request("/api/git/github/repos", as: [GitHubRepository].self) }
         catch let error as KitedError where error.status == 404 { return [] }
     }
 
@@ -75,7 +54,8 @@ extension KiteAccount {
 struct GitAccountsSection: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
-    @State private var accounts: [GitAccount] = []
+    /// 账号绑定的 Git 平台；凭据只在托管服务和工作机之间流转，App 只看到主机与账号名。
+    @State private var accounts: [AccountCredential] = []
     @State private var device: GitHubDevice?
     @State private var host = ""
     @State private var username = ""
@@ -89,12 +69,12 @@ struct GitAccountsSection: View {
             ForEach(accounts) { account in
                 HStack {
                     VStack(alignment: .leading) {
-                        Text(account.host)
-                        Text(account.account).font(.caption).foregroundStyle(.secondary)
+                        Text(account.name)
+                        Text(account.meta["username"]?.string ?? "").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("解除绑定", role: .destructive) {
-                        perform { try await model.account.unbind(host: account.host); try await load() }
+                        perform { try await model.account.deleteCredential(account.id); try await load() }
                     }
                 }
             }
@@ -116,8 +96,8 @@ struct GitAccountsSection: View {
                 SecureField("访问令牌", text: $token)
                 Button("保存") {
                     perform {
-                        try await model.account.bindToken(host: host.trimmingCharacters(in: .whitespaces).lowercased(),
-                                                          username: username.trimmingCharacters(in: .whitespaces), token: token)
+                        try await bind(host: host.trimmingCharacters(in: .whitespaces).lowercased(),
+                                       username: username.trimmingCharacters(in: .whitespaces), token: token)
                         host = ""; username = ""; token = ""; tokenForm = false
                         try await load()
                     }
@@ -134,7 +114,18 @@ struct GitAccountsSection: View {
         .task(id: device?.flow) { await poll() }
     }
 
-    private func load() async throws { accounts = try await model.account.gitAccounts() }
+    private func load() async throws { accounts = try await model.account.credentials(type: "git") }
+
+    /// 同一主机只有一条 Git 凭据，已绑定就替换。
+    private func bind(host: String, username: String, token: String) async throws {
+        // 不填用户名时由服务端补上默认的 oauth2
+        let meta = username.isEmpty ? [:] : ["username": username]
+        if let existing = accounts.first(where: { $0.name == host }) {
+            try await model.account.updateCredential(existing.id, meta: meta, secret: ["token": token])
+        } else {
+            try await model.account.createCredential(type: "git", name: host, meta: meta, secret: ["token": token])
+        }
+    }
 
     /// 按服务端给的间隔轮询，授权完成、拒绝或过期即停。
     private func poll() async {

@@ -3,14 +3,15 @@ import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { existsSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { defaultAgentModel } from '../../src/agents/models.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { History } from '../../src/transcript/protocol.ts';
 import { startCli } from '../cli.ts';
 import type { Logged } from '../fake-api.ts';
 import {
-  api, call, createWorkspace, type Kited, listSnapshots, mark, registerCheckout, sendThreadMessage, startKited, waitRunner,
+  api, call, createWorkspace, type Kited, listSnapshots, mark, registerCheckout, sendThreadMessage, startKited, waitIdle,
 } from '../harness.ts';
-import { commitAll, git, newRepo, read, until, useTemp, writeFiles } from '../util.ts';
+import { commitAll, ENV, git, newRepo, read, transcript, until, useTemp, writeFiles } from '../util.ts';
 
 setDefaultTimeout(3_000);
 
@@ -41,6 +42,10 @@ async function readResult(id: string) {
   return resultFor(request, id);
 }
 
+/** 这个原生会话的 Claude Code 进程。依赖 SDK 起 CLI 时把原生会话 id 放在命令行参数里（新建 --session-id，续接 --resume）。 */
+const sessionProcesses = (nativeId: string) => Bun.spawnSync(['pgrep', '-f', nativeId], { env: ENV(), stdout: 'pipe' })
+  .stdout.toString().split('\n').filter(Boolean).map(Number);
+
 async function history(kited: Kited, threadId: string): Promise<History> {
   const response = await kited.call('GET', `/threads/${threadId}/history`);
   expect(response.status).toBe(200);
@@ -52,102 +57,140 @@ async function history(kited: Kited, threadId: string): Promise<History> {
  * 宿主工具不能让默认工具、项目 skill 或 .mcp.json 重新出现。实际请求、回传和 HTTP 历史投影须一起验证。
  * skills: [] 只过滤模型上下文，init.skills 仍列出发现的技能（Claude Code 2.1.280 实测），所以断言实际请求。
  * .mcp.json 的命令一启动就留标记，避免工具列表为空却已经启动外部进程的假通过。
+ * 进程常驻：回合之间进程不退出，下一回合写进同一进程的输入流；换模型后旧进程退出，用 resume 起新进程。
+ * 流式输入下 CLI 每个回合都报一次 system/init（2.1.280 实测），不能用 init 的次数判断是否换了进程，改看进程号。
+ * MCP 处理器抛错要转成 tool_result.is_error，经原生会话记录投影成失败结果；错误后仍可恢复读取。
  */
-test('Claude 新建与续接只开放 Kite 工具，按行读取经 MCP 返回并投影为 read 历史，项目工具不回流', async () => {
+test('Claude 进程跨回合常驻复用，换模型后在 resume 的新进程上接续历史；始终只开放 Kite 工具，按行读取经 MCP 返回并投影为 read 历史，项目工具不回流；read 拒绝目录越界和符号链接逃逸，错误不泄露正文且之后仍可读取；fable 写入的批量提醒附件不妨碍切到自研后端', async () => {
   k = startKited();
   const kk = k;
   const mcpStarted = join(kk.root, 'mcp-started');
   const skill = token('project-skill');
   const repo = newRepo(kk.root, 'proj', {
-    'a.txt': '首行未选中\n第二行读取成功\n第三行恢复成功\n',
+    'a.txt': '首行未选中\n第二行读取成功\n第三行续接成功\n第四行重启后读取成功\n',
+    'allowed.txt': '失败后仍能读取\n',
     '.claude/settings.local.json': JSON.stringify({ enableAllProjectMcpServers: true }),
     [`.claude/skills/${skill}/SKILL.md`]: `---\nname: ${skill}\ndescription: 项目测试技能\n---\n这是一条项目技能指令。\n`,
     '.mcp.json': JSON.stringify({ mcpServers: {
       projectProbe: { command: '/bin/sh', args: ['-c', 'printf started > "$1"', 'sh', mcpStarted] },
     } }),
   });
+  const outside = temp();
+  const externalSecret = token('外部机密');
+  writeFiles(outside, { 'secret.txt': externalSecret });
+  symlinkSync(outside, join(repo, 'escape'));
+  commitAll(repo, '准备读取边界');
   const p = await registerCheckout(kk, repo);
+  /** 读取结果只含选中的那一行，行号在前。 */
+  const onlyLine = (result: any, line: number, content: string) => {
+    expect(resultText(result)).toMatch(new RegExp(`(?:^|\\n)\\s*${line}[^\\n]*${content}`));
+    expect(resultText(result).match(/首行未选中|第二行读取成功|第三行续接成功|第四行重启后读取成功/g)).toEqual([content]);
+  };
+  const clean = (request: Logged) => {
+    expect(tools(request).sort()).toEqual(expectedTools);
+    expect(JSON.stringify(request.body)).not.toContain(skill);
+    expect(JSON.stringify(request.body)).not.toContain('这是一条项目技能指令。');
+  };
 
   const a = token('首回合');
   const firstArgs = { path: 'a.txt', offset: 2, limit: 1 };
   const secondArgs = { path: 'a.txt', offset: 3, limit: 1 };
+  const thirdArgs = { path: 'a.txt', offset: 4, limit: 1 };
   const s = await createWorkspace(kk, p.checkout.id, `第一条 ${a}\nREAD ${JSON.stringify(firstArgs)}`);
   const req1 = await api.waitRequest((l) => l.main && l.lastUserText.includes(a));
-  expect(tools(req1).sort()).toEqual(expectedTools);
-  expect(JSON.stringify(req1.body)).not.toContain(skill);
-  expect(JSON.stringify(req1.body)).not.toContain('这是一条项目技能指令。');
+  clean(req1);
   expect(req1.toolUseIds).toHaveLength(1);
   const firstId = req1.toolUseIds[0]!;
   const firstResult = await readResult(firstId);
   expect(firstResult.is_error).toBeFalsy();
-  expect(resultText(firstResult)).toMatch(/(?:^|\n)\s*2[^\n]*第二行读取成功/);
-  expect(resultText(firstResult)).not.toMatch(/首行未选中|第三行恢复成功/);
-  await waitRunner(kk, s.id, 'closed');
+  onlyLine(firstResult, 2, '第二行读取成功');
+  await waitIdle(kk, s.id);
   expect((await history(kk, s.id)).records).toEqual(expect.arrayContaining([
     expect.objectContaining({ block: expect.objectContaining({ type: 'tool_use', id: firstId, name: 'read', input: firstArgs }) }),
     expect.objectContaining({ block: expect.objectContaining({ type: 'tool_result', call: firstId, status: 'success', output: resultText(firstResult) }) }),
   ]));
-  expect(existsSync(mcpStarted)).toBe(false);
+  const resident = sessionProcesses(s.nativeId);
+  expect(resident).toHaveLength(1);
 
+  // 第二回合：同一进程接着跑，CLI 发送在常驻进程空闲时结束。
   const m = mark(kk);
-  const b = token('续接');
+  const b = token('常驻续接');
   const sending = startCli(kk.url, 'send', s.id, `第二条 ${b}\nREAD ${JSON.stringify(secondArgs)}`);
+  let secondId: string;
+  let secondResult: any;
   try {
     const req2 = await api.waitRequest((l) => l.main && l.lastUserText.includes(b));
     expect(JSON.stringify(req2.body.messages)).toContain(a);
-    expect(tools(req2).sort()).toEqual(expectedTools);
+    clean(req2);
     expect(resultValue(resultFor(req2, firstId))).toEqual(resultValue(firstResult));
-    expect(JSON.stringify(req2.body)).not.toContain(skill);
-    expect(JSON.stringify(req2.body)).not.toContain('这是一条项目技能指令。');
     expect(req2.toolUseIds).toHaveLength(1);
-    const secondId = req2.toolUseIds[0]!;
-    const secondResult = await readResult(secondId);
+    secondId = req2.toolUseIds[0]!;
+    secondResult = await readResult(secondId);
     expect(secondResult.is_error).toBeFalsy();
-    expect(resultText(secondResult)).toMatch(/(?:^|\n)\s*3[^\n]*第三行恢复成功/);
-    expect(resultText(secondResult)).not.toMatch(/首行未选中|第二行读取成功/);
-    await waitRunner(kk, s.id, 'closed', m);
-    expect(await sending.finished()).toMatchObject({ code: 0, stderr: '', stdout: expect.stringContaining('第三行恢复成功') });
-    const resumed = await history(kk, s.id);
-    expect(resumed.records.filter((record) => record.block.type === 'tool_use').map((record) => record.block)).toEqual([
-      expect.objectContaining({ type: 'tool_use', id: firstId, name: 'read', input: firstArgs }),
-      expect.objectContaining({ type: 'tool_use', id: secondId, name: 'read', input: secondArgs }),
-    ]);
-    expect(resumed.records).toEqual(expect.arrayContaining([
-      expect.objectContaining({ block: expect.objectContaining({ type: 'tool_result', call: firstId, status: 'success', output: resultText(firstResult) }) }),
-      expect.objectContaining({ block: expect.objectContaining({ type: 'tool_result', call: secondId, status: 'success', output: resultText(secondResult) }) }),
-    ]));
+    onlyLine(secondResult, 3, '第三行续接成功');
+    await waitIdle(kk, s.id, m);
+    expect(await sending.finished()).toMatchObject({ code: 0, stderr: '', stdout: expect.stringContaining('第三行续接成功') });
   } finally {
     await sending.stop();
   }
+  expect(sessionProcesses(s.nativeId)).toEqual(resident);
 
+  // 第三回合：换模型后旧进程退出，resume 起的新进程接着同一原生会话。
+  const config = await kk.call('GET', `/instances/${s.id}/agent-config`);
+  const agent = config.body.instance.config.agent;
+  // 换到 fable：它调用工具后 CLI 会写入批量提醒附件，最后切换后端时用到。
+  const model = 'claude-fable-5-1[1m]';
+  expect(agent.model.model).not.toBe(model);
+  expect((await kk.call('PUT', `/instances/${s.id}/agent-config`, {
+    expectedRevision: config.body.revision, agent: { ...agent, model: { ...agent.model, model } },
+  })).status).toBe(200);
+  const n = mark(kk);
+  const c = token('换模型');
+  await sendThreadMessage(kk, s.id, `第三条 ${c}\nREAD ${JSON.stringify(thirdArgs)}`);
+  const req3 = await api.waitRequest((l) => l.main && l.lastUserText.includes(c));
+  expect(req3.body.model).not.toBe(req1.body.model);
+  const resumedMessages = JSON.stringify(req3.body.messages);
+  expect(resumedMessages).toContain(a);
+  expect(resumedMessages).toContain(b);
+  clean(req3);
+  expect(resultValue(resultFor(req3, firstId))).toEqual(resultValue(firstResult));
+  expect(resultValue(resultFor(req3, secondId))).toEqual(resultValue(secondResult));
+  expect(req3.toolUseIds).toHaveLength(1);
+  const thirdId = req3.toolUseIds[0]!;
+  const thirdResult = await readResult(thirdId);
+  expect(thirdResult.is_error).toBeFalsy();
+  onlyLine(thirdResult, 4, '第四行重启后读取成功');
+  await waitIdle(kk, s.id, n);
+  const restarted = sessionProcesses(s.nativeId);
+  expect(restarted).toHaveLength(1);
+  expect(restarted).not.toEqual(resident);
+
+  const resumed = await history(kk, s.id);
+  expect(resumed.records.filter((record) => record.block.type === 'tool_use').map((record) => record.block)).toEqual([
+    expect.objectContaining({ type: 'tool_use', id: firstId, name: 'read', input: firstArgs }),
+    expect.objectContaining({ type: 'tool_use', id: secondId, name: 'read', input: secondArgs }),
+    expect.objectContaining({ type: 'tool_use', id: thirdId, name: 'read', input: thirdArgs }),
+  ]);
+  expect(resumed.records).toEqual(expect.arrayContaining([firstResult, secondResult, thirdResult].map((result) =>
+    expect.objectContaining({ block: expect.objectContaining({ type: 'tool_result', call: result.tool_use_id, status: 'success', output: resultText(result) }) }))));
   const inits = kk.events.flatMap((e) => e.type === 'sdk' && e.threadId === s.id && e.message.type === 'system' && e.message.subtype === 'init' ? [e.message] : []);
-  expect(inits).toHaveLength(2);
+  expect(kk.events.slice(n).some((e) => e.type === 'sdk' && e.threadId === s.id && e.message.type === 'system' && e.message.subtype === 'init')).toBe(true);
   for (const init of inits) {
     expect(init.session_id).toBe(s.nativeId);
     expect([...init.tools].sort()).toEqual(expectedTools);
     expect(init.mcp_servers).toEqual([expect.objectContaining({ name: 'kite', status: 'connected' })]);
   }
   expect(existsSync(mcpStarted)).toBe(false);
-});
 
-/* MCP 处理器抛错要转成 tool_result.is_error，经原生会话记录投影成失败结果；错误后仍可恢复读取。 */
-test('read 拒绝目录越界和符号链接逃逸，错误不泄露正文且之后仍可读取', async () => {
-  k = startKited();
-  const kk = k;
-  const outside = temp();
-  const externalSecret = token('外部机密');
-  writeFiles(outside, { 'secret.txt': externalSecret });
-  const repo = newRepo(kk.root, 'proj', { 'allowed.txt': '失败后仍能读取\n' });
-  symlinkSync(outside, join(repo, 'escape'));
-  commitAll(repo, '准备读取边界');
-  const p = await registerCheckout(kk, repo);
+  // 读取边界：目录外的绝对路径和经符号链接逃逸的路径都报错，不泄露正文；之后同一进程仍可正常读取。
+  const threadId = s.id;
+  const refused = mark(kk);
   const marker = token('拒绝读取');
   const args = [
     { path: join(outside, 'secret.txt') },
     { path: 'escape/secret.txt' },
   ];
-  const thread = await createWorkspace(kk, p.checkout.id, `${marker}\nREAD ${JSON.stringify(args)}`);
-  const threadId = thread.id;
+  await sendThreadMessage(kk, threadId, `${marker}\nREAD ${JSON.stringify(args)}`);
   const request = await api.waitRequest((entry) => entry.main && entry.lastUserText.includes(marker));
   expect(request.toolUseIds).toHaveLength(2);
   for (const id of request.toolUseIds) {
@@ -156,7 +199,7 @@ test('read 拒绝目录越界和符号链接逃逸，错误不泄露正文且之
     expect(resultText(result)).not.toBe('');
     expect(resultText(result)).not.toContain(externalSecret);
   }
-  await waitRunner(kk, threadId, 'closed');
+  await waitIdle(kk, threadId, refused);
   const failed = await history(kk, threadId);
   expect(failed.records.filter((record) => record.block.type === 'tool_result').map((record) => record.block)).toEqual(
     expect.arrayContaining(request.toolUseIds.map((call) => expect.objectContaining({ type: 'tool_result', call, status: 'error' }))),
@@ -164,20 +207,32 @@ test('read 拒绝目录越界和符号链接逃逸，错误不泄露正文且之
   expect(JSON.stringify(failed)).not.toContain(externalSecret);
 
   const since = mark(kk);
-  const resumed = token('读取恢复');
-  await sendThreadMessage(kk, threadId, `${resumed}\nREAD {"path":"allowed.txt"}`);
-  const next = await api.waitRequest((entry) => entry.main && entry.lastUserText.includes(resumed));
+  const recovered = token('读取恢复');
+  await sendThreadMessage(kk, threadId, `${recovered}\nREAD {"path":"allowed.txt"}`);
+  const next = await api.waitRequest((entry) => entry.main && entry.lastUserText.includes(recovered));
   const result = await readResult(next.toolUseIds[0]!);
   expect(result.is_error).toBeFalsy();
   expect(resultText(result)).toContain('失败后仍能读取');
-  await waitRunner(kk, threadId, 'closed', since);
+  await waitIdle(kk, threadId, since);
+
+  // 真实出过的 bug：fable 调用工具后，CLI 2.1.280 在会话记录里写入 batching_reminder_sent 附件（不发给模型），
+  // Claude 内容翻译不认识它，切换后端和压缩都返回 409。
+  expect(transcript(s.nativeId).some((entry) => entry.type === 'attachment' && entry.attachment?.type === 'batching_reminder_sent')).toBe(true);
+  const current = await kk.call('GET', `/instances/${s.id}/agent-config`);
+  const switched = await kk.call('PUT', `/instances/${s.id}/agent-config`, {
+    expectedRevision: current.body.revision,
+    agent: { ...current.body.instance.config.agent, runtime: 'harness', model: { model: defaultAgentModel, reasoning: 'high' } },
+  });
+  expect(switched).toMatchObject({ status: 200 });
 });
 
 /*
  * 上游把 MCP structuredContent 转成模型可见的 JSON 文本；成功与局部失败的 diff 都必须经原生记录和显示投影保留。
  * 在假端点收到下一请求时同步记录已发生的快照事件，防止稍后读取快照列表掩盖 PostToolBatch 的时序回归。
+ * 进程常驻：kited 停止时要结束空闲的 Claude 进程（bun test 每个测试后会清掉残留子进程，不断言就看不出泄漏）；
+ * 这次结束发生在回合收尾之后，宿主不能把它当成停止，上一回合的结果要保持完成。
  */
-test('patch 的结果和快照先于下一模型请求，局部失败及服务重开后仍可查看各次原始 diff', async () => {
+test('patch 的结果和快照先于下一模型请求，局部失败及服务重开后仍可查看各次原始 diff；空闲时停服务结束常驻进程，上一回合仍记为完成', async () => {
   k = startKited();
   const kk = k;
   const repo = newRepo(kk.root, 'proj', { 'original.txt': '修改前\n' });
@@ -233,7 +288,7 @@ test('patch 的结果和快照先于下一模型请求，局部失败及服务�
   ] };
   expect(await kk.call('POST', diffPath, diffArgs)).toEqual({ status: 200, body: expectedDiff });
   api.release(hold);
-  await waitRunner(kk, thread.id, 'closed');
+  await waitIdle(kk, thread.id);
 
   const since = mark(kk);
   const failedMarker = token('局部失败');
@@ -253,7 +308,7 @@ test('patch 的结果和快照先于下一模型请求，局部失败及服务�
   expect(partial.output).not.toBe('');
   expect(partial.diff.paths).toEqual(['partial.txt']);
   expect(partial.diff.id).not.toBe(payload.diff.id);
-  await waitRunner(kk, thread.id, 'closed', since);
+  await waitIdle(kk, thread.id, since);
   expect(read(join(thread.workspace.cwd, 'original.txt'))).toBe('修改后\n');
   expect(read(join(thread.workspace.cwd, 'partial.txt'))).toBe('部分已完成\n');
   expect(existsSync(join(thread.workspace.cwd, 'partial.txt/child.txt'))).toBe(false);
@@ -265,11 +320,15 @@ test('patch 的结果和快照先于下一模型请求，局部失败及服务�
   const partialArgs = { ...diffArgs, diffId: partial.diff.id };
   const partialDiff = { id: partial.diff.id, files: [{ path: 'partial.txt', before: null, after: '部分已完成\n' }] };
   expect(await kk.call('POST', diffPath, partialArgs)).toEqual({ status: 200, body: partialDiff });
+  expect(completed.state.lastOutcome).toEqual({ kind: 'completed' });
+  expect(sessionProcesses(thread.nativeId)).toHaveLength(1);
 
   await kk.daemon.stop();
+  expect(sessionProcesses(thread.nativeId)).toEqual([]);
   restarted = startDaemon({ home: kk.home, port: 0, lightTasks: false });
   const rebuilt = await call(restarted.url, 'GET', `/threads/${thread.id}/history`);
   expect(rebuilt.status).toBe(200);
+  expect(rebuilt.body.state.lastOutcome).toEqual({ kind: 'completed' });
   const toolBlocks = (value: History) => value.records.flatMap<History['records'][number]['block']>((record) => {
     const block = record.block;
     if (block.type === 'tool_use') return [{ type: block.type, id: block.id, name: block.name, input: block.input }];

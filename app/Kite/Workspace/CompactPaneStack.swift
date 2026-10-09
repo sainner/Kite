@@ -20,7 +20,9 @@ struct CompactPaneStack: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Theme.card)
                     .offset(x: pane == departing ? -distance : 0)
-                    .transition(distance == 0 ? .opacity : .offset(x: distance))
+                    .transition((distance == 0 ? AnyTransition.opacity : .offset(x: distance)).combined(with: .dotsPresence))
+                    // 滑走的窗口一开始离场，图案就收回
+                    .modifier(DotsPresence(presented: pane != departing))
                     .zIndex(pane == group.layout.focused ? 1 : 0)
                     .allowsHitTesting(pane == group.layout.focused)
             }

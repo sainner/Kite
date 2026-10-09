@@ -1,7 +1,9 @@
-import { afterEach, beforeEach, expect, test } from 'bun:test';
+import { afterEach, beforeEach, expect, setSystemTime, test } from 'bun:test';
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readModelAccounts, type AccountReadOptions, type ModelAccountsSnapshot } from '../../src/model-accounts.ts';
+import {
+  ModelAccounts, readModelAccounts, type AccountReadOptions, type ModelAccount, type ModelAccountsSnapshot,
+} from '../../src/model-accounts.ts';
 import { useTemp, writeFiles } from '../util.ts';
 
 const temp = useTemp();
@@ -113,8 +115,10 @@ test('工作机读取自己的订阅凭据并经认证请求取得账号、额�
       expect.objectContaining({ remainingPercent: 80, windowMinutes: 300, resetsAt: reset }),
       expect.objectContaining({ remainingPercent: 30, windowMinutes: 10_080, resetsAt: reset }),
     ]));
-    expect(api.seen).toHaveLength(3);
-    const chatgptRequest = api.seen.find((value) => value.url.hostname === 'chatgpt.com')!;
+    // 按天用量另有请求（桩返回 404），额度不受影响；其余请求恰好三条，没有重复。
+    const quotaRequests = api.seen.filter((value) => value.url.pathname !== '/backend-api/wham/profiles/me');
+    expect(quotaRequests).toHaveLength(3);
+    const chatgptRequest = quotaRequests.find((value) => value.url.hostname === 'chatgpt.com')!;
     expect(chatgptRequest.url.href).toBe('https://chatgpt.com/backend-api/wham/usage');
     expect(chatgptRequest.headers.get('authorization')).toBe(`Bearer ${auth.accessToken}`);
     expect(chatgptRequest.headers.get('chatgpt-account-id')).toBe('chatgpt-test-account');
@@ -125,6 +129,25 @@ test('工作机读取自己的订阅凭据并经认证请求取得账号、额�
     expect(readFileSync(auth.path, 'utf8')).toBe(auth.content);
     expect(statSync(auth.path).mtimeMs).toBe(before);
     noSecrets(snapshot, [auth.accessToken, auth.idToken, claudeToken, '刷新令牌不得返回']);
+  } finally { await api.stop(); }
+}, 1000);
+
+// 真实缺陷：plan 取自登录凭据缓存的 subscriptionType，它只在登录时写入；从 Pro 升级到 Max 后钥匙串里仍是 pro，刷新一直显示 Pro。
+// 依赖上游 /api/oauth/profile 的响应形状（2026-10 实测：organization.organization_type 与 rate_limit_tier）。
+test('Claude 订阅档位以 profile 返回的组织当前订阅为准，不用登录凭据里过期的缓存', async () => {
+  const home = temp('kite-model-accounts-claude-plan-');
+  const api = endpoint((_request, url) => {
+    if (url.pathname === '/api/oauth/usage') return Response.json(claudeUsage);
+    if (url.pathname === '/api/oauth/profile') return Response.json({
+      account: { email: 'claude@kite.test' },
+      organization: { organization_type: 'claude_max', rate_limit_tier: 'default_claude_max_20x' },
+    });
+    return Response.json({}, { status: 404 });
+  });
+  try {
+    const staleLogin = async () => ({ accessToken: claudeToken, subscriptionType: 'pro' });
+    const snapshot = await readModelAccounts(home, { fetch: api.fetch, claudeLogin: staleLogin });
+    expect(account(snapshot, 'claude')).toMatchObject({ status: 'ready', identity: 'claude@kite.test', plan: 'max 20x' });
   } finally { await api.stop(); }
 }, 1000);
 
@@ -232,9 +255,12 @@ test('API 普通密钥只确认配置，管理密钥完整读分页后才展示�
     expect(account(complete, 'openai-api').cost).toMatchObject({ value: 4, currency: 'USD', from: monthStart });
     expect(account(complete, 'anthropic-api').cost).toMatchObject({ value: 4.5, currency: 'USD', from: monthStart });
     for (const id of ['openai-api', 'anthropic-api']) expect(account(complete, id).credits).toBeUndefined();
-    expect(api.seen).toHaveLength(4);
+    // 按天用量另有请求（桩返回 404），费用不受影响；费用请求恰好每家两页，没有重复。
+    const usagePaths = ['/v1/organization/usage/completions', '/v1/organizations/usage_report/messages'];
+    const costRequests = api.seen.filter((value) => !usagePaths.includes(value.url.pathname));
+    expect(costRequests).toHaveLength(4);
     for (const [host, cursor] of [['api.openai.com', 'openai-second'], ['api.anthropic.com', 'anthropic-second']]) {
-      const requests = api.seen.filter((value) => value.url.hostname === host);
+      const requests = costRequests.filter((value) => value.url.hostname === host);
       expect(requests).toHaveLength(2);
       expect(requests[0]!.url.searchParams.get('page')).toBeNull();
       expect(requests[1]!.url.searchParams.get('page')).toBe(cursor!);
@@ -278,7 +304,7 @@ test('DeepSeek 经密钥认证保留多币种及不足余额，畸形金额不�
     ? Response.json(reply) : Response.json({}, { status: 404 }));
   try {
     const missing = await readModelAccounts(home, { fetch: api.fetch, claudeLogin: noClaudeLogin });
-    expect(account(missing, 'deepseek-api').status).toBe('unconfigured');
+    expect(missing.accounts.some((value) => value.id === 'deepseek-api')).toBe(false);
     expect(api.seen).toHaveLength(0);
     process.env.DEEPSEEK_API_KEY = secret;
     const loaded = await readModelAccounts(home, { fetch: api.fetch, claudeLogin: noClaudeLogin });
@@ -311,4 +337,53 @@ test('DeepSeek 经密钥认证保留多币种及不足余额，畸形金额不�
       noSecrets(malformed, [secret]);
     }
   } finally { await api.stop(); }
+}, 1000);
+
+// 真实缺陷：点刷新时上游返回 429，失败快照整体替换了上次结果，并删掉早于这次查询的会话观测，额度随之消失。
+// 刷新结果、会话观测与时间先后共同决定展示，失败查询只能更新状态，不能清掉已知额度。
+test('刷新被限流时保留上次额度与会话观测，之后的会话观测才把状态改回可用', async () => {
+  const home = temp('kite-model-accounts-cache-');
+  const start = 1_900_000_000_000;
+  const claudeAccount = (fields: Partial<ModelAccount>): ModelAccountsSnapshot => ({
+    checkedAt: Math.floor(Date.now() / 1000),
+    accounts: [{ id: 'claude', provider: 'Claude', kind: 'subscription', status: 'ready', quotas: [], ...fields }],
+  });
+  const replies = [
+    () => claudeAccount({ identity: 'claude@kite.test', quotas: [
+      { id: 'five_hour', label: '5 小时', remainingPercent: 80, windowMinutes: 300, resetsAt: reset },
+      { id: 'seven_day', label: '每周', remainingPercent: 30, windowMinutes: 10_080, resetsAt: reset },
+    ] }),
+    () => claudeAccount({ status: 'unavailable', message: '查询过于频繁，请稍后刷新。', quotas: [] }),
+  ];
+  const emitted: ModelAccountsSnapshot[] = [];
+  const accounts = new ModelAccounts(home, (snapshot) => emitted.push(snapshot), async () => replies.shift()!());
+  const session = (used: number) => ({ rateLimitType: 'five_hour', utilization: used, resetsAt: reset + 50,
+    unifiedWindows: { five_hour: { utilization: used, resetsAt: reset + 50 } } });
+  const claude = () => account(accounts.current()!, 'claude');
+  const quota = (id: string) => claude().quotas.find((value) => value.id === id);
+  try {
+    setSystemTime(new Date(start));
+    await accounts.refresh();
+    expect(claude()).toMatchObject({ status: 'ready', identity: 'claude@kite.test' });
+
+    setSystemTime(new Date(start + 10_000));
+    accounts.observeClaude(session(0.4));
+    expect(quota('five_hour')?.remainingPercent).toBe(60);
+
+    // 失败的查询晚于上面的会话观测。
+    setSystemTime(new Date(start + 20_000));
+    await accounts.refresh();
+    expect(claude()).toMatchObject({ status: 'unavailable', message: '查询过于频繁，请稍后刷新。', identity: 'claude@kite.test' });
+    expect(quota('five_hour')).toMatchObject({ remainingPercent: 60, resetsAt: reset + 50 });
+    expect(quota('seven_day')).toMatchObject({ remainingPercent: 30, resetsAt: reset });
+    expect(account(emitted.at(-1)!, 'claude').quotas).toHaveLength(2);
+
+    // 失败查询之后的会话观测说明账号可用。
+    setSystemTime(new Date(start + 30_000));
+    accounts.observeClaude(session(0.5));
+    expect(claude().status).toBe('ready');
+    expect(claude().message).toBeUndefined();
+    expect(quota('five_hour')?.remainingPercent).toBe(50);
+    expect(quota('seven_day')?.remainingPercent).toBe(30);
+  } finally { setSystemTime(); }
 }, 1000);

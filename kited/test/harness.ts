@@ -142,6 +142,12 @@ export function waitRunner(k: Kited, id: string, state: string, since = 0, timeo
   return k.waitEvent((e) => e.type === 'runner' && e.threadId === id && e.state === state && isAfter(e), timeoutMs);
 }
 
+/** 等 since 之后这个会话的回合结束。Claude 进程随实例常驻，回合结束时进程不关闭，要等 idle 事件而不是 runner 关闭。 */
+export function waitIdle(k: Kited, id: string, since = 0, timeoutMs?: number) {
+  const isAfter = after(k, since);
+  return k.waitEvent((e) => e.type === 'idle' && e.threadId === id && isAfter(e), timeoutMs);
+}
+
 // ---- kited 子进程 ----
 
 export interface KitedProcess {

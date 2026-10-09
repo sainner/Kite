@@ -4,7 +4,7 @@
 import { expect, test } from 'bun:test';
 import { renameSync, rmSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
-import { capture, findSnapshot, list, restore } from '../../src/workspace/snapshots.ts';
+import { capture, changesBetween, findSnapshot, list, restore } from '../../src/workspace/snapshots.ts';
 import { git, gitWorktree, lexists, newRepo, read, repoState, useTemp, writeFiles } from '../util.ts';
 
 const temp = useTemp();
@@ -148,4 +148,29 @@ test('快照查找解析本工作区的提交号，拒绝外部快照、普通�
     expect(await findSnapshot(main, id, arg)).toBeNull();
   }
   expect(lexists(leak)).toBe(false);
+});
+
+// 压缩的净文件变化依赖真实 git：两个时刻各自对应的快照（按 Kite-At 毫秒 trailer 定位）做 diff-tree，
+// 改名检测、行数统计和删除文件的计数都来自 git 输出，看代码确认不了。
+test('压缩起止时刻之间的净文件变化取各自最近的快照，列出新增修改删除与增删行数', async () => {
+  const root = temp();
+  const main = newRepo(root, 'main', { 'keep.txt': 'k\n', 'edit.txt': '一\n二\n三\n', 'gone.txt': 'x\ny\n' });
+  const id = 'w1';
+  await capture(main, id, '开始');
+  writeFiles(main, { 'edit.txt': '一\n改\n三\n四\n', 'new.txt': 'a\nb\n' });
+  rmSync(join(main, 'gone.txt'));
+  await capture(main, id, '中间');
+  writeFiles(main, { 'later.txt': '更晚的改动\n' });
+  await capture(main, id, '之后');
+  const [after, middle, start] = await list(main, id);
+  expect(start!.at).toBeLessThan(middle!.at);
+  expect(middle!.at + 1).toBeLessThan(after!.at);
+
+  // 终点落在「中间」与「之后」两枚快照之间，取较早的「中间」；更晚的 later.txt 不应出现。
+  const changes = await changesBetween(main, id, start!.at, middle!.at + 1);
+  expect(changes?.split('\n').sort()).toEqual([
+    '修改 edit.txt (+2 -1)',
+    '删除 gone.txt (+0 -2)',
+    '新增 new.txt (+2 -0)',
+  ].sort());
 });

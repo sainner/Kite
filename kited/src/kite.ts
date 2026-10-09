@@ -1,5 +1,5 @@
 /** 工作区负责文件、快照和采纳；线程负责模型执行及独立的对话记录。 */
-import type { Input, StopRequest } from './harness/types.ts';
+import type { CompactionRequest, Input, StopRequest } from './harness/types.ts';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { FileDiffStore } from './workspace/file-diffs.ts';
@@ -13,17 +13,21 @@ import { normalizeRemote } from './remote-url.ts';
 import { commitAll, git, isAncestor, isDirty } from './workspace/git.ts';
 import { checkoutSync, currentBranch, fetchBranch, originAccess, originURL, pushBranch, type CheckoutSync, type RemoteAccess } from './workspace/remote.ts';
 import { openRuntime, type Runtime, type RuntimeOptions } from './runtime.ts';
-import { capture, findSnapshot, list, restore, type Snapshot } from './workspace/snapshots.ts';
+import { capture, changesBetween, findSnapshot, list, restore, type Snapshot } from './workspace/snapshots.ts';
+import { compactTemplate } from './harness/compaction.ts';
 import type { Store } from './store.ts';
 import type { AgentInstance, Checkout, Machine, OpenWindowRequest, PluginInstance, Project, RuntimeKind, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
 import { PluginCatalog } from './plugins/catalog.ts';
 import { PluginHost } from './plugins/host.ts';
 import { InstanceConfiguration } from './instance-configuration.ts';
+import { handOff } from './handoff/handoff.ts';
+import type { AgentDefinition } from './agents/definition.ts';
 import { InstanceLifecycle } from './instance-lifecycle.ts';
-import { ContextTemplates, type ContextTemplateSelection } from './context-templates.ts';
+import { ContextTemplates, type ContextTemplate, type ContextTemplateSelection } from './context-templates.ts';
 import { addWorktree, removeWorktree, runSetup } from './workspace/worktrees.ts';
 import {
-  agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, pluginToolsContextDefinition,
+  agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
+  pluginToolsContextDefinition,
 } from './harness/context/notifications.ts';
 import { instanceExecutionGrants } from './execution/grants.ts';
 import { InstanceOperations } from './operations/operations.ts';
@@ -35,10 +39,11 @@ import { TranscriptHistory } from './transcript/history.ts';
 import type { DisplayState, History } from './transcript/protocol.ts';
 import { LightTasks } from './light-tasks.ts';
 import { ThreadTitles, titleTemplate } from './thread-titles.ts';
+import { emblemTemplate, TemplateEmblems } from './template-emblems.ts';
 import { ChatGPTModel } from './harness/chatgpt.ts';
 import { readSubscriptionCredentials } from './harness/auth.ts';
 import { SubscriptionLogins } from './subscription-logins.ts';
-import { ModelAccounts } from './model-accounts.ts';
+import { ModelAccounts, readModelAccounts } from './model-accounts.ts';
 import { agentModels } from './agents/models.ts';
 
 export interface ThreadView extends ThreadContext { runner: Runtime['state']; busy: boolean }
@@ -65,6 +70,7 @@ export class Kite {
   readonly plugins: PluginHost;
   readonly lightTasks?: LightTasks;
   readonly titles?: ThreadTitles;
+  readonly emblems: TemplateEmblems;
   private readonly transcripts: TranscriptHistory;
   private readonly configuration: InstanceConfiguration;
   private readonly instances: InstanceLifecycle;
@@ -83,12 +89,14 @@ export class Kite {
   constructor(readonly store: Store, readonly home: string, readonly bus: Bus, private options: RuntimeOptions = {},
     readonly account = new AccountClient(() => undefined)) {
     this.subscriptionLogins = new SubscriptionLogins(home);
-    this.modelAccounts = new ModelAccounts(home, (modelAccounts) => bus.emit({ type: 'model-accounts.changed', modelAccounts }));
+    this.modelAccounts = new ModelAccounts(home, (modelAccounts) => bus.emit({ type: 'model-accounts.changed', modelAccounts }),
+      (home) => readModelAccounts(home, { usage: store, apiKeys: async () => this.account.linked ? this.account.apiKeys() : [] }));
     this.catalog = new PluginCatalog(join(home, 'plugins'));
     this.contextTemplates = new ContextTemplates(store, [
       ...this.catalog.definitions().flatMap((definition) => definition.agent ? [definition.agent.context] : []),
-      titleTemplate,
-      agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, pluginToolsContextDefinition,
+      titleTemplate, compactTemplate, emblemTemplate,
+      agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
+      pluginToolsContextDefinition,
     ]);
     this.receipts = new OperationReceipts(store);
     this.operations = new InstanceOperations(this);
@@ -97,6 +105,7 @@ export class Kite {
       run: (workspaceId, action) => this.control(workspaceId, action),
       context: (id) => this.context(id), openThread: (id) => this.openThread(id),
       runtime: (thread) => this.runnerForManagement(thread),
+      switchRuntime: (id, agent, commit) => this.switchRuntime(id, agent, commit),
       changed: (workspaceId) => this.changed(workspaceId),
     });
     this.instances = new InstanceLifecycle(this, {
@@ -123,11 +132,25 @@ export class Kite {
         history: (id) => this.history(id), changed: (thread) => this.threadChanged(thread),
       });
     }
+    this.emblems = new TemplateEmblems(store, this.contextTemplates, this.lightTasks,
+      () => bus.emit({ type: 'context-templates.changed' }));
     for (const w of store.workspaces()) if (w.status === 'preparing') store.setWorkspaceStatus(w.id, 'failed');
     this.transcripts = new TranscriptHistory(store, home, bus, this.events);
   }
 
   machine(): Machine { return this.store.machine; }
+  createContextTemplate(definition: unknown) {
+    return this.templateSaved(this.contextTemplates.create(definition));
+  }
+  updateContextTemplate(id: string, expectedRevision: string, definition: unknown) {
+    return this.templateSaved(this.contextTemplates.update(id, expectedRevision, definition));
+  }
+  /** 模板保存后通知各端刷新，创建会话模板随之更新点阵签名。 */
+  private templateSaved(saved: ContextTemplate) {
+    this.bus.emit({ type: 'context-templates.changed' });
+    this.emblems.templateSaved(saved);
+    return this.emblems.decorate(saved);
+  }
   projects(): Project[] { return this.store.projects(); }
   checkouts(projectId?: string): Checkout[] { return this.store.checkouts(projectId); }
   /** 登记本机文件夹（path）或 clone 远程（remote，path 可选）。 */
@@ -467,6 +490,23 @@ export class Kite {
   async history(id: string): Promise<History> { return (await this.transcripts.load(this.context(id))).snapshot(); }
   async threadState(id: string): Promise<DisplayState> { return (await this.transcripts.load(this.context(id))).state(); }
   historyNow(id: string): History { return this.transcripts.snapshot(id); }
+  /**
+   * 调用方持有工作区控制锁，发送与切换不能同时通过状态检查。先把上下文追加到目标后端的原生记录再保存后端；
+   * 保存失败后重试只会导入尚未导入的部分。
+   */
+  private async switchRuntime(id: string, agent: AgentDefinition, commit: () => void): Promise<void> {
+    if (!(await this.threadState(id)).capabilities.switchRuntime) {
+      throw new KiteError('请先停止会话、处理排队消息并确认执行结果，再切换后端', 409);
+    }
+    const runner = await this.runnerForManagement(this.context(id));
+    if (runner?.busy || runner?.recovery) throw new KiteError('请先停止会话并确认执行结果，再切换后端', 409);
+    await runner?.shutdown();
+    this.runners.delete(id);
+    try { await handOff({ home: this.home, thread: this.context(id), to: agent.runtime, model: agent.model.model }); }
+    catch (error) { throw new KiteError(`上下文翻译失败，后端未切换：${(error as Error).message}`, 409); }
+    commit();
+    await this.transcripts.reset(this.context(id));
+  }
   private runner(t: ThreadContext): Promise<Runtime> {
     const existing = this.runners.get(t.id);
     if (existing) return Promise.resolve(existing);
@@ -504,6 +544,11 @@ export class Kite {
       notifications: (after) => this.store.instanceNotifications(id, after),
       operations: { tools: this.operations.tools(id), prepare: (instance) => this.operations.prepareTools(instance) },
       contextUpdateTemplate: () => this.contextTemplates.get(contextUpdateContextDefinition.id, contextUpdateContextDefinition.scene).definition,
+      compactionTemplates: () => ({
+        compact: this.contextTemplates.get(compactTemplate.id, compactTemplate.scene).definition,
+        fileChanges: this.contextTemplates.get(fileChangesContextDefinition.id, fileChangesContextDefinition.scene).definition,
+      }),
+      compactionFiles: ({ from, to }) => changesBetween(workspace.cwd, workspaceId, from, to),
     });
     this.runners.set(id, r);
     return r;
@@ -570,6 +615,23 @@ export class Kite {
       check();
       if (!r.resume) throw new KiteError('这个后端通过发消息继续', 409);
       await r.resume();
+    });
+  }
+  /** 压缩不改文件，不要求同一工作区的其他线程空闲；模型请求在锁外进行，结果经显示事件送达。 */
+  compact(id: string, request: CompactionRequest): Promise<void> {
+    return this.controlThread(id, async () => {
+      const r = await this.runner(this.openThread(id));
+      if (!r.compact) throw new KiteError('这个后端暂不支持压缩上下文', 409);
+      try { await r.compact(request); }
+      catch (error) { throw new KiteError((error as Error).message, 409); }
+    });
+  }
+  revertCompaction(id: string, compactionId: string): Promise<void> {
+    return this.controlThread(id, async () => {
+      const r = await this.runner(this.openThread(id));
+      if (!r.revertCompaction) throw new KiteError('这个后端暂不支持压缩上下文', 409);
+      try { await r.revertCompaction(compactionId); }
+      catch (error) { throw new KiteError((error as Error).message, 409); }
     });
   }
   recover(id: string): Promise<void> {
@@ -694,7 +756,7 @@ export class Kite {
   }
   async shutdown(): Promise<void> {
     this.stopping = true;
-    await Promise.all([this.titles?.close(), this.lightTasks?.close(), this.subscriptionLogins.close()]);
+    await Promise.all([this.titles?.close(), this.emblems.close(), this.lightTasks?.close(), this.subscriptionLogins.close()]);
     await this.plugins.close();
     await this.operations.close();
     for (const c of this.preparations.values()) c.abort();

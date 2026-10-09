@@ -1,0 +1,22 @@
+/** 实验 6：在已运行过的原生会话（含 last-prompt）末尾追加合成条目，resume 后检查请求是否包含追加内容。 */
+import { fakeApi, isolated, drive } from './native.ts';
+import { mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+const out = resolve(process.argv[2]); const cwd = join(out, 'work');
+const api = fakeApi(); const { options, cfg } = isolated(join(out, 'append'), api.port, cwd);
+const native = readFileSync(join(out, 'native.jsonl'), 'utf8');
+const rows = native.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+const sessionId = rows.find((r) => r.sessionId).sessionId;
+const leaf = rows.filter((r) => r.uuid && !r.isSidechain).at(-1).uuid;
+const dir = join(cfg, 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-')); mkdirSync(dir, { recursive: true });
+const file = join(dir, `${sessionId}.jsonl`);
+writeFileSync(file, native);
+let parent = leaf; let at = Date.now();
+const add = (f: any) => { const uuid = crypto.randomUUID(); appendFileSync(file, JSON.stringify({ parentUuid: parent, isSidechain: false, sessionId, timestamp: new Date(at += 10).toISOString(), uuid, kite: { import: 'x', through: '7' }, ...f }) + '\n'); parent = uuid; };
+add({ type: 'user', message: { role: 'user', content: '来自 harness 的问题' }, origin: { kind: 'human' } });
+add({ type: 'assistant', message: { id: 'msg_kite_r1', type: 'message', role: 'assistant', model: 'claude-sonnet-4-5', content: [{ type: 'text', text: '来自 harness 的回答' }], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
+await drive({ ...options, resume: sessionId, model: 'claude-sonnet-4-5' }, [{ id: crypto.randomUUID(), text: '切回 Claude 后的问题' }]);
+api.stop();
+const messages = api.log.filter((l) => l.main)[0].body.messages;
+console.log(JSON.stringify(messages.slice(-3).map((m: any) => typeof m.content === 'string' ? m.content : m.content.map((b: any) => b.text ?? b.type))));
+console.log(messages.length);

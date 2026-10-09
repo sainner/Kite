@@ -3,7 +3,7 @@ import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { History } from '../../src/transcript/protocol.ts';
-import { api, call, type Kited, mark, registerCheckout, startKited, waitRunner } from '../harness.ts';
+import { api, call, type Kited, mark, registerCheckout, startKited, waitIdle, waitRunner } from '../harness.ts';
 import { newRepo, transcript, until, writeFiles } from '../util.ts';
 
 setDefaultTimeout(3_000);
@@ -51,6 +51,7 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
   };
   const firstHold = tag('首个工具请求');
   const first = { id: 'client-input-without-uuid', text: `HOLD ${firstHold}\nREAD {"path":"a.txt"}\nSTREAM_RESULT ${streamingTag}` };
+  const firstTurn = mark(kk);
   const firstReply = await kk.call('POST', `/threads/${id}/messages`, first);
   expect(firstReply.status).toBe(200);
   expect(await kk.call('POST', `/threads/${id}/messages`, first)).toEqual(firstReply);
@@ -85,7 +86,7 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
     && record.block.text.includes(streamingTag) && record.generation === 'streaming'), '工具后回复增量已到达历史');
   expect((await kk.call('POST', `/threads/${id}/messages/${interjections[0]!.id}/cancel`)).status).toBe(409);
   api.release(streamingTag);
-  await waitRunner(kk, id, 'closed');
+  await waitIdle(kk, id, firstTurn);
   const complete = await getHistory();
   const texts = complete.records.filter((record) => record.block.type === 'text' && record.block.text.includes(streamingTag));
   expect(texts).toHaveLength(1);
@@ -124,7 +125,6 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
   const opTag = tag('创建空会话');
   const hold = tag('操作结果');
   const operation = { id: 'operation-client-input', text: `${opTag}\nAGENT_START {"definitionId":"kite.agent.claude","presentation":"background"}\nHOLD_RESULT ${hold}` };
-  const since = mark(kk);
   expect((await kk.call('POST', `/threads/${id}/messages`, operation)).status).toBe(200);
   const request = await api.waitRequest((entry) => entry.main && entry.lastUserText.includes(opTag));
   expect(request.body.tools.map((tool: { name: string }) => tool.name)).toEqual(['mcp__kite__agent_start']);
@@ -151,11 +151,13 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
   const unconfirmed = { id: 'return-unconfirmed', text: tag('未确认输入'), source: 'human' as const };
   const returnedUuid = await submitQueued(queued);
   const stop = { id: 'stable-stop-id', inputs: [unconfirmed] };
+  const stopping = mark(kk);
   const stopped = await kk.call('POST', `/threads/${id}/interrupt`, stop);
   expect(stopped).toEqual({ status: 200, body: { returned: [queued, unconfirmed] } });
   await waitLifecycle(returnedUuid, 'cancelled');
   api.release(hold);
-  await waitRunner(kk, id, 'closed', since);
+  // 手动停止结束常驻进程。
+  await waitRunner(kk, id, 'closed', stopping);
   expect((await getHistory()).pending).toEqual([]);
   expect(api.log.some((entry) => JSON.stringify(entry.body).includes(queued.text))).toBe(false);
 

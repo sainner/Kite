@@ -30,6 +30,15 @@ struct Record {
     var parent: String?
     var block: Block
     var generation: String?
+    /// 被这次压缩收起：界面上收在它的摘要下面，原文可以展开。
+    var folded: String? = nil
+}
+
+/// 一次上下文压缩。id 为 nil 的来自 Claude 原生压缩，没有范围，只在原处显示分界。
+struct Compaction {
+    let id: String?
+    let summary: String
+    let automatic: Bool
 }
 
 enum Block {
@@ -45,8 +54,8 @@ enum Block {
     case toolResult(ToolResult)
     /// 人打断了回合。
     case interrupted
-    /// 之前的对话压缩成了这段摘要。
-    case compacted(String)
+    /// 一段对话压缩成了这份摘要。
+    case compacted(Compaction)
     /// 调用模型出错。
     case apiError(String)
 }
@@ -202,7 +211,8 @@ struct Item: Identifiable {
         case thinking(String)
         case work(Work)
         case interrupted
-        case compacted(String)
+        /// 压缩的摘要；children 是被收起的原文。
+        case compacted(Compaction, children: [Item])
         case apiError(String)
     }
 }
@@ -230,13 +240,26 @@ extension Transcript {
     private mutating func derive() -> [Item] {
         locations = [:]
         let byParent = Dictionary(grouping: Array(records.enumerated()), by: { $0.element.parent })
-        return derive(under: nil, byParent)
+        var compactions: [String: Compaction] = [:]
+        for record in records {
+            if case .compacted(let compaction) = record.block, let id = compaction.id { compactions[id] = compaction }
+        }
+        return derive(byParent[nil] ?? [], parent: nil, byParent, compactions: compactions)
     }
 
-    private mutating func derive(under parent: String?, _ byParent: [String?: [(offset: Int, element: Record)]]) -> [Item] {
+    private mutating func derive(under parent: String, _ byParent: [String?: [(offset: Int, element: Record)]]) -> [Item] {
+        derive(byParent[parent] ?? [], parent: parent, byParent)
+    }
+
+    /// 按顺序把记录排成界面上的项。主对话里被同一次压缩收起的记录连成一段，换成一项摘要摆在这段开头，
+    /// 压缩记录本身不再单独出现；收起的原文作为这一项的 children，不登记流式刷新位置。
+    private mutating func derive(_ entries: [(offset: Int, element: Record)], parent: String?,
+                                 _ byParent: [String?: [(offset: Int, element: Record)]],
+                                 compactions: [String: Compaction] = [:], top: Bool = true) -> [Item] {
         var list: [Item] = []
         /// 调用的 id → 在第几项的第几步，结果来了按它找回去。
         var positions: [String: (item: Int, step: Int)] = [:]
+        let folds = Set(entries.compactMap { entry in entry.element.folded.flatMap { compactions[$0] == nil ? nil : $0 } })
 
         func append(_ kind: Item.Kind) {
             list.append(Item(id: list.count, kind: kind))
@@ -253,7 +276,18 @@ extension Transcript {
             return (list.count - 1, work.calls.count - 1)
         }
 
-        for (recordIndex, record) in byParent[parent] ?? [] {
+        var index = 0
+        while index < entries.count {
+            let (recordIndex, record) = entries[index]
+            index += 1
+            if let fold = record.folded, let compaction = compactions[fold] {
+                var end = index
+                while end < entries.count, entries[end].element.folded == fold { end += 1 }
+                let children = derive(Array(entries[(index - 1)..<end]), parent: parent, byParent, top: false)
+                append(.compacted(compaction, children: children))
+                index = end
+                continue
+            }
             let before = list.count
             switch record.block {
             case .human(let message): append(.human(message))
@@ -261,14 +295,16 @@ extension Transcript {
             case .notification(let text): append(.notification(text))
             case .text(let text): append(.text(text))
             case .interrupted: append(.interrupted)
-            case .compacted(let summary): append(.compacted(summary))
+            case .compacted(let compaction):
+                if let id = compaction.id, folds.contains(id) { continue }
+                append(.compacted(compaction, children: []))
             case .apiError(let message): append(.apiError(message))
             case .thinking(let text): append(.thinking(text))
             case .toolUse(let use):
                 let call = Call(use: use, state: Self.callState(use, result: nil, running: running), children: derive(under: use.id, byParent))
                 let at = add(call)
                 positions[use.id] = at
-                if parent == nil { locations[recordIndex] = (at.item, at.step) }
+                if parent == nil && top { locations[recordIndex] = (at.item, at.step) }
             case .toolResult(let result):
                 guard let at = positions[result.call], case .work(var work) = list[at.item].kind else { continue }
                 var call = work.calls[at.step]
@@ -279,7 +315,7 @@ extension Transcript {
             }
             if list.count > before {
                 list[list.count - 1].generation = record.generation
-                if parent == nil, locations[recordIndex] == nil { locations[recordIndex] = (list.count - 1, nil) }
+                if parent == nil, top, locations[recordIndex] == nil { locations[recordIndex] = (list.count - 1, nil) }
             }
         }
         return list

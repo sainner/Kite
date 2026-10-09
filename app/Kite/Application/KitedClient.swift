@@ -8,9 +8,12 @@ nonisolated struct RemoteState: Decodable, Equatable, Sendable {
         let interrupt: Bool
         let resume: Bool
         let cancel: Bool
+        var switchRuntime: Bool? = nil
+        var compact: Bool? = nil
     }
     let phase: String
     let busy: Bool
+    var compacting: Bool?
     var waitingForResume = false
     var lastOutcome: Outcome?
     var recovery: Recovery?
@@ -73,6 +76,10 @@ struct RemoteRecord: Decodable, Identifiable {
         var startedAt: Double?
         var finishedAt: Double?
         var diff: ToolDiffReference?
+        var from: String?
+        var through: String?
+        var automatic: Bool?
+        var reverted: Bool?
     }
     let id: String
     let parent: String?
@@ -89,7 +96,10 @@ struct RemoteRecord: Decodable, Identifiable {
         case "text": content = .text(block.text ?? "")
         case "thinking": content = .thinking(block.text ?? "")
         case "error": content = .apiError(block.text ?? "")
-        case "compacted": content = .compacted(block.text ?? "")
+        case "compacted":
+            // 撤销后范围照原样显示，摘要不再出现。
+            if block.reverted == true { return nil }
+            content = .compacted(Compaction(id: block.id, summary: block.text ?? "", automatic: block.automatic ?? false))
         case "interrupted": content = .interrupted
         case "tool_use":
             guard let call = block.id, let name = block.name else { return nil }

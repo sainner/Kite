@@ -93,15 +93,19 @@ struct CompactWindow: View {
                     // 一直给着：打开时窗口上盖着一层点了收起的，按钮点不到。有无来回切的话，标题栏会被当成换了一个视图
                     .environment(\.openSidebar, { settle(.sidebar) })
                     .environment(\.keyboardShown, insets.bottom > homeInset + 1)
+                    .transition(.opacity.combined(with: .dotsPresence))
+                    // 换一组窗口（侧栏切栏目、切工作区）直接替换：交叉淡化时新旧两组的点阵同时半透明，整片会暗一下
+                    .transaction(value: group.id) { $0.animation = nil }
                     .id(group.id)
             } else {
                 placeholder
                     .environment(\.openSidebar, { settle(.sidebar) })
                     .environment(\.keyboardShown, insets.bottom > homeInset + 1)
-                    .transition(.opacity)
+                    .transition(.opacity.combined(with: .dotsPresence))
             }
         }
         .animation(.snappy, value: windowed)
+        // 拉开侧边栏或底栏就是焦点到了它们那边，窗口不画静息的点；钉着的底栏不算
         .environment(\.windowDotsFocused, shown == nil || (shown == .actions && actionsRule == .pinned))
         .environment(\.dotCarrier, carrier)
         .modifier(WindowPlacement(openness: target, screen: screen, insets: insets, homeInset: homeInset,

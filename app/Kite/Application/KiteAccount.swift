@@ -88,7 +88,7 @@ private struct AccountLogin: Codable {
     }
     #endif
 
-    func request<T: Decodable>(_ path: String, method: String = "GET", body: [String: String]? = nil,
+    func request<T: Decodable>(_ path: String, method: String = "GET", body: (any Encodable)? = nil,
                                timeout: TimeInterval = 25, as: T.Type) async throws -> T {
         let expectedToken = login?.token
         var request = URLRequest(url: URL(string: Self.server + path)!)

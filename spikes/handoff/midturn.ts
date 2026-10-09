@@ -1,0 +1,22 @@
+/** 实验 4：工具执行期间插话，加图片工具结果；记录原生 jsonl 与请求。用法：bun midturn.ts <输出目录> */
+import { fakeApi, isolated, Inbox, kiteServer, sessionFile } from './native.ts';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+const { query } = await import('../../kited/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs');
+const out = resolve(process.argv[2]);
+const cwd = join(out, 'work'); mkdirSync(cwd, { recursive: true });
+const api = fakeApi();
+const { options, cfg } = isolated(join(out, 'midturn'), api.port, cwd);
+const sessionId = crypto.randomUUID();
+const inbox = new Inbox();
+const results: any[] = [];
+const q = query({ prompt: inbox, options: { ...options, sessionId, model: 'claude-sonnet-4-5', title: '插话', mcpServers: { kite: kiteServer() } } });
+const loop = (async () => { for await (const m of q) if (m.type === 'result') { results.push(m); if (results.length >= 1) inbox.close(); } })();
+inbox.push('请看图', crypto.randomUUID());
+await Bun.sleep(1200);
+inbox.push('顺便补充一句插话', crypto.randomUUID());
+await loop;
+api.stop();
+writeFileSync(join(out, 'midturn.jsonl'), readFileSync(sessionFile(cfg, sessionId)));
+writeFileSync(join(out, 'midturn-requests.json'), JSON.stringify(api.log.filter((l) => l.main).map((l) => l.body), null, 2));
+console.log(JSON.stringify({ sessionId, requests: api.log.filter((l) => l.main).length, results: results.length }));

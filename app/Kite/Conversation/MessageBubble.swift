@@ -111,6 +111,19 @@ struct MessageBubble: View {
             copyToPasteboard(message.typed, toast: toast)
             done {}
         }
+        if !queued {
+            if thread.compactionStart == nil {
+                ActionButton("从这里开始压缩", icon: "arrow.down.to.line") {
+                    done { thread.compactionStart = message.id }
+                    toast?.show("已选起点，在这条或之后的消息上选「压缩到这里」", systemImage: "arrow.down.to.line")
+                }
+                .disabled(!thread.canCompact)
+            } else {
+                ActionButton("压缩到这里", icon: "rectangle.compress.vertical") { done { thread.compact(through: message.id) } }
+                    .disabled(!thread.canCompact)
+                ActionButton("取消压缩起点", icon: "xmark") { done { thread.compactionStart = nil } }
+            }
+        }
         if foldable {
             ActionButton(expanded ? "收起" : "展开全文",
                          icon: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") {

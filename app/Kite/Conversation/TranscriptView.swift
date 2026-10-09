@@ -236,8 +236,8 @@ private struct ItemView: View {
             WorkRow(work: work)
         case .interrupted:
             EventLabel(text: "已打断", icon: "hand.raised")
-        case .compacted(let summary):
-            CompactedDivider(summary: summary)
+        case .compacted(let compaction, let children):
+            CompactedDivider(compaction: compaction, children: children)
         case .apiError(let message):
             EventLabel(text: message, icon: "exclamationmark.triangle", tint: Theme.danger)
         }
@@ -258,10 +258,13 @@ private struct EventLabel: View {
     }
 }
 
-/// 压缩的分界：之前的对话收成了一段摘要，点开看摘要。
+/// 压缩的分界：一段对话收成了摘要，点开看摘要；被收起的原文可以展开，Kite 的压缩还能撤销。
 private struct CompactedDivider: View {
-    let summary: String
+    let compaction: Compaction
+    let children: [Item]
+    @Environment(WorkThread.self) private var thread
     @State private var expanded = false
+    @State private var original = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -270,7 +273,7 @@ private struct CompactedDivider: View {
             } label: {
                 HStack(spacing: 10) {
                     Rectangle().fill(Theme.rule).frame(height: 1)
-                    Text(expanded ? "收起摘要" : "之前的对话已压缩成摘要").fixedSize()
+                    Text(expanded ? "收起摘要" : compaction.automatic || compaction.id == nil ? "之前的对话已压缩成摘要" : "这段对话已压缩成摘要").fixedSize()
                     Rectangle().fill(Theme.rule).frame(height: 1)
                 }
                 .font(Theme.secondary)
@@ -279,7 +282,23 @@ private struct CompactedDivider: View {
             }
             .buttonStyle(.pointingPlain)
             if expanded {
-                MarkdownView(summary).font(Theme.secondary).foregroundStyle(.secondary)
+                MarkdownView(compaction.summary).font(Theme.secondary).foregroundStyle(.secondary)
+                HStack(spacing: 16) {
+                    if !children.isEmpty {
+                        Button(original ? "收起原文" : "显示原文") { withAnimation(.snappy) { original.toggle() } }
+                    }
+                    if let id = compaction.id {
+                        Button("撤销压缩") { thread.revertCompaction(id) }.disabled(!thread.canCompact)
+                    }
+                }
+                .font(Theme.secondary)
+                .buttonStyle(.pointingPlain)
+                .foregroundStyle(Color.accentColor)
+            }
+            if expanded && original {
+                TranscriptView(items: children)
+                    .padding(.leading, 12)
+                    .overlay(alignment: .leading) { Rectangle().fill(Theme.rule).frame(width: 1) }
             }
         }
     }

@@ -12,6 +12,8 @@ const schema = z.object({
   processes: z.array(z.number().int().positive()),
   initialContext: z.string().optional(), context: z.string().optional(), through: z.number().default(0),
   paused: z.boolean().default(false),
+  /** 切换后端前由另一后端处理过的输入，重发同一 ID 不再投递。 */
+  importedInputs: z.array(z.string()).default([]),
   outcome: z.discriminatedUnion('kind', [z.object({ kind: z.literal('completed') }), z.object({ kind: z.literal('interrupted') }),
     z.object({ kind: z.literal('failed'), message: z.string() })]).optional(),
   recovery: z.object({ message: z.string() }).optional(),
@@ -21,6 +23,8 @@ export interface ClaudeState {
   inputs: ClaudeControl['inputs'];
   phase: Phase;
   busy: boolean;
+  /** 正在压缩上下文；期间不启动新回合。 */
+  compacting?: boolean;
   waitingForResume: boolean;
   lastOutcome?: Outcome;
   recovery?: Recovery;
@@ -33,7 +37,7 @@ export function readClaudeControl(directory: string): ClaudeControl {
   if (data.inputs.some((entry) => entry.status === 'queued')) data.paused = true;
   return data;
 }
-export function saveClaudeControl(directory: string, data: ClaudeControl): void {
+export function saveClaudeControl(directory: string, data: z.input<typeof schema>): void {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const path = join(directory, 'claude-control.json');
   const temp = `${path}.${randomUUID()}.tmp`;
@@ -43,8 +47,8 @@ export function saveClaudeControl(directory: string, data: ClaudeControl): void 
   const folder = openSync(dirname(path), 'r');
   try { fsyncSync(folder); } finally { closeSync(folder); }
 }
-export const claudeState = (data: ClaudeControl, phase: Phase = 'idle'): ClaudeState => ({
-  inputs: data.inputs, phase, busy: phase !== 'idle', lastOutcome: data.outcome, recovery: data.recovery,
+export const claudeState = (data: Pick<ClaudeControl, 'inputs' | 'outcome' | 'recovery' | 'paused'>, phase: Phase = 'idle', compacting = false): ClaudeState => ({
+  inputs: data.inputs, phase, busy: phase !== 'idle' || compacting, ...(compacting ? { compacting } : {}), lastOutcome: data.outcome, recovery: data.recovery,
   waitingForResume: !!data.recovery || (phase === 'idle' && data.paused),
 });
 export const sameInput = (a: Input, b: Input) => a.id === b.id && a.text === b.text && a.source === b.source;

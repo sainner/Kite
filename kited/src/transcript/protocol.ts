@@ -7,7 +7,9 @@ import type { WorkspaceStatus } from '../model.ts';
 
 export type DisplayBlock =
   | { type: 'human'; id: string; text: string; midTurn: boolean }
-  | { type: 'kite' | 'error' | 'compacted'; text: string }
+  | { type: 'kite' | 'error'; text: string }
+  /** from、through 是被压缩范围首尾记录的 id；Claude 原生压缩没有范围。 */
+  | { type: 'compacted'; text: string; id?: string; from?: string; through?: string; automatic?: boolean; reverted?: boolean }
   | { type: 'text' | 'thinking'; text: string; parts?: string[] }
   | { type: 'tool_use'; id: string; name: string; input: Json; batch?: string; arguments?: string;
       stage?: 'generating' | 'queued' | 'running' | 'finished' | 'not_executed' | 'unfinished';
@@ -20,6 +22,8 @@ export interface PendingInput extends Input { midTurn: boolean }
 export interface DisplayState {
   phase: Phase;
   busy: boolean;
+  /** 正在生成压缩摘要。 */
+  compacting?: boolean;
   waitingForResume: boolean;
   lastOutcome?: Outcome;
   recovery?: Recovery;
@@ -27,7 +31,7 @@ export interface DisplayState {
   error?: string;
   /** 最近一次完成请求的输入用量；窗口上限缺失时不能计算百分比。 */
   context?: { requestId: string; inputTokens: number; windowTokens?: number; measuredAt: number };
-  capabilities: { send: boolean; interrupt: boolean; resume: boolean; cancel: boolean };
+  capabilities: { send: boolean; interrupt: boolean; resume: boolean; cancel: boolean; switchRuntime?: boolean; compact?: boolean };
 }
 export interface History {
   version: 1;

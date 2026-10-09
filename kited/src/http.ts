@@ -222,12 +222,17 @@ export function serve(kite: Kite, listen: Listen) {
         POST: bound(async (req) => kite.catalog.install(await body(req))),
       },
       '/context-templates': {
-        GET: bound(() => kite.contextTemplates.list()),
-        POST: bound(async (req) => kite.contextTemplates.create((await body(req)).definition)),
+        GET: bound(() => kite.emblems.catalog()),
+        POST: bound(async (req) => kite.createContextTemplate((await body(req)).definition)),
       },
       '/context-templates/:id': { PUT: bound(async (req) => {
         const b = await body(req);
-        return kite.contextTemplates.update(req.params.id, str(b.expectedRevision, 'expectedRevision'), b.definition);
+        return kite.updateContextTemplate(req.params.id, str(b.expectedRevision, 'expectedRevision'), b.definition);
+      }) },
+      '/context-templates/:id/emblem': { PUT: bound(async (req) => kite.emblems.save(req.params.id, (await body(req)).emblem)) },
+      '/context-templates/:id/emblem/generate': { POST: bound(async (req) => {
+        const b = await body(req);
+        return kite.emblems.generate(req.params.id, b.force === true);
       }) },
       '/workspaces/:id/plugin-instances': { POST: bound(async (req) => {
         const parsed = z.object({ id: z.uuid(), definitionId: z.string().min(1), title: z.string().trim().min(1).optional() }).strict().safeParse(await body(req));
@@ -353,6 +358,16 @@ export function serve(kite: Kite, listen: Listen) {
         }, req.signal);
       }) },
       '/threads/:id/recover': { POST: bound((req) => kite.recover(req.params.id)) },
+      '/threads/:id/compactions': { POST: bound(async (req) => {
+        const parsed = z.object({ id: z.string().min(1), from: z.string().min(1), through: z.string().min(1) }).strict().safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('压缩请求无效');
+        await kite.compact(req.params.id, parsed.data);
+        return { ok: true };
+      }) },
+      '/threads/:id/compactions/:compaction': { DELETE: bound(async (req) => {
+        await kite.revertCompaction(req.params.id, req.params.compaction);
+        return { ok: true };
+      }) },
       '/threads/:id/messages/:message/cancel': { POST: bound((req) => kite.cancel(req.params.id, req.params.message)) },
       '/workspaces/:id/snapshots': { GET: bound((req) => kite.snapshots(req.params.id)) },
       '/workspaces/:id/restore': {

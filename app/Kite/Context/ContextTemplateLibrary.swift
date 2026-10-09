@@ -70,6 +70,16 @@ struct ContextTemplateLibrary: View {
     }
 }
 
+extension AppModel {
+    /// 新会话选用的创建会话模板，取工作机目录里的最新版本；没选过时是第一个。
+    func newThreadTemplate(for thread: WorkThread, in area: WorkArea) -> ContextTemplate? {
+        let templates = (templates(in: area)?.templates ?? []).filter { $0.definition.scene == "thread.create" }
+        let instance = area.instances.first { $0.id == thread.id }
+        let id = thread.contextTemplate?.id ?? instance?.config?.agent?.context["id"]?.string
+        return templates.first { $0.id == id } ?? templates.first
+    }
+}
+
 /// 首次发送前选用模板，或使用同一编辑器复制新模板；不单独增加创建向导。
 struct NewThreadContextTemplate: View {
     @Environment(AppModel.self) private var model
@@ -86,9 +96,7 @@ struct NewThreadContextTemplate: View {
     private var title: String {
         thread.contextTemplate?.definition.title ?? instance?.config?.agent?.context["title"]?.string ?? "默认模板"
     }
-    private var source: ContextTemplate? {
-        templates.first { $0.id == templateID } ?? templates.first
-    }
+    private var source: ContextTemplate? { model.newThreadTemplate(for: thread, in: area) }
     private var available: Bool {
         !thread.configuringTemplate && model.isConnected(area)
             && (instance?.config?.agent != nil || thread.isDraft)
@@ -97,24 +105,43 @@ struct NewThreadContextTemplate: View {
     var body: some View {
         VStack(spacing: 10) {
             Menu {
-                ForEach(templates) { template in
-                    Button { apply(template) } label: {
-                        if template.id == templateID { Label(template.definition.title, systemImage: "checkmark") }
-                        else { Text(template.definition.title) }
+                Section("上下文模板") {
+                    ForEach(templates) { template in
+                        Button { apply(template) } label: {
+                            if template.id == templateID { Label(template.definition.title, systemImage: "checkmark") }
+                            else { Text(template.definition.title) }
+                        }
                     }
                 }
-            } label: { Label(title, systemImage: "text.document") }
-                .disabled(!available || model.templates(in: area) == nil)
-            Button("基于此模板新建…") {
-                if let source { edit = .init(definition: source.definition.copy()) }
-            }.disabled(!available || source == nil)
-            if thread.configuringTemplate { ProgressView() }
+                Divider()
+                Button("基于「\(source?.definition.title ?? title)」新建模板…", systemImage: "plus") {
+                    if let source { edit = .init(definition: source.definition.copy()) }
+                }.disabled(source == nil)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "text.document").foregroundStyle(.secondary)
+                    Text(title).lineLimit(1).truncationMode(.middle)
+                    Group {
+                        if thread.configuringTemplate { CardSpinner().scaleEffect(0.75) }
+                        else { Image(systemName: "chevron.down").font(Theme.status.weight(.semibold)) }
+                    }
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12)
+                }
+            }
+            .menuStyle(.button).buttonStyle(TemplateChipStyle()).menuIndicator(.hidden).fixedSize().clickPointer()
+            .disabled(!available || model.templates(in: area) == nil)
+            .help("上下文模板")
             if let error {
-                Text(error).font(.caption).foregroundStyle(Theme.danger)
-                Button("重新读取模板") { Task { await load() } }
+                HStack(spacing: 8) {
+                    Text(error).foregroundStyle(Theme.danger).lineLimit(2)
+                    Button("重新读取") { Task { await load() } }
+                        .buttonStyle(.borderless).foregroundStyle(Color.accentColor).clickPointer()
+                }
+                .font(Theme.caption)
+                .multilineTextAlignment(.center)
             }
         }
-        .buttonStyle(.bordered)
         .sheet(item: $edit) { request in
             ContextTemplateEditor(request: request, connection: model.revision(for: area)) { template in apply(template) }
                 .environment(model)
@@ -137,6 +164,31 @@ struct NewThreadContextTemplate: View {
             defer { thread.configuringTemplate = false }
             do { try await model.applyContextTemplate(template, to: thread, in: area, connection: revision) }
             catch { self.error = error.localizedDescription }
+        }
+    }
+}
+
+/// 新会话中间的模板选择：一枚浅底胶囊，悬停略深，按下变淡。
+private struct TemplateChipStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Chip(configuration: configuration)
+    }
+
+    private struct Chip: View {
+        let configuration: ButtonStyleConfiguration
+        @Environment(\.isEnabled) private var enabled
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .font(Theme.secondary)
+                .padding(.horizontal, 14)
+                .frame(minHeight: InputMode.current.isTouch ? 40 : 30)
+                .background(Theme.codeBackground.opacity(hovering ? 1 : 0.7), in: Capsule())
+                .contentShape(Capsule())
+                .opacity(enabled ? (configuration.isPressed ? 0.6 : 1) : 0.5)
+                .onHover { hovering = $0 && enabled }
+                .animation(.easeOut(duration: 0.15), value: hovering)
         }
     }
 }

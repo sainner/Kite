@@ -8,8 +8,10 @@ struct ThreadHeaderActions: View {
     @Environment(\.paneInstance) private var instance
     @Environment(\.toast) private var toast
     @State private var savingModel = false
+    @State private var loadingModels = false
     @State private var modelError: String?
     @State private var confirmingRecovery = false
+    @State private var showingModels = false
     private var availableModels: [AgentCapabilities.Model] { thread.agentCapabilities?.models ?? [] }
     private var modelName: String? {
         if let name = instance?.config?.agent?.model.model { return name }
@@ -21,24 +23,45 @@ struct ThreadHeaderActions: View {
 
     private var modelTier: String {
         guard let modelName else { return "模型" }
-        return availableModels.first { modelName == $0.id || modelName == $0.resolvedModel }?.title ?? modelName
+        return availableModels.first { modelName == $0.id }?.title ?? modelName
     }
     private var canChangeModel: Bool {
         instance != nil && model.isConnected(area) && !savingModel
             && thread.agentCapabilities?.canEdit(thread.state) == true
     }
+    private var runtimeName: String { instance?.config?.agent?.runtime ?? "harness" }
+    private var canOpenModels: Bool { instance != nil && model.isConnected(area) }
+    private var canChangeRuntime: Bool {
+        canOpenModels && !savingModel && !thread.showStop && thread.state?.capabilities.switchRuntime == true
+    }
 
     var body: some View {
         menuGroup
-            .task(id: "\(model.revision(for: area))-\(model.isConnected(area))") {
+            .popover(isPresented: $showingModels, arrowEdge: .top) {
+                ThreadModelMenu(runtime: runtimeName, modelName: modelName, models: availableModels,
+                    runtimeEnabled: canChangeRuntime, modelEnabled: canChangeModel, saving: savingModel,
+                    loading: loadingModels,
+                    runtimeExplanation: thread.state?.capabilities.switchRuntime == false
+                        ? "运行中、有排队消息或等待恢复确认时不能切换。" : nil,
+                    onSelectRuntime: selectRuntime, onSelectModel: selectModel)
+                    .presentationCompactAdaptation(.popover)
+            }
+            .task(id: "\(model.revision(for: area))-\(model.isConnected(area))-\(runtimeName)") {
                 guard model.isConnected(area), let instance else { return }
+                thread.agentCapabilities = nil
+                loadingModels = true
+                defer { if !Task.isCancelled { loadingModels = false } }
                 do {
                     let client = try model.activeClient(in: area)
                     let revision = model.revision(for: area)
+                    let runtime = runtimeName
                     let capabilities = try await client.request("/instances/\(instance.id)/agent-capabilities", as: AgentCapabilities.self)
-                    guard revision == model.revision(for: area), !Task.isCancelled else { return }
+                    guard revision == model.revision(for: area), !Task.isCancelled,
+                          area.instances.first(where: { $0.id == instance.id })?.config?.agent?.runtime == runtime else { return }
                     thread.agentCapabilities = capabilities
-                } catch { modelError = error.localizedDescription }
+                } catch {
+                    if !Task.isCancelled { showingModels = false; modelError = error.localizedDescription }
+                }
             }
             .alert("切换模型失败", isPresented: Binding(
                 get: { modelError != nil }, set: { if !$0 { modelError = nil } }
@@ -56,13 +79,11 @@ struct ThreadHeaderActions: View {
     private var menuGroup: some View {
         #if os(iOS)
         PhoneThreadHeaderMenus(modelTitle: modelTier, modelName: modelName,
-            modelIDs: availableModels.map(\.id), modelEnabled: canChangeModel,
-            commands: moreCommands, onSelectModel: selectModel)
+            modelEnabled: canOpenModels, commands: moreCommands, onOpenModel: { showingModels = true })
             .fixedSize()
         #else
         MacThreadHeaderMenus(modelTitle: modelTier, modelName: modelName,
-            modelIDs: availableModels.map(\.id), modelEnabled: canChangeModel,
-            commands: moreCommands, onSelectModel: selectModel)
+            modelEnabled: canOpenModels, commands: moreCommands, onOpenModel: { showingModels = true })
             .fixedSize()
         #endif
     }
@@ -95,6 +116,7 @@ struct ThreadHeaderActions: View {
         guard canChangeModel, name != modelName, availableModels.contains(where: { $0.id == name }),
               let instance else { return }
         savingModel = true
+        showingModels = false
         Task {
             defer { savingModel = false }
             do {
@@ -103,6 +125,77 @@ struct ThreadHeaderActions: View {
                 }
             } catch { modelError = error.localizedDescription }
         }
+    }
+
+    private func selectRuntime(_ runtime: String) {
+        guard canChangeRuntime, runtime != runtimeName, let instance,
+              let defaults = area.definitions.first(where: { $0.agent?.runtime.rawValue == runtime })?.agent?.model else { return }
+        savingModel = true
+        Task {
+            defer { savingModel = false }
+            do {
+                try await model.updateAgent(in: area, id: instance.id) { agent in
+                    agent.runtime = runtime
+                    agent.model = defaults
+                }
+            } catch { modelError = error.localizedDescription }
+        }
+    }
+}
+
+/// 模型弹出菜单共用系统分段选择器；切换后按当前后端重新读取模型目录。
+private struct ThreadModelMenu: View {
+    let runtime: String
+    let modelName: String?
+    let models: [AgentCapabilities.Model]
+    let runtimeEnabled: Bool
+    let modelEnabled: Bool
+    let saving: Bool
+    let loading: Bool
+    let runtimeExplanation: String?
+    let onSelectRuntime: (String) -> Void
+    let onSelectModel: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Picker("执行后端", selection: Binding(get: { runtime }, set: onSelectRuntime)) {
+                Text("Kite").tag("harness")
+                Text("Claude").tag("claude")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .disabled(!runtimeEnabled)
+            if let runtimeExplanation {
+                Text(runtimeExplanation).font(.caption).foregroundStyle(.secondary)
+            }
+            Divider()
+            if saving || loading {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text(saving ? "正在切换…" : "正在读取模型…").foregroundStyle(.secondary)
+                }
+            } else if models.isEmpty {
+                Text("暂无可用模型").foregroundStyle(.secondary)
+            } else {
+                ForEach(models) { model in
+                    Button { onSelectModel(model.id) } label: {
+                        HStack {
+                            Text(model.name)
+                            Spacer()
+                            if modelName == model.id {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .padding(.vertical, 5)
+                    }
+                    .buttonStyle(.pointingPlain)
+                    .disabled(!modelEnabled)
+                }
+            }
+        }
+        .padding(16)
+        .frame(width: 280)
     }
 }
 

@@ -26,7 +26,7 @@ struct TilesLayer: View {
                 if layout.panes.isEmpty && workspace.drag == nil {
                     WindowlessStage(dock: "右侧停靠栏")
                         .placed(regions.canvas)
-                        .transition(.opacity)
+                        .transition(.opacity.combined(with: .dotsPresence))
                 }
                 ForEach(workspace.isFixed ? [] : layout.gaps) { gap in
                     LayoutDragArea(cursor: gap.split.axis == .horizontal ? .columnResize : .rowResize) { drag in
@@ -224,6 +224,8 @@ struct PaneCard: View {
                 .frame(height: minimized ? nil : headerHeight)
             }
             .clipShape(shape)
+            // clipShape 只裁画面不裁命中；标题栏可交互玻璃的命中范围会伸出卡片，盖住旁边停靠栏的按钮。
+            .contentShape(shape)
             // 在整张卡片上跟踪悬停，指针经过标题栏、正文或控制区时都显示窗口操作。
             .onHover { cardHovered = $0 }
             .onPreferenceChange(PaneHeaderActionsWidth.self) { menuWidth = $0 }

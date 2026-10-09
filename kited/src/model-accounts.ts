@@ -4,11 +4,16 @@ import { createHash } from 'node:crypto';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
+import type { ApiKey } from './account-client.ts';
 import { parseSubscriptionCredentials } from './harness/auth.ts';
+import { apiUsage, chatgptDailyUsage, scanChatgptUsage, scanClaudeUsage, withLocalHours, type AccountUsage, type HourlyUsage,
+  type UsageStore } from './account-usage.ts';
 
 export interface AccountQuota {
   id: string;
+  /** 周期名称；只限某个模型或功能的额度另由 model 给出范围，缺省表示整个账号共用。 */
   label: string;
+  model?: string;
   remainingPercent: number;
   windowMinutes?: number;
   /** Unix 秒。 */
@@ -25,8 +30,11 @@ export interface ModelAccount {
   message?: string;
   quotas: AccountQuota[];
   credits?: { value?: number; unlimited: boolean };
+  /** Claude 的额外用量：超出套餐额度后按金额计费，金额已按币种的小数位换算。 */
+  extraUsage?: { enabled: boolean; currency?: string; used?: number; limit?: number; balance?: number };
   cost?: { value: number; currency: string; from: number; to: number };
   balances?: Array<{ currency: string; total: number; granted: number; toppedUp: number }>;
+  usage?: AccountUsage;
 }
 
 export interface ModelAccountsSnapshot { checkedAt: number; accounts: ModelAccount[] }
@@ -34,7 +42,17 @@ export interface ClaudeLogin { accessToken: string; subscriptionType?: string }
 export interface AccountReadOptions {
   fetch?: (url: string, init: RequestInit) => Promise<Response>;
   claudeLogin?: () => Promise<ClaudeLogin | undefined>;
+  /** 上游缺的按天、按小时用量由 kited 自己按小时保存；不给时不统计。 */
+  usage?: UsageStore;
+  /** Claude Code 的配置目录，会话记录在其下的 projects。 */
+  claudeDirectory?: string;
+  /** Codex CLI 的配置目录，会话记录在其下的 sessions 与 archived_sessions。 */
+  codexDirectory?: string;
+  /** 账号保存的 API Key，每次查询前领取；不给时只查本机环境变量。 */
+  apiKeys?: () => Promise<ApiKey[]>;
 }
+
+const apiProviders = { openai: 'OpenAI', anthropic: 'Anthropic', deepseek: 'DeepSeek' } as const;
 
 const object = z.record(z.string(), z.unknown());
 const text = (value: unknown): string | undefined => typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -54,21 +72,36 @@ const claudeUsage = z.object({ five_hour: claudeWindow.nullish(), seven_day: cla
   seven_day_opus: claudeWindow.nullish(), seven_day_sonnet: claudeWindow.nullish(),
 }).refine((value) => Object.keys(value).length > 0);
 
+const claudeAmount = z.object({ amount_minor: z.number().finite(), currency: z.string().min(1), exponent: z.number().int().min(0).max(6) });
+/** 额外用量的各项金额分别解析，未开启时多为 null。 */
+function claudeExtraUsage(spend: unknown): ModelAccount['extraUsage'] {
+  const data = record(spend);
+  if (typeof data.enabled !== 'boolean') return undefined;
+  const extra: NonNullable<ModelAccount['extraUsage']> = { enabled: data.enabled };
+  for (const key of ['used', 'limit', 'balance'] as const) {
+    const amount = claudeAmount.safeParse(data[key]).data;
+    if (!amount) continue;
+    extra.currency ??= amount.currency;
+    extra[key] = amount.amount_minor / 10 ** amount.exponent;
+  }
+  return extra;
+}
+
 const claudeWindows = { five_hour: ['5 小时', 300], seven_day: ['每周', 10080],
-  seven_day_opus: ['Opus · 每周', 10080], seven_day_sonnet: ['Sonnet · 每周', 10080] } as const;
+  seven_day_opus: ['每周', 10080, 'Opus'], seven_day_sonnet: ['每周', 10080, 'Sonnet'] } as const;
 type ClaudeWindow = keyof typeof claudeWindows;
 
 /** 查询接口和会话响应共用同一组周期 ID，会话只更新它带回的周期。 */
 function claudeQuota(key: ClaudeWindow, usedPercent: number, resetsAt?: number): AccountQuota {
-  const [label, windowMinutes] = claudeWindows[key];
-  return { id: key, label, remainingPercent: remaining(usedPercent), windowMinutes, ...(resetsAt !== undefined ? { resetsAt } : {}) };
+  const [label, windowMinutes, model] = claudeWindows[key];
+  return { id: key, label, ...(model ? { model } : {}), remainingPercent: remaining(usedPercent), windowMinutes, ...(resetsAt !== undefined ? { resetsAt } : {}) };
 }
 
 function chatgptQuota(bucket: { id: string; label: string }, key: 'primary_window' | 'secondary_window',
   usedPercent: number, minutes?: number, resetsAt?: number): AccountQuota {
   const period = minutes === undefined ? (key === 'primary_window' ? '主要额度' : '次要额度')
     : minutes === 10080 ? '每周' : minutes >= 60 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
-  return { id: `${bucket.id}:${key}`, label: [bucket.label, period].filter(Boolean).join(' · '),
+  return { id: `${bucket.id}:${key}`, label: period, ...(bucket.label ? { model: bucket.label } : {}),
     remainingPercent: remaining(usedPercent), windowMinutes: minutes, resetsAt };
 }
 
@@ -89,10 +122,13 @@ async function optionalJSON(path: string): Promise<Record<string, unknown> | und
   }
 }
 
+const claudeDirectory = () => process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
+const codexDirectory = () => process.env.CODEX_HOME ?? join(homedir(), '.codex');
+
 /** 对齐固定版本 Claude SDK 的原生存储规则，不读取其他配置目录的登录。 */
 export async function readClaudeLogin(): Promise<ClaudeLogin | undefined> {
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return { accessToken: process.env.CLAUDE_CODE_OAUTH_TOKEN };
-  const directory = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
+  const directory = claudeDirectory();
   let stored: Record<string, unknown> | undefined;
   if (process.platform === 'darwin') {
     const configured = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR;
@@ -113,6 +149,10 @@ export async function readClaudeLogin(): Promise<ClaudeLogin | undefined> {
   const accessToken = text(oauth.accessToken);
   return accessToken ? { accessToken, subscriptionType: text(oauth.subscriptionType) } : undefined;
 }
+
+/** 领取不到账号里的 Key 时不知道有哪些 API 账号，用一条不可查询的账号说明原因。 */
+const unreadApiKeys = (reason: string): ModelAccount => ({ id: 'account-api', provider: 'Kite 账号', kind: 'api',
+  status: 'unavailable', quotas: [], message: `读取账号中的 API Key 失败：${reason}` });
 
 export async function readModelAccounts(home: string, options: AccountReadOptions = {}): Promise<ModelAccountsSnapshot> {
   const transport = options.fetch ?? fetch;
@@ -141,9 +181,92 @@ export async function readModelAccounts(home: string, options: AccountReadOption
       delete account.cost;
       delete account.credits;
       delete account.balances;
+      delete account.usage;
+      delete account.extraUsage;
     }
     return account;
   }
+  // 账号里的每把 Key 各是一个账号；本机环境变量另作一个账号，未设置时不列出。
+  let apiKeysError: string | undefined;
+  const stored = options.apiKeys ? await options.apiKeys().catch((error: Error) => { apiKeysError = error.message; return []; }) : [];
+  const apiSources = [
+    ...stored.map((key) => ({ id: `api:${key.id}`, provider: key.provider, identity: key.name, key: key.key, adminKey: key.adminKey })),
+    ...(['openai', 'anthropic', 'deepseek'] as const).flatMap((provider) => {
+      const key = process.env[`${provider.toUpperCase()}_API_KEY`];
+      const adminKey = provider === 'deepseek' ? undefined : process.env[`${provider.toUpperCase()}_ADMIN_KEY`];
+      return key || adminKey ? [{ id: `${provider}-api`, provider, identity: adminKey ? '工作机组织管理凭据' : '工作机 API Key', key, adminKey }] : [];
+    }),
+  ];
+  async function readDeepSeek(account: ModelAccount, key: string) {
+    const data = await get('https://api.deepseek.com/user/balance', { authorization: `Bearer ${key}` });
+    const decimal = z.string().regex(/^-?\d+(\.\d+)?$/).transform(Number).pipe(z.number().finite());
+    const parsed = z.object({
+      is_available: z.boolean(),
+      balance_infos: z.array(z.object({ currency: z.enum(['CNY', 'USD']),
+        total_balance: decimal, granted_balance: decimal, topped_up_balance: decimal })).min(1),
+    }).safeParse(data);
+    if (!parsed.success) throw new AccountReadError('服务返回的余额格式无法识别。');
+    account.balances = parsed.data.balance_infos.map((balance) => ({ currency: balance.currency,
+      total: balance.total_balance, granted: balance.granted_balance, toppedUp: balance.topped_up_balance }));
+    account.status = 'ready';
+    if (!parsed.data.is_available) account.message = '当前余额不足以调用 API。';
+  }
+  async function readOrganizationCost(account: ModelAccount, provider: 'openai' | 'anthropic', admin?: string) {
+    account.status = 'ready';
+    account.message = '供应商未提供此凭据可查询的余额。';
+    if (!admin) {
+    account.message = '已配置 API Key；查询组织费用需要管理凭据，余额暂不可查询。';
+    return;
+    }
+    // 组织费用不是余额，也不等于某个 API Key 的费用；完整取完分页才展示合计。
+    const today = new Date(checkedAt * 1000);
+    const from = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1) / 1000;
+    const url = new URL(provider === 'openai' ? 'https://api.openai.com/v1/organization/costs' : 'https://api.anthropic.com/v1/organizations/cost_report');
+    if (provider === 'openai') {
+      url.searchParams.set('start_time', String(from)); url.searchParams.set('end_time', String(checkedAt));
+    } else {
+      url.searchParams.set('starting_at', new Date(from * 1000).toISOString());
+      url.searchParams.set('ending_at', today.toISOString());
+    }
+    url.searchParams.set('limit', '31');
+    const headers: Record<string, string> = provider === 'openai' ? { authorization: `Bearer ${admin}` }
+      : { 'x-api-key': admin, 'anthropic-version': '2023-06-01' };
+    // 按天用量与费用分页互不依赖，一起查；用量失败不影响费用。
+    const usage = apiUsage(provider, (url) => get(url, headers), checkedAt).catch(() => undefined);
+    const pages = new Set<string>();
+    let value = 0;
+    while (true) {
+      const data = await get(url.toString(), headers);
+      if (!Array.isArray(data.data)) throw new AccountReadError('服务返回的费用格式无法识别。');
+      for (const raw of data.data) {
+        const bucket = record(raw);
+        if (!Array.isArray(bucket.results)) throw new AccountReadError('服务返回的费用格式无法识别。');
+        for (const rawResult of bucket.results) {
+          const result = record(rawResult);
+          const amount = provider === 'openai' ? record(result.amount) : result;
+          const cost = provider === 'openai' ? number(amount.value)
+            : typeof amount.amount === 'string' && amount.amount.trim() ? Number(amount.amount) / 100 : undefined;
+          if (cost === undefined || !Number.isFinite(cost) || text(amount.currency)?.toLowerCase() !== 'usd') {
+            throw new AccountReadError('服务返回的费用金额或币种无法识别。');
+          }
+          value += cost;
+        }
+      }
+      if (data.has_more === false) break;
+      const next = text(data.next_page);
+      if (!next || pages.has(next) || pages.size >= 31) throw new AccountReadError('费用分页不完整，请稍后刷新。');
+      pages.add(next); url.searchParams.set('page', next);
+    }
+    account.cost = { value, currency: 'USD', from, to: checkedAt };
+    account.usage = await usage;
+  }
+  const store = options.usage;
+  // 扫本机会话记录并入 kited 保存的按小时汇总，历史不随本地记录清理而丢失；扫描失败时沿用已存的。扫描与上游查询并行。
+  const merge = async (id: string, scan: () => Promise<HourlyUsage>) => {
+    try { store!.mergeUsageHours(id, await scan()); }
+    catch (error) { console.error(`[用量] 读取 ${id} 的本机会话记录失败`, error); }
+  };
+  const claudeScan = store && merge('claude', () => scanClaudeUsage(options.claudeDirectory ?? claudeDirectory()));
   const accounts = await Promise.all([
     read('chatgpt', 'ChatGPT', 'subscription', async (account) => {
       const path = join(home, 'auth', 'chatgpt', 'auth.json');
@@ -156,9 +279,13 @@ export async function readModelAccounts(home: string, options: AccountReadOption
       let credentials;
       try { credentials = parseSubscriptionCredentials(login); }
       catch { throw new AccountReadError('ChatGPT 登录已失效，请在工作机的 Kite 认证目录重新登录。', 'reauthentication'); }
-      const data = await get('https://chatgpt.com/backend-api/wham/usage', {
-        authorization: `Bearer ${credentials.accessToken}`, 'ChatGPT-Account-Id': credentials.accountId,
-      });
+      const headers = { authorization: `Bearer ${credentials.accessToken}`, 'ChatGPT-Account-Id': credentials.accountId };
+      // 按天用量取自 Codex 官方客户端的个人统计，失败不影响额度。
+      const [data, profile] = await Promise.all([
+        get('https://chatgpt.com/backend-api/wham/usage', headers),
+        get('https://chatgpt.com/backend-api/wham/profiles/me', headers).catch(() => undefined),
+      ]);
+      account.usage = chatgptDailyUsage(profile);
       const parsed = chatgptUsage.safeParse(data);
       if (!parsed.success) throw new AccountReadError('服务返回的订阅额度格式无法识别。');
       account.identity ??= credentials.accountId;
@@ -183,6 +310,11 @@ export async function readModelAccounts(home: string, options: AccountReadOption
       }
       account.status = 'ready';
       if (!account.quotas.length && !account.credits) account.message = '服务未返回可查询的额度。';
+      // 上游只有按天合计，按小时的分布取本机记录。
+      if (store) {
+        await merge('chatgpt', () => scanChatgptUsage(home, options.codexDirectory ?? codexDirectory()));
+        account.usage = withLocalHours(account.usage, store.usageDays('chatgpt'));
+      }
     }),
     read('claude', 'Claude', 'subscription', async (account) => {
       const login = await (options.claudeLogin ?? readClaudeLogin)();
@@ -197,6 +329,12 @@ export async function readModelAccounts(home: string, options: AccountReadOption
       const parsed = claudeUsage.safeParse(usage);
       if (!parsed.success) throw new AccountReadError('服务返回的订阅额度格式无法识别。');
       account.identity = text(record(profile?.account).email);
+      account.extraUsage = claudeExtraUsage(usage.spend);
+      // 登录凭据里的 subscriptionType 只在登录时写入，升级后仍是旧档位；以组织的当前订阅为准，例如 max 20x。
+      const organization = record(profile?.organization);
+      const tier = text(organization.organization_type)?.replace(/^claude_/, '');
+      const multiplier = /_(\d+x)$/.exec(text(organization.rate_limit_tier) ?? '')?.[1];
+      if (tier) account.plan = multiplier ? `${tier} ${multiplier}` : tier;
       for (const key of Object.keys(claudeWindows) as ClaudeWindow[]) {
         const window = parsed.data[key];
         if (!window) continue;
@@ -206,75 +344,19 @@ export async function readModelAccounts(home: string, options: AccountReadOption
       account.status = 'ready';
       if (!account.quotas.length) account.message = '服务未返回可查询的订阅额度。';
     }),
-    read('deepseek-api', 'DeepSeek', 'api', async (account) => {
-      const key = process.env.DEEPSEEK_API_KEY;
-      if (!key) return;
-      account.identity = '工作机 API Key';
-      const data = await get('https://api.deepseek.com/user/balance', { authorization: `Bearer ${key}` });
-      const decimal = z.string().regex(/^-?\d+(\.\d+)?$/).transform(Number).pipe(z.number().finite());
-      const parsed = z.object({
-        is_available: z.boolean(),
-        balance_infos: z.array(z.object({ currency: z.enum(['CNY', 'USD']),
-          total_balance: decimal, granted_balance: decimal, topped_up_balance: decimal })).min(1),
-      }).safeParse(data);
-      if (!parsed.success) throw new AccountReadError('服务返回的余额格式无法识别。');
-      account.balances = parsed.data.balance_infos.map((balance) => ({ currency: balance.currency,
-        total: balance.total_balance, granted: balance.granted_balance, toppedUp: balance.topped_up_balance }));
-      account.status = 'ready';
-      if (!parsed.data.is_available) account.message = '当前余额不足以调用 API。';
-    }),
-    ...(['openai', 'anthropic'] as const).map((provider) => read(`${provider}-api`, provider === 'openai' ? 'OpenAI' : 'Anthropic', 'api', async (account) => {
-      const prefix = provider.toUpperCase();
-      const key = process.env[`${prefix}_API_KEY`];
-      const admin = process.env[`${prefix}_ADMIN_KEY`];
-      if (!key && !admin) return;
-      account.identity = admin ? '组织管理凭据' : '工作机 API Key';
-      account.status = 'ready';
-      account.message = '供应商未提供此凭据可查询的余额。';
-      if (!admin) {
-        account.message = '已配置 API Key；查询组织费用需要管理凭据，余额暂不可查询。';
-        return;
-      }
-      // 组织费用不是余额，也不等于某个 API Key 的费用；完整取完分页才展示合计。
-      const today = new Date(checkedAt * 1000);
-      const from = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1) / 1000;
-      const url = new URL(provider === 'openai' ? 'https://api.openai.com/v1/organization/costs' : 'https://api.anthropic.com/v1/organizations/cost_report');
-      if (provider === 'openai') {
-        url.searchParams.set('start_time', String(from)); url.searchParams.set('end_time', String(checkedAt));
-      } else {
-        url.searchParams.set('starting_at', new Date(from * 1000).toISOString());
-        url.searchParams.set('ending_at', today.toISOString());
-      }
-      url.searchParams.set('limit', '31');
-      const headers: Record<string, string> = provider === 'openai' ? { authorization: `Bearer ${admin}` }
-        : { 'x-api-key': admin, 'anthropic-version': '2023-06-01' };
-      const pages = new Set<string>();
-      let value = 0;
-      while (true) {
-        const data = await get(url.toString(), headers);
-        if (!Array.isArray(data.data)) throw new AccountReadError('服务返回的费用格式无法识别。');
-        for (const raw of data.data) {
-          const bucket = record(raw);
-          if (!Array.isArray(bucket.results)) throw new AccountReadError('服务返回的费用格式无法识别。');
-          for (const rawResult of bucket.results) {
-            const result = record(rawResult);
-            const amount = provider === 'openai' ? record(result.amount) : result;
-            const cost = provider === 'openai' ? number(amount.value)
-              : typeof amount.amount === 'string' && amount.amount.trim() ? Number(amount.amount) / 100 : undefined;
-            if (cost === undefined || !Number.isFinite(cost) || text(amount.currency)?.toLowerCase() !== 'usd') {
-              throw new AccountReadError('服务返回的费用金额或币种无法识别。');
-            }
-            value += cost;
-          }
-        }
-        if (data.has_more === false) break;
-        const next = text(data.next_page);
-        if (!next || pages.has(next) || pages.size >= 31) throw new AccountReadError('费用分页不完整，请稍后刷新。');
-        pages.add(next); url.searchParams.set('page', next);
-      }
-      account.cost = { value, currency: 'USD', from, to: checkedAt };
+    ...apiSources.map((source) => read(source.id, apiProviders[source.provider], 'api', async (account) => {
+      account.identity = source.identity;
+      if (source.provider === 'deepseek') await readDeepSeek(account, source.key!);
+      else await readOrganizationCost(account, source.provider, source.adminKey);
     })),
+    ...(apiKeysError ? [unreadApiKeys(apiKeysError)] : []),
   ]);
+  // Claude 没有上游用量，按天、按小时都来自本机记录。
+  const claude = accounts.find((account) => account.id === 'claude');
+  if (claude && store) {
+    await claudeScan;
+    claude.usage = withLocalHours(undefined, store.usageDays('claude')) ?? claude.usage;
+  }
   return { checkedAt, accounts };
 }
 
@@ -296,8 +378,11 @@ interface Observation {
   credits?: { at: number; value: ModelAccount['credits'] | null };
 }
 
+/** 只有会话响应带额度的订阅账号；还没主动查询过时，账号由观测到的额度单独组成。 */
+const observedProviders: Record<string, string> = { chatgpt: 'ChatGPT', claude: 'Claude' };
+
 /**
- * 本机账号与额度的最新结果。主动查询给出完整快照；会话响应带回的周期按观测时间覆盖查询值，
+ * 本机账号与额度的最新结果。上游只在首个客户端连接和显式刷新时查询，给出完整快照；会话响应带回的周期按观测时间覆盖查询值，
  * 会话不带的周期（按模型分开的周额度、ChatGPT 附加额度、API 余额）保留上次查询的结果。
  */
 export class ModelAccounts {
@@ -310,26 +395,33 @@ export class ModelAccounts {
     private read: (home: string) => Promise<ModelAccountsSnapshot> = readModelAccounts) {}
 
   current(): ModelAccountsSnapshot | undefined {
-    if (!this.base) return undefined;
-    let checkedAt = this.base.checkedAt;
-    const accounts = this.base.accounts.map((account) => {
+    if (!this.base && !this.observed.size) return undefined;
+    let checkedAt = this.base?.checkedAt ?? 0;
+    const base = this.base?.accounts ?? Object.keys(observedProviders).filter((id) => this.observed.has(id))
+      .map((id): ModelAccount => ({ id, provider: observedProviders[id]!, kind: 'subscription', status: 'ready', quotas: [] }));
+    const accounts = base.map((account) => {
       const seen = this.observed.get(account.id);
       if (!seen || (!seen.quotas.size && !seen.credits)) return account;
       const merged: ModelAccount = { ...account, quotas: [...account.quotas] };
+      let latest = 0;
       for (const { at, quota } of seen.quotas.values()) {
         const index = merged.quotas.findIndex((item) => item.id === quota.id);
         if (index < 0) merged.quotas.push(quota);
         else merged.quotas[index] = quota;
-        checkedAt = Math.max(checkedAt, at);
+        latest = Math.max(latest, at);
       }
       if (seen.credits) {
         if (seen.credits.value) merged.credits = seen.credits.value;
         else delete merged.credits;
-        checkedAt = Math.max(checkedAt, seen.credits.at);
+        latest = Math.max(latest, seen.credits.at);
       }
-      // 会话请求在查询之后成功，说明登录可用，查询失败时的状态和提示不再适用。
-      merged.status = 'ready';
-      delete merged.message;
+      checkedAt = Math.max(checkedAt, latest);
+      // 会话请求在查询之后成功，说明登录可用，查询失败时的状态和提示不再适用；
+      // 失败时沿用的较早观测不能掩盖这次失败。
+      if (latest >= (this.base?.checkedAt ?? 0)) {
+        merged.status = 'ready';
+        delete merged.message;
+      }
       return merged;
     });
     return { checkedAt: Math.floor(checkedAt), accounts };
@@ -338,8 +430,15 @@ export class ModelAccounts {
   /** 查询上游；进行中的查询被复用，完成后总会推送一次。 */
   refresh(): Promise<ModelAccountsSnapshot> {
     this.reading ??= this.read(this.home).then((snapshot) => {
-      this.base = snapshot;
-      for (const seen of this.observed.values()) {
+      // 限流、超时等暂时失败不作废已有数据：沿用上次查询结果和会话观测，只换上这次的状态与提示。
+      const failed = new Set(snapshot.accounts.filter((account) => account.status === 'unavailable').map((account) => account.id));
+      const previous = this.base;
+      this.base = { checkedAt: snapshot.checkedAt, accounts: snapshot.accounts.map((account) => {
+        const last = failed.has(account.id) ? previous?.accounts.find((item) => item.id === account.id) : undefined;
+        return last ? { ...last, status: account.status, message: account.message, usage: account.usage ?? last.usage } : account;
+      }) };
+      for (const [account, seen] of this.observed) {
+        if (failed.has(account)) continue;
         for (const [id, item] of seen.quotas) if (item.at < snapshot.checkedAt) seen.quotas.delete(id);
         if (seen.credits && seen.credits.at < snapshot.checkedAt) delete seen.credits;
       }
@@ -350,7 +449,7 @@ export class ModelAccounts {
     return this.reading;
   }
 
-  /** 还没有快照时查一次上游，之后只靠会话响应和显式刷新更新。 */
+  /** 还没有查询过时查一次上游，之后只靠会话响应和显式刷新更新。 */
   ensure(): void {
     if (!this.base) this.refresh().catch((error) => console.error('[额度] 查询失败', error));
   }
@@ -402,7 +501,8 @@ export class ModelAccounts {
   private publish(): void {
     const snapshot = this.current();
     if (!snapshot) return;
-    const accounts = JSON.stringify(snapshot.accounts);
+    // 用量只随查询变化，查询后总会推送；比较时略过它，免得每次观测都序列化整年的按小时用量。
+    const accounts = JSON.stringify(snapshot.accounts.map(({ usage: _usage, ...account }) => account));
     // 数值没变时最多每分钟推一次，只为让客户端知道数据仍是新的。
     if (accounts === this.published?.accounts && snapshot.checkedAt - this.published.checkedAt < 60) return;
     this.published = { accounts, checkedAt: snapshot.checkedAt };

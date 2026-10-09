@@ -41,8 +41,6 @@ App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `
 
 ## 预览和验证
 
-订阅登录弹窗的样式迭代运行仓库根目录 `./preview-mac.command`。它只编译 `Preview/KitePreview.xcodeproj` 中直接引用的正式 UI 源文件与颜色资源，以 Release 打开独立的 `KitePreview.app`；不打包后台服务，不替换正常 Kite。也可在 Xcode 中打开该工程。修改共享控件会同时影响正式 App 与预览；预览账号和状态只用于驱动呈现，不发起登录。新增预览组件时在该工程添加正式源文件引用，不复制组件。
-
 初始配置预览使用 Debug build 带 `--onboarding-preview` 启动，需要从测试机桌面反复启动时，编译参数使用 `KITE_PREVIEW_FLAGS=KITE_ONBOARDING_PREVIEW`。界面在真实工作机和数据上迭代。
 
 Swift 类型、窗口排布、草稿交接、滚动与 WebKit 验证统一在 [手动验证目录](../kited/test/manual/README.md)。移动或拆分 Swift 文件时同步更新这些脚本引用的源码路径。
