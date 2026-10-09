@@ -116,6 +116,7 @@ final class AppModel {
     }
 
     func createInstance(_ definition: RemotePluginDefinition, in area: WorkArea) {
+        if definition.agent != nil { area.openDraft(definition); return }
         if !definition.views.isEmpty { openWindow(.create(definition.id), in: area); return }
         guard !area.changingWindows, area.pendingWindowRequest == nil, area.pendingInstanceRequest == nil else { return }
         area.pendingInstanceRequest = CreatePluginInstance(id: UUID().uuidString.lowercased(), definitionId: definition.id)
@@ -413,13 +414,22 @@ final class AppModel {
     func startThread(in area: WorkArea, prompt: String) async throws {
         let client = try activeClient(in: area)
         guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
+        let draft = area.draftThread
         let thread = try await client.request("/workspaces/\(area.id)/threads", method: "POST",
-            body: CreateThreadRequest(prompt: prompt, contextTemplate: area.draftThread.contextTemplate?.selection), as: RemoteThread.self)
+            body: CreateThreadRequest(prompt: prompt, contextTemplate: draft.contextTemplate?.selection,
+                                      definitionId: draft.draftChoice?.definitionId, runtime: draft.draftChoice?.runtime,
+                                      model: draft.draftChoice?.changedModel), as: RemoteThread.self)
         try await refresh(client)
         guard accepts(client) else { throw KitedError(message: "工作机已切换") }
-        area.activateWindow(for: WindowTarget(instanceId: thread.instanceId, viewId: "conversation"))
-        area.draftThread.draft = ""
-        area.draftThread.contextTemplate = nil
+        area.finishDraft(into: WindowTarget(instanceId: thread.instanceId, viewId: "conversation"))
+    }
+
+    /// 归档保留会话与数据，工作机停止执行并关闭它的全部窗口。
+    func archiveInstance(_ instance: RemotePluginInstance, in area: WorkArea) async throws {
+        let client = try activeClient(in: area)
+        guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
+        let _: JSON = try await client.request("/instances/\(instance.id)/archive", method: "POST", as: JSON.self)
+        try await refresh(client)
     }
 
     func openWindow(_ content: OpenWindowRequest.Content, in area: WorkArea) {
@@ -508,7 +518,9 @@ final class AppModel {
     }
 
     func closeWindow(_ pane: Pane, in area: WorkArea) {
-        guard !area.isDraft, !area.changingWindows else { return }
+        guard !area.isDraft else { return }
+        if pane.id == WorkArea.draftWindowID { area.closeDraft(); return }
+        guard !area.changingWindows else { return }
         area.changingWindows = true
         area.windowError = nil
         Task {

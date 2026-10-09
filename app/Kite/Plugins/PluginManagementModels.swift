@@ -5,7 +5,7 @@ nonisolated enum PluginLifetime: String, Decodable, Sendable {
 
     var title: String { self == .window ? "随窗口回收" : "独立存续" }
     var explanation: String {
-        self == .window ? "关闭最后一个窗口时，结束运行并回收实例和状态。" : "关闭窗口后保留实例和数据，可在侧栏重新打开。"
+        self == .window ? "关闭最后一个窗口时，结束运行并回收实例和状态。" : "关闭窗口后保留实例和数据，可在侧栏重新打开；不再需要时归档。"
     }
 }
 

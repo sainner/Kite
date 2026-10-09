@@ -21,8 +21,8 @@ import { PluginCatalog } from './plugins/catalog.ts';
 import { PluginHost } from './plugins/host.ts';
 import { InstanceConfiguration } from './instance-configuration.ts';
 import { handOff } from './handoff/handoff.ts';
-import type { AgentDefinition } from './agents/definition.ts';
-import { InstanceLifecycle } from './instance-lifecycle.ts';
+import { instanceAgent, type AgentDefinition } from './agents/definition.ts';
+import { InstanceLifecycle, type AgentChoice } from './instance-lifecycle.ts';
 import { ContextTemplates, type ContextTemplate, type ContextTemplateSelection } from './context-templates.ts';
 import { addWorktree, removeWorktree, runSetup } from './workspace/worktrees.ts';
 import {
@@ -302,9 +302,11 @@ export class Kite {
   private controlThread<T>(id: string, fn: () => Promise<T>): Promise<T> {
     return this.control(this.context(id).workspaceId, fn);
   }
-  private newThread(workspaceId: string, prompt: string, runtime: RuntimeKind, kind: Workspace['kind'], template?: ContextTemplateSelection): AgentInstance {
-    const instance = this.instances.newInstance(workspaceId, runtime === 'claude' ? 'kite.agent.claude' : 'kite.agent.coding', titleOf(prompt), kind, template);
-    return { ...instance, instanceId: instance.id, runtime, nativeId: randomUUID() };
+  private newThread(workspaceId: string, prompt: string, kind: Workspace['kind'], choice: AgentChoice): AgentInstance {
+    const definitionId = choice.definitionId ?? (choice.runtime === 'claude' ? 'kite.agent.claude' : 'kite.agent.coding');
+    if (!this.catalog.get(definitionId).agent) throw new KiteError('只能用 agent 定义创建会话');
+    const instance = this.instances.newInstance(workspaceId, definitionId, titleOf(prompt), kind, choice);
+    return { ...instance, instanceId: instance.id, runtime: instanceAgent(instance).runtime, nativeId: randomUUID() };
   }
 
   /** 可以先建空工作区；带首条消息时，准备完成才启动首个线程。 */
@@ -318,7 +320,7 @@ export class Kite {
     const w: Workspace = { id, checkoutId: c.id, name: name.trim() || (prompt ? titleOf(prompt) : '新工作区'),
       cwd: join(this.home, 'worktrees', c.projectId, id), kind: 'worktree', branch: `kite/${id}`, base,
       status: 'preparing', createdAt: Date.now() };
-    const t = prompt === undefined ? undefined : this.newThread(id, prompt, runtime, w.kind, template);
+    const t = prompt === undefined ? undefined : this.newThread(id, prompt, w.kind, { runtime, template });
     this.store.addWorkspace(w, t ? { agent: t, window: this.instances.newWindow(t) } : undefined);
     const controller = new AbortController();
     this.preparations.set(id, controller);
@@ -346,14 +348,15 @@ export class Kite {
     return this.workspace(id);
   }
 
-  createThread(workspaceId: string, prompt: string, runtime: RuntimeKind = 'harness', template?: ContextTemplateSelection): Promise<ThreadView> {
+  /** 新会话的草稿只在 App 本地；第一条消息连同草稿里选好的参数一次创建实例、会话和窗口。 */
+  createThread(workspaceId: string, prompt: string, choice: AgentChoice = {}): Promise<ThreadView> {
     return this.control(workspaceId, async () => {
       const { workspace } = this.workspace(workspaceId);
       if (workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
       if (!prompt.trim()) throw new KiteError('第一条消息不能为空');
       await this.assertIdle(workspaceId);
       await this.snapshot(workspace, [], '线程开始');
-      const t = this.newThread(workspaceId, prompt, runtime, workspace.kind, template);
+      const t = this.newThread(workspaceId, prompt, workspace.kind, choice);
       this.store.addAgent(t, this.instances.newWindow(t));
       this.threadChanged(t);
       await this.sendInput(this.context(t.id), { id: randomUUID(), text: prompt, source: 'human' });
@@ -448,6 +451,7 @@ export class Kite {
 
   agentConfig(id: string) { return this.configuration.agentConfig(id); }
   agentCapabilities(id: string) { return this.configuration.agentCapabilities(id); }
+  definitionCapabilities(definitionId: string, runtime?: RuntimeKind) { return this.configuration.definitionCapabilities(definitionId, runtime); }
   configureAgent(id: string, expectedRevision: string, value: unknown) {
     return this.configuration.configureAgent(id, expectedRevision, value);
   }
@@ -718,14 +722,28 @@ export class Kite {
     if (r) { await r.shutdown(); this.runners.delete(t.id); }
     this.turnLabels.delete(t.id);
   }
-  archiveThread(id: string): Promise<void> {
+  /** 归档保留会话与业务数据，停止执行并关闭它的窗口；随窗口回收的实例关闭窗口即可。 */
+  archiveInstance(id: string): Promise<void> {
+    const instance = this.store.instance(id);
+    if (!instance) throw new KiteError(`没有这个实例：${id}`, 404);
+    const definition = this.catalog.get(instance.definitionId);
+    if (definition.agent) return this.archiveThread(id);
+    if (definition.lifetime === 'window') throw new KiteError('此实例随窗口回收，关闭窗口即可');
+    return this.control(instance.workspaceId, async () => {
+      if (this.store.instance(id)!.status === 'archived') return;
+      const release = await this.plugins.closeInstance(id);
+      try { this.store.archiveInstance(id); } finally { release(); }
+      this.changed(instance.workspaceId);
+    });
+  }
+  private archiveThread(id: string): Promise<void> {
     const t = this.context(id);
     this.preparations.get(t.workspaceId)?.abort();
     return this.control(t.workspaceId, async () => {
       const current = this.context(id);
       if (current.status === 'archived') return;
       await this.stopThread(current);
-      this.store.archiveThread(id);
+      this.store.archiveInstance(id);
       this.threadChanged({ ...current, status: 'archived' });
     });
   }

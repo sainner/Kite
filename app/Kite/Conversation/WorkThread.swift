@@ -10,6 +10,7 @@ final class WorkThread: Identifiable {
     var transcript: Transcript
     var draft = ""
     var contextTemplate: ContextTemplate?
+    var draftChoice: DraftAgentChoice?
     var configuringTemplate = false
     var state: RemoteState?
     var agentCapabilities: AgentCapabilities?

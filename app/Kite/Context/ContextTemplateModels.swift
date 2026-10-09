@@ -144,6 +144,9 @@ struct CreateThreadRequest: Encodable {
     let prompt: String
     var checkout: String? = nil
     var contextTemplate: ContextTemplateSelection? = nil
+    var definitionId: String? = nil
+    var runtime: String? = nil
+    var model: AgentModelConfiguration? = nil
 }
 
 extension AppModel {

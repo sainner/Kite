@@ -249,7 +249,7 @@ export class Store implements UsageStore {
       if (window) this.addWindow(window);
     })();
   }
-  archiveThread(id: string): void {
+  archiveInstance(id: string): void {
     this.db.transaction(() => {
       this.db.query("update plugin_instances set status = 'archived' where id = ?").run(id);
       this.db.query("update workspace_windows set state = 'closed' where instance_id = ?").run(id);

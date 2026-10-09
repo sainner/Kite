@@ -112,6 +112,19 @@ final class WindowLayout {
         save()
     }
 
+    /// 草稿换成真实窗口：新窗口占用草稿的位置与焦点，不经过停靠栏重新放置。
+    func replace(_ old: Pane, with new: Pane) {
+        guard !isFixed, old != new, panes.contains(old) else { return }
+        drag = nil
+        docked.removeAll { $0 == new }
+        root = root?.removing(new)
+        if root?.panes.contains(old) == true { root = root?.replacing(old, with: .pane(new)) }
+        else if let index = docked.firstIndex(of: old) { docked[index] = new }
+        if focused == old { focused = new }
+        if carriedFocus == old { carriedFocus = new }
+        save()
+    }
+
     func focus(_ pane: Pane) {
         guard focused != pane, panes.contains(pane) else { return }
         focused = pane

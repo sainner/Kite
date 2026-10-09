@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { agentCapabilities, configurationBoundary } from './agents/capabilities.ts';
-import { agentRevision, bindAgentContext, instanceAgent, parseAgentDefinition, type AgentDefinition } from './agents/definition.ts';
+import { agentRevision, bindAgentContext, claudeReasoning, instanceAgent, parseAgentDefinition, type AgentDefinition } from './agents/definition.ts';
 import type { ContextTemplateSelection } from './context-templates.ts';
 import { KiteError } from './errors.ts';
 import { applyExecutionGrants, executionRevision, instanceExecutionGrants, normalizeExecutionGrants } from './execution/grants.ts';
@@ -133,6 +133,12 @@ export class InstanceConfiguration {
     const thread = this.control.context(id);
     return agentCapabilities({ ...this.kite.catalog.get(thread.definitionId).agent!, runtime: instanceAgent(thread).runtime });
   }
+  /** 新会话草稿还没有实例，按定义和选定后端给出可选模型。 */
+  definitionCapabilities(definitionId: string, runtime?: AgentDefinition['runtime']) {
+    const agent = this.kite.catalog.get(definitionId).agent;
+    if (!agent) throw new KiteError('此插件不是 agent');
+    return agentCapabilities({ ...agent, runtime: runtime ?? agent.runtime });
+  }
   configureAgent(id: string, expectedRevision: string, value: unknown) {
     return this.updateAgentConfiguration(id, expectedRevision, () => value);
   }
@@ -152,7 +158,7 @@ export class InstanceConfiguration {
       if (agent.runtime === 'claude') {
         const running = await this.control.runtime(this.control.context(id));
         if (running?.busy || running?.recovery || running?.state === 'stopping') throw new KiteError('请先停止会话并确认执行结果，再修改 Claude 配置', 409);
-        if (!['default', 'low', 'medium', 'high', 'xhigh', 'max'].includes(agent.model.reasoning)) throw new KiteError('Claude 思考强度无效');
+        if (!claudeReasoning.includes(agent.model.reasoning)) throw new KiteError('Claude 思考强度无效');
       }
       const declared = this.kite.catalog.get(instance.definitionId).agent!;
       if (agent.tools.some((tool) => !declared.tools.includes(tool))) throw new KiteError('配置包含此定义未开放的工具');

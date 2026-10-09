@@ -74,121 +74,56 @@ extension AppModel {
     /// 新会话选用的创建会话模板，取工作机目录里的最新版本；没选过时是第一个。
     func newThreadTemplate(for thread: WorkThread, in area: WorkArea) -> ContextTemplate? {
         let templates = (templates(in: area)?.templates ?? []).filter { $0.definition.scene == "thread.create" }
-        let instance = area.instances.first { $0.id == thread.id }
-        let id = thread.contextTemplate?.id ?? instance?.config?.agent?.context["id"]?.string
+        let id = selectedTemplateID(for: thread, in: area)
         return templates.first { $0.id == id } ?? templates.first
+    }
+
+    /// 草稿取本机选好的模板，已有会话取实例配置里的上下文。
+    func selectedTemplateID(for thread: WorkThread, in area: WorkArea) -> String? {
+        thread.contextTemplate?.id ?? area.instances.first { $0.id == thread.id }?.config?.agent?.context["id"]?.string
+    }
+
+    func templateTitle(for thread: WorkThread, in area: WorkArea) -> String {
+        thread.contextTemplate?.definition.title
+            ?? area.instances.first { $0.id == thread.id }?.config?.agent?.context["title"]?.string ?? "默认模板"
+    }
+
+    func canSelectTemplate(for thread: WorkThread, in area: WorkArea) -> Bool {
+        !thread.configuringTemplate && isConnected(area) && templates(in: area) != nil
+            && (area.instances.first { $0.id == thread.id }?.config?.agent != nil || thread.isDraft)
+    }
+
+    /// 套用期间输入区与模板菜单禁用。
+    func selectNewThreadTemplate(_ template: ContextTemplate, for thread: WorkThread, in area: WorkArea) async throws {
+        guard canSelectTemplate(for: thread, in: area) else { return }
+        thread.configuringTemplate = true
+        defer { thread.configuringTemplate = false }
+        try await applyContextTemplate(template, to: thread, in: area, connection: revision(for: area))
     }
 }
 
-/// 首次发送前选用模板，或使用同一编辑器复制新模板；不单独增加创建向导。
-struct NewThreadContextTemplate: View {
+/// 首次发送前在会话标题栏的模板菜单里选用模板，或使用同一编辑器复制新模板；不单独增加创建向导。
+struct NewThreadTemplateMenu: View {
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @Environment(WorkThread.self) private var thread
-    @State private var edit: ContextTemplateEdit?
-    @State private var error: String?
-
-    private var instance: RemotePluginInstance? { area.instances.first { $0.id == thread.id } }
-    private var templateID: String? { thread.contextTemplate?.id ?? instance?.config?.agent?.context["id"]?.string }
-    private var templates: [ContextTemplate] {
-        (model.templates(in: area)?.templates ?? []).filter { $0.definition.scene == "thread.create" }
-    }
-    private var title: String {
-        thread.contextTemplate?.definition.title ?? instance?.config?.agent?.context["title"]?.string ?? "默认模板"
-    }
-    private var source: ContextTemplate? { model.newThreadTemplate(for: thread, in: area) }
-    private var available: Bool {
-        !thread.configuringTemplate && model.isConnected(area)
-            && (instance?.config?.agent != nil || thread.isDraft)
-    }
+    let select: (ContextTemplate) -> Void
+    let copy: (ContextTemplate) -> Void
 
     var body: some View {
-        VStack(spacing: 10) {
-            Menu {
-                Section("上下文模板") {
-                    ForEach(templates) { template in
-                        Button { apply(template) } label: {
-                            if template.id == templateID { Label(template.definition.title, systemImage: "checkmark") }
-                            else { Text(template.definition.title) }
-                        }
-                    }
-                }
-                Divider()
-                Button("基于「\(source?.definition.title ?? title)」新建模板…", systemImage: "plus") {
-                    if let source { edit = .init(definition: source.definition.copy()) }
-                }.disabled(source == nil)
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "text.document").foregroundStyle(.secondary)
-                    Text(title).lineLimit(1).truncationMode(.middle)
-                    Group {
-                        if thread.configuringTemplate { CardSpinner().scaleEffect(0.75) }
-                        else { Image(systemName: "chevron.down").font(Theme.status.weight(.semibold)) }
-                    }
-                    .foregroundStyle(.secondary)
-                    .frame(width: 12)
+        let selected = model.selectedTemplateID(for: thread, in: area)
+        let source = model.newThreadTemplate(for: thread, in: area)
+        Section("上下文模板") {
+            ForEach((model.templates(in: area)?.templates ?? []).filter { $0.definition.scene == "thread.create" }) { template in
+                Button { select(template) } label: {
+                    if template.id == selected { Label(template.definition.title, systemImage: "checkmark") }
+                    else { Text(template.definition.title) }
                 }
             }
-            .menuStyle(.button).buttonStyle(TemplateChipStyle()).menuIndicator(.hidden).fixedSize().clickPointer()
-            .disabled(!available || model.templates(in: area) == nil)
-            .help("上下文模板")
-            if let error {
-                HStack(spacing: 8) {
-                    Text(error).foregroundStyle(Theme.danger).lineLimit(2)
-                    Button("重新读取") { Task { await load() } }
-                        .buttonStyle(.borderless).foregroundStyle(Color.accentColor).clickPointer()
-                }
-                .font(Theme.caption)
-                .multilineTextAlignment(.center)
-            }
         }
-        .sheet(item: $edit) { request in
-            ContextTemplateEditor(request: request, connection: model.revision(for: area)) { template in apply(template) }
-                .environment(model)
-        }
-        .task(id: model.revision(for: area)) { await load() }
-    }
-
-    private func load() async {
-        do { try await model.refreshContextTemplates(in: area); error = nil }
-        catch is CancellationError { }
-        catch { self.error = error.localizedDescription }
-    }
-
-    private func apply(_ template: ContextTemplate) {
-        guard available else { return }
-        thread.configuringTemplate = true
-        error = nil
-        let revision = model.revision(for: area)
-        Task {
-            defer { thread.configuringTemplate = false }
-            do { try await model.applyContextTemplate(template, to: thread, in: area, connection: revision) }
-            catch { self.error = error.localizedDescription }
-        }
-    }
-}
-
-/// 新会话中间的模板选择：一枚浅底胶囊，悬停略深，按下变淡。
-private struct TemplateChipStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        Chip(configuration: configuration)
-    }
-
-    private struct Chip: View {
-        let configuration: ButtonStyleConfiguration
-        @Environment(\.isEnabled) private var enabled
-        @State private var hovering = false
-
-        var body: some View {
-            configuration.label
-                .font(Theme.secondary)
-                .padding(.horizontal, 14)
-                .frame(minHeight: InputMode.current.isTouch ? 40 : 30)
-                .background(Theme.codeBackground.opacity(hovering ? 1 : 0.7), in: Capsule())
-                .contentShape(Capsule())
-                .opacity(enabled ? (configuration.isPressed ? 0.6 : 1) : 0.5)
-                .onHover { hovering = $0 && enabled }
-                .animation(.easeOut(duration: 0.15), value: hovering)
-        }
+        Divider()
+        Button("基于「\(source?.definition.title ?? model.templateTitle(for: thread, in: area))」新建模板…", systemImage: "plus") {
+            if let source { copy(source) }
+        }.disabled(source == nil)
     }
 }

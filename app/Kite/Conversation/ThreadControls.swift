@@ -117,16 +117,25 @@ struct ThreadControls: View {
         thread.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var reasoning: String { instance?.config?.agent?.model.reasoning ?? "medium" }
+    /// 草稿还没有实例，思考强度改的是本机选择，随第一条消息一起提交。
+    private var choice: DraftAgentChoice? { instance == nil ? thread.draftChoice : nil }
+    private var agentModel: AgentModelConfiguration? { instance?.config?.agent?.model ?? choice?.model }
+    private var reasoning: String { agentModel?.reasoning ?? "medium" }
     private var availableEfforts: [Effort] {
-        let levels = thread.agentCapabilities?.model(instance?.config?.agent?.model.model ?? "")?.reasoning ?? []
+        let levels = thread.agentCapabilities?.model(agentModel?.model ?? "")?.reasoning ?? []
         return Effort.allCases.filter { levels.contains($0.name) }
     }
     private var canChangeEffort: Bool {
-        instance != nil && !savingEffort && !availableEfforts.isEmpty
+        if choice != nil { return agentModel != nil && !availableEfforts.isEmpty && model.isConnected(area) }
+        return instance != nil && !savingEffort && !availableEfforts.isEmpty
             && model.isConnected(area) && thread.agentCapabilities?.canEdit(thread.state) == true
     }
     private func saveEffort() {
+        if choice != nil {
+            if canChangeEffort, let effortDraft { thread.draftChoice?.model?.reasoning = effortDraft.name }
+            self.effortDraft = nil
+            return
+        }
         guard canChangeEffort, let effortDraft, effortDraft.name != reasoning, let instance else { self.effortDraft = nil; return }
         savingEffort = true
         Task {

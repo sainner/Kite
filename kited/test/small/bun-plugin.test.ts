@@ -130,6 +130,43 @@ test('声明的 MCP App 视图读取本实例资源，拒绝不安全内容，�
   }
 }, 1000);
 
+// 插件子进程停止与宿主拒绝重启跨进程交接：归档返回前插件进程须已退出；宿主撤下停止期间的启动阻止后，
+// UI 调用、工具发现和视图读取都不能把已归档实例的进程重新拉起。随窗口实例没有独立存续，不能归档。
+test('归档常驻插件实例先停掉插件进程并收起窗口，之后的调用被拒绝且不再拉起进程，随窗口实例拒绝归档', async () => {
+  const k = startKited();
+  try {
+    const repo = newRepo(k.root, 'project', { 'note.txt': '原始\n' });
+    const workspaceId = await workspace(k, repo);
+    await install(k, [{ id: 'state', title: 'state', resourceUri: 'ui://test/state.html' }]);
+    const instanceId = await createInstance(k, workspaceId);
+    const opened = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
+      id: randomUUID(), content: { kind: 'open', instanceId, viewId: 'state' },
+    });
+    expect(opened.status).toBe(200);
+    const running = output(await tool(k, instanceId, 'state', 'archive-before', { action: 'increment' }));
+    expect((await k.call('GET', `/instances/${instanceId}/plugin/process`)).body.phase).toBe('running');
+
+    expect((await k.call('POST', `/instances/${instanceId}/archive`)).status).toBe(200);
+    expect(() => process.kill(running.pid, 0)).toThrow();
+    expect(k.daemon.kite.store.instance(instanceId)?.status).toBe('archived');
+    const archived = await k.call('GET', `/workspaces/${workspaceId}`);
+    expect(archived.body.windows.filter((value: { target: { instanceId: string } }) =>
+      value.target.instanceId === instanceId)).toEqual([]);
+
+    expect((await tool(k, instanceId, 'state', 'archive-after', { action: 'read' })).status).not.toBe(200);
+    expect((await k.call('GET', `/instances/${instanceId}/plugin/tools`)).status).not.toBe(200);
+    expect((await k.call('GET', `/instances/${instanceId}/plugin/views/state`)).status).not.toBe(200);
+    const afterCalls = await k.call('GET', `/instances/${instanceId}/plugin/process`);
+    expect(afterCalls.body.phase ?? 'stopped').toBe('stopped');
+    expect(k.daemon.kite.store.instance(instanceId)?.status).toBe('archived');
+
+    const filesId = await filesTarget(k, workspaceId);
+    expect((await k.call('POST', `/instances/${filesId}/archive`)).status).toBe(400);
+  } finally {
+    await k.stop();
+  }
+}, 1000);
+
 // SQLite 多视图窗口、宿主清理失败和真实 MCP 阻塞调用/后代退出交接；最后关窗不能留下可唤醒的实例。
 test('随窗口插件等最后视图关闭才回收，清理失败可重试且回收等待阻塞调用与后代退出', async () => {
   const k = startKited();

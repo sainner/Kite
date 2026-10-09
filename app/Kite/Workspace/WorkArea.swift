@@ -13,6 +13,9 @@ final class WorkArea: Identifiable {
     private(set) var pluginClient: KitedClient?
     private(set) var pluginConnection: UUID
     let draftThread: WorkThread
+    /// 已有工作区里的新会话草稿只在本机打开，不同步到其他设备；关闭即丢弃，工作机上不留实例。
+    private(set) var draftOpen = false
+    static let draftWindowID = "draft-window"
     let layout: WindowLayout
     var creatingThread = false
     var changingWindows = false
@@ -20,6 +23,7 @@ final class WorkArea: Identifiable {
     var pendingInstanceRequest: CreatePluginInstance?
     var windowError: String?
     var settingsInstance: RemotePluginInstance?
+    var archiveRequest: RemotePluginInstance?
     var tint: Color { Palette.breeze }
     var title: String { remote?.workspace.name ?? "新工作区" }
     var header: PaneHeader { PaneHeader(title: title, subtitle: "工作区") }
@@ -39,8 +43,7 @@ final class WorkArea: Identifiable {
                                   storageKey: "KiteWindowLayout.\(remote.machine.id).\(remote.id)",
                                   reconcileOnLoad: client != nil)
         } else {
-            let draft = RemoteWorkspaceWindow(id: "draft-window", workspaceId: id,
-                                             target: WindowTarget(instanceId: draftThread.id, viewId: "conversation"), state: .open, createdAt: 0)
+            let draft = Self.draftWindow(workspace: id, thread: draftThread)
             windows = [draft]
             layout = WindowLayout(panes: [Pane(draft.id)])
         }
@@ -66,7 +69,7 @@ final class WorkArea: Identifiable {
         if let settingsInstance, !instances.contains(where: { $0.id == settingsInstance.id && $0.status == .open }) {
             self.settingsInstance = nil
         }
-        windows = remote.windows.filter { $0.state == .open }
+        windows = remote.windows.filter { $0.state == .open } + (draftOpen ? [Self.draftWindow(workspace: id, thread: draftThread)] : [])
         layout.reconcile(windows.map { Pane($0.id) })
         draftThread.connected = remote.workspace.status == .open
         updateFiles(client: client)
@@ -128,6 +131,51 @@ final class WorkArea: Identifiable {
 
     func activateWindow(for target: WindowTarget) {
         if let window = windows.first(where: { $0.target == target }) { layout.activate(Pane(window.id)) }
+    }
+
+    private static func draftWindow(workspace: String, thread: WorkThread) -> RemoteWorkspaceWindow {
+        RemoteWorkspaceWindow(id: draftWindowID, workspaceId: workspace,
+                              target: WindowTarget(instanceId: thread.id, viewId: "conversation"), state: .open, createdAt: 0)
+    }
+
+    /// 添加 agent 时先打开本机草稿；已有草稿时沿用它，换了 agent 类型才重置选择。
+    func openDraft(_ definition: RemotePluginDefinition) {
+        guard !isDraft, let choice = DraftAgentChoice(definition) else { return }
+        if !draftOpen || draftThread.draftChoice?.definitionId != definition.id {
+            draftThread.draftChoice = choice
+            draftThread.agentCapabilities = nil
+        }
+        if !draftOpen {
+            draftOpen = true
+            windows.append(Self.draftWindow(workspace: id, thread: draftThread))
+            layout.reconcile(windows.map { Pane($0.id) })
+        }
+        layout.activate(Pane(Self.draftWindowID))
+    }
+
+    func closeDraft() {
+        guard draftOpen else { return }
+        layout.reconcile(dropDraft().map { Pane($0.id) })
+    }
+
+    /// 草稿发出后由新建的真实窗口接替原来的位置和焦点。
+    func finishDraft(into target: WindowTarget) {
+        guard let window = windows.first(where: { $0.target == target }) else { return }
+        let draft = Pane(Self.draftWindowID)
+        if layout.panes.contains(draft) { layout.replace(draft, with: Pane(window.id)) }
+        else { layout.activate(Pane(window.id)) }
+        layout.reconcile(dropDraft().map { Pane($0.id) })
+    }
+
+    private func dropDraft() -> [RemoteWorkspaceWindow] {
+        draftOpen = false
+        draftThread.draft = ""
+        draftThread.contextTemplate = nil
+        draftThread.draftChoice = nil
+        draftThread.agentCapabilities = nil
+        draftThread.error = nil
+        windows.removeAll { $0.id == Self.draftWindowID }
+        return windows
     }
 }
 

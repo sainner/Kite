@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 还没有消息的会话：选用模板的点阵签名铺满整个窗口，连同标题栏和输入区后面；标题与模板选择压在中间，
+/// 还没有消息的会话：选用模板的点阵签名铺满整个窗口，连同标题栏和输入区后面；标题压在中间，模板在标题栏副标题里选，
 /// 背后的图案收弱，标题栏一带也稍收弱，输入区是玻璃，不收。
 /// 指针（触屏是手指）划过时图案跟着起反应，打字时更活跃；第一条消息发出、对话出现时图案收回。
 /// Mac 上指针在整个窗口里移动都算，由 ThreadPane 报给同一个 slot。
@@ -14,6 +14,8 @@ struct NewThreadStage: View {
     @Environment(\.self) private var environment
     @Environment(\.paneWindowFrame) private var window
     let slot: String
+    /// 模板读取或套用失败的说明，套用由标题栏的模板菜单发起。
+    @Binding var templateError: String?
     @State private var center: CGRect?
     @State private var content: CGRect?
     /// 解析好的签名；body 随打字和窗口拖动频繁重算，只在签名或主题色变化时重新解析表达式。
@@ -34,7 +36,15 @@ struct NewThreadStage: View {
             VStack(spacing: 14) {
                 Text("说说要做什么")
                     .font(Theme.heading1)
-                NewThreadContextTemplate()
+                if let templateError {
+                    HStack(spacing: 8) {
+                        Text(templateError).foregroundStyle(Theme.danger).lineLimit(2)
+                        Button("重新读取") { Task { await loadTemplates() } }
+                            .buttonStyle(.borderless).foregroundStyle(Color.accentColor).clickPointer()
+                    }
+                    .font(Theme.caption)
+                    .multilineTextAlignment(.center)
+                }
                 if template?.emblemState == "generating" {
                     Text("正在为这个模板画点阵签名…")
                         .font(Theme.caption).foregroundStyle(.secondary)
@@ -63,6 +73,13 @@ struct NewThreadStage: View {
             pattern = source.design?.pattern(accent: source.accent) ?? EmblemDesign.fallback.pattern(accent: source.accent)
         }
         .task(id: template.map { "\($0.id):\($0.revision):\($0.emblemState ?? "")" }) { await ensureEmblem(template) }
+        .task(id: model.revision(for: area)) { await loadTemplates() }
+    }
+
+    private func loadTemplates() async {
+        do { try await model.refreshContextTemplates(in: area); templateError = nil }
+        catch is CancellationError { }
+        catch { templateError = error.localizedDescription }
     }
 
     private var quiet: [PatternQuiet] {

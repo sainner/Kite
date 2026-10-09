@@ -18,6 +18,7 @@ struct InstanceSettings: View {
     @State private var phase: String?
     @State private var progress = CardPhase.idle
     @State private var discardAction: String?
+    @State private var archiving: RemotePluginInstance?
     /// 弹窗里当前的子页面，nil 是实例设置本身。
     @State private var page: Page?
 
@@ -84,6 +85,11 @@ struct InstanceSettings: View {
                         }.disabled(!available || phase == nil || phase == "stopped")
                     }
                 }
+                if definition?.lifetime == .persistent {
+                    CardSection("归档", note: "停止执行并关闭窗口，会话和数据保留在工作机上。") {
+                        Button("归档实例…", role: .destructive) { archiving = instance }.disabled(!available)
+                    }
+                }
                 if editable, draft != nil {
                     CardSection("可用能力", note: "选择这个实例可以调用的能力。修改后保存，撤回对后续调用立即生效。"
                         + (definition?.agent != nil ? "撤回授权立即阻止后续调用。新增工具的生效时机见会话配置。" : ""))
@@ -109,6 +115,7 @@ struct InstanceSettings: View {
             }
         }
         .interactiveDismissDisabled(working || changed)
+        .modifier(ArchiveInstanceConfirmation(instance: $archiving, archived: { dismiss() }))
         .confirmationDialog("放弃未保存的授权修改？", isPresented: Binding(get: { discardAction != nil }, set: { if !$0 { discardAction = nil } }), titleVisibility: .visible) {
             Button("放弃修改", role: .destructive) {
                 let action = discardAction
@@ -258,7 +265,41 @@ struct InstanceSettingsPresentation: ViewModifier {
         content.sheet(item: $area.settingsInstance) { instance in
             InstanceSettings(instance: instance).environment(model).environment(area).toastHost().appAppearance()
         }
-        .onChange(of: model.revision(for: area)) { area.settingsInstance = nil }
+        .modifier(ArchiveInstanceConfirmation(instance: $area.archiveRequest))
+        .onChange(of: model.revision(for: area)) { area.settingsInstance = nil; area.archiveRequest = nil }
+    }
+}
+
+/// 归档确认：窗口菜单、停靠栏和实例设置共用同一段说明与请求。
+struct ArchiveInstanceConfirmation: ViewModifier {
+    @Binding var instance: RemotePluginInstance?
+    var archived: () -> Void = {}
+    @Environment(AppModel.self) private var model
+    @Environment(WorkArea.self) private var area
+    @Environment(\.toast) private var toast
+    @State private var error: String?
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog("归档「\(instance?.title ?? "")」？", isPresented: Binding(get: { instance != nil }, set: { if !$0 { instance = nil } }),
+                                titleVisibility: .visible, presenting: instance) { target in
+                Button("归档", role: .destructive) { archive(target) }
+            } message: { _ in
+                Text("归档会停止它正在进行的执行并关闭它的窗口，会话和数据保留在工作机上。目前还不能在界面里查看或恢复已归档的实例。")
+            }
+            .alert("归档失败", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                Button("好", role: .cancel) { error = nil }
+            } message: { Text(error ?? "") }
+    }
+
+    private func archive(_ target: RemotePluginInstance) {
+        Task {
+            do {
+                try await model.archiveInstance(target, in: area)
+                toast?.show("已归档")
+                archived()
+            } catch { self.error = error.localizedDescription }
+        }
     }
 }
 
@@ -273,6 +314,10 @@ struct InstanceActions: View {
                 .disabled(area.changingWindows || area.pendingWindowRequest != nil || area.pendingInstanceRequest != nil)
         }
         Button("实例设置与授权") { area.settingsInstance = instance }
+        if area.definition(of: instance)?.lifetime == .persistent {
+            Button("归档…", role: .destructive) { area.archiveRequest = instance }
+                .disabled(!model.isConnected(area))
+        }
     }
 }
 

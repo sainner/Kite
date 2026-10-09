@@ -199,7 +199,7 @@ test('登记检出创建同工作区线程，暂停后 CLI resume 续接，归�
   expect(adopted.body.status).toBe('adopted');
   expect(kk.events.slice(beforeAdopt).filter((event) => event.type === 'workspace.adopt'
     && event.workspaceId === workspace.workspace.id)).toHaveLength(1);
-  const archived = await kk.call('POST', `/threads/${firstThreadId}/archive`);
+  const archived = await kk.call('POST', `/instances/${firstThreadId}/archive`);
   expect(archived.status).toBe(200);
   await kk.waitEvent((event) => event.type === 'thread.changed' && event.threadId === firstThreadId && event.status === 'archived');
   expect(existsSync(workspace.workspace.cwd)).toBe(true);
@@ -570,7 +570,7 @@ test('运行中的线程关闭窗口后继续执行，重新打开目标且归�
 
   running.response.complete();
   await kk.waitEvent((event) => event.type === 'idle' && event.threadId === threadId);
-  expect((await kk.call('POST', `/threads/${threadId}/archive`)).status).toBe(200);
+  expect((await kk.call('POST', `/instances/${threadId}/archive`)).status).toBe(200);
   await kk.waitEvent((event) => event.type === 'thread.changed' && event.threadId === threadId && event.status === 'archived');
   const archived = await kk.call('GET', '/workspaces');
   const afterArchive = archived.body.find((entry: any) => entry.workspace.id === workspace.workspace.id);

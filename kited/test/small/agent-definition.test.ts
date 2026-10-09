@@ -114,6 +114,56 @@ test('运行中换配置不打断旧工具，下一请求再采用新配置', as
   await kk.waitEvent((event) => event.type === 'idle' && event.threadId === threadId);
 }, 1000);
 
+// HTTP 参数、实例创建时的定义绑定（含 KITE_MODEL 覆盖）、窗口建立与运行时取模型要一起成立：草稿显式选的模型
+// 必须压过定义默认值和环境变量，并且就是运行时实际拿到的模型；参数不成立的请求要在建实例前拒绝，不留实例或窗口。
+test('按草稿选择创建会话时显式模型压过定义默认值和 KITE_MODEL 并同时建窗口，换后端不给模型时拒绝且不留实例', async () => {
+  const previous = process.env.KITE_MODEL;
+  process.env.KITE_MODEL = 'env-override-model';
+  try {
+    const model = new ManualModel();
+    const runtimeModels: AgentDefinition['model'][] = [];
+    kited = startKited((thread) => {
+      runtimeModels.push(structuredClone((thread.config.agent as AgentDefinition).model));
+      return model;
+    });
+    const kk = kited;
+    const registered = await registerCheckout(kk, newRepo(kk.root, 'project', { 'base.txt': '原始\n' }));
+    const workspaceId = registered.workspace.id;
+    const aggregate = async () => {
+      const response = await kk.call('GET', `/workspaces/${workspaceId}`);
+      expect(response.status).toBe(200);
+      return response.body as { instances: { id: string }[]; windows: { id: string; target: { instanceId: string; viewId: string } }[] };
+    };
+
+    const chosen = { model: 'draft-chosen-model', reasoning: 'low' };
+    const created = await kk.call('POST', `/workspaces/${workspaceId}/threads`, {
+      prompt: '审查一下', definitionId: 'kite.agent.review', model: chosen,
+    });
+    expect(created.status).toBe(200);
+    const id = created.body.instanceId as string;
+    const first = await model.call(1);
+    expect(runtimeModels).toEqual([chosen]);
+    const thread = await kk.call('GET', `/threads/${id}`);
+    expect(thread.body).toMatchObject({ definitionId: 'kite.agent.review', runtime: 'harness' });
+    expect(thread.body.config.agent.model).toEqual(chosen);
+    const withThread = await aggregate();
+    expect(withThread.instances.map((value) => value.id)).toEqual([id]);
+    expect(withThread.windows.map((value) => value.target)).toEqual([{ instanceId: id, viewId: 'conversation' }]);
+    first.response.complete();
+    await kk.waitEvent((event) => event.type === 'idle' && event.threadId === id);
+
+    const rejected = await kk.call('POST', `/workspaces/${workspaceId}/threads`, {
+      prompt: '换到 Claude 但没选模型', definitionId: 'kite.agent.review', runtime: 'claude',
+    });
+    expect(rejected.status).toBe(400);
+    expect(await aggregate()).toMatchObject({ instances: withThread.instances, windows: withThread.windows });
+    expect(model.calls.values).toHaveLength(1);
+  } finally {
+    if (previous === undefined) delete process.env.KITE_MODEL;
+    else process.env.KITE_MODEL = previous;
+  }
+}, 1000);
+
 // 模板目录、SQLite 排队快照与 journal 跨重启交接；缓存 Runner 仅在正文变化时读取新基础通知模板。
 // 真实回归：原样 PUT 曾漏掉 configurationBoundary，导致 App 无法解码成功保存的配置快照。
 test('原样保存保留配置快照，通知跨重启保留且审查保持只读', async () => {

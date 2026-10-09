@@ -20,11 +20,11 @@
 - [工作区、线程与插件架构](workspace-thread-plugin-architecture.md) — 工作区承载同级实例，agent 统一为插件，自定义插件需要界面、逻辑与工作区能力
 - [窗口的跨端同步](workspace-window-sync.md) — 同一工作区共享窗口集合，各设备独立布局与焦点
 - [插件实例回收](plugin-instance-lifetime.md) — 按是否需要独立存续决定回收，关闭窗口不再一律保留实例
-- [实例管理入口](instance-management-entrypoints.md) — 定义在设置中管理，添加只创建实例，无窗口的存续实例仍可找到
+- [实例管理入口](instance-management-entrypoints.md) — 定义在设置中管理，添加 agent 先开本机草稿，存续实例可找到、可归档
 - [新窗口放置](new-window-placement.md) — Mac 新窗口优先新列，其次上下分栏，空间仍不足再收起旧窗口
 - [停止会话的语义](session-stop-behavior.md) — 手动停止退回未纳入请求的消息，不等于保留 paused 状态
 - [统一资源引用](resource-reference-direction.md) — 统一资源引用保留稳定内容身份，历史 diff 不随当前文件变化
-- [窗口标题信息](window-header-information.md) — 标题前公共信息区放状态圆环，手机会话点击圆环打开侧栏
+- [窗口标题信息](window-header-information.md) — 状态圆环在标题前；会话副标题是上下文模板，新会话在此选模板
 - [侧栏一级导航](sidebar-navigation.md) — 空间、设备、资源库的导航分层；设备下账号与文件并列；账号页允许固定窗口分区
 - [初始配置与设备角色](onboarding-device-roles.md) — 本机执行或仅远程控制都入网，进入 App 后发现 kited 工作机
 - [托管账号与组网](hosted-network-direction.md) — 我们托管，用户账号密码登录或扫描已登录设备二维码加入；规格见 docs

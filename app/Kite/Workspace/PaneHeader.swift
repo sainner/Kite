@@ -4,6 +4,8 @@ import SwiftUI
 struct PaneHeader {
     var title: String
     var subtitle: String?
+    /// 副标题后跟下拉箭头，点开是窗口给的菜单，例如新会话选用上下文模板。
+    var subtitleMenu: SubtitleMenu?
     var titleRefresh: TitleRefresh?
     /// 主标题右边的小标签，例如订阅账号的档位。
     var badge: String?
@@ -15,6 +17,14 @@ struct PaneHeader {
         var isRefreshing: Bool
         var enabled: Bool
         var action: () -> Void
+    }
+
+    /// 菜单处理期间箭头换成转圈，菜单不可点。
+    struct SubtitleMenu {
+        var label: String
+        var isBusy: Bool
+        var enabled: Bool
+        var content: AnyView
     }
 }
 
@@ -113,7 +123,10 @@ struct PaneHeaderTitle: View {
             }
             .font((InputMode.current.isTouch ? Theme.secondary : Theme.title).weight(.semibold))
             if let subtitle = header.subtitle {
-                Text(subtitle)
+                Group {
+                    if let menu = header.subtitleMenu { PaneSubtitleMenu(subtitle: subtitle, menu: menu) }
+                    else { Text(subtitle) }
+                }
                     .font(Theme.caption)
                     .foregroundStyle(.secondary)
                     .id(subtitle)
@@ -124,6 +137,30 @@ struct PaneHeaderTitle: View {
         .animation(.snappy, value: header.title)
         .animation(.snappy, value: header.subtitle)
         .animation(.snappy, value: header.badge)
+    }
+}
+
+/// 副标题连同尾部箭头一起作为菜单入口，悬停范围与刷新图标一样向外扩出，不改变排版。
+private struct PaneSubtitleMenu: View {
+    let subtitle: String
+    let menu: PaneHeader.SubtitleMenu
+
+    var body: some View {
+        Menu { menu.content } label: {
+            HStack(spacing: Metrics.titleRefreshGap) {
+                Text(subtitle)
+                Group {
+                    if menu.isBusy { CardSpinner().scaleEffect(0.6) }
+                    else { Image(systemName: "chevron.down").imageScale(.small).fontWeight(.semibold) }
+                }
+                .frame(width: 10)
+            }
+        }
+        .menuStyle(.button).buttonStyle(PaneTitleIconButtonStyle(fill: false)).menuIndicator(.hidden).fixedSize()
+        .disabled(!menu.enabled)
+        .help(menu.label)
+        .accessibilityLabel(menu.label)
+        .accessibilityValue(subtitle)
     }
 }
 
@@ -149,18 +186,23 @@ private struct PaneTitleRefreshButton: View {
 }
 
 private struct PaneTitleIconButtonStyle: ButtonStyle {
+    /// 副标题菜单悬停、展开时不铺灰底，只保留按下变淡。
+    var fill = true
     @Environment(\.isEnabled) private var isEnabled
     private var outset: CGFloat { Metrics.titleRefreshOutset }
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
+        let label = configuration.label
             .foregroundStyle(.secondary)
             .padding(outset)
-            .modifier(PaneButtonHover(inset: 0, isPressed: configuration.isPressed))
-            .opacity(!isEnabled ? 0.45 : configuration.isPressed ? 0.7 : 1)
-            .clickPointer()
-            .reportsHeaderInteraction()
-            .padding(-outset)
+        Group {
+            if fill { label.modifier(PaneButtonHover(inset: 0, isPressed: configuration.isPressed)) }
+            else { label.contentShape(Rectangle()) }
+        }
+        .opacity(!isEnabled ? 0.45 : configuration.isPressed ? 0.7 : 1)
+        .clickPointer()
+        .reportsHeaderInteraction()
+        .padding(-outset)
     }
 }
 

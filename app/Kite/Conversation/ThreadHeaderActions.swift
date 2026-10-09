@@ -13,8 +13,11 @@ struct ThreadHeaderActions: View {
     @State private var confirmingRecovery = false
     @State private var showingModels = false
     private var availableModels: [AgentCapabilities.Model] { thread.agentCapabilities?.models ?? [] }
+    /// 草稿还没有实例，模型与后端改的是本机选择，随第一条消息一起提交。
+    private var choice: DraftAgentChoice? { instance == nil ? thread.draftChoice : nil }
     private var modelName: String? {
         if let name = instance?.config?.agent?.model.model { return name }
+        if let choice { return choice.model?.model }
         if thread.isDraft {
             return area.definitions.first { $0.id == (instance?.definitionId ?? "kite.agent.coding") }?.agent?.model?.model
         }
@@ -26,13 +29,15 @@ struct ThreadHeaderActions: View {
         return availableModels.first { modelName == $0.id }?.title ?? modelName
     }
     private var canChangeModel: Bool {
-        instance != nil && model.isConnected(area) && !savingModel
+        if choice != nil { return model.isConnected(area) && thread.agentCapabilities != nil }
+        return instance != nil && model.isConnected(area) && !savingModel
             && thread.agentCapabilities?.canEdit(thread.state) == true
     }
-    private var runtimeName: String { instance?.config?.agent?.runtime ?? "harness" }
-    private var canOpenModels: Bool { instance != nil && model.isConnected(area) }
+    private var runtimeName: String { instance?.config?.agent?.runtime ?? choice?.runtime ?? "harness" }
+    private var canOpenModels: Bool { (instance != nil || choice != nil) && model.isConnected(area) }
     private var canChangeRuntime: Bool {
-        canOpenModels && !savingModel && !thread.showStop && thread.state?.capabilities.switchRuntime == true
+        if choice != nil { return canOpenModels }
+        return canOpenModels && !savingModel && !thread.showStop && thread.state?.capabilities.switchRuntime == true
     }
 
     var body: some View {
@@ -46,7 +51,8 @@ struct ThreadHeaderActions: View {
                     onSelectRuntime: selectRuntime, onSelectModel: selectModel)
                     .presentationCompactAdaptation(.popover)
             }
-            .task(id: "\(model.revision(for: area))-\(model.isConnected(area))-\(runtimeName)") {
+            .task(id: "\(model.revision(for: area))-\(model.isConnected(area))-\(runtimeName)-\(choice?.definitionId ?? "")") {
+                if let choice { await loadDraftCapabilities(choice); return }
                 guard model.isConnected(area), let instance else { return }
                 thread.agentCapabilities = nil
                 loadingModels = true
@@ -94,6 +100,8 @@ struct ThreadHeaderActions: View {
         if let instance {
             general.append(.init(title: "实例设置与授权", symbol: "slider.horizontal.3",
                                  enabled: model.isConnected(area)) { area.settingsInstance = instance })
+            general.append(.init(title: "归档会话", symbol: "archivebox",
+                                 enabled: model.isConnected(area)) { area.archiveRequest = instance })
         }
         general.append(.init(title: "复制工作目录", symbol: "folder", enabled: !thread.transcript.root.isEmpty) {
             copyToPasteboard(thread.transcript.root, toast: toast)
@@ -112,7 +120,32 @@ struct ThreadHeaderActions: View {
         return [general, execution].filter { !$0.isEmpty }
     }
 
+    private func loadDraftCapabilities(_ choice: DraftAgentChoice) async {
+        guard model.isConnected(area) else { return }
+        thread.agentCapabilities = nil
+        loadingModels = true
+        defer { if !Task.isCancelled { loadingModels = false } }
+        do {
+            let client = try model.activeClient(in: area)
+            let capabilities = try await client.request(
+                "/plugin-definitions/\(choice.definitionId)/agent-capabilities?runtime=\(choice.runtime)", as: AgentCapabilities.self)
+            guard !Task.isCancelled, thread.draftChoice?.definitionId == choice.definitionId,
+                  thread.draftChoice?.runtime == choice.runtime else { return }
+            thread.agentCapabilities = capabilities
+        } catch {
+            if !Task.isCancelled { showingModels = false; modelError = error.localizedDescription }
+        }
+    }
+
     private func selectModel(_ name: String) {
+        if choice != nil {
+            guard canChangeModel, availableModels.contains(where: { $0.id == name }) else { return }
+            let levels = thread.agentCapabilities?.model(name)?.reasoning ?? []
+            if thread.draftChoice?.model == nil { thread.draftChoice?.model = .init(model: name, reasoning: "medium") }
+            thread.draftChoice?.model?.selectModel(name, supportedReasoning: levels)
+            showingModels = false
+            return
+        }
         guard canChangeModel, name != modelName, availableModels.contains(where: { $0.id == name }),
               let instance else { return }
         savingModel = true
@@ -128,6 +161,12 @@ struct ThreadHeaderActions: View {
     }
 
     private func selectRuntime(_ runtime: String) {
+        if choice != nil {
+            guard canChangeRuntime, runtime != runtimeName else { return }
+            thread.draftChoice?.runtime = runtime
+            thread.draftChoice?.model = area.definitions.first(where: { $0.agent?.runtime.rawValue == runtime })?.agent?.model
+            return
+        }
         guard canChangeRuntime, runtime != runtimeName, let instance,
               let defaults = area.definitions.first(where: { $0.agent?.runtime.rawValue == runtime })?.agent?.model else { return }
         savingModel = true

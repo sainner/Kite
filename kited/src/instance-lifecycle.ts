@@ -2,12 +2,20 @@
 import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { bindAgentDefinition } from './agents/definition.ts';
+import { bindAgentDefinition, chooseAgentModel, type AgentDefinition } from './agents/definition.ts';
 import type { ContextTemplateSelection } from './context-templates.ts';
 import { KiteError } from './errors.ts';
 import type { Kite } from './kite.ts';
-import type { OpenWindowRequest, PluginInstance, Thread, Workspace, WorkspaceWindow } from './model.ts';
+import type { OpenWindowRequest, PluginInstance, RuntimeKind, Thread, Workspace, WorkspaceWindow } from './model.ts';
 import { defaultOperationGrants } from './operations/contract.ts';
+
+/** 新会话在本机草稿里选好的初始参数，创建时一次写入实例配置。 */
+export interface AgentChoice {
+  definitionId?: string;
+  runtime?: RuntimeKind;
+  model?: AgentDefinition['model'];
+  template?: ContextTemplateSelection;
+}
 
 type InstanceServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'workspace' | 'plugins' | 'contextTemplates'>;
 
@@ -20,12 +28,12 @@ interface InstanceControl {
 export class InstanceLifecycle {
   constructor(private kite: InstanceServices, private control: InstanceControl) {}
 
-  newInstance(workspaceId: string, definitionId: string, title: string, kind: Workspace['kind'], template?: ContextTemplateSelection): PluginInstance {
+  newInstance(workspaceId: string, definitionId: string, title: string, kind: Workspace['kind'], choice: AgentChoice = {}): PluginInstance {
     const definition = this.kite.catalog.get(definitionId);
-    const agent = definition.agent && { ...definition.agent,
-      context: this.kite.contextTemplates.get(template?.id ?? definition.agent.context.id, 'thread.create', template?.revision).definition };
+    const agent = definition.agent && chooseAgentModel(bindAgentDefinition({ ...definition.agent,
+      context: this.kite.contextTemplates.get(choice.template?.id ?? definition.agent.context.id, 'thread.create', choice.template?.revision).definition }, kind), choice);
     return { id: randomUUID(), workspaceId, definitionId, title,
-      config: agent ? { agent: bindAgentDefinition(agent, kind), grants: defaultOperationGrants(definitionId), execution: definition.execution } : definition.runtime === 'bun' ? { packageRevision: definition.revision, grants: [] } : {}, state: {},
+      config: agent ? { agent, grants: defaultOperationGrants(definitionId), execution: definition.execution } : definition.runtime === 'bun' ? { packageRevision: definition.revision, grants: [] } : {}, state: {},
       presentation: 'window', status: 'open', createdAt: Date.now() };
   }
 

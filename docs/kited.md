@@ -154,11 +154,11 @@ Kite 托管账号与组网。Mac 和 iPhone 在 App 中使用账号密码登录�
 |---|---|
 | 登记检出 | 按目录的 origin 归入项目，建立直接使用登记目录的根工作区，不创建线程。没有 origin 时建托管远程并推送，普通文件夹先由 Kite 初始化仓库并提交初始版本 |
 | 创建独立工作区 | 从检出当前 HEAD 建立独立工作树；现场未提交的改动不带入，也不由 Kite 代为提交。可以先建空工作区，也可在准备完成后运行首条消息 |
-| 添加线程 | 根工作区和独立工作区都可有多个线程，各自保存对话；当前同一 cwd 有执行或恢复阻塞时，不能启动另一线程 |
+| 添加线程 | 根工作区和独立工作区都可有多个线程，各自保存对话；当前同一 cwd 有执行或恢复阻塞时，不能启动另一线程。App 的新会话草稿只在本机，第一条消息连同所选定义、后端、模型和模板一次创建实例、线程与窗口 |
 | 快照与回退 | 每批工具后与回合结束时保存变更，快照不改变 HEAD、分支或暂存区。回退先保存现状，再恢复文件；执行或恢复阻塞期间不允许回退 |
 | 采纳（集成） | 将独立工作区改动合回检出主线并推送到远程。现场有未提交的改动或不在分支上时拒绝。同一检出的采纳串行执行，冲突留在独立工作树；采纳后工作区与线程仍可继续使用 |
 | 现场提交并推送 | 由用户触发，把现场改动提交后推送。远程领先而现场没有新内容时快进；两边都有新内容时拒绝，提示新建工作区集成 |
-| 归档线程 | 停止该线程，保留工作区、文件、其他线程和快照 |
+| 归档实例 | 停止该实例的执行并关闭它的窗口，保留会话、业务数据、工作区和快照；随窗口回收的实例关闭窗口即可，不提供归档 |
 | 归档工作区 | 停止所有线程、保存最后快照，回收独立工作树和分支，归档实例并关闭共享窗口。未采纳改动须显式 `force`；根工作区不能通过此操作删除 |
 
 工作树准备可用 `worktree.symlinkDirectories` 链接依赖目录，用 `.worktreeinclude` 带入指定的忽略文件；随后运行项目的 `.kite/setup`，通过 `KITE_MAIN_DIR` 提供检出目录。准备失败或被打断时工作区为 `failed`；成功后保存初始快照并开放使用。准备中的首个线程被打断也会中止初始化。
@@ -253,6 +253,7 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | GET | `/operations` | 操作输入、输出、错误 schema，以及重试与取消规则 |
 | POST | `/workspaces/:id/operations/:operation` | 调用 agent.start / list / send / resume / stop 或 files.list / read / state / select；修改操作必须带 operationId |
 | GET | `/instances/:id/agent-capabilities` | 模型与思考档位、工具选择及配置生效边界；不发模型请求 |
+| GET | `/plugin-definitions/:id/agent-capabilities` | 尚无实例的新会话草稿按定义读取同样的能力，`?runtime=` 选择后端 |
 | GET / PUT | `/instances/:id/agent-config` | 读取绑定配置及 revision；以 expectedRevision 和完整 agent 配置更新 |
 | GET / POST | `/context-templates` | 列出创建会话、标题、上下文压缩及五类通知模板和场景变量；以 `{definition}` 新建创建会话模板 |
 | PUT | `/context-templates/:id` | 以 `{expectedRevision, definition}` 更新模板；不修改已有实例 |
@@ -265,7 +266,7 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | GET / PUT | `/instances/:id/operation-grants` | 读取实例操作授权及 revision；以 expectedRevision 和 grants 更新 |
 | POST | `/workspaces/:id/windows` | 创建实例及默认窗口，或打开已有实例视图；请求使用稳定 id |
 | DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口；最后窗口按插件生命周期回收实例或保留 |
-| POST | `/workspaces/:id/threads` | 在已有工作区创建线程 `{prompt, runtime?, contextTemplate?}`，默认 harness；模板选择为 `{id, revision}` |
+| POST | `/workspaces/:id/threads` | 在已有工作区创建线程并打开窗口 `{prompt, definitionId?, runtime?, model?, contextTemplate?}`；省略 definitionId 时按 runtime 选内置定义，默认 harness。`model` 为 `{model, reasoning}`，优先于定义默认值；runtime 与定义不同时必须同时给出 model。模板选择为 `{id, revision}` |
 | GET | `/threads/:id` | 线程和上下文，附带 `runner`、`busy` |
 | GET | `/threads/:id/state` | 只读执行与恢复状态，不启动模型 |
 | GET | `/threads/:id/history` | v1 显示历史、pending、state 和 cursor，只读 |
@@ -276,7 +277,7 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | POST | `/threads/:id/recover` | 确认恢复，不自动执行 |
 | POST | `/threads/:id/compactions` | 手动压缩上下文 `{id, from, through}`，起止为输入 id；校验通过即返回，结果经显示事件送达 |
 | DELETE | `/threads/:id/compactions/:compaction` | 撤销最外层的一次压缩 |
-| POST | `/threads/:id/archive` | 归档线程，保留所属工作区 |
+| POST | `/instances/:id/archive` | 归档独立存续的实例（agent 或 Bun 插件），保留所属工作区 |
 | GET | `/workspaces/:id/snapshots` | 工作区快照，新的在前 |
 | POST | `/workspaces/:id/restore` | 恢复文件到快照 `{commit}` |
 | POST | `/workspaces/:id/adopt` | 合回主线并推送，返回 `{status: "adopted", commit, push}` 或 `{status: "conflict", files}`；`push` 为 `{status: "pushed"}` 或 `{status: "failed", message}` |

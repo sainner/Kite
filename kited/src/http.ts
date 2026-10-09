@@ -8,6 +8,7 @@ import type { Kite } from './kite.ts';
 import type { RuntimeKind } from './model.ts';
 import { operationCatalog } from './operations/contract.ts';
 import { contextTemplateSelection } from './context-templates.ts';
+import { agentDefinitionSchema } from './agents/definition.ts';
 import type { Network } from './network.ts';
 import { publisherConfig, type CatalogPublisher } from './catalog-publisher.ts';
 
@@ -221,6 +222,9 @@ export function serve(kite: Kite, listen: Listen) {
         GET: bound(() => kite.catalog.definitions()),
         POST: bound(async (req) => kite.catalog.install(await body(req))),
       },
+      '/plugin-definitions/:id/agent-capabilities': {
+        GET: bound((req) => kite.definitionCapabilities(req.params.id, runtimeKind(new URL(req.url).searchParams.get('runtime') ?? undefined))),
+      },
       '/context-templates': {
         GET: bound(() => kite.emblems.catalog()),
         POST: bound(async (req) => kite.createContextTemplate((await body(req)).definition)),
@@ -311,8 +315,11 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/threads': {
         POST: bound(async (req) => {
           const b = await body(req);
-          const runtime = runtimeKind(b.runtime);
-          return kite.createThread(req.params.id, str(b.prompt, 'prompt'), runtime, contextTemplateSelection(b.contextTemplate));
+          const choice = z.object({ definitionId: z.string().trim().min(1).optional(), model: agentDefinitionSchema.shape.model.optional() })
+            .safeParse({ definitionId: b.definitionId, model: b.model });
+          if (!choice.success) throw new KiteError('会话创建参数无效');
+          return kite.createThread(req.params.id, str(b.prompt, 'prompt'),
+            { ...choice.data, runtime: runtimeKind(b.runtime), template: contextTemplateSelection(b.contextTemplate) });
         }),
       },
       '/workspaces/:id/windows': { POST: bound(async (req) => {
@@ -374,7 +381,7 @@ export function serve(kite: Kite, listen: Listen) {
         POST: bound(async (req) => kite.restore(req.params.id, str((await body(req)).commit, 'commit'))),
       },
       '/workspaces/:id/adopt': { POST: long(bound((req) => kite.adopt(req.params.id))) },
-      '/threads/:id/archive': { POST: bound((req) => kite.archiveThread(req.params.id)) },
+      '/instances/:id/archive': { POST: bound((req) => kite.archiveInstance(req.params.id)) },
       '/workspaces/:id/archive': { POST: bound(async (req) => kite.archiveWorkspace(req.params.id, (await body(req)).force === true)) },
       '/events': { GET: bound((req) => events(kite, eventScope(req.url))) },
     },

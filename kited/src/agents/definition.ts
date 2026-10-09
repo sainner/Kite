@@ -29,6 +29,16 @@ export function bindAgentDefinition(definition: AgentDefinition, kind: Workspace
   return parseAgentDefinition(bound);
 }
 
+export const claudeReasoning = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+/** 创建时选定的后端与模型优先于定义默认值和环境变量覆盖；换后端必须同时给出该后端的模型。 */
+export function chooseAgentModel(agent: AgentDefinition, choice: { runtime?: AgentDefinition['runtime']; model?: AgentDefinition['model'] }): AgentDefinition {
+  if (choice.runtime && choice.runtime !== agent.runtime && !choice.model) throw new KiteError('切换后端时须同时选择模型');
+  const chosen = parseAgentDefinition({ ...agent, runtime: choice.runtime ?? agent.runtime, model: choice.model ?? agent.model });
+  if (chosen.runtime === 'claude' && !claudeReasoning.includes(chosen.model.reasoning)) throw new KiteError('Claude 思考强度无效');
+  return chosen;
+}
+
 export function bindAgentContext(definition: ContextDefinition, kind: Workspace['kind']): ContextDefinition {
   const context = contextDefinitionSchema.parse(definition);
   if (kind === 'worktree') context.blocks.push({
