@@ -55,7 +55,7 @@ private struct PlaceholderPane: View {
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)
         } controls: { _ in
-            Color.clear.frame(height: Metrics.paneToolbarHeight)
+            EmptyView()
         }
     }
 }

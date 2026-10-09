@@ -51,8 +51,10 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
                 Group(subviews: controls($typing)) { controlViews in
                     GlassEffectContainer(spacing: Metrics.paneButtonGap) {
                         // 空控制区仍保留命中范围，继续承接上拉与横滑手势。
+                        // 什么都没画的底栏不被系统当作控制区，contentShape 也不管用，触摸落到下面的滚动视图
+                        // （iOS 27 模拟器 hitTest 实测）；挂一个不显示的 identity 玻璃，系统就会接管这一条。
                         if controlViews.isEmpty {
-                            Color.clear.frame(height: Metrics.paneToolbarHeight)
+                            Color.clear.frame(height: Metrics.paneToolbarHeight).glassEffect(.identity)
                         } else {
                             ForEach(controlViews) { $0 }
                         }

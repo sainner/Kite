@@ -65,5 +65,5 @@
 
 ## 资料入口
 
-- [界面命中问题的调试](ui-hit-testing-debugging.md) — 进程内合成点击可靠复现；悬停无法合成，需用户实测加日志
+- [界面命中问题的调试](ui-hit-testing-debugging.md) — Mac 进程内合成点击；iPhone 用模拟器探针比 hitTest；悬停需用户实测
 - [旧个人 Headscale（lisa）](reference-headscale-lisa.md) — 旧实验服务位置、nginx 分流与清理入口
