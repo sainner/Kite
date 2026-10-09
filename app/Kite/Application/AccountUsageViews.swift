@@ -140,7 +140,8 @@ struct AccountUsageSection: View {
                 }
                 summary(today: today)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // 宽度只取外面给的，不被按旧格数画出的图撑开；否则窗口变窄时量到的仍是旧宽度，格数只增不减。
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         }
         .onGeometryChange(for: Int.self) { Int($0.size.width / DotMetrics.pitch) } action: { columns = $0 }
     }
