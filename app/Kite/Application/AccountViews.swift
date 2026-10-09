@@ -37,6 +37,8 @@ struct KiteAccountSection: View {
             LabeledContent("额度", value: "暂无额度信息")
                 .foregroundStyle(.secondary)
             if let error { Text(error).foregroundStyle(Theme.danger) }
+            // 账号层的错误只在这一页写全，侧栏用户栏的提示点开到这里。
+            if let error = model.account.error { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) }
         }
         .disabled(working)
     }

@@ -3,7 +3,8 @@
  * 只解析、求值，不执行代码。语法与 App 的 DotExpression.swift 保持一致，改动须两边同步。
  */
 
-export const emblemVariables = ['t', 'x', 'y', 'i', 'w', 'h', 'r', 'a', 'px', 'py', 'd', 'k', 'pi', 'tau'] as const;
+/** v 是声音的响度（0～1），来自语音输入或系统播放的声音；音源接入前 App 恒给 0。 */
+export const emblemVariables = ['t', 'x', 'y', 'i', 'w', 'h', 'r', 'a', 'px', 'py', 'd', 'k', 'v', 'pi', 'tau'] as const;
 const arities: Record<string, number[]> = {
   sin: [1], cos: [1], tan: [1], abs: [1], floor: [1], ceil: [1], round: [1], sqrt: [1], exp: [1], log: [1],
   sign: [1], fract: [1], min: [2], max: [2], pow: [2], hypot: [2], atan2: [2], mod: [2], clamp: [3], mix: [3],
@@ -207,20 +208,19 @@ export function evaluateEmblem(node: Node, scope: EmblemScope): number {
 }
 
 /**
- * 在一块 32 × 20 格的画面上抽几帧，确认图案既不是一片空白、也不是整片铺满，并且会动。
- * 通过时返回 undefined，否则返回说明，供模型重试时参考。
+ * 在一块画面上抽几帧，确认图案既不是一片空白、也不是整片铺满，并且会动。签名默认按 32 × 20 格查，头像按它的 9 × 9 小画布查。
+ * everyFrame 时每一帧都不能是空白：头像空闲时停在随机的时刻。通过时返回 undefined，否则返回说明，供模型重试时参考。
  */
-export function checkEmblemExpression(source: string): string | undefined {
+export function checkEmblemExpression(source: string, { w, h, everyFrame = false } = { w: 32, h: 20 }): string | undefined {
   let node: Node;
   try { node = parseEmblemExpression(source); } catch (error) { return error instanceof Error ? error.message : String(error); }
-  const w = 32, h = 20;
   const frames = [0, 0.7, 1.9, 4.3].map((t) => {
     const values: number[] = [];
     for (let row = 0; row < h; row++) {
       for (let column = 0; column < w; column++) {
         const x = column - Math.floor(w / 2), y = row - Math.floor(h / 2);
         values.push(evaluateEmblem(node, {
-          t, x, y, i: row * w + column, w, h, r: Math.hypot(x, y), a: Math.atan2(y, x), px: 999, py: 999, d: 999, k: 0,
+          t, x, y, i: row * w + column, w, h, r: Math.hypot(x, y), a: Math.atan2(y, x), px: 999, py: 999, d: 999, k: 0, v: 0,
         }));
       }
     }
@@ -229,6 +229,9 @@ export function checkEmblemExpression(source: string): string | undefined {
   const all = frames.flat().map(Math.abs);
   const mean = all.reduce((sum, v) => sum + v, 0) / all.length;
   if (Math.max(...all) < 0.3) return '图案几乎是空白，最大值应至少到 0.3';
+  if (everyFrame && frames.some((frame) => Math.max(...frame.map(Math.abs)) < 0.3)) {
+    return '有的时刻几乎是空白；头像会停在随机的时刻，每一刻的最大值都应至少到 0.3';
+  }
   if (mean > 0.85) return '图案几乎整片铺满，平均绝对值应低于 0.85';
   const moving = frames.slice(1).some((frame) => frame.some((v, index) => Math.abs(v - frames[0]![index]!) > 0.05));
   if (!moving) return '图案不随 t 变化，应当是动画';

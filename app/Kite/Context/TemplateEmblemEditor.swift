@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 角色编辑器里的点阵签名：动画预览、表达式、正负两种颜色与点的形状。手改后随角色一起保存，之后不再被自动生成替换；
+/// 角色编辑器里的点阵签名：动画预览、表达式、头像算式、正负两种颜色与点的形状。手改后随角色一起保存，之后不再被自动生成替换；
 /// 「重新生成」交给模型按提示词重画，连手改过的一起替换。
 struct TemplateEmblemField: View {
     @Binding var design: EmblemDesign
@@ -11,6 +11,9 @@ struct TemplateEmblemField: View {
     /// 表达式改到一半无效时，预览停在上一个有效的图案。
     @State private var shown: DotPattern?
     @State private var error: String?
+    /// 头像算式改到一半无效时同样停在上一个有效的样子。
+    @State private var shownAvatar: EmblemDesign?
+    @State private var avatarError: String?
 
     private var generating: Bool { role?.emblemState == "generating" }
 
@@ -25,6 +28,25 @@ struct TemplateEmblemField: View {
                     .autocorrectionDisabled()
                 if let error {
                     Text(error).font(Theme.caption).foregroundStyle(Theme.danger)
+                }
+                HStack(alignment: .top, spacing: 10) {
+                    ZStack {
+                        Circle().fill(Theme.background)
+                        AgentAvatar(design: shownAvatar, instance: "preview", animating: true)
+                            .padding(1)
+                            .clipShape(Circle())
+                    }
+                    .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
+                    VStack(alignment: .leading, spacing: 4) {
+                        TextField("头像算式", text: $design.avatar, axis: .vertical)
+                            .textFieldStyle(.plain)
+                            .font(Theme.code)
+                            .lineLimit(1...3)
+                            .autocorrectionDisabled()
+                        Text(avatarError ?? "停靠栏头像：9×9 格的圆，x y 为 −4～4，代理工作时才动。")
+                            .font(Theme.caption)
+                            .foregroundStyle(avatarError == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Theme.danger))
+                    }
                 }
                 HStack(spacing: 8) {
                     colorMenu("正值", selection: $design.positive)
@@ -74,6 +96,13 @@ struct TemplateEmblemField: View {
             shown = design.pattern(accent: DotColor(Color.accentColor.resolve(in: environment)))
         } catch {
             self.error = error.localizedDescription
+        }
+        do {
+            _ = try DotExpression(design.avatar)
+            avatarError = nil
+            shownAvatar = design
+        } catch {
+            avatarError = error.localizedDescription
         }
     }
 

@@ -365,7 +365,7 @@ private struct WindowPlacement<Overlay: View>: ViewModifier {
         return content
             .environment(\.homeIndicatorInset, coveredByHome)
             .environment(\.paneTopSafeInset, covered.top)
-            .safeAreaPadding(covered)
+            .modifier(WindowSafeArea(covered: covered))
             .frame(width: screen.width, height: (screen.height - windowInsets.top - windowInsets.bottom) / scale,
                    alignment: .bottomLeading)
             // 卡片坐标：缩放前的内容，摆在卡片上的点阵图形按它换算到窗口，见 DotCarrier
@@ -389,5 +389,45 @@ private struct WindowPlacement<Overlay: View>: ViewModifier {
                 return DotCarrier.Mapping(origin: CGPoint(x: layout.insets.leading, y: layout.insets.top), scale: layout.scale)
             })
             .ignoresSafeArea()
+    }
+}
+
+/// 窗口内容的安全区，离停下的位置不到半点就直接停在那里。
+/// 抽屉的弹簧尾巴很长，收起后快一秒安全区还在每帧变千分之几点；滚动视图的内边距一变，越界拖着的位置就被夹回边界，
+/// 这时在对话顶上、底下越界拖动会来回抽（iPhone 实测；不加任何修饰的滚动视图也会夹）。
+/// 安全区有两截：状态栏、Home 条和键盘盖住窗口的那一截（covered），和 SwiftUI 按窗口四周的边距传进来的一截。
+/// 后一截收起时回到 0；打开时窗口上盖着接手势的一层，对话滚不了，不用管它停在哪。
+private struct WindowSafeArea: ViewModifier, Animatable {
+    var covered: EdgeInsets
+    /// covered 要停在哪。
+    private let target: EdgeInsets
+
+    init(covered: EdgeInsets) {
+        self.covered = covered
+        target = covered
+    }
+
+    var animatableData: EdgeInsets.AnimatableData {
+        get { covered.animatableData }
+        set { covered.animatableData = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        GeometryReader { proxy in
+            let own = Self.settle(covered, at: target)
+            let passed = Self.settle(proxy.safeAreaInsets, at: EdgeInsets())
+            // 传进来的那一截换成停住的值：外层不再让，统一在这里让
+            content
+                .safeAreaPadding(EdgeInsets(top: own.top + passed.top, leading: own.leading + passed.leading,
+                                            bottom: own.bottom + passed.bottom, trailing: own.trailing + passed.trailing))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                .ignoresSafeArea()
+        }
+    }
+
+    private static func settle(_ value: EdgeInsets, at target: EdgeInsets) -> EdgeInsets {
+        func edge(_ value: CGFloat, _ target: CGFloat) -> CGFloat { abs(value - target) < 0.5 ? target : value }
+        return EdgeInsets(top: edge(value.top, target.top), leading: edge(value.leading, target.leading),
+                          bottom: edge(value.bottom, target.bottom), trailing: edge(value.trailing, target.trailing))
     }
 }

@@ -1,6 +1,7 @@
 /**
- * 资源库随账号保存：角色、上下文模板、点阵签名与插件包写入时先到账号服务，成功后更新本机缓存；
- * 读取一律用缓存，后台拉取其他设备的修改，账号里还没有的本机内容顺带上传。项目约束同样按项目拉取缓存。
+ * 资源库随账号保存：角色、上下文模板、点阵签名与插件包写入时先到账号服务，成功后更新本机缓存；读取一律用缓存。
+ * 加入账号后与账号服务保持一条事件流：连上时先全量同步一遍，之后账号里有变化（含其他设备的修改与项目约束）就再同步；
+ * 断线后退避重连，重连时同样先同步。角色与模板的缓存以账号为准，账号里没有的从缓存去掉，内置的退回默认。
  * 工作机没加入账号时只用本机。
  */
 import type { AccountClient, LibraryItem } from './account-client.ts';
@@ -14,16 +15,23 @@ import type { TemplateEmblem } from './template-emblems.ts';
 /** constraints 列出约束变了的项目及变化前的规则。 */
 export interface LibraryChanges { roles: boolean; templates: boolean; constraints: Array<{ projectId: string; before?: ProjectToolRule }> }
 
-/** App 打开资源库页面时会触发拉取，短时间内的重复请求合并掉。 */
-const REFRESH_INTERVAL_MS = 10_000;
+/** 账号服务每 25 秒发一次心跳，事件流超过这么久没有任何数据就当作断了。 */
+const SILENCE_MS = 60_000;
+const RETRY_MIN_MS = 1_000;
+const RETRY_MAX_MS = 60_000;
 
 export class LibrarySync {
   private pending?: Promise<void>;
   private again = false;
-  private pulledAt = 0;
   private closed = false;
-  /** 停机时中止进行中的账号请求，不等网络超时。 */
+  /** 停机时中止进行中的账号请求与事件流，不等网络超时。 */
   private abort = new AbortController();
+  /** 当前的事件流；换凭据时中止它，用新凭据立即重连。 */
+  private stream?: AbortController;
+  private reconnecting = false;
+  private listening?: Promise<void>;
+  /** 结束重连前的等待。 */
+  private wake?: () => void;
   /** 正在后台写出的签名；拉取不拿账号里的旧版本覆盖它们。 */
   private publishing = new Map<string, number>();
 
@@ -34,15 +42,22 @@ export class LibrarySync {
 
   get linked(): boolean { return this.deps.account.linked; }
 
-  /** 后台拉取；进行中时合并为一次补拉。失败只记日志，继续用缓存，同样按间隔限制重试。force 不受间隔限制。 */
-  refresh(force = false): Promise<void> {
+  /** 启动或加入账号、换了凭据时调用：断开旧的事件流，用当前凭据重新连接。没加入账号时不做事。 */
+  connect(): void {
+    if (this.closed) return;
+    this.reconnecting = true;
+    this.stream?.abort();
+    this.wake?.();
+    this.listening ??= this.listen().finally(() => { this.listening = undefined; });
+  }
+
+  /** 全量同步一遍；进行中时合并为一次补拉。失败只记日志，继续用缓存。 */
+  refresh(): Promise<void> {
     if (!this.linked || this.closed) return Promise.resolve();
-    if (this.pending) { this.again ||= force; return this.pending; }
-    if (!force && Date.now() - this.pulledAt < REFRESH_INTERVAL_MS) return Promise.resolve();
+    if (this.pending) { this.again = true; return this.pending; }
     this.pending = (async () => {
       do {
         this.again = false;
-        this.pulledAt = Date.now();
         try { await this.pull(); }
         catch (error) { if (!this.closed) console.warn('[资源库同步]', (error as Error).message); }
       } while (this.again && !this.closed);
@@ -55,12 +70,12 @@ export class LibrarySync {
     if (!this.linked) return;
     try { await this.deps.account.putLibrary(kind, id, body, expectedRevision); }
     catch (error) {
-      if (error instanceof KiteError && error.status === 409) void this.refresh(true);
+      if (error instanceof KiteError && error.status === 409) void this.refresh();
       throw error;
     }
   }
 
-  /** 后写为准的内容（点阵签名）在后台写出，失败等下次拉取时再上传。 */
+  /** 后写为准的内容（点阵签名）在后台写出，失败等下次同步时再上传。 */
   publish(kind: LibraryItem['kind'], id: string, body: object): void {
     const key = `${kind}:${id}`;
     this.publishing.set(key, (this.publishing.get(key) ?? 0) + 1);
@@ -71,11 +86,12 @@ export class LibrarySync {
       });
   }
 
-  /** 停机时中止并等进行中的拉取结束，之后不再访问本机数据库。 */
+  /** 停机时中止事件流并等进行中的同步结束，之后不再访问本机数据库。 */
   async close(): Promise<void> {
     this.closed = true;
     this.abort.abort();
-    await this.pending;
+    this.wake?.();
+    await Promise.all([this.pending, this.listening]);
   }
 
   /** 本机没装的插件包从账号下载安装；内置定义和已装的直接返回。 */
@@ -83,6 +99,46 @@ export class LibrarySync {
     const { catalog, account } = this.deps;
     if (catalog.installed(id) || catalog.get(id).runtime !== 'bun') return;
     catalog.install((await account.libraryItem('plugin', id)).body);
+  }
+
+  private async listen(): Promise<void> {
+    let delay = RETRY_MIN_MS;
+    while (!this.closed && this.linked) {
+      const stream = this.stream = new AbortController();
+      this.reconnecting = false;
+      try {
+        const body = await this.deps.account.libraryEvents(AbortSignal.any([stream.signal, this.abort.signal]));
+        delay = RETRY_MIN_MS;
+        await this.read(body, stream);
+      } catch (error) {
+        // 断线期间按退避重试，只在每轮断线的第一次记日志。
+        if (!this.closed && !this.reconnecting && delay === RETRY_MIN_MS) console.warn('[资源库同步]', (error as Error).message);
+      }
+      if (this.closed || this.reconnecting) continue;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => this.wake?.(), delay);
+        this.wake = () => { clearTimeout(timer); this.wake = undefined; resolve(); };
+      });
+      delay = Math.min(delay * 2, RETRY_MAX_MS);
+    }
+  }
+
+  /** 每条事件都触发一次全量同步，连上时服务先发的那条就是重连后的同步。 */
+  private async read(body: ReadableStream<Uint8Array>, stream: AbortController): Promise<void> {
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let silence = setTimeout(() => stream.abort(), SILENCE_MS);
+    try {
+      for await (const chunk of body) {
+        clearTimeout(silence);
+        silence = setTimeout(() => stream.abort(), SILENCE_MS);
+        const events = (buffer + decoder.decode(chunk, { stream: true })).split('\n\n');
+        buffer = events.pop()!;
+        if (events.some((event) => event.split('\n').some((line) => line.startsWith('data:')))) void this.refresh();
+      }
+    } finally {
+      clearTimeout(silence);
+    }
   }
 
   private async pull(): Promise<void> {
@@ -108,11 +164,11 @@ export class LibrarySync {
 
     const remoteRoles = remote('role');
     for (const item of remoteRoles.values()) changes.roles = accepted('role', item.id, () => roles.cache(item.body)) || changes.roles;
-    for (const { role } of roles.list()) if (!remoteRoles.has(role.id)) await upload('role', role.id, role, null);
+    changes.roles = roles.keep(new Set(remoteRoles.keys())) || changes.roles;
 
     const remoteTemplates = remote('template');
     for (const item of remoteTemplates.values()) changes.templates = accepted('template', item.id, () => templates.cache(item.body)) || changes.templates;
-    for (const { definition } of templates.edited()) if (!remoteTemplates.has(definition.id)) await upload('template', definition.id, definition, null);
+    changes.templates = templates.keep(new Set(remoteTemplates.keys())) || changes.templates;
 
     const remoteEmblems = remote('emblem');
     for (const item of remoteEmblems.values()) {
@@ -120,11 +176,14 @@ export class LibrarySync {
       store.saveTemplateEmblem(item.id, item.body as unknown as TemplateEmblem);
       changes.roles = true;
     }
-    for (const { id, emblem } of store.templateEmblems()) if (!remoteEmblems.has(id)) await upload('emblem', id, emblem);
 
     const remotePlugins = remote('plugin');
     catalog.setRemote([...remotePlugins.values()].map((item) => ({ meta: item.body, revision: item.revision })));
-    for (const id of catalog.installedIds()) if (!remotePlugins.has(id)) await upload('plugin', id, catalog.package(id), null);
+    // 本机有、账号里没有的签名与插件包一起补传
+    await Promise.all([
+      ...store.templateEmblems().filter(({ id }) => !remoteEmblems.has(id)).map(({ id, emblem }) => upload('emblem', id, emblem)),
+      ...catalog.installedIds().filter((id) => !remotePlugins.has(id)).map((id) => upload('plugin', id, catalog.package(id), null)),
+    ]);
     if (this.closed) return;
 
     for (const { projectId, value } of constraints.filter((entry) => entry !== undefined)) {

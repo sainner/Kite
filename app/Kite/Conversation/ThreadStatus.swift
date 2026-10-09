@@ -1,16 +1,13 @@
 import SwiftUI
 
-/// 标题栏圆环表达主状态与上下文占比，悬停提示和辅助功能保留状态与结果说明。
+/// 标题栏圆环表达主状态与上下文占比，说明（悬停、长按与读屏）保留状态与结果；信息区有提示时改为提示。
 struct ThreadStatusRing: View {
     @Environment(WorkThread.self) private var thread
     private let lineWidth: CGFloat = 3
 
     var body: some View {
         ContextRing(phase: thread.statusPhase, fraction: thread.state?.context?.fraction, lineWidth: lineWidth)
-            .paneHeaderRing(lineWidth: lineWidth)
-            .help(thread.statusLabel + "\n" + thread.contextDescription)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(thread.statusLabel + "，" + thread.contextDescription)
+            .paneHeaderRing(lineWidth: lineWidth, status: thread.statusLabel + "\n" + thread.contextDescription)
     }
 }
 
@@ -28,7 +25,7 @@ private extension WorkThread {
     }
 }
 
-private struct ContextRing: View {
+struct ContextRing: View {
     let phase: String
     let fraction: Double?
     let lineWidth: CGFloat

@@ -18,7 +18,7 @@ try {
   await command([
     compiler, '-parse-as-library', '-swift-version', '6', '-default-isolation', 'MainActor',
     '-sdk', sdk, '-target', `${architecture}-apple-macosx26.0`,
-    ...['DotBackground', 'DotStage', 'Dots', 'WaitingBreath', 'Theme', 'InterfaceMode']
+    ...['DotBackground', 'DotStage', 'DotPattern', 'DotExpression', 'Dots', 'WaitingBreath', 'Theme', 'InterfaceMode']
       .map((name) => join(source, `${name}.swift`)),
     join(import.meta.dir, 'DotBackgroundVerify.swift'), '-o', executable,
   ], root, 60_000);

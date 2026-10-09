@@ -12,7 +12,9 @@ struct PhoneThreadHeaderMenus: UIViewRepresentable {
     @ScaledMetric(relativeTo: .body) private var controlHeight = Metrics.paneHeaderButton
 
     func makeUIView(context: Context) -> PhoneThreadMenuButton { PhoneThreadMenuButton() }
-    func updateUIView(_ button: PhoneThreadMenuButton, context: Context) { button.update(self) }
+    func updateUIView(_ button: PhoneThreadMenuButton, context: Context) {
+        button.update(self)
+    }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: PhoneThreadMenuButton, context: Context) -> CGSize? {
         CGSize(width: uiView.intrinsicContentSize.width, height: controlHeight)
     }

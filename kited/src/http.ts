@@ -212,19 +212,17 @@ export function serve(kite: Kite, listen: Listen) {
         }),
       },
       '/plugin-definitions': {
-        GET: bound(() => { void kite.library.refresh(); return kite.catalog.definitions(); }),
+        GET: bound(() => kite.catalog.definitions()),
         POST: bound(async (req) => kite.installPlugin(await body(req))),
       },
-      // 有设备改了账号资源库或项目约束后请工作机立即拉取，等拉完再返回。
-      '/library/refresh': { POST: bound(async () => { await kite.library.refresh(true); return { ok: true }; }) },
       '/workspaces/:id/agent-options': { GET: bound((req) => kite.agentOptions(req.params.id)) },
-      '/context-templates': { GET: bound(() => { void kite.library.refresh(); return kite.contextTemplates.list(); }) },
+      '/context-templates': { GET: bound(() => kite.contextTemplates.list()) },
       '/context-templates/:id': { PUT: bound(async (req) => {
         const b = await body(req);
         return kite.updateContextTemplate(req.params.id, str(b.expectedRevision, 'expectedRevision'), b.definition);
       }) },
       '/roles': {
-        GET: bound(() => { void kite.library.refresh(); return kite.roleCatalog(); }),
+        GET: bound(() => kite.roleCatalog()),
         POST: bound(async (req) => kite.createRole((await body(req)).role)),
       },
       '/roles/:id': { PUT: bound(async (req) => {
@@ -313,11 +311,12 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/threads': {
         POST: bound(async (req) => {
           const b = await body(req);
-          const choice = z.object({ model: agentDefinitionSchema.shape.model.optional(), tools: agentDefinitionSchema.shape.tools.optional(),
-            maxRequestsPerTurn: agentDefinitionSchema.shape.maxRequestsPerTurn.optional() })
-            .safeParse({ model: b.model, tools: b.tools, maxRequestsPerTurn: b.maxRequestsPerTurn });
-          if (!choice.success) throw new KiteError('代理创建参数无效');
-          return kite.createThread(req.params.id, str(b.prompt, 'prompt'), { ...choice.data, role: roleSelection(b.role) });
+          const parsed = z.object({ model: agentDefinitionSchema.shape.model.optional(), tools: agentDefinitionSchema.shape.tools.optional(),
+            maxRequestsPerTurn: agentDefinitionSchema.shape.maxRequestsPerTurn.optional(), windowId: z.uuid().optional() })
+            .safeParse({ model: b.model, tools: b.tools, maxRequestsPerTurn: b.maxRequestsPerTurn, windowId: b.windowId });
+          if (!parsed.success) throw new KiteError('代理创建参数无效');
+          const { windowId, ...choice } = parsed.data;
+          return kite.createThread(req.params.id, str(b.prompt, 'prompt'), { ...choice, role: roleSelection(b.role) }, windowId);
         }),
       },
       '/workspaces/:id/windows': { POST: bound(async (req) => {

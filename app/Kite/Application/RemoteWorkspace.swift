@@ -77,6 +77,19 @@ struct RemoteThread: Decodable {
     let instanceId: String
     let runtime: RemoteRuntime
     let nativeId: String
+    /// 工作机载入过显示投影的线程才有。
+    var activity: ThreadActivity? = nil
+}
+
+/// 代理的活动摘要，停靠栏据此显示后台代理的状态；完整状态以线程流为准。
+/// 时间是工作机的毫秒时间戳，settledAt 只在工作机实时看到回合收尾时记录。
+struct ThreadActivity: Decodable, Equatable {
+    let phase: String
+    let waitingForResume: Bool
+    var outcome: String? = nil
+    var error: Bool? = nil
+    var changedAt: Double? = nil
+    var settledAt: Double? = nil
 }
 
 struct RemotePluginInstance: Decodable, Identifiable {
@@ -95,6 +108,10 @@ struct RemotePluginInstance: Decodable, Identifiable {
     let createdAt: Int
     var state: State? = nil
     var config: InstanceAgentConfig? = nil
+    /// 由另一个实例经 agent_start 创建时，工作机记下的创建来源。
+    var origin: Origin? = nil
+
+    struct Origin: Decodable { let instanceId: String }
 }
 
 struct FileSelection: Decodable, Equatable {

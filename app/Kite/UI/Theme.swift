@@ -130,6 +130,8 @@ enum Metrics {
     static let gap: CGFloat = 12
     /// 侧栏左右的外侧留白。
     static let sidebarInset: CGFloat = 12
+    /// 侧栏分割线上下的留白，一个半模块。
+    static let sidebarRuleGap: CGFloat = 18
     /// 菜单项与项目列表内容共用的左内边距。
     static let sidebarItemInset: CGFloat = 10
     static let sidebarWidth: CGFloat = 240
@@ -171,7 +173,7 @@ enum Metrics {
     /// 卡片和内部输入框保持同心。
     static var cardRadius: CGFloat { controlRadius + paneMargin }
     /// iPhone 上标题栏后面的渐变遮罩往下伸过标题栏底边多少。
-    static let topFadeOverhang: CGFloat = 20
+    static let topFadeOverhang: CGFloat = 48
     /// 拖出布局或最小化后的窗口图标尺寸：Mac 三个模块，iPhone 四个模块，保留触控尺寸。
     static var dragBubble: CGFloat { InputMode.current.dockItem }
     /// Mac 右侧停靠栏与窗口图标同宽。

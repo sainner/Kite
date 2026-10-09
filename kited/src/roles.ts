@@ -9,6 +9,7 @@ import { contextDefinitionSchema } from './harness/context/assembler.ts';
 import { defaultContextDefinition } from './harness/context/project.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
 import type { PluginInstance, Workspace } from './model.ts';
+import { agentTools } from './plugins/definitions.ts';
 import type { Store } from './store.ts';
 
 export const roleSchema = z.object({
@@ -41,16 +42,18 @@ export interface RoleChoice { model?: AgentDefinition['model']; tools?: AgentDef
 export type ProjectToolRule = Pick<ToolRule, 'mode' | 'tools'>;
 
 export const defaultRoleId = 'kite.work';
+/** 代理插件声明的全部工具，角色的规则只能引用其中的名字。 */
+const universe: readonly string[] = agentTools;
 
 export function instanceRole(instance: PluginInstance): RoleBinding | undefined {
   return instance.config.role as RoleBinding | undefined;
 }
 
 /**
- * universe 是代理插件声明的全部工具。角色规则决定实例能开的上限（allowed），写进实例配置；
+ * 角色规则从 universe 里决定实例能开的上限（allowed），写进实例配置；
  * 项目约束是实时过滤，不写进配置，收紧或放宽都立即作用于有效集（permitted），blocked 是被项目禁掉的那些。
  */
-export function toolLimits(universe: readonly string[], rule: Pick<ToolRule, 'mode' | 'tools' | 'required'> = allTools, project?: ProjectToolRule) {
+export function toolLimits(rule: Pick<ToolRule, 'mode' | 'tools' | 'required'> = allTools, project?: ProjectToolRule) {
   const allowed = permittedTools(universe, [rule]);
   const permitted = project ? permittedTools(allowed, [project]) : allowed;
   return { allowed, blocked: allowed.filter((name) => !permitted.includes(name)), required: rule.required,
@@ -65,9 +68,8 @@ export function checkTools(tools: readonly string[], limits: ReturnType<typeof t
 }
 
 /** 新代理的初始配置：角色给默认值，草稿的选择覆盖它们；后端由模型推出。必需工具被项目约束禁用时角色不可用。 */
-export function roleAgent(universe: readonly string[], { role, revision }: RoleSnapshot, kind: Workspace['kind'], choice: RoleChoice = {},
-  project?: ProjectToolRule) {
-  const limits = toolLimits(universe, role.tools, project);
+export function roleAgent({ role, revision }: RoleSnapshot, kind: Workspace['kind'], choice: RoleChoice = {}, project?: ProjectToolRule) {
+  const limits = toolLimits(role.tools, project);
   if (limits.missing.length) throw new KiteError(`角色「${role.title}」需要的工具被项目约束禁用：${limits.missing.join('、')}`);
   // 角色允许的工具是代理插件声明工具的子集；被项目禁掉的也留在配置里，约束放宽后恢复。
   const tools = choice.tools ?? limits.allowed as AgentDefinition['tools'];
@@ -95,34 +97,39 @@ const snapshot = (role: Role): RoleSnapshot => ({ role, revision: createHash('sh
 export const contextRevision = (role: Role): string => createHash('sha256').update(JSON.stringify(role.context)).digest('hex');
 
 export class Roles {
-  /** universe 是代理插件声明的全部工具，角色的规则只能引用其中的名字。 */
-  constructor(private store: Store, private universe: readonly string[]) {
+  /** 内置角色的默认内容。本机与账号只存自建的和改过的内置角色，没改过的跟随 kited 版本的默认。 */
+  private readonly builtins: Map<string, Role>;
+
+  constructor(private store: Store) {
+    this.builtins = new Map(builtinRoles.map((role) => [role.id, this.parse(role)]));
     store.transaction(() => {
-      // 创建会话模板改由角色承载：沿用模板 ID 与正文，点阵签名按 ID 保留。
-      for (const definition of store.contextTemplates().filter((definition) => definition.scene === 'thread.create')) {
-        // 默认模板旧名「工作会话」，代理不再称作会话。
-        const title = definition.id === defaultRoleId && definition.title === '工作会话' ? defaultContextDefinition.title : definition.title;
-        if (!store.role(definition.id)) store.saveRole(this.parse({ version: 1, id: definition.id, title, context: definition,
-          tools: definition.id === 'kite.review' ? reviewTools : allTools, model: defaultModel, maxRequestsPerTurn: 50 }));
-        store.deleteContextTemplate(definition.id);
-      }
-      for (const role of builtinRoles) if (!store.role(role.id)) store.saveRole(this.parse(role));
+      for (const role of store.roles()) if (this.isDefault(role)) store.deleteRole(role.id);
     });
   }
 
-  list(): RoleSnapshot[] { return this.store.roles().map(snapshot); }
+  list(): RoleSnapshot[] {
+    const ids = new Set([...this.builtins.keys(), ...this.store.roles().map((role) => role.id)]);
+    return [...ids].sort().map((id) => snapshot(this.current(id)!));
+  }
 
   /** 账号里拉来的版本直接替换本机缓存；内容不合本机契约的跳过，返回是否有变化。 */
   cache(value: unknown): boolean {
     const role = this.parse(value);
-    const saved = this.store.role(role.id);
+    const saved = this.current(role.id);
     if (saved && snapshot(saved).revision === snapshot(role).revision) return false;
-    this.store.saveRole(role);
+    this.save(role);
     return true;
   }
 
+  /** 账号里已经没有的从缓存去掉，内置角色退回默认；返回是否有变化。 */
+  keep(ids: ReadonlySet<string>): boolean {
+    const gone = this.store.roles().filter((role) => !ids.has(role.id));
+    for (const role of gone) this.store.deleteRole(role.id);
+    return gone.length > 0;
+  }
+
   get(id: string, revision?: string): RoleSnapshot {
-    const role = this.store.role(id);
+    const role = this.current(id);
     if (!role) throw new KiteError('角色不存在，请刷新列表', 404);
     const value = snapshot(role);
     if (revision !== undefined && revision !== value.revision) throw new KiteError('角色已更新，请刷新后重新选择', 409);
@@ -132,7 +139,7 @@ export class Roles {
   /** role 已经过 parse。 */
   create(role: Role): RoleSnapshot {
     return this.store.transaction(() => {
-      const saved = this.store.role(role.id);
+      const saved = this.current(role.id);
       if (saved && snapshot(saved).revision !== snapshot(role).revision) throw new KiteError('角色 ID 已存在，请另存为新角色', 409);
       if (!saved) this.store.saveRole(role);
       return snapshot(role);
@@ -147,13 +154,29 @@ export class Roles {
     return role;
   }
 
-  /** role 已经过 validate；写账号期间本机缓存可能被拉取更新，事务里再核对一次版本。 */
+  /** role 已经过 validate；写账号期间账号推来的同步可能已更新本机缓存，事务里再核对一次版本，已是这次的内容就不再核对。 */
   update(expectedRevision: string, role: Role): RoleSnapshot {
     return this.store.transaction(() => {
-      this.get(role.id, expectedRevision);
-      this.store.saveRole(role);
-      return snapshot(role);
+      const value = snapshot(role);
+      if (this.get(role.id).revision !== value.revision) {
+        this.get(role.id, expectedRevision);
+        this.save(role);
+      }
+      return value;
     });
+  }
+
+  private current(id: string): Role | undefined { return this.store.role(id) ?? this.builtins.get(id); }
+
+  /** 改回与默认一样的内置角色不算改过，不留副本。 */
+  private save(role: Role) {
+    if (this.isDefault(role)) this.store.deleteRole(role.id);
+    else this.store.saveRole(role);
+  }
+
+  private isDefault(role: Role): boolean {
+    const builtin = this.builtins.get(role.id);
+    return !!builtin && snapshot(builtin).revision === snapshot(role).revision;
   }
 
   parse(value: unknown): Role {
@@ -161,9 +184,9 @@ export class Roles {
     if (!parsed.success) throw new KiteError(`角色无效：${parsed.error.issues.map((issue) => issue.message).join('；')}`);
     const role = parsed.data;
     if (role.context.scene !== 'thread.create') throw new KiteError('角色的提示词须使用创建会话场景');
-    const unknown = [...role.tools.tools, ...role.tools.required].filter((name) => !this.universe.includes(name));
+    const unknown = [...role.tools.tools, ...role.tools.required].filter((name) => !universe.includes(name));
     if (unknown.length) throw new KiteError(`角色引用了不存在的工具：${unknown.join('、')}`);
-    const excluded = missingRequired(role.tools.required, permittedTools(this.universe, [role.tools]));
+    const excluded = missingRequired(role.tools.required, permittedTools(universe, [role.tools]));
     if (excluded.length) throw new KiteError(`必需工具被角色自己的规则排除了：${excluded.join('、')}`);
     if (![...agentModels.models, ...agentModels.claude].some((model) => model.id === role.model.model)) throw new KiteError('角色的默认模型不在模型目录中');
     if (runtimeOfModel(role.model.model) === 'claude' && !claudeReasoning.includes(role.model.reasoning)) throw new KiteError('Claude 思考强度无效');

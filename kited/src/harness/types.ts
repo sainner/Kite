@@ -80,6 +80,8 @@ export interface HarnessRequest {
   tools: Tool[];
   /** 声明目录在首次请求固定；tools 是本次实际可执行的子集。 */
   toolDefinitions?: ToolDefinition[];
+  /** 每次调用启动前再查一次；返回原因时不执行，结果为 not_executed。请求发出后才收紧的限制靠它拦下。 */
+  blocked?(name: string): string | undefined;
   instructions: string | ContextSource;
   /** 本次基础上下文变化时使用的通知模板；独立宿主未指定时使用内置定义。 */
   contextUpdateTemplate?: ContextDefinition;

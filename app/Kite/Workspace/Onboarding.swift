@@ -258,13 +258,9 @@ struct Onboarding: View {
             #endif
     }
 
-    /// 窄窗口里一栏居中，左边落在模块线上；iPhone 上卡片两边各留一个模块。
+    /// 窄布局里一栏居中，左边落在模块线上；放不下一栏时卡片两边各留一个模块。
     private func horizontalMargin(width: CGFloat) -> CGFloat {
-        #if os(macOS)
         DotMetrics.snapDown(max(Metrics.padding, (width - Self.columnWidth) / 2))
-        #else
-        Metrics.padding
-        #endif
     }
 
     /// iPhone 上卡片伸到屏幕底边，内容在 Home 条之上结束；键盘弹出时卡片落在键盘上。

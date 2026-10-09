@@ -205,6 +205,11 @@ private struct AccountLogin: Codable {
         #endif
         let session = TimingTrace.span("组网会话")
         let verified = TimingTrace.span("账号核验")
+        #if os(macOS)
+        // 本机 kited 的检查与账号核验同时进行，结果等核验结束后立即处理：核验成功会清空账号错误，
+        // 本机的问题紧接着写回，中间没有等待，重连时界面不会先清空再报错。
+        async let local = enrollment.device.role == "worker" ? localNetwork() : nil
+        #endif
         await reportDeviceKind()
         do { try await refresh(); verified("完成") }
         catch {
@@ -213,11 +218,8 @@ private struct AccountLogin: Codable {
             self.error = error.localizedDescription
         }
         #if os(macOS)
-        if enrollment.device.role == "worker" {
-            try await LocalService.installAndStart()
-            let machine = try await KitedClient(address: "http://127.0.0.1:5483").request("/machine", as: RemoteMachine.self)
-            let network = try await KitedClient(address: "http://127.0.0.1:5483", machineID: machine.id).request("/network", as: LocalNetwork.self)
-            guard network.state == "Running", let port = network.socksPort else { throw KitedError(message: "本机 kited 尚未入网") }
+        if let worker = try await local {
+            let (machine, port) = worker
             await Tailnet.shared.useWorker(port: port)
             do { try await configurePublisher(enrollment, machine: machine) }
             catch {
@@ -279,6 +281,15 @@ private struct AccountLogin: Codable {
     }
 
     #if os(macOS)
+    /// 作为工作机时确认本机 kited 已安装、运行并入网，返回它的机器与组网代理端口。
+    private func localNetwork() async throws -> (machine: RemoteMachine, port: Int) {
+        try await LocalService.installAndStart()
+        let machine = try await KitedClient(address: "http://127.0.0.1:5483").request("/machine", as: RemoteMachine.self)
+        let network = try await KitedClient(address: "http://127.0.0.1:5483", machineID: machine.id).request("/network", as: LocalNetwork.self)
+        guard network.state == "Running", let port = network.socksPort else { throw KitedError(message: "本机 kited 尚未入网") }
+        return (machine, port)
+    }
+
     private func configurePublisher(_ enrollment: AccountEnrollment, machine: RemoteMachine) async throws {
         let client = KitedClient(address: "http://127.0.0.1:5483", machineID: machine.id)
         struct Status: Decodable { let deviceId: String?; let needsAuthorization: Bool? }
@@ -361,6 +372,12 @@ private enum AccountVault {
 #if os(macOS)
 enum LocalService {
     static func installAndStart() async throws {
+        #if DEBUG
+        // Debug 版只用于改界面时快速预览，不打包 kited，直接连本机已安装的服务，也不重启它。
+        guard (try? await KitedClient(address: "http://127.0.0.1:5483").request("/machine", as: RemoteMachine.self)) != nil else {
+            throw KitedError(message: "Debug 版不带 kited，请先用 install.command 安装 Kite 并启动本机服务")
+        }
+        #else
         guard let resource = Bundle.main.resourceURL?.appending(path: "Service/runtime"),
               FileManager.default.isExecutableFile(atPath: resource.appending(path: "bin/bun").path) else {
             throw KitedError(message: "此 App 未包含 kited，请使用完整的 Kite 安装包")
@@ -383,6 +400,7 @@ enum LocalService {
             do { try process.run() } catch { continuation.resume(throwing: error) }
         }
         guard code == 0 else { throw KitedError(message: (try? String(contentsOf: log, encoding: .utf8)) ?? "安装 kited 失败") }
+        #endif
     }
 }
 #endif

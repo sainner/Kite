@@ -1,6 +1,7 @@
 /**
  * 账号服务的替身：只有 kited 用到的项目登记、凭据分发、目录上报、托管远程、资源库和项目约束，行为对照 src/account/service.ts。
  * 资源库直接用 src/account/library.ts 的存储与版本校验；项目约束只能读，测试改 constraints 模拟用户在 App 里修改。
+ * 资源库事件流直接用正式服务的 LibraryEvents：资源库写入或约束改动后发 changed，替身停止时断开。
  * 托管仓库直接用 GitHosting，地址是本机 http，归一化后带端口，和正式的托管地址一样能按地址找回项目。
  * 测试和本地演示脚本共用；linkAccount 把 kited 的数据目录接到这里，相当于 App 下发了目录上报配置。
  */
@@ -9,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { GitHosting } from '../src/account/git-hosting.ts';
-import { Library, LibraryConflict, libraryKind, libraryWrite } from '../src/account/library.ts';
+import { Library, LibraryConflict, LibraryEvents, libraryKind, libraryWrite } from '../src/account/library.ts';
 import type { CatalogSnapshot } from '../src/account/catalog.ts';
 import type { ProjectConstraints, RegisteredProject } from '../src/account-client.ts';
 import type { GitCredential } from '../src/git-credential.ts';
@@ -27,7 +28,7 @@ export interface FakeAccount {
   snapshot?: CatalogSnapshot;
   /** 账号资源库，与正式服务同一份存储和版本校验。 */
   library: Library;
-  /** 项目约束，按项目 ID；没有的项目是默认的不限制。 */
+  /** 项目约束，按项目 ID；没有的项目是默认的不限制。set 相当于用户在 App 里保存，随即推送给工作机的事件流。 */
   constraints: Map<string, Omit<ProjectConstraints, 'revision'>>;
   /** 托管仓库所在目录，裸仓库为 `<项目ID>.git`。 */
   repos: string;
@@ -52,16 +53,24 @@ export function startFakeAccount(root: string): FakeAccount {
   const credentials = new Map<string, GitCredential>();
   const database = new Database(':memory:');
   const library = new Library(database);
-  const constraints = new Map<string, Omit<ProjectConstraints, 'revision'>>();
   /** 替身只有一个账号。 */
   const userId = 'fake-user';
+  const events = new LibraryEvents();
+  const notify = () => events.notify(userId);
+  const constraints = new class extends Map<string, Omit<ProjectConstraints, 'revision'>> {
+    override set(id: string, value: Omit<ProjectConstraints, 'revision'>) {
+      super.set(id, value);
+      notify();
+      return this;
+    }
+  }();
   let baseURL = '';
   const hostedURL = (id: string) => `${baseURL}/git/${id}.git`;
   const json = (body: unknown, status = 200) => Response.json(body, { status });
 
   const server = Bun.serve({
     hostname: '127.0.0.1', port: 0,
-    async fetch(request) {
+    async fetch(request, server) {
       const path = new URL(request.url).pathname;
       const repository = /^\/git\/([0-9a-f-]{36})\.git(\/.*)$/.exec(path);
       if (repository) {
@@ -103,6 +112,10 @@ export function startFakeAccount(root: string): FakeAccount {
         return json(project, 201);
       }
       if (request.method === 'GET' && path === '/api/library') return json(library.list(userId));
+      if (request.method === 'GET' && path === '/api/library/events') {
+        server.timeout(request, 0);
+        return events.open(userId, request);
+      }
       const item = /^\/api\/library\/([a-z]+)\/([^/]+)$/.exec(path);
       if (item) {
         const kind = libraryKind.parse(item[1]);
@@ -112,8 +125,11 @@ export function startFakeAccount(root: string): FakeAccount {
           return found ? json(found) : json({ error: '资源库里没有这一项' }, 404);
         }
         if (request.method === 'PUT') {
-          try { return json(library.put(userId, kind, id, libraryWrite.parse(await request.json()), Date.now())); }
+          let saved;
+          try { saved = library.put(userId, kind, id, libraryWrite.parse(await request.json()), Date.now()); }
           catch (error) { if (error instanceof LibraryConflict) return json({ error: error.message }, 409); throw error; }
+          notify();
+          return json(saved);
         }
       }
       const constraint = /^\/api\/projects\/([^/]+)\/constraints$/.exec(path);
@@ -146,6 +162,7 @@ export function startFakeAccount(root: string): FakeAccount {
       return migrated;
     },
     stop() {
+      events.close();
       void server.stop(true);
       database.close();
       rmSync(repos, { recursive: true, force: true });

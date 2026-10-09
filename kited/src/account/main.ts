@@ -22,6 +22,6 @@ const service = await createAccountService({
 // 上限按推送托管仓库设定；JSON 接口在服务内另行限制为 2 MiB。
 const server = Bun.serve({ hostname: '0.0.0.0', port: Number(process.env.PORT ?? 5484), maxRequestBodySize: 2 * 1024 ** 3, fetch: service.fetch });
 console.log(`Kite 账号服务监听 ${server.port}`);
-async function stop() { await server.stop(); await service.close(); process.exit(0); }
+async function stop() { service.disconnect(); await server.stop(); await service.close(); process.exit(0); }
 process.on('SIGTERM', () => void stop());
 process.on('SIGINT', () => void stop());

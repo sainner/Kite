@@ -24,6 +24,12 @@ enum InputMode {
     var controlRadius: CGFloat { isTouch ? 28 : 18 }
     var rowHeight: CGFloat { isTouch ? 44 : 32 }
     var workspaceRowHeight: CGFloat { isTouch ? 44 : 24 }
+    /// 卡片里输入框与选择框的高度。
+    var fieldHeight: CGFloat { isTouch ? 48 : 36 }
+    /// 卡片底部与空白页主操作按钮的尺寸。
+    var actionControlSize: ControlSize { isTouch ? .large : .extraLarge }
+    /// 卡片里开关的尺寸。
+    var toggleControlSize: ControlSize { isTouch ? .regular : .small }
 }
 
 /// 按当前窗口可用空间选择布局，键盘只压缩内容，不改变布局类别。

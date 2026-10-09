@@ -52,23 +52,29 @@ export class AccountClient {
 
   /** 非 2xx 一律抛错，状态码随 KiteError 带出；401 表示工作机授权失效。 */
   private async request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    const timeout = AbortSignal.timeout(15_000);
+    const response = await this.send(method, path, body, signal ? AbortSignal.any([signal, timeout]) : timeout, signal);
+    return await response.json().catch(() => ({})) as T;
+  }
+
+  private async send(method: string, path: string, body: unknown, signal: AbortSignal, caller?: AbortSignal): Promise<Response> {
     const link = this.link();
     if (!link) throw new KiteError('这台工作机还没有加入 Kite 账号，请先在 App 中登录', 409);
     let response: Response;
     try {
       response = await fetch(new URL(path, link.url), {
-        method, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
+        method, signal,
         headers: { authorization: `Bearer ${link.token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch (error) {
-      signal?.throwIfAborted();
+      caller?.throwIfAborted();
       throw new KiteError(`连不上 Kite 账号服务：${(error as Error).message}`, 502);
     }
-    const data = await response.json().catch(() => ({})) as T & { error?: string };
+    if (response.ok) return response;
+    const data = await response.json().catch(() => ({})) as { error?: string };
     if (response.status === 401) throw new KiteError('工作机的账号授权已失效，请在 App 中重新登录', 409);
-    if (!response.ok) throw new KiteError(data.error ?? `账号服务返回 ${response.status}`, response.status === 404 ? 404 : response.status >= 500 ? 502 : 409);
-    return data;
+    throw new KiteError(data.error ?? `账号服务返回 ${response.status}`, response.status === 404 ? 404 : response.status >= 500 ? 502 : 409);
   }
 
   resolveSecrets(references: string[], projectId?: string, signal?: AbortSignal): Promise<ResolvedSecret[]> {
@@ -89,6 +95,11 @@ export class AccountClient {
   createHosted(name: string): Promise<RegisteredProject> { return this.request('POST', '/api/projects', { hosted: { name } }); }
 
   projects(): Promise<RegisteredProject[]> { return this.request('GET', '/api/projects'); }
+
+  /** 资源库与项目约束的变化通知，是一直开着的事件流；连上时服务先发一次。 */
+  async libraryEvents(signal: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+    return (await this.send('GET', '/api/library/events', undefined, signal, signal)).body!;
+  }
 
   library(signal?: AbortSignal): Promise<LibraryItem[]> { return this.request('GET', '/api/library', undefined, signal); }
 

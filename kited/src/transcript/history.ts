@@ -11,7 +11,7 @@ import type { ThreadContext } from '../model.ts';
 import type { Store } from '../store.ts';
 import type { TranscriptFeed } from './feed.ts';
 import { TranscriptProjection } from './projection.ts';
-import type { History } from './protocol.ts';
+import type { DisplayState, History, ThreadActivity } from './protocol.ts';
 
 type ClaudeMessage = Awaited<ReturnType<typeof readClaudeMessages>>[number];
 interface Run<T> { steps: T[]; needs?: number; covers: number; at: number }
@@ -69,8 +69,10 @@ function mergeSegments(journal: JournalRecord[], claude: ClaudeMessage[], positi
 export class TranscriptHistory {
   private transcripts = new Map<string, TranscriptProjection>();
   private loadingTranscripts = new Map<string, Promise<TranscriptProjection>>();
+  private activities = new Map<string, ThreadActivity>();
 
   constructor(private store: Store, private home: string, bus: Bus, private feed: TranscriptFeed) {
+    feed.subscribe((e) => e.type === 'thread.state', (e) => { if (e.type === 'thread.state') this.observe(e.threadId, e.state, e.at); });
     bus.subscribe(undefined, (event) => {
       switch (event.type) {
         case 'workspace.changed':
@@ -141,9 +143,29 @@ export class TranscriptHistory {
       projection.lifecycle(current.workspace.status, current.status);
       projection.finishReplay();
       this.transcripts.set(t.id, projection);
+      this.observe(t.id, projection.state());
       return projection;
     })().finally(() => this.loadingTranscripts.delete(t.id));
     this.loadingTranscripts.set(t.id, promise);
     return promise;
+  }
+
+  activity(id: string): ThreadActivity | undefined { return this.activities.get(id); }
+
+  /** 摘要变了才推送；收尾时间只在实时看到回合从执行转为空闲时记录，回放出来的旧结果不算。 */
+  private observe(id: string, state: DisplayState, at?: number): void {
+    const previous = this.activities.get(id);
+    const next: ThreadActivity = { phase: state.phase, waitingForResume: state.waitingForResume,
+      ...(state.lastOutcome ? { outcome: state.lastOutcome.kind } : {}), ...(state.error ? { error: true as const } : {}) };
+    if (previous && previous.phase === next.phase && previous.waitingForResume === next.waitingForResume
+      && previous.outcome === next.outcome && previous.error === next.error) return;
+    const settled = at !== undefined && previous !== undefined && previous.phase !== 'idle' && next.phase === 'idle' && next.outcome !== undefined;
+    const changedAt = at ?? previous?.changedAt;
+    const settledAt = settled ? at : previous?.settledAt;
+    if (changedAt !== undefined) next.changedAt = changedAt;
+    if (settledAt !== undefined) next.settledAt = settledAt;
+    this.activities.set(id, next);
+    const workspaceId = this.store.instance(id)?.workspaceId;
+    if (workspaceId) this.feed.emit({ type: 'thread.activity', workspaceId, threadId: id, activity: next });
   }
 }

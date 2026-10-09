@@ -163,6 +163,8 @@ struct RemoteEvent: Decodable {
     let type: String
     var version: Int?
     var threadId: String?
+    var workspaceId: String?
+    var activity: ThreadActivity?
     var workspaces: [RemoteWorkspace]?
     var cursor: String?
     var records: [RemoteRecord]?

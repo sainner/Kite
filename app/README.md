@@ -41,6 +41,8 @@ App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `
 
 ## 预览和验证
 
+改界面时用 `app/scripts/preview-mac.sh` 快速预览：增量编译 Mac Debug 版，退出正在运行的 Kite 后打开新 build；也可以在 Xcode 里直接运行 Debug。Debug 版不带 kited，直接连本机已安装的服务，不会重装或重启它，所以要先用 `./install.command` 装好一次。交付确认仍完整安装 Release。
+
 初始配置预览使用 Debug build 带 `--onboarding-preview` 启动，需要从测试机桌面反复启动时，编译参数使用 `KITE_PREVIEW_FLAGS=KITE_ONBOARDING_PREVIEW`。界面在真实工作机和数据上迭代。
 
 Swift 类型、窗口排布、草稿交接、滚动与 WebKit 验证统一在 [手动验证目录](../kited/test/manual/README.md)。移动或拆分 Swift 文件时同步更新这些脚本引用的源码路径。

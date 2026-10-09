@@ -185,9 +185,10 @@ test('登记检出创建同工作区线程，暂停后 CLI resume 续接，归�
 
   const listed = await kk.call('GET', '/workspaces');
   const aggregate = listed.body.find((view: any) => view.workspace.id === workspace.workspace.id);
+  // 跑过回合的线程另带活动摘要 activity，这里只核对线程身份
   expect(aggregate.threads).toEqual(expect.arrayContaining([
-    { instanceId: firstThreadId, runtime: 'harness', nativeId: expect.any(String) },
-    { instanceId: secondInstanceId, runtime: 'harness', nativeId: expect.any(String) },
+    expect.objectContaining({ instanceId: firstThreadId, runtime: 'harness', nativeId: expect.any(String) }),
+    expect.objectContaining({ instanceId: secondInstanceId, runtime: 'harness', nativeId: expect.any(String) }),
   ]));
   expect(aggregate.instances.map((instance: any) => instance.id).sort()).toEqual(
     aggregate.threads.map((thread: any) => thread.instanceId).sort(),
@@ -575,7 +576,7 @@ test('运行中的线程关闭窗口后继续执行，重新打开目标且归�
   const archived = await kk.call('GET', '/workspaces');
   const afterArchive = archived.body.find((entry: any) => entry.workspace.id === workspace.workspace.id);
   expect(afterArchive.windows).toEqual([]);
-  expect(afterArchive.threads).toEqual([{ instanceId: threadId, runtime: 'harness', nativeId: expect.any(String) }]);
+  expect(afterArchive.threads).toEqual([expect.objectContaining({ instanceId: threadId, runtime: 'harness', nativeId: expect.any(String) })]);
   expect(afterArchive.instances).toEqual([expect.objectContaining({ id: threadId, status: 'archived' })]);
   expect((await kk.call('POST', `/workspaces/${workspace.workspace.id}/windows`, {
     id: randomUUID(), content: { kind: 'open', instanceId: threadId, viewId: 'conversation' },

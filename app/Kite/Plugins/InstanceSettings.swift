@@ -219,7 +219,7 @@ struct InstanceSettings: View {
             draft = PluginGrantDraft(snapshot: value)
             operations = definitions
             // 「按角色创建代理」列出的是工作机上的角色。
-            if model.roles(in: area) == nil { try await model.refreshRoles(in: area) }
+            try await model.ensureRoles(in: area)
         }
         if definition?.runtime == "bun" { try await readProcess() }
     }
@@ -320,36 +320,5 @@ struct InstanceActions: View {
             Button("归档…", role: .destructive) { area.archiveRequest = instance }
                 .disabled(!model.isConnected(area))
         }
-    }
-}
-
-struct InstanceDockButton: View {
-    let instance: RemotePluginInstance
-    var opened: () -> Void = {}
-    @Environment(AppModel.self) private var model
-    @Environment(WorkArea.self) private var area
-    private var definition: RemotePluginDefinition? { area.definition(of: instance) }
-    private var appearance: WindowAppearance {
-        definition?.agent != nil ? .init(name: instance.title, icon: "bubble.left.and.bubble.right", tint: Palette.breeze)
-            : .renderer(definition?.views.first?.renderer ?? "")
-    }
-    var body: some View {
-        Button {
-            guard !area.changingWindows, area.pendingWindowRequest == nil, area.pendingInstanceRequest == nil else { return }
-            if let definition, let view = definition.views.first(where: { $0.id == definition.defaultView }) ?? definition.views.first {
-                model.openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area)
-                opened()
-            }
-        } label: {
-            Image(systemName: appearance.icon)
-                .font(Theme.title)
-                .foregroundStyle(appearance.tint)
-                .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.pointingPlain)
-        .help(instance.title + ((definition?.views.isEmpty ?? true) ? "（后台实例）" : ""))
-        .accessibilityLabel(instance.title)
-        .contextMenu { InstanceActions(instance: instance) }
     }
 }

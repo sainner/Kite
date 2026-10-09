@@ -1,17 +1,14 @@
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { createHash } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentDefinition } from '../../src/agents/definition.ts';
 import { defaultAgentModel } from '../../src/agents/models.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
-import { contextDefinitionSchema } from '../../src/harness/context/assembler.ts';
-import type { ContextDefinition } from '../../src/harness/context/types.ts';
 import type { OperationGrant } from '../../src/operations/contract.ts';
 import type { Role } from '../../src/roles.ts';
-import type { EmblemDesign, EmblemStatus } from '../../src/template-emblems.ts';
+import type { EmblemStatus } from '../../src/template-emblems.ts';
 import { call, claudeModel, linkNewAccount, openAgent, registerCheckout, startKited } from '../harness.ts';
 import { ManualModel, Seen } from '../harness-loop.ts';
 import { makeTemp, newRepo } from '../util.ts';
@@ -383,13 +380,12 @@ test('发出第一条消息后改选角色返回 409，回合进行中与重启�
   }
 }, 1000);
 
-// 新需求：三个旧定义合并为 kite.agent，创建会话模板改由角色承载。迁移分两处：Store 构造改实例与授权，
-// Roles 构造把模板转成角色；签名是否过期改按角色提示词算，旧库里存的是旧模板修订，两边算法对不上，
-// 迁移后所有签名都会变成过期。只有拿旧数据重开才看得出这几处合起来对不对。
-test('旧库重开后旧定义的实例指向代理并补上角色，按定义的授权改成按角色，创建会话模板变成同 ID 的角色且签名仍是最新', async () => {
+// 新需求：三个旧定义合并为 kite.agent。Store 构造时把旧定义的实例改指代理并按角色补上约束，按定义的授权改成按角色；
+// 迁移结果还要和角色目录、能力计算、授权读取接上，只有拿旧数据重开才看得出合起来对不对。
+test('旧库重开后旧定义的实例指向代理并补上角色，按定义的授权改成按角色', async () => {
   const root = makeTemp('roles-legacy-');
   const home = join(root, 'kite');
-  const accounts = [linkNewAccount(home)];
+  const account = linkNewAccount(home);
   let daemon: Daemon | undefined;
   try {
     daemon = startDaemon({ home, port: 0, lightTasks: false });
@@ -401,22 +397,7 @@ test('旧库重开后旧定义的实例指向代理并补上角色，按定义�
     await daemon.stop();
     daemon = undefined;
 
-    // 改写成接口改造前的数据：旧定义 ID、没有 config.role、按定义授权；角色表还空着，创建会话模板存在模板表里。
-    const legacyTemplate = contextDefinitionSchema.parse({
-      version: 2, id: 'test.legacy', title: '旧模板', scene: 'thread.create',
-      blocks: [{ type: 'paragraph', id: 'rules', title: '规则', parts: [{ type: 'text', text: '旧模板正文：先读需求。' }] }],
-    });
-    const oldReview: ContextDefinition = contextDefinitionSchema.parse({
-      version: 2, id: 'kite.review', title: '只读审查', scene: 'thread.create',
-      blocks: [{ type: 'paragraph', id: 'identity', title: '审查职责', parts: [{ type: 'text', text: '用户改过的审查模板。' }] }],
-    });
-    const oldWork: ContextDefinition = contextDefinitionSchema.parse({
-      version: 2, id: 'kite.work', title: '工作会话', scene: 'thread.create',
-      blocks: [{ type: 'paragraph', id: 'identity', title: '基础行为', parts: [{ type: 'text', text: '旧的工作模板。' }] }],
-    });
-    // 旧模板修订就是模板定义的哈希，签名里记的是它。
-    const oldRevision = createHash('sha256').update(JSON.stringify(legacyTemplate)).digest('hex');
-    const design: EmblemDesign = { expression: 'sin(x*0.4+t)*cos(y*0.4-t*0.7)', positive: 'M', negative: 'Y', form: 'circle' };
+    // 改写成接口改造前的数据：旧定义 ID、没有 config.role、按定义授权。
     const db = new Database(join(home, 'kite.db'));
     try {
       const config = (id: string) => JSON.parse((db.query('select config from plugin_instances where id = ?').get(id) as { config: string }).config);
@@ -434,17 +415,9 @@ test('旧库重开后旧定义的实例指向代理并补上角色，按定义�
       legacy(claudeId, 'kite.agent.claude', (value) => {
         value.grants = [{ operation: 'agent.start', definitionIds: ['kite.agent.claude'] }];
       });
-      db.query('delete from roles').run();
-      for (const definition of [legacyTemplate, oldReview, oldWork]) {
-        db.query('insert into context_templates values (?, ?)').run(definition.id, JSON.stringify(definition));
-      }
-      db.query('insert into template_emblems values (?, ?)').run(legacyTemplate.id,
-        JSON.stringify({ ...design, source: 'generated', templateRevision: oldRevision }));
     } finally {
       db.close();
     }
-    // 旧库的年代账号里还没有资源库；换一个空账号，免得第一次启动时同步上去的内置角色在拉取时盖掉迁移结果。
-    accounts.push(linkNewAccount(home));
 
     daemon = startDaemon({ home, port: 0, lightTasks: false });
     const review = (await request('GET', `/threads/${reviewId}`)).body;
@@ -460,21 +433,9 @@ test('旧库重开后旧定义的实例指向代理并补上角色，按定义�
     expect((await request('GET', `/instances/${claudeId}/operation-grants`)).body.grants).toEqual([
       { operation: 'agent.start', roleIds: ['kite.work'] },
     ]);
-
-    const roles = (await request('GET', '/roles')).body;
-    expect(findRole(roles, legacyTemplate.id)).toMatchObject({
-      role: { id: legacyTemplate.id, title: legacyTemplate.title, context: legacyTemplate, tools: { mode: 'deny', tools: [], required: [] } },
-      emblemState: 'ready', emblem: { ...design, source: 'generated' },
-    });
-    expect(findRole(roles, 'kite.review').role).toMatchObject({
-      context: { blocks: oldReview.blocks }, tools: { mode: 'allow', tools: ['read'], required: ['read'] },
-    });
-    expect(findRole(roles, 'kite.work').role).toMatchObject({ title: '工作', context: { title: '工作', blocks: oldWork.blocks } });
-    const templates = (await request('GET', '/context-templates')).body.templates as Array<{ definition: ContextDefinition }>;
-    expect(templates.filter((template) => template.definition.scene === 'thread.create')).toEqual([]);
   } finally {
     await daemon?.stop();
-    for (const account of accounts) account.stop();
+    account.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }, 1000);

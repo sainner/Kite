@@ -16,7 +16,6 @@ import type { Kite } from './kite.ts';
 import type { AgentInstance, PluginInstance, ThreadContext } from './model.ts';
 import { roleOperationGrants, type OperationGrant } from './operations/contract.ts';
 import { mergePluginTools, pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding } from './plugins/tools.ts';
-import { agentTools } from './plugins/definitions.ts';
 import { permittedTools } from './agents/tool-policy.ts';
 import { checkTools, instanceRole, roleAgent, toolLimits, type ProjectToolRule, type RoleBinding, type RoleSelection } from './roles.ts';
 import type { Runtime } from './runtime.ts';
@@ -140,7 +139,7 @@ export class InstanceConfiguration {
   }
   /** 这个代理可开的工具：代理插件声明的全部工具，经创建时角色的规则约束；项目约束另作实时过滤。 */
   private toolLimits(instance: PluginInstance) {
-    return toolLimits(agentTools, instanceRole(instance)?.tools, this.projectRule(instance.workspaceId));
+    return toolLimits(instanceRole(instance)?.tools, this.projectRule(instance.workspaceId));
   }
   agentCapabilities(id: string) {
     const thread = this.control.context(id);
@@ -150,7 +149,7 @@ export class InstanceConfiguration {
   agentOptions(workspaceId: string) {
     const project = this.projectRule(workspaceId);
     return { ...agentModelCatalog(), roles: this.kite.roles.list().map(({ role, revision }) => {
-      const limits = toolLimits(agentTools, role.tools, project);
+      const limits = toolLimits(role.tools, project);
       return { id: role.id, revision, tools: limits.allowed, required: limits.required, blocked: limits.blocked,
         ...(limits.missing.length ? { unavailable: `项目约束禁用了必需的 ${limits.missing.join('、')}` } : {}) };
     }) };
@@ -182,7 +181,7 @@ export class InstanceConfiguration {
   /** 改选角色：提示词、工具、默认模型、预算与协作授权一起换成角色的，并记下新的角色约束。只在还没有对话时可用。 */
   configureRole(id: string, expectedRevision: string, selection: RoleSelection) {
     const thread = this.control.context(id);
-    const bound = roleAgent(agentTools, this.kite.roles.get(selection.id, selection.revision), thread.workspace.kind,
+    const bound = roleAgent(this.kite.roles.get(selection.id, selection.revision), thread.workspace.kind,
       {}, this.projectRule(thread.workspaceId));
     return this.updateAgentConfiguration(id, expectedRevision, () => bound.agent, bound.role);
   }
@@ -207,7 +206,7 @@ export class InstanceConfiguration {
         if (running?.busy || running?.recovery || running?.state === 'stopping') throw new KiteError('请先停止会话并确认执行结果，再修改 Claude 配置', 409);
         if (!claudeReasoning.includes(agent.model.reasoning)) throw new KiteError('Claude 思考强度无效');
       }
-      checkTools(agent.tools, role ? toolLimits(agentTools, role.tools) : this.toolLimits(instance));
+      checkTools(agent.tools, role ? toolLimits(role.tools) : this.toolLimits(instance));
       const nextRevision = agentRevision(agent);
       const roleChanged = role !== undefined && JSON.stringify(role) !== JSON.stringify(instanceRole(instance));
       if (nextRevision === revision && !roleChanged) return snapshot;
@@ -216,7 +215,7 @@ export class InstanceConfiguration {
         if (runtimeChanged) this.kite.store.setThreadRuntime(id, agent.runtime);
         this.kite.store.setInstanceConfig(id, { ...instance.config, agent,
           ...(role ? { role, grants: roleOperationGrants(instance.definitionId, this.kite.operations.grants(id).grants,
-            toolLimits(agentTools, instanceRole(instance)?.tools).allowed, toolLimits(agentTools, role.tools).allowed) } : {}) },
+            toolLimits(instanceRole(instance)?.tools).allowed, toolLimits(role.tools).allowed) } : {}) },
           nextRevision === revision ? undefined : notification);
       });
       if (runtimeChanged) await this.control.switchRuntime(id, agent, save);

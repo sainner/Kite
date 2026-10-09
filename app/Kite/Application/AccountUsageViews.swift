@@ -32,14 +32,17 @@ extension ModelAccount.Quota {
 /// 标题前的额度圆环，和会话窗口的状态圆环同一位置、同样大小。每个整个账号共用的周期一圈，窗口长的在外圈：
 /// 只有每周额度时是单环，另有 5 小时额度时内圈是 5 小时。圆弧是剩余的比例。
 /// 悬停时圆环虚化，外圈的剩余百分比渐显在原处；内圈的数字只在提示里，重置时间写在正文。
+/// 信息区有提示时由提示占住这个位置，悬停不再显示百分比。
 struct AccountQuotaRing: View {
     let quotas: [ModelAccount.Quota]
     let stale: Bool
     @State private var hovering = false
+    @Environment(\.paneNotice) private var notice
     private var lineWidth: CGFloat { quotas.count > 1 ? 2.5 : 3 }
 
     var body: some View {
         let rings = Array(quotas.prefix(2))
+        let revealed = hovering && notice == nil
         TimelineView(.everyMinute) { context in
             let now = context.date.timeIntervalSince1970
             ZStack {
@@ -57,24 +60,20 @@ struct AccountQuotaRing: View {
                     .padding(CGFloat(index) * (lineWidth + 1.5))
                 }
             }
-            .blur(radius: hovering ? 2.5 : 0)
-            .opacity(hovering ? 0.3 : 1)
+            .blur(radius: revealed ? 2.5 : 0)
+            .opacity(revealed ? 0.3 : 1)
             .overlay {
                 if let quota = rings.first {
                     Text(quota.isExpired(now: now) ? "–" : String(Int((quota.remaining * 100).rounded())))
                         .font(Theme.ringValue)
                         .foregroundStyle(quota.tint(stale: stale, now: now))
                         .fixedSize()
-                        .opacity(hovering ? 1 : 0)
+                        .opacity(revealed ? 1 : 0)
                 }
             }
         }
-        .paneHeaderRing(lineWidth: lineWidth)
-        .contentShape(Rectangle())
+        .paneHeaderRing(lineWidth: lineWidth, status: description)
         .onHover { inside in withAnimation(.easeInOut(duration: 0.2)) { hovering = inside } }
-        .help(description)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(description)
     }
 
     private var description: String {

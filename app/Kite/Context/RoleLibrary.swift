@@ -9,7 +9,7 @@ struct RoleLibrary: View {
 
     private var catalog: RoleCatalog? { model.roleCatalog }
     /// 新建角色以默认角色为底，保留运行环境与项目材料等段落。
-    private var base: AgentRole? { catalog?.roles.first { $0.id == "kite.work" } ?? catalog?.roles.first }
+    private var base: AgentRole? { catalog?.defaultRole }
 
     var body: some View {
         SectionPage(header: PaneHeader(title: "角色", subtitle: SidebarSection.extensions.title)) {

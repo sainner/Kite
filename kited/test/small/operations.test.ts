@@ -133,7 +133,7 @@ test('agent.start 跨重启重试复用实例与窗口，后台实例不建窗�
     expect(checkout.status).toBe(200);
     const workspaceId = checkout.body.workspace.id as string;
 
-    const windowRequest = { operationId: 'create-window', title: '编码线程' };
+    const windowRequest = { operationId: 'create-window', title: '编码线程', presentation: 'window' };
     const backgroundRequest = { operationId: 'create-background', role: 'kite.review', presentation: 'background' };
     const window = await call(daemon.url, 'POST', operationPath(workspaceId, 'agent.start'), windowRequest);
     const background = await call(daemon.url, 'POST', operationPath(workspaceId, 'agent.start'), backgroundRequest);

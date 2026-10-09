@@ -23,6 +23,12 @@ import SwiftUI
 ///   所以可见区变矮时留白等 0.6 秒再缩，缩掉的在键盘后面。变高时留白在排版里当场跟着变，内容和可见区一起变长，不用动。
 /// - 留白要在排版里和新消息一次算出来（TranscriptStack）：量出来再补会晚一次排版，滑的那一刻底下还没有留白，滑不到位。
 /// - 带动画加进内容的话，紧接着的滚动整个不动；所以发送时不带动画地加，下一拍再滑。
+///
+/// macOS 上在会话窗口里加探针逐帧记位置，另外试出来：
+/// - 位置里钉着坐标时，带动画的底部对齐走几点就停，展开的部分全往下长；什么目标都没有时，展开收起都跟着动画贴着最底下。
+///   所以跟着最底下时不留坐标：滑完停在最底下就放开（release），补滚、夹正钉下的坐标到底了也放开。
+/// - 带动画变尺寸后的第一次回调里，内容尺寸是新的、偏移还是旧的，看着没到底或越了界；这时在回调里滚会打断对齐的动画，
+///   所以底部对齐、位置里没有坐标时回调不插手。
 @Observable
 final class TranscriptScroll {
     /// 绑给滚动视图。
@@ -114,15 +120,18 @@ final class TranscriptScroll {
         // 程序滚的这一阵子交给那一下滚动，不插手，不然会把滑到一半的一下子跳过去
         guard gliding == 0 else { return }
         if old.contentSize == new.contentSize && old.containerSize == new.containerSize && old.contentInsets == new.contentInsets {
-            // 只是滚了：翻上去就不跟了，翻回最底下又跟
-            following = new.atBottom
+            // 只是滚了：翻上去就不跟了，翻回最底下又跟。跟着时往最底下挪是底部对齐在跟着动画走，不算翻上去
+            following = new.atBottom || following && new.distanceToBottom < old.distanceToBottom
+        } else if anchor == .bottom && position.y == nil {
+            // 滚动视图自己按底部对齐，跟着那一次变化的动画走；这一下的偏移可能还是变化前的，不插手
         } else if max(new.scrollOffset, position.y ?? 0) > new.bottom + 1 {
             // 原生视图可能先夹正可见位置，绑定的旧目标却仍然越界；两者都要收回新末尾。
             position.scrollTo(y: new.bottom)
         } else if following && !blankShown && !new.atBottom {
-            // 留白刚被回复填满的那一下还按顶部对齐，多出来的一截补滚过去；之后按底部对齐，不会再差。
+            // 留白刚被回复填满的那一下还按顶部对齐，或者钉着的坐标让对齐不起作用：多出来的一截补滚过去
             position.scrollTo(y: new.bottom)
         }
+        if anchor == .bottom && new.atBottom && position.y != nil { release() }
     }
 
     /// 可见区变矮时，等它最后一次变完 0.6 秒再让留白跟上，那时已经变回去了就不缩。
@@ -144,12 +153,13 @@ final class TranscriptScroll {
         blankShown = shown
     }
 
-    /// 程序滚完一下，等它停稳再钉住。期间又有一下滚动的，等最后一下；人已经上手滚了就不钉，那会和手抢。
+    /// 程序滚完一下，等它停稳再钉住，停在最底下接着跟的放开。期间又有一下滚动的，等最后一下；人已经上手滚了就不钉，那会和手抢。
     private func settle() {
         Task {
             try? await Task.sleep(for: .seconds(1))
             gliding -= 1
-            if gliding == 0, !userScrolling { pin() }
+            guard gliding == 0, !userScrolling else { return }
+            if anchor == .bottom && geometry?.atBottom == true { release() } else { pin() }
         }
     }
 
@@ -157,6 +167,11 @@ final class TranscriptScroll {
     private func pin() {
         guard let geometry else { return }
         position.scrollTo(y: min(max(geometry.scrollOffset, 0), geometry.bottom))
+    }
+
+    /// 放开滚动位置里的目标，交给底部对齐。
+    private func release() {
+        position.isPositionedByUser = true
     }
 }
 

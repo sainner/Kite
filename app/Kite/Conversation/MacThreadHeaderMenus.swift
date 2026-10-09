@@ -8,7 +8,6 @@ struct MacThreadHeaderMenus: View {
     let modelEnabled: Bool
     let commands: [[ThreadHeaderCommand]]
     let onOpenModel: () -> Void
-    @Environment(\.paneOverflowActions) private var windowActions
     var body: some View {
         PaneHeaderButtonGroup {
             modelMenu
@@ -28,15 +27,6 @@ struct MacThreadHeaderMenus: View {
 
     private var moreMenu: some View {
         Menu {
-            if let windowActions {
-                Button("缩小窗口", systemImage: "minus", action: windowActions.minimize)
-                if let expand = windowActions.expand {
-                    Button("展开窗口", systemImage: "arrow.up.left.and.arrow.down.right", action: expand)
-                }
-                Button("关闭窗口", systemImage: "xmark", action: windowActions.close)
-                    .disabled(!windowActions.canClose)
-                Divider()
-            }
             ForEach(commands.indices, id: \.self) { index in
                 Section {
                     ForEach(commands[index]) { command in

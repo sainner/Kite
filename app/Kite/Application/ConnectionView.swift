@@ -54,7 +54,6 @@ struct SettingsContent: View {
                     case .projects:
                         if model.account.signedIn { AccountProjectsSection() }
                     }
-                    if let error = model.account.error { Text(error).foregroundStyle(Theme.danger) }
                     if let error = model.error { Text(error).foregroundStyle(Theme.danger) }
                 }
                 .formStyle(.grouped)

@@ -811,7 +811,7 @@ export class HarnessRunner implements ThreadRunner {
     this.toolDefinitions ??= structuredClone(configuration.tools);
     const saved = this.requests.get(requestId)!;
     const batch = new ToolBatch({
-      cwd: this.options.cwd, signal: turn.controller.signal, turnId: turn.id, tools,
+      cwd: this.options.cwd, signal: turn.controller.signal, turnId: turn.id, tools, blocked: prepared.blocked,
       started: (call) => this.record({ type: 'tool.started', ...ids, callId: call.id }),
       finished: (call, result) => this.record({ type: 'tool.finished', ...ids, callId: call.id, result }),
       output: (call, text, limit) => this.emit({ type: 'tool.output', ...ids, callId: call.id, text, limit }),

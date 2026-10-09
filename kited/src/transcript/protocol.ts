@@ -49,5 +49,18 @@ export type ThreadDisplayEvent =
   | { type: 'thread.idle' }
   | { type: 'thread.check'; result: CheckResult }
   | { type: 'thread.error'; message: string };
-export type DisplayEvent = DomainEvent | (ThreadDisplayEvent & { threadId: string });
+/**
+ * 代理活动摘要，供停靠栏这类概览使用；完整状态以线程流的 thread.state 为准。只有载入过显示投影的线程才有摘要。
+ * settledAt 是工作机实时看到的最近一回合收尾时间，客户端用它判断结果是否已看过，重启后不保留。
+ */
+export interface ThreadActivity {
+  phase: Phase;
+  waitingForResume: boolean;
+  outcome?: Outcome['kind'];
+  error?: true;
+  changedAt?: number;
+  settledAt?: number;
+}
+export type DisplayEvent = DomainEvent | (ThreadDisplayEvent & { threadId: string })
+  | { type: 'thread.activity'; workspaceId: string; threadId: string; activity: ThreadActivity };
 export type DisplayEnvelope = Stamped<DisplayEvent & { cursor: string }>;

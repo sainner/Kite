@@ -77,7 +77,7 @@ struct NewThreadStage: View {
     }
 
     private func loadRoles() async {
-        do { try await model.refreshRoles(in: area); roleError = nil }
+        do { try await model.ensureRoles(in: area); roleError = nil }
         catch is CancellationError { }
         catch { roleError = error.localizedDescription }
     }

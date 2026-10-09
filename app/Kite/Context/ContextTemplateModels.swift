@@ -65,6 +65,8 @@ nonisolated struct ContextTemplate: Decodable, Identifiable, Sendable {
 /// 角色点阵签名的设计：一行表达式、正负两种颜色（字母见 DotFigure.letters）和点的形状。
 nonisolated struct EmblemDesign: Codable, Equatable, Sendable {
     var expression: String
+    /// 停靠栏头像的算式：同一意象画在 9×9 格的圆形小画布上，见 AgentAvatar。
+    var avatar: String
     var positive: String
     var negative: String
     var form: String
@@ -73,14 +75,38 @@ nonisolated struct EmblemDesign: Codable, Equatable, Sendable {
     static let letterTitles = ["B": "主题色", "M": "晨风蓝", "L": "露水蓝", "Y": "阳光黄", "D": "深阳光黄"]
     /// 没有签名或签名还在生成时用的图案。
     static let fallback = EmblemDesign(expression: "sin(x/5 + t*0.6) * cos(y/4 - t*0.4) * 0.55 + 0.4*max(0, 1 - d/6)*sin(d - t*3)",
+                                       avatar: "sin(x*0.9+t*0.6)*cos(y*0.8-t*0.4)*0.75+0.35*(r<1.5)*sin(t*2)",
                                        positive: "B", negative: "L", form: "circle")
 
     /// 主题色按所在环境解析；表达式无效时为 nil。
-    func pattern(accent: DotColor) -> DotPattern? {
-        guard let expression = try? DotExpression(expression) else { return nil }
-        let letters = DotFigure.letters(accent: accent)
-        return DotPattern(expression: expression, positive: positive.first.flatMap { letters[$0] } ?? accent,
-                          negative: negative.first.flatMap { letters[$0] } ?? accent, form: DotForm(rawValue: form) ?? .circle)
+    func pattern(accent: DotColor) -> DotPattern? { pattern(expression, accent: accent) }
+
+    /// 头像的图案，颜色与点的形状同签名；头像算式无效时为 nil。
+    func avatarPattern(accent: DotColor) -> DotPattern? { pattern(avatar, accent: accent) }
+
+    /// 正值的颜色，不用解析算式。
+    func positiveColor(accent: DotColor) -> DotColor { color(positive, accent: accent) }
+
+    private func pattern(_ source: String, accent: DotColor) -> DotPattern? {
+        guard let expression = DotExpression.cached(source) else { return nil }
+        return DotPattern(expression: expression, positive: color(positive, accent: accent),
+                          negative: color(negative, accent: accent), form: DotForm(rawValue: form) ?? .circle)
+    }
+
+    private func color(_ letter: String, accent: DotColor) -> DotColor {
+        letter.first.flatMap { DotFigure.letters(accent: accent)[$0] } ?? accent
+    }
+}
+
+nonisolated extension EmblemDesign {
+    /// 加头像之前手改的签名没有头像算式，用默认头像；生成的会由 kited 判为过期后重新生成。
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        expression = try container.decode(String.self, forKey: .expression)
+        avatar = try container.decodeIfPresent(String.self, forKey: .avatar) ?? Self.fallback.avatar
+        positive = try container.decode(String.self, forKey: .positive)
+        negative = try container.decode(String.self, forKey: .negative)
+        form = try container.decode(String.self, forKey: .form)
     }
 }
 
@@ -123,6 +149,7 @@ struct CreateThreadRequest: Encodable {
     var model: AgentModelConfiguration? = nil
     var tools: [String]? = nil
     var maxRequestsPerTurn: Int? = nil
+    var windowId: String? = nil
 }
 
 extension AppModel {
@@ -167,7 +194,7 @@ extension AppModel {
     }
 
     /// 模板只能修改，各场景的模板由工作机提供。
-    func saveContextTemplate(_ definition: ContextDefinition, expectedRevision: String, connection: UUID) async throws -> ContextTemplate {
+    func saveContextTemplate(_ definition: ContextDefinition, expectedRevision: String, connection: UUID) async throws {
         guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请返回模板列表") }
         let client = target.client
         let result = try await client.request("/context-templates/\(definition.id.pathComponent)", method: "PUT",
@@ -175,6 +202,5 @@ extension AppModel {
         guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回模板列表") }
         target.templates?.templates.removeAll { $0.id == result.id }
         target.templates?.templates.append(result)
-        return result
     }
 }

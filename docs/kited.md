@@ -99,15 +99,15 @@ bun run harness --resume <会话id>
 
 ### 资源库与项目约束
 
-角色、后台场景的上下文模板、点阵签名与插件包随 Kite 账号保存，接口见 [托管账号与设备](托管账号与设备.md#资源库)。写入先到账号服务，成功后更新本机缓存，版本冲突返回 409；读取一律用缓存。App 读取角色、模板或插件列表时在后台拉取，`POST /library/refresh` 立即拉取，服务也定期拉取；拉取以账号版本为准，本机独有的内容随之上传。账号服务不可达时沿用缓存；工作机没加入账号时只用本机。
+角色、后台场景的上下文模板、点阵签名与插件包随 Kite 账号保存，接口见 [托管账号与设备](托管账号与设备.md#资源库)。写入先到账号服务，成功后更新本机缓存，版本冲突返回 409；读取一律用缓存。内置的角色与模板随 kited 版本，账号和缓存里只有自建的和改过的。加入账号后，kited 与账号服务保持一条事件流：连上时全量同步一遍，之后账号里有变化就再同步，断线后退避重连，重连时同样先同步。同步时角色与模板以账号为准，账号里没有的从缓存去掉；点阵签名与插件包账号里没有的由本机补传。账号服务不可达时沿用缓存；工作机没加入账号时只用本机。
 
 项目约束同样拉取后缓存，离线时沿用。它在创建代理、每次模型请求和每次工具调用前过滤工具，不改写实例配置；有效工具因此变化的代理收到配置通知。分层规则见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)。
 
 ### 角色点阵签名
 
-每个角色有一枚点阵签名，App 在新代理的空白内容区按它铺满动画。签名是 `{expression, positive, negative, form}`：一行算式，客户端每帧对每格求值，结果截到 −1～1，绝对值为点的大小、正负选 `positive` 或 `negative` 颜色（参考色板字母 `B M L Y D`），`form` 为点的终态形状。算式只解析求值、不执行代码，语法以 `kited/src/emblem-expression.ts` 为准，App 的 `DotExpression.swift` 与之保持一致。
+每个角色有一枚点阵签名，App 在新代理的空白内容区按它铺满动画。签名是 `{expression, avatar, positive, negative, form}`：`expression` 是一行算式，客户端每帧对每格求值，结果截到 −1～1，绝对值为点的大小、正负选 `positive` 或 `negative` 颜色（参考色板字母 `B M L Y D`），`form` 为点的终态形状。`avatar` 是同一意象给代理头像用的另一条算式，画在 9×9 格的圆形小画布上（x、y 为 −4～4），没有指针、打字与声音输入，颜色和形状与签名相同。算式只解析求值、不执行代码，语法以 `kited/src/emblem-expression.ts` 为准，App 的 `DotExpression.swift` 与之保持一致。变量 `v` 是声音的响度（0～1，语音输入或系统播放的声音），音源接入前恒为 0。
 
-角色保存后用轻任务按角色名称与提示词生成，生成规则是可编辑的「点阵签名」模板。签名只随提示词过期，只改工具、模型或预算不会重新生成。回复不可用时附上原因重试一次，仍失败记为 `failed`，客户端沿用默认图案。手改的签名不被自动生成替换，只有 `force` 重新生成会覆盖；生成期间发生的手改也不会被在途结果覆盖。角色列表中每项带 `emblem`、`emblemState`（`ready`、`stale`、`missing`、`generating`、`failed`）与失败时的 `emblemError`；`stale` 表示提示词已变、签名尚未更新。角色或签名状态变化时，目录事件流推送 `roles.changed`，客户端据此重新读取角色列表；后台场景模板变化推送 `context-templates.changed`。
+角色保存后用轻任务按角色名称与提示词生成，生成规则是可编辑的「点阵签名」模板。签名只随提示词过期，只改工具、模型或预算不会重新生成；生成的签名缺少头像算式时也视为过期。回复不可用时附上原因重试一次，仍失败记为 `failed`，客户端沿用默认图案。手改的签名不被自动生成替换，只有 `force` 重新生成会覆盖；生成期间发生的手改也不会被在途结果覆盖。角色列表中每项带 `emblem`、`emblemState`（`ready`、`stale`、`missing`、`generating`、`failed`）与失败时的 `emblemError`；`stale` 表示提示词已变或缺少头像算式、签名尚未更新。角色或签名状态变化时，目录事件流推送 `roles.changed`，客户端据此重新读取角色列表；后台场景模板变化推送 `context-templates.changed`。
 
 ### 启动服务
 
@@ -256,7 +256,6 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, role?}`，`role` 为 `{id, revision}`，准备过程看事件 |
 | GET | `/workspaces/:id` | 工作区上下文及 instances、threads、windows 的完整聚合 |
 | GET / POST | `/plugin-definitions` | 读取定义（含账号资源库里尚未装到本机的包）或登记自定义包；包格式见 Bun 插件契约 |
-| POST | `/library/refresh` | 立即从账号拉取资源库与项目约束并等待完成；App 修改项目约束后用它通知已连接的工作机 |
 | GET | `/operations` | 操作输入、输出、错误 schema，以及重试与取消规则 |
 | POST | `/workspaces/:id/operations/:operation` | 调用 agent.start / list / send / resume / stop 或 files.list / read / state / select；修改操作必须带 operationId |
 | GET | `/instances/:id/agent-capabilities` | 按厂商分组的模型与思考档位、这个代理可开的工具（`tools`）与角色必需的工具（`required`），以及配置生效边界；不发模型请求 |
@@ -275,7 +274,7 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | GET / PUT | `/instances/:id/operation-grants` | 读取实例操作授权及 revision；以 expectedRevision 和 grants 更新 |
 | POST | `/workspaces/:id/windows` | 创建实例及默认窗口，或打开已有实例视图；请求使用稳定 id |
 | DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口；最后窗口按插件生命周期回收实例或保留 |
-| POST | `/workspaces/:id/threads` | 在已有工作区创建代理并打开窗口 `{prompt, role?, model?, tools?, maxRequestsPerTurn?}`；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具 |
+| POST | `/workspaces/:id/threads` | 在已有工作区创建代理并打开窗口 `{prompt, role?, model?, tools?, maxRequestsPerTurn?, windowId?}`；`windowId` 是客户端生成的 UUID，用作新窗口的 ID，已用过返回 409，省略时由 kited 生成；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具 |
 | GET | `/threads/:id` | 线程和上下文，附带 `runner`、`busy` |
 | GET | `/threads/:id/state` | 只读执行与恢复状态，不启动模型 |
 | GET | `/threads/:id/history` | v1 显示历史、pending、state 和 cursor，只读 |

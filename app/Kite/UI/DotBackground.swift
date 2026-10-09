@@ -33,7 +33,7 @@ extension View {
     }
 
     /// 每个 App 窗口持有唯一的点阵舞台，背景是它的取景框。焦点在窗口区、有窗口画着静息的点时，背景让出静息的点，
-    /// 图案、波和轨迹照常画；焦点回到侧栏时背景接回来。
+    /// 波和轨迹照常画；焦点回到侧栏时背景接回来。图案总由所在窗口画，背景不画。
     func appDotBackground() -> some View {
         modifier(AppDotBackground())
     }
@@ -82,7 +82,7 @@ private struct AppDotBackground: ViewModifier {
             .background {
                 ZStack {
                     Theme.background
-                    DotCanvas(drawsRest: !occupied)
+                    DotCanvas(drawsRest: !occupied, drawsPatterns: false)
                 }
                 .ignoresSafeArea()
             }

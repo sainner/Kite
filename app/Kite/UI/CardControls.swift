@@ -6,11 +6,7 @@ enum CardMetrics {
     static let inset = Metrics.padding * 2
     /// 弹窗正文和底部按钮的左右留白，比卡片窄一些。
     static let sheetInset: CGFloat = 16
-    #if os(macOS)
-    static let fieldHeight: CGFloat = 36
-    #else
-    static let fieldHeight: CGFloat = 48
-    #endif
+    static var fieldHeight: CGFloat { InputMode.current.fieldHeight }
 }
 
 /// 填充框的形状。
@@ -122,9 +118,7 @@ private struct CardToggleStyle: ToggleStyle {
         HStack(spacing: 12) {
             configuration.label.frame(maxWidth: .infinity, alignment: .leading)
             Toggle("", isOn: configuration.$isOn).labelsHidden().toggleStyle(.switch)
-                #if os(macOS)
-                .controlSize(.small)
-                #endif
+                .controlSize(InputMode.current.toggleControlSize)
         }
     }
 }
@@ -368,11 +362,7 @@ struct CardActions: View {
                 main(state).glassEffectID("primary", in: glass)
             }
             .font(Theme.body.weight(.semibold))
-            #if os(macOS)
-            .controlSize(.extraLarge)
-            #else
-            .controlSize(.large)
-            #endif
+            .controlSize(InputMode.current.actionControlSize)
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
         .animation(.snappy, value: state)
@@ -497,7 +487,7 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
     private var footerBottom: CGFloat { bottomSafeArea }
     #endif
 
-    /// Mac 首次按理想尺寸打开，后续用三段的实际高度更新同一个 sheet；放不下时正文滚动。
+    /// Mac 用三段的实际高度作为理想尺寸打开并更新同一个 sheet；放不下时正文滚动。
     /// iPhone 上按量出的高度给 detent，键盘升起时正文滚动。
     var body: some View {
         #if os(macOS)
@@ -505,17 +495,12 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
             if let size {
                 scrolling.frame(width: size.width, height: size.height)
             } else {
-                Group {
-                    if bodyHeight == 0 {
-                        // 首次尚未量出正文，用内容本身给出理想高度，避免从空滚动区撑开。
-                        VStack(spacing: 0) { header; page; footerBar }
-                    } else {
-                        // 保持同一个滚动容器，长内容缩回后仍能读到新的完整高度。
-                        scrolling.frame(idealHeight: headerHeight + bodyHeight + footerHeight)
-                    }
-                }
-                .frame(width: 480)
-                .background(CardSheetWindowSize(height: headerHeight + bodyHeight + footerHeight))
+                // 始终是同一个滚动容器，长内容缩回后仍能读到新的完整高度。三段在窗口显示前的首次排版里就已量出，
+                // 不必先换一套不滚动的排法：那时 sheet 窗口还是 0×0，换下来的那份按零尺寸居中，淡出时停在左上角。
+                scrolling
+                    .frame(width: 480)
+                    .frame(idealHeight: headerHeight + bodyHeight + footerHeight)
+                    .background(CardSheetWindowSize(height: headerHeight + bodyHeight + footerHeight))
             }
         }
         .presentationBackground(Theme.card)

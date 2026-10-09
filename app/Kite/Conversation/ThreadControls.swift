@@ -119,10 +119,7 @@ struct ThreadControls: View {
 
     /// 草稿还没有实例，思考强度改的是本机选择，随第一条消息一起提交。
     private var choice: DraftAgentChoice? { instance == nil ? thread.draftChoice : nil }
-    /// 草稿没改过模型时用角色的默认模型。
-    private var agentModel: AgentModelConfiguration? {
-        instance?.config?.agent?.model ?? choice.flatMap { $0.model ?? model.newThreadRole(for: thread, in: area)?.role.model }
-    }
+    private var agentModel: AgentModelConfiguration? { model.agentModel(for: thread, instance: instance, in: area) }
     private var reasoning: String { agentModel?.reasoning ?? "medium" }
     private var availableEfforts: [Effort] {
         let levels = thread.agentCapabilities?.model(agentModel?.model ?? "")?.reasoning ?? []

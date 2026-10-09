@@ -282,7 +282,8 @@ final class WindowLayout {
     }
 
     /// 手势层达到起拖距离后调用，布局层从第一次调用起就接管窗口排布。
-    func drag(_ pane: Pane, to location: CGPoint, in bounds: CGRect) {
+    /// dockIndex 按停靠栏的实际分组给出插入位置；不给时按格子顺序算。
+    func drag(_ pane: Pane, to location: CGPoint, in bounds: CGRect, dockIndex: (([Pane], CGPoint) -> Int)? = nil) {
         guard !isFixed else { return }
         guard panes.contains(pane), drag == nil || drag?.pane == pane else { return }
         pointer = location
@@ -293,7 +294,7 @@ final class WindowLayout {
         // 指针在卡片之间的缝里时保持原来的落点，出了内容区才取消
         let remainingDock = dockedPanes(outside: fitted).filter { $0 != pane }
         if regions.dock.contains(location) {
-            next.spot = .dock(regions.dockIndex(at: location, count: remainingDock.count))
+            next.spot = .dock(dockIndex?(remainingDock, location) ?? regions.dockIndex(at: location, count: remainingDock.count))
         } else if regions.canvas.contains(location), let rest = next.rest {
             if let edge = regions.canvasEdge(at: location) {
                 let minimum = rest.inserting(.placeholder, on: edge).minimumSize

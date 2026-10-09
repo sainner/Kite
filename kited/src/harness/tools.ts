@@ -6,6 +6,7 @@ export interface BatchOptions {
   signal: AbortSignal;
   turnId?: string;
   tools: ReadonlyMap<string, Tool>;
+  blocked?(name: string): string | undefined;
   started(call: ToolCall): void;
   output?(call: ToolCall, text: string, limit: number): void;
   finished(call: ToolCall, result: ToolResult): void;
@@ -51,6 +52,11 @@ export class ToolBatch {
       tool.validate(call.arguments);
     } catch (error) {
       o.finished(call, { status: 'error', output: String(error) });
+      return;
+    }
+    const blocked = o.blocked?.(call.name);
+    if (blocked !== undefined) {
+      o.finished(call, { status: 'not_executed', output: blocked });
       return;
     }
     o.started(call);

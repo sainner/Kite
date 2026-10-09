@@ -328,11 +328,23 @@ final class AppModel {
                 if connection.roles != nil { Task { try? await self.refreshRoles(of: connection, fresh: true) } }
                 return
             }
+            if event.type == "thread.activity" {
+                // 摘要直接带着新值，不重新读取目录。
+                if let workspaceId = event.workspaceId, let threadId = event.threadId, let activity = event.activity,
+                   let cursor = event.cursor.flatMap(EventCursor.init),
+                   let area = self.workspaces.first(where: { $0.id == workspaceId && $0.remote?.machine.id == connection.id }) {
+                    area.updateActivity(threadId, activity, cursor: cursor)
+                }
+                return
+            }
             guard ["catalog.snapshot", "checkout.changed", "workspace.changed", "thread.changed"].contains(event.type) else { return }
             guard let cursor = event.cursor.flatMap(EventCursor.init) else { throw KitedError(message: "工作区事件数据无效") }
             if event.type == "catalog.snapshot" {
                 guard event.version == 1, let remote = event.workspaces else { throw KitedError(message: "工作区快照无效") }
                 try self.apply(remote, from: client, cursor: cursor, generation: generation)
+                // 断线期间收不到角色与模板的变化事件，重连后读过的重新读一遍
+                if connection.roles != nil { Task { try? await self.refreshRoles(of: connection, fresh: true) } }
+                if connection.templates != nil { Task { try? await self.refreshTemplates(of: connection, fresh: true) } }
                 TimingTrace.mark("工作机 \(connection.machine.name) 目录快照已应用")
             } else if connection.catalog.needsRefresh(cursor) { try await self.refresh(client) }
         }
@@ -355,10 +367,10 @@ final class AppModel {
             let areas = remote.filter { $0.workspace.status != .archived }.reversed().map { value in
                 if let area = previous[value.id] {
                     area.definitions = connection.definitions
-                    area.update(value, client: client, connection: generation)
+                    area.update(value, client: client, connection: generation, cursor: cursor)
                     return area
                 }
-                return WorkArea(remote: value, client: client, definitions: connection.definitions, connection: generation)
+                return WorkArea(remote: value, client: client, definitions: connection.definitions, connection: generation, cursor: cursor)
             }
             replaceWorkspaces(areas, on: id)
             connection.hasLiveCatalog = true
@@ -416,17 +428,22 @@ final class AppModel {
         draftWorkspace.draftThread.role = nil
     }
 
-    func startThread(in area: WorkArea, prompt: String) async throws {
+    func startThread(in area: WorkArea, message: Message, window: String) async throws {
         let client = try activeClient(in: area)
         guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
         let draft = area.draftThread
         let choice = draft.draftChoice
         let thread = try await client.request("/workspaces/\(area.id)/threads", method: "POST",
-            body: CreateThreadRequest(prompt: prompt, role: newThreadRole(for: draft, in: area)?.selection, model: choice?.model,
-                                      tools: choice?.tools, maxRequestsPerTurn: choice?.maxRequestsPerTurn), as: RemoteThread.self)
+            body: CreateThreadRequest(prompt: message.typed, role: newThreadRole(for: draft, in: area)?.selection, model: choice?.model,
+                                      tools: choice?.tools, maxRequestsPerTurn: choice?.maxRequestsPerTurn, windowId: window), as: RemoteThread.self)
         try await refresh(client)
         guard accepts(client) else { throw KitedError(message: "工作机已切换") }
-        area.finishDraft(into: WindowTarget(instanceId: thread.instanceId, viewId: "conversation"))
+        // 新窗口接着显示草稿里的消息和模型目录，不等历史与能力读回来，免得先闪空白页和模型原名。
+        if let created = area.threads.first(where: { $0.id == thread.instanceId }) {
+            created.showAccepted(message)
+            if created.agentCapabilities == nil { created.agentCapabilities = draft.agentCapabilities }
+        }
+        area.finishDraft(into: window)
     }
 
     /// 归档保留会话与数据，工作机停止执行并关闭它的全部窗口。

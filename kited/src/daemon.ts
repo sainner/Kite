@@ -38,15 +38,13 @@ export function startDaemon(opts: DaemonOptions): Daemon {
   const account = new AccountClient((): AccountLink | undefined => publisher.link());
   const kite = new Kite(store, opts.home, new Bus(), opts, account);
   // 迁移远程由用户在 App 中操作，工作机定期对照登记表；离线的工作机上线后在下一轮赶上。
-  // 资源库与项目约束同样定期拉取，各端改动在 App 打开页面或请工作机刷新时更早到达。
-  const sync = () => {
-    kite.syncProjects().catch((error: unknown) => console.error(`[项目同步] ${(error as Error).message}`));
-    void kite.library.refresh(true);
-  };
-  const publisher: CatalogPublisher = new CatalogPublisher(join(opts.home, 'catalog-publisher.json'), kite, sync);
-  const syncTimer = setInterval(sync, PROJECT_SYNC_MS);
+  const sync = () => kite.syncProjects().catch((error: unknown) => console.error(`[项目同步] ${(error as Error).message}`));
+  // 资源库与项目约束由账号服务推送，加入账号或换了凭据时重连事件流。
+  const publisher: CatalogPublisher = new CatalogPublisher(join(opts.home, 'catalog-publisher.json'), kite, () => { void sync(); kite.library.connect(); });
+  const syncTimer = setInterval(() => void sync(), PROJECT_SYNC_MS);
   syncTimer.unref();
-  sync();
+  void sync();
+  kite.library.connect();
   // kite-net 核验组网身份；随机内部凭据阻止绕过代理伪造同账号请求。
   const proxyToken = crypto.randomUUID();
   const remote = serve(kite, { hostname: '127.0.0.1', port: 0, remote: true, proxyToken });

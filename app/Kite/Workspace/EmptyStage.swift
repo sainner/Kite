@@ -130,11 +130,7 @@ struct EmptyStage: View {
                 }
             }
             .font(Theme.body.weight(.semibold))
-            #if os(macOS)
-            .controlSize(.extraLarge)
-            #else
-            .controlSize(.large)
-            #endif
+            .controlSize(InputMode.current.actionControlSize)
         }
     }
 

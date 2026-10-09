@@ -7,6 +7,7 @@ struct ThreadHeaderActions: View {
     @Environment(AppModel.self) private var model
     @Environment(\.paneInstance) private var instance
     @Environment(\.toast) private var toast
+    @Environment(\.paneOverflowActions) private var windowActions
     @State private var savingModel = false
     @State private var loadingModels = false
     @State private var modelError: String?
@@ -17,24 +18,24 @@ struct ThreadHeaderActions: View {
     /// 草稿还没有实例，模型改的是本机选择，随第一条消息一起提交。
     private var choice: DraftAgentChoice? { instance == nil ? thread.draftChoice : nil }
     private var role: AgentRole? { model.newThreadRole(for: thread, in: area) }
-    /// 草稿没改过模型时用角色的默认模型。
-    private var draftModel: AgentModelConfiguration? { choice.flatMap { $0.model ?? role?.role.model } }
-    private var modelName: String? { instance?.config?.agent?.model.model ?? draftModel?.model }
+    private var agentModel: AgentModelConfiguration? { model.agentModel(for: thread, instance: instance, in: area) }
+    private var modelName: String? { agentModel?.model }
 
     private var modelTier: String {
         guard let modelName else { return "模型" }
         return availableModels.first { modelName == $0.id }?.title ?? modelName
     }
+    /// 重新读取期间沿用上次的能力显示模型名，但不凭它放开修改。
     private var canChangeModel: Bool {
         if choice != nil { return model.isConnected(area) && thread.agentCapabilities != nil }
-        return instance != nil && model.isConnected(area) && !savingModel
+        return instance != nil && model.isConnected(area) && !savingModel && !loadingModels
             && thread.agentCapabilities?.canEdit(thread.state) == true
     }
     private var canOpenModels: Bool { (instance != nil || choice != nil) && model.isConnected(area) }
     /// 换到另一厂商的模型就是换后端，运行中、有排队消息或等待恢复确认时不能换。
     private var canChangeVendor: Bool {
         if choice != nil { return canOpenModels }
-        return canOpenModels && !savingModel && !thread.showStop && thread.state?.capabilities.switchRuntime == true
+        return canOpenModels && !savingModel && !loadingModels && !thread.showStop && thread.state?.capabilities.switchRuntime == true
     }
 
     var body: some View {
@@ -55,7 +56,6 @@ struct ThreadHeaderActions: View {
             .task(id: "\(model.revision(for: area))-\(model.isConnected(area))-\(instance?.config?.agent?.runtime ?? "draft:\(role != nil)")") {
                 if choice != nil { await loadDraftOptions(); return }
                 guard model.isConnected(area), let instance else { return }
-                thread.agentCapabilities = nil
                 loadingModels = true
                 defer { if !Task.isCancelled { loadingModels = false } }
                 do {
@@ -95,7 +95,7 @@ struct ThreadHeaderActions: View {
         #endif
     }
 
-    /// 两端菜单使用相同的可用状态和业务动作。
+    /// 两端菜单使用相同的可用状态和业务动作；卡片太窄时窗口操作也收在这里，排最前。
     private var moreCommands: [[ThreadHeaderCommand]] {
         var general: [ThreadHeaderCommand] = []
         if let instance {
@@ -122,7 +122,7 @@ struct ThreadHeaderActions: View {
         if thread.state?.capabilities.resume == true {
             execution.append(.init(title: "继续执行", symbol: "play", enabled: thread.canResume) { thread.control("resume") })
         }
-        return [general, execution].filter { !$0.isEmpty }
+        return [windowActions?.commands ?? [], general, execution].filter { !$0.isEmpty }
     }
 
     /// 草稿按工作区读取模型目录与各角色可开的工具，再按所选角色给出能力。
@@ -144,7 +144,7 @@ struct ThreadHeaderActions: View {
     private func selectModel(_ name: String) {
         let levels = thread.agentCapabilities?.model(name)?.reasoning ?? []
         if choice != nil {
-            guard canChangeModel, availableModels.contains(where: { $0.id == name }), var selected = draftModel else { return }
+            guard canChangeModel, availableModels.contains(where: { $0.id == name }), var selected = agentModel else { return }
             selected.selectModel(name, supportedReasoning: levels)
             thread.draftChoice?.model = selected
             showingModels = false

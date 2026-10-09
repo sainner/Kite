@@ -22,11 +22,12 @@ struct ModelAccountPane: View {
         let connection = model.accountWorker
         let account = connection?.modelAccounts?.accounts.first { $0.id == subscriptionID }
         let stale = account.map { connection?.showsStaleData($0) ?? true } ?? false
-        // 订阅窗口的档位是标题右边的标签，副行是账号邮箱，状态异常写在正文顶部；还没有身份时副行退回状态。
-        let subtitle = account.map { $0.identity ?? (stale ? "上次数据" : $0.statusTitle) }
+        // 订阅窗口的档位是标题右边的标签，副行是账号邮箱，账号状态写在正文顶部；还没有身份时副行退回状态。
+        let subtitle = account.map { $0.identity ?? $0.statusTitle }
         // API 窗口的副行说明密钥存放位置。
         return PaneWindow(header: PaneHeader(title: title, subtitle: subscriptionID == nil ? "API Key 保存在资源库的凭据中" : subtitle,
-                                             badge: account?.planTitle), usesDots: subscriptionID != nil) {
+                                             badge: account?.planTitle), usesDots: subscriptionID != nil,
+                          notice: notice(connection, account: account)) {
             ScrollView {
                 VStack(alignment: .leading, spacing: DotMetrics.module * 2) {
                     if let connection {
@@ -34,9 +35,6 @@ struct ModelAccountPane: View {
                     } else {
                         Label("暂无已连接的工作机", systemImage: "desktopcomputer")
                             .font(Theme.secondary).foregroundStyle(.secondary)
-                    }
-                    if let error = model.account.error {
-                        Text(error).font(Theme.caption).foregroundStyle(Theme.danger)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -108,15 +106,23 @@ struct ModelAccountPane: View {
         } else {
             pendingNotice(connection)
         }
+    }
+
+    /// 窗口自己的提示：这次更新失败，或工作机沿用了上次的数据。工作机离线由窗口外层的连接提示表达。
+    private func notice(_ connection: WorkerConnection?, account: ModelAccount?) -> PaneNotice? {
+        guard let connection else { return nil }
         if let error = connection.modelAccountsError {
-            Text("本次更新失败：\(error)").font(Theme.caption).foregroundStyle(Theme.warning)
-                .fixedSize(horizontal: false, vertical: true)
+            return .failure(connection.modelAccounts == nil ? "本次更新失败：\(error)" : "本次更新失败，显示的是上次数据：\(error)")
         }
+        if account?.showsPreviousData == true {
+            return PaneNotice(text: "暂时查询不到，显示的是上次数据", symbol: "clock.arrow.circlepath", tint: .secondary)
+        }
+        return nil
     }
 
     /// 额度只在点刷新或会话带回时更新，打开页面不查询。
     private func pendingNotice(_ connection: WorkerConnection) -> some View {
-        Text(connection.connected ? "尚未取得账号数据，代理运行后自动更新，也可在侧栏的账号行刷新" : "工作机离线，连接后可查看账号与额度")
+        Text(connection.connected ? "尚未取得账号数据，代理运行后自动更新，也可在侧栏的账号行刷新" : "连接工作机后可查看账号与额度")
             .font(Theme.secondary).foregroundStyle(.secondary)
     }
 }
@@ -167,18 +173,19 @@ private struct ModelAccountRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// 订阅窗口的标题副行只放身份和档位；未登录、需要重新授权、沿用旧数据这些状态写在额度上方。
+    /// 订阅窗口的标题副行只放身份和档位；未登录、需要重新授权、暂不可查询这些账号状态写在额度上方，
+    /// 沿用旧数据由窗口信息区提示。
     @ViewBuilder
     private var notice: some View {
         let unconfigured = account.status == "unconfigured"
-        let warns = stale || account.status == "reauthentication" || account.status == "unavailable"
+        let warns = account.status == "reauthentication" || account.status == "unavailable"
         let detail = unconfigured ? "这台工作机尚未登录此订阅账号。" : account.message
         if unconfigured || warns {
             HStack(alignment: .firstTextBaseline, spacing: DotMetrics.module / 2) {
                 Image(systemName: unconfigured ? "person.crop.circle.badge.questionmark" : "exclamationmark.triangle.fill")
                     .foregroundStyle(warns ? Theme.warning : .secondary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(stale ? "显示的是上次数据" : account.statusTitle).font(Theme.secondary.weight(.medium))
+                    Text(account.statusTitle).font(Theme.secondary.weight(.medium))
                     if let detail {
                         Text(detail).font(Theme.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -266,7 +273,7 @@ private struct ApiAccountRow: View {
     let account: ModelAccount
     let stale: Bool
 
-    private var warns: Bool { stale || account.status == "reauthentication" || account.status == "unavailable" }
+    private var warns: Bool { account.status == "reauthentication" || account.status == "unavailable" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DotMetrics.module) {
@@ -319,10 +326,10 @@ private struct ApiAccountRow: View {
     /// 状态用一个小圆点加文字：可用为主题色，需要处理为警示色，只确认了配置为灰色。
     private var status: some View {
         let hasData = account.cost != nil || account.balances != nil
-        let color: Color = warns ? Theme.warning : account.status == "ready" && hasData ? .accentColor : .secondary
+        let color: Color = warns ? Theme.warning : !stale && account.status == "ready" && hasData ? .accentColor : .secondary
         return HStack(spacing: 5) {
             Circle().fill(color).frame(width: 6, height: 6)
-            Text(stale ? "上次数据" : account.statusTitle)
+            Text(account.statusTitle)
         }
         .font(Theme.caption)
         .foregroundStyle(warns ? Theme.warning : .secondary)

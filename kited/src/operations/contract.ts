@@ -21,10 +21,10 @@ export const operationContracts = {
     input: target.extend({ tool: id, arguments: z.record(z.string(), z.unknown()) }).strict(), output: z.unknown(),
   },
   'agent.start': {
-    title: '创建 agent', description: '在当前工作区按角色创建 agent 实例。role 是角色 ID，省略时用默认角色 kite.work（工作）；内置的还有 kite.review（只读审查）。省略 prompt 只创建空会话；共享工作区已有线程运行时不能启动另一线程。',
+    title: '创建 agent', description: '在当前工作区按角色创建 agent 实例。role 是角色 ID，省略时用默认角色 kite.work（工作）；内置的还有 kite.review（只读审查）。省略 prompt 只创建空会话；共享工作区已有线程运行时不能启动另一线程。默认不打开窗口，由用户从创建它的 agent 处查看；只在用户要求在界面上看着它时传 presentation: window。',
     tool: 'agent_start', effect: 'create', retry: 'receipt',
     input: z.object({ operationId: id, role: id.optional(), title: text.optional(), prompt: text.optional(),
-      presentation: z.enum(['window', 'inline', 'background']).default('window') }).strict(),
+      presentation: z.enum(['window', 'inline', 'background']).default('background') }).strict(),
     output: z.object({ instanceId: id, windowId: id.optional() }).strict(),
   },
   'agent.list': {

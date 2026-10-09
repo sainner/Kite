@@ -61,11 +61,12 @@ struct CompactLayout: View {
                     // 底部是用户栏，与窗口控制区底边对齐
                     SidebarLogoBar { EmptyView() }
                         .padding(.top, logoBarTop(screen: screen, insets: insets))
-                        .padding(.bottom, Metrics.gap)
+                        .padding(.bottom, Metrics.sidebarRuleGap)
                     if model.sidebarSection != .settings {
                         SidebarNavigation()
-                            .padding(.top, 8)
-                            .padding(.bottom, 24)
+                            .padding(.bottom, Metrics.sidebarRuleGap)
+                        Rectangle().fill(Theme.rule).frame(height: 1)
+                            .padding(.bottom, Metrics.sidebarRuleGap)
                     }
                     SidebarListHeader()
                     ScrollView(.vertical, showsIndicators: false) {
@@ -125,12 +126,12 @@ struct CompactLayout: View {
         .appDotBackground()
     }
 
-    /// 其余窗口折叠在底部；点击后展开它，原来的窗口回到这一栏，始终只展开一个。
+    /// 窗口都排在底部，当前窗口垫一块选中底；点别的窗口换过去，点当前窗口收起底栏。
     @ViewBuilder
     private var tabBar: some View {
         if let group = model.paneGroup {
             if let area = group.workspace {
-                tabs(in: group)
+                CompactDockBar(open: $open)
                     .modifier(InstanceSettingsPresentation())
                     .environment(area)
             } else {
@@ -139,37 +140,25 @@ struct CompactLayout: View {
         }
     }
 
+    /// 设备账号的固定窗口：只有窗口，没有实例与停靠分组。
     private func tabs(in group: PaneGroup) -> some View {
         let workspace = group.layout
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Metrics.gap) {
-                ForEach(workspace.panes.filter { $0 != workspace.focused }, id: \.self) { pane in
+                ForEach(workspace.panes, id: \.self) { pane in
                     Button {
                         workspace.focus(pane)
                         open = nil
                     } label: {
                         PaneBubble(appearance: group.appearance(of: pane))
+                            .background { if pane == workspace.focused { DockSelection() } }
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("展开\(group.appearance(of: pane).name)窗口")
-                    .contextMenu {
-                        if let area = group.workspace {
-                            if let target = area.windows.first(where: { $0.id == pane.id })?.target,
-                               let instance = area.instances.first(where: { $0.id == target.instanceId }) {
-                                InstanceActions(instance: instance)
-                            }
-                            Button("关闭窗口") { model.closeWindow(pane, in: area) }
-                        }
-                    }
-                }
-                if let area = group.workspace {
-                    AddWindowButton()
-                    ForEach(area.windowlessInstances) { instance in
-                        InstanceDockButton(instance: instance, opened: { open = nil })
-                    }
                 }
             }
         }
+        .scrollClipDisabled()
     }
 
     /// 标志栏与侧边栏拉开后窗口标题栏的按钮同高：窗口顶边让出一个边距，内容按高度缩小，标题栏在补足的安全区下面。

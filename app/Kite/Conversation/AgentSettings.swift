@@ -41,14 +41,8 @@ struct AgentSettings: View {
                     CardSection("可用工具", note: "可开的工具由创建时的角色决定，角色必需的不能关闭；项目约束禁用的工具暂不可用，约束放宽后恢复。实例授权仍然有效；勾选工具不会增加文件、网络或其他实例的访问权限。") {
                         AgentToolToggles(capabilities: capabilities, tools: Binding(get: { draft?.tools ?? [] }, set: { draft?.tools = $0 }))
                     }
-                    CardField(label: "每回合最多模型请求数", focused: editingLimit, note: "达到上限后停止，保留已经产生的结果。") {
-                        TextField("", value: Binding(get: { draft!.maxRequestsPerTurn }, set: { draft?.maxRequestsPerTurn = $0 }), format: .number)
-                            .focused($editingLimit)
-                            #if os(iOS)
-                            .keyboardType(.numberPad)
-                            #endif
-                            .cardInput { editingLimit = true }
-                    }
+                    TurnBudgetField(value: Binding(get: { draft!.maxRequestsPerTurn }, set: { draft?.maxRequestsPerTurn = $0 }),
+                                    focus: $editingLimit, field: true)
                 }
             }
             .disabled(working || !available)
@@ -152,14 +146,7 @@ struct DraftAgentSettings: View {
                 CardSection("可用工具", note: "可开的工具由角色决定，角色必需的不能关闭，项目约束禁用的暂不可用。") {
                     AgentToolToggles(capabilities: capabilities, tools: $tools)
                 }
-                CardField(label: "每回合最多模型请求数", focused: editingLimit, note: "达到上限后停止，保留已经产生的结果。") {
-                    TextField("", value: $budget, format: .number)
-                        .focused($editingLimit)
-                        #if os(iOS)
-                        .keyboardType(.numberPad)
-                        #endif
-                        .cardInput { editingLimit = true }
-                }
+                TurnBudgetField(value: $budget, focus: $editingLimit, field: true)
             } else {
                 ProgressView()
             }
@@ -183,6 +170,39 @@ struct DraftAgentSettings: View {
         thread.draftChoice?.tools = selected == capabilities.tools ? nil : selected
         thread.draftChoice?.maxRequestsPerTurn = budget == roleBudget ? nil : budget
         dismiss()
+    }
+}
+
+/// 每回合最多模型请求数；field 是这个输入框在所在页面焦点里的取值。
+struct TurnBudgetField<Focus: Hashable>: View {
+    @Binding var value: Int
+    let focus: FocusState<Focus>.Binding
+    let field: Focus
+
+    var body: some View {
+        CardField(label: "每回合最多模型请求数", focused: focus.wrappedValue == field, note: "达到上限后停止，保留已经产生的结果。") {
+            TextField("", value: $value, format: .number)
+                .focused(focus, equals: field)
+                #if os(iOS)
+                .keyboardType(.numberPad)
+                #endif
+                .cardInput { focus.wrappedValue = field }
+        }
+    }
+}
+
+/// 工具规则的方向，角色与项目约束共用：只决定以后新增的工具默认是否可用，见 ToolFilter.setMode。
+struct ToolModePicker: View {
+    let mode: Binding<String>
+
+    var body: some View {
+        LabeledContent("以后新增的工具") {
+            Picker("以后新增的工具", selection: mode) {
+                Text("默认可用").tag("deny")
+                Text("默认不可用").tag("allow")
+            }
+            .labelsHidden().pickerStyle(.segmented).fixedSize()
+        }
     }
 }
 

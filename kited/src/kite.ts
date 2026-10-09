@@ -39,7 +39,7 @@ import type { OperationInput } from './operations/contract.ts';
 import { WorkspaceFiles, fileSelection } from './workspace/files.ts';
 import { TranscriptFeed } from './transcript/feed.ts';
 import { TranscriptHistory } from './transcript/history.ts';
-import type { DisplayState, History } from './transcript/protocol.ts';
+import type { DisplayState, History, ThreadActivity } from './transcript/protocol.ts';
 import { LightTasks } from './light-tasks.ts';
 import { ThreadTitles, titleTemplate } from './thread-titles.ts';
 import { emblemTemplate, TemplateEmblems } from './template-emblems.ts';
@@ -98,7 +98,7 @@ export class Kite {
     this.modelAccounts = new ModelAccounts(home, (modelAccounts) => bus.emit({ type: 'model-accounts.changed', modelAccounts }),
       (home) => readModelAccounts(home, { usage: store, apiKeys: async () => this.account.linked ? this.account.apiKeys() : [] }));
     this.catalog = new PluginCatalog(join(home, 'plugins'));
-    this.roles = new Roles(store, agentTools);
+    this.roles = new Roles(store);
     this.contextTemplates = new ContextTemplates(store, [
       titleTemplate, compactTemplate, emblemTemplate,
       agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
@@ -284,7 +284,13 @@ export class Kite {
     if (!c) throw new KiteError(`没有这个检出：${id}`, 404);
     return c;
   }
-  workspaces(projectId?: string): WorkspaceModel[] { return this.store.workspaceModels(projectId); }
+  /** 客户端读取的工作区列表；载入过的代理附活动摘要。 */
+  workspaces(projectId?: string): Array<WorkspaceModel & { threads: Array<WorkspaceModel['threads'][number] & { activity?: ThreadActivity }> }> {
+    return this.store.workspaceModels(projectId).map((model) => ({ ...model, threads: model.threads.map((thread) => {
+      const activity = this.transcripts.activity(thread.instanceId);
+      return activity ? { ...thread, activity } : thread;
+    }) }));
+  }
   workspace(id: string): WorkspaceModel {
     const model = this.store.workspaceModel(id);
     if (!model) throw new KiteError(`没有这个工作区：${id}`, 404);
@@ -382,16 +388,18 @@ export class Kite {
     return this.workspace(id);
   }
 
-  /** 新会话的草稿只在 App 本地；第一条消息连同草稿里选好的参数一次创建实例、会话和窗口。 */
-  createThread(workspaceId: string, prompt: string, choice: AgentChoice = {}): Promise<ThreadView> {
+  /** 新会话的草稿只在 App 本地；第一条消息连同草稿里选好的参数一次创建实例、会话和窗口。
+   * windowId 由 App 生成，窗口经事件先到时 App 也认得出是草稿换成的那个。 */
+  createThread(workspaceId: string, prompt: string, choice: AgentChoice = {}, windowId?: string): Promise<ThreadView> {
     return this.control(workspaceId, async () => {
       const { workspace } = this.workspace(workspaceId);
       if (workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
       if (!prompt.trim()) throw new KiteError('第一条消息不能为空');
+      if (windowId && this.store.window(windowId)) throw new KiteError('窗口 ID 已使用', 409);
       await this.assertIdle(workspaceId);
       await this.snapshot(workspace, [], '线程开始');
       const t = this.newThread(workspaceId, prompt, workspace.kind, choice);
-      this.store.addAgent(t, this.instances.newWindow(t));
+      this.store.addAgent(t, this.instances.newWindow(t, windowId));
       this.threadChanged(t);
       await this.sendInput(this.context(t.id), { id: randomUUID(), text: prompt, source: 'human' });
       return this.thread(t.id);
@@ -620,7 +628,8 @@ export class Kite {
     const runner = await this.runner(thread);
     check();
     await runner.send(input);
-    if (thread.title === '新代理' && this.store.threadTitle(thread.id)?.mode === 'auto') {
+    // 还没有标题记录（没起过名、没手动改过）时，用第一条消息作标题
+    if (this.store.threadTitle(thread.id)?.revision === 'initial') {
       this.store.renameInstance(thread.id, titleOf(input.text));
       this.threadChanged(thread);
     }

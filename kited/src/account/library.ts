@@ -19,6 +19,50 @@ interface Row { kind: LibraryKind; id: string; revision: string; updatedAt: numb
 
 export class LibraryConflict extends Error {}
 
+/**
+ * 在线工作机的资源库事件流。账号的资源库或项目约束变了就往它的各条流里发一条 changed，工作机收到后全量同步。
+ * 连上先发一条 ready，工作机据此做重连后的同步；之后每 25 秒一次心跳，工作机靠它发现断线。
+ */
+export class LibraryEvents {
+  private listeners = new Set<{ userId: string; send(text: string): void; close(): void }>();
+  private encoder = new TextEncoder();
+
+  notify(userId: string): void {
+    for (const listener of this.listeners) if (listener.userId === userId) listener.send('data: changed\n\n');
+  }
+
+  open(userId: string, request: Request): Response {
+    const { listeners, encoder } = this;
+    let heartbeat: Timer | undefined;
+    let listener: { userId: string; send(text: string): void; close(): void } | undefined;
+    const stop = () => {
+      clearInterval(heartbeat);
+      if (listener) listeners.delete(listener);
+    };
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const current = listener = {
+          userId,
+          // 连接已断时写入会抛错，这时只把这条流摘掉。
+          send: (text: string) => { try { controller.enqueue(encoder.encode(text)); } catch { stop(); } },
+          close: () => { stop(); try { controller.close(); } catch {} },
+        };
+        listeners.add(current);
+        current.send('data: ready\n\n');
+        heartbeat = setInterval(() => current.send(': \n\n'), 25_000);
+        request.signal.addEventListener('abort', current.close);
+      },
+      cancel: stop,
+    });
+    return new Response(body, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store', 'x-accel-buffering': 'no' } });
+  }
+
+  /** 停机前断开全部事件流，否则服务会一直等这些长连接结束。 */
+  close(): void {
+    for (const listener of [...this.listeners]) listener.close();
+  }
+}
+
 /** 版本是内容的摘要，与工作机按同一份 JSON 算出的版本一致。 */
 const revisionOf = (text: string) => createHash('sha256').update(text).digest('hex');
 

@@ -228,6 +228,9 @@ export class Store implements UsageStore {
     const row = this.db.query('select role from roles where id = ?').get(id) as { role: string } | null;
     return row ? JSON.parse(row.role) : undefined;
   }
+  deleteRole(id: string): void {
+    this.db.query('delete from roles where id = ?').run(id);
+  }
   saveRole(role: Role): void {
     this.db.query('insert into roles values (?, ?) on conflict(id) do update set role = excluded.role').run(role.id, JSON.stringify(role));
   }

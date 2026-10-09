@@ -53,7 +53,6 @@ struct CredentialsLibrary: View {
                         Button("登录 Kite 账号") { model.openSettings(.account) }
                     }
                 }
-                if let error = model.account.error { Text(error).foregroundStyle(Theme.danger) }
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)

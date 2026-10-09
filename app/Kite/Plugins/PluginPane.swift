@@ -9,8 +9,6 @@ struct PluginPane: View {
     let state: JSON?
     let connection: UUID
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(AppModel.self) private var model
-    @Environment(WorkArea.self) private var area
     @State private var loadState = LoadState.loading
     @State private var generation = UUID()
 
@@ -24,7 +22,7 @@ struct PluginPane: View {
     }
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: title, subtitle: "插件")) {
+        PaneWindow(header: PaneHeader(title: title, subtitle: "插件"), notice: loadState.error.map(PaneNotice.failure)) {
             PluginWebView(target: target, client: client, theme: colorScheme == .dark ? "dark" : "light",
                           state: state, connection: connection, report: { [loadState = $loadState] message in
                               loadState.wrappedValue = message.map(LoadState.failed) ?? .ready
@@ -35,10 +33,7 @@ struct PluginPane: View {
                 }
         } controls: { _ in
             HStack(spacing: Metrics.paneButtonGap) {
-                Text(loadState.error ?? (model.isConnected(area) ? "" : "连接已断开，正在重连"))
-                    .font(Theme.secondary).foregroundStyle(loadState.error == nil ? Color.secondary : Theme.danger)
-                    .lineLimit(2)
-                Spacer(minLength: Metrics.paneButtonGap)
+                Spacer(minLength: 0)
                 Button {
                     loadState = .loading
                     generation = UUID()

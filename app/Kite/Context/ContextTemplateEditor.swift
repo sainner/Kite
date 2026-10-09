@@ -63,7 +63,7 @@ struct ContextTemplateEditor: View {
     /// 保存成功后弹窗直接关掉。
     private func save() {
         $phase.run {
-            _ = try await model.saveContextTemplate(draft, expectedRevision: template.revision, connection: connection)
+            try await model.saveContextTemplate(draft, expectedRevision: template.revision, connection: connection)
             dismiss()
         }
     }

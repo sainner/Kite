@@ -124,16 +124,13 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       const execution = instanceExecutionGrants(current);
       const { agent, selection, permitted, plugins } = selectTools(current, operations, host.toolConstraint());
       const declared = [...tools, ...operations.tools].filter((tool) => declaredTools.has(tool.name));
-      // 请求发出后项目约束收紧时，这次请求里的调用也在执行前拦下。
-      const guarded = (tool: Tool): Tool => Object.assign(Object.create(Object.getPrototypeOf(tool) as object) as Tool, tool, {
-        execute: (args: Parameters<Tool['execute']>[0], context: Parameters<Tool['execute']>[1]) => constraintAllows(host.toolConstraint(), tool.name)
-          ? tool.execute(args, context) : Promise.resolve({ status: 'not_executed' as const, output: `项目约束已禁用 ${tool.name}` }),
-      });
       return {
         model: options.model?.(current) ?? new ChatGPTModel({ ...agent.model, threadId: current.nativeId,
           credentials: () => readSubscriptionCredentials(join(home, 'auth', 'chatgpt', 'auth.json')),
           observeLimits: host.chatgptLimits }),
-        tools: [...declared.filter((tool) => permitted(tool.name)).map(guarded), ...plugins],
+        tools: [...declared.filter((tool) => permitted(tool.name)), ...plugins],
+        // 请求发出后项目约束收紧时，这次请求里的调用也在执行前拦下。
+        blocked: (name) => declaredTools.has(name) && !constraintAllows(host.toolConstraint(), name) ? `项目约束已禁用 ${name}` : undefined,
         toolDefinitions: [...declared, ...selection.plugins].map(({ name, description, parameters }) => ({ name, description, parameters })),
         instructions: projectContext(current.workspace.cwd, agent.context),
         contextUpdateTemplate: host.contextUpdateTemplate(),

@@ -1,14 +1,20 @@
 import SwiftUI
 
+/// 窗口按所属工作机取得连接提示：工作区窗口属于工作区的工作机，账号窗口属于正在查看的工作机。
 struct PaneBody: View {
     let group: PaneGroup
     let pane: Pane
+    @Environment(AppModel.self) private var model
 
     var body: some View {
         Group {
             switch group {
-            case .workspace(let area): WorkspacePaneBody(pane: pane).environment(area)
-            case .accounts: ModelAccountPane(pane: pane)
+            case .workspace(let area):
+                WorkspacePaneBody(pane: pane).environment(area)
+                    .environment(\.paneConnectionNotice, model.connectionNotice(model.connection(for: area)))
+            case .accounts:
+                ModelAccountPane(pane: pane)
+                    .environment(\.paneConnectionNotice, model.connectionNotice(model.accountWorker))
             }
         }
         .environment(\.headerPane, pane)

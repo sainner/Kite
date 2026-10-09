@@ -7,7 +7,6 @@ import type { Kite } from './kite.ts';
 import type { OpenWindowRequest, PluginInstance, Thread, Workspace, WorkspaceWindow } from './model.ts';
 import { roleOperationGrants } from './operations/contract.ts';
 import { defaultRoleId, roleAgent, toolLimits, type RoleChoice } from './roles.ts';
-import { agentTools } from './plugins/definitions.ts';
 import { instanceAgent } from './agents/definition.ts';
 
 /** 新代理在本机草稿里选好的角色与初始参数，创建时一次写入实例配置；省略 revision 时用角色的最新版本。 */
@@ -30,8 +29,8 @@ export class InstanceLifecycle {
   newInstance(workspaceId: string, definitionId: string, title: string, kind: Workspace['kind'], choice: AgentChoice = {}, projectId?: string): PluginInstance {
     const definition = this.kite.catalog.get(definitionId);
     const project = definition.agent && (projectId ? this.kite.store.projectConstraints(projectId) : this.kite.store.workspaceConstraints(workspaceId))?.tools;
-    const bound = definition.agent && roleAgent(agentTools, this.kite.roles.get(choice.role?.id ?? defaultRoleId, choice.role?.revision), kind, choice, project);
-    const grants = bound ? roleOperationGrants(definitionId, [], [], toolLimits(agentTools, bound.role.tools).allowed) : [];
+    const bound = definition.agent && roleAgent(this.kite.roles.get(choice.role?.id ?? defaultRoleId, choice.role?.revision), kind, choice, project);
+    const grants = bound ? roleOperationGrants(definitionId, [], [], toolLimits(bound.role.tools).allowed) : [];
     return { id: randomUUID(), workspaceId, definitionId, title,
       config: bound ? { ...bound, grants, execution: definition.execution } : definition.runtime === 'bun' ? { packageRevision: definition.revision, grants: [] } : {}, state: {},
       presentation: 'window', status: 'open', createdAt: Date.now() };

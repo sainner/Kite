@@ -15,10 +15,16 @@ afterEach(async () => {
   kited = undefined;
 });
 
-const generated: EmblemDesign = { expression: 'sin(x*0.4+t)*cos(y*0.4-t*0.7)', positive: 'M', negative: 'Y', form: 'circle' };
-const regenerated: EmblemDesign = { expression: 'sin(r*0.5-t*1.3)*0.8', positive: 'B', negative: 'D', form: 'diamond' };
-const handmade: EmblemDesign = { expression: 'cos(x*0.3-t)*sin(y*0.5+t*0.6)', positive: 'L', negative: 'B', form: 'star' };
-// 算式本身可解析，但图案是空白，过不了 checkEmblemExpression。
+const generated: EmblemDesign = {
+  expression: 'sin(x*0.4+t)*cos(y*0.4-t*0.7)', avatar: 'sin(r*1.4-t*1.2)*0.9', positive: 'M', negative: 'Y', form: 'circle',
+};
+const regenerated: EmblemDesign = {
+  expression: 'sin(r*0.5-t*1.3)*0.8', avatar: 'cos(x*0.8+t)*sin(y*0.8-t*0.9)', positive: 'B', negative: 'D', form: 'diamond',
+};
+const handmade: EmblemDesign = {
+  expression: 'cos(x*0.3-t)*sin(y*0.5+t*0.6)', avatar: 'sin(a*3+t)*0.8', positive: 'L', negative: 'B', form: 'star',
+};
+// 算式本身可解析，但图案是空白，过不了 checkEmblemExpression；头像沿用 generated 的合法算式，只让签名算式不可用。
 const blank: EmblemDesign = { ...generated, expression: '0' };
 
 function role(id: string, text: string, maxRequestsPerTurn = 50): Role {

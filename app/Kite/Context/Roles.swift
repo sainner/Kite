@@ -42,6 +42,9 @@ nonisolated struct RoleCatalog: Decodable, Sendable {
     let variables: [ContextScene.Variable]
     let vendors: [AgentCapabilities.Vendor]
     let models: [AgentCapabilities.Model]
+
+    /// 默认角色；工作机没有它时取第一个。
+    var defaultRole: AgentRole? { roles.first { $0.id == "kite.work" } ?? roles.first }
 }
 
 private struct RoleSave: Encodable {
@@ -65,6 +68,11 @@ extension AppModel {
     func refreshRoles(in area: WorkArea? = nil) async throws {
         guard let connection = connection(for: area), connection.connected else { throw KitedError(message: "所属工作机未连接") }
         try await refreshRoles(of: connection)
+    }
+
+    /// 目录没读过才读；读过的由 roles.changed 事件和重连后的重读保持最新。
+    func ensureRoles(in area: WorkArea? = nil) async throws {
+        if connection(for: area)?.roles == nil { try await refreshRoles(in: area) }
     }
 
     func refreshRoles(of connection: WorkerConnection, fresh: Bool = false) async throws {
@@ -108,9 +116,15 @@ extension AppModel {
 
     /// 新代理选用的角色，取工作机目录里的最新版本；没选过时用默认角色。
     func newThreadRole(for thread: WorkThread, in area: WorkArea) -> AgentRole? {
-        let roles = roles(in: area)?.roles ?? []
+        let catalog = roles(in: area)
         let id = selectedRoleID(for: thread, in: area)
-        return roles.first { $0.id == id } ?? roles.first { $0.id == "kite.work" } ?? roles.first
+        return catalog?.roles.first { $0.id == id } ?? catalog?.defaultRole
+    }
+
+    /// 代理当前的模型：已有代理取实例配置；草稿取本机选择，没改过时用角色的默认模型。
+    func agentModel(for thread: WorkThread, instance: RemotePluginInstance?, in area: WorkArea) -> AgentModelConfiguration? {
+        if let instance { return instance.config?.agent?.model }
+        return thread.draftChoice.flatMap { $0.model ?? newThreadRole(for: thread, in: area)?.role.model }
     }
 
     /// 草稿取本机选好的角色，已有代理取实例配置里记下的角色。

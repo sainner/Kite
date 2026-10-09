@@ -17,19 +17,33 @@ final class WorkArea: Identifiable {
     private(set) var draftOpen = false
     static let draftWindowID = "draft-window"
     let layout: WindowLayout
-    var creatingThread = false
+    /// 草稿发出后将换成的窗口，ID 由本机生成。结果返回前它先不进排布，由 finishDraft 放到草稿的位置，
+    /// 不先收进停靠栏再展开；请求失败时再照常收进停靠栏。其他新窗口不受影响。
+    var creatingWindow: String? {
+        didSet { if creatingWindow == nil { layout.reconcile(windows.map { Pane($0.id) }) } }
+    }
     var changingWindows = false
     var pendingWindowRequest: OpenWindowRequest?
     var pendingInstanceRequest: CreatePluginInstance?
     var windowError: String?
     var settingsInstance: RemotePluginInstance?
     var archiveRequest: RemotePluginInstance?
+    /// 代理的活动摘要，按实例 ID。目录快照与单条推送谁新用谁，见 updateActivity。
+    private(set) var activities: [String: ThreadActivity] = [:]
+    @ObservationIgnored private var activityCursors: [String: EventCursor] = [:]
+    /// 本机看过的回合收尾时间，按实例 ID；收尾时间比它新、窗口又不在本机台面上的，停靠栏标「完成待查看」。不跨设备同步。
+    private(set) var seenTurns: [String: Double] = [:]
+    @ObservationIgnored private var visibleInstances: Set<String> = []
+    /// 停靠栏里展开的文件夹或家族格，外层在前；只在本机，不保存。
+    var dockExpansion: [String] = []
+    /// 指针停在停靠栏哪一格上，Mac 据此在左侧浮出名字与状态。
+    var dockHover: DockHover?
     var tint: Color { Palette.breeze }
     var title: String { remote?.workspace.name ?? "新工作区" }
     var header: PaneHeader { PaneHeader(title: title, subtitle: "工作区") }
     var isDraft: Bool { remote == nil }
 
-    init(remote: RemoteWorkspace? = nil, client: KitedClient? = nil, definitions: [RemotePluginDefinition] = [], connection: UUID = UUID()) {
+    init(remote: RemoteWorkspace? = nil, client: KitedClient? = nil, definitions: [RemotePluginDefinition] = [], connection: UUID = UUID(), cursor: EventCursor? = nil) {
         id = remote?.id ?? "draft-workspace"
         pluginConnection = connection
         self.remote = remote
@@ -47,11 +61,15 @@ final class WorkArea: Identifiable {
             windows = [draft]
             layout = WindowLayout(panes: [Pane(draft.id)])
         }
-        if let remote, let client { update(remote, client: client, connection: connection) }
+        if let remote {
+            seenTurns = UserDefaults.standard.dictionary(forKey: seenKey(remote)) as? [String: Double] ?? [:]
+            if let client { update(remote, client: client, connection: connection, cursor: cursor) }
+        }
     }
 
-    func update(_ remote: RemoteWorkspace, client: KitedClient, connection: UUID) {
+    func update(_ remote: RemoteWorkspace, client: KitedClient, connection: UUID, cursor: EventCursor? = nil) {
         self.remote = remote
+        updateActivities(remote.threads, cursor: cursor)
         pluginClient = client
         pluginConnection = connection
         let previous = Dictionary(uniqueKeysWithValues: threads.map { ($0.id, $0) })
@@ -70,7 +88,7 @@ final class WorkArea: Identifiable {
             self.settingsInstance = nil
         }
         windows = remote.windows.filter { $0.state == .open } + (draftOpen ? [Self.draftWindow(workspace: id, thread: draftThread)] : [])
-        layout.reconcile(windows.map { Pane($0.id) })
+        layout.reconcile(windows.map { Pane($0.id) }.filter { $0.id != creatingWindow || layout.panes.contains($0) })
         draftThread.connected = remote.workspace.status == .open
         updateFiles(client: client)
     }
@@ -99,16 +117,14 @@ final class WorkArea: Identifiable {
         definitions.first { $0.id == instance.definitionId }
     }
 
-    var windowlessInstances: [RemotePluginInstance] {
-        let shown = Set(windows.map { $0.target.instanceId })
-        return instances.filter { $0.status == .open && !shown.contains($0.id) }
-    }
-
+    /// 停靠栏要放下添加入口、每一格和两组之间的分隔；无窗口的代理都收在文件夹里，只占一格。
     var minimumSize: CGSize {
         let content = layout.minimumSize
-        let entries = layout.docked.count + windowlessInstances.count + 1
+        let dock = dockModel(docked: layout.docked, onStage: [])
+        let cells = 1 + dock.agents.count + dock.tools.count
+        let divider = dock.agents.isEmpty || dock.tools.isEmpty ? 0 : DockGeometry.dividerExtra
         return CGSize(width: content.width, height: max(content.height,
-            2 * Metrics.padding + CGFloat(entries) * (Metrics.dragBubble + Metrics.gap) - Metrics.gap))
+            2 * Metrics.padding + CGFloat(cells) * (Metrics.dragBubble + Metrics.gap) - Metrics.gap + divider))
     }
 
     func view(in pane: Pane) -> RemotePluginDefinition.PluginView? {
@@ -129,6 +145,57 @@ final class WorkArea: Identifiable {
         return .init(name: "窗口", icon: "rectangle", tint: Palette.stone)
     }
 
+    /// 快照里的摘要只在比已收到的推送新时采用；工作机重启后游标换了一轮，以快照为准。
+    private func updateActivities(_ threads: [RemoteThread], cursor: EventCursor?) {
+        var next: [String: ThreadActivity] = [:]
+        var cursors: [String: EventCursor] = [:]
+        for thread in threads {
+            let id = thread.instanceId
+            if let known = activityCursors[id], cursor.map({ known.covers($0) && known != $0 }) ?? true {
+                next[id] = activities[id]
+                cursors[id] = known
+            } else {
+                next[id] = thread.activity
+                if let cursor { cursors[id] = cursor }
+            }
+        }
+        if next != activities { activities = next }
+        activityCursors = cursors
+        markSeen()
+    }
+
+    func updateActivity(_ id: String, _ activity: ThreadActivity, cursor: EventCursor) {
+        if let known = activityCursors[id], known.covers(cursor) { return }
+        activityCursors[id] = cursor
+        if activities[id] != activity { activities[id] = activity }
+        markSeen()
+    }
+
+    /// 本机台面上的实例：宽屏是排布里显示的窗口，紧凑布局是当前窗口。
+    func noteVisible(_ ids: Set<String>) {
+        visibleInstances = ids
+        markSeen()
+    }
+
+    /// 回合收尾时窗口在台面上，或之后打开了窗口，都算看过。
+    func unseen(_ id: String) -> Bool {
+        guard let settled = activities[id]?.settledAt, !visibleInstances.contains(id) else { return false }
+        return settled > seenTurns[id] ?? 0
+    }
+
+    private func markSeen() {
+        guard let remote else { return }
+        var next = seenTurns.filter { id, _ in instances.contains { $0.id == id && $0.status == .open } }
+        for id in visibleInstances {
+            if let settled = activities[id]?.settledAt, settled > next[id] ?? 0 { next[id] = settled }
+        }
+        guard next != seenTurns else { return }
+        seenTurns = next
+        UserDefaults.standard.set(next, forKey: seenKey(remote))
+    }
+
+    private func seenKey(_ remote: RemoteWorkspace) -> String { "KiteSeenTurns.\(remote.machine.id).\(remote.id)" }
+
     func activateWindow(for target: WindowTarget) {
         if let window = windows.first(where: { $0.target == target }) { layout.activate(Pane(window.id)) }
     }
@@ -142,8 +209,12 @@ final class WorkArea: Identifiable {
     func openDraft() {
         guard !isDraft else { return }
         if !draftOpen {
+            draftThread.draft = ""
+            draftThread.role = nil
             draftThread.draftChoice = DraftAgentChoice()
             draftThread.agentCapabilities = nil
+            draftThread.agentOptions = nil
+            draftThread.error = nil
             draftOpen = true
             windows.append(Self.draftWindow(workspace: id, thread: draftThread))
             layout.reconcile(windows.map { Pane($0.id) })
@@ -157,22 +228,17 @@ final class WorkArea: Identifiable {
     }
 
     /// 草稿发出后由新建的真实窗口接替原来的位置和焦点。
-    func finishDraft(into target: WindowTarget) {
-        guard let window = windows.first(where: { $0.target == target }) else { return }
+    func finishDraft(into id: String) {
+        guard windows.contains(where: { $0.id == id }) else { return }
         let draft = Pane(Self.draftWindowID)
-        if layout.panes.contains(draft) { layout.replace(draft, with: Pane(window.id)) }
-        else { layout.activate(Pane(window.id)) }
+        if layout.panes.contains(draft) { layout.replace(draft, with: Pane(id)) }
+        else { layout.activate(Pane(id)) }
         layout.reconcile(dropDraft().map { Pane($0.id) })
     }
 
+    /// 草稿的内容留到下次 openDraft 再清：窗口淡出时仍显示原来的模型与输入，不闪成「模型」和空输入框。
     private func dropDraft() -> [RemoteWorkspaceWindow] {
         draftOpen = false
-        draftThread.draft = ""
-        draftThread.role = nil
-        draftThread.draftChoice = nil
-        draftThread.agentCapabilities = nil
-        draftThread.agentOptions = nil
-        draftThread.error = nil
         windows.removeAll { $0.id == Self.draftWindowID }
         return windows
     }
@@ -183,7 +249,8 @@ struct WindowAppearance {
     let icon: String
     let tint: Color
     var isAgent = false
-    var minimizedCornerRadius: CGFloat { isAgent ? Metrics.dragBubble / 2 : Metrics.dockRadius }
+    /// 最小化后的圆角：代理是圆，其余是圆角矩形。
+    func minimizedCornerRadius(width: CGFloat = Metrics.dragBubble) -> CGFloat { isAgent ? width / 2 : Metrics.dockRadius }
 
     static func renderer(_ id: String) -> Self {
         switch id {

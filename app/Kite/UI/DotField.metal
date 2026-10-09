@@ -12,10 +12,20 @@ constant int profileCount = 120;
 constant int cellStride = 8;
 // 波每道 6 个数：起点区域 x、y、宽、高，波前已走的距离，终态序号。
 constant int waveStride = 6;
+// 图案每块 28 个数，布局见 ResolvedPattern.appendShaderData。
+constant int patternStride = 28;
+// 同 PatternMotion.morphSpread 与 DotMetrics.morphDuration。
+constant float morphSpread = 0.6;
+constant float morphDuration = 0.5;
 
 static float smoothUnit(float x) {
     float t = clamp(x, 0.0, 1.0);
     return t * t * (3.0 - 2.0 * t);
+}
+
+static float easeOutCubic(float x) {
+    float t = 1.0 - clamp(x, 0.0, 1.0);
+    return 1.0 - t * t * t;
 }
 
 // 与 DotField.slot 相同的散列；格表和效果色都按它取位。
@@ -64,21 +74,61 @@ static float4 mixColor(float4 a, float4 b, float t) {
     return fromOklab(la + (oklab(b) - la) * clamp(t, 0.0, 1.0));
 }
 
+// 一格上各块图案叠好的样子，同 ResolvedPattern.dot：后面的图案盖住前面的。每格的取值由 CPU 整批算好，按行排在 values 里。
+// 颜色在确定这像素要画之后才混，这里只记下混向哪个颜色、混几成（amount 为 0 表示没有图案，是静息的点）。
+struct PatternDot {
+    float shape;
+    int form;
+    float4 target;
+    float amount;
+};
+
+static PatternDot patternDot(int column, int row, device const float *patterns, int patternFloats, device const float *values) {
+    PatternDot result = { 0.0, 0, float4(0.0), 0.0 };
+    for (int p = 0; p + patternStride <= patternFloats; p += patternStride) {
+        device const float *h = patterns + p;
+        int c0 = int(h[0]), c1 = int(h[1]), r0 = int(h[2]), r1 = int(h[3]);
+        if (column < c0 || column > c1 || row < r0 || row > r1) continue;
+        float value = values[int(h[4]) + (row - r0) * (c1 - c0 + 1) + (column - c0)];
+        float shape = abs(value);
+        if (shape <= 1.0 / 512.0) continue;
+        // 形变时沿对角线逐格换过去，还没换过一半的格子用旧图案的颜色与终态
+        bool earlier = false;
+        if (h[9] > 0.5) {
+            float delay = h[7] > 0.0 ? float(column - int(h[5]) + row - int(h[6])) / h[7] * morphSpread : 0.0;
+            earlier = easeOutCubic((h[8] - delay) / morphDuration) < 0.5;
+        }
+        int pick = (earlier ? 20 : 12) + (value >= 0.0 ? 0 : 4);
+        result.shape = shape;
+        result.form = int(h[earlier ? 11 : 10]);
+        result.target = float4(h[pick], h[pick + 1], h[pick + 2], h[pick + 3]);
+        result.amount = min(1.0, shape * 1.6);
+    }
+    return result;
+}
+
 // 窗口点阵的一帧，颜色都是不预乘的 sRGB。frame 是 (画布原点 x, y, 画布到窗口的缩放, 一像素合多少窗口点)；
-// cells 是图形与轨迹覆盖到的格子（CPU 已按 DotField.dot 算好），按散列开放寻址；
-// 其余格子只有经过的波和静息的点，在这里按 DotWave.shape 算。
+// cells 是图形与轨迹覆盖到的格子（CPU 已按 DotField.dot 连同底下的图案算好），按散列开放寻址；
+// 其余格子先查 patterns 与 values 里的图案（ResolvedPattern.dot），再按 DotWave.shape 取大叠上经过的波，没有就是静息的点。
+// hidden 是被遮掉的范围（窗口坐标，每块 minX、minY、maxX、maxY），那里不用算。
 [[ stitchable ]] half4 dotField(float2 position, float4 frame, float4 rest, float drawsRest,
                                 device const float *cells, int cellFloats,
                                 device const float *waves, int waveFloats,
                                 float4 wave, float waveOpacity,
                                 device const float *palette, int paletteFloats,
-                                device const float *profiles, int profileFloats) {
+                                device const float *profiles, int profileFloats,
+                                device const float *patterns, int patternFloats,
+                                device const float *values, int valueFloats,
+                                device const float *hidden, int hiddenFloats) {
     float2 point = frame.xy + position * frame.z;
+    for (int i = 0; i + 4 <= hiddenFloats; i += 4) {
+        if (point.x >= hidden[i] && point.y >= hidden[i + 1] && point.x < hidden[i + 2] && point.y < hidden[i + 3]) return half4(0.0h);
+    }
     int column = int(floor(point.x / dotPitch)), row = int(floor(point.y / dotPitch));
     float2 offset = point - (float2(column, row) + 0.5) * dotPitch;
+    // 终态轮廓都在 [-1, 1] 的方框里，任一方向离格心超过半个格宽（加一像素的抗锯齿）一定是缝。
+    if (any(abs(offset) > dotHalf + frame.w)) return half4(0.0h);
     float distance = length(offset);
-    // 终态轮廓都在 [-1, 1] 的方框里，离格心超过半格的 √2 倍一定是缝。
-    if (distance > dotHalf * 1.42 + frame.w) return half4(0.0h);
 
     int form = 0;
     float shape = 0.0;
@@ -98,8 +148,15 @@ static float4 mixColor(float4 a, float4 b, float t) {
         }
     }
 
+    PatternDot pattern = { 0.0, 0, float4(0.0), 0.0 };
+    float waveAmount = 0.0;
     if (!found) {
+        pattern = patternDot(column, row, patterns, patternFloats, values);
+        shape = pattern.shape;
+        form = pattern.form;
         // wave：(半宽, 走到多远消失, 从几成处变弱, 波前正中的 shape)
+        float waveShape = 0.0;
+        int waveForm = 0;
         float2 squareMin = float2(column, row) * dotPitch, squareMax = squareMin + dotPitch;
         for (int i = 0; i + waveStride <= waveFloats; i += waveStride) {
             float2 originMin = float2(waves[i], waves[i + 1]);
@@ -112,10 +169,16 @@ static float4 mixColor(float4 a, float4 b, float t) {
             float fadeFrom = wave.y * wave.z;
             float fade = 1.0 - smoothUnit((front - fadeFrom) / max(wave.y - fadeFrom, 1.0));
             float value = (1.0 - smoothUnit(x)) * fade * wave.w;
-            if (value > shape) {
-                shape = value;
-                form = int(waves[i + 5]);
+            if (value > waveShape) {
+                waveShape = value;
+                waveForm = int(waves[i + 5]);
             }
+        }
+        // 波按取大叠在图案上（DotBlend.lighten）：只长出比图案大的那段，颜色只在超出的那段混向波的颜色。
+        if (waveShape > shape) {
+            waveAmount = (waveShape - shape) / max(1.0 - shape, 1e-6);
+            shape = waveShape;
+            form = waveForm;
         }
         if (shape <= 1.0 / 512.0 && drawsRest <= 0.0) return half4(0.0h);
     }
@@ -134,11 +197,12 @@ static float4 mixColor(float4 a, float4 b, float t) {
     float coverage = clamp((radius - distance) / frame.w + 0.5, 0.0, 1.0);
     if (coverage <= 0.0) return half4(0.0h);
 
-    if (!found && shape > 0.0) {
+    if (!found && pattern.amount > 0.0) color = mixColor(rest, pattern.target, pattern.amount);
+    if (!found && waveAmount > 0.0) {
         uint colors = uint(max(paletteFloats / 4, 1));
         uint pick = ((uint(column) * 73856093u) ^ (uint(row) * 19349663u)) % colors * 4;
         float4 target = float4(palette[pick], palette[pick + 1], palette[pick + 2], palette[pick + 3] * waveOpacity);
-        color = mixColor(color, target, shape);
+        color = mixColor(color, target, waveAmount);
     }
     return half4(half3(color.rgb * color.a), half(color.a)) * half(coverage);
 }

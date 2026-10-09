@@ -19,6 +19,12 @@ nonisolated enum DotMetrics {
         CGRect(x: CGFloat(column) * pitch, y: CGFloat(row) * pitch, width: pitch, height: pitch)
     }
 
+    /// 整格落在一块区域（窗口坐标）里的格子。
+    static func cells(within rect: CGRect) -> (columns: Range<Int>, rows: Range<Int>) {
+        let column = Int((rect.minX / pitch).rounded(.up)), row = Int((rect.minY / pitch).rounded(.up))
+        return (column..<max(column, Int((rect.maxX / pitch).rounded(.down))), row..<max(row, Int((rect.maxY / pitch).rounded(.down))))
+    }
+
     /// 一格与一块区域之间的距离（点）；重叠即 0。
     static func distance(between square: CGRect, and rect: CGRect) -> CGFloat {
         let dx = max(rect.minX - square.maxX, square.minX - rect.maxX, 0)
@@ -274,5 +280,18 @@ nonisolated struct DotColor: Hashable, Codable, Sendable {
         }
 
         var magnitudeSquared: Double { lightness * lightness + a * a + b * b + alpha * alpha }
+    }
+}
+
+extension DotForm {
+    /// 不经着色器、直接用 Canvas 画的一格终态轮廓，停靠栏头像这类小图用；radius 是半格。
+    func path(center: CGPoint, radius: CGFloat) -> Path {
+        guard let outline else {
+            return Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius))
+        }
+        var path = Path()
+        path.addLines(outline.map { CGPoint(x: center.x + $0.x * radius, y: center.y + $0.y * radius) })
+        path.closeSubpath()
+        return path
     }
 }

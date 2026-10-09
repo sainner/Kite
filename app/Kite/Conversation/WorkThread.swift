@@ -32,6 +32,8 @@ final class WorkThread: Identifiable {
     private var received: Set<String> = []
     private var pending: [RemoteInput] = []
     private var outbox: [Message] = []
+    /// 见 showAccepted。这条消息的 id 由工作机生成、本地对不上，所以不进 outbox，历史一到整段由历史接替。
+    private var accepted: Message?
     private(set) var failed: Set<String> = []
     private var sending: Set<String> = []
     private var returned: Set<String> = []
@@ -49,30 +51,35 @@ final class WorkThread: Identifiable {
     var canCompact: Bool { !isDraft && connected && state?.capabilities.compact == true }
     var canRegenerateTitle: Bool { !isDraft && connected && state?.status == "open" && !regeneratingTitle }
     var statusPhase: String { stopping ? "stopping" : state?.phase ?? "idle" }
+    /// 会话自身的错误：本地操作失败，或工作机报回的错误（含恢复阻塞与上一轮失败的说明）。
+    /// 作为窗口信息区的提示盖住圆环，圆环的说明里不再重复。
+    var problem: String? { error ?? state?.error ?? (state?.status == "failed" ? "工作区准备失败" : nil) }
     var statusLabel: String {
-        if let error { return error }
         if isDraft && state == nil { return "空闲" }
         guard connected else { return "正在连接" }
         if stopping { return "正在停止" }
-        if let recovery = state?.recovery { return recovery.message }
         if state?.compacting == true { return "正在压缩上下文" }
-        if let error = state?.error { return error }
         switch state?.status {
         case "preparing": return "正在准备工作区"
-        case "failed": return "工作区准备失败"
         case "archived": return "已归档"
         default: break
         }
-        switch state?.phase {
-        case "running": return "运行中"
-        case "stopping": return "正在停止"
-        case "finishing": return "正在收尾"
+        return Self.turnStatus(phase: state?.phase, outcome: state?.lastOutcome?.kind, waitingForResume: state?.waitingForResume == true)
+    }
+
+    /// 回合的状态文字，标题栏圆环与停靠栏共用：先看是否在跑，再看上一轮结果，等待继续优先级最低。
+    static func turnStatus(phase: String?, outcome: String?, waitingForResume: Bool, unseen: Bool = false) -> String {
+        switch phase {
+        case "running": "运行中"
+        case "stopping": "正在停止"
+        case "finishing": "正在收尾"
         default:
-            if state?.lastOutcome?.kind == "failed" { return state?.lastOutcome?.message ?? "本轮失败" }
-            if state?.lastOutcome?.kind == "interrupted" { return "已停止" }
-            if state?.lastOutcome?.kind == "completed" { return "已完成" }
-            if state?.waitingForResume == true { return "等待继续" }
-            return "空闲"
+            switch outcome {
+            case "failed": "本轮失败"
+            case "interrupted": "已停止"
+            case "completed": unseen ? "已完成，未查看" : "已完成"
+            default: waitingForResume ? "等待继续" : "空闲"
+            }
         }
     }
 
@@ -133,6 +140,7 @@ final class WorkThread: Identifiable {
             positions = Dictionary(uniqueKeysWithValues: history.enumerated().map { ($0.element.id, $0.offset) })
             received = Set(history.compactMap { $0.block.type == "human" ? $0.block.id : nil })
             pending = event.pending ?? []
+            accepted = nil
             state = event.state
             connected = true
             error = nil
@@ -195,7 +203,7 @@ final class WorkThread: Identifiable {
 
     private func render(recordsChanged: Bool = false) {
         let running = state?.busy == true && ["running", "stopping", "finishing"].contains(state?.phase ?? "")
-        let messages = pending.filter { $0.source == "human" }.map(\.message) + outbox
+        let messages = pending.filter { $0.source == "human" }.map(\.message) + (accepted.map { [$0] } ?? []) + outbox
         if recordsChanged {
             var records: [Record] = []
             visiblePositions.removeAll(keepingCapacity: true)
@@ -231,6 +239,13 @@ final class WorkThread: Identifiable {
     }
 
     func retry(_ message: Message) { deliver(message) }
+
+    /// 草稿的第一条消息工作机已经收下；历史到达前先显示在待发送区，新窗口不先闪空白页。
+    func showAccepted(_ message: Message) {
+        guard !connected, remoteRecords.isEmpty else { return }
+        accepted = message
+        render()
+    }
 
     private func deliver(_ message: Message) {
         guard let client, stopRequest == nil, !returned.contains(message.id), !sending.contains(message.id) else { return }

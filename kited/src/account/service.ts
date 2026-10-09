@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite';
+import type { Server } from 'bun';
 import { betterAuth, type BetterAuthOptions } from 'better-auth';
 import { getMigrations } from 'better-auth/db/migration';
 import { bearer } from 'better-auth/plugins';
@@ -11,7 +12,7 @@ import { catalogPublication, type CatalogSnapshot } from './catalog.ts';
 import { GitHubDeviceFlow, gitHubRepositories, type GitHubOptions } from './credentials.ts';
 import { GitHosting } from './git-hosting.ts';
 import { CredentialConflictError, CredentialStore, type Credential, type CredentialType } from './credential-store.ts';
-import { Library, LibraryConflict, libraryKind, libraryWrite } from './library.ts';
+import { Library, LibraryConflict, LibraryEvents, libraryKind, libraryWrite } from './library.ts';
 import { secretName, secretReference, secretValue } from '../secrets.ts';
 
 interface Options {
@@ -134,6 +135,7 @@ export async function createAccountService(options: Options) {
   const hosting = new GitHosting(options.git?.reposPath ?? join(dirname(options.databasePath), 'repos'));
   const credentials = new CredentialStore(db, options.secret);
   const library = new Library(db);
+  const events = new LibraryEvents();
   /** 约束的版本是内容摘要，没设置过时是默认的不限制。 */
   function constraintsView(projectId: string) {
     const row = db.query<{ body: string }, [string]>('SELECT body FROM kite_project_constraints WHERE projectId = ?').get(projectId);
@@ -320,7 +322,7 @@ export async function createAccountService(options: Options) {
     return projectView({ ...row, remote: target });
   }
 
-  async function fetchRequest(request: Request): Promise<Response> {
+  async function fetchRequest(request: Request, server?: Server<undefined>): Promise<Response> {
     const path = new URL(request.url).pathname;
     const repository = /^\/git\/([0-9a-f-]{36})\.git(\/.*)$/.exec(path);
     if (repository) return serveRepository(request, repository[1]!, repository[2]!);
@@ -416,6 +418,10 @@ export async function createAccountService(options: Options) {
     if (path === '/api/library' && request.method === 'GET') {
       return result(library.list((await owner(request)).userId));
     }
+    if (path === '/api/library/events' && request.method === 'GET') {
+      server?.timeout(request, 0);
+      return events.open((await owner(request)).userId, request);
+    }
     const libraryItem = /^\/api\/library\/([a-z]+)\/([^/]+)$/.exec(path);
     if (libraryItem) {
       const { userId } = await owner(request);
@@ -427,8 +433,11 @@ export async function createAccountService(options: Options) {
         return result(found);
       }
       if (request.method === 'PUT') {
-        try { return result(library.put(userId, kind, id, libraryWrite.parse(await request.json()), now())); }
+        let saved;
+        try { saved = library.put(userId, kind, id, libraryWrite.parse(await request.json()), now()); }
         catch (error) { if (error instanceof LibraryConflict) throw new RequestError(error.message, 409); throw error; }
+        events.notify(userId);
+        return result(saved);
       }
       throw new RequestError('找不到接口', 404);
     }
@@ -497,12 +506,14 @@ export async function createAccountService(options: Options) {
         if (fromWorker) throw new RequestError('项目约束须由用户在 App 中修改', 403);
         const project = ownedProject(constraints[1]!, userId);
         const { expectedRevision, ...body } = projectConstraints.extend({ expectedRevision: z.string().min(1) }).parse(await request.json());
-        return result(db.transaction(() => {
+        const saved = db.transaction(() => {
           if (constraintsView(project.id).revision !== expectedRevision) throw new RequestError('项目约束已被其他设备修改，请刷新后重试', 409);
           db.query('INSERT INTO kite_project_constraints VALUES (?, ?) ON CONFLICT(projectId) DO UPDATE SET body = excluded.body')
             .run(project.id, JSON.stringify(body));
           return constraintsView(project.id);
-        })());
+        })();
+        events.notify(userId);
+        return result(saved);
       }
       const match = /^\/api\/projects\/([^/]+)(\/migrate)?$/.exec(path);
       if (match && !match[2] && request.method === 'GET') return result(projectView(ownedProject(match[1]!, userId)));
@@ -660,8 +671,8 @@ export async function createAccountService(options: Options) {
   }, 60_000);
   timer.unref();
   return {
-    async fetch(request: Request): Promise<Response> {
-      try { return await fetchRequest(request); }
+    async fetch(request: Request, server?: Server<undefined>): Promise<Response> {
+      try { return await fetchRequest(request, server); }
       catch (error) {
         if (error instanceof RequestError) return result({ error: error.message }, error.status);
         if (error instanceof CredentialConflictError) return result({ error: '同名凭据已存在' }, 409);
@@ -670,6 +681,8 @@ export async function createAccountService(options: Options) {
         return result({ error: '服务暂时不可用，请稍后重试' }, 500);
       }
     },
+    /** 停机前先断开事件流，否则服务会一直等这些长连接结束。 */
+    disconnect(): void { events.close(); },
     async close(): Promise<void> { clearInterval(timer); await cleanup; db.close(); },
   };
 }

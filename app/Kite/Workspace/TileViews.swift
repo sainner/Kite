@@ -16,11 +16,15 @@ struct TilesLayer: View {
             let local = { (point: CGPoint) in CGPoint(x: point.x - origin.x, y: point.y - origin.y) }
             let layout = workspace.shown?.layout(in: regions.canvas, free: workspace.resizing) ?? TileLayout()
             let docked = workspace.shownDock
+            let area = group.workspace
+            let onStage = Set(layout.panes.keys)
+            let dock = area.map { DockGeometry(model: $0.dockModel(docked: docked, onStage: onStage), regions: regions) }
+            let expanded = !(area?.dockExpansion.isEmpty ?? true)
             // 侧栏入口只放在左上角的窗口：先比顶边，再比左边
             let first = layout.panes.min { ($0.value.minY, $0.value.minX) < ($1.value.minY, $1.value.minX) }?.key
             ZStack(alignment: .topLeading) {
-                if let area = group.workspace {
-                    DockRail(regions: regions, paneCount: docked.count)
+                if let area, let dock {
+                    DockRail(geometry: dock)
                         .environment(area)
                 }
                 if layout.panes.isEmpty && workspace.drag == nil {
@@ -46,58 +50,257 @@ struct TilesLayer: View {
                         .placed(rect)
                 }
                 ForEach(workspace.panes, id: \.self) { pane in
-                    let dockFrame = docked.firstIndex(of: pane).map { regions.dockFrame(at: $0) }
+                    let dockFrame = dock?.paneFrame(pane) ?? docked.firstIndex(of: pane).map { regions.dockFrame(at: $0) }
+                    let family = dock.flatMap { familyID(of: pane, in: $0) }
                     CardSlot(group: group, pane: pane, rect: layout.panes[pane], dockFrame: dockFrame) { point in
-                        workspace.drag(pane, to: local(point), in: bounds)
+                        area?.collapseDock()
+                        workspace.drag(pane, to: local(point), in: bounds) { remaining, location in
+                            dockIndex(of: pane, among: remaining, at: location, onStage: onStage, regions: regions)
+                        }
                     } onDrop: {
                         workspace.drop(in: bounds)
                     } onActivate: {
-                        workspace.restore(pane, in: bounds)
+                        // 家族格里的父代理：点开看子代理，展开后再点父代理才放上台面
+                        if let family { area?.toggleDock(family, depth: 0) }
+                        else { workspace.restore(pane, in: bounds) }
                     }
                     .environment(\.openSidebar, pane == first ? openSidebar : nil)
+                    .modifier(DockDimmed(dimmed: expanded && layout.panes[pane] == nil && workspace.drag?.pane != pane))
                     .zIndex(workspace.drag?.pane == pane ? 1 : 0)
                     // 拖缝调整大小时指针会快速扫过卡片，期间卡片不响应悬停和点击
                     .allowsHitTesting(workspace.resizing == nil)
-                    .transition(.scale(scale: 0.92).combined(with: .paneFade))
+                    .transition(closing(pane, from: layout.panes[pane] ?? dockFrame, regions: regions))
+                }
+                if let area, let dock {
+                    DockOverlay(geometry: dock, bounds: bounds, regions: regions) { pane in
+                        if layout.panes[pane] != nil { workspace.focus(pane) }
+                        else { workspace.restore(pane, in: bounds) }
+                    }
+                    .environment(area)
+                    .zIndex(2)
                 }
             }
+            .coordinateSpace(.named(DockSpace.name))
             .animation(.snappy, value: workspace.panes)
             .onGeometryChange(for: CGSize.self) { $0.size } action: { workspace.updateViewport($0, presentation: .tiled) }
+            .onChange(of: Set(onStage.compactMap { area?.dockInstanceID($0) }), initial: true) { _, visible in
+                area?.noteVisible(visible)
+            }
+            .onDisappear { area?.noteVisible([]) }
         }
         .environment(workspace)
+        .environment(\.dockCardsDrawPanes, true)
         .disablesWindowDragging()
+    }
+
+    /// 最小化的父代理所在的家族格。
+    private func familyID(of pane: Pane, in dock: DockGeometry) -> String? {
+        for (entry, _) in dock.cells {
+            if case .family(let family) = entry, family.pane == pane, !family.onStage { return entry.id }
+        }
+        return nil
+    }
+
+    /// 拖进停靠栏时，窗口只能落在自己那一类里：插在同类第 j 个之前就占这一类的第 j 格，取画出来离指针最近的那一格。
+    private func dockIndex(of pane: Pane, among remaining: [Pane], at location: CGPoint, onStage: Set<Pane>, regions: WindowRegions) -> Int {
+        guard let area = group.workspace else { return regions.dockIndex(at: location, count: remaining.count) }
+        // 放在最后排一次停靠栏：同类的窗口按停靠的顺序连成一段，它在这一段的末尾，各格大小相同
+        let cells = DockGeometry(model: area.dockModel(docked: remaining + [pane], onStage: onStage.subtracting([pane])), regions: regions).cells
+        func docked(_ entry: DockEntry) -> (pane: Pane, family: Bool)? {
+            switch entry {
+            case .pane(let value): (value, false)
+            case .family(let family) where !family.onStage: family.pane.map { ($0, true) }
+            default: nil
+            }
+        }
+        guard let last = cells.lastIndex(where: { docked($0.entry)?.pane == pane }), let kind = docked(cells[last].entry) else {
+            return remaining.count
+        }
+        let agent = area.isAgentPane(pane)
+        var first = last
+        while first > cells.startIndex, let other = docked(cells[first - 1].entry), other.family == kind.family,
+              area.isAgentPane(other.pane) == agent {
+            first -= 1
+        }
+        // 家族格里的父代理缩在左下角
+        func frame(_ cell: Int) -> CGRect { kind.family ? DockGeometry.parentFrame(in: cells[cell].frame) : cells[cell].frame }
+        let best = (first...last).min { abs(frame($0).midY - location.y) < abs(frame($1).midY - location.y) } ?? last
+        // 紧跟在前一个同类窗口后面
+        guard best > first else { return 0 }
+        guard let previous = docked(cells[best - 1].entry), let index = remaining.firstIndex(of: previous.pane) else { return remaining.count }
+        return index + 1
+    }
+
+    /// 关掉独立存续的代理：卡片缩进它要去的那一格（文件夹或父代理的家族格）；随窗口回收的实例原地淡出。
+    private func closing(_ pane: Pane, from source: CGRect?, regions: WindowRegions) -> AnyTransition {
+        let fade = AnyTransition.scale(scale: 0.92).combined(with: .paneFade)
+        guard let area = group.workspace, let source, let instance = area.instance(of: pane), area.isAgent(instance),
+              area.definition(of: instance)?.lifetime == .persistent else { return fade }
+        return .asymmetric(insertion: fade, removal: AnyTransition(DockLanding(area: area, layout: workspace, pane: pane, instance: instance.id,
+                                                                               source: source, regions: regions)))
     }
 }
 
-/// 最小化窗口和添加入口在上方，无窗口实例在底部；停靠栏沿用工作区底色。
-private struct DockRail: View {
+/// 卡片缩进停靠栏里要去的那一格。去哪一格要把停靠栏整个排一遍，只在真正离场时算，台面平时刷新不算。
+private struct DockLanding: Transition {
+    let area: WorkArea
+    let layout: WindowLayout
+    let pane: Pane
+    let instance: String
+    let source: CGRect
     let regions: WindowRegions
-    let paneCount: Int
-    @Environment(WindowLayout.self) private var workspace
-    @Environment(WorkArea.self) private var area
 
-    private var dropIndex: Int? {
-        if case .dock(let index) = workspace.drag?.spot { index } else { nil }
+    func body(content: Content, phase: TransitionPhase) -> some View {
+        content.modifier(phase == .didDisappear ? landing() : DockFlight(offset: .zero, scale: 1, opacity: 1))
     }
 
+    private func landing() -> DockFlight {
+        let remaining = layout.shownDock.filter { $0 != pane }
+        let model = area.dockModel(docked: remaining, onStage: Set(layout.shown?.panes ?? []).subtracting([pane]), closing: instance)
+        guard let target = DockGeometry(model: model, regions: regions).frame(containing: instance) else {
+            return DockFlight(offset: .zero, scale: 0.92, opacity: 0)
+        }
+        let scale = min(target.width / max(source.width, 1), target.height / max(source.height, 1))
+        return DockFlight(offset: CGSize(width: target.midX - source.midX, height: target.midY - source.midY), scale: scale, opacity: 0)
+    }
+}
+
+private struct DockFlight: ViewModifier {
+    let offset: CGSize
+    let scale: CGFloat
+    let opacity: Double
+
+    func body(content: Content) -> some View {
+        content.scaleEffect(scale).offset(offset).opacity(opacity)
+    }
+}
+
+/// 宽屏停靠栏：添加入口固定在最上面，然后是代理组（有子代理的在前，没有窗口的收进文件夹）、分隔线、工具组。
+/// 最小化的窗口由卡片自己画在格子上；格子上的外圈、角标和家族格装饰画在卡片上面，见 DockOverlay。
+private struct DockRail: View {
+    let geometry: DockGeometry
+    @Environment(WindowLayout.self) private var workspace
+    @Environment(WorkArea.self) private var area
+    @Environment(AppModel.self) private var model
+
     var body: some View {
+        let dimmed = !area.dockExpansion.isEmpty
         ZStack(alignment: .topLeading) {
             AddWindowButton()
-                .placed(regions.dockFrame(at: paneCount))
-            VStack(spacing: Metrics.gap) {
-                ForEach(area.windowlessInstances) { instance in
-                    InstanceDockButton(instance: instance)
+                .placed(geometry.add)
+                .modifier(DockDimmed(dimmed: dimmed))
+            ForEach(geometry.cells, id: \.entry.id) { cell in
+                if !isPane(cell.entry) {
+                    DockCellButton(entry: cell.entry, depth: 0, hoverFrame: cell.frame)
+                        .placed(cell.frame)
+                        .modifier(DockDimmed(dimmed: dimmed))
+                        .transition(.scale(scale: 0.6).combined(with: .opacity))
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-            .placed(regions.dock)
-            if let index = dropIndex, let pane = workspace.drag?.pane {
-                RoundedRectangle(cornerRadius: area.appearance(of: pane).minimizedCornerRadius)
+            if let divider = geometry.divider {
+                Rectangle().fill(Theme.rule)
+                    .frame(width: Metrics.dragBubble * 0.6, height: 1)
+                    .position(x: geometry.add.midX, y: divider)
+                    .modifier(DockDimmed(dimmed: dimmed))
+            }
+            if case .dock = workspace.drag?.spot, let pane = workspace.drag?.pane, let frame = geometry.paneFrame(pane) {
+                RoundedRectangle(cornerRadius: area.isAgentPane(pane) ? frame.width / 2 : Metrics.dockRadius)
                     .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
-                    .placed(regions.dockFrame(at: index))
+                    .placed(frame)
                     .allowsHitTesting(false)
             }
         }
+        .animation(.snappy, value: geometry.cells.map(\.entry.id))
+        .task(id: model.revision(for: area)) {
+            try? await model.ensureRoles(in: area)
+        }
+    }
+
+    private func isPane(_ entry: DockEntry) -> Bool {
+        if case .pane = entry { true } else { false }
+    }
+}
+
+/// 画在卡片上面的一层：最小化窗口的运行外圈与角标、家族格的描边与角上的子代理、悬停标签和展开的面板。
+private struct DockOverlay: View {
+    let geometry: DockGeometry
+    let bounds: CGRect
+    let regions: WindowRegions
+    var showPane: (Pane) -> Void
+    @Environment(WindowLayout.self) private var workspace
+    @Environment(WorkArea.self) private var area
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let expanded = !area.dockExpansion.isEmpty
+        ZStack(alignment: .topLeading) {
+            ForEach(geometry.cells, id: \.entry.id) { cell in
+                marks(cell.entry, frame: cell.frame)
+                    .modifier(DockDimmed(dimmed: expanded))
+                    .allowsHitTesting(false)
+            }
+            if let root = area.dockExpansion.first, let cell = geometry.cells.first(where: { $0.entry.id == root }) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { area.collapseDock() }
+                    .placed(bounds)
+                panel(cell.entry, from: cell.frame)
+            }
+            if expanded {
+                // Esc 收起
+                Button("收起") { area.collapseDock() }
+                    .keyboardShortcut(.cancelAction)
+                    .opacity(0)
+                    .frame(width: 0, height: 0)
+            }
+            if let hover = area.dockHover, let entry = hoverEntry(hover.id) {
+                DockHoverLabel(text: area.dockLabel(entry), frame: hover.frame)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: area.dockHover)
+    }
+
+    /// 家族格里的父代理是窗口卡片报上来的，按窗口找。
+    private func hoverEntry(_ id: String) -> DockEntry? {
+        if let entry = DockModel(agents: geometry.cells.map(\.entry)).entry(id) { return entry }
+        guard id.hasPrefix("pane:") else { return nil }
+        return .pane(Pane(String(id.dropFirst("pane:".count))))
+    }
+
+    @ViewBuilder
+    private func marks(_ entry: DockEntry, frame: CGRect) -> some View {
+        switch entry {
+        case .pane(let pane) where workspace.drag?.pane != pane:
+            DockStatusMarks(instance: area.dockInstanceID(pane)).placed(frame)
+        case .family(let family) where family.pane != nil && !family.onStage && workspace.drag?.pane != family.pane:
+            let parent = DockGeometry.parentFrame(in: CGRect(origin: .zero, size: frame.size))
+            ZStack(alignment: .topLeading) {
+                DockStatusMarks(instance: family.parent.id)
+                    .frame(width: parent.width, height: parent.height)
+                    .offset(x: parent.minX, y: parent.minY)
+                DockFamilyDecoration(family: family, size: frame.width)
+            }
+            .frame(width: frame.width, height: frame.height, alignment: .topLeading)
+            .placed(frame)
+        default:
+            EmptyView()
+        }
+    }
+
+    /// 展开的面板从格子原地拉长：先往下，放不下再往上，最高到停靠栏全高，再多就在里面滚动。
+    private func panel(_ entry: DockEntry, from cell: CGRect) -> some View {
+        let path = area.dockExpansion.dropFirst()
+        let extent = DockPanel.extent(entry, path: path), breadth = DockPanel.breadth(entry, path: path)
+        let height = min(extent, regions.dock.height)
+        let top = max(min(cell.minY - DockPanel.padding, regions.dock.maxY - height), regions.dock.minY)
+        let frame = CGRect(x: cell.midX - breadth / 2, y: top, width: breadth, height: height)
+        return ScrollView(.vertical, showsIndicators: false) {
+            DockPanel(entry: entry, depth: 0, axis: .vertical, showPane: showPane)
+        }
+        .scrollDisabled(extent <= height)
+        .scrollClipDisabled(extent <= height)
+        .placed(frame)
+        .transition(.scale(scale: 0.7, anchor: .top).combined(with: .opacity))
     }
 }
 
@@ -117,8 +320,11 @@ private struct CardSlot: View {
     var body: some View {
         if let (frame, minimized) = place {
             PaneCard(group: group, pane: pane, minimized: minimized, width: frame.width,
-                     onDrag: onDrag, onDrop: onDrop, onActivate: onActivate)
-                .placed(frame)
+                     onDrag: onDrag, onDrop: onDrop, onActivate: onActivate) { hovering in
+                // 家族格里的父代理按整格浮出标签
+                group.workspace?.setDockHover(DockEntry.pane(pane).id, frame: dockFrame ?? frame, hovering: hovering && minimized)
+            }
+            .placed(frame)
         }
     }
 
@@ -155,20 +361,18 @@ struct PaneCard: View {
     var onDrag: (CGPoint) -> Void
     var onDrop: () -> Void
     var onActivate: () -> Void
+    /// 缩成停靠形状时报给停靠栏，用来浮出名字。
+    var onHover: (Bool) -> Void = { _ in }
 
     private var actionsShown: Bool { !workspace.isFixed && !controlsInMenu && InputMode.current.revealsControls(hovered: cardHovered) && !minimized && workspace.drag == nil && workspace.resizing == nil }
     private var canExpand: Bool { (workspace.shown?.panes.count ?? 0) > 1 }
 
     private var controlsInMenu: Bool {
-        #if os(macOS)
         guard !minimized, group.workspace?.thread(in: pane) != nil, menuWidth > 0 else { return false }
         // 按完整控制组计算，不能随悬停显隐改变判断；圆环占一个按钮宽，标题至少保留两个按钮宽。
         let required = 2 * Metrics.paneMargin + menuWidth + controlsSize.width
             + 3 * Metrics.paneButtonGap + 3 * Metrics.paneHeaderButton
         return width < required
-        #else
-        return false
-        #endif
     }
 
     private var windowActions: PaneWindowActions? {
@@ -182,11 +386,11 @@ struct PaneCard: View {
     }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: minimized ? appearance.minimizedCornerRadius : Metrics.cardRadius)
+        let shape = RoundedRectangle(cornerRadius: minimized ? appearance.minimizedCornerRadius(width: width) : Metrics.cardRadius)
         // 底下的形状定大小，内容放在 overlay 里：缩小时内容比停靠形状大，不能把它撑开
-        // 卡片是不透明的面，盖住背景上的点阵
+        // 卡片是不透明的面，盖住背景上的点阵；代理缩小后仍是卡片的底色，上面是签名头像，像一扇缩小的空白窗口
         shape
-            .fill(minimized ? appearance.tint : Theme.card)
+            .fill(minimized && !appearance.isAgent ? appearance.tint : Theme.card)
             .overlay(alignment: .topLeading) {
                 PaneBody(group: group, pane: pane)
                     .paneFocus(pane, in: workspace, enabled: !minimized)
@@ -199,13 +403,27 @@ struct PaneCard: View {
                     .allowsHitTesting(!minimized)
                     .accessibilityHidden(minimized)
             }
-            // 图标画在拖动层下面：盖在 AppKit 视图上的 SwiftUI 内容会挡住点到它的鼠标
+            // 图标画在拖动层下面：盖在 AppKit 视图上的 SwiftUI 内容会挡住点到它的鼠标。
+            // 只在缩小后才建，以缩小后的尺寸淡入，台面上的卡片不解析头像、不跟着代理状态重算。
             .overlay {
-                Image(systemName: appearance.icon)
-                    .font(Theme.title)
-                    .foregroundStyle(Theme.ink)
-                    .opacity(minimized ? 1 : 0)
+                if minimized {
+                    Group {
+                        if appearance.isAgent, let area = group.workspace {
+                            let id = area.dockInstanceID(pane)
+                            let size = min(width, Metrics.dragBubble)
+                            AgentAvatar(design: model.emblem(for: id, in: area), instance: id, animating: area.isRunning(id))
+                                .padding(1)
+                                .frame(width: size, height: size)
+                                .clipShape(Circle())
+                        } else {
+                            Image(systemName: appearance.icon)
+                                .font(Theme.title)
+                                .foregroundStyle(Theme.ink)
+                        }
+                    }
+                    .transition(.opacity)
                     .allowsHitTesting(false)
+                }
             }
             .overlay(alignment: .top) {
                 ZStack(alignment: .trailing) {
@@ -227,7 +445,7 @@ struct PaneCard: View {
             // clipShape 只裁画面不裁命中；标题栏可交互玻璃的命中范围会伸出卡片，盖住旁边停靠栏的按钮。
             .contentShape(shape)
             // 在整张卡片上跟踪悬停，指针经过标题栏、正文或控制区时都显示窗口操作。
-            .onHover { cardHovered = $0 }
+            .onHover { cardHovered = $0; onHover($0) }
             .onPreferenceChange(PaneHeaderActionsWidth.self) { menuWidth = $0 }
             .onPreferenceChange(PaneHeaderHeight.self) { headerHeight = $0 }
             .onPreferenceChange(PaneHeaderInteractiveRects.self) { headerInteractiveRects = $0 }
@@ -259,6 +477,7 @@ struct PaneCard: View {
             if let area = group.workspace,
                let target = area.windows.first(where: { $0.id == pane.id })?.target,
                let instance = area.instances.first(where: { $0.id == target.instanceId }) {
+                if minimized { Text(area.dockLabel(.pane(pane))) }
                 InstanceActions(instance: instance)
                 Button("关闭窗口") { model.closeWindow(pane, in: area) }
             }
@@ -288,29 +507,6 @@ struct PaneCard: View {
         }
         .help(title)
         .accessibilityLabel(title)
-    }
-}
-
-/// 宽屏停靠栏与紧凑布局的窗口栏共用添加入口。
-struct AddWindowButton: View {
-    @Environment(WorkArea.self) private var area
-    @State private var presented = false
-
-    var body: some View {
-        Button { presented = true } label: {
-            Image(systemName: "plus")
-                .font(Theme.title)
-                .foregroundStyle(.secondary)
-                .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
-                .overlay { RoundedRectangle(cornerRadius: Metrics.dockRadius).strokeBorder(.secondary.opacity(0.4), lineWidth: 1) }
-                .contentShape(RoundedRectangle(cornerRadius: Metrics.dockRadius))
-        }
-        .buttonStyle(.pointingPlain)
-        .fixedSize()
-        .help("创建实例")
-        .accessibilityLabel("添加")
-        .popover(isPresented: $presented) { CreateInstanceMenu(presented: $presented) }
-        .modifier(WindowErrorAlert())
     }
 }
 
@@ -397,7 +593,7 @@ struct PaneBubble: View {
     let appearance: WindowAppearance
 
     var body: some View {
-        RoundedRectangle(cornerRadius: appearance.minimizedCornerRadius)
+        RoundedRectangle(cornerRadius: appearance.minimizedCornerRadius())
             .fill(appearance.tint)
             .overlay {
                 Image(systemName: appearance.icon).font(Theme.title).foregroundStyle(Theme.ink)

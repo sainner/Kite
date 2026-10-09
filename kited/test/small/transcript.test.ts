@@ -3,6 +3,7 @@ import { chmodSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { WorkspaceModel } from '../../src/model.ts';
+import type { ThreadActivity } from '../../src/transcript/protocol.ts';
 import type { FakeAccount } from '../fake-account.ts';
 import { call, createWorkspace, linkNewAccount, machine, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { item, ManualModel, Seen } from '../harness-loop.ts';
@@ -36,6 +37,7 @@ type WireEvent = {
   delta?: DeltaView;
   pending?: PendingView[];
   state?: StateView;
+  activity?: ThreadActivity;
 };
 
 const roots: string[] = [];
@@ -138,6 +140,64 @@ test('目录 SSE 快照和列表响应头同序，后续变化需要更新列表
   expect(after.models.some((entry) => entry.workspace.id === second.workspace.id)).toBe(true);
   expect(Number(later.cursor.split(':')[1])).toBeLessThanOrEqual(Number(after.cursor.split(':')[1]));
   await stream.close();
+}, 1000);
+
+/*
+ * 执行进程、显示投影和两种 SSE 交接：摘要由投影推出的 thread.state 在同一次总线分发里重入发出，
+ * 收尾时间只在实时看到 running 到 idle 的转换时记下，要真跑回合才知道时序对不对。
+ * 第一回合不开线程流、不读历史，对应停靠栏里没人打开过的后台代理。
+ */
+test('后台代理跑完一回合，目录流先后收到运行中和带收尾时间的完成摘要并与列表一致，线程流收不到摘要', async () => {
+  const model = new ManualModel();
+  kited = startKited(() => model);
+  const kk = kited;
+  const registered = await registerCheckout(kk, newRepo(kk.root, 'project', { 'base.txt': '初始\n' }));
+  const workspaceId = registered.workspace.id;
+  const operationPath = (name: string) => `/workspaces/${workspaceId}/operations/${name}`;
+  const created = await kk.call('POST', operationPath('agent.start'), {
+    operationId: 'activity-agent', presentation: 'background',
+  });
+  expect(created.status).toBe(200);
+  const id = created.body.instanceId as string;
+  const catalog = await connect(kk.url);
+  await catalog.events.wait((event) => event.type === 'catalog.snapshot');
+  const isActivity = (event: WireEvent) => event.type === 'thread.activity' && event.threadId === id;
+  const later = (stream: typeof catalog, index: number) => (event: WireEvent) => stream.events.values.indexOf(event) > index;
+
+  expect((await kk.call('POST', operationPath('agent.send'), {
+    operationId: 'first-turn', instanceId: id, text: '第一回合',
+  })).status).toBe(200);
+  const first = await model.call(1);
+  const running = await catalog.events.wait((event) => isActivity(event) && event.activity?.phase !== 'idle');
+  expect(running.workspaceId).toBe(workspaceId);
+  first.response.complete();
+  const runningAt = catalog.events.values.indexOf(running);
+  const settled = await catalog.events.wait((event) => later(catalog, runningAt)(event) && isActivity(event)
+    && event.activity?.phase === 'idle');
+  expect(settled).toMatchObject({
+    workspaceId, threadId: id, activity: { phase: 'idle', outcome: 'completed', settledAt: expect.any(Number) },
+  });
+  const listed = await kk.call('GET', '/workspaces');
+  const listedThread = (listed.body as Array<{ workspace: { id: string }; threads: Array<{ instanceId: string; activity?: ThreadActivity }> }>)
+    .find((entry) => entry.workspace.id === workspaceId)?.threads.find((thread) => thread.instanceId === id);
+  expect(listedThread?.activity).toEqual(catalog.events.values.filter(isActivity).at(-1)?.activity);
+  expect(listedThread?.activity).toEqual(settled.activity);
+
+  // 第二回合开着线程流：运行中摘要与线程流的 running 状态同一次分发发出，之后的 idle 状态到达时，漏进线程流的摘要早该到了。
+  const thread = await connect(kk.url, id);
+  await thread.events.wait((event) => event.type === 'thread.history');
+  const beforeSecond = catalog.events.values.length - 1;
+  expect((await kk.call('POST', operationPath('agent.send'), {
+    operationId: 'second-turn', instanceId: id, text: '第二回合',
+  })).status).toBe(200);
+  const second = await model.call(2);
+  await catalog.events.wait((event) => later(catalog, beforeSecond)(event) && isActivity(event) && event.activity?.phase !== 'idle');
+  second.response.complete();
+  const threadRunning = await thread.events.wait((event) => event.type === 'thread.state' && event.state?.phase !== 'idle');
+  await thread.events.wait((event) => later(thread, thread.events.values.indexOf(threadRunning))(event)
+    && event.type === 'thread.state' && event.state?.phase === 'idle');
+  await catalog.events.wait((event) => later(catalog, beforeSecond)(event) && isActivity(event) && event.activity?.phase === 'idle');
+  expect(thread.events.values.filter((event) => event.type === 'thread.activity')).toEqual([]);
 }, 1000);
 
 function apply(events: WireEvent[]) {

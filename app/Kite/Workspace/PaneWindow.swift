@@ -2,7 +2,8 @@ import SwiftUI
 
 /// 窗口的共有布局：浮在上面的标题栏、内容、浮在下面的控制区。内容从标题栏和控制区后面滚过去，
 /// 标题栏后面垫系统滚动软边，iPhone 的软边是渐进模糊，再叠一层渐变。Mac 上是一张卡片的内容，iPhone 上铺满窗口；各个窗口只给标题栏的信息、内容、控制区里的东西，
-/// 标题前的信息区由窗口给出（会话是状态圆环），两端相同。
+/// 标题前的信息区由窗口给出（会话是状态圆环），两端相同。信息区同时只展示一项：所属工作机的连接提示优先于
+/// 窗口自己的提示，提示出现时盖住圆环，见 PaneNotice。
 /// 控制区是液态玻璃容器，各个窗口给内部控件提供玻璃形状；左右留边，底部总边距统一取固定留白与安全区高度的较大值。
 /// 控制区始终存在；内容为空时仍保留交互范围。
 /// 安全区已由窗口容器让出，控制区补足差额；打字时在键盘上方保留固定留白。
@@ -12,6 +13,7 @@ import SwiftUI
 struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActions: View>: View {
     let header: PaneHeader
     let usesDots: Bool
+    let notice: PaneNotice?
     let content: Content
     let controls: (FocusState<Bool>.Binding) -> Controls
     let headerStatus: HeaderStatus
@@ -25,15 +27,17 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
     @Environment(\.keyboardShown) private var keyboardShown
     @Environment(\.openSidebar) private var openSidebar
     @Environment(\.dotCarrier) private var carrier
+    @Environment(\.paneConnectionNotice) private var connectionNotice
     /// 整个窗口（连同标题栏与控制区）的范围，交给内容里要铺满整个窗口的点阵图案。
     @State private var frame: CGRect?
 
-    init(header: PaneHeader, usesDots: Bool = false, @ViewBuilder content: () -> Content,
+    init(header: PaneHeader, usesDots: Bool = false, notice: PaneNotice? = nil, @ViewBuilder content: () -> Content,
          @ViewBuilder controls: @escaping (_ typing: FocusState<Bool>.Binding) -> Controls,
          @ViewBuilder headerStatus: () -> HeaderStatus = { EmptyView() },
          @ViewBuilder headerActions: () -> HeaderActions = { EmptyView() }) {
         self.header = header
         self.usesDots = usesDots
+        self.notice = notice
         self.content = content()
         self.controls = controls
         self.headerStatus = headerStatus()
@@ -74,12 +78,12 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
                 if let sharedHeaderHeight, headerPane != nil {
                     Color.clear.frame(height: sharedHeaderHeight).allowsHitTesting(false)
                 } else {
-                    PaneHeaderBar(header: header, status: headerStatus, actions: headerActions, openSidebar: sidebarAction)
+                    PaneHeaderBar(header: header, status: status, actions: headerActions, openSidebar: sidebarAction)
                         .modifier(PaneHeaderPlacement(endTyping: { typing = false }))
                 }
             }
             .background {
-                Group(subviews: headerStatus) { statusViews in
+                Group(subviews: status) { statusViews in
                     Color.clear.preference(key: CompactPaneHeaders.self, value: sharedHeader(hasStatus: !statusViews.isEmpty))
                 }
             }
@@ -96,9 +100,22 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
     private func sharedHeader(hasStatus: Bool) -> [CompactPaneHeader] {
         guard sharedHeaderHeight != nil, let pane = headerPane else { return [] }
         return [CompactPaneHeader(pane: pane, header: header,
-                                  status: hasStatus ? AnyView(headerStatus) : nil,
+                                  status: hasStatus ? AnyView(status) : nil,
                                   actions: AnyView(headerActions), environment: environment,
                                   openSidebar: sidebarAction, endTyping: { typing = false })]
+    }
+
+    /// 信息区：窗口给的圆环，提示出现时虚化盖住；没有圆环时只放提示图标。
+    private var status: some View {
+        let shown = connectionNotice ?? notice
+        return Group(subviews: headerStatus) { statusViews in
+            if !statusViews.isEmpty {
+                ForEach(statusViews) { $0 }
+            } else if let shown {
+                PaneNoticeIcon(notice: shown)
+            }
+        }
+        .environment(\.paneNotice, shown)
     }
 
     /// 标题栏左边按钮的动作：先收起键盘，再拉开侧边栏。

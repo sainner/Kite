@@ -88,13 +88,7 @@ struct RoleEditor: View {
     /// 开关表示这个角色能用哪些工具；规则的方向只决定以后新增的工具默认是否可用。
     private var tools: some View {
         CardSection("工具", note: "必需的工具在代理里不能关闭；被其他约束禁用时，这个角色不可选。") {
-            LabeledContent("以后新增的工具") {
-                Picker("以后新增的工具", selection: Binding(get: { draft.tools.mode }, set: { draft.tools.setMode($0, in: universe) })) {
-                    Text("默认可用").tag("deny")
-                    Text("默认不可用").tag("allow")
-                }
-                .labelsHidden().pickerStyle(.segmented).fixedSize()
-            }
+            ToolModePicker(mode: Binding(get: { draft.tools.mode }, set: { draft.tools.setMode($0, in: universe) }))
             ForEach(universe, id: \.self) { name in
                 let enabled = draft.tools.permitted(in: universe).contains(name)
                 let required = draft.tools.required.contains(name)
@@ -117,14 +111,7 @@ struct RoleEditor: View {
             CardSection("默认模型") {
                 AgentModelFields(configuration: $draft.model, vendors: catalog?.vendors ?? [], models: catalog?.models ?? [])
             }
-            CardField(label: "每回合最多模型请求数", focused: focus == .budget, note: "达到上限后停止，保留已经产生的结果。") {
-                TextField("", value: $draft.maxRequestsPerTurn, format: .number)
-                    .focused($focus, equals: .budget)
-                    #if os(iOS)
-                    .keyboardType(.numberPad)
-                    #endif
-                    .cardInput { focus = .budget }
-            }
+            TurnBudgetField(value: $draft.maxRequestsPerTurn, focus: $focus, field: .budget)
         }
     }
 

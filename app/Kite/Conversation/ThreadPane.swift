@@ -24,7 +24,7 @@ struct ThreadPane: View {
         let items = thread.transcript.items
         let pending = thread.transcript.pending
         let initial = items.isEmpty && pending.isEmpty
-        return PaneWindow(header: header(initial: initial), usesDots: true) {
+        return PaneWindow(header: header(initial: initial), usesDots: true, notice: thread.problem.map(PaneNotice.failure)) {
             if initial {
                 NewThreadStage(slot: patternSlot, roleError: $roleError)
             } else {
@@ -56,7 +56,7 @@ struct ThreadPane: View {
             }
         } controls: { typing in
             ThreadControls(typing: typing, send: send)
-                .disabled(area.creatingThread || thread.configuringTemplate)
+                .disabled(area.creatingWindow != nil || thread.configuringTemplate)
                 .frame(maxWidth: Metrics.transcriptWidth)
         } headerStatus: {
             ThreadStatusRing()
@@ -119,12 +119,13 @@ struct ThreadPane: View {
         if thread.isDraft {
             if area.isDraft { model.newWorkspace = .session }
             else {
-                guard !area.creatingThread else { return }
-                area.creatingThread = true
+                guard area.creatingWindow == nil else { return }
+                let window = UUID().uuidString.lowercased()
+                area.creatingWindow = window
                 thread.error = nil
                 Task {
-                    defer { area.creatingThread = false }
-                    do { try await model.startThread(in: area, prompt: message.typed) }
+                    defer { area.creatingWindow = nil }
+                    do { try await model.startThread(in: area, message: message, window: window) }
                     catch { thread.error = error.localizedDescription }
                 }
             }
