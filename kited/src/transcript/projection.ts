@@ -1,7 +1,7 @@
 import type { Stamped, ThreadEvent } from '../events.ts';
 import type { JournalRecord, Phase, Outcome, Recovery, ModelStreamEvent } from '../harness/types.ts';
 import type { PluginInstance, ThreadContext, WorkspaceStatus } from '../model.ts';
-import { contextWindow } from '../agents/models.ts';
+import { instanceAgent } from '../agents/definition.ts';
 import { ClaudeProjection } from './claude-projection.ts';
 import { object } from '../claude/tools.ts';
 import type { ClaudeState } from '../claude/control.ts';
@@ -9,10 +9,6 @@ import { ToolInputPreview } from './tool-input-preview.ts';
 import type { TranscriptFeed } from './feed.ts';
 import type { DisplayBlock, DisplayRecord, DisplayDelta, PendingInput, DisplayState, History, ThreadDisplayEvent } from './protocol.ts';
 
-const windowTokens = (model: string | undefined) => {
-  const window = model ? contextWindow(model) : undefined;
-  return window ? { windowTokens: window } : {};
-};
 const textParts = (value: unknown, separator = ''): string => Array.isArray(value)
   ? value.map((part) => object(part).text).filter((text) => typeof text === 'string').join(separator) : '';
 
@@ -22,8 +18,10 @@ export class TranscriptProjection {
   private streamIds = new Map<string, string>();
   private inputPreviews = new Map<string, ToolInputPreview>();
   private requests = new Set<string>();
-  private configuredModels = new Map<string, string>();
-  private requestModels = new Map<string, string>();
+  private configuredWindows = new Map<string, number>();
+  private requestWindows = new Map<string, number>();
+  private claudeWindow?: ClaudeState['contextWindow'];
+  private configuredModel: string;
   /** 段的首条输入：压缩范围按输入的显示记录定位，Claude 段的内容来自另一份记录，按 seq 对不上位置。 */
   private segmentInputs = new Map<number, string>();
   private compacting = false;
@@ -37,6 +35,7 @@ export class TranscriptProjection {
   private recovery?: Recovery;
   private error?: string;
   private context?: DisplayState['context'];
+  private contextRuntime?: ThreadContext['runtime'];
   private workspaceStatus: WorkspaceStatus;
   private threadStatus: PluginInstance['status'];
   private readonly threadId: string;
@@ -44,6 +43,7 @@ export class TranscriptProjection {
 
   constructor(thread: ThreadContext, private feed: TranscriptFeed) {
     this.threadId = thread.id;
+    this.configuredModel = instanceAgent(thread).model.model;
     this.runtime = thread.runtime;
     this.workspaceStatus = thread.workspace.status;
     this.threadStatus = thread.status;
@@ -51,7 +51,12 @@ export class TranscriptProjection {
       records: this.records, streamIds: this.streamIds,
       replaying: () => this.replaying, stopping: () => this.phase === 'stopping',
       put: (record) => this.put(record), delta: (delta) => this.delta(delta), endDrafts: () => this.endDrafts(),
-      context: (context) => { this.context = context; this.emit({ type: 'thread.state', state: this.state() }); },
+      context: (context) => {
+        this.contextRuntime = 'claude';
+        this.context = context;
+        this.applyClaudeWindow();
+        this.emit({ type: 'thread.state', state: this.state() });
+      },
     });
   }
 
@@ -60,6 +65,13 @@ export class TranscriptProjection {
     this.workspaceStatus = workspaceStatus;
     this.threadStatus = threadStatus;
     if (this.state().status === previous) return;
+    this.emit({ type: 'thread.state', state: this.state() });
+  }
+
+  configureModel(model: string): void {
+    if (this.configuredModel === model) return;
+    this.configuredModel = model;
+    this.applyClaudeWindow();
     this.emit({ type: 'thread.state', state: this.state() });
   }
 
@@ -192,13 +204,13 @@ export class TranscriptProjection {
         this.phase = 'running'; this.busy = true; this.waitingForResume = false;
         this.lastOutcome = undefined; this.error = undefined; break;
       case 'request.configured': {
-        const model = row.snapshot.settings.model?.model;
-        if (model) this.configuredModels.set(row.snapshot.id, model);
+        const window = row.snapshot.settings.contextWindow;
+        if (window !== undefined) this.configuredWindows.set(row.snapshot.id, window);
         break;
       }
       case 'request.started': {
-        const model = this.configuredModels.get(row.configurationId);
-        if (model) this.requestModels.set(row.requestId, model);
+        const window = this.configuredWindows.get(row.configurationId);
+        if (window !== undefined) this.requestWindows.set(row.requestId, window);
         const midTurn = this.requests.has(row.turnId);
         this.requests.add(row.turnId);
         row.inputIds.forEach((id, index) => {
@@ -230,9 +242,11 @@ export class TranscriptProjection {
       case 'request.failed': this.endDrafts(row.requestId); break;
       case 'request.completed': {
         this.endDrafts(row.requestId);
+        this.contextRuntime = 'harness';
         const tokens = row.usage?.input_tokens;
+        const window = this.requestWindows.get(row.requestId);
         this.context = typeof tokens === 'number' && Number.isSafeInteger(tokens) && tokens >= 0
-          ? { requestId: row.requestId, inputTokens: tokens, ...windowTokens(this.requestModels.get(row.requestId)), measuredAt: row.at } : undefined;
+          ? { requestId: row.requestId, inputTokens: tokens, ...(window !== undefined ? { windowTokens: window } : {}), measuredAt: row.at } : undefined;
         this.emit({ type: 'thread.state', state: this.state() });
         break;
       }
@@ -369,6 +383,8 @@ export class TranscriptProjection {
   claudeInputs(state: ClaudeState): void { this.claudeProjection.syncInputs(state, new Map()); }
 
   claudeControl(state: ClaudeState): void {
+    this.claudeWindow = state.contextWindow;
+    this.applyClaudeWindow();
     this.phase = state.phase; this.busy = state.busy; this.compacting = state.compacting === true; this.waitingForResume = state.waitingForResume;
     this.lastOutcome = state.lastOutcome; this.recovery = state.recovery;
     this.error = state.recovery?.message ?? (state.lastOutcome?.kind === 'failed' ? state.lastOutcome.message : undefined);
@@ -376,6 +392,15 @@ export class TranscriptProjection {
     this.claudeProjection.syncInputs(state, this.pending);
     if (state.phase === 'idle') this.endDrafts();
     this.emitPending(); this.emit({ type: 'thread.state', state: this.state() });
+  }
+
+  /** 控制查询可能晚于用量消息；只补到同一请求，不把旧窗口配给新模型，也不恢复压缩后已清除的测量。 */
+  private applyClaudeWindow(): void {
+    if (!this.context || this.contextRuntime !== 'claude') return;
+    const { windowTokens: _previous, ...context } = this.context;
+    const window = this.claudeWindow?.model === this.configuredModel && this.claudeWindow.requestId === context.requestId
+      ? this.claudeWindow.tokens : undefined;
+    this.context = { ...context, ...(window !== undefined ? { windowTokens: window } : {}) };
   }
 
   claude(value: unknown, at: number): void { this.claudeProjection.message(value, at); }

@@ -1,7 +1,6 @@
 /** Claude 原生消息、输入身份与分块序号的显示转换；记录与增量由公共投影保存。 */
 import type { ClaudeState } from '../claude/control.ts';
 import { claudeToolName, claudeToolResult, object, structuredClaudeTool } from '../claude/tools.ts';
-import { contextWindow } from '../agents/models.ts';
 import type { DisplayBlock, DisplayDelta, DisplayRecord, DisplayState, PendingInput } from './protocol.ts';
 
 interface ClaudeProjectionTarget {
@@ -26,7 +25,6 @@ export class ClaudeProjection {
   private offsets = new Map<string, number>();
   private rows = new Map<string, number>();
   private usage: Record<string, number> = {};
-  private model = '';
 
   constructor(private target: ClaudeProjectionTarget) {}
 
@@ -60,7 +58,6 @@ export class ClaudeProjection {
       const event = object(row.event);
       if (event.type === 'message_start') {
         this.messageId = object(event.message).id; this.index = 0; this.usage = object(object(event.message).usage);
-        this.model = String(object(event.message).model ?? '');
       }
       if (!this.messageId) return;
       const id = `claude:${this.messageId}:${event.index}`;
@@ -88,7 +85,6 @@ export class ClaudeProjection {
     }
     if (typeof row.uuid !== 'string') return;
     const message = object(row.message);
-    if (row.type === 'assistant' && typeof message.model === 'string') this.model = message.model;
     if (row.type === 'assistant' && message.usage) this.updateContext(message.id ?? row.uuid, object(message.usage), at);
     const parent = typeof row.parent_tool_use_id === 'string' ? row.parent_tool_use_id : undefined;
     const content = typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : message.content;
@@ -138,9 +134,7 @@ export class ClaudeProjection {
 
   private updateContext(requestId: string, usage: Record<string, any>, at: number): void {
     const tokens = [usage.input_tokens, usage.cache_read_input_tokens ?? 0, usage.cache_creation_input_tokens ?? 0];
-    const windowTokens = contextWindow(this.model);
-    const window = windowTokens ? { windowTokens } : {};
     this.target.context(tokens.every((value) => Number.isSafeInteger(value) && value >= 0)
-      ? { requestId, inputTokens: tokens.reduce((total, value) => total + value, 0), ...window, measuredAt: at } : undefined);
+      ? { requestId, inputTokens: tokens.reduce((total, value) => total + value, 0), measuredAt: at } : undefined);
   }
 }

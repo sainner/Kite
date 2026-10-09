@@ -3,11 +3,13 @@
  * 都是几个部分的配合：runner 运行中的历史、journal 重放、后台摘要请求与停止/插话的时序、投影把 seq 范围换成显示记录。
  */
 import { expect, test } from 'bun:test';
+import type { AgentDefinition } from '../../src/agents/definition.ts';
 import { assembleContext, literalContext } from '../../src/harness/context/assembler.ts';
 import type {
   ContextItem, HarnessEvent, HarnessOptions, JsonObject, Model, ModelItem, ThreadNotification,
 } from '../../src/harness/types.ts';
 import { TranscriptFeed } from '../../src/transcript/feed.ts';
+import type { DisplayState } from '../../src/transcript/protocol.ts';
 import { TranscriptProjection } from '../../src/transcript/projection.ts';
 import type { ThreadContext } from '../../src/model.ts';
 import { input, item, ManualModel, success, tool, useHarness, waitRecord } from '../harness-loop.ts';
@@ -25,11 +27,10 @@ const notice = (id: string, sequence: number, kind: string): ThreadNotification 
 });
 
 /** 投递给定的通知列表，按游标只给未投递的部分。 */
-function requests(model: Model, notices: ThreadNotification[] = [], extra: { autoCompactTokens?: number; maxRequestsPerTurn?: number } = {}) {
+function requests(model: Model, notices: ThreadNotification[] = [], extra: { contextWindow?: number; maxRequestsPerTurn?: number } = {}) {
   const prepareRequest: HarnessOptions['prepareRequest'] = ({ afterNotification }) => ({
     model, tools: [tool('noop', async () => success('无事'))], instructions: '测试主循环',
-    settings: { maxRequestsPerTurn: extra.maxRequestsPerTurn },
-    autoCompactTokens: extra.autoCompactTokens,
+    settings: { maxRequestsPerTurn: extra.maxRequestsPerTurn, contextWindow: extra.contextWindow },
     notifications: notices.filter((entry) => entry.sequence! > afterNotification),
   });
   return prepareRequest;
@@ -57,7 +58,11 @@ function shape(history: ContextItem[]): string[] {
 
 /** 把 runner 事件接进真实显示投影，读它给客户端的快照。 */
 function projected() {
-  const thread = { id: 'thread', status: 'open', runtime: 'harness', workspace: { status: 'open' } } as ThreadContext;
+  const agent: AgentDefinition = { runtime: 'harness', model: { model: 'gpt-6.1-sol', reasoning: 'high' },
+    tools: [], maxRequestsPerTurn: 100,
+    context: { version: 2, id: 'test', title: '测试上下文', scene: 'thread.create', blocks: [] } };
+  const thread = { id: 'thread', status: 'open', runtime: 'harness', config: { agent },
+    workspace: { status: 'open' } } as unknown as ThreadContext;
   const projection = new TranscriptProjection(thread, new TranscriptFeed());
   projection.finishReplay();
   return {
@@ -204,13 +209,13 @@ test('外层压缩完整包含内层，部分重叠与撤销内层被拒绝，�
 test('估算用量超过上限时回合内先自动压缩并保留人发原文，压缩不占请求预算，紧接的请求不再压缩', async () => {
   const model = new ManualModel();
   const { runner, journal, events } = h.runner(h.root(), {
-    prepareRequest: requests(model, [], { autoCompactTokens: 1000, maxRequestsPerTurn: 2 }),
+    prepareRequest: requests(model, [], { contextWindow: 10_000, maxRequestsPerTurn: 2 }),
   });
   await runner.send({ id: 'k1', text: 'Kite 发的输入', source: 'kite' });
   const first = await model.call(1);
   first.response.complete();
   await runner.settled();
-  await round(runner, model, 2, 'r1', { input_tokens: 5000, output_tokens: 100 });
+  await round(runner, model, 2, 'r1', { input_tokens: 8700, output_tokens: 100 });
 
   await runner.send(input('r2'));
   const summary = await model.call(3);
@@ -259,4 +264,48 @@ test('停止进行中的手动压缩：取消摘要请求、退回期间收到�
   const third = await round(runner, model, 4, 'r3');
   expect(third.request.history).toEqual([...second.request.history,
     { type: 'output', item: message('out-r2', '回答 r2') }, { type: 'input', input: input('r3') }]);
+}, 1000);
+
+// 每个请求快照、实时投影与文件重放配合；窗口变化不能篡改旧测量，旧快照也不能借用当前目录最大窗口。
+test('请求窗口随配置快照保存并重放，缺少窗口时只显示用量且不按模型最大窗口自动压缩', async () => {
+  const root = h.root();
+  const model = new ManualModel();
+  const view = projected();
+  let contextWindow: number | undefined;
+  const { runner, journal, path } = h.runner(root, {
+    onEvent: view.onEvent,
+    prepareRequest: () => ({ model, tools: [], instructions: '测试实际请求窗口',
+      settings: { model: { model: 'gpt-6.1-sol', reasoning: 'high' }, contextWindow } }),
+  });
+  const measurements = new Map<string, NonNullable<DisplayState['context']>>();
+  for (const [index, window] of [10_000, 20_000, undefined].entries()) {
+    contextWindow = window;
+    const request = await round(runner, model, index + 1, `window-${index}`, { input_tokens: 1000 + index });
+    const measurement = view.projection.state().context;
+    expect(measurement).toMatchObject({ requestId: request.request.id, inputTokens: 1000 + index });
+    expect(measurement?.windowTokens).toBe(window);
+    measurements.set(request.request.id, measurement!);
+  }
+  await round(runner, model, 4, 'unknown-large-usage', { input_tokens: 800_000 });
+  const expected = view.projection.state().context;
+  expect(expected?.windowTokens).toBeUndefined();
+  await runner.send(input('after-large-usage'));
+  const next = await model.call(5);
+  expect(next.request.history.at(-1)).toEqual({ type: 'input', input: input('after-large-usage') });
+  next.response.complete();
+  await runner.settled();
+  expect(journal.records.some((record) => record.type === 'context.compacted')).toBe(false);
+  await runner.shutdown();
+  journal.close();
+
+  const replay = projected();
+  for (const record of h.open(path).records) {
+    replay.projection.journal(record);
+    if (record.type === 'request.completed') {
+      const previous = measurements.get(record.requestId);
+      if (previous) expect(replay.projection.state().context).toEqual(previous);
+      if (record.requestId === expected!.requestId) expect(replay.projection.state().context).toEqual(expected);
+    }
+  }
+  expect(replay.projection.state().context).toBeUndefined();
 }, 1000);

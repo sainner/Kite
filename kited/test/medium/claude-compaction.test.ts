@@ -3,20 +3,27 @@
  * 摘要在不落盘的分叉上生成，再重组 Claude 会话，下一回合从重组后的会话恢复。
  * Claude 一侧是真实 Claude Code 进程，模型换成假端点。
  */
-import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
+import { afterEach, expect, setDefaultTimeout, spyOn, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { readClaudeControl } from '../../src/claude/control.ts';
+import { Runner } from '../../src/claude/runner.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { ThreadContext } from '../../src/model.ts';
-import type { DisplayBlock, History } from '../../src/transcript/protocol.ts';
+import type { DisplayBlock, DisplayEnvelope, History } from '../../src/transcript/protocol.ts';
 import { api, type Kited, mark, registerCheckout, startKited, waitIdle } from '../harness.ts';
+import { deferred, Seen } from '../harness-loop.ts';
 import { ENV, newRepo, transcript } from '../util.ts';
 
 setDefaultTimeout(3_000);
 let k: Kited | undefined;
+let restoreQuery: (() => void) | undefined;
+let releaseQuery: (() => void) | undefined;
 afterEach(async () => {
+  releaseQuery?.(); releaseQuery = undefined;
   await k?.stop(); k = undefined;
+  restoreQuery?.(); restoreQuery = undefined;
 });
 
 const tag = (name: string) => `${name}-${randomUUID().slice(0, 8)}`;
@@ -35,11 +42,14 @@ const sessionProcesses = (nativeId: string) => Bun.spawnSync(['pgrep', '-f', nat
  * getContextUsage 报出 CLI 自己认定的窗口（可能小于模型目录），CLI 在本地按这个窗口拦截超长上下文
  * （关闭原生压缩时不发请求，直接报 Prompt is too long），所以自动压缩要按它算阈值，分叉才发得出摘要请求。
  * 配合：常驻进程退出与重启、Claude 内容导入 journal、journal 上的压缩与撤销、会话重组、显示投影，
- * 以及压缩期间的排队和回合结束时的自动压缩，单看各部分都确认不了。
+ * 以及控制查询先完成、再保存窗口并推送、最后决定自动压缩的时序，单看各部分都确认不了。
  */
-test('Claude 线程压缩中间两轮：摘要在不落盘的分叉上按主会话的上下文生成，期间消息排队，之后范围换成摘要、前后各轮逐字节不变，显示能折叠；撤销后恢复原历史；回合结束用量达 Claude 进程认定窗口的 85% 时自动压缩全部历史', async () => {
+test('Claude 线程压缩中间两轮：摘要在不落盘的分叉上按主会话的上下文生成，期间消息排队，之后范围换成摘要、前后各轮逐字节不变，显示能折叠；撤销后恢复原历史；每回合等待动态窗口查询，同模型失败保留窗口，用量达新窗口的 85% 后自动压缩全部历史', async () => {
   k = startKited();
   const kk = k;
+  const query = spyOn(Runner.prototype, 'contextUsage');
+  restoreQuery = () => query.mockRestore();
+  query.mockResolvedValueOnce(undefined);
   const repo = newRepo(kk.root, 'project', { 'a.txt': '压缩测试文件第一行\n压缩测试文件第二行\n' });
   const workspace = await registerCheckout(kk, repo);
   const opened = await kk.call('POST', `/workspaces/${workspace.workspace.id}/windows`, {
@@ -47,11 +57,29 @@ test('Claude 线程压缩中间两轮：摘要在不落盘的分叉上按主会�
   });
   expect(opened.status).toBe(200);
   const id = opened.body.target.instanceId as string;
+  const updates = new Seen<DisplayEnvelope>();
+  kk.daemon.kite.events.subscribe((event) => 'threadId' in event && event.threadId === id, (event) => updates.add(event));
   const thread = (await kk.call('GET', `/threads/${id}`)).body as ThreadContext;
+  const configuredModel = (await kk.call('GET', `/instances/${id}/agent-config`)).body.instance.config.agent.model.model as string;
   const history = async () => {
     const result = await kk.call('GET', `/threads/${id}/history`);
     expect(result.status).toBe(200);
     return result.body as History;
+  };
+  const measured = async (window: number | undefined) => {
+    const current = (await history()).state.context;
+    expect(current?.inputTokens).toBe(10);
+    expect(current?.windowTokens).toBe(window);
+    const last = transcript(thread.nativeId).filter((entry) => entry.type === 'assistant').at(-1);
+    expect(current?.requestId).toBe(last.message.id);
+    if (window !== undefined) {
+      expect(readClaudeControl(join(kk.home, 'sessions', id)).contextWindow).toEqual({
+        model: configuredModel, tokens: window, requestId: current!.requestId,
+      });
+      await updates.wait((event) => event.type === 'thread.state'
+        && event.state.context?.requestId === current!.requestId && event.state.context.windowTokens === window);
+    }
+    return current;
   };
   const record = (envelope: Envelope, type: string, compaction?: string) => envelope.type === 'harness' && envelope.threadId === id
     && envelope.event.type === 'record' && envelope.event.record.type === type
@@ -76,8 +104,14 @@ test('Claude 线程压缩中间两轮：摘要在不落盘的分叉上按主会�
   };
   const first = await round('r1', texts.r1);
   expect(first.flatMap((l) => l.toolUseIds)).toHaveLength(1);
+  await measured(undefined);
   await round('r2', texts.r2);
+  const initialWindow = (await history()).state.context?.windowTokens;
+  expect(initialWindow).toBe(200_000);
+  await measured(initialWindow);
+  query.mockResolvedValueOnce(undefined);
   await round('r3', texts.r3);
+  await measured(initialWindow);
   const fourth = await round('r4', texts.r4);
   const fourthCall = fourth.flatMap((l) => l.toolUseIds)[0]!;
   expect(fourthCall).toStartWith('toolu_');
@@ -160,7 +194,9 @@ test('Claude 线程压缩中间两轮：摘要在不落盘的分叉上按主会�
   const reverting = mark(kk);
   expect((await kk.call('DELETE', `/threads/${id}/compactions/c1`)).status).toBe(200);
   await kk.waitEvent((e) => record(e, 'context.compaction.reverted', 'c1') && kk.events.indexOf(e) >= reverting);
+  query.mockResolvedValueOnce({ tokens: 10, window: 300_000 });
   const sixth = (await round('r6', `第六轮 ${tag('己')}`))[0]!;
+  await measured(300_000);
   const restored = sixth.body.messages as Array<{ role: string; content: unknown }>;
   expect(json(restored.slice(0, reference.length - 1))).toBe(json(reference.slice(0, -1)));
   expect(restored.slice(reference.length - 1).map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
@@ -170,16 +206,25 @@ test('Claude 线程压缩中间两轮：摘要在不落盘的分叉上按主会�
   expect(count(resent, json(`echo: ${texts.r5}`).slice(1, -1))).toBe(1);
   expect(count(resent, `"tool_use_id":"${fourthCall}"`)).toBe(1);
 
-  // 下一轮报出达到 Claude 进程认定窗口 85% 的实测输入，回合结束后自动压缩。CLI 2.1.280 在假端点上
-  // 把 claude-sonnet-5 的窗口认定为 20 万（getContextUsage 的 rawMaxTokens，模型目录里是 100 万），
-  // 上一条回复的输入约 17.7 万以上时分叉在本地被拒，所以取 17.3 万，落在阈值 17 万与拒绝线之间；
-  // 平分到 input、cache 写、cache 读三项，三项相加才达到阈值。窗口在进程的第一回合结束后才查到，所以先跑过上面一轮。
+  // 回合收口时窗口从 30 万变为 20 万，必须等查询后才决定压缩；沿用旧窗口会漏压缩。
+  // CLI 在约 17.7 万输入以上拒绝摘要分叉，这里用 17.3 万并分到三类输入用量。
+  const querying = deferred();
+  const window = deferred<Awaited<ReturnType<Runner['contextUsage']>>>();
+  releaseQuery = () => window.resolve(undefined);
+  query.mockImplementationOnce(() => { querying.resolve(); return window.promise; });
   const share = Math.ceil(173_000 / 3);
   const seventhText = `第七轮 ${tag('庚')}\nUSAGE ${json({ input_tokens: share, cache_creation_input_tokens: share, cache_read_input_tokens: share })}`;
   const seventhAt = api.log.length;
   const seventhMark = mark(kk);
   expect((await kk.call('POST', `/threads/${id}/messages`, { id: 'r7', text: seventhText })).status).toBe(200);
   const seventh = await api.waitRequest((l) => l.main && l.lastUserText.includes(seventhText));
+
+  await querying.promise;
+  expect((await history()).state.context?.windowTokens).toBeUndefined();
+  expect(kk.events.slice(seventhMark).some((event) => record(event, 'context.compacted')
+    || (event.type === 'idle' && event.threadId === id))).toBe(false);
+  expect(api.log.slice(seventhAt).filter((entry) => entry.main)).toEqual([seventh]);
+  window.resolve({ tokens: share * 3, window: 200_000 });
 
   // 自动压缩：回合结束后在分叉上摘要全部历史，显示块从会话第一条记录起。失败时会报错并暂停，这里直接报出错误。
   const automatic = await kk.waitEvent((e) => kk.events.indexOf(e) >= seventhMark

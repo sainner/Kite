@@ -61,6 +61,8 @@ export interface ThreadNotification {
 export interface RequestSettings {
   execution?: { revision: string; grants: import('../execution/grants.ts').ExecutionGrants };
   model?: { model: string; reasoning: string };
+  /** 宿主为这次请求采用的上下文窗口；显示与自动压缩共用，未知时省略。 */
+  contextWindow?: number;
   maxRequestsPerTurn?: number;
   agent?: { definitionId: string; revision: string };
   allowedTools?: string[];
@@ -83,8 +85,6 @@ export interface HarnessRequest {
   contextUpdateTemplate?: ContextDefinition;
   /** 压缩指令与摘要包装（thread.compact）及净文件变化通知（thread.file_changes）；未指定时使用内置定义。 */
   compactionTemplates?: { compact?: ContextDefinition; fileChanges?: ContextDefinition };
-  /** 估算用量达到该值时先自动压缩再请求；不提供时不自动压缩。 */
-  autoCompactTokens?: number;
   settings: RequestSettings;
   notifications?: ThreadNotification[];
 }

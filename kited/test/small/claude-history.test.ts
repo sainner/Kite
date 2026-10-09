@@ -141,3 +141,35 @@ test('Claude 重开保留每条原生时间，老线程的标题仍使用近三�
   pending.response.complete();
   expect(await generating).toMatchObject({ status: 200, body: { title: '修复会话恢复' } });
 }, 1000);
+
+// 原生 JSONL 和宿主控制文件分别恢复：不能把旧查询窗口配给历史中的更新用量，也不能用目录最大值补旧文件。
+test('Claude 重开只把保存的窗口配给同一请求，旧控制文件和错配请求仅显示用量', async () => {
+  const { k, id, thread, directory } = await emptyThread();
+  const at = Date.now();
+  writeClaudeHistory(thread, [
+    { uuid: randomUUID(), at, role: 'user', text: '第一轮' },
+    { uuid: randomUUID(), at: at + 1, role: 'assistant', text: '第一轮回答',
+      measurement: { id: 'msg-first', model: 'claude-sonnet-5', usage: { input_tokens: 100 } } },
+    { uuid: randomUUID(), at: at + 2, role: 'user', text: '最新一轮' },
+    { uuid: randomUUID(), at: at + 3, role: 'assistant', text: '最新回答',
+      measurement: { id: 'msg-latest', model: 'claude-sonnet-5',
+        usage: { input_tokens: 2000, cache_read_input_tokens: 13, cache_creation_input_tokens: 17, output_tokens: 99 } } },
+  ]);
+  const control: Parameters<typeof saveClaudeControl>[1] = { inputs: [], stops: [], processes: [], through: 0, paused: false };
+  const windows: Array<ClaudeControl['contextWindow']> = [undefined,
+    { model: 'sonnet', tokens: 200_000, requestId: 'msg-first' },
+    { model: 'sonnet', tokens: 200_000, requestId: 'msg-latest' }];
+  const requests = api.log.length;
+  for (const contextWindow of windows) {
+    saveClaudeControl(directory, { ...control, contextWindow });
+    reopened = startDaemon({ home: k.home, port: 0, lightTasks: false });
+    const result = await call(reopened.url, 'GET', `/threads/${id}/history`);
+    expect(result.status).toBe(200);
+    const measurement = result.body.state.context as History['state']['context'];
+    expect(measurement).toMatchObject({ requestId: 'msg-latest', inputTokens: 2030, measuredAt: at + 3 });
+    expect(measurement?.windowTokens).toBe(contextWindow?.requestId === 'msg-latest' ? 200_000 : undefined);
+    expect(await reopened.kite.threadState(id)).toEqual(result.body.state);
+    await reopened.stop(); reopened = undefined;
+  }
+  expect(api.log).toHaveLength(requests);
+}, 1000);

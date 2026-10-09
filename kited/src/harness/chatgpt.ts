@@ -4,6 +4,8 @@ import type { SubscriptionModelOptions } from './subscription-types.ts';
 import type { JsonObject, Model, ModelEvent, ModelItem, ModelRequest } from './types.ts';
 
 const ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses';
+/** harness 主动采用的运行窗口，写入每次请求的配置；订阅响应不提供窗口，不把目录的最大能力当作当前设置。 */
+export const CHATGPT_CONTEXT_WINDOW = 272_000;
 const object = z.record(z.string(), z.json());
 
 function asObject(value: unknown, label: string): JsonObject {

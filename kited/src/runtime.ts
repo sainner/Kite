@@ -9,7 +9,7 @@ import { assembleContext, restoreContext } from './harness/context/assembler.ts'
 import { contextUpdateContext } from './harness/context/notifications.ts';
 import type { PluginInstance, ThreadContext } from './model.ts';
 import { readSubscriptionCredentials } from './harness/auth.ts';
-import { ChatGPTModel } from './harness/chatgpt.ts';
+import { CHATGPT_CONTEXT_WINDOW, ChatGPTModel } from './harness/chatgpt.ts';
 import { openThreadHost } from './harness/thread-host.ts';
 import { harnessPolicy } from './execution/policy.ts';
 import { applyExecutionGrants, executionRevision, instanceExecutionGrants } from './execution/grants.ts';
@@ -19,8 +19,6 @@ import { agentRevision, instanceAgent } from './agents/definition.ts';
 import { pluginDefinition } from './plugins/definitions.ts';
 import type { OperationToolSelection } from './operations/operations.ts';
 import type { CompactionRequest, Input, Model, Phase, Recovery, StopRequest, ThreadNotification, Tool } from './harness/types.ts';
-import { contextWindow } from './agents/models.ts';
-import { AUTO_COMPACT_RATIO } from './harness/compaction.ts';
 import type { LightTaskOptions } from './light-tasks.ts';
 
 export interface Runtime {
@@ -107,8 +105,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
           notificationText: updates.map((notification) => restoreContext(notification.context).instructions).join('\n\n'),
           through: updates.at(-1)?.sequence ?? afterNotification };
       }, events: on,
-      compaction: { templates: () => host.compactionTemplates(), files: (range) => host.compactionFiles(range),
-        window: (model) => contextWindow(model) },
+      compaction: { templates: () => host.compactionTemplates(), files: (range) => host.compactionFiles(range) },
     });
   }
   const declaredTools = new Set<string>(pluginDefinition(definitionId).agent!.tools);
@@ -120,7 +117,6 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       const execution = instanceExecutionGrants(current);
       const { agent, selection, permitted, plugins } = selectTools(current, operations);
       const declared = [...tools, ...operations.tools].filter((tool) => declaredTools.has(tool.name));
-      const window = contextWindow(agent.model.model);
       return {
         model: options.model?.(current) ?? new ChatGPTModel({ ...agent.model, threadId: current.nativeId,
           credentials: () => readSubscriptionCredentials(join(home, 'auth', 'chatgpt', 'auth.json')),
@@ -130,8 +126,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         instructions: projectContext(current.workspace.cwd, agent.context),
         contextUpdateTemplate: host.contextUpdateTemplate(),
         compactionTemplates: host.compactionTemplates(),
-        ...(window ? { autoCompactTokens: Math.floor(window * AUTO_COMPACT_RATIO) } : {}),
-        settings: { model: agent.model, maxRequestsPerTurn: agent.maxRequestsPerTurn,
+        settings: { model: agent.model, contextWindow: CHATGPT_CONTEXT_WINDOW, maxRequestsPerTurn: agent.maxRequestsPerTurn,
           execution: { grants: execution, revision: executionRevision(execution) },
           agent: { definitionId: current.definitionId, revision: agentRevision(agent) },
           pluginTools: selection.sources },

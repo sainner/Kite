@@ -8,7 +8,7 @@ export function configurationBoundary(runtime: AgentDefinition['runtime']) { ret
 
 export function agentCapabilities(agent: AgentDefinition) {
   const models = (agent.runtime === 'claude' ? agentModels.claude : agentModels.models)
-    .map((model) => ({ id: model.id, title: model.tier, name: model.name, reasoning }));
+    .map((model) => ({ id: model.id, title: model.tier, name: model.name, maxContextWindow: model.maxContextWindow, reasoning }));
   return { models, tools: agent.tools, configurationBoundary: configurationBoundary(agent.runtime),
     toolCatalogBoundary: agent.runtime === 'claude' ? 'idle' : 'session' };
 }

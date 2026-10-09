@@ -284,11 +284,20 @@ export class Runner {
   }
 
   /** CLI 估算的上下文用量与它认定的窗口，不发模型请求；进程不在或查询失败时为 undefined。 */
-  async contextUsage(): Promise<{ tokens: number; window: number } | undefined> {
+  async contextUsage(cancellation?: AbortSignal): Promise<{ tokens: number; window: number } | undefined> {
+    // 只是本地控制查询；超时或停止时不让它拖住回合收尾，迟到的结果不再交给宿主。
+    const signal = AbortSignal.any([AbortSignal.timeout(2000), ...(cancellation ? [cancellation] : [])]);
+    let abort: (() => void) | undefined;
     try {
-      const usage = await this.q?.getContextUsage({ detail: 'summary' });
-      return usage ? { tokens: usage.totalTokens, window: usage.rawMaxTokens } : undefined;
+      if (signal.aborted) return undefined;
+      const usage = await Promise.race([this.q?.getContextUsage({ detail: 'summary' }), new Promise<undefined>((resolve) => {
+        abort = () => resolve(undefined);
+        signal.addEventListener('abort', abort, { once: true });
+      })]);
+      return usage && Number.isSafeInteger(usage.rawMaxTokens) && usage.rawMaxTokens > 0
+        ? { tokens: usage.totalTokens, window: usage.rawMaxTokens } : undefined;
     } catch { return undefined; }
+    finally { if (abort) signal.removeEventListener('abort', abort); }
   }
 
   private options(resume: boolean): Options {

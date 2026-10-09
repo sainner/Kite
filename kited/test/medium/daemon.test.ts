@@ -1,8 +1,9 @@
 /** 经 HTTP、CLI 驱动真实 Claude Code，验证 Kite 文件工具的 MCP 桥接与原生恢复。 */
-import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
+import { afterEach, expect, setDefaultTimeout, spyOn, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { existsSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { Runner } from '../../src/claude/runner.ts';
 import { defaultAgentModel } from '../../src/agents/models.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { History } from '../../src/transcript/protocol.ts';
@@ -17,9 +18,11 @@ setDefaultTimeout(3_000);
 
 let k: Kited | undefined;
 let restarted: Daemon | undefined;
+let restoreQuery: (() => void) | undefined;
 afterEach(async () => {
   await restarted?.stop(); restarted = undefined;
   await k?.stop(); k = undefined;
+  restoreQuery?.(); restoreQuery = undefined;
 });
 const temp = useTemp();
 
@@ -134,6 +137,9 @@ test('Claude 进程跨回合常驻复用，换模型后在 resume 的新进程�
     await sending.stop();
   }
   expect(sessionProcesses(s.nativeId)).toEqual(resident);
+  expect((await history(kk, s.id)).state.context?.windowTokens).toBe(200_000);
+  const query = spyOn(Runner.prototype, 'contextUsage').mockResolvedValueOnce(undefined);
+  restoreQuery = () => query.mockRestore();
 
   // 第三回合：换模型后旧进程退出，resume 起的新进程接着同一原生会话。
   const config = await kk.call('GET', `/instances/${s.id}/agent-config`);
@@ -144,6 +150,7 @@ test('Claude 进程跨回合常驻复用，换模型后在 resume 的新进程�
   expect((await kk.call('PUT', `/instances/${s.id}/agent-config`, {
     expectedRevision: config.body.revision, agent: { ...agent, model: { ...agent.model, model } },
   })).status).toBe(200);
+  expect((await history(kk, s.id)).state.context?.windowTokens).toBeUndefined();
   const n = mark(kk);
   const c = token('换模型');
   await sendThreadMessage(kk, s.id, `第三条 ${c}\nREAD ${JSON.stringify(thirdArgs)}`);
@@ -166,6 +173,9 @@ test('Claude 进程跨回合常驻复用，换模型后在 resume 的新进程�
   expect(restarted).not.toEqual(resident);
 
   const resumed = await history(kk, s.id);
+  // 换模型后查询失败，前一模型的窗口不能用于新用量。
+  expect(resumed.state.context?.inputTokens).toBe(10);
+  expect(resumed.state.context?.windowTokens).toBeUndefined();
   expect(resumed.records.filter((record) => record.block.type === 'tool_use').map((record) => record.block)).toEqual([
     expect.objectContaining({ type: 'tool_use', id: firstId, name: 'read', input: firstArgs }),
     expect.objectContaining({ type: 'tool_use', id: secondId, name: 'read', input: secondArgs }),
@@ -329,6 +339,10 @@ test('patch 的结果和快照先于下一模型请求，局部失败及服务�
   const rebuilt = await call(restarted.url, 'GET', `/threads/${thread.id}/history`);
   expect(rebuilt.status).toBe(200);
   expect(rebuilt.body.state.lastOutcome).toEqual({ kind: 'completed' });
+  expect(completed.state.context?.windowTokens).toBe(200_000);
+  const { requestId, inputTokens, windowTokens } = completed.state.context!;
+  expect(rebuilt.body.state.context).toMatchObject({ requestId, inputTokens, windowTokens });
+  expect(rebuilt.body.state.context.measuredAt).toBeGreaterThan(0);
   const toolBlocks = (value: History) => value.records.flatMap<History['records'][number]['block']>((record) => {
     const block = record.block;
     if (block.type === 'tool_use') return [{ type: block.type, id: block.id, name: block.name, input: block.input }];

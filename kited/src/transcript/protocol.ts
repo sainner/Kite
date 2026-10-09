@@ -29,7 +29,7 @@ export interface DisplayState {
   recovery?: Recovery;
   status: WorkspaceStatus;
   error?: string;
-  /** 最近一次完成请求的输入用量；窗口上限缺失时不能计算百分比。 */
+  /** 最近一次完成请求的输入用量与当时生效的运行窗口；窗口未知时不能用模型最大能力计算百分比。 */
   context?: { requestId: string; inputTokens: number; windowTokens?: number; measuredAt: number };
   capabilities: { send: boolean; interrupt: boolean; resume: boolean; cancel: boolean; switchRuntime?: boolean; compact?: boolean };
 }

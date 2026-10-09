@@ -1,18 +1,26 @@
 /** Claude 原生流、宿主输入收据和 HTTP 操作控制一起验证，模型仅连接假端点。 */
-import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
+import { afterEach, expect, setDefaultTimeout, spyOn, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { readClaudeControl } from '../../src/claude/control.ts';
+import { Runner } from '../../src/claude/runner.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { History } from '../../src/transcript/protocol.ts';
-import { api, call, type Kited, mark, registerCheckout, startKited, waitIdle, waitRunner } from '../harness.ts';
+import { api, call, type Kited, mark, registerCheckout, startKited, waitRunner } from '../harness.ts';
+import { deferred } from '../harness-loop.ts';
 import { newRepo, transcript, until, writeFiles } from '../util.ts';
 
 setDefaultTimeout(3_000);
 let k: Kited | undefined;
 let reopened: Daemon | undefined;
+let restoreQuery: (() => void) | undefined;
+let releaseQuery: (() => void) | undefined;
 afterEach(async () => {
   api.releaseAll();
+  releaseQuery?.(); releaseQuery = undefined;
   await reopened?.stop(); reopened = undefined;
   await k?.stop(); k = undefined;
+  restoreQuery?.(); restoreQuery = undefined;
 });
 
 const tag = (name: string) => `${name}-${randomUUID().slice(0, 8)}`;
@@ -22,9 +30,16 @@ const tag = (name: string) => `${name}-${randomUUID().slice(0, 8)}`;
  * 非 UUID 客户端输入要经过宿主映射到原生 SDK；取消以 SDK 收据为准，增量与最终事件仍归并成同一记录。
  * 工具配置、真实 MCP 的 callId/turnId、工具后通知与输入停止收据跨进程交接，类型或单独小测试不能确认。
  */
-test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消停止收据和流式历史跨重开保持', async () => {
+test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消停止收据和流式历史跨重开保持，停止后的迟到窗口查询不能覆盖重开状态或启动排队与压缩', async () => {
   k = startKited();
   const kk = k;
+  const querying = deferred();
+  const delayedWindow = deferred<Awaited<ReturnType<Runner['contextUsage']>>>();
+  releaseQuery = () => delayedWindow.resolve(undefined);
+  const query = spyOn(Runner.prototype, 'contextUsage').mockImplementationOnce(() => {
+    querying.resolve(); return delayedWindow.promise;
+  });
+  restoreQuery = () => query.mockRestore();
   const streamingTag = tag('流式工具结果');
   const oldRule = tag('最初项目规则');
   const updatedRule = tag('运行中项目规则更新');
@@ -51,7 +66,6 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
   };
   const firstHold = tag('首个工具请求');
   const first = { id: 'client-input-without-uuid', text: `HOLD ${firstHold}\nREAD {"path":"a.txt"}\nSTREAM_RESULT ${streamingTag}` };
-  const firstTurn = mark(kk);
   const firstReply = await kk.call('POST', `/threads/${id}/messages`, first);
   expect(firstReply.status).toBe(200);
   expect(await kk.call('POST', `/threads/${id}/messages`, first)).toEqual(firstReply);
@@ -86,7 +100,14 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
     && record.block.text.includes(streamingTag) && record.generation === 'streaming'), '工具后回复增量已到达历史');
   expect((await kk.call('POST', `/threads/${id}/messages/${interjections[0]!.id}/cancel`)).status).toBe(409);
   api.release(streamingTag);
-  await waitIdle(kk, id, firstTurn);
+  await querying.promise;
+  // 上游回合已完成而控制查询未返回；这时停止必须能退回排队输入，迟到查询留到宿主重开后才放行。
+  const queuedAtQuery = { id: 'queued-during-context-query', text: tag('查询时排队'), source: 'human' as const };
+  expect((await kk.call('POST', `/threads/${id}/messages`, queuedAtQuery)).status).toBe(200);
+  const queryStop = mark(kk);
+  expect(await kk.call('POST', `/threads/${id}/interrupt`, { id: 'stop-context-query' }))
+    .toEqual({ status: 200, body: { returned: [queuedAtQuery] } });
+  await waitRunner(kk, id, 'closed', queryStop);
   const complete = await getHistory();
   const texts = complete.records.filter((record) => record.block.type === 'text' && record.block.text.includes(streamingTag));
   expect(texts).toHaveLength(1);
@@ -165,7 +186,17 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
   reopened = startDaemon({ home: kk.home, port: 0, lightTasks: false });
   expect(await call(reopened.url, 'POST', `/threads/${id}/interrupt`, stop)).toEqual(stopped);
   expect((await call(reopened.url, 'POST', `/threads/${id}/messages`, operation)).status).toBe(200);
+  const beforeLate = await call(reopened.url, 'GET', `/threads/${id}/history`);
+  const controlDirectory = join(kk.home, 'sessions', id);
+  const beforeControl = readClaudeControl(controlDirectory);
+  const beforeRequests = api.log.length;
+  delayedWindow.resolve({ tokens: 999_999, window: 1000 });
+  await delayedWindow.promise;
   const restored = await call(reopened.url, 'GET', `/threads/${id}/history`);
+  expect(restored.body.state).toEqual(beforeLate.body.state);
+  expect(readClaudeControl(controlDirectory)).toEqual(beforeControl);
+  expect(api.log).toHaveLength(beforeRequests);
+  expect(api.log.some((entry) => entry.main && entry.lastUserText.includes(queuedAtQuery.text))).toBe(false);
   expect(restored.body.pending).toEqual([]);
   expect(restored.body.state.phase).toBe('idle');
   const humanIds = [first.id, ...interjections.map((input) => input.id), operation.id];

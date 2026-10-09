@@ -4,7 +4,7 @@ import { ToolBatch } from './tools.ts';
 import { assembleContext, literalContext, restoreContext } from './context/assembler.ts';
 import { contextUpdateContext } from './context/notifications.ts';
 import { notificationSchema, requestSnapshot } from './request-config.ts';
-import { compactInstructions, compactionItems, compactTemplate, roughTokens, summaryText } from './compaction.ts';
+import { AUTO_COMPACT_RATIO, compactInstructions, compactionItems, compactTemplate, roughTokens, summaryText } from './compaction.ts';
 import type { ContextAssembly } from './context/types.ts';
 import type {
   CompactionRequest, ContextItem, HarnessRequest, Input, JournalEvent, JournalRecord, JsonObject, ModelItem, Outcome, Phase,
@@ -676,9 +676,10 @@ export class HarnessRunner implements ThreadRunner {
 
   /** 估算达到上限时先压缩全部已有历史；自动压缩后尚未实测就不再触发，避免粗估偏高时反复压缩。 */
   private async autoCompact(turn: Turn, prepared: HarnessRequest, context: ContextAssembly, configuration: RequestSnapshot, extra: ContextItem[]): Promise<void> {
-    const limit = prepared.autoCompactTokens;
+    const window = configuration.settings.contextWindow;
     const first = this.segments[0];
-    if (limit === undefined || !first) return;
+    if (window === undefined || !first) return;
+    const limit = Math.floor(window * AUTO_COMPACT_RATIO);
     const changed = this.contextChanged;
     if (changed?.automatic && !this.segments.some((segment) => 'usage' in segment && segment.usage && segment.seq > changed.seq)) return;
     if (this.estimate(context.instructions, configuration.tools, extra) < limit) return;

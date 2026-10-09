@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { instanceAgent } from '../agents/definition.ts';
 import { readClaudeMessages } from '../claude/history.ts';
 import { claudeState, readClaudeControl } from '../claude/control.ts';
 import { KiteError } from '../errors.ts';
@@ -76,7 +77,10 @@ export class TranscriptHistory {
         case 'workspace.error':
           for (const t of this.store.threads(event.workspaceId)) {
             const transcript = this.transcripts.get(t.id);
-            if (event.type === 'workspace.changed') transcript?.lifecycle(event.status, t.status);
+            if (event.type === 'workspace.changed') {
+              transcript?.configureModel(instanceAgent(t).model.model);
+              transcript?.lifecycle(event.status, t.status);
+            }
             else transcript?.workspaceError(event.message);
           }
           this.feed.emit(event);

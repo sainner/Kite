@@ -6,12 +6,12 @@ import { basename, isAbsolute, join, resolve } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { defaultAuthFile, readSubscriptionCredentials } from './harness/auth.ts';
-import { ChatGPTModel } from './harness/chatgpt.ts';
+import { CHATGPT_CONTEXT_WINDOW, ChatGPTModel } from './harness/chatgpt.ts';
 import { openThreadHost, readThreadMetadata } from './harness/thread-host.ts';
 import { harnessPolicy } from './execution/policy.ts';
 import { projectContext } from './harness/context/project.ts';
 import type { HarnessEvent } from './harness/types.ts';
-import { contextWindow, defaultAgentModel } from './agents/models.ts';
+import { defaultAgentModel } from './agents/models.ts';
 
 const USAGE = `用法：
   bun run harness --cwd <目录>                     开始对话
@@ -88,13 +88,11 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
       lastWasBusy = event.state.busy;
     }
   };
-  const settings = { model: { model: modelName, reasoning }, maxRequestsPerTurn: maxRequests };
-  const window = contextWindow(modelName);
+  const settings = { model: { model: modelName, reasoning }, contextWindow: CHATGPT_CONTEXT_WINDOW, maxRequestsPerTurn: maxRequests };
   const host = await openThreadHost({
     cwd, threadDir: directory, env: { ...process.env }, onEvent: render, settings,
     policy: await harnessPolicy({ cwd, env: process.env, home, authFile: resolve(values.auth ?? defaultAuthFile()) }),
-    prepareRequest: (tools) => ({ model, tools, instructions: projectContext(cwd), settings,
-      ...(window ? { autoCompactTokens: Math.floor(window * 0.85) } : {}) }),
+    prepareRequest: (tools) => ({ model, tools, instructions: projectContext(cwd), settings }),
   });
   const status = () => line(JSON.stringify(host.runner.state, null, 2));
   line(`Kite · ${modelName} · ${reasoning}\n工作目录：${cwd}\n会话：${basename(directory)}\n记录：${directory}`);

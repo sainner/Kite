@@ -46,12 +46,10 @@ export function openClaudeHost(options: {
   secrets?: SecretProvider;
   prepare(afterNotification: number): { agent: AgentDefinition; instructions: string; contextUpdate: string; tools: Tool[]; allowed: Set<string>; notificationText: string; through: number };
   events: RuntimeEvents;
-  /** 压缩所需的模板、净文件变化和自动压缩阈值；不提供时不开放压缩。 */
+  /** 压缩所需的模板与净文件变化；不提供时不开放压缩。 */
   compaction?: {
     templates(): { compact: ContextDefinition; fileChanges: ContextDefinition };
     files(range: { from: number; to: number }): Promise<string | undefined>;
-    /** 模型目录中的窗口；进程报告实际认定的窗口之前用它判断自动压缩。 */
-    window(model: string): number | undefined;
   };
 }): Runtime {
   const data = readClaudeControl(options.directory);
@@ -74,11 +72,10 @@ export function openClaudeHost(options: {
   /** 进行中的压缩或撤销，期间不启动新回合；停止会取消其中的摘要请求。 */
   let compacting: Promise<void> | undefined;
   let compactionAbort: AbortController | undefined;
-  /** 最近一次主循环模型请求的实测输入，回合结束时据此判断是否自动压缩；压缩后清零。 */
-  let measured = 0;
+  /** 本回合最近一次主循环模型请求的实测输入，收尾时与运行窗口配对；压缩后清除。 */
+  let measured: { requestId: string; tokens: number } | undefined;
   let currentModel = '';
-  /** 当前进程认定的窗口，因账号与型号而异，可能小于模型目录中的值（2026-10-09 假端点上 sonnet、opus 为 20 万）。 */
-  let cliWindow: number | undefined;
+  let windowQuery: AbortController | undefined;
   const publish = () => options.events.emit({ type: 'claude.control', state: claudeState(data, phase, !!compacting) });
   const requireStorage = () => { if (storageFailed) throw new KiteError('会话记录写入失败，请重新打开宿主并核查后恢复', 409); };
   const save = () => {
@@ -138,10 +135,24 @@ export function openClaudeHost(options: {
     else options.events.idle(data.outcome.kind === 'completed');
   };
   /** 常驻进程上的回合正常收口：进程留着，结果与队列照常处理。 */
-  const completeTurn = async () => {
+  const completeTurn = async (running: Runner) => {
     if (phase !== 'running') return;
+    // 查询期间仍占用线程；新输入排队，不能抢先启动下一回合或修改模型配置。
+    phase = 'finishing'; publish();
+    const query = new AbortController();
+    windowQuery = query;
     controller.abort();
     await waitTools();
+    if (query.signal.aborted || closing || driver !== running) {
+      if (windowQuery === query) windowQuery = undefined;
+      return;
+    }
+    let usage: Awaited<ReturnType<Runner['contextUsage']>>;
+    try { usage = await running.contextUsage(query.signal); }
+    finally { if (windowQuery === query) windowQuery = undefined; }
+    if (query.signal.aborted || closing || driver !== running) return;
+    const window = usage?.window ?? (data.contextWindow?.model === currentModel ? data.contextWindow.tokens : undefined);
+    if (measured && window !== undefined) data.contextWindow = { model: currentModel, tokens: window, requestId: measured.requestId };
     try { processesStopped(); } catch (failure) { data.recovery = { message: String(failure) }; }
     for (const entry of data.inputs) if (entry.status === 'active') entry.status = 'done';
     if (data.inputs.some((entry) => entry.status === 'submitted')) data.recovery ??= { message: 'Claude 回合结束时仍有未确认交接的输入，请核查后恢复。' };
@@ -150,8 +161,7 @@ export function openClaudeHost(options: {
     phase = 'idle';
     save();
     // 回合之间才能改写会话：用量达到窗口的 85% 时先压缩，之后再处理排队的输入。
-    const window = cliWindow ?? options.compaction?.window(currentModel);
-    if (!closing && !data.paused && window !== undefined && measured >= Math.floor(window * AUTO_COMPACT_RATIO)) {
+    if (!closing && !data.paused && options.compaction && window !== undefined && measured && measured.tokens >= Math.floor(window * AUTO_COMPACT_RATIO)) {
       void compaction({ compact: { id: randomUUID(), automatic: true } }).catch(() => {});
     }
     if (!closing && !data.paused && data.inputs.some((entry) => entry.status === 'queued')) pump();
@@ -212,7 +222,7 @@ export function openClaudeHost(options: {
         if (errors.length) throw new Error(errors.join('\n'));
       });
       await syncToClaude(options.directory, options.cwd, options.nativeId, prepared.agent.model.model);
-      measured = 0;
+      measured = undefined;
     })();
     compacting = job.catch((error: unknown) => {
       if (!checked) { validated(error); return; }
@@ -237,7 +247,7 @@ export function openClaudeHost(options: {
     tools: available.map(({ name, description, parameters }) => [name, description, parameters]),
   });
   const pump = () => {
-    if (closing || compacting || phase === 'stopping' || data.recovery || data.paused || restarting || (driver && driver.state !== 'running')) return;
+    if (closing || compacting || phase === 'finishing' || phase === 'stopping' || data.recovery || data.paused || restarting || (driver && driver.state !== 'running')) return;
     const entry = data.inputs.find((item) => item.status === 'queued');
     if (!entry) return;
     // 回合进行中的新消息沿原生输入流插话。
@@ -247,6 +257,9 @@ export function openClaudeHost(options: {
       data.outcome = { kind: 'failed', message: String(error) }; data.paused = true; save(); return;
     }
     data.initialContext ??= prepared.instructions;
+    currentModel = prepared.agent.model.model;
+    if (data.contextWindow?.model !== currentModel) data.contextWindow = undefined;
+    measured = undefined;
     controller = new AbortController(); terminal = undefined; turnId = entry.sdkId;
     phase = 'running'; data.outcome = undefined; save();
     const available = [...tools, ...prepared.tools].filter((tool) => prepared.allowed.has(tool.name));
@@ -265,8 +278,6 @@ export function openClaudeHost(options: {
   };
   const start = (prepared: ReturnType<typeof options.prepare>, available: Tool[], key: string) => {
     driverKey = key;
-    currentModel = prepared.agent.model.model;
-    cliWindow = undefined;
     const runner: Runner = new Runner({ cwd: options.cwd, nativeId: options.nativeId, title: options.title, resident: true,
       configuration: () => ({ model: prepared.agent.model.model, effort: prepared.agent.model.reasoning === 'default' ? undefined : prepared.agent.model.reasoning as Options['effort'],
         maxTurns: prepared.agent.maxRequestsPerTurn, systemPrompt: { type: 'custom', snapshot: false, prompt: data.initialContext! } }),
@@ -293,10 +304,10 @@ export function openClaudeHost(options: {
       message(message) {
         if (message.type === 'assistant' && message.parent_tool_use_id === null) {
           const usage = message.message.usage;
-          if (usage) measured = (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
+          const tokens = usage && [usage.input_tokens, usage.cache_creation_input_tokens ?? 0, usage.cache_read_input_tokens ?? 0];
+          measured = tokens?.every((value) => Number.isSafeInteger(value) && value >= 0)
+            ? { requestId: message.message.id, tokens: tokens.reduce((sum, value) => sum + value, 0) } : undefined;
         }
-        // 回合结果到达后在后台问进程认定的窗口，不拖住回合收尾。
-        if (message.type === 'result' && cliWindow === undefined) void runner.contextUsage().then((usage) => { if (usage && driver === runner) cliWindow = usage.window; });
         if (message.type === 'result') terminal = message.is_error
           ? { kind: 'failed', message: 'errors' in message ? message.errors.join('\n') : 'Claude 执行失败' } : { kind: 'completed' };
         options.events.emit({ type: 'sdk', message });
@@ -318,7 +329,7 @@ export function openClaudeHost(options: {
       turnEnd: () => options.events.snapshot([]),
       idle() {
         if (driver !== runner) return;
-        settling = completeTurn().catch((failure) => {
+        settling = completeTurn(runner).catch((failure) => {
           data.recovery = { message: String(failure) }; phase = 'idle'; publish();
           options.events.emit({ type: 'error', message: String(failure) });
         });
@@ -326,11 +337,13 @@ export function openClaudeHost(options: {
       state(state, error) {
         // 换配置重启时退下的旧进程不再影响当前状态。
         if (driver !== runner) return;
-        if (state === 'closed') settling = finish(error).catch((failure) => {
-          data.recovery = { message: String(failure) }; phase = 'idle'; publish();
-          options.events.emit({ type: 'error', message: String(failure) });
-        });
-        else options.events.emit({ type: 'runner', state, ...(error ? { error } : {}) });
+        if (state === 'closed') {
+          windowQuery?.abort();
+          settling = finish(error).catch((failure) => {
+            data.recovery = { message: String(failure) }; phase = 'idle'; publish();
+            options.events.emit({ type: 'error', message: String(failure) });
+          });
+        } else options.events.emit({ type: 'runner', state, ...(error ? { error } : {}) });
       },
     });
     driver = runner;
@@ -388,6 +401,7 @@ export function openClaudeHost(options: {
       }
       const receipt = { id: request.id, request: encoded, returned: [] as Input[], completed: false };
       data.stops.push(receipt);
+      windowQuery?.abort();
       data.paused = false; phase = 'stopping'; save(); controller.abort();
       stopping = (async () => {
         compactionAbort?.abort();
@@ -449,6 +463,7 @@ export function openClaudeHost(options: {
     },
     async shutdown() {
       closing = true; controller.abort();
+      windowQuery?.abort();
       compactionAbort?.abort();
       await compacting;
       await restarting;

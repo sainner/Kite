@@ -1,4 +1,4 @@
-/** 只保存宿主输入收据、停止结果和进程登记；Claude 对话与恢复数据仍由 SDK 保存。 */
+/** 保存宿主控制状态与运行窗口；Claude 对话与恢复数据仍由 SDK 保存。 */
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -14,6 +14,8 @@ const schema = z.object({
   paused: z.boolean().default(false),
   /** 切换后端前由另一后端处理过的输入，重发同一 ID 不再投递。 */
   importedInputs: z.array(z.string()).default([]),
+  /** CLI 上报的运行窗口，关联配置模型和对应的主循环用量，不能配给其他模型或旧请求。 */
+  contextWindow: z.object({ model: z.string().min(1), tokens: z.number().int().positive(), requestId: z.string().min(1) }).optional(),
   outcome: z.discriminatedUnion('kind', [z.object({ kind: z.literal('completed') }), z.object({ kind: z.literal('interrupted') }),
     z.object({ kind: z.literal('failed'), message: z.string() })]).optional(),
   recovery: z.object({ message: z.string() }).optional(),
@@ -25,6 +27,7 @@ export interface ClaudeState {
   busy: boolean;
   /** 正在压缩上下文；期间不启动新回合。 */
   compacting?: boolean;
+  contextWindow?: ClaudeControl['contextWindow'];
   waitingForResume: boolean;
   lastOutcome?: Outcome;
   recovery?: Recovery;
@@ -47,8 +50,9 @@ export function saveClaudeControl(directory: string, data: z.input<typeof schema
   const folder = openSync(dirname(path), 'r');
   try { fsyncSync(folder); } finally { closeSync(folder); }
 }
-export const claudeState = (data: Pick<ClaudeControl, 'inputs' | 'outcome' | 'recovery' | 'paused'>, phase: Phase = 'idle', compacting = false): ClaudeState => ({
+export const claudeState = (data: Pick<ClaudeControl, 'inputs' | 'outcome' | 'recovery' | 'paused' | 'contextWindow'>, phase: Phase = 'idle', compacting = false): ClaudeState => ({
   inputs: data.inputs, phase, busy: phase !== 'idle' || compacting, ...(compacting ? { compacting } : {}), lastOutcome: data.outcome, recovery: data.recovery,
+  contextWindow: data.contextWindow,
   waitingForResume: !!data.recovery || (phase === 'idle' && data.paused),
 });
 export const sameInput = (a: Input, b: Input) => a.id === b.id && a.text === b.text && a.source === b.source;

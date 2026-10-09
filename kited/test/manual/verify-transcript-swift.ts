@@ -6,6 +6,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { AgentDefinition } from '../../src/agents/definition.ts';
 import { TranscriptFeed } from '../../src/transcript/feed.ts';
 import { TranscriptProjection } from '../../src/transcript/projection.ts';
 import type { DisplayDelta, DisplayRecord } from '../../src/transcript/protocol.ts';
@@ -61,7 +62,11 @@ function declaration(source: string, signature: string): string {
   throw new Error(`Swift 声明未闭合：${signature}`);
 }
 
-const thread = { id: 'fixture-thread', status: 'open', runtime: 'harness', workspace: { status: 'open' } } as ThreadContext;
+const agent: AgentDefinition = { runtime: 'harness', model: { model: 'gpt-6.1-sol', reasoning: 'high' },
+  tools: [], maxRequestsPerTurn: 100,
+  context: { version: 2, id: 'fixture', title: '显示投影合同', scene: 'thread.create', blocks: [] } };
+const thread = { id: 'fixture-thread', status: 'open', runtime: 'harness', config: { agent },
+  workspace: { status: 'open' } } as unknown as ThreadContext;
 const feed = new TranscriptFeed();
 const projection = new TranscriptProjection(thread, feed);
 const deltas: DisplayDelta[] = [];
