@@ -85,8 +85,14 @@ export class TemplateEmblems {
   private pending = new Map<string, { again: boolean; force: boolean; promise: Promise<void> }>();
   private closed = false;
 
+  /** publish 把新签名写到账号资源库，后写为准。 */
   constructor(private store: Store, private roles: Roles, private templates: ContextTemplates, private tasks: LightTasks | undefined,
-    private changed: () => void) {}
+    private changed: () => void, private publish: (id: string, emblem: TemplateEmblem) => void = () => {}) {}
+
+  private saveEmblem(id: string, emblem: TemplateEmblem): void {
+    this.store.saveTemplateEmblem(id, emblem);
+    this.publish(id, emblem);
+  }
 
   status({ role }: RoleSnapshot): EmblemStatus {
     const emblem = this.store.templateEmblem(role.id);
@@ -126,7 +132,7 @@ export class TemplateEmblems {
     const problem = checkEmblemExpression(parsed.data.expression);
     if (problem) throw new KiteError(`表达式不可用：${problem}`);
     const role = this.roles.get(id);
-    this.store.saveTemplateEmblem(id, { ...parsed.data, source: 'manual', templateRevision: contextRevision(role.role) });
+    this.saveEmblem(id, { ...parsed.data, source: 'manual', templateRevision: contextRevision(role.role) });
     this.failures.delete(id);
     this.changed();
     return this.decorate(role);
@@ -185,7 +191,7 @@ export class TemplateEmblems {
         if (this.closed) return;
         // 生成期间用户手改了签名：普通生成让位于手改
         if (!force && this.store.templateEmblem(id)?.source === 'manual') return;
-        this.store.saveTemplateEmblem(id, { ...reply.design, source: 'generated', templateRevision: contextRevision(role) });
+        this.saveEmblem(id, { ...reply.design, source: 'generated', templateRevision: contextRevision(role) });
         return;
       }
       lastError = reply.error;

@@ -216,12 +216,14 @@ test('模型创建记录来源并受工作区与目标授权约束，撤权即�
   const workspace = aggregate.body.find((entry: { workspace: { id: string } }) => entry.workspace.id === workspaceId);
   const child = workspace.instances.find((instance: { origin?: { callId: string } }) => instance.origin?.callId === 'create-review');
   if (!child) throw new Error('模型没有创建审查实例');
-  // 审查角色的子实例照样带着代理的默认授权，挡住它的是角色白名单：协作工具不在它的工具里
+  // 只读审查角色用不了协作工具，默认也不带协作操作的授权
   expect(child.config.role.id).toBe('kite.review');
   expect(child.config.agent.tools).toEqual(['read']);
   expect(child.origin).toMatchObject({ instanceId: parentId, callId: 'create-review' });
   const modelCaller = { kind: 'model' as const, instanceId: parentId, turnId: first.request.turnId, callId: 'authorization' };
   await expect(kk.daemon.kite.operations.invoke(modelCaller, otherWorkspaceId, 'agent.list', {}))
+    .rejects.toMatchObject({ outcome: 'denied' });
+  await expect(kk.daemon.kite.operations.invoke({ kind: 'model', instanceId: child.id }, workspaceId, 'agent.list', {}))
     .rejects.toMatchObject({ outcome: 'denied' });
   await expect(kk.daemon.kite.operations.invoke(modelCaller, workspaceId, 'agent.send', {
     operationId: 'send-unrelated', instanceId: unrelatedId, text: '不应发送',

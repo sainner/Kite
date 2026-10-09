@@ -30,6 +30,21 @@ export interface ApiKey {
   adminKey?: string;
 }
 
+/** 资源库里的一项；插件包在列表里不带代码，单独读取时才有。 */
+export interface LibraryItem {
+  kind: 'role' | 'template' | 'emblem' | 'plugin';
+  id: string;
+  revision: string;
+  updatedAt: number;
+  body: Record<string, unknown>;
+}
+
+/** 项目约束，首期只有工具规则；没设置过时是不限制的黑名单。 */
+export interface ProjectConstraints {
+  tools: { mode: 'allow' | 'deny'; tools: string[] };
+  revision: string;
+}
+
 export class AccountClient {
   constructor(private readonly link: () => AccountLink | undefined) {}
 
@@ -74,6 +89,21 @@ export class AccountClient {
   createHosted(name: string): Promise<RegisteredProject> { return this.request('POST', '/api/projects', { hosted: { name } }); }
 
   projects(): Promise<RegisteredProject[]> { return this.request('GET', '/api/projects'); }
+
+  library(signal?: AbortSignal): Promise<LibraryItem[]> { return this.request('GET', '/api/library', undefined, signal); }
+
+  libraryItem(kind: LibraryItem['kind'], id: string): Promise<LibraryItem> {
+    return this.request('GET', `/api/library/${kind}/${encodeURIComponent(id)}`);
+  }
+
+  /** expectedRevision 为 null 表示新建，省略表示不做版本校验。 */
+  putLibrary(kind: LibraryItem['kind'], id: string, body: object, expectedRevision?: string | null): Promise<LibraryItem> {
+    return this.request('PUT', `/api/library/${kind}/${encodeURIComponent(id)}`, { body, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+  }
+
+  constraints(projectId: string, signal?: AbortSignal): Promise<ProjectConstraints> {
+    return this.request('GET', `/api/projects/${encodeURIComponent(projectId)}/constraints`, undefined, signal);
+  }
 
   /** 访问某个 HTTPS 远程的凭据；账号没有绑定这个平台时为 null，交给用户本机的 git 配置。 */
   async credential(url: string): Promise<GitCredential | null> {

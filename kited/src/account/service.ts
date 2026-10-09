@@ -11,6 +11,7 @@ import { catalogPublication, type CatalogSnapshot } from './catalog.ts';
 import { GitHubDeviceFlow, gitHubRepositories, type GitHubOptions } from './credentials.ts';
 import { GitHosting } from './git-hosting.ts';
 import { CredentialConflictError, CredentialStore, type Credential, type CredentialType } from './credential-store.ts';
+import { Library, LibraryConflict, libraryKind, libraryWrite } from './library.ts';
 import { secretName, secretReference, secretValue } from '../secrets.ts';
 
 interface Options {
@@ -72,6 +73,13 @@ const credentialCreation = z.object({ type: credentialType, name: z.unknown(), p
 const credentialChange = z.object({ name: z.unknown().optional(), meta: z.unknown().optional(), secret: z.unknown().optional() }).strict()
   .refine((change) => Object.keys(change).length > 0, '没有要修改的内容');
 const JSON_LIMIT = 2 * 1024 * 1024;
+/** 插件包的代码最大 4 MiB，加上 JSON 转义留出余量。 */
+const PLUGIN_LIMIT = 6 * 1024 * 1024;
+/** 项目约束：首期只有工具的白名单或黑名单，与角色、实例的选择逐层求交。 */
+const projectConstraints = z.object({
+  tools: z.object({ mode: z.enum(['allow', 'deny']), tools: z.array(z.string().trim().min(1).max(64)).max(64) }).strict(),
+}).strict();
+const defaultConstraints: z.infer<typeof projectConstraints> = { tools: { mode: 'deny', tools: [] } };
 const HOSTED_TOKEN_MS = 60 * 60_000;
 
 /** 密码与会话交给 Better Auth；这里只维护账号与网络设备之间的对应关系。 */
@@ -115,6 +123,9 @@ export async function createAccountService(options: Options) {
       icon TEXT NOT NULL DEFAULT 'folder', color TEXT NOT NULL DEFAULT 'primary'
     );
     CREATE TABLE IF NOT EXISTS kite_git_token (digest TEXT PRIMARY KEY, userId TEXT NOT NULL, expiresAt INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS kite_project_constraints (
+      projectId TEXT PRIMARY KEY REFERENCES kite_project(id) ON DELETE CASCADE, body TEXT NOT NULL
+    );
   `);
   // 已登记的设备在下次启动 App 时补报类型。
   if (!db.query<{ name: string }, []>('PRAGMA table_info(kite_device)').all().some((column) => column.name === 'kind')) {
@@ -122,6 +133,13 @@ export async function createAccountService(options: Options) {
   }
   const hosting = new GitHosting(options.git?.reposPath ?? join(dirname(options.databasePath), 'repos'));
   const credentials = new CredentialStore(db, options.secret);
+  const library = new Library(db);
+  /** 约束的版本是内容摘要，没设置过时是默认的不限制。 */
+  function constraintsView(projectId: string) {
+    const row = db.query<{ body: string }, [string]>('SELECT body FROM kite_project_constraints WHERE projectId = ?').get(projectId);
+    const body = row ? JSON.parse(row.body) as z.infer<typeof projectConstraints> : defaultConstraints;
+    return { ...body, revision: hash(JSON.stringify(body)) };
+  }
   const github = options.git?.github && new GitHubDeviceFlow(options.git.github);
   const flows = new Map<string, { userId: string; deviceCode: string; expiresAt: number }>();
   /** 迁移中的托管仓库只读，推送到新远程期间不能再有人写入。 */
@@ -306,8 +324,9 @@ export async function createAccountService(options: Options) {
     const path = new URL(request.url).pathname;
     const repository = /^\/git\/([0-9a-f-]{36})\.git(\/.*)$/.exec(path);
     if (repository) return serveRepository(request, repository[1]!, repository[2]!);
-    // 推送托管仓库需要较大的请求上限；其余接口仍限制为 2 MiB。
-    if (Number(request.headers.get('content-length') ?? 0) > JSON_LIMIT) throw new RequestError('请求内容过大', 413);
+    // 推送托管仓库需要较大的请求上限；上传插件包放宽到 6 MiB，其余接口仍限制为 2 MiB。
+    const limit = path.startsWith('/api/library/plugin/') ? PLUGIN_LIMIT : JSON_LIMIT;
+    if (Number(request.headers.get('content-length') ?? 0) > limit) throw new RequestError('请求内容过大', 413);
     if (path.startsWith('/api/auth/')) return auth.handler(request);
     if (request.method === 'GET' && path === '/health') return result({ ok: true });
     const publication = /^\/api\/catalog\/([^/]+)$/.exec(path);
@@ -394,6 +413,25 @@ export async function createAccountService(options: Options) {
       }
       throw new RequestError('未知的凭据接口', 404);
     }
+    if (path === '/api/library' && request.method === 'GET') {
+      return result(library.list((await owner(request)).userId));
+    }
+    const libraryItem = /^\/api\/library\/([a-z]+)\/([^/]+)$/.exec(path);
+    if (libraryItem) {
+      const { userId } = await owner(request);
+      const kind = libraryKind.parse(libraryItem[1]);
+      const id = z.string().min(1).max(200).parse(decodeURIComponent(libraryItem[2]!));
+      if (request.method === 'GET') {
+        const found = library.get(userId, kind, id);
+        if (!found) throw new RequestError('资源库里没有这一项', 404);
+        return result(found);
+      }
+      if (request.method === 'PUT') {
+        try { return result(library.put(userId, kind, id, libraryWrite.parse(await request.json()), now())); }
+        catch (error) { if (error instanceof LibraryConflict) throw new RequestError(error.message, 409); throw error; }
+      }
+      throw new RequestError('找不到接口', 404);
+    }
     if (path === '/api/git/credential' && request.method === 'POST') {
       const found = await worker(bearerToken(request));
       if (!found) throw new RequestError('请使用工作机凭据', 401);
@@ -451,6 +489,20 @@ export async function createAccountService(options: Options) {
           ON CONFLICT(projectId) DO UPDATE SET icon = COALESCE(?, icon), color = COALESCE(?, color)`)
           .run(project.id, body.icon ?? null, body.color ?? null, body.icon ?? null, body.color ?? null);
         return result(projectView(project));
+      }
+      const constraints = /^\/api\/projects\/([^/]+)\/constraints$/.exec(path);
+      if (constraints && request.method === 'GET') return result(constraintsView(ownedProject(constraints[1]!, userId).id));
+      if (constraints && request.method === 'PUT') {
+        // 约束限制的正是工作机上的代理，只能由用户修改。
+        if (fromWorker) throw new RequestError('项目约束须由用户在 App 中修改', 403);
+        const project = ownedProject(constraints[1]!, userId);
+        const { expectedRevision, ...body } = projectConstraints.extend({ expectedRevision: z.string().min(1) }).parse(await request.json());
+        return result(db.transaction(() => {
+          if (constraintsView(project.id).revision !== expectedRevision) throw new RequestError('项目约束已被其他设备修改，请刷新后重试', 409);
+          db.query('INSERT INTO kite_project_constraints VALUES (?, ?) ON CONFLICT(projectId) DO UPDATE SET body = excluded.body')
+            .run(project.id, JSON.stringify(body));
+          return constraintsView(project.id);
+        })());
       }
       const match = /^\/api\/projects\/([^/]+)(\/migrate)?$/.exec(path);
       if (match && !match[2] && request.method === 'GET') return result(projectView(ownedProject(match[1]!, userId)));

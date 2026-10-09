@@ -20,6 +20,7 @@ import { pluginDefinition } from './plugins/definitions.ts';
 import type { OperationToolSelection } from './operations/operations.ts';
 import type { CompactionRequest, Input, Model, Phase, Recovery, StopRequest, ThreadNotification, Tool } from './harness/types.ts';
 import type { LightTaskOptions } from './light-tasks.ts';
+import type { ProjectToolRule } from './roles.ts';
 
 export interface Runtime {
   readonly state: RunnerState | Phase;
@@ -68,15 +69,20 @@ export interface RuntimeHost {
   compactionTemplates(): { compact: ContextDefinition; fileChanges: ContextDefinition };
   /** 两个时刻之间工作区的净文件变化。 */
   compactionFiles(range: { from: number; to: number }): Promise<string | undefined>;
+  /** 所在项目的工具约束；每次请求和每次调用工具时读取，收紧即时生效。 */
+  toolConstraint(): ProjectToolRule | undefined;
 }
 
-/** 两个后端共用的工具筛选：agent 配置声明的工具中，操作工具还须获得授权；插件工具只看授权。 */
-function selectTools(current: ThreadContext, operations: RuntimeHost['operations']) {
+const constraintAllows = (rule: ProjectToolRule | undefined, name: string) => !rule || (rule.mode === 'allow') === rule.tools.includes(name);
+
+/** 两个后端共用的工具筛选：agent 配置声明的工具中，须未被项目约束禁用，操作工具还须获得授权；插件工具只看授权。 */
+function selectTools(current: ThreadContext, operations: RuntimeHost['operations'], constraint: ProjectToolRule | undefined) {
   const agent = instanceAgent(current);
   const selection = operations.prepare(current);
   const operationNames = new Set(operations.tools.map((tool) => tool.name));
   const configured = new Set<string>(agent.tools);
-  const permitted = (name: string) => configured.has(name) && (!operationNames.has(name) || selection.allowed.has(name));
+  const permitted = (name: string) => configured.has(name) && constraintAllows(constraint, name)
+    && (!operationNames.has(name) || selection.allowed.has(name));
   const plugins = selection.plugins.filter((tool) => selection.allowed.has(tool.name));
   return { agent, selection, permitted, plugins };
 }
@@ -96,7 +102,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   if (runtime === 'claude') {
     return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy, secrets,
       prepare(afterNotification) {
-        const { agent, permitted, plugins } = selectTools(host.current(), operations);
+        const { agent, permitted, plugins } = selectTools(host.current(), operations, host.toolConstraint());
         const allowed = new Set([...agent.tools.filter(permitted), ...plugins.map((tool) => tool.name)]);
         const updates = host.notifications(afterNotification);
         const instructions = assembleContext(projectContext(cwd, agent.context)).instructions;
@@ -115,13 +121,18 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
     prepareRequest(tools, { afterNotification }) {
       const current = host.current();
       const execution = instanceExecutionGrants(current);
-      const { agent, selection, permitted, plugins } = selectTools(current, operations);
+      const { agent, selection, permitted, plugins } = selectTools(current, operations, host.toolConstraint());
       const declared = [...tools, ...operations.tools].filter((tool) => declaredTools.has(tool.name));
+      // 请求发出后项目约束收紧时，这次请求里的调用也在执行前拦下。
+      const guarded = (tool: Tool): Tool => Object.assign(Object.create(Object.getPrototypeOf(tool) as object) as Tool, tool, {
+        execute: (args: Parameters<Tool['execute']>[0], context: Parameters<Tool['execute']>[1]) => constraintAllows(host.toolConstraint(), tool.name)
+          ? tool.execute(args, context) : Promise.resolve({ status: 'not_executed' as const, output: `项目约束已禁用 ${tool.name}` }),
+      });
       return {
         model: options.model?.(current) ?? new ChatGPTModel({ ...agent.model, threadId: current.nativeId,
           credentials: () => readSubscriptionCredentials(join(home, 'auth', 'chatgpt', 'auth.json')),
           observeLimits: host.chatgptLimits }),
-        tools: [...declared.filter((tool) => permitted(tool.name)), ...plugins],
+        tools: [...declared.filter((tool) => permitted(tool.name)).map(guarded), ...plugins],
         toolDefinitions: [...declared, ...selection.plugins].map(({ name, description, parameters }) => ({ name, description, parameters })),
         instructions: projectContext(current.workspace.cwd, agent.context),
         contextUpdateTemplate: host.contextUpdateTemplate(),

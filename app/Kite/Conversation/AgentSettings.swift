@@ -61,14 +61,15 @@ struct AgentSettings: View {
                             .disabled(levels.isEmpty)
                         }
                     }
-                    CardSection("可用工具", note: "可开的工具由创建时的角色决定，角色必需的不能关闭。实例授权仍然有效；勾选工具不会增加文件、网络或其他实例的访问权限。") {
+                    CardSection("可用工具", note: "可开的工具由创建时的角色决定，角色必需的不能关闭；项目约束禁用的工具暂不可用，约束放宽后恢复。实例授权仍然有效；勾选工具不会增加文件、网络或其他实例的访问权限。") {
                         ForEach(capabilities.tools, id: \.self) { name in
-                            let required = capabilities.required.contains(name)
-                            Toggle(required ? "\(name)（角色必需）" : name, isOn: Binding(get: { draft?.tools.contains(name) == true }, set: { enabled in
+                            let blocked = capabilities.blocked.contains(name)
+                            Toggle(capabilities.toolLabel(name), isOn: Binding(get: { draft?.tools.contains(name) == true && !blocked }, set: { enabled in
                                 draft?.tools.removeAll { $0 == name }
                                 if enabled { draft?.tools.append(name) }
                             }))
-                            .disabled(required)
+                            .strikethrough(blocked)
+                            .disabled(blocked || capabilities.required.contains(name))
                         }
                     }
                     CardField(label: "每回合最多模型请求数", focused: editingLimit, note: "达到上限后停止，保留已经产生的结果。") {
@@ -179,14 +180,15 @@ struct DraftAgentSettings: View {
         CardSheet(title: "代理配置", subtitle: role.map { "角色：\($0.role.title)" }, typing: editingLimit, size: InstanceSettings.size,
                   close: { dismiss() }) {
             if let capabilities {
-                CardSection("可用工具", note: "可开的工具由角色决定，角色必需的不能关闭。") {
+                CardSection("可用工具", note: "可开的工具由角色决定，角色必需的不能关闭，项目约束禁用的暂不可用。") {
                     ForEach(capabilities.tools, id: \.self) { name in
-                        let required = capabilities.required.contains(name)
-                        Toggle(required ? "\(name)（角色必需）" : name, isOn: Binding(get: { tools.contains(name) }, set: { enabled in
+                        let blocked = capabilities.blocked.contains(name)
+                        Toggle(capabilities.toolLabel(name), isOn: Binding(get: { tools.contains(name) && !blocked }, set: { enabled in
                             tools.removeAll { $0 == name }
                             if enabled { tools.append(name) }
                         }))
-                        .disabled(required)
+                        .strikethrough(blocked)
+                        .disabled(blocked || capabilities.required.contains(name))
                     }
                 }
                 CardField(label: "每回合最多模型请求数", focused: editingLimit, note: "达到上限后停止，保留已经产生的结果。") {

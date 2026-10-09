@@ -24,6 +24,8 @@ export const packageRevision = (value: PluginPackage): string => createHash('sha
 
 export class PluginCatalog {
   private packages = new Map<string, { value: PluginPackage; definition: PluginDefinition }>();
+  /** 账号资源库里有、本机还没装的包；用到时由资源库同步下载安装。 */
+  private remote = new Map<string, PluginDefinition>();
   constructor(private directory: string) {
     if (!existsSync(directory)) return;
     for (const file of readdirSync(directory).filter((file) => file.endsWith('.json'))) {
@@ -33,11 +35,28 @@ export class PluginCatalog {
     }
   }
   definitions(): PluginDefinition[] {
-    return [...pluginDefinitions(), ...[...this.packages.values()].map((entry) => structuredClone(entry.definition))];
+    return [...pluginDefinitions(), ...[...this.packages.values()].map((entry) => structuredClone(entry.definition)),
+      ...[...this.remote.values()].filter((definition) => !this.packages.has(definition.id)).map((definition) => structuredClone(definition))];
   }
   get(id: string): PluginDefinition {
     const entry = this.packages.get(id);
-    return entry ? structuredClone(entry.definition) : pluginDefinition(id);
+    const remote = this.remote.get(id);
+    return entry ? structuredClone(entry.definition) : remote ? structuredClone(remote) : pluginDefinition(id);
+  }
+  installed(id: string): boolean { return this.packages.has(id); }
+  /** 本机装过的包，资源库同步时上传账号里还没有的。 */
+  installedPackages(): PluginPackage[] { return [...this.packages.values()].map((entry) => structuredClone(entry.value)); }
+  /** 账号里各包的元数据（不含代码）与版本；格式不合本机契约的跳过。 */
+  setRemote(entries: Array<{ meta: unknown; revision: string }>): void {
+    this.remote = new Map(entries.flatMap(({ meta, revision }) => {
+      const parsed = pluginPackageSchema.safeParse({ ...(meta as object), bundle: ' ' });
+      return parsed.success ? [[parsed.data.id, { ...this.definition(parsed.data), revision }] as const] : [];
+    }));
+  }
+  validate(raw: unknown): PluginPackage {
+    const parsed = pluginPackageSchema.safeParse(raw);
+    if (!parsed.success) throw new KiteError(`插件包无效：${parsed.error.message}`);
+    return parsed.data;
   }
   package(id: string): PluginPackage {
     const value = this.packages.get(id);
@@ -45,9 +64,7 @@ export class PluginCatalog {
     return structuredClone(value.value);
   }
   install(raw: unknown): PluginDefinition {
-    const parsed = pluginPackageSchema.safeParse(raw);
-    if (!parsed.success) throw new KiteError(`插件包无效：${parsed.error.message}`);
-    const value = parsed.data;
+    const value = this.validate(raw);
     const previous = this.packages.get(value.id);
     if (previous) {
       if (previous.definition.revision !== packageRevision(value)) throw new KiteError('定义 ID 已安装其他内容；升级请使用新的定义 ID', 409);

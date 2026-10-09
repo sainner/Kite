@@ -1,19 +1,19 @@
 ---
 name: todo-agent-roles
-description: 代理与角色改造的三期待办：角色与代理合一、资源库迁到账号、项目约束
+description: 代理与角色改造三期代码已完成，剩账号服务上线、各工作机升级与真机验收
 metadata:
   node_type: memory
   type: todo
   originSessionId: 7c9639e3-0374-46e3-81b4-3a82c2c97cb6
-  modified: 2026-10-09T06:13:15.640Z
+  modified: 2026-10-09T07:07:25.911Z
 ---
 
-来源：2026-10-09 用户确认 [[agent-role-direction]]、[[project-constraints-direction]]、[[library-account-storage]]、[[model-vendor-backend]]，并要求按三期推进。
+来源：2026-10-09 用户确认 [[agent-role-direction]]、[[project-constraints-direction]]、[[library-account-storage]]、[[model-vendor-backend]]，要求按三期推进。同日三期代码完成：角色与代理合一、资源库随账号保存（角色、后台模板、点阵签名、插件包）、项目约束。
 
-1. 角色与代理合一（角色暂存工作机）：三个 agent 定义合一；角色含工具黑白名单与必需标记、默认模型、预算；`agent.start` 改按角色；界面隐藏后端，模型菜单按厂商分；资源库角色页、草稿、代理配置；文案改名。
-2. 资源库迁到账号：角色、上下文模板、插件包由账号服务保存与分发，kited 缓存使用。
-3. 项目约束：账号服务按项目保存，kited 在创建和每次调用工具时检查并即时生效，App 项目设置可编辑。
+未解决：
+- 账号服务新增资源库与项目约束接口，生产部署要用户确认后再做；部署前已加入账号的工作机写资源库会失败。
+- 各工作机的 kited 需升级到同一版本，旧 kited 没有 `/roles`、`/workspaces/:id/agent-options`，新 App 连上会报错。
+- 用户尚未在 Release 版里预览角色页、代理配置与项目约束；iPhone 上的角色菜单与配置页也未在真机验收。
+- 之后再议：新代理开场白、执行授权的项目上限。
 
-之后再议：新会话开场白、执行授权的项目上限。
-
-**完成条件：** 三期都实现、`.kite/check` 通过，相关 docs 已改为现状，本条删除，未决项转入对应记忆。
+**完成条件：** 账号服务上线、各工作机升级后，用户预览确认界面，本条删除，开场白等未决项另立记忆。

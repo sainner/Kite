@@ -8,6 +8,7 @@ import type { ContextDefinition } from './harness/context/types.ts';
 import type { HourlyUsage, UsageDay, UsageStore } from './account-usage.ts';
 import type { TemplateEmblem } from './template-emblems.ts';
 import type { Role } from './roles.ts';
+import type { ProjectConstraints } from './account-client.ts';
 
 export interface ThreadTitle {
   title: string;
@@ -79,6 +80,10 @@ create table if not exists template_emblems (
 );
 create table if not exists roles (
   id text primary key, role text not null
+);
+-- 项目约束以账号服务为准，这里是缓存，离线时沿用。
+create table if not exists project_constraints (
+  project_id text primary key, constraints text not null
 );
 create table if not exists usage_hours (
   account text not null, day text not null, hour integer not null, tokens integer not null, primary key(account, day, hour)
@@ -190,6 +195,18 @@ export class Store implements UsageStore {
   templateEmblem(id: string): TemplateEmblem | undefined {
     const row = this.db.query('select emblem from template_emblems where template_id = ?').get(id) as { emblem: string } | null;
     return row ? JSON.parse(row.emblem) : undefined;
+  }
+  templateEmblems(): Array<{ id: string; emblem: TemplateEmblem }> {
+    return this.db.query('select template_id, emblem from template_emblems order by template_id').all()
+      .map((row: any) => ({ id: row.template_id, emblem: JSON.parse(row.emblem) }));
+  }
+  projectConstraints(projectId: string): ProjectConstraints | undefined {
+    const row = this.db.query('select constraints from project_constraints where project_id = ?').get(projectId) as { constraints: string } | null;
+    return row ? JSON.parse(row.constraints) : undefined;
+  }
+  saveProjectConstraints(projectId: string, constraints: ProjectConstraints): void {
+    this.db.query('insert into project_constraints values (?, ?) on conflict(project_id) do update set constraints = excluded.constraints')
+      .run(projectId, JSON.stringify(constraints));
   }
   saveTemplateEmblem(id: string, emblem: TemplateEmblem): void {
     this.db.query('insert into template_emblems values (?, ?) on conflict(template_id) do update set emblem = excluded.emblem')

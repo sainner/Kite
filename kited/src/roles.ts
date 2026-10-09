@@ -37,31 +37,40 @@ export interface RoleBinding { id: string; revision: string; tools: ToolRule }
 /** 草稿里可调的初始参数；工具与预算只能在角色允许的范围内收窄。 */
 export interface RoleChoice { model?: AgentDefinition['model']; tools?: AgentDefinition['tools']; maxRequestsPerTurn?: number }
 
+/** 项目约束里的工具规则，没有必需项。 */
+export type ProjectToolRule = Pick<ToolRule, 'mode' | 'tools'>;
+
 export const defaultRoleId = 'kite.work';
 
 export function instanceRole(instance: PluginInstance): RoleBinding | undefined {
   return instance.config.role as RoleBinding | undefined;
 }
 
-/** universe 是代理插件声明的全部工具；以后项目约束作为另一层规则加入。 */
-export function toolLimits(universe: readonly string[], rule: Pick<ToolRule, 'mode' | 'tools' | 'required'> = allTools) {
-  const permitted = permittedTools(universe, [rule]);
-  return { permitted, required: rule.required, missing: missingRequired(rule.required, permitted) };
+/**
+ * universe 是代理插件声明的全部工具。角色规则决定实例能开的上限（allowed），写进实例配置；
+ * 项目约束是实时过滤，不写进配置，收紧或放宽都立即作用于有效集（permitted），blocked 是被项目禁掉的那些。
+ */
+export function toolLimits(universe: readonly string[], rule: Pick<ToolRule, 'mode' | 'tools' | 'required'> = allTools, project?: ProjectToolRule) {
+  const allowed = permittedTools(universe, [rule]);
+  const permitted = project ? permittedTools(allowed, [project]) : allowed;
+  return { allowed, permitted, blocked: allowed.filter((name) => !permitted.includes(name)), required: rule.required,
+    missing: missingRequired(rule.required, permitted) };
 }
 
 export function checkTools(tools: readonly string[], limits: ReturnType<typeof toolLimits>): void {
-  const extra = tools.filter((name) => !limits.permitted.includes(name));
+  const extra = tools.filter((name) => !limits.allowed.includes(name));
   if (extra.length) throw new KiteError(`工具超出角色允许的范围：${extra.join('、')}`);
   const off = limits.required.filter((name) => !tools.includes(name));
   if (off.length) throw new KiteError(`不能关闭角色必需的工具：${off.join('、')}`);
 }
 
-/** 新代理的初始配置：角色给默认值，草稿的选择覆盖它们；后端由模型推出。 */
-export function roleAgent(base: AgentDefinition, { role, revision }: RoleSnapshot, kind: Workspace['kind'], choice: RoleChoice = {}) {
-  const limits = toolLimits(base.tools, role.tools);
-  if (limits.missing.length) throw new KiteError(`角色「${role.title}」需要的工具不可用：${limits.missing.join('、')}`);
-  // 有效集是代理插件声明工具的子集
-  const tools = choice.tools ?? limits.permitted as AgentDefinition['tools'];
+/** 新代理的初始配置：角色给默认值，草稿的选择覆盖它们；后端由模型推出。必需工具被项目约束禁用时角色不可用。 */
+export function roleAgent(base: AgentDefinition, { role, revision }: RoleSnapshot, kind: Workspace['kind'], choice: RoleChoice = {},
+  project?: ProjectToolRule) {
+  const limits = toolLimits(base.tools, role.tools, project);
+  if (limits.missing.length) throw new KiteError(`角色「${role.title}」需要的工具被项目约束禁用：${limits.missing.join('、')}`);
+  // 角色允许的工具是代理插件声明工具的子集；被项目禁掉的也留在配置里，约束放宽后恢复。
+  const tools = choice.tools ?? limits.allowed as AgentDefinition['tools'];
   checkTools(tools, limits);
   const agent = chooseAgentModel(bindAgentDefinition({ runtime: runtimeOfModel(role.model.model), model: role.model, tools,
     context: role.context, maxRequestsPerTurn: choice.maxRequestsPerTurn ?? role.maxRequestsPerTurn }, kind), choice.model);
@@ -103,6 +112,15 @@ export class Roles {
 
   list(): RoleSnapshot[] { return this.store.roles().map(snapshot); }
 
+  /** 账号里拉来的版本直接替换本机缓存；内容不合本机契约的跳过，返回是否有变化。 */
+  cache(value: unknown): boolean {
+    const role = this.parse(value);
+    const saved = this.store.role(role.id);
+    if (saved && snapshot(saved).revision === snapshot(role).revision) return false;
+    this.store.saveRole(role);
+    return true;
+  }
+
   get(id: string, revision?: string): RoleSnapshot {
     const role = this.store.role(id);
     if (!role) throw new KiteError('角色不存在，请刷新列表', 404);
@@ -121,6 +139,14 @@ export class Roles {
     });
   }
 
+  /** 修改前的校验，结果先写到账号服务再存本机。 */
+  validate(id: string, expectedRevision: string, value: unknown): Role {
+    const role = this.parse(value);
+    if (id !== role.id) throw new KiteError('角色 ID 与请求目标不一致');
+    this.get(id, expectedRevision);
+    return role;
+  }
+
   update(id: string, expectedRevision: string, value: unknown): RoleSnapshot {
     const role = this.parse(value);
     if (id !== role.id) throw new KiteError('角色 ID 与请求目标不一致');
@@ -131,7 +157,7 @@ export class Roles {
     });
   }
 
-  private parse(value: unknown): Role {
+  parse(value: unknown): Role {
     const parsed = roleSchema.safeParse(value);
     if (!parsed.success) throw new KiteError(`角色无效：${parsed.error.issues.map((issue) => issue.message).join('；')}`);
     const role = parsed.data;

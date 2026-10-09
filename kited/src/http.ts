@@ -212,17 +212,19 @@ export function serve(kite: Kite, listen: Listen) {
         }),
       },
       '/plugin-definitions': {
-        GET: bound(() => kite.catalog.definitions()),
-        POST: bound(async (req) => kite.catalog.install(await body(req))),
+        GET: bound(() => { void kite.library.refresh(); return kite.catalog.definitions(); }),
+        POST: bound(async (req) => kite.installPlugin(await body(req))),
       },
+      // 有设备改了账号资源库或项目约束后请工作机立即拉取，等拉完再返回。
+      '/library/refresh': { POST: bound(async () => { await kite.library.refresh(true); return { ok: true }; }) },
       '/workspaces/:id/agent-options': { GET: bound((req) => kite.agentOptions(req.params.id)) },
-      '/context-templates': { GET: bound(() => kite.contextTemplates.list()) },
+      '/context-templates': { GET: bound(() => { void kite.library.refresh(); return kite.contextTemplates.list(); }) },
       '/context-templates/:id': { PUT: bound(async (req) => {
         const b = await body(req);
         return kite.updateContextTemplate(req.params.id, str(b.expectedRevision, 'expectedRevision'), b.definition);
       }) },
       '/roles': {
-        GET: bound(() => kite.roleCatalog()),
+        GET: bound(() => { void kite.library.refresh(); return kite.roleCatalog(); }),
         POST: bound(async (req) => kite.createRole((await body(req)).role)),
       },
       '/roles/:id': { PUT: bound(async (req) => {

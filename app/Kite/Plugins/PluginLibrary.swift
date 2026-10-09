@@ -19,7 +19,7 @@ private nonisolated struct ImportedPluginPackage: Decodable, Sendable {
     }
 }
 
-/// 插件定义属于工作机；安装后可在各工作区创建实例。资源库一栏的单页，操作在标题栏。
+/// 插件包随 Kite 账号保存在资源库，经当前连接的工作机导入；其他工作机首次用到时再下载安装。资源库一栏的单页，操作在标题栏。
 struct PluginLibrary: View {
     private struct PendingPackage {
         let contents: ImportedPluginPackage
@@ -34,7 +34,7 @@ struct PluginLibrary: View {
     @State private var importClient: KitedClient?
 
     var body: some View {
-        SectionPage(header: PaneHeader(title: "插件", subtitle: model.machine.map { "工作机：\($0.name)" } ?? SidebarSection.extensions.title)) {
+        SectionPage(header: PaneHeader(title: "插件", subtitle: SidebarSection.extensions.title)) {
             form
         } actions: {
             PaneHeaderButtonGroup {
@@ -61,7 +61,7 @@ struct PluginLibrary: View {
                     ForEach(package.views ?? []) { Text($0.title) }
                     if (package.views ?? []).isEmpty { Text("后台插件，无窗口").foregroundStyle(.secondary) }
                     HStack {
-                        Button("安装到当前工作机") { perform { try await install() } }
+                        Button("保存到资源库") { perform { try await install() } }
                             .disabled(!model.connected)
                         Button("取消") { pendingPackage = nil }
                     }
@@ -69,7 +69,7 @@ struct PluginLibrary: View {
             }
             Section("自定义插件") {
                 let custom = model.definitions.filter { $0.runtime == "bun" }
-                if custom.isEmpty { Text("尚未安装自定义插件").foregroundStyle(.secondary) }
+                if custom.isEmpty { Text("资源库里还没有自定义插件").foregroundStyle(.secondary) }
                 ForEach(custom) { definitionRow($0) }
             }
             Section("内置插件") {

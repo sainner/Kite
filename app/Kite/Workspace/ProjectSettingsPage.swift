@@ -32,6 +32,7 @@ struct ProjectSettingsPage: View {
                             .disabled(migrating || target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
+                ProjectConstraintsSection(projectID: project.id)
                 Section("检出") {
                     ForEach(checkouts) { checkout in
                         VStack(alignment: .leading, spacing: 6) {

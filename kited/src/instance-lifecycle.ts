@@ -24,11 +24,13 @@ interface InstanceControl {
 export class InstanceLifecycle {
   constructor(private kite: InstanceServices, private control: InstanceControl) {}
 
-  newInstance(workspaceId: string, definitionId: string, title: string, kind: Workspace['kind'], choice: AgentChoice = {}): PluginInstance {
+  /** projectId 供尚未入库的新工作区使用，其余情况从工作区查出。 */
+  newInstance(workspaceId: string, definitionId: string, title: string, kind: Workspace['kind'], choice: AgentChoice = {}, projectId?: string): PluginInstance {
     const definition = this.kite.catalog.get(definitionId);
-    const bound = definition.agent && roleAgent(definition.agent, this.kite.roles.get(choice.role?.id ?? defaultRoleId, choice.role?.revision), kind, choice);
+    const project = definition.agent && this.kite.store.projectConstraints(projectId ?? this.kite.workspace(workspaceId).project.id)?.tools;
+    const bound = definition.agent && roleAgent(definition.agent, this.kite.roles.get(choice.role?.id ?? defaultRoleId, choice.role?.revision), kind, choice, project);
     // 协作操作的默认授权只给角色允许使用对应工具的代理，例如只读审查不带。
-    const permitted = bound && toolLimits(definition.agent!.tools, bound.role.tools).permitted;
+    const permitted = bound && toolLimits(definition.agent!.tools, bound.role.tools).allowed;
     const grants = permitted ? defaultOperationGrants(definitionId).filter((grant) => permitted.includes(operationContracts[grant.operation].tool ?? '')) : [];
     return { id: randomUUID(), workspaceId, definitionId, title,
       config: bound ? { ...bound, grants, execution: definition.execution } : definition.runtime === 'bun' ? { packageRevision: definition.revision, grants: [] } : {}, state: {},

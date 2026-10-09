@@ -25,6 +25,7 @@ import { instanceAgent, type AgentDefinition } from './agents/definition.ts';
 import { InstanceLifecycle, type AgentChoice } from './instance-lifecycle.ts';
 import { ContextTemplates } from './context-templates.ts';
 import { defaultRoleId, Roles, type RoleSelection, type RoleSnapshot } from './roles.ts';
+import { LibrarySync, type LibraryChanges } from './library-sync.ts';
 import { agentDefinitionId } from './plugins/definitions.ts';
 import { addWorktree, removeWorktree, runSetup } from './workspace/worktrees.ts';
 import {
@@ -71,6 +72,7 @@ export class Kite {
   readonly catalog: PluginCatalog;
   readonly contextTemplates: ContextTemplates;
   readonly roles: Roles;
+  readonly library: LibrarySync;
   readonly plugins: PluginHost;
   readonly lightTasks?: LightTasks;
   readonly titles?: ThreadTitles;
@@ -102,6 +104,8 @@ export class Kite {
       agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
       pluginToolsContextDefinition,
     ]);
+    this.library = new LibrarySync({ account, store, roles: this.roles, templates: this.contextTemplates, catalog: this.catalog,
+      changed: (changes) => this.libraryChanged(changes) });
     this.receipts = new OperationReceipts(store);
     this.operations = new InstanceOperations(this);
     this.plugins = new PluginHost(this);
@@ -137,14 +141,17 @@ export class Kite {
       });
     }
     this.emblems = new TemplateEmblems(store, this.roles, this.contextTemplates, this.lightTasks,
-      () => bus.emit({ type: 'roles.changed' }));
+      () => bus.emit({ type: 'roles.changed' }), (id, emblem) => this.library.publish('emblem', id, emblem));
     for (const w of store.workspaces()) if (w.status === 'preparing') store.setWorkspaceStatus(w.id, 'failed');
     this.transcripts = new TranscriptHistory(store, home, bus, this.events);
   }
 
   machine(): Machine { return this.store.machine; }
-  updateContextTemplate(id: string, expectedRevision: string, definition: unknown) {
-    const saved = this.contextTemplates.update(id, expectedRevision, definition);
+  /** 资源库的写入先到账号服务，成功后存本机；没加入账号时只存本机。 */
+  async updateContextTemplate(id: string, expectedRevision: string, definition: unknown) {
+    const valid = this.contextTemplates.validate(id, expectedRevision, definition);
+    await this.library.write('template', id, valid, expectedRevision);
+    const saved = this.contextTemplates.update(id, expectedRevision, valid);
     this.bus.emit({ type: 'context-templates.changed' });
     return saved;
   }
@@ -153,8 +160,27 @@ export class Kite {
     return { roles: this.roles.list().map((role) => this.emblems.decorate(role)), tools: this.catalog.get(agentDefinitionId).agent!.tools,
       variables: this.contextTemplates.sceneVariables('thread.create'), ...agentModelCatalog() };
   }
-  createRole(role: unknown) { return this.roleSaved(this.roles.create(role)); }
-  updateRole(id: string, expectedRevision: string, role: unknown) { return this.roleSaved(this.roles.update(id, expectedRevision, role)); }
+  async createRole(value: unknown) {
+    const role = this.roles.parse(value);
+    await this.library.write('role', role.id, role, null);
+    return this.roleSaved(this.roles.create(role));
+  }
+  async updateRole(id: string, expectedRevision: string, value: unknown) {
+    const role = this.roles.validate(id, expectedRevision, value);
+    await this.library.write('role', id, role, expectedRevision);
+    return this.roleSaved(this.roles.update(id, expectedRevision, role));
+  }
+  /** 插件包先存到账号资源库，再装到本机；其他工作机用到时再下载。 */
+  async installPlugin(raw: unknown) {
+    const value = this.catalog.validate(raw);
+    await this.library.write('plugin', value.id, value, null);
+    return this.catalog.install(value);
+  }
+  private libraryChanged(changes: LibraryChanges) {
+    if (changes.roles) this.bus.emit({ type: 'roles.changed' });
+    if (changes.templates) this.bus.emit({ type: 'context-templates.changed' });
+    for (const { projectId, before } of changes.constraints) this.configuration.constraintsChanged(projectId, before);
+  }
   /** 角色保存后通知各端刷新，并随提示词更新点阵签名。 */
   private roleSaved(saved: RoleSnapshot) {
     this.bus.emit({ type: 'roles.changed' });
@@ -312,8 +338,8 @@ export class Kite {
   private controlThread<T>(id: string, fn: () => Promise<T>): Promise<T> {
     return this.control(this.context(id).workspaceId, fn);
   }
-  private newThread(workspaceId: string, prompt: string, kind: Workspace['kind'], choice: AgentChoice): AgentInstance {
-    const instance = this.instances.newInstance(workspaceId, agentDefinitionId, titleOf(prompt), kind, choice);
+  private newThread(workspaceId: string, prompt: string, kind: Workspace['kind'], choice: AgentChoice, projectId?: string): AgentInstance {
+    const instance = this.instances.newInstance(workspaceId, agentDefinitionId, titleOf(prompt), kind, choice, projectId);
     return { ...instance, instanceId: instance.id, runtime: instanceAgent(instance).runtime, nativeId: randomUUID() };
   }
 
@@ -328,7 +354,7 @@ export class Kite {
     const w: Workspace = { id, checkoutId: c.id, name: name.trim() || (prompt ? titleOf(prompt) : '新工作区'),
       cwd: join(this.home, 'worktrees', c.projectId, id), kind: 'worktree', branch: `kite/${id}`, base,
       status: 'preparing', createdAt: Date.now() };
-    const t = prompt === undefined ? undefined : this.newThread(id, prompt, w.kind, { role });
+    const t = prompt === undefined ? undefined : this.newThread(id, prompt, w.kind, { role }, c.projectId);
     this.store.addWorkspace(w, t ? { agent: t, window: this.instances.newWindow(t) } : undefined);
     const controller = new AbortController();
     this.preparations.set(id, controller);
@@ -444,11 +470,13 @@ export class Kite {
     return this.configuration.configureExecutionGrants(id, expectedRevision, value);
   }
 
-  openWindow(workspaceId: string, request: OpenWindowRequest): Promise<WorkspaceWindow> {
+  async openWindow(workspaceId: string, request: OpenWindowRequest): Promise<WorkspaceWindow> {
+    if (request.content.kind === 'create') await this.library.ensurePlugin(request.content.definitionId);
     return this.instances.openWindow(workspaceId, request);
   }
 
-  createPluginInstance(workspaceId: string, id: string, definitionId: string, title?: string) {
+  async createPluginInstance(workspaceId: string, id: string, definitionId: string, title?: string) {
+    await this.library.ensurePlugin(definitionId);
     return this.instances.createPluginInstance(workspaceId, id, definitionId, title);
   }
 
@@ -560,6 +588,7 @@ export class Kite {
         fileChanges: this.contextTemplates.get(fileChangesContextDefinition.id, fileChangesContextDefinition.scene).definition,
       }),
       compactionFiles: ({ from, to }) => changesBetween(workspace.cwd, workspaceId, from, to),
+      toolConstraint: () => this.store.projectConstraints(t.project.id)?.tools,
     });
     this.runners.set(id, r);
     return r;
@@ -781,7 +810,7 @@ export class Kite {
   }
   async shutdown(): Promise<void> {
     this.stopping = true;
-    await Promise.all([this.titles?.close(), this.emblems.close(), this.lightTasks?.close(), this.subscriptionLogins.close()]);
+    await Promise.all([this.titles?.close(), this.emblems.close(), this.lightTasks?.close(), this.subscriptionLogins.close(), this.library.close()]);
     await this.plugins.close();
     await this.operations.close();
     for (const c of this.preparations.values()) c.abort();

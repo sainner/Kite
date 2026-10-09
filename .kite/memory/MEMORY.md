@@ -54,7 +54,7 @@
 
 ## 待办与未决事项
 
-- [待办：代理与角色三期](todo-agent-roles.md) — 角色与代理合一、资源库迁账号、项目约束的分期与完成条件
+- [待办：代理与角色上线](todo-agent-roles.md) — 三期代码已完成，剩账号服务部署、各工作机升级与界面验收
 - [待决策：会话观察账本](context-observation-ledger.md) — 记录模型观察与压缩后上下文的账本设想，尚未确定完整设计
 - [待办：插件跨端验收](todo-plugin-device-validation.md) — 插件跨端验收的未解决事项、来源与完成条件
 - [待办：共享工作区协作](todo-workspace-collaboration.md) — 共享工作区协作的未解决事项、来源与完成条件

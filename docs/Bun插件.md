@@ -6,7 +6,7 @@
 
 管理 API 沿用 `X-Kite-Machine`。HTTP 信任本机客户端和经组网验证的同账号设备；插件进程不能访问本机 HTTP，也不继承宿主认证环境。
 
-`POST /plugin-definitions` 接收：
+插件包随 Kite 账号保存在资源库：`POST /plugin-definitions` 先把包存到账号，再装到这台工作机；其他工作机的定义列表里能看到它，首次创建实例或打开窗口时再下载安装。工作机没加入账号时只装在本机。同一 ID 只能对应一份内容，升级须换新的 ID。`POST /plugin-definitions` 接收：
 
 ```json
 {

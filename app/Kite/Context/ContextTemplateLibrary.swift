@@ -22,7 +22,7 @@ struct ContextTemplateLibrary: View {
     private var form: some View {
         Form {
             Section {
-                Text("模板保存在当前工作机。标题模板在下次生成时生效；通知模板用于之后生成的通知，已生成的内容保留原样。代理的提示词在「角色」里编辑。")
+                Text("模板随 Kite 账号保存，各工作机共用。标题模板在下次生成时生效；通知模板用于之后生成的通知，已生成的内容保留原样。代理的提示词在「角色」里编辑。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             ForEach(model.contextTemplates?.scenes ?? []) { scene in

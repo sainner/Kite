@@ -208,8 +208,8 @@ test('只读审查角色建的代理只有 read，改配置加 shell 或关掉�
     const options = await k.call('GET', `/workspaces/${workspaceId}/agent-options`);
     expect(options.status).toBe(200);
     expect(options.body.roles).toEqual(expect.arrayContaining([
-      { id: 'kite.work', revision: work.revision, tools: universe, required: [] },
-      { id: 'kite.review', revision: review.revision, tools: ['read'], required: ['read'] },
+      { id: 'kite.work', revision: work.revision, tools: universe, required: [], blocked: [] },
+      { id: 'kite.review', revision: review.revision, tools: ['read'], required: ['read'], blocked: [] },
     ]));
 
     const created = await k.call('POST', `/workspaces/${workspaceId}/threads`, {
@@ -224,7 +224,7 @@ test('只读审查角色建的代理只有 read，改配置加 shell 或关掉�
     const configPath = `/instances/${id}/agent-config`;
     const config = await k.call('GET', configPath);
     expect(config.body.instance.config.agent.tools).toEqual(['read']);
-    expect((await k.call('GET', `/instances/${id}/agent-capabilities`)).body).toMatchObject({ tools: ['read'], required: ['read'] });
+    expect((await k.call('GET', `/instances/${id}/agent-capabilities`)).body).toMatchObject({ tools: ['read'], required: ['read'], blocked: [] });
     for (const tools of [['read', 'shell'], []]) {
       const rejected = await k.call('PUT', configPath, {
         expectedRevision: config.body.revision, agent: { ...config.body.instance.config.agent, tools },
@@ -238,7 +238,7 @@ test('只读审查角色建的代理只有 read，改配置加 shell 或关掉�
     });
     expect(noShell.status).toBe(200);
     expect((await k.call('GET', `/workspaces/${workspaceId}/agent-options`)).body.roles).toContainEqual({
-      id: 'test.no-shell', revision: noShell.body.revision, tools: universe.filter((name) => name !== 'shell'), required: [],
+      id: 'test.no-shell', revision: noShell.body.revision, tools: universe.filter((name) => name !== 'shell'), required: [], blocked: [],
     });
     const before = (await k.call('GET', `/workspaces/${workspaceId}`)).body.instances;
     const rejected = await k.call('POST', `/workspaces/${workspaceId}/threads`, {
@@ -258,7 +258,7 @@ test('只读审查角色建的代理只有 read，改配置加 shell 或关掉�
 test('旧库重开后旧定义的实例指向代理并补上角色，按定义的授权改成按角色，创建会话模板变成同 ID 的角色且签名仍是最新', async () => {
   const root = makeTemp('roles-legacy-');
   const home = join(root, 'kite');
-  const account = linkNewAccount(home);
+  const accounts = [linkNewAccount(home)];
   let daemon: Daemon | undefined;
   try {
     daemon = startDaemon({ home, port: 0, lightTasks: false });
@@ -312,11 +312,13 @@ test('旧库重开后旧定义的实例指向代理并补上角色，按定义�
     } finally {
       db.close();
     }
+    // 旧库的年代账号里还没有资源库；换一个空账号，免得第一次启动时同步上去的内置角色在拉取时盖掉迁移结果。
+    accounts.push(linkNewAccount(home));
 
     daemon = startDaemon({ home, port: 0, lightTasks: false });
     const review = (await request('GET', `/threads/${reviewId}`)).body;
     expect(review.definitionId).toBe('kite.agent');
-    expect(review.config.role).toMatchObject({ id: 'kite.review', tools: { mode: 'allow', tools: ['read'] } });
+    expect(review.config.role).toMatchObject({ id: 'kite.review', tools: { mode: 'allow', tools: ['read'], required: ['read'] } });
     expect((await request('GET', `/instances/${reviewId}/agent-capabilities`)).body.tools).toEqual(['read']);
     expect((await request('GET', `/instances/${reviewId}/operation-grants`)).body.grants).toEqual([
       { operation: 'agent.list' }, { operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] },
@@ -341,7 +343,7 @@ test('旧库重开后旧定义的实例指向代理并补上角色，按定义�
     expect(templates.filter((template) => template.definition.scene === 'thread.create')).toEqual([]);
   } finally {
     await daemon?.stop();
-    account.stop();
+    for (const account of accounts) account.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }, 1000);

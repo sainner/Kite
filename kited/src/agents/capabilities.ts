@@ -12,8 +12,8 @@ export const agentModelCatalog = () => ({
     maxContextWindow: model.maxContextWindow, reasoning, vendor: vendor.id }))),
 });
 
-/** tools 是这个代理可开的工具（角色规则内），required 是角色必需、不能关闭的那些。 */
-export function agentCapabilities(runtime: RuntimeKind, tools: { permitted: string[]; required: string[] }) {
-  return { ...agentModelCatalog(), tools: tools.permitted, required: tools.required, configurationBoundary: configurationBoundary(runtime),
+/** tools 是这个代理可开的工具（角色规则内），required 是角色必需、不能关闭的，blocked 是其中正被项目约束禁用的。 */
+export function agentCapabilities(runtime: RuntimeKind, tools: { allowed: string[]; required: string[]; blocked: string[] }) {
+  return { ...agentModelCatalog(), tools: tools.allowed, required: tools.required, blocked: tools.blocked, configurationBoundary: configurationBoundary(runtime),
     toolCatalogBoundary: runtime === 'claude' ? 'idle' : 'session' };
 }

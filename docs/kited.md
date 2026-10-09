@@ -97,6 +97,12 @@ bun run harness --resume <会话id>
 
 显式重生不受相同消息位置的限制，使更早的在途标题结果失效。标题生成不打断或阻塞主会话控制。
 
+### 资源库与项目约束
+
+角色、后台场景的上下文模板、点阵签名与插件包随 Kite 账号保存，接口见 [托管账号与设备](托管账号与设备.md#资源库)。写入先到账号服务，成功后更新本机缓存，版本冲突返回 409；读取一律用缓存。App 读取角色、模板或插件列表时在后台拉取，`POST /library/refresh` 立即拉取，服务也定期拉取；拉取以账号版本为准，本机独有的内容随之上传。账号服务不可达时沿用缓存；工作机没加入账号时只用本机。
+
+项目约束同样拉取后缓存，离线时沿用。它在创建代理、每次模型请求和每次工具调用前过滤工具，不改写实例配置；有效工具因此变化的代理收到配置通知。分层规则见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)。
+
 ### 角色点阵签名
 
 每个角色有一枚点阵签名，App 在新代理的空白内容区按它铺满动画。签名是 `{expression, positive, negative, form}`：一行算式，客户端每帧对每格求值，结果截到 −1～1，绝对值为点的大小、正负选 `positive` 或 `negative` 颜色（参考色板字母 `B M L Y D`），`form` 为点的终态形状。算式只解析求值、不执行代码，语法以 `kited/src/emblem-expression.ts` 为准，App 的 `DotExpression.swift` 与之保持一致。
@@ -249,7 +255,8 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | GET/POST | `/checkouts` | 列出本机检出（`?project=`）；登记本机文件夹 `{path}` 或 clone 远程 `{remote, path?}`，返回根工作区聚合 |
 | GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, role?}`，`role` 为 `{id, revision}`，准备过程看事件 |
 | GET | `/workspaces/:id` | 工作区上下文及 instances、threads、windows 的完整聚合 |
-| GET / POST | `/plugin-definitions` | 读取定义或登记自定义包；包格式见 Bun 插件契约 |
+| GET / POST | `/plugin-definitions` | 读取定义（含账号资源库里尚未装到本机的包）或登记自定义包；包格式见 Bun 插件契约 |
+| POST | `/library/refresh` | 立即从账号拉取资源库与项目约束并等待完成；App 修改项目约束后用它通知已连接的工作机 |
 | GET | `/operations` | 操作输入、输出、错误 schema，以及重试与取消规则 |
 | POST | `/workspaces/:id/operations/:operation` | 调用 agent.start / list / send / resume / stop 或 files.list / read / state / select；修改操作必须带 operationId |
 | GET | `/instances/:id/agent-capabilities` | 按厂商分组的模型与思考档位、这个代理可开的工具（`tools`）与角色必需的工具（`required`），以及配置生效边界；不发模型请求 |

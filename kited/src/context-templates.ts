@@ -26,9 +26,11 @@ function parse(value: unknown): ContextDefinition {
 
 export class ContextTemplates {
   private readonly fixedTemplates: Set<string>;
+  private readonly defaults: Map<string, string>;
 
   constructor(private store: Store, defaults: ContextDefinition[]) {
     this.fixedTemplates = new Set(defaults.map((definition) => definition.id));
+    this.defaults = new Map(defaults.map((definition) => [definition.id, snapshot(parse(definition)).revision]));
     store.transaction(() => {
       for (const definition of defaults) {
         if (!store.contextTemplate(definition.id)) store.saveContextTemplate(parse(definition));
@@ -53,6 +55,29 @@ export class ContextTemplates {
     const value = snapshot(definition);
     if (revision !== undefined && revision !== value.revision) throw new KiteError('模板已更新，请刷新后重新选择', 409);
     return value;
+  }
+
+  /** 用户改过的模板，资源库同步时上传本机独有的修改。 */
+  edited(): ContextTemplate[] {
+    return this.list().templates.filter((template) => this.defaults.get(template.definition.id) !== template.revision);
+  }
+
+  /** 账号里拉来的版本直接替换本机缓存；不是本机已知场景的跳过，返回是否有变化。 */
+  cache(value: unknown): boolean {
+    const definition = parse(value);
+    if (!this.fixedTemplates.has(definition.id)) return false;
+    const saved = this.store.contextTemplate(definition.id);
+    if (saved && snapshot(saved).revision === snapshot(definition).revision) return false;
+    this.store.saveContextTemplate(definition);
+    return true;
+  }
+
+  /** 修改前的校验，结果先写到账号服务再存本机。 */
+  validate(id: string, expectedRevision: string, value: unknown): ContextDefinition {
+    const definition = parse(value);
+    if (id !== definition.id) throw new KiteError('模板 ID 与请求目标不一致');
+    this.get(id, definition.scene, expectedRevision);
+    return definition;
   }
 
   update(id: string, expectedRevision: string, value: unknown): ContextTemplate {

@@ -38,7 +38,7 @@ bun run harness --resume <会话id>
 | 路径 | 职责 |
 |---|---|
 | `src/main.ts`、`daemon.ts`、`http.ts`、`cli.ts` | 服务与客户端入口、HTTP 和 SSE |
-| `src/account/`、`catalog-publisher.ts` | 托管账号与目录服务、工作机目录上报；契约见 [托管账号与设备](../docs/托管账号与设备.md) |
+| `src/account/`、`catalog-publisher.ts` | 托管账号、资源库与目录服务、工作机目录上报；契约见 [托管账号与设备](../docs/托管账号与设备.md) |
 | `src/kite.ts`、`model.ts`、`store.ts`、`events.ts` | 业务编排、领域对象、持久化与事件 |
 | `src/instance-lifecycle.ts` | 实例与窗口创建、请求去重及回收 |
 | `src/instance-configuration.ts` | 实例配置、授权变更与对应通知 |
@@ -52,6 +52,7 @@ bun run harness --resume <会话id>
 | `src/operations/` | 实例操作契约、授权入口与操作收据 |
 | `src/agents/` | Agent 定义、工具的逐层约束、后端能力与共享模型清单入口 |
 | `src/roles.ts` | 角色目录，以及由角色生成代理初始配置 |
+| `src/library-sync.ts` | 资源库与项目约束在账号服务和本机缓存之间的同步 |
 | `src/context-templates.ts` | 后台场景的上下文模板目录 |
 | `src/template-emblems.ts` | 角色的点阵签名 |
 | `src/light-tasks.ts`、`thread-titles.ts` | 辅助模型任务与会话标题 |

@@ -34,7 +34,7 @@ struct RoleLibrary: View {
     private var form: some View {
         Form {
             Section {
-                Text("角色保存在当前工作机，决定新代理的提示词、可用工具、默认模型与每回合预算。修改角色只影响之后新建的代理。")
+                Text("角色随 Kite 账号保存，各工作机共用，决定新代理的提示词、可用工具、默认模型与每回合预算。修改角色只影响之后新建的代理。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section {

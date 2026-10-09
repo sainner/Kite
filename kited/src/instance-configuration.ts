@@ -17,7 +17,8 @@ import type { AgentInstance, PluginInstance, ThreadContext } from './model.ts';
 import type { OperationGrant } from './operations/contract.ts';
 import { mergePluginTools, pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding } from './plugins/tools.ts';
 import { agentDefinitionId } from './plugins/definitions.ts';
-import { checkTools, instanceRole, roleAgent, toolLimits, type RoleBinding, type RoleSelection } from './roles.ts';
+import { permittedTools } from './agents/tool-policy.ts';
+import { checkTools, instanceRole, roleAgent, toolLimits, type ProjectToolRule, type RoleBinding, type RoleSelection } from './roles.ts';
 import type { Runtime } from './runtime.ts';
 
 type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates' | 'roles'>;
@@ -130,23 +131,47 @@ export class InstanceConfiguration {
     const agent = instanceAgent(instance);
     return { instance, revision: agentRevision(agent), configurationBoundary: configurationBoundary(agent.runtime) };
   }
-  /** 这个代理可开的工具：代理插件声明的全部工具，经创建时角色的规则约束。 */
+  /** 项目当前的工具约束，以账号服务为准，这里读本机缓存。 */
+  private projectRule(workspaceId: string) {
+    return this.kite.store.projectConstraints(this.kite.workspace(workspaceId).project.id)?.tools;
+  }
+  /** 这个代理可开的工具：代理插件声明的全部工具，经创建时角色的规则约束；项目约束另作实时过滤。 */
   private toolLimits(instance: PluginInstance) {
-    return toolLimits(this.kite.catalog.get(instance.definitionId).agent!.tools, instanceRole(instance)?.tools);
+    return toolLimits(this.kite.catalog.get(instance.definitionId).agent!.tools, instanceRole(instance)?.tools, this.projectRule(instance.workspaceId));
   }
   agentCapabilities(id: string) {
     const thread = this.control.context(id);
     return agentCapabilities(instanceAgent(thread).runtime, this.toolLimits(thread));
   }
-  /** 新代理的草稿还没有实例：给出模型目录，以及各角色在这个工作区可开的工具；必需工具不可用的角色附上原因。 */
+  /** 新代理的草稿还没有实例：给出模型目录，以及各角色在这个工作区可开的工具与被项目禁用的工具；必需工具被禁的角色附上原因。 */
   agentOptions(workspaceId: string) {
-    this.kite.workspace(workspaceId);
+    const project = this.projectRule(workspaceId);
     const universe = this.kite.catalog.get(agentDefinitionId).agent!.tools;
     return { ...agentModelCatalog(), roles: this.kite.roles.list().map(({ role, revision }) => {
-      const limits = toolLimits(universe, role.tools);
-      return { id: role.id, revision, tools: limits.permitted, required: limits.required,
-        ...(limits.missing.length ? { unavailable: `需要的工具不可用：${limits.missing.join('、')}` } : {}) };
+      const limits = toolLimits(universe, role.tools, project);
+      return { id: role.id, revision, tools: limits.allowed, required: limits.required, blocked: limits.blocked,
+        ...(limits.missing.length ? { unavailable: `项目约束禁用了必需的 ${limits.missing.join('、')}` } : {}) };
     }) };
+  }
+  /** 项目约束变化后，有效工具随之改变的代理在下一次请求收到配置通知。 */
+  constraintsChanged(projectId: string, before?: ProjectToolRule) {
+    const after = this.kite.store.projectConstraints(projectId)?.tools;
+    for (const checkout of this.kite.store.checkouts(projectId)) {
+      for (const workspace of this.kite.store.workspaces().filter((workspace) => workspace.checkoutId === checkout.id && workspace.status === 'open')) {
+        for (const instance of this.kite.store.threads(workspace.id).filter((thread) => thread.status === 'open')) {
+          const agent = instanceAgent(instance);
+          const effective = (rule?: ProjectToolRule) => rule ? permittedTools(agent.tools, [rule]) : agent.tools;
+          if (JSON.stringify(effective(before)) === JSON.stringify(effective(after))) continue;
+          this.kite.store.setInstanceConfig(instance.id, instance.config, {
+            id: randomUUID(), kind: 'agent.configuration.changed', source: 'host', authority: 'instruction',
+            context: assembleContext(agentConfigurationContext({
+              revision: agentRevision(agent), ...agent.model, tools: effective(after), maxRequestsPerTurn: agent.maxRequestsPerTurn,
+            }, this.kite.contextTemplates.get(agentConfigurationContextDefinition.id, agentConfigurationContextDefinition.scene).definition)).snapshot,
+          });
+        }
+        this.control.changed(workspace.id);
+      }
+    }
   }
   configureAgent(id: string, expectedRevision: string, value: unknown) {
     return this.updateAgentConfiguration(id, expectedRevision, () => value);
@@ -154,7 +179,8 @@ export class InstanceConfiguration {
   /** 改选角色：提示词、工具、默认模型与预算一起换成角色的，并记下新的角色约束。 */
   configureRole(id: string, expectedRevision: string, selection: RoleSelection) {
     const thread = this.control.context(id);
-    const bound = roleAgent(this.kite.catalog.get(thread.definitionId).agent!, this.kite.roles.get(selection.id, selection.revision), thread.workspace.kind);
+    const bound = roleAgent(this.kite.catalog.get(thread.definitionId).agent!, this.kite.roles.get(selection.id, selection.revision), thread.workspace.kind,
+      {}, this.projectRule(thread.workspaceId));
     return this.updateAgentConfiguration(id, expectedRevision, () => bound.agent, bound.role);
   }
   private updateAgentConfiguration(id: string, expectedRevision: string, update: (agent: AgentDefinition) => unknown, role?: RoleBinding) {
