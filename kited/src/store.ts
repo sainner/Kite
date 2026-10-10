@@ -86,7 +86,8 @@ create table if not exists project_constraints (
   project_id text primary key, constraints text not null
 );
 create table if not exists usage_hours (
-  account text not null, day text not null, hour integer not null, tokens integer not null, primary key(account, day, hour)
+  account text not null, day text not null, hour integer not null, tokens integer not null,
+  cost real not null, unpriced integer not null, primary key(account, day, hour)
 );
 `;
 const projectOf = (r: any): Project => ({ id: r.id, name: r.name, remote: r.remote, createdAt: r.created_at });
@@ -117,6 +118,7 @@ export class Store implements UsageStore {
     this.db = new Database(path, { create: true, strict: true });
     this.db.exec('pragma journal_mode = wal; pragma foreign_keys = on;');
     this.dropLocalProjects();
+    this.dropUnpricedUsage();
     this.db.exec(SCHEMA);
     this.mergeAgentDefinitions();
     // 同一个数据库只属于一台工作机服务。端口、地址和主机名变化都不重建身份。
@@ -139,6 +141,14 @@ export class Store implements UsageStore {
     const used = this.db.query('select 1 from checkouts limit 1').get();
     if (used) throw new Error('数据库里有项目改以远程为身份之前登记的检出，请删除 KITE_HOME 下的 kite.db 后重新登记');
     this.db.exec('drop table checkouts; drop table projects;');
+  }
+
+  /**
+   * 用量折算金额之前的表没有 cost 列。在研期间不迁移：直接重建，下次查询时从本机会话记录重扫，已被清理的记录不再计入。
+   */
+  private dropUnpricedUsage(): void {
+    const columns = this.db.query("select name from pragma_table_info('usage_hours')").all() as Array<{ name: string }>;
+    if (columns.length && !columns.some((c) => c.name === 'cost')) this.db.exec('drop table usage_hours');
   }
 
   /**
@@ -165,19 +175,32 @@ export class Store implements UsageStore {
   }
 
   mergeUsageHours(account: string, usage: HourlyUsage): void {
-    const upsert = this.db.query('insert into usage_hours values (?, ?, ?, ?) on conflict(account, day, hour) do update set tokens = max(tokens, excluded.tokens)');
+    // 等号右边都取更新前的值，几列的先后不影响结果。
+    const upsert = this.db.query(`insert into usage_hours values (?, ?, ?, ?, ?, ?) on conflict(account, day, hour) do update set
+      tokens = max(tokens, excluded.tokens),
+      cost = case when excluded.tokens >= tokens then excluded.cost else cost end,
+      unpriced = case when excluded.tokens >= tokens then excluded.unpriced else unpriced end`);
     this.db.transaction(() => {
-      for (const [day, hours] of usage) hours.forEach((tokens, hour) => { if (tokens > 0) upsert.run(account, day, hour, tokens); });
+      for (const [day, hours] of usage) {
+        hours.tokens.forEach((tokens, hour) => {
+          if (tokens > 0) upsert.run(account, day, hour, tokens, hours.cost[hour]!, hours.unpriced[hour]!);
+        });
+      }
     })();
   }
 
   usageDays(account: string): UsageDay[] {
-    const rows = this.db.query('select day, hour, tokens from usage_hours where account = ? order by day').all(account) as Array<{ day: string; hour: number; tokens: number }>;
+    const rows = this.db.query('select day, hour, tokens, cost, unpriced from usage_hours where account = ? order by day')
+      .all(account) as Array<{ day: string; hour: number; tokens: number; cost: number; unpriced: number }>;
     const days = new Map<string, UsageDay>();
     for (const row of rows) {
-      const day = days.get(row.day) ?? { date: row.day, tokens: 0, hours: Array<number>(24).fill(0) };
+      const day = days.get(row.day)
+        ?? { date: row.day, tokens: 0, hours: Array<number>(24).fill(0), cost: 0, costHours: Array<number>(24).fill(0), unpriced: 0 };
       day.tokens += row.tokens;
-      day.hours![row.hour]! += row.tokens;
+      day.hours[row.hour]! += row.tokens;
+      day.cost += row.cost;
+      day.costHours[row.hour]! += row.cost;
+      day.unpriced += row.unpriced;
       days.set(row.day, day);
     }
     return [...days.values()];

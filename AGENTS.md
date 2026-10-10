@@ -18,7 +18,9 @@
 
 ## 测试
 
-改完代码跑 `.kite/check`，退出码为 0 才算通过。测试一律交给 test-writer 子 agent 写，规则正文在 `.claude/agents/test-writer.md`，Codex 入口在 `.codex/agents/test-writer.toml`；当前 agent 工具没有自动发现这个定义时，显式读取规则并交给写测试的子 agent。自己接着写实现，写完一起跑检查。
+改完代码跑 `.kite/check`，退出码为 0 才算通过。检查包含按改动范围触发的 macOS 和 iOS 模拟器 App 构建，`--all` 一定构建两端；具体检查项与触发条件见 `kited/scripts/check.ts`。
+
+测试一律交给 test-writer 子 agent 写，规则正文在 `.claude/agents/test-writer.md`，Codex 入口在 `.codex/agents/test-writer.toml`；当前 agent 工具没有自动发现这个定义时，显式读取规则并交给写测试的子 agent。自己接着写实现，写完一起跑检查。
 
 ## 持久知识的分工与准入
 

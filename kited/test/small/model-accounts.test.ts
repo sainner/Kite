@@ -87,18 +87,24 @@ function noSecrets(snapshot: ModelAccountsSnapshot, secrets: string[]) {
 }
 
 // 临时文件凭据、Bun HTTP 认证头与两家订阅响应共同决定展示账号，不能只验证 JSON 转换。
-test('工作机读取自己的订阅凭据并经认证请求取得账号、额度和重置时间', async () => {
+// 真实缺陷：plan 曾取登录时缓存的 subscriptionType，从 Pro 升级到 Max 后仍一直显示 Pro。
+// 依赖上游 /api/oauth/profile 的响应形状（2026-10 实测：organization.organization_type 与 rate_limit_tier）。
+test('工作机读取自己的订阅凭据并经认证请求取得账号、额度和重置时间，Claude 当前档位以 profile 为准', async () => {
   const home = temp('kite-model-accounts-');
   const auth = chatgptAuth(home);
   const before = statSync(auth.path).mtimeMs;
   const api = endpoint((_request, url) => {
     if (url.pathname === '/backend-api/wham/usage') return Response.json(chatgptUsage);
     if (url.pathname === '/api/oauth/usage') return Response.json(claudeUsage);
-    if (url.pathname === '/api/oauth/profile') return Response.json({ account: { email: 'claude@kite.test' } });
+    if (url.pathname === '/api/oauth/profile') return Response.json({
+      account: { email: 'claude@kite.test' },
+      organization: { organization_type: 'claude_max', rate_limit_tier: 'default_claude_max_20x' },
+    });
     return Response.json({}, { status: 404 });
   });
   try {
-    const snapshot = await readModelAccounts(home, { fetch: api.fetch, claudeLogin });
+    const staleLogin = async () => ({ accessToken: claudeToken, subscriptionType: 'pro' });
+    const snapshot = await readModelAccounts(home, { fetch: api.fetch, claudeLogin: staleLogin });
     expect(snapshot.checkedAt).toBeGreaterThan(0);
     const chatgpt = account(snapshot, 'chatgpt');
     expect(chatgpt).toMatchObject({ kind: 'subscription', status: 'ready', identity: 'chatgpt@kite.test', plan: 'plus' });
@@ -110,15 +116,14 @@ test('工作机读取自己的订阅凭据并经认证请求取得账号、额�
     ]));
     expect(chatgpt.credits).toEqual({ value: 12.5, unlimited: false });
     const claude = account(snapshot, 'claude');
-    expect(claude).toMatchObject({ kind: 'subscription', status: 'ready', identity: 'claude@kite.test' });
+    expect(claude).toMatchObject({ kind: 'subscription', status: 'ready', identity: 'claude@kite.test', plan: 'max 20x' });
     expect(claude.quotas).toEqual(expect.arrayContaining([
       expect.objectContaining({ remainingPercent: 80, windowMinutes: 300, resetsAt: reset }),
       expect.objectContaining({ remainingPercent: 30, windowMinutes: 10_080, resetsAt: reset }),
     ]));
-    // 按天用量另有请求（桩返回 404），额度不受影响；其余请求恰好三条，没有重复。
-    const quotaRequests = api.seen.filter((value) => value.url.pathname !== '/backend-api/wham/profiles/me');
-    expect(quotaRequests).toHaveLength(3);
-    const chatgptRequest = quotaRequests.find((value) => value.url.hostname === 'chatgpt.com')!;
+    // 额度与身份请求恰好三条，没有重复。
+    expect(api.seen).toHaveLength(3);
+    const chatgptRequest = api.seen.find((value) => value.url.hostname === 'chatgpt.com')!;
     expect(chatgptRequest.url.href).toBe('https://chatgpt.com/backend-api/wham/usage');
     expect(chatgptRequest.headers.get('authorization')).toBe(`Bearer ${auth.accessToken}`);
     expect(chatgptRequest.headers.get('chatgpt-account-id')).toBe('chatgpt-test-account');
@@ -129,25 +134,6 @@ test('工作机读取自己的订阅凭据并经认证请求取得账号、额�
     expect(readFileSync(auth.path, 'utf8')).toBe(auth.content);
     expect(statSync(auth.path).mtimeMs).toBe(before);
     noSecrets(snapshot, [auth.accessToken, auth.idToken, claudeToken, '刷新令牌不得返回']);
-  } finally { await api.stop(); }
-}, 1000);
-
-// 真实缺陷：plan 取自登录凭据缓存的 subscriptionType，它只在登录时写入；从 Pro 升级到 Max 后钥匙串里仍是 pro，刷新一直显示 Pro。
-// 依赖上游 /api/oauth/profile 的响应形状（2026-10 实测：organization.organization_type 与 rate_limit_tier）。
-test('Claude 订阅档位以 profile 返回的组织当前订阅为准，不用登录凭据里过期的缓存', async () => {
-  const home = temp('kite-model-accounts-claude-plan-');
-  const api = endpoint((_request, url) => {
-    if (url.pathname === '/api/oauth/usage') return Response.json(claudeUsage);
-    if (url.pathname === '/api/oauth/profile') return Response.json({
-      account: { email: 'claude@kite.test' },
-      organization: { organization_type: 'claude_max', rate_limit_tier: 'default_claude_max_20x' },
-    });
-    return Response.json({}, { status: 404 });
-  });
-  try {
-    const staleLogin = async () => ({ accessToken: claudeToken, subscriptionType: 'pro' });
-    const snapshot = await readModelAccounts(home, { fetch: api.fetch, claudeLogin: staleLogin });
-    expect(account(snapshot, 'claude')).toMatchObject({ status: 'ready', identity: 'claude@kite.test', plan: 'max 20x' });
   } finally { await api.stop(); }
 }, 1000);
 
@@ -255,12 +241,10 @@ test('API 普通密钥只确认配置，管理密钥完整读分页后才展示�
     expect(account(complete, 'openai-api').cost).toMatchObject({ value: 4, currency: 'USD', from: monthStart });
     expect(account(complete, 'anthropic-api').cost).toMatchObject({ value: 4.5, currency: 'USD', from: monthStart });
     for (const id of ['openai-api', 'anthropic-api']) expect(account(complete, id).credits).toBeUndefined();
-    // 按天用量另有请求（桩返回 404），费用不受影响；费用请求恰好每家两页，没有重复。
-    const usagePaths = ['/v1/organization/usage/completions', '/v1/organizations/usage_report/messages'];
-    const costRequests = api.seen.filter((value) => !usagePaths.includes(value.url.pathname));
-    expect(costRequests).toHaveLength(4);
+    // 费用请求恰好每家两页，没有重复。
+    expect(api.seen).toHaveLength(4);
     for (const [host, cursor] of [['api.openai.com', 'openai-second'], ['api.anthropic.com', 'anthropic-second']]) {
-      const requests = costRequests.filter((value) => value.url.hostname === host);
+      const requests = api.seen.filter((value) => value.url.hostname === host);
       expect(requests).toHaveLength(2);
       expect(requests[0]!.url.searchParams.get('page')).toBeNull();
       expect(requests[1]!.url.searchParams.get('page')).toBe(cursor!);

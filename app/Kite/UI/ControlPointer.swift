@@ -16,6 +16,15 @@ private struct ClickPointer: ViewModifier {
 extension View {
     func clickPointer() -> some View { modifier(ClickPointer()) }
 
+    /// 拖动手柄：平时张开的手，拖动中握紧。
+    @ViewBuilder func grabPointer(_ grabbing: Bool) -> some View {
+        #if os(macOS)
+        pointerStyle(grabbing ? .grabActive : .grabIdle)
+        #else
+        self
+        #endif
+    }
+
     /// 内联链接只在文字实际占用的范围内显示手形，不影响整段的选字。
     @ViewBuilder func referencePointer() -> some View {
         #if os(macOS)

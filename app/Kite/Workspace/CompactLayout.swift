@@ -94,6 +94,7 @@ struct CompactLayout: View {
                     SidebarUserBar()
                 }
                 .padding(.horizontal, Metrics.sidebarInset)
+                .modifier(SidebarScaledMetrics())
                 .frame(width: sidebarWidth)
                 .modifier(SidebarSlide(progress: sidebarProgress, width: sidebarWidth))
                 .accessibilityHidden(!showing(.sidebar))

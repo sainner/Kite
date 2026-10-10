@@ -21,17 +21,22 @@ nonisolated struct ModelAccount: Decodable, Identifiable {
     /// Claude 的额外用量，超出套餐额度后按金额计费。
     struct ExtraUsage: Decodable { let enabled: Bool; let currency: String?; let used: Double?; let limit: Double?; let balance: Double? }
     struct Cost: Decodable { let value: Double; let currency: String; let from: Double; let to: Double }
-    /// 按天的 token 用量；scope 为 account 时是整个账号在所有设备上的用量，machine 只含这台工作机的记录。
+    /// 该账号在这台工作机上按天的 token 用量。
     struct Usage: Decodable {
         struct Day: Decodable {
             let date: String
             let tokens: Double
-            /// 本地时间 0–23 时每小时的 token，只来自工作机本机的记录；没有时为 nil。
-            let hours: [Double]?
+            /// 本地时间 0–23 时每小时的 token。
+            let hours: [Double]
+            /// 按工作机的价格表折算的美元，不含未计价的 token。
+            let cost: Double
+            let costHours: [Double]
+            /// 价格表里没有对应模型的 token，已计入 tokens。
+            let unpriced: Double
         }
-        let scope: String
         let days: [Day]
         let lifetimeTokens: Double
+        let lifetimeCost: Double
     }
     struct Balance: Decodable, Identifiable {
         let currency: String
@@ -77,6 +82,42 @@ nonisolated struct ModelAccount: Decodable, Identifiable {
     }
 }
 
+/// 工作机折算用量金额用的价格表，单价是每百万 token 的美元。
+nonisolated struct TokenPriceTable: Decodable {
+    struct Rates: Decodable {
+        let input: Double
+        let cacheRead: Double
+        /// 价格页没有列出时为 nil。
+        let cacheWrite: Double?
+        /// Claude 的 1 小时缓存写入。
+        let cacheWrite1h: Double?
+        let output: Double
+    }
+    struct Model: Decodable, Identifiable {
+        /// 提示超过 above 个 token 的请求整次按 rates 计价。
+        struct Long: Decodable { let above: Double; let rates: Rates }
+        let model: String
+        let provider: String
+        let rates: Rates
+        let long: Long?
+        var id: String { model }
+
+        private enum CodingKeys: String, CodingKey { case model, provider, long }
+
+        /// 单价和型号写在同一层。
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            model = try container.decode(String.self, forKey: .model)
+            provider = try container.decode(String.self, forKey: .provider)
+            long = try container.decodeIfPresent(Long.self, forKey: .long)
+            rates = try Rates(from: decoder)
+        }
+    }
+    /// 核对价格的日期。
+    let checked: String
+    let models: [Model]
+}
+
 extension WorkerConnection {
     /// 账号按旧数据显示：工作机离线、这次更新失败，或工作机沿用了上次的数据。
     func showsStaleData(_ account: ModelAccount) -> Bool {
@@ -107,6 +148,24 @@ extension AppModel {
 
     var accountWorker: WorkerConnection? {
         accountMachineID.flatMap { connections[$0] } ?? accountWorkers.first
+    }
+
+    /// 所有工作机上各账号的用量按天相加。每台工作机只统计自己的会话记录，同一账号登录在几台机器上也不会重复；
+    /// 只含已收到账号数据的工作机。
+    var totalUsage: ModelAccount.Usage? {
+        let usages = connections.values.compactMap(\.modelAccounts).flatMap(\.accounts).compactMap(\.usage)
+        guard !usages.isEmpty else { return nil }
+        let days = Dictionary(grouping: usages.flatMap(\.days), by: \.date).map { date, days in
+            let sum = { (value: (ModelAccount.Usage.Day) -> Double) in days.reduce(0) { $0 + value($1) } }
+            let hours = { (value: (ModelAccount.Usage.Day) -> [Double]) in
+                (0..<24).map { hour in days.reduce(0) { $0 + (value($1).indices.contains(hour) ? value($1)[hour] : 0) } }
+            }
+            return ModelAccount.Usage.Day(date: date, tokens: sum(\.tokens), hours: hours(\.hours), cost: sum(\.cost),
+                                          costHours: hours(\.costHours), unpriced: sum(\.unpriced))
+        }
+        return ModelAccount.Usage(days: days.sorted { $0.date < $1.date },
+                                  lifetimeTokens: usages.reduce(0) { $0 + $1.lifetimeTokens },
+                                  lifetimeCost: usages.reduce(0) { $0 + $1.lifetimeCost })
     }
 
     var subscriptionQuotas: [SubscriptionQuota] {

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 窗口按所属工作机取得连接提示：工作区窗口属于工作区的工作机，账号窗口属于正在查看的工作机。
+/// 窗口按所属工作机取得连接提示：工作区窗口属于工作区的工作机，账号窗口属于正在查看的工作机，代理上下文窗口属于当前工作机。
 struct PaneBody: View {
     let group: PaneGroup
     let pane: Pane
@@ -15,6 +15,9 @@ struct PaneBody: View {
             case .accounts:
                 ModelAccountPane(pane: pane)
                     .environment(\.paneConnectionNotice, model.connectionNotice(model.accountWorker))
+            case .agentContext(let item, _):
+                AgentContextPane(item: item, pane: pane)
+                    .environment(\.paneConnectionNotice, model.connectionNotice(model.activeConnection))
             }
         }
         .environment(\.headerPane, pane)

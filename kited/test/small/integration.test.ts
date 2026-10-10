@@ -18,9 +18,8 @@ afterEach(async () => {
 /** 直接在托管裸仓库的分支上加一个提交（沿用父提交的文件），模拟另一台机器刚推了提交；返回这个提交。 */
 function advanceRemote(bare: string, branch: string, message: string): string {
   const ref = `refs/heads/${branch}`;
-  const parent = git(bare, 'rev-parse', ref);
-  const commit = git(bare, 'commit-tree', `${parent}^{tree}`, '-p', parent, '-m', message);
-  git(bare, 'update-ref', ref, commit, parent);
+  const commit = git(bare, 'commit-tree', `${ref}^{tree}`, '-p', ref, '-m', message);
+  git(bare, 'update-ref', ref, commit);
   return commit;
 }
 
@@ -82,9 +81,10 @@ test('现场推送在远程领先时快进，现场领先时提交并推送，�
   const pushed = await kited.call('POST', `/checkouts/${model.checkout.id}/push`, { message: '现场提交' });
   expect(pushed.status).toBe(200);
   expect(pushed.body).toEqual({ branch, dirty: false, ahead: 0, behind: 0 });
-  expect(git(folder, 'log', '-1', '--format=%s')).toBe('现场提交');
-  expect(git(folder, 'rev-parse', 'HEAD^')).toBe(remoteHead);
-  expect(git(bare, 'rev-parse', `refs/heads/${branch}`)).toBe(git(folder, 'rev-parse', 'HEAD'));
+  const [subject, parents, head] = git(folder, 'log', '-1', '--format=%s%n%P%n%H').split('\n');
+  expect(subject).toBe('现场提交');
+  expect(parents!.split(' ')[0]).toBe(remoteHead);
+  expect(git(bare, 'rev-parse', `refs/heads/${branch}`)).toBe(head!);
   expect((await kited.call('GET', `/checkouts/${model.checkout.id}/sync`)).body).toEqual(pushed.body);
 
   git(folder, 'switch', '-q', '-c', 'new-branch');

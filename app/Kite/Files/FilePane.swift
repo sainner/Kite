@@ -134,7 +134,7 @@ struct FilePane: View {
                             .disabled(directory.nextOffset == nil)
                     }.buttonStyle(.pointingPlain)
                 }
-            }.font(Theme.secondary).padding(14).frame(maxWidth: .infinity, alignment: .leading)
+            }.font(Theme.secondary).padding(Metrics.padding).frame(maxWidth: .infinity, alignment: .leading)
             .separateScrollPocket()
         }
     }
@@ -181,7 +181,7 @@ struct FilePane: View {
                         }
                     } else if browser.selection.path == nil { Text("选择文件，或点击消息中的引用").foregroundStyle(.secondary) }
                 }
-                .font(Theme.code).textSelection(.enabled).padding(14)
+                .font(Theme.code).textSelection(.enabled).padding(Metrics.padding)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .separateScrollPocket()
             }

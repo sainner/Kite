@@ -1066,6 +1066,8 @@ extension EnvironmentValues {
     @Entry var dotClip: CGRect?
     /// 所在滚动区正在滚动（拖动、惯性或程序滚动），见 dotClip()。
     @Entry var dotScrolling = false
+    /// 所在窗口的图形暂时收回（窄屏拉开侧边栏、底栏时，见 CompactWindow），占位改用底色填充。
+    @Entry var dotFiguresRetracted = false
 }
 
 extension View {
@@ -1131,15 +1133,18 @@ private struct DotsPresenceTransition: Transition {
     }
 }
 
-/// 点阵上的一块图案：自己只占位（figure 的列数 × 行数个模块），图案交给所在窗口的舞台，按占位的实际位置摆上去。
+/// 点阵上的一块图案：自己只占位，图案交给所在窗口的舞台，按占位的实际位置摆上去。
+/// 占位默认正好是 figure 的列数 × 行数个模块；给出 alignment 时铺满外面给的大小，图形按它对齐摆在里面，收回时的底色铺满整个占位。
 /// 跟着内容滚动或随卡片移动时连续跟随，落在两格之间由点阵插值显示；停着时吸附到离占位最近的格位，不让插值把图案拆虚。
 /// 所在内容离场（见 DotsPresence）或视图消失时逐格收回。
 struct DotMask: View {
     let figure: DotFigure
+    var alignment: Alignment?
     @Environment(\.dotStage) private var stage
     @Environment(\.dotCarrier) private var carrier
     @Environment(\.dotClip) private var clip
     @Environment(\.dotScrolling) private var scrolling
+    @Environment(\.dotFiguresRetracted) private var retracted
     @State private var slot = "mask.\(UUID().uuidString)"
     @State private var area: CGRect?
 
@@ -1156,6 +1161,13 @@ struct DotMask: View {
             .onChange(of: clip) { refresh() }
             .onChange(of: scrolling) { refresh() }
             .onDisappear { stage?.show(nil, in: .zero, slot: slot) }
+            .frame(maxWidth: alignment == nil ? nil : .infinity, maxHeight: alignment == nil ? nil : .infinity,
+                   alignment: alignment ?? .center)
+            // 和格子收回、长出一起淡入淡出
+            .background {
+                RoundedRectangle(cornerRadius: DotMetrics.module / 2, style: .continuous).fill(Theme.placeholder)
+                    .opacity(retracted ? 1 : 0).animation(DotMetrics.morph, value: retracted)
+            }
             .preference(key: DotSlots.self, value: [slot])
             .allowsHitTesting(false)
     }

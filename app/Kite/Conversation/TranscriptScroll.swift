@@ -6,7 +6,8 @@ import SwiftUI
 ///   最后几行贴着底边，键盘升起时和键盘一起顶上去；不然按顶部对齐，对话不动。
 ///   收起后旧坐标超出内容范围时收回新末尾；从手指按下到惯性结束，暂停程序定位和尺寸对齐。
 /// - 发送：都滑到最底下。开启新一轮的，最后一轮连同对话底下的边距至少比可见区高一个模数，不够在底下留白（TailSpace），
-///   滑到底时上一轮的末尾滚出可见区顶边再多一个模数；排在后面的消息接在最后面，滑到最底下把它顶上来，不另留空白。
+///   滑到底时上一轮的末尾滚出可见区顶边再多一个模数；对话里只有这一轮时留白正好铺满可见区，不滚。
+///   排在后面的消息接在最后面，滑到最底下把它顶上来，不另留空白。
 /// - 留白：人往上翻多少裁掉多少，裁到最后一条内容为止，下一次开启新一轮才重新留；回复把它填满以后照常跟着最底下。
 ///
 /// 下面的做法都是在 iPhone 模拟器上用单独的探针 app 逐帧记位置试出来的，改之前先看：
@@ -190,8 +191,10 @@ struct TailSpace {
     let scroll: TranscriptScroll
 
     /// 给最后一组的最小高度；可见区还没量出来时不限。
-    var minimum: CGFloat? {
-        height.isFinite ? max(height, 0) : nil
+    /// 它也是第一组时上面没有要滚出去的上一轮，再扣掉对话顶上的边距和那一个模数，正好铺满可见区：发送时不滚，消息停在原处。
+    func minimum(first: Bool) -> CGFloat? {
+        let height = first ? height - Metrics.transcriptPadding - DotMetrics.module : height
+        return height.isFinite ? max(height, 0) : nil
     }
 }
 

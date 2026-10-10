@@ -5,7 +5,7 @@ import SwiftUI
 /// 标题前的信息区由窗口给出（会话是状态圆环），两端相同。信息区同时只展示一项：所属工作机的连接提示优先于
 /// 窗口自己的提示，提示出现时盖住圆环，见 PaneNotice。
 /// 控制区是液态玻璃容器，各个窗口给内部控件提供玻璃形状；左右留边，底部总边距统一取固定留白与安全区高度的较大值。
-/// 控制区始终存在；内容为空时仍保留交互范围。
+/// 控制区始终存在；内容为空时窄屏触控下仍保留交互范围，鼠标或宽屏下不接点击，后面的内容照常可点。
 /// 安全区已由窗口容器让出，控制区补足差额；打字时在键盘上方保留固定留白。
 /// 控制区里的输入框拿 typing 绑定焦点。iPhone 上打字时点控制区以外的地方收起键盘；不打字时从控制区往上拖拉出 action 栏。
 /// 窄屏控制区左右滑动切换窗口，键盘显示或控制区已聚焦时禁用。
@@ -19,16 +19,13 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
     let headerStatus: HeaderStatus
     let headerActions: HeaderActions
     @FocusState private var typing: Bool
-    /// 窗口底部为 Home 条保留的高度，不含键盘；底栏展开时仍保留。
-    @Environment(\.homeIndicatorInset) private var homeInset
     @Environment(\.headerPane) private var headerPane
     @Environment(\.sharedPaneHeaderHeight) private var sharedHeaderHeight
-    @Environment(\.self) private var environment
-    @Environment(\.keyboardShown) private var keyboardShown
+    @Environment(\.workspacePresentation) private var presentation
     @Environment(\.openSidebar) private var openSidebar
     @Environment(\.dotCarrier) private var carrier
     @Environment(\.paneConnectionNotice) private var connectionNotice
-    /// 整个窗口（连同标题栏与控制区）的范围，交给内容里要铺满整个窗口的点阵图案。
+    /// 整个窗口（连同标题栏与控制区）的范围，交给内容里要铺满整个窗口的点阵图案；不铺点阵的窗口不量。
     @State private var frame: CGRect?
 
     init(header: PaneHeader, usesDots: Bool = false, notice: PaneNotice? = nil, @ViewBuilder content: () -> Content,
@@ -45,7 +42,6 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
     }
 
     var body: some View {
-        let bottomSafeArea = keyboardShown ? 0 : homeInset
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .environment(\.paneWindowFrame, frame)
@@ -64,14 +60,14 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
                         }
                     }
                         .padding(.horizontal, Metrics.paneMargin)
-                        // 总底边距取 max(固定留白, 安全区)，容器已经让出的安全区只计算一次。
-                        // 键盘显示时容器已让出键盘，在它上方补固定留白；和键盘自己的动画同步。
-                        .padding(.bottom, max(Metrics.paneMargin, bottomSafeArea) - bottomSafeArea)
+                        .modifier(PaneControlsBottom())
                         .frame(maxWidth: .infinity)
                         .contentShape(Rectangle())
                         // 打字时在输入框里上下拖是选字、滚动，不拉 action 栏
-                        .pullsDrawer(enabled: !typing)
+                        .modifier(DrawerPullModifier(enabled: !typing && presentation.isCompactTouch))
                         .modifier(PaneControlSwipe(typing: typing))
+                        // 空控制区只在窄屏触控下接上拉与横滑；其他情况只是一段透明的留白，点击和悬停落到后面的内容上。
+                        .allowsHitTesting(!controlViews.isEmpty || presentation.isCompactTouch)
                 }
             }
             .safeAreaBar(edge: .top, spacing: 0) {
@@ -84,7 +80,8 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
             }
             .background {
                 Group(subviews: status) { statusViews in
-                    Color.clear.preference(key: CompactPaneHeaders.self, value: sharedHeader(hasStatus: !statusViews.isEmpty))
+                    CompactPaneHeaderReport(header: header, status: statusViews.isEmpty ? nil : AnyView(status),
+                                            actions: AnyView(headerActions), openSidebar: sidebarAction, endTyping: { typing = false })
                 }
             }
             // 窗口内容里的滚动区要用 separateScrollPocket，Mac 上贴着窗口顶边的卡片才不会互相串色
@@ -92,17 +89,10 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
             // 控制区后面的内容保持完整显示。
             .scrollEdgeEffectHidden(true, for: .bottom)
             .windowDots(usesDots)
-            .onGeometryChange(for: CGRect.self) {
-                $0.frame(in: DotCarrier.coordinateSpace(carrier))
+            // 窗口移动、缩放时范围每帧都变，写一次状态整个窗口跟着重算，只有铺点阵的窗口才量。
+            .onGeometryChange(for: CGRect?.self) {
+                usesDots ? $0.frame(in: DotCarrier.coordinateSpace(carrier)) : nil
             } action: { frame = $0 }
-    }
-
-    private func sharedHeader(hasStatus: Bool) -> [CompactPaneHeader] {
-        guard sharedHeaderHeight != nil, let pane = headerPane else { return [] }
-        return [CompactPaneHeader(pane: pane, header: header,
-                                  status: hasStatus ? AnyView(status) : nil,
-                                  actions: AnyView(headerActions), environment: environment,
-                                  openSidebar: sidebarAction, endTyping: { typing = false })]
     }
 
     /// 信息区：窗口给的圆环，提示出现时虚化盖住；没有圆环时只放提示图标。
@@ -186,19 +176,7 @@ struct DrawerPull {
     }
 }
 
-private extension View {
-    /// 在这里往上拖拉出 action 栏，只在 iPhone 上。和控制区里的点按、输入同时生效，不抢它们。
-    @ViewBuilder
-    func pullsDrawer(enabled: Bool) -> some View {
-        #if os(iOS)
-        modifier(DrawerPullModifier(enabled: enabled))
-        #else
-        self
-        #endif
-    }
-}
-
-#if os(iOS)
+/// 在这里往上拖拉出 action 栏，只在窄屏触控下。和控制区里的点按、输入同时生效，不抢它们。
 private struct DrawerPullModifier: ViewModifier {
     let enabled: Bool
     @Environment(\.drawerPull) private var pull
@@ -212,4 +190,40 @@ private struct DrawerPullModifier: ViewModifier {
                                  isEnabled: enabled && pull != nil)
     }
 }
-#endif
+
+/// 控制区的底边距：总底边距取 max(固定留白, 安全区)，容器已经让出的安全区只计算一次。
+/// 键盘显示时容器已让出键盘，在它上方补固定留白；和键盘自己的动画同步。
+/// Home 条高度在这一层读：拖抽屉时它随手指逐次变化，只重算边距，不带着整个窗口重算。
+private struct PaneControlsBottom: ViewModifier {
+    /// 窗口底部为 Home 条保留的高度，不含键盘；底栏展开时仍保留。
+    @Environment(\.homeIndicatorInset) private var homeInset
+    @Environment(\.keyboardShown) private var keyboardShown
+
+    func body(content: Content) -> some View {
+        let safeArea = keyboardShown ? 0 : homeInset
+        content.padding(.bottom, max(Metrics.paneMargin, safeArea) - safeArea)
+    }
+}
+
+/// 紧凑布局里几个窗口共用一条标题栏，各窗口把自己的标题栏连同所处环境报上去。读整个环境放在这一小块里，
+/// 环境一变只重算它，不带着整个窗口重算。
+private struct CompactPaneHeaderReport: View {
+    let header: PaneHeader
+    let status: AnyView?
+    let actions: AnyView
+    let openSidebar: (@MainActor () -> Void)?
+    let endTyping: () -> Void
+    @Environment(\.headerPane) private var headerPane
+    @Environment(\.sharedPaneHeaderHeight) private var sharedHeaderHeight
+    @Environment(\.self) private var environment
+
+    var body: some View {
+        Color.clear.preference(key: CompactPaneHeaders.self, value: headers)
+    }
+
+    private var headers: [CompactPaneHeader] {
+        guard sharedHeaderHeight != nil, let pane = headerPane else { return [] }
+        return [CompactPaneHeader(pane: pane, header: header, status: status, actions: actions, environment: environment,
+                                  openSidebar: openSidebar, endTyping: endTyping)]
+    }
+}

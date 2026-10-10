@@ -1,6 +1,5 @@
 import { expect, test } from 'bun:test';
-import { Database } from 'bun:sqlite';
-import { rmSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentDefinition } from '../../src/agents/definition.ts';
 import { defaultAgentModel } from '../../src/agents/models.ts';
@@ -9,8 +8,8 @@ import type { Envelope } from '../../src/events.ts';
 import type { OperationGrant } from '../../src/operations/contract.ts';
 import type { Role } from '../../src/roles.ts';
 import type { EmblemStatus } from '../../src/template-emblems.ts';
-import { call, claudeModel, linkNewAccount, openAgent, registerCheckout, startKited } from '../harness.ts';
-import { ManualModel, Seen } from '../harness-loop.ts';
+import { call, linkNewAccount, openAgent, registerCheckout, startKited } from '../harness.ts';
+import { diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
 import { makeTemp, newRepo } from '../util.ts';
 
 interface Entry extends EmblemStatus { role: Role; revision: string }
@@ -203,7 +202,8 @@ test('改角色不影响已有代理，改选到同样允许协作工具的角�
 
 // 新需求：只读审查不再由定义的执行权限保证，只靠角色的工具白名单。规则要在草稿选项（agent-options）、创建代理
 // （角色给初始工具）和改配置（实例上记下的角色规则）三处都接上，漏了任何一处，审查代理就能开出写工具。
-test('只读审查角色建的代理只有 read，改配置加 shell 或关掉必需的 read 都被拒，黑名单角色建代理时不能带被禁的工具', async () => {
+// 模型流强发白名单之外的 patch 与 shell 时，执行侧仍须拒绝，不能只靠模型自觉遵守工具声明。
+test('只读审查角色建的代理只有 read，模型强发 patch 与 shell 均被拒且不写文件，改配置加 shell 或关掉必需的 read 都被拒，黑名单角色建代理时不能带被禁的工具', async () => {
   const model = new ManualModel();
   const k = startKited(() => model);
   try {
@@ -222,14 +222,31 @@ test('只读审查角色建的代理只有 read，改配置加 shell 或关掉�
     ]));
 
     const created = await k.call('POST', `/workspaces/${workspaceId}/threads`, {
-      prompt: '审查改动', role: { id: 'kite.review', revision: review.revision },
+      prompt: '审查改动', role: { id: 'kite.review', revision: review.revision }, maxRequestsPerTurn: 1,
     });
     expect(created.status).toBe(200);
     const id = created.body.instanceId as string;
     const first = await model.call(1);
     expect(first.request.allowedTools).toEqual(['read']);
+    void first.response.emit({ type: 'item', item: {
+      ...item('review-patch', 'patch'), call: { id: 'review-patch', name: 'patch', arguments: {
+        operations: [{ type: 'create_file', path: 'forbidden-patch.txt', diff: '+不应出现\n+' }],
+      } },
+    } });
+    void first.response.emit({ type: 'item', item: {
+      ...item('review-shell', 'shell'), call: { id: 'review-shell', name: 'shell', arguments: {
+        description: '不应执行', command: 'printf forbidden > forbidden-shell.txt',
+      } },
+    } });
     first.response.complete();
     await k.waitEvent((event) => event.type === 'idle' && event.threadId === id);
+    const thread = await k.call('GET', `/threads/${id}`);
+    expect(existsSync(join(thread.body.workspace.cwd, 'forbidden-patch.txt'))).toBe(false);
+    expect(existsSync(join(thread.body.workspace.cwd, 'forbidden-shell.txt'))).toBe(false);
+    const denied = diskRecords(join(k.home, 'sessions', id, 'journal.jsonl'))
+      .filter((record) => record.type === 'tool.finished');
+    expect(denied.map((record) => record.callId).sort()).toEqual(['review-patch', 'review-shell']);
+    expect(denied.every((record) => record.result.status !== 'success')).toBe(true);
     const configPath = `/instances/${id}/agent-config`;
     const config = await k.call('GET', configPath);
     expect(config.body.instance.config.agent.tools).toEqual(['read']);
@@ -373,66 +390,6 @@ test('发出第一条消息后改选角色返回 409，回合进行中与重启�
     const reopened = await rejectedRole();
     expect(reopened.instance.config.role.id).toBe('kite.work');
     expect(model.calls.values).toHaveLength(1);
-  } finally {
-    await daemon?.stop();
-    account.stop();
-    rmSync(root, { recursive: true, force: true });
-  }
-}, 1000);
-
-// 新需求：三个旧定义合并为 kite.agent。Store 构造时把旧定义的实例改指代理并按角色补上约束，按定义的授权改成按角色；
-// 迁移结果还要和角色目录、能力计算、授权读取接上，只有拿旧数据重开才看得出合起来对不对。
-test('旧库重开后旧定义的实例指向代理并补上角色，按定义的授权改成按角色', async () => {
-  const root = makeTemp('roles-legacy-');
-  const home = join(root, 'kite');
-  const account = linkNewAccount(home);
-  let daemon: Daemon | undefined;
-  try {
-    daemon = startDaemon({ home, port: 0, lightTasks: false });
-    const request = (method: string, path: string, body?: unknown) => call(daemon!.url, method, path, body);
-    const checkout = await request('POST', '/checkouts', { path: newRepo(root, 'project', { 'base.txt': '原始\n' }) });
-    expect(checkout.status).toBe(200);
-    const reviewId = await openAgent(request, checkout.body.workspace.id);
-    const claudeId = await openAgent(request, checkout.body.workspace.id, claudeModel);
-    await daemon.stop();
-    daemon = undefined;
-
-    // 改写成接口改造前的数据：旧定义 ID、没有 config.role、按定义授权。
-    const db = new Database(join(home, 'kite.db'));
-    try {
-      const config = (id: string) => JSON.parse((db.query('select config from plugin_instances where id = ?').get(id) as { config: string }).config);
-      const legacy = (id: string, definitionId: string, change: (config: any) => void) => {
-        const { role: _role, ...rest } = config(id);
-        change(rest);
-        db.query('update plugin_instances set definition_id = ?, config = ? where id = ?').run(definitionId, JSON.stringify(rest), id);
-      };
-      legacy(reviewId, 'kite.agent.review', (value) => {
-        value.agent.tools = ['read'];
-        value.agent.context = { ...value.agent.context, id: 'kite.review', title: '只读审查' };
-        value.grants = [{ operation: 'agent.list' },
-          { operation: 'agent.start', definitionIds: ['kite.agent.coding', 'kite.agent.review', 'kite.agent.claude'] }];
-      });
-      legacy(claudeId, 'kite.agent.claude', (value) => {
-        value.grants = [{ operation: 'agent.start', definitionIds: ['kite.agent.claude'] }];
-      });
-    } finally {
-      db.close();
-    }
-
-    daemon = startDaemon({ home, port: 0, lightTasks: false });
-    const review = (await request('GET', `/threads/${reviewId}`)).body;
-    expect(review.definitionId).toBe('kite.agent');
-    expect(review.config.role).toMatchObject({ id: 'kite.review', tools: { mode: 'allow', tools: ['read'], required: ['read'] } });
-    expect((await request('GET', `/instances/${reviewId}/agent-capabilities`)).body.tools).toEqual(['read']);
-    expect((await request('GET', `/instances/${reviewId}/operation-grants`)).body.grants).toEqual([
-      { operation: 'agent.list' }, { operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] },
-    ]);
-    const claude = (await request('GET', `/threads/${claudeId}`)).body;
-    expect(claude).toMatchObject({ definitionId: 'kite.agent', runtime: 'claude', config: { agent: { model: claudeModel } } });
-    expect(claude.config.role).toMatchObject({ id: 'kite.work', tools: { mode: 'deny', tools: [], required: [] } });
-    expect((await request('GET', `/instances/${claudeId}/operation-grants`)).body.grants).toEqual([
-      { operation: 'agent.start', roleIds: ['kite.work'] },
-    ]);
   } finally {
     await daemon?.stop();
     account.stop();

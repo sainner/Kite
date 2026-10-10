@@ -2,32 +2,20 @@ import SwiftUI
 
 enum RoleField { case title, budget }
 
-/// 角色的各项设置：名称、提示词、点阵签名、工具规则、默认模型与预算。资源库的角色页与新代理另存角色的弹窗共用。
-struct RoleForm: View {
+/// 用这个角色新建代理时的初始配置：默认模型、每回合请求上限与工具。资源库角色的初始配置窗口与新代理另存角色的弹窗共用。
+struct RoleSettingsForm: View {
     @Binding var role: RoleDefinition
-    @Binding var emblem: EmblemDesign
-    /// 工作机目录里这个角色的最新状态，签名生成的进度从这里来；新角色没有。
-    let current: AgentRole?
     let catalog: RoleCatalog?
-    var regenerate: (() -> Void)?
     let focus: FocusState<RoleField?>.Binding
 
     private var universe: [String] { catalog?.tools ?? [] }
 
     var body: some View {
-        CardField(label: "角色名称", focused: focus.wrappedValue == .title) {
-            TextField("角色名称", text: $role.title)
-                .focused(focus, equals: .title)
-                .cardInput { focus.wrappedValue = .title }
-        }
-        Text("提示词").font(.headline)
-        ContextBlocksEditor(blocks: $role.context.blocks, variables: catalog?.variables ?? [])
-        TemplateEmblemField(design: $emblem, role: current, regenerate: regenerate)
-        tools
         CardSection("默认模型") {
             AgentModelFields(configuration: $role.model, vendors: catalog?.vendors ?? [], models: catalog?.models ?? [])
         }
         TurnBudgetField(value: $role.maxRequestsPerTurn, focus: focus, field: .budget)
+        tools
     }
 
     /// 开关表示这个角色能用哪些工具；规则的方向只决定以后新增的工具默认是否可用。
@@ -63,7 +51,7 @@ struct RoleForm: View {
     }
 }
 
-/// 代理窗口的角色菜单里基于已有角色另存新角色的弹窗；资源库里的角色在角色页编辑，见 RoleLibrary。保存失败或冲突时保留草稿。
+/// 代理窗口的角色菜单里基于已有角色另存新角色的弹窗；资源库里的角色在代理上下文的窗口里编辑，见 RoleContextPane。保存失败或冲突时保留草稿。
 struct RoleEditor: View {
     let connection: UUID
     var onSaved: (AgentRole) -> Void = { _ in }
@@ -90,11 +78,24 @@ struct RoleEditor: View {
 
     var body: some View {
         CardSheet(title: "新建角色",
-                  subtitle: "提示词双击段落编辑。工具、模型与预算是用这个角色新建代理时的初始值，草稿里还能在此范围内调整。",
+                  subtitle: "工具、模型与预算是用这个角色新建代理时的初始值，草稿里还能在此范围内调整。",
                   typing: focus != nil, size: CGSize(width: 720, height: 720),
                   close: { if changed { discard = true } else { dismiss() } }) {
-            RoleForm(role: $draft, emblem: $emblem, current: nil, catalog: catalog, focus: $focus)
-                .disabled(working || !available)
+            Group {
+                CardField(label: "角色名称", focused: focus == .title) {
+                    TextField("角色名称", text: $draft.title)
+                        .focused($focus, equals: .title)
+                        .cardInput { focus = .title }
+                }
+                Text("提示词").font(Theme.heading3)
+                ContextEditing(variables: catalog?.variables ?? [],
+                               counting: model.contextCounting(model: draft.model.model, scene: nil, connection: model.templateConnection(connection))) {
+                    ContextBlocksEditor(blocks: $draft.context.blocks, variables: catalog?.variables ?? [])
+                }
+                TemplateEmblemField(design: $emblem)
+                RoleSettingsForm(role: $draft, catalog: catalog, focus: $focus)
+            }
+            .disabled(working || !available)
             if !available { CardCallout(text: "工作机连接已变化，请返回后重新打开角色。草稿尚未保存。", systemImage: "info.circle", tint: .secondary) }
         } footer: {
             CardActions(primary: "保存",

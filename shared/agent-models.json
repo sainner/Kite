@@ -3,7 +3,8 @@
   "claude": [
     { "id": "claude-fable-5-1[1m]", "tier": "fable", "name": "fable-5.1", "maxContextWindow": 1000000 },
     { "id": "opus", "tier": "opus", "name": "opus-5.5", "maxContextWindow": 1000000 },
-    { "id": "sonnet", "tier": "sonnet", "name": "sonnet-5", "maxContextWindow": 1000000 }
+    { "id": "sonnet", "tier": "sonnet", "name": "sonnet-5", "maxContextWindow": 1000000 },
+    { "id": "haiku", "tier": "haiku", "name": "haiku-5.5", "maxContextWindow": 1000000 }
   ],
   "models": [
     { "id": "gpt-6-astra", "tier": "astra", "name": "astra-6", "maxContextWindow": 872000 },

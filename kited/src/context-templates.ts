@@ -7,11 +7,13 @@ import type { ContextDefinition } from './harness/context/types.ts';
 import type { Store } from './store.ts';
 
 export interface ContextTemplate { definition: ContextDefinition; revision: string }
-const editableScenes = [
-  'thread.title', 'thread.compact', 'thread.configuration_changed', 'thread.context_updated',
-  'thread.execution_permissions_changed', 'thread.plugin_tools_changed', 'thread.file_changes',
-  'template.emblem',
-] as const;
+/** 可编辑的场景及在资源库代理上下文里的分类：旁路任务（task）另外调用模型生成内容，事件通知（notification）是插进会话的正文。 */
+const editableScenes: Partial<Record<ContextScene, 'task' | 'notification'>> = {
+  'thread.title': 'task', 'thread.compact': 'task', 'template.emblem': 'task',
+  'thread.configuration_changed': 'notification', 'thread.context_updated': 'notification',
+  'thread.execution_permissions_changed': 'notification', 'thread.plugin_tools_changed': 'notification',
+  'thread.file_changes': 'notification',
+};
 
 const snapshot = (definition: ContextDefinition): ContextTemplate => ({
   definition, revision: createHash('sha256').update(JSON.stringify(definition)).digest('hex'),
@@ -20,7 +22,7 @@ const snapshot = (definition: ContextDefinition): ContextTemplate => ({
 function parse(value: unknown): ContextDefinition {
   const result = contextDefinitionSchema.safeParse(value);
   if (!result.success) throw new KiteError(`上下文模板无效：${result.error.issues.map((issue) => issue.message).join('；')}`);
-  if (!editableScenes.some((scene) => scene === result.data.scene)) throw new KiteError('该场景尚未开放模板编辑');
+  if (!editableScenes[result.data.scene]) throw new KiteError('该场景尚未开放模板编辑');
   return result.data;
 }
 
@@ -38,7 +40,7 @@ export class ContextTemplates {
   list() {
     return {
       templates: [...this.defaults.keys()].sort().map((id) => snapshot(this.current(id)!)),
-      scenes: editableScenes.map((id) => ({ id, ...contextScenes[id] })),
+      scenes: Object.entries(editableScenes).map(([id, kind]) => ({ id, kind, ...contextScenes[id as ContextScene] })),
     };
   }
 
@@ -56,7 +58,7 @@ export class ContextTemplates {
 
   /** 账号里拉来的版本直接替换本机缓存；不是本机已知场景的跳过，返回是否有变化。 */
   cache(value: unknown): boolean {
-    const definition = parse(value);
+    const definition = this.named(parse(value));
     const current = this.current(definition.id);
     if (!current || snapshot(current).revision === snapshot(definition).revision) return false;
     this.save(definition);
@@ -72,7 +74,7 @@ export class ContextTemplates {
 
   /** 修改前的校验，结果先写到账号服务再存本机。 */
   validate(id: string, expectedRevision: string, value: unknown): ContextDefinition {
-    const definition = parse(value);
+    const definition = this.named(parse(value));
     if (id !== definition.id) throw new KiteError('模板 ID 与请求目标不一致');
     this.get(id, definition.scene, expectedRevision);
     return definition;
@@ -88,6 +90,12 @@ export class ContextTemplates {
       }
       return value;
     });
+  }
+
+  /** 名称固定为内置名称，用户只改内容。 */
+  private named(definition: ContextDefinition): ContextDefinition {
+    const builtin = this.defaults.get(definition.id);
+    return builtin ? { ...definition, title: builtin.title } : definition;
   }
 
   private current(id: string): ContextDefinition | undefined {

@@ -23,11 +23,13 @@ struct ThreadPane: View {
     var body: some View {
         let items = thread.transcript.items
         let pending = thread.transcript.pending
-        let initial = items.isEmpty && pending.isEmpty
+        let empty = items.isEmpty && pending.isEmpty
+        // 已有代理的历史还没到时先什么也不画，不铺新代理的点阵图案，免得长出来又马上收回
+        let initial = empty && (thread.isDraft || thread.historyLoaded)
         return PaneWindow(header: header(initial: initial), usesDots: true, notice: thread.problem.map(PaneNotice.failure)) {
             if initial {
                 NewThreadStage(slot: patternSlot, roleError: $roleError)
-            } else {
+            } else if !empty {
                 // 可见区多高在排版时当场算出来（GeometryReader），留白和它同一次排好。这里的尺寸已经扣掉了
                 // 标题栏、控制区和键盘让出的那一截，滚动视图照样伸到它们后面（实测）
                 GeometryReader { proxy in
@@ -35,7 +37,7 @@ struct ThreadPane: View {
                         TranscriptView(items: items, pending: pending, actionable: true, lazy: Self.lazyTranscript, tail: scroll.tail(visible: proxy.size.height))
                             .font(Theme.body)
                             .frame(maxWidth: Metrics.transcriptWidth)
-                            .padding(.horizontal, 16)
+                            .padding(.horizontal, Metrics.padding * 2)
                             .padding(.vertical, Metrics.transcriptPadding)
                             .frame(maxWidth: .infinity)
                             // 操作栏开着时，点对话里别的地方收起；点到按钮、别的气泡由它们自己接

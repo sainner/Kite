@@ -73,16 +73,21 @@ struct PaneHeaderButtonGroup<Content: View>: View {
 
 /// 原生菜单展开时沿用按钮的按下状态，背景随菜单收起自动清除。
 /// 按钮只带半个间距，反馈向两侧多出一点，图标入口的反馈仍是圆形。
-/// 触屏上按压反馈由可交互的玻璃负责，不再叠灰色背景。
+/// 触屏上按压反馈由可交互的玻璃负责，不再叠灰色背景。禁用时内容变暗，与 PaneButtonStyle 相同。
 private struct PaneHeaderButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
-        if InputMode.current.isTouch {
-            configuration.label
-        } else {
-            configuration.label
-                .modifier(PaneButtonHover(inset: 4, horizontalInset: -1, isPressed: configuration.isPressed))
-                .clickPointer()
+        Group {
+            if InputMode.current.isTouch {
+                configuration.label
+            } else {
+                configuration.label
+                    .modifier(PaneButtonHover(inset: 4, horizontalInset: -1, isPressed: configuration.isPressed))
+                    .clickPointer()
+            }
         }
+        .opacity(isEnabled ? 1 : 0.45)
     }
 }
 

@@ -1,8 +1,8 @@
 import { expect, test } from 'bun:test';
-import { existsSync, readFileSync, watch, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SubscriptionLogins } from '../../src/subscription-logins.ts';
-import { ENV, useTemp } from '../util.ts';
+import { ENV, until, useTemp } from '../util.ts';
 
 const temp = useTemp();
 type Snapshot = ReturnType<SubscriptionLogins['get']>;
@@ -29,19 +29,9 @@ function fixture(root: string, name: string, source: string): string[] {
 
 async function marker(root: string, name: string): Promise<{ pid: number; data: any }> {
   const path = join(root, name);
-  if (!existsSync(path)) {
-    await new Promise<void>((resolve, reject) => {
-      const watcher = watch(root, () => {
-        if (existsSync(path)) { clearTimeout(timer); watcher.close(); resolve(); }
-      });
-      const timer = setTimeout(() => {
-        watcher.close();
-        reject(new Error(`等待登录夹具 ${name} 超时`));
-      }, 700);
-      if (existsSync(path)) { clearTimeout(timer); watcher.close(); resolve(); }
-    });
-  }
-  return JSON.parse(readFileSync(path, 'utf8'));
+  // 夹具用 rename 原子发布标记；直接等落盘状态，不依赖目录通知的投递时序。
+  return until(() => existsSync(path) && JSON.parse(readFileSync(path, 'utf8')),
+    `登录夹具 ${name}`, 700);
 }
 
 async function snapshot(logins: SubscriptionLogins, id: string, predicate: (value: Snapshot) => boolean): Promise<Snapshot> {

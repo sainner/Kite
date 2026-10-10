@@ -109,6 +109,10 @@ struct CompactWindow: View {
             }
         }
         .animation(.snappy, value: windowed)
+        // 拉开侧边栏或底栏时窗口里的图案收回，占位填上底色，窗口停回收起的位置后再长出来。窗口走着时图形每帧在点阵上换算位置，
+        // 亚格插值和整格跟随都会闪（iPhone 实测）。钉着的底栏是收起的位置，图案照常显示。
+        .modifier(DotsPresence(presented: figuresShown))
+        .environment(\.dotFiguresRetracted, !figuresShown)
         .environment(\.dotCarrier, carrier)
         .modifier(WindowPlacement(openness: target, screen: screen, insets: insets, homeInset: homeInset,
                                   avoidsKeyboard: avoidsKeyboard, sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius,
@@ -132,6 +136,9 @@ struct CompactWindow: View {
 
     /// 收起时停在哪：底栏钉着时是展开的底栏。
     private var rest: WorkspaceDrawer? { actionsRule == .pinned ? .actions : nil }
+
+    /// 窗口停在收起的位置，里面的图案摆在点阵上。
+    private var figuresShown: Bool { !carrier.moving && (shown == nil || shown == rest) }
 
     /// 窗口和单页里有输入框，要给键盘让位；目录状态和空画板只展示信息，弹窗里打字时不跟着键盘变形。
     private var avoidsKeyboard: Bool {

@@ -19,7 +19,7 @@ nonisolated struct ContextBlock: Codable, Equatable, Identifiable, Sendable {
     var cases: [ContextBranch]?
     var otherwise: ContextBranch?
 
-    static func paragraph() -> Self { .init(type: "paragraph", title: "新段落", parts: [.text("")]) }
+    static func paragraph() -> Self { .init(type: "paragraph", title: "新段落", parts: []) }
     static func condition(variable: String) -> Self {
         .init(type: "condition", title: "新条件", variable: variable,
               cases: [.init(title: "为空时", equals: "", blocks: [])],
@@ -27,13 +27,10 @@ nonisolated struct ContextBlock: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-nonisolated struct ContextPart: Codable, Equatable, Identifiable, Sendable {
-    // 编辑时保持文字和变量的身份，避免增删、重排让输入框绑定到相邻片段；不写入模板契约。
-    var id = UUID()
+nonisolated struct ContextPart: Codable, Equatable, Sendable {
     var type: String
     var text: String?
     var name: String?
-    private enum CodingKeys: String, CodingKey { case type, text, name }
     static func text(_ value: String) -> Self { .init(type: "text", text: value) }
     static func variable(_ name: String) -> Self { .init(type: "variable", name: name) }
 }
@@ -49,9 +46,17 @@ nonisolated struct ContextScene: Decodable, Identifiable, Sendable {
     struct Variable: Decodable, Identifiable, Sendable {
         let name: String
         let title: String
+        /// 变量里是什么、什么时候为空。
+        let description: String
         var id: String { name }
+
+        /// 表示变量的图标：工具栏的插入变量和正文开头的可用变量用同一个，用户才认得出。
+        static let icon = "curlybraces"
     }
+    /// 在资源库代理上下文里的分类：旁路任务另外调用模型生成内容，事件通知是插进会话的正文。
+    enum Kind: String, Decodable, Sendable { case task, notification }
     let id: String
+    let kind: Kind
     let title: String
     let variables: [Variable]
 }
@@ -167,6 +172,11 @@ extension AppModel {
         try await refreshTemplates(of: connection)
     }
 
+    /// 目录没读过才读；读过的由 context-templates.changed 事件和重连后的重读保持最新。
+    func ensureContextTemplates(in area: WorkArea? = nil) async throws {
+        if connection(for: area)?.templates == nil { try await refreshContextTemplates(in: area) }
+    }
+
     func refreshTemplates(of connection: WorkerConnection, fresh: Bool = false) async throws {
         try await refreshCatalog("/context-templates", of: connection, fresh: fresh, request: \.templatesRequest, into: \.templates)
     }
@@ -196,11 +206,11 @@ extension AppModel {
 
     /// 模板只能修改，各场景的模板由工作机提供。
     func saveContextTemplate(_ definition: ContextDefinition, expectedRevision: String, connection: UUID) async throws {
-        guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请返回模板列表") }
+        guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请重试") }
         let client = target.client
         let result = try await client.request("/context-templates/\(definition.id.pathComponent)", method: "PUT",
             body: ContextTemplateSave(definition: definition, expectedRevision: expectedRevision), as: ContextTemplate.self)
-        guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回模板列表") }
+        guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请重试") }
         target.templates?.templates.removeAll { $0.id == result.id }
         target.templates?.templates.append(result)
     }

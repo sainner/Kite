@@ -60,7 +60,8 @@ struct TranscriptView: View {
             // 组和组之间的行距算在后一组顶上，最后一组的顶就是上一组的底边，最小高度从这里算
             .padding(.top, turn.id == turns.first?.id ? 0 : Metrics.rowSpacing)
             // 改最小高度不换分支：这一组不再是最后一组时还是同一个视图
-            .frame(maxWidth: .infinity, minHeight: last && turn.startsHumanTurn ? tail?.minimum : nil, alignment: .topLeading)
+            .frame(maxWidth: .infinity, minHeight: last && turn.startsHumanTurn ? tail?.minimum(first: turn.id == turns.first?.id) : nil,
+                   alignment: .topLeading)
             // 操作栏也要压在后面几组上
             .zIndex(turn.rows.contains { $0.id == selection.wrappedValue } ? 1 : 0)
         }

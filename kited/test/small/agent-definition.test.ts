@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { existsSync, rmSync, writeFileSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentDefinition } from '../../src/agents/definition.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
@@ -163,7 +163,7 @@ test('按草稿选择创建代理时显式模型压过角色默认值和 KITE_MO
 
 // 模板目录、SQLite 排队快照与 journal 跨重启交接；缓存 Runner 仅在正文变化时读取新基础通知模板。
 // 真实回归：原样 PUT 曾漏掉 configurationBoundary，导致 App 无法解码成功保存的配置快照。
-test('原样保存保留配置快照，通知跨重启保留且审查保持只读', async () => {
+test('原样保存保留配置快照，通知跨重启保留且按请求边界采用新模板', async () => {
   const root = makeTemp();
   const home = join(root, 'kite');
   const account = linkNewAccount(home);
@@ -215,8 +215,7 @@ test('原样保存保留配置快照，通知跨重启保留且审查保持只�
     daemon = undefined;
 
     const resumedModel = new ManualModel();
-    const reviewModel = new ManualModel();
-    daemon = startDaemon({ home, port: 0, lightTasks: false, model: (thread) => (thread.config.role as { id: string } | undefined)?.id === 'kite.review' ? reviewModel : resumedModel });
+    daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => resumedModel });
     expect(daemon.kite.store.instanceNotifications(codingId, 0)).toEqual(pending);
     const secondEvents = new Seen<Envelope>();
     daemon.kite.bus.subscribe(undefined, (event) => secondEvents.add(event));
@@ -313,30 +312,6 @@ test('原样保存保留配置快照，通知跨重启保留且审查保持只�
     third.response.complete();
     await secondEvents.wait((event) => event.type === 'idle' && event.threadId === codingId
       && secondEvents.values.indexOf(event) >= thirdEventStart);
-
-    // 只读审查只靠角色的工具白名单：模型越权发出的 patch 与 shell 都不能落到工作区
-    const roles = await apiCall('GET', '/roles');
-    const reviewRole = (roles.body.roles as Array<{ role: { id: string }; revision: string }>).find((entry) => entry.role.id === 'kite.review')!;
-    const review = await apiCall('POST', `/workspaces/${workspaceId}/threads`, {
-      prompt: '只审查', role: { id: 'kite.review', revision: reviewRole.revision }, maxRequestsPerTurn: 1,
-    });
-    expect(review.status).toBe(200);
-    const reviewId = review.body.instanceId as string;
-    const malicious = await reviewModel.call(1);
-    expect(malicious.request.allowedTools).toEqual(['read']);
-    void malicious.response.emit({ type: 'item', item: calledItem('review-patch', 'patch', {
-      operations: [{ type: 'create_file', path: 'forbidden-patch.txt', diff: '+不应出现\n+' }],
-    }) });
-    void malicious.response.emit({ type: 'item', item: calledItem('review-shell', 'shell', {
-      description: '不应执行', command: "printf forbidden > forbidden-shell.txt",
-    }) });
-    malicious.response.complete();
-    await secondEvents.wait((event) => event.type === 'idle' && event.threadId === reviewId);
-    const reviewThread = await call(daemon.url, 'GET', `/threads/${reviewId}`);
-    expect(existsSync(join(reviewThread.body.workspace.cwd, 'forbidden-patch.txt'))).toBe(false);
-    expect(existsSync(join(reviewThread.body.workspace.cwd, 'forbidden-shell.txt'))).toBe(false);
-    const reviewRecords = diskRecords(join(home, 'sessions', reviewId, 'journal.jsonl'));
-    expect(reviewRecords.filter((record) => record.type === 'tool.finished').every((record) => record.result.status !== 'success')).toBe(true);
   } finally {
     await daemon?.stop();
     account.stop();

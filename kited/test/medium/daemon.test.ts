@@ -1,4 +1,4 @@
-/** 经 HTTP、CLI 驱动真实 Claude Code，验证 Kite 文件工具的 MCP 桥接与原生恢复。 */
+/** 经 HTTP 驱动真实 Claude Code，验证 Kite 文件工具的 MCP 桥接与原生恢复。 */
 import { afterEach, expect, setDefaultTimeout, spyOn, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { existsSync, symlinkSync } from 'node:fs';
@@ -7,7 +7,6 @@ import { Runner } from '../../src/claude/runner.ts';
 import { defaultAgentModel } from '../../src/agents/models.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { History } from '../../src/transcript/protocol.ts';
-import { startCli } from '../cli.ts';
 import type { Logged } from '../fake-api.ts';
 import {
   api, call, createWorkspace, type Kited, listSnapshots, mark, registerCheckout, sendThreadMessage, startKited, waitIdle,
@@ -115,27 +114,20 @@ test('Claude 进程跨回合常驻复用，换模型后在 resume 的新进程�
   const resident = sessionProcesses(s.nativeId);
   expect(resident).toHaveLength(1);
 
-  // 第二回合：同一进程接着跑，CLI 发送在常驻进程空闲时结束。
+  // 第二回合：同一进程接着跑，历史与工具结果在常驻进程里保持。
   const m = mark(kk);
   const b = token('常驻续接');
-  const sending = startCli(kk.url, 'send', s.id, `第二条 ${b}\nREAD ${JSON.stringify(secondArgs)}`);
-  let secondId: string;
-  let secondResult: any;
-  try {
-    const req2 = await api.waitRequest((l) => l.main && l.lastUserText.includes(b));
-    expect(JSON.stringify(req2.body.messages)).toContain(a);
-    clean(req2);
-    expect(resultValue(resultFor(req2, firstId))).toEqual(resultValue(firstResult));
-    expect(req2.toolUseIds).toHaveLength(1);
-    secondId = req2.toolUseIds[0]!;
-    secondResult = await readResult(secondId);
-    expect(secondResult.is_error).toBeFalsy();
-    onlyLine(secondResult, 3, '第三行续接成功');
-    await waitIdle(kk, s.id, m);
-    expect(await sending.finished()).toMatchObject({ code: 0, stderr: '', stdout: expect.stringContaining('第三行续接成功') });
-  } finally {
-    await sending.stop();
-  }
+  await sendThreadMessage(kk, s.id, `第二条 ${b}\nREAD ${JSON.stringify(secondArgs)}`);
+  const req2 = await api.waitRequest((l) => l.main && l.lastUserText.includes(b));
+  expect(JSON.stringify(req2.body.messages)).toContain(a);
+  clean(req2);
+  expect(resultValue(resultFor(req2, firstId))).toEqual(resultValue(firstResult));
+  expect(req2.toolUseIds).toHaveLength(1);
+  const secondId = req2.toolUseIds[0]!;
+  const secondResult = await readResult(secondId);
+  expect(secondResult.is_error).toBeFalsy();
+  onlyLine(secondResult, 3, '第三行续接成功');
+  await waitIdle(kk, s.id, m);
   expect(sessionProcesses(s.nativeId)).toEqual(resident);
   expect((await history(kk, s.id)).state.context?.windowTokens).toBe(200_000);
   const query = spyOn(Runner.prototype, 'contextUsage').mockResolvedValueOnce(undefined);

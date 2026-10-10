@@ -6,17 +6,17 @@ nonisolated private let blockCardSpace = "BlockCard"
 /// 标题栏按钮按下（true）与松开（false）时通知卡片，并给出按钮在卡片里的中心。
 typealias BlockCardPress = (_ pressed: Bool, _ at: CGPoint) -> Void
 
-/// 代码块与表格共用的卡片：标题栏左边是类别，右边是操作按钮，复制始终在最右。
+/// 代码块、表格与上下文编辑器的块共用的卡片：标题栏左边是类别或块名，右边是操作按钮，有复制时复制始终在最右。
 /// 按住标题栏按钮时卡片朝按钮的位置倾斜下沉，松手回弹；Mac 的 Force Touch 触控板按得越重压得越深，
 /// 鼠标和 iPhone 没有压力数据，用固定深度。其他操作由使用方给出，排在复制左边，用 BlockCardButton 或 BlockCardPressable 接上 `press`。
-struct BlockCard<Actions: View, Content: View>: View {
-    let label: String
-    let copyLabel: String
+struct BlockCard<Label: View, Actions: View, Content: View>: View {
+    let label: Label
     var background: Color = Theme.codeBackground
     var radius: CGFloat = Metrics.contentRadius
-    let copy: () -> Void
-    @ViewBuilder let actions: (_ press: @escaping BlockCardPress) -> Actions
-    @ViewBuilder let content: Content
+    /// 复制按钮的说明与动作；没有时标题栏不放复制。
+    let copy: (label: String, action: () -> Void)?
+    let actions: (_ press: @escaping BlockCardPress) -> Actions
+    let content: Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.fontResolutionContext) private var fontContext
     @State private var cardSize: CGSize = .zero
@@ -27,6 +27,29 @@ struct BlockCard<Actions: View, Content: View>: View {
     @State private var pressureMonitor: Any?
     #endif
 
+    init(label: String, copyLabel: String, background: Color = Theme.codeBackground, radius: CGFloat = Metrics.contentRadius,
+         copy: @escaping () -> Void, @ViewBuilder actions: @escaping (_ press: @escaping BlockCardPress) -> Actions,
+         @ViewBuilder content: () -> Content) where Label == Text {
+        self.label = Text(label)
+        self.background = background
+        self.radius = radius
+        self.copy = (copyLabel, copy)
+        self.actions = actions
+        self.content = content()
+    }
+
+    /// 标题栏左边放自己的视图（如可改的名称），不带复制。
+    init(background: Color = Theme.codeBackground, radius: CGFloat = Metrics.contentRadius,
+         @ViewBuilder label: () -> Label, @ViewBuilder actions: @escaping (_ press: @escaping BlockCardPress) -> Actions,
+         @ViewBuilder content: () -> Content) {
+        self.label = label()
+        self.background = background
+        self.radius = radius
+        copy = nil
+        self.actions = actions
+        self.content = content()
+    }
+
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         let iconSize = Theme.body.resolve(in: fontContext).pointSize
@@ -34,12 +57,12 @@ struct BlockCard<Actions: View, Content: View>: View {
         let tiltY = Double((pressLocation.x - 0.5) * 5 * pressDepth)
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Metrics.paneButtonGap) {
-                Text(label)
+                label
                     .font(.system(.caption, design: .monospaced))
                 Spacer(minLength: 12)
                 HStack(spacing: 0) {
                     actions(press)
-                    BlockCardButton("CodeCopy", label: copyLabel, press: press, action: copy)
+                    if let copy { BlockCardButton("CodeCopy", label: copy.label, press: press, action: copy.action) }
                 }
                 .buttonStyle(PaneButtonStyle())
             }

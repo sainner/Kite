@@ -19,6 +19,8 @@ final class WorkThread: Identifiable {
     var state: RemoteState?
     var agentCapabilities: AgentCapabilities?
     var connected = false
+    /// 收到过工作机发来的完整历史。已有代理在这之前对话是空的，只是还没读出来。
+    private(set) var historyLoaded = false
     var error: String?
     private(set) var regeneratingTitle = false
     /// 选好的压缩起点（一条人发消息的 id），等在这条或之后的消息上选终点。
@@ -151,6 +153,7 @@ final class WorkThread: Identifiable {
             pending = event.pending ?? []
             state = event.state
             connected = true
+            historyLoaded = true
             error = nil
             recordsChanged = true
         case "thread.record":

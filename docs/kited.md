@@ -232,8 +232,7 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 
 - `quotas` 中的 `label` 是周期名称，`remainingPercent` 是周期剩余百分比，`windowMinutes` 是窗口长度，`resetsAt` 是 Unix 秒。窗口缺失表示未知，不能当成零或无限；只限某个模型或功能的额度分开返回，并以 `model` 标明范围，缺省表示整个账号共用。
 - 订阅的 `plan` 是小写档位名。Claude 取 profile 接口中组织的当前订阅（如 `max 20x`），登录凭据缓存的 `subscriptionType` 升级后不更新，只在 profile 不可用时使用。
-- `usage` 是按天的 token 用量：`days` 为最近 53 周里有用量的日期（`date` 为 `YYYY-MM-DD`，升序）及当天 `tokens`，`lifetimeTokens` 为累计。`scope` 为 `account` 时按天的数字是供应商给出的整个账号在所有设备上的用量，不在 kited 保存：ChatGPT 取 Codex 官方客户端使用的个人统计接口，没有公开文档，格式可能变化，统计有延迟，比它最后一天还新的日子用本机记录的合计；OpenAI、Anthropic 有组织管理凭据时取其按天用量接口（日期按 UTC）。`scope` 为 `machine` 时只含这台工作机的记录。
-- 某天的 `hours` 是本地时间 0–23 时每小时的 token，只来自这台工作机的会话记录，`scope` 为 `account` 时与当天合计可能不一致；没有本机记录的日子省略。上游没有的部分由 kited 在每次查询时扫描本机记录、按小时存入数据库，同一小时取较大值，本地记录被清理后历史仍保留：Claude 扫 Claude Code 会话记录（含 Kite 的 Claude 会话），汇总输入、输出与缓存 token，按天的数字也由此而来；ChatGPT 扫 Kite 自研 harness 的线程日志与 Codex CLI 会话记录。其他 API 账号目前没有用量来源，不返回 `usage`。
+- `usage` 是该账号在这台工作机上的 token 用量，不读供应商的用量统计：`days` 为最近 53 周里有用量的日期（`date` 为 `YYYY-MM-DD`，升序）、当天 `tokens` 与 `hours`（本地时间 0–23 时每小时的 token）、按价格表折算的 `cost` 与 `costHours`（美元）、`unpriced`（价格表里没有对应模型、未计入金额的 token），`lifetimeTokens` 与 `lifetimeCost` 为 kited 保存的全部日子之和。价格表在 `kited/src/token-prices.ts`，取 Claude 与 OpenAI 官方 API 价格页的标准档，按每次请求的模型与输入、缓存读写、输出分别计价；订阅本身不按 token 计费，金额只是同样用量走 API 的折算。kited 在每次查询时扫描本机会话记录、按小时存入数据库，同一小时取 token 较多的那次扫描，token 相同时取这次的金额（价格表更新后仍在本地的记录按新价格重算），本地记录被清理后历史仍保留：Claude 扫 Claude Code 会话记录（含 Kite 的 Claude 会话），汇总输入、输出与缓存 token；ChatGPT 扫 Kite 自研 harness 的线程日志与 Codex CLI 会话记录。API 账号在本机没有会话记录，不返回 `usage`。
 - ChatGPT 的 `credits` 使用供应商的额度单位；`unlimited` 仅在上游明确返回时成立，未返回金额时省略 `value`。
 - Claude 的 `extraUsage` 是额外用量（超出套餐额度后按金额计费）：`enabled` 表示是否开启，`used`、`limit`、`balance` 是按币种小数位换算后的金额，`currency` 为币种；上游没给的项省略。
 - API 的 `cost` 是 UTC 当月到查询时刻的**组织费用**（`value`、`currency`、`from`、`to`），取完所有分页才返回；不是余额，也不是单个 API Key 的费用。普通调用 Key 没有组织费用权限时明确提示，不能推算余额。来源见 [OpenAI Costs](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs) 与 [Anthropic Usage and Cost](https://platform.claude.com/docs/en/manage-claude/usage-cost-api)。
@@ -248,6 +247,7 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | GET | `/machine` | 读取这台工作机服务的持久身份，无需 `X-Kite-Machine`；远程访问须通过同账号组网认证 |
 | GET | `/model-accounts` | 读取本机模型账号、订阅额度与 API 费用/余额的当前快照；凭据、额度与更新方式见下文 |
 | POST | `/model-accounts/refresh` | 立即查询上游并推送新快照 |
+| GET | `/token-prices` | 读取用量折算金额用的价格表，只列 Kite 模型目录里的模型（计价本身覆盖更多型号）：`checked`（核对日期）与 `models`，每项是 `model`（目录里的显示名）、`provider`，以及每百万 token 的美元单价 `input`、`cacheRead`、`output`，价格页列出时带 `cacheWrite`、`cacheWrite1h`（Claude 的 1 小时缓存写入）与长提示档 `long`（`above`、`rates`） |
 | PUT | `/network/account` | 仅本机：`{deviceId, controlURL, authKey}`，接收账号服务的一次性入网授权 |
 | GET/PUT | `/catalog/account` | 仅本机：查询上报状态，或用 `{deviceId, url, token}` 设置目录上报凭据；签发与版本约定见 [托管账号与设备](托管账号与设备.md) |
 | GET/PUT | `/network` | 仅本机：组网状态，上线后 `peers` 列出对端设备的连接方式（`direct` 直连、`relay` 经中继、`idle` 近期无流量）；`{enabled}` 开启或关闭组网节点 |
@@ -268,6 +268,7 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | PUT | `/instances/:id/role` | 以 `{expectedRevision, roleId, roleRevision}` 为代理改选角色，换上角色的提示词、工具、默认模型与预算，协作操作授权随角色增减，其余授权不变；已有对话时返回 409 |
 | GET | `/context-templates` | 列出标题、上下文压缩、点阵签名及五类通知模板和场景变量 |
 | PUT | `/context-templates/:id` | 以 `{expectedRevision, definition}` 更新模板；模板由工作机提供，不能新建 |
+| POST | `/token-counts` | 以 `{texts, model?, scene?}` 逐段计数，返回 `{model, results}`；没给模型时按场景推出。账号里有对应厂商的 API Key 时用官方计数接口（`method: api`），否则 OpenAI 按 o200k 估算、Claude 不给数；`exact` 标明是否准确 |
 | GET / PUT | `/threads/:id/title` | 读取标题与生成进度；以 expectedRevision 手动改名或恢复自动标题 |
 | POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不阻塞主会话控制 |
 | GET / PUT | `/instances/:id/execution-grants` | 读取或修改执行授权；须停止且无恢复阻塞 |

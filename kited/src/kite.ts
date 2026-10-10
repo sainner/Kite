@@ -49,6 +49,7 @@ import { SubscriptionLogins } from './subscription-logins.ts';
 import { ModelAccounts, readModelAccounts } from './model-accounts.ts';
 import { agentModels } from './agents/models.ts';
 import { agentModelCatalog } from './agents/capabilities.ts';
+import { TokenCounter } from './token-counts.ts';
 
 export interface ThreadView extends ThreadContext { runner: Runtime['state']; busy: boolean }
 const firstLine = (text: string) => text.trim().split('\n')[0]!.trim() || '（空消息）';
@@ -77,6 +78,7 @@ export class Kite {
   readonly lightTasks?: LightTasks;
   readonly titles?: ThreadTitles;
   readonly emblems: TemplateEmblems;
+  readonly tokenCounts: TokenCounter;
   private readonly transcripts: TranscriptHistory;
   private readonly configuration: InstanceConfiguration;
   private readonly instances: InstanceLifecycle;
@@ -121,11 +123,13 @@ export class Kite {
       changed: (workspaceId) => this.changed(workspaceId),
       revokeGrants: (instance) => this.configuration.revokeInstanceGrants(instance),
     });
+    const lightModel = process.env.KITE_LIGHT_MODEL ?? agentModels.models.find((model) => model.tier === 'luna')!.id;
+    this.tokenCounts = new TokenCounter({ lightModel, apiKeys: async () => this.account.linked ? this.account.apiKeys() : [] });
     if (options.lightTasks !== false && process.env.KITE_LIGHT_TASKS !== '0') {
       const light = options.lightTasks;
       this.lightTasks = new LightTasks({
         model: light?.model ?? (({ id }) => new ChatGPTModel({
-          model: process.env.KITE_LIGHT_MODEL ?? agentModels.models.find((model) => model.tier === 'luna')!.id,
+          model: lightModel,
           reasoning: process.env.KITE_LIGHT_REASONING ?? 'low', threadId: id,
           credentials: () => readSubscriptionCredentials(join(home, 'auth', 'chatgpt', 'auth.json')),
           observeLimits: (headers) => this.modelAccounts.observeChatGPT(headers),

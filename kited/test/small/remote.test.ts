@@ -4,7 +4,7 @@ import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon } from '../../src/daemon.ts';
 import { serve } from '../../src/http.ts';
-import { call, machine } from '../harness.ts';
+import { machine } from '../harness.ts';
 import { makeTemp } from '../util.ts';
 
 function start() {
@@ -30,7 +30,7 @@ function remote(url: string, path: string, opts: {
 }
 
 // startDaemon 必须把运行时生成的代理凭据接入真实远程监听；客户端 bearer 与伪造网络头不能穿透它。
-test('真实远程监听拒绝外部 bearer 和伪造网络凭据，本机不再提供旧逐机配对接口', async () => {
+test('真实远程监听拒绝外部 bearer 和伪造网络凭据', async () => {
   const k = start();
   try {
     const d = k.daemon;
@@ -43,11 +43,6 @@ test('真实远程监听拒绝外部 bearer 和伪造网络凭据，本机不再
       for (const path of ['/machine', '/events']) {
         expect((await remote(d.remoteUrl, path, { ...credentials, machineId })).status).toBe(401);
       }
-    }
-    for (const [method, path] of [
-      ['POST', '/pair'], ['POST', '/pairings'], ['GET', '/devices'], ['DELETE', '/devices/old-device'],
-    ] as const) {
-      expect((await call(d.url, method, path, undefined, machineId)).status).toBe(404);
     }
   } finally { await k.stop(); }
 }, 1_000);

@@ -6,8 +6,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { ApiKey } from './account-client.ts';
 import { parseSubscriptionCredentials } from './harness/auth.ts';
-import { apiUsage, chatgptDailyUsage, scanChatgptUsage, scanClaudeUsage, withLocalHours, type AccountUsage, type HourlyUsage,
-  type UsageStore } from './account-usage.ts';
+import { localUsage, scanChatgptUsage, scanClaudeUsage, type AccountUsage, type HourlyUsage, type UsageStore } from './account-usage.ts';
 
 export interface AccountQuota {
   id: string;
@@ -42,7 +41,7 @@ export interface ClaudeLogin { accessToken: string; subscriptionType?: string }
 export interface AccountReadOptions {
   fetch?: (url: string, init: RequestInit) => Promise<Response>;
   claudeLogin?: () => Promise<ClaudeLogin | undefined>;
-  /** 上游缺的按天、按小时用量由 kited 自己按小时保存；不给时不统计。 */
+  /** 账号用量由 kited 扫描本机会话记录后按小时保存；不给时不统计。 */
   usage?: UsageStore;
   /** Claude Code 的配置目录，会话记录在其下的 projects。 */
   claudeDirectory?: string;
@@ -181,7 +180,6 @@ export async function readModelAccounts(home: string, options: AccountReadOption
       delete account.cost;
       delete account.credits;
       delete account.balances;
-      delete account.usage;
       delete account.extraUsage;
     }
     return account;
@@ -231,8 +229,6 @@ export async function readModelAccounts(home: string, options: AccountReadOption
     url.searchParams.set('limit', '31');
     const headers: Record<string, string> = provider === 'openai' ? { authorization: `Bearer ${admin}` }
       : { 'x-api-key': admin, 'anthropic-version': '2023-06-01' };
-    // 按天用量与费用分页互不依赖，一起查；用量失败不影响费用。
-    const usage = apiUsage(provider, (url) => get(url, headers), checkedAt).catch(() => undefined);
     const pages = new Set<string>();
     let value = 0;
     while (true) {
@@ -258,15 +254,18 @@ export async function readModelAccounts(home: string, options: AccountReadOption
       pages.add(next); url.searchParams.set('page', next);
     }
     account.cost = { value, currency: 'USD', from, to: checkedAt };
-    account.usage = await usage;
   }
   const store = options.usage;
-  // 扫本机会话记录并入 kited 保存的按小时汇总，历史不随本地记录清理而丢失；扫描失败时沿用已存的。扫描与上游查询并行。
+  // 扫本机会话记录并入 kited 保存的按小时汇总，历史不随本地记录清理而丢失；扫描失败时沿用已存的。
+  // 扫描与上游查询并行，用量不受额度查询成败影响。
   const merge = async (id: string, scan: () => Promise<HourlyUsage>) => {
     try { store!.mergeUsageHours(id, await scan()); }
     catch (error) { console.error(`[用量] 读取 ${id} 的本机会话记录失败`, error); }
   };
-  const claudeScan = store && merge('claude', () => scanClaudeUsage(options.claudeDirectory ?? claudeDirectory()));
+  const scans = store && Promise.all([
+    merge('chatgpt', () => scanChatgptUsage(home, options.codexDirectory ?? codexDirectory())),
+    merge('claude', () => scanClaudeUsage(options.claudeDirectory ?? claudeDirectory())),
+  ]);
   const accounts = await Promise.all([
     read('chatgpt', 'ChatGPT', 'subscription', async (account) => {
       const path = join(home, 'auth', 'chatgpt', 'auth.json');
@@ -280,12 +279,7 @@ export async function readModelAccounts(home: string, options: AccountReadOption
       try { credentials = parseSubscriptionCredentials(login); }
       catch { throw new AccountReadError('ChatGPT 登录已失效，请在工作机的 Kite 认证目录重新登录。', 'reauthentication'); }
       const headers = { authorization: `Bearer ${credentials.accessToken}`, 'ChatGPT-Account-Id': credentials.accountId };
-      // 按天用量取自 Codex 官方客户端的个人统计，失败不影响额度。
-      const [data, profile] = await Promise.all([
-        get('https://chatgpt.com/backend-api/wham/usage', headers),
-        get('https://chatgpt.com/backend-api/wham/profiles/me', headers).catch(() => undefined),
-      ]);
-      account.usage = chatgptDailyUsage(profile);
+      const data = await get('https://chatgpt.com/backend-api/wham/usage', headers);
       const parsed = chatgptUsage.safeParse(data);
       if (!parsed.success) throw new AccountReadError('服务返回的订阅额度格式无法识别。');
       account.identity ??= credentials.accountId;
@@ -310,11 +304,6 @@ export async function readModelAccounts(home: string, options: AccountReadOption
       }
       account.status = 'ready';
       if (!account.quotas.length && !account.credits) account.message = '服务未返回可查询的额度。';
-      // 上游只有按天合计，按小时的分布取本机记录。
-      if (store) {
-        await merge('chatgpt', () => scanChatgptUsage(home, options.codexDirectory ?? codexDirectory()));
-        account.usage = withLocalHours(account.usage, store.usageDays('chatgpt'));
-      }
     }),
     read('claude', 'Claude', 'subscription', async (account) => {
       const login = await (options.claudeLogin ?? readClaudeLogin)();
@@ -351,11 +340,9 @@ export async function readModelAccounts(home: string, options: AccountReadOption
     })),
     ...(apiKeysError ? [unreadApiKeys(apiKeysError)] : []),
   ]);
-  // Claude 没有上游用量，按天、按小时都来自本机记录。
-  const claude = accounts.find((account) => account.id === 'claude');
-  if (claude && store) {
-    await claudeScan;
-    claude.usage = withLocalHours(undefined, store.usageDays('claude')) ?? claude.usage;
+  if (store) {
+    await scans;
+    for (const account of accounts) if (account.kind === 'subscription') account.usage = localUsage(store.usageDays(account.id));
   }
   return { checkedAt, accounts };
 }
@@ -435,7 +422,7 @@ export class ModelAccounts {
       const previous = this.base;
       this.base = { checkedAt: snapshot.checkedAt, accounts: snapshot.accounts.map((account) => {
         const last = failed.has(account.id) ? previous?.accounts.find((item) => item.id === account.id) : undefined;
-        return last ? { ...last, status: account.status, message: account.message, usage: account.usage ?? last.usage } : account;
+        return last ? { ...last, status: account.status, message: account.message, usage: account.usage } : account;
       }) };
       for (const [account, seen] of this.observed) {
         if (failed.has(account)) continue;

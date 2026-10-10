@@ -41,16 +41,25 @@ final class AppModel {
     var drivePage = DrivePage.accounts
     /// 资源库一栏在内容区显示的页面。
     var extensionPage = ExtensionLibrary.plugins
-    /// 资源库角色页选中的角色，见 libraryRoleID。
-    var selectedLibraryRole: String?
+    /// 资源库代理上下文页选中的角色或模板，见 agentContextItem。
+    var selectedAgentContext: AgentContextItem?
     /// 资源库里改过还没保存的角色，按侧栏里的先后排。
     var roleDrafts: [RoleDraft] = []
+    /// 资源库里改过还没保存的模板。
+    var templateDrafts: [TemplateDraft] = []
     /// 设置一栏在内容区显示的页面。
-    var settingsPage = SettingsPage.appearance
+    var settingsPage = SettingsPage.account
     var accountMachineID: String?
     let accountWindows = WindowLayout(fixed: .split(Split(.horizontal, 0.5,
         .split(Split(.vertical, 0.5, .pane(Pane("chatgpt")), .pane(Pane("claude")))),
         .pane(Pane("api")))))
+    /// 资源库代理上下文的固定窗口：角色左边整列是上下文，右边上下分别是签名与初始配置；模板只有上下文。
+    let roleWindows = WindowLayout(fixed: .split(Split(.horizontal, 0.6,
+        .pane(Pane("context")),
+        .split(Split(.vertical, 0.5, .pane(Pane("emblem")), .pane(Pane("settings")))))))
+    let templateWindows = WindowLayout(fixed: .pane(Pane("context")))
+    /// 正在保存的资源库角色；角色分在几个窗口里，保存期间都不能改。
+    var savingRoles: Set<String> = []
 
     var selectedProject: RemoteProject? {
         guard let selectedProjectID else { return nil }
@@ -176,7 +185,8 @@ final class AppModel {
         selectedProjectID = nil
         selected = ""
         roleDrafts = []
-        selectedLibraryRole = nil
+        selectedAgentContext = nil
+        templateDrafts = []
         draftWorkspace.draftThread.role = nil
         draftWorkspace.draftThread.connected = false
     }

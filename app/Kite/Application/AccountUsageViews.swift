@@ -1,23 +1,18 @@
 import SwiftUI
 
 extension ModelAccount.Quota {
-    /// 重置的时刻：一天内按剩余时长说，一周内说星期几，再远写日期。
-    func resetMoment(now: Double) -> String? {
+    /// 距重置还有多久，各周期一律倒计时：一天以上写天和小时，一小时以上写小时和分钟，再短只写分钟。
+    func resetCountdown(now: Double) -> String? {
         guard let resetsAt else { return nil }
         let minutes = max(1, Int(((resetsAt - now) / 60).rounded(.up)))
-        if minutes < 60 { return "\(minutes) 分钟后" }
-        if minutes < 24 * 60 {
-            let rest = minutes % 60
-            return rest == 0 ? "\(minutes / 60) 小时后" : "\(minutes / 60) 小时 \(rest) 分后"
-        }
-        let date = Date(timeIntervalSince1970: resetsAt)
-        let style: Date.FormatStyle = minutes < 6 * 24 * 60 ? .dateTime.weekday(.abbreviated).hour().minute()
-            : .dateTime.month().day().hour().minute()
-        return date.formatted(style)
+        let days = minutes / (24 * 60), hours = minutes % (24 * 60) / 60, rest = minutes % 60
+        if days > 0 { return hours == 0 ? "\(days) 天" : "\(days) 天 \(hours) 小时" }
+        if hours > 0 { return rest == 0 ? "\(hours) 小时" : "\(hours) 小时 \(rest) 分" }
+        return "\(rest) 分钟"
     }
 
     func resetText(now: Double) -> String? {
-        resetMoment(now: now).map { $0.hasSuffix("后") ? "\($0)重置" : "\($0) 重置" }
+        resetCountdown(now: now).map { "\($0)后重置" }
     }
 
     /// 重置时刻已过，等着下一次刷新。
@@ -86,17 +81,61 @@ struct AccountQuotaRing: View {
     }
 }
 
-/// 用量统计：近一年的热力图、某一天的 24 小时柱状图与几项汇总。两张图画在窗口的点阵上：
-/// 热力图一列一周，宽度放得下几列就画最近几周；柱状图一小时一根，宽处每小时占几列。
+/// 用量的计量单位：token 数，或按工作机价格表折算的美元。保存在本机，Kite 账号页切换，各账号窗口跟着用。
+enum UsageUnit: String, CaseIterable, Identifiable {
+    case tokens, cost
+
+    static let storageKey = "KiteUsageUnit"
+
+    var id: Self { self }
+    var title: String { self == .tokens ? "Token" : "金额" }
+
+    /// token 数按本地习惯缩写，例如 4358万、261亿；金额百元以下留两位小数，上万再缩写。
+    func format(_ value: Double) -> String {
+        switch self {
+        case .tokens:
+            return Int(value.rounded()).formatted(.number.notation(.compactName).precision(.significantDigits(1...3)))
+        case .cost:
+            let style = FloatingPointFormatStyle<Double>.Currency(code: "USD")
+            if value >= 10_000 { return value.formatted(style.notation(.compactName).precision(.significantDigits(1...3))) }
+            return value.formatted(style.precision(.fractionLength(value >= 100 ? 0 : 2)))
+        }
+    }
+}
+
+extension ModelAccount.Usage.Day {
+    func total(_ unit: UsageUnit) -> Double { unit == .tokens ? tokens : cost }
+    func hours(_ unit: UsageUnit) -> [Double] { unit == .tokens ? hours : costHours }
+}
+
+/// 一项数字：上面一行小字写它是什么，note 跟在标题后面，不另起一行，免得整行被撑高；下面是大号的值。
+struct UsageFigure: View {
+    let title: String
+    let value: String
+    var note: String?
+    var tint: Color = .primary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(title).foregroundStyle(.secondary)
+                if let note { Text(note).foregroundStyle(.tertiary) }
+            }
+            .font(Theme.caption)
+            Text(value).font(Theme.heading2).monospacedDigit().foregroundStyle(tint)
+        }
+        .lineLimit(1)
+    }
+}
+
+/// 用量统计：某一天的 24 小时柱状图与近一年的热力图，都画在窗口的点阵上：
+/// 柱状图一小时一根，宽处每小时占几列；热力图一列一周，宽度放得下几列就画最近几周。
 struct AccountUsageSection: View {
-    let usage: ModelAccount.Usage
     let stale: Bool
-    /// 日期与 token 数的对照；没有记录的日子是零。
-    private let tokens: [String: Double]
-    /// 日期与按小时分布的对照，只有本机有记录的日子。
-    private let hours: [String: [Double]]
-    /// 柱状图画的那天：热力图上悬停的优先，其次是点按选定的，都没有时是今天。
-    @State private var hoveredDay: String?
+    /// 日期与当天用量的对照；没有用量的日子不在其中。
+    private let days: [String: ModelAccount.Usage.Day]
+    @AppStorage(UsageUnit.storageKey) private var unit = UsageUnit.tokens
+    /// 柱状图画的那天：热力图上点按选定的，没有时是今天。
     @State private var pinnedDay: String?
     /// 柱状图上悬停的小时优先，其次是点按选定的；选定的只属于当时那一天。
     @State private var hoveredHour: Int?
@@ -107,11 +146,8 @@ struct AccountUsageSection: View {
     private struct PinnedHour { let day: String; let hour: Int }
 
     init(usage: ModelAccount.Usage, stale: Bool) {
-        self.usage = usage
         self.stale = stale
-        tokens = Dictionary(usage.days.map { ($0.date, $0.tokens) }, uniquingKeysWith: +)
-        hours = Dictionary(usage.days.compactMap { day in day.hours.flatMap { $0.count == 24 ? (day.date, $0) : nil } },
-                           uniquingKeysWith: { first, _ in first })
+        days = Dictionary(usage.days.map { ($0.date, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     private var tint: Color { stale ? .secondary : .accentColor }
@@ -119,25 +155,20 @@ struct AccountUsageSection: View {
     var body: some View {
         TimelineView(.everyMinute) { context in
             let today = Calendar.current.startOfDay(for: context.date)
-            let day = hoveredDay ?? pinnedDay ?? UsageCalendar.key(today)
+            let day = pinnedDay ?? UsageCalendar.key(today)
             let pinned = pinnedHour.flatMap { $0.day == day ? $0.hour : nil }
             let hour = hoveredHour ?? pinned
             VStack(alignment: .leading, spacing: DotMetrics.module * 2) {
-                UsageHeatmap(tokens: tokens, weeks: min(53, columns), today: today, tint: tint, shown: day,
-                             hovered: $hoveredDay, pinned: $pinnedDay)
                 VStack(alignment: .leading, spacing: DotMetrics.module) {
                     readout(day, hour: hour, today: today)
-                    UsageHours(hours: hours[day], total: tokens[day] ?? 0,
+                    UsageHours(hours: days[day]?.hours(unit),
                                current: day == UsageCalendar.key(today) ? Calendar.current.component(.hour, from: context.date) : nil,
                                columns: columns, tint: tint, shown: hour, pinned: pinned, hovered: $hoveredHour) { hour in
                         pinnedHour = hour.map { PinnedHour(day: day, hour: $0) }
                     }
-                    // 上游只给整个账号按天的合计，按小时的分布只有本机记录，两者可能对不上。
-                    if usage.scope == "account", hours[day] != nil {
-                        Text("按小时只含这台工作机的记录").font(Theme.status).foregroundStyle(.tertiary)
-                    }
                 }
-                summary(today: today)
+                UsageHeatmap(values: days.mapValues { $0.total(unit) }, weeks: min(53, columns), today: today, tint: tint,
+                             shown: day, pinned: $pinnedDay)
             }
             // 宽度只取外面给的，不被按旧格数画出的图撑开；否则窗口变窄时量到的仍是旧宽度，格数只增不减。
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
@@ -146,59 +177,59 @@ struct AccountUsageSection: View {
     }
 
     /// 柱状图的标题行：那天的日期和用量，选中某小时时是那一小时的；右边写柱子顶格代表多少。
+    /// 按金额看时，价格表里没有的模型不计入金额，整天的读数后面注明有多少 token 没算进去。
     private func readout(_ key: String, hour: Int?, today: Date) -> some View {
         let name = UsageCalendar.date(key).map {
             Calendar.current.isDate($0, inSameDayAs: today) ? "今天" : $0.formatted(.dateTime.month().day().weekday(.abbreviated))
         } ?? key
-        let detail = hour.map { "\($0):00–\($0 + 1):00 · \(Self.format(hours[key]?[$0] ?? 0)) token" }
-            ?? "\(Self.format(tokens[key] ?? 0)) token"
-        let peak = hours[key]?.max() ?? 0
+        let suffix = unit == .tokens ? " token" : ""
+        let unpriced = days[key]?.unpriced ?? 0
+        let detail = hour.map { "\($0):00–\($0 + 1):00 · \(unit.format(days[key]?.hours(unit)[$0] ?? 0))\(suffix)" }
+            ?? "\(unit.format(days[key]?.total(unit) ?? 0))\(suffix)"
+            + (unit == .cost && unpriced > 0 ? " · \(UsageUnit.tokens.format(unpriced)) token 未计价" : "")
+        let peak = days[key]?.hours(unit).max() ?? 0
         return HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(name).font(Theme.secondary.weight(.medium))
             Text(detail).font(Theme.caption).foregroundStyle(.secondary)
             Spacer(minLength: DotMetrics.module)
             if peak > 0 {
-                Text("最高 \(Self.format(peak))/时").font(Theme.status).foregroundStyle(.tertiary)
+                Text("最高 \(unit.format(peak))/时").font(Theme.status).foregroundStyle(.tertiary)
             }
         }
         .monospacedDigit()
         .lineLimit(1)
     }
+}
 
-    private func summary(today: Date) -> some View {
-        let week = (0..<7).reduce(0.0) { sum, offset in
-            sum + (tokens[UsageCalendar.key(UsageCalendar.add(-offset, to: today))] ?? 0)
-        }
-        let peak = usage.days.max { $0.tokens < $1.tokens }
-        // 连续天数从今天往前数；今天还没用时从昨天数起。
+extension ModelAccount.Usage {
+    func lifetime(_ unit: UsageUnit) -> Double { unit == .tokens ? lifetimeTokens : lifetimeCost }
+
+    /// 截至 today 的最近几天合计。
+    func total(days count: Int, through today: Date, unit: UsageUnit) -> Double {
+        let since = UsageCalendar.key(UsageCalendar.add(-count, to: today)), until = UsageCalendar.key(today)
+        return days.filter { $0.date > since && $0.date <= until }.reduce(0) { $0 + $1.total(unit) }
+    }
+
+    /// 几项统计：累计、近 7 天、单日峰值与连续使用天数。
+    @ViewBuilder func figures(unit: UsageUnit, today: Date) -> some View {
+        let peak = days.max { $0.total(unit) < $1.total(unit) }
+        UsageFigure(title: "累计", value: unit.format(lifetime(unit)))
+        UsageFigure(title: "近 7 天", value: unit.format(total(days: 7, through: today, unit: unit)))
+        UsageFigure(title: "单日峰值", value: peak.map { unit.format($0.total(unit)) } ?? "—",
+                    note: peak.flatMap { UsageCalendar.date($0.date)?.formatted(.dateTime.month().day()) })
+        UsageFigure(title: "连续使用", value: "\(streak(through: today)) 天")
+    }
+
+    /// 从今天往前数连续有用量的天数；今天还没用时从昨天数起。
+    func streak(through today: Date) -> Int {
+        let used = Set(days.filter { $0.tokens > 0 }.map(\.date))
         var streak = 0
-        var cursor = (tokens[UsageCalendar.key(today)] ?? 0) > 0 ? today : UsageCalendar.add(-1, to: today)
-        while (tokens[UsageCalendar.key(cursor)] ?? 0) > 0 {
+        var cursor = used.contains(UsageCalendar.key(today)) ? today : UsageCalendar.add(-1, to: today)
+        while used.contains(UsageCalendar.key(cursor)) {
             streak += 1
             cursor = UsageCalendar.add(-1, to: cursor)
         }
-        let items: [(String, String, String?)] = [
-            ("近 7 天", Self.format(week), nil),
-            ("累计", Self.format(usage.lifetimeTokens), usage.scope == "account" ? "整个账号，含其他设备" : "这台工作机的记录"),
-            ("单日峰值", peak.map { Self.format($0.tokens) } ?? "—",
-             peak.flatMap { UsageCalendar.date($0.date)?.formatted(.dateTime.month().day()) }),
-            ("连续使用", "\(streak) 天", nil),
-        ]
-        return LazyVGrid(columns: [GridItem(.adaptive(minimum: DotMetrics.module * 8), spacing: DotMetrics.module * 2, alignment: .topLeading)],
-                         alignment: .leading, spacing: DotMetrics.module * 2) {
-            ForEach(items, id: \.0) { title, value, note in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(Theme.caption).foregroundStyle(.secondary)
-                    Text(value).font(Theme.heading2).monospacedDigit()
-                    if let note { Text(note).font(Theme.status).foregroundStyle(.tertiary) }
-                }
-            }
-        }
-    }
-
-    /// token 数按本地习惯缩写，例如 4358万、261亿。
-    static func format(_ tokens: Double) -> String {
-        Int(tokens.rounded()).formatted(.number.notation(.compactName).precision(.significantDigits(1...3)))
+        return streak
     }
 }
 
@@ -221,7 +252,7 @@ enum UsageCalendar {
 }
 
 /// 坐标文字的行高。
-private let labelHeight = DotMetrics.pitch * 1.5
+nonisolated private let labelHeight = DotMetrics.pitch * 1.5
 
 private func axisLabel(_ text: String) -> some View {
     Text(text).font(Theme.status).foregroundStyle(.secondary).lineLimit(1).fixedSize()
@@ -235,12 +266,11 @@ private func cell(at point: CGPoint, columns: Int, rows: Int) -> (column: Int, r
 }
 
 /// 一天 24 小时铺满整行：每一列按它在一天里的位置归到某一小时，相邻小时连成阶梯，各小时宽度至多差一列。
-/// 柱高按当天最多的那一小时折算成六格，顶格按零头长一部分，最底一行是轴；今天还没到的小时不画轴。
+/// 图的高度占满外面剩下的空间，能放几行点就画几行，至少五行，图贴着下面的时刻画，不足一行的零头留在上面；柱高按当天最多的那一小时折算成满格，
+/// 顶格按零头长一部分，最底一行是轴；今天还没到的小时不画轴。
 /// 下方每 6 小时标一次时刻；悬停或点按某一段看那一小时。
 private struct UsageHours: View {
     let hours: [Double]?
-    /// 当天合计；有用量却没有按小时的记录时在图里说明。
-    let total: Double
     /// 今天正在走的小时；不是今天时为 nil。
     let current: Int?
     let columns: Int
@@ -251,18 +281,17 @@ private struct UsageHours: View {
     @Binding var hovered: Int?
     let pin: (Int?) -> Void
     @Environment(\.self) private var environment
+    @State private var height: CGFloat = 0
 
-    private static let rows = 6
+    nonisolated private static let minRows = 5
+    nonisolated private static let minHeight = DotMetrics.pitch * CGFloat(minRows) + 4 + labelHeight
+
+    private var rows: Int { max(Self.minRows, Int((height - 4 - labelHeight) / DotMetrics.pitch)) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if columns > 0 {
-                DotMask(figure: figure())
-                    .overlay {
-                        if hours == nil, total > 0 {
-                            Text("这一天没有本机的按小时记录").font(Theme.caption).foregroundStyle(.secondary)
-                        }
-                    }
+                DotMask(figure: figure(), alignment: .bottomLeading)
                     .overlay {
                         Color.clear
                             .contentShape(Rectangle())
@@ -285,7 +314,8 @@ private struct UsageHours: View {
                 .frame(width: CGFloat(columns) * DotMetrics.pitch, height: labelHeight, alignment: .topLeading)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: DotMetrics.pitch * CGFloat(Self.rows) + 4 + labelHeight, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: Self.minHeight, maxHeight: .infinity, alignment: .topLeading)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("当天每小时用量")
     }
@@ -295,15 +325,15 @@ private struct UsageHours: View {
         min(23, Int((Double(column) + 0.5) * 24 / Double(columns)))
     }
 
-    /// 指针下的那一小时；还没到的小时为 nil。
+    /// 指针下的那一小时，只按列算，占位上面的零头也算；还没到的小时为 nil。
     private func hour(at point: CGPoint) -> Int? {
-        guard let hit = cell(at: point, columns: columns, rows: Self.rows) else { return nil }
-        let hour = hour(of: hit.column)
+        let column = Int(point.x / DotMetrics.pitch)
+        guard point.x >= 0, column < columns else { return nil }
+        let hour = hour(of: column)
         return current.map { hour <= $0 } ?? true ? hour : nil
     }
 
     private func figure() -> DotFigure {
-        let rows = Self.rows
         let values = hours ?? Array(repeating: 0, count: 24)
         let peak = values.max() ?? 0
         let heights = values.map { value in peak > 0 && value > 0 ? max(0.35, value / peak * Double(rows)) : 0 }
@@ -334,51 +364,52 @@ private struct UsageHours: View {
 }
 
 /// 每一列是一周，自上而下按日历的一周排列，最右一列是本周；格子大小和颜色按当天用量在有用量日子里的四分位分四档。
-/// 上方在每月第一周标出月份；柱状图正在画的那天满格标出，悬停看某一天，点按选定。
+/// 下方在每月第一周标出月份；柱状图正在画的那天满格标出，点按某一天选定，再点一次回到今天；悬停的那天换个颜色。
 private struct UsageHeatmap: View {
-    let tokens: [String: Double]
+    /// 日期与当天用量的对照，按当前的计量单位；没有用量的日子不在其中。
+    let values: [String: Double]
     let weeks: Int
     let today: Date
     let tint: Color
     let shown: String
-    @Binding var hovered: String?
     @Binding var pinned: String?
+    @State private var hovered: String?
     @Environment(\.self) private var environment
 
     var body: some View {
         let start = start()
-        let date = { (column: Int, row: Int) in UsageCalendar.add(column * 7 + row, to: start) }
         VStack(alignment: .leading, spacing: 4) {
             if weeks > 0 {
+                DotMask(figure: figure(start: start))
+                    .overlay {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onContinuousHover { phase in
+                                if case .active(let point) = phase { hovered = key(at: point, start: start) } else { hovered = nil }
+                            }
+                            .onTapGesture { point in
+                                let key = key(at: point, start: start)
+                                pinned = pinned == key ? nil : key
+                            }
+                    }
                 ZStack(alignment: .topLeading) {
                     ForEach(monthTicks(start: start), id: \.column) { tick in
                         axisLabel(tick.label).offset(x: CGFloat(tick.column) * DotMetrics.pitch)
                     }
                 }
                 .frame(width: CGFloat(weeks) * DotMetrics.pitch, height: labelHeight, alignment: .topLeading)
-                DotMask(figure: figure(start: start))
-                    .overlay {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onContinuousHover { phase in
-                                if case .active(let point) = phase, let hit = cell(at: point, columns: weeks, rows: 7),
-                                   date(hit.column, hit.row) <= today {
-                                    hovered = UsageCalendar.key(date(hit.column, hit.row))
-                                } else {
-                                    hovered = nil
-                                }
-                            }
-                            .onTapGesture { point in
-                                let key = cell(at: point, columns: weeks, rows: 7)
-                                    .map { date($0.column, $0.row) }.flatMap { $0 <= today ? UsageCalendar.key($0) : nil }
-                                pinned = pinned == key ? nil : key
-                            }
-                    }
             }
         }
         .frame(maxWidth: .infinity, minHeight: labelHeight + 4 + DotMetrics.pitch * 7, alignment: .topLeading)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("近一年每日用量热力图")
+    }
+
+    /// 指针下的那一天；落在图外或还没到的日子为 nil。
+    private func key(at point: CGPoint, start: Date) -> String? {
+        guard let hit = cell(at: point, columns: weeks, rows: 7) else { return nil }
+        let date = UsageCalendar.add(hit.column * 7 + hit.row, to: start)
+        return date <= today ? UsageCalendar.key(date) : nil
     }
 
     /// 最左一列那一周的第一天。
@@ -404,8 +435,8 @@ private struct UsageHeatmap: View {
     }
 
     private func figure(start: Date) -> DotFigure {
-        let values = tokens.values.filter { $0 > 0 }.sorted()
-        func quantile(_ q: Double) -> Double { values.isEmpty ? 0 : values[min(values.count - 1, Int(Double(values.count) * q))] }
+        let used = values.values.filter { $0 > 0 }.sorted()
+        func quantile(_ q: Double) -> Double { used.isEmpty ? 0 : used[min(used.count - 1, Int(Double(used.count) * q))] }
         let thresholds = [quantile(0.25), quantile(0.5), quantile(0.75)]
         let levels: [Character] = ["1", "2", "3", "4"]
         let tint = DotColor(tint.resolve(in: environment)), rule = DotColor(Theme.rule.resolve(in: environment))
@@ -417,14 +448,22 @@ private struct UsageHeatmap: View {
             colors[level] = rule.mixed(with: tint, by: 0.35 + 0.65 * t)
             shapes[level] = 0.3 + 0.45 * t
         }
+        // 悬停的那天大小不变，只换成文字色。
+        let hover = DotColor(Color.primary.resolve(in: environment))
+        let hoverMarks: [Character: Character] = ["0": "z", "1": "a", "2": "b", "3": "c", "4": "d"]
+        for (base, mark) in hoverMarks {
+            colors[mark] = hover
+            shapes[mark] = shapes[base]
+        }
         let lines = (0..<7).map { row in
             String((0..<weeks).map { column -> Character in
                 let date = UsageCalendar.add(column * 7 + row, to: start)
                 guard date <= today else { return "." }
                 let key = UsageCalendar.key(date)
                 if key == shown { return "S" }
-                guard let value = tokens[key], value > 0 else { return "0" }
-                return levels[thresholds.filter { value >= $0 }.count]
+                let value = values[key] ?? 0
+                let base = value > 0 ? levels[thresholds.filter { value >= $0 }.count] : "0"
+                return key == hovered ? hoverMarks[base]! : base
             })
         }
         return DotFigure(lines, colors: colors, shapes: shapes)

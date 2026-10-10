@@ -10,6 +10,7 @@ import { roleSelection } from './roles.ts';
 import { agentDefinitionSchema } from './agents/definition.ts';
 import type { Network } from './network.ts';
 import { publisherConfig, type CatalogPublisher } from './catalog-publisher.ts';
+import { tokenPrices } from './token-prices.ts';
 
 async function body(req: Request): Promise<Record<string, unknown>> {
   try { return (await req.json()) as Record<string, unknown>; } catch { throw new KiteError('请求体不是 JSON'); }
@@ -179,6 +180,7 @@ export function serve(kite: Kite, listen: Listen) {
       },
       '/model-accounts': { GET: bound(async () => Response.json(kite.modelAccounts.current() ?? await kite.modelAccounts.refresh(), { headers: { 'Cache-Control': 'no-store' } })) },
       '/model-accounts/refresh': { POST: bound(async () => Response.json(await kite.modelAccounts.refresh(), { headers: { 'Cache-Control': 'no-store' } })) },
+      '/token-prices': { GET: bound(() => tokenPrices()) },
       '/instances/:id/agent-capabilities': { GET: bound((req) => kite.agentCapabilities(req.params.id)) },
       '/projects': {
         GET: bound(() => kite.projects()),
@@ -220,6 +222,13 @@ export function serve(kite: Kite, listen: Listen) {
       '/context-templates/:id': { PUT: bound(async (req) => {
         const b = await body(req);
         return kite.updateContextTemplate(req.params.id, str(b.expectedRevision, 'expectedRevision'), b.definition);
+      }) },
+      '/token-counts': { POST: bound(async (req) => {
+        const parsed = z.object({ texts: z.array(z.string()).max(200), model: z.string().min(1).optional(), scene: z.string().optional() })
+          .strict().safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('计数请求无效');
+        const model = parsed.data.model ?? kite.tokenCounts.modelFor(parsed.data.scene);
+        return { model, results: await kite.tokenCounts.count(parsed.data.texts, model) };
       }) },
       '/roles': {
         GET: bound(() => kite.roleCatalog()),

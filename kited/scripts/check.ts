@@ -30,10 +30,11 @@ writeFileSync(LOG, '');
 const log = (text: string) => writeFileSync(LOG, text, { flag: 'a' });
 
 async function run(cmd: string[], cwd = KITED): Promise<{ code: number; out: string; stdout: string }> {
+  const started = performance.now();
   const p = Bun.spawn(cmd, { cwd, env: process.env, stdout: 'pipe', stderr: 'pipe' });
   const [stdout, stderr] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
   const code = await p.exited;
-  log(`$ ${cmd.join(' ')}\n${stdout}${stderr}\n`);
+  log(`$ ${cmd.join(' ')}\n${stdout}${stderr}\n耗时：${((performance.now() - started) / 1000).toFixed(2)} 秒\n`);
   return { code, out: stdout + stderr, stdout };
 }
 
@@ -112,8 +113,8 @@ if (early.length) fail(early);
 const stages = ['类型检查', 'lint', ...(app ? ['App 编译'] : []), ...(contracts.length ? ['解码合同'] : [])].join('、');
 const passed = `${stages}${/[a-z]$/i.test(stages) ? ' ' : ''}通过`;
 
-// 3. 跑测试。小测试只调 git、互不相干，按文件分到多个进程并行跑；
-// 中测试每个都起 Claude Code，并行就是同时起好几个，照旧按顺序跑
+// 3. 两层同时跑：小测试按文件分给两个独立进程，中测试在另一个进程内串行。
+// 单独限制中测试，避免同时启动多个 Claude Code；文件隔离保留各自的环境与清理范围。
 const TIERS = [
   { dir: 'small', name: '小', workers: 2, limit: 1 },
   { dir: 'medium', name: '中', workers: 1, limit: 3 },
@@ -152,18 +153,18 @@ async function runTests(tier: Tier, path: string, index: number): Promise<void> 
     problems.push('测试进程出错退出：', ...tail(tests.out));
   }
 }
-for (const tier of TIERS) {
+await Promise.all(TIERS.map(async (tier) => {
   const paths = tier.workers === 1 ? [`test/${tier.dir}`]
     : [...new Bun.Glob(`test/${tier.dir}/**/*.test.ts`).scanSync({ cwd: KITED })].sort();
   let next = 0;
-  // Bun test 没有 --parallel；独立进程隔离各文件的 preload、环境变量与模块级清理。
+  // 独立进程隔离各文件的 preload、环境变量与模块级清理。
   await Promise.all(Array.from({ length: tier.workers }, async () => {
     while (next < paths.length) {
       const index = next++;
       await runTests(tier, paths[index]!, index);
     }
   }));
-}
+}));
 const seconds = (performance.now() - started) / 1000;
 
 // 4. 核对规则和预算

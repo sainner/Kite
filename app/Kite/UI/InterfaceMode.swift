@@ -24,8 +24,8 @@ enum InputMode {
     var controlRadius: CGFloat { isTouch ? 28 : 18 }
     var rowHeight: CGFloat { isTouch ? 44 : 32 }
     var workspaceRowHeight: CGFloat { isTouch ? 44 : 24 }
-    /// 侧栏行尾的小按钮（添加、刷新）。
-    var sidebarControl: CGFloat { isTouch ? button : workspaceRowHeight }
+    /// 侧栏行首到图标的留白：触屏与图标在行高里的上下空白相同，Mac 稍宽。
+    var sidebarItemInset: CGFloat { isTouch ? 13 : 10 }
     /// 卡片里输入框与选择框的高度。
     var fieldHeight: CGFloat { isTouch ? 48 : 36 }
     /// 卡片底部与空白页主操作按钮的尺寸。
@@ -41,6 +41,9 @@ enum WorkspacePresentation: Equatable {
     init(size: CGSize) {
         self = size.width >= 720 && size.height >= 480 ? .tiled : .compact
     }
+
+    /// 窄屏触控：标题栏圆环拉开侧栏、空控制区接上拉与横滑，都只在这时。
+    var isCompactTouch: Bool { self == .compact && InputMode.current.isTouch }
 }
 
 extension EnvironmentValues {

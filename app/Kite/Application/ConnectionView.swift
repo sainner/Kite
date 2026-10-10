@@ -2,58 +2,42 @@ import SwiftUI
 
 /// 设置一栏里的各页。
 nonisolated enum SettingsPage: String, SidebarPage {
-    case appearance, account, projects
+    case account, appearance
 
     var id: Self { self }
 
     var title: String {
         switch self {
-        case .appearance: "外观"
         case .account: "Kite 账号"
-        case .projects: "项目"
+        case .appearance: "外观"
         }
     }
 
     var icon: TablerSymbol {
         switch self {
-        case .appearance: .palette
         case .account: .user
-        case .projects: .folder
+        case .appearance: .palette
         }
     }
 
     var available: Bool { true }
 }
 
-/// 设置一栏的单页：侧栏选中的那一页。
+/// 设置一栏的单页：侧栏选中的那一页。Kite 账号页开点阵，用量合计画在上面。
 struct SettingsContent: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         let page = model.settingsPage
-        SectionPage(header: PaneHeader(title: page.title, subtitle: "设置")) {
-            if page == .account {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 28) {
-                        KiteAccountSection()
-                        AccountDeviceInvitation()
-                    }
-                        .frame(maxWidth: DotMetrics.module * 84, alignment: .leading)
-                        .padding(CardMetrics.inset)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            } else {
+        SectionPage(header: PaneHeader(title: page.title, subtitle: "设置"), usesDots: page == .account) {
+            switch page {
+            case .account: AccountSettingsPage()
+            case .appearance:
                 Form {
-                    switch page {
-                    case .appearance:
-                        Section { AppearancePicker() }
-                        #if os(iOS)
-                        Section { KeepAwakeToggle() }
-                        #endif
-                    case .account: EmptyView()
-                    case .projects:
-                        if model.account.signedIn { AccountProjectsSection() }
-                    }
+                    Section { AppearancePicker() }
+                    #if os(iOS)
+                    Section { KeepAwakeToggle() }
+                    #endif
                     if let error = model.error { Text(error).foregroundStyle(Theme.danger) }
                 }
                 .pageForm()

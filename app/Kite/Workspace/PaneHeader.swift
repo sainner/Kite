@@ -9,6 +9,7 @@ struct PaneHeader {
     var titleRefresh: TitleRefresh?
     /// 主标题右边的小标签，例如订阅账号的档位。
     var badge: String?
+    var titleEdit: TitleEdit?
 
     /// 由主标题尾部的刷新图标触发，生成期间保持原题。
     struct TitleRefresh {
@@ -17,6 +18,13 @@ struct PaneHeader {
         var isRefreshing: Bool
         var enabled: Bool
         var action: () -> Void
+    }
+
+    /// 由主标题尾部的编辑图标进入，标题原地变成输入框；回车或移开焦点提交，Esc 取消，清空不提交。
+    struct TitleEdit {
+        var label: String
+        var enabled: Bool = true
+        var commit: (String) -> Void
     }
 
     /// 菜单处理期间箭头换成转圈，菜单不可点。
@@ -62,7 +70,7 @@ struct PaneHeaderBar<Status: View, Actions: View>: View {
     @State private var statusText: String?
     @State private var showsStatusText = false
 
-    private var statusOpensSidebar: Bool { InputMode.current.isTouch && presentation == .compact }
+    private var statusOpensSidebar: Bool { presentation.isCompactTouch }
 
     var body: some View {
         // 合进玻璃的信息缩小；环境要在拆分子视图之前给出
@@ -124,7 +132,8 @@ struct PaneHeaderBar<Status: View, Actions: View>: View {
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
             .padding(.horizontal, Metrics.paneMargin)
-            .frame(minHeight: controlsHeight)
+            // 至少一个按钮高：只有主标题、没有按钮的窗口不跟着文字变矮。
+            .frame(minHeight: max(controlsHeight, Metrics.paneHeaderButton))
             .onPreferenceChange(PaneHeaderStatusText.self) { statusText = $0 }
         }
     }
@@ -259,13 +268,29 @@ private struct PaneStatusTextPopover: ViewModifier {
 /// 主标题与下方的窗口类型左对齐，主标题可带尾部刷新图标。
 struct PaneHeaderTitle: View {
     let header: PaneHeader
+    @State private var editing = false
+    @State private var draft = ""
+    @FocusState private var focused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: Metrics.titleRefreshGap) {
-                Text(header.title)
-                    .id(header.title)
-                    .transition(.blurReplace)
+                if editing, let edit = header.titleEdit {
+                    TextField(edit.label, text: $draft)
+                        .textFieldStyle(.plain)
+                        .focused($focused)
+                        .onSubmit { commit(edit) }
+                        #if os(macOS)
+                        .onExitCommand { editing = false }
+                        #endif
+                        .onChange(of: focused) { _, focused in if !focused { commit(edit) } }
+                        .onAppear { focused = true }
+                        .reportsHeaderInteraction()
+                } else {
+                    Text(header.title)
+                        .id(header.title)
+                        .transition(.blurReplace)
+                }
                 if let badge = header.badge {
                     Text(badge)
                         .font(Theme.status.weight(.medium))
@@ -279,6 +304,19 @@ struct PaneHeaderTitle: View {
                 }
                 if let refresh = header.titleRefresh {
                     PaneTitleRefreshButton(refresh: refresh, title: header.title)
+                }
+                if let edit = header.titleEdit, !editing {
+                    Button {
+                        draft = header.title
+                        editing = true
+                    } label: {
+                        Image(systemName: "pencil").imageScale(.small)
+                    }
+                    .buttonStyle(PaneTitleIconButtonStyle())
+                    .disabled(!edit.enabled)
+                    .help(edit.label)
+                    .accessibilityLabel(edit.label)
+                    .accessibilityValue(header.title)
                 }
             }
             .font((InputMode.current.isTouch ? Theme.secondary : Theme.title).weight(.semibold))
@@ -294,9 +332,20 @@ struct PaneHeaderTitle: View {
             }
         }
         .lineLimit(1)
+        .onChange(of: header.titleEdit?.enabled) { _, enabled in if enabled != true { editing = false } }
         .animation(.snappy, value: header.title)
         .animation(.snappy, value: header.subtitle)
         .animation(.snappy, value: header.badge)
+    }
+}
+
+extension PaneHeaderTitle {
+    /// 回车与失焦都会走到这里，只提交一次。
+    private func commit(_ edit: PaneHeader.TitleEdit) {
+        guard editing else { return }
+        editing = false
+        let title = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !title.isEmpty, title != header.title { edit.commit(title) }
     }
 }
 

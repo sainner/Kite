@@ -18,13 +18,32 @@ extension View {
     }
 
     /// 标出一块输入框：点它是要打字，所在区域的 endsTyping 不收键盘。
-    func typingTarget() -> some View {
-        background {
-            GeometryReader { geo in
-                Color.clear.preference(key: TypingTargets.self, value: [geo.frame(in: .global)])
+    func typingTarget() -> some View { modifier(TypingTarget()) }
+}
+
+extension EnvironmentValues {
+    /// 所在区域正在打字，里面的输入框要报上自己的位置。
+    @Entry var collectsTypingTargets = false
+}
+
+/// 只在所在区域打字时量位置：窗口移动、缩放时位置每帧都变，平时不往上报。
+private struct TypingTarget: ViewModifier {
+    @Environment(\.collectsTypingTargets) private var collecting
+
+    func body(content: Content) -> some View {
+        content.background {
+            if collecting {
+                GeometryReader { geo in
+                    Color.clear.preference(key: TypingTargets.self, value: [geo.frame(in: .global)])
+                }
             }
         }
     }
+}
+
+/// 输入框的位置只在点按时拿来比对，存在这里，变了不引起视图更新。
+private final class TypingTargetFrames {
+    var frames: [CGRect] = []
 }
 
 private struct TypingTargets: PreferenceKey {
@@ -35,14 +54,15 @@ private struct TypingTargets: PreferenceKey {
 private struct EndsTyping: ViewModifier {
     let typing: Bool
     let end: () -> Void
-    @State private var targets: [CGRect] = []
+    @State private var targets = TypingTargetFrames()
 
     func body(content: Content) -> some View {
         #if os(iOS)
         content
-            .onPreferenceChange(TypingTargets.self) { frames in Task { @MainActor in targets = frames } }
+            .environment(\.collectsTypingTargets, typing)
+            .onPreferenceChange(TypingTargets.self) { [targets] frames in Task { @MainActor in targets.frames = frames } }
             .simultaneousGesture(SpatialTapGesture(coordinateSpace: .global).onEnded { tap in
-                if !targets.contains(where: { $0.contains(tap.location) }) { end() }
+                if !targets.frames.contains(where: { $0.contains(tap.location) }) { end() }
             }, isEnabled: typing)
         #else
         content

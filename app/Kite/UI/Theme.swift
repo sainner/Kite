@@ -134,8 +134,6 @@ enum Metrics {
     static let sidebarInset: CGFloat = 12
     /// 侧栏分割线上下的留白，一个半模块。
     static let sidebarRuleGap: CGFloat = 18
-    /// 菜单项与项目列表内容共用的左内边距。
-    static let sidebarItemInset: CGFloat = 10
     static let sidebarWidth: CGFloat = 240
     /// 侧边栏拖动调宽度的范围；拖到比 sidebarCollapse 还窄就收起。松手后宽度吸附到模块。
     static let sidebarMin: CGFloat = 204
