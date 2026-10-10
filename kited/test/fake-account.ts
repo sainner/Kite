@@ -39,6 +39,8 @@ export interface FakeAccount {
   beforePush?: (projectId: string) => void | Promise<void>;
   /** 拉取引用广告前调用，测试可以挂起 clone/fetch，或返回失败响应。 */
   beforeFetch?: (projectId: string) => void | Response | Promise<void | Response>;
+  /** 读取项目约束前调用，测试可以挂起请求或模拟账号暂时不可用。 */
+  beforeConstraints?: (projectId: string) => void | Response | Promise<void | Response>;
   /** 把项目的远程改为 url，模拟迁移完成；不推送内容。 */
   migrate(id: string, url: string): RegisteredProject;
   stop(): void;
@@ -136,6 +138,8 @@ export function startFakeAccount(root: string): FakeAccount {
       if (constraint) {
         if (!projects.has(constraint[1]!)) return json({ error: '找不到项目' }, 404);
         if (request.method !== 'GET') return json({ error: '项目约束须由用户在 App 中修改' }, 403);
+        const response = await account.beforeConstraints?.(constraint[1]!);
+        if (response) return response;
         const body = constraints.get(constraint[1]!) ?? { tools: { mode: 'deny', tools: [] } };
         return json({ ...body, revision: createHash('sha256').update(JSON.stringify(body)).digest('hex') });
       }

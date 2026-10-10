@@ -8,6 +8,7 @@
  */
 import { copyFileSync, existsSync, mkdirSync, statSync, utimesSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { KiteError } from '../errors.ts';
 import { git, gitTry, isAncestor, KITE_IDENTITY } from './git.ts';
 
 const snapshotRef = (workspaceId: string) => `refs/kite/snapshots/${workspaceId}`;
@@ -110,7 +111,8 @@ export async function capture(worktree: string, workspaceId: string, label: stri
 /**
  * 把工作树整体恢复成某一枚快照：只动文件，不动 HEAD、分支和工作树自己的暂存区。
  * 先捕获一次当前状态，私有索引此时等于「现在」，回退本身因此可以撤销；
- * 再在私有索引上 read-tree --reset -u：现在有而目标没有的文件被删，被忽略的文件不碰。
+ * 再在私有索引上以安全快照为基线做双树更新：现在有而目标没有的文件被删，被忽略的文件不碰。
+ * Git 的合并更新仍会覆盖忽略内容，先拒绝这类路径碰撞；双树更新另保护已捕获文件的后续改动。
  * 之后工作树里未被忽略的部分正好是目标那棵树，直接把它记成新的一枚，不用再捕获一遍。
  */
 export async function restore(worktree: string, workspaceId: string, target: string): Promise<{ safety: Captured; current: Captured; label: string }> {
@@ -118,7 +120,40 @@ export async function restore(worktree: string, workspaceId: string, target: str
   const env = { GIT_INDEX_FILE: await privateIndex(worktree) };
   const [tree, subject] = (await git(worktree, ['log', '-1', '--format=%T%x00%s', target])).split('\0') as [string, string];
   const label = `回到「${subject}」`;
-  await git(worktree, ['read-tree', '--reset', '-u', target], { env });
+  const [ignored, targetFiles, safetyFiles, ignoreCase] = await Promise.all([
+    gitTry(worktree, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z'], { env }),
+    gitTry(worktree, ['ls-tree', '-r', '-z', target]),
+    gitTry(worktree, ['ls-tree', '-r', '-z', safety.commit]),
+    git(worktree, ['config', '--bool', '--get', '--default=false', 'core.ignorecase']),
+  ]);
+  for (const result of [ignored, targetFiles, safetyFiles]) {
+    if (result.code !== 0) throw new KiteError(`无法核对回退路径：${result.stderr.trim()}`, 409);
+  }
+  const pathKey = (path: string) => {
+    // ls-files 把被忽略的嵌套仓库列为带 / 的目录；大小写按 Git 检测出的文件系统规则比较。
+    const name = path.replace(/\/$/, '');
+    return ignoreCase === 'true' ? name.toLowerCase() : name;
+  };
+  const entries = (output: string) => output.split('\0').filter(Boolean).map((entry) => ({
+    mode: entry.slice(0, 6), path: entry.slice(entry.indexOf('\t') + 1),
+  }));
+  const targetEntries = entries(targetFiles.stdout);
+  const files = new Set(targetEntries.map((entry) => pathKey(entry.path)));
+  const targetLinks = new Set(targetEntries.filter((entry) => entry.mode === '160000').map((entry) => pathKey(entry.path)));
+  // 捕获可能把原文件改记为嵌套仓库的 gitlink；它只保存提交号，内部内容没有进入安全快照。
+  const nested = entries(safetyFiles.stdout).filter((entry) => entry.mode === '160000' && !targetLinks.has(pathKey(entry.path)));
+  const directories = new Set<string>();
+  for (const file of files) {
+    for (let directory = dirname(file); directory !== '.'; directory = dirname(directory)) directories.add(directory);
+  }
+  for (const file of [...ignored.stdout.split('\0').filter(Boolean), ...nested.map((entry) => entry.path)]) {
+    // 同名文件、文件挡住目标目录、目标文件覆盖整个本地目录，都必须保住未入快照的内容。
+    const key = pathKey(file);
+    let collision = directories.has(key);
+    for (let path = key; !collision && path !== '.'; path = dirname(path)) collision = files.has(path);
+    if (collision) throw new KiteError(`回退会覆盖未被快照保存的本地内容，请先移走或保存：${file}`, 409);
+  }
+  await git(worktree, ['read-tree', '-m', '-u', safety.commit, target], { env });
   // 目标就是现状时不产生新快照。HEAD 没动，safety 已经把它挂好了，所以不用再挂
   const current = tree === safety.tree
     ? { ...safety, created: false, changedFiles: 0 }

@@ -24,6 +24,9 @@ export class LibrarySync {
   private pending?: Promise<void>;
   private again = false;
   private closed = false;
+  /** 事件流仍在线时，失败的拉取也须重试，不能等下一次无关变化。 */
+  private retry?: ReturnType<typeof setTimeout>;
+  private retryDelay = RETRY_MIN_MS;
   /** 停机时中止进行中的账号请求与事件流，不等网络超时。 */
   private abort = new AbortController();
   /** 当前的事件流；换凭据时中止它，用新凭据立即重连。 */
@@ -51,15 +54,24 @@ export class LibrarySync {
     this.listening ??= this.listen().finally(() => { this.listening = undefined; });
   }
 
-  /** 全量同步一遍；进行中时合并为一次补拉。失败只记日志，继续用缓存。 */
+  /** 全量同步一遍；进行中时合并为一次补拉。失败暂用缓存，并退避重试直到成功。 */
   refresh(): Promise<void> {
     if (!this.linked || this.closed) return Promise.resolve();
     if (this.pending) { this.again = true; return this.pending; }
     this.pending = (async () => {
       do {
         this.again = false;
-        try { await this.pull(); }
-        catch (error) { if (!this.closed) console.warn('[资源库同步]', (error as Error).message); }
+        clearTimeout(this.retry);
+        this.retry = undefined;
+        try { await this.pull(); this.retryDelay = RETRY_MIN_MS; }
+        catch (error) {
+          if (!this.closed) {
+            console.warn('[资源库同步]', (error as Error).message);
+            this.retry = setTimeout(() => { this.retry = undefined; void this.refresh(); }, this.retryDelay);
+            this.retry.unref();
+            this.retryDelay = Math.min(this.retryDelay * 2, RETRY_MAX_MS);
+          }
+        }
       } while (this.again && !this.closed);
     })().finally(() => { this.pending = undefined; });
     return this.pending;
@@ -89,6 +101,7 @@ export class LibrarySync {
   /** 停机时中止事件流并等进行中的同步结束，之后不再访问本机数据库。 */
   async close(): Promise<void> {
     this.closed = true;
+    clearTimeout(this.retry);
     this.abort.abort();
     this.wake?.();
     await Promise.all([this.pending, this.listening]);

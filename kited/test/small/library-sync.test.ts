@@ -1,12 +1,17 @@
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, expect, jest, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { AccountClient, type LibraryItem, type ProjectConstraints } from '../../src/account-client.ts';
+import { ContextTemplates } from '../../src/context-templates.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { ContextDefinition } from '../../src/harness/context/types.ts';
 import type { Json, ModelItem } from '../../src/harness/types.ts';
-import type { Role } from '../../src/roles.ts';
+import { LibrarySync } from '../../src/library-sync.ts';
+import { PluginCatalog } from '../../src/plugins/catalog.ts';
+import { Roles, type Role } from '../../src/roles.ts';
+import { Store } from '../../src/store.ts';
 import { emblemTemplate } from '../../src/template-emblems.ts';
 import { startFakeAccount, type FakeAccount } from '../fake-account.ts';
 import { after, call, linkNewAccount, mark, openAgent, registerCheckout, startKited, type Kited } from '../harness.ts';
@@ -92,6 +97,133 @@ test('A 改的角色经推送同步到 B 后是同一版本，B 用过期版本�
   const instance = (await b.call('GET', `/workspaces/${workspace.workspace.id}`)).body.instances
     .find((entry: { id: string }) => entry.id === opened.body.target.instanceId);
   expect(instance.config.packageRevision).toBe(installed.body.revision);
+}, 1000);
+
+// 真实 bug：首次同步时本机还没有此项目，之后登记账号已有项目不会再收到约束变更事件，因而留下无限制缓存。
+// 账号读取失败、登记入库与开代理必须一起验证：首次约束未取到不能留下可运行工作区，重试成功返回时约束已生效。
+test('首次同步后登记账号已有项目，取不到首次约束不留下工作区，恢复后登记成功时 shell 已禁用', async () => {
+  const root = makeTemp('library-register-');
+  shared = { account: startFakeAccount(join(root, 'account')), root };
+  const projectId = crypto.randomUUID();
+  const remote = 'example.test/library/existing';
+  const url = `https://${remote}.git`;
+  shared.account.projects.set(projectId, { id: projectId, name: '已有限制的项目', remote, url,
+    hosted: false, createdAt: Date.now() });
+  shared.account.constraints.set(projectId, { tools: { mode: 'deny', tools: ['shell'] } });
+  const k = startKited(undefined, false, shared.account);
+  kiteds.push(k);
+  await k.daemon.kite.library.refresh();
+  const path = newRepo(k.root, 'existing', { 'base.txt': '账号已有项目\n' }, url);
+
+  shared.account.beforeConstraints = () => Response.json({ error: '项目约束暂时不可用' }, { status: 503 });
+  const unavailable = await k.call('POST', '/checkouts', { path });
+  expect(unavailable.status).toBeGreaterThanOrEqual(400);
+  expect((await k.call('GET', '/checkouts')).body).toEqual([]);
+  expect(k.daemon.kite.workspaces()).toEqual([]);
+
+  shared.account.beforeConstraints = undefined;
+  const registered = await registerCheckout(k, path);
+  expect(registered.project.id).toBe(projectId);
+  expect(k.daemon.kite.store.projectConstraints(projectId)?.tools).toEqual({ mode: 'deny', tools: ['shell'] });
+  const id = await openAgent(k.call, registered.workspace.id);
+  expect((await k.call('GET', `/instances/${id}/agent-capabilities`)).body.blocked).toContain('shell');
+}, 1000);
+
+// 真实 bug：事件流仍持续心跳时一次拉取失败，缓存只能等下一次变更或重连才能追上。
+// 资源库和项目约束分开失败，每次只发一条变更事件；后续只有心跳与退避时间推进，验证各自自动恢复和关闭取消。
+test('事件流仍通时资源库和约束的临时失败自动重试并更新缓存，关闭后不再重试', async () => {
+  const root = makeTemp('library-retry-');
+  const store = new Store(join(root, 'kite.sqlite'));
+  const roles = new Roles(store);
+  const projectId = crypto.randomUUID();
+  store.saveProject({ id: projectId, name: '重试约束', remote: 'example.test/library/retry', createdAt: Date.now() });
+  const role = sharedRole(roles.get('kite.work').role, '同步恢复后使用的新规则。');
+  const initial = Promise.withResolvers<void>();
+  let source: LibraryItem[] = [];
+  let constraints: ProjectConstraints = { tools: { mode: 'deny', tools: [] }, revision: 'initial' };
+  let failLibrary = false;
+  let failConstraints = false;
+  let requests = 0;
+  let streamClosed = false;
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const account = new class extends AccountClient {
+    override async libraryEvents(signal: AbortSignal) {
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          stream = controller;
+          signal.addEventListener('abort', () => {
+            if (!streamClosed) { streamClosed = true; controller.close(); }
+          }, { once: true });
+          controller.enqueue(new TextEncoder().encode('data: ready\n\n'));
+        },
+        cancel() { streamClosed = true; },
+      });
+    }
+    override async library() {
+      requests++;
+      if (failLibrary) { failLibrary = false; throw new Error('资源库暂时不可用'); }
+      return source;
+    }
+    override async constraints() {
+      requests++;
+      if (failConstraints) { failConstraints = false; throw new Error('项目约束暂时不可用'); }
+      return constraints;
+    }
+  }(() => ({ url: 'http://account.test', token: 'test' }));
+  const sync = new LibrarySync({ account, store, roles, templates: new ContextTemplates(store, []),
+    catalog: new PluginCatalog(join(root, 'plugins')), changed: () => initial.resolve() });
+  // 用一个真实事件循环边界排空 Promise/流读取；不靠睡眠等待，也不主动 refresh 帮重试补请求。
+  const immediate = globalThis.setImmediate;
+  const settled = () => new Promise<void>((resolve) => { immediate(resolve); });
+  const send = (text: string) => stream.enqueue(new TextEncoder().encode(text));
+  const retryUntil = async (caughtUp: () => boolean) => {
+    // 不再发送 changed；最多推进一分钟，覆盖退避而不绑定调用次数或具体间隔。
+    for (let seconds = 0; seconds < 60 && !caughtUp(); seconds++) {
+      send(': \n\n');
+      await settled();
+      jest.advanceTimersByTime(1000);
+      await settled();
+    }
+  };
+  jest.useFakeTimers();
+  try {
+    sync.connect();
+    await initial.promise;
+    await settled();
+    source = [{ kind: 'role', id: role.id, body: role, revision: 'changed', updatedAt: Date.now() }];
+    failLibrary = true;
+    send('data: changed\n\n');
+    await settled();
+    expect(failLibrary).toBe(false);
+    expect(store.role(role.id)).toBeUndefined();
+    await retryUntil(() => store.role(role.id) !== undefined);
+    expect(roles.get(role.id).role).toEqual(role);
+
+    constraints = { tools: { mode: 'deny', tools: ['shell'] }, revision: 'blocked' };
+    failConstraints = true;
+    send('data: changed\n\n');
+    await settled();
+    expect(failConstraints).toBe(false);
+    expect(store.projectConstraints(projectId)?.revision).toBe('initial');
+    await retryUntil(() => store.projectConstraints(projectId)?.revision === 'blocked');
+    expect(store.projectConstraints(projectId)).toEqual(constraints);
+    expect(streamClosed).toBe(false);
+
+    failLibrary = true;
+    send('data: changed\n\n');
+    await settled();
+    await sync.close();
+    const atClose = requests;
+    jest.advanceTimersByTime(120_000);
+    await settled();
+    expect(requests).toBe(atClose);
+    expect(streamClosed).toBe(true);
+  } finally {
+    await sync.close();
+    jest.useRealTimers();
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 }, 1000);
 
 // 项目约束是实时过滤：账号里改了约束、账号服务推送后工作机同步，正在跑的回合里已经发出的 shell 调用在执行前被拦下，

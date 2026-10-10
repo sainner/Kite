@@ -83,11 +83,16 @@ export async function register(store: Store, home: string, account: AccountClien
   }
 
   const project = projectOf(registered);
+  // 首次登记先取得账号已有的约束，失败时不开放工作区；已有项目的缓存由资源库同步持续更新。
+  const constraints = store.projectConstraints(project.id) ?? await account.constraints(project.id);
   const checkout: Checkout = { id: checkoutId, projectId: project.id, machineId: store.machine.id, path,
     remote: project.remote, createdAt: Date.now() };
   const workspace: Workspace = { id: randomUUID(), checkoutId: checkout.id, name: basename(path), cwd: path,
     kind: 'root', branch: null, base: null, status: 'open', createdAt: checkout.createdAt };
-  store.register(project, checkout, workspace);
+  store.transaction(() => {
+    store.register(project, checkout, workspace);
+    store.saveProjectConstraints(project.id, constraints);
+  });
   return store.workspaceModel(workspace.id)!;
 }
 

@@ -175,6 +175,8 @@ final class AppModel {
         detached = []
         selectedProjectID = nil
         selected = ""
+        roleDrafts = []
+        selectedLibraryRole = nil
         draftWorkspace.draftThread.role = nil
         draftWorkspace.draftThread.connected = false
     }

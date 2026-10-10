@@ -5,7 +5,7 @@ import { expect, test } from 'bun:test';
 import { renameSync, rmSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { capture, changesBetween, findSnapshot, list, restore } from '../../src/workspace/snapshots.ts';
-import { git, gitWorktree, lexists, newRepo, read, repoState, useTemp, writeFiles } from '../util.ts';
+import { git, gitWorktree, lexists, listTree, newRepo, read, repoState, useTemp, writeFiles } from '../util.ts';
 
 const temp = useTemp();
 
@@ -108,6 +108,41 @@ test('回退恢复增删改名且保留忽略文件，自动快照能找回回�
   expect(lexists(join(wt, 'ren.txt'))).toBe(false);
   expect(lexists(join(wt, 'dir/inner.txt'))).toBe(false);
   expect(read(join(wt, '.env'))).toBe('SECRET=2\n');
+});
+
+// 回归：旧快照中的文件曾覆盖当前同名的忽略文件，或删掉同名目录里的忽略内容；
+// 这些内容不在回退前的安全快照里，依赖真实 Git 的索引、忽略规则和工作树更新共同保护。
+// 不区分大小写的文件系统还会让 Config 文件与 config/ 目录指向同一路径。
+// Git 对被忽略的嵌套仓库只列出目录，里面的文件和仓库也必须保留。
+test('回退拒绝覆盖忽略文件或含忽略内容的目录，保留工作文件和 Git 状态', async () => {
+  const root = temp();
+  for (const fixture of [
+    { name: 'file', path: '.env', ignored: '.env', captureDeletion: true },
+    { name: 'directory', path: 'cache', ignored: 'cache/ignored.txt', captureDeletion: false },
+    { name: 'case-directory', path: 'Config', ignored: 'config/ignored.txt', captureDeletion: false },
+    { name: 'nested-repo', path: 'cache', ignored: 'cache/ignored.txt', captureDeletion: false },
+  ]) {
+    const main = newRepo(root, fixture.name, { 'keep.txt': '旧内容\n' });
+    const id = `ignored-${fixture.name}`;
+    const wt = gitWorktree(main, join(root, `wt-${fixture.name}`), `kite/${id}`);
+    writeFiles(wt, { [fixture.path]: '快照中的文件\n' });
+    if (fixture.name === 'case-directory' && !lexists(join(wt, 'config'))) continue;
+    const target = await capture(wt, id, '原文件');
+    rmSync(join(wt, fixture.path));
+    writeFiles(wt, { '.gitignore': `${fixture.path}\n`, 'keep.txt': '回退前内容\n' });
+    if (fixture.captureDeletion) await capture(wt, id, '删除原文件并忽略');
+    writeFiles(wt, { [fixture.ignored]: '只保存在本地的内容\n' });
+    if (fixture.name === 'nested-repo') newRepo(wt, fixture.path, {});
+    expect(git(wt, 'check-ignore', '--', fixture.ignored)).toBe(fixture.ignored);
+    const files = listTree(wt);
+    const state = repoState(wt);
+
+    const error = await restore(wt, id, target.commit).then(() => undefined, (error: unknown) => error);
+    expect(listTree(wt)).toEqual(files);
+    expect(repoState(wt)).toBe(state);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message.toLowerCase()).toContain(fixture.path.toLowerCase());
+  }
 });
 
 /*
