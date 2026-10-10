@@ -5,8 +5,6 @@ struct MainWindow: View {
     var availableWidth: CGFloat = 1272
     @Environment(AppModel.self) private var model
     @State private var resizingFrom: CGFloat?
-    /// 焦点在窗口区还是侧栏：点哪边就到哪边。焦点在侧栏时窗口不画静息的点。
-    @State private var windowsFocused = true
 
     var body: some View {
         GeometryReader { proxy in
@@ -26,7 +24,6 @@ struct MainWindow: View {
             WorkspaceSidebar()
                 .frame(width: sidebarWidth)
                 .allowsHitTesting(resizingFrom == nil)
-                .simultaneousGesture(TapGesture().onEnded { windowsFocused = false })
             LayoutDragArea(cursor: .columnResize) { drag in
                 let from = resizingFrom ?? sidebarWidth
                 resizingFrom = from
@@ -61,8 +58,6 @@ struct MainWindow: View {
             }
             // 切换栏目在动画里进行，换页不用默认的 opacity 转场，见 PaneFade
             .transition(.paneFade)
-            .simultaneousGesture(TapGesture().onEnded { windowsFocused = true })
-            .environment(\.windowDotsFocused, windowsFocused)
             // 侧栏收起后，展开按钮移到内容区第一个窗口的标题栏
             .environment(\.openSidebar, expandSidebar)
         }

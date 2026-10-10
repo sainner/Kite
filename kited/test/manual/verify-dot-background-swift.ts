@@ -1,5 +1,5 @@
 /**
- * 手动原生验证：窗口焦点、点阵停用与视图移除经过真实 SwiftUI 宿主后恢复 App 点阵占用状态。
+ * 手动原生验证：点阵启用、停用与视图移除经过真实 SwiftUI 宿主后自动交接 App 点阵占用状态。
  * 运行：bun kited/test/manual/verify-dot-background-swift.ts
  * 不计入快测预算。
  */

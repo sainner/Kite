@@ -109,8 +109,6 @@ struct CompactWindow: View {
             }
         }
         .animation(.snappy, value: windowed)
-        // 拉开侧边栏或底栏就是焦点到了它们那边，窗口不画静息的点；钉着的底栏不算
-        .environment(\.windowDotsFocused, shown == nil || (shown == .actions && actionsRule == .pinned))
         .environment(\.dotCarrier, carrier)
         .modifier(WindowPlacement(openness: target, screen: screen, insets: insets, homeInset: homeInset,
                                   avoidsKeyboard: avoidsKeyboard, sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius,

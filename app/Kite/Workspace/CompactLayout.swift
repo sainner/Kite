@@ -131,6 +131,8 @@ struct CompactLayout: View {
             if was, !now { open = nil }
         }
         .appDotBackground()
+        // 窄屏侧栏展开时由 App 画静息点阵；收起后只由开启了点阵的窗口画，不回退到 App 背景。
+        .environment(\.dotBackgroundPlacement, showing(.sidebar) ? .app : .windows)
     }
 
     /// 窗口都排在底部，当前窗口垫一块选中底；点别的窗口换过去，点当前窗口收起底栏。

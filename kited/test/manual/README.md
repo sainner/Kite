@@ -19,7 +19,7 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 | `verify-thread-draft-swift.ts` | 停止退回草稿与发送淡出回调交错时不丢字、不重复 | `bun kited/test/manual/verify-thread-draft-swift.ts` |
 | `verify-transcript-scroll-swift.ts` | SwiftUI 动画收起与滚动阶段的定位交接 | `bun kited/test/manual/verify-transcript-scroll-swift.ts` |
 | `verify-dot-canvas-swift.ts` | 真实 DotField 浮动、闪烁与空白帧交接的颜色连续性 | `bun kited/test/manual/verify-dot-canvas-swift.ts` |
-| `verify-dot-background-swift.ts` | 真实 SwiftUI 环境与 preference 在窗口聚焦、失焦、停用与移除时的点阵占用交接 | `bun kited/test/manual/verify-dot-background-swift.ts` |
+| `verify-dot-background-swift.ts` | 真实 SwiftUI preference 在窗口点阵启用、停用与移除时的自动占用交接 | `bun kited/test/manual/verify-dot-background-swift.ts` |
 | `verify-compact-pane-stack-swift.ts` | 真实 SwiftUI 卡片连续左右切换后的入口恢复与原生按钮命中，含玻璃控制区和持续动画重绘；仅手动运行 | `bun kited/test/manual/verify-compact-pane-stack-swift.ts` |
 | `verify-card-sheet-sizing-swift.ts` | 同一次真实 SwiftUI sheet 随生产 CardSheet 内容增减长高、缩短；只读取窗口尺寸，仅手动运行 | `bun kited/test/manual/verify-card-sheet-sizing-swift.ts` |
 | `verify-transcript-swift.ts` | 显示投影 JSON 的 Swift 解码、思考和工具结果关联 | `bun kited/test/manual/verify-transcript-swift.ts` |

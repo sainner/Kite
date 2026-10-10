@@ -419,9 +419,16 @@ nonisolated struct PaneHeaderStatusText: PreferenceKey {
 extension View {
     /// 信息区里的视图（圆环、提示图标）用它给出说明，见 PaneHeaderStatusText。
     func paneHeaderStatusText(_ text: String) -> some View {
-        // 整块信息区都算悬停范围；圆环只是描边，不声明的话只有那一圈线算
-        contentShape(Rectangle())
-            .help(text)
+        Group {
+            #if os(macOS)
+            // 原生提示占满方框，圆环与状态图标只负责显示。
+            self.allowsHitTesting(false)
+                .overlay { PaneHeaderHelp(text: text) }
+            #else
+            self.help(text)
+            #endif
+        }
+            .contentShape(Rectangle())
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(text)
             .preference(key: PaneHeaderStatusText.self, value: text)
