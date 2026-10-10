@@ -57,7 +57,7 @@ export class TokenCounter {
     const key = await this.key(vendor);
     return Promise.all(texts.map(async (text): Promise<TokenCountResult> => {
       if (!text) return { tokens: 0, method: key ? 'api' : vendor === 'openai' ? 'o200k' : 'none', exact: true };
-      if (key && (this.cooldown.get(vendor) ?? 0) < Date.now()) {
+      if (key && (this.cooldown.get(vendor) ?? 0) <= Date.now()) {
         try {
           return { tokens: await this.official(vendor, apiModel, key, text), method: 'api', exact: true };
         } catch (error) {
@@ -95,6 +95,8 @@ export class TokenCounter {
   private async request(vendor: Vendor, model: string, key: string, text: string): Promise<number> {
     await this.slot();
     try {
+      // 排队期间也可能收到同厂商的 429；真正发送前再检查，跳过的请求照常释放槽位。
+      if ((this.cooldown.get(vendor) ?? 0) > Date.now()) throw new Error('计数接口处于限频冷却期');
       const response = await (this.options.fetch ?? fetch)(vendor === 'anthropic'
         ? 'https://api.anthropic.com/v1/messages/count_tokens' : 'https://api.openai.com/v1/responses/input_tokens', {
         method: 'POST',

@@ -175,11 +175,9 @@ export class Store implements UsageStore {
   }
 
   mergeUsageHours(account: string, usage: HourlyUsage): void {
-    // 等号右边都取更新前的值，几列的先后不影响结果。
     const upsert = this.db.query(`insert into usage_hours values (?, ?, ?, ?, ?, ?) on conflict(account, day, hour) do update set
-      tokens = max(tokens, excluded.tokens),
-      cost = case when excluded.tokens >= tokens then excluded.cost else cost end,
-      unpriced = case when excluded.tokens >= tokens then excluded.unpriced else unpriced end`);
+      tokens = excluded.tokens, cost = excluded.cost, unpriced = excluded.unpriced
+      where excluded.tokens >= tokens`);
     this.db.transaction(() => {
       for (const [day, hours] of usage) {
         hours.tokens.forEach((tokens, hour) => {

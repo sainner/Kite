@@ -19,6 +19,10 @@ extension AppModel {
 
     func templateDraft(_ id: String) -> TemplateDraft? { templateDrafts.first { $0.id == id } }
 
+    func libraryTemplate(_ id: String) -> ContextDefinition? {
+        templateDraft(id)?.definition ?? contextTemplates?.templates.first { $0.id == id }?.definition
+    }
+
     /// 改动资源库里的模板；改回与工作机上一致时不再算草稿。
     func editTemplate(_ id: String, _ change: (inout ContextDefinition) -> Void) {
         let saved = contextTemplates?.templates.first { $0.id == id }
@@ -46,9 +50,8 @@ struct TemplatePane: View {
     @State private var discard = false
     @State private var editor = ContextEditor()
 
-    private var saved: ContextTemplate? { model.contextTemplates?.templates.first { $0.id == id } }
     private var draft: TemplateDraft? { model.templateDraft(id) }
-    private var definition: ContextDefinition? { draft?.definition ?? saved?.definition }
+    private var definition: ContextDefinition? { model.libraryTemplate(id) }
     private var variables: [ContextScene.Variable] {
         model.contextTemplates?.scenes.first { $0.id == definition?.scene }?.variables ?? []
     }
@@ -61,8 +64,8 @@ struct TemplatePane: View {
                     if let error { CardCallout(text: error) }
                     if let definition {
                         ContextVariablePreview(variables: variables)
-                        ContextTemplateForm(definition: Binding(get: { self.definition ?? definition },
-                                                                set: { value in model.editTemplate(id) { $0 = value } }),
+                        ContextTemplateForm(definition: Binding(get: { [model, id] in model.libraryTemplate(id) ?? definition },
+                                                                set: { [model, id] value in model.editTemplate(id) { $0 = value } }),
                                             variables: variables)
                             .disabled(saving)
                     }

@@ -12,6 +12,7 @@ import { startCli } from '../cli.ts';
 import { type FakeAccount, startFakeAccount } from '../fake-account.ts';
 import { after, call, linkNewAccount, machine, mark, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { ManualModel, Seen } from '../harness-loop.ts';
+import { connectSse } from '../sse.ts';
 import { git, makeTemp, newRepo } from '../util.ts';
 
 let kited: Kited | undefined;
@@ -37,37 +38,8 @@ type WorkspaceWireEvent = {
 };
 
 /** 工作区 SSE 首帧是完整聚合；调用方显式关闭流，避免测试留下打开的 HTTP 连接。 */
-async function connectWorkspace(url: string, machineId: string, workspaceId: string) {
-  const controller = new AbortController();
-  const response = await fetch(`${url}/events?workspace=${workspaceId}`, {
-    headers: { 'X-Kite-Machine': machineId }, signal: controller.signal,
-  });
-  expect(response.status).toBe(200);
-  const events = new Seen<WorkspaceWireEvent>();
-  const reading = (async () => {
-    const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
-    let buffer = '';
-    try {
-      while (true) {
-        const chunk = await reader.read();
-        if (chunk.done) return;
-        buffer += chunk.value;
-        let end: number;
-        while ((end = buffer.indexOf('\n\n')) >= 0) {
-          const frame = buffer.slice(0, end);
-          buffer = buffer.slice(end + 2);
-          const data = frame.split('\n').find((line) => line.startsWith('data: '));
-          if (data) events.add(JSON.parse(data.slice(6)) as WorkspaceWireEvent);
-        }
-      }
-    } catch (error) {
-      if (!controller.signal.aborted) throw error;
-    }
-  })();
-  return {
-    events,
-    async close() { controller.abort(); await reading; },
-  };
+function connectWorkspace(url: string, machineId: string, workspaceId: string) {
+  return connectSse<WorkspaceWireEvent>(`${url}/events?workspace=${workspaceId}`, machineId);
 }
 
 /*
@@ -503,9 +475,9 @@ test('插件窗口命令去重，重连保留打开目标且回收后的关窗�
       id: randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },
     }, machineId)).status).toBe(409);
   } finally {
-    await firstClient?.close();
-    await reconnected?.close();
+    const closed = await Promise.allSettled([firstClient?.close(), reconnected?.close()]);
     unsubscribe();
+    for (const result of closed) if (result.status === 'rejected') throw result.reason;
   }
 }, 1000);
 

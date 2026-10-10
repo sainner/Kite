@@ -6,7 +6,8 @@ import type { WorkspaceModel } from '../../src/model.ts';
 import type { ThreadActivity } from '../../src/transcript/protocol.ts';
 import type { FakeAccount } from '../fake-account.ts';
 import { call, createWorkspace, linkNewAccount, machine, registerCheckout, startKited, type Kited } from '../harness.ts';
-import { item, ManualModel, Seen } from '../harness-loop.ts';
+import { item, ManualModel } from '../harness-loop.ts';
+import { connectSse } from '../sse.ts';
 import { commitAll, makeTemp, newRepo } from '../util.ts';
 
 type RecordView = { id: string; at: number; block: { type: string; [key: string]: unknown }; parent?: string;
@@ -46,46 +47,18 @@ let kited: Kited | undefined;
 let daemon: Daemon | undefined;
 const accounts: FakeAccount[] = [];
 afterEach(async () => {
-  await Promise.all(streams.splice(0).map((stream) => stream.close()));
+  const closed = await Promise.allSettled(streams.splice(0).map((stream) => stream.close()));
   await daemon?.stop();
   daemon = undefined;
   await kited?.stop();
   kited = undefined;
   for (const account of accounts.splice(0)) account.stop();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const result of closed) if (result.status === 'rejected') throw result.reason;
 });
 
 async function connect(url: string, threadId?: string) {
-  const ctl = new AbortController();
-  const response = await fetch(`${url}/events${threadId ? `?thread=${threadId}` : ''}`, {
-    headers: { 'X-Kite-Machine': (await machine(url)).id }, signal: ctl.signal,
-  });
-  expect(response.status).toBe(200);
-  const events = new Seen<WireEvent>();
-  const reading = (async () => {
-    const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
-    let buffer = '';
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) return;
-        buffer += value;
-        let end: number;
-        while ((end = buffer.indexOf('\n\n')) >= 0) {
-          const frame = buffer.slice(0, end);
-          buffer = buffer.slice(end + 2);
-          const data = frame.split('\n').filter((line) => line.startsWith('data: ')).map((line) => line.slice(6)).join('\n');
-          if (data) events.add(JSON.parse(data) as WireEvent);
-        }
-      }
-    } catch (error) {
-      if (!ctl.signal.aborted) throw error;
-    }
-  })();
-  const stream = {
-    events,
-    async close() { ctl.abort(); await reading; },
-  };
+  const stream = await connectSse<WireEvent>(`${url}/events${threadId ? `?thread=${threadId}` : ''}`, (await machine(url)).id);
   streams.push(stream);
   return stream;
 }

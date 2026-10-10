@@ -7,9 +7,9 @@
 - [自研 harness 与 ChatGPT 订阅](harness-direction.md) — Claude 账号受阻后提前自研 harness，首个模型入口使用 ChatGPT 订阅
 - [Claude Code 重新接入](claude-integration-direction.md) — 先清空工具与附加功能再逐项接入，插话沿用原生 stdin
 - [模型厂商决定后端](model-vendor-backend.md) — 用户只选择模型，执行后端由模型厂商决定
-- [代理与角色](agent-role-direction.md) — 代理=角色+实例配置，三个 agent 定义合一，工具黑白名单逐层求交，角色可标必需
-- [项目约束](project-constraints-direction.md) — 存账号服务按项目分发，kited 执行并缓存，收紧即时生效，不放仓库
-- [资源库随账号保存](library-account-storage.md) — 资源库随账号分发，服务推送变化、重连先同步；内置只存改过的；分机内容放各工作机页面
+- [代理与角色](agent-role-direction.md) — 角色合并提示词与能力配置的原因；分层契约见 docs
+- [项目约束](project-constraints-direction.md) — 约束放账号侧而非仓库的原因；文件与网络上限尚待决定
+- [资源库随账号保存](library-account-storage.md) — 跨工作机一致性的动机，以及不保存未修改内置项的原因
 - [协议与适配器边界](protocol-adapter-boundaries.md) — 统一前端会话语义，区分完整 agent 与模型 API 适配，保留原生恢复记录
 - [工具接口方向](tool-interface-direction.md) — 短工具名与统一读写入口，版本变化仅提示，抽象调用才填写用途
 - [PDF 读取方案](pdf-read-direction.md) — PDF 转 Markdown 用 macOS Vision，不用 Docling 或 pdf.js，不留兜底
@@ -39,20 +39,17 @@
 - [同类控件统一交互](shared-control-interaction.md) — 同时覆盖命中、反馈与各端既有交互，避免只统一外观
 - [界面由用户自己预览](user-previews-ui.md) — 视觉验收交用户，构建流程引用主文档，手机交互须交付真机
 - [接数据沿用原界面](feedback-preserve-ui-on-data-integration.md) — App 接真实数据时保留已做好的界面结构，不另换空状态页面或控件布局
-- [Xcode 按路径选版本](feedback-xcode-version.md) — 多个 Xcode 时按路径开用户在用的那个，目前只有 Xcode.app（27.1）
-- [对话用中文](feedback-chat-language.md) — 回复、计划与交付说明都用简体中文
+- [Xcode 按路径选版本](feedback-xcode-version.md) — 多个 Xcode 时核对当前工具链，按路径打开用户选定的版本
 - [大改动先给方案](feedback-plan-before-large-changes.md) — 新视觉或全局布局先交方案；已确认的多期计划连续做完
 - [测试要克制](test-restraint.md) — 简单配置与接入不扩充测试，跑检查与新增测试分开判断
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 扫描无用逻辑时沿实际执行和数据流判断，不能只看引用
 - [同一对象换状态](feedback-same-object-states.md) — 连续阶段保持对象与视图身份，避免靠转场掩盖替换
 - [先确认是哪个控件](feedback-confirm-ui-target.md) — 「侧边栏」可能指右侧停靠栏；同名按钮有多处时先确认位置
-- [文档只写现状](feedback-docs-current-state.md) — 改文档直接陈述当前状态，不追加更新说明
 - [美化不是整理](feedback-ui-beautify.md) — 美化先出视觉方案，可以改布局，不顺带抽公共组件或向其他表单看齐
-- [不留界面打磨流水](feedback-docs-principles-only.md) — 长期文档与 memory 不另存已落地的界面细节和试改过程
 
 ## 待办与未决事项
 
-- [待办：代理与角色上线](todo-agent-roles.md) — 三期代码已完成，账号服务已上线，剩各工作机升级与界面验收
+- [待办：代理与角色验收](todo-agent-roles.md) — 工作机能力与真机界面待核验，新代理开场白待决定
 - [待决策：会话观察账本](context-observation-ledger.md) — 记录模型观察与压缩后上下文的账本设想，尚未确定完整设计
 - [待办：插件跨端验收](todo-plugin-device-validation.md) — 插件跨端验收的未解决事项、来源与完成条件
 - [待办：共享工作区协作](todo-workspace-collaboration.md) — 共享工作区协作的未解决事项、来源与完成条件
@@ -65,7 +62,7 @@
 - [待办：开发工作流待补齐项](todo-development-workflow.md) — 开发工作流待补齐项的未解决事项、来源与完成条件
 - [待办：产品中的个人偏好存放位置](todo-personal-preferences.md) — 产品中的个人偏好存放位置的未解决事项、来源与完成条件
 - [待办：工作区公共上下文变量](todo-workspace-context.md) — 工作区公共上下文变量的未解决事项、来源与完成条件
-- [待决定：上下文正文预览与恢复默认](todo-context-editor-preview.md) — 代理上下文编辑器二期，都要改 kited，等用户表态
+- [待决定：上下文正文预览与恢复默认](todo-context-editor-preview.md) — 两项编辑能力尚未确认实施，需同时补齐工作机接口与 App
 
 ## 资料入口
 

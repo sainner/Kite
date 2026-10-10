@@ -63,14 +63,13 @@ async function history(kited: Kited, threadId: string): Promise<History> {
  * 流式输入下 CLI 每个回合都报一次 system/init（2.1.280 实测），不能用 init 的次数判断是否换了进程，改看进程号。
  * MCP 处理器抛错要转成 tool_result.is_error，经原生会话记录投影成失败结果；错误后仍可恢复读取。
  */
-test('Claude 进程跨回合常驻复用，换模型后在 resume 的新进程上接续历史；始终只开放 Kite 工具，按行读取经 MCP 返回并投影为 read 历史，项目工具不回流；read 拒绝目录越界和符号链接逃逸，错误不泄露正文且之后仍可读取；fable 写入的批量提醒附件不妨碍切到自研后端', async () => {
+test('Claude 常驻进程在 MCP 读取错误后继续工作，换模型后 resume 保留历史与 Kite 工具边界，fable 附件不妨碍切换后端', async () => {
   k = startKited();
   const kk = k;
   const mcpStarted = join(kk.root, 'mcp-started');
   const skill = token('project-skill');
   const repo = newRepo(kk.root, 'proj', {
     'a.txt': '首行未选中\n第二行读取成功\n第三行续接成功\n第四行重启后读取成功\n',
-    'allowed.txt': '失败后仍能读取\n',
     '.claude/settings.local.json': JSON.stringify({ enableAllProjectMcpServers: true }),
     [`.claude/skills/${skill}/SKILL.md`]: `---\nname: ${skill}\ndescription: 项目测试技能\n---\n这是一条项目技能指令。\n`,
     '.mcp.json': JSON.stringify({ mcpServers: {
@@ -96,25 +95,37 @@ test('Claude 进程跨回合常驻复用，换模型后在 resume 的新进程�
 
   const a = token('首回合');
   const firstArgs = { path: 'a.txt', offset: 2, limit: 1 };
+  const refusedArgs = [{ path: join(outside, 'secret.txt') }, { path: 'escape/secret.txt' }];
   const secondArgs = { path: 'a.txt', offset: 3, limit: 1 };
   const thirdArgs = { path: 'a.txt', offset: 4, limit: 1 };
-  const s = await createWorkspace(kk, p.checkout.id, `第一条 ${a}\nREAD ${JSON.stringify(firstArgs)}`);
+  const s = await createWorkspace(kk, p.checkout.id, `第一条 ${a}\nREAD ${JSON.stringify([firstArgs, ...refusedArgs])}`);
   const req1 = await api.waitRequest((l) => l.main && l.lastUserText.includes(a));
   clean(req1);
-  expect(req1.toolUseIds).toHaveLength(1);
+  expect(req1.toolUseIds).toHaveLength(3);
   const firstId = req1.toolUseIds[0]!;
   const firstResult = await readResult(firstId);
   expect(firstResult.is_error).toBeFalsy();
   onlyLine(firstResult, 2, '第二行读取成功');
+  // 文件边界的各类路径由小测试覆盖；这里保留错误跨 MCP 和原生历史投影的证据。
+  const refusedIds = req1.toolUseIds.slice(1);
+  for (const id of refusedIds) {
+    const result = await readResult(id);
+    expect(result.is_error).toBe(true);
+    expect(resultText(result)).not.toBe('');
+    expect(resultText(result)).not.toContain(externalSecret);
+  }
   await waitIdle(kk, s.id);
-  expect((await history(kk, s.id)).records).toEqual(expect.arrayContaining([
+  const firstHistory = await history(kk, s.id);
+  expect(firstHistory.records).toEqual(expect.arrayContaining([
     expect.objectContaining({ block: expect.objectContaining({ type: 'tool_use', id: firstId, name: 'read', input: firstArgs }) }),
     expect.objectContaining({ block: expect.objectContaining({ type: 'tool_result', call: firstId, status: 'success', output: resultText(firstResult) }) }),
+    ...refusedIds.map((call) => expect.objectContaining({ block: expect.objectContaining({ type: 'tool_result', call, status: 'error' }) })),
   ]));
+  expect(JSON.stringify(firstHistory)).not.toContain(externalSecret);
   const resident = sessionProcesses(s.nativeId);
   expect(resident).toHaveLength(1);
 
-  // 第二回合：同一进程接着跑，历史与工具结果在常驻进程里保持。
+  // 第二回合：读取失败后同一进程仍可正常读取，历史与工具结果在常驻进程里保持。
   const m = mark(kk);
   const b = token('常驻续接');
   await sendThreadMessage(kk, s.id, `第二条 ${b}\nREAD ${JSON.stringify(secondArgs)}`);
@@ -170,6 +181,7 @@ test('Claude 进程跨回合常驻复用，换模型后在 resume 的新进程�
   expect(resumed.state.context?.windowTokens).toBeUndefined();
   expect(resumed.records.filter((record) => record.block.type === 'tool_use').map((record) => record.block)).toEqual([
     expect.objectContaining({ type: 'tool_use', id: firstId, name: 'read', input: firstArgs }),
+    ...refusedIds.map((id, index) => expect.objectContaining({ type: 'tool_use', id, name: 'read', input: refusedArgs[index] })),
     expect.objectContaining({ type: 'tool_use', id: secondId, name: 'read', input: secondArgs }),
     expect.objectContaining({ type: 'tool_use', id: thirdId, name: 'read', input: thirdArgs }),
   ]);
@@ -183,39 +195,6 @@ test('Claude 进程跨回合常驻复用，换模型后在 resume 的新进程�
     expect(init.mcp_servers).toEqual([expect.objectContaining({ name: 'kite', status: 'connected' })]);
   }
   expect(existsSync(mcpStarted)).toBe(false);
-
-  // 读取边界：目录外的绝对路径和经符号链接逃逸的路径都报错，不泄露正文；之后同一进程仍可正常读取。
-  const threadId = s.id;
-  const refused = mark(kk);
-  const marker = token('拒绝读取');
-  const args = [
-    { path: join(outside, 'secret.txt') },
-    { path: 'escape/secret.txt' },
-  ];
-  await sendThreadMessage(kk, threadId, `${marker}\nREAD ${JSON.stringify(args)}`);
-  const request = await api.waitRequest((entry) => entry.main && entry.lastUserText.includes(marker));
-  expect(request.toolUseIds).toHaveLength(2);
-  for (const id of request.toolUseIds) {
-    const result = await readResult(id);
-    expect(result.is_error).toBe(true);
-    expect(resultText(result)).not.toBe('');
-    expect(resultText(result)).not.toContain(externalSecret);
-  }
-  await waitIdle(kk, threadId, refused);
-  const failed = await history(kk, threadId);
-  expect(failed.records.filter((record) => record.block.type === 'tool_result').map((record) => record.block)).toEqual(
-    expect.arrayContaining(request.toolUseIds.map((call) => expect.objectContaining({ type: 'tool_result', call, status: 'error' }))),
-  );
-  expect(JSON.stringify(failed)).not.toContain(externalSecret);
-
-  const since = mark(kk);
-  const recovered = token('读取恢复');
-  await sendThreadMessage(kk, threadId, `${recovered}\nREAD {"path":"allowed.txt"}`);
-  const next = await api.waitRequest((entry) => entry.main && entry.lastUserText.includes(recovered));
-  const result = await readResult(next.toolUseIds[0]!);
-  expect(result.is_error).toBeFalsy();
-  expect(resultText(result)).toContain('失败后仍能读取');
-  await waitIdle(kk, threadId, since);
 
   // 真实出过的 bug：fable 调用工具后，CLI 2.1.280 在会话记录里写入 batching_reminder_sent 附件（不发给模型），
   // Claude 内容翻译不认识它，切换后端和压缩都返回 409。

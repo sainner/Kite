@@ -163,7 +163,7 @@ struct ContextBlocksEditor: View {
             guard let index = blocks.firstIndex(where: { $0.id == id }) else { return nil }
             return .init(title: blocks[index].title, paragraph: blocks[index].type == "paragraph", empty: blocks[index].isEmpty,
                          first: index == 0, last: index == blocks.count - 1)
-        }, perform: { action in
+        }, perform: { [weak editor] action in
             guard let index = list.wrappedValue.firstIndex(where: { $0.id == id }) else { return }
             switch action {
             case .move(let offset):
@@ -173,7 +173,7 @@ struct ContextBlocksEditor: View {
                 list.wrappedValue.insert(block, at: index + 1)
             case .delete:
                 list.wrappedValue.remove(at: index)
-                if editor.current?.id == id { editor.current = nil }
+                if editor?.current?.id == id { editor?.current = nil }
             }
         })
     }
@@ -566,9 +566,13 @@ private struct ContextConditionEditor: View {
 
     private func binding(_ id: String) -> Binding<ContextBranch>? {
         guard let original = branches.first(where: { $0.id == id }) else { return nil }
-        return Binding(get: { branches.first { $0.id == id } ?? original }, set: { value in
-            if let index = block.cases?.firstIndex(where: { $0.id == id }) { block.cases?[index] = value }
-            else if block.otherwise?.id == id { block.otherwise = value }
+        let source = $block
+        return Binding(get: {
+            let block = source.wrappedValue
+            return ((block.cases ?? []) + [block.otherwise].compactMap { $0 }).first { $0.id == id } ?? original
+        }, set: { value in
+            if let index = source.wrappedValue.cases?.firstIndex(where: { $0.id == id }) { source.wrappedValue.cases?[index] = value }
+            else if source.wrappedValue.otherwise?.id == id { source.wrappedValue.otherwise = value }
         })
     }
 }

@@ -80,8 +80,8 @@ struct RoleContextPane: View {
                     if role != nil {
                         ContextVariablePreview(variables: catalog?.variables ?? [])
                         ContextSection("系统规则") {
-                            ContextBlocksEditor(blocks: Binding(get: { model.libraryRole(id)?.context.blocks ?? [] },
-                                                                set: { blocks in model.editRole(id) { $0.role.context.blocks = blocks } }),
+                            ContextBlocksEditor(blocks: Binding(get: { [model, id] in model.libraryRole(id)?.context.blocks ?? [] },
+                                                                set: { [model, id] blocks in model.editRole(id) { $0.role.context.blocks = blocks } }),
                                                 variables: catalog?.variables ?? [])
                         }
                         .disabled(saving)

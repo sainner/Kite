@@ -105,7 +105,7 @@ bun run harness --resume <会话id>
 
 ### 角色点阵签名
 
-每个角色有一枚点阵签名，App 在新代理的空白内容区按它铺满动画。签名是 `{expression, avatar, positive, negative, form}`：`expression` 是一行算式，客户端每帧对每格求值，结果截到 −1～1，绝对值为点的大小、正负选 `positive` 或 `negative` 颜色（参考色板字母 `B M L Y D`），`form` 为点的终态形状。`avatar` 是同一意象给代理头像用的另一条算式，画在 9×9 格的圆形小画布上（x、y 为 −4～4），没有指针、打字与声音输入，颜色和形状与签名相同。算式只解析求值、不执行代码，语法以 `kited/src/emblem-expression.ts` 为准，App 的 `DotExpression.swift` 与之保持一致。变量 `v` 是声音的响度（0～1，语音输入或系统播放的声音），音源接入前恒为 0。
+每个角色可保存一枚可编辑的点阵签名。签名是 `{expression, avatar, positive, negative, form}`：`expression` 是一行算式，客户端每帧对每格求值，结果截到 −1～1，绝对值为点的大小、正负选 `positive` 或 `negative` 颜色（参考色板字母 `B M L Y D`），`form` 为点的终态形状。`avatar` 是同一意象给代理头像用的另一条算式，画在 9×9 格的圆形小画布上（x、y 为 −4～4），没有指针、打字与声音输入，颜色和形状与签名相同。算式只解析求值、不执行代码，语法以 `kited/src/emblem-expression.ts` 为准，App 的 `DotExpression.swift` 与之保持一致。变量 `v` 是声音的响度（0～1，语音输入或系统播放的声音），音源接入前恒为 0。
 
 角色保存后用轻任务按角色名称与提示词生成，生成规则是可编辑的「点阵签名」模板。签名只随提示词过期，只改工具、模型或预算不会重新生成；生成的签名缺少头像算式时也视为过期。回复不可用时附上原因重试一次，仍失败记为 `failed`，客户端沿用默认图案。手改的签名不被自动生成替换，只有 `force` 重新生成会覆盖；生成期间发生的手改也不会被在途结果覆盖。角色列表中每项带 `emblem`、`emblemState`（`ready`、`stale`、`missing`、`generating`、`failed`）与失败时的 `emblemError`；`stale` 表示提示词已变或缺少头像算式、签名尚未更新。角色或签名状态变化时，目录事件流推送 `roles.changed`，客户端据此重新读取角色列表；后台场景模板变化推送 `context-templates.changed`。
 
@@ -177,7 +177,7 @@ Kite 托管账号与组网。Mac 和 iPhone 在 App 中使用账号密码登录�
 
 Claude 负责模型循环与原生对话恢复；Kite 负责工具、项目上下文、授权、工作区与快照。Claude 从空工具集接入，只开放实例配置与授权允许的 Kite 工具，以及显式授权的插件工具，不自动加载用户或项目中的 MCP、skills 和设置。
 
-内置 Claude 定义提供 `read`、`patch`、`shell` 与五个 agent 操作，默认仅能管理自己创建的 agent。基础工具共用 [工具契约](harness-主循环.md#工具执行约定)，协作与授权共用 [实例操作](实例操作.md)，显示名称使用 Kite 短名称。工具执行完成并保存快照后才能继续模型请求。
+Claude 使用统一代理插件，工具由角色、实例选择、项目约束及授权共同决定，不再有独立的 Claude 定义。基础工具共用 [工具契约](harness-主循环.md#工具执行约定)，协作与授权共用 [实例操作](实例操作.md)，显示名称使用 Kite 短名称。工具执行完成并保存快照后才能继续模型请求。
 
 模型、工具、基础上下文与请求预算绑定到实例；`KITE_CLAUDE_MODEL` 可覆盖创建时的模型。配置和执行授权须在空闲且无恢复阻塞时修改；可选型号与思考档位通过能力接口获取。项目规则与记忆索引仅由 Kite 的模板提供，Claude 不自行扫描。具体生效时机见 [线程通知投递](线程通知投递.md#claude-的交接边界)。
 
@@ -232,7 +232,7 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 
 - `quotas` 中的 `label` 是周期名称，`remainingPercent` 是周期剩余百分比，`windowMinutes` 是窗口长度，`resetsAt` 是 Unix 秒。窗口缺失表示未知，不能当成零或无限；只限某个模型或功能的额度分开返回，并以 `model` 标明范围，缺省表示整个账号共用。
 - 订阅的 `plan` 是小写档位名。Claude 取 profile 接口中组织的当前订阅（如 `max 20x`），登录凭据缓存的 `subscriptionType` 升级后不更新，只在 profile 不可用时使用。
-- `usage` 是该账号在这台工作机上的 token 用量，不读供应商的用量统计：`days` 为最近 53 周里有用量的日期（`date` 为 `YYYY-MM-DD`，升序）、当天 `tokens` 与 `hours`（本地时间 0–23 时每小时的 token）、按价格表折算的 `cost` 与 `costHours`（美元）、`unpriced`（价格表里没有对应模型、未计入金额的 token），`lifetimeTokens` 与 `lifetimeCost` 为 kited 保存的全部日子之和。价格表在 `kited/src/token-prices.ts`，取 Claude 与 OpenAI 官方 API 价格页的标准档，按每次请求的模型与输入、缓存读写、输出分别计价；订阅本身不按 token 计费，金额只是同样用量走 API 的折算。kited 在每次查询时扫描本机会话记录、按小时存入数据库，同一小时取 token 较多的那次扫描，token 相同时取这次的金额（价格表更新后仍在本地的记录按新价格重算），本地记录被清理后历史仍保留：Claude 扫 Claude Code 会话记录（含 Kite 的 Claude 会话），汇总输入、输出与缓存 token；ChatGPT 扫 Kite 自研 harness 的线程日志与 Codex CLI 会话记录。API 账号在本机没有会话记录，不返回 `usage`。
+- `usage` 是该账号在这台工作机上的 token 用量，不读供应商的用量统计：`days` 为最近 53 周里有用量的日期（`date` 为 `YYYY-MM-DD`，升序）、当天 `tokens` 与 `hours`（本地时间 0–23 时每小时的 token）、按价格表折算的 `cost` 与 `costHours`（美元）、`unpriced`（价格表里没有对应模型、未计入金额的 token），`lifetimeTokens` 与 `lifetimeCost` 为 kited 保存的全部日子之和。价格表在 `kited/src/token-prices.ts`，取 Claude 与 OpenAI 官方 API 价格页的标准档，按每次请求的模型与输入、缓存读写、输出分别计价；订阅本身不按 token 计费，金额只是同样用量走 API 的折算。统计来源为本机 Claude Code 会话（含 Kite 的 Claude 会话）、Kite 自研 harness 与 Codex CLI 会话；本地原始记录清理后已保存的历史仍保留。价格表变化时，仍有原始记录的用量可以重新折算。API 账号在本机没有会话记录，不返回 `usage`。
 - ChatGPT 的 `credits` 使用供应商的额度单位；`unlimited` 仅在上游明确返回时成立，未返回金额时省略 `value`。
 - Claude 的 `extraUsage` 是额外用量（超出套餐额度后按金额计费）：`enabled` 表示是否开启，`used`、`limit`、`balance` 是按币种小数位换算后的金额，`currency` 为币种；上游没给的项省略。
 - API 的 `cost` 是 UTC 当月到查询时刻的**组织费用**（`value`、`currency`、`from`、`to`），取完所有分页才返回；不是余额，也不是单个 API Key 的费用。普通调用 Key 没有组织费用权限时明确提示，不能推算余额。来源见 [OpenAI Costs](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs) 与 [Anthropic Usage and Cost](https://platform.claude.com/docs/en/manage-claude/usage-cost-api)。
@@ -325,11 +325,11 @@ kited 在启动、加入账号后和每 5 分钟对照一次项目登记表。�
 
 升级 SDK 或 Claude Code 之后，用真实订阅手动跑一遍。kited 要在干净的环境变量里启动，不继承当前 Claude Code 会话的 `CLAUDE_*` 变量；终端版 Claude Code 要先登录。
 
-1. 在 App 新建 Claude 实例，让它读取、修改文件并通过 shell 执行项目检查：工具行实时更新，出现工作区快照，patch 的历史引用在恢复后仍可打开。正常回复后进程关闭，实际模型请求只有实例配置和授权开放的 Kite 工具。
+1. 在 App 新建使用 Claude 模型的代理，让它读取、修改文件并通过 shell 执行项目检查：工具行实时更新，出现工作区快照，patch 的历史引用在恢复后仍可打开。普通回合正常结束后进程保留，实际模型请求只有角色、实例配置、项目约束和授权开放的 Kite 工具。
 2. 检查发给模型的实际请求，不能只看 SDK 消息流：首轮、工具调用后与原生恢复只能带入 Kite 模板明确提供的上下文，不自动附加 Claude 的日期、环境、模型说明、技能、项目指令或自动记忆。单独验证高用量时的提醒，区分客户端与服务端注入。人发的消息仍带 `origin: human`，宿主工具和回调可用。
-3. 再发一条消息：进程重新 resume，记下从发消息到进程就绪、到首条回复各用多久。
-4. 归档：工作树被回收，线程历史仍可查看。
-5. 核对新建和恢复后的工具集合；默认是 read / patch / shell 和五个 agent 操作工具，项目 `.mcp.json` 不自动增加能力。撤回操作或插件授权后执行被拒绝，新增插件授权在下一回合开始前重启进程后生效。验证排队取消、停止退回、模型及上下文更新，以及异常退出后的确认恢复。
+3. 配置不变且未触发压缩时再发消息，确认复用常驻进程；手动停止后发送新消息，确认从原生会话恢复且不重复输入。分别测量两条路径到首条回复的延迟。
+4. 分别验证归档：归档实例保留工作区与历史；归档独立工作区才回收工作树，未采纳改动须显式确认。
+5. 按所选角色和当前授权核对新建、恢复后的工具集合，包括 `credentials`；项目 `.mcp.json` 不自动增加能力。撤回操作或插件授权后执行被拒绝，新增插件授权在下一回合开始前重启进程后生效。验证排队取消、停止退回、模型及上下文更新，以及异常退出后的确认恢复。
 6. 可选模型与最大上下文能力（`maxContextWindow`）维护在[共享模型目录](../shared/agent-models.json)，升级时核对模型资料与上游能力目录。最大能力不等于运行窗口：Claude 每回合用 `getContextUsage({ detail: 'summary' })` 获取当前窗口（不发模型请求）；harness 由宿主明确选择运行窗口并保存到请求配置。显示与压缩的契约见[上下文压缩](harness-主循环.md#上下文压缩)和[会话显示协议](会话显示协议.md#当前边界)。
 
 ## 当前能力边界

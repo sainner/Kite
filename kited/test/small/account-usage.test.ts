@@ -82,7 +82,8 @@ const claudeLogin = async () => ({ accessToken: 'sk-ant-oat01-test', subscriptio
 
 // Claude Code 约 30 天后清理会话记录；kited 的 sqlite 要留住已清理日子的用量与金额，同时让仍在增长的当天取新值。
 // 扫描、Store 合并与 readModelAccounts 输出三处配合，单看任一处都确认不了。
-test('Claude Code 清理旧会话记录后，kited 保存的那天用量与金额仍在，新一天的增长照常累加', async () => {
+// 同小时合并还依赖 SQLite UPSERT：tokens 不减少，金额与未计价数只随被采纳的扫描结果整组更新。
+test('Claude Code 清理旧会话记录后历史用量仍在，同小时只采纳 token 不少于旧值的完整扫描结果', async () => {
   const home = temp('kite-claude-usage-store-');
   const claude = join(home, 'claude');
   const store = new Store(join(home, 'kite.sqlite'));
@@ -111,6 +112,19 @@ test('Claude Code 清理旧会话记录后，kited 保存的那天用量与金�
       olderDay,
       { date: localDate(newer), tokens: 85, hours: hours({ 12: 85 }), cost: 553, costHours: hours({ 12: 553 }), unpriced: 0 },
     ] });
+
+    const merge = (tokens: number, cost: number, unpriced: number) => store.mergeUsageHours('claude', new Map([
+      [localDate(newer), { tokens: hours({ 12: tokens }), cost: hours({ 12: cost }), unpriced: hours({ 12: unpriced }) }],
+    ]));
+    const repriced = { date: localDate(newer), tokens: 85, hours: hours({ 12: 85 }),
+      cost: 0.0007, costHours: hours({ 12: 0.0007 }), unpriced: 7 };
+    merge(85, 0.0007, 7);
+    expect(store.usageDays('claude')[1]).toEqual(repriced);
+    merge(80, 0.0008, 8);
+    expect(store.usageDays('claude')[1]).toEqual(repriced);
+    merge(90, 0.0006, 6);
+    expect(store.usageDays('claude')[1]).toEqual({ date: localDate(newer), tokens: 90, hours: hours({ 12: 90 }),
+      cost: 0.0006, costHours: hours({ 12: 0.0006 }), unpriced: 6 });
   } finally { store.close(); }
 }, 1000);
 

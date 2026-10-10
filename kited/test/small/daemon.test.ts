@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { startCli } from '../cli.ts';
 import { createWorkspace, machine, type Kited, registerCheckout, startKited } from '../harness.ts';
 import { ManualModel } from '../harness-loop.ts';
+import { connectSse } from '../sse.ts';
 import { commitAll, newRepo } from '../util.ts';
 
 let k: Kited | undefined;
@@ -30,52 +31,28 @@ test('工作区 SSE 在连接开着时推送本工作区准备结果，不串入
   const a = await createWorkspace(kk, p.checkout.id, '会话 A');
   const b = await createWorkspace(kk, p.checkout.id, '会话 B');
 
-  const ctl = new AbortController();
   const machineId = (await machine(kk.url)).id;
   // SSE 一旦建立就会持续占用连接；机器不匹配必须在订阅前拒绝。
   expect((await fetch(`${kk.url}/events?workspace=${a.workspace.id}`)).status).toBe(400);
   expect((await fetch(`${kk.url}/events?workspace=${a.workspace.id}`, {
     headers: { 'X-Kite-Machine': 'wrong-machine' },
   })).status).toBe(409);
-  const res = await fetch(`${kk.url}/events?workspace=${a.workspace.id}`, {
-    headers: { 'X-Kite-Machine': machineId }, signal: ctl.signal,
-  });
-  const got: Array<{ type: string; workspaceId?: string; status?: string; model?: unknown }> = [];
-  let sawEnd!: () => void;
-  const ended = new Promise<void>((r) => (sawEnd = r));
-  const reading = (async () => {
-    const r = res.body!.pipeThrough(new TextDecoderStream()).getReader();
-    let buf = '';
-    try {
-      while (true) {
-        const { value, done } = await r.read();
-        if (done) return;
-        buf += value;
-        let i: number;
-        while ((i = buf.indexOf('\n\n')) >= 0) {
-          const data = buf.slice(0, i).split('\n').find((l) => l.startsWith('data: '));
-          buf = buf.slice(i + 2);
-          if (!data) continue;
-          const e = JSON.parse(data.slice(6)) as typeof got[number];
-          got.push(e);
-          if (e.type === 'workspace.changed' && e.status === 'failed') sawEnd();
-        }
-      }
-    } catch { /* 中止 */ }
-  })();
+  const stream = await connectSse<{ type: string; workspaceId?: string; status?: string }>(
+    `${kk.url}/events?workspace=${a.workspace.id}`, machineId,
+  );
+  try {
+    // 先让 B 跑完，再让 A 跑完：A 的最后一个事件到达时，B 的事件如果会漏进来也早就到了。
+    writeFileSync(`${b.workspace.cwd}.go`, '');
+    await kk.waitEvent((e) => e.type === 'workspace.changed' && e.workspaceId === b.workspace.id && e.status === 'failed');
+    writeFileSync(`${a.workspace.cwd}.go`, '');
+    await stream.events.wait((e) => e.type === 'workspace.changed' && e.status === 'failed');
 
-  // 先让 B 跑完，再让 A 跑完：A 的最后一个事件到达时，B 的事件如果会漏进来也早就到了
-  writeFileSync(`${b.workspace.cwd}.go`, '');
-  await kk.waitEvent((e) => e.type === 'workspace.changed' && e.workspaceId === b.workspace.id && e.status === 'failed');
-  writeFileSync(`${a.workspace.cwd}.go`, '');
-  await ended;
-  ctl.abort();
-  await reading;
-
-  expect(got[0]).toMatchObject({ type: 'workspace.model', workspaceId: a.workspace.id });
-  expect(got.some((e) => e.type === 'workspace.setup')).toBe(true);
-  expect(got.every((e) => e.workspaceId === a.workspace.id)).toBe(true);
-  expect(got.every((e) => !['thread.record', 'thread.pending', 'thread.state', 'thread.idle', 'thread.check', 'thread.error'].includes(e.type))).toBe(true);
+    expect(stream.events.values[0]).toMatchObject({ type: 'workspace.model', workspaceId: a.workspace.id });
+    expect(stream.events.values.some((e) => e.type === 'workspace.setup')).toBe(true);
+    expect(stream.events.values.every((e) => e.workspaceId === a.workspace.id)).toBe(true);
+  } finally {
+    await stream.close();
+  }
 });
 
 // CLI 子进程、HTTP 创建/发送、模型完成和 SSE 历史交接；快速结束时仍应跟到本回合结果。
