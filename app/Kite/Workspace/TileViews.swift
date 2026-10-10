@@ -630,17 +630,3 @@ struct WindowErrorAlert: ViewModifier {
             } message: { Text(area.windowError ?? "") }
     }
 }
-
-/// 最小化窗口：agent 用圆形，其余窗口用圆角矩形。
-struct PaneBubble: View {
-    let appearance: WindowAppearance
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: appearance.minimizedCornerRadius())
-            .fill(appearance.tint)
-            .overlay {
-                Image(systemName: appearance.icon).font(Theme.title).foregroundStyle(Theme.ink)
-            }
-            .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
-    }
-}

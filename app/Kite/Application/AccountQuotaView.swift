@@ -182,6 +182,8 @@ private struct ModelAccountRow: View {
             }
             .scrollIndicators(.hidden)
             .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+            // 各项靠左与上下的内容对齐，左边保持硬边，前后还有没有由右边的一对箭头提醒。
+            .hintsScrollOverflow(.horizontal, carets: .atEnd)
             // 横向滚动区在竖直方向也会占满给它的高度，限定为内容高度，剩下的空间留给柱状图。
             .fixedSize(horizontal: false, vertical: true)
         }

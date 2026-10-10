@@ -62,6 +62,8 @@ struct SectionPage<Content: View, Actions: View>: View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .scrollDismissesKeyboard(.interactively)
+            // 单页没有底栏，收起键盘放在键盘上方
+            .keyboardDismissToolbar()
             .safeAreaBar(edge: .top, spacing: 0) {
                 PaneHeaderBar(header: header, status: EmptyView(), actions: actions, openSidebar: openSidebar)
                     .padding(.top, max(Metrics.paneMargin, topInset) - topInset)

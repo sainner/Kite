@@ -332,6 +332,7 @@ struct WorkspaceList<Row: View>: View {
     @Environment(\.workspacePresentation) private var presentation
 
     var body: some View {
+        let _ = DrawerBench.count("WorkspaceList")
         VStack(alignment: .leading, spacing: 4) {
             ForEach(model.workspaceGroups) { group in
                 WorkspaceProjectSection(group: group, onSelect: onSelect, row: row)
@@ -780,6 +781,7 @@ struct SidebarNavigation: View {
     @Environment(\.sidebarMetrics) private var metrics
 
     var body: some View {
+        let _ = DrawerBench.count("SidebarNav")
         VStack(spacing: iconsOnly ? 12 : 4) {
             ForEach(SidebarSection.allCases.filter(\.navigable)) { section in
                 let selected = model.sidebarSection == section
@@ -819,6 +821,7 @@ struct SidebarUserBar: View {
     private var user: AccountUser? { model.account.user }
 
     var body: some View {
+        let _ = DrawerBench.count("UserBar")
         let quotas = model.subscriptionQuotas
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
@@ -1435,6 +1438,7 @@ struct SidebarLogoBar<Buttons: View>: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: Metrics.paneHeaderButton)
                 .focused($searchFocused)
+                .keyboardDismissToolbar()
                 #if os(macOS)
                 .onExitCommand(perform: closeSearch)
                 #endif

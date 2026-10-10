@@ -102,7 +102,6 @@ struct RoleEditor: View {
                         enabled: !working && available && draft.isSavable,
                         phase: $phase, action: save)
         }
-        .keyboardDoneButton { focus = nil }
         .interactiveDismissDisabled(working || changed)
         .discardAlert("放弃未保存的角色修改？", isPresented: $discard) { dismiss() }
     }

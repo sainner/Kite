@@ -481,10 +481,18 @@ struct AddWindowButton: View {
     }
 }
 
-/// 紧凑布局底栏里的当前窗口：垫在格子下面的选中底。
+/// 紧凑布局底栏里的当前窗口：垫在格子下面的选中底，向外扩出一圈，与格子同心。
 struct DockSelection: View {
+    /// 格子的圆角：工具图标是圆角矩形；nil 是代理头像和家族格，用圆和胶囊。
+    var cornerRadius: CGFloat?
+
     var body: some View {
-        Capsule().fill(Theme.selection).padding(-Metrics.gap / 3)
+        let outset = Metrics.gap / 3
+        Group {
+            if let cornerRadius { RoundedRectangle(cornerRadius: cornerRadius + outset, style: .continuous).fill(Theme.selection) }
+            else { Capsule().fill(Theme.selection) }
+        }
+        .padding(-outset)
     }
 }
 
@@ -497,6 +505,7 @@ struct CompactDockBar: View {
     @State private var width: CGFloat = 0
 
     var body: some View {
+        let _ = DrawerBench.count("DockBar")
         let layout = area.layout
         let dock = area.dockModel(docked: layout.panes, onStage: [])
         let dimmed = !area.dockExpansion.isEmpty
@@ -588,7 +597,7 @@ struct CompactDockBar: View {
         } label: {
             DockEntryFace(subject: .pane(pane))
                 .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
-                .background { if current { DockSelection() } }
+                .background { if current { DockSelection(cornerRadius: area.isAgentPane(pane) ? nil : Metrics.dockRadius) } }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(area.dockLabel(.pane(pane)))

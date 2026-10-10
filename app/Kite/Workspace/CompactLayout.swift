@@ -29,6 +29,7 @@ struct CompactLayout: View {
     @State private var formMargin: CGFloat?
 
     var body: some View {
+        let _ = DrawerBench.count("Layout")
         GeometryReader { geo in
             // SwiftUI 的安全区把状态栏、Home 条和键盘合在一起（分区只能用来忽略，读不出各占多少）
             let safe = geo.safeAreaInsets
@@ -136,7 +137,7 @@ struct CompactLayout: View {
         .environment(\.dotBackgroundPlacement, showing(.sidebar) ? .app : .windows)
     }
 
-    /// 窗口都排在底部，当前窗口垫一块选中底；点别的窗口换过去，点当前窗口收起底栏。
+    /// 窗口都排在底部，当前窗口垫一块选中底、图标换成向上的箭头；点别的窗口换过去，点当前窗口收起底栏。
     @ViewBuilder
     private var tabBar: some View {
         if let group = model.paneGroup {
@@ -150,21 +151,23 @@ struct CompactLayout: View {
         }
     }
 
-    /// 设备账号的固定窗口：只有窗口，没有实例与停靠分组。
+    /// 设备账号与代理上下文的固定窗口：只有窗口，没有实例与停靠分组；图标和当前窗口的样子与工作区底栏的工具一样。
     private func tabs(in group: PaneGroup) -> some View {
         let workspace = group.layout
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Metrics.gap) {
                 ForEach(workspace.panes, id: \.self) { pane in
+                    let appearance = group.appearance(of: pane), current = pane == workspace.focused
                     Button {
                         workspace.focus(pane)
                         open = nil
                     } label: {
-                        PaneBubble(appearance: group.appearance(of: pane))
-                            .background { if pane == workspace.focused { DockSelection() } }
+                        DockFace(look: .tool(appearance), arrow: current ? "arrow.up" : nil)
+                            .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
+                            .background { if current { DockSelection(cornerRadius: Metrics.dockRadius) } }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("展开\(group.appearance(of: pane).name)窗口")
+                    .accessibilityLabel("展开\(appearance.name)窗口")
                 }
             }
         }

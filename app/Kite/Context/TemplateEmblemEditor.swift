@@ -20,8 +20,9 @@ struct TemplateEmblemField: View {
     }
 }
 
-/// 资源库角色的签名窗口：签名铺满整个窗口，连同标题栏后面，同新代理的空白页；指针划过时跟着起反应。
-/// 头像在卡片上方点阵的正中，底部一行签名各项。生成进度写在副标题，失败在信息区；「重新生成」交给模型按提示词重画，连手改过的一起替换。
+/// 资源库角色的签名窗口：签名铺满整个窗口，连同标题栏和控制区后面，同新代理的空白页；指针划过时跟着起反应。
+/// 头像在控制区上方点阵的正中，签名各项在控制区里，算式输入框的位置同空白页的输入区。
+/// 生成进度写在副标题，失败在信息区；「重新生成」交给模型按提示词重画，连手改过的一起替换。
 struct RoleEmblemPane: View {
     let id: String
     @Environment(AppModel.self) private var model
@@ -53,10 +54,12 @@ struct RoleEmblemPane: View {
     var body: some View {
         PaneWindow(header: PaneHeader(title: "签名", subtitle: status), usesDots: true,
                    notice: saved?.emblemState == "failed" ? .failure("签名生成失败：\(saved?.emblemError ?? "未知原因")") : nil) {
-            EmblemStage(design: Binding(get: { design }, set: { value in model.editRole(id) { $0.emblem = value } }),
-                        check: check, slot: slot, saving: saving)
-        } controls: { _ in
-            EmptyView()
+            EmblemStage(check: check, slot: slot)
+        } controls: { typing in
+            EmblemControls(design: Binding(get: { design }, set: { value in model.editRole(id) { $0.emblem = value } }),
+                           check: check, typing: typing)
+                .disabled(saving)
+                .frame(maxWidth: Metrics.transcriptWidth)
         } headerActions: {
             if let saved {
                 PaneHeaderButtonGroup {
@@ -87,20 +90,16 @@ struct RoleEmblemPane: View {
     }
 }
 
-/// 签名窗口的正文，不滚动：卡片定高压在底部，上面留给图案，头像居中在这一块里，窗口变高变矮只伸缩这一块。
-/// 图案铺满整个窗口，标题栏一带稍收弱，头像与卡片四周渐弱，不在边上切断大点。iPhone 上手指划过图案时跟着起反应。
+/// 签名窗口的正文，不滚动：头像居中在控制区上面这一块里，窗口变高变矮只伸缩这一块。
+/// 图案铺满整个窗口，标题栏一带稍收弱，头像四周渐弱，不在边上切断大点；控制区是玻璃，后面不收。iPhone 上手指划过图案时跟着起反应。
 private struct EmblemStage: View {
-    @Binding var design: EmblemDesign
     let check: EmblemCheck
     let slot: String
-    let saving: Bool
     @Environment(\.dotStage) private var stage
     @Environment(\.dotCarrier) private var carrier
     @Environment(\.paneWindowFrame) private var window
-    @Environment(\.workspacePresentation) private var presentation
     @State private var content: CGRect?
     @State private var avatarFrame: CGRect?
-    @State private var cardsFrame: CGRect?
 
     /// 标题栏一带留多少，同新代理的空白页。
     private static var headerFloor: Double { 0.45 }
@@ -108,42 +107,27 @@ private struct EmblemStage: View {
     var body: some View {
         ZStack {
             DotPatternArea(pattern: check.pattern, quiet: quiet, area: window, slot: slot)
-            VStack(spacing: 12) {
-                ZStack {
-                    Color.clear
-                    EmblemAvatar(design: check.avatar)
-                        .onGeometryChange(for: CGRect.self) {
-                            $0.frame(in: DotCarrier.coordinateSpace(carrier))
-                        } action: { avatarFrame = $0 }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
-                #if os(iOS)
-                .simultaneousGesture(DragGesture(minimumDistance: 0, coordinateSpace: .global)
-                    .onChanged { stage?.patternPointer($0.location, slot: slot) }
-                    .onEnded { _ in stage?.patternPointer(nil, slot: slot) })
-                #endif
-                EmblemCards(design: $design, check: check)
-                    .disabled(saving)
-                    .onGeometryChange(for: CGRect.self) {
-                        $0.frame(in: DotCarrier.coordinateSpace(carrier))
-                    } action: { cardsFrame = $0 }
-            }
-            .frame(maxWidth: Metrics.transcriptWidth)
-            .padding(Metrics.padding)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            EmblemAvatar(design: check.avatar)
+                .onGeometryChange(for: CGRect.self) {
+                    $0.frame(in: DotCarrier.coordinateSpace(carrier))
+                } action: { avatarFrame = $0 }
         }
-        // 窗口太矮时图案先让出高度，再放不下就截掉上面。
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        #if os(iOS)
+        .simultaneousGesture(DragGesture(minimumDistance: 0, coordinateSpace: .global)
+            .onChanged { stage?.patternPointer($0.location, slot: slot) }
+            .onEnded { _ in stage?.patternPointer(nil, slot: slot) })
+        #endif
+        // 窗口太矮时截掉头像，不压到标题栏和控制区上。
         .frame(minHeight: 0, maxHeight: .infinity).clipped()
-        // 空控制区只在窄屏触控下接手势，其他时候卡片铺到它后面。
-        .ignoresSafeArea(.container, edges: presentation.isCompactTouch ? [] : .bottom)
         .onGeometryChange(for: CGRect.self) {
             $0.frame(in: DotCarrier.coordinateSpace(carrier))
         } action: { content = $0 }
     }
 
     private var quiet: [PatternQuiet] {
-        var result = [avatarFrame, cardsFrame].compactMap { $0.map { PatternQuiet(rect: $0) } }
+        var result = [avatarFrame].compactMap { $0.map { PatternQuiet(rect: $0) } }
         if let window, let content, content.minY > window.minY {
             result.append(PatternQuiet(rect: CGRect(x: window.minX, y: window.minY, width: window.width, height: content.minY - window.minY),
                                        floor: Self.headerFloor))
@@ -210,13 +194,9 @@ private struct EmblemCards: View {
         let colorTitle = { (letter: String) in EmblemDesign.letterTitles[letter] ?? letter }
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
-                label("图案算式", error: check.error) {
-                    Text("\(code("t")) 秒，\(code("x y")) 格坐标，\(code("r a")) 极坐标，\(code("d")) 到指针的距离，\(code("k")) 打字活跃度")
-                }
+                label("图案算式", error: check.error) { EmblemFormulaInfo.pattern }
                 field("图案算式", text: $design.expression, formula: .pattern, lines: 3, invalid: check.error != nil)
-                label("头像算式", error: check.avatarError) {
-                    Text("停靠栏头像：9×9 格的圆，\(code("x y")) 为 −4～4，没有指针与打字，代理工作时才动")
-                }
+                label("头像算式", error: check.avatarError) { EmblemFormulaInfo.avatar }
                 .padding(.top, 6)
                 field("头像算式", text: $design.avatar, formula: .avatar, lines: 2, invalid: check.avatarError != nil)
             }
@@ -237,8 +217,7 @@ private struct EmblemCards: View {
             .emblemCard(inset: Self.inset, height: height)
             EmblemChoiceColumn(label: "形状", options: DotForm.allCases.map(\.rawValue), selection: $design.form,
                                title: { DotForm(rawValue: $0)?.title ?? $0 }, tint: { _ in color(design.positive) }) { form, selected in
-                EmblemFormGlyph(form: DotForm(rawValue: form) ?? .circle)
-                    .foregroundStyle(selected ? AnyShapeStyle(color(design.positive)) : AnyShapeStyle(.secondary))
+                EmblemFormGlyph(form: DotForm(rawValue: form) ?? .circle, color: selected ? color(design.positive) : EmblemFormGlyph.idle)
             }
             .padding(.horizontal, 4)
             .emblemCard(inset: Self.inset, height: height)
@@ -286,10 +265,195 @@ private struct EmblemCards: View {
             .typingTarget()
             .animation(.easeOut(duration: 0.15), value: focused)
     }
+}
+
+/// 两条算式的参数说明，弹窗卡片与窗口控制区共用。
+private enum EmblemFormulaInfo {
+    static var pattern: Text {
+        Text("\(code("t")) 秒，\(code("x y")) 格坐标，\(code("r a")) 极坐标，\(code("d")) 到指针的距离，\(code("k")) 打字活跃度")
+    }
+
+    static var avatar: Text {
+        Text("停靠栏头像：9×9 格的圆，\(code("x y")) 为 −4～4，没有指针与打字，代理工作时才动")
+    }
 
     /// 说明里的参数名：等宽、正文色。
-    private func code(_ name: String) -> Text {
+    private static func code(_ name: String) -> Text {
         Text(name).font(Theme.caption.monospaced().weight(.semibold)).foregroundStyle(.primary)
+    }
+}
+
+/// 签名窗口控制区里的签名各项。上面一行靠右，是颜色与形状：正负两色一组、形状一组，只显示当前的小样；
+/// 点一个，它所在的胶囊横向展开成这一项的全部小样，另一组让出位置，选中后收回。
+/// 下面是算式输入框，同会话的输入区：文字直接写在玻璃上，写长了往上长；左下角是参数说明，右下角两个图标在图案与头像两条算式之间切换，
+/// 出错原因排在说明后面，正在看的这条没错、另一条有错时也提示。输入框接窗口的打字焦点。
+private struct EmblemControls: View {
+    @Binding var design: EmblemDesign
+    let check: EmblemCheck
+    var typing: FocusState<Bool>.Binding
+    @Environment(\.self) private var environment
+    @State private var formula = Formula.pattern
+    @State private var expanded: Pick?
+    @State private var showsInfo = false
+
+    private enum Formula: Hashable { case pattern, avatar }
+    private enum Pick { case positive, negative, form }
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: Metrics.paneButtonGap) {
+            HStack(spacing: Metrics.paneButtonGap) {
+                if expanded != .form {
+                    PaneHeaderButtonGroup {
+                        colorSlot("正值", pick: .positive, selection: $design.positive)
+                        colorSlot("负值", pick: .negative, selection: $design.negative)
+                    }
+                }
+                if expanded == nil || expanded == .form {
+                    PaneHeaderButtonGroup { formSlot }
+                }
+            }
+            formulaPanel
+        }
+    }
+
+    private var palette: [Character: DotColor] { DotFigure.letters(accent: DotColor(Color.accentColor.resolve(in: environment))) }
+    private func color(_ letter: String) -> Color { letter.first.flatMap { palette[$0] }?.color ?? .accentColor }
+    private func colorTitle(_ letter: String) -> String { EmblemDesign.letterTitles[letter] ?? letter }
+
+    /// 一种颜色：收起时是当前的色点，展开后是全部颜色。
+    @ViewBuilder
+    private func colorSlot(_ title: String, pick: Pick, selection: Binding<String>) -> some View {
+        if expanded == pick {
+            choices(EmblemDesign.letters, selection: selection, title: colorTitle, tint: color) { letter, _ in
+                EmblemSwatch(color: color(letter))
+            }
+        } else {
+            trigger(pick, label: "\(title)的颜色", value: colorTitle(selection.wrappedValue)) {
+                EmblemSwatch(color: color(selection.wrappedValue))
+            }
+        }
+    }
+
+    /// 点的形状：收起时是当前形状的小样，展开后是全部形状；选中的用正值的颜色，其余的用次要色。
+    @ViewBuilder
+    private var formSlot: some View {
+        let tint = color(design.positive)
+        if expanded == .form {
+            choices(DotForm.allCases.map(\.rawValue), selection: $design.form, title: { DotForm(rawValue: $0)?.title ?? $0 },
+                    tint: { _ in tint }) { option, selected in
+                EmblemFormGlyph(form: DotForm(rawValue: option) ?? .circle, color: selected ? tint : EmblemFormGlyph.idle)
+            }
+        } else {
+            let form = DotForm(rawValue: design.form) ?? .circle
+            trigger(.form, label: "点的形状", value: form.title) {
+                EmblemFormGlyph(form: form, color: tint)
+            }
+        }
+    }
+
+    /// 收起时的一项：只有小样，尺寸同展开后选中的那一项，展开时原地变成一排。
+    private func trigger(_ pick: Pick, label: String, value: String, @ViewBuilder glyph: () -> some View) -> some View {
+        Button { withAnimation(.snappy) { expanded = pick } } label: {
+            glyph()
+                .frame(width: EmblemChoice<EmptyView>.glyphSize, height: EmblemChoice<EmptyView>.glyphSize)
+                .padding(.horizontal, Metrics.paneHeaderButtonGap / 2)
+                .frame(height: Metrics.paneHeaderButton)
+                .contentShape(.capsule)
+        }
+        .help("\(label)：\(value)")
+        .accessibilityLabel(label)
+        .accessibilityValue(value)
+    }
+
+    /// 展开后的一排：点一个选中并收回，点当前选中的也收回。
+    private func choices(_ options: [String], selection: Binding<String>, title: @escaping (String) -> String,
+                         tint: @escaping (String) -> Color,
+                         @ViewBuilder glyph: @escaping (_ option: String, _ selected: Bool) -> some View) -> some View {
+        ForEach(options, id: \.self) { option in
+            EmblemChoice(title: title(option), selected: option == selection.wrappedValue, tint: tint(option)) {
+                selection.wrappedValue = option
+                withAnimation(.snappy) { expanded = nil }
+            } glyph: {
+                glyph(option, option == selection.wrappedValue)
+            }
+            .frame(height: Metrics.paneHeaderButton)
+        }
+    }
+
+    private var formulaPanel: some View {
+        let shape = RoundedRectangle(cornerRadius: Metrics.controlRadius, style: .continuous)
+        let pattern = formula == .pattern
+        let error = pattern ? check.error : check.avatarError
+        let otherError = pattern ? check.avatarError.map { "头像算式：\($0)" } : check.error.map { "图案算式：\($0)" }
+        let hidden = pattern ? design.avatar : design.expression
+        return VStack(alignment: .leading, spacing: 2) {
+            ZStack(alignment: .topLeading) {
+                // 另一条算式只占高度：输入框取两条里高的那条，切换时面板不变高变矮，下面一行按钮不跟着挪
+                Text(hidden.isEmpty ? " " : hidden)
+                    .font(Theme.code)
+                    .lineLimit(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .hidden()
+                    .accessibilityHidden(true)
+                TextField(pattern ? "图案算式" : "头像算式", text: pattern ? $design.expression : $design.avatar, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(Theme.code)
+                    .lineLimit(1...4)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                    .focused(typing)
+            }
+            .padding(.horizontal, Metrics.controlInset + 8)
+            .padding(.vertical, 6)
+            HStack(spacing: Metrics.paneButtonGap) {
+                Button { showsInfo.toggle() } label: { Image(systemName: "questionmark.circle") }
+                    .buttonStyle(PaneButtonStyle())
+                    .help("算式里的参数")
+                    .accessibilityLabel(pattern ? "图案算式说明" : "头像算式说明")
+                    .popover(isPresented: $showsInfo, arrowEdge: Self.infoEdge) {
+                        (pattern ? EmblemFormulaInfo.pattern : EmblemFormulaInfo.avatar)
+                            .font(Theme.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(width: 240, alignment: .leading)
+                            .padding(12)
+                            .presentationCompactAdaptation(.popover)
+                    }
+                if let message = error ?? otherError {
+                    Text(message).font(Theme.caption).foregroundStyle(Theme.danger)
+                        .lineLimit(1).truncationMode(.tail)
+                        .help(message)
+                }
+                Spacer(minLength: 0)
+                HStack(spacing: 0) {
+                    formulaButton(.pattern, title: "图案算式", icon: "circle.grid.3x3")
+                    formulaButton(.avatar, title: "头像算式", icon: "person.crop.circle")
+                }
+            }
+            .padding(.horizontal, Metrics.controlButtonInset)
+        }
+        .padding(.top, Metrics.controlInset)
+        .padding(.bottom, Metrics.controlButtonInset)
+        // 面板本身不接交互高光：点里面的图标时整块玻璃不跟着变亮
+        .glassEffect(.regular, in: shape)
+    }
+
+    /// 参数说明弹在按钮上面，下面只剩控制区的留白。iPhone 上给 .top 时弹出框落在按钮下面、被压成一条（用户实测），所以两端分开给。
+    #if os(iOS)
+    private static let infoEdge = Edge.bottom
+    #else
+    private static let infoEdge = Edge.top
+    #endif
+
+    /// 切换算式的图标，正在编辑的那条用主题色。
+    private func formulaButton(_ value: Formula, title: String, icon: String) -> some View {
+        let selected = formula == value
+        return Button { formula = value } label: { Image(systemName: icon) }
+            .buttonStyle(PaneButtonStyle(foreground: selected ? .accentColor : .secondary))
+            .help(title)
+            .accessibilityLabel(title)
+            .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -335,8 +499,8 @@ private extension View {
     }
 }
 
-/// 竖排的一列小样，上面是名称；点一个选中，选中的外面描一圈。放不下时这一列滚动，不显示滚动条，出现时选中的滚到中间。
-/// 颜色与点的形状共用，各项名称在悬停提示与读屏里。
+/// 弹窗卡片里竖排的一列小样，上面是名称。放不下时这一列滚动，不显示滚动条，出现时选中的滚到中间。
+/// 颜色与点的形状共用。
 private struct EmblemChoiceColumn<Glyph: View>: View {
     let label: String
     let options: [String]
@@ -344,8 +508,6 @@ private struct EmblemChoiceColumn<Glyph: View>: View {
     let title: (String) -> String
     let tint: (String) -> Color
     @ViewBuilder let glyph: (_ option: String, _ selected: Bool) -> Glyph
-
-    private var glyphSize: CGFloat { InputMode.current.isTouch ? 22 : 16 }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -368,21 +530,39 @@ private struct EmblemChoiceColumn<Glyph: View>: View {
 
     private var choices: some View {
         ForEach(options, id: \.self) { option in
-            let selected = option == selection
-            Button { selection = option } label: {
-                glyph(option, selected)
-                    .frame(width: glyphSize, height: glyphSize)
-                    .frame(width: glyphSize + 8, height: glyphSize + 8)
-                    .overlay { Circle().strokeBorder(tint(option).opacity(selected ? 1 : 0), lineWidth: 1.5) }
-                    .frame(width: InputMode.current.button, height: InputMode.current.button)
-                    .contentShape(Rectangle())
-                    .animation(.easeOut(duration: 0.15), value: selected)
+            EmblemChoice(title: title(option), selected: option == selection, tint: tint(option)) {
+                selection = option
+            } glyph: {
+                glyph(option, option == selection)
             }
-            .buttonStyle(EmblemChoiceStyle())
-            .help(title(option))
-            .accessibilityLabel(title(option))
-            .accessibilityAddTraits(selected ? .isSelected : [])
         }
+    }
+}
+
+/// 一项小样：点一下选中，选中的外面描一圈；名称在悬停提示与读屏里。
+private struct EmblemChoice<Glyph: View>: View {
+    let title: String
+    let selected: Bool
+    let tint: Color
+    let select: () -> Void
+    @ViewBuilder let glyph: Glyph
+
+    static var glyphSize: CGFloat { InputMode.current.isTouch ? 22 : 16 }
+
+    var body: some View {
+        Button(action: select) {
+            glyph
+                .frame(width: Self.glyphSize, height: Self.glyphSize)
+                .frame(width: Self.glyphSize + 8, height: Self.glyphSize + 8)
+                .overlay { Circle().strokeBorder(tint.opacity(selected ? 1 : 0), lineWidth: 1.5) }
+                .frame(width: InputMode.current.button, height: InputMode.current.button)
+                .contentShape(Rectangle())
+                .animation(.easeOut(duration: 0.15), value: selected)
+        }
+        .buttonStyle(EmblemChoiceStyle())
+        .help(title)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -396,14 +576,19 @@ private struct EmblemSwatch: View {
     }
 }
 
-/// 点的终态形状的小样，颜色取前景色；比格子收一点，选中的圈不压到角。
+/// 点的终态形状的小样；比格子收一点，选中的圈不压到角。
+/// 颜色直接给，不取前景色：没选中的形状用次要色前景填充时，在弹出框里看不见。
 private struct EmblemFormGlyph: View {
     let form: DotForm
+    let color: Color
+
+    /// 没选中的形状的颜色。
+    static let idle = Color.primary.opacity(0.45)
 
     var body: some View {
         Canvas { context, size in
             let path = form.path(center: CGPoint(x: size.width / 2, y: size.height / 2), radius: min(size.width, size.height) / 2 * 0.8)
-            context.fill(path, with: .foreground)
+            context.fill(path, with: .color(color))
         }
     }
 }

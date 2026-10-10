@@ -325,7 +325,7 @@ extension View {
     }
 }
 
-/// 卡片底部的按钮：主按钮占满剩下的宽度，次要按钮在它左边。
+/// 卡片底部的按钮：主按钮占满剩下的宽度，次要按钮在它左边。iPhone 键盘升起时最左边多一个收起键盘。
 /// 给了 phase 时主按钮跟着进度变：加载中转圈；成功打勾，直到再次能提交（又改了内容）才变回来；
 /// 失败变成错误色，按钮里一行写原因，点它把完整原因复制到剪贴板，左边冒出圆形的重试。几个状态之间的形变交给玻璃效果的容器。
 struct CardActions: View {
@@ -364,6 +364,17 @@ struct CardActions: View {
         let state = phase.wrappedValue
         GlassEffectContainer(spacing: Metrics.paneButtonGap) {
             HStack(spacing: Metrics.paneButtonGap) {
+                #if os(iOS)
+                if ScreenKeyboard.shared.shown {
+                    // 等按钮松手这次更新过去再收，同 KeyboardDismissButton
+                    Button { Task { dismissKeyboard() } } label: {
+                        Image(systemName: KeyboardDismissButton.icon).accessibilityLabel("收起键盘")
+                    }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .glassEffectID("keyboard", in: glass)
+                }
+                #endif
                 if let secondary {
                     Button(secondary, action: secondaryAction)
                         .buttonStyle(.glass)

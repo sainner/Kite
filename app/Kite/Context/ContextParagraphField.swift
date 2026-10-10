@@ -47,6 +47,7 @@ struct ContextParagraphField: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
+        let _ = DrawerBench.count("Paragraph")
         let style = ContextTextStyle(variables: variables, colorScheme: colorScheme, scale: displayScale, dynamicTypeSize: dynamicTypeSize)
         ContextTextView(parts: $parts, focused: $focused, style: style, editable: isEnabled, editor: editor,
                         focusRequested: focusRequested, focusHandled: focusHandled)
@@ -485,14 +486,6 @@ final class ContextTextCoordinator: NSObject {
         #endif
     }
 
-    func endEditing() {
-        #if os(macOS)
-        if view?.window?.firstResponder === view { view?.window?.makeFirstResponder(nil) }
-        #else
-        view?.resignFirstResponder()
-        #endif
-    }
-
     /// 替换一段文字并选中 selecting。Mac 走正常的输入路径，撤销照常；UITextView 没有插入带附件文字的输入接口，直接改文字存储，撤销记录随之作废。
     private func replace(_ range: NSRange, with text: NSAttributedString, selecting: NSRange) {
         guard let view else { return }
@@ -748,6 +741,7 @@ extension ContextTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: ContextUITextView, context: Context) {
+        let _ = DrawerBench.count("TextUpdate")
         view.isEditable = editable
         context.coordinator.update(parts: $parts, focused: $focused, style: style, editor: editor)
         requestFocus(context.coordinator)
@@ -758,6 +752,7 @@ extension ContextTextView: UIViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView view: ContextUITextView, context: Context) -> CGSize? {
+        let _ = DrawerBench.count("TextSize")
         guard let width = proposal.width, width.isFinite, width > 0 else { return nil }
         let inset = view.textContainerInset
         return CGSize(width: width, height: context.coordinator.height(for: width - inset.left - inset.right) + inset.top + inset.bottom)

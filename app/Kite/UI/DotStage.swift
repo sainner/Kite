@@ -1149,6 +1149,7 @@ struct DotMask: View {
     @State private var area: CGRect?
 
     var body: some View {
+        let _ = DrawerBench.count("DotMask")
         Color.clear
             .frame(width: CGFloat(figure.columns) * DotMetrics.pitch, height: CGFloat(figure.rows) * DotMetrics.pitch)
             .onGeometryChange(for: CGRect.self) {
@@ -1195,6 +1196,7 @@ struct DotCanvas: View {
     @Environment(\.self) private var environment
 
     var body: some View {
+        let _ = DrawerBench.count("DotCanvas")
         GeometryReader { proxy in
             let global = proxy.frame(in: .global)
             // 放在缩放的窗口里时，按屏幕上的实际大小画，格子仍与 App 网格对齐。
@@ -1205,6 +1207,7 @@ struct DotCanvas: View {
                 let frame = carrier?.final.apply(CGRect(origin: local, size: proxy.size)) ?? global
                 let live = (stage.animating(in: frame, patterns: drawsPatterns) || carrier?.moving == true) && !reduceMotion
                 TimelineView(.animation(paused: !live)) { timeline in
+                    let _ = DrawerBench.count("DotFrame")
                     // 静息或减少动态效果时取波都已结束的时刻，直接画出静息的点。
                     let date = live ? timeline.date : .distantFuture
                     let field = stage.field(at: date, rest: .rest(in: environment), live: live, patterns: drawsPatterns, scope: scope)

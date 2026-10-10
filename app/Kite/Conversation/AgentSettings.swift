@@ -54,8 +54,6 @@ struct AgentSettings: View {
         } footer: {
             CardActions(primary: "保存", enabled: canSave, phase: $phase) { perform(succeeds: true) { try await save() } }
         }
-        // 数字键盘没有换行键，键盘上方给一个完成
-        .keyboardDoneButton { editingLimit = false }
         .endsTyping(editingLimit) { editingLimit = false }
         .interactiveDismissDisabled(working || changed)
         .discardAlert("放弃未保存的代理配置？", item: $discard) { action in
@@ -147,7 +145,6 @@ struct DraftAgentSettings: View {
         } footer: {
             CardActions(primary: "完成", enabled: capabilities != nil && budget >= 1, phase: $phase, succeeded: "已更新") { save() }
         }
-        .keyboardDoneButton { editingLimit = false }
         .endsTyping(editingLimit) { editingLimit = false }
         .onAppear {
             tools = thread.draftChoice?.tools ?? capabilities?.tools ?? []

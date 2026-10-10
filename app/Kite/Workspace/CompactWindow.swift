@@ -86,6 +86,10 @@ struct CompactWindow: View {
     }
 
     var body: some View {
+        let _ = DrawerBench.count("Window")
+        #if DEBUG && os(iOS)
+        let _ = DrawerBench.register(settle: { settle($0) }, pull: { pull($0) }, sidebarWidth: sidebarWidth, actionsHeight: actionsHeight)
+        #endif
         // 外壳的身份不随会话改变，保留边距和缩放的动画状态。
         // Group 会把外面的修饰器分发给成员，成员换掉时各段动画可能从不同进度重新开始。
         ZStack(alignment: .topLeading) {
@@ -132,6 +136,9 @@ struct CompactWindow: View {
             }
         }
         .sensoryFeedback(.impact(weight: .light), trigger: crossings)
+        #if DEBUG && os(iOS)
+        .task { await DrawerBench.watch() }
+        #endif
     }
 
     /// 收起时停在哪：底栏钉着时是展开的底栏。
@@ -315,6 +322,7 @@ struct SidebarSlide: ViewModifier {
     let width: CGFloat
 
     func body(content: Content) -> some View {
+        let _ = DrawerBench.count("SidebarSlide")
         content.offset(x: (Openness.shown(progress.openness, extent: width) - 1) * width)
     }
 }
@@ -378,6 +386,7 @@ private struct WindowPlacement<Overlay: View>: ViewModifier {
     }
 
     func body(content: Content) -> some View {
+        let _ = DrawerBench.count("Placement")
         let s = Openness.shown(openness.sidebar, extent: sidebarWidth)
         let pad = Metrics.padding
         let (windowInsets, scale) = Self.layout(openness, screen: screen, sidebarWidth: sidebarWidth,
@@ -444,7 +453,9 @@ private struct WindowSafeArea: ViewModifier, Animatable {
     }
 
     func body(content: Content) -> some View {
+        let _ = DrawerBench.count("SafeArea")
         GeometryReader { proxy in
+            let _ = DrawerBench.count("SafeAreaGeo")
             let own = Self.settle(covered, at: target)
             let passed = Self.settle(proxy.safeAreaInsets, at: EdgeInsets())
             // 传进来的那一截换成停住的值：外层不再让，统一在这里让

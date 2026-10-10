@@ -163,14 +163,19 @@ enum ContextBlockAction {
 /// 格式与变量作用在最后放过光标的段落上，块工具作用在当前块上，添加在当前块下方。放不下一行时，添加与当前块一行，行级与行内一行。
 struct ContextEditorToolbar: View {
     let variables: [ContextScene.Variable]
+    /// 放在窗口底栏时自己排收起键盘；弹窗里工具栏在正文上方，收起键盘由弹窗的按钮栏给。
+    var keyboardButton = true
     @Environment(ContextEditor.self) private var editor
-    @Environment(\.keyboardShown) private var keyboardShown
     @State private var confirmingDelete: ContextBlockHandle?
 
     var body: some View {
+        let _ = DrawerBench.count("Toolbar")
         let current = editor.current.flatMap { handle in handle.state().map { (handle, $0) } }
         ContextToolbarLayout(spacing: Metrics.paneButtonGap) {
-            keyboardButton.layoutValue(key: ContextToolbarLayout.UpperRow.self, value: true)
+            // 在块级那一行的最左边：出现、消失时占的是空白，不挤动别的按钮
+            if keyboardButton {
+                KeyboardDismissButton().layoutValue(key: ContextToolbarLayout.UpperRow.self, value: true)
+            }
             addMenu(current).layoutValue(key: ContextToolbarLayout.UpperRow.self, value: true)
             blockTools(current).layoutValue(key: ContextToolbarLayout.UpperRow.self, value: true)
             lineFormat
@@ -183,6 +188,7 @@ struct ContextEditorToolbar: View {
         } message: {
             Text(confirmingDelete?.state()?.paragraph == true ? "段落里的文字会一起删掉。" : "各分支里的内容会一起删掉。")
         }
+        .containerValue(\.placesKeyboardButton, keyboardButton)
     }
 
     private var inlineFormat: some View {
@@ -252,18 +258,6 @@ struct ContextEditorToolbar: View {
         guard let handle else { return }
         editor.focusRequest = block.id
         handle.perform(.insert(block))
-    }
-
-    /// 屏幕键盘弹出时，在块级那一行的最左边放收起键盘：出现、消失时占的是空白，不挤动别的按钮；玻璃也不和旁边融合。
-    @ViewBuilder
-    private var keyboardButton: some View {
-        if keyboardShown, let target = editor.target {
-            PaneHeaderButtonGroup {
-                // 等按钮松手这次更新过去再收：同步收的话键盘让位会沿用玻璃松手的回弹，整条底栏落下时弹一下
-                ActionButton("收起键盘", icon: "keyboard.chevron.compact.down") { Task { target.endEditing() } }
-            }
-            .glassEffectTransition(.identity)
-        }
     }
 }
 

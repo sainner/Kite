@@ -7,7 +7,7 @@ import SwiftUI
 /// 控制区是液态玻璃容器，各个窗口给内部控件提供玻璃形状；左右留边，底部总边距统一取固定留白与安全区高度的较大值。
 /// 控制区始终存在；内容为空时窄屏触控下仍保留交互范围，鼠标或宽屏下不接点击，后面的内容照常可点。
 /// 安全区已由窗口容器让出，控制区补足差额；打字时在键盘上方保留固定留白。
-/// 控制区里的输入框拿 typing 绑定焦点。iPhone 上打字时点控制区以外的地方收起键盘；不打字时从控制区往上拖拉出 action 栏。
+/// 控制区里的输入框拿 typing 绑定焦点。iPhone 上打字时点控制区以外的地方收起键盘，键盘升起时控制区最左边有收起键盘；不打字时从控制区往上拖拉出 action 栏。
 /// 窄屏控制区左右滑动切换窗口，键盘显示或控制区已聚焦时禁用。
 /// 标题栏左侧负责打开侧栏；紧凑触屏布局由会话状态圆环承接，其他情况显示侧栏按钮。
 struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActions: View>: View {
@@ -42,6 +42,7 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
     }
 
     var body: some View {
+        let _ = DrawerBench.count("PaneWindow")
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .environment(\.paneWindowFrame, frame)
@@ -50,13 +51,24 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
             .safeAreaBar(edge: .bottom, spacing: 0) {
                 Group(subviews: controls($typing)) { controlViews in
                     GlassEffectContainer(spacing: Metrics.paneButtonGap) {
-                        // 空控制区仍保留命中范围，继续承接上拉与横滑手势。
-                        // 什么都没画的底栏不被系统当作控制区，contentShape 也不管用，触摸落到下面的滚动视图
-                        // （iOS 27 模拟器 hitTest 实测）；挂一个不显示的 identity 玻璃，系统就会接管这一条。
-                        if controlViews.isEmpty {
-                            Color.clear.frame(height: Metrics.paneToolbarHeight).glassEffect(.identity)
-                        } else {
-                            ForEach(controlViews) { $0 }
+                        HStack(alignment: .bottom, spacing: Metrics.paneButtonGap) {
+                            if !controlViews.contains(where: { $0.containerValues.placesKeyboardButton }) {
+                                KeyboardDismissButton()
+                            }
+                            // 空控制区仍保留命中范围，继续承接上拉与横滑手势。
+                            // 什么都没画的底栏不被系统当作控制区，contentShape 也不管用，触摸落到下面的滚动视图
+                            // （iOS 27 模拟器 hitTest 实测）；挂一个不显示的 identity 玻璃，系统就会接管这一条。
+                            // 只在窄屏触控下挂：Mac 上系统会在这块玻璃底下垫一层整条宽的模糊背板，窗口底部的内容跟着变糊，
+                            // 而其他情况下空控制区本就不接点击。
+                            if controlViews.isEmpty {
+                                if presentation.isCompactTouch {
+                                    Color.clear.frame(height: Metrics.paneToolbarHeight).glassEffect(.identity)
+                                } else {
+                                    Color.clear.frame(height: Metrics.paneToolbarHeight)
+                                }
+                            } else {
+                                ForEach(controlViews) { $0 }
+                            }
                         }
                     }
                         .padding(.horizontal, Metrics.paneMargin)
@@ -200,6 +212,7 @@ private struct PaneControlsBottom: ViewModifier {
     @Environment(\.keyboardShown) private var keyboardShown
 
     func body(content: Content) -> some View {
+        let _ = DrawerBench.count("ControlsBottom")
         let safeArea = keyboardShown ? 0 : homeInset
         content.padding(.bottom, max(Metrics.paneMargin, safeArea) - safeArea)
     }
@@ -218,6 +231,7 @@ private struct CompactPaneHeaderReport: View {
     @Environment(\.self) private var environment
 
     var body: some View {
+        let _ = DrawerBench.count("HeaderReport")
         Color.clear.preference(key: CompactPaneHeaders.self, value: headers)
     }
 
