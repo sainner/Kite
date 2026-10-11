@@ -30,9 +30,13 @@ private struct ScrollOverflowHint: ViewModifier {
 
     /// 一个箭头沿滚动方向占的长度。
     private static let caretExtent = DotMetrics.module
+    /// 箭头与滚动区的边之间留的距离。
+    private static let caretInset = DotMetrics.module / 2
 
-    /// 渐隐的长度，箭头画在靠外的一段里；并排的两个箭头占得多，渐隐也长一些。
-    private var length: CGFloat { carets == .apart ? DotMetrics.module * 2 : DotMetrics.module * 3 }
+    /// 渐隐的长度：边上留的距离、箭头，再加一个模数的过渡，箭头落在靠外的一段里；并排的两个箭头占得多，渐隐也长一些。
+    private var length: CGFloat {
+        Self.caretInset + Self.caretExtent * (carets == .apart ? 1 : 2) + DotMetrics.module
+    }
 
     func body(content: Content) -> some View {
         let vertical = axis == .vertical
@@ -47,19 +51,24 @@ private struct ScrollOverflowHint: ViewModifier {
             }
             .mask { fade(vertical: vertical) }
             .overlay(alignment: vertical ? .top : .leading) {
-                if carets == .apart { caret(vertical: vertical, before: true) }
+                if carets == .apart {
+                    caret(vertical: vertical, before: true).padding(vertical ? .top : .leading, Self.caretInset)
+                }
             }
             .overlay(alignment: vertical ? .bottom : .trailing) {
-                switch carets {
-                case .apart:
-                    caret(vertical: vertical, before: false)
-                case .atEnd:
-                    let pair = vertical ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))
-                    pair {
-                        caret(vertical: vertical, before: true)
+                Group {
+                    switch carets {
+                    case .apart:
                         caret(vertical: vertical, before: false)
+                    case .atEnd:
+                        let pair = vertical ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))
+                        pair {
+                            caret(vertical: vertical, before: true)
+                            caret(vertical: vertical, before: false)
+                        }
                     }
                 }
+                .padding(vertical ? .bottom : .trailing, Self.caretInset)
             }
     }
 

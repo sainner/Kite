@@ -34,6 +34,7 @@ struct ThreadControls: View {
                 .font(Theme.body)
                 .lineLimit(1...8)
                 .focused(typing)
+                .scrollsOnlyWhileTyping(typing.wrappedValue)
                 .onSubmit(submit)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fieldHeight = $0 }
                 .frame(minHeight: fading?.height, alignment: .top)

@@ -16,6 +16,18 @@ final class WindowLayout {
     private(set) var resizing: Split?
     /// 拖动时指针在内容区里的位置。一直在变，和 drag 分开，免得每动一下整个排布都重算。
     private(set) var pointer: CGPoint = .zero
+    /// 正在走排布动画的窗口，由摆卡片的视图报上来，见 blocksInput。
+    private(set) var settling: Set<Pane> = []
+
+    /// 拖动或排布动画（缩小、恢复、让位、放下后归位）进行中。这段时间窗口没有可用的交互，所有窗口都不接点击和悬停：
+    /// 窗口掠过指针、指针扫过窗口时，悬停每帧重算命中，还会带着标题栏重排（2026-10-11 Mac 三窗口实测，缩小、恢复掉到约 30 帧）。
+    /// 拖动本身由按下时的视图继续接收，不受影响。
+    var blocksInput: Bool { drag != nil || !settling.isEmpty }
+
+    func noteSettling(_ pane: Pane, _ settling: Bool) {
+        guard self.settling.contains(pane) != settling else { return }
+        if settling { self.settling.insert(pane) } else { self.settling.remove(pane) }
+    }
 
     @ObservationIgnored private let storageKey: String?
     @ObservationIgnored private let defaults: UserDefaults
@@ -102,7 +114,7 @@ final class WindowLayout {
         guard panes.contains(pane) else { return }
         if isFixed { focus(pane); return }
         motionKind = .settle
-        withAnimation(.windowSettle) {
+        withLayoutAnimation(.windowSettle) {
             drag = nil
             carriedFocus = nil
             if docked.contains(pane) {
@@ -178,7 +190,7 @@ final class WindowLayout {
         let tile = arrangement.tile(for: panes)
         let remaining = panes.filter { !(tile?.panes.contains($0) ?? false) }
         motionKind = .settle
-        withAnimation(.windowSettle) {
+        withLayoutAnimation(.windowSettle) {
             drag = nil
             carriedFocus = nil
             root = tile
@@ -199,7 +211,7 @@ final class WindowLayout {
         }
         guard root?.panes.contains(pane) == true else { return }
         motionKind = .settle
-        withAnimation(.windowSettle) {
+        withLayoutAnimation(.windowSettle) {
             drag = nil
             root = root?.removing(pane)
             docked.append(pane)
@@ -213,7 +225,7 @@ final class WindowLayout {
         guard !isFixed else { return }
         guard shown?.panes.contains(pane) == true else { return }
         motionKind = .settle
-        withAnimation(.windowSettle) {
+        withLayoutAnimation(.windowSettle) {
             drag = nil
             carriedFocus = nil
             docked = docked.filter { $0 != pane } + (root?.panes ?? []).filter { $0 != pane }
@@ -273,7 +285,7 @@ final class WindowLayout {
     /// 分栏拖动只改内存，松手后吸附到模块并保存最终比例。
     func finishResize() {
         motionKind = .settle
-        withAnimation(.windowSettle) { resizing = nil }
+        withLayoutAnimation(.windowSettle) { resizing = nil }
         save()
     }
 
@@ -319,7 +331,7 @@ final class WindowLayout {
         next.docked = remainingDock
         if case .dock(let index) = next.spot { next.docked.insert(pane, at: index) }
         motionKind = .preview
-        withAnimation(.windowPreview) { drag = next }
+        withLayoutAnimation(.windowPreview) { drag = next }
     }
 
     func drop(in bounds: CGRect) {
@@ -327,7 +339,7 @@ final class WindowLayout {
         guard let next = drag else { return }
         // 一次提交树和停靠顺序；同一张 CardSlot 在圆和卡片之间直接动画，不留下延迟回调覆盖新拖动。
         motionKind = .settle
-        withAnimation(.windowSettle) {
+        withLayoutAnimation(.windowSettle) {
             switch next.spot {
             case .dock:
                 carriedFocus = nil
@@ -346,6 +358,13 @@ final class WindowLayout {
         }
         save()
     }
+}
+
+/// 排布变化在动画里提交，并在事务上标明，见 Transaction.windowLayoutChange。
+private func withLayoutAnimation(_ animation: Animation, _ body: () -> Void) {
+    var transaction = Transaction(animation: animation)
+    transaction.windowLayoutChange = true
+    withTransaction(transaction, body)
 }
 
 /// 本地文件只记录窗口 ID 和布局数值，不缓存窗口目标或业务对象。

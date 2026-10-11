@@ -338,11 +338,14 @@ private struct CardSlot: View {
             group.workspace?.setDockHover(DockEntry.pane(pane).id, frame: dockFrame ?? frame,
                 hovering: hovering && minimized && !motion.moving && workspace.drag == nil && workspace.resizing == nil)
         }
+        .allowsHitTesting(acceptsInput)
         .onChange(of: target, initial: true) { _, target in
             let kind: WindowMotionKind = reduceMotion ? .immediate : workspace.drag?.pane == pane ? .tracking
                 : workspace.resizing != nil ? .immediate : workspace.drag != nil ? .preview : workspace.motionKind
             motion.move(to: target, kind: kind)
         }
+        .onChange(of: motion.settling, initial: true) { _, settling in workspace.noteSettling(pane, settling) }
+        .onDisappear { workspace.noteSettling(pane, false) }
         .task(id: closing) {
             guard closing else { return }
             // 退出只负责回收视图；新的手势和布局更新仍可改变目标。
@@ -351,6 +354,17 @@ private struct CardSlot: View {
             } while motion.moving
             onRetired()
         }
+    }
+
+    /// 见 WindowLayout.blocksInput。iPad 上跟手拖动是挂在卡片上的 SwiftUI 手势，中途设成不可命中可能把拖动取消，
+    /// 没在真机上验证之前，被拖的卡片照常接。
+    private var acceptsInput: Bool {
+        guard workspace.blocksInput else { return true }
+        #if os(iOS)
+        return workspace.drag?.pane == pane
+        #else
+        return false
+        #endif
     }
 
     private var returnFrame: CGRect? {
@@ -585,20 +599,23 @@ private final class HeaderRegions {
 }
 
 /// 网格固定在屏幕上，只有卡片承载的图案跟随同一呈现状态；正文不再逐帧报告全局坐标。
+/// 静息的网点不随卡片走，卡片移动时不重画；卡片上摆着图形或图案时才逐帧跟随。
 private struct WindowSurfaceDots: View {
     let motion: WindowMotion
     let contentSize: CGSize
     let origin: CGPoint
     let enabled: Bool
     @Environment(\.dotCarrier) private var carrier
+    @Environment(\.dotStage) private var stage
 
     var body: some View {
         if enabled {
-            TimelineView(.animation(paused: !motion.moving)) { clock in
+            let follows = motion.moving && carrier.map { stage?.carries($0) == true } == true
+            TimelineView(.animation(paused: !follows)) { clock in
                 let pose = motion.presentation(at: clock.date)
                 let offset = pose.contentOrigin(size: contentSize)
                 let mapping = DotCarrier.Mapping(origin: CGPoint(x: origin.x + offset.x, y: origin.y + offset.y), scale: pose.scale)
-                DotCanvas(follow: motion.moving ? carrier?.rest.after(mapping.inverted) : nil)
+                DotCanvas(follow: follows ? carrier?.rest.after(mapping.inverted) : nil)
             }
         }
     }

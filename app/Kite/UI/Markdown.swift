@@ -219,6 +219,7 @@ private struct CodeBlockContent: View, Equatable {
                     .fixedSize()
                     .padding(10)
             }
+            .hintsScrollOverflow(.horizontal)
         }
     }
 }

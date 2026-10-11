@@ -125,6 +125,7 @@ struct ScenePushSheet: View {
             CardField(label: "提交说明", focused: typing) {
                 TextField("说明这次改了什么", text: $message, axis: .vertical).lineLimit(2...6)
                     .focused($typing)
+                    .scrollsOnlyWhileTyping(typing)
                     .cardInput { typing = true }
             }
             Text("现场的改动由你自己决定何时提交。远程有新提交而现场没有新内容时直接更新；两边都有新内容时不在现场合并，请新建工作区处理。")

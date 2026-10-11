@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 一级导航的各栏。没接通的置灰，不能选。
+/// 一级导航的各栏。
 enum SidebarSection: CaseIterable, Identifiable {
     case workspaces, drive, extensions, settings
 
@@ -24,7 +24,6 @@ enum SidebarSection: CaseIterable, Identifiable {
         }
     }
 
-    var available: Bool { true }
     /// 设置不在一级导航里，从用户栏末尾的设置按钮进入。
     var navigable: Bool { self != .settings }
 
@@ -102,7 +101,7 @@ private struct SidebarNavigationLabel: View {
     }
 }
 
-/// 一级导航：标志栏下面一列全宽按钮，选中项用主题色背景配白字；没接通的置灰。两端相同，iPhone 放在侧栏抽屉顶部。
+/// 一级导航：标志栏下面一列全宽按钮，选中项用主题色背景配白字。两端相同，iPhone 放在侧栏抽屉顶部。
 /// 设置不在这里，入口是用户栏末尾的设置按钮。
 /// 收起的侧栏里只留图标竖着排。
 struct SidebarNavigation: View {
@@ -127,14 +126,12 @@ struct SidebarNavigation: View {
                             .frame(width: max(36, Metrics.paneButton), height: max(36, Metrics.paneButton))
                             .background(selected ? Color.accentColor : .clear, in: sidebarRowShape)
                             .contentShape(sidebarRowShape)
-                            .opacity(section.available ? 1 : 0.45)
                     } else {
                         SidebarNavigationLabel(title: section.title, systemImage: section.symbol,
                                                note: section.count(in: model).map(String.init), selected: selected)
                     }
                 }
-                .disabled(!section.available)
-                .help(section.available ? section.title : "\(section.title)（尚未接通）")
+                .help(section.title)
                 .accessibilityAddTraits(selected ? .isSelected : [])
                 if iconsOnly { button.buttonStyle(SidebarButtonStyle()) }
                 else { button.buttonStyle(SidebarNavigationStyle(selected: selected)) }

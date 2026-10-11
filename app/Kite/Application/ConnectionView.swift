@@ -202,6 +202,7 @@ struct NewWorkspace: View {
         CardField(label: "要做什么", focused: focus == .prompt) {
             TextField("说说要做什么", text: $prompt, axis: .vertical).lineLimit(3...8)
                 .focused($focus, equals: .prompt)
+                .scrollsOnlyWhileTyping(focus == .prompt)
                 .cardInput { focus = .prompt }
         }
     }

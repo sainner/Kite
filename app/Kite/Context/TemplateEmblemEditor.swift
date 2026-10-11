@@ -252,6 +252,7 @@ private struct EmblemCards: View {
             .textInputAutocapitalization(.never)
             #endif
             .focused($focus, equals: formula)
+            .scrollsOnlyWhileTyping(focused)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -405,6 +406,7 @@ private struct EmblemControls: View {
                     .textInputAutocapitalization(.never)
                     #endif
                     .focused(typing)
+                    .scrollsOnlyWhileTyping(typing.wrappedValue)
             }
             .padding(.horizontal, Metrics.controlInset + 8)
             .padding(.vertical, 6)

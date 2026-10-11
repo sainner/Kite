@@ -32,6 +32,7 @@ struct MarkdownTable: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 MarkdownTableGrid(header: header, rows: rows, edgeInset: 10, minWidth: viewportWidth)
             }
+            .hintsScrollOverflow(.horizontal)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { viewportWidth = $0 }
         }
     }

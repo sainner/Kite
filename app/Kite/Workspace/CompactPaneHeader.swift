@@ -4,6 +4,23 @@ extension EnvironmentValues {
     @Entry var headerPane: Pane?
     /// 紧凑窗口的标题栏由外壳显示，正文只为它让出实际高度。
     @Entry var sharedPaneHeaderHeight: CGFloat?
+    /// 紧凑窗口的控制区也由外壳显示，各窗口按自己控制区量出来的高度让位。
+    @Entry var sharedPaneControls: SharedPaneControls?
+}
+
+/// 外壳上量出来的各窗口控制区高度。只记显示过的窗口；没显示过的先按最近一次的算，换过去时再量。
+@MainActor @Observable final class SharedPaneControls {
+    private var heights: [Pane: CGFloat] = [:]
+    private var last: CGFloat?
+
+    func height(for pane: Pane) -> CGFloat {
+        heights[pane] ?? last ?? Metrics.paneToolbarHeight + Metrics.paneMargin
+    }
+
+    func measured(_ height: CGFloat, for pane: Pane) {
+        if heights[pane] != height { heights[pane] = height }
+        if last != height { last = height }
+    }
 }
 
 struct CompactPaneHeader {
@@ -11,6 +28,7 @@ struct CompactPaneHeader {
     let header: PaneHeader
     let status: AnyView?
     let actions: AnyView
+    let controls: AnyView
     let environment: EnvironmentValues
     let openSidebar: (@MainActor () -> Void)?
     let endTyping: () -> Void
@@ -23,24 +41,46 @@ struct CompactPaneHeaders: PreferenceKey {
     }
 }
 
-/// 标题栏留在外壳上，只有正文和底部控制区进入横向切换层。
+/// 标题栏和底部控制区都留在外壳上，换窗口时原地过渡，只有正文进入横向切换层。
 struct CompactPaneHeaderHost: ViewModifier {
     let focused: Pane?
     @State private var height: CGFloat?
+    @State private var controls = SharedPaneControls()
     @Environment(\.paneTopSafeInset) private var topInset
 
     func body(content: Content) -> some View {
         content
             .environment(\.sharedPaneHeaderHeight, height ?? Metrics.paneHeaderButton + Metrics.paneMargin
                          + max(Metrics.paneMargin, topInset) - topInset)
+            .environment(\.sharedPaneControls, controls)
             .overlayPreferenceValue(CompactPaneHeaders.self) { headers in
                 if let source = headers.first(where: { $0.pane == focused }) {
-                    CompactPaneHeaderBar(source: source)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
-                        .frame(maxHeight: .infinity, alignment: .top)
+                    ZStack {
+                        CompactPaneHeaderBar(source: source)
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+                            .frame(maxHeight: .infinity, alignment: .top)
+                        CompactPaneControlsBar(source: source, controls: controls)
+                            .frame(maxHeight: .infinity, alignment: .bottom)
+                    }
                 }
             }
             .animation(.snappy, value: focused)
+    }
+}
+
+/// 控制区同标题栏的按钮组一样按窗口淡入淡出；量出的高度记给窗口，窗口按它让位。
+private struct CompactPaneControlsBar: View {
+    let source: CompactPaneHeader
+    let controls: SharedPaneControls
+
+    var body: some View {
+        let pane = source.pane
+        source.controls
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { controls.measured($0, for: pane) }
+            // 控制区移出正文后仍使用源窗口的会话、实例与动作环境。
+            .environment(\.self, source.environment)
+            .id(pane)
+            .transition(.opacity)
     }
 }
 

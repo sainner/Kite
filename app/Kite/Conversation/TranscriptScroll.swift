@@ -19,7 +19,7 @@ import SwiftUI
 ///   它只在内容变了时跳，比什么都没有强。和键盘升起同一次更新里钉住的话底部对齐不起作用，所以键盘动之前不钉。
 ///   用户进入 tracking 时用 isPositionedByUser 清除旧目标；回到 idle 后更新跟随状态，边缘不写定位目标。
 /// - withAnimation 的 completion 对滚动十几毫秒就回调，不等滚完，这时钉住会把滚动停在原地；glide 名义上 0.5 秒，
-///   实际 0.8 秒左右才停稳，所以滚完一秒再钉（settle）。
+///   实际 0.8 秒左右才停稳。停稳按滚动相位从 animating 回到 idle 认；这次不用滚（对话里只有这一轮）或系统没报相位时一秒兜底（settle、finish）。
 /// - 键盘升起的动画没走完时内容变短，滚动视图会把对话往下挪一个键盘高，同一次排版、晚一次排版、不带动画都一样；
 ///   所以可见区变矮时留白等 0.6 秒再缩，缩掉的在键盘后面。变高时留白在排版里当场跟着变，内容和可见区一起变长，不用动。
 /// - 留白要在排版里和新消息一次算出来（最后一组的最小高度，见 TranscriptView）：量出来再补会晚一次排版，滑的那一刻底下还没有留白，滑不到位。
@@ -40,8 +40,9 @@ final class TranscriptScroll {
     private var blankShown = false
     /// 留白被人往上翻裁掉了多少。打开时为 nil，不生成留白；发送并开启新一轮时才从 0 开始。
     private var trim: CGFloat?
-    /// 程序正在滚的次数。滚的时候按顶部对齐，回调也不插手。
-    private var gliding = 0
+    /// 程序正在滚的几下，值是那一下有没有起步，各自等停稳（见 settle）。滚的时候按顶部对齐，回调也不插手。
+    private var glides: [UUID: Bool] = [:]
+    private var gliding: Int { glides.count }
     /// 留白按多高的可见区算：变高时当场跟上，变矮时等一会儿再跟（visibleChanged）。
     private var heldVisible: CGFloat = 0
     /// 可见区这会儿多高。
@@ -74,7 +75,8 @@ final class TranscriptScroll {
     func send(_ append: () -> Bool, alongside: @escaping () -> Void) {
         following = true
         // 和加消息同一次更新：加进去的那一次排版就按顶部对齐，也钉在当前位置，不然开头给的滚到最底下会在内容变长时一下跟过去
-        gliding += 1
+        let glide = UUID()
+        glides[glide] = false
         pin()
         let startsTurn = append()
         if startsTurn { trim = 0 }
@@ -84,7 +86,8 @@ final class TranscriptScroll {
                 self.position.scrollTo(edge: .bottom)
                 alongside()
             }
-            self.settle()
+            if self.glides[glide] != nil { self.glides[glide] = true }
+            self.settle(glide)
         }
     }
 
@@ -102,6 +105,10 @@ final class TranscriptScroll {
             if gliding == 0, geometry.scrollOffset > 1, geometry.scrollOffset < geometry.bottom - 1 {
                 pin()
             }
+        }
+        if old == .animating, phase == .idle {
+            // 程序滚的停稳了。滚动视图只有一个位置，已经起步的几下一起算停稳；还没起步的（排在后面的发送）等它自己的
+            for glide in glides.filter({ $0.value }).map(\.key) { finish(glide) }
         }
     }
 
@@ -160,14 +167,19 @@ final class TranscriptScroll {
         position = value
     }
 
-    /// 程序滚完一下，等它停稳再钉住，停在最底下接着跟的放开。期间又有一下滚动的，等最后一下；人已经上手滚了就不钉，那会和手抢。
-    private func settle() {
+    /// 程序滚的一下起步了：相位报了停稳就收尾（见 phaseChanged），没报就一秒兜底。两边谁先到谁收，只收一次。
+    private func settle(_ glide: UUID) {
         Task {
             try? await Task.sleep(for: .seconds(1))
-            gliding -= 1
-            guard gliding == 0, !userScrolling else { return }
-            if anchor == .bottom && geometry?.atBottom == true { release() } else { pin() }
+            finish(glide)
         }
+    }
+
+    /// 一下滚动收尾：最后一下停稳才钉住，停在最底下接着跟的放开。期间又有一下滚动的，等最后一下；人已经上手滚了就不钉，那会和手抢。
+    private func finish(_ glide: UUID) {
+        guard glides.removeValue(forKey: glide) != nil else { return }
+        guard glides.isEmpty, !userScrolling else { return }
+        if anchor == .bottom && geometry?.atBottom == true { release() } else { pin() }
     }
 
     /// 钉在这会儿的位置，滚动位置里只留一个位置。

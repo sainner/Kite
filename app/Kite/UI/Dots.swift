@@ -6,9 +6,8 @@ nonisolated enum DotMetrics {
     /// 布局的模数：边距、缝、侧栏与卡片尺寸都取它的整数倍，边界落在模块线上。
     static let module: CGFloat = 12
     static let pitch: CGFloat = module
-    /// 一次形变的时长与曲线。
+    /// 一次形变的时长。
     static let morphDuration: TimeInterval = 0.5
-    static let morph = Animation.easeOut(duration: morphDuration)
 
     static func snap(_ length: CGFloat) -> CGFloat { (length / module).rounded() * module }
     static func snapUp(_ length: CGFloat) -> CGFloat { (length / module).rounded(.up) * module }

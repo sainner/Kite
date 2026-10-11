@@ -69,18 +69,21 @@ struct ExecutionGrantSettings: View {
                         CardField(label: "额外只读路径", focused: focus == .read) {
                             TextField("每行一个绝对路径", text: field(\.readPaths, fallback: ""), axis: .vertical)
                                 .lineLimit(2...5).focused($focus, equals: .read)
+                                .scrollsOnlyWhileTyping(focus == .read)
                                 .cardInput { focus = .read }
                         }
                         CardField(label: "额外读写路径", focused: focus == .write,
                                   note: "每行填写一个工作机上已存在的绝对路径，读写包含读取。命令可访问这些路径；文件读取和补丁工具仍限于工作区。") {
                             TextField("每行一个绝对路径", text: field(\.writePaths, fallback: ""), axis: .vertical)
                                 .lineLimit(2...5).focused($focus, equals: .write)
+                                .scrollsOnlyWhileTyping(focus == .write)
                                 .cardInput { focus = .write }
                         }
                         CardField(label: "允许访问的网络地址", focused: focus == .network,
                                   note: "每行一个域名或 IP，可带端口，支持 *.example.com。留空禁止网络；不支持全网通配或本机回环地址。") {
                             TextField("例如 registry.npmjs.org:443", text: field(\.networkDomains, fallback: ""), axis: .vertical)
                                 .lineLimit(2...5).focused($focus, equals: .network)
+                                .scrollsOnlyWhileTyping(focus == .network)
                                 .cardInput { focus = .network }
                         }
                     }

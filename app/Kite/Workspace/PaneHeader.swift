@@ -122,15 +122,22 @@ struct PaneHeaderBar<Status: View, Actions: View>: View {
                     .clipped()
                 }
                 .modifier(WindowHeaderAnchor(edge: .leading, clipsTitle: true))
-                actions
-                    .background {
-                        GeometryReader { proxy in
-                            Color.clear.preference(key: PaneHeaderActionsWidth.self, value: proxy.size.width)
+                // 窗口可能给出几组按钮（如角色的刷新组与保存组），先排成一行再锚定：锚定里是 TimelineView，几个视图交给它会被竖着排开
+                Group(subviews: actions) { actionViews in
+                    if !actionViews.isEmpty {
+                        HStack(spacing: Metrics.paneButtonGap) {
+                            ForEach(actionViews) { $0 }
                         }
+                        .background {
+                            GeometryReader { proxy in
+                                Color.clear.preference(key: PaneHeaderActionsWidth.self, value: proxy.size.width)
+                            }
+                        }
+                        .padding(.leading, controlsInset)
+                        .layoutPriority(1)
+                        .modifier(WindowHeaderAnchor(edge: .trailing))
                     }
-                    .padding(.leading, controlsInset)
-                    .layoutPriority(1)
-                    .modifier(WindowHeaderAnchor(edge: .trailing))
+                }
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
             .padding(.horizontal, Metrics.paneMargin)

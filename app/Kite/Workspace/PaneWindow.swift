@@ -8,7 +8,7 @@ import SwiftUI
 /// 控制区始终存在；内容为空时窄屏触控下仍保留交互范围，鼠标或宽屏下不接点击，后面的内容照常可点。
 /// 安全区已由窗口容器让出，控制区补足差额；打字时在键盘上方保留固定留白。
 /// 控制区里的输入框拿 typing 绑定焦点。iPhone 上打字时点控制区以外的地方收起键盘，键盘升起时控制区最左边有收起键盘；不打字时从控制区往上拖拉出 action 栏。
-/// 窄屏控制区左右滑动切换窗口，键盘显示或控制区已聚焦时禁用。
+/// 窄屏控制区左右滑动切换窗口，键盘显示或控制区已聚焦时禁用。紧凑布局里标题栏和控制区都由外壳统一显示，只有正文跟着切换平移，见 CompactPaneHeaderHost。
 /// 标题栏左侧负责打开侧栏；紧凑触屏布局由会话状态圆环承接，其他情况显示侧栏按钮。
 struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActions: View>: View {
     let header: PaneHeader
@@ -21,7 +21,7 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
     @FocusState private var typing: Bool
     @Environment(\.headerPane) private var headerPane
     @Environment(\.sharedPaneHeaderHeight) private var sharedHeaderHeight
-    @Environment(\.workspacePresentation) private var presentation
+    @Environment(\.sharedPaneControls) private var sharedControls
     @Environment(\.openSidebar) private var openSidebar
     @Environment(\.dotCarrier) private var carrier
     @Environment(\.paneConnectionNotice) private var connectionNotice
@@ -48,38 +48,10 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
             // 加在控制区外面这一层，点控制区不算
             .endsTyping(typing) { typing = false }
             .safeAreaBar(edge: .bottom, spacing: 0) {
-                Group(subviews: controls($typing)) { controlViews in
-                    GlassEffectContainer(spacing: Metrics.paneButtonGap) {
-                        HStack(alignment: .bottom, spacing: Metrics.paneButtonGap) {
-                            if !controlViews.contains(where: { $0.containerValues.placesKeyboardButton }) {
-                                KeyboardDismissButton()
-                            }
-                            // 空控制区仍保留命中范围，继续承接上拉与横滑手势。
-                            // 什么都没画的底栏不被系统当作控制区，contentShape 也不管用，触摸落到下面的滚动视图
-                            // （iOS 27 模拟器 hitTest 实测）；挂一个不显示的 identity 玻璃，系统就会接管这一条。
-                            // 只在窄屏触控下挂：Mac 上系统会在这块玻璃底下垫一层整条宽的模糊背板，窗口底部的内容跟着变糊，
-                            // 而其他情况下空控制区本就不接点击。
-                            if controlViews.isEmpty {
-                                if presentation.isCompactTouch {
-                                    Color.clear.frame(height: Metrics.paneToolbarHeight).glassEffect(.identity)
-                                } else {
-                                    Color.clear.frame(height: Metrics.paneToolbarHeight)
-                                }
-                            } else {
-                                ForEach(controlViews) { $0 }
-                            }
-                        }
-                    }
-                        .padding(.horizontal, Metrics.paneMargin)
-                        .modifier(PaneControlsBottom())
-                        .drawerShift(.bottom)
-                        .frame(maxWidth: .infinity)
-                        .contentShape(Rectangle())
-                        // 打字时在输入框里上下拖是选字、滚动，不拉 action 栏
-                        .modifier(DrawerPullModifier(enabled: !typing && presentation.isCompactTouch))
-                        .modifier(PaneControlSwipe(typing: typing))
-                        // 空控制区只在窄屏触控下接上拉与横滑；其他情况只是一段透明的留白，点击和悬停落到后面的内容上。
-                        .allowsHitTesting(!controlViews.isEmpty || presentation.isCompactTouch)
+                if let sharedControls, let headerPane {
+                    Color.clear.frame(height: sharedControls.height(for: headerPane)).allowsHitTesting(false)
+                } else {
+                    PaneControlsBar(controls: controls($typing), typing: typing)
                 }
             }
             .safeAreaBar(edge: .top, spacing: 0) {
@@ -93,7 +65,9 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
             .background {
                 Group(subviews: status) { statusViews in
                     CompactPaneHeaderReport(header: header, status: statusViews.isEmpty ? nil : AnyView(status),
-                                            actions: AnyView(headerActions), openSidebar: sidebarAction, endTyping: { typing = false })
+                                            actions: AnyView(headerActions),
+                                            controls: AnyView(PaneControlsBar(controls: controls($typing), typing: typing)),
+                                            openSidebar: sidebarAction, endTyping: { typing = false })
                 }
             }
             // 窗口内容里的滚动区要用 separateScrollPocket，Mac 上贴着窗口顶边的卡片才不会互相串色
@@ -190,6 +164,50 @@ struct DrawerPull {
     }
 }
 
+/// 窗口底部的控制区：液态玻璃容器里放窗口给的控件，键盘升起时最左边是收起键盘。紧凑布局里由外壳统一显示（见 CompactPaneHeaderHost），
+/// 窗口只为它让出高度；输入框的焦点仍绑在窗口自己的 typing 上。
+struct PaneControlsBar<Controls: View>: View {
+    let controls: Controls
+    let typing: Bool
+    @Environment(\.workspacePresentation) private var presentation
+
+    var body: some View {
+        Group(subviews: controls) { controlViews in
+            GlassEffectContainer(spacing: Metrics.paneButtonGap) {
+                HStack(alignment: .bottom, spacing: Metrics.paneButtonGap) {
+                    if !controlViews.contains(where: { $0.containerValues.placesKeyboardButton }) {
+                        KeyboardDismissButton()
+                    }
+                    // 空控制区仍保留命中范围，继续承接上拉与横滑手势。
+                    // 什么都没画的底栏不被系统当作控制区，contentShape 也不管用，触摸落到下面的滚动视图
+                    // （iOS 27 模拟器 hitTest 实测）；挂一个不显示的 identity 玻璃，系统就会接管这一条。
+                    // 只在窄屏触控下挂：Mac 上系统会在这块玻璃底下垫一层整条宽的模糊背板，窗口底部的内容跟着变糊，
+                    // 而其他情况下空控制区本就不接点击。
+                    if controlViews.isEmpty {
+                        if presentation.isCompactTouch {
+                            Color.clear.frame(height: Metrics.paneToolbarHeight).glassEffect(.identity)
+                        } else {
+                            Color.clear.frame(height: Metrics.paneToolbarHeight)
+                        }
+                    } else {
+                        ForEach(controlViews) { $0 }
+                    }
+                }
+            }
+                .padding(.horizontal, Metrics.paneMargin)
+                .modifier(PaneControlsBottom())
+                .drawerShift(.bottom)
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+                // 打字时在输入框里上下拖是选字、滚动，不拉 action 栏
+                .modifier(DrawerPullModifier(enabled: !typing && presentation.isCompactTouch))
+                .modifier(PaneControlSwipe(typing: typing))
+                // 空控制区只在窄屏触控下接上拉与横滑；其他情况只是一段透明的留白，点击和悬停落到后面的内容上。
+                .allowsHitTesting(!controlViews.isEmpty || presentation.isCompactTouch)
+        }
+    }
+}
+
 /// 在这里往上拖拉出 action 栏，只在窄屏触控下。和控制区里的点按、输入同时生效，不抢它们。
 private struct DrawerPullModifier: ViewModifier {
     let enabled: Bool
@@ -224,6 +242,7 @@ private struct CompactPaneHeaderReport: View {
     let header: PaneHeader
     let status: AnyView?
     let actions: AnyView
+    let controls: AnyView
     let openSidebar: (@MainActor () -> Void)?
     let endTyping: () -> Void
     @Environment(\.headerPane) private var headerPane
@@ -236,7 +255,7 @@ private struct CompactPaneHeaderReport: View {
 
     private var headers: [CompactPaneHeader] {
         guard sharedHeaderHeight != nil, let pane = headerPane else { return [] }
-        return [CompactPaneHeader(pane: pane, header: header, status: status, actions: actions, environment: environment,
-                                  openSidebar: openSidebar, endTyping: endTyping)]
+        return [CompactPaneHeader(pane: pane, header: header, status: status, actions: actions, controls: controls,
+                                  environment: environment, openSidebar: openSidebar, endTyping: endTyping)]
     }
 }

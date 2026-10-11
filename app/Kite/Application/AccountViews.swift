@@ -178,6 +178,9 @@ struct TokenPriceSection: View {
         }) {
             if let table {
                 ScrollView(.horizontal) { grid(table).padding(.vertical, 10) }
+                    .scrollIndicators(.hidden)
+                    // 表格靠左与标题、说明对齐，左边保持硬边，前后还有没有由右边的一对箭头提醒。
+                    .hintsScrollOverflow(.horizontal, carets: .atEnd)
             } else if let error {
                 Text(error).foregroundStyle(Theme.danger)
             } else {

@@ -26,6 +26,17 @@ extension View {
 
     /// 标出一块输入框：点它是要打字，所在区域的 endsTyping 不收键盘。
     func typingTarget() -> some View { modifier(TypingTarget()) }
+
+    /// 能滚动的多行输入框只在打字时滚：没在打字时在框里拖，拖动留给所在的地方（控制区上拉抽屉、横滑换窗口、外面的滚动），
+    /// 框里的字不跟着滚。加在 TextField 上，typing 是它自己有没有焦点。只在 iPhone 与 iPad 上。
+    @ViewBuilder
+    func scrollsOnlyWhileTyping(_ typing: Bool) -> some View {
+        #if os(iOS)
+        background(TextScrollLock(locked: !typing))
+        #else
+        self
+        #endif
+    }
 }
 
 extension EnvironmentValues {
@@ -40,12 +51,15 @@ extension ContainerValues {
 
 /// iPhone 上有底栏的地方，键盘升起时在底栏最左边放收起键盘：窗口的控制区由 PaneWindow 加，弹窗与初始配置的按钮栏由 CardActions 加。
 /// 收的是当前的输入框，SwiftUI 的输入框和 UITextView 一样，焦点状态跟着同步。
+/// 只放在给键盘让位的窗口里（keyboardShown，见 CompactPaneStack）：横滑那一行的窗口都建着，按钮插进每个窗口的控制区的话，
+/// 每个控制区都要重排、把输入框重量一遍，三个窗口时键盘升起多卡约 70 毫秒（2026-10-11 真机实测）。
 struct KeyboardDismissButton: View {
     static let icon = "keyboard.chevron.compact.down"
+    @Environment(\.keyboardShown) private var keyboardShown
 
     var body: some View {
         #if os(iOS)
-        if ScreenKeyboard.shared.shown {
+        if ScreenKeyboard.shared.shown && keyboardShown {
             PaneHeaderButtonGroup {
                 // 等按钮松手这次更新过去再收：同步收的话键盘让位会沿用玻璃松手的回弹，整条底栏落下时弹一下
                 ActionButton("收起键盘", icon: Self.icon) { Task { dismissKeyboard() } }
@@ -58,6 +72,76 @@ struct KeyboardDismissButton: View {
 }
 
 #if os(iOS)
+/// 多行 TextField 在 iOS 上是一个 UITextView，scrollDisabled 管不到它（iOS 26 模拟器实测 isScrollEnabled 不变）。
+/// 垫在输入框后面的空视图按屏幕上的位置找到重合的那个 UITextView，没在打字时停掉它的滚动手势。
+/// 按渲染后的位置找：紧凑布局几个窗口排版位置相同，只在渲染时平移开（模拟器实测叠放两框能各自配对）。
+private struct TextScrollLock: UIViewRepresentable {
+    let locked: Bool
+
+    func makeUIView(context: Context) -> Probe { Probe() }
+
+    func updateUIView(_ view: Probe, context: Context) {
+        view.locked = locked
+        view.apply()
+    }
+
+    final class Probe: UIView {
+        var locked = true
+        private weak var target: UITextView?
+        /// 进窗口后没找到时只再等一轮。
+        private var retried = false
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            retried = false
+            apply()
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            apply()
+        }
+
+        func apply() {
+            if target?.window == nil { target = find() }
+            if let target {
+                target.panGestureRecognizer.isEnabled = !locked
+            } else if window != nil, !retried {
+                // 输入框可能还没排好，下一轮再找一次
+                retried = true
+                DispatchQueue.main.async { [weak self] in self?.apply() }
+            }
+        }
+
+        /// 从近到远往上找，取和自己重合得最多的可编辑 UITextView。
+        private func find() -> UITextView? {
+            guard let window, bounds.width > 0, bounds.height > 0 else { return nil }
+            let mine = convert(bounds, to: window)
+            func overlap(_ view: UITextView) -> CGFloat {
+                let shared = view.convert(view.bounds, to: window).intersection(mine)
+                return shared.isNull ? 0 : shared.width * shared.height
+            }
+            func editable(in view: UIView) -> [UITextView] {
+                if let text = view as? UITextView { return text.isEditable ? [text] : [] }
+                return view.subviews.flatMap(editable)
+            }
+            var ancestor = superview
+            while let view = ancestor {
+                if let best = editable(in: view).max(by: { overlap($0) < overlap($1) }), overlap(best) > 0 { return best }
+                ancestor = view.superview
+            }
+            return nil
+        }
+    }
+}
+
 /// 让当前的输入框交出焦点，键盘随之收起。
 func dismissKeyboard() {
     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
