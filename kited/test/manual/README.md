@@ -21,7 +21,7 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 | `verify-transcript-scroll-swift.ts` | SwiftUI 动画收起与滚动阶段的定位交接 | `bun kited/test/manual/verify-transcript-scroll-swift.ts` |
 | `verify-dot-canvas-swift.ts` | 真实 DotField 浮动、闪烁与空白帧交接的颜色连续性 | `bun kited/test/manual/verify-dot-canvas-swift.ts` |
 | `verify-dot-background-swift.ts` | 真实 SwiftUI preference 在窗口点阵启用、停用与移除时的自动占用交接 | `bun kited/test/manual/verify-dot-background-swift.ts` |
-| `verify-compact-pane-stack-swift.ts` | 真实 SwiftUI 卡片连续左右切换后的入口恢复与原生按钮命中，含玻璃控制区和持续动画重绘；仅手动运行 | `bun kited/test/manual/verify-compact-pane-stack-swift.ts` |
+| `verify-compact-pane-stack-swift.ts` | 真实 SwiftUI 紧凑窗口行横滑松手后的焦点切换与原生按钮命中、保活窗口的环境动作、外壳控制区接回源环境后的 keyboardShown、PanePresence 随停稳翻转；仅手动运行 | `bun kited/test/manual/verify-compact-pane-stack-swift.ts` |
 | `verify-card-sheet-sizing-swift.ts` | 同一次真实 SwiftUI sheet 随生产 CardSheet 内容增减长高、缩短；只读取窗口尺寸，仅手动运行 | `bun kited/test/manual/verify-card-sheet-sizing-swift.ts` |
 | `verify-transcript-swift.ts` | 显示投影 JSON 的 Swift 解码、思考和工具结果关联 | `bun kited/test/manual/verify-transcript-swift.ts` |
 | `verify-window-dock.ts` | 窗口拖动、停靠、宽窄视口切换、临时收起与状态恢复 | `bun kited/test/manual/verify-window-dock.ts` |
@@ -31,7 +31,7 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 
 `PluginWebProbe.swift` 是 `verify-plugin-web.ts` 编译和启动的原生探针，不单独运行。其余 Swift 文件是同名验证使用的夹具；`command.ts` 提供共用子进程执行入口。
 
-`verify-compact-pane-stack-swift.ts` 直接编译生产 `CompactPaneStack.swift`，用最小两页模型和离屏 `NSHostingView` 验证两个场景：静态卡片，以及带 `safeAreaBar`、`GlassEffectContainer`、重复状态动画和 `TimelineView` 重绘的卡片。复杂场景使用新卡片首次观测到的环境入口立即反向；每次正向、反向切换后都要求从宿主命中原生 `NSButton` 才发送动作；不截图、不打开或操作用户 App。该验证覆盖卡片容器的命中交接，不涵盖真实触控手势识别或完整业务页面；脚本可接受 Swift 源文件路径作为第一个参数，用于编译保留的回归快照。
+`verify-compact-pane-stack-swift.ts` 把生产的 `CompactPaneStack.swift` 连同 `WindowMotion.swift`、`CompactPaneHeader.swift`、`PaneControlSwipe.swift` 一起编译，`Pane`、`WindowLayout`、`DrawerMotion`、`PanePresence` 等由夹具给最小定义；两页模型放在离屏 `NSHostingView` 里，外面按 `CompactWindow` 的接法套 `CompactPaneHeaderHost`。一个场景顺序验证：直接调环境里的 `trackPaneSwipe`、`endPaneSwipe` 横滑松手后焦点换到相邻窗口，`WindowMotion` 停稳后新窗口的原生 `NSButton` 从宿主可命中、换走的窗口平移到宿主之外；相邻窗口建出时拿到的 `switchPane` 在它成为当前窗口后仍能切回；外壳控制区整份接回源窗口环境后仍读到外壳写入的 `keyboardShown`，并能用源环境里的 `switchPane` 切换；`PanePresence` 拖动中对露出来的相邻窗口为在屏，停稳后换走的窗口翻成不在屏。不发真实手势、不验证点阵与抽屉、不截图、不打开或操作用户 App；脚本可接受 `CompactPaneStack.swift` 的路径作为第一个参数，用于编译保留的回归快照。
 
 `verify-card-sheet-sizing-swift.ts` 使用真实 SwiftUI sheet 验证共享弹窗随内容增减调整高度、超长内容受屏幕可用范围限制，且始终使用同一窗口。测试窗口透明且不接收鼠标，只读取窗口尺寸；不涵盖登录服务、实际滚动手势或视觉验收。第一个参数可指定包含完整控件定义的 `CardControls.swift` 快照，此时替代生产控件文件参与编译。
 
