@@ -125,6 +125,15 @@ extension AnyTransition {
     var rect: CGRect?
 }
 
+/// 所在窗口在不在屏上。紧凑布局横滑那一行的窗口都建着，没露出来的只是平移到屏外；宽屏缩进停靠栏的窗口正文用蒙版遮住。
+/// SwiftUI 不会因为看不见就停掉 TimelineView(.animation)：平移出窗口、opacity 0、mask 全透都照常每帧跑 body
+/// （2026-10-11 Mac 实测，iPhone 未量），窗口里的逐帧动画要自己按它暂停。
+/// 放盒子不放 Bool：横滑开始、停稳时相邻窗口露没露出来会翻转，Bool 直接进环境就是一次环境变化，整棵窗口子树都要收（见 CompactPaneStack 文件头）；
+/// 盒子建好不再换，只改 onScreen，只有读它的叶子视图重算。CompactPaneStack 和 PaneCard 给出。
+@MainActor @Observable final class PanePresence {
+    var onScreen = true
+}
+
 extension EnvironmentValues {
     /// 窗口底部为 Home 条保留的高度，不含键盘；底栏展开时仍保留。SwiftUI 的安全区读出来是合在一起的，分不出键盘，
     /// CompactLayout 从 UIKit 读了给出；Mac 上是 0。
@@ -137,7 +146,11 @@ extension EnvironmentValues {
     @Entry var formMargin: CGFloat?
     /// iPhone 上键盘升起来了。CompactLayout 在屏幕这一层比出来：SwiftUI 的安全区比 Home 条那一截高。
     /// 不能在窗口里比：窗口里的安全区按窗口停着的样子换算过（底栏钉着时缩放），比出来不准。Mac 上总是 false。
+    /// 紧凑布局里只给外壳上的控制区（CompactPaneHeaderHost）和占位内容（CompactWindow），不进窗口正文：
+    /// 键盘每次升降、焦点每次换窗口都是一次环境变化，进了正文整棵窗口子树都要收，见 CompactPaneStack 文件头。
     @Entry var keyboardShown = false
+    /// 所在窗口在不在屏上，见 PanePresence。CompactPaneStack 和 PaneCard 给出；别处没有，当作在屏上。
+    @Entry var panePresence: PanePresence?
 
     /// 拉开侧边栏，标题栏左边的按钮调它。紧凑布局由 CompactLayout 给出；宽屏侧栏收起时由主窗口给出，
     /// 只交给排在左上角的窗口。没有就不显示按钮。

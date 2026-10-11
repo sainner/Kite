@@ -42,8 +42,11 @@ struct CompactPaneHeaders: PreferenceKey {
 }
 
 /// 标题栏和底部控制区都留在外壳上，换窗口时原地过渡，只有正文进入横向切换层。
+/// 键盘升没升也只在这里告诉控制区（收起键盘的按钮、键盘上方的留白），不进窗口正文：进了正文，键盘每次升降、焦点每次换窗口，
+/// 整棵窗口子树都要收一次环境变化，见 CompactPaneStack 文件头。
 struct CompactPaneHeaderHost: ViewModifier {
     let focused: Pane?
+    let keyboardShown: Bool
     @State private var height: CGFloat?
     @State private var controls = SharedPaneControls()
     @Environment(\.paneTopSafeInset) private var topInset
@@ -59,7 +62,7 @@ struct CompactPaneHeaderHost: ViewModifier {
                         CompactPaneHeaderBar(source: source)
                             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
                             .frame(maxHeight: .infinity, alignment: .top)
-                        CompactPaneControlsBar(source: source, controls: controls)
+                        CompactPaneControlsBar(source: source, controls: controls, keyboardShown: keyboardShown)
                             .frame(maxHeight: .infinity, alignment: .bottom)
                     }
                 }
@@ -72,11 +75,15 @@ struct CompactPaneHeaderHost: ViewModifier {
 private struct CompactPaneControlsBar: View {
     let source: CompactPaneHeader
     let controls: SharedPaneControls
+    let keyboardShown: Bool
 
     var body: some View {
         let pane = source.pane
         source.controls
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { controls.measured($0, for: pane) }
+            // 键盘升没升只有这一条控制区知道，见 KeyboardDismissButton、PaneControlsBottom。
+            // 要写在接回源环境的里面：接回源环境是整份替换，写在外面会被源窗口环境里的默认值盖掉
+            .environment(\.keyboardShown, keyboardShown)
             // 控制区移出正文后仍使用源窗口的会话、实例与动作环境。
             .environment(\.self, source.environment)
             .id(pane)

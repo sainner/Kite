@@ -7,21 +7,20 @@ import SwiftUI
 /// iPhone 上一次卡 120～440 毫秒（2026-10-11 真机 Time Profiler）。当前窗口先建，其余的等它出来以后由近到远一个个建，
 /// 不赶在滑动和抽屉开合的时候；手指比预热先到时，当场建出相邻的那个。
 ///
-/// 放进窗口环境的东西（横滑动作）建好就不再换：环境一变，SwiftUI 要把它推给窗口里的每个 UIKit 视图，
+/// 放进窗口环境的东西（横滑动作、在不在屏上的 PanePresence）建好就不再换：环境一变，SwiftUI 要把它推给窗口里的每个 UIKit 视图，
 /// 对话里每段字都是一个 UITextView，一次 60～90 毫秒（同上实测），横滑开始、松手、停稳各来一次。
+/// 会变的量只改盒子里的属性，只有读它的叶子视图重算；键盘升没升不进窗口正文，只给外壳上的控制区（见 CompactPaneHeaderHost）。
 struct CompactPaneStack: View {
     let group: PaneGroup
     let motion: DrawerMotion
     let width: CGFloat
-    let keyboardShown: Bool
     @State private var row: PaneRow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(group: PaneGroup, motion: DrawerMotion, width: CGFloat, keyboardShown: Bool) {
+    init(group: PaneGroup, motion: DrawerMotion, width: CGFloat) {
         self.group = group
         self.motion = motion
         self.width = width
-        self.keyboardShown = keyboardShown
         _row = State(initialValue: PaneRow(layout: group.layout, drawer: motion, width: width))
     }
 
@@ -35,12 +34,14 @@ struct CompactPaneStack: View {
                 let current = pane == focused
                 // 滑动途中，开始时那个窗口两旁的都可能露出来
                 let exposed = current || swipe.map { abs(index - $0.page) <= 1 } == true
+                let presence = row.presence(of: pane)
                 RowPlacement(motion: row.slide, offset: CGFloat(index) * width) {
                     PaneBody(group: group, pane: pane)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                    // 键盘升没升只告诉当前窗口：收起键盘的按钮只插进它的控制区，见 KeyboardDismissButton
-                    .environment(\.keyboardShown, current && keyboardShown)
+                    .environment(\.panePresence, presence)
+                    // 露没露出来写进盒子，不在 body 求值时改：那样读它的视图会在这次更新里再被触发一轮
+                    .onChange(of: exposed, initial: true) { _, exposed in if presence.onScreen != exposed { presence.onScreen = exposed } }
                     .modifier(DotsPresence(presented: current && swipe == nil))
                     // 没露出来的窗口不要窗口的点阵层
                     .transformPreference(WindowDotsActive.self) { if !exposed { $0 = false } }
@@ -88,6 +89,8 @@ final class PaneRow {
     @ObservationIgnored let drawer: DrawerMotion
     @ObservationIgnored var width: CGFloat
     @ObservationIgnored var reduceMotion = false
+    /// 各窗口在不在屏上的盒子，放进窗口环境后不再换；第一次要时建，和 warm 一样只增不减。
+    @ObservationIgnored private var presences: [Pane: PanePresence] = [:]
     /// 放进环境的动作，建好就不再换。
     @ObservationIgnored private(set) var track: @MainActor (CGFloat) -> Void = { _ in }
     @ObservationIgnored private(set) var end: @MainActor (CGFloat, CGFloat) -> Void = { _, _ in }
@@ -114,6 +117,13 @@ final class PaneRow {
 
     func keep(_ pane: Pane) {
         if !warm.contains(pane) { warm.insert(pane) }
+    }
+
+    func presence(of pane: Pane) -> PanePresence {
+        if let presence = presences[pane] { return presence }
+        let presence = PanePresence()
+        presences[pane] = presence
+        return presence
     }
 
     /// 当前窗口出来以后，由近到远把其余窗口一个个建好；滑动、抽屉开合时等它停下。

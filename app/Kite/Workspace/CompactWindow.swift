@@ -22,8 +22,8 @@ struct CompactWindow: View {
             // 外壳的身份不随会话改变，保留变换和形状的动画状态。
             ZStack(alignment: .topLeading) {
                 if windowed, let group = model.paneGroup {
-                    CompactPaneStack(group: group, motion: motion, width: geometry.screen.width, keyboardShown: geometry.keyboardShown)
-                        .modifier(CompactPaneHeaderHost(focused: group.layout.focused))
+                    CompactPaneStack(group: group, motion: motion, width: geometry.screen.width)
+                        .modifier(CompactPaneHeaderHost(focused: group.layout.focused, keyboardShown: geometry.keyboardShown))
                         .environment(group.layout)
                         .transition(.opacity.combined(with: .dotsPresence))
                         // 换一组窗口（侧栏切栏目、切工作区）直接替换：交叉淡化时新旧两组的点阵同时半透明，整片会暗一下
@@ -114,7 +114,7 @@ private struct WindowShell<Content: View>: View {
                     .allowsHitTesting(false)
             }
             content
-                // 停着时的量，开合时不变。键盘升没升由内容自己给（见 CompactWindow），横滑那一行只给当前窗口
+                // 停着时的量，开合时不变。键盘升没升由内容自己给（见 CompactWindow）：横滑那一行只给外壳上的控制区，不进窗口正文
                 .environment(\.homeIndicatorInset, covered.home)
                 .environment(\.paneTopSafeInset, covered.insets.top)
                 // 状态栏、Home 条和键盘按停着的样子让位。传进来的安全区只看停着的摆放（铺满时是 0），开合时不变

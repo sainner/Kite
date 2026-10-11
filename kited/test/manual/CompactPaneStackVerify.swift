@@ -203,7 +203,7 @@ private struct CompactPaneStackContract {
         let layout = WindowLayout(panes: panes)
         let recorder = CompactPaneRecorder()
         let group = PaneGroup(layout: layout, recorder: recorder, lively: lively)
-        let host = NSHostingView(rootView: CompactPaneStack(group: group, motion: DrawerMotion(), width: 360, keyboardShown: false))
+        let host = NSHostingView(rootView: CompactPaneStack(group: group, motion: DrawerMotion(), width: 360))
         let window = NSWindow(contentRect: CGRect(x: -10000, y: -10000, width: 360, height: 240),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

@@ -438,6 +438,8 @@ struct PaneCard: View {
     @State private var scope = DotScope()
     @State private var usesDots = false
     @State private var screenOrigin = CGPoint.zero
+    /// 缩进停靠栏时不在屏上，写进这个盒子交给内容：只有读它的逐帧动画随它停、起，窗口本身不跟着重算。
+    @State private var presence = PanePresence()
     let motion: WindowMotion
     let viewport: CGSize
     let appearance: WindowAppearance
@@ -486,6 +488,7 @@ struct PaneCard: View {
                 .environment(\.paneOverflowActions, controlsInMenu ? windowActions : nil)
                 .environment(\.paneHeaderControlsInset, actionsShown ? controlsSize.width + Metrics.paneButtonGap : 0)
                 .environment(\.paneHeaderMinHeight, controlsSize.height)
+                .environment(\.panePresence, presence)
                 .containerShape(RoundedRectangle(cornerRadius: Metrics.cardRadius))
                 .allowsHitTesting(!minimized && !motion.moving)
                 .accessibilityHidden(minimized)
@@ -514,6 +517,10 @@ struct PaneCard: View {
         .onGeometryChange(for: CGPoint.self) { $0.frame(in: .global).origin } action: { screenOrigin = $0; updateDots() }
         .onChange(of: motion.target, initial: true) { updateDots() }
         .onChange(of: contentSize) { updateDots() }
+        .onChange(of: minimized, initial: true) { _, minimized in
+            let onScreen = !minimized
+            if presence.onScreen != onScreen { presence.onScreen = onScreen }
+        }
         .onChange(of: workspace.drag?.pane) { _, _ in cardHovered = false; onHover(false) }
         .onChange(of: motion.moving) { _, moving in
             if moving { onHover(false) }
