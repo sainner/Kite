@@ -4,13 +4,14 @@ import SwiftUI
 struct PaneBody: View {
     let group: PaneGroup
     let pane: Pane
+    var retainForExit = false
     @Environment(AppModel.self) private var model
 
     var body: some View {
         Group {
             switch group {
             case .workspace(let area):
-                WorkspacePaneBody(pane: pane).environment(area)
+                WorkspacePaneBody(pane: pane, retainForExit: retainForExit).environment(area)
                     .environment(\.paneConnectionNotice, model.connectionNotice(model.connection(for: area)))
             case .accounts:
                 ModelAccountPane(pane: pane)
@@ -27,9 +28,19 @@ struct PaneBody: View {
 /// 每个工作区窗口按目标引用取得自己的线程或插件实例，不共享“当前线程”槽位。
 private struct WorkspacePaneBody: View {
     let pane: Pane
+    let retainForExit: Bool
+    @State private var retained = PaneExitContent()
     @Environment(WorkArea.self) private var area
 
     var body: some View {
+        if retainForExit {
+            retained.content(present: area.windows.contains { $0.id == pane.id }, current: AnyView(resolved))
+        } else {
+            resolved
+        }
+    }
+
+    @ViewBuilder private var resolved: some View {
         let renderer = area.view(in: pane)?.renderer
         Group {
             if let thread = area.thread(in: pane) {
@@ -51,6 +62,15 @@ private struct WorkspacePaneBody: View {
             area.instances.first { $0.id == window.target.instanceId }
         })
         .modifier(ReferenceNavigation())
+    }
+}
+
+/// 只延长当前视图的离场寿命，不缓存后续打开的窗口。
+private final class PaneExitContent {
+    private var last: AnyView?
+    func content(present: Bool, current: AnyView) -> AnyView {
+        if present || last == nil { last = current }
+        return last ?? current
     }
 }
 

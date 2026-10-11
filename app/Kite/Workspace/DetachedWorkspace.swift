@@ -23,6 +23,7 @@ struct DetachedWorkspace: View {
             .frame(minWidth: minimum.width, minHeight: minimum.height)
             .appDotBackground()
             .ignoresSafeArea()
+            .dockHoverHost()
             .resizesByModule()
             .background(WindowPlacer(frame: model.pendingPlacement))
             .onAppear {

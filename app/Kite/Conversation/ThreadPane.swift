@@ -5,6 +5,7 @@ import SwiftUI
 struct ThreadPane: View {
     @Environment(WorkThread.self) private var thread
     @Environment(AppModel.self) private var model
+    @Environment(\.windowMotion) private var windowMotion
     @Environment(WorkArea.self) private var area
     /// 对话怎么滚：跟不跟着最底下、发送后滑到哪、底下留多少空白。
     @State private var scroll = TranscriptScroll()
@@ -74,6 +75,12 @@ struct ThreadPane: View {
         #endif
         .environment(\.workingDirectory, thread.transcript.root)
         .task(id: thread.client?.identity) {
+            // 打开时先完成窗口的移动，再接收并排版历史；不在每次拖动时重连已经建立的订阅。
+            await Task.yield()
+            while windowMotion?.moving == true || windowMotion?.interacting == true {
+                do { try await Task.sleep(for: .milliseconds(40)) } catch { return }
+            }
+            guard !Task.isCancelled else { return }
             await thread.observe()
         }
         .environment(\.arrivingMessages, arriving)

@@ -423,26 +423,6 @@ struct DockDimmed: ViewModifier {
     }
 }
 
-/// Mac 悬停时浮在格子左边的名字与状态。
-struct DockHoverLabel: View {
-    let text: String
-    let frame: CGRect
-
-    var body: some View {
-        let width: CGFloat = 280
-        Text(text)
-            .font(Theme.secondary)
-            .lineLimit(1)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Capsule().fill(Theme.card).shadow(color: .black.opacity(0.15), radius: 6, y: 2))
-            .frame(width: width, height: frame.height, alignment: .trailing)
-            .position(x: frame.minX - Metrics.gap / 2 - width / 2, y: frame.midY)
-            .allowsHitTesting(false)
-            .transition(.opacity)
-    }
-}
-
 /// 加号：宽屏是圆、右上角与窗口右上角同心；紧凑布局的底栏边上没有窗口角，是正圆。
 struct AddWindowButton: View {
     var concentric = true

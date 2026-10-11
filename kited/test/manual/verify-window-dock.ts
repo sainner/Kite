@@ -20,6 +20,7 @@ try {
     '-target', `${architecture}-apple-macosx26.0`,
     join(source, 'Workspace', 'Tiles.swift'),
     join(source, 'Workspace', 'WindowLayout.swift'),
+    join(source, 'Workspace', 'WindowMotion.swift'),
     join(source, 'UI', 'Dots.swift'),
     join(source, 'UI', 'DotStage.swift'),
     join(source, 'UI', 'DotFigure.swift'),

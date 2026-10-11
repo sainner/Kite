@@ -4,6 +4,7 @@ import SwiftUI
 /// 拖动卡片的接口收内容区里的坐标和内容区的大小，换算由摆卡片的视图做。
 @Observable
 final class WindowLayout {
+    private(set) var motionKind = WindowMotionKind.immediate
     let isFixed: Bool
     private(set) var root: Tile?
     /// 缩小的窗口仍属于这个工作区，按停靠顺序保存。
@@ -34,11 +35,12 @@ final class WindowLayout {
         if self.presentation == .compact && presentation == .tiled {
             carriedFocus = focused.flatMap { docked.contains($0) ? $0 : nil }
         }
+        motionKind = .immediate
         self.presentation = presentation
         availableSize = nextSize
     }
 
-    func cancelDrag() { drag = nil }
+    func cancelDrag() { motionKind = .settle; drag = nil }
 
     init(panes: [Pane] = [], arrangement: Arrangement = .oneAndTwo,
          storageKey: String? = nil, defaults: UserDefaults = .standard, reconcileOnLoad: Bool = true) {
@@ -76,6 +78,7 @@ final class WindowLayout {
     /// 服务端决定窗口是否存在。本机只保留这些 ID 的位置，新窗口默认收进停靠栏。
     func reconcile(_ available: [Pane]) {
         guard !isFixed else { return }
+        motionKind = .settle
         let allowed = Set(available)
         guard Set(panes) != allowed else { return }
         drag = nil
@@ -98,7 +101,8 @@ final class WindowLayout {
     func activate(_ pane: Pane, in bounds: CGRect? = nil) {
         guard panes.contains(pane) else { return }
         if isFixed { focus(pane); return }
-        withAnimation(.snappy) {
+        motionKind = .settle
+        withAnimation(.windowSettle) {
             drag = nil
             carriedFocus = nil
             if docked.contains(pane) {
@@ -173,7 +177,8 @@ final class WindowLayout {
         guard !isFixed else { return }
         let tile = arrangement.tile(for: panes)
         let remaining = panes.filter { !(tile?.panes.contains($0) ?? false) }
-        withAnimation(.snappy) {
+        motionKind = .settle
+        withAnimation(.windowSettle) {
             drag = nil
             carriedFocus = nil
             root = tile
@@ -193,7 +198,8 @@ final class WindowLayout {
             return
         }
         guard root?.panes.contains(pane) == true else { return }
-        withAnimation(.snappy) {
+        motionKind = .settle
+        withAnimation(.windowSettle) {
             drag = nil
             root = root?.removing(pane)
             docked.append(pane)
@@ -206,7 +212,8 @@ final class WindowLayout {
     func expand(_ pane: Pane) {
         guard !isFixed else { return }
         guard shown?.panes.contains(pane) == true else { return }
-        withAnimation(.snappy) {
+        motionKind = .settle
+        withAnimation(.windowSettle) {
             drag = nil
             carriedFocus = nil
             docked = docked.filter { $0 != pane } + (root?.panes ?? []).filter { $0 != pane }
@@ -250,6 +257,7 @@ final class WindowLayout {
     /// 拖动 gap 这道缝。两边都不小于各自的最小尺寸，里面再切过的也算上。
     func resize(_ gap: TileLayout.Gap, to location: CGPoint) {
         guard !isFixed else { return }
+        motionKind = .immediate
         let split = gap.split
         let horizontal = split.axis == .horizontal
         let length = { (size: CGSize) in horizontal ? size.width : size.height }
@@ -264,7 +272,8 @@ final class WindowLayout {
 
     /// 分栏拖动只改内存，松手后吸附到模块并保存最终比例。
     func finishResize() {
-        withAnimation(.snappy) { resizing = nil }
+        motionKind = .settle
+        withAnimation(.windowSettle) { resizing = nil }
         save()
     }
 
@@ -309,14 +318,16 @@ final class WindowLayout {
         next.layout = next.placing(.placeholder, in: regions.canvas) ?? next.rest
         next.docked = remainingDock
         if case .dock(let index) = next.spot { next.docked.insert(pane, at: index) }
-        withAnimation(.snappy) { drag = next }
+        motionKind = .preview
+        withAnimation(.windowPreview) { drag = next }
     }
 
     func drop(in bounds: CGRect) {
         guard !isFixed else { return }
         guard let next = drag else { return }
         // 一次提交树和停靠顺序；同一张 CardSlot 在圆和卡片之间直接动画，不留下延迟回调覆盖新拖动。
-        withAnimation(.snappy) {
+        motionKind = .settle
+        withAnimation(.windowSettle) {
             switch next.spot {
             case .dock:
                 carriedFocus = nil

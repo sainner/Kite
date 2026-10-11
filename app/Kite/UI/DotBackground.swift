@@ -79,11 +79,12 @@ private struct WindowDotBackground: ViewModifier {
 /// 这里画在软边之上、标题栏控件之下，标题栏和窗口的点阵连成一片，窗口的取景框在这块挖空。
 /// 窄屏的软边只糊标题栏下面那一截，不补画。窗口没选点阵时什么也不画。
 struct ScrollEdgeDots: View {
+    @Environment(\.dotCarrier) private var carrier
     @Environment(\.windowUsesDots) private var usesDots
     @Environment(\.workspacePresentation) private var presentation
 
     var body: some View {
-        if usesDots && presentation != .compact {
+        if usesDots && presentation != .compact && carrier == nil {
             DotCanvas()
                 .background {
                     GeometryReader { Color.clear.preference(key: ScrollEdgeDotsArea.self, value: [$0.frame(in: .global)]) }

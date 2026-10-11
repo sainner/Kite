@@ -26,6 +26,8 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 | `verify-card-sheet-sizing-swift.ts` | 同一次真实 SwiftUI sheet 随生产 CardSheet 内容增减长高、缩短；只读取窗口尺寸，仅手动运行 | `bun kited/test/manual/verify-card-sheet-sizing-swift.ts` |
 | `verify-transcript-swift.ts` | 显示投影 JSON 的 Swift 解码、思考和工具结果关联 | `bun kited/test/manual/verify-transcript-swift.ts` |
 | `verify-window-dock.ts` | 窗口拖动、停靠、宽窄视口切换、临时收起与状态恢复 | `bun kited/test/manual/verify-window-dock.ts` |
+| `verify-window-motion-swift.ts` | 真实 SwiftUI 窗口收放与连续 tracking 的像素同步、resize 后标题命中，以及上下双窗口交换位置后的标题像素和命中归属；三个离屏场景，不覆盖悬停回调，仅手动运行 | `bun kited/test/manual/verify-window-motion-swift.ts` |
+| `verify-dock-hover-label-swift.ts` | 生产 source/host 将短/长中文停靠提示绘到内容矩形 mask 外；36/16 点图标旁保持自然大小与垂直居中，底边提示进入窗口留白，nil source 移除提示；一个关闭动画的离屏场景，不测 hover 时序，仅手动运行 | `bun kited/test/manual/verify-dock-hover-label-swift.ts` |
 | `verify-plugin-web.ts` | 真实 WKWebView 与 MCP Apps SDK 的隔离和生命周期 | `bun kited/test/manual/verify-plugin-web.ts`；iOS 加 `--ios <模拟器 UDID>` |
 
 `PluginWebProbe.swift` 是 `verify-plugin-web.ts` 编译和启动的原生探针，不单独运行。其余 Swift 文件是同名验证使用的夹具；`command.ts` 提供共用子进程执行入口。

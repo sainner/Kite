@@ -17,6 +17,7 @@ struct MainWindow: View {
         .ignoresSafeArea()
         .resizesByModule()
         #endif
+        .dockHoverHost()
     }
 
     private var content: some View {

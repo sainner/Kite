@@ -76,42 +76,42 @@ struct PaneHeaderBar<Status: View, Actions: View>: View {
         // 合进玻璃的信息缩小；环境要在拆分子视图之前给出
         Group(subviews: status.environment(\.paneHeaderStatusGrouped, openSidebar != nil && !statusOpensSidebar)) { statusViews in
             let showsSidebarButton = openSidebar != nil && (!statusOpensSidebar || statusViews.isEmpty)
-            HStack(spacing: 0) {
-                if let openSidebar, statusOpensSidebar, !statusViews.isEmpty {
-                    Button {
-                        // 长按弹出说明后松手，不再打开侧栏
-                        guard !showsStatusText else { return }
-                        openSidebar()
-                    } label: {
-                        HStack(spacing: 0) {
-                            ForEach(statusViews) { $0 }
+            HStack(spacing: Metrics.paneButtonGap) {
+                HStack(spacing: 0) {
+                    if let openSidebar, statusOpensSidebar, !statusViews.isEmpty {
+                        Button {
+                            // 长按弹出说明后松手，不再打开侧栏
+                            guard !showsStatusText else { return }
+                            openSidebar()
+                        } label: {
+                            HStack(spacing: 0) {
+                                ForEach(statusViews) { $0 }
+                            }
+                            .contentShape(.circle)
                         }
-                        .contentShape(.circle)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityHint("打开侧边栏")
-                    .reportsHeaderInteraction()
-                    .modifier(PaneStatusTextPopover(text: statusText, presented: $showsStatusText))
-                } else if let openSidebar {
-                    PaneHeaderButtonGroup {
-                        Button(action: openSidebar) {
-                            PaneHeaderButtonLabel("侧边栏", systemImage: "sidebar.left")
-                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("打开侧边栏")
                         .reportsHeaderInteraction()
+                        .modifier(PaneStatusTextPopover(text: statusText, presented: $showsStatusText))
+                    } else if let openSidebar {
+                        PaneHeaderButtonGroup {
+                            Button(action: openSidebar) {
+                                PaneHeaderButtonLabel("侧边栏", systemImage: "sidebar.left")
+                            }
+                            .reportsHeaderInteraction()
+                            ForEach(statusViews) { statusView in
+                                // 信息区有悬停说明与长按，卡片拖动层在这里挖空
+                                statusView.reportsHeaderInteraction()
+                                    .modifier(PaneStatusTextPopover(text: statusText, presented: $showsStatusText))
+                            }
+                        }
+                    } else {
                         ForEach(statusViews) { statusView in
-                            // 信息区有悬停说明与长按，卡片拖动层在这里挖空
-                            statusView.reportsHeaderInteraction()
+                            statusView.fixedSize()
+                                .reportsHeaderInteraction()
                                 .modifier(PaneStatusTextPopover(text: statusText, presented: $showsStatusText))
                         }
                     }
-                } else {
-                    ForEach(statusViews) { statusView in
-                        statusView.fixedSize()
-                            .reportsHeaderInteraction()
-                            .modifier(PaneStatusTextPopover(text: statusText, presented: $showsStatusText))
-                    }
-                }
-                HStack(spacing: Metrics.paneButtonGap) {
                     PaneHeaderTitle(header: header)
                     // 标题前统一留一个按钮间距；单独显示的信息按圆环方框计算，扣掉方框里已有的空白
                     .padding(.leading, statusViews.isEmpty || showsSidebarButton
@@ -120,15 +120,17 @@ struct PaneHeaderBar<Status: View, Actions: View>: View {
                     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                     .clipped()
-                    actions
-                        .background {
-                            GeometryReader { proxy in
-                                Color.clear.preference(key: PaneHeaderActionsWidth.self, value: proxy.size.width)
-                            }
-                        }
-                        .padding(.leading, controlsInset)
-                        .layoutPriority(1)
                 }
+                .modifier(WindowHeaderAnchor(edge: .leading, clipsTitle: true))
+                actions
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear.preference(key: PaneHeaderActionsWidth.self, value: proxy.size.width)
+                        }
+                    }
+                    .padding(.leading, controlsInset)
+                    .layoutPriority(1)
+                    .modifier(WindowHeaderAnchor(edge: .trailing))
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
             .padding(.horizontal, Metrics.paneMargin)
