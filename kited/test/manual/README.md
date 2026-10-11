@@ -27,11 +27,14 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 | `verify-window-dock.ts` | 窗口拖动、停靠、宽窄视口切换、临时收起与状态恢复 | `bun kited/test/manual/verify-window-dock.ts` |
 | `verify-window-motion-swift.ts` | 真实 SwiftUI 窗口收放与连续 tracking 的像素同步、resize 后标题命中，以及上下双窗口交换位置后的标题像素和命中归属；三个离屏场景，不覆盖悬停回调，仅手动运行 | `bun kited/test/manual/verify-window-motion-swift.ts` |
 | `verify-dock-hover-label-swift.ts` | 生产 source/host 将短/长中文停靠提示绘到内容矩形 mask 外；36/16 点图标旁保持自然大小与垂直居中，底边提示进入窗口留白，nil source 移除提示；一个关闭动画的离屏场景，不测 hover 时序，仅手动运行 | `bun kited/test/manual/verify-dock-hover-label-swift.ts` |
+| `verify-mac-selectable-text-swift.ts` | Mac 对话正文的生产 NSTextView（TextKit 2）：跨段落、标题、引用的选区与复制，嵌套列表里行内代码背景包住字形，360→240→360 按宽度量高且同一宽度只排一次，流式追加只补末尾并保住选区，链接点击到 openURL；五个离屏场景，仅手动运行 | `bun kited/test/manual/verify-mac-selectable-text-swift.ts` |
 | `verify-plugin-web.ts` | 真实 WKWebView 与 MCP Apps SDK 的隔离和生命周期 | `bun kited/test/manual/verify-plugin-web.ts`；iOS 加 `--ios <模拟器 UDID>` |
 
 `PluginWebProbe.swift` 是 `verify-plugin-web.ts` 编译和启动的原生探针，不单独运行。其余 Swift 文件是同名验证使用的夹具；`command.ts` 提供共用子进程执行入口。
 
 `verify-compact-pane-stack-swift.ts` 把生产的 `CompactPaneStack.swift` 连同 `WindowMotion.swift`、`CompactPaneHeader.swift`、`PaneControlSwipe.swift` 一起编译，`Pane`、`WindowLayout`、`DrawerMotion`、`PanePresence` 等由夹具给最小定义；两页模型放在离屏 `NSHostingView` 里，外面按 `CompactWindow` 的接法套 `CompactPaneHeaderHost`。一个场景顺序验证：直接调环境里的 `trackPaneSwipe`、`endPaneSwipe` 横滑松手后焦点换到相邻窗口，`WindowMotion` 停稳后新窗口的原生 `NSButton` 从宿主可命中、换走的窗口平移到宿主之外；相邻窗口建出时拿到的 `switchPane` 在它成为当前窗口后仍能切回；外壳控制区整份接回源窗口环境后仍读到外壳写入的 `keyboardShown`，并能用源环境里的 `switchPane` 切换；`PanePresence` 拖动中对露出来的相邻窗口为在屏，停稳后换走的窗口翻成不在屏。不发真实手势、不验证点阵与抽屉、不截图、不打开或操作用户 App；脚本可接受 `CompactPaneStack.swift` 的路径作为第一个参数，用于编译保留的回归快照。
+
+`verify-mac-selectable-text-swift.ts` 把生产的 `SelectableMarkdown.swift`、`MacSelectableTextView.swift`、`TextKitDecorations.swift`、`PlatformText.swift` 连同 `Theme.swift`、`Markdown.swift`、`InlineCode.swift`、`ReferenceViews.swift` 等一起编进 .app 包，颜色资源用 actool 编成 Assets.car，代码块卡片、表格、宿主模型由夹具给最小定义；`SelectableMarkdown` 放在离屏 `NSWindow` 里的 `NSHostingView`，由 SwiftUI 真实量高和更新。五个场景顺序验证：`setSelectedRange` 跨段落、标题、引用后经 `writeSelection` 复制出按段落换行的纯文本（写到单独命名的 pasteboard，不碰用户剪贴板），合成鼠标拖选跨过标题；深度 1 到 3 的列表项和段落里，行内代码的背景像素连成一块包住字形、颜色是 `Theme.codeBackground` 叠在白底上（挡 3aac1c4 修的制表位画偏）；360→240→360 三种宽度下 frame 高等于 TextKit 排出来的高、末行不越界、改回同宽同高，并借 `ensureLayoutForRange:` 的调用计数确认同一宽度只排一次、改回已量过的宽度不再排；流式追加时 `textStorage` 仍是同一对象、`didProcessEditing` 的编辑范围只在旧串末尾、前面的选区不动、高度跟着长；左键从 `contentView` 命中文本视图后点网页链接和文件引用各到 `openURL` 一次，点普通文字不触发。离屏无边框窗口不激活 App 成不了 key，鼠标事件按 `NSWindow` 的命中结果直接交给文本视图，拖动与松开预先放进事件队列；不验证右键盖层、上浮动画、深色外观和滚轮穿透。第一个参数可指定一份 `app/Kite` 的副本目录，用于编译保留的回归快照或判别力核验。
 
 `verify-card-sheet-sizing-swift.ts` 使用真实 SwiftUI sheet 验证共享弹窗随内容增减调整高度、超长内容受屏幕可用范围限制，且始终使用同一窗口。测试窗口透明且不接收鼠标，只读取窗口尺寸；不涵盖登录服务、实际滚动手势或视觉验收。第一个参数可指定包含完整控件定义的 `CardControls.swift` 快照，此时替代生产控件文件参与编译。
 
