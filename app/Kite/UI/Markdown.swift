@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// agent 回复的 Markdown。解析用 Foundation 自带的（AttributedString 的 full 语法），这里只按它标出的块逐块排版：
+/// 一段 Markdown，每块一个 SwiftUI Text。解析用 Foundation 自带的（AttributedString 的 full 语法），这里只按它标出的块逐块排版：
 /// SwiftUI 的 Text 只认行内的粗体、斜体、代码和链接，标题、列表、代码块、引用、表格这些块它不排。
-/// 正文字号跟着外面：对话里是正文，展开的工具结果里小一号。
+/// 对话里 agent 的话两端都改用 SelectableMarkdown（平台文本视图，能跨段选字），这里剩文件预览和 iPhone 上没有操作栏的正文在用；
+/// SelectableMarkdown 的样子以它为准。正文字号跟着外面：对话里是正文，展开的工具结果里小一号。
 /// 源字符串变化时才解析；布局或其他消息更新引起重画时，沿用当前视图缓存。
 struct MarkdownView: View {
     let source: String
@@ -126,7 +127,7 @@ struct MarkdownBlock {
     }
 }
 
-/// 一块 Markdown。iPhone 上 agent 的话里，代码块、表格、分隔线也用它排（见 SelectableMarkdown）。
+/// 一块 Markdown。agent 的话里，代码块、表格、分隔线也用它排（见 SelectableMarkdown）。
 struct MarkdownBlockView: View {
     let block: MarkdownBlock
     @Environment(\.font) private var font

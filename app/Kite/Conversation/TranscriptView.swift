@@ -152,7 +152,7 @@ private extension Item {
 }
 
 /// agent 说的一段话，铺满这一栏。iPhone 上长按、Mac 上右键，在左下方弹出操作栏：复制、翻译、从这里分叉（翻译、分叉还没做）。
-/// iPhone 上长按以后接着拖是选字（SelectableMarkdown），Mac 上左键选字。
+/// 两端都用 SelectableMarkdown 排：iPhone 上长按以后接着拖是选字，Mac 上左键选字，右键由盖层接（opensActionBar）。
 private struct AgentText: View {
     let id: RowID
     let text: String
@@ -170,7 +170,7 @@ private struct AgentText: View {
         #if os(iOS)
         SelectableMarkdown(source: text, showActions: { selection.show(id) }, dismissActions: { selection.close() })
         #else
-        MarkdownView(text)
+        SelectableMarkdown(source: text)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .opensActionBar(id)
@@ -210,7 +210,12 @@ private struct ItemView: View {
         case .notification(let text):
             EventLabel(text: text, icon: "bell")
         case .text(let text):
+            // 子 agent 做的事、压缩前的原文里 agent 说的话：没有操作栏，Mac 上照样能选字
+            #if os(macOS)
+            SelectableMarkdown(source: text)
+            #else
             MarkdownView(text)
+            #endif
         case .thinking(let text):
             ThinkingRow(text: text)
         case .work(let work):
@@ -263,7 +268,11 @@ private struct CompactedDivider: View {
             }
             .buttonStyle(.pointingPlain)
             if expanded {
+                #if os(macOS)
+                SelectableMarkdown(source: compaction.summary, color: .secondaryLabel).font(Theme.secondary).foregroundStyle(.secondary)
+                #else
                 MarkdownView(compaction.summary).font(Theme.secondary).foregroundStyle(.secondary)
+                #endif
                 HStack(spacing: 16) {
                     if !children.isEmpty {
                         Button(original ? "收起原文" : "显示原文") { withAnimation(.snappy) { original.toggle() } }

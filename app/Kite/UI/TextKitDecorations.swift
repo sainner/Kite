@@ -1,6 +1,9 @@
-#if os(iOS)
 import CoreText
+#if canImport(UIKit)
 import UIKit
+#else
+import AppKit
+#endif
 
 extension NSAttributedString.Key {
     nonisolated static let quoteDecoration = NSAttributedString.Key("kite.quoteDecoration")
@@ -43,7 +46,29 @@ nonisolated final class QuoteDecoration: NSObject, Sendable {
 
 /// 先画引用竖线和行内代码背景，再画原生文字。
 /// 行内代码只覆盖系统排版返回的文字范围，每次折行分别绘制圆角。
+/// 两端的文本视图都是 flipped 坐标，TextKit 2 交给 draw(at:in:) 的 context 已按片段局部坐标设好，Mac 上也不用翻。
 nonisolated final class DecoratedFragment: NSTextLayoutFragment {
+    /// 段落带引用竖线或行内代码时才用会画装饰的片段，其余用普通片段。两端文本视图的排版代理都从这里取。
+    /// TextKit 的回调不在主线程隔离里，绘制参数都跟着字放在不可变属性里。
+    static func fragment(for textElement: NSTextElement) -> NSTextLayoutFragment {
+        let paragraph = (textElement as? NSTextParagraph)?.attributedString
+        if let paragraph, paragraph.length > 0 {
+            let decoration = paragraph.attribute(.quoteDecoration, at: 0, effectiveRange: nil) as? QuoteDecoration
+            var hasInlineCode = false
+            paragraph.enumerateAttribute(.inlineCodeDecoration, in: NSRange(location: 0, length: paragraph.length)) { value, _, stop in
+                if value is InlineCodeDecoration {
+                    hasInlineCode = true
+                    stop.pointee = true
+                }
+            }
+            if decoration != nil || hasInlineCode {
+                return DecoratedFragment(textElement: textElement, range: textElement.elementRange,
+                                         decoration: decoration, hasInlineCode: hasInlineCode)
+            }
+        }
+        return NSTextLayoutFragment(textElement: textElement, range: textElement.elementRange)
+    }
+
     private let decoration: QuoteDecoration?
     private let hasInlineCode: Bool
 
@@ -158,4 +183,3 @@ nonisolated final class DecoratedFragment: NSTextLayoutFragment {
         return CTTypesetterCreateLine(typesetter, CFRange(location: range.location, length: range.length))
     }
 }
-#endif

@@ -141,7 +141,7 @@ struct MessageBubble: View {
 }
 
 /// 用户正文保持原样；独立代码块和 agent 共用 CodeBlock。
-/// iPhone 的普通文字继续用 UIKit 处理长按与拖动选字。
+/// 普通文字两端都排进平台文本视图（SelectableText）：iPhone 上长按与拖动选字，Mac 上左键拖选。
 private struct MessageText: View {
     let message: Message
     let queued: Bool
@@ -159,12 +159,7 @@ private struct MessageText: View {
                                    showActions: { selection.show(.message(message.id)) },
                                    dismissActions: { selection.close() })
                     #else
-                    if index == 0, let command = message.command {
-                        let name = Text(command).font(Theme.code)
-                        text.isEmpty ? name : Text("\(name) \(text)")
-                    } else {
-                        Text(text)
-                    }
+                    SelectableText(text: text, command: index == 0 ? message.command : nil, color: queued ? .label : .white)
                     #endif
                 case .code(let code, let language):
                     // 整条消息统一折叠；代码不再单独截断，展开全文后一次看完。
@@ -178,7 +173,7 @@ private struct MessageText: View {
             }
         }
         .font(Theme.body)
-        // 已接收的实色气泡恒用白字；排队中的透明描边气泡仍跟随系统文字色。
+        // 已接收的实色气泡恒用白字；排队中的透明描边气泡仍跟随系统文字色。正文的颜色由 SelectableText 自己带，这里管代码块
         .foregroundStyle(queued ? Color.primary : .white)
         .multilineTextAlignment(.leading)
         .textSelectable(selectable)
@@ -325,13 +320,14 @@ private struct BubbleSurface: View {
 extension EnvironmentValues {
     /// 刚发出、气泡还在下面藏着的消息：对话往上滑的同时，气泡从下往上浮进来。ThreadPane 给出。
     @Entry var arrivingMessages: Set<String> = []
-    /// 消息正文能不能选字，见 Rising。
-    @Entry fileprivate var messageTextSelectable = true
+    /// 消息正文能不能选字，见 Rising。Mac 的文本视图（SelectableTextView）读它。
+    @Entry var messageTextSelectable = true
 }
 
 /// 气泡从下面 bubbleRise 处浮上来、淡显，progress 从 1 走到 0。
-/// 浮的过程中正文不能选字：Mac 上能选字的文字由单独一层 AppKit 视图画，和对话往上滑同时动画时，它不跟着气泡上浮；
-/// 按普通文字画就和气泡在同一层里一起走。用动画自己的进度判断浮完：withAnimation 的 completion 对滚动会提前回调。
+/// 浮的过程中正文不能选字：原先 Mac 上 SwiftUI 的可选文字由单独一层 AppKit 视图画，和对话往上滑同时动画时不跟着气泡上浮。
+/// 换成 NSTextView 后实验里它跟着上浮（spikes/mac-textkit-prose），这个约定先保持不动。
+/// 用动画自己的进度判断浮完：withAnimation 的 completion 对滚动会提前回调。
 private struct Rising: ViewModifier, Animatable {
     var progress: CGFloat
 

@@ -1,7 +1,4 @@
 import SwiftUI
-#if os(iOS)
-import UIKit
-#endif
 
 /// 两条原生渲染路径共用字号比例，并保留所在标题、表头的字重与倾斜。
 enum InlineCodeStyle {
@@ -10,19 +7,17 @@ enum InlineCodeStyle {
         return base.isItalic ? font.italic() : font
     }
 
-    #if os(iOS)
-    static func font(relativeTo base: UIFont) -> UIFont {
-        let traits = base.fontDescriptor.object(forKey: .traits) as? [UIFontDescriptor.TraitKey: Any]
-        let fallbackWeight: UIFont.Weight = base.fontDescriptor.symbolicTraits.contains(.traitBold) ? .bold : .regular
+    /// 文本视图的属性串用：等宽、字号按比例、保留字重和倾斜。
+    static func font(relativeTo base: PlatformFont) -> PlatformFont {
+        let traits = base.fontDescriptor.object(forKey: .traits) as? [PlatformFontDescriptor.TraitKey: Any]
+        let fallbackWeight: PlatformFont.Weight = base.fontDescriptor.symbolicTraits.contains(.bold) ? .bold : .regular
         let weight = (traits?[.weight] as? NSNumber)?.doubleValue ?? fallbackWeight.rawValue
-        let font = UIFont.monospacedSystemFont(ofSize: base.pointSize * Metrics.inlineCodeFontScale,
-                                              weight: .init(rawValue: weight))
-        let inherited = base.fontDescriptor.symbolicTraits.intersection(.traitItalic)
-        guard !inherited.isEmpty,
-              let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(inherited)) else { return font }
-        return UIFont(descriptor: descriptor, size: 0)
+        let font = PlatformFont.monospacedSystemFont(ofSize: base.pointSize * Metrics.inlineCodeFontScale,
+                                                    weight: .init(rawValue: weight))
+        let inherited = base.fontDescriptor.symbolicTraits.intersection(.italic)
+        guard !inherited.isEmpty else { return font }
+        return font.addingTraits(inherited) ?? font
     }
-    #endif
 }
 
 /// 只标记文字范围，背景绘制不拆分原生文本的排版、选择和链接。
