@@ -15,7 +15,9 @@ test('轻任务断流后队列继续，关闭取消在途和排队请求', async
   const model = new ManualModel();
   const results = new Seen<{ purpose: string; durationMs: number; usage?: JsonObject; error?: string }>();
   tasks = new LightTasks({ model: () => model, onResult: (result) => results.add(result) });
-  const generate = (purpose: string) => tasks!.generateText({ purpose, instructions: '生成短文本', input: purpose });
+  const generate = (purpose: string) => tasks!.generateText({
+    purpose, model: { model: 'gpt-6-luna', reasoning: 'low' }, instructions: '生成短文本', input: purpose,
+  });
 
   const broken = generate('断流').catch((error: unknown) => error);
   const complete = generate('完整');

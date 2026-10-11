@@ -8,6 +8,7 @@ import type { Kite } from './kite.ts';
 import { operationCatalog } from './operations/contract.ts';
 import { roleSelection } from './roles.ts';
 import { agentDefinitionSchema } from './agents/definition.ts';
+import { defaultAgentModel } from './agents/models.ts';
 import type { Network } from './network.ts';
 import { publisherConfig, type CatalogPublisher } from './catalog-publisher.ts';
 import { tokenPrices } from './token-prices.ts';
@@ -220,14 +221,15 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/agent-options': { GET: bound((req) => kite.agentOptions(req.params.id)) },
       '/context-templates': { GET: bound(() => kite.contextTemplates.list()) },
       '/context-templates/:id': { PUT: bound(async (req) => {
-        const b = await body(req);
-        return kite.updateContextTemplate(req.params.id, str(b.expectedRevision, 'expectedRevision'), b.definition);
+        const { expectedRevision, ...template } = await body(req);
+        return kite.updateContextTemplate(req.params.id, str(expectedRevision, 'expectedRevision'), template);
       }) },
       '/token-counts': { POST: bound(async (req) => {
-        const parsed = z.object({ texts: z.array(z.string()).max(200), model: z.string().min(1).optional(), scene: z.string().optional() })
+        const parsed = z.object({ texts: z.array(z.string()).max(200), model: z.string().min(1).optional() })
           .strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('计数请求无效');
-        const model = parsed.data.model ?? kite.tokenCounts.modelFor(parsed.data.scene);
+        // 没给模型时（如上下文压缩，实际用会话自己的模型）按默认模型数。
+        const model = parsed.data.model ?? defaultAgentModel;
         return { model, results: await kite.tokenCounts.count(parsed.data.texts, model) };
       }) },
       '/roles': {

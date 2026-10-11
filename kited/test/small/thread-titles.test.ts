@@ -57,7 +57,7 @@ async function saveTitleTemplate(k: Kited, version: string, inputVersion = versi
     ] }],
   };
   const response = await k.call('PUT', `/context-templates/${titleTemplate.id}`, {
-    expectedRevision: original.revision, definition,
+    expectedRevision: original.revision, definition, model: original.model,
   });
   expect(response.status).toBe(200);
   return response.body as ContextTemplate;
@@ -103,7 +103,7 @@ test('首条输入立即生成标题，模板原子保存且在途快照与主�
     input: [{ type: 'paragraph', id: 'stale-input', title: '过期材料', parts: [{ type: 'text', text: '过期标题材料' }] }],
   };
   expect((await k.call('PUT', `/context-templates/${titleTemplate.id}`, {
-    expectedRevision: savedFirst.revision, definition: staleDefinition,
+    expectedRevision: savedFirst.revision, definition: staleDefinition, model: savedFirst.model,
   })).status).toBe(409);
   const afterConflict = await k.call('GET', '/context-templates');
   expect(afterConflict.status).toBe(200);

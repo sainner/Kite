@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import type { AgentInstance, Checkout, Machine, PluginInstance, Project, Thread, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
 import type { ThreadNotification } from './harness/types.ts';
-import type { ContextDefinition } from './harness/context/types.ts';
+import type { Template } from './context-templates.ts';
 import type { HourlyUsage, UsageDay, UsageStore } from './account-usage.ts';
 import type { TemplateEmblem } from './template-emblems.ts';
 import type { Role } from './roles.ts';
@@ -72,7 +72,7 @@ create table if not exists operation_receipts (
   primary key(caller, id)
 );
 create table if not exists context_templates (
-  id text primary key, definition text not null
+  id text primary key, template text not null
 );
 -- 角色的点阵签名，沿用创建会话模板时期的表名。
 create table if not exists template_emblems (
@@ -119,6 +119,7 @@ export class Store implements UsageStore {
     this.db.exec('pragma journal_mode = wal; pragma foreign_keys = on;');
     this.dropLocalProjects();
     this.dropUnpricedUsage();
+    this.dropBareContextTemplates();
     this.db.exec(SCHEMA);
     this.mergeAgentDefinitions();
     // 同一个数据库只属于一台工作机服务。端口、地址和主机名变化都不重建身份。
@@ -149,6 +150,14 @@ export class Store implements UsageStore {
   private dropUnpricedUsage(): void {
     const columns = this.db.query("select name from pragma_table_info('usage_hours')").all() as Array<{ name: string }>;
     if (columns.length && !columns.some((c) => c.name === 'cost')) this.db.exec('drop table usage_hours');
+  }
+
+  /**
+   * 模板带上辅助生成的模型之前，表里只存组装定义。在研期间不迁移：直接重建，改过的模板回到默认；账号里的旧格式副本同步时被跳过。
+   */
+  private dropBareContextTemplates(): void {
+    const columns = this.db.query("select name from pragma_table_info('context_templates')").all() as Array<{ name: string }>;
+    if (columns.some((c) => c.name === 'definition')) this.db.exec('drop table context_templates');
   }
 
   /**
@@ -205,13 +214,13 @@ export class Store implements UsageStore {
   }
 
   projects(): Project[] { return this.db.query('select * from projects order by created_at, id').all().map(projectOf); }
-  contextTemplates(): ContextDefinition[] {
-    return this.db.query('select definition from context_templates order by id').all()
-      .map((row: any) => JSON.parse(row.definition));
+  contextTemplates(): Template[] {
+    return this.db.query('select template from context_templates order by id').all()
+      .map((row: any) => JSON.parse(row.template));
   }
-  contextTemplate(id: string): ContextDefinition | undefined {
-    const row = this.db.query('select definition from context_templates where id = ?').get(id) as { definition: string } | null;
-    return row ? JSON.parse(row.definition) : undefined;
+  contextTemplate(id: string): Template | undefined {
+    const row = this.db.query('select template from context_templates where id = ?').get(id) as { template: string } | null;
+    return row ? JSON.parse(row.template) : undefined;
   }
   templateEmblem(id: string): TemplateEmblem | undefined {
     const row = this.db.query('select emblem from template_emblems where template_id = ?').get(id) as { emblem: string } | null;
@@ -255,9 +264,9 @@ export class Store implements UsageStore {
   saveRole(role: Role): void {
     this.db.query('insert into roles values (?, ?) on conflict(id) do update set role = excluded.role').run(role.id, JSON.stringify(role));
   }
-  saveContextTemplate(definition: ContextDefinition): void {
-    this.db.query('insert into context_templates values (?, ?) on conflict(id) do update set definition = excluded.definition')
-      .run(definition.id, JSON.stringify(definition));
+  saveContextTemplate(template: Template): void {
+    this.db.query('insert into context_templates values (?, ?) on conflict(id) do update set template = excluded.template')
+      .run(template.definition.id, JSON.stringify(template));
   }
   project(id: string): Project | null {
     const r = this.db.query('select * from projects where id = ?').get(id);

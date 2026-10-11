@@ -46,7 +46,6 @@ import { ChatGPTModel } from './harness/chatgpt.ts';
 import { readSubscriptionCredentials } from './harness/auth.ts';
 import { SubscriptionLogins } from './subscription-logins.ts';
 import { ModelAccounts, readModelAccounts } from './model-accounts.ts';
-import { agentModels } from './agents/models.ts';
 import { agentModelCatalog } from './agents/capabilities.ts';
 import { TokenCounter } from './token-counts.ts';
 
@@ -122,14 +121,12 @@ export class Kite {
       changed: (workspaceId) => this.changed(workspaceId),
       revokeGrants: (instance) => this.configuration.revokeInstanceGrants(instance),
     });
-    const lightModel = process.env.KITE_LIGHT_MODEL ?? agentModels.models.find((model) => model.tier === 'luna')!.id;
-    this.tokenCounts = new TokenCounter({ lightModel, apiKeys: async () => this.account.linked ? this.account.apiKeys() : [] });
+    this.tokenCounts = new TokenCounter({ apiKeys: async () => this.account.linked ? this.account.apiKeys() : [] });
     if (options.lightTasks !== false && process.env.KITE_LIGHT_TASKS !== '0') {
       const light = options.lightTasks;
       this.lightTasks = new LightTasks({
-        model: light?.model ?? (({ id }) => new ChatGPTModel({
-          model: lightModel,
-          reasoning: process.env.KITE_LIGHT_REASONING ?? 'low', threadId: id,
+        model: light?.model ?? (({ id, model }) => new ChatGPTModel({
+          model: model.model, reasoning: model.reasoning, threadId: id,
           credentials: () => readSubscriptionCredentials(join(home, 'auth', 'chatgpt', 'auth.json')),
           observeLimits: (headers) => this.modelAccounts.observeChatGPT(headers),
         })),
@@ -151,8 +148,8 @@ export class Kite {
 
   machine(): Machine { return this.store.machine; }
   /** 资源库的写入先到账号服务，成功后存本机；没加入账号时只存本机。 */
-  async updateContextTemplate(id: string, expectedRevision: string, definition: unknown) {
-    const valid = this.contextTemplates.validate(id, expectedRevision, definition);
+  async updateContextTemplate(id: string, expectedRevision: string, template: unknown) {
+    const valid = this.contextTemplates.validate(id, expectedRevision, template);
     await this.library.write('template', id, valid, expectedRevision);
     const saved = this.contextTemplates.update(expectedRevision, valid);
     this.bus.emit({ type: 'context-templates.changed' });

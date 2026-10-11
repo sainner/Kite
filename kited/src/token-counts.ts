@@ -5,7 +5,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { ApiKey } from './account-client.ts';
-import { agentModels, defaultAgentModel } from './agents/models.ts';
+import { agentModels } from './agents/models.ts';
 
 export type TokenCountMethod = 'api' | 'o200k' | 'none';
 
@@ -17,8 +17,6 @@ export interface TokenCountResult {
 
 export interface TokenCountOptions {
   apiKeys: () => Promise<ApiKey[]>;
-  /** 会话标题与点阵签名这类轻任务实际用的模型。 */
-  lightModel: string;
   fetch?: typeof fetch;
 }
 
@@ -44,11 +42,6 @@ export class TokenCounter {
   private waiting: (() => void)[] = [];
 
   constructor(private options: TokenCountOptions) {}
-
-  /** 场景只用来推出模型：角色传自己的默认模型，轻任务场景用轻任务模型，其他按默认模型。 */
-  modelFor(scene?: string): string {
-    return scene === 'thread.title' || scene === 'template.emblem' ? this.options.lightModel : defaultAgentModel;
-  }
 
   async count(texts: string[], model: string): Promise<TokenCountResult[]> {
     const claude = agentModels.claude.find((entry) => entry.id === model);

@@ -193,8 +193,9 @@ export class TemplateEmblems {
   private async run(id: string, force: boolean): Promise<void> {
     const { role } = this.roles.get(id);
     if (!force && this.store.templateEmblem(id)?.source === 'manual') return;
+    const template = this.templates.get(emblemTemplate.id, 'template.emblem');
     const { instructions, input } = assembleContext({
-      definition: this.templates.get(emblemTemplate.id, 'template.emblem').definition,
+      definition: template.definition,
       bindings: {
         'template.title': { text: role.title },
         'template.content': { text: outline(role.context.blocks).join('\n').slice(0, 6_000) || '（空）' },
@@ -204,7 +205,7 @@ export class TemplateEmblems {
     let lastError = '模型没有给出可用的签名';
     for (let attempt = 0; attempt < 2; attempt++) {
       const { text } = await this.tasks!.generateText({
-        purpose: 'template.emblem', instructions, input: input! + feedback, maxOutputChars: 1_024,
+        purpose: 'template.emblem', model: template.model!, instructions, input: input! + feedback, maxOutputChars: 1_024,
       });
       const reply = parseReply(text);
       if ('design' in reply) {

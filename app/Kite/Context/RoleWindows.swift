@@ -119,7 +119,7 @@ struct RoleContextPane: View {
             }
         }
         // 按初始配置里的默认模型数 token，改了默认模型就重数。
-        .contextEditor(editor, counting: model.contextCounting(model: role?.model.model, scene: nil, connection: model.activeConnection))
+        .contextEditor(editor, counting: model.contextCounting(model: role?.model.model, connection: model.activeConnection))
         .discardAlert(isNew ? "放弃这个新角色？" : "放弃未保存的角色修改？", isPresented: $discard, discardLabel: discardTitle) {
             model.roleDrafts.removeAll { $0.id == id }
         }

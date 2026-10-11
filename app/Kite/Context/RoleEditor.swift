@@ -89,7 +89,7 @@ struct RoleEditor: View {
                 }
                 Text("提示词").font(Theme.heading3)
                 ContextEditing(variables: catalog?.variables ?? [],
-                               counting: model.contextCounting(model: draft.model.model, scene: nil, connection: model.templateConnection(connection))) {
+                               counting: model.contextCounting(model: draft.model.model, connection: model.templateConnection(connection))) {
                     ContextBlocksEditor(blocks: $draft.context.blocks, variables: catalog?.variables ?? [])
                 }
                 TemplateEmblemField(design: $emblem)

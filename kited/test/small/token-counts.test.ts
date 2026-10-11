@@ -20,7 +20,7 @@ for (const scenario of scenarios) test(`${scenario.vendor} 计数限频后排队
   let peak = 0;
   let window: { entered: ReturnType<typeof Promise.withResolvers<void>>; held: Array<ReturnType<typeof Promise.withResolvers<Response>>> } | undefined;
   const pending: Array<Promise<TokenCountResult[]>> = [];
-  const counter = new TokenCounter({ apiKeys: async () => keys, lightModel: 'gpt-6.1-sol', fetch: (async (input) => {
+  const counter = new TokenCounter({ apiKeys: async () => keys, fetch: (async (input) => {
     const host = new URL(input instanceof Request ? input.url : input.toString()).hostname;
     const vendor = host === 'api.openai.com' ? 'openai' : host === 'api.anthropic.com' ? 'anthropic' : undefined;
     if (!vendor) throw new Error(`测试未提供此地址的响应：${host}`);

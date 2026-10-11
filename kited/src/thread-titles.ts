@@ -150,12 +150,11 @@ export class ThreadTitles {
       'thread.title': { text: JSON.stringify(title.title) }, 'thread.messages': { text: content.input },
     };
     // 每次生成读取已保存的模板；本次展开后固定，不受后续编辑影响。
-    const { instructions, input } = assembleContext({
-      definition: this.templates.get(titleTemplate.id, 'thread.title').definition, bindings,
-    });
+    const template = this.templates.get(titleTemplate.id, 'thread.title');
+    const { instructions, input } = assembleContext({ definition: template.definition, bindings });
     let text: string;
     try {
-      ({ text } = await this.tasks.generateText({ purpose: 'thread.title',
+      ({ text } = await this.tasks.generateText({ purpose: 'thread.title', model: template.model!,
         instructions, input: input!, maxOutputChars: 256 }));
       if (text.length > 80 || /[\r\n`]/.test(text) || /^标题\s*[:：]/.test(text)) throw new Error('模型返回的标题格式无效');
     } catch (error) {

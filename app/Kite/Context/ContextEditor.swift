@@ -111,16 +111,15 @@ struct ContextTotal: Equatable {
 private struct TokenCountRequest: Encodable {
     let texts: [String]
     let model: String?
-    let scene: String?
 }
 
 extension AppModel {
-    /// 资源库的 token 计数：角色给默认模型，模板给场景，由工作机推出模型。
-    func contextCounting(model: String?, scene: String?, connection: WorkerConnection?) -> ContextCounting? {
+    /// 资源库的 token 计数：角色给默认模型，辅助生成的模板给自己的模型；没给时工作机按默认模型数。
+    func contextCounting(model: String?, connection: WorkerConnection?) -> ContextCounting? {
         guard let connection, connection.connected else { return nil }
         let client = connection.client
-        return ContextCounting(key: "\(connection.catalog.generation)|\(model ?? "")|\(scene ?? "")") { texts in
-            try await client.request("/token-counts", method: "POST", body: TokenCountRequest(texts: texts, model: model, scene: scene),
+        return ContextCounting(key: "\(connection.catalog.generation)|\(model ?? "")") { texts in
+            try await client.request("/token-counts", method: "POST", body: TokenCountRequest(texts: texts, model: model),
                                      as: ContextTokenCounts.self)
         }
     }

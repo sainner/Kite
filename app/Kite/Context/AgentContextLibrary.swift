@@ -1,17 +1,18 @@
 import SwiftUI
 
-/// 资源库「代理上下文」的三类，按进入代理上下文的方式分：角色是新建代理时的初始上下文与配置，
-/// 旁路任务另外调用模型生成内容，事件通知是插进会话的正文。三类内容同一种组装契约。
+/// 资源库「代理上下文」的四类，按进入代理上下文的方式分：角色是新建代理时的初始上下文与配置，事件通知是插进会话的正文，
+/// 上下文压缩由代理自己写摘要、替换一段历史，辅助生成由辅助模型另外生成、结果不进入代理上下文。四类内容同一种组装契约。
 nonisolated enum AgentContextCategory: String, CaseIterable, Identifiable {
-    case role, task, notification
+    case role, notification, compaction, generation
 
     var id: Self { self }
 
     var title: String {
         switch self {
         case .role: "角色"
-        case .task: "旁路任务"
         case .notification: "事件通知"
+        case .compaction: "上下文压缩"
+        case .generation: "辅助生成"
         }
     }
 
@@ -19,8 +20,9 @@ nonisolated enum AgentContextCategory: String, CaseIterable, Identifiable {
     var templateKind: ContextScene.Kind? {
         switch self {
         case .role: nil
-        case .task: .task
         case .notification: .notification
+        case .compaction: .compaction
+        case .generation: .generation
         }
     }
 }

@@ -53,8 +53,8 @@ nonisolated struct ContextScene: Decodable, Identifiable, Sendable {
         /// 表示变量的图标：工具栏的插入变量和正文开头的可用变量用同一个，用户才认得出。
         static let icon = "curlybraces"
     }
-    /// 在资源库代理上下文里的分类：旁路任务另外调用模型生成内容，事件通知是插进会话的正文。
-    enum Kind: String, Decodable, Sendable { case task, notification }
+    /// 在资源库代理上下文里的分类，见 AgentContextCategory。
+    enum Kind: String, Decodable, Sendable { case notification, compaction, generation }
     let id: String
     let kind: Kind
     let title: String
@@ -63,6 +63,8 @@ nonisolated struct ContextScene: Decodable, Identifiable, Sendable {
 
 nonisolated struct ContextTemplate: Decodable, Identifiable, Sendable {
     var definition: ContextDefinition
+    /// 辅助生成的模型与思考强度，其他模板没有。
+    var model: AgentModelConfiguration?
     var revision: String
     var id: String { definition.id }
 }
@@ -139,10 +141,14 @@ struct EmblemGenerate: Encodable { let force: Bool }
 nonisolated struct ContextTemplateCatalog: Decodable, Sendable {
     var templates: [ContextTemplate]
     let scenes: [ContextScene]
+    /// 辅助生成可选的模型。
+    let vendors: [AgentCapabilities.Vendor]
+    let models: [AgentCapabilities.Model]
 }
 
 struct ContextTemplateSave: Encodable {
     let definition: ContextDefinition
+    let model: AgentModelConfiguration?
     let expectedRevision: String
 }
 
@@ -205,11 +211,11 @@ extension AppModel {
     }
 
     /// 模板只能修改，各场景的模板由工作机提供。
-    func saveContextTemplate(_ definition: ContextDefinition, expectedRevision: String, connection: UUID) async throws {
+    func saveContextTemplate(_ draft: TemplateDraft, connection: UUID) async throws {
         guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请重试") }
         let client = target.client
-        let result = try await client.request("/context-templates/\(definition.id.pathComponent)", method: "PUT",
-            body: ContextTemplateSave(definition: definition, expectedRevision: expectedRevision), as: ContextTemplate.self)
+        let result = try await client.request("/context-templates/\(draft.id.pathComponent)", method: "PUT",
+            body: ContextTemplateSave(definition: draft.definition, model: draft.model, expectedRevision: draft.revision), as: ContextTemplate.self)
         guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请重试") }
         target.templates?.templates.removeAll { $0.id == result.id }
         target.templates?.templates.append(result)

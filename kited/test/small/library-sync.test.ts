@@ -308,7 +308,7 @@ test('本机留着旧版内置模板和内置角色副本时加入空账号，�
       parts: [{ type: 'text', text: '旧版设计规则：签名是一行算式，结果在 0 到 1 之间。' }] }] };
     const db = new Database(join(home, 'kite.db'));
     try {
-      db.query('insert into context_templates values (?, ?)').run(stale.id, JSON.stringify(stale));
+      db.query('insert into context_templates values (?, ?)').run(stale.id, JSON.stringify({ definition: stale }));
       for (const role of builtins) db.query('insert or replace into roles values (?, ?)').run(role.id, JSON.stringify(role));
     } finally {
       db.close();

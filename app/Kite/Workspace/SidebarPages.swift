@@ -55,7 +55,7 @@ private struct ExtensionSidebar: View {
     }
 }
 
-/// 代理上下文的角色、旁路任务与事件通知三类，改过没保存的项标「未保存」。还没有内容的类不列出。
+/// 代理上下文的各类，改过没保存的项标「未保存」。还没有内容的类不列出。
 private struct AgentContextSection: View {
     var onSelect: () -> Void
     @Environment(AppModel.self) private var model

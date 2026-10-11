@@ -1,15 +1,18 @@
 /** 轻任务共用的一次性文本生成；串行限制后台请求，不创建线程或工具循环。 */
 import { randomUUID } from 'node:crypto';
+import type { AgentDefinition } from './agents/definition.ts';
 import type { JsonObject, Model } from './harness/types.ts';
 
 export interface LightTaskOptions {
-  model(task: { id: string; purpose: string }): Model;
+  model(task: { id: string; purpose: string; model: AgentDefinition['model'] }): Model;
   timeoutMs?: number;
   onResult?(result: { purpose: string; durationMs: number; usage?: JsonObject; error?: string }): void;
 }
 
 export interface TextTask {
   purpose: string;
+  /** 模板里设的模型与思考强度。 */
+  model: AgentDefinition['model'];
   instructions: string;
   input: string;
   signal?: AbortSignal;
@@ -45,7 +48,7 @@ export class LightTasks {
       const id = randomUUID();
       let completed = false;
       let text = '';
-      const model = this.options.model({ id, purpose: task.purpose });
+      const model = this.options.model({ id, purpose: task.purpose, model: task.model });
       for await (const event of model.stream({
         id, turnId: id, cwd: '', instructions: task.instructions, tools: [], allowedTools: [],
         history: [{ type: 'input', input: { id, source: 'human', text: task.input } }],
