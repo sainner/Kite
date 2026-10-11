@@ -75,21 +75,33 @@ struct SelectableTextView: UIViewRepresentable {
     func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.parent = self
         view.textContainerInset = UIEdgeInsets(top: inset.height, left: inset.width, bottom: inset.height, right: inset.width)
-        let textChanged = context.coordinator.shown?.string != text.string
-        // 外观变化时也换掉已经解析成 CGColor 的装饰；只换颜色时保留选区。
-        if context.coordinator.shown != text || context.coordinator.colorScheme != context.environment.colorScheme {
-            let selection = view.selectedRange
-            let selectable = view.isSelectable
-            context.coordinator.refreshingAppearance = !textChanged
+        guard context.coordinator.shown != text || context.coordinator.colorScheme != context.environment.colorScheme else { return }
+        // 流式回复每 33 毫秒长一截，每次整段重设 attributedText 会让 TextKit 2 把整段从头重排，真机上卡几百毫秒
+        // （2026-10-11 iPhone Time Profiler）。新串只是旧串原样接着往后长、外观也没变时，只往 textStorage 末尾补字，
+        // TextKit 2 从编辑处起重排；选区在前面的字上，不动它和 isSelectable。
+        // 前缀用 isEqual 连属性一起比：装饰按值比，但引用图标的 NSTextAttachment 按身份比，带图标的段落会落到下面的整段路径，接受。
+        // 只能碰 textStorage，读 layoutManager 会让视图退回 TextKit 1。
+        if let old = context.coordinator.shown, context.coordinator.colorScheme == context.environment.colorScheme,
+           text.length > old.length,
+           text.attributedSubstring(from: NSRange(location: 0, length: old.length)).isEqual(to: old) {
+            let added = text.attributedSubstring(from: NSRange(location: old.length, length: text.length - old.length))
+            view.textStorage.replaceCharacters(in: NSRange(location: old.length, length: 0), with: added)
             context.coordinator.shown = text
-            context.coordinator.colorScheme = context.environment.colorScheme
-            view.attributedText = text
-            if !textChanged {
-                view.isSelectable = selectable
-                view.selectedRange = selection
-            }
-            context.coordinator.refreshingAppearance = false
+            return
         }
+        // 外观变化时也换掉已经解析成 CGColor 的装饰；只换颜色时保留选区。
+        let textChanged = context.coordinator.shown?.string != text.string
+        let selection = view.selectedRange
+        let selectable = view.isSelectable
+        context.coordinator.refreshingAppearance = !textChanged
+        context.coordinator.shown = text
+        context.coordinator.colorScheme = context.environment.colorScheme
+        view.attributedText = text
+        if !textChanged {
+            view.isSelectable = selectable
+            view.selectedRange = selection
+        }
+        context.coordinator.refreshingAppearance = false
     }
 
     /// 高度照文本视图自己排出来的算。量过的按给的宽度记下：文本视图每量一次都把字从头排一遍，SwiftUI 一次排版会用几种宽度

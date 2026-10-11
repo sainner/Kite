@@ -1,6 +1,6 @@
 ---
 name: todo-window-motion-remaining
-description: 多窗口缩小、恢复、拖动的剩余开销：首帧 60～70ms、拖动换落点时重排、文字布局偏好逐帧重算、iPad 未验证
+description: 多窗口缩小、恢复、拖动的剩余开销：首帧与拖动换落点重排用户暂不处理，文字布局偏好随文本容器退掉，iPad 未验证
 metadata:
   type: todo
 ---
@@ -12,5 +12,7 @@ metadata:
 - `ReferenceLabel` 的行内代码背景和链接光标读 `Text.LayoutKey`，窗口移动时逐帧重算；去掉后首帧约省 10～20ms。改用 `TextRenderer` 前要确认不破坏 Markdown 正文的文字选择。
 - 拖动换落点时，受影响窗口按预览尺寸重排正文，每次 32～82ms；三窗口模拟拖动扫过 10 个落点，中位丢 19 帧。拖动期间所有窗口已不接交互，但模拟拖动不移动系统指针，悬停上的收益没测到。可选防抖（落点停留一会儿再提交，预览变慢）或预览时不重排正文（只居中裁切，松手再排；效果取舍需用户定）。
 - iPad 宽屏的卡片点阵层仍在 SwiftUI 渲染层里，没有在真机上量过；被拖卡片在 iPad 上仍接交互，关掉会不会取消 SwiftUI 拖动手势待真机验证。
+
+2026-10-11 用户看过后认为 Mac 上拖动和首帧现在不算卡，这两项暂不处理；`Text.LayoutKey` 一项随文本容器方向一起退掉，见 [[text-container-direction]]。
 
 完成条件：上述三项各自处理或经用户确认不做；iPad 的结论来自真机测量，不从 Mac 外推。测量方法见 [[performance-diagnosis]]。
