@@ -25,6 +25,15 @@ nonisolated struct ContextBlock: Codable, Equatable, Identifiable, Sendable {
               cases: [.init(title: "为空时", equals: "", blocks: [])],
               otherwise: .init(title: "其他情况", blocks: []))
     }
+
+    /// 条件的全部分支，其他情况排在最后。
+    var branches: [ContextBranch] { (cases ?? []) + [otherwise].compactMap { $0 } }
+
+    /// 按 id 换掉条件里的一个分支。
+    mutating func replaceBranch(_ branch: ContextBranch) {
+        if let index = cases?.firstIndex(where: { $0.id == branch.id }) { cases?[index] = branch }
+        else if otherwise?.id == branch.id { otherwise = branch }
+    }
 }
 
 nonisolated struct ContextPart: Codable, Equatable, Sendable {

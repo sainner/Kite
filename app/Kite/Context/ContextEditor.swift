@@ -5,11 +5,13 @@ import SwiftUI
 final class ContextEditor {
     /// 最后放过光标的段落；格式和变量作用在它上面，段落不在了就没有。
     var target: ContextTextCoordinator?
-    /// 当前块：光标所在或点过标题栏的块；段落工具作用在它上面。
+    /// 正在输入的名称框；这时格式和变量工具禁用，名称是纯文字，免得作用到别处的段落。
+    var naming: UUID?
+    /// 当前选中的节或块：光标所在、点过标题栏或框内空白的块，或点过标题与空白的节；添加和块工具作用在它上面。
     var current: ContextBlockHandle?
     /// 刚加的块，出现时放光标。
     var focusRequest: String?
-    /// 各条件块选中的分支，显示与计数用同一份。
+    /// 各条件块选中的分支。
     var branches: [String: String] = [:]
     private var counting: ContextCounting?
     private var counts: [String: ContextTokenCount] = [:]
@@ -38,17 +40,15 @@ final class ContextEditor {
         counts[text] = ContextTokenCount(tokens: first.tokens, method: first.method, exact: first.exact, model: result.model)
     }
 
-    /// 一组块的字数与 token：条件只算选中的分支；有一段还没数出 token 就只给字数。
-    func total(of blocks: [ContextBlock]) -> ContextTotal {
-        blocks.reduce(ContextTotal()) { sum, block in
-            if block.type == "paragraph" {
-                let text = (block.parts ?? []).literalText
-                return sum.adding(characters: text.count, count: text.isEmpty ? .empty : counts[text])
-            }
-            let branches = (block.cases ?? []) + [block.otherwise].compactMap { $0 }
-            let branch = branches.first { $0.id == self.branches[block.id] } ?? branches.first
-            return sum.adding(total(of: branch?.blocks ?? []))
-        }
+    /// 一段的字数与 token；还没数出 token 就只给字数。
+    func total(of paragraph: ContextBlock) -> ContextTotal {
+        let text = (paragraph.parts ?? []).literalText
+        return ContextTotal().adding(characters: text.count, count: text.isEmpty ? .empty : counts[text])
+    }
+
+    /// 条件选中的分支：没选过或选中的已删掉时是第一个。
+    func branch(of block: ContextBlock) -> ContextBranch? {
+        block.branches.first { $0.id == branches[block.id] } ?? block.branches.first
     }
 }
 
@@ -96,16 +96,6 @@ struct ContextTotal: Equatable {
         }
         return result
     }
-
-    func adding(_ other: Self) -> Self {
-        var result = self
-        result.characters += other.characters
-        result.tokens = tokens.flatMap { tokens in other.tokens.map { tokens + $0 } }
-        result.exact = exact && other.exact
-        result.method = other.method ?? method
-        result.model = other.model ?? model
-        return result
-    }
 }
 
 private struct TokenCountRequest: Encodable {
@@ -137,11 +127,15 @@ extension View {
     }
 }
 
-/// 当前块：位置与能做的操作每次现取，块被删了就是 nil。
+/// 当前选中的节或块：位置与能做的操作每次现取，块被删了就是 nil。节不能移动和删除。
 struct ContextBlockHandle {
+    enum Kind {
+        case section, paragraph, condition
+    }
+
     struct State {
         let title: String
-        let paragraph: Bool
+        let kind: Kind
         let empty: Bool
         let first: Bool
         let last: Bool
@@ -154,12 +148,13 @@ struct ContextBlockHandle {
 
 enum ContextBlockAction {
     case move(Int)
-    case insert(ContextBlock)
+    /// 节加在末尾，段落加在下方，条件加进当前分支末尾。
+    case add(ContextBlock)
     case delete
 }
 
 /// 窗口底部的工具栏：添加块、当前块、行级、行内四组，与标题栏同一套按钮组，整体右对齐；变量也是行内的内容，放在行内组里。
-/// 格式与变量作用在最后放过光标的段落上，块工具作用在当前块上，添加在当前块下方。放不下一行时，添加与当前块一行，行级与行内一行。
+/// 格式与变量作用在最后放过光标的段落上，块工具作用在当前块上，添加按选中的节、段落或条件决定位置。放不下一行时，添加与当前块一行，行级与行内一行。
 struct ContextEditorToolbar: View {
     let variables: [ContextScene.Variable]
     /// 放在窗口底栏时自己排收起键盘；弹窗里工具栏在正文上方，收起键盘由弹窗的按钮栏给。
@@ -179,14 +174,19 @@ struct ContextEditorToolbar: View {
             lineFormat
             inlineFormat
         }
-        .alert("删除「\(confirmingDelete?.state()?.title ?? "")」？", isPresented: Binding(get: { confirmingDelete != nil },
-                                                                                       set: { if !$0 { confirmingDelete = nil } })) {
+        .alert(deleteTitle, isPresented: Binding(get: { confirmingDelete != nil }, set: { if !$0 { confirmingDelete = nil } })) {
             Button("删除", role: .destructive) { confirmingDelete?.perform(.delete) }
             Button("取消", role: .cancel) {}
         } message: {
-            Text(confirmingDelete?.state()?.paragraph == true ? "段落里的文字会一起删掉。" : "各分支里的内容会一起删掉。")
+            Text(confirmingDelete?.state()?.kind == .paragraph ? "段落里的文字会一起删掉。" : "各分支里的内容会一起删掉。")
         }
         .containerValue(\.placesKeyboardButton, keyboardButton)
+    }
+
+    /// 条件不显示名称，按变量称呼。
+    private var deleteTitle: String {
+        guard let state = confirmingDelete?.state() else { return "" }
+        return state.kind == .condition ? "删除按「\(state.title)」选择的条件？" : "删除「\(state.title)」？"
     }
 
     private var inlineFormat: some View {
@@ -204,7 +204,7 @@ struct ContextEditorToolbar: View {
             }
             .disabled(variables.isEmpty)
         }
-        .disabled(editor.target == nil)
+        .disabled(editor.target == nil || editor.naming != nil)
     }
 
     private var lineFormat: some View {
@@ -218,7 +218,7 @@ struct ContextEditorToolbar: View {
             format("有序列表", "list.number", .numbered)
             format("引用", "text.quote", .quote)
         }
-        .disabled(editor.target == nil)
+        .disabled(editor.target == nil || editor.naming != nil)
     }
 
     private func format(_ title: String, _ icon: String, _ format: ContextFormat) -> some View {
@@ -227,11 +227,16 @@ struct ContextEditorToolbar: View {
 
     /// 添加是新建一块，单独一组；当前块组里的都是对这一块本身的操作。
     private func addMenu(_ current: (ContextBlockHandle, ContextBlockHandle.State)?) -> some View {
-        PaneHeaderButtonGroup {
-            ActionMenu("在当前块下方添加", icon: "plus") {
-                Button("段落", systemImage: "text.alignleft") { insert(.paragraph(), after: current?.0) }
+        let title = switch current?.1.kind {
+        case .section: "添加到本节末尾"
+        case .condition: "添加到当前分支"
+        default: "在当前段落下方添加"
+        }
+        return PaneHeaderButtonGroup {
+            ActionMenu(title, icon: "plus") {
+                Button("段落", systemImage: "text.alignleft") { add(.paragraph(), to: current?.0) }
                 if let variable = variables.first {
-                    Button("条件", systemImage: "arrow.triangle.branch") { insert(.condition(variable: variable.name), after: current?.0) }
+                    Button("条件", systemImage: "arrow.triangle.branch") { add(.condition(variable: variable.name), to: current?.0) }
                 }
             }
         }
@@ -248,14 +253,14 @@ struct ContextEditorToolbar: View {
                 guard let (handle, state) = current else { return }
                 if state.empty { handle.perform(.delete) } else { confirmingDelete = handle }
             }
-            .disabled(current == nil)
+            .disabled(current == nil || current?.1.kind == .section)
         }
     }
 
-    private func insert(_ block: ContextBlock, after handle: ContextBlockHandle?) {
+    private func add(_ block: ContextBlock, to handle: ContextBlockHandle?) {
         guard let handle else { return }
         editor.focusRequest = block.id
-        handle.perform(.insert(block))
+        handle.perform(.add(block))
     }
 }
 

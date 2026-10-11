@@ -79,12 +79,11 @@ struct RoleContextPane: View {
                     if let error { CardCallout(text: error) }
                     if role != nil {
                         ContextVariablePreview(variables: catalog?.variables ?? [])
-                        ContextSection("系统规则") {
-                            ContextBlocksEditor(blocks: Binding(get: { [model, id] in model.libraryRole(id)?.context.blocks ?? [] },
-                                                                set: { [model, id] blocks in model.editRole(id) { $0.role.context.blocks = blocks } }),
-                                                variables: catalog?.variables ?? [])
-                        }
-                        .disabled(saving)
+                        ContextBlocksSection("系统规则",
+                                             blocks: Binding(get: { [model, id] in model.libraryRole(id)?.context.blocks ?? [] },
+                                                             set: { [model, id] blocks in model.editRole(id) { $0.role.context.blocks = blocks } }),
+                                             variables: catalog?.variables ?? [])
+                            .disabled(saving)
                     }
                 }
                 .agentContextColumn()
