@@ -87,11 +87,7 @@ nonisolated final class DecoratedFragment: NSTextLayoutFragment {
         context.saveGState()
         defer { context.restoreGState() }
         for line in textLineFragments {
-            // segment 是选区边界，会吸收部分 kern 和中英文间距，不能当作字形边界。
-            // 沿用 TextKit 的断行，只向 CoreText 取得这一行的字形位置。
-            let typesetter = CTTypesetterCreateWithAttributedString(line.attributedString)
-            let range = line.characterRange
-            let shaped = CTTypesetterCreateLine(typesetter, CFRange(location: range.location, length: range.length))
+            let shaped = shapedLine(line)
             var box = CGRect.null
             var fill: CGColor?
             func drawBox() {
@@ -119,21 +115,47 @@ nonisolated final class DecoratedFragment: NSTextLayoutFragment {
                 CTRunGetPositions(run, CFRange(), &positions)
                 CTRunGetAdvances(run, CFRange(), &advances)
                 var widths = advances
-                if attributes[NSAttributedString.Key.attachment.rawValue] == nil {
-                    let font = attributes[kCTFontAttributeName] as! CTFont
+                let font: CTFont? = attributes[kCTFontAttributeName].flatMap { value in
+                    CFGetTypeID(value as CFTypeRef) == CTFontGetTypeID() ? (value as! CTFont) : nil
+                }
+                if attributes[NSAttributedString.Key.attachment.rawValue] == nil, let font {
                     var glyphs = [CGGlyph](repeating: 0, count: count)
                     CTRunGetGlyphs(run, CFRange(), &glyphs)
                     // 字体原始宽度不含外侧 kern；附件则保留图标本身的排版宽度。
                     CTFontGetAdvancesForGlyphs(font, .horizontal, &glyphs, &widths, count)
                 }
+                // 背景按这段代码字体自己的 ascent+descent 贴在基线上，和 SwiftUI 里 run.typographicBounds 的高一样；
+                // 用整行高会比它高约 2 pt（Mac 13 pt 正文下量到 16 对 13.5，见 spikes/mac-textkit-prose/README.md）。
+                let top = font.map { line.glyphOrigin.y - CTFontGetAscent($0) } ?? 0
+                let height = font.map { CTFontGetAscent($0) + CTFontGetDescent($0) } ?? line.typographicBounds.height
                 // 跳过 WORD JOINER 等零宽字形，不让它们撑大背景。
                 for index in 0..<count where advances[index].width > 0 && widths[index].width > 0 {
-                    box = box.union(CGRect(x: positions[index].x, y: 0, width: widths[index].width,
-                                           height: line.typographicBounds.height))
+                    box = box.union(CGRect(x: positions[index].x, y: top, width: widths[index].width, height: height))
                 }
             }
             drawBox()
         }
+    }
+
+    /// 沿用 TextKit 排好的这一行，让 CoreText 再排一遍，只为取字形位置。
+    /// TextKit 2 只给插入点位置（locationForCharacter、文本段都等于 CTLineGetOffsetForStringIndex）：插入点落在字距的中间，
+    /// 也不含中英文之间自动加的间距（Mac 13 pt 正文下量到两项合计差 4.46 pt），不能当作字形边界。
+    /// CoreText 把制表位算在自己这一行的起点，TextKit 算在文本容器的起点；列表项的编号靠制表位定位，
+    /// 行起点有缩进时（嵌套列表）两边的字会错开一个缩进，背景块就整体画偏，所以制表位先按行起点平移。
+    private func shapedLine(_ line: NSTextLineFragment) -> CTLine {
+        var text = line.attributedString
+        let range = line.characterRange
+        let originX = layoutFragmentFrame.minX + line.typographicBounds.minX
+        if originX != 0, range.length > 0, (text.string as NSString).range(of: "\t", options: [], range: range).location != NSNotFound,
+           let style = text.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle, !style.tabStops.isEmpty {
+            let shifted = style.mutableCopy() as! NSMutableParagraphStyle
+            shifted.tabStops = style.tabStops.map { NSTextTab(textAlignment: $0.alignment, location: $0.location - originX, options: $0.options) }
+            let copy = NSMutableAttributedString(attributedString: text)
+            copy.addAttribute(.paragraphStyle, value: shifted, range: NSRange(location: 0, length: copy.length))
+            text = copy
+        }
+        let typesetter = CTTypesetterCreateWithAttributedString(text)
+        return CTTypesetterCreateLine(typesetter, CFRange(location: range.location, length: range.length))
     }
 }
 #endif
