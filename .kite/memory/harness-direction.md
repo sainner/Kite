@@ -1,15 +1,13 @@
 ---
 name: harness-direction
-description: Claude 账号受阻后提前自研 harness，首个模型入口使用 ChatGPT 订阅
+description: 自研 harness、工作机独立订阅授权与辅助模型的当前取舍
 metadata:
   type: decision
 ---
 
-2026-09-26 用户说明 Claude Code 账号被误封、恢复不确定，决定提前自研 harness，首个模型入口使用 ChatGPT 订阅。任务书中“第一阶段只接 Claude Code，自研与 GPT 留到第二阶段”的顺序已被覆盖。
+自研 harness 负责模型循环，Kite 维护统一执行宿主；主要模型入口使用工作机独立授权的 ChatGPT 订阅。Claude Code 管理自己的模型循环，作为另一执行后端接入，重复能力按职责显式关闭。
 
-2026-10-06 用户决定重新接入 Claude Code，见 [[claude-integration-direction]]；这不表示停止自研 harness，也不能据此推断账号已经恢复。
+每台工作机独立登录，不借用日常 Codex 凭据，不跨机器复制 refresh token。标题等辅助生成使用工作机的 ChatGPT 订阅，与主会话模型独立选型。
 
-用户还明确需要多机使用：每台工作机单独设备登录，不默认借用日常 Codex 凭据，不跨机器同步 refresh token。
-
-**Why:** Kite 的可用性不能依赖 Claude 账号恢复；用户选择的是订阅入口和由 Kite 管理的模型循环。
-**How to apply:** 不擅自改成按量 API key，也不把调用 Codex CLI 当成自研 harness。接入操作与能力现状查 [kited 说明](../../docs/kited.md)；早期 [接入评估](../../docs/harness-接入评估.md) 是建议与历史背景，不是全部已确认规格。工作区隔离按 [[session-worktree-decision]]，不再机械解释为每个线程必须单独建工作树。
+**Why:** 工作台的可用性不能依赖单一 agent 产品；ChatGPT 是常驻账号，辅助生成不应依赖额外启动完整 agent 或非常驻的 Claude 账号。
+**How to apply:** 不把调用 Codex CLI 当作自研 harness，不擅自把订阅入口换成按量 API key。当前接入、模型账号与后端职责由 [工作机说明](../../docs/kited.md) 维护；续期未决项见 [[todo-subscription-auth]]。

@@ -10,7 +10,7 @@
 ./install.command
 ```
 
-构建机需要 macOS 26 或更新版本、完整 Xcode、Git 和网络。首次使用 Xcode 应先打开它完成初始化；提示缺少 Metal Toolchain 时运行 `xcodebuild -downloadComponent MetalToolchain`。
+完整 App 的构建机需要 Apple Silicon Mac、macOS 26 或更新版本、完整 Xcode、Go、Git 和网络。首次使用 Xcode 应先打开它完成初始化；提示缺少 Metal Toolchain 时运行 `xcodebuild -downloadComponent MetalToolchain`。
 
 入口自动准备项目工具与依赖，构建并安装 Release App，成功后打开。所需 Bun 经过下载校验并缓存于仓库内，不修改全局 Bun 或 shell 配置。所有安装操作使用当前登录用户，不使用 `sudo`。
 
@@ -20,7 +20,7 @@
 ./install.command --service-only
 ```
 
-该模式不编译或安装 App，因此不需要完整 Xcode；仍需 Git 和 macOS 命令行工具，后者也用于首次读取 PDF 时编译转换程序。已安装的 App 不受仅服务升级影响。
+该模式不编译或安装 App，因此不需要完整 Xcode；源码构建仍需 Go、Git 和 macOS 命令行工具，后者也用于首次读取 PDF 时编译转换程序。已安装的 App 不受仅服务升级影响。
 
 ## 生成 Mac 安装包
 
@@ -34,7 +34,7 @@
 
 产物在 `build/Kite-macOS-<架构>/` 和同名 `.zip`，仅服务版本使用 `kited-macOS-<架构>`。完整包包含 `Kite.app`、`安装.command` 和安装说明；可选服务运行目录嵌在 App 资源中。Bun、生产依赖、沙箱与 Claude 适配资源随包携带，安装后不依赖源码仓库，也不依赖打包机上的依赖目录。包中不含开发依赖、`.env`、登录凭据或用户数据库。
 
-目前按构建机的架构出包：Apple Silicon 为 `arm64`，Intel 为 `x64`；不同架构分别在相应机器构建。解压后双击 `安装.command`，目标机器需要 Git，完整包还需要 macOS 26 或更新版本；无需下载依赖、安装 Bun 或完整 Xcode。缺少 Git 时先运行 `xcode-select --install`。安装成功后可移走解压目录与源码仓库。
+完整 App 仅支持 `arm64`。仅服务安装包按构建机架构生成 `arm64` 或 `x64`，不同架构分别构建。解压后双击 `安装.command`，目标机器需要 Git，完整包还需要 Apple Silicon Mac 和 macOS 26 或更新版本；无需安装 Bun、Go 或完整 Xcode。缺少 Git 时先运行 `xcode-select --install`。安装成功后可移走解压目录与源码仓库。
 
 App 使用临时签名，打包时验证签名完整性。此签名适合本机使用，不代表获得 Apple 信任；跨机器传送后可能被 Gatekeeper 拦截。正式分发前还需配置 Developer ID 签名、公证并验证整个安装包，不通过移除隔离属性或关闭安全检查绕过。
 
@@ -75,7 +75,7 @@ App 使用临时签名，打包时验证签名完整性。此签名适合本机�
 ~/.local/bin/kite-service uninstall
 ```
 
-移除服务运行文件、命令入口和登录自启，保留数据库、工作区、对话、登录及日志。新完整包的 App 独立放置，可从 Applications 移到废纸篓；仅远程控制模式直接移除 App 即可。
+移除服务运行文件、命令入口和登录自启，保留数据库、工作区、对话、登录及日志。App 可从安装目录移到废纸篓；仅远程控制模式直接移除 App 即可。
 
 ## 自定义位置
 

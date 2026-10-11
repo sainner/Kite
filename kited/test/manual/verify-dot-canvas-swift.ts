@@ -16,9 +16,9 @@ try {
   const executable = join(root, 'verify-dot-canvas');
   await command([
     compiler, '-sdk', sdk, '-target', `${architecture}-apple-macosx26.0`,
-    ...['DotStage', 'DotPattern', 'DotExpression', 'Dots', 'WaitingBreath', 'Theme', 'InterfaceMode']
+    ...['DotBackground', 'DotStage', 'DotFigure', 'DotField', 'DotCanvas', 'DotPattern', 'DotExpression', 'Dots', 'WaitingBreath', 'Theme', 'InterfaceMode']
       .map((name) => join(source, `${name}.swift`)),
-    join(import.meta.dir, 'DotCanvas.swift'), '-o', executable,
+    join(import.meta.dir, 'DotCanvasVerify.swift'), '-o', executable,
   ], root, 60_000);
   console.log(await command([executable], root, 15_000));
 } finally {

@@ -1,71 +1,26 @@
-## 项目背景
+## 当前取舍与资料入口
 
-- [Kite 来历](kite-origin.md) — Kite 替代 Pigeon 的动机与旧任务书的历史定位
-
-## 项目决定
-
-- [自研 harness 与 ChatGPT 订阅](harness-direction.md) — Claude 账号受阻后提前自研 harness，首个模型入口使用 ChatGPT 订阅
-- [Claude Code 重新接入](claude-integration-direction.md) — 先清空工具与附加功能再逐项接入，插话沿用原生 stdin
-- [模型厂商决定后端](model-vendor-backend.md) — 用户只选择模型，执行后端由模型厂商决定
-- [代理与角色](agent-role-direction.md) — 角色合并提示词与能力配置的原因；分层契约见 docs
-- [项目约束](project-constraints-direction.md) — 约束放账号侧而非仓库的原因；文件与网络上限尚待决定
-- [资源库随账号保存](library-account-storage.md) — 跨工作机一致性的动机，以及不保存未修改内置项的原因
-- [协议与适配器边界](protocol-adapter-boundaries.md) — 统一前端会话语义，区分完整 agent 与模型 API 适配，保留原生恢复记录
-- [工具接口方向](tool-interface-direction.md) — 短工具名与统一读写入口，版本变化仅提示，抽象调用才填写用途
-- [PDF 读取方案](pdf-read-direction.md) — PDF 转 Markdown 用 macOS Vision，不用 Docling 或 pdf.js，不留兜底
-- [上下文压缩方向](compaction-direction.md) — 自己实现、按范围选择性压缩的来由；Claude 回合中途压缩等上游稳定再接
-- [提示词编排方向](prompt-composition-direction.md) — 上下文编排的核心是用户可编辑，包含轻任务与通知正文
-- [辅助轻任务方向](light-task-direction.md) — 辅助生成统一使用常驻 ChatGPT 订阅直调，业务材料与校验各自负责
-- [配置与工作区事件投递](external-event-delivery.md) — 配置和环境变化在自然请求边界追加通知，减少缓存损失与工作打断
-- [统一执行沙箱](sandbox-execution-direction.md) — 插件与 harness 共用操作系统沙箱，正式运行时继续使用 Bun
-- [项目以远程仓库为身份](project-remote-identity.md) — 项目以远程为身份、托管远程与集成推送的决定来源，正文在 docs
-- [凭据分发服务](credential-service-direction.md) — Git、共享密钥与模型 API Key 归入资源库凭据，随账号分发、按类型取用
-- [工作树与工作区生命周期](session-worktree-decision.md) — 独立工作树用于隔离并行改动，生命周期属于工作区而非单个线程
-- [工作区、线程与插件架构](workspace-thread-plugin-architecture.md) — 工作区承载同级实例，agent 统一为插件，自定义插件需要界面、逻辑与工作区能力
-- [窗口的跨端同步](workspace-window-sync.md) — 同一工作区共享窗口集合，各设备独立布局与焦点
-- [插件实例回收](plugin-instance-lifetime.md) — 按是否需要独立存续决定回收，关闭窗口不再一律保留实例
-- [草稿与实例管理](instance-management-entrypoints.md) — 本机草稿避免永久空实例，后台实例仍须可管理
-- [停止会话的语义](session-stop-behavior.md) — 手动停止退回未纳入请求的消息，不等于保留 paused 状态
-- [统一资源引用](resource-reference-direction.md) — 统一资源引用保留稳定内容身份，历史 diff 不随当前文件变化
-- [导航对象与归属](sidebar-navigation.md) — 空间、设备与资源库的边界，代理上下文按角色、旁路任务、事件通知分类的理由
-- [初始配置与设备角色](onboarding-device-roles.md) — 本机执行或仅远程控制都入网，进入 App 后发现 kited 工作机
-- [托管账号与组网](hosted-network-direction.md) — 我们托管，用户账号密码登录或扫描已登录设备二维码加入；规格见 docs
-- [账号用量的数据范围](account-usage-direction.md) — 用量只取所属工作机的记录，避免混入上游整账号统计
-- [角色点阵签名的来由](template-emblem-direction.md) — 角色视觉表达与用户可编辑要求，契约正文在 docs
-- [宋体尝试的边界](serif-font-trial.md) — 人文气息的动机与限定尝试范围的原因，尚未决定全局换字体
+- [自研 harness 与订阅授权](harness-direction.md) — 独立宿主、每台工作机授权和辅助模型的选型理由
+- [PDF 读取方案](pdf-read-direction.md) — Vision 与无备用解析器的明确取舍
+- [视觉参考与范围](visual-style-direction.md) — 色板、角色点阵、项目色和字体范围
+- [界面事件诊断](ui-hit-testing-debugging.md) — 合成输入与命中证据的限制，simctl 探针未决风险
 
 ## 协作反馈
 
-- [同类控件统一交互](shared-control-interaction.md) — 同时覆盖命中、反馈与各端既有交互，避免只统一外观
-- [界面由用户自己预览](user-previews-ui.md) — 视觉验收交用户，构建流程引用主文档，手机交互须交付真机
-- [接数据沿用原界面](feedback-preserve-ui-on-data-integration.md) — App 接真实数据时保留已做好的界面结构，不另换空状态页面或控件布局
-- [Xcode 按路径选版本](feedback-xcode-version.md) — 多个 Xcode 时核对当前工具链，按路径打开用户选定的版本
-- [大改动先给方案](feedback-plan-before-large-changes.md) — 新视觉或全局布局先交方案；已确认的多期计划连续做完
-- [测试要克制](test-restraint.md) — 简单配置与接入不扩充测试，跑检查与新增测试分开判断
-- [扫描无用逻辑](feedback-dead-logic-review.md) — 扫描无用逻辑时沿实际执行和数据流判断，不能只看引用
-- [同一对象换状态](feedback-same-object-states.md) — 连续阶段保持对象与视图身份，避免靠转场掩盖替换
-- [先确认是哪个控件](feedback-confirm-ui-target.md) — 「侧边栏」可能指右侧停靠栏；同名按钮有多处时先确认位置
-- [美化不是整理](feedback-ui-beautify.md) — 美化先出视觉方案，可以改布局，不顺带抽公共组件或向其他表单看齐
+- [界面工作与验收](feedback-ui-workflow.md) — 方案、目标定位、连续推进、真机验收和工具链选择
+- [交互连续性](feedback-interaction-quality.md) — 公共控件完整行为、对象身份和保留动效的性能优化
+- [测试要克制](test-restraint.md) — 测试准入主来源、事件断言与 PDF 验证要求
+- [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行与数据流判断，不能只看引用
 
-## 待办与未决事项
+## 未决事项
 
-- [待办：代理与角色验收](todo-agent-roles.md) — 工作机能力与真机界面待核验，新代理开场白待决定
-- [待决策：会话观察账本](context-observation-ledger.md) — 记录模型观察与压缩后上下文的账本设想，尚未确定完整设计
-- [待办：插件跨端验收](todo-plugin-device-validation.md) — 插件跨端验收的未解决事项、来源与完成条件
-- [待办：共享工作区协作](todo-workspace-collaboration.md) — 共享工作区协作的未解决事项、来源与完成条件
-- [待办：文件与插件事件投递](todo-event-sources.md) — 文件与插件事件投递的未解决事项、来源与完成条件
-- [待办：真实终端插件](todo-terminal-plugin.md) — 真实终端插件的未解决事项、来源与完成条件
-- [待办：长会话上下文能力](todo-context-capabilities.md) — 长会话上下文能力的未解决事项、来源与完成条件
-- [待办：执行隔离与资源管理](todo-execution-boundaries.md) — 执行隔离与资源管理的未解决事项、来源与完成条件
-- [待办：远程连接与多机关系](todo-remote-connections.md) — 跨机器目录和账号的真机验收、iPhone 重连提速遗留问题、文件同步候选
-- [待办：订阅凭据续期](todo-subscription-auth.md) — 订阅凭据续期的未解决事项、来源与完成条件
-- [待办：开发工作流待补齐项](todo-development-workflow.md) — 开发工作流待补齐项的未解决事项、来源与完成条件
-- [待办：产品中的个人偏好存放位置](todo-personal-preferences.md) — 产品中的个人偏好存放位置的未解决事项、来源与完成条件
-- [待办：工作区公共上下文变量](todo-workspace-context.md) — 工作区公共上下文变量的未解决事项、来源与完成条件
-- [待决定：上下文正文预览与恢复默认](todo-context-editor-preview.md) — 两项编辑能力尚未确认实施，需同时补齐工作机接口与 App
-
-## 资料入口
-
-- [视觉参考来源](visual-style-direction.md) — Pigeon 格阵、用户指定色板及项目主题色的例外理由
-- [界面事件诊断的限制](ui-hit-testing-debugging.md) — 合成输入与命中测试的证据边界，simctl 内核崩溃原因仍未查明
-- [旧个人 Headscale（lisa）](reference-headscale-lisa.md) — 旧实验服务位置、nginx 分流与清理入口
+- [真机与线上验收](todo-device-validation.md) — 角色、插件、托管账号、跨机目录与 Git 的验收范围
+- [上下文能力](todo-context-capabilities.md) — skill/MCP、观察账本、变量、预览、开场白与个人偏好
+- [工作区协作](todo-workspace-collaboration.md) — 跨线程竞争、后台交接与归档扩展
+- [事件来源](todo-event-sources.md) — 文件/插件观察的路由、合并和主动触发
+- [执行边界](todo-execution-boundaries.md) — Linux、资源限制与项目文件/网络授权上限
+- [开发工作流](todo-development-workflow.md) — 检查、宿主 Git、会话回退与分叉的待评估能力
+- [远程连接与托管运维](todo-remote-connections.md) — iPhone 重连、托管容量备份、凭据重绑和多机关系
+- [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
+- [真实终端](todo-terminal-plugin.md) — PTY 与跨端重连、停止和资源生命周期
+- [个人组网清理](todo-headscale-cleanup.md) — lisa 实验资源的存在与清理状态待核验

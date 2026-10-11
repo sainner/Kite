@@ -67,7 +67,7 @@ description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录�
 
 在 Kite 会话里，agent 通过 shell 调用 `.kite/check`，没有专用 check 工具或宿主检查排队保证。调用方可显式提供 `KITE_BASE` 和 `KITE_LOG_DIR`；未提供时按上面的未提交改动和临时日志目录规则执行。项目自己的 AGENTS.md 规定何时检查，不能假设工具会自动补足基线、日志归档或排队。
 
-Kite 仓库自己的 `.kite/check` 是一个例子：它调 kited/scripts/check.ts，类型检查和 lint 同时跑，App 有改动时一起编译 App，用 `bun test --changed` 选测试，小测试加 `--parallel`。
+Kite 仓库自己的 `.kite/check` 是一个例子：它调 `kited/scripts/check.ts`，类型检查和 lint 同时跑，App 有改动时构建 macOS 和 iOS 模拟器目标，用 `bun test --changed` 选测试，小测试按文件分到两个进程并行运行。
 
 ## 测试规则为什么放在子 agent 里
 

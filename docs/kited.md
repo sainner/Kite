@@ -11,13 +11,11 @@ bun install
 export PATH="$PWD/node_modules/.bin:$PATH"
 ```
 
-Bun 1.3.11 在沙箱内遇到不可读的父目录时会丢失环境变量，不能用于此入口；相关上游修复见 [Bun #27802](https://github.com/oven-sh/bun/issues/27802)。
-
 ```bash
 bun run harness --cwd /你的项目目录
 ```
 
-默认凭据位于 `$KITE_HOME/auth/chatgpt/auth.json`（`KITE_HOME` 默认 `~/.kite`），通过设备登录独立授权，不再默认读取日常 Codex 的登录。也可用 `--auth /绝对路径/auth.json` 指定文件。
+默认凭据位于 `$KITE_HOME/auth/chatgpt/auth.json`（`KITE_HOME` 默认 `~/.kite`），通过设备登录独立授权，不读取日常 Codex 的登录。也可用 `--auth /绝对路径/auth.json` 指定文件。
 
 授权借用官方登录工具，给它单独的认证目录；每台工作机各登录一次，不跨机器同步凭据：
 
@@ -57,7 +55,7 @@ bun run harness --resume <会话id>
 
 文件工具限制在工作目录内，shell 使用操作系统沙箱。默认工作区可读写、必要工具链可读、网络关闭；宿主凭据和内部记录受保护，Git 元数据只读。授权范围和平台限制见 [执行边界](Agent与插件契约.md#71-插件与-harness-共用操作系统沙箱)。独立终端尚无授权编辑入口，服务中的实例可在 App「执行授权」页编辑，见 [实例执行授权](实例操作.md#实例执行授权)。每回合的请求上限可用 `--max-requests` 调整，达到上限后等待显式继续。
 
-这个终端入口直接修改指定目录。需要独立工作树、快照与采纳时，通过 kited 创建工作区。独立终端未接 agent 协作工具与账号凭据服务；harness 的 skill 自动发现和 MCP 仍待实现；上下文压缩只有自动触发，没有手动入口。
+这个终端入口直接修改指定目录。需要独立工作树、快照与采纳时，通过 kited 创建工作区。独立终端不提供 agent 协作工具、账号凭据服务、skill 自动发现或外部 MCP 连接；上下文压缩只有自动触发，没有手动入口。服务中的 MCP 工具由 [Bun 插件宿主](Bun插件.md) 接入并授权。
 
 异常退出留下的 `lock/` 不会自动删除。先根据会话目录中的 `lock/owner.json` 与 `processes.json` 确认原进程及命令均已停止，再清理锁并重新打开。执行效果未知时先核查，不重放旧工具。
 
@@ -65,9 +63,11 @@ bun run harness --resume <会话id>
 
 自研 harness 与 Claude 各自负责完整 agent 循环，Kite 宿主负责工作区、共享工具、授权、快照与显示协议。执行进程关闭后会话仍可继续，两种后端保留各自的原生恢复记录。
 
-后端由模型的厂商决定：Claude 模型经 Claude Code 订阅运行，其他厂商的模型由自研 harness 运行，调用方不单独指定后端。代理可通过 `/instances/:id/agent-config` 换用另一厂商的模型，后端随之更换，保留实例、窗口和其他配置；只改思考强度等、模型不变时后端不变。能力目录列出全部厂商的模型。`state.capabilities.switchRuntime` 表示当前能否换到另一厂商：须空闲、没有排队或交接未确认的输入、没有恢复阻塞，否则返回 409。服务端在同一控制队列中检查状态、交接上下文并保存后端与配置。
+后端由模型的厂商决定：Claude 模型经 Claude Code 订阅运行，其他厂商的模型由自研 harness 运行，调用方不单独指定后端。代理可通过 `/instances/:id/agent-config` 换用另一厂商的模型，后端随之更换，保留实例、窗口和其他配置；只改思考强度等、模型不变时后端不变。能力目录列出可选模型。`state.capabilities.switchRuntime` 表示当前能否切换后端：须空闲、没有排队或交接未确认的输入、没有恢复阻塞，否则返回 409。
 
-切换在回合边界交接上下文。两种后端在线程内各保留一份原生记录；切换时把来源后端自上次交接以来产生的内容翻译后追加到目标后端的记录，并标明来源位置。已有记录不改写，重复切换不重复导入，翻译失败时不切换。harness 一侧在上次交接之后压缩或撤销过压缩时，改为整体重组 Claude 会话：在会话文件末尾追加压缩分界与按 harness 当前上下文合成的完整历史，原条目留作显示，Claude 从分界之后接续。人发消息、Kite 通知、助手文字、工具调用与结果及图片按目标后端的原生形态交接；推理内容只保留在产生它的后端记录中，不跨厂商传递，提示缓存在切换后重新建立。历史显示按段拼接两份记录，每段只取自产生它的后端，显示记录不作为原生恢复数据。Claude 会话文件的合成依赖锁定版本 CLI 的内部格式，升级 SDK 时按 [实验记录](research/2026-10-08-跨后端上下文翻译.md) 重新验证。
+切换在回合边界交接上下文，两种后端各保留原生记录。人发消息、Kite 通知、助手文字、工具调用与结果及图片随当前有效上下文交接；压缩或撤销后的结果同样生效。推理内容只保留在产生它的后端，不跨厂商传递；提示缓存在切换后重新建立。重复切换不重复导入，翻译失败时不切换。历史显示保留内容来源，显示记录不作为原生恢复数据。
+
+Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新验证上下文交接与压缩后的恢复，条件和证据见 [上下文翻译实验](research/2026-10-08-跨后端上下文翻译.md) 和 [Claude 会话重组实验](research/2026-10-09-Claude会话重组.md)。
 
 代理配置由创建时的角色加草稿里的调整得来，绑定到实例，重启沿用已保存内容。内置角色「工作」可用全部工具（read、patch、shell、credentials 及 agent 操作），「只读审查」只用 read 且 read 为必需；工具的逐层约束见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)，工具选择不能扩大授权。默认型号见 [共享模型目录](../shared/agent-models.json)，配置生效见 [线程通知投递](线程通知投递.md)，执行与恢复要求见 [harness 执行约定](harness-主循环.md) 和 [会话状态机](会话状态机.md)。
 
@@ -99,15 +99,15 @@ bun run harness --resume <会话id>
 
 ### 资源库与项目约束
 
-角色、后台场景的上下文模板、点阵签名与插件包随 Kite 账号保存，接口见 [托管账号与设备](托管账号与设备.md#资源库)。写入先到账号服务，成功后更新本机缓存，版本冲突返回 409；读取一律用缓存。内置的角色与模板随 kited 版本，账号和缓存里只有自建的和改过的。加入账号后，kited 与账号服务保持一条事件流：连上时全量同步一遍，之后账号里有变化就再同步，断线后退避重连，重连时同样先同步。同步时角色与模板以账号为准，账号里没有的从缓存去掉；点阵签名与插件包账号里没有的由本机补传。账号服务不可达时沿用缓存；工作机没加入账号时只用本机。
+角色、后台场景的上下文模板、点阵签名与插件包随 Kite 账号保存，接口见 [托管账号与设备](托管账号与设备.md#资源库)。角色、模板和插件包先写账号服务，成功后更新本机缓存，版本冲突返回 409；点阵签名先保存在本机，再后台同步。读取使用缓存。内置角色和模板只有自建或修改的内容写入账号，未修改项跟随 kited 版本。工作机通过账号事件同步资源，连接和重连均重新核对；离线时沿用缓存，未加入账号时只用本机。
 
 项目约束同样拉取后缓存，离线时沿用。它在创建代理、每次模型请求和每次工具调用前过滤工具，不改写实例配置；有效工具因此变化的代理收到配置通知。分层规则见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)。
 
 ### 角色点阵签名
 
-每个角色可保存一枚可编辑的点阵签名。签名是 `{expression, avatar, positive, negative, form}`：`expression` 是一行算式，客户端每帧对每格求值，结果截到 −1～1，绝对值为点的大小、正负选 `positive` 或 `negative` 颜色（参考色板字母 `B M L Y D`），`form` 为点的终态形状。`avatar` 是同一意象给代理头像用的另一条算式，画在 9×9 格的圆形小画布上（x、y 为 −4～4），没有指针、打字与声音输入，颜色和形状与签名相同。算式只解析求值、不执行代码，语法以 `kited/src/emblem-expression.ts` 为准，App 的 `DotExpression.swift` 与之保持一致。变量 `v` 是声音的响度（0～1，语音输入或系统播放的声音），音源接入前恒为 0。
+每个角色可保存一枚可编辑的点阵签名，结构为 `{expression, avatar, positive, negative, form}`：`expression` 与 `avatar` 分别描述签名与头像，颜色和形状配置共用。算式只解析求值、不执行代码；[签名格式](../kited/src/template-emblems.ts) 与 [表达式语法](../kited/src/emblem-expression.ts) 由共享契约约束，App 使用相同语义。
 
-角色保存后用轻任务按角色名称与提示词生成，生成规则是可编辑的「点阵签名」模板。签名只随提示词过期，只改工具、模型或预算不会重新生成；生成的签名缺少头像算式时也视为过期。回复不可用时附上原因重试一次，仍失败记为 `failed`，客户端沿用默认图案。手改的签名不被自动生成替换，只有 `force` 重新生成会覆盖；生成期间发生的手改也不会被在途结果覆盖。角色列表中每项带 `emblem`、`emblemState`（`ready`、`stale`、`missing`、`generating`、`failed`）与失败时的 `emblemError`；`stale` 表示提示词已变或缺少头像算式、签名尚未更新。角色或签名状态变化时，目录事件流推送 `roles.changed`，客户端据此重新读取角色列表；后台场景模板变化推送 `context-templates.changed`。
+角色保存后用轻任务按角色名称与提示词生成，生成规则来自「点阵签名」模板。自动签名在提示词变化或缺少头像算式时过期，只改工具、模型或预算不会重新生成。普通生成不会覆盖手改签名，包括手改之后才返回的结果；显式 `force` 生成允许覆盖。角色列表中每项带 `emblem`、`emblemState`（`ready`、`stale`、`missing`、`generating`、`failed`）与失败时的 `emblemError`；生成失败时客户端使用默认图案。角色或签名状态变化推送 `roles.changed`，后台场景模板变化推送 `context-templates.changed`。
 
 ### 启动服务
 
@@ -177,7 +177,7 @@ Kite 托管账号与组网。Mac 和 iPhone 在 App 中使用账号密码登录�
 
 Claude 负责模型循环与原生对话恢复；Kite 负责工具、项目上下文、授权、工作区与快照。Claude 从空工具集接入，只开放实例配置与授权允许的 Kite 工具，以及显式授权的插件工具，不自动加载用户或项目中的 MCP、skills 和设置。
 
-Claude 使用统一代理插件，工具由角色、实例选择、项目约束及授权共同决定，不再有独立的 Claude 定义。基础工具共用 [工具契约](harness-主循环.md#工具执行约定)，协作与授权共用 [实例操作](实例操作.md)，显示名称使用 Kite 短名称。工具执行完成并保存快照后才能继续模型请求。
+Claude 使用统一的 `kite.agent` 定义，工具由角色、实例选择、项目约束及授权共同决定。基础工具共用 [工具契约](harness-主循环.md#工具执行约定)，协作与授权共用 [实例操作](实例操作.md)，显示名称使用 Kite 短名称。工具执行完成并保存快照后才能继续模型请求。
 
 模型、工具、基础上下文与请求预算绑定到实例；`KITE_CLAUDE_MODEL` 可覆盖创建时的模型。配置和执行授权须在空闲且无恢复阻塞时修改；可选型号与思考档位通过能力接口获取。项目规则与记忆索引仅由 Kite 的模板提供，Claude 不自行扫描。具体生效时机见 [线程通知投递](线程通知投递.md#claude-的交接边界)。
 
@@ -202,7 +202,7 @@ App、HTTP 和 CLI 的显示与控制能力见 [会话显示协议](会话显示
 
 提示过滤不是可靠的隔离层：上游加载或处理失败时可能回退到原始内容。SDK 固定身份文本及 billing header 没有公开关闭入口；服务端插入的额度提示无法靠客户端保证移除；组织管理配置仍由上游读取。模型循环为处理截断和错误工具调用产生的恢复消息也保留。不能把初始化事件或替换系统提示视为“零注入”的证明。
 
-升级时须检查实际模型请求，验收要求见 [大测试清单](#大测试清单)。需要重新评估上游入口时查 [SDK 系统提示与附件](https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts)、[配置来源边界](https://code.claude.com/docs/en/agent-sdk/claude-code-features#what-settingsources-does-not-control)、[环境变量](https://code.claude.com/docs/en/env-vars) 与 [mods 接口](https://code.claude.com/docs/en/plugins/mods/reference)。
+升级时须通过实际模型请求核验这些边界，不能只检查 SDK 事件；验证入口见 [手动验证](../kited/test/manual/README.md)。上游配置入口参见 [SDK 系统提示与附件](https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts)、[配置来源边界](https://code.claude.com/docs/en/agent-sdk/claude-code-features#what-settingsources-does-not-control)、[环境变量](https://code.claude.com/docs/en/env-vars) 与 [mods 接口](https://code.claude.com/docs/en/plugins/mods/reference)。
 
 ## 项目检查
 
@@ -245,7 +245,7 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/machine` | 读取这台工作机服务的持久身份，无需 `X-Kite-Machine`；远程访问须通过同账号组网认证 |
-| GET | `/model-accounts` | 读取本机模型账号、订阅额度与 API 费用/余额的当前快照；凭据、额度与更新方式见下文 |
+| GET | `/model-accounts` | 读取本机模型账号、订阅额度与 API 费用/余额的当前快照，详见 [模型账号与额度](#模型账号与额度) |
 | POST | `/model-accounts/refresh` | 立即查询上游并推送新快照 |
 | GET | `/token-prices` | 读取用量折算金额用的价格表，只列 Kite 模型目录里的模型（计价本身覆盖更多型号）：`checked`（核对日期）与 `models`，每项是 `model`（目录里的显示名）、`provider`，以及每百万 token 的美元单价 `input`、`cacheRead`、`output`，价格页列出时带 `cacheWrite`、`cacheWrite1h`（Claude 的 1 小时缓存写入）与长提示档 `long`（`above`、`rates`） |
 | PUT | `/network/account` | 仅本机：`{deviceId, controlURL, authKey}`，接收账号服务的一次性入网授权 |
@@ -257,7 +257,7 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | GET | `/workspaces/:id` | 工作区上下文及 instances、threads、windows 的完整聚合 |
 | GET / POST | `/plugin-definitions` | 读取定义（含账号资源库里尚未装到本机的包）或登记自定义包；包格式见 Bun 插件契约 |
 | GET | `/operations` | 操作输入、输出、错误 schema，以及重试与取消规则 |
-| POST | `/workspaces/:id/operations/:operation` | 调用 agent.start / list / send / resume / stop 或 files.list / read / state / select；修改操作必须带 operationId |
+| POST | `/workspaces/:id/operations/:operation` | 调用 agent、文件或插件操作；参数、operationId 和重试语义见 [实例操作](实例操作.md) |
 | GET | `/instances/:id/agent-capabilities` | 按厂商分组的模型与思考档位、这个代理可开的工具（`tools`）与角色必需的工具（`required`），以及配置生效边界；不发模型请求 |
 | GET | `/workspaces/:id/agent-options` | 尚无实例的新代理草稿读取模型目录，以及各角色在这个工作区可开的工具；必需工具不可用的角色带 `unavailable` 原因 |
 | GET / PUT | `/instances/:id/agent-config` | 读取绑定配置及 revision；以 expectedRevision 和完整 agent 配置更新，工具不能超出创建时角色的规则，也不能关闭必需工具 |
@@ -319,24 +319,13 @@ kited 在启动、加入账号后和每 5 分钟对照一次项目登记表。�
 
 ## 验证入口
 
-项目测试规则以 [AGENTS.md](../AGENTS.md#测试) 为准，构建与检查命令见 [kited README](../kited/README.md)，Swift、WebKit 和原生运行时的手动验证见 [手动验证入口](../kited/test/manual/README.md)。测试次数与耗时属于当次证据，不在本文维护。
-
-## 大测试清单
-
-升级 SDK 或 Claude Code 之后，用真实订阅手动跑一遍。kited 要在干净的环境变量里启动，不继承当前 Claude Code 会话的 `CLAUDE_*` 变量；终端版 Claude Code 要先登录。
-
-1. 在 App 新建使用 Claude 模型的代理，让它读取、修改文件并通过 shell 执行项目检查：工具行实时更新，出现工作区快照，patch 的历史引用在恢复后仍可打开。普通回合正常结束后进程保留，实际模型请求只有角色、实例配置、项目约束和授权开放的 Kite 工具。
-2. 检查发给模型的实际请求，不能只看 SDK 消息流：首轮、工具调用后与原生恢复只能带入 Kite 模板明确提供的上下文，不自动附加 Claude 的日期、环境、模型说明、技能、项目指令或自动记忆。单独验证高用量时的提醒，区分客户端与服务端注入。人发的消息仍带 `origin: human`，宿主工具和回调可用。
-3. 配置不变且未触发压缩时再发消息，确认复用常驻进程；手动停止后发送新消息，确认从原生会话恢复且不重复输入。分别测量两条路径到首条回复的延迟。
-4. 分别验证归档：归档实例保留工作区与历史；归档独立工作区才回收工作树，未采纳改动须显式确认。
-5. 按所选角色和当前授权核对新建、恢复后的工具集合，包括 `credentials`；项目 `.mcp.json` 不自动增加能力。撤回操作或插件授权后执行被拒绝，新增插件授权在下一回合开始前重启进程后生效。验证排队取消、停止退回、模型及上下文更新，以及异常退出后的确认恢复。
-6. 可选模型与最大上下文能力（`maxContextWindow`）维护在[共享模型目录](../shared/agent-models.json)，升级时核对模型资料与上游能力目录。最大能力不等于运行窗口：Claude 每回合用 `getContextUsage({ detail: 'summary' })` 获取当前窗口（不发模型请求）；harness 由宿主明确选择运行窗口并保存到请求配置。显示与压缩的契约见[上下文压缩](harness-主循环.md#上下文压缩)和[会话显示协议](会话显示协议.md#当前边界)。
+项目测试规则以 [AGENTS.md](../AGENTS.md#测试) 为准，构建与检查命令见 [kited README](../kited/README.md)，Swift、WebKit、真实模型后端和远程链路的验证见 [手动验证入口](../kited/test/manual/README.md)。
 
 ## 当前能力边界
 
 远程连接需要组网，iPhone 真机经组网连接的完整验收尚未完成。Linux 沙箱实机验证、资源配额、独立终端授权编辑和脱离进程组的后台任务尚未完成；Git 元数据只读，不能假设模型工具可直接暂存或提交。文件快照回退已提供，会话历史的回退与分叉尚未提供。
 
-持续待办、待验证事项和候选产品决定已归入 [项目记忆](../.kite/memory/MEMORY.md)，不在本文重复维护排期。Claude 原生能力的开放范围以本文专节和当前接入决定为准。
+Claude 原生能力的开放范围以本文专节为准。
 
 ## Bun 自定义插件
 

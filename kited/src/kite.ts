@@ -7,11 +7,10 @@ import { join, relative } from 'node:path';
 import { KiteError } from './errors.ts';
 import { type AdoptResult, Bus, type PushOutcome } from './events.ts';
 import { hasUnmerged, mainline, mergeBack } from './workspace/mainline.ts';
-import { cloneRemote, cloneTarget, register } from './workspace/projects.ts';
+import { CheckoutManagement } from './workspace/checkout-management.ts';
 import { AccountClient } from './account-client.ts';
-import { normalizeRemote } from './remote-url.ts';
-import { commitAll, git, isAncestor, isDirty } from './workspace/git.ts';
-import { checkoutSync, currentBranch, fetchBranch, originAccess, originURL, pushBranch, type CheckoutSync, type RemoteAccess } from './workspace/remote.ts';
+import { isDirty } from './workspace/git.ts';
+import { currentBranch, fetchBranch, originAccess, pushBranch, type CheckoutSync, type RemoteAccess } from './workspace/remote.ts';
 import { openRuntime, type Runtime, type RuntimeOptions } from './runtime.ts';
 import { capture, changesBetween, findSnapshot, list, restore, type Snapshot } from './workspace/snapshots.ts';
 import { compactTemplate } from './harness/compaction.ts';
@@ -82,6 +81,7 @@ export class Kite {
   private readonly transcripts: TranscriptHistory;
   private readonly configuration: InstanceConfiguration;
   private readonly instances: InstanceLifecycle;
+  private readonly checkoutManagement: CheckoutManagement;
   private runners = new Map<string, Runtime>();
   private openingRunners = new Map<string, Promise<Runtime>>();
   private queues = new Map<string, Promise<unknown>>();
@@ -89,13 +89,12 @@ export class Kite {
   private stopping = false;
   private turnLabels = new Map<string, string>();
   private adoptAfterTurn = new Set<string>();
-  /** 正在 clone 的目标目录，clone 期间不持登记锁。 */
-  private cloning = new Set<string>();
   /** 含锁外网络操作的项目任务，关闭时仍需等待它们完成登记。 */
   private projectOperations = new Set<Promise<unknown>>();
 
   constructor(readonly store: Store, readonly home: string, readonly bus: Bus, private options: RuntimeOptions = {},
     readonly account = new AccountClient(() => undefined)) {
+    this.checkoutManagement = new CheckoutManagement(store, home, account, bus, (key, action) => this.serial(key, action));
     this.subscriptionLogins = new SubscriptionLogins(home);
     this.modelAccounts = new ModelAccounts(home, (modelAccounts) => bus.emit({ type: 'model-accounts.changed', modelAccounts }),
       (home) => readModelAccounts(home, { usage: store, apiKeys: async () => this.account.linked ? this.account.apiKeys() : [] }));
@@ -193,100 +192,18 @@ export class Kite {
   }
   projects(): Project[] { return this.store.projects(); }
   checkouts(projectId?: string): Checkout[] { return this.store.checkouts(projectId); }
-  /** 登记本机文件夹（path）或 clone 远程（remote，path 可选）。 */
+  /** 登记任务包含锁外 clone，停机时仍要等它完成登记。 */
   registerCheckout(request: { path: string; remote?: undefined } | { remote: string; path?: string }): Promise<WorkspaceModel> {
-    return this.projectOperation(async () => {
-      // realpath 和目录重叠检查也在锁内，两个别名不能登记出重复检出。
-      const registered = (model: WorkspaceModel) => {
-        this.bus.emit({ type: 'checkout.changed', projectId: model.project.id, checkoutId: model.checkout.id });
-        this.changed(model.workspace.id);
-        return model;
-      };
-      if (request.remote === undefined) {
-        return this.serial('register', async () => registered(await register(this.store, this.home, this.account, request.path, { cloning: this.cloning })));
-      }
-      // clone 可能很久，放在登记锁外；目标目录先占位，其他登记不能与它重叠。
-      const { remote, path } = request;
-      const dest = await this.serial('register', async () => {
-        const dest = cloneTarget(this.store, this.home, remote, path, this.cloning);
-        this.cloning.add(dest);
-        return dest;
-      });
-      try {
-        const project = await cloneRemote(this.account, remote, dest);
-        return await this.serial('register', async () => {
-          this.cloning.delete(dest);
-          return registered(await register(this.store, this.home, this.account, dest, { cloned: project, cloning: this.cloning }));
-        });
-      } finally { this.cloning.delete(dest); }
-    });
+    return this.projectOperation(() => this.checkoutManagement.register(request));
   }
-  /**
-   * 按账号的项目登记表更新本机项目。远程迁移后把各检出的 origin 改到新地址，
-   * 目录上报随 checkout.changed 带上新远程，账号服务据此删除托管仓库。
-   */
   syncProjects(): Promise<void> {
     if (!this.account.linked || this.stopping) return Promise.resolve();
-    // 登记表在锁外取，账号服务不通时不挡住本机登记。
-    return this.projectOperation(async () => {
-      const projects = await this.account.projects();
-      await this.serial('register', async () => {
-        const registered = new Map(projects.map((p) => [p.id, p]));
-        for (const project of this.store.projects()) {
-          const latest = registered.get(project.id);
-          if (!latest) continue;
-          if (latest.remote !== project.remote || latest.name !== project.name) {
-            this.store.saveProject({ ...project, name: latest.name, remote: latest.remote });
-          }
-          for (const checkout of this.store.checkouts(project.id)) {
-            if (checkout.remote === latest.remote || !existsSync(checkout.path)) continue;
-            try {
-              const origin = await originURL(checkout.path);
-              if (!origin || normalizeRemote(origin) !== latest.remote) await git(checkout.path, ['remote', 'set-url', 'origin', latest.url]);
-            } catch (error) {
-              console.error(`[项目同步] 更新 ${checkout.path} 的 origin 失败：${(error as Error).message}`);
-              continue;
-            }
-            this.store.setCheckoutRemote(checkout.id, latest.remote);
-            this.bus.emit({ type: 'checkout.changed', projectId: project.id, checkoutId: checkout.id });
-          }
-        }
-      });
-    });
+    return this.projectOperation(() => this.checkoutManagement.syncProjects());
   }
-  /** 现场与远程的关系，基于最近一次拉取的结果。只读，不排在集成与推送的网络操作后面。 */
-  checkoutSync(id: string): Promise<CheckoutSync> { return checkoutSync(this.checkoutOf(id).path); }
-  /**
-   * 现场的「提交并推送」，由用户触发。远程落后时把现场改动提交（message 为提交说明）后推送；
-   * 远程领先而现场没有新东西时快进；两边都有新东西时不在现场合并，请用户新建工作区处理。
-   */
+  checkoutSync(id: string): Promise<CheckoutSync> { return this.checkoutManagement.sync(id); }
   pushCheckout(id: string, message?: string): Promise<CheckoutSync> {
     this.assertRunning();
-    const c = this.checkoutOf(id);
-    return this.serial(`checkout:${c.id}`, async () => {
-      const branch = await currentBranch(c.path);
-      if (!branch) throw new KiteError('检出现场不在任何分支上，先切回主线分支', 409);
-      const dirty = await isDirty(c.path);
-      if (dirty && !message?.trim()) throw new KiteError('现场有未提交的改动，请填写提交说明', 400);
-      const access = await originAccess(c.path, this.account);
-      const upstream = await fetchBranch(c.path, branch, access);
-      const head = await mainline(c);
-      if (upstream && !(await isAncestor(c.path, upstream, head))) {
-        if (dirty || !(await isAncestor(c.path, head, upstream))) {
-          throw new KiteError('远程有新的提交，和现场的改动分叉了。请新建工作区，在工作区里集成', 409);
-        }
-        await git(c.path, ['merge', '-q', '--ff-only', upstream]);
-        return checkoutSync(c.path);
-      }
-      if (dirty) await commitAll(c.path, ['-m', message!.trim()]);
-      if (await pushBranch(c.path, branch, access) === 'rejected') throw new KiteError('远程刚有新的提交，请重试', 409);
-      return checkoutSync(c.path);
-    });
-  }
-  private checkoutOf(id: string): Checkout {
-    const c = this.store.checkout(id);
-    if (!c) throw new KiteError(`没有这个检出：${id}`, 404);
-    return c;
+    return this.checkoutManagement.push(id, message);
   }
   /** 客户端读取的工作区列表；载入过的代理附活动摘要。 */
   workspaces(projectId?: string): Array<WorkspaceModel & { threads: Array<WorkspaceModel['threads'][number] & { activity?: ThreadActivity }> }> {
@@ -356,7 +273,7 @@ export class Kite {
   /** 可以先建空工作区；带首条消息时，准备完成才启动首个线程。 */
   async createWorkspace(checkoutId: string, name: string, prompt?: string, role?: RoleSelection): Promise<WorkspaceModel> {
     this.assertRunning();
-    const c = this.checkoutOf(checkoutId);
+    const c = this.checkoutManagement.get(checkoutId);
     if (prompt !== undefined && !prompt.trim()) throw new KiteError('第一条消息不能为空');
     const base = await this.serial(`checkout:${c.id}`, () => mainline(c));
     this.assertRunning();

@@ -1,17 +1,16 @@
 ---
 name: visual-style-direction
-description: 视觉参考的外部来源，以及项目主题色放开色相限制的原因
+description: 视觉参考来源、角色表达和字体范围的用户取舍
 metadata:
-  node_type: memory
   type: reference
-  originSessionId: a072d06b-d612-4540-ba34-a6a8275083ff
 ---
 
-用户选定的视觉参考来源：
+用户选定的视觉参考与范围：
 
-- 点阵参考旧项目 Pigeon 的格阵，供后续讨论视觉方向时追溯来源。
-- 2026-10-06 指定 [Pinterest 色板](https://pin.it/7CTb6KP5G)（Buttercup Sky、Dewy Blue、Sunwashed、Cloud Puff、Morning Breeze，黄蓝方向）。
-- 项目主题色是色板限制的例外：用户认为仅靠黄蓝难以区分项目，要求优先保证不同项目的辨识度与深浅外观下的一致性。
+- 点阵参考 Pigeon 的格阵；角色点阵签名参考 tixy.land，生成结果要能预览、手改和重新生成。
+- 色板参考 [Pinterest](https://pin.it/7CTb6KP5G) 的 Buttercup Sky、Dewy Blue、Sunwashed、Cloud Puff、Morning Breeze，整体为黄蓝方向。
+- 项目主题色允许脱离黄蓝，优先保证项目辨识度和深浅外观下的一致性。
+- 思源宋体仅获准用于字标尝试，未决定全 App 更换字体；扩大范围需重新确认可读性、系统控件与包体取舍。
 
-**Why:** 外部参考与放开项目色相的理由无法仅从当前颜色值得知，后续调整视觉方向时仍有用。
-**How to apply:** 本条用于追溯参考来源；当前视觉参数与呈现核对代码，公共原则见 [界面设计原则](../../docs/视觉风格.md)，效果按 [[user-previews-ui]] 交用户预览。
+**Why:** 用户希望角色有独立视觉表达，字体具有人文气息，同时保持项目易区分和生成素材可编辑。
+**How to apply:** 这些是外部参考与用户限制，不是另一套样式规格。当前视觉参数以代码为准，公共原则见 [界面设计原则](../../docs/视觉风格.md)，效果按 [[feedback-ui-workflow]] 验收。

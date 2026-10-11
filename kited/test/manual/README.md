@@ -1,6 +1,8 @@
 # 手动验证
 
-这些验证需要真实组网服务、Swift 编译器、原生界面或 WKWebView，不计入 `small` / `medium` 的数量与耗时预算；其中哪些由 `.kite/check` 自动运行见 `kited/scripts/check.ts`。以下命令从仓库根目录运行；原生界面与 Swift 验证需要 macOS 和 Xcode 开发工具。
+这些验证需要真实组网服务、Swift 编译器、原生界面、WKWebView 或模型订阅，不计入 `small` / `medium` 的数量与耗时预算；其中哪些由 `.kite/check` 自动运行见 `kited/scripts/check.ts`。以下命令从仓库根目录运行；原生界面与 Swift 验证需要 macOS 和 Xcode 开发工具。
+
+## 运行时验证
 
 先按 [工作机开发入口](../../README.md#启动服务) 安装依赖，再在仓库根目录选择项目固定的 Bun：
 
@@ -30,7 +32,7 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 
 `verify-compact-pane-stack-swift.ts` 直接编译生产 `CompactPaneStack.swift`，用最小两页模型和离屏 `NSHostingView` 验证两个场景：静态卡片，以及带 `safeAreaBar`、`GlassEffectContainer`、重复状态动画和 `TimelineView` 重绘的卡片。复杂场景使用新卡片首次观测到的环境入口立即反向；每次正向、反向切换后都要求从宿主命中原生 `NSButton` 才发送动作；不截图、不打开或操作用户 App。该验证覆盖卡片容器的命中交接，不涵盖真实触控手势识别或完整业务页面；脚本可接受 Swift 源文件路径作为第一个参数，用于编译保留的回归快照。
 
-`verify-card-sheet-sizing-swift.ts` 直接编译生产 `CardControls.swift` 和共享 UI 依赖，由真实 `SwiftUI.App` scene 呈现 `.sheet`；测试窗口透明且不接收鼠标。同一窗口的内容由一行增至十二行再恢复一行，随后增至一百行，要求窗口不超出屏幕可用范围并能恢复短高度。读取 `NSWindow` 尺寸并确认没有替换弹窗；通过原生帧与有界超时等待，不截图、不操作用户 App。覆盖共享弹窗的动态尺寸与限高，不涵盖登录服务、实际滚动手势或视觉验收。可传入保留的 `CardControls.swift` 路径作为第一个参数比较修复前后。
+`verify-card-sheet-sizing-swift.ts` 使用真实 SwiftUI sheet 验证共享弹窗随内容增减调整高度、超长内容受屏幕可用范围限制，且始终使用同一窗口。测试窗口透明且不接收鼠标，只读取窗口尺寸；不涵盖登录服务、实际滚动手势或视觉验收。第一个参数可指定包含完整控件定义的 `CardControls.swift` 快照，此时替代生产控件文件参与编译。
 
 `verify-account-http-swift.ts` 直接编译真实 `AccountHTTP.swift`，连接本机真实账号服务和临时 SQLite；Foundation shared Cookie 存储也隔离到临时目录。服务启用生产模式的来源检查，旧客户端与新客户端使用不同的夹具 IP 避免互相消耗登录限流额度；不访问公网，不测试限流策略。预期拒绝旧 Cookie 请求时，Better Auth 会输出 `Missing or null Origin` 与 `Invalid origin` 日志，脚本最终退出码为 0 才算通过。
 
@@ -40,4 +42,13 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 
 撤销验收先保留 controller 本机网络，确认其令牌访问 `/api/account` 返回 401，并在十五秒传播窗口内确认新组网请求无法取得 2xx；随后模拟客户端响应 401 调用 `network.stop()`，要求既有 SSE 在五秒内结束。不要求控制面撤销自然产生 EOF，也不验证原生 App 的自动轮询与收口。异账号访问若被 ACL 提前拒绝，也不能单独证明请求到达了 Go 的 WhoIs 校验。
 
-2026-10-06 针对 `https://hs.sainner.top` 的三节点实测已通过入网、同账号访问及异账号伪造头拒绝。该次使用未观察账号状态的纯 daemon controller，撤销后直到脚本 80 秒验证期限结束仍未观察到 SSE 自然 EOF，curl 退出 28；设备最终清理成功。该次运行停在等候 EOF，未验证撤销后的新请求。这是当次条件下的观察，不代表控制面永久不会关闭连接；原生 App 行为仍需独立验收。
+## 真实订阅验收
+
+升级 SDK、Claude Code 或模型接入后，需要用对应工作机上的真实订阅验收。Claude 验收先确认终端已登录，并清理测试进程继承的 `CLAUDE_*` 环境变量。假端点测试与 SDK 事件不能代替真实模型请求证据；验收结果保留在任务记录中，注明版本、环境和覆盖范围。
+
+1. 在 App 创建代理，完成读取、修改、shell 与项目检查。核对工具调用和结果、增量显示、文件快照及历史引用；确认暴露的工具符合当前角色与授权。Claude 正常完成一轮后应保留进程，宿主能力不被 Claude 的内置工具或 hooks 重复执行。
+2. 检查首轮、工具调用后和原生恢复后的实际上游请求。核对系统提示词与历史内容符合 [上下文模板](../../../docs/harness-上下文组装.md)，没有额外注入 Claude 的日期、环境、技能或项目记忆。高用量提示要区分客户端注入与服务端行为；仅观察 SDK 输出不能作出来源结论。
+3. 在配置稳定且没有压缩的条件下，分别验证持续会话和停止后继续输入。确认原生恢复不重复提交输入，并分别记录首轮与后续轮次延迟；不从单次测量推断性能保证。
+4. 按 [会话状态机](../../../docs/会话状态机.md) 和 [线程通知投递](../../../docs/线程通知投递.md) 验证停止、队列退回、配置与模型切换、授权撤销和恢复。实例归档与工作区归档的范围分别按 [工作机契约](../../../docs/kited.md) 验证。
+5. 核对角色工具、插件授权和凭据访问；已撤销的能力必须被拒绝。项目 MCP 配置不应自动授予实例能力，新增授权在对应后端的生效边界内进入模型请求，规则见 [Bun 插件](../../../docs/Bun插件.md)。
+6. 核对模型目录声明的最大上下文与本轮实际配置的上下文窗口。Claude 使用 SDK 提供的运行摘要，自研 harness 核对宿主请求配置；两者都不能只凭模型目录的上限推断本轮实际可用容量。

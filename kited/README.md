@@ -8,9 +8,7 @@ Kite 的工作机服务，管理项目、检出、工作区、插件实例和线
 
 macOS 安装成登录自启服务，在仓库根目录运行 `./install.command --service-only`；完整 App 使用 `./install.command`，首次配置选择本机执行后安装 kited。独立安装包、升级和卸载见 [macOS 安装与打包](../docs/macOS安装与打包.md)。
 
-开发时仍可从源码前台运行：
-
-在本目录安装依赖并使用项目固定的 Bun 1.4.2：
+源码开发时，在本目录安装依赖并使用 [package.json](package.json) 固定的 Bun：
 
 ```bash
 bun install
@@ -39,15 +37,18 @@ bun run harness --resume <会话id>
 |---|---|
 | `src/main.ts`、`daemon.ts`、`http.ts`、`cli.ts` | 服务与客户端入口、HTTP 和 SSE |
 | `src/account/`、`catalog-publisher.ts` | 托管账号、资源库与目录服务、工作机目录上报；契约见 [托管账号与设备](../docs/托管账号与设备.md) |
+| `src/account/credential-service.ts` | 账号凭据管理与工作机凭据分发 |
 | `src/kite.ts`、`model.ts`、`store.ts`、`events.ts` | 业务编排、领域对象、持久化与事件 |
 | `src/instance-lifecycle.ts` | 实例与窗口创建、请求去重及回收 |
 | `src/instance-configuration.ts` | 实例配置、授权变更与对应通知 |
 | `src/runtime.ts` | 选择执行后端 |
 | `src/transcript/` | 显示协议、事件流、公共记录投影、Claude 消息转换与历史缓存 |
 | `src/harness/` | 自研模型循环、订阅接入、journal、上下文与会话宿主 |
+| `src/harness/runner.ts`、`history.ts` | 异步执行控制与可重放的历史投影 |
 | `src/claude/` | Claude Code 会话宿主、进程控制、原生历史与工具适配 |
 | `src/execution/` | 共用沙箱、执行授权、文件工具、命令与进程组 |
 | `src/workspace/` | 项目登记、工作树、Git、快照、文件与历史差异 |
+| `src/workspace/checkout-management.ts` | 检出登记、远程同步与现场推送 |
 | `src/plugins/` | 插件定义、安装目录、实例宿主、进程与工具绑定 |
 | `src/operations/` | 实例操作契约、授权入口与操作收据 |
 | `src/agents/` | Agent 定义、工具的逐层约束、后端能力与共享模型清单入口 |
@@ -72,9 +73,7 @@ bun run harness --resume <会话id>
 | `test/fixtures/` | 插件与协议探针输入 |
 | `test/setup.ts`、`fake-api.ts`、`harness.ts` 等 | 测试隔离环境、假端点与公共辅助代码 |
 
-## 大测试清单
-
-升级 SDK 或 Claude Code 后的真实订阅验收见 [大测试清单](../docs/kited.md#大测试清单)。
+升级 SDK 或 Claude Code 后的真实订阅验收见 [手动验证](test/manual/README.md#真实订阅验收)。
 
 ## 插件开发
 

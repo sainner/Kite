@@ -16,7 +16,7 @@ import { readClaudeControl, saveClaudeControl, type ClaudeControl } from '../cla
 import { claudeToolName, claudeToolResult, claudeToolResultContent, structuredClaudeTool } from '../claude/tools.ts';
 import { restoreContext } from '../harness/context/assembler.ts';
 import { readJournal } from '../harness/journal.ts';
-import { outcomeFeedback, recoveryFeedback, replayUnits } from '../harness/runner.ts';
+import { outcomeFeedback, recoveryFeedback, replayUnits } from '../harness/history.ts';
 import { appendThreadJournal } from '../harness/thread-host.ts';
 import type { ContextItem, Input, Json, JsonObject, JournalRecord, ModelItem, ToolResult } from '../harness/types.ts';
 import type { RuntimeKind, ThreadContext } from '../model.ts';

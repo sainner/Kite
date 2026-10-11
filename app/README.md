@@ -6,7 +6,7 @@ Mac、iPhone 和 iPad 共用一个 SwiftUI 工程、一个多平台 target。使
 
 ## 代码地图
 
-`Kite/` 是 Xcode 同步文件夹，增删、移动源码会自动反映到工程。各功能共用代码；窗口空间决定布局；输入方式（手指或指针）决定交互尺寸、操作入口与手势，不按平台区分；条件编译只用于系统 API 差异。
+`Kite/` 是 Xcode 同步文件夹，增删、移动源码会自动反映到工程。各端共用功能代码；布局与输入适配由界面组件处理，系统 API 差异使用条件编译。
 
 | 目录 | 职责 |
 |---|---|
@@ -19,6 +19,8 @@ Mac、iPhone 和 iPad 共用一个 SwiftUI 工程、一个多平台 target。使
 | `Kite/UI/` | 主题、公共控件、点阵视觉语言、文本渲染与 Metal 动效 |
 | `Kite/Resources/Generated/` | 生成的插件宿主页；源码在 `kited/web/plugin-host.ts` |
 | `Kite.xcodeproj/` | 多平台工程、共享 scheme 与固定的 Swift Package 版本 |
+
+侧栏入口在 `Workspace/Sidebar.swift`，列表、导航、页面和行组件分别在 `WorkspaceList.swift`、`SidebarNavigation.swift`、`SidebarPages.swift`、`SidebarRows.swift`。点阵的舞台状态、图形、帧计算与 SwiftUI 画布分别在 `UI/DotStage.swift`、`DotFigure.swift`、`DotField.swift`、`DotCanvas.swift`。
 
 ## 编译和运行
 
@@ -49,13 +51,13 @@ App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `
 
 Swift 类型、窗口排布、草稿交接、滚动与 WebKit 验证统一在 [手动验证目录](../kited/test/manual/README.md)。移动或拆分 Swift 文件时同步更新这些脚本引用的源码路径。
 
-真机耗时用 Debug 构建里的 `TimingTrace` 记录：每次回到前台开始一轮，记下账号核验、组网节点上线、对端路径变化、各请求与事件流的耗时，并附带带时间的组网库日志。真机测完后取回：
+真机耗时用 Debug 构建里的 `TimingTrace` 记录：每次回到前台开始一轮，记录首分钟内的账号核验、组网节点上线、对端路径变化、各请求与事件流耗时，并附带带时间的组网库日志。真机测完后取回：
 
 ```sh
 xcrun devicectl device copy from --device <设备 ID> --domain-type appDataContainer \
   --domain-identifier com.sainner.kite --source Library/Caches/timing-trace.log --destination timing-trace.log
 ```
 
-文件只追加，重装 App 不清空；同一进程内轮次递增，出现新的「第 1 轮」表示进程重新启动过。
+文件位于 App 的缓存目录，记录以追加方式写入；同一进程内轮次递增。需要保留的测量结果及时取回，不把缓存文件当作长期记录。
 
 工程使用自动签名。本机配置有效开发团队并连接测试 iPhone 或 iPad 后，按设备 ID 构建，再用 Xcode 或 `devicectl device install app` 安装、`devicectl device process launch` 打开。签名身份以工程当前配置和本机证书为准，不在文档复制一份机器状态。
