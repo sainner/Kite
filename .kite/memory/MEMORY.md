@@ -4,11 +4,12 @@
 - [PDF 读取方案](pdf-read-direction.md) — Vision 与无备用解析器的明确取舍
 - [视觉参考与范围](visual-style-direction.md) — 色板、角色点阵、项目色和字体范围
 - [界面事件诊断](ui-hit-testing-debugging.md) — 合成输入与命中证据的限制，simctl 探针未决风险
+- [卡顿怎么量](performance-diagnosis.md) — 帧间隔对照、真机 Time Profiler，Mac 结论不外推到 iPhone
 
 ## 协作反馈
 
 - [界面工作与验收](feedback-ui-workflow.md) — 方案、目标定位、连续推进、真机验收和工具链选择
-- [交互连续性](feedback-interaction-quality.md) — 公共控件完整行为、对象身份和保留动效的性能优化
+- [交互连续性](feedback-interaction-quality.md) — 公共控件完整行为、对象身份、保留动效的性能优化与窗口动画不回弹
 - [测试要克制](test-restraint.md) — 测试准入主来源、事件断言与 PDF 验证要求
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行与数据流判断，不能只看引用
 

@@ -21,18 +21,25 @@ final class DotStage {
     @ObservationIgnored private var nextOrder = 0
     /// 指针或手指在空白画板上划过时点亮的格子，键是格位，值是点亮的时刻。
     @ObservationIgnored private var sparks: [DotCell: Date] = [:]
-    /// 有波或形变在走时为 true。
+    /// 有不限窗口的波、形变或轨迹在走时为 true，所有取景框都要刷新。
     private var ticking = false
+    /// 只画在某个窗口里的波还在走的窗口（DotScope）：只带动那个窗口的取景框，App 背景和别的窗口不跟着逐帧刷新。
+    private var wavingScopes: Set<ObjectIdentifier> = []
+    /// 按弹簧走的波，每个窗口（不限窗口的是 nil）推过几道：每推一道加一，取景框按 springAnimation 逐帧插值（见 springProgress），
+    /// 减去起步时的值就是波这一帧走了多少。
+    private var springs: [ObjectIdentifier?: Double] = [:]
+    /// 最近一道按弹簧走的波的弹簧。取景框自己按它插值，不靠外面传进来的动画：Mac 的窗口外层去掉了事务里的动画（见 WindowSurface）。
+    private(set) var springAnimation: Animation?
     /// 铺满一块区域的图案（点阵签名），见 DotPattern。
     private var patterns: [String: PatternSlot] = [:]
     @ObservationIgnored private var patternRequests: [String: PatternRequest] = [:]
     @ObservationIgnored private var patternInputs: [String: PatternInput] = [:]
     /// 各图案上一帧用的 PatternGrid，位置、大小和压字范围不变就接着用。
     @ObservationIgnored private var patternGrids: [String: PatternGrid] = [:]
-    /// 取景框（rect，窗口坐标）是否要逐帧刷新，静息时不耗电：有事件走时都刷新；
+    /// 取景框（rect，窗口坐标）是否要逐帧刷新，静息时不耗电：有不限窗口的事件走时都刷新，限在窗口里的波只刷新那个窗口（scope）；
     /// 呼吸、在动的图形和图案只带动与它相交、画它们的取景框（carrier 相同，见 field）；不画图案的取景框不受图案带动。
-    func animating(in rect: CGRect, carrier: DotCarrier? = nil, patterns drawsPatterns: Bool = true) -> Bool {
-        if ticking { return true }
+    func animating(in rect: CGRect, carrier: DotCarrier? = nil, patterns drawsPatterns: Bool = true, scope: DotScope? = nil) -> Bool {
+        if ticking || scope.map({ wavingScopes.contains(ObjectIdentifier($0)) }) == true { return true }
         // 浮动至多偏出一格
         let near = rect.insetBy(dx: -DotMetrics.pitch, dy: -DotMetrics.pitch)
         return slots.contains { key, slot in
@@ -173,12 +180,22 @@ final class DotStage {
 
     /// 从 origin（窗口坐标）向四周推开一道波；不给 form 时取方格终态。pace 小于 1 时整道波放慢，用于不赶时间的场景。
     /// 给出 scope 时波只画在那个窗口里，App 背景和别的窗口不画，见 DotScope。
+    /// 按弹簧走的波，弹簧交给 SwiftUI 的动画跑，和同一次更新里起步的动画同一帧起步：自己按时钟走的话，
+    /// iPhone 上发送那一次排版要近百毫秒，第一帧就跳过一大截（2026-10-11 实测）。
     func emitWave(from origin: CGRect, form: DotForm? = nil, pace: Double = 1, parameters: DotWave.Parameters = .init(),
                   in scope: DotScope? = nil) {
-        let wave = DotWave(origin: origin, start: .now, form: form ?? .square, pace: pace, parameters: parameters,
+        var wave = DotWave(origin: origin, start: .now, form: form ?? .square, pace: pace, parameters: parameters,
                            scope: scope.map(ObjectIdentifier.init))
+        if let spring = parameters.spring {
+            let base = springs[wave.scope] ?? 0
+            wave.springBase = base
+            springs[wave.scope] = base + 1
+            let animation = Animation.spring(spring).speed(pace)
+            if springAnimation != animation { springAnimation = animation }
+        }
         waves.append(wave)
-        keepAnimating(for: wave.duration)
+        if let scope = wave.scope { wavingScopes.insert(scope) }
+        keepAnimating(for: wave.duration, everywhere: wave.scope == nil)
     }
 
     /// 在 slot 上按 placement 把 figure 摆进 area（窗口坐标），nil 让图形退回静息的点。换成另一个图形时逐格形变过去；
@@ -282,14 +299,27 @@ final class DotStage {
         keepAnimating(for: DotSpark.duration)
     }
 
+    /// 取景框所在窗口的波和不限窗口的波各自的弹簧进度。取景框把它当成可动画的值，按 springAnimation 逐帧插值后交回 field。
+    func springProgress(in scope: DotScope?) -> AnimatablePair<Double, Double> {
+        AnimatablePair(springs[scope.map(ObjectIdentifier.init)] ?? 0, springs[.none] ?? 0)
+    }
+
     /// date 时刻的取值快照，供一帧绘制使用。live 为 false（静息或减少动态效果）时不呼吸；
     /// patterns 为 false 时不含图案，逐格求值的图案只由画它的取景框算。scope 是取景框所在的窗口，只含不限窗口的波和这个窗口的波。
+    /// springs 是取景框这一帧插值到的弹簧进度，见 springProgress。
     /// carrier 是取景框画的那张卡片：只含摆在它上面的图形和图案，nil 时只含不在卡片上的。
     /// follow 是卡片正在走时，屏幕上的一点对应卡片停着时的哪里，摆在卡片上的图形和图案按它取样，跟着卡片走。
     func field(at date: Date, rest: DotColor, live: Bool, patterns drawsPatterns: Bool = true, scope: DotScope? = nil,
-               carrier: DotCarrier? = nil, follow: DotCarrier.Mapping? = nil) -> DotField {
+               springs: AnimatablePair<Double, Double>, carrier: DotCarrier? = nil, follow: DotCarrier.Mapping? = nil) -> DotField {
         let scope = scope.map(ObjectIdentifier.init)
-        return DotField(waves: waves.filter { $0.isActive(at: date) && ($0.scope == nil || $0.scope == scope) },
+        let waves = waves.compactMap { wave -> DotWave? in
+            guard wave.isActive(at: date), wave.scope == nil || wave.scope == scope else { return nil }
+            guard let base = wave.springBase else { return wave }
+            var wave = wave
+            wave.travelled = (wave.scope == nil ? springs.second : springs.first) - base
+            return wave
+        }
+        return DotField(waves: waves,
                         palette: DotColor.palette, rest: rest,
                         slots: slots.values.compactMap { slot -> FigureSlot? in
                             guard slot.carrier === carrier else { return nil }
@@ -302,9 +332,10 @@ final class DotStage {
                         follow: follow)
     }
 
-    private func keepAnimating(for duration: TimeInterval) {
+    /// everywhere 为 false 时只是限在窗口里的波，取景框按 wavingScopes 刷新，这里只负责到时收尾。
+    private func keepAnimating(for duration: TimeInterval, everywhere: Bool = true) {
         activeUntil = max(activeUntil, .now + duration)
-        ticking = true
+        if everywhere { ticking = true }
         settle?.cancel()
         settle = Task { [weak self] in
             try? await Task.sleep(for: .seconds(max(0, (self?.activeUntil.timeIntervalSinceNow ?? 0)) + 0.05))
@@ -315,6 +346,7 @@ final class DotStage {
             slots = slots.filter { $0.value.figure != nil }
             requests = requests.filter { slots[$0.key] != nil || hiders[$0.key] != nil }
             ticking = false
+            wavingScopes = []
         }
     }
 }

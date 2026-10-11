@@ -138,17 +138,21 @@ struct DotCanvas: View {
             // 放在缩放的窗口里时，按屏幕上的实际大小画，格子仍与 App 网格对齐。
             let scale = proxy.size.width > 0 ? global.width / proxy.size.width : 1
             if let stage {
-                let live = stage.animating(in: global, carrier: carrier, patterns: drawsPatterns) && !reduceMotion
-                TimelineView(.animation(paused: !live)) { timeline in
-                    // 静息或减少动态效果时取波都已结束的时刻，直接画出静息的点。
-                    let date = live ? timeline.date : .distantFuture
-                    let field = stage.field(at: date, rest: .rest(in: environment), live: live, patterns: drawsPatterns, scope: scope,
-                                            carrier: carrier, follow: follow)
-                    Rectangle().fill(field.shader(origin: global.origin, scale: scale, pixel: 1 / max(displayScale, 1),
-                                                  bounds: global, at: date, drawsRest: drawsRest, hidden: excluding))
+                let live = stage.animating(in: global, carrier: carrier, patterns: drawsPatterns, scope: scope) && !reduceMotion
+                let springs = stage.springProgress(in: scope)
+                SpringFrame(progress: springs) { springs in
+                    TimelineView(.animation(paused: !live)) { timeline in
+                        // 静息或减少动态效果时取波都已结束的时刻，直接画出静息的点。
+                        let date = live ? timeline.date : .distantFuture
+                        let field = stage.field(at: date, rest: .rest(in: environment), live: live, patterns: drawsPatterns,
+                                                scope: scope, springs: springs, carrier: carrier, follow: follow)
+                        Rectangle().fill(field.shader(origin: global.origin, scale: scale, pixel: 1 / max(displayScale, 1),
+                                                      bounds: global, at: date, drawsRest: drawsRest, hidden: excluding))
+                    }
+                    // 逐帧刷新不带动画：否则所在视图离场时，每帧的更新都继承转场的动画，转场一直结束不了，视图移除不掉
+                    .transaction { $0.animation = nil }
                 }
-                // 逐帧刷新不带动画：否则所在视图离场时，每帧的更新都继承转场的动画，转场一直结束不了，视图移除不掉
-                .transaction { $0.animation = nil }
+                .animation(stage.springAnimation, value: springs)
             }
         }
         .mask {
@@ -172,6 +176,19 @@ struct DotCanvas: View {
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
+}
+
+/// 舞台里的弹簧进度当成可动画的值：变了就按弹簧逐帧插值，里面的取景框跟着逐帧重画（见 DotStage.emitWave）。
+private struct SpringFrame<Content: View>: View, Animatable {
+    var progress: AnimatablePair<Double, Double>
+    @ViewBuilder let content: (AnimatablePair<Double, Double>) -> Content
+
+    var animatableData: AnimatablePair<Double, Double> {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    var body: some View { content(progress) }
 }
 
 #if os(macOS)

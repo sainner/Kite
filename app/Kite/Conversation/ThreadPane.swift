@@ -10,7 +10,7 @@ struct ThreadPane: View {
     /// 对话怎么滚：跟不跟着最底下、发送后滑到哪、底下留多少空白。
     @State private var scroll = TranscriptScroll()
     /// 刚发出、气泡还在下面、没开始往上浮的消息。
-    @State private var arriving: Set<String> = []
+    @State private var arriving = ArrivingMessages()
     /// 点开了操作栏的那一行。
     @State private var selected: RowID?
     @State private var titleError: String?
@@ -22,9 +22,7 @@ struct ThreadPane: View {
     @Environment(\.dotStage) private var stage
 
     var body: some View {
-        let items = thread.transcript.items
-        let pending = thread.transcript.pending
-        let empty = items.isEmpty && pending.isEmpty
+        let empty = !thread.hasTranscript
         // 已有代理的历史还没到时先什么也不画，不铺新代理的点阵图案，免得长出来又马上收回
         let initial = empty && (thread.isDraft || thread.historyLoaded)
         return PaneWindow(header: header(initial: initial), usesDots: true, notice: thread.problem.map(PaneNotice.failure)) {
@@ -35,7 +33,7 @@ struct ThreadPane: View {
                 // 标题栏、控制区和键盘让出的那一截，滚动视图照样伸到它们后面（实测）
                 GeometryReader { proxy in
                     ScrollView {
-                        TranscriptView(items: items, pending: pending, actionable: true, lazy: Self.lazyTranscript, tail: scroll.tail(visible: proxy.size.height))
+                        ThreadTranscript(scroll: scroll, arriving: arriving, visibleHeight: proxy.size.height, lazy: Self.lazyTranscript)
                             .font(Theme.body)
                             .frame(maxWidth: Metrics.transcriptWidth)
                             .padding(.horizontal, Metrics.padding * 2)
@@ -73,7 +71,7 @@ struct ThreadPane: View {
             else { stage?.patternPointer(nil, slot: patternSlot) }
         }
         #endif
-        .environment(\.workingDirectory, thread.transcript.root)
+        .environment(\.workingDirectory, thread.transcriptRoot)
         .task(id: thread.client?.identity) {
             // 打开时先完成窗口的移动，再接收并排版历史；不在每次拖动时重连已经建立的订阅。
             await Task.yield()
@@ -83,7 +81,6 @@ struct ThreadPane: View {
             guard !Task.isCancelled else { return }
             await thread.observe()
         }
-        .environment(\.arrivingMessages, arriving)
         .environment(\.selectedRow, $selected)
         .alert("重新生成标题失败", isPresented: Binding(
             get: { titleError != nil }, set: { if !$0 { titleError = nil } }
@@ -131,9 +128,9 @@ struct ThreadPane: View {
         }
     }
 
-    /// 发一条消息：先排进队里，对话滑过去（见 TranscriptScroll.send），气泡同时从下往上浮进来。
+    /// 发一条消息：先排进队里，对话滑过去（见 TranscriptScroll.send），气泡同时从下往上浮进来，alongside 也和滑同一次更新。
     /// 草稿的第一条也这样走，同时创建代理；建好后同一个会话对象原地变成这个代理，窗口不换，失败时消息退回输入框。
-    private func send(_ message: Message) {
+    private func send(_ message: Message, alongside: @escaping () -> Void) {
         if thread.isDraft {
             if area.isDraft { model.newWorkspace = .session; return }
             guard area.creatingWindow == nil, let window = area.draftWindow else { return }
@@ -146,7 +143,30 @@ struct ThreadPane: View {
                 catch { draft.firstMessageFailed(message, error: error.localizedDescription) }
             }
         }
-        arriving.insert(message.id)
-        scroll.send { thread.send(message) } alongside: { arriving.remove(message.id) }
+        arriving.ids.insert(message.id)
+        scroll.send { thread.send(message) } alongside: {
+            arriving.ids.remove(message.id)
+            alongside()
+        }
     }
+}
+
+/// 对话本身：窗口里只有它读 transcript，收发消息和流式刷新只重算这一块，不牵动标题栏和控制区。
+private struct ThreadTranscript: View {
+    let scroll: TranscriptScroll
+    let arriving: ArrivingMessages
+    let visibleHeight: CGFloat
+    let lazy: Bool
+    @Environment(WorkThread.self) private var thread
+
+    var body: some View {
+        TranscriptView(items: thread.transcript.items, pending: thread.transcript.pending, actionable: true, lazy: lazy,
+                       tail: scroll.tail(visible: visibleHeight))
+            .environment(\.arrivingMessages, arriving.ids)
+    }
+}
+
+/// 刚发出、还没浮上来的消息，只由对话那一块读，发送时不重算整个窗口。
+@Observable private final class ArrivingMessages {
+    var ids: Set<String> = []
 }

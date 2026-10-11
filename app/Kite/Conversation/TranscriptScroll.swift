@@ -152,6 +152,14 @@ final class TranscriptScroll {
         blankShown = shown
     }
 
+    /// 滚动视图写回绑定。它执行完一个目标会把这个目标原样写回；前后脚发出两个目标时，旧目标晚到的写回把绑定改回旧值，
+    /// 滚动视图当成新目标再发一遍，两个目标轮流写回，主线程卡死（2026-10-11 Mac 上抓到：按需排版的长对话展开后连着估错总高度，
+    /// 越界收回前后发了两个坐标）。所以和现有值一样的写回不收，带着别的目标的写回是过期的也不收，只收滚动视图自己定下的位置。
+    fileprivate func positionWritten(_ value: ScrollPosition) {
+        guard value != position, value.isPositionedByUser else { return }
+        position = value
+    }
+
     /// 程序滚完一下，等它停稳再钉住，停在最底下接着跟的放开。期间又有一下滚动的，等最后一下；人已经上手滚了就不钉，那会和手抢。
     private func settle() {
         Task {
@@ -223,13 +231,13 @@ extension View {
 }
 
 private struct TranscriptScrolling: ViewModifier {
-    @Bindable var scroll: TranscriptScroll
+    let scroll: TranscriptScroll
     let visibleHeight: CGFloat
     let userScrollBegan: () -> Void
 
     func body(content: Content) -> some View {
         content
-            .scrollPosition($scroll.position)
+            .scrollPosition(Binding { scroll.position } set: { scroll.positionWritten($0) })
             .onScrollPhaseChange { old, phase, context in
                 scroll.phaseChanged(from: old, to: phase, geometry: context.geometry)
                 if phase == .interacting { userScrollBegan() }

@@ -140,6 +140,10 @@ struct WindowSurface<Content: View, Icon: View, Header: View>: View {
                     .opacity(pose.contentOpacity)
                     .allowsHitTesting(false)
                 content
+                    // 外层去掉了事务里的动画（外框按每帧取样）；内容自己的动画照常，如发送时对话滑动、气泡浮起，
+                    // 只是窗口改尺寸那一次不带，内容一次排到位
+                    .transaction(value: contentSize) { $0.animation = nil }
+                    .transaction { $0.animation = $0.windowContentAnimation }
                     .frame(width: contentSize.width, height: contentSize.height)
                     .modifier(WindowTranslation(point: destination))
                     .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
@@ -164,11 +168,16 @@ struct WindowSurface<Content: View, Icon: View, Header: View>: View {
             .onHover(perform: onHover)
             .position(x: pose.frame.midX, y: pose.frame.midY)
             .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
-            .transaction { $0.animation = nil }
+            .transaction { $0.windowContentAnimation = $0.animation; $0.animation = nil }
         }
         .environment(\.windowMotion, motion)
         .environment(\.windowContentSize, contentSize)
     }
+}
+
+extension Transaction {
+    /// WindowSurface 外层去掉动画前的动画，交还给窗口里的内容。
+    @Entry var windowContentAnimation: Animation?
 }
 
 /// 不可插值的排版位置。动画由 WindowMotion 统一采样，SwiftUI 不再额外补一次位移。

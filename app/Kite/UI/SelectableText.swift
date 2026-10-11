@@ -92,8 +92,16 @@ struct SelectableTextView: UIViewRepresentable {
         }
     }
 
-    /// 高度照文本视图自己排出来的算。
+    /// 高度照文本视图自己排出来的算。量过的按给的宽度记下：文本视图每量一次都把字从头排一遍，SwiftUI 一次排版会用几种宽度
+    /// 把每段字各量几遍，对话一重排（发送、收到回复）就把所有消息重排几遍，主线程卡几百毫秒（2026-10-11 iPhone 实测）。
     func sizeThatFits(_ proposal: ProposedViewSize, uiView view: UITextView, context: Context) -> CGSize? {
+        let key = SizeKey(text: text, inset: inset, typeSize: context.environment.dynamicTypeSize,
+                          weight: context.environment.legibilityWeight)
+        if context.coordinator.sizedFor != key {
+            context.coordinator.sizedFor = key
+            context.coordinator.sizes = [:]
+        }
+        if let size = context.coordinator.sizes[proposal.width] { return size }
         let most = (proposal.width ?? .greatestFiniteMagnitude) - inset.width * 2
         var width = most
         if !fillsWidth || proposal.width == nil {
@@ -104,7 +112,17 @@ struct SelectableTextView: UIViewRepresentable {
         }
         width += inset.width * 2
         let height = view.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
-        return CGSize(width: width, height: height)
+        let size = CGSize(width: width, height: height)
+        context.coordinator.sizes[proposal.width] = size
+        return size
+    }
+
+    /// 量出的尺寸取决于这些；变了就重新量。
+    struct SizeKey: Equatable {
+        let text: NSAttributedString
+        let inset: CGSize
+        let typeSize: DynamicTypeSize
+        let weight: LegibilityWeight?
     }
 
     final class Coordinator: NSObject, UITextViewDelegate, NSTextLayoutManagerDelegate {
@@ -112,6 +130,9 @@ struct SelectableTextView: UIViewRepresentable {
         /// 文本视图里现在放的字。
         var shown: NSAttributedString?
         var colorScheme: ColorScheme?
+        /// 量过的尺寸，按给的宽度记。
+        var sizedFor: SizeKey?
+        var sizes: [CGFloat?: CGSize] = [:]
         var refreshingAppearance = false
         weak var view: UITextView?
         var menu: UIEditMenuInteraction?

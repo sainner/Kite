@@ -116,8 +116,8 @@ struct ThreadHeaderActions: View {
             general.append(.init(title: "代理配置", symbol: "slider.horizontal.3",
                                  enabled: thread.agentCapabilities != nil) { showingDraftSettings = true })
         }
-        general.append(.init(title: "复制工作目录", symbol: "folder", enabled: !thread.transcript.root.isEmpty) {
-            copyToPasteboard(thread.transcript.root, toast: toast)
+        general.append(.init(title: "复制工作目录", symbol: "folder", enabled: !thread.transcriptRoot.isEmpty) {
+            copyToPasteboard(thread.transcriptRoot, toast: toast)
         })
         var execution: [ThreadHeaderCommand] = []
         if thread.state?.recovery != nil {

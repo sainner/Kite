@@ -8,7 +8,13 @@ final class WorkThread: Identifiable {
     let tint: Color
     var title: String
     var project: String
-    var transcript: Transcript
+    var transcript: Transcript {
+        didSet { summarizeTranscript() }
+    }
+    /// 从 transcript 摘出的几项，只在变了时写：窗口、标题栏和控制区只读这些，不跟着收发消息和每一次流式刷新重算。
+    private(set) var hasTranscript = false
+    private(set) var transcriptRunning = false
+    private(set) var transcriptRoot = ""
     var draft = ""
     /// 草稿里选好的角色；已有代理的角色记在实例配置里。
     var role: AgentRole?
@@ -40,7 +46,6 @@ final class WorkThread: Identifiable {
     private var returned: Set<String> = []
     private var stopRequest: StopRequest?
     private(set) var stopping = false
-    private var submittedDraft: (id: UUID, text: String)?
 
     var isDraft: Bool { client == nil }
     var canSend: Bool { stopRequest == nil && connected && (state?.capabilities.send ?? isDraft) }
@@ -91,6 +96,7 @@ final class WorkThread: Identifiable {
         self.project = project
         self.client = client
         transcript = Transcript(root: workspace.cwd)
+        summarizeTranscript()
     }
 
     /// 尚未创建的会话沿用同一套工作区，只保存草稿，不制造后端记录。
@@ -101,6 +107,14 @@ final class WorkThread: Identifiable {
         self.project = project
         client = nil
         transcript = Transcript(root: workspace)
+        summarizeTranscript()
+    }
+
+    private func summarizeTranscript() {
+        let has = !transcript.items.isEmpty || !transcript.pending.isEmpty
+        if hasTranscript != has { hasTranscript = has }
+        if transcriptRunning != transcript.running { transcriptRunning = transcript.running }
+        if transcriptRoot != transcript.root { transcriptRoot = transcript.root }
     }
 
     func use(_ client: KitedClient) {
@@ -303,21 +317,7 @@ final class WorkThread: Identifiable {
         }
     }
 
-    /// 淡出动画尚未结束时停止，也必须先扣除已提交部分，再恢复队列。
-    func beginDraftSubmission() -> UUID {
-        let token = UUID()
-        submittedDraft = (token, draft)
-        return token
-    }
-
-    func finishDraftSubmission(_ token: UUID) {
-        guard let submission = submittedDraft, submission.id == token else { return }
-        if draft.hasPrefix(submission.text) { draft.removeFirst(submission.text.count) }
-        submittedDraft = nil
-    }
-
     private func restoreDraft(_ texts: [String]) {
-        if let submission = submittedDraft { finishDraftSubmission(submission.id) }
         draft = (texts + (draft.isEmpty ? [] : [draft])).joined(separator: "\n\n")
     }
 

@@ -7,9 +7,13 @@ extension NSAttributedString.Key {
     nonisolated static let inlineCodeDecoration = NSAttributedString.Key("kite.inlineCodeDecoration")
 }
 
+/// 装饰都按值比较：消息每次重算都新建一份，一样的字不该算成变了，文本视图不重放、量过的尺寸也不作废。
 nonisolated final class InlineCodeDecoration: NSObject, Sendable {
     let fill: CGColor
     init(fill: CGColor) { self.fill = fill }
+
+    override func isEqual(_ object: Any?) -> Bool { (object as? InlineCodeDecoration)?.fill == fill }
+    override var hash: Int { fill.hashValue }
 }
 
 /// 引用竖线：x 是文本容器坐标，top 是段落上方的间隔。
@@ -22,6 +26,18 @@ nonisolated final class QuoteDecoration: NSObject, Sendable {
         self.x = x
         self.top = top
         self.fill = fill
+    }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? QuoteDecoration else { return false }
+        return other.x == x && other.top == top && other.fill == fill
+    }
+    override var hash: Int {
+        var hasher = Hasher()
+        hasher.combine(x)
+        hasher.combine(top)
+        hasher.combine(fill)
+        return hasher.finalize()
     }
 }
 

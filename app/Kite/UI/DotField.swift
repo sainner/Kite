@@ -33,12 +33,16 @@ nonisolated struct DotWave: Sendable {
     let parameters: Parameters
     /// 只画在这个窗口里（DotScope），nil 时各个取景框都画。
     let scope: ObjectIdentifier?
+    /// 按弹簧走的波起步时舞台里的弹簧进度，见 DotStage.emitWave。
+    var springBase: Double?
+    /// 按弹簧走的波这一帧走了多少（到 reach 为 1），由取景框按插值到的弹簧进度给出，见 DotStage.field。
+    var travelled: Double?
 
     /// 波的参数，默认值给初始配置完成一步、扫到码、连接成功时的慢波（再按 pace 放慢）；发送消息的波见 ThreadControls。
     struct Parameters: Equatable, Sendable {
         /// 每秒推进多少点。
         var speed = 420.0
-        /// 波前按这个弹簧从起点走向 reach，和用同一弹簧的动画一起走；给出时不看 speed。
+        /// 波前按这个弹簧从起点走向 reach，和同一次更新里用同一弹簧的动画一起走（见 DotStage.emitWave）；给出时不看 speed。
         var spring: Spring?
         /// 波前的半宽（点），三个模块。
         var width = 36.0
@@ -71,7 +75,7 @@ nonisolated struct DotWave: Sendable {
     /// date 时刻波前离起点多远（点）、半宽多少、正中那一格多大；不在走或已经淡尽时为 nil。
     func front(at date: Date) -> (distance: Double, width: Double, amplitude: Double)? {
         let time = date.timeIntervalSince(start) * pace
-        let travelled = parameters.spring.map { $0.value(target: 1.0, time: time) } ?? time * parameters.speed / max(parameters.reach, 1)
+        let travelled = parameters.spring == nil ? time * parameters.speed / max(parameters.reach, 1) : self.travelled ?? 0
         let width = parameters.width + ((parameters.widthEnd ?? parameters.width) - parameters.width) * travelled
         guard time >= 0, travelled < min(parameters.fadeEnd, 1), width > 0 else { return nil }
         let fade = 1 - smoothstep((travelled - parameters.fadeStart) / max(parameters.fadeEnd - parameters.fadeStart, 0.001))
