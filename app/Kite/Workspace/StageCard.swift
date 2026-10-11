@@ -69,6 +69,7 @@ struct SectionPage<Content: View, Actions: View>: View {
                     .padding(.top, max(Metrics.paneMargin, topInset) - topInset)
                     .padding(.bottom, Metrics.paneMargin)
                     .background { ScrollEdgeDots() }
+                    .drawerShift(.top)
             }
             .scrollEdgeEffectStyle(.soft, for: .top)
             .stageCard(usesDots: usesDots)

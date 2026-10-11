@@ -505,7 +505,6 @@ struct CompactDockBar: View {
     @State private var width: CGFloat = 0
 
     var body: some View {
-        let _ = DrawerBench.count("DockBar")
         let layout = area.layout
         let dock = area.dockModel(docked: layout.panes, onStage: [])
         let dimmed = !area.dockExpansion.isEmpty

@@ -96,7 +96,7 @@ static PatternDot patternDot(int column, int row, device const float *patterns, 
         // 形变时沿对角线逐格换过去，还没换过一半的格子用旧图案的颜色与终态
         bool earlier = false;
         if (h[9] > 0.5) {
-            float delay = h[7] > 0.0 ? float(column - int(h[5]) + row - int(h[6])) / h[7] * morphSpread : 0.0;
+            float delay = h[7] > 0.0 ? (float(column) - h[5] + float(row) - h[6]) / h[7] * morphSpread : 0.0;
             earlier = easeOutCubic((h[8] - delay) / morphDuration) < 0.5;
         }
         int pick = (earlier ? 20 : 12) + (value >= 0.0 ? 0 : 4);

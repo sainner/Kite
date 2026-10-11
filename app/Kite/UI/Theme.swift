@@ -5,8 +5,6 @@ enum Theme {
     // 颜色资源带浅色、深色两套值，由当前窗口的外观解析。
     static let background = Color("WorkspaceBackground")
     static let card = Color("CardBackground")
-    /// 还没有内容时的占位色块。
-    static let placeholder = Color("Placeholder")
     /// 占位里要显眼一点的，比如标题。
     static let strongPlaceholder = Color("StrongPlaceholder")
     /// 侧边栏里选中的一行。

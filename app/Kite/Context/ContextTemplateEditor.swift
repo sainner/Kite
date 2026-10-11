@@ -123,7 +123,6 @@ struct ContextBlocksEditor: View {
     private let spacing: CGFloat = 12
 
     var body: some View {
-        let _ = DrawerBench.count("BlocksEditor")
         VStack(alignment: .leading, spacing: spacing) {
             ForEach($blocks) { $block in
                 let id = block.id
@@ -266,7 +265,6 @@ private struct ContextBlockView: View {
     private var text: String { (block.parts ?? []).literalText }
 
     var body: some View {
-        let _ = DrawerBench.count("BlockView")
         let shape = RoundedRectangle(cornerRadius: ContextCardLevel(depth: depth).radius, style: .continuous)
         let current = editor.current?.id == block.id
         Group {

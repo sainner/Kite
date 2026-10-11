@@ -21,7 +21,6 @@ struct ThreadPane: View {
     @Environment(\.dotStage) private var stage
 
     var body: some View {
-        let _ = DrawerBench.count("ThreadPane")
         let items = thread.transcript.items
         let pending = thread.transcript.pending
         let empty = items.isEmpty && pending.isEmpty
@@ -34,7 +33,6 @@ struct ThreadPane: View {
                 // 可见区多高在排版时当场算出来（GeometryReader），留白和它同一次排好。这里的尺寸已经扣掉了
                 // 标题栏、控制区和键盘让出的那一截，滚动视图照样伸到它们后面（实测）
                 GeometryReader { proxy in
-                    let _ = DrawerBench.count("TranscriptGeo")
                     ScrollView {
                         TranscriptView(items: items, pending: pending, actionable: true, lazy: Self.lazyTranscript, tail: scroll.tail(visible: proxy.size.height))
                             .font(Theme.body)

@@ -70,7 +70,6 @@ struct RoleContextPane: View {
     private var discardTitle: String { isNew ? "放弃新角色" : "放弃修改" }
 
     var body: some View {
-        let _ = DrawerBench.count("RolePane")
         PaneWindow(header: PaneHeader(title: role?.title ?? "", subtitle: AgentContextCategory.role.title,
                                       titleEdit: role == nil ? nil : .init(label: "重命名角色", enabled: !saving) { title in
                                           model.editRole(id) { $0.role.title = title }

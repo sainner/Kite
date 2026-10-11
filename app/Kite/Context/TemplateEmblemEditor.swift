@@ -97,7 +97,8 @@ private struct EmblemStage: View {
     let slot: String
     @Environment(\.dotStage) private var stage
     @Environment(\.dotCarrier) private var carrier
-    @Environment(\.paneWindowFrame) private var window
+    @Environment(\.paneWindowFrame) private var windowFrame
+    private var window: CGRect? { windowFrame?.rect }
     @State private var content: CGRect?
     @State private var avatarFrame: CGRect?
 

@@ -12,7 +12,8 @@ struct NewThreadStage: View {
     @Environment(\.dotStage) private var stage
     @Environment(\.dotCarrier) private var carrier
     @Environment(\.self) private var environment
-    @Environment(\.paneWindowFrame) private var window
+    @Environment(\.paneWindowFrame) private var windowFrame
+    private var window: CGRect? { windowFrame?.rect }
     let slot: String
     /// 角色读取或套用失败的说明，套用由标题栏的角色菜单发起。
     @Binding var roleError: String?

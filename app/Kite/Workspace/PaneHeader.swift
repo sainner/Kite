@@ -73,7 +73,6 @@ struct PaneHeaderBar<Status: View, Actions: View>: View {
     private var statusOpensSidebar: Bool { presentation.isCompactTouch }
 
     var body: some View {
-        let _ = DrawerBench.count("PaneHeaderBar")
         // 合进玻璃的信息缩小；环境要在拆分子视图之前给出
         Group(subviews: status.environment(\.paneHeaderStatusGrouped, openSidebar != nil && !statusOpensSidebar)) { statusViews in
             let showsSidebarButton = openSidebar != nil && (!statusOpensSidebar || statusViews.isEmpty)

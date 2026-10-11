@@ -157,9 +157,17 @@ nonisolated struct ResolvedPattern: Sendable {
     /// 交给着色器（DotField.metal）的一块图案：可见范围里每格的取值（带正负，已乘上长出、形变、收回和收弱）整批算好，
     /// 按行追加到 values；表头按 patternStride 排，颜色由着色器按取值混。算法与下面逐格的 dot 相同。
     /// hidden 是整格被遮掉的格子：可见的几列全被遮掉的行不算，其余的行按连续的几段各追加一条。
+    /// follow 是所在卡片正在走时，屏幕上的一点对应卡片停着时的哪里，见 DotCarrier。
     func appendShaderData(to header: inout [Float], values: inout [Float], columns visibleColumns: ClosedRange<Int>,
-                          rows visibleRows: ClosedRange<Int>, hidden: [(columns: Range<Int>, rows: Range<Int>)], at date: Date, live: Bool) {
-        guard let pattern, columns.overlaps(visibleColumns), rows.overlaps(visibleRows) else { return }
+                          rows visibleRows: ClosedRange<Int>, hidden: [(columns: Range<Int>, rows: Range<Int>)],
+                          follow: DotCarrier.Mapping?, at date: Date, live: Bool) {
+        guard let pattern else { return }
+        if let follow {
+            appendFollowing(pattern, follow: follow, to: &header, values: &values, columns: visibleColumns, rows: visibleRows,
+                            at: date, live: live)
+            return
+        }
+        guard columns.overlaps(visibleColumns), rows.overlaps(visibleRows) else { return }
         let shownColumns = columns.clamped(to: visibleColumns)
         func covered(_ row: Int) -> Bool {
             hidden.contains {
@@ -183,6 +191,64 @@ nonisolated struct ResolvedPattern: Sendable {
                         to header: inout [Float], values: inout [Float], at date: Date, live: Bool) {
         let width = columns.count
         let range = (shownRows.lowerBound - rows.lowerBound) * width ..< (shownRows.upperBound - rows.lowerBound + 1) * width
+        let value = evaluate(pattern, range: range, at: date, live: live)
+        appendHeader(pattern, columns: shownColumns, rows: shownRows, valueOffset: values.count, at: date, live: live, to: &header)
+        let floats = vDSP.doubleToFloat(value)
+        if shownColumns == columns {
+            values += floats
+        } else {
+            let skip = shownColumns.lowerBound - columns.lowerBound
+            for line in 0..<shownRows.count {
+                values += floats[line * width + skip ..< line * width + skip + shownColumns.count]
+            }
+        }
+    }
+
+    /// 卡片走着时：整块图案按停着的格位求值，屏幕上的每一格按 follow 换算回停着时的位置，由相邻四格按双线性权重取值，
+    /// 图案跟着卡片平移、缩放；表达式里的 x、y、i 仍是停着时的整数格。
+    private func appendFollowing(_ pattern: DotPattern, follow: DotCarrier.Mapping, to header: inout [Float], values: inout [Float],
+                                 columns visibleColumns: ClosedRange<Int>, rows visibleRows: ClosedRange<Int>, at date: Date, live: Bool) {
+        // 屏幕上图案这一帧占到的格子，四边多留一格给插值
+        let shown = DotMetrics.cells(covering: follow.inverted.apply(DotMetrics.rect(columns: columns, rows: rows)))
+        let reachColumns = (shown.columns.lowerBound - 1)...(shown.columns.upperBound + 1)
+        let reachRows = (shown.rows.lowerBound - 1)...(shown.rows.upperBound + 1)
+        guard reachColumns.overlaps(visibleColumns), reachRows.overlaps(visibleRows) else { return }
+        let shownColumns = reachColumns.clamped(to: visibleColumns), shownRows = reachRows.clamped(to: visibleRows)
+        let width = columns.count, height = rows.count
+        let lattice = evaluate(pattern, range: 0 ..< width * height, at: date, live: live)
+        func value(_ column: Int, _ row: Int) -> Double {
+            guard column >= 0, column < width, row >= 0, row < height else { return 0 }
+            return lattice[row * width + column]
+        }
+        // follow 只有等比缩放加平移：屏幕上第 c 列的格心换算回去，落在图案里第 scale × c + offset 列（以格心计，可以在两列之间），
+        // 只随屏幕上的列变；行同理。两条轴各算一遍
+        let scale = Double(follow.scale)
+        func offset(_ origin: CGFloat, first: Int) -> Double { Double(origin / DotMetrics.pitch) + 0.5 * scale - 0.5 - Double(first) }
+        let offsetX = offset(follow.origin.x, first: columns.lowerBound), offsetY = offset(follow.origin.y, first: rows.lowerBound)
+        // 形变的对角线按图案里的格位走，起点和跨度折算成屏幕上的格子交给着色器
+        appendHeader(pattern, columns: shownColumns, rows: shownRows, valueOffset: values.count,
+                     diagonal: (-offsetX / scale, -offsetY / scale, Double(columns.count + rows.count - 2) / scale),
+                     at: date, live: live, to: &header)
+        func axis(_ cells: ClosedRange<Int>, offset: Double) -> [(cell: Int, fraction: Double)] {
+            cells.map { cell in
+                let u = scale * Double(cell) + offset, u0 = u.rounded(.down)
+                return (Int(u0), u - u0)
+            }
+        }
+        let us = axis(shownColumns, offset: offsetX), vs = axis(shownRows, offset: offsetY)
+        values.reserveCapacity(values.count + shownColumns.count * shownRows.count)
+        for (r, fv) in vs {
+            for (c, fu) in us {
+                let top = value(c, r) * (1 - fu) + value(c + 1, r) * fu
+                let bottom = value(c, r + 1) * (1 - fu) + value(c + 1, r + 1) * fu
+                values.append(Float(top * (1 - fv) + bottom * fv))
+            }
+        }
+    }
+
+    /// grid 里 range 这几格的取值，已乘上长出、形变、收回和收弱。
+    private func evaluate(_ pattern: DotPattern, range: Range<Int>, at date: Date, live: Bool) -> [Double] {
+        let width = columns.count
         let count = range.count
         let w = Double(width), h = Double(rows.count)
         let x = grid.x[range], y = grid.y[range]
@@ -234,36 +300,56 @@ nonisolated struct ResolvedPattern: Sendable {
         if !grid.quietFactors.isEmpty {
             value = vDSP.multiply(value, grid.quietFactors[range])
         }
-
-        func color(_ color: DotColor) -> [Float] { [Float(color.red), Float(color.green), Float(color.blue), Float(color.alpha)] }
-        let earlier = previous ?? pattern
-        header += [Float(shownColumns.lowerBound), Float(shownColumns.upperBound), Float(shownRows.lowerBound), Float(shownRows.upperBound),
-                   Float(values.count), Float(columns.lowerBound), Float(rows.lowerBound), Float(w + h - 2),
-                   Float(min(elapsed, 1e9)), previous == nil ? 0 : 1, Float(pattern.form.index), Float(earlier.form.index)]
-        header += color(pattern.positive) + color(pattern.negative) + color(earlier.positive) + color(earlier.negative)
-        let floats = vDSP.doubleToFloat(value)
-        if shownColumns == columns {
-            values += floats
-        } else {
-            let skip = shownColumns.lowerBound - columns.lowerBound
-            for line in 0..<shownRows.count {
-                values += floats[line * width + skip ..< line * width + skip + shownColumns.count]
-            }
-        }
+        return value
     }
 
-    func dot(column: Int, row: Int, at date: Date, live: Bool, rest: DotColor) -> Dot? {
-        guard columns.contains(column), rows.contains(row) else { return nil }
+    /// 一段图案的表头，布局见 patternStride；取值从 values 的 valueOffset 起按行排。
+    /// diagonal 是形变对角线的起点（列、行）和跨度，按表头里的格子计；nil 时就是图案自己的格位。
+    private func appendHeader(_ pattern: DotPattern, columns shownColumns: ClosedRange<Int>, rows shownRows: ClosedRange<Int>,
+                              valueOffset: Int, diagonal: (column: Double, row: Double, span: Double)? = nil, at date: Date, live: Bool,
+                              to header: inout [Float]) {
+        func color(_ color: DotColor) -> [Float] { [Float(color.red), Float(color.green), Float(color.blue), Float(color.alpha)] }
+        let elapsed = live ? date.timeIntervalSince(changed) : .infinity
+        let earlier = previous ?? pattern
+        let diagonal = diagonal ?? (Double(columns.lowerBound), Double(rows.lowerBound), Double(columns.count + rows.count - 2))
+        header += [Float(shownColumns.lowerBound), Float(shownColumns.upperBound), Float(shownRows.lowerBound), Float(shownRows.upperBound),
+                   Float(valueOffset), Float(diagonal.column), Float(diagonal.row), Float(diagonal.span),
+                   Float(min(elapsed, 1e9)), previous == nil ? 0 : 1, Float(pattern.form.index), Float(earlier.form.index)]
+        header += color(pattern.positive) + color(pattern.negative) + color(earlier.positive) + color(earlier.negative)
+    }
+
+    /// point（窗口坐标；跟着卡片走时已换算回卡片停着的位置）处的点，算法同 appendShaderData：
+    /// 落在格心时就是那一格，落在两格之间时由相邻四格按双线性权重取值。
+    func dot(at point: CGPoint, at date: Date, live: Bool, rest: DotColor) -> Dot? {
+        guard let pattern else { return nil }
+        // 以格心计、相对图案左上角那一格
+        let u = Double(point.x / DotMetrics.pitch) - 0.5 - Double(columns.lowerBound)
+        let v = Double(point.y / DotMetrics.pitch) - 0.5 - Double(rows.lowerBound)
+        let u0 = u.rounded(.down), v0 = v.rounded(.down), fu = u - u0, fv = v - v0
+        var value = 0.0
+        for (du, dv, weight) in [(0, 0, (1 - fu) * (1 - fv)), (1, 0, fu * (1 - fv)), (0, 1, (1 - fu) * fv), (1, 1, fu * fv)] where weight > 0 {
+            value += weight * self.value(pattern, column: Int(u0) + du, row: Int(v0) + dv, at: date, live: live)
+        }
+        let shape = abs(value)
+        guard shape > 1.0 / 512 else { return nil }
+        // 还没换过一半的格子用旧图案的颜色与终态
+        let colors = previous.map { morphed(u + v, at: date, live: live) < 0.5 ? $0 : pattern } ?? pattern
+        let color = rest.mixed(with: value >= 0 ? colors.positive : colors.negative, by: min(1, shape * 1.6))
+        return Dot(colors.form, shape: shape, color: color)
+    }
+
+    /// 图案里第 (column, row) 格（相对左上角）的取值，同 evaluate；图案外为 0。
+    private func value(_ pattern: DotPattern, column: Int, row: Int, at date: Date, live: Bool) -> Double {
+        guard column >= 0, column < columns.count, row >= 0, row < rows.count else { return 0 }
         let w = Double(columns.count), h = Double(rows.count)
-        let x = Double(column - columns.lowerBound) - (w / 2).rounded(.down)
-        let y = Double(row - rows.lowerBound) - (h / 2).rounded(.down)
+        let x = Double(column) - (w / 2).rounded(.down), y = Double(row) - (h / 2).rounded(.down)
         var scope = DotExpression.Scope()
         scope[.t] = live ? date.timeIntervalSince(start) : 0
         scope[.x] = x
         scope[.y] = y
         scope[.w] = w
         scope[.h] = h
-        scope[.i] = Double(row - rows.lowerBound) * w + Double(column - columns.lowerBound)
+        scope[.i] = Double(row) * w + Double(column)
         scope[.r] = hypot(x, y)
         scope[.a] = atan2(y, x)
         scope[.px] = pointer.map { x - $0.x } ?? 999
@@ -272,30 +358,23 @@ nonisolated struct ResolvedPattern: Sendable {
         scope[.k] = activity
         scope[.v] = sound
 
-        let elapsed = live ? date.timeIntervalSince(changed) : .infinity
-        var value = 0.0
-        var colors = pattern
-        if let pattern {
-            value = pattern.expression.evaluate(scope)
-            if let previous {
-                // 沿对角线从左上到右下逐格换过去
-                let span = Double(columns.count + rows.count - 2)
-                let delay = span > 0 ? Double(column - columns.lowerBound + row - rows.lowerBound) / span * PatternMotion.morphSpread : 0
-                let eased = easeOutCubic((elapsed - delay) / DotMetrics.morphDuration)
-                value = previous.expression.evaluate(scope) * (1 - eased) + value * eased
-                if eased < 0.5 { colors = previous }
-            } else {
-                // 由中心向外长出来
-                let reach = hypot(w / 2, h / 2)
-                let delay = reach > 0 ? scope[.r] / reach * PatternMotion.growSpread : 0
-                value *= easeOutCubic((elapsed - delay) / DotMetrics.morphDuration)
-            }
+        var value = pattern.expression.evaluate(scope)
+        if let previous {
+            // 沿对角线从左上到右下逐格换过去
+            let eased = morphed(Double(column + row), at: date, live: live)
+            value = previous.expression.evaluate(scope) * (1 - eased) + value * eased
+        } else {
+            // 由中心向外长出来
+            let reach = hypot(w / 2, h / 2)
+            let delay = reach > 0 ? scope[.r] / reach * PatternMotion.growSpread : 0
+            let elapsed = live ? date.timeIntervalSince(changed) : .infinity
+            value *= easeOutCubic((elapsed - delay) / DotMetrics.morphDuration)
         }
         if let leaving, live {
             value *= 1 - easeOutCubic(date.timeIntervalSince(leaving) / PatternMotion.leaveDuration)
         }
         if !quiet.isEmpty {
-            let square = DotMetrics.square(column: column, row: row)
+            let square = DotMetrics.square(column: column + columns.lowerBound, row: row + rows.lowerBound)
             var factor = 1.0
             for quiet in quiet {
                 let distance = Double(DotMetrics.distance(between: square, and: quiet.rect) / DotMetrics.pitch)
@@ -303,10 +382,15 @@ nonisolated struct ResolvedPattern: Sendable {
             }
             value *= factor
         }
-        let shape = abs(value)
-        guard shape > 1.0 / 512, let colors else { return nil }
-        let color = rest.mixed(with: value >= 0 ? colors.positive : colors.negative, by: min(1, shape * 1.6))
-        return Dot(colors.form, shape: shape, color: color)
+        return value
+    }
+
+    /// 换图案时，列号加行号（相对左上角，可以在两格之间）为 diagonal 的地方形变到几成。
+    private func morphed(_ diagonal: Double, at date: Date, live: Bool) -> Double {
+        let elapsed = live ? date.timeIntervalSince(changed) : .infinity
+        let span = Double(columns.count + rows.count - 2)
+        let delay = span > 0 ? diagonal / span * PatternMotion.morphSpread : 0
+        return easeOutCubic((elapsed - delay) / DotMetrics.morphDuration)
     }
 }
 

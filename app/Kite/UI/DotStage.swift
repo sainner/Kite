@@ -5,8 +5,8 @@ import SwiftUI
 /// 坐标统一用窗口坐标（SwiftUI 的 .global）：原点是窗口左上角，每个模块（步距 p）的中心一颗点，布局边界都落在模块线上。
 ///
 /// 静息网点是屏的底色：宽屏有开启点阵的窗口时由窗口画，没有时由 App 背景画；
-/// 窄屏侧栏展开时由 App 背景画，收起后只由开启点阵的窗口画。
-/// 各取景框格位一致，卡片移动时格位不跟着挪。
+/// 窄屏 App 背景一直画，开启点阵的窗口也画，连成一块屏。
+/// 各取景框格位一致，卡片移动时格位不跟着挪；摆在卡片上的图形跟着卡片走，见 DotCarrier。
 /// 图案按摆上去的先后叠加，后摆上的按覆盖度盖在上面；波和轨迹最后按取大叠上去。
 /// 事件（如发送消息的波）只在一段时间里抬高经过的格子，结束后格子退回静息的点。
 /// 每个图形占一个位置（slot），格子一直长着，换图形时逐格形变过去；组件消失时用 remove 直接撤掉。
@@ -19,8 +19,6 @@ final class DotStage {
     private var slots: [String: FigureSlot] = [:]
     /// 新 slot 的叠放次序，越大越靠上。
     @ObservationIgnored private var nextOrder = 0
-    /// 图形摆在会移动的卡片上时，那张卡片这一帧实际挪到哪，见 DotCarrier。
-    private var carriers: [String: DotCarrier] = [:]
     /// 指针或手指在空白画板上划过时点亮的格子，键是格位，值是点亮的时刻。
     @ObservationIgnored private var sparks: [DotCell: Date] = [:]
     /// 有波或形变在走时为 true。
@@ -31,22 +29,30 @@ final class DotStage {
     @ObservationIgnored private var patternInputs: [String: PatternInput] = [:]
     /// 各图案上一帧用的 PatternGrid，位置、大小和压字范围不变就接着用。
     @ObservationIgnored private var patternGrids: [String: PatternGrid] = [:]
-    /// 取景框（rect，窗口坐标）是否要逐帧刷新，静息时不耗电：有事件走或有卡片在走时都刷新；
-    /// 呼吸、在动的图形和图案只带动与它相交的取景框；不画图案的取景框不受图案带动。
-    func animating(in rect: CGRect, patterns drawsPatterns: Bool = true) -> Bool {
-        if ticking || carriers.values.contains(where: \.moving) { return true }
-        // 浮动和随卡片挪动至多偏出一格
+    /// 取景框（rect，窗口坐标）是否要逐帧刷新，静息时不耗电：有事件走时都刷新；
+    /// 呼吸、在动的图形和图案只带动与它相交、画它们的取景框（carrier 相同，见 field）；不画图案的取景框不受图案带动。
+    func animating(in rect: CGRect, carrier: DotCarrier? = nil, patterns drawsPatterns: Bool = true) -> Bool {
+        if ticking { return true }
+        // 浮动至多偏出一格
         let near = rect.insetBy(dx: -DotMetrics.pitch, dy: -DotMetrics.pitch)
         return slots.contains { key, slot in
-            (slot.breathing || slot.figure?.figure.moves == true) && figureFrame(key)?.intersects(near) == true
-        } || drawsPatterns && patterns.values.contains { ($0.carrier?.final.apply($0.area) ?? $0.area).intersects(near) }
+            slot.carrier === carrier && (slot.breathing || slot.figure?.figure.moves == true) && figureFrame(key)?.intersects(near) == true
+        } || drawsPatterns && patterns.values.contains {
+            $0.carrier === carrier && ($0.carrier?.rest.apply($0.area) ?? $0.area).intersects(near)
+        }
+    }
+
+    /// 有摆在这张卡片上的图形或图案。
+    func carries(_ carrier: DotCarrier) -> Bool {
+        slots.values.contains { $0.carrier === carrier && ($0.figure != nil || $0.previous != nil) }
+            || patterns.values.contains { $0.carrier === carrier }
     }
     /// slot 上正拼着的图形。
     func shownFigure(_ slot: String = FigureSlot.main) -> DotFigure? { slots[slot]?.figure?.figure }
     /// slot 上的图形在窗口坐标中占的范围。
     func figureFrame(_ slot: String = FigureSlot.main) -> CGRect? {
         guard let shown = slots[slot] else { return nil }
-        return (carriers[slot]?.carry(shown, moving: false) ?? shown).figure?.frame
+        return (shown.carrier?.carry(shown) ?? shown).figure?.frame
     }
     @ObservationIgnored private var activeUntil = Date.distantPast
     @ObservationIgnored private var settle: Task<Void, Never>?
@@ -122,9 +128,11 @@ final class DotStage {
         }
     }
 
-    private func resolvedPatterns(at date: Date, live: Bool) -> [ResolvedPattern] {
+    /// carrier 上的图案；指针按 follow（见 field）换算到卡片停着时的位置。
+    private func resolvedPatterns(at date: Date, live: Bool, carrier: DotCarrier?, follow: DotCarrier.Mapping?) -> [ResolvedPattern] {
         patterns.compactMap { key, slot in
-            let mapping = slot.carrier.map { live && $0.moving ? $0.current : $0.final }
+            guard slot.carrier === carrier else { return nil }
+            let mapping = slot.carrier?.rest
             let area = mapping?.apply(slot.area) ?? slot.area
             let pitch = DotMetrics.pitch
             let cells = DotMetrics.cells(within: area)
@@ -134,7 +142,8 @@ final class DotStage {
             let input = patternInputs[key] ?? PatternInput()
             let center = (x: Double(columns) + Double((lastColumn - columns + 1) / 2),
                           y: Double(rows) + Double((lastRow - rows + 1) / 2))
-            let pointer = input.pointer.map { (x: Double($0.x / pitch) - 0.5 - center.x, y: Double($0.y / pitch) - 0.5 - center.y) }
+            let pointer = input.pointer.map { follow?.apply($0) ?? $0 }
+                .map { (x: Double($0.x / pitch) - 0.5 - center.x, y: Double($0.y / pitch) - 0.5 - center.y) }
             // 形变走完就不再算旧图案
             let previous = live && date.timeIntervalSince(slot.changed) < PatternMotion.settled ? slot.previous : nil
             let quiet = slot.quiet.map { $0.mapped(by: mapping) }
@@ -213,20 +222,20 @@ final class DotStage {
         let request = hiders[slot] == nil ? requests[slot] : nil
         let figure = request?.figure, area = request?.area ?? .zero, placement = request?.placement ?? .center
         let clip = request?.clip, breathing = request?.breathing ?? false
-        // 收回时不再跟着卡片
-        let carrier = request?.carrier
+        // 收回途中照样跟着原来的卡片：卡片正在走（比如在拉开的侧边栏里切页面）时，换成按停着的位置画会从窗口里跳到屏幕中间
+        let carrier = request?.carrier ?? slots[slot]?.carrier
         guard figure != nil || slots[slot] != nil else { return }
-        if carriers[slot] !== carrier { carriers[slot] = carrier }
         var current = slots[slot] ?? FigureSlot(order: nextOrder)
         if slots[slot] == nil { nextOrder += 1 }
+        current.carrier = carrier
         let placed = figure.map { figure in
-            carrier.map { PlacedFigure(figure, in: $0.final.apply(area), placement: placement, area: area,
-                                       clip: clip.map($0.final.apply), localClip: clip) }
+            carrier.map { PlacedFigure(figure, in: $0.rest.apply(area), placement: placement, area: area,
+                                       clip: clip.map($0.rest.apply), localClip: clip) }
                 ?? PlacedFigure(figure, in: area, placement: placement, clip: clip)
         }
         current.breathing = breathing && placed != nil
         if placed == current.figure {
-            if slots[slot]?.breathing != current.breathing { slots[slot] = current }
+            if slots[slot]?.breathing != current.breathing || slots[slot]?.carrier !== carrier { slots[slot] = current }
             return
         }
         if let placed, placed.figure == current.figure?.figure {
@@ -255,7 +264,7 @@ final class DotStage {
 
     /// 在 point（窗口坐标）附近留下轨迹，越远越淡，随后慢慢退回静息的点。
     func trace(at point: CGPoint) {
-        let column = Int((point.x / DotMetrics.pitch).rounded(.down)), row = Int((point.y / DotMetrics.pitch).rounded(.down))
+        let (column, row) = DotMetrics.cell(at: point)
         let now = Date.now
         sparks = sparks.filter { now.timeIntervalSince($0.value) < DotSpark.duration }
         sparks[DotCell(column: column, row: row)] = now
@@ -275,14 +284,22 @@ final class DotStage {
 
     /// date 时刻的取值快照，供一帧绘制使用。live 为 false（静息或减少动态效果）时不呼吸；
     /// patterns 为 false 时不含图案，逐格求值的图案只由画它的取景框算。scope 是取景框所在的窗口，只含不限窗口的波和这个窗口的波。
-    func field(at date: Date, rest: DotColor, live: Bool, patterns drawsPatterns: Bool = true, scope: DotScope? = nil) -> DotField {
+    /// carrier 是取景框画的那张卡片：只含摆在它上面的图形和图案，nil 时只含不在卡片上的。
+    /// follow 是卡片正在走时，屏幕上的一点对应卡片停着时的哪里，摆在卡片上的图形和图案按它取样，跟着卡片走。
+    func field(at date: Date, rest: DotColor, live: Bool, patterns drawsPatterns: Bool = true, scope: DotScope? = nil,
+               carrier: DotCarrier? = nil, follow: DotCarrier.Mapping? = nil) -> DotField {
         let scope = scope.map(ObjectIdentifier.init)
         return DotField(waves: waves.filter { $0.isActive(at: date) && ($0.scope == nil || $0.scope == scope) },
                         palette: DotColor.palette, rest: rest,
-                        slots: slots.map { key, slot in (carriers[key]?.carry(slot, moving: live) ?? slot).settled(at: date, live: live) }
-                            .sorted { $0.order < $1.order },
+                        slots: slots.values.compactMap { slot -> FigureSlot? in
+                            guard slot.carrier === carrier else { return nil }
+                            return (slot.carrier?.carry(slot) ?? slot).settled(at: date, live: live)
+                        }
+                        .sorted { $0.order < $1.order },
                         breath: live ? WaitingBreath.opacity(at: date) : 1, moving: live,
-                        sparks: live ? sparks : [:], patterns: drawsPatterns ? resolvedPatterns(at: date, live: live) : [])
+                        sparks: live ? sparks : [:],
+                        patterns: drawsPatterns ? resolvedPatterns(at: date, live: live, carrier: carrier, follow: follow) : [],
+                        follow: follow)
     }
 
     private func keepAnimating(for duration: TimeInterval) {
@@ -297,7 +314,6 @@ final class DotStage {
             for key in slots.keys { slots[key]?.previous = nil }
             slots = slots.filter { $0.value.figure != nil }
             requests = requests.filter { slots[$0.key] != nil || hiders[$0.key] != nil }
-            carriers = carriers.filter { slots[$0.key] != nil }
             ticking = false
         }
     }
@@ -309,10 +325,10 @@ nonisolated struct DotCell: Hashable, Sendable {
     let row: Int
 }
 
-/// 一张会移动的卡片（iPhone 的窗口）。卡片里的内容按卡片自己的坐标（space）排，
-/// 卡片的动画逐帧报来这一帧实际在哪（current）和要去哪（final），两者都是卡片坐标到窗口坐标的换算。
-/// 摆在卡片上的图形按 final 落到整格，再按 current 与 final 之差把亚格偏移分给相邻的格子（同浮动），
-/// 不跟着卡片整块平移；格位和偏移取自同一帧的换算，不等卡片里的布局回报。
+/// 一张会移动的卡片（窄屏的窗口）。卡片里的内容按卡片自己的坐标（space）排，rest 是卡片停着时卡片坐标到窗口坐标的换算。
+/// 摆在卡片上的图形和图案按 rest 落到点阵的格位上，停着时不插值、不发虚；卡片走着时由卡片的点阵层逐帧给出 follow，
+/// 把屏幕上的每一格换算回卡片停着时的位置取样，图形随卡片平移、缩放，落在两格之间由相邻格插值（同浮动）。
+/// 静息网点不跟着卡片动。
 @MainActor @Observable
 final class DotCarrier {
     /// 卡片内容的坐标空间。
@@ -321,8 +337,8 @@ final class DotCarrier {
     /// 摆到点阵上的坐标：在会移动的卡片里（carrier 不为 nil）用卡片坐标，否则用窗口坐标。
     nonisolated static func coordinateSpace(_ carrier: DotCarrier?) -> CoordinateSpace { carrier == nil ? .global : .named(space) }
 
-    /// 卡片坐标到窗口坐标：p × scale + origin。
-    nonisolated struct Mapping: Equatable, Sendable {
+    /// 一个坐标到另一个坐标：p × scale + origin。
+    nonisolated struct Mapping: Hashable, Sendable {
         var origin = CGPoint.zero
         var scale: CGFloat = 1
 
@@ -333,39 +349,36 @@ final class DotCarrier {
         func apply(_ rect: CGRect) -> CGRect {
             CGRect(origin: apply(rect.origin), size: CGSize(width: rect.width * scale, height: rect.height * scale))
         }
+
+        var inverted: Mapping {
+            Mapping(origin: CGPoint(x: -origin.x / scale, y: -origin.y / scale), scale: 1 / scale)
+        }
+
+        /// 先换算 other，再换算自己。
+        func after(_ other: Mapping) -> Mapping {
+            Mapping(origin: apply(other.origin), scale: scale * other.scale)
+        }
+
+        var transform: CGAffineTransform {
+            CGAffineTransform(a: scale, b: 0, c: 0, d: scale, tx: origin.x, ty: origin.y)
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(origin.x)
+            hasher.combine(origin.y)
+            hasher.combine(scale)
+        }
     }
 
-    /// 正在走的动画数；有在走的时，点阵逐帧刷新。
-    private var runs = 0
-    @ObservationIgnored private(set) var current = Mapping()
-    @ObservationIgnored private(set) var final = Mapping()
+    /// 卡片停着时卡片坐标到窗口坐标的换算。
+    var rest = Mapping()
 
-    var moving: Bool { runs > 0 }
-
-    /// 一段动画开始与结束，成对调用。
-    func began() { runs += 1 }
-    func ended() { runs = max(runs - 1, 0) }
-
-    /// 由卡片的动画逐帧写入，不引起视图更新。
-    func update(current: Mapping, final: Mapping) {
-        self.current = current
-        self.final = final
-    }
-
-    /// slot 上的图形（area 是卡片坐标）按卡片停下时的位置摆到点阵上；moving 时再加上这一帧还差的亚格偏移。图形本身不缩放。
-    func carry(_ slot: FigureSlot, moving: Bool) -> FigureSlot {
+    /// slot 上的图形（area 是卡片坐标）按卡片停着的位置摆到点阵上，图形本身不缩放。
+    func carry(_ slot: FigureSlot) -> FigureSlot {
         func carried(_ placed: PlacedFigure) -> PlacedFigure {
             guard let area = placed.area else { return placed }
-            let mapping = moving ? current : final
-            var result = PlacedFigure(placed.figure, in: final.apply(area), placement: placed.placement, area: area,
-                                      clip: placed.localClip.map(mapping.apply), localClip: placed.localClip)
-            if moving {
-                let center = CGPoint(x: area.midX, y: area.midY)
-                let now = current.apply(center), then = final.apply(center)
-                result.shiftX += Double((now.x - then.x) / DotMetrics.pitch)
-                result.shiftY += Double((now.y - then.y) / DotMetrics.pitch)
-            }
-            return result
+            return PlacedFigure(placed.figure, in: rest.apply(area), placement: placed.placement, area: area,
+                                clip: placed.localClip.map(rest.apply), localClip: placed.localClip)
         }
         var slot = slot
         slot.figure = slot.figure.map(carried)
@@ -711,7 +724,7 @@ nonisolated struct PlacedFigure: Hashable, Sendable {
     let clip: CGRect?
     /// 摆在会移动的卡片上时，卡片坐标里的可见范围。
     let localClip: CGRect?
-    /// 图形左上角偏出 (column, row) 多少（格）：exact 摆放落在两格之间，或随所在卡片挪动；对齐格位时为 0。
+    /// 图形左上角偏出 (column, row) 多少（格）：exact 摆放落在两格之间；对齐格位时为 0。
     var shiftX = 0.0
     var shiftY = 0.0
 
@@ -756,18 +769,21 @@ nonisolated struct PlacedFigure: Hashable, Sendable {
                width: CGFloat(figure.columns) * DotMetrics.pitch, height: CGFloat(figure.rows) * DotMetrics.pitch)
     }
 
-    /// 窗口点阵上 (column, row) 这一格从图形内容里分到多少形变、什么颜色、覆盖了几成；一点都没分到是 nil。
-    /// 浮动的层和落在两格之间、随卡片挪动的图形按此刻的位移把这一格的中心反算回图形坐标，由相邻格按双线性权重分配形变量；
+    /// 这一帧可能占到的格子：浮动、落在两格之间至多偏出一格。
+    var reach: (columns: ClosedRange<Int>, rows: ClosedRange<Int>) {
+        let dx = Int(shiftX.rounded(.down)), dy = Int(shiftY.rounded(.down))
+        return ((column + dx - 1)...(column + dx + figure.columns + 1), (row + dy - 1)...(row + dy + figure.rows + 1))
+    }
+
+    /// center（窗口点阵上一格的格心；跟着卡片走时已换算回卡片停着的位置）从图形内容里分到多少形变、什么颜色、覆盖了几成；
+    /// 一点都没分到是 nil。浮动的层和落在两格之间的图形按此刻的位移把 center 反算回图形坐标，由相邻格按双线性权重分配形变量；
     /// 颜色按相同的空间权重在 oklab 中混合，未覆盖的部分留给 DotBlend 与下层合成；闪烁的层连续交接给底层或静息点。
     /// 幅度为 0、没有挪动时正好取回原来那一格。
-    func sample(column: Int, row: Int, at date: Date, amplitude: Double, rest: DotColor) -> DotSample? {
-        if let clip {
-            let center = CGPoint(x: (CGFloat(column) + 0.5) * DotMetrics.pitch, y: (CGFloat(row) + 0.5) * DotMetrics.pitch)
-            guard clip.contains(center) else { return nil }
-        }
+    func sample(at center: CGPoint, at date: Date, amplitude: Double, rest: DotColor) -> DotSample? {
+        if let clip, !clip.contains(center) { return nil }
         // 格的中心，以格为单位、相对图形左上角；浮动至多偏出一格
-        let x = Double(column - self.column) + 0.5 - shiftX
-        let y = Double(row - self.row) + 0.5 - shiftY
+        let x = Double(center.x / DotMetrics.pitch) - Double(self.column) - shiftX
+        let y = Double(center.y / DotMetrics.pitch) - Double(self.row) - shiftY
         guard x > -1, x < Double(figure.columns) + 1, y > -1, y < Double(figure.rows) + 1 else { return nil }
         let u = x - 0.5, u0 = u.rounded(.down), fu = u - u0
         var shape = 0.0, coverage = 0.0
@@ -837,6 +853,8 @@ nonisolated struct FigureSlot: Sendable {
     var breathing = false
     /// 越大越靠上，同一 slot 换图形时不变。
     var order = 0
+    /// 图形摆在会移动的卡片上时，是哪张卡片，见 DotCarrier。
+    var carrier: DotCarrier?
     /// 换摆放方式时原位置相对新位置的偏移（格），从 settleStart 起在 settleDuration 内减到零。
     var settle = (x: 0.0, y: 0.0)
     var settleStart = Date.distantPast
@@ -877,16 +895,21 @@ nonisolated struct DotField: Sendable {
     let moving: Bool
     let sparks: [DotCell: Date]
     let patterns: [ResolvedPattern]
+    /// 所在卡片正在走：屏幕上的一点对应卡片停着时的哪里。图形和图案按停着的位置摆，每格把格心换算过去取样，
+    /// 跟着卡片走；波、轨迹和静息的点不跟着走。见 DotCarrier。
+    let follow: DotCarrier.Mapping?
 
     func dot(column: Int, row: Int, at date: Date) -> Dot {
         // 先按叠放次序把各图案合成到静息的点上，再叠波和轨迹
         var dot = Dot(.square, shape: 0, color: rest)
+        let center = DotMetrics.center(column: column, row: row)
+        let point = follow?.apply(center) ?? center
         // 图案铺在最底下，图形叠在它上面
         for pattern in patterns {
-            if let value = pattern.dot(column: column, row: row, at: date, live: moving, rest: rest) { dot = value }
+            if let value = pattern.dot(at: point, at: date, live: moving, rest: rest) { dot = value }
         }
         for slot in slots {
-            if let cell = figureCell(in: slot, column: column, row: row, at: date) {
+            if let cell = figureCell(in: slot, at: point, at: date) {
                 dot = DotBlend.normal.composite(cell, over: dot)
             }
         }
@@ -916,14 +939,14 @@ nonisolated struct DotField: Sendable {
         return shape > dot.shape ? Dot(form, shape: lit.shape, color: lit.color) : dot
     }
 
-    /// 图形在这一格的取值；形变中从旧图形（或静息的点）缓出到新图形（或静息的点）。
+    /// 图形在 point（一格的格心，见 dot）的取值；形变中从旧图形（或静息的点）缓出到新图形（或静息的点）。
     /// 旧图形一开始形变就在 0.3 秒内停下回正，新图形形变完后 0.8 秒内动起来。
-    private func figureCell(in slot: FigureSlot, column: Int, row: Int, at date: Date) -> DotSample? {
+    private func figureCell(in slot: FigureSlot, at point: CGPoint, at date: Date) -> DotSample? {
         let figure = slot.figure, previousFigure = slot.previous
         let elapsed = date.timeIntervalSince(slot.start)
-        let to = figure?.sample(column: column, row: row, at: date,
+        let to = figure?.sample(at: point, at: date,
                                 amplitude: moving ? smoothstep((elapsed - DotFigure.transition) / 0.8) : 0, rest: rest)
-        let from = previousFigure?.sample(column: column, row: row, at: date,
+        let from = previousFigure?.sample(at: point, at: date,
                                           amplitude: moving ? 1 - smoothstep(elapsed / 0.3) : 0, rest: rest)
         guard to != nil || from != nil else { return nil }
         var eased = 1.0
@@ -931,7 +954,9 @@ nonisolated struct DotField: Sendable {
             let first = min(previousFigure.column + previousFigure.row, figure.column + figure.row)
             let last = max(previousFigure.column + previousFigure.figure.columns + previousFigure.row + previousFigure.figure.rows,
                            figure.column + figure.figure.columns + figure.row + figure.figure.rows) - 2
-            let delay = last > first ? Double(column + row - first) / Double(last - first) * DotFigure.stagger : 0
+            // point 所在格的列号加行号，跟着卡片走时可以在两格之间
+            let diagonal = Double((point.x + point.y) / DotMetrics.pitch) - 1
+            let delay = last > first ? (diagonal - Double(first)) / Double(last - first) * DotFigure.stagger : 0
             eased = easeOutCubic((elapsed - delay) / DotMetrics.morphDuration)
         } else if previousFigure != nil || figure != nil {
             // 从无到有或整体收回：所有格子一起形变。
@@ -962,12 +987,12 @@ nonisolated struct DotField: Sendable {
         }
         if waveFloats.isEmpty { waveFloats = [0] }
         let colors = palette.isEmpty ? DotColor.palette : palette
-        let visible = Self.visibleCells(in: bounds)
+        let visible = DotMetrics.cells(covering: bounds)
         let hiddenCells = hidden.map(DotMetrics.cells(within:))
         var patternFloats: [Float] = [], patternValues: [Float] = []
         for pattern in patterns {
             pattern.appendShaderData(to: &patternFloats, values: &patternValues, columns: visible.columns, rows: visible.rows,
-                                     hidden: hiddenCells, at: date, live: moving)
+                                     hidden: hiddenCells, follow: follow, at: date, live: moving)
         }
         // 着色器的数组参数不能为空，空的给一个占位；占位比一条记录短，着色器按长度跳过。
         let hiddenFloats = hidden.flatMap { [Float($0.minX), Float($0.minY), Float($0.maxX), Float($0.maxY)] }
@@ -978,13 +1003,6 @@ nonisolated struct DotField: Sendable {
             .floatArray(DotForm.shaderProfiles),
             .floatArray(patternFloats.isEmpty ? [0] : patternFloats), .floatArray(patternValues.isEmpty ? [0] : patternValues),
             .floatArray(hiddenFloats.isEmpty ? [0] : hiddenFloats))
-    }
-
-    /// 画布范围（窗口坐标）覆盖到的格子。
-    private static func visibleCells(in bounds: CGRect) -> (columns: ClosedRange<Int>, rows: ClosedRange<Int>) {
-        let pitch = DotMetrics.pitch
-        return (Int((bounds.minX / pitch).rounded(.down))...Int((bounds.maxX / pitch).rounded(.up)),
-                Int((bounds.minY / pitch).rounded(.down))...Int((bounds.maxY / pitch).rounded(.up)))
     }
 
     /// 格表每格的数：列、行、终态序号（-1 是空位）、shape、不预乘的 sRGB 与透明度。
@@ -1000,9 +1018,11 @@ nonisolated struct DotField: Sendable {
         var cells = Set(sparks.keys.filter { visibleColumns.contains($0.column) && visibleRows.contains($0.row) })
         for slot in slots {
             for placed in [slot.figure, slot.previous].compactMap(\.self) {
-                let dx = Int(placed.shiftX.rounded(.down)), dy = Int(placed.shiftY.rounded(.down))
-                let rows = (placed.row + dy - 1)...(placed.row + dy + placed.figure.rows + 1)
-                let columns = (placed.column + dx - 1)...(placed.column + dx + placed.figure.columns + 1)
+                var (columns, rows) = placed.reach
+                if let follow {
+                    // 屏幕上换算回去落在这片格子里的格子
+                    (columns, rows) = DotMetrics.cells(covering: follow.inverted.apply(DotMetrics.rect(columns: columns, rows: rows)))
+                }
                 guard rows.overlaps(visibleRows), columns.overlaps(visibleColumns) else { continue }
                 for row in rows.clamped(to: visibleRows) {
                     for column in columns.clamped(to: visibleColumns) { cells.insert(DotCell(column: column, row: row)) }
@@ -1060,14 +1080,12 @@ nonisolated func easeOutCubic(_ x: Double) -> Double {
 extension EnvironmentValues {
     /// 所在 App 窗口的点阵舞台，一个窗口只有一个。
     @Entry var dotStage: DotStage?
-    /// 所在卡片会移动时（iPhone 的窗口），报告卡片这一帧实际在哪；不动的地方为 nil。
+    /// 所在卡片会移动时（窄屏的窗口），卡片停着时在哪；不动的地方为 nil。卡片里的图形摆在它上面，由卡片的点阵层画。
     @Entry var dotCarrier: DotCarrier?
     /// 图案可见的范围（窗口坐标；在会移动的卡片里是卡片坐标），见 dotClip()。
     @Entry var dotClip: CGRect?
     /// 所在滚动区正在滚动（拖动、惯性或程序滚动），见 dotClip()。
     @Entry var dotScrolling = false
-    /// 所在窗口的图形暂时收回（窄屏拉开侧边栏、底栏时，见 CompactWindow），占位改用底色填充。
-    @Entry var dotFiguresRetracted = false
 }
 
 extension View {
@@ -1144,12 +1162,10 @@ struct DotMask: View {
     @Environment(\.dotCarrier) private var carrier
     @Environment(\.dotClip) private var clip
     @Environment(\.dotScrolling) private var scrolling
-    @Environment(\.dotFiguresRetracted) private var retracted
     @State private var slot = "mask.\(UUID().uuidString)"
     @State private var area: CGRect?
 
     var body: some View {
-        let _ = DrawerBench.count("DotMask")
         Color.clear
             .frame(width: CGFloat(figure.columns) * DotMetrics.pitch, height: CGFloat(figure.rows) * DotMetrics.pitch)
             .onGeometryChange(for: CGRect.self) {
@@ -1164,11 +1180,6 @@ struct DotMask: View {
             .onDisappear { stage?.show(nil, in: .zero, slot: slot) }
             .frame(maxWidth: alignment == nil ? nil : .infinity, maxHeight: alignment == nil ? nil : .infinity,
                    alignment: alignment ?? .center)
-            // 和格子收回、长出一起淡入淡出
-            .background {
-                RoundedRectangle(cornerRadius: DotMetrics.module / 2, style: .continuous).fill(Theme.placeholder)
-                    .opacity(retracted ? 1 : 0).animation(DotMetrics.morph, value: retracted)
-            }
             .preference(key: DotSlots.self, value: [slot])
             .allowsHitTesting(false)
     }
@@ -1181,6 +1192,7 @@ struct DotMask: View {
 
 /// 点阵的取景框，格子按窗口坐标对齐，不参与点击和读屏。画的是所在窗口舞台里落在自己范围内的那部分：静息网点、图案、波和轨迹。
 /// 像素由 Metal 着色器（DotField.metal）画，CPU 每帧只算图形和轨迹那几格。
+/// 所在环境给出卡片（dotCarrier）时是那张卡片的点阵层，只画摆在它上面的图形和图案；否则只画不在卡片上的。
 struct DotCanvas: View {
     /// 画静息的点；为 false 时只画图案、波和轨迹。
     var drawsRest = true
@@ -1188,6 +1200,8 @@ struct DotCanvas: View {
     var drawsPatterns = true
     /// 另有取景框负责的范围（窗口坐标），这里不画也不求值。
     var excluding: [CGRect] = []
+    /// 卡片正在走：屏幕上的一点对应卡片停着时的哪里，卡片上的图形按它跟着走，见 DotCarrier。
+    var follow: DotCarrier.Mapping?
     @Environment(\.dotStage) private var stage
     @Environment(\.dotCarrier) private var carrier
     @Environment(\.dotScope) private var scope
@@ -1196,34 +1210,19 @@ struct DotCanvas: View {
     @Environment(\.self) private var environment
 
     var body: some View {
-        let _ = DrawerBench.count("DotCanvas")
         GeometryReader { proxy in
             let global = proxy.frame(in: .global)
             // 放在缩放的窗口里时，按屏幕上的实际大小画，格子仍与 App 网格对齐。
             let scale = proxy.size.width > 0 ? global.width / proxy.size.width : 1
-            let local = proxy.frame(in: .named(DotCarrier.space)).origin
             if let stage {
-                // 卡片在走时总在刷新，这里按它要去的位置判断范围里有没有在动的内容
-                let frame = carrier?.final.apply(CGRect(origin: local, size: proxy.size)) ?? global
-                let live = (stage.animating(in: frame, patterns: drawsPatterns) || carrier?.moving == true) && !reduceMotion
+                let live = stage.animating(in: global, carrier: carrier, patterns: drawsPatterns) && !reduceMotion
                 TimelineView(.animation(paused: !live)) { timeline in
-                    let _ = DrawerBench.count("DotFrame")
                     // 静息或减少动态效果时取波都已结束的时刻，直接画出静息的点。
                     let date = live ? timeline.date : .distantFuture
-                    let field = stage.field(at: date, rest: .rest(in: environment), live: live, patterns: drawsPatterns, scope: scope)
-                    // 在移动的卡片里时按卡片这一帧的实际位置换算，画出来的格子仍落在窗口的点阵上
-                    let mapping = live ? carrier?.current : carrier?.final
-                    let origin = mapping?.apply(local) ?? global.origin, canvasScale = mapping?.scale ?? scale
-                    // 挖空的范围换到与 bounds 相同的坐标，那里的格子不再求值
-                    let hidden = excluding.map { rect in
-                        CGRect(x: origin.x + (rect.minX - global.minX) / scale * canvasScale,
-                               y: origin.y + (rect.minY - global.minY) / scale * canvasScale,
-                               width: rect.width / scale * canvasScale, height: rect.height / scale * canvasScale)
-                    }
-                    Rectangle().fill(field.shader(origin: origin, scale: canvasScale, pixel: 1 / max(displayScale, 1),
-                                                  bounds: CGRect(origin: origin, size: CGSize(width: proxy.size.width * canvasScale,
-                                                                                              height: proxy.size.height * canvasScale)),
-                                                  at: date, drawsRest: drawsRest, hidden: hidden))
+                    let field = stage.field(at: date, rest: .rest(in: environment), live: live, patterns: drawsPatterns, scope: scope,
+                                            carrier: carrier, follow: follow)
+                    Rectangle().fill(field.shader(origin: global.origin, scale: scale, pixel: 1 / max(displayScale, 1),
+                                                  bounds: global, at: date, drawsRest: drawsRest, hidden: excluding))
                 }
                 // 逐帧刷新不带动画：否则所在视图离场时，每帧的更新都继承转场的动画，转场一直结束不了，视图移除不掉
                 .transaction { $0.animation = nil }

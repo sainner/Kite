@@ -25,7 +25,6 @@ struct TranscriptView: View {
     @Environment(\.selectedRow) private var selection
 
     var body: some View {
-        let _ = DrawerBench.count("Transcript")
         let turns = turns
         if lazy {
             LazyVStack(alignment: .leading, spacing: 0) { content(turns) }

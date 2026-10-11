@@ -19,6 +19,28 @@ nonisolated enum DotMetrics {
         CGRect(x: CGFloat(column) * pitch, y: CGFloat(row) * pitch, width: pitch, height: pitch)
     }
 
+    /// 第 (column, row) 格的中心（窗口坐标）。
+    static func center(column: Int, row: Int) -> CGPoint {
+        CGPoint(x: (CGFloat(column) + 0.5) * pitch, y: (CGFloat(row) + 0.5) * pitch)
+    }
+
+    /// point（窗口坐标）落在哪一格。
+    static func cell(at point: CGPoint) -> (column: Int, row: Int) {
+        (Int((point.x / pitch).rounded(.down)), Int((point.y / pitch).rounded(.down)))
+    }
+
+    /// 一片格子在窗口坐标中占的范围。
+    static func rect(columns: ClosedRange<Int>, rows: ClosedRange<Int>) -> CGRect {
+        CGRect(x: CGFloat(columns.lowerBound) * pitch, y: CGFloat(rows.lowerBound) * pitch,
+               width: CGFloat(columns.count) * pitch, height: CGFloat(rows.count) * pitch)
+    }
+
+    /// 一块区域（窗口坐标）盖到的格子，边上只盖到一部分的也算。
+    static func cells(covering rect: CGRect) -> (columns: ClosedRange<Int>, rows: ClosedRange<Int>) {
+        (Int((rect.minX / pitch).rounded(.down))...Int((rect.maxX / pitch).rounded(.up)),
+         Int((rect.minY / pitch).rounded(.down))...Int((rect.maxY / pitch).rounded(.up)))
+    }
+
     /// 整格落在一块区域（窗口坐标）里的格子。
     static func cells(within rect: CGRect) -> (columns: Range<Int>, rows: Range<Int>) {
         let column = Int((rect.minX / pitch).rounded(.up)), row = Int((rect.minY / pitch).rounded(.up))

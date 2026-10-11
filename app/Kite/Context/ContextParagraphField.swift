@@ -47,7 +47,6 @@ struct ContextParagraphField: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        let _ = DrawerBench.count("Paragraph")
         let style = ContextTextStyle(variables: variables, colorScheme: colorScheme, scale: displayScale, dynamicTypeSize: dynamicTypeSize)
         ContextTextView(parts: $parts, focused: $focused, style: style, editable: isEnabled, editor: editor,
                         focusRequested: focusRequested, focusHandled: focusHandled)
@@ -741,7 +740,6 @@ extension ContextTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: ContextUITextView, context: Context) {
-        let _ = DrawerBench.count("TextUpdate")
         view.isEditable = editable
         context.coordinator.update(parts: $parts, focused: $focused, style: style, editor: editor)
         requestFocus(context.coordinator)
@@ -752,7 +750,6 @@ extension ContextTextView: UIViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView view: ContextUITextView, context: Context) -> CGSize? {
-        let _ = DrawerBench.count("TextSize")
         guard let width = proposal.width, width.isFinite, width > 0 else { return nil }
         let inset = view.textContainerInset
         return CGSize(width: width, height: context.coordinator.height(for: width - inset.left - inset.right) + inset.top + inset.bottom)

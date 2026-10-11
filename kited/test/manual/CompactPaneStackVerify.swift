@@ -18,14 +18,27 @@ final class WindowLayout {
     func focus(_ pane: Pane) { focused = pane }
 }
 
+@Observable @MainActor
+final class DrawerMotion {
+    // 此夹具保持抽屉收起，只验证卡片切换后的命中交接。
+    var collapsed = true
+}
+
 struct PaneGroup {
     let layout: WindowLayout
     let recorder: CompactPaneRecorder
     let lively: Bool
 }
 
-enum Theme {
-    static let card = Color.white
+// 夹具没有 DotStage 或点阵 slot，不验证点阵生命周期。
+struct DotsPresence: ViewModifier {
+    let presented: Bool
+
+    func body(content: Content) -> some View { content }
+}
+
+extension AnyTransition {
+    static var dotsPresence: AnyTransition { .identity }
 }
 
 extension EnvironmentValues {
@@ -190,7 +203,7 @@ private struct CompactPaneStackContract {
         let layout = WindowLayout(panes: panes)
         let recorder = CompactPaneRecorder()
         let group = PaneGroup(layout: layout, recorder: recorder, lively: lively)
-        let host = NSHostingView(rootView: CompactPaneStack(group: group, width: 360, canSwitch: true))
+        let host = NSHostingView(rootView: CompactPaneStack(group: group, motion: DrawerMotion(), width: 360))
         let window = NSWindow(contentRect: CGRect(x: -10000, y: -10000, width: 360, height: 240),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

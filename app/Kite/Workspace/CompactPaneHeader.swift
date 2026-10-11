@@ -30,7 +30,6 @@ struct CompactPaneHeaderHost: ViewModifier {
     @Environment(\.paneTopSafeInset) private var topInset
 
     func body(content: Content) -> some View {
-        let _ = DrawerBench.count("HeaderHost")
         content
             .environment(\.sharedPaneHeaderHeight, height ?? Metrics.paneHeaderButton + Metrics.paneMargin
                          + max(Metrics.paneMargin, topInset) - topInset)
@@ -49,7 +48,6 @@ private struct CompactPaneHeaderBar: View {
     let source: CompactPaneHeader
 
     var body: some View {
-        let _ = DrawerBench.count("HeaderBar")
         GlassEffectContainer(spacing: Metrics.paneButtonGap) {
             PaneHeaderBar(header: source.header, status: Group {
                 if let status = source.status {
@@ -68,7 +66,6 @@ struct PaneHeaderPlacement: ViewModifier {
     @Environment(\.paneTopSafeInset) private var topInset
 
     func body(content: Content) -> some View {
-        let _ = DrawerBench.count("HeaderPlacement")
         content
             .padding(.top, max(Metrics.paneMargin, topInset) - topInset)
             .padding(.bottom, Metrics.paneMargin)
@@ -91,6 +88,7 @@ struct PaneHeaderPlacement: ViewModifier {
             .contentShape(Rectangle())
             .onTapGesture(perform: endTyping)
             #endif
+            .drawerShift(.top)
     }
 
     #if os(iOS)

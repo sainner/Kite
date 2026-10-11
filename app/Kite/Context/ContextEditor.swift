@@ -169,7 +169,6 @@ struct ContextEditorToolbar: View {
     @State private var confirmingDelete: ContextBlockHandle?
 
     var body: some View {
-        let _ = DrawerBench.count("Toolbar")
         let current = editor.current.flatMap { handle in handle.state().map { (handle, $0) } }
         ContextToolbarLayout(spacing: Metrics.paneButtonGap) {
             // 在块级那一行的最左边：出现、消失时占的是空白，不挤动别的按钮

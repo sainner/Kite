@@ -20,7 +20,6 @@ struct ThreadControls: View {
     @State private var effortError: String?
 
     var body: some View {
-        let _ = DrawerBench.count("Controls")
         @Bindable var thread = thread
         let running = thread.transcript.running
         let shape = RoundedRectangle(cornerRadius: Metrics.controlRadius, style: .continuous)

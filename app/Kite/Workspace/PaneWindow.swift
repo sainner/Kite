@@ -25,8 +25,8 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
     @Environment(\.openSidebar) private var openSidebar
     @Environment(\.dotCarrier) private var carrier
     @Environment(\.paneConnectionNotice) private var connectionNotice
-    /// 整个窗口（连同标题栏与控制区）的范围，交给内容里要铺满整个窗口的点阵图案；不铺点阵的窗口不量。
-    @State private var frame: CGRect?
+    /// 量好的范围写进这个盒子交给内容：只有读它的视图（铺满窗口的签名）随它重算，窗口本身不跟着重算。
+    @State private var frame = PaneWindowFrame()
 
     init(header: PaneHeader, usesDots: Bool = false, notice: PaneNotice? = nil, @ViewBuilder content: () -> Content,
          @ViewBuilder controls: @escaping (_ typing: FocusState<Bool>.Binding) -> Controls,
@@ -42,7 +42,6 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
     }
 
     var body: some View {
-        let _ = DrawerBench.count("PaneWindow")
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .environment(\.paneWindowFrame, frame)
@@ -73,6 +72,7 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
                     }
                         .padding(.horizontal, Metrics.paneMargin)
                         .modifier(PaneControlsBottom())
+                        .drawerShift(.bottom)
                         .frame(maxWidth: .infinity)
                         .contentShape(Rectangle())
                         // 打字时在输入框里上下拖是选字、滚动，不拉 action 栏
@@ -101,10 +101,7 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
             // 控制区后面的内容保持完整显示。
             .scrollEdgeEffectHidden(true, for: .bottom)
             .windowDots(usesDots)
-            // 窗口移动、缩放时范围每帧都变，写一次状态整个窗口跟着重算，只有铺点阵的窗口才量。
-            .onGeometryChange(for: CGRect?.self) {
-                usesDots ? $0.frame(in: DotCarrier.coordinateSpace(carrier)) : nil
-            } action: { frame = $0 }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: DotCarrier.coordinateSpace(carrier)) } action: { frame.rect = $0 }
     }
 
     /// 信息区：窗口给的圆环，提示出现时虚化盖住；没有圆环时只放提示图标。
@@ -149,18 +146,23 @@ extension AnyTransition {
     }
 }
 
+/// 窗口连同标题栏与控制区的范围：窗口坐标，在会移动的卡片里是卡片坐标。
+@MainActor @Observable final class PaneWindowFrame {
+    var rect: CGRect?
+}
+
 extension EnvironmentValues {
     /// 窗口底部为 Home 条保留的高度，不含键盘；底栏展开时仍保留。SwiftUI 的安全区读出来是合在一起的，分不出键盘，
     /// CompactLayout 从 UIKit 读了给出；Mac 上是 0。
     @Entry var homeIndicatorInset: CGFloat = 0
-    /// 所在窗口连同标题栏与控制区的范围：窗口坐标，在会移动的卡片里是卡片坐标。由 PaneWindow 给内容。
-    @Entry var paneWindowFrame: CGRect?
+    /// 所在窗口连同标题栏与控制区的范围，见 PaneWindowFrame。由 PaneWindow 给内容。
+    @Entry var paneWindowFrame: PaneWindowFrame?
     /// 窗口容器已让出的顶部安全区，标题栏只补足固定边距；Mac 为 0。
     @Entry var paneTopSafeInset: CGFloat = 0
     /// iPhone 根视图的左右边距，CompactLayout 从 UIKit 读了给窗口，单页的分组表单按它固定，见 pageForm；其他情况为 nil。
     @Entry var formMargin: CGFloat?
     /// iPhone 上键盘升起来了。CompactLayout 在屏幕这一层比出来：SwiftUI 的安全区比 Home 条那一截高。
-    /// 不能在窗口里比：拉开、收起抽屉时窗口里读到的安全区跟着动画逐帧变，还会冲过 Home 条那一截，会被当成键盘。Mac 上总是 false。
+    /// 不能在窗口里比：窗口里的安全区按窗口停着的样子换算过（底栏钉着时缩放），比出来不准。Mac 上总是 false。
     @Entry var keyboardShown = false
 
     /// 拉开侧边栏，标题栏左边的按钮调它。紧凑布局由 CompactLayout 给出；宽屏侧栏收起时由主窗口给出，
@@ -193,8 +195,8 @@ private struct DrawerPullModifier: ViewModifier {
     let enabled: Bool
     @Environment(\.drawerPull) private var pull
 
-    // 有没有 pull 都是同一个结构，没有时只停掉手势。分成两支的话，拉开、收起抽屉时 pull 在有无之间切换，
-    // 控制区会被当成换了一个视图，淡出再淡入
+    // 有没有 pull 都是同一个结构，没有时只停掉手势；分成两支的话，pull 有无一变控制区就被当成换了一个视图，淡出再淡入。
+    // 紧凑布局的窗口一直给着，能不能拉由它自己判断
     func body(content: Content) -> some View {
         content
             .contentShape(Rectangle())
@@ -205,14 +207,12 @@ private struct DrawerPullModifier: ViewModifier {
 
 /// 控制区的底边距：总底边距取 max(固定留白, 安全区)，容器已经让出的安全区只计算一次。
 /// 键盘显示时容器已让出键盘，在它上方补固定留白；和键盘自己的动画同步。
-/// Home 条高度在这一层读：拖抽屉时它随手指逐次变化，只重算边距，不带着整个窗口重算。
 private struct PaneControlsBottom: ViewModifier {
     /// 窗口底部为 Home 条保留的高度，不含键盘；底栏展开时仍保留。
     @Environment(\.homeIndicatorInset) private var homeInset
     @Environment(\.keyboardShown) private var keyboardShown
 
     func body(content: Content) -> some View {
-        let _ = DrawerBench.count("ControlsBottom")
         let safeArea = keyboardShown ? 0 : homeInset
         content.padding(.bottom, max(Metrics.paneMargin, safeArea) - safeArea)
     }
@@ -231,7 +231,6 @@ private struct CompactPaneHeaderReport: View {
     @Environment(\.self) private var environment
 
     var body: some View {
-        let _ = DrawerBench.count("HeaderReport")
         Color.clear.preference(key: CompactPaneHeaders.self, value: headers)
     }
 

@@ -14,11 +14,8 @@ struct CompactLayout: View {
     @Environment(\.windowChrome) private var chrome
     #endif
 
-    @State private var open: WorkspaceDrawer?
-    /// 露出来的一侧：打开着、手指拖着或者正随时间走。
-    @State private var shown: WorkspaceDrawer?
-    /// 侧边栏打开到几成，CompactWindow 和窗口一起改，侧栏只有平移跟着更新。
-    @State private var sidebarProgress = SidebarProgress()
+    /// 拉开侧边栏、底栏的状态与手势；进度只有窗口外壳和侧栏平移这些小修饰器读，这里的 body 不随开合重算。
+    @State private var motion = DrawerMotion()
     /// 屏幕圆角，读到之前按 0 算：铺满时窗口的角本来就被屏幕圆角盖住。
     @State private var screenRadius: CGFloat = 0
     /// 页签和 action 栏合起来多高，按实际排出来的量。
@@ -29,7 +26,6 @@ struct CompactLayout: View {
     @State private var formMargin: CGFloat?
 
     var body: some View {
-        let _ = DrawerBench.count("Layout")
         GeometryReader { geo in
             // SwiftUI 的安全区把状态栏、Home 条和键盘合在一起（分区只能用来忽略，读不出各占多少）
             let safe = geo.safeAreaInsets
@@ -50,6 +46,10 @@ struct CompactLayout: View {
                 : DotMetrics.snapDown(min(screen.width - Metrics.padding - Metrics.phoneMinWindow, 312))
             // 窗口底边要升到页签上面，页签在 action 栏上面，action 栏在 Home 条上面
             let actionsHeight = drawerHeight + home + Metrics.padding
+            let geometry = WindowGeometry(screen: screen, insets: insets, homeInset: home, avoidsKeyboard: avoidsKeyboard,
+                                          sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius,
+                                          rule: windowed ? .free : windowless ? .pinned : .none,
+                                          padding: Metrics.padding, margin: Metrics.paneMargin)
             let current = model.current?.id
             ZStack(alignment: .topLeading) {
                 #if os(iOS)
@@ -61,7 +61,7 @@ struct CompactLayout: View {
                 .ignoresSafeArea()
                 #endif
                 // 侧栏：一级导航选中的那一栏；点一个工作区就切过去并收起。
-                // 收起时滑到屏幕外，不跟着 shown 藏：收起侧栏时底栏可能同时钉回来，shown 立刻换成底栏，侧栏还在往外滑
+                // 收起时滑到屏幕外，不跟着露出的一侧藏：收起侧栏时底栏可能同时钉回来，露出的一侧立刻换成底栏，侧栏还在往外滑
                 VStack(alignment: .leading, spacing: 0) {
                     // 顶部是标志栏（只有搜索按钮），下面是一级导航和当前一栏的列表；
                     // 底部是用户栏，与窗口控制区底边对齐
@@ -78,17 +78,17 @@ struct CompactLayout: View {
                     ScrollView(.vertical, showsIndicators: false) {
                         switch model.sidebarSection {
                         case .workspaces:
-                            WorkspaceList(onSelect: { open = nil }) { workspace in
+                            WorkspaceList(onSelect: { motion.settle(nil) }) { workspace in
                                 WorkspaceRow(workspace: workspace, current: current == workspace.id) {
                                     Color.clear.contentShape(Rectangle())
                                     .onTapGesture {
                                         model.selectWorkspace(workspace.id)
-                                        open = nil
+                                        motion.settle(nil)
                                     }
                                 }
                             }
                         case .drive, .extensions, .settings:
-                            SectionPages { open = nil }
+                            SectionPages { motion.settle(nil) }
                         }
                     }
                     .fadesScrollEdges()
@@ -97,8 +97,8 @@ struct CompactLayout: View {
                 .padding(.horizontal, Metrics.sidebarInset)
                 .modifier(SidebarScaledMetrics())
                 .frame(width: sidebarWidth)
-                .modifier(SidebarSlide(progress: sidebarProgress, width: sidebarWidth))
-                .accessibilityHidden(!showing(.sidebar))
+                .modifier(SidebarSlide(motion: motion, width: sidebarWidth))
+                .modifier(DrawerReveal(motion: motion, drawer: .sidebar))
                 // 底栏：折叠的窗口那一行。一次只露出一侧，拉侧边栏时藏起来，免得窗口移开时从边上露出来
                 VStack(alignment: .leading, spacing: Metrics.gap) {
                     if model.paneGroup != nil {
@@ -109,15 +109,13 @@ struct CompactLayout: View {
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { drawerHeight = $0 }
                 .padding(.horizontal, Metrics.padding)
                 .frame(maxHeight: .infinity, alignment: .bottom)
-                .opacity(showing(.actions) ? 1 : 0)
+                .modifier(DrawerReveal(motion: motion, drawer: .actions))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             // 窗口铺满整个屏幕，放在 overlay 里，不把上面这层撑出安全区，action 栏才能留在 Home 条上面
             // 没有窗口时窗口里放占位内容，见 CompactWindow
             .overlay(alignment: .topLeading) {
-                CompactWindow(open: $open, shown: $shown, sidebarProgress: sidebarProgress, screen: screen, insets: insets, homeInset: home,
-                              sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius,
-                              actionsRule: windowed ? .free : windowless ? .pinned : .none)
+                CompactWindow(motion: motion, geometry: geometry)
                     .environment(\.formMargin, formMargin)
             }
         }
@@ -130,11 +128,11 @@ struct CompactLayout: View {
         }
         // 刚开出第一个窗口（新建，或在侧栏换到有窗口的工作区）：窗口从底栏上方展开铺满
         .onChange(of: model.paneGroup?.layout.focused == nil) { was, now in
-            if was, !now { open = nil }
+            if was, !now { motion.settle(nil) }
         }
         .appDotBackground()
-        // 窄屏侧栏展开时由 App 画静息点阵；收起后只由开启了点阵的窗口画，不回退到 App 背景。
-        .environment(\.dotBackgroundPlacement, showing(.sidebar) ? .app : .windows)
+        // App 底色一直画静息点，和开了点阵的窗口连成一块屏，见 WindowShell
+        .environment(\.dotBackgroundPlacement, .everywhere)
     }
 
     /// 窗口都排在底部，当前窗口垫一块选中底、图标换成向上的箭头；点别的窗口换过去，点当前窗口收起底栏。
@@ -142,7 +140,7 @@ struct CompactLayout: View {
     private var tabBar: some View {
         if let group = model.paneGroup {
             if let area = group.workspace {
-                CompactDockBar(open: $open)
+                CompactDockBar(open: motion.openBinding)
                     .modifier(InstanceSettingsPresentation())
                     .environment(area)
             } else {
@@ -160,7 +158,7 @@ struct CompactLayout: View {
                     let appearance = group.appearance(of: pane), current = pane == workspace.focused
                     Button {
                         workspace.focus(pane)
-                        open = nil
+                        motion.settle(nil)
                     } label: {
                         DockFace(look: .tool(appearance), arrow: current ? "arrow.up" : nil)
                             .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
@@ -175,7 +173,7 @@ struct CompactLayout: View {
     }
 
     /// 标志栏与侧边栏拉开后窗口标题栏的按钮同高：窗口顶边让出一个边距，内容按高度缩小，标题栏在补足的安全区下面。
-    /// 返回相对安全区顶边的距离，见 WindowPlacement 与 PaneWindow。
+    /// 返回相对安全区顶边的距离，见 WindowGeometry 与 PaneWindow。
     private func logoBarTop(screen: CGSize, insets: EdgeInsets) -> CGFloat {
         let pad = Metrics.padding
         let scale = (screen.height - 2 * pad) / screen.height
@@ -185,20 +183,35 @@ struct CompactLayout: View {
         return center - button / 2 - insets.top
     }
 
-    private func showing(_ drawer: WorkspaceDrawer) -> Bool {
-        shown == drawer
-    }
-
     /// 当前窗口组有可用窗口时，底栏可以展开收起。
     private var windowed: Bool {
         guard let group = model.paneGroup, group.layout.focused != nil else { return false }
         return group.canShowWindows
     }
 
+    /// 窗口和单页里有输入框，要给键盘让位；目录状态和空画板只展示信息，弹窗里打字时不跟着键盘变形。
+    private var avoidsKeyboard: Bool {
+        windowed || model.sidebarSection != .workspaces || model.selectedProject != nil
+    }
+
     /// 工作区内容已载入但没开窗口：底栏钉着，新建窗口的入口在那里。目录状态（添加项目、连接中等）没有可用的底栏，同单页一样铺满。
     private var windowless: Bool {
         guard model.sidebarSection == .workspaces, model.selectedProject == nil, let area = model.current else { return false }
         return area.layout.focused == nil && area.pluginClient != nil
+    }
+}
+
+/// 侧栏、底栏露出来的时候才给读屏（侧栏）、才显示（底栏）。露出的一侧只在开合起止时变，读它的只有这一层。
+private struct DrawerReveal: ViewModifier {
+    let motion: DrawerMotion
+    let drawer: WorkspaceDrawer
+
+    func body(content: Content) -> some View {
+        if drawer == .sidebar {
+            content.accessibilityHidden(motion.shown != .sidebar)
+        } else {
+            content.opacity(motion.shown == .actions ? 1 : 0)
+        }
     }
 }
 

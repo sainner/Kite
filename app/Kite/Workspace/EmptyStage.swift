@@ -83,6 +83,7 @@ struct EmptyStage: View {
                 }
                 .padding(.horizontal, Metrics.paneMargin)
                 .padding(.top, max(Metrics.paneMargin, topInset) - topInset)
+                .drawerShift(.top)
             }
         }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
