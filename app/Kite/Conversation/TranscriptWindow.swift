@@ -147,8 +147,12 @@ final class TranscriptWindow {
             let near = bottom > visible.minY - margin && top < visible.maxY + margin
             // 可见区上下各四分之一屏也跟着对话的宽排：改宽度时可见的组变高变矮，旁边的组会被带进可见区，按原宽排着就露出一帧
             let follows = bottom > visible.minY - margin / 4 && top < visible.maxY + margin / 4
-            // 排着真内容的组按自己报来的高算，一直是准的；改宽度时先报的组不会把还没报的挤成占位
-            let live = slot.pinned || shown || near && (slot.live || certain(slot))
+            // 排着真内容的组按自己报来的高算，一直是准的；改宽度时先报的组不会把还没报的挤成占位。
+            // 刚换成真内容、还没报来眼下的宽下多高的组也先留着：它的高还是估的或旧宽下的，按它算位置会把它挤回占位，
+            // 换回占位对话一变矮又把它拉进来，一次排版里来回换（2026-10-12 离屏实测：四屏长的对话改宽度时每帧换几百次，
+            // 一帧两百多毫秒，总高也停在估的高上）
+            let reporting = slot.live && slot.frozenWidth == nil && !certain(slot)
+            let live = slot.pinned || shown || reporting || near && (slot.live || certain(slot))
             if slot.live != live {
                 slot.live = live
                 if live { slot.measuring = false }
