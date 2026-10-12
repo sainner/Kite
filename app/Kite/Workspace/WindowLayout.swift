@@ -12,6 +12,11 @@ final class WindowLayout {
     /// 紧凑布局显示聚焦窗口；宽屏空间不足时优先保留它。
     private(set) var focused: Pane?
     private(set) var drag: CardDrag?
+    /// 指针所在、还没换上预览的落点，见 previewDwell。
+    @ObservationIgnored private var pendingDrag: CardDrag?
+    @ObservationIgnored private var pendingPreview: Task<Void, Never>?
+    /// 等指针停下从这里起算，离开超过 previewSlop 重新计时。
+    @ObservationIgnored private var dwellAnchor = CGPoint.zero
     /// 正在拖的那道缝，跟手不吸附；松手后清空，排布吸附到模块。
     private(set) var resizing: Split?
     /// 拖动时指针在内容区里的位置。一直在变，和 drag 分开，免得每动一下整个排布都重算。
@@ -60,7 +65,11 @@ final class WindowLayout {
         availableSize = nextSize
     }
 
-    func cancelDrag() { motionKind = .settle; drag = nil }
+    func cancelDrag() {
+        clearPendingPreview()
+        motionKind = .settle
+        drag = nil
+    }
 
     init(panes: [Pane] = [], arrangement: Arrangement = .oneAndTwo,
          storageKey: String? = nil, defaults: UserDefaults = .standard, reconcileOnLoad: Bool = true) {
@@ -305,9 +314,11 @@ final class WindowLayout {
         guard !isFixed else { return }
         guard panes.contains(pane), drag == nil || drag?.pane == pane else { return }
         pointer = location
+        if drag == nil { clearPendingPreview() }
         let regions = regions(in: bounds)
         let fitted = fittedRoot
-        var next = drag ?? CardDrag(pane: pane, rest: fitted?.removing(pane))
+        // 接着指针最近所在的落点判断，缝里保留的也是它
+        var next = pendingDrag ?? drag ?? CardDrag(pane: pane, rest: fitted?.removing(pane))
         // 按脱离后、插占位之前的排布判断落点：预览一变卡片就挪位置，按预览判断会来回跳。
         // 指针在卡片之间的缝里时保持原来的落点，出了内容区才取消
         let remainingDock = dockedPanes(outside: fitted).filter { $0 != pane }
@@ -336,17 +347,68 @@ final class WindowLayout {
         } else {
             next.spot = nil
         }
-        guard drag == nil || next.spot != drag?.spot else { return }
+        if let drag, next.spot == drag.spot {
+            // 回到了正在预览的落点
+            clearPendingPreview()
+            return
+        }
+        if let pendingDrag, next.spot == pendingDrag.spot {
+            if hypot(location.x - dwellAnchor.x, location.y - dwellAnchor.y) > Self.previewSlop { schedulePreview(at: location) }
+            return
+        }
         next.layout = next.placing(.placeholder, in: regions.canvas) ?? next.rest
         next.docked = remainingDock
         if case .dock(let index) = next.spot { next.docked.insert(pane, at: index) }
+        // 刚起拖时立刻缩成停靠形状、让出位置；不改窗口尺寸的落点（停靠栏里换位置）也立刻跟上
+        guard let drag, resizesPanes(from: drag, to: next, in: regions.canvas) else {
+            showPreview(next)
+            return
+        }
+        pendingDrag = next
+        schedulePreview(at: location)
+    }
+
+    /// 拖动中换落点，等指针停下这么久再换预览。换一次预览，尺寸变了的窗口要按新尺寸重排正文，
+    /// 一次几十毫秒（2026-10-11 Mac 实测 32～82ms）；指针还在动时，跟手的头像会跟着卡一下，扫过几个落点就卡几下。
+    /// 停下再换，这一下落在头像不动的时候。
+    private static let previewDwell = Duration.milliseconds(120)
+    /// 指针动了不到这么多（点）算停着，触控板上手指停住也会有细小的移动。
+    private static let previewSlop: CGFloat = 3
+
+    private func schedulePreview(at location: CGPoint) {
+        dwellAnchor = location
+        pendingPreview?.cancel()
+        pendingPreview = Task { [weak self] in
+            do { try await Task.sleep(for: Self.previewDwell) } catch { return }
+            guard let self, let next = pendingDrag, drag?.pane == next.pane else { return }
+            showPreview(next)
+        }
+    }
+
+    private func showPreview(_ next: CardDrag) {
+        clearPendingPreview()
         motionKind = .preview
         withLayoutAnimation(.windowPreview) { drag = next }
     }
 
+    private func clearPendingPreview() {
+        pendingDrag = nil
+        pendingPreview?.cancel()
+        pendingPreview = nil
+    }
+
+    /// 换成 next 的预览，台面上有没有窗口要改尺寸。
+    private func resizesPanes(from current: CardDrag, to next: CardDrag, in canvas: CGRect) -> Bool {
+        func sizes(_ drag: CardDrag) -> [Pane: CGSize] { drag.layout?.layout(in: canvas).panes.mapValues(\.size) ?? [:] }
+        return sizes(current) != sizes(next)
+    }
+
     func drop(in bounds: CGRect) {
         guard !isFixed else { return }
-        guard let next = drag else { return }
+        // 按指针所在的落点放，还没换上预览的也算
+        guard let committed = drag else { return }
+        let next = pendingDrag ?? committed
+        clearPendingPreview()
         // 一次提交树和停靠顺序；同一张 CardSlot 在圆和卡片之间直接动画，不留下延迟回调覆盖新拖动。
         motionKind = .settle
         withLayoutAnimation(.windowSettle) {
