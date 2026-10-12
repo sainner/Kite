@@ -2,7 +2,8 @@ import SwiftUI
 
 enum RoleField { case title, budget }
 
-/// 用这个角色新建代理时的初始配置：默认模型、每回合请求上限与工具。资源库角色的初始配置窗口与新代理另存角色的弹窗共用。
+/// 用这个角色新建代理时的初始配置：每回合请求上限与工具。资源库角色的初始配置窗口与新代理另存角色的弹窗共用；
+/// 默认模型各放各的，初始配置窗口在标题栏，弹窗在表单里。
 struct RoleSettingsForm: View {
     @Binding var role: RoleDefinition
     let catalog: RoleCatalog?
@@ -11,31 +12,35 @@ struct RoleSettingsForm: View {
     private var universe: [String] { catalog?.tools ?? [] }
 
     var body: some View {
-        CardSection("默认模型") {
-            AgentModelFields(configuration: $role.model, vendors: catalog?.vendors ?? [], models: catalog?.models ?? [])
-        }
         TurnBudgetField(value: $role.maxRequestsPerTurn, focus: focus, field: .budget)
         tools
     }
 
-    /// 开关表示这个角色能用哪些工具；规则的方向只决定以后新增的工具默认是否可用。
+    /// 开关表示这个角色能用哪些工具，按组折叠，旁边的胶囊标出必需；规则的方向只决定以后新增的工具默认是否可用，单独放在列表下面。
+    @ViewBuilder
     private var tools: some View {
-        CardSection("工具", note: "必需的工具在代理里不能关闭；被其他约束禁用时，这个角色不可选。") {
-            ToolModePicker(mode: Binding(get: { role.tools.mode }, set: { role.tools.setMode($0, in: universe) }))
-            ForEach(universe, id: \.self) { name in
+        CardSection("工具", info: "必需的工具在代理里不能关闭；被其他约束禁用时，这个角色不可选。") {
+            AgentToolGroups(groups: (catalog?.toolCatalog).groups(of: universe), isOn: { role.tools.allows($0) }) { tool in
+                let name = tool.name
                 let enabled = role.tools.allows(name)
                 let required = role.tools.required.contains(name)
-                LabeledContent(name) {
+                LabeledContent {
                     HStack(spacing: 12) {
-                        Button(required ? "必需" : "可选") { setRequired(name, !required) }
-                            .buttonStyle(.borderless).font(Theme.secondary)
-                            .foregroundStyle(required ? Color.accentColor : .secondary)
+                        Button("必需") { setRequired(name, !required) }
+                            .buttonStyle(RequiredTagStyle(on: required))
                             .disabled(!enabled)
+                            .accessibilityLabel("\(name) 必需")
+                            .accessibilityAddTraits(required ? .isSelected : [])
                         Toggle(name, isOn: Binding(get: { enabled }, set: { setEnabled(name, $0) }))
                             .labelsHidden()
                     }
+                } label: {
+                    AgentToolTitle(tool: tool)
                 }
             }
+        }
+        CardSection {
+            ToolModePicker(mode: Binding(get: { role.tools.mode }, set: { role.tools.setMode($0, in: universe) }))
         }
     }
 
@@ -48,6 +53,28 @@ struct RoleSettingsForm: View {
     private func setRequired(_ name: String, _ required: Bool) {
         role.tools.required.removeAll { $0 == name }
         if required { role.tools.required.append(name) }
+    }
+}
+
+/// 工具行里的「必需」：点一下切换。选中是主题色浅底配主题色字，没选中只描边、字淡；工具关掉时变暗不可点。
+/// 胶囊本身小，上下多留出一截点击范围。
+private struct RequiredTagStyle: ButtonStyle {
+    let on: Bool
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Theme.caption.weight(.medium))
+            .foregroundStyle(on ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background { Capsule().fill(Color.accentColor.opacity(on ? 0.15 : 0)) }
+            .overlay { Capsule().strokeBorder(on ? Color.clear : Theme.rule) }
+            .animation(.easeOut(duration: 0.15), value: on)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+            .opacity(!isEnabled ? 0.4 : configuration.isPressed ? 0.6 : 1)
+            .clickPointer()
     }
 }
 
@@ -93,6 +120,9 @@ struct RoleEditor: View {
                     ContextBlocksSection("系统规则", blocks: $draft.context.blocks, variables: catalog?.variables ?? [])
                 }
                 TemplateEmblemField(design: $emblem)
+                CardSection("默认模型") {
+                    AgentModelFields(configuration: $draft.model, vendors: catalog?.vendors ?? [], models: catalog?.models ?? [])
+                }
                 RoleSettingsForm(role: $draft, catalog: catalog, focus: $focus)
             }
             .disabled(working || !available)

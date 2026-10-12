@@ -72,6 +72,34 @@ nonisolated struct AgentConfigurationSnapshot: Decodable, Sendable {
     let configurationBoundary: String
 }
 
+/// 工具在界面上的名称与分组，工作机给出；目录顺序即界面顺序。
+nonisolated struct AgentToolInfo: Decodable, Identifiable, Sendable {
+    let name: String
+    let title: String
+    let group: String
+    var id: String { name }
+}
+
+/// 一组工具，界面上折叠成一行。
+nonisolated struct AgentToolGroup: Identifiable, Sendable {
+    let title: String
+    let tools: [AgentToolInfo]
+    var id: String { title }
+}
+
+nonisolated extension Optional where Wrapped == [AgentToolInfo] {
+    /// 按目录的分组和顺序排出 names；目录里没有的工具（工作机较旧，或新工具还没登记）归到最后的「其他」，名称就是标识。
+    func groups(of names: [String]) -> [AgentToolGroup] {
+        let catalog = (self ?? []).filter { names.contains($0.name) }
+        var titles: [String] = []
+        for info in catalog where !titles.contains(info.group) { titles.append(info.group) }
+        var groups = titles.map { title in AgentToolGroup(title: title, tools: catalog.filter { $0.group == title }) }
+        let others = names.filter { name in !catalog.contains { $0.name == name } }
+        if !others.isEmpty { groups.append(AgentToolGroup(title: "其他", tools: others.map { AgentToolInfo(name: $0, title: $0, group: "其他") })) }
+        return groups
+    }
+}
+
 /// 模型按厂商分组，后端由所选模型推出；tools 是这个代理可开的工具，required 是角色必需、不能关闭的，blocked 是其中正被项目约束禁用的。
 nonisolated struct AgentCapabilities: Decodable, Sendable {
     struct Vendor: Decodable, Identifiable, Sendable {
@@ -90,14 +118,16 @@ nonisolated struct AgentCapabilities: Decodable, Sendable {
     let tools: [String]
     let required: [String]
     let blocked: [String]
+    let toolCatalog: [AgentToolInfo]?
     let configurationBoundary: String
     let toolCatalogBoundary: String
 
     func model(_ id: String) -> Model? { models.first { $0.id == id } }
-    /// 配置页里工具开关的标签：注明角色必需或项目禁用。
-    func toolLabel(_ name: String) -> String {
-        blocked.contains(name) ? "\(name)（项目禁用）" : required.contains(name) ? "\(name)（角色必需）" : name
+    /// 配置页里工具名旁的注明：项目禁用或角色必需。
+    func toolNote(_ name: String) -> String? {
+        blocked.contains(name) ? "项目禁用" : required.contains(name) ? "角色必需" : nil
     }
+    var toolGroups: [AgentToolGroup] { toolCatalog.groups(of: tools) }
     func canEdit(_ state: RemoteState?) -> Bool {
         guard let state, state.status == "open", state.recovery == nil, state.phase != "stopping" else { return false }
         return configurationBoundary == "request" || !state.busy
@@ -117,12 +147,13 @@ nonisolated struct AgentOptions: Decodable, Sendable {
     }
     let vendors: [AgentCapabilities.Vendor]
     let models: [AgentCapabilities.Model]
+    let toolCatalog: [AgentToolInfo]?
     let roles: [Role]
 
     /// 草稿还没有实例，按所选角色给出与已有代理同形的能力，模型菜单与配置页共用。
     func capabilities(for role: String) -> AgentCapabilities? {
         guard let option = roles.first(where: { $0.id == role }) else { return nil }
-        return AgentCapabilities(vendors: vendors, models: models, tools: option.tools, required: option.required, blocked: option.blocked,
+        return AgentCapabilities(vendors: vendors, models: models, tools: option.tools, required: option.required, blocked: option.blocked, toolCatalog: toolCatalog,
                                  configurationBoundary: "request", toolCatalogBoundary: "session")
     }
 }

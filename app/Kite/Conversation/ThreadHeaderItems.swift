@@ -22,6 +22,34 @@ struct ThreadModelMenu {
     let select: (String) -> Void
 }
 
+/// 模型菜单的条目，SwiftUI 原生菜单共用：每个厂商一节，当前模型打勾。
+struct ThreadModelMenuItems: View {
+    let models: ThreadModelMenu
+
+    var body: some View {
+        if let status = models.status {
+            Text(status)
+        }
+        ForEach(models.vendors) { vendor in
+            if let title = vendor.title {
+                Section(title) { items(vendor) }
+            } else {
+                Section { items(vendor) }
+            }
+        }
+        if let note = models.note {
+            Section { Text(note) }
+        }
+    }
+
+    private func items(_ vendor: ThreadModelMenu.Vendor) -> some View {
+        ForEach(vendor.models) { model in
+            Toggle(model.name, isOn: Binding(get: { model.selected }, set: { _ in models.select(model.id) }))
+                .disabled(!model.enabled)
+        }
+    }
+}
+
 struct ThreadHeaderCommand: Identifiable {
     var id: String { title }
     let title: String

@@ -25,7 +25,7 @@ import { InstanceLifecycle, type AgentChoice } from './instance-lifecycle.ts';
 import { ContextTemplates } from './context-templates.ts';
 import { defaultRoleId, Roles, type RoleSelection, type RoleSnapshot } from './roles.ts';
 import { LibrarySync, type LibraryChanges } from './library-sync.ts';
-import { agentDefinitionId, agentTools } from './plugins/definitions.ts';
+import { agentDefinitionId, agentToolCatalog, agentTools } from './plugins/definitions.ts';
 import { addWorktree, removeWorktree, runSetup } from './workspace/worktrees.ts';
 import {
   agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
@@ -162,9 +162,9 @@ export class Kite {
     this.bus.emit({ type: 'context-templates.changed' });
     return saved;
   }
-  /** 角色列表带上点阵签名状态，以及角色编辑器要用的代理插件全部工具、提示词变量和模型目录。 */
+  /** 角色列表带上点阵签名状态，以及角色编辑器要用的代理插件全部工具（连同界面名称与分组）、提示词变量和模型目录。 */
   roleCatalog() {
-    return { roles: this.roles.list().map((role) => this.emblems.decorate(role)), tools: agentTools,
+    return { roles: this.roles.list().map((role) => this.emblems.decorate(role)), tools: agentTools, toolCatalog: agentToolCatalog,
       variables: this.contextTemplates.sceneVariables('thread.create'), ...agentModelCatalog() };
   }
   async createRole(value: unknown) {

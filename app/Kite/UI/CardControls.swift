@@ -12,14 +12,52 @@ enum CardMetrics {
 /// 填充框的形状。
 private let cardShape = RoundedRectangle(cornerRadius: 12, style: .continuous)
 
-/// 填充框上面的标签，和框里的文字左边对齐。
+/// 填充框上面的标签，和框里的文字左边对齐；有说明时右边跟一个说明图标。
 struct CardLabel: View {
     let text: String
-    init(_ text: String) { self.text = text }
+    var info: String?
+    init(_ text: String, info: String? = nil) {
+        self.text = text
+        self.info = info
+    }
 
     var body: some View {
-        Text(text).font(Theme.caption.weight(.medium)).foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
+        HStack(spacing: 4) {
+            Text(text).font(Theme.caption.weight(.medium)).foregroundStyle(.secondary)
+            if let info { CardInfo(title: text, text: Text(info)) }
+        }
+        .padding(.horizontal, 12)
+    }
+}
+
+/// 标签右边的说明图标：Mac 上指针停在上面时弹出说明，触屏点一下弹出。点击范围比图标大一圈，不撑开标签那一行。
+struct CardInfo: View {
+    let title: String
+    let text: Text
+    @State private var shown = false
+
+    var body: some View {
+        Image(systemName: "info.circle")
+            .font(Theme.caption)
+            .foregroundStyle(shown ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
+            .padding(8)
+            .contentShape(Rectangle())
+            #if os(macOS)
+            .onHover { shown = $0 }
+            #else
+            .onTapGesture { shown = true }
+            #endif
+            .padding(-8)
+            .popover(isPresented: $shown, arrowEdge: .bottom) {
+                text.font(Theme.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 240, alignment: .leading)
+                    .padding(12)
+                    .presentationCompactAdaptation(.popover)
+            }
+            .accessibilityLabel("\(title)说明")
+            .accessibilityValue(text)
+            .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -56,21 +94,24 @@ struct CardField<Content: View>: View {
 }
 
 /// 一组设置项：标题、填充框里用分隔线隔开的若干行、框下的说明。没有行时只剩标题和说明。
+/// info 是收进标题旁说明图标里的说明，不占框下的位置。
 /// 行里直接写 LabeledContent、Toggle、Button、DisclosureGroup，样式由这里统一换掉；进入子页面的一行用 CardLink。
 struct CardSection<Content: View>: View {
     var title: String?
     var note: String?
+    var info: String?
     @ViewBuilder let content: Content
 
-    init(_ title: String? = nil, note: String? = nil, @ViewBuilder content: () -> Content = { EmptyView() }) {
+    init(_ title: String? = nil, note: String? = nil, info: String? = nil, @ViewBuilder content: () -> Content = { EmptyView() }) {
         self.title = title
         self.note = note
+        self.info = info
         self.content = content()
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let title { CardLabel(title) }
+            if let title { CardLabel(title, info: info) }
             Group(subviews: content) { rows in
                 if !rows.isEmpty {
                     VStack(spacing: 0) {
@@ -112,13 +153,24 @@ private struct CardLabeledContentStyle: LabeledContentStyle {
     }
 }
 
-/// 名称占满左边，开关贴右。
+/// 名称占满左边，开关贴右；labelsHidden 时只有开关，用在 LabeledContent 等已有名称的行里。
 private struct CardToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 12) {
-            configuration.label.frame(maxWidth: .infinity, alignment: .leading)
-            Toggle("", isOn: configuration.$isOn).labelsHidden().toggleStyle(.switch)
-                .controlSize(InputMode.current.toggleControlSize)
+        Row(configuration: configuration)
+    }
+
+    private struct Row: View {
+        let configuration: Configuration
+        @Environment(\.labelsVisibility) private var labels
+
+        var body: some View {
+            HStack(spacing: 12) {
+                if labels != .hidden {
+                    configuration.label.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Toggle("", isOn: configuration.$isOn).labelsHidden().toggleStyle(.switch)
+                    .controlSize(InputMode.current.toggleControlSize)
+            }
         }
     }
 }

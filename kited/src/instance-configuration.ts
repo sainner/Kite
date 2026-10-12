@@ -15,6 +15,7 @@ import { JournalIndex } from './harness/journal.ts';
 import type { Kite } from './kite.ts';
 import type { AgentInstance, PluginInstance, ThreadContext } from './model.ts';
 import { roleOperationGrants, type OperationGrant } from './operations/contract.ts';
+import { agentToolCatalog } from './plugins/definitions.ts';
 import { mergePluginTools, pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding } from './plugins/tools.ts';
 import { permittedTools } from './agents/tool-policy.ts';
 import { checkTools, instanceRole, roleAgent, toolLimits, type ProjectToolRule, type RoleBinding, type RoleSelection } from './roles.ts';
@@ -145,10 +146,10 @@ export class InstanceConfiguration {
     const thread = this.control.context(id);
     return agentCapabilities(instanceAgent(thread).runtime, this.toolLimits(thread));
   }
-  /** 新代理的草稿还没有实例：给出模型目录，以及各角色在这个工作区可开的工具与被项目禁用的工具；必需工具被禁的角色附上原因。 */
+  /** 新代理的草稿还没有实例：给出模型目录、工具的界面名称与分组，以及各角色在这个工作区可开的工具与被项目禁用的工具；必需工具被禁的角色附上原因。 */
   agentOptions(workspaceId: string) {
     const project = this.projectRule(workspaceId);
-    return { ...agentModelCatalog(), roles: this.kite.roles.list().map(({ role, revision }) => {
+    return { ...agentModelCatalog(), toolCatalog: agentToolCatalog, roles: this.kite.roles.list().map(({ role, revision }) => {
       const limits = toolLimits(role.tools, project);
       return { id: role.id, revision, tools: limits.allowed, required: limits.required, blocked: limits.blocked,
         ...(limits.missing.length ? { unavailable: `项目约束禁用了必需的 ${limits.missing.join('、')}` } : {}) };

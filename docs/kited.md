@@ -258,10 +258,10 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | GET / POST | `/plugin-definitions` | 读取定义（含账号资源库里尚未装到本机的包）或登记自定义包；包格式见 Bun 插件契约 |
 | GET | `/operations` | 操作输入、输出、错误 schema，以及重试与取消规则 |
 | POST | `/workspaces/:id/operations/:operation` | 调用 agent、文件或插件操作；参数、operationId 和重试语义见 [实例操作](实例操作.md) |
-| GET | `/instances/:id/agent-capabilities` | 按厂商分组的模型与思考档位、这个代理可开的工具（`tools`）与角色必需的工具（`required`），以及配置生效边界；不发模型请求 |
-| GET | `/workspaces/:id/agent-options` | 尚无实例的新代理草稿读取模型目录，以及各角色在这个工作区可开的工具；必需工具不可用的角色带 `unavailable` 原因 |
+| GET | `/instances/:id/agent-capabilities` | 按厂商分组的模型与思考档位、这个代理可开的工具（`tools`）与角色必需的工具（`required`）、工具的界面名称与分组（`toolCatalog`），以及配置生效边界；不发模型请求 |
+| GET | `/workspaces/:id/agent-options` | 尚无实例的新代理草稿读取模型目录、工具的界面名称与分组（`toolCatalog`），以及各角色在这个工作区可开的工具；必需工具不可用的角色带 `unavailable` 原因 |
 | GET / PUT | `/instances/:id/agent-config` | 读取绑定配置及 revision；以 expectedRevision 和完整 agent 配置更新，工具不能超出创建时角色的规则，也不能关闭必需工具 |
-| GET / POST | `/roles` | 列出角色（带签名状态），附代理插件的全部工具、提示词变量与模型目录；以 `{role}` 新建角色 |
+| GET / POST | `/roles` | 列出角色（带签名状态），附代理插件的全部工具及其界面名称与分组（`toolCatalog`）、提示词变量与模型目录；以 `{role}` 新建角色 |
 | PUT | `/roles/:id` | 以 `{expectedRevision, role}` 更新角色；不修改已有代理 |
 | PUT | `/roles/:id/emblem` | 以 `{emblem}` 保存手改的点阵签名，返回带签名状态的角色；表达式不可用时 400 |
 | POST | `/roles/:id/emblem/generate` | `{force}`：为 `true` 时连手改的签名一起重新生成，否则只补缺失或过期的签名；立即返回 `{emblem?, emblemState, emblemError?}`，结果随 `roles.changed` 送达；未启用轻任务时 503 |

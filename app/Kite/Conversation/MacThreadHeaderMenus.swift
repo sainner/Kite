@@ -17,19 +17,7 @@ struct MacThreadHeaderMenus: View {
 
     private var modelMenu: some View {
         Menu {
-            if let status = models.status {
-                Text(status)
-            }
-            ForEach(models.vendors) { vendor in
-                if let title = vendor.title {
-                    Section(title) { modelItems(vendor) }
-                } else {
-                    Section { modelItems(vendor) }
-                }
-            }
-            if let note = models.note {
-                Section { Text(note) }
-            }
+            ThreadModelMenuItems(models: models)
         } label: {
             PaneHeaderButtonLabel(modelTitle)
         }
@@ -37,13 +25,6 @@ struct MacThreadHeaderMenus: View {
         .help(modelName ?? "执行环境与模型")
         .accessibilityLabel("模型")
         .accessibilityValue(modelName ?? modelTitle)
-    }
-
-    private func modelItems(_ vendor: ThreadModelMenu.Vendor) -> some View {
-        ForEach(vendor.models) { model in
-            Toggle(model.name, isOn: Binding(get: { model.selected }, set: { _ in models.select(model.id) }))
-                .disabled(!model.enabled)
-        }
     }
 
     private var moreMenu: some View {

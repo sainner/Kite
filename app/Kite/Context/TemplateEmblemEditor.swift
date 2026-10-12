@@ -229,7 +229,7 @@ private struct EmblemCards: View {
     private func label(_ title: String, error: String?, info: () -> Text) -> some View {
         HStack(spacing: 4) {
             Text(title).font(Theme.caption.weight(.medium)).foregroundStyle(.secondary)
-            EmblemInfo(title: title, text: info())
+            CardInfo(title: title, text: info())
             if let error {
                 Spacer(minLength: 8)
                 Text(error).font(Theme.caption).foregroundStyle(Theme.danger)
@@ -457,37 +457,6 @@ private struct EmblemControls: View {
             .help(title)
             .accessibilityLabel(title)
             .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-}
-
-/// 标签右边的说明图标：Mac 上指针停在上面时弹出说明，触屏点一下弹出。点击范围比图标大一圈，不撑开标签那一行。
-private struct EmblemInfo: View {
-    let title: String
-    let text: Text
-    @State private var shown = false
-
-    var body: some View {
-        Image(systemName: "info.circle")
-            .font(Theme.caption)
-            .foregroundStyle(shown ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
-            .padding(8)
-            .contentShape(Rectangle())
-            #if os(macOS)
-            .onHover { shown = $0 }
-            #else
-            .onTapGesture { shown = true }
-            #endif
-            .padding(-8)
-            .popover(isPresented: $shown, arrowEdge: .bottom) {
-                text.font(Theme.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(width: 240, alignment: .leading)
-                    .padding(12)
-                    .presentationCompactAdaptation(.popover)
-            }
-            .accessibilityLabel("\(title)说明")
-            .accessibilityValue(text)
-            .accessibilityAddTraits(.isButton)
     }
 }
 

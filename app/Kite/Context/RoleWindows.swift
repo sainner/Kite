@@ -154,26 +154,35 @@ struct RoleContextPane: View {
     }
 }
 
-/// 资源库角色的初始配置窗口：用这个角色新建代理时的默认模型、每回合请求上限与工具。
+/// 资源库角色的初始配置窗口：用这个角色新建代理时的默认模型、每回合请求上限与工具；默认模型与思考强度在标题栏。
 struct RoleSettingsPane: View {
     let id: String
     @Environment(AppModel.self) private var model
     @FocusState private var focus: RoleField?
 
+    private var saving: Bool { model.savingRoles.contains(id) }
+
     var body: some View {
-        PaneWindow(header: PaneHeader(title: "初始配置")) {
+        PaneWindow(header: PaneHeader(title: "初始配置", subtitle: "以此角色新建代理时的默认配置")) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let role = model.libraryRole(id) {
                         RoleSettingsForm(role: Binding(get: { model.libraryRole(id) ?? role }, set: { value in model.editRole(id) { $0.role = value } }),
                                          catalog: model.roleCatalog, focus: $focus)
-                            .disabled(model.savingRoles.contains(id))
+                            .disabled(saving)
                     }
                 }
                 .agentContextColumn()
             }
         } controls: { _ in
             EmptyView()
+        } headerActions: {
+            if let role = model.libraryRole(id) {
+                AgentModelMenus(configuration: Binding(get: { model.libraryRole(id)?.model ?? role.model },
+                                                       set: { value in model.editRole(id) { $0.role.model = value } }),
+                                vendors: model.roleCatalog?.vendors ?? [], models: model.roleCatalog?.models ?? [])
+                    .disabled(saving)
+            }
         }
     }
 }

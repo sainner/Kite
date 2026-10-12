@@ -162,20 +162,47 @@ struct DraftAgentSettings: View {
     }
 }
 
-/// 每回合最多模型请求数；field 是这个输入框在所在页面焦点里的取值。
+/// 每回合最多模型请求数：设置组里的一行，名称旁是说明图标，右边窄数字框连同步进按钮，聚焦时数字框描主题色；
+/// field 是这个输入框在所在页面焦点里的取值。
 struct TurnBudgetField<Focus: Hashable>: View {
     @Binding var value: Int
     let focus: FocusState<Focus>.Binding
     let field: Focus
 
+    private var focused: Bool { focus.wrappedValue == field }
+
     var body: some View {
-        CardField(label: "每回合最多模型请求数", focused: focus.wrappedValue == field, note: "达到上限后停止，保留已经产生的结果。") {
-            TextField("", value: $value, format: .number)
-                .focused(focus, equals: field)
-                #if os(iOS)
-                .keyboardType(.numberPad)
-                #endif
-                .cardInput { focus.wrappedValue = field }
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        CardSection {
+            LabeledContent {
+                HStack(spacing: 8) {
+                    TextField("每回合最多模型请求数", value: $value, format: .number.grouping(.never))
+                        .labelsHidden()
+                        .textFieldStyle(.plain)
+                        .multilineTextAlignment(.trailing)
+                        .monospacedDigit()
+                        .focused(focus, equals: field)
+                        #if os(iOS)
+                        .keyboardType(.numberPad)
+                        #endif
+                        .frame(width: 48)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Theme.card, in: shape)
+                        .overlay { shape.strokeBorder(Color.accentColor.opacity(focused ? 0.8 : 0), lineWidth: 1.5) }
+                        .animation(.easeOut(duration: 0.15), value: focused)
+                        .contentShape(Rectangle())
+                        .onTapGesture { focus.wrappedValue = field }
+                        .typingTarget()
+                    Stepper("每回合最多模型请求数", value: $value, in: 1...Int.max)
+                        .labelsHidden()
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("每回合最多模型请求数")
+                    CardInfo(title: "每回合最多模型请求数", text: Text("达到上限后停止，保留已经产生的结果。"))
+                }
+            }
         }
     }
 }
@@ -220,34 +247,139 @@ struct AgentModelFields: View {
         }
         if showsReasoning {
             LabeledContent("思考强度") {
-                Picker("思考强度", selection: $configuration.reasoning) {
-                    if levels.isEmpty || configuration.reasoning == "default" { Text("自动").tag("default") }
-                    if configuration.reasoning != "default", !levels.contains(configuration.reasoning) {
-                        Text(configuration.reasoning).tag(configuration.reasoning)
-                    }
-                    ForEach(levels, id: \.self) { Text($0).tag($0) }
-                }
-                .labelsHidden().fixedSize()
-                .disabled(levels.isEmpty)
+                ReasoningPicker(reasoning: $configuration.reasoning, levels: levels)
+                    .labelsHidden().fixedSize()
+                    .disabled(levels.isEmpty)
             }
         }
     }
 }
 
-/// 代理可开的工具：角色必需的不能关闭，项目约束禁用的划掉并暂不可用。
+/// AgentModelFields 放在标题栏的样子：模型与思考强度是同一块玻璃里的两个原生菜单，中间一道竖线，选项与表单相同。
+struct AgentModelMenus: View {
+    @Binding var configuration: AgentModelConfiguration
+    let vendors: [AgentCapabilities.Vendor]
+    let models: [AgentCapabilities.Model]
+    /// 竖线与按钮里的图标同高。
+    @ScaledMetric(relativeTo: .body) private var dividerHeight: CGFloat = InputMode.current.labelExtent
+
+    private var current: AgentCapabilities.Model? { models.first { $0.id == configuration.model } }
+    private var levels: [String] { current?.reasoning ?? [] }
+
+    var body: some View {
+        PaneHeaderButtonGroup {
+            Menu {
+                ThreadModelMenuItems(models: menu)
+            } label: {
+                PaneHeaderButtonLabel(current?.title ?? configuration.model)
+            }
+            .help(configuration.model)
+            .accessibilityLabel("模型")
+            .accessibilityValue(configuration.model)
+            Rectangle().fill(Theme.rule).frame(width: 1, height: dividerHeight)
+                .allowsHitTesting(false).accessibilityHidden(true)
+            Menu {
+                ReasoningPicker(reasoning: $configuration.reasoning, levels: levels)
+                    .pickerStyle(.inline)
+            } label: {
+                PaneHeaderButtonLabel(configuration.reasoning == "default" ? "自动" : configuration.reasoning)
+            }
+            .disabled(levels.isEmpty)
+            .help("思考强度")
+            .accessibilityLabel("思考强度")
+            .accessibilityValue(configuration.reasoning)
+        }
+    }
+
+    /// 不在目录里的当前值单独一节排最前。
+    private var menu: ThreadModelMenu {
+        var sections = vendors.map { vendor in
+            ThreadModelMenu.Vendor(id: vendor.id, title: vendors.count > 1 ? vendor.title : nil,
+                models: models.filter { $0.vendor == vendor.id }.map { model in
+                    .init(id: model.id, name: model.name, selected: model.id == configuration.model, enabled: true)
+                })
+        }.filter { !$0.models.isEmpty }
+        if current == nil {
+            sections.insert(.init(id: "", title: nil, models: [.init(id: configuration.model, name: configuration.model, selected: true, enabled: true)]), at: 0)
+        }
+        return ThreadModelMenu(vendors: sections, status: nil, note: nil) { id in
+            guard id != configuration.model else { return }
+            configuration.selectModel(id, supportedReasoning: models.first { $0.id == id }?.reasoning ?? [])
+        }
+    }
+}
+
+/// 思考强度的选项：模型没有档位时只有「自动」，不在档位里的当前值也列出，选择器不丢值。
+private struct ReasoningPicker: View {
+    @Binding var reasoning: String
+    let levels: [String]
+
+    var body: some View {
+        Picker("思考强度", selection: $reasoning) {
+            if levels.isEmpty || reasoning == "default" { Text("自动").tag("default") }
+            if reasoning != "default", !levels.contains(reasoning) {
+                Text(reasoning).tag(reasoning)
+            }
+            ForEach(levels, id: \.self) { Text($0).tag($0) }
+        }
+    }
+}
+
+/// 代理可开的工具，按组折叠：角色必需的不能关闭，项目约束禁用的划掉并暂不可用。
 struct AgentToolToggles: View {
     let capabilities: AgentCapabilities
     @Binding var tools: [String]
 
     var body: some View {
-        ForEach(capabilities.tools, id: \.self) { name in
-            let blocked = capabilities.blocked.contains(name)
-            Toggle(capabilities.toolLabel(name), isOn: Binding(get: { tools.contains(name) && !blocked }, set: { enabled in
-                tools.removeAll { $0 == name }
-                if enabled { tools.append(name) }
-            }))
+        AgentToolGroups(groups: capabilities.toolGroups, isOn: { tools.contains($0) && !capabilities.blocked.contains($0) }) { tool in
+            let blocked = capabilities.blocked.contains(tool.name)
+            Toggle(isOn: Binding(get: { tools.contains(tool.name) && !blocked }, set: { enabled in
+                tools.removeAll { $0 == tool.name }
+                if enabled { tools.append(tool.name) }
+            })) {
+                AgentToolTitle(tool: tool, note: capabilities.toolNote(tool.name))
+            }
             .strikethrough(blocked)
-            .disabled(blocked || capabilities.required.contains(name))
+            .disabled(blocked || capabilities.required.contains(tool.name))
+        }
+    }
+}
+
+/// 工具按组折叠列出，放在 CardSection 里：每组一行，右边是开了几个，点开逐个列出，展开的行样式由 CardSection 统一。组默认收起。
+struct AgentToolGroups<Row: View>: View {
+    let groups: [AgentToolGroup]
+    let isOn: (String) -> Bool
+    @ViewBuilder let row: (AgentToolInfo) -> Row
+    @State private var expanded: Set<String> = []
+
+    var body: some View {
+        ForEach(groups) { group in
+            DisclosureGroup(isExpanded: Binding(get: { expanded.contains(group.id) }, set: { open in
+                if open { expanded.insert(group.id) } else { expanded.remove(group.id) }
+            })) {
+                ForEach(group.tools) { row($0) }
+            } label: {
+                HStack(spacing: 12) {
+                    Text(group.title)
+                    Spacer(minLength: 0)
+                    Text("\(group.tools.filter { isOn($0.name) }.count)/\(group.tools.count) 已开")
+                        .font(Theme.secondary).foregroundStyle(.secondary).monospacedDigit()
+                }
+            }
+        }
+    }
+}
+
+/// 工具行左边的名称：中文名后跟淡色的标识，名称就是标识时只写一次；note 是项目禁用、角色必需这类注明。
+struct AgentToolTitle: View {
+    let tool: AgentToolInfo
+    var note: String?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(tool.title)
+            if tool.title != tool.name { Text(tool.name).font(Theme.caption).foregroundStyle(.tertiary) }
+            if let note { Text(note).font(Theme.caption).foregroundStyle(.secondary) }
         }
     }
 }
