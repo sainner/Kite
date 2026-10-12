@@ -197,7 +197,8 @@ private struct ThreadTranscript: View {
     @Environment(WorkThread.self) private var thread
 
     var body: some View {
-        TranscriptView(items: thread.transcript.items, pending: thread.transcript.pending, actionable: true, lazy: lazy,
+        TranscriptView(items: thread.transcript.items, pending: thread.transcript.pending, actionable: true,
+                       window: lazy ? scroll.window : nil,
                        tail: scroll.tail(visible: visibleHeight))
             .environment(\.arrivingMessages, arriving.ids)
     }

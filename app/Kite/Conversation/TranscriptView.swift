@@ -6,15 +6,15 @@ extension EnvironmentValues {
 }
 
 /// 一串记录排下来，排队中的消息接在最后。主对话和子 agent 做的事都用它。
-/// 按人开启的每一轮分组，一组里的行竖着排。主对话按需排版，只排可见区附近的几组：长会话改窗口宽度时只重排看得见的，
-/// 没排到的组等滚到附近再按当时的宽度排。一行从出现起就待在同一组里，后面又开了一轮也不换组，展开收起这些状态不会丢。
+/// 按人开启的每一轮分组，一组里的行竖着排。Mac 的主对话按需排版，只排可见区附近的几组，其余按量过的高占位（TranscriptWindow）：
+/// 长会话改窗口宽度时只重排看得见的。一行从出现起就待在同一组里，后面又开了一轮也不换组，展开收起这些状态不会丢。
 struct TranscriptView: View {
     let items: [Item]
     var pending: [Message] = []
     /// 点 agent 的话弹出操作栏。主对话里是；子 agent 做的事里不是，它们的序号和主对话的会撞。
     var actionable = false
-    /// 主对话按需排版。嵌在一行里的（压缩前的原文、子 agent 做的事）跟着那一行整个排。
-    var lazy = false
+    /// 按需排版。iPhone 的主对话、嵌在一行里的（压缩前的原文、子 agent 做的事）都整个排。
+    var window: TranscriptWindow?
     /// 主对话给：最后一轮底下的留白。最后一轮就是最后一组，它至少 tail.height 高（从上一组的底边算起），不够就在底下留白；
     /// 留白是这一组的最小高度，和新消息同一次排版算出来，量出来再补会晚一次排版，发送时滚动那一刻底下还没有留白，滚不到位。
     /// 发送后滑到最底下（见 TranscriptScroll.send），这条消息停在可见区顶上，上一段内容滚出去，回复往下面的空白里填；
@@ -26,45 +26,56 @@ struct TranscriptView: View {
 
     var body: some View {
         let turns = turns
-        if lazy {
-            LazyVStack(alignment: .leading, spacing: 0) { content(turns) }
-        } else {
-            VStack(alignment: .leading, spacing: 0) { content(turns) }
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(turns) { turn in
+                let last = turn.id == turns.last?.id
+                let first = turn.id == turns.first?.id
+                let selected = turn.rows.contains { $0.id == selection.wrappedValue }
+                Group {
+                    if let window {
+                        // 最后一组在流式长、底下留白，开着操作栏的那组浮层要接着显示，都一直排真内容
+                        TurnSlot(slot: window.slot(turn.id), window: window, signature: turn.signature(first: first),
+                                 pinned: last || selected) {
+                            group(turn, last: last, first: first)
+                        }
+                    } else {
+                        group(turn, last: last, first: first)
+                    }
+                }
+                // 操作栏也要压在后面几组上
+                .zIndex(selected ? 1 : 0)
+            }
         }
+        .onChange(of: turns.map(\.id), initial: true) { window?.reorder($1) }
     }
 
-    private func content(_ turns: [Turn]) -> some View {
-        ForEach(turns) { turn in
-            let last = turn.id == turns.last?.id
-            VStack(alignment: .leading, spacing: Metrics.rowSpacing) {
-                ForEach(turn.rows) { row in
-                    Group {
-                        switch row.content {
-                        case .item(let item):
-                            if actionable, case .text(let text) = item.kind {
-                                AgentText(id: row.id, text: text)
-                            } else {
-                                ItemView(item: item)
-                            }
-                        case .message(let message, let queued): MessageBubble(message: message, queued: queued)
+    private func group(_ turn: Turn, last: Bool, first: Bool) -> some View {
+        VStack(alignment: .leading, spacing: Metrics.rowSpacing) {
+            ForEach(turn.rows) { row in
+                Group {
+                    switch row.content {
+                    case .item(let item):
+                        if actionable, case .text(let text) = item.kind {
+                            AgentText(id: row.id, text: text)
+                        } else {
+                            ItemView(item: item)
                         }
+                    case .message(let message, let queued): MessageBubble(message: message, queued: queued)
                     }
-                    .padding(.top, row.gap)
-                    // 开着操作栏的那一行垫在最上面：操作栏浮出这一行，压在前后的行上（自己的排版容器里也管用，实测）
-                    .zIndex(selection.wrappedValue == row.id ? 1 : 0)
                 }
+                .padding(.top, row.gap)
+                // 开着操作栏的那一行垫在最上面：操作栏浮出这一行，压在前后的行上（自己的排版容器里也管用，实测）
+                .zIndex(selection.wrappedValue == row.id ? 1 : 0)
             }
-            .overlay(alignment: .bottomLeading) {
-                if last, let tail { TailEnd(tail: tail) }
-            }
-            // 组和组之间的行距算在后一组顶上，最后一组的顶就是上一组的底边，最小高度从这里算
-            .padding(.top, turn.id == turns.first?.id ? 0 : Metrics.rowSpacing)
-            // 改最小高度不换分支：这一组不再是最后一组时还是同一个视图
-            .frame(maxWidth: .infinity, minHeight: last && turn.startsHumanTurn ? tail?.minimum(first: turn.id == turns.first?.id) : nil,
-                   alignment: .topLeading)
-            // 操作栏也要压在后面几组上
-            .zIndex(turn.rows.contains { $0.id == selection.wrappedValue } ? 1 : 0)
         }
+        .overlay(alignment: .bottomLeading) {
+            if last, let tail { TailEnd(tail: tail) }
+        }
+        // 组和组之间的行距算在后一组顶上，最后一组的顶就是上一组的底边，最小高度从这里算
+        .padding(.top, first ? 0 : Metrics.rowSpacing)
+        // 改最小高度不换分支：这一组不再是最后一组时还是同一个视图
+        .frame(maxWidth: .infinity, minHeight: last && turn.startsHumanTurn ? tail?.minimum(first: first) : nil,
+               alignment: .topLeading)
     }
 
     /// 从每一条开启新一轮的人发的消息起另开一组。
@@ -119,6 +130,61 @@ private struct Turn: Identifiable {
 
     var id: RowID { rows[0].id }
     var startsHumanTurn: Bool { rows[0].startsHumanTurn }
+
+    /// 排出来多高取决于的内容，按需排版用它看屏幕外的组要不要重量。只取便宜的：几行、各行的种类、字数、几步工具和各步状态，
+    /// 字数不变的改字不算（记录只追加，不会这样改）。
+    func signature(first: Bool) -> Int {
+        var hasher = Hasher()
+        hasher.combine(first)
+        for row in rows {
+            hasher.combine(row.id)
+            hasher.combine(row.gap)
+            switch row.content {
+            case .item(let item): item.kind.shape(into: &hasher)
+            case .message(let message, let queued):
+                hasher.combine(queued)
+                message.shape(into: &hasher)
+            }
+        }
+        return hasher.finalize()
+    }
+}
+
+/// 按需排版里的一组：可见区附近排真内容，报自己多大；远的按量过的高占位，要量时在占位上藏着排一遍。
+private struct TurnSlot<Content: View>: View {
+    let slot: TranscriptWindow.Slot
+    let window: TranscriptWindow
+    let signature: Int
+    let pinned: Bool
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        Group {
+            if slot.live {
+                content
+                    .onGeometryChange(for: CGSize.self) { $0.size } action: { window.laidOut(slot, size: $0) }
+                    // 屏幕外的组按原宽排，改宽度时不跟着重排（见 TranscriptWindow）；占的宽还是对话的宽，不把整列撑宽
+                    .frame(width: slot.frozenWidth, alignment: .leading)
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            } else {
+                Color.clear
+                    .frame(maxWidth: .infinity)
+                    .frame(height: slot.height)
+                    .overlay(alignment: .top) {
+                        if slot.measuring {
+                            // 不画、不接点击、不占排版，只量理想高
+                            content
+                                .fixedSize(horizontal: false, vertical: true)
+                                .hidden()
+                                .accessibilityHidden(true)
+                                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { window.measured(slot, height: $0) }
+                        }
+                    }
+            }
+        }
+        .onChange(of: signature, initial: true) { window.contentChanged(slot, signature: signature) }
+        .onChange(of: pinned, initial: true) { window.pin(slot, pinned) }
+    }
 }
 
 private struct Row: Identifiable {
@@ -139,6 +205,40 @@ private struct Row: Identifiable {
     let startsHumanTurn: Bool
 
     var isMessage: Bool { content.isMessage }
+}
+
+private extension Item.Kind {
+    func shape(into hasher: inout Hasher) {
+        switch self {
+        case .human(let message): message.shape(into: &hasher)
+        case .kite(let text): hasher.combine(1); hasher.combine(text.utf8.count)
+        case .notification(let text): hasher.combine(2); hasher.combine(text.utf8.count)
+        case .text(let text): hasher.combine(3); hasher.combine(text.utf8.count)
+        case .thinking(let text): hasher.combine(4); hasher.combine(text.utf8.count)
+        case .work(let work):
+            hasher.combine(5)
+            for call in work.calls {
+                hasher.combine(call.state)
+                hasher.combine(call.result != nil)
+                hasher.combine(call.children.count)
+            }
+        case .interrupted: hasher.combine(6)
+        case .compacted(let compaction, let children):
+            hasher.combine(7)
+            hasher.combine(compaction.summary.utf8.count)
+            hasher.combine(children.count)
+        case .apiError(let text): hasher.combine(8); hasher.combine(text.utf8.count)
+        }
+    }
+}
+
+private extension Message {
+    func shape(into hasher: inout Hasher) {
+        hasher.combine(0)
+        hasher.combine(text.utf8.count)
+        hasher.combine(command)
+        hasher.combine(attachments.count)
+    }
 }
 
 private extension Item {
