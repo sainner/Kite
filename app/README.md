@@ -43,7 +43,7 @@ App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `
 
 ## 预览和验证
 
-改界面时用 `app/scripts/preview-mac.sh` 快速预览：增量编译 Mac Debug 版，退出正在运行的 Kite 后打开新 build；也可以在 Xcode 里直接运行 Debug。Debug 版不带 kited，直接连本机已安装的服务，不会重装或重启它，所以要先用 `./install.command` 装好一次。交付确认仍完整安装 Release。
+改界面时用 `app/scripts/preview-mac.sh` 快速预览：增量编译 Mac Debug 版，只退出本检出上次打开的预览，再另起一个实例打开新 build，主线和各工作树的预览可以同时开着；也可以在 Xcode 里直接运行 Debug。Debug 版不带 kited，直接连本机已安装的服务，不会重装或重启它，所以要先用 `./install.command` 装好一次。交付确认仍完整安装 Release。
 
 `preview-mac.sh` 的参数原样传给 App。带 `--dock-preview` 打开停靠栏预览：用真实的停靠栏组件画各种窗口与活动状态下的头像，不建工作区、不发请求，头像签名取已连接工作机上的角色。
 
