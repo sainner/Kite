@@ -42,8 +42,6 @@ final class WindowLayout {
 
     /// 所有 App 窗口里有窗口组在过渡中。主线程上能往后放的工作（如对话藏着量高，见 TranscriptWindow）看它让开，不卡进动画里。
     static var anyTransitioning: Bool { all.allObjects.contains { $0.transitioning } }
-    /// 有窗口组正在拖缝调整大小，见 HostedContent。
-    static var anyResizing: Bool { all.allObjects.contains { $0.resizing != nil } }
     private static let all = NSHashTable<WindowLayout>.weakObjects()
 
     func noteSettling(_ pane: Pane, _ settling: Bool) {
@@ -316,9 +314,6 @@ final class WindowLayout {
     func finishResize() {
         releasing = true
         withLayoutAnimation(.settle) { resizing = nil }
-        #if os(macOS)
-        HostedContentUpdates.flush()
-        #endif
         save()
         // 吸附动画走完以后各窗口的 settling 已经接上；吸附位移为零、没有窗口动时，到点就算停下
         releaseEnd?.cancel()
