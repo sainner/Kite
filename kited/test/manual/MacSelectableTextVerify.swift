@@ -346,7 +346,7 @@ private struct MacSelectableTextContract {
 
     // 1. 跨段落、标题、引用的选区与复制。
     // 换成 NSTextView 的理由就是 SwiftUI 不能跨 Text 选字；段落、标题、引用在属性串里是带不同段落样式和自定义装饰属性的几个段落，
-    // 选区能不能从一段拖进另一段、复制出来的纯文本是不是按段落换行且不夹带装饰，由 TextKit 2 的选择与 AppKit 的 pasteboard 写入决定。
+    // 选区能不能从一段拖进另一段、复制能否按源文保留段间空行与 Markdown 标记，由 TextKit 2 的选择与 AppKit 的 pasteboard 写入决定。
     // 复制写到单独命名的 pasteboard（和 copy: 走同一条 writeSelection 路径），不碰用户的剪贴板。
     private static func selectionSpansParagraphHeadingAndQuote() throws {
         let harness = ProseHost(source: """
@@ -375,11 +375,11 @@ private struct MacSelectableTextContract {
         guard written, let copied = pasteboard.string(forType: .string) else {
             throw TextFailure.failed("跨段选区没有写出纯文本；writeSelection 返回 \(written)，pasteboard 类型 \(pasteboard.types ?? [])，选区 \(view.selectedRange())")
         }
-        let lines = copied.components(separatedBy: "\n")
-        guard lines == [paragraphTail, heading, quoteHead] else {
-            throw TextFailure.failed("跨段复制应得到按段落换行的三段纯文本；实际 \(lines)")
+        let expected = "\(paragraphTail)\n\n### \(heading)\n\n> \(quoteHead)"
+        guard copied == expected else {
+            throw TextFailure.failed("跨段复制应保留 Markdown 原文的空行、标题与引用标记；实际 \(copied.debugDescription)")
         }
-        print("通过：setSelectedRange 跨段落、标题、引用后复制得到 \(lines.count) 段纯文本")
+        print("通过：setSelectedRange 跨段落、标题、引用后复制保留 Markdown 原文")
 
         // 鼠标从第一段拖到引用：选区要跨过中间的标题
         view.setSelectedRange(NSRange(location: 0, length: 0))

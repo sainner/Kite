@@ -26,7 +26,7 @@ struct WindowHeaderAnchored<Content: View>: View {
     var body: some View {
         #if os(macOS)
         if let anchors {
-            HeaderAnchorHost(edge: edge, link: anchors, relay: relay, size: relay.size, content: content)
+            HeaderAnchorHost(edge: edge, link: anchors, relay: relay, content: content)
                 .modifier(HeaderAnchorReports(relay: relay))
         } else {
             content.modifier(WindowHeaderAnchor(edge: edge))
@@ -38,13 +38,12 @@ struct WindowHeaderAnchored<Content: View>: View {
 }
 
 #if os(macOS)
-/// 标题一侧在自己的托管视图里报的偏好值和排出来的大小，由 WindowHeaderAnchored 接出来。
+/// 标题一侧在自己的托管视图里报的偏好值，由 WindowHeaderAnchored 接出来；尺寸变化直接通知原生容器。
 @MainActor @Observable private final class HeaderAnchorRelay {
+    @ObservationIgnored weak var container: HeaderAnchorContainer?
     var statusText: String?
     var actionsWidth: CGFloat = 0
     var rects: [CGRect] = []
-    /// 里面的内容排出来的大小：变了外面要重新量。
-    var size = CGSize.zero
 }
 
 /// 标题一侧报的偏好值传不出它的托管视图，在这里接着往上报，控件的范围换回标题栏的坐标。
@@ -67,12 +66,11 @@ private struct HeaderAnchorHost<Content: View>: NSViewRepresentable {
     let edge: HorizontalEdge
     let link: HostedContentLink
     let relay: HeaderAnchorRelay
-    /// 只用来让里面的尺寸变了时外面重新量。
-    let size: CGSize
     let content: Content
 
     func makeNSView(context: Context) -> HeaderAnchorContainer {
         let container = HeaderAnchorContainer(edge: edge, link: link)
+        relay.container = container
         container.controller.rootView = rooted(in: context, title: container.title)
         return container
     }
@@ -99,7 +97,13 @@ private struct HeaderAnchorHost<Content: View>: NSViewRepresentable {
                 Task { @MainActor in if relay.rects != rects { relay.rects = rects } }
             }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
-                Task { @MainActor in if relay.size != size { relay.size = size } }
+                Task { @MainActor in
+                    // 外面刚分配的尺寸不用再报回去；只有标题内部改了尺寸，才让 SwiftUI 重新量。
+                    // 走原生尺寸失效，避免仅仅改宽就重赋整个标题的 rootView。
+                    if let container = relay.container, container.bounds.size != size {
+                        container.invalidateIntrinsicContentSize()
+                    }
+                }
             }
             // 里面的控件按这一侧的左上角报范围，WindowHeaderAnchored 再换回标题栏的坐标
             .coordinateSpace(name: "pane-header")

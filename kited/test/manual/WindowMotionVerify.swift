@@ -60,20 +60,26 @@ private final class ColorButton: NSButton {
 private struct HeaderButton: NSViewRepresentable {
     let id: String
     let recorder: MotionRecorder
+    var onClick: (() -> Void)? = nil
 
     final class Coordinator: NSObject {
         let id: String
         let recorder: MotionRecorder
+        var onClick: (() -> Void)?
 
-        init(id: String, recorder: MotionRecorder) {
+        init(id: String, recorder: MotionRecorder, onClick: (() -> Void)?) {
             self.id = id
             self.recorder = recorder
+            self.onClick = onClick
         }
 
-        @objc func click() { recorder.clicks.append(id) }
+        @objc func click() {
+            recorder.clicks.append(id)
+            onClick?()
+        }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(id: id, recorder: recorder) }
+    func makeCoordinator() -> Coordinator { Coordinator(id: id, recorder: recorder, onClick: onClick) }
 
     func makeNSView(context: Context) -> NSButton {
         let button = ColorButton(title: id, target: context.coordinator, action: #selector(Coordinator.click))
@@ -83,7 +89,49 @@ private struct HeaderButton: NSViewRepresentable {
         return button
     }
 
-    func updateNSView(_ view: NSButton, context: Context) {}
+    func updateNSView(_ view: NSButton, context: Context) { context.coordinator.onClick = onClick }
+}
+
+/// 尺寸完全由标题内部的 State 决定；外层夹具不能直接读写它来促成重测。
+private struct SelfSizingHeader: View {
+    let recorder: MotionRecorder
+    @State private var expanded = false
+
+    var body: some View {
+        HeaderButton(id: "leading", recorder: recorder, onClick: { expanded.toggle() })
+            .frame(width: expanded ? 172 : 84, height: expanded ? 60 : 28)
+    }
+}
+
+private struct IntrinsicHeaderFixture: View {
+    let motion: WindowMotion
+    let contentSize: MotionFixtureSize
+    let recorder: MotionRecorder
+
+    var body: some View {
+        let size = contentSize.value
+        ZStack(alignment: .topLeading) {
+            Color.black
+            WindowSurface(motion: motion, target: motion.target, contentSize: size,
+                          viewport: MotionFixture.viewport, iconSize: 40, color: Color(red: 0, green: 1, blue: 0)) {
+                HStack(alignment: .bottom, spacing: 12) {
+                    SelfSizingHeader(recorder: recorder).windowHeaderAnchor(.leading)
+                    // 这个兄弟视图在锚定宿主外：它的坐标同时证实外层收到了标题的新宽和新高。
+                    HeaderButton(id: "trailing", recorder: recorder).frame(width: 84, height: 28)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(20)
+                .frame(width: size.width, height: size.height)
+            } icon: {
+                EmptyView()
+            }
+            TimelineView(.periodic(from: .now, by: 1.0 / 60.0)) { context in
+                FrameProbe(date: context.date, recorder: recorder).frame(width: 1, height: 1)
+            }
+            .allowsHitTesting(false)
+        }
+        .frame(width: MotionFixture.viewport.width, height: MotionFixture.viewport.height)
+    }
 }
 
 @Observable @MainActor
@@ -309,11 +357,14 @@ private final class MotionHost {
     let host: NSHostingView<AnyView>
     let window: NSWindow
 
-    init(pose: WindowPose, contentSize: CGSize, neighbor: WindowMotion? = nil, bodyState: MotionBodyState? = nil) {
+    init(pose: WindowPose, contentSize: CGSize, neighbor: WindowMotion? = nil, bodyState: MotionBodyState? = nil,
+         intrinsicHeader: Bool = false) {
         motion = WindowMotion(pose)
         self.contentSize = MotionFixtureSize(contentSize)
         let root: AnyView
-        if let bodyState {
+        if intrinsicHeader {
+            root = AnyView(IntrinsicHeaderFixture(motion: motion, contentSize: self.contentSize, recorder: recorder))
+        } else if let bodyState {
             root = AnyView(MotionBodyFixture(motion: motion, state: bodyState, recorder: recorder))
         } else if let neighbor {
             root = AnyView(StackedMotionFixture(first: motion, second: neighbor, recorder: recorder))
@@ -425,6 +476,7 @@ private struct WindowMotionContract {
                 ("即时改宽标题", immediateResizeKeepsHeadersVisibleAndHittable),
                 ("双窗口标题", stackedHeadersKeepTheirPixelsAndHitsAfterSwapping),
                 ("正文与环境交接", continuousResizeKeepsBodyEnvironmentIdentityAndSelectionCurrent),
+                ("标题内部尺寸变化", headerLocalStateResizesOuterLayoutAndKeepsButtonIdentity),
             ]
             var failures = [String]()
             // 场景各自创建并关闭窗口；一个已有失败不应遮住另一个独立场景的回归证据。
@@ -433,7 +485,7 @@ private struct WindowMotionContract {
                 catch { failures.append("\(name)：\(error)") }
             }
             if failures.isEmpty {
-                print("窗口动画的四个原生场景验证通过")
+                print("窗口动画的五个原生场景验证通过")
                 exit(0)
             }
             FileHandle.standardError.write(Data((failures.joined(separator: "\n") + "\n").utf8))
@@ -540,6 +592,55 @@ private struct WindowMotionContract {
             }
         }
         print("通过：四次即时 resize 的首帧标题贴边完整显示，左右原生按钮均在实际像素位置命中")
+    }
+
+    // 标题自己的 State 改变理想尺寸后，嵌套 NSHostingView 必须让外层 SwiftUI 重测。
+    // AppKit 固有尺寸失效能否穿过 representable 边界、是否重建已有按钮，必须运行真实宿主才能确认。
+    private static func headerLocalStateResizesOuterLayoutAndKeepsButtonIdentity() async throws {
+        var frame = CGRect(x: 120, y: 100, width: 600, height: 420)
+        let harness = MotionHost(pose: WindowPose(frame: frame), contentSize: frame.size, intrinsicHeader: true)
+        defer { harness.window.close() }
+        let initial = try await harness.settled()
+        guard let leading = harness.recorder.buttons["leading"], let trailing = harness.recorder.buttons["trailing"] else {
+            throw MotionFailure.failed("内部尺寸场景未建立两个原生按钮")
+        }
+
+        func verify(_ label: String, titleSize: CGSize, pixels: MotionPixels) throws {
+            guard harness.recorder.buttons["leading"] === leading, harness.recorder.buttons["trailing"] === trailing,
+                  leading.window === harness.window, trailing.window === harness.window else {
+                throw MotionFailure.failed("\(label)：标题或兄弟按钮被重建，或离开原窗口")
+            }
+            try frameEquals(pixels.card.rect, frame, label: "\(label) 卡片", pixels: pixels)
+            try frameEquals(pixels.leading.rect,
+                            CGRect(x: frame.minX + 20, y: frame.minY + 20, width: titleSize.width, height: titleSize.height),
+                            label: "\(label) 内部状态标题", pixels: pixels)
+            try frameEquals(pixels.trailing.rect,
+                            CGRect(x: frame.minX + 20 + titleSize.width + 12,
+                                   y: frame.minY + 20 + titleSize.height - 28, width: 84, height: 28),
+                            label: "\(label) 按外层测量排列的兄弟按钮", pixels: pixels)
+            try harness.click("trailing", pixels: pixels)
+        }
+
+        let small = CGSize(width: 84, height: 28)
+        let large = CGSize(width: 172, height: 60)
+        try verify("初始", titleSize: small, pixels: initial)
+        // 只触发标题内部 State；不改父层输入、rootView 或尺寸，不在夹具里主动使固有尺寸失效。
+        try harness.click("leading", pixels: initial)
+        try await harness.nextFrame()
+        try verify("内部展开后的首帧", titleSize: large, pixels: harness.pixels())
+
+        for width: CGFloat in [360, 740, 440, 600] {
+            frame.size.width = width
+            harness.contentSize.value = frame.size
+            harness.motion.move(to: WindowPose(frame: frame), kind: .immediate)
+            try await harness.nextFrame()
+            try verify("改宽 \(width)", titleSize: large, pixels: harness.pixels())
+        }
+        let returned = try harness.pixels()
+        try harness.click("leading", pixels: returned)
+        try await harness.nextFrame()
+        try verify("往返改宽后内部收起的首帧", titleSize: small, pixels: harness.pixels())
+        print("通过：标题仅改内部 State 即向外传播宽高，兄弟按钮同步重排；往返改宽保留展开状态、原生按钮身份与实际像素命中")
     }
 
     // 稳定宿主不能冻结父层传入的正文或整份环境，也不能靠重建原生子树刷新内容。
