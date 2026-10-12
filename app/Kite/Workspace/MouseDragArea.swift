@@ -143,6 +143,43 @@ extension View {
     }
 }
 
+extension View {
+    /// 过渡中整个窗口不换光标（见 WindowLayout.transitioning）：暂停窗口的光标区域，停下后恢复并按指针当前位置重设。
+    /// 拖动中的指针样式是压栈设的（见 DragView），不受影响。
+    func freezesCursor(_ frozen: Bool) -> some View {
+        background(CursorFreezer(frozen: frozen))
+    }
+}
+
+private struct CursorFreezer: NSViewRepresentable {
+    let frozen: Bool
+
+    func makeNSView(context: Context) -> FreezerView { FreezerView() }
+
+    func updateNSView(_ view: FreezerView, context: Context) { view.frozen = frozen }
+
+    final class FreezerView: NSView {
+        var frozen = false {
+            didSet {
+                guard frozen != oldValue, let window else { return }
+                if frozen {
+                    window.disableCursorRects()
+                } else {
+                    window.enableCursorRects()
+                    window.resetCursorRects()
+                }
+            }
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            if newWindow == nil, frozen { window?.enableCursorRects() }
+            super.viewWillMove(toWindow: newWindow)
+        }
+    }
+}
+
 private struct WindowDragBlocker: NSViewRepresentable {
     func makeNSView(context: Context) -> BlockerView {
         BlockerView()

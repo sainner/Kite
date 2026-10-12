@@ -24,6 +24,14 @@ final class WindowLayout {
     /// 拖动本身由按下时的视图继续接收，不受影响。
     var blocksInput: Bool { drag != nil || !settling.isEmpty }
 
+    /// 过渡中：拖动、拖缝调整大小、排布动画。点阵不参与过渡，停下后再淡入；窗口、停靠栏和缝都不接点击和悬停，Mac 上也不换光标
+    /// （2026-10-12 用户确定：过渡中这些都用不上）。正在进行的拖动照常由按下时的视图接。
+    var transitioning: Bool { blocksInput || resizing != nil }
+
+    /// 所有 App 窗口里有窗口组在过渡中。主线程上能往后放的工作（如对话藏着量高，见 TranscriptWindow）看它让开，不卡进动画里。
+    static var anyTransitioning: Bool { all.allObjects.contains { $0.transitioning } }
+    private static let all = NSHashTable<WindowLayout>.weakObjects()
+
     func noteSettling(_ pane: Pane, _ settling: Bool) {
         guard self.settling.contains(pane) != settling else { return }
         if settling { self.settling.insert(pane) } else { self.settling.remove(pane) }
@@ -72,6 +80,7 @@ final class WindowLayout {
             focused = panes.first
             save()
         }
+        Self.all.add(self)
     }
 
     /// 设备工具页保留固定窗口集合与排布，共用工作区的焦点和模数布局。
@@ -81,6 +90,7 @@ final class WindowLayout {
         defaults = .standard
         self.root = root
         focused = root.panes.first
+        Self.all.add(self)
     }
 
     func regions(in bounds: CGRect) -> WindowRegions {

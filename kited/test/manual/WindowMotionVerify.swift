@@ -75,7 +75,7 @@ private struct MotionFixture: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             Color.black
-            WindowSurface(motion: motion, contentSize: contentSize, viewport: Self.viewport,
+            WindowSurface(motion: motion, target: motion.target, contentSize: contentSize, viewport: Self.viewport,
                           iconSize: 40, color: Color(red: 0, green: 1, blue: 0)) {
                 ZStack {
                     HeaderButton(id: "leading", recorder: recorder)
@@ -121,7 +121,7 @@ private struct StackedMotionFixture: View {
     }
 
     private func surface(_ motion: WindowMotion, id: String) -> some View {
-        WindowSurface(motion: motion, contentSize: CGSize(width: 600, height: 300),
+        WindowSurface(motion: motion, target: motion.target, contentSize: CGSize(width: 600, height: 300),
                       viewport: MotionFixture.viewport, iconSize: 40, color: Color(red: 0, green: 1, blue: 0),
                       headerHeight: 64) {
             Color.clear

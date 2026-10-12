@@ -79,5 +79,6 @@ private extension LayoutDragArea.Cursor {
 #else
 extension View {
     func disablesWindowDragging() -> some View { self }
+    func freezesCursor(_ frozen: Bool) -> some View { self }
 }
 #endif

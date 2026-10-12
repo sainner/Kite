@@ -120,9 +120,10 @@ struct PaneHeaderBar<Status: View, Actions: View>: View {
                     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                     .clipped()
+                    .modifier(WindowHeaderTitleMask())
                 }
-                .modifier(WindowHeaderAnchor(edge: .leading, clipsTitle: true))
-                // 窗口可能给出几组按钮（如角色的刷新组与保存组），先排成一行再锚定：锚定里是 TimelineView，几个视图交给它会被竖着排开
+                .windowHeaderAnchor(.leading)
+                // 窗口可能给出几组按钮（如角色的刷新组与保存组），先排成一行再锚定：几个视图交给锚定会被竖着排开
                 Group(subviews: actions) { actionViews in
                     if !actionViews.isEmpty {
                         HStack(spacing: Metrics.paneButtonGap) {
@@ -134,8 +135,8 @@ struct PaneHeaderBar<Status: View, Actions: View>: View {
                             }
                         }
                         .padding(.leading, controlsInset)
+                        .windowHeaderAnchor(.trailing)
                         .layoutPriority(1)
-                        .modifier(WindowHeaderAnchor(edge: .trailing))
                     }
                 }
             }

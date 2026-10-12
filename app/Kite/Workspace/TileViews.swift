@@ -31,12 +31,9 @@ struct TilesLayer: View {
                 if let area, let dock {
                     DockRail(geometry: dock, hiddenInstances: retiring)
                         .environment(area)
+                        .modifier(PausedInTransition(layout: workspace))
                 }
-                if layout.panes.isEmpty && workspace.drag == nil {
-                    WindowlessStage(dock: "右侧停靠栏")
-                        .placed(regions.canvas)
-                        .transition(.opacity.combined(with: .dotsPresence))
-                }
+                SettledWindowlessStage(layout: workspace, canvas: regions.canvas, wanted: layout.panes.isEmpty && workspace.drag == nil)
                 ForEach(workspace.isFixed ? [] : layout.gaps) { gap in
                     LayoutDragArea(cursor: gap.split.axis == .horizontal ? .columnResize : .rowResize) { drag in
                         workspace.resize(gap, to: local(drag.location))
@@ -46,6 +43,8 @@ struct TilesLayer: View {
                         workspace.finishResize()
                     }
                     .placed(gap.rect)
+                    // 拖缝本身不算在内：正拖着的缝照常接，iPad 上它是 SwiftUI 手势
+                    .modifier(PausedInTransition(layout: workspace, whileResizing: false))
                 }
                 if let rect = layout.placeholder {
                     // 拖动卡片时预览它放下后的位置
@@ -89,6 +88,7 @@ struct TilesLayer: View {
                         else { workspace.restore(pane, in: bounds) }
                     }
                     .environment(area)
+                    .modifier(PausedInTransition(layout: workspace))
                     .zIndex(2)
                 }
             }
@@ -108,6 +108,7 @@ struct TilesLayer: View {
         .environment(workspace)
         .environment(\.dockCardsDrawPanes, true)
         .disablesWindowDragging()
+        .modifier(CursorFrozenInTransition(layout: workspace))
     }
 
     /// 最小化的父代理所在的家族格。
@@ -321,7 +322,8 @@ private struct CardSlot: View {
         let contentSize = rect?.size ?? saved.size ?? fallbackSize
         let appearance = closing ? saved.appearance ?? group.appearance(of: pane) : group.appearance(of: pane)
         let returnTarget = closing || saved.motion == nil ? returnFrame : nil
-        let previous = saved.motion?.target.frame ?? CGRect(origin: .zero, size: contentSize)
+        // 不读 motion 的终点：读了的话，交给它新终点时这张卡片和里面的窗口要再算一轮
+        let previous = saved.frame ?? CGRect(origin: .zero, size: contentSize)
         let frame = closing ? returnTarget ?? previous : destination ?? previous
         let minimized = closing ? returnTarget != nil : rect == nil || workspace.drag?.pane == pane
         let target = WindowPose(frame: frame,
@@ -331,23 +333,19 @@ private struct CardSlot: View {
                                 iconOpacity: minimized ? 1 : 0)
         let motion = saved.prepare(target: target, start: saved.motion == nil ? dockFrame ?? returnTarget : nil, size: rect?.size, contentSize: contentSize, appearance: appearance,
                                    instance: closing ? nil : group.workspace?.instance(of: pane))
-        PaneCard(group: group, pane: pane, minimized: minimized, size: frame.size, contentSize: contentSize,
+        PaneCard(group: group, pane: pane, minimized: minimized, target: target, contentSize: contentSize,
                  motion: motion, viewport: viewport, appearance: appearance, instance: saved.instance,
                  onDrag: onDrag, onDrop: onDrop, onActivate: onActivate) { hovering in
             group.workspace?.setDockHover(DockEntry.pane(pane).id, frame: dockFrame ?? frame,
                 hovering: hovering && minimized && !motion.moving && workspace.drag == nil && workspace.resizing == nil)
         }
-        .allowsHitTesting(acceptsInput)
         .onChange(of: target, initial: true) { _, target in
             let kind: WindowMotionKind = reduceMotion ? .immediate : workspace.drag?.pane == pane ? .tracking
                 : workspace.resizing != nil ? .immediate : workspace.drag != nil ? .preview : workspace.motionKind
             motion.move(to: target, kind: kind)
         }
-        .onChange(of: motion.settling, initial: true) { _, settling in workspace.noteSettling(pane, settling) }
+        .modifier(CardMotionState(motion: motion, layout: workspace, pane: pane, closing: closing))
         .onDisappear { workspace.noteSettling(pane, false) }
-        // 拖着、关闭、在停靠栏和台面之间飞的卡片压在别的窗口上面。不然按加入的先后排，缩小时从后面那个窗口底下穿过，
-        // 快到停靠栏才从它的直边露出来，头像和卡片都被切掉一截（2026-10-12 Mac 实测）
-        .zIndex(workspace.drag?.pane == pane || closing || motion.changingForm ? 1 : 0)
         .task(id: closing) {
             guard closing else { return }
             // 退出只负责回收视图；新的手势和布局更新仍可改变目标。
@@ -356,17 +354,6 @@ private struct CardSlot: View {
             } while motion.moving
             onRetired()
         }
-    }
-
-    /// 见 WindowLayout.blocksInput。iPad 上跟手拖动是挂在卡片上的 SwiftUI 手势，中途设成不可命中可能把拖动取消，
-    /// 没在真机上验证之前，被拖的卡片照常接。
-    private var acceptsInput: Bool {
-        guard workspace.blocksInput else { return true }
-        #if os(iOS)
-        return workspace.drag?.pane == pane
-        #else
-        return false
-        #endif
     }
 
     private var returnFrame: CGRect? {
@@ -386,9 +373,111 @@ private struct CardSlot: View {
     }
 }
 
+/// 卡片随自己的动画变的几项：报给窗口组是否在走排布动画、叠放次序、过渡中接不接输入。
+/// 这些在这一层读，动画开始、结束和别的窗口开始、停下时只更新这一层，不让卡片和正文跟着重算。
+private struct CardMotionState: ViewModifier {
+    let motion: WindowMotion
+    let layout: WindowLayout
+    let pane: Pane
+    let closing: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .allowsHitTesting(acceptsInput)
+            .onChange(of: motion.settling, initial: true) { _, settling in layout.noteSettling(pane, settling) }
+            // 拖着、关闭、在停靠栏和台面之间飞的卡片压在别的窗口上面。不然按加入的先后排，缩小时从后面那个窗口底下穿过，
+            // 快到停靠栏才从它的直边露出来，头像和卡片都被切掉一截（2026-10-12 Mac 实测）
+            .zIndex(layout.drag?.pane == pane || closing || motion.changingForm ? 1 : 0)
+    }
+
+    /// 见 WindowLayout.blocksInput。iPad 上跟手拖动是挂在卡片上的 SwiftUI 手势，中途设成不可命中可能把拖动取消，
+    /// 没在真机上验证之前，被拖的卡片照常接。
+    private var acceptsInput: Bool {
+        guard layout.blocksInput else { return true }
+        #if os(iOS)
+        return layout.drag?.pane == pane
+        #else
+        return false
+        #endif
+    }
+}
+
+/// 台面上没有窗口时的画板。它把场景图形摆到整个 App 的点阵上，点阵不参与过渡（见 WindowLayout.transitioning）：
+/// 空台面的画板。缩小最后一个窗口时等它落进停靠栏再出现，不然飞行中整窗点阵逐帧长出图形。过渡状态在这一层读，同 PausedInTransition。
+/// 打开窗口时画板的实色底和文字随窗口展开淡出，图形不淡、逐格收回；窗口展开完盖住它以后再移除（2026-10-12 用户确定）。
+/// 台面变空、打开窗口的那次更新里卡片还没报上自己在动，这时就当作已经停下，画板会提前出场、提前移除
+/// （2026-10-12 用户看到图形先退场、停下后再随画板出场）；所以先不动，等这次更新走完再看还在不在过渡中。
+private struct SettledWindowlessStage: View {
+    let layout: WindowLayout
+    let canvas: CGRect
+    /// 台面上没有窗口，也没在拖窗口。
+    let wanted: Bool
+    @State private var mounted = false
+    @State private var shown = false
+
+    var body: some View {
+        let settled = !layout.transitioning
+        // 不要了的那次排布更新里直接变成 false，淡出跟着排布的动画走
+        let visible = shown && wanted
+        ZStack {
+            if mounted {
+                WindowlessStage(dock: "右侧停靠栏")
+                    .environment(\.stageCardOpacity, visible ? 1 : 0)
+                    .modifier(DotsPresence(presented: visible))
+                    .allowsHitTesting(visible)
+            }
+        }
+        .placed(canvas)
+        .task(id: [wanted, settled]) {
+            guard settled else {
+                if !wanted { shown = false }
+                return
+            }
+            await Task.yield()
+            guard !Task.isCancelled, !layout.transitioning else { return }
+            if wanted {
+                guard !shown else { return }
+                if !mounted {
+                    mounted = true
+                    // 先按透明摆上去，下一拍再淡入
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                }
+                withAnimation(.easeOut(duration: 0.25)) { shown = true }
+            } else {
+                shown = false
+                mounted = false
+            }
+        }
+    }
+}
+
+/// 过渡中（见 WindowLayout.transitioning）停靠栏、缝不接点击和悬停。
+/// 过渡状态在这一层读：开始、结束过渡只更新这一层，摆卡片的整层不跟着重算。
+private struct PausedInTransition: ViewModifier {
+    let layout: WindowLayout
+    /// 拖缝调整大小也算。正拖着的缝自己不算，照常接。
+    var whileResizing = true
+
+    func body(content: Content) -> some View {
+        content.allowsHitTesting(!(whileResizing ? layout.transitioning : layout.blocksInput))
+    }
+}
+
+/// 过渡中 Mac 上整个内容区不换光标，同 PausedInTransition 只在这一层读过渡状态。
+private struct CursorFrozenInTransition: ViewModifier {
+    let layout: WindowLayout
+
+    func body(content: Content) -> some View {
+        content.freezesCursor(layout.transitioning)
+    }
+}
+
 /// 退出期间保留内容的排版和实例身份；服务端移除窗口不能让飞行中的卡片换成占位。
 private final class CardPresentation {
     var size: CGSize?
+    /// 上一次排布给的外框。
+    var frame: CGRect?
     var appearance: WindowAppearance?
     var instance: RemotePluginInstance?
     var motion: WindowMotion?
@@ -396,6 +485,7 @@ private final class CardPresentation {
     func prepare(target: WindowPose, start: CGRect?, size: CGSize?, contentSize: CGSize, appearance: WindowAppearance,
                  instance: RemotePluginInstance?) -> WindowMotion {
         if let size { self.size = size }
+        frame = target.frame
         self.appearance = appearance
         if let instance { self.instance = instance }
         if let motion { return motion }
@@ -425,20 +515,19 @@ struct PaneCard: View {
     let group: PaneGroup
     let pane: Pane
     let minimized: Bool
-    let size: CGSize
+    /// 这次排布给的终点，见 WindowSurface.target。
+    let target: WindowPose
     /// 内容按台面上的尺寸排。缩成停靠形状、拖动和从停靠栏展开时只整体缩放，不跟着卡片逐帧重排。
     let contentSize: CGSize
     @Environment(WindowLayout.self) private var workspace
     @Environment(AppModel.self) private var model
-    @State private var cardHovered = false
-    @State private var menuWidth: CGFloat = 0
-    @State private var controlsSize: CGSize = .zero
-    @State private var headerHeight: CGFloat = 0
-    @State private var headerInteractiveRects: [CGRect] = []
+    @State private var header = PaneCardHeader()
     @State private var headerRegions = HeaderRegions()
     @State private var carrier = DotCarrier()
     @State private var scope = DotScope()
     @State private var usesDots = false
+    /// 正文里摆在点阵上的图形，转交给外面的 DotsPresence，见 body。
+    @State private var dotSlots: Set<String> = []
     @State private var screenOrigin = CGPoint.zero
     /// 头像的描边颜色，由头像报上来，画在外框上。
     @State private var ringColor: Color?
@@ -455,17 +544,13 @@ struct PaneCard: View {
     /// 缩成停靠形状时报给停靠栏，用来浮出名字。
     var onHover: (Bool) -> Void = { _ in }
 
-    private var width: CGFloat { size.width }
+    private var width: CGFloat { target.frame.width }
 
-    private var actionsShown: Bool { !workspace.isFixed && !controlsInMenu && InputMode.current.revealsControls(hovered: cardHovered) && !minimized && workspace.drag == nil && workspace.resizing == nil }
     private var canExpand: Bool { (workspace.shown?.panes.count ?? 0) > 1 }
 
-    private var controlsInMenu: Bool {
-        guard !minimized, group.workspace?.thread(in: pane) != nil, menuWidth > 0 else { return false }
-        // 按完整控制组计算，不能随悬停显隐改变判断；圆环占一个按钮宽，标题至少保留两个按钮宽。
-        let required = 2 * Metrics.paneMargin + menuWidth + controlsSize.width
-            + 3 * Metrics.paneButtonGap + 3 * Metrics.paneHeaderButton
-        return width < required
+    private var controls: PaneHeaderControls {
+        PaneHeaderControls(header: header, layout: workspace, minimized: minimized, width: width,
+                           hasThread: group.workspace?.thread(in: pane) != nil)
     }
 
     private var windowActions: PaneWindowActions? {
@@ -479,24 +564,40 @@ struct PaneCard: View {
     }
 
     var body: some View {
-        WindowSurface(motion: motion, contentSize: contentSize, viewport: viewport,
+        WindowSurface(motion: motion, target: target, contentSize: contentSize, viewport: viewport,
                       iconSize: min(width, Metrics.dragBubble), color: Theme.card,
                       minimizedColor: appearance.isAgent ? Theme.card : appearance.tint,
                       ring: ringColor.map { ($0, DockFace.ringWidth) },
-                      background: AnyView(WindowSurfaceDots(motion: motion, contentSize: contentSize,
-                                                            origin: screenOrigin, enabled: usesDots)),
-                      headerHeight: minimized ? nil : headerHeight,
-                      onHover: { cardHovered = $0; onHover($0) }) {
+                      background: AnyView(WindowSurfaceDots(enabled: usesDots)),
+                      // 点阵不参与过渡（见 WindowLayout.transitioning）：窗口自己在动时 WindowSurface 收起，拖缝调整大小时也收起
+                      backgroundHidden: workspace.resizing != nil,
+                      headerHeight: minimized ? nil : header.height,
+                      onHover: { hovered in
+                          if header.hovered != hovered { header.hovered = hovered }
+                          onHover(hovered)
+                      }) {
             PaneBody(group: group, pane: pane, retainForExit: true)
                 .coordinateSpace(.named(DotCarrier.space))
                 .paneFocus(pane, in: workspace, enabled: !minimized)
-                .environment(\.paneOverflowActions, controlsInMenu ? windowActions : nil)
-                .environment(\.paneHeaderControlsInset, actionsShown ? controlsSize.width + Metrics.paneButtonGap : 0)
-                .environment(\.paneHeaderMinHeight, controlsSize.height)
+                .modifier(PaneHeaderEnvironment(controls: controls, actions: windowActions))
                 .environment(\.panePresence, presence)
                 .containerShape(RoundedRectangle(cornerRadius: Metrics.cardRadius))
-                .allowsHitTesting(!minimized && !motion.moving)
+                .modifier(WhileSettled(motion: motion, shown: !minimized, fades: false))
                 .accessibilityHidden(minimized)
+                // Mac 上正文托管在自己的视图里（见 WindowSurface），它报的偏好值传不出卡片，在这里接；
+                // 点阵的两项外面也要用（App 背景让出静息点、整页淡出时收回图形），由卡片接着往上报
+                .onPreferenceChange(WindowDotsActive.self) { usesDots = $0 }
+                .onPreferenceChange(DotSlots.self) { dotSlots = $0 }
+                .onPreferenceChange(PaneHeaderActionsWidth.self) { width in
+                    if header.menuWidth != width { header.menuWidth = width }
+                }
+                .onPreferenceChange(PaneHeaderHeight.self) { height in
+                    if header.height != height { header.height = height }
+                }
+                .onPreferenceChange(PaneHeaderInteractiveRects.self) { rects in
+                    headerRegions.rects = rects
+                    if !motion.moving { headerRegions.settled = rects }
+                }
         } icon: {
             if appearance.isAgent, let area = group.workspace {
                 DockEntryFace(subject: instance.map { .instance($0) } ?? .pane(pane), pulse: false, ring: false)
@@ -508,36 +609,30 @@ struct PaneCard: View {
             ZStack(alignment: .trailing) {
                 if !workspace.isFixed { dragArea }
                 if !minimized, !workspace.isFixed {
-                    headerActions
-                        .padding(.trailing, Metrics.paneMargin + (menuWidth > 0 ? menuWidth + Metrics.paneButtonGap : 0))
-                        .opacity(actionsShown && !motion.moving ? 1 : 0)
-                        .allowsHitTesting(actionsShown && !motion.moving)
-                        .accessibilityHidden(!actionsShown)
+                    headerActions.modifier(HeaderActionsPlacement(controls: controls, motion: motion))
                 }
             }
         }
         .environment(\.dotCarrier, carrier)
         .environment(\.dotScope, scope)
-        .onPreferenceChange(WindowDotsActive.self) { usesDots = $0 }
+        .preference(key: WindowDotsActive.self, value: usesDots)
+        .preference(key: DotSlots.self, value: dotSlots)
         .onPreferenceChange(DockRingColor.self) { ringColor = $0 }
         .onGeometryChange(for: CGPoint.self) { $0.frame(in: .global).origin } action: { screenOrigin = $0; updateDots() }
-        .onChange(of: motion.target, initial: true) { updateDots() }
+        .onChange(of: target, initial: true) { updateDots() }
         .onChange(of: contentSize) { updateDots() }
         .onChange(of: minimized, initial: true) { _, minimized in
             let onScreen = !minimized
             if presence.onScreen != onScreen { presence.onScreen = onScreen }
         }
-        .onChange(of: workspace.drag?.pane) { _, _ in cardHovered = false; onHover(false) }
-        .onChange(of: motion.moving) { _, moving in
+        .modifier(DragStarted(layout: workspace) {
+            if header.hovered { header.hovered = false }
+            onHover(false)
+        })
+        .modifier(MotionFlip(motion: motion) { moving in
             if moving { onHover(false) }
-            else { headerInteractiveRects = headerRegions.rects }
-        }
-        .onPreferenceChange(PaneHeaderActionsWidth.self) { menuWidth = $0 }
-        .onPreferenceChange(PaneHeaderHeight.self) { headerHeight = $0 }
-        .onPreferenceChange(PaneHeaderInteractiveRects.self) { rects in
-            headerRegions.rects = rects
-            if !motion.moving { headerInteractiveRects = rects }
-        }
+            else { headerRegions.settled = headerRegions.rects }
+        })
         .accessibilityActions {
             if minimized {
                 Button("展开窗口", action: onActivate)
@@ -550,16 +645,22 @@ struct PaneCard: View {
     }
 
     private func updateDots() {
-        let offset = motion.target.contentOrigin(size: contentSize)
+        let offset = target.contentOrigin(size: contentSize)
         carrier.rest = DotCarrier.Mapping(origin: CGPoint(x: screenOrigin.x + offset.x, y: screenOrigin.y + offset.y),
-                                          scale: motion.target.scale)
-        scope.frame = motion.target.frame.offsetBy(dx: screenOrigin.x, dy: screenOrigin.y)
+                                          scale: target.scale)
+        scope.frame = target.frame.offsetBy(dx: screenOrigin.x, dy: screenOrigin.y)
     }
 
+    /// 挖掉的按钮范围在动画停下时才换（见 HeaderRegions），按钮和菜单让出的宽度跟着悬停变（见 PaneCardHeader），都只更新拖动区这一层。
     private var dragArea: some View {
-        let excluded = minimized ? [] : headerInteractiveRects
-        return LayoutDragArea(cursor: minimized ? .pointingHand : .openHand, activeCursor: .closedHand,
-                      minimumDistance: minimized ? Metrics.dragThreshold : headerHeight, excluded: excluded) { drag in
+        SettledRegions(regions: headerRegions) { settled in
+            dragArea(excluded: minimized ? [] : settled)
+        }
+    }
+
+    private func dragArea(excluded: [CGRect]) -> some View {
+        LayoutDragArea(cursor: minimized ? .pointingHand : .openHand, activeCursor: .closedHand,
+                       minimumDistance: minimized ? Metrics.dragThreshold : header.height, excluded: excluded) { drag in
             onDrag(drag.location)
         } onEnded: {
             onDrop()
@@ -578,7 +679,8 @@ struct PaneCard: View {
                 Button("关闭窗口") { model.closeWindow(pane, in: area) }
             }
         }
-        .padding(.trailing, minimized ? 0 : menuWidth + (actionsShown ? controlsSize.width + Metrics.paneButtonGap : 0) + Metrics.paneMargin)
+        .padding(.trailing, minimized ? 0 : header.menuWidth + (controls.shown ? header.controlsSize.width + Metrics.paneButtonGap : 0)
+                 + Metrics.paneMargin)
     }
 
     @ViewBuilder
@@ -593,7 +695,9 @@ struct PaneCard: View {
                     .disabled(!actions.canClose)
             }
             // 按系统控件的实际尺寸安排标题栏并避让拖动，避免固定标签尺寸再次撑大按钮。
-            .onGeometryChange(for: CGSize.self) { $0.size } action: { controlsSize = $0 }
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                if header.controlsSize != size { header.controlsSize = size }
+            }
         }
     }
 
@@ -606,31 +710,123 @@ struct PaneCard: View {
     }
 }
 
-/// 命中区域在动画完成时交给原生拖动层，避免标题逐帧补位引起整段正文重算。
-private final class HeaderRegions {
-    var rects: [CGRect] = []
+/// 卡片标题栏的悬停和几项实际尺寸，由外框、按钮组和正文报上来，只有读它们的几层随之更新：卡片每重算一次，
+/// 正文的托管视图就整个更新一遍。缩小、恢复时悬停跟着结束、剩一个窗口时按钮组少了展开，以前首帧、结束时卡片都要多算一两轮。
+@Observable private final class PaneCardHeader {
+    var hovered = false
+    /// 正文标题栏右侧菜单的宽度。
+    var menuWidth: CGFloat = 0
+    /// 窗口按钮组（缩小、展开、关闭）的实际尺寸。
+    var controlsSize = CGSize.zero
+    /// 正文标题栏的实际高度。
+    var height: CGFloat = 0
 }
 
-/// 网格固定在屏幕上，只有卡片承载的图案跟随同一呈现状态；正文不再逐帧报告全局坐标。
-/// 静息的网点不随卡片走，卡片移动时不重画；卡片上摆着图形或图案时才逐帧跟随。
-private struct WindowSurfaceDots: View {
+/// 窗口按钮放在哪：标题栏上露出来、藏着，还是收进正文的更多菜单。读 PaneCardHeader 的几层各自用它算。
+private struct PaneHeaderControls {
+    let header: PaneCardHeader
+    let layout: WindowLayout
+    let minimized: Bool
+    let width: CGFloat
+    let hasThread: Bool
+
+    /// 按完整控制组计算，不能随悬停显隐改变判断；圆环占一个按钮宽，标题至少保留两个按钮宽。
+    var inMenu: Bool {
+        guard !minimized, hasThread, header.menuWidth > 0 else { return false }
+        let required = 2 * Metrics.paneMargin + header.menuWidth + header.controlsSize.width
+            + 3 * Metrics.paneButtonGap + 3 * Metrics.paneHeaderButton
+        return width < required
+    }
+
+    var shown: Bool {
+        !layout.isFixed && !inMenu && InputMode.current.revealsControls(hovered: header.hovered) && !minimized
+            && layout.drag == nil && layout.resizing == nil
+    }
+}
+
+/// 正文标题栏按窗口按钮让位、收进菜单；在正文的托管视图里读，卡片不跟着重算。
+private struct PaneHeaderEnvironment: ViewModifier {
+    let controls: PaneHeaderControls
+    let actions: PaneWindowActions?
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.paneOverflowActions, controls.inMenu ? actions : nil)
+            .environment(\.paneHeaderControlsInset, controls.shown ? controls.header.controlsSize.width + Metrics.paneButtonGap : 0)
+            .environment(\.paneHeaderMinHeight, controls.header.controlsSize.height)
+    }
+}
+
+/// 窗口按钮组让开正文的菜单，悬停时露出来。
+private struct HeaderActionsPlacement: ViewModifier {
+    let controls: PaneHeaderControls
     let motion: WindowMotion
-    let contentSize: CGSize
-    let origin: CGPoint
+
+    func body(content: Content) -> some View {
+        let menuWidth = controls.header.menuWidth, shown = controls.shown
+        content
+            .padding(.trailing, Metrics.paneMargin + (menuWidth > 0 ? menuWidth + Metrics.paneButtonGap : 0))
+            .modifier(WhileSettled(motion: motion, shown: shown))
+            .accessibilityHidden(!shown)
+    }
+}
+
+/// 开始拖哪个窗口时做的事，在这一层读 drag，卡片本身不跟着重算。
+private struct DragStarted: ViewModifier {
+    let layout: WindowLayout
+    let action: () -> Void
+
+    func body(content: Content) -> some View {
+        content.onChange(of: layout.drag?.pane) { _, _ in action() }
+    }
+}
+
+/// 命中区域在动画完成时交给原生拖动层，避免标题逐帧补位引起整段正文重算。
+@Observable private final class HeaderRegions {
+    /// 正文最新报上来的。
+    @ObservationIgnored var rects: [CGRect] = []
+    /// 拖动区挖掉的：停着时跟着 rects，动画中保持动画开始前的，停下再换。
+    var settled: [CGRect] = []
+}
+
+/// 只在这一层读 HeaderRegions.settled。
+private struct SettledRegions<Content: View>: View {
+    let regions: HeaderRegions
+    @ViewBuilder let content: ([CGRect]) -> Content
+
+    var body: some View { content(regions.settled) }
+}
+
+/// 窗口在动时看不见、不接输入（shown 为 false 时一直这样）。动画开始、结束只更新这一层。
+private struct WhileSettled: ViewModifier {
+    let motion: WindowMotion
+    let shown: Bool
+    var fades = true
+
+    func body(content: Content) -> some View {
+        let active = shown && !motion.moving
+        content
+            .opacity(fades && !active ? 0 : 1)
+            .allowsHitTesting(active)
+    }
+}
+
+/// 动画开始、结束时做的事，在这一层读 moving，卡片本身不跟着重算。
+private struct MotionFlip: ViewModifier {
+    let motion: WindowMotion
+    let action: (Bool) -> Void
+
+    func body(content: Content) -> some View {
+        content.onChange(of: motion.moving) { _, moving in action(moving) }
+    }
+}
+
+/// 网格固定在屏幕上，静息的网点不随卡片走。窗口在动时整层收起（见 WindowSurface），卡片上的图形也不逐帧跟随。
+private struct WindowSurfaceDots: View {
     let enabled: Bool
-    @Environment(\.dotCarrier) private var carrier
-    @Environment(\.dotStage) private var stage
 
     var body: some View {
-        if enabled {
-            let follows = motion.moving && carrier.map { stage?.carries($0) == true } == true
-            TimelineView(.animation(paused: !follows)) { clock in
-                let pose = motion.presentation(at: clock.date)
-                let offset = pose.contentOrigin(size: contentSize)
-                let mapping = DotCarrier.Mapping(origin: CGPoint(x: origin.x + offset.x, y: origin.y + offset.y), scale: pose.scale)
-                DotCanvas(follow: follows ? carrier?.rest.after(mapping.inverted) : nil)
-            }
-        }
+        if enabled { DotCanvas() }
     }
 }
 
