@@ -4,14 +4,15 @@
 - [PDF 读取方案](pdf-read-direction.md) — Vision 与无备用解析器的明确取舍
 - [视觉参考与范围](visual-style-direction.md) — 色板、角色点阵、项目色和字体范围
 - [界面事件诊断](ui-hit-testing-debugging.md) — 合成输入与命中证据的限制，simctl 探针未决风险
-- [卡顿怎么量](performance-diagnosis.md) — 帧间隔对照、真机 Time Profiler、改完数 body 对照耗时，Mac 结论不外推到 iPhone
+- [卡顿怎么量](performance-diagnosis.md) — 帧间隔对照、真机 Time Profiler、合成滚动、用户双击的测量版、软边诊断，Mac 结论不外推到 iPhone
+- [模拟器量 iPhone 排版](ios-layout-probe.md) — 不登录：本机 kited 取目录、DEBUG 临时入口渲染生产视图、结果写 App tmp
 - [对话正文的文本容器](text-container-direction.md) — 每条回复一个 TextKit 2 文本视图、附件嵌代码块、复制给原文、外观不改，第三步 iPhone 待验收
 - [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、术语词典与整理后做、点阵表现、未选的识别候选
 
 ## 协作反馈
 
 - [界面工作与验收](feedback-ui-workflow.md) — 方案、目标定位、连续推进、真机验收和工具链选择
-- [交互连续性](feedback-interaction-quality.md) — 公共控件完整行为、对象身份、保留动效的性能优化与窗口动画不回弹
+- [交互连续性](feedback-interaction-quality.md) — 公共控件完整行为、对象身份、保留动效的性能优化；窗口动画不回弹，过渡中点阵收起；空画板是窗口
 - [测试要克制](test-restraint.md) — 测试准入主来源、事件断言与 PDF 验证要求
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行与数据流判断，不能只看引用
 
@@ -26,5 +27,5 @@
 - [远程连接与托管运维](todo-remote-connections.md) — iPhone 重连、托管容量备份、凭据重绑和多机关系
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
 - [真实终端](todo-terminal-plugin.md) — PTY 与跨端重连、停止和资源生命周期
-- [窗口动画剩余开销](todo-window-motion-remaining.md) — 首帧与拖动重排用户暂不处理，文字布局偏好随文本容器退掉，iPad 待验证
+- [窗口动画剩余开销](todo-window-motion-remaining.md) — 首帧标题托管更新与悬停、画板改后未再量、拖缝重排长轮次、换落点手感待试，iPad、iPhone 未量
 - [个人组网清理](todo-headscale-cleanup.md) — lisa 实验资源的存在与清理状态待核验
