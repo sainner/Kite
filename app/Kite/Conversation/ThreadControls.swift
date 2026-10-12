@@ -82,8 +82,7 @@ struct ThreadControls: View {
     private var effortControl: some View {
         if let effort = Effort.allCases.first(where: { $0.name == reasoning }) {
             EffortPicker(effort: Binding(get: { effortDraft ?? effort }, set: { effortDraft = $0 }),
-                         allowed: availableEfforts, commit: saveEffort, cancel: { effortDraft = nil })
-                .allowsHitTesting(canChangeEffort)
+                         allowed: availableEfforts, enabled: canChangeEffort, commit: saveEffort, cancel: { effortDraft = nil })
                 .help(thread.agentCapabilities?.explanation ?? "正在读取模型能力")
         } else {
             Menu {

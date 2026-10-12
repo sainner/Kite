@@ -4,16 +4,22 @@ import SwiftUI
 /// 触屏一按下档位名就展开，刻度线挪到当前档位落在手指下面，左边放不下就贴着左边。没拖就松手，留着展开，再点一下档位名收起；
 /// 按下以后横着拖是在调档位，手指在哪一格就是哪一格，松手就是松手处那一档，收起。按下时手指所在的那一格要等手指离开它才算：
 /// 刻度线贴着左边时手指下面不是当前档位，按下去、手抖一下不会就换。展开以后点一下刻度直接选那一档、收起，从刻度上拖也一样调。
-/// 竖着拖留给拉 action 栏，刻度线收起。指针移上去在原地展开，不跟着指针挪，移开就收起；在上面点、拖和触屏一样调档位。
+/// 竖着拖留给拉 action 栏，刻度线收起。指针移上去在原地展开，不跟着指针挪，移开就收起；在上面点、拖和触屏一样调档位，
+/// 选完收起，指针移开以前不再因为悬停展开。
 struct EffortPicker: View {
     @Binding var effort: Effort
     var allowed: [Effort] = Effort.allCases
+    /// 能不能调，不能调时指针移上去也不展开。在这里管，不在外面关掉命中：关掉再打开命中，悬停会报一次移开、移上来，
+    /// 保存档位时这样关一下，选完收起的刻度线就又展开了。
+    var enabled = true
     var commit: () -> Void = {}
     var cancel: () -> Void = {}
     /// 按下时展开的，松手后留着还是收起见 onEnded。
     @State private var open = false
     /// Mac 上鼠标在上面。
     @State private var hovering = false
+    /// 选完收起时指针还在上面，移开以前悬停不算。
+    @State private var settled = false
     /// 刻度线的左边在哪，从这个控件的左边算。
     @State private var origin: CGFloat = 0
     @State private var touch: Touch?
@@ -43,7 +49,7 @@ struct EffortPicker: View {
         if let touch { touch.sliding != false } else { false }
     }
 
-    private var showsTicks: Bool { open || hovering || adjusting }
+    private var showsTicks: Bool { open || (hovering && enabled && !settled) || adjusting }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -56,7 +62,7 @@ struct EffortPicker: View {
         }
         .contentShape(Rectangle())
         .reservesPaneSwipe()
-        .gesture(press)
+        .gesture(press, isEnabled: enabled)
         .onChange(of: down) { _, down in
             // 松手时 onEnded 已经收过尾；被系统打断时不调它，在这里收
             if !down, touch != nil {
@@ -68,7 +74,10 @@ struct EffortPicker: View {
             }
         }
         .onHover { hovering in
-            withAnimation(.snappy) { self.hovering = hovering }
+            withAnimation(.snappy) {
+                self.hovering = hovering
+                if !hovering { settled = false }
+            }
         }
         .sensoryFeedback(.selection, trigger: effort)
     }
@@ -109,7 +118,10 @@ struct EffortPicker: View {
                     self.touch = nil
                     if touch.tapped, touch.onTicks, let start = touch.start { effort = start }
                     // 点档位名展开的留着；点了刻度、点档位名收起、拖完了都收起
-                    if !(touch.tapped && touch.opened) { open = false }
+                    if !(touch.tapped && touch.opened) {
+                        open = false
+                        settled = hovering
+                    }
                 }
                 commit()
             }
