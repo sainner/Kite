@@ -387,6 +387,8 @@ private struct WindowBackdrop: NSViewRepresentable {
         let alpha: CGFloat = hidden ? 0 : 1
         guard host.alphaValue != alpha else { return }
         host.alphaValue = alpha
+        // 收起要当场收：淡入还在走的话图层动画会盖过新的透明度，点阵照样淡出来（2026-10-13 用户看到松手时点阵闪一下）
+        if hidden { host.layer?.removeAnimation(forKey: "fade") }
         guard !hidden, let layer = host.layer else { return }
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = 0

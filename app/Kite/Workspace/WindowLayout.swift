@@ -19,6 +19,13 @@ final class WindowLayout {
     @ObservationIgnored private var dwellAnchor = CGPoint.zero
     /// 正在拖的那道缝，跟手不吸附；松手后清空，排布吸附到模块。
     private(set) var resizing: Split?
+    /// 刚松开缝、各窗口还没报上吸附动画（settling）的那一段也算过渡中：吸附动画由卡片在下一次更新里报上来，
+    /// 中间这一两帧不算的话，点阵会先淡入、又随吸附收起、吸附完再淡入，闪一下（2026-10-13 用户报）。
+    private var releasing = false
+    @ObservationIgnored private var releaseEnd: Task<Void, Never>?
+
+    /// 在拖缝，或者刚松开、吸附还没走完：窗口点阵这段时间一直收着，吸附完只淡入一次。
+    var resizingOrReleasing: Bool { resizing != nil || releasing }
     /// 拖动时指针在内容区里的位置。一直在变，和 drag 分开，免得每动一下整个排布都重算。
     private(set) var pointer: CGPoint = .zero
     /// 正在走排布动画的窗口，由摆卡片的视图报上来，见 blocksInput。
@@ -31,7 +38,7 @@ final class WindowLayout {
 
     /// 过渡中：拖动、拖缝调整大小、排布动画。点阵不参与过渡，停下后再淡入；窗口、停靠栏和缝都不接点击和悬停，Mac 上也不换光标
     /// （2026-10-12 用户确定：过渡中这些都用不上）。正在进行的拖动照常由按下时的视图接。
-    var transitioning: Bool { blocksInput || resizing != nil }
+    var transitioning: Bool { blocksInput || resizingOrReleasing }
 
     /// 所有 App 窗口里有窗口组在过渡中。主线程上能往后放的工作（如对话藏着量高，见 TranscriptWindow）看它让开，不卡进动画里。
     static var anyTransitioning: Bool { all.allObjects.contains { $0.transitioning } }
@@ -286,7 +293,8 @@ final class WindowLayout {
     /// 拖动 gap 这道缝。两边都不小于各自的最小尺寸，里面再切过的也算上。
     func resize(_ gap: TileLayout.Gap, to location: CGPoint) {
         guard !isFixed else { return }
-        motionKind = .immediate
+        // 每动一下都会走到这里，值没变不写，免得读它们的视图每帧重算
+        if motionKind != .immediate { motionKind = .immediate }
         let split = gap.split
         let horizontal = split.axis == .horizontal
         let length = { (size: CGSize) in horizontal ? size.width : size.height }
@@ -295,17 +303,29 @@ final class WindowLayout {
         let upper = available - length(split.second.minimumSize)
         guard available > 0, lower <= upper else { return }
         let position = (horizontal ? location.x - gap.region.minX : location.y - gap.region.minY) - Metrics.gap / 2
-        resizing = split.source ?? split
+        let source = split.source ?? split
+        if resizing !== source { resizing = source }
+        if releasing {
+            releaseEnd?.cancel()
+            releasing = false
+        }
         split.ratio = min(max(position, lower), upper) / available
     }
 
     /// 分栏拖动只改内存，松手后吸附到模块并保存最终比例。
     func finishResize() {
+        releasing = true
         withLayoutAnimation(.settle) { resizing = nil }
         #if os(macOS)
         HostedContentUpdates.flush()
         #endif
         save()
+        // 吸附动画走完以后各窗口的 settling 已经接上；吸附位移为零、没有窗口动时，到点就算停下
+        releaseEnd?.cancel()
+        releaseEnd = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(WindowMotionKind.settle.duration)) } catch { return }
+            self?.releasing = false
+        }
     }
 
     /// 手势层达到起拖距离后调用，布局层从第一次调用起就接管窗口排布。

@@ -569,8 +569,8 @@ struct PaneCard: View {
                       minimizedColor: appearance.isAgent ? Theme.card : appearance.tint,
                       ring: ringColor.map { ($0, DockFace.ringWidth) },
                       background: AnyView(WindowSurfaceDots(enabled: usesDots)),
-                      // 点阵不参与过渡（见 WindowLayout.transitioning）：窗口自己在动时 WindowSurface 收起，拖缝调整大小时也收起
-                      backgroundHidden: workspace.resizing != nil,
+                      // 点阵不参与过渡（见 WindowLayout.transitioning）：窗口自己在动时 WindowSurface 收起，拖缝调整大小、松手吸附时也收起
+                      backgroundHidden: workspace.resizingOrReleasing,
                       headerHeight: minimized ? nil : header.height,
                       onHover: { hovered in
                           if header.hovered != hovered { header.hovered = hovered }
