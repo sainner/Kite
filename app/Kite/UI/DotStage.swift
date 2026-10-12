@@ -73,13 +73,15 @@ final class DotStage {
         var pattern: DotPattern
         var area: CGRect
         var quiet: [PatternQuiet]
+        var rise: CGFloat?
         var carrier: DotCarrier?
     }
 
     /// 在 slot 上把 pattern 铺满 area（窗口坐标；给出 carrier 时是卡片坐标），nil 让图案收回。
-    /// 从无到有时由中心向外长出来，换图案时沿对角线逐格形变；quiet 是文字压在上面的范围，图案在那里收弱。
-    func showPattern(_ pattern: DotPattern?, in area: CGRect, quiet: [PatternQuiet] = [], slot: String, carrier: DotCarrier? = nil) {
-        patternRequests[slot] = pattern.map { PatternRequest(pattern: $0, area: area, quiet: quiet, carrier: carrier) }
+    /// 从无到有时由中心向外长出来，换图案时沿对角线逐格形变；quiet 是文字压在上面的范围，图案在那里收弱；rise 见 PatternSlot.rise。
+    func showPattern(_ pattern: DotPattern?, in area: CGRect, quiet: [PatternQuiet] = [], rise: CGFloat? = nil, slot: String,
+                     carrier: DotCarrier? = nil) {
+        patternRequests[slot] = pattern.map { PatternRequest(pattern: $0, area: area, quiet: quiet, rise: rise, carrier: carrier) }
         placePattern(slot)
     }
 
@@ -107,11 +109,12 @@ final class DotStage {
         guard var current = patterns[slot] else {
             guard let request else { return }
             patterns[slot] = PatternSlot(pattern: request.pattern, changed: now, start: now,
-                                         area: request.area, quiet: request.quiet, carrier: request.carrier)
+                                         area: request.area, quiet: request.quiet, rise: request.rise, carrier: request.carrier)
             return
         }
         if let request {
-            var changed = current.area != request.area || current.quiet != request.quiet || current.carrier !== request.carrier
+            var changed = current.area != request.area || current.quiet != request.quiet || current.rise != request.rise
+                || current.carrier !== request.carrier
             if current.leaving != nil {
                 // 收回途中又摆回来：重新长出来
                 current.previous = nil
@@ -127,6 +130,7 @@ final class DotStage {
             current.pattern = request.pattern
             current.area = request.area
             current.quiet = request.quiet
+            current.rise = request.rise
             current.carrier = request.carrier
             patterns[slot] = current
         } else if current.leaving == nil {
@@ -164,6 +168,7 @@ final class DotStage {
                                    start: slot.start, columns: columns...lastColumn, rows: rows...lastRow,
                                    quiet: quiet, pointer: pointer,
                                    activity: live ? input.level(at: date) : 0, sound: live ? input.sound?.level(at: date) ?? 0 : 0,
+                                   rise: slot.rise.map { Double($0 * (mapping?.scale ?? 1) / pitch) },
                                    grid: grid(key, columns: columns...lastColumn, rows: rows...lastRow, quiet: quiet))
         }
     }

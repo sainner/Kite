@@ -168,19 +168,20 @@ struct ThreadPane: View {
     }
 }
 
-/// 语音输入时铺在窗口底部一带的签名：从窗口底边往上，盖过控制区再高出几格，随录音的响度（v）起伏，停下就收回。
+/// 语音输入时铺在窗口底部一带的签名：从窗口底边往上，盖过控制区再高出几格，随录音的响度（v）起伏、往上涨，停下就收回。
 /// 大半在控制区的玻璃后面，透出来的是模糊的光，高出来的几格和两侧露出图案本身。
 private struct VoiceBand: View {
     let pattern: DotPattern?
     let slot: String
 
-    /// 高出控制区的格数。
-    private static let rise: CGFloat = 3
+    /// 静音时高出控制区的格数，和响度到 1 时涨到的格数。
+    private static let quiet: CGFloat = 3
+    private static let loud: CGFloat = 9
 
     var body: some View {
         GeometryReader { proxy in
-            DotPatternArea(pattern: pattern, slot: slot)
-                .frame(height: proxy.safeAreaInsets.bottom + Self.rise * DotMetrics.pitch)
+            DotPatternArea(pattern: pattern, rise: proxy.safeAreaInsets.bottom + Self.quiet * DotMetrics.pitch, slot: slot)
+                .frame(height: proxy.safeAreaInsets.bottom + Self.loud * DotMetrics.pitch)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
         .ignoresSafeArea(.container, edges: .bottom)

@@ -37,6 +37,8 @@ struct PatternSlot {
     var area: CGRect
     /// 文字压在上面的范围，图案在这里收弱。
     var quiet: [PatternQuiet]
+    /// 随声音从底边往上涨：静音时只铺到底边往上这么高（同 area 的坐标），响度到 1 时铺满整块；nil 时一直铺满。
+    var rise: CGFloat?
     var carrier: DotCarrier?
 }
 
@@ -67,6 +69,10 @@ nonisolated enum PatternMotion {
     /// 压字的范围里留多少，离开范围多远（格）回到原样。
     static let quietFloor = 0.12
     static let quietReach = 3.0
+    /// 响度到 1 时整幅涨大多少：签名里 v 只占一小项，不另外涨的话说话时看不出在听。
+    static let soundSwell = 0.8
+    /// 随声音往上涨的图案，上沿淡出的格数。
+    static let riseEdge = 2.0
 }
 
 /// 一块图案只随位置、大小和压字范围变的逐格量，按行排满整块：表达式里只与格位有关的变量，以及压字处收弱的系数。
@@ -152,9 +158,11 @@ nonisolated struct ResolvedPattern: Sendable {
     let pointer: (x: Double, y: Double)?
     let activity: Double
     let sound: Double
+    /// 静音时从底边往上铺几格，见 PatternSlot.rise。
+    let rise: Double?
     let grid: PatternGrid
 
-    /// 交给着色器（DotField.metal）的一块图案：可见范围里每格的取值（带正负，已乘上长出、形变、收回和收弱）整批算好，
+    /// 交给着色器（DotField.metal）的一块图案：可见范围里每格的取值（带正负，已乘上长出、形变、声音、收回和收弱）整批算好，
     /// 按行追加到 values；表头按 patternStride 排，颜色由着色器按取值混。算法与下面逐格的 dot 相同。
     /// hidden 是整格被遮掉的格子：可见的几列全被遮掉的行不算，其余的行按连续的几段各追加一条。
     /// follow 是所在卡片正在走时，屏幕上的一点对应卡片停着时的哪里，见 DotCarrier。
@@ -246,7 +254,7 @@ nonisolated struct ResolvedPattern: Sendable {
         }
     }
 
-    /// grid 里 range 这几格的取值，已乘上长出、形变、收回和收弱。
+    /// grid 里 range 这几格的取值，已乘上长出、形变、声音、收回和收弱。
     private func evaluate(_ pattern: DotPattern, range: Range<Int>, at date: Date, live: Bool) -> [Double] {
         let width = columns.count
         let count = range.count
@@ -293,6 +301,15 @@ nonisolated struct ResolvedPattern: Sendable {
             // 由中心向外长出来；全部长完后系数都是 1，不用再乘
             let reach = hypot(w / 2, h / 2)
             value = vDSP.multiply(value, eased(reach > 0 ? vDSP.multiply(PatternMotion.growSpread / reach, grid.r[range]) : zeros()))
+        }
+        if sound > 0 {
+            value = vDSP.multiply(1 + PatternMotion.soundSwell * sound, value)
+        }
+        if let rise {
+            // 从底边往上铺到 reach 格，上沿几格淡出；第 row 行的格心离底边 h − 0.5 − row 格
+            let reach = rise + sound * (h - rise)
+            let t = vDSP.clip(vDSP.multiply(1 / PatternMotion.riseEdge, vDSP.add(reach - h + 0.5, grid.row[range])), to: 0...1)
+            value = vDSP.multiply(value, vDSP.multiply(vDSP.multiply(t, t), vDSP.add(3, vDSP.multiply(-2, t))))
         }
         if let leaving, live {
             value = vDSP.multiply(1 - easeOutCubic(date.timeIntervalSince(leaving) / PatternMotion.leaveDuration), value)
@@ -370,6 +387,10 @@ nonisolated struct ResolvedPattern: Sendable {
             let elapsed = live ? date.timeIntervalSince(changed) : .infinity
             value *= easeOutCubic((elapsed - delay) / DotMetrics.morphDuration)
         }
+        value *= 1 + PatternMotion.soundSwell * sound
+        if let rise {
+            value *= smoothstep((rise + sound * (h - rise) - h + 0.5 + Double(row)) / PatternMotion.riseEdge)
+        }
         if let leaving, live {
             value *= 1 - easeOutCubic(date.timeIntervalSince(leaving) / PatternMotion.leaveDuration)
         }
@@ -401,6 +422,8 @@ struct DotPatternArea: View {
     /// 收弱的范围；坐标与 area 相同：窗口坐标，在会移动的卡片里是卡片坐标。
     var quiet: [PatternQuiet] = []
     var area: CGRect?
+    /// 随声音从底边往上涨，见 PatternSlot.rise。
+    var rise: CGFloat?
     let slot: String
     @Environment(\.dotStage) private var stage
     @Environment(\.dotCarrier) private var carrier
@@ -417,6 +440,7 @@ struct DotPatternArea: View {
             .onChange(of: pattern) { refresh() }
             .onChange(of: quiet) { refresh() }
             .onChange(of: area) { refresh() }
+            .onChange(of: rise) { refresh() }
             .onDisappear { stage?.showPattern(nil, in: .zero, slot: slot) }
             .preference(key: DotSlots.self, value: [slot])
             .allowsHitTesting(false)
@@ -424,6 +448,6 @@ struct DotPatternArea: View {
 
     private func refresh() {
         guard let area = area ?? frame else { return }
-        stage?.showPattern(pattern, in: area, quiet: quiet, slot: slot, carrier: carrier)
+        stage?.showPattern(pattern, in: area, quiet: quiet, rise: rise, slot: slot, carrier: carrier)
     }
 }
