@@ -6,6 +6,8 @@ struct ThreadControls: View {
     var typing: FocusState<Bool>.Binding
     /// 发一条消息；第二个参数和对话往上滑在同一次更新里调。
     let send: (Message, _ alongside: @escaping () -> Void) -> Void
+    /// 这个窗口录语音时的标识，见 VoiceInput.owner。
+    let voiceOwner: String
     @Environment(WorkThread.self) private var thread
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
@@ -23,6 +25,7 @@ struct ThreadControls: View {
     @State private var effortDraft: Effort?
     @State private var savingEffort = false
     @State private var effortError: String?
+    @State private var voiceError: String?
 
     var body: some View {
         @Bindable var thread = thread
@@ -70,6 +73,9 @@ struct ThreadControls: View {
         .alert("修改思考强度失败", isPresented: Binding(get: { effortError != nil }, set: { if !$0 { effortError = nil } })) {
             Button("好", role: .cancel) { effortError = nil }
         } message: { Text(effortError ?? "") }
+        .alert("无法开始语音输入", isPresented: Binding(get: { voiceError != nil }, set: { if !$0 { voiceError = nil } })) {
+            Button("好", role: .cancel) { voiceError = nil }
+        } message: { Text(voiceError ?? "") }
     }
 
     @ViewBuilder
@@ -90,14 +96,14 @@ struct ThreadControls: View {
     }
 
     private var actionButtons: some View {
-        HStack(spacing: Metrics.paneButtonGap) {
+        HStack(spacing: Self.actionGap) {
             HStack(spacing: 0) {
                 Button {} label: { Image(systemName: "paperclip") }
                     .buttonStyle(PaneButtonStyle())
                     .disabled(true).accessibilityLabel("添加附件")
-                Button {} label: { Image(systemName: "mic") }
-                    .buttonStyle(PaneButtonStyle())
-                    .disabled(true).accessibilityLabel("语音输入")
+                Button(action: toggleVoice) { Image(systemName: listening ? "mic.fill" : "mic") }
+                    .buttonStyle(PaneButtonStyle(foreground: listening ? .accentColor : .secondary))
+                    .accessibilityLabel(listening ? "结束语音输入" : "语音输入")
             }
             if thread.showStop {
                 Button {
@@ -118,6 +124,37 @@ struct ThreadControls: View {
                     .buttonStyle(PaneButtonStyle(fill: .accentColor))
                     .disabled(!thread.canSend)
                     .accessibilityLabel("发送")
+            }
+        }
+    }
+
+    private var listening: Bool { model.voice.owner == voiceOwner }
+
+    private func toggleVoice() {
+        if listening {
+            model.voice.stop()
+            return
+        }
+        // 识别出的字接在开录时的草稿后面，每次都是到目前为止的全文
+        let base = thread.draft
+        let thread = thread, voice = model.voice, owner = voiceOwner
+        Task {
+            do {
+                let client = try thread.client ?? model.activeClient(in: area)
+                try await voice.start(owner: owner, target: VoiceTarget(client: client, thread: thread.isDraft ? nil : thread.id)) { text in
+                    switch text {
+                    case .partial(let value), .final(let value): thread.draft = base + value
+                    case .failed(let message):
+                        voice.stop(owner: owner)
+                        voiceError = message
+                    }
+                }
+                #if os(iOS)
+                // 收起键盘，窗口底部随声音起伏的签名才露得出来
+                typing.wrappedValue = false
+                #endif
+            } catch {
+                voiceError = error.localizedDescription
             }
         }
     }
@@ -181,6 +218,9 @@ struct ThreadControls: View {
         thread.draft = ""
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.fadeDuration) { fading = nil }
     }
+
+    /// 附件、语音这组按钮与后面停止、继续、发送键的间距，比通用的按钮间距紧，发送键贴着左边的按钮组。
+    private static let actionGap: CGFloat = 4
 
     /// 发出去的字 0.3 秒 easeOut 模糊到 6、透明度到 0。
     fileprivate static let fadeDuration = 0.3

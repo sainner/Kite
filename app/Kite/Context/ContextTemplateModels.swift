@@ -90,7 +90,7 @@ nonisolated struct EmblemDesign: Codable, Equatable, Sendable {
     static let letters = ["B", "M", "L", "Y", "D"]
     static let letterTitles = ["B": "主题色", "M": "晨风蓝", "L": "露水蓝", "Y": "阳光黄", "D": "深阳光黄"]
     /// 没有签名或签名还在生成时用的图案。
-    static let fallback = EmblemDesign(expression: "sin(x/5 + t*0.6) * cos(y/4 - t*0.4) * 0.55 + 0.4*max(0, 1 - d/6)*sin(d - t*3)",
+    static let fallback = EmblemDesign(expression: "sin(x/5 + t*0.6) * cos(y/4 - t*0.4) * (0.55 + 0.45*v) + 0.4*max(0, 1 - d/6)*sin(d - t*3)",
                                        avatar: "sin(x*0.9+t*0.6)*cos(y*0.8-t*0.4)*0.75+0.35*(r<1.5)*sin(t*2)",
                                        positive: "B", negative: "L", form: "circle")
 
@@ -148,11 +148,21 @@ struct EmblemSave: Encodable { let emblem: EmblemDesign }
 struct EmblemGenerate: Encodable { let force: Bool }
 
 nonisolated struct ContextTemplateCatalog: Decodable, Sendable {
+    nonisolated struct Models: Decodable, Sendable {
+        let vendors: [AgentCapabilities.Vendor]
+        let models: [AgentCapabilities.Model]
+    }
+
     var templates: [ContextTemplate]
     let scenes: [ContextScene]
     /// 辅助生成可选的模型。
     let vendors: [AgentCapabilities.Vendor]
     let models: [AgentCapabilities.Model]
+    /// 语音识别模板可选的识别模型。
+    let speech: Models
+
+    /// 语音识别模板的场景，模型从 speech 里选。
+    static let speechScene = "thread.voice"
 }
 
 struct ContextTemplateSave: Encodable {

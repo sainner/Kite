@@ -87,6 +87,11 @@ final class DotStage {
         patternInputs[slot, default: PatternInput()].pointer = point
     }
 
+    /// 图案随 level 的响度起伏（表达式里的 v）；nil 时 v 回到 0。
+    func patternSound(_ level: AudioLevel?, slot: String) {
+        patternInputs[slot, default: PatternInput()].sound = level
+    }
+
     /// 打了一下字：图案的活跃度加一截，随后慢慢落回去。
     func patternKeystroke(slot: String) {
         var input = patternInputs[slot] ?? PatternInput()
@@ -157,7 +162,7 @@ final class DotStage {
             return ResolvedPattern(pattern: slot.pattern, previous: previous, changed: slot.changed, leaving: slot.leaving,
                                    start: slot.start, columns: columns...lastColumn, rows: rows...lastRow,
                                    quiet: quiet, pointer: pointer,
-                                   activity: live ? input.level(at: date) : 0, sound: live ? input.sound : 0,
+                                   activity: live ? input.level(at: date) : 0, sound: live ? input.sound?.level(at: date) ?? 0 : 0,
                                    grid: grid(key, columns: columns...lastColumn, rows: rows...lastRow, quiet: quiet))
         }
     }

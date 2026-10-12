@@ -1,0 +1,26 @@
+{
+  "contexts": {
+    "A": "语音输入先做 App 这边：麦克风键、录音，音量驱动点阵签名。\n\n好的。录音放在 VoiceInput，用 AVAudioEngine 的输入节点接一个 AVAudioSinkNode，响度算均方根后交给 DotStage 的 patternSound。按钮在 ThreadControls 的 actionButtons 里。\n\n已有对话的窗口在底部一带铺签名，空会话直接让整片签名跟着 v 动。\n\n明白，底部一带用 VoiceBand，高度是控制区的安全区再加三格。AudioLevel 的 attack 是 0.04，release 是 0.2。改完我跑 .kite/check。",
+    "B": "语音识别作为辅助生成的一类，凭据里单开一类，只分发给工作机。\n\n好。我会在 credential-service.ts 的 credentialFields 里加 speech 类型，provider 先支持 volcengine 和 dashscope，工作机通过 GET /api/credentials/speech 领取。\n\nApp 和 kited 之间加一条 WebSocket，音频流式推上去。\n\n可以，kited 用 Bun.serve 的 websocket 处理，App 用 URLSessionWebSocketTask，PCM 是 16 kHz 单声道。上下文用 thread.messages，近三天最多 20 轮。"
+  },
+  "samples": [
+    { "context": "A", "text": "把 VoiceBand 的高度从三格改成四格，然后在 Mac 上重新打开预览看看。", "terms": ["VoiceBand", "Mac"] },
+    { "context": "A", "text": "AudioLevel 的 attack 设成 0.03，release 改成 0.25，回落再慢一点。", "terms": ["AudioLevel", "attack", "release"] },
+    { "context": "A", "text": "录音停了以后 patternSound 要传 nil，不然 v 会一直停在最后那个值。", "terms": ["patternSound", "nil"] },
+    { "context": "A", "text": "跑一下 .kite/check，要是 iOS 模拟器那边编译不过，把报错贴给我。", "terms": [".kite/check", "iOS"] },
+    { "context": "A", "text": "ThreadControls 里那个麦克风按钮，录音的时候换成 mic.fill，颜色用 accentColor。", "terms": ["ThreadControls", "mic.fill", "accentColor"] },
+    { "context": "A", "text": "先别提交，等我在 iPhone 上看完效果再说，顺便把 DerivedData 清一下。", "terms": ["iPhone", "DerivedData"] },
+    { "context": "B", "text": "在 credential-service.ts 里加一个 speech 类型，字段跟 api 类型保持一致。", "terms": ["credential-service.ts", "speech", "api"] },
+    { "context": "B", "text": "Bun.serve 那边的 websocket 处理函数，收到 close 的时候要把识别会话也关掉。", "terms": ["Bun.serve", "websocket", "close"] },
+    { "context": "B", "text": "把 light-tasks.ts 里的超时改成十秒，不对，十五秒，然后重启 kited。", "terms": ["light-tasks.ts", "kited"] },
+    { "context": "B", "text": "App 这边用 URLSessionWebSocketTask，每两百毫秒发一包 PCM。", "terms": ["URLSessionWebSocketTask", "PCM"] },
+    { "context": "B", "text": "看一下 thread.messages 这个变量，代码块被略掉的话，标识符就进不了上下文。", "terms": ["thread.messages"] },
+    { "context": "B", "text": "在托管账号与设备那篇文档里，把凭据服务的表格补上语音识别这一行。", "terms": ["托管账号与设备", "凭据服务"] },
+    { "text": "帮我看一下 git log 最近五条提交，有没有动过 DotStage.swift。", "terms": ["git log", "DotStage.swift"] },
+    { "text": "把这个分支 rebase 到 main 上，有冲突的话先停下来问我。", "terms": ["rebase", "main"] },
+    { "text": "用 bun test 只跑 test/medium 下面的 host.test.ts。", "terms": ["bun test", "test/medium", "host.test.ts"] },
+    { "text": "这个函数改成 async，调用的地方都加上 await。", "terms": ["async", "await"] },
+    { "text": "查一下 Tailscale 为什么连不上 lisa，看看 headscale 的日志。", "terms": ["Tailscale", "lisa", "headscale"] },
+    { "text": "打开 Xcode 的 Instruments，用 Time Profiler 在 iPhone 上录一段发送消息的卡顿。", "terms": ["Xcode", "Instruments", "Time Profiler", "iPhone"] }
+  ]
+}

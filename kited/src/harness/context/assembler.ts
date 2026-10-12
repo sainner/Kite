@@ -25,8 +25,8 @@ function validateDefinition(definition: ContextSnapshot['definition'], ctx: z.Re
   const variables = new Set<string>(contextScenes[definition.scene].variables.map((variable) => variable.name));
   const ids = new Set<string>();
   const error = (message: string) => ctx.addIssue({ code: 'custom', message });
-  if (['thread.title', 'thread.compact', 'template.emblem'].includes(definition.scene) !== (definition.input !== undefined)) {
-    error('会话标题、上下文压缩与点阵签名模板须同时包含指令与材料，其他场景仅使用正文');
+  if (['thread.title', 'thread.compact', 'template.emblem', 'thread.voice'].includes(definition.scene) !== (definition.input !== undefined)) {
+    error('会话标题、上下文压缩、点阵签名与语音识别模板须同时包含指令与材料，其他场景仅使用正文');
   }
   const reference = (variable: string) => {
     if (!variables.has(variable)) error(`当前定义不支持变量：${variable}`);

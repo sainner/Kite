@@ -48,6 +48,7 @@ import { SubscriptionLogins } from './subscription-logins.ts';
 import { ModelAccounts, readModelAccounts } from './model-accounts.ts';
 import { agentModelCatalog } from './agents/capabilities.ts';
 import { TokenCounter } from './token-counts.ts';
+import { VoiceSessions, voiceTemplate } from './voice/sessions.ts';
 
 export interface ThreadView extends ThreadContext { runner: Runtime['state']; busy: boolean }
 const firstLine = (text: string) => text.trim().split('\n')[0]!.trim() || '（空消息）';
@@ -77,6 +78,7 @@ export class Kite {
   readonly titles?: ThreadTitles;
   readonly emblems: TemplateEmblems;
   readonly tokenCounts: TokenCounter;
+  readonly voice: VoiceSessions;
   private readonly transcripts: TranscriptHistory;
   private readonly configuration: InstanceConfiguration;
   private readonly instances: InstanceLifecycle;
@@ -102,7 +104,7 @@ export class Kite {
     this.contextTemplates = new ContextTemplates(store, [
       titleTemplate, compactTemplate, emblemTemplate,
       agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
-      pluginToolsContextDefinition,
+      pluginToolsContextDefinition, voiceTemplate,
     ]);
     this.library = new LibrarySync({ account, store, roles: this.roles, templates: this.contextTemplates, catalog: this.catalog,
       changed: (changes) => this.libraryChanged(changes) });
@@ -122,6 +124,11 @@ export class Kite {
       revokeGrants: (instance) => this.configuration.revokeInstanceGrants(instance),
     });
     this.tokenCounts = new TokenCounter({ apiKeys: async () => this.account.linked ? this.account.apiKeys() : [] });
+    this.voice = new VoiceSessions({
+      keys: async () => this.account.linked ? this.account.speechKeys() : [],
+      template: () => this.contextTemplates.get(voiceTemplate.id, voiceTemplate.scene),
+      history: (id) => this.history(id),
+    });
     if (options.lightTasks !== false && process.env.KITE_LIGHT_TASKS !== '0') {
       const light = options.lightTasks;
       this.lightTasks = new LightTasks({

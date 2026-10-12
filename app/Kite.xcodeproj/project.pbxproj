@@ -297,6 +297,7 @@
 				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -304,6 +305,7 @@
 				"INFOPLIST_FILE[sdk=iphoneos*]" = "Info-iOS.plist";
 				"INFOPLIST_FILE[sdk=iphonesimulator*]" = "Info-iOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Kite;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "语音输入时录下你说的话";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -348,6 +350,7 @@
 				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -355,6 +358,7 @@
 				"INFOPLIST_FILE[sdk=iphoneos*]" = "Info-iOS.plist";
 				"INFOPLIST_FILE[sdk=iphonesimulator*]" = "Info-iOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Kite;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "语音输入时录下你说的话";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;

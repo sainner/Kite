@@ -40,13 +40,13 @@ struct PatternSlot {
     var carrier: DotCarrier?
 }
 
-/// 图案的交互输入：指针所在（窗口坐标）、打字的活跃度与声音的响度。逐帧读取，不引起视图更新。
+/// 图案的交互输入：指针所在（窗口坐标）、打字的活跃度与声音的来源。逐帧读取，不引起视图更新。
 struct PatternInput {
     var pointer: CGPoint?
     var activity = 0.0
     var activityAt = Date.distantPast
-    /// 表达式里的 v（0～1），留给语音输入或系统播放的声音；音源接入前恒为 0。
-    var sound = 0.0
+    /// 表达式里的 v（0～1）逐帧从这里取；没有时为 0。现在只有语音输入，系统播放的声音还没接。
+    var sound: AudioLevel?
 
     /// 每敲一下加一截，随后按秒衰减。
     func level(at date: Date) -> Double {

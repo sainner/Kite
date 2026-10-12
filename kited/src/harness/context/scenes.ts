@@ -14,6 +14,12 @@ export const contextScenes = {
       { name: 'compaction.summary', title: '摘要正文', description: '模型写好的摘要。只在摘要包装里有值，摘要指令里为空。' },
     ],
   },
+  'thread.voice': {
+    title: '语音识别',
+    variables: [
+      { name: 'thread.messages', title: '近期对话', description: '最近的请求和回复，每段以「用户：」或「agent：」开头、空行分隔，代码不略去，从最近往前取到 6000 字；新会话还没有对话时为空。' },
+    ],
+  },
   'template.emblem': {
     title: '生成点阵签名',
     variables: [

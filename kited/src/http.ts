@@ -1,9 +1,9 @@
-/** HTTP 接口：本机监听信任回环客户端，远程监听只接受已核验组网身份的内部代理。事件流用 SSE。 */
+/** HTTP 接口：本机监听信任回环客户端，远程监听只接受已核验组网身份的内部代理。事件流用 SSE，语音输入用 WebSocket。 */
 import { KiteError, OperationError } from './errors.ts';
 import type { EventScope } from './events.ts';
 import { inScope } from './transcript/feed.ts';
 import { z } from 'zod';
-import type { Server } from 'bun';
+import type { Server, ServerWebSocket } from 'bun';
 import type { Kite } from './kite.ts';
 import { operationCatalog } from './operations/contract.ts';
 import { roleSelection } from './roles.ts';
@@ -12,6 +12,7 @@ import { defaultAgentModel } from './agents/models.ts';
 import type { Network } from './network.ts';
 import { publisherConfig, type CatalogPublisher } from './catalog-publisher.ts';
 import { tokenPrices } from './token-prices.ts';
+import type { VoiceSocket } from './voice/sessions.ts';
 
 async function body(req: Request): Promise<Record<string, unknown>> {
   try { return (await req.json()) as Record<string, unknown>; } catch { throw new KiteError('请求体不是 JSON'); }
@@ -42,7 +43,7 @@ function handle<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
 
 /** Git 网络操作和轻任务可能长时间没有响应数据，由各自的生命周期控制结束。 */
 function long<R extends Request>(fn: (req: R) => Promise<Response>) {
-  return (req: R, server: Server<undefined>) => {
+  return (req: R, server: Server<VoiceSocket>) => {
     server.timeout(req, 0);
     return fn(req);
   };
@@ -98,13 +99,10 @@ async function events(kite: Kite, scope: EventScope): Promise<Response> {
 }
 
 /** 只监听回环地址仍挡不住 DNS 重绑定：网页换成同源后可读 /machine 再发请求，因此只接受回环主机名。 */
-function local<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
-  return handle((req: R) => {
-    let host = '';
-    try { host = new URL(`http://${req.headers.get('host') ?? ''}`).hostname; } catch { /* 按非本机地址拒绝。 */ }
-    if (host !== '127.0.0.1' && host !== 'localhost') throw new KiteError('只接受本机地址的请求', 403);
-    return fn(req);
-  });
+function checkLocal(req: Request) {
+  let host = '';
+  try { host = new URL(`http://${req.headers.get('host') ?? ''}`).hostname; } catch { /* 按非本机地址拒绝。 */ }
+  if (host !== '127.0.0.1' && host !== 'localhost') throw new KiteError('只接受本机地址的请求', 403);
 }
 
 export interface Listen {
@@ -121,18 +119,36 @@ export interface Listen {
 
 export function serve(kite: Kite, listen: Listen) {
   // 代理负责同账号认证，工作机身份检查防止地址复用时操作错机器。
-  const access = <R extends Request>(fn: (req: R) => Promise<unknown> | unknown) => listen.remote
-    ? handle((req: R) => {
-      if (!listen.proxyToken || req.headers.get('X-Kite-Network') !== listen.proxyToken) throw new KiteError('设备未通过组网认证', 401);
-      return fn(req);
-    })
-    : local(fn);
-  const bound = <R extends Request>(fn: (req: R) => Promise<unknown> | unknown) => access((req: R) => {
+  const checkAccess = (req: Request) => {
+    if (!listen.remote) return checkLocal(req);
+    if (!listen.proxyToken || req.headers.get('X-Kite-Network') !== listen.proxyToken) throw new KiteError('设备未通过组网认证', 401);
+  };
+  const checkMachine = (req: Request) => {
     const machine = req.headers.get('X-Kite-Machine');
     if (!machine) throw new KiteError('缺少 X-Kite-Machine，请先读取 /machine');
     if (machine !== kite.machine().id) throw new KiteError('连接地址对应的工作机已改变，请重新选择工作机', 409);
+  };
+  const access = <R extends Request>(fn: (req: R) => Promise<unknown> | unknown) => handle((req: R) => {
+    checkAccess(req);
     return fn(req);
   });
+  const bound = <R extends Request>(fn: (req: R) => Promise<unknown> | unknown) => access((req: R) => {
+    checkMachine(req);
+    return fn(req);
+  });
+  /** 语音输入升级成 WebSocket，检查同 bound；thread 是正在输入的会话，新会话不带。 */
+  const voice = (req: Request, server: Server<VoiceSocket>) => {
+    try {
+      checkAccess(req);
+      checkMachine(req);
+      const thread = new URL(req.url).searchParams.get('thread') ?? undefined;
+      if (thread !== undefined) kite.thread(thread);
+      if (server.upgrade(req, { data: { thread } })) return undefined;
+      throw new KiteError('语音输入需要 WebSocket 连接');
+    } catch (e) {
+      return Response.json({ error: (e as Error).message }, { status: e instanceof KiteError ? e.status : 500 });
+    }
+  };
   // 本机网络设置不对远程设备开放。
   const localOnly = <R extends Request>(fn: (req: R) => Promise<Response>) =>
     listen.remote ? handle<R>(() => { throw new KiteError('没有这个接口', 404); }) : fn;
@@ -393,6 +409,12 @@ export function serve(kite: Kite, listen: Listen) {
       '/instances/:id/archive': { POST: bound((req) => kite.archiveInstance(req.params.id)) },
       '/workspaces/:id/archive': { POST: bound(async (req) => kite.archiveWorkspace(req.params.id, (await body(req)).force === true)) },
       '/events': { GET: bound((req) => events(kite, eventScope(req.url))) },
+      '/voice': { GET: voice },
+    },
+    websocket: {
+      open: (socket: ServerWebSocket<VoiceSocket>) => kite.voice.open(socket),
+      message: (socket: ServerWebSocket<VoiceSocket>, message: string | Buffer) => kite.voice.message(socket, message),
+      close: (socket: ServerWebSocket<VoiceSocket>) => kite.voice.close(socket),
     },
     fetch: () => Response.json({ error: '没有这个接口' }, { status: 404 }),
   });

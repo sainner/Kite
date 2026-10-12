@@ -73,10 +73,14 @@ struct TemplatePane: View {
                     if let error { CardCallout(text: error) }
                     if let definition {
                         if let configuration, let catalog = model.contextTemplates {
-                            CardSection("模型", note: "使用工作机的 ChatGPT 订阅，不调用工具。") {
+                            let speech = definition.scene == ContextTemplateCatalog.speechScene
+                            CardSection(speech ? "识别模型" : "模型",
+                                        note: speech ? "使用 Kite 账号凭据里的语音识别 Key。"
+                                            : "使用工作机的 ChatGPT 订阅，不调用工具。") {
                                 AgentModelFields(configuration: Binding(get: { [model, id] in model.libraryTemplateModel(id) ?? configuration },
                                                                         set: { [model, id] value in model.editTemplate(id) { $0.model = value } }),
-                                                 vendors: catalog.vendors, models: catalog.models)
+                                                 vendors: speech ? catalog.speech.vendors : catalog.vendors,
+                                                 models: speech ? catalog.speech.models : catalog.models, showsReasoning: !speech)
                             }
                             .disabled(saving)
                         }
@@ -114,7 +118,9 @@ struct TemplatePane: View {
             }
         }
         // 辅助生成按模板自己的模型数；其他模板没有自己的模型（压缩实际用会话的模型），由工作机按默认模型数。
-        .contextEditor(editor, counting: model.contextCounting(model: configuration?.model, connection: model.activeConnection))
+        // 识别模型没有计数接口，语音识别的背景文本也按默认模型估。
+        .contextEditor(editor, counting: model.contextCounting(
+            model: definition?.scene == ContextTemplateCatalog.speechScene ? nil : configuration?.model, connection: model.activeConnection))
         .discardAlert("放弃未保存的模板修改？", isPresented: $discard, discardLabel: "放弃修改") {
             model.templateDrafts.removeAll { $0.id == id }
         }

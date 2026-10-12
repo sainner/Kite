@@ -47,9 +47,10 @@ struct CredentialsLibrary: View {
                     GitAccountsSection()
                     SecretsSection()
                     ApiKeysSection()
+                    SpeechKeysSection()
                 } else {
                     Section {
-                        Text("登录 Kite 账号后管理 Git 授权、共享密钥和模型 API Key。")
+                        Text("登录 Kite 账号后管理 Git 授权、共享密钥、模型 API Key 和语音识别 Key。")
                         Button("登录 Kite 账号") { model.openSettings(.account) }
                     }
                 }
@@ -330,4 +331,116 @@ struct ApiKeysSection: View {
     }
 
     private func load() async throws { entries = try await model.account.credentials(type: "api") }
+}
+
+/// 语音识别支持的供应商。
+enum SpeechProvider: String, CaseIterable, Identifiable {
+    case dashscope
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .dashscope: "千问（百炼）"
+        }
+    }
+}
+
+/// 保存一把语音识别 Key 到 Kite 账号；工作机识别语音输入时领取，App 拿不到。
+struct SpeechKeySheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var provider = SpeechProvider.dashscope
+    @State private var name = ""
+    @State private var key = ""
+    @State private var phase = CardPhase.idle
+    @FocusState private var focus: Field?
+
+    private enum Field { case name, key }
+
+    private func trimmed(_ value: String) -> String { value.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var valid: Bool { !trimmed(key).isEmpty }
+
+    var body: some View {
+        CardSheet(title: "添加语音识别 Key", subtitle: "保存到 Kite 账号，各工作机识别语音输入时使用", typing: focus != nil, close: { dismiss() }) {
+            CardField(label: "供应商") {
+                Menu {
+                    ForEach(SpeechProvider.allCases) { item in
+                        Button(item.title) { provider = item }
+                    }
+                } label: {
+                    Text(provider.title)
+                }
+                .menuStyle(.button).buttonStyle(CardSelectStyle()).menuIndicator(.hidden).clickPointer()
+            }
+            CardField(label: "名称", focused: focus == .name, note: "用来区分同一供应商的多把 Key，留空时使用供应商名。") {
+                TextField(provider.title, text: $name)
+                    .focused($focus, equals: .name).onSubmit(save)
+                    .cardInput { focus = .name }
+            }
+            CardField(label: "API Key", focused: focus == .key, note: "百炼控制台的 API Key，北京地域。") {
+                SecureField("粘贴 API Key", text: $key)
+                    .focused($focus, equals: .key).onSubmit(save)
+                    .cardInput { focus = .key }
+            }
+        } footer: {
+            CardActions(primary: "保存", enabled: valid, phase: $phase, action: save)
+        }
+        .endsTyping(focus != nil) { focus = nil }
+    }
+
+    private func save() {
+        guard valid else { return }
+        let name = trimmed(name).isEmpty ? provider.title : trimmed(name)
+        let provider = provider, key = trimmed(key)
+        $phase.run {
+            try await model.account.createCredential(type: "speech", name: name, meta: ["provider": provider.rawValue], secret: ["key": key])
+            dismiss()
+        }
+    }
+}
+
+/// 资源库里的语音识别 Key：列出公开信息，可添加和删除。
+struct SpeechKeysSection: View {
+    @Environment(AppModel.self) private var model
+    @State private var entries: [AccountCredential] = []
+    @State private var adding = false
+    @State private var phase = CardPhase.idle
+
+    var body: some View {
+        Section {
+            ForEach(entries) { entry in
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(entry.name)
+                        Text(detail(entry)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("删除", role: .destructive) {
+                        $phase.run {
+                            try await model.account.deleteCredential(entry.id)
+                            try await load()
+                        }
+                    }
+                }
+            }
+            Button("添加语音识别 Key") { adding = true }
+            if let error = phase.error { Text(error).foregroundStyle(Theme.danger) }
+        } header: {
+            Text("语音识别")
+        } footer: {
+            Text("语音识别 Key 随 Kite 账号分发给各台工作机，只用于识别语音输入，agent 执行的命令里无法引用。")
+        }
+        .disabled(phase.working)
+        .task { $phase.run { try await load() } }
+        .sheet(isPresented: $adding, onDismiss: { $phase.run { try await load() } }) {
+            SpeechKeySheet().environment(model).appAppearance()
+        }
+    }
+
+    private func detail(_ entry: AccountCredential) -> String {
+        let provider = SpeechProvider(rawValue: entry.meta["provider"]?.string ?? "")?.title ?? "语音识别"
+        return provider + (entry.meta["hint"]?.string.map { " · …\($0)" } ?? "")
+    }
+
+    private func load() async throws { entries = try await model.account.credentials(type: "speech") }
 }

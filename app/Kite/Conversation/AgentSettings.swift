@@ -195,11 +195,12 @@ struct ToolModePicker: View {
     }
 }
 
-/// 模型按厂商分组，连同思考强度；不在目录里的当前值也列出，选择器不丢值。
+/// 模型按厂商分组，连同思考强度；不在目录里的当前值也列出，选择器不丢值。语音识别没有思考强度，不显示。
 struct AgentModelFields: View {
     @Binding var configuration: AgentModelConfiguration
     let vendors: [AgentCapabilities.Vendor]
     let models: [AgentCapabilities.Model]
+    var showsReasoning = true
 
     private var levels: [String] { models.first { $0.id == configuration.model }?.reasoning ?? [] }
 
@@ -217,16 +218,18 @@ struct AgentModelFields: View {
             }
             .labelsHidden().fixedSize()
         }
-        LabeledContent("思考强度") {
-            Picker("思考强度", selection: $configuration.reasoning) {
-                if levels.isEmpty || configuration.reasoning == "default" { Text("自动").tag("default") }
-                if configuration.reasoning != "default", !levels.contains(configuration.reasoning) {
-                    Text(configuration.reasoning).tag(configuration.reasoning)
+        if showsReasoning {
+            LabeledContent("思考强度") {
+                Picker("思考强度", selection: $configuration.reasoning) {
+                    if levels.isEmpty || configuration.reasoning == "default" { Text("自动").tag("default") }
+                    if configuration.reasoning != "default", !levels.contains(configuration.reasoning) {
+                        Text(configuration.reasoning).tag(configuration.reasoning)
+                    }
+                    ForEach(levels, id: \.self) { Text($0).tag($0) }
                 }
-                ForEach(levels, id: \.self) { Text($0).tag($0) }
+                .labelsHidden().fixedSize()
+                .disabled(levels.isEmpty)
             }
-            .labelsHidden().fixedSize()
-            .disabled(levels.isEmpty)
         }
     }
 }

@@ -17,9 +17,12 @@ struct ThreadPane: View {
     /// 标题栏模板菜单里「基于…新建模板」打开的编辑器，与模板读取、套用失败的说明。
     @State private var roleEdit: RoleDefinition?
     @State private var roleError: String?
-    /// 空会话铺在窗口上的点阵签名，见 NewThreadStage。
+    /// 空会话铺在窗口上的点阵签名，见 NewThreadStage。也是这个窗口录语音时的标识，见 VoiceInput.owner。
     @State private var patternSlot = "pattern.\(UUID().uuidString)"
+    /// 已有对话时，语音输入铺在窗口底部一带的签名，见 VoiceBand。
+    @State private var voiceSlot = "voice.\(UUID().uuidString)"
     @Environment(\.dotStage) private var stage
+    @Environment(\.self) private var environment
 
     var body: some View {
         let empty = !thread.hasTranscript
@@ -54,9 +57,10 @@ struct ThreadPane: View {
                         if selected != nil { $selected.close() }
                     }
                 }
+                .background { VoiceBand(pattern: listening ? emblem : nil, slot: voiceSlot) }
             }
         } controls: { typing in
-            ThreadControls(typing: typing, send: send)
+            ThreadControls(typing: typing, send: send, voiceOwner: patternSlot)
                 .disabled(area.creatingWindow != nil || thread.configuringTemplate)
                 .frame(maxWidth: Metrics.transcriptWidth)
         } headerStatus: {
@@ -72,6 +76,11 @@ struct ThreadPane: View {
         }
         #endif
         .environment(\.workingDirectory, thread.transcriptRoot)
+        // 空会话的签名和底部那一带都随录音的响度起伏
+        .onChange(of: listening, initial: true) {
+            for slot in [patternSlot, voiceSlot] { stage?.patternSound(listening ? model.voice.level : nil, slot: slot) }
+        }
+        .onDisappear { model.voice.stop(owner: patternSlot) }
         .task(id: thread.client?.identity) {
             // 打开时先完成窗口的移动，再接收并排版历史；不在每次拖动时重连已经建立的订阅。
             await Task.yield()
@@ -91,6 +100,14 @@ struct ThreadPane: View {
             RoleEditor(role: role, connection: model.revision(for: area)) { selectRole($0) }
                 .environment(model)
         }
+    }
+
+    private var listening: Bool { model.voice.owner == patternSlot }
+
+    /// 这个代理的角色签名；角色列表还没读到或角色没有签名时用默认图案。
+    private var emblem: DotPattern? {
+        let accent = DotColor(Color.accentColor.resolve(in: environment))
+        return (model.emblem(for: thread.id, in: area) ?? .fallback).pattern(accent: accent)
     }
 
     /// 只在 Mac 上按需排版：长会话改窗口宽度时只重排看得见的。iPhone 上窗口宽度不变，省不下重排；
@@ -148,6 +165,26 @@ struct ThreadPane: View {
             arriving.ids.remove(message.id)
             alongside()
         }
+    }
+}
+
+/// 语音输入时铺在窗口底部一带的签名：从窗口底边往上，盖过控制区再高出几格，随录音的响度（v）起伏，停下就收回。
+/// 大半在控制区的玻璃后面，透出来的是模糊的光，高出来的几格和两侧露出图案本身。
+private struct VoiceBand: View {
+    let pattern: DotPattern?
+    let slot: String
+
+    /// 高出控制区的格数。
+    private static let rise: CGFloat = 3
+
+    var body: some View {
+        GeometryReader { proxy in
+            DotPatternArea(pattern: pattern, slot: slot)
+                .frame(height: proxy.safeAreaInsets.bottom + Self.rise * DotMetrics.pitch)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        }
+        .ignoresSafeArea(.container, edges: .bottom)
+        .allowsHitTesting(false)
     }
 }
 

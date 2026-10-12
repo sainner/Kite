@@ -280,6 +280,18 @@ struct KitedClient: Equatable {
         throw KitedError(message: "连接已断开，正在重连")
     }
 
+    /// 语音输入的 WebSocket，协议见 kited 的 voice/sessions.ts；thread 是正在输入的会话，新会话不带。组网会话的配置带着节点的代理设置。
+    func voiceSocket(thread: String?) async throws -> (URLSession, URLSessionWebSocketTask) {
+        guard let machineID else { throw KitedError(message: "请先连接工作机") }
+        var components = URLComponents(url: try url("/voice"), resolvingAgainstBaseURL: true)!
+        components.scheme = components.scheme == "https" ? "wss" : "ws"
+        if let thread { components.queryItems = [URLQueryItem(name: "thread", value: thread)] }
+        var request = URLRequest(url: components.url!)
+        request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
+        let session = URLSession(configuration: Tailnet.covers(address) ? try await Tailnet.shared.urlSession().configuration : .ephemeral)
+        return (session, session.webSocketTask(with: request))
+    }
+
     private func validate(_ response: URLResponse, data: Data? = nil) throws {
         guard let http = response as? HTTPURLResponse else { throw KitedError(message: "服务响应无效") }
         guard (200..<300).contains(http.statusCode) else {

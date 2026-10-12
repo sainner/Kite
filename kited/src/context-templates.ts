@@ -9,6 +9,7 @@ import { contextDefinitionSchema } from './harness/context/assembler.ts';
 import { contextScenes, type ContextScene } from './harness/context/scenes.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
 import type { Store } from './store.ts';
+import { defaultSpeechModel, speechModels, speechVendors } from './voice/models.ts';
 
 /**
  * 可编辑的场景及在资源库代理上下文里的分类，按进入代理上下文的方式分：事件通知（notification）是插进会话的正文；
@@ -19,12 +20,13 @@ const editableScenes: Partial<Record<ContextScene, 'notification' | 'compaction'
   'thread.execution_permissions_changed': 'notification', 'thread.plugin_tools_changed': 'notification',
   'thread.file_changes': 'notification',
   'thread.compact': 'compaction',
-  'thread.title': 'generation', 'template.emblem': 'generation',
+  'thread.title': 'generation', 'template.emblem': 'generation', 'thread.voice': 'generation',
 };
 
-/** 辅助生成统一用工作机的 ChatGPT 订阅，只能选其中的型号；内置模板默认用最轻的一档。 */
+/** 辅助生成统一用工作机的 ChatGPT 订阅，只能选其中的型号；内置模板默认用最轻的一档。语音识别另选识别模型，见 voice/。 */
 const generationModels = agentModels.models;
 const defaultGenerationModel = { model: generationModels.find((model) => model.tier === 'luna')!.id, reasoning: 'low' };
+const speechScene: ContextScene = 'thread.voice';
 
 const templateSchema = z.object({ definition: contextDefinitionSchema, model: agentDefinitionSchema.shape.model.optional() }).strict();
 /** 随账号保存的模板内容：组装定义，辅助生成的另带模型与思考强度。工具属于角色，模板没有。 */
@@ -43,6 +45,9 @@ function parse(value: unknown): Template {
   if (!kind) throw new KiteError('该场景尚未开放模板编辑');
   if (kind !== 'generation') {
     if (model) throw new KiteError('只有辅助生成的模板可以设置模型');
+  } else if (definition.scene === speechScene) {
+    if (!model || !speechModels.some((entry) => entry.id === model.model)) throw new KiteError('语音识别只能使用目录里的识别模型');
+    if (model.reasoning !== 'default') throw new KiteError('语音识别没有思考强度');
   } else {
     if (!model) throw new KiteError('辅助生成的模板须设置模型');
     if (!generationModels.some((entry) => entry.id === model.model)) throw new KiteError('辅助生成只能使用 ChatGPT 订阅里的模型');
@@ -57,13 +62,14 @@ export class ContextTemplates {
 
   constructor(private store: Store, defaults: ContextDefinition[]) {
     this.defaults = new Map(defaults.map((definition) => [definition.id, parse({ definition,
-      ...(editableScenes[definition.scene] === 'generation' ? { model: defaultGenerationModel } : {}) })]));
+      ...(editableScenes[definition.scene] === 'generation'
+        ? { model: definition.scene === speechScene ? defaultSpeechModel : defaultGenerationModel } : {}) })]));
     store.transaction(() => {
       for (const template of store.contextTemplates()) if (this.isDefault(template)) store.deleteContextTemplate(template.definition.id);
     });
   }
 
-  /** 带上辅助生成可选的模型目录。 */
+  /** 带上辅助生成可选的模型目录；语音识别的另列在 speech。 */
   list() {
     const catalog = agentModelCatalog();
     const models = catalog.models.filter((model) => generationModels.some((entry) => entry.id === model.id));
@@ -72,6 +78,7 @@ export class ContextTemplates {
       scenes: Object.entries(editableScenes).map(([id, kind]) => ({ id, kind, ...contextScenes[id as ContextScene] })),
       vendors: catalog.vendors.filter((vendor) => models.some((model) => model.vendor === vendor.id)),
       models,
+      speech: { vendors: speechVendors, models: speechModels },
     };
   }
 

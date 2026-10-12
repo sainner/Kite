@@ -3,7 +3,7 @@
  * 只解析、求值，不执行代码。语法与 App 的 DotExpression.swift 保持一致，改动须两边同步。
  */
 
-/** v 是声音的响度（0～1），来自语音输入或系统播放的声音；音源接入前 App 恒给 0。 */
+/** v 是声音的响度（0～1），来自语音输入或系统播放的声音；App 现在只接了语音输入，没有声音时为 0。 */
 export const emblemVariables = ['t', 'x', 'y', 'i', 'w', 'h', 'r', 'a', 'px', 'py', 'd', 'k', 'v', 'pi', 'tau'] as const;
 const arities: Record<string, number[]> = {
   sin: [1], cos: [1], tan: [1], abs: [1], floor: [1], ceil: [1], round: [1], sqrt: [1], exp: [1], log: [1],

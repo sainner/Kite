@@ -30,6 +30,14 @@ export interface ApiKey {
   adminKey?: string;
 }
 
+/** 账号里的一把语音识别 Key。 */
+export interface SpeechKey {
+  id: string;
+  name: string;
+  provider: 'dashscope';
+  key: string;
+}
+
 /** 资源库里的一项；插件包在列表里不带代码，单独读取时才有。 */
 export interface LibraryItem {
   kind: 'role' | 'template' | 'emblem' | 'plugin';
@@ -87,6 +95,7 @@ export class AccountClient {
 
   /** 账号保存的模型 API Key，只用于查询额度。 */
   apiKeys(signal?: AbortSignal): Promise<ApiKey[]> { return this.request('GET', '/api/credentials/api', undefined, signal); }
+  speechKeys(signal?: AbortSignal): Promise<SpeechKey[]> { return this.request('GET', '/api/credentials/speech', undefined, signal); }
 
   /** 按远程地址登记；同一远程总是得到同一个项目。 */
   register(remote: string): Promise<RegisteredProject> { return this.request('POST', '/api/projects', { remote }); }

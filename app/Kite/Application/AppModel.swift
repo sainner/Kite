@@ -14,6 +14,8 @@ final class AppModel {
     var sidebarSection = SidebarSection.workspaces
     var contentSize: CGSize = .zero
     let account: KiteAccount
+    /// 语音输入的录音，整个 App 共用一支麦克风。
+    let voice = VoiceInput()
     private(set) var connections: [String: WorkerConnection] = [:]
     private var connectionRun: UUID?
     private let emptyConnection = UUID()

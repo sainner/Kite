@@ -2,7 +2,7 @@
 import type { Database } from 'bun:sqlite';
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
 
-export type CredentialType = 'secret' | 'git' | 'api';
+export type CredentialType = 'secret' | 'git' | 'api' | 'speech';
 export interface Credential {
   id: string;
   type: CredentialType;

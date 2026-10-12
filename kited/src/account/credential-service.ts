@@ -13,8 +13,8 @@ interface Options {
   ownedProject(id: string, userId: string): void;
 }
 
-const credentialType = z.enum(['secret', 'git', 'api']);
-/** 各类凭据的名称、公开信息与保密内容；API 凭据的 hint、admin 由服务端生成。 */
+const credentialType = z.enum(['secret', 'git', 'api', 'speech']);
+/** 各类凭据的名称、公开信息与保密内容；API 与语音识别凭据的 hint、admin 由服务端生成。 */
 const credentialFields: Record<CredentialType, { name: z.ZodType<string>; meta: z.ZodType<Record<string, unknown>>; secret: z.ZodType<Record<string, string | undefined>> }> = {
   secret: {
     name: secretName,
@@ -30,6 +30,11 @@ const credentialFields: Record<CredentialType, { name: z.ZodType<string>; meta: 
     name: z.string().trim().min(1).max(64),
     meta: z.object({ provider: z.enum(['openai', 'anthropic', 'deepseek']) }).strict(),
     secret: z.object({ key: z.string().trim().min(1).max(4096).optional(), adminKey: z.string().trim().min(1).max(4096).optional() }).strict(),
+  },
+  speech: {
+    name: z.string().trim().min(1).max(64),
+    meta: z.object({ provider: z.enum(['dashscope']) }).strict(),
+    secret: z.object({ key: z.string().trim().min(1).max(4096) }).strict(),
   },
 };
 const credentialCreation = z.object({ type: credentialType, name: z.unknown(), projectId: z.uuid().optional(),
@@ -66,15 +71,17 @@ export function createCredentialService(credentials: CredentialStore, { hostedHo
       if (!key && !adminKey) throw new RequestError('至少填写调用 Key 或管理 Key', 400);
       Object.assign(meta, { hint: (key ?? adminKey)!.slice(-4), admin: !!adminKey });
     }
+    if (type === 'speech' && secret) Object.assign(meta, { hint: secret.key!.slice(-4) });
     return { name, meta, secret };
   }
-  /** 改名或替换内容，类型与范围不变；API 凭据不换密钥时沿用原来的 hint、admin，换供应商必须换密钥。 */
+  /** 改名或替换内容，类型与范围不变；API 与语音识别凭据不换密钥时沿用原来的 hint、admin，换供应商必须换密钥。 */
   function changeCredential(userId: string, existing: Credential, change: z.infer<typeof credentialChange>): Credential {
-    const meta = change.meta ?? (existing.type === 'api' ? { provider: existing.meta.provider } : existing.meta);
+    const keyed = existing.type === 'api' || existing.type === 'speech';
+    const meta = change.meta ?? (keyed ? { provider: existing.meta.provider } : existing.meta);
     const input = credentialInput(existing.type, { name: change.name ?? existing.name, meta, secret: change.secret });
-    if (existing.type === 'api' && !input.secret) {
+    if (keyed && !input.secret) {
       if (input.meta.provider !== existing.meta.provider) throw new RequestError('更换供应商需要重新填写密钥', 400);
-      Object.assign(input.meta, { hint: existing.meta.hint, admin: existing.meta.admin });
+      Object.assign(input.meta, existing.type === 'api' ? { hint: existing.meta.hint, admin: existing.meta.admin } : { hint: existing.meta.hint });
     }
     return credentials.update(userId, existing.id, { name: input.name, meta: input.meta, secret: input.secret }, now());
   }
@@ -109,6 +116,13 @@ export function createCredentialService(credentials: CredentialStore, { hostedHo
       const userId = found.device.userId;
       return result(credentials.list(userId, null, 'api').map((credential) => ({ id: credential.id, name: credential.name,
         provider: credential.meta.provider, ...credentials.open<{ key?: string; adminKey?: string }>(userId, credential.id) })));
+    }
+    if (path === '/api/credentials/speech' && request.method === 'GET') {
+      const found = await worker(bearerToken(request));
+      if (!found) throw new RequestError('请使用工作机凭据', 401);
+      const userId = found.device.userId;
+      return result(credentials.list(userId, null, 'speech').map((credential) => ({ id: credential.id, name: credential.name,
+        provider: credential.meta.provider, ...credentials.open<{ key: string }>(userId, credential.id) })));
     }
     const user = await owner(request);
     if (user.worker) throw new RequestError('凭据管理需要登录 Kite 账号', 403);

@@ -81,6 +81,12 @@ Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新�
 
 材料来自近期用户请求与完成的回复，包括已接收的排队消息；不使用工具、思考及代码块。命名规则和材料使用可编辑的标题模板，每次生成读取最新保存内容，在途请求不受后续编辑影响。模板格式见 [上下文模板](harness-上下文组装.md)。
 
+### 语音识别
+
+语音识别也是辅助生成的一类：App 录音，经 `/voice` 把声音推给工作机，工作机连识别服务，识别结果不进入代理上下文。识别模型随「语音识别」模板保存，只能选识别模型目录里的型号，目前是千问 `qwen3-asr-flash-realtime`；凭据用 Kite 账号里的语音识别 Key（见 [凭据服务](托管账号与设备.md#凭据服务)）。
+
+识别不按停顿分句，说完一次提交：边收声音边推中间结果，App 发出结束后给整段定稿。开录时按模板把这个会话最近的请求和回复（代码不略去，取到 6000 字）作为背景文本交给识别服务；新会话还没有实例时不带对话。定稿再做一次确定性整理，不用 LLM：夹在英文之间念出来的「点」「斜杠」「杠」「下划线」换成符号，英文词对得上背景文本里的标识符时按它的写法恢复。选型依据见 [语音识别选型](research/2026-10-12-语音识别选型.md)。
+
 | 接口 | 请求与结果 |
 |---|---|
 | `GET /threads/:id/title` | 返回 `{title, mode, revision, generatedAt, through}`；后两项标识最近成功检查的时间与输入截止位置 |
@@ -260,8 +266,8 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | PUT | `/roles/:id/emblem` | 以 `{emblem}` 保存手改的点阵签名，返回带签名状态的角色；表达式不可用时 400 |
 | POST | `/roles/:id/emblem/generate` | `{force}`：为 `true` 时连手改的签名一起重新生成，否则只补缺失或过期的签名；立即返回 `{emblem?, emblemState, emblemError?}`，结果随 `roles.changed` 送达；未启用轻任务时 503 |
 | PUT | `/instances/:id/role` | 以 `{expectedRevision, roleId, roleRevision}` 为代理改选角色，换上角色的提示词、工具、默认模型与预算，协作操作授权随角色增减，其余授权不变；已有对话时返回 409 |
-| GET | `/context-templates` | 列出标题、上下文压缩、点阵签名及五类通知模板和场景变量 |
-| PUT | `/context-templates/:id` | 以 `{expectedRevision, definition}` 更新模板；模板由工作机提供，不能新建 |
+| GET | `/context-templates` | 列出标题、上下文压缩、点阵签名、语音识别及五类通知模板和场景变量，附辅助生成可选的模型目录（`vendors`、`models`）与语音识别可选的识别模型（`speech`） |
+| PUT | `/context-templates/:id` | 以 `{expectedRevision, definition, model?}` 更新模板；模板由工作机提供，不能新建 |
 | POST | `/token-counts` | 以 `{texts, model?, scene?}` 逐段计数，返回 `{model, results}`；没给模型时按场景推出。账号里有对应厂商的 API Key 时用官方计数接口（`method: api`），否则 OpenAI 按 o200k 估算、Claude 不给数；`exact` 标明是否准确 |
 | GET / PUT | `/threads/:id/title` | 读取标题与生成进度；以 expectedRevision 手动改名或恢复自动标题 |
 | POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不阻塞主会话控制 |
@@ -290,6 +296,7 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | GET | `/events` | 目录 SSE：首帧 `catalog.snapshot`，随后检出、工作区和线程概要变更 |
 | GET | `/events?workspace=<id>` | 工作区 SSE：首帧 `workspace.model`，随后工作区操作与所属线程概要 |
 | GET | `/events?thread=<id>` | 线程 SSE：首帧 `thread.history`，随后线程显示与状态事件 |
+| GET | `/voice?thread=<id>` | 语音输入的 WebSocket，见 [语音识别](#语音识别)；`thread` 是正在输入的会话，新会话不带。App 推 16 kHz 单声道 s16le 的 PCM 二进制帧，说完发 `{"type":"finish"}`；工作机推 `{"type":"partial","text"}`（到目前为止的全文），最后推 `{"type":"final","text"}` 或 `{"type":"error","message"}` 后关闭。连上之后的错误（如没有凭据）都以 `error` 消息给出 |
 
 窗口创建请求为 `{id, content: {kind: "create", definitionId}}`；打开已有视图为 `{id, content: {kind: "open", instanceId, viewId}}`。`id` 使用 UUID。内置代理（`kite.agent`）提供 `conversation`，文件提供 `files`，终端占位提供 `terminal`；文件视图包含预览。新建的空 agent 不调用模型；目标实例须属于当前工作区且处于可用状态，视图须由定义声明。
 

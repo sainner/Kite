@@ -6,7 +6,7 @@ import Synchronization
 /// 解析时编译成一串后缀指令。每帧整片图案按批求值（evaluate(batch:)）：每条指令对所有格子调用一次 vDSP / vForce，
 /// 逐格解释指令的开销摊到整批上；逐格的 evaluate 只给图形盖住的少数格子用。
 nonisolated struct DotExpression: Sendable {
-    /// 求值时能读到的量，顺序即 Scope 与着色器里的下标。v 是声音的响度（0～1），音源接入前恒为 0。
+    /// 求值时能读到的量，顺序即 Scope 与着色器里的下标。v 是声音的响度（0～1），现在只来自语音输入，没有声音时为 0。
     enum Variable: Int, CaseIterable, Sendable {
         case t, x, y, i, w, h, r, a, px, py, d, k, v
     }
