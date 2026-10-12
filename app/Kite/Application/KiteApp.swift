@@ -25,7 +25,7 @@ struct KiteApp: App {
         #if os(macOS)
         Window("Kite", id: "main") {
             AppRoot().dockPreview().connectsToService().cardActionsPreview()
-                .environment(model).readsWindowChrome().toastHost().appAppearance()
+                .environment(model).readsWindowChrome().keepsLayoutEngine().toastHost().appAppearance()
         }
         .kiteWindowStyle()
         .defaultSize(width: 1272, height: 792)
@@ -34,7 +34,7 @@ struct KiteApp: App {
         // 从侧边栏分离出来的工作区，放在松手的地方
         WindowGroup("工作区", id: "workspace", for: String.self) { $id in
             if let id {
-                DetachedWorkspace(id: id).environment(model).readsWindowChrome().toastHost().appAppearance()
+                DetachedWorkspace(id: id).environment(model).readsWindowChrome().keepsLayoutEngine().toastHost().appAppearance()
             }
         }
         .kiteWindowStyle()
