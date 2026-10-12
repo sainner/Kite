@@ -20,26 +20,33 @@ nonisolated final class InlineCodeDecoration: NSObject, Sendable {
 }
 
 /// 引用竖线：x 是文本容器坐标，top 是段落上方的间隔。
+/// 上下文编辑器里一行一段，连着的几行引用接成一根竖线：joinsAbove、joinsBelow 那一端不画圆头。
 nonisolated final class QuoteDecoration: NSObject, Sendable {
     let x: CGFloat
     let top: CGFloat
     let fill: CGColor
+    let joinsAbove: Bool
+    let joinsBelow: Bool
 
-    init(x: CGFloat, top: CGFloat, fill: CGColor) {
+    init(x: CGFloat, top: CGFloat, fill: CGColor, joinsAbove: Bool = false, joinsBelow: Bool = false) {
         self.x = x
         self.top = top
         self.fill = fill
+        self.joinsAbove = joinsAbove
+        self.joinsBelow = joinsBelow
     }
 
     override func isEqual(_ object: Any?) -> Bool {
         guard let other = object as? QuoteDecoration else { return false }
-        return other.x == x && other.top == top && other.fill == fill
+        return other.x == x && other.top == top && other.fill == fill && other.joinsAbove == joinsAbove && other.joinsBelow == joinsBelow
     }
     override var hash: Int {
         var hasher = Hasher()
         hasher.combine(x)
         hasher.combine(top)
         hasher.combine(fill)
+        hasher.combine(joinsAbove)
+        hasher.combine(joinsBelow)
         return hasher.finalize()
     }
 }
@@ -82,9 +89,14 @@ nonisolated final class DecoratedFragment: NSTextLayoutFragment {
 
     private var box: CGRect {
         guard let decoration else { return .null }
+        // 文档以换行结尾时，换行后的空行也排在最后一段的片段里；竖线不画到这一行（上下文编辑器里按回车就会遇到）。
+        var bottom = layoutFragmentFrame.height
+        if textLineFragments.count > 1, let last = textLineFragments.last, last.characterRange.length == 0 {
+            bottom = last.typographicBounds.minY
+        }
         // 绘制原点已包含段落缩进，将容器坐标换成片段局部坐标。
         return CGRect(x: decoration.x - layoutFragmentFrame.minX, y: decoration.top,
-                      width: 3, height: layoutFragmentFrame.height - decoration.top)
+                      width: 3, height: bottom - decoration.top)
     }
 
     override var renderingSurfaceBounds: CGRect {
@@ -100,8 +112,14 @@ nonisolated final class DecoratedFragment: NSTextLayoutFragment {
 
     private func drawBlock(_ decoration: QuoteDecoration, at point: CGPoint, in context: CGContext) {
         let rect = box.offsetBy(dx: point.x, dy: point.y)
+        let radius = rect.width / 2
+        // 相接的一端把圆头伸出片段再裁掉，留下平头；竖线是半透明色，两段叠画会深一截，所以不靠重叠接。
+        let above = decoration.joinsAbove ? radius : 0
+        let shape = CGRect(x: rect.minX, y: rect.minY - above, width: rect.width,
+                           height: rect.height + above + (decoration.joinsBelow ? radius : 0))
         context.saveGState()
-        context.addPath(CGPath(roundedRect: rect, cornerWidth: rect.width / 2, cornerHeight: rect.width / 2, transform: nil))
+        context.clip(to: rect)
+        context.addPath(CGPath(roundedRect: shape, cornerWidth: radius, cornerHeight: radius, transform: nil))
         context.setFillColor(decoration.fill)
         context.fillPath()
         context.restoreGState()

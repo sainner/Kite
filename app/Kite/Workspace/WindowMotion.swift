@@ -60,6 +60,9 @@ final class WindowMotion {
     /// 排布动画进行中（缩小、恢复、让位、放下后归位），不含跟手拖动。
     var settling: Bool { moving && kind != .tracking }
 
+    /// 排布动画在停靠形状和台面形状之间变：缩小进停靠栏、从停靠栏恢复、拖动松手后展开。
+    var changingForm: Bool { settling && source.iconOpacity != target.iconOpacity }
+
     func presentation(at date: Date) -> WindowPose {
         guard duration > 0 else { return target }
         guard let started else { return source }
@@ -118,6 +121,8 @@ struct WindowSurface<Content: View, Icon: View, Header: View>: View {
     let iconSize: CGFloat
     let color: Color
     let minimizedColor: Color?
+    /// 头像的描边，画在外框上，随头像淡入：飞过同色的窗口时也看得出轮廓，落进停靠栏外框就是头像那一圈。
+    let ring: (color: Color, width: CGFloat)?
     let content: Content
     let icon: Icon
     let background: AnyView
@@ -125,7 +130,8 @@ struct WindowSurface<Content: View, Icon: View, Header: View>: View {
     let onHover: (Bool) -> Void
     let header: Header
 
-    init(motion: WindowMotion, contentSize: CGSize, viewport: CGSize, iconSize: CGFloat, color: Color, minimizedColor: Color? = nil, background: AnyView = AnyView(EmptyView()),
+    init(motion: WindowMotion, contentSize: CGSize, viewport: CGSize, iconSize: CGFloat, color: Color, minimizedColor: Color? = nil,
+         ring: (color: Color, width: CGFloat)? = nil, background: AnyView = AnyView(EmptyView()),
          headerHeight: CGFloat? = nil, onHover: @escaping (Bool) -> Void = { _ in },
          @ViewBuilder content: () -> Content, @ViewBuilder icon: () -> Icon, @ViewBuilder header: () -> Header = { EmptyView() }) {
         self.motion = motion
@@ -134,6 +140,7 @@ struct WindowSurface<Content: View, Icon: View, Header: View>: View {
         self.iconSize = iconSize
         self.color = color
         self.minimizedColor = minimizedColor
+        self.ring = ring
         self.background = background
         self.headerHeight = headerHeight
         self.onHover = onHover
@@ -164,13 +171,26 @@ struct WindowSurface<Content: View, Icon: View, Header: View>: View {
                 }
                 .allowsHitTesting(false)
             TimelineView(.animation(paused: !motion.moving)) { clock in
-                stage(pose: motion.presentation(at: clock.date), destination: destination)
+                let pose = motion.presentation(at: clock.date)
+                ZStack(alignment: .topLeading) {
+                    stage(pose: pose, destination: destination)
+                    if let ring { outlineRing(ring, pose: pose) }
+                }
             }
         }
         .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
         .transaction { $0.windowContentAnimation = $0.animation; $0.animation = nil }
         .environment(\.windowMotion, motion)
         .environment(\.windowContentSize, contentSize)
+    }
+
+    /// 描边压在舞台外面，不经过舞台的圆角裁切，外缘与外框贴合。
+    private func outlineRing(_ ring: (color: Color, width: CGFloat), pose: WindowPose) -> some View {
+        let inset = ring.width / 2
+        return WindowOutline(frame: pose.frame.insetBy(dx: inset, dy: inset), radius: max(pose.radius - inset, 0))
+            .stroke(ring.color, lineWidth: ring.width)
+            .opacity(pose.iconOpacity)
+            .allowsHitTesting(false)
     }
 
     /// 正文、头像和标题栏的舞台：排版框始终覆盖内容区，按当前外框裁切。

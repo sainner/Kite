@@ -255,7 +255,10 @@ struct WindowAppearance {
     var tint = Palette.stone
     var isAgent = false
     /// 最小化后的圆角：代理是圆，其余是圆角矩形。
-    func minimizedCornerRadius(width: CGFloat = Metrics.dragBubble) -> CGFloat { isAgent ? width / 2 : Metrics.dockRadius }
+    /// 工具的圆角随格子大小缩放，和停靠栏里画的一样（见 DockFace）：关进小头像时，飞到终点的卡片和接手的小头像同形。
+    func minimizedCornerRadius(width: CGFloat = Metrics.dragBubble) -> CGFloat {
+        isAgent ? width / 2 : Metrics.dockRadius * width / Metrics.dragBubble
+    }
 
     static func renderer(_ id: String) -> Self {
         switch id {

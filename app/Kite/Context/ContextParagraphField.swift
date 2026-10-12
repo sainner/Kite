@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 #endif
 
 /// 段落正文：文字里嵌着变量胶囊，直接打字；胶囊整块选中、整块删除。Markdown 标记按样式显示，发给模型的仍是原文。
-/// Mac 用 NSTextView，iPhone 与 iPad 用 UITextView。只有文字，底色与聚焦描边由所在的块卡片给。
+/// Mac 用 NSTextView，iPhone 与 iPad 用 UITextView，都是 TextKit 2，行内代码与引用的装饰和对话正文共用。只有文字，底色与聚焦描边由所在的块卡片给。
 struct ContextParagraphField: View {
     @Binding var parts: [ContextPart]
     let variables: [ContextScene.Variable]
@@ -70,13 +70,7 @@ private struct ContextTextView {
 extension ContextTextView: NSViewRepresentable {
     func makeNSView(context: Context) -> ContextNSTextView {
         let coordinator = context.coordinator
-        let layout = NSLayoutManager()
-        coordinator.storage.addLayoutManager(layout)
-        let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
-        container.widthTracksTextView = true
-        container.lineFragmentPadding = 0
-        layout.addTextContainer(container)
-        let view = ContextNSTextView(frame: .zero, textContainer: container)
+        let view = ContextNSTextView(frame: .zero, textContainer: coordinator.makeTextContainer())
         view.coordinator = coordinator
         view.delegate = coordinator
         view.isRichText = true
@@ -124,6 +118,11 @@ extension ContextTextView: NSViewRepresentable {
 /// 不带滚动的多行文本视图，高度随内容；Tab 换到下一个输入框，Esc 收起光标。
 final class ContextNSTextView: NSTextView {
     weak var coordinator: ContextTextCoordinator?
+
+    /// 露出任何一部分就把整段当作视口，和对话正文的 ProseTextView 同一个原因：TextKit 2 只排外层滚动视图可见区里的片段，
+    /// 长段落从中间露出时前面按估算高度占位，字先画偏、再跳回去。
+    override var visibleRect: NSRect { super.visibleRect.isEmpty ? .zero : bounds }
+
     override func becomeFirstResponder() -> Bool {
         let became = super.becomeFirstResponder()
         if became { coordinator?.focus(true) }
@@ -185,13 +184,7 @@ extension ContextTextCoordinator: NSTextViewDelegate {
 extension ContextTextView: UIViewRepresentable {
     func makeUIView(context: Context) -> ContextUITextView {
         let coordinator = context.coordinator
-        let layout = NSLayoutManager()
-        coordinator.storage.addLayoutManager(layout)
-        let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
-        container.widthTracksTextView = true
-        container.lineFragmentPadding = 0
-        layout.addTextContainer(container)
-        let view = ContextUITextView(frame: .zero, textContainer: container)
+        let view = ContextUITextView(frame: .zero, textContainer: coordinator.makeTextContainer())
         view.coordinator = coordinator
         view.delegate = coordinator
         view.isScrollEnabled = false

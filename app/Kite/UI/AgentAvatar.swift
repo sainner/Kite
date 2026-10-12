@@ -98,12 +98,17 @@ struct DockFace: View {
     var tint: Color?
     /// 窗口正看得到时指向它的箭头（SF Symbol 名）：头像或图标模糊，上面画箭头，不显示状态。
     var arrow: String?
+    /// 代理头像的描边由自己画。为 false 时交给外面的容器，颜色经 DockRingColor 报上去：最小化的窗口卡片把它画在外框上，见 WindowSurface。
+    var ring = true
     @Environment(\.self) private var environment
+
+    static let ringWidth: CGFloat = 1.5
 
     var body: some View {
         switch look {
         case .agent(let instance, let design):
             let base = (design ?? .fallback).baseColor(in: environment)
+            let ringColor = arrow == nil ? tint ?? base : base
             Circle().fill(Theme.card)
                 .overlay {
                     if let arrow {
@@ -116,7 +121,8 @@ struct DockFace: View {
                             .clipShape(Circle())
                     }
                 }
-                .overlay { Circle().strokeBorder(arrow == nil ? tint ?? base : base, lineWidth: 1.5) }
+                .overlay { if ring { Circle().strokeBorder(ringColor, lineWidth: Self.ringWidth) } }
+                .preference(key: DockRingColor.self, value: ring ? nil : ringColor)
         case .tool(let appearance):
             // 底色定大小，图标叠在上面：图标按原字号排版，放进小头像会比格子宽，不能让它撑开底色
             // 圆角和图标按格子大小等比缩放，停靠格大小时圆角正好是 dockRadius
@@ -135,6 +141,15 @@ struct DockFace: View {
                     }
             }
         }
+    }
+}
+
+/// 交给外面容器画的头像描边颜色，见 DockFace.ring。
+struct DockRingColor: PreferenceKey {
+    static let defaultValue: Color? = nil
+
+    static func reduce(value: inout Color?, nextValue: () -> Color?) {
+        value = value ?? nextValue()
     }
 }
 

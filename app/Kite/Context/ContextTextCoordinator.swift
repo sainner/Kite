@@ -5,7 +5,8 @@ import AppKit
 import UIKit
 #endif
 
-/// 正文里 Markdown 的显示样式：只改字体和颜色，不动文字。逐行认标题、引用、列表和代码围栏，行内认粗体、斜体与行内代码。
+/// 正文里 Markdown 的显示样式：只改字体、颜色和装饰，不动文字。逐行认标题、引用、列表和代码围栏，行内认粗体、斜体与行内代码。
+/// 行内代码的底色、引用的竖线和对话正文同一套（TextKitDecorations），由文本视图的排版片段画。
 private enum ContextMarkdown {
     private static let heading = regex("^(#{1,6})[ \\t]+")
     private static let quote = regex("^>[ \\t]?")
@@ -22,12 +23,19 @@ private enum ContextMarkdown {
         let text = storage.string
         let string = text as NSString
         let full = NSRange(location: 0, length: string.length)
+        let codeDecoration = InlineCodeDecoration(fill: style.codeFill)
         storage.beginEditing()
         // 不能整体 setAttributes，那会把变量胶囊的附件也抹掉。
         storage.addAttributes(style.attributes, range: full)
-        storage.removeAttribute(.backgroundColor, range: full)
+        for key: NSAttributedString.Key in [.kern, .paragraphStyle, .inlineCodeDecoration, .quoteDecoration] {
+            storage.removeAttribute(key, range: full)
+        }
         var fenced = false
-        string.enumerateSubstrings(in: full, options: [.byLines, .substringNotRequired]) { _, line, _, _ in
+        var index = -1
+        // 引用行：整段的范围（含换行）与第几行，排完再按上下是否相邻接竖线。
+        var quotes: [(paragraph: NSRange, index: Int)] = []
+        string.enumerateSubstrings(in: full, options: [.byLines, .substringNotRequired]) { _, line, paragraph, _ in
+            index += 1
             if string.substring(with: line).hasPrefix("```") {
                 fenced.toggle()
                 storage.addAttributes([.font: style.code, .foregroundColor: style.markColor], range: line)
@@ -43,6 +51,8 @@ private enum ContextMarkdown {
             } else if let match = quote.firstMatch(in: text, range: line) {
                 storage.addAttribute(.foregroundColor, value: style.secondaryColor, range: line)
                 storage.addAttribute(.foregroundColor, value: style.markColor, range: match.range)
+                storage.addAttribute(.paragraphStyle, value: style.quoteParagraph, range: paragraph)
+                quotes.append((paragraph, index))
             } else if let match = list.firstMatch(in: text, range: line) {
                 storage.addAttribute(.foregroundColor, value: style.secondaryColor, range: match.range(at: 1))
             }
@@ -55,9 +65,27 @@ private enum ContextMarkdown {
                 mark(storage, style, NSRange(location: match.range.location, length: 1), NSRange(location: NSMaxRange(match.range) - 1, length: 1))
             }
             for match in code.matches(in: text, range: line) {
-                storage.addAttributes([.font: style.code, .backgroundColor: style.codeBackground], range: match.range)
+                // 反引号也包在底色里；字体按所在的标题、粗体换成等宽，字重和倾斜留着。
+                storage.enumerateAttribute(.font, in: match.range) { value, run, _ in
+                    if let font = value as? ContextFont { storage.addAttribute(.font, value: InlineCodeStyle.font(relativeTo: font), range: run) }
+                }
+                storage.addAttribute(.inlineCodeDecoration, value: codeDecoration, range: match.range)
                 mark(storage, style, NSRange(location: match.range.location, length: 1), NSRange(location: NSMaxRange(match.range) - 1, length: 1))
+                // 和对话一样只加大代码两侧的字距，底色的内边距不压到旁边的字；行首行尾不加。
+                let spacing = Metrics.inlineCodePadding + Metrics.inlineCodeGap
+                if match.range.location > line.location {
+                    storage.addAttribute(.kern, value: spacing, range: NSRange(location: match.range.location - 1, length: 1))
+                }
+                if NSMaxRange(match.range) < NSMaxRange(line) {
+                    storage.addAttribute(.kern, value: spacing, range: NSRange(location: NSMaxRange(match.range) - 1, length: 1))
+                }
             }
+        }
+        for (position, quote) in quotes.enumerated() {
+            let above = position > 0 && quotes[position - 1].index == quote.index - 1
+            let below = position < quotes.count - 1 && quotes[position + 1].index == quote.index + 1
+            storage.addAttribute(.quoteDecoration, value: QuoteDecoration(x: 0, top: 0, fill: style.quoteFill, joinsAbove: above, joinsBelow: below),
+                                 range: quote.paragraph)
         }
         storage.endEditing()
     }
@@ -104,8 +132,10 @@ extension [ContextPart] {
 }
 
 /// 文本视图与正文的往返：外面的正文变了才重新载入，打字只写回整理后的正文，不回头改文本视图，光标和输入法都不受打扰。
+/// 文本视图是 TextKit 2：文字、文本视图的排版和量高度的排版都挂在这里的同一份内容上。
 final class ContextTextCoordinator: NSObject {
     let storage = NSTextStorage()
+    private let content = NSTextContentStorage()
     var parts: Binding<[ContextPart]>
     var focused: Binding<Bool>
     var editor: ContextEditor?
@@ -118,9 +148,9 @@ final class ContextTextCoordinator: NSObject {
     /// 文本视图里现在的正文。
     private var shown: [ContextPart] = []
     private var chips: [String: ContextImage] = [:]
-    /// 量高度用的另一套排版，挂在同一份文字上，不动输入框自己的排版。UITextView 自己量一次要把排版宽度改过去再改回来，
+    /// 量高度用的另一个排版，挂在同一份内容上，不动输入框自己的排版。UITextView 自己量一次要把排版宽度改过去再改回来，
     /// 整段重排两遍；窄屏拉侧栏、底栏时整列每帧重新布局，每帧都会来问高度。量过的宽度记着，文字或样式变了才清。
-    private let measuring = NSLayoutManager()
+    private let measuring = NSTextLayoutManager()
     private let measuringContainer = NSTextContainer(size: CGSize(width: 1, height: CGFloat.greatestFiniteMagnitude))
     private var heights: [CGFloat: CGFloat] = [:]
 
@@ -128,9 +158,25 @@ final class ContextTextCoordinator: NSObject {
         self.parts = parts
         self.focused = focused
         self.style = style
+        super.init()
+        content.textStorage = storage
         measuringContainer.lineFragmentPadding = 0
-        measuring.addTextContainer(measuringContainer)
-        storage.addLayoutManager(measuring)
+        measuring.textContainer = measuringContainer
+        content.addTextLayoutManager(measuring)
+    }
+
+    /// 文本视图的文本容器：它的排版挂到同一份内容上、作主排版，用这里给的排版片段画行内代码底色和引用竖线。
+    /// 文本视图拿它初始化就是 TextKit 2；之后不能读文本视图的 layoutManager，读了会退回 TextKit 1。
+    func makeTextContainer() -> NSTextContainer {
+        let layout = NSTextLayoutManager()
+        layout.delegate = self
+        content.addTextLayoutManager(layout)
+        content.primaryTextLayoutManager = layout
+        let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = true
+        container.lineFragmentPadding = 0
+        layout.textContainer = container
+        return container
     }
 
     /// 排版宽度 width 下文字的高度，不含上下留白。
@@ -139,13 +185,9 @@ final class ContextTextCoordinator: NSObject {
         if let height = heights[width] { return height }
         if heights.count >= 8 { heights = [:] }
         measuringContainer.size = CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
-        measuring.ensureLayout(for: measuringContainer)
-        #if os(macOS)
-        let line = measuring.defaultLineHeight(for: style.font)
-        #else
-        let line = style.font.lineHeight
-        #endif
-        let height = ceil(max(measuring.usedRect(for: measuringContainer).height, line))
+        measuring.ensureLayout(for: measuring.documentRange)
+        // 没有字时 TextKit 2 排不出一行，按正文一行算。
+        let height = ceil(max(measuring.usageBoundsForTextContainer.height, style.emptyLineHeight))
         heights[width] = height
         return height
     }
@@ -364,5 +406,12 @@ final class ContextTextCoordinator: NSObject {
             location += length + 1
         }
         replace(range, with: result, selecting: NSRange(location: range.location, length: result.length))
+    }
+}
+
+extension ContextTextCoordinator: NSTextLayoutManagerDelegate {
+    nonisolated func textLayoutManager(_ textLayoutManager: NSTextLayoutManager, textLayoutFragmentFor location: any NSTextLocation,
+                                       in textElement: NSTextElement) -> NSTextLayoutFragment {
+        DecoratedFragment.fragment(for: textElement)
     }
 }

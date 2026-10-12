@@ -60,13 +60,15 @@ struct DockEntryFace: View {
     let subject: Subject
     /// 家族格里叠在后面的子代理只露一截，不发脉冲。
     var pulse = true
+    /// 见 DockFace.ring。
+    var ring = true
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @Environment(\.dockCurrentPane) private var current
 
     var body: some View {
         let id = instanceID, arrow = self.arrow
-        DockFace(look: look, running: area.isRunning(id), tint: area.attention(of: id)?.color, arrow: arrow)
+        DockFace(look: look, running: area.isRunning(id), tint: area.attention(of: id)?.color, arrow: arrow, ring: ring)
             .overlay { if pulse, arrow == nil { DockPulse(instance: id) } }
     }
 

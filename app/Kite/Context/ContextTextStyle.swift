@@ -61,7 +61,7 @@ struct ContextTextStyle: Equatable {
         #endif
     }
 
-    /// Markdown 的标记符号淡显，引用与列表符号次要色，行内代码垫一层浅底。
+    /// Markdown 的标记符号淡显，引用与列表符号次要色。
     var markColor: ContextColor {
         #if os(macOS)
         .tertiaryLabelColor
@@ -78,15 +78,20 @@ struct ContextTextStyle: Equatable {
         #endif
     }
 
-    var codeBackground: ContextColor {
-        #if os(macOS)
-        NSColor.labelColor.withAlphaComponent(0.08)
-        #else
-        UIColor.label.withAlphaComponent(0.08)
-        #endif
-    }
+    /// 行内代码的底色与引用竖线，和对话正文同一套装饰（TextKitDecorations），按外观解析好。
+    var codeFill: CGColor { Theme.codeBackground.resolvedCGColor(for: colorScheme) }
+    var quoteFill: CGColor { Theme.rule.resolvedCGColor(for: colorScheme) }
 
-    var code: ContextFont { .monospacedSystemFont(ofSize: font.pointSize * 0.92, weight: .regular) }
+    /// 代码围栏里的行与行内代码同一个等宽字号。
+    var code: ContextFont { InlineCodeStyle.font(relativeTo: font) }
+
+    /// 引用行给竖线让出位置，和对话正文一样宽。
+    var quoteParagraph: NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.firstLineHeadIndent = Metrics.quoteIndent
+        style.headIndent = Metrics.quoteIndent
+        return style
+    }
 
     /// 一级、二级标题放大，三级以下与正文同号，都加粗。
     func heading(_ level: Int) -> ContextFont {
@@ -110,6 +115,9 @@ struct ContextTextStyle: Equatable {
     }
 
     private var lineHeight: CGFloat { font.ascender - font.descender }
+
+    /// 空段落的高度：没有字可排时按一行算。
+    var emptyLineHeight: CGFloat { lineHeight + font.leading }
 
     /// 胶囊比一行字矮 2 点，上下相邻两行的胶囊不贴在一起；底边落在字的下伸线上方 1 点。
     var chipBaseline: CGFloat { font.descender + 1 }
@@ -139,35 +147,10 @@ nonisolated final class ContextVariableAttachment: NSTextAttachment {
 
     required init?(coder: NSCoder) { nil }
 
+    /// TextKit 2 两端一样：尺寸取图片，底边按 baseline 下移。
     @MainActor func show(_ image: ContextImage?, style: ContextTextStyle) {
         guard let image else { return }
-        #if os(macOS)
-        attachmentCell = ContextChipCell(image: image, baseline: style.chipBaseline)
-        #else
         self.image = image
         bounds = CGRect(origin: CGPoint(x: 0, y: style.chipBaseline), size: image.size)
-        #endif
     }
 }
-
-#if os(macOS)
-/// Mac 的 TextKit 1 按单元格排附件：尺寸取图片，底边按 baseline 下移。
-private final class ContextChipCell: NSTextAttachmentCell {
-    private nonisolated let size: NSSize
-    private nonisolated let baseline: CGFloat
-
-    init(image: NSImage, baseline: CGFloat) {
-        size = image.size
-        self.baseline = baseline
-        super.init(imageCell: image)
-    }
-
-    required init(coder: NSCoder) { fatalError("init(coder:) 不支持") }
-
-    nonisolated override func cellSize() -> NSSize { size }
-    nonisolated override func cellBaselineOffset() -> NSPoint { NSPoint(x: 0, y: baseline) }
-    override func draw(withFrame cellFrame: NSRect, in controlView: NSView?) {
-        image?.draw(in: cellFrame, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
-    }
-}
-#endif

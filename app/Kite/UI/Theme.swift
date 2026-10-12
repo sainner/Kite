@@ -223,6 +223,8 @@ enum Metrics {
     static let codeHeaderInset: CGFloat = 4
     static let listIndent: CGFloat = 18
     static let listMarker: CGFloat = 14
+    /// 引用的字从竖线左边往里缩多少，对话正文和上下文编辑器一样。
+    static let quoteIndent: CGFloat = 12
     /// 文件图标与 favicon 到链接文字的统一间距。
     static let referenceIconGap: CGFloat = 2
     static let referenceIconScale: CGFloat = 0.85

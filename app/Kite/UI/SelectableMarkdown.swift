@@ -126,8 +126,8 @@ struct SelectableMarkdown: View {
                 if index > 0 { style.paragraphSpacingBefore += blockGap / 2 }
             case .quote:
                 color = .secondaryLabel
-                style.firstLineHeadIndent = indent + 12
-                style.headIndent = indent + 12
+                style.firstLineHeadIndent = indent + Metrics.quoteIndent
+                style.headIndent = indent + Metrics.quoteIndent
                 // 竖线从第一行字的顶边起：片段顶边在段前距之上还高出一个行距（Mac 量到竖线 −6.03…37.97 对 SwiftUI 的 0…37.5，
                 // 加上行距后 −0.03…37.97）；文档第一段既没有段前距也没有这个行距。
                 let top = index > 0 ? style.paragraphSpacingBefore + lineSpacing : 0

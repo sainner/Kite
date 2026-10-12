@@ -318,7 +318,7 @@ struct MarkdownBlockView: View {
         case .quote:
             ReferenceLabel(block.text)
                 .foregroundStyle(.secondary)
-                .padding(.leading, 12)
+                .padding(.leading, Metrics.quoteIndent)
                 .overlay(alignment: .leading) { Capsule().fill(Theme.rule).frame(width: 3) }
         case .rule:
             Divider()

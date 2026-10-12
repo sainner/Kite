@@ -79,7 +79,6 @@ struct TilesLayer: View {
                     }
                     .environment(\.openSidebar, pane == first ? openSidebar : nil)
                     .modifier(DockDimmed(dimmed: expanded && layout.panes[pane] == nil && workspace.drag?.pane != pane))
-                    .zIndex(workspace.drag?.pane == pane || closing ? 1 : 0)
                     // 拖缝调整大小时指针会快速扫过卡片，期间卡片不响应悬停和点击
                     .allowsHitTesting(workspace.resizing == nil && !closing)
                     .transition(.identity)
@@ -346,6 +345,9 @@ private struct CardSlot: View {
         }
         .onChange(of: motion.settling, initial: true) { _, settling in workspace.noteSettling(pane, settling) }
         .onDisappear { workspace.noteSettling(pane, false) }
+        // 拖着、关闭、在停靠栏和台面之间飞的卡片压在别的窗口上面。不然按加入的先后排，缩小时从后面那个窗口底下穿过，
+        // 快到停靠栏才从它的直边露出来，头像和卡片都被切掉一截（2026-10-12 Mac 实测）
+        .zIndex(workspace.drag?.pane == pane || closing || motion.changingForm ? 1 : 0)
         .task(id: closing) {
             guard closing else { return }
             // 退出只负责回收视图；新的手势和布局更新仍可改变目标。
@@ -438,6 +440,8 @@ struct PaneCard: View {
     @State private var scope = DotScope()
     @State private var usesDots = false
     @State private var screenOrigin = CGPoint.zero
+    /// 头像的描边颜色，由头像报上来，画在外框上。
+    @State private var ringColor: Color?
     /// 缩进停靠栏时不在屏上，写进这个盒子交给内容：只有读它的逐帧动画随它停、起，窗口本身不跟着重算。
     @State private var presence = PanePresence()
     let motion: WindowMotion
@@ -478,6 +482,7 @@ struct PaneCard: View {
         WindowSurface(motion: motion, contentSize: contentSize, viewport: viewport,
                       iconSize: min(width, Metrics.dragBubble), color: Theme.card,
                       minimizedColor: appearance.isAgent ? Theme.card : appearance.tint,
+                      ring: ringColor.map { ($0, DockFace.ringWidth) },
                       background: AnyView(WindowSurfaceDots(motion: motion, contentSize: contentSize,
                                                             origin: screenOrigin, enabled: usesDots)),
                       headerHeight: minimized ? nil : headerHeight,
@@ -494,7 +499,7 @@ struct PaneCard: View {
                 .accessibilityHidden(minimized)
         } icon: {
             if appearance.isAgent, let area = group.workspace {
-                DockEntryFace(subject: instance.map { .instance($0) } ?? .pane(pane), pulse: false)
+                DockEntryFace(subject: instance.map { .instance($0) } ?? .pane(pane), pulse: false, ring: false)
                     .environment(area)
             } else {
                 Image(systemName: appearance.icon).font(Theme.title).foregroundStyle(Theme.ink)
@@ -514,6 +519,7 @@ struct PaneCard: View {
         .environment(\.dotCarrier, carrier)
         .environment(\.dotScope, scope)
         .onPreferenceChange(WindowDotsActive.self) { usesDots = $0 }
+        .onPreferenceChange(DockRingColor.self) { ringColor = $0 }
         .onGeometryChange(for: CGPoint.self) { $0.frame(in: .global).origin } action: { screenOrigin = $0; updateDots() }
         .onChange(of: motion.target, initial: true) { updateDots() }
         .onChange(of: contentSize) { updateDots() }
