@@ -19,7 +19,7 @@ struct SelectableTextView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSTextView {
-        let view = NSTextView(usingTextLayoutManager: true)
+        let view = ProseTextView(usingTextLayoutManager: true)
         view.isEditable = false
         view.isSelectable = true
         view.drawsBackground = false
@@ -93,6 +93,15 @@ struct SelectableTextView: NSViewRepresentable {
         let size = CGSize(width: total, height: ceil(layout.usageBoundsForTextContainer.height) + inset.height * 2)
         context.coordinator.sizes[proposal.width] = size
         return size
+    }
+
+    /// 露出任何一部分就把整段当作视口。TextKit 2 的 NSTextView 只排、只画 visibleRect 里的片段，而这里的 visibleRect 是外层
+    /// SwiftUI 滚动视图的可见区：往上滚时新露出的一条先露底部，视口从中间起，前面的片段按估算高度占位，画出来的字整体
+    /// 比真实位置高几十 pt、底下留白，等滚到顶上重排才跳回去，看起来就是先空白、再逐段入场（2026-10-12 离屏实测，
+    /// 视口从中间起时渲染面比片段高 70 pt）。整段作视口后片段从头排、位置准确；没露出时照旧空视口，不给屏幕外的字留渲染面。
+    /// 只扩到露出的底边（视口逐帧长）实测冷滚丢帧反而更多，所以一露出就整段。
+    private final class ProseTextView: NSTextView {
+        override var visibleRect: NSRect { super.visibleRect.isEmpty ? .zero : bounds }
     }
 
     /// 量出的尺寸取决于这些；变了就重新量。

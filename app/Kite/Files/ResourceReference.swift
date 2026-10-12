@@ -14,17 +14,21 @@ struct FileReference: Equatable, Hashable, Sendable {
 
     var label: String { (path as NSString).lastPathComponent }
 
+    // 正文里每个像路径的词都要经这几条正则；编译比匹配贵得多，对话建行时曾占到正文属性串构建的四成（2026-10-12 实测）
+    private static let lineSuffix = try! NSRegularExpression(pattern: #"#L(\d+)(?:-L?(\d+))?$"#)
+    private static let parts = try! NSRegularExpression(pattern: #"^(.+?)(?::(diff_[A-Za-z0-9_-]+))?(?::([1-9][0-9]*)(?:-([1-9][0-9]*))?)?$"#)
+    private static let fileExtension = try! NSRegularExpression(pattern: #"\.[A-Za-z][A-Za-z0-9_-]*$"#)
+
     static func parse(_ source: String) -> Self? {
         var value = source
         if value.hasPrefix("file://"), let url = URL(string: value) { value = url.path }
         guard !value.contains("://"), !value.contains("\n"), !value.contains("\r") else { return nil }
-        value = value.replacingOccurrences(of: #"#L(\d+)(?:-L?(\d+))?$"#, with: ":$1-$2", options: .regularExpression)
+        value = lineSuffix.stringByReplacingMatches(in: value, range: NSRange(value.startIndex..., in: value), withTemplate: ":$1-$2")
         if value.hasSuffix("-") { value.removeLast() }
-        let pattern = #"^(.+?)(?::(diff_[A-Za-z0-9_-]+))?(?::([1-9][0-9]*)(?:-([1-9][0-9]*))?)?$"#
-        guard let match = try? NSRegularExpression(pattern: pattern).firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) else { return nil }
+        guard let match = parts.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) else { return nil }
         func part(_ i: Int) -> String? { Range(match.range(at: i), in: value).map { String(value[$0]) } }
         guard let path = part(1), !path.contains(":"),
-              path.contains("/") || path.range(of: #"\.[A-Za-z][A-Za-z0-9_-]*$"#, options: .regularExpression) != nil else { return nil }
+              path.contains("/") || fileExtension.firstMatch(in: path, range: NSRange(path.startIndex..., in: path)) != nil else { return nil }
         let start = part(3).flatMap(Int.init), end = part(4).flatMap(Int.init)
         guard part(3) == nil || start != nil, part(4) == nil || end != nil,
               end == nil || (start != nil && end! >= start!) else { return nil }
