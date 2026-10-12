@@ -553,7 +553,8 @@ private struct ContextConditionEditor<Grip: View>: View {
             }
             .frame(minHeight: Metrics.paneButton)
         }
-        .menuStyle(.button).buttonStyle(ContextVariableMenuStyle()).menuIndicator(.hidden).fixedSize()
+        // 横向不固定：窄屏放不下时变量名跟着截断，不把整个窗口撑宽
+        .menuStyle(.button).buttonStyle(ContextVariableMenuStyle()).menuIndicator(.hidden).fixedSize(horizontal: false, vertical: true)
         .help(variable?.description ?? "选择变量")
     }
 

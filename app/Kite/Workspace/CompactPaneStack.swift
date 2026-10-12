@@ -36,8 +36,10 @@ struct CompactPaneStack: View {
                 let exposed = current || swipe.map { abs(index - $0.page) <= 1 } == true
                 let presence = row.presence(of: pane)
                 RowPlacement(motion: row.slide, offset: CGFloat(index) * width) {
+                    // 正好占给定的大小：竖向滚动区的内容比它宽时，滚动区会跟着变宽，窗口一宽，
+                    // 外壳上按这一行排的标题栏和控制区也跟着宽出屏幕、两边的边距变窄
                     PaneBody(group: group, pane: pane)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                 }
                     .environment(\.panePresence, presence)
                     // 露没露出来写进盒子，不在 body 求值时改：那样读它的视图会在这次更新里再被触发一轮
