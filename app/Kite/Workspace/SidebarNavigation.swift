@@ -272,7 +272,7 @@ struct SidebarListHeader: View {
     }
 }
 
-/// 标志栏：Kite 字标，右端一组标题栏玻璃按钮，搜索在前，宽屏后面跟侧边栏按钮。字标与侧栏行的文字左对齐，宽屏时与按钮底对齐；底下一道分割线。
+/// 标志栏：Kite 字标（指针进到这一栏时写一遍手写标志），右端一组标题栏玻璃按钮，搜索在前，宽屏后面跟侧边栏按钮。字标与侧栏行的文字左对齐，宽屏时与按钮底对齐；底下一道分割线。
 /// 两端都有，窄布局放在侧栏抽屉顶部。搜索展开时用输入框替换侧栏按钮。
 struct SidebarLogoBar<Buttons: View>: View {
     @ViewBuilder var buttons: Buttons
@@ -282,19 +282,25 @@ struct SidebarLogoBar<Buttons: View>: View {
     @State private var searchText = ""
     @FocusState private var searchFocused: Bool
     @Namespace private var glass
+    @State private var hovering = false
 
     var body: some View {
         // 宽屏侧栏里字标与按钮底部对齐，窄布局的抽屉里垂直居中
         let tiled = presentation == .tiled
         return VStack(spacing: Metrics.sidebarRuleGap) {
             HStack(alignment: tiled ? .bottom : .center, spacing: Metrics.paneButtonGap) {
-                Text("Kite").font(Theme.wordmark)
+                KiteWordmark(hovering: hovering)
                 controlPanel
                     .padding(.leading, tiled && searchPresented ? Metrics.padding : 0)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(.leading, metrics.itemInset - 2)
             .frame(height: Metrics.paneHeaderButton)
+            // 整栏都算：指针进来就写，空白处也一样；Mac 上外层已经铺了拖窗口的命中区，这里不挡拖动
+            .contentShape(Rectangle())
+            .onHover { inside in
+                withAnimation(.easeOut(duration: 0.15)) { hovering = inside }
+            }
             Rectangle().fill(Theme.rule).frame(height: 1)
         }
     }

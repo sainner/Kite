@@ -14,7 +14,7 @@
 	<true/>
 	<key>UIAppFonts</key>
 	<array>
-		<string>KiteWordmark-SemiBold.otf</string>
+		<string>KiteWordmark-Bold.otf</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>扫描已登录设备上的登录二维码</string>

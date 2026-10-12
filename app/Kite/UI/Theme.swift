@@ -66,12 +66,12 @@ enum Theme {
     static let heading1 = Font.title2.weight(.semibold)
     static let heading2 = Font.title3.weight(.semibold)
     static let heading3 = Font.headline
-    /// 侧栏的「Kite」字标：思源宋体半粗，大小与 title3 相同并随系统字号缩放。
+    /// 侧栏的「Kite」字标：思源宋体粗体，大小与 title3 相同并随系统字号缩放。
     /// 字体只含英文字符，按 OFL 改名为 Kite Wordmark，许可见 Resources/Fonts。
     #if os(macOS)
-    static let wordmark = Font.custom("KiteWordmark-SemiBold", size: 15, relativeTo: .title3)
+    static let wordmark = Font.custom("KiteWordmark-Bold", size: 15, relativeTo: .title3)
     #else
-    static let wordmark = Font.custom("KiteWordmark-SemiBold", size: 20, relativeTo: .title3)
+    static let wordmark = Font.custom("KiteWordmark-Bold", size: 20, relativeTo: .title3)
     #endif
 }
 
