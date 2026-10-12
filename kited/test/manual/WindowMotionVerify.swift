@@ -1,6 +1,23 @@
 import AppKit
 import SwiftUI
 
+// 本合同的标题是原生按钮，不发送 PaneHeader 的状态、操作宽度或交互区域偏好。
+// 只补齐空值承载类型，实际的标题宿主和跟随逻辑编译自 WindowHeaderAnchored.swift。
+nonisolated struct PaneHeaderStatusText: PreferenceKey {
+    static let defaultValue: String? = nil
+    static func reduce(value: inout String?, nextValue: () -> String?) {}
+}
+
+nonisolated struct PaneHeaderActionsWidth: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {}
+}
+
+nonisolated struct PaneHeaderInteractiveRects: PreferenceKey {
+    static let defaultValue: [CGRect] = []
+    static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) {}
+}
+
 private enum MotionFailure: Error, CustomStringConvertible {
     case failed(String)
 
@@ -15,6 +32,9 @@ private final class MotionRecorder {
     var buttons = [String: NSButton]()
     var clicks = [String]()
     var onFrame: (() -> Void)?
+    var texts = [String: NSTextView]()
+    var textCreations = [String: Int]()
+    var bodySize = CGSize.zero
 }
 
 private struct FrameProbe: NSViewRepresentable {
@@ -66,13 +86,20 @@ private struct HeaderButton: NSViewRepresentable {
     func updateNSView(_ view: NSButton, context: Context) {}
 }
 
+@Observable @MainActor
+private final class MotionFixtureSize {
+    var value: CGSize
+    init(_ value: CGSize) { self.value = value }
+}
+
 private struct MotionFixture: View {
     let motion: WindowMotion
-    let contentSize: CGSize
+    let contentSize: MotionFixtureSize
     let recorder: MotionRecorder
     static let viewport = CGSize(width: 1000, height: 800)
 
     var body: some View {
+        let contentSize = self.contentSize.value
         ZStack(alignment: .topLeading) {
             Color.black
             WindowSurface(motion: motion, target: motion.target, contentSize: contentSize, viewport: Self.viewport,
@@ -80,11 +107,11 @@ private struct MotionFixture: View {
                 ZStack {
                     HeaderButton(id: "leading", recorder: recorder)
                         .frame(width: 84, height: 28)
-                        .modifier(WindowHeaderAnchor(edge: .leading))
+                        .windowHeaderAnchor(.leading)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     HeaderButton(id: "trailing", recorder: recorder)
                         .frame(width: 84, height: 28)
-                        .modifier(WindowHeaderAnchor(edge: .trailing))
+                        .windowHeaderAnchor(.trailing)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }
                 .padding(20)
@@ -137,6 +164,108 @@ private struct StackedMotionFixture: View {
     }
 }
 
+@Observable @MainActor
+private final class MotionBodyState {
+    var size = CGSize(width: 600, height: 520)
+    var message = "初始正文"
+    var contextRevision = 1
+    var scheme = ColorScheme.light
+}
+
+private extension EnvironmentValues {
+    @Entry var motionBodyContextRevision = 0
+}
+
+// 原生正文 adapter 只承担 TextKit 2 的换行和选区；不包含 WindowSurface 的宿主或尺寸更新逻辑。
+private struct MotionBodyText: NSViewRepresentable {
+    let id: String
+    let text: String
+    let recorder: MotionRecorder
+
+    func makeNSView(context: Context) -> NSTextView {
+        let view = NSTextView(usingTextLayoutManager: true)
+        view.isEditable = false
+        view.isSelectable = true
+        view.drawsBackground = false
+        view.isHorizontallyResizable = false
+        view.isVerticallyResizable = true
+        view.textContainerInset = .zero
+        view.textContainer?.lineFragmentPadding = 0
+        view.textContainer?.widthTracksTextView = false
+        view.font = .systemFont(ofSize: 15)
+        recorder.texts[id] = view
+        recorder.textCreations[id, default: 0] += 1
+        return view
+    }
+
+    func updateNSView(_ view: NSTextView, context: Context) {
+        if view.string != text { view.string = text }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
+        let offered = proposal.width ?? 360
+        let width = offered.isFinite ? max(1, offered) : 2000
+        guard let manager = nsView.textLayoutManager, let content = manager.textContentManager else { return nil }
+        nsView.textContainer?.size = CGSize(width: width, height: .greatestFiniteMagnitude)
+        manager.ensureLayout(for: content.documentRange)
+        var height: CGFloat = 0
+        manager.enumerateTextLayoutFragments(from: nil, options: [.ensuresLayout]) { fragment in
+            height = max(height, fragment.layoutFragmentFrame.maxY)
+            return true
+        }
+        return CGSize(width: width, height: ceil(height))
+    }
+}
+
+private struct MotionBodyContent: View {
+    let message: String
+    let recorder: MotionRecorder
+    @Environment(\.motionBodyContextRevision) private var contextRevision
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            MotionBodyText(id: "selection", text: String(repeating: "可选择的原生正文包含中文与 English words，改宽时会重新换行。", count: 4),
+                           recorder: recorder)
+            MotionBodyText(id: "semantic", text: "\(message)；环境版本 \(contextRevision)；\(scheme == .dark ? "深色" : "浅色")",
+                           recorder: recorder)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(12)
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { _, value in
+            recorder.bodySize = value
+        }
+    }
+}
+
+private struct MotionBodyFixture: View {
+    let motion: WindowMotion
+    let state: MotionBodyState
+    let recorder: MotionRecorder
+
+    var body: some View {
+        let size = state.size
+        // 传普通值，正文不直接观察 state；否则会绕开待验证的宿主内容交接。
+        let message = state.message
+        ZStack(alignment: .topLeading) {
+            Color.black
+            WindowSurface(motion: motion, target: motion.target, contentSize: size, viewport: MotionFixture.viewport,
+                          iconSize: 40, color: Color(red: 0, green: 1, blue: 0)) {
+                MotionBodyContent(message: message, recorder: recorder)
+            } icon: {
+                EmptyView()
+            }
+            TimelineView(.periodic(from: .now, by: 1.0 / 60.0)) { context in
+                FrameProbe(date: context.date, recorder: recorder).frame(width: 1, height: 1)
+            }
+            .allowsHitTesting(false)
+        }
+        .frame(width: MotionFixture.viewport.width, height: MotionFixture.viewport.height)
+        .environment(\.motionBodyContextRevision, state.contextRevision)
+        .environment(\.colorScheme, state.scheme)
+    }
+}
+
 private struct PixelBounds: CustomStringConvertible {
     var minX = Int.max
     var minY = Int.max
@@ -175,17 +304,21 @@ private final class MotionDeadline: NSObject {
 @MainActor
 private final class MotionHost {
     let motion: WindowMotion
+    let contentSize: MotionFixtureSize
     let recorder = MotionRecorder()
     let host: NSHostingView<AnyView>
     let window: NSWindow
 
-    init(pose: WindowPose, contentSize: CGSize, neighbor: WindowMotion? = nil) {
+    init(pose: WindowPose, contentSize: CGSize, neighbor: WindowMotion? = nil, bodyState: MotionBodyState? = nil) {
         motion = WindowMotion(pose)
+        self.contentSize = MotionFixtureSize(contentSize)
         let root: AnyView
-        if let neighbor {
+        if let bodyState {
+            root = AnyView(MotionBodyFixture(motion: motion, state: bodyState, recorder: recorder))
+        } else if let neighbor {
             root = AnyView(StackedMotionFixture(first: motion, second: neighbor, recorder: recorder))
         } else {
-            root = AnyView(MotionFixture(motion: motion, contentSize: contentSize, recorder: recorder))
+            root = AnyView(MotionFixture(motion: motion, contentSize: self.contentSize, recorder: recorder))
         }
         host = NSHostingView(rootView: root)
         window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -10000, y: -10000), size: MotionFixture.viewport),
@@ -287,16 +420,24 @@ private struct WindowMotionContract {
     static func main() {
         NSApplication.shared.setActivationPolicy(.prohibited)
         Task { @MainActor in
-            do {
-                try await iconAndCardTravelTogetherAcrossInterruptedMotion()
-                try await immediateResizeKeepsHeadersVisibleAndHittable()
-                try await stackedHeadersKeepTheirPixelsAndHitsAfterSwapping()
-                print("窗口动画的三个原生场景验证通过")
-                exit(0)
-            } catch {
-                FileHandle.standardError.write(Data("\(error)\n".utf8))
-                exit(1)
+            let scenarios: [(String, () async throws -> Void)] = [
+                ("收放与反向", iconAndCardTravelTogetherAcrossInterruptedMotion),
+                ("即时改宽标题", immediateResizeKeepsHeadersVisibleAndHittable),
+                ("双窗口标题", stackedHeadersKeepTheirPixelsAndHitsAfterSwapping),
+                ("正文与环境交接", continuousResizeKeepsBodyEnvironmentIdentityAndSelectionCurrent),
+            ]
+            var failures = [String]()
+            // 场景各自创建并关闭窗口；一个已有失败不应遮住另一个独立场景的回归证据。
+            for (name, run) in scenarios {
+                do { try await run() }
+                catch { failures.append("\(name)：\(error)") }
             }
+            if failures.isEmpty {
+                print("窗口动画的四个原生场景验证通过")
+                exit(0)
+            }
+            FileHandle.standardError.write(Data((failures.joined(separator: "\n") + "\n").utf8))
+            exit(1)
         }
         NSApplication.shared.run()
     }
@@ -366,6 +507,9 @@ private struct WindowMotionContract {
         _ = try await harness.settled()
         for width: CGFloat in [360, 740, 440, 600] {
             let next = CGRect(x: 120, y: 100, width: width, height: 420)
+            // 正常拖缝时，生产 CardSlot 的正文尺寸与 target.frame 来自同一个 rect，必须同步输入。
+            // 收放/中途反向场景仍固定正文尺寸，不使用这里的 resize 更新。
+            harness.contentSize.value = next.size
             harness.motion.move(to: WindowPose(frame: next), kind: .immediate)
             try await harness.nextFrame()
             let pixels = try harness.pixels()
@@ -396,6 +540,76 @@ private struct WindowMotionContract {
             }
         }
         print("通过：四次即时 resize 的首帧标题贴边完整显示，左右原生按钮均在实际像素位置命中")
+    }
+
+    // 稳定宿主不能冻结父层传入的正文或整份环境，也不能靠重建原生子树刷新内容。
+    // SwiftUI 内容值、环境、嵌套 NSHostingView 尺寸与 AppKit 选区的交接必须在真实运行时验证。
+    private static func continuousResizeKeepsBodyEnvironmentIdentityAndSelectionCurrent() async throws {
+        let state = MotionBodyState()
+        let origin = CGPoint(x: 120, y: 100)
+        let harness = MotionHost(pose: WindowPose(frame: CGRect(origin: origin, size: state.size)),
+                                 contentSize: state.size, bodyState: state)
+        defer { harness.window.close() }
+        _ = try await harness.settled()
+        guard let selected = harness.recorder.texts["selection"],
+              let semantic = harness.recorder.texts["semantic"] else {
+            throw MotionFailure.failed("正文合同未建立两个原生文本视图")
+        }
+        let originals = ["selection": selected, "semantic": semantic]
+        let selection = NSRange(location: 8, length: 17)
+        selected.setSelectedRange(selection)
+
+        func verify(_ label: String) throws {
+            let expectedText = "\(state.message)；环境版本 \(state.contextRevision)；\(state.scheme == .dark ? "深色" : "浅色")"
+            guard semantic.string == expectedText else {
+                throw MotionFailure.failed("\(label)：正文或外层环境没有在首帧更新；期望「\(expectedText)」，实际「\(semantic.string)」")
+            }
+            guard abs(harness.recorder.bodySize.width - state.size.width) <= 1,
+                  abs(harness.recorder.bodySize.height - state.size.height) <= 1 else {
+                throw MotionFailure.failed("\(label)：正文首帧尺寸落后；期望 \(state.size)，实际 \(harness.recorder.bodySize)")
+            }
+            for (id, view) in originals {
+                guard harness.recorder.texts[id] === view, harness.recorder.textCreations[id] == 1,
+                      view.window === harness.window else {
+                    throw MotionFailure.failed("\(label)：原生正文 \(id) 被重建或离开原窗口")
+                }
+                guard abs(view.bounds.width - (state.size.width - 24)) <= 1, view.bounds.height > 0 else {
+                    throw MotionFailure.failed("\(label)：原生正文 \(id) 首帧没有按当前容器宽度排版；期望宽 \(state.size.width - 24)，实际 \(view.bounds)")
+                }
+            }
+            guard selected.selectedRange() == selection else {
+                throw MotionFailure.failed("\(label)：改宽或内容交接丢失已有原生选区，实际 \(selected.selectedRange())")
+            }
+        }
+
+        try verify("初始正文")
+        // 只有宿主的尺寸输入变化，正文值和环境保持不变；不能借内容更新补上落后的 proposal。
+        state.size.width = 480
+        harness.motion.move(to: WindowPose(frame: CGRect(origin: origin, size: state.size)), kind: .immediate)
+        try await harness.nextFrame()
+        try verify("仅改宽，正文与环境不变")
+
+        for (index, width) in [CGFloat(360), 540, 300, 660, 420, 600].enumerated() {
+            state.size.width = width
+            state.message = "第 \(index + 1) 次正文更新"
+            state.contextRevision += 1
+            state.scheme = index.isMultiple(of: 2) ? .dark : .light
+            harness.motion.move(to: WindowPose(frame: CGRect(origin: origin, size: state.size)), kind: .immediate)
+            try await harness.nextFrame()
+            try verify("连续改宽 \(width)")
+
+            if index == 2 {
+                // 同尺寸更新也必须生效，不能依赖下一次 resize 顺带刷新环境或正文。
+                state.contextRevision += 100
+                state.scheme = .light
+                try await harness.nextFrame()
+                try verify("尺寸不变，仅外层环境变化")
+                state.message = "尺寸不变时到达的新正文"
+                try await harness.nextFrame()
+                try verify("尺寸不变，仅正文变化")
+            }
+        }
+        print("通过：连续改宽与同尺寸内容/环境变化在首帧生效，正文实际宽度同步，两个原生文本对象和已有选区保留")
     }
 
     private static func intermediate(_ harness: MotionHost, between start: CGRect, and end: CGRect) async throws -> MotionPixels {

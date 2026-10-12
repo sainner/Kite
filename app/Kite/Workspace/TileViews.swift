@@ -525,9 +525,7 @@ struct PaneCard: View {
     @State private var headerRegions = HeaderRegions()
     @State private var carrier = DotCarrier()
     @State private var scope = DotScope()
-    @State private var usesDots = false
-    /// 正文里摆在点阵上的图形，转交给外面的 DotsPresence，见 body。
-    @State private var dotSlots: Set<String> = []
+    @State private var bodyReports = PaneCardBodyReports()
     @State private var screenOrigin = CGPoint.zero
     /// 头像的描边颜色，由头像报上来，画在外框上。
     @State private var ringColor: Color?
@@ -554,13 +552,7 @@ struct PaneCard: View {
     }
 
     private var windowActions: PaneWindowActions? {
-        guard let area = group.workspace else { return nil }
-        let expand: (@MainActor () -> Void)?
-        if canExpand { expand = { workspace.expand(pane) } }
-        else { expand = nil }
-        return PaneWindowActions(minimize: { workspace.minimize(pane) }, expand: expand,
-                                 close: { model.closeWindow(pane, in: area) },
-                                 canClose: !area.isDraft && !area.changingWindows && area.creatingWindow != pane.id)
+        paneWindowActions(group: group, pane: pane, model: model)
     }
 
     var body: some View {
@@ -568,7 +560,7 @@ struct PaneCard: View {
                       iconSize: min(width, Metrics.dragBubble), color: Theme.card,
                       minimizedColor: appearance.isAgent ? Theme.card : appearance.tint,
                       ring: ringColor.map { ($0, DockFace.ringWidth) },
-                      background: AnyView(WindowSurfaceDots(enabled: usesDots)),
+                      background: AnyView(WindowSurfaceDots(enabled: bodyReports.usesDots)),
                       // 点阵不参与过渡（见 WindowLayout.transitioning）：窗口自己在动时 WindowSurface 收起，拖缝调整大小时也收起
                       backgroundHidden: workspace.resizing != nil,
                       headerHeight: minimized ? nil : header.height,
@@ -576,28 +568,8 @@ struct PaneCard: View {
                           if header.hovered != hovered { header.hovered = hovered }
                           onHover(hovered)
                       }) {
-            PaneBody(group: group, pane: pane, retainForExit: true)
-                .coordinateSpace(.named(DotCarrier.space))
-                .paneFocus(pane, in: workspace, enabled: !minimized)
-                .modifier(PaneHeaderEnvironment(controls: controls, actions: windowActions))
-                .environment(\.panePresence, presence)
-                .containerShape(RoundedRectangle(cornerRadius: Metrics.cardRadius))
-                .modifier(WhileSettled(motion: motion, shown: !minimized, fades: false))
-                .accessibilityHidden(minimized)
-                // Mac 上正文托管在自己的视图里（见 WindowSurface），它报的偏好值传不出卡片，在这里接；
-                // 点阵的两项外面也要用（App 背景让出静息点、整页淡出时收回图形），由卡片接着往上报
-                .onPreferenceChange(WindowDotsActive.self) { usesDots = $0 }
-                .onPreferenceChange(DotSlots.self) { dotSlots = $0 }
-                .onPreferenceChange(PaneHeaderActionsWidth.self) { width in
-                    if header.menuWidth != width { header.menuWidth = width }
-                }
-                .onPreferenceChange(PaneHeaderHeight.self) { height in
-                    if header.height != height { header.height = height }
-                }
-                .onPreferenceChange(PaneHeaderInteractiveRects.self) { rects in
-                    headerRegions.rects = rects
-                    if !motion.moving { headerRegions.settled = rects }
-                }
+            PaneCardBody(group: group, pane: pane, minimized: minimized, header: header, headerRegions: headerRegions,
+                         presence: presence, motion: motion, reports: bodyReports)
         } icon: {
             if appearance.isAgent, let area = group.workspace {
                 DockEntryFace(subject: instance.map { .instance($0) } ?? .pane(pane), pulse: false, ring: false)
@@ -615,8 +587,8 @@ struct PaneCard: View {
         }
         .environment(\.dotCarrier, carrier)
         .environment(\.dotScope, scope)
-        .preference(key: WindowDotsActive.self, value: usesDots)
-        .preference(key: DotSlots.self, value: dotSlots)
+        .preference(key: WindowDotsActive.self, value: bodyReports.usesDots)
+        .preference(key: DotSlots.self, value: bodyReports.dotSlots)
         .onPreferenceChange(DockRingColor.self) { ringColor = $0 }
         .onGeometryChange(for: CGPoint.self) { $0.frame(in: .global).origin } action: { screenOrigin = $0; updateDots() }
         .onChange(of: target, initial: true) { updateDots() }
@@ -715,8 +687,59 @@ struct PaneCard: View {
     }
 }
 
-/// 卡片标题栏的悬停和几项实际尺寸，由外框、按钮组和正文报上来，只有读它们的几层随之更新：卡片每重算一次，
-/// 正文的托管视图就整个更新一遍。缩小、恢复时悬停跟着结束、剩一个窗口时按钮组少了展开，以前首帧、结束时卡片都要多算一两轮。
+/// 正文只收内容身份和共享状态；卡片每次改尺寸时，不把包含整张卡片的偏好回调重新交给托管视图。
+private struct PaneCardBody: View {
+    let group: PaneGroup
+    let pane: Pane
+    let minimized: Bool
+    let header: PaneCardHeader
+    let headerRegions: HeaderRegions
+    let presence: PanePresence
+    let motion: WindowMotion
+    let reports: PaneCardBodyReports
+
+    var body: some View {
+        PaneBody(group: group, pane: pane, retainForExit: true)
+            .coordinateSpace(.named(DotCarrier.space))
+            .paneFocus(pane, in: group.layout, enabled: !minimized)
+            .modifier(PaneHeaderEnvironment(header: header, group: group, pane: pane))
+            .environment(\.panePresence, presence)
+            .containerShape(RoundedRectangle(cornerRadius: Metrics.cardRadius))
+            .modifier(WhileSettled(motion: motion, shown: !minimized, fades: false))
+            .accessibilityHidden(minimized)
+            // 托管正文报出的偏好在这里接；点阵两项再由外框转交给 App 背景和 DotsPresence。
+            .onPreferenceChange(WindowDotsActive.self) { reports.usesDots = $0 }
+            .onPreferenceChange(DotSlots.self) { reports.dotSlots = $0 }
+            .onPreferenceChange(PaneHeaderActionsWidth.self) { width in
+                if header.menuWidth != width { header.menuWidth = width }
+            }
+            .onPreferenceChange(PaneHeaderHeight.self) { height in
+                if header.height != height { header.height = height }
+            }
+            .onPreferenceChange(PaneHeaderInteractiveRects.self) { rects in
+                headerRegions.rects = rects
+                if !motion.moving { headerRegions.settled = rects }
+            }
+    }
+}
+
+@Observable private final class PaneCardBodyReports {
+    var usesDots = false
+    var dotSlots: Set<String> = []
+}
+
+@MainActor private func paneWindowActions(group: PaneGroup, pane: Pane, model: AppModel) -> PaneWindowActions? {
+    guard let area = group.workspace else { return nil }
+    let layout = group.layout
+    let expand: (@MainActor () -> Void)?
+    if (layout.shown?.panes.count ?? 0) > 1 { expand = { layout.expand(pane) } }
+    else { expand = nil }
+    return PaneWindowActions(minimize: { layout.minimize(pane) }, expand: expand,
+                             close: { model.closeWindow(pane, in: area) },
+                             canClose: !area.isDraft && !area.changingWindows && area.creatingWindow != pane.id)
+}
+
+/// 卡片标题栏的悬停和几项实际尺寸，由外框、按钮组和正文报上来，只有读它们的几层随之更新。
 /// 正文标题栏给窗口按钮让位也按它算（PaneHeaderControlsSpace），悬停一变只有标题栏读它的那一层更新。
 @Observable private final class PaneCardHeader: PaneHeaderControlsSpace {
     var hovered = false
@@ -771,13 +794,18 @@ private struct PaneHeaderControls {
 
 /// 正文标题栏按窗口按钮让位（见 PaneHeaderControlsSpace）、收进菜单；在正文的托管视图里读，卡片不跟着重算。
 private struct PaneHeaderEnvironment: ViewModifier {
-    let controls: PaneHeaderControls
-    let actions: PaneWindowActions?
+    let header: PaneCardHeader
+    let group: PaneGroup
+    let pane: Pane
+    @Environment(AppModel.self) private var model
 
     func body(content: Content) -> some View {
+        let placement = header.placement
+        let controls = PaneHeaderControls(header: header, layout: group.layout, minimized: placement.minimized,
+                                          width: placement.width, hasThread: placement.hasThread)
         content
-            .environment(\.paneOverflowActions, controls.inMenu ? actions : nil)
-            .environment(\.paneHeaderControlsSpace, controls.header)
+            .environment(\.paneOverflowActions, controls.inMenu ? paneWindowActions(group: group, pane: pane, model: model) : nil)
+            .environment(\.paneHeaderControlsSpace, header)
     }
 }
 

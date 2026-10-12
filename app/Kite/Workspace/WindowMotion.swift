@@ -192,7 +192,9 @@ struct WindowSurface<Content: View, Icon: View, Header: View>: View {
                     if let ring { outlineRing(ring, pose: pose) }
                     #if os(macOS)
                     // 正文的缩放、平移和外框按同一次取样，同一帧交上去；动画开始、结束时接不接输入也从这里交
-                    HostedContentDriver(link: hosted, frame: hostedFrame(pose, destination: destination, area: hostedArea(destination)))
+                    HostedContentDriver(link: hosted,
+                                        placement: hostedPlacement(destination: destination), onHover: onHover,
+                                        frame: hostedFrame(pose, destination: destination, area: hostedArea(destination)))
                         .frame(width: 0, height: 0)
                         .allowsHitTesting(false)
                     #endif
@@ -229,18 +231,19 @@ struct WindowSurface<Content: View, Icon: View, Header: View>: View {
     /// 停着、看得见时由正文自己接悬停；收成停靠形状、飞行中舞台接（见 stage）。
     private func hostedContent(destination: CGPoint) -> some View {
         let area = hostedArea(destination)
-        // 托管视图的原点对齐窗口原点（见 HostedContentContainer），正文按它在窗口里的位置摆
-        return HostedContent(link: hosted, motion: motion, origin: CGPoint(x: stageOrigin.x + area.minX, y: stageOrigin.y + area.minY),
-                             content: content
-                                .onHover(perform: onHover)
-                                .environment(\.windowHeaderAnchors, hosted)
-                                .frame(width: contentSize.width, height: contentSize.height)
-                                .offset(x: stageOrigin.x + destination.x, y: stageOrigin.y + destination.y)
-                                .frame(width: max(stageOrigin.x + area.maxX, 0), height: max(stageOrigin.y + area.maxY, 0),
-                                       alignment: .topLeading))
+        return HostedContent(link: hosted, motion: motion, content: content)
             .frame(width: area.width, height: area.height)
             .modifier(WindowTranslation(point: area.origin))
             .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
+    }
+
+    private func hostedPlacement(destination: CGPoint) -> HostedPlacementValue {
+        let area = hostedArea(destination)
+        // 托管视图的原点对齐窗口原点（见 HostedContentContainer），正文也保留窗口坐标。
+        return HostedPlacementValue(origin: CGPoint(x: stageOrigin.x + area.minX, y: stageOrigin.y + area.minY),
+                                    contentSize: contentSize,
+                                    offset: CGPoint(x: stageOrigin.x + destination.x, y: stageOrigin.y + destination.y),
+                                    extent: CGSize(width: max(stageOrigin.x + area.maxX, 0), height: max(stageOrigin.y + area.maxY, 0)))
     }
 
     /// Mac 的标题栏一层（拖动区和窗口按钮）按停着的外框摆，不跟时钟走。飞行中它看不见（按钮淡出、拖动区透明）也不接输入；
@@ -431,6 +434,8 @@ private struct HostedContentFrame: Equatable {
 @MainActor final class HostedContentLink {
     fileprivate weak var container: HostedContentContainer?
     fileprivate var frame = HostedContentFrame()
+    fileprivate let placement = HostedPlacement()
+    fileprivate var onHover: (Bool) -> Void = { _ in }
     private let followers = NSHashTable<AnyObject>.weakObjects()
 
     /// 加进来时先按当前这一帧摆好。
@@ -464,13 +469,12 @@ extension EnvironmentValues {
 private struct HostedContent<Content: View>: NSViewRepresentable {
     let link: HostedContentLink
     let motion: WindowMotion
-    /// 这个视图左上角在窗口里的位置。
-    let origin: CGPoint
     let content: Content
 
     func makeNSView(context: Context) -> HostedContentContainer {
         let container = HostedContentContainer(rootView: rooted(in: context))
         container.motion = motion
+        container.origin = link.placement.value.origin
         link.container = container
         container.apply(link.frame)
         return container
@@ -484,11 +488,37 @@ private struct HostedContent<Content: View>: NSViewRepresentable {
 
     func updateNSView(_ container: HostedContentContainer, context: Context) {
         container.host.rootView = rooted(in: context)
-        container.origin = origin
     }
 
     private func rooted(in context: Context) -> AnyView {
-        AnyView(content.environment(\.self, context.environment))
+        AnyView(HostedPlaced(content: content, link: link).environment(\.self, context.environment))
+    }
+}
+
+/// 正文尺寸和窗口坐标单独送进托管树；拖缝只更新这里，语义内容与外部环境仍由 HostedContent 正常转交。
+@Observable private final class HostedPlacement {
+    var value = HostedPlacementValue()
+}
+
+private struct HostedPlacementValue: Equatable {
+    var origin = CGPoint.zero
+    var contentSize = CGSize.zero
+    var offset = CGPoint.zero
+    var extent = CGSize.zero
+}
+
+private struct HostedPlaced<Content: View>: View {
+    let content: Content
+    let link: HostedContentLink
+
+    var body: some View {
+        let placement = link.placement.value
+        content
+            .onHover { link.onHover($0) }
+            .environment(\.windowHeaderAnchors, link)
+            .frame(width: placement.contentSize.width, height: placement.contentSize.height)
+            .offset(x: placement.offset.x, y: placement.offset.y)
+            .frame(width: placement.extent.width, height: placement.extent.height, alignment: .topLeading)
     }
 }
 
@@ -568,6 +598,8 @@ private final class HostedContentView: NSHostingView<AnyView> {
 /// 放在舞台的时钟里，每帧把正文的摆放交给托管视图。
 private struct HostedContentDriver: NSViewRepresentable {
     let link: HostedContentLink
+    let placement: HostedPlacementValue
+    let onHover: (Bool) -> Void
     let frame: HostedContentFrame
 
     func makeNSView(context: Context) -> NSView { DriverView() }
@@ -575,6 +607,9 @@ private struct HostedContentDriver: NSViewRepresentable {
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> CGSize? { .zero }
 
     func updateNSView(_ view: NSView, context: Context) {
+        link.onHover = onHover
+        if link.placement.value != placement { link.placement.value = placement }
+        link.container?.origin = placement.origin
         guard link.frame != frame else { return }
         link.apply(frame)
     }
