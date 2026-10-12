@@ -37,13 +37,14 @@ final class DotStage {
     /// 各图案上一帧用的 PatternGrid，位置、大小和压字范围不变就接着用。
     @ObservationIgnored private var patternGrids: [String: PatternGrid] = [:]
     /// 取景框（rect，窗口坐标）是否要逐帧刷新，静息时不耗电：有不限窗口的事件走时都刷新，限在窗口里的波只刷新那个窗口（scope）；
-    /// 呼吸、在动的图形和图案只带动与它相交、画它们的取景框（carrier 相同，见 field）；不画图案的取景框不受图案带动。
+    /// 呼吸、在动的图形和图案只带动与它相交、画它们的取景框（carrier、scope 对得上，见 field）；不画图案的取景框不受图案带动。
     func animating(in rect: CGRect, carrier: DotCarrier? = nil, patterns drawsPatterns: Bool = true, scope: DotScope? = nil) -> Bool {
         if ticking || scope.map({ wavingScopes.contains(ObjectIdentifier($0)) }) == true { return true }
         // 浮动至多偏出一格
         let near = rect.insetBy(dx: -DotMetrics.pitch, dy: -DotMetrics.pitch)
+        let window = scope.map(ObjectIdentifier.init)
         return slots.contains { key, slot in
-            slot.carrier === carrier && (slot.breathing || slot.figure?.figure.moves == true) && figureFrame(key)?.intersects(near) == true
+            slot.carrier === carrier && slot.drawn(in: window) && (slot.breathing || slot.figure?.figure.moves == true) && figureFrame(key)?.intersects(near) == true
         } || drawsPatterns && patterns.values.contains {
             $0.carrier === carrier && ($0.carrier?.rest.apply($0.area) ?? $0.area).intersects(near)
         }
@@ -181,6 +182,7 @@ final class DotStage {
         var clip: CGRect?
         var breathing: Bool
         var carrier: DotCarrier?
+        var scope: DotScope?
     }
 
     /// 从 origin（窗口坐标）向四周推开一道波；不给 form 时取方格终态。pace 小于 1 时整道波放慢，用于不赶时间的场景。
@@ -207,10 +209,12 @@ final class DotStage {
     /// 只是区域变了（窗口改大小、内容滚动）就直接挪过去。breathing 时图形按等待呼吸起伏。
     /// clip 是图案可见的范围（同 area 的坐标），出了范围的格子不显示，像窗口裁掉滚出去的内容。
     /// 摆在会移动的卡片上时给出 carrier，area 与 clip 用卡片坐标（DotCarrier.space）：卡片走着的时候图形随它在点阵上滑过去。
+    /// 摆在自己画点阵的窗口里时给出 scope，图形只由这个窗口的取景框画，见 FigureSlot.scope。
     func show(_ figure: DotFigure?, in area: CGRect, placement: PlacedFigure.Placement = .center,
-              clip: CGRect? = nil, breathing: Bool = false, slot: String = FigureSlot.main, carrier: DotCarrier? = nil) {
+              clip: CGRect? = nil, breathing: Bool = false, slot: String = FigureSlot.main, carrier: DotCarrier? = nil,
+              scope: DotScope? = nil) {
         requests[slot] = figure.map {
-            Request(figure: $0, area: area, placement: placement, clip: clip, breathing: breathing, carrier: carrier)
+            Request(figure: $0, area: area, placement: placement, clip: clip, breathing: breathing, carrier: carrier, scope: scope)
         }
         place(slot)
     }
@@ -246,10 +250,13 @@ final class DotStage {
         let clip = request?.clip, breathing = request?.breathing ?? false
         // 收回途中照样跟着原来的卡片：卡片正在走（比如在拉开的侧边栏里切页面）时，换成按停着的位置画会从窗口里跳到屏幕中间
         let carrier = request?.carrier ?? slots[slot]?.carrier
+        // 收回途中也照样只由原来的窗口画
+        let scope = request.map { $0.scope.map(ObjectIdentifier.init) } ?? slots[slot]?.scope
         guard figure != nil || slots[slot] != nil else { return }
         var current = slots[slot] ?? FigureSlot(order: nextOrder)
         if slots[slot] == nil { nextOrder += 1 }
         current.carrier = carrier
+        current.scope = scope
         let placed = figure.map { figure in
             carrier.map { PlacedFigure(figure, in: $0.rest.apply(area), placement: placement, area: area,
                                        clip: clip.map($0.rest.apply), localClip: clip) }
@@ -257,7 +264,9 @@ final class DotStage {
         }
         current.breathing = breathing && placed != nil
         if placed == current.figure {
-            if slots[slot]?.breathing != current.breathing || slots[slot]?.carrier !== carrier { slots[slot] = current }
+            if slots[slot]?.breathing != current.breathing || slots[slot]?.carrier !== carrier || slots[slot]?.scope != scope {
+                slots[slot] = current
+            }
             return
         }
         if let placed, placed.figure == current.figure?.figure {
@@ -310,7 +319,7 @@ final class DotStage {
     }
 
     /// date 时刻的取值快照，供一帧绘制使用。live 为 false（静息或减少动态效果）时不呼吸；
-    /// patterns 为 false 时不含图案，逐格求值的图案只由画它的取景框算。scope 是取景框所在的窗口，只含不限窗口的波和这个窗口的波。
+    /// patterns 为 false 时不含图案，逐格求值的图案只由画它的取景框算。scope 是取景框所在的窗口，只含不限窗口的波和图形，以及这个窗口的。
     /// springs 是取景框这一帧插值到的弹簧进度，见 springProgress。
     /// carrier 是取景框画的那张卡片：只含摆在它上面的图形和图案，nil 时只含不在卡片上的。
     /// follow 是卡片正在走时，屏幕上的一点对应卡片停着时的哪里，摆在卡片上的图形和图案按它取样，跟着卡片走。
@@ -327,7 +336,7 @@ final class DotStage {
         return DotField(waves: waves,
                         palette: DotColor.palette, rest: rest,
                         slots: slots.values.compactMap { slot -> FigureSlot? in
-                            guard slot.carrier === carrier else { return nil }
+                            guard slot.carrier === carrier, slot.drawn(in: scope) else { return nil }
                             return (slot.carrier?.carry(slot) ?? slot).settled(at: date, live: live)
                         }
                         .sorted { $0.order < $1.order },

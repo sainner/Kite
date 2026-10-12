@@ -4,23 +4,33 @@ import SwiftUI
 /// 宽屏使用不透明窗口底色，紧凑布局沿用窗口外壳。点阵画在底色上方。
 private struct StageCard: ViewModifier {
     var usesDots = false
+    var drawsRest = true
     @Environment(\.workspacePresentation) private var presentation
+    @Environment(\.stageCardOpacity) private var opacity
 
     func body(content: Content) -> some View {
         if presentation == .compact {
-            content.windowDots(usesDots)
+            content.windowDots(usesDots, drawsRest: drawsRest)
         } else {
             let shape = RoundedRectangle(cornerRadius: Metrics.cardRadius, style: .continuous)
             content
-                .windowDots(usesDots)
-                .background(shape.fill(Theme.card))
+                .windowDots(usesDots, drawsRest: drawsRest)
+                .background(shape.fill(Theme.card).opacity(opacity))
                 .clipShape(shape)
         }
     }
 }
 
+extension EnvironmentValues {
+    /// 宽屏占位卡片的实色底和上面的文字、按钮有多不透明；点阵不跟着淡，摆在上面的图形照样按自己的节奏长出、收回。见 SettledWindowlessStage。
+    @Entry var stageCardOpacity = 1.0
+}
+
 extension View {
-    func stageCard(usesDots: Bool = false) -> some View { modifier(StageCard(usesDots: usesDots)) }
+    /// drawsRest 为 false 时点阵不铺静息的点，卡片是实色底，只画摆在上面的图形。
+    func stageCard(usesDots: Bool = false, drawsRest: Bool = true) -> some View {
+        modifier(StageCard(usesDots: usesDots, drawsRest: drawsRest))
+    }
 
     /// 单页里的分组表单，底色透出卡片。
     func pageForm() -> some View { modifier(PageForm()) }

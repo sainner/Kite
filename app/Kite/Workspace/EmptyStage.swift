@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// 内容区没有窗口时的画板。场景图形摆在所在 App 窗口的点阵上，画板离场或消失时逐格收回：
-/// - 图形画在卡片底色上方；打开窗口后画板退出。
+/// - 画板是一个窗口：实色底，不铺静息的点，图形只由画板自己的点阵画，App 背景不画（2026-10-12 用户确定）。打开窗口后画板退出。
 /// - 场景图形用风筝和线讲连接状态：人握着线，风筝在远处飞。标题、说明和操作按钮直接放在上面。
 /// - 指针划过（触屏是手指拖过）空白处留下一道慢慢退去的轨迹。
 struct EmptyStage: View {
@@ -16,7 +16,10 @@ struct EmptyStage: View {
     @Environment(\.self) private var environment
     @Environment(\.openSidebar) private var openSidebar
     @Environment(\.paneTopSafeInset) private var topInset
+    @Environment(\.stageCardOpacity) private var cardOpacity
     @State private var canvas: CGRect?
+    /// 画板卡片自己的点阵范围，卡片里面才读得到（见 WindowDotScope）。
+    @State private var windowScope: DotScope?
     @State private var figureArea: CGRect?
     /// 放得下的画幅，见 StageFigures.sizes。
     @State private var sizeIndex: Int?
@@ -61,8 +64,11 @@ struct EmptyStage: View {
                             }
                             .allowsHitTesting(false)
                     }
-                    titleBlock
-                    if !actions.isEmpty { buttons }
+                    Group {
+                        titleBlock
+                        if !actions.isEmpty { buttons }
+                    }
+                    .opacity(cardOpacity)
                 }
                 .padding(Metrics.padding * 2)
                 .onChange(of: fitting, initial: true) { _, index in
@@ -71,8 +77,12 @@ struct EmptyStage: View {
                     refresh()
                 }
             }
+            .modifier(WindowDotScope { scope in
+                windowScope = scope
+                refresh()
+            })
         }
-        .stageCard(usesDots: true)
+        .stageCard(usesDots: true, drawsRest: false)
         .onDisappear { stage?.show(nil, in: .zero, slot: sceneSlot) }
         .preference(key: DotSlots.self, value: [sceneSlot])
         // 容器给出侧边栏入口时（iPhone），左上角放按钮，位置同窗口标题栏
@@ -144,7 +154,7 @@ struct EmptyStage: View {
     /// 按当前范围摆场景图形；同一图形在同一处时 DotStage 什么也不做。
     private func refresh() {
         if let figureArea, let figure = sceneFigure {
-            stage?.show(figure, in: figureArea, breathing: scene == .unreachable, slot: sceneSlot, carrier: carrier)
+            stage?.show(figure, in: figureArea, breathing: scene == .unreachable, slot: sceneSlot, carrier: carrier, scope: windowScope)
         } else {
             stage?.show(nil, in: .zero, slot: sceneSlot)
         }
@@ -163,6 +173,18 @@ struct EmptyStage: View {
             stage?.trace(at: CGPoint(x: from.x + (point.x - from.x) * t, y: from.y + (point.y - from.y) * t))
         }
         lastTrace = point
+    }
+}
+
+/// 读出所在窗口的点阵范围：只有自己画点阵的窗口里才有，摆上去的图形交给这个窗口的取景框画。
+private struct WindowDotScope: ViewModifier {
+    @Environment(\.dotScope) private var scope
+    @Environment(\.windowUsesDots) private var usesDots
+    let changed: (DotScope?) -> Void
+
+    func body(content: Content) -> some View {
+        let owner = usesDots ? scope : nil
+        content.onChange(of: owner.map(ObjectIdentifier.init), initial: true) { changed(owner) }
     }
 }
 

@@ -39,8 +39,9 @@ struct WindowDotsActive: PreferenceKey {
 extension View {
     /// 窗口选择使用点阵：卡片上开一个取景框，画出所在 App 窗口那一套点阵落在卡片里的部分。
     /// 在会移动的卡片里（窄屏的窗口）时，取景框由卡片的外壳画在屏幕上（见 WindowShell），这里只报告用不用。
-    func windowDots(_ enabled: Bool = true) -> some View {
-        modifier(WindowDotBackground(enabled: enabled))
+    /// drawsRest 为 false 时不铺静息的点，只画摆在上面的图形、波和轨迹。
+    func windowDots(_ enabled: Bool = true, drawsRest: Bool = true) -> some View {
+        modifier(WindowDotBackground(enabled: enabled, drawsRest: drawsRest))
     }
 
     /// 每个 App 窗口持有唯一的点阵舞台，背景是它的取景框。自动模式下，有窗口开启点阵时背景让出静息的点，否则接回来。
@@ -52,6 +53,7 @@ extension View {
 
 private struct WindowDotBackground: ViewModifier {
     let enabled: Bool
+    let drawsRest: Bool
     @Environment(\.dotCarrier) private var carrier
     @State private var edges: [CGRect] = []
     @State private var scope = DotScope()
@@ -63,7 +65,7 @@ private struct WindowDotBackground: ViewModifier {
             } else {
                 content
                     .background {
-                        if enabled { DotCanvas(excluding: edges) }
+                        if enabled { DotCanvas(drawsRest: drawsRest, excluding: edges) }
                     }
                     .onPreferenceChange(ScrollEdgeDotsArea.self) { edges = $0 }
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { scope.frame = $0 }

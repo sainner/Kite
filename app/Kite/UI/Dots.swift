@@ -237,9 +237,17 @@ nonisolated struct DotColor: Hashable, Codable, Sendable {
     var color: Color { Color(.sRGB, red: red, green: green, blue: blue, opacity: alpha) }
 
     /// 在 oklab 中混合，t=0 取自身、t=1 取 other。需要颜色随 shape 从点色长出来的调用方用 shape 作 t。
+    /// 混到头的不必经 oklab 往返（每格每帧都要混几次）。
     func mixed(with other: DotColor, by t: Double) -> DotColor {
-        let t = t > 0 ? min(t, 1) : 0
+        guard t > 0 else { return normalized }
+        if t >= 1 { return other.normalized }
         return DotColor(oklab + (other.oklab - oklab).scaled(by: t))
+    }
+
+    /// 同经 oklab 往返一遍的结果：分量截到 0...1，完全透明的归零。
+    var normalized: DotColor {
+        guard alpha > 0 else { return DotColor(red: 0, green: 0, blue: 0, alpha: 0) }
+        return DotColor(red: min(max(red, 0), 1), green: min(max(green, 0), 1), blue: min(max(blue, 0), 1), alpha: min(alpha, 1))
     }
 
     var oklab: Oklab {

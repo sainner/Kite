@@ -44,11 +44,28 @@ nonisolated struct DotFigure: Hashable, Sendable {
         }
     }
 
+    /// 有内容的一格和它所在的层。
+    struct Occupied: Hashable, Sendable {
+        var column: Int
+        var row: Int
+        var layer: Int
+    }
+
     private(set) var columns: Int
     private(set) var rows: Int
     /// 按行排列，nil 是静息的点。
     private var cells: [Cell?]
     private(set) var layers: [Layer]
+    /// 有内容的格子：摆到点阵上时只算它们附近，不必把整块画幅逐格算一遍（风筝场景 32 × 24 格里只有一百多格有内容）。
+    /// 改了 cells 之后由 indexOccupied 重算。
+    private(set) var occupied: [Occupied] = []
+
+    private mutating func indexOccupied() {
+        occupied = []
+        for index in cells.indices {
+            if let cell = cells[index] { occupied.append(Occupied(column: index % columns, row: index / columns, layer: cell.layer)) }
+        }
+    }
 
     /// 一层的图形；shapes 给不满格的字符定大小，motion 是这一层的小动画。
     init(_ lines: [String], colors: [Character: DotColor], shapes: [Character: Double] = [:], motion: FigureMotion = .still) {
@@ -63,6 +80,7 @@ nonisolated struct DotFigure: Hashable, Sendable {
             }
         }
         layers = [Layer(motion: motion)]
+        indexOccupied()
     }
 
     /// 帧序列的图形：frames 是逐帧的字符画，第 i 帧停 holds[i] 秒，再用 transition 秒逐格过渡到下一帧，末帧接回首帧。
@@ -87,6 +105,7 @@ nonisolated struct DotFigure: Hashable, Sendable {
             }
         }
         layers = [Layer(motion: .frames(holds: holds, transition: transition, stagger: min(stagger, transition), phase: phase))]
+        indexOccupied()
     }
 
     /// 每帧停留同样久的帧序列。
@@ -120,6 +139,7 @@ nonisolated struct DotFigure: Hashable, Sendable {
             }
         }
         result.layers = layers + other.layers
+        result.indexOccupied()
         return result
     }
 
@@ -139,6 +159,7 @@ nonisolated struct DotFigure: Hashable, Sendable {
             }
         }
         result.layers = layers
+        result.indexOccupied()
         return result
     }
 
@@ -302,33 +323,64 @@ nonisolated struct PlacedFigure: Hashable, Sendable {
         return ((column + dx - 1)...(column + dx + figure.columns + 1), (row + dy - 1)...(row + dy + figure.rows + 1))
     }
 
+    /// date 时刻、按 amplitude（0–1 的幅度系数）动着的样子，取样用。
+    func posed(at date: Date, amplitude: Double) -> PosedFigure {
+        let offsets = figure.layers.map { $0.motion.offset(at: date, amplitude: amplitude) }
+        var distinct: [Double] = []
+        for offset in offsets where !distinct.contains(offset) { distinct.append(offset) }
+        return PosedFigure(placed: self, date: date, amplitude: amplitude, offsets: offsets,
+                           lit: figure.layers.map { $0.motion.visibility(at: date, amplitude: amplitude) }, distinctOffsets: distinct)
+    }
+}
+
+/// 摆好的图形在某一时刻的样子。各层的位移和展开程度只和时刻有关，一帧算一次，各格取样共用。
+nonisolated struct PosedFigure: Sendable {
+    let placed: PlacedFigure
+    let date: Date
+    let amplitude: Double
+    /// 各层浮动的位移（格）与展开程度，见 FigureMotion。
+    let offsets: [Double]
+    let lit: [Double]
+    /// offsets 里不同的值：位移相同的层落在同样的格位上，一起取样。
+    let distinctOffsets: [Double]
+
     /// center（窗口点阵上一格的格心；跟着卡片走时已换算回卡片停着的位置）从图形内容里分到多少形变、什么颜色、覆盖了几成；
     /// 一点都没分到是 nil。浮动的层和落在两格之间的图形按此刻的位移把 center 反算回图形坐标，由相邻格按双线性权重分配形变量；
     /// 颜色按相同的空间权重在 oklab 中混合，未覆盖的部分留给 DotBlend 与下层合成；闪烁的层连续交接给底层或静息点。
     /// 幅度为 0、没有挪动时正好取回原来那一格。
-    func sample(at center: CGPoint, at date: Date, amplitude: Double, rest: DotColor) -> DotSample? {
-        if let clip, !clip.contains(center) { return nil }
+    func sample(at center: CGPoint, rest: DotColor) -> DotSample? {
+        if let clip = placed.clip, !clip.contains(center) { return nil }
+        let figure = placed.figure
         // 格的中心，以格为单位、相对图形左上角；浮动至多偏出一格
-        let x = Double(center.x / DotMetrics.pitch) - Double(self.column) - shiftX
-        let y = Double(center.y / DotMetrics.pitch) - Double(self.row) - shiftY
+        let x = Double(center.x / DotMetrics.pitch) - Double(placed.column) - placed.shiftX
+        let y = Double(center.y / DotMetrics.pitch) - Double(placed.row) - placed.shiftY
         guard x > -1, x < Double(figure.columns) + 1, y > -1, y < Double(figure.rows) + 1 else { return nil }
         let u = x - 0.5, u0 = u.rounded(.down), fu = u - u0
         var shape = 0.0, coverage = 0.0
+        // 分到的都是同一种颜色时（大多数格子）结果就是它，不必在 oklab 里加权再换回来；出现第二种颜色才开始累加
+        var single: DotColor?
         var color = DotColor.Oklab.zero
         func contribute(_ look: DotFigure.Look, weight: Double) {
+            guard weight > 0 else { return }
+            if coverage == 0 {
+                single = look.color
+            } else if let first = single, first != look.color {
+                color = first.oklab.scaled(by: coverage)
+                single = nil
+            }
+            if single == nil { color += look.color.oklab.scaled(by: weight) }
             shape += look.shape * weight
             coverage += weight
-            color += look.color.oklab.scaled(by: weight)
         }
-        for (index, layer) in figure.layers.enumerated() {
-            let v = y - layer.motion.offset(at: date, amplitude: amplitude) - 0.5
+        for offset in distinctOffsets {
+            let v = y - offset - 0.5
             let v0 = v.rounded(.down), fv = v - v0
-            let lit = layer.motion.visibility(at: date, amplitude: amplitude)
             func tap(_ du: Int, _ dv: Int, _ w: Double) {
                 let c = Int(u0) + du, r = Int(v0) + dv
-                guard w > 0, let cell = figure[c, r], cell.layer == index else { return }
+                guard w > 0, let cell = figure[c, r], offsets[cell.layer] == offset else { return }
+                let lit = lit[cell.layer]
                 let delay = Double(c + r) / Double(max(figure.columns + figure.rows - 2, 1))
-                let look = layer.motion.look(of: cell, at: date, delay: delay, amplitude: amplitude, rest: rest)
+                let look = figure.layers[cell.layer].motion.look(of: cell, at: date, delay: delay, amplitude: amplitude, rest: rest)
                 // 熄掉的那部分换成底下的格子
                 if let look { contribute(look, weight: w * lit) }
                 if let under = cell.under { contribute(under, weight: w * (1 - lit)) }
@@ -340,7 +392,27 @@ nonisolated struct PlacedFigure: Hashable, Sendable {
         }
         guard coverage > 0 else { return nil }
         // shape 是图案作者给定的大小，不当作颜色权重，避免小格子本来饱满的颜色被冲淡。
-        return DotSample(shape: min(shape, 1), color: DotColor(color.scaled(by: 1 / coverage)), coverage: min(coverage, 1))
+        let mixed = single?.normalized ?? DotColor(color.scaled(by: 1 / coverage))
+        return DotSample(shape: min(shape, 1), color: mixed, coverage: min(coverage, 1))
+    }
+
+    /// 取样分得到内容的格子（窗口点阵的列、行），同一格可能给出多次；不含 clip 的裁切。follow 同 DotField.follow。
+    /// 内容格只分给格心离它左右、上下都不到一格的格子，对齐格位、不浮动、不跟着卡片走时正好是内容格自己。
+    func forEachReachedCell(through follow: DotCarrier.Mapping?, _ body: (_ column: Int, _ row: Int) -> Void) {
+        let back = follow?.inverted ?? DotCarrier.Mapping()
+        let pitch = Double(DotMetrics.pitch), scale = Double(back.scale)
+        // 内容格左上角落在 base 格处：格心（卡片停着时的坐标）在 base − 0.5 到 base + 1.5 格之间的分得到它，换算回屏幕上看是哪几格
+        func reached(_ base: Double, origin: CGFloat) -> ClosedRange<Int> {
+            let low = (Double(origin) + (base - 0.5) * pitch * scale) / pitch - 0.5
+            let high = (Double(origin) + (base + 1.5) * pitch * scale) / pitch - 0.5
+            return Int(low.rounded(.down)) + 1...Int(high.rounded(.up)) - 1
+        }
+        for cell in placed.figure.occupied {
+            let columns = reached(Double(placed.column + cell.column) + placed.shiftX, origin: back.origin.x)
+            for row in reached(Double(placed.row + cell.row) + placed.shiftY + offsets[cell.layer], origin: back.origin.y) {
+                for column in columns { body(column, row) }
+            }
+        }
     }
 }
 
@@ -382,11 +454,16 @@ nonisolated struct FigureSlot: Sendable {
     var order = 0
     /// 图形摆在会移动的卡片上时，是哪张卡片，见 DotCarrier。
     var carrier: DotCarrier?
+    /// 图形摆在自己画点阵的窗口里时，是哪个窗口（DotScope）：只由这个窗口的取景框画，App 背景和别的窗口不画。
+    var scope: ObjectIdentifier?
     /// 换摆放方式时原位置相对新位置的偏移（格），从 settleStart 起在 settleDuration 内减到零。
     var settle = (x: 0.0, y: 0.0)
     var settleStart = Date.distantPast
 
     static let settleDuration: TimeInterval = 0.2
+
+    /// scope 所在的取景框（App 背景是 nil）画不画这个图形。
+    func drawn(in scope: ObjectIdentifier?) -> Bool { self.scope == nil || self.scope == scope }
 
     /// date 时刻还没走完的偏移，缓出。
     func settleResidual(at date: Date) -> (x: Double, y: Double) {

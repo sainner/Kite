@@ -114,6 +114,10 @@ nonisolated struct DotField: Sendable {
     let follow: DotCarrier.Mapping?
 
     func dot(column: Int, row: Int, at date: Date) -> Dot {
+        dot(column: column, row: row, at: date, figures: figureFrames(at: date))
+    }
+
+    private func dot(column: Int, row: Int, at date: Date, figures: [FigureFrame]) -> Dot {
         // 先按叠放次序把各图案合成到静息的点上，再叠波和轨迹
         var dot = Dot(.square, shape: 0, color: rest)
         let center = DotMetrics.center(column: column, row: row)
@@ -122,8 +126,8 @@ nonisolated struct DotField: Sendable {
         for pattern in patterns {
             if let value = pattern.dot(at: point, at: date, live: moving, rest: rest) { dot = value }
         }
-        for slot in slots {
-            if let cell = figureCell(in: slot, at: point, at: date) {
+        for figure in figures {
+            if let cell = figureCell(figure, at: point) {
                 dot = DotBlend.normal.composite(cell, over: dot)
             }
         }
@@ -139,7 +143,7 @@ nonisolated struct DotField: Sendable {
                 opacity = wave.parameters.opacity
             }
         }
-        if let start = sparks[DotCell(column: column, row: row)] {
+        if !sparks.isEmpty, let start = sparks[DotCell(column: column, row: row)] {
             let spark = DotSpark.shape(since: start, at: date)
             if spark > shape {
                 shape = spark
@@ -153,15 +157,30 @@ nonisolated struct DotField: Sendable {
         return shape > dot.shape ? Dot(form, shape: lit.shape, color: lit.color) : dot
     }
 
-    /// 图形在 point（一格的格心，见 dot）的取值；形变中从旧图形（或静息的点）缓出到新图形（或静息的点）。
+    /// 一个图形位置这一帧的样子，各格共用：新旧图形各自按此刻的幅度摆好。
+    private struct FigureFrame {
+        let slot: FigureSlot
+        let elapsed: TimeInterval
+        let to: PosedFigure?
+        let from: PosedFigure?
+    }
+
     /// 旧图形一开始形变就在 0.3 秒内停下回正，新图形形变完后 0.8 秒内动起来。
-    private func figureCell(in slot: FigureSlot, at point: CGPoint, at date: Date) -> DotSample? {
-        let figure = slot.figure, previousFigure = slot.previous
-        let elapsed = date.timeIntervalSince(slot.start)
-        let to = figure?.sample(at: point, at: date,
-                                amplitude: moving ? smoothstep((elapsed - DotFigure.transition) / 0.8) : 0, rest: rest)
-        let from = previousFigure?.sample(at: point, at: date,
-                                          amplitude: moving ? 1 - smoothstep(elapsed / 0.3) : 0, rest: rest)
+    private func figureFrames(at date: Date) -> [FigureFrame] {
+        slots.map { slot in
+            let elapsed = date.timeIntervalSince(slot.start)
+            return FigureFrame(slot: slot, elapsed: elapsed,
+                               to: slot.figure?.posed(at: date, amplitude: moving ? smoothstep((elapsed - DotFigure.transition) / 0.8) : 0),
+                               from: slot.previous?.posed(at: date, amplitude: moving ? 1 - smoothstep(elapsed / 0.3) : 0))
+        }
+    }
+
+    /// 图形在 point（一格的格心，见 dot）的取值；形变中从旧图形（或静息的点）缓出到新图形（或静息的点）。
+    private func figureCell(_ frame: FigureFrame, at point: CGPoint) -> DotSample? {
+        let slot = frame.slot, figure = slot.figure, previousFigure = slot.previous
+        let elapsed = frame.elapsed
+        let to = frame.to?.sample(at: point, rest: rest)
+        let from = frame.from?.sample(at: point, rest: rest)
         guard to != nil || from != nil else { return nil }
         var eased = 1.0
         if let previousFigure, let figure {
@@ -223,33 +242,45 @@ nonisolated struct DotField: Sendable {
     static let cellStride = 8
 
     /// 开放寻址的格表，容量是 2 的幂且至少空一半，着色器按 slot 取位、顺次往后找。
-    /// 只收落在画布范围（visible）里、图形可能占到的格子（浮动、随卡片挪动至多偏出一格）和轨迹，算出来是静息的点就不收。
-    /// 这些格子按 dot 连同底下的图案一起算好，着色器查到就不再算图案；图案的其余格子由着色器算。
+    /// 只收落在画布范围（visible）里、图形分得到内容的格子（浮动、落在两格之间、跟着卡片走时连同相邻的格子，见 PosedFigure.forEachReachedCell）和轨迹，
+    /// 算出来是静息的点就不收。这些格子按 dot 连同底下的图案一起算好，着色器查到就不再算图案；图案的其余格子由着色器算。
     /// 着色器每个像素只查自己那一格，范围外的格子不用算；整格落在 hidden 里的像素全被遮掉，也不用算。
     private func cellTable(at date: Date, in visible: (columns: ClosedRange<Int>, rows: ClosedRange<Int>),
                            hidden hiddenCells: [(columns: Range<Int>, rows: Range<Int>)]) -> [Float] {
         let visibleColumns = visible.columns, visibleRows = visible.rows
-        var cells = Set(sparks.keys.filter { visibleColumns.contains($0.column) && visibleRows.contains($0.row) })
-        for slot in slots {
-            for placed in [slot.figure, slot.previous].compactMap(\.self) {
-                var (columns, rows) = placed.reach
-                if let follow {
-                    // 屏幕上换算回去落在这片格子里的格子
-                    (columns, rows) = DotMetrics.cells(covering: follow.inverted.apply(DotMetrics.rect(columns: columns, rows: rows)))
-                }
-                guard rows.overlaps(visibleRows), columns.overlaps(visibleColumns) else { continue }
-                for row in rows.clamped(to: visibleRows) {
-                    for column in columns.clamped(to: visibleColumns) { cells.insert(DotCell(column: column, row: row)) }
-                }
+        let figures = figureFrames(at: date)
+        // 各图形可能占到的范围（浮动、随卡片挪动至多偏出一格），在这些范围合起来的方框里按格记下要算的格子，不重复
+        let posedFigures = figures.flatMap { [$0.to, $0.from] }.compactMap(\.self)
+        let reaches = posedFigures.compactMap { posed -> (posed: PosedFigure, columns: ClosedRange<Int>, rows: ClosedRange<Int>)? in
+            var (columns, rows) = posed.placed.reach
+            if let follow {
+                // 屏幕上换算回去落在这片格子里的格子
+                (columns, rows) = DotMetrics.cells(covering: follow.inverted.apply(DotMetrics.rect(columns: columns, rows: rows)))
             }
+            guard rows.overlaps(visibleRows), columns.overlaps(visibleColumns) else { return nil }
+            return (posed: posed, columns: columns.clamped(to: visibleColumns), rows: rows.clamped(to: visibleRows))
+        }
+        let boxColumns = (reaches.map(\.columns.lowerBound).min() ?? 0)..<(reaches.map(\.columns.upperBound).max() ?? -1) + 1
+        let boxRows = (reaches.map(\.rows.lowerBound).min() ?? 0)..<(reaches.map(\.rows.upperBound).max() ?? -1) + 1
+        var cells: [DotCell] = []
+        var marked = [Bool](repeating: false, count: boxColumns.count * boxRows.count)
+        func mark(_ column: Int, _ row: Int) {
+            guard boxColumns.contains(column), boxRows.contains(row) else { return }
+            let index = (row - boxRows.lowerBound) * boxColumns.count + column - boxColumns.lowerBound
+            guard !marked[index] else { return }
+            marked[index] = true
+            cells.append(DotCell(column: column, row: row))
+        }
+        for reach in reaches { reach.posed.forEachReachedCell(through: follow, mark) }
+        for cell in sparks.keys where visibleColumns.contains(cell.column) && visibleRows.contains(cell.row) {
+            if boxColumns.contains(cell.column), boxRows.contains(cell.row) { mark(cell.column, cell.row) } else { cells.append(cell) }
         }
         var dots: [(DotCell, Dot)] = []
-        func add(_ cell: DotCell) {
-            if hiddenCells.contains(where: { $0.columns.contains(cell.column) && $0.rows.contains(cell.row) }) { return }
-            let dot = dot(column: cell.column, row: cell.row, at: date)
+        for cell in cells {
+            if !hiddenCells.isEmpty, hiddenCells.contains(where: { $0.columns.contains(cell.column) && $0.rows.contains(cell.row) }) { continue }
+            let dot = dot(column: cell.column, row: cell.row, at: date, figures: figures)
             if dot.shape > 1.0 / 512 || dot.color != rest { dots.append((cell, dot)) }
         }
-        for cell in cells { add(cell) }
         var capacity = 2
         while capacity < dots.count * 2 { capacity *= 2 }
         let stride = Self.cellStride
