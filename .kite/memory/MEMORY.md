@@ -5,7 +5,7 @@
 - [视觉参考与范围](visual-style-direction.md) — 色板、角色点阵、项目色和字体范围
 - [界面事件诊断](ui-hit-testing-debugging.md) — 合成输入与命中证据的限制，simctl 探针未决风险
 - [卡顿怎么量](performance-diagnosis.md) — 帧间隔对照、真机 Time Profiler、改完数 body 对照耗时，Mac 结论不外推到 iPhone
-- [对话正文的文本容器](text-container-direction.md) — 每条回复一个 TextKit 2 文本视图、附件嵌代码块、复制出 Markdown、外观不改
+- [对话正文的文本容器](text-container-direction.md) — 每条回复一个 TextKit 2 文本视图、附件嵌代码块、复制给原文、外观不改，第三步 iPhone 待验收
 - [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、术语词典与整理后做、点阵表现、未选的识别候选
 
 ## 协作反馈

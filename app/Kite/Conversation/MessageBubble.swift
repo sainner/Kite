@@ -140,50 +140,34 @@ struct MessageBubble: View {
 
 }
 
-/// 用户正文保持原样；独立代码块和 agent 共用 CodeBlock。
-/// 普通文字两端都排进平台文本视图（SelectableText）：iPhone 上长按与拖动选字，Mac 上左键拖选。
+/// 用户正文保持原样，整条排进一个文本视图（SelectableText）；独立代码块是嵌在里面的卡片，和 agent 共用 CodeBlock。
+/// iPhone 上长按与拖动选字，Mac 上左键拖选。
 private struct MessageText: View {
     let message: Message
     let queued: Bool
     @Environment(\.selectedRow) private var selection
-    @Environment(\.messageTextSelectable) private var selectable
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Metrics.messageSegmentGap) {
-            ForEach(Array(message.segments.enumerated()), id: \.offset) { index, segment in
-                switch segment {
-                case .text(let text):
-                    #if os(iOS)
-                    SelectableText(text: text, command: index == 0 ? message.command : nil,
-                                   color: queued ? .label : .white,
-                                   showActions: { selection.show(.message(message.id)) },
-                                   dismissActions: { selection.close() })
-                    #else
-                    SelectableText(text: text, command: index == 0 ? message.command : nil, color: queued ? .label : .white)
-                    #endif
-                case .code(let code, let language):
-                    // 整条消息统一折叠；代码不再单独截断，展开全文后一次看完。
-                    CodeBlock(text: code, language: language, maxLines: nil, background: Theme.userCodeBackground,
-                              radius: Metrics.nestedRadius(inset: Metrics.bubblePadding.height))
-                        .foregroundStyle(Color.primary)
-                        #if os(iOS)
-                        .environment(\.blockCardLongPress) { selection.show(.message(message.id)) }
-                        #endif
-                }
-            }
+        Group {
+            #if os(iOS)
+            SelectableText(message: message, color: queued ? .label : .white,
+                           showActions: { selection.show(.message(message.id)) },
+                           dismissActions: { selection.close() })
+                .environment(\.blockCardLongPress) { selection.show(.message(message.id)) }
+            #else
+            // 已接收的实色气泡恒用白字；排队中的透明描边气泡仍跟随系统文字色
+            SelectableText(message: message, color: queued ? .label : .white)
+            #endif
         }
         .font(Theme.body)
-        // 已接收的实色气泡恒用白字；排队中的透明描边气泡仍跟随系统文字色。正文的颜色由 SelectableText 自己带，这里管代码块
-        .foregroundStyle(queued ? Color.primary : .white)
-        .multilineTextAlignment(.leading)
-        .textSelectable(selectable)
     }
 }
 
-/// 气泡里的正文按 ``` 切成的一段：文字，或者等宽排的代码。
+/// 气泡里的正文按 ``` 切成的一段：文字，或者等宽排的代码。source 是这段在 Message.text 里的位置，复制时对回原文：
+/// 文字去掉了首尾空行，代码连着上下两行围栏。
 enum MessageSegment {
-    case text(String)
-    case code(String, language: String?)
+    case text(String, source: Range<String.Index>)
+    case code(String, language: String?, source: Range<String.Index>)
 }
 
 extension Message {
@@ -194,28 +178,34 @@ extension Message {
         var lines: [Substring] = []
         var inCode = false
         var language: String?
-        func flush() {
+        /// 正在收的代码块的开头围栏行。
+        var fence: Substring?
+        func flush(closing: Substring?) {
             let joined = lines.joined(separator: "\n")
-            if inCode {
-                list.append(.code(joined, language: language))
-            } else if !joined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                list.append(.text(joined.trimmingCharacters(in: .newlines)))
+            if inCode, let fence {
+                list.append(.code(joined, language: language, source: fence.startIndex..<(closing?.endIndex ?? text.endIndex)))
+            } else if !joined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let first = lines.first, let last = lines.last {
+                let trimmed = joined.trimmingCharacters(in: .newlines)
+                // 拆出来的行连着，拼回去就是原文里的一段；只去掉了首尾的换行，第一次出现的位置就是它
+                let whole = first.startIndex..<last.endIndex
+                list.append(.text(trimmed, source: text[whole].range(of: trimmed) ?? whole))
             }
             lines = []
         }
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("```") {
-                flush()
+                flush(closing: line)
                 inCode.toggle()
                 language = inCode ? trimmed.drop(while: { $0 == "`" }).split(whereSeparator: \.isWhitespace).first.map(String.init) : nil
+                fence = inCode ? line : nil
             } else {
                 lines.append(line)
             }
         }
-        flush()
+        flush(closing: nil)
         if command != nil {
-            if case .text? = list.first {} else { list.insert(.text(""), at: 0) }
+            if case .text? = list.first {} else { list.insert(.text("", source: text.startIndex..<text.startIndex), at: 0) }
         }
         return list
     }
@@ -341,12 +331,5 @@ private struct Rising: ViewModifier, Animatable {
             .offset(y: progress * Metrics.bubbleRise)
             .opacity(1 - progress)
             .environment(\.messageTextSelectable, progress == 0)
-    }
-}
-
-private extension View {
-    @ViewBuilder
-    func textSelectable(_ enabled: Bool) -> some View {
-        if enabled { textSelection(.enabled) } else { textSelection(.disabled) }
     }
 }

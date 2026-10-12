@@ -7,21 +7,25 @@ import UIKit
 /// 长按以后接着拖就是选字，从按下的那个字选到手指下面，开始选时轻震一下、调 dismissActions（操作栏自己收起），
 /// 松手留着选区和系统的编辑菜单。长按期间对话不滚动，所以不和滚动抢。
 /// 平时不开系统的选字，免得长按、双击时它自己选一个词、弹出编辑菜单。
+/// 代码块、表格这类是附件（BlockAttachment）：在卡片上长按、点按、横滑都归卡片自己（长按弹操作栏），选字从正文拖起能拖过卡片；
+/// 拷贝给原文（TextSourceMap）。
 /// fillsWidth：占满给的宽度；不然贴着字的宽度，长的折行。
 struct SelectableTextView: UIViewRepresentable {
     @Environment(\.openURL) private var openURL
-    let text: NSAttributedString
+    let content: TextViewContent
     let inset: CGSize
     let fillsWidth: Bool
     let showActions: () -> Void
     let dismissActions: () -> Void
+
+    private var text: NSAttributedString { content.text }
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
 
     func makeUIView(context: Context) -> UITextView {
-        let view = UITextView(usingTextLayoutManager: true)
+        let view = ProseTextView(usingTextLayoutManager: true)
         view.isEditable = false
         view.isSelectable = false
         view.isScrollEnabled = false
@@ -36,9 +40,11 @@ struct SelectableTextView: UIViewRepresentable {
         let press = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.press(_:)))
         press.minimumPressDuration = 0.4
         press.allowableMovement = 8
+        press.delegate = context.coordinator
         view.addGestureRecognizer(press)
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tap(_:)))
         tap.require(toFail: press)
+        tap.delegate = context.coordinator
         view.addGestureRecognizer(tap)
         let menu = UIEditMenuInteraction(delegate: nil)
         view.addInteraction(menu)
@@ -50,6 +56,9 @@ struct SelectableTextView: UIViewRepresentable {
     func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.parent = self
         view.textContainerInset = UIEdgeInsets(top: inset.height, left: inset.width, bottom: inset.height, right: inset.width)
+        (view as? ProseTextView)?.source = content.source
+        // 附件先换好内容再放字：放字时 TextKit 就会量附件的高
+        context.coordinator.update(content.blocks, environment: EmbeddedEnvironment(context.environment))
         guard context.coordinator.shown != text || context.coordinator.colorScheme != context.environment.colorScheme else { return }
         // 流式回复每 33 毫秒长一截，每次整段重设 attributedText 会让 TextKit 2 把整段从头重排，真机上卡几百毫秒
         // （2026-10-11 iPhone Time Profiler）。新串只是旧串原样接着往后长、外观也没变时，只往 textStorage 末尾补字，
@@ -83,7 +92,7 @@ struct SelectableTextView: UIViewRepresentable {
     /// 把每段字各量几遍，对话一重排（发送、收到回复）就把所有消息重排几遍，主线程卡几百毫秒（2026-10-11 iPhone 实测）。
     func sizeThatFits(_ proposal: ProposedViewSize, uiView view: UITextView, context: Context) -> CGSize? {
         let key = SizeKey(text: text, inset: inset, typeSize: context.environment.dynamicTypeSize,
-                          weight: context.environment.legibilityWeight)
+                          weight: context.environment.legibilityWeight, blocks: context.coordinator.blocksVersion)
         if context.coordinator.sizedFor != key {
             context.coordinator.sizedFor = key
             context.coordinator.sizes = [:]
@@ -104,16 +113,67 @@ struct SelectableTextView: UIViewRepresentable {
         return size
     }
 
-    /// 量出的尺寸取决于这些；变了就重新量。
+    /// 拷贝给原文：有对照时选区换成原文放进剪贴板，只放纯文本。
+    private final class ProseTextView: UITextView {
+        var source: (text: String, map: TextSourceMap)?
+
+        override func copy(_ sender: Any?) {
+            guard let source, let text = source.map.text(for: selectedRange, in: source.text) else { return super.copy(sender) }
+            UIPasteboard.general.string = text
+        }
+    }
+
+    /// 量出的尺寸取决于这些；变了就重新量。blocks 是附件高变了的次数。
     struct SizeKey: Equatable {
         let text: NSAttributedString
         let inset: CGSize
         let typeSize: DynamicTypeSize
         let weight: LegibilityWeight?
+        let blocks: Int
     }
 
-    final class Coordinator: NSObject, UITextViewDelegate, NSTextLayoutManagerDelegate {
+    final class Coordinator: NSObject, UITextViewDelegate, NSTextLayoutManagerDelegate, UIGestureRecognizerDelegate {
         var parent: SelectableTextView?
+        /// 附件的高变了一次加一，量过的尺寸跟着作废。
+        private(set) var blocksVersion = 0
+
+        /// 把内容和环境交给附件。附件的高可能变了（流式时代码越来越长）就重排那一块：字没变时只有这一步，
+        /// 后面接着补了字的，只补末尾的排版不会回头重排前面的附件。
+        func update(_ blocks: [(attachment: BlockAttachment, content: EmbeddedBlock)], environment: EmbeddedEnvironment) {
+            var changed: [BlockAttachment] = []
+            for (attachment, content) in blocks {
+                attachment.resized = { [weak self] in self?.relayout([$0]) }
+                if attachment.update(content, environment: environment) { changed.append(attachment) }
+            }
+            if !changed.isEmpty, shown != nil { relayout(changed) }
+        }
+
+        /// 附件的高变了：重排它所在的那一段，作废量过的尺寸，请 SwiftUI 再量一次。
+        private func relayout(_ changed: [BlockAttachment]) {
+            blocksVersion += 1
+            guard let view, let layout = view.textLayoutManager else { return }
+            let storage = view.textStorage
+            storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                guard let attachment = value as? BlockAttachment, changed.contains(where: { $0 === attachment }),
+                      let start = layout.location(layout.documentRange.location, offsetBy: range.location),
+                      let end = layout.location(start, offsetBy: range.length),
+                      let textRange = NSTextRange(location: start, end: end) else { return }
+                layout.invalidateLayout(for: textRange)
+            }
+            view.setNeedsLayout()
+            view.invalidateIntrinsicContentSize()
+        }
+
+        /// 卡片上的触摸归卡片自己：横滑、按钮、长按弹操作栏都在 SwiftUI 里，这里的点按和长按选字不接。
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            var current = touch.view
+            while let candidate = current, candidate !== view {
+                if candidate is EmbeddedContainerView { return false }
+                current = candidate.superview
+            }
+            return true
+        }
+
         /// 文本视图里现在放的字。
         var shown: NSAttributedString?
         var colorScheme: ColorScheme?

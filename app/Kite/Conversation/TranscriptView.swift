@@ -210,12 +210,8 @@ private struct ItemView: View {
         case .notification(let text):
             EventLabel(text: text, icon: "bell")
         case .text(let text):
-            // 子 agent 做的事、压缩前的原文里 agent 说的话：没有操作栏，Mac 上照样能选字
-            #if os(macOS)
+            // 子 agent 做的事、压缩前的原文里 agent 说的话：没有操作栏，照样能选字
             SelectableMarkdown(source: text)
-            #else
-            MarkdownView(text)
-            #endif
         case .thinking(let text):
             ThinkingRow(text: text)
         case .work(let work):
@@ -268,11 +264,7 @@ private struct CompactedDivider: View {
             }
             .buttonStyle(.pointingPlain)
             if expanded {
-                #if os(macOS)
                 SelectableMarkdown(source: compaction.summary, color: .secondaryLabel).font(Theme.secondary).foregroundStyle(.secondary)
-                #else
-                MarkdownView(compaction.summary).font(Theme.secondary).foregroundStyle(.secondary)
-                #endif
                 HStack(spacing: 16) {
                     if !children.isEmpty {
                         Button(original ? "收起原文" : "显示原文") { withAnimation(.snappy) { original.toggle() } }

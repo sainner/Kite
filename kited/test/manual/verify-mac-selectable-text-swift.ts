@@ -27,6 +27,8 @@ try {
     join(app, 'UI', 'SelectableMarkdown.swift'),
     join(app, 'UI', 'MacSelectableTextView.swift'),
     join(app, 'UI', 'TextKitDecorations.swift'),
+    join(app, 'UI', 'BlockAttachment.swift'),
+    join(app, 'UI', 'TextSourceMap.swift'),
     join(app, 'UI', 'PlatformText.swift'),
     join(app, 'UI', 'Theme.swift'),
     join(app, 'UI', 'InterfaceMode.swift'),

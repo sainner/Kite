@@ -77,6 +77,11 @@ enum ReferenceText {
 
     static func decorate(_ source: AttributedString, scope: ReferenceScope, compact: Bool = true) -> AttributedString {
         var result = AttributedString()
+        var labels = 0
+        func label(_ text: String, from source: AttributedString, link: URL) -> AttributedString {
+            labels += 1
+            return Self.label(text, from: source, link: link, id: labels)
+        }
         for (link, range) in source.runs[\.link] {
             var part = AttributedString(source[range])
             if let link {
@@ -118,10 +123,22 @@ enum ReferenceText {
         return AttributedString(value[start..<end])
     }
 
-    private static func label(_ label: String, from source: AttributedString, link: URL) -> AttributedString {
+    private static func label(_ label: String, from source: AttributedString, link: URL, id: Int) -> AttributedString {
         var result = AttributedString(label)
         if let attributes = source.runs.first?.attributes { result.setAttributes(attributes) }
         result.link = link
+        result[ReferenceOriginalAttribute.self] = ReferenceOriginal(id: id, length: String(source.characters).utf16.count)
         return result
     }
+}
+
+/// 换成文件名显示的引用原来有多长（UTF-16）：显示的字和原文对不上，复制时按它对回原文。id 区分相邻的两个引用。
+nonisolated struct ReferenceOriginal: Hashable, Sendable {
+    let id: Int
+    let length: Int
+}
+
+nonisolated enum ReferenceOriginalAttribute: AttributedStringKey {
+    typealias Value = ReferenceOriginal
+    static let name = "kite.referenceOriginal"
 }
