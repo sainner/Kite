@@ -230,14 +230,14 @@ struct WindowSurface<Content: View, Icon: View, Header: View>: View {
     private func hostedContent(destination: CGPoint) -> some View {
         let area = hostedArea(destination)
         // 托管视图的原点对齐窗口原点（见 HostedContentContainer），正文按它在窗口里的位置摆
+        let placement = HostedPlacement(size: contentSize,
+                                        offset: CGPoint(x: stageOrigin.x + destination.x, y: stageOrigin.y + destination.y),
+                                        extent: CGSize(width: max(stageOrigin.x + area.maxX, 0), height: max(stageOrigin.y + area.maxY, 0)))
         return HostedContent(link: hosted, motion: motion, origin: CGPoint(x: stageOrigin.x + area.minX, y: stageOrigin.y + area.minY),
+                             placement: placement,
                              content: content
                                 .onHover(perform: onHover)
-                                .environment(\.windowHeaderAnchors, hosted)
-                                .frame(width: contentSize.width, height: contentSize.height)
-                                .offset(x: stageOrigin.x + destination.x, y: stageOrigin.y + destination.y)
-                                .frame(width: max(stageOrigin.x + area.maxX, 0), height: max(stageOrigin.y + area.maxY, 0),
-                                       alignment: .topLeading))
+                                .environment(\.windowHeaderAnchors, hosted))
             .frame(width: area.width, height: area.height)
             .modifier(WindowTranslation(point: area.origin))
             .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
@@ -421,6 +421,31 @@ private struct HostedContentFrame: Equatable {
     var shown = true
 }
 
+/// 正文在托管视图里的摆放：排版尺寸、左上角的位置和托管视图要铺多大，都在窗口坐标里。
+private struct HostedPlacement: Equatable {
+    var size = CGSize.zero
+    var offset = CGPoint.zero
+    var extent = CGSize.zero
+}
+
+/// 托管视图里只有 HostedPlaced 读它：尺寸、位置变了只重排正文，不重设托管视图的根（见 HostedContent.updateNSView）。
+@MainActor @Observable private final class HostedPlacementBox {
+    var placement = HostedPlacement()
+}
+
+private struct HostedPlaced<Content: View>: View {
+    let box: HostedPlacementBox
+    let content: Content
+
+    var body: some View {
+        let placement = box.placement
+        content
+            .frame(width: placement.size.width, height: placement.size.height)
+            .offset(x: placement.offset.x, y: placement.offset.y)
+            .frame(width: placement.extent.width, height: placement.extent.height, alignment: .topLeading)
+    }
+}
+
 /// 正文里跟着外框挪动的标题一侧，见 WindowHeaderAnchored。
 @MainActor protocol WindowHeaderFollower: AnyObject {
     /// shift 是相对排版位置要挪的量（左侧按原样、右侧横向取反），titleCut 是标题右边截掉的宽度。
@@ -431,6 +456,7 @@ private struct HostedContentFrame: Equatable {
 @MainActor final class HostedContentLink {
     fileprivate weak var container: HostedContentContainer?
     fileprivate var frame = HostedContentFrame()
+    fileprivate let placement = HostedPlacementBox()
     private let followers = NSHashTable<AnyObject>.weakObjects()
 
     /// 加进来时先按当前这一帧摆好。
@@ -461,14 +487,21 @@ extension EnvironmentValues {
 /// 一半以上花在这上面；离屏对照每帧 8～12 毫秒，只改外层图层后 1～4 毫秒）。
 /// 外层图层的变换 AppKit 和 SwiftUI 都不知道：飞行中按停着时的位置命中，所以只在停着、看得见时接点击；
 /// 收成停靠形状停着时整块隐藏，原尺寸摆着的文本视图不接光标和点击。环境整份转交，同 WindowBackdrop。
+/// 拖缝调整大小时，各窗口的卡片逐帧重算，这里每帧都会被更新。根只在拖缝以外重设：重设一次就是把整份环境重新灌进正文，
+/// 正文里每个读环境的视图、每个 AppKit 视图都要核对一遍，开销跟着正文里的视图多少走。
+/// 拖缝时只把尺寸、位置交给 HostedPlacementBox，正文照常跟着变宽变窄；这期间的根留到松手时补上（HostedContentUpdates），
+/// 外层传进正文的环境变化（如连接提示）也要等松手才生效。2026-10-13 Mac 实测（Debug，台面三个窗口、左边长对话）：
+/// 拖缝时主线程每帧约 27 → 19 毫秒，仍在一帧之上，丢帧没变。
 private struct HostedContent<Content: View>: NSViewRepresentable {
     let link: HostedContentLink
     let motion: WindowMotion
     /// 这个视图左上角在窗口里的位置。
     let origin: CGPoint
+    let placement: HostedPlacement
     let content: Content
 
     func makeNSView(context: Context) -> HostedContentContainer {
+        link.placement.placement = placement
         let container = HostedContentContainer(rootView: rooted(in: context))
         container.motion = motion
         link.container = container
@@ -483,12 +516,18 @@ private struct HostedContent<Content: View>: NSViewRepresentable {
     }
 
     func updateNSView(_ container: HostedContentContainer, context: Context) {
-        container.host.rootView = rooted(in: context)
+        if link.placement.placement != placement { link.placement.placement = placement }
+        if WindowLayout.anyResizing {
+            HostedContentUpdates.defer(container, rooted(in: context))
+        } else {
+            HostedContentUpdates.cancel(container)
+            container.host.rootView = rooted(in: context)
+        }
         container.origin = origin
     }
 
     private func rooted(in context: Context) -> AnyView {
-        AnyView(content.environment(\.self, context.environment))
+        AnyView(HostedPlaced(box: link.placement, content: content).environment(\.self, context.environment))
     }
 }
 
@@ -553,6 +592,32 @@ private final class HostedContentContainer: NSView {
         clip.path = RoundedRectangle(cornerRadius: state.radius).path(in: rect).cgPath
         clip.opacity = Float(state.opacity)
         CATransaction.commit()
+    }
+}
+
+/// 拖缝期间没重设的根，松手时一起补上（WindowLayout.finishResize）。
+@MainActor enum HostedContentUpdates {
+    private static var pending: [ObjectIdentifier: Pending] = [:]
+
+    private struct Pending {
+        weak var container: HostedContentContainer?
+        let root: AnyView
+    }
+
+    fileprivate static func `defer`(_ container: HostedContentContainer, _ root: AnyView) {
+        pending[ObjectIdentifier(container)] = Pending(container: container, root: root)
+    }
+
+    fileprivate static func cancel(_ container: HostedContentContainer) {
+        pending[ObjectIdentifier(container)] = nil
+    }
+
+    static func flush() {
+        let updates = pending.values
+        pending = [:]
+        for update in updates {
+            update.container?.host.rootView = update.root
+        }
     }
 }
 
