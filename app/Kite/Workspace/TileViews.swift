@@ -625,6 +625,11 @@ struct PaneCard: View {
             let onScreen = !minimized
             if presence.onScreen != onScreen { presence.onScreen = onScreen }
         }
+        // 正文标题栏按这几项算给窗口按钮让出多少，交给 PaneCardHeader，见 PaneHeaderControlsSpace
+        .onChange(of: HeaderPlacement(minimized: minimized, width: width, hasThread: group.workspace?.thread(in: pane) != nil), initial: true) { _, placement in
+            header.layout = workspace
+            if header.placement != placement { header.placement = placement }
+        }
         .modifier(DragStarted(layout: workspace) {
             if header.hovered { header.hovered = false }
             onHover(false)
@@ -712,7 +717,8 @@ struct PaneCard: View {
 
 /// 卡片标题栏的悬停和几项实际尺寸，由外框、按钮组和正文报上来，只有读它们的几层随之更新：卡片每重算一次，
 /// 正文的托管视图就整个更新一遍。缩小、恢复时悬停跟着结束、剩一个窗口时按钮组少了展开，以前首帧、结束时卡片都要多算一两轮。
-@Observable private final class PaneCardHeader {
+/// 正文标题栏给窗口按钮让位也按它算（PaneHeaderControlsSpace），悬停一变只有标题栏读它的那一层更新。
+@Observable private final class PaneCardHeader: PaneHeaderControlsSpace {
     var hovered = false
     /// 正文标题栏右侧菜单的宽度。
     var menuWidth: CGFloat = 0
@@ -720,6 +726,25 @@ struct PaneCard: View {
     var controlsSize = CGSize.zero
     /// 正文标题栏的实际高度。
     var height: CGFloat = 0
+    /// 卡片报来的几项，正文标题栏按它们算让出多少（见 PaneHeaderControlsSpace）。
+    var placement = HeaderPlacement()
+    @ObservationIgnored weak var layout: WindowLayout?
+
+    var inset: CGFloat {
+        guard let layout else { return 0 }
+        let controls = PaneHeaderControls(header: self, layout: layout, minimized: placement.minimized, width: placement.width,
+                                          hasThread: placement.hasThread)
+        return controls.shown ? controlsSize.width + Metrics.paneButtonGap : 0
+    }
+
+    var minHeight: CGFloat { controlsSize.height }
+}
+
+/// 窗口按钮放不放得下、该不该露出来要看的卡片状态。
+private struct HeaderPlacement: Equatable {
+    var minimized = false
+    var width: CGFloat = 0
+    var hasThread = false
 }
 
 /// 窗口按钮放在哪：标题栏上露出来、藏着，还是收进正文的更多菜单。读 PaneCardHeader 的几层各自用它算。
@@ -744,7 +769,7 @@ private struct PaneHeaderControls {
     }
 }
 
-/// 正文标题栏按窗口按钮让位、收进菜单；在正文的托管视图里读，卡片不跟着重算。
+/// 正文标题栏按窗口按钮让位（见 PaneHeaderControlsSpace）、收进菜单；在正文的托管视图里读，卡片不跟着重算。
 private struct PaneHeaderEnvironment: ViewModifier {
     let controls: PaneHeaderControls
     let actions: PaneWindowActions?
@@ -752,8 +777,7 @@ private struct PaneHeaderEnvironment: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.paneOverflowActions, controls.inMenu ? actions : nil)
-            .environment(\.paneHeaderControlsInset, controls.shown ? controls.header.controlsSize.width + Metrics.paneButtonGap : 0)
-            .environment(\.paneHeaderMinHeight, controls.header.controlsSize.height)
+            .environment(\.paneHeaderControlsSpace, controls.header)
     }
 }
 

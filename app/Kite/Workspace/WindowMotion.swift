@@ -208,7 +208,11 @@ struct WindowSurface<Content: View, Icon: View, Header: View>: View {
         #endif
         .transaction { $0.windowContentAnimation = $0.animation; $0.animation = nil }
         .environment(\.windowMotion, motion)
+        // 标题两侧按正文尺寸贴外框（见 WindowHeaderAnchor）。Mac 上两侧的挪动在图层上算（见 hostedFrame），不放进环境：
+        // 放了的话正文尺寸一变就是一次环境变化，窗口正文里每个文本视图都要跟着更新
+        #if !os(macOS)
         .environment(\.windowContentSize, contentSize)
+        #endif
     }
 
     /// 描边压在舞台外面，不经过舞台的圆角裁切，外缘与外框贴合。
@@ -259,17 +263,18 @@ struct WindowSurface<Content: View, Icon: View, Header: View>: View {
     }
 
     /// 正文这一帧的摆放，都在托管视图（area）的坐标里：排在 destination、原尺寸的正文按 scale 缩放、左上角落在 contentOrigin，
-    /// 按外框裁切、按 contentOpacity 淡出。标题两侧在停着时的位置之外还要挪多少、标题右边截掉多少，见 WindowHeaderAnchored。
+    /// 按外框裁切、按 contentOpacity 淡出。标题两侧要挪多少、标题右边截掉多少，见 WindowHeaderAnchored。
     private func hostedFrame(_ pose: WindowPose, destination: CGPoint, area: CGRect) -> HostedContentFrame {
         let origin = pose.contentOrigin(size: contentSize)
         let transform = CGAffineTransform(a: pose.scale, b: 0, c: 0, d: pose.scale,
                                           tx: origin.x - area.minX - pose.scale * (destination.x - area.minX),
                                           ty: origin.y - area.minY - pose.scale * (destination.y - area.minY))
-        let shift = pose.headerShift(contentSize: contentSize), rest = target.headerShift(contentSize: contentSize)
+        let shift = pose.headerShift(contentSize: contentSize)
+        // 按这一帧看不看得见：排布刚改的那次更新里 motion 还没开始走，只按终点和 moving 算的话，缩小时整块正文先藏起来、
+        // 开始走时再露出来，正文的视图树来回走两遍（2026-10-12 Mac 实测，首帧多 2～3 毫秒）
         return HostedContentFrame(transform: transform, clip: pose.frame.offsetBy(dx: -area.minX, dy: -area.minY),
-                                  radius: pose.radius, opacity: pose.contentOpacity,
-                                  headerShift: CGVector(dx: shift.dx - rest.dx, dy: shift.dy - rest.dy),
-                                  titleCut: max(0, 2 * shift.dx), shown: target.contentOpacity > 0 || motion.moving)
+                                  radius: pose.radius, opacity: pose.contentOpacity, headerShift: shift,
+                                  titleCut: max(0, 2 * shift.dx), shown: target.contentOpacity > 0 || pose.contentOpacity > 0)
     }
     #endif
 
@@ -408,7 +413,7 @@ private struct HostedContentFrame: Equatable {
     var clip = CGRect.zero
     var radius: CGFloat = 0
     var opacity: Double = 1
-    /// 标题两侧在停着的位置之外还要挪的量，左侧按原样、右侧横向取反。
+    /// 标题两侧相对排版位置要挪的量，左侧按原样、右侧横向取反。标题栏看得见、停着时外框和正文一样大，不用挪。
     var headerShift = CGVector.zero
     /// 标题右边截掉的宽度。
     var titleCut: CGFloat = 0
@@ -418,7 +423,7 @@ private struct HostedContentFrame: Equatable {
 
 /// 正文里跟着外框挪动的标题一侧，见 WindowHeaderAnchored。
 @MainActor protocol WindowHeaderFollower: AnyObject {
-    /// shift 是在停着的位置之外还要挪的量（左侧按原样、右侧横向取反），titleCut 是标题右边截掉的宽度。
+    /// shift 是相对排版位置要挪的量（左侧按原样、右侧横向取反），titleCut 是标题右边截掉的宽度。
     func follow(shift: CGVector, titleCut: CGFloat)
 }
 
