@@ -8,7 +8,7 @@ import UIKit
 /// 松手留着选区和系统的编辑菜单。长按期间对话不滚动，所以不和滚动抢。
 /// 平时不开系统的选字，免得长按、双击时它自己选一个词、弹出编辑菜单。
 /// 代码块、表格这类是附件（BlockAttachment）：在卡片上长按、点按、横滑都归卡片自己（长按弹操作栏），选字从正文拖起能拖过卡片；
-/// 拷贝给原文（TextSourceMap）。
+/// 拷贝给原文（TextSourceMap）。补字、量尺寸、附件重排与 Mac 共用，见 ProseTextCoordinator。
 /// fillsWidth：占满给的宽度；不然贴着字的宽度，长的折行。
 struct SelectableTextView: UIViewRepresentable {
     @Environment(\.openURL) private var openURL
@@ -59,20 +59,10 @@ struct SelectableTextView: UIViewRepresentable {
         (view as? ProseTextView)?.source = content.source
         // 附件先换好内容再放字：放字时 TextKit 就会量附件的高
         context.coordinator.update(content.blocks, environment: EmbeddedEnvironment(context.environment))
-        guard context.coordinator.shown != text || context.coordinator.colorScheme != context.environment.colorScheme else { return }
-        // 流式回复每 33 毫秒长一截，每次整段重设 attributedText 会让 TextKit 2 把整段从头重排，真机上卡几百毫秒
-        // （2026-10-11 iPhone Time Profiler）。新串只是旧串原样接着往后长、外观也没变时，只往 textStorage 末尾补字，
-        // TextKit 2 从编辑处起重排；选区在前面的字上，不动它和 isSelectable。
-        // 前缀用 isEqual 连属性一起比：装饰按值比，但引用图标的 NSTextAttachment 按身份比，带图标的段落会落到下面的整段路径，接受。
-        // 只能碰 textStorage，读 layoutManager 会让视图退回 TextKit 1。
-        if let old = context.coordinator.shown, context.coordinator.colorScheme == context.environment.colorScheme,
-           text.length > old.length,
-           text.attributedSubstring(from: NSRange(location: 0, length: old.length)).isEqual(to: old) {
-            let added = text.attributedSubstring(from: NSRange(location: old.length, length: text.length - old.length))
-            view.textStorage.replaceCharacters(in: NSRange(location: old.length, length: 0), with: added)
-            context.coordinator.shown = text
-            return
-        }
+        let sameScheme = context.coordinator.colorScheme == context.environment.colorScheme
+        guard context.coordinator.shown != text || !sameScheme else { return }
+        // 外观没变、只是接着长时只补末尾的字，不动选区和 isSelectable
+        if sameScheme, context.coordinator.appendTail(of: text) { return }
         // 外观变化时也换掉已经解析成 CGColor 的装饰；只换颜色时保留选区。
         let textChanged = context.coordinator.shown?.string != text.string
         let selection = view.selectedRange
@@ -88,29 +78,14 @@ struct SelectableTextView: UIViewRepresentable {
         context.coordinator.refreshingAppearance = false
     }
 
-    /// 高度照文本视图自己排出来的算。量过的按给的宽度记下：文本视图每量一次都把字从头排一遍，SwiftUI 一次排版会用几种宽度
-    /// 把每段字各量几遍，对话一重排（发送、收到回复）就把所有消息重排几遍，主线程卡几百毫秒（2026-10-11 iPhone 实测）。
+    /// 高度照文本视图自己排出来的算，量过的按给的宽度记下：对话一重排（发送、收到回复）就把所有消息各量几遍，
+    /// 不记的话主线程卡几百毫秒（2026-10-11 iPhone 实测）。
     func sizeThatFits(_ proposal: ProposedViewSize, uiView view: UITextView, context: Context) -> CGSize? {
-        let key = SizeKey(text: text, inset: inset, typeSize: context.environment.dynamicTypeSize,
-                          weight: context.environment.legibilityWeight, blocks: context.coordinator.blocksVersion)
-        if context.coordinator.sizedFor != key {
-            context.coordinator.sizedFor = key
-            context.coordinator.sizes = [:]
+        context.coordinator.size(inset: inset, environment: context.environment, width: proposal.width) {
+            let most = (proposal.width ?? .greatestFiniteMagnitude) - inset.width * 2
+            let width = (fillsWidth && proposal.width != nil ? most : ProseTextCoordinator.naturalWidth(of: text, most: most)) + inset.width * 2
+            return CGSize(width: width, height: view.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
         }
-        if let size = context.coordinator.sizes[proposal.width] { return size }
-        let most = (proposal.width ?? .greatestFiniteMagnitude) - inset.width * 2
-        var width = most
-        if !fillsWidth || proposal.width == nil {
-            let natural = text.boundingRect(with: CGSize(width: most, height: .greatestFiniteMagnitude),
-                                            options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
-            // 多留一点，免得文本视图排出来比量的宽、多折一行
-            width = min(ceil(natural.width) + 1, most)
-        }
-        width += inset.width * 2
-        let height = view.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
-        let size = CGSize(width: width, height: height)
-        context.coordinator.sizes[proposal.width] = size
-        return size
     }
 
     /// 拷贝给原文：有对照时选区换成原文放进剪贴板，只放纯文本。
@@ -123,46 +98,8 @@ struct SelectableTextView: UIViewRepresentable {
         }
     }
 
-    /// 量出的尺寸取决于这些；变了就重新量。blocks 是附件高变了的次数。
-    struct SizeKey: Equatable {
-        let text: NSAttributedString
-        let inset: CGSize
-        let typeSize: DynamicTypeSize
-        let weight: LegibilityWeight?
-        let blocks: Int
-    }
-
-    final class Coordinator: NSObject, UITextViewDelegate, NSTextLayoutManagerDelegate, UIGestureRecognizerDelegate {
+    final class Coordinator: ProseTextCoordinator, UITextViewDelegate, UIGestureRecognizerDelegate {
         var parent: SelectableTextView?
-        /// 附件的高变了一次加一，量过的尺寸跟着作废。
-        private(set) var blocksVersion = 0
-
-        /// 把内容和环境交给附件。附件的高可能变了（流式时代码越来越长）就重排那一块：字没变时只有这一步，
-        /// 后面接着补了字的，只补末尾的排版不会回头重排前面的附件。
-        func update(_ blocks: [(attachment: BlockAttachment, content: EmbeddedBlock)], environment: EmbeddedEnvironment) {
-            var changed: [BlockAttachment] = []
-            for (attachment, content) in blocks {
-                attachment.resized = { [weak self] in self?.relayout([$0]) }
-                if attachment.update(content, environment: environment) { changed.append(attachment) }
-            }
-            if !changed.isEmpty, shown != nil { relayout(changed) }
-        }
-
-        /// 附件的高变了：重排它所在的那一段，作废量过的尺寸，请 SwiftUI 再量一次。
-        private func relayout(_ changed: [BlockAttachment]) {
-            blocksVersion += 1
-            guard let view, let layout = view.textLayoutManager else { return }
-            let storage = view.textStorage
-            storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
-                guard let attachment = value as? BlockAttachment, changed.contains(where: { $0 === attachment }),
-                      let start = layout.location(layout.documentRange.location, offsetBy: range.location),
-                      let end = layout.location(start, offsetBy: range.length),
-                      let textRange = NSTextRange(location: start, end: end) else { return }
-                layout.invalidateLayout(for: textRange)
-            }
-            view.setNeedsLayout()
-            view.invalidateIntrinsicContentSize()
-        }
 
         /// 卡片上的触摸归卡片自己：横滑、按钮、长按弹操作栏都在 SwiftUI 里，这里的点按和长按选字不接。
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
@@ -174,14 +111,8 @@ struct SelectableTextView: UIViewRepresentable {
             return true
         }
 
-        /// 文本视图里现在放的字。
-        var shown: NSAttributedString?
         var colorScheme: ColorScheme?
-        /// 量过的尺寸，按给的宽度记。
-        var sizedFor: SizeKey?
-        var sizes: [CGFloat?: CGSize] = [:]
         var refreshingAppearance = false
-        weak var view: UITextView?
         var menu: UIEditMenuInteraction?
         /// 长按的地方和那里的字；接着拖挪过 slop 才算选字。
         private var start: CGPoint = .zero
@@ -264,11 +195,6 @@ struct SelectableTextView: UIViewRepresentable {
             view.selectedTextRange = nil
             view.isSelectable = false
             view.resignFirstResponder()
-        }
-
-        nonisolated func textLayoutManager(_ textLayoutManager: NSTextLayoutManager, textLayoutFragmentFor location: any NSTextLocation,
-                                           in textElement: NSTextElement) -> NSTextLayoutFragment {
-            DecoratedFragment.fragment(for: textElement)
         }
     }
 }

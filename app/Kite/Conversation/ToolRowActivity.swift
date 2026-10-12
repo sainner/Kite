@@ -4,7 +4,6 @@ import SwiftUI
 struct ToolRowActivity: ViewModifier {
     let state: Call.State?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.panePresence) private var presence
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -14,7 +13,7 @@ struct ToolRowActivity: ViewModifier {
             content.waitingBreath()
         } else if state == .running {
             // 窗口不在屏上时停住，不换分支：换分支会让回到屏上的工具行重建一次
-            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: presence?.onScreen == false)) { timeline in
+            PaneTimeline { timeline in
                 // 先在 Double 中收敛到一周期，再传入 Metal，避免大时间戳损失逐帧精度。
                 let phase = timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2) / 2
                 let travel = UnitCurve.easeInOut.value(at: min(phase / 0.88, 1))

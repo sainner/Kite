@@ -1,7 +1,7 @@
 /** 工作机共享的可编辑上下文：事件通知、上下文压缩与辅助生成（标题、签名）的模板，在生成时读取并固定快照。代理的提示词属于角色，见 roles.ts。 */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { agentModelCatalog, reasoningLevels } from './agents/capabilities.ts';
+import { agentModelCatalog } from './agents/capabilities.ts';
 import { agentDefinitionSchema } from './agents/definition.ts';
 import { agentModels } from './agents/models.ts';
 import { KiteError } from './errors.ts';
@@ -23,10 +23,30 @@ const editableScenes: Partial<Record<ContextScene, 'notification' | 'compaction'
   'thread.title': 'generation', 'template.emblem': 'generation', 'thread.voice': 'generation',
 };
 
-/** 辅助生成统一用工作机的 ChatGPT 订阅，只能选其中的型号；内置模板默认用最轻的一档。语音识别另选识别模型，见 voice/。 */
-const generationModels = agentModels.models;
-const defaultGenerationModel = { model: generationModels.find((model) => model.tier === 'luna')!.id, reasoning: 'low' };
-const speechScene: ContextScene = 'thread.voice';
+/**
+ * 辅助生成场景可选的模型，连同编辑器里模型一节的标题与说明。一般用工作机的 ChatGPT 订阅，只能选其中的型号，内置模板默认用最轻的一档；
+ * 语音识别另选识别模型（见 voice/），没有思考强度，也没有计数接口，背景文本按默认模型估。
+ */
+interface SceneModels {
+  title: string;
+  note: string;
+  vendors: { id: string; title: string }[];
+  models: { id: string; reasoning: string[] }[];
+  counts: boolean;
+  default: { model: string; reasoning: string };
+}
+
+function sceneModels(scene: ContextScene): SceneModels {
+  if (scene === 'thread.voice') {
+    return { title: '识别模型', note: '使用 Kite 账号凭据里的语音识别 Key。', vendors: speechVendors, models: speechModels, counts: false,
+      default: defaultSpeechModel };
+  }
+  const catalog = agentModelCatalog();
+  const models = catalog.models.filter((model) => agentModels.models.some((entry) => entry.id === model.id));
+  return { title: '模型', note: '使用工作机的 ChatGPT 订阅，不调用工具。', models, counts: true,
+    vendors: catalog.vendors.filter((vendor) => models.some((model) => model.vendor === vendor.id)),
+    default: { model: agentModels.models.find((model) => model.tier === 'luna')!.id, reasoning: 'low' } };
+}
 
 const templateSchema = z.object({ definition: contextDefinitionSchema, model: agentDefinitionSchema.shape.model.optional() }).strict();
 /** 随账号保存的模板内容：组装定义，辅助生成的另带模型与思考强度。工具属于角色，模板没有。 */
@@ -45,13 +65,11 @@ function parse(value: unknown): Template {
   if (!kind) throw new KiteError('该场景尚未开放模板编辑');
   if (kind !== 'generation') {
     if (model) throw new KiteError('只有辅助生成的模板可以设置模型');
-  } else if (definition.scene === speechScene) {
-    if (!model || !speechModels.some((entry) => entry.id === model.model)) throw new KiteError('语音识别只能使用目录里的识别模型');
-    if (model.reasoning !== 'default') throw new KiteError('语音识别没有思考强度');
   } else {
     if (!model) throw new KiteError('辅助生成的模板须设置模型');
-    if (!generationModels.some((entry) => entry.id === model.model)) throw new KiteError('辅助生成只能使用 ChatGPT 订阅里的模型');
-    if (!reasoningLevels.includes(model.reasoning)) throw new KiteError('思考强度无效');
+    const entry = sceneModels(definition.scene).models.find((candidate) => candidate.id === model.model);
+    if (!entry) throw new KiteError('只能使用这个模板可选的模型');
+    if (entry.reasoning.length ? !entry.reasoning.includes(model.reasoning) : model.reasoning !== 'default') throw new KiteError('思考强度无效');
   }
   return result.data;
 }
@@ -62,23 +80,21 @@ export class ContextTemplates {
 
   constructor(private store: Store, defaults: ContextDefinition[]) {
     this.defaults = new Map(defaults.map((definition) => [definition.id, parse({ definition,
-      ...(editableScenes[definition.scene] === 'generation'
-        ? { model: definition.scene === speechScene ? defaultSpeechModel : defaultGenerationModel } : {}) })]));
+      ...(editableScenes[definition.scene] === 'generation' ? { model: sceneModels(definition.scene).default } : {}) })]));
     store.transaction(() => {
       for (const template of store.contextTemplates()) if (this.isDefault(template)) store.deleteContextTemplate(template.definition.id);
     });
   }
 
-  /** 带上辅助生成可选的模型目录；语音识别的另列在 speech。 */
+  /** 辅助生成的场景带上可选的模型。 */
   list() {
-    const catalog = agentModelCatalog();
-    const models = catalog.models.filter((model) => generationModels.some((entry) => entry.id === model.id));
     return {
       templates: [...this.defaults.keys()].sort().map((id) => snapshot(this.current(id)!)),
-      scenes: Object.entries(editableScenes).map(([id, kind]) => ({ id, kind, ...contextScenes[id as ContextScene] })),
-      vendors: catalog.vendors.filter((vendor) => models.some((model) => model.vendor === vendor.id)),
-      models,
-      speech: { vendors: speechVendors, models: speechModels },
+      scenes: Object.entries(editableScenes).map(([id, kind]) => {
+        if (kind !== 'generation') return { id, kind, ...contextScenes[id as ContextScene] };
+        const { default: _, ...models } = sceneModels(id as ContextScene);
+        return { id, kind, ...contextScenes[id as ContextScene], models };
+      }),
     };
   }
 

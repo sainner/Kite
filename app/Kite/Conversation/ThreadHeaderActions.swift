@@ -90,13 +90,9 @@ struct ThreadHeaderActions: View {
         let status = savingModel ? "正在切换…" : loadingModels ? "正在读取模型…" : availableModels.isEmpty ? "暂无可用模型" : nil
         let vendors = thread.agentCapabilities?.vendors ?? []
         let current = availableModels.first { $0.id == modelName }?.vendor
-        let sections = vendors.map { vendor in
-            ThreadModelMenu.Vendor(id: vendor.id, title: vendors.count > 1 ? vendor.title : nil,
-                models: availableModels.filter { $0.vendor == vendor.id }.map { model in
-                    .init(id: model.id, name: model.name, selected: model.id == modelName,
-                          enabled: canChangeModel && (model.vendor == current || canChangeVendor))
-                })
-        }.filter { !$0.models.isEmpty }
+        let sections = ThreadModelMenu.sections(vendors: vendors, models: availableModels, selected: modelName) { model in
+            canChangeModel && (model.vendor == current || canChangeVendor)
+        }
         let locked = !canChangeVendor && thread.state?.capabilities.switchRuntime == false && sections.count > 1
         return ThreadModelMenu(vendors: status == nil ? sections : [], status: status,
                                note: status == nil && locked ? "运行中、有排队消息或待确认恢复时不能换厂商" : nil,
@@ -169,5 +165,18 @@ struct ThreadHeaderActions: View {
                 }
             } catch { modelError = error.localizedDescription }
         }
+    }
+}
+
+extension ThreadModelMenu {
+    /// 每个厂商一节，没有模型的厂商不列。
+    static func sections(vendors: [AgentCapabilities.Vendor], models: [AgentCapabilities.Model], selected: String?,
+                         enabled: (AgentCapabilities.Model) -> Bool) -> [Vendor] {
+        vendors.map { vendor in
+            Vendor(id: vendor.id, title: vendors.count > 1 ? vendor.title : nil,
+                   models: models.filter { $0.vendor == vendor.id }.map { model in
+                       Model(id: model.id, name: model.name, selected: model.id == selected, enabled: enabled(model))
+                   })
+        }.filter { !$0.models.isEmpty }
     }
 }

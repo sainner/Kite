@@ -97,10 +97,12 @@ class VoiceSession {
     try {
       const template = options.template();
       const model = speechModels.find((entry) => entry.id === template.model?.model) ?? speechModels[0]!;
-      const key = (await options.keys()).find((entry) => entry.provider === model.vendor)?.key;
-      if (!key) throw new KiteError('没有语音识别凭据：在 Kite 账号的凭据里添加千问（百炼）的 API Key');
       const thread = this.socket.data.thread;
-      const messages = thread ? voiceMaterial(await options.history(thread)) : '';
+      // 凭据要问账号服务，和读会话记录同时进行
+      const [keys, history] = await Promise.all([options.keys(), thread ? options.history(thread) : undefined]);
+      const key = keys.find((entry) => entry.provider === model.vendor)?.key;
+      if (!key) throw new KiteError('没有语音识别凭据：在 Kite 账号的凭据里添加千问（百炼）的 API Key');
+      const messages = history ? voiceMaterial(history) : '';
       const { instructions, input } = assembleContext({ definition: template.definition, bindings: { 'thread.messages': { text: messages } } });
       const context = [instructions, input].filter(Boolean).join('\n\n');
       if (this.ended) return;

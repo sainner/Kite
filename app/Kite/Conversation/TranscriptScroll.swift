@@ -48,7 +48,8 @@ final class TranscriptScroll {
     @ObservationIgnored private var visible: CGFloat = 0
     /// 从手指按下到惯性结束都交给用户；此时也暂停尺寸变化的自动对齐。
     private var phase = ScrollPhase.idle
-    private var userScrolling: Bool { phase == .tracking || phase == .interacting || phase == .decelerating }
+    /// 人在滚。按需排版这时只量快进可见区的组。
+    var userScrolling: Bool { phase == .tracking || phase == .interacting || phase == .decelerating }
     /// 同一次回调里的尺寸和位置，避免分开读取时混用折叠前后的坐标。
     @ObservationIgnored private var geometry: ScrollGeometry?
     /// 等着让留白跟上变矮的可见区。
@@ -62,8 +63,6 @@ final class TranscriptScroll {
         window.scroll = self
     }
 
-    /// 人在滚：按需排版这时只量快进可见区的组。
-    var userScrolls: Bool { userScrolling }
     /// 程序在滚（发送后滑到最底下）：按需排版这时不换高，不和那一下滑抢位置。
     var gliding: Bool { !glides.isEmpty }
 

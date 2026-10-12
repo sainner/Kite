@@ -132,8 +132,7 @@ final class WindowLayout {
     func activate(_ pane: Pane, in bounds: CGRect? = nil) {
         guard panes.contains(pane) else { return }
         if isFixed { focus(pane); return }
-        motionKind = .settle
-        withLayoutAnimation(.windowSettle) {
+        withLayoutAnimation(.settle) {
             drag = nil
             carriedFocus = nil
             if docked.contains(pane) {
@@ -208,8 +207,7 @@ final class WindowLayout {
         guard !isFixed else { return }
         let tile = arrangement.tile(for: panes)
         let remaining = panes.filter { !(tile?.panes.contains($0) ?? false) }
-        motionKind = .settle
-        withLayoutAnimation(.windowSettle) {
+        withLayoutAnimation(.settle) {
             drag = nil
             carriedFocus = nil
             root = tile
@@ -229,8 +227,7 @@ final class WindowLayout {
             return
         }
         guard root?.panes.contains(pane) == true else { return }
-        motionKind = .settle
-        withLayoutAnimation(.windowSettle) {
+        withLayoutAnimation(.settle) {
             drag = nil
             root = root?.removing(pane)
             docked.append(pane)
@@ -243,8 +240,7 @@ final class WindowLayout {
     func expand(_ pane: Pane) {
         guard !isFixed else { return }
         guard shown?.panes.contains(pane) == true else { return }
-        motionKind = .settle
-        withLayoutAnimation(.windowSettle) {
+        withLayoutAnimation(.settle) {
             drag = nil
             carriedFocus = nil
             docked = docked.filter { $0 != pane } + (root?.panes ?? []).filter { $0 != pane }
@@ -303,8 +299,7 @@ final class WindowLayout {
 
     /// 分栏拖动只改内存，松手后吸附到模块并保存最终比例。
     func finishResize() {
-        motionKind = .settle
-        withLayoutAnimation(.windowSettle) { resizing = nil }
+        withLayoutAnimation(.settle) { resizing = nil }
         save()
     }
 
@@ -387,8 +382,7 @@ final class WindowLayout {
 
     private func showPreview(_ next: CardDrag) {
         clearPendingPreview()
-        motionKind = .preview
-        withLayoutAnimation(.windowPreview) { drag = next }
+        withLayoutAnimation(.preview) { drag = next }
     }
 
     private func clearPendingPreview() {
@@ -403,6 +397,14 @@ final class WindowLayout {
         return sizes(current) != sizes(next)
     }
 
+    /// 排布变化按 kind 的曲线和时长在动画里提交，逐帧取样读同一个 motionKind；事务上标明，见 Transaction.windowLayoutChange。
+    private func withLayoutAnimation(_ kind: WindowMotionKind, _ body: () -> Void) {
+        motionKind = kind
+        var transaction = Transaction(animation: kind.animation)
+        transaction.windowLayoutChange = true
+        withTransaction(transaction, body)
+    }
+
     func drop(in bounds: CGRect) {
         guard !isFixed else { return }
         // 按指针所在的落点放，还没换上预览的也算
@@ -410,8 +412,7 @@ final class WindowLayout {
         let next = pendingDrag ?? committed
         clearPendingPreview()
         // 一次提交树和停靠顺序；同一张 CardSlot 在圆和卡片之间直接动画，不留下延迟回调覆盖新拖动。
-        motionKind = .settle
-        withLayoutAnimation(.windowSettle) {
+        withLayoutAnimation(.settle) {
             switch next.spot {
             case .dock:
                 carriedFocus = nil
@@ -432,12 +433,6 @@ final class WindowLayout {
     }
 }
 
-/// 排布变化在动画里提交，并在事务上标明，见 Transaction.windowLayoutChange。
-private func withLayoutAnimation(_ animation: Animation, _ body: () -> Void) {
-    var transaction = Transaction(animation: animation)
-    transaction.windowLayoutChange = true
-    withTransaction(transaction, body)
-}
 
 /// 本地文件只记录窗口 ID 和布局数值，不缓存窗口目标或业务对象。
 private struct SavedLayout: Codable {

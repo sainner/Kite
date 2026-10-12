@@ -5,6 +5,7 @@
 import type { ResolvedSecret, SecretMetadata } from './secrets.ts';
 import { KiteError } from './errors.ts';
 import type { GitCredential } from './git-credential.ts';
+import type { SpeechProvider } from './voice/models.ts';
 
 export interface AccountLink {
   url: string;
@@ -34,7 +35,7 @@ export interface ApiKey {
 export interface SpeechKey {
   id: string;
   name: string;
-  provider: 'dashscope';
+  provider: SpeechProvider;
   key: string;
 }
 

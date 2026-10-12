@@ -67,17 +67,16 @@ private enum ContextMarkdown {
             for match in code.matches(in: text, range: line) {
                 // 反引号也包在底色里；字体按所在的标题、粗体换成等宽，字重和倾斜留着。
                 storage.enumerateAttribute(.font, in: match.range) { value, run, _ in
-                    if let font = value as? ContextFont { storage.addAttribute(.font, value: InlineCodeStyle.font(relativeTo: font), range: run) }
+                    if let font = value as? PlatformFont { storage.addAttribute(.font, value: InlineCodeStyle.font(relativeTo: font), range: run) }
                 }
                 storage.addAttribute(.inlineCodeDecoration, value: codeDecoration, range: match.range)
                 mark(storage, style, NSRange(location: match.range.location, length: 1), NSRange(location: NSMaxRange(match.range) - 1, length: 1))
-                // 和对话一样只加大代码两侧的字距，底色的内边距不压到旁边的字；行首行尾不加。
-                let spacing = Metrics.inlineCodePadding + Metrics.inlineCodeGap
+                // 和对话一样只加大代码两侧的字距，见 InlineCodeSpacing。
                 if match.range.location > line.location {
-                    storage.addAttribute(.kern, value: spacing, range: NSRange(location: match.range.location - 1, length: 1))
+                    storage.addAttribute(.kern, value: InlineCodeSpacing.kern, range: NSRange(location: match.range.location - 1, length: 1))
                 }
                 if NSMaxRange(match.range) < NSMaxRange(line) {
-                    storage.addAttribute(.kern, value: spacing, range: NSRange(location: NSMaxRange(match.range) - 1, length: 1))
+                    storage.addAttribute(.kern, value: InlineCodeSpacing.kern, range: NSRange(location: NSMaxRange(match.range) - 1, length: 1))
                 }
             }
         }
@@ -92,7 +91,7 @@ private enum ContextMarkdown {
 
     private static func trait(_ storage: NSTextStorage, bold: Bool, range: NSRange) {
         storage.enumerateAttribute(.font, in: range) { value, run, _ in
-            if let font = value as? ContextFont { storage.addAttribute(.font, value: ContextTextStyle.adding(bold: bold, to: font), range: run) }
+            if let font = value as? PlatformFont { storage.addAttribute(.font, value: font.addingTraits(bold ? .bold : .italic) ?? font, range: run) }
         }
     }
 
@@ -147,7 +146,7 @@ final class ContextTextCoordinator: NSObject {
     #endif
     /// 文本视图里现在的正文。
     private var shown: [ContextPart] = []
-    private var chips: [String: ContextImage] = [:]
+    private var chips: [String: PlatformImage] = [:]
     /// 量高度用的另一个排版，挂在同一份内容上，不动输入框自己的排版。UITextView 自己量一次要把排版宽度改过去再改回来，
     /// 整段重排两遍；窄屏拉侧栏、底栏时整列每帧重新布局，每帧都会来问高度。量过的宽度记着，文字或样式变了才清。
     private let measuring = NSTextLayoutManager()
@@ -290,7 +289,7 @@ final class ContextTextCoordinator: NSObject {
         return result.normalized
     }
 
-    private func chip(_ name: String) -> ContextImage? {
+    private func chip(_ name: String) -> PlatformImage? {
         if let image = chips[name] { return image }
         let image = style.chip(name)
         chips[name] = image

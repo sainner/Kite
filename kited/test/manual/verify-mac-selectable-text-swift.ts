@@ -1,6 +1,6 @@
 /**
  * 手动原生合同：Mac 对话正文的 NSTextView（TextKit 2）——跨段选区与复制、嵌套列表里行内代码背景的位置、按宽度量高、
- * 流式追加只补末尾、链接点击到 openURL。真实的 SelectableMarkdown、MacSelectableTextView、TextKitDecorations、PlatformText
+ * 流式追加只补末尾、链接点击到 openURL。真实的 SelectableMarkdown、MacSelectableTextView、ProseTextCoordinator、TextKitDecorations、PlatformText
  * 连同 Theme、Markdown、InlineCode、ReferenceViews 一起编进 .app 包；颜色资源用 actool 编成 Assets.car，Theme 的颜色才是真值。
  * 运行：bun kited/test/manual/verify-mac-selectable-text-swift.ts [app/Kite 目录的替代路径]
  * 第一个参数可指定一份 app/Kite 的副本（含 UI/、Files/ 和 Assets.xcassets），用来编译保留的回归快照或做判别力核验。
@@ -26,6 +26,7 @@ try {
     '-sdk', sdk, '-target', `${architecture}-apple-macosx26.0`,
     join(app, 'UI', 'SelectableMarkdown.swift'),
     join(app, 'UI', 'MacSelectableTextView.swift'),
+    join(app, 'UI', 'ProseTextCoordinator.swift'),
     join(app, 'UI', 'TextKitDecorations.swift'),
     join(app, 'UI', 'BlockAttachment.swift'),
     join(app, 'UI', 'TextSourceMap.swift'),

@@ -53,10 +53,7 @@ struct CompactPaneStack: View {
             }
         }
         .environment(\.windowMotion, row.slide)
-        .environment(\.switchPane, row.switchPane)
-        .environment(\.trackPaneSwipe, row.track)
-        .environment(\.endPaneSwipe, row.end)
-        .environment(\.cancelPaneSwipe, row.cancel)
+        .environment(\.paneSwipe, row.swipeActions)
         .onChange(of: row.slide.moving) { _, moving in if !moving { row.settled() } }
         // 底栏点了别的窗口、窗口增删挪了序号：直接停到当前窗口上；松手时已经朝它滑过去的不打断
         .onChange(of: row.page) { row.follow() }
@@ -94,10 +91,7 @@ final class PaneRow {
     /// 各窗口在不在屏上的盒子，放进窗口环境后不再换；第一次要时建，和 warm 一样只增不减。
     @ObservationIgnored private var presences: [Pane: PanePresence] = [:]
     /// 放进环境的动作，建好就不再换。
-    @ObservationIgnored private(set) var track: @MainActor (CGFloat) -> Void = { _ in }
-    @ObservationIgnored private(set) var end: @MainActor (CGFloat, CGFloat) -> Void = { _, _ in }
-    @ObservationIgnored private(set) var cancel: @MainActor () -> Void = {}
-    @ObservationIgnored private(set) var switchPane: @MainActor (Int) -> Void = { _ in }
+    @ObservationIgnored private(set) var swipeActions = PaneSwipeActions(track: { _ in }, end: { _, _ in }, cancel: {})
 
     init(layout: WindowLayout, drawer: DrawerMotion, width: CGFloat) {
         self.layout = layout
@@ -106,10 +100,9 @@ final class PaneRow {
         // 一开始就停在当前窗口上，第一帧不从第一个窗口挪过来
         let page = layout.focused.flatMap { layout.panes.firstIndex(of: $0) } ?? 0
         slide = WindowMotion(WindowPose(frame: CGRect(x: -CGFloat(page) * width, y: 0, width: 0, height: 0)))
-        track = { [weak self] in self?.drag($0) }
-        end = { [weak self] in self?.release($0, predicted: $1) }
-        cancel = { [weak self] in self?.abandon() }
-        switchPane = { [weak self] in self?.step($0) }
+        swipeActions = PaneSwipeActions(track: { [weak self] in self?.drag($0) },
+                                        end: { [weak self] in self?.release($0, predicted: $1) },
+                                        cancel: { [weak self] in self?.abandon() })
     }
 
     /// 当前窗口的序号。
@@ -171,14 +164,6 @@ final class PaneRow {
         settle(to: commit ? swipe.page + (distance < 0 ? 1 : -1) : swipe.page)
     }
 
-    /// 没有拖动过程的切换：直接滑到相邻窗口。
-    private func step(_ direction: Int) {
-        guard drawer.collapsed, swipe == nil, let page, layout.panes.indices.contains(page + direction) else { return }
-        warm.insert(layout.panes[page + direction])
-        swipe = Swipe(origin: slide.target.frame.minX, page: page, dragging: false)
-        settle(to: page + direction)
-    }
-
     private func abandon() {
         if let swipe, swipe.dragging { settle(to: swipe.page) }
     }
@@ -224,8 +209,8 @@ private struct RowPlacement<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        TimelineView(.animation(paused: !motion.moving)) { clock in
-            content.modifier(WindowTranslation(point: CGPoint(x: motion.presentation(at: clock.date).frame.minX + offset, y: 0)).ignoredByLayout())
+        WindowClock(motion: motion) { pose in
+            content.modifier(WindowTranslation(point: CGPoint(x: pose.frame.minX + offset, y: 0)).ignoredByLayout())
         }
     }
 }

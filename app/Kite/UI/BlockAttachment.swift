@@ -243,6 +243,18 @@ final class BlockAttachments {
         if ordinal < list.count { list[ordinal] = attachment } else { list.append(attachment) }
         return attachment
     }
+
+    /// content 作为下一个附件字符接在 result 末尾，自成一段，记进 embedded。返回这一段的属性：段尾的换行也用它，换行的字体不把这一行撑高。
+    func embed(_ content: EmbeddedBlock, paragraph: NSParagraphStyle, into result: NSMutableAttributedString,
+               embedded: inout [(attachment: BlockAttachment, content: EmbeddedBlock)]) -> [NSAttributedString.Key: Any] {
+        let attachment = attachment(embedded.count, for: content)
+        embedded.append((attachment, content))
+        let attributes: [NSAttributedString.Key: Any] = [.font: BlockAttachment.lineFont, .paragraphStyle: paragraph]
+        let part = NSMutableAttributedString(attachment: attachment)
+        part.addAttributes(attributes, range: NSRange(location: 0, length: part.length))
+        result.append(part)
+        return attributes
+    }
 }
 
 /// 宿主里的根视图：块本身，量理想高。卡片底色是半透明的，选区拖过时文本视图的选区色从底下透出来，不另外上色。

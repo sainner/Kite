@@ -127,11 +127,22 @@ extension AnyTransition {
 
 /// 所在窗口在不在屏上。紧凑布局横滑那一行的窗口都建着，没露出来的只是平移到屏外；宽屏缩进停靠栏的窗口正文用蒙版遮住。
 /// SwiftUI 不会因为看不见就停掉 TimelineView(.animation)：平移出窗口、opacity 0、mask 全透都照常每帧跑 body
-/// （2026-10-11 Mac 实测，iPhone 未量），窗口里的逐帧动画要自己按它暂停。
+/// （2026-10-11 Mac 实测，iPhone 未量），窗口里的逐帧动画用 PaneTimeline 按它暂停。
 /// 放盒子不放 Bool：横滑开始、停稳时相邻窗口露没露出来会翻转，Bool 直接进环境就是一次环境变化，整棵窗口子树都要收（见 CompactPaneStack 文件头）；
 /// 盒子建好不再换，只改 onScreen，只有读它的叶子视图重算。CompactPaneStack 和 PaneCard 给出。
 @MainActor @Observable final class PanePresence {
     var onScreen = true
+}
+
+/// 窗口里的逐帧动画，每秒 30 帧，窗口不在屏上时停在当时那一帧，见 PanePresence。
+struct PaneTimeline<Content: View>: View {
+    var paused = false
+    @ViewBuilder let content: (TimelineViewDefaultContext) -> Content
+    @Environment(\.panePresence) private var presence
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: paused || presence?.onScreen == false), content: content)
+    }
 }
 
 extension EnvironmentValues {

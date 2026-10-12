@@ -61,9 +61,8 @@ struct TemplatePane: View {
     private var draft: TemplateDraft? { model.templateDraft(id) }
     private var definition: ContextDefinition? { model.libraryTemplate(id) }
     private var configuration: AgentModelConfiguration? { model.libraryTemplateModel(id) }
-    private var variables: [ContextScene.Variable] {
-        model.contextTemplates?.scenes.first { $0.id == definition?.scene }?.variables ?? []
-    }
+    private var scene: ContextScene? { model.contextTemplates?.scenes.first { $0.id == definition?.scene } }
+    private var variables: [ContextScene.Variable] { scene?.variables ?? [] }
     private var canSave: Bool { !saving && model.connected }
 
     var body: some View {
@@ -72,15 +71,11 @@ struct TemplatePane: View {
                 VStack(alignment: .leading, spacing: 16) {
                     if let error { CardCallout(text: error) }
                     if let definition {
-                        if let configuration, let catalog = model.contextTemplates {
-                            let speech = definition.scene == ContextTemplateCatalog.speechScene
-                            CardSection(speech ? "识别模型" : "模型",
-                                        note: speech ? "使用 Kite 账号凭据里的语音识别 Key。"
-                                            : "使用工作机的 ChatGPT 订阅，不调用工具。") {
+                        if let configuration, let choices = scene?.models {
+                            CardSection(choices.title, note: choices.note) {
                                 AgentModelFields(configuration: Binding(get: { [model, id] in model.libraryTemplateModel(id) ?? configuration },
                                                                         set: { [model, id] value in model.editTemplate(id) { $0.model = value } }),
-                                                 vendors: speech ? catalog.speech.vendors : catalog.vendors,
-                                                 models: speech ? catalog.speech.models : catalog.models, showsReasoning: !speech)
+                                                 vendors: choices.vendors, models: choices.models)
                             }
                             .disabled(saving)
                         }
@@ -117,10 +112,9 @@ struct TemplatePane: View {
                 }
             }
         }
-        // 辅助生成按模板自己的模型数；其他模板没有自己的模型（压缩实际用会话的模型），由工作机按默认模型数。
-        // 识别模型没有计数接口，语音识别的背景文本也按默认模型估。
+        // 辅助生成按模板自己的模型数；其他模板没有自己的模型（压缩实际用会话的模型），模型不能计数的（语音识别），由工作机按默认模型数。
         .contextEditor(editor, counting: model.contextCounting(
-            model: definition?.scene == ContextTemplateCatalog.speechScene ? nil : configuration?.model, connection: model.activeConnection))
+            model: scene?.models?.counts == true ? configuration?.model : nil, connection: model.activeConnection))
         .discardAlert("放弃未保存的模板修改？", isPresented: $discard, discardLabel: "放弃修改") {
             model.templateDrafts.removeAll { $0.id == id }
         }

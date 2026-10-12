@@ -14,7 +14,7 @@ struct ModelAccountPane: View {
                 SubscriptionLoginSheet(request: request).environment(model).appAppearance()
             }
             .sheet(isPresented: $addingApiKey) {
-                ApiKeySheet().environment(model).appAppearance()
+                KeySheet<ApiProvider>().environment(model).appAppearance()
             }
     }
 

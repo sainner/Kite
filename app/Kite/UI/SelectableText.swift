@@ -66,20 +66,13 @@ struct SelectableText: View {
                 let display = NSRange(location: start, length: result.length - start)
                 let exact = NSMaxRange(lines) <= typed.length && typed.substring(with: lines) == (result.string as NSString).substring(with: display)
                 map.blocks.append(.init(display: display, content: start, lines: lines,
-                                        pieces: [.init(display: display, source: lines, outer: lines, exact: exact)]))
+                                        pieces: [.init(display: display, source: lines, exact: exact)]))
                 separator = textAttributes
             case .code(let text, let language, let source):
-                let content = EmbeddedBlock.userCode(text, language: language)
-                let attachment = attachments.attachment(embedded.count, for: content)
-                embedded.append((attachment, content))
-                let attributes: [NSAttributedString.Key: Any] = [.font: BlockAttachment.lineFont, .paragraphStyle: gap]
-                let part = NSMutableAttributedString(attachment: attachment)
-                part.addAttributes(attributes, range: NSRange(location: 0, length: part.length))
-                result.append(part)
+                separator = attachments.embed(.userCode(text, language: language), paragraph: gap, into: result, embedded: &embedded)
                 var lines = NSRange(source, in: message.text)
                 lines.location += offset
-                map.blocks.append(.init(display: NSRange(location: start, length: part.length), content: start, lines: lines))
-                separator = attributes
+                map.blocks.append(.init(display: NSRange(location: start, length: result.length - start), content: start, lines: lines))
             }
         }
         return TextViewContent(text: result, blocks: embedded, source: (message.typed, map))

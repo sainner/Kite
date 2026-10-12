@@ -1,14 +1,8 @@
 import SwiftUI
 #if os(macOS)
 import AppKit
-typealias ContextFont = NSFont
-typealias ContextImage = NSImage
-typealias ContextColor = NSColor
 #else
 import UIKit
-typealias ContextFont = UIFont
-typealias ContextImage = UIImage
-typealias ContextColor = UIColor
 #endif
 
 /// 变量胶囊：变量菜单、条件的变量选择和段落正文里是同一个样子。正文里按一行字的高度画成图片嵌进文字。
@@ -45,7 +39,7 @@ struct ContextTextStyle: Equatable {
             && a.colorScheme == b.colorScheme && a.scale == b.scale && a.dynamicTypeSize == b.dynamicTypeSize
     }
 
-    var font: ContextFont {
+    var font: PlatformFont {
         #if os(macOS)
         .preferredFont(forTextStyle: .body)
         #else
@@ -53,37 +47,18 @@ struct ContextTextStyle: Equatable {
         #endif
     }
 
-    var attributes: [NSAttributedString.Key: Any] {
-        #if os(macOS)
-        [.font: font, .foregroundColor: NSColor.labelColor]
-        #else
-        [.font: font, .foregroundColor: UIColor.label]
-        #endif
-    }
+    var attributes: [NSAttributedString.Key: Any] { [.font: font, .foregroundColor: PlatformColor.label] }
 
     /// Markdown 的标记符号淡显，引用与列表符号次要色。
-    var markColor: ContextColor {
-        #if os(macOS)
-        .tertiaryLabelColor
-        #else
-        .tertiaryLabel
-        #endif
-    }
-
-    var secondaryColor: ContextColor {
-        #if os(macOS)
-        .secondaryLabelColor
-        #else
-        .secondaryLabel
-        #endif
-    }
+    var markColor: PlatformColor { .tertiaryLabel }
+    var secondaryColor: PlatformColor { .secondaryLabel }
 
     /// 行内代码的底色与引用竖线，和对话正文同一套装饰（TextKitDecorations），按外观解析好。
     var codeFill: CGColor { Theme.codeBackground.resolvedCGColor(for: colorScheme) }
     var quoteFill: CGColor { Theme.rule.resolvedCGColor(for: colorScheme) }
 
     /// 代码围栏里的行与行内代码同一个等宽字号。
-    var code: ContextFont { InlineCodeStyle.font(relativeTo: font) }
+    var code: PlatformFont { InlineCodeStyle.font(relativeTo: font) }
 
     /// 引用行给竖线让出位置，和对话正文一样宽。
     var quoteParagraph: NSParagraphStyle {
@@ -94,24 +69,10 @@ struct ContextTextStyle: Equatable {
     }
 
     /// 一级、二级标题放大，三级以下与正文同号，都加粗。
-    func heading(_ level: Int) -> ContextFont {
+    func heading(_ level: Int) -> PlatformFont {
         let size = font.pointSize * (level == 1 ? 1.3 : level == 2 ? 1.15 : 1)
-        #if os(macOS)
-        return Self.adding(bold: true, to: NSFont(descriptor: font.fontDescriptor, size: size) ?? font)
-        #else
-        return Self.adding(bold: true, to: UIFont(descriptor: font.fontDescriptor, size: size))
-        #endif
-    }
-
-    static func adding(bold: Bool, to font: ContextFont) -> ContextFont {
-        #if os(macOS)
-        let trait: NSFontDescriptor.SymbolicTraits = bold ? .bold : .italic
-        return NSFont(descriptor: font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(trait)), size: font.pointSize) ?? font
-        #else
-        let trait: UIFontDescriptor.SymbolicTraits = bold ? .traitBold : .traitItalic
-        guard let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(trait)) else { return font }
-        return UIFont(descriptor: descriptor, size: font.pointSize)
-        #endif
+        let sized = PlatformFont.font(descriptor: font.fontDescriptor.withSize(size)) ?? font
+        return sized.addingTraits(.bold) ?? sized
     }
 
     private var lineHeight: CGFloat { font.ascender - font.descender }
@@ -122,7 +83,7 @@ struct ContextTextStyle: Equatable {
     /// 胶囊比一行字矮 2 点，上下相邻两行的胶囊不贴在一起；底边落在字的下伸线上方 1 点。
     var chipBaseline: CGFloat { font.descender + 1 }
 
-    func chip(_ name: String) -> ContextImage? {
+    func chip(_ name: String) -> PlatformImage? {
         let title = variables.first { $0.name == name }?.title
         let renderer = ImageRenderer(content: ContextVariableChip(title: title ?? name, missing: title == nil, height: lineHeight - 2)
             .environment(\.colorScheme, colorScheme)
@@ -148,7 +109,7 @@ nonisolated final class ContextVariableAttachment: NSTextAttachment {
     required init?(coder: NSCoder) { nil }
 
     /// TextKit 2 两端一样：尺寸取图片，底边按 baseline 下移。
-    @MainActor func show(_ image: ContextImage?, style: ContextTextStyle) {
+    @MainActor func show(_ image: PlatformImage?, style: ContextTextStyle) {
         guard let image else { return }
         self.image = image
         bounds = CGRect(origin: CGPoint(x: 0, y: style.chipBaseline), size: image.size)

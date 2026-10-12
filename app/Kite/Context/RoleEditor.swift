@@ -20,7 +20,7 @@ struct RoleSettingsForm: View {
     @ViewBuilder
     private var tools: some View {
         CardSection("工具", info: "必需的工具在代理里不能关闭；被其他约束禁用时，这个角色不可选。") {
-            AgentToolGroups(groups: (catalog?.toolCatalog).groups(of: universe), isOn: { role.tools.allows($0) }) { tool in
+            AgentToolGroups(groups: (catalog?.toolCatalog ?? []).groups(of: universe), isOn: { role.tools.allows($0) }) { tool in
                 let name = tool.name
                 let enabled = role.tools.allows(name)
                 let required = role.tools.required.contains(name)

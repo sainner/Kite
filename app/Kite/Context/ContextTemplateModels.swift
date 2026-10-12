@@ -62,12 +62,22 @@ nonisolated struct ContextScene: Decodable, Identifiable, Sendable {
         /// 表示变量的图标：工具栏的插入变量和正文开头的可用变量用同一个，用户才认得出。
         static let icon = "curlybraces"
     }
+    /// 辅助生成可选的模型，连同编辑器里模型一节的标题与说明；counts 是能不能按这些模型计数，不能时按工作机的默认模型估。
+    struct Models: Decodable, Sendable {
+        let title: String
+        let note: String
+        let vendors: [AgentCapabilities.Vendor]
+        let models: [AgentCapabilities.Model]
+        let counts: Bool
+    }
     /// 在资源库代理上下文里的分类，见 AgentContextCategory。
     enum Kind: String, Decodable, Sendable { case notification, compaction, generation }
     let id: String
     let kind: Kind
     let title: String
     let variables: [Variable]
+    /// 只有辅助生成的场景有。
+    let models: Models?
 }
 
 nonisolated struct ContextTemplate: Decodable, Identifiable, Sendable {
@@ -148,21 +158,8 @@ struct EmblemSave: Encodable { let emblem: EmblemDesign }
 struct EmblemGenerate: Encodable { let force: Bool }
 
 nonisolated struct ContextTemplateCatalog: Decodable, Sendable {
-    nonisolated struct Models: Decodable, Sendable {
-        let vendors: [AgentCapabilities.Vendor]
-        let models: [AgentCapabilities.Model]
-    }
-
     var templates: [ContextTemplate]
     let scenes: [ContextScene]
-    /// 辅助生成可选的模型。
-    let vendors: [AgentCapabilities.Vendor]
-    let models: [AgentCapabilities.Model]
-    /// 语音识别模板可选的识别模型。
-    let speech: Models
-
-    /// 语音识别模板的场景，模型从 speech 里选。
-    static let speechScene = "thread.voice"
 }
 
 struct ContextTemplateSave: Encodable {

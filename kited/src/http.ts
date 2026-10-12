@@ -35,10 +35,14 @@ function handle<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
       const out = await fn(req);
       return out instanceof Response ? out : Response.json(out ?? { ok: true });
     } catch (e) {
-      const status = e instanceof KiteError ? e.status : 500;
-      return Response.json({ error: (e as Error).message, ...(e instanceof OperationError ? { outcome: e.outcome } : {}) }, { status });
+      return errorResponse(e);
     }
   };
+}
+
+function errorResponse(e: unknown) {
+  const status = e instanceof KiteError ? e.status : 500;
+  return Response.json({ error: (e as Error).message, ...(e instanceof OperationError ? { outcome: e.outcome } : {}) }, { status });
 }
 
 /** Git 网络操作和轻任务可能长时间没有响应数据，由各自的生命周期控制结束。 */
@@ -146,7 +150,7 @@ export function serve(kite: Kite, listen: Listen) {
       if (server.upgrade(req, { data: { thread } })) return undefined;
       throw new KiteError('语音输入需要 WebSocket 连接');
     } catch (e) {
-      return Response.json({ error: (e as Error).message }, { status: e instanceof KiteError ? e.status : 500 });
+      return errorResponse(e);
     }
   };
   // 本机网络设置不对远程设备开放。

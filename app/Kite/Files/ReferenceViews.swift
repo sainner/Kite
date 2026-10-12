@@ -2,10 +2,8 @@ import SwiftUI
 
 #if os(macOS)
 import AppKit
-typealias ReferenceImage = NSImage
 #else
 import UIKit
-typealias ReferenceImage = UIImage
 #endif
 
 private struct ReferenceScopeKey: EnvironmentKey {
@@ -25,14 +23,14 @@ extension EnvironmentValues {
     static let webpage = symbol("globe", size: 14)
     /// 展示用的零宽连接符，禁止在图标和名称开头之间断行。
     static let nameJoiner = "\u{2060}"
-    private var images: [String: ReferenceImage] = [:]
+    private var images: [String: PlatformImage] = [:]
     private var attempted: Set<String> = []
     private var loading: [String: Task<Void, Never>] = [:]
 
-    func image(for url: URL) -> ReferenceImage? { origin(url).flatMap { images[$0.absoluteString] } }
+    func image(for url: URL) -> PlatformImage? { origin(url).flatMap { images[$0.absoluteString] } }
 
     /// 按实际图像高度缩放，避免把符号字号误当成图像高度；保留原有宽高比。
-    static func scaled(_ image: ReferenceImage, to height: CGFloat, trailingSpace: CGFloat = 0) -> ReferenceImage {
+    static func scaled(_ image: PlatformImage, to height: CGFloat, trailingSpace: CGFloat = 0) -> PlatformImage {
         let imageSize = CGSize(width: image.size.width * height / image.size.height, height: height)
         let size = CGSize(width: imageSize.width + trailingSpace, height: height)
         let imageRect = CGRect(origin: .zero, size: imageSize)
@@ -56,7 +54,7 @@ extension EnvironmentValues {
     }
 
     /// 图标底边作为基线；符号和站点图片使用同一规则，不跟随文本框底边对齐。
-    private static func baselineAligned(_ image: ReferenceImage) -> ReferenceImage {
+    private static func baselineAligned(_ image: PlatformImage) -> PlatformImage {
         #if os(macOS)
         let aligned = image.copy() as! NSImage
         aligned.alignmentRect = NSRect(origin: .zero, size: aligned.size)
@@ -66,7 +64,7 @@ extension EnvironmentValues {
         #endif
     }
 
-    private static func symbol(_ name: String, size: CGFloat) -> ReferenceImage {
+    private static func symbol(_ name: String, size: CGFloat) -> PlatformImage {
         #if os(macOS)
         let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)!
             .withSymbolConfiguration(.init(pointSize: size, weight: .regular))!
@@ -145,7 +143,7 @@ extension EnvironmentValues {
                 }
             }
             for candidate in candidates.prefix(4) {
-                guard let data = await fetch(candidate, maximum: 512_000), let image = ReferenceImage(data: data) else { continue }
+                guard let data = await fetch(candidate, maximum: 512_000), let image = PlatformImage(data: data) else { continue }
                 let small = Self.scaled(image, to: 32)
                 #if os(macOS)
                 images[site.absoluteString] = Self.baselineAligned(Self.trimmingTransparentEdges(small))

@@ -122,16 +122,14 @@ final class CompactPaneRecorder {
         let button: NSButton
         let presence: PanePresence?
         let motion: WindowMotion?
-        let switchPane: (@MainActor (Int) -> Void)?
-        let track: (@MainActor (CGFloat) -> Void)?
-        let end: (@MainActor (CGFloat, CGFloat) -> Void)?
+        let paneSwipe: PaneSwipeActions?
     }
 
     /// 外壳控制区里的探针每次更新时读到的环境，按先后记录。
     struct Controls {
         let pane: Pane
         let keyboardShown: Bool
-        let switchPane: (@MainActor (Int) -> Void)?
+        let paneSwipe: PaneSwipeActions?
     }
 
     var bodies = [Pane: Body]()
@@ -152,9 +150,7 @@ private struct NativeButton: NSViewRepresentable {
     let recorder: CompactPaneRecorder
     let presence: PanePresence?
     let motion: WindowMotion?
-    let switchPane: (@MainActor (Int) -> Void)?
-    let track: (@MainActor (CGFloat) -> Void)?
-    let end: (@MainActor (CGFloat, CGFloat) -> Void)?
+    let paneSwipe: PaneSwipeActions?
 
     final class Coordinator: NSObject {
         let pane: Pane
@@ -177,8 +173,7 @@ private struct NativeButton: NSViewRepresentable {
     }
 
     func updateNSView(_ view: NSButton, context: Context) {
-        recorder.bodies[pane] = .init(button: view, presence: presence, motion: motion,
-                                      switchPane: switchPane, track: track, end: end)
+        recorder.bodies[pane] = .init(button: view, presence: presence, motion: motion, paneSwipe: paneSwipe)
     }
 }
 
@@ -187,12 +182,12 @@ private struct ControlsProbe: NSViewRepresentable {
     let pane: Pane
     let recorder: CompactPaneRecorder
     let keyboardShown: Bool
-    let switchPane: (@MainActor (Int) -> Void)?
+    let paneSwipe: PaneSwipeActions?
 
     func makeNSView(context: Context) -> NSView { NSView() }
 
     func updateNSView(_ view: NSView, context: Context) {
-        recorder.controls.append(.init(pane: pane, keyboardShown: keyboardShown, switchPane: switchPane))
+        recorder.controls.append(.init(pane: pane, keyboardShown: keyboardShown, paneSwipe: paneSwipe))
     }
 }
 
@@ -200,10 +195,10 @@ private struct ShellControls: View {
     let pane: Pane
     let recorder: CompactPaneRecorder
     @Environment(\.keyboardShown) private var keyboardShown
-    @Environment(\.switchPane) private var switchPane
+    @Environment(\.paneSwipe) private var paneSwipe
 
     var body: some View {
-        ControlsProbe(pane: pane, recorder: recorder, keyboardShown: keyboardShown, switchPane: switchPane)
+        ControlsProbe(pane: pane, recorder: recorder, keyboardShown: keyboardShown, paneSwipe: paneSwipe)
             .frame(width: 80, height: 24)
     }
 }
@@ -212,9 +207,7 @@ private struct ShellControls: View {
 struct PaneBody: View {
     let group: PaneGroup
     let pane: Pane
-    @Environment(\.switchPane) private var switchPane
-    @Environment(\.trackPaneSwipe) private var track
-    @Environment(\.endPaneSwipe) private var end
+    @Environment(\.paneSwipe) private var paneSwipe
     @Environment(\.panePresence) private var presence
     @Environment(\.windowMotion) private var motion
     @Environment(\.self) private var environment
@@ -222,8 +215,7 @@ struct PaneBody: View {
     var body: some View {
         VStack {
             Text("窗口 \(pane.id)")
-            NativeButton(pane: pane, recorder: group.recorder, presence: presence, motion: motion,
-                         switchPane: switchPane, track: track, end: end)
+            NativeButton(pane: pane, recorder: group.recorder, presence: presence, motion: motion, paneSwipe: paneSwipe)
                 .frame(width: 120, height: 32)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -255,8 +247,8 @@ private struct Fixture: View {
 // 真实回归：窄屏控制区第一次滑动后，新窗口的后续滑动和所有按钮失效（旧的插入/移出设计）。
 // 新设计里窗口全部保活、只平移，同样要在 SwiftUI 宿主里跑过动画、焦点切换和鼠标派发才知道对不对：
 // - 横滑松手后焦点换到相邻窗口，行停稳后新的当前窗口的原生按钮从宿主可命中，换走的那个被平移到屏外；
-// - 窗口还没当过当前窗口时拿到的环境动作，在它成为当前窗口后仍指向同一个 PaneRow，能切回去；
-// - 外壳控制区整份接回源窗口环境后，写在里面的 keyboardShown 仍覆盖到控件，源环境里的横滑动作也能从外壳调用；
+// - 窗口还没当过当前窗口时拿到的 paneSwipe，在它成为当前窗口后仍指向同一个 PaneRow，能横滑切回去；
+// - 外壳控制区整份接回源窗口环境后，写在里面的 keyboardShown 仍覆盖到控件，源环境里的 paneSwipe 也能从外壳横滑切换；
 // - PanePresence 滑动中对露出来的相邻窗口为 true，停稳后换走的窗口翻成 false。
 @MainActor @main
 private struct CompactPaneStackContract {
@@ -288,11 +280,10 @@ private struct CompactPaneStackContract {
         // 初始：当前窗口拿到横滑动作、在屏盒子和行的运动，按钮可命中
         try wait("初始窗口拿到横滑动作与在屏盒子", host: host) {
             let body = recorder.bodies[panes[0]]
-            return body?.track != nil && body?.end != nil && body?.switchPane != nil
-                && body?.presence?.onScreen == true && body?.motion != nil
+            return body?.paneSwipe != nil && body?.presence?.onScreen == true && body?.motion != nil
         }
         guard let first = recorder.bodies[panes[0]], let motion = first.motion, let presence0 = first.presence,
-              let track = first.track, let end = first.end else {
+              let swipe = first.paneSwipe else {
             throw CompactPaneError.failed("初始窗口环境不完整")
         }
         try clickButton(on: panes[0], host: host, window: window, recorder: recorder)
@@ -312,18 +303,18 @@ private struct CompactPaneStackContract {
         print("通过：外壳控制区接回源窗口环境后仍读到外壳写入的 keyboardShown")
 
         // 拖动：相邻窗口当场建出来、算露出来；焦点还没换
-        track(-120)
+        swipe.track(-120)
         try wait("拖动中相邻窗口建出并算在屏上", host: host,
                  diagnostics: { "焦点 \(String(describing: layout.focused))；在屏 \(recorder.bodies.mapValues { $0.presence?.onScreen })" }) {
             layout.focused == panes[0] && recorder.bodies[panes[1]]?.presence?.onScreen == true && presence0.onScreen
         }
-        guard let second = recorder.bodies[panes[1]], let presence1 = second.presence, let reverse = second.switchPane else {
+        guard let second = recorder.bodies[panes[1]], let presence1 = second.presence, let reverse = second.paneSwipe else {
             throw CompactPaneError.failed("相邻窗口建出时没有拿到横滑动作")
         }
         print("通过：拖动中相邻窗口建出，PanePresence 为在屏，焦点未换")
 
         // 松手：过了四分之一宽，焦点换到相邻窗口；行停稳后换走的窗口不在屏上、新的当前窗口可命中
-        end(-120, -200)
+        swipe.end(-120, -200)
         try waitSettled(on: panes[1], host: host, window: window, layout: layout, motion: motion, recorder: recorder,
                         presences: [panes[0]: presence0, panes[1]: presence1])
         try clickButton(on: panes[1], host: host, window: window, recorder: recorder)
@@ -336,23 +327,25 @@ private struct CompactPaneStackContract {
         }
         print("通过：外壳控制区换到新窗口后仍读到外壳写入的 keyboardShown")
 
-        // 保活窗口还没当过当前窗口时拿到的动作，现在仍指向同一个 PaneRow
-        reverse(-1)
+        // 保活窗口还没当过当前窗口时拿到的动作，现在仍指向同一个 PaneRow：用它右滑回去
+        reverse.track(120)
+        reverse.end(120, 200)
         try waitSettled(on: panes[0], host: host, window: window, layout: layout, motion: motion, recorder: recorder,
                         presences: [panes[0]: presence0, panes[1]: presence1])
         try clickButton(on: panes[0], host: host, window: window, recorder: recorder)
-        print("通过：相邻窗口建出时拿到的 switchPane 在它成为当前窗口后仍能切回")
+        print("通过：相邻窗口建出时拿到的 paneSwipe 在它成为当前窗口后仍能横滑切回")
 
         // 外壳控制区从源环境拿到的横滑动作也能切换
-        try wait("外壳控制区换回原窗口", host: host) { recorder.latestControls(for: panes[0])?.switchPane != nil }
-        guard let fromShell = recorder.latestControls(for: panes[0])?.switchPane else {
-            throw CompactPaneError.failed("外壳控制区没有从源环境拿到 switchPane")
+        try wait("外壳控制区换回原窗口", host: host) { recorder.latestControls(for: panes[0])?.paneSwipe != nil }
+        guard let fromShell = recorder.latestControls(for: panes[0])?.paneSwipe else {
+            throw CompactPaneError.failed("外壳控制区没有从源环境拿到 paneSwipe")
         }
-        fromShell(1)
+        fromShell.track(-120)
+        fromShell.end(-120, -200)
         try waitSettled(on: panes[1], host: host, window: window, layout: layout, motion: motion, recorder: recorder,
                         presences: [panes[0]: presence0, panes[1]: presence1])
         try clickButton(on: panes[1], host: host, window: window, recorder: recorder)
-        print("通过：外壳控制区从源环境拿到的 switchPane 能切换窗口")
+        print("通过：外壳控制区从源环境拿到的 paneSwipe 能横滑切换窗口")
 
         guard recorder.clicks == [panes[0], panes[1], panes[0], panes[1]] else {
             throw CompactPaneError.failed("点击记录不符：\(recorder.clicks.map(\.id))")

@@ -30,7 +30,6 @@ struct ContextRing: View {
     let fraction: Double?
     let lineWidth: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.panePresence) private var presence
 
     private var color: Color { Self.color(phase) }
     private var period: Double { Self.period(phase) }
@@ -55,7 +54,7 @@ struct ContextRing: View {
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: period == 0 || reduceMotion || presence?.onScreen == false)) { timeline in
+        PaneTimeline(paused: period == 0 || reduceMotion) { timeline in
             let progress = period == 0 || reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
             let pulse = period == 0 || reduceMotion || phase == "running" ? 1 : 0.65 + 0.35 * cos(progress * 2 * .pi)
             // 底轨保留明暗渐变，未知用量时也能看出旋转。

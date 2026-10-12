@@ -10,6 +10,10 @@ nonisolated struct AgentModelConfiguration: Codable, Equatable, Sendable {
             reasoning = levels.contains("medium") ? "medium" : levels.first ?? "default"
         }
     }
+
+    mutating func selectModel(_ id: String, in models: [AgentCapabilities.Model]) {
+        selectModel(id, supportedReasoning: models.first { $0.id == id }?.reasoning ?? [])
+    }
 }
 
 /// 编辑模型时保留其余配置；上下文继续按原有结构往返，不转成纯文本。
@@ -87,16 +91,13 @@ nonisolated struct AgentToolGroup: Identifiable, Sendable {
     var id: String { title }
 }
 
-nonisolated extension Optional where Wrapped == [AgentToolInfo] {
-    /// 按目录的分组和顺序排出 names；目录里没有的工具（工作机较旧，或新工具还没登记）归到最后的「其他」，名称就是标识。
+nonisolated extension [AgentToolInfo] {
+    /// 按目录的分组和顺序排出 names。工作机给出的工具都在目录里。
     func groups(of names: [String]) -> [AgentToolGroup] {
-        let catalog = (self ?? []).filter { names.contains($0.name) }
+        let catalog = filter { names.contains($0.name) }
         var titles: [String] = []
         for info in catalog where !titles.contains(info.group) { titles.append(info.group) }
-        var groups = titles.map { title in AgentToolGroup(title: title, tools: catalog.filter { $0.group == title }) }
-        let others = names.filter { name in !catalog.contains { $0.name == name } }
-        if !others.isEmpty { groups.append(AgentToolGroup(title: "其他", tools: others.map { AgentToolInfo(name: $0, title: $0, group: "其他") })) }
-        return groups
+        return titles.map { title in AgentToolGroup(title: title, tools: catalog.filter { $0.group == title }) }
     }
 }
 
@@ -118,7 +119,7 @@ nonisolated struct AgentCapabilities: Decodable, Sendable {
     let tools: [String]
     let required: [String]
     let blocked: [String]
-    let toolCatalog: [AgentToolInfo]?
+    let toolCatalog: [AgentToolInfo]
     let configurationBoundary: String
     let toolCatalogBoundary: String
 
@@ -147,7 +148,7 @@ nonisolated struct AgentOptions: Decodable, Sendable {
     }
     let vendors: [AgentCapabilities.Vendor]
     let models: [AgentCapabilities.Model]
-    let toolCatalog: [AgentToolInfo]?
+    let toolCatalog: [AgentToolInfo]
     let roles: [Role]
 
     /// 草稿还没有实例，按所选角色给出与已有代理同形的能力，模型菜单与配置页共用。

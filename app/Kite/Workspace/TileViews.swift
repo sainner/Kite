@@ -195,7 +195,7 @@ private struct DockRail: View {
                     .allowsHitTesting(false)
             }
         }
-        .animation(.windowPreview, value: geometry.allCells.map(\.entry.id))
+        .animation(WindowMotionKind.preview.animation, value: geometry.allCells.map(\.entry.id))
         .task(id: model.revision(for: area)) {
             try? await model.ensureRoles(in: area)
         }

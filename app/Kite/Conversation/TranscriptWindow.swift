@@ -174,7 +174,7 @@ final class TranscriptWindow {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(100))
                 guard let self else { return }
-                if busy || scroll?.userScrolls == true { continue }
+                if busy || scroll?.userScrolling == true { continue }
                 guard thaw() else {
                     thawing = nil
                     return
@@ -216,7 +216,7 @@ final class TranscriptWindow {
     /// 一批一批藏着量，直到屏幕外的组都量准。人在滚时只量快进可见区的；宽度还在变（量了也作废）、有窗口在过渡、程序在滚时不量。
     private func measureAll() async {
         while !Task.isCancelled {
-            let batch = busy ? [] : nextBatch(nearOnly: scroll?.userScrolls == true)
+            let batch = busy ? [] : nextBatch(nearOnly: scroll?.userScrolling == true)
             guard !batch.isEmpty else {
                 guard slots.values.contains(where: { !$0.live && !certain($0) }) else { return }
                 try? await Task.sleep(for: .milliseconds(100))

@@ -243,20 +243,16 @@ struct KitedClient: Equatable {
 
     /// 首帧包含所选范围的完整快照；取消任务时关闭 URLSession。
     func events(scope: KitedEventScope = .catalog, receive: (RemoteEvent) async throws -> Void) async throws {
-        guard let machineID else { throw KitedError(message: "请先连接工作机") }
-        // 组网会话的配置带着节点的代理设置。
-        let connection = URLSession(configuration: Tailnet.covers(address) ? try await Tailnet.shared.urlSession().configuration : .ephemeral)
-        defer { connection.invalidateAndCancel() }
-        var components = URLComponents(url: try url("/events"), resolvingAgainstBaseURL: true)!
-        switch scope {
-        case .catalog: break
-        case .thread(let id): components.queryItems = [URLQueryItem(name: "thread", value: id)]
+        let thread: String? = switch scope {
+        case .catalog: nil
+        case .thread(let id): id
         }
-        var request = URLRequest(url: components.url!)
+        let (connection, stream) = try await streamRequest("/events", thread: thread)
+        defer { connection.invalidateAndCancel() }
+        var request = stream
         request.timeoutInterval = 60
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
-        let trace = TimingTrace.span("事件流 \(components.url?.query ?? "目录")")
+        let trace = TimingTrace.span("事件流 \(request.url?.query ?? "目录")")
         let (bytes, response): (URLSession.AsyncBytes, URLResponse)
         do { (bytes, response) = try await connection.bytes(for: request) }
         catch { trace("失败：\(error.localizedDescription)"); throw error }
@@ -273,23 +269,29 @@ struct KitedClient: Equatable {
         for try await line in bytes.lines {
             try Task.checkCancellation()
             guard line.hasPrefix("data:") else { continue }
-            if first { first = false; TimingTrace.mark("事件流 \(components.url?.query ?? "目录") 首帧") }
+            if first { first = false; TimingTrace.mark("事件流 \(request.url?.query ?? "目录") 首帧") }
             let event = try JSONDecoder().decode(RemoteEvent.self, from: Data(line.dropFirst(5).utf8))
             try await receive(event)
         }
         throw KitedError(message: "连接已断开，正在重连")
     }
 
-    /// 语音输入的 WebSocket，协议见 kited 的 voice/sessions.ts；thread 是正在输入的会话，新会话不带。组网会话的配置带着节点的代理设置。
+    /// 语音输入的 WebSocket，协议见 kited 的 voice/sessions.ts；thread 是正在输入的会话，新会话不带。
     func voiceSocket(thread: String?) async throws -> (URLSession, URLSessionWebSocketTask) {
+        let (session, request) = try await streamRequest("/voice", thread: thread, webSocket: true)
+        return (session, session.webSocketTask(with: request))
+    }
+
+    /// 长连接（事件流、语音）用的独立会话和带工作机校验的请求；thread 给出时只关于这个会话。组网会话的配置带着节点的代理设置。
+    private func streamRequest(_ path: String, thread: String?, webSocket: Bool = false) async throws -> (URLSession, URLRequest) {
         guard let machineID else { throw KitedError(message: "请先连接工作机") }
-        var components = URLComponents(url: try url("/voice"), resolvingAgainstBaseURL: true)!
-        components.scheme = components.scheme == "https" ? "wss" : "ws"
+        var components = URLComponents(url: try url(path), resolvingAgainstBaseURL: true)!
+        if webSocket { components.scheme = components.scheme == "https" ? "wss" : "ws" }
         if let thread { components.queryItems = [URLQueryItem(name: "thread", value: thread)] }
         var request = URLRequest(url: components.url!)
         request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
         let session = URLSession(configuration: Tailnet.covers(address) ? try await Tailnet.shared.urlSession().configuration : .ephemeral)
-        return (session, session.webSocketTask(with: request))
+        return (session, request)
     }
 
     private func validate(_ response: URLResponse, data: Data? = nil) throws {

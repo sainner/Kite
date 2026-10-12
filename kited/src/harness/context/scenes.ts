@@ -1,7 +1,11 @@
-/** 场景及可用变量的唯一目录。这里只描述契约；触发、取值和投递由业务调用方负责。说明给编辑器显示，写清变量里是什么、什么时候为空。 */
+/**
+ * 场景及可用变量的唯一目录。这里只描述契约；触发、取值和投递由业务调用方负责。说明给编辑器显示，写清变量里是什么、什么时候为空。
+ * input 的场景模板分指令与材料两部分，其他场景只有正文。
+ */
 export const contextScenes = {
   'thread.title': {
     title: '生成会话标题',
+    input: true,
     variables: [
       { name: 'thread.title', title: '当前标题', description: '会话现在的标题，写成带引号的 JSON 字符串；还没有标题时是 ""。' },
       { name: 'thread.messages', title: '近期对话正文', description: '近三天里最多 20 轮的请求和回复末尾，代码块略去，JSON 格式。' },
@@ -9,6 +13,7 @@ export const contextScenes = {
   },
   'thread.compact': {
     title: '压缩上下文',
+    input: true,
     variables: [
       { name: 'compaction.range', title: '压缩范围', description: '这次压缩覆盖的对话，如「从会话开头到现在」。只在摘要指令里有值，摘要包装里为空。' },
       { name: 'compaction.summary', title: '摘要正文', description: '模型写好的摘要。只在摘要包装里有值，摘要指令里为空。' },
@@ -16,12 +21,14 @@ export const contextScenes = {
   },
   'thread.voice': {
     title: '语音识别',
+    input: true,
     variables: [
       { name: 'thread.messages', title: '近期对话', description: '最近的请求和回复，每段以「用户：」或「agent：」开头、空行分隔，代码不略去，从最近往前取到 6000 字；新会话还没有对话时为空。' },
     ],
   },
   'template.emblem': {
     title: '生成点阵签名',
+    input: true,
     variables: [
       { name: 'template.title', title: '角色名称', description: '要设计签名的角色名称。' },
       { name: 'template.content', title: '角色提示词', description: '角色提示词的提纲：每段以【段落名称】开头，变量写成 {变量标识}，条件列出各分支；最多 6000 字，没有内容时是「（空）」。' },

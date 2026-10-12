@@ -5,13 +5,14 @@ import UIKit
 import AppKit
 #endif
 
-// 对话正文的属性串在 iPhone（UITextView）和 Mac（NSTextView）上共用一份构建代码，字体、颜色、描述符按平台取别名；
+// 对话正文和上下文编辑器的属性串在 iPhone（UITextView）和 Mac（NSTextView）上共用一份构建代码，字体、颜色、描述符、图片按平台取别名；
 // 两端 API 只差名字和可选性的地方在这里补齐，构建代码里不写平台分支。
 
 #if canImport(UIKit)
 typealias PlatformFont = UIFont
 typealias PlatformColor = UIColor
 typealias PlatformFontDescriptor = UIFontDescriptor
+typealias PlatformImage = UIImage
 
 extension UIFontDescriptor.SymbolicTraits {
     /// 和 AppKit 同名。
@@ -22,11 +23,13 @@ extension UIFontDescriptor.SymbolicTraits {
 typealias PlatformFont = NSFont
 typealias PlatformColor = NSColor
 typealias PlatformFontDescriptor = NSFontDescriptor
+typealias PlatformImage = NSImage
 
 extension NSColor {
     /// 和 UIKit 同名。
     static var label: NSColor { .labelColor }
     static var secondaryLabel: NSColor { .secondaryLabelColor }
+    static var tertiaryLabel: NSColor { .tertiaryLabelColor }
     static var link: NSColor { .linkColor }
 }
 #endif

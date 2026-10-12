@@ -46,8 +46,8 @@ struct CredentialsLibrary: View {
                 if model.account.signedIn {
                     GitAccountsSection()
                     SecretsSection()
-                    ApiKeysSection()
-                    SpeechKeysSection()
+                    KeysSection<ApiProvider>()
+                    KeysSection<SpeechProvider>()
                 } else {
                     Section {
                         Text("登录 Kite 账号后管理 Git 授权、共享密钥、模型 API Key 和语音识别 Key。")
@@ -201,10 +201,37 @@ struct SecretsSection: View {
     }
 }
 
+/// 一类带 Key 的凭据（模型 API、语音识别）的供应商，连同这一类在资源库和添加表单里的文案。
+protocol KeyProvider: RawRepresentable<String>, CaseIterable, Identifiable, Hashable where AllCases: RandomAccessCollection {
+    /// 账号服务里的凭据类型。
+    static var type: String { get }
+    static var header: String { get }
+    static var footer: String { get }
+    /// 添加按钮和表单的标题。
+    static var addTitle: String { get }
+    static var sheetSubtitle: String { get }
+    var title: String { get }
+    /// 能另填组织管理 Key。
+    var acceptsAdminKey: Bool { get }
+    /// API Key 输入框下的说明。
+    var keyNote: String? { get }
+    /// 添加、删除以后要跟着刷新的。
+    @MainActor static func changed(_ model: AppModel)
+}
+
+extension KeyProvider {
+    @MainActor static func changed(_ model: AppModel) {}
+}
+
 /// 额度查询支持的 API 供应商。
-enum ApiProvider: String, CaseIterable, Identifiable {
+nonisolated enum ApiProvider: String, KeyProvider {
     case openai, anthropic, deepseek
 
+    static let type = "api"
+    static let header = "模型 API"
+    static let footer = "API Key 随 Kite 账号分发给各台工作机，只用于查询额度与余额，agent 执行的命令里无法引用。"
+    static let addTitle = "添加 API Key"
+    static let sheetSubtitle = "保存到 Kite 账号，各工作机查询额度时使用"
     var id: Self { self }
     var title: String {
         switch self {
@@ -215,13 +242,34 @@ enum ApiProvider: String, CaseIterable, Identifiable {
     }
     /// DeepSeek 用调用 Key 查余额；OpenAI、Anthropic 的组织费用要管理 Key。
     var acceptsAdminKey: Bool { self != .deepseek }
+    var keyNote: String? { acceptsAdminKey ? "只想查询组织费用时可以留空，只填管理 Key。" : nil }
+    @MainActor static func changed(_ model: AppModel) { model.refreshAllModelAccounts() }
 }
 
-/// 保存一把模型 API Key 到 Kite 账号；各工作机查询额度时领取，命令里无法引用。
-struct ApiKeySheet: View {
+/// 语音识别支持的供应商。
+nonisolated enum SpeechProvider: String, KeyProvider {
+    case dashscope
+
+    static let type = "speech"
+    static let header = "语音识别"
+    static let footer = "语音识别 Key 随 Kite 账号分发给各台工作机，只用于识别语音输入，agent 执行的命令里无法引用。"
+    static let addTitle = "添加语音识别 Key"
+    static let sheetSubtitle = "保存到 Kite 账号，各工作机识别语音输入时使用"
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .dashscope: "千问（百炼）"
+        }
+    }
+    var acceptsAdminKey: Bool { false }
+    var keyNote: String? { "百炼控制台的 API Key，北京地域。" }
+}
+
+/// 保存一把 Key 到 Kite 账号；工作机查询额度、识别语音时领取，命令里无法引用。
+struct KeySheet<Provider: KeyProvider>: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    @State private var provider = ApiProvider.openai
+    @State private var provider = Provider.allCases.first!
     @State private var name = ""
     @State private var key = ""
     @State private var adminKey = ""
@@ -234,10 +282,10 @@ struct ApiKeySheet: View {
     private var valid: Bool { !trimmed(key).isEmpty || (provider.acceptsAdminKey && !trimmed(adminKey).isEmpty) }
 
     var body: some View {
-        CardSheet(title: "添加 API Key", subtitle: "保存到 Kite 账号，各工作机查询额度时使用", typing: focus != nil, close: { dismiss() }) {
+        CardSheet(title: Provider.addTitle, subtitle: Provider.sheetSubtitle, typing: focus != nil, close: { dismiss() }) {
             CardField(label: "供应商") {
                 Menu {
-                    ForEach(ApiProvider.allCases) { item in
+                    ForEach(Provider.allCases) { item in
                         Button(item.title) { provider = item }
                     }
                 } label: {
@@ -250,8 +298,7 @@ struct ApiKeySheet: View {
                     .focused($focus, equals: .name).onSubmit(save)
                     .cardInput { focus = .name }
             }
-            CardField(label: "API Key", focused: focus == .key,
-                      note: provider.acceptsAdminKey ? "只想查询组织费用时可以留空，只填管理 Key。" : nil) {
+            CardField(label: "API Key", focused: focus == .key, note: provider.keyNote) {
                 SecureField("粘贴 API Key", text: $key)
                     .focused($focus, equals: .key).onSubmit(save)
                     .cardInput { focus = .key }
@@ -278,15 +325,15 @@ struct ApiKeySheet: View {
         let name = trimmed(name).isEmpty ? provider.title : trimmed(name)
         let provider = provider
         $phase.run {
-            try await model.account.createCredential(type: "api", name: name, meta: ["provider": provider.rawValue], secret: secret)
-            model.refreshAllModelAccounts()
+            try await model.account.createCredential(type: Provider.type, name: name, meta: ["provider": provider.rawValue], secret: secret)
+            Provider.changed(model)
             dismiss()
         }
     }
 }
 
-/// 资源库里的模型 API Key：列出公开信息，可添加和删除。
-struct ApiKeysSection: View {
+/// 资源库里一类带 Key 的凭据：列出公开信息，可添加和删除。
+struct KeysSection<Provider: KeyProvider>: View {
     @Environment(AppModel.self) private var model
     @State private var entries: [AccountCredential] = []
     @State private var adding = false
@@ -304,143 +351,31 @@ struct ApiKeysSection: View {
                     Button("删除", role: .destructive) {
                         $phase.run {
                             try await model.account.deleteCredential(entry.id)
-                            model.refreshAllModelAccounts()
+                            Provider.changed(model)
                             try await load()
                         }
                     }
                 }
             }
-            Button("添加 API Key") { adding = true }
+            Button(Provider.addTitle) { adding = true }
             if let error = phase.error { Text(error).foregroundStyle(Theme.danger) }
         } header: {
-            Text("模型 API")
+            Text(Provider.header)
         } footer: {
-            Text("API Key 随 Kite 账号分发给各台工作机，只用于查询额度与余额，agent 执行的命令里无法引用。")
+            Text(Provider.footer)
         }
         .disabled(phase.working)
         .task { $phase.run { try await load() } }
         .sheet(isPresented: $adding, onDismiss: { $phase.run { try await load() } }) {
-            ApiKeySheet().environment(model).appAppearance()
+            KeySheet<Provider>().environment(model).appAppearance()
         }
     }
 
     private func detail(_ entry: AccountCredential) -> String {
-        let provider = ApiProvider(rawValue: entry.meta["provider"]?.string ?? "")?.title ?? "API"
+        let provider = Provider(rawValue: entry.meta["provider"]?.string ?? "")?.title ?? Provider.header
         let hint = entry.meta["hint"]?.string.map { " · …\($0)" } ?? ""
         return provider + hint + (entry.meta["admin"]?.bool == true ? " · 含管理 Key" : "")
     }
 
-    private func load() async throws { entries = try await model.account.credentials(type: "api") }
-}
-
-/// 语音识别支持的供应商。
-enum SpeechProvider: String, CaseIterable, Identifiable {
-    case dashscope
-
-    var id: Self { self }
-    var title: String {
-        switch self {
-        case .dashscope: "千问（百炼）"
-        }
-    }
-}
-
-/// 保存一把语音识别 Key 到 Kite 账号；工作机识别语音输入时领取，App 拿不到。
-struct SpeechKeySheet: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    @State private var provider = SpeechProvider.dashscope
-    @State private var name = ""
-    @State private var key = ""
-    @State private var phase = CardPhase.idle
-    @FocusState private var focus: Field?
-
-    private enum Field { case name, key }
-
-    private func trimmed(_ value: String) -> String { value.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var valid: Bool { !trimmed(key).isEmpty }
-
-    var body: some View {
-        CardSheet(title: "添加语音识别 Key", subtitle: "保存到 Kite 账号，各工作机识别语音输入时使用", typing: focus != nil, close: { dismiss() }) {
-            CardField(label: "供应商") {
-                Menu {
-                    ForEach(SpeechProvider.allCases) { item in
-                        Button(item.title) { provider = item }
-                    }
-                } label: {
-                    Text(provider.title)
-                }
-                .menuStyle(.button).buttonStyle(CardSelectStyle()).menuIndicator(.hidden).clickPointer()
-            }
-            CardField(label: "名称", focused: focus == .name, note: "用来区分同一供应商的多把 Key，留空时使用供应商名。") {
-                TextField(provider.title, text: $name)
-                    .focused($focus, equals: .name).onSubmit(save)
-                    .cardInput { focus = .name }
-            }
-            CardField(label: "API Key", focused: focus == .key, note: "百炼控制台的 API Key，北京地域。") {
-                SecureField("粘贴 API Key", text: $key)
-                    .focused($focus, equals: .key).onSubmit(save)
-                    .cardInput { focus = .key }
-            }
-        } footer: {
-            CardActions(primary: "保存", enabled: valid, phase: $phase, action: save)
-        }
-        .endsTyping(focus != nil) { focus = nil }
-    }
-
-    private func save() {
-        guard valid else { return }
-        let name = trimmed(name).isEmpty ? provider.title : trimmed(name)
-        let provider = provider, key = trimmed(key)
-        $phase.run {
-            try await model.account.createCredential(type: "speech", name: name, meta: ["provider": provider.rawValue], secret: ["key": key])
-            dismiss()
-        }
-    }
-}
-
-/// 资源库里的语音识别 Key：列出公开信息，可添加和删除。
-struct SpeechKeysSection: View {
-    @Environment(AppModel.self) private var model
-    @State private var entries: [AccountCredential] = []
-    @State private var adding = false
-    @State private var phase = CardPhase.idle
-
-    var body: some View {
-        Section {
-            ForEach(entries) { entry in
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text(entry.name)
-                        Text(detail(entry)).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("删除", role: .destructive) {
-                        $phase.run {
-                            try await model.account.deleteCredential(entry.id)
-                            try await load()
-                        }
-                    }
-                }
-            }
-            Button("添加语音识别 Key") { adding = true }
-            if let error = phase.error { Text(error).foregroundStyle(Theme.danger) }
-        } header: {
-            Text("语音识别")
-        } footer: {
-            Text("语音识别 Key 随 Kite 账号分发给各台工作机，只用于识别语音输入，agent 执行的命令里无法引用。")
-        }
-        .disabled(phase.working)
-        .task { $phase.run { try await load() } }
-        .sheet(isPresented: $adding, onDismiss: { $phase.run { try await load() } }) {
-            SpeechKeySheet().environment(model).appAppearance()
-        }
-    }
-
-    private func detail(_ entry: AccountCredential) -> String {
-        let provider = SpeechProvider(rawValue: entry.meta["provider"]?.string ?? "")?.title ?? "语音识别"
-        return provider + (entry.meta["hint"]?.string.map { " · …\($0)" } ?? "")
-    }
-
-    private func load() async throws { entries = try await model.account.credentials(type: "speech") }
+    private func load() async throws { entries = try await model.account.credentials(type: Provider.type) }
 }

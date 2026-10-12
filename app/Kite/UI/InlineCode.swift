@@ -25,8 +25,11 @@ struct InlineCodeAttribute: TextAttribute {
     var trailingSpace: CGFloat = 0
 }
 
-/// 只增大代码边界处的字距；原文、代码内部字距和复制内容都不变。
+/// 只增大代码边界处的字距；原文、代码内部字距和复制内容都不变。行首行尾不加。上下文编辑器的 NSTextStorage 也按这个字距。
 enum InlineCodeSpacing {
+    /// 代码前一个字和代码最后一个字的字距，底色的内边距不压到旁边的字。
+    static let kern = Metrics.inlineCodePadding + Metrics.inlineCodeGap
+
     static func apply(to source: AttributedString) -> AttributedString {
         var result = source
         var ranges: [Range<AttributedString.Index>] = []
@@ -37,17 +40,16 @@ enum InlineCodeSpacing {
                 ranges.append(range)
             }
         }
-        let spacing = Metrics.inlineCodePadding + Metrics.inlineCodeGap
         for range in ranges {
             if range.lowerBound > source.startIndex {
                 let previous = source.characters.index(before: range.lowerBound)
                 if !source.characters[previous].isNewline {
-                    result[previous..<range.lowerBound].swiftUI.kern = spacing
+                    result[previous..<range.lowerBound].swiftUI.kern = kern
                 }
             }
             if range.upperBound < source.endIndex, !source.characters[range.upperBound].isNewline {
                 let last = source.characters.index(before: range.upperBound)
-                result[last..<range.upperBound].swiftUI.kern = spacing
+                result[last..<range.upperBound].swiftUI.kern = kern
             }
         }
         return result

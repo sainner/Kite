@@ -86,8 +86,7 @@ struct CardField<Content: View>: View {
             content
                 .frame(maxWidth: .infinity, minHeight: CardMetrics.fieldHeight, alignment: .leading)
                 .background(Theme.codeBackground, in: cardShape)
-                .overlay { cardShape.strokeBorder(Color.accentColor.opacity(focused ? 0.8 : 0), lineWidth: 1.5) }
-                .animation(.easeOut(duration: 0.15), value: focused)
+                .cardFocusRing(focused, in: cardShape)
             if let note { CardNote(note) }
         }
     }
@@ -244,6 +243,12 @@ struct CardLink: View {
 }
 
 extension View {
+    /// 输入框聚焦时描的主题色边框。
+    func cardFocusRing(_ focused: Bool, in shape: some InsettableShape) -> some View {
+        overlay { shape.strokeBorder(Color.accentColor.opacity(focused ? 0.8 : 0), lineWidth: 1.5) }
+            .animation(.easeOut(duration: 0.15), value: focused)
+    }
+
     /// 填充框里的输入框：无边框、正文字号，整块都能点进去。点它不算点空白处，所在区域的 endsTyping 不收键盘。
     /// 左边已有图标按钮时 leading 收窄。
     func cardInput(leading: CGFloat = 12, focus: @escaping () -> Void) -> some View {

@@ -1,11 +1,15 @@
 import SwiftUI
 
+/// 控制区横滑切窗口：track 跟手，end 松手（位移、预测位移），cancel 中途作罢。紧凑布局的 PaneRow 建好就不再换。
+struct PaneSwipeActions {
+    let track: @MainActor (CGFloat) -> Void
+    let end: @MainActor (CGFloat, CGFloat) -> Void
+    let cancel: @MainActor () -> Void
+}
+
 extension EnvironmentValues {
-    /// 紧凑窗口提供：左滑传 1，右滑传 -1；宽屏与抽屉展开时没有此动作。
-    @Entry var switchPane: (@MainActor (Int) -> Void)?
-    @Entry var trackPaneSwipe: (@MainActor (CGFloat) -> Void)?
-    @Entry var endPaneSwipe: (@MainActor (CGFloat, CGFloat) -> Void)?
-    @Entry var cancelPaneSwipe: (@MainActor () -> Void)?
+    /// 紧凑布局提供；宽屏没有，控制区不接横滑。
+    @Entry var paneSwipe: PaneSwipeActions?
 }
 
 private struct PaneControlsFocus: FocusedValueKey {
@@ -37,10 +41,7 @@ extension View {
 
 struct PaneControlSwipe: ViewModifier {
     let typing: Bool
-    @Environment(\.switchPane) private var switchPane
-    @Environment(\.trackPaneSwipe) private var trackPaneSwipe
-    @Environment(\.endPaneSwipe) private var endPaneSwipe
-    @Environment(\.cancelPaneSwipe) private var cancelPaneSwipe
+    @Environment(\.paneSwipe) private var paneSwipe
     @Environment(\.keyboardShown) private var keyboardShown
     @FocusedValue(\.paneControls) private var focusedControls
     @State private var focusID = UUID()
@@ -49,7 +50,7 @@ struct PaneControlSwipe: ViewModifier {
     @GestureState private var dragging = false
 
     private var enabled: Bool {
-        switchPane != nil && !keyboardShown && !typing && focusedControls != focusID
+        paneSwipe != nil && !keyboardShown && !typing && focusedControls != focusID
     }
 
     func body(content: Content) -> some View {
@@ -60,12 +61,13 @@ struct PaneControlSwipe: ViewModifier {
                 Task { @MainActor in reservations = frames }
             }
             .simultaneousGesture(swipe, isEnabled: enabled)
-            .onChange(of: dragging) { _, dragging in
-                if !dragging { if switching == true { cancelPaneSwipe?() }; switching = nil }
-            }
-            .onChange(of: enabled) { _, enabled in
-                if !enabled { if switching == true { cancelPaneSwipe?() }; switching = nil }
-            }
+            .onChange(of: dragging) { _, dragging in if !dragging { stopSwitching() } }
+            .onChange(of: enabled) { _, enabled in if !enabled { stopSwitching() } }
+    }
+
+    private func stopSwitching() {
+        if switching == true { paneSwipe?.cancel() }
+        switching = nil
     }
 
     private var swipe: some Gesture {
@@ -77,13 +79,12 @@ struct PaneControlSwipe: ViewModifier {
                     switching = enabled && DrawerPull.isHorizontal(value.translation)
                         && !reservations.contains { $0.contains(value.startLocation) }
                 }
-                if switching == true { trackPaneSwipe?(value.translation.width) }
+                if switching == true { paneSwipe?.track(value.translation.width) }
             }
             .onEnded { value in
                 defer { switching = nil }
                 guard enabled, switching == true else { return }
-                if let endPaneSwipe { endPaneSwipe(value.translation.width, value.predictedEndTranslation.width) }
-                else if abs(value.translation.width) >= 48 { switchPane?(value.translation.width < 0 ? 1 : -1) }
+                paneSwipe?.end(value.translation.width, value.predictedEndTranslation.width)
             }
     }
 }

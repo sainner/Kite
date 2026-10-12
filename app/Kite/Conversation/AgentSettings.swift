@@ -189,8 +189,7 @@ struct TurnBudgetField<Focus: Hashable>: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(Theme.card, in: shape)
-                        .overlay { shape.strokeBorder(Color.accentColor.opacity(focused ? 0.8 : 0), lineWidth: 1.5) }
-                        .animation(.easeOut(duration: 0.15), value: focused)
+                        .cardFocusRing(focused, in: shape)
                         .contentShape(Rectangle())
                         .onTapGesture { focus.wrappedValue = field }
                         .typingTarget()
@@ -222,20 +221,17 @@ struct ToolModePicker: View {
     }
 }
 
-/// 模型按厂商分组，连同思考强度；不在目录里的当前值也列出，选择器不丢值。语音识别没有思考强度，不显示。
+/// 模型按厂商分组，连同思考强度；不在目录里的当前值也列出，选择器不丢值。目录里都没有思考强度（语音识别）时不显示。
 struct AgentModelFields: View {
     @Binding var configuration: AgentModelConfiguration
     let vendors: [AgentCapabilities.Vendor]
     let models: [AgentCapabilities.Model]
-    var showsReasoning = true
 
     private var levels: [String] { models.first { $0.id == configuration.model }?.reasoning ?? [] }
 
     var body: some View {
         LabeledContent("模型") {
-            Picker("模型", selection: Binding(get: { configuration.model }, set: { id in
-                configuration.selectModel(id, supportedReasoning: models.first { $0.id == id }?.reasoning ?? [])
-            })) {
+            Picker("模型", selection: Binding(get: { configuration.model }, set: { configuration.selectModel($0, in: models) })) {
                 if !models.contains(where: { $0.id == configuration.model }) { Text(configuration.model).tag(configuration.model) }
                 ForEach(vendors) { vendor in
                     Section(vendor.title) {
@@ -245,7 +241,8 @@ struct AgentModelFields: View {
             }
             .labelsHidden().fixedSize()
         }
-        if showsReasoning {
+        // 目录还没读到时照常显示，只是不能选
+        if models.isEmpty || models.contains(where: { !$0.reasoning.isEmpty }) {
             LabeledContent("思考强度") {
                 ReasoningPicker(reasoning: $configuration.reasoning, levels: levels)
                     .labelsHidden().fixedSize()
@@ -293,18 +290,13 @@ struct AgentModelMenus: View {
 
     /// 不在目录里的当前值单独一节排最前。
     private var menu: ThreadModelMenu {
-        var sections = vendors.map { vendor in
-            ThreadModelMenu.Vendor(id: vendor.id, title: vendors.count > 1 ? vendor.title : nil,
-                models: models.filter { $0.vendor == vendor.id }.map { model in
-                    .init(id: model.id, name: model.name, selected: model.id == configuration.model, enabled: true)
-                })
-        }.filter { !$0.models.isEmpty }
+        var sections = ThreadModelMenu.sections(vendors: vendors, models: models, selected: configuration.model) { _ in true }
         if current == nil {
             sections.insert(.init(id: "", title: nil, models: [.init(id: configuration.model, name: configuration.model, selected: true, enabled: true)]), at: 0)
         }
         return ThreadModelMenu(vendors: sections, status: nil, note: nil) { id in
             guard id != configuration.model else { return }
-            configuration.selectModel(id, supportedReasoning: models.first { $0.id == id }?.reasoning ?? [])
+            configuration.selectModel(id, in: models)
         }
     }
 }

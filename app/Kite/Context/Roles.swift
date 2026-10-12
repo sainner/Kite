@@ -42,7 +42,7 @@ nonisolated struct RoleSelection: Encodable, Sendable {
 nonisolated struct RoleCatalog: Decodable, Sendable {
     var roles: [AgentRole]
     let tools: [String]
-    let toolCatalog: [AgentToolInfo]?
+    let toolCatalog: [AgentToolInfo]
     let variables: [ContextScene.Variable]
     let vendors: [AgentCapabilities.Vendor]
     let models: [AgentCapabilities.Model]

@@ -43,6 +43,9 @@ nonisolated enum WindowMotionKind {
         case .preview, .tracking: 0.2
         }
     }
+
+    /// SwiftUI 排布动画，与逐帧取样同曲线同时长。
+    var animation: Animation { .timingCurve(Self.curve, duration: duration) }
 }
 
 /// 只在目标改变时更新。TimelineView 负责取帧，窗口内容不订阅逐帧状态。
@@ -322,7 +325,7 @@ struct WindowSurface<Content: View, Icon: View, Header: View>: View {
 }
 
 /// 按 motion 逐帧取样，只在动画进行中走。动画开始、结束只更新这一层，外面的窗口不跟着重算。
-private struct WindowClock<Content: View>: View {
+struct WindowClock<Content: View>: View {
     let motion: WindowMotion
     var paused = false
     @ViewBuilder let content: (WindowPose) -> Content
@@ -680,8 +683,3 @@ extension EnvironmentValues {
     @Entry var windowHeaderTitleEdge: WindowHeaderTitleEdge?
 }
 #endif
-
-extension Animation {
-    static let windowSettle = Animation.timingCurve(WindowMotionKind.curve, duration: WindowMotionKind.settle.duration)
-    static let windowPreview = Animation.timingCurve(WindowMotionKind.curve, duration: WindowMotionKind.preview.duration)
-}

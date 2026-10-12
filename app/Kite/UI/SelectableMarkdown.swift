@@ -75,7 +75,7 @@ struct SelectableMarkdown: View {
         var embedded: [(attachment: BlockAttachment, content: EmbeddedBlock)] = []
         var map = TextSourceMap()
         var mapped = true
-        /// 附件那一段的字体和段落样式，段尾的换行也用它，换行的字体不把这一行撑高。
+        /// 附件那一段的属性，见 BlockAttachments.embed。
         var attachmentAttributes: [NSAttributedString.Key: Any]?
         for (index, block) in blocks.enumerated() {
             if index > 0 { result.append(NSAttributedString(string: "\n", attributes: attachmentAttributes)) }
@@ -91,16 +91,9 @@ struct SelectableMarkdown: View {
                 style.headIndent = indent
                 var flat = block
                 flat.depth = 0
-                let content = EmbeddedBlock.markdown(flat)
-                let attachment = attachments.attachment(embedded.count, for: content)
-                embedded.append((attachment, content))
-                let attributes: [NSAttributedString.Key: Any] = [.font: BlockAttachment.lineFont, .paragraphStyle: style]
-                let part = NSMutableAttributedString(attachment: attachment)
-                part.addAttributes(attributes, range: NSRange(location: 0, length: part.length))
-                result.append(part)
-                attachmentAttributes = attributes
+                attachmentAttributes = attachments.embed(.markdown(flat), paragraph: style, into: result, embedded: &embedded)
                 if let lines = block.source?.lines {
-                    map.blocks.append(.init(display: NSRange(location: start, length: part.length), content: start, lines: lines))
+                    map.blocks.append(.init(display: NSRange(location: start, length: result.length - start), content: start, lines: lines))
                 } else {
                     mapped = false
                 }
@@ -246,9 +239,9 @@ private extension PlatformFont {
     }
 }
 
-private extension ReferenceImage {
+private extension PlatformImage {
     /// 模板图标按给定颜色着色：附件里的图不会像 SwiftUI 的 .template 那样跟着 foregroundStyle。
-    func tinted(_ color: PlatformColor) -> ReferenceImage {
+    func tinted(_ color: PlatformColor) -> PlatformImage {
         #if canImport(UIKit)
         withTintColor(color, renderingMode: .alwaysOriginal)
         #else

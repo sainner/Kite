@@ -8,6 +8,7 @@ import SwiftUI
 /// （三种挂法的结论见 spikes/mac-textkit-prose/README.md）。没有盖层的地方右键是 NSTextView 自己的菜单。
 /// 气泡上浮时按 messageTextSelectable 关掉选字，和 MessageBubble 的约定一致。
 /// 代码块、表格这类是附件（BlockAttachment），它们的内容和环境在这里交给附件；复制给原文（TextSourceMap）。
+/// 补字、量尺寸、附件重排与 iPhone 共用，见 ProseTextCoordinator。
 /// fillsWidth：占满给的宽度；不然贴着字的宽度，长的折行。
 struct SelectableTextView: NSViewRepresentable {
     @Environment(\.openURL) private var openURL
@@ -53,18 +54,7 @@ struct SelectableTextView: NSViewRepresentable {
         (view as? ProseTextView)?.source = content.source
         // 附件先换好内容再放字：放字时 TextKit 就会量附件的高
         context.coordinator.update(content.blocks, environment: EmbeddedEnvironment(context.environment))
-        guard context.coordinator.shown != text else { return }
-        // 流式回复每次整段重设会让 TextKit 2 从头重排。新串只是旧串原样接着往后长时，只往 textStorage 末尾补字，
-        // TextKit 2 从编辑处起重排；选区在前面的字上，不动它。
-        // 前缀用 isEqual 连属性一起比：装饰按值比，但引用图标的 NSTextAttachment 按身份比，带图标的段落会落到下面的整段路径，接受。
-        // 只能碰 textStorage，读 layoutManager 会让视图退回 TextKit 1。
-        if let old = context.coordinator.shown, text.length > old.length,
-           text.attributedSubstring(from: NSRange(location: 0, length: old.length)).isEqual(to: old) {
-            let added = text.attributedSubstring(from: NSRange(location: old.length, length: text.length - old.length))
-            view.textStorage?.replaceCharacters(in: NSRange(location: old.length, length: 0), with: added)
-            context.coordinator.shown = text
-            return
-        }
+        guard context.coordinator.shown != text, !context.coordinator.appendTail(of: text) else { return }
         // 外观变化时也换掉已经解析成 CGColor 的装饰；只换颜色时保留选区。
         let textChanged = context.coordinator.shown?.string != text.string
         let selection = view.selectedRange()
@@ -73,33 +63,20 @@ struct SelectableTextView: NSViewRepresentable {
         if !textChanged { view.setSelectedRange(selection) }
     }
 
-    /// 高度照文本视图自己排出来的算。量过的按给的宽度记下：SwiftUI 一次排版会用几种宽度把每段字各量几遍
-    /// （实验里问 78 次只有 21 种宽度），每量一次 TextKit 都把这段字从头排一遍。
+    /// 高度照文本视图自己排出来的算，量过的按给的宽度记下。
     func sizeThatFits(_ proposal: ProposedViewSize, nsView view: NSTextView, context: Context) -> CGSize? {
-        let key = SizeKey(text: text, inset: inset, blocks: context.coordinator.blocksVersion)
-        if context.coordinator.sizedFor != key {
-            context.coordinator.sizedFor = key
-            context.coordinator.sizes = [:]
+        context.coordinator.size(inset: inset, environment: context.environment, width: proposal.width) {
+            guard let layout = view.textLayoutManager, let container = view.textContainer else { return nil }
+            let proposed = proposal.width.flatMap { $0.isFinite ? $0 : nil }
+            let most = max((proposed ?? .greatestFiniteMagnitude) - inset.width * 2, 0)
+            let width = fillsWidth && proposed != nil ? most : ProseTextCoordinator.naturalWidth(of: text, most: most)
+            // 文本容器跟着视图宽度，先把宽度放上去再量；SwiftUI 之后会按返回的尺寸再设一次 frame
+            let total = width + inset.width * 2
+            if view.frame.width != total { view.setFrameSize(NSSize(width: total, height: view.frame.height)) }
+            container.size = NSSize(width: width, height: .greatestFiniteMagnitude)
+            layout.ensureLayout(for: layout.documentRange)
+            return CGSize(width: total, height: ceil(layout.usageBoundsForTextContainer.height) + inset.height * 2)
         }
-        if let size = context.coordinator.sizes[proposal.width] { return size }
-        guard let layout = view.textLayoutManager, let container = view.textContainer else { return nil }
-        let proposed = proposal.width.flatMap { $0.isFinite ? $0 : nil }
-        let most = max((proposed ?? .greatestFiniteMagnitude) - inset.width * 2, 0)
-        var width = most
-        if !fillsWidth || proposed == nil {
-            let natural = text.boundingRect(with: CGSize(width: most, height: .greatestFiniteMagnitude),
-                                            options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
-            // 多留一点，免得文本视图排出来比量的宽、多折一行
-            width = min(ceil(natural.width) + 1, most)
-        }
-        // 文本容器跟着视图宽度，先把宽度放上去再量；SwiftUI 之后会按返回的尺寸再设一次 frame
-        let total = width + inset.width * 2
-        if view.frame.width != total { view.setFrameSize(NSSize(width: total, height: view.frame.height)) }
-        container.size = NSSize(width: width, height: .greatestFiniteMagnitude)
-        layout.ensureLayout(for: layout.documentRange)
-        let size = CGSize(width: total, height: ceil(layout.usageBoundsForTextContainer.height) + inset.height * 2)
-        context.coordinator.sizes[proposal.width] = size
-        return size
     }
 
     /// 露出任何一部分就把整段当作视口。TextKit 2 的 NSTextView 只排、只画 visibleRect 里的片段，而这里的 visibleRect 是外层
@@ -171,61 +148,14 @@ struct SelectableTextView: NSViewRepresentable {
         }
     }
 
-    /// 量出的尺寸取决于这些；变了就重新量。blocks 是附件高变了的次数。
-    struct SizeKey: Equatable {
-        let text: NSAttributedString
-        let inset: CGSize
-        let blocks: Int
-    }
-
-    final class Coordinator: NSObject, NSTextViewDelegate, NSTextLayoutManagerDelegate {
+    final class Coordinator: ProseTextCoordinator, NSTextViewDelegate {
         var parent: SelectableTextView?
-        weak var view: NSTextView?
-        /// 文本视图里现在放的字。
-        var shown: NSAttributedString?
-        /// 量过的尺寸，按给的宽度记。
-        var sizedFor: SizeKey?
-        var sizes: [CGFloat?: CGSize] = [:]
-        /// 附件的高变了一次加一，量过的尺寸跟着作废。
-        private(set) var blocksVersion = 0
-
-        /// 把内容和环境交给附件。附件的高可能变了（流式时代码越来越长）就重排那一块：字没变时只有这一步，
-        /// 后面接着补了字的，只补末尾的排版不会回头重排前面的附件。
-        func update(_ blocks: [(attachment: BlockAttachment, content: EmbeddedBlock)], environment: EmbeddedEnvironment) {
-            var changed: [BlockAttachment] = []
-            for (attachment, content) in blocks {
-                attachment.resized = { [weak self] in self?.relayout([$0]) }
-                if attachment.update(content, environment: environment) { changed.append(attachment) }
-            }
-            if !changed.isEmpty, shown != nil { relayout(changed) }
-        }
-
-        /// 附件的高变了：重排它所在的那一段，作废量过的尺寸，请 SwiftUI 再量一次。
-        private func relayout(_ changed: [BlockAttachment]) {
-            blocksVersion += 1
-            guard let view, let layout = view.textLayoutManager, let storage = view.textStorage else { return }
-            storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
-                guard let attachment = value as? BlockAttachment, changed.contains(where: { $0 === attachment }),
-                      let start = layout.location(layout.documentRange.location, offsetBy: range.location),
-                      let end = layout.location(start, offsetBy: range.length),
-                      let textRange = NSTextRange(location: start, end: end) else { return }
-                layout.invalidateLayout(for: textRange)
-            }
-            view.needsLayout = true
-            view.needsDisplay = true
-            view.invalidateIntrinsicContentSize()
-        }
 
         /// 链接交给 SwiftUI 的 openURL：文件引用由 ReferenceNavigation 打开，网页交给系统。
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
             guard let url = link as? URL ?? (link as? String).flatMap(URL.init(string:)) else { return false }
             parent?.openURL(url)
             return true
-        }
-
-        nonisolated func textLayoutManager(_ textLayoutManager: NSTextLayoutManager, textLayoutFragmentFor location: any NSTextLocation,
-                                           in textElement: NSTextElement) -> NSTextLayoutFragment {
-            DecoratedFragment.fragment(for: textElement)
         }
     }
 }

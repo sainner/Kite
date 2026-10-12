@@ -20,10 +20,8 @@ nonisolated struct TextSourceMap: Equatable, Sendable {
 
     struct Piece: Equatable, Sendable {
         var display: NSRange
-        /// 逐字对应时显示的字对应的原文。
+        /// exact 时是显示的字逐字对应的原文，起止落在中间可以照样截；否则是扩到标记外的原文，起止落在中间也整段取。
         var source: NSRange
-        /// 起止落在这段中间、又不能逐字截时，扩到的原文。
-        var outer: NSRange
         var exact: Bool
     }
 
@@ -37,7 +35,7 @@ nonisolated struct TextSourceMap: Equatable, Sendable {
         if selection.location <= first.content {
             lower = first.lines.location
         } else if let piece = first.pieces.first(where: { NSLocationInRange(selection.location, $0.display) }) {
-            lower = piece.exact ? piece.source.location + selection.location - piece.display.location : piece.outer.location
+            lower = piece.exact ? piece.source.location + selection.location - piece.display.location : piece.source.location
         } else {
             lower = first.lines.location
         }
@@ -45,7 +43,7 @@ nonisolated struct TextSourceMap: Equatable, Sendable {
         if end >= NSMaxRange(last.display) {
             upper = NSMaxRange(last.lines)
         } else if let piece = last.pieces.first(where: { NSLocationInRange(end - 1, $0.display) }) {
-            upper = piece.exact ? piece.source.location + end - piece.display.location : NSMaxRange(piece.outer)
+            upper = piece.exact ? piece.source.location + end - piece.display.location : NSMaxRange(piece.source)
         } else {
             upper = NSMaxRange(last.lines)
         }
@@ -68,13 +66,13 @@ extension MarkdownSource {
         let covered = runs.filter { $0.start < NSMaxRange(original) && $0.start + $0.length > original.location }
         guard let first = covered.first, let last = covered.last else {
             let at = NSRange(location: NSMaxRange(lines), length: 0)
-            return .init(display: display, source: at, outer: at, exact: false)
+            return .init(display: display, source: at, exact: false)
         }
         if covered.count == 1, first.exact, !first.styled {
             let part = NSRange(location: first.span.location + original.location - first.start, length: original.length)
-            return .init(display: display, source: part, outer: part, exact: !atomic)
+            return .init(display: display, source: part, exact: !atomic)
         }
-        return .init(display: display, source: NSUnionRange(first.span, last.span), outer: NSUnionRange(first.outer, last.outer), exact: false)
+        return .init(display: display, source: NSUnionRange(first.outer, last.outer), exact: false)
     }
 }
 
@@ -84,12 +82,5 @@ struct TextViewContent {
     /// 嵌在字里的块，按出现的顺序；附件就在 text 里，这里另外带上它该显示的内容，流式更新时属性串不变也能换。
     var blocks: [(attachment: BlockAttachment, content: EmbeddedBlock)] = []
     /// 原文和对照；没有时复制按显示的字。
-    var source: (text: String, map: TextSourceMap)?
-
-    init(text: NSAttributedString, blocks: [(attachment: BlockAttachment, content: EmbeddedBlock)] = [],
-         source: (text: String, map: TextSourceMap)? = nil) {
-        self.text = text
-        self.blocks = blocks
-        self.source = source
-    }
+    var source: (text: String, map: TextSourceMap)? = nil
 }

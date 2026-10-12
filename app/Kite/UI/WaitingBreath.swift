@@ -22,13 +22,12 @@ extension View {
 private struct WaitingBreathModifier: ViewModifier {
     let active: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.panePresence) private var presence
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if active, !reduceMotion {
             // 窗口不在屏上时停在当时的透明度上，回到屏上接着呼吸
-            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: presence?.onScreen == false)) { timeline in
+            PaneTimeline { timeline in
                 content.opacity(WaitingBreath.opacity(at: timeline.date))
             }
         } else {

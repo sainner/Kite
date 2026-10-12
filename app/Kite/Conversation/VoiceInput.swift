@@ -58,42 +58,32 @@ final class VoiceInput {
         try session.setActive(true)
         #endif
         let engine = AVAudioEngine()
+        // 没走到录音开始就停掉引擎（没启动时 stop 什么也不做），交还音频会话
+        var started = false
+        defer { if !started { engine.stop(); deactivate() } }
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else { deactivate(); throw Failure.noDevice }
-        guard format.commonFormat == .pcmFormatFloat32 else { deactivate(); throw Failure.unsupported }
+        guard format.sampleRate > 0, format.channelCount > 0 else { throw Failure.noDevice }
+        guard format.commonFormat == .pcmFormatFloat32 else { throw Failure.unsupported }
         let samples = level.samples
-        samples.reset(sampleRate: format.sampleRate)
+        samples.reset()
         let sink = AVAudioSinkNode(receiverBlock: Self.receiver(samples, interleaved: format.isInterleaved,
                                                                 channels: Int(format.channelCount)))
         engine.attach(sink)
-        do {
-            if #available(macOS 27, iOS 27, *) {
-                try engine.connectNode(input, to: sink, format: format)
-            } else {
-                engine.connect(input, to: sink, format: format)
-            }
-            try engine.start()
-        } catch {
-            deactivate()
-            throw error
+        if #available(macOS 27, iOS 27, *) {
+            try engine.connectNode(input, to: sink, format: format)
+        } else {
+            engine.connect(input, to: sink, format: format)
         }
+        try engine.start()
         // 先录起来，连工作机期间的声音攒在环形缓冲里，连上后一起推
-        let stream: VoiceStream
-        do {
-            let (session, socket) = try await target.client.voiceSocket(thread: target.thread)
-            stream = try VoiceStream(session: session, socket: socket, samples: samples, sampleRate: format.sampleRate, update: update)
-        } catch {
-            engine.stop()
-            deactivate()
-            throw error
-        }
+        let (connection, socket) = try await target.client.voiceSocket(thread: target.thread)
+        let stream = try VoiceStream(session: connection, socket: socket, samples: samples, sampleRate: format.sampleRate, update: update)
         guard current == generation else {
-            engine.stop()
-            deactivate()
             await stream.cancel()
             return
         }
+        started = true
         self.engine = engine
         self.stream = stream
         self.owner = owner
@@ -281,18 +271,16 @@ nonisolated final class SampleRing: Sendable {
         var samples = [Float](repeating: 0, count: SampleRing.capacity)
         /// 一共写进来多少个，取余就是下一个写的位置。
         var written = 0
-        var sampleRate = 48_000.0
     }
 
     /// 48 kHz 下约 5 秒，连工作机期间的声音也放得下。
     static let capacity = 1 << 18
     private let state = Mutex(State())
 
-    func reset(sampleRate: Double) {
+    func reset() {
         state.withLock { state in
             for index in state.samples.indices { state.samples[index] = 0 }
             state.written = 0
-            state.sampleRate = sampleRate
         }
     }
 
@@ -305,12 +293,11 @@ nonisolated final class SampleRing: Sendable {
         }
     }
 
-    /// 最近 count 个采样，从旧到新写进 output；返回采样率。
-    func latest(_ count: Int, into output: inout [Float]) -> Double {
+    /// 最近 count 个采样，从旧到新写进 output。
+    func latest(_ count: Int, into output: inout [Float]) {
         state.withLock { state in
             let start = state.written - count
             for index in 0..<count { output[index] = state.samples[(start + index) & (Self.capacity - 1)] }
-            return state.sampleRate
         }
     }
 
@@ -368,7 +355,7 @@ final class AudioLevel {
     }
 
     private func measure(dt: Double) -> Double {
-        _ = samples.latest(Self.window, into: &buffer)
+        samples.latest(Self.window, into: &buffer)
         let decibels = 20 * log10(Double(vDSP.rootMeanSquare(buffer)) + 1e-9)
         peak = max(decibels, peak - Self.peakFall * dt, Self.quietest)
         return min(max((decibels - (peak - Self.span)) / Self.span, 0), 1)

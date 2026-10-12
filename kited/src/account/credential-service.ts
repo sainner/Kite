@@ -81,16 +81,21 @@ export function createCredentialService(credentials: CredentialStore, { hostedHo
     const input = credentialInput(existing.type, { name: change.name ?? existing.name, meta, secret: change.secret });
     if (keyed && !input.secret) {
       if (input.meta.provider !== existing.meta.provider) throw new RequestError('更换供应商需要重新填写密钥', 400);
-      Object.assign(input.meta, existing.type === 'api' ? { hint: existing.meta.hint, admin: existing.meta.admin } : { hint: existing.meta.hint });
+      const { provider: _, ...generated } = existing.meta;
+      Object.assign(input.meta, generated);
     }
     return credentials.update(userId, existing.id, { name: input.name, meta: input.meta, secret: input.secret }, now());
   }
 
+  async function workerUser(request: Request) {
+    const found = await worker(bearerToken(request));
+    if (!found) throw new RequestError('请使用工作机凭据', 401);
+    return found.device.userId;
+  }
+
   async function fetch(request: Request, path: string): Promise<Response> {
     if (path === '/api/credentials/resolve' && request.method === 'POST') {
-      const found = await worker(bearerToken(request));
-      if (!found) throw new RequestError('请使用工作机凭据', 401);
-      const userId = found.device.userId;
+      const userId = await workerUser(request);
       const body = z.object({ projectId: z.uuid().optional(), references: z.array(secretReference).min(1).max(32) }).strict().parse(await request.json());
       if (body.projectId) ownedProject(body.projectId, userId);
       return result([...new Set(body.references)].map((reference) => {
@@ -103,26 +108,16 @@ export function createCredentialService(credentials: CredentialStore, { hostedHo
       }));
     }
     if (path === '/api/credentials/available' && request.method === 'GET') {
-      const found = await worker(bearerToken(request));
-      if (!found) throw new RequestError('请使用工作机凭据', 401);
-      const userId = found.device.userId;
+      const userId = await workerUser(request);
       const projectId = z.uuid().optional().parse(new URL(request.url).searchParams.get('projectId') ?? undefined);
       return result([...secretList(userId), ...(projectId ? secretList(userId, projectId) : [])]
         .map((entry) => ({ ...entry, reference: `{${entry.projectId ? 'project' : 'account'}.${entry.name}}` })));
     }
-    if (path === '/api/credentials/api' && request.method === 'GET') {
-      const found = await worker(bearerToken(request));
-      if (!found) throw new RequestError('请使用工作机凭据', 401);
-      const userId = found.device.userId;
-      return result(credentials.list(userId, null, 'api').map((credential) => ({ id: credential.id, name: credential.name,
+    const keyed = /^\/api\/credentials\/(api|speech)$/.exec(path);
+    if (keyed && request.method === 'GET') {
+      const userId = await workerUser(request);
+      return result(credentials.list(userId, null, keyed[1] as 'api' | 'speech').map((credential) => ({ id: credential.id, name: credential.name,
         provider: credential.meta.provider, ...credentials.open<{ key?: string; adminKey?: string }>(userId, credential.id) })));
-    }
-    if (path === '/api/credentials/speech' && request.method === 'GET') {
-      const found = await worker(bearerToken(request));
-      if (!found) throw new RequestError('请使用工作机凭据', 401);
-      const userId = found.device.userId;
-      return result(credentials.list(userId, null, 'speech').map((credential) => ({ id: credential.id, name: credential.name,
-        provider: credential.meta.provider, ...credentials.open<{ key: string }>(userId, credential.id) })));
     }
     const user = await owner(request);
     if (user.worker) throw new RequestError('凭据管理需要登录 Kite 账号', 403);
