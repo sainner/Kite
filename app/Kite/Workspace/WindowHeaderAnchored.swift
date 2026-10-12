@@ -8,33 +8,26 @@ extension View {
 }
 
 /// 标题两侧贴着外框：正文按终点排版，外框和它不一样大时（缩小、调整大小途中，或停着时外框比正文宽），两侧跟着外框的左右边和上边走。
-/// Mac 上停着的位置在布局里给，飞行中相对它的挪动只改这一侧托管视图的图层（见 HeaderAnchorContainer）：
+/// Mac 上两侧按排版位置摆，挪动只改这一侧托管视图的图层（见 HeaderAnchorContainer），飞行中和停着都一样：标题栏看得见、停着时外框和正文一样大，
+/// 不用挪；收成停靠形状停着时整块正文藏起来（见 WindowSurface）。不读 motion 的终点：排布一变，卡片随即把新终点交给 motion，
+/// 读了的话两侧的托管视图要跟着再更新一轮。
 /// 锚定若在正文的托管视图里逐帧改 SwiftUI 几何，整段正文跟着逐帧更新，玻璃按钮的 AppKit 视图逐帧改位置
 /// （2026-10-12 Mac 实测，一个窗口占满台面时，缩小、恢复各多 25～45 毫秒主线程，缩小的丢帧约多一倍；只在绘制时平移没有用）。
-/// 这一侧报的偏好值传不出它的托管视图，在这里接着往上报，控件的范围换回标题栏的坐标。
+/// 这一侧报的偏好值传不出它的托管视图，接着往上报，见 HeaderAnchorReports。
 /// 滚动软边照样认得这一侧里的控件，位置也对（2026-10-12 Mac 实测，见 HostedContentContainer 里软边的那段）。
 struct WindowHeaderAnchored<Content: View>: View {
     let edge: HorizontalEdge
     let content: Content
     #if os(macOS)
     @Environment(\.windowHeaderAnchors) private var anchors
-    @Environment(\.windowMotion) private var motion
-    @Environment(\.windowContentSize) private var contentSize
     @State private var relay = HeaderAnchorRelay()
-    @State private var origin = CGPoint.zero
     #endif
 
     var body: some View {
         #if os(macOS)
-        if let anchors, let motion {
-            let rest = motion.target.headerShift(contentSize: contentSize)
+        if let anchors {
             HeaderAnchorHost(edge: edge, link: anchors, relay: relay, size: relay.size, content: content)
-                .onGeometryChange(for: CGPoint.self) { $0.frame(in: .named("pane-header")).origin } action: { origin = $0 }
-                .preference(key: PaneHeaderStatusText.self, value: relay.statusText)
-                .preference(key: PaneHeaderActionsWidth.self, value: relay.actionsWidth)
-                .preference(key: PaneHeaderInteractiveRects.self,
-                            value: relay.rects.map { $0.offsetBy(dx: origin.x, dy: origin.y) })
-                .modifier(WindowTranslation(point: CGPoint(x: edge == .leading ? rest.dx : -rest.dx, y: rest.dy)))
+                .modifier(HeaderAnchorReports(relay: relay))
         } else {
             content.modifier(WindowHeaderAnchor(edge: edge))
         }
@@ -52,6 +45,21 @@ struct WindowHeaderAnchored<Content: View>: View {
     var rects: [CGRect] = []
     /// 里面的内容排出来的大小：变了外面要重新量。
     var size = CGSize.zero
+}
+
+/// 标题一侧报的偏好值传不出它的托管视图，在这里接着往上报，控件的范围换回标题栏的坐标。
+/// 只在这一层读：这一侧挪了位置（如窗口按钮露出来时让位）、报的值变了，这一侧的托管视图不跟着更新。
+private struct HeaderAnchorReports: ViewModifier {
+    let relay: HeaderAnchorRelay
+    @State private var origin = CGPoint.zero
+
+    func body(content: Content) -> some View {
+        content
+            .onGeometryChange(for: CGPoint.self) { $0.frame(in: .named("pane-header")).origin } action: { origin = $0 }
+            .preference(key: PaneHeaderStatusText.self, value: relay.statusText)
+            .preference(key: PaneHeaderActionsWidth.self, value: relay.actionsWidth)
+            .preference(key: PaneHeaderInteractiveRects.self, value: relay.rects.map { $0.offsetBy(dx: origin.x, dy: origin.y) })
+    }
 }
 
 /// 标题一侧托管在自己的视图里。环境整份转交。

@@ -63,8 +63,7 @@ struct PaneHeaderBar<Status: View, Actions: View>: View {
     let header: PaneHeader
     let status: Status
     let actions: Actions
-    @Environment(\.paneHeaderControlsInset) private var controlsInset
-    @Environment(\.paneHeaderMinHeight) private var controlsHeight
+    @Environment(\.paneHeaderControlsSpace) private var controlsSpace
     @Environment(\.workspacePresentation) private var presentation
     let openSidebar: (@MainActor () -> Void)?
     @State private var statusText: String?
@@ -134,20 +133,39 @@ struct PaneHeaderBar<Status: View, Actions: View>: View {
                                 Color.clear.preference(key: PaneHeaderActionsWidth.self, value: proxy.size.width)
                             }
                         }
-                        .padding(.leading, controlsInset)
-                        .windowHeaderAnchor(.trailing)
+                        .modifier(TrailingPlacement(space: controlsSpace))
                         .layoutPriority(1)
                     }
                 }
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
             .padding(.horizontal, Metrics.paneMargin)
-            // 至少一个按钮高：只有主标题、没有按钮的窗口不跟着文字变矮。
-            .frame(minHeight: max(controlsHeight, Metrics.paneHeaderButton))
+            .modifier(ControlsMinHeight(space: controlsSpace))
             .onPreferenceChange(PaneHeaderStatusText.self) { statusText = $0 }
         }
     }
 
+}
+
+/// 标题栏右边那组按钮：锚定在外框右边，前面给窗口按钮让出宽度。让出的宽度随悬停变，放在锚定外面、只在这一层读：
+/// 变了不重建那一侧的托管视图（见 WindowHeaderAnchored），标题栏也不跟着重算。
+private struct TrailingPlacement: ViewModifier {
+    let space: (any PaneHeaderControlsSpace)?
+
+    func body(content: Content) -> some View {
+        content.windowHeaderAnchor(.trailing).padding(.leading, space?.inset ?? 0)
+    }
+}
+
+/// 窗口按钮藏着时也为它保留高度，在这一层读，同 TrailingPlacement。
+private struct ControlsMinHeight: ViewModifier {
+    let space: (any PaneHeaderControlsSpace)?
+
+    func body(content: Content) -> some View {
+        let height = space?.minHeight ?? 0
+        // 至少一个按钮高：只有主标题、没有按钮的窗口不跟着文字变矮。
+        content.frame(minHeight: max(height, Metrics.paneHeaderButton))
+    }
 }
 
 #if canImport(UIKit)
@@ -438,6 +456,15 @@ private extension View {
     }
 }
 
+/// 标题栏给卡片的窗口按钮（缩小、展开、关闭）让出的地方，由卡片给出。给一个建好不再换的对象，只有读它的那一层随悬停更新：
+/// 按钮随悬停显隐，让出的宽度直接放进环境的话，每次都是一次环境变化，整个窗口的正文（每段字一个文本视图）都要跟着更新。
+@MainActor protocol PaneHeaderControlsSpace: AnyObject {
+    /// 按钮露出来时，在右边那组按钮前面留出的宽度。
+    var inset: CGFloat { get }
+    /// 按钮藏着时也为它保留的高度，悬停时标题栏不跳动。
+    var minHeight: CGFloat { get }
+}
+
 /// 标题栏与更多菜单共用当前卡片的窗口动作。
 struct PaneWindowActions {
     let minimize: @MainActor () -> Void
@@ -457,10 +484,8 @@ struct PaneWindowActions {
 extension EnvironmentValues {
     /// 卡片宽度不足时，把窗口操作交给更多菜单。
     @Entry var paneOverflowActions: PaneWindowActions?
-    /// 窗口操作按钮位于标题与菜单之间，出现时在菜单前留出的宽度。
-    @Entry var paneHeaderControlsInset: CGFloat = 0
-    /// 隐藏的窗口操作组仍为标题栏保留系统按钮需要的高度，悬停时标题栏不跳动。
-    @Entry var paneHeaderMinHeight: CGFloat = 0
+    /// 标题栏给窗口按钮让出的地方，见 PaneHeaderControlsSpace。
+    @Entry var paneHeaderControlsSpace: (any PaneHeaderControlsSpace)?
     /// 信息区与侧栏入口合在一块玻璃里，信息缩到按钮图标的尺度。
     @Entry var paneHeaderStatusGrouped = false
     /// 信息区当前展示的提示；圆环据此虚化，悬停说明换成提示。
