@@ -145,7 +145,7 @@ final class CompactRowView: UIView {
             slot.view.isUserInteractionEnabled = current
             slot.view.accessibilityElementsHidden = !current
             if exposed, slot.usesDots { dots = true }
-            layoutChrome(slot, current: current, read: read)
+            layoutChrome(slot, exposed: exposed, read: read)
             slot.setChromeOpacity(current ? 1 : 0, animated: fades)
         }
         // 渐变：当前窗口是会话窗口时露出来，铺到它的标题栏底下
@@ -286,15 +286,19 @@ final class CompactRowView: UIView {
 
     /// 一个窗口的标题栏和控制区：当前窗口的露出来，别的藏着（换窗口时淡入淡出，见 fadeChrome）；会话窗口按外壳的安全区摆原生的两块，
     /// 让出的距离交给对话；别的窗口的两个岛铺满窗口，按它们报的高接点按。
-    private func layoutChrome(_ slot: CompactSlot, current: Bool, read: Read) {
+    /// 没露出来的会话窗口按键盘收着的样子排：键盘升降时只有露出来的窗口重排对话（每个窗口一次几十毫秒，iPad 强制紧凑布局真机实测），
+    /// 键盘升着时不能横滑，换过去时再按当时的样子排。
+    private func layoutChrome(_ slot: CompactSlot, exposed: Bool, read: Read) {
         let width = bounds.width, height = bounds.height
-        let covered = read.covered
+        var covered = read.covered
         guard let thread = slot.thread, let area = slot.controlsArea else {
             for island in [slot.headerIsland, slot.controlsIsland] where island.frame != bounds { island.frame = bounds }
             slot.chromeHeight = (top: covered.top, header: slot.state.headerHeight ?? defaultHeaderHeight(covered.top),
                                  controls: controls.height(for: slot.pane), bottom: covered.bottom)
             return
         }
+        let keyboardShown = read.keyboardShown && exposed
+        if read.keyboardShown, !exposed { covered.bottom = read.home }
         let header = thread.headerBar
         header.topInset = covered.top
         let headerHeight = header.height
@@ -302,11 +306,11 @@ final class CompactRowView: UIView {
         if header.frame != headerFrame { header.frame = headerFrame }
         // 控制区：左右留 paneMargin，玻璃最宽 transcriptWidth 居中；键盘升起时最左边是收起键盘（只在 iPhone 上）。
         // 底边距取 max(paneMargin, Home 条) 只算一次，键盘升起时在键盘上方留 paneMargin，同 PaneControlsBottom
-        let safe = read.keyboardShown ? 0 : read.home
+        let safe = keyboardShown ? 0 : read.home
         let bottomPadding = max(Metrics.paneMargin, safe) - safe
-        area.showsKeyboardButton = ScreenKeyboard.applies && read.keyboardShown
+        area.showsKeyboardButton = ScreenKeyboard.applies && keyboardShown
         area.typing = { [weak thread] in thread?.controls.typing ?? false }
-        area.keyboardShown = read.keyboardShown
+        area.keyboardShown = keyboardShown
         let available = max(width - covered.leading - covered.trailing - 2 * Metrics.paneMargin, 0)
         let glassHeight = area.layout(available: available)
         let areaHeight = glassHeight + bottomPadding
