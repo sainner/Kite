@@ -146,13 +146,16 @@ private struct CompactTabsRoot: View {
     }
 }
 
-/// 窗口的点阵层：铺满屏幕、不随窗口动，窗口的形状是取景框（外壳裁）。摆在窗口上的图形开合途中跟着窗口走（follow），同 WindowDots。
+/// 窗口的点阵层：铺满屏幕、不随窗口动，窗口的形状是取景框（外壳裁）。摆在窗口上的图形跟着窗口走（follow：开合途中逐帧、拉开停着时停在拉开的位置），
+/// 同 WindowDots；窗口上没有图形时不换算，停着时不插值、不发虚。
 private struct CompactWindowDots: View {
     let state: CompactShellState
+    @Environment(\.dotStage) private var stage
 
     var body: some View {
         if state.usesDots {
-            DotCanvas(follow: state.follow)
+            let follows = stage?.carries(state.carrier) == true
+            DotCanvas(follow: follows ? state.follow : nil)
                 .environment(\.dotCarrier, state.carrier)
                 .environment(\.dotScope, state.scope)
         }
@@ -433,7 +436,15 @@ final class CompactShellView: UIView, DrawerDriving {
                 feedback.impactOccurred()
             }
         }
-        if geometryChanged, segments.isEmpty { apply(DrawerPose(geometry, settled)) }
+        // 几何变了（转屏、键盘、规则、读到屏幕圆角）：停着的直接摆到新几何下；正在走的按新几何重新取样，接着走完
+        if geometryChanged {
+            if segments.isEmpty {
+                apply(DrawerPose(geometry, settled))
+                tracking.quietly { updateFollow(settled) }
+            } else {
+                refresh(at: CACurrentMediaTime())
+            }
+        }
     }
 
     private func readModel() -> Read {
@@ -477,6 +488,12 @@ final class CompactShellView: UIView, DrawerDriving {
                 row = made
                 content.insertSubview(made, at: 0)
                 made.frame = bounds
+                // 抽屉开着时才建出来的（工作区连上、开出第一个窗口）：标题栏、控制区按这一刻的进度补位
+                if let geometry {
+                    let pose = DrawerPose(geometry, presented)
+                    made.shift(header: pose.header, controls: pose.controls)
+                    if !segments.isEmpty { refresh(at: CACurrentMediaTime()) }
+                }
                 fadeIn(made, from: placeholder)
                 if let placeholder {
                     self.placeholder = nil
@@ -629,8 +646,15 @@ final class CompactShellView: UIView, DrawerDriving {
         }
         if segments.isEmpty {
             stopLink()
-            if state.follow != nil { state.follow = nil }
+            updateFollow(settled)
         }
+    }
+
+    /// 摆在窗口上的图形这一刻怎么跟着窗口：停在收起的位置时不换算。点阵层只在窗口上真有图形时用它，见 CompactWindowDots。
+    private func updateFollow(_ openness: Openness) {
+        guard let geometry else { return }
+        let follow = openness == geometry.rest ? nil : geometry.follow(openness)
+        if state.follow != follow { state.follow = follow }
     }
 
     private var carriesFigures: Bool {
@@ -658,10 +682,7 @@ final class CompactShellView: UIView, DrawerDriving {
             apply(DrawerPose(geometry, openness))
             finish(at: time)
         }
-        if carriesFigures {
-            let follow = openness == geometry.rest ? nil : geometry.follow(openness)
-            if state.follow != follow { state.follow = follow }
-        }
+        if carriesFigures { updateFollow(openness) }
         if segments.isEmpty || (!segments.values.contains(where: \.tracking) && !carriesFigures) { stopLink() }
     }
 
