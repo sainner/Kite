@@ -56,6 +56,9 @@ final class PhoneCardView: UIView {
     private let presence = PanePresence()
     private let content = CardContentState()
     private let link = HostedContentLink()
+    /// 正文里的会话窗口桥接上来时建的原生外框，见 ThreadPaneBridge。
+    private let threadSlot = ThreadWindowSlot()
+    private var threadWindow: PhoneThreadWindowView?
 
     private let fill = CardFillLayers()
     private var backdrop: HostIsland?
@@ -111,7 +114,8 @@ final class PhoneCardView: UIView {
         ring.cornerCurve = .continuous
         for layer in [ring, fill.base, fill.minimized] { layer.actions = Self.noActions }
         headerView.addSubview(buttons)
-        isAccessibilityElement = false
+        threadSlot.attach = { [weak self] thread, pane, environment in self?.attachThread(thread, pane: pane, environment: environment) }
+        threadSlot.detach = { [weak self] pane in self?.detachThread(pane) }
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in self.updateColors() }
     }
 
@@ -167,7 +171,7 @@ final class PhoneCardView: UIView {
         content.environment += 1
         container.island.rootView = stage.rooted(CardContent(
             group: group, pane: pane, state: content, header: header, headerRegions: headerRegions, presence: presence, motion: motion,
-            reports: bodyReports, link: link, carrier: carrier, scope: scope, threadSlot: nil))
+            reports: bodyReports, link: link, carrier: carrier, scope: scope, threadSlot: Self.nativeThreads ? threadSlot : nil))
         backdrop.rootView = stage.rooted(CardDots(reports: bodyReports, carrier: carrier, scope: scope, motion: motion))
         buttons.rootView = stage.rooted(CardButtons(group: group, pane: pane, header: header, state: content, motion: motion))
         iconKey = nil
@@ -175,9 +179,23 @@ final class PhoneCardView: UIView {
         updateColors()
     }
 
-    /// 拆掉：不再跟模型，收掉闭包和岛里的东西。
+    /// 会话窗口的外框是原生的；Debug 带 --swiftui-thread-window 时照旧是 SwiftUI 的 ThreadPane，同一个构建对照新旧两版。
+    private static var nativeThreads: Bool {
+        #if DEBUG
+        !ProcessInfo.processInfo.arguments.contains("--swiftui-thread-window")
+        #else
+        true
+        #endif
+    }
+
+    /// 拆掉：不再跟模型，收掉闭包和岛里的东西，原生外框一起拆。
     func dismantle() {
         motionTracking.cancel()
+        threadWindow?.dismantle()
+        threadWindow = nil
+        threadSlot.attach = nil
+        threadSlot.detach = nil
+        container?.native = nil
         placed?.motion.onStart = nil
         presentation.motion?.onStart = nil
         headerView.dragged = nil
@@ -188,6 +206,35 @@ final class PhoneCardView: UIView {
         icon.rootView = AnyView(EmptyView())
         buttons.rootView = AnyView(EmptyView())
         link.container = nil
+    }
+
+    // MARK: - 会话窗口的原生外框
+
+    /// 正文里的会话窗口桥接上来（或它的环境变了）：建原生外框，岛里的正文从此不跟着改尺寸（见 placeContent）。
+    private func attachThread(_ thread: WorkThread, pane threadPane: ThreadPaneModel, environment: EnvironmentValues) {
+        guard let stage, let motion = placed?.motion, let container else { return }
+        if let threadWindow, threadWindow.thread === thread, threadWindow.pane === threadPane {
+            threadWindow.environmentChanged(environment, group: stage.group)
+            return
+        }
+        threadWindow?.dismantle()
+        let window = PhoneThreadWindowView(thread: thread, pane: threadPane, environment: environment, group: stage.group, paneID: pane,
+                                           model: stage.model, header: header, regions: headerRegions, reports: bodyReports, motion: motion)
+        threadWindow = window
+        container.native = window
+        if !content.nativeThread { content.nativeThread = true }
+        stage.setNeedsLayout()
+    }
+
+    /// 桥不在了（窗口不再是会话）：收掉原生外框，正文回到岛里。
+    private func detachThread(_ threadPane: ThreadPaneModel) {
+        guard let threadWindow, threadWindow.pane === threadPane else { return }
+        threadWindow.dismantle()
+        self.threadWindow = nil
+        container?.native = nil
+        if content.nativeThread { content.nativeThread = false }
+        bodyReports.threadSlots = []
+        stage?.setNeedsLayout()
     }
 
     // MARK: - 排布
@@ -281,11 +328,19 @@ final class PhoneCardView: UIView {
         let destination = target.contentOrigin(size: contentSize)
         let area = CGRect(origin: destination, size: contentSize).union(target.frame)
         let origin = stage.origin
-        let placement = HostedPlacementValue(origin: CGPoint(x: origin.x + area.minX, y: origin.y + area.minY),
-                                             contentSize: contentSize,
-                                             offset: CGPoint(x: origin.x + destination.x, y: origin.y + destination.y),
-                                             extent: CGSize(width: max(origin.x + area.maxX, 0), height: max(origin.y + area.maxY, 0)))
-        if link.placement.value != placement { link.placement.value = placement }
+        if threadWindow != nil {
+            // 原生外框：岛里的正文只剩桥，不跟着改尺寸；外框按正文停着的位置摆在这一层里
+            let placement = HostedPlacementValue()
+            if link.placement.value != placement { link.placement.value = placement }
+            container.nativeFrame = CGRect(x: destination.x - area.minX, y: destination.y - area.minY,
+                                           width: contentSize.width, height: contentSize.height)
+        } else {
+            let placement = HostedPlacementValue(origin: CGPoint(x: origin.x + area.minX, y: origin.y + area.minY),
+                                                 contentSize: contentSize,
+                                                 offset: CGPoint(x: origin.x + destination.x, y: origin.y + destination.y),
+                                                 extent: CGSize(width: max(origin.x + area.maxX, 0), height: max(origin.y + area.maxY, 0)))
+            if link.placement.value != placement { link.placement.value = placement }
+        }
         container.origin = CGPoint(x: origin.x + area.minX, y: origin.y + area.minY)
         if container.frame != area { container.frame = area }
         // 点阵层按台面全幅铺，遮罩按外框
