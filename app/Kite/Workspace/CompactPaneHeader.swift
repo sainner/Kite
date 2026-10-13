@@ -72,7 +72,7 @@ struct CompactPaneHeaderHost: ViewModifier {
 }
 
 /// 控制区同标题栏的按钮组一样按窗口淡入淡出；量出的高度记给窗口，窗口按它让位。
-private struct CompactPaneControlsBar: View {
+struct CompactPaneControlsBar: View {
     let source: CompactPaneHeader
     let controls: SharedPaneControls
     let keyboardShown: Bool
@@ -91,7 +91,7 @@ private struct CompactPaneControlsBar: View {
     }
 }
 
-private struct CompactPaneHeaderBar: View {
+struct CompactPaneHeaderBar: View {
     let source: CompactPaneHeader
 
     var body: some View {

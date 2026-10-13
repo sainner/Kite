@@ -94,11 +94,37 @@ final class PassThroughView: UIView {
 }
 
 /// 按下挪过 threshold 才算开始的拖动，同 SwiftUI 的 DragGesture(minimumDistance:)（UIPanGestureRecognizer 的起步距离改不了）。
-/// 位置都按窗口坐标报（同 DragGesture 的 .global）。
+/// 位置都按窗口坐标报（同 DragGesture 的 .global）；速度按最近 0.1 秒挪的算（点每秒）。
 final class ThresholdDrag: UIGestureRecognizer {
     var threshold: CGFloat = Metrics.dragThreshold
     private(set) var start: CGPoint?
     private(set) var location: CGPoint = .zero
+    private var samples: [(time: TimeInterval, point: CGPoint)] = []
+
+    /// 相对按下处挪了多少。
+    var translation: CGSize {
+        guard let start else { return .zero }
+        return CGSize(width: location.x - start.x, height: location.y - start.y)
+    }
+
+    var velocity: CGSize {
+        guard let first = samples.first, let last = samples.last, last.time - first.time > 0.001 else { return .zero }
+        let dt = last.time - first.time
+        return CGSize(width: (last.point.x - first.point.x) / dt, height: (last.point.y - first.point.y) / dt)
+    }
+
+    /// 松手后照这个速度滑下去大概停在哪（同 UIScrollView 正常减速的投影），相对按下处。
+    var predictedTranslation: CGSize {
+        let rate = UIScrollView.DecelerationRate.normal.rawValue
+        let factor = rate / (1 - rate) / 1000
+        return CGSize(width: translation.width + velocity.width * factor, height: translation.height + velocity.height * factor)
+    }
+
+    private func sample(_ touch: UITouch) {
+        let now = touch.timestamp
+        samples.append((now, touch.location(in: nil)))
+        samples.removeAll { now - $0.time > 0.1 }
+    }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         guard touches.count == 1, state == .possible, start == nil, let touch = touches.first else {
@@ -107,11 +133,14 @@ final class ThresholdDrag: UIGestureRecognizer {
         }
         start = touch.location(in: nil)
         location = start ?? .zero
+        samples = []
+        sample(touch)
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
         guard let touch = touches.first, let start else { return }
         location = touch.location(in: nil)
+        sample(touch)
         if state == .possible {
             if hypot(location.x - start.x, location.y - start.y) >= threshold { state = .began }
         } else if state == .began || state == .changed {
@@ -120,6 +149,8 @@ final class ThresholdDrag: UIGestureRecognizer {
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        // 松手前停住的，速度按停住算
+        if let touch = touches.first, start != nil { sample(touch) }
         state = state == .possible ? .failed : .ended
     }
 
@@ -130,6 +161,7 @@ final class ThresholdDrag: UIGestureRecognizer {
     override func reset() {
         super.reset()
         start = nil
+        samples = []
     }
 }
 

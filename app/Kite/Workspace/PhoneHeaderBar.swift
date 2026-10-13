@@ -85,6 +85,7 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
         subtitleLabel.font = subtitleFont
         refresh.font = titleFont
         refresh.environment = environment
+        measuredRow = nil
         link = environment.windowHeaderAnchors
         if window != nil { link?.add(self) }
         sizeChanged()
@@ -100,6 +101,7 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
             titleIsland.rootView = titleRoot()
         }
         titleIsland.isHidden = !island
+        measuredRow = nil
         for view in [titleLabel, subtitleLabel] as [UIView] { view.isHidden = island }
         if previous?.header.title != header.title, previous != nil, !island {
             // 标题换字：同 SwiftUI 的 blurReplace 跟 snappy 走，这里淡入淡出
@@ -124,6 +126,7 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
     }
 
     private func sizeChanged() {
+        measuredRow = nil
         setNeedsLayout()
         changed?()
     }
@@ -132,8 +135,17 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
 
     /// 一行的高：至少一个按钮高（窗口按钮藏着时也为它留高），信息区、菜单、标题里最高的。
     private var rowHeight: CGFloat {
+        max(Metrics.paneHeaderButton, controlsSpace?.minHeight ?? 0, contentRow)
+    }
+
+    /// 信息区、菜单、标题里最高的：量岛的理想大小要跑一遍 SwiftUI，记下来，岛报大小变了、内容换了再量。
+    private var measuredRow: CGFloat?
+    private var contentRow: CGFloat {
+        if let measuredRow { return measuredRow }
         let title = titleIsland.isHidden ? titleBlockHeight : titleIsland.idealSize.height
-        return max(Metrics.paneHeaderButton, controlsSpace?.minHeight ?? 0, statusIsland.idealSize.height, actionsIsland.idealSize.height, title)
+        let row = max(statusIsland.idealSize.height, actionsIsland.idealSize.height, title)
+        measuredRow = row
+        return row
     }
 
     private var titleBlockHeight: CGFloat {
@@ -174,9 +186,9 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
         // 信息区
         let status = statusIsland.idealSize
         place(statusIsland, CGRect(x: Metrics.paneMargin, y: center - status.height / 2, width: status.width, height: status.height))
-        // 标题前统一留一个按钮间距；单独显示的圆环按方框计算，扣掉方框里已有的空白
-        let grouped = content?.openSidebar != nil
-        let titleX = statusIsland.frame.maxX + (status.width == 0 || grouped ? Metrics.paneButtonGap : Metrics.paneButtonGap - Metrics.statusRingMargin)
+        // 标题前统一留一个按钮间距；单独显示的圆环按方框计算，扣掉方框里已有的空白。紧凑触屏下圆环本身就是侧栏入口，不另放侧栏按钮
+        let sidebarButton = content?.openSidebar != nil && !environment.workspacePresentation.isCompactTouch
+        let titleX = statusIsland.frame.maxX + (status.width == 0 || sidebarButton ? Metrics.paneButtonGap : Metrics.paneButtonGap - Metrics.statusRingMargin)
         let available = max(trailingEdge - titleX, 0)
         if !titleIsland.isHidden {
             place(titleIsland, CGRect(x: titleX, y: top, width: available, height: row))

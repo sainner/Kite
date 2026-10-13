@@ -97,6 +97,8 @@ final class ControlsBarView: UIView {
     }
     /// 正在打字（输入框是第一响应者）。
     var typing: Bool { field.isFirstResponder }
+    /// 思考强度占的地方（本视图坐标）：紧凑布局里从这里起手的横拖留给它自己调档，不切窗口（同 reservesPaneSwipe）。
+    var effortFrame: CGRect { effort.view.frame }
 
     init() {
         let effect = UIGlassEffect(style: .regular)

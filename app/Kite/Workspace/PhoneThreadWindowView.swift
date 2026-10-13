@@ -8,6 +8,7 @@ import UIKit
 /// 和列表的大小，列表里面照旧自己排；标题栏两侧各在自己的托管视图里（见 WindowHeaderAnchored）。空会话的签名、录音时底部那一带
 /// 是铺满窗口的岛，只在有它们时才在。层次从下到上：签名或那一带、标题栏和对话、输入区。
 /// 行为照 ThreadPane 和 PaneWindow，状态和动作共用 ThreadPaneModel；结构照 Mac 的 ThreadWindowView。坐标照卡片正文：左上角是正文原点。
+/// 紧凑布局里（compact）标题栏和输入区由外壳统一摆（换窗口时原地淡入淡出，见 CompactRowView），这里只剩对话和签名，让出的距离由外壳给。
 final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
     let thread: WorkThread
     let pane: ThreadPaneModel
@@ -26,7 +27,16 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
     /// 对话列表，和它上面给滚动软边占位的标题栏（safeAreaBar，透明，高同标题栏）。
     private let surface = HostIsland()
     /// 标题栏，原生的，压在对话上面。
-    private let headerBar = PhoneHeaderBar()
+    let headerBar = PhoneHeaderBar()
+    /// 紧凑布局：标题栏和输入区交给外壳，见 compactInsets。
+    let compact: Bool
+    /// 紧凑布局里外壳让出的距离：上面是状态栏连同标题栏，下面是输入区连同 Home 条或键盘，左右是横屏时的安全区。
+    var compactInsets = EdgeInsets() {
+        didSet { if compactInsets != oldValue { setNeedsLayout() } }
+    }
+
+    /// 紧凑布局里标题栏、输入区的高变了：外壳重摆。
+    var chromeChanged: (() -> Void)?
     private let headerTracking = ModelTracking()
     private let metrics = ThreadWindowMetrics()
     /// 窗口的范围（正文坐标），交给铺满窗口的签名，同 PaneWindow 的 paneWindowFrame。
@@ -48,7 +58,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
     }
 
     init(thread: WorkThread, pane: ThreadPaneModel, environment: EnvironmentValues, group: PaneGroup, paneID: Pane, model: AppModel,
-         header: PaneCardHeader, regions: HeaderRegions, reports: PaneCardBodyReports, motion: WindowMotion) {
+         header: PaneCardHeader, regions: HeaderRegions, reports: PaneCardBodyReports, motion: WindowMotion, compact: Bool = false) {
         self.thread = thread
         self.pane = pane
         self.environment = environment
@@ -59,15 +69,19 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         self.regions = regions
         self.reports = reports
         self.motion = motion
+        self.compact = compact
         super.init(frame: .zero)
         pane.scroll.list = list
-        for view in [backdrop, surface, headerBar, controls] as [UIView] { addSubview(view) }
+        for view in (compact ? [backdrop, surface] : [backdrop, surface, headerBar, controls]) as [UIView] { addSubview(view) }
         headerBar.controlsSpace = header
         headerBar.changed = { [weak self] in self?.headerChanged() }
         headerBar.tapped = { [weak self] in self?.controls.endTyping() }
         backdrop.isHidden = true
         list.isHidden = true
-        controls.heightChanged = { [weak self] in self?.invalidate() }
+        controls.heightChanged = { [weak self] in
+            guard let self else { return }
+            if compact { chromeChanged?() } else { invalidate() }
+        }
         installIslands()
         refreshRows()
         refreshControls()
@@ -96,7 +110,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
 
     private func installIslands() {
         let roots = ThreadIslandEnvironment(group: group, pane: paneID, header: header, model: pane)
-        surface.rootView = rooted(PhoneTranscriptSurface(list: list, metrics: metrics))
+        surface.rootView = rooted(PhoneTranscriptSurface(list: list, metrics: metrics, compact: compact))
         headerBar.install(status: rooted(ThreadHeaderStatusRoot(openSidebar: sidebarAction).modifier(roots)),
                           actions: rooted(ThreadHeaderActions().fixedSize().modifier(roots)), environment: environment)
         backdrop.rootView = rooted(ThreadBackdropRoot(pane: pane, metrics: metrics, windowFrame: windowFrame, reports: reports).modifier(roots))
@@ -113,6 +127,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         headerTracking.cancel()
         headerBar.changed = nil
         headerBar.tapped = nil
+        chromeChanged = nil
         rowsTracking.cancel()
         controlsTracking.cancel()
         controls.heightChanged = nil
@@ -151,6 +166,10 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
 
     /// 标题栏的高、菜单宽、可点的范围报给卡片（同 PaneHeaderReports）：卡片的拖动层按它们让位、挖空，窗口按钮按高居中。
     private func headerChanged() {
+        if compact {
+            chromeChanged?()
+            return
+        }
         let height = headerBar.height
         if header.height != height { header.height = height }
         let width = headerBar.menuWidth
@@ -237,6 +256,10 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         super.layoutSubviews()
         laying = true
         defer { laying = false }
+        if compact {
+            layoutCompact()
+            return
+        }
         let state = tracking.track({
             State(initial: pane.initial(thread), empty: !thread.hasTranscript, listening: pane.listening(model), headerHeight: headerHeight,
                   controlsInset: header.inset)
@@ -278,6 +301,32 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         }
     }
 
+    /// 紧凑布局：对话铺满，上下让出外壳给的距离；标题栏后面的渐变、滚动软边从窗口顶边铺到标题栏底边。
+    private func layoutCompact() {
+        let state = tracking.track({
+            State(initial: pane.initial(thread), empty: !thread.hasTranscript, listening: pane.listening(model), headerHeight: 0, controlsInset: 0)
+        }) { [weak self] in self?.invalidate() }
+        let insets = compactInsets
+        if metrics.controlsHeight != insets.bottom { metrics.controlsHeight = insets.bottom }
+        place(surface, bounds)
+        let placement = ThreadWindowMetrics.Header(origin: .zero, size: CGSize(width: bounds.width, height: insets.top))
+        if metrics.header != placement { metrics.header = placement }
+        let window = CGRect(origin: .zero, size: bounds.size)
+        if windowFrame.rect != window { windowFrame.rect = window }
+        let backdropShown = state.initial || (state.listening && !state.empty)
+        backdrop.isHidden = !backdropShown
+        if backdropShown { place(backdrop, bounds) }
+        list.isHidden = state.empty
+        if insets != self.insets {
+            self.insets = insets
+            list.setInsets(insets)
+        }
+        if rowsDirty, !state.empty {
+            rowsDirty = false
+            list.update(rows, context: rowContext, presence: environment.panePresence)
+        }
+    }
+
     /// 排版当中改了读过的模型：这一轮排完 UIKit 会清掉待排，下一拍再标一次（同 PhoneStageView）。
     private func invalidate() {
         setNeedsLayout()
@@ -294,7 +343,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
     @objc private func tapped(_ recognizer: UITapGestureRecognizer) {
         guard recognizer.state == .ended else { return }
         let point = recognizer.location(in: self)
-        if controls.typing, !controls.frame.contains(point) { controls.endTyping() }
+        if controls.typing, !controls.convert(controls.bounds, to: self).contains(point) { controls.endTyping() }
         group.layout.focus(paneID)
     }
 
@@ -305,29 +354,44 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
 
     /// 读屏顺序按看的顺序：标题栏、对话、（空会话的说明）、输入区。
     override var accessibilityElements: [Any]? {
-        get { [headerBar, surface, backdrop, controls].filter { !$0.isHidden } }
+        get { (compact ? [surface, backdrop] : [headerBar, surface, backdrop, controls]).filter { !$0.isHidden } }
         set {}
     }
 }
 /// 对话列表那个岛：列表铺满，顶上一条 safeAreaBar 和标题栏一样高，只画标题栏后面的渐变。UIKit 的滚动软边只认同一个 SwiftUI 软边容器里的
 /// 滚动视图（UIScrollEdgeElementContainerInteraction 在 SwiftUI 托管的窗口里连不上，2026-10-14 iPad 真机导过：软边高 0），
 /// 所以软边照旧由 SwiftUI 建，标题栏本身是原生的、压在上面。
+/// 紧凑布局里（compact）标题栏、渐变在外壳上（CompactRowView，开合时跟着标题栏补位），这里只放一条看不出来的 safeAreaBar 撑起滚动软边。
+/// 软边的高按这一条里元素的底边再往下伸一截：SwiftUI 版收集到的元素是同一棵树里共用标题栏的按钮（底边在标题栏底下的 paneMargin 之上），
+/// 这一条就到那里为止，软边才一样高（2026-10-14 iPhone 真机导过：SwiftUI 版 150、整条标题栏高时 164）。
 private struct PhoneTranscriptSurface: View {
     let list: PhoneTranscriptView
     let metrics: ThreadWindowMetrics
+    let compact: Bool
 
     var body: some View {
-        PhoneTranscriptSlot(list: list)
-            .ignoresSafeArea()
-            .safeAreaBar(edge: .top, spacing: 0) {
-                // 标题栏后面的渐变也在这里画（同 PaneHeaderPlacement 的 topFade）：透明的一条 SwiftUI 不把它当滚动软边的元素
-                Color.clear.frame(height: metrics.header.size.height)
-                    .background { PaneTopFade() }
-                    .allowsHitTesting(false)
-            }
-            // 同 PaneWindow：标题栏后面是系统滚动软边，底边不要
-            .scrollEdgeEffectStyle(.soft, for: .top)
-            .scrollEdgeEffectHidden(true, for: .bottom)
+        if compact {
+            PhoneTranscriptSlot(list: list)
+                .ignoresSafeArea()
+                .safeAreaBar(edge: .top, spacing: 0) {
+                    // 全透明的一条 SwiftUI 不当软边的元素（软边就只剩滚动视图自己那条，高度不随标题栏），垫一层看不出来的底
+                    Color.black.opacity(0.001).frame(height: max(metrics.header.size.height - Metrics.paneMargin, 0)).allowsHitTesting(false)
+                }
+                .scrollEdgeEffectStyle(.soft, for: .top)
+                .scrollEdgeEffectHidden(true, for: .bottom)
+        } else {
+            PhoneTranscriptSlot(list: list)
+                .ignoresSafeArea()
+                .safeAreaBar(edge: .top, spacing: 0) {
+                    // 标题栏后面的渐变也在这里画（同 PaneHeaderPlacement 的 topFade）：透明的一条 SwiftUI 不把它当滚动软边的元素
+                    Color.clear.frame(height: metrics.header.size.height)
+                        .background { PaneTopFade() }
+                        .allowsHitTesting(false)
+                }
+                // 同 PaneWindow：标题栏后面是系统滚动软边，底边不要
+                .scrollEdgeEffectStyle(.soft, for: .top)
+                .scrollEdgeEffectHidden(true, for: .bottom)
+        }
     }
 }
 
