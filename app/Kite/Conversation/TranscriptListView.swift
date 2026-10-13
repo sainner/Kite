@@ -50,7 +50,7 @@ final class TranscriptListView: NSScrollView {
     private var actions: (id: RowID, host: NSHostingView<AnyView>, above: Bool, side: HorizontalEdge)?
     /// 正在展开、收起的行：从哪个高起、弹簧走到哪了。
     private var heightAnimations: [RowID: HeightAnimation] = [:]
-    private var heightTicker: Ticker?
+    private var heightTicker: FrameTicker?
     private var actionsRemoval: Task<Void, Never>?
     /// 有行开着操作栏时，点列表里别处（包括文本视图上）先收起它；文本视图照常接着处理这次点击。
     private var clickMonitor: Any?
@@ -380,7 +380,7 @@ final class TranscriptListView: NSScrollView {
         heightAnimations[slot.id] = HeightAnimation(from: from, motion: motion)
         needsLayout = true
         if heightTicker == nil {
-            let ticker = Ticker()
+            let ticker = FrameTicker()
             heightTicker = ticker
             ticker.start(in: self) { [weak self] time in self?.heightStep(time) ?? false }
         }
@@ -649,65 +649,4 @@ extension TranscriptListView {
     }
 }
 
-/// 一行展开收起的动画：从哪个高起，走到哪了。
-private struct HeightAnimation {
-    let from: CGFloat
-    let motion: RowMotion
-    var started: CFTimeInterval?
-    var progress: Double = 0
-}
-
-/// 按显示刷新逐帧调 step（传这一帧的时刻），step 返回 false 时停。
-@MainActor private final class Ticker: NSObject {
-    private var link: CADisplayLink?
-    private var step: ((CFTimeInterval) -> Bool)?
-
-    func start(in view: NSView, step: @escaping (CFTimeInterval) -> Bool) {
-        self.step = step
-        let link = view.displayLink(target: self, selector: #selector(tick(_:)))
-        link.add(to: .main, forMode: .common)
-        self.link = link
-    }
-
-    @objc private func tick(_ link: CADisplayLink) {
-        if step?(link.targetTimestamp) != true {
-            link.invalidate()
-            self.link = nil
-            step = nil
-        }
-    }
-}
-
-/// 发送后滑到最底下：弹簧和 TranscriptScroll.glide 同一条（Spring.smooth 0.5 秒），按显示刷新逐帧走。
-@MainActor private final class Glide: NSObject {
-    let from: CGFloat
-    /// 跟着这一下浮上来的消息。
-    var rising: [RowID] = []
-    private var started: CFTimeInterval?
-    private var link: CADisplayLink?
-    private var step: ((Double?) -> Bool)?
-
-    init(from: CGFloat) { self.from = from }
-
-    func start(in view: NSView, step: @escaping (Double?) -> Bool) {
-        self.step = step
-        let link = view.displayLink(target: self, selector: #selector(tick(_:)))
-        link.add(to: .main, forMode: .common)
-        self.link = link
-    }
-
-    @objc private func tick(_ link: CADisplayLink) {
-        let now = link.targetTimestamp
-        let started = started ?? now
-        self.started = started
-        let spring = Spring.glide
-        let time = now - started
-        let done = time >= spring.settlingDuration
-        if step?(done ? nil : spring.value(target: 1.0, time: time)) != true {
-            link.invalidate()
-            self.link = nil
-            step = nil
-        }
-    }
-}
 #endif
