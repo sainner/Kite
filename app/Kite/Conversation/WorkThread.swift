@@ -254,6 +254,9 @@ final class WorkThread: Identifiable {
 
     /// 草稿没有连接，排着的第一条消息由创建请求带上（见 ThreadPane.send），不在这里投递。
     func send(_ message: Message) -> Bool {
+        #if DEBUG && KITE_LAYOUT_AUDIT
+        if let startsTurn = PerfProbe.hold(message, in: self) { return startsTurn }
+        #endif
         guard canSend else { return false }
         let startsTurn = !transcript.running && transcript.pending.isEmpty
         var queued = message
