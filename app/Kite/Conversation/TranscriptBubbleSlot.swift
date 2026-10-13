@@ -70,6 +70,10 @@ final class BubbleRowSlot: TranscriptRowSlot {
         let toggle: (() -> Void)? = context.actionable ? { context.toggleActions(id) } : nil
         container.text.secondaryClick = toggle
         container.bubble.secondaryClick = toggle
+        container.text.setAccessibilityLabel(TranscriptSpeech.message(queued: queued))
+        container.text.setAccessibilityCustomActions(toggle.map { toggle in
+            [NSAccessibilityCustomAction(name: TranscriptSpeech.actions) { toggle(); return true }]
+        })
         guard resized else { return }
         let environment = context.environment
         let body = Theme.body.resolve(in: environment.fontResolutionContext).ctFont as NSFont
@@ -352,6 +356,15 @@ final class BubbleFoldButton: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {}
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { TranscriptSpeech.fold(expanded: expanded) }
+    override func accessibilityChildren() -> [Any]? { [] }
+    override func accessibilityPerformPress() -> Bool {
+        action?()
+        return true
+    }
 }
 
 #endif

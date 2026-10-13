@@ -240,6 +240,14 @@ class BlockCardView: EmbeddedCardView {
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .group }
     override func accessibilityLabel() -> String? { speech }
+
+    /// 读屏先走标题栏的按钮（从左到右），再走内容。
+    override func accessibilityChildren() -> [Any]? {
+        let views = surface.subviews.filter { !$0.isHidden }.sorted {
+            $0.frame.minY != $1.frame.minY ? $0.frame.minY < $1.frame.minY : $0.frame.minX < $1.frame.minX
+        }
+        return NSAccessibility.unignoredChildren(from: views)
+    }
 }
 
 /// 卡片里画底色、截内容的那一层：底色按圆角（连续曲率）画，子视图按同一个形状截。
@@ -314,7 +322,7 @@ final class CardButton: NSView {
         icon.imageScaling = .scaleProportionallyUpOrDown
         icon.contentTintColor = .secondaryLabelColor
         addSubview(icon)
-        icon.setAccessibilityElement(false)
+        icon.hideFromAccessibility()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -708,25 +716,36 @@ final class TableCardView: BlockCardView {
         let result = NSMutableAttributedString()
         var map = TextSourceMap()
         var mapped = markdown != nil
+        let original = (markdown ?? "") as NSString
         for (index, row) in cells.enumerated() {
             if index > 0 { result.append(NSAttributedString(string: "\n", attributes: [.font: font, .paragraphStyle: style])) }
             let rowStart = result.length
+            var pieces: [TextSourceMap.Piece] = []
+            var lines: NSRange?
             for (column, cell) in row.enumerated() {
                 if column > 0 { result.append(NSAttributedString(string: "\t", attributes: [.font: font])) }
                 let start = result.length
-                let shifted = cell.pieces.map { piece in
+                pieces += cell.pieces.map { piece in
                     TextSourceMap.Piece(display: NSRange(location: piece.display.location + start, length: piece.display.length),
                                         source: piece.source, exact: piece.exact)
                 }
                 result.append(cell.text)
                 if let source = cell.source {
-                    map.blocks.append(.init(display: NSRange(location: start, length: cell.text.length), content: start,
-                                            lines: source.lines, pieces: shifted))
+                    lines = lines.map { NSUnionRange($0, source.lines) } ?? source.lines
                 } else {
                     mapped = false
                 }
             }
             result.addAttribute(.paragraphStyle, value: style, range: NSRange(location: rowStart, length: result.length - rowStart))
+            // 一行一块：选到行首、行尾就连表格的竖线一起取这一整行原文，落在格子中间按格子里的字取
+            if let lines, NSMaxRange(lines) <= original.length {
+                var start = 0, end = 0
+                original.getLineStart(&start, end: nil, contentsEnd: &end, for: lines)
+                map.blocks.append(.init(display: NSRange(location: rowStart, length: result.length - rowStart), content: rowStart,
+                                        lines: NSRange(location: start, length: end - start), pieces: pieces))
+            } else {
+                mapped = false
+            }
         }
         text.source = mapped ? (markdown ?? "", map) : nil
         if text.textStorage?.isEqual(to: result) != true { text.textStorage?.setAttributedString(result) }
@@ -856,6 +875,7 @@ final class OverflowScrollView: NSView {
             view.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
             view.contentTintColor = .secondaryLabelColor
             view.alphaValue = 0
+            view.hideFromAccessibility()
             addSubview(view)
         }
         NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: scroll.contentView)

@@ -99,6 +99,7 @@ final class CompactionRowSlot: TranscriptRowSlot {
                 measured = nil
                 heightChanged?(nil)
             }
+            block.text.setAccessibilityLabel(TranscriptSpeech.compactionSummary)
             container.insertContent(block.text)
             self.summary = block
             return block

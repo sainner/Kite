@@ -35,7 +35,8 @@ final class WorkRowSlot: TranscriptRowSlot {
         self.context = context
         let environment = context.environment
         if work.running != nil {
-            let root = AnyView(WorkSummaryLine(work: work, expanded: expanded).environment(\.self, environment))
+            // 托管的汇总行只画，读屏由原生汇总行读
+            let root = AnyView(WorkSummaryLine(work: work, expanded: expanded).accessibilityHidden(true).environment(\.self, environment))
             if let running {
                 running.rootView = root
             } else {
@@ -45,7 +46,7 @@ final class WorkRowSlot: TranscriptRowSlot {
                 container.addSubview(controller.view, positioned: .below, relativeTo: container.header)
                 running = controller
             }
-            container.header.showRunning()
+            container.header.showRunning(work)
         } else {
             running?.view.removeFromSuperview()
             running = nil
@@ -106,8 +107,10 @@ final class WorkRowSlot: TranscriptRowSlot {
             controller.view.alphaValue = 0
             steps = controller
         }
+        container.header.expanded = expanded
         if let work, let context, let running {
-            running.rootView = AnyView(WorkSummaryLine(work: work, expanded: expanded).environment(\.self, context.environment))
+            running.rootView = AnyView(WorkSummaryLine(work: work, expanded: expanded).accessibilityHidden(true)
+                .environment(\.self, context.environment))
         }
         measured = nil
         heightChanged?(Self.motion)
@@ -138,15 +141,27 @@ final class WorkHeaderView: NSView {
 
     override var isFlipped: Bool { true }
 
+    /// 读屏读的：汇总连同出错、没跑完的步数，有调用在跑时是正在做什么。
+    private var speech = ""
+    /// 展开了步骤，读屏读成展开收起的三角。
+    var expanded = false {
+        didSet { if expanded != oldValue { NSAccessibility.post(element: self, notification: .valueChanged) } }
+    }
+
     init() {
         super.init(frame: .zero)
-        for label in [summary, failed, unfinished] { addSubview(label) }
+        for label in [summary, failed, unfinished] {
+            addSubview(label)
+            label.setAccessibilityElement(false)
+        }
         addSubview(chevron)
+        chevron.hideFromAccessibility()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func show(_ work: Work, environment: EnvironmentValues) {
+        speech = TranscriptSpeech.work(work)
         font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont
         let secondary = NSColor.secondaryLabelColor
         let failedCount = work.count(.failed) + work.count(.unknown), unfinishedCount = work.count(.unfinished)
@@ -160,8 +175,9 @@ final class WorkHeaderView: NSView {
         needsLayout = true
     }
 
-    /// 有调用在跑：汇总行由下面托管的 WorkSummaryLine 画，这里不画字，只接点击。
-    func showRunning() {
+    /// 有调用在跑：汇总行由下面托管的 WorkSummaryLine 画，这里不画字，只接点击和读屏。
+    func showRunning(_ work: Work) {
+        speech = TranscriptSpeech.work(work)
         for view in subviews { view.isHidden = true }
     }
 
@@ -203,6 +219,16 @@ final class WorkHeaderView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         if bounds.contains(convert(event.locationInWindow, from: nil)) { action?() }
+    }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .disclosureTriangle }
+    override func accessibilityLabel() -> String? { speech }
+    override func accessibilityValue() -> Any? { expanded ? 1 : 0 }
+    override func isAccessibilityExpanded() -> Bool { expanded }
+    override func accessibilityPerformPress() -> Bool {
+        action?()
+        return true
     }
 }
 

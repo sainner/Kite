@@ -32,6 +32,8 @@ final class TranscriptListView: NSScrollView {
     private var clickMonitor: Any?
     /// 拖缝时把滚动条藏了，见 layoutRows。
     private var scrollerHidden = false
+    /// 读屏给远处还没建视图的行的代理，按行认，见 accessibilityTranscript。
+    private var proxies: [RowID: TranscriptRowProxy] = [:]
 
     init() {
         super.init(frame: .zero)
@@ -67,7 +69,10 @@ final class TranscriptListView: NSScrollView {
             }
             return slot
         }, fits: transcriptRowSlotFits)
-        for slot in removed where slot.hasView { slot.view.removeFromSuperview() }
+        for slot in removed {
+            if slot.hasView { slot.view.removeFromSuperview() }
+            proxies[slot.id] = nil
+        }
         needsLayout = true
     }
 
@@ -173,6 +178,7 @@ final class TranscriptListView: NSScrollView {
             host = NSHostingView(rootView: actionsRoot(nil, side: bar.side, above: above, context: context))
             host.sizingOptions = [.intrinsicContentSize]
             document.addSubview(host)
+            announce(host)
             // 先按收着排好一次，再换成显示：ActionBar 按 shown 的变化自己播出现的动画
             DispatchQueue.main.async { [weak self, weak host, weak slot] in
                 guard let self, let host, let slot, self.actions?.host === host, let bar = slot.actionBar() else { return }
@@ -231,6 +237,11 @@ final class TranscriptListView: NSScrollView {
         return !arrangement.heightAnimations.isEmpty
     }
 
+    /// 开着的操作栏，读屏要它。
+    fileprivate var actionsHost: (id: RowID, host: NSView)? {
+        actions.map { ($0.id, $0.host) }
+    }
+
     // MARK: - 补量
 
     /// 宽度停下、没有窗口在过渡、人和程序都没在滚的时候，屏幕外的行分批按眼下的宽量好，见 TranscriptArrangement.measureLater。
@@ -255,6 +266,16 @@ final class TranscriptListView: NSScrollView {
         contentView.scroll(to: CGPoint(x: 0, y: origin))
         reflectScrolledClipView(contentView)
         adjusting = wasAdjusting
+    }
+
+    /// 可见区（文档坐标），读屏滚动用。
+    fileprivate var viewportVisible: CGRect { visibleArea }
+
+    /// 读屏要看远处的行：当作人翻过去（不再跟着最底下），滚动通知照常处理。
+    fileprivate func scrollByAccessibility(toVisibleTop top: CGFloat) {
+        let maxTop = max(document.frame.height - visibleArea.height, 0)
+        contentView.scroll(to: CGPoint(x: 0, y: min(max(top, 0), maxTop) - contentInsets.top))
+        reflectScrolledClipView(contentView)
     }
 
     private var distanceToBottom: CGFloat {
@@ -373,7 +394,104 @@ final class TranscriptListView: NSScrollView {
 }
 
 
-/// 列表的文档视图：翻转坐标，点空白处收起操作栏。
+// MARK: - 读屏
+
+extension TranscriptListView {
+    /// 读屏按行的先后一条条读：建了视图的行交出视图里的元素（文本视图、按钮这些），远处还没建视图的给代理元素，读整行（TranscriptSpeech.summary），
+    /// 读屏走到它时滚过去、建出视图。开着的操作栏跟在它那一行后面。
+    func accessibilityTranscript() -> [Any] {
+        var rows: [Any] = []
+        var live = Set<RowID>()
+        let bar = actionsHost
+        for slot in arrangement.slots {
+            if slot.hasView, slot.view.superview === document, !slot.view.isHidden {
+                rows += NSAccessibility.unignoredChildren(from: [slot.view])
+            } else {
+                let proxy = proxies[slot.id] ?? TranscriptRowProxy(list: self, id: slot.id)
+                proxy.text = TranscriptSpeech.summary(slot.row)
+                proxies[slot.id] = proxy
+                live.insert(slot.id)
+                rows.append(proxy)
+            }
+            if let bar, bar.id == slot.id { rows += NSAccessibility.unignoredChildren(from: [bar.host]) }
+        }
+        for id in proxies.keys where !live.contains(id) { proxies[id] = nil }
+        return rows
+    }
+
+    /// 读屏走到还没建视图的行：滚到它露出来（行顶对着可见区顶边），建出视图后告诉读屏换了元素。
+    func scrollRowToVisible(_ id: RowID) {
+        guard let slot = arrangement.byID[id] else { return }
+        let visible = viewportVisible
+        if slot.frame.minY >= visible.minY, slot.frame.maxY <= visible.maxY { return }
+        scrollByAccessibility(toVisibleTop: slot.frame.minY - Metrics.transcriptPadding)
+        layoutSubtreeIfNeeded()
+        NSAccessibility.post(element: document, notification: .layoutChanged)
+    }
+
+    /// 这一行在屏幕上的位置。
+    func screenFrame(of id: RowID) -> CGRect {
+        guard let slot = arrangement.byID[id], let window else { return .zero }
+        return window.convertToScreen(document.convert(slot.frame, to: nil))
+    }
+
+    /// 操作栏刚弹出来：开着读屏时告诉它，好让读屏移过去。
+    func announce(_ host: NSView) {
+        guard NSWorkspace.shared.isVoiceOverEnabled else { return }
+        DispatchQueue.main.async { [weak self, weak host] in
+            guard let self, let host else { return }
+            NSAccessibility.post(element: document, notification: .layoutChanged,
+                                 userInfo: [.uiElements: NSAccessibility.unignoredChildren(from: [host])])
+        }
+    }
+}
+
+/// 远处还没建视图的一行给读屏的代理：读整行的一句话，读屏走到它（聚焦或请它滚到可见）时列表滚过去建出视图。
+/// NSAccessibilityElement 不归主线程，读屏的回调实际在主线程进来，取列表时按主线程处理。
+nonisolated final class TranscriptRowProxy: NSAccessibilityElement {
+    nonisolated(unsafe) private weak var list: TranscriptListView?
+    let id: RowID
+    nonisolated(unsafe) var text = ""
+
+    @MainActor init(list: TranscriptListView, id: RowID) {
+        self.list = list
+        self.id = id
+        super.init()
+    }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
+    override func accessibilityValue() -> Any? { text }
+    override func accessibilityParent() -> Any? { list }
+
+    override func accessibilityFrame() -> NSRect {
+        let list = list
+        let id = id
+        return MainActor.assumeIsolated { list?.screenFrame(of: id) ?? .zero }
+    }
+
+    override func setAccessibilityFocused(_ focused: Bool) {
+        guard focused else { return }
+        scrollToVisible()
+    }
+
+    override func accessibilityActionNames() -> [NSAccessibility.Action] {
+        [NSAccessibility.Action(rawValue: "AXScrollToVisible")]
+    }
+
+    override func accessibilityPerformAction(_ action: NSAccessibility.Action) {
+        guard action.rawValue == "AXScrollToVisible" else { return }
+        scrollToVisible()
+    }
+
+    private func scrollToVisible() {
+        let list = list
+        let id = id
+        MainActor.assumeIsolated { list?.scrollRowToVisible(id) }
+    }
+}
+
+/// 列表的文档视图：翻转坐标，点空白处收起操作栏。读屏按行的先后交出各行，见 TranscriptListView.accessibilityTranscript。
 final class TranscriptDocumentView: NSView {
     weak var list: TranscriptListView?
 
@@ -382,6 +500,10 @@ final class TranscriptDocumentView: NSView {
     override func mouseDown(with event: NSEvent) {
         list?.closeActions()
         super.mouseDown(with: event)
+    }
+
+    override func accessibilityChildren() -> [Any]? {
+        list?.accessibilityTranscript() ?? super.accessibilityChildren()
     }
 }
 

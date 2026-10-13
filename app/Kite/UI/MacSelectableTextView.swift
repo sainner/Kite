@@ -135,16 +135,28 @@ class ProseTextView: NSTextView, TextKitMeasuring {
     // 光标：NSTextView 把整块注册成文字光标的光标矩形，鼠标移动、cursorUpdate 时也设文字光标，盖过卡片里按钮的手形。
     // 文字光标只给卡片以外的那几条，落在卡片上的移动交给卡片自己。
 
-    /// 嵌着的卡片在这个视图里的位置。
-    private var cards: [NSRect] {
-        var frames: [NSRect] = []
+    /// 嵌着的卡片（附件的容器），按在字里的先后。
+    private var cardViews: [NSView] {
+        var views: [NSView] = []
         func collect(_ view: NSView) {
             for child in view.subviews {
-                if child is EmbeddedContainerView { frames.append(child.convert(child.bounds, to: self)) } else { collect(child) }
+                if child is EmbeddedContainerView { views.append(child) } else { collect(child) }
             }
         }
         collect(self)
-        return frames
+        return views.sorted { $0.convert($0.bounds, to: self).minY < $1.convert($1.bounds, to: self).minY }
+    }
+
+    /// 嵌着的卡片在这个视图里的位置。
+    private var cards: [NSRect] {
+        cardViews.map { $0.convert($0.bounds, to: self) }
+    }
+
+    /// 读屏：文本视图自己不交出附件里的视图，卡片（代码、表格的标题、按钮和里面的字）接在后面，进到这段话里能走到。
+    override func accessibilityChildren() -> [Any]? {
+        let base = super.accessibilityChildren() ?? []
+        let cards = cardViews
+        return cards.isEmpty ? base : base + NSAccessibility.unignoredChildren(from: cards)
     }
 
     override func resetCursorRects() {
@@ -171,6 +183,15 @@ class ProseTextView: NSTextView, TextKitMeasuring {
 
     override func rightMouseDown(with event: NSEvent) {
         if let secondaryClick { secondaryClick() } else { super.rightMouseDown(with: event) }
+    }
+
+    /// 读屏的「显示菜单」（VO-Shift-M）同右键：有操作栏的打开操作栏。
+    override func accessibilityPerformShowMenu() -> Bool {
+        if let secondaryClick {
+            secondaryClick()
+            return true
+        }
+        return super.accessibilityPerformShowMenu()
     }
 
     override func mouseDown(with event: NSEvent) {

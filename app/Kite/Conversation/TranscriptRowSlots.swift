@@ -91,6 +91,8 @@ final class ProseRowSlot: TranscriptRowSlot {
         let id = row.id
         actionable = context.actionable
         text.secondaryClick = context.actionable ? { context.toggleActions(id) } : nil
+        text.setAccessibilityCustomActions(context.actionable
+            ? [NSAccessibilityCustomAction(name: TranscriptSpeech.actions) { context.toggleActions(id); return true }] : nil)
         environment = context.environment
         body.show(source, environment: context.environment, font: context.environment.font ?? .body, color: .label)
     }

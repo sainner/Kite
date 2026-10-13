@@ -77,8 +77,7 @@ final class KiteRowView: NSView {
         layer?.addSublayer(border)
         addSubview(header)
         addSubview(text)
-        // 标签只是说明，读屏时由正文读出来
-        header.setAccessibilityElement(false)
+        // 标签只是说明，读屏时由正文读出来（见 SymbolLineView）
         text.setAccessibilityLabel(TranscriptSpeech.kite)
     }
 
@@ -128,6 +127,9 @@ final class SymbolLineView: NSView {
         super.init(frame: .zero)
         addSubview(icon)
         addSubview(label)
+        // 读屏由这一行的正文带着读，标签本身不读
+        icon.hideFromAccessibility()
+        label.setAccessibilityElement(false)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -162,7 +164,7 @@ final class SymbolTextView: NSView {
         super.init(frame: .zero)
         addSubview(icon)
         addSubview(text)
-        icon.setAccessibilityElement(false)
+        icon.hideFromAccessibility()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

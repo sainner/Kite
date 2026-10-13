@@ -4,17 +4,27 @@ import AppKit
 // Mac 原生对话的行和嵌在正文里的卡片共用的几个小控件。
 
 /// 一行字，按字形的宽排，放不下末尾截成省略号。SwiftUI 的 lineLimit(1) Text 那样从 0 起画，不像 NSTextField 两边带单元格边距。
+/// 读屏时是一段静态的字（生成中的思考）；只作说明、由别处读出来的，用的地方 setAccessibilityElement(false)。
 final class LineLabel: NSView {
     private var text = NSAttributedString()
     private var font = NSFont.systemFont(ofSize: 11)
 
     override var isFlipped: Bool { true }
 
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
     func set(_ string: String, font: NSFont, color: NSColor) {
         let style = NSMutableParagraphStyle()
         style.lineBreakMode = .byTruncatingTail
         text = NSAttributedString(string: string, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: style])
         self.font = font
+        setAccessibilityValue(string)
         needsDisplay = true
     }
 
@@ -134,6 +144,14 @@ final class TextButton: NSView {
         guard isEnabled else { return false }
         action?()
         return true
+    }
+}
+
+extension NSImageView {
+    /// 只作装饰的图标，读屏不读：图片视图的读屏元素是它的单元格，要一起关掉。
+    func hideFromAccessibility() {
+        setAccessibilityElement(false)
+        cell?.setAccessibilityElement(false)
     }
 }
 
