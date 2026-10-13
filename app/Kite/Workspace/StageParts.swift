@@ -241,14 +241,18 @@ struct CardButtons: View {
     var body: some View {
         if let area = group.workspace {
             let layout = group.layout
+            let expands = (layout.shown?.panes.count ?? 0) > 1
             PaneHeaderButtonGroup {
                 button("缩小", icon: "minus") { layout.minimize(pane) }
-                if (layout.shown?.panes.count ?? 0) > 1 {
+                if expands {
                     button("展开", icon: "arrow.up.left.and.arrow.down.right") { layout.expand(pane) }
                 }
                 button("关闭", icon: "xmark") { model.closeWindow(pane, in: area) }
                     .disabled(area.isDraft || area.changingWindows || area.creatingWindow == pane.id)
             }
+            // 缩小、恢复时台面上的窗口数变了，展开按钮出现消失不跟排布的动画走：飞行中按钮组本来看不见，
+            // 带着动画这个托管视图每帧要重排几遍（2026-10-14 实测，一次缩小或恢复约 117 次、合计约 49 ms）
+            .animation(nil, value: expands)
             // 按系统控件的实际尺寸安排标题栏并避让拖动
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
                 if header.controlsSize != size { header.controlsSize = size }

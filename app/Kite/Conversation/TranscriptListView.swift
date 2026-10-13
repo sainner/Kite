@@ -34,6 +34,8 @@ final class TranscriptListView: NSScrollView {
     private var clickMonitor: Any?
     /// 拖缝时把滚动条藏了，见 layoutRows。
     private var scrollerHidden = false
+    /// 拖缝、拖侧栏停下后再排一次：滚动条露回来、按近似量的行补量。停下时宽度不一定再变，不会自己排。
+    private var resizeEnd: Task<Void, Never>?
     /// 读屏给远处还没建视图的行的代理，按行认，见 accessibilityTranscript。
     private var proxies: [RowID: TranscriptRowProxy] = [:]
 
@@ -61,7 +63,11 @@ final class TranscriptListView: NSScrollView {
     func update(_ rows: [TranscriptRow], context: TranscriptRowContext, insets: NSEdgeInsets) {
         self.context = context
         if contentInsets.top != insets.top || contentInsets.bottom != insets.bottom {
+            // 设 insets 时滚动视图把可见区挪到顶上，这一下是程序改的，不当成人在滚：原生会话窗口先排了空列表再交 insets，
+            // 当成人滚的话打开就不跟着最底下了，停在顶上
+            adjusting = true
             contentInsets = insets
+            adjusting = false
         }
         let removed = arrangement.update(rows, context: context, make: { row in
             let slot = makeTranscriptRowSlot(row)
@@ -107,6 +113,7 @@ final class TranscriptListView: NSScrollView {
             scrollerHidden = viewport.resizing
             verticalScroller?.alphaValue = viewport.resizing ? 0 : 1
         }
+        if viewport.resizing { awaitResizeEnd() }
         let layout = arrangement.arrange(viewport, follow: follow)
         adjusting = true
         if document.frame.size != CGSize(width: width, height: layout.documentHeight) {
@@ -126,6 +133,17 @@ final class TranscriptListView: NSScrollView {
         if layout.waiting { measureLater() }
         // 发出去的新消息排好了就开始滑
         if let pending = follow.pendingGlide, pending.version != arrangement.version, follow.glide == nil { startGlideIfReady() }
+    }
+
+    private func awaitResizeEnd() {
+        guard resizeEnd == nil else { return }
+        resizeEnd = Task { [weak self] in
+            while WindowLayout.anyResizing {
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            }
+            self?.resizeEnd = nil
+            self?.needsLayout = true
+        }
     }
 
     /// 按共用层给的放进、藏起、拿出（见 TranscriptArrangement.placements）。

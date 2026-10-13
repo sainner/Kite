@@ -2,6 +2,7 @@ import SwiftUI
 
 /// 代理头像：角色签名里的头像算式，画在 9×9 格的圆形小画布上（x、y 为 −4～4），圆外的格不画。
 /// 同一角色的代理按实例 ID 取动画里不同的时刻；运行中才动。每帧按最大值放大，淡的图案在小尺寸下也看得清。
+/// Mac 上动着的头像不经 SwiftUI 逐帧更新（见 AvatarFrames）：停靠栏的托管视图每帧整轮更新、再提交一次 Metal，比画头像本身贵得多。
 struct AgentAvatar: View {
     let design: EmblemDesign?
     let instance: String
@@ -18,17 +19,43 @@ struct AgentAvatar: View {
         let pattern = (design?.avatarPattern(accent: accent) ?? EmblemDesign.fallback.avatarPattern(accent: accent)).map(tinted)
         let rest = DotColor(Theme.dotRest.resolve(in: environment))
         let seed = Self.seed(instance)
-        TimelineView(.animation(minimumInterval: 1.0 / 24, paused: !animating || reduceMotion)) { context in
-            let t = animating && !reduceMotion
-                ? seed + context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3600) : seed
-            Canvas { canvas, size in
-                if let pattern { draw(pattern, rest: rest, at: t, in: &canvas, size: size) }
+        Group {
+            #if os(macOS)
+            if animating, !reduceMotion, let pattern {
+                AvatarFrames(pattern: pattern, rest: rest, seed: seed)
+                    .allowsHitTesting(false)
+            } else {
+                frames(pattern: pattern, rest: rest, seed: seed)
             }
+            #else
+            frames(pattern: pattern, rest: rest, seed: seed)
+            #endif
         }
         .accessibilityHidden(true)
     }
 
-    private func draw(_ pattern: DotPattern, rest: DotColor, at t: Double, in canvas: inout GraphicsContext, size: CGSize) {
+    private func frames(pattern: DotPattern?, rest: DotColor, seed: Double) -> some View {
+        TimelineView(.animation(minimumInterval: Self.interval, paused: !animating || reduceMotion)) { context in
+            let t = animating && !reduceMotion ? Self.time(seed: seed, at: context.date) : seed
+            Canvas { canvas, size in
+                guard let pattern else { return }
+                for cell in Self.cells(pattern, rest: rest, at: t, size: size) {
+                    canvas.fill(cell.path, with: .color(cell.color.color))
+                }
+            }
+        }
+    }
+
+    /// 动画最多每秒 24 帧。
+    static let interval: TimeInterval = 1.0 / 24
+
+    /// 动画里的时刻：实例的起始时刻加上现在（按一小时取余，免得数太大丢精度）。
+    nonisolated static func time(seed: Double, at date: Date) -> Double {
+        seed + date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3600)
+    }
+
+    /// t 时刻各格画什么：轮廓（画布坐标，左上为原点）和填色。SwiftUI 的 Canvas 和 Mac 的 AvatarFrames 都按它画。
+    static func cells(_ pattern: DotPattern, rest: DotColor, at t: Double, size: CGSize) -> [(path: Path, color: DotColor)] {
         let half = Self.half, n = 2 * half + 1
         let pitch = min(size.width, size.height) / CGFloat(n)
         var scope = DotExpression.Scope()
@@ -38,7 +65,7 @@ struct AgentAvatar: View {
         scope[.px] = 999
         scope[.py] = 999
         scope[.d] = hypot(999, 999)
-        var cells: [(center: CGPoint, value: Double)] = []
+        var values: [(center: CGPoint, value: Double)] = []
         for row in 0..<n {
             for column in 0..<n {
                 let x = Double(column - half), y = Double(row - half)
@@ -48,23 +75,21 @@ struct AgentAvatar: View {
                 scope[.i] = Double(row * n + column)
                 scope[.r] = hypot(x, y)
                 scope[.a] = atan2(y, x)
-                cells.append((CGPoint(x: (CGFloat(column) + 0.5) * pitch, y: (CGFloat(row) + 0.5) * pitch),
-                              pattern.expression.evaluate(scope)))
+                values.append((CGPoint(x: (CGFloat(column) + 0.5) * pitch, y: (CGFloat(row) + 0.5) * pitch),
+                               pattern.expression.evaluate(scope)))
             }
         }
-        let largest = cells.reduce(0) { max($0, abs($1.value)) }
+        let largest = values.reduce(0) { max($0, abs($1.value)) }
         let gain = largest > 0.05 ? min(4, 0.95 / largest) : 1
-        for (center, value) in cells {
+        return values.map { center, value in
             let shape = min(1, abs(value) * gain)
             if shape < 0.04 {
                 let radius = pitch * 0.1
-                canvas.fill(Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius)),
-                            with: .color(rest.color))
-                continue
+                return (Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius)), rest)
             }
             // 与签名一样从静息点长出来，颜色随大小从静息色混到本色
             let color = rest.mixed(with: value > 0 ? pattern.positive : pattern.negative, by: min(1, shape * 1.6))
-            canvas.fill(pattern.form.path(center: center, radius: pitch / 2 * (0.2 + 0.8 * shape)), with: .color(color.color))
+            return (pattern.form.path(center: center, radius: pitch / 2 * (0.2 + 0.8 * shape)), color)
         }
     }
 
@@ -159,3 +184,102 @@ extension EmblemDesign {
         positiveColor(accent: DotColor(Color.accentColor.resolve(in: environment))).color
     }
 }
+
+#if os(macOS)
+/// Mac 上动着的代理头像：按 AgentAvatar.cells 用 Core Graphics 画进图层，显示链接按帧换图（同 TimelineView 最多每秒 24 帧），
+/// 不经 SwiftUI。在 SwiftUI 里逐帧画时，停靠栏整个托管视图每帧都要更新一轮、再提交一次 Metal（2026-10-14 实测，
+/// 头像在跑时托管视图的更新约占主线程 4%，画头像本身约 1.5%）。不接点击、读屏看不见，外观照 Canvas 画的。
+private struct AvatarFrames: NSViewRepresentable {
+    let pattern: DotPattern
+    let rest: DotColor
+    let seed: Double
+
+    func makeNSView(context: Context) -> AvatarFramesView { AvatarFramesView() }
+
+    func updateNSView(_ view: AvatarFramesView, context: Context) {
+        view.show(pattern: pattern, rest: rest, seed: seed)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: AvatarFramesView, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions()
+    }
+}
+
+private final class AvatarFramesView: NSView {
+    private var content: (pattern: DotPattern, rest: DotColor, seed: Double)?
+    private var link: CADisplayLink?
+    private var drawnAt: CFTimeInterval = 0
+
+    override var isFlipped: Bool { true }
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.contentsGravity = .resize
+        setAccessibilityElement(false)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func show(pattern: DotPattern, rest: DotColor, seed: Double) {
+        if let content, content.pattern == pattern, content.rest == rest, content.seed == seed { return }
+        content = (pattern, rest, seed)
+        draw(at: .now)
+    }
+
+    override func layout() {
+        super.layout()
+        draw(at: .now)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        link?.invalidate()
+        link = nil
+        guard window != nil else { return }
+        let link = displayLink(target: self, selector: #selector(tick(_:)))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 8, maximum: 24, preferred: 24)
+        link.add(to: .main, forMode: .common)
+        self.link = link
+        draw(at: .now)
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        draw(at: .now)
+    }
+
+    @objc private func tick(_ link: CADisplayLink) {
+        // 窗口被挡住时不画；同 TimelineView 的最小间隔，换帧按这一帧要显示的时刻
+        guard window?.occlusionState.contains(.visible) == true, link.targetTimestamp - drawnAt >= AgentAvatar.interval - 0.004 else { return }
+        drawnAt = link.targetTimestamp
+        draw(at: Date(timeIntervalSinceNow: link.targetTimestamp - CACurrentMediaTime()))
+    }
+
+    private func draw(at date: Date) {
+        guard let content, let layer, bounds.width > 0, bounds.height > 0,
+              let space = CGColorSpace(name: CGColorSpace.sRGB) else { return }
+        let scale = window?.backingScaleFactor ?? 2
+        let width = Int((bounds.width * scale).rounded(.up)), height = Int((bounds.height * scale).rounded(.up))
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+        // 格子按左上为原点算，位图原点在左下：上下翻过来
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: scale, y: -scale)
+        let t = AgentAvatar.time(seed: content.seed, at: date)
+        for cell in AgentAvatar.cells(content.pattern, rest: content.rest, at: t, size: bounds.size) {
+            let color = cell.color
+            context.setFillColor(CGColor(srgbRed: color.red, green: color.green, blue: color.blue, alpha: color.alpha))
+            context.addPath(cell.path.cgPath)
+            context.fillPath()
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.contentsScale = scale
+        layer.contents = context.makeImage()
+        CATransaction.commit()
+    }
+}
+#endif

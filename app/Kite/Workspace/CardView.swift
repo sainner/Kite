@@ -327,8 +327,9 @@ final class CardView: NSView {
         }
         container.origin = CGPoint(x: origin.x + area.minX, y: origin.y + area.minY)
         if container.frame != area { container.frame = area }
-        // 点阵层按台面全幅铺，遮罩按外框
-        if let backdrop, backdrop.frame != bounds { backdrop.frame = bounds }
+        // 点阵层按台面全幅铺，遮罩按外框。窗口没开点阵时里面是空的，不跟着台面改尺寸（侧栏拖宽时台面每步都变）；
+        // 开了点阵时台面重排一轮（见 StageView.arrange 读 usesDots），这里接着铺满
+        if let backdrop, backdrop.frame != bounds, bodyReports.usesDots || backdrop.frame == .zero { backdrop.frame = bounds }
         for view in [fill, ring, iconMover] where view.frame != bounds { view.frame = bounds }
         // 摆在卡片上的图形按停着的位置落到点阵上，同 PaneCard.updateDots
         let offset = target.contentOrigin(size: contentSize)

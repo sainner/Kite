@@ -27,6 +27,7 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 | `verify-window-motion-swift.ts` | 真实 SwiftUI 窗口收放与连续 tracking 的像素同步、resize 后标题命中，以及上下双窗口交换位置后的标题像素和命中归属；三个离屏场景，不覆盖悬停回调，仅手动运行 | `bun kited/test/manual/verify-window-motion-swift.ts` |
 | `verify-dock-hover-label-swift.ts` | 生产 source/host 将短/长中文停靠提示绘到内容矩形 mask 外；36/16 点图标旁保持自然大小与垂直居中，底边提示进入窗口留白，nil source 移除提示；一个关闭动画的离屏场景，不测 hover 时序，仅手动运行 | `bun kited/test/manual/verify-dock-hover-label-swift.ts` |
 | `verify-mac-selectable-text-swift.ts` | Mac 生产 NSTextView（TextKit 2）的跨段选区与 Markdown 原文复制、行内代码像素、改宽量高缓存、流式追加、链接、真实滚动裁切视口，以及原生代码卡片附件屏外改宽后滚入时的尺寸、展开/横滑状态和跨附件选区；七个离屏场景及一个 Lazy 新行首次露出/裁切中改宽的屏幕像素场景，仅手动运行 | `bun kited/test/manual/verify-mac-selectable-text-swift.ts` |
+| `verify-represented-root-swift.ts` | 生产 `RepresentedRoot` 截住里面托管视图（岛）的约束失效：屏上小窗口里岛的 `TimelineView(.animation)` 按帧走，外面 representable 所在的 SwiftUI 根不再每帧整轮重排；对照换成普通 `NSView`，外面每帧重排；同一个 `RepresentedRoot` 里的普通子视图逐帧标排版，`layout()` 仍按帧被调。挡系统改了约束上报的路径后外面又每帧重排（性能退回）或岛停住不动；仅手动运行 | `bun kited/test/manual/verify-represented-root-swift.ts` |
 | `verify-plugin-web.ts` | 真实 WKWebView 与 MCP Apps SDK 的隔离和生命周期 | `bun kited/test/manual/verify-plugin-web.ts`；iOS 加 `--ios <模拟器 UDID>` |
 
 `PluginWebProbe.swift` 是 `verify-plugin-web.ts` 编译和启动的原生探针，不单独运行。其余 Swift 文件是同名验证使用的夹具；`command.ts` 提供共用子进程执行入口。
@@ -38,6 +39,8 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 第八个文本场景复现历史上 Lazy 新消息首次只露出底部时，TextKit 行位置与真实绘制相差约 70 pt 的问题：40 条长短混合消息放进屏上 760×700 的 SwiftUI `ScrollView` / `LazyVStack`，从底部向上滚 70 步、每步 24 pt，以暖趟完整露出的同内容为参考，比较冷趟每个可见切片。截图里的帧标记与实际绘制时的正文坐标配对；直接读取测试窗口的屏幕图像，不预先 `ensureLayout` 或 `cacheDisplay`。墨迹按原生 Retina 像素覆盖汇总，允许 1 pt 栅格差异和 0.5% 阈值边缘残差，避免缩图抽掉浅灰文字细笔画；必须实际覆盖新建且仅部分露出的原生行，不能只凭“有墨”通过。随后保持同一正文顶部裁切，宽度 720→480→720，检查首次呈现相对完整滚入参照没有错位，并保持同一个 `NSTextView`、`textStorage` 和选区。
 
 该场景需要已解锁且可用的 macOS 图形会话，测试窗口会短暂出现在屏上；通过 WindowServer 只截取自己的窗口，需要系统允许该窗口图像读取。若本窗口截图或 display link 不可用，脚本明确失败，不跳过，也不把环境限制当产品坐标回归。不读取其他 App，不验证性能、实际滚轮手势、同实例内容替换或附件高度改变。
+
+`verify-represented-root-swift.ts` 把生产的 `RepresentedRoot.swift` 和夹具一起编译：窗口根是在 `placeSubviews` 里计数的自定义 `Layout`，里面一个 `NSViewRepresentable`（`sizeThatFits` 返回给的大小），它的视图是 `RepresentedRoot` 的子类，岛是 `NSHostingView`，设置同生产的 `StageIsland`（`sizingOptions`、`safeAreaRegions` 为空），在 `TimelineView` 的内容闭包里计数。每个场景开一个 320×200 的浮动无边框测试窗口，等 1 秒稳定后记 2 秒，按每秒 40 帧放宽阈值。夹具必须在 `NSApp.run` 的事件循环里跑：自己用 `RunLoop.main.run(mode:before:)` 转时，对照场景里外面的根每帧重排四五百次，和 App 里每帧一次对不上。需要已解锁的图形会话，测试窗口不在屏上或没有 display link 时明确失败，不跳过。第一个参数可指定一份 `RepresentedRoot.swift` 快照做判别力核验：把被拦的方法改名（不截）时第一个场景外面每帧重排，去掉排版里自己更新约束那一步（截了不补）时岛停住。不读屏幕像素，不验证点击、读屏和真实台面里的岛。
 
 `verify-card-sheet-sizing-swift.ts` 使用真实 SwiftUI sheet 验证共享弹窗随内容增减调整高度、超长内容受屏幕可用范围限制，且始终使用同一窗口。测试窗口透明且不接收鼠标，只读取窗口尺寸；不涵盖登录服务、实际滚动手势或视觉验收。第一个参数可指定包含完整控件定义的 `CardControls.swift` 快照，此时替代生产控件文件参与编译。
 

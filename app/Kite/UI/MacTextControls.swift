@@ -8,6 +8,8 @@ import SwiftUI
 /// 读屏时是一段静态的字（生成中的思考）；只作说明、由别处读出来的，用的地方 setAccessibilityElement(false)。
 final class LineLabel: NSView {
     private var text = NSAttributedString()
+    /// 不截时多大，换字时量一次：排版每次都要看宽，拖缝时每步要排好几遍（压缩分界的标签一次排版量四遍）。
+    private var size = CGSize.zero
     private var font = NSFont.systemFont(ofSize: 11)
     private var truncation: NSLineBreakMode = .byTruncatingTail
 
@@ -26,6 +28,7 @@ final class LineLabel: NSView {
         let style = NSMutableParagraphStyle()
         style.lineBreakMode = truncation
         text = NSAttributedString(string: string, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: style])
+        size = text.size()
         self.font = font
         self.truncation = truncation
         setAccessibilityValue(string)
@@ -33,16 +36,16 @@ final class LineLabel: NSView {
     }
 
     /// 不截时多宽。
-    var textWidth: CGFloat { ceil(text.size().width) }
+    var textWidth: CGFloat { ceil(size.width) }
     /// 不截时多宽，往上取到像素（SwiftUI 的 Text 就这么宽），不取整到点。
-    var exactWidth: CGFloat { (text.size().width * 2).rounded(.up) / 2 }
+    var exactWidth: CGFloat { (size.width * 2).rounded(.up) / 2 }
 
     /// 一行字的高。
     var lineHeight: CGFloat { ceil(font.ascender - font.descender + font.leading) }
 
     /// 放得下照常画；放不下按字截（同 SwiftUI 的 Text，不按词截），截掉的地方一个省略号，基线不变。
     override func draw(_ dirtyRect: NSRect) {
-        guard text.size().width > bounds.width + 0.01, let context = NSGraphicsContext.current?.cgContext else {
+        guard size.width > bounds.width + 0.01, let context = NSGraphicsContext.current?.cgContext else {
             text.draw(with: CGRect(x: 0, y: 0, width: bounds.width, height: lineHeight),
                       options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
             return

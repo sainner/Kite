@@ -60,7 +60,8 @@ private struct StageRepresentable: NSViewRepresentable {
 /// 观察排布模型（ModelTracking），变了在 layout 里重算 StagePlan、摆缝和卡片；排布动画由各张卡片整段交给 Core Animation，
 /// 只有跟手拖动的那张由显示链接逐帧取样。
 /// 过渡中（WindowLayout.transitioning）整个窗口暂停光标区域，缝、卡片、停靠栏都不接点击和悬停；指针在台面上时系统窗口不可拖。
-final class StageView: NSView, StageDotsReporting {
+/// 里面的托管视图（停靠栏、空画板、卡片里的岛）更新时不惊动窗口根的 SwiftUI，见 RepresentedRoot。
+final class StageView: RepresentedRoot, StageDotsReporting {
     /// 资源库里同一类换一项（角色、模板）时台面不重建（.id 只按类别），这里换成新的一项，正文跟着换，见 update。
     private(set) var group: PaneGroup
     let model: AppModel
