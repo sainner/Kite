@@ -37,11 +37,13 @@ struct MarkdownTable: View {
         }
     }
 
-    /// 单元格里的行内样式还原成 Markdown；竖线一律转义，换行并成空格，保证仍是一行一格。
-    private var markdown: String {
+    private var markdown: String { Self.markdown(header: header, rows: rows) }
+
+    /// 单元格里的行内样式还原成 Markdown；竖线一律转义，换行并成空格，保证仍是一行一格。Mac 的原生表格卡片的复制也用它。
+    static func markdown(header: [AttributedString], rows: [[AttributedString]]) -> String {
         func line(_ cells: [String]) -> String { "| " + cells.joined(separator: " | ") + " |" }
-        var lines = [line(header.map(Self.markdown)), line(header.map { _ in "---" })]
-        lines += rows.map { line($0.map(Self.markdown)) }
+        var lines = [line(header.map(markdown)), line(header.map { _ in "---" })]
+        lines += rows.map { line($0.map(markdown)) }
         return lines.joined(separator: "\n")
     }
 

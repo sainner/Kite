@@ -2,10 +2,10 @@ import CoreText
 import SwiftUI
 
 /// agent 说的一段话，整段排进一个文本视图（iPhone 是 UITextView，Mac 是 NSTextView，都是 TextKit 2），选字能从头拖到尾。
-/// 代码块、表格、分隔线各是文本里的一个附件字符，显示成原来的 SwiftUI 视图（BlockAttachment）：卡片要横着滚、太长折起来，
-/// 表格排不进文本视图；选区拖过它们就是整块选上，卡片上盖一层选区色。复制给 Markdown 原文（TextSourceMap）。
+/// 代码块、表格、分隔线各是文本里的一个附件字符，显示成卡片（BlockAttachment：iOS 托管原来的 SwiftUI 视图，Mac 是原生卡片）：
+/// 卡片要横着滚、太长折起来，表格排不进文本视图；选区拖过它们就是整块选上。复制给 Markdown 原文（TextSourceMap）。
 /// 样子照 MarkdownView：正文字号跟着环境里的字体（对话里是正文，压缩摘要和子 agent 做的事里小一号），标题字号固定。
-/// iPhone 上长按文本视图和卡片都显示操作栏；Mac 上右键由外层 opensActionBar 的盖层接，这里不管。
+/// iPhone 上长按文本视图和卡片都显示操作栏。Mac 的主对话是原生列表，不用它；Mac 上还用它的地方右键由外层 opensActionBar 的盖层接。
 struct SelectableMarkdown: View {
     @Environment(\.referenceScope) private var referenceScope
     @Environment(\.colorScheme) private var colorScheme
@@ -92,6 +92,10 @@ struct SelectableMarkdown: View {
                 var flat = block
                 flat.depth = 0
                 attachmentAttributes = attachments.embed(.markdown(flat), paragraph: style, into: result, embedded: &embedded)
+                #if os(macOS)
+                // Mac 的表格卡片能选字，复制时按原文取回
+                embedded.last?.attachment.markdown = source
+                #endif
                 if let lines = block.source?.lines {
                     map.blocks.append(.init(display: NSRange(location: start, length: result.length - start), content: start, lines: lines))
                 } else {
@@ -155,9 +159,9 @@ struct SelectableMarkdown: View {
 
     /// 行内的样式：粗体、斜体、行内代码、删除线、链接，和 SwiftUI 的 Text 认的一样。
     /// 同时记下每段显示的字对应原文的哪里（offset 是这段字在整个属性串里的起点）：显示的字是 block.text 依次往下，
-    /// 只有缩短成文件名的引用要按 ReferenceOriginal 记的原长对回去，引用前插的图标算进它后面那段。
-    private static func inline(_ text: AttributedString, source: MarkdownSource?, offset: Int, font: PlatformFont, color: PlatformColor,
-                               iconTint: PlatformColor, codeFill: CGColor) -> (NSAttributedString, [TextSourceMap.Piece]) {
+    /// 只有缩短成文件名的引用要按 ReferenceOriginal 记的原长对回去，引用前插的图标算进它后面那段。Mac 的表格卡片排格子也用它。
+    static func inline(_ text: AttributedString, source: MarkdownSource?, offset: Int, font: PlatformFont, color: PlatformColor,
+                       iconTint: PlatformColor, codeFill: CGColor) -> (NSAttributedString, [TextSourceMap.Piece]) {
         let text = InlineCodeSpacing.apply(to: text)
         let result = NSMutableAttributedString()
         let codeDecoration = InlineCodeDecoration(fill: codeFill)
