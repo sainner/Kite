@@ -20,7 +20,7 @@ final class PhoneCardView: UIView {
         let openSidebar: (@MainActor () -> Void)?
         let dimmed: Bool
         let acceptsInput: Bool
-        /// 拖缝调整大小时点阵也收起。
+        /// 拖缝调整大小、拖侧栏改宽时点阵也收起。
         let dotsHidden: Bool
         let dragged: Bool
         let hasThread: Bool
@@ -343,8 +343,8 @@ final class PhoneCardView: UIView {
         }
         container.origin = CGPoint(x: origin.x + area.minX, y: origin.y + area.minY)
         if container.frame != area { container.frame = area }
-        // 点阵层按台面全幅铺，遮罩按外框
-        if let backdrop, backdrop.frame != bounds { backdrop.frame = bounds }
+        // 点阵层按台面全幅铺，遮罩按外框；收着时不跟着台面改尺寸（拖侧栏时台面每步改宽，整窗点阵跟着重画，见 PhoneStageView.placeIslands）
+        if let backdrop, dotsShown, backdrop.frame != bounds { backdrop.frame = bounds }
         if iconMover.frame != bounds { iconMover.frame = bounds }
         // 摆在卡片上的图形按停着的位置落到点阵上，同 PaneCard.updateDots
         let rest = DotCarrier.Mapping(origin: CGPoint(x: origin.x + destination.x, y: origin.y + destination.y), scale: target.scale)
@@ -476,6 +476,7 @@ final class PhoneCardView: UIView {
         CATransaction.setDisableActions(true)
         backdrop.alpha = shown ? 1 : 0
         if shown {
+            if backdrop.frame != bounds { backdrop.frame = bounds }
             maskDots(placed.motion.presentation(at: .now))
             let fade = CABasicAnimation(keyPath: "opacity")
             fade.fromValue = 0

@@ -9,6 +9,11 @@ final class AppModel {
     var detached: Set<String> = []
     var pendingPlacement: CGRect?
     var sidebarWidth = Metrics.sidebarWidth
+    /// 正在拖侧栏改宽：最左一列窗口每步跟着改宽，对话列表这时只量可见区附近（见 WindowLayout.anyResizing），
+    /// 原生台面这时不跟着重排停靠栏、收起窗口点阵（见 PhoneStageView）。
+    var sidebarResizing = false {
+        didSet { WindowLayout.sidebarResizing = sidebarResizing }
+    }
     var sidebarCollapsed = false
     /// 侧栏底部一级导航选中的一栏。
     var sidebarSection = SidebarSection.workspaces

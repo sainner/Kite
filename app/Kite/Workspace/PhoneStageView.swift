@@ -64,6 +64,8 @@ final class PhoneStageView: UIView, StageDotsReporting {
     let model: AppModel
     private let reports: StageReports
     let geometry = StageGeometry()
+    /// 空画板的台面大小：拖侧栏时停靠栏定住不排（geometry 定住），空画板照常跟着台面排。
+    private let windowlessGeometry = StageGeometry()
     private(set) var environment = EnvironmentValues()
     private(set) var look: StageAppearance?
     private var openSidebar: (@MainActor () -> Void)?
@@ -163,7 +165,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
     private func installIslands() {
         let layout = group.layout, geometry = geometry
         dockRail.rootView = rooted(StageDockRail(layout: layout, area: group.workspace, geometry: geometry))
-        windowless.rootView = rooted(StageWindowless(layout: layout, geometry: geometry, reports: windowlessReports))
+        windowless.rootView = rooted(StageWindowless(layout: layout, geometry: windowlessGeometry, reports: windowlessReports))
         dockOverlay.rootView = rooted(StageDockOverlay(layout: layout, area: group.workspace, geometry: geometry))
     }
 
@@ -203,18 +205,41 @@ final class PhoneStageView: UIView, StageDotsReporting {
         guard look != nil else { return }
         let size = bounds.size
         origin = window.map { convert(CGPoint.zero, to: $0) } ?? .zero
+        laying = true
+        defer { laying = false }
+        let sidebarResizing = tracking.track({ model.sidebarResizing }) { [weak self] in self?.invalidateArrangement() }
         if viewport != size {
             viewport = size
             // 报视口会改排布模型，自己的改动不回头再排一遍。台面左边在哪交给排布：侧栏改宽时只由最左一列吸收
             tracking.quietly { group.layout.updateViewport(size, presentation: .tiled, leading: origin.x) }
         }
-        for island in [dockRail, windowless, dockOverlay] { place(island, bounds) }
+        placeIslands(frozen: sidebarResizing)
         place(placeholder, bounds)
-        if geometry.bounds != bounds { geometry.bounds = bounds }
-        laying = true
-        defer { laying = false }
-        let arranged = tracking.track({ arrange() }) { [weak self] in self?.invalidateArrangement() }
+        let arranged = tracking.track({ arrange(dotsHidden: sidebarResizing) }) { [weak self] in self?.invalidateArrangement() }
         settle(arranged)
+    }
+
+    /// 拖侧栏改宽时停靠栏不跟着每步重排：停靠栏、它上面那一层的岛定在开始拖时的大小，整块平移到台面的右边（停靠栏贴着右边），
+    /// 停靠格的位置不变（侧栏改宽只由最左一列吸收）；松手再按新的大小排一次。台面每步改宽时这几个岛整块重排是拖侧栏的大头之一
+    /// （2026-10-14 iPad 真机：只留外壳时每步约 11ms，拖缝时约 6ms）。空画板照常跟着排（没有窗口时才露出来）。
+    private var frozenBounds: CGRect?
+
+    private func placeIslands(frozen: Bool) {
+        if frozen, frozenBounds == nil { frozenBounds = geometry.bounds == .zero ? bounds : geometry.bounds }
+        if !frozen { frozenBounds = nil }
+        let dockBounds = frozenBounds ?? bounds
+        let shift = CGAffineTransform(translationX: bounds.width - dockBounds.width, y: 0)
+        for island in [dockRail, dockOverlay] {
+            if island.transform != shift { island.transform = shift }
+            if island.bounds.size != dockBounds.size {
+                island.bounds = CGRect(origin: .zero, size: dockBounds.size)
+            }
+            let center = CGPoint(x: dockBounds.midX, y: dockBounds.midY)
+            if island.center != center { island.center = center }
+        }
+        place(windowless, bounds)
+        if windowlessGeometry.bounds != bounds { windowlessGeometry.bounds = bounds }
+        if geometry.bounds != dockBounds { geometry.bounds = dockBounds }
     }
 
     /// 排版当中改了排布读过的模型：这一轮排完 UIKit 会清掉待排，所以下一拍再标一次。
@@ -240,7 +265,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
     private var cardDots: (uses: Bool, slots: Set<String>) = (false, [])
 
     /// 读模型、算这一轮的排布；读到的属性变了会再来一轮。卡片的终点在这里算好，交给 motion 放到观察之外（见 settle）。
-    private func arrange() -> Arranged {
+    private func arrange(dotsHidden: Bool) -> Arranged {
         let layout = group.layout, area = group.workspace
         let plan = StagePlan(layout: layout, area: area, bounds: bounds)
         var arranged = Arranged()
@@ -255,6 +280,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
         }
         let retiring = Set(retained.filter { !layout.panes.contains($0) }.compactMap { paneInstances[$0] })
         if geometry.retiring != retiring { geometry.retiring = retiring }
+        if windowlessGeometry.retiring != retiring { windowlessGeometry.retiring = retiring }
 
         arrangeGaps(plan.tiles.gaps, blocked: layout.isFixed ? nil : layout.blocksInput)
         placeholder.show(plan.tiles.placeholder, kind: layout.motionKind, reduceMotion: look?.reduceMotion ?? false)
@@ -275,7 +301,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
             let accepts = (!blocksInput || dragged) && !resizing && !closing && !dimmed
             let arrangement = PhoneCardView.Arrangement(
                 placed: placed, dockFrame: plan.dockFrame(of: pane, area: area), closing: closing, family: plan.familyID(of: pane),
-                openSidebar: pane == plan.first ? openSidebar : nil, dimmed: dimmed, acceptsInput: accepts, dotsHidden: resizing,
+                openSidebar: pane == plan.first ? openSidebar : nil, dimmed: dimmed, acceptsInput: accepts, dotsHidden: resizing || dotsHidden,
                 dragged: dragged, hasThread: hasThread, fixed: layout.isFixed,
                 header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width, hasThread: hasThread))
             arranged.cards.append((card, arrangement, CardPresentation.motionKind(layout: layout, pane: pane, reduceMotion: reduceMotion)))
@@ -476,9 +502,9 @@ final class PhoneStageView: UIView, StageDotsReporting {
 
     private var regions: WindowRegions { group.layout.regions(in: bounds) }
 
-    /// 停靠栏只在停靠栏那一列接点按；过渡中不接，同 PausedInTransition。
+    /// 停靠栏只在停靠栏那一列接点按；过渡中不接，同 PausedInTransition。按岛自己的坐标（拖侧栏时定住的大小）。
     private var dockHitRegion: CGRect? {
-        group.layout.transitioning || group.workspace == nil ? nil : regions.dock
+        group.layout.transitioning || group.workspace == nil ? nil : group.layout.regions(in: geometry.bounds).dock
     }
 
     /// 台面上没有窗口、也没在拖窗口时空画板接，同它在 SwiftUI 版里只在显示着时接。
@@ -490,7 +516,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
     /// 停靠栏展开时铺满台面接点空白收起；收着时上面只有脉冲，不接。
     private var overlayHitRegion: CGRect? {
         guard let area = group.workspace, !area.dockExpansion.isEmpty, !group.layout.transitioning else { return nil }
-        return bounds
+        return CGRect(origin: .zero, size: geometry.bounds.size)
     }
 
     // MARK: - 点阵

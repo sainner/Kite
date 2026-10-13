@@ -24,7 +24,7 @@ struct MainWindow: View {
             LayoutDragArea(cursor: .columnResize) { drag in
                 let from = resizingFrom ?? sidebarWidth
                 resizingFrom = from
-                WindowLayout.sidebarResizing = true
+                if !model.sidebarResizing { model.sidebarResizing = true }
                 resizeSidebar(to: from + drag.translation.width)
             } onEnded: {
                 finishResize()
@@ -83,7 +83,7 @@ struct MainWindow: View {
 
     private func finishResize() {
         resizingFrom = nil
-        WindowLayout.sidebarResizing = false
+        model.sidebarResizing = false
     }
 
     private func resizeSidebar(to width: CGFloat) {
