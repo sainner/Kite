@@ -38,13 +38,11 @@ final class ProseRowSlot: TranscriptRowSlot {
     private var topInset: CGFloat = 0
     /// 引用图标要加载的网址，变了才重新加载。
     private var urls: [URL] = []
-    /// 拖缝前整段排准时各段的高，估没排的那些用。量过的高作废时跟着作废。
-    private var rest: RestLayout?
-    /// pin 记下的那段：起头的位置、当时在排版里的上沿。
-    private var pinned: (location: NSTextLocation, top: CGFloat)?
+    /// 拖缝时只排一截、按住看着的那截，两端共用。量过的高作废时跟着作废。
+    private let layout = ProseLayout()
 
     override var measured: (width: CGFloat, height: CGFloat)? {
-        didSet { if measured == nil { rest = nil } }
+        didSet { if measured == nil { layout.invalidate() } }
     }
 
     override init(row: TranscriptRow) {
@@ -136,52 +134,23 @@ final class ProseRowSlot: TranscriptRowSlot {
         return height
     }
 
-    /// 拖缝时只从 band 上沿那段起排到下沿：上面没排的按 TextKit 估的高占位，下面没排的按拖缝前排准的段高、随宽度反比估。
-    /// 这截占了大半行时整段排。
+    /// 拖缝时只排 band 那一截，见 ProseLayout；这截占了大半行时整段排。
     override func height(width: CGFloat, band: ClosedRange<CGFloat>) -> CGFloat {
         if let measured, measured.width == width { return measured.height }
-        guard let measured, band.upperBound - band.lowerBound < measured.height * 0.7,
-              let layout = text.textLayoutManager else { return height(width: width) }
-        // 眼下是整段排准的，记下各段的高
-        if !provisional { rest = RestLayout(layout, width: measured.width) }
-        guard let rest else { return height(width: width) }
-        let start = layout.documentRange.location
-        let y = band.lowerBound - topInset
-        var from = start, top: CGFloat = 0
-        if y > 0 {
-            guard let fragment = text.laidFragment(at: y) else { return height(width: width) }
-            from = fragment.rangeInElement.location
-            top = fragment.layoutFragmentFrame.minY
-            // 上沿那截还没排（上一步排的在它下面，比如贴底时变宽、内容变矮）：按段高往上补够，免得可见区逐步越过排好的上沿
-            if top > y, var index = rest.paragraph(startingAt: layout.offset(from: start, to: from)) {
-                while top > y, index > 0 {
-                    index -= 1
-                    top -= rest.height(of: index) * rest.width / measured.width
-                }
-                guard let location = layout.location(start, offsetBy: rest.start(of: index)) else { return height(width: width) }
-                from = location
-            }
-        }
-        guard let laid = text.measure(lineWidth: width, from: from, through: band.upperBound - topInset - top) else {
-            return height(width: width)
-        }
-        let below = rest.below(end: layout.offset(from: start, to: laid.end)).map { $0 * rest.width / width } ?? 0
-        // 同整段排的取整：估的位置带小数，不取整时贴底的可见区跟着它每步错开零点几点，字逐步抖一个像素
-        let height = topInset + ceil(laid.bottom + below)
+        guard let measured,
+              let banded = layout.height(of: text, width: width, band: band, topInset: topInset, measured: measured, exact: !provisional)
+        else { return height(width: width) }
         provisional = true
-        self.measured = (width, height)
-        return height
+        self.measured = (width, banded)
+        return banded
     }
 
     override func pin(at y: CGFloat) {
-        pinned = nil
-        guard y > topInset, let fragment = text.laidFragment(at: y - topInset) else { return }
-        pinned = (fragment.rangeInElement.location, fragment.layoutFragmentFrame.minY)
+        layout.pin(text, at: y, topInset: topInset)
     }
 
     override var pinShift: CGFloat {
-        guard let pinned, let frame = text.laidFrame(at: pinned.location) else { return 0 }
-        return frame.minY - pinned.top
+        layout.pinShift(text)
     }
 
     override func viewFrame(in column: CGRect) -> CGRect {
