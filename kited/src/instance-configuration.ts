@@ -177,16 +177,16 @@ export class InstanceConfiguration {
     } as const;
   }
   configureAgent(id: string, expectedRevision: string, value: unknown) {
-    return this.updateAgentConfiguration(id, expectedRevision, () => value);
+    return this.updateAgentConfiguration(id, expectedRevision, value);
   }
   /** 改选角色：提示词、工具、默认模型、预算与协作授权一起换成角色的，并记下新的角色约束。只在还没有对话时可用。 */
   configureRole(id: string, expectedRevision: string, selection: RoleSelection) {
     const thread = this.control.context(id);
     const bound = roleAgent(this.kite.roles.get(selection.id, selection.revision), thread.workspace.kind,
       {}, this.projectRule(thread.workspaceId));
-    return this.updateAgentConfiguration(id, expectedRevision, () => bound.agent, bound.role);
+    return this.updateAgentConfiguration(id, expectedRevision, bound.agent, bound.role);
   }
-  private updateAgentConfiguration(id: string, expectedRevision: string, update: (agent: AgentDefinition) => unknown, role?: RoleBinding) {
+  private updateAgentConfiguration(id: string, expectedRevision: string, value: unknown, role?: RoleBinding) {
     return this.control.run(this.control.context(id).workspaceId, async () => {
       this.control.openThread(id);
       const snapshot = this.agentConfig(id);
@@ -198,7 +198,7 @@ export class InstanceConfiguration {
         if (records.length || pending.length) throw new KiteError('对话开始后不能改选角色，请新建代理', 409);
       }
       const current = instanceAgent(instance);
-      const requested = parseAgentDefinition(update(current));
+      const requested = parseAgentDefinition(value);
       // 后端由模型推出；模型没换时沿用原后端，环境变量覆盖的目录外模型不会被误判为换了厂商。
       const agent = requested.model.model === current.model.model ? { ...requested, runtime: current.runtime } : chooseAgentModel(requested, requested.model);
       const runtimeChanged = agent.runtime !== this.control.context(id).runtime;

@@ -7,6 +7,7 @@
 - [卡顿怎么量](performance-diagnosis.md) — 帧间隔对照、真机 Time Profiler、合成滚动、用户双击的测量版、软边诊断，Mac 结论不外推到 iPhone
 - [模拟器量 iPhone 排版](ios-layout-probe.md) — 不登录：本机 kited 取目录、DEBUG 临时入口渲染生产视图、结果写 App tmp
 - [对话正文的文本容器](text-container-direction.md) — 每条回复一个 TextKit 2 文本视图、附件嵌代码块、复制给原文、外观不改，第三步 iPhone 待验收
+- [界面改原生](decision-native-ui.md) — Mac 对话与外壳改 AppKit、iOS 改 UIKit，为拖缝 60 帧，外观逐项复刻；骨架、点阵是退路
 - [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、术语词典与整理后做、点阵表现、未选的识别候选
 
 ## 协作反馈
@@ -27,5 +28,5 @@
 - [远程连接与托管运维](todo-remote-connections.md) — iPhone 重连、托管容量备份、凭据重绑和多机关系
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
 - [真实终端](todo-terminal-plugin.md) — PTY 与跨端重连、停止和资源生命周期
-- [窗口动画剩余开销](todo-window-motion-remaining.md) — 缩小首帧的 SwiftUI 整轮更新、拖缝随时重排约 30 帧的构成与无效改法，iPad、iPhone 未量
+- [窗口动画剩余开销](todo-window-motion-remaining.md) — 缩小首帧的 SwiftUI 整轮更新、拖缝约 30 帧的构成与无效改法、轮流重排原型、iPad 真机拖缝，iPhone 未量
 - [个人组网清理](todo-headscale-cleanup.md) — lisa 实验资源的存在与清理状态待核验

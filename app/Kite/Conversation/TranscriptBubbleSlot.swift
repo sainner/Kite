@@ -15,9 +15,8 @@ final class BubbleRowSlot: TranscriptRowSlot {
     /// 展开了全文。
     private(set) var expanded = false
     private var context: TranscriptRowContext?
-    /// 正文连同上下边距不折时多高，量的时候算出来。
-    private var contentHeight: CGFloat = 0
-    private var textWidth: CGFloat = 0
+    /// 怎么量、怎么摆，两端共用。
+    private var layout = BubbleLayout()
     private var attachmentsHeight: CGFloat = 0
     private var hasBlocks = false
 
@@ -55,7 +54,7 @@ final class BubbleRowSlot: TranscriptRowSlot {
     override var hasView: Bool { true }
     override var view: NSView { container }
 
-    var foldable: Bool { contentHeight > Self.foldHeight * 1.4 }
+    var foldable: Bool { layout.foldable(foldHeight: Self.foldHeight) }
 
 
     override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
@@ -91,66 +90,29 @@ final class BubbleRowSlot: TranscriptRowSlot {
             MessageAttachmentRow(attachments: message.attachments).environment(\.self, environment)))
     }
 
+    /// 量正文见 BubbleLayout：拖缝和吸附中按近似量，记作 provisional，停下后按精确的重量。
     override func height(width: CGFloat) -> CGFloat {
         if let measured, measured.width == width { return measured.height }
         guard let storage = container.text.textStorage else { return 0 }
-        let padding = Metrics.bubblePadding
-        let most = max(width - padding.width * 2, 0)
-        // 有代码段时占满气泡能给的宽度，只有字时贴着字，同 SelectableText。贴字的宽照 SelectableText 用 boundingRect 量：
-        // 它按最优断行量，长消息改宽时每次几毫秒（2026-10-13 实测）。拖缝和吸附中改用近似：按能给的最宽排，取最宽的一行，
-        // 和 boundingRect 只差零点几点，但中文避头尾在临界宽度下会让个别行折得不一样（逐像素对过），所以停下后按精确的重量
-        let textHeight: CGFloat
-        provisional = WindowLayout.anyResizing && !hasBlocks
-        if hasBlocks {
-            textWidth = most
-            textHeight = container.text.measure(lineWidth: most)
-        } else if provisional, foldable, !expanded, let height = foldedHeight(most: most) {
-            textHeight = height
-        } else if provisional {
-            var height = container.text.measure(lineWidth: most)
-            textWidth = min(ceil(container.text.widestLine) + 1, most)
-            if textWidth < most, container.text.wraps { height = container.text.measure(lineWidth: textWidth) }
-            textHeight = height
-        } else {
-            textWidth = ProseTextCoordinator.naturalWidth(of: storage, most: most)
-            textHeight = container.text.measure(lineWidth: textWidth)
-        }
-        contentHeight = textHeight + padding.height * 2
+        provisional = layout.measure(container.text, storage: storage, width: width, hasBlocks: hasBlocks,
+                                     resizing: WindowLayout.anyResizing, expanded: expanded, foldHeight: Self.foldHeight)
         attachmentsHeight = container.attachmentsHeight(width: width)
         let height = attachmentsHeight + bubbleHeight(expanded: expanded)
         measured = (width, height)
         return height
     }
 
-    /// 折着的长消息拖缝时只排露出来的那截：贴字的宽按这截里最宽的一行，全文多高按上次量的随宽度反比估，只用来判断还折不折。
-    /// 不然每步都要把整条长消息重排一遍，露出来的只有开头几行。
-    private func foldedHeight(most: CGFloat) -> CGFloat? {
-        guard let start = container.text.textLayoutManager?.documentRange.location,
-              var laid = container.text.measure(lineWidth: most, from: start, through: Self.foldHeight) else { return nil }
-        let previous = (height: contentHeight - Metrics.bubblePadding.height * 2, width: textWidth)
-        textWidth = min(ceil(container.text.widestLine) + 1, most)
-        if textWidth < most, container.text.wraps,
-           let narrow = container.text.measure(lineWidth: textWidth, from: start, through: Self.foldHeight) {
-            laid = narrow
-        }
-        return ceil(max(laid.bottom, previous.height * previous.width / max(textWidth, 1)))
-    }
-
     /// 气泡多高：折起来的正文，加上能折时的按钮。
     private func bubbleHeight(expanded: Bool) -> CGFloat {
-        guard foldable else { return contentHeight }
-        return (expanded ? contentHeight : Self.foldHeight) + container.fold.height
+        layout.bubbleHeight(expanded: expanded, foldHeight: Self.foldHeight, button: container.fold.height)
     }
 
     override func viewFrame(in column: CGRect) -> CGRect { column }
 
     /// 摆好气泡里的东西：行的高可能正在展开、收起的动画里（比量的矮或高），正文按它截。
     override func layoutView(in frame: CGRect) {
-        let bubbleWidth = textWidth + Metrics.bubblePadding.width * 2
-        let bubbleHeight = max(frame.height - attachmentsHeight, 0)
-        container.place(bubble: CGRect(x: frame.width - bubbleWidth, y: attachmentsHeight, width: bubbleWidth, height: bubbleHeight),
-                        attachmentsHeight: attachmentsHeight, contentHeight: contentHeight, textWidth: textWidth,
-                        foldable: foldable, expanded: expanded)
+        let frames = layout.frames(row: frame.size, attachmentsHeight: attachmentsHeight, button: foldable ? container.fold.height : 0)
+        container.place(frames, attachmentsHeight: attachmentsHeight, foldable: foldable, expanded: expanded)
     }
 
     /// 浮上来的过程：1 在下面藏着，0 到位。浮的过程中正文不能选字，同 MessageBubble 的 Rising。
@@ -163,8 +125,7 @@ final class BubbleRowSlot: TranscriptRowSlot {
 
     /// 气泡内容在这一行里占的范围（附件连同气泡，靠右），操作栏和它右边对齐。
     override var actionAnchor: CGRect {
-        let width = max(textWidth + Metrics.bubblePadding.width * 2, container.attachmentsWidth)
-        return CGRect(x: frame.maxX - width, y: frame.minY, width: width, height: frame.height)
+        layout.anchor(in: frame, attachmentsWidth: container.attachmentsWidth)
     }
 
     override func actionBar() -> (side: HorizontalEdge, content: AnyView)? {
@@ -240,34 +201,24 @@ final class BubbleRowView: NSView {
 
     var attachmentsWidth: CGFloat { attachments?.view.frame.width ?? 0 }
 
-    func place(bubble frame: CGRect, attachmentsHeight: CGFloat, contentHeight: CGFloat, textWidth: CGFloat,
-               foldable: Bool, expanded: Bool) {
+    /// 按 BubbleLayout 给的框摆：气泡、截住正文的那层（底下渐隐）、正文、折叠按钮。
+    func place(_ frames: BubbleLayout.Frames, attachmentsHeight: CGFloat, foldable: Bool, expanded: Bool) {
         if let attachments {
             let size = attachments.sizeThatFits(in: CGSize(width: bounds.width, height: .greatestFiniteMagnitude))
             attachments.view.frame = CGRect(x: bounds.width - size.width, y: 0, width: size.width, height: attachmentsHeight - 6)
         }
-        if bubble.frame != frame { bubble.frame = frame }
-        let padding = Metrics.bubblePadding
-        let foldHeight = foldable ? fold.height : 0
-        // 正文这一块（连同上下边距）这会儿露出多高：动画中在折起和全文之间
-        let shown = max(frame.height - foldHeight, 0)
-        clip.frame = CGRect(x: 0, y: 0, width: frame.width, height: shown)
-        // 正文只给到露出来的底边：折着时文本视图不去排、画折下去的那些（拖缝时那截也没排，见 foldedHeight）
-        let textHeight = min(contentHeight - padding.height * 2, shown - padding.height)
-        let textFrame = CGRect(x: padding.width, y: padding.height, width: textWidth, height: max(textHeight, 0))
-        if text.frame != textFrame { text.frame = textFrame }
-        // 底下渐隐：被截掉的越多越透，全露出来时不渐隐
+        if bubble.frame != frames.bubble { bubble.frame = frames.bubble }
+        clip.frame = CGRect(x: 0, y: 0, width: frames.bubble.width, height: frames.shown)
+        if text.frame != frames.text { text.frame = frames.text }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         fade.frame = clip.bounds
-        let hidden = min(max((contentHeight - shown) / Metrics.messageFoldFade, 0), 1)
-        let fadeStart = max(0, 1 - Metrics.messageFoldFade / max(shown, 1))
-        fade.locations = [0, NSNumber(value: fadeStart), 1]
-        fade.colors = [NSColor.black.cgColor, NSColor.black.cgColor, NSColor.black.withAlphaComponent(1 - hidden).cgColor]
+        fade.locations = [0, NSNumber(value: frames.fadeStart), 1]
+        fade.colors = [NSColor.black.cgColor, NSColor.black.cgColor, NSColor.black.withAlphaComponent(1 - frames.faded).cgColor]
         CATransaction.commit()
         fold.isHidden = !foldable
         fold.expanded = expanded
-        fold.frame = CGRect(x: 0, y: shown, width: frame.width, height: foldHeight)
+        fold.frame = frames.fold
     }
 }
 

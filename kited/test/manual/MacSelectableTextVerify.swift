@@ -463,7 +463,7 @@ private enum LayoutCount {
         guard enabled else { return }
         // 跳过 record 自己和换上去的方法（含它的 @objc 壳），第一个外部帧就是直接调用者
         let caller = Thread.callStackSymbols.first { !$0.contains("LayoutCount") && !$0.contains("contract_ensure") }
-        // 量高抽到了 ProseTextView.measure(lineWidth:)，由 sizeThatFits 调它
+        // 量高抽到了 TextKitMeasuring 的 measure(lineWidth:)，由 sizeThatFits 调它
         guard let caller, caller.contains("sizeThatFits") || caller.contains("7measure9lineWidth") else { return }
         widths.append(width)
     }

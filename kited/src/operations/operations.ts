@@ -74,7 +74,8 @@ export class InstanceOperations {
   private authorize(caller: OperationCaller, workspaceId: string, name: OperationName, args: Record<string, unknown>): void {
     if (this.closing) throw new OperationError('kited 正在关闭', 'denied', 503);
     if (caller.kind === 'model' && !operationContracts[name].tool && name !== 'plugin.call') throw new OperationError('此操作未向模型开放', 'denied', 403);
-    this.kite.workspace(workspaceId);
+    const workspace = this.kite.store.workspace(workspaceId);
+    if (!workspace) throw new KiteError(`没有这个工作区：${workspaceId}`, 404);
     let target: PluginInstance | undefined;
     if (typeof args.instanceId === 'string') {
       target = this.kite.store.instance(args.instanceId) ?? undefined;
@@ -86,7 +87,7 @@ export class InstanceOperations {
     const source = this.kite.store.instance(caller.instanceId);
     if (!source || source.status !== 'open' || source.workspaceId !== workspaceId) throw new OperationError('调用方不属于此工作区或已归档', 'denied', 403);
     if (name.startsWith('files.') && typeof args.path === 'string') {
-      const files = new WorkspaceFiles(this.kite.workspace(workspaceId).workspace.cwd);
+      const files = new WorkspaceFiles(workspace.cwd);
       try { assertFileAccess(files.resolve(args.path), 'read', { read: [files.root], write: [], network: [], denyRead: hostPrivatePaths(this.kite.home) }); }
       catch { throw new OperationError('插件不能读取宿主内部数据或工作区外文件', 'denied', 403); }
     }
