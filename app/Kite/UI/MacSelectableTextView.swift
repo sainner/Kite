@@ -84,13 +84,24 @@ struct SelectableTextView: NSViewRepresentable {
     }
 }
 
+/// 链接交给 SwiftUI 的 openURL：文件引用由 ReferenceNavigation 打开，网页交给系统。原生对话的行和表格卡片用，同 SelectableTextView.Coordinator。
+final class ProseRowCoordinator: ProseTextCoordinator, NSTextViewDelegate {
+    var openURL: OpenURLAction?
+
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        guard let url = link as? URL ?? (link as? String).flatMap(URL.init(string:)) else { return false }
+        openURL?(url)
+        return true
+    }
+}
+
 /// 露出任何一部分就把整段当作视口。TextKit 2 的 NSTextView 只排、只画 visibleRect 里的片段，而这里的 visibleRect 是外层
 /// SwiftUI 滚动视图的可见区：往上滚时新露出的一条先露底部，视口从中间起，前面的片段按估算高度占位，画出来的字整体
 /// 比真实位置高几十 pt、底下留白，等滚到顶上重排才跳回去，看起来就是先空白、再逐段入场（2026-10-12 离屏实测，
 /// 视口从中间起时渲染面比片段高 70 pt）。整段作视口后片段从头排、位置准确；没露出时照旧空视口，不给屏幕外的字留渲染面。
 /// 只扩到露出的底边（视口逐帧长）实测冷滚丢帧反而更多，所以一露出就整段。
 /// 复制给原文：有对照时选区换成原文写进剪贴板（拷贝、拖出、服务都走这里），只写纯文本。
-final class ProseTextView: NSTextView, TextKitMeasuring {
+class ProseTextView: NSTextView, TextKitMeasuring {
     var source: (text: String, map: TextSourceMap)?
     /// 右键或按住 Control 点击打开这一行的操作栏；没有时右键是文本视图自己的菜单。原生对话列表给（见 TranscriptRowSlots）。
     var secondaryClick: (() -> Void)?
@@ -125,16 +136,28 @@ final class ProseTextView: NSTextView, TextKitMeasuring {
     // 光标：NSTextView 把整块注册成文字光标的光标矩形，鼠标移动、cursorUpdate 时也设文字光标，盖过卡片里按钮的手形。
     // 文字光标只给卡片以外的那几条，落在卡片上的移动交给卡片自己。
 
-    /// 嵌着的卡片在这个视图里的位置。
-    private var cards: [NSRect] {
-        var frames: [NSRect] = []
+    /// 嵌着的卡片（附件的容器），按在字里的先后。
+    private var cardViews: [NSView] {
+        var views: [NSView] = []
         func collect(_ view: NSView) {
             for child in view.subviews {
-                if child is EmbeddedContainerView { frames.append(child.convert(child.bounds, to: self)) } else { collect(child) }
+                if child is EmbeddedContainerView { views.append(child) } else { collect(child) }
             }
         }
         collect(self)
-        return frames
+        return views.sorted { $0.convert($0.bounds, to: self).minY < $1.convert($1.bounds, to: self).minY }
+    }
+
+    /// 嵌着的卡片在这个视图里的位置。
+    private var cards: [NSRect] {
+        cardViews.map { $0.convert($0.bounds, to: self) }
+    }
+
+    /// 读屏：文本视图自己不交出附件里的视图，卡片（代码、表格的标题、按钮和里面的字）接在后面，进到这段话里能走到。
+    override func accessibilityChildren() -> [Any]? {
+        let base = super.accessibilityChildren() ?? []
+        let cards = cardViews
+        return cards.isEmpty ? base : base + NSAccessibility.unignoredChildren(from: cards)
     }
 
     override func resetCursorRects() {
@@ -163,6 +186,15 @@ final class ProseTextView: NSTextView, TextKitMeasuring {
         if let secondaryClick { secondaryClick() } else { super.rightMouseDown(with: event) }
     }
 
+    /// 读屏的「显示菜单」（VO-Shift-M）同右键：有操作栏的打开操作栏。
+    override func accessibilityPerformShowMenu() -> Bool {
+        if let secondaryClick {
+            secondaryClick()
+            return true
+        }
+        return super.accessibilityPerformShowMenu()
+    }
+
     override func mouseDown(with event: NSEvent) {
         if let secondaryClick, event.modifierFlags.contains(.control) { secondaryClick() } else { super.mouseDown(with: event) }
     }
@@ -185,6 +217,61 @@ final class ProseTextView: NSTextView, TextKitMeasuring {
         }
         pasteboard.declareTypes([.string], owner: nil)
         return pasteboard.setString(text, forType: .string)
+    }
+}
+
+extension ProseTextView {
+    /// 对话里只读、能选的文本视图：不可编辑、不画底色、高度由外面量，悬停不显示链接提示，不自动识别链接、补全，
+    /// 同 SelectableTextView。原生列表的行放进列表前已经量好，视口只给露出的那截（clipsViewport）。
+    static func makeReadOnly() -> ProseTextView {
+        let view = make()
+        view.isEditable = false
+        view.isSelectable = true
+        view.drawsBackground = false
+        view.isVerticallyResizable = false
+        view.isHorizontallyResizable = false
+        view.textContainerInset = .zero
+        view.clipsViewport = true
+        view.displaysLinkToolTips = false
+        view.isAutomaticLinkDetectionEnabled = false
+        view.isAutomaticDataDetectionEnabled = false
+        view.isAutomaticTextCompletionEnabled = false
+        view.usesFontPanel = false
+        view.linkTextAttributes = [.foregroundColor: NSColor.linkColor, .cursor: NSCursor.pointingHand]
+        return view
+    }
+
+    /// 按 lineWidth 的行宽排出来多高，取到像素：SwiftUI 的 Text 不往上取整到点。
+    func measurePixel(lineWidth: CGFloat) -> CGFloat {
+        _ = measure(lineWidth: lineWidth)
+        let height = textLayoutManager?.usageBoundsForTextContainer.height ?? 0
+        return (height * 2).rounded() / 2
+    }
+
+    /// 放一段不带格式的字，复制给原样的字（不带字体颜色）。字和样子都没变时不重放，保留选区。
+    func showPlain(_ string: String, font: NSFont, color: NSColor) {
+        let text = NSAttributedString(string: string, attributes: [.font: font, .foregroundColor: color])
+        let whole = NSRange(location: 0, length: text.length)
+        source = (string, TextSourceMap(blocks: [.init(display: whole, content: 0, lines: whole,
+                                                         pieces: [.init(display: whole, source: whole, exact: true)])]))
+        guard textStorage?.isEqual(to: text) != true else { return }
+        textStorage?.setAttributedString(text)
+    }
+
+    /// 放一段字，里面的文件路径、网址标成链接（不缩短），同 ReferenceLabel(compact: false)；复制给原样的字。
+    func showLinked(_ string: String, scope: ReferenceScope, font: NSFont) {
+        let decorated = ReferenceText.decorate(AttributedString(string), scope: scope, compact: false)
+        let result = NSMutableAttributedString()
+        for run in decorated.runs {
+            var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
+            if let link = run.link { attributes[.link] = link }
+            result.append(NSAttributedString(string: String(decorated[run.range].characters), attributes: attributes))
+        }
+        let whole = NSRange(location: 0, length: result.length)
+        source = (result.string, TextSourceMap(blocks: [.init(display: whole, content: 0, lines: whole,
+                                                              pieces: [.init(display: whole, source: whole, exact: true)])]))
+        guard textStorage?.isEqual(to: result) != true else { return }
+        textStorage?.setAttributedString(result)
     }
 }
 

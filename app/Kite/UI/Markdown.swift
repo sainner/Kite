@@ -143,6 +143,24 @@ struct MarkdownBlock: Equatable {
     }
 }
 
+extension MarkdownBlock {
+    /// 表格各格（表头在前，再逐行）在原文 source 里的位置：lines 是这一格的字连同标记占的那一段，不是整行。
+    /// 表格以外的块、对不上原文的格给 nil。Mac 的表格卡片能选字，复制时按它取回原文。
+    func tableCellSources(in source: String) -> [[MarkdownSource?]] {
+        guard case .table(let header, let rows) = kind else { return [] }
+        let locator = SourceLocator(source)
+        return ([header] + rows).map { cells in
+            cells.map { cell in
+                guard var found = locator.prose(cell), let first = found.runs.first else { return nil }
+                let lower = found.runs.map(\.outer.location).min() ?? first.outer.location
+                let upper = found.runs.map { NSMaxRange($0.outer) }.max() ?? NSMaxRange(first.outer)
+                found.lines = NSRange(location: lower, length: upper - lower)
+                return found
+            }
+        }
+    }
+}
+
 /// 一块 Markdown 在原文里的位置。下标都是 UTF-16 的，和 NSString、NSRange 一致。
 struct MarkdownSource: Equatable {
     /// 这一块占的整行：从第一行行首（含列表符号、引用的 >、标题的 #）到最后一行行尾，不含行尾换行。
