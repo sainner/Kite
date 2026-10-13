@@ -36,6 +36,9 @@ final class TranscriptListView: NSScrollView {
     private var adjusting = false
     /// 人在滚（含惯性）。
     private var userScrolling = false
+    /// 这一段滑动落在行里的横向滚动视图上、主方向竖向，由列表接过来滚，见 takeScroll。
+    private var takesGesture = false
+    private var scrollMonitor: Any?
     /// 发送后滑到最底下的那一下。
     private var glide: Glide?
     /// 发出去、等新消息排好再滑的那一下。
@@ -467,6 +470,53 @@ final class TranscriptListView: NSScrollView {
                 needsLayout = true
             }
         }
+    }
+
+    // MARK: - 行里的横向滚动
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil, scrollMonitor == nil {
+            scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                guard let self, event.window === window else { return event }
+                return takeScroll(event) ? nil : event
+            }
+        }
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil, let monitor = scrollMonitor {
+            NSEvent.removeMonitor(monitor)
+            scrollMonitor = nil
+        }
+    }
+
+    /// 嵌块（代码、表格）里是 SwiftUI 的横向 ScrollView，竖向的滑动它也接下、不往外传，落在块上就滚不动对话
+    /// （旧版外层同是 SwiftUI 的 ScrollView，两者衔接得上）。按一段滑动开头的主方向分流：竖向的整段连同惯性交给列表，
+    /// 横向的照常给块。滚轮没有分段，每一格各看各的。
+    private func takeScroll(_ event: NSEvent) -> Bool {
+        if event.phase.contains(.mayBegin) {
+            takesGesture = false
+        } else if event.phase.contains(.began) || event.phase.isEmpty && event.momentumPhase.isEmpty {
+            takesGesture = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX) && overInnerScroller(event)
+        }
+        guard takesGesture else { return false }
+        scrollWheel(with: event)
+        return true
+    }
+
+    /// 落点在列表里一个竖向滚不动的滚动视图上。
+    private func overInnerScroller(_ event: NSEvent) -> Bool {
+        guard let root = window?.contentView?.superview, var view = root.hitTest(event.locationInWindow) else { return false }
+        while view !== self {
+            if let scroll = view as? NSScrollView {
+                return (scroll.documentView?.frame.height ?? 0) <= scroll.contentView.bounds.height + 1
+            }
+            guard let parent = view.superview else { return false }
+            view = parent
+        }
+        return false
     }
 
     // MARK: - 发送
