@@ -1,10 +1,117 @@
+import SwiftUI
 #if os(macOS)
 import AppKit
-import SwiftUI
+#else
+import UIKit
+#endif
+
+#if os(macOS)
+typealias StatusHostView = NSView
+#else
+typealias StatusHostView = UIView
+#endif
+
+/// 状态图层（圆环、脉冲）的宿主视图，两端共用：只显示，点按和读屏都穿过去；深浅色、强调色变了、进出窗口时让子类重设颜色和动画。
+/// 坐标照 SwiftUI 左上角起往下为正（Mac 上翻转，iOS 的图层本来就是）。
+class StatusLayerView: StatusHostView {
+    init() {
+        super.init(frame: .zero)
+        #if os(macOS)
+        wantsLayer = true
+        // 系统强调色换了当场跟上（SwiftUI 不一定为它调 updateNSView）
+        NotificationCenter.default.addObserver(self, selector: #selector(colorsChanged),
+                                               name: NSColor.systemColorsDidChangeNotification, object: nil)
+        #else
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitAccessibilityContrast.self]) { (self: Self, _) in
+            self.appearanceChanged()
+        }
+        #endif
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func colorsChanged() { appearanceChanged() }
+
+    /// 深浅色、强调色变了。
+    func appearanceChanged() {}
+    /// 进了窗口：图层动画离开窗口时会被拿掉，回来接着按绝对时间走。
+    func enteredWindow() {}
+    /// 尺寸变了、要重排图层。
+    func layoutLayers() {}
+
+    var backing: CALayer {
+        #if os(macOS)
+        layer!
+        #else
+        layer
+        #endif
+    }
+
+    /// 图层坐标是不是左上角起往下为正。
+    var flippedLayers: Bool {
+        #if os(macOS)
+        layer?.contentsAreFlipped() ?? true
+        #else
+        true
+        #endif
+    }
+
+    /// 颜色按这个视图的深浅色解析成 SwiftUI 里同样的值。
+    func resolve(_ color: Color, in environment: EnvironmentValues) -> Color.Resolved {
+        var environment = environment
+        #if os(macOS)
+        environment.colorScheme = effectiveAppearance.isDark ? .dark : .light
+        #else
+        environment.colorScheme = traitCollection.userInterfaceStyle == .dark ? .dark : .light
+        #endif
+        return color.resolve(in: environment)
+    }
+
+    func markNeedsLayout() {
+        #if os(macOS)
+        needsLayout = true
+        #else
+        setNeedsLayout()
+        #endif
+    }
+
+    #if os(macOS)
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func isAccessibilityElement() -> Bool { false }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        appearanceChanged()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { enteredWindow() }
+    }
+
+    override func layout() {
+        super.layout()
+        layoutLayers()
+    }
+    #else
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { enteredWindow() }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layoutLayers()
+    }
+    #endif
+}
 
 /// 会话状态圆环的图层版：外观照 ContextRingFrame 逐项复刻，转动和明暗起伏交给 Core Animation，跟屏幕刷新率走，主线程不逐帧重画
 /// （SwiftUI 版每秒 30 帧重算 body）。节奏按绝对时间对齐（同 SwiftUI 版按 timeIntervalSinceReferenceDate 取进度），几个圆环同阶段时同步。
-struct ContextRingLayers: NSViewRepresentable {
+struct ContextRingLayers {
     let phase: String
     let fraction: Double?
     let lineWidth: CGFloat
@@ -14,23 +121,35 @@ struct ContextRingLayers: NSViewRepresentable {
     var frozen: Double?
     #endif
 
-    func makeNSView(context: Context) -> ContextRingLayerView { ContextRingLayerView() }
-
-    func updateNSView(_ view: ContextRingLayerView, context: Context) {
+    fileprivate func update(_ view: ContextRingLayerView, environment: EnvironmentValues) {
         let color = ContextRing.color(phase)
         view.configure(.init(phase: phase, fraction: fraction, lineWidth: lineWidth, still: still, period: ContextRing.period(phase)),
-                       color: color, environment: context.environment)
+                       color: color, environment: environment)
         #if DEBUG
         view.frozen = frozen
         #endif
     }
+}
 
+#if os(macOS)
+extension ContextRingLayers: NSViewRepresentable {
+    func makeNSView(context: Context) -> ContextRingLayerView { ContextRingLayerView() }
+    func updateNSView(_ view: ContextRingLayerView, context: Context) { update(view, environment: context.environment) }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: ContextRingLayerView, context: Context) -> CGSize? {
         proposal.replacingUnspecifiedDimensions()
     }
 }
+#else
+extension ContextRingLayers: UIViewRepresentable {
+    func makeUIView(context: Context) -> ContextRingLayerView { ContextRingLayerView() }
+    func updateUIView(_ view: ContextRingLayerView, context: Context) { update(view, environment: context.environment) }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: ContextRingLayerView, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions()
+    }
+}
+#endif
 
-final class ContextRingLayerView: NSView {
+final class ContextRingLayerView: StatusLayerView {
     struct Look: Equatable {
         var phase: String
         var fraction: Double?
@@ -56,33 +175,22 @@ final class ContextRingLayerView: NSView {
     }
     #endif
 
-    override var isFlipped: Bool { true }
-
-    init() {
-        super.init(frame: .zero)
-        wantsLayer = true
-        layer?.addSublayer(ring)
+    override init() {
+        super.init()
+        backing.addSublayer(ring)
         track.fillColor = nil
         gradient.type = .conic
         gradient.mask = gradientMask
         gradientMask.fillColor = nil
-        gradientMask.strokeColor = NSColor.black.cgColor
+        gradientMask.strokeColor = CGColor(gray: 0, alpha: 1)
         arc.fillColor = nil
         arc.lineCap = .round
         ring.addSublayer(track)
         ring.addSublayer(gradient)
         ring.addSublayer(arc)
-        // 系统强调色换了当场跟上（SwiftUI 不一定为它调 updateNSView）
-        NotificationCenter.default.addObserver(self, selector: #selector(systemColorsChanged),
-                                               name: NSColor.systemColorsDidChangeNotification, object: nil)
     }
 
-    @objc private func systemColorsChanged() { updateColors() }
-
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    override func isAccessibilityElement() -> Bool { false }
 
     func configure(_ look: Look, color: Color, environment: EnvironmentValues) {
         self.color = color
@@ -91,27 +199,19 @@ final class ContextRingLayerView: NSView {
         self.look = look
         updateColors()
         if changed {
-            needsLayout = true
+            markNeedsLayout()
             restartAnimations()
         }
     }
 
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        updateColors()
-    }
+    override func appearanceChanged() { updateColors() }
 
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        // 离开窗口时图层动画会被拿掉，回来接着按绝对时间转
-        if window != nil { restartAnimations() }
-    }
+    // 离开窗口时图层动画会被拿掉，回来接着按绝对时间转
+    override func enteredWindow() { restartAnimations() }
 
     /// 颜色按这个视图的外观解析成 SwiftUI 里同样的值。
     private func updateColors() {
-        var environment = environment
-        environment.colorScheme = effectiveAppearance.isDark ? .dark : .light
-        let resolved = color.resolve(in: environment)
+        let resolved = resolve(color, in: environment)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         track.strokeColor = resolved.cgColor
@@ -122,8 +222,7 @@ final class ContextRingLayerView: NSView {
         CATransaction.commit()
     }
 
-    override func layout() {
-        super.layout()
+    override func layoutLayers() {
         guard let look else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -163,7 +262,7 @@ final class ContextRingLayerView: NSView {
         let path = CGMutablePath()
         let center = CGPoint(x: rect.midX, y: rect.midY), radius = rect.width / 2
         // 图层坐标上下没翻转时，顺时针在数学上是角度变小
-        let flipped = layer?.contentsAreFlipped() ?? true
+        let flipped = flippedLayers
         let start = flipped ? -CGFloat.pi / 2 : CGFloat.pi / 2
         path.addArc(center: center, radius: radius, startAngle: start, endAngle: start + (flipped ? 2 : -2) * .pi, clockwise: !flipped)
         return path
@@ -194,7 +293,7 @@ final class ContextRingLayerView: NSView {
             layer.add(animation, forKey: "status")
         }
         if look.phase == "running" {
-            let flipped = layer?.contentsAreFlipped() ?? true
+            let flipped = flippedLayers
             let spin = CABasicAnimation(keyPath: "transform.rotation.z")
             spin.fromValue = 0
             spin.toValue = (flipped ? 2 : -2) * CGFloat.pi
@@ -214,7 +313,7 @@ final class ContextRingLayerView: NSView {
 
 /// 停靠栏头像的脉冲的图层版：外观照 DockPulseFrame 逐项复刻（实心的一圈从头像外缘往外扩、边扩边淡），交给 Core Animation，
 /// 跟屏幕刷新率走。节奏按绝对时间对齐，同阶段的几个头像同步；减少动态效果时停在半路。
-struct DockPulseLayers: NSViewRepresentable {
+struct DockPulseLayers {
     let color: Color
     let period: Double
     /// 四周伸出头像的那一截。
@@ -224,21 +323,33 @@ struct DockPulseLayers: NSViewRepresentable {
     var frozen: Double?
     #endif
 
-    func makeNSView(context: Context) -> DockPulseLayerView { DockPulseLayerView() }
-
-    func updateNSView(_ view: DockPulseLayerView, context: Context) {
-        view.configure(.init(period: period, margin: margin, still: still), color: color, environment: context.environment)
+    fileprivate func update(_ view: DockPulseLayerView, environment: EnvironmentValues) {
+        view.configure(.init(period: period, margin: margin, still: still), color: color, environment: environment)
         #if DEBUG
         view.frozen = frozen
         #endif
     }
+}
 
+#if os(macOS)
+extension DockPulseLayers: NSViewRepresentable {
+    func makeNSView(context: Context) -> DockPulseLayerView { DockPulseLayerView() }
+    func updateNSView(_ view: DockPulseLayerView, context: Context) { update(view, environment: context.environment) }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: DockPulseLayerView, context: Context) -> CGSize? {
         proposal.replacingUnspecifiedDimensions()
     }
 }
+#else
+extension DockPulseLayers: UIViewRepresentable {
+    func makeUIView(context: Context) -> DockPulseLayerView { DockPulseLayerView() }
+    func updateUIView(_ view: DockPulseLayerView, context: Context) { update(view, environment: context.environment) }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: DockPulseLayerView, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions()
+    }
+}
+#endif
 
-final class DockPulseLayerView: NSView {
+final class DockPulseLayerView: StatusLayerView {
     struct Look: Equatable {
         var period: Double
         var margin: CGFloat
@@ -256,24 +367,13 @@ final class DockPulseLayerView: NSView {
     }
     #endif
 
-    override var isFlipped: Bool { true }
-
-    init() {
-        super.init(frame: .zero)
-        wantsLayer = true
+    override init() {
+        super.init()
         disc.fillRule = .evenOdd
-        layer?.addSublayer(disc)
-        // 系统强调色换了当场跟上（SwiftUI 不一定为它调 updateNSView）
-        NotificationCenter.default.addObserver(self, selector: #selector(systemColorsChanged),
-                                               name: NSColor.systemColorsDidChangeNotification, object: nil)
+        backing.addSublayer(disc)
     }
 
-    @objc private func systemColorsChanged() { restart() }
-
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    override func isAccessibilityElement() -> Bool { false }
 
     func configure(_ look: Look, color: Color, environment: EnvironmentValues) {
         let changed = look != self.look || color != self.color
@@ -283,18 +383,10 @@ final class DockPulseLayerView: NSView {
         if changed { restart() }
     }
 
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        restart()
-    }
+    override func appearanceChanged() { restart() }
+    override func enteredWindow() { restart() }
 
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if window != nil { restart() }
-    }
-
-    override func layout() {
-        super.layout()
+    override func layoutLayers() {
         if bounds.size != size {
             size = bounds.size
             restart()
@@ -317,9 +409,7 @@ final class DockPulseLayerView: NSView {
 
     private func restart() {
         guard let look, bounds.width > 0 else { return }
-        var environment = environment
-        environment.colorScheme = effectiveAppearance.isDark ? .dark : .light
-        let resolved = color.resolve(in: environment)
+        let resolved = resolve(color, in: environment)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         disc.frame = bounds
@@ -349,4 +439,3 @@ final class DockPulseLayerView: NSView {
         disc.add(group, forKey: "pulse")
     }
 }
-#endif

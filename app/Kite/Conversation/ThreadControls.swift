@@ -225,8 +225,8 @@ extension FadingSnapshot: UIViewRepresentable {
 }
 
 /// iOS 的图层不支持 Core Image 滤镜，模糊不能逐帧加大：模糊到头的那张事先画好垫在清晰的下面，
-/// 整体淡掉的同时清晰的淡出、模糊的淡入。
-private final class FadingSnapshotView: UIView {
+/// 整体淡掉的同时清晰的淡出、模糊的淡入。SwiftUI 版输入区和原生版（ControlsBarView）共用。
+final class FadingSnapshotView: UIView {
     private let content = CALayer()
     private let sharp = CALayer()
     private let blurred = CALayer()

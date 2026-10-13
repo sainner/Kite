@@ -8,7 +8,36 @@ import UIKit
 /// 内容不重新换行，只露边距的那个方向等比缩放：让出侧边栏时右边裁掉；让出 action 栏时内容变矮，浮在底下的控制区跟着窗口底边走，
 /// 圆角从屏幕圆角变成屏幕圆角减去边距。
 /// 打开时点窗口或往回拖收起。
+/// iOS 上是原生外壳（PhoneCompactLayout，见 CompactShellView）；Mac 的窄窗口和 Debug 带 --swiftui-compact 时是下面的 SwiftUI 版。
 struct CompactLayout: View {
+    var body: some View {
+        #if os(iOS)
+        if CompactShellVariant.native {
+            PhoneCompactLayout()
+        } else {
+            SwiftUICompactLayout()
+        }
+        #else
+        SwiftUICompactLayout()
+        #endif
+    }
+}
+
+#if os(iOS)
+/// 紧凑布局用原生外壳；Debug 带 --swiftui-compact 时照旧是 SwiftUI 版，同一个构建对照新旧两版。
+enum CompactShellVariant {
+    static let native: Bool = {
+        #if DEBUG
+        !ProcessInfo.processInfo.arguments.contains("--swiftui-compact")
+        #else
+        true
+        #endif
+    }()
+}
+#endif
+
+/// 紧凑布局的 SwiftUI 版，见 CompactLayout。
+private struct SwiftUICompactLayout: View {
     @Environment(AppModel.self) private var model
     #if os(macOS)
     @Environment(\.windowChrome) private var chrome
@@ -50,7 +79,6 @@ struct CompactLayout: View {
                                           sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius,
                                           rule: windowed ? .free : windowless ? .pinned : .none,
                                           padding: Metrics.padding, margin: Metrics.paneMargin)
-            let current = model.current?.id
             ZStack(alignment: .topLeading) {
                 #if os(iOS)
                 ScreenReader { radius, bottom, margin in
@@ -60,49 +88,15 @@ struct CompactLayout: View {
                 }
                 .ignoresSafeArea()
                 #endif
-                // 侧栏：一级导航选中的那一栏；点一个工作区就切过去并收起。
-                // 收起时滑到屏幕外，不跟着露出的一侧藏：收起侧栏时底栏可能同时钉回来，露出的一侧立刻换成底栏，侧栏还在往外滑
-                VStack(alignment: .leading, spacing: 0) {
-                    // 顶部是标志栏（只有搜索按钮），下面是一级导航和当前一栏的列表；
-                    // 底部是用户栏，与窗口控制区底边对齐
-                    SidebarLogoBar { EmptyView() }
-                        .padding(.top, logoBarTop(screen: screen, insets: insets))
-                        .padding(.bottom, Metrics.sidebarRuleGap)
-                    if model.sidebarSection != .settings {
-                        SidebarNavigation()
-                            .padding(.bottom, Metrics.sidebarRuleGap)
-                        Rectangle().fill(Theme.rule).frame(height: 1)
-                            .padding(.bottom, Metrics.sidebarRuleGap)
-                    }
-                    SidebarListHeader()
-                    ScrollView(.vertical, showsIndicators: false) {
-                        switch model.sidebarSection {
-                        case .workspaces:
-                            WorkspaceList(onSelect: { motion.settle(nil) }) { workspace in
-                                WorkspaceRow(workspace: workspace, current: current == workspace.id) {
-                                    Color.clear.contentShape(Rectangle())
-                                    .onTapGesture {
-                                        model.selectWorkspace(workspace.id)
-                                        motion.settle(nil)
-                                    }
-                                }
-                            }
-                        case .drive, .extensions, .settings:
-                            SectionPages { motion.settle(nil) }
-                        }
-                    }
-                    .fadesScrollEdges()
-                    SidebarUserBar()
-                }
-                .padding(.horizontal, Metrics.sidebarInset)
-                .modifier(SidebarScaledMetrics())
+                // 侧栏收起时滑到屏幕外，不跟着露出的一侧藏：收起侧栏时底栏可能同时钉回来，露出的一侧立刻换成底栏，侧栏还在往外滑
+                CompactSidebarColumn(logoTop: CompactSidebarColumn.logoBarTop(screen: screen, insets: insets)) { motion.settle(nil) }
                 .frame(width: sidebarWidth)
                 .modifier(SidebarSlide(motion: motion, width: sidebarWidth))
                 .modifier(DrawerReveal(motion: motion, drawer: .sidebar))
                 // 底栏：折叠的窗口那一行。一次只露出一侧，拉侧边栏时藏起来，免得窗口移开时从边上露出来
                 VStack(alignment: .leading, spacing: Metrics.gap) {
                     if model.paneGroup != nil {
-                        tabBar.frame(height: Metrics.tabBar)
+                        CompactTabBar(motion: motion).frame(height: Metrics.tabBar)
                             .padding(.horizontal, Metrics.padding)
                     }
                 }
@@ -123,6 +117,9 @@ struct CompactLayout: View {
         #if os(iOS)
         .persistentSystemOverlays(.hidden)
         #endif
+        #if DEBUG && KITE_LAYOUT_AUDIT
+        .onAppear { PerfProbe.drawer = motion }
+        #endif
         .onChange(of: model.paneGroup?.id, initial: true) { _, _ in
             model.paneGroup?.layout.updateViewport(.zero, presentation: .compact)
         }
@@ -135,9 +132,87 @@ struct CompactLayout: View {
         .environment(\.dotBackgroundPlacement, .everywhere)
     }
 
-    /// 窗口都排在底部，当前窗口垫一块选中底、图标换成向上的箭头；点别的窗口换过去，点当前窗口收起底栏。
-    @ViewBuilder
-    private var tabBar: some View {
+    /// 当前窗口组有可用窗口时，底栏可以展开收起。
+    private var windowed: Bool {
+        guard let group = model.paneGroup, group.layout.focused != nil else { return false }
+        return group.canShowWindows
+    }
+
+    /// 窗口和单页里有输入框，要给键盘让位；目录状态和空画板只展示信息，弹窗里打字时不跟着键盘变形。
+    private var avoidsKeyboard: Bool {
+        windowed || model.sidebarSection != .workspaces || model.selectedProject != nil
+    }
+
+    /// 工作区内容已载入但没开窗口：底栏钉着，新建窗口的入口在那里。目录状态（添加项目、连接中等）没有可用的底栏，同单页一样铺满。
+    private var windowless: Bool {
+        guard model.sidebarSection == .workspaces, model.selectedProject == nil, let area = model.current else { return false }
+        return area.layout.focused == nil && area.pluginClient != nil
+    }
+}
+
+/// 侧栏一列：顶部是标志栏（只有搜索按钮），下面是一级导航和当前一栏的列表，底部是用户栏，与窗口控制区底边对齐。
+/// 点一个工作区就切过去并收起（collapse）。SwiftUI 版和原生外壳共用，宽度、平移和安全区由外面给。
+struct CompactSidebarColumn: View {
+    /// 标志栏离安全区顶边多远，见 logoBarTop。
+    let logoTop: CGFloat
+    let collapse: () -> Void
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let current = model.current?.id
+        VStack(alignment: .leading, spacing: 0) {
+            SidebarLogoBar { EmptyView() }
+                .padding(.top, logoTop)
+                .padding(.bottom, Metrics.sidebarRuleGap)
+            if model.sidebarSection != .settings {
+                SidebarNavigation()
+                    .padding(.bottom, Metrics.sidebarRuleGap)
+                Rectangle().fill(Theme.rule).frame(height: 1)
+                    .padding(.bottom, Metrics.sidebarRuleGap)
+            }
+            SidebarListHeader()
+            ScrollView(.vertical, showsIndicators: false) {
+                switch model.sidebarSection {
+                case .workspaces:
+                    WorkspaceList(onSelect: collapse) { workspace in
+                        WorkspaceRow(workspace: workspace, current: current == workspace.id) {
+                            Color.clear.contentShape(Rectangle())
+                            .onTapGesture {
+                                model.selectWorkspace(workspace.id)
+                                collapse()
+                            }
+                        }
+                    }
+                case .drive, .extensions, .settings:
+                    SectionPages(onSelect: collapse)
+                }
+            }
+            .fadesScrollEdges()
+            SidebarUserBar()
+        }
+        .padding(.horizontal, Metrics.sidebarInset)
+        .modifier(SidebarScaledMetrics())
+    }
+
+    /// 标志栏与侧边栏拉开后窗口标题栏的按钮同高：窗口顶边让出一个边距，内容按高度缩小，标题栏在补足的安全区下面。
+    /// 返回相对安全区顶边的距离，见 WindowGeometry 与 PaneWindow。
+    static func logoBarTop(screen: CGSize, insets: EdgeInsets) -> CGFloat {
+        let pad = Metrics.padding
+        let scale = (screen.height - 2 * pad) / screen.height
+        let covered = max(insets.top - pad, 0) / scale
+        let button = Metrics.paneHeaderButton
+        let center = pad + max(Metrics.paneMargin, covered) * scale + button * scale / 2
+        return center - button / 2 - insets.top
+    }
+}
+
+/// 底栏上面那一行页签：窗口都排在底部，当前窗口垫一块选中底、图标换成向上的箭头；点别的窗口换过去，点当前窗口收起底栏。
+/// SwiftUI 版和原生外壳共用。
+struct CompactTabBar: View {
+    let motion: DrawerMotion
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
         if let group = model.paneGroup {
             if let area = group.workspace {
                 CompactDockBar(open: motion.openBinding)
@@ -170,34 +245,6 @@ struct CompactLayout: View {
             }
         }
         .scrollClipDisabled()
-    }
-
-    /// 标志栏与侧边栏拉开后窗口标题栏的按钮同高：窗口顶边让出一个边距，内容按高度缩小，标题栏在补足的安全区下面。
-    /// 返回相对安全区顶边的距离，见 WindowGeometry 与 PaneWindow。
-    private func logoBarTop(screen: CGSize, insets: EdgeInsets) -> CGFloat {
-        let pad = Metrics.padding
-        let scale = (screen.height - 2 * pad) / screen.height
-        let covered = max(insets.top - pad, 0) / scale
-        let button = Metrics.paneHeaderButton
-        let center = pad + max(Metrics.paneMargin, covered) * scale + button * scale / 2
-        return center - button / 2 - insets.top
-    }
-
-    /// 当前窗口组有可用窗口时，底栏可以展开收起。
-    private var windowed: Bool {
-        guard let group = model.paneGroup, group.layout.focused != nil else { return false }
-        return group.canShowWindows
-    }
-
-    /// 窗口和单页里有输入框，要给键盘让位；目录状态和空画板只展示信息，弹窗里打字时不跟着键盘变形。
-    private var avoidsKeyboard: Bool {
-        windowed || model.sidebarSection != .workspaces || model.selectedProject != nil
-    }
-
-    /// 工作区内容已载入但没开窗口：底栏钉着，新建窗口的入口在那里。目录状态（添加项目、连接中等）没有可用的底栏，同单页一样铺满。
-    private var windowless: Bool {
-        guard model.sidebarSection == .workspaces, model.selectedProject == nil, let area = model.current else { return false }
-        return area.layout.focused == nil && area.pluginClient != nil
     }
 }
 

@@ -25,6 +25,7 @@ struct MainWindow: View {
             LayoutDragArea(cursor: .columnResize) { drag in
                 let from = resizingFrom ?? sidebarWidth
                 resizingFrom = from
+                if !model.sidebarResizing { model.sidebarResizing = true }
                 resizeSidebar(to: from + drag.translation.width)
             } onEnded: {
                 finishResize()
@@ -83,18 +84,40 @@ struct MainWindow: View {
 
     private func finishResize() {
         resizingFrom = nil
+        if let width = model.sidebarDrag.end() { model.sidebarWidth = width }
+        model.sidebarResizing = false
+    }
+
+    /// 内容区是原生台面（工作区的窗口）：iPad 上拖动中侧栏宽不进 SwiftUI，台面自己挪，见 SidebarDrag。
+    private var nativeStage: Bool {
+        #if os(iOS)
+        model.sidebarSection == .workspaces && model.selectedProject == nil && model.current != nil
+        #else
+        false
+        #endif
     }
 
     private func resizeSidebar(to width: CGFloat) {
         let collapse = width < Metrics.sidebarCollapse
         if collapse != model.sidebarCollapsed {
+            // 收起、展开换了排法：先把挪着的宽交回 SwiftUI
+            if let width = model.sidebarDrag.end() { model.sidebarWidth = width }
             withAnimation(.snappy) { model.sidebarCollapsed = collapse }
         }
-        if !collapse {
-            // 取到像素：侧栏的宽带零头时右边整块台面落在半像素上，里面的图片、文字每步都要按新的位置重画
-            let width = (width * displayScale).rounded() / displayScale
-            model.sidebarWidth = min(max(width, Metrics.sidebarMin), Metrics.sidebarMax)
+        guard !collapse else { return }
+        // 取到像素：侧栏的宽带零头时右边整块台面落在半像素上，里面的图片、文字每步都要按新的位置重画
+        let width = min(max((width * displayScale).rounded() / displayScale, Metrics.sidebarMin), Metrics.sidebarMax)
+        if nativeStage {
+            model.sidebarDrag.move(to: min(width, maximumSidebar), base: sidebarWidth)
+        } else {
+            model.sidebarWidth = width
         }
+    }
+
+    /// 侧栏最宽多少：给内容区至少留一个窗口的最小宽，同 sidebarWidth。
+    private var maximumSidebar: CGFloat {
+        let remaining = availableWidth - 2 * Metrics.sidebarInset - Metrics.padding - Metrics.gap - Metrics.dockWidth - Metrics.minPane
+        return max(Metrics.sidebarMin, remaining)
     }
 }
 

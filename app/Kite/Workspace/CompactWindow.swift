@@ -30,7 +30,7 @@ struct CompactWindow: View {
                         .transaction(value: group.id) { $0.animation = nil }
                         .id(group.id)
                 } else {
-                    placeholder
+                    CompactPlaceholder()
                         .environment(\.keyboardShown, geometry.keyboardShown)
                         .transition(.opacity.combined(with: .dotsPresence))
                 }
@@ -50,9 +50,13 @@ struct CompactWindow: View {
         }
     }
 
-    /// 没有窗口时放的占位内容：单页、目录状态，或工作区没有窗口时的画板。
-    @ViewBuilder
-    private var placeholder: some View {
+}
+
+/// 没有窗口时放的占位内容：单页、目录状态，或工作区没有窗口时的画板。SwiftUI 版和原生外壳共用。
+struct CompactPlaceholder: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
         if model.sidebarSection != .workspaces {
             SectionContent()
         } else if let project = model.selectedProject {

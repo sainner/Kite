@@ -3,19 +3,24 @@ import SwiftUI
 /// 内容区：各张卡片、占位、卡片之间的缝按排布算好的位置摆在同一层。卡片始终是同一个视图，
 /// 排布变了、拖出去缩成停靠形状、松手展开，都只是它的位置和大小在变，动画连贯，不会出现新旧两份交叠。
 /// 拖动报的是窗口坐标，在这里换算成内容区里的坐标再交给窗口组。
-/// Mac 上是原生的台面（StageView），这一版给 iPad；Debug 版带 --swiftui-stage 时 Mac 也用它，同一个构建对照新旧两版。
+/// 两端都是原生的台面（Mac 的 StageView、iPad 的 PhoneStageView）；这一版 SwiftUI 的只在 Debug 版带 --swiftui-stage 时用，
+/// 同一个构建对照新旧两版。
 struct TilesLayer: View {
     let group: PaneGroup
 
     var body: some View {
-        #if os(macOS)
         #if DEBUG
-        if StageVariant.swiftUI { SwiftUITilesLayer(group: group) } else { StageHost(group: group) }
+        if StageVariant.swiftUI { SwiftUITilesLayer(group: group) } else { native }
         #else
-        StageHost(group: group)
+        native
         #endif
+    }
+
+    @ViewBuilder private var native: some View {
+        #if os(macOS)
+        StageHost(group: group)
         #else
-        SwiftUITilesLayer(group: group)
+        PhoneStageHost(group: group)
         #endif
     }
 }

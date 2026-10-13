@@ -18,26 +18,19 @@ extension View {
 struct WindowHeaderAnchored<Content: View>: View {
     let edge: HorizontalEdge
     let content: Content
-    #if os(macOS)
     @Environment(\.windowHeaderAnchors) private var anchors
     @State private var relay = HeaderAnchorRelay()
-    #endif
 
     var body: some View {
-        #if os(macOS)
         if let anchors {
             HeaderAnchorHost(edge: edge, link: anchors, relay: relay, content: content)
                 .modifier(HeaderAnchorReports(relay: relay))
         } else {
             content.modifier(WindowHeaderAnchor(edge: edge))
         }
-        #else
-        content.modifier(WindowHeaderAnchor(edge: edge))
-        #endif
     }
 }
 
-#if os(macOS)
 /// 标题一侧在自己的托管视图里报的偏好值，由 WindowHeaderAnchored 接出来；尺寸变化直接通知原生容器。
 @MainActor @Observable private final class HeaderAnchorRelay {
     @ObservationIgnored weak var container: HeaderAnchorContainer?
@@ -62,29 +55,25 @@ private struct HeaderAnchorReports: ViewModifier {
 }
 
 /// 标题一侧托管在自己的视图里。环境整份转交。
-private struct HeaderAnchorHost<Content: View>: NSViewRepresentable {
+private struct HeaderAnchorHost<Content: View> {
     let edge: HorizontalEdge
     let link: HostedContentLink
     let relay: HeaderAnchorRelay
     let content: Content
 
-    func makeNSView(context: Context) -> HeaderAnchorContainer {
+    private func make(environment: EnvironmentValues) -> HeaderAnchorContainer {
         let container = HeaderAnchorContainer(edge: edge, link: link)
         relay.container = container
-        container.controller.rootView = rooted(in: context, title: container.title)
+        container.controller.rootView = rooted(environment, title: container.title)
         return container
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: HeaderAnchorContainer, context: Context) -> CGSize? {
-        nsView.measure(proposal)
-    }
-
-    func updateNSView(_ container: HeaderAnchorContainer, context: Context) {
-        container.controller.rootView = rooted(in: context, title: container.title)
+    private func update(_ container: HeaderAnchorContainer, environment: EnvironmentValues) {
+        container.controller.rootView = rooted(environment, title: container.title)
     }
 
     /// 偏好值和尺寸隔一拍交出去：里面的托管视图可能在外面这次更新当中排版，不能当场改外面的状态。
-    private func rooted(in context: Context, title: WindowHeaderTitleEdge) -> AnyView {
+    private func rooted(_ environment: EnvironmentValues, title: WindowHeaderTitleEdge) -> AnyView {
         let relay = relay
         return AnyView(content
             .onPreferenceChange(PaneHeaderStatusText.self) { text in
@@ -109,9 +98,29 @@ private struct HeaderAnchorHost<Content: View>: NSViewRepresentable {
             .coordinateSpace(name: "pane-header")
             .environment(\.windowHeaderTitleEdge, title)
             .environment(\.windowHeaderAnchors, nil)
-            .environment(\.self, context.environment))
+            .environment(\.self, environment))
     }
 }
+
+#if os(macOS)
+extension HeaderAnchorHost: NSViewRepresentable {
+    func makeNSView(context: Context) -> HeaderAnchorContainer { make(environment: context.environment) }
+    func updateNSView(_ container: HeaderAnchorContainer, context: Context) { update(container, environment: context.environment) }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: HeaderAnchorContainer, context: Context) -> CGSize? {
+        nsView.measure(proposal)
+    }
+}
+#else
+extension HeaderAnchorHost: UIViewRepresentable {
+    func makeUIView(context: Context) -> HeaderAnchorContainer { make(environment: context.environment) }
+    func updateUIView(_ container: HeaderAnchorContainer, context: Context) { update(container, environment: context.environment) }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: HeaderAnchorContainer, context: Context) -> CGSize? {
+        uiView.measure(proposal)
+    }
+}
+#endif
+
+#if os(macOS)
 
 /// 外面按停着的位置摆；里面一层按飞行中的挪动平移，标题右边截掉的部分是这一层图层上的遮罩。
 private final class HeaderAnchorContainer: NSView, WindowHeaderFollower {
@@ -245,3 +254,130 @@ private final class HeaderAnchorContainer: NSView, WindowHeaderFollower {
     }
 }
 #endif
+
+#if os(iOS)
+/// 外面按停着的位置摆；里面一层按飞行中的挪动平移，标题右边截掉的部分是这一层图层上的遮罩。同 Mac 版。
+private final class HeaderAnchorContainer: UIView, WindowHeaderFollower {
+    let controller = UIHostingController(rootView: AnyView(EmptyView()))
+    let title = WindowHeaderTitleEdge()
+    private let edge: HorizontalEdge
+    private weak var link: HostedContentLink?
+    private let mover = UIView()
+    private let clip = CAShapeLayer()
+    private var shift = CGVector.zero
+    private var titleCut: CGFloat = 0
+
+    init(edge: HorizontalEdge, link: HostedContentLink) {
+        self.edge = edge
+        self.link = link
+        // 量尺寸要理想大小（见 measure）；不另算安全区
+        controller.sizingOptions = [.intrinsicContentSize]
+        controller.safeAreaRegions = []
+        super.init(frame: .zero)
+        controller.view.backgroundColor = .clear
+        mover.addSubview(controller.view)
+        addSubview(mover)
+        title.changed = { [weak self] in self?.place() }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        mover.frame = bounds
+        controller.view.frame = bounds
+        place()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { link?.add(self) } else { link?.remove(self) }
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return hit === self || hit === mover ? nil : hit
+    }
+
+    /// 没给的方向按理想大小：标题栏的高度由里面的按钮定。
+    func measure(_ proposal: ProposedViewSize) -> CGSize {
+        let ideal = controller.view.intrinsicContentSize
+        return controller.sizeThatFits(in: CGSize(width: proposal.width ?? ideal.width, height: proposal.height ?? ideal.height))
+    }
+
+    func follow(shift: CGVector, titleCut: CGFloat) {
+        guard shift != self.shift || titleCut != self.titleCut else { return }
+        self.shift = shift
+        self.titleCut = titleCut
+        update()
+    }
+
+    /// 整段交给 Core Animation（原生台面的窗口动画，见 HostedContentLink.animate）：平移和标题右边的截法按每一帧走，停在最后一帧。
+    func follow(_ frames: [(shift: CGVector, titleCut: CGFloat)], duration: TimeInterval) {
+        guard let last = frames.last else { return }
+        shift = last.shift
+        titleCut = last.titleCut
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        mover.layer.removeAnimation(forKey: "flight")
+        clip.removeAnimation(forKey: "flight")
+        flightMask = frames.contains { $0.titleCut > 0 }
+        update(shift: last.shift, titleCut: last.titleCut)
+        mover.layer.add(StageKeyframes.make("sublayerTransform", frames.map { NSValue(caTransform3D: translation($0.shift)) }, duration: duration),
+                        forKey: "flight")
+        if edge == .leading, layer.mask === clip {
+            clip.add(StageKeyframes.make("path", frames.map { clipPath(shift: $0.shift, titleCut: $0.titleCut) }, duration: duration),
+                     forKey: "flight")
+        }
+        CATransaction.commit()
+    }
+
+    /// 交给 Core Animation 的那一段里有要截标题的帧，遮罩整段挂着。
+    private var flightMask = false
+
+    func settleFlight() {
+        update()
+    }
+
+    private func update() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        mover.layer.removeAnimation(forKey: "flight")
+        clip.removeAnimation(forKey: "flight")
+        flightMask = false
+        update(shift: shift, titleCut: titleCut)
+        CATransaction.commit()
+    }
+
+    private func place() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        update(shift: shift, titleCut: titleCut)
+        CATransaction.commit()
+    }
+
+    private func update(shift: CGVector, titleCut: CGFloat) {
+        mover.layer.sublayerTransform = translation(shift)
+        if edge == .leading, titleCut > 0 || flightMask {
+            clip.frame = layer.bounds
+            clip.path = clipPath(shift: shift, titleCut: titleCut)
+            if layer.mask !== clip { layer.mask = clip }
+        } else if layer.mask != nil {
+            layer.mask = nil
+        }
+    }
+
+    private func translation(_ shift: CGVector) -> CATransform3D {
+        CATransform3DMakeTranslation(edge == .leading ? shift.dx : -shift.dx, shift.dy, 0)
+    }
+
+    /// 只截标题的右边，上下左都放开：按下时放大的玻璃不被切。不截时放开到整个宽度，路径的形状不变（同一个矩形）。
+    private func clipPath(shift: CGVector, titleCut: CGFloat) -> CGPath {
+        let margin: CGFloat = 1000
+        let dx = edge == .leading ? shift.dx : -shift.dx
+        let right = titleCut > 0 ? max(title.minX, bounds.width - titleCut) + dx : bounds.width + margin
+        return CGPath(rect: CGRect(x: -margin, y: -margin, width: right + margin, height: bounds.height + 2 * margin), transform: nil)
+    }
+}
+#endif
+

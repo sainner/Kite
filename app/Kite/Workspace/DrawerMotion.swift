@@ -19,6 +19,8 @@ nonisolated enum ActionsRule: Sendable { case free, pinned, none }
 ///
 /// 进度（target）只由窗口外壳、侧栏平移和标题栏、控制区的补位读，窗口内容不读：开合时内容不求值、不排版，见 CompactWindow。
 /// 放进环境的动作（openSidebar、拉底栏）建好就不再换，开合起止也不会让读它们的视图重算。
+/// iOS 的原生外壳（CompactShellView）另给一个 driver：外壳、侧栏、补位按同样的弹簧在 Core Animation 上走，这一帧走到几成也由它算；
+/// SwiftUI 的弹簧照旧带着 target 走，给还在 SwiftUI 里读进度的（单页的标题栏、控制区补位）。
 @MainActor @Observable
 final class DrawerMotion {
     /// 打开着的一侧；停在收起的位置时是 rest。
@@ -32,8 +34,14 @@ final class DrawerMotion {
     /// 底栏规则；第一次配好以前是 nil，窗口按停着的样子摆。
     private(set) var rule: ActionsRule?
 
-    /// 这一帧弹簧走到几成，由窗口的变换逐帧写入，不引起视图更新。手指半路接住时从这里接着拖。
-    @ObservationIgnored var presented = Openness()
+    /// 这一帧弹簧走到几成：SwiftUI 的外壳由窗口的变换逐帧写入，原生外壳由 driver 算，不引起视图更新。手指半路接住时从这里接着拖。
+    var presented: Openness {
+        get { driver?.presented ?? written }
+        set { written = newValue }
+    }
+    @ObservationIgnored private var written = Openness()
+    /// 原生外壳接手开合的动画时给，见 DrawerDriving。
+    @ObservationIgnored weak var driver: DrawerDriving?
     /// 侧边栏宽、底栏连同页签与 Home 条高，手指位移按它换算成几成。
     @ObservationIgnored var extents = (sidebar: CGFloat(0), actions: CGFloat(0))
     /// 手指正拖着的一侧。
@@ -59,7 +67,9 @@ final class DrawerMotion {
     /// 弹簧走完大约多久。
     private static let duration = 0.4
     /// 点按钮、换规则和让开另一侧时用：不回弹、不冲过头。
-    private static let settleSpring = Animation.spring(duration: duration, bounce: 0)
+    private static let settleSpring = Spring(duration: duration, bounce: 0)
+    /// 拖着时每挪一下用的弹簧，同 SwiftUI 的 interactiveSpring（response 0.15、阻尼 0.86）。
+    static let trackingSpring = Spring(response: 0.15, dampingRatio: 0.86)
 
     init() {
         openSidebar = { [weak self] in self?.settle(.sidebar) }
@@ -86,6 +96,7 @@ final class DrawerMotion {
             if rule == .pinned {
                 target.actions = 1
                 presented = target
+                driver?.place(target)
                 open = .actions
                 shown = .actions
             }
@@ -107,15 +118,21 @@ final class DrawerMotion {
     }
 
     /// 带着动画让 drawer 那一侧走到 value。收起的走完了才藏起那一侧。
-    private func animate(_ drawer: WorkspaceDrawer, to value: CGFloat, with animation: Animation) {
+    private func animate(_ drawer: WorkspaceDrawer, to value: CGFloat, with spring: Spring) {
         shown = drawer
-        withAnimation(animation, completionCriteria: .removed) {
-            target[drawer] = value
-        } completion: { [weak self] in
+        let finished: @MainActor () -> Void = { [weak self] in
             guard let self else { return }
             // 中间又拉开、又拖起来的不藏
             if target[drawer] == 0, dragging != drawer, shown == drawer { shown = nil }
         }
+        guard let driver else {
+            withAnimation(.spring(spring), completionCriteria: .removed) {
+                target[drawer] = value
+            } completion: { finished() }
+            return
+        }
+        withAnimation(.spring(spring)) { target[drawer] = value }
+        driver.animate(drawer, to: value, spring: spring, completion: finished)
     }
 
     private func extent(_ drawer: WorkspaceDrawer) -> CGFloat {
@@ -161,6 +178,7 @@ final class DrawerMotion {
         if holding, (target[drawer] > 0.5) != (finger > 0.5) { crossings += 1 }
         // 每挪一下接着上一个弹簧走；接手时正在走的动画也带着当时的速度转过来
         withAnimation(.interactiveSpring) { target[drawer] = finger }
+        driver?.track(drawer, to: finger)
     }
 
     private func release(_ drawer: WorkspaceDrawer, velocity: CGSize) {
@@ -172,7 +190,7 @@ final class DrawerMotion {
         let to: CGFloat = abs(speed) * extent(drawer) > Self.flickSpeed ? (speed > 0 ? 1 : 0) : (finger > 0.5 ? 1 : 0)
         let bounce = min(abs(speed) * extent(drawer) / Self.fullBounceSpeed, 1) * Self.maxBounce
         // 速度由 SwiftUI 从拖动时的 interactiveSpring 接过来
-        animate(drawer, to: to, with: .spring(duration: Self.duration, bounce: bounce))
+        animate(drawer, to: to, with: Spring(duration: Self.duration, bounce: bounce))
         if to == 0, let rest, rest != drawer {
             animate(rest, to: 1, with: Self.settleSpring)
             open = rest
@@ -180,6 +198,18 @@ final class DrawerMotion {
             open = to == 1 ? drawer : nil
         }
     }
+}
+
+/// 原生外壳接手开合的动画（iOS 的 CompactShellView）：按同样的弹簧在 Core Animation 上走，接手、掉头时带着当时的速度。
+@MainActor protocol DrawerDriving: AnyObject {
+    /// 这一帧走到几成。
+    var presented: Openness { get }
+    /// 不带动画停到 openness。
+    func place(_ openness: Openness)
+    /// drawer 那一侧从这一刻的样子按 spring 走到 value；走完时调 completion，中途换了终点的等最后那一段走完一起调。
+    func animate(_ drawer: WorkspaceDrawer, to value: CGFloat, spring: Spring, completion: @escaping @MainActor () -> Void)
+    /// 跟手：按 DrawerMotion.trackingSpring 接着上一个弹簧走到 value。
+    func track(_ drawer: WorkspaceDrawer, to value: CGFloat)
 }
 
 /// 两侧各打开到几成，0 是铺满，1 是完全打开。按手指算，计算窗口位置时再给越界部分加阻尼。

@@ -38,12 +38,14 @@ final class WindowLayout {
     /// 所有 App 窗口里有窗口组在过渡中，或者在拖侧栏改宽。主线程上能往后放的工作（如对话藏着量高，见 TranscriptWindow）看它让开，不卡进动画里。
     static var anyTransitioning: Bool { resizingLeadingEdge || all.allObjects.contains { $0.transitioning } }
     /// 所有 App 窗口里有窗口组在拖缝，或者在拖侧栏改宽：对话列表这时只量可见区附近的行，停下后补量（见 TranscriptListView、PhoneTranscriptView）。
-    static var anyResizing: Bool { resizingLeadingEdge || all.allObjects.contains { $0.resizing != nil } }
+    static var anyResizing: Bool { sidebarResizing || resizingLeadingEdge || all.allObjects.contains { $0.resizing != nil } }
     /// 在拖侧栏改宽：贴着侧栏的那一列每步改宽（见 shiftLeadingEdge），对话列表和拖缝时一样省着量。
     /// 侧栏改宽都经 updateViewport 认出来，最后一次改过后 leadingQuiet 秒内都算在拖（拖侧栏的边、侧栏收起展开的动画都是逐帧改）。
     static var resizingLeadingEdge: Bool { ProcessInfo.processInfo.systemUptime - leadingShiftedAt < leadingQuiet }
     private static var leadingShiftedAt: TimeInterval = -.infinity
     private static let leadingQuiet: TimeInterval = 0.2
+    /// 正在拖侧栏的边，跟着 AppModel.sidebarResizing：iPad 原生台面拖侧栏时宽不经 SwiftUI（见 SidebarDrag），从按下起就算。
+    static var sidebarResizing = false
     private static let all = NSHashTable<WindowLayout>.weakObjects()
 
     func noteSettling(_ pane: Pane, _ settling: Bool) {

@@ -62,7 +62,14 @@ function sweep(segment: Segment) {
   };
 }
 
-/** 缩小、恢复的一次：动作到第一帧、这之间的主线程，到动画走完的主线程合计，丢帧（按屏幕刷新间隔算）和最长一帧。 */
+/** 一次动作到动画走完、逐帧记的段，按表分：iPad、Mac 的缩小恢复，iPhone 的抽屉开合、手指拉抽屉、横滑、键盘升降。 */
+const ACTIONS: Record<string, string[]> = {
+  '缩小与恢复': ['minimize', 'restore'],
+  '抽屉、横滑与键盘': ['sidebar-open', 'sidebar-close', 'actions-open', 'actions-close', 'pull-open', 'pull-close',
+    'swipe-next', 'swipe-back', 'keyboard-show', 'keyboard-hide'],
+};
+
+/** 缩小、恢复这类的一次：动作到第一帧、这之间的主线程，到动画走完的主线程合计，丢帧（按屏幕刷新间隔算）和最长一帧。 */
 function settle(segment: Segment, frame: number) {
   const ticks = segment.ticks;
   const first = ticks[0], last = ticks.at(-1);
@@ -134,8 +141,10 @@ export function summarize(runs: Run[]): Row[] {
     if (named('drag').length || named('sidebar').length) {
       rows.push(combine('拖缝与侧栏', scene, variant, [...named('drag'), ...named('sidebar')].map(sweep), ['每步主线程']));
     }
-    for (const name of ['minimize', 'restore']) {
-      if (named(name).length) rows.push(combine('缩小与恢复', `${scene} ${name}`, variant, named(name).map((s) => settle(s, frame)), ['整段主线程']));
+    for (const [table, names] of Object.entries(ACTIONS)) {
+      for (const name of names) {
+        if (named(name).length) rows.push(combine(table, `${scene} ${name}`, variant, named(name).map((s) => settle(s, frame)), ['整段主线程']));
+      }
     }
     if (named('idle').length) rows.push(combine('静息占用', scene, variant, named('idle').map(idle), ['主线程 %']));
     if (named('key').length) {

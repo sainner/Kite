@@ -77,40 +77,8 @@ struct PaneHeaderBar<Status: View, Actions: View>: View {
             let showsSidebarButton = openSidebar != nil && (!statusOpensSidebar || statusViews.isEmpty)
             HStack(spacing: Metrics.paneButtonGap) {
                 HStack(spacing: 0) {
-                    if let openSidebar, statusOpensSidebar, !statusViews.isEmpty {
-                        Button {
-                            // 长按弹出说明后松手，不再打开侧栏
-                            guard !showsStatusText else { return }
-                            openSidebar()
-                        } label: {
-                            HStack(spacing: 0) {
-                                ForEach(statusViews) { $0 }
-                            }
-                            .contentShape(.circle)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityHint("打开侧边栏")
-                        .reportsHeaderInteraction()
-                        .modifier(PaneStatusTextPopover(text: statusText, presented: $showsStatusText))
-                    } else if let openSidebar {
-                        PaneHeaderButtonGroup {
-                            Button(action: openSidebar) {
-                                PaneHeaderButtonLabel("侧边栏", systemImage: "sidebar.left")
-                            }
-                            .reportsHeaderInteraction()
-                            ForEach(statusViews) { statusView in
-                                // 信息区有悬停说明与长按，卡片拖动层在这里挖空
-                                statusView.reportsHeaderInteraction()
-                                    .modifier(PaneStatusTextPopover(text: statusText, presented: $showsStatusText))
-                            }
-                        }
-                    } else {
-                        ForEach(statusViews) { statusView in
-                            statusView.fixedSize()
-                                .reportsHeaderInteraction()
-                                .modifier(PaneStatusTextPopover(text: statusText, presented: $showsStatusText))
-                        }
-                    }
+                    PaneHeaderStatus(statusViews: statusViews, openSidebar: openSidebar, statusOpensSidebar: statusOpensSidebar,
+                                     statusText: statusText, showsStatusText: $showsStatusText)
                     PaneHeaderTitle(header: header)
                     // 标题前统一留一个按钮间距；单独显示的信息按圆环方框计算，扣掉方框里已有的空白
                     .padding(.leading, statusViews.isEmpty || showsSidebarButton
@@ -145,6 +113,53 @@ struct PaneHeaderBar<Status: View, Actions: View>: View {
         }
     }
 
+}
+
+/// 标题前的信息区：紧凑触屏下圆环就是打开侧栏的按钮；给了侧栏入口时入口和圆环合成一块玻璃；否则只有圆环。
+/// 指针悬停看说明，手指长按弹出说明（showsStatusText）。PaneHeaderBar 和原生标题栏（PhoneHeaderBar 的信息区岛）共用。
+struct PaneHeaderStatus: View {
+    let statusViews: SubviewsCollection
+    let openSidebar: (@MainActor () -> Void)?
+    let statusOpensSidebar: Bool
+    let statusText: String?
+    @Binding var showsStatusText: Bool
+
+    var body: some View {
+        if let openSidebar, statusOpensSidebar, !statusViews.isEmpty {
+            Button {
+                // 长按弹出说明后松手，不再打开侧栏
+                guard !showsStatusText else { return }
+                openSidebar()
+            } label: {
+                HStack(spacing: 0) {
+                    ForEach(statusViews) { $0 }
+                }
+                .contentShape(.circle)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("打开侧边栏")
+            .reportsHeaderInteraction()
+            .modifier(PaneStatusTextPopover(text: statusText, presented: $showsStatusText))
+        } else if let openSidebar {
+            PaneHeaderButtonGroup {
+                Button(action: openSidebar) {
+                    PaneHeaderButtonLabel("侧边栏", systemImage: "sidebar.left")
+                }
+                .reportsHeaderInteraction()
+                ForEach(statusViews) { statusView in
+                    // 信息区有悬停说明与长按，卡片拖动层在这里挖空
+                    statusView.reportsHeaderInteraction()
+                        .modifier(PaneStatusTextPopover(text: statusText, presented: $showsStatusText))
+                }
+            }
+        } else {
+            ForEach(statusViews) { statusView in
+                statusView.fixedSize()
+                    .reportsHeaderInteraction()
+                    .modifier(PaneStatusTextPopover(text: statusText, presented: $showsStatusText))
+            }
+        }
+    }
 }
 
 /// 标题栏右边那组按钮：锚定在外框右边，前面给窗口按钮让出宽度。让出的宽度随悬停变，放在锚定外面、只在这一层读：
