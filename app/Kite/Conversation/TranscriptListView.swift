@@ -3,7 +3,7 @@ import AppKit
 import SwiftUI
 
 /// Mac 主对话的列表：AppKit 自己排，行是原生视图（TranscriptRowSlot），只有可见区附近的行放进列表。
-/// 为什么不用 SwiftUI 的滚动视图见 .kite/memory/decision-mac-transcript-appkit.md：拖缝时整列 SwiftUI 树每帧重排，越不过 60 帧。
+/// 为什么不用 SwiftUI 的滚动视图见 .kite/memory/decision-native-ui.md：拖缝时整列 SwiftUI 树每帧重排，越不过 60 帧。
 /// 滚动的规则同 TranscriptScroll：
 /// - 打开时停在最后一条内容的底部，跟着最底下；人往上翻就不跟了，翻回最底下又跟。
 /// - 内容、可见区变高变矮时：跟着最底下、底下也没露着留白，就贴着底；不然保持可见区顶上那一行不动。
