@@ -97,7 +97,8 @@ private struct ControlsBarHost: NSViewRepresentable {
 
 /// 玻璃里的内容，和玻璃一样大，圆角以外不接点击。照 ThreadControls 的版式：输入框左右留 controlInset + 8、上下 6，
 /// 下面一行思考强度和按钮，放不下时思考强度单独一行。在空白处按下不拖窗口。
-final class ControlsBarView: NSView {
+/// 思考强度的托管视图、输入框更新时不让外面的 SwiftUI 重量这一块（见 RepresentedRoot），高变了由 contentChanged 报。
+final class ControlsBarView: RepresentedRoot {
     private let field = ComposerField()
     private let fadingView = FadingSnapshotView()
     private let effort = EffortIsland(rootView: AnyView(EmptyView()))
