@@ -22,13 +22,14 @@ struct KiteApp: App {
         _model = State(initialValue: model)
         #if DEBUG && os(macOS)
         if ComposerPreview.enabled { ComposerPreview.openWindow(model: model) }
+        if StagePreview.enabled { StagePreview.openWindow(model: model) }
         #endif
     }
 
     var body: some Scene {
         #if os(macOS)
         Window("Kite", id: "main") {
-            AppRoot().dockPreview().composerPreview().connectsToService().cardActionsPreview()
+            AppRoot().dockPreview().composerPreview().stagePreview().connectsToService().cardActionsPreview()
                 .environment(model).readsWindowChrome().keepsLayoutEngine().toastHost().appAppearance()
         }
         .kiteWindowStyle()

@@ -52,6 +52,11 @@ App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `
 - `--swiftui-composer`：Mac 宽屏的会话窗口也用 SwiftUI 版输入区，同一个构建切新旧两版，对照行为或测量。
 - `--composer-preview`：主窗口留空，另开一个窗口并排画两版输入区（左 SwiftUI、右原生），用一个不连工作机的草稿会话逐种状态切换，用来逐像素对照。再加 `--capture-port <端口>` 时依次把每种状态的窗口图和布局 POST 到本机这个端口，抓完退出；`--composer-no-glass` 两版都不画玻璃，`--composer-inactive` 抓 App 不在前台时的样子，深色加 `-KiteAppearance dark`。
 
+宽屏台面（卡片、缝、拖动和窗口动画）也有两版：Mac 是原生的 `StageView`，iPad 是 SwiftUI 的 `SwiftUITilesLayer`。对照用：
+
+- `--swiftui-stage`：Mac 也用 SwiftUI 版台面，同一个构建切新旧两版。
+- `--stage-preview`：主窗口留空，另开一个窗口并排画两版台面（左 SwiftUI、右原生），各用一个造出来的工作区，按同样的步骤改排布（缩小、展开、空台面、恢复、拖动预览、展开停靠栏）。加 `--capture-port <端口>` 时每一步等动画走完、缩小和恢复途中再各抓几帧，窗口图和两格位置 POST 到本机这个端口，抓完退出；`-stageHover swiftui|native` 把窗口挪到指针底下，让指针停在那一边的卡片上，比悬停露出的窗口按钮；深色加 `-KiteAppearance dark`。
+
 初始配置预览使用 Debug build 带 `--onboarding-preview` 启动，需要从测试机桌面反复启动时，编译参数使用 `KITE_PREVIEW_FLAGS=KITE_ONBOARDING_PREVIEW`。界面在真实工作机和数据上迭代。
 
 Swift 类型、窗口排布、草稿交接、滚动与 WebKit 验证统一在 [手动验证目录](../kited/test/manual/README.md)。移动或拆分 Swift 文件时同步更新这些脚本引用的源码路径。
