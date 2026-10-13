@@ -91,6 +91,8 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         interaction = PhoneTextInteraction(text: text, host: text)
         configure()
         build()
+        // 放掉以后重建的（内存警告）：量过的高留着，没人再量，行宽按上次量的给回去
+        if let measured { text.fit(lineWidth: measured.width) }
         return text
     }
 
@@ -214,6 +216,7 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         coordinator.view = nil
         coordinator.shown = nil
         layout.invalidate()
+        attachments.releaseHosts()
     }
 }
 

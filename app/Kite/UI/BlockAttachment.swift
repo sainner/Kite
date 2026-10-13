@@ -59,14 +59,18 @@ nonisolated final class BlockAttachment: NSTextAttachment {
     @MainActor private(set) var content: EmbeddedBlock
     @MainActor private var environment: EmbeddedEnvironment?
     #if canImport(UIKit)
-    @MainActor private lazy var controller: UIHostingController<EmbeddedBlockView> = {
+    @MainActor private var host: UIHostingController<EmbeddedBlockView>?
+    /// 宿主，第一次要时建；放掉以后（releaseHost）再要时重建，里面的状态（展开、横滑位置）回到初始。
+    @MainActor private var controller: UIHostingController<EmbeddedBlockView> {
+        if let host { return host }
         let controller = UIHostingController(rootView: root)
         // 尺寸由 TextKit 按 attachmentBounds 摆，宿主不自己报尺寸，也不让安全区挤进来
         controller.sizingOptions = []
         controller.safeAreaRegions = []
         controller.view.backgroundColor = .clear
+        host = controller
         return controller
-    }()
+    }
     #else
     /// Mac 上是原生的卡片（MacBlockCards），不托管 SwiftUI：改窗口宽度时托管的卡片约 0.8 ms 一张（2026-10-13 实测）。
     @MainActor private lazy var card: EmbeddedCardView = {
@@ -110,7 +114,16 @@ nonisolated final class BlockAttachment: NSTextAttachment {
     }
 
     @MainActor private func render() {
-        controller.rootView = root
+        host?.rootView = root
+    }
+
+    /// 放掉宿主：从视图控制器和视图层级里撤下来。量过的高留着；行收到内存警告放掉视图、行被删掉时调。
+    @MainActor func releaseHost() {
+        guard let host else { return }
+        host.willMove(toParent: nil)
+        host.view.removeFromSuperview()
+        host.removeFromParent()
+        self.host = nil
     }
     #else
     @MainActor private func render() {
@@ -160,7 +173,6 @@ nonisolated final class BlockAttachment: NSTextAttachment {
         self.width = width
         if let height { return height }
         #if canImport(UIKit)
-        if environment == nil { render() }
         let height = controller.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
         #else
         let height = card.height(width: width)
@@ -413,6 +425,13 @@ final class BlockAttachments {
         result.append(part)
         return attributes
     }
+
+    #if canImport(UIKit)
+    /// 各附件放掉宿主，见 BlockAttachment.releaseHost。
+    func releaseHosts() {
+        for attachment in list { attachment.releaseHost() }
+    }
+    #endif
 }
 
 #if canImport(UIKit)

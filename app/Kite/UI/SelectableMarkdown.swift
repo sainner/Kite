@@ -5,7 +5,7 @@ import SwiftUI
 /// 代码块、表格、分隔线各是文本里的一个附件字符，显示成卡片（BlockAttachment：iOS 托管原来的 SwiftUI 视图，Mac 是原生卡片）：
 /// 卡片要横着滚、太长折起来，表格排不进文本视图；选区拖过它们就是整块选上。复制给 Markdown 原文（TextSourceMap）。
 /// 样子照 MarkdownView：正文字号跟着环境里的字体（对话里是正文，压缩摘要和子 agent 做的事里小一号），标题字号固定。
-/// iPhone 上长按文本视图和卡片都显示操作栏。Mac 的主对话是原生列表，不用它；Mac 上还用它的地方右键由外层 opensActionBar 的盖层接。
+/// 两端的对话（主对话、子 agent 做的事、压缩前的原文）都是原生列表，不用它，操作栏也由列表摆。
 struct SelectableMarkdown: View {
     @Environment(\.referenceScope) private var referenceScope
     @Environment(\.colorScheme) private var colorScheme
@@ -16,10 +16,6 @@ struct SelectableMarkdown: View {
     var color: PlatformColor = .label
     @State private var document = MarkdownDocument()
     @State private var attachments = BlockAttachments()
-    #if os(iOS)
-    var showActions: @MainActor () -> Void = {}
-    var dismissActions: () -> Void = {}
-    #endif
 
     var body: some View {
         let blocks = document.blocks(for: source)
@@ -40,9 +36,7 @@ struct SelectableMarkdown: View {
     private func textView(_ content: TextViewContent) -> some View {
         #if os(iOS)
         SelectableTextView(content: content, inset: CGSize(width: Metrics.inlineCodePadding, height: 0), fillsWidth: true,
-                           showActions: showActions, dismissActions: dismissActions)
-            // 卡片只在内容区接长按，标题栏按钮保留按下状态
-            .environment(\.blockCardLongPress, showActions)
+                           showActions: {}, dismissActions: {})
         #else
         SelectableTextView(content: content, inset: CGSize(width: Metrics.inlineCodePadding, height: 0), fillsWidth: true)
         #endif

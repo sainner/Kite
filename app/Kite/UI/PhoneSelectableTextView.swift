@@ -2,8 +2,8 @@
 import SwiftUI
 import UIKit
 
-/// UIKit 的文本视图，用来在 iPhone 上选字：子 agent 做的事、压缩摘要、嵌套的消息这些还在 SwiftUI 里的正文用它，
-/// 主对话的原生列表（PhoneTranscriptView）直接用同一个文本视图（PhoneProseTextView）和触摸（PhoneTextInteraction）。
+/// UIKit 的文本视图，SwiftUI 里的正文（SelectableMarkdown、SelectableText）在 iPhone 上用它选字。对话（主对话、子 agent 做的事、
+/// 压缩前的原文）都是原生列表（PhoneTranscriptView），直接用同一个文本视图（PhoneProseTextView）和触摸（PhoneTextInteraction）。
 /// 点一下只处理链接与取消选区；长按不动显示操作栏；长按以后接着拖是选字，见 PhoneTextInteraction。
 /// 补字、量尺寸、附件重排与 Mac 共用，见 ProseTextCoordinator。
 /// fillsWidth：占满给的宽度；不然贴着字的宽度，长的折行。

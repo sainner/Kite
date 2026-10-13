@@ -42,7 +42,11 @@ final class PhoneWorkSteps: UIView {
             rows.append(row)
             content.addSubview(row)
         }
-        while rows.count > work.calls.count { rows.removeLast().removeFromSuperview() }
+        while rows.count > work.calls.count {
+            let row = rows.removeLast()
+            row.release()
+            row.removeFromSuperview()
+        }
         for (index, call) in work.calls.enumerated() { rows[index].show(call, context: context) }
         rule = Theme.toolRule.resolve(in: context.environment).cgColor
         let count = max(work.calls.count - 1, 0)
@@ -68,6 +72,14 @@ final class PhoneWorkSteps: UIView {
     func height(width: CGFloat) -> CGFloat {
         heights = rows.map { $0.height(width: width) }
         return heights.reduce(0, +) + CGFloat(separators.count)
+    }
+
+    /// 上次量的时候嵌着的对话里有按近似量的行（拖缝中），见 PhoneTranscriptStack.approximate。
+    var approximate: Bool { rows.contains { $0.approximate } }
+
+    /// 放掉嵌着的对话里的视图和托管的宿主：工具行放掉视图、被删掉、收起拿掉步骤时调。
+    func release() {
+        for row in rows { row.release() }
     }
 
     override func layoutSubviews() {
@@ -139,6 +151,12 @@ final class PhoneCallRow: UIView {
         return headerHeight + detailHeight + 10
     }
 
+    var approximate: Bool { expanded && detail?.approximate == true }
+
+    func release() {
+        detail?.release()
+    }
+
     /// 按给的高摆：动画中在收起和展开之间，详情按露出多少淡入淡出；收起走完拿掉详情，同 SwiftUI 版不留它的状态。
     func layout(height: CGFloat) {
         header.frame = CGRect(x: 0, y: 0, width: bounds.width, height: headerHeight)
@@ -148,6 +166,7 @@ final class PhoneCallRow: UIView {
         detail.frame = CGRect(x: Metrics.toolRowInset, y: headerHeight, width: max(bounds.width - Metrics.toolRowInset * 2, 0), height: detailHeight)
         detail.alpha = progress
         if !expanded, progress == 0 {
+            detail.release()
             detail.removeFromSuperview()
             self.detail = nil
         }
@@ -405,6 +424,7 @@ final class PhoneCallDetail: UIView {
         input.show(fields, context: context)
         result.show(call.detailResult.detailFields, context: context)
         if call.children.isEmpty {
+            children?.release()
             children?.view.removeFromSuperview()
             children = nil
         } else {
@@ -424,6 +444,12 @@ final class PhoneCallDetail: UIView {
         heights.result = result.height(width: width)
         heights.children = children?.height(width: max(width - 12, 0)) ?? 0
         return heights.input + Self.spacing + heights.result + (children == nil ? 0 : Self.spacing + heights.children)
+    }
+
+    var approximate: Bool { children?.approximate == true }
+
+    func release() {
+        children?.release()
     }
 
     override func layoutSubviews() {
@@ -589,15 +615,33 @@ extension TranscriptRowContext {
         }
         for slot in slots where !next.contains(where: { $0 === slot }) {
             if slot.hasView { slot.view.removeFromSuperview() }
+            (slot as? PhoneRowSlot)?.releaseView()
             shapes[slot.id] = nil
         }
         slots = next
     }
 
+    /// 上次量的时候有行按近似量（拖缝中，见 TranscriptRowSlot.provisional）：外面那一行也记作 provisional，停下后整列重量。
+    private(set) var approximate = false
+
+    /// 按宽量整列多高。拖缝中各行同列表里一样按近似量（气泡见 PhoneBubbleRowSlot），停下后按近似量过的作废重量。
     func height(width: CGFloat) -> CGFloat {
         self.width = width
-        heights = slots.map { $0.height(width: width) }
+        let resizing = WindowLayout.anyResizing
+        approximate = false
+        heights = slots.map { slot in
+            if !resizing, slot.provisional { slot.measured = nil }
+            slot.resizing = resizing
+            let height = slot.height(width: width)
+            if slot.provisional { approximate = true }
+            return height
+        }
         return heights.reduce(0, +) + spacing
+    }
+
+    /// 各行放掉视图和托管的宿主：外面那一行放掉视图、被删掉、收起拿掉这一列时调。
+    func release() {
+        for slot in slots { (slot as? PhoneRowSlot)?.releaseView() }
     }
 
     /// 行距：第一行以外每行上面 rowSpacing 加它的 gap。

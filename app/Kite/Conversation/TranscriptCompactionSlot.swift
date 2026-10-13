@@ -469,6 +469,8 @@ final class CompactionButtonsView: NSView {
                 approximate = true
             } else {
                 if !resizing, slot.provisional { slot.measured = nil }
+                // 同列表：拖缝中气泡这些按近似量
+                slot.resizing = resizing
                 rowHeight = slot.height(width: width)
                 if slot.provisional { approximate = true }
             }

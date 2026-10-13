@@ -292,13 +292,19 @@ enum TranscriptPlacement: Equatable {
     // MARK: - 补量
 
     /// 宽度停下、没有窗口在过渡、人和程序都没在滚（busy 为 false）的时候，屏幕外的行分批按眼下的宽量好，每批不超过 8 ms，
-    /// 每批量完调 arrange 重排。viewport 给 nil 时（列表没了）停。
-    func measureLater(busy: @escaping () -> Bool, viewport: @escaping () -> TranscriptViewport?, arrange: @escaping () -> Void) {
+    /// 每批量完调 arrange 重排。viewport 给 nil 时（列表没了）停；paused 为 true 时（窗口不在屏上）也停，平台回到屏上时重排，
+    /// 排列发现还有没量准的会再调这里。
+    func measureLater(busy: @escaping () -> Bool, paused: @escaping () -> Bool = { false },
+                      viewport: @escaping () -> TranscriptViewport?, arrange: @escaping () -> Void) {
         guard measuring == nil else { return }
         measuring = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(50))
                 guard let self, let current = viewport() else { return }
+                if paused() {
+                    measuring = nil
+                    return
+                }
                 if busy() { continue }
                 guard measureBatch(current) else {
                     measuring = nil
