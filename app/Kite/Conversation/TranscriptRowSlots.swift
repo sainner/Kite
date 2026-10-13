@@ -12,6 +12,27 @@ struct TranscriptRowContext {
     var toggleActions: (RowID) -> Void
 }
 
+/// 一行展开收起怎么动，和 SwiftUI 版的那一下对上：气泡折叠是弹簧，工具行是普通缓出。
+enum RowMotion {
+    case spring(Spring)
+    case curve(UnitCurve, duration: TimeInterval)
+
+    var duration: TimeInterval {
+        switch self {
+        case .spring(let spring): spring.settlingDuration
+        case .curve(_, let duration): duration
+        }
+    }
+
+    /// 走了 time 秒时到哪了：0 起，1 到。
+    func progress(at time: TimeInterval) -> Double {
+        switch self {
+        case .spring(let spring): spring.value(target: 1.0, time: time)
+        case .curve(let curve, let duration): curve.value(at: min(time / duration, 1))
+        }
+    }
+}
+
 /// 原生对话列表（TranscriptListView）里的一行：内容、量过的高、视图。
 /// 视图只在可见区附近时放进列表：AppKit 改动一个视图在窗口里的位置时要通知它整棵子树，拖缝时每帧都在挪（2026-10-13 实测，
 /// 一个长会话的行全建成视图时每步比按需只建可见区附近多约 8 ms）。
@@ -20,10 +41,12 @@ struct TranscriptRowContext {
     private(set) var row: TranscriptRow
     /// 量过的：按哪个内容宽、多高。内容变了作废。
     var measured: (width: CGFloat, height: CGFloat)?
+    /// 量的时候在拖缝，用的是省时的近似（见 BubbleRowSlot），停下要按精确的重量。
+    var provisional = false
     /// 在文档里占的范围（内容列的宽），排列时算出来。
     var frame = CGRect.zero
-    /// 自己变高变矮时告诉列表：animated 是人点了展开收起，下面的行跟着动画挪；附件量完、图标载完这类直接换。
-    var heightChanged: ((_ animated: Bool) -> Void)?
+    /// 自己变高变矮时告诉列表：motion 是人点了展开收起时和 SwiftUI 版同样的走法，下面的行跟着挪；附件量完、图标载完这类给 nil，直接换。
+    var heightChanged: ((_ motion: RowMotion?) -> Void)?
     /// 刚发出去、还在下面藏着的程度：1 在下面，0 到位，见 TranscriptListView 的发送。
     var rise: CGFloat = 0
 
@@ -64,6 +87,8 @@ struct TranscriptRowContext {
     switch slotKind(row) {
     case .prose: ProseRowSlot(row: row)
     case .bubble: BubbleRowSlot(row: row)
+    case .work: WorkRowSlot(row: row)
+    case .thinking: ThinkingRowSlot(row: row)
     case .hosted: HostedRowSlot(row: row)
     }
 }
@@ -73,17 +98,24 @@ struct TranscriptRowContext {
     switch slotKind(row) {
     case .prose: slot is ProseRowSlot
     case .bubble: slot is BubbleRowSlot
+    case .work: slot is WorkRowSlot
+    case .thinking: slot is ThinkingRowSlot
     case .hosted: slot is HostedRowSlot
     }
 }
 
-private enum SlotKind { case prose, bubble, hosted }
+private enum SlotKind { case prose, bubble, work, thinking, hosted }
 
 private func slotKind(_ row: TranscriptRow) -> SlotKind {
     switch row.content {
     case .message: .bubble
     case .item(let item):
-        if case .text = item.kind { .prose } else { .hosted }
+        switch item.kind {
+        case .text: .prose
+        case .work: .work
+        case .thinking: .thinking
+        default: .hosted
+        }
     }
 }
 
@@ -124,7 +156,7 @@ final class ProseRowSlot: TranscriptRowSlot {
         coordinator.resized = { [weak self] in
             guard let self else { return }
             measured = nil
-            heightChanged?(false)
+            heightChanged?(nil)
         }
     }
 
@@ -168,7 +200,7 @@ final class ProseRowSlot: TranscriptRowSlot {
                 guard let self else { return }
                 self.measured = nil
                 self.build()
-                self.heightChanged?(false)
+                self.heightChanged?(nil)
             }
         }
         text.source = content.source
@@ -253,12 +285,12 @@ final class HostedRowSlot: TranscriptRowSlot {
         let height = ceil(height)
         guard let measured, measured.width == frame.width, abs(measured.height - height) > 0.5 else { return }
         self.measured = (measured.width, height)
-        heightChanged?(false)
+        heightChanged?(nil)
     }
 }
 /// 托管的行按内容的理想高报尺寸、贴顶摆：量高时给无限高也只报内容多高（不然 maxHeight 无限的框会把无限高原样报回来），
 /// 内容自己变高、列表还没跟上的那一帧往下伸，不居中。
-private struct HostedRowFrame: Layout {
+struct HostedRowFrame: Layout {
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let size = subviews.first?.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) ?? .zero
         return CGSize(width: proposal.width ?? size.width, height: size.height)

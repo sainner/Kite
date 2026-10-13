@@ -122,6 +122,17 @@ final class ProseTextView: NSTextView {
         return widest
     }
 
+    /// 刚排好的折没折行（不止一行）。
+    var wraps: Bool {
+        guard let layout = textLayoutManager else { return false }
+        var count = 0
+        layout.enumerateTextLayoutFragments(from: layout.documentRange.location, options: []) { fragment in
+            count += fragment.textLineFragments.count
+            return count < 2
+        }
+        return count > 1
+    }
+
     /// 按 lineWidth 的行宽排出来多高（不含上下边距）。文本容器跟着视图宽度时，先把宽度放上去再量。
     func measure(lineWidth: CGFloat) -> CGFloat {
         guard let layout = textLayoutManager, let container = textContainer else { return 0 }

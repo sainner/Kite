@@ -34,7 +34,7 @@ final class BubbleRowSlot: TranscriptRowSlot {
         text.isHorizontallyResizable = false
         text.textContainerInset = .zero
         text.clipsViewport = true
-        // 按能给的最宽排一次，视图贴着字放窄时不跟着重排，见 height(width:)
+        // 行宽由 height(width:) 按贴字的宽设，视图跟着放窄时不再重排一次
         text.textContainer?.widthTracksTextView = false
         text.displaysLinkToolTips = false
         text.isAutomaticLinkDetectionEnabled = false
@@ -47,7 +47,7 @@ final class BubbleRowSlot: TranscriptRowSlot {
         coordinator.resized = { [weak self] in
             guard let self else { return }
             measured = nil
-            heightChanged?(false)
+            heightChanged?(nil)
         }
         container.fold.action = { [weak self] in self?.setExpanded(!(self?.expanded ?? false)) }
     }
@@ -56,6 +56,7 @@ final class BubbleRowSlot: TranscriptRowSlot {
     override var view: NSView { container }
 
     var foldable: Bool { contentHeight > Self.foldHeight * 1.4 }
+
 
     override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
         super.update(row, context: context, resized: resized)
@@ -92,13 +93,28 @@ final class BubbleRowSlot: TranscriptRowSlot {
 
     override func height(width: CGFloat) -> CGFloat {
         if let measured, measured.width == width { return measured.height }
+        guard let storage = container.text.textStorage else { return 0 }
         let padding = Metrics.bubblePadding
         let most = max(width - padding.width * 2, 0)
         // 有代码段时占满气泡能给的宽度，只有字时贴着字，同 SelectableText：先按能给的最宽排，
         // 再贴着最宽的一行（多留 1 pt，同 ProseTextCoordinator.naturalWidth），窄了就按贴字的宽再排一遍
-        // 视图比排版的宽窄时不重排：文本容器不跟着视图宽度（见 init），各行都不比贴字的宽宽，按能给的最宽排出来的折行就是贴字排的折行
-        let textHeight = container.text.measure(lineWidth: most)
-        textWidth = hasBlocks ? most : min(ceil(container.text.widestLine) + 1, most)
+        // 有代码段时占满气泡能给的宽度，只有字时贴着字，同 SelectableText。贴字的宽照 SelectableText 用 boundingRect 量：
+        // 它按最优断行量，长消息改宽时每次几毫秒（2026-10-13 实测）。拖缝和吸附中改用近似：按能给的最宽排，取最宽的一行，
+        // 和 boundingRect 只差零点几点，但中文避头尾在临界宽度下会让个别行折得不一样（逐像素对过），所以停下后按精确的重量
+        let textHeight: CGFloat
+        provisional = WindowLayout.anyResizing && !hasBlocks
+        if hasBlocks {
+            textWidth = most
+            textHeight = container.text.measure(lineWidth: most)
+        } else if provisional {
+            var height = container.text.measure(lineWidth: most)
+            textWidth = min(ceil(container.text.widestLine) + 1, most)
+            if textWidth < most, container.text.wraps { height = container.text.measure(lineWidth: textWidth) }
+            textHeight = height
+        } else {
+            textWidth = ProseTextCoordinator.naturalWidth(of: storage, most: most)
+            textHeight = container.text.measure(lineWidth: textWidth)
+        }
         contentHeight = textHeight + padding.height * 2
         attachmentsHeight = container.attachmentsHeight(width: width)
         let height = attachmentsHeight + bubbleHeight(expanded: expanded)
@@ -150,7 +166,7 @@ final class BubbleRowSlot: TranscriptRowSlot {
         self.expanded = expanded
         if let measured { self.measured = (measured.width, attachmentsHeight + bubbleHeight(expanded: expanded)) }
         container.fold.expanded = expanded
-        heightChanged?(true)
+        heightChanged?(.spring(.snappy))
     }
 }
 

@@ -102,9 +102,9 @@ final class TranscriptListView: NSScrollView {
             } else {
                 if let existing = byID[row.id], existing.hasView { existing.view.removeFromSuperview() }
                 slot = makeTranscriptRowSlot(row)
-                slot.heightChanged = { [weak self, weak slot] animated in
+                slot.heightChanged = { [weak self, weak slot] motion in
                     guard let self, let slot else { return }
-                    if animated { animateHeight(of: slot) } else { needsLayout = true }
+                    if let motion { animateHeight(of: slot, motion: motion) } else { needsLayout = true }
                 }
                 slot.update(row, context: context, resized: true)
                 // 刚发出去的消息先在下面藏着，跟着滑到底的那一下浮上来，见 startGlideIfReady
@@ -175,10 +175,13 @@ final class TranscriptListView: NSScrollView {
             // 量：可见区附近的按眼下的宽量；远的有量过的高就先用着（宽可能是旧的），没有就估，空闲时再补
             let close = old.maxY > near.minY && old.minY < near.maxY || old == .zero && y < near.maxY && y + estimate > near.minY
             var height: CGFloat
-            if let measured = slot.measured, measured.width == columnWidth || !close {
+            // 拖缝中按近似量的，停下后当作没量准
+            let exact = !slot.provisional || resizing
+            if let measured = slot.measured, measured.width == columnWidth && exact || !close {
                 height = measured.height
-                if measured.width != columnWidth { waiting = true }
+                if measured.width != columnWidth || !exact { waiting = true }
             } else if close {
+                if !exact { slot.measured = nil }
                 height = slot.height(width: columnWidth)
             } else {
                 height = estimate
@@ -188,6 +191,8 @@ final class TranscriptListView: NSScrollView {
             if let animation = heightAnimations[slot.id] {
                 height = animation.from + (height - animation.from) * animation.progress
             }
+            // 拖缝中按近似量的，等停下由空闲补量按精确的重量
+            if slot.provisional { waiting = true }
             slot.frame = CGRect(x: x, y: y, width: columnWidth, height: height)
             y += height
         }
@@ -333,10 +338,10 @@ final class TranscriptListView: NSScrollView {
 
     // MARK: - 行高动画
 
-    /// 一行自己展开、收起：从原来的高按 snappy 的弹簧走到新量的高，下面的行跟着挪，同 SwiftUI 版的 withAnimation(.snappy)。
-    private func animateHeight(of slot: TranscriptRowSlot) {
+    /// 一行自己展开、收起：从原来的高按这一行给的走法走到新量的高，下面的行跟着挪，同 SwiftUI 版的 withAnimation。
+    private func animateHeight(of slot: TranscriptRowSlot, motion: RowMotion) {
         let from = slot.frame.height
-        heightAnimations[slot.id] = HeightAnimation(from: from)
+        heightAnimations[slot.id] = HeightAnimation(from: from, motion: motion)
         needsLayout = true
         if heightTicker == nil {
             let ticker = Ticker()
@@ -347,15 +352,14 @@ final class TranscriptListView: NSScrollView {
 
     /// 行高动画的一帧，都走完了返回 false。
     private func heightStep(_ now: CFTimeInterval) -> Bool {
-        let spring = Spring.snappy
         for (id, var animation) in heightAnimations {
             let started = animation.started ?? now
             animation.started = started
             let time = now - started
-            if time >= spring.settlingDuration || byID[id] == nil {
+            if time >= animation.motion.duration || byID[id] == nil {
                 heightAnimations[id] = nil
             } else {
-                animation.progress = spring.value(target: 1.0, time: time)
+                animation.progress = animation.motion.progress(at: time)
                 heightAnimations[id] = animation
             }
         }
@@ -387,11 +391,12 @@ final class TranscriptListView: NSScrollView {
     private func measureBatch() -> Bool {
         let (_, columnWidth) = column(width: contentView.bounds.width)
         let visible = visibleArea
-        let pending = slots.filter { $0.measured?.width != columnWidth }
+        let pending = slots.filter { $0.measured?.width != columnWidth || $0.provisional }
             .sorted { distance($0.frame, from: visible) < distance($1.frame, from: visible) }
         guard !pending.isEmpty else { return false }
         let start = CACurrentMediaTime()
         for slot in pending {
+            if slot.provisional { slot.measured = nil }
             _ = slot.height(width: columnWidth)
             if CACurrentMediaTime() - start > 0.008 { break }
         }
@@ -554,9 +559,10 @@ extension TranscriptListView {
     }
 }
 
-/// 一行展开收起的动画：从哪个高起，弹簧走到哪了。
+/// 一行展开收起的动画：从哪个高起，走到哪了。
 private struct HeightAnimation {
     let from: CGFloat
+    let motion: RowMotion
     var started: CFTimeInterval?
     var progress: Double = 0
 }
