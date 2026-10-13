@@ -135,7 +135,7 @@ private final class HeaderAnchorContainer: NSView, WindowHeaderFollower {
         mover.wantsLayer = true
         mover.addSubview(controller.view)
         addSubview(mover)
-        title.changed = { [weak self] in self?.update() }
+        title.changed = { [weak self] in self?.place() }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -146,7 +146,7 @@ private final class HeaderAnchorContainer: NSView, WindowHeaderFollower {
         super.layout()
         mover.frame = bounds
         controller.view.frame = bounds
-        update()
+        place()
     }
 
     override func viewDidMoveToWindow() {
@@ -175,7 +175,10 @@ private final class HeaderAnchorContainer: NSView, WindowHeaderFollower {
         titleCut = last.titleCut
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        update(shift: last.shift, titleCut: last.titleCut, keepsMask: frames.contains { $0.titleCut > 0 })
+        moverLayer.removeAnimation(forKey: "flight")
+        clip.removeAnimation(forKey: "flight")
+        flightMask = frames.contains { $0.titleCut > 0 }
+        update(shift: last.shift, titleCut: last.titleCut)
         moverLayer.add(StageKeyframes.make("sublayerTransform", frames.map { NSValue(caTransform3D: translation($0.shift)) }, duration: duration),
                        forKey: "flight")
         if edge == .leading, layer.mask === clip {
@@ -185,19 +188,36 @@ private final class HeaderAnchorContainer: NSView, WindowHeaderFollower {
         CATransaction.commit()
     }
 
+    /// 交给 Core Animation 的那一段里有要截标题的帧，遮罩整段挂着（见 follow(_:duration:)）。
+    private var flightMask = false
+
+    func settleFlight() {
+        update()
+    }
+
+    /// 挪到新的位置：交给 Core Animation 的那一段（有的话）收掉。
     private func update() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         mover.layer?.removeAnimation(forKey: "flight")
         clip.removeAnimation(forKey: "flight")
-        update(shift: shift, titleCut: titleCut, keepsMask: false)
+        flightMask = false
+        update(shift: shift, titleCut: titleCut)
         CATransaction.commit()
     }
 
-    private func update(shift: CGVector, titleCut: CGFloat, keepsMask: Bool) {
+    /// 排版、标题左边挪了：只补摆模型值，不收进行中的那一段。
+    private func place() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        update(shift: shift, titleCut: titleCut)
+        CATransaction.commit()
+    }
+
+    private func update(shift: CGVector, titleCut: CGFloat) {
         guard let layer else { return }
         mover.layer?.sublayerTransform = translation(shift)
-        if edge == .leading, titleCut > 0 || keepsMask {
+        if edge == .leading, titleCut > 0 || flightMask {
             clip.frame = layer.bounds
             clip.path = clipPath(shift: shift, titleCut: titleCut, in: layer)
             if layer.mask !== clip { layer.mask = clip }

@@ -456,6 +456,8 @@ struct HostedContentFrame: Equatable {
     func follow(shift: CGVector, titleCut: CGFloat)
     /// 整段交给 Core Animation：每一帧的挪动量和截掉的宽度，按时间均匀取，停在最后一帧。
     func follow(_ frames: [(shift: CGVector, titleCut: CGFloat)], duration: TimeInterval)
+    /// 交给 Core Animation 的那一段走完了：按最后一帧摆好，收掉为它留着的东西。
+    func settleFlight()
 }
 
 /// 窗口正文的托管视图、正文里标题两侧与逐帧驱动之间的联系。
@@ -485,6 +487,7 @@ struct HostedContentFrame: Equatable {
     /// 交给 Core Animation 的那一段走完：按最后一帧再交一次，飞行中一直显示着的正文这时该藏的藏起来。
     func settle() {
         container?.apply(frame)
+        for case let follower as WindowHeaderFollower in followers.allObjects { follower.settleFlight() }
     }
 
     /// 整段交给 Core Animation：frames 是按时间均匀取的每一帧，飞行中一直看得见，停在最后一帧（Mac 原生台面，见 CardView）。
@@ -620,7 +623,11 @@ final class HostedContentContainer: NSView {
             host.frame = CGRect(x: -origin.x, y: -origin.y,
                                 width: max(origin.x + bounds.width, 0), height: max(origin.y + bounds.height, 0))
         }
-        apply(frameState)
+        // 排版只补摆模型值，不收进行中交给 Core Animation 的那一段
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        place(frameState)
+        CATransaction.commit()
     }
 
     /// 停着、看得见时才接点击。命中时当场看动画状态：动作那一刻 SwiftUI 就按新排版重算悬停，等逐帧驱动交过来已经晚了，
@@ -630,20 +637,31 @@ final class HostedContentContainer: NSView {
         return super.hitTest(point)
     }
 
+    /// 交给 Core Animation 的那一段还在走，正文一直显示着（见 animate）。
+    private var flying = false
+
+    /// 摆到这一帧：交给 Core Animation 的那一段（有的话）收掉。
     func apply(_ state: HostedContentFrame) {
-        frameState = state
-        if isHidden == state.shown { isHidden = !state.shown }
-        guard let layer else { return }
+        flying = false
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         mover.layer?.removeAnimation(forKey: "flight")
         clip.removeAnimation(forKey: "flight-path")
         clip.removeAnimation(forKey: "flight-opacity")
+        place(state)
+        CATransaction.commit()
+    }
+
+    /// 只摆模型值，不碰进行中的动画。
+    private func place(_ state: HostedContentFrame) {
+        frameState = state
+        let shown = state.shown || flying
+        if isHidden == shown { isHidden = !shown }
+        guard let layer else { return }
         mover.layer?.sublayerTransform = CATransform3DMakeAffineTransform(state.transform)
         clip.frame = layer.bounds
         clip.path = clipPath(state, in: layer)
         clip.opacity = Float(state.opacity)
-        CATransaction.commit()
     }
 
     /// 遮罩的路径按图层自己的坐标：图层没翻转时原点在左下，视图坐标（左上为原点）要上下翻过来。
@@ -655,10 +673,10 @@ final class HostedContentContainer: NSView {
 
     /// 整段交给 Core Animation：变换、遮罩的路径和透明度按 frames 逐帧走，飞行中一直看得见，模型值停在最后一帧。
     func animate(_ frames: [HostedContentFrame], duration: TimeInterval) {
-        guard var last = frames.last, let layer, let moverLayer = mover.layer else { return }
-        last.shown = frames.contains(where: \.shown)
+        guard let last = frames.last, let layer, let moverLayer = mover.layer else { return }
         apply(last)
-        frameState = frames[frames.count - 1]
+        flying = frames.contains(where: \.shown)
+        place(last)
         moverLayer.add(StageKeyframes.make("sublayerTransform", frames.map { NSValue(caTransform3D: CATransform3DMakeAffineTransform($0.transform)) },
                                            duration: duration), forKey: "flight")
         clip.add(StageKeyframes.make("path", frames.map { clipPath($0, in: layer) }, duration: duration), forKey: "flight-path")

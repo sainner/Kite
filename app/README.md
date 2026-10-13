@@ -49,7 +49,7 @@ App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `
 
 会话输入区有两版：Mac 宽屏是原生的 `MacControlsBar`，iPhone、iPad 和 Mac 窄窗口是 SwiftUI 的 `ThreadControls`。对照两版用下面几个启动参数，都只在 Debug 版生效，Release 版不认：
 
-- `--swiftui-composer`：Mac 宽屏的会话窗口也用 SwiftUI 版输入区，同一个构建切新旧两版，对照行为或测量。
+- `--swiftui-composer`：Mac 宽屏的会话窗口也用 SwiftUI 版输入区，同一个构建切新旧两版，对照行为或测量。原生台面上会话窗口的外框是原生的、只用原生输入区，这个开关要和 `--swiftui-stage` 一起用才起作用。
 - `--composer-preview`：主窗口留空，另开一个窗口并排画两版输入区（左 SwiftUI、右原生），用一个不连工作机的草稿会话逐种状态切换，用来逐像素对照。再加 `--capture-port <端口>` 时依次把每种状态的窗口图和布局 POST 到本机这个端口，抓完退出；`--composer-no-glass` 两版都不画玻璃，`--composer-inactive` 抓 App 不在前台时的样子，深色加 `-KiteAppearance dark`。
 
 宽屏台面（卡片、缝、拖动和窗口动画）也有两版：Mac 是原生的 `StageView`，iPad 是 SwiftUI 的 `SwiftUITilesLayer`。对照用：

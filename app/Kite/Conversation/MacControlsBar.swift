@@ -114,8 +114,8 @@ final class ControlsBarView: NSView {
     private var effortSize: CGSize?
     /// 交给按钮解析颜色的环境，外观变了再换。
     private var buttonsEnvironment: ColorScheme?
-    /// 第几次登记观察，见 refresh。
-    private var tracking = 0
+    /// 跟着会话、App 模型和 state 变，见 refresh。
+    private let tracking = ModelTracking()
     /// 正在播的发送淡出。
     private var shownFading: UUID?
     /// 上次报给 SwiftUI 的高，按宽记：里面变了才让它重新量。
@@ -181,19 +181,12 @@ final class ControlsBarView: NSView {
         refresh()
     }
 
-    /// 按模型摆一遍，同时记下读了哪些可观察属性，变了再来一遍。每次摆都重新登记，之前登记的作废，不叠着通知。
+    /// 按模型摆一遍，读过的可观察属性变了再来一遍（同一时刻只挂一条登记，见 ModelTracking）。
     private func refresh() {
         guard let controls else { return }
-        tracking += 1
-        let generation = tracking
-        withObservationTracking {
-            apply(controls)
-        } onChange: { [weak self] in
+        tracking.track({ apply(controls) }) { [weak self] in
             // 在属性改之前通知，到下一拍再读
-            Task { @MainActor in
-                guard let self, self.tracking == generation else { return }
-                self.refresh()
-            }
+            Task { @MainActor in self?.refresh() }
         }
         // 量高时托管的思考强度会跑 SwiftUI，不放在登记里面
         contentChanged()

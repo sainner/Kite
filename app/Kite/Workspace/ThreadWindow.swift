@@ -5,6 +5,8 @@ import SwiftUI
 extension EnvironmentValues {
     /// Mac 宽屏原生台面交给卡片正文的：有它时会话窗口的外框是原生的（ThreadWindowView），正文里只放 ThreadPaneBridge。
     @Entry var nativeThreadWindow: ThreadWindowSlot?
+    /// 卡片交给正文的环境换过几次（外观类的环境变了、窗口组换了一项）：桥按它把整份新环境再交给原生外框。
+    @Entry var nativeThreadGeneration = 0
 }
 
 /// 卡片和它正文里的 ThreadPaneBridge 之间的联系：桥接上会话和环境时交给卡片，卡片建好原生外框；桥不在了收掉外框。
@@ -20,24 +22,38 @@ struct ThreadPaneBridge: View {
     let slot: ThreadWindowSlot
     @Environment(WorkThread.self) private var thread
     @Environment(\.self) private var environment
-    // 显式读出来：只读 \.self 时这几项变了不重算
+    // 显式读出来：只读 \.self 时这几项变了不重算。卡片换过环境（generation）时整份重交；
+    // 卡片环境以外、在正文里才加上的（引用跳转的范围）也在这里看
+    @Environment(\.nativeThreadGeneration) private var generation
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.controlActiveState) private var activeState
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.legibilityWeight) private var weight
+    @Environment(\.referenceScope) private var referenceScope
     @Environment(\.openSidebar) private var openSidebar
     @State private var pane = ThreadPaneModel()
 
     private struct Key: Equatable {
         let thread: ObjectIdentifier
+        let generation: Int
         let colorScheme: ColorScheme
         let activeState: ControlActiveState
         let isEnabled: Bool
+        let displayScale: CGFloat
+        let reduceMotion: Bool
+        let typeSize: DynamicTypeSize
+        let weight: LegibilityWeight?
+        let referenceScope: ReferenceScope
         let sidebar: Bool
     }
 
     var body: some View {
-        let key = Key(thread: ObjectIdentifier(thread), colorScheme: colorScheme, activeState: activeState, isEnabled: isEnabled,
-                      sidebar: openSidebar != nil)
+        let key = Key(thread: ObjectIdentifier(thread), generation: generation, colorScheme: colorScheme, activeState: activeState,
+                      isEnabled: isEnabled, displayScale: displayScale, reduceMotion: reduceMotion, typeSize: typeSize, weight: weight,
+                      referenceScope: referenceScope, sidebar: openSidebar != nil)
         Color.clear
             .frame(width: 0, height: 0)
             .preference(key: WindowDotsActive.self, value: true)
@@ -58,7 +74,7 @@ final class ThreadWindowView: NSView {
     let thread: WorkThread
     let pane: ThreadPaneModel
     private(set) var environment: EnvironmentValues
-    private let group: PaneGroup
+    private var group: PaneGroup
     private let paneID: Pane
     private let model: AppModel
     private let header: PaneCardHeader
@@ -119,9 +135,10 @@ final class ThreadWindowView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// 外观类的环境变了：几个托管视图重新交环境，对话的行也换上新环境。
-    func environmentChanged(_ environment: EnvironmentValues) {
+    /// 环境变了（外观、屏幕倍数、减少动态效果、字号、引用跳转的范围……）或窗口组换了：几个托管视图重新交环境，对话的行也换上新环境。
+    func environmentChanged(_ environment: EnvironmentValues, group: PaneGroup) {
         self.environment = environment
+        self.group = group
         installIslands()
         rowsDirty = true
         needsLayout = true
@@ -143,8 +160,13 @@ final class ThreadWindowView: NSView {
     }
 
     func dismantle() {
-        tracking.begin()
-        rowsTracking.begin()
+        tracking.cancel()
+        rowsTracking.cancel()
+        controlsLink.changed = nil
+        for island in [headerIsland, controls, backdrop] {
+            island.hitRegion = nil
+            island.rootView = AnyView(EmptyView())
+        }
         if pane.scroll.list === list { pane.scroll.list = nil }
     }
 
@@ -195,7 +217,6 @@ final class ThreadWindowView: NSView {
         super.layout()
         laying = true
         defer { laying = false }
-        tracking.begin()
         let state = tracking.track({
             State(initial: pane.initial(thread), empty: !thread.hasTranscript, listening: pane.listening(model), headerHeight: headerHeight)
         }) { [weak self] in self?.invalidate() }
@@ -252,6 +273,13 @@ final class ThreadWindowView: NSView {
         guard let window, let editor = window.firstResponder as? NSTextView, editor.isFieldEditor,
               let field = editor.delegate as? NSView, field.isDescendant(of: controls) else { return }
         window.makeFirstResponder(nil)
+    }
+
+    // MARK: - 读屏
+
+    /// 读屏顺序按看的顺序：标题栏、（空会话的说明）、对话、输入区；子视图的叠放是反过来的。
+    override func accessibilityChildren() -> [Any]? {
+        [headerIsland, backdrop, list, controls].filter { !$0.isHidden }
     }
 
     // MARK: - 指针

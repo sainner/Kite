@@ -48,7 +48,7 @@ struct ThreadPane: View {
         @Bindable var pane = pane
         return GeometryReader { proxy in
             #if os(macOS)
-            // 选中的行显式传进去：列表、托管的行各在自己的视图层级里，只靠环境里的绑定收不到它变了
+            // 选中的行显式传进去：列表是原生的，不在这个视图层级里，只靠环境里的绑定收不到它变了
             MacThreadTranscript(scroll: pane.scroll, arriving: pane.arriving, insets: proxy.safeAreaInsets, selected: pane.selected)
                 .ignoresSafeArea()
             #else

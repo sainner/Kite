@@ -68,7 +68,7 @@ private struct StageRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ stage: StageView, context: Context) {
-        stage.update(environment: context.environment, appearance: appearance, openSidebar: openSidebar)
+        stage.update(group: group, environment: context.environment, appearance: appearance, openSidebar: openSidebar)
     }
 
     /// 铺满给的地方；不给的话 SwiftUI 按 Auto Layout 量 fittingSize，整个台面的视图树塞进临时约束引擎。
@@ -89,10 +89,12 @@ private struct StageRepresentable: NSViewRepresentable {
 }
 
 /// 台面本身：最底下停靠栏和空画板两个托管视图，上面依次是缝、拖动时的占位、各张卡片，最上面是停靠栏的脉冲和展开的面板。
-/// 观察排布模型（ModelTracking），变了在 layout 里重算 StagePlan、摆缝和卡片；卡片在动时由显示链接逐帧取样。
+/// 观察排布模型（ModelTracking），变了在 layout 里重算 StagePlan、摆缝和卡片；排布动画由各张卡片整段交给 Core Animation，
+/// 只有跟手拖动的那张由显示链接逐帧取样。
 /// 过渡中（WindowLayout.transitioning）整个窗口暂停光标区域，缝、卡片、停靠栏都不接点击和悬停；指针在台面上时系统窗口不可拖。
 final class StageView: NSView {
-    let group: PaneGroup
+    /// 资源库里同一类换一项（角色、模板）时台面不重建（.id 只按类别），这里换成新的一项，正文跟着换，见 update。
+    private(set) var group: PaneGroup
     let model: AppModel
     private let reports: StageReports
     let geometry = StageGeometry()
@@ -126,19 +128,28 @@ final class StageView: NSView {
     private var visibleInstances: Set<String>?
     private var escapeMonitor: Any?
     private var focusMonitor: Any?
-    /// 这次按下的位置（台面坐标），松手时挪得不多才算点了一下。
+    /// 这次按下的位置（台面坐标）和点进了哪张卡片，松手时挪得不多才算点了一下。
     private var pressedAt: CGPoint?
+    private weak var pressedCard: CardView?
     /// 正在跟手的那张卡片，拖动开始时清掉各卡片的悬停。
     private var dragging: Pane?
 
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
 
+    #if DEBUG
+    /// 还活着的台面和卡片，台面对照拆掉台面后看有没有漏（StagePreview）。
+    static let alive = NSHashTable<NSView>.weakObjects()
+    #endif
+
     init(group: PaneGroup, model: AppModel, reports: StageReports) {
         self.group = group
         self.model = model
         self.reports = reports
         super.init(frame: .zero)
+        #if DEBUG
+        Self.alive.add(self)
+        #endif
         wantsLayer = true
         for island in [dockRail, windowless] { addSubview(island) }
         addSubview(placeholder)
@@ -155,18 +166,34 @@ final class StageView: NSView {
 
     // MARK: - 环境
 
-    func update(environment: EnvironmentValues, appearance: StageAppearance, openSidebar: (@MainActor () -> Void)?) {
+    func update(group: PaneGroup, environment: EnvironmentValues, appearance: StageAppearance, openSidebar: (@MainActor () -> Void)?) {
         self.environment = environment
+        let groupChanged = GroupKey(group) != GroupKey(self.group)
+        self.group = group
         let sidebarChanged = (openSidebar == nil) != (self.openSidebar == nil)
         self.openSidebar = openSidebar
-        guard appearance != look || sidebarChanged else { return }
-        let rebuilds = appearance != look
+        guard appearance != look || sidebarChanged || groupChanged else { return }
+        let rebuilds = appearance != look || groupChanged
         look = appearance
         if rebuilds {
             installIslands()
+            placeholder.environment = environment
             for card in cards.values { card.environmentChanged() }
         }
         needsLayout = true
+    }
+
+    /// 窗口组是哪一个：工作区、设备账号，或资源库里选中的哪一项（同一类共用一套排布）。
+    private struct GroupKey: Equatable {
+        let layout: ObjectIdentifier
+        let workspace: ObjectIdentifier?
+        let item: AgentContextItem?
+
+        init(_ group: PaneGroup) {
+            layout = ObjectIdentifier(group.layout)
+            workspace = group.workspace.map(ObjectIdentifier.init)
+            if case .agentContext(let item, _) = group { self.item = item } else { item = nil }
+        }
     }
 
     /// 托管视图里的 SwiftUI 环境：台面外面给的整份，加上台面自己给的几项。
@@ -183,15 +210,26 @@ final class StageView: NSView {
         dockOverlay.rootView = rooted(StageDockOverlay(layout: layout, area: group.workspace, geometry: geometry))
     }
 
+    /// 台面拆掉（换工作区、离开这一栏）：停掉显示链接和事件监视，不再跟模型，卡片、缝和托管视图里的东西都清掉。
+    /// 闭包都只弱持有台面和卡片（显示链接强持有台面，在这里废掉），这里清掉是为了不留着已经没用的模型和视图。
     func dismantle() {
         displayLink?.invalidate()
         displayLink = nil
         removeEscapeMonitor()
         removeFocusMonitor()
-        tracking.begin()
+        tracking.cancel()
         for card in cards.values {
             card.dismantle()
+            card.removeFromSuperview()
             group.layout.noteSettling(card.pane, false)
+        }
+        cards = [:]
+        retained = []
+        for gap in gaps.values { gap.removeFromSuperview() }
+        gaps = [:]
+        for island in [dockRail, windowless, dockOverlay] {
+            island.hitRegion = nil
+            island.rootView = AnyView(EmptyView())
         }
     }
 
@@ -218,12 +256,11 @@ final class StageView: NSView {
         super.layout()
         // 环境交过来以前不建卡片：托管的正文要从环境里取 App 模型
         guard look != nil else { return }
-        // 先作废上一轮的观察：下面报视口会改排布模型，自己的改动不回头再排一遍
-        tracking.begin()
         let size = bounds.size
         if viewport != size {
             viewport = size
-            group.layout.updateViewport(size, presentation: .tiled)
+            // 报视口会改排布模型，自己的改动不回头再排一遍
+            tracking.quietly { group.layout.updateViewport(size, presentation: .tiled) }
         }
         origin = windowOrigin
         for island in [dockRail, windowless, dockOverlay] { place(island, bounds) }
@@ -558,18 +595,31 @@ final class StageView: NSView {
         focusMonitor = nil
     }
 
+    /// 按下时实际点进了哪张卡片（命中的视图在它里面）：停靠栏展开着面板时点空白落在面板那一层上，只收起面板，不聚焦下面的卡片，同旧版。
     private func focusClick(_ event: NSEvent) {
         guard event.window === window else { return }
         let point = convert(event.locationInWindow, from: nil)
         guard event.type == .leftMouseUp else {
             pressedAt = point
+            pressedCard = cardHit(event)
             return
         }
-        defer { pressedAt = nil }
+        defer {
+            pressedAt = nil
+            pressedCard = nil
+        }
         guard let pressedAt, hypot(point.x - pressedAt.x, point.y - pressedAt.y) < Metrics.dragThreshold,
-              let card = subviews.reversed().lazy.compactMap({ $0 as? CardView }).first(where: { $0.showsContent(at: point) })
-        else { return }
+              let card = pressedCard, card.showsContent(at: point) else { return }
         group.layout.focus(card.pane)
+    }
+
+    private func cardHit(_ event: NSEvent) -> CardView? {
+        guard let content = window?.contentView, var view = content.hitTest(event.locationInWindow) else { return nil }
+        while let parent = view.superview {
+            if let card = view as? CardView, parent === self { return card }
+            view = parent
+        }
+        return nil
     }
 
     // MARK: - 命中
@@ -709,6 +759,11 @@ private final class PlaceholderView: NSView {
 
     override var isFlipped: Bool { true }
 
+    /// 解析主题色用的环境，台面交过来。
+    var environment = EnvironmentValues() {
+        didSet { updateColors() }
+    }
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
@@ -716,7 +771,12 @@ private final class PlaceholderView: NSView {
         shape.opacity = 0
         layer?.addSublayer(shape)
         updateColors()
+        // 系统强调色换了当场跟上
+        NotificationCenter.default.addObserver(self, selector: #selector(systemColorsChanged),
+                                               name: NSColor.systemColorsDidChangeNotification, object: nil)
     }
+
+    @objc private func systemColorsChanged() { updateColors() }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -728,11 +788,18 @@ private final class PlaceholderView: NSView {
         updateColors()
     }
 
+    /// 同 SwiftUI 版的 Color.accentColor：主题色 8% 填充、描边，按这个视图的外观解析。
     private func updateColors() {
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            shape.fillColor = NSColor.controlAccentColor.withAlphaComponent(0.08).cgColor
-            shape.strokeColor = NSColor.controlAccentColor.cgColor
-        }
+        var environment = environment
+        environment.colorScheme = effectiveAppearance.isDark ? .dark : .light
+        let accent = Color.accentColor.resolve(in: environment)
+        var fill = accent
+        fill.opacity *= 0.08
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        shape.fillColor = fill.cgColor
+        shape.strokeColor = accent.cgColor
+        CATransaction.commit()
     }
 
     override func layout() {

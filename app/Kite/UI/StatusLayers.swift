@@ -72,7 +72,12 @@ final class ContextRingLayerView: NSView {
         ring.addSublayer(track)
         ring.addSublayer(gradient)
         ring.addSublayer(arc)
+        // 系统强调色换了当场跟上（SwiftUI 不一定为它调 updateNSView）
+        NotificationCenter.default.addObserver(self, selector: #selector(systemColorsChanged),
+                                               name: NSColor.systemColorsDidChangeNotification, object: nil)
     }
+
+    @objc private func systemColorsChanged() { updateColors() }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -258,7 +263,12 @@ final class DockPulseLayerView: NSView {
         wantsLayer = true
         disc.fillRule = .evenOdd
         layer?.addSublayer(disc)
+        // 系统强调色换了当场跟上（SwiftUI 不一定为它调 updateNSView）
+        NotificationCenter.default.addObserver(self, selector: #selector(systemColorsChanged),
+                                               name: NSColor.systemColorsDidChangeNotification, object: nil)
     }
+
+    @objc private func systemColorsChanged() { restart() }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 

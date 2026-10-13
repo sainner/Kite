@@ -70,6 +70,8 @@ struct StagePreview: View {
     @State private var frames = StagePreviewFrames()
     @State private var index = 0
     @State private var started = false
+    /// 抓完最后一步拆掉两边的台面，看原生台面有没有漏。
+    @State private var removed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -80,8 +82,10 @@ struct StagePreview: View {
                 Button("下一步") { advance() }.disabled(index == StagePreviewStep.all.count - 1)
             }
             HStack(alignment: .top, spacing: 24) {
-                ForEach(scenes.indices, id: \.self) { side in
-                    StagePreviewCell(scene: scenes[side], native: side == 1, frames: frames)
+                if !removed {
+                    ForEach(scenes.indices, id: \.self) { side in
+                        StagePreviewCell(scene: scenes[side], native: side == 1, frames: frames)
+                    }
                 }
             }
         }
@@ -120,6 +124,12 @@ struct StagePreview: View {
             try? await Task.sleep(for: .milliseconds(1500))
             await shoot(name, port: port, frames: frames)
         }
+        // 拆掉两边，等一会儿看原生台面和卡片还有没有活着的
+        let before = StageView.alive.allObjects.count
+        removed = true
+        try? await Task.sleep(for: .seconds(2))
+        let after = StageView.alive.allObjects.map { String(describing: type(of: $0)) }
+        await StagePreviewCapture.post("stage-\(appearance)-alive.txt", Data("拆前 \(before)，拆后 \(after.count)：\(after)".utf8), port: port)
         await StagePreviewCapture.post("stage-\(appearance)-done.txt", Data(), port: port)
         NSApp.terminate(nil)
     }
@@ -130,11 +140,38 @@ struct StagePreview: View {
             return
         }
         await StagePreviewCapture.post("\(name).png", image, port: port)
+        await StagePreviewCapture.post("\(name).hits.txt", Data(Self.hits(in: window, frames: frames).utf8), port: port)
         let layout: [String: Any] = ["scale": window.backingScaleFactor,
                                      "cells": frames.cells.mapValues { [$0.minX, $0.minY, $0.width, $0.height] }]
         if let data = try? JSONSerialization.data(withJSONObject: layout, options: [.prettyPrinted, .sortedKeys]) {
             await StagePreviewCapture.post("\(name).json", data, port: port)
         }
+    }
+}
+
+extension StagePreview {
+    /// 两边各取几处（格内坐标）：左边那张卡片的正文、它的输入框、两张卡片之间的缝、右上那张卡片标题栏的空白处，
+    /// 问窗口这一点落在哪个视图上（hitTest，不发事件），看铺满台面的各层有没有挡住。
+    fileprivate static func hits(in window: NSWindow, frames: StagePreviewFrames) -> String {
+        guard let content = window.contentView else { return "" }
+        let points: [(String, CGPoint)] = [("正文", CGPoint(x: 186, y: 300)), ("输入框", CGPoint(x: 100, y: 515)),
+                                           ("缝", CGPoint(x: 378, y: 300)), ("第二张卡片标题栏", CGPoint(x: 520, y: 24))]
+        var lines: [String] = []
+        for side in ["swiftui", "native"] {
+            guard let cell = frames.cells[side] else { continue }
+            for (label, point) in points {
+                // 窗口坐标左上角起，换成内容视图上一层的坐标（左下角起）
+                let location = NSPoint(x: cell.minX + point.x, y: content.frame.height - (cell.minY + point.y))
+                var chain: [String] = []
+                var view = content.hitTest(location)
+                while let current = view, chain.count < 5 {
+                    chain.append(String(describing: type(of: current)).prefix(48).description)
+                    view = current.superview
+                }
+                lines.append("\(side) \(label): \(chain.joined(separator: " < "))")
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 }
 

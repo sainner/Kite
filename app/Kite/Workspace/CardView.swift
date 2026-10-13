@@ -3,10 +3,12 @@ import AppKit
 import SwiftUI
 
 /// 原生台面（StageView）上的一张卡片，合起 SwiftUI 版 CardSlot、PaneCard、WindowSurface 的职责，外观和行为照它们：
-/// 外框和最小化色、点阵层、窗口正文、头像、头像描边、标题栏一层（拖动区、窗口按钮）。视图铺满台面，各层按台面坐标摆。
-/// 终点由台面按 CardPresentation 算好交过来，交给 WindowMotion；在动时台面的显示链接逐帧取样，只改图层（applyPresentation）。
-/// 正文仍是 SwiftUI，按停着的样子排一次，飞行中只改外层图层的变换和遮罩（HostedContentContainer）；点阵、头像、窗口按钮各是一个托管视图。
-/// 标题栏一层按停着的外框摆，飞行中看不见也不接输入，同 WindowSurface.headerLayer。
+/// 外框和最小化色、点阵层、窗口正文、头像、头像描边、标题栏一层（拖动区、窗口按钮）。视图铺满台面，各层按台面坐标摆；
+/// 铺满台面的几层（外框、点阵、头像、描边）都不接点击，只有正文和标题栏一层接。
+/// 终点由台面按 CardPresentation 算好交过来，交给 WindowMotion。排布动画开始计时时整段交给 Core Animation（flightStarted），
+/// 跟手拖动由台面的显示链接逐帧取样（applyPresentation），都只改图层。
+/// 正文按停着的样子排一次，飞行中只改外层图层的变换和遮罩（HostedContentContainer）：会话窗口是原生外框（ThreadWindowView），
+/// 别的窗口是托管视图；点阵、头像、窗口按钮各是一个托管视图。标题栏一层按停着的外框摆，飞行中看不见也不接输入，同 WindowSurface.headerLayer。
 final class CardView: NSView {
     /// 台面这一轮给这张卡片的：终点、停靠格、在不在退出、家族格、侧栏入口给不给它、是不是被停靠栏展开的面板压暗、接不接输入。
     struct Arrangement {
@@ -60,7 +62,7 @@ final class CardView: NSView {
     private let fill = CardFillView()
     private var backdrop: BackdropHost?
     private var container: HostedContentContainer?
-    private let iconMover = FlippedView()
+    private let iconMover = PassThroughView()
     private let icon = CardIsland()
     private let ring = CardRingView()
     private let headerView = CardHeaderView()
@@ -99,6 +101,9 @@ final class CardView: NSView {
         self.pane = pane
         self.stage = stage
         super.init(frame: .zero)
+        #if DEBUG
+        StageView.alive.add(self)
+        #endif
         wantsLayer = true
         layerUsesCoreImageFilters = true
         header.layout = stage.group.layout
@@ -132,10 +137,8 @@ final class CardView: NSView {
         addSubview(iconMover)
         addSubview(ring)
         addSubview(headerView)
-        headerView.drag.onChanged = { [weak self] drag in
-            guard let self else { return }
-            stage.drag(pane, to: drag.location)
-        }
+        let pane = pane
+        headerView.drag.onChanged = { [weak stage] drag in stage?.drag(pane, to: drag.location) }
         headerView.drag.onEnded = { [weak stage] in stage?.drop() }
         headerView.drag.onClick = { [weak self] in self?.click() }
         headerView.drag.menu = headerView.contextMenu
@@ -146,11 +149,14 @@ final class CardView: NSView {
         trackMotion()
     }
 
-    /// 外观类的环境变了：各个托管视图重新交环境。
+    /// 外观类的环境变了，或窗口组换了一项（资源库同一类里换角色、模板）：各个托管视图重新交环境，正文按新的一项重建，
+    /// 会话窗口的原生外框也换上。正文里的桥接上来的环境跟着变（CardContentState.environment 每次加一），见 ThreadPaneBridge。
     func environmentChanged() {
         guard let stage, let motion = placed?.motion, let container, let backdrop else { return }
         installed = true
         let group = stage.group
+        header.layout = group.layout
+        content.environment += 1
         container.host.rootView = stage.rooted(CardContent(
             group: group, pane: pane, state: content, header: header, headerRegions: headerRegions, presence: presence, motion: motion,
             reports: bodyReports, link: link, carrier: carrier, scope: scope, threadSlot: threadSlot))
@@ -161,9 +167,26 @@ final class CardView: NSView {
         updateColors()
     }
 
+    /// 拆掉：不再跟模型，收掉闭包和托管视图里的东西，原生外框一起拆。闭包都只弱持有台面和卡片，这里清掉是为了不留着已经没用的模型。
     func dismantle() {
-        motionTracking.begin()
+        motionTracking.cancel()
         threadWindow?.dismantle()
+        threadWindow = nil
+        threadSlot.attach = nil
+        threadSlot.detach = nil
+        placed?.motion.onStart = nil
+        presentation.motion?.onStart = nil
+        let drag = headerView.drag
+        drag.onChanged = nil
+        drag.onEnded = nil
+        drag.onClick = nil
+        headerView.buildMenu = nil
+        container?.native = nil
+        container?.host.rootView = AnyView(EmptyView())
+        backdrop?.rootView = AnyView(EmptyView())
+        icon.rootView = AnyView(EmptyView())
+        buttons.rootView = AnyView(EmptyView())
+        link.container = nil
     }
 
     // MARK: - 会话窗口的原生外框
@@ -172,7 +195,7 @@ final class CardView: NSView {
     private func attachThread(_ thread: WorkThread, pane threadPane: ThreadPaneModel, environment: EnvironmentValues) {
         guard let stage, let motion = placed?.motion, let container else { return }
         if let threadWindow, threadWindow.thread === thread, threadWindow.pane === threadPane {
-            threadWindow.environmentChanged(environment)
+            threadWindow.environmentChanged(environment, group: stage.group)
             return
         }
         threadWindow?.dismantle()
@@ -494,7 +517,8 @@ final class CardView: NSView {
         guard color != ringColor else { return }
         ringColor = color
         updateColors()
-        applyPresentation(at: .now)
+        // 交给 Core Animation 的那一段还在走时不重摆，停下时按终点摆（见 motionChanged）
+        if !flying { applyPresentation(at: .now) }
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -531,6 +555,13 @@ final class CardView: NSView {
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        // 不压暗了：动画走完把模糊拿掉，不让它一直挂在卡片的图层上
+        if !dimmed {
+            CATransaction.setCompletionBlock { [weak self] in
+                guard let self, !self.dimmed else { return }
+                contentFilters = []
+            }
+        }
         alphaValue = CGFloat(opacity)
         layer.setValue(radius * scale, forKeyPath: "filters.blur.inputRadius")
         if !reduceMotion {
@@ -563,7 +594,7 @@ final class CardView: NSView {
         if header.hovered != hovered { header.hovered = hovered }
         guard let stage, let placed, let area = stage.group.workspace else { return }
         let layout = stage.group.layout
-        // hovered 为假时不往下读：排布的观察里也会调到这里，不读 motion，免得交新终点时再排一遍
+        // 缩成停靠形状、停着、没在拖动和拖缝时才浮出停靠栏的名字
         area.setDockHover(DockEntry.pane(pane).id, frame: arrangement?.dockFrame ?? placed.target.frame,
                           hovering: hovered && placed.minimized && !placed.motion.moving && layout.drag == nil && layout.resizing == nil)
     }
@@ -592,7 +623,7 @@ final class CardView: NSView {
         }
         let model = stage.model
         for action in InstanceAction.all(for: instance, in: area, model: model) {
-            menu.addItem(MenuAction.item(action.title, enabled: action.enabled, perform: action.perform))
+            menu.addItem(MenuAction.item(action.title, enabled: action.enabled, destructive: action.destructive, perform: action.perform))
         }
         let pane = pane
         menu.addItem(MenuAction.item("关闭窗口", enabled: true) { model.closeWindow(pane, in: area) })
@@ -649,6 +680,8 @@ final class CardView: NSView {
     var openSidebar: (@MainActor () -> Void)?
     var buttonsShown = false
     var nativeThread = false
+    /// 卡片交给托管视图的环境换过几次，会话窗口的桥按它把新环境再交给原生外框。
+    var environment = 0
 }
 
 /// 卡片里的托管视图（头像、窗口按钮）：按自己的大小摆，点击和读屏照常。
@@ -663,6 +696,13 @@ final class CardIsland: NSHostingView<AnyView> {
 
     @MainActor required init(rootView: AnyView) { fatalError("init(rootView:) has not been implemented") }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
+/// 铺满台面、只负责显示的一层（头像随外框平移的那一层）：点击和读屏都穿过去，不挡下面的正文、缝和别的卡片。
+final class PassThroughView: NSView {
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func isAccessibilityElement() -> Bool { false }
 }
 
 /// 外框底色和最小化色：两层同一个轮廓，底色按 min(正文 + 头像, 1)、最小化色按头像的透明度，同 WindowSurface。
@@ -824,12 +864,19 @@ private final class CardHeaderView: NSView, NSMenuDelegate {
 
     private init(_ perform: @escaping @MainActor () -> Void) { self.perform = perform }
 
-    static func item(_ title: String, enabled: Bool, perform: @escaping @MainActor () -> Void) -> NSMenuItem {
+    /// destructive：同 SwiftUI 的 Button(role: .destructive) 在菜单里的样子。NSMenuItem 没有公开的接口，用的是它没公开的 setDestructive:，
+    /// 系统去掉它时只是退回普通样式。
+    static func item(_ title: String, enabled: Bool, destructive: Bool = false, perform: @escaping @MainActor () -> Void) -> NSMenuItem {
         let target = MenuAction(perform)
         let item = NSMenuItem(title: title, action: enabled ? #selector(run) : nil, keyEquivalent: "")
         item.target = target
         item.representedObject = target
         item.isEnabled = enabled
+        let setDestructive = NSSelectorFromString("setDestructive:")
+        if destructive, item.responds(to: setDestructive) {
+            typealias Set = @convention(c) (AnyObject, Selector, Bool) -> Void
+            unsafeBitCast(item.method(for: setDestructive), to: Set.self)(item, setDestructive, true)
+        }
         return item
     }
 
@@ -859,6 +906,7 @@ private struct CardContent: View {
                                            presence: presence, motion: motion, reports: reports, reportsHeader: !state.nativeThread),
                      link: link)
             .environment(\.nativeThreadWindow, threadSlot)
+            .environment(\.nativeThreadGeneration, state.environment)
             .environment(\.openSidebar, state.openSidebar)
             .environment(\.dotCarrier, carrier)
             .environment(\.dotScope, scope)
