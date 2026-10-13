@@ -54,11 +54,16 @@ final class TranscriptListView: NSScrollView {
     private var actionsRemoval: Task<Void, Never>?
     /// 有行开着操作栏时，点列表里别处（包括文本视图上）先收起它；文本视图照常接着处理这次点击。
     private var clickMonitor: Any?
+    /// 拖缝时把滚动条藏了，见 layoutRows。
+    private var scrollerHidden = false
 
     /// 屏幕外的行排在可见区上下各多远以内就建视图、跟着宽度量。
     private static let margin: CGFloat = 0.5
-    /// 拖缝时只量可见区上下各四分之一屏以内的行，其余按原来的高占位，停下再补。
-    private static let resizeMargin: CGFloat = 0.25
+    /// 可见区上下各十分之一屏：这以内的行每次排列都当场量准；拖缝时只量、只放这以内的，其余按原来的高占位，停下再补。
+    /// 看着的内容按顶上那一行按住，外面的行只在每步挪动的几点里滑进来，留一点余量够了；多留的每步都要跟着重排。
+    private static let closeMargin: CGFloat = 0.1
+    /// 一次排列里量不急的行最多花多久，超了留给空闲时补。
+    private static let layoutBudget: CFTimeInterval = 0.006
 
     init() {
         super.init(frame: .zero)
@@ -157,10 +162,24 @@ final class TranscriptListView: NSScrollView {
         visibleChanged(visible.height)
         let (x, columnWidth) = column(width: width)
         let resizing = WindowLayout.anyResizing
+        // 拖缝时藏起滚动条：每步按住看着的内容都要改滚动位置，会把它闪出来，长正文只排一截时把手的位置还是估的。
+        // 用透明度藏：要不要显示由滚动视图每次 tile 时自己定，改 isHidden 会被它改回来
+        if resizing != scrollerHidden {
+            scrollerHidden = resizing
+            verticalScroller?.alphaValue = resizing ? 0 : 1
+        }
         // 对齐：程序在滚时交给那一下；跟着最底下、没露留白时贴底；不然保持可见区顶上那一行不动
         let keepsBottom = following && !blankShown && glide == nil && pendingGlide == nil
         let anchor = keepsBottom || glide != nil ? nil : currentAnchor(in: visible)
-        let near = visible.insetBy(dx: 0, dy: -visible.height * (resizing ? Self.resizeMargin : Self.margin))
+        // 顶上那一行是长正文时按住看着的那截：拖缝时它上面没排的是估的高，停下整段排准时还会变，量完按它在行里挪了多少挪回去
+        if let anchor { byID[anchor.id]?.pin(at: -anchor.offset) }
+        let near = visible.insetBy(dx: 0, dy: -visible.height * (resizing ? Self.closeMargin : Self.margin))
+        // 可见区和紧挨着的必须当场量准；再远些的在这一帧还有空时量，不然先用着旧的高，空闲时补（松手后上下半屏一起重量要卡一下）
+        let urgent = visible.insetBy(dx: 0, dy: -visible.height * Self.closeMargin)
+        let started = CACurrentMediaTime()
+        // 拖缝时长正文只排这一截：滚动区露出来的整个范围（标题栏、控制区底下也画字）上下各加十分之一屏。
+        // 文本视图自己的视口越过排好的上沿时，补排的段落会和排好的叠在一起（见 ProseTextView.measure(lineWidth:from:through:)）
+        let reach = contentView.bounds.insetBy(dx: 0, dy: -visible.height * Self.closeMargin)
         let estimate = estimatedHeight(columnWidth)
         var y = Metrics.transcriptPadding
         var lastTurnTop = Metrics.transcriptPadding
@@ -176,7 +195,10 @@ final class TranscriptListView: NSScrollView {
             }
             let old = slot.frame
             // 量：可见区附近的按眼下的宽量；远的有量过的高就先用着（宽可能是旧的），没有就估，空闲时再补
-            let close = old.maxY > near.minY && old.minY < near.maxY || old == .zero && y < near.maxY && y + estimate > near.minY
+            func overlaps(_ area: CGRect) -> Bool {
+                old.maxY > area.minY && old.minY < area.maxY || old == .zero && y < area.maxY && y + estimate > area.minY
+            }
+            let close = overlaps(near) && (overlaps(urgent) || CACurrentMediaTime() - started < Self.layoutBudget)
             var height: CGFloat
             // 拖缝中按近似量的，停下后当作没量准
             let exact = !slot.provisional || resizing
@@ -185,7 +207,12 @@ final class TranscriptListView: NSScrollView {
                 if measured.width != columnWidth || !exact { waiting = true }
             } else if close {
                 if !exact { slot.measured = nil }
-                height = slot.height(width: columnWidth)
+                let lower = max(reach.minY - old.minY, 0), upper = min(reach.maxY, old.maxY) - old.minY
+                if resizing, old != .zero, upper > lower {
+                    height = slot.height(width: columnWidth, band: lower...upper)
+                } else {
+                    height = slot.height(width: columnWidth)
+                }
             } else {
                 height = estimate
                 waiting = true
@@ -217,7 +244,7 @@ final class TranscriptListView: NSScrollView {
             if keepsBottom {
                 scroll(toVisibleTop: height - visible.height)
             } else if let anchor, let slot = byID[anchor.id] {
-                scroll(toVisibleTop: slot.frame.minY - anchor.offset)
+                scroll(toVisibleTop: slot.frame.minY - anchor.offset + slot.pinShift)
             } else {
                 scroll(toVisibleTop: visibleArea.minY)
             }
@@ -232,20 +259,26 @@ final class TranscriptListView: NSScrollView {
         if let pendingGlide, pendingGlide.version != version, glide == nil { startGlideIfReady() }
     }
 
-    /// 可见区附近的行放进列表、摆好位置，远的拿出来。
+    /// 可见区附近的行放进列表、摆好位置，远的拿出来。拖缝时只摆量着的那些，其余放着的先藏起来、不跟着改宽：
+    /// 文本视图每次改宽，自己排版时都要按新宽估整段多高、排最后一段，白花时间；拿出来又要在松手时一起放回、重画，卡一下。
     private func realize(around visible: CGRect) {
         let near = visible.insetBy(dx: 0, dy: -visible.height * Self.margin)
+        let placed = WindowLayout.anyResizing ? visible.insetBy(dx: 0, dy: -visible.height * Self.closeMargin) : near
         for slot in slots {
-            let shown = slot.frame.maxY > near.minY && slot.frame.minY < near.maxY
-            if shown {
+            if slot.frame.maxY > placed.minY && slot.frame.minY < placed.maxY {
                 let view = slot.view
                 if view.superview !== document { document.addSubview(view) }
+                if view.isHidden { view.isHidden = false }
                 // 刚发出去的消息在下面 bubbleRise 处藏着，浮上来的过程见 glideStep
                 let frame = slot.viewFrame(in: slot.frame).offsetBy(dx: 0, dy: slot.rise * Metrics.bubbleRise)
                 if view.frame != frame { view.frame = frame }
                 slot.layoutView(in: CGRect(origin: .zero, size: frame.size))
             } else if slot.hasView, slot.view.superview != nil {
-                slot.view.removeFromSuperview()
+                if slot.frame.maxY > near.minY && slot.frame.minY < near.maxY {
+                    if !slot.view.isHidden { slot.view.isHidden = true }
+                } else {
+                    slot.view.removeFromSuperview()
+                }
             }
         }
     }
@@ -390,15 +423,16 @@ final class TranscriptListView: NSScrollView {
         }
     }
 
-    /// 离可见区最近的没量准的行量一批，还有没量准的返回 true。
+    /// 离可见区最近的没量准的行量一批，还有没量准的返回 true。可见区和紧挨着的留给接着的 layoutRows 量：它先按住顶上那一行看着的那截再量。
     private func measureBatch() -> Bool {
         let (_, columnWidth) = column(width: contentView.bounds.width)
         let visible = visibleArea
+        let urgent = visible.insetBy(dx: 0, dy: -visible.height * Self.closeMargin)
         let pending = slots.filter { $0.measured?.width != columnWidth || $0.provisional }
-            .sorted { distance($0.frame, from: visible) < distance($1.frame, from: visible) }
         guard !pending.isEmpty else { return false }
         let start = CACurrentMediaTime()
-        for slot in pending {
+        for slot in pending.sorted(by: { distance($0.frame, from: visible) < distance($1.frame, from: visible) }) {
+            if slot.frame.maxY > urgent.minY && slot.frame.minY < urgent.maxY { continue }
             if slot.provisional { slot.measured = nil }
             _ = slot.height(width: columnWidth)
             if CACurrentMediaTime() - start > 0.008 { break }

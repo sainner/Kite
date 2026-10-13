@@ -69,6 +69,14 @@ enum RowMotion {
     /// 按内容列的宽量出多高，量过同宽的直接给。
     func height(width: CGFloat) -> CGFloat { 0 }
 
+    /// 拖缝时量：只要排准行内 band 这一截（行内坐标，按这一行眼下的排版）。长正文只排这截，其余估着占位、记作 provisional；别的行整行量。
+    func height(width: CGFloat, band: ClosedRange<CGFloat>) -> CGFloat { height(width: width) }
+
+    /// 量高前记下行内 y 处（行内坐标）的内容，量完由 pinShift 给出它在行内挪了多少。长正文拖缝时上面没排的按估的高占位，
+    /// 看着的那截在行里的位置跟着估的变，列表按它把可见区挪回去（见 TranscriptListView.layoutRows）；别的行不挪。
+    func pin(at y: CGFloat) {}
+    var pinShift: CGFloat { 0 }
+
     /// 视图在文档里的 frame：column 是这一行在内容列里占的范围。
     func viewFrame(in column: CGRect) -> CGRect { column }
 
@@ -133,6 +141,14 @@ final class ProseRowSlot: TranscriptRowSlot {
     private var topInset: CGFloat = 0
     /// 引用图标要加载的网址，变了才重新加载。
     private var urls: [URL] = []
+    /// 拖缝前整段排准时各段的高，估没排的那些用。量过的高作废时跟着作废。
+    private var rest: RestLayout?
+    /// pin 记下的那段：起头的位置、当时在排版里的上沿。
+    private var pinned: (location: NSTextLocation, top: CGFloat)?
+
+    override var measured: (width: CGFloat, height: CGFloat)? {
+        didSet { if measured == nil { rest = nil } }
+    }
 
     override init(row: TranscriptRow) {
         super.init(row: row)
@@ -216,10 +232,98 @@ final class ProseRowSlot: TranscriptRowSlot {
     }
 
     override func height(width: CGFloat) -> CGFloat {
-        if let measured, measured.width == width { return measured.height }
+        if let measured, measured.width == width, !provisional { return measured.height }
         let height = text.measure(lineWidth: width) + topInset
+        provisional = false
         measured = (width, height)
         return height
+    }
+
+    /// 拖缝时只从 band 上沿那段起排到下沿：上面没排的按 TextKit 估的高占位，下面没排的按拖缝前排准的段高、随宽度反比估。
+    /// 这截占了大半行时整段排。
+    override func height(width: CGFloat, band: ClosedRange<CGFloat>) -> CGFloat {
+        if let measured, measured.width == width { return measured.height }
+        guard let measured, band.upperBound - band.lowerBound < measured.height * 0.7,
+              let layout = text.textLayoutManager else { return height(width: width) }
+        // 眼下是整段排准的，记下各段的高
+        if !provisional { rest = RestLayout(layout, width: measured.width) }
+        guard let rest else { return height(width: width) }
+        let start = layout.documentRange.location
+        let y = band.lowerBound - topInset
+        var from = start, top: CGFloat = 0
+        if y > 0 {
+            guard let fragment = text.laidFragment(at: y) else { return height(width: width) }
+            from = fragment.rangeInElement.location
+            top = fragment.layoutFragmentFrame.minY
+            // 上沿那截还没排（上一步排的在它下面，比如贴底时变宽、内容变矮）：按段高往上补够，免得可见区逐步越过排好的上沿
+            if top > y, var index = rest.paragraph(startingAt: layout.offset(from: start, to: from)) {
+                while top > y, index > 0 {
+                    index -= 1
+                    top -= rest.height(of: index) * rest.width / measured.width
+                }
+                guard let location = layout.location(start, offsetBy: rest.start(of: index)) else { return height(width: width) }
+                from = location
+            }
+        }
+        guard let laid = text.measure(lineWidth: width, from: from, through: band.upperBound - topInset - top) else {
+            return height(width: width)
+        }
+        let below = rest.below(end: layout.offset(from: start, to: laid.end)).map { $0 * rest.width / width } ?? 0
+        // 同整段排的取整：估的位置带小数，不取整时贴底的可见区跟着它每步错开零点几点，字逐步抖一个像素
+        let height = topInset + ceil(laid.bottom + below)
+        provisional = true
+        self.measured = (width, height)
+        return height
+    }
+
+    /// 整段排准时的各段：段尾的字数、底边，按顺序。
+    private struct RestLayout {
+        let width: CGFloat
+        private var ends: [Int] = []
+        private var bottoms: [CGFloat] = []
+
+        /// 各段都排好了才记，不然给 nil。
+        init?(_ layout: NSTextLayoutManager, width: CGFloat) {
+            self.width = width
+            let start = layout.documentRange.location
+            var complete = true
+            var ends: [Int] = [], bottoms: [CGFloat] = []
+            layout.enumerateTextLayoutFragments(from: start, options: []) { fragment in
+                complete = fragment.state == .layoutAvailable
+                ends.append(layout.offset(from: start, to: fragment.rangeInElement.endLocation))
+                bottoms.append(fragment.layoutFragmentFrame.maxY)
+                return complete
+            }
+            guard complete else { return nil }
+            self.ends = ends
+            self.bottoms = bottoms
+        }
+
+        /// 从 offset 起头的那段是第几段。
+        func paragraph(startingAt offset: Int) -> Int? {
+            if offset == 0 { return 0 }
+            return ends.firstIndex(of: offset).map { $0 + 1 }.flatMap { $0 < ends.count ? $0 : nil }
+        }
+
+        func start(of index: Int) -> Int { index == 0 ? 0 : ends[index - 1] }
+
+        func height(of index: Int) -> CGFloat { bottoms[index] - (index == 0 ? 0 : bottoms[index - 1]) }
+
+        /// 段尾在 end 的那段下面还有多高。
+        func below(end: Int) -> CGFloat? {
+            ends.firstIndex(of: end).map { (bottoms.last ?? 0) - bottoms[$0] }
+        }
+    }
+
+    override func pin(at y: CGFloat) {
+        pinned = nil
+        guard y > topInset, let fragment = text.laidFragment(at: y - topInset) else { return }
+        pinned = (fragment.rangeInElement.location, fragment.layoutFragmentFrame.minY)
+    }
+
+    override var pinShift: CGFloat {
+        guard let pinned, let frame = text.laidFrame(at: pinned.location) else { return 0 }
+        return frame.minY - pinned.top
     }
 
     override func viewFrame(in column: CGRect) -> CGRect {

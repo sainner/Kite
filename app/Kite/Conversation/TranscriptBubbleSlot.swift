@@ -96,8 +96,6 @@ final class BubbleRowSlot: TranscriptRowSlot {
         guard let storage = container.text.textStorage else { return 0 }
         let padding = Metrics.bubblePadding
         let most = max(width - padding.width * 2, 0)
-        // 有代码段时占满气泡能给的宽度，只有字时贴着字，同 SelectableText：先按能给的最宽排，
-        // 再贴着最宽的一行（多留 1 pt，同 ProseTextCoordinator.naturalWidth），窄了就按贴字的宽再排一遍
         // 有代码段时占满气泡能给的宽度，只有字时贴着字，同 SelectableText。贴字的宽照 SelectableText 用 boundingRect 量：
         // 它按最优断行量，长消息改宽时每次几毫秒（2026-10-13 实测）。拖缝和吸附中改用近似：按能给的最宽排，取最宽的一行，
         // 和 boundingRect 只差零点几点，但中文避头尾在临界宽度下会让个别行折得不一样（逐像素对过），所以停下后按精确的重量
@@ -106,6 +104,8 @@ final class BubbleRowSlot: TranscriptRowSlot {
         if hasBlocks {
             textWidth = most
             textHeight = container.text.measure(lineWidth: most)
+        } else if provisional, foldable, !expanded, let height = foldedHeight(most: most) {
+            textHeight = height
         } else if provisional {
             var height = container.text.measure(lineWidth: most)
             textWidth = min(ceil(container.text.widestLine) + 1, most)
@@ -120,6 +120,20 @@ final class BubbleRowSlot: TranscriptRowSlot {
         let height = attachmentsHeight + bubbleHeight(expanded: expanded)
         measured = (width, height)
         return height
+    }
+
+    /// 折着的长消息拖缝时只排露出来的那截：贴字的宽按这截里最宽的一行，全文多高按上次量的随宽度反比估，只用来判断还折不折。
+    /// 不然每步都要把整条长消息重排一遍，露出来的只有开头几行。
+    private func foldedHeight(most: CGFloat) -> CGFloat? {
+        guard let start = container.text.textLayoutManager?.documentRange.location,
+              var laid = container.text.measure(lineWidth: most, from: start, through: Self.foldHeight) else { return nil }
+        let previous = (height: contentHeight - Metrics.bubblePadding.height * 2, width: textWidth)
+        textWidth = min(ceil(container.text.widestLine) + 1, most)
+        if textWidth < most, container.text.wraps,
+           let narrow = container.text.measure(lineWidth: textWidth, from: start, through: Self.foldHeight) {
+            laid = narrow
+        }
+        return ceil(max(laid.bottom, previous.height * previous.width / max(textWidth, 1)))
     }
 
     /// 气泡多高：折起来的正文，加上能折时的按钮。
@@ -238,7 +252,9 @@ final class BubbleRowView: NSView {
         // 正文这一块（连同上下边距）这会儿露出多高：动画中在折起和全文之间
         let shown = max(frame.height - foldHeight, 0)
         clip.frame = CGRect(x: 0, y: 0, width: frame.width, height: shown)
-        let textFrame = CGRect(x: padding.width, y: padding.height, width: textWidth, height: max(contentHeight - padding.height * 2, 0))
+        // 正文只给到露出来的底边：折着时文本视图不去排、画折下去的那些（拖缝时那截也没排，见 foldedHeight）
+        let textHeight = min(contentHeight - padding.height * 2, shown - padding.height)
+        let textFrame = CGRect(x: padding.width, y: padding.height, width: textWidth, height: max(textHeight, 0))
         if text.frame != textFrame { text.frame = textFrame }
         // 底下渐隐：被截掉的越多越透，全露出来时不渐隐
         CATransaction.begin()
