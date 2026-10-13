@@ -37,8 +37,11 @@ final class WindowLayout {
 
     /// 所有 App 窗口里有窗口组在过渡中。主线程上能往后放的工作（如对话藏着量高，见 TranscriptWindow）看它让开，不卡进动画里。
     static var anyTransitioning: Bool { all.allObjects.contains { $0.transitioning } }
-    /// 所有 App 窗口里有窗口组在拖缝：Mac 对话列表这时只量可见区附近的行，见 TranscriptListView。
-    static var anyResizing: Bool { all.allObjects.contains { $0.resizing != nil } }
+    /// 所有 App 窗口里有窗口组在拖缝，或在拖侧栏改宽（见 sidebarResizing）：对话列表这时只量可见区附近的行，
+    /// 见 TranscriptListView、PhoneTranscriptView。
+    static var anyResizing: Bool { sidebarResizing || all.allObjects.contains { $0.resizing != nil } }
+    /// 正在拖侧栏改宽，由 MainWindow 在拖动的起止设。侧栏改宽时最左一列窗口每步跟着改宽，同拖缝。
+    static var sidebarResizing = false
     private static let all = NSHashTable<WindowLayout>.weakObjects()
 
     func noteSettling(_ pane: Pane, _ settling: Bool) {
