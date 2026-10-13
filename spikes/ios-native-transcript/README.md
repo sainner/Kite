@@ -1,6 +1,6 @@
 # iPhone、iPad 原生对话的三项技术验证（第 0 期）
 
-2026-10-13，Xcode 27.2（27B5028f），iOS 模拟器 27.2：V1、V2 在 iPad Pro 11-inch (M5)，V3 在 iPhone Air。设计稿见编排工作树的 `.orchestra/ios-transcript-design.md` §5（V1～V3），这里只记当时的问题、做法和结果。
+2026-10-13，Xcode 27.2（27B5028f），iOS 模拟器 27.2：V1、V2 在 iPad Pro 11-inch (M5)，V3 在 iPhone Air。这里只记当时的问题、做法和结果。
 
 ## 问题
 
@@ -37,7 +37,7 @@
 - 只排一截时上面没排的段落按估的高占位，露出来那截的位置是估的（H 排好的在 y 20136…32245，宽 600 时那里是另一段字），和 Mac 一样要靠列表按住看着的那一行（`pin`/`pinShift`）。
 - 计时是模拟器上的，整段排比 Mac 原生慢（Mac 同样 7.5 万字约 35 ms）；只看量级和排了几段。
 
-结论：第 3 期要做 iPad 长回复拖缝只排一截，可行的写法是 H（`isScrollEnabled = true`、关掉它自己的拖动手势和滚动条、frame 宽固定成最宽内容列、拖缝只改 `textContainer.size` 的宽、frame 只改高、覆写 `viewportBounds(for:)` 裁到外层可见区，外层滚动时请视口重排），代价是要求 iOS 27，且文本视图比内容列宽（命中区往右伸到最宽列）。第 1 期的正文行可以先按 A 的简单写法（整段排），等 iPad 真机量过再定（设计稿 D3）。
+结论：第 3 期要做 iPad 长回复拖缝只排一截，可行的写法是 H（`isScrollEnabled = true`、关掉它自己的拖动手势和滚动条、frame 宽固定成最宽内容列、拖缝只改 `textContainer.size` 的宽、frame 只改高、覆写 `viewportBounds(for:)` 裁到外层可见区，外层滚动时请视口重排），代价是要求 iOS 27，且文本视图比内容列宽（命中区往右伸到最宽列）。第 1 期的正文行可以先按 A 的简单写法（整段排），等 iPad 真机量过再定。
 
 ### V2：几何效果不改表示视图的尺寸，但会反复调 layoutSubviews
 
@@ -56,7 +56,7 @@
 - 软边：三张截图左边 1000 px 宽（文字相同的部分）逐像素比，状态栏到标题栏下沿、软边下沿、正文三段的差都不超过 1（满 255），差超过 30 的像素为 0。只设 `topEdgeEffect.style = .soft` 就和 SwiftUI `ScrollView` 一样，登记 `UIScrollEdgeElementContainerInteraction` 与否看不出区别。截图：`v3-swiftui.png`、`v3-uikit-style.png`、`v3-uikit-registered.png`。没有覆盖真实标题栏的 `topFade`、`ScrollEdgeDots` 和玻璃按钮。
 - 键盘（程序聚焦输入框，第二次弹出时量；第一次模拟器加载键盘卡住约一秒）：`updateUIView` 只被调一次、事务里**没有**动画，直接改 `contentInset` 和滚动位置，弹出 68 帧、收起 57 帧里最后一行和控制区的距离每帧都是 0.0 pt。改动落在系统键盘动画的 UIKit 动画块里，跟着同一条曲线走。
 - 控制区带 `withAnimation(.smooth(duration: 0.4))` 长高 300 pt：SwiftUI `ScrollView` 贴底时距离在 ±0.4 pt 以内；表示视图用 `context.animate` 改，`updateUIView` 调一次、事务带动画，距离最大 11～46 pt（三次运行），收回时最小 −32 pt。逐帧看是 UIKit 这边比 SwiftUI 早一帧起步（控制区还没动时列表已经挪了 7.4 pt，之后每帧列表约等于控制区下一帧的位置），中途掉一帧时差得更多，不是曲线不同。
-- 所以设计稿 §4.3「事务带动画时用 `context.animate`」在键盘上用不着（事务不带动画），在 SwiftUI 动画改让出的高时会错开一帧。第 1 期要找对齐的办法（比如让 UIKit 这一下晚一帧起步，或换成按帧取值），并核对实际 App 里哪些控制区高度变化是带动画的。
+- 所以原先设想的「事务带动画时用 `context.animate`」在键盘上用不着（事务不带动画），在 SwiftUI 动画改让出的高时会错开一帧。第 1 期要找对齐的办法（比如让 UIKit 这一下晚一帧起步，或换成按帧取值），并核对实际 App 里哪些控制区高度变化是带动画的。
 
 ## 复现
 

@@ -52,7 +52,7 @@ struct TranscriptRowContext {
     func height(width: CGFloat, band: ClosedRange<CGFloat>) -> CGFloat { height(width: width) }
 
     /// 量高前记下行内 y 处（行内坐标）的内容，量完由 pinShift 给出它在行内挪了多少。长正文拖缝时上面没排的按估的高占位，
-    /// 看着的那截在行里的位置跟着估的变，列表按它把可见区挪回去（见 TranscriptListView.layoutRows）；别的行不挪。
+    /// 看着的那截在行里的位置跟着估的变，列表按它把可见区挪回去（见 TranscriptArrangement.arrange）；别的行不挪。
     func pin(at y: CGFloat) {}
     var pinShift: CGFloat { 0 }
 
