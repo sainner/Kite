@@ -2,9 +2,9 @@
 import SwiftUI
 import UIKit
 
-/// iPhone（和窄的 iPad）紧凑布局的原生外壳：替代 SwiftUI 版的 CompactLayout、CompactWindow、WindowShell。行为、几何照 SwiftUI 版
-/// （抽屉的状态与手势仍是 DrawerMotion，几何是 WindowGeometry），只是开合、横滑、键盘升降不再逐帧经过 SwiftUI：
-/// SwiftUI 版每帧都要把外壳、侧栏平移、标题栏和控制区的补位重新求值一遍，iPhone 真机拉开侧栏时 0.8 秒里主线程约 365 毫秒、掉 9 帧
+/// iPhone（和窄的 iPad）紧凑布局的原生外壳。行为、几何和 Mac 窄窗口的 SwiftUI 版（CompactLayout 里的 MacCompactLayout、CompactWindow）
+/// 一样（抽屉的状态与手势是 DrawerMotion，几何是 WindowGeometry），只是开合、横滑、键盘升降不逐帧经过 SwiftUI：
+/// SwiftUI 的外壳每帧都要把外壳、侧栏平移、标题栏和控制区的补位重新求值一遍，iPhone 真机拉开侧栏时 0.8 秒里主线程约 365 毫秒、掉 9 帧
 /// （2026-10-14 测量版）；这里开合整段按同样的弹簧取样交给 Core Animation，跟手时显示链接逐帧摆几个图层。
 /// 侧栏一列、底栏页签、单页这些不随开合改尺寸的仍是 SwiftUI，各放进一个岛；窗口里的一行窗口见 CompactRowView。
 struct PhoneCompactLayout: View {

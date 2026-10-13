@@ -41,7 +41,9 @@ struct CompactPaneHeaders: PreferenceKey {
     }
 }
 
-/// 标题栏和底部控制区都留在外壳上，换窗口时原地过渡，只有正文进入横向切换层。
+#if os(macOS)
+/// Mac 窄窗口里一行窗口的标题栏和底部控制区都留在外壳上，换窗口时原地过渡，只有正文进入横向切换层。
+/// iOS 的原生外壳把它们放在外壳上的两个岛里，见 CompactRowView。
 /// 键盘升没升也只在这里告诉控制区（收起键盘的按钮、键盘上方的留白），不进窗口正文：进了正文，键盘每次升降、焦点每次换窗口，
 /// 整棵窗口子树都要收一次环境变化，见 CompactPaneStack 文件头。
 struct CompactPaneHeaderHost: ViewModifier {
@@ -70,6 +72,7 @@ struct CompactPaneHeaderHost: ViewModifier {
             .animation(.snappy, value: focused)
     }
 }
+#endif
 
 /// 控制区同标题栏的按钮组一样按窗口淡入淡出；量出的高度记给窗口，窗口按它让位。
 struct CompactPaneControlsBar: View {

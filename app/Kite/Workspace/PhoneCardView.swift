@@ -2,14 +2,14 @@
 import SwiftUI
 import UIKit
 
-/// 原生台面（PhoneStageView）上的一张卡片，合起 SwiftUI 版 CardSlot、PaneCard、WindowSurface 的职责，外观和行为照它们，结构照 Mac 的 CardView：
+/// 台面（PhoneStageView）上的一张卡片，外观、行为和结构照 Mac 的 CardView：
 /// 外框和最小化色、点阵层、窗口正文、头像、头像描边、标题栏一层（拖动区、窗口按钮）。视图铺满台面，各层按台面坐标摆；
 /// 铺满台面的几层（外框、点阵、头像、描边）都不接点按，只有正文和标题栏一层接。
 /// 终点由台面按 CardPresentation 算好交过来，交给 WindowMotion。排布动画开始计时时整段交给 Core Animation（flightStarted），
 /// 跟手拖动由台面的显示链接逐帧取样（applyPresentation），都只改图层。外框、遮罩用图层的圆角（continuous，同 SwiftUI 的 RoundedRectangle）
 /// 和大小，Core Animation 自己插值，不用路径。
 /// 正文按停着的样子排一次，飞行中只改外层图层的变换和遮罩（PhoneContentContainer）：会话窗口是原生外框（PhoneThreadWindowView），
-/// 别的窗口是岛；点阵、头像、窗口按钮各是一个岛。标题栏一层按停着的外框摆，飞行中看不见也不接输入，同 WindowSurface.headerLayer。
+/// 别的窗口是岛；点阵、头像、窗口按钮各是一个岛。标题栏一层按停着的外框摆，飞行中看不见也不接输入。
 final class PhoneCardView: UIView {
     /// 台面这一轮给这张卡片的：终点、停靠格、在不在退出、家族格、侧栏入口给不给它、是不是被停靠栏展开的面板压暗、接不接输入。
     struct Arrangement {
@@ -101,9 +101,6 @@ final class PhoneCardView: UIView {
         self.pane = pane
         self.stage = stage
         super.init(frame: .zero)
-        #if DEBUG
-        PhoneStageView.alive.add(self)
-        #endif
         header.layout = stage.group.layout
         link.onHover = { _ in }
         layer.addSublayer(fill.base)
@@ -125,7 +122,7 @@ final class PhoneCardView: UIView {
                                                         "opacity": NSNull(), "backgroundColor": NSNull(), "borderColor": NSNull(),
                                                         "hidden": NSNull()]
 
-    /// 第一次排布时 motion 才有，正文、点阵等这时建：叠放从下到上是外框、点阵、正文、头像、描边、标题栏一层，同 WindowSurface。
+    /// 第一次排布时 motion 才有，正文、点阵等这时建：叠放从下到上是外框、点阵、正文、头像、描边、标题栏一层。
     private func install(motion: WindowMotion) {
         guard let stage else { return }
         let backdrop = HostIsland()
@@ -171,21 +168,12 @@ final class PhoneCardView: UIView {
         content.environment += 1
         container.island.rootView = stage.rooted(CardContent(
             group: group, pane: pane, state: content, header: header, headerRegions: headerRegions, presence: presence, motion: motion,
-            reports: bodyReports, link: link, carrier: carrier, scope: scope, threadSlot: Self.nativeThreads ? threadSlot : nil))
+            reports: bodyReports, link: link, carrier: carrier, scope: scope, threadSlot: threadSlot))
         backdrop.rootView = stage.rooted(CardDots(reports: bodyReports, carrier: carrier, scope: scope, motion: motion))
         buttons.rootView = stage.rooted(CardButtons(group: group, pane: pane, header: header, state: content, motion: motion))
         iconKey = nil
         updateIcon()
         updateColors()
-    }
-
-    /// 会话窗口的外框是原生的；Debug 带 --swiftui-thread-window 时照旧是 SwiftUI 的 ThreadPane，同一个构建对照新旧两版。
-    private static var nativeThreads: Bool {
-        #if DEBUG
-        !ProcessInfo.processInfo.arguments.contains("--swiftui-thread-window")
-        #else
-        true
-        #endif
     }
 
     /// 拆掉：不再跟模型，收掉闭包和岛里的东西，原生外框一起拆。
@@ -322,7 +310,7 @@ final class PhoneCardView: UIView {
         CATransform3DMakeTranslation(pose.frame.midX - size / 2, pose.frame.midY - size / 2, 0)
     }
 
-    /// 正文的范围：正文的排版框加上停着时的外框；岛的原点对齐窗口原点，同 WindowSurface.hostedPlacement。
+    /// 正文的范围：正文的排版框加上停着时的外框；岛的原点对齐窗口原点，同 Mac 的 CardView。
     private func placeContent(target: WindowPose, contentSize: CGSize) {
         guard let stage, let container else { return }
         let destination = target.contentOrigin(size: contentSize)
@@ -346,7 +334,7 @@ final class PhoneCardView: UIView {
         // 点阵层按台面全幅铺，遮罩按外框；收着时不跟着台面改尺寸（拖侧栏时台面每步改宽，整窗点阵跟着重画，见 PhoneStageView.placeIslands）
         if let backdrop, dotsShown, backdrop.frame != bounds { backdrop.frame = bounds }
         if iconMover.frame != bounds { iconMover.frame = bounds }
-        // 摆在卡片上的图形按停着的位置落到点阵上，同 PaneCard.updateDots
+        // 摆在卡片上的图形按停着的位置落到点阵上
         let rest = DotCarrier.Mapping(origin: CGPoint(x: origin.x + destination.x, y: origin.y + destination.y), scale: target.scale)
         if carrier.rest != rest { carrier.rest = rest }
         scope.frame = target.frame.offsetBy(dx: origin.x, dy: origin.y)
@@ -381,7 +369,7 @@ final class PhoneCardView: UIView {
 
     // MARK: - 逐帧
 
-    /// 这一刻的样子：外框、最小化色、描边、头像、点阵遮罩和正文的变换，都只改图层，同 WindowSurface 里按同一次取样交上去的几层。
+    /// 这一刻的样子：外框、最小化色、描边、头像、点阵遮罩和正文的变换，都按同一次取样只改图层。
     func applyPresentation(at date: Date) {
         guard let placed else { return }
         let pose = placed.motion.presentation(at: date)
@@ -442,7 +430,7 @@ final class PhoneCardView: UIView {
             let layout = stage.group.layout, pane = pane
             Task { @MainActor in layout.noteSettling(pane, settling) }
         }
-        // 拖着、关闭、在停靠栏和台面之间飞的卡片压在别的窗口上面，同 CardMotionState
+        // 拖着、关闭、在停靠栏和台面之间飞的卡片压在别的窗口上面，同 Mac 的 CardView
         let raised = arrangement?.dragged == true || closing || motion.changingForm
         if raised != self.raised {
             self.raised = raised
@@ -578,7 +566,7 @@ final class PhoneCardView: UIView {
         return UIBezierPath(roundedRect: target.frame, cornerRadius: target.radius).contains(point)
     }
 
-    /// 悬停：缩成停靠形状停着时浮出停靠栏的名字，同 CardSlot 的 onHover；窗口按钮触屏一直露。
+    /// 悬停：缩成停靠形状停着时浮出停靠栏的名字；窗口按钮触屏一直露。
     func setHovered(_ hovered: Bool) {
         guard hovered != self.hovered else { return }
         self.hovered = hovered
@@ -600,7 +588,7 @@ final class PhoneCardView: UIView {
         else { stage.group.layout.focus(pane) }
     }
 
-    /// 长按（指针右键）菜单：缩成停靠形状时先写名字与状态，再是实例操作和关闭窗口，同 PaneCard 的 contextMenu。
+    /// 长按（指针右键）菜单：缩成停靠形状时先写名字与状态，再是实例操作和关闭窗口。
     private func menu() -> UIMenu? {
         guard let stage, let placed, let area = stage.group.workspace,
               let target = area.windows.first(where: { $0.id == pane.id })?.target,
@@ -666,7 +654,7 @@ final class PhoneCardView: UIView {
         set {}
     }
 
-    /// 读屏的动作：缩小、展开、关闭窗口；缩在停靠栏里时展开窗口，同 PaneCard 的 accessibilityActions。
+    /// 读屏的动作：缩小、展开、关闭窗口；缩在停靠栏里时展开窗口。
     override var accessibilityCustomActions: [UIAccessibilityCustomAction]? {
         get {
             guard let placed, let stage, !closing else { return nil }
@@ -687,7 +675,7 @@ final class PhoneCardView: UIView {
     }
 }
 
-/// 外框底色和最小化色：两层同一个外框，底色按 min(正文 + 头像, 1)、最小化色按头像的透明度，同 WindowSurface。
+/// 外框底色和最小化色：两层同一个外框，底色按 min(正文 + 头像, 1)、最小化色按头像的透明度。
 private final class CardFillLayers {
     let base = CALayer()
     let minimized = CALayer()
@@ -741,7 +729,7 @@ enum RingGeometry {
         layer.add(group, forKey: "flight")
     }
 
-    /// 头像的描边压在外框上，随头像淡入：边框画在外框里面、外缘与外框贴合，同 WindowSurface.outlineRing。
+    /// 头像的描边压在外框上，随头像淡入：边框画在外框里面、外缘与外框贴合。
     static func apply(_ ring: CALayer, _ pose: WindowPose) {
         ring.removeAnimation(forKey: "flight")
         place(ring, frame: pose.frame, radius: pose.radius)
@@ -865,7 +853,7 @@ final class PhoneContentContainer: UIView, HostedContentSurface {
     }
 }
 
-/// 标题栏一层：拖动区和窗口按钮，按停着的外框摆，命中按外框的圆角裁，同 WindowSurface.headerLayer 的 clipShape。
+/// 标题栏一层：拖动区和窗口按钮，按停着的外框摆，命中按外框的圆角裁。
 private final class CardHeaderView: UIView, UIContextMenuInteractionDelegate {
     let drag = CardDragArea()
     var dragged: ((UIGestureRecognizer.State, CGPoint) -> Void)?

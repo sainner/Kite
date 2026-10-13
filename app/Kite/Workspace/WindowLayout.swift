@@ -467,12 +467,10 @@ final class WindowLayout {
         return sizes(current) != sizes(next)
     }
 
-    /// 排布变化按 kind 的曲线和时长在动画里提交，逐帧取样读同一个 motionKind；事务上标明，见 Transaction.windowLayoutChange。
+    /// 排布变化按 kind 的曲线和时长在动画里提交，逐帧取样读同一个 motionKind。
     private func withLayoutAnimation(_ kind: WindowMotionKind, _ body: () -> Void) {
         motionKind = kind
-        var transaction = Transaction(animation: kind.animation)
-        transaction.windowLayoutChange = true
-        withTransaction(transaction, body)
+        withAnimation(kind.animation, body)
     }
 
     func drop(in bounds: CGRect) {
@@ -481,7 +479,7 @@ final class WindowLayout {
         guard let committed = drag else { return }
         let next = pendingDrag ?? committed
         clearPendingPreview()
-        // 一次提交树和停靠顺序；同一张 CardSlot 在圆和卡片之间直接动画，不留下延迟回调覆盖新拖动。
+        // 一次提交树和停靠顺序；同一张卡片在圆和卡片之间直接动画，不留下延迟回调覆盖新拖动。
         withLayoutAnimation(.settle) {
             switch next.spot {
             case .dock:

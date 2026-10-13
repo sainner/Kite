@@ -2,70 +2,10 @@
 import SwiftUI
 import UIKit
 
-/// iPhone、iPad 会话窗口的输入区，原生版：替代 ThreadControls 那一整块 SwiftUI（玻璃、输入框、思考强度、按钮）。
-/// 拖缝改宽时它每步跟着改尺寸，整块 SwiftUI 子树重排；原生的只按宽度重摆。外观、行为逐项照 ThreadControls、PaneButtonStyle，
-/// 逻辑共用 ThreadControlsModel；思考强度留在 SwiftUI（ThreadEffortControl），放进一个按自己大小摆的托管视图，只在它自己改宽时重排。
-/// 这个表示视图给宽屏（iPad 卡片里的会话窗口）用，左右、底各留 paneMargin，玻璃最宽 transcriptWidth 居中，同 PaneControlsBar 在宽屏上的样子；
-/// 原生外框（PhoneThreadWindowView、紧凑布局的外壳）直接用 ControlsBarView。Mac 的对应是 MacControlsBar。
-struct PhoneControlsBar: View {
-    var typing: FocusState<Bool>.Binding
-    /// 发一条消息；第二个参数和对话往上滑在同一次更新里调。
-    let send: (Message, _ alongside: @escaping () -> Void) -> Void
-    /// 这个窗口录语音时的标识，见 VoiceInput.owner。
-    let voiceOwner: String
-    @Environment(WorkThread.self) private var thread
-    @Environment(AppModel.self) private var model
-    @Environment(WorkArea.self) private var area
-    @Environment(\.paneInstance) private var instance
-    @Environment(\.dotStage) private var stage
-    @Environment(\.dotScope) private var dotScope
-    // 显式读出来交给原生视图：只读 context.environment 时这几项变了不一定调 updateUIView
-    @Environment(\.isEnabled) private var isEnabled
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.dynamicTypeSize) private var typeSize
-    @State private var state = ThreadControlsState()
-
-    var body: some View {
-        ControlsBarHost(controls: ThreadControlsModel(thread: thread, model: model, area: area, instance: instance, stage: stage,
-                                                      scope: dotScope, voiceOwner: voiceOwner, state: state, send: send),
-                        enabled: isEnabled, colorScheme: colorScheme, typeSize: typeSize, typing: typing)
-            .frame(maxWidth: Metrics.transcriptWidth)
-            .padding(.horizontal, Metrics.paneMargin)
-            .padding(.bottom, Metrics.paneMargin)
-            .frame(maxWidth: .infinity)
-    }
-}
-
-private struct ControlsBarHost: UIViewRepresentable {
-    let controls: ThreadControlsModel
-    let enabled: Bool
-    let colorScheme: ColorScheme
-    let typeSize: DynamicTypeSize
-    let typing: FocusState<Bool>.Binding
-
-    func makeUIView(context: Context) -> ControlsBarView {
-        let view = ControlsBarView()
-        view.heightChanged = { [weak view] in view?.invalidateIntrinsicContentSize() }
-        return view
-    }
-
-    func updateUIView(_ view: ControlsBarView, context: Context) {
-        let typing = typing
-        // 输入框有没有焦点照样记在窗口的 typing 上：成为第一响应者时为真；窗口把它设成假（点侧栏按钮、点标题栏）时交出焦点
-        view.focusChanged = { focused in if typing.wrappedValue != focused { typing.wrappedValue = focused } }
-        view.update(controls: controls, enabled: enabled, environment: context.environment)
-        if !typing.wrappedValue { view.endTyping() }
-    }
-
-    /// 高按给的宽当场原生量；里面变高变矮（多一行、横排换竖排、思考强度改宽）时 ControlsBarView 让 SwiftUI 重新量。
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: ControlsBarView, context: Context) -> CGSize? {
-        let width = proposal.width ?? uiView.bounds.width
-        return CGSize(width: width, height: uiView.height(forWidth: width))
-    }
-}
-
-/// 输入区的玻璃和里面的内容，和玻璃一样大，圆角以外不接点按。照 ThreadControls 的版式：输入框左右留 controlInset + 8、上下 6，
+/// iPhone、iPad 会话窗口的输入区：玻璃和里面的内容，和玻璃一样大，圆角以外不接点按。原生会话窗口（PhoneThreadWindowView）
+/// 和紧凑布局的外壳直接挂它，拖缝改宽时只按宽度重摆。版式同 Mac 的输入区：输入框左右留 controlInset + 8、上下 6，
 /// 下面一行思考强度和按钮，放不下时思考强度单独一行。玻璃是 UIKit 的交互玻璃（UIGlassEffect，圆角 controlRadius）。
+/// 逻辑共用 ThreadControlsModel；思考强度留在 SwiftUI（ThreadEffortControl），放进一个按自己大小摆的托管视图，只在它自己改宽时重排。
 final class ControlsBarView: UIView {
     private let glass: UIVisualEffectView
     private let field = ComposerField.make()
@@ -103,13 +43,9 @@ final class ControlsBarView: UIView {
     init() {
         let effect = UIGlassEffect(style: .regular)
         effect.isInteractive = true
-        #if DEBUG
-        glass = UIVisualEffectView(effect: ControlsBarVariant.noGlass ? nil : effect)
-        #else
         glass = UIVisualEffectView(effect: effect)
-        #endif
         super.init(frame: .zero)
-        // 交互玻璃的同心形状有高光退回胶囊的复现（见 ThreadControls）；玻璃用明确的圆角
+        // 交互玻璃的同心形状有高光退回胶囊的复现；玻璃用明确的圆角
         glass.cornerConfiguration = .corners(radius: .fixed(Metrics.controlRadius))
         addSubview(glass)
         let content = glass.contentView
@@ -216,7 +152,7 @@ final class ControlsBarView: UIView {
         let fading = controls.state.fading
         field.alpha = fading == nil ? 1 : 0
         if fading == nil { shownFading = nil }
-        // 失败提示：同 SwiftUI 版的 alert，标题、按钮照旧
+        // 失败提示
         if let error = controls.state.effortError { present("修改思考强度失败", error) { controls.state.effortError = nil } }
         if let error = controls.state.voiceError { present("无法开始语音输入", error) { controls.state.voiceError = nil } }
     }
@@ -267,7 +203,7 @@ final class ControlsBarView: UIView {
 
     // MARK: - 排版
 
-    /// 版式常量，照 ThreadControls：输入框左右 controlInset + 8、上下 6；输入框和按钮行之间 2；按钮行左右、底 controlButtonInset；
+    /// 版式常量：输入框左右 controlInset + 8、上下 6；输入框和按钮行之间 2；按钮行左右、底 controlButtonInset；
     /// 顶 controlInset。附件、语音一组间距 0，和后面的停止、继续、发送间距 4；横排时思考强度和按钮组之间至少两个按钮间距。
     private static let fieldInset = Metrics.controlInset + 8
     private static let fieldPadding: CGFloat = 6
@@ -310,7 +246,7 @@ final class ControlsBarView: UIView {
     private var shownButtons: [PaneButtonView] { [stop, resume, send].filter { !$0.isHidden } }
 
     private var buttonsWidth: CGFloat {
-        2 * Metrics.paneButton + shownButtons.reduce(0) { $0 + ThreadControls.actionGap + $1.width }
+        2 * Metrics.paneButton + shownButtons.reduce(0) { $0 + ThreadControlsModel.actionGap + $1.width }
     }
 
     override func layoutSubviews() {
@@ -339,7 +275,7 @@ final class ControlsBarView: UIView {
         for button in shownButtons.reversed() {
             x -= button.width
             place(button, CGRect(x: x, y: rowTop, width: button.width, height: buttonsHeight))
-            x -= ThreadControls.actionGap
+            x -= ThreadControlsModel.actionGap
         }
         for button in [voice, attach] {
             x -= Metrics.paneButton

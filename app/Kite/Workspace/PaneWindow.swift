@@ -8,7 +8,8 @@ import SwiftUI
 /// 控制区始终存在；内容为空时窄屏触控下仍保留交互范围，鼠标或宽屏下不接点击，后面的内容照常可点。
 /// 安全区已由窗口容器让出，控制区补足差额；打字时在键盘上方保留固定留白。
 /// 控制区里的输入框拿 typing 绑定焦点。iPhone 上打字时点控制区以外的地方收起键盘，键盘升起时控制区最左边有收起键盘；不打字时从控制区往上拖拉出 action 栏。
-/// 窄屏控制区左右滑动切换窗口，键盘显示或控制区已聚焦时禁用。紧凑布局里标题栏和控制区都由外壳统一显示，只有正文跟着切换平移，见 CompactPaneHeaderHost。
+/// 窄屏控制区左右滑动切换窗口，键盘显示或控制区已聚焦时禁用。紧凑布局里标题栏和控制区都由外壳统一显示，只有正文跟着切换平移，
+/// 见 CompactPaneHeaderHost（Mac 窄窗口）、CompactRowView（iPhone、iPad）。
 /// 标题栏左侧负责打开侧栏；紧凑触屏布局由会话状态圆环承接，其他情况显示侧栏按钮。
 struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActions: View>: View {
     let header: PaneHeader
@@ -18,8 +19,6 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
     let controls: (FocusState<Bool>.Binding) -> Controls
     let headerStatus: HeaderStatus
     let headerActions: HeaderActions
-    /// 宽屏的整条底栏由窗口自己给（会话窗口的原生输入区，见 MacControlsBar、PhoneControlsBar），不再套 PaneControlsBar；紧凑布局仍用 controls。
-    private var wideBar: ((FocusState<Bool>.Binding) -> AnyView)?
     @FocusState private var typing: Bool
     @Environment(\.headerPane) private var headerPane
     @Environment(\.sharedPaneHeaderHeight) private var sharedHeaderHeight
@@ -52,8 +51,6 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
             .safeAreaBar(edge: .bottom, spacing: 0) {
                 if let sharedControls, let headerPane {
                     Color.clear.frame(height: sharedControls.height(for: headerPane)).allowsHitTesting(false)
-                } else if let wideBar {
-                    wideBar($typing)
                 } else {
                     PaneControlsBar(controls: controls($typing), typing: typing)
                 }
@@ -93,16 +90,6 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
             }
         }
         .environment(\.paneNotice, shown)
-    }
-
-    /// 宽屏时底栏整条换成 bar（会话窗口的原生输入区），见 wideBar。
-    func wideControls(@ViewBuilder _ bar: @escaping (_ typing: FocusState<Bool>.Binding) -> some View) -> Self {
-        var window = self
-        #if DEBUG
-        guard !ControlsBarVariant.swiftUI else { return window }
-        #endif
-        window.wideBar = { AnyView(bar($0)) }
-        return window
     }
 
     /// 标题栏左边按钮的动作：先收起键盘，再拉开侧边栏。
@@ -162,23 +149,23 @@ struct PaneTimeline<Content: View>: View {
 
 extension EnvironmentValues {
     /// 窗口底部为 Home 条保留的高度，不含键盘；底栏展开时仍保留。SwiftUI 的安全区读出来是合在一起的，分不出键盘，
-    /// CompactLayout 从 UIKit 读了给出；Mac 上是 0。
+    /// 紧凑布局的外壳从 UIKit 读了给出（见 ScreenReader）；Mac 上是 0。
     @Entry var homeIndicatorInset: CGFloat = 0
     /// 所在窗口连同标题栏与控制区的范围，见 PaneWindowFrame。由 PaneWindow 给内容。
     @Entry var paneWindowFrame: PaneWindowFrame?
     /// 窗口容器已让出的顶部安全区，标题栏只补足固定边距；Mac 为 0。
     @Entry var paneTopSafeInset: CGFloat = 0
-    /// iPhone 根视图的左右边距，CompactLayout 从 UIKit 读了给窗口，单页的分组表单按它固定，见 pageForm；其他情况为 nil。
+    /// iPhone 根视图的左右边距，紧凑布局的外壳从 UIKit 读了给窗口，单页的分组表单按它固定，见 pageForm；其他情况为 nil。
     @Entry var formMargin: CGFloat?
-    /// iPhone 上键盘升起来了。CompactLayout 在屏幕这一层比出来：SwiftUI 的安全区比 Home 条那一截高。
+    /// iPhone 上键盘升起来了。紧凑布局的外壳在屏幕这一层比出来（WindowGeometry.keyboardShown）：安全区比 Home 条那一截高。
     /// 不能在窗口里比：窗口里的安全区按窗口停着的样子换算过（底栏钉着时缩放），比出来不准。Mac 上总是 false。
-    /// 紧凑布局里只给外壳上的控制区（CompactPaneHeaderHost）和占位内容（CompactWindow），不进窗口正文：
-    /// 键盘每次升降、焦点每次换窗口都是一次环境变化，进了正文整棵窗口子树都要收，见 CompactPaneStack 文件头。
+    /// 紧凑布局里只给外壳上的控制区和占位内容，不进窗口正文：键盘每次升降、焦点每次换窗口都是一次环境变化，
+    /// 进了正文整棵窗口子树都要收，见 CompactPaneStack 文件头。
     @Entry var keyboardShown = false
     /// 所在窗口在不在屏上，见 PanePresence。台面的卡片和紧凑布局的一行窗口给出；别处没有，当作在屏上。
     @Entry var panePresence: PanePresence?
 
-    /// 拉开侧边栏，标题栏左边的按钮调它。紧凑布局由 CompactLayout 给出；宽屏侧栏收起时由主窗口给出，
+    /// 拉开侧边栏，标题栏左边的按钮调它。紧凑布局由外壳给出；宽屏侧栏收起时由主窗口给出，
     /// 只交给排在左上角的窗口。没有就不显示按钮。
     @Entry var openSidebar: (@MainActor () -> Void)?
     /// iPhone 上从控制区往上拖拉出 action 栏：窗口给出拖动的处理，控制区接手势。没有就不接。
@@ -203,7 +190,7 @@ struct DrawerPull {
     }
 }
 
-/// 窗口底部的控制区：液态玻璃容器里放窗口给的控件，键盘升起时最左边是收起键盘。紧凑布局里由外壳统一显示（见 CompactPaneHeaderHost），
+/// 窗口底部的控制区：液态玻璃容器里放窗口给的控件，键盘升起时最左边是收起键盘。紧凑布局里由外壳统一显示（见 CompactPaneHeaderReport），
 /// 窗口只为它让出高度；输入框的焦点仍绑在窗口自己的 typing 上。
 struct PaneControlsBar<Controls: View>: View {
     let controls: Controls

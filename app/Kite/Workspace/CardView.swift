@@ -2,13 +2,14 @@
 import AppKit
 import SwiftUI
 
-/// 原生台面（StageView）上的一张卡片，合起 SwiftUI 版 CardSlot、PaneCard、WindowSurface 的职责，外观和行为照它们：
+/// 台面（StageView）上的一张卡片：
 /// 外框和最小化色、点阵层、窗口正文、头像、头像描边、标题栏一层（拖动区、窗口按钮）。视图铺满台面，各层按台面坐标摆；
 /// 铺满台面的几层（外框、点阵、头像、描边）都不接点击，只有正文和标题栏一层接。
 /// 终点由台面按 CardPresentation 算好交过来，交给 WindowMotion。排布动画开始计时时整段交给 Core Animation（flightStarted），
 /// 跟手拖动由台面的显示链接逐帧取样（applyPresentation），都只改图层。
 /// 正文按停着的样子排一次，飞行中只改外层图层的变换和遮罩（HostedContentContainer）：会话窗口是原生外框（ThreadWindowView），
-/// 别的窗口是托管视图；点阵、头像、窗口按钮各是一个托管视图。标题栏一层按停着的外框摆，飞行中看不见也不接输入，同 WindowSurface.headerLayer。
+/// 别的窗口是托管视图；点阵、头像、窗口按钮各是一个托管视图。标题栏一层按停着的外框摆，飞行中看不见也不接输入：
+/// 跟着外框逐帧变大小的话，拖动区这个 AppKit 视图每帧改尺寸，连带焦点、可见范围、跟踪区域和光标逐帧重算（2026-10-12 Mac 实测）。
 final class CardView: NSView {
     /// 台面这一轮给这张卡片的：终点、停靠格、在不在退出、家族格、侧栏入口给不给它、是不是被停靠栏展开的面板压暗、接不接输入。
     struct Arrangement {
@@ -102,9 +103,6 @@ final class CardView: NSView {
         self.pane = pane
         self.stage = stage
         super.init(frame: .zero)
-        #if DEBUG
-        StageView.alive.add(self)
-        #endif
         wantsLayer = true
         layerUsesCoreImageFilters = true
         header.layout = stage.group.layout
@@ -121,7 +119,7 @@ final class CardView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// 第一次排布时 motion 才有，正文、点阵等这时建：叠放从下到上是外框、点阵、正文、头像、描边、标题栏一层，同 WindowSurface。
+    /// 第一次排布时 motion 才有，正文、点阵等这时建：叠放从下到上是外框、点阵、正文、头像、描边、标题栏一层。
     private func install(motion: WindowMotion) {
         guard let stage else { return }
         let backdrop = BackdropHost(rootView: AnyView(EmptyView()))
@@ -305,7 +303,8 @@ final class CardView: NSView {
         CATransform3DMakeTranslation(pose.frame.midX - size / 2, pose.frame.midY - size / 2, 0)
     }
 
-    /// 托管正文的范围：正文的排版框加上停着时的外框；托管视图的原点对齐窗口原点，同 WindowSurface.hostedPlacement。
+    /// 托管正文的范围：正文的排版框加上停着时的外框（标题两侧按外框贴边，外框比正文宽时按钮在正文外面，托管视图要盖住它们才接得到点击）；
+    /// 托管视图的原点对齐窗口原点，正文保留窗口坐标（见 HostedContentContainer）。
     private func placeContent(target: WindowPose, contentSize: CGSize) {
         guard let stage, let container else { return }
         let destination = target.contentOrigin(size: contentSize)
@@ -331,7 +330,7 @@ final class CardView: NSView {
         // 开了点阵时台面重排一轮（见 StageView.arrange 读 usesDots），这里接着铺满
         if let backdrop, backdrop.frame != bounds, bodyReports.usesDots || backdrop.frame == .zero { backdrop.frame = bounds }
         for view in [fill, ring, iconMover] where view.frame != bounds { view.frame = bounds }
-        // 摆在卡片上的图形按停着的位置落到点阵上，同 PaneCard.updateDots
+        // 摆在卡片上的图形按停着的位置落到点阵上
         let offset = target.contentOrigin(size: contentSize)
         let rest = DotCarrier.Mapping(origin: CGPoint(x: origin.x + offset.x, y: origin.y + offset.y), scale: target.scale)
         if carrier.rest != rest { carrier.rest = rest }
@@ -373,7 +372,7 @@ final class CardView: NSView {
 
     // MARK: - 逐帧
 
-    /// 这一刻的样子：外框、最小化色、描边、头像、点阵遮罩和正文的变换，都只改图层，同 WindowSurface 里按同一次取样交上去的几层。
+    /// 这一刻的样子：外框、最小化色、描边、头像、点阵遮罩和正文的变换，都按同一次取样只改图层。
     func applyPresentation(at date: Date) {
         guard let placed else { return }
         let pose = placed.motion.presentation(at: date)
@@ -435,7 +434,8 @@ final class CardView: NSView {
             let layout = stage.group.layout, pane = pane
             Task { @MainActor in layout.noteSettling(pane, settling) }
         }
-        // 拖着、关闭、在停靠栏和台面之间飞的卡片压在别的窗口上面，同 CardMotionState
+        // 拖着、关闭、在停靠栏和台面之间飞的卡片压在别的窗口上面。不然按加入的先后排，缩小时从后面那个窗口底下穿过，
+        // 快到停靠栏才从它的直边露出来，头像和卡片都被切掉一截（2026-10-12 Mac 实测）
         let raised = arrangement?.dragged == true || closing || motion.changingForm
         if raised != self.raised {
             self.raised = raised
@@ -457,7 +457,7 @@ final class CardView: NSView {
 
     // MARK: - 点阵
 
-    /// 点阵不参与过渡：卡片在动、拖缝调整大小时收起；停下后淡入 0.25 秒，同 WindowBackdrop。
+    /// 点阵不参与过渡（见 WindowLayout.transitioning）：卡片在动、拖缝调整大小时当场收起；停下后淡入 0.25 秒，交给图层动画，主线程不逐帧插值。
     private func updateDots() {
         guard let backdrop, let placed else { return }
         let shown = !(arrangement?.dotsHidden ?? false) && !placed.motion.moving
@@ -589,7 +589,7 @@ final class CardView: NSView {
         return true
     }
 
-    /// 悬停：窗口按钮露出来（见 PaneHeaderControls）；缩成停靠形状停着时浮出停靠栏的名字，同 CardSlot 的 onHover。
+    /// 悬停：窗口按钮露出来（见 PaneHeaderControls）；缩成停靠形状停着时浮出停靠栏的名字。
     func setHovered(_ hovered: Bool) {
         guard hovered != self.hovered else { return }
         self.hovered = hovered
@@ -612,7 +612,7 @@ final class CardView: NSView {
         else { stage.group.layout.focus(pane) }
     }
 
-    /// 右键菜单：缩成停靠形状时先写名字与状态，再是实例操作和关闭窗口，同 PaneCard 的 contextMenu。
+    /// 右键菜单：缩成停靠形状时先写名字与状态，再是实例操作和关闭窗口。
     private func buildMenu(_ menu: NSMenu) {
         menu.removeAllItems()
         guard let stage, let placed, let area = stage.group.workspace,
@@ -657,7 +657,7 @@ final class CardView: NSView {
         return true
     }
 
-    /// 读屏的动作：缩小、展开、关闭窗口；缩在停靠栏里时展开窗口，同 PaneCard 的 accessibilityActions。最小化时正文对读屏隐藏，见 PaneCardBody。
+    /// 读屏的动作：缩小、展开、关闭窗口；缩在停靠栏里时展开窗口。最小化时正文对读屏隐藏，见 PaneCardBody。
     override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
         guard let placed, let stage, !closing else { return nil }
         let layout = stage.group.layout, pane = pane, family = arrangement?.family
@@ -689,7 +689,7 @@ final class CardIsland: NSHostingView<AnyView> {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
-/// 外框底色和最小化色：两层同一个轮廓，底色按 min(正文 + 头像, 1)、最小化色按头像的透明度，同 WindowSurface。
+/// 外框底色和最小化色：两层同一个轮廓，底色按 min(正文 + 头像, 1)、最小化色按头像的透明度。
 private final class CardFillView: NSView {
     private let base = CAShapeLayer()
     private let minimized = CAShapeLayer()
@@ -748,7 +748,7 @@ private final class CardFillView: NSView {
     }
 }
 
-/// 头像的描边压在外框上，随头像淡入：内缩半个线宽、外缘与外框贴合，同 WindowSurface.outlineRing。
+/// 头像的描边压在外框上，随头像淡入：内缩半个线宽、外缘与外框贴合，飞过同色的窗口时也看得出轮廓，落进停靠栏外框就是头像那一圈。
 private final class CardRingView: NSView {
     private let shape = CAShapeLayer()
 
@@ -810,7 +810,7 @@ private func outline(_ frame: CGRect, radius: CGFloat, in layer: CALayer) -> CGP
     return WindowOutline.path(in: rect, radius: radius)
 }
 
-/// 标题栏一层：拖动区和窗口按钮，按停着的外框摆，命中按外框的圆角裁，同 WindowSurface.headerLayer 的 clipShape。
+/// 标题栏一层：拖动区和窗口按钮，按停着的外框摆，命中按外框的圆角裁。
 private final class CardHeaderView: NSView, NSMenuDelegate {
     let drag = MouseDragArea.DragView()
     let contextMenu = NSMenu()

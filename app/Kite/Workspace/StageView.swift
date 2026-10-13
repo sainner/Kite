@@ -2,10 +2,10 @@
 import AppKit
 import SwiftUI
 
-/// Mac 宽屏的台面，原生版：各张卡片、卡片之间的缝、拖动时的占位都是 AppKit 视图（StageView、CardView），拖缝改宽时
+/// Mac 宽屏的台面：各张卡片、卡片之间的缝、拖动时的占位都是 AppKit 视图（StageView、CardView），拖缝改宽时
 /// 每步只重算排布、按新位置摆，不经过 SwiftUI。停靠栏、空台面的画板、停靠栏上面那一层（脉冲、展开的面板）
 /// 不随拖缝改尺寸，仍是 SwiftUI，各放进一个铺满台面的托管视图（StageIsland）。窗口正文也还是每张卡片一个托管视图。
-/// 行为照 SwiftUI 版（SwiftUITilesLayer、CardSlot、PaneCard、WindowSurface），排布的计算共用 StagePlan。
+/// 排布的计算和 iPad 的台面（PhoneStageView）共用 StagePlan。
 /// 原生层报不了偏好，有没有窗口开点阵、摆在点阵上的图形、停靠栏悬停标签由这里接着往上报（见 StageReports）。
 struct StageHost: View {
     let group: PaneGroup
@@ -106,19 +106,11 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
 
-    #if DEBUG
-    /// 还活着的台面和卡片，台面对照拆掉台面后看有没有漏（StagePreview）。
-    static let alive = NSHashTable<NSView>.weakObjects()
-    #endif
-
     init(group: PaneGroup, model: AppModel, reports: StageReports) {
         self.group = group
         self.model = model
         self.reports = reports
         super.init(frame: .zero)
-        #if DEBUG
-        Self.alive.add(self)
-        #endif
         wantsLayer = true
         for island in [dockRail, windowless] { addSubview(island) }
         addSubview(placeholder)
@@ -321,7 +313,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         return arranged
     }
 
-    /// 拖动、拖缝时不浮标签；家族格里的父代理是窗口卡片报上来的，按窗口找。同 SwiftUI 版的 DockOverlay。
+    /// 拖动、拖缝时不浮标签；家族格里的父代理是窗口卡片报上来的，按窗口找。
     private func hoverTip(plan: StagePlan) -> DockHoverTip? {
         let layout = group.layout
         guard layout.drag == nil, layout.resizing == nil, let area = group.workspace, let hover = area.dockHover,
@@ -477,7 +469,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
 
     // MARK: - 过渡中的光标、拖动系统窗口
 
-    /// 过渡中整个窗口不换光标：暂停窗口的光标区域，停下后恢复并按指针当前位置重设。拖动中压栈的光标不受影响，同 freezesCursor。
+    /// 过渡中（见 WindowLayout.transitioning）整个窗口不换光标：暂停窗口的光标区域，停下后恢复并按指针当前位置重设。拖动中压栈的光标不受影响。
     private func freezeCursors(_ frozen: Bool) {
         guard frozen != cursorsFrozen, let window else { return }
         cursorsFrozen = frozen
@@ -525,7 +517,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         if pointerInside { hover(at: point) } else { for card in cards.values { card.setHovered(false) } }
     }
 
-    /// 悬停在最上面那张接输入、停着的卡片上，同 SwiftUI 版正文和收成停靠形状时垫的那一层的 onHover。
+    /// 悬停在最上面那张接输入、停着的卡片上。
     private func hover(at point: CGPoint) {
         let found = subviews.reversed().lazy.compactMap { $0 as? CardView }.first { $0.contains(point) }
         for card in cards.values where card !== found { card.setHovered(false) }
@@ -548,7 +540,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         escapeMonitor = nil
     }
 
-    /// 点窗口任何地方（正文、标题栏、输入区、对话里的字）都聚焦它，同 SwiftUI 版正文上的 paneFocus：按下松手挪得不多才算点了一下。
+    /// 点窗口任何地方（正文、标题栏、输入区、对话里的字）都聚焦它：按下松手挪得不多才算点了一下。
     /// 原生的会话窗口外框里点到的多是 AppKit 视图，SwiftUI 的点按手势收不到，所以在台面这一层看。
     private func installFocusMonitor() {
         guard focusMonitor == nil else { return }
@@ -563,7 +555,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         focusMonitor = nil
     }
 
-    /// 按下时实际点进了哪张卡片（命中的视图在它里面）：停靠栏展开着面板时点空白落在面板那一层上，只收起面板，不聚焦下面的卡片，同旧版。
+    /// 按下时实际点进了哪张卡片（命中的视图在它里面）：停靠栏展开着面板时点空白落在面板那一层上，只收起面板，不聚焦下面的卡片。
     private func focusClick(_ event: NSEvent) {
         guard event.window === window else { return }
         let point = convert(event.locationInWindow, from: nil)
@@ -599,7 +591,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         group.layout.transitioning || group.workspace == nil ? nil : regions.dock
     }
 
-    /// 台面上没有窗口、也没在拖窗口时空画板接，同它在 SwiftUI 版里只在显示着时接。
+    /// 台面上没有窗口、也没在拖窗口时空画板接，只在显示着时接。
     private var windowlessHitRegion: CGRect? {
         let layout = group.layout
         return (layout.shown?.panes.isEmpty ?? true) && layout.drag == nil && !layout.transitioning ? regions.canvas : nil
@@ -756,7 +748,7 @@ private final class PlaceholderView: NSView {
         updateColors()
     }
 
-    /// 同 SwiftUI 版的 Color.accentColor：主题色 8% 填充、描边，按这个视图的外观解析。
+    /// 主题色 8% 填充、描边，按这个视图的外观解析。
     private func updateColors() {
         var environment = environment
         environment.colorScheme = effectiveAppearance.isDark ? .dark : .light
@@ -775,7 +767,7 @@ private final class PlaceholderView: NSView {
         shape.frame = bounds
     }
 
-    /// 同 SwiftUI 版：占位在预览的事务里插值位置和大小，出现、消失是默认的淡入淡出，同曲线同时长。
+    /// 占位跟着预览插值位置和大小，出现、消失淡入淡出，和窗口同曲线同时长。
     func show(_ rect: CGRect?, kind: WindowMotionKind, reduceMotion: Bool) {
         guard rect != shown else { return }
         let previous = shown

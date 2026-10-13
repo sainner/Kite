@@ -123,7 +123,7 @@ struct DockFace: View {
     var tint: Color?
     /// 窗口正看得到时指向它的箭头（SF Symbol 名）：头像或图标模糊，上面画箭头，不显示状态。
     var arrow: String?
-    /// 代理头像的描边由自己画。为 false 时交给外面的容器，颜色经 DockRingColor 报上去：最小化的窗口卡片把它画在外框上，见 WindowSurface。
+    /// 代理头像的描边由自己画。为 false 时交给外面的容器，颜色经 DockRingColor 报上去：最小化的窗口卡片把它画在外框上，见 CardView。
     var ring = true
     @Environment(\.self) private var environment
 

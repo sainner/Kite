@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// 会话窗口的控制区：输入框与服务支持的操作。发送、打断、继续由真实状态控制，未接通的入口禁用。
-/// 发出去的字在输入框里模糊、淡掉，同时气泡在对话里从下往上浮进来（见 ThreadPane.send）。
-/// 逻辑在 ThreadControlsModel，和 Mac 宽屏的原生输入区（MacControlsBar）共用；这一版给 iPhone、iPad 和 Mac 窄窗口。
+#if os(macOS)
+/// Mac 窄窗口（紧凑布局）会话窗口的控制区：输入框与服务支持的操作。发送、打断、继续由真实状态控制，未接通的入口禁用。
+/// 发出去的字在输入框里模糊、淡掉，同时气泡在对话里从下往上浮进来（见 ThreadPaneModel.send）。
+/// 逻辑在 ThreadControlsModel，和宽屏的原生输入区（MacControlsBar）、iPhone、iPad 的 ControlsBarView 共用。
 struct ThreadControls: View {
     var typing: FocusState<Bool>.Binding
     /// 发一条消息；第二个参数和对话往上滑在同一次更新里调。
@@ -65,10 +66,7 @@ struct ThreadControls: View {
         .padding(.bottom, Metrics.controlButtonInset)
         // 交互玻璃的同心形状有高光退回胶囊的复现；玻璃与交互轮廓统一使用明确圆角。
         .contentShape(.interaction, shape)
-        #if os(iOS)
-        .contentShape(.hoverEffect, shape)
-        #endif
-        .glassEffect(glass, in: shape)
+        .glassEffect(.regular.interactive(), in: shape)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
         .alert("修改思考强度失败", isPresented: Binding(get: { state.effortError != nil }, set: { if !$0 { state.effortError = nil } })) {
             Button("好", role: .cancel) { state.effortError = nil }
@@ -78,16 +76,9 @@ struct ThreadControls: View {
         } message: { Text(state.voiceError ?? "") }
     }
 
-    private var glass: Glass {
-        #if DEBUG
-        if ControlsBarVariant.noGlass { return .identity }
-        #endif
-        return .regular.interactive()
-    }
-
     private func actionButtons(_ controls: ThreadControlsModel) -> some View {
         let listening = controls.listening
-        return HStack(spacing: Self.actionGap) {
+        return HStack(spacing: ThreadControlsModel.actionGap) {
             HStack(spacing: 0) {
                 Button {} label: { Image(systemName: "paperclip") }
                     .buttonStyle(PaneButtonStyle())
@@ -118,31 +109,19 @@ struct ThreadControls: View {
     }
 
     private func toggleVoice() {
-        #if os(iOS)
-        // 收起键盘，窗口底部随声音起伏的签名才露得出来
-        let typing = typing
-        controls.toggleVoice { typing.wrappedValue = false }
-        #else
         controls.toggleVoice()
-        #endif
     }
 
     private func submit() {
         controls.submit(from: frame, fieldHeight: fieldHeight)
     }
-
-    /// 附件、语音这组按钮与后面停止、继续、发送键的间距，比通用的按钮间距紧，发送键贴着左边的按钮组。
-    static let actionGap: CGFloat = 4
 }
 
 /// 发出去的字画成图盖在输入框原处，在 Core Animation 里模糊、淡掉，由渲染服务驱动，主线程不逐帧更新。
-/// 图和输入框里的字逐像素重合，折行也一样（2026-10-11 实测；iOS 含深色和大字号）。
-private struct FadingSnapshot {
+/// 图和输入框里的字逐像素重合，折行也一样（2026-10-11 实测）。
+private struct FadingSnapshot: NSViewRepresentable {
     let fading: FadingText?
-}
 
-#if os(macOS)
-extension FadingSnapshot: NSViewRepresentable {
     func makeNSView(context: Context) -> FadingSnapshotView { FadingSnapshotView() }
 
     func updateNSView(_ view: FadingSnapshotView, context: Context) {
@@ -164,7 +143,7 @@ extension FadingSnapshot: NSViewRepresentable {
 }
 
 /// 发出去的字的图（四周带 FadingText.bleed 的边）盖在输入框原处，0.3 秒 easeOut 模糊、淡掉。
-/// SwiftUI 版的图用 Text 画（见 FadingSnapshot），Mac 宽屏的原生输入区直接画输入框自己的字（见 ComposerField.snapshot）。
+/// 窄窗口的图用 Text 画（见 FadingSnapshot），宽屏的原生输入区直接画输入框自己的字（见 ComposerField.snapshot）。
 final class FadingSnapshotView: NSView {
     private let content = CALayer()
     private var shown: UUID?
@@ -216,16 +195,8 @@ final class FadingSnapshotView: NSView {
     }
 }
 #else
-extension FadingSnapshot: UIViewRepresentable {
-    func makeUIView(context: Context) -> FadingSnapshotView { FadingSnapshotView() }
-
-    func updateUIView(_ view: FadingSnapshotView, context: Context) {
-        if let fading { view.fade(fading) }
-    }
-}
-
-/// iOS 的图层不支持 Core Image 滤镜，模糊不能逐帧加大：模糊到头的那张事先画好垫在清晰的下面，
-/// 整体淡掉的同时清晰的淡出、模糊的淡入。SwiftUI 版输入区和原生版（ControlsBarView）共用。
+/// 发出去的字的图盖在输入框原处淡掉，iPhone、iPad 的输入区（ControlsBarView）用。iOS 的图层不支持 Core Image 滤镜，
+/// 模糊不能逐帧加大：模糊到头的那张事先画好垫在清晰的下面，整体淡掉的同时清晰的淡出、模糊的淡入。
 final class FadingSnapshotView: UIView {
     private let content = CALayer()
     private let sharp = CALayer()

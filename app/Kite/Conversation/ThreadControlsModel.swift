@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 会话输入区的状态，建好不换：SwiftUI 版（ThreadControls，iPhone、iPad 和 Mac 窄窗口）和 Mac 宽屏的原生版（MacControlsBar）各持一份。
+/// 会话输入区的状态，建好不换：每个输入区（原生的 MacControlsBar、ControlsBarView，Mac 窄窗口的 SwiftUI 版 ThreadControls）各持一份。
 @Observable final class ThreadControlsState {
     /// 刚发出去、正在淡掉的字，见 ThreadControlsModel.submit。控制区里由 SwiftUI 逐帧驱动的动画会和对话滑动抢同一帧，
     /// 发送时掉帧（2026-10-11 Mac 实测，字的模糊淡出和发送键的淡出各自都会）：输入框先藏起来，字画成图盖在原处
@@ -13,7 +13,7 @@ import SwiftUI
     var voiceError: String?
 }
 
-/// 会话输入区的逻辑：发送、停止、继续、语音、思考强度，占位文字和哪些按钮显示。两版输入区共用，每次更新按当时的环境现做一份；
+/// 会话输入区的逻辑：发送、停止、继续、语音、思考强度，占位文字和哪些按钮显示。各个输入区共用，每次更新按当时的环境现做一份；
 /// 读的都是会话、App 模型和 state 里的可观察属性，SwiftUI 版在 body 里读、原生版在 withObservationTracking 里读，都跟着变。
 struct ThreadControlsModel {
     let thread: WorkThread
@@ -28,6 +28,9 @@ struct ThreadControlsModel {
     let state: ThreadControlsState
     /// 发一条消息；第二个参数和对话往上滑在同一次更新里调。
     let send: (Message, _ alongside: @escaping () -> Void) -> Void
+
+    /// 附件、语音这组按钮与后面停止、继续、发送键的间距，比通用的按钮间距紧，发送键贴着左边的按钮组。
+    static let actionGap: CGFloat = 4
 
     var placeholder: String { thread.transcriptRunning ? "插话，agent 做完手上这一步就会看到" : "回复" }
     var listening: Bool { model.voice.owner == voiceOwner }
@@ -193,12 +196,3 @@ struct ThreadEffortControl: View {
         }
     }
 }
-
-#if DEBUG
-/// 外观对照与测量用的启动参数。--swiftui-composer：Mac 宽屏仍用 SwiftUI 版底栏，同一个构建切新旧两版；
-/// --composer-no-glass：两版输入区都不画玻璃，单比玻璃里的内容（见 ComposerPreview）。
-enum ControlsBarVariant {
-    static let swiftUI = ProcessInfo.processInfo.arguments.contains("--swiftui-composer")
-    static let noGlass = ProcessInfo.processInfo.arguments.contains("--composer-no-glass")
-}
-#endif

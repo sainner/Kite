@@ -1,6 +1,33 @@
 import SwiftUI
 
-/// 紧凑布局的窗口：平时铺满屏幕，拉开侧边栏、action 栏时缩小让开，开合的状态与手势见 DrawerMotion，几何见 WindowGeometry。
+/// 没有窗口时放的占位内容：单页、目录状态，或工作区没有窗口时的画板。Mac 窄窗口和 iOS 的原生外壳共用。
+struct CompactPlaceholder: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        if model.sidebarSection != .workspaces {
+            SectionContent()
+        } else if let project = model.selectedProject {
+            ProjectSettingsPage(project: project).id(project.id)
+        } else if let area = model.current {
+            Group {
+                if area.pluginClient == nil {
+                    DirectoryStatus(workspace: area)
+                } else {
+                    WindowlessStage(dock: "底栏")
+                }
+            }
+            .environment(area)
+            .id(area.id)
+        } else {
+            DirectoryStatus()
+        }
+    }
+}
+
+#if os(macOS)
+/// Mac 窄窗口里紧凑布局的窗口：平时铺满，拉开侧边栏、action 栏时缩小让开，开合的状态与手势见 DrawerMotion，几何见 WindowGeometry。
+/// iPhone 和窄的 iPad 上是原生外壳（CompactShellView）。
 /// 窗口内容只按停着的样子排一次；开合时由 WindowShell 在合成层缩放、平移、裁切，帧间插值交给 SwiftUI 的渲染，
 /// 动画中窗口内容不求值、不排版。不能让安全区、尺寸这些排版的量随进度变：那样每一帧都要把窗口内容重新排一遍，
 /// 内容一长（工作页的段落、长对话）就掉帧（iPhone 实测每帧 37～50 毫秒）。
@@ -50,31 +77,6 @@ struct CompactWindow: View {
         }
     }
 
-}
-
-/// 没有窗口时放的占位内容：单页、目录状态，或工作区没有窗口时的画板。SwiftUI 版和原生外壳共用。
-struct CompactPlaceholder: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        if model.sidebarSection != .workspaces {
-            SectionContent()
-        } else if let project = model.selectedProject {
-            ProjectSettingsPage(project: project).id(project.id)
-        } else if let area = model.current {
-            Group {
-                if area.pluginClient == nil {
-                    DirectoryStatus(workspace: area)
-                } else {
-                    WindowlessStage(dock: "底栏")
-                }
-            }
-            .environment(area)
-            .id(area.id)
-        } else {
-            DirectoryStatus()
-        }
-    }
 }
 
 /// 窗口的外壳：按抽屉的进度在合成层摆放窗口，进度一变只有这一层与侧栏平移、标题栏和控制区的补位重算。
@@ -277,3 +279,4 @@ private struct FollowingDots: View, Animatable {
         DotCanvas(follow: follows && openness != geometry.rest ? geometry.follow(openness) : nil)
     }
 }
+#endif

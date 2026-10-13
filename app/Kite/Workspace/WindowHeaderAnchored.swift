@@ -7,10 +7,10 @@ extension View {
     }
 }
 
-/// 标题两侧贴着外框：正文按终点排版，外框和它不一样大时（缩小、调整大小途中，或停着时外框比正文宽），两侧跟着外框的左右边和上边走。
-/// Mac 上两侧按排版位置摆，挪动只改这一侧托管视图的图层（见 HeaderAnchorContainer），飞行中和停着都一样：标题栏看得见、停着时外框和正文一样大，
-/// 不用挪；收成停靠形状停着时整块正文藏起来（见 WindowSurface）。不读 motion 的终点：排布一变，卡片随即把新终点交给 motion，
-/// 读了的话两侧的托管视图要跟着再更新一轮。
+/// 标题两侧贴着外框：台面上的窗口正文按终点排版，外框和它不一样大时（缩小、调整大小途中，或停着时外框比正文宽），两侧跟着外框的左右边和上边走。
+/// 两侧按排版位置摆，挪动只改这一侧托管视图的图层（见 HeaderAnchorContainer），飞行中和停着都一样：标题栏看得见、停着时外框和正文一样大，
+/// 不用挪；收成停靠形状停着时整块正文藏起来（见 HostedContentContainer）。不读 motion 的终点：排布一变，卡片随即把新终点交给 motion，
+/// 读了的话两侧的托管视图要跟着再更新一轮。不在台面的托管视图里（紧凑布局、单页）时外框和正文一样大，两侧照常排。
 /// 锚定若在正文的托管视图里逐帧改 SwiftUI 几何，整段正文跟着逐帧更新，玻璃按钮的 AppKit 视图逐帧改位置
 /// （2026-10-12 Mac 实测，一个窗口占满台面时，缩小、恢复各多 25～45 毫秒主线程，缩小的丢帧约多一倍；只在绘制时平移没有用）。
 /// 这一侧报的偏好值传不出它的托管视图，接着往上报，见 HeaderAnchorReports。
@@ -26,7 +26,7 @@ struct WindowHeaderAnchored<Content: View>: View {
             HeaderAnchorHost(edge: edge, link: anchors, relay: relay, content: content)
                 .modifier(HeaderAnchorReports(relay: relay))
         } else {
-            content.modifier(WindowHeaderAnchor(edge: edge))
+            content
         }
     }
 }

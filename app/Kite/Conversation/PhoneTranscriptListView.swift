@@ -11,7 +11,7 @@ import UIKit.UIGestureRecognizerSubclass
 /// - 从手指按下到惯性结束不做程序定位，停下后按位置决定跟不跟；手指按下（还没拖起来）也算，长按选字时字不会在手指下面挪。
 /// - 滚动不收键盘、竖向总能回弹、点状态栏回顶；回顶只给在屏上的窗口，文本视图不参与。
 /// - 标题栏底下是系统的滚动软边，底边不要。
-/// 让出的距离（标题栏、控制区、键盘、左右安全区）由 PhoneTranscript 交进来，见 setInsets。
+/// 让出的距离（标题栏、控制区、键盘、左右安全区）由会话窗口外框（PhoneThreadWindowView）交进来，见 setInsets。
 final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     private let scrollView = PhoneTranscriptScrollView()
     private let document = PhoneTranscriptDocumentView()

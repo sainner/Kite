@@ -2,12 +2,12 @@
 import SwiftUI
 import UIKit
 
-/// iPhone、iPad 会话窗口的外框，原生版：替代 PaneWindow 套 ThreadPane 的整块 SwiftUI。拖缝改宽时它每步跟着改尺寸，
+/// iPhone、iPad 会话窗口的外框。拖缝改宽时它每步跟着改尺寸，
 /// 输入区（ControlsBarView）直接挂在这里，只按宽度重摆；原生的对话列表（PhoneTranscriptView）和标题栏放在同一个岛里
 /// （标题栏用 safeAreaBar，列表在它下面，SwiftUI 照旧给它们建滚动软边的容器，见 ThreadHeaderRoot），改宽时这个岛只排标题那一截
 /// 和列表的大小，列表里面照旧自己排；标题栏两侧各在自己的托管视图里（见 WindowHeaderAnchored）。空会话的签名、录音时底部那一带
 /// 是铺满窗口的岛，只在有它们时才在。层次从下到上：签名或那一带、标题栏和对话、输入区。
-/// 行为照 ThreadPane 和 PaneWindow，状态和动作共用 ThreadPaneModel；结构照 Mac 的 ThreadWindowView。坐标照卡片正文：左上角是正文原点。
+/// 状态和动作共用 ThreadPaneModel；结构照 Mac 的 ThreadWindowView。坐标照卡片正文：左上角是正文原点。
 /// 紧凑布局里（compact）标题栏和输入区由外壳统一摆（换窗口时原地淡入淡出，见 CompactRowView），这里只剩对话和签名，让出的距离由外壳给。
 final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
     let thread: WorkThread
@@ -223,7 +223,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         setNeedsLayout()
     }
 
-    /// 行看到的环境：窗口的环境加上正文字号、刚发出的消息、选中的行、工作目录，同 PhoneThreadTranscript 交给 PhoneTranscript 的。
+    /// 行看到的环境：窗口的环境加上正文字号、刚发出的消息、选中的行、工作目录。
     private var rowContext: TranscriptRowContext {
         var environment = environment
         environment.font = Theme.body
@@ -317,7 +317,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         backdrop.isHidden = !backdropShown
         if backdropShown { place(backdrop, bounds) }
         list.isHidden = state.empty
-        // 键盘升降时外壳在键盘的动画块里排版：对话照 SwiftUI 版一次到位（那时列表拿到的就是终点的让位），不让新露出来的行从原点飞进来
+        // 键盘升降时外壳在键盘的动画块里排版：对话一次到位（那时列表拿到的就是终点的让位），不让新露出来的行从原点飞进来
         UIView.performWithoutAnimation {
             if insets != self.insets {
                 self.insets = insets
@@ -366,8 +366,8 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
 /// 滚动视图（UIScrollEdgeElementContainerInteraction 在 SwiftUI 托管的窗口里连不上，2026-10-14 iPad 真机导过：软边高 0），
 /// 所以软边照旧由 SwiftUI 建，标题栏本身是原生的、压在上面。
 /// 紧凑布局里（compact）标题栏、渐变在外壳上（CompactRowView，开合时跟着标题栏补位），这里只放一条看不出来的 safeAreaBar 撑起滚动软边。
-/// 软边的高按这一条里元素的底边再往下伸一截：SwiftUI 版收集到的元素是同一棵树里共用标题栏的按钮（底边在标题栏底下的 paneMargin 之上），
-/// 这一条就到那里为止，软边才一样高（2026-10-14 iPhone 真机导过：SwiftUI 版 150、整条标题栏高时 164）。
+/// 软边的高按这一条里元素的底边再往下伸一截：这一条到外壳标题栏按钮的底边为止（标题栏底下的 paneMargin 之上），
+/// 不按整条标题栏的高（2026-10-14 iPhone 真机导过：这样软边 150，按整条标题栏高是 164，多出一截）。
 private struct PhoneTranscriptSurface: View {
     let list: PhoneTranscriptView
     let metrics: ThreadWindowMetrics

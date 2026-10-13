@@ -17,7 +17,7 @@ import UIKit
 @MainActor enum PerfProbe {
     static let scene = UserDefaults.standard.string(forKey: "perfScene")
     private static var armed = false
-    /// 紧凑布局出现时登记的抽屉和一行窗口（CompactLayout、CompactPaneStack），iPhone 的场景经它们开合、横滑。
+    /// 紧凑布局出现时登记的抽屉和一行窗口（CompactShellView、CompactRowView），iPhone 的场景经它们开合、横滑。
     static weak var drawer: DrawerMotion?
     static weak var row: PaneRow?
 

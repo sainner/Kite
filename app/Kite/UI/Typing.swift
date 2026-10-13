@@ -51,7 +51,7 @@ extension ContainerValues {
 
 /// iPhone 上有底栏的地方，键盘升起时在底栏最左边放收起键盘：窗口的控制区由 PaneWindow 加，弹窗与初始配置的按钮栏由 CardActions 加。
 /// 收的是当前的输入框，SwiftUI 的输入框和 UITextView 一样，焦点状态跟着同步。
-/// 只放在给键盘让位的地方（keyboardShown）：紧凑布局里只有外壳上的那一条控制区知道键盘升了（见 CompactPaneHeaderHost）。
+/// 只放在给键盘让位的地方（keyboardShown）：紧凑布局里只有外壳上的那一条控制区知道键盘升了（见 CompactPaneControlsBar）。
 /// 横滑那一行的窗口都建着，按钮插进每个窗口的控制区的话，每个控制区都要重排、把输入框重量一遍，
 /// 三个窗口时键盘升起多卡约 70 毫秒（2026-10-11 真机实测）。
 struct KeyboardDismissButton: View {

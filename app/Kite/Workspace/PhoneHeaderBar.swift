@@ -2,9 +2,8 @@
 import SwiftUI
 import UIKit
 
-/// iPhone、iPad 会话窗口的标题栏，原生版：替代 PaneHeaderBar 套 PaneHeaderPlacement 的整块 SwiftUI。窗口改宽（拖缝、拖侧栏）时
-/// SwiftUI 版每步把整条标题栏重排一遍，连同两侧各自的托管视图重量，iPad 真机每步约 1.5ms 一个窗口（2026-10-14，测量版拿掉标题栏对照）；
-/// 原生的只按宽度重摆：信息区（状态圆环，侧栏入口）和右组菜单各是一个按自己大小摆的岛，只挪位置；标题、副标题是 UILabel，
+/// iPhone、iPad 会话窗口的标题栏。窗口改宽（拖缝、拖侧栏）时 SwiftUI 的标题栏（PaneHeaderBar）每步把整条重排一遍，
+/// 连同两侧各自的托管视图重量，iPad 真机每步约 1.5ms 一个窗口（2026-10-14，测量版拿掉标题栏对照）；这里只按宽度重摆：信息区（状态圆环，侧栏入口）和右组菜单各是一个按自己大小摆的岛，只挪位置；标题、副标题是 UILabel，
 /// 刷新图标是原生按钮，只有它们跟着宽度截断。副标题带菜单（新代理选角色）时标题整块换成岛（PaneHeaderTitle），那时窗口不常改宽。
 /// 版式照 PaneHeaderBar 和 PaneHeaderPlacement：上下左右留 paneMargin（顶上补到安全区），至少一个按钮高；信息区与标题之间一个按钮间距，
 /// 单独的圆环扣掉方框里已有的空白；右组前面给窗口按钮让出宽度（PaneHeaderControlsSpace），标题区让出宽度、尾部截断。
@@ -218,7 +217,7 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
 
     // MARK: - 命中
 
-    /// 标题栏整条都接点按（同 SwiftUI 版的 contentShape）：空白处点了收起键盘，不落到后面的对话上。
+    /// 标题栏整条都接点按（同 PaneHeaderPlacement 的 contentShape）：空白处点了收起键盘，不落到后面的对话上。
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard bounds.contains(point) else { return nil }
         let hit = super.hitTest(point, with: event)
