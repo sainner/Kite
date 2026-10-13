@@ -59,14 +59,18 @@ nonisolated final class BlockAttachment: NSTextAttachment {
     @MainActor private(set) var content: EmbeddedBlock
     @MainActor private var environment: EmbeddedEnvironment?
     #if canImport(UIKit)
-    @MainActor private lazy var controller: UIHostingController<EmbeddedBlockView> = {
+    @MainActor private var host: UIHostingController<EmbeddedBlockView>?
+    /// 宿主，第一次要时建；放掉以后（releaseHost）再要时重建，里面的状态（展开、横滑位置）回到初始。
+    @MainActor private var controller: UIHostingController<EmbeddedBlockView> {
+        if let host { return host }
         let controller = UIHostingController(rootView: root)
         // 尺寸由 TextKit 按 attachmentBounds 摆，宿主不自己报尺寸，也不让安全区挤进来
         controller.sizingOptions = []
         controller.safeAreaRegions = []
         controller.view.backgroundColor = .clear
+        host = controller
         return controller
-    }()
+    }
     #else
     /// Mac 上是原生的卡片（MacBlockCards），不托管 SwiftUI：改窗口宽度时托管的卡片约 0.8 ms 一张（2026-10-13 实测）。
     @MainActor private lazy var card: EmbeddedCardView = {
@@ -110,7 +114,16 @@ nonisolated final class BlockAttachment: NSTextAttachment {
     }
 
     @MainActor private func render() {
-        controller.rootView = root
+        host?.rootView = root
+    }
+
+    /// 放掉宿主：从视图控制器和视图层级里撤下来。量过的高留着；行收到内存警告放掉视图、行被删掉时调。
+    @MainActor func releaseHost() {
+        guard let host else { return }
+        host.willMove(toParent: nil)
+        host.view.removeFromSuperview()
+        host.removeFromParent()
+        self.host = nil
     }
     #else
     @MainActor private func render() {
@@ -124,13 +137,7 @@ nonisolated final class BlockAttachment: NSTextAttachment {
     @MainActor fileprivate func adopt(into container: EmbeddedContainerView) {
         #if canImport(UIKit)
         // UIKit 的 view 是隐式解包的可选值，AppKit 不是
-        let view: PlatformView = controller.view
-        if view.superview !== container {
-            view.removeFromSuperview()
-            view.frame = container.bounds
-            view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            container.addSubview(view)
-        }
+        container.host(controller.view)
         // 挂进视图控制器的层级，ShareLink 这类要弹出界面的按钮才找得到从哪弹
         var responder: UIResponder? = container.superview
         while let current = responder, !(current is UIViewController) { responder = current.next }
@@ -166,7 +173,6 @@ nonisolated final class BlockAttachment: NSTextAttachment {
         self.width = width
         if let height { return height }
         #if canImport(UIKit)
-        if environment == nil { render() }
         let height = controller.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
         #else
         let height = card.height(width: width)
@@ -211,13 +217,83 @@ nonisolated final class BlockAttachment: NSTextAttachment {
 }
 
 /// 一个提供者的容器：TextKit 按附件的边界摆它，它进了窗口就把附件的宿主接过来；iPhone 上顺带把宿主挂进视图控制器的层级。
+/// 宿主不跟着容器自动改尺寸：屏外的先藏着、不改宽，滚进来（或露出来）时再跟上容器的大小。长回复拖缝、改窗口宽时，
+/// TextKit 按新宽给每个附件定边界，屏外的卡片要是跟着改宽，每步都要把里面的 SwiftUI 重排一遍；两端同一个做法。
 final class EmbeddedContainerView: PlatformView {
     weak var attachment: BlockAttachment?
 
     #if canImport(UIKit)
+    private weak var hostedView: UIView?
+    /// 外面的滚动视图（对话列表；文本视图自己也是滚动视图，不算）：它一滚就看看露没露出来。
+    private weak var outer: UIScrollView?
+    private var scrolling: NSKeyValueObservation?
+
+    func host(_ view: UIView) {
+        hostedView = view
+        view.autoresizingMask = []
+        if view.superview !== self {
+            view.removeFromSuperview()
+            addSubview(view)
+        }
+        synchronizeHost()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        synchronizeHost()
+    }
+
+    private func observe(_ scroll: UIScrollView?) {
+        if scroll != nil, outer === scroll { return }
+        outer = scroll
+        scrolling = scroll?.observe(\.contentOffset, options: []) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.synchronizeHost() }
+        }
+    }
+
+    private var enclosingOuterScroll: UIScrollView? {
+        var current = superview
+        while let view = current {
+            if let scroll = view as? UIScrollView, !(view is UITextView) { return scroll }
+            current = view.superview
+        }
+        return nil
+    }
+
+    /// root 里嵌着的卡片各自看看露没露出来。容器自己只在外面一滚、自己改了尺寸时知道；TextKit 挪的是包着它的排版片段，
+    /// 对话列表挪的是整行，容器的 frame 都不变，由文本视图排完版（PhoneProseTextView）、列表摆完行（PhoneTranscriptView）后调。
+    static func synchronize(in root: UIView) {
+        for child in root.subviews {
+            if let container = child as? EmbeddedContainerView { container.synchronizeHost() } else { synchronize(in: child) }
+        }
+    }
+
+    /// 露在外面滚动视图里（含标题栏、控制区底下）才跟上容器的大小、显示出来；TextKit 换了提供者、宿主已经挪走的不管。
+    private func synchronizeHost() {
+        guard let hostedView, hostedView.superview === self else { return }
+        if let outer, !convert(bounds, to: outer).intersects(outer.bounds) {
+            if !hostedView.isHidden { hostedView.isHidden = true }
+            return
+        }
+        if hostedView.frame != bounds { hostedView.frame = bounds }
+        if hostedView.isHidden { hostedView.isHidden = false }
+    }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window != nil { attachment?.adopt(into: self) }
+        observe(window == nil ? nil : enclosingOuterScroll)
+        guard window != nil else { return }
+        attachment?.adopt(into: self)
+        // 卡片横着滚的那层不接点状态栏回顶：SwiftUI 的横向 ScrollView 默认开着（模拟器读过），同一窗口里有几个开着的滚动视图时
+        // 系统一个都不滚，对话就回不了顶。它在宿主排版时才建，等这一拍排完再找
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            @MainActor func walk(_ view: UIView) {
+                if let scroll = view as? UIScrollView, scroll.scrollsToTop { scroll.scrollsToTop = false }
+                for child in view.subviews { walk(child) }
+            }
+            for child in subviews { walk(child) }
+        }
     }
     #else
     private weak var hostedView: NSView?
@@ -349,6 +425,13 @@ final class BlockAttachments {
         result.append(part)
         return attributes
     }
+
+    #if canImport(UIKit)
+    /// 各附件放掉宿主，见 BlockAttachment.releaseHost。
+    func releaseHosts() {
+        for attachment in list { attachment.releaseHost() }
+    }
+    #endif
 }
 
 #if canImport(UIKit)

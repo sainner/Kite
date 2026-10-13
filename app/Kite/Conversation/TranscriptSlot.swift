@@ -4,13 +4,23 @@ import SwiftUI
 struct TranscriptRowContext {
     /// 字体、外观、引用范围、打开链接、选中的行等，主对话的 SwiftUI 环境整份转交。
     var environment: EnvironmentValues
-    /// 点 agent 的话弹出操作栏，见 TranscriptView.actionable。
+    /// 点 agent 的话弹出操作栏：主对话里是。
     var actionable: Bool
     /// 右键开关这一行的操作栏。
     var toggleActions: (RowID) -> Void
 }
 
-/// 原生对话列表（Mac 的 TranscriptListView）里的一行：内容、量过的高、视图。两端共用这个基类，行视图各端各写子类。
+extension TranscriptRowContext {
+    /// 开着操作栏的那一行。SwiftUI 外壳经环境里的 selectedRow 给，以后的 UIKit 外壳换掉这里和 select 就能接。
+    var selected: RowID? { environment.selectedRow.wrappedValue }
+
+    /// 打开这一行的操作栏（别的收起），给 nil 收起。iPhone 上长按时用，右键开关见 toggleActions。
+    func select(_ id: RowID?) {
+        if let id { environment.selectedRow.show(id) } else if selected != nil { environment.selectedRow.close() }
+    }
+}
+
+/// 原生对话列表（Mac 的 TranscriptListView、iOS 的 PhoneTranscriptView）里的一行：内容、量过的高、视图。两端共用这个基类，行视图各端各写子类。
 /// 视图只在可见区附近时放进列表：AppKit 改动一个视图在窗口里的位置时要通知它整棵子树，拖缝时每帧都在挪（2026-10-13 实测，
 /// 一个长会话的行全建成视图时每步比按需只建可见区附近多约 8 ms）。
 @MainActor class TranscriptRowSlot {
@@ -20,6 +30,8 @@ struct TranscriptRowContext {
     var measured: (width: CGFloat, height: CGFloat)?
     /// 量的时候在拖缝，用的是省时的近似（见 BubbleRowSlot），停下要按精确的重量。
     var provisional = false
+    /// 这一次量是在拖缝或吸附中，排列循环量之前给（见 TranscriptArrangement.arrange），行自己不读外壳。
+    var resizing = false
     /// 在文档里占的范围（内容列的宽），排列时算出来。
     var frame = CGRect.zero
     /// 自己变高变矮时告诉列表：motion 是人点了展开收起时和 SwiftUI 版同样的走法，下面的行跟着挪；附件量完、图标载完这类给 nil，直接换。
@@ -34,12 +46,10 @@ struct TranscriptRowContext {
 
     /// 视图建好了没有。没建过的行按估的高占位。
     var hasView: Bool { false }
-    /// 托管原来的 SwiftUI 行视图：还读选中的行和刚发出的消息，这两样变了也要换内容。
-    var hosted: Bool { false }
     /// 视图，第一次要时建。
     var view: PlatformView { preconditionFailure("子类给出") }
 
-    /// 换上这一行的新内容和环境。resized：内容或外观变了，量过的高作废；只是选中的行、刚发出的消息变了时不作废。
+    /// 换上这一行的新内容和环境。resized：内容或外观变了，量过的高作废。
     func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
         self.row = row
         if resized { measured = nil }
@@ -64,14 +74,11 @@ struct TranscriptRowContext {
 
     /// 操作栏和这一行的哪一块对齐。
     var actionAnchor: CGRect { frame }
-
-    /// 这一行的操作栏：和哪边对齐、上面的按钮。没有原生操作栏的行（托管的行自己带着）给 nil。
-    func actionBar() -> (side: HorizontalEdge, content: AnyView)? { nil }
 }
 
-/// 一行该用哪种实现：agent 的话、人发的消息原生排，工具行、思考行原生，其余先托管原来的 SwiftUI 行视图。
-/// 判断两端共用，各端的工厂按它建自己的子类（Mac 见 makeTranscriptRowSlot）。
-enum SlotKind { case prose, bubble, work, thinking, hosted }
+/// 一行该用哪种实现：agent 的话、人发的消息、工具组、思考、kite 发来的话、压缩分界，其余（通知、打断、API 出错）是一行事件。
+/// 判断两端共用，各端的工厂按它建自己的子类（Mac 见 makeTranscriptRowSlot，iOS 见 makePhoneTranscriptRowSlot）。
+enum SlotKind { case prose, bubble, work, thinking, kite, compaction, event }
 
 func slotKind(_ row: TranscriptRow) -> SlotKind {
     switch row.content {
@@ -79,9 +86,13 @@ func slotKind(_ row: TranscriptRow) -> SlotKind {
     case .item(let item):
         switch item.kind {
         case .text: .prose
+        // 人发的消息在 TranscriptRow.rows 里都成了 .message，走不到这里
+        case .human: .bubble
         case .work: .work
         case .thinking: .thinking
-        default: .hosted
+        case .kite: .kite
+        case .compacted: .compaction
+        case .notification, .interrupted, .apiError: .event
         }
     }
 }

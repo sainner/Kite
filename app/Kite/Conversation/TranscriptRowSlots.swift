@@ -2,19 +2,16 @@
 import AppKit
 import SwiftUI
 
-/// Mac 上按 slotKind（两端共用，见 TranscriptSlot）建这一行的实现。共用层记作托管的几种（kite、事件、压缩分界）Mac 上都已原生，按记录的种类分。
+/// Mac 上按 slotKind（两端共用，见 TranscriptSlot）建这一行的实现。
 @MainActor func makeTranscriptRowSlot(_ row: TranscriptRow) -> TranscriptRowSlot {
     switch slotKind(row) {
     case .prose: ProseRowSlot(row: row)
     case .bubble: BubbleRowSlot(row: row)
     case .work: WorkRowSlot(row: row)
     case .thinking: ThinkingRowSlot(row: row)
-    case .hosted:
-        switch NativeKind(row) {
-        case .kite: KiteRowSlot(row: row)
-        case .compaction: CompactionRowSlot(row: row)
-        case .event: EventRowSlot(row: row)
-        }
+    case .kite: KiteRowSlot(row: row)
+    case .compaction: CompactionRowSlot(row: row)
+    case .event: EventRowSlot(row: row)
     }
 }
 
@@ -25,29 +22,9 @@ import SwiftUI
     case .bubble: slot is BubbleRowSlot
     case .work: slot is WorkRowSlot
     case .thinking: slot is ThinkingRowSlot
-    case .hosted:
-        switch NativeKind(row) {
-        case .kite: slot is KiteRowSlot
-        case .compaction: slot is CompactionRowSlot
-        case .event: slot is EventRowSlot
-        }
-    }
-}
-
-/// 共用层记作托管的那几种在 Mac 上各用哪个原生行。
-private enum NativeKind {
-    case kite, compaction, event
-
-    init(_ row: TranscriptRow) {
-        switch row.content {
-        case .item(let item):
-            switch item.kind {
-            case .kite: self = .kite
-            case .compacted: self = .compaction
-            default: self = .event
-            }
-        case .message: self = .event
-        }
+    case .kite: slot is KiteRowSlot
+    case .compaction: slot is CompactionRowSlot
+    case .event: slot is EventRowSlot
     }
 }
 

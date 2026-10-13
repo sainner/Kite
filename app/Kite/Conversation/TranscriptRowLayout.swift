@@ -46,7 +46,7 @@ import AppKit
         guard let laid = text.measure(lineWidth: width, from: from, through: band.upperBound - topInset - top) else { return nil }
         let below = rest.below(end: layout.offset(from: start, to: laid.end)).map { $0 * rest.width / width } ?? 0
         // 同整段排的取整：估的位置带小数，不取整时贴底的可见区跟着它每步错开零点几点，字逐步抖一个像素
-        return topInset + ceil(laid.bottom + below)
+        return topInset + text.roundedHeight(laid.bottom + below)
     }
 
     /// 量高前记下行内 y 处的那段，量完由 pinShift 给出它在行里挪了多少，见 TranscriptRowSlot.pin。
@@ -78,8 +78,10 @@ struct BubbleLayout {
     /// 按内容列的宽量正文。有代码段时占满气泡能给的宽度，只有字时贴着字，同 SelectableText。贴字的宽照 SelectableText 用 boundingRect 量：
     /// 它按最优断行量，长消息改宽时每次几毫秒（2026-10-13 实测）。拖缝和吸附中（resizing）改用近似：按能给的最宽排，取最宽的一行，
     /// 和 boundingRect 只差零点几点，但中文避头尾在临界宽度下会让个别行折得不一样（逐像素对过），所以返回 true，停下后按精确的重量。
+    /// narrows：拖缝中贴字的宽比能给的窄、折了行时，按贴字的宽再排一遍量高（Mac）。iOS 给 false：按能给的宽排出来的每行都放得下贴字的宽，
+    /// 行和高都一样，容器就留在能给的宽，每步少排一遍（iPad 真机拖缝时气泡量高占了大头）。
     mutating func measure(_ text: some TextKitMeasuring, storage: NSAttributedString, width: CGFloat, hasBlocks: Bool,
-                          resizing: Bool, expanded: Bool, foldHeight: CGFloat) -> Bool {
+                          resizing: Bool, expanded: Bool, foldHeight: CGFloat, narrows: Bool = true) -> Bool {
         let padding = Metrics.bubblePadding
         let most = max(width - padding.width * 2, 0)
         let textHeight: CGFloat
@@ -87,12 +89,13 @@ struct BubbleLayout {
         if hasBlocks {
             textWidth = most
             textHeight = text.measure(lineWidth: most)
-        } else if provisional, foldable(foldHeight: foldHeight), !expanded, let height = foldedHeight(text, most: most, foldHeight: foldHeight) {
+        } else if provisional, foldable(foldHeight: foldHeight), !expanded,
+                  let height = foldedHeight(text, most: most, foldHeight: foldHeight, narrows: narrows) {
             textHeight = height
         } else if provisional {
             var height = text.measure(lineWidth: most)
             textWidth = min(ceil(text.widestLine) + 1, most)
-            if textWidth < most, text.wraps { height = text.measure(lineWidth: textWidth) }
+            if narrows, textWidth < most, text.wraps { height = text.measure(lineWidth: textWidth) }
             textHeight = height
         } else {
             textWidth = ProseTextCoordinator.naturalWidth(of: storage, most: most)
@@ -104,15 +107,20 @@ struct BubbleLayout {
 
     /// 折着的长消息拖缝时只排露出来的那截：贴字的宽按这截里最宽的一行，全文多高按上次量的随宽度反比估，只用来判断还折不折。
     /// 不然每步都要把整条长消息重排一遍，露出来的只有开头几行。
-    private mutating func foldedHeight(_ text: some TextKitMeasuring, most: CGFloat, foldHeight: CGFloat) -> CGFloat? {
+    private mutating func foldedHeight(_ text: some TextKitMeasuring, most: CGFloat, foldHeight: CGFloat, narrows: Bool) -> CGFloat? {
         guard let start = text.textLayoutManager?.documentRange.location,
               var laid = text.measure(lineWidth: most, from: start, through: foldHeight) else { return nil }
         let previous = (height: contentHeight - Metrics.bubblePadding.height * 2, width: textWidth)
         textWidth = min(ceil(text.widestLine) + 1, most)
-        if textWidth < most, text.wraps, let narrow = text.measure(lineWidth: textWidth, from: start, through: foldHeight) {
+        if narrows, textWidth < most, text.wraps, let narrow = text.measure(lineWidth: textWidth, from: start, through: foldHeight) {
             laid = narrow
         }
         return ceil(max(laid.bottom, previous.height * previous.width / max(textWidth, 1)))
+    }
+
+    /// 折着的长消息拖缝时不重量（iOS）：露出来的高是定的，只按能给的宽换正文的行宽（上次折了行的占满，没折的照旧贴字）。
+    mutating func keepFolded(most: CGFloat, wraps: Bool) {
+        textWidth = wraps ? most : min(textWidth, most)
     }
 
     /// 气泡多高：折起来的正文，加上能折时的按钮（button 是按钮的高）。
@@ -152,5 +160,24 @@ struct BubbleLayout {
     func anchor(in frame: CGRect, attachmentsWidth: CGFloat) -> CGRect {
         let width = max(textWidth + Metrics.bubblePadding.width * 2, attachmentsWidth)
         return CGRect(x: frame.maxX - width, y: frame.minY, width: width, height: frame.height)
+    }
+}
+
+/// 两段话之间 agent 做的事折成的一行怎么量、展开到哪了，两端原生列表的工具行共用（照 WorkRow）：汇总一行，点开下面是步骤，
+/// 展开收起和下面的行一起按 0.25 秒的普通缓出动，箭头跟着转、步骤跟着淡入淡出。汇总行、步骤的视图各端自己建。
+enum WorkLayout {
+    /// 汇总行和步骤之间的间距，同 WorkRow 的 VStack。
+    static let spacing: CGFloat = 6
+    static let motion = RowMotion.curve(.easeOut, duration: 0.25)
+
+    /// 行多高：汇总行，展开时再加上间距和步骤。
+    static func height(header: CGFloat, steps: CGFloat, expanded: Bool) -> CGFloat {
+        header + (expanded ? spacing + steps : 0)
+    }
+
+    /// 动画中行的高在收起和展开之间，按它算走到哪了：0 收起，1 展开。箭头转多少、步骤多透明都跟着它。
+    static func progress(rowHeight: CGFloat, header: CGFloat, steps: CGFloat, expanded: Bool) -> CGFloat {
+        let full = spacing + steps
+        return full > 0 ? min(max((rowHeight - header) / full, 0), 1) : (expanded ? 1 : 0)
     }
 }

@@ -3,9 +3,9 @@
 - [自研 harness 与订阅授权](harness-direction.md) — 独立宿主、每台工作机授权和辅助模型的选型理由
 - [PDF 读取方案](pdf-read-direction.md) — Vision 与无备用解析器的明确取舍
 - [视觉参考与范围](visual-style-direction.md) — 色板、角色点阵、项目色和字体范围
-- [界面事件诊断](ui-hit-testing-debugging.md) — 合成输入与命中证据的限制，simctl 探针未决风险
+- [界面事件诊断](ui-hit-testing-debugging.md) — 合成输入与命中证据的限制，simctl 两次内核崩溃后不再用
 - [卡顿怎么量](performance-diagnosis.md) — 帧间隔对照、真机 Time Profiler、合成滚动、用户双击的测量版、软边诊断，Mac 结论不外推到 iPhone
-- [模拟器量 iPhone 排版](ios-layout-probe.md) — 不登录：本机 kited 取目录、DEBUG 临时入口渲染生产视图、结果写 App tmp
+- [真机量 iPhone、iPad 排版](ios-layout-probe.md) — 不登录：kited 取数据、参数开的探针渲染生产视图、App 里截图、devicectl 取回；不用模拟器
 - [对话正文的文本容器](text-container-direction.md) — 每条回复一个 TextKit 2 文本视图、附件嵌代码块、复制给原文、外观不改，第三步 iPhone 待验收
 - [界面改原生](decision-native-ui.md) — Mac 对话与外壳改 AppKit、iOS 改 UIKit，为拖缝 60 帧，外观逐项复刻；骨架、点阵是退路
 - [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、术语词典与整理后做、点阵表现、未选的识别候选

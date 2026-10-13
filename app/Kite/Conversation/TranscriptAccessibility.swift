@@ -27,6 +27,9 @@ enum TranscriptSpeech {
     /// 被收起的原文那一栏。
     static let originalTranscript = "压缩前的原文"
 
+    /// 展开收起的状态：iOS 的 UIKit 没有展开状态的属性，作为值读（Mac 用 isAccessibilityExpanded）。
+    static func expanded(_ expanded: Bool) -> String { expanded ? "已展开" : "已收起" }
+
     /// 工具组汇总行：汇总，连同出错、没跑完的步数；有调用在跑时读正在做什么。
     static func work(_ work: Work) -> String {
         let failed = work.count(.failed) + work.count(.unknown), unfinished = work.count(.unfinished)

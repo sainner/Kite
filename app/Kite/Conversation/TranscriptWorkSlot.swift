@@ -16,10 +16,6 @@ final class WorkRowSlot: TranscriptRowSlot {
     /// 自己正在展开收起（不是里面某一步）：箭头、步骤的透明度跟着行高走。
     private var toggling = false
 
-    /// 汇总行和步骤之间的间距，同 WorkRow 的 VStack。
-    private static let spacing: CGFloat = 6
-    static let motion = RowMotion.curve(.easeOut, duration: 0.25)
-
     override init(row: TranscriptRow) {
         super.init(row: row)
         container.header.action = { [weak self] in self?.toggle() }
@@ -46,7 +42,7 @@ final class WorkRowSlot: TranscriptRowSlot {
             stepsHeight = steps.height(width: width)
             provisional = steps.approximate
         }
-        let height = headerHeight + (expanded ? Self.spacing + stepsHeight : 0)
+        let height = WorkLayout.height(header: headerHeight, steps: stepsHeight, expanded: expanded)
         measured = (width, height)
         return height
     }
@@ -54,17 +50,16 @@ final class WorkRowSlot: TranscriptRowSlot {
     /// 动画中行的高在收起和展开之间：自己展开收起时按它算走到哪了，箭头转多少、步骤多透明都跟着它；
     /// 里面某一步在动时，步骤整块的高跟着行高走。
     override func layoutView(in frame: CGRect) {
-        let full = Self.spacing + stepsHeight
         var progress: CGFloat = expanded ? 1 : 0
         if toggling {
-            progress = full > 0 ? min(max((frame.height - headerHeight) / full, 0), 1) : progress
+            progress = WorkLayout.progress(rowHeight: frame.height, header: headerHeight, steps: stepsHeight, expanded: expanded)
             if let measured, abs(frame.height - measured.height) < 0.01 { toggling = false }
         }
         container.header.frame = CGRect(x: 0, y: 0, width: frame.width, height: headerHeight)
         container.header.turn = progress
         if let steps {
-            let current = steps.animating ? max(frame.height - headerHeight - Self.spacing, 0) : stepsHeight
-            steps.frame = CGRect(x: 0, y: headerHeight + Self.spacing, width: frame.width, height: current)
+            let current = steps.animating ? max(frame.height - headerHeight - WorkLayout.spacing, 0) : stepsHeight
+            steps.frame = CGRect(x: 0, y: headerHeight + WorkLayout.spacing, width: frame.width, height: current)
             steps.layout(height: current)
             steps.alphaValue = progress
             // 收起走完拿掉步骤
@@ -89,14 +84,14 @@ final class WorkRowSlot: TranscriptRowSlot {
         if let work, let context { container.header.show(work, environment: context.environment, expanded: expanded) }
         toggling = true
         measured = nil
-        heightChanged?(Self.motion)
+        heightChanged?(WorkLayout.motion)
     }
 
     /// 某一步自己变高变矮（点开参数和结果）：按它的走法，步骤整块跟着行高走。
     private func stepsChanged(_ motion: RowMotion?) {
         guard expanded, let measured, let steps else { return }
         stepsHeight = steps.height(width: measured.width)
-        self.measured = (measured.width, headerHeight + Self.spacing + stepsHeight)
+        self.measured = (measured.width, WorkLayout.height(header: headerHeight, steps: stepsHeight, expanded: true))
         heightChanged?(motion)
     }
 }

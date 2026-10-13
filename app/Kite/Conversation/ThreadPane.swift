@@ -42,32 +42,17 @@ struct ThreadPane: View {
         .modifier(ThreadPaneSupport(pane: pane))
     }
 
-    /// 可见区多高在排版时当场算出来（GeometryReader），留白和它同一次排好。这里的尺寸已经扣掉了
-    /// 标题栏、控制区和键盘让出的那一截，滚动视图照样伸到它们后面（实测）。
+    /// 列表铺满窗口，标题栏、控制区（iOS 还有键盘、左右安全区）让出的距离量出来交给它（GeometryReader 的安全区），
+    /// 内容从它们后面滚过去。选中的行显式传进去：列表是原生的，不在这个视图层级里，只靠环境里的绑定收不到它变了。
     private var scrollingTranscript: some View {
         @Bindable var pane = pane
         return GeometryReader { proxy in
             #if os(macOS)
-            // 选中的行显式传进去：列表是原生的，不在这个视图层级里，只靠环境里的绑定收不到它变了
             MacThreadTranscript(scroll: pane.scroll, arriving: pane.arriving, insets: proxy.safeAreaInsets, selected: pane.selected)
                 .ignoresSafeArea()
             #else
-            ScrollView {
-                ThreadTranscript(scroll: pane.scroll, arriving: pane.arriving, visibleHeight: proxy.size.height)
-                    .font(Theme.body)
-                    .frame(maxWidth: Metrics.transcriptWidth)
-                    .padding(.horizontal, Metrics.padding * 2)
-                    .padding(.vertical, Metrics.transcriptPadding)
-                    .frame(maxWidth: .infinity)
-                    // 操作栏开着时，点对话里别的地方收起；点到按钮、别的气泡由它们自己接
-                    .contentShape(Rectangle())
-                    // 收起浮层与子视图的链接点击同时发生，不抢走引用跳转。
-                    .simultaneousGesture(TapGesture().onEnded { $pane.selected.close() }, isEnabled: pane.selected != nil)
-            }
-            // 手指一滚就收起操作栏
-            .transcriptScroll(pane.scroll, visibleHeight: proxy.size.height) {
-                if pane.selected != nil { $pane.selected.close() }
-            }
+            PhoneThreadTranscript(scroll: pane.scroll, arriving: pane.arriving, insets: proxy.safeAreaInsets, selected: pane.selected)
+                .ignoresSafeArea()
             #endif
         }
         .background {
@@ -81,11 +66,11 @@ struct ThreadPane: View {
 
 /// 会话窗口的状态和动作，SwiftUI 版（ThreadPane）和 Mac 宽屏的原生外框（ThreadWindowView）共用。窗口在就一直是同一个。
 @MainActor @Observable final class ThreadPaneModel {
-    /// 对话怎么滚：跟不跟着最底下、发送后滑到哪、底下留多少空白。Mac 上是原生列表，见 TranscriptListView。
+    /// 对话怎么滚：跟不跟着最底下、发送后滑到哪、底下留多少空白。两端都是原生列表，见 TranscriptListView、PhoneTranscriptView。
     #if os(macOS)
     @ObservationIgnored let scroll = MacTranscriptScroll()
     #else
-    @ObservationIgnored let scroll = TranscriptScroll()
+    @ObservationIgnored let scroll = PhoneTranscriptScroll()
     #endif
     /// 刚发出、气泡还在下面、没开始往上浮的消息。
     @ObservationIgnored let arriving = ArrivingMessages()
@@ -143,7 +128,7 @@ struct ThreadPane: View {
         }
     }
 
-    /// 发一条消息：先排进队里，对话滑过去（见 TranscriptScroll.send），气泡同时从下往上浮进来，alongside 也和滑同一次更新。
+    /// 发一条消息：先排进队里，对话滑过去（见 TranscriptFollow.send），气泡同时从下往上浮进来，alongside 也和滑同一次更新。
     /// 草稿的第一条也这样走，同时创建代理；建好后同一个会话对象原地变成这个代理，窗口不换，失败时消息退回输入框。
     func send(_ message: Message, thread: WorkThread, model: AppModel, area: WorkArea, alongside: @escaping () -> Void) {
         if thread.isDraft {
@@ -276,15 +261,17 @@ private struct MacThreadTranscript: View {
     }
 }
 #else
-private struct ThreadTranscript: View {
-    let scroll: TranscriptScroll
+private struct PhoneThreadTranscript: View {
+    let scroll: PhoneTranscriptScroll
     let arriving: ArrivingMessages
-    let visibleHeight: CGFloat
+    let insets: EdgeInsets
+    let selected: RowID?
     @Environment(WorkThread.self) private var thread
 
     var body: some View {
-        TranscriptView(items: thread.transcript.items, pending: thread.transcript.pending, actionable: true,
-                       tail: scroll.tail(visible: visibleHeight))
+        PhoneTranscript(rows: TranscriptRow.rows(items: thread.transcript.items, pending: thread.transcript.pending),
+                        scroll: scroll, insets: insets, selected: selected)
+            .font(Theme.body)
             .environment(\.arrivingMessages, arriving.ids)
     }
 }

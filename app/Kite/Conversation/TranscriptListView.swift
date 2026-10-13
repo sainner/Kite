@@ -4,7 +4,7 @@ import SwiftUI
 
 /// Mac 主对话的列表：AppKit 自己排，行是原生视图（TranscriptRowSlot），只有可见区附近的行放进列表。
 /// 为什么不用 SwiftUI 的滚动视图见 .kite/memory/decision-native-ui.md：拖缝时整列 SwiftUI 树每帧重排，越不过 60 帧。
-/// 滚动的规则同 TranscriptScroll：
+/// 滚动的规则（两端相同，iOS 另有几条见 PhoneTranscriptView）：
 /// - 打开时停在最后一条内容的底部，跟着最底下；人往上翻就不跟了，翻回最底下又跟。
 /// - 内容、可见区变高变矮时：跟着最底下、底下也没露着留白，就贴着底；不然保持可见区顶上那一行不动。
 /// - 发送：都滑到最底下。开启新一轮的，最后一轮至少比可见区高一个模数，不够在底下留白，滑到底时上一轮的末尾滚出顶边再多一个模数；
@@ -149,7 +149,7 @@ final class TranscriptListView: NSScrollView {
     // MARK: - 操作栏
 
     /// 选中了一行就在它旁边弹出操作栏（ActionBarView）：平常在这一行底下，底下放不下（会压到控制区）就放到上面；和这一行给的那一边对齐，
-    /// 同 SwiftUI 版的 ActionBarPlacement。收起时先播完收起动画再拿掉。
+    /// 见 TranscriptArrangement.actionBarAbove。收起时先让浮层播完收起动画再拿掉。
     private func placeActions() {
         guard let context else { return }
         let selected = context.environment.selectedRow.wrappedValue

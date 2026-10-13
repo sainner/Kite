@@ -7,7 +7,11 @@ import AppKit
 #endif
 
 /// 原生对话列表两端共用的动画：行高的走法、逐帧时钟、发送后的滑动。
-/// 滑动的弹簧 Spring.glide 还定义在 TranscriptScroll.swift：它的手动合同只编那一个文件，iOS 换下 TranscriptScroll 时一起挪过来。
+
+extension Spring {
+    /// 发送后对话往上滑，气泡同时浮进来；控制区推开的波也按它走（见 ThreadControls.sendWave）。
+    static let glide = Spring.smooth(duration: 0.5)
+}
 
 /// 一行展开收起怎么动，和 SwiftUI 版的那一下对上：气泡折叠是弹簧，工具行是普通缓出。
 enum RowMotion {
@@ -70,7 +74,7 @@ struct HeightAnimation {
     }
 }
 
-/// 发送后滑到最底下：弹簧和 TranscriptScroll.glide 同一条（Spring.smooth 0.5 秒），按显示刷新逐帧走。
+/// 发送后滑到最底下：Spring.glide（smooth 0.5 秒），按显示刷新逐帧走。
 @MainActor final class Glide: NSObject {
     let from: CGFloat
     /// 跟着这一下浮上来的消息。

@@ -5,53 +5,38 @@ extension EnvironmentValues {
     @Entry var workingDirectory = ""
 }
 
-/// 一串记录排下来，排队中的消息接在最后。iPhone 的主对话和两端子 agent 做的事、压缩前的原文都用它；Mac 的主对话是原生列表（TranscriptListView）。
+/// 一串记录排下来，排队中的消息接在最后（SwiftUI 版）。两端主对话、子 agent 做的事、压缩前的原文都已是原生的（TranscriptListView、PhoneTranscriptView）。
 /// 按人开启的每一轮分组，一组里的行竖着排。一行从出现起就待在同一组里，后面又开了一轮也不换组，展开收起这些状态不会丢。
 struct TranscriptView: View {
     let items: [Item]
     var pending: [Message] = []
-    /// 点 agent 的话弹出操作栏。主对话里是；子 agent 做的事里不是，它们的序号和主对话的会撞。
-    var actionable = false
-    /// 主对话给：最后一轮底下的留白。最后一轮就是最后一组，它至少 tail.height 高（从上一组的底边算起），不够就在底下留白；
-    /// 留白是这一组的最小高度，和新消息同一次排版算出来，量出来再补会晚一次排版，发送时滚动那一刻底下还没有留白，滚不到位。
-    /// 发送后滑到最底下（见 TranscriptScroll.send），这条消息停在可见区顶上，上一段内容滚出去，回复往下面的空白里填；
-    /// 回复长过一屏就照常跟着最底下。
-    /// 排在后面的消息（回合在跑、或者前面还排着别的时发的）不开启新的一轮：它接在那一轮后面，
-    /// 顶到最上面的话 agent 接着写的内容就在屏幕外了。最后一行的底边放一个 TailEnd，用来看底下的空白露没露出来。
-    var tail: TailSpace?
     @Environment(\.selectedRow) private var selection
 
     var body: some View {
         let turns = turns
         VStack(alignment: .leading, spacing: 0) {
             ForEach(turns) { turn in
-                let last = turn.id == turns.last?.id
                 let first = turn.id == turns.first?.id
                 let selected = turn.rows.contains { $0.id == selection.wrappedValue }
-                group(turn, last: last, first: first)
+                group(turn, first: first)
                     // 操作栏也要压在后面几组上
                     .zIndex(selected ? 1 : 0)
             }
         }
     }
 
-    private func group(_ turn: TranscriptTurn, last: Bool, first: Bool) -> some View {
+    private func group(_ turn: TranscriptTurn, first: Bool) -> some View {
         VStack(alignment: .leading, spacing: Metrics.rowSpacing) {
             ForEach(turn.rows) { row in
-                TranscriptRowView(row: row, actionable: actionable)
+                TranscriptRowView(row: row)
                     .padding(.top, row.gap)
                     // 开着操作栏的那一行垫在最上面：操作栏浮出这一行，压在前后的行上（自己的排版容器里也管用，实测）
                     .zIndex(selection.wrappedValue == row.id ? 1 : 0)
             }
         }
-        .overlay(alignment: .bottomLeading) {
-            if last, let tail { TailEnd(tail: tail) }
-        }
-        // 组和组之间的行距算在后一组顶上，最后一组的顶就是上一组的底边，最小高度从这里算
+        // 组和组之间的行距算在后一组顶上
         .padding(.top, first ? 0 : Metrics.rowSpacing)
-        // 改最小高度不换分支：这一组不再是最后一组时还是同一个视图
-        .frame(maxWidth: .infinity, minHeight: last && turn.startsHumanTurn ? tail?.minimum(first: first) : nil,
-               alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var rows: [TranscriptRow] { TranscriptRow.rows(items: items, pending: pending) }
@@ -59,48 +44,15 @@ struct TranscriptView: View {
 }
 
 
-/// 对话里的一行显示成什么。iOS 用；Mac 主对话是原生列表，各行见 makeTranscriptRowSlot。
+/// 对话里的一行显示成什么（SwiftUI 版）。两端主对话都是原生列表，各行见 makeTranscriptRowSlot、makePhoneTranscriptRowSlot。
 struct TranscriptRowView: View {
     let row: TranscriptRow
-    /// 点 agent 的话弹出操作栏，见 TranscriptView.actionable。
-    let actionable: Bool
 
     var body: some View {
         switch row.content {
-        case .item(let item):
-            if actionable, case .text(let text) = item.kind {
-                AgentText(id: row.id, text: text)
-            } else {
-                ItemView(item: item)
-            }
+        case .item(let item): ItemView(item: item)
         case .message(let message, let queued): MessageBubble(message: message, queued: queued)
         }
-    }
-}
-
-/// agent 说的一段话，铺满这一栏。iPhone 上长按、Mac 上右键，在左下方弹出操作栏：复制、翻译、从这里分叉（翻译、分叉还没做）。
-/// 两端都用 SelectableMarkdown 排：iPhone 上长按以后接着拖是选字，Mac 上左键选字，右键由盖层接（opensActionBar）。
-private struct AgentText: View {
-    let id: RowID
-    let text: String
-    @Environment(\.selectedRow) private var selection
-
-    var body: some View {
-        content
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .actionBar(id, side: .leading) { AgentTextActions(text: text) }
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        #if os(iOS)
-        SelectableMarkdown(source: text, showActions: { selection.show(id) }, dismissActions: { selection.close() })
-        #else
-        SelectableMarkdown(source: text)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .opensActionBar(id)
-        #endif
     }
 }
 
@@ -142,7 +94,7 @@ private struct ItemView: View {
         case .notification(let text):
             EventLabel(text: text, icon: "bell")
         case .text(let text):
-            // 子 agent 做的事、压缩前的原文里 agent 说的话：没有操作栏，照样能选字
+            // 子 agent 做的事、压缩前的原文里 agent 说的话：没有操作栏，照样能选字。主对话里的是原生行
             SelectableMarkdown(source: text)
         case .thinking(let text):
             ThinkingRow(text: text)

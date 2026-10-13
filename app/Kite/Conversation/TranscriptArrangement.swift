@@ -53,17 +53,16 @@ enum TranscriptPlacement: Equatable {
     case remove
 }
 
-/// 原生对话列表两端共用的部分：行的仓库（按 id 复用行对象，看签名、外观、托管的环境决定换不换内容）、排列循环、
+/// 原生对话列表两端共用的部分：行的仓库（按 id 复用行对象，看签名、外观决定换不换内容）、排列循环、
 /// 放进列表的范围、行高动画、空闲补量。滚动视图、行视图、操作栏宿主各端自己写，按这里的结果执行。
-/// 规则见 TranscriptListView 开头；跟不跟着最底下、留白、发送后的滑动见 TranscriptFollow。
+/// 规则见 TranscriptListView 开头（iOS 的 PhoneTranscriptView 同）；跟不跟着最底下、留白、发送后的滑动见 TranscriptFollow。
 @MainActor final class TranscriptArrangement {
     private(set) var slots: [TranscriptRowSlot] = []
     private(set) var byID: [RowID: TranscriptRowSlot] = [:]
-    /// 各行上次更新时的形状签名，托管的行签名变了才换内容，见 update。
+    /// 各行上次更新时的形状签名，签名变了才换内容，见 update。
     private var shapes: [RowID: Int] = [:]
-    /// 环境里会让行重画的几项：外观变了所有行都换一遍，选中的行、刚发出的消息变了托管的行换一遍。
+    /// 环境里会让行重画的几项：外观变了所有行都换一遍。
     private var appearanceKey: AppearanceKey?
-    private var hostedKey: HostedKey?
     /// 每次换行加一，发送时用它看新消息到了没有。
     private(set) var version = 0
     /// 正在展开、收起的行：从哪个高起、弹簧走到哪了。
@@ -86,10 +85,9 @@ enum TranscriptPlacement: Equatable {
     func update(_ rows: [TranscriptRow], context: TranscriptRowContext,
                 make: (TranscriptRow) -> TranscriptRowSlot,
                 fits: (TranscriptRowSlot, TranscriptRow) -> Bool) -> [TranscriptRowSlot] {
-        let appearance = AppearanceKey(context.environment), hosted = HostedKey(context.environment)
-        let appearanceChanged = appearance != appearanceKey, hostedChanged = hosted != hostedKey
+        let appearance = AppearanceKey(context.environment)
+        let appearanceChanged = appearance != appearanceKey
         appearanceKey = appearance
-        hostedKey = hosted
         var removed: [TranscriptRowSlot] = []
         var next: [TranscriptRowSlot] = []
         var nextByID: [RowID: TranscriptRowSlot] = [:]
@@ -100,14 +98,12 @@ enum TranscriptPlacement: Equatable {
             let slot: TranscriptRowSlot
             if let existing = byID[row.id], fits(existing, row) {
                 slot = existing
-                // 签名（记录只追加，字数就能看出变没变）或外观变了才换内容、作废量过的高；
-                // 选中的行、刚发出的消息变了只换托管的行的内容，高不变
-                let resized = shapes[row.id] != shape || appearanceChanged
-                if resized || hostedChanged && slot.hosted { slot.update(row, context: context, resized: resized) }
+                // 签名（记录只追加，字数就能看出变没变）或外观变了才换内容、作废量过的高
+                if shapes[row.id] != shape || appearanceChanged { slot.update(row, context: context, resized: true) }
             } else {
                 slot = make(row)
                 slot.update(row, context: context, resized: true)
-                // 刚发出去的消息先在下面藏着，跟着滑到底的那一下浮上来，见 TranscriptListView.startGlideIfReady
+                // 刚发出去的消息先在下面藏着，跟着滑到底的那一下浮上来，见各端列表的 startGlideIfReady
                 if case .message(let message, _) = row.content, context.environment.arrivingMessages.contains(message.id) {
                     slot.rise = 1
                 }
@@ -172,6 +168,7 @@ enum TranscriptPlacement: Equatable {
                 if measured.width != columnWidth || !exact { waiting = true }
             } else if close {
                 if !exact { slot.measured = nil }
+                slot.resizing = resizing
                 let lower = max(reach.minY - old.minY, 0), upper = min(reach.maxY, old.maxY) - old.minY
                 if resizing, old != .zero, upper > lower {
                     height = slot.height(width: columnWidth, band: lower...upper)
@@ -222,11 +219,21 @@ enum TranscriptPlacement: Equatable {
         let placed = viewport.resizing ? visible.insetBy(dx: 0, dy: -visible.height * Self.closeMargin) : near
         for slot in slots {
             if slot.frame.maxY > placed.minY && slot.frame.minY < placed.maxY {
-                // 刚发出去的消息在下面 bubbleRise 处藏着，浮上来的过程见 TranscriptListView.glideStep
+                // 刚发出去的消息在下面 bubbleRise 处藏着，浮上来的过程见各端列表的 glideStep
                 body(slot, .place(slot.viewFrame(in: slot.frame).offsetBy(dx: 0, dy: slot.rise * Metrics.bubbleRise)))
             } else if slot.hasView {
                 body(slot, slot.frame.maxY > near.minY && slot.frame.minY < near.maxY ? .hide : .remove)
             }
+        }
+    }
+
+    /// 要放进列表的行里有还没按眼下的宽量过的：人滚得比空闲补量快时，滑进来的行先要排一遍（arrange 先量再放、按住顶上那一行）。
+    func needsMeasure(in viewport: TranscriptViewport) -> Bool {
+        let visible = viewport.visible
+        let width = viewport.column.width
+        let placed = visible.insetBy(dx: 0, dy: -visible.height * (viewport.resizing ? Self.closeMargin : Self.margin))
+        return slots.contains { slot in
+            slot.frame.maxY > placed.minY && slot.frame.minY < placed.maxY && slot.measured?.width != width
         }
     }
 
@@ -285,13 +292,19 @@ enum TranscriptPlacement: Equatable {
     // MARK: - 补量
 
     /// 宽度停下、没有窗口在过渡、人和程序都没在滚（busy 为 false）的时候，屏幕外的行分批按眼下的宽量好，每批不超过 8 ms，
-    /// 每批量完调 arrange 重排。viewport 给 nil 时（列表没了）停。
-    func measureLater(busy: @escaping () -> Bool, viewport: @escaping () -> TranscriptViewport?, arrange: @escaping () -> Void) {
+    /// 每批量完调 arrange 重排。viewport 给 nil 时（列表没了）停；paused 为 true 时（窗口不在屏上）也停，平台回到屏上时重排，
+    /// 排列发现还有没量准的会再调这里。
+    func measureLater(busy: @escaping () -> Bool, paused: @escaping () -> Bool = { false },
+                      viewport: @escaping () -> TranscriptViewport?, arrange: @escaping () -> Void) {
         guard measuring == nil else { return }
         measuring = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(50))
                 guard let self, let current = viewport() else { return }
+                if paused() {
+                    measuring = nil
+                    return
+                }
                 if busy() { continue }
                 guard measureBatch(current) else {
                     measuring = nil
@@ -313,6 +326,7 @@ enum TranscriptPlacement: Equatable {
         for slot in pending.sorted(by: { distance($0.frame, from: visible) < distance($1.frame, from: visible) }) {
             if slot.frame.maxY > urgent.minY && slot.frame.minY < urgent.maxY { continue }
             if slot.provisional { slot.measured = nil }
+            slot.resizing = false
             _ = slot.height(width: columnWidth)
             if CACurrentMediaTime() - start > 0.008 { break }
         }
@@ -341,17 +355,6 @@ enum TranscriptPlacement: Equatable {
             typeSize = environment.dynamicTypeSize
             weight = environment.legibilityWeight
             #endif
-        }
-    }
-
-    /// 托管的行还读选中的行（操作栏）和刚发出的消息（上浮）。
-    private struct HostedKey: Equatable {
-        let selected: RowID?
-        let arriving: Set<String>
-
-        init(_ environment: EnvironmentValues) {
-            selected = environment.selectedRow.wrappedValue
-            arriving = environment.arrivingMessages
         }
     }
 }

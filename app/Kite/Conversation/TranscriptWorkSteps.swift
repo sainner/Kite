@@ -226,7 +226,7 @@ final class CallRowView: NSView {
             detail = view
         }
         if let call, let environment { header.show(call, environment: environment, expanded: expanded) }
-        changed?(WorkRowSlot.motion)
+        changed?(WorkLayout.motion)
     }
 }
 
