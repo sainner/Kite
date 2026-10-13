@@ -5,16 +5,13 @@ extension EnvironmentValues {
     @Entry var workingDirectory = ""
 }
 
-/// 一串记录排下来，排队中的消息接在最后。主对话和子 agent 做的事都用它。
-/// 按人开启的每一轮分组，一组里的行竖着排。Mac 的主对话按需排版，只排可见区附近的几组，其余按量过的高占位（TranscriptWindow）：
-/// 长会话改窗口宽度时只重排看得见的。一行从出现起就待在同一组里，后面又开了一轮也不换组，展开收起这些状态不会丢。
+/// 一串记录排下来，排队中的消息接在最后。iPhone 的主对话和两端子 agent 做的事、压缩前的原文都用它；Mac 的主对话是原生列表（TranscriptListView）。
+/// 按人开启的每一轮分组，一组里的行竖着排。一行从出现起就待在同一组里，后面又开了一轮也不换组，展开收起这些状态不会丢。
 struct TranscriptView: View {
     let items: [Item]
     var pending: [Message] = []
     /// 点 agent 的话弹出操作栏。主对话里是；子 agent 做的事里不是，它们的序号和主对话的会撞。
     var actionable = false
-    /// 按需排版。iPhone 的主对话、嵌在一行里的（压缩前的原文、子 agent 做的事）都整个排。
-    var window: TranscriptWindow?
     /// 主对话给：最后一轮底下的留白。最后一轮就是最后一组，它至少 tail.height 高（从上一组的底边算起），不够就在底下留白；
     /// 留白是这一组的最小高度，和新消息同一次排版算出来，量出来再补会晚一次排版，发送时滚动那一刻底下还没有留白，滚不到位。
     /// 发送后滑到最底下（见 TranscriptScroll.send），这条消息停在可见区顶上，上一段内容滚出去，回复往下面的空白里填；
@@ -31,41 +28,20 @@ struct TranscriptView: View {
                 let last = turn.id == turns.last?.id
                 let first = turn.id == turns.first?.id
                 let selected = turn.rows.contains { $0.id == selection.wrappedValue }
-                Group {
-                    if let window {
-                        // 最后一组在流式长、底下留白，开着操作栏的那组浮层要接着显示，都一直排真内容
-                        TurnSlot(slot: window.slot(turn.id), window: window, signature: turn.signature(first: first),
-                                 pinned: last || selected) {
-                            group(turn, last: last, first: first)
-                        }
-                    } else {
-                        group(turn, last: last, first: first)
-                    }
-                }
-                // 操作栏也要压在后面几组上
-                .zIndex(selected ? 1 : 0)
+                group(turn, last: last, first: first)
+                    // 操作栏也要压在后面几组上
+                    .zIndex(selected ? 1 : 0)
             }
         }
-        .onChange(of: turns.map(\.id), initial: true) { window?.reorder($1) }
     }
 
-    private func group(_ turn: Turn, last: Bool, first: Bool) -> some View {
+    private func group(_ turn: TranscriptTurn, last: Bool, first: Bool) -> some View {
         VStack(alignment: .leading, spacing: Metrics.rowSpacing) {
             ForEach(turn.rows) { row in
-                Group {
-                    switch row.content {
-                    case .item(let item):
-                        if actionable, case .text(let text) = item.kind {
-                            AgentText(id: row.id, text: text)
-                        } else {
-                            ItemView(item: item)
-                        }
-                    case .message(let message, let queued): MessageBubble(message: message, queued: queued)
-                    }
-                }
-                .padding(.top, row.gap)
-                // 开着操作栏的那一行垫在最上面：操作栏浮出这一行，压在前后的行上（自己的排版容器里也管用，实测）
-                .zIndex(selection.wrappedValue == row.id ? 1 : 0)
+                TranscriptRowView(row: row, actionable: actionable)
+                    .padding(.top, row.gap)
+                    // 开着操作栏的那一行垫在最上面：操作栏浮出这一行，压在前后的行上（自己的排版容器里也管用，实测）
+                    .zIndex(selection.wrappedValue == row.id ? 1 : 0)
             }
         }
         .overlay(alignment: .bottomLeading) {
@@ -78,175 +54,26 @@ struct TranscriptView: View {
                alignment: .topLeading)
     }
 
-    /// 从每一条开启新一轮的人发的消息起另开一组。
-    private var turns: [Turn] {
-        var turns: [Turn] = []
-        for row in rows {
-            if turns.isEmpty || row.startsHumanTurn {
-                turns.append(Turn(rows: [row]))
-            } else {
-                turns[turns.count - 1].rows.append(row)
-            }
-        }
-        return turns
-    }
-
-    /// 人发的消息按消息的 id 认，排队中和收到了走同一个分支：从排队中变成收到，还是同一个气泡，底色直接填进来。
-    private var rows: [Row] {
-        var rows: [Row] = []
-        func append(_ id: RowID, _ content: Row.Content, startsTurn: Bool) {
-            let humanTurn = startsTurn && content.isMessage
-            guard let last = rows.last else {
-                rows.append(Row(id: id, content: content, gap: 0, startsHumanTurn: humanTurn))
-                return
-            }
-            // 人发的消息和前后的内容之间多空一样多，连着的几条消息之间不加；它开启的新一轮不再另加，上下才一样。
-            // Kite 发来的、后台任务通知开启的新一轮，和上一轮之间多空一点
-            let gap = if last.isMessage != content.isMessage { Metrics.messageGap }
-                else if startsTurn && !content.isMessage { Metrics.turnGap }
-                else { CGFloat(0) }
-            rows.append(Row(id: id, content: content, gap: gap, startsHumanTurn: humanTurn))
-        }
-        for item in items {
-            // 隐藏结束的思考，但保留派生项身份和它分隔工具组的位置。
-            if case .thinking = item.kind, item.generation != "streaming" { continue }
-            if case .text(let text) = item.kind, text.isEmpty { continue }
-            if case .human(let message) = item.kind {
-                append(.message(message.id), .message(message, queued: false), startsTurn: item.startsTurn)
-            } else {
-                append(.item(item.id), .item(item), startsTurn: item.startsTurn)
-            }
-        }
-        for message in pending {
-            append(.message(message.id), .message(message, queued: true), startsTurn: !message.midTurn)
-        }
-        return rows
-    }
+    private var rows: [TranscriptRow] { TranscriptRow.rows(items: items, pending: pending) }
+    private var turns: [TranscriptTurn] { TranscriptTurn.group(rows) }
 }
 
-/// 一轮：开启它的那一行和后面跟着的行。id 是第一行的 id，后面接着来的行不改变它。
-private struct Turn: Identifiable {
-    var rows: [Row]
 
-    var id: RowID { rows[0].id }
-    var startsHumanTurn: Bool { rows[0].startsHumanTurn }
-
-    /// 排出来多高取决于的内容，按需排版用它看屏幕外的组要不要重量。只取便宜的：几行、各行的种类、字数、几步工具和各步状态，
-    /// 字数不变的改字不算（记录只追加，不会这样改）。
-    func signature(first: Bool) -> Int {
-        var hasher = Hasher()
-        hasher.combine(first)
-        for row in rows {
-            hasher.combine(row.id)
-            hasher.combine(row.gap)
-            switch row.content {
-            case .item(let item): item.kind.shape(into: &hasher)
-            case .message(let message, let queued):
-                hasher.combine(queued)
-                message.shape(into: &hasher)
-            }
-        }
-        return hasher.finalize()
-    }
-}
-
-/// 按需排版里的一组：可见区附近排真内容，报自己多大；远的按量过的高占位，要量时在占位上藏着排一遍。
-private struct TurnSlot<Content: View>: View {
-    let slot: TranscriptWindow.Slot
-    let window: TranscriptWindow
-    let signature: Int
-    let pinned: Bool
-    @ViewBuilder let content: Content
+/// 对话里的一行显示成什么。Mac 主对话的原生列表里还没原生化的行也托管它。
+struct TranscriptRowView: View {
+    let row: TranscriptRow
+    /// 点 agent 的话弹出操作栏，见 TranscriptView.actionable。
+    let actionable: Bool
 
     var body: some View {
-        Group {
-            if slot.live {
-                content
-                    .onGeometryChange(for: CGSize.self) { $0.size } action: { window.laidOut(slot, size: $0) }
-                    // 屏幕外的组按原宽排，改宽度时不跟着重排（见 TranscriptWindow）；占的宽还是对话的宽，不把整列撑宽
-                    .frame(width: slot.frozenWidth, alignment: .leading)
-                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        switch row.content {
+        case .item(let item):
+            if actionable, case .text(let text) = item.kind {
+                AgentText(id: row.id, text: text)
             } else {
-                Color.clear
-                    .frame(maxWidth: .infinity)
-                    .frame(height: slot.height)
-                    .overlay(alignment: .top) {
-                        if slot.measuring {
-                            // 不画、不接点击、不占排版，只量理想高
-                            content
-                                .fixedSize(horizontal: false, vertical: true)
-                                .hidden()
-                                .accessibilityHidden(true)
-                                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { window.measured(slot, height: $0) }
-                        }
-                    }
+                ItemView(item: item)
             }
-        }
-        .onChange(of: signature, initial: true) { window.contentChanged(slot, signature: signature) }
-        .onChange(of: pinned, initial: true) { window.pin(slot, pinned) }
-    }
-}
-
-private struct Row: Identifiable {
-    enum Content {
-        case item(Item)
-        case message(Message, queued: Bool)
-
-        var isMessage: Bool {
-            if case .message = self { true } else { false }
-        }
-    }
-
-    let id: RowID
-    let content: Content
-    /// 和上一行之间在 VStack 的间距之外多空多少。
-    let gap: CGFloat
-    /// 人发的消息开启新的一轮（不是并进正在跑的这一轮的插话）。
-    let startsHumanTurn: Bool
-
-    var isMessage: Bool { content.isMessage }
-}
-
-private extension Item.Kind {
-    func shape(into hasher: inout Hasher) {
-        switch self {
-        case .human(let message): message.shape(into: &hasher)
-        case .kite(let text): hasher.combine(1); hasher.combine(text.utf8.count)
-        case .notification(let text): hasher.combine(2); hasher.combine(text.utf8.count)
-        case .text(let text): hasher.combine(3); hasher.combine(text.utf8.count)
-        case .thinking(let text): hasher.combine(4); hasher.combine(text.utf8.count)
-        case .work(let work):
-            hasher.combine(5)
-            for call in work.calls {
-                hasher.combine(call.state)
-                hasher.combine(call.result != nil)
-                hasher.combine(call.children.count)
-            }
-        case .interrupted: hasher.combine(6)
-        case .compacted(let compaction, let children):
-            hasher.combine(7)
-            hasher.combine(compaction.summary.utf8.count)
-            hasher.combine(children.count)
-        case .apiError(let text): hasher.combine(8); hasher.combine(text.utf8.count)
-        }
-    }
-}
-
-private extension Message {
-    func shape(into hasher: inout Hasher) {
-        hasher.combine(0)
-        hasher.combine(text.utf8.count)
-        hasher.combine(command)
-        hasher.combine(attachments.count)
-    }
-}
-
-private extension Item {
-    var startsTurn: Bool {
-        switch kind {
-        case .human(let message): !message.midTurn
-        case .kite, .notification: true
-        default: false
+        case .message(let message, let queued): MessageBubble(message: message, queued: queued)
         }
     }
 }
@@ -257,12 +84,11 @@ private struct AgentText: View {
     let id: RowID
     let text: String
     @Environment(\.selectedRow) private var selection
-    @Environment(\.toast) private var toast
 
     var body: some View {
         content
             .frame(maxWidth: .infinity, alignment: .leading)
-            .actionBar(id, side: .leading) { actions }
+            .actionBar(id, side: .leading) { AgentTextActions(text: text) }
     }
 
     @ViewBuilder
@@ -276,9 +102,15 @@ private struct AgentText: View {
             .opensActionBar(id)
         #endif
     }
+}
 
-    @ViewBuilder
-    private var actions: some View {
+/// agent 说的一段话的操作栏：复制、翻译、从这里分叉（翻译、分叉还没做）。Mac 主对话的原生列表也用它。
+struct AgentTextActions: View {
+    let text: String
+    @Environment(\.selectedRow) private var selection
+    @Environment(\.toast) private var toast
+
+    var body: some View {
         ActionButton("复制", icon: "doc.on.doc") {
             copyToPasteboard(text, toast: toast)
             selection.close()

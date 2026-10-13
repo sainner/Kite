@@ -48,7 +48,7 @@ struct SelectableMarkdown: View {
         #endif
     }
 
-    private static func startsWithHeading(_ blocks: [MarkdownBlock]) -> Bool {
+    static func startsWithHeading(_ blocks: [MarkdownBlock]) -> Bool {
         if case .heading = blocks.first?.kind { return true }
         return false
     }

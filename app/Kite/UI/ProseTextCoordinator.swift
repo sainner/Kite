@@ -12,6 +12,9 @@ typealias PlatformTextView = NSTextView
 /// 只碰 textStorage 和 textLayoutManager：读 layoutManager 会让视图退回 TextKit 1。
 class ProseTextCoordinator: NSObject, NSTextLayoutManagerDelegate {
     weak var view: PlatformTextView?
+    /// 附件变高、重排了那一段以后调：Mac 主对话的原生行（见 TranscriptRowSlots）借它重新量高。
+    /// SwiftUI 里由 invalidateIntrinsicContentSize 请它再量；文本视图自己改尺寸时也会调那个，不能借它。
+    var resized: (() -> Void)?
     /// 文本视图里现在放的字。换了就是排版变了。
     var shown: NSAttributedString? { didSet { revision += 1 } }
     /// 放的字换了、附件的高变了各加一，量过的尺寸跟着作废。按它比，不对整段属性串逐个比。
@@ -94,6 +97,7 @@ class ProseTextCoordinator: NSObject, NSTextLayoutManagerDelegate {
         view.needsDisplay = true
         #endif
         view.invalidateIntrinsicContentSize()
+        resized?()
     }
 
     nonisolated func textLayoutManager(_ textLayoutManager: NSTextLayoutManager, textLayoutFragmentFor location: any NSTextLocation,

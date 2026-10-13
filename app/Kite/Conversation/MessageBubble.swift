@@ -10,10 +10,8 @@ import SwiftUI
 struct MessageBubble: View {
     let message: Message
     let queued: Bool
-    @Environment(WorkThread.self) private var thread
     @Environment(\.arrivingMessages) private var arrivingMessages
     @Environment(\.selectedRow) private var selection
-    @Environment(\.toast) private var toast
     @State private var expanded = false
     /// 正文不折时有多高。
     @State private var height: CGFloat = 0
@@ -27,7 +25,7 @@ struct MessageBubble: View {
             Spacer(minLength: 0)
             VStack(alignment: .trailing, spacing: 6) {
                 if !message.attachments.isEmpty {
-                    AttachmentRow(attachments: message.attachments)
+                    MessageAttachmentRow(attachments: message.attachments)
                 }
                 bubble(foldable: foldable)
                     #if os(macOS)
@@ -36,7 +34,9 @@ struct MessageBubble: View {
             }
             // 动画跟着 ThreadPane 发送时的那一下走，和对话往上滑同步
             .modifier(Rising(progress: arriving ? 1 : 0))
-            .actionBar(.message(message.id), side: .trailing) { actions(foldable: foldable) }
+            .actionBar(.message(message.id), side: .trailing) {
+                MessageActionButtons(message: message, queued: queued, foldable: foldable, expanded: $expanded)
+            }
         }
     }
 
@@ -94,8 +94,27 @@ struct MessageBubble: View {
             .padding(.vertical, Metrics.bubblePadding.height)
     }
 
-    @ViewBuilder
-    private func actions(foldable: Bool) -> some View {
+    /// 点了操作栏上的一项：收起操作栏，再做这件事。
+    @discardableResult
+    private func done<Result>(_ body: () -> Result) -> Result {
+        selection.close()
+        return withAnimation(.snappy, body)
+    }
+
+}
+
+/// 人发的消息的操作栏：排队中的是重试、编辑、取消发送；收到了的是压缩起点和终点。都有复制，折起来的还有展开全文。
+/// Mac 主对话的原生气泡也托管它（见 BubbleRowSlot），展开状态由气泡给。
+struct MessageActionButtons: View {
+    let message: Message
+    let queued: Bool
+    let foldable: Bool
+    @Binding var expanded: Bool
+    @Environment(WorkThread.self) private var thread
+    @Environment(\.selectedRow) private var selection
+    @Environment(\.toast) private var toast
+
+    var body: some View {
         if queued {
             if thread.failed.contains(message.id) {
                 ActionButton("重试发送", icon: "arrow.clockwise") { done { thread.retry(message) } }
@@ -137,7 +156,6 @@ struct MessageBubble: View {
         selection.close()
         return withAnimation(.snappy, body)
     }
-
 }
 
 /// 用户正文保持原样，整条排进一个文本视图（SelectableText）；独立代码块是嵌在里面的卡片，和 agent 共用 CodeBlock。
@@ -211,8 +229,8 @@ extension Message {
     }
 }
 
-/// 消息上面的附件：图片是缩略图，其余文件是一张小卡片，靠右排，放不下换行。
-private struct AttachmentRow: View {
+/// 消息上面的附件：图片是缩略图，其余文件是一张小卡片，靠右排，放不下换行。Mac 主对话的原生气泡也托管它。
+struct MessageAttachmentRow: View {
     let attachments: [Attachment]
 
     var body: some View {

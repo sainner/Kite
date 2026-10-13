@@ -8,33 +8,11 @@ struct WorkRow: View {
     @State private var expanded = false
 
     var body: some View {
-        let failed = work.count(.failed) + work.count(.unknown), unfinished = work.count(.unfinished)
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                withAnimation(.snappy(duration: 0.25)) { expanded.toggle() }
+                withAnimation(.easeOut(duration: 0.25)) { expanded.toggle() }
             } label: {
-                HStack(spacing: 8) {
-                    if let running = work.running {
-                        Text(running.use.title)
-                            .modifier(ToolRowActivity(state: !expanded && work.count(.running) > 0 ? .running : nil))
-                    } else {
-                        Text(work.summary)
-                    }
-                    if failed > 0 {
-                        Text("\(failed) 步出错").foregroundStyle(Theme.danger)
-                    }
-                    if unfinished > 0 {
-                        Text("\(unfinished) 步没跑完")
-                    }
-                    Image(systemName: "chevron.right")
-                        .imageScale(.small)
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
-                    Spacer(minLength: 0)
-                }
-                .font(Theme.secondary)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .contentShape(Rectangle())
+                WorkSummaryLine(work: work, expanded: expanded)
             }
             .buttonStyle(.pointingPlain)
             if expanded {
@@ -47,8 +25,40 @@ struct WorkRow: View {
     }
 }
 
-/// 步骤仍按原来的序号识别，后续调用到来、形成批次时，不重建已经展开的工具详情。
-private struct WorkSteps: View {
+/// 工具组的汇总行：有调用在跑时说正在做什么（带动效），不然是汇总；出错、没跑完的步数；箭头。Mac 主对话的原生工具行在跑时托管它。
+struct WorkSummaryLine: View {
+    let work: Work
+    let expanded: Bool
+
+    var body: some View {
+        let failed = work.count(.failed) + work.count(.unknown), unfinished = work.count(.unfinished)
+        HStack(spacing: 8) {
+            if let running = work.running {
+                Text(running.use.title)
+                    .modifier(ToolRowActivity(state: !expanded && work.count(.running) > 0 ? .running : nil))
+            } else {
+                Text(work.summary)
+            }
+            if failed > 0 {
+                Text("\(failed) 步出错").foregroundStyle(Theme.danger)
+            }
+            if unfinished > 0 {
+                Text("\(unfinished) 步没跑完")
+            }
+            Image(systemName: "chevron.right")
+                .imageScale(.small)
+                .rotationEffect(.degrees(expanded ? 90 : 0))
+            Spacer(minLength: 0)
+        }
+        .font(Theme.secondary)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .contentShape(Rectangle())
+    }
+}
+
+/// 步骤仍按原来的序号识别，后续调用到来、形成批次时，不重建已经展开的工具详情。Mac 主对话的原生工具行展开后托管它。
+struct WorkSteps: View {
     let work: Work
 
     var body: some View {
@@ -159,7 +169,7 @@ private struct CallRow: View {
         .clipped()
     }
 
-    private func toggle() { withAnimation(.snappy(duration: 0.25)) { expanded.toggle() } }
+    private func toggle() { withAnimation(.easeOut(duration: 0.25)) { expanded.toggle() } }
 
     private var failed: Bool {
         call.state == .failed || call.state == .unknown
