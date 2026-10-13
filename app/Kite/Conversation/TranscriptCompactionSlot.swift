@@ -147,6 +147,7 @@ final class CompactionRowSlot: TranscriptRowSlot {
         let width = frame.width
         let height = frame.height
         container.header.frame = CGRect(x: 0, y: 0, width: width, height: headerHeight)
+        container.clip(width: width, height: height, top: headerHeight)
         var y = headerHeight
         let summaryTop = y
         if let summary {
@@ -226,9 +227,11 @@ final class CompactionRowSlot: TranscriptRowSlot {
     }
 }
 
-/// 压缩分界这一行的视图：标签、摘要、按钮、原文和它左边的竖线，按自己的范围截（展开收起时没露出来的不画到后面的行上）。
+/// 压缩分界这一行的视图：标签，下面摘要、按钮、原文和它左边的竖线放在 content 里，按这一行的范围截（展开收起时没露出来的不画到后面的行上）。
+/// 标签不截：收起时弹簧往回弹会比标签矮一点，标签照样画全。content 的坐标原点对着这一行的顶边，里面按行的坐标摆。
 final class CompactionRowView: NSView {
     let header = CompactionHeaderView()
+    let content = FlippedLayerView()
     let buttons = CompactionButtonsView()
     let rule = CALayer()
 
@@ -237,10 +240,11 @@ final class CompactionRowView: NSView {
     init() {
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.masksToBounds = true
+        addSubview(content)
         addSubview(header)
-        addSubview(buttons)
-        layer?.addSublayer(rule)
+        content.layer?.masksToBounds = true
+        content.addSubview(buttons)
+        content.layer?.addSublayer(rule)
         rule.isHidden = true
         rule.actions = ["opacity": NSNull(), "position": NSNull(), "bounds": NSNull(), "hidden": NSNull()]
         buttons.isHidden = true
@@ -248,9 +252,15 @@ final class CompactionRowView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// 摘要、原文垫在标签和按钮下面，按出现的先后。
+    /// 摘要、原文垫在按钮下面，按出现的先后。
     func insertContent(_ view: NSView) {
-        addSubview(view, positioned: .below, relativeTo: buttons)
+        content.addSubview(view, positioned: .below, relativeTo: buttons)
+    }
+
+    /// 标签以下那一截：行这会儿 height 高。
+    func clip(width: CGFloat, height: CGFloat, top: CGFloat) {
+        content.frame = CGRect(x: 0, y: top, width: width, height: max(height - top, 0))
+        content.setBoundsOrigin(NSPoint(x: 0, y: top))
     }
 }
 

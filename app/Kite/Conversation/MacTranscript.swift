@@ -21,7 +21,7 @@ struct MacTranscript: NSViewRepresentable {
     let rows: [TranscriptRow]
     let scroll: MacTranscriptScroll
     let insets: EdgeInsets
-    /// 开着操作栏的那一行，变了要重排浮层、换托管的行，见 TranscriptListView.update。
+    /// 开着操作栏的那一行，变了要重排浮层，见 TranscriptListView.placeActions。
     let selected: RowID?
 
     func makeNSView(context: Context) -> TranscriptListView {

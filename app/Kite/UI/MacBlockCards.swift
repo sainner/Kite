@@ -130,13 +130,15 @@ class BlockCardView: EmbeddedCardView {
         CATransaction.setDisableActions(true)
         // Divider 在 Mac 上是 1 pt
         divider.frame = CGRect(x: 0, y: header - 1, width: bounds.width, height: 1)
-        divider.backgroundColor = resolved(.separatorColor)
+        if divider.backgroundColor == nil { divider.backgroundColor = resolved(.separatorColor) }
         CATransaction.commit()
-        applyPress()
+        // 改宽时（拖缝每一步）没在按就不动变换
+        if depth.value != 0 || !CATransform3DIsIdentity(surface.layer?.transform ?? CATransform3DIdentity) { applyPress() }
     }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
+        divider.backgroundColor = resolved(.separatorColor)
         needsLayout = true
         surface.needsDisplay = true
     }
