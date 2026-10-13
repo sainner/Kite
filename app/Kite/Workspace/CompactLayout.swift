@@ -123,6 +123,9 @@ struct CompactLayout: View {
         #if os(iOS)
         .persistentSystemOverlays(.hidden)
         #endif
+        #if DEBUG && KITE_LAYOUT_AUDIT
+        .onAppear { PerfProbe.drawer = motion }
+        #endif
         .onChange(of: model.paneGroup?.id, initial: true) { _, _ in
             model.paneGroup?.layout.updateViewport(.zero, presentation: .compact)
         }
