@@ -302,7 +302,13 @@ nonisolated private final class BlockAttachmentViewProvider: NSTextAttachmentVie
 
     override func attachmentBounds(for attributes: [NSAttributedString.Key: Any], location: any NSTextLocation, textContainer: NSTextContainer?,
                                    proposedLineFragment: CGRect, position: CGPoint) -> CGRect {
-        BlockAttachment.bounds(of: textAttachment, attributes: attributes, lineWidth: proposedLineFragment.width)
+        #if os(macOS)
+        // Mac 正文的行宽由容器另给，TextKit 交来的是容器的宽，见 LineWidthContainer
+        let lineWidth = (textContainer as? LineWidthContainer)?.attachmentWidth ?? proposedLineFragment.width
+        #else
+        let lineWidth = proposedLineFragment.width
+        #endif
+        return BlockAttachment.bounds(of: textAttachment, attributes: attributes, lineWidth: lineWidth)
     }
 }
 

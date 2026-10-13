@@ -7,8 +7,12 @@ struct ThreadPane: View {
     @Environment(AppModel.self) private var model
     @Environment(\.windowMotion) private var windowMotion
     @Environment(WorkArea.self) private var area
-    /// 对话怎么滚：跟不跟着最底下、发送后滑到哪、底下留多少空白。
+    /// 对话怎么滚：跟不跟着最底下、发送后滑到哪、底下留多少空白。Mac 上是原生列表，见 TranscriptListView。
+    #if os(macOS)
+    @State private var scroll = MacTranscriptScroll()
+    #else
     @State private var scroll = TranscriptScroll()
+    #endif
     /// 刚发出、气泡还在下面、没开始往上浮的消息。
     @State private var arriving = ArrivingMessages()
     /// 点开了操作栏的那一行。
@@ -32,32 +36,7 @@ struct ThreadPane: View {
             if initial {
                 NewThreadStage(slot: patternSlot, roleError: $roleError)
             } else if !empty {
-                // 可见区多高在排版时当场算出来（GeometryReader），留白和它同一次排好。这里的尺寸已经扣掉了
-                // 标题栏、控制区和键盘让出的那一截，滚动视图照样伸到它们后面（实测）
-                GeometryReader { proxy in
-                    ScrollView {
-                        ThreadTranscript(scroll: scroll, arriving: arriving, visibleHeight: proxy.size.height, lazy: Self.lazyTranscript)
-                            .font(Theme.body)
-                            .frame(maxWidth: Metrics.transcriptWidth)
-                            .padding(.horizontal, Metrics.padding * 2)
-                            .padding(.vertical, Metrics.transcriptPadding)
-                            .frame(maxWidth: .infinity)
-                            // 操作栏开着时，点对话里别的地方收起；点到按钮、别的气泡由它们自己接
-                            .contentShape(Rectangle())
-                            #if os(iOS)
-                            // 收起浮层与子视图的链接点击同时发生，不抢走引用跳转。
-                            .simultaneousGesture(TapGesture().onEnded { $selected.close() }, isEnabled: selected != nil)
-                            #else
-                            .gesture(TapGesture().onEnded { $selected.close() }, isEnabled: selected != nil)
-                            #endif
-                            .separateScrollPocket()
-                    }
-                    // 手指一滚就收起操作栏
-                    .transcriptScroll(scroll, visibleHeight: proxy.size.height) {
-                        if selected != nil { $selected.close() }
-                    }
-                }
-                .background { VoiceBand(pattern: listening ? emblem : nil, slot: voiceSlot) }
+                scrollingTranscript
             }
         } controls: { typing in
             ThreadControls(typing: typing, send: send, voiceOwner: patternSlot)
@@ -102,6 +81,36 @@ struct ThreadPane: View {
         }
     }
 
+    /// 可见区多高在排版时当场算出来（GeometryReader），留白和它同一次排好。这里的尺寸已经扣掉了
+    /// 标题栏、控制区和键盘让出的那一截，滚动视图照样伸到它们后面（实测）。
+    private var scrollingTranscript: some View {
+        GeometryReader { proxy in
+            #if os(macOS)
+            // 选中的行显式传进去：列表、托管的行各在自己的视图层级里，只靠环境里的绑定收不到它变了
+            MacThreadTranscript(scroll: scroll, arriving: arriving, insets: proxy.safeAreaInsets, selected: selected)
+                .ignoresSafeArea()
+            #else
+            ScrollView {
+                ThreadTranscript(scroll: scroll, arriving: arriving, visibleHeight: proxy.size.height)
+                    .font(Theme.body)
+                    .frame(maxWidth: Metrics.transcriptWidth)
+                    .padding(.horizontal, Metrics.padding * 2)
+                    .padding(.vertical, Metrics.transcriptPadding)
+                    .frame(maxWidth: .infinity)
+                    // 操作栏开着时，点对话里别的地方收起；点到按钮、别的气泡由它们自己接
+                    .contentShape(Rectangle())
+                    // 收起浮层与子视图的链接点击同时发生，不抢走引用跳转。
+                    .simultaneousGesture(TapGesture().onEnded { $selected.close() }, isEnabled: selected != nil)
+            }
+            // 手指一滚就收起操作栏
+            .transcriptScroll(scroll, visibleHeight: proxy.size.height) {
+                if selected != nil { $selected.close() }
+            }
+            #endif
+        }
+        .background { VoiceBand(pattern: listening ? emblem : nil, slot: voiceSlot) }
+    }
+
     private var listening: Bool { model.voice.owner == patternSlot }
 
     /// 这个代理的角色签名；角色列表还没读到或角色没有签名时用默认图案。
@@ -109,14 +118,6 @@ struct ThreadPane: View {
         let accent = DotColor(Color.accentColor.resolve(in: environment))
         return (model.emblem(for: thread.id, in: area) ?? .fallback).pattern(accent: accent)
     }
-
-    /// 只在 Mac 上按需排版：长会话改窗口宽度时只重排看得见的。iPhone 上窗口宽度不变，省不下重排；
-    /// 按需排版后在底部展开工具行出现过先原地跳一下、再往下展开（2026-10-09 用户在 iPhone 上实测），所以仍整个排。
-    #if os(macOS)
-    private static let lazyTranscript = true
-    #else
-    private static let lazyTranscript = false
-    #endif
 
     /// 副标题是代理的角色。还没有对话时副标题带下拉箭头，在这里换角色；标题还没生成，不给重新生成。
     private func header(initial: Bool) -> PaneHeader {
@@ -190,20 +191,35 @@ private struct VoiceBand: View {
 }
 
 /// 对话本身：窗口里只有它读 transcript，收发消息和流式刷新只重算这一块，不牵动标题栏和控制区。
+#if os(macOS)
+private struct MacThreadTranscript: View {
+    let scroll: MacTranscriptScroll
+    let arriving: ArrivingMessages
+    let insets: EdgeInsets
+    let selected: RowID?
+    @Environment(WorkThread.self) private var thread
+
+    var body: some View {
+        MacTranscript(rows: TranscriptRow.rows(items: thread.transcript.items, pending: thread.transcript.pending),
+                      scroll: scroll, insets: insets, selected: selected)
+            .font(Theme.body)
+            .environment(\.arrivingMessages, arriving.ids)
+    }
+}
+#else
 private struct ThreadTranscript: View {
     let scroll: TranscriptScroll
     let arriving: ArrivingMessages
     let visibleHeight: CGFloat
-    let lazy: Bool
     @Environment(WorkThread.self) private var thread
 
     var body: some View {
         TranscriptView(items: thread.transcript.items, pending: thread.transcript.pending, actionable: true,
-                       window: lazy ? scroll.window : nil,
                        tail: scroll.tail(visible: visibleHeight))
             .environment(\.arrivingMessages, arriving.ids)
     }
 }
+#endif
 
 /// 刚发出、还没浮上来的消息，只由对话那一块读，发送时不重算整个窗口。
 @Observable private final class ArrivingMessages {

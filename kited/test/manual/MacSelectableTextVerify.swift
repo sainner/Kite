@@ -470,7 +470,8 @@ private enum LayoutCount {
 
 extension NSTextLayoutManager {
     @objc dynamic nonisolated func contract_ensureLayout(for range: NSTextRange) {
-        if let width = textContainer?.size.width { LayoutCount.record(width: width) }
+        // 行宽由 LineWidthContainer 给，容器本身铺得很宽
+        if let width = (textContainer as? LineWidthContainer)?.lineWidth ?? textContainer?.size.width { LayoutCount.record(width: width) }
         contract_ensureLayout(for: range)
     }
 }

@@ -48,34 +48,21 @@ final class TranscriptScroll {
     @ObservationIgnored private var visible: CGFloat = 0
     /// 从手指按下到惯性结束都交给用户；此时也暂停尺寸变化的自动对齐。
     private var phase = ScrollPhase.idle
-    /// 人在滚。按需排版这时只量快进可见区的组。
-    var userScrolling: Bool { phase == .tracking || phase == .interacting || phase == .decelerating }
+    /// 人在滚。
+    private var userScrolling: Bool { phase == .tracking || phase == .interacting || phase == .decelerating }
     /// 同一次回调里的尺寸和位置，避免分开读取时混用折叠前后的坐标。
     @ObservationIgnored private var geometry: ScrollGeometry?
     /// 等着让留白跟上变矮的可见区。
     @ObservationIgnored private var shrinking: Task<Void, Never>?
-    /// 只管这一次更新的对齐，见 contentAboveChanged。
-    private var heldAnchor: UnitPoint?
-    /// Mac 上按需排版，按可见区决定排哪几组（见 TranscriptWindow）。
-    @ObservationIgnored let window = TranscriptWindow()
-
-    init() {
-        window.scroll = self
-    }
-
-    /// 程序在滚（发送后滑到最底下）：按需排版这时不换高，不和那一下滑抢位置。
-    var gliding: Bool { !glides.isEmpty }
+    /// 程序在滚（发送后滑到最底下）。
+    private var gliding: Bool { !glides.isEmpty }
 
     /// 内容、可见区变了时怎么对齐。底下露着留白时按顶部对齐：键盘升起时留白要等一会儿才缩，按底部对齐会先把对话顶上去再落回来。
     /// 程序在滚时按顶部对齐：发送时不带动画加进去的消息和留白不能被它一下推到底，要留给那一下滑。
     fileprivate var anchor: UnitPoint? {
-        if let heldAnchor { return heldAnchor }
         guard !userScrolling else { return nil }
         return following && !blankShown && !gliding ? .bottom : .top
     }
-
-    /// 按底部对齐、位置里没钉坐标：可见区上面的内容变高变矮，看着的最底下不动（见 anchor）。
-    var keepsBottom: Bool { anchor == .bottom && position.y == nil }
 
     /// 给 TranscriptView 的留白，visible 是这一次排版时可见区多高。仅查看历史时没有留白。
     /// 最后一轮（从上一轮的底边算起）比可见区再多一个模数，发送后滑到最底下，这个模数就是上一轮的末尾滚过可见区顶边的那一截。
@@ -129,7 +116,6 @@ final class TranscriptScroll {
 
     fileprivate func geometryChanged(from old: ScrollGeometry, to new: ScrollGeometry) {
         geometry = new
-        window.visibleChanged(new.visibleRect)
         if userScrolling {
             following = new.atBottom
             // 人往上翻、底下的留白还露着：翻上去多少就裁掉多少。
@@ -154,18 +140,6 @@ final class TranscriptScroll {
             position.scrollTo(y: new.bottom)
         }
         if anchor == .bottom && new.atBottom && position.y != nil { release() }
-    }
-
-    /// 按需排版把可见区上面的组换成量出来的高，和这次调用同一次更新：上面变高变矮多少，滚动位置就挪多少，看着的内容不动。
-    /// 钉着坐标的直接挪坐标；按底部对齐、没钉坐标的（跟着最底下）本来就不动；人在滚、或者按顶部对齐又没钉坐标的，
-    /// 这一次更新按底部对齐：内容变了多少偏移就跟着挪多少。
-    func contentAboveChanged(by delta: CGFloat) {
-        if !userScrolling, let y = position.y {
-            position.scrollTo(y: y + delta)
-        } else if anchor != .bottom {
-            heldAnchor = .bottom
-            DispatchQueue.main.async { self.heldAnchor = nil }
-        }
     }
 
     /// 可见区变矮时，等它最后一次变完 0.6 秒再让留白跟上，那时已经变回去了就不缩。
