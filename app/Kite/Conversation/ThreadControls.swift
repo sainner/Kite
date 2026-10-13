@@ -2,6 +2,7 @@ import SwiftUI
 
 /// 会话窗口的控制区：输入框与服务支持的操作。发送、打断、继续由真实状态控制，未接通的入口禁用。
 /// 发出去的字在输入框里模糊、淡掉，同时气泡在对话里从下往上浮进来（见 ThreadPane.send）。
+/// 逻辑在 ThreadControlsModel，和 Mac 宽屏的原生输入区（MacControlsBar）共用；这一版给 iPhone、iPad 和 Mac 窄窗口。
 struct ThreadControls: View {
     var typing: FocusState<Bool>.Binding
     /// 发一条消息；第二个参数和对话往上滑在同一次更新里调。
@@ -14,25 +15,24 @@ struct ThreadControls: View {
     @Environment(\.paneInstance) private var instance
     @Environment(\.dotStage) private var stage
     @Environment(\.dotScope) private var dotScope
+    @State private var state = ThreadControlsState()
     /// 控制区在窗口坐标中的位置，发送时点阵的波从这里推开。
     @State private var frame: CGRect = .zero
-    /// 刚发出去、正在淡掉的字。控制区里由 SwiftUI 逐帧驱动的动画会和对话滑动抢同一帧，发送时掉帧（2026-10-11 Mac 实测，
-    /// 字的模糊淡出和发送键的淡出各自都会）：输入框先藏起来，字画成图盖在原处交给 Core Animation 淡掉（见 FadingSnapshot），
-    /// 发送键直接消失。
-    @State private var fading: FadingText?
     /// 输入框的高度，发送时记进 FadingText。
     @State private var fieldHeight: CGFloat = 0
-    @State private var effortDraft: Effort?
-    @State private var savingEffort = false
-    @State private var effortError: String?
-    @State private var voiceError: String?
+
+    private var controls: ThreadControlsModel {
+        ThreadControlsModel(thread: thread, model: model, area: area, instance: instance, stage: stage, scope: dotScope,
+                            voiceOwner: voiceOwner, state: state, send: send)
+    }
 
     var body: some View {
         @Bindable var thread = thread
-        let running = thread.transcriptRunning
+        let controls = controls
+        let fading = state.fading
         let shape = RoundedRectangle(cornerRadius: Metrics.controlRadius, style: .continuous)
         VStack(spacing: 2) {
-            TextField(running ? "插话，agent 做完手上这一步就会看到" : "回复", text: $thread.draft, axis: .vertical)
+            TextField(controls.placeholder, text: $thread.draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(Theme.body)
                 .lineLimit(1...8)
@@ -47,15 +47,15 @@ struct ThreadControls: View {
                 .padding(.vertical, 6)
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: Metrics.paneButtonGap) {
-                    effortControl.fixedSize()
+                    ThreadEffortControl(controls: controls).fixedSize()
                     Spacer(minLength: 0)
-                    actionButtons.fixedSize()
+                    actionButtons(controls).fixedSize()
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    effortControl
+                    ThreadEffortControl(controls: controls)
                     HStack(spacing: 0) {
                         Spacer(minLength: 0)
-                        actionButtons
+                        actionButtons(controls)
                     }
                 }
             }
@@ -68,34 +68,26 @@ struct ThreadControls: View {
         #if os(iOS)
         .contentShape(.hoverEffect, shape)
         #endif
-        .glassEffect(.regular.interactive(), in: shape)
+        .glassEffect(glass, in: shape)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
-        .alert("修改思考强度失败", isPresented: Binding(get: { effortError != nil }, set: { if !$0 { effortError = nil } })) {
-            Button("好", role: .cancel) { effortError = nil }
-        } message: { Text(effortError ?? "") }
-        .alert("无法开始语音输入", isPresented: Binding(get: { voiceError != nil }, set: { if !$0 { voiceError = nil } })) {
-            Button("好", role: .cancel) { voiceError = nil }
-        } message: { Text(voiceError ?? "") }
+        .alert("修改思考强度失败", isPresented: Binding(get: { state.effortError != nil }, set: { if !$0 { state.effortError = nil } })) {
+            Button("好", role: .cancel) { state.effortError = nil }
+        } message: { Text(state.effortError ?? "") }
+        .alert("无法开始语音输入", isPresented: Binding(get: { state.voiceError != nil }, set: { if !$0 { state.voiceError = nil } })) {
+            Button("好", role: .cancel) { state.voiceError = nil }
+        } message: { Text(state.voiceError ?? "") }
     }
 
-    @ViewBuilder
-    private var effortControl: some View {
-        if let effort = Effort.allCases.first(where: { $0.name == reasoning }) {
-            EffortPicker(effort: Binding(get: { effortDraft ?? effort }, set: { effortDraft = $0 }),
-                         allowed: availableEfforts, enabled: canChangeEffort, commit: saveEffort, cancel: { effortDraft = nil })
-                .help(thread.agentCapabilities?.explanation ?? "正在读取模型能力")
-        } else {
-            Menu {
-                ForEach(availableEfforts, id: \.self) { value in
-                    Button(value.name) { effortDraft = value; saveEffort() }
-                }
-            } label: { Text(reasoning == "default" ? "自动" : reasoning).font(Theme.secondary).foregroundStyle(.secondary).padding(.horizontal, 8) }
-                .disabled(!canChangeEffort)
-        }
+    private var glass: Glass {
+        #if DEBUG
+        if ControlsBarVariant.noGlass { return .identity }
+        #endif
+        return .regular.interactive()
     }
 
-    private var actionButtons: some View {
-        HStack(spacing: Self.actionGap) {
+    private func actionButtons(_ controls: ThreadControlsModel) -> some View {
+        let listening = controls.listening
+        return HStack(spacing: Self.actionGap) {
             HStack(spacing: 0) {
                 Button {} label: { Image(systemName: "paperclip") }
                     .buttonStyle(PaneButtonStyle())
@@ -104,21 +96,19 @@ struct ThreadControls: View {
                     .buttonStyle(PaneButtonStyle(foreground: listening ? .accentColor : .secondary))
                     .accessibilityLabel(listening ? "结束语音输入" : "语音输入")
             }
-            if thread.showStop {
-                Button {
-                    thread.stop()
-                } label: { Image(systemName: "stop.fill") }
-                .buttonStyle(PaneButtonStyle(fill: Theme.strongPlaceholder))
-                .disabled(!thread.canStop)
-                .accessibilityLabel("停止")
+            if controls.showsStop {
+                Button(action: controls.stop) { Image(systemName: "stop.fill") }
+                    .buttonStyle(PaneButtonStyle(fill: Theme.strongPlaceholder))
+                    .disabled(!thread.canStop)
+                    .accessibilityLabel("停止")
             }
-            if thread.state?.capabilities.resume == true {
-                Button("继续") { thread.control("resume") }
+            if controls.showsResume {
+                Button("继续", action: controls.resume)
                     .buttonStyle(PaneButtonStyle(text: true))
                     .disabled(!thread.canResume)
                     .accessibilityLabel("继续")
             }
-            if !blank && fading == nil {
+            if controls.showsSend {
                 Button(action: submit) { Image(systemName: "arrow.up") }
                     .buttonStyle(PaneButtonStyle(fill: .accentColor))
                     .disabled(!thread.canSend)
@@ -127,118 +117,28 @@ struct ThreadControls: View {
         }
     }
 
-    private var listening: Bool { model.voice.owner == voiceOwner }
-
     private func toggleVoice() {
-        if listening {
-            model.voice.stop()
-            return
-        }
-        // 识别出的字接在开录时的草稿后面，每次都是到目前为止的全文
-        let base = thread.draft
-        let thread = thread, voice = model.voice, owner = voiceOwner
-        Task {
-            do {
-                let client = try thread.client ?? model.activeClient(in: area)
-                try await voice.start(owner: owner, target: VoiceTarget(client: client, thread: thread.isDraft ? nil : thread.id)) { text in
-                    switch text {
-                    case .partial(let value), .final(let value): thread.draft = base + value
-                    case .failed(let message):
-                        voice.stop(owner: owner)
-                        voiceError = message
-                    }
-                }
-                #if os(iOS)
-                // 收起键盘，窗口底部随声音起伏的签名才露得出来
-                typing.wrappedValue = false
-                #endif
-            } catch {
-                voiceError = error.localizedDescription
-            }
-        }
-    }
-
-    private var blank: Bool {
-        thread.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    /// 草稿还没有实例，思考强度改的是本机选择，随第一条消息一起提交。
-    private var choice: DraftAgentChoice? { instance == nil ? thread.draftChoice : nil }
-    private var agentModel: AgentModelConfiguration? { model.agentModel(for: thread, instance: instance, in: area) }
-    private var reasoning: String { agentModel?.reasoning ?? "medium" }
-    private var availableEfforts: [Effort] {
-        let levels = thread.agentCapabilities?.model(agentModel?.model ?? "")?.reasoning ?? []
-        return Effort.allCases.filter { levels.contains($0.name) }
-    }
-    private var canChangeEffort: Bool {
-        if choice != nil { return agentModel != nil && !availableEfforts.isEmpty && model.isConnected(area) }
-        return instance != nil && !savingEffort && !availableEfforts.isEmpty
-            && model.isConnected(area) && thread.agentCapabilities?.canEdit(thread.state) == true
-    }
-    private func saveEffort() {
-        if choice != nil {
-            if canChangeEffort, let effortDraft, var selected = agentModel {
-                selected.reasoning = effortDraft.name
-                thread.draftChoice?.model = selected
-            }
-            self.effortDraft = nil
-            return
-        }
-        guard canChangeEffort, let effortDraft, effortDraft.name != reasoning, let instance else { self.effortDraft = nil; return }
-        savingEffort = true
-        Task {
-            defer { savingEffort = false; self.effortDraft = nil }
-            do {
-                try await model.updateAgent(in: area, id: instance.id) { $0.model.reasoning = effortDraft.name }
-            } catch { effortError = error.localizedDescription }
-        }
-    }
-
-    /// 发送时从控制区推开的波：弓形，中间先走，和对话往上滑同一条弹簧朝窗口顶边走，像把对话推上去；
-    /// 从窄到宽、越走越淡，到窗口上部已经很淡。
-    private static func sendWave(from frame: CGRect, reach: CGFloat) -> DotWave.Parameters {
-        DotWave.Parameters(spring: .glide, width: 24, widthEnd: 144, reach: reach, bow: frame.width * 0.75, fadeEnd: 0.85)
+        #if os(iOS)
+        // 收起键盘，窗口底部随声音起伏的签名才露得出来
+        let typing = typing
+        controls.toggleVoice { typing.wrappedValue = false }
+        #else
+        controls.toggleVoice()
+        #endif
     }
 
     private func submit() {
-        guard !blank, fading == nil, thread.canSend else { return }
-        let sent = thread.draft
-        // 波只画在窗口里，朝窗口顶边走，和对话往上滑同一次更新起步
-        let frame = frame, stage = stage, scope = dotScope
-        let reach = frame.minY - (scope?.frame.minY ?? frame.minY)
-        send(Message(typed: sent.trimmingCharacters(in: .whitespacesAndNewlines))) {
-            stage?.emitWave(from: frame, parameters: Self.sendWave(from: frame, reach: reach), in: scope)
-        }
-        // 新工作区先选择项目；关闭选择窗口时仍保留原输入。
-        guard !area.isDraft else { return }
-        // 发送时就清空，输入框撑着原来的高度淡完再变矮。清空时键盘处理、输入框重排要几十毫秒（2026-10-11 iPhone 实测），
-        // 放在对话刚起步的时候，不落在滑得最快的时候
-        fading = FadingText(text: sent, height: fieldHeight)
-        thread.draft = ""
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.fadeDuration) { fading = nil }
+        controls.submit(from: frame, fieldHeight: fieldHeight)
     }
 
     /// 附件、语音这组按钮与后面停止、继续、发送键的间距，比通用的按钮间距紧，发送键贴着左边的按钮组。
-    private static let actionGap: CGFloat = 4
-
-    /// 发出去的字 0.3 秒 easeOut 模糊到 6、透明度到 0。
-    fileprivate static let fadeDuration = 0.3
-    fileprivate static let fadeBlur: CGFloat = 6
-}
-
-/// 一段正在淡掉的发出去的字，和发送时输入框的高度。
-private struct FadingText {
-    let id = UUID()
-    let text: String
-    let height: CGFloat
+    static let actionGap: CGFloat = 4
 }
 
 /// 发出去的字画成图盖在输入框原处，在 Core Animation 里模糊、淡掉，由渲染服务驱动，主线程不逐帧更新。
 /// 图和输入框里的字逐像素重合，折行也一样（2026-10-11 实测；iOS 含深色和大字号）。
 private struct FadingSnapshot {
     let fading: FadingText?
-    /// 图四周留出的边，容下模糊溢出的部分；盖回去时往左上让开同样的距离。
-    static let bleed: CGFloat = 12
 }
 
 #if os(macOS)
@@ -246,11 +146,26 @@ extension FadingSnapshot: NSViewRepresentable {
     func makeNSView(context: Context) -> FadingSnapshotView { FadingSnapshotView() }
 
     func updateNSView(_ view: FadingSnapshotView, context: Context) {
-        if let fading { view.fade(fading, colorScheme: context.environment.colorScheme, scale: context.environment.displayScale) }
+        guard let fading, !view.isShowing(fading) else { return }
+        view.fade(fading, image: Self.render(fading.text, width: view.bounds.width, colorScheme: context.environment.colorScheme,
+                                             scale: context.environment.displayScale), scale: context.environment.displayScale)
+    }
+
+    /// 按输入框的字体和宽度用 SwiftUI 的 Text 画，和 Mac 输入框的排法一样。
+    private static func render(_ text: String, width: CGFloat, colorScheme: ColorScheme, scale: CGFloat) -> CGImage? {
+        guard width > 0 else { return nil }
+        let renderer = ImageRenderer(content: Text(text).font(Theme.body).lineLimit(8)
+            .frame(width: width, alignment: .leading)
+            .padding(FadingText.bleed)
+            .environment(\.colorScheme, colorScheme))
+        renderer.scale = scale
+        return renderer.cgImage
     }
 }
 
-private final class FadingSnapshotView: NSView {
+/// 发出去的字的图（四周带 FadingText.bleed 的边）盖在输入框原处，0.3 秒 easeOut 模糊、淡掉。
+/// SwiftUI 版的图用 Text 画（见 FadingSnapshot），Mac 宽屏的原生输入区直接画输入框自己的字（见 ComposerField.snapshot）。
+final class FadingSnapshotView: NSView {
     private let content = CALayer()
     private var shown: UUID?
 
@@ -269,10 +184,12 @@ private final class FadingSnapshotView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    func fade(_ fading: FadingText, colorScheme: ColorScheme, scale: CGFloat) {
+    func isShowing(_ fading: FadingText) -> Bool { fading.id == shown }
+
+    func fade(_ fading: FadingText, image: CGImage?, scale: CGFloat) {
         guard fading.id != shown else { return }
         shown = fading.id
-        guard let image = render(fading.text, colorScheme: colorScheme, scale: scale) else { return }
+        guard let image else { return }
         let blur = CIFilter(name: "CIGaussianBlur")
         blur?.name = "blur"
         blur?.setValue(0, forKey: kCIInputRadiusKey)
@@ -281,7 +198,7 @@ private final class FadingSnapshotView: NSView {
         content.contents = image
         content.contentsScale = scale
         content.bounds = CGRect(x: 0, y: 0, width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
-        content.position = CGPoint(x: -FadingSnapshot.bleed, y: -FadingSnapshot.bleed)
+        content.position = CGPoint(x: -FadingText.bleed, y: -FadingText.bleed)
         content.filters = blur.map { [$0] }
         content.opacity = 0
         CATransaction.commit()
@@ -290,23 +207,12 @@ private final class FadingSnapshotView: NSView {
         opacity.toValue = 0
         let radius = CABasicAnimation(keyPath: "filters.blur.inputRadius")
         radius.fromValue = 0
-        radius.toValue = ThreadControls.fadeBlur
+        radius.toValue = FadingText.blur
         let group = CAAnimationGroup()
         group.animations = [opacity, radius]
-        group.duration = ThreadControls.fadeDuration
+        group.duration = FadingText.duration
         group.timingFunction = CAMediaTimingFunction(name: .easeOut)
         content.add(group, forKey: "fade")
-    }
-
-    /// 按输入框的字体和宽度用 SwiftUI 的 Text 画，和 Mac 输入框的排法一样。
-    private func render(_ text: String, colorScheme: ColorScheme, scale: CGFloat) -> CGImage? {
-        guard bounds.width > 0 else { return nil }
-        let renderer = ImageRenderer(content: Text(text).font(Theme.body).lineLimit(8)
-            .frame(width: bounds.width, alignment: .leading)
-            .padding(FadingSnapshot.bleed)
-            .environment(\.colorScheme, colorScheme))
-        renderer.scale = scale
-        return renderer.cgImage
     }
 }
 #else
@@ -345,14 +251,14 @@ private final class FadingSnapshotView: UIView {
         shown = fading.id
         let scale = traitCollection.displayScale
         guard let image = render(fading.text) else { return }
-        let renderer = ImageRenderer(content: Image(decorative: image, scale: scale).blur(radius: ThreadControls.fadeBlur))
+        let renderer = ImageRenderer(content: Image(decorative: image, scale: scale).blur(radius: FadingText.blur))
         renderer.scale = scale
         guard let blurredImage = renderer.cgImage else { return }
         let bounds = CGRect(x: 0, y: 0, width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         content.bounds = bounds
-        content.position = CGPoint(x: -FadingSnapshot.bleed, y: -FadingSnapshot.bleed)
+        content.position = CGPoint(x: -FadingText.bleed, y: -FadingText.bleed)
         for (part, image) in [(sharp, image), (blurred, blurredImage)] {
             part.contents = image
             part.contentsScale = scale
@@ -392,7 +298,7 @@ private final class FadingSnapshotView: UIView {
                 return true
             }
             guard let last = fragments.last else { return }
-            let bleed = FadingSnapshot.bleed
+            let bleed = FadingText.bleed
             let size = CGSize(width: bounds.width + bleed * 2, height: min(last.layoutFragmentFrame.maxY, bounds.height) + bleed * 2)
             image = UIGraphicsImageRenderer(size: size, format: UIGraphicsImageRendererFormat(for: traitCollection)).image { context in
                 for fragment in fragments {
@@ -408,7 +314,7 @@ private final class FadingSnapshotView: UIView {
         let animation = CABasicAnimation(keyPath: "opacity")
         animation.fromValue = from
         animation.toValue = to
-        animation.duration = ThreadControls.fadeDuration
+        animation.duration = FadingText.duration
         animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
         return animation
     }

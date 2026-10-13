@@ -308,14 +308,32 @@ struct InstanceActions: View {
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     var body: some View {
-        ForEach(area.definition(of: instance)?.views ?? []) { view in
-            Button("打开\(view.title)") { model.openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area) }
-                .disabled(area.changingWindows || area.pendingWindowRequest != nil || area.pendingInstanceRequest != nil)
+        ForEach(Array(InstanceAction.all(for: instance, in: area, model: model).enumerated()), id: \.offset) { _, action in
+            Button(action.title, role: action.destructive ? .destructive : nil, action: action.perform)
+                .disabled(!action.enabled)
         }
-        Button("实例设置与授权") { area.settingsInstance = instance }
+    }
+}
+
+/// 一项实例操作。SwiftUI 的菜单（InstanceActions）和 Mac 原生台面的卡片右键菜单都从这里出。
+struct InstanceAction {
+    let title: String
+    var enabled = true
+    var destructive = false
+    let perform: @MainActor () -> Void
+
+    /// 打开它的各个视图、实例设置与授权；持久实例还能归档。
+    @MainActor static func all(for instance: RemotePluginInstance, in area: WorkArea, model: AppModel) -> [InstanceAction] {
+        let busy = area.changingWindows || area.pendingWindowRequest != nil || area.pendingInstanceRequest != nil
+        var actions = (area.definition(of: instance)?.views ?? []).map { view in
+            InstanceAction(title: "打开\(view.title)", enabled: !busy) {
+                model.openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area)
+            }
+        }
+        actions.append(InstanceAction(title: "实例设置与授权") { area.settingsInstance = instance })
         if area.definition(of: instance)?.lifetime == .persistent {
-            Button("归档", role: .destructive) { area.archiveRequest = instance }
-                .disabled(!model.isConnected(area))
+            actions.append(InstanceAction(title: "归档", enabled: model.isConnected(area), destructive: true) { area.archiveRequest = instance })
         }
+        return actions
     }
 }

@@ -109,36 +109,54 @@ struct DockEntryFace: View {
 
 /// 进行中（运行、正在停止、正在收尾）从头像向外扩散的实心脉冲，颜色和节奏随阶段，大小头像按比例；不含头像。
 /// 只填头像外面的一圈，画在上面也不盖住头像：最小化的窗口卡片自己画头像，脉冲画在卡片上面。
+/// 一次一个波，前一个散尽再发下一个；减弱动态时停在半路，只留一圈淡晕。节奏按绝对时间对齐，几个头像同阶段时同步。
 struct DockPulse: View {
     let instance: String
     @Environment(WorkArea.self) private var area
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// 波传出去的距离占头像直径的比例。
-    private static let reach: CGFloat = 9 / 36
+    static let reach: CGFloat = 9 / 36
 
     var body: some View {
         if area.isRunning(instance) {
             let phase = area.activities[instance]?.phase ?? "idle"
             let color = ContextRing.color(phase), period = max(ContextRing.period(phase), 1)
             let margin = Metrics.dragBubble * Self.reach
-            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { timeline in
-                let time = timeline.date.timeIntervalSinceReferenceDate / period
-                Canvas { canvas, size in
-                    let side = min(size.width, size.height) - 2 * margin
-                    let center = CGPoint(x: size.width / 2, y: size.height / 2)
-                    let circle = { (radius: CGFloat) in
-                        Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius))
-                    }
-                    // 一次一个波，前一个散尽再发下一个；减弱动态时停在半路，只留一圈淡晕
-                    let progress = reduceMotion ? 0.5 : time.truncatingRemainder(dividingBy: 1)
-                    var disc = circle(side / 2 + side * Self.reach * progress)
-                    disc.addPath(circle(side / 2))
-                    canvas.fill(disc, with: .color(color.opacity(0.6 * (1 - progress))), style: FillStyle(eoFill: true))
+            Group {
+                #if os(macOS)
+                // Mac 上交给图层动画，跟屏幕刷新率走，主线程不逐帧重画
+                DockPulseLayers(color: color, period: period, margin: margin, still: reduceMotion)
+                #else
+                TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { timeline in
+                    let time = timeline.date.timeIntervalSinceReferenceDate / period
+                    DockPulseFrame(color: color, margin: margin, progress: reduceMotion ? 0.5 : time.truncatingRemainder(dividingBy: 1))
                 }
+                #endif
             }
             .padding(-margin)
             .allowsHitTesting(false)
+        }
+    }
+}
+
+/// 某一刻的脉冲：progress 是这一个波走到哪（0～1）。SwiftUI 版逐帧画它，Mac 的图层版（DockPulseLayers）照它复刻。
+struct DockPulseFrame: View {
+    let color: Color
+    /// 四周伸出头像的那一截。
+    let margin: CGFloat
+    let progress: Double
+
+    var body: some View {
+        Canvas { canvas, size in
+            let side = min(size.width, size.height) - 2 * margin
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            let circle = { (radius: CGFloat) in
+                Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius))
+            }
+            var disc = circle(side / 2 + side * DockPulse.reach * progress)
+            disc.addPath(circle(side / 2))
+            canvas.fill(disc, with: .color(color.opacity(0.6 * (1 - progress))), style: FillStyle(eoFill: true))
         }
     }
 }
