@@ -236,7 +236,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         layout.anchor(in: frame, attachmentsWidth: container?.attachmentsWidth ?? 0)
     }
 
-    override func actionBar() -> (side: HorizontalEdge, content: AnyView)? {
+    func actionBar() -> (side: HorizontalEdge, content: AnyView)? {
         guard let message, let context, context.actionable else { return nil }
         let expanded = Binding { [weak self] in self?.expanded ?? false } set: { [weak self] in self?.setExpanded($0) }
         return (.trailing, AnyView(MessageActionButtons(message: message, queued: queued, foldable: foldable, expanded: expanded)

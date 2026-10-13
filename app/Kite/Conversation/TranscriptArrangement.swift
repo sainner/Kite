@@ -53,17 +53,16 @@ enum TranscriptPlacement: Equatable {
     case remove
 }
 
-/// 原生对话列表两端共用的部分：行的仓库（按 id 复用行对象，看签名、外观、托管的环境决定换不换内容）、排列循环、
+/// 原生对话列表两端共用的部分：行的仓库（按 id 复用行对象，看签名、外观决定换不换内容）、排列循环、
 /// 放进列表的范围、行高动画、空闲补量。滚动视图、行视图、操作栏宿主各端自己写，按这里的结果执行。
 /// 规则见 TranscriptListView 开头（iOS 的 PhoneTranscriptView 同）；跟不跟着最底下、留白、发送后的滑动见 TranscriptFollow。
 @MainActor final class TranscriptArrangement {
     private(set) var slots: [TranscriptRowSlot] = []
     private(set) var byID: [RowID: TranscriptRowSlot] = [:]
-    /// 各行上次更新时的形状签名，托管的行签名变了才换内容，见 update。
+    /// 各行上次更新时的形状签名，签名变了才换内容，见 update。
     private var shapes: [RowID: Int] = [:]
-    /// 环境里会让行重画的几项：外观变了所有行都换一遍，选中的行、刚发出的消息变了托管的行换一遍。
+    /// 环境里会让行重画的几项：外观变了所有行都换一遍。
     private var appearanceKey: AppearanceKey?
-    private var hostedKey: HostedKey?
     /// 每次换行加一，发送时用它看新消息到了没有。
     private(set) var version = 0
     /// 正在展开、收起的行：从哪个高起、弹簧走到哪了。
@@ -86,10 +85,9 @@ enum TranscriptPlacement: Equatable {
     func update(_ rows: [TranscriptRow], context: TranscriptRowContext,
                 make: (TranscriptRow) -> TranscriptRowSlot,
                 fits: (TranscriptRowSlot, TranscriptRow) -> Bool) -> [TranscriptRowSlot] {
-        let appearance = AppearanceKey(context.environment), hosted = HostedKey(context.environment)
-        let appearanceChanged = appearance != appearanceKey, hostedChanged = hosted != hostedKey
+        let appearance = AppearanceKey(context.environment)
+        let appearanceChanged = appearance != appearanceKey
         appearanceKey = appearance
-        hostedKey = hosted
         var removed: [TranscriptRowSlot] = []
         var next: [TranscriptRowSlot] = []
         var nextByID: [RowID: TranscriptRowSlot] = [:]
@@ -100,10 +98,8 @@ enum TranscriptPlacement: Equatable {
             let slot: TranscriptRowSlot
             if let existing = byID[row.id], fits(existing, row) {
                 slot = existing
-                // 签名（记录只追加，字数就能看出变没变）或外观变了才换内容、作废量过的高；
-                // 选中的行、刚发出的消息变了只换托管的行的内容，高不变
-                let resized = shapes[row.id] != shape || appearanceChanged
-                if resized || hostedChanged && slot.hosted { slot.update(row, context: context, resized: resized) }
+                // 签名（记录只追加，字数就能看出变没变）或外观变了才换内容、作废量过的高
+                if shapes[row.id] != shape || appearanceChanged { slot.update(row, context: context, resized: true) }
             } else {
                 slot = make(row)
                 slot.update(row, context: context, resized: true)
@@ -353,17 +349,6 @@ enum TranscriptPlacement: Equatable {
             typeSize = environment.dynamicTypeSize
             weight = environment.legibilityWeight
             #endif
-        }
-    }
-
-    /// 托管的行还读选中的行（操作栏）和刚发出的消息（上浮）。
-    private struct HostedKey: Equatable {
-        let selected: RowID?
-        let arriving: Set<String>
-
-        init(_ environment: EnvironmentValues) {
-            selected = environment.selectedRow.wrappedValue
-            arriving = environment.arrivingMessages
         }
     }
 }

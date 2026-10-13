@@ -46,12 +46,10 @@ extension TranscriptRowContext {
 
     /// 视图建好了没有。没建过的行按估的高占位。
     var hasView: Bool { false }
-    /// 托管原来的 SwiftUI 行视图：还读选中的行和刚发出的消息，这两样变了也要换内容。
-    var hosted: Bool { false }
     /// 视图，第一次要时建。
     var view: PlatformView { preconditionFailure("子类给出") }
 
-    /// 换上这一行的新内容和环境。resized：内容或外观变了，量过的高作废；只是选中的行、刚发出的消息变了时不作废。
+    /// 换上这一行的新内容和环境。resized：内容或外观变了，量过的高作废。
     func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
         self.row = row
         if resized { measured = nil }
@@ -76,14 +74,11 @@ extension TranscriptRowContext {
 
     /// 操作栏和这一行的哪一块对齐。
     var actionAnchor: CGRect { frame }
-
-    /// 这一行的操作栏：和哪边对齐、上面的按钮。没有原生操作栏的行（托管的行自己带着）给 nil。
-    func actionBar() -> (side: HorizontalEdge, content: AnyView)? { nil }
 }
 
-/// 一行该用哪种实现：agent 的话、人发的消息原生排，工具行、思考行原生，其余先托管原来的 SwiftUI 行视图。
+/// 一行该用哪种实现：agent 的话、人发的消息、工具组、思考、kite 发来的话、压缩分界，其余（通知、打断、API 出错）是一行事件。
 /// 判断两端共用，各端的工厂按它建自己的子类（Mac 见 makeTranscriptRowSlot，iOS 见 makePhoneTranscriptRowSlot）。
-enum SlotKind { case prose, bubble, work, thinking, hosted }
+enum SlotKind { case prose, bubble, work, thinking, kite, compaction, event }
 
 func slotKind(_ row: TranscriptRow) -> SlotKind {
     switch row.content {
@@ -91,9 +86,13 @@ func slotKind(_ row: TranscriptRow) -> SlotKind {
     case .item(let item):
         switch item.kind {
         case .text: .prose
+        // 人发的消息在 TranscriptRow.rows 里都成了 .message，走不到这里
+        case .human: .bubble
         case .work: .work
         case .thinking: .thinking
-        default: .hosted
+        case .kite: .kite
+        case .compacted: .compaction
+        case .notification, .interrupted, .apiError: .event
         }
     }
 }

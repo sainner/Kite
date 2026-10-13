@@ -235,15 +235,16 @@ final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
         activity.show(call.state, presence: environment.panePresence)
         let status = Theme.status.resolve(in: environment.fontResolutionContext).ctFont as UIFont
         diff.show(call.use.diffSummary, font: status.monospacedDigits, fill: Theme.codeBackground.resolve(in: environment).cgColor)
-        diff.accessibilityLabel = call.use.diffSummary.map { "补丁行数 \($0)" }
+        diff.accessibilityLabel = call.use.diffSummary.map(TranscriptSpeech.patchLines)
         duration.font = status.monospacedDigits
         duration.fill = Theme.codeBackground.resolve(in: environment).cgColor
         updateDuration()
         height0 = UIFontMetrics(forTextStyle: .subheadline).scaledValue(
             for: Metrics.toolRowHeight, compatibleWith: UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(environment.dynamicTypeSize)))
-        accessibilityLabel = call.use.displayName + " " + text
-        accessibilityValue = call.stageLabel.isEmpty ? "成功" : call.stageLabel
-        accessibilityHint = expanded ? "收起参数与结果" : "展开参数与结果"
+        let spoken = TranscriptSpeech.call(call, summary: text)
+        accessibilityLabel = spoken.label
+        accessibilityValue = spoken.value
+        accessibilityHint = TranscriptSpeech.callHint(expanded: expanded)
         setNeedsLayout()
     }
 
@@ -274,7 +275,7 @@ final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
             ? value.formatted(.number.precision(.fractionLength(0))) + " ms"
             : (value / 1000).formatted(.number.precision(.fractionLength(0...1))) + " s"
         duration.show(text, font: nil, fill: nil)
-        duration.accessibilityLabel = "运行时间 \(text)"
+        duration.accessibilityLabel = TranscriptSpeech.duration(text)
     }
 
     override func willMove(toWindow newWindow: UIWindow?) {

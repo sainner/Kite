@@ -2,54 +2,42 @@
 import SwiftUI
 import UIKit
 
-/// iOS 原生对话列表的行比共用的基类多两件事：放进列表时（didPlace）、收到内存警告放掉视图（releaseView）。
+/// iOS 原生对话列表的行比共用的基类多几件事：放进列表时（didPlace）、收到内存警告放掉视图（releaseView）、操作栏（actionBar）。
 protocol PhoneRowSlot: TranscriptRowSlot {
-    /// 第一次放进文档以后：行里托管的 SwiftUI（工具步骤、附件这些）接进视图控制器的层级。
+    /// 第一次放进文档以后：行里托管的 SwiftUI（附件、嵌在正文里的卡片这些）接进视图控制器的层级。
     func didPlace()
     /// 放掉视图，下次要时按内容重建；量过的高留着。
     func releaseView()
+    /// 这一行的操作栏：和哪边对齐、上面的按钮。没有操作栏的行给 nil。Mac 的见 ActionBarProviding。
+    func actionBar() -> (side: HorizontalEdge, content: AnyView)?
 }
 
-/// iOS 上一行用哪种实现：两端共用的 slotKind 之外，Mac 还托管 SwiftUI 的几种行（kite 发来的、通知、打断、压缩分界、API 错误）这里都是原生的。
-enum PhoneSlotKind { case prose, bubble, work, thinking, kite, compacted, event }
-
-func phoneSlotKind(_ row: TranscriptRow) -> PhoneSlotKind {
-    switch slotKind(row) {
-    case .prose: return .prose
-    case .bubble: return .bubble
-    case .work: return .work
-    case .thinking: return .thinking
-    case .hosted:
-        guard case .item(let item) = row.content else { return .event }
-        switch item.kind {
-        case .kite: return .kite
-        case .compacted: return .compacted
-        default: return .event
-        }
-    }
+extension PhoneRowSlot {
+    func actionBar() -> (side: HorizontalEdge, content: AnyView)? { nil }
 }
 
+/// iOS 上按 slotKind（两端共用，见 TranscriptSlot）建这一行的实现。
 @MainActor func makePhoneTranscriptRowSlot(_ row: TranscriptRow) -> TranscriptRowSlot {
-    switch phoneSlotKind(row) {
+    switch slotKind(row) {
     case .prose: PhoneProseRowSlot(row: row)
     case .bubble: PhoneBubbleRowSlot(row: row)
     case .work: PhoneWorkRowSlot(row: row)
     case .thinking: PhoneThinkingRowSlot(row: row)
     case .kite: PhoneKiteRowSlot(row: row)
-    case .compacted: PhoneCompactedRowSlot(row: row)
+    case .compaction: PhoneCompactedRowSlot(row: row)
     case .event: PhoneEventRowSlot(row: row)
     }
 }
 
 /// 这一行用的实现还能不能接着用：种类变了换一个新的。
 @MainActor func phoneTranscriptRowSlotFits(_ slot: TranscriptRowSlot, _ row: TranscriptRow) -> Bool {
-    switch phoneSlotKind(row) {
+    switch slotKind(row) {
     case .prose: slot is PhoneProseRowSlot
     case .bubble: slot is PhoneBubbleRowSlot
     case .work: slot is PhoneWorkRowSlot
     case .thinking: slot is PhoneThinkingRowSlot
     case .kite: slot is PhoneKiteRowSlot
-    case .compacted: slot is PhoneCompactedRowSlot
+    case .compaction: slot is PhoneCompactedRowSlot
     case .event: slot is PhoneEventRowSlot
     }
 }
@@ -69,6 +57,8 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var topInset: CGFloat = 0
     /// 引用图标要加载的网址，变了才重新加载。
     private var urls: [URL] = []
+    /// 看着引用图标（ReferenceIcons），载完重排。
+    private let tracking = ModelTracking()
     /// 拖缝时只排一截、按住看着的那截，两端共用。量过的高作废时跟着作废。
     private let layout = ProseLayout()
 
@@ -105,7 +95,7 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
     }
 
     /// 主对话里 agent 的话：复制、翻译、分叉，和这段话左边对齐。
-    override func actionBar() -> (side: HorizontalEdge, content: AnyView)? {
+    func actionBar() -> (side: HorizontalEdge, content: AnyView)? {
         guard let context, context.actionable, let source else { return nil }
         return (.leading, AnyView(AgentTextActions(text: source).environment(\.self, context.environment)))
     }
@@ -115,6 +105,8 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         guard case .item(let item) = row.content, case .text(let source) = item.kind else { return }
         self.context = context
         self.source = source
+        // 原文、环境换了，要看的引用图标跟着换
+        tracking.cancel()
         guard text != nil else { return }
         configure()
         build()
@@ -137,7 +129,7 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private func build() {
         guard let source, let context, let text else { return }
         let environment = context.environment
-        let content = withObservationTracking { () -> TextViewContent in
+        let content = tracking.track { () -> TextViewContent in
             let blocks = document.blocks(for: source)
             let body = (environment.font ?? .body).resolve(in: environment.fontResolutionContext).ctFont as UIFont
             topInset = SelectableMarkdown.startsWithHeading(blocks) ? PhonePixel.round(Metrics.markdownBlockGap(body.pointSize) / 2) : 0
@@ -148,12 +140,13 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
             }
             return SelectableMarkdown.content(blocks, source: source, body: body, color: .label, colorScheme: environment.colorScheme,
                                               scope: environment.referenceScope, attachments: attachments)
-        } onChange: { [weak self] in
-            Task { @MainActor in
+        } changed: { [weak self] in
+            // 通知在图标写进去之前发出，下一拍再按新的排
+            DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.measured = nil
-                self.build()
-                self.heightChanged?(nil)
+                measured = nil
+                build()
+                heightChanged?(nil)
             }
         }
         text.source = content.source

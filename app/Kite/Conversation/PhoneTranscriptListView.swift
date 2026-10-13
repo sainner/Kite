@@ -34,6 +34,7 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
     private var heightTicker: FrameTicker?
     /// 所在窗口在不在屏上：紧凑布局横滑那一行的窗口都建着。不在屏上不补量、不接点状态栏回顶。
     private var presence: PanePresence?
+    private let presenceTracking = ModelTracking()
     /// 手指按下的时刻（还没松开时），见 TouchObserver。
     private var touchDown: CFTimeInterval?
 
@@ -78,6 +79,7 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
         if opened { actionsOpened = CACurrentMediaTime() }
         if self.presence !== presence {
             self.presence = presence
+            presenceTracking.cancel()
             observePresence()
         }
         let removed = arrangement.update(rows, context: context, make: { row in
@@ -199,12 +201,12 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
 
     // MARK: - 操作栏
 
-    /// 选中了原生行就在它旁边弹出操作栏：平常在这一行底下，底下放不下（会压到控制区）就放到上面；和这一行给的那一边对齐。
-    /// 托管的行的操作栏还在它们自己的 SwiftUI 视图里。收起时先让浮层播完收起动画再拿掉。
+    /// 选中了一行就在它旁边弹出操作栏：平常在这一行底下，底下放不下（会压到控制区）就放到上面；和这一行给的那一边对齐。
+    /// 收起时先让浮层播完收起动画再拿掉。
     private func placeActions() {
         guard let context else { return }
         let slot = context.selected.flatMap { arrangement.byID[$0] }
-        let bar = slot?.actionBar()
+        let bar = (slot as? PhoneRowSlot)?.actionBar()
         if let actions, actions.id != slot?.id || bar == nil {
             // 收起：同一个浮层改成不显示，播完动画再拿掉
             let host = actions.host
@@ -239,7 +241,7 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
             if let parent { host.didMove(toParent: parent) }
             // 先按收着排好一次，再换成显示：ActionBar 按 shown 的变化自己播出现的动画
             DispatchQueue.main.async { [weak self, weak host, weak slot] in
-                guard let self, let host, let slot, self.actions?.host === host, let bar = slot.actionBar() else { return }
+                guard let self, let host, let slot, self.actions?.host === host, let bar = (slot as? PhoneRowSlot)?.actionBar() else { return }
                 host.rootView = self.actionsRoot(bar.content, side: bar.side, above: above, context: context)
                 // 显示出来以后才有真实的宽，靠右的要按它重新对齐
                 self.placeActions()
@@ -307,13 +309,11 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
     /// 所在窗口进出屏幕：只有在屏上的窗口接点状态栏回顶（同一窗口里有几个开着的滚动视图时系统一个都不滚；
     /// iPad 宽屏几个窗口都在屏上，系统按点的位置挑上面那一个）；回到屏上时接着补量。
     private func observePresence() {
-        let onScreen = presence?.onScreen ?? true
+        let onScreen = presenceTracking.track { presence?.onScreen ?? true } changed: { [weak self] in
+            DispatchQueue.main.async { [weak self] in self?.observePresence() }
+        }
         scrollView.scrollsToTop = onScreen
         if onScreen, arrangement.slots.contains(where: { $0.measured == nil || $0.provisional }) { setNeedsArrange() }
-        guard let presence else { return }
-        withObservationTracking { _ = presence.onScreen } onChange: { [weak self] in
-            Task { @MainActor in self?.observePresence() }
-        }
     }
 
     // MARK: - 滚动
@@ -437,7 +437,7 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
 
     // MARK: - 内存
 
-    /// 收到内存警告时，离可见区远（上下三屏以外）的行放掉视图：文本视图按内容重建，托管的行里自己展开、横滑的状态会丢（用户 2026-10-13 定）。
+    /// 收到内存警告时，离可见区远（上下三屏以外）的行放掉视图：按内容重建，行里自己展开的状态、嵌着的卡片横滑的位置会丢（用户 2026-10-13 定）。
     /// 量过的高留着，排列不受影响。
     @objc private func memoryWarning() {
         let visible = visibleArea

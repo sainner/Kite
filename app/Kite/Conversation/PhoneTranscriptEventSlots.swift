@@ -315,7 +315,10 @@ final class PhoneCompactionDetails: UIView {
     private var heights: (summary: CGFloat, buttons: CGFloat, stack: CGFloat) = (0, 0, 0)
     private var width: CGFloat = 0
     private var source: (summary: String, context: TranscriptRowContext)?
-    private var watchingThread = false
+    /// 看着摘要里的引用图标（ReferenceIcons），载完重排。
+    private let summaryTracking = ModelTracking()
+    /// 看着会话能不能撤销压缩（WorkThread.canCompact）。
+    private let threadTracking = ModelTracking()
     private static let spacing: CGFloat = 10
 
     init() {
@@ -346,6 +349,8 @@ final class PhoneCompactionDetails: UIView {
         let accent = UIColor(cgColor: Color.accentColor.resolve(in: environment).cgColor)
         if force || source?.summary != compaction.summary {
             source = (compaction.summary, context)
+            // 摘要、环境换了，要看的引用图标跟着换
+            summaryTracking.cancel()
             buildSummary()
         }
         originalButton.isHidden = children.isEmpty
@@ -353,7 +358,7 @@ final class PhoneCompactionDetails: UIView {
         revertButton.isHidden = compaction.id == nil
         if let id = compaction.id { revertButton.action = { [weak self] in self?.revert(id) } }
         for button in [originalButton, revertButton] { button.style(font: font, color: accent) }
-        watchThread(environment)
+        showRevert(environment)
         rule.backgroundColor = Theme.rule.resolve(in: environment).cgColor
         if original != shownOriginal { stackAnimating = false }
         shownOriginal = original
@@ -378,7 +383,7 @@ final class PhoneCompactionDetails: UIView {
     private func buildSummary() {
         guard let (source, context) = self.source else { return }
         let environment = context.environment
-        let content = withObservationTracking { () -> TextViewContent in
+        let content = summaryTracking.track { () -> TextViewContent in
             let blocks = document.blocks(for: source)
             let body = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as UIFont
             topInset = SelectableMarkdown.startsWithHeading(blocks) ? PhonePixel.round(Metrics.markdownBlockGap(body.pointSize) / 2) : 0
@@ -389,8 +394,9 @@ final class PhoneCompactionDetails: UIView {
             }
             return SelectableMarkdown.content(blocks, source: source, body: body, color: .secondaryLabel, colorScheme: environment.colorScheme,
                                               scope: environment.referenceScope, attachments: attachments)
-        } onChange: { [weak self] in
-            Task { @MainActor in
+        } changed: { [weak self] in
+            // 通知在图标写进去之前发出，下一拍再按新的排
+            DispatchQueue.main.async { [weak self] in
                 self?.buildSummary()
                 self?.changed?(nil)
             }
@@ -402,19 +408,13 @@ final class PhoneCompactionDetails: UIView {
         summary.attributedText = content.text
     }
 
-    /// 撤销压缩能不能点跟着会话的状态（WorkThread.canCompact）变；只挂一个观察，变了重新挂。
-    private func watchThread(_ environment: EnvironmentValues) {
+    /// 撤销压缩能不能点跟着会话的状态（WorkThread.canCompact）变。
+    private func showRevert(_ environment: EnvironmentValues) {
         let thread = environment[WorkThread.self]
-        guard !watchingThread else {
-            revertButton.isEnabled = thread?.canCompact ?? false
-            return
-        }
-        watchingThread = true
-        revertButton.isEnabled = withObservationTracking { thread?.canCompact ?? false } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.watchingThread = false
-                if let context = self.source?.context { self.watchThread(context.environment) }
+        revertButton.isEnabled = threadTracking.track { thread?.canCompact ?? false } changed: { [weak self] in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let context = source?.context else { return }
+                showRevert(context.environment)
             }
         }
     }

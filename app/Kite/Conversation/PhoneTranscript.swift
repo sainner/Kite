@@ -25,7 +25,7 @@ struct PhoneTranscript: View, Animatable {
     let rows: [TranscriptRow]
     let scroll: PhoneTranscriptScroll
     var insets: EdgeInsets
-    /// 开着操作栏的那一行，变了要重排浮层、换托管的行，见 PhoneTranscriptView.update。
+    /// 开着操作栏的那一行，变了要重排浮层，见 PhoneTranscriptView.update。
     let selected: RowID?
 
     var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>> {

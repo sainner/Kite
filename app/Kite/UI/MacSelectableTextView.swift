@@ -241,13 +241,6 @@ extension ProseTextView {
         return view
     }
 
-    /// 按 lineWidth 的行宽排出来多高，取到像素：SwiftUI 的 Text 不往上取整到点。
-    func measurePixel(lineWidth: CGFloat) -> CGFloat {
-        _ = measure(lineWidth: lineWidth)
-        let height = textLayoutManager?.usageBoundsForTextContainer.height ?? 0
-        return (height * 2).rounded() / 2
-    }
-
     /// 放一段不带格式的字，复制给原样的字（不带字体颜色）。字和样子都没变时不重放，保留选区。
     func showPlain(_ string: String, font: NSFont, color: NSColor) {
         let text = NSAttributedString(string: string, attributes: [.font: font, .foregroundColor: color])

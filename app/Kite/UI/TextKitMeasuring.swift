@@ -6,23 +6,26 @@ import AppKit
 #endif
 
 /// 对话正文的文本视图（TextKit 2）两端共用的量高：按行宽量高、只排一截、找已经排好的段落、贴字的宽。
-/// Mac 的 ProseTextView 遵循它；iOS 原生对话的正文以后也遵循，两端的原生列表按同一套量。
+/// Mac 的 ProseTextView、iOS 的 PhoneProseTextView 遵循它，两端的原生列表按同一套量。
 /// 只碰 textLayoutManager：读 layoutManager 会让视图退回 TextKit 1。改容器的宽（fit）各端自己实现。
 protocol TextKitMeasuring: AnyObject {
     var textLayoutManager: NSTextLayoutManager? { get }
     /// 按 lineWidth 定容器的宽；文本容器跟着视图宽度时先把视图的宽放上去。
     func fit(lineWidth: CGFloat)
-    /// 量出来的高往上取整到多细：一点分成几份。Mac 取整点（原来 SwiftUI 版量的就是整点）；iOS 取到像素，
+    /// 一点分成几个像素：Mac 按 Retina 的 2 份量（原来就这样）；iOS 按屏幕。
+    var pixelScale: CGFloat { get }
+    /// measure 往上取整到像素还是整点：Mac 正文取整点（原来 SwiftUI 版量的就是整点）；iOS 取到像素，
     /// 同原来 SwiftUI 版用的 UITextView.sizeThatFits（一行 17 pt 正文 20.33 pt，取整点要高出 0.67 pt）。
-    var heightRounding: CGFloat { get }
+    var measuresPixels: Bool { get }
 }
 
 extension TextKitMeasuring {
-    var heightRounding: CGFloat { 1 }
+    var pixelScale: CGFloat { 2 }
+    var measuresPixels: Bool { false }
 
-    /// 按 heightRounding 往上取整。
+    /// 往上取整到像素（measuresPixels）或整点。
     func roundedHeight(_ height: CGFloat) -> CGFloat {
-        ceil(height * heightRounding) / heightRounding
+        measuresPixels ? ceil(height * pixelScale) / pixelScale : ceil(height)
     }
 
     /// 刚排好的各行里最宽的一行有多宽（排版坐标），按它算贴着字的宽度：和 NSAttributedString 的 boundingRect 量的一样，
@@ -63,12 +66,21 @@ extension TextKitMeasuring {
         return wrapped
     }
 
-    /// 按 lineWidth 的行宽排出来多高（不含上下边距）。
+    /// 按 lineWidth 的行宽排出来多高（不含上下边距），按 roundedHeight 取整。
     func measure(lineWidth: CGFloat) -> CGFloat {
+        roundedHeight(layoutHeight(lineWidth: lineWidth))
+    }
+
+    /// 同 measure，取到最近的像素：照 SwiftUI 的 Text，不往上取整（Mac 上 kite 发来的话、详情卡片里的字）。
+    func measurePixel(lineWidth: CGFloat) -> CGFloat {
+        (layoutHeight(lineWidth: lineWidth) * pixelScale).rounded() / pixelScale
+    }
+
+    fileprivate func layoutHeight(lineWidth: CGFloat) -> CGFloat {
         guard let layout = textLayoutManager else { return 0 }
         fit(lineWidth: lineWidth)
         layout.ensureLayout(for: layout.documentRange)
-        return roundedHeight(layout.usageBoundsForTextContainer.height)
+        return layout.usageBoundsForTextContainer.height
     }
 
     /// 改到 lineWidth 的行宽，从 location 那段起边排边往下，排够 height 高为止（排版坐标）。改宽让整段作废后只排这一截：

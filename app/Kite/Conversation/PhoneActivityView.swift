@@ -17,7 +17,7 @@ final class PhoneActivityView: UIView {
     private var texture: MTLTexture?
     private var state: Call.State?
     private var presence: PanePresence?
-    private var watchingPresence = false
+    private let tracking = ModelTracking()
 
     /// 贴图比字的范围四边多出的点，同 SwiftUI 的 maxSampleOffset。
     private static let inset: CGFloat = 4
@@ -31,6 +31,10 @@ final class PhoneActivityView: UIView {
         metal.framebufferOnly = true
         metal.isHidden = true
         layer.addSublayer(metal)
+        // 浅色深色、屏幕倍数变了，字的颜色、像素跟着变，贴图重画
+        registerForTraitChanges(UITraitCollection.systemTraitsAffectingColorAppearance + [UITraitDisplayScale.self]) {
+            (self: Self, _: UITraitCollection) in self.texture = nil
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -39,7 +43,7 @@ final class PhoneActivityView: UIView {
     func show(_ state: Call.State?, presence: PanePresence?) {
         if self.presence !== presence {
             self.presence = presence
-            watchingPresence = false
+            tracking.cancel()
         }
         self.state = UIAccessibility.isReduceMotionEnabled ? nil : state
         apply()
@@ -62,20 +66,17 @@ final class PhoneActivityView: UIView {
         CATransaction.commit()
     }
 
-    override func traitCollectionDidChange(_ previous: UITraitCollection?) {
-        super.traitCollectionDidChange(previous)
-        texture = nil
-    }
-
     override func didMoveToWindow() {
         super.didMoveToWindow()
         apply()
     }
 
-    private var onScreen: Bool { window != nil && presence?.onScreen != false }
-
     private func apply() {
-        watchPresence()
+        // 窗口进出屏幕时停、接着动
+        let shown = tracking.track { presence?.onScreen ?? true } changed: { [weak self] in
+            DispatchQueue.main.async { [weak self] in self?.apply() }
+        }
+        let onScreen = window != nil && shown
         let breathing = state == .queued && onScreen
         if breathing, content.layer.animation(forKey: "breath") == nil {
             content.layer.add(Self.breath(), forKey: "breath")
@@ -93,18 +94,6 @@ final class PhoneActivityView: UIView {
             link.invalidate()
             self.link = nil
             showSweep(false)
-        }
-    }
-
-    /// 窗口进出屏幕时停、接着动。盒子建好就不再换，只看它的 onScreen。
-    private func watchPresence() {
-        guard let presence, !watchingPresence else { return }
-        watchingPresence = true
-        withObservationTracking { _ = presence.onScreen } onChange: { [weak self] in
-            Task { @MainActor in
-                self?.watchingPresence = false
-                self?.apply()
-            }
         }
     }
 

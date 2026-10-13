@@ -245,6 +245,8 @@ struct MessageAttachmentRow: View {
                                height: Metrics.attachmentHeight)
                         .overlay { Image(systemName: "photo").foregroundStyle(.secondary) }
                         .help(name)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(TranscriptSpeech.imageAttachment(name))
                 case .file(let name):
                     HStack(spacing: 8) {
                         Image(systemName: Self.icon(name)).foregroundStyle(.secondary)
@@ -253,6 +255,8 @@ struct MessageAttachmentRow: View {
                     .padding(.horizontal, 12)
                     .frame(height: 44)
                     .overlay(RoundedRectangle(cornerRadius: Metrics.contentRadius, style: .continuous).strokeBorder(Theme.rule))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(TranscriptSpeech.fileAttachment(name))
                 }
             }
         }
