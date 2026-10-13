@@ -28,5 +28,5 @@
 - [远程连接与托管运维](todo-remote-connections.md) — iPhone 重连、托管容量备份、凭据重绑和多机关系
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
 - [真实终端](todo-terminal-plugin.md) — PTY 与跨端重连、停止和资源生命周期
-- [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量入口的基线（Mac、iPad 拖缝与侧栏拖宽）、缩小首帧、之前的分项与无效改法，iPhone 未量
+- [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽时台面重画待查、缩小首帧、无效改法，iPhone 未量
 - [个人组网清理](todo-headscale-cleanup.md) — lisa 实验资源的存在与清理状态待核验
