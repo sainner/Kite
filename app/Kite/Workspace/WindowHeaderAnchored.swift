@@ -156,6 +156,10 @@ private final class HeaderAnchorContainer: NSView, WindowHeaderFollower {
 
     /// 没给的方向按理想大小：标题栏的高度由里面的按钮定（2026-10-12 Mac 实测，给无限高时标题栏从 48 撑到 56）。
     func measure(_ proposal: ProposedViewSize) -> CGSize {
+        // 两个方向都给了就不用先量理想大小：拖缝改宽时标题那一侧每步都要量
+        if let width = proposal.width, let height = proposal.height {
+            return controller.sizeThatFits(in: CGSize(width: width, height: height))
+        }
         let ideal = controller.view.intrinsicContentSize
         return controller.sizeThatFits(in: CGSize(width: proposal.width ?? ideal.width, height: proposal.height ?? ideal.height))
     }

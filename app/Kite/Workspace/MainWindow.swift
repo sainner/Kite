@@ -4,6 +4,7 @@ import SwiftUI
 struct MainWindow: View {
     var availableWidth: CGFloat = 1272
     @Environment(AppModel.self) private var model
+    @Environment(\.displayScale) private var displayScale
     @State private var resizingFrom: CGFloat?
 
     var body: some View {
@@ -90,6 +91,8 @@ struct MainWindow: View {
             withAnimation(.snappy) { model.sidebarCollapsed = collapse }
         }
         if !collapse {
+            // 取到像素：侧栏的宽带零头时右边整块台面落在半像素上，里面的图片、文字每步都要按新的位置重画
+            let width = (width * displayScale).rounded() / displayScale
             model.sidebarWidth = min(max(width, Metrics.sidebarMin), Metrics.sidebarMax)
         }
     }

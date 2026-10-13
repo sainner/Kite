@@ -69,6 +69,14 @@ struct BubbleLayout {
     private(set) var contentHeight: CGFloat = 0
     /// 正文的行宽。
     private(set) var textWidth: CGFloat = 0
+    /// 折着的长消息拖缝时上一次排露出来那截的行宽、最宽的一行和这截的底边，见 foldedHeight。换了内容（contentChanged）、
+    /// 按别的方式量过（容器换了宽）就作废。
+    private var folded: (lineWidth: CGFloat, widest: CGFloat, bottom: CGFloat)?
+
+    /// 正文换了：拖缝中折着的那截要重排。
+    mutating func contentChanged() {
+        folded = nil
+    }
 
     /// 比折起来的高（foldHeight，iOS 随动态字体变）高出不少（1.4 倍）才折，同 MessageBubble。
     func foldable(foldHeight: CGFloat) -> Bool {
@@ -78,25 +86,26 @@ struct BubbleLayout {
     /// 按内容列的宽量正文。有代码段时占满气泡能给的宽度，只有字时贴着字，同 SelectableText。贴字的宽照 SelectableText 用 boundingRect 量：
     /// 它按最优断行量，长消息改宽时每次几毫秒（2026-10-13 实测）。拖缝和吸附中（resizing）改用近似：按能给的最宽排，取最宽的一行，
     /// 和 boundingRect 只差零点几点，但中文避头尾在临界宽度下会让个别行折得不一样（逐像素对过），所以返回 true，停下后按精确的重量。
-    /// narrows：拖缝中贴字的宽比能给的窄、折了行时，按贴字的宽再排一遍量高（Mac）。iOS 给 false：按能给的宽排出来的每行都放得下贴字的宽，
-    /// 行和高都一样，容器就留在能给的宽，每步少排一遍（iPad 真机拖缝时气泡量高占了大头）。
+    /// 拖缝中容器留在能给的宽、只排这一遍：每行都放得下贴字的宽，显示的就是这一遍的断行和高，不再按贴字的宽排第二遍
+    /// （iPad 真机拖缝时气泡量高占了大头；Mac 两窗贴底时两条折着的长消息每步约 1.5 ms，2026-10-14）。
+    /// 按贴字的宽重排时个别行会差一个词：上一行以全角收尾标点（」等）结束时，CoreText 要多出约半个字宽才放得下这一行
+    /// （2026-10-14 实测，五组样本、每 0.25 pt 一个宽，只有标点密集的那组在约 5% 的宽上差一个词，行数不变）；停下后照常按精确的重量。
     mutating func measure(_ text: some TextKitMeasuring, storage: NSAttributedString, width: CGFloat, hasBlocks: Bool,
-                          resizing: Bool, expanded: Bool, foldHeight: CGFloat, narrows: Bool = true) -> Bool {
+                          resizing: Bool, expanded: Bool, foldHeight: CGFloat) -> Bool {
         let padding = Metrics.bubblePadding
         let most = max(width - padding.width * 2, 0)
         let textHeight: CGFloat
         let provisional = resizing && !hasBlocks
+        let foldedPath = provisional && foldable(foldHeight: foldHeight) && !expanded
+        if !foldedPath { folded = nil }
         if hasBlocks {
             textWidth = most
             textHeight = text.measure(lineWidth: most)
-        } else if provisional, foldable(foldHeight: foldHeight), !expanded,
-                  let height = foldedHeight(text, most: most, foldHeight: foldHeight, narrows: narrows) {
+        } else if foldedPath, let height = foldedHeight(text, most: most, foldHeight: foldHeight) {
             textHeight = height
         } else if provisional {
-            var height = text.measure(lineWidth: most)
+            textHeight = text.measure(lineWidth: most)
             textWidth = min(ceil(text.widestLine) + 1, most)
-            if narrows, textWidth < most, text.wraps { height = text.measure(lineWidth: textWidth) }
-            textHeight = height
         } else {
             textWidth = ProseTextCoordinator.naturalWidth(of: storage, most: most)
             textHeight = text.measure(lineWidth: textWidth)
@@ -107,14 +116,20 @@ struct BubbleLayout {
 
     /// 折着的长消息拖缝时只排露出来的那截：贴字的宽按这截里最宽的一行，全文多高按上次量的随宽度反比估，只用来判断还折不折。
     /// 不然每步都要把整条长消息重排一遍，露出来的只有开头几行。
-    private mutating func foldedHeight(_ text: some TextKitMeasuring, most: CGFloat, foldHeight: CGFloat, narrows: Bool) -> CGFloat? {
-        guard let start = text.textLayoutManager?.documentRange.location,
-              var laid = text.measure(lineWidth: most, from: start, through: foldHeight) else { return nil }
+    /// 变窄、还放得下上次排的最宽的一行时不重排：容器留在上次的宽，显示的还是上次那一遍（每行都放得下贴字的宽）；
+    /// 和按新宽实排比，个别行可能差一个词（见 measure），停下后照常重量。
+    private mutating func foldedHeight(_ text: some TextKitMeasuring, most: CGFloat, foldHeight: CGFloat) -> CGFloat? {
         let previous = (height: contentHeight - Metrics.bubblePadding.height * 2, width: textWidth)
-        textWidth = min(ceil(text.widestLine) + 1, most)
-        if narrows, textWidth < most, text.wraps, let narrow = text.measure(lineWidth: textWidth, from: start, through: foldHeight) {
-            laid = narrow
+        let laid: (lineWidth: CGFloat, widest: CGFloat, bottom: CGFloat)
+        if let folded, folded.lineWidth >= most, folded.widest <= most {
+            laid = folded
+        } else {
+            guard let start = text.textLayoutManager?.documentRange.location,
+                  let measured = text.measure(lineWidth: most, from: start, through: foldHeight) else { return nil }
+            laid = (most, text.widestLine, measured.bottom)
+            folded = laid
         }
+        textWidth = min(ceil(laid.widest) + 1, most)
         return ceil(max(laid.bottom, previous.height * previous.width / max(textWidth, 1)))
     }
 
