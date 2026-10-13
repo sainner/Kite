@@ -17,7 +17,7 @@ enum Tile {
 @Observable
 final class Split {
     let axis: Axis
-    /// 第一块占的比例，拖动两块之间的缝时改变。
+    /// 第一块占的比例：拖缝、侧栏改宽时改，系统窗口变大变小时各块按它分。
     private var storedRatio: CGFloat
     /// 临时省略卡片时仍调整原分栏；视口恢复后沿用用户拖过的比例。
     let source: Split?
@@ -30,6 +30,8 @@ final class Split {
     }
     let first: Tile
     let second: Tile
+    /// 临时省略卡片时重建的分栏和原分栏是同一刀：比例、缝的视图和改尺寸前记下的长度都按它认。
+    var identity: ObjectIdentifier { ObjectIdentifier(source ?? self) }
 
     init(_ axis: Axis, _ ratio: CGFloat, _ first: Tile, _ second: Tile, source: Split? = nil) {
         self.axis = axis
@@ -38,6 +40,48 @@ final class Split {
         self.first = first
         self.second = second
     }
+
+    /// 值没变不写，免得读它的视图跟着重算。
+    func setRatio(_ value: CGFloat) {
+        if ratio != value { ratio = value }
+    }
+
+    /// 把这一刀挪到第一块长 length 的地方（available 是两块加起来的长）：两边都只让紧挨着这一刀的窗口改尺寸，见 Tile.absorb。
+    func cut(at length: CGFloat, available: CGFloat, base: TileBase) {
+        if let cut = base.cuts[identity] {
+            first.absorb(along: axis, from: cut.first, to: length, atEnd: true, base: base)
+            second.absorb(along: axis, from: cut.second, to: available - length, atEnd: false, base: base)
+        }
+        setRatio(length / available)
+    }
+}
+
+/// 改尺寸之前每一刀两边各多长、比例多少，按 Split.identity 记。拖缝、侧栏改宽都从它算：改回原来的长度，窗口就原样回来，
+/// 中途被挤到最小尺寸的也一样。
+struct TileBase {
+    struct Cut {
+        let first: CGFloat
+        let second: CGFloat
+        let ratio: CGFloat
+    }
+
+    let cuts: [ObjectIdentifier: Cut]
+
+    init(_ layout: TileLayout) {
+        var cuts: [ObjectIdentifier: Cut] = [:]
+        for gap in layout.gaps {
+            let horizontal = gap.split.axis == .horizontal
+            cuts[gap.id] = Cut(first: horizontal ? gap.rect.minX - gap.region.minX : gap.rect.minY - gap.region.minY,
+                               second: horizontal ? gap.region.maxX - gap.rect.maxX : gap.region.maxY - gap.rect.maxY,
+                               ratio: gap.split.ratio)
+        }
+        self.cuts = cuts
+    }
+}
+
+extension CGSize {
+    /// 沿 axis 的长度：左右切看宽，上下切看高。
+    func length(along axis: Axis) -> CGFloat { axis == .horizontal ? width : height }
 }
 
 /// 一种排布在某块地方里摆出来的样子：各张卡片、占位、每一刀留下的缝各在哪。
@@ -52,7 +96,7 @@ struct TileLayout {
         let rect: CGRect
         /// 这一刀切的整块地方。
         let region: CGRect
-        var id: ObjectIdentifier { ObjectIdentifier(split.source ?? split) }
+        var id: ObjectIdentifier { split.identity }
     }
 }
 
@@ -80,14 +124,14 @@ extension Tile {
         }
     }
 
-    /// 每一刀都吸附到模块线上；free 是正在拖的那一刀，跟手不吸附，松手后再吸附。
-    func layout(in rect: CGRect, free: Split? = nil) -> TileLayout {
+    /// 各块按比例分；排出来的长度取到半点，见 halfPoint。
+    func layout(in rect: CGRect) -> TileLayout {
         var result = TileLayout()
-        place(in: rect, free: free, into: &result)
+        place(in: rect, into: &result)
         return result
     }
 
-    private func place(in rect: CGRect, free: Split?, into result: inout TileLayout) {
+    private func place(in rect: CGRect, into result: inout TileLayout) {
         switch self {
         case .pane(let pane):
             result.panes[pane] = rect
@@ -97,18 +141,65 @@ extension Tile {
             let horizontal = split.axis == .horizontal
             let edge: CGRectEdge = horizontal ? .minXEdge : .minYEdge
             let available = max((horizontal ? rect.width : rect.height) - Metrics.gap, 0)
-            let firstMinimum = horizontal ? split.first.minimumSize.width : split.first.minimumSize.height
-            let secondMinimum = horizontal ? split.second.minimumSize.width : split.second.minimumSize.height
-            // 比例照常保存，窗口变大变小时按比例分；排出来的长度取整到模块。
-            let requested = (split.source ?? split) === free ? (available * split.ratio).rounded() : DotMetrics.snap(available * split.ratio)
+            let firstMinimum = split.first.minimumSize.length(along: split.axis)
+            let secondMinimum = split.second.minimumSize.length(along: split.axis)
+            // 比例照常保存，窗口变大变小时按比例分
+            let requested = Self.halfPoint(available * split.ratio)
             let length = available >= firstMinimum + secondMinimum
                 ? min(max(requested, firstMinimum), available - secondMinimum) : requested
             let (a, rest) = rect.divided(atDistance: length, from: edge)
             let (gap, b) = rest.divided(atDistance: Metrics.gap, from: edge)
             result.gaps.append(TileLayout.Gap(split: split, rect: gap, region: rect))
-            split.first.place(in: a, free: free, into: &result)
-            split.second.place(in: b, free: free, into: &result)
+            split.first.place(in: a, into: &result)
+            split.second.place(in: b, into: &result)
         }
+    }
+
+    /// 长度取到半点：Retina 屏上边缘落在像素上。台面的宽高也是半点的整数倍（界面按像素摆），
+    /// 加减不出零头，改尺寸时不相邻的窗口一点不差地保持原来的长度。
+    static func halfPoint(_ length: CGFloat) -> CGFloat { (length * 2).rounded() / 2 }
+
+    /// 沿 axis 把这一块从 old 改成 new 长，只让贴着 end 那条边的窗口改尺寸，其余窗口保持 base 里的长度；
+    /// 贴边的小到最小尺寸后，再由离这条边近的往远处依次让出。end 为 true 是后头那条边（右、下），false 是前头（左、上）。
+    /// 顺着另一个方向切开的两块都贴着这条边，各自照此调整。都从 base 算，长度改回 base 里的就回到原来的比例。
+    func absorb(along axis: Axis, from old: CGFloat, to new: CGFloat, atEnd end: Bool, base: TileBase) {
+        guard case .split(let split) = self, let cut = base.cuts[split.identity] else { return }
+        guard old != new else {
+            restore(base)
+            return
+        }
+        guard split.axis == axis else {
+            split.first.absorb(along: axis, from: old, to: new, atEnd: end, base: base)
+            split.second.absorb(along: axis, from: old, to: new, atEnd: end, base: base)
+            return
+        }
+        let available = new - Metrics.gap
+        guard available > 0 else { return }
+        let (near, far) = end ? (split.second, split.first) : (split.first, split.second)
+        let (nearOld, farOld) = end ? (cut.second, cut.first) : (cut.first, cut.second)
+        let nearMinimum = near.minimumSize.length(along: axis), farMinimum = far.minimumSize.length(along: axis)
+        // 远的一块保持原长；近的到了最小尺寸，远的再让，也不小于它自己的最小尺寸
+        let farNew = max(min(farOld, available - nearMinimum), min(farMinimum, farOld))
+        let nearNew = available - farNew
+        near.absorb(along: axis, from: nearOld, to: nearNew, atEnd: end, base: base)
+        far.absorb(along: axis, from: farOld, to: farNew, atEnd: end, base: base)
+        split.setRatio((end ? farNew : nearNew) / available)
+    }
+
+    /// 各刀回到 base 里的比例。
+    private func restore(_ base: TileBase) {
+        guard case .split(let split) = self else { return }
+        if let cut = base.cuts[split.identity] { split.setRatio(cut.ratio) }
+        split.first.restore(base)
+        split.second.restore(base)
+    }
+
+    /// 各刀现在的比例，按 Split.identity 记。
+    var ratios: [ObjectIdentifier: CGFloat] {
+        guard case .split(let split) = self else { return [:] }
+        var ratios = split.first.ratios.merging(split.second.ratios) { a, _ in a }
+        ratios[split.identity] = split.ratio
+        return ratios
     }
 
     /// 拿掉一张卡片，它所在的那一刀由另一半补上。
@@ -192,14 +283,11 @@ struct WindowRegions {
     let canvas: CGRect
     let dock: CGRect
 
-    /// 内容区从模块线开始；尺寸不是模块整数倍时，余下的不足一格留在右边和下边。
     init(in bounds: CGRect, showsDock: Bool = true) {
-        let width = DotMetrics.snapDown(bounds.width), height = DotMetrics.snapDown(bounds.height)
         let dockWidth = showsDock ? Metrics.dockWidth : 0
         canvas = CGRect(x: bounds.minX, y: bounds.minY,
-                        width: max(0, width - dockWidth - (showsDock ? Metrics.gap : 0)), height: height)
-        dock = CGRect(x: bounds.minX + width - dockWidth, y: bounds.minY,
-                      width: dockWidth, height: height)
+                        width: max(0, bounds.width - dockWidth - (showsDock ? Metrics.gap : 0)), height: bounds.height)
+        dock = CGRect(x: bounds.maxX - dockWidth, y: bounds.minY, width: dockWidth, height: bounds.height)
     }
 
     func dockFrame(at index: Int) -> CGRect {

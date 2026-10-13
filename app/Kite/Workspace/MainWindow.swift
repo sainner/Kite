@@ -7,17 +7,13 @@ struct MainWindow: View {
     @State private var resizingFrom: CGFloat?
 
     var body: some View {
-        GeometryReader { proxy in
-            let top = proxy.frame(in: .global).minY
-            // 安全区高度不一定是模块的整数倍；只补到窗口网格线，不移动背景点阵的原点。
-            content.padding(.top, DotMetrics.snapUp(top) - top)
-        }
-        .appDotBackground()
-        #if os(macOS)
-        .ignoresSafeArea()
-        .resizesByModule()
-        #endif
-        .dockHoverHost()
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .appDotBackground()
+            #if os(macOS)
+            .ignoresSafeArea()
+            #endif
+            .dockHoverHost()
     }
 
     private var content: some View {
@@ -80,16 +76,12 @@ struct MainWindow: View {
             return Metrics.dragBubble
             #endif
         }
-        let requested = resizingFrom == nil ? DotMetrics.snap(model.sidebarWidth) : model.sidebarWidth
         let remaining = availableWidth - 2 * Metrics.sidebarInset - Metrics.padding - Metrics.gap - Metrics.dockWidth - Metrics.minPane
-        return min(requested, max(Metrics.sidebarMin, remaining))
+        return min(model.sidebarWidth, max(Metrics.sidebarMin, remaining))
     }
 
     private func finishResize() {
-        withAnimation(.snappy) {
-            resizingFrom = nil
-            model.sidebarWidth = DotMetrics.snap(model.sidebarWidth)
-        }
+        resizingFrom = nil
     }
 
     private func resizeSidebar(to width: CGFloat) {

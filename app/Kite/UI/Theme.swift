@@ -133,7 +133,7 @@ enum Metrics {
     /// 侧栏分割线上下的留白，一个半模块。
     static let sidebarRuleGap: CGFloat = 18
     static let sidebarWidth: CGFloat = 240
-    /// 侧边栏拖动调宽度的范围；拖到比 sidebarCollapse 还窄就收起。松手后宽度吸附到模块。
+    /// 侧边栏拖动调宽度的范围；拖到比 sidebarCollapse 还窄就收起。
     static let sidebarMin: CGFloat = 204
     static let sidebarMax: CGFloat = 396
     static let sidebarCollapse: CGFloat = 120

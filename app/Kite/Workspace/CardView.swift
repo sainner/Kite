@@ -19,7 +19,7 @@ final class CardView: NSView {
         let openSidebar: (@MainActor () -> Void)?
         let dimmed: Bool
         let acceptsInput: Bool
-        /// 拖缝调整大小、松手吸附时点阵也收起。
+        /// 拖缝调整大小时点阵也收起。
         let dotsHidden: Bool
         let dragged: Bool
         let hasThread: Bool
@@ -456,7 +456,7 @@ final class CardView: NSView {
 
     // MARK: - 点阵
 
-    /// 点阵不参与过渡：卡片在动、拖缝调整大小、松手吸附时收起；停下后淡入 0.25 秒，同 WindowBackdrop。
+    /// 点阵不参与过渡：卡片在动、拖缝调整大小时收起；停下后淡入 0.25 秒，同 WindowBackdrop。
     private func updateDots() {
         guard let backdrop, let placed else { return }
         let shown = !(arrangement?.dotsHidden ?? false) && !placed.motion.moving

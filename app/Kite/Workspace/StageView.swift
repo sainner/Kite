@@ -225,12 +225,12 @@ final class StageView: NSView, StageDotsReporting {
         // 环境交过来以前不建卡片：托管的正文要从环境里取 App 模型
         guard look != nil else { return }
         let size = bounds.size
+        origin = windowOrigin
         if viewport != size {
             viewport = size
             // 报视口会改排布模型，自己的改动不回头再排一遍
-            tracking.quietly { group.layout.updateViewport(size, presentation: .tiled) }
+            tracking.quietly { group.layout.updateViewport(size, presentation: .tiled, leading: origin.x) }
         }
-        origin = windowOrigin
         for island in [dockRail, windowless, dockOverlay] { place(island, bounds) }
         place(placeholder, bounds)
         if geometry.bounds != bounds { geometry.bounds = bounds }
@@ -295,7 +295,6 @@ final class StageView: NSView, StageDotsReporting {
         let reduceMotion = look?.reduceMotion ?? false
         let resizing = layout.resizing != nil
         let blocksInput = layout.blocksInput
-        let dots = layout.resizingOrReleasing
         for pane in retained {
             let card = cards[pane] ?? makeCard(pane)
             let closing = !layout.panes.contains(pane)
@@ -306,7 +305,7 @@ final class StageView: NSView, StageDotsReporting {
             let arrangement = CardView.Arrangement(
                 placed: placed, dockFrame: plan.dockFrame(of: pane, area: area), closing: closing, family: plan.familyID(of: pane),
                 openSidebar: pane == plan.first ? openSidebar : nil, dimmed: dimmed,
-                acceptsInput: !blocksInput && !resizing && !closing && !dimmed, dotsHidden: dots,
+                acceptsInput: !blocksInput && !resizing && !closing && !dimmed, dotsHidden: resizing,
                 dragged: layout.drag?.pane == pane, hasThread: area?.thread(in: pane) != nil, fixed: layout.isFixed,
                 header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width,
                                          hasThread: area?.thread(in: pane) != nil))
@@ -696,7 +695,7 @@ private final class GapView: PressDragView {
         super.mouseUp(with: event)
     }
 
-    // 读屏：分隔条，左右（上下）各挪一个模块，同拖着松手吸附到模块
+    // 读屏：分隔条，左右（上下）各挪一个模块，同拖着松手
 
     override func isAccessibilityElement() -> Bool { gap != nil }
     override func accessibilityRole() -> NSAccessibility.Role? { .splitter }

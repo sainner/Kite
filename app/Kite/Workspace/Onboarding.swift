@@ -139,7 +139,6 @@ struct Onboarding: View {
         .environment(\.dotStage, stage)
         #if os(macOS)
         .frame(minWidth: 528, minHeight: 576)
-        .resizesByModule()
         #endif
         .onAppear {
 

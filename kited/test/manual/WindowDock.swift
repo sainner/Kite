@@ -17,6 +17,19 @@ private extension CGRect {
     var center: CGPoint { CGPoint(x: midX, y: midY) }
 }
 
+/// 点阵图案引用的响度源，真实定义在 Conversation/VoiceInput.swift，连着语音识别和工作机客户端；
+/// 窗口排布用不到声音，这里给最小定义，免得把整条语音链路编进来。
+final class AudioLevel {
+    func level(at date: Date) -> Double { 0 }
+}
+
+/// 等待呼吸用的逐帧时钟，真实定义在 Workspace/PaneWindow.swift，连着整个窗口视图；排布合同不渲染，给最小定义。
+struct PaneTimeline<Content: View>: View {
+    @ViewBuilder let content: (TimelineViewDefaultContext) -> Content
+
+    var body: some View { TimelineView(.animation, content: content) }
+}
+
 private struct LayoutState {
     let empty: Bool
     let active: [Pane]
@@ -77,6 +90,85 @@ private func fixturePanes(_ name: String, count: Int) -> [Pane] {
     (0..<count).map { Pane("contract-\(name)-\($0)") }
 }
 
+/// 正在显示的排布，按视图的取法：bounds 是内容区所在的整块区域，原点为零。
+private func shownTiles(_ layout: WindowLayout, in bounds: CGRect) -> TileLayout {
+    layout.shown?.layout(in: layout.regions(in: bounds).canvas) ?? TileLayout()
+}
+
+/// first 与 second 之间的那道缝：左右缝在 first 右边、second 左边，上下缝在 first 下边、second 上边，且横跨两扇窗口。
+private func gap(between first: Pane, and second: Pane, in tiles: TileLayout) throws -> TileLayout.Gap {
+    guard let a = tiles.panes[first], let b = tiles.panes[second] else {
+        throw DockContractError.failed("找缝时 \(first.id) 或 \(second.id) 不在排布里")
+    }
+    let found = tiles.gaps.filter { gap in
+        let r = gap.rect
+        if gap.split.axis == .horizontal {
+            return abs(r.minX - a.maxX) < 0.001 && abs(r.maxX - b.minX) < 0.001
+                && r.minY < a.maxY && r.maxY > a.minY && r.minY < b.maxY && r.maxY > b.minY
+        }
+        return abs(r.minY - a.maxY) < 0.001 && abs(r.maxY - b.minY) < 0.001
+            && r.minX < a.maxX && r.maxX > a.minX && r.minX < b.maxX && r.maxX > b.minX
+    }
+    guard found.count == 1 else {
+        throw DockContractError.failed("\(first.id) 与 \(second.id) 之间应有一道缝，找到 \(found.count) 道")
+    }
+    return found[0]
+}
+
+/// 按住 start 这道缝，指针从起拖时的缝中心沿缝的方向挪 offset。每一步按当前排布重取这道缝再交给 resize，
+/// 同 TileViews 每次重建出来的缝。
+private func dragGap(_ start: TileLayout.Gap, by offset: CGFloat, layout: WindowLayout, in bounds: CGRect) throws {
+    guard let current = shownTiles(layout, in: bounds).gaps.first(where: { $0.id == start.id }) else {
+        throw DockContractError.failed("拖动中找不到正在拖的缝")
+    }
+    let point = start.split.axis == .horizontal
+        ? CGPoint(x: start.rect.midX + offset, y: start.rect.midY)
+        : CGPoint(x: start.rect.midX, y: start.rect.midY + offset)
+    layout.resize(current, to: point)
+}
+
+/// 需求里的挤法：lengths 按离缝（或内容区左边）由近到远排，整侧让出 amount，近的先让，各自到最小尺寸为止；
+/// amount 为负时只有最近的那扇变长。
+private func squeezed(_ lengths: [CGFloat], by amount: CGFloat) -> [CGFloat] {
+    var remaining = amount
+    return lengths.map { length in
+        let next = max(length - remaining, Metrics.minPane)
+        remaining -= length - next
+        return next
+    }
+}
+
+/// 一排铺满内容区的列，依次给宽度。宽度加缝之和不等于内容区宽度时，要么夹具算错，要么内容区没按 bounds 连续变化。
+private func row(_ panes: [Pane], widths: [CGFloat], in canvas: CGRect) throws -> [Pane: CGRect] {
+    var x = canvas.minX
+    var frames: [Pane: CGRect] = [:]
+    for (pane, width) in zip(panes, widths) {
+        try require(width + 0.001 >= Metrics.minPane, "夹具的期望宽度 \(width) 小于最小尺寸")
+        frames[pane] = CGRect(x: x, y: canvas.minY, width: width, height: canvas.height)
+        x += width + Metrics.gap
+    }
+    try require(abs(x - Metrics.gap - canvas.maxX) < 0.001, "期望宽度 \(widths) 加缝与内容区 \(canvas) 不符")
+    return frames
+}
+
+/// 位置尺寸允许 1 点以内的取整误差；fixed 里的窗口是这一步不相邻、尺寸必须一点不变的（这次需求的核心：
+/// 变了就要多重排一份对话），只有它们的宽高严格比较。
+private func requireFrames(_ actual: [Pane: CGRect], _ expected: [Pane: CGRect], fixed: [Pane] = [],
+                           _ step: String) throws {
+    try require(Set(actual.keys) == Set(expected.keys), "\(step)：显示的窗口集合变了")
+    let near = { (a: CGFloat, b: CGFloat) in abs(a - b) <= 1.001 }
+    for (pane, frame) in expected {
+        let got = actual[pane]!
+        try require(near(got.minX, frame.minX) && near(got.minY, frame.minY)
+                    && near(got.width, frame.width) && near(got.height, frame.height),
+                    "\(step)：\(pane.id) 应为 \(frame)，实际 \(got)")
+        if fixed.contains(pane) {
+            try require(abs(got.width - frame.width) < 0.001 && abs(got.height - frame.height) < 0.001,
+                        "\(step)：不相邻的 \(pane.id) 尺寸变了，应为 \(frame.size)，实际 \(got.size)")
+        }
+    }
+}
+
 @MainActor
 @main
 private struct WindowDockContract {
@@ -92,7 +184,203 @@ private struct WindowDockContract {
         try compactFocusPreservesTiledArrangement()
         try viewportDockPreservesSavedArrangement()
         try viewportChangesKeepUserLayoutEdits()
-        print("窗口停靠九组手动合同验证通过")
+        try columnGapMovesOnlyAdjacentColumns()
+        try squeezedColumnsReturnWithinOneDrag()
+        try nestedGapsMoveOnlyAdjacentPanes()
+        try sidebarResizeMovesOnlyLeadingColumn()
+        print("窗口停靠十三组手动合同验证通过")
+    }
+
+    /// 左右三列 A | B | C：两栏预设再在整个排布右边加一列，树是 H(H(A, B), C)。内容区宽高不是 12 的倍数。
+    private static func threeColumns(_ name: String, in bounds: CGRect, leading: CGFloat = 0,
+                                     storageKey: String? = nil,
+                                     defaults: UserDefaults = .standard) throws -> (WindowLayout, [Pane]) {
+        let panes = fixturePanes(name, count: 3)
+        let layout = WindowLayout(panes: panes, arrangement: .sideBySide, storageKey: storageKey, defaults: defaults)
+        layout.updateViewport(bounds.size, presentation: .tiled, leading: leading)
+        layout.focus(panes[1])
+        layout.activate(panes[2], in: bounds)
+        let canvas = layout.regions(in: bounds).canvas
+        let frames = shownTiles(layout, in: bounds).panes
+        guard let a = frames[panes[0]], let b = frames[panes[1]], let c = frames[panes[2]] else {
+            throw DockContractError.failed("三列预设没有把三扇窗口都排上")
+        }
+        try require(a.maxX < b.minX && b.maxX < c.minX
+                    && [a, b, c].allSatisfy { abs($0.height - canvas.height) < 0.001 },
+                    "三列预设没有排成左右三列")
+        return (layout, panes)
+    }
+
+    // 拖缝的几部分配合：起拖时记下的排布、嵌套两刀比例的连带调整、按比例排版的半点取整、松手保存与重建。
+    // 第二条缝是根上那一刀，要同时改里面那刀的比例，不相邻的 A 才能一点不动；松手不再吸附到 12 点模数；
+    // 重建后两刀比例排出同样的位置尺寸。
+    private static func columnGapMovesOnlyAdjacentColumns() throws {
+        let suite = "kite-window-contract-gap-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            throw DockContractError.failed("无法建立拖缝的独立 UserDefaults suite")
+        }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let bounds = placementBounds(canvasWidth: 1218, canvasHeight: 810)
+        let canvas = WindowRegions(in: bounds).canvas
+        try require(abs(canvas.width - 1218) <= 1 && abs(canvas.height - 810) <= 1, "内容区仍取到模数：\(canvas.size)")
+        let (layout, panes) = try threeColumns("gap", in: bounds, storageKey: "layout", defaults: defaults)
+        let a = panes[0], b = panes[1], c = panes[2]
+        let start = shownTiles(layout, in: bounds)
+        let widths = [a, b, c].map { start.panes[$0]!.width }
+
+        // 第一条缝：指针挪 37 点，A、B 就差 37 点，C 不动
+        let first = try gap(between: a, and: b, in: start)
+        try dragGap(first, by: 37, layout: layout, in: bounds)
+        let afterFirst = [widths[0] + 37, widths[1] - 37, widths[2]]
+        try requireFrames(shownTiles(layout, in: bounds).panes, row(panes, widths: afterFirst, in: canvas), fixed: [c], "拖第一条缝")
+        layout.finishResize()
+        try requireFrames(shownTiles(layout, in: bounds).panes, row(panes, widths: afterFirst, in: canvas), fixed: [c], "第一条缝松手")
+
+        // 第二条缝：同一次拖动先往左再往右，只有 B、C 改宽，A 保持起拖时的宽度
+        let second = try gap(between: b, and: c, in: shownTiles(layout, in: bounds))
+        try dragGap(second, by: -19, layout: layout, in: bounds)
+        try requireFrames(shownTiles(layout, in: bounds).panes,
+                          row(panes, widths: [afterFirst[0], afterFirst[1] - 19, afterFirst[2] + 19], in: canvas),
+                          fixed: [a], "第二条缝往左拖")
+        try dragGap(second, by: 41, layout: layout, in: bounds)
+        let afterSecond = [afterFirst[0], afterFirst[1] + 41, afterFirst[2] - 41]
+        try requireFrames(shownTiles(layout, in: bounds).panes, row(panes, widths: afterSecond, in: canvas), fixed: [a], "第二条缝往右拖")
+        layout.finishResize()
+        let released = shownTiles(layout, in: bounds).panes
+        try requireFrames(released, row(panes, widths: afterSecond, in: canvas), fixed: [a], "第二条缝松手")
+
+        defaults.synchronize()
+        let rebuilt = WindowLayout(panes: panes, arrangement: .stacked, storageKey: "layout",
+                                   defaults: UserDefaults(suiteName: suite)!)
+        rebuilt.updateViewport(bounds.size, presentation: .tiled)
+        try requireFrames(shownTiles(rebuilt, in: bounds).panes, released, "拖缝松手后重建")
+    }
+
+    // 碰到最小尺寸：最小尺寸的夹取、起拖时的排布和拖动途中的状态合起来。往左拖根上那刀，B 先到最小再挤 A，
+    // 拖到底两边都停在最小尺寸；同一次拖动拖回起点，中途被挤小的 A、B 原样回来；往右拖到底只挤 C，A 不动。
+    private static func squeezedColumnsReturnWithinOneDrag() throws {
+        let bounds = placementBounds(canvasWidth: 1218, canvasHeight: 810)
+        let canvas = WindowRegions(in: bounds).canvas
+        let (layout, panes) = try threeColumns("squeeze", in: bounds)
+        let a = panes[0], b = panes[1], c = panes[2]
+        let start = shownTiles(layout, in: bounds)
+        let widths = [a, b, c].map { start.panes[$0]!.width }
+        let minimum = Metrics.minPane
+        let cut = try gap(between: b, and: c, in: start)
+        try require(abs(cut.region.minX - canvas.minX) < 0.001 && abs(cut.region.maxX - canvas.maxX) < 0.001,
+                    "B、C 之间的缝不是整个排布的那一刀")
+
+        // B 到最小后 A 再让 20
+        let past = widths[1] - minimum + 20
+        try dragGap(cut, by: -past, layout: layout, in: bounds)
+        let left = squeezed([widths[1], widths[0]], by: past)
+        try requireFrames(shownTiles(layout, in: bounds).panes,
+                          row(panes, widths: [left[1], left[0], widths[2] + past], in: canvas), "B 到最小后继续往左拖")
+        try dragGap(cut, by: -canvas.width, layout: layout, in: bounds)
+        try requireFrames(shownTiles(layout, in: bounds).panes,
+                          row(panes, widths: [minimum, minimum, canvas.width - minimum * 2 - Metrics.gap * 2], in: canvas),
+                          "往左拖到底")
+        try dragGap(cut, by: 0, layout: layout, in: bounds)
+        try requireFrames(shownTiles(layout, in: bounds).panes, start.panes, "同一次拖动拖回起点")
+        try dragGap(cut, by: canvas.width, layout: layout, in: bounds)
+        try requireFrames(shownTiles(layout, in: bounds).panes,
+                          row(panes, widths: [widths[0], widths[1] + widths[2] - minimum, minimum], in: canvas),
+                          fixed: [a], "往右拖到底")
+        try dragGap(cut, by: 0, layout: layout, in: bounds)
+        layout.finishResize()
+        try requireFrames(shownTiles(layout, in: bounds).panes, start.panes, "往右拖到底再拖回起点松手")
+    }
+
+    // 嵌套分栏：A | B/C/D | E（左一右三再在右边加一列）。左右缝一侧是上下切开的一整列，B、C、D 都贴着缝，一起改宽，
+    // 缝另一侧更远的 A 不动；上下缝只改上下紧挨着的两扇，同一列里更远的那扇保持高度。要几刀比例连带调整合起来才知道。
+    private static func nestedGapsMoveOnlyAdjacentPanes() throws {
+        let bounds = placementBounds(canvasWidth: 1218, canvasHeight: 810)
+        let canvas = WindowRegions(in: bounds).canvas
+        let panes = fixturePanes("nested", count: 5)
+        let a = panes[0], b = panes[1], c = panes[2], d = panes[3], e = panes[4]
+        let layout = WindowLayout(panes: panes, arrangement: .oneAndThree)
+        layout.updateViewport(bounds.size, presentation: .tiled)
+        layout.focus(b)
+        layout.activate(e, in: bounds)
+        let start = shownTiles(layout, in: bounds).panes
+        guard let fa = start[a], let fb = start[b], let fc = start[c], let fd = start[d], let fe = start[e] else {
+            throw DockContractError.failed("嵌套预设没有把五扇窗口都排上")
+        }
+        try require(abs(fa.height - canvas.height) < 0.001 && abs(fe.height - canvas.height) < 0.001
+                    && abs(fe.maxX - canvas.maxX) < 0.001 && fa.maxX < fb.minX && fb.maxX < fe.minX
+                    && [fc, fd].allSatisfy { abs($0.minX - fb.minX) < 0.001 && abs($0.width - fb.width) < 0.001 }
+                    && fb.maxY < fc.minY && fc.maxY < fd.minY,
+                    "嵌套预设没有排成 A | B/C/D | E")
+        let minimum = Metrics.minPane
+        try require(fb.width - 31 > minimum && fb.height + 29 > minimum && fc.height - 29 - 23 > minimum,
+                    "嵌套预设的窗口太小，拖缝会碰到最小尺寸")
+
+        // 左右缝：整列 B、C、D 变窄，E 变宽，A 不动
+        var expected = start
+        let column = try gap(between: b, and: e, in: shownTiles(layout, in: bounds))
+        try dragGap(column, by: -31, layout: layout, in: bounds)
+        for pane in [b, c, d] {
+            let frame = start[pane]!
+            expected[pane] = CGRect(x: frame.minX, y: frame.minY, width: frame.width - 31, height: frame.height)
+        }
+        expected[e] = CGRect(x: fe.minX - 31, y: fe.minY, width: fe.width + 31, height: fe.height)
+        try requireFrames(shownTiles(layout, in: bounds).panes, expected, fixed: [a], "拖整列右边的左右缝")
+        layout.finishResize()
+        try requireFrames(shownTiles(layout, in: bounds).panes, expected, fixed: [a], "左右缝松手")
+
+        // 上下缝：B、C 之间往下 29，D 不动；C、D 之间往上 23，B 不动
+        let upper = try gap(between: b, and: c, in: shownTiles(layout, in: bounds))
+        try dragGap(upper, by: 29, layout: layout, in: bounds)
+        let b1 = expected[b]!, c1 = expected[c]!
+        expected[b] = CGRect(x: b1.minX, y: b1.minY, width: b1.width, height: b1.height + 29)
+        expected[c] = CGRect(x: c1.minX, y: c1.minY + 29, width: c1.width, height: c1.height - 29)
+        try requireFrames(shownTiles(layout, in: bounds).panes, expected, fixed: [a, d, e], "拖 B、C 之间的上下缝")
+        layout.finishResize()
+        let lower = try gap(between: c, and: d, in: shownTiles(layout, in: bounds))
+        try dragGap(lower, by: -23, layout: layout, in: bounds)
+        let c2 = expected[c]!, d2 = expected[d]!
+        expected[c] = CGRect(x: c2.minX, y: c2.minY, width: c2.width, height: c2.height - 23)
+        expected[d] = CGRect(x: d2.minX, y: d2.minY - 23, width: d2.width, height: d2.height + 23)
+        try requireFrames(shownTiles(layout, in: bounds).panes, expected, fixed: [a, b, e], "拖 C、D 之间的上下缝")
+        layout.finishResize()
+        try requireFrames(shownTiles(layout, in: bounds).panes, expected, fixed: [a, b, e], "上下缝松手")
+    }
+
+    // 侧栏改宽：视口更新判断改宽来源、本轮起始排布的记录、最小尺寸夹取和按比例排版合起来。左边不动的系统改尺寸仍按比例分；
+    // 宽度变化等于左边挪的那段时只改贴着侧栏的 A，A 到最小再依次挤 B、C；同一轮都从第一次改之前的排布算，
+    // 改回去中途被挤小的 B、C 原样回来，收起再展开也回到原样。
+    private static func sidebarResizeMovesOnlyLeadingColumn() throws {
+        let leading: CGFloat = 200
+        let narrow = placementBounds(canvasWidth: 1000, canvasHeight: 810)
+        let bounds = placementBounds(canvasWidth: 1218, canvasHeight: 810)
+        let (layout, panes) = try threeColumns("sidebar", in: narrow, leading: leading)
+        layout.updateViewport(bounds.size, presentation: .tiled, leading: leading)
+        let (reference, _) = try threeColumns("sidebar", in: bounds, leading: leading)
+        let start = shownTiles(layout, in: bounds).panes
+        try requireFrames(start, shownTiles(reference, in: bounds).panes, "系统窗口改尺寸后按比例分")
+
+        let widths = panes.map { start[$0]!.width }
+        let minimum = Metrics.minPane
+        let steps: [(CGFloat, String)] = [
+            (40, "侧栏加宽 40"),
+            ((widths[0] - minimum).rounded(.up) + 30, "A 到最小后挤 B"),
+            ((widths[0] - minimum + widths[1] - minimum).rounded(.up) + 40, "A、B 到最小后挤 C"),
+            (40, "侧栏改回加宽 40"),
+            (0, "侧栏改回原宽"),
+            (-leading, "侧栏收起"),
+            (0, "侧栏展开回原宽"),
+        ]
+        for (shift, step) in steps {
+            let size = CGSize(width: bounds.width - shift, height: bounds.height)
+            layout.updateViewport(size, presentation: .tiled, leading: leading + shift)
+            let current = CGRect(origin: .zero, size: size)
+            let expected = squeezed(widths, by: shift)
+            // 贴着侧栏的 A 之外，没被挤到的列尺寸一点不变
+            let fixed = panes.indices.dropFirst().filter { expected[$0] == widths[$0] }.map { panes[$0] }
+            try requireFrames(shownTiles(layout, in: current).panes,
+                              row(panes, widths: expected, in: layout.regions(in: current).canvas),
+                              fixed: fixed, step)
+        }
     }
 
     // 紧凑视口、焦点切换与 UserDefaults 交接：选择原 dock 窗口不能把单卡片投影写成原宽屏排布。

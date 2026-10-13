@@ -202,12 +202,12 @@ final class PhoneStageView: UIView, StageDotsReporting {
         // 环境交过来以前不建卡片：托管的正文要从环境里取 App 模型
         guard look != nil else { return }
         let size = bounds.size
+        origin = window.map { convert(CGPoint.zero, to: $0) } ?? .zero
         if viewport != size {
             viewport = size
-            // 报视口会改排布模型，自己的改动不回头再排一遍
-            tracking.quietly { group.layout.updateViewport(size, presentation: .tiled) }
+            // 报视口会改排布模型，自己的改动不回头再排一遍。台面左边在哪交给排布：侧栏改宽时只由最左一列吸收
+            tracking.quietly { group.layout.updateViewport(size, presentation: .tiled, leading: origin.x) }
         }
-        origin = window.map { convert(CGPoint.zero, to: $0) } ?? .zero
         for island in [dockRail, windowless, dockOverlay] { place(island, bounds) }
         place(placeholder, bounds)
         if geometry.bounds != bounds { geometry.bounds = bounds }
@@ -262,7 +262,6 @@ final class PhoneStageView: UIView, StageDotsReporting {
         let reduceMotion = look?.reduceMotion ?? false
         let resizing = layout.resizing != nil
         let blocksInput = layout.blocksInput
-        let dots = layout.resizingOrReleasing
         for pane in retained {
             let card = cards[pane] ?? makeCard(pane)
             let closing = !layout.panes.contains(pane)
@@ -276,7 +275,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
             let accepts = (!blocksInput || dragged) && !resizing && !closing && !dimmed
             let arrangement = PhoneCardView.Arrangement(
                 placed: placed, dockFrame: plan.dockFrame(of: pane, area: area), closing: closing, family: plan.familyID(of: pane),
-                openSidebar: pane == plan.first ? openSidebar : nil, dimmed: dimmed, acceptsInput: accepts, dotsHidden: dots,
+                openSidebar: pane == plan.first ? openSidebar : nil, dimmed: dimmed, acceptsInput: accepts, dotsHidden: resizing,
                 dragged: dragged, hasThread: hasThread, fixed: layout.isFixed,
                 header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width, hasThread: hasThread))
             arranged.cards.append((card, arrangement, CardPresentation.motionKind(layout: layout, pane: pane, reduceMotion: reduceMotion)))
@@ -565,7 +564,7 @@ private final class StageGapView: UIView {
         }
     }
 
-    // 读屏：左右（上下）各挪一个模块，同拖着松手吸附到模块
+    // 读屏：左右（上下）各挪一个模块
 
     override var accessibilityValue: String? {
         get { gap.map { "\(Int(($0.split.ratio * 100).rounded()))%" } }
