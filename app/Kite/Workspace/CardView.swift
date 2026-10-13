@@ -86,6 +86,12 @@ final class CardView: NSView {
 
     var motionMoving: Bool { placed?.motion.moving ?? false }
 
+    /// 要台面的显示链接逐帧取样：只有跟手拖动（指针一动整条轨迹跟着平移，不能整段预先交出去）。
+    /// 别的排布动画开始计时时整段交给 Core Animation（见 flightStarted），主线程忙也不掉帧。
+    var needsFrames: Bool { guard let motion = placed?.motion else { return false }; return motion.moving && motion.tracking }
+    /// 这一段已经交给 Core Animation。
+    private var flying = false
+
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
 
@@ -135,6 +141,7 @@ final class CardView: NSView {
         headerView.drag.menu = headerView.contextMenu
         headerView.contextMenu.delegate = headerView
         headerView.buildMenu = { [weak self] menu in self?.buildMenu(menu) }
+        motion.onStart = { [weak self] motion in self?.flightStarted(motion) }
         environmentChanged()
         trackMotion()
     }
@@ -219,9 +226,59 @@ final class CardView: NSView {
     /// 把终点交给 motion，当场按这一刻的样子摆一次：停着的直接到终点；刚开始动的停在起点，等这次排版交上去再计时（见 WindowMotion.move）。
     func move(to target: WindowPose, kind: WindowMotionKind) {
         guard let motion = placed?.motion else { return }
+        let before = motion.target
         motion.move(to: target, kind: kind)
+        // 中途换了终点：交给 Core Animation 的那一段作废，从这一刻的样子接着走（WindowMotion 从当时的呈现取起点）
+        if flying, motion.target != before {
+            flying = false
+            stopFlight()
+        }
         motionChanged()
-        applyPresentation(at: .now)
+        if !flying { applyPresentation(at: .now) }
+    }
+
+    /// 这一段开始计时（这次排版已经交上去）：按 WindowMotion 的曲线每 1/120 秒取一帧，外框、最小化色、描边、头像、正文的变换和遮罩、
+    /// 标题两侧整段交给 Core Animation，模型值停在终点。取样和逐帧驱动用的是同一个 presentation，飞出来一样。
+    private func flightStarted(_ motion: WindowMotion) {
+        guard motion === placed?.motion, !motion.tracking, let flight = motion.flight, let placed else { return }
+        let steps = max(Int((flight.duration * 120).rounded(.up)), 1)
+        let poses = (0...steps).map { motion.presentation(at: flight.start.addingTimeInterval(flight.duration * Double($0) / Double(steps))) }
+        flying = true
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fill.animate(poses, duration: flight.duration)
+        if ringColor != nil { ring.animate(poses, duration: flight.duration) }
+        let size = iconSize
+        if let layer = iconMover.layer {
+            let transforms = poses.map { NSValue(caTransform3D: iconTransform($0, size: size)) }
+            layer.sublayerTransform = iconTransform(poses[poses.count - 1], size: size)
+            iconMover.alphaValue = poses[poses.count - 1].iconOpacity
+            layer.add(StageKeyframes.make("sublayerTransform", transforms, duration: flight.duration), forKey: "flight")
+            layer.add(StageKeyframes.make("opacity", poses.map { Float($0.iconOpacity) }, duration: flight.duration), forKey: "flight-opacity")
+        }
+        if let container {
+            let destination = placed.target.contentOrigin(size: placed.contentSize)
+            let area = container.frame
+            link.animate(poses.map { HostedContentFrame(pose: $0, target: placed.target, destination: destination, area: area,
+                                                         contentSize: placed.contentSize) }, duration: flight.duration)
+        }
+        CATransaction.commit()
+        stage?.updateDisplayLink()
+    }
+
+    /// 收掉交给 Core Animation 的那一段（换终点、停下）。
+    private func stopFlight() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fill.stopAnimations()
+        ring.stopAnimations()
+        iconMover.layer?.removeAnimation(forKey: "flight")
+        iconMover.layer?.removeAnimation(forKey: "flight-opacity")
+        CATransaction.commit()
+    }
+
+    private func iconTransform(_ pose: WindowPose, size: CGFloat) -> CATransform3D {
+        CATransform3DMakeTranslation(pose.frame.midX - size / 2, pose.frame.midY - size / 2, 0)
     }
 
     /// 托管正文的范围：正文的排版框加上停着时的外框；托管视图的原点对齐窗口原点，同 WindowSurface.hostedPlacement。
@@ -299,8 +356,7 @@ final class CardView: NSView {
         CATransaction.setDisableActions(true)
         fill.apply(pose)
         ring.apply(pose, shown: ringColor != nil)
-        let size = iconSize
-        iconMover.layer?.sublayerTransform = CATransform3DMakeTranslation(pose.frame.midX - size / 2, pose.frame.midY - size / 2, 0)
+        iconMover.layer?.sublayerTransform = iconTransform(pose, size: iconSize)
         iconMover.alphaValue = pose.iconOpacity
         if dotsShown { maskDots(pose) }
         if let container {
@@ -337,6 +393,12 @@ final class CardView: NSView {
                 setHovered(false)
             } else {
                 if headerRegions.settled != headerRegions.rects { headerRegions.settled = headerRegions.rects }
+                if flying {
+                    // Core Animation 那一段已经走完，模型值就是终点；正文按终点交一次（飞行中一直显示着，缩进停靠栏的这时藏起来）
+                    flying = false
+                    stopFlight()
+                    link.settle()
+                }
                 applyPresentation(at: .now)
                 stage.refreshHover()
             }
@@ -552,6 +614,16 @@ final class CardView: NSView {
         return window.convertToScreen(convert(placed.target.frame, to: nil))
     }
 
+    /// 读屏打开右键菜单（VO-Shift-M）：同标题栏上右键。
+    override func accessibilityPerformShowMenu() -> Bool {
+        guard let placed, acceptsInput else { return false }
+        let menu = headerView.contextMenu
+        buildMenu(menu)
+        guard !menu.items.isEmpty else { return false }
+        menu.popUp(positioning: nil, at: CGPoint(x: placed.target.frame.minX + 12, y: placed.target.frame.minY + 12), in: self)
+        return true
+    }
+
     /// 读屏的动作：缩小、展开、关闭窗口；缩在停靠栏里时展开窗口，同 PaneCard 的 accessibilityActions。最小化时正文对读屏隐藏，见 PaneCardBody。
     override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
         guard let placed, let stage, !closing else { return nil }
@@ -622,13 +694,33 @@ private final class CardFillView: NSView {
 
     func apply(_ pose: WindowPose) {
         guard let layer else { return }
+        stopAnimations()
         let path = outline(pose.frame, radius: pose.radius, in: layer)
         for shape in [base, minimized] {
             shape.frame = layer.bounds
             shape.path = path
         }
-        base.opacity = Float(min(pose.contentOpacity + pose.iconOpacity, 1))
+        base.opacity = baseOpacity(pose)
         minimized.opacity = Float(pose.iconOpacity)
+    }
+
+    private func baseOpacity(_ pose: WindowPose) -> Float { Float(min(pose.contentOpacity + pose.iconOpacity, 1)) }
+
+    /// 整段交给 Core Animation：路径和透明度按每一帧走，模型值停在最后一帧。
+    func animate(_ poses: [WindowPose], duration: TimeInterval) {
+        guard let layer, let last = poses.last else { return }
+        apply(last)
+        let paths = poses.map { outline($0.frame, radius: $0.radius, in: layer) }
+        for shape in [base, minimized] { shape.add(StageKeyframes.make("path", paths, duration: duration), forKey: "flight") }
+        base.add(StageKeyframes.make("opacity", poses.map(baseOpacity), duration: duration), forKey: "flight-opacity")
+        minimized.add(StageKeyframes.make("opacity", poses.map { Float($0.iconOpacity) }, duration: duration), forKey: "flight-opacity")
+    }
+
+    func stopAnimations() {
+        for shape in [base, minimized] {
+            shape.removeAnimation(forKey: "flight")
+            shape.removeAnimation(forKey: "flight-opacity")
+        }
     }
 }
 
@@ -661,18 +753,37 @@ private final class CardRingView: NSView {
 
     func apply(_ pose: WindowPose, shown: Bool) {
         guard shown, let layer else { return }
-        let inset = DockFace.ringWidth / 2
+        stopAnimations()
         shape.frame = layer.bounds
-        shape.path = outline(pose.frame.insetBy(dx: inset, dy: inset), radius: max(pose.radius - inset, 0), in: layer)
+        shape.path = path(pose, in: layer)
         shape.opacity = Float(pose.iconOpacity)
+    }
+
+    private func path(_ pose: WindowPose, in layer: CALayer) -> CGPath {
+        let inset = DockFace.ringWidth / 2
+        return outline(pose.frame.insetBy(dx: inset, dy: inset), radius: max(pose.radius - inset, 0), in: layer)
+    }
+
+    /// 整段交给 Core Animation，同 CardFillView.animate。
+    func animate(_ poses: [WindowPose], duration: TimeInterval) {
+        guard let layer, let last = poses.last else { return }
+        apply(last, shown: true)
+        shape.add(StageKeyframes.make("path", poses.map { path($0, in: layer) }, duration: duration), forKey: "flight")
+        shape.add(StageKeyframes.make("opacity", poses.map { Float($0.iconOpacity) }, duration: duration), forKey: "flight-opacity")
+    }
+
+    func stopAnimations() {
+        shape.removeAnimation(forKey: "flight")
+        shape.removeAnimation(forKey: "flight-opacity")
     }
 }
 
 /// 外框的轮廓：同 WindowOutline（SwiftUI 的 RoundedRectangle），按图层坐标；图层没翻转时上下翻过来。
+/// 段数固定（见 WindowOutline.path），Core Animation 能在两帧之间插值。
 private func outline(_ frame: CGRect, radius: CGFloat, in layer: CALayer) -> CGPath {
     var rect = frame
     if !layer.contentsAreFlipped() { rect.origin.y = layer.bounds.height - rect.maxY }
-    return RoundedRectangle(cornerRadius: radius).path(in: rect).cgPath
+    return WindowOutline.path(in: rect, radius: radius)
 }
 
 /// 标题栏一层：拖动区和窗口按钮，按停着的外框摆，命中按外框的圆角裁，同 WindowSurface.headerLayer 的 clipShape。

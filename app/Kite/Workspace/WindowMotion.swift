@@ -62,11 +62,22 @@ final class WindowMotion {
     private var kind = WindowMotionKind.immediate
     @ObservationIgnored private var completion: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
+    /// 这一段开始计时的那一刻（见 move），Mac 原生台面在这时把整段交给 Core Animation。
+    @ObservationIgnored var onStart: ((WindowMotion) -> Void)?
 
     init(_ pose: WindowPose) { target = pose; source = pose }
 
     /// 排布动画进行中（缩小、恢复、让位、放下后归位），不含跟手拖动。
     var settling: Bool { moving && kind != .tracking }
+
+    /// 跟手拖动：指针一动整条轨迹跟着平移，不能整段预先交出去。
+    var tracking: Bool { kind == .tracking }
+
+    /// 正在走的这一段从哪一刻起、走多久；还没开始计时或停着时为 nil。
+    var flight: (start: Date, duration: TimeInterval)? {
+        guard moving, duration > 0, let started else { return nil }
+        return (started, duration)
+    }
 
     /// 排布动画在停靠形状和台面形状之间变：缩小进停靠栏、从停靠栏恢复、拖动松手后展开。
     var changingForm: Bool { settling && source.iconOpacity != target.iconOpacity }
@@ -107,6 +118,7 @@ final class WindowMotion {
             guard let self, generation == current else { return }
             let start = Date.now
             started = start
+            onStart?(self)
             do { try await Task.sleep(until: .now + .seconds(duration)) } catch { return }
             guard generation == current else { return }
             source = target
@@ -442,6 +454,8 @@ struct HostedContentFrame: Equatable {
 @MainActor protocol WindowHeaderFollower: AnyObject {
     /// shift 是相对排版位置要挪的量（左侧按原样、右侧横向取反），titleCut 是标题右边截掉的宽度。
     func follow(shift: CGVector, titleCut: CGFloat)
+    /// 整段交给 Core Animation：每一帧的挪动量和截掉的宽度，按时间均匀取，停在最后一帧。
+    func follow(_ frames: [(shift: CGVector, titleCut: CGFloat)], duration: TimeInterval)
 }
 
 /// 窗口正文的托管视图、正文里标题两侧与逐帧驱动之间的联系。
@@ -465,6 +479,21 @@ struct HostedContentFrame: Equatable {
         container?.apply(frame)
         for case let follower as WindowHeaderFollower in followers.allObjects {
             follower.follow(shift: frame.headerShift, titleCut: frame.titleCut)
+        }
+    }
+
+    /// 交给 Core Animation 的那一段走完：按最后一帧再交一次，飞行中一直显示着的正文这时该藏的藏起来。
+    func settle() {
+        container?.apply(frame)
+    }
+
+    /// 整段交给 Core Animation：frames 是按时间均匀取的每一帧，飞行中一直看得见，停在最后一帧（Mac 原生台面，见 CardView）。
+    func animate(_ frames: [HostedContentFrame], duration: TimeInterval) {
+        guard let last = frames.last else { return }
+        frame = last
+        container?.animate(frames, duration: duration)
+        for case let follower as WindowHeaderFollower in followers.allObjects {
+            follower.follow(frames.map { ($0.headerShift, $0.titleCut) }, duration: duration)
         }
     }
 }
@@ -607,14 +636,33 @@ final class HostedContentContainer: NSView {
         guard let layer else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        mover.layer?.removeAnimation(forKey: "flight")
+        clip.removeAnimation(forKey: "flight-path")
+        clip.removeAnimation(forKey: "flight-opacity")
         mover.layer?.sublayerTransform = CATransform3DMakeAffineTransform(state.transform)
         clip.frame = layer.bounds
-        // 遮罩的路径按图层自己的坐标：图层没翻转时原点在左下，视图坐标（左上为原点）要上下翻过来
-        var rect = state.clip
-        if !layer.contentsAreFlipped() { rect.origin.y = layer.bounds.height - rect.maxY }
-        clip.path = RoundedRectangle(cornerRadius: state.radius).path(in: rect).cgPath
+        clip.path = clipPath(state, in: layer)
         clip.opacity = Float(state.opacity)
         CATransaction.commit()
+    }
+
+    /// 遮罩的路径按图层自己的坐标：图层没翻转时原点在左下，视图坐标（左上为原点）要上下翻过来。
+    private func clipPath(_ state: HostedContentFrame, in layer: CALayer) -> CGPath {
+        var rect = state.clip
+        if !layer.contentsAreFlipped() { rect.origin.y = layer.bounds.height - rect.maxY }
+        return WindowOutline.path(in: rect, radius: state.radius)
+    }
+
+    /// 整段交给 Core Animation：变换、遮罩的路径和透明度按 frames 逐帧走，飞行中一直看得见，模型值停在最后一帧。
+    func animate(_ frames: [HostedContentFrame], duration: TimeInterval) {
+        guard var last = frames.last, let layer, let moverLayer = mover.layer else { return }
+        last.shown = frames.contains(where: \.shown)
+        apply(last)
+        frameState = frames[frames.count - 1]
+        moverLayer.add(StageKeyframes.make("sublayerTransform", frames.map { NSValue(caTransform3D: CATransform3DMakeAffineTransform($0.transform)) },
+                                           duration: duration), forKey: "flight")
+        clip.add(StageKeyframes.make("path", frames.map { clipPath($0, in: layer) }, duration: duration), forKey: "flight-path")
+        clip.add(StageKeyframes.make("opacity", frames.map { Float($0.opacity) }, duration: duration), forKey: "flight-opacity")
     }
 }
 
@@ -692,6 +740,41 @@ nonisolated struct WindowOutline: Shape {
     let frame: CGRect
     let radius: CGFloat
     func path(in _: CGRect) -> Path { RoundedRectangle(cornerRadius: radius).path(in: frame) }
+
+    /// 同样的圆角矩形（圆角按 RoundedRectangle 的 .circular，半径不超过短边的一半），给图层用。
+    /// 每次都是四段直线加四段三次曲线，半径为零也一样：Core Animation 按控制点逐个插值路径，前后段数不同就不连贯。
+    static func path(in rect: CGRect, radius: CGFloat) -> CGPath {
+        let r = max(0, min(radius, rect.width / 2, rect.height / 2))
+        // 四分之一圆的三次曲线近似
+        let k = r * 0.552_284_749_8
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: rect.minX + r, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - r, y: rect.minY))
+        path.addCurve(to: CGPoint(x: rect.maxX, y: rect.minY + r),
+                      control1: CGPoint(x: rect.maxX - r + k, y: rect.minY), control2: CGPoint(x: rect.maxX, y: rect.minY + r - k))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
+        path.addCurve(to: CGPoint(x: rect.maxX - r, y: rect.maxY),
+                      control1: CGPoint(x: rect.maxX, y: rect.maxY - r + k), control2: CGPoint(x: rect.maxX - r + k, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX + r, y: rect.maxY))
+        path.addCurve(to: CGPoint(x: rect.minX, y: rect.maxY - r),
+                      control1: CGPoint(x: rect.minX + r - k, y: rect.maxY), control2: CGPoint(x: rect.minX, y: rect.maxY - r + k))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + r))
+        path.addCurve(to: CGPoint(x: rect.minX + r, y: rect.minY),
+                      control1: CGPoint(x: rect.minX, y: rect.minY + r - k), control2: CGPoint(x: rect.minX + r - k, y: rect.minY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// 按时间均匀取的关键帧，线性插值（取得够密，曲线由取样给出）。
+enum StageKeyframes {
+    static func make(_ keyPath: String, _ values: [Any], duration: TimeInterval) -> CAKeyframeAnimation {
+        let animation = CAKeyframeAnimation(keyPath: keyPath)
+        animation.values = values
+        animation.duration = duration
+        animation.calculationMode = .linear
+        return animation
+    }
 }
 
 /// 标题两侧只读同一时钟，不自己加动画；正文尺寸变了也不会产生另一段补位时序。

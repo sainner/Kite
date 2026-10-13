@@ -418,6 +418,11 @@ final class StageView: NSView {
         CGPoint(x: point.x - origin.x, y: point.y - origin.y)
     }
 
+    /// 台面坐标换成窗口坐标（左上角起），同拖动报的。
+    func windowPoint(_ point: CGPoint) -> CGPoint {
+        CGPoint(x: point.x + origin.x, y: point.y + origin.y)
+    }
+
     // MARK: - 卡片的拖动、点击
 
     func drag(_ pane: Pane, to point: CGPoint) {
@@ -443,9 +448,9 @@ final class StageView: NSView {
 
     // MARK: - 逐帧
 
-    /// 有卡片在动时开显示链接，逐帧取样；都停了就关。
+    /// 有卡片在跟手拖动时开显示链接，逐帧取样；别的排布动画整段交给 Core Animation（见 CardView.flightStarted）。
     func updateDisplayLink() {
-        let moving = cards.values.contains { $0.motionMoving }
+        let moving = cards.values.contains { $0.needsFrames }
         if moving, displayLink == nil {
             let link = displayLink(target: self, selector: #selector(tick(_:)))
             link.add(to: .main, forMode: .common)
@@ -458,7 +463,7 @@ final class StageView: NSView {
         // 取样按这一帧要显示的时刻，同 TimelineView 给的帧时刻
         let date = Date(timeIntervalSinceNow: link.targetTimestamp - CACurrentMediaTime())
         var moving = false
-        for card in cards.values where card.motionMoving {
+        for card in cards.values where card.needsFrames {
             card.applyPresentation(at: date)
             moving = true
         }
@@ -673,7 +678,28 @@ private final class GapView: PressDragView {
         super.mouseUp(with: event)
     }
 
-    override func isAccessibilityElement() -> Bool { false }
+    // 读屏：分隔条，左右（上下）各挪一个模块，同拖着松手吸附到模块
+
+    override func isAccessibilityElement() -> Bool { gap != nil }
+    override func accessibilityRole() -> NSAccessibility.Role? { .splitter }
+    override func accessibilityLabel() -> String? { "调整窗口大小" }
+    override func accessibilityOrientation() -> NSAccessibilityOrientation {
+        gap?.split.axis == .vertical ? .horizontal : .vertical
+    }
+    override func accessibilityValue() -> Any? {
+        gap.map { Int(($0.split.ratio * 100).rounded()) }
+    }
+    override func accessibilityPerformIncrement() -> Bool { nudge(DotMetrics.module) }
+    override func accessibilityPerformDecrement() -> Bool { nudge(-DotMetrics.module) }
+
+    private func nudge(_ distance: CGFloat) -> Bool {
+        guard let gap, let stage else { return false }
+        let horizontal = gap.split.axis == .horizontal
+        let center = CGPoint(x: frame.midX + (horizontal ? distance : 0), y: frame.midY + (horizontal ? 0 : distance))
+        stage.resize(gap, to: stage.windowPoint(center))
+        stage.finishResize()
+        return true
+    }
 }
 
 /// 拖动卡片时预览它放下后的位置：圆角 cardRadius，主题色 8% 填充、2 点主题色描边，出现、移动、消失跟着预览的动画走。

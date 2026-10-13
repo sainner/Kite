@@ -167,25 +167,57 @@ private final class HeaderAnchorContainer: NSView, WindowHeaderFollower {
         update()
     }
 
-    private func update() {
-        guard let layer else { return }
+    /// 整段交给 Core Animation（Mac 原生台面的窗口动画，见 HostedContentLink.animate）：平移和标题右边的截法按每一帧走，停在最后一帧。
+    /// 有哪一帧要截，遮罩就整段挂着，不截的那几帧遮罩放开到整个宽度。
+    func follow(_ frames: [(shift: CGVector, titleCut: CGFloat)], duration: TimeInterval) {
+        guard let last = frames.last, let layer, let moverLayer = mover.layer else { return }
+        shift = last.shift
+        titleCut = last.titleCut
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        let dx = edge == .leading ? shift.dx : -shift.dx
-        mover.layer?.sublayerTransform = CATransform3DMakeTranslation(dx, shift.dy, 0)
-        if edge == .leading, titleCut > 0 {
-            // 只截标题的右边，上下左都放开：按下时放大的玻璃不被切
-            let margin: CGFloat = 1000
-            let right = max(title.minX, bounds.width - titleCut) + dx
-            var rect = CGRect(x: -margin, y: -margin, width: right + margin, height: bounds.height + 2 * margin)
-            if !layer.contentsAreFlipped() { rect.origin.y = bounds.height - rect.maxY }
+        update(shift: last.shift, titleCut: last.titleCut, keepsMask: frames.contains { $0.titleCut > 0 })
+        moverLayer.add(StageKeyframes.make("sublayerTransform", frames.map { NSValue(caTransform3D: translation($0.shift)) }, duration: duration),
+                       forKey: "flight")
+        if edge == .leading, layer.mask === clip {
+            clip.add(StageKeyframes.make("path", frames.map { clipPath(shift: $0.shift, titleCut: $0.titleCut, in: layer) }, duration: duration),
+                     forKey: "flight")
+        }
+        CATransaction.commit()
+    }
+
+    private func update() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        mover.layer?.removeAnimation(forKey: "flight")
+        clip.removeAnimation(forKey: "flight")
+        update(shift: shift, titleCut: titleCut, keepsMask: false)
+        CATransaction.commit()
+    }
+
+    private func update(shift: CGVector, titleCut: CGFloat, keepsMask: Bool) {
+        guard let layer else { return }
+        mover.layer?.sublayerTransform = translation(shift)
+        if edge == .leading, titleCut > 0 || keepsMask {
             clip.frame = layer.bounds
-            clip.path = CGPath(rect: rect, transform: nil)
+            clip.path = clipPath(shift: shift, titleCut: titleCut, in: layer)
             if layer.mask !== clip { layer.mask = clip }
         } else if layer.mask != nil {
             layer.mask = nil
         }
-        CATransaction.commit()
+    }
+
+    private func translation(_ shift: CGVector) -> CATransform3D {
+        CATransform3DMakeTranslation(edge == .leading ? shift.dx : -shift.dx, shift.dy, 0)
+    }
+
+    /// 只截标题的右边，上下左都放开：按下时放大的玻璃不被切。不截时放开到整个宽度，路径的形状不变（同一个矩形）。
+    private func clipPath(shift: CGVector, titleCut: CGFloat, in layer: CALayer) -> CGPath {
+        let margin: CGFloat = 1000
+        let dx = edge == .leading ? shift.dx : -shift.dx
+        let right = titleCut > 0 ? max(title.minX, bounds.width - titleCut) + dx : bounds.width + margin
+        var rect = CGRect(x: -margin, y: -margin, width: right + margin, height: bounds.height + 2 * margin)
+        if !layer.contentsAreFlipped() { rect.origin.y = bounds.height - rect.maxY }
+        return CGPath(rect: rect, transform: nil)
     }
 }
 #endif
