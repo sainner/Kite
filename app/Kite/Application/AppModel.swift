@@ -10,6 +10,8 @@ final class AppModel {
     var pendingPlacement: CGRect?
     var sidebarWidth = Metrics.sidebarWidth
     var sidebarCollapsed = false
+    /// 正在拖侧栏的边改宽：Mac 上台面这时不跟着每步改宽，见 MainWindow.stageInset。
+    var sidebarResizing = false
     /// 侧栏底部一级导航选中的一栏。
     var sidebarSection = SidebarSection.workspaces
     var contentSize: CGSize = .zero

@@ -326,6 +326,7 @@ import UIKit
         let model = session.model, layout = session.area.layout
         let width = model.sidebarWidth, collapsed = model.sidebarCollapsed
         session.onFinish {
+            model.sidebarResizing = false
             model.sidebarWidth = width
             model.sidebarCollapsed = collapsed
         }
@@ -338,6 +339,11 @@ import UIKit
         let lower = Metrics.sidebarMin + 2, upper = Metrics.sidebarMax - 2
         let center = ((lower + upper) / 2).rounded()
         let positions = sweep(center: center, amplitude: min(96, (upper - lower) / 2))
+        #if os(macOS)
+        let displayScale = window?.backingScaleFactor ?? 2
+        #else
+        let displayScale = UITraitCollection.current.displayScale
+        #endif
         func stageWidth() -> [Double] { [Double(layout.availableSize?.width ?? 0)] }
         try await ready(session)
         for index in 0..<rounds(isMac ? 2 : 3) {
@@ -345,16 +351,20 @@ import UIKit
             try await Task.sleep(for: .seconds(1.2))
             var segment = Segment(name: "sidebar", index: index, start: .now)
             var step = 0
+            // 同拖侧栏的边：拖着时台面另有安排（见 MainWindow.stageInset）
+            model.sidebarResizing = true
             try await measuring {
                 try await Clock().run { link in
                     segment.ticks.append(Tick(link, widths: stageWidth()))
                     guard step < positions.count else { return false }
-                    model.sidebarWidth = positions[step]
+                    // 同 MainWindow.resizeSidebar 取到像素
+                    model.sidebarWidth = (positions[step] * displayScale).rounded() / displayScale
                     step += 1
                     return true
                 }
             }
             segment.end = .now
+            model.sidebarResizing = false
             try await Task.sleep(for: .milliseconds(400))
             let settle = Mark.now
             try await Task.sleep(for: .seconds(1.2))
