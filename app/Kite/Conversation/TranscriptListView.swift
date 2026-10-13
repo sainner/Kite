@@ -142,7 +142,7 @@ final class TranscriptListView: NSScrollView {
     // MARK: - 操作栏
 
     /// 选中了原生行就在它旁边弹出操作栏：平常在这一行底下，底下放不下（会压到控制区）就放到上面；和这一行给的那一边对齐，
-    /// 见 ActionBarPlacement。托管的行的操作栏还在它们自己的 SwiftUI 视图里。收起时先让浮层播完收起动画再拿掉。
+    /// 见 TranscriptArrangement.actionBarAbove。托管的行的操作栏还在它们自己的 SwiftUI 视图里。收起时先让浮层播完收起动画再拿掉。
     private func placeActions() {
         guard let context else { return }
         let selected = context.environment.selectedRow.wrappedValue

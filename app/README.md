@@ -66,6 +66,6 @@ xcrun devicectl device copy from --device <设备 ID> --domain-type appDataConta
 
 宽对象只通过摘要属性暴露给宽视图。读整个 transcript、布局或模型的视图尽量小：窗口、标题栏和控制区只读 `WorkThread` 摘出的几项（如 `hasTranscript`），对话正文由 `ThreadTranscript` 单独读。
 
-放进环境的闭包和对象建好就不再换。环境一变，SwiftUI 要把它推给子树里每个 UIKit 视图，对话里每段字都是一个 `UITextView`，真机上一次就是几十毫秒；`PaneRow` 的横滑动作、`DrawerMotion` 的 `openSidebar` 都这样处理。
+放进环境的闭包和对象建好就不再换。环境一变，SwiftUI 要把它推给子树里每个 UIKit 视图（主对话改原生列表之前，iPhone 上每段字都是一个 `UITextView`，真机上一次就是几十毫秒）；原生列表也要换一遍托管的行和附件里的环境。`PaneRow` 的横滑动作、`DrawerMotion` 的 `openSidebar` 都这样处理。
 
 逐帧变化的量只在叶子视图读，排版用的量不随动画进度变。窗口内容按停着的样子排一次，运动交给合成层变换（`WindowMotion`、`CompactWindow`）；读 `.frame(in: .global)` 或 `Text.LayoutKey` 的视图在几何效果移动容器时每帧重算。
