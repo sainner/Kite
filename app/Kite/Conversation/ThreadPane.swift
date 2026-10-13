@@ -37,6 +37,11 @@ struct ThreadPane: View {
         }
         // 指针移到标题栏、输入区上时图案照样跟着
         .modifier(ThreadPatternPointer(slot: pane.patternSlot))
+        #else
+        .wideControls { typing in
+            PhoneControlsBar(typing: typing, send: send, voiceOwner: pane.patternSlot)
+                .disabled(area.creatingWindow != nil || thread.configuringTemplate)
+        }
         #endif
         .environment(\.workingDirectory, thread.transcriptRoot)
         .modifier(ThreadPaneSupport(pane: pane))
