@@ -55,11 +55,13 @@ export class WorkspaceFiles {
 
   list(path = '.', offset = 0, limit = 200) {
     const target = this.resolve(path);
-    const entries = readdirSync(target, { withFileTypes: true }).map((entry) => ({
+    const entries = readdirSync(target, { withFileTypes: true })
+      .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    const page = entries.slice(offset, offset + limit).map((entry) => ({
       name: entry.name, path: relative(this.root, resolve(target, entry.name)),
       kind: entry.isDirectory() ? 'directory' as const : entry.isFile() ? 'file' as const : entry.isSymbolicLink() ? 'symlink' as const : 'other' as const,
-    })).sort((a, b) => Number(b.kind === 'directory') - Number(a.kind === 'directory') || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    return { path: relative(this.root, target) || '.', entries: entries.slice(offset, offset + limit), total: entries.length,
+    }));
+    return { path: relative(this.root, target) || '.', entries: page, total: entries.length,
       nextOffset: offset + limit < entries.length ? offset + limit : null };
   }
 }
