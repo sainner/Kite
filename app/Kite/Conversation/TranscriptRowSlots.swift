@@ -207,14 +207,4 @@ final class ProseRowSlot: TranscriptRowSlot {
     }
 }
 
-/// 链接交给 SwiftUI 的 openURL：文件引用由 ReferenceNavigation 打开，网页交给系统。同 SelectableTextView.Coordinator。
-final class ProseRowCoordinator: ProseTextCoordinator, NSTextViewDelegate {
-    var openURL: OpenURLAction?
-
-    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
-        guard let url = link as? URL ?? (link as? String).flatMap(URL.init(string:)) else { return false }
-        openURL?(url)
-        return true
-    }
-}
 #endif

@@ -68,13 +68,14 @@ nonisolated final class BlockAttachment: NSTextAttachment {
         return controller
     }()
     #else
-    @MainActor private lazy var controller: NSHostingController<EmbeddedBlockView> = {
-        let controller = NSHostingController(rootView: root)
-        // 尺寸由 TextKit 按 attachmentBounds 摆，宿主不自己报尺寸，也不让安全区挤进来
-        controller.sizingOptions = []
-        controller.safeAreaRegions = []
-        return controller
+    /// Mac 上是原生的卡片（MacBlockCards），不托管 SwiftUI：改窗口宽度时托管的卡片约 0.8 ms 一张（2026-10-13 实测）。
+    @MainActor private lazy var card: EmbeddedCardView = {
+        let card = EmbeddedCardView.make(for: content)
+        card.resized = { [weak self] in self?.cardResized() }
+        return card
     }()
+    /// 这段回复的原文：表格卡片能选字，复制时按它取回原文。SelectableMarkdown.content 排的时候给。
+    @MainActor var markdown: String?
     #endif
     /// 量过的理想高。
     @MainActor private var height: CGFloat?
@@ -101,6 +102,7 @@ nonisolated final class BlockAttachment: NSTextAttachment {
         return layout
     }
 
+    #if canImport(UIKit)
     @MainActor private var root: EmbeddedBlockView {
         EmbeddedBlockView(content: content, environment: environment) { [weak self] size in
             self?.laidOut(size)
@@ -110,6 +112,12 @@ nonisolated final class BlockAttachment: NSTextAttachment {
     @MainActor private func render() {
         controller.rootView = root
     }
+    #else
+    @MainActor private func render() {
+        guard let environment else { return }
+        card.update(content, environment: environment, markdown: markdown)
+    }
+    #endif
 
     /// TextKit 会给这一行换新的提供者（实测流式在它后面接字时会换），每个提供者一个容器；宿主只有一个，
     /// 哪个容器进了窗口就挪进去，状态（展开、横滑位置）跟着宿主走。
@@ -133,7 +141,7 @@ nonisolated final class BlockAttachment: NSTextAttachment {
             controller.didMove(toParent: parent)
         }
         #else
-        container.host(controller.view)
+        container.host(card)
         #endif
     }
 
@@ -157,18 +165,31 @@ nonisolated final class BlockAttachment: NSTextAttachment {
     @MainActor private func measure(width: CGFloat) -> CGFloat {
         self.width = width
         if let height { return height }
+        #if canImport(UIKit)
         if environment == nil { render() }
         let height = controller.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
+        #else
+        let height = card.height(width: width)
+        #endif
         self.height = height
         return height
     }
 
+    #if canImport(UIKit)
     /// 宿主按摆好的宽排完以后报来的理想高；和量的不一样（自己展开了、表格量完宽）就请文本视图重排。
     @MainActor private func laidOut(_ size: CGSize) {
         guard let width, abs(size.width - width) < 0.5, let height, abs(height - size.height) > 0.5 else { return }
         self.height = size.height
         resized?(self)
     }
+    #else
+    /// 卡片自己变高了（展开全部）：重量，请文本视图重排这一块。
+    @MainActor private func cardResized() {
+        guard let width, let height, abs(card.height(width: width) - height) > 0.5 else { return }
+        self.height = nil
+        resized?(self)
+    }
+    #endif
 
     // 边界由提供者给：附件自己覆写 attachmentBounds 时 TextKit 不再走视图这条路；提供者不开 tracksTextAttachmentViewBounds 时
     // TextKit 不问它的边界、按默认的 32×32 摆（2026-10-12 macOS 27.2 实测）。

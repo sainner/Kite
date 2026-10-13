@@ -92,6 +92,10 @@ struct SelectableMarkdown: View {
                 var flat = block
                 flat.depth = 0
                 attachmentAttributes = attachments.embed(.markdown(flat), paragraph: style, into: result, embedded: &embedded)
+                #if os(macOS)
+                // Mac 的表格卡片能选字，复制时按原文取回
+                embedded.last?.attachment.markdown = source
+                #endif
                 if let lines = block.source?.lines {
                     map.blocks.append(.init(display: NSRange(location: start, length: result.length - start), content: start, lines: lines))
                 } else {
@@ -155,8 +159,8 @@ struct SelectableMarkdown: View {
 
     /// 行内的样式：粗体、斜体、行内代码、删除线、链接，和 SwiftUI 的 Text 认的一样。
     /// 同时记下每段显示的字对应原文的哪里（offset 是这段字在整个属性串里的起点）：显示的字是 block.text 依次往下，
-    /// 只有缩短成文件名的引用要按 ReferenceOriginal 记的原长对回去，引用前插的图标算进它后面那段。
-    private static func inline(_ text: AttributedString, source: MarkdownSource?, offset: Int, font: PlatformFont, color: PlatformColor,
+    /// 只有缩短成文件名的引用要按 ReferenceOriginal 记的原长对回去，引用前插的图标算进它后面那段。Mac 的表格卡片排格子也用它。
+    static func inline(_ text: AttributedString, source: MarkdownSource?, offset: Int, font: PlatformFont, color: PlatformColor,
                                iconTint: PlatformColor, codeFill: CGColor) -> (NSAttributedString, [TextSourceMap.Piece]) {
         let text = InlineCodeSpacing.apply(to: text)
         let result = NSMutableAttributedString()

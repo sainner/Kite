@@ -354,15 +354,4 @@ final class BubbleFoldButton: NSView {
     override func mouseDown(with event: NSEvent) {}
 }
 
-/// 翻转坐标、带图层的视图，截住正文用。
-final class FlippedLayerView: NSView {
-    override var isFlipped: Bool { true }
-
-    init() {
-        super.init(frame: .zero)
-        wantsLayer = true
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-}
 #endif

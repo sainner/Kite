@@ -84,13 +84,23 @@ struct SelectableTextView: NSViewRepresentable {
     }
 }
 
+/// 链接交给 SwiftUI 的 openURL：文件引用由 ReferenceNavigation 打开，网页交给系统。原生对话的行和表格卡片用，同 SelectableTextView.Coordinator。
+final class ProseRowCoordinator: ProseTextCoordinator, NSTextViewDelegate {
+    var openURL: OpenURLAction?
+
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        guard let url = link as? URL ?? (link as? String).flatMap(URL.init(string:)) else { return false }
+        openURL?(url)
+        return true
+    }
+}
 /// 露出任何一部分就把整段当作视口。TextKit 2 的 NSTextView 只排、只画 visibleRect 里的片段，而这里的 visibleRect 是外层
 /// SwiftUI 滚动视图的可见区：往上滚时新露出的一条先露底部，视口从中间起，前面的片段按估算高度占位，画出来的字整体
 /// 比真实位置高几十 pt、底下留白，等滚到顶上重排才跳回去，看起来就是先空白、再逐段入场（2026-10-12 离屏实测，
 /// 视口从中间起时渲染面比片段高 70 pt）。整段作视口后片段从头排、位置准确；没露出时照旧空视口，不给屏幕外的字留渲染面。
 /// 只扩到露出的底边（视口逐帧长）实测冷滚丢帧反而更多，所以一露出就整段。
 /// 复制给原文：有对照时选区换成原文写进剪贴板（拷贝、拖出、服务都走这里），只写纯文本。
-final class ProseTextView: NSTextView, TextKitMeasuring {
+class ProseTextView: NSTextView, TextKitMeasuring {
     var source: (text: String, map: TextSourceMap)?
     /// 右键或按住 Control 点击打开这一行的操作栏；没有时右键是文本视图自己的菜单。原生对话列表给（见 TranscriptRowSlots）。
     var secondaryClick: (() -> Void)?

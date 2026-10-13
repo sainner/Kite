@@ -235,35 +235,6 @@ struct HostedRowFrame: Layout {
     }
 }
 
-/// 一行字，按字形的宽排，放不下末尾截成省略号。SwiftUI 的 lineLimit(1) Text 那样从 0 起画，不像 NSTextField 两边带单元格边距。
-final class LineLabel: NSView {
-    private var text = NSAttributedString()
-    private var font = NSFont.systemFont(ofSize: 11)
-
-    override var isFlipped: Bool { true }
-
-    func set(_ string: String, font: NSFont, color: NSColor) {
-        let style = NSMutableParagraphStyle()
-        style.lineBreakMode = .byTruncatingTail
-        text = NSAttributedString(string: string, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: style])
-        self.font = font
-        needsDisplay = true
-    }
-
-    /// 不截时多宽。
-    var textWidth: CGFloat { ceil(text.size().width) }
-    /// 不截时多宽，往上取到像素（SwiftUI 的 Text 就这么宽），不取整到点。
-    var exactWidth: CGFloat { (text.size().width * 2).rounded(.up) / 2 }
-
-    /// 一行字的高。
-    var lineHeight: CGFloat { ceil(font.ascender - font.descender + font.leading) }
-
-    override func draw(_ dirtyRect: NSRect) {
-        text.draw(with: CGRect(x: 0, y: 0, width: bounds.width, height: lineHeight),
-                  options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
-    }
-}
-
 /// 生成中的思考，同 ThinkingRow：一行次要色小字，换行当空格，放不下截掉。
 final class ThinkingRowSlot: TranscriptRowSlot {
     private let label = LineLabel()
