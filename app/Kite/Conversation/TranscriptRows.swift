@@ -54,6 +54,23 @@ struct TranscriptRow: Identifiable {
         return rows
     }
 
+    /// 读屏读的这一行：原生列表里屏外还没建视图的行由代理元素读它（见 PhoneTranscriptView.accessibilityRows）。
+    var accessibilitySummary: String {
+        switch content {
+        case .message(let message, let queued): queued ? "排队中：\(message.typed)" : message.typed
+        case .item(let item):
+            switch item.kind {
+            case .human(let message): message.typed
+            case .kite(let text): "Kite 发给 agent：\(text)"
+            case .notification(let text), .text(let text), .apiError(let text): text
+            case .thinking(let text): text.isEmpty ? "思考中" : text
+            case .work(let work): work.accessibilitySummary
+            case .interrupted: "已打断"
+            case .compacted(let compaction, _): compaction.dividerTitle
+            }
+        }
+    }
+
     /// 排出来多高取决于的内容，只取便宜的：种类、字数、几步工具和各步状态。字数不变的改字不算（记录只追加，不会这样改）。
     func shape(into hasher: inout Hasher) {
         hasher.combine(id)

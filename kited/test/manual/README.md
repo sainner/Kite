@@ -18,7 +18,6 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 | `verify-plugin-management.ts` | Swift 配置编辑与真实后端往返、授权和版本冲突 | `bun kited/test/manual/verify-plugin-management.ts` |
 | `verify-remote-workspace-swift.ts` | 真实后端工作区与跨工作机项目身份的 Swift 解码、目录同步 | `bun kited/test/manual/verify-remote-workspace-swift.ts` |
 | `verify-resource-reference-swift.ts` | 文件、diff 和网页引用经过 Markdown 与编码转换后仍正确 | `bun kited/test/manual/verify-resource-reference-swift.ts` |
-| `verify-transcript-scroll-swift.ts` | SwiftUI 动画收起与滚动阶段的定位交接 | `bun kited/test/manual/verify-transcript-scroll-swift.ts` |
 | `verify-dot-canvas-swift.ts` | 真实 DotField 浮动、闪烁与空白帧交接的颜色连续性 | `bun kited/test/manual/verify-dot-canvas-swift.ts` |
 | `verify-dot-background-swift.ts` | 真实 SwiftUI preference 在窗口点阵启用、停用与移除时的自动占用交接 | `bun kited/test/manual/verify-dot-background-swift.ts` |
 | `verify-compact-pane-stack-swift.ts` | 真实 SwiftUI 紧凑窗口行横滑松手后的焦点切换与原生按钮命中、保活窗口的环境动作、外壳控制区接回源环境后的 keyboardShown、PanePresence 随停稳翻转；仅手动运行 | `bun kited/test/manual/verify-compact-pane-stack-swift.ts` |

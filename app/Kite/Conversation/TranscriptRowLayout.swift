@@ -46,7 +46,7 @@ import AppKit
         guard let laid = text.measure(lineWidth: width, from: from, through: band.upperBound - topInset - top) else { return nil }
         let below = rest.below(end: layout.offset(from: start, to: laid.end)).map { $0 * rest.width / width } ?? 0
         // 同整段排的取整：估的位置带小数，不取整时贴底的可见区跟着它每步错开零点几点，字逐步抖一个像素
-        return topInset + ceil(laid.bottom + below)
+        return topInset + text.roundedHeight(laid.bottom + below)
     }
 
     /// 量高前记下行内 y 处的那段，量完由 pinShift 给出它在行里挪了多少，见 TranscriptRowSlot.pin。
@@ -152,5 +152,24 @@ struct BubbleLayout {
     func anchor(in frame: CGRect, attachmentsWidth: CGFloat) -> CGRect {
         let width = max(textWidth + Metrics.bubblePadding.width * 2, attachmentsWidth)
         return CGRect(x: frame.maxX - width, y: frame.minY, width: width, height: frame.height)
+    }
+}
+
+/// 两段话之间 agent 做的事折成的一行怎么量、展开到哪了，两端原生列表的工具行共用（照 WorkRow）：汇总一行，点开下面是步骤，
+/// 展开收起和下面的行一起按 0.25 秒的普通缓出动，箭头跟着转、步骤跟着淡入淡出。汇总行、步骤的视图各端自己建。
+enum WorkLayout {
+    /// 汇总行和步骤之间的间距，同 WorkRow 的 VStack。
+    static let spacing: CGFloat = 6
+    static let motion = RowMotion.curve(.easeOut, duration: 0.25)
+
+    /// 行多高：汇总行，展开时再加上间距和步骤。
+    static func height(header: CGFloat, steps: CGFloat, expanded: Bool) -> CGFloat {
+        header + (expanded ? spacing + steps : 0)
+    }
+
+    /// 动画中行的高在收起和展开之间，按它算走到哪了：0 收起，1 展开。箭头转多少、步骤多透明都跟着它。
+    static func progress(rowHeight: CGFloat, header: CGFloat, steps: CGFloat, expanded: Bool) -> CGFloat {
+        let full = spacing + steps
+        return full > 0 ? min(max((rowHeight - header) / full, 0), 1) : (expanded ? 1 : 0)
     }
 }

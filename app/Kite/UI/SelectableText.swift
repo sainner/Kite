@@ -26,9 +26,7 @@ struct SelectableText: View {
 
     private var content: TextViewContent {
         #if canImport(UIKit)
-        let body = UIFont.preferredFont(forTextStyle: .body)
-        // Theme.code：等宽的 subheadline
-        let code = UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: .monospacedSystemFont(ofSize: 15, weight: .regular))
+        let (body, code) = Self.phoneFonts
         #else
         // 直接取 SwiftUI 解析出的字体，和原来 Text 用的是同一个：Theme.code 解析出的 SF Mono 带 leading，
         // monospacedSystemFont 不带，只有命令名的一行会差 1 pt 行高
@@ -37,6 +35,14 @@ struct SelectableText: View {
         #endif
         return Self.content(message, color: color, body: body, code: code, attachments: attachments)
     }
+
+    #if canImport(UIKit)
+    /// iPhone、iPad 上正文和代码段的字体，原生气泡（PhoneBubbleRowSlot）也用。代码是 Theme.code：等宽的 subheadline。
+    static var phoneFonts: (body: UIFont, code: UIFont) {
+        (UIFont.preferredFont(forTextStyle: .body),
+         UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: .monospacedSystemFont(ofSize: 15, weight: .regular)))
+    }
+    #endif
 
     /// 文字和代码块之间空 messageSegmentGap，和原来一段一个视图竖着排的间距一样。Mac 主对话的原生气泡也用它（见 BubbleRowSlot）。
     static func content(_ message: Message, color: PlatformColor, body: PlatformFont, code: PlatformFont,

@@ -55,7 +55,7 @@ enum TranscriptPlacement: Equatable {
 
 /// 原生对话列表两端共用的部分：行的仓库（按 id 复用行对象，看签名、外观、托管的环境决定换不换内容）、排列循环、
 /// 放进列表的范围、行高动画、空闲补量。滚动视图、行视图、操作栏宿主各端自己写，按这里的结果执行。
-/// 规则见 TranscriptListView 开头；跟不跟着最底下、留白、发送后的滑动见 TranscriptFollow。
+/// 规则见 TranscriptListView 开头（iOS 的 PhoneTranscriptView 同）；跟不跟着最底下、留白、发送后的滑动见 TranscriptFollow。
 @MainActor final class TranscriptArrangement {
     private(set) var slots: [TranscriptRowSlot] = []
     private(set) var byID: [RowID: TranscriptRowSlot] = [:]
@@ -107,7 +107,7 @@ enum TranscriptPlacement: Equatable {
             } else {
                 slot = make(row)
                 slot.update(row, context: context, resized: true)
-                // 刚发出去的消息先在下面藏着，跟着滑到底的那一下浮上来，见 TranscriptListView.startGlideIfReady
+                // 刚发出去的消息先在下面藏着，跟着滑到底的那一下浮上来，见各端列表的 startGlideIfReady
                 if case .message(let message, _) = row.content, context.environment.arrivingMessages.contains(message.id) {
                     slot.rise = 1
                 }
@@ -172,6 +172,7 @@ enum TranscriptPlacement: Equatable {
                 if measured.width != columnWidth || !exact { waiting = true }
             } else if close {
                 if !exact { slot.measured = nil }
+                slot.resizing = resizing
                 let lower = max(reach.minY - old.minY, 0), upper = min(reach.maxY, old.maxY) - old.minY
                 if resizing, old != .zero, upper > lower {
                     height = slot.height(width: columnWidth, band: lower...upper)
@@ -222,11 +223,21 @@ enum TranscriptPlacement: Equatable {
         let placed = viewport.resizing ? visible.insetBy(dx: 0, dy: -visible.height * Self.closeMargin) : near
         for slot in slots {
             if slot.frame.maxY > placed.minY && slot.frame.minY < placed.maxY {
-                // 刚发出去的消息在下面 bubbleRise 处藏着，浮上来的过程见 TranscriptListView.glideStep
+                // 刚发出去的消息在下面 bubbleRise 处藏着，浮上来的过程见各端列表的 glideStep
                 body(slot, .place(slot.viewFrame(in: slot.frame).offsetBy(dx: 0, dy: slot.rise * Metrics.bubbleRise)))
             } else if slot.hasView {
                 body(slot, slot.frame.maxY > near.minY && slot.frame.minY < near.maxY ? .hide : .remove)
             }
+        }
+    }
+
+    /// 要放进列表的行里有还没按眼下的宽量过的：人滚得比空闲补量快时，滑进来的行先要排一遍（arrange 先量再放、按住顶上那一行）。
+    func needsMeasure(in viewport: TranscriptViewport) -> Bool {
+        let visible = viewport.visible
+        let width = viewport.column.width
+        let placed = visible.insetBy(dx: 0, dy: -visible.height * (viewport.resizing ? Self.closeMargin : Self.margin))
+        return slots.contains { slot in
+            slot.frame.maxY > placed.minY && slot.frame.minY < placed.maxY && slot.measured?.width != width
         }
     }
 
@@ -313,6 +324,7 @@ enum TranscriptPlacement: Equatable {
         for slot in pending.sorted(by: { distance($0.frame, from: visible) < distance($1.frame, from: visible) }) {
             if slot.frame.maxY > urgent.minY && slot.frame.minY < urgent.maxY { continue }
             if slot.provisional { slot.measured = nil }
+            slot.resizing = false
             _ = slot.height(width: columnWidth)
             if CACurrentMediaTime() - start > 0.008 { break }
         }

@@ -2,7 +2,7 @@
 import AppKit
 import SwiftUI
 
-/// Mac 主对话的滚动：原生列表建好后接上，发送时让它滑，见 TranscriptListView.send。iPhone 用 TranscriptScroll。
+/// Mac 主对话的滚动：原生列表建好后接上，发送时让它滑，见 TranscriptListView.send。iPhone、iPad 是 PhoneTranscriptScroll。
 @MainActor final class MacTranscriptScroll {
     fileprivate weak var list: TranscriptListView?
 

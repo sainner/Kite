@@ -263,6 +263,15 @@ extension Work {
     /// 正在跑的那次调用。
     var running: Call? { calls.first { [.generating, .queued, .running].contains($0.state) } }
 
+    /// 读屏读的汇总行：正在做什么或汇总，连同出错、没跑完的步数，和汇总行上显示的一样。
+    var accessibilitySummary: String {
+        let failed = count(.failed) + count(.unknown), unfinished = count(.unfinished)
+        var parts = [running?.use.title ?? summary]
+        if failed > 0 { parts.append("\(failed) 步出错") }
+        if unfinished > 0 { parts.append("\(unfinished) 步没跑完") }
+        return parts.joined(separator: "，")
+    }
+
 }
 
 func firstLine(_ text: String?) -> String {

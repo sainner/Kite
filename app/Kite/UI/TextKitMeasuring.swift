@@ -12,9 +12,19 @@ protocol TextKitMeasuring: AnyObject {
     var textLayoutManager: NSTextLayoutManager? { get }
     /// 按 lineWidth 定容器的宽；文本容器跟着视图宽度时先把视图的宽放上去。
     func fit(lineWidth: CGFloat)
+    /// 量出来的高往上取整到多细：一点分成几份。Mac 取整点（原来 SwiftUI 版量的就是整点）；iOS 取到像素，
+    /// 同原来 SwiftUI 版用的 UITextView.sizeThatFits（一行 17 pt 正文 20.33 pt，取整点要高出 0.67 pt）。
+    var heightRounding: CGFloat { get }
 }
 
 extension TextKitMeasuring {
+    var heightRounding: CGFloat { 1 }
+
+    /// 按 heightRounding 往上取整。
+    func roundedHeight(_ height: CGFloat) -> CGFloat {
+        ceil(height * heightRounding) / heightRounding
+    }
+
     /// 刚排好的各行里最宽的一行有多宽（排版坐标），按它算贴着字的宽度：和 NSAttributedString 的 boundingRect 量的一样，
     /// 但不用再按最优断行把全文排一遍（长消息改宽时每次几毫秒，2026-10-13 实测）。
     var widestLine: CGFloat {
@@ -47,7 +57,7 @@ extension TextKitMeasuring {
         guard let layout = textLayoutManager else { return 0 }
         fit(lineWidth: lineWidth)
         layout.ensureLayout(for: layout.documentRange)
-        return ceil(layout.usageBoundsForTextContainer.height)
+        return roundedHeight(layout.usageBoundsForTextContainer.height)
     }
 
     /// 改到 lineWidth 的行宽，从 location 那段起边排边往下，排够 height 高为止（排版坐标）。改宽让整段作废后只排这一截：

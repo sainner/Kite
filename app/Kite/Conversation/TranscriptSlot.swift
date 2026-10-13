@@ -4,13 +4,23 @@ import SwiftUI
 struct TranscriptRowContext {
     /// 字体、外观、引用范围、打开链接、选中的行等，主对话的 SwiftUI 环境整份转交。
     var environment: EnvironmentValues
-    /// 点 agent 的话弹出操作栏，见 TranscriptView.actionable。
+    /// 点 agent 的话弹出操作栏：主对话里是。
     var actionable: Bool
     /// 右键开关这一行的操作栏。
     var toggleActions: (RowID) -> Void
 }
 
-/// 原生对话列表（Mac 的 TranscriptListView）里的一行：内容、量过的高、视图。两端共用这个基类，行视图各端各写子类。
+extension TranscriptRowContext {
+    /// 开着操作栏的那一行。SwiftUI 外壳经环境里的 selectedRow 给，以后的 UIKit 外壳换掉这里和 select 就能接。
+    var selected: RowID? { environment.selectedRow.wrappedValue }
+
+    /// 打开这一行的操作栏（别的收起），给 nil 收起。iPhone 上长按时用，右键开关见 toggleActions。
+    func select(_ id: RowID?) {
+        if let id { environment.selectedRow.show(id) } else if selected != nil { environment.selectedRow.close() }
+    }
+}
+
+/// 原生对话列表（Mac 的 TranscriptListView、iOS 的 PhoneTranscriptView）里的一行：内容、量过的高、视图。两端共用这个基类，行视图各端各写子类。
 /// 视图只在可见区附近时放进列表：AppKit 改动一个视图在窗口里的位置时要通知它整棵子树，拖缝时每帧都在挪（2026-10-13 实测，
 /// 一个长会话的行全建成视图时每步比按需只建可见区附近多约 8 ms）。
 @MainActor class TranscriptRowSlot {
@@ -20,6 +30,8 @@ struct TranscriptRowContext {
     var measured: (width: CGFloat, height: CGFloat)?
     /// 量的时候在拖缝，用的是省时的近似（见 BubbleRowSlot），停下要按精确的重量。
     var provisional = false
+    /// 这一次量是在拖缝或吸附中，排列循环量之前给（见 TranscriptArrangement.arrange），行自己不读外壳。
+    var resizing = false
     /// 在文档里占的范围（内容列的宽），排列时算出来。
     var frame = CGRect.zero
     /// 自己变高变矮时告诉列表：motion 是人点了展开收起时和 SwiftUI 版同样的走法，下面的行跟着挪；附件量完、图标载完这类给 nil，直接换。
@@ -70,7 +82,7 @@ struct TranscriptRowContext {
 }
 
 /// 一行该用哪种实现：agent 的话、人发的消息原生排，工具行、思考行原生，其余先托管原来的 SwiftUI 行视图。
-/// 判断两端共用，各端的工厂按它建自己的子类（Mac 见 makeTranscriptRowSlot）。
+/// 判断两端共用，各端的工厂按它建自己的子类（Mac 见 makeTranscriptRowSlot，iOS 见 makePhoneTranscriptRowSlot）。
 enum SlotKind { case prose, bubble, work, thinking, hosted }
 
 func slotKind(_ row: TranscriptRow) -> SlotKind {
@@ -83,5 +95,18 @@ func slotKind(_ row: TranscriptRow) -> SlotKind {
         case .thinking: .thinking
         default: .hosted
         }
+    }
+}
+
+/// 两端原生列表里托管的行按内容的理想高报尺寸、贴顶摆：量高时给无限高也只报内容多高（不然 maxHeight 无限的框会把无限高原样报回来），
+/// 内容自己变高、列表还没跟上的那一帧往下伸，不居中。
+struct HostedRowFrame: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let size = subviews.first?.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) ?? .zero
+        return CGSize(width: proposal.width ?? size.width, height: size.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(width: bounds.width, height: nil))
     }
 }

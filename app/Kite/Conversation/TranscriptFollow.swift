@@ -9,7 +9,7 @@ import SwiftUI
     private(set) var following = true
     /// 留白被人往上翻裁掉了多少。打开时为 nil，不留白；发送并开启新一轮时从 0 开始。
     private(set) var trim: CGFloat?
-    /// 留白按多高的可见区算：变高时当场跟上，变矮时等 0.6 秒（可见区变矮时留白要等一会儿再缩，见 TranscriptScroll.visibleChanged）。
+    /// 留白按多高的可见区算：变高时当场跟上，变矮时等 0.6 秒，见 visibleChanged。
     private(set) var heldVisible: CGFloat = 0
     /// 可见区这会儿多高，每次排版报上来。
     private var visible: CGFloat = 0
@@ -58,7 +58,8 @@ import SwiftUI
         following = distanceToBottom <= 1
     }
 
-    /// 可见区变矮时，等它最后一次变完 0.6 秒再让留白跟上，那时已经变回去了就不缩：每变一次都从头计时，同 TranscriptScroll。
+    /// 可见区变矮时，等它最后一次变完 0.6 秒再让留白跟上，那时已经变回去了就不缩：每变一次都从头计时。
+    /// 原来 iPhone 的 SwiftUI 版试出来：键盘升起的动画没走完时内容变短，滚动视图会把对话往下挪一个键盘高，所以等一会儿再缩，缩掉的在键盘后面。
     /// 平台每次排版都报，高没变的不算一次变化，不然流式回复不停重排时留白一直缩不下去。
     func visibleChanged(_ height: CGFloat) {
         guard height != visible else { return }

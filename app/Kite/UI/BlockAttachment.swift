@@ -196,7 +196,18 @@ final class EmbeddedContainerView: PlatformView {
     #if canImport(UIKit)
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window != nil { attachment?.adopt(into: self) }
+        guard window != nil else { return }
+        attachment?.adopt(into: self)
+        // 卡片横着滚的那层不接点状态栏回顶：SwiftUI 的横向 ScrollView 默认开着（模拟器读过），同一窗口里有几个开着的滚动视图时
+        // 系统一个都不滚，对话就回不了顶。它在宿主排版时才建，等这一拍排完再找
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            @MainActor func walk(_ view: UIView) {
+                if let scroll = view as? UIScrollView, scroll.scrollsToTop { scroll.scrollsToTop = false }
+                for child in view.subviews { walk(child) }
+            }
+            for child in subviews { walk(child) }
+        }
     }
     #else
     private weak var hostedView: NSView?

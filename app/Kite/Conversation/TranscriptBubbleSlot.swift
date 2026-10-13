@@ -95,7 +95,7 @@ final class BubbleRowSlot: TranscriptRowSlot {
         if let measured, measured.width == width { return measured.height }
         guard let storage = container.text.textStorage else { return 0 }
         provisional = layout.measure(container.text, storage: storage, width: width, hasBlocks: hasBlocks,
-                                     resizing: WindowLayout.anyResizing, expanded: expanded, foldHeight: Self.foldHeight)
+                                     resizing: resizing, expanded: expanded, foldHeight: Self.foldHeight)
         attachmentsHeight = container.attachmentsHeight(width: width)
         let height = attachmentsHeight + bubbleHeight(expanded: expanded)
         measured = (width, height)

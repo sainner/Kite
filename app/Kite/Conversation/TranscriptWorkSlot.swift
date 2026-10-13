@@ -16,10 +16,6 @@ final class WorkRowSlot: TranscriptRowSlot {
     /// 有调用在跑时托管的汇总行。
     private var running: NSHostingController<AnyView>?
 
-    /// 汇总行和步骤之间的间距，同 WorkRow 的 VStack。
-    private static let spacing: CGFloat = 6
-    static let motion = RowMotion.curve(.easeOut, duration: 0.25)
-
     override init(row: TranscriptRow) {
         super.init(row: row)
         container.header.action = { [weak self] in self?.toggle() }
@@ -73,21 +69,20 @@ final class WorkRowSlot: TranscriptRowSlot {
         if expanded, let steps {
             stepsHeight = ceil(steps.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height)
         }
-        let height = headerHeight + (expanded ? Self.spacing + stepsHeight : 0)
+        let height = WorkLayout.height(header: headerHeight, steps: stepsHeight, expanded: expanded)
         measured = (width, height)
         return height
     }
 
     /// 动画中行的高在收起和展开之间：按它算走到哪了，箭头转多少、步骤多透明都跟着它。
     override func layoutView(in frame: CGRect) {
-        let full = Self.spacing + stepsHeight
-        let progress = full > 0 ? min(max((frame.height - headerHeight) / full, 0), 1) : (expanded ? 1 : 0)
+        let progress = WorkLayout.progress(rowHeight: frame.height, header: headerHeight, steps: stepsHeight, expanded: expanded)
         let header = CGRect(x: 0, y: 0, width: frame.width, height: headerHeight)
         container.header.frame = header
         container.header.turn = progress
         running?.view.frame = header
         if let steps {
-            steps.view.frame = CGRect(x: 0, y: headerHeight + Self.spacing, width: frame.width, height: stepsHeight)
+            steps.view.frame = CGRect(x: 0, y: headerHeight + WorkLayout.spacing, width: frame.width, height: stepsHeight)
             steps.view.alphaValue = progress
             // 收起走完拿掉步骤
             if !expanded, progress == 0 {
@@ -110,7 +105,7 @@ final class WorkRowSlot: TranscriptRowSlot {
             running.rootView = AnyView(WorkSummaryLine(work: work, expanded: expanded).environment(\.self, context.environment))
         }
         measured = nil
-        heightChanged?(Self.motion)
+        heightChanged?(WorkLayout.motion)
     }
 
     /// 步骤自己变高变矮（点开某一步）：和它同样的走法。
@@ -118,8 +113,8 @@ final class WorkRowSlot: TranscriptRowSlot {
         let height = ceil(height)
         guard expanded, abs(height - stepsHeight) > 0.5, let measured else { return }
         stepsHeight = height
-        self.measured = (measured.width, headerHeight + Self.spacing + height)
-        heightChanged?(Self.motion)
+        self.measured = (measured.width, WorkLayout.height(header: headerHeight, steps: height, expanded: true))
+        heightChanged?(WorkLayout.motion)
     }
 }
 

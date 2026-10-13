@@ -197,7 +197,7 @@ final class HostedRowSlot: TranscriptRowSlot {
     private func root() -> AnyView {
         guard let context else { return AnyView(EmptyView()) }
         return AnyView(HostedRowFrame {
-            TranscriptRowView(row: row, actionable: context.actionable)
+            TranscriptRowView(row: row)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] in self?.reported($0) }
         }
         .environment(\.self, context.environment))
@@ -218,18 +218,6 @@ final class HostedRowSlot: TranscriptRowSlot {
         guard let measured, measured.width == frame.width, abs(measured.height - height) > 0.5 else { return }
         self.measured = (measured.width, height)
         heightChanged?(nil)
-    }
-}
-/// 托管的行按内容的理想高报尺寸、贴顶摆：量高时给无限高也只报内容多高（不然 maxHeight 无限的框会把无限高原样报回来），
-/// 内容自己变高、列表还没跟上的那一帧往下伸，不居中。
-struct HostedRowFrame: Layout {
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let size = subviews.first?.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) ?? .zero
-        return CGSize(width: proposal.width ?? size.width, height: size.height)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        subviews.first?.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(width: bounds.width, height: nil))
     }
 }
 #endif
