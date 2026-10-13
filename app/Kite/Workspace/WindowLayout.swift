@@ -39,8 +39,11 @@ final class WindowLayout {
     static var anyTransitioning: Bool { resizingLeadingEdge || all.allObjects.contains { $0.transitioning } }
     /// 所有 App 窗口里有窗口组在拖缝，或者在拖侧栏改宽：对话列表这时只量可见区附近的行，停下后补量（见 TranscriptListView、PhoneTranscriptView）。
     static var anyResizing: Bool { resizingLeadingEdge || all.allObjects.contains { $0.resizing != nil } }
-    /// 在拖侧栏改宽：贴着侧栏的那一列每步改宽（见 shiftLeadingEdge），对话列表和拖缝时一样省着量。宽屏主窗口拖侧栏时设。
-    static var resizingLeadingEdge = false
+    /// 在拖侧栏改宽：贴着侧栏的那一列每步改宽（见 shiftLeadingEdge），对话列表和拖缝时一样省着量。
+    /// 侧栏改宽都经 updateViewport 认出来，最后一次改过后 leadingQuiet 秒内都算在拖（拖侧栏的边、侧栏收起展开的动画都是逐帧改）。
+    static var resizingLeadingEdge: Bool { ProcessInfo.processInfo.systemUptime - leadingShiftedAt < leadingQuiet }
+    private static var leadingShiftedAt: TimeInterval = -.infinity
+    private static let leadingQuiet: TimeInterval = 0.2
     private static let all = NSHashTable<WindowLayout>.weakObjects()
 
     func noteSettling(_ pane: Pane, _ settling: Bool) {
@@ -71,6 +74,7 @@ final class WindowLayout {
         // 界面按像素摆，内容区的左边和宽各自取整，两者的变化差不到一点
         if self.presentation == .tiled, presentation == .tiled, let previous = availableSize, size.width != previous.width,
            leading != viewportLeading, abs(size.width - previous.width + leading - viewportLeading) < 1 {
+            Self.leadingShiftedAt = ProcessInfo.processInfo.systemUptime
             shiftLeadingEdge(from: previous, to: size)
         }
         if self.presentation == .compact && presentation == .tiled {

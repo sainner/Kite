@@ -25,8 +25,6 @@ struct MainWindow: View {
             LayoutDragArea(cursor: .columnResize) { drag in
                 let from = resizingFrom ?? sidebarWidth
                 resizingFrom = from
-                // 对话列表和拖缝时一样只量看得见的那截，松手后补量
-                WindowLayout.resizingLeadingEdge = true
                 resizeSidebar(to: from + drag.translation.width)
             } onEnded: {
                 finishResize()
@@ -85,7 +83,6 @@ struct MainWindow: View {
 
     private func finishResize() {
         resizingFrom = nil
-        WindowLayout.resizingLeadingEdge = false
     }
 
     private func resizeSidebar(to width: CGFloat) {
