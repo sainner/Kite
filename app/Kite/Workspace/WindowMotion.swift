@@ -96,7 +96,8 @@ final class WindowMotion {
         completion?.cancel()
         generation += 1
         let current = generation
-        moving = duration > 0
+        // 没变不写：拖缝时每步都交新终点，读 moving 的几层不跟着每步更新
+        if moving != (duration > 0) { moving = duration > 0 }
         guard moving else { source = next; started = date; return }
         // 改变排布的那次更新要重排几个窗口，几十毫秒后才画出第一帧（2026-10-11 Mac 三窗口实测 60～70 毫秒）。
         // 从动作时刻起算的话，第一帧已走过曲线的一半，窗口一出来就跳一大截；所以第一帧停在起点，等这次更新交上去再计时
@@ -268,16 +269,7 @@ struct WindowSurface<Content: View, Icon: View, Header: View>: View {
     /// 正文这一帧的摆放，都在托管视图（area）的坐标里：排在 destination、原尺寸的正文按 scale 缩放、左上角落在 contentOrigin，
     /// 按外框裁切、按 contentOpacity 淡出。标题两侧要挪多少、标题右边截掉多少，见 WindowHeaderAnchored。
     private func hostedFrame(_ pose: WindowPose, destination: CGPoint, area: CGRect) -> HostedContentFrame {
-        let origin = pose.contentOrigin(size: contentSize)
-        let transform = CGAffineTransform(a: pose.scale, b: 0, c: 0, d: pose.scale,
-                                          tx: origin.x - area.minX - pose.scale * (destination.x - area.minX),
-                                          ty: origin.y - area.minY - pose.scale * (destination.y - area.minY))
-        let shift = pose.headerShift(contentSize: contentSize)
-        // 按这一帧看不看得见：排布刚改的那次更新里 motion 还没开始走，只按终点和 moving 算的话，缩小时整块正文先藏起来、
-        // 开始走时再露出来，正文的视图树来回走两遍（2026-10-12 Mac 实测，首帧多 2～3 毫秒）
-        return HostedContentFrame(transform: transform, clip: pose.frame.offsetBy(dx: -area.minX, dy: -area.minY),
-                                  radius: pose.radius, opacity: pose.contentOpacity, headerShift: shift,
-                                  titleCut: max(0, 2 * shift.dx), shown: target.contentOpacity > 0 || pose.contentOpacity > 0)
+        HostedContentFrame(pose: pose, target: target, destination: destination, area: area, contentSize: contentSize)
     }
     #endif
 
@@ -407,13 +399,33 @@ private struct WindowBackdrop: NSViewRepresentable {
 }
 
 /// 只负责显示，点击和读屏都穿过去。
-private final class BackdropHost: NSHostingView<AnyView> {
+final class BackdropHost: NSHostingView<AnyView> {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func isAccessibilityElement() -> Bool { false }
 }
 
 /// 正文一帧的摆放，见 WindowSurface.hostedFrame。
-private struct HostedContentFrame: Equatable {
+struct HostedContentFrame: Equatable {
+    init() {}
+
+    /// 正文这一帧的摆放，都在托管视图（area）的坐标里：排在 destination、原尺寸的正文按 scale 缩放、左上角落在 contentOrigin，
+    /// 按外框裁切、按 contentOpacity 淡出；标题两侧挪多少、标题右边截掉多少，见 WindowHeaderAnchored。
+    init(pose: WindowPose, target: WindowPose, destination: CGPoint, area: CGRect, contentSize: CGSize) {
+        let origin = pose.contentOrigin(size: contentSize)
+        transform = CGAffineTransform(a: pose.scale, b: 0, c: 0, d: pose.scale,
+                                      tx: origin.x - area.minX - pose.scale * (destination.x - area.minX),
+                                      ty: origin.y - area.minY - pose.scale * (destination.y - area.minY))
+        let shift = pose.headerShift(contentSize: contentSize)
+        clip = pose.frame.offsetBy(dx: -area.minX, dy: -area.minY)
+        radius = pose.radius
+        opacity = pose.contentOpacity
+        headerShift = shift
+        titleCut = max(0, 2 * shift.dx)
+        // 按这一帧看不看得见：排布刚改的那次更新里 motion 还没开始走，只按终点和 moving 算的话，缩小时整块正文先藏起来、
+        // 开始走时再露出来，正文的视图树来回走两遍（2026-10-12 Mac 实测，首帧多 2～3 毫秒）
+        shown = target.contentOpacity > 0 || pose.contentOpacity > 0
+    }
+
     var transform = CGAffineTransform.identity
     var clip = CGRect.zero
     var radius: CGFloat = 0
@@ -434,10 +446,10 @@ private struct HostedContentFrame: Equatable {
 
 /// 窗口正文的托管视图、正文里标题两侧与逐帧驱动之间的联系。
 @MainActor final class HostedContentLink {
-    fileprivate weak var container: HostedContentContainer?
-    fileprivate var frame = HostedContentFrame()
-    fileprivate let placement = HostedPlacement()
-    fileprivate var onHover: (Bool) -> Void = { _ in }
+    weak var container: HostedContentContainer?
+    private(set) var frame = HostedContentFrame()
+    let placement = HostedPlacement()
+    var onHover: (Bool) -> Void = { _ in }
     private let followers = NSHashTable<AnyObject>.weakObjects()
 
     /// 加进来时先按当前这一帧摆好。
@@ -448,7 +460,7 @@ private struct HostedContentFrame: Equatable {
 
     func remove(_ follower: WindowHeaderFollower) { followers.remove(follower) }
 
-    fileprivate func apply(_ frame: HostedContentFrame) {
+    func apply(_ frame: HostedContentFrame) {
         self.frame = frame
         container?.apply(frame)
         for case let follower as WindowHeaderFollower in followers.allObjects {
@@ -498,18 +510,18 @@ private struct HostedContent<Content: View>: NSViewRepresentable {
 }
 
 /// 正文尺寸和窗口坐标单独送进托管树；拖缝只更新这里，语义内容与外部环境仍由 HostedContent 正常转交。
-@Observable private final class HostedPlacement {
+@Observable final class HostedPlacement {
     var value = HostedPlacementValue()
 }
 
-private struct HostedPlacementValue: Equatable {
+struct HostedPlacementValue: Equatable {
     var origin = CGPoint.zero
     var contentSize = CGSize.zero
     var offset = CGPoint.zero
     var extent = CGSize.zero
 }
 
-private struct HostedPlaced<Content: View>: View {
+struct HostedPlaced<Content: View>: View {
     let content: Content
     let link: HostedContentLink
 
@@ -529,7 +541,7 @@ private struct HostedPlaced<Content: View>: View {
 /// 托管视图从窗口原点铺到这一层的右下角，里面的坐标就是窗口坐标：嵌套的托管视图按自己的原点报标题栏给滚动软边，
 /// 软边却按窗口坐标比对，原点不在窗口左上角时对不上，软边当作上面没有浮着的元素，不再模糊（2026-10-12 Mac 实测，
 /// 一列两个窗口时下面那个没有软边）；正文里按 .global 取位置的也一起对上。
-private final class HostedContentContainer: NSView {
+final class HostedContentContainer: NSView {
     let host: HostedContentView
     weak var motion: WindowMotion?
     var origin = CGPoint.zero {
@@ -581,7 +593,7 @@ private final class HostedContentContainer: NSView {
         clip.frame = layer.bounds
         // 遮罩的路径按图层自己的坐标：图层没翻转时原点在左下，视图坐标（左上为原点）要上下翻过来
         var rect = state.clip
-        if !layer.isGeometryFlipped { rect.origin.y = layer.bounds.height - rect.maxY }
+        if !layer.contentsAreFlipped() { rect.origin.y = layer.bounds.height - rect.maxY }
         clip.path = RoundedRectangle(cornerRadius: state.radius).path(in: rect).cgPath
         clip.opacity = Float(state.opacity)
         CATransaction.commit()
@@ -593,7 +605,7 @@ final class FlippedView: NSView {
 }
 
 /// 窗口背景照常能拖窗口，正文里按下不拖，和正文放在卡片里时一样。
-private final class HostedContentView: NSHostingView<AnyView> {
+final class HostedContentView: NSHostingView<AnyView> {
     override var mouseDownCanMoveWindow: Bool { false }
 }
 

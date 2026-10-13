@@ -178,7 +178,7 @@ private final class HeaderAnchorContainer: NSView, WindowHeaderFollower {
             let margin: CGFloat = 1000
             let right = max(title.minX, bounds.width - titleCut) + dx
             var rect = CGRect(x: -margin, y: -margin, width: right + margin, height: bounds.height + 2 * margin)
-            if !layer.isGeometryFlipped { rect.origin.y = bounds.height - rect.maxY }
+            if !layer.contentsAreFlipped() { rect.origin.y = bounds.height - rect.maxY }
             clip.frame = layer.bounds
             clip.path = CGPath(rect: rect, transform: nil)
             if layer.mask !== clip { layer.mask = clip }
