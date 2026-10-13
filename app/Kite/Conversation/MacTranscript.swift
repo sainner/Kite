@@ -4,7 +4,8 @@ import SwiftUI
 
 /// Mac 主对话的滚动：原生列表建好后接上，发送时让它滑，见 TranscriptListView.send。iPhone、iPad 是 PhoneTranscriptScroll。
 @MainActor final class MacTranscriptScroll {
-    fileprivate weak var list: TranscriptListView?
+    /// 原生列表：MacTranscript 建好时接上，Mac 宽屏的原生会话窗口（ThreadWindowView）自己建列表时也接上。
+    weak var list: TranscriptListView?
 
     func send(_ append: () -> Bool, alongside: @escaping () -> Void) {
         guard let list else {

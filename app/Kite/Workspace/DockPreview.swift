@@ -167,7 +167,7 @@ private struct DockPreviewScenes {
 }
 
 /// 一组造出来的实例和窗口。docked 是停靠栏里的窗口，按停靠顺序；onStage 是台面上的。
-private struct DockPreviewScene {
+struct DockPreviewScene {
     let title: String
     let area: WorkArea
     let docked: [Pane]
@@ -179,7 +179,7 @@ private struct DockPreviewScene {
     var model: DockModel { area.dockModel(docked: docked, onStage: onStage) }
 }
 
-private struct DockPreviewRow: Identifiable {
+struct DockPreviewRow: Identifiable {
     let title: String
     let note: String?
     let mini: Bool
@@ -188,7 +188,7 @@ private struct DockPreviewRow: Identifiable {
     var id: String { title }
 }
 
-private struct DockPreviewTool: Identifiable {
+struct DockPreviewTool: Identifiable {
     let title: String
     let entry: DockEntry
     var mini = false
@@ -200,7 +200,7 @@ private extension DockEntry {
     var pane: Pane? { if case .pane(let pane) = self { pane } else { nil } }
 }
 
-private enum DockPreviewState: CaseIterable {
+enum DockPreviewState: CaseIterable {
     case idle, running, stopping, finishing, waiting, failed, unseen
 
     var title: String {
@@ -230,7 +230,7 @@ private enum DockPreviewState: CaseIterable {
     }
 }
 
-private extension RemotePluginDefinition {
+extension RemotePluginDefinition {
     static let previewAgent = RemotePluginDefinition(id: "preview.agent", title: "代理", lifetime: .persistent,
                                                      views: [.init(id: "conversation", title: "对话", renderer: "conversation")],
                                                      defaultView: "conversation", agent: .init(runtime: .harness))
@@ -249,7 +249,7 @@ private extension RemotePluginDefinition {
 }
 
 /// 按创建先后造实例；agent 的 role 是角色列表里的序号，循环着用。
-private struct DockPreviewBuilder {
+struct DockPreviewBuilder {
     enum Window { case none, docked, stage }
 
     let machine: RemoteMachine

@@ -5,41 +5,24 @@ import SwiftUI
 struct ThreadPane: View {
     @Environment(WorkThread.self) private var thread
     @Environment(AppModel.self) private var model
-    @Environment(\.windowMotion) private var windowMotion
     @Environment(WorkArea.self) private var area
-    /// 对话怎么滚：跟不跟着最底下、发送后滑到哪、底下留多少空白。两端都是原生列表，见 TranscriptListView、PhoneTranscriptView。
-    #if os(macOS)
-    @State private var scroll = MacTranscriptScroll()
-    #else
-    @State private var scroll = PhoneTranscriptScroll()
-    #endif
-    /// 刚发出、气泡还在下面、没开始往上浮的消息。
-    @State private var arriving = ArrivingMessages()
-    /// 点开了操作栏的那一行。
-    @State private var selected: RowID?
-    @State private var titleError: String?
-    /// 标题栏模板菜单里「基于…新建模板」打开的编辑器，与模板读取、套用失败的说明。
-    @State private var roleEdit: RoleDefinition?
-    @State private var roleError: String?
-    /// 空会话铺在窗口上的点阵签名，见 NewThreadStage。也是这个窗口录语音时的标识，见 VoiceInput.owner。
-    @State private var patternSlot = "pattern.\(UUID().uuidString)"
-    /// 已有对话时，语音输入铺在窗口底部一带的签名，见 VoiceBand。
-    @State private var voiceSlot = "voice.\(UUID().uuidString)"
-    @Environment(\.dotStage) private var stage
-    @Environment(\.self) private var environment
+    @State private var pane = ThreadPaneModel()
 
     var body: some View {
         let empty = !thread.hasTranscript
-        // 已有代理的历史还没到时先什么也不画，不铺新代理的点阵图案，免得长出来又马上收回
-        let initial = empty && (thread.isDraft || thread.historyLoaded)
-        return PaneWindow(header: header(initial: initial), usesDots: true, notice: thread.problem.map(PaneNotice.failure)) {
+        let initial = pane.initial(thread)
+        let send = { (message: Message, alongside: @escaping () -> Void) in
+            pane.send(message, thread: thread, model: model, area: area, alongside: alongside)
+        }
+        return PaneWindow(header: pane.header(thread: thread, model: model, area: area, initial: initial), usesDots: true,
+                          notice: thread.problem.map(PaneNotice.failure)) {
             if initial {
-                NewThreadStage(slot: patternSlot, roleError: $roleError)
+                NewThreadStage(slot: pane.patternSlot, roleError: Bindable(pane).roleError)
             } else if !empty {
                 scrollingTranscript
             }
         } controls: { typing in
-            ThreadControls(typing: typing, send: send, voiceOwner: patternSlot)
+            ThreadControls(typing: typing, send: send, voiceOwner: pane.patternSlot)
                 .disabled(area.creatingWindow != nil || thread.configuringTemplate)
                 .frame(maxWidth: Metrics.transcriptWidth)
         } headerStatus: {
@@ -48,75 +31,89 @@ struct ThreadPane: View {
             ThreadHeaderActions()
         }
         #if os(macOS)
-        // 指针移到标题栏、输入区上时图案照样跟着
-        .onContinuousHover(coordinateSpace: .global) { phase in
-            if case .active(let point) = phase { stage?.patternPointer(point, slot: patternSlot) }
-            else { stage?.patternPointer(nil, slot: patternSlot) }
+        .wideControls { typing in
+            MacControlsBar(typing: typing, send: send, voiceOwner: pane.patternSlot)
+                .disabled(area.creatingWindow != nil || thread.configuringTemplate)
         }
+        // 指针移到标题栏、输入区上时图案照样跟着
+        .modifier(ThreadPatternPointer(slot: pane.patternSlot))
         #endif
         .environment(\.workingDirectory, thread.transcriptRoot)
-        // 空会话的签名和底部那一带都随录音的响度起伏
-        .onChange(of: listening, initial: true) {
-            for slot in [patternSlot, voiceSlot] { stage?.patternSound(listening ? model.voice.level : nil, slot: slot) }
-        }
-        .onDisappear { model.voice.stop(owner: patternSlot) }
-        .task(id: thread.client?.identity) {
-            // 打开时先完成窗口的移动，再接收并排版历史；不在每次拖动时重连已经建立的订阅。
-            await Task.yield()
-            while windowMotion?.moving == true || windowMotion?.interacting == true {
-                do { try await Task.sleep(for: .milliseconds(40)) } catch { return }
-            }
-            guard !Task.isCancelled else { return }
-            await thread.observe()
-        }
-        .environment(\.selectedRow, $selected)
-        .alert("重新生成标题失败", isPresented: Binding(
-            get: { titleError != nil }, set: { if !$0 { titleError = nil } }
-        )) {
-            Button("好", role: .cancel) { titleError = nil }
-        } message: { Text(titleError ?? "") }
-        .sheet(item: $roleEdit) { role in
-            RoleEditor(role: role, connection: model.revision(for: area)) { selectRole($0) }
-                .environment(model)
-        }
+        .modifier(ThreadPaneSupport(pane: pane))
     }
 
     /// 列表铺满窗口，标题栏、控制区（iOS 还有键盘、左右安全区）让出的距离量出来交给它（GeometryReader 的安全区），
     /// 内容从它们后面滚过去。选中的行显式传进去：列表、托管的行各在自己的视图层级里，只靠环境里的绑定收不到它变了。
     private var scrollingTranscript: some View {
-        GeometryReader { proxy in
+        @Bindable var pane = pane
+        return GeometryReader { proxy in
             #if os(macOS)
-            MacThreadTranscript(scroll: scroll, arriving: arriving, insets: proxy.safeAreaInsets, selected: selected)
+            MacThreadTranscript(scroll: pane.scroll, arriving: pane.arriving, insets: proxy.safeAreaInsets, selected: pane.selected)
                 .ignoresSafeArea()
             #else
-            PhoneThreadTranscript(scroll: scroll, arriving: arriving, insets: proxy.safeAreaInsets, selected: selected)
+            PhoneThreadTranscript(scroll: pane.scroll, arriving: pane.arriving, insets: proxy.safeAreaInsets, selected: pane.selected)
                 .ignoresSafeArea()
             #endif
         }
-        .background { VoiceBand(pattern: listening ? emblem : nil, slot: voiceSlot) }
+        .background {
+            GeometryReader { proxy in
+                ThreadVoiceBand(pane: pane, bottom: proxy.safeAreaInsets.bottom)
+            }
+            .ignoresSafeArea(.container, edges: .bottom)
+        }
+    }
+}
+
+/// 会话窗口的状态和动作，SwiftUI 版（ThreadPane）和 Mac 宽屏的原生外框（ThreadWindowView）共用。窗口在就一直是同一个。
+@MainActor @Observable final class ThreadPaneModel {
+    /// 对话怎么滚：跟不跟着最底下、发送后滑到哪、底下留多少空白。两端都是原生列表，见 TranscriptListView、PhoneTranscriptView。
+    #if os(macOS)
+    @ObservationIgnored let scroll = MacTranscriptScroll()
+    #else
+    @ObservationIgnored let scroll = PhoneTranscriptScroll()
+    #endif
+    /// 刚发出、气泡还在下面、没开始往上浮的消息。
+    @ObservationIgnored let arriving = ArrivingMessages()
+    /// 点开了操作栏的那一行。
+    var selected: RowID?
+    var titleError: String?
+    /// 标题栏模板菜单里「基于…新建模板」打开的编辑器，与模板读取、套用失败的说明。
+    var roleEdit: RoleDefinition?
+    var roleError: String?
+    /// 空会话铺在窗口上的点阵签名，见 NewThreadStage。也是这个窗口录语音时的标识，见 VoiceInput.owner。
+    @ObservationIgnored let patternSlot = "pattern.\(UUID().uuidString)"
+    /// 已有对话时，语音输入铺在窗口底部一带的签名，见 VoiceBand。
+    @ObservationIgnored let voiceSlot = "voice.\(UUID().uuidString)"
+
+    /// 还没有消息的代理，铺满整窗的点阵签名。已有代理的历史还没到时先什么也不画，不铺新代理的点阵图案，免得长出来又马上收回。
+    func initial(_ thread: WorkThread) -> Bool {
+        !thread.hasTranscript && (thread.isDraft || thread.historyLoaded)
     }
 
-    private var listening: Bool { model.voice.owner == patternSlot }
+    func listening(_ model: AppModel) -> Bool { model.voice.owner == patternSlot }
 
     /// 这个代理的角色签名；角色列表还没读到或角色没有签名时用默认图案。
-    private var emblem: DotPattern? {
+    func emblem(thread: WorkThread, model: AppModel, area: WorkArea, environment: EnvironmentValues) -> DotPattern? {
         let accent = DotColor(Color.accentColor.resolve(in: environment))
         return (model.emblem(for: thread.id, in: area) ?? .fallback).pattern(accent: accent)
     }
 
     /// 副标题是代理的角色。还没有对话时副标题带下拉箭头，在这里换角色；标题还没生成，不给重新生成。
-    private func header(initial: Bool) -> PaneHeader {
+    func header(thread: WorkThread, model: AppModel, area: WorkArea, initial: Bool) -> PaneHeader {
         PaneHeader(title: thread.title, subtitle: model.roleTitle(for: thread, in: area),
             subtitleMenu: initial ? .init(label: "角色", isBusy: thread.configuringTemplate,
                 enabled: model.canSelectRole(for: thread, in: area),
-                content: AnyView(NewThreadRoleMenu(select: selectRole) { roleEdit = $0.role.copy() }))
+                content: AnyView(NewThreadRoleMenu(select: { [weak self] in self?.selectRole($0, thread: thread, model: model, area: area) }) {
+                    [weak self] in self?.roleEdit = $0.role.copy()
+                }))
                 : nil,
             titleRefresh: initial ? nil : .init(
                 actionLabel: "重新生成标题", progressLabel: "正在重新生成标题",
-                isRefreshing: thread.regeneratingTitle, enabled: thread.canRegenerateTitle, action: regenerateTitle))
+                isRefreshing: thread.regeneratingTitle, enabled: thread.canRegenerateTitle,
+                action: { [weak self] in self?.regenerateTitle(thread) }))
     }
 
-    private func selectRole(_ role: AgentRole) {
+    func selectRole(_ role: AgentRole, thread: WorkThread, model: AppModel, area: WorkArea) {
         roleError = nil
         Task {
             do { try await model.selectNewThreadRole(role, for: thread, in: area) }
@@ -124,7 +121,7 @@ struct ThreadPane: View {
         }
     }
 
-    private func regenerateTitle() {
+    func regenerateTitle(_ thread: WorkThread) {
         Task {
             do { try await thread.regenerateTitle() }
             catch { titleError = error.localizedDescription }
@@ -133,7 +130,7 @@ struct ThreadPane: View {
 
     /// 发一条消息：先排进队里，对话滑过去（见 TranscriptFollow.send），气泡同时从下往上浮进来，alongside 也和滑同一次更新。
     /// 草稿的第一条也这样走，同时创建代理；建好后同一个会话对象原地变成这个代理，窗口不换，失败时消息退回输入框。
-    private func send(_ message: Message, alongside: @escaping () -> Void) {
+    func send(_ message: Message, thread: WorkThread, model: AppModel, area: WorkArea, alongside: @escaping () -> Void) {
         if thread.isDraft {
             if area.isDraft { model.newWorkspace = .session; return }
             guard area.creatingWindow == nil, let window = area.draftWindow else { return }
@@ -146,6 +143,7 @@ struct ThreadPane: View {
                 catch { draft.firstMessageFailed(message, error: error.localizedDescription) }
             }
         }
+        let arriving = arriving
         arriving.ids.insert(message.id)
         scroll.send { thread.send(message) } alongside: {
             arriving.ids.remove(message.id)
@@ -154,24 +152,95 @@ struct ThreadPane: View {
     }
 }
 
+/// 会话窗口里不占地方的几样：录音时空会话的签名和底部那一带随响度起伏、窗口关掉时停掉自己的录音、
+/// 窗口动画走完才订阅历史、选中的行、标题和角色的弹窗。SwiftUI 版挂在 ThreadPane 上，Mac 原生外框挂在 ThreadPaneBridge 上。
+struct ThreadPaneSupport: ViewModifier {
+    let pane: ThreadPaneModel
+    @Environment(WorkThread.self) private var thread
+    @Environment(AppModel.self) private var model
+    @Environment(WorkArea.self) private var area
+    @Environment(\.windowMotion) private var windowMotion
+    @Environment(\.dotStage) private var stage
+
+    func body(content: Content) -> some View {
+        @Bindable var pane = pane
+        let listening = pane.listening(model)
+        content
+            // 空会话的签名和底部那一带都随录音的响度起伏
+            .onChange(of: listening, initial: true) {
+                for slot in [pane.patternSlot, pane.voiceSlot] { stage?.patternSound(listening ? model.voice.level : nil, slot: slot) }
+            }
+            .onDisappear { model.voice.stop(owner: pane.patternSlot) }
+            .task(id: thread.client?.identity) {
+                // 打开时先完成窗口的移动，再接收并排版历史；不在每次拖动时重连已经建立的订阅。
+                await Task.yield()
+                while windowMotion?.moving == true || windowMotion?.interacting == true {
+                    do { try await Task.sleep(for: .milliseconds(40)) } catch { return }
+                }
+                guard !Task.isCancelled else { return }
+                await thread.observe()
+            }
+            .environment(\.selectedRow, $pane.selected)
+            .alert("重新生成标题失败", isPresented: Binding(
+                get: { pane.titleError != nil }, set: { if !$0 { pane.titleError = nil } }
+            )) {
+                Button("好", role: .cancel) { pane.titleError = nil }
+            } message: { Text(pane.titleError ?? "") }
+            .sheet(item: $pane.roleEdit) { role in
+                RoleEditor(role: role, connection: model.revision(for: area)) {
+                    pane.selectRole($0, thread: thread, model: model, area: area)
+                }
+                .environment(model)
+            }
+    }
+}
+
+#if os(macOS)
+/// Mac 上指针在整个窗口里移动，空会话的签名都跟着。
+private struct ThreadPatternPointer: ViewModifier {
+    let slot: String
+    @Environment(\.dotStage) private var stage
+
+    func body(content: Content) -> some View {
+        content.onContinuousHover(coordinateSpace: .global) { phase in
+            if case .active(let point) = phase { stage?.patternPointer(point, slot: slot) }
+            else { stage?.patternPointer(nil, slot: slot) }
+        }
+    }
+}
+#endif
+
+/// 录音时铺在窗口底部一带的签名，录着才有图案。bottom 是控制区的高。
+struct ThreadVoiceBand: View {
+    let pane: ThreadPaneModel
+    let bottom: CGFloat
+    @Environment(WorkThread.self) private var thread
+    @Environment(AppModel.self) private var model
+    @Environment(WorkArea.self) private var area
+    @Environment(\.self) private var environment
+
+    var body: some View {
+        VoiceBand(pattern: pane.listening(model) ? pane.emblem(thread: thread, model: model, area: area, environment: environment) : nil,
+                  slot: pane.voiceSlot, bottom: bottom)
+    }
+}
+
 /// 语音输入时铺在窗口底部一带的签名：从窗口底边往上，盖过控制区再高出几格，随录音的响度（v）起伏、往上涨，停下就收回。
-/// 大半在控制区的玻璃后面，透出来的是模糊的光，高出来的几格和两侧露出图案本身。
+/// 大半在控制区的玻璃后面，透出来的是模糊的光，高出来的几格和两侧露出图案本身。bottom 是控制区的高，图案铺到窗口底边。
 private struct VoiceBand: View {
     let pattern: DotPattern?
     let slot: String
+    let bottom: CGFloat
 
     /// 静音时高出控制区的格数，和响度到 1 时涨到的格数。
     private static let quiet: CGFloat = 3
     private static let loud: CGFloat = 9
 
     var body: some View {
-        GeometryReader { proxy in
-            DotPatternArea(pattern: pattern, rise: proxy.safeAreaInsets.bottom + Self.quiet * DotMetrics.pitch, slot: slot)
-                .frame(height: proxy.safeAreaInsets.bottom + Self.loud * DotMetrics.pitch)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        }
-        .ignoresSafeArea(.container, edges: .bottom)
-        .allowsHitTesting(false)
+        DotPatternArea(pattern: pattern, rise: bottom + Self.quiet * DotMetrics.pitch, slot: slot)
+            .frame(height: bottom + Self.loud * DotMetrics.pitch)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .allowsHitTesting(false)
     }
 }
 
@@ -209,6 +278,6 @@ private struct PhoneThreadTranscript: View {
 #endif
 
 /// 刚发出、还没浮上来的消息，只由对话那一块读，发送时不重算整个窗口。
-@Observable private final class ArrivingMessages {
+@Observable final class ArrivingMessages {
     var ids: Set<String> = []
 }

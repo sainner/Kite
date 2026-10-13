@@ -62,11 +62,22 @@ final class WindowMotion {
     private var kind = WindowMotionKind.immediate
     @ObservationIgnored private var completion: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
+    /// 这一段开始计时的那一刻（见 move），Mac 原生台面在这时把整段交给 Core Animation。
+    @ObservationIgnored var onStart: ((WindowMotion) -> Void)?
 
     init(_ pose: WindowPose) { target = pose; source = pose }
 
     /// 排布动画进行中（缩小、恢复、让位、放下后归位），不含跟手拖动。
     var settling: Bool { moving && kind != .tracking }
+
+    /// 跟手拖动：指针一动整条轨迹跟着平移，不能整段预先交出去。
+    var tracking: Bool { kind == .tracking }
+
+    /// 正在走的这一段从哪一刻起、走多久；还没开始计时或停着时为 nil。
+    var flight: (start: Date, duration: TimeInterval)? {
+        guard moving, duration > 0, let started else { return nil }
+        return (started, duration)
+    }
 
     /// 排布动画在停靠形状和台面形状之间变：缩小进停靠栏、从停靠栏恢复、拖动松手后展开。
     var changingForm: Bool { settling && source.iconOpacity != target.iconOpacity }
@@ -96,7 +107,8 @@ final class WindowMotion {
         completion?.cancel()
         generation += 1
         let current = generation
-        moving = duration > 0
+        // 没变不写：拖缝时每步都交新终点，读 moving 的几层不跟着每步更新
+        if moving != (duration > 0) { moving = duration > 0 }
         guard moving else { source = next; started = date; return }
         // 改变排布的那次更新要重排几个窗口，几十毫秒后才画出第一帧（2026-10-11 Mac 三窗口实测 60～70 毫秒）。
         // 从动作时刻起算的话，第一帧已走过曲线的一半，窗口一出来就跳一大截；所以第一帧停在起点，等这次更新交上去再计时
@@ -106,6 +118,7 @@ final class WindowMotion {
             guard let self, generation == current else { return }
             let start = Date.now
             started = start
+            onStart?(self)
             do { try await Task.sleep(until: .now + .seconds(duration)) } catch { return }
             guard generation == current else { return }
             source = target
@@ -268,16 +281,7 @@ struct WindowSurface<Content: View, Icon: View, Header: View>: View {
     /// 正文这一帧的摆放，都在托管视图（area）的坐标里：排在 destination、原尺寸的正文按 scale 缩放、左上角落在 contentOrigin，
     /// 按外框裁切、按 contentOpacity 淡出。标题两侧要挪多少、标题右边截掉多少，见 WindowHeaderAnchored。
     private func hostedFrame(_ pose: WindowPose, destination: CGPoint, area: CGRect) -> HostedContentFrame {
-        let origin = pose.contentOrigin(size: contentSize)
-        let transform = CGAffineTransform(a: pose.scale, b: 0, c: 0, d: pose.scale,
-                                          tx: origin.x - area.minX - pose.scale * (destination.x - area.minX),
-                                          ty: origin.y - area.minY - pose.scale * (destination.y - area.minY))
-        let shift = pose.headerShift(contentSize: contentSize)
-        // 按这一帧看不看得见：排布刚改的那次更新里 motion 还没开始走，只按终点和 moving 算的话，缩小时整块正文先藏起来、
-        // 开始走时再露出来，正文的视图树来回走两遍（2026-10-12 Mac 实测，首帧多 2～3 毫秒）
-        return HostedContentFrame(transform: transform, clip: pose.frame.offsetBy(dx: -area.minX, dy: -area.minY),
-                                  radius: pose.radius, opacity: pose.contentOpacity, headerShift: shift,
-                                  titleCut: max(0, 2 * shift.dx), shown: target.contentOpacity > 0 || pose.contentOpacity > 0)
+        HostedContentFrame(pose: pose, target: target, destination: destination, area: area, contentSize: contentSize)
     }
     #endif
 
@@ -407,13 +411,33 @@ private struct WindowBackdrop: NSViewRepresentable {
 }
 
 /// 只负责显示，点击和读屏都穿过去。
-private final class BackdropHost: NSHostingView<AnyView> {
+final class BackdropHost: NSHostingView<AnyView> {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func isAccessibilityElement() -> Bool { false }
 }
 
 /// 正文一帧的摆放，见 WindowSurface.hostedFrame。
-private struct HostedContentFrame: Equatable {
+struct HostedContentFrame: Equatable {
+    init() {}
+
+    /// 正文这一帧的摆放，都在托管视图（area）的坐标里：排在 destination、原尺寸的正文按 scale 缩放、左上角落在 contentOrigin，
+    /// 按外框裁切、按 contentOpacity 淡出；标题两侧挪多少、标题右边截掉多少，见 WindowHeaderAnchored。
+    init(pose: WindowPose, target: WindowPose, destination: CGPoint, area: CGRect, contentSize: CGSize) {
+        let origin = pose.contentOrigin(size: contentSize)
+        transform = CGAffineTransform(a: pose.scale, b: 0, c: 0, d: pose.scale,
+                                      tx: origin.x - area.minX - pose.scale * (destination.x - area.minX),
+                                      ty: origin.y - area.minY - pose.scale * (destination.y - area.minY))
+        let shift = pose.headerShift(contentSize: contentSize)
+        clip = pose.frame.offsetBy(dx: -area.minX, dy: -area.minY)
+        radius = pose.radius
+        opacity = pose.contentOpacity
+        headerShift = shift
+        titleCut = max(0, 2 * shift.dx)
+        // 按这一帧看不看得见：排布刚改的那次更新里 motion 还没开始走，只按终点和 moving 算的话，缩小时整块正文先藏起来、
+        // 开始走时再露出来，正文的视图树来回走两遍（2026-10-12 Mac 实测，首帧多 2～3 毫秒）
+        shown = target.contentOpacity > 0 || pose.contentOpacity > 0
+    }
+
     var transform = CGAffineTransform.identity
     var clip = CGRect.zero
     var radius: CGFloat = 0
@@ -430,14 +454,18 @@ private struct HostedContentFrame: Equatable {
 @MainActor protocol WindowHeaderFollower: AnyObject {
     /// shift 是相对排版位置要挪的量（左侧按原样、右侧横向取反），titleCut 是标题右边截掉的宽度。
     func follow(shift: CGVector, titleCut: CGFloat)
+    /// 整段交给 Core Animation：每一帧的挪动量和截掉的宽度，按时间均匀取，停在最后一帧。
+    func follow(_ frames: [(shift: CGVector, titleCut: CGFloat)], duration: TimeInterval)
+    /// 交给 Core Animation 的那一段走完了：按最后一帧摆好，收掉为它留着的东西。
+    func settleFlight()
 }
 
 /// 窗口正文的托管视图、正文里标题两侧与逐帧驱动之间的联系。
 @MainActor final class HostedContentLink {
-    fileprivate weak var container: HostedContentContainer?
-    fileprivate var frame = HostedContentFrame()
-    fileprivate let placement = HostedPlacement()
-    fileprivate var onHover: (Bool) -> Void = { _ in }
+    weak var container: HostedContentContainer?
+    private(set) var frame = HostedContentFrame()
+    let placement = HostedPlacement()
+    var onHover: (Bool) -> Void = { _ in }
     private let followers = NSHashTable<AnyObject>.weakObjects()
 
     /// 加进来时先按当前这一帧摆好。
@@ -448,11 +476,27 @@ private struct HostedContentFrame: Equatable {
 
     func remove(_ follower: WindowHeaderFollower) { followers.remove(follower) }
 
-    fileprivate func apply(_ frame: HostedContentFrame) {
+    func apply(_ frame: HostedContentFrame) {
         self.frame = frame
         container?.apply(frame)
         for case let follower as WindowHeaderFollower in followers.allObjects {
             follower.follow(shift: frame.headerShift, titleCut: frame.titleCut)
+        }
+    }
+
+    /// 交给 Core Animation 的那一段走完：按最后一帧再交一次，飞行中一直显示着的正文这时该藏的藏起来。
+    func settle() {
+        container?.apply(frame)
+        for case let follower as WindowHeaderFollower in followers.allObjects { follower.settleFlight() }
+    }
+
+    /// 整段交给 Core Animation：frames 是按时间均匀取的每一帧，飞行中一直看得见，停在最后一帧（Mac 原生台面，见 CardView）。
+    func animate(_ frames: [HostedContentFrame], duration: TimeInterval) {
+        guard let last = frames.last else { return }
+        frame = last
+        container?.animate(frames, duration: duration)
+        for case let follower as WindowHeaderFollower in followers.allObjects {
+            follower.follow(frames.map { ($0.headerShift, $0.titleCut) }, duration: duration)
         }
     }
 }
@@ -498,18 +542,18 @@ private struct HostedContent<Content: View>: NSViewRepresentable {
 }
 
 /// 正文尺寸和窗口坐标单独送进托管树；拖缝只更新这里，语义内容与外部环境仍由 HostedContent 正常转交。
-@Observable private final class HostedPlacement {
+@Observable final class HostedPlacement {
     var value = HostedPlacementValue()
 }
 
-private struct HostedPlacementValue: Equatable {
+struct HostedPlacementValue: Equatable {
     var origin = CGPoint.zero
     var contentSize = CGSize.zero
     var offset = CGPoint.zero
     var extent = CGSize.zero
 }
 
-private struct HostedPlaced<Content: View>: View {
+struct HostedPlaced<Content: View>: View {
     let content: Content
     let link: HostedContentLink
 
@@ -529,11 +573,24 @@ private struct HostedPlaced<Content: View>: View {
 /// 托管视图从窗口原点铺到这一层的右下角，里面的坐标就是窗口坐标：嵌套的托管视图按自己的原点报标题栏给滚动软边，
 /// 软边却按窗口坐标比对，原点不在窗口左上角时对不上，软边当作上面没有浮着的元素，不再模糊（2026-10-12 Mac 实测，
 /// 一列两个窗口时下面那个没有软边）；正文里按 .global 取位置的也一起对上。
-private final class HostedContentContainer: NSView {
+final class HostedContentContainer: NSView {
     let host: HostedContentView
     weak var motion: WindowMotion?
     var origin = CGPoint.zero {
         didSet { if origin != oldValue { needsLayout = true } }
+    }
+    /// 原生的正文（Mac 原生台面上的会话窗口外框，见 ThreadWindowView）：有它时托管视图只留一点、不跟着改尺寸，
+    /// 正文按 nativeFrame（这一层的坐标）摆，缩放、裁切照样在外面这一层。
+    var native: NSView? {
+        didSet {
+            guard native !== oldValue else { return }
+            oldValue?.removeFromSuperview()
+            if let native { mover.addSubview(native) }
+            needsLayout = true
+        }
+    }
+    var nativeFrame = CGRect.zero {
+        didSet { if nativeFrame != oldValue { needsLayout = true } }
     }
     private let mover = FlippedView()
     private let clip = CAShapeLayer()
@@ -559,9 +616,18 @@ private final class HostedContentContainer: NSView {
     override func layout() {
         super.layout()
         mover.frame = bounds
-        host.frame = CGRect(x: -origin.x, y: -origin.y,
-                            width: max(origin.x + bounds.width, 0), height: max(origin.y + bounds.height, 0))
-        apply(frameState)
+        if let native {
+            if host.frame != .zero { host.frame = .zero }
+            if native.frame != nativeFrame { native.frame = nativeFrame }
+        } else {
+            host.frame = CGRect(x: -origin.x, y: -origin.y,
+                                width: max(origin.x + bounds.width, 0), height: max(origin.y + bounds.height, 0))
+        }
+        // 排版只补摆模型值，不收进行中交给 Core Animation 的那一段
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        place(frameState)
+        CATransaction.commit()
     }
 
     /// 停着、看得见时才接点击。命中时当场看动画状态：动作那一刻 SwiftUI 就按新排版重算悬停，等逐帧驱动交过来已经晚了，
@@ -571,20 +637,50 @@ private final class HostedContentContainer: NSView {
         return super.hitTest(point)
     }
 
+    /// 交给 Core Animation 的那一段还在走，正文一直显示着（见 animate）。
+    private var flying = false
+
+    /// 摆到这一帧：交给 Core Animation 的那一段（有的话）收掉。
     func apply(_ state: HostedContentFrame) {
-        frameState = state
-        if isHidden == state.shown { isHidden = !state.shown }
-        guard let layer else { return }
+        flying = false
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        mover.layer?.removeAnimation(forKey: "flight")
+        clip.removeAnimation(forKey: "flight-path")
+        clip.removeAnimation(forKey: "flight-opacity")
+        place(state)
+        CATransaction.commit()
+    }
+
+    /// 只摆模型值，不碰进行中的动画。
+    private func place(_ state: HostedContentFrame) {
+        frameState = state
+        let shown = state.shown || flying
+        if isHidden == shown { isHidden = !shown }
+        guard let layer else { return }
         mover.layer?.sublayerTransform = CATransform3DMakeAffineTransform(state.transform)
         clip.frame = layer.bounds
-        // 遮罩的路径按图层自己的坐标：图层没翻转时原点在左下，视图坐标（左上为原点）要上下翻过来
-        var rect = state.clip
-        if !layer.isGeometryFlipped { rect.origin.y = layer.bounds.height - rect.maxY }
-        clip.path = RoundedRectangle(cornerRadius: state.radius).path(in: rect).cgPath
+        clip.path = clipPath(state, in: layer)
         clip.opacity = Float(state.opacity)
-        CATransaction.commit()
+    }
+
+    /// 遮罩的路径按图层自己的坐标：图层没翻转时原点在左下，视图坐标（左上为原点）要上下翻过来。
+    private func clipPath(_ state: HostedContentFrame, in layer: CALayer) -> CGPath {
+        var rect = state.clip
+        if !layer.contentsAreFlipped() { rect.origin.y = layer.bounds.height - rect.maxY }
+        return WindowOutline.path(in: rect, radius: state.radius)
+    }
+
+    /// 整段交给 Core Animation：变换、遮罩的路径和透明度按 frames 逐帧走，飞行中一直看得见，模型值停在最后一帧。
+    func animate(_ frames: [HostedContentFrame], duration: TimeInterval) {
+        guard let last = frames.last, let layer, let moverLayer = mover.layer else { return }
+        apply(last)
+        flying = frames.contains(where: \.shown)
+        place(last)
+        moverLayer.add(StageKeyframes.make("sublayerTransform", frames.map { NSValue(caTransform3D: CATransform3DMakeAffineTransform($0.transform)) },
+                                           duration: duration), forKey: "flight")
+        clip.add(StageKeyframes.make("path", frames.map { clipPath($0, in: layer) }, duration: duration), forKey: "flight-path")
+        clip.add(StageKeyframes.make("opacity", frames.map { Float($0.opacity) }, duration: duration), forKey: "flight-opacity")
     }
 }
 
@@ -593,7 +689,7 @@ final class FlippedView: NSView {
 }
 
 /// 窗口背景照常能拖窗口，正文里按下不拖，和正文放在卡片里时一样。
-private final class HostedContentView: NSHostingView<AnyView> {
+final class HostedContentView: NSHostingView<AnyView> {
     override var mouseDownCanMoveWindow: Bool { false }
 }
 
@@ -662,6 +758,41 @@ nonisolated struct WindowOutline: Shape {
     let frame: CGRect
     let radius: CGFloat
     func path(in _: CGRect) -> Path { RoundedRectangle(cornerRadius: radius).path(in: frame) }
+
+    /// 同样的圆角矩形（圆角按 RoundedRectangle 的 .circular，半径不超过短边的一半），给图层用。
+    /// 每次都是四段直线加四段三次曲线，半径为零也一样：Core Animation 按控制点逐个插值路径，前后段数不同就不连贯。
+    static func path(in rect: CGRect, radius: CGFloat) -> CGPath {
+        let r = max(0, min(radius, rect.width / 2, rect.height / 2))
+        // 四分之一圆的三次曲线近似
+        let k = r * 0.552_284_749_8
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: rect.minX + r, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - r, y: rect.minY))
+        path.addCurve(to: CGPoint(x: rect.maxX, y: rect.minY + r),
+                      control1: CGPoint(x: rect.maxX - r + k, y: rect.minY), control2: CGPoint(x: rect.maxX, y: rect.minY + r - k))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
+        path.addCurve(to: CGPoint(x: rect.maxX - r, y: rect.maxY),
+                      control1: CGPoint(x: rect.maxX, y: rect.maxY - r + k), control2: CGPoint(x: rect.maxX - r + k, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX + r, y: rect.maxY))
+        path.addCurve(to: CGPoint(x: rect.minX, y: rect.maxY - r),
+                      control1: CGPoint(x: rect.minX + r - k, y: rect.maxY), control2: CGPoint(x: rect.minX, y: rect.maxY - r + k))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + r))
+        path.addCurve(to: CGPoint(x: rect.minX + r, y: rect.minY),
+                      control1: CGPoint(x: rect.minX, y: rect.minY + r - k), control2: CGPoint(x: rect.minX + r - k, y: rect.minY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// 按时间均匀取的关键帧，线性插值（取得够密，曲线由取样给出）。
+enum StageKeyframes {
+    static func make(_ keyPath: String, _ values: [Any], duration: TimeInterval) -> CAKeyframeAnimation {
+        let animation = CAKeyframeAnimation(keyPath: keyPath)
+        animation.values = values
+        animation.duration = duration
+        animation.calculationMode = .linear
+        return animation
+    }
 }
 
 /// 标题两侧只读同一时钟，不自己加动画；正文尺寸变了也不会产生另一段补位时序。
