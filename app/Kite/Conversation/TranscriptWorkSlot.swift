@@ -222,6 +222,19 @@ final class WorkRowView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
+/// 托管的步骤按内容的理想高报尺寸、贴顶摆：量高时给无限高也只报内容多高（不然 maxHeight 无限的框会把无限高原样报回来），
+/// 内容自己变高、行还没跟上的那一帧往下伸，不居中。
+struct HostedRowFrame: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let size = subviews.first?.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) ?? .zero
+        return CGSize(width: proposal.width ?? size.width, height: size.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(width: bounds.width, height: nil))
+    }
+}
+
 /// 一行字，按字形的宽排，放不下末尾截成省略号。SwiftUI 的 lineLimit(1) Text 那样从 0 起画，不像 NSTextField 两边带单元格边距。
 final class LineLabel: NSView {
     private var text = NSAttributedString()
@@ -239,6 +252,8 @@ final class LineLabel: NSView {
 
     /// 不截时多宽。
     var textWidth: CGFloat { ceil(text.size().width) }
+    /// 不截时多宽，往上取到像素（SwiftUI 的 Text 就这么宽），不取整到点。
+    var exactWidth: CGFloat { (text.size().width * 2).rounded(.up) / 2 }
 
     /// 一行字的高。
     var lineHeight: CGFloat { ceil(font.ascender - font.descender + font.leading) }

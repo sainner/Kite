@@ -66,7 +66,8 @@ final class BubbleRowSlot: TranscriptRowSlot {
         self.queued = queued
         self.context = context
         let id = row.id
-        let toggle: () -> Void = { context.toggleActions(id) }
+        // 压缩前的原文里的消息没有操作栏（actionable 为 false），右键是文本视图自己的菜单
+        let toggle: (() -> Void)? = context.actionable ? { context.toggleActions(id) } : nil
         container.text.secondaryClick = toggle
         container.bubble.secondaryClick = toggle
         guard resized else { return }
@@ -129,7 +130,7 @@ final class BubbleRowSlot: TranscriptRowSlot {
     }
 
     override func actionBar() -> (side: HorizontalEdge, content: AnyView)? {
-        guard let message, let context else { return nil }
+        guard let message, let context, context.actionable else { return nil }
         let expanded = Binding { [weak self] in self?.expanded ?? false } set: { [weak self] in self?.setExpanded($0) }
         return (.trailing, AnyView(MessageActionButtons(message: message, queued: queued, foldable: foldable, expanded: expanded)
             .environment(\.self, context.environment)))
