@@ -140,10 +140,11 @@ import UIKit
         do {
             #if os(iOS)
             let compact = isPhone
+            let area = try await compact ? compactStage(model) : stage(model)
             #else
             let compact = false
+            let area = try await stage(model)
             #endif
-            let area = try await compact ? compactStage(model) : stage(model)
             let current = Session(model: model, area: area, report: report)
             session = current
             #if os(macOS)
