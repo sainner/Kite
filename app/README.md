@@ -47,6 +47,11 @@ App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `
 
 `preview-mac.sh` 的参数原样传给 App。带 `--dock-preview` 打开停靠栏预览：用真实的停靠栏组件画各种窗口与活动状态下的头像，不建工作区、不发请求，头像签名取已连接工作机上的角色。
 
+会话输入区有两版：Mac 宽屏是原生的 `MacControlsBar`，iPhone、iPad 和 Mac 窄窗口是 SwiftUI 的 `ThreadControls`。对照两版用下面几个启动参数，都只在 Debug 版生效，Release 版不认：
+
+- `--swiftui-composer`：Mac 宽屏的会话窗口也用 SwiftUI 版输入区，同一个构建切新旧两版，对照行为或测量。
+- `--composer-preview`：主窗口留空，另开一个窗口并排画两版输入区（左 SwiftUI、右原生），用一个不连工作机的草稿会话逐种状态切换，用来逐像素对照。再加 `--capture-port <端口>` 时依次把每种状态的窗口图和布局 POST 到本机这个端口，抓完退出；`--composer-no-glass` 两版都不画玻璃，`--composer-inactive` 抓 App 不在前台时的样子，深色加 `-KiteAppearance dark`。
+
 初始配置预览使用 Debug build 带 `--onboarding-preview` 启动，需要从测试机桌面反复启动时，编译参数使用 `KITE_PREVIEW_FLAGS=KITE_ONBOARDING_PREVIEW`。界面在真实工作机和数据上迭代。
 
 Swift 类型、窗口排布、草稿交接、滚动与 WebKit 验证统一在 [手动验证目录](../kited/test/manual/README.md)。移动或拆分 Swift 文件时同步更新这些脚本引用的源码路径。
