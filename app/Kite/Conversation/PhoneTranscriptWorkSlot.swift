@@ -237,7 +237,8 @@ final class PhoneWorkHeader: PhonePlainControl {
         }
         let transform = chevron.transform
         chevron.transform = .identity
-        chevron.frame = CGRect(x: x, y: (bounds.height - imageSize.height) / 2, width: imageSize.width, height: imageSize.height)
+        // 位置对到像素，同 SwiftUI 画的时候
+        chevron.frame = PhonePixel.align(CGRect(x: x, y: (bounds.height - imageSize.height) / 2, width: imageSize.width, height: imageSize.height))
         chevron.transform = transform
     }
 }

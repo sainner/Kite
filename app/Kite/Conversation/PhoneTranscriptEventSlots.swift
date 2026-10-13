@@ -341,7 +341,7 @@ final class PhoneDividerHeader: PhonePlainControl {
         title.frame = CGRect(x: side + spacing, y: 0, width: width, height: bounds.height)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        let y = (bounds.height - 1) / 2
+        let y = PhonePixel.round((bounds.height - 1) / 2)
         left.frame = CGRect(x: 0, y: y, width: side, height: 1)
         right.frame = CGRect(x: side + spacing * 2 + width, y: y, width: side, height: 1)
         CATransaction.commit()

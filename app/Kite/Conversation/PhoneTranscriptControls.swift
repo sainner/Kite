@@ -52,8 +52,9 @@ class PhonePlainControl: UIControl, UIPointerInteractionDelegate {
     }
 }
 
-/// 一段字，排法同 SwiftUI 的 Text：一行高是字体的行高，多行之间再加字体的行距，整段高往上取到像素（模拟器里量过 SwiftUI 的 Text）；
-/// 从左上角画，lines 为 1 时放不下末尾截成省略号。UILabel 竖着居中、多行时每行都带行距，排出来和 Text 差零点几点。
+/// 一段字，排法同 SwiftUI 的 Text：断行按系统标准的策略（.standard，中文不把一个词拆到两行，Text 也是这样；
+/// CoreText 和不设策略的 TextKit 会拆，iPad 上并排截屏对过），一行高是字体的行高，多行时基线隔行高加行距，
+/// 整段高往上取到像素（模拟器里量过 SwiftUI 的 Text）；从左上角画，lines 为 1 时放不下末尾截成省略号。
 final class PhoneTextLine: UIView {
     private(set) var text = NSAttributedString()
     private var font = UIFont.preferredFont(forTextStyle: .subheadline)
@@ -70,6 +71,7 @@ final class PhoneTextLine: UIView {
     func set(_ string: String, font: UIFont, color: UIColor) {
         let style = NSMutableParagraphStyle()
         style.lineBreakMode = lines == 1 ? .byTruncatingTail : .byWordWrapping
+        style.lineBreakStrategy = .standard
         text = NSAttributedString(string: string, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: style])
         self.font = font
         setNeedsDisplay()
@@ -84,20 +86,42 @@ final class PhoneTextLine: UIView {
     /// 第一行的基线离顶边多远：行高往上取整多出来的在上面，同 Text。
     var firstBaseline: CGFloat { lineHeight - font.lineHeight + font.ascender }
 
+    /// 按 width 断出几行：TextKit 每行占行高加行距。
+    private func count(width: CGFloat) -> Int {
+        let bound = text.boundingRect(with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                                      options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+        return max(Int((bound.height / (font.lineHeight + font.leading)).rounded()), 1)
+    }
+
     /// 按 width 排出来多高。
     func height(width: CGFloat) -> CGFloat {
         guard lines != 1 else { return lineHeight }
-        let bound = text.boundingRect(with: CGSize(width: width, height: .greatestFiniteMagnitude),
-                                      options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
-        let count = max(Int((bound.height / (font.lineHeight + font.leading)).rounded()), 1)
+        let count = count(width: width)
         return PhonePixel.ceil(CGFloat(count) * font.lineHeight + CGFloat(count - 1) * font.leading)
     }
 
+    /// 多行时相邻两行基线隔多远：行高加行距往上取到像素，同 Text（iPad 上并排截屏对过，第二行起差半点）。
+    private var pitch: CGFloat { PhonePixel.ceil(font.lineHeight + font.leading) }
+
     override func draw(_ rect: CGRect) {
-        let top = lineHeight - font.lineHeight
-        var options: NSStringDrawingOptions = [.usesLineFragmentOrigin, .usesFontLeading]
-        if lines == 1 { options.insert(.truncatesLastVisibleLine) }
-        text.draw(with: CGRect(x: 0, y: top, width: bounds.width, height: lines == 1 ? font.lineHeight : bounds.height), options: options, context: nil)
+        guard lines != 1 else {
+            // 一行：行高往上取整多出来的在上面
+            text.draw(with: CGRect(x: 0, y: lineHeight - font.lineHeight, width: bounds.width, height: font.lineHeight),
+                      options: [.usesLineFragmentOrigin, .usesFontLeading, .truncatesLastVisibleLine], context: nil)
+            return
+        }
+        // 多行：行与行按 pitch 隔开，整块贴着框的底边（框高按行高、行距算，比整块矮的那点伸到框上面），同 Text
+        let count = CGFloat(count(width: bounds.width))
+        let spaced = NSMutableAttributedString(attributedString: text)
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byWordWrapping
+        style.lineBreakStrategy = .standard
+        style.lineSpacing = pitch - font.lineHeight - font.leading
+        spaced.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: spaced.length))
+        let block = (count - 1) * pitch + font.lineHeight
+        // 给够高：最后一行底下没有行距，不给够的话最后一行放不下、不画
+        spaced.draw(with: CGRect(x: 0, y: bounds.height - block, width: bounds.width, height: count * pitch),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
     }
 }
 
@@ -148,10 +172,11 @@ final class PhoneIconLabel: UIView {
         super.layoutSubviews()
         let (iconTop, titleTop) = tops
         let size = iconSize
-        icon.frame = CGRect(x: 0, y: iconTop, width: size.width, height: size.height)
+        // 位置对到像素，同 SwiftUI 画的时候
+        icon.frame = PhonePixel.align(CGRect(x: 0, y: iconTop, width: size.width, height: size.height))
         let x = size.width + Self.spacing
         let width = max(bounds.width - x, 0)
-        title.frame = CGRect(x: x, y: titleTop, width: width, height: title.height(width: width))
+        title.frame = PhonePixel.align(CGRect(x: x, y: titleTop, width: width, height: title.height(width: width)))
     }
 }
 
