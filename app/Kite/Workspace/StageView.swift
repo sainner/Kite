@@ -38,24 +38,6 @@ struct StageHost: View {
     }
 }
 
-/// 原生台面报给 SwiftUI 的几项，由 StageHost 发成偏好：有没有窗口开点阵（App 背景让出静息点）、摆在点阵上的图形（换栏目时收回）、
-/// 停靠栏悬停浮出的标签。
-@MainActor @Observable final class StageReports {
-    var usesDots = false
-    var dotSlots: Set<String> = []
-    var hoverTip: DockHoverTip?
-}
-
-/// 会影响托管视图外观的几项环境：变了才给各个托管视图重新交环境（rootView），其余时候托管视图自己读模型更新。
-struct StageAppearance: Equatable {
-    var colorScheme: ColorScheme
-    var activeState: ControlActiveState
-    var reduceMotion: Bool
-    var displayScale: CGFloat
-    var isEnabled: Bool
-    var dotStage: ObjectIdentifier?
-}
-
 private struct StageRepresentable: NSViewRepresentable {
     let group: PaneGroup
     let model: AppModel
@@ -81,18 +63,11 @@ private struct StageRepresentable: NSViewRepresentable {
     }
 }
 
-/// 台面的大小，和关闭途中、停靠栏里那一格先不显示的实例。停靠栏、空画板的托管视图读它，自己从排布模型算停靠栏各格：
-/// 排布的改动在 SwiftUI 的事务里，岛自己读模型才接得到同一个动画（见 StagePlan.dock）；原生层不把算好的格子推进去。
-@MainActor @Observable final class StageGeometry {
-    var bounds: CGRect = .zero
-    var retiring: Set<String> = []
-}
-
 /// 台面本身：最底下停靠栏和空画板两个托管视图，上面依次是缝、拖动时的占位、各张卡片，最上面是停靠栏的脉冲和展开的面板。
 /// 观察排布模型（ModelTracking），变了在 layout 里重算 StagePlan、摆缝和卡片；排布动画由各张卡片整段交给 Core Animation，
 /// 只有跟手拖动的那张由显示链接逐帧取样。
 /// 过渡中（WindowLayout.transitioning）整个窗口暂停光标区域，缝、卡片、停靠栏都不接点击和悬停；指针在台面上时系统窗口不可拖。
-final class StageView: NSView {
+final class StageView: NSView, StageDotsReporting {
     /// 资源库里同一类换一项（角色、模板）时台面不重建（.id 只按类别），这里换成新的一项，正文跟着换，见 update。
     private(set) var group: PaneGroup
     let model: AppModel
@@ -834,104 +809,4 @@ private final class PlaceholderView: NSView {
     }
 }
 
-/// 台面上的图层动画：曲线与时长同 WindowMotionKind（cubic-bezier(0.2, 0, 0, 1)）；SwiftUI 的弹簧按同样的参数逐帧取样成关键帧。
-enum StageAnimation {
-    static let timing = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
-
-    static func spring(_ keyPath: String, from: Double, to: Double, spring: Spring) -> CAKeyframeAnimation {
-        let duration = spring.settlingDuration
-        let steps = max(Int(duration * 120), 1)
-        let animation = CAKeyframeAnimation(keyPath: keyPath)
-        animation.values = (0...steps).map { step in
-            from + (to - from) * spring.value(target: 1.0, time: duration * Double(step) / Double(steps))
-        }
-        animation.duration = duration
-        animation.calculationMode = .linear
-        return animation
-    }
-
-    static func basic(_ keyPath: String, from: Any, to: Any, duration: TimeInterval) -> CABasicAnimation {
-        let animation = CABasicAnimation(keyPath: keyPath)
-        animation.fromValue = from
-        animation.toValue = to
-        animation.duration = duration
-        animation.timingFunction = timing
-        return animation
-    }
-}
-
-// MARK: - 托管的 SwiftUI
-
-/// 停靠栏：自己从排布模型算停靠栏各格（不读拖缝的比例），排布改动的动画照常落在格子上。
-private struct StageDockRail: View {
-    let layout: WindowLayout
-    let area: WorkArea?
-    let geometry: StageGeometry
-
-    var body: some View {
-        if let area {
-            let dock = StagePlan.dock(layout: layout, area: area, bounds: geometry.bounds).dock
-            DockRail(geometry: dock, hiddenInstances: geometry.retiring)
-                .environment(area)
-                .modifier(PausedInTransition(layout: layout))
-                .frame(width: geometry.bounds.width, height: geometry.bounds.height, alignment: .topLeading)
-                .coordinateSpace(.named(DockSpace.name))
-                .environment(\.dockCardsDrawPanes, true)
-        }
-    }
-}
-
-/// 停靠栏上面那一层：最小化窗口的脉冲、展开的面板。点了面板里父代理的窗口：在台面上就聚焦，否则放上台面。
-private struct StageDockOverlay: View {
-    let layout: WindowLayout
-    let area: WorkArea?
-    let geometry: StageGeometry
-
-    var body: some View {
-        if let area {
-            let bounds = geometry.bounds
-            let (regions, dock) = StagePlan.dock(layout: layout, area: area, bounds: bounds)
-            DockOverlay(geometry: dock, bounds: bounds, regions: regions) { pane in
-                if layout.shown?.panes.contains(pane) == true { layout.focus(pane) }
-                else { layout.restore(pane, in: bounds) }
-            }
-            .environment(area)
-            .modifier(PausedInTransition(layout: layout))
-            .frame(width: bounds.width, height: bounds.height, alignment: .topLeading)
-            .coordinateSpace(.named(DockSpace.name))
-            .environment(\.dockCardsDrawPanes, true)
-        }
-    }
-}
-
-/// 空台面的画板：台面上没有窗口、也没在拖窗口时出现。它报的偏好传不出托管视图，交给台面合起来往上报。
-private struct StageWindowless: View {
-    let layout: WindowLayout
-    let geometry: StageGeometry
-    let reports: StageIslandReports
-
-    var body: some View {
-        let canvas = layout.regions(in: geometry.bounds).canvas
-        SettledWindowlessStage(layout: layout, canvas: canvas, wanted: (layout.shown?.panes.isEmpty ?? true) && layout.drag == nil)
-            .frame(width: geometry.bounds.width, height: geometry.bounds.height, alignment: .topLeading)
-            // 隔一拍交出去：托管视图可能在台面这次排版当中更新
-            .onPreferenceChange(WindowDotsActive.self) { uses in Task { @MainActor in reports.update(uses: uses) } }
-            .onPreferenceChange(DotSlots.self) { slots in Task { @MainActor in reports.update(slots: slots) } }
-    }
-}
-
-/// 托管视图报上来的点阵用量。
-@MainActor final class StageIslandReports {
-    private weak var stage: StageView?
-    private(set) var usesDots = false
-    private(set) var slots: Set<String> = []
-
-    init(stage: StageView) { self.stage = stage }
-
-    func update(uses: Bool? = nil, slots: Set<String>? = nil) {
-        if let uses { usesDots = uses }
-        if let slots { self.slots = slots }
-        stage?.reportDots()
-    }
-}
 #endif
