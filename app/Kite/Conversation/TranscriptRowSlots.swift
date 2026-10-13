@@ -156,6 +156,8 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
     private var urls: [URL] = []
     /// 排出来的高可能变了：附件变高、引用图标载完重排。
     var changed: (() -> Void)?
+    /// 看着引用图标（ReferenceIcons），载完重排。
+    private let tracking = ModelTracking()
 
     init() {
         text.textContainerInset = NSSize(width: Metrics.inlineCodePadding, height: 0)
@@ -172,13 +174,15 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
         self.environment = environment
         self.font = font
         self.color = color
+        // 原文、环境换了，要看的引用图标跟着换
+        tracking.cancel()
         build()
     }
 
     /// 按 source 和环境排出属性串。读了引用图标（ReferenceIcons），图标载完重排一次。
     private func build() {
         guard let source, let environment else { return }
-        let content = withObservationTracking {
+        let content = tracking.track {
             let blocks = document.blocks(for: source)
             let body = font.resolve(in: environment.fontResolutionContext).ctFont as NSFont
             topInset = SelectableMarkdown.startsWithHeading(blocks) ? Metrics.markdownBlockGap(body.pointSize) / 2 : 0
@@ -189,11 +193,12 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
             }
             return SelectableMarkdown.content(blocks, source: source, body: body, color: color, colorScheme: environment.colorScheme,
                                               scope: environment.referenceScope, attachments: attachments)
-        } onChange: { [weak self] in
-            Task { @MainActor in
+        } changed: { [weak self] in
+            // 通知在图标写进去之前发出，下一拍再按新的排
+            DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.build()
-                self.changed?()
+                build()
+                changed?()
             }
         }
         text.source = content.source

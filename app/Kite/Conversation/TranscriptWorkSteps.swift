@@ -18,6 +18,10 @@ final class WorkStepsView: NSView {
     private var laidHeight: CGFloat = 0
     /// 正在动的那一步：它的高从哪到哪，整块的高从哪到哪。
     private var animation: (index: Int, from: CGFloat, to: CGFloat, stepsFrom: CGFloat, stepsTo: CGFloat)?
+    /// 最近一次量的各步的高，摆的时候照它摆。
+    private var rowHeights: [CGFloat] = []
+    /// 最近一次量出来的高里有近似的（拖缝时看不见的详情按上次的高占位），停下后要按准确的重量。
+    private(set) var approximate = false
 
     override var isFlipped: Bool { true }
 
@@ -36,7 +40,8 @@ final class WorkStepsView: NSView {
 
     var animating: Bool { animation != nil }
 
-    func show(_ work: Work, environment: EnvironmentValues) {
+    /// resized：内容或外观变了（同 TranscriptRowSlot.update），子 agent 的行跟着重排。
+    func show(_ work: Work, environment: EnvironmentValues, resized: Bool) {
         self.work = work
         self.environment = environment
         while rows.count < work.calls.count {
@@ -50,7 +55,7 @@ final class WorkStepsView: NSView {
             rows.append(row)
         }
         while rows.count > work.calls.count { rows.removeLast().removeFromSuperview() }
-        for (row, call) in zip(rows, work.calls) { row.show(call, environment: environment) }
+        for (row, call) in zip(rows, work.calls) { row.show(call, environment: environment, resized: resized) }
         while separators.count < max(rows.count - 1, 0) {
             let line = CAShapeLayer()
             line.lineWidth = 1
@@ -81,6 +86,7 @@ final class WorkStepsView: NSView {
         if let motion {
             let from = row.frame.height
             let to = row.height(width: width)
+            if index < rowHeights.count { rowHeights[index] = to }
             animation = (index, from, to, laidHeight, laidHeight + to - from)
             changed?(motion)
         } else {
@@ -90,12 +96,9 @@ final class WorkStepsView: NSView {
 
     func height(width: CGFloat) -> CGFloat {
         self.width = width
-        var height: CGFloat = 0
-        for (index, row) in rows.enumerated() {
-            if index > 0 { height += 1 }
-            height += row.height(width: width)
-        }
-        return height
+        rowHeights = rows.map { $0.height(width: width) }
+        approximate = rows.contains { $0.approximate }
+        return rowHeights.reduce(0, +) + CGFloat(max(rows.count - 1, 0))
     }
 
     /// 按眼下整块的高摆各步：动画中那一步按整块走到哪给它中间的高。
@@ -121,7 +124,7 @@ final class WorkStepsView: NSView {
                 CATransaction.commit()
                 y += 1
             }
-            var rowHeight = row.height(width: width)
+            var rowHeight = index < rowHeights.count ? rowHeights[index] : row.height(width: width)
             if let animation, animation.index == index {
                 rowHeight = animation.from + (animation.to - animation.from) * progress
             }
@@ -170,17 +173,27 @@ final class CallRowView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func show(_ call: Call, environment: EnvironmentValues) {
+    func show(_ call: Call, environment: EnvironmentValues, resized: Bool) {
         self.call = call
         self.environment = environment
         header.show(call, environment: environment, expanded: expanded)
-        detail?.show(call, environment: environment)
+        detail?.show(call, environment: environment, resized: resized)
     }
 
+    /// 量出来的详情是不是近似的，见 WorkStepsView.approximate。
+    private(set) var approximate = false
+
+    /// 拖缝时看不见的详情按上次的高占位（近似），看得见的照常量（里面子 agent 的行再只量看得见的，见 TranscriptStack.height）。
     func height(width: CGFloat) -> CGFloat {
         var height = Metrics.toolRowHeight
+        approximate = false
         if expanded, let detail {
-            detailHeight = detail.height(width: max(width - Self.inset * 2, 0))
+            if WindowLayout.anyResizing, detailHeight > 0, visibleRect.isEmpty {
+                approximate = true
+            } else {
+                detailHeight = detail.height(width: max(width - Self.inset * 2, 0))
+                approximate = detail.approximate
+            }
             height += detailHeight + Self.inset
         }
         return height
@@ -209,7 +222,7 @@ final class CallRowView: NSView {
             view.changed = { [weak self] motion in self?.changed?(motion) }
             view.alphaValue = 0
             addSubview(view)
-            view.show(call, environment: environment)
+            view.show(call, environment: environment, resized: true)
             detail = view
         }
         if let call, let environment { header.show(call, environment: environment, expanded: expanded) }
@@ -275,6 +288,7 @@ final class CallHeaderView: NativeButton {
             diff.isHidden = true
         }
         showDuration(environment: environment)
+        activity.presence = environment.panePresence
         activity.mode = call.state == .queued ? .breathing : call.state == .running ? .sweeping : .none
         activity.contentChanged()
         let spoken = TranscriptSpeech.call(call, summary: text)
@@ -297,9 +311,12 @@ final class CallHeaderView: NativeButton {
         } else if call.state == .running {
             showDuration(Date().timeIntervalSince1970 * 1000 - start)
             duration.isHidden = false
-            timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            // 放进 common 模式：滚动、拖动时也走
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.showDuration(Date().timeIntervalSince1970 * 1000 - start) }
             }
+            RunLoop.main.add(timer, forMode: .common)
+            self.timer = timer
         } else {
             duration.isHidden = true
         }
@@ -315,11 +332,14 @@ final class CallHeaderView: NativeButton {
         needsLayout = true
     }
 
+    /// 离开窗口时停表；回到窗口（行滚远被拿掉、又滚回来）重新起表，接着走。
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil {
             timer?.invalidate()
             timer = nil
+        } else if timer == nil, let environment {
+            showDuration(environment: environment)
         }
     }
 
@@ -361,7 +381,7 @@ final class CallHeaderView: NativeButton {
     override func accessibilityValue() -> Any? { speech.value }
     override func accessibilityHelp() -> String? { speech.hint }
     override func accessibilityChildren() -> [Any]? {
-        NSAccessibility.unignoredChildren(from: [diff, duration].filter { !$0.isHidden })
+        references.accessibilityLinks + NSAccessibility.unignoredChildren(from: [diff, duration].filter { !$0.isHidden })
     }
 }
 
@@ -413,7 +433,9 @@ final class ToolChipView: NSView {
 final class ReferenceLineView: NSView {
     private var text = NSAttributedString()
     private var line: CTLine?
-    private var links: [(rect: CGRect, url: URL)] = []
+    private var links: [(rect: CGRect, url: URL, label: String)] = []
+    /// 读屏：每个文件名一个链接元素。
+    private var elements: [ReferenceLinkElement] = []
     private var openURL: OpenURLAction?
     private var pressed: URL?
     private var font = NSFont.systemFont(ofSize: 11)
@@ -449,14 +471,18 @@ final class ReferenceLineView: NSView {
         guard let line else { return }
         var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
         _ = CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
+        let string = text.string as NSString
         for run in CTLineGetGlyphRuns(line) as! [CTRun] {
             let attributes = CTRunGetAttributes(run) as NSDictionary
             guard let url = attributes[NSAttributedString.Key.link.rawValue] as? URL else { continue }
             var position = CGPoint.zero
             CTRunGetPositions(run, CFRange(location: 0, length: 1), &position)
             let width = CTRunGetTypographicBounds(run, CFRange(), nil, nil, nil)
-            links.append((CGRect(x: position.x, y: 0, width: CGFloat(width), height: bounds.height), url))
+            let range = CTRunGetStringRange(run)
+            let label = range.location + range.length <= string.length ? string.substring(with: NSRange(location: range.location, length: range.length)) : ""
+            links.append((CGRect(x: position.x, y: 0, width: CGFloat(width), height: bounds.height), url, label))
         }
+        elements = links.map { ReferenceLinkElement(view: self, rect: $0.rect, url: $0.url, label: $0.label) }
         window?.invalidateCursorRects(for: self)
     }
 
@@ -498,6 +524,57 @@ final class ReferenceLineView: NSView {
     }
 
     override func isAccessibilityElement() -> Bool { false }
+
+    /// 读屏：截短后露出来的每个文件名一个链接，按下打开。
+    var accessibilityLinks: [Any] { isHidden ? [] : elements }
+
+    /// 读屏按下了一个文件名。
+    fileprivate func open(_ url: URL) { openURL?(url) }
+}
+
+/// 工具步骤里的一个文件引用给读屏的元素：链接，读文件名，按下打开。
+/// NSAccessibilityElement 不归主线程，读屏的回调实际在主线程进来，取视图时按主线程处理。
+nonisolated final class ReferenceLinkElement: NSAccessibilityElement {
+    nonisolated(unsafe) private weak var view: ReferenceLineView?
+    private let rect: CGRect
+    private let url: URL
+    private let label: String
+
+    @MainActor init(view: ReferenceLineView, rect: CGRect, url: URL, label: String) {
+        self.view = view
+        self.rect = rect
+        self.url = url
+        self.label = label
+        super.init()
+    }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .link }
+    override func accessibilityLabel() -> String? { label }
+
+    override func accessibilityParent() -> Any? {
+        let view = view
+        // 读屏的上级是这一步的标题行（它把链接交给读屏）
+        return MainActor.assumeIsolated { () -> NSView? in
+            var ancestor = view?.superview
+            while let current = ancestor, !(current is CallHeaderView) { ancestor = current.superview }
+            return ancestor
+        }
+    }
+
+    override func accessibilityFrame() -> NSRect {
+        let view = view, rect = rect
+        return MainActor.assumeIsolated {
+            guard let view, let window = view.window else { return .zero }
+            return window.convertToScreen(view.convert(rect, to: nil))
+        }
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        let view = view, url = url
+        MainActor.assumeIsolated { view?.open(url) }
+        return true
+    }
 }
 
 /// 一次调用的详情，照 CallDetail：参数、结果各一张卡片（键在左、最宽 96，值在右能折行，等宽字、能选），之间 6；
@@ -521,7 +598,7 @@ final class CallDetailView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func show(_ call: Call, environment: EnvironmentValues) {
+    func show(_ call: Call, environment: EnvironmentValues, resized: Bool) {
         var fields = Self.fields(Self.input(call))
         if call.state == .generating { fields.append(("arguments（原文）", .string(call.use.arguments ?? ""))) }
         input.show(fields, environment: environment)
@@ -538,10 +615,13 @@ final class CallDetailView: NSView {
                 return stack
             }()
             stack.update(TranscriptRow.rows(items: call.children, pending: []),
-                         context: TranscriptRowContext(environment: environment, actionable: false, toggleActions: { _ in }), resized: false)
+                         context: TranscriptRowContext(environment: environment, actionable: false, toggleActions: { _ in }), resized: resized)
         }
         needsLayout = true
     }
+
+    /// 子 agent 的行里有按近似量的，见 TranscriptStack.approximate。
+    var approximate: Bool { children?.approximate ?? false }
 
     func height(width: CGFloat) -> CGFloat {
         self.width = width
@@ -687,21 +767,4 @@ final class ToolDetailCardView: NSView {
     }
 }
 
-extension ProseTextView {
-    /// 放一段字，里面的文件路径、网址标成链接（不缩短），同 ReferenceLabel(compact: false)；复制给原样的字。
-    func showLinked(_ string: String, scope: ReferenceScope, font: NSFont) {
-        let decorated = ReferenceText.decorate(AttributedString(string), scope: scope, compact: false)
-        let result = NSMutableAttributedString()
-        for run in decorated.runs {
-            var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
-            if let link = run.link { attributes[.link] = link }
-            result.append(NSAttributedString(string: String(decorated[run.range].characters), attributes: attributes))
-        }
-        let whole = NSRange(location: 0, length: result.length)
-        source = (result.string, TextSourceMap(blocks: [.init(display: whole, content: 0, lines: whole,
-                                                              pieces: [.init(display: whole, source: whole, exact: true)])]))
-        guard textStorage?.isEqual(to: result) != true else { return }
-        textStorage?.setAttributedString(result)
-    }
-}
 #endif

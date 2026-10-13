@@ -27,8 +27,9 @@ final class TranscriptListView: NSScrollView {
     /// 开着的操作栏：原生的浮层（ActionBarView），放在文档最上面，跟着行一起滚，见 placeActions。
     private var actions: (id: RowID, host: ActionBarView, above: Bool, side: HorizontalEdge)?
     private var heightTicker: FrameTicker?
-    /// 操作栏里的按钮读着会话的状态（能不能取消、压缩起点这些），变了重排一次：在看哪一行的。
-    private var watchedActions: RowID?
+    /// 操作栏里的按钮读着会话的状态（能不能取消、压缩起点这些），变了重排一次；换了一行重新看。
+    private let actionsTracking = ModelTracking()
+    private var trackedActions: RowID?
     /// 有行开着操作栏时，点列表里别处（包括文本视图上）先收起它；文本视图照常接着处理这次点击。
     private var clickMonitor: Any?
     /// 拖缝时把滚动条藏了，见 layoutRows。
@@ -147,14 +148,20 @@ final class TranscriptListView: NSScrollView {
 
     // MARK: - 操作栏
 
-    /// 选中了原生行就在它旁边弹出操作栏：平常在这一行底下，底下放不下（会压到控制区）就放到上面；和这一行给的那一边对齐，
-    /// 见 ActionBarPlacement。收起时先让浮层播完收起动画再拿掉。
+    /// 选中了一行就在它旁边弹出操作栏（ActionBarView）：平常在这一行底下，底下放不下（会压到控制区）就放到上面；和这一行给的那一边对齐，
+    /// 同 SwiftUI 版的 ActionBarPlacement。收起时先播完收起动画再拿掉。
     private func placeActions() {
         guard let context else { return }
         let selected = context.environment.selectedRow.wrappedValue
         watchClicks(selected != nil)
         let slot = selected.flatMap { arrangement.byID[$0] }
-        let bar = slot.flatMap { slot in trackingActions(slot.id) { (slot as? ActionBarProviding)?.actionItems() } }
+        if trackedActions != slot?.id {
+            trackedActions = slot?.id
+            actionsTracking.cancel()
+        }
+        let bar = slot.flatMap { slot in
+            actionsTracking.track { (slot as? ActionBarProviding)?.actionItems() } changed: { [weak self] in self?.needsLayout = true }
+        }
         if let actions, actions.id != slot?.id || bar == nil {
             // 收起：缩回角上，播完拿掉
             let host = actions.host
@@ -183,18 +190,6 @@ final class TranscriptListView: NSScrollView {
             host.layoutSubtreeIfNeeded()
             host.appear(side: bar.side, from: above ? .bottom : .top)
             announce(host)
-        }
-    }
-
-    /// 取操作栏的按钮，顺带看着它读到的会话状态，变了重排一次（同 SwiftUI 版跟着 WorkThread 变）。每一行只挂一个观察，变了重新挂。
-    private func trackingActions<T>(_ id: RowID, _ read: () -> T) -> T {
-        guard watchedActions != id else { return read() }
-        watchedActions = id
-        return withObservationTracking(read) { [weak self] in
-            Task { @MainActor in
-                self?.watchedActions = nil
-                self?.needsLayout = true
-            }
         }
     }
 
@@ -235,11 +230,6 @@ final class TranscriptListView: NSScrollView {
         return !arrangement.heightAnimations.isEmpty
     }
 
-    /// 开着的操作栏，读屏要它。
-    fileprivate var actionsHost: (id: RowID, host: NSView)? {
-        actions.map { ($0.id, $0.host as NSView) }
-    }
-
     // MARK: - 补量
 
     /// 宽度停下、没有窗口在过渡、人和程序都没在滚的时候，屏幕外的行分批按眼下的宽量好，见 TranscriptArrangement.measureLater。
@@ -264,16 +254,6 @@ final class TranscriptListView: NSScrollView {
         contentView.scroll(to: CGPoint(x: 0, y: origin))
         reflectScrolledClipView(contentView)
         adjusting = wasAdjusting
-    }
-
-    /// 可见区（文档坐标），读屏滚动用。
-    fileprivate var viewportVisible: CGRect { visibleArea }
-
-    /// 读屏要看远处的行：当作人翻过去（不再跟着最底下），滚动通知照常处理。
-    fileprivate func scrollByAccessibility(toVisibleTop top: CGFloat) {
-        let maxTop = max(document.frame.height - visibleArea.height, 0)
-        contentView.scroll(to: CGPoint(x: 0, y: min(max(top, 0), maxTop) - contentInsets.top))
-        reflectScrolledClipView(contentView)
     }
 
     private var distanceToBottom: CGFloat {
@@ -316,9 +296,8 @@ final class TranscriptListView: NSScrollView {
         }
     }
 
-    /// 嵌块（代码、表格）里是 SwiftUI 的横向 ScrollView，竖向的滑动它也接下、不往外传，落在块上就滚不动对话
-    /// （旧版外层同是 SwiftUI 的 ScrollView，两者衔接得上）。按一段滑动开头的主方向分流：竖向的整段连同惯性交给列表，
-    /// 横向的照常给块。滚轮没有分段，每一格各看各的。
+    /// 嵌块（代码、表格）里有横向的 NSScrollView，竖向的滑动它也接下、不往外传，落在块上就滚不动对话。
+    /// 按一段滑动开头的主方向分流：竖向的整段连同惯性交给列表，横向的照常给块。滚轮没有分段，每一格各看各的。
     private func takeScroll(_ event: NSEvent) -> Bool {
         if event.phase.contains(.mayBegin) {
             takesGesture = false
@@ -400,7 +379,7 @@ extension TranscriptListView {
     func accessibilityTranscript() -> [Any] {
         var rows: [Any] = []
         var live = Set<RowID>()
-        let bar = actionsHost
+        let bar = actions
         for slot in arrangement.slots {
             if slot.hasView, slot.view.superview === document, !slot.view.isHidden {
                 rows += NSAccessibility.unignoredChildren(from: [slot.view])
@@ -420,9 +399,12 @@ extension TranscriptListView {
     /// 读屏走到还没建视图的行：滚到它露出来（行顶对着可见区顶边），建出视图后告诉读屏换了元素。
     func scrollRowToVisible(_ id: RowID) {
         guard let slot = arrangement.byID[id] else { return }
-        let visible = viewportVisible
+        let visible = visibleArea
         if slot.frame.minY >= visible.minY, slot.frame.maxY <= visible.maxY { return }
-        scrollByAccessibility(toVisibleTop: slot.frame.minY - Metrics.transcriptPadding)
+        // 当作人翻过去：不再跟着最底下
+        scroll(toVisibleTop: slot.frame.minY - Metrics.transcriptPadding)
+        _ = follow.scrolled(distanceToBottom: distanceToBottom)
+        needsLayout = true
         layoutSubtreeIfNeeded()
         NSAccessibility.post(element: document, notification: .layoutChanged)
     }

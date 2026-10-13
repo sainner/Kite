@@ -94,6 +94,7 @@ final class ProseRowCoordinator: ProseTextCoordinator, NSTextViewDelegate {
         return true
     }
 }
+
 /// 露出任何一部分就把整段当作视口。TextKit 2 的 NSTextView 只排、只画 visibleRect 里的片段，而这里的 visibleRect 是外层
 /// SwiftUI 滚动视图的可见区：往上滚时新露出的一条先露底部，视口从中间起，前面的片段按估算高度占位，画出来的字整体
 /// 比真实位置高几十 pt、底下留白，等滚到顶上重排才跳回去，看起来就是先空白、再逐段入场（2026-10-12 离屏实测，
@@ -216,6 +217,61 @@ class ProseTextView: NSTextView, TextKitMeasuring {
         }
         pasteboard.declareTypes([.string], owner: nil)
         return pasteboard.setString(text, forType: .string)
+    }
+}
+
+extension ProseTextView {
+    /// 对话里只读、能选的文本视图：不可编辑、不画底色、高度由外面量，悬停不显示链接提示，不自动识别链接、补全，
+    /// 同 SelectableTextView。原生列表的行放进列表前已经量好，视口只给露出的那截（clipsViewport）。
+    static func makeReadOnly() -> ProseTextView {
+        let view = make()
+        view.isEditable = false
+        view.isSelectable = true
+        view.drawsBackground = false
+        view.isVerticallyResizable = false
+        view.isHorizontallyResizable = false
+        view.textContainerInset = .zero
+        view.clipsViewport = true
+        view.displaysLinkToolTips = false
+        view.isAutomaticLinkDetectionEnabled = false
+        view.isAutomaticDataDetectionEnabled = false
+        view.isAutomaticTextCompletionEnabled = false
+        view.usesFontPanel = false
+        view.linkTextAttributes = [.foregroundColor: NSColor.linkColor, .cursor: NSCursor.pointingHand]
+        return view
+    }
+
+    /// 按 lineWidth 的行宽排出来多高，取到像素：SwiftUI 的 Text 不往上取整到点。
+    func measurePixel(lineWidth: CGFloat) -> CGFloat {
+        _ = measure(lineWidth: lineWidth)
+        let height = textLayoutManager?.usageBoundsForTextContainer.height ?? 0
+        return (height * 2).rounded() / 2
+    }
+
+    /// 放一段不带格式的字，复制给原样的字（不带字体颜色）。字和样子都没变时不重放，保留选区。
+    func showPlain(_ string: String, font: NSFont, color: NSColor) {
+        let text = NSAttributedString(string: string, attributes: [.font: font, .foregroundColor: color])
+        let whole = NSRange(location: 0, length: text.length)
+        source = (string, TextSourceMap(blocks: [.init(display: whole, content: 0, lines: whole,
+                                                         pieces: [.init(display: whole, source: whole, exact: true)])]))
+        guard textStorage?.isEqual(to: text) != true else { return }
+        textStorage?.setAttributedString(text)
+    }
+
+    /// 放一段字，里面的文件路径、网址标成链接（不缩短），同 ReferenceLabel(compact: false)；复制给原样的字。
+    func showLinked(_ string: String, scope: ReferenceScope, font: NSFont) {
+        let decorated = ReferenceText.decorate(AttributedString(string), scope: scope, compact: false)
+        let result = NSMutableAttributedString()
+        for run in decorated.runs {
+            var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
+            if let link = run.link { attributes[.link] = link }
+            result.append(NSAttributedString(string: String(decorated[run.range].characters), attributes: attributes))
+        }
+        let whole = NSRange(location: 0, length: result.length)
+        source = (result.string, TextSourceMap(blocks: [.init(display: whole, content: 0, lines: whole,
+                                                              pieces: [.init(display: whole, source: whole, exact: true)])]))
+        guard textStorage?.isEqual(to: result) != true else { return }
+        textStorage?.setAttributedString(result)
     }
 }
 

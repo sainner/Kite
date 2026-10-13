@@ -187,9 +187,13 @@ class BlockCardView: EmbeddedCardView {
         pressureMonitor = nil
     }
 
+    /// 离开窗口时停掉压力监听和按压的弹簧（显示链接），回到静止。
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         super.viewWillMove(toWindow: newWindow)
-        if newWindow == nil { stopPressureTracking() }
+        guard newWindow == nil else { return }
+        stopPressureTracking()
+        depth.stop(at: 0)
+        applyPress()
     }
 
     /// 同 BlockCard 的 rotation3DEffect（绕 x、绕 y，各自透视 0.4，以中心为轴）和朝按压点的 scaleEffect，按这个次序叠。
@@ -227,15 +231,6 @@ class BlockCardView: EmbeddedCardView {
         transform = CATransform3DConcat(transform, perspective)
         return CATransform3DConcat(transform, CATransform3DMakeTranslation(center.x, center.y, 0))
     }
-
-    #if DEBUG
-    /// 探针用：直接摆成按到 depth 深、按在 location（0～1）的样子。
-    func probePress(depth value: Double, at location: CGPoint) {
-        pressLocation = location
-        depth.set(value)
-        applyPress()
-    }
-    #endif
 
     // MARK: - 读屏
 
@@ -536,6 +531,12 @@ final class TableCardView: BlockCardView {
     /// 表格本身多宽（不算补足的那截）、多高。
     private var tableSize: CGSize = .zero
     private var shownKey: TableKey?
+    /// 看着网页链接的站点图标（ReferenceIcons），载完重排这张表。
+    private let iconTracking = ModelTracking()
+    /// 引用图标要加载的网址，变了才重新加载。
+    private var urls: [URL] = []
+    /// 行间分隔线的颜色，外观变了才重新解析。
+    private var dividerColor: CGColor?
 
     private struct TableKey: Equatable {
         let block: MarkdownBlock
@@ -591,6 +592,8 @@ final class TableCardView: BlockCardView {
         super.viewDidChangeEffectiveAppearance()
         guard let key = shownKey, let environment else { return }
         let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        dividerColor = nil
+        needsLayout = true
         guard dark != key.dark else { return }
         shownKey = TableKey(block: key.block, markdown: key.markdown, font: key.font, scope: key.scope, dark: dark)
         build(key.block, markdown: key.markdown, environment: environment, dark: dark)
@@ -605,16 +608,31 @@ final class TableCardView: BlockCardView {
         let iconTint = NSColor.controlAccentColor.resolved(for: scheme)
         let codeFill = Theme.codeBackground.resolvedCGColor(for: scheme)
         let sources = markdown.map { block.tableCellSources(in: $0) } ?? []
+        let decorated = ([header] + rows).map { row in row.map { ReferenceText.decorate($0, scope: environment.referenceScope) } }
+        // 网页链接前面的站点图标：没载过的去载，载完（ReferenceIcons 变了）重排一次
+        let urls = decorated.flatMap { $0.flatMap { $0.runs.compactMap(\.link) } }
+        if urls != self.urls {
+            self.urls = urls
+            Task { await ReferenceIcons.shared.load(urls) }
+        }
         // 先按格排好，量宽
-        var cells: [[(text: NSAttributedString, pieces: [TextSourceMap.Piece], source: MarkdownSource?)]] = []
-        for (index, row) in ([header] + rows).enumerated() {
-            cells.append(row.enumerated().map { column, value in
-                let source = index < sources.count && column < sources[index].count ? sources[index][column] : nil
-                let (text, pieces) = SelectableMarkdown.inline(ReferenceText.decorate(value, scope: environment.referenceScope),
-                                                               source: source, offset: 0, font: index == 0 ? bold : font,
-                                                               color: .labelColor, iconTint: iconTint, codeFill: codeFill)
-                return (text, pieces, source)
-            })
+        iconTracking.cancel()
+        let cells = iconTracking.track {
+            decorated.enumerated().map { index, row in
+                row.enumerated().map { column, value -> (text: NSAttributedString, pieces: [TextSourceMap.Piece], source: MarkdownSource?) in
+                    let source = index < sources.count && column < sources[index].count ? sources[index][column] : nil
+                    let (text, pieces) = SelectableMarkdown.inline(value, source: source, offset: 0, font: index == 0 ? bold : font,
+                                                                   color: .labelColor, iconTint: iconTint, codeFill: codeFill)
+                    return (text, pieces, source)
+                }
+            }
+        } changed: { [weak self] in
+            // 通知在图标写进去之前发出，下一拍再按新的排
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let key = shownKey, let environment = self.environment else { return }
+                build(key.block, markdown: key.markdown, environment: environment, dark: key.dark)
+                resized?()
+            }
         }
         let columns = cells.map(\.count).max() ?? 0
         var widths = [CGFloat](repeating: 0, count: columns)
@@ -685,11 +703,9 @@ final class TableCardView: BlockCardView {
         return NSFont(descriptor: descriptor, size: font.pointSize) ?? font
     }
 
-    /// 一格字排成一行多宽，往上取到像素。
+    /// 一格字排成一行多宽（连同链接前面插的图标），往上取到像素。
     private static func width(of text: NSAttributedString) -> CGFloat {
-        let line = CTLineCreateWithAttributedString(text)
-        let width = CTLineGetTypographicBounds(line, nil, nil, nil)
-        return (CGFloat(width) * 2).rounded(.up) / 2
+        (text.size().width * 2).rounded(.up) / 2
     }
 
     override func height(width: CGFloat) -> CGFloat {
@@ -717,6 +733,8 @@ final class TableCardView: BlockCardView {
             return true
         }
         let count = max(bottoms.count - 1, 0)
+        let color = dividerColor ?? resolved(.separatorColor)
+        dividerColor = color
         while dividers.count < count {
             let layer = CALayer()
             layer.actions = ["position": NSNull(), "bounds": NSNull(), "backgroundColor": NSNull()]
@@ -729,7 +747,7 @@ final class TableCardView: BlockCardView {
             layer.isHidden = index >= count
             guard index < count else { continue }
             layer.frame = CGRect(x: 0, y: Self.cellPadding + bottoms[index] + Self.cellPadding, width: width, height: 1)
-            layer.backgroundColor = resolved(.separatorColor)
+            if layer.backgroundColor != color { layer.backgroundColor = color }
         }
         CATransaction.commit()
     }
@@ -914,9 +932,15 @@ final class CaretView: NSImageView {
         }
     }
 
-    #if DEBUG
-    func set(_ value: Double) { self.value = value }
-    #endif
+    /// 停下：显示链接作废，停在 value 上。
+    func stop(at value: Double) {
+        link?.invalidate()
+        link = nil
+        started = nil
+        velocity = 0
+        self.value = value
+        target = value
+    }
 
     @objc private func tick(_ link: CADisplayLink) {
         guard let started else { return }

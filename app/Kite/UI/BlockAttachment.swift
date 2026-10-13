@@ -24,7 +24,7 @@ enum EmbeddedBlock: Equatable {
     }
 }
 
-/// 嵌进来的块排在自己的 SwiftUI 宿主里，读不到文本视图外面的环境；它们用到的几项由文本视图转交。
+/// 嵌进来的块读不到文本视图外面的环境（iOS 上排在自己的 SwiftUI 宿主里，Mac 上是原生卡片）；它们用到的几项由文本视图转交。
 struct EmbeddedEnvironment {
     var font: Font?
     var referenceScope: ReferenceScope
@@ -50,8 +50,8 @@ struct EmbeddedEnvironment {
     }
 }
 
-/// 文本里的一个附件字符，显示成一块 SwiftUI 视图：照旧用 MarkdownBlockView、CodeBlock 排，外观、折叠、横滑、按钮都和原来一样。
-/// 宽是所在行的宽，高是 SwiftUI 的理想高；内容自己变高（展开全部、表格量完宽）时通知文本视图重排这一行。
+/// 文本里的一个附件字符，显示成一块卡片：iOS 托管 SwiftUI 视图（EmbeddedBlockView，照旧用 MarkdownBlockView、CodeBlock 排），
+/// Mac 是原生卡片（MacBlockCards）。宽是所在行的宽，高是卡片的理想高；内容自己变高（展开全部、表格量完宽）时通知文本视图重排这一行。
 /// 代码块、表格太宽时横着滚，高和行宽无关，量一次就记下：改窗口宽度时不用每种宽度都再量一遍。
 /// 附件和宿主跨流式更新复用：属性串里的附件按身份比较，内容变了属性串不变，文本视图不用重放字，宿主里的状态（展开、横滑位置）也留着。
 /// NSTextAttachment 不归主线程，TextKit 的回调在文本视图排版时进来，也就是主线程；宿主和状态都标在主线程上。
@@ -291,7 +291,7 @@ final class EmbeddedContainerView: PlatformView {
 
         let clip = window == nil ? nil : enclosingScrollView?.contentView
         observeClip(clip)
-        // 长回复仍由 TextKit 排整段；屏外附件只保留行边界和宿主状态，不逐帧重排内部 SwiftUI。
+        // 长回复仍由 TextKit 排整段；屏外附件只保留行边界和卡片状态，不逐帧重排卡片里面。
         if let clip, !convert(bounds, to: clip).intersects(clip.bounds) {
             if !hostedView.isHidden { hostedView.isHidden = true }
             return
@@ -351,6 +351,7 @@ final class BlockAttachments {
     }
 }
 
+#if canImport(UIKit)
 /// 宿主里的根视图：块本身，量理想高。卡片底色是半透明的，选区拖过时文本视图的选区色从底下透出来，不另外上色。
 struct EmbeddedBlockView: View {
     let content: EmbeddedBlock
@@ -398,3 +399,4 @@ private struct EmbeddedEnvironmentModifier: ViewModifier {
         }
     }
 }
+#endif

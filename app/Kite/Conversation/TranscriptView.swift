@@ -59,7 +59,7 @@ struct TranscriptView: View {
 }
 
 
-/// 对话里的一行显示成什么。Mac 主对话的原生列表里还没原生化的行也托管它。
+/// 对话里的一行显示成什么。iOS 用；Mac 主对话是原生列表，各行见 makeTranscriptRowSlot。
 struct TranscriptRowView: View {
     let row: TranscriptRow
     /// 点 agent 的话弹出操作栏，见 TranscriptView.actionable。
@@ -104,7 +104,7 @@ private struct AgentText: View {
     }
 }
 
-/// agent 说的一段话的操作栏：复制、翻译、从这里分叉（翻译、分叉还没做）。Mac 主对话的原生列表也用它。
+/// agent 说的一段话的操作栏：复制、翻译、从这里分叉（翻译、分叉还没做）。iOS 用；Mac 的原生版见 ProseRowSlot.actionItems。
 struct AgentTextActions: View {
     let text: String
     @Environment(\.selectedRow) private var selection

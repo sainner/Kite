@@ -104,7 +104,7 @@ struct MessageBubble: View {
 }
 
 /// 人发的消息的操作栏：排队中的是重试、编辑、取消发送；收到了的是压缩起点和终点。都有复制，折起来的还有展开全文。
-/// Mac 主对话的原生气泡也托管它（见 BubbleRowSlot），展开状态由气泡给。
+/// iOS 用；Mac 的原生版见 BubbleRowSlot.actionItems，按钮和这里一一对应，改的时候两处一起改。
 struct MessageActionButtons: View {
     let message: Message
     let queued: Bool
@@ -229,7 +229,7 @@ extension Message {
     }
 }
 
-/// 消息上面的附件：图片是缩略图，其余文件是一张小卡片，靠右排，放不下换行。Mac 主对话的原生气泡也托管它。
+/// 消息上面的附件：图片是缩略图，其余文件是一张小卡片，靠右排，放不下换行。iOS 用；Mac 的原生版是 AttachmentRowView。
 struct MessageAttachmentRow: View {
     let attachments: [Attachment]
 

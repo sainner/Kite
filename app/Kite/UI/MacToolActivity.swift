@@ -4,18 +4,31 @@ import SwiftUI
 
 /// 工具行里正在做的事的动效，原生版的 ToolRowActivity：等待时整块透明度呼吸（WaitingBreath 的节奏），执行时像素扫掠
 /// （KitePixels.metal 的 kitePixels：扫过时笔画变成彩色方块，离开后恢复）。里面的字、图标照常放在 content 里，链接照常能点。
-/// 扫掠按屏幕刷新率走：内容画成一张图记下来（字、宽度、外观变了才重画，拖缝改宽时只有被截短的字才要重画），
-/// 每一帧只把扫到的那一截按着色器的算法逐像素算一遍，换成图层的内容；原来的内容透明着留在下面接点击。
-/// 呼吸交给 Core Animation，按参考时刻对齐，和别处的呼吸同一拍。开了「减弱动态效果」都不动。
+/// 扫掠每秒最多 60 帧（现版 30 帧）：内容画成一张图记下来、每一格方块的颜色一起算好（字、宽度、外观变了才重画，
+/// 拖缝改宽时只有被截短的字才要重画）；每一帧只算扫到的那一截，放进一个只有这一截宽的图层，原来的内容用遮罩挖掉这一截，其余照常画。
+/// 窗口不在屏上（PanePresence）、在过渡中、被挡住、这一行滚出可见区时不算。呼吸交给 Core Animation，按参考时刻对齐，
+/// 和别处的呼吸同一拍。开了「减弱动态效果」都不动。
 final class ToolActivityView: NSView {
     enum Mode: Equatable { case none, breathing, sweeping }
 
     /// 放字、图标的那一层。
     let content = FlippedLayerView()
+    /// 扫到的那一截。
     private let effect = CALayer()
+    /// 原来的内容挖掉扫到的那一截。
+    private let hole = CAShapeLayer()
     var mode: Mode = .none {
         didSet { if mode != oldValue { update() } }
     }
+    /// 所在窗口在不在屏上，不在屏上停（同 PaneTimeline）。
+    var presence: PanePresence? {
+        didSet {
+            guard presence !== oldValue else { return }
+            tracking.cancel()
+            update()
+        }
+    }
+    private let tracking = ModelTracking()
     private var link: CADisplayLink?
     /// 内容画成的图，见 Source。
     private var source: Source?
@@ -29,6 +42,7 @@ final class ToolActivityView: NSView {
         layer?.addSublayer(effect)
         effect.actions = ["contents": NSNull(), "position": NSNull(), "bounds": NSNull(), "hidden": NSNull()]
         effect.isHidden = true
+        hole.actions = ["path": NSNull(), "position": NSNull(), "bounds": NSNull()]
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -46,7 +60,7 @@ final class ToolActivityView: NSView {
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        effect.frame = bounds
+        hole.frame = content.bounds
         CATransaction.commit()
     }
 
@@ -63,18 +77,25 @@ final class ToolActivityView: NSView {
     private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
     private func update() {
-        let sweeping = mode == .sweeping && window != nil && !reduceMotion
+        let onScreen = tracking.track { presence?.onScreen ?? true } changed: { [weak self] in
+            DispatchQueue.main.async { [weak self] in self?.update() }
+        }
+        let sweeping = mode == .sweeping && window != nil && !reduceMotion && onScreen
         if sweeping, link == nil {
             let link = displayLink(target: self, selector: #selector(tick(_:)))
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
             link.add(to: .main, forMode: .common)
             self.link = link
         } else if !sweeping, let link {
             link.invalidate()
             self.link = nil
         }
-        if !sweeping {
+        if mode != .sweeping {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             effect.isHidden = true
-            content.layer?.opacity = 1
+            content.layer?.mask = nil
+            CATransaction.commit()
             source = nil
         }
         let breathing = mode == .breathing && window != nil && !reduceMotion
@@ -103,35 +124,36 @@ final class ToolActivityView: NSView {
         return animation
     }
 
-    #if DEBUG
-    /// 探针用：效果层在不在画、有没有内容，原内容透明没有。
-    var probeState: String { "效果层显示 \(!effect.isHidden) 有内容 \(effect.contents != nil) 原内容透明度 \(content.layer?.opacity ?? -1)" }
-
-    /// 探针用：停在 travel 那一刻的样子。
-    func probeRender(travel: CGFloat) {
-        link?.invalidate()
-        link = nil
-        guard let image = render(travel: travel) else { return }
-        effect.contents = image
-        effect.contentsScale = source?.scale ?? 2
-        effect.isHidden = false
-        content.layer?.opacity = 0
-    }
-    #endif
-
     @objc private func tick(_ link: CADisplayLink) {
-        // 屏幕外（窗口被挡住、行滚出可见区）不算
-        guard bounds.width > 0, bounds.height > 0, let window, window.occlusionState.contains(.visible), !visibleRect.isEmpty else { return }
+        // 屏幕外（窗口被挡住、行滚出可见区）、窗口在过渡中不算
+        guard bounds.width > 0, bounds.height > 0, let window, window.occlusionState.contains(.visible), !visibleRect.isEmpty,
+              !WindowLayout.anyTransitioning else { return }
         // 先在 Double 里收敛到一周期：2 秒一周，前 88% 走完，余下停在终点（扫掠已离开字），同 ToolRowActivity
         let phase = Date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2) / 2
-        let travel = UnitCurve.easeInOut.value(at: min(phase / 0.88, 1))
-        guard let image = render(travel: CGFloat(travel)) else { return }
+        show(travel: CGFloat(UnitCurve.easeInOut.value(at: min(phase / 0.88, 1))))
+    }
+
+    /// 摆出 travel 那一刻：扫到的那一截换成算好的图，原来的内容挖掉这一截。
+    private func show(travel: CGFloat) {
+        if source == nil || source?.size != bounds.size { source = capture() }
+        guard let source, let content = content.layer else { return }
+        let band = render(travel: travel)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        effect.contents = image
-        effect.contentsScale = source?.scale ?? 2
-        effect.isHidden = false
-        content.layer?.opacity = 0
+        if let band {
+            effect.frame = band.frame
+            effect.contents = band.image
+            effect.contentsScale = source.scale
+            effect.isHidden = false
+            let path = CGMutablePath()
+            path.addRect(CGRect(x: 0, y: 0, width: band.frame.minX, height: bounds.height))
+            path.addRect(CGRect(x: band.frame.maxX, y: 0, width: max(bounds.width - band.frame.maxX, 0), height: bounds.height))
+            hole.path = path
+            if content.mask !== hole { content.mask = hole }
+        } else {
+            effect.isHidden = true
+            content.mask = nil
+        }
         CATransaction.commit()
     }
 
@@ -197,11 +219,9 @@ final class ToolActivityView: NSView {
         return Source(pixels: pixels, width: width, height: height, size: size, scale: scale, cell: cell, columns: columns, blocks: blocks)
     }
 
-    /// 这一帧的样子：没扫到的地方原样，扫到的地方按扫掠的强度和方块混合，同 kitePixels。
-    private func render(travel: CGFloat) -> CGImage? {
-        if source == nil || source?.size != bounds.size { source = capture() }
+    /// 这一帧扫到的那一截（点的坐标）和它的样子：按扫掠的强度把原图和方块混合，同 kitePixels。扫掠不在字上时给 nil。
+    private func render(travel: CGFloat) -> (frame: CGRect, image: CGImage)? {
         guard let source else { return nil }
-        var pixels = source.pixels
         let size = source.size, scale = source.scale, cell = source.cell
         let baseHalfWidth = min(max(size.width * 0.2, 24), 64)
         let maxHalfWidth = baseHalfWidth * 1.35
@@ -209,29 +229,37 @@ final class ToolActivityView: NSView {
         let front = -baseHalfWidth + (size.width + maxHalfWidth + baseHalfWidth) * travel
         let lower = max(Int(((front - halfWidth) * scale).rounded(.down)), 0)
         let upper = min(Int(((front + halfWidth) * scale).rounded(.up)), source.width)
-        if lower < upper {
-            for column in lower..<upper {
-                let x = (CGFloat(column) + 0.5) / scale
-                let t = min(max(abs(x - front) / halfWidth, 0), 1)
-                let intensity = Float(1 - t * t * (3 - 2 * t))
-                guard intensity >= 0.001 else { continue }
-                let gridX = Int((x / cell).rounded(.down))
-                for row in 0..<source.height {
-                    let gridY = Int(((CGFloat(row) + 0.5) / scale / cell).rounded(.down))
-                    let block = source.blocks[gridY * source.columns + gridX]
-                    let index = (row * source.width + column) * 4
-                    for channel in 0..<4 {
-                        let original = Float(pixels[index + channel]) / 255
-                        let mixed = original + (block[channel] - original) * intensity
-                        pixels[index + channel] = UInt8(min(max(mixed * 255, 0), 255).rounded())
-                    }
+        guard lower < upper else { return nil }
+        let width = upper - lower
+        var pixels = [UInt8](repeating: 0, count: width * source.height * 4)
+        for column in lower..<upper {
+            let x = (CGFloat(column) + 0.5) / scale
+            let t = min(max(abs(x - front) / halfWidth, 0), 1)
+            let intensity = Float(1 - t * t * (3 - 2 * t))
+            let gridX = Int((x / cell).rounded(.down))
+            for row in 0..<source.height {
+                let from = (row * source.width + column) * 4
+                let to = (row * width + column - lower) * 4
+                guard intensity >= 0.001 else {
+                    for channel in 0..<4 { pixels[to + channel] = source.pixels[from + channel] }
+                    continue
+                }
+                let gridY = Int(((CGFloat(row) + 0.5) / scale / cell).rounded(.down))
+                let block = source.blocks[gridY * source.columns + gridX]
+                for channel in 0..<4 {
+                    let original = Float(source.pixels[from + channel]) / 255
+                    let mixed = original + (block[channel] - original) * intensity
+                    pixels[to + channel] = UInt8(min(max(mixed * 255, 0), 255).rounded())
                 }
             }
         }
-        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
-        return CGImage(width: source.width, height: source.height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: source.width * 4,
-                       space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                       provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+              let image = CGImage(width: width, height: source.height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
+        let frame = CGRect(x: CGFloat(lower) / scale, y: 0, width: CGFloat(width) / scale, height: CGFloat(source.height) / scale)
+        return (frame, image)
     }
 
     /// 效果色，与 DotColor.palette 同一组（见 docs/视觉风格.md），同 kitePixels。

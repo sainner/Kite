@@ -23,8 +23,8 @@ final class CompactionRowSlot: TranscriptRowSlot {
     private var stackHeight: CGFloat = 0
     /// 「显示原文」「收起原文」正在换字，跟着原文那一段露出多少走。
     private var originalSwitching = false
-    /// 在看会话能不能撤销压缩，变了再看一次。
-    private var watchingThread = false
+    /// 看着会话能不能撤销压缩，变了再看一次。
+    private let tracking = ModelTracking()
 
     /// 标签、摘要、按钮、原文之间的间距，同 CompactedDivider 的 VStack。
     private static let spacing: CGFloat = 10
@@ -74,17 +74,9 @@ final class CompactionRowSlot: TranscriptRowSlot {
         buttons.original.title = TranscriptSpeech.original(shown: original)
         buttons.revert.isHidden = compaction.id == nil
         let thread = context.environment[WorkThread.self]
-        // 能不能撤销跟着会话的状态变；只挂一个观察，变了重新挂
-        guard !watchingThread else {
-            buttons.revert.isEnabled = thread?.canCompact ?? false
-            return
-        }
-        watchingThread = true
-        buttons.revert.isEnabled = withObservationTracking { thread?.canCompact ?? false } onChange: { [weak self] in
-            Task { @MainActor in
-                self?.watchingThread = false
-                self?.showButtons()
-            }
+        // 能不能撤销跟着会话的状态变
+        buttons.revert.isEnabled = tracking.track { thread?.canCompact ?? false } changed: { [weak self] in
+            DispatchQueue.main.async { [weak self] in self?.showButtons() }
         }
     }
 
@@ -110,6 +102,9 @@ final class CompactionRowSlot: TranscriptRowSlot {
     private func showStack() {
         guard stack == nil else { return }
         let stack = TranscriptStack()
+        stack.view.setAccessibilityElement(true)
+        stack.view.setAccessibilityRole(.group)
+        stack.view.setAccessibilityLabel(TranscriptSpeech.originalTranscript)
         stack.changed = { [weak self] motion in
             guard let self, let measured else { return }
             self.measured = nil
@@ -121,16 +116,24 @@ final class CompactionRowSlot: TranscriptRowSlot {
         self.stack = stack
     }
 
+    /// 拖缝时看不见的摘要按上次的高、原文只量看得见的那些（见 TranscriptStack.height），记作 provisional，停下后列表补量成准确的高。
     override func height(width: CGFloat) -> CGFloat {
-        if let measured, measured.width == width { return measured.height }
+        if let measured, measured.width == width, !provisional || WindowLayout.anyResizing { return measured.height }
+        let resizing = WindowLayout.anyResizing
+        provisional = false
         headerHeight = container.header.height
         var height = headerHeight
         if expanded, let summary {
-            summaryHeight = summary.height(width: width)
+            if resizing, summaryHeight > 0, summary.text.visibleRect.isEmpty {
+                provisional = true
+            } else {
+                summaryHeight = summary.height(width: width)
+            }
             buttonsHeight = hasButtons ? container.buttons.height : 0
             height += Self.spacing + summaryHeight + (hasButtons ? Self.spacing + buttonsHeight : 0)
             if original, !children.isEmpty, let stack {
                 stackHeight = stack.height(width: max(width - Self.originalInset, 0))
+                if stack.approximate { provisional = true }
                 height += Self.spacing + stackHeight
             }
         }
@@ -240,8 +243,9 @@ final class CompactionRowView: NSView {
     init() {
         super.init(frame: .zero)
         wantsLayer = true
-        addSubview(content)
+        // 先标签后内容：读屏按子视图的先后读
         addSubview(header)
+        addSubview(content)
         content.layer?.masksToBounds = true
         content.addSubview(buttons)
         content.layer?.addSublayer(rule)
@@ -392,6 +396,10 @@ final class CompactionButtonsView: NSView {
     private var laidHeight: CGFloat = 0
     /// 正在动的那一行：它的高从哪到哪，整列的高从哪到哪。
     private var animation: (id: RowID, from: CGFloat, to: CGFloat, stackFrom: CGFloat, stackTo: CGFloat)?
+    /// 最近一次量的各行的高，摆的时候照它摆。
+    private var heights: [RowID: CGFloat] = [:]
+    /// 最近一次量出来的高里有近似的：拖缝时看不见的行按上次的高占位，或者某一行自己是按近似量的。停下后要按准确的重量。
+    private(set) var approximate = false
 
     init() {
         view.layer?.masksToBounds = false
@@ -433,6 +441,7 @@ final class CompactionButtonsView: NSView {
         if let motion {
             let from = slot.frame.height
             let to = slot.height(width: width)
+            heights[slot.id] = to
             animation = (slot.id, from, to, laidHeight, laidHeight + to - from)
             changed?(motion)
         } else {
@@ -443,13 +452,28 @@ final class CompactionButtonsView: NSView {
     /// 有一行正在自己展开收起。
     var animating: Bool { animation != nil }
 
-    /// 按宽量整列多高。
+    /// 按宽量整列多高。拖缝时同列表：只量看得见（连同上下十分之一屏）的行，其余按上次量的高占位，记作 approximate；
+    /// 停下后整列按准确的重量，按近似量过的行先作废。
     func height(width: CGFloat) -> CGFloat {
         self.width = width
+        let resizing = WindowLayout.anyResizing
+        let shown = view.visibleRect
+        let near = shown.insetBy(dx: 0, dy: -max(view.window?.contentView?.bounds.height ?? 0, shown.height) * TranscriptArrangement.closeMargin)
+        approximate = false
         var height: CGFloat = 0
         for (index, slot) in slots.enumerated() {
             if index > 0 { height += Metrics.rowSpacing + slot.row.gap }
-            height += slot.height(width: width)
+            let rowHeight: CGFloat
+            if resizing, let measured = slot.measured, shown.isEmpty || !slot.frame.intersects(near) {
+                rowHeight = measured.height
+                approximate = true
+            } else {
+                if !resizing, slot.provisional { slot.measured = nil }
+                rowHeight = slot.height(width: width)
+                if slot.provisional { approximate = true }
+            }
+            heights[slot.id] = rowHeight
+            height += rowHeight
         }
         return height
     }
@@ -466,7 +490,7 @@ final class CompactionButtonsView: NSView {
         var y: CGFloat = 0
         for (index, slot) in slots.enumerated() {
             if index > 0 { y += Metrics.rowSpacing + slot.row.gap }
-            var rowHeight = slot.height(width: width)
+            var rowHeight = heights[slot.id] ?? slot.height(width: width)
             if let animation, animation.id == slot.id {
                 rowHeight = animation.from + (animation.to - animation.from) * progress
             }

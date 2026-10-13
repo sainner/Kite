@@ -74,11 +74,6 @@ enum TranscriptSpeech {
     static let table = "表格"
 }
 
-extension ProseTextView {
-    /// 生产版在 TranscriptEventSlots.swift（依赖对话的行模型），只有表格卡片用；本合同的附件是代码块，不建表格。
-    static func makeReadOnly() -> ProseTextView { make() }
-}
-
 extension View {
     func hintsScrollOverflow(_ axis: Axis = .vertical) -> some View { self }
 }

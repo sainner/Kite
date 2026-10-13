@@ -34,13 +34,18 @@ final class WorkRowSlot: TranscriptRowSlot {
         self.work = work
         self.context = context
         container.header.show(work, environment: context.environment, expanded: expanded)
-        steps?.show(work, environment: context.environment)
+        steps?.show(work, environment: context.environment, resized: resized)
     }
 
+    /// 拖缝时步骤里看不见的详情、子 agent 的行按上次的高占位，记作 provisional，停下后列表补量成准确的高。
     override func height(width: CGFloat) -> CGFloat {
-        if let measured, measured.width == width { return measured.height }
+        if let measured, measured.width == width, !provisional || WindowLayout.anyResizing { return measured.height }
         headerHeight = container.header.height
-        if expanded, let steps { stepsHeight = steps.height(width: width) }
+        provisional = false
+        if expanded, let steps {
+            stepsHeight = steps.height(width: width)
+            provisional = steps.approximate
+        }
         let height = headerHeight + (expanded ? Self.spacing + stepsHeight : 0)
         measured = (width, height)
         return height
@@ -77,7 +82,7 @@ final class WorkRowSlot: TranscriptRowSlot {
             view.changed = { [weak self] motion in self?.stepsChanged(motion) }
             view.alphaValue = 0
             container.addSubview(view)
-            view.show(work, environment: context.environment)
+            view.show(work, environment: context.environment, resized: true)
             steps = view
         }
         container.header.expanded = expanded
@@ -138,6 +143,7 @@ final class WorkHeaderView: NativeButton {
         let secondary = NSColor.secondaryLabelColor
         let failedCount = work.count(.failed) + work.count(.unknown), unfinishedCount = work.count(.unfinished)
         set(summary, work.running?.use.title ?? work.summary, color: secondary)
+        activity.presence = environment.panePresence
         activity.mode = work.running != nil && !expanded && work.count(.running) > 0 ? .sweeping : .none
         activity.contentChanged()
         set(failed, failedCount > 0 ? "\(failedCount) 步出错" : "", color: NSColor(cgColor: Theme.danger.resolve(in: environment).cgColor) ?? .systemRed)
@@ -214,7 +220,7 @@ final class ThinkingRowSlot: TranscriptRowSlot {
     override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
         super.update(row, context: context, resized: resized)
         guard case .item(let item) = row.content, case .thinking(let text) = item.kind else { return }
-        label.set(text.isEmpty ? "思考中" : text.replacingOccurrences(of: "\n", with: " "),
+        label.set(TranscriptSpeech.thinking(text),
                   font: Theme.secondary.resolve(in: context.environment.fontResolutionContext).ctFont as NSFont, color: .secondaryLabelColor)
     }
 
