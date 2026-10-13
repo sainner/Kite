@@ -13,7 +13,7 @@
 ## 协作反馈
 
 - [界面工作与验收](feedback-ui-workflow.md) — 方案、目标定位、连续推进、真机验收和工具链选择
-- [多 agent 编排](feedback-orchestration.md) — 用 Workflow 直接编排、运行中不插话、对照设收敛门槛，审完再合主线
+- [多 agent 编排](feedback-orchestration.md) — 直接派子 agent（Workflow 只给真正复杂的），运行中不插话，对照设门槛，审完再合主线
 - [交互连续性](feedback-interaction-quality.md) — 公共控件完整行为、对象身份、保留动效的性能优化；窗口动画不回弹，过渡中点阵收起；空画板是窗口
 - [测试要克制](test-restraint.md) — 测试准入主来源、事件断言与 PDF 验证要求
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行与数据流判断，不能只看引用
