@@ -132,6 +132,7 @@ final class CompactionRowSlot: TranscriptRowSlot {
             buttonsHeight = hasButtons ? container.buttons.height : 0
             height += Self.spacing + summaryHeight + (hasButtons ? Self.spacing + buttonsHeight : 0)
             if original, !children.isEmpty, let stack {
+                measuredStackTop = height + Self.spacing
                 stackHeight = stack.height(width: max(width - Self.originalInset, 0))
                 if stack.approximate { provisional = true }
                 height += Self.spacing + stackHeight
@@ -143,6 +144,24 @@ final class CompactionRowSlot: TranscriptRowSlot {
 
     /// 原文往里缩多少，竖线画在最左边。
     private static let originalInset: CGFloat = 12
+
+    /// 原文那一列在这一行里的顶边：上次摆的（laidStackTop）、这次量出来的（measuredStackTop），pin 时记下的那次摆的（pinnedStackTop）。
+    private var laidStackTop: CGFloat = 0
+    private var measuredStackTop: CGFloat = 0
+    private var pinnedStackTop: CGFloat?
+
+    /// 列表按住的那一处落在原文里：交给原文那一列按住那一行（同列表），量完连同上面摘要变高变矮挪了多少一起报回去。
+    override func pin(at y: CGFloat) {
+        pinnedStackTop = nil
+        guard let stack, !stack.animating, stack.view.superview != nil, y > laidStackTop else { return }
+        pinnedStackTop = laidStackTop
+        stack.pin(at: y - laidStackTop)
+    }
+
+    override var pinShift: CGFloat {
+        guard let stack, let pinnedStackTop else { return 0 }
+        return measuredStackTop - pinnedStackTop + stack.pinShift
+    }
 
     /// 动画中行的高在收起和展开之间：摘要那一段、原文那一段各按露出了多少淡入淡出，标签跟着摘要那一段换字，
     /// 「显示原文」换「收起原文」跟着原文那一段换字。
@@ -169,6 +188,7 @@ final class CompactionRowSlot: TranscriptRowSlot {
             y += Self.spacing
             // 原文里有一行自己在展开收起：整列的高跟着这一行的高走；不然原文整段按量的高摆，靠这一行截住露出来的那截
             let current = stack.animating ? max(height - y, 0) : stackHeight
+            laidStackTop = y
             stack.view.frame = CGRect(x: Self.originalInset, y: y, width: max(width - Self.originalInset, 0), height: current)
             stack.layout(height: current)
             container.rule.frame = CGRect(x: 0, y: y, width: 1, height: current)
@@ -396,8 +416,11 @@ final class CompactionButtonsView: NSView {
     private var laidHeight: CGFloat = 0
     /// 正在动的那一行：它的高从哪到哪，整列的高从哪到哪。
     private var animation: (id: RowID, from: CGFloat, to: CGFloat, stackFrom: CGFloat, stackTo: CGFloat)?
-    /// 最近一次量的各行的高，摆的时候照它摆。
+    /// 最近一次量的各行的高和顶边，摆的时候照它摆。
     private var heights: [RowID: CGFloat] = [:]
+    private var tops: [RowID: CGFloat] = [:]
+    /// pin 记下的那一行和它当时的顶边，见 pin。
+    private var pinned: (id: RowID, top: CGFloat)?
     /// 最近一次量出来的高里有近似的：拖缝时看不见的行按上次的高占位，或者某一行自己是按近似量的。停下后要按准确的重量。
     private(set) var approximate = false
 
@@ -453,7 +476,7 @@ final class CompactionButtonsView: NSView {
     var animating: Bool { animation != nil }
 
     /// 按宽量整列多高。拖缝时同列表：只量看得见（连同上下十分之一屏）的行，其余按上次量的高占位，记作 approximate；
-    /// 停下后整列按准确的重量，按近似量过的行先作废。
+    /// 看得见的长正文也只排这一截（见 TranscriptArrangement.arrange）。停下后整列按准确的重量，按近似量过的行先作废。
     func height(width: CGFloat) -> CGFloat {
         self.width = width
         let resizing = WindowLayout.anyResizing
@@ -463,24 +486,47 @@ final class CompactionButtonsView: NSView {
         var height: CGFloat = 0
         for (index, slot) in slots.enumerated() {
             if index > 0 { height += Metrics.rowSpacing + slot.row.gap }
+            let old = slot.frame
             let rowHeight: CGFloat
-            if resizing, let measured = slot.measured, shown.isEmpty || !slot.frame.intersects(near) {
+            if resizing, let measured = slot.measured, shown.isEmpty || !old.intersects(near) {
                 rowHeight = measured.height
                 approximate = true
             } else {
                 if !resizing, slot.provisional { slot.measured = nil }
                 // 同列表：拖缝中气泡这些按近似量
                 slot.resizing = resizing
-                rowHeight = slot.height(width: width)
+                let lower = max(near.minY - old.minY, 0), upper = min(near.maxY, old.maxY) - old.minY
+                if resizing, old != .zero, upper > lower {
+                    rowHeight = slot.height(width: width, band: lower...upper)
+                } else {
+                    rowHeight = slot.height(width: width)
+                }
                 if slot.provisional { approximate = true }
             }
             heights[slot.id] = rowHeight
+            tops[slot.id] = height
             height += rowHeight
         }
         return height
     }
 
+    /// 量之前记下列里 y 处（列的坐标，按上次摆的位置）的那一行和那一行里的内容，量完由 pinShift 给出它挪了多少，
+    /// 外面的行按它把看着的内容放回原处（同列表按住顶上那一行，见 TranscriptRowSlot.pin）。
+    func pin(at y: CGFloat) {
+        pinned = nil
+        guard let slot = slots.first(where: { $0.frame.maxY > y }) else { return }
+        pinned = (slot.id, slot.frame.minY)
+        slot.pin(at: y - slot.frame.minY)
+    }
+
+    var pinShift: CGFloat {
+        guard let pinned, let slot = byID[pinned.id], let top = tops[pinned.id] else { return 0 }
+        return top - pinned.top + slot.pinShift
+    }
+
     /// 按眼下整列的高摆各行：动画中那一行按整列走到哪给它中间的高，其余按量的高。
+    /// 拖缝时同列表只摆量着的那些（看得见的连同上下十分之一屏），其余放着的先藏起来、不跟着改宽：文本视图每次改宽都要自己重排、
+    /// 重算内容的高（压缩分界展开着原文时每步约 3 ms，2026-10-14）。停下后整列照常摆，藏起来的露回来，读屏照样读得到每一行。
     func layout(height: CGFloat) {
         laidHeight = height
         var progress: CGFloat = 1
@@ -489,6 +535,9 @@ final class CompactionButtonsView: NSView {
             progress = span == 0 ? 1 : (height - animation.stackFrom) / span
             if abs(height - animation.stackTo) < 0.01 { self.animation = nil }
         }
+        let resizing = WindowLayout.anyResizing
+        let shown = view.visibleRect
+        let placed = shown.insetBy(dx: 0, dy: -max(view.window?.contentView?.bounds.height ?? 0, shown.height) * TranscriptArrangement.closeMargin)
         var y: CGFloat = 0
         for (index, slot) in slots.enumerated() {
             if index > 0 { y += Metrics.rowSpacing + slot.row.gap }
@@ -497,12 +546,17 @@ final class CompactionButtonsView: NSView {
                 rowHeight = animation.from + (animation.to - animation.from) * progress
             }
             slot.frame = CGRect(x: 0, y: y, width: width, height: rowHeight)
-            let frame = slot.viewFrame(in: slot.frame)
+            y += rowHeight
             let child = slot.view
+            if resizing, shown.isEmpty || !slot.frame.intersects(placed) {
+                if child.superview === view, !child.isHidden { child.isHidden = true }
+                continue
+            }
+            let frame = slot.viewFrame(in: slot.frame)
             if child.superview !== view { view.addSubview(child) }
+            if child.isHidden { child.isHidden = false }
             if child.frame != frame { child.frame = frame }
             slot.layoutView(in: CGRect(origin: .zero, size: frame.size))
-            y += rowHeight
         }
     }
 }

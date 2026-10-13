@@ -19,6 +19,8 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     private var layout = BubbleLayout()
     private var attachmentsHeight: CGFloat = 0
     private var hasBlocks = false
+    /// 上次整条排过、没有一行是被行宽折下来的：贴字的宽。拖缝时能给的宽还放得下它，排出来一样，不用再排（见 height），同 iOS。
+    private var unwrapped: CGFloat?
 
     /// 折起来时显示多高，比它高出不少（1.4 倍）才折，同 MessageBubble。
     private static var foldHeight: CGFloat { Metrics.messageFold }
@@ -75,6 +77,7 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
             [NSAccessibilityCustomAction(name: TranscriptSpeech.actions) { toggle(); return true }]
         })
         guard resized else { return }
+        layout.contentChanged()
         let environment = context.environment
         let body = Theme.body.resolve(in: environment.fontResolutionContext).ctFont as NSFont
         let code = Theme.code.resolve(in: environment.fontResolutionContext).ctFont as NSFont
@@ -95,11 +98,19 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     }
 
     /// 量正文见 BubbleLayout：拖缝和吸附中按近似量，记作 provisional，停下后按精确的重量。
+    /// 拖缝中没折行的短消息（大多数）能给的宽还放得下就不再排：贴字的宽和高本来就不随能给的宽变，量准过的也还是准的。
     override func height(width: CGFloat) -> CGFloat {
         if let measured, measured.width == width { return measured.height }
+        if resizing, let unwrapped, let measured, unwrapped <= width - Metrics.bubblePadding.width * 2 {
+            self.measured = (width, measured.height)
+            return measured.height
+        }
         guard let storage = container.text.textStorage else { return 0 }
         provisional = layout.measure(container.text, storage: storage, width: width, hasBlocks: hasBlocks,
                                      resizing: resizing, expanded: expanded, foldHeight: Self.foldHeight)
+        // 折着、拖缝中只排了露出来那截的长消息不算：底下没排的可能折了行
+        let whole = !(provisional && foldable && !expanded)
+        unwrapped = !hasBlocks && message?.attachments.isEmpty == true && whole && !container.text.softWraps ? layout.textWidth : nil
         attachmentsHeight = container.attachmentsHeight(width: width)
         let height = attachmentsHeight + bubbleHeight(expanded: expanded)
         measured = (width, height)

@@ -74,6 +74,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         self.queued = queued
         self.context = context
         foldHeight = UIFontMetrics(forTextStyle: .body).scaledValue(for: Metrics.messageFold, compatibleWith: Self.traits(context.environment))
+        if resized { layout.contentChanged() }
         guard container != nil else { return }
         configure()
         if resized { build(first: false, wasQueued: wasQueued) }
@@ -201,7 +202,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         // 停下来按精确量：要全文多高（折着时放的是开头那截）
         if !resizing { fold(false) }
         provisional = layout.measure(container.text, storage: container.text.textStorage, width: width, hasBlocks: hasBlocks,
-                                     resizing: resizing, expanded: expanded, foldHeight: foldHeight, narrows: false)
+                                     resizing: resizing, expanded: expanded, foldHeight: foldHeight)
         // 折着、拖缝中只排了露出来那截的长消息不算：底下没排的可能折了行
         let whole = !(provisional && foldable && !expanded)
         unwrapped = !hasBlocks && message?.attachments.isEmpty == true && whole && !container.text.softWraps ? layout.textWidth : nil

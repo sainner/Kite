@@ -44,6 +44,12 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
         didSet { if measured == nil { layout.invalidate() } }
     }
 
+    /// 上次整段排准、没有一段被行宽折下来、也没有嵌块：最宽一行的宽（排版坐标）。拖缝时新的行宽还放得下它，排出来一样：
+    /// 不再量，文本容器也留在原来的宽（视图跟着列宽改、容器不跟，见 layoutView），文本视图不用重排。停下后照常补量。
+    private var unwrapped: CGFloat?
+    /// 拖缝中文本容器留在原来的宽，摆视图时不跟着改。
+    private var keepsContainer = false
+
     override init(row: TranscriptRow) {
         super.init(row: row)
         body.changed = { [weak self] in
@@ -51,6 +57,8 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
             measured = nil
             heightChanged?(nil)
         }
+        // 容器的宽由量高（fit）和摆视图（layoutView）定，不跟着视图的宽：拖缝中没折行的短段落留在原来的宽
+        text.textContainer?.widthTracksTextView = false
     }
 
     override var hasView: Bool { true }
@@ -89,13 +97,23 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
         if let measured, measured.width == width, !provisional { return measured.height }
         let height = body.height(width: width)
         provisional = false
+        keepsContainer = false
+        unwrapped = body.hasBlocks || text.softWraps ? nil : text.widestLine
         measured = (width, height)
         return height
     }
 
-    /// 拖缝时只排 band 那一截，见 ProseLayout；这截占了大半行时整段排。
+    /// 拖缝时只排 band 那一截，见 ProseLayout；这截占了大半行时整段排。没折行的短段落新宽还放得下就不排（见 unwrapped）。
     override func height(width: CGFloat, band: ClosedRange<CGFloat>) -> CGFloat {
         if let measured, measured.width == width { return measured.height }
+        if let unwrapped, let measured, unwrapped <= width {
+            provisional = true
+            keepsContainer = true
+            self.measured = (width, measured.height)
+            return measured.height
+        }
+        keepsContainer = false
+        unwrapped = nil
         guard let measured,
               let banded = layout.height(of: text, width: width, band: band, topInset: body.topInset, measured: measured, exact: !provisional)
         else { return height(width: width) }
@@ -115,6 +133,12 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
     override func viewFrame(in column: CGRect) -> CGRect {
         body.frame(in: column)
     }
+
+    /// 容器跟着摆好的视图的宽（视图两边各伸出 inlineCodePadding），拖缝中留在原来的宽的除外。
+    override func layoutView(in frame: CGRect) {
+        guard !keepsContainer else { return }
+        text.fit(lineWidth: max(frame.width - Metrics.inlineCodePadding * 2, 0))
+    }
 }
 
 /// 一段 Markdown 排进原生文本视图，agent 的话和压缩摘要用：属性串、附件、装饰、复制原文都和 SelectableMarkdown 共用一套。
@@ -125,6 +149,8 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
     private let document = MarkdownDocument()
     private let attachments = BlockAttachments()
     private(set) var source: String?
+    /// 嵌着块（代码、表格、分隔线）：块的宽跟着行宽变。
+    private(set) var hasBlocks = false
     private var environment: EnvironmentValues?
     private var font: Font = .body
     private var color: NSColor = .label
@@ -179,6 +205,7 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
             }
         }
         text.source = content.source
+        hasBlocks = !content.blocks.isEmpty
         // 附件先换好内容再放字：放字时 TextKit 就会量附件的高
         coordinator.update(content.blocks, environment: EmbeddedEnvironment(environment))
         guard coordinator.shown != content.text, !coordinator.appendTail(of: content.text) else { return }
