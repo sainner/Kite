@@ -84,10 +84,13 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         let id = row.id
         let openURL = context.environment.openURL
         interaction.openURL = { openURL($0) }
-        interaction.showActions = { context.select(id) }
+        // 嵌着的对话里（压缩前的原文、子 agent 做的事）没有操作栏，同 Mac
+        interaction.showActions = { if context.actionable { context.select(id) } }
         interaction.dismissActions = { context.select(nil) }
-        interaction.secondaryClick = { context.toggleActions(id) }
-        container.text.accessibilityCustomActions = [UIAccessibilityCustomAction(name: "显示操作") { _ in context.select(id); return true }]
+        interaction.secondaryClick = context.actionable ? { context.toggleActions(id) } : nil
+        container.text.accessibilityLabel = TranscriptSpeech.message(queued: queued)
+        container.text.accessibilityCustomActions = context.actionable
+            ? [UIAccessibilityCustomAction(name: TranscriptSpeech.actions) { _ in context.select(id); return true }] : nil
     }
 
     /// 排出正文、换上外观。wasQueued：上次是不是排队中，从排队中变成收到时底色填进来。
@@ -101,8 +104,11 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         container.text.source = content.source
         let id = row.id
         var embedded = environment
-        embedded.blockCardLongPress = { context.select(id) }
+        let longPress: @MainActor () -> Void = { context.select(id) }
+        embedded.blockCardLongPress = context.actionable ? longPress : nil
         coordinator.update(content.blocks, environment: EmbeddedEnvironment(embedded))
+        full = content.text
+        showsPrefix = false
         if coordinator.shown != content.text, !coordinator.appendTail(of: content.text) {
             let text = container.text
             let textChanged = coordinator.shown?.string != content.text.string
@@ -122,12 +128,81 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
             MessageAttachmentRow(attachments: message.attachments).environment(\.self, environment)))
     }
 
+    /// 上次整条排过、没有一行是被行宽折下来的：贴字的宽。拖缝时能给的宽还放得下它，排出来一样，不用再排（见 height）。
+    private var unwrapped: CGFloat?
+    /// 整条正文的属性串，和折着时文本视图里只放的开头那截（见 fold）。
+    private var full: NSAttributedString?
+    private var showsPrefix = false
+    /// 折着时只放开头这么多字（UTF-16），停下来按全文量时按折起来的高能露出多少字算（见 measurePrefix）。
+    private var prefixLength = Int.max
+    /// 上次按全文量时折了行：拖缝时行宽占满能给的宽。
+    private var foldWraps = false
+
+    /// 刚按全文排好时，折起来的高再往下两行处是第几个字；拖缝时内容列最宽能到 transcriptWidth，一行放得下的字跟着多，按比例放大，
+    /// 再多留一行。iPad 真机上折着的消息六七百字、露出来的两百来字，整条每步跟着改宽重排要两毫秒。
+    private func measurePrefix() -> Int {
+        guard let container, let manager = container.text.textLayoutManager else { return Int.max }
+        let font = SelectableText.phoneFonts.body
+        let y = foldHeight + font.lineHeight * 2
+        guard let fragment = manager.textLayoutFragment(for: CGPoint(x: 0, y: y)) else { return Int.max }
+        let start = manager.offset(from: manager.documentRange.location, to: fragment.rangeInElement.location)
+        let inside = y - fragment.layoutFragmentFrame.minY
+        let line = fragment.textLineFragments.first { $0.typographicBounds.maxY >= inside } ?? fragment.textLineFragments.last
+        let offset = start + (line.map { $0.characterRange.upperBound } ?? 0)
+        let widest = Metrics.transcriptWidth - Metrics.bubblePadding.width * 2
+        // 再多一行的字：截口落在折起来的高底下两行以外
+        let perLine = Double(offset) / Double(max(line.map { _ in fragment.textLineFragments.count } ?? 1, 1))
+        return Int((Double(offset) * Double(widest / max(layout.textWidth, 1)) + perLine).rounded(.up))
+    }
+
+    /// 折着时文本视图里只放开头那截：TextKit 一段一段排，长消息常常整条就是一段，拖缝时每步都要把整段重排（iPad 真机上占了量高的大头），
+    /// 露出来的只有开头十来行。整条多高停下来按全文量（量的时候换回全文），展开时换回全文。有选区时不换，免得把选区换掉。
+    private func fold(_ prefix: Bool) {
+        guard let full, let container, prefix != showsPrefix, !container.text.isSelectable else { return }
+        let text: NSAttributedString
+        if prefix {
+            guard full.length > prefixLength else { return }
+            let cut = (full.string as NSString).rangeOfComposedCharacterSequence(at: prefixLength).location
+            text = full.attributedSubstring(from: NSRange(location: 0, length: cut))
+        } else {
+            text = full
+        }
+        showsPrefix = prefix
+        coordinator.shown = text
+        container.text.attributedText = text
+    }
+
     /// 量正文见 BubbleLayout：拖缝和吸附中按近似量，记作 provisional，停下后按精确的重量。
+    /// 拖缝中没折行的短消息（大多数）能给的宽还放得下就不再排，高照旧：每步改宽时文本视图也就不用重排。
     override func height(width: CGFloat) -> CGFloat {
         if let measured, measured.width == width { return measured.height }
+        if resizing, let unwrapped, let measured, unwrapped <= width - Metrics.bubblePadding.width * 2 {
+            provisional = true
+            self.measured = (width, measured.height)
+            return measured.height
+        }
         let container = rowView
+        // 折着的长消息拖缝时不重量：露出来的高是定的，只按能给的宽换行宽，文本视图按新的容器宽只排露出来那截
+        if resizing, foldable, !expanded, let measured {
+            let most = max(width - Metrics.bubblePadding.width * 2, 0)
+            layout.keepFolded(most: most, wraps: foldWraps)
+            container.text.fit(lineWidth: layout.textWidth)
+            provisional = true
+            self.measured = (width, measured.height)
+            return measured.height
+        }
+        // 停下来按精确量：要全文多高（折着时放的是开头那截）
+        if !resizing { fold(false) }
         provisional = layout.measure(container.text, storage: container.text.textStorage, width: width, hasBlocks: hasBlocks,
-                                     resizing: resizing, expanded: expanded, foldHeight: foldHeight)
+                                     resizing: resizing, expanded: expanded, foldHeight: foldHeight, narrows: false)
+        // 折着、拖缝中只排了露出来那截的长消息不算：底下没排的可能折了行
+        let whole = !(provisional && foldable && !expanded)
+        unwrapped = !hasBlocks && message?.attachments.isEmpty == true && whole && !container.text.softWraps ? layout.textWidth : nil
+        if !provisional, foldable {
+            foldWraps = container.text.softWraps
+            prefixLength = measurePrefix()
+        }
+        if foldable, !expanded { fold(true) }
         attachmentsHeight = container.attachmentsHeight(width: width)
         let height = attachmentsHeight + bubbleHeight(expanded: expanded)
         measured = (width, height)
@@ -145,6 +220,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         let frames = layout.frames(row: frame.size, attachmentsHeight: attachmentsHeight, button: foldable ? container.fold.height : 0)
         container.place(frames, textHeight: layout.contentHeight - Metrics.bubblePadding.height * 2, attachmentsHeight: attachmentsHeight,
                         foldable: foldable, expanded: expanded)
+        if foldable, !expanded, frames.shown <= foldHeight + 1 { fold(true) }
     }
 
     /// 浮上来的过程：1 在下面藏着，0 到位。浮的过程中正文不能选字，同 Mac。
@@ -161,7 +237,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
     }
 
     override func actionBar() -> (side: HorizontalEdge, content: AnyView)? {
-        guard let message, let context else { return nil }
+        guard let message, let context, context.actionable else { return nil }
         let expanded = Binding { [weak self] in self?.expanded ?? false } set: { [weak self] in self?.setExpanded($0) }
         return (.trailing, AnyView(MessageActionButtons(message: message, queued: queued, foldable: foldable, expanded: expanded)
             .environment(\.self, context.environment)))
@@ -171,6 +247,8 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
     func setExpanded(_ expanded: Bool) {
         guard expanded != self.expanded, foldable else { return }
         self.expanded = expanded
+        // 展开前换回全文；收起时等收完再换成开头那截（见 layoutView），收的途中底下的字还露着
+        if expanded { fold(false) }
         if let measured { self.measured = (measured.width, attachmentsHeight + bubbleHeight(expanded: expanded)) }
         container?.fold.expanded = expanded
         heightChanged?(.spring(.snappy))
@@ -187,6 +265,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         interaction = nil
         coordinator.view = nil
         coordinator.shown = nil
+        showsPrefix = false
     }
 }
 
@@ -202,6 +281,7 @@ final class PhoneBubbleRowView: UIView {
 
     init() {
         super.init(frame: .zero)
+        text.clipViewport()
         addSubview(bubble)
         bubble.content.addSubview(clip)
         clip.addSubview(text)
@@ -264,9 +344,12 @@ final class PhoneBubbleRowView: UIView {
         }
         if bubble.frame != frames.bubble { bubble.frame = frames.bubble }
         clip.frame = CGRect(x: 0, y: 0, width: frames.bubble.width, height: frames.shown)
+        // 视图宽固定（见 PhoneProseTextView.clipViewport），字排在贴字的容器宽里，由截住正文的那层截
         var textFrame = frames.text
-        textFrame.size.height = textHeight
+        textFrame.size = CGSize(width: PhoneProseTextView.widest, height: textHeight)
         if text.frame != textFrame { text.frame = textFrame }
+        // 折着时截住的那层底下的字不排、不画
+        text.shownHeight = foldable ? max(frames.shown - textFrame.minY, 0) : nil
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         fade.frame = clip.bounds
@@ -354,7 +437,7 @@ final class PhoneBubbleFoldButton: PhonePlainControl {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private func update() {
-        label.text = expanded ? "收起" : "展开全文"
+        label.text = TranscriptSpeech.fold(expanded: expanded)
         chevron.image = UIImage(systemName: expanded ? "chevron.up" : "chevron.down")
         accessibilityLabel = label.text
         setNeedsLayout()

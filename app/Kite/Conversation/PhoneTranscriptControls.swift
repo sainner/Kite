@@ -59,14 +59,33 @@ final class PhoneTextLine: UIView {
     private(set) var text = NSAttributedString()
     private var font = UIFont.preferredFont(forTextStyle: .subheadline)
     var lines = 1
+    /// 量过的不折时多宽、按某个宽折成几行：拖缝时每步都要问，每问一次都要排一遍字。换了字作废。
+    private var natural: CGFloat?
+    private var counted: (width: CGFloat, count: Int)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         isOpaque = false
-        contentMode = .redraw
+        // 改尺寸时不自动重画：放得下的字宽变了画出来也一样，拖缝时每步都在改宽，见 bounds
+        contentMode = .topLeft
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 宽变了才可能要重画：两个宽都放得下不折不截的字（单行，或每段都放得下）时画出来一样，不画。
+    override var bounds: CGRect {
+        didSet { redrawIfNeeded(from: oldValue.size) }
+    }
+
+    override var frame: CGRect {
+        didSet { redrawIfNeeded(from: oldValue.size) }
+    }
+
+    private func redrawIfNeeded(from old: CGSize) {
+        let size = bounds.size
+        let rewrapped = size.width != old.width && min(size.width, old.width) < naturalWidth
+        if rewrapped || size.height > old.height { setNeedsDisplay() }
+    }
 
     func set(_ string: String, font: UIFont, color: UIColor) {
         let style = NSMutableParagraphStyle()
@@ -74,11 +93,18 @@ final class PhoneTextLine: UIView {
         style.lineBreakStrategy = .standard
         text = NSAttributedString(string: string, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: style])
         self.font = font
+        natural = nil
+        counted = nil
         setNeedsDisplay()
     }
 
     /// 不折、不截时多宽。
-    var naturalWidth: CGFloat { PhonePixel.ceil(text.size().width) }
+    var naturalWidth: CGFloat {
+        if let natural { return natural }
+        let width = PhonePixel.ceil(text.size().width)
+        natural = width
+        return width
+    }
 
     /// 一行的高。
     var lineHeight: CGFloat { PhonePixel.ceil(font.lineHeight) }
@@ -88,9 +114,14 @@ final class PhoneTextLine: UIView {
 
     /// 按 width 断出几行：TextKit 每行占行高加行距。
     private func count(width: CGFloat) -> Int {
+        if let counted, counted.width == width { return counted.count }
+        // 不折时放得下就是一行，不用再排
+        if !text.string.contains("\n"), naturalWidth <= width { return 1 }
         let bound = text.boundingRect(with: CGSize(width: width, height: .greatestFiniteMagnitude),
                                       options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
-        return max(Int((bound.height / (font.lineHeight + font.leading)).rounded()), 1)
+        let count = max(Int((bound.height / (font.lineHeight + font.leading)).rounded()), 1)
+        counted = (width, count)
+        return count
     }
 
     /// 按 width 排出来多高。

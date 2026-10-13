@@ -92,6 +92,7 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var textView: PhoneProseTextView {
         if let text { return text }
         let text = PhoneProseTextView.make()
+        text.clipViewport()
         text.textContainerInset = UIEdgeInsets(top: 0, left: Metrics.inlineCodePadding, bottom: 0, right: Metrics.inlineCodePadding)
         // 行内代码的底色、引用的竖线由自己的排版片段画，要在放字之前接上
         text.textLayoutManager?.delegate = coordinator
@@ -129,7 +130,7 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         interaction.dismissActions = { context.select(nil) }
         interaction.secondaryClick = context.actionable ? { context.toggleActions(id) } : nil
         text.accessibilityCustomActions = context.actionable
-            ? [UIAccessibilityCustomAction(name: "显示操作") { _ in context.select(id); return true }] : nil
+            ? [UIAccessibilityCustomAction(name: TranscriptSpeech.actions) { _ in context.select(id); return true }] : nil
     }
 
     /// 按 source 和环境排出属性串。读了引用图标（ReferenceIcons），图标载完重排一次。
@@ -205,9 +206,10 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         text.map { layout.pinShift($0) } ?? 0
     }
 
+    /// 视图宽固定（见 PhoneProseTextView.clipViewport），字排在容器的宽里：改宽时视图不变，只有容器变。
     override func viewFrame(in column: CGRect) -> CGRect {
         CGRect(x: column.minX - Metrics.inlineCodePadding, y: column.minY + topInset,
-               width: column.width + Metrics.inlineCodePadding * 2, height: column.height - topInset)
+               width: PhoneProseTextView.widest, height: column.height - topInset)
     }
 
     func didPlace() {}

@@ -7,6 +7,22 @@ import UIKit
 /// 补字、附件重排、装饰片段见 ProseTextCoordinator。拷贝给原文：有对照（TextSourceMap）时选区换成原文放进剪贴板，只放纯文本。
 final class PhoneProseTextView: UITextView, TextKitMeasuring {
     var source: (text: String, map: TextSourceMap)?
+    /// 原生对话列表里的：视图宽固定、只排露出来的那截，见 clipViewport。SwiftUI 里的不开。
+    private(set) var clipsViewport = false
+    /// 上次给 TextKit 的视口（自己的坐标）。外层滚动时露出来的那截还在里面就不用重排。
+    private var viewport = CGRect.null
+    /// 只露出上面这么高（自己的坐标），比如折着的长消息：底下被截住的不排。nil 是整个视图都可能露出来。
+    var shownHeight: CGFloat? {
+        didSet {
+            guard shownHeight != oldValue, clipsViewport, #available(iOS 27.0, *) else { return }
+            // 露出来的变多了（展开的动画中）：底下新露出来的要排
+            if let shownHeight, !viewport.isNull, shownHeight <= viewport.maxY { return }
+            textLayoutManager?.textViewportLayoutController.layoutViewport()
+        }
+    }
+
+    /// 视图固定的宽：最宽的内容列，连同两边给行内代码背景留的余量。
+    static let widest = Metrics.transcriptWidth + Metrics.inlineCodePadding * 2
 
     /// TextKit 2，文本容器跟着视图宽度、不加边距。
     static func make() -> PhoneProseTextView {
@@ -23,13 +39,83 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
         return view
     }
 
-    /// 量高见 TextKitMeasuring：按 lineWidth 定容器的宽，视图的宽先跟上（容器跟着视图宽度，设 frame 时会被改回 frame 的宽）。
-    /// 关了滚动的 UITextView 把容器高定成视图高，量的时候放开，不然只排到视图那么高（spikes/ios-native-transcript V1）。
+    /// 原生对话列表里用，照 spikes/ios-native-transcript V1 的 H：关了滚动的 UITextView 一改 frame（宽或高）就把整段重设容器、重排，
+    /// iPad 拖缝时这占了主线程的大头（2026-10-13 真机 Time Profiler：setFrame → _resyncContainerFrame → ensureLayout）。改成：
+    /// - 开着滚动（容器不再跟着视图高），关掉它自己的拖动、滚动条、回弹和安全区边距，滚不动也不滚；
+    /// - 视图宽固定成最宽的内容列，改宽、量高都只改容器宽，视图只改高；比字宽出来的那截不接触摸（point(inside:)）；
+    /// - iOS 27 起覆写 viewportBounds(for:)，视口裁到外层可见区上下各半屏（拖缝中十分之一屏），外层滚出这截时再请它重排（outerScrolled）。
+    ///   iOS 26 不会问，照旧按整个视图排。
+    func clipViewport() {
+        clipsViewport = true
+        isScrollEnabled = true
+        panGestureRecognizer.isEnabled = false
+        showsVerticalScrollIndicator = false
+        showsHorizontalScrollIndicator = false
+        bounces = false
+        contentInsetAdjustmentBehavior = .never
+        textContainer.widthTracksTextView = false
+        textContainer.heightTracksTextView = false
+        frame.size.width = Self.widest
+    }
+
+    /// 量高见 TextKitMeasuring：按 lineWidth 定容器的宽。
+    /// - 列表里的（clipsViewport）只改容器，不动视图。
+    /// - SwiftUI 里的视图宽先跟上（容器跟着视图宽度，设 frame 时会被改回 frame 的宽）；关了滚动的 UITextView 把容器高定成视图高，
+    ///   量的时候放开，不然只排到视图那么高（spikes/ios-native-transcript V1）。
     func fit(lineWidth: CGFloat) {
-        let total = lineWidth + textContainerInset.left + textContainerInset.right
-        if frame.width != total { frame.size.width = total }
+        if !clipsViewport {
+            let total = lineWidth + textContainerInset.left + textContainerInset.right
+            if frame.width != total { frame.size.width = total }
+        }
         let size = CGSize(width: lineWidth, height: .greatestFiniteMagnitude)
         if textContainer.size != size { textContainer.size = size }
+    }
+
+    /// 视图比字宽（固定成最宽的内容列），字以外的那截不接触摸，落到后面去。
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        guard clipsViewport else { return super.point(inside: point, with: event) }
+        let width = textContainerInset.left + textContainer.size.width + textContainerInset.right
+        return point.x >= 0 && point.x < width && point.y >= 0 && point.y < bounds.height
+    }
+
+    /// 外面的滚动视图（对话列表；文本视图自己也是滚动视图，不算）。
+    private var outerScroll: UIScrollView? {
+        var current = superview
+        while let view = current {
+            if let scroll = view as? UIScrollView, !(view is UITextView) { return scroll }
+            current = view.superview
+        }
+        return nil
+    }
+
+    /// 外层可见区上下各加半屏，换到自己的坐标。拖缝、吸附中只加十分之一屏：和列表这时量的那截一样（TranscriptArrangement.closeMargin），
+    /// 多出来的每步都要跟着改宽重排。
+    private var outerVisible: CGRect? {
+        guard let outer = outerScroll else { return nil }
+        let visible = outer.convert(outer.bounds, to: self)
+        let margin = WindowLayout.anyResizing ? TranscriptArrangement.closeMargin : TranscriptArrangement.margin
+        return visible.insetBy(dx: 0, dy: -outer.bounds.height * margin)
+    }
+
+    @available(iOS 27.0, *)
+    override func viewportBounds(for textViewportLayoutController: NSTextViewportLayoutController) -> CGRect {
+        let full = super.viewportBounds(for: textViewportLayoutController)
+        guard clipsViewport, window != nil, var visible = outerVisible else {
+            viewport = full
+            return full
+        }
+        if let shownHeight { visible = visible.intersection(CGRect(x: visible.minX, y: 0, width: visible.width, height: shownHeight)) }
+        let clipped = full.intersection(visible)
+        viewport = clipped.isNull ? CGRect(x: full.minX, y: full.minY, width: full.width, height: 0) : clipped
+        return viewport
+    }
+
+    /// 外层滚了、这一行挪了：露出来的那截出了上次的视口就请 TextKit 按新视口重排。
+    func outerScrolled() {
+        guard clipsViewport, #available(iOS 27.0, *), let outer = outerScroll else { return }
+        let visible = outer.convert(outer.bounds, to: self).intersection(bounds)
+        guard !visible.isNull, visible.height > 0, !viewport.contains(visible) else { return }
+        textLayoutManager?.textViewportLayoutController.layoutViewport()
     }
 
     /// 量出来的高取到像素，同原来 SwiftUI 版用的 sizeThatFits。
@@ -38,6 +124,8 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
     /// 排完版，嵌着的卡片看看露没露出来：TextKit 挪的是包着它们的排版片段，卡片自己收不到位置变了，见 EmbeddedContainerView。
     override func layoutSubviews() {
         super.layoutSubviews()
+        // 开着滚动的（列表里的）字比视图先长出来的那一下，它会把自己往上滚去露出末尾；视图跟着变高前也不让它滚
+        if clipsViewport, contentOffset != .zero { contentOffset = .zero }
         EmbeddedContainerView.synchronize(in: self)
     }
 

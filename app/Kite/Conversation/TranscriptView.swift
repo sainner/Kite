@@ -128,6 +128,7 @@ private struct EventLabel: View {
 private struct CompactedDivider: View {
     let compaction: Compaction
     let children: [Item]
+    @Environment(WorkThread.self) private var thread
     @State private var expanded = false
     @State private var original = false
 
@@ -138,7 +139,7 @@ private struct CompactedDivider: View {
             } label: {
                 HStack(spacing: 10) {
                     Rectangle().fill(Theme.rule).frame(height: 1)
-                    Text(expanded ? "收起摘要" : compaction.dividerTitle).fixedSize()
+                    Text(expanded ? "收起摘要" : compaction.automatic || compaction.id == nil ? "之前的对话已压缩成摘要" : "这段对话已压缩成摘要").fixedSize()
                     Rectangle().fill(Theme.rule).frame(height: 1)
                 }
                 .font(Theme.secondary)
@@ -147,45 +148,24 @@ private struct CompactedDivider: View {
             }
             .buttonStyle(.pointingPlain)
             if expanded {
-                CompactionDetails(compaction: compaction, children: children, original: $original)
-            }
-        }
-    }
-}
-
-/// 压缩分界点开以后的那一截：摘要，显示原文、撤销压缩，展开的原文。iOS 原生列表的压缩分界托管它（PhoneCompactedRowSlot）。
-struct CompactionDetails: View {
-    let compaction: Compaction
-    let children: [Item]
-    @Binding var original: Bool
-    @Environment(WorkThread.self) private var thread
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SelectableMarkdown(source: compaction.summary, color: .secondaryLabel).font(Theme.secondary).foregroundStyle(.secondary)
-            HStack(spacing: 16) {
-                if !children.isEmpty {
-                    Button(original ? "收起原文" : "显示原文") { withAnimation(.snappy) { original.toggle() } }
+                SelectableMarkdown(source: compaction.summary, color: .secondaryLabel).font(Theme.secondary).foregroundStyle(.secondary)
+                HStack(spacing: 16) {
+                    if !children.isEmpty {
+                        Button(original ? "收起原文" : "显示原文") { withAnimation(.snappy) { original.toggle() } }
+                    }
+                    if let id = compaction.id {
+                        Button("撤销压缩") { thread.revertCompaction(id) }.disabled(!thread.canCompact)
+                    }
                 }
-                if let id = compaction.id {
-                    Button("撤销压缩") { thread.revertCompaction(id) }.disabled(!thread.canCompact)
-                }
+                .font(Theme.secondary)
+                .buttonStyle(.pointingPlain)
+                .foregroundStyle(Color.accentColor)
             }
-            .font(Theme.secondary)
-            .buttonStyle(.pointingPlain)
-            .foregroundStyle(Color.accentColor)
-            if original {
+            if expanded && original {
                 TranscriptView(items: children)
                     .padding(.leading, 12)
                     .overlay(alignment: .leading) { Rectangle().fill(Theme.rule).frame(width: 1) }
             }
         }
-    }
-}
-
-extension Compaction {
-    /// 压缩分界上收着时的说法：自动压缩和旧记录说之前的对话，手动选的一段说这段对话。
-    var dividerTitle: String {
-        automatic || id == nil ? "之前的对话已压缩成摘要" : "这段对话已压缩成摘要"
     }
 }

@@ -52,6 +52,17 @@ extension TextKitMeasuring {
         return count > 1
     }
 
+    /// 刚排好的段落里有没有被行宽折下来的（一段排成了不止一行）。没有的话，行宽只要还放得下最宽的那行，排出来都一样。
+    var softWraps: Bool {
+        guard let layout = textLayoutManager else { return false }
+        var wrapped = false
+        layout.enumerateTextLayoutFragments(from: layout.documentRange.location, options: []) { fragment in
+            if fragment.state == .layoutAvailable, fragment.textLineFragments.count > 1 { wrapped = true }
+            return !wrapped
+        }
+        return wrapped
+    }
+
     /// 按 lineWidth 的行宽排出来多高（不含上下边距）。
     func measure(lineWidth: CGFloat) -> CGFloat {
         guard let layout = textLayoutManager else { return 0 }

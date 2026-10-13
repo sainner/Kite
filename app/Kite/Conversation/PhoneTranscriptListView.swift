@@ -187,6 +187,8 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
                 if view.frame != frame { view.frame = frame; moved = true }
                 slot.layoutView(in: CGRect(origin: .zero, size: frame.size))
                 if moved { EmbeddedContainerView.synchronize(in: view) }
+                // 滚了、挪了：文本视图露出来的那截出了上次的视口就按新视口重排。拖缝中每步改了容器宽，文本视图本来就按新视口重排
+                if !viewport.resizing { Self.refreshViewports(in: view) }
             case .hide:
                 if slot.view.superview != nil, !slot.view.isHidden { slot.view.isHidden = true }
             case .remove:
@@ -470,7 +472,7 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
     private func proxy(for slot: TranscriptRowSlot) -> RowAccessibilityElement {
         let element = proxies[slot.id] ?? RowAccessibilityElement(accessibilityContainer: document)
         proxies[slot.id] = element
-        element.accessibilityLabel = slot.row.accessibilitySummary
+        element.accessibilityLabel = TranscriptSpeech.summary(slot.row)
         element.accessibilityFrameInContainerSpace = slot.frame
         element.focused = { [weak self, weak element] in
             guard let self, let element else { return }
@@ -492,6 +494,17 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
         if slot.hasView, slot.view.superview === document {
             UIAccessibility.post(notification: .layoutChanged, argument: slot.view)
         }
+    }
+}
+
+extension PhoneTranscriptView {
+    /// 行里的文本视图看看要不要按新视口重排（见 PhoneProseTextView.outerScrolled）。找到文本视图就不往里找了。
+    static func refreshViewports(in view: UIView) {
+        if let text = view as? PhoneProseTextView {
+            text.outerScrolled()
+            return
+        }
+        for child in view.subviews { refreshViewports(in: child) }
     }
 }
 
