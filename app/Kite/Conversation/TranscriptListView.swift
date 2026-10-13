@@ -44,7 +44,10 @@ final class TranscriptListView: NSScrollView {
     private var measuring: Task<Void, Never>?
     private var pocketsRegistered = false
     /// 原生行的操作栏：托管的 SwiftUI 浮层，放在文档最上面，跟着行一起滚，见 placeActions。
-    private var actions: (id: RowID, host: NSHostingView<AnyView>, above: Bool)?
+    private var actions: (id: RowID, host: NSHostingView<AnyView>, above: Bool, side: HorizontalEdge)?
+    /// 正在展开、收起的行：从哪个高起、弹簧走到哪了。
+    private var heightAnimations: [RowID: HeightAnimation] = [:]
+    private var heightTicker: Ticker?
     private var actionsRemoval: Task<Void, Never>?
     /// 有行开着操作栏时，点列表里别处（包括文本视图上）先收起它；文本视图照常接着处理这次点击。
     private var clickMonitor: Any?
@@ -99,8 +102,15 @@ final class TranscriptListView: NSScrollView {
             } else {
                 if let existing = byID[row.id], existing.hasView { existing.view.removeFromSuperview() }
                 slot = makeTranscriptRowSlot(row)
-                slot.heightChanged = { [weak self] in self?.needsLayout = true }
+                slot.heightChanged = { [weak self, weak slot] animated in
+                    guard let self, let slot else { return }
+                    if animated { animateHeight(of: slot) } else { needsLayout = true }
+                }
                 slot.update(row, context: context, resized: true)
+                // 刚发出去的消息先在下面藏着，跟着滑到底的那一下浮上来，见 startGlideIfReady
+                if case .message(let message, _) = row.content, context.environment.arrivingMessages.contains(message.id) {
+                    slot.rise = 1
+                }
             }
             shapes[row.id] = shape
             next.append(slot)
@@ -164,7 +174,7 @@ final class TranscriptListView: NSScrollView {
             let old = slot.frame
             // 量：可见区附近的按眼下的宽量；远的有量过的高就先用着（宽可能是旧的），没有就估，空闲时再补
             let close = old.maxY > near.minY && old.minY < near.maxY || old == .zero && y < near.maxY && y + estimate > near.minY
-            let height: CGFloat
+            var height: CGFloat
             if let measured = slot.measured, measured.width == columnWidth || !close {
                 height = measured.height
                 if measured.width != columnWidth { waiting = true }
@@ -173,6 +183,10 @@ final class TranscriptListView: NSScrollView {
             } else {
                 height = estimate
                 waiting = true
+            }
+            // 展开收起的动画中：从原来的高按弹簧走向新量的高
+            if let animation = heightAnimations[slot.id] {
+                height = animation.from + (height - animation.from) * animation.progress
             }
             slot.frame = CGRect(x: x, y: y, width: columnWidth, height: height)
             y += height
@@ -218,8 +232,10 @@ final class TranscriptListView: NSScrollView {
             if shown {
                 let view = slot.view
                 if view.superview !== document { document.addSubview(view) }
-                let frame = slot.viewFrame(in: slot.frame)
+                // 刚发出去的消息在下面 bubbleRise 处藏着，浮上来的过程见 glideStep
+                let frame = slot.viewFrame(in: slot.frame).offsetBy(dx: 0, dy: slot.rise * Metrics.bubbleRise)
                 if view.frame != frame { view.frame = frame }
+                slot.layoutView(in: CGRect(origin: .zero, size: frame.size))
             } else if slot.hasView, slot.view.superview != nil {
                 slot.view.removeFromSuperview()
             }
@@ -241,18 +257,18 @@ final class TranscriptListView: NSScrollView {
 
     // MARK: - 操作栏
 
-    /// 选中了原生行就在它旁边弹出操作栏：平常在这一行底下，底下放不下（会压到控制区）就放到上面；和这一行的左边对齐。
-    /// 托管的行（气泡等）的操作栏还在它们自己的 SwiftUI 视图里（MessageBubble 的 actionBar）。
-    /// 收起时先让浮层播完收起动画再拿掉。
+    /// 选中了原生行就在它旁边弹出操作栏：平常在这一行底下，底下放不下（会压到控制区）就放到上面；和这一行给的那一边对齐，
+    /// 见 ActionBarPlacement。托管的行的操作栏还在它们自己的 SwiftUI 视图里。收起时先让浮层播完收起动画再拿掉。
     private func placeActions() {
         guard let context else { return }
         let selected = context.environment.selectedRow.wrappedValue
         watchClicks(selected != nil)
-        let slot = selected.flatMap { byID[$0] } as? ProseRowSlot
-        if let actions, actions.id != slot?.id {
+        let slot = selected.flatMap { byID[$0] }
+        let bar = slot?.actionBar()
+        if let actions, actions.id != slot?.id || bar == nil {
             // 收起：同一个浮层改成不显示，播完动画再拿掉
             let host = actions.host
-            host.rootView = actionsRoot(slot: nil, side: .leading, above: actions.above, context: context)
+            host.rootView = actionsRoot(nil, side: actions.side, above: actions.above, context: context)
             self.actions = nil
             actionsRemoval?.cancel()
             actionsRemoval = Task { [weak host] in
@@ -260,29 +276,34 @@ final class TranscriptListView: NSScrollView {
                 host?.removeFromSuperview()
             }
         }
-        guard let slot else { return }
+        guard let slot, let bar else { return }
         let visible = visibleArea
+        let anchor = slot.actionAnchor
         let room = Metrics.actionBarGap + Metrics.paneHeaderButton
-        let above = slot.frame.maxY + room > visible.maxY && slot.frame.minY - room >= visible.minY
+        let above = anchor.maxY + room > visible.maxY && anchor.minY - room >= visible.minY
         let host: NSHostingView<AnyView>
         if let actions, actions.id == slot.id {
             host = actions.host
-            if actions.above != above { host.rootView = actionsRoot(slot: slot, side: .leading, above: above, context: context) }
+            // 内容（比如展开状态）和上下都可能变，每次排版都换一遍
+            host.rootView = actionsRoot(bar.content, side: bar.side, above: above, context: context)
         } else {
             actionsRemoval?.cancel()
-            host = NSHostingView(rootView: actionsRoot(slot: nil, side: .leading, above: above, context: context))
+            host = NSHostingView(rootView: actionsRoot(nil, side: bar.side, above: above, context: context))
             host.sizingOptions = [.intrinsicContentSize]
             document.addSubview(host)
             // 先按收着排好一次，再换成显示：ActionBar 按 shown 的变化自己播出现的动画
-            DispatchQueue.main.async { [weak self, weak host] in
-                guard let self, let host, self.actions?.host === host else { return }
-                host.rootView = self.actionsRoot(slot: slot, side: .leading, above: above, context: context)
+            DispatchQueue.main.async { [weak self, weak host, weak slot] in
+                guard let self, let host, let slot, self.actions?.host === host, let bar = slot.actionBar() else { return }
+                host.rootView = self.actionsRoot(bar.content, side: bar.side, above: above, context: context)
+                // 显示出来以后才有真实的宽，靠右的要按它重新对齐
+                self.needsLayout = true
             }
         }
-        actions = (slot.id, host, above)
+        actions = (slot.id, host, above, bar.side)
         let size = host.fittingSize
-        let y = above ? slot.frame.minY - Metrics.actionBarGap - size.height : slot.frame.maxY + Metrics.actionBarGap
-        host.frame = CGRect(x: slot.frame.minX, y: y, width: size.width, height: size.height)
+        let y = above ? anchor.minY - Metrics.actionBarGap - size.height : anchor.maxY + Metrics.actionBarGap
+        let x = bar.side == .leading ? anchor.minX : anchor.maxX - size.width
+        host.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
         if document.subviews.last !== host { document.addSubview(host, positioned: .above, relativeTo: nil) }
     }
 
@@ -302,12 +323,45 @@ final class TranscriptListView: NSScrollView {
         }
     }
 
-    private func actionsRoot(slot: ProseRowSlot?, side: HorizontalEdge, above: Bool, context: TranscriptRowContext) -> AnyView {
-        AnyView(ActionBar(shown: slot != nil, side: side, from: above ? .bottom : .top) {
-            if let slot { AgentTextActions(text: slot.source ?? "") }
+    private func actionsRoot(_ content: AnyView?, side: HorizontalEdge, above: Bool, context: TranscriptRowContext) -> AnyView {
+        AnyView(ActionBar(shown: content != nil, side: side, from: above ? .bottom : .top) {
+            if let content { content }
         }
         .fixedSize()
         .environment(\.self, context.environment))
+    }
+
+    // MARK: - 行高动画
+
+    /// 一行自己展开、收起：从原来的高按 snappy 的弹簧走到新量的高，下面的行跟着挪，同 SwiftUI 版的 withAnimation(.snappy)。
+    private func animateHeight(of slot: TranscriptRowSlot) {
+        let from = slot.frame.height
+        heightAnimations[slot.id] = HeightAnimation(from: from)
+        needsLayout = true
+        if heightTicker == nil {
+            let ticker = Ticker()
+            heightTicker = ticker
+            ticker.start(in: self) { [weak self] time in self?.heightStep(time) ?? false }
+        }
+    }
+
+    /// 行高动画的一帧，都走完了返回 false。
+    private func heightStep(_ now: CFTimeInterval) -> Bool {
+        let spring = Spring.snappy
+        for (id, var animation) in heightAnimations {
+            let started = animation.started ?? now
+            animation.started = started
+            let time = now - started
+            if time >= spring.settlingDuration || byID[id] == nil {
+                heightAnimations[id] = nil
+            } else {
+                animation.progress = spring.value(target: 1.0, time: time)
+                heightAnimations[id] = animation
+            }
+        }
+        layoutRows()
+        if heightAnimations.isEmpty { heightTicker = nil }
+        return !heightAnimations.isEmpty
     }
 
     // MARK: - 补量
@@ -428,6 +482,7 @@ final class TranscriptListView: NSScrollView {
         // 先把这一下记上再排版：排版看到程序在滚就不动滚动位置，从眼下的位置起滑
         let glide = Glide(from: visibleArea.minY)
         self.glide = glide
+        glide.rising = slots.filter { $0.rise > 0 }.map(\.id)
         layoutSubtreeIfNeeded()
         withAnimation(.spring(.glide)) { pending.alongside() }
         glide.start(in: self) { [weak self] progress in self?.glideStep(progress) ?? false }
@@ -437,6 +492,8 @@ final class TranscriptListView: NSScrollView {
     private func glideStep(_ progress: Double?) -> Bool {
         guard let glide else { return false }
         let target = max(document.frame.height - visibleArea.height, 0)
+        // 刚发出去的消息跟着这一下浮上来、淡显
+        for id in glide.rising { byID[id]?.rise = 1 - CGFloat(progress ?? 1) }
         guard let progress else {
             self.glide = nil
             following = true
@@ -497,9 +554,39 @@ extension TranscriptListView {
     }
 }
 
+/// 一行展开收起的动画：从哪个高起，弹簧走到哪了。
+private struct HeightAnimation {
+    let from: CGFloat
+    var started: CFTimeInterval?
+    var progress: Double = 0
+}
+
+/// 按显示刷新逐帧调 step（传这一帧的时刻），step 返回 false 时停。
+@MainActor private final class Ticker: NSObject {
+    private var link: CADisplayLink?
+    private var step: ((CFTimeInterval) -> Bool)?
+
+    func start(in view: NSView, step: @escaping (CFTimeInterval) -> Bool) {
+        self.step = step
+        let link = view.displayLink(target: self, selector: #selector(tick(_:)))
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+
+    @objc private func tick(_ link: CADisplayLink) {
+        if step?(link.targetTimestamp) != true {
+            link.invalidate()
+            self.link = nil
+            step = nil
+        }
+    }
+}
+
 /// 发送后滑到最底下：弹簧和 TranscriptScroll.glide 同一条（Spring.smooth 0.5 秒），按显示刷新逐帧走。
 @MainActor private final class Glide: NSObject {
     let from: CGFloat
+    /// 跟着这一下浮上来的消息。
+    var rising: [RowID] = []
     private var started: CFTimeInterval?
     private var link: CADisplayLink?
     private var step: ((Double?) -> Bool)?

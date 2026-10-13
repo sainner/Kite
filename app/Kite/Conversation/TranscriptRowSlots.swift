@@ -22,8 +22,10 @@ struct TranscriptRowContext {
     var measured: (width: CGFloat, height: CGFloat)?
     /// 在文档里占的范围（内容列的宽），排列时算出来。
     var frame = CGRect.zero
-    /// 自己变高变矮（展开收起、附件量完）时告诉列表。
-    var heightChanged: (() -> Void)?
+    /// 自己变高变矮时告诉列表：animated 是人点了展开收起，下面的行跟着动画挪；附件量完、图标载完这类直接换。
+    var heightChanged: ((_ animated: Bool) -> Void)?
+    /// 刚发出去、还在下面藏着的程度：1 在下面，0 到位，见 TranscriptListView 的发送。
+    var rise: CGFloat = 0
 
     init(row: TranscriptRow) {
         id = row.id
@@ -46,30 +48,56 @@ struct TranscriptRowContext {
 
     /// 视图在文档里的 frame：column 是这一行在内容列里占的范围。
     func viewFrame(in column: CGRect) -> CGRect { column }
+
+    /// 视图摆好以后摆里面的东西：frame 是这一行这会儿的范围（展开收起的动画中和量的高不一样）。
+    func layoutView(in frame: CGRect) {}
+
+    /// 操作栏和这一行的哪一块对齐。
+    var actionAnchor: CGRect { frame }
+
+    /// 这一行的操作栏：和哪边对齐、上面的按钮。没有原生操作栏的行（托管的行自己带着）给 nil。
+    func actionBar() -> (side: HorizontalEdge, content: AnyView)? { nil }
 }
 
-/// 一行该用哪种实现：agent 的话原生排，其余先托管原来的 SwiftUI 行视图。
+/// 一行该用哪种实现：agent 的话、人发的消息原生排，其余先托管原来的 SwiftUI 行视图。
 @MainActor func makeTranscriptRowSlot(_ row: TranscriptRow) -> TranscriptRowSlot {
-    if case .item(let item) = row.content, case .text = item.kind { return ProseRowSlot(row: row) }
-    return HostedRowSlot(row: row)
+    switch slotKind(row) {
+    case .prose: ProseRowSlot(row: row)
+    case .bubble: BubbleRowSlot(row: row)
+    case .hosted: HostedRowSlot(row: row)
+    }
 }
 
 /// 这一行用的实现还能不能接着用：种类变了换一个新的。
 @MainActor func transcriptRowSlotFits(_ slot: TranscriptRowSlot, _ row: TranscriptRow) -> Bool {
-    if case .item(let item) = row.content, case .text = item.kind { return slot is ProseRowSlot }
-    return slot is HostedRowSlot
+    switch slotKind(row) {
+    case .prose: slot is ProseRowSlot
+    case .bubble: slot is BubbleRowSlot
+    case .hosted: slot is HostedRowSlot
+    }
+}
+
+private enum SlotKind { case prose, bubble, hosted }
+
+private func slotKind(_ row: TranscriptRow) -> SlotKind {
+    switch row.content {
+    case .message: .bubble
+    case .item(let item):
+        if case .text = item.kind { .prose } else { .hosted }
+    }
 }
 
 /// agent 说的一段话：原生文本视图，属性串、附件、装饰、复制原文都和 SelectableMarkdown 共用一套。
 /// 文本视图两边各伸出 inlineCodePadding 给行内代码背景留绘制余量，正文的宽和起点不变；开头是标题时上面多半个块距，同 SelectableMarkdown。
 final class ProseRowSlot: TranscriptRowSlot {
-    private let text = ProseTextView()
+    private let text = ProseTextView.make()
     private let coordinator = ProseRowCoordinator()
     private let document = MarkdownDocument()
     private let attachments = BlockAttachments()
     /// 这段话的原文，操作栏复制它。
     private(set) var source: String?
     private var environment: EnvironmentValues?
+    private var actionable = false
     private var topInset: CGFloat = 0
     /// 引用图标要加载的网址，变了才重新加载。
     private var urls: [URL] = []
@@ -82,6 +110,7 @@ final class ProseRowSlot: TranscriptRowSlot {
         text.isVerticallyResizable = false
         text.isHorizontallyResizable = false
         text.textContainerInset = NSSize(width: Metrics.inlineCodePadding, height: 0)
+        text.clipsViewport = true
         // 悬停不显示 URL 提示，也不自动识别链接、补全，同 SelectableTextView
         text.displaysLinkToolTips = false
         text.isAutomaticLinkDetectionEnabled = false
@@ -92,21 +121,28 @@ final class ProseRowSlot: TranscriptRowSlot {
         text.delegate = coordinator
         text.textLayoutManager?.delegate = coordinator
         coordinator.view = text
-        text.contentResized = { [weak self] in
+        coordinator.resized = { [weak self] in
             guard let self else { return }
             measured = nil
-            heightChanged?()
+            heightChanged?(false)
         }
     }
 
     override var hasView: Bool { true }
     override var view: NSView { text }
 
+    /// 主对话里 agent 的话：复制、翻译、分叉，和这段话左边对齐。
+    override func actionBar() -> (side: HorizontalEdge, content: AnyView)? {
+        guard actionable, let source, let environment else { return nil }
+        return (.leading, AnyView(AgentTextActions(text: source).environment(\.self, environment)))
+    }
+
     override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
         super.update(row, context: context, resized: resized)
         guard case .item(let item) = row.content, case .text(let source) = item.kind else { return }
         coordinator.openURL = context.environment.openURL
         let id = row.id
+        actionable = context.actionable
         text.secondaryClick = context.actionable ? { context.toggleActions(id) } : nil
         self.source = source
         environment = context.environment
@@ -132,7 +168,7 @@ final class ProseRowSlot: TranscriptRowSlot {
                 guard let self else { return }
                 self.measured = nil
                 self.build()
-                self.heightChanged?()
+                self.heightChanged?(false)
             }
         }
         text.source = content.source
@@ -149,10 +185,7 @@ final class ProseRowSlot: TranscriptRowSlot {
 
     override func height(width: CGFloat) -> CGFloat {
         if let measured, measured.width == width { return measured.height }
-        guard let layout = text.textLayoutManager else { return 0 }
-        text.lineWidth(width)
-        layout.ensureLayout(for: layout.documentRange)
-        let height = ceil(layout.usageBoundsForTextContainer.height) + topInset
+        let height = text.measure(lineWidth: width) + topInset
         measured = (width, height)
         return height
     }
@@ -220,7 +253,7 @@ final class HostedRowSlot: TranscriptRowSlot {
         let height = ceil(height)
         guard let measured, measured.width == frame.width, abs(measured.height - height) > 0.5 else { return }
         self.measured = (measured.width, height)
-        heightChanged?()
+        heightChanged?(false)
     }
 }
 /// 托管的行按内容的理想高报尺寸、贴顶摆：量高时给无限高也只报内容多高（不然 maxHeight 无限的框会把无限高原样报回来），

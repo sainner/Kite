@@ -463,15 +463,15 @@ private enum LayoutCount {
         guard enabled else { return }
         // 跳过 record 自己和换上去的方法（含它的 @objc 壳），第一个外部帧就是直接调用者
         let caller = Thread.callStackSymbols.first { !$0.contains("LayoutCount") && !$0.contains("contract_ensure") }
-        guard caller?.contains("sizeThatFits") == true else { return }
+        // 量高抽到了 ProseTextView.measure(lineWidth:)，由 sizeThatFits 调它
+        guard let caller, caller.contains("sizeThatFits") || caller.contains("7measure9lineWidth") else { return }
         widths.append(width)
     }
 }
 
 extension NSTextLayoutManager {
     @objc dynamic nonisolated func contract_ensureLayout(for range: NSTextRange) {
-        // 行宽由 LineWidthContainer 给，容器本身铺得很宽
-        if let width = (textContainer as? LineWidthContainer)?.lineWidth ?? textContainer?.size.width { LayoutCount.record(width: width) }
+        if let width = textContainer?.size.width { LayoutCount.record(width: width) }
         contract_ensureLayout(for: range)
     }
 }

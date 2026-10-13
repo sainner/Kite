@@ -24,7 +24,6 @@ struct SelectableText: View {
         #endif
     }
 
-    /// 文字和代码块之间空 messageSegmentGap，和原来一段一个视图竖着排的间距一样。
     private var content: TextViewContent {
         #if canImport(UIKit)
         let body = UIFont.preferredFont(forTextStyle: .body)
@@ -36,6 +35,12 @@ struct SelectableText: View {
         let body = Theme.body.resolve(in: fontContext).ctFont as NSFont
         let code = Theme.code.resolve(in: fontContext).ctFont as NSFont
         #endif
+        return Self.content(message, color: color, body: body, code: code, attachments: attachments)
+    }
+
+    /// 文字和代码块之间空 messageSegmentGap，和原来一段一个视图竖着排的间距一样。Mac 主对话的原生气泡也用它（见 BubbleRowSlot）。
+    static func content(_ message: Message, color: PlatformColor, body: PlatformFont, code: PlatformFont,
+                        attachments: BlockAttachments) -> TextViewContent {
         let typed = message.typed as NSString
         // 正文在 typed 里从哪起：斜杠命令时前面是命令名和一个空格
         let offset = message.command.map { $0.utf16.count + (message.text.isEmpty ? 0 : 1) } ?? 0

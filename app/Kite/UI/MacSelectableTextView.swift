@@ -23,7 +23,7 @@ struct SelectableTextView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSTextView {
-        let view = ProseTextView()
+        let view = ProseTextView.make()
         view.isEditable = false
         view.isSelectable = true
         view.drawsBackground = false
@@ -62,15 +62,13 @@ struct SelectableTextView: NSViewRepresentable {
 
     /// 高度照文本视图自己排出来的算，量过的按给的宽度记下。
     func sizeThatFits(_ proposal: ProposedViewSize, nsView view: NSTextView, context: Context) -> CGSize? {
-        guard let view = view as? ProseTextView, let layout = view.textLayoutManager else { return nil }
-        return context.coordinator.size(inset: inset, environment: context.environment, width: proposal.width) {
+        context.coordinator.size(inset: inset, environment: context.environment, width: proposal.width) {
+            guard let view = view as? ProseTextView else { return nil }
             let proposed = proposal.width.flatMap { $0.isFinite ? $0 : nil }
             let most = max((proposed ?? .greatestFiniteMagnitude) - inset.width * 2, 0)
             let width = fillsWidth && proposed != nil ? most : ProseTextCoordinator.naturalWidth(of: text, most: most)
-            // SwiftUI 之后会按返回的尺寸设 frame，行宽再跟着 frame 设一次（ProseTextView.setFrameSize）
-            view.lineWidth(width)
-            layout.ensureLayout(for: layout.documentRange)
-            return CGSize(width: width + inset.width * 2, height: ceil(layout.usageBoundsForTextContainer.height) + inset.height * 2)
+            // SwiftUI 之后会按返回的尺寸再设一次 frame
+            return CGSize(width: width + inset.width * 2, height: view.measure(lineWidth: width) + inset.height * 2)
         }
     }
 
@@ -96,43 +94,49 @@ final class ProseTextView: NSTextView {
     var source: (text: String, map: TextSourceMap)?
     /// 右键或按住 Control 点击打开这一行的操作栏；没有时右键是文本视图自己的菜单。原生对话列表给（见 TranscriptRowSlots）。
     var secondaryClick: (() -> Void)?
-    /// 附件变高、内容重排后要重新量高时调，原生对话列表接（见 TranscriptRowSlots）；SwiftUI 里由 invalidateIntrinsicContentSize 自己请它再量。
-    var contentResized: (() -> Void)?
-    private let contentStorage = NSTextContentStorage()
+    /// 视口只给露出来的那截。原生对话列表的行放进列表前已经整段排好（见 TranscriptRowSlot.height），视口从中间起也按排好的位置找片段，
+    /// 不会出现上面说的错位；屏外那截不建渲染面，拖缝时每帧省下整段的视口维护。SwiftUI 里懒加载的行没排就露出，仍整段作视口。
+    var clipsViewport = false
 
-    init() {
-        // 行宽由 LineWidthContainer 给，不跟着视图宽度自动变，见它的说明
-        let container = LineWidthContainer(size: CGSize(width: LineWidthContainer.extent, height: CGFloat.greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0
-        container.widthTracksTextView = false
-        container.heightTracksTextView = false
-        let layout = NSTextLayoutManager()
-        layout.textContainer = container
-        contentStorage.addTextLayoutManager(layout)
-        contentStorage.primaryTextLayoutManager = layout
-        super.init(frame: .zero, textContainer: container)
+    /// TextKit 2，文本容器跟着视图宽度、不加边距。
+    static func make() -> ProseTextView {
+        let view = ProseTextView(usingTextLayoutManager: true)
+        view.textContainer?.lineFragmentPadding = 0
+        view.textContainer?.widthTracksTextView = true
+        view.textContainer?.heightTracksTextView = false
+        return view
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    /// 刚排好的各行里最宽的一行有多宽（排版坐标），按它算贴着字的宽度：和 NSAttributedString 的 boundingRect 量的一样，
+    /// 但不用再按最优断行把全文排一遍（长消息改宽时每次几毫秒，2026-10-13 实测）。
+    var widestLine: CGFloat {
+        guard let layout = textLayoutManager else { return 0 }
+        var widest: CGFloat = 0
+        layout.enumerateTextLayoutFragments(from: layout.documentRange.location, options: []) { fragment in
+            let origin = fragment.layoutFragmentFrame.minX
+            for line in fragment.textLineFragments {
+                widest = max(widest, origin + line.typographicBounds.maxX)
+            }
+            return true
+        }
+        return widest
+    }
+
+    /// 按 lineWidth 的行宽排出来多高（不含上下边距）。文本容器跟着视图宽度时，先把宽度放上去再量。
+    func measure(lineWidth: CGFloat) -> CGFloat {
+        guard let layout = textLayoutManager, let container = textContainer else { return 0 }
+        let total = lineWidth + textContainerInset.width * 2
+        if container.widthTracksTextView, frame.width != total { setFrameSize(NSSize(width: total, height: frame.height)) }
+        if container.size.width != lineWidth { container.size = NSSize(width: lineWidth, height: .greatestFiniteMagnitude) }
+        layout.ensureLayout(for: layout.documentRange)
+        return ceil(layout.usageBoundsForTextContainer.height)
+    }
 
     override var visibleRect: NSRect {
         // AppKit 的裁切矩形可能非空但完全落在本视图之外，要先与自身范围相交。
-        super.visibleRect.intersection(bounds).isEmpty ? .zero : bounds
-    }
-
-    /// 行宽跟着视图宽度，同原来容器跟着视图宽度。
-    override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
-        lineWidth(newSize.width - textContainerInset.width * 2)
-    }
-
-    /// 行宽换成 width：宽变了就整段作废，下次排版按新宽排。
-    func lineWidth(_ width: CGFloat) {
-        guard let container = textContainer as? LineWidthContainer, let layout = textLayoutManager else { return }
-        let width = max(width, 0)
-        guard container.lineWidth != width else { return }
-        container.lineWidth = width
-        layout.invalidateLayout(for: layout.documentRange)
+        let visible = super.visibleRect.intersection(bounds)
+        if visible.isEmpty { return .zero }
+        return clipsViewport ? visible : bounds
     }
 
     // 光标：NSTextView 把整块注册成文字光标的光标矩形，鼠标移动、cursorUpdate 时也设文字光标，盖过卡片里按钮的手形。
@@ -172,11 +176,6 @@ final class ProseTextView: NSTextView {
         return cards.contains { $0.contains(point) }
     }
 
-    override func invalidateIntrinsicContentSize() {
-        super.invalidateIntrinsicContentSize()
-        contentResized?()
-    }
-
     override func rightMouseDown(with event: NSEvent) {
         if let secondaryClick { secondaryClick() } else { super.rightMouseDown(with: event) }
     }
@@ -204,29 +203,6 @@ final class ProseTextView: NSTextView {
         pasteboard.declareTypes([.string], owner: nil)
         return pasteboard.setString(text, forType: .string)
     }
-}
-
-/// Mac 对话正文的行宽由这里给，不跟着视图宽度自动变：原生对话列表在视图建好前就要量高（见 TranscriptRowSlots），
-/// 视图放进列表时宽度才定。容器本身铺得很宽，每行按 lineWidth 截；附件的宽也按这里取（BlockAttachment），
-/// TextKit 交给附件的行宽是容器的宽。不是简单矩形的容器整段排版慢约 5%（2026-10-13 离屏实测）。
-nonisolated final class LineWidthContainer: NSTextContainer {
-    static let extent: CGFloat = 100_000
-    /// 每行多宽，还没量过时为 0（按容器的宽）。
-    var lineWidth: CGFloat = 0
-
-    override var isSimpleRectangularTextContainer: Bool { false }
-
-    override func lineFragmentRect(forProposedRect proposedRect: CGRect, at characterIndex: Int,
-                                   writingDirection baseWritingDirection: NSWritingDirection,
-                                   remaining remainingRect: UnsafeMutablePointer<CGRect>?) -> CGRect {
-        var rect = super.lineFragmentRect(forProposedRect: proposedRect, at: characterIndex,
-                                          writingDirection: baseWritingDirection, remaining: remainingRect)
-        if lineWidth > 0 { rect.size.width = max(min(rect.width, lineWidth - rect.minX), 0) }
-        return rect
-    }
-
-    /// 附件所在那一行多宽；还没量过时为 nil。
-    var attachmentWidth: CGFloat? { lineWidth > 0 ? lineWidth : nil }
 }
 
 #endif
