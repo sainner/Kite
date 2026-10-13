@@ -128,8 +128,18 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
         guard clipsViewport, #available(iOS 27.0, *), let outer = outerScroll else { return }
         var visible = outer.convert(outer.bounds, to: self).intersection(bounds)
         if let shownHeight { visible = visible.intersection(CGRect(x: visible.minX, y: 0, width: visible.width, height: shownHeight)) }
-        guard !visible.isNull, visible.height > 0, !viewport.contains(visible) else { return }
+        // 只比上下：段落整行排，横着挪（拖缝时列跟着居中、行左右挪）不用重排
+        guard !visible.isNull, visible.height > 0, !(viewport.minY <= visible.minY && viewport.maxY >= visible.maxY) else { return }
         textLayoutManager?.textViewportLayoutController.layoutViewport()
+    }
+
+    /// 改宽重排过（整段或一截）以后让 TextKit 的视口从新排的位置找起。视口记着上次排在顶上的那段和它的 y，
+    /// 那段还在视口里时下次照旧摆回那个 y：上面的段落变高了它也不往下挪，和量出来的位置、高对不上，
+    /// 行底下空出一截或露出别的段落（拖缝中，2026-10-14 iPad 真机）。
+    func relocateViewport() {
+        guard clipsViewport, #available(iOS 27.0, *), !viewport.isNull, let layout = textLayoutManager,
+              let fragment = laidFragment(at: max(viewport.minY, 0)) else { return }
+        layout.textViewportLayoutController.relocateViewport(to: fragment.rangeInElement.location)
     }
 
     /// 读屏的焦点框按字的宽：视图宽固定成最宽的内容列（clipViewport），iPhone 上比屏幕宽，框会伸出屏幕。
