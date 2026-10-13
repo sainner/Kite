@@ -61,7 +61,11 @@ final class TranscriptListView: NSScrollView {
     func update(_ rows: [TranscriptRow], context: TranscriptRowContext, insets: NSEdgeInsets) {
         self.context = context
         if contentInsets.top != insets.top || contentInsets.bottom != insets.bottom {
+            // 设 insets 时滚动视图把可见区挪到顶上，这一下是程序改的，不当成人在滚：原生会话窗口先排了空列表再交 insets，
+            // 当成人滚的话打开就不跟着最底下了，停在顶上
+            adjusting = true
             contentInsets = insets
+            adjusting = false
         }
         let removed = arrangement.update(rows, context: context, make: { row in
             let slot = makeTranscriptRowSlot(row)
