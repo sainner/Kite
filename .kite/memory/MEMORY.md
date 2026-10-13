@@ -4,7 +4,7 @@
 - [PDF 读取方案](pdf-read-direction.md) — Vision 与无备用解析器的明确取舍
 - [视觉参考与范围](visual-style-direction.md) — 色板、角色点阵、项目色和字体范围
 - [界面事件诊断](ui-hit-testing-debugging.md) — 合成输入与命中证据的限制，simctl 两次内核崩溃后不再用
-- [卡顿怎么量](performance-diagnosis.md) — 帧间隔对照、真机 Time Profiler、合成滚动、用户双击的测量版、软边诊断，Mac 结论不外推到 iPhone
+- [卡顿怎么量](performance-diagnosis.md) — 测量入口与交替对照、帧间隔、真机 Time Profiler、合成滚动、软边诊断，Mac 结论不外推到 iPhone
 - [真机量 iPhone、iPad 排版](ios-layout-probe.md) — 不登录：kited 取数据、参数开的探针渲染生产视图、App 里截图、devicectl 取回；不用模拟器
 - [对话正文的文本容器](text-container-direction.md) — 每条回复一个 TextKit 2 文本视图、附件嵌代码块、复制给原文、外观不改，第三步 iPhone 待验收
 - [界面改原生](decision-native-ui.md) — Mac 对话与外壳改 AppKit、iOS 改 UIKit，为拖缝 60 帧，外观逐项复刻；骨架、点阵是退路
@@ -28,5 +28,5 @@
 - [远程连接与托管运维](todo-remote-connections.md) — iPhone 重连、托管容量备份、凭据重绑和多机关系
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
 - [真实终端](todo-terminal-plugin.md) — PTY 与跨端重连、停止和资源生命周期
-- [窗口动画剩余开销](todo-window-motion-remaining.md) — 缩小首帧的 SwiftUI 整轮更新、拖缝约 30 帧的构成与无效改法、轮流重排原型、iPad 真机拖缝，iPhone 未量
+- [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量入口的基线（Mac、iPad 拖缝与侧栏拖宽）、缩小首帧、之前的分项与无效改法，iPhone 未量
 - [个人组网清理](todo-headscale-cleanup.md) — lisa 实验资源的存在与清理状态待核验
