@@ -5,12 +5,13 @@ import QuartzCore
 import SwiftUI
 
 // Mac 对话正文的 NSTextView（TextKit 2）原生合同。真实的 SelectableMarkdown、MacSelectableTextView、TextKitDecorations、
-// PlatformText 连同它们依赖的 Theme、Markdown、InlineCode、ReferenceViews 一起编进来，放进离屏 NSWindow 里的 NSHostingView，
+// PlatformText、BlockAttachment 与原生卡片 MacBlockCards、MacTextControls 连同它们依赖的 Theme、Markdown、MarkdownTable、Dots、
+// InlineCode、ReferenceViews 一起编进来，放进离屏 NSWindow 里的 NSHostingView，
 // 由 SwiftUI 真实地量高、更新；第八场景使用屏上窗口验证实际呈现；鼠标按 NSWindow 的命中办法交给文本视图（离屏窗口成不了 key，见 ProseHost.press）；
 // 颜色资源由运行脚本用 actool 编成 Assets.car 放进 .app 包，Theme 的颜色才是真值。
 // 下面八个场景都是 TextKit 2、CoreText、AppKit 与 SwiftUI 宿主配合出来的结果，读代码推不出，每个场景上方写它挡的回归。
 
-// MARK: - 桩：表格、提示条、宿主模型、语法高亮和指针/按钮样式；附件、代码卡片与折叠逻辑使用生产实现
+// MARK: - 桩：提示条、宿主模型、语法高亮、读屏文案和指针/按钮样式；附件、原生代码卡片与折叠逻辑使用生产实现
 
 @Observable final class ToastCenter {
     func show(_ text: String, systemImage: String? = nil) {}
@@ -29,7 +30,7 @@ func splitLines(_ text: String) -> [String] {
     return (text.hasSuffix("\n") ? String(text.dropLast()) : text).components(separatedBy: "\n")
 }
 
-// 卡片与折叠逻辑编译真实源码；只省略按钮的装饰样式和代码语法高亮。
+// Mac 上附件用原生卡片；SwiftUI 的 BlockCard、CodeBlock、MarkdownTable 只因共用文件引用而编进来，本合同不走它们，按钮样式给空壳。
 struct PaneButtonStyle: ButtonStyle {
     var text = false
     var fill: Color?
@@ -38,37 +39,8 @@ struct PaneButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { configuration.label }
 }
 
-// 离屏 SwiftUI 没有可用的 AX 按钮树；只把公开 trigger 接到原生按钮，仍执行生产 Folded 的 action/State。
-private final class ContractActionButton: NSButton {
-    override func draw(_ dirtyRect: NSRect) {}
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
-}
-
-private struct ContractActionInput: NSViewRepresentable {
-    let trigger: () -> Void
-    final class Coordinator: NSObject {
-        var trigger: () -> Void
-        init(_ trigger: @escaping () -> Void) { self.trigger = trigger }
-        @objc func press() { trigger() }
-    }
-    func makeCoordinator() -> Coordinator { Coordinator(trigger) }
-    func makeNSView(context: Context) -> ContractActionButton {
-        let button = ContractActionButton(title: "", target: context.coordinator, action: #selector(Coordinator.press))
-        button.isBordered = false
-        return button
-    }
-    func updateNSView(_ view: ContractActionButton, context: Context) { context.coordinator.trigger = trigger }
-}
-
-struct ContractPlainButtonStyle: PrimitiveButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.overlay { ContractActionInput(trigger: configuration.trigger) }
-    }
-}
-
-extension PrimitiveButtonStyle where Self == ContractPlainButtonStyle {
-    static var pointingPlain: Self { Self() }
-    static var pointingAutomatic: Self { Self() }
+extension PrimitiveButtonStyle where Self == PlainButtonStyle {
+    static var pointingPlain: Self { .plain }
 }
 
 struct ReferenceLinkAttribute: TextAttribute {}
@@ -90,14 +62,20 @@ struct HighlightedCode: View {
     var body: some View { Text(text) }
 }
 
-extension View {
-    func hintsScrollOverflow(_ axis: Axis = .vertical) -> some View { self }
+/// CodeHighlighting.swift 依赖 Highlighter 包；原样返回不着色，原生代码卡片照常排版。
+actor CodeHighlighter {
+    static let shared = CodeHighlighter()
+    func highlight(_ text: String, language: String?, dark: Bool) -> AttributedString { AttributedString(text) }
 }
 
-struct MarkdownTable: View {
-    let header: [AttributedString]
-    let rows: [[AttributedString]]
-    var body: some View { EmptyView() }
+/// TranscriptAccessibility.swift 依赖对话模型；这里只给卡片用到的两句读屏文案。
+enum TranscriptSpeech {
+    static func code(language: String) -> String { "代码，\(language)" }
+    static let table = "表格"
+}
+
+extension View {
+    func hintsScrollOverflow(_ axis: Axis = .vertical) -> some View { self }
 }
 
 @Observable final class AppModel {
@@ -1336,9 +1314,9 @@ private struct MacSelectableTextContract {
         print("通过：完全屏外、部分露出和滚入的视口语义正确；长段 \(referenceLines.count) 行中途露出有 \(darkPixels) 个深色像素，往返滚动保持行位置、绘制、对象与选区")
     }
 
-    // 屏外附件延迟内部宿主改宽后，真实 clip 通知必须在再次显示时补齐尺寸，且不能重建宿主丢掉折叠/横滑状态。
-    // 真实 BlockAttachment/TextKit provider、CodeBlock/Folded/BlockCard 与 NSScrollView 配合，单看源码不能确认通知与布局顺序。
-    // 高亮和指针/按钮装饰用薄桩；pointingPlain 只把公开 trigger 接到原生输入，展开和横滑仍用生产 SwiftUI 逻辑。
+    // 屏外附件延迟原生卡片改宽后，真实 clip 通知必须在再次显示时补齐尺寸，且不能重建卡片丢掉折叠/横滑状态。
+    // 真实 BlockAttachment/TextKit provider、EmbeddedContainerView、CodeCardView/OverflowScrollView 与外层 NSScrollView 配合，单看源码不能确认通知与布局顺序。
+    // 只有语法高亮是薄桩；展开走卡片里 TextButton 的读屏按下（离屏窗口不合成鼠标），横滑是卡片里真实的 NSScrollView。
     private static func offscreenAttachmentResumesAtCurrentWidthWithItsStateAndSelection() throws {
         let state = ProseState(source: AttachmentProseFixture.source)
         state.width = 520
@@ -1356,20 +1334,22 @@ private struct MacSelectableTextContract {
         try harness.scroll(scroll, to: initialY)
         try harness.wait("TextKit 建立附件 provider") { !harness.descendants(EmbeddedContainerView.self).isEmpty }
         guard let container = harness.descendants(EmbeddedContainerView.self).first,
-              let attachment = container.attachment, let embeddedHost = container.subviews.first else {
-            throw TextFailure.failed("没有实际的附件容器或 NSHostingController.view")
+              let attachment = container.attachment, let card = container.subviews.first as? CodeCardView else {
+            throw TextFailure.failed("没有实际的附件容器或其中的原生代码卡片；容器子视图 \(harness.descendants(EmbeddedContainerView.self).first?.subviews.map { String(describing: type(of: $0)) } ?? [])")
+        }
+        try harness.wait("原生代码卡片折起并露出「显示全部」") {
+            container.bounds.height > 0 && harness.descendants(TextButton.self, in: card).contains { !$0.isHidden && $0.title == "显示全部 32 行" }
         }
         let foldedHeight = container.bounds.height
-        // 复制按钮有独立 PaneButtonStyle；只有内容里的展开按钮使用 pointingPlain 输入适配。
-        try harness.wait("生产展开按钮输入适配建立") { harness.descendants(ContractActionButton.self, in: embeddedHost).count == 1 }
-        let expand = harness.descendants(ContractActionButton.self, in: embeddedHost)[0]
-        expand.performClick(nil)
-        try harness.wait("生产代码块展开并更新 TextKit 高度") { container.bounds.height > foldedHeight + 100 }
-        let expandedSize = container.bounds.size
-        guard !harness.descendants(ContractActionButton.self, in: embeddedHost).contains(where: { $0 === expand }) else {
-            throw TextFailure.failed("生产代码块展开后仍显示折叠按钮")
+        let foldButtons = harness.descendants(TextButton.self, in: card)
+        guard foldButtons.count == 1, let expand = foldButtons.first else {
+            throw TextFailure.failed("代码卡片里应只有一个「显示全部」按钮，实际 \(foldButtons.map(\.title))")
         }
-        guard let horizontal = harness.descendants(NSScrollView.self, in: embeddedHost).first(where: {
+        guard expand.accessibilityPerformPress() else { throw TextFailure.failed("「显示全部」不接受读屏按下") }
+        try harness.wait("原生代码卡片展开并更新 TextKit 高度") { container.bounds.height > foldedHeight + 100 }
+        let expandedSize = container.bounds.size
+        guard expand.isHidden else { throw TextFailure.failed("原生代码卡片展开后仍显示「显示全部」") }
+        guard let horizontal = harness.descendants(NSScrollView.self, in: card).first(where: {
             ($0.documentView?.bounds.width ?? 0) > $0.contentView.bounds.width + 300
         }) else { throw TextFailure.failed("长代码没有建立实际横向滚动视图") }
         horizontal.contentView.scroll(to: CGPoint(x: 160, y: horizontal.contentView.bounds.minY))
@@ -1400,18 +1380,18 @@ private struct MacSelectableTextContract {
             throw TextFailure.failed("跨附件复制没有保留完整代码及 Markdown 围栏")
         }
         let widthInset = state.width - expandedSize.width
-        let visibleHostFrame = embeddedHost.frame
+        let visibleCardFrame = card.frame
 
         func checkIdentityAndState(_ label: String) throws {
             guard textView.textStorage === storage, textView.selectedRange() == selection,
-                  container.attachment === attachment, container.subviews.first === embeddedHost,
+                  container.attachment === attachment, container.subviews.first === card,
                   harness.descendants(EmbeddedContainerView.self).contains(where: { $0 === container }),
-                  harness.descendants(NSScrollView.self, in: embeddedHost).contains(where: { $0 === horizontal }) else {
-                throw TextFailure.failed("\(label)：正文、附件、宿主、横向滚动对象或选区被替换")
+                  harness.descendants(NSScrollView.self, in: card).contains(where: { $0 === horizontal }) else {
+                throw TextFailure.failed("\(label)：正文、附件、原生卡片、横向滚动对象或选区被替换")
             }
             guard abs(horizontal.contentView.bounds.minX - 160) <= 1,
-                  abs(container.bounds.height - expandedSize.height) <= 1 else {
-                throw TextFailure.failed("\(label)：展开或横滑状态丢失；高 \(container.bounds.height)/\(expandedSize.height)，横向位置 \(horizontal.contentView.bounds.minX)")
+                  abs(container.bounds.height - expandedSize.height) <= 1, expand.isHidden else {
+                throw TextFailure.failed("\(label)：展开或横滑状态丢失；高 \(container.bounds.height)/\(expandedSize.height)，横向位置 \(horizontal.contentView.bounds.minX)，「显示全部」隐藏 \(expand.isHidden)")
             }
             guard abs(container.bounds.width - (state.width - widthInset)) <= 1 else {
                 throw TextFailure.failed("\(label)：TextKit 附件占位没有跟随正文改宽；容器 \(container.bounds)，正文宽 \(state.width)")
@@ -1428,8 +1408,8 @@ private struct MacSelectableTextContract {
             state.width = width
             try harness.wait("屏外正文改宽 \(width)") { abs(textView.bounds.width - (width + Metrics.inlineCodePadding * 2)) <= 1 }
             try checkIdentityAndState("屏外宽 \(width)")
-            guard embeddedHost.isHidden, embeddedHost.frame == visibleHostFrame else {
-                throw TextFailure.failed("完全屏外的内部宿主应隐藏并保留原 frame；hidden \(embeddedHost.isHidden)，frame \(embeddedHost.frame)，原 frame \(visibleHostFrame)")
+            guard card.isHidden, card.frame == visibleCardFrame else {
+                throw TextFailure.failed("完全屏外的原生卡片应隐藏并保留原 frame；hidden \(card.isHidden)，frame \(card.frame)，原 frame \(visibleCardFrame)")
             }
         }
 
@@ -1437,10 +1417,10 @@ private struct MacSelectableTextContract {
         let partialY = container.convert(container.bounds, to: clip).minY - clip.bounds.height + 80
         try harness.scroll(scroll, to: partialY)
         try checkIdentityAndState("仅部分滚入首帧")
-        let visiblePart = embeddedHost.convert(embeddedHost.bounds, to: clip).intersection(clip.bounds)
-        guard !embeddedHost.isHidden, embeddedHost.frame == container.bounds,
+        let visiblePart = card.convert(card.bounds, to: clip).intersection(clip.bounds)
+        guard !card.isHidden, card.frame == container.bounds,
               !visiblePart.isEmpty, visiblePart.height <= 81 else {
-            throw TextFailure.failed("附件仅部分滚入首帧应先对齐当前容器再显示；hidden \(embeddedHost.isHidden)，frame \(embeddedHost.frame)，bounds \(container.bounds)，可见部分 \(visiblePart)")
+            throw TextFailure.failed("附件仅部分滚入首帧应先对齐当前容器再显示；hidden \(card.isHidden)，frame \(card.frame)，bounds \(container.bounds)，可见部分 \(visiblePart)")
         }
         let pixels = try harness.pixels()
         let painted = clip.convert(visiblePart, to: nil)
@@ -1457,11 +1437,10 @@ private struct MacSelectableTextContract {
         try harness.wait("附件恢复原宽") { abs(textView.bounds.width - (520 + Metrics.inlineCodePadding * 2)) <= 1 }
         try harness.scroll(scroll, to: initialY)
         try checkIdentityAndState("恢复原宽并完整滚入")
-        guard !embeddedHost.isHidden, embeddedHost.frame == container.bounds,
-              container.bounds.size == expandedSize, try copySelection() == originalCopy,
-              !harness.descendants(ContractActionButton.self, in: embeddedHost).contains(where: { $0 === expand }) else {
+        guard !card.isHidden, card.frame == container.bounds,
+              container.bounds.size == expandedSize, try copySelection() == originalCopy else {
             throw TextFailure.failed("恢复原宽后附件尺寸、展开状态或跨附件原文复制发生变化")
         }
-        print("通过：真实代码附件展开后高 \(foldedHeight) → \(expandedSize.height)，屏外三次改宽保留占位/宿主/横滑/选区；仅露出 80 pt 时首帧同步尺寸且绘出 \(ink) 个深色像素，回原宽状态与复制原文恢复")
+        print("通过：原生代码卡片展开后高 \(foldedHeight) → \(expandedSize.height)，屏外三次改宽保留占位/卡片/横滑/选区；仅露出 80 pt 时首帧同步尺寸且绘出 \(ink) 个深色像素，回原宽状态与复制原文恢复")
     }
 }

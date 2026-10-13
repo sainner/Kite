@@ -24,7 +24,7 @@ enum EmbeddedBlock: Equatable {
     }
 }
 
-/// 嵌进来的块排在自己的 SwiftUI 宿主里，读不到文本视图外面的环境；它们用到的几项由文本视图转交。
+/// 嵌进来的块读不到文本视图外面的环境（iOS 上排在自己的 SwiftUI 宿主里，Mac 上是原生卡片）；它们用到的几项由文本视图转交。
 struct EmbeddedEnvironment {
     var font: Font?
     var referenceScope: ReferenceScope
@@ -50,8 +50,8 @@ struct EmbeddedEnvironment {
     }
 }
 
-/// 文本里的一个附件字符，显示成一块 SwiftUI 视图：照旧用 MarkdownBlockView、CodeBlock 排，外观、折叠、横滑、按钮都和原来一样。
-/// 宽是所在行的宽，高是 SwiftUI 的理想高；内容自己变高（展开全部、表格量完宽）时通知文本视图重排这一行。
+/// 文本里的一个附件字符，显示成一块卡片：iOS 托管 SwiftUI 视图（EmbeddedBlockView，照旧用 MarkdownBlockView、CodeBlock 排），
+/// Mac 是原生卡片（MacBlockCards）。宽是所在行的宽，高是卡片的理想高；内容自己变高（展开全部、表格量完宽）时通知文本视图重排这一行。
 /// 代码块、表格太宽时横着滚，高和行宽无关，量一次就记下：改窗口宽度时不用每种宽度都再量一遍。
 /// 附件和宿主跨流式更新复用：属性串里的附件按身份比较，内容变了属性串不变，文本视图不用重放字，宿主里的状态（展开、横滑位置）也留着。
 /// NSTextAttachment 不归主线程，TextKit 的回调在文本视图排版时进来，也就是主线程；宿主和状态都标在主线程上。
@@ -68,13 +68,14 @@ nonisolated final class BlockAttachment: NSTextAttachment {
         return controller
     }()
     #else
-    @MainActor private lazy var controller: NSHostingController<EmbeddedBlockView> = {
-        let controller = NSHostingController(rootView: root)
-        // 尺寸由 TextKit 按 attachmentBounds 摆，宿主不自己报尺寸，也不让安全区挤进来
-        controller.sizingOptions = []
-        controller.safeAreaRegions = []
-        return controller
+    /// Mac 上是原生的卡片（MacBlockCards），不托管 SwiftUI：改窗口宽度时托管的卡片约 0.8 ms 一张（2026-10-13 实测）。
+    @MainActor private lazy var card: EmbeddedCardView = {
+        let card = EmbeddedCardView.make(for: content)
+        card.resized = { [weak self] in self?.cardResized() }
+        return card
     }()
+    /// 这段回复的原文：表格卡片能选字，复制时按它取回原文。SelectableMarkdown.content 排的时候给。
+    @MainActor var markdown: String?
     #endif
     /// 量过的理想高。
     @MainActor private var height: CGFloat?
@@ -101,6 +102,7 @@ nonisolated final class BlockAttachment: NSTextAttachment {
         return layout
     }
 
+    #if canImport(UIKit)
     @MainActor private var root: EmbeddedBlockView {
         EmbeddedBlockView(content: content, environment: environment) { [weak self] size in
             self?.laidOut(size)
@@ -110,6 +112,12 @@ nonisolated final class BlockAttachment: NSTextAttachment {
     @MainActor private func render() {
         controller.rootView = root
     }
+    #else
+    @MainActor private func render() {
+        guard let environment else { return }
+        card.update(content, environment: environment, markdown: markdown)
+    }
+    #endif
 
     /// TextKit 会给这一行换新的提供者（实测流式在它后面接字时会换），每个提供者一个容器；宿主只有一个，
     /// 哪个容器进了窗口就挪进去，状态（展开、横滑位置）跟着宿主走。
@@ -127,7 +135,7 @@ nonisolated final class BlockAttachment: NSTextAttachment {
             controller.didMove(toParent: parent)
         }
         #else
-        container.host(controller.view)
+        container.host(card)
         #endif
     }
 
@@ -151,18 +159,31 @@ nonisolated final class BlockAttachment: NSTextAttachment {
     @MainActor private func measure(width: CGFloat) -> CGFloat {
         self.width = width
         if let height { return height }
+        #if canImport(UIKit)
         if environment == nil { render() }
         let height = controller.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
+        #else
+        let height = card.height(width: width)
+        #endif
         self.height = height
         return height
     }
 
+    #if canImport(UIKit)
     /// 宿主按摆好的宽排完以后报来的理想高；和量的不一样（自己展开了、表格量完宽）就请文本视图重排。
     @MainActor private func laidOut(_ size: CGSize) {
         guard let width, abs(size.width - width) < 0.5, let height, abs(height - size.height) > 0.5 else { return }
         self.height = size.height
         resized?(self)
     }
+    #else
+    /// 卡片自己变高了（展开全部）：重量，请文本视图重排这一块。
+    @MainActor private func cardResized() {
+        guard let width, let height, abs(card.height(width: width) - height) > 0.5 else { return }
+        self.height = nil
+        resized?(self)
+    }
+    #endif
 
     // 边界由提供者给：附件自己覆写 attachmentBounds 时 TextKit 不再走视图这条路；提供者不开 tracksTextAttachmentViewBounds 时
     // TextKit 不问它的边界、按默认的 32×32 摆（2026-10-12 macOS 27.2 实测）。
@@ -334,7 +355,7 @@ final class EmbeddedContainerView: PlatformView {
 
         let clip = window == nil ? nil : enclosingScrollView?.contentView
         observeClip(clip)
-        // 长回复仍由 TextKit 排整段；屏外附件只保留行边界和宿主状态，不逐帧重排内部 SwiftUI。
+        // 长回复仍由 TextKit 排整段；屏外附件只保留行边界和卡片状态，不逐帧重排卡片里面。
         if let clip, !convert(bounds, to: clip).intersects(clip.bounds) {
             if !hostedView.isHidden { hostedView.isHidden = true }
             return
@@ -394,6 +415,7 @@ final class BlockAttachments {
     }
 }
 
+#if canImport(UIKit)
 /// 宿主里的根视图：块本身，量理想高。卡片底色是半透明的，选区拖过时文本视图的选区色从底下透出来，不另外上色。
 struct EmbeddedBlockView: View {
     let content: EmbeddedBlock
@@ -441,3 +463,4 @@ private struct EmbeddedEnvironmentModifier: ViewModifier {
         }
     }
 }
+#endif

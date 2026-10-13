@@ -25,7 +25,7 @@ struct WorkRow: View {
     }
 }
 
-/// 工具组的汇总行：有调用在跑时说正在做什么（带动效），不然是汇总；出错、没跑完的步数；箭头。Mac 主对话的原生工具行在跑时托管它。
+/// 工具组的汇总行：有调用在跑时说正在做什么（带动效），不然是汇总；出错、没跑完的步数；箭头。iOS 用；Mac 的原生版是 WorkHeaderView。
 struct WorkSummaryLine: View {
     let work: Work
     let expanded: Bool
@@ -57,7 +57,7 @@ struct WorkSummaryLine: View {
     }
 }
 
-/// 步骤仍按原来的序号识别，后续调用到来、形成批次时，不重建已经展开的工具详情。Mac 主对话的原生工具行展开后托管它。
+/// 步骤仍按原来的序号识别，后续调用到来、形成批次时，不重建已经展开的工具详情。iOS 用；Mac 的原生版是 WorkStepsView。
 struct WorkSteps: View {
     let work: Work
 

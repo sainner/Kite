@@ -5,7 +5,7 @@ extension EnvironmentValues {
     @Entry var workingDirectory = ""
 }
 
-/// 一串记录排下来，排队中的消息接在最后。两端子 agent 做的事、压缩前的原文都用它；主对话是原生列表（TranscriptListView、PhoneTranscriptView）。
+/// 一串记录排下来，排队中的消息接在最后（SwiftUI 版）。两端主对话、子 agent 做的事、压缩前的原文都已是原生的（TranscriptListView、PhoneTranscriptView）。
 /// 按人开启的每一轮分组，一组里的行竖着排。一行从出现起就待在同一组里，后面又开了一轮也不换组，展开收起这些状态不会丢。
 struct TranscriptView: View {
     let items: [Item]
@@ -44,7 +44,7 @@ struct TranscriptView: View {
 }
 
 
-/// 对话里的一行显示成什么。两端主对话的原生列表里还没原生化的行也托管它。
+/// 对话里的一行显示成什么（SwiftUI 版）。两端主对话都是原生列表，各行见 makeTranscriptRowSlot、makePhoneTranscriptRowSlot。
 struct TranscriptRowView: View {
     let row: TranscriptRow
 
@@ -56,7 +56,7 @@ struct TranscriptRowView: View {
     }
 }
 
-/// agent 说的一段话的操作栏：复制、翻译、从这里分叉（翻译、分叉还没做）。两端主对话的原生列表都用它。
+/// agent 说的一段话的操作栏：复制、翻译、从这里分叉（翻译、分叉还没做）。iOS 用；Mac 的原生版见 ProseRowSlot.actionItems。
 struct AgentTextActions: View {
     let text: String
     @Environment(\.selectedRow) private var selection
