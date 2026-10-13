@@ -6,23 +6,32 @@ import Observation
 /// - 同一时刻只有一条登记：上一条还没触发时 track 只读值、不再登记，触发过以后的下一次 track 才重新登记。
 ///   withObservationTracking 的登记要等读过的某个属性变了才撤掉，每次排版都登记的话，没变的那些属性上登记越积越多（拖缝时每步一条）。
 ///   所以两次触发之间读到的属性要在上一条登记里：读的范围变了，得是因为某个读过的属性变了（比如多了一张卡片是因为排布变了）。
+/// - 读的对象换了（换了一行、换了所在的窗口、内容换了要看的东西不同）：先 cancel 再 track。cancel 当场撤掉那条登记，不留在旧对象上。
 /// - 通知在属性改之前发出（willSet），changed 里只做标记（如 needsLayout），到排版时再读新值；同一轮的多次变化合成一次。
-///   要在通知里读新值的，自己隔一拍（Task）再读。
+///   要在通知里读新值的，自己隔一拍（Task、DispatchQueue.main.async）再读。
 /// - 自己要在读之前改模型（比如报视口），包在 quietly 里：改动照样撤掉那条登记，但不回头通知自己。
-/// - 视图拆掉时 cancel：还挂着的那条登记以后触发时什么也不做。
+/// - 视图拆掉时 cancel。
+///
+/// 每条登记都另读一个自己的哨兵属性：什么模型都没读到时也有登记（不然以为挂着、其实没有，以后再也不登记）；cancel 改它，
+/// 那条登记就从读过的每个属性上撤掉（Observation 没有直接撤登记的接口，读过的任一属性变了才整条撤）。
 @MainActor final class ModelTracking {
     /// 有一条登记还没触发。
     private var live = false
     private var muted = false
     /// 登记的第几代：cancel 以后，之前那条触发时作废。
     private var generation = 0
+    private let sentinel = ModelTrackingSentinel()
 
     @discardableResult
     func track<T>(_ read: () -> T, changed: @escaping @MainActor () -> Void) -> T {
         guard !live else { return read() }
         live = true
         let current = generation
-        return withObservationTracking(read) { [weak self] in
+        let sentinel = sentinel
+        return withObservationTracking({
+            _ = sentinel.tick
+            return read()
+        }) { [weak self] in
             // 模型都在主线程上改，通知当场在主线程上；万一不在，下一拍再标
             if Thread.isMainThread {
                 MainActor.assumeIsolated { self?.fire(current, changed) }
@@ -39,10 +48,12 @@ import Observation
         muted = false
     }
 
-    /// 不再跟：还挂着的那条登记以后触发时什么也不做。
+    /// 撤掉挂着的那条登记，不再通知；下一次 track 重新登记。
     func cancel() {
+        guard live else { return }
         generation += 1
         live = false
+        sentinel.tick += 1
     }
 
     private func fire(_ current: Int, _ changed: @MainActor () -> Void) {
@@ -50,4 +61,9 @@ import Observation
         live = false
         if !muted { changed() }
     }
+}
+
+/// ModelTracking 每条登记都读的哨兵，cancel 改它撤掉登记。
+@Observable final class ModelTrackingSentinel {
+    var tick = 0
 }
