@@ -27,5 +27,5 @@
 - [远程连接与托管运维](todo-remote-connections.md) — iPhone 重连、托管容量备份、凭据重绑和多机关系
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
 - [真实终端](todo-terminal-plugin.md) — PTY 与跨端重连、停止和资源生命周期
-- [窗口动画与拖缝剩余验收](todo-window-motion-remaining.md) — 真实长短回复的成本边界、屏外附件证据与尚未达到的性能目标。
+- [窗口动画与拖缝剩余验收](todo-window-motion-remaining.md) — 真实长短回复成本、屏外附件收益、视口裁切的像素回归与剩余验收。
 - [个人组网清理](todo-headscale-cleanup.md) — lisa 实验资源的存在与清理状态待核验
