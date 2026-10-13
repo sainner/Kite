@@ -455,8 +455,9 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
             } else {
                 elements.append(proxy(for: slot))
             }
+            // 开着的操作栏紧跟在它那一行后面读
+            if let actions, actions.id == slot.id { elements.append(actions.host.view!) }
         }
-        if let host = actions?.host.view { elements.append(host) }
         return elements
     }
 
