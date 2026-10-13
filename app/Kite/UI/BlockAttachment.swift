@@ -114,19 +114,15 @@ nonisolated final class BlockAttachment: NSTextAttachment {
     /// TextKit 会给这一行换新的提供者（实测流式在它后面接字时会换），每个提供者一个容器；宿主只有一个，
     /// 哪个容器进了窗口就挪进去，状态（展开、横滑位置）跟着宿主走。
     @MainActor fileprivate func adopt(into container: EmbeddedContainerView) {
+        #if canImport(UIKit)
         // UIKit 的 view 是隐式解包的可选值，AppKit 不是
         let view: PlatformView = controller.view
         if view.superview !== container {
             view.removeFromSuperview()
             view.frame = container.bounds
-            #if canImport(UIKit)
             view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            #else
-            view.autoresizingMask = [.width, .height]
-            #endif
             container.addSubview(view)
         }
-        #if canImport(UIKit)
         // 挂进视图控制器的层级，ShareLink 这类要弹出界面的按钮才找得到从哪弹
         var responder: UIResponder? = container.superview
         while let current = responder, !(current is UIViewController) { responder = current.next }
@@ -136,6 +132,8 @@ nonisolated final class BlockAttachment: NSTextAttachment {
             parent.addChild(controller)
             controller.didMove(toParent: parent)
         }
+        #else
+        container.host(controller.view)
         #endif
     }
 
@@ -201,11 +199,86 @@ final class EmbeddedContainerView: PlatformView {
         if window != nil { attachment?.adopt(into: self) }
     }
     #else
+    private weak var hostedView: NSView?
+    private weak var clipView: NSClipView?
+    private var synchronizingHost = false
+
     override var isFlipped: Bool { true }
+
+    func host(_ view: NSView) {
+        hostedView = view
+        view.autoresizingMask = []
+        if view.superview !== self {
+            view.removeFromSuperview()
+            addSubview(view)
+        }
+        synchronizeHost()
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil { attachment?.adopt(into: self) }
+        synchronizeHost()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        synchronizeHost()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        synchronizeHost()
+    }
+
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        super.setFrameOrigin(newOrigin)
+        synchronizeHost()
+    }
+
+    override func layout() {
+        synchronizeHost()
+        super.layout()
+    }
+
+    private func observeClip(_ clip: NSClipView?) {
+        guard clipView !== clip else { return }
+        if let previous = clipView {
+            NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: previous)
+        }
+        clipView = clip
+        if let clip {
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(clipBoundsChanged(_:)),
+                                                   name: NSView.boundsDidChangeNotification, object: clip)
+        }
+    }
+
+    @objc private func clipBoundsChanged(_ notification: Notification) {
+        synchronizeHost()
+    }
+
+    private func synchronizeHost() {
+        guard !synchronizingHost else { return }
+        // TextKit 换提供者后，旧容器的滚动通知不能再改已经迁走的宿主。
+        guard let hostedView, hostedView.superview === self else {
+            observeClip(nil)
+            return
+        }
+        synchronizingHost = true
+        defer { synchronizingHost = false }
+
+        let clip = window == nil ? nil : enclosingScrollView?.contentView
+        observeClip(clip)
+        // 长回复仍由 TextKit 排整段；屏外附件只保留行边界和宿主状态，不逐帧重排内部 SwiftUI。
+        if let clip, !convert(bounds, to: clip).intersects(clip.bounds) {
+            if !hostedView.isHidden { hostedView.isHidden = true }
+            return
+        }
+
+        // 滚入视口时先跟上最新边界再显示，容器与附件高度始终仍由 TextKit 管理。
+        if hostedView.frame != bounds { hostedView.frame = bounds }
+        if hostedView.isHidden { hostedView.isHidden = false }
     }
     #endif
 }

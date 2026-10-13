@@ -88,7 +88,10 @@ struct SelectableTextView: NSViewRepresentable {
     private final class ProseTextView: NSTextView {
         var source: (text: String, map: TextSourceMap)?
 
-        override var visibleRect: NSRect { super.visibleRect.isEmpty ? .zero : bounds }
+        override var visibleRect: NSRect {
+            // AppKit 的裁切矩形可能非空但完全落在本视图之外，要先与自身范围相交。
+            super.visibleRect.intersection(bounds).isEmpty ? .zero : bounds
+        }
 
         // 光标：NSTextView 把整块注册成文字光标的光标矩形，鼠标移动、cursorUpdate 时也设文字光标，盖过卡片里按钮的手形。
         // 文字光标只给卡片以外的那几条，落在卡片上的移动交给卡片自己。

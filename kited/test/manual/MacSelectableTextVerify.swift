@@ -1,15 +1,16 @@
 import AppKit
 import CoreText
 import ObjectiveC
+import QuartzCore
 import SwiftUI
 
 // Mac 对话正文的 NSTextView（TextKit 2）原生合同。真实的 SelectableMarkdown、MacSelectableTextView、TextKitDecorations、
 // PlatformText 连同它们依赖的 Theme、Markdown、InlineCode、ReferenceViews 一起编进来，放进离屏 NSWindow 里的 NSHostingView，
-// 由 SwiftUI 真实地量高、更新；鼠标按 NSWindow 的命中办法交给文本视图（离屏窗口成不了 key，见 ProseHost.press）；
+// 由 SwiftUI 真实地量高、更新；第八场景使用屏上窗口验证实际呈现；鼠标按 NSWindow 的命中办法交给文本视图（离屏窗口成不了 key，见 ProseHost.press）；
 // 颜色资源由运行脚本用 actool 编成 Assets.car 放进 .app 包，Theme 的颜色才是真值。
-// 下面五个场景都是 TextKit 2、CoreText、AppKit 与 SwiftUI 宿主配合出来的结果，读代码推不出，每个场景上方写它挡的回归。
+// 下面八个场景都是 TextKit 2、CoreText、AppKit 与 SwiftUI 宿主配合出来的结果，读代码推不出，每个场景上方写它挡的回归。
 
-// MARK: - 桩：真实源文件引用到、但正文排版用不到的类型（代码块卡片、表格、提示条、宿主模型）
+// MARK: - 桩：表格、提示条、宿主模型、语法高亮和指针/按钮样式；附件、代码卡片与折叠逻辑使用生产实现
 
 @Observable final class ToastCenter {
     func show(_ text: String, systemImage: String? = nil) {}
@@ -28,23 +29,59 @@ func splitLines(_ text: String) -> [String] {
     return (text.hasSuffix("\n") ? String(text.dropLast()) : text).components(separatedBy: "\n")
 }
 
-typealias BlockCardPress = (_ pressed: Bool, _ at: CGPoint) -> Void
-
-struct BlockCard<Label: View, Actions: View, Content: View>: View {
-    let content: Content
-
-    init(label: String, copyLabel: String, background: Color = Theme.codeBackground, radius: CGFloat = Metrics.contentRadius,
-         copy: @escaping () -> Void, @ViewBuilder actions: @escaping (_ press: @escaping BlockCardPress) -> Actions,
-         @ViewBuilder content: () -> Content) where Label == Text {
-        self.content = content()
-    }
-
-    var body: some View { content }
+// 卡片与折叠逻辑编译真实源码；只省略按钮的装饰样式和代码语法高亮。
+struct PaneButtonStyle: ButtonStyle {
+    var text = false
+    var fill: Color?
+    var foreground: Color = .secondary
+    var size: CGFloat?
+    func makeBody(configuration: Configuration) -> some View { configuration.label }
 }
 
-struct BlockCardIcon: View {
-    init(_ asset: String) {}
-    var body: some View { EmptyView() }
+// 离屏 SwiftUI 没有可用的 AX 按钮树；只把公开 trigger 接到原生按钮，仍执行生产 Folded 的 action/State。
+private final class ContractActionButton: NSButton {
+    override func draw(_ dirtyRect: NSRect) {}
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+}
+
+private struct ContractActionInput: NSViewRepresentable {
+    let trigger: () -> Void
+    final class Coordinator: NSObject {
+        var trigger: () -> Void
+        init(_ trigger: @escaping () -> Void) { self.trigger = trigger }
+        @objc func press() { trigger() }
+    }
+    func makeCoordinator() -> Coordinator { Coordinator(trigger) }
+    func makeNSView(context: Context) -> ContractActionButton {
+        let button = ContractActionButton(title: "", target: context.coordinator, action: #selector(Coordinator.press))
+        button.isBordered = false
+        return button
+    }
+    func updateNSView(_ view: ContractActionButton, context: Context) { context.coordinator.trigger = trigger }
+}
+
+struct ContractPlainButtonStyle: PrimitiveButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.overlay { ContractActionInput(trigger: configuration.trigger) }
+    }
+}
+
+extension PrimitiveButtonStyle where Self == ContractPlainButtonStyle {
+    static var pointingPlain: Self { Self() }
+    static var pointingAutomatic: Self { Self() }
+}
+
+struct ReferenceLinkAttribute: TextAttribute {}
+struct ReferenceLinkRects: PreferenceKey {
+    static let defaultValue: [CGRect] = []
+    static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) { value += nextValue() }
+}
+extension Text {
+    func referenceLink(_ linked: Bool = true) -> Text { self }
+}
+extension View {
+    func clickPointer() -> some View { self }
+    func referencePointer() -> some View { self }
 }
 
 struct HighlightedCode: View {
@@ -112,6 +149,134 @@ private struct ProseFixture: View {
             })
             .transaction { $0.disablesAnimations = true }
     }
+}
+
+private struct ClippedProseFixture: View {
+    static let short = "用于滚动裁切合同的短行。"
+    static let long = String(repeating: "长段中途露出时，中文与 English words 的行位置必须连续，不能出现空白或跳位。", count: 120)
+
+    var body: some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 0) {
+                Color.clear.frame(height: 9458)
+                SelectableMarkdown(source: Self.short).frame(width: 572, alignment: .leading)
+                Color.clear.frame(height: 800)
+                SelectableMarkdown(source: Self.long).frame(width: 572, alignment: .leading)
+                Color.clear.frame(height: 1200)
+            }
+            .padding(.horizontal, 20)
+        }
+        .scrollIndicators(.hidden)
+        .background(Color.white)
+        .transaction { $0.disablesAnimations = true }
+    }
+}
+
+private struct AttachmentProseFixture: View {
+    let state: ProseState
+    static let code = (1...32).map { "line_\($0): " + String(repeating: "long_code_value_", count: 24) }.joined(separator: "\n")
+    static let source = "附件前正文，保留跨附件选区。\n\n```swift\n\(code)\n```\n\n附件后正文。"
+        + String(repeating: "后续长正文让代码附件滚出时，整个文本视图仍然和外部裁切区相交。", count: 100)
+
+    var body: some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 0) {
+                Color.clear.frame(height: 600)
+                SelectableMarkdown(source: state.source).frame(width: state.width, alignment: .leading)
+                Color.clear.frame(height: 1200)
+            }
+            .padding(.horizontal, 20)
+        }
+        .scrollIndicators(.hidden)
+        .background(Color.white)
+        .transaction { $0.disablesAnimations = true }
+    }
+}
+
+@MainActor
+private final class ClippedProseHost<Content: View> {
+    let host: NSHostingView<Content>
+    let window: NSWindow
+
+    init(rootView: Content) {
+        host = NSHostingView(rootView: rootView)
+        window = NSWindow(contentRect: CGRect(x: -10000, y: -10000, width: 618, height: 900),
+                          styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .aqua)
+        window.contentView = host
+        window.orderFront(nil)
+    }
+
+    func descendants<T: NSView>(_ type: T.Type, in root: NSView? = nil) -> [T] {
+        let view = root ?? host
+        return ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { descendants(type, in: $0) }
+    }
+
+    func wait(_ label: String, until predicate: () -> Bool) throws {
+        let deadline = Date().addingTimeInterval(3)
+        while !predicate() {
+            guard Date() < deadline else { throw TextFailure.failed("\(label)：等待超时") }
+            host.layoutSubtreeIfNeeded()
+            if !predicate() { RunLoop.main.run(mode: .default, before: min(deadline, Date().addingTimeInterval(0.05))) }
+        }
+    }
+
+    func scroll(_ scroll: NSScrollView, to y: CGFloat) throws {
+        let clip = scroll.contentView
+        clip.scroll(to: CGPoint(x: clip.bounds.minX, y: y))
+        scroll.reflectScrolledClipView(clip)
+        try nextFrame()
+        guard abs(clip.bounds.minY - y) <= 1 else {
+            throw TextFailure.failed("夹具滚动目标 \(y) 被夹紧；实际 clip \(clip.bounds)")
+        }
+    }
+
+    func nextFrame() throws {
+        // 等滚动通知所在的主队列批次结束，再执行正常布局/显示，不为 TextKit 补 ensureLayout。
+        var delivered = false
+        DispatchQueue.main.async { delivered = true }
+        let deadline = Date().addingTimeInterval(3)
+        while !delivered {
+            guard Date() < deadline else { throw TextFailure.failed("滚动通知没有交回主队列") }
+            RunLoop.main.run(mode: .default, before: deadline)
+        }
+        host.layoutSubtreeIfNeeded()
+        host.displayIfNeeded()
+    }
+
+    /// 直接读取 AppKit 基类的实现用于证明复现条件，不替换方法、不改变产品 getter 的结果。
+    func appKitVisibleRect(_ view: NSTextView) throws -> CGRect {
+        let selector = NSSelectorFromString("visibleRect")
+        guard let method = class_getInstanceMethod(NSTextView.self, selector) else {
+            throw TextFailure.failed("无法读取 AppKit 的 visibleRect")
+        }
+        typealias Getter = @convention(c) (AnyObject, Selector) -> CGRect
+        let getter = unsafeBitCast(method_getImplementation(method), to: Getter.self)
+        return getter(view, selector)
+    }
+
+    func pixels() throws -> Pixels {
+        host.displayIfNeeded()
+        guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
+            throw TextFailure.failed("滚动宿主无法建立像素缓存")
+        }
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        guard let image = bitmap.cgImage else { throw TextFailure.failed("滚动宿主没有绘制图像") }
+        let width = image.width, height = image.height
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        try bytes.withUnsafeMutableBytes { data in
+            guard let context = CGContext(data: data.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                                          bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else {
+                throw TextFailure.failed("滚动宿主无法读取 RGBA")
+            }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        return Pixels(width: width, height: height, scale: CGFloat(width) / host.bounds.width,
+                      contentHeight: host.bounds.height, bytes: bytes)
+    }
+
 }
 
 /// 读出来的像素：按窗口坐标（y 向上）取色。
@@ -310,6 +475,448 @@ extension NSTextLayoutManager {
     }
 }
 
+// 历史 6845be2 的可复现输入：40 条混合消息，760×700，LazyVStack 首次从底部露出新消息。
+// 样例内容用于保留当时的换行与片段形态，不是当前产品说明；不导入原实验的 hook 或补排版。
+private enum LazyMessageSamples {
+    static let templates: [String] = [
+        "好的，我先看一下 `TranscriptView.swift` 里按需排版那一段，再回来说结论。",
+        """
+        ## 这次改动的范围
+
+        把 Mac 的对话正文换成 `NSTextView`，和 iPhone 共用属性串构建。涉及的文件：
+
+        - app/Kite/UI/MacSelectableTextView.swift：representable，没有自己的滚动视图
+        - app/Kite/UI/SelectableMarkdown.swift：散文块合成一个文本视图
+        - app/Kite/UI/TextKitDecorations.swift：引用竖线和行内代码背景
+
+        > 外观必须与现状一致：字体、行距、块距、行内代码背景、引用竖线、列表缩进都是反复调过的。
+
+        下一步是每条回复一个文本视图，把代码块和表格作附件嵌进去。
+        """,
+        """
+        我量了三轮，中位数如下：
+
+        1. 发送后一秒内帧间隔最大 **48 ms**，丢 3 帧
+        2. 文本视图 `sizeThatFits` 被问 78 次，只有 21 种宽度
+        3. 改窗口宽度时每个视图重排一次
+
+        结论先写在 .kite/memory/performance-diagnosis.md 里，详见 https://developer.apple.com/documentation/appkit/nstextview 的说明。
+        """,
+        "收到。",
+        """
+        ### 为什么先空白再出现
+
+        TextKit 2 只排、只画视口里的片段。视口按 `enclosingScrollView` 的可见范围算，外层一滚，片段要到下一轮 layout 才建出来。
+        iPhone 的 `UITextView` 自己就是滚动视图、尺寸等于内容，视口就是整段，所以没有这个现象。
+
+        - 第一步：量出视口与 bounds 的关系
+        - 第二步：逐帧抓图看新露出的行
+          - 看是不是先空白
+          - 看是不是逐段出现
+        - 第三步：数丢帧
+
+        > 卡顿先量再改：手感只能说明卡不卡，说明不了卡在哪。
+        """,
+        """
+        这段比较长，模拟一条完整的回复。先说背景：Mac 上每个 Markdown 块原来是独立的 SwiftUI `Text`，系统不支持跨 `Text` 选择，连两个段落都选不到一起；iPhone 的散文已经合成一个 `UITextView`，但在代码块处断开。近期的性能修补也都聚在平台文本视图这一层。
+
+        然后是做法。属性串构建放在 `SelectableMarkdown.attributed`，两端共用；平台差异收在 `PlatformText.swift`。块距、引用竖线顶边、行内代码背景高按 Mac 上与 SwiftUI 版并排逐行量过的差异补偿：
+
+        1. TextKit 2 把 `lineSpacing` 放在每一行上方，段落第一行也有，所以段前距要减掉一个行距
+        2. 文档第一段不认 `paragraphSpacingBefore`，开头是标题时半个块距放在视图外面
+        3. 引用竖线从第一行字的顶边起，片段顶边在段前距之上还高出一个行距
+
+        > 这是 SwiftUI 的不一致，TextKit 反而整齐；一段里差不超过 1.4 pt。
+
+        最后是风险。`offset` 动画让 `NSTextView` 每帧重画，发送时上浮的那条消息会多一次完整的文本绘制；行内代码前有引用图标时背景画偏是两端共用的缺陷，已在 3aac1c4 修掉。
+
+        #### 待办
+
+        - 真机验收
+        - 每条回复一个文本视图嵌入附件
+        - 复制出 Markdown 原文
+        """,
+        "改完了，跑 `.kite/check` 通过，合同也过。要不要我把结论记进 docs/？",
+        """
+        > 用户 2026-10-12 确认：接受标题行高 1～2 pt、个别行 0.69 pt、中文折行位置这三项残差。
+
+        那我就不再追这三项了，把精力放到滚动卡顿上。看 kited/test/manual/verify-mac-selectable-text-swift.ts 怎么把源文件编进 .app。
+        """,
+        """
+        ## 候选方案
+
+        按侵入性从小到大：
+
+        1. 让视口等于整段：子类里覆盖 `visibleRect` 返回 `bounds`
+        2. 套一个按内容尺寸的 `NSScrollView`，滚轮透传给外层
+        3. Mac 的对话改回不按需建行
+
+        每个各量一次，取外观不变且有效的。第三条若要改要说明取舍让用户定。
+        """,
+        """
+        说明一下测法：`CADisplayLink` 记主线程帧间隔，`CGWindowListCreateImage` 抓自己窗口的像素（经 `dlsym` 调，不需要录屏权限），单次测量受指针位置和其他会话活动影响，同一份代码中位丢帧会在 2 和 11 之间跳，所以至少跑 3 次看中位。
+        """,
+    ]
+
+    static func messages(_ count: Int) -> [String] {
+        (0..<count).map { index in
+            let template = templates[index % templates.count]
+            return template + "\n\n（第 \(index + 1) 条）"
+        }
+    }
+}
+
+
+private struct LazyViewportFixture: View {
+    let messages = LazyMessageSamples.messages(40)
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: Metrics.rowSpacing) {
+                ForEach(Array(messages.enumerated()), id: \.offset) { _, text in
+                    SelectableMarkdown(source: text).frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .font(Theme.body)
+            .frame(maxWidth: Metrics.transcriptWidth)
+            .padding(.horizontal, Metrics.padding * 2)
+            .padding(.vertical, Metrics.transcriptPadding)
+            .frame(maxWidth: .infinity)
+        }
+        .background(Color.white)
+        .environment(\.openURL, OpenURLAction { _ in .handled })
+        .transaction { $0.disablesAnimations = true }
+    }
+}
+
+private final class LazyFrameMarker: NSView {
+    var token = 0 { didSet { needsDisplay = true } }
+    var onPaint: (() -> Void)?
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.white.setFill()
+        bounds.fill()
+        for bit in 0..<10 {
+            ((token & (1 << bit)) != 0 ? NSColor.red : NSColor.green).setFill()
+            CGRect(x: CGFloat(bit * 10), y: 0, width: 8, height: 8).fill()
+        }
+        NSColor.blue.setFill()
+        CGRect(x: 112, y: 0, width: 8, height: 8).fill()
+        // 读当次真实绘制的视图坐标，再用截图中的条码匹配，避免抓图和几何错拍。
+        onPaint?()
+    }
+}
+
+private final class LazyFrameClock: NSObject {
+    var ticks = 0
+    var link: CADisplayLink?
+    func start(_ window: NSWindow) {
+        let link = window.displayLink(target: self, selector: #selector(tick(_:)))
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+    func stop() { link?.invalidate(); link = nil }
+    @objc private func tick(_ link: CADisplayLink) { ticks += 1 }
+    func next() throws {
+        let target = ticks + 1
+        let deadline = Date().addingTimeInterval(3)
+        while ticks < target {
+            guard Date() < deadline else { throw TextFailure.failed("Lazy 屏幕合同没有 display link；检查锁屏/可用显示器") }
+            RunLoop.main.run(mode: .default, before: deadline)
+        }
+    }
+}
+
+private enum LazyViewportContract {
+    struct ViewPosition {
+        let id: String
+        let object: ObjectIdentifier
+        let rect: CGRect
+    }
+    struct Geometry {
+        let views: [ViewPosition]
+    }
+    struct ScreenInk {
+        let token: Int
+        let width: Int
+        let height: Int
+        let ink: [UInt8]
+        func at(_ point: CGPoint) -> Bool {
+            let x = Int(floor(point.x)), y = height - 1 - Int(floor(point.y))
+            guard x >= 0, x < width, y >= 0, y < height else { return false }
+            return ink[y * width + x] != 0
+        }
+        func hasInk(near point: CGPoint) -> Bool {
+            for dy in -1...1 {
+                for dx in -1...1 where at(CGPoint(x: point.x + CGFloat(dx), y: point.y + CGFloat(dy))) {
+                    return true
+                }
+            }
+            return false
+        }
+    }
+    struct Shot {
+        let image: ScreenInk
+        let geometry: Geometry
+    }
+    typealias CreateWindowImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+
+    static func screen(_ window: NSWindow) throws -> ScreenInk? {
+        guard let handle = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", RTLD_NOW) else {
+            throw TextFailure.failed("无法打开 CoreGraphics")
+        }
+        defer { dlclose(handle) }
+        guard let symbol = dlsym(handle, "CGWindowListCreateImage") else { throw TextFailure.failed("没有窗口截图接口") }
+        let create = unsafeBitCast(symbol, to: CreateWindowImage.self)
+        guard let image = create(.null, CGWindowListOption.optionIncludingWindow.rawValue, CGWindowID(window.windowNumber),
+                                 CGWindowImageOption.boundsIgnoreFraming.rawValue | CGWindowImageOption.bestResolution.rawValue)?.takeRetainedValue() else {
+            throw TextFailure.failed("当前会话无法读取测试窗口的实际屏幕图像；不是产品坐标失败")
+        }
+        // 统一为 1 像素/pt，整趟只保存二值墨迹，避免逐帧保留 Retina RGBA 的高内存。
+        let width = 760, height = 700
+        let nativeWidth = image.width, nativeHeight = image.height
+        let sx = CGFloat(nativeWidth) / CGFloat(width), sy = CGFloat(nativeHeight) / CGFloat(height)
+        var bytes = [UInt8](repeating: 0, count: nativeWidth * nativeHeight * 4)
+        let rendered = bytes.withUnsafeMutableBytes { data -> Bool in
+            guard let context = CGContext(data: data.baseAddress, width: nativeWidth, height: nativeHeight, bitsPerComponent: 8,
+                                          bytesPerRow: nativeWidth * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
+            context.interpolationQuality = .none
+            context.draw(image, in: CGRect(x: 0, y: 0, width: nativeWidth, height: nativeHeight))
+            return true
+        }
+        guard rendered else { throw TextFailure.failed("无法读取屏幕像素") }
+        func color(x: Int, y: Int) -> (Int, Int, Int) {
+            let px = Int((CGFloat(x) + 0.5) * sx), py = Int((CGFloat(height - 1 - y) + 0.5) * sy)
+            let i = (py * nativeWidth + px) * 4
+            return (Int(bytes[i]), Int(bytes[i + 1]), Int(bytes[i + 2]))
+        }
+        let anchor = color(x: 117, y: 5)
+        guard anchor.0 < 80, anchor.1 < 80, anchor.2 > 180 else { return nil }
+        var token = 0
+        for bit in 0..<10 {
+            let c = color(x: 6 + bit * 10, y: 5)
+            if c.0 > 180, c.1 < 80, c.2 < 80 { token |= 1 << bit }
+            else if !(c.1 > 180 && c.0 < 80 && c.2 < 80) { return nil }
+        }
+        // 每 pt 汇总覆盖到的所有原生像素；不能先 nearest-neighbor 缩图抽掉浅灰文字的细笔画。
+        var ink = [UInt8](repeating: 0, count: width * height)
+        for y in 0..<nativeHeight {
+            let row = min(height - 1, Int(CGFloat(y) / sy)) * width
+            for x in 0..<nativeWidth {
+                let i = (y * nativeWidth + x) * 4
+                if bytes[i] < 160 && bytes[i + 1] < 160 && bytes[i + 2] < 160 {
+                    ink[row + min(width - 1, Int(CGFloat(x) / sx))] = 1
+                }
+            }
+        }
+        return ScreenInk(token: token, width: width, height: height, ink: ink)
+    }
+
+    static func verify() throws {
+        let host = NSHostingView(rootView: LazyViewportFixture())
+        let visibleFrame = NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let window = NSWindow(contentRect: CGRect(x: visibleFrame.minX + 40, y: visibleFrame.minY + 40, width: 760, height: 700),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .aqua)
+        let root = NSView(frame: CGRect(x: 0, y: 0, width: 760, height: 700))
+        host.frame = root.bounds
+        host.autoresizingMask = [.width, .height]
+        root.addSubview(host)
+        let marker = LazyFrameMarker(frame: CGRect(x: 2, y: 2, width: 122, height: 8))
+        root.addSubview(marker)
+        window.contentView = root
+        window.orderFront(nil)
+        let clock = LazyFrameClock()
+        clock.start(window)
+        defer { clock.stop(); marker.onPaint = nil; window.close() }
+        func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
+            ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { descendants(type, in: $0) }
+        }
+        var scroll: NSScrollView?
+        for _ in 0..<20 {
+            try clock.next()
+            scroll = descendants(NSScrollView.self, in: host).first
+            if scroll?.documentView?.bounds.height ?? 0 > 700 { break }
+        }
+        guard let scroll, let document = scroll.documentView else { throw TextFailure.failed("Lazy 合同没有外层滚动视图") }
+        let clip = scroll.contentView
+        func scrollTo(_ y: CGFloat) {
+            let maxY = max(0, document.frame.height - clip.bounds.height)
+            clip.scroll(to: CGPoint(x: 0, y: min(max(y, 0), maxY)))
+            scroll.reflectScrolledClipView(clip)
+        }
+        var geometries: [Int: Geometry] = [:]
+        marker.onPaint = {
+            let texts = descendants(NSTextView.self, in: host)
+            let positions = texts.compactMap { view -> ViewPosition? in
+                let rect = view.convert(view.bounds, to: nil)
+                guard rect.intersects(root.bounds), !view.string.isEmpty else { return nil }
+                return ViewPosition(id: String(view.string.suffix(16)).replacingOccurrences(of: "\n", with: " "), object: ObjectIdentifier(view), rect: rect)
+            }
+            geometries[marker.token] = Geometry(views: positions)
+        }
+        // Lazy 内容高会随新行测量改变。等真实底边和文档高连续稳定，不按秒休眠，也不触碰文本排版。
+        var lastBottom: CGFloat = -1, stable = 0
+        for _ in 0..<40 {
+            let bottom = max(0, document.frame.height - clip.bounds.height)
+            scrollTo(bottom)
+            marker.token = 0
+            try clock.next()
+            let current = max(0, document.frame.height - clip.bounds.height)
+            if abs(current - lastBottom) <= 0.5, abs(clip.bounds.minY - current) <= 0.5 { stable += 1 } else { stable = 0 }
+            lastBottom = current
+            if stable >= 3 { break }
+        }
+        guard stable >= 3 else { throw TextFailure.failed("Lazy 文档底部未稳定") }
+        let start = clip.bounds.minY
+        let initialObjects = Set(descendants(NSTextView.self, in: host).map(ObjectIdentifier.init))
+        guard initialObjects.count < 40, start > 1680 else {
+            throw TextFailure.failed("未形成按需创建的长对话；初始 native \(initialObjects.count)，底部 \(start)")
+        }
+        func pass(base: Int) throws -> [Shot] {
+            var images: [ScreenInk] = []
+            scrollTo(start)
+            marker.token = base
+            try clock.next()
+            for step in 0...72 {
+                if let image = try screen(window) { images.append(image) }
+                if step < 70 {
+                    scrollTo(start - CGFloat(step + 1) * 24)
+                    marker.token = base + step + 1
+                }
+                try clock.next()
+            }
+            var seen = Set<Int>()
+            let shots = images.compactMap { image -> Shot? in
+                guard image.token >= base, image.token <= base + 70, seen.insert(image.token).inserted,
+                      let geometry = geometries[image.token] else { return nil }
+                return Shot(image: image, geometry: geometry)
+            }
+            guard shots.count >= 30 else { throw TextFailure.failed("可配对的屏幕帧不足；\(shots.count)/71，不能判定绘制") }
+            return shots
+        }
+        // 整趟采集结束前不读 TextKit 行片段、不调用 cacheDisplay，不让验证主动重画掩盖首次空白。
+        let cold = try pass(base: 1)
+        let warm = try pass(base: 101)
+        var reference: [String: (ScreenInk, ViewPosition)] = [:]
+        for shot in warm {
+            for view in shot.geometry.views where view.rect.minY >= 12 && view.rect.maxY <= 698 && reference[view.id] == nil {
+                reference[view.id] = (shot.image, view)
+            }
+        }
+        guard reference.count >= 3 else { throw TextFailure.failed("暖趟完整参考不足：\(reference.count)") }
+        func compare(_ actualImage: ScreenInk, rect actualRect: CGRect, to expectedImage: ScreenInk, rect expectedRect: CGRect) -> (Int, Int, CGRect) {
+            let visible = actualRect.intersection(CGRect(x: 0, y: 12, width: 760, height: 686)).insetBy(dx: 4, dy: 4)
+            var missing = 0, ink = 0
+            var missingBounds = CGRect.null
+            for y in stride(from: ceil(visible.minY) + 0.5, to: floor(visible.maxY), by: 1) {
+                for x in stride(from: ceil(visible.minX) + 0.5, to: floor(visible.maxX), by: 1) {
+                    let point = CGPoint(x: x, y: y)
+                    let wanted = CGPoint(x: expectedRect.minX + x - actualRect.minX,
+                                         y: expectedRect.maxY - (actualRect.maxY - y))
+                    let a = actualImage.at(point), b = expectedImage.at(wanted)
+                    if a {
+                        ink += 1
+                        if !expectedImage.hasInk(near: wanted) {
+                            missing += 1
+                            missingBounds = missingBounds.union(CGRect(x: x, y: y, width: 1, height: 1))
+                        }
+                    }
+                    if b {
+                        ink += 1
+                        if !actualImage.hasInk(near: point) {
+                            missing += 1
+                            missingBounds = missingBounds.union(CGRect(x: x, y: y, width: 1, height: 1))
+                        }
+                    }
+                }
+            }
+            return (missing, ink, missingBounds)
+        }
+        var checks = 0, coldPartialObjects = Set<ObjectIdentifier>(), failures: [String] = []
+        var comparedIDs = Set<String>(), worstMismatch = 0.0
+        for shot in cold {
+            for view in shot.geometry.views {
+                guard let (expectedImage, expectedView) = reference[view.id],
+                      abs(view.rect.width - expectedView.rect.width) <= 1,
+                      abs(view.rect.height - expectedView.rect.height) <= 1 else { continue }
+                let visible = view.rect.intersection(CGRect(x: 0, y: 12, width: 760, height: 686)).insetBy(dx: 4, dy: 4)
+                guard visible.width > 100, visible.height > 12 else { continue }
+                if !initialObjects.contains(view.object), view.rect.maxY > 702, view.rect.minY > 12 {
+                    coldPartialObjects.insert(view.object)
+                }
+                let (missing, ink, missingBounds) = compare(shot.image, rect: view.rect, to: expectedImage, rect: expectedView.rect)
+                guard ink > 100 else { continue }
+                checks += 1
+                comparedIDs.insert(view.id)
+                worstMismatch = max(worstMismatch, Double(missing) / Double(ink))
+                if missing * 200 > ink {
+                    failures.append("帧 \(shot.image.token) 消息 \(view.id) 高 \(view.rect.height)，露出 \(visible.height)，错位/缺墨 \(missing)/\(ink)，差异屏幕范围 \(missingBounds)")
+                }
+            }
+        }
+        guard checks >= 30, coldPartialObjects.count >= 1 else {
+            throw TextFailure.failed("未覆盖新的 Lazy 原生行首次仅底部露出；比较 \(checks)，新 partial 对象 \(coldPartialObjects.count)，参考 \(reference.count)")
+        }
+        guard failures.isEmpty else {
+            throw TextFailure.failed("Lazy 首次部分露出像素与完整参考不一致；冷帧 \(cold.count)，暖帧 \(warm.count)，新 partial \(coldPartialObjects.count)；\n" + failures.prefix(3).joined(separator: "\n"))
+        }
+        // 每次改宽前保持同一原生行顶部裁切，抓首次真正呈现的画面，再完整滚入该行建立参考。
+        // 不先滚到顶部暖布局，也不通过等待像素正确来跳过失败首帧。
+        guard let target = descendants(NSTextView.self, in: host).first(where: {
+            let rect = $0.convert($0.bounds, to: nil)
+            return rect.intersects(root.bounds) && rect.height > 170 && rect.height < 430
+        }), let targetStorage = target.textStorage else {
+            throw TextFailure.failed("改宽夹具没有可完整显示的中长消息")
+        }
+        guard targetStorage.length >= 5 else { throw TextFailure.failed("改宽夹具正文不足以建立非空选区") }
+        target.setSelectedRange(NSRange(location: 1, length: 4))
+        let identity = ObjectIdentifier(target), selection = target.selectedRange()
+        guard selection.length > 0 else { throw TextFailure.failed("改宽前未建立非空选区") }
+        func markedShot(_ token: Int) throws -> Shot {
+            marker.token = token
+            for _ in 0..<12 {
+                try clock.next()
+                if let image = try screen(window), image.token == token, let geometry = geometries[token] {
+                    return Shot(image: image, geometry: geometry)
+                }
+            }
+            throw TextFailure.failed("改宽帧标记没有呈现：\(token)")
+        }
+        for (index, width) in [CGFloat(520), CGFloat(760)].enumerated() {
+            let before = target.convert(target.bounds, to: clip)
+            scrollTo(before.minY + min(120, before.height / 3))
+            let cropped = try markedShot(201 + index * 3)
+            guard let croppedPosition = cropped.geometry.views.first(where: { $0.object == identity }),
+                  croppedPosition.rect.maxY > 720, croppedPosition.rect.minY < 680 else {
+                throw TextFailure.failed("改宽前同一消息顶部必须已被裁切")
+            }
+            let wantedWidth = target.bounds.width + width - host.bounds.width
+            host.setFrameSize(CGSize(width: width, height: 700))
+            let first = try markedShot(202 + index * 3)
+            guard let firstPosition = first.geometry.views.first(where: { $0.object == identity }),
+                  firstPosition.rect.maxY > 702, firstPosition.rect.minY < 698,
+                  abs(firstPosition.rect.width - wantedWidth) <= 1,
+                  target.textStorage === targetStorage, target.selectedRange() == selection else {
+                throw TextFailure.failed("改宽首次显示未保持裁切的同一正文/Storage/选区或尺寸；目标宿主宽 \(width)，正文宽 \(target.bounds.width)，期望 \(wantedWidth)")
+            }
+            let now = target.convert(target.bounds, to: clip)
+            scrollTo(now.minY - 24)
+            let reference = try markedShot(203 + index * 3)
+            guard let full = reference.geometry.views.first(where: { $0.object == identity }),
+                  full.rect.minY >= 12, full.rect.maxY <= 698,
+                  full.rect.size == firstPosition.rect.size else {
+                throw TextFailure.failed("改宽完整参考未包含同一消息的当前全部内容；高 \(target.bounds.height)")
+            }
+            let (missing, ink, rect) = compare(first.image, rect: firstPosition.rect, to: reference.image, rect: full.rect)
+            guard ink > 1000, missing * 200 <= ink else {
+                throw TextFailure.failed("顶部裁切时改宽到 \(width - 40) pt 的首帧错位/缺墨 \(missing)/\(ink)，范围 \(rect)，消息 \(firstPosition.id)")
+            }
+        }
+        print("通过：Lazy 40 条消息冷滚 70×24 pt，冷/暖配对 \(cold.count)/\(warm.count) 帧；\(coldPartialObjects.count) 个新原生对象部分露出，\(comparedIDs.count) 条消息 \(checks) 个切片与完整参考对齐，最大不匹配 \(worstMismatch)；同实例720→480→720首帧对齐，Storage/选区保持")
+    }
+}
+
 // MARK: - 场景
 
 @MainActor @main
@@ -323,7 +930,10 @@ private struct MacSelectableTextContract {
             try heightFollowsWidthAndLaysOutOncePerWidth()
             try streamingAppendOnlyEditsTheTail()
             try linkClickReachesOpenURLButPlainTextDoesNot()
-            print("Mac 文本视图的五个原生场景验证通过")
+            try clippedTextReportsEmptyOnlyWhenFullyOutsideAndKeepsLongParagraphStable()
+            try offscreenAttachmentResumesAtCurrentWidthWithItsStateAndSelection()
+            try LazyViewportContract.verify()
+            print("Mac 文本视图的八个原生场景验证通过")
             exit(0)
         } catch {
             FileHandle.standardError.write(Data("\(error)\n".utf8))
@@ -346,7 +956,7 @@ private struct MacSelectableTextContract {
 
     // 1. 跨段落、标题、引用的选区与复制。
     // 换成 NSTextView 的理由就是 SwiftUI 不能跨 Text 选字；段落、标题、引用在属性串里是带不同段落样式和自定义装饰属性的几个段落，
-    // 选区能不能从一段拖进另一段、复制出来的纯文本是不是按段落换行且不夹带装饰，由 TextKit 2 的选择与 AppKit 的 pasteboard 写入决定。
+    // 选区能不能从一段拖进另一段、复制能否按源文保留段间空行与 Markdown 标记，由 TextKit 2 的选择与 AppKit 的 pasteboard 写入决定。
     // 复制写到单独命名的 pasteboard（和 copy: 走同一条 writeSelection 路径），不碰用户的剪贴板。
     private static func selectionSpansParagraphHeadingAndQuote() throws {
         let harness = ProseHost(source: """
@@ -375,11 +985,11 @@ private struct MacSelectableTextContract {
         guard written, let copied = pasteboard.string(forType: .string) else {
             throw TextFailure.failed("跨段选区没有写出纯文本；writeSelection 返回 \(written)，pasteboard 类型 \(pasteboard.types ?? [])，选区 \(view.selectedRange())")
         }
-        let lines = copied.components(separatedBy: "\n")
-        guard lines == [paragraphTail, heading, quoteHead] else {
-            throw TextFailure.failed("跨段复制应得到按段落换行的三段纯文本；实际 \(lines)")
+        let expected = "\(paragraphTail)\n\n### \(heading)\n\n> \(quoteHead)"
+        guard copied == expected else {
+            throw TextFailure.failed("跨段复制应保留 Markdown 原文的空行、标题与引用标记；实际 \(copied.debugDescription)")
         }
-        print("通过：setSelectedRange 跨段落、标题、引用后复制得到 \(lines.count) 段纯文本")
+        print("通过：setSelectedRange 跨段落、标题、引用后复制保留 Markdown 原文")
 
         // 鼠标从第一段拖到引用：选区要跨过中间的标题
         view.setSelectedRange(NSRange(location: 0, length: 0))
@@ -624,5 +1234,233 @@ private struct MacSelectableTextContract {
             throw TextFailure.failed("点文件引用应把 kite:// 链接交给 openURL；实际 \(harness.state.opened)")
         }
         print("通过：openURL 依次收到 \(harness.state.opened.map(\.absoluteString))，点普通文字没有触发")
+    }
+
+    // 真实缺陷：SwiftUI 滚动裁切下，AppKit 的 visibleRect 可非空却完全落在文本 bounds 之外。
+    // 屏外正文必须给 TextKit 空视口；长段只露中间时又必须保留整段视口，避免字形空白或跳位。
+    // 使用真实 NSScrollView/NSHostingView 裁切，期望来自屏幕相交关系与滚动前的行几何，不模拟产品的 getter。
+    private static func clippedTextReportsEmptyOnlyWhenFullyOutsideAndKeepsLongParagraphStable() throws {
+        let harness = ClippedProseHost(rootView: ClippedProseFixture())
+        defer { harness.window.close() }
+        try harness.wait("滚动正文建立") {
+            let texts = harness.descendants(NSTextView.self)
+            return texts.contains { $0.string == ClippedProseFixture.short && $0.bounds.height > 0 }
+                && texts.contains { $0.string == ClippedProseFixture.long && $0.bounds.height > 1800 }
+        }
+        let texts = harness.descendants(NSTextView.self)
+        guard let short = texts.first(where: { $0.string == ClippedProseFixture.short }),
+              let long = texts.first(where: { $0.string == ClippedProseFixture.long }),
+              let shortStorage = short.textStorage, let longStorage = long.textStorage,
+              let scroll = harness.descendants(NSScrollView.self).first else {
+            throw TextFailure.failed("滚动夹具缺少两个正文或 NSScrollView")
+        }
+        let clip = scroll.contentView
+        let shortBounds = short.bounds, longBounds = long.bounds
+        let shortSelection = NSRange(location: 1, length: 4), longSelection = NSRange(location: 8, length: 12)
+        short.setSelectedRange(shortSelection)
+        long.setSelectedRange(longSelection)
+
+        func check(_ label: String, shortVisible: Bool, longVisible: Bool) throws {
+            for (view, originalStorage, originalBounds, selection, expectedVisible) in [
+                (short, shortStorage, shortBounds, shortSelection, shortVisible),
+                (long, longStorage, longBounds, longSelection, longVisible),
+            ] {
+                let inClip = view.convert(view.bounds, to: clip)
+                guard inClip.intersects(clip.bounds) == expectedVisible else {
+                    throw TextFailure.failed("\(label)：夹具裁切位置不符合场景；正文 \(inClip)，clip \(clip.bounds)")
+                }
+                let visible = view.visibleRect
+                guard expectedVisible ? visible == view.bounds : visible.isEmpty else {
+                    throw TextFailure.failed("\(label)：\(expectedVisible ? "露出部分时应报告整段 bounds" : "完全屏外时应报告空视口")；visibleRect \(visible)，bounds \(view.bounds)，正文在 clip 内 \(inClip)，clip \(clip.bounds)")
+                }
+                guard view.window === harness.window, harness.descendants(NSTextView.self).contains(where: { $0 === view }),
+                      view.textStorage === originalStorage, view.bounds == originalBounds,
+                      view.selectedRange() == selection else {
+                    throw TextFailure.failed("\(label)：滚动改变了原生对象、正文尺寸或已有选区")
+                }
+            }
+        }
+
+        func lines() throws -> [CGRect] {
+            guard let layout = long.textLayoutManager else { throw TextFailure.failed("长段缺少 TextKit 2") }
+            var result: [CGRect] = []
+            // 只读已存在的片段，不请求 ensureLayout/ensuresLayout 来掩盖视口造成的缺字。
+            layout.enumerateTextLayoutFragments(from: nil, options: []) { fragment in
+                for line in fragment.textLineFragments where line.characterRange.length > 0 {
+                    result.append(line.typographicBounds.offsetBy(dx: fragment.layoutFragmentFrame.minX,
+                                                                 dy: fragment.layoutFragmentFrame.minY))
+                }
+                return true
+            }
+            return result
+        }
+
+        let shortInClip = short.convert(short.bounds, to: clip)
+        try harness.scroll(scroll, to: shortInClip.minY + 801)
+        let appKitRect = try harness.appKitVisibleRect(short)
+        guard !appKitRect.isEmpty, !appKitRect.intersects(short.bounds) else {
+            throw TextFailure.failed("未复现 AppKit 非空但不相交的前提；AppKit visibleRect \(appKitRect)，bounds \(short.bounds)，clip \(clip.bounds)")
+        }
+        try check("短行完全位于裁切区上方", shortVisible: false, longVisible: true)
+        print("通过：AppKit visibleRect \(appKitRect) 与短行 bounds \(short.bounds) 不相交，产品报告空视口")
+
+        try harness.scroll(scroll, to: shortInClip.maxY - 8)
+        try check("短行只露出 8 pt", shortVisible: true, longVisible: true)
+        try harness.scroll(scroll, to: shortInClip.minY - 24)
+        try check("短行完整滚入", shortVisible: true, longVisible: true)
+        let referenceLines = try lines()
+        guard referenceLines.count > 30 else { throw TextFailure.failed("长段夹具行数不足：\(referenceLines.count)") }
+
+        let longInClip = long.convert(long.bounds, to: clip)
+        let middle = (longInClip.midY - clip.bounds.height / 2).rounded()
+        try harness.scroll(scroll, to: middle)
+        try check("长段仅中部露出", shortVisible: false, longVisible: true)
+        guard try lines() == referenceLines else { throw TextFailure.failed("长段中途露出后行几何发生跳位") }
+        let firstPixels = try harness.pixels()
+        let darkPixels = stride(from: 0, to: firstPixels.bytes.count, by: 4).filter {
+            firstPixels.bytes[$0] < 128 && firstPixels.bytes[$0 + 1] < 128 && firstPixels.bytes[$0 + 2] < 128
+        }.count
+        guard darkPixels > 1000 else { throw TextFailure.failed("长段中部出现空白；实际深色像素只有 \(darkPixels)") }
+
+        try harness.scroll(scroll, to: 0)
+        try check("两段全部滚出", shortVisible: false, longVisible: false)
+        try harness.scroll(scroll, to: middle)
+        try check("再次滚回长段中部", shortVisible: false, longVisible: true)
+        guard try lines() == referenceLines else { throw TextFailure.failed("滚出再回来后长段行几何发生跳位") }
+        let returnedPixels = try harness.pixels()
+        guard returnedPixels.width == firstPixels.width, returnedPixels.height == firstPixels.height,
+              zip(returnedPixels.bytes, firstPixels.bytes).allSatisfy({ abs(Int($0.0) - Int($0.1)) <= 3 }) else {
+            throw TextFailure.failed("滚出再回到同一中部位置后，文字实际绘制发生变化")
+        }
+        print("通过：完全屏外、部分露出和滚入的视口语义正确；长段 \(referenceLines.count) 行中途露出有 \(darkPixels) 个深色像素，往返滚动保持行位置、绘制、对象与选区")
+    }
+
+    // 屏外附件延迟内部宿主改宽后，真实 clip 通知必须在再次显示时补齐尺寸，且不能重建宿主丢掉折叠/横滑状态。
+    // 真实 BlockAttachment/TextKit provider、CodeBlock/Folded/BlockCard 与 NSScrollView 配合，单看源码不能确认通知与布局顺序。
+    // 高亮和指针/按钮装饰用薄桩；pointingPlain 只把公开 trigger 接到原生输入，展开和横滑仍用生产 SwiftUI 逻辑。
+    private static func offscreenAttachmentResumesAtCurrentWidthWithItsStateAndSelection() throws {
+        let state = ProseState(source: AttachmentProseFixture.source)
+        state.width = 520
+        let harness = ClippedProseHost(rootView: AttachmentProseFixture(state: state))
+        defer { harness.window.close() }
+        try harness.wait("带附件正文建立") {
+            harness.descendants(NSTextView.self).contains { $0.string.hasPrefix("附件前正文") && $0.bounds.height > 900 }
+        }
+        guard let textView = harness.descendants(NSTextView.self).first(where: { $0.string.hasPrefix("附件前正文") }),
+              let storage = textView.textStorage, let scroll = harness.descendants(NSScrollView.self).first else {
+            throw TextFailure.failed("附件夹具没有生产正文或外层滚动视图")
+        }
+        let clip = scroll.contentView
+        let initialY = textView.convert(textView.bounds, to: clip).minY - 20
+        try harness.scroll(scroll, to: initialY)
+        try harness.wait("TextKit 建立附件 provider") { !harness.descendants(EmbeddedContainerView.self).isEmpty }
+        guard let container = harness.descendants(EmbeddedContainerView.self).first,
+              let attachment = container.attachment, let embeddedHost = container.subviews.first else {
+            throw TextFailure.failed("没有实际的附件容器或 NSHostingController.view")
+        }
+        let foldedHeight = container.bounds.height
+        // 复制按钮有独立 PaneButtonStyle；只有内容里的展开按钮使用 pointingPlain 输入适配。
+        try harness.wait("生产展开按钮输入适配建立") { harness.descendants(ContractActionButton.self, in: embeddedHost).count == 1 }
+        let expand = harness.descendants(ContractActionButton.self, in: embeddedHost)[0]
+        expand.performClick(nil)
+        try harness.wait("生产代码块展开并更新 TextKit 高度") { container.bounds.height > foldedHeight + 100 }
+        let expandedSize = container.bounds.size
+        guard !harness.descendants(ContractActionButton.self, in: embeddedHost).contains(where: { $0 === expand }) else {
+            throw TextFailure.failed("生产代码块展开后仍显示折叠按钮")
+        }
+        guard let horizontal = harness.descendants(NSScrollView.self, in: embeddedHost).first(where: {
+            ($0.documentView?.bounds.width ?? 0) > $0.contentView.bounds.width + 300
+        }) else { throw TextFailure.failed("长代码没有建立实际横向滚动视图") }
+        horizontal.contentView.scroll(to: CGPoint(x: 160, y: horizontal.contentView.bounds.minY))
+        horizontal.reflectScrolledClipView(horizontal.contentView)
+        try harness.nextFrame()
+        guard abs(horizontal.contentView.bounds.minX - 160) <= 1 else { throw TextFailure.failed("横滑夹具没有到达 160 pt") }
+
+        let rendered = storage.string as NSString
+        let before = try range(of: "跨附件选区", in: rendered)
+        let after = try range(of: "附件后正文", in: rendered)
+        let selection = NSRange(location: before.location, length: NSMaxRange(after) - before.location)
+        var attachments = 0
+        storage.enumerateAttribute(.attachment, in: selection) { value, _, _ in
+            if value as? BlockAttachment === attachment { attachments += 1 }
+        }
+        guard attachments == 1 else { throw TextFailure.failed("选区必须跨过同一个真实 BlockAttachment") }
+        textView.setSelectedRange(selection)
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("kite.contract.attachment.\(ProcessInfo.processInfo.processIdentifier)"))
+        defer { pasteboard.releaseGlobally() }
+        func copySelection() throws -> String {
+            pasteboard.declareTypes(textView.writablePasteboardTypes, owner: nil)
+            guard textView.writeSelection(to: pasteboard, types: textView.writablePasteboardTypes),
+                  let copied = pasteboard.string(forType: .string) else { throw TextFailure.failed("跨附件选区没有写出原文") }
+            return copied
+        }
+        let originalCopy = try copySelection()
+        guard originalCopy.contains(AttachmentProseFixture.code), originalCopy.contains("```swift") else {
+            throw TextFailure.failed("跨附件复制没有保留完整代码及 Markdown 围栏")
+        }
+        let widthInset = state.width - expandedSize.width
+        let visibleHostFrame = embeddedHost.frame
+
+        func checkIdentityAndState(_ label: String) throws {
+            guard textView.textStorage === storage, textView.selectedRange() == selection,
+                  container.attachment === attachment, container.subviews.first === embeddedHost,
+                  harness.descendants(EmbeddedContainerView.self).contains(where: { $0 === container }),
+                  harness.descendants(NSScrollView.self, in: embeddedHost).contains(where: { $0 === horizontal }) else {
+                throw TextFailure.failed("\(label)：正文、附件、宿主、横向滚动对象或选区被替换")
+            }
+            guard abs(horizontal.contentView.bounds.minX - 160) <= 1,
+                  abs(container.bounds.height - expandedSize.height) <= 1 else {
+                throw TextFailure.failed("\(label)：展开或横滑状态丢失；高 \(container.bounds.height)/\(expandedSize.height)，横向位置 \(horizontal.contentView.bounds.minX)")
+            }
+            guard abs(container.bounds.width - (state.width - widthInset)) <= 1 else {
+                throw TextFailure.failed("\(label)：TextKit 附件占位没有跟随正文改宽；容器 \(container.bounds)，正文宽 \(state.width)")
+            }
+        }
+
+        let offscreenY = container.convert(container.bounds, to: clip).maxY + 200
+        try harness.scroll(scroll, to: offscreenY)
+        guard !container.convert(container.bounds, to: clip).intersects(clip.bounds),
+              textView.convert(textView.bounds, to: clip).intersects(clip.bounds) else {
+            throw TextFailure.failed("附件应完全屏外，但它所在的长正文仍需露出")
+        }
+        for width: CGFloat in [360, 560, 420] {
+            state.width = width
+            try harness.wait("屏外正文改宽 \(width)") { abs(textView.bounds.width - (width + Metrics.inlineCodePadding * 2)) <= 1 }
+            try checkIdentityAndState("屏外宽 \(width)")
+            guard embeddedHost.isHidden, embeddedHost.frame == visibleHostFrame else {
+                throw TextFailure.failed("完全屏外的内部宿主应隐藏并保留原 frame；hidden \(embeddedHost.isHidden)，frame \(embeddedHost.frame)，原 frame \(visibleHostFrame)")
+            }
+        }
+
+        // 通过真实 NSClipView bounds 通知滚入，只等下一批主队列与正常显示；不直接调用产品的 host/sync。
+        let partialY = container.convert(container.bounds, to: clip).minY - clip.bounds.height + 80
+        try harness.scroll(scroll, to: partialY)
+        try checkIdentityAndState("仅部分滚入首帧")
+        let visiblePart = embeddedHost.convert(embeddedHost.bounds, to: clip).intersection(clip.bounds)
+        guard !embeddedHost.isHidden, embeddedHost.frame == container.bounds,
+              !visiblePart.isEmpty, visiblePart.height <= 81 else {
+            throw TextFailure.failed("附件仅部分滚入首帧应先对齐当前容器再显示；hidden \(embeddedHost.isHidden)，frame \(embeddedHost.frame)，bounds \(container.bounds)，可见部分 \(visiblePart)")
+        }
+        let pixels = try harness.pixels()
+        let painted = clip.convert(visiblePart, to: nil)
+        var ink = 0
+        for y in stride(from: painted.minY, to: painted.maxY, by: 1) {
+            for x in stride(from: painted.minX, to: painted.maxX, by: 1) {
+                let color = pixels.color(at: CGPoint(x: x, y: y))
+                if color.r < 128 && color.g < 128 && color.b < 128 { ink += 1 }
+            }
+        }
+        guard ink > 10 else { throw TextFailure.failed("部分滚入的代码附件没有实际绘出内容；深色像素 \(ink)") }
+
+        state.width = 520
+        try harness.wait("附件恢复原宽") { abs(textView.bounds.width - (520 + Metrics.inlineCodePadding * 2)) <= 1 }
+        try harness.scroll(scroll, to: initialY)
+        try checkIdentityAndState("恢复原宽并完整滚入")
+        guard !embeddedHost.isHidden, embeddedHost.frame == container.bounds,
+              container.bounds.size == expandedSize, try copySelection() == originalCopy,
+              !harness.descendants(ContractActionButton.self, in: embeddedHost).contains(where: { $0 === expand }) else {
+            throw TextFailure.failed("恢复原宽后附件尺寸、展开状态或跨附件原文复制发生变化")
+        }
+        print("通过：真实代码附件展开后高 \(foldedHeight) → \(expandedSize.height)，屏外三次改宽保留占位/宿主/横滑/选区；仅露出 80 pt 时首帧同步尺寸且绘出 \(ink) 个深色像素，回原宽状态与复制原文恢复")
     }
 }
