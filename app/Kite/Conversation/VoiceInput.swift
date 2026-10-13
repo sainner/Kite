@@ -92,11 +92,6 @@ final class VoiceInput {
         await stream.begin()
     }
 
-    #if DEBUG
-    /// 输入区外观对照（ComposerPreview）用：不开麦克风，直接当作 owner 在录。
-    func previewOwner(_ owner: String?) { self.owner = owner }
-    #endif
-
     /// 停止录音，已录的声音交给工作机定稿；给出 owner 时只停它自己的。
     func stop(owner: String? = nil) {
         if let owner, owner != self.owner { return }

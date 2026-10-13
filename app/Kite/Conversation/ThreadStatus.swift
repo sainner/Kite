@@ -59,33 +59,3 @@ struct ContextRing: View {
         ContextRingLayers(phase: phase, fraction: fraction, lineWidth: lineWidth, still: still)
     }
 }
-
-/// 某一刻的圆环：progress 是一个周期里走到哪（0～1），still 是不动（空闲或减少动态效果）。原来的 SwiftUI 版逐帧画它，
-/// 图层版（ContextRingLayers）照它复刻，Mac 的圆环对照（StagePreview）也画它。运行中整圈顺时针转、底轨明暗渐变；停止和收尾时整圈按余弦明暗起伏。
-struct ContextRingFrame: View {
-    let phase: String
-    let fraction: Double?
-    let lineWidth: CGFloat
-    let progress: Double
-    let still: Bool
-
-    var body: some View {
-        let color = ContextRing.color(phase)
-        let pulse = still || phase == "running" ? 1 : 0.65 + 0.35 * cos(progress * 2 * .pi)
-        // 底轨保留明暗渐变，未知用量时也能看出旋转。
-        let stroke = phase == "running" && !still
-            ? AnyShapeStyle(AngularGradient(colors: [color, color.opacity(0.35), color], center: .center))
-            : AnyShapeStyle(color)
-        ZStack {
-            Circle().stroke(stroke, lineWidth: lineWidth).opacity(0.25)
-            if let fraction {
-                Circle()
-                    .trim(from: 0, to: min(max(fraction, 0), 1))
-                    .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            }
-        }
-        .rotationEffect(.degrees(phase == "running" ? progress * 360 : 0))
-        .opacity(pulse)
-    }
-}
