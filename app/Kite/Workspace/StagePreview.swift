@@ -171,7 +171,7 @@ extension StagePreview {
         try? await Task.sleep(for: .milliseconds(800))
         await shoot("\(name)-0-actions", port: port, frames: frames)
         await StagePreviewCapture.post("\(name)-0-actions.ax.txt", Data(Self.accessibilityTree(view).utf8), port: port)
-        // 拖缝：往左挪 60，中途抓一张，松手吸附后再抓一张
+        // 拖缝：往左挪 60，中途抓一张，松手后再抓一张
         let layout = scene.area.layout, bounds = CGRect(origin: .zero, size: Self.cell)
         if let gap = layout.shown?.layout(in: layout.regions(in: bounds).canvas).gaps.first {
             for step in 1...6 {

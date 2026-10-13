@@ -17,7 +17,7 @@ struct StagePlan {
     /// bounds 是台面所在的整块（含停靠栏），台面自己的坐标。
     init(layout: WindowLayout, area: WorkArea?, bounds: CGRect) {
         regions = layout.regions(in: bounds)
-        tiles = layout.shown?.layout(in: regions.canvas, free: layout.resizing) ?? TileLayout()
+        tiles = layout.shown?.layout(in: regions.canvas) ?? TileLayout()
         docked = layout.shownDock
         onStage = Set(tiles.panes.keys)
         opening = area?.openingInstance

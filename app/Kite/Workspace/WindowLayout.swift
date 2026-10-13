@@ -17,15 +17,10 @@ final class WindowLayout {
     @ObservationIgnored private var pendingPreview: Task<Void, Never>?
     /// 等指针停下从这里起算，离开超过 previewSlop 重新计时。
     @ObservationIgnored private var dwellAnchor = CGPoint.zero
-    /// 正在拖的那道缝，跟手不吸附；松手后清空，排布吸附到模块。
+    /// 正在拖的那道缝，松手后清空。
     private(set) var resizing: Split?
-    /// 刚松开缝、各窗口还没报上吸附动画（settling）的那一段也算过渡中：吸附动画由卡片在下一次更新里报上来，
-    /// 中间这一两帧不算的话，点阵会先淡入、又随吸附收起、吸附完再淡入，闪一下（2026-10-13 用户报）。
-    private var releasing = false
-    @ObservationIgnored private var releaseEnd: Task<Void, Never>?
-
-    /// 在拖缝，或者刚松开、吸附还没走完：窗口点阵这段时间一直收着，吸附完只淡入一次。
-    var resizingOrReleasing: Bool { resizing != nil || releasing }
+    /// 起拖时的排布，这一次拖缝都从它算，见 resize。
+    @ObservationIgnored private var resizeBase: TileBase?
     /// 拖动时指针在内容区里的位置。一直在变，和 drag 分开，免得每动一下整个排布都重算。
     private(set) var pointer: CGPoint = .zero
     /// 正在走排布动画的窗口，由摆卡片的视图报上来，见 blocksInput。
@@ -38,12 +33,12 @@ final class WindowLayout {
 
     /// 过渡中：拖动、拖缝调整大小、排布动画。点阵不参与过渡，停下后再淡入；窗口、停靠栏和缝都不接点击和悬停，Mac 上也不换光标
     /// （2026-10-12 用户确定：过渡中这些都用不上）。正在进行的拖动照常由按下时的视图接。
-    var transitioning: Bool { blocksInput || resizingOrReleasing }
+    var transitioning: Bool { blocksInput || resizing != nil }
 
     /// 所有 App 窗口里有窗口组在过渡中。主线程上能往后放的工作（如对话藏着量高，见 TranscriptWindow）看它让开，不卡进动画里。
     static var anyTransitioning: Bool { all.allObjects.contains { $0.transitioning } }
-    /// 所有 App 窗口里有窗口组在拖缝或吸附：Mac 对话列表这时只量可见区附近的行，见 TranscriptListView。
-    static var anyResizing: Bool { all.allObjects.contains { $0.resizingOrReleasing } }
+    /// 所有 App 窗口里有窗口组在拖缝：Mac 对话列表这时只量可见区附近的行，见 TranscriptListView。
+    static var anyResizing: Bool { all.allObjects.contains { $0.resizing != nil } }
     private static let all = NSHashTable<WindowLayout>.weakObjects()
 
     func noteSettling(_ pane: Pane, _ settling: Bool) {
@@ -55,16 +50,26 @@ final class WindowLayout {
     @ObservationIgnored private let defaults: UserDefaults
     /// 由当前窗口内容区提供；不随布局写入共享数据或持久化。
     var availableSize: CGSize?
+    /// 内容区左边在 App 窗口里的位置，见 updateViewport。
+    @ObservationIgnored private var viewportLeading: CGFloat = 0
+    @ObservationIgnored private var leadingShift: LeadingShift?
     private(set) var presentation: WorkspacePresentation = .tiled
     /// 紧凑布局里正在看的停靠窗口，回到宽屏后继续显示，但不改写原排布。
     private var carriedFocus: Pane?
 
-    /// 窄屏只改变呈现，不把暂时放不下的卡片写成永久停靠。
-    func updateViewport(_ size: CGSize, presentation: WorkspacePresentation) {
+    /// 窄屏只改变呈现，不把暂时放不下的卡片写成永久停靠。leading 是内容区左边在 App 窗口里的位置：
+    /// 宽度的变化正好是左边挪的那一段，就是侧栏改了宽（拖动、收起、展开），由贴着侧栏的那一列吸收，见 shiftLeadingEdge；
+    /// 其余的宽度变化（系统窗口改尺寸、换到另一个窗口里）各列照比例分。
+    func updateViewport(_ size: CGSize, presentation: WorkspacePresentation, leading: CGFloat = 0) {
         let nextSize: CGSize? = presentation == .tiled ? size : nil
         if self.presentation != presentation || availableSize != nextSize {
             cancelDrag()
             if resizing != nil { finishResize() }
+        }
+        // 界面按像素摆，内容区的左边和宽各自取整，两者的变化差不到一点
+        if self.presentation == .tiled, presentation == .tiled, let previous = availableSize, size.width != previous.width,
+           leading != viewportLeading, abs(size.width - previous.width + leading - viewportLeading) < 1 {
+            shiftLeadingEdge(from: previous, to: size)
         }
         if self.presentation == .compact && presentation == .tiled {
             carriedFocus = focused.flatMap { docked.contains($0) ? $0 : nil }
@@ -72,6 +77,32 @@ final class WindowLayout {
         motionKind = .immediate
         self.presentation = presentation
         availableSize = nextSize
+        viewportLeading = leading
+    }
+
+    /// 一轮侧栏改宽：开始前的排布和台面宽度，上一次改完台面多宽、各刀的比例。
+    private struct LeadingShift {
+        let base: TileBase
+        let width: CGFloat
+        var target: CGFloat
+        var ratios: [ObjectIdentifier: CGFloat] = [:]
+    }
+
+    /// 侧栏改宽，内容区从 previous 变成 size：宽度的变化由贴着侧栏的那一列吸收，其余列保持原来的宽度；
+    /// 那一列到了最小宽度，再从左往右依次让出。一轮侧栏改宽都从第一次改之前的排布算，侧栏拖回去、收起再展开，
+    /// 窗口原样回来，中途挤小的也回来。排布被别的改动改过（拖缝、放卡片、换排布），或台面宽度另有变化（系统窗口改尺寸），
+    /// 就从当时的排布重新算起。
+    private func shiftLeadingEdge(from previous: CGSize, to size: CGSize) {
+        guard let tile = fittedRoot else { return }
+        let canvas = regions(in: CGRect(origin: .zero, size: previous)).canvas
+        let target = regions(in: CGRect(origin: .zero, size: size)).canvas.width
+        var current = leadingShift.flatMap { $0.target == canvas.width && $0.ratios == tile.ratios ? $0 : nil }
+            ?? LeadingShift(base: TileBase(tile.layout(in: canvas)), width: canvas.width, target: canvas.width)
+        tile.absorb(along: .horizontal, from: current.width, to: target, atEnd: false, base: current.base)
+        current.target = target
+        current.ratios = tile.ratios
+        leadingShift = current
+        saveSoon()
     }
 
     func cancelDrag() {
@@ -163,9 +194,23 @@ final class WindowLayout {
     }
 
     private func save() {
+        pendingSave?.cancel()
+        pendingSave = nil
         guard let storageKey else { return }
         let saved = SavedLayout(root: root.map(SavedTile.init), docked: docked, focused: focused)
         if let data = try? JSONEncoder().encode(saved) { defaults.set(data, forKey: storageKey) }
+    }
+
+    /// 侧栏拖动时比例每步都在变，停下一会儿再存。
+    @ObservationIgnored private var pendingSave: Task<Void, Never>?
+
+    private func saveSoon() {
+        guard storageKey != nil else { return }
+        pendingSave?.cancel()
+        pendingSave = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(0.5)) } catch { return }
+            self?.save()
+        }
     }
 
     var panes: [Pane] { (root?.panes ?? []) + docked }
@@ -290,39 +335,34 @@ final class WindowLayout {
         focused = visible.first ?? docked.first
     }
 
-    /// 拖动 gap 这道缝。两边都不小于各自的最小尺寸，里面再切过的也算上。
+    /// 拖动 gap 这道缝：只有紧挨着缝的窗口改尺寸，其余窗口保持起拖时的大小；紧挨着的小到最小尺寸后，
+    /// 再由离缝近的往远处依次让出（见 Tile.absorb）。缝能拖到哪不变：两边都不小于各自的最小尺寸，里面再切过的也算上。
+    /// 一次拖动都从起拖时的排布算，拖回去时中途挤小的窗口也原样回来。
     func resize(_ gap: TileLayout.Gap, to location: CGPoint) {
         guard !isFixed else { return }
         // 每动一下都会走到这里，值没变不写，免得读它们的视图每帧重算
         if motionKind != .immediate { motionKind = .immediate }
         let split = gap.split
         let horizontal = split.axis == .horizontal
-        let length = { (size: CGSize) in horizontal ? size.width : size.height }
-        let available = length(gap.region.size) - Metrics.gap
-        let lower = length(split.first.minimumSize)
-        let upper = available - length(split.second.minimumSize)
+        let available = gap.region.size.length(along: split.axis) - Metrics.gap
+        let lower = split.first.minimumSize.length(along: split.axis)
+        let upper = available - split.second.minimumSize.length(along: split.axis)
         guard available > 0, lower <= upper else { return }
         let position = (horizontal ? location.x - gap.region.minX : location.y - gap.region.minY) - Metrics.gap / 2
         let source = split.source ?? split
-        if resizing !== source { resizing = source }
-        if releasing {
-            releaseEnd?.cancel()
-            releasing = false
+        if resizing !== source {
+            resizing = source
+            resizeBase = TileBase(Tile.split(split).layout(in: gap.region))
         }
-        split.ratio = min(max(position, lower), upper) / available
+        guard let resizeBase else { return }
+        split.cut(at: Tile.halfPoint(min(max(position, lower), upper)), available: available, base: resizeBase)
     }
 
-    /// 分栏拖动只改内存，松手后吸附到模块并保存最终比例。
+    /// 分栏拖动只改内存，松手后保存最终比例。
     func finishResize() {
-        releasing = true
-        withLayoutAnimation(.settle) { resizing = nil }
+        resizing = nil
+        resizeBase = nil
         save()
-        // 吸附动画走完以后各窗口的 settling 已经接上；吸附位移为零、没有窗口动时，到点就算停下
-        releaseEnd?.cancel()
-        releaseEnd = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(WindowMotionKind.settle.duration)) } catch { return }
-            self?.releasing = false
-        }
     }
 
     /// 手势层达到起拖距离后调用，布局层从第一次调用起就接管窗口排布。
@@ -481,7 +521,7 @@ private indirect enum SavedTile: Codable {
         switch self {
         case .pane(let pane): return .pane(pane)
         case .split(let horizontal, let ratio, let first, let second):
-            return .split(Split(horizontal ? .horizontal : .vertical, min(max(ratio, 0.05), 0.95), first.tile, second.tile))
+            return .split(Split(horizontal ? .horizontal : .vertical, min(max(ratio, 0), 1), first.tile, second.tile))
         }
     }
 }

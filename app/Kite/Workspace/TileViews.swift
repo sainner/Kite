@@ -108,7 +108,11 @@ struct SwiftUITilesLayer: View {
             .onChange(of: instances, initial: true) { _, instances in
                 paneInstances.merge(instances) { _, new in new }
             }
-            .onGeometryChange(for: CGSize.self) { $0.size } action: { workspace.updateViewport($0, presentation: .tiled) }
+            // 报大小和左边在窗口里的位置（侧栏改宽时它挪），见 WindowLayout.updateViewport
+            .onGeometryChange(for: CGRect.self) {
+                let frame = $0.frame(in: .global)
+                return CGRect(x: frame.minX, y: 0, width: frame.width, height: frame.height)
+            } action: { workspace.updateViewport($0.size, presentation: .tiled, leading: $0.minX) }
             .onChange(of: Set(onStage.compactMap { area?.dockInstanceID($0) }), initial: true) { _, visible in
                 area?.noteVisible(visible)
             }
@@ -473,8 +477,8 @@ struct PaneCard: View {
                       minimizedColor: appearance.isAgent ? Theme.card : appearance.tint,
                       ring: ringColor.map { ($0, DockFace.ringWidth) },
                       background: AnyView(WindowSurfaceDots(enabled: bodyReports.usesDots)),
-                      // 点阵不参与过渡（见 WindowLayout.transitioning）：窗口自己在动时 WindowSurface 收起，拖缝调整大小、松手吸附时也收起
-                      backgroundHidden: workspace.resizingOrReleasing,
+                      // 点阵不参与过渡（见 WindowLayout.transitioning）：窗口自己在动时 WindowSurface 收起，拖缝调整大小时也收起
+                      backgroundHidden: workspace.resizing != nil,
                       headerHeight: minimized ? nil : header.height,
                       onHover: { hovered in
                           if header.hovered != hovered { header.hovered = hovered }

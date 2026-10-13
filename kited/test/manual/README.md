@@ -23,7 +23,7 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 | `verify-compact-pane-stack-swift.ts` | 真实 SwiftUI 紧凑窗口行横滑松手后的焦点切换与原生按钮命中、保活窗口的环境动作、外壳控制区接回源环境后的 keyboardShown、PanePresence 随停稳翻转；仅手动运行 | `bun kited/test/manual/verify-compact-pane-stack-swift.ts` |
 | `verify-card-sheet-sizing-swift.ts` | 同一次真实 SwiftUI sheet 随生产 CardSheet 内容增减长高、缩短；只读取窗口尺寸，仅手动运行 | `bun kited/test/manual/verify-card-sheet-sizing-swift.ts` |
 | `verify-transcript-swift.ts` | 显示投影 JSON 的 Swift 解码、思考和工具结果关联 | `bun kited/test/manual/verify-transcript-swift.ts` |
-| `verify-window-dock.ts` | 窗口拖动、停靠、宽窄视口切换、临时收起与状态恢复 | `bun kited/test/manual/verify-window-dock.ts` |
+| `verify-window-dock.ts` | 窗口拖动、停靠、宽窄视口切换、临时收起与状态恢复；拖缝与侧栏改宽只改相邻窗口、挤到最小尺寸后同次拖回复原、松手不吸附与比例持久化。`AudioLevel`、`PaneTimeline` 由夹具给最小定义 | `bun kited/test/manual/verify-window-dock.ts` |
 | `verify-window-motion-swift.ts` | 真实 SwiftUI 窗口收放与连续 tracking 的像素同步、resize 后标题命中，以及上下双窗口交换位置后的标题像素和命中归属；三个离屏场景，不覆盖悬停回调，仅手动运行 | `bun kited/test/manual/verify-window-motion-swift.ts` |
 | `verify-dock-hover-label-swift.ts` | 生产 source/host 将短/长中文停靠提示绘到内容矩形 mask 外；36/16 点图标旁保持自然大小与垂直居中，底边提示进入窗口留白，nil source 移除提示；一个关闭动画的离屏场景，不测 hover 时序，仅手动运行 | `bun kited/test/manual/verify-dock-hover-label-swift.ts` |
 | `verify-mac-selectable-text-swift.ts` | Mac 生产 NSTextView（TextKit 2）的跨段选区与 Markdown 原文复制、行内代码像素、改宽量高缓存、流式追加、链接、真实滚动裁切视口，以及原生代码卡片附件屏外改宽后滚入时的尺寸、展开/横滑状态和跨附件选区；七个离屏场景及一个 Lazy 新行首次露出/裁切中改宽的屏幕像素场景，仅手动运行 | `bun kited/test/manual/verify-mac-selectable-text-swift.ts` |
