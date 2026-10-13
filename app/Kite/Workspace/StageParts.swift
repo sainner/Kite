@@ -154,6 +154,8 @@ struct StageWindowless: View {
     var minimized = false
     var openSidebar: (@MainActor () -> Void)?
     var buttonsShown = false
+    /// 台面上不止一个窗口、窗口按钮里有「展开」。Mac 原生台面由卡片在动画停下时交（见 CardView.arrange）；没给时按排布现算。
+    var expands: Bool?
     var nativeThread = false
     /// 卡片交给托管视图的环境换过几次，会话窗口的桥按它把新环境再交给原生外框。
     var environment = 0
@@ -242,7 +244,7 @@ struct CardButtons: View {
     var body: some View {
         if let area = group.workspace {
             let layout = group.layout
-            let expands = (layout.shown?.panes.count ?? 0) > 1
+            let expands = state.expands ?? ((layout.shown?.panes.count ?? 0) > 1)
             PaneHeaderButtonGroup {
                 button("缩小", icon: "minus") { layout.minimize(pane) }
                 if expands {

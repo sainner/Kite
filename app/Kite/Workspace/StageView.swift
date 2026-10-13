@@ -356,7 +356,8 @@ final class StageView: RepresentedRoot, StageDotsReporting {
                 acceptsInput: !blocksInput && !resizing && !closing && !dimmed, dotsHidden: resizing,
                 dragged: layout.drag?.pane == pane, hasThread: area?.thread(in: pane) != nil, fixed: layout.isFixed,
                 header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width,
-                                         hasThread: area?.thread(in: pane) != nil))
+                                         hasThread: area?.thread(in: pane) != nil),
+                expands: (layout.shown?.panes.count ?? 0) > 1)
             arranged.cards.append((card, arrangement, CardPresentation.motionKind(layout: layout, pane: pane, reduceMotion: reduceMotion)))
         }
         arranged.visible = Set(plan.onStage.compactMap { area?.dockInstanceID($0) })
@@ -389,7 +390,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         for (card, arrangement, kind) in arranged.cards {
             // 卡片铺满台面，里面各层按台面坐标摆
             place(card, bounds)
-            card.arrange(arrangement)
+            card.arrange(arrangement, kind: kind)
             card.move(to: arrangement.placed.target, kind: kind)
         }
         if dragging != arranged.drag {
