@@ -4,11 +4,11 @@ import QuartzCore
 import SwiftUI
 import UIKit
 
-/// 工具在跑时的动效，照 ToolRowActivity：等待中（queued）内容透明度按等待呼吸起伏，执行中（running）像素扫掠。
+/// 工具在跑时的动效：等待中（queued）内容透明度按等待呼吸起伏，执行中（running）像素扫掠。
 /// 要带动效的字和图标放进 content。
-/// - 呼吸是 Core Animation 的关键帧动画，按绝对时间对齐，几行一起起伏，同 SwiftUI 版共用一个时钟。
-/// - 扫掠时 content 画进一张贴图，盖在上面的 CAMetalLayer 按屏幕刷新率逐帧画（着色器 kiteSweepFragment，和 SwiftUI 版的 kitePixels
-///   同一套算法）：每帧只编一次绘制，字和尺寸变了才重画贴图。拖缝、吸附中尺寸一直在变，先不扫、只显示字，停下再接着扫。
+/// - 呼吸是 Core Animation 的关键帧动画，按绝对时间对齐，几行一起起伏，和 SwiftUI 里的 waitingBreath 共用一个时钟。
+/// - 扫掠时 content 画进一张贴图，盖在上面的 CAMetalLayer 按屏幕刷新率逐帧画（着色器 kiteSweepFragment，和 Mac 的
+///   MacToolActivity 同一套算法）：每帧只编一次绘制，字和尺寸变了才重画贴图。拖缝、吸附中尺寸一直在变，先不扫、只显示字，停下再接着扫。
 /// - 减弱动态效果时不动；所在窗口不在屏上（PanePresence）时停。
 final class PhoneActivityView: UIView {
     let content = UIView()
@@ -137,7 +137,7 @@ final class PhoneActivityView: UIView {
             metal.contentsScale = scale
             metal.drawableSize = size
         }
-        // 两秒一轮：前 88% 用系统的 easeInOut 推过去，余下停在文字外面，同 ToolRowActivity
+        // 两秒一轮：前 88% 用系统的 easeInOut 推过去，余下停在文字外面
         let phase = Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2) / 2
         let travel = Float(UnitCurve.easeInOut.value(at: min(phase / 0.88, 1)))
         guard let drawable = metal.nextDrawable() else { return }

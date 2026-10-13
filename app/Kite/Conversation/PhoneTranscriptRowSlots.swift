@@ -102,8 +102,8 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         return (.leading, AnyView(AgentTextActions(text: source).environment(\.self, context.environment)))
     }
 
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
-        super.update(row, context: context, resized: resized)
+    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
+        super.update(row, context: context)
         guard case .item(let item) = row.content, case .text(let source) = item.kind else { return }
         self.context = context
         self.source = source

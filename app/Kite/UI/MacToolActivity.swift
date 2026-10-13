@@ -2,8 +2,8 @@
 import AppKit
 import SwiftUI
 
-/// 工具行里正在做的事的动效，原生版的 ToolRowActivity：等待时整块透明度呼吸（WaitingBreath 的节奏），执行时像素扫掠
-/// （KitePixels.metal 的 kitePixels：扫过时笔画变成彩色方块，离开后恢复）。里面的字、图标照常放在 content 里，链接照常能点。
+/// 工具行里正在做的事的动效：等待时整块透明度呼吸（WaitingBreath 的节奏），执行时像素扫掠
+/// （扫过时笔画变成彩色方块，离开后恢复；算法同 KitePixels.metal 里 iOS 用的着色器）。里面的字、图标照常放在 content 里，链接照常能点。
 /// 扫掠每秒最多 60 帧（现版 30 帧）：内容画成一张图记下来、每一格方块的颜色一起算好（字、宽度、外观变了才重画，
 /// 拖缝改宽时只有被截短的字才要重画）；每一帧只算扫到的那一截，放进一个只有这一截宽的图层，原来的内容用遮罩挖掉这一截，其余照常画。
 /// 窗口不在屏上（PanePresence）、在过渡中、被挡住、这一行滚出可见区时不算。呼吸交给 Core Animation，按参考时刻对齐，
@@ -128,7 +128,7 @@ final class ToolActivityView: NSView {
         // 屏幕外（窗口被挡住、行滚出可见区）、窗口在过渡中不算
         guard bounds.width > 0, bounds.height > 0, let window, window.occlusionState.contains(.visible), !visibleRect.isEmpty,
               !WindowLayout.anyTransitioning else { return }
-        // 先在 Double 里收敛到一周期：2 秒一周，前 88% 走完，余下停在终点（扫掠已离开字），同 ToolRowActivity
+        // 先在 Double 里收敛到一周期：2 秒一周，前 88% 走完，余下停在终点（扫掠已离开字）
         let phase = Date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2) / 2
         show(travel: CGFloat(UnitCurve.easeInOut.value(at: min(phase / 0.88, 1))))
     }
@@ -170,7 +170,7 @@ final class ToolActivityView: NSView {
         var blocks: [SIMD4<Float>]
     }
 
-    /// 把内容画成一张图，算好每一格的方块：格子中心周围 3×3 取样求平均（同 kitePixels），覆盖率放大 1.65 倍，颜色按格子散列取。
+    /// 把内容画成一张图，算好每一格的方块：格子中心周围 3×3 取样求平均（同着色器），覆盖率放大 1.65 倍，颜色按格子散列取。
     private func capture() -> Source? {
         let scale = window?.backingScaleFactor ?? 2
         let size = bounds.size
@@ -219,7 +219,7 @@ final class ToolActivityView: NSView {
         return Source(pixels: pixels, width: width, height: height, size: size, scale: scale, cell: cell, columns: columns, blocks: blocks)
     }
 
-    /// 这一帧扫到的那一截（点的坐标）和它的样子：按扫掠的强度把原图和方块混合，同 kitePixels。扫掠不在字上时给 nil。
+    /// 这一帧扫到的那一截（点的坐标）和它的样子：按扫掠的强度把原图和方块混合，同着色器。扫掠不在字上时给 nil。
     private func render(travel: CGFloat) -> (frame: CGRect, image: CGImage)? {
         guard let source else { return nil }
         let size = source.size, scale = source.scale, cell = source.cell
@@ -262,7 +262,7 @@ final class ToolActivityView: NSView {
         return (frame, image)
     }
 
-    /// 效果色，与 DotColor.palette 同一组（见 docs/视觉风格.md），同 kitePixels。
+    /// 效果色，与 DotColor.palette 同一组（见 docs/视觉风格.md），同着色器。
     private static let palette: [SIMD3<Float>] = [
         SIMD3(127, 168, 214) / 255, // #7FA8D6 Morning Breeze
         SIMD3(168, 198, 231) / 255, // #A8C6E7 Dewy Blue
@@ -271,7 +271,7 @@ final class ToolActivityView: NSView {
         SIMD3(91, 136, 194) / 255,  // #5B88C2 主题色
     ]
 
-    /// 同一格始终取同一色，同 kitePixels 的 fract(sin(dot(grid, (127.1, 311.7))) * 43758.5453)。
+    /// 同一格始终取同一色，同着色器的 fract(sin(dot(grid, (127.1, 311.7))) * 43758.5453)。
     private static func noise(_ x: Float, _ y: Float) -> Float {
         let value = sin(x * 127.1 + y * 311.7) * 43758.5453
         return value - value.rounded(.down)

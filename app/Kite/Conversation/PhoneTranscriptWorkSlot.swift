@@ -2,9 +2,9 @@
 import SwiftUI
 import UIKit
 
-/// 两段话之间 agent 做的事折成的一行，照 WorkRow：汇总一行（汇总或正在做什么、出错和没跑完的步数、箭头，一行，放不下截汇总；
+/// 两段话之间 agent 做的事折成的一行：汇总一行（汇总或正在做什么、出错和没跑完的步数、箭头，一行，放不下截汇总；
 /// 有调用在跑时正在做什么带像素扫掠，见 PhoneActivityView），点开后下面是每一步（PhoneWorkSteps）。
-/// 展开收起和下面的行一起按 0.25 秒的普通缓出动，箭头跟着转、步骤跟着淡入淡出；收起走完拿掉步骤，同 SwiftUI 版不留展开状态。
+/// 展开收起和下面的行一起按 0.25 秒的普通缓出动，箭头跟着转、步骤跟着淡入淡出；收起走完拿掉步骤，不留各步的展开状态。
 /// 一步自己展开收起时，这一行的高由列表的行高动画给，多出、少掉的那截交给步骤去摆。量法、展开进度和 Mac 共用（WorkLayout）。
 final class PhoneWorkRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var container: PhoneWorkRowView?
@@ -27,8 +27,8 @@ final class PhoneWorkRowSlot: TranscriptRowSlot, PhoneRowSlot {
         return container
     }
 
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
-        super.update(row, context: context, resized: resized)
+    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
+        super.update(row, context: context)
         guard case .item(let item) = row.content, case .work(let work) = item.kind else { return }
         self.work = work
         self.context = context
@@ -115,7 +115,7 @@ final class PhoneWorkRowSlot: TranscriptRowSlot, PhoneRowSlot {
     }
 }
 
-/// 工具行的视图：汇总行、展开后的步骤，按自己的范围截（收起时退场的步骤不画到后面的行上，同 WorkRow 的 clipped）。
+/// 工具行的视图：汇总行、展开后的步骤，按自己的范围截（收起时退场的步骤不画到后面的行上）。
 final class PhoneWorkRowView: UIView {
     let header = PhoneWorkHeader()
 
@@ -128,8 +128,8 @@ final class PhoneWorkRowView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
-/// 工具组汇总行的原生版，照 WorkSummaryLine：一行次要色小字，HStack(spacing: 8) 竖着居中：汇总（有调用在跑时是正在做什么）、
-/// 出错步数（红）、没跑完步数、小号箭头；汇总放不下截掉。有调用在跑、没展开时正在做什么带像素扫掠（ToolRowActivity）。整行可点。
+/// 工具组的汇总行：一行次要色小字，间距 8、竖着居中：汇总（有调用在跑时是正在做什么）、
+/// 出错步数（红）、没跑完步数、小号箭头；汇总放不下截掉。有调用在跑、没展开时正在做什么带像素扫掠（PhoneActivityView）。整行可点。
 final class PhoneWorkHeader: PhonePlainControl {
     /// 箭头转了多少：0 朝右，1 朝下。
     var turn: CGFloat = 0 {
@@ -200,7 +200,7 @@ final class PhoneWorkHeader: PhonePlainControl {
     }
 }
 
-/// 生成中的思考，同 ThinkingRow：一行次要色小字，换行当空格，放不下截掉。
+/// 生成中的思考：一行次要色小字，换行当空格，放不下截掉。
 final class PhoneThinkingRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var label: PhoneTextLine?
     private var text = ""
@@ -218,8 +218,8 @@ final class PhoneThinkingRowSlot: TranscriptRowSlot, PhoneRowSlot {
         return label
     }
 
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
-        super.update(row, context: context, resized: resized)
+    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
+        super.update(row, context: context)
         guard case .item(let item) = row.content, case .thinking(let text) = item.kind else { return }
         self.text = text.isEmpty ? "思考中" : text.replacingOccurrences(of: "\n", with: " ")
         font = Theme.secondary.resolve(in: context.environment.fontResolutionContext).ctFont as UIFont

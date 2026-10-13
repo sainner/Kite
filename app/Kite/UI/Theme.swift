@@ -244,7 +244,7 @@ enum Metrics {
     static func nestedRadius(inset: CGFloat) -> CGFloat { max(contentRadius - inset, bubbleTail) }
     /// 发送时气泡从多低的地方往上浮进来。
     static let bubbleRise: CGFloat = 32
-    /// 人发的消息折起来时显示多高，大约十行；比它高出不少才折（见 MessageBubble）。
+    /// 人发的消息折起来时显示多高，大约十行；比它高出不少才折（见 BubbleLayout.foldable）。
     static let messageFold: CGFloat = 220
     /// 折叠内容仅在末端短渐隐，展开按钮位于渐隐外。
     static let messageFoldFade: CGFloat = 20

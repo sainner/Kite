@@ -14,8 +14,8 @@ protocol TextKitMeasuring: AnyObject {
     func fit(lineWidth: CGFloat)
     /// 一点分成几个像素：Mac 按 Retina 的 2 份量（原来就这样）；iOS 按屏幕。
     var pixelScale: CGFloat { get }
-    /// measure 往上取整到像素还是整点：Mac 正文取整点（原来 SwiftUI 版量的就是整点）；iOS 取到像素，
-    /// 同原来 SwiftUI 版用的 UITextView.sizeThatFits（一行 17 pt 正文 20.33 pt，取整点要高出 0.67 pt）。
+    /// measure 往上取整到像素还是整点：Mac 正文取整点；iOS 取到像素，同 UITextView.sizeThatFits（一行 17 pt 正文 20.33 pt，
+    /// 取整点要高出 0.67 pt）。
     var measuresPixels: Bool { get }
 }
 

@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 
 /// 对话正文的 UIKit 文本视图（TextKit 2）：不可编辑，平时不开系统的选字，没有自己的滚动，也不接点状态栏回顶。
-/// iPhone、iPad 的原生对话列表（PhoneTranscriptView）和 SwiftUI 里的 SelectableTextView 共用；触摸见 PhoneTextInteraction，
+/// iPhone、iPad 的原生对话列表（PhoneTranscriptView）用；触摸见 PhoneTextInteraction，
 /// 补字、附件重排、装饰片段见 ProseTextCoordinator。拷贝给原文：有对照（TextSourceMap）时选区换成原文放进剪贴板，只放纯文本。
 final class PhoneProseTextView: UITextView, TextKitMeasuring {
     var source: (text: String, map: TextSourceMap)?
@@ -142,7 +142,7 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
         set { super.accessibilityFrame = newValue }
     }
 
-    /// 量出来的高取到像素，同原来 SwiftUI 版用的 sizeThatFits。
+    /// 量出来的高取到像素，同 UITextView.sizeThatFits。
     var pixelScale: CGFloat { PhonePixel.scale }
     var measuresPixels: Bool { true }
 
@@ -309,7 +309,7 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
         text.resignFirstResponder()
     }
 }
-/// 原生对话列表按像素对齐尺寸：原来的 SwiftUI 版把每个视图的位置和大小都对到像素（3 倍屏上 1/3 pt），
+/// 原生对话列表按像素对齐尺寸：每个视图的位置和大小都对到像素（3 倍屏上 1/3 pt），
 /// 原生行的高、边距照样对齐，排出来才和原来逐像素一样（模拟器并排截屏对过）。
 enum PhonePixel {
     /// 一点几个像素。还没进窗口时按当前的特征取，取不到按 3 倍屏算。

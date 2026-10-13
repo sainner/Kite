@@ -229,7 +229,7 @@ final class TranscriptListView: NSScrollView {
 
     // MARK: - 行高动画
 
-    /// 一行自己展开、收起：从原来的高按这一行给的走法走到新量的高，下面的行跟着挪，同 SwiftUI 版的 withAnimation。
+    /// 一行自己展开、收起：从原来的高按这一行给的走法走到新量的高，下面的行跟着挪。
     private func animateHeight(of slot: TranscriptRowSlot, motion: RowMotion) {
         arrangement.animateHeight(of: slot, motion: motion)
         needsLayout = true

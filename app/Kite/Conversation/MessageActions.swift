@@ -8,7 +8,7 @@ nonisolated enum RowID: Hashable {
 }
 
 extension EnvironmentValues {
-    /// 对话里点开了操作栏的那一行，一次只有一行。ThreadPane 给出，点别处、滚动时收起。
+    /// 对话里点开了操作栏的那一行，一次只有一行。会话窗口给出（ThreadPaneSupport），点别处、滚动时收起。
     @Entry var selectedRow: Binding<RowID?> = .constant(nil)
 }
 
@@ -34,85 +34,78 @@ extension Animation {
     static let actionBar = Animation.snappy(duration: 0.25)
 }
 
-extension View {
-    /// 在这里打开这一行的操作栏：iPhone 上长按，Mac 上右键（或按住 Control 点）开关。
-    /// Mac 上左键留给选字：开着文字选择的字会把单击整个吃掉，点击手势收不到（实测）。
-    /// iPhone 的可选文字由 SelectableTextView 协调长按和拖动选字，不再额外挂这个手势。
-    func opensActionBar(_ id: RowID) -> some View {
-        modifier(OpensActionBar(id: id))
-    }
-
-    /// 给对话里的一行挂上操作栏：这一行被点开（selectedRow 是 id）时出现。操作栏是个浮层，不挤开别的内容，
-    /// 和这一行的 side 那边对齐，也从那边往外展开，在这一行底下。在哪里打开由这一行自己定（opensActionBar）。
-    /// SwiftUI 版的消息气泡（MessageBubble）用；两端的对话（主对话、子 agent 做的事、压缩前的原文）都是原生列表，操作栏由列表自己摆，
-    /// 底下放不下时放到上面（见 TranscriptArrangement.actionBarAbove）。
-    func actionBar<Bar: View>(_ id: RowID, side: HorizontalEdge, @ViewBuilder bar: @escaping () -> Bar) -> some View {
-        modifier(ActionBarPlacement(id: id, side: side, bar: bar))
-    }
-}
-
-private struct OpensActionBar: ViewModifier {
-    let id: RowID
+#if os(iOS)
+/// agent 说的一段话的操作栏：复制、翻译、从这里分叉（翻译、分叉还没做）。iPhone、iPad 的原生列表托管它（PhoneProseRowSlot.actionBar）；
+/// Mac 的见 ProseRowSlot.actionItems。
+struct AgentTextActions: View {
+    let text: String
     @Environment(\.selectedRow) private var selection
+    @Environment(\.toast) private var toast
 
-    func body(content: Content) -> some View {
-        #if os(macOS)
-        content.overlay { SecondaryClickArea { selection.toggle(id) } }
-        #else
-        content.onLongPressGesture(minimumDuration: 0.4, maximumDistance: 8) { selection.show(id) }
-        #endif
+    var body: some View {
+        ActionButton("复制", icon: "doc.on.doc") {
+            copyToPasteboard(text, toast: toast)
+            selection.close()
+        }
+        // 翻译成另一种语言，还没做
+        ActionButton("翻译", icon: "translate") { selection.close() }.disabled(true)
+        // 分出一个新会话，从这段话之后接着说；还没做
+        ActionButton("从这里分叉", icon: "arrow.triangle.branch") { selection.close() }.disabled(true)
     }
 }
 
-#if os(macOS)
-/// 盖在上面只接右键的一层。SwiftUI 没有右键手势。
-private struct SecondaryClickArea: NSViewRepresentable {
-    let action: () -> Void
+/// 人发的消息的操作栏：排队中的是重试、编辑、取消发送；收到了的是压缩起点和终点。都有复制，折起来的还有展开全文。
+/// iPhone、iPad 的原生列表托管它（PhoneBubbleRowSlot.actionBar）；Mac 的见 BubbleRowSlot.actionItems，按钮和这里一一对应，改的时候两处一起改。
+struct MessageActionButtons: View {
+    let message: Message
+    let queued: Bool
+    let foldable: Bool
+    @Binding var expanded: Bool
+    @Environment(WorkThread.self) private var thread
+    @Environment(\.selectedRow) private var selection
+    @Environment(\.toast) private var toast
 
-    func makeNSView(context: Context) -> ClickView {
-        ClickView()
+    var body: some View {
+        if queued {
+            if thread.failed.contains(message.id) {
+                ActionButton("重试发送", icon: "arrow.clockwise") { done { thread.retry(message) } }
+                    .disabled(!thread.connected)
+            }
+            ActionButton("编辑", icon: "pencil") { done { thread.cancel(message, editing: true) } }
+                .disabled(!thread.canCancel)
+            ActionButton("取消发送", icon: "xmark", role: .destructive) { done { thread.cancel(message) } }
+                .disabled(!thread.canCancel)
+        }
+        ActionButton("复制", icon: "doc.on.doc") {
+            copyToPasteboard(message.typed, toast: toast)
+            done {}
+        }
+        if !queued {
+            if thread.compactionStart == nil {
+                ActionButton("从这里开始压缩", icon: "arrow.down.to.line") {
+                    done { thread.compactionStart = message.id }
+                    toast?.show("已选起点，在这条或之后的消息上选「压缩到这里」", systemImage: "arrow.down.to.line")
+                }
+                .disabled(!thread.canCompact)
+            } else {
+                ActionButton("压缩到这里", icon: "rectangle.compress.vertical") { done { thread.compact(through: message.id) } }
+                    .disabled(!thread.canCompact)
+                ActionButton("取消压缩起点", icon: "xmark") { done { thread.compactionStart = nil } }
+            }
+        }
+        if foldable {
+            ActionButton(expanded ? "收起" : "展开全文",
+                         icon: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") {
+                done { expanded.toggle() }
+            }
+        }
     }
 
-    func updateNSView(_ view: ClickView, context: Context) {
-        view.action = action
-    }
-
-    final class ClickView: NSView {
-        var action: (() -> Void)?
-
-        /// 只接右键和按住 Control 的左键；左键选字、滚动、悬停都让给底下
-        override func hitTest(_ point: NSPoint) -> NSView? {
-            guard let event = NSApp.currentEvent, Self.secondary(event) else { return nil }
-            return super.hitTest(point)
-        }
-
-        override func rightMouseDown(with event: NSEvent) {
-            action?()
-        }
-
-        override func mouseDown(with event: NSEvent) {
-            if Self.secondary(event) { action?() }
-        }
-
-        private static func secondary(_ event: NSEvent) -> Bool {
-            event.type == .rightMouseDown || (event.type == .leftMouseDown && event.modifierFlags.contains(.control))
-        }
+    /// 点了操作栏上的一项：收起操作栏，再做这件事。
+    @discardableResult
+    private func done<Result>(_ body: () -> Result) -> Result {
+        selection.close()
+        return withAnimation(.snappy, body)
     }
 }
 #endif
-
-private struct ActionBarPlacement<Bar: View>: ViewModifier {
-    let id: RowID
-    let side: HorizontalEdge
-    let bar: () -> Bar
-    @Environment(\.selectedRow) private var selection
-
-    func body(content: Content) -> some View {
-        content
-            .overlay(alignment: Alignment(horizontal: side == .leading ? .leading : .trailing, vertical: .bottom)) {
-                ActionBar(shown: selection.wrappedValue == id, side: side, from: .top, content: bar)
-                    // 顶边离这一行的底边 actionBarGap。参考线要加在 ActionBar 这一层：加在它里面 if 包着的视图上，overlay 对齐时不认（实测）
-                    .alignmentGuide(.bottom) { $0[.top] - Metrics.actionBarGap }
-            }
-    }
-}

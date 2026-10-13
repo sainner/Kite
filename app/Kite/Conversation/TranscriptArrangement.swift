@@ -99,10 +99,10 @@ enum TranscriptPlacement: Equatable {
             if let existing = byID[row.id], fits(existing, row) {
                 slot = existing
                 // 签名（记录只追加，字数就能看出变没变）或外观变了才换内容、作废量过的高
-                if shapes[row.id] != shape || appearanceChanged { slot.update(row, context: context, resized: true) }
+                if shapes[row.id] != shape || appearanceChanged { slot.update(row, context: context) }
             } else {
                 slot = make(row)
-                slot.update(row, context: context, resized: true)
+                slot.update(row, context: context)
                 // 刚发出去的消息先在下面藏着，跟着滑到底的那一下浮上来，见各端列表的 startGlideIfReady
                 if case .message(let message, _) = row.content, context.environment.arrivingMessages.contains(message.id) {
                     slot.rise = 1
@@ -267,7 +267,7 @@ enum TranscriptPlacement: Equatable {
 
     // MARK: - 行高动画
 
-    /// 一行自己展开、收起：从原来的高按这一行给的走法走到新量的高，下面的行跟着挪，同 SwiftUI 版的 withAnimation。
+    /// 一行自己展开、收起：从原来的高按这一行给的走法走到新量的高，下面的行跟着挪。
     /// 平台接着重排，逐帧时钟没在走就起一个，每帧调 stepHeights。
     func animateHeight(of slot: TranscriptRowSlot, motion: RowMotion) {
         heightAnimations[slot.id] = HeightAnimation(from: slot.frame.height, motion: motion)

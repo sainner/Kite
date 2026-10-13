@@ -1,6 +1,8 @@
 import SwiftUI
 
+#if os(iOS)
 /// 点对话里的一行弹出的操作栏：一排只有图标的按钮，和标题栏的玻璃按钮组同一套尺寸与构件（PaneHeaderButtonGroup）。
+/// iPhone、iPad 的原生对话列表托管它（PhoneTranscriptView）；Mac 的是原生的 MacActionBar。
 /// 出现时整条从贴着这一行、靠 side 那边的角等比放大，带一点回弹，边放大边淡显；收起时缩回那个角，不回弹，边缩边淡出。
 /// 关着时什么都不画。
 /// 和系统的编辑菜单（UIEditMenuInteraction）一个做法：按原本的大小排好一次，动画只改整体的缩放，不改尺寸，
@@ -34,6 +36,7 @@ struct ActionBar<Content: View>: View {
         }
     }
 }
+#endif
 
 /// 操作栏上的一个按钮。名字不显示，Mac 上鼠标停在上面时提示，读屏时读出来。
 struct ActionButton: View {

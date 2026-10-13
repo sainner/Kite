@@ -2,9 +2,9 @@
 import AppKit
 import SwiftUI
 
-/// 两段话之间 agent 做的事折成的一行，照 WorkRow：汇总一行（汇总、出错和没跑完的步数、箭头，一行，放不下截汇总；有调用在跑时说正在做什么，
+/// 两段话之间 agent 做的事折成的一行：汇总一行（汇总、出错和没跑完的步数、箭头，一行，放不下截汇总；有调用在跑时说正在做什么，
 /// 带像素扫掠，见 ToolActivityView）。点开后下面是步骤（WorkStepsView），展开收起和下面的行一起按 0.25 秒的普通缓出动，
-/// 箭头跟着转、步骤跟着淡入淡出；收起走完拿掉步骤，同 SwiftUI 版不留展开状态。某一步自己展开收起时只有步骤跟着变高，箭头和透明度不动。
+/// 箭头跟着转、步骤跟着淡入淡出；收起走完拿掉步骤，不留各步的展开状态。某一步自己展开收起时只有步骤跟着变高，箭头和透明度不动。
 final class WorkRowSlot: TranscriptRowSlot {
     private let container = WorkRowView()
     private var work: Work?
@@ -24,13 +24,13 @@ final class WorkRowSlot: TranscriptRowSlot {
     override var hasView: Bool { true }
     override var view: NSView { container }
 
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
-        super.update(row, context: context, resized: resized)
+    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
+        super.update(row, context: context)
         guard case .item(let item) = row.content, case .work(let work) = item.kind else { return }
         self.work = work
         self.context = context
         container.header.show(work, environment: context.environment, expanded: expanded)
-        steps?.show(work, environment: context.environment, resized: resized)
+        steps?.show(work, environment: context.environment)
     }
 
     /// 拖缝时步骤里看不见的详情、子 agent 的行按上次的高占位，记作 provisional，停下后列表补量成准确的高。
@@ -77,7 +77,7 @@ final class WorkRowSlot: TranscriptRowSlot {
             view.changed = { [weak self] motion in self?.stepsChanged(motion) }
             view.alphaValue = 0
             container.addSubview(view)
-            view.show(work, environment: context.environment, resized: true)
+            view.show(work, environment: context.environment)
             steps = view
         }
         container.header.expanded = expanded
@@ -96,13 +96,13 @@ final class WorkRowSlot: TranscriptRowSlot {
     }
 }
 
-/// 工具组汇总行的原生版：一行次要色小字，汇总、出错步数（红）、没跑完步数，箭头；整行可点，指针是手形。
+/// 工具组的汇总行：一行次要色小字，汇总、出错步数（红）、没跑完步数，箭头；整行可点，指针是手形。
 final class WorkHeaderView: NativeButton {
     /// 箭头转了多少：0 朝右，1 朝下。
     var turn: CGFloat = 0 {
         didSet { if turn != oldValue { chevron.frameCenterRotation = -90 * turn } }
     }
-    /// 汇总（有调用在跑时是正在做什么），扫掠只画在它上面，同 WorkSummaryLine。
+    /// 汇总（有调用在跑时是正在做什么），扫掠只画在它上面。
     private let activity = ToolActivityView()
     private let summary = LineLabel()
     private let failed = LineLabel()
@@ -189,7 +189,7 @@ final class WorkHeaderView: NativeButton {
     override func isAccessibilityExpanded() -> Bool { expanded }
 }
 
-/// 工具行的视图：汇总行、展开后的步骤，按自己的范围截（收起时退场的步骤不画到后面的行上，同 WorkRow 的 clipped）。
+/// 工具行的视图：汇总行、展开后的步骤，按自己的范围截（收起时退场的步骤不画到后面的行上）。
 final class WorkRowView: NSView {
     let header = WorkHeaderView()
 
@@ -205,15 +205,15 @@ final class WorkRowView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
-/// 生成中的思考，同 ThinkingRow：一行次要色小字，换行当空格，放不下截掉。
+/// 生成中的思考：一行次要色小字，换行当空格，放不下截掉。思考条目只在生成期间显示，完整摘要仍保留在记录中。
 final class ThinkingRowSlot: TranscriptRowSlot {
     private let label = LineLabel()
 
     override var hasView: Bool { true }
     override var view: NSView { label }
 
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
-        super.update(row, context: context, resized: resized)
+    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
+        super.update(row, context: context)
         guard case .item(let item) = row.content, case .thinking(let text) = item.kind else { return }
         label.set(TranscriptSpeech.thinking(text),
                   font: Theme.secondary.resolve(in: context.environment.fontResolutionContext).ctFont as NSFont, color: .secondaryLabelColor)

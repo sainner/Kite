@@ -2,10 +2,10 @@
 import SwiftUI
 import UIKit
 
-/// 人发的一条消息，原生气泡，样子和行为照 MessageBubble：靠右，贴着字宽（有代码段时占满）；收到了填上底色、白字，
+/// 人发的一条消息，原生气泡：靠右，贴着字宽（有代码段时占满）；收到了填上底色、白字，
 /// 排队中只描边、跟系统文字色，两者之间 0.3 秒淡入淡出；太长的折到 messageFold 高（随动态字体缩放），底下渐隐，下面一个展开、收起的按钮；
-/// 附件排在气泡上面（托管原来的 MessageAttachmentRow，很少有）。正文和代码段用 SelectableText 同一套属性串，复制给打的原文。
-/// 长按气泡任何地方（含内边距、折叠按钮）都开操作栏，接着拖是选字（SwiftUI 版只有正文和代码卡片接长按，用户 2026-10-13 定不照搬）；
+/// 附件排在气泡上面（托管 MessageAttachmentRow，很少有）。正文和代码段用 SelectableText 同一套属性串，复制给打的原文。
+/// 长按气泡任何地方（含内边距、折叠按钮）都开操作栏，接着拖是选字（用户 2026-10-13 定）；
 /// iPad 指针右键开关操作栏。刚发出去时从下面 bubbleRise 处浮上来、淡显，跟着对话往上滑的那一下走，浮的途中不能选字（同 Mac）。
 final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var container: PhoneBubbleRowView?
@@ -21,7 +21,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var layout = BubbleLayout()
     private var attachmentsHeight: CGFloat = 0
     private var hasBlocks = false
-    /// 折起来时显示多高：messageFold 随动态字体缩放，同 MessageBubble 的 @ScaledMetric。
+    /// 折起来时显示多高：messageFold 随动态字体缩放。
     private var foldHeight = Metrics.messageFold
 
     override init(row: TranscriptRow) {
@@ -66,18 +66,18 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
 
     var foldable: Bool { layout.foldable(foldHeight: foldHeight) }
 
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
-        super.update(row, context: context, resized: resized)
+    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
+        super.update(row, context: context)
         guard case .message(let message, let queued) = row.content else { return }
         let wasQueued = self.queued
         self.message = message
         self.queued = queued
         self.context = context
         foldHeight = UIFontMetrics(forTextStyle: .body).scaledValue(for: Metrics.messageFold, compatibleWith: Self.traits(context.environment))
-        if resized { layout.contentChanged() }
+        layout.contentChanged()
         guard container != nil else { return }
         configure()
-        if resized { build(first: false, wasQueued: wasQueued) }
+        build(first: false, wasQueued: wasQueued)
     }
 
     private static func traits(_ environment: EnvironmentValues) -> UITraitCollection {
@@ -377,7 +377,7 @@ final class PhoneBubbleRowView: UIView {
 
 /// 气泡：底色（收到了）和描边（排队中）按气泡的形状画，里面的正文、按钮放进 content，按形状截。
 /// 形状只截一次：底色是铺满的一层、由 content 的形状遮罩截出圆角；描边在遮罩外面单独画。底色也按路径填再被同一个形状截的话，
-/// 圆角边上的像素被抗锯齿两遍、发淡（iPad 模拟器和 SwiftUI 版并排截屏对过）。
+/// 圆角边上的像素被抗锯齿两遍、发淡（iPad 模拟器上并排截屏对过）。
 final class PhoneBubbleView: UIView {
     let content = UIView()
     private let fill = CALayer()

@@ -67,27 +67,6 @@ struct TranscriptRow: Identifiable {
     }
 }
 
-/// 一轮：开启它的那一行和后面跟着的行。id 是第一行的 id，后面接着来的行不改变它。
-struct TranscriptTurn: Identifiable {
-    var rows: [TranscriptRow]
-
-    var id: RowID { rows[0].id }
-    var startsHumanTurn: Bool { rows[0].startsHumanTurn }
-
-    /// 从每一条开启新一轮的人发的消息起另开一组。
-    static func group(_ rows: [TranscriptRow]) -> [TranscriptTurn] {
-        var turns: [TranscriptTurn] = []
-        for row in rows {
-            if turns.isEmpty || row.startsHumanTurn {
-                turns.append(TranscriptTurn(rows: [row]))
-            } else {
-                turns[turns.count - 1].rows.append(row)
-            }
-        }
-        return turns
-    }
-}
-
 private extension Item.Kind {
     func shape(into hasher: inout Hasher) {
         switch self {

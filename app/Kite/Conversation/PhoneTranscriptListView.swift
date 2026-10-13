@@ -9,7 +9,7 @@ import UIKit.UIGestureRecognizerSubclass
 /// 排列、留白、按住看着的内容这些规则和 Mac 共用一份（TranscriptArrangement、TranscriptFollow）。
 /// 滚动的规则同 Mac 的 TranscriptListView 开头，iOS 另有：
 /// - 从手指按下到惯性结束不做程序定位，停下后按位置决定跟不跟；手指按下（还没拖起来）也算，长按选字时字不会在手指下面挪。
-/// - 滚动不收键盘、竖向总能回弹、点状态栏回顶，都照 SwiftUI 滚动视图原来的设置；回顶只给在屏上的窗口，文本视图不参与。
+/// - 滚动不收键盘、竖向总能回弹、点状态栏回顶；回顶只给在屏上的窗口，文本视图不参与。
 /// - 标题栏底下是系统的滚动软边，底边不要。
 /// 让出的距离（标题栏、控制区、键盘、左右安全区）由 PhoneTranscript 交进来，见 setInsets。
 final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
@@ -281,7 +281,7 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
 
     // MARK: - 行高动画
 
-    /// 一行自己展开、收起：从原来的高按这一行给的走法走到新量的高，下面的行跟着挪，同 SwiftUI 版的 withAnimation。
+    /// 一行自己展开、收起：从原来的高按这一行给的走法走到新量的高，下面的行跟着挪。
     private func animateHeight(of slot: TranscriptRowSlot, motion: RowMotion) {
         arrangement.animateHeight(of: slot, motion: motion)
         setNeedsArrange()
@@ -365,7 +365,7 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
         userEnded()
     }
 
-    /// 手指按下就算人在滚，松开、惯性也停了才按停的位置定跟不跟（同原来 SwiftUI 版的 tracking）。
+    /// 手指按下就算人在滚，松开、惯性也停了才按停的位置定跟不跟。
     /// 按下前跟着最底下、手指没拖起来也没进选字（轻点、长按开操作栏）的，松手后照旧跟：按着的那会儿流式变长，底下没跟上不算翻上去了。
     private func touched(_ down: Bool) {
         if down {
@@ -469,7 +469,7 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
     // MARK: - 读屏
 
     /// 读屏按行的顺序一条条读：放进列表的行用它自己的视图，屏外没建、没放的行给一个代理元素（位置是行在文档里的位置，读这一行的摘要），
-    /// 读屏走到它时列表滚过去、把这一行放进来，焦点再交给它的视图。整列都建着的 SwiftUI 版读屏能一路读下去，这里不退化。
+    /// 读屏走到它时列表滚过去、把这一行放进来，焦点再交给它的视图：屏外没建视图的行，读屏也能一路读下去。
     fileprivate func accessibilityRows() -> [Any] {
         var elements: [Any] = []
         for slot in arrangement.slots {

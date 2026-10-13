@@ -78,7 +78,7 @@ struct BubbleLayout {
         folded = nil
     }
 
-    /// 比折起来的高（foldHeight，iOS 随动态字体变）高出不少（1.4 倍）才折，同 MessageBubble。
+    /// 比折起来的高（foldHeight，iOS 随动态字体变）高出不少（1.4 倍）才折：只高出一点的不折，省得展开只多看两行。
     func foldable(foldHeight: CGFloat) -> Bool {
         contentHeight > foldHeight * 1.4
     }
@@ -178,10 +178,10 @@ struct BubbleLayout {
     }
 }
 
-/// 两段话之间 agent 做的事折成的一行怎么量、展开到哪了，两端原生列表的工具行共用（照 WorkRow）：汇总一行，点开下面是步骤，
+/// 两段话之间 agent 做的事折成的一行怎么量、展开到哪了，两端原生列表的工具行共用：汇总一行，点开下面是步骤，
 /// 展开收起和下面的行一起按 0.25 秒的普通缓出动，箭头跟着转、步骤跟着淡入淡出。汇总行、步骤的视图各端自己建。
 enum WorkLayout {
-    /// 汇总行和步骤之间的间距，同 WorkRow 的 VStack。
+    /// 汇总行和步骤之间的间距。
     static let spacing: CGFloat = 6
     static let motion = RowMotion.curve(.easeOut, duration: 0.25)
 

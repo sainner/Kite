@@ -2,7 +2,7 @@
 import SwiftUI
 import UIKit
 
-/// 会话里发生的事，不是谁说的话，照 EventLabel：后台任务结束的通知（铃铛）、打断（举手）、API 错误（三角，红色）。
+/// 会话里发生的事，不是谁说的话：后台任务结束的通知（铃铛）、打断（举手）、API 错误（三角，红色）。
 /// 一行次要色小字带图标，长了折行；长按弹出拷贝、共享，同 Text 的 textSelection。
 final class PhoneEventRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var label: PhoneIconLabel?
@@ -25,8 +25,8 @@ final class PhoneEventRowSlot: TranscriptRowSlot, PhoneRowSlot {
         return label
     }
 
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
-        super.update(row, context: context, resized: resized)
+    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
+        super.update(row, context: context)
         guard case .item(let item) = row.content else { return }
         switch item.kind {
         case .notification(let text): content = (text, "bell", .secondaryLabel, TranscriptSpeech.notification)
@@ -70,7 +70,7 @@ final class PhoneEventRowSlot: TranscriptRowSlot, PhoneRowSlot {
     }
 }
 
-/// Kite 发给 agent 的消息，照原来的 SwiftUI 版：细边框圆角框，里面上面一行「Kite 发给 agent」带图标（小字），下面是正文，都是次要色；
+/// Kite 发给 agent 的消息：细边框圆角框，里面上面一行「Kite 发给 agent」带图标（小字），下面是正文，都是次要色；
 /// 长按正文弹出拷贝、共享，同 Text 的 textSelection。
 final class PhoneKiteRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var box: PhoneKiteRowView?
@@ -92,8 +92,8 @@ final class PhoneKiteRowSlot: TranscriptRowSlot, PhoneRowSlot {
         return box
     }
 
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
-        super.update(row, context: context, resized: resized)
+    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
+        super.update(row, context: context)
         guard case .item(let item) = row.content, case .kite(let text) = item.kind else { return }
         self.text = text
         let environment = context.environment
@@ -178,10 +178,10 @@ final class PhoneKiteRowView: UIView {
     }
 }
 
-/// 压缩的分界，照 CompactedDivider：一条横线中间一行次要色小字（「之前的对话已压缩成摘要」，展开后「收起摘要」），整条可点；
+/// 压缩的分界：一条横线中间一行次要色小字（「之前的对话已压缩成摘要」，展开后「收起摘要」），整条可点；
 /// 点开下面是摘要、显示原文和撤销压缩（PhoneCompactionDetails），原文是一列原生的行。展开收起、显示收起原文都和下面的行一起按
-/// snappy 的弹簧走，新露出来的那截按露出多少淡入（SwiftUI 版托管在 Mac 原生列表里时下面的行会跳，用户 2026-10-13 定不照搬）。
-/// 收起走完拿掉摘要和原文；原文开没开留着，再展开时还在，同 SwiftUI 版的 @State。
+/// snappy 的弹簧走，新露出来的那截按露出多少淡入（用户 2026-10-13 定下面的行跟着走，不跳）。
+/// 收起走完拿掉摘要和原文；原文开没开留着，再展开时还在。
 final class PhoneCompactedRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var container: PhoneCompactedRowView?
     private var compaction: Compaction?
@@ -209,13 +209,13 @@ final class PhoneCompactedRowSlot: TranscriptRowSlot, PhoneRowSlot {
         return container
     }
 
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
-        super.update(row, context: context, resized: resized)
+    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
+        super.update(row, context: context)
         guard case .item(let item) = row.content, case .compacted(let compaction, let children) = item.kind else { return }
         self.compaction = compaction
         self.children = children
         self.context = context
-        show(force: resized)
+        show(force: true)
     }
 
     private func show(force: Bool) {
@@ -310,7 +310,7 @@ final class PhoneCompactedRowSlot: TranscriptRowSlot, PhoneRowSlot {
     }
 }
 
-/// 压缩分界点开以后的那一截，照 CompactedDivider 的展开部分：VStack(spacing: 10) 摘要（小一号、次要色，能选字）、
+/// 压缩分界点开以后的那一截：间距 10 竖着排摘要（小一号、次要色，能选字）、
 /// 一排文字按钮（「显示原文」「收起原文」、「撤销压缩」，主题色，HStack(spacing: 16)，撤销不了时半透明）、原文（左边空 12，一道竖线）。
 /// 按给的高摆：比量的矮或高（显示、收起原文的动画中）时差的那截给原文，原文按露出多少淡入淡出。
 final class PhoneCompactionDetails: UIView {

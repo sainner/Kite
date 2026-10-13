@@ -2,17 +2,17 @@
 import AppKit
 import SwiftUI
 
-/// 压缩的分界，照 CompactedDivider：一行次要字号的「之前的对话已压缩成摘要」，两边细线，整行可点。点开下面是摘要（能选）和一排文字按钮：
+/// 压缩的分界：一行次要字号的「之前的对话已压缩成摘要」，两边细线，整行可点。点开下面是摘要（能选）和一排文字按钮：
 /// 被收起的原文能展开（「显示原文」），Kite 的压缩还能撤销；原文是一列原生的行，左边一道竖线。
-/// 展开收起和下面的行一起按 snappy 的弹簧动（SwiftUI 版的托管行里先动、列表的行后跳，用户 2026-10-13 定跟着动）：
-/// 行按自己的范围截，新露出来的一截按露出多少淡入，标签的两种字交叉淡变；收起走完拿掉摘要和原文，同 SwiftUI 版不留它们的状态。
+/// 展开收起和下面的行一起按 snappy 的弹簧动（用户 2026-10-13 定下面的行跟着动，不后跳）：
+/// 行按自己的范围截，新露出来的一截按露出多少淡入，标签的两种字交叉淡变；收起走完拿掉摘要和原文，不留它们的状态。
 final class CompactionRowSlot: TranscriptRowSlot {
     private let container = CompactionRowView()
     private var compaction: Compaction?
     private var children: [Item] = []
     private var context: TranscriptRowContext?
     private var expanded = false
-    /// 展开了原文。收起摘要时原文一起收起，但这个状态留着，再展开摘要时原文还在，同 SwiftUI 版的 @State。
+    /// 展开了原文。收起摘要时原文一起收起，但这个状态留着，再展开摘要时原文还在。
     private var original = false
     private var summary: MarkdownTextBlock?
     private var stack: TranscriptStack?
@@ -26,7 +26,7 @@ final class CompactionRowSlot: TranscriptRowSlot {
     /// 看着会话能不能撤销压缩，变了再看一次。
     private let tracking = ModelTracking()
 
-    /// 标签、摘要、按钮、原文之间的间距，同 CompactedDivider 的 VStack。
+    /// 标签、摘要、按钮、原文之间的间距。
     private static let spacing: CGFloat = 10
     static let motion = RowMotion.spring(.snappy)
 
@@ -40,8 +40,8 @@ final class CompactionRowSlot: TranscriptRowSlot {
     override var hasView: Bool { true }
     override var view: NSView { container }
 
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
-        super.update(row, context: context, resized: resized)
+    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
+        super.update(row, context: context)
         guard case .item(let item) = row.content, case .compacted(let compaction, let children) = item.kind else { return }
         self.compaction = compaction
         self.children = children
@@ -56,7 +56,7 @@ final class CompactionRowSlot: TranscriptRowSlot {
         container.rule.backgroundColor = Theme.rule.resolve(in: environment).cgColor
         showButtons()
         if expanded { showSummary() }
-        if let stack { stack.update(rows, context: nested, resized: resized) }
+        if let stack { stack.update(rows, context: nested) }
     }
 
     /// 原文的行：没有操作栏，序号和主对话的会撞。
@@ -112,7 +112,7 @@ final class CompactionRowSlot: TranscriptRowSlot {
             heightChanged?(motion)
         }
         container.insertContent(stack.view)
-        stack.update(rows, context: nested, resized: true)
+        stack.update(rows, context: nested)
         self.stack = stack
     }
 
@@ -402,13 +402,12 @@ final class CompactionButtonsView: NSView {
     }
 }
 
-/// 一列原生的行，竖着排、不滚，同 TranscriptView：行距加上各行自己多空的 gap。压缩前的原文用它，每一行都建视图（原文展开时才有）。
+/// 一列原生的行，竖着排、不滚：行距加上各行自己多空的 gap，同主对话。压缩前的原文、子 agent 做的事用它，每一行都建视图（展开时才有）。
 /// 某一行自己展开收起（工具行、折起来的长消息）时报给外面（changed 带着走法），外面的行按这个走法变高，这一行跟着外面的高走。
 @MainActor final class TranscriptStack {
     let view = FlippedLayerView()
     private(set) var slots: [TranscriptRowSlot] = []
     private var byID: [RowID: TranscriptRowSlot] = [:]
-    private var shapes: [RowID: Int] = [:]
     /// 有一行自己变高变矮了：motion 是它的走法，nil 是直接换。
     var changed: ((RowMotion?) -> Void)?
     private var width: CGFloat = 0
@@ -428,32 +427,27 @@ final class CompactionButtonsView: NSView {
         view.layer?.masksToBounds = false
     }
 
-    func update(_ rows: [TranscriptRow], context: TranscriptRowContext, resized: Bool) {
+    /// 换上这几行：外面这一行换了内容或外观才调，每一行都跟着换（同 TranscriptRowSlot.update）。
+    func update(_ rows: [TranscriptRow], context: TranscriptRowContext) {
         var next: [TranscriptRowSlot] = []
         var nextByID: [RowID: TranscriptRowSlot] = [:]
         for row in rows {
-            var hasher = Hasher()
-            row.shape(into: &hasher)
-            let shape = hasher.finalize()
             let slot: TranscriptRowSlot
             if let existing = byID[row.id], transcriptRowSlotFits(existing, row) {
                 slot = existing
-                if resized || shapes[row.id] != shape { slot.update(row, context: context, resized: true) }
             } else {
                 slot = makeTranscriptRowSlot(row)
                 slot.heightChanged = { [weak self, weak slot] motion in
                     guard let self, let slot else { return }
                     childChanged(slot, motion: motion)
                 }
-                slot.update(row, context: context, resized: true)
             }
-            shapes[row.id] = shape
+            slot.update(row, context: context)
             next.append(slot)
             nextByID[row.id] = slot
         }
-        for (id, slot) in byID where nextByID[id] !== slot {
-            if slot.hasView { slot.view.removeFromSuperview() }
-            shapes[id] = nil
+        for (id, slot) in byID where nextByID[id] !== slot && slot.hasView {
+            slot.view.removeFromSuperview()
         }
         slots = next
         byID = nextByID

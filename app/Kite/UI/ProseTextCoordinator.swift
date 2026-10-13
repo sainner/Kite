@@ -7,32 +7,18 @@ import AppKit
 typealias PlatformTextView = NSTextView
 #endif
 
-/// 对话正文文本视图（Mac 的 MacSelectableTextView、iPhone 的 PhoneSelectableTextView）共用的协调器：流式只补末尾的字、
-/// 按宽度记下量过的尺寸、附件变高后重排那一段、行内代码和引用的装饰片段。平台的子类只管建视图、整段重设、手势、链接与复制。
+/// 对话正文文本视图（Mac 的 ProseTextView、iOS 的 PhoneProseTextView）共用的协调器：流式只补末尾的字、
+/// 附件变高后重排那一段、行内代码和引用的装饰片段。两端原生列表的行和 Mac 的表格卡片各持一个。
 /// 只碰 textStorage 和 textLayoutManager：读 layoutManager 会让视图退回 TextKit 1。
 class ProseTextCoordinator: NSObject, NSTextLayoutManagerDelegate {
     weak var view: PlatformTextView?
-    /// 附件变高、重排了那一段以后调：Mac 主对话的原生行（见 TranscriptRowSlots）借它重新量高。
-    /// SwiftUI 里由 invalidateIntrinsicContentSize 请它再量；文本视图自己改尺寸时也会调那个，不能借它。
+    /// 附件变高、重排了那一段以后调：原生行借它重新量高（文本视图自己改尺寸时不调）。
     var resized: (() -> Void)?
-    /// 文本视图里现在放的字。换了就是排版变了。
-    var shown: NSAttributedString? { didSet { revision += 1 } }
-    /// 放的字换了、附件的高变了各加一，量过的尺寸跟着作废。按它比，不对整段属性串逐个比。
-    private var revision = 0
-    private var sizedFor: SizeKey?
-    /// 量过的尺寸，按给的宽度记。
-    private var sizes: [CGFloat?: CGSize] = [:]
+    /// 文本视图里现在放的字。
+    var shown: NSAttributedString?
 
     /// 两端的 textStorage 只差可选性。
     private var storage: NSTextStorage? { view?.textStorage }
-
-    /// 量出的尺寸取决于这些；变了就重新量。字号还跟着动态字体和粗体文字的设置变。
-    private struct SizeKey: Equatable {
-        let revision: Int
-        let inset: CGSize
-        let typeSize: DynamicTypeSize
-        let weight: LegibilityWeight?
-    }
 
     /// 新串只是旧串原样接着往后长时，只往 textStorage 末尾补字，TextKit 2 从编辑处起重排；选区在前面的字上，不动它。
     /// 流式回复每次整段重设会让 TextKit 2 把整段从头重排，iPhone 真机上卡几百毫秒（2026-10-11 Time Profiler）。
@@ -45,20 +31,6 @@ class ProseTextCoordinator: NSObject, NSTextLayoutManagerDelegate {
         storage?.replaceCharacters(in: NSRange(location: old.length, length: 0), with: added)
         shown = text
         return true
-    }
-
-    /// 按给的宽度取量过的尺寸，没量过就量一次记下。SwiftUI 一次排版会用几种宽度把每段字各量几遍
-    /// （Mac 实验里问 78 次只有 21 种宽度），每量一次 TextKit 都把这段字从头排一遍。
-    func size(inset: CGSize, environment: EnvironmentValues, width: CGFloat?, measure: () -> CGSize?) -> CGSize? {
-        let key = SizeKey(revision: revision, inset: inset, typeSize: environment.dynamicTypeSize, weight: environment.legibilityWeight)
-        if sizedFor != key {
-            sizedFor = key
-            sizes = [:]
-        }
-        if let size = sizes[width] { return size }
-        guard let size = measure() else { return nil }
-        sizes[width] = size
-        return size
     }
 
     /// 不占满时贴着字的宽度，最多 most。多留一点，免得文本视图排出来比量的宽、多折一行。
@@ -79,9 +51,8 @@ class ProseTextCoordinator: NSObject, NSTextLayoutManagerDelegate {
         if !changed.isEmpty, shown != nil { relayout(changed) }
     }
 
-    /// 附件的高变了：重排它所在的那一段，作废量过的尺寸，请 SwiftUI 再量一次。
+    /// 附件的高变了：重排它所在的那一段，告诉行重新量高。
     private func relayout(_ changed: [BlockAttachment]) {
-        revision += 1
         guard let view, let layout = view.textLayoutManager, let storage else { return }
         storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
             guard let attachment = value as? BlockAttachment, changed.contains(where: { $0 === attachment }),

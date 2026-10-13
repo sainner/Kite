@@ -2,7 +2,7 @@
 import AppKit
 import SwiftUI
 
-/// 人发的一条消息，原生气泡，样子和行为照 MessageBubble：靠右，贴着字宽（有代码段时占满）；收到了填上底色、白字，
+/// 人发的一条消息，原生气泡：靠右，贴着字宽（有代码段时占满）；收到了填上底色、白字，
 /// 排队中只描边、跟系统文字色，两者之间 0.3 秒淡入淡出；太长的折到 messageFold 高，底下渐隐，下面一个展开、收起的按钮；
 /// 附件排在气泡上面（AttachmentRowView，很少有）。正文和代码段用 SelectableText 同一套属性串，复制给打的原文。
 /// 刚发出去时从下面 bubbleRise 处浮上来、淡显，跟着对话往上滑的那一下走，见 TranscriptListView.rise。
@@ -22,7 +22,7 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     /// 上次整条排过、没有一行是被行宽折下来的：贴字的宽。拖缝时能给的宽还放得下它，排出来一样，不用再排（见 height），同 iOS。
     private var unwrapped: CGFloat?
 
-    /// 折起来时显示多高，比它高出不少（1.4 倍）才折，同 MessageBubble。
+    /// 折起来时显示多高，比它高出不少（1.4 倍）才折。
     private static var foldHeight: CGFloat { Metrics.messageFold }
 
     override init(row: TranscriptRow) {
@@ -59,8 +59,8 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     var foldable: Bool { layout.foldable(foldHeight: Self.foldHeight) }
 
 
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
-        super.update(row, context: context, resized: resized)
+    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
+        super.update(row, context: context)
         guard case .message(let message, let queued) = row.content else { return }
         let wasQueued = self.queued
         let first = self.message == nil
@@ -76,7 +76,6 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
         container.text.setAccessibilityCustomActions(toggle.map { toggle in
             [NSAccessibilityCustomAction(name: TranscriptSpeech.actions) { toggle(); return true }]
         })
-        guard resized else { return }
         layout.contentChanged()
         let environment = context.environment
         let body = Theme.body.resolve(in: environment.fontResolutionContext).ctFont as NSFont
@@ -130,7 +129,7 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
         container.place(frames, attachmentsHeight: attachmentsHeight, foldable: foldable, expanded: expanded)
     }
 
-    /// 浮上来的过程：1 在下面藏着，0 到位。浮的过程中正文不能选字，同 MessageBubble 的 Rising。
+    /// 浮上来的过程：1 在下面藏着，0 到位。浮的过程中正文不能选字。
     override var rise: CGFloat {
         didSet {
             container.alphaValue = 1 - rise

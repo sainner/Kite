@@ -3,8 +3,8 @@ import CoreText
 import SwiftUI
 import UIKit
 
-/// 工具行点开后的步骤，照 WorkSteps：一步一行，同批调用之间隔横向虚线，不同批隔实线，整块圆角 8、细描边。
-/// 每一步再点开看参数和结果（PhoneCallDetail），按 0.25 秒的普通缓出展开，同 CallRow。
+/// 工具行点开后的步骤：一步一行，同批调用之间隔横向虚线，不同批隔实线，整块圆角 8、细描边。
+/// 每一步再点开看参数和结果（PhoneCallDetail），按 0.25 秒的普通缓出展开。
 /// 一步展开收起时，它的高由列表的行高动画给：整块按给的高摆，多出、少掉的那截都给正在动的那一步（见 layout）。
 final class PhoneWorkSteps: UIView {
     /// 一步展开收起了、或者里面嵌着的对话变了：带着走法报给工具行，工具行再报给列表。
@@ -31,7 +31,7 @@ final class PhoneWorkSteps: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func show(_ work: Work, context: TranscriptRowContext) {
-        // 步骤按原来的序号认，后续调用到来、形成批次时，已经展开的那一步不重建，同 WorkSteps
+        // 步骤按原来的序号认，后续调用到来、形成批次时，已经展开的那一步不重建
         while rows.count < work.calls.count {
             let row = PhoneCallRow()
             row.changed = { [weak self, weak row] motion in
@@ -114,7 +114,7 @@ final class PhoneWorkSteps: UIView {
     }
 }
 
-/// 一次工具调用，照 CallRow：标题行（图标、名字、摘要或文件引用、补丁行数和运行时间），点开下面是参数和结果，按自己的范围截。
+/// 一次工具调用：标题行（图标、名字、摘要或文件引用、补丁行数和运行时间），点开下面是参数和结果，按自己的范围截。
 final class PhoneCallRow: UIView {
     var changed: ((RowMotion?) -> Void)?
     private let header = PhoneCallHeader()
@@ -157,7 +157,7 @@ final class PhoneCallRow: UIView {
         detail?.release()
     }
 
-    /// 按给的高摆：动画中在收起和展开之间，详情按露出多少淡入淡出；收起走完拿掉详情，同 SwiftUI 版不留它的状态。
+    /// 按给的高摆：动画中在收起和展开之间，详情按露出多少淡入淡出；收起走完拿掉详情，不留它的状态。
     func layout(height: CGFloat) {
         header.frame = CGRect(x: 0, y: 0, width: bounds.width, height: headerHeight)
         guard let detail else { return }
@@ -189,8 +189,8 @@ final class PhoneCallRow: UIView {
     }
 }
 
-/// 一步的标题行，照 CallRow 的标题：HStack(spacing: 6) { 图标（16 宽）、名字（半粗）、摘要或文件引用 }，右边是小标签；
-/// 竖着居中，高是 toolRowHeight 随字号缩放。整行点开、收起；点在文件引用上打开引用。等待中、执行中带 ToolRowActivity 的动效。
+/// 一步的标题行：图标（16 宽）、名字（半粗）、摘要或文件引用，间距 6，右边是小标签；
+/// 竖着居中，高是 toolRowHeight 随字号缩放。整行点开、收起；点在文件引用上打开引用。等待中、执行中带动效（PhoneActivityView）。
 final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
     var toggle: (() -> Void)?
     private let activity = PhoneActivityView()
@@ -237,7 +237,7 @@ final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
         let text = call.use.rowSummary(relativeTo: root, generating: call.state == .generating)
         let color: UIColor = failed ? danger : .secondaryLabel
         if call.state != .generating, !call.fileReferences.isEmpty {
-            // 文件引用：带下划线的链接，中间用 · 隔开，放不下截中间，同 ToolReferenceSummary
+            // 文件引用：带下划线的链接，中间用 · 隔开，放不下截中间
             let result = NSMutableAttributedString()
             for (index, reference) in call.fileReferences.enumerated() {
                 if index > 0 { result.append(NSAttributedString(string: " · ", attributes: [.font: font, .foregroundColor: color])) }
@@ -267,7 +267,7 @@ final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
         setNeedsLayout()
     }
 
-    /// 命令的运行时间，同 ToolDurationChip：跑完了按开始到结束，在跑时每秒按现在更新。
+    /// 命令的运行时间：跑完了按开始到结束，在跑时每秒按现在更新。
     private func updateDuration() {
         timer?.invalidate()
         timer = nil
@@ -363,7 +363,7 @@ final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
     }
 }
 
-/// 一个小标签，照 ToolInfoChip：最小号的等宽数字，次要色，左右 6、上下 2 的胶囊底。
+/// 一个小标签：最小号的等宽数字，次要色，左右 6、上下 2 的胶囊底。
 final class PhoneChip: UIView {
     private let label = PhoneTextLine()
     var font: UIFont?
@@ -401,7 +401,7 @@ final class PhoneChip: UIView {
     }
 }
 
-/// 一步的参数和结果，照 CallDetail：两张卡片（参数、结果）隔 6，子 agent 做的事接在下面、左边空 12。字是等宽的次要字号。
+/// 一步的参数和结果：两张卡片（参数、结果）隔 6，子 agent 做的事接在下面、左边空 12。字是等宽的次要字号。
 final class PhoneCallDetail: UIView {
     var changed: ((RowMotion?) -> Void)?
     private let input = PhoneDetailCard()
@@ -464,7 +464,7 @@ final class PhoneCallDetail: UIView {
     }
 }
 
-/// 一张详情卡片，照 ToolDetailCard：Grid（列间 12、行间 8）每行左边是键（次要色，最宽 96，长了折行），右边是值（序列化成一行的 JSON，
+/// 一张详情卡片：列间 12、行间 8，每行左边是键（次要色，最宽 96，长了折行），右边是值（序列化成一行的 JSON，
 /// 文件路径是链接，长了折行，能选字），四边空 10，代码底色、圆角 8。
 final class PhoneDetailCard: UIView {
     private var rows: [(key: PhoneTextLine, value: PhoneDetailValue)] = []
@@ -578,8 +578,8 @@ extension TranscriptRowContext {
     }
 }
 
-/// 嵌着的一段对话（子 agent 做的事、压缩前的原文），照 TranscriptView：原生的行一行行竖着排，行距 rowSpacing 加每行的 gap；
-/// 全部建着、全部量（同原来的 VStack），行视图和主对话同一套（makePhoneTranscriptRowSlot）。
+/// 嵌着的一段对话（子 agent 做的事、压缩前的原文）：原生的行一行行竖着排，行距 rowSpacing 加每行的 gap；
+/// 全部建着、全部量，行视图和主对话同一套（makePhoneTranscriptRowSlot）。
 /// 一行自己展开收起时报给外面，按给的高摆，多出、少掉的那截给正在动的那一行。
 @MainActor final class PhoneTranscriptStack {
     let view = UIView()
@@ -599,7 +599,7 @@ extension TranscriptRowContext {
             row.shape(into: &hasher)
             let shape = hasher.finalize()
             if let slot = old[row.id], phoneTranscriptRowSlotFits(slot, row) {
-                if force || shapes[row.id] != shape { slot.update(row, context: context, resized: true) }
+                if force || shapes[row.id] != shape { slot.update(row, context: context) }
                 next.append(slot)
             } else {
                 let slot = makePhoneTranscriptRowSlot(row)
@@ -608,7 +608,7 @@ extension TranscriptRowContext {
                     animating = slot.id
                     changed?(motion)
                 }
-                slot.update(row, context: context, resized: true)
+                slot.update(row, context: context)
                 next.append(slot)
             }
             shapes[row.id] = shape
