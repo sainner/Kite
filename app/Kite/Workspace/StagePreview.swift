@@ -1,10 +1,11 @@
 import SwiftUI
 
 extension View {
-    /// Debug build 带 --stage-preview 启动时主窗口空着，宽屏台面的新旧对照另开一个窗口，见 StagePreview。
+    /// Debug build 带 --stage-preview（或 --ring-preview）启动时主窗口空着，宽屏台面（或状态圆环、停靠栏脉冲）的新旧对照另开一个窗口，
+    /// 见 StagePreview、RingPreview。
     @ViewBuilder func stagePreview() -> some View {
         #if DEBUG && os(macOS)
-        if StagePreview.enabled { Color.clear } else { self }
+        if StagePreview.enabled || RingPreview.enabled { Color.clear } else { self }
         #else
         self
         #endif
@@ -33,6 +34,10 @@ struct StagePreview: View {
     static let cell = CGSize(width: 684, height: 564)
 
     static func openWindow(model: AppModel) {
+        if RingPreview.enabled {
+            DispatchQueue.main.async { RingPreview.openWindow(model: model) }
+            return
+        }
         DispatchQueue.main.async {
             let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 2 * cell.width + 72, height: cell.height + 110),
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -251,6 +256,107 @@ private struct StagePreviewStep {
             scene.area.toggleDock(scene.miniFamily, depth: 0)
         },
     ]
+}
+
+/// 状态圆环、停靠栏脉冲的新旧对照：左边 SwiftUI 版逐帧画的那一帧（ContextRingFrame、DockPulseFrame），右边图层版停在同一处
+/// （ContextRingLayers、DockPulseLayers 的 frozen），各阶段、各进度一格。加 --capture-port 时抓一张图和两格的位置 POST 回去。
+struct RingPreview: View {
+    static var enabled: Bool { ProcessInfo.processInfo.arguments.contains("--ring-preview") }
+    private static var shown: NSWindow?
+    @State private var frames = StagePreviewFrames()
+
+    static func openWindow(model: AppModel) {
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1100, height: 760),
+                              styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isReleasedWhenClosed = false
+        if UserDefaults.standard.string(forKey: "KiteAppearance") == "dark" { window.appearance = NSAppearance(named: .darkAqua) }
+        window.contentView = NSHostingView(rootView: RingPreview().environment(model))
+        window.center()
+        window.orderFrontRegardless()
+        shown = window
+    }
+
+    private static let rings: [(phase: String, fraction: Double?)] = [("running", 0.4), ("running", nil), ("stopping", 0.7), ("finishing", nil), ("idle", 0.2)]
+    private static let progresses: [Double] = [0, 0.15, 0.4, 0.75]
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 24) {
+            grid(native: false)
+            grid(native: true)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Theme.card)
+        .task {
+            guard let port = StagePreview.capturePort else { return }
+            try? await Task.sleep(for: .seconds(2))
+            guard let window = Self.shown, let image = StagePreviewCapture.image(of: window) else { return }
+            let appearance = UserDefaults.standard.string(forKey: "KiteAppearance") ?? "light"
+            await StagePreviewCapture.post("ring-\(appearance).png", image, port: port)
+            let layout: [String: Any] = ["scale": window.backingScaleFactor,
+                                         "cells": frames.cells.mapValues { [$0.minX, $0.minY, $0.width, $0.height] }]
+            if let data = try? JSONSerialization.data(withJSONObject: layout) {
+                await StagePreviewCapture.post("ring-\(appearance).json", data, port: port)
+            }
+            await StagePreviewCapture.post("ring-\(appearance)-done.txt", Data(), port: port)
+            NSApp.terminate(nil)
+        }
+    }
+
+    private func grid(native: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            ForEach(Self.rings.indices, id: \.self) { row in
+                let ring = Self.rings[row]
+                HStack(spacing: 18) {
+                    ForEach(Self.progresses, id: \.self) { progress in
+                        Group {
+                            if native {
+                                ContextRingLayers(phase: ring.phase, fraction: ring.fraction, lineWidth: 3, still: ring.phase == "idle", frozen: progress)
+                            } else {
+                                ContextRingFrame(phase: ring.phase, fraction: ring.fraction, lineWidth: 3, progress: progress, still: ring.phase == "idle")
+                            }
+                        }
+                        .padding(1.5)
+                        .frame(width: 27, height: 27)
+                        .frame(width: 60, height: 60)
+                    }
+                }
+            }
+            // 标题栏里的样子：有提示时虚化、变淡，叠提示图标
+            HStack(spacing: 18) {
+                ForEach([PaneNotice?.none, PaneNotice.failure("工作机连不上")], id: \.?.text) { notice in
+                    Group {
+                        if native {
+                            ContextRingLayers(phase: "running", fraction: 0.4, lineWidth: 3, still: false, frozen: 0.15)
+                        } else {
+                            ContextRingFrame(phase: "running", fraction: 0.4, lineWidth: 3, progress: 0.15, still: false)
+                        }
+                    }
+                    .paneHeaderRing(lineWidth: 3, status: "运行中")
+                    .environment(\.paneNotice, notice)
+                    .frame(width: 60, height: 60)
+                }
+            }
+            HStack(spacing: 18) {
+                ForEach(Self.progresses, id: \.self) { progress in
+                    let margin = Metrics.dragBubble * DockPulse.reach
+                    Group {
+                        if native {
+                            DockPulseLayers(color: .accentColor, period: 2.4, margin: margin, still: false, frozen: progress)
+                        } else {
+                            DockPulseFrame(color: .accentColor, margin: margin, progress: progress)
+                        }
+                    }
+                    .padding(-margin)
+                    .frame(width: 36, height: 36)
+                    .frame(width: 60, height: 60)
+                }
+            }
+        }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frames.cells[native ? "native" : "swiftui"] = $0 }
+    }
 }
 
 private enum StagePreviewCapture {

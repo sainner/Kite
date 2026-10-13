@@ -22,7 +22,7 @@ struct KiteApp: App {
         _model = State(initialValue: model)
         #if DEBUG && os(macOS)
         if ComposerPreview.enabled { ComposerPreview.openWindow(model: model) }
-        if StagePreview.enabled { StagePreview.openWindow(model: model) }
+        if StagePreview.enabled || RingPreview.enabled { StagePreview.openWindow(model: model) }
         #endif
     }
 

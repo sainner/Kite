@@ -57,6 +57,8 @@ App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `
 - `--swiftui-stage`：Mac 也用 SwiftUI 版台面，同一个构建切新旧两版。
 - `--stage-preview`：主窗口留空，另开一个窗口并排画两版台面（左 SwiftUI、右原生），各用一个造出来的工作区，按同样的步骤改排布（缩小、展开、空台面、恢复、拖动预览、展开停靠栏）。加 `--capture-port <端口>` 时每一步等动画走完、缩小和恢复途中再各抓几帧，窗口图和两格位置 POST 到本机这个端口，抓完退出；`-stageHover swiftui|native` 把窗口挪到指针底下，让指针停在那一边的卡片上，比悬停露出的窗口按钮；深色加 `-KiteAppearance dark`。
 
+状态圆环和停靠栏头像的脉冲在 Mac 上是图层动画（`ContextRingLayers`、`DockPulseLayers`），iPhone、iPad 仍逐帧画 SwiftUI 版。`--ring-preview` 另开一个窗口，左边是 SwiftUI 版各阶段、各进度的那一帧，右边是图层版停在同一处，加 `--capture-port <端口>` 时抓图后退出。
+
 初始配置预览使用 Debug build 带 `--onboarding-preview` 启动，需要从测试机桌面反复启动时，编译参数使用 `KITE_PREVIEW_FLAGS=KITE_ONBOARDING_PREVIEW`。界面在真实工作机和数据上迭代。
 
 Swift 类型、窗口排布、草稿交接、滚动与 WebKit 验证统一在 [手动验证目录](../kited/test/manual/README.md)。移动或拆分 Swift 文件时同步更新这些脚本引用的源码路径。
