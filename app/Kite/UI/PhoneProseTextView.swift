@@ -24,9 +24,21 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
     /// 视图固定的宽：最宽的内容列，连同两边给行内代码背景留的余量。
     static let widest = Metrics.transcriptWidth + Metrics.inlineCodePadding * 2
 
+    /// TextKit 2 的一套自己搭，视图走指定构造器：UITextView(usingTextLayoutManager:) 走 UIKit 自己的构造路径，
+    /// Swift 子类存储属性的初始值不会设上（shownHeight 读出来是 0 不是 nil，正文只排第一段，2026-10-13 iPad 真机）。
+    private var stack: (content: NSTextContentStorage, layout: NSTextLayoutManager)?
+
     /// TextKit 2，文本容器跟着视图宽度、不加边距。
     static func make() -> PhoneProseTextView {
-        let view = PhoneProseTextView(usingTextLayoutManager: true)
+        let layout = NSTextLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = true
+        layout.textContainer = container
+        let content = NSTextContentStorage()
+        content.addTextLayoutManager(layout)
+        content.primaryTextLayoutManager = layout
+        let view = PhoneProseTextView(frame: .zero, textContainer: container)
+        view.stack = (content, layout)
         view.isEditable = false
         view.isSelectable = false
         view.isScrollEnabled = false
