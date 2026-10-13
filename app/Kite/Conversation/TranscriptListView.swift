@@ -413,7 +413,8 @@ final class TranscriptListView: NSScrollView {
     private func scroll(toVisibleTop top: CGFloat) {
         let visible = visibleArea
         let maxTop = max(document.frame.height - visible.height, 0)
-        let origin = min(max(top, 0), maxTop) - contentInsets.top
+        // 人在滑时不夹：越过两端是回弹，交给滚动视图自己收
+        let origin = (userScrolling ? top : min(max(top, 0), maxTop)) - contentInsets.top
         guard abs(contentView.bounds.minY - origin) > 0.25 else { return }
         let wasAdjusting = adjusting
         adjusting = true
@@ -434,12 +435,17 @@ final class TranscriptListView: NSScrollView {
             self.trim = trim + distanceToBottom
             needsLayout = true
         }
-        following = distanceToBottom <= 1
+        // 手在滑（含惯性、回弹）时滑完再看停在哪；滚轮一格一格的没有这一段，当场看
+        if !userScrolling { following = distanceToBottom <= 1 }
         if case .some = context?.environment.selectedRow.wrappedValue { context?.environment.selectedRow.close() }
         realize(around: visibleArea)
     }
 
-    @objc private func liveScrollBegan() { userScrolling = true }
+    /// 手一滑就不再贴底：展开、流式变高时贴底每帧都改滚动位置，滑到底回弹时就和回弹抢。
+    @objc private func liveScrollBegan() {
+        userScrolling = true
+        following = false
+    }
 
     @objc private func liveScrollEnded() {
         userScrolling = false
