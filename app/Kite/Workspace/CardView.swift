@@ -62,6 +62,7 @@ final class CardView: NSView {
     private let fill = CardFillView()
     private var backdrop: BackdropHost?
     private var container: HostedContentContainer?
+    /// 头像随外框平移的那一层，铺满台面：点击和读屏都穿过去，不挡下面的正文、缝和别的卡片（PassThroughView）。
     private let iconMover = PassThroughView()
     private let icon = CardIsland()
     private let ring = CardRingView()
@@ -696,13 +697,6 @@ final class CardIsland: NSHostingView<AnyView> {
 
     @MainActor required init(rootView: AnyView) { fatalError("init(rootView:) has not been implemented") }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-}
-
-/// 铺满台面、只负责显示的一层（头像随外框平移的那一层）：点击和读屏都穿过去，不挡下面的正文、缝和别的卡片。
-final class PassThroughView: NSView {
-    override var isFlipped: Bool { true }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    override func isAccessibilityElement() -> Bool { false }
 }
 
 /// 外框底色和最小化色：两层同一个轮廓，底色按 min(正文 + 头像, 1)、最小化色按头像的透明度，同 WindowSurface。

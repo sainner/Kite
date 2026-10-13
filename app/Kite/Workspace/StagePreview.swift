@@ -124,6 +124,7 @@ struct StagePreview: View {
             try? await Task.sleep(for: .milliseconds(1500))
             await shoot(name, port: port, frames: frames)
         }
+        await threadChecks(appearance: appearance, port: port, frames: frames)
         // 拆掉两边，等一会儿看原生台面和卡片还有没有活着的
         let before = StageView.alive.allObjects.count
         removed = true
@@ -150,6 +151,78 @@ struct StagePreview: View {
 }
 
 extension StagePreview {
+    /// 原生会话窗口（右边、左上那个代理窗口）的几样，用模型的接口摆出来、不发事件：选中一行开操作栏，拖缝时操作栏跟着那一行，
+    /// 收起；引用跳转打不开时弹提示（走正文托管视图里的 ReferenceNavigation）；发送后对话滑到底、气泡浮起。各抓图，再导出读屏树。
+    fileprivate func threadChecks(appearance: String, port: Int, frames: StagePreviewFrames) async {
+        let scene = scenes[1]
+        scene.area.collapseDock()
+        try? await Task.sleep(for: .milliseconds(800))
+        guard let window = Self.shown, let root = window.contentView,
+              let thread = scene.area.threads.first(where: { $0.title == "重构停靠栏" }),
+              let view = Self.views(ThreadWindowView.self, in: root).first(where: { $0.thread === thread }) else {
+            await StagePreviewCapture.post("stage-\(appearance)-thread.txt", Data("找不到原生会话窗口".utf8), port: port)
+            return
+        }
+        let name = "stage-\(appearance)-thread"
+        // 选中最后一条人发的消息
+        let rows = TranscriptRow.rows(items: thread.transcript.items, pending: thread.transcript.pending)
+        let human = rows.last { $0.content.isMessage }
+        view.pane.selected = human?.id
+        try? await Task.sleep(for: .milliseconds(800))
+        await shoot("\(name)-0-actions", port: port, frames: frames)
+        await StagePreviewCapture.post("\(name)-0-actions.ax.txt", Data(Self.accessibilityTree(view).utf8), port: port)
+        // 拖缝：往左挪 60，中途抓一张，松手吸附后再抓一张
+        let layout = scene.area.layout, bounds = CGRect(origin: .zero, size: Self.cell)
+        if let gap = layout.shown?.layout(in: layout.regions(in: bounds).canvas).gaps.first {
+            for step in 1...6 {
+                layout.resize(gap, to: CGPoint(x: gap.rect.midX - CGFloat(step) * 10, y: gap.rect.midY))
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            await shoot("\(name)-1-resizing", port: port, frames: frames)
+            layout.finishResize()
+            try? await Task.sleep(for: .milliseconds(800))
+            await shoot("\(name)-2-resized", port: port, frames: frames)
+        }
+        view.pane.selected = nil
+        try? await Task.sleep(for: .milliseconds(800))
+        await shoot("\(name)-3-closed", port: port, frames: frames)
+        // 引用跳转：不属于这个工作区的引用，提示打不开
+        view.environment.openURL(URL(string: "kite://reference/elsewhere/README.md")!)
+        try? await Task.sleep(for: .milliseconds(800))
+        let sheet = window.attachedSheet
+        await StagePreviewCapture.post("\(name)-4-reference.txt", Data("提示：\(sheet.map { String(describing: type(of: $0)) } ?? "没有")".utf8),
+                                       port: port)
+        await shoot("\(name)-4-reference", port: port, frames: frames)
+        if let sheet { window.endSheet(sheet) }
+        try? await Task.sleep(for: .milliseconds(500))
+        // 发送：对话滑到底、气泡从下面浮起
+        thread.connected = true
+        view.pane.scroll.send({ thread.send(Message(text: "再看一下拖缝时的那一帧")) }, alongside: {})
+        for (index, delay) in [80, 200, 600].enumerated() {
+            try? await Task.sleep(for: .milliseconds(delay - (index > 0 ? [80, 200, 600][index - 1] : 0)))
+            await shoot("\(name)-5-send-\(index)", port: port, frames: frames)
+        }
+    }
+
+    fileprivate static func views<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
+        ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { views(type, in: $0) }
+    }
+
+    /// 读屏树：角色、名字，按读屏走的顺序，缩进表示层次。
+    fileprivate static func accessibilityTree(_ root: Any) -> String {
+        var lines: [String] = []
+        func visit(_ element: Any, depth: Int) {
+            guard lines.count < 200, depth < 9, let object = element as? NSAccessibilityProtocol else { return }
+            let role = (object.accessibilityRole() ?? .unknown).rawValue
+            let label = object.accessibilityLabel() ?? object.accessibilityTitle() ?? ""
+            let value = (object.accessibilityValue() as? String).map { " 值=\($0.prefix(30))" } ?? ""
+            lines.append(String(repeating: "  ", count: depth) + "\(role) \(label.prefix(40))\(value)")
+            for child in object.accessibilityChildren() ?? [] { visit(child, depth: depth + 1) }
+        }
+        visit(root, depth: 0)
+        return lines.joined(separator: "\n")
+    }
+
     /// 两边各取几处（格内坐标）：左边那张卡片的正文、它的输入框、两张卡片之间的缝、右上那张卡片标题栏的空白处，
     /// 问窗口这一点落在哪个视图上（hitTest，不发事件），看铺满台面的各层有没有挡住。
     fileprivate static func hits(in window: NSWindow, frames: StagePreviewFrames) -> String {
