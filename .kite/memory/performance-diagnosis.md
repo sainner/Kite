@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: reference
   originSessionId: 19e18107-9859-4070-a429-82a37c6d6214
-  modified: 2026-10-14T02:10:00+09:00
+  modified: 2026-10-14T09:00:00+09:00
 ---
 
 - 卡顿先量再改：用 `CADisplayLink` 记下动作后一两秒的帧间隔，每做一次换一种组合对照，一次只用一种组合。手感只能说明卡不卡，说明不了卡在哪。
@@ -26,6 +26,7 @@ metadata:
 - 量改窗口宽度的开销先把窗口定窄：对话正文最宽 720 点（`Metrics.transcriptWidth`），窗口比它宽时拖缝、让位都不重排正文，新旧写法测不出差别（2026-10-12；测量入口默认把 Mac 窗口定成 1200×924）。测量版等「长对话」按总高（几屏）判断，不按轮数：按需排版按人发的轮次分组，11 轮就有近 4 屏。
 - 丢帧是阈值效应：每帧主线程超过 16.7ms（测量机是 60Hz 外接屏）就隔帧出图，CPU 少了三成丢帧也可能一帧不变。报每帧主线程和帧间隔，按起手、持续、停顿、松手后分段，计数只算动作期间；驱动拖动按实际最小尺寸算范围，被夹住不动的那段会拉低平均（2026-10-13 拖缝，Codex 复核指出）。离屏单对话的 bench 会把正文排版放大成主因，归因先在真实 App 里用同一次启动的分层模式（正常、不重排、定尺寸、拿掉内容）定量，再试单项开关。
 - 探针的坑（2026-10-13）：读 `@Environment(\.self)` 的探针在环境变化时不重算，`updateNSView` 也只在读过的那几项变了才调，查环境变化要读具体键；开优化的测量版里 `Thread.callStackSymbols` 每次几毫秒、会占满主线程，判断调用来源改用 `callStackReturnAddresses` 比地址。
+- 图层每帧重画、却断不到谁调 `setNeedsDisplay` 时（2026-10-14 侧栏拖宽）：lldb 断 QuartzCore 的 `CA::Layer::mark(CA::Transaction*, unsigned int, unsigned int)`，第三个参数 0x100 的是标成要重画，记栈看来路。AppKit 有两条不走公开方法的路：改 `sublayerTransform` 经 `_NSInvalidateSuggestedContentsScaleBelow` 把整棵子树标成重画，视图可见区变了经 `NSViewHierarchyInvalidateVisibleRect` 标。用 lldb 挂测量版：断点先停用，在只在测量段里跑的函数上（没有就临时加一个）再打开，回调里只记栈、不求值表达式；热路径上逐次求值会把测量版拖到测量入口超时被杀，共享的 UserDefaults 就不写回了（2026-10-14 出过一次）。
 - 先分清是计算还是渲染：计数显示 body 和取样一次都没跑而开销还在，就是渲染，换成纯色对照即可确认。2026-10-11 卡片点阵就是这样查出的：整窗大小的着色器层随所在渲染层每帧重画。
 - 改完要验证：用 Instruments 的 SwiftUI 模板数一次流式刷新或一次动作里重算了多少个 body，同时看 Time Profiler 里布局与渲染的耗时。只数 body 不够，body 没少跑开销也可能在排版和渲染上；真机和 Mac 分别量。
 - SwiftUI 用几何效果移动容器时（`ignoredByLayout`、`visualEffect` 都一样），里面所有 `.frame(in: .global)` 和读 `Text.LayoutKey` 锚点的视图每帧重算，只读本地尺寸的不受影响（2026-10-11 离屏实测）。
