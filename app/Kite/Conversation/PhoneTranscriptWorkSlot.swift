@@ -149,6 +149,8 @@ final class PhoneWorkRowSlot: TranscriptRowSlot, PhoneRowSlot {
         steps = nil
         running = nil
         container = nil
+        // 重建时是收着的，量过的高（可能带着展开的步骤）作废
+        if expanded { measured = nil }
         expanded = false
     }
 }

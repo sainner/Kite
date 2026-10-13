@@ -287,6 +287,8 @@ final class PhoneCompactedRowSlot: TranscriptRowSlot, PhoneRowSlot {
         details?.removeFromParent()
         details = nil
         container = nil
+        // 重建时是收着的，量过的高（可能带着摘要那截）作废
+        if expanded { measured = nil }
         expanded = false
     }
 }
