@@ -13,6 +13,8 @@ struct MacControlsBar: View {
     let send: (Message, _ alongside: @escaping () -> Void) -> Void
     /// 这个窗口录语音时的标识，见 VoiceInput.owner。
     let voiceOwner: String
+    /// 原生的会话窗口外框（ThreadWindowView）从这里拿到底栏，按宽度原生量高、知道里面变高变矮。
+    var link: ControlsBarLink?
     @Environment(WorkThread.self) private var thread
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
@@ -32,7 +34,7 @@ struct MacControlsBar: View {
         GlassEffectContainer(spacing: Metrics.paneButtonGap) {
             ControlsBarHost(controls: ThreadControlsModel(thread: thread, model: model, area: area, instance: instance, stage: stage,
                                                           scope: dotScope, voiceOwner: voiceOwner, state: state, send: send),
-                            enabled: isEnabled, colorScheme: colorScheme)
+                            enabled: isEnabled, colorScheme: colorScheme, link: link)
                 // 输入框有没有焦点照样记在窗口的 typing 上：原生输入框成为第一响应者时为真，窗口把它设成假时交出焦点（2026-10-13 实测）。
                 // 宽屏上只有标题栏的侧栏按钮用它先收起输入；点别处、Esc 都是 AppKit 的第一响应者照常处理，SwiftUI 版的输入框也是 NSTextField
                 .focused(typing)
@@ -61,12 +63,26 @@ struct MacControlsBar: View {
     }
 }
 
+/// 原生外框和底栏之间的联系：底栏建好后交出来，里面变高变矮时通知。
+@MainActor final class ControlsBarLink {
+    fileprivate(set) weak var view: ControlsBarView?
+    var changed: (() -> Void)?
+}
+
 private struct ControlsBarHost: NSViewRepresentable {
     let controls: ThreadControlsModel
     let enabled: Bool
     let colorScheme: ColorScheme
+    let link: ControlsBarLink?
 
-    func makeNSView(context: Context) -> ControlsBarView { ControlsBarView() }
+    func makeNSView(context: Context) -> ControlsBarView {
+        let view = ControlsBarView()
+        view.link = link
+        link?.view = view
+        // 外框先按估的高摆，建好了按实际的再量一次
+        DispatchQueue.main.async { [weak link] in link?.changed?() }
+        return view
+    }
 
     func updateNSView(_ view: ControlsBarView, context: Context) {
         view.update(controls: controls, enabled: enabled, environment: context.environment)
@@ -104,6 +120,7 @@ final class ControlsBarView: NSView {
     private var shownFading: UUID?
     /// 上次报给 SwiftUI 的高，按宽记：里面变了才让它重新量。
     private var reported: (width: CGFloat, height: CGFloat)?
+    fileprivate weak var link: ControlsBarLink?
 
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -312,11 +329,12 @@ final class ControlsBarView: NSView {
         if view.frame != frame { view.frame = frame }
     }
 
-    /// 里面变了（行数、按钮、思考强度的宽）：高变了让 SwiftUI 重新量，没变只重摆。
+    /// 里面变了（行数、按钮、思考强度的宽）：高变了让 SwiftUI 和原生外框重新量，没变只重摆。
     private func contentChanged() {
         needsLayout = true
         guard let reported, plan(width: reported.width).height != reported.height else { return }
         invalidateIntrinsicContentSize()
+        link?.changed?()
     }
 
     /// 玻璃的圆角以外不接点击，后面的内容照常可点。

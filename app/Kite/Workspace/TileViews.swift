@@ -609,6 +609,8 @@ struct PaneCardBody: View {
     let presence: PanePresence
     let motion: WindowMotion
     let reports: PaneCardBodyReports
+    /// 标题栏在这里面：标题栏报的几项从这里接。Mac 宽屏的原生会话窗口（ThreadWindowView）的标题栏在它自己的托管视图里，从那边接。
+    var reportsHeader = true
 
     var body: some View {
         PaneBody(group: group, pane: pane, retainForExit: true)
@@ -622,22 +624,41 @@ struct PaneCardBody: View {
             // 托管正文报出的偏好在这里接；点阵两项再由外框转交给 App 背景和 DotsPresence。
             .onPreferenceChange(WindowDotsActive.self) { reports.usesDots = $0 }
             .onPreferenceChange(DotSlots.self) { reports.dotSlots = $0 }
-            .onPreferenceChange(PaneHeaderActionsWidth.self) { width in
-                if header.menuWidth != width { header.menuWidth = width }
-            }
-            .onPreferenceChange(PaneHeaderHeight.self) { height in
-                if header.height != height { header.height = height }
-            }
-            .onPreferenceChange(PaneHeaderInteractiveRects.self) { rects in
-                headerRegions.rects = rects
-                if !motion.moving { headerRegions.settled = rects }
-            }
+            .modifier(PaneHeaderReports(header: header, regions: headerRegions, motion: motion, enabled: reportsHeader))
+    }
+}
+
+/// 标题栏报上来的菜单宽、高度和可点控件的范围，交给卡片：拖动区按它们让位、挖空。
+struct PaneHeaderReports: ViewModifier {
+    let header: PaneCardHeader
+    let regions: HeaderRegions
+    let motion: WindowMotion
+    var enabled = true
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .onPreferenceChange(PaneHeaderActionsWidth.self) { width in
+                    if header.menuWidth != width { header.menuWidth = width }
+                }
+                .onPreferenceChange(PaneHeaderHeight.self) { height in
+                    if header.height != height { header.height = height }
+                }
+                .onPreferenceChange(PaneHeaderInteractiveRects.self) { rects in
+                    regions.rects = rects
+                    if !motion.moving { regions.settled = rects }
+                }
+        } else {
+            content
+        }
     }
 }
 
 @Observable final class PaneCardBodyReports {
     var usesDots = false
     var dotSlots: Set<String> = []
+    /// Mac 原生会话窗口外框里铺满窗口的那个托管视图报的（空会话的签名、录音的那一带），见 ThreadWindowView。
+    var threadSlots: Set<String> = []
 }
 
 @MainActor func paneWindowActions(group: PaneGroup, pane: Pane, model: AppModel) -> PaneWindowActions? {
@@ -705,7 +726,7 @@ struct PaneHeaderControls {
 }
 
 /// 正文标题栏按窗口按钮让位（见 PaneHeaderControlsSpace）、收进菜单；在正文的托管视图里读，卡片不跟着重算。
-private struct PaneHeaderEnvironment: ViewModifier {
+struct PaneHeaderEnvironment: ViewModifier {
     let header: PaneCardHeader
     let group: PaneGroup
     let pane: Pane

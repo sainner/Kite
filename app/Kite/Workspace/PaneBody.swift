@@ -31,6 +31,9 @@ private struct WorkspacePaneBody: View {
     let retainForExit: Bool
     @State private var retained = PaneExitContent()
     @Environment(WorkArea.self) private var area
+    #if os(macOS)
+    @Environment(\.nativeThreadWindow) private var nativeThreadWindow
+    #endif
 
     var body: some View {
         if retainForExit {
@@ -45,7 +48,13 @@ private struct WorkspacePaneBody: View {
         Group {
             if let thread = area.thread(in: pane) {
                 // 不按线程 id 区分身份：草稿发出后同一个会话对象变成真实代理，id 随之改变，窗口内容不能跟着重建
+                #if os(macOS)
+                // Mac 宽屏原生台面上，会话窗口的外框是原生的（ThreadWindowView），这里只留不占地方的那几样，见 ThreadPaneBridge
+                if let slot = nativeThreadWindow { ThreadPaneBridge(slot: slot).environment(thread) }
+                else { ThreadPane().environment(thread) }
+                #else
                 ThreadPane().environment(thread)
+                #endif
             } else if let browser = area.files(in: pane), renderer == "files" {
                 FilePane(browser: browser).id(pane.id)
             } else if renderer == "web", let target = area.windows.first(where: { $0.id == pane.id })?.target,

@@ -184,11 +184,36 @@ private final class StagePreviewScene {
         b.agent("后台子代理", role: 3, parent: background[0].id)
         let scene = b.build()
         area = scene.area
+        // 两个代理窗口是会话，A 有一段够长的对话：滚到底时开头压在标题栏后面，看滚动软边
+        for (instance, records) in [(a, Self.records), (parent, [Record]())] {
+            let thread = WorkThread(workspace: "/", project: "预览")
+            thread.adopt(instance: instance.id)
+            thread.title = instance.title
+            thread.transcript = Transcript(root: "/", records: records)
+            area.threads.append(thread)
+        }
         agentA = b.pane(of: a)!
         self.files = b.pane(of: files)!
         agentB = b.pane(of: parent)!
         family = DockEntry.familyID(parent.id)
         miniFamily = DockEntry.familyID(background[0].id)
+    }
+}
+
+extension StagePreviewScene {
+    static let records: [Record] = (1...4).flatMap { round in
+        [Record(block: .human(Message(id: "preview-\(round)", text: "第 \(round) 轮：帮我看看停靠栏的格子为什么在缩小时跳一下"))),
+         Record(block: .text("""
+            先看排布：缩小时卡片的终点是停靠栏里那一格，**格子的位置**在同一次更新里算好。跳一下多半是两套时钟错开了一帧，\
+            卡片按显示链接取样，停靠栏按 SwiftUI 的动画走。
+
+            ```swift
+            let frame = plan.dockFrame(of: pane, area: area)
+            motion.move(to: target, kind: .settle)
+            ```
+
+            可以先在第 \(round) 个窗口上量一下帧间隔，再决定改哪边。
+            """))]
     }
 }
 

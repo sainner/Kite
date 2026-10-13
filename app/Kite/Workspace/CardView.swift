@@ -53,6 +53,9 @@ final class CardView: NSView {
     private let presence = PanePresence()
     private let content = CardContentState()
     private let link = HostedContentLink()
+    /// 正文里的会话窗口桥接上来时建的原生外框，见 ThreadPaneBridge。
+    private let threadSlot = ThreadWindowSlot()
+    private var threadWindow: ThreadWindowView?
 
     private let fill = CardFillView()
     private var backdrop: BackdropHost?
@@ -100,6 +103,8 @@ final class CardView: NSView {
         headerView.addSubview(buttons)
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
+        threadSlot.attach = { [weak self] thread, pane, environment in self?.attachThread(thread, pane: pane, environment: environment) }
+        threadSlot.detach = { [weak self] pane in self?.detachThread(pane) }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -141,7 +146,7 @@ final class CardView: NSView {
         let group = stage.group
         container.host.rootView = stage.rooted(CardContent(
             group: group, pane: pane, state: content, header: header, headerRegions: headerRegions, presence: presence, motion: motion,
-            reports: bodyReports, link: link, carrier: carrier, scope: scope))
+            reports: bodyReports, link: link, carrier: carrier, scope: scope, threadSlot: threadSlot))
         backdrop.rootView = stage.rooted(CardDots(reports: bodyReports, carrier: carrier, scope: scope, motion: motion))
         buttons.rootView = stage.rooted(CardButtons(group: group, pane: pane, header: header, state: content, motion: motion))
         iconKey = nil
@@ -151,6 +156,36 @@ final class CardView: NSView {
 
     func dismantle() {
         motionTracking.begin()
+        threadWindow?.dismantle()
+    }
+
+    // MARK: - 会话窗口的原生外框
+
+    /// 正文里的会话窗口桥接上来（或它的环境变了）：建原生外框，托管的正文从此不跟着改尺寸（见 placeContent）。
+    private func attachThread(_ thread: WorkThread, pane threadPane: ThreadPaneModel, environment: EnvironmentValues) {
+        guard let stage, let motion = placed?.motion, let container else { return }
+        if let threadWindow, threadWindow.thread === thread, threadWindow.pane === threadPane {
+            threadWindow.environmentChanged(environment)
+            return
+        }
+        threadWindow?.dismantle()
+        let window = ThreadWindowView(thread: thread, pane: threadPane, environment: environment, group: stage.group, paneID: pane,
+                                      model: stage.model, header: header, regions: headerRegions, reports: bodyReports, motion: motion)
+        threadWindow = window
+        container.native = window
+        if !content.nativeThread { content.nativeThread = true }
+        stage.needsLayout = true
+    }
+
+    /// 桥不在了（窗口不再是会话）：收掉原生外框，正文回到托管视图。
+    private func detachThread(_ threadPane: ThreadPaneModel) {
+        guard let threadWindow, threadWindow.pane === threadPane else { return }
+        threadWindow.dismantle()
+        self.threadWindow = nil
+        container?.native = nil
+        if content.nativeThread { content.nativeThread = false }
+        bodyReports.threadSlots = []
+        stage?.needsLayout = true
     }
 
     // MARK: - 排布
@@ -195,12 +230,21 @@ final class CardView: NSView {
         let destination = target.contentOrigin(size: contentSize)
         let area = CGRect(origin: destination, size: contentSize).union(target.frame)
         let origin = stage.origin
-        let placement = HostedPlacementValue(origin: CGPoint(x: origin.x + area.minX, y: origin.y + area.minY),
-                                             contentSize: contentSize,
-                                             offset: CGPoint(x: origin.x + destination.x, y: origin.y + destination.y),
-                                             extent: CGSize(width: max(origin.x + area.maxX, 0), height: max(origin.y + area.maxY, 0)))
-        if link.placement.value != placement { link.placement.value = placement }
-        container.origin = placement.origin
+        if threadWindow != nil {
+            // 原生外框：托管的正文只剩桥，不跟着改尺寸；外框按正文停着的位置摆在这一层里
+            let placement = HostedPlacementValue()
+            if link.placement.value != placement { link.placement.value = placement }
+            container.nativeFrame = CGRect(x: destination.x - area.minX, y: destination.y - area.minY,
+                                           width: contentSize.width, height: contentSize.height)
+            threadWindow?.windowOrigin = CGPoint(x: origin.x + destination.x, y: origin.y + destination.y)
+        } else {
+            let placement = HostedPlacementValue(origin: CGPoint(x: origin.x + area.minX, y: origin.y + area.minY),
+                                                 contentSize: contentSize,
+                                                 offset: CGPoint(x: origin.x + destination.x, y: origin.y + destination.y),
+                                                 extent: CGSize(width: max(origin.x + area.maxX, 0), height: max(origin.y + area.maxY, 0)))
+            if link.placement.value != placement { link.placement.value = placement }
+        }
+        container.origin = CGPoint(x: origin.x + area.minX, y: origin.y + area.minY)
         if container.frame != area { container.frame = area }
         // 点阵层按台面全幅铺，遮罩按外框
         if let backdrop, backdrop.frame != bounds { backdrop.frame = bounds }
@@ -444,6 +488,12 @@ final class CardView: NSView {
         return NSBezierPath(roundedRect: target.frame, xRadius: target.radius, yRadius: target.radius).contains(point)
     }
 
+    /// 正文停着、看得见、接输入，且 point（台面坐标）落在外框里：点了聚焦这个窗口，见 StageView.focusClick。
+    func showsContent(at point: CGPoint) -> Bool {
+        guard let placed, !placed.minimized, contains(point) else { return false }
+        return true
+    }
+
     /// 悬停：窗口按钮露出来（见 PaneHeaderControls）；缩成停靠形状停着时浮出停靠栏的名字，同 CardSlot 的 onHover。
     func setHovered(_ hovered: Bool) {
         guard hovered != self.hovered else { return }
@@ -520,11 +570,13 @@ final class CardView: NSView {
     }
 }
 
-/// 正文、窗口按钮读的卡片状态，建好不换：缩没缩成停靠形状、侧栏入口、窗口按钮露不露，变了只更新读它的那一层。
+/// 正文、窗口按钮读的卡片状态，建好不换：缩没缩成停靠形状、侧栏入口、窗口按钮露不露、会话窗口的外框是不是原生的，
+/// 变了只更新读它的那一层。
 @MainActor @Observable final class CardContentState {
     var minimized = false
     var openSidebar: (@MainActor () -> Void)?
     var buttonsShown = false
+    var nativeThread = false
 }
 
 /// 卡片里的托管视图（头像、窗口按钮）：按自己的大小摆，点击和读屏照常。
@@ -689,10 +741,13 @@ private struct CardContent: View {
     let link: HostedContentLink
     let carrier: DotCarrier
     let scope: DotScope
+    let threadSlot: ThreadWindowSlot
 
     var body: some View {
         HostedPlaced(content: PaneCardBody(group: group, pane: pane, minimized: state.minimized, header: header, headerRegions: headerRegions,
-                                           presence: presence, motion: motion, reports: reports), link: link)
+                                           presence: presence, motion: motion, reports: reports, reportsHeader: !state.nativeThread),
+                     link: link)
+            .environment(\.nativeThreadWindow, threadSlot)
             .environment(\.openSidebar, state.openSidebar)
             .environment(\.dotCarrier, carrier)
             .environment(\.dotScope, scope)

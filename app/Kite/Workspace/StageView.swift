@@ -125,6 +125,9 @@ final class StageView: NSView {
     private var pointerInside = false
     private var visibleInstances: Set<String>?
     private var escapeMonitor: Any?
+    private var focusMonitor: Any?
+    /// 这次按下的位置（台面坐标），松手时挪得不多才算点了一下。
+    private var pressedAt: CGPoint?
     /// 正在跟手的那张卡片，拖动开始时清掉各卡片的悬停。
     private var dragging: Pane?
 
@@ -184,6 +187,7 @@ final class StageView: NSView {
         displayLink?.invalidate()
         displayLink = nil
         removeEscapeMonitor()
+        removeFocusMonitor()
         tracking.begin()
         for card in cards.values {
             card.dismantle()
@@ -191,8 +195,14 @@ final class StageView: NSView {
         }
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { installFocusMonitor() }
+    }
+
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         if newWindow == nil {
+            removeFocusMonitor()
             if cursorsFrozen { window?.enableCursorRects() }
             cursorsFrozen = false
             window?.isMovable = true
@@ -298,7 +308,10 @@ final class StageView: NSView {
             arranged.cards.append((card, arrangement, CardPresentation.motionKind(layout: layout, pane: pane, reduceMotion: reduceMotion)))
         }
         arranged.visible = Set(plan.onStage.compactMap { area?.dockInstanceID($0) })
-        cardDots = (cards.values.contains { $0.bodyReports.usesDots }, cards.values.reduce(into: Set<String>()) { $0.formUnion($1.bodyReports.dotSlots) })
+        cardDots = (cards.values.contains { $0.bodyReports.usesDots }, cards.values.reduce(into: Set<String>()) {
+            $0.formUnion($1.bodyReports.dotSlots)
+            $0.formUnion($1.bodyReports.threadSlots)
+        })
         arranged.hoverTip = hoverTip(plan: plan)
         return arranged
     }
@@ -523,6 +536,35 @@ final class StageView: NSView {
     private func removeEscapeMonitor() {
         if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
         escapeMonitor = nil
+    }
+
+    /// 点窗口任何地方（正文、标题栏、输入区、对话里的字）都聚焦它，同 SwiftUI 版正文上的 paneFocus：按下松手挪得不多才算点了一下。
+    /// 原生的会话窗口外框里点到的多是 AppKit 视图，SwiftUI 的点按手势收不到，所以在台面这一层看。
+    private func installFocusMonitor() {
+        guard focusMonitor == nil else { return }
+        focusMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
+            self?.focusClick(event)
+            return event
+        }
+    }
+
+    private func removeFocusMonitor() {
+        if let focusMonitor { NSEvent.removeMonitor(focusMonitor) }
+        focusMonitor = nil
+    }
+
+    private func focusClick(_ event: NSEvent) {
+        guard event.window === window else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard event.type == .leftMouseUp else {
+            pressedAt = point
+            return
+        }
+        defer { pressedAt = nil }
+        guard let pressedAt, hypot(point.x - pressedAt.x, point.y - pressedAt.y) < Metrics.dragThreshold,
+              let card = subviews.reversed().lazy.compactMap({ $0 as? CardView }).first(where: { $0.showsContent(at: point) })
+        else { return }
+        group.layout.focus(card.pane)
     }
 
     // MARK: - 命中

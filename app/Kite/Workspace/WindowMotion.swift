@@ -547,6 +547,19 @@ final class HostedContentContainer: NSView {
     var origin = CGPoint.zero {
         didSet { if origin != oldValue { needsLayout = true } }
     }
+    /// 原生的正文（Mac 原生台面上的会话窗口外框，见 ThreadWindowView）：有它时托管视图只留一点、不跟着改尺寸，
+    /// 正文按 nativeFrame（这一层的坐标）摆，缩放、裁切照样在外面这一层。
+    var native: NSView? {
+        didSet {
+            guard native !== oldValue else { return }
+            oldValue?.removeFromSuperview()
+            if let native { mover.addSubview(native) }
+            needsLayout = true
+        }
+    }
+    var nativeFrame = CGRect.zero {
+        didSet { if nativeFrame != oldValue { needsLayout = true } }
+    }
     private let mover = FlippedView()
     private let clip = CAShapeLayer()
     private var frameState = HostedContentFrame()
@@ -571,8 +584,13 @@ final class HostedContentContainer: NSView {
     override func layout() {
         super.layout()
         mover.frame = bounds
-        host.frame = CGRect(x: -origin.x, y: -origin.y,
-                            width: max(origin.x + bounds.width, 0), height: max(origin.y + bounds.height, 0))
+        if let native {
+            if host.frame != .zero { host.frame = .zero }
+            if native.frame != nativeFrame { native.frame = nativeFrame }
+        } else {
+            host.frame = CGRect(x: -origin.x, y: -origin.y,
+                                width: max(origin.x + bounds.width, 0), height: max(origin.y + bounds.height, 0))
+        }
         apply(frameState)
     }
 
