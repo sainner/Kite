@@ -83,17 +83,39 @@ struct MainWindow: View {
 
     private func finishResize() {
         resizingFrom = nil
+        if let width = model.sidebarDrag.end() { model.sidebarWidth = width }
         model.sidebarResizing = false
+    }
+
+    /// 内容区是原生台面（工作区的窗口）：iPad 上拖动中侧栏宽不进 SwiftUI，台面自己挪，见 SidebarDrag。
+    private var nativeStage: Bool {
+        #if os(iOS)
+        model.sidebarSection == .workspaces && model.selectedProject == nil && model.current != nil
+        #else
+        false
+        #endif
     }
 
     private func resizeSidebar(to width: CGFloat) {
         let collapse = width < Metrics.sidebarCollapse
         if collapse != model.sidebarCollapsed {
+            // 收起、展开换了排法：先把挪着的宽交回 SwiftUI
+            if let width = model.sidebarDrag.end() { model.sidebarWidth = width }
             withAnimation(.snappy) { model.sidebarCollapsed = collapse }
         }
-        if !collapse {
-            model.sidebarWidth = min(max(width, Metrics.sidebarMin), Metrics.sidebarMax)
+        guard !collapse else { return }
+        let width = min(max(width, Metrics.sidebarMin), Metrics.sidebarMax)
+        if nativeStage {
+            model.sidebarDrag.move(to: min(width, maximumSidebar), base: sidebarWidth)
+        } else {
+            model.sidebarWidth = width
         }
+    }
+
+    /// 侧栏最宽多少：给内容区至少留一个窗口的最小宽，同 sidebarWidth。
+    private var maximumSidebar: CGFloat {
+        let remaining = availableWidth - 2 * Metrics.sidebarInset - Metrics.padding - Metrics.gap - Metrics.dockWidth - Metrics.minPane
+        return max(Metrics.sidebarMin, remaining)
     }
 }
 

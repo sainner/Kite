@@ -119,6 +119,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
         dockOverlay.hitRegion = { [weak self] in self?.overlayHitRegion }
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(hovered(_:)))
         addGestureRecognizer(hover)
+        NotificationCenter.default.addObserver(self, selector: #selector(sidebarDragged), name: SidebarDrag.changed, object: model.sidebarDrag)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -203,44 +204,32 @@ final class PhoneStageView: UIView, StageDotsReporting {
         super.layoutSubviews()
         // 环境交过来以前不建卡片：托管的正文要从环境里取 App 模型
         guard look != nil else { return }
-        let size = bounds.size
         origin = window.map { convert(CGPoint.zero, to: $0) } ?? .zero
         laying = true
         defer { laying = false }
         let sidebarResizing = tracking.track({ model.sidebarResizing }) { [weak self] in self?.invalidateArrangement() }
+        // 拖侧栏改宽时 SwiftUI 按开始拖时的宽摆着台面，台面自己把左边挪到侧栏实时的右边，见 SidebarDrag
+        let shift = model.sidebarDrag.offset
+        stageRect = CGRect(x: shift, y: 0, width: max(bounds.width - shift, 0), height: bounds.height)
+        let size = stageRect.size
         if viewport != size {
             viewport = size
             // 报视口会改排布模型，自己的改动不回头再排一遍。台面左边在哪交给排布：侧栏改宽时只由最左一列吸收
-            tracking.quietly { group.layout.updateViewport(size, presentation: .tiled, leading: origin.x) }
+            tracking.quietly { group.layout.updateViewport(size, presentation: .tiled, leading: origin.x + shift) }
         }
-        placeIslands(frozen: sidebarResizing)
+        for island in [dockRail, windowless, dockOverlay] { place(island, bounds) }
         place(placeholder, bounds)
+        // 停靠栏贴着台面右边，侧栏改宽时不动，按整个台面排；空画板拖侧栏时不跟着挪（没有窗口时才露出来），松手再排
+        if geometry.bounds != bounds { geometry.bounds = bounds }
+        if windowlessGeometry.bounds != bounds { windowlessGeometry.bounds = bounds }
         let arranged = tracking.track({ arrange(dotsHidden: sidebarResizing) }) { [weak self] in self?.invalidateArrangement() }
         settle(arranged)
     }
 
-    /// 拖侧栏改宽时停靠栏不跟着每步重排：停靠栏、它上面那一层的岛定在开始拖时的大小，整块平移到台面的右边（停靠栏贴着右边），
-    /// 停靠格的位置不变（侧栏改宽只由最左一列吸收）；松手再按新的大小排一次。台面每步改宽时这几个岛整块重排是拖侧栏的大头之一
-    /// （2026-10-14 iPad 真机：只留外壳时每步约 11ms，拖缝时约 6ms）。空画板照常跟着排（没有窗口时才露出来）。
-    private var frozenBounds: CGRect?
+    /// 台面上排窗口的那一块（台面坐标）：平时是整个台面，拖侧栏改宽时左边挪到侧栏实时的右边。
+    private(set) var stageRect = CGRect.zero
 
-    private func placeIslands(frozen: Bool) {
-        if frozen, frozenBounds == nil { frozenBounds = geometry.bounds == .zero ? bounds : geometry.bounds }
-        if !frozen { frozenBounds = nil }
-        let dockBounds = frozenBounds ?? bounds
-        let shift = CGAffineTransform(translationX: bounds.width - dockBounds.width, y: 0)
-        for island in [dockRail, dockOverlay] {
-            if island.transform != shift { island.transform = shift }
-            if island.bounds.size != dockBounds.size {
-                island.bounds = CGRect(origin: .zero, size: dockBounds.size)
-            }
-            let center = CGPoint(x: dockBounds.midX, y: dockBounds.midY)
-            if island.center != center { island.center = center }
-        }
-        place(windowless, bounds)
-        if windowlessGeometry.bounds != bounds { windowlessGeometry.bounds = bounds }
-        if geometry.bounds != dockBounds { geometry.bounds = dockBounds }
-    }
+    @objc private func sidebarDragged() { setNeedsLayout() }
 
     /// 排版当中改了排布读过的模型：这一轮排完 UIKit 会清掉待排，所以下一拍再标一次。
     private var laying = false
@@ -267,7 +256,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
     /// 读模型、算这一轮的排布；读到的属性变了会再来一轮。卡片的终点在这里算好，交给 motion 放到观察之外（见 settle）。
     private func arrange(dotsHidden: Bool) -> Arranged {
         let layout = group.layout, area = group.workspace
-        let plan = StagePlan(layout: layout, area: area, bounds: bounds)
+        let plan = StagePlan(layout: layout, area: area, bounds: stageRect)
         var arranged = Arranged()
         arranged.transitioning = layout.transitioning
         arranged.drag = layout.drag?.pane
@@ -423,7 +412,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
     // MARK: - 卡片的拖动、点按
 
     func drag(_ pane: Pane, to point: CGPoint) {
-        let layout = group.layout, area = group.workspace, bounds = bounds
+        let layout = group.layout, area = group.workspace, bounds = stageRect
         area?.collapseDock()
         area?.dockHover = nil
         let regions = layout.regions(in: bounds)
@@ -434,7 +423,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
     }
 
     func drop() {
-        group.layout.drop(in: bounds)
+        group.layout.drop(in: stageRect)
     }
 
     func cancelDrag() {
@@ -444,7 +433,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
     /// 点最小化的窗口：恢复；家族格里的父代理先展开家族，展开后再点父代理才放上台面。
     func activate(_ pane: Pane, family: String?) {
         if let family { group.workspace?.toggleDock(family, depth: 0) }
-        else { group.layout.restore(pane, in: bounds) }
+        else { group.layout.restore(pane, in: stageRect) }
     }
 
     // MARK: - 逐帧
@@ -500,11 +489,11 @@ final class PhoneStageView: UIView, StageDotsReporting {
 
     // MARK: - 命中
 
-    private var regions: WindowRegions { group.layout.regions(in: bounds) }
+    private var regions: WindowRegions { group.layout.regions(in: stageRect) }
 
-    /// 停靠栏只在停靠栏那一列接点按；过渡中不接，同 PausedInTransition。按岛自己的坐标（拖侧栏时定住的大小）。
+    /// 停靠栏只在停靠栏那一列接点按；过渡中不接，同 PausedInTransition。
     private var dockHitRegion: CGRect? {
-        group.layout.transitioning || group.workspace == nil ? nil : group.layout.regions(in: geometry.bounds).dock
+        group.layout.transitioning || group.workspace == nil ? nil : regions.dock
     }
 
     /// 台面上没有窗口、也没在拖窗口时空画板接，同它在 SwiftUI 版里只在显示着时接。
@@ -516,7 +505,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
     /// 停靠栏展开时铺满台面接点空白收起；收着时上面只有脉冲，不接。
     private var overlayHitRegion: CGRect? {
         guard let area = group.workspace, !area.dockExpansion.isEmpty, !group.layout.transitioning else { return nil }
-        return CGRect(origin: .zero, size: geometry.bounds.size)
+        return bounds
     }
 
     // MARK: - 点阵
