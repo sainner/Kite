@@ -35,10 +35,12 @@ final class WindowLayout {
     /// （2026-10-12 用户确定：过渡中这些都用不上）。正在进行的拖动照常由按下时的视图接。
     var transitioning: Bool { blocksInput || resizing != nil }
 
-    /// 所有 App 窗口里有窗口组在过渡中。主线程上能往后放的工作（如对话藏着量高，见 TranscriptWindow）看它让开，不卡进动画里。
-    static var anyTransitioning: Bool { all.allObjects.contains { $0.transitioning } }
-    /// 所有 App 窗口里有窗口组在拖缝：Mac 对话列表这时只量可见区附近的行，见 TranscriptListView。
-    static var anyResizing: Bool { all.allObjects.contains { $0.resizing != nil } }
+    /// 所有 App 窗口里有窗口组在过渡中，或者在拖侧栏改宽。主线程上能往后放的工作（如对话藏着量高，见 TranscriptWindow）看它让开，不卡进动画里。
+    static var anyTransitioning: Bool { resizingLeadingEdge || all.allObjects.contains { $0.transitioning } }
+    /// 所有 App 窗口里有窗口组在拖缝，或者在拖侧栏改宽：对话列表这时只量可见区附近的行，停下后补量（见 TranscriptListView、PhoneTranscriptView）。
+    static var anyResizing: Bool { resizingLeadingEdge || all.allObjects.contains { $0.resizing != nil } }
+    /// 在拖侧栏改宽：贴着侧栏的那一列每步改宽（见 shiftLeadingEdge），对话列表和拖缝时一样省着量。宽屏主窗口拖侧栏时设。
+    static var resizingLeadingEdge = false
     private static let all = NSHashTable<WindowLayout>.weakObjects()
 
     func noteSettling(_ pane: Pane, _ settling: Bool) {

@@ -34,6 +34,8 @@ final class TranscriptListView: NSScrollView {
     private var clickMonitor: Any?
     /// 拖缝时把滚动条藏了，见 layoutRows。
     private var scrollerHidden = false
+    /// 拖缝、拖侧栏停下后再排一次：滚动条露回来、按近似量的行补量。停下时宽度不一定再变，不会自己排。
+    private var resizeEnd: Task<Void, Never>?
     /// 读屏给远处还没建视图的行的代理，按行认，见 accessibilityTranscript。
     private var proxies: [RowID: TranscriptRowProxy] = [:]
 
@@ -111,6 +113,7 @@ final class TranscriptListView: NSScrollView {
             scrollerHidden = viewport.resizing
             verticalScroller?.alphaValue = viewport.resizing ? 0 : 1
         }
+        if viewport.resizing { awaitResizeEnd() }
         let layout = arrangement.arrange(viewport, follow: follow)
         adjusting = true
         if document.frame.size != CGSize(width: width, height: layout.documentHeight) {
@@ -130,6 +133,17 @@ final class TranscriptListView: NSScrollView {
         if layout.waiting { measureLater() }
         // 发出去的新消息排好了就开始滑
         if let pending = follow.pendingGlide, pending.version != arrangement.version, follow.glide == nil { startGlideIfReady() }
+    }
+
+    private func awaitResizeEnd() {
+        guard resizeEnd == nil else { return }
+        resizeEnd = Task { [weak self] in
+            while WindowLayout.anyResizing {
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            }
+            self?.resizeEnd = nil
+            self?.needsLayout = true
+        }
     }
 
     /// 按共用层给的放进、藏起、拿出（见 TranscriptArrangement.placements）。
