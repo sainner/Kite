@@ -44,7 +44,8 @@ extension View {
 
     /// 给对话里的一行挂上操作栏：这一行被点开（selectedRow 是 id）时出现。操作栏是个浮层，不挤开别的内容，
     /// 和这一行的 side 那边对齐，也从那边往外展开，在这一行底下。在哪里打开由这一行自己定（opensActionBar）。
-    /// 嵌着的对话（压缩前的原文、子 agent 做的事）里的消息用；主对话的原生列表自己摆操作栏，底下放不下时放到上面。
+    /// SwiftUI 版的消息气泡（MessageBubble）用；两端的对话（主对话、子 agent 做的事、压缩前的原文）都是原生列表，操作栏由列表自己摆，
+    /// 底下放不下时放到上面（见 TranscriptArrangement.actionBarAbove）。
     func actionBar<Bar: View>(_ id: RowID, side: HorizontalEdge, @ViewBuilder bar: @escaping () -> Bar) -> some View {
         modifier(ActionBarPlacement(id: id, side: side, bar: bar))
     }

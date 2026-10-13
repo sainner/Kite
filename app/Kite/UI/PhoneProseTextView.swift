@@ -26,6 +26,7 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
 
     /// TextKit 2 的一套自己搭，视图走指定构造器：UITextView(usingTextLayoutManager:) 走 UIKit 自己的构造路径，
     /// Swift 子类存储属性的初始值不会设上（shownHeight 读出来是 0 不是 nil，正文只排第一段，2026-10-13 iPad 真机）。
+    /// 这一套由这个属性拿着：容器到排版管理器、排版管理器到内容存储都是弱引用，删掉它整套就没了。
     private var stack: (content: NSTextContentStorage, layout: NSTextLayoutManager)?
 
     /// TextKit 2，文本容器跟着视图宽度、不加边距。
@@ -100,13 +101,13 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
         return nil
     }
 
-    /// 外层可见区上下各加半屏，换到自己的坐标。拖缝、吸附中只加十分之一屏：和列表这时量的那截一样（TranscriptArrangement.closeMargin），
-    /// 多出来的每步都要跟着改宽重排。
+    /// 外层滚动区露出来的范围上下各加半屏，换到自己的坐标。拖缝、吸附中不加：多出来的每步都要跟着改宽重排，
+    /// 也不能越过列表这时排准的那截（滚动区上下各加十分之一可见区，见 TranscriptArrangement.arrange 的 reach），越过的话补排的段落会叠上去。
     private var outerVisible: CGRect? {
         guard let outer = outerScroll else { return nil }
         let visible = outer.convert(outer.bounds, to: self)
-        let margin = WindowLayout.anyResizing ? TranscriptArrangement.closeMargin : TranscriptArrangement.margin
-        return visible.insetBy(dx: 0, dy: -outer.bounds.height * margin)
+        guard !WindowLayout.anyResizing else { return visible }
+        return visible.insetBy(dx: 0, dy: -outer.bounds.height * TranscriptArrangement.margin)
     }
 
     @available(iOS 27.0, *)
@@ -122,12 +123,23 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
         return viewport
     }
 
-    /// 外层滚了、这一行挪了：露出来的那截出了上次的视口就请 TextKit 按新视口重排。
+    /// 外层滚了、这一行挪了：露出来的那截出了上次的视口就请 TextKit 按新视口重排。折着的（shownHeight）只看截住以内的那截。
     func outerScrolled() {
         guard clipsViewport, #available(iOS 27.0, *), let outer = outerScroll else { return }
-        let visible = outer.convert(outer.bounds, to: self).intersection(bounds)
+        var visible = outer.convert(outer.bounds, to: self).intersection(bounds)
+        if let shownHeight { visible = visible.intersection(CGRect(x: visible.minX, y: 0, width: visible.width, height: shownHeight)) }
         guard !visible.isNull, visible.height > 0, !viewport.contains(visible) else { return }
         textLayoutManager?.textViewportLayoutController.layoutViewport()
+    }
+
+    /// 读屏的焦点框按字的宽：视图宽固定成最宽的内容列（clipViewport），iPhone 上比屏幕宽，框会伸出屏幕。
+    override var accessibilityFrame: CGRect {
+        get {
+            guard clipsViewport else { return super.accessibilityFrame }
+            let width = textContainerInset.left + textContainer.size.width + textContainerInset.right
+            return UIAccessibility.convertToScreenCoordinates(CGRect(x: 0, y: 0, width: width, height: bounds.height), in: self)
+        }
+        set { super.accessibilityFrame = newValue }
     }
 
     /// 量出来的高取到像素，同原来 SwiftUI 版用的 sizeThatFits。

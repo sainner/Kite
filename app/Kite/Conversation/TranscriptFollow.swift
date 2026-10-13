@@ -52,10 +52,11 @@ import SwiftUI
         following = false
     }
 
-    /// 滑完（含惯性）：停在最底下就接着跟。
-    func userEnded(distanceToBottom: CGFloat) {
+    /// 滑完（含惯性）：停在最底下就接着跟。wasFollowing：这次按下前跟着、手指没拖起来（iOS 的轻点、长按），按着的那会儿
+    /// 流式变长、底下没跟上也照旧跟，同原来 SwiftUI 版轻点不影响跟底。
+    func userEnded(distanceToBottom: CGFloat, wasFollowing: Bool = false) {
         userScrolling = false
-        following = distanceToBottom <= 1
+        following = wasFollowing || distanceToBottom <= 1
     }
 
     /// 可见区变矮时，等它最后一次变完 0.6 秒再让留白跟上，那时已经变回去了就不缩：每变一次都从头计时。

@@ -56,6 +56,11 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         container.alpha = 1 - rise
         configure()
         build(first: true)
+        // 放掉以后重建的（内存警告）：量过的高留着，没人再量，行宽按上次量的给回去；拖缝中折着的照旧只放开头那截
+        if measured != nil {
+            container.text.fit(lineWidth: layout.textWidth)
+            if resizing, foldable, !expanded { fold(true) }
+        }
         return container
     }
 
@@ -155,8 +160,9 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         return Int((Double(offset) * Double(widest / max(layout.textWidth, 1)) + perLine).rounded(.up))
     }
 
-    /// 折着时文本视图里只放开头那截：TextKit 一段一段排，长消息常常整条就是一段，拖缝时每步都要把整段重排（iPad 真机上占了量高的大头），
-    /// 露出来的只有开头十来行。整条多高停下来按全文量（量的时候换回全文），展开时换回全文。有选区时不换，免得把选区换掉。
+    /// 拖缝、吸附中折着的长消息，文本视图里只放开头那截：TextKit 一段一段排，长消息常常整条就是一段，每步都要把整段重排
+    /// （iPad 真机上占了量高的大头），露出来的只有开头十来行。停下来按全文量时换回全文，静止时一直是全文：读屏、全选拷贝都要整条
+    /// （iOS 27 起只排露出来的那截，见 PhoneProseTextView.shownHeight）。展开时换回全文。有选区时不换，免得把选区换掉。
     private func fold(_ prefix: Bool) {
         guard let full, let container, prefix != showsPrefix, !container.text.isSelectable else { return }
         let text: NSAttributedString
@@ -182,8 +188,9 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
             return measured.height
         }
         let container = rowView
-        // 折着的长消息拖缝时不重量：露出来的高是定的，只按能给的宽换行宽，文本视图按新的容器宽只排露出来那截
+        // 折着的长消息拖缝时不重量：露出来的高是定的，只按能给的宽换行宽，文本视图里只放开头那截、按新的容器宽排
         if resizing, foldable, !expanded, let measured {
+            fold(true)
             let most = max(width - Metrics.bubblePadding.width * 2, 0)
             layout.keepFolded(most: most, wraps: foldWraps)
             container.text.fit(lineWidth: layout.textWidth)
@@ -202,7 +209,6 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
             foldWraps = container.text.softWraps
             prefixLength = measurePrefix()
         }
-        if foldable, !expanded { fold(true) }
         attachmentsHeight = container.attachmentsHeight(width: width)
         let height = attachmentsHeight + bubbleHeight(expanded: expanded)
         measured = (width, height)
@@ -220,7 +226,6 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         let frames = layout.frames(row: frame.size, attachmentsHeight: attachmentsHeight, button: foldable ? container.fold.height : 0)
         container.place(frames, textHeight: layout.contentHeight - Metrics.bubblePadding.height * 2, attachmentsHeight: attachmentsHeight,
                         foldable: foldable, expanded: expanded)
-        if foldable, !expanded, frames.shown <= foldHeight + 1 { fold(true) }
     }
 
     /// 浮上来的过程：1 在下面藏着，0 到位。浮的过程中正文不能选字，同 Mac。
@@ -247,7 +252,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
     func setExpanded(_ expanded: Bool) {
         guard expanded != self.expanded, foldable else { return }
         self.expanded = expanded
-        // 展开前换回全文；收起时等收完再换成开头那截（见 layoutView），收的途中底下的字还露着
+        // 拖缝中（只放着开头那截）展开时先换回全文
         if expanded { fold(false) }
         if let measured { self.measured = (measured.width, attachmentsHeight + bubbleHeight(expanded: expanded)) }
         container?.fold.expanded = expanded
@@ -266,6 +271,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         coordinator.view = nil
         coordinator.shown = nil
         showsPrefix = false
+        attachments.releaseHosts()
     }
 }
 
@@ -277,6 +283,8 @@ final class PhoneBubbleRowView: UIView {
     /// 正文按折起来的高截住，底下渐隐。
     private let clip = UIView()
     private let fade = CAGradientLayer()
+    /// 渐隐上次设的起点和底下淡掉多少。
+    private var faded: (start: CGFloat, amount: CGFloat)?
     private var attachments: UIHostingController<AnyView>?
 
     init() {
@@ -352,9 +360,13 @@ final class PhoneBubbleRowView: UIView {
         text.shownHeight = foldable ? max(frames.shown - textFrame.minY, 0) : nil
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        fade.frame = clip.bounds
-        fade.locations = [0, NSNumber(value: frames.fadeStart), 1]
-        fade.colors = [UIColor.black.cgColor, UIColor.black.cgColor, UIColor.black.withAlphaComponent(1 - frames.faded).cgColor]
+        if fade.frame != clip.bounds { fade.frame = clip.bounds }
+        // 渐隐只在折着、展开收起的途中变，别的时候不重设
+        if faded.map({ $0.start != frames.fadeStart || $0.amount != frames.faded }) ?? true {
+            faded = (frames.fadeStart, frames.faded)
+            fade.locations = [0, NSNumber(value: frames.fadeStart), 1]
+            fade.colors = [UIColor.black.cgColor, UIColor.black.cgColor, UIColor.black.withAlphaComponent(1 - frames.faded).cgColor]
+        }
         CATransaction.commit()
         fold.isHidden = !foldable
         fold.expanded = expanded

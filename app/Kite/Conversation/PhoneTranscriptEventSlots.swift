@@ -9,6 +9,8 @@ final class PhoneEventRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private let menu = PhoneCopyMenu()
     private var content: (text: String, icon: String, color: UIColor, speech: String?) = ("", "bell", .secondaryLabel, nil)
     private var font = UIFont.preferredFont(forTextStyle: .subheadline)
+    /// 上次摆的尺寸：变了才重新摆，字变了由 set 自己标。
+    private var laidSize: CGSize?
 
     override var hasView: Bool { label != nil }
 
@@ -55,13 +57,16 @@ final class PhoneEventRowSlot: TranscriptRowSlot, PhoneRowSlot {
     }
 
     override func layoutView(in frame: CGRect) {
-        label?.setNeedsLayout()
+        guard let label, laidSize != frame.size else { return }
+        laidSize = frame.size
+        label.setNeedsLayout()
     }
 
     func didPlace() {}
 
     func releaseView() {
         label = nil
+        laidSize = nil
     }
 }
 
@@ -73,6 +78,8 @@ final class PhoneKiteRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var text = ""
     private var fonts = (secondary: UIFont.preferredFont(forTextStyle: .subheadline), body: UIFont.preferredFont(forTextStyle: .body))
     private var rule: CGColor?
+    /// 上次摆的尺寸：变了才重新摆，内容变了由 show 标。
+    private var laidSize: CGSize?
 
     override var hasView: Bool { box != nil }
 
@@ -104,6 +111,7 @@ final class PhoneKiteRowSlot: TranscriptRowSlot, PhoneRowSlot {
         box.border.strokeColor = rule
         box.accessibilityLabel = TranscriptSpeech.kite
         box.accessibilityValue = text
+        box.setNeedsLayout()
     }
 
     override func height(width: CGFloat) -> CGFloat {
@@ -115,13 +123,16 @@ final class PhoneKiteRowSlot: TranscriptRowSlot, PhoneRowSlot {
     }
 
     override func layoutView(in frame: CGRect) {
-        box?.setNeedsLayout()
+        guard let box, laidSize != frame.size else { return }
+        laidSize = frame.size
+        box.setNeedsLayout()
     }
 
     func didPlace() {}
 
     func releaseView() {
         box = nil
+        laidSize = nil
     }
 }
 
@@ -218,10 +229,15 @@ final class PhoneCompactedRowSlot: TranscriptRowSlot, PhoneRowSlot {
         details?.show(compaction, children: children, original: original, context: context, force: force)
     }
 
+    /// 拖缝中原文里按近似量的话记作 provisional，停下后列表补量成准确的高。
     override func height(width: CGFloat) -> CGFloat {
-        if let measured, measured.width == width { return measured.height }
+        if let measured, measured.width == width, !provisional || resizing { return measured.height }
         headerHeight = rowView.header.height
-        if expanded, let details { detailsHeight = details.height(width: width) }
+        provisional = false
+        if expanded, let details {
+            detailsHeight = details.height(width: width)
+            provisional = details.approximate
+        }
         let height = headerHeight + (expanded ? Self.spacing + detailsHeight : 0)
         measured = (width, height)
         return height
@@ -240,6 +256,7 @@ final class PhoneCompactedRowSlot: TranscriptRowSlot, PhoneRowSlot {
         details.layoutIfNeeded()
         // 收起走完拿掉
         if !expanded, progress == 0 {
+            details.release()
             details.removeFromSuperview()
             self.details = nil
         }
@@ -284,6 +301,7 @@ final class PhoneCompactedRowSlot: TranscriptRowSlot, PhoneRowSlot {
     func didPlace() {}
 
     func releaseView() {
+        details?.release()
         details = nil
         container = nil
         // 重建时是收着的，量过的高（可能带着摘要那截）作废
@@ -333,7 +351,11 @@ final class PhoneCompactionDetails: UIView {
         addSubview(summary)
         addSubview(originalButton)
         addSubview(revertButton)
-        originalButton.action = { [weak self] in self?.toggleOriginal?() }
+        // 按下时同别的按钮一样收起操作栏
+        originalButton.action = { [weak self] in
+            self?.source?.context.select(nil)
+            self?.toggleOriginal?()
+        }
         revertButton.title = TranscriptSpeech.revertCompaction
     }
 
@@ -356,7 +378,12 @@ final class PhoneCompactionDetails: UIView {
         originalButton.isHidden = children.isEmpty
         originalButton.title = TranscriptSpeech.original(shown: original)
         revertButton.isHidden = compaction.id == nil
-        if let id = compaction.id { revertButton.action = { [weak self] in self?.revert(id) } }
+        if let id = compaction.id {
+            revertButton.action = { [weak self] in
+                self?.source?.context.select(nil)
+                self?.revert(id)
+            }
+        }
         for button in [originalButton, revertButton] { button.style(font: font, color: accent) }
         showRevert(environment)
         rule.backgroundColor = Theme.rule.resolve(in: environment).cgColor
@@ -432,6 +459,15 @@ final class PhoneCompactionDetails: UIView {
         return fixedHeight + (shownOriginal ? Self.spacing + heights.stack : 0)
     }
 
+    /// 上次量的时候原文里有按近似量的行（拖缝中），见 PhoneTranscriptStack.approximate。
+    var approximate: Bool { shownOriginal && stack?.approximate == true }
+
+    /// 放掉摘要里卡片的宿主和原文里的视图：压缩分界放掉视图、被删掉、收起拿掉这一截时调。
+    func release() {
+        attachments.releaseHosts()
+        stack?.release()
+    }
+
     private var fixedHeight: CGFloat {
         heights.summary + (hasButtons ? Self.spacing + heights.buttons : 0)
     }
@@ -460,6 +496,7 @@ final class PhoneCompactionDetails: UIView {
         rule.frame = CGRect(x: -12, y: 0, width: 1, height: stack.view.frame.height)
         CATransaction.commit()
         if !shownOriginal, progress == 0 {
+            stack.release()
             stack.view.removeFromSuperview()
             self.stack = nil
         }

@@ -42,10 +42,15 @@ final class PhoneWorkRowSlot: TranscriptRowSlot, PhoneRowSlot {
         steps?.show(work, context: context)
     }
 
+    /// 拖缝中步骤里嵌着的对话按近似量的话记作 provisional，停下后列表补量成准确的高，同 Mac 的 WorkRowSlot。
     override func height(width: CGFloat) -> CGFloat {
-        if let measured, measured.width == width { return measured.height }
+        if let measured, measured.width == width, !provisional || resizing { return measured.height }
         headerHeight = rowView.header.height
-        if expanded, let steps { stepsHeight = steps.height(width: width) }
+        provisional = false
+        if expanded, let steps {
+            stepsHeight = steps.height(width: width)
+            provisional = steps.approximate
+        }
         let height = WorkLayout.height(header: headerHeight, steps: stepsHeight, expanded: expanded)
         measured = (width, height)
         return height
@@ -66,6 +71,7 @@ final class PhoneWorkRowSlot: TranscriptRowSlot, PhoneRowSlot {
         steps.layoutIfNeeded()
         // 收起走完拿掉步骤
         if !expanded, progress == 0 {
+            steps.release()
             steps.removeFromSuperview()
             self.steps = nil
         }
@@ -100,6 +106,7 @@ final class PhoneWorkRowSlot: TranscriptRowSlot, PhoneRowSlot {
     func didPlace() {}
 
     func releaseView() {
+        steps?.release()
         steps = nil
         container = nil
         // 重建时是收着的，量过的高（可能带着展开的步骤）作废

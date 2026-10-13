@@ -48,7 +48,7 @@ struct ThreadPane: View {
     }
 
     /// 列表铺满窗口，标题栏、控制区（iOS 还有键盘、左右安全区）让出的距离量出来交给它（GeometryReader 的安全区），
-    /// 内容从它们后面滚过去。选中的行显式传进去：列表、托管的行各在自己的视图层级里，只靠环境里的绑定收不到它变了。
+    /// 内容从它们后面滚过去。选中的行显式传进去：列表是原生的，不在这个视图层级里，只靠环境里的绑定收不到它变了。
     private var scrollingTranscript: some View {
         @Bindable var pane = pane
         return GeometryReader { proxy in

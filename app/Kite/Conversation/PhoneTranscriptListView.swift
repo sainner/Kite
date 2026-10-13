@@ -28,7 +28,6 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
     private var arrangedSize: CGSize = .zero
     /// 原生行的操作栏：托管的 SwiftUI 浮层，放在文档最上面，跟着行一起滚，见 placeActions。
     private var actions: (id: RowID, host: UIHostingController<AnyView>, above: Bool, side: HorizontalEdge)?
-    private var actionsRemoval: Task<Void, Never>?
     /// 操作栏是哪一刻打开的：长按开出来的那一下松手时，点按收起不算（见 tapped）。
     private var actionsOpened: CFTimeInterval = 0
     private var heightTicker: FrameTicker?
@@ -37,6 +36,9 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
     private let presenceTracking = ModelTracking()
     /// 手指按下的时刻（还没松开时），见 TouchObserver。
     private var touchDown: CFTimeInterval?
+    /// 这次按下前跟不跟着最底下，和手指拖起来没有：轻点、长按（没进选字）松手后照旧跟，见 touched。
+    private var touchFollowing = false
+    private var touchDragged = false
 
     init() {
         super.init(frame: .zero)
@@ -90,7 +92,11 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
             }
             return slot
         }, fits: phoneTranscriptRowSlotFits)
-        for slot in removed where slot.hasView { slot.view.removeFromSuperview() }
+        for slot in removed {
+            if slot.hasView { slot.view.removeFromSuperview() }
+            // 托管的附件、卡片挂在视图控制器上，行删掉时一起撤下来
+            (slot as? PhoneRowSlot)?.releaseView()
+        }
         if !removed.isEmpty { proxies = proxies.filter { arrangement.byID[$0.key] != nil } }
         setNeedsArrange()
     }
@@ -208,12 +214,11 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
         let slot = context.selected.flatMap { arrangement.byID[$0] }
         let bar = (slot as? PhoneRowSlot)?.actionBar()
         if let actions, actions.id != slot?.id || bar == nil {
-            // 收起：同一个浮层改成不显示，播完动画再拿掉
+            // 收起：同一个浮层改成不显示，播完动画再拿掉；换到别的行时也是，新的另开一个，同 Mac
             let host = actions.host
             host.rootView = actionsRoot(nil, side: actions.side, above: actions.above, context: context)
             self.actions = nil
-            actionsRemoval?.cancel()
-            actionsRemoval = Task { [weak host] in
+            Task { [weak host] in
                 try? await Task.sleep(for: .milliseconds(300))
                 host?.willMove(toParent: nil)
                 host?.view.removeFromSuperview()
@@ -229,7 +234,6 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
             // 内容（比如展开状态）和上下都可能变，每次排版都换一遍
             host.rootView = actionsRoot(bar.content, side: bar.side, above: above, context: context)
         } else {
-            actionsRemoval?.cancel()
             host = UIHostingController(rootView: actionsRoot(nil, side: bar.side, above: above, context: context))
             host.sizingOptions = []
             host.safeAreaRegions = []
@@ -298,12 +302,15 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
 
     // MARK: - 补量
 
-    /// 宽度停下、没有窗口在过渡、人和程序都没在滚、窗口在屏上的时候，屏幕外的行分批按眼下的宽量好，见 TranscriptArrangement.measureLater。
+    /// 宽度停下、没有窗口在过渡、人和程序都没在滚的时候，屏幕外的行分批按眼下的宽量好，见 TranscriptArrangement.measureLater。
+    /// 窗口不在屏上时不等：补量停掉，回到屏上时重排再接着（见 observePresence）。
     private func measureLater() {
+        guard presence?.onScreen != false else { return }
         arrangement.measureLater(busy: { [weak self] in
             guard let self else { return true }
-            return WindowLayout.anyTransitioning || follow.glide != nil || follow.userScrolling || presence?.onScreen == false
-        }, viewport: { [weak self] in self?.viewport }, arrange: { [weak self] in self?.layoutRows() })
+            return WindowLayout.anyTransitioning || follow.glide != nil || follow.userScrolling
+        }, paused: { [weak self] in self?.presence?.onScreen == false }, viewport: { [weak self] in self?.viewport },
+           arrange: { [weak self] in self?.layoutRows() })
     }
 
     /// 所在窗口进出屏幕：只有在屏上的窗口接点状态栏回顶（同一窗口里有几个开着的滚动视图时系统一个都不滚；
@@ -346,6 +353,7 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        touchDragged = true
         follow.userBegan()
     }
 
@@ -358,24 +366,33 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
     }
 
     /// 手指按下就算人在滚，松开、惯性也停了才按停的位置定跟不跟（同原来 SwiftUI 版的 tracking）。
+    /// 按下前跟着最底下、手指没拖起来也没进选字（轻点、长按开操作栏）的，松手后照旧跟：按着的那会儿流式变长，底下没跟上不算翻上去了。
     private func touched(_ down: Bool) {
         if down {
             touchDown = CACurrentMediaTime()
+            touchFollowing = follow.following && !follow.userScrolling
+            touchDragged = false
             follow.userBegan()
         } else {
             touchDown = nil
             // 拖动的结束和惯性由滚动视图的回调接；它们和这里谁先到不一定，等这一拍过去再看
             DispatchQueue.main.async { [weak self] in
                 guard let self, touchDown == nil, !scrollView.isDragging, !scrollView.isDecelerating else { return }
-                userEnded()
+                userEnded(tapped: !touchDragged && touchFollowing && !Self.selecting(in: document))
             }
         }
     }
 
-    private func userEnded() {
+    private func userEnded(tapped: Bool = false) {
         guard follow.userScrolling else { return }
-        follow.userEnded(distanceToBottom: distanceToBottom)
+        follow.userEnded(distanceToBottom: distanceToBottom, wasFollowing: tapped)
         setNeedsArrange()
+    }
+
+    /// 有正文在选字（PhoneTextInteraction 选字时打开文本视图的 isSelectable）。
+    private static func selecting(in view: UIView) -> Bool {
+        if let text = view as? PhoneProseTextView { return text.isSelectable }
+        return view.subviews.contains { selecting(in: $0) }
     }
 
     // MARK: - 手势
@@ -437,8 +454,8 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
 
     // MARK: - 内存
 
-    /// 收到内存警告时，离可见区远（上下三屏以外）的行放掉视图：按内容重建，行里自己展开的状态、嵌着的卡片横滑的位置会丢（用户 2026-10-13 定）。
-    /// 量过的高留着，排列不受影响。
+    /// 收到内存警告时，离可见区远（上下三屏以外）的行放掉视图和嵌着的卡片的宿主（用户 2026-10-13 定）：滚回来时按内容重建，
+    /// 展开着的工具行、压缩分界收回去，卡片里的状态（代码展开、表格横滑的位置）回到初始。量过的高留着（收回去的行除外），排列不受影响。
     @objc private func memoryWarning() {
         let visible = visibleArea
         let kept = visible.insetBy(dx: 0, dy: -visible.height * 3)
@@ -470,14 +487,25 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
     private var proxies: [RowID: RowAccessibilityElement] = [:]
 
     private func proxy(for slot: TranscriptRowSlot) -> RowAccessibilityElement {
-        let element = proxies[slot.id] ?? RowAccessibilityElement(accessibilityContainer: document)
-        proxies[slot.id] = element
-        element.accessibilityLabel = TranscriptSpeech.summary(slot.row)
-        element.accessibilityFrameInContainerSpace = slot.frame
-        element.focused = { [weak self, weak element] in
-            guard let self, let element else { return }
-            reveal(slot.id, from: element)
+        let id = slot.id
+        let element = proxies[id] ?? {
+            let element = RowAccessibilityElement(accessibilityContainer: document)
+            element.focused = { [weak self, weak element] in
+                guard let self, let element else { return }
+                reveal(id, from: element)
+            }
+            proxies[id] = element
+            return element
+        }()
+        // 摘要按行的签名缓存：读屏每次问一遍整列，长会话里每行重拼一遍字不划算
+        var hasher = Hasher()
+        slot.row.shape(into: &hasher)
+        let shape = hasher.finalize()
+        if element.shape != shape {
+            element.shape = shape
+            element.accessibilityLabel = TranscriptSpeech.summary(slot.row)
         }
+        element.accessibilityFrameInContainerSpace = slot.frame
         return element
     }
 
@@ -527,6 +555,8 @@ final class PhoneTranscriptDocumentView: UIView {
 /// 屏外一行的读屏代理，读屏停到它时交给列表把这一行放进来。
 private final class RowAccessibilityElement: UIAccessibilityElement {
     var focused: (() -> Void)?
+    /// 摘要按哪个签名的行拼的。
+    var shape: Int?
 
     override func accessibilityElementDidBecomeFocused() {
         super.accessibilityElementDidBecomeFocused()
