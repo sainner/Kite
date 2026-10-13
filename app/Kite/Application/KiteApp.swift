@@ -20,6 +20,9 @@ struct KiteApp: App {
         #endif
         let model = AppModel()
         _model = State(initialValue: model)
+        #if DEBUG && KITE_LAYOUT_AUDIT
+        PerfProbe.arm(model: model)
+        #endif
         #if DEBUG && os(macOS)
         if ComposerPreview.enabled { ComposerPreview.openWindow(model: model) }
         if StagePreview.enabled || RingPreview.enabled { StagePreview.openWindow(model: model) }
