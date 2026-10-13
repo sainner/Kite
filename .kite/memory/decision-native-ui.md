@@ -12,6 +12,6 @@ metadata:
 
 同日用户定的细节（按编排者建议）：Mac 标题栏不原生化；状态圆环、停靠栏脉冲改图层动画后跟屏幕刷新率（比现在的 30 帧顺）；窗口动画交给 Core Animation（外壳第四期）。iOS 原生版不照搬 SwiftUI 版的副作用：长按气泡任何地方（含内边距、折叠按钮）都开操作栏，压缩分界展开时下面的行跟着展开动画走，点状态栏回顶按系统惯例做好，气泡浮起途中不能选字（同 Mac）；滚动收不收键盘照 iOS 现版；读屏补齐在 iOS 第 1 期之后马上做、两端一起；iPad 指针右键开操作栏顺带做；iPhone 文本容器第三步的真机验收并入 iOS 第 1 期手测。
 
-**Why:** 拖缝 60 帧的预算是 16.7ms。SwiftUI 每帧整棵树重算：托管的 SwiftUI 行改宽约 0.8ms 一行，外壳两窗约 9.4ms；对话原生化以后剩下的大头就是外壳（数据见 [[todo-window-motion-remaining]]）。参照 TelegramSwift：全 AppKit、每条消息一个自绘图层、改宽只同步重算可见行；它的 CoreText 贪心断行只比 TextKit 2 快约 30%，优势主要在没有 SwiftUI 外壳和每行文本视图的开销。宽屏 iPad 和 Mac 用同一套分栏、也能拖缝，对话仍是 SwiftUI，真机没量过。用户知道代价：按周计，Mac、iOS 视图层各一份（只共用排列和量高的计算），交互和动画有回归风险。
+**Why:** 拖缝 60 帧的预算是 16.7ms。SwiftUI 每帧整棵树重算：托管的 SwiftUI 行改宽约 0.8ms 一行，外壳两窗约 9.4ms；对话原生化以后剩下的大头就是外壳（数据见 [[todo-window-motion-remaining]]）。参照 TelegramSwift：全 AppKit、每条消息一个自绘图层、改宽只同步重算可见行；它的 CoreText 贪心断行只比 TextKit 2 快约 30%，优势主要在没有 SwiftUI 外壳和每行文本视图的开销。宽屏 iPad 和 Mac 用同一套分栏、也能拖缝，对话仍是 SwiftUI；2026-10-13 真机（iPad Pro 12.9 第 5 代）拖缝每步 166～317ms，每次改宽 SwiftUI 把整列行重量一遍，气泡 boundingRect 贴字宽约占 2/3。用户知道代价：按周计，Mac、iOS 视图层各一份（只共用排列和量高的计算），交互和动画有回归风险。
 
-**How to apply:** 动对话列表、行视图、窗口外壳或拖缝性能时按这个方向。外观以现有 SwiftUI 版逐项对照（[[feedback-ui-workflow]]），但旧版不一定对：先判断差异是有意设计还是 SwiftUI 带出来的副作用，副作用不照搬（如气泡正文被量两遍、字没排满气泡，用户认可原生版排满）。滚动行为以 `TranscriptScroll` 现有规则为准逐条迁移。每步用测量版量过再往下走；iPad 先在真机上量拖缝再定改多少。
+**How to apply:** 动对话列表、行视图、窗口外壳或拖缝性能时按这个方向。外观以现有 SwiftUI 版逐项对照（[[feedback-ui-workflow]]），但旧版不一定对：先判断差异是有意设计还是 SwiftUI 带出来的副作用，副作用不照搬（如气泡正文被量两遍、字没排满气泡，用户认可原生版排满）。滚动行为以 `TranscriptScroll` 现有规则为准逐条迁移。每步用测量版量过再往下走，iPad 在真机上量（测量版钩子 PhoneResizeAudit，结果写 App 缓存目录）。
