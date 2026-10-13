@@ -40,7 +40,7 @@ iPad 场景：${IPAD_SCENES.join(' ')}
 iPhone 场景：${IPHONE_SCENES.join(' ')}
 不给场景时跑全部。选项：
   --repeat N            每个场景、每个变体启动几次，默认 1
-  --variant 名=参数     加一个对照变体：同一个测量版带这些启动参数（空格分开），和默认变体交替跑，如 --variant 'swiftui=--swiftui-stage'
+  --variant 名=参数     加一个对照变体：同一个测量版带这些启动参数（空格分开），和默认变体交替跑，如 --variant 'top=-perfScrollTop 0'
   --base <检出目录>     加一个对照变体 base：用那个检出编一份测量版，交替跑
   --trace               每次附一份 Time Profiler，按关键词合计测量区间里的主线程
   --keywords a,b        Time Profiler 合计的关键词，默认按平台给一组

@@ -22,6 +22,7 @@ try {
     '-sdk', sdk, '-target', `${architecture}-apple-macosx26.0`,
     source,
     join(workspace, 'WindowMotion.swift'),
+    join(workspace, 'HostedContent.swift'),
     join(workspace, 'CompactPaneHeader.swift'),
     join(workspace, 'PaneControlSwipe.swift'),
     join(import.meta.dir, 'CompactPaneStackVerify.swift'),
