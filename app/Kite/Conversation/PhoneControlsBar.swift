@@ -151,6 +151,9 @@ final class ControlsBarView: UIView {
     func update(controls: ThreadControlsModel, enabled: Bool, environment: EnvironmentValues) {
         self.controls = controls
         self.enabled = enabled
+        if self.environment?.colorScheme != environment.colorScheme || self.environment == nil {
+            for button in [attach, voice, stop, resume, send] { button.environment = environment }
+        }
         self.environment = environment
         fontChanged()
         let key = EffortKey(controls: controls, enabled: enabled, colorScheme: environment.colorScheme, typeSize: environment.dynamicTypeSize)
@@ -342,9 +345,13 @@ final class ControlsBarView: UIView {
         }
     }
 
-    /// 和现在一样就不设：拖缝时每步都排，多数子视图只有横向位置在变。
+    /// 四边取整到像素再摆，同 SwiftUI（输入框 8 行以上时高带小数）；和现在一样就不设：拖缝时每步都排，多数子视图只有横向位置在变。
     private func place(_ view: UIView, _ frame: CGRect) {
-        if view.frame != frame { view.frame = frame }
+        let scale = max(traitCollection.displayScale, 1)
+        func pixel(_ value: CGFloat) -> CGFloat { (value * scale).rounded() / scale }
+        let minX = pixel(frame.minX), minY = pixel(frame.minY)
+        let rounded = CGRect(x: minX, y: minY, width: pixel(frame.maxX) - minX, height: pixel(frame.maxY) - minY)
+        if view.frame != rounded { view.frame = rounded }
     }
 
     /// 里面变了（行数、按钮、思考强度的宽）：高变了让外面重新量，没变只重摆。

@@ -6,7 +6,7 @@ import UIKit
 /// （2026-10-14 iPad 真机导过，见下）：TextKit 2，容器宽跟着视图、高不限，无内边距、行内边距 0，正文字号、字色 label、
 /// 插入点主题色，开着滚动但不显示滚动条、竖向不总回弹，自动大写按句；占位是一个 UILabel，正文字号、placeholderText 色，
 /// 和第一行同一条基线，有字时藏起。行高是字体的 lineHeight 加 leading（17 点正文 22.008）；高 = 字的总高向上取整到点，
-/// 最多 8 行（8 行字加 7 个 leading，取整到像素，17 点时 174），再多在里面滚，停在末尾。
+/// 最多 8 行（8 行字加 7 个 leading），再多在里面滚；外面改了字不滚，停在开头，同现版。
 /// 回车照现版是换行，不发送（发送只走发送键）；组字照系统。没在打字时停掉它自己的拖动：框里拖是拉抽屉、横滑换窗口，
 /// 同 TextScrollLock。外面改草稿时（发送后清空、语音写入）整段换掉、插入点到末尾、清掉撤销，同 Mac 版。
 final class ComposerField: UITextView, UITextViewDelegate {
@@ -109,7 +109,7 @@ final class ComposerField: UITextView, UITextViewDelegate {
         }
     }
 
-    /// 外面改了草稿。整段换掉、插入点到末尾、停在末尾，同现版；和现在一样就不动，组字不被打断。
+    /// 外面改了草稿。整段换掉、插入点到末尾，同现版；和现在一样就不动，组字不被打断。
     /// 换掉的字不进撤销，之前打字记下的撤销也清掉：它们按旧字的范围记，留着的话撤销会越界。
     func setText(_ value: String) {
         guard value != text else { return }
@@ -119,13 +119,6 @@ final class ComposerField: UITextView, UITextViewDelegate {
         let end = (value as NSString).length
         selectedRange = NSRange(location: end, length: 0)
         placeholderLabel.isHidden = !value.isEmpty
-        scrollToEnd()
-    }
-
-    private func scrollToEnd() {
-        layoutIfNeeded()
-        let bottom = max(contentSize.height - bounds.height, 0)
-        if contentOffset.y != bottom { contentOffset.y = bottom }
     }
 
     // MARK: - 量高
@@ -150,11 +143,11 @@ final class ComposerField: UITextView, UITextViewDelegate {
         return min(ceil(content), maximumHeight(font))
     }
 
-    /// 8 行多高：8 行字加 7 个 leading，向下取整到像素（17 点正文 2 倍屏是 174，2026-10-14 iPad 真机量过）。
+    /// 8 行多高：8 行字加 7 个 leading，不取整（17 点正文 174.345）；摆到屏上时和别的边一起取整到像素，
+    /// 同 SwiftUI（2 倍屏上现版摆出来是 174.5，2026-10-14 iPad 真机量过）。
     private func maximumHeight(_ font: UIFont) -> CGFloat {
         let lines = CGFloat(Self.maximumLines)
-        let scale = max(traitCollection.displayScale, 1)
-        return ((lines * font.lineHeight + (lines - 1) * font.leading) * scale).rounded(.down) / scale
+        return lines * font.lineHeight + (lines - 1) * font.leading
     }
 
     /// 字排出来多宽、多高（空的时候是一行）。
@@ -171,8 +164,7 @@ final class ComposerField: UITextView, UITextViewDelegate {
             }
             return true
         }
-        // 以换行结尾时最后还有一个空行
-        if text.hasSuffix("\n") { size.height += font.lineHeight + font.leading }
+        // 以换行结尾时最后那个空行 TextKit 2 已经算在里面（2026-10-14 真机和现版比过）
         if text.isEmpty { size.width = 0 }
         return size
     }

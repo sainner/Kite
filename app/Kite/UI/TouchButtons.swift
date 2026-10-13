@@ -50,6 +50,10 @@ class NativeButton: UIControl {
         }
     }
 
+    override var isHidden: Bool {
+        didSet { if oldValue && !isHidden { setNeedsLayout() } }
+    }
+
     override var isHighlighted: Bool {
         didSet { if isHighlighted != oldValue { stateChanged() } }
     }
@@ -59,6 +63,18 @@ class NativeButton: UIControl {
 
     /// 样子跟着状态变。
     func stateChanged() {}
+
+    /// 上次按哪种深浅色上的色。藏着时深浅色变了，系统不一定当场通知（2026-10-14 真机：藏着的「继续」露出来时还是浅色的字），
+    /// 排版时再对一次。
+    private var paintedStyle: UIUserInterfaceStyle?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if paintedStyle != traitCollection.userInterfaceStyle {
+            paintedStyle = traitCollection.userInterfaceStyle
+            stateChanged()
+        }
+    }
 
     /// 这一点（自己的坐标）在不在按钮的范围里：命中按它，默认整个视图。
     func contains(_ point: CGPoint) -> Bool { bounds.contains(point) }
@@ -101,6 +117,9 @@ class HighlightButton: NativeButton {
     override init(frame: CGRect) {
         super.init(frame: frame)
         tracksHover = true
+        // 按下、停用时的透明度一层层各自乘上去，不先合成一组再淡：同 SwiftUI 的 opacity（没有 compositingGroup），
+        // 停用的发送键箭头透出底下的主题色（2026-10-14 iPad 真机逐像素比过）
+        layer.allowsGroupOpacity = false
         layer.addSublayer(highlight)
         highlight.actions = ["backgroundColor": NSNull(), "position": NSNull(), "bounds": NSNull(), "cornerRadius": NSNull()]
     }
@@ -159,6 +178,10 @@ final class PaneButtonView: HighlightButton {
     var title = "" {
         didSet { accessibilityLabel = title }
     }
+    /// 解析颜色用的 SwiftUI 环境（主题色等从这里来），外观按这个视图自己的。
+    var environment: EnvironmentValues? {
+        didSet { applyColors() }
+    }
 
     /// 实心按钮的填色，在最下面。
     private let fillLayer = CALayer()
@@ -173,7 +196,6 @@ final class PaneButtonView: HighlightButton {
         image.contentMode = .center
         image.isUserInteractionEnabled = false
         text.isUserInteractionEnabled = false
-        text.textAlignment = .center
         text.lineBreakMode = .byClipping
         addSubview(image)
         addSubview(text)
@@ -192,15 +214,23 @@ final class PaneButtonView: HighlightButton {
     var width: CGFloat {
         switch label {
         case .symbol: Metrics.paneButton
-        case .text: max(textWidth + 2 * Metrics.paneToolbarInset, Metrics.paneButton)
+        case .text: max(textBox + 2 * Metrics.paneToolbarInset, Metrics.paneButton)
         }
     }
 
     private var textWidth: CGFloat = 0
 
+    /// 字占的宽：字宽向上取整到像素，同 SwiftUI 的 Text（2026-10-14 iPad 真机逐像素比过）。
+    private var textBox: CGFloat {
+        let scale = max(traitCollection.displayScale, 1)
+        return (textWidth * scale).rounded(.up) / scale
+    }
+
+    /// 实心按钮的字和图标是正文字号的 bold，同 SwiftUI 的 Theme.body.weight(.bold)（不用粗体特征：那样出来的是 semibold，箭头细一圈）。
     private var weightedFont: UIFont {
-        guard fill != nil, let bold = font.fontDescriptor.withSymbolicTraits(.traitBold) else { return font }
-        return UIFont(descriptor: bold, size: font.pointSize)
+        guard fill != nil else { return font }
+        let descriptor = font.fontDescriptor.addingAttributes([.traits: [UIFontDescriptor.TraitKey.weight: UIFont.Weight.bold]])
+        return UIFont(descriptor: descriptor, size: font.pointSize)
     }
 
     private func labelChanged() {
@@ -218,19 +248,22 @@ final class PaneButtonView: HighlightButton {
             text.isHidden = false
             text.font = weightedFont
             text.text = string
-            textWidth = ceil(NSAttributedString(string: string, attributes: [.font: weightedFont]).size().width)
+            textWidth = NSAttributedString(string: string, attributes: [.font: weightedFont]).size().width
         }
         applyColors()
         setNeedsLayout()
     }
 
     private func applyColors() {
-        let content = fill == nil ? resolved(foreground, traits: traitCollection) : .white
+        // 字和图标用动态色，按当时的深浅色自己解析：藏着的按钮换深浅色时不一定收到通知
+        let foreground = foreground, environment = environment
+        let content = fill != nil ? .white : foreground == .secondary ? .secondaryLabel
+            : UIColor { resolved(foreground, traits: $0, in: environment) }
         image.tintColor = content
         text.textColor = content
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        fillLayer.backgroundColor = fill.map { resolved($0, traits: traitCollection).cgColor }
+        fillLayer.backgroundColor = fill.map { resolved($0, traits: traitCollection, in: environment).cgColor }
         CATransaction.commit()
     }
 
@@ -246,23 +279,25 @@ final class PaneButtonView: HighlightButton {
         fillLayer.frame = highlight.frame
         fillLayer.cornerRadius = highlight.cornerRadius
         CATransaction.commit()
-        text.frame = bounds
+        // 字从左边留白处起排（同 SwiftUI 的 padding），字本身不在取整后的宽里居中
+        text.frame = CGRect(x: max((bounds.width - textBox) / 2, Metrics.paneToolbarInset), y: 0, width: textWidth, height: bounds.height)
         if let symbol = image.image {
             // 横向按字形的对齐范围居中、取整到像素，同 SwiftUI（Mac 版 2026-10-13 逐像素比过）
             let size = symbol.size, alignment = symbol.alignmentRectInsets
             let scale = traitCollection.displayScale
             let alignedWidth = size.width - alignment.left - alignment.right
             let x = (((bounds.width - alignedWidth) / 2 - alignment.left) * scale).rounded() / scale
-            let alignedHeight = size.height - alignment.top - alignment.bottom
-            let y = (((bounds.height - alignedHeight) / 2 - alignment.top) * scale).rounded() / scale
+            // 竖向按整张图居中、取整到像素（2026-10-14 iPad 真机逐像素比过：按对齐范围居中时麦克风高半点，不取整时停止键高半点）
+            let y = (((bounds.height - size.height) / 2) * scale).rounded() / scale
             image.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
         }
     }
 }
 
-/// SwiftUI 的颜色按这个 trait 的深浅色解析成同样的值（主题色、资源色、带透明度的系统色）。
-@MainActor func resolved(_ color: Color, traits: UITraitCollection) -> UIColor {
-    var environment = EnvironmentValues()
+/// SwiftUI 的颜色按这个 trait 的深浅色解析成同样的值（主题色、资源色、带透明度的系统色）。主题色要从 SwiftUI 交过来的环境里解析：
+/// 新建的 EnvironmentValues 里 accentColor 是系统蓝，不是 App 的 AccentColor。
+func resolved(_ color: Color, traits: UITraitCollection, in environment: EnvironmentValues? = nil) -> UIColor {
+    var environment = environment ?? EnvironmentValues()
     environment.colorScheme = traits.userInterfaceStyle == .dark ? .dark : .light
     return UIColor(cgColor: color.resolve(in: environment).cgColor)
 }
