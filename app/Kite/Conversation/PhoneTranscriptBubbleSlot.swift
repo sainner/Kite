@@ -328,10 +328,8 @@ final class PhoneBubbleView: UIView {
     }
 }
 
-/// 折起来的气泡下面的按钮：「展开全文」「收起」连同箭头，居中，跟着气泡的宽，整条可点；按下变淡，同 SwiftUI 的 plain 按钮。
-/// iPad 上指针停在上面有系统的悬停效果。
-final class PhoneBubbleFoldButton: UIControl, UIPointerInteractionDelegate {
-    var action: (() -> Void)?
+/// 折起来的气泡下面的按钮：「展开全文」「收起」连同箭头，HStack(spacing: 6) 居中，跟着气泡的宽，整条可点。
+final class PhoneBubbleFoldButton: PhonePlainControl {
     var expanded = false {
         didSet {
             guard expanded != oldValue else { return }
@@ -340,13 +338,9 @@ final class PhoneBubbleFoldButton: UIControl, UIPointerInteractionDelegate {
     }
     private let label = UILabel()
     private let chevron = UIImageView()
-    /// 字和箭头，按下时一起变淡。
-    private let content = UIView()
 
-    init() {
-        super.init(frame: .zero)
-        content.isUserInteractionEnabled = false
-        addSubview(content)
+    override init() {
+        super.init()
         content.addSubview(label)
         content.addSubview(chevron)
         label.font = .preferredFont(forTextStyle: .subheadline)
@@ -354,10 +348,6 @@ final class PhoneBubbleFoldButton: UIControl, UIPointerInteractionDelegate {
         chevron.preferredSymbolConfiguration = UIImage.SymbolConfiguration(textStyle: .subheadline)
         // 按符号自己的大小居中画，不拉伸到视图的框
         chevron.contentMode = .center
-        addTarget(self, action: #selector(triggered), for: .primaryActionTriggered)
-        addInteraction(UIPointerInteraction(delegate: self))
-        isAccessibilityElement = true
-        accessibilityTraits = .button
         update()
     }
 
@@ -382,8 +372,6 @@ final class PhoneBubbleFoldButton: UIControl, UIPointerInteractionDelegate {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        content.frame = bounds
-        // HStack(spacing: 6)，整组居中、各自竖着居中
         let labelSize = label.intrinsicContentSize
         let imageSize = chevron.intrinsicContentSize
         let spacing: CGFloat = 6
@@ -392,31 +380,6 @@ final class PhoneBubbleFoldButton: UIControl, UIPointerInteractionDelegate {
         label.frame = CGRect(x: x, y: (bounds.height - labelSize.height) / 2, width: labelSize.width, height: labelSize.height)
         chevron.frame = CGRect(x: x + labelSize.width + spacing, y: (bounds.height - imageSize.height) / 2,
                                width: imageSize.width, height: imageSize.height)
-    }
-
-    override var isHighlighted: Bool {
-        didSet {
-            guard isHighlighted != oldValue else { return }
-            if isHighlighted {
-                content.alpha = 0.2
-            } else {
-                UIView.animate(withDuration: 0.2) { self.content.alpha = 1 }
-            }
-        }
-    }
-
-    @objc private func triggered() {
-        action?()
-    }
-
-    /// 正文上的点按（取消选区、点链接）不接按钮上的点：不然点按一识别就把按钮的触摸取消了，按钮收不到松手。长按照样接，长按按钮也开操作栏。
-    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        if gestureRecognizer is UITapGestureRecognizer, gestureRecognizer.view !== self { return false }
-        return super.gestureRecognizerShouldBegin(gestureRecognizer)
-    }
-
-    func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
-        UIPointerStyle(effect: .automatic(UITargetedPreview(view: self)))
     }
 }
 #endif

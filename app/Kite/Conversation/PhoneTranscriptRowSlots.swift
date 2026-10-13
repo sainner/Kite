@@ -4,29 +4,53 @@ import UIKit
 
 /// iOS 原生对话列表的行比共用的基类多两件事：放进列表时（didPlace）、收到内存警告放掉视图（releaseView）。
 protocol PhoneRowSlot: TranscriptRowSlot {
-    /// 第一次放进文档以后：托管的视图接进视图控制器的层级。
+    /// 第一次放进文档以后：行里托管的 SwiftUI（工具步骤、附件这些）接进视图控制器的层级。
     func didPlace()
     /// 放掉视图，下次要时按内容重建；量过的高留着。
     func releaseView()
 }
 
-/// iOS 上按 slotKind（两端共用，见 TranscriptSlot）建这一行的实现。
-@MainActor func makePhoneTranscriptRowSlot(_ row: TranscriptRow) -> TranscriptRowSlot {
+/// iOS 上一行用哪种实现：两端共用的 slotKind 之外，Mac 还托管 SwiftUI 的几种行（kite 发来的、通知、打断、压缩分界、API 错误）这里都是原生的。
+enum PhoneSlotKind { case prose, bubble, work, thinking, kite, compacted, event }
+
+func phoneSlotKind(_ row: TranscriptRow) -> PhoneSlotKind {
     switch slotKind(row) {
+    case .prose: return .prose
+    case .bubble: return .bubble
+    case .work: return .work
+    case .thinking: return .thinking
+    case .hosted:
+        guard case .item(let item) = row.content else { return .event }
+        switch item.kind {
+        case .kite: return .kite
+        case .compacted: return .compacted
+        default: return .event
+        }
+    }
+}
+
+@MainActor func makePhoneTranscriptRowSlot(_ row: TranscriptRow) -> TranscriptRowSlot {
+    switch phoneSlotKind(row) {
     case .prose: PhoneProseRowSlot(row: row)
     case .bubble: PhoneBubbleRowSlot(row: row)
-    case .work: PhoneHostedRowSlot(row: row)
-    case .thinking: PhoneHostedRowSlot(row: row)
-    case .hosted: PhoneHostedRowSlot(row: row)
+    case .work: PhoneWorkRowSlot(row: row)
+    case .thinking: PhoneThinkingRowSlot(row: row)
+    case .kite: PhoneKiteRowSlot(row: row)
+    case .compacted: PhoneCompactedRowSlot(row: row)
+    case .event: PhoneEventRowSlot(row: row)
     }
 }
 
 /// 这一行用的实现还能不能接着用：种类变了换一个新的。
 @MainActor func phoneTranscriptRowSlotFits(_ slot: TranscriptRowSlot, _ row: TranscriptRow) -> Bool {
-    switch slotKind(row) {
+    switch phoneSlotKind(row) {
     case .prose: slot is PhoneProseRowSlot
     case .bubble: slot is PhoneBubbleRowSlot
-    case .work, .thinking, .hosted: slot is PhoneHostedRowSlot
+    case .work: slot is PhoneWorkRowSlot
+    case .thinking: slot is PhoneThinkingRowSlot
+    case .kite: slot is PhoneKiteRowSlot
+    case .compacted: slot is PhoneCompactedRowSlot
+    case .event: slot is PhoneEventRowSlot
     }
 }
 
@@ -195,69 +219,6 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         coordinator.view = nil
         coordinator.shown = nil
         layout.invalidate()
-    }
-}
-
-/// 还没原生化的行：托管原来的 SwiftUI 行视图。只在可见区附近才建；内容自己变高变矮时由 onGeometryChange 报回来。
-final class PhoneHostedRowSlot: TranscriptRowSlot, PhoneRowSlot {
-    private var controller: UIHostingController<AnyView>?
-    private var context: TranscriptRowContext?
-
-    override var hasView: Bool { controller != nil }
-    override var hosted: Bool { true }
-
-    override var view: UIView {
-        if let controller { return controller.view }
-        let controller = UIHostingController(rootView: root())
-        controller.sizingOptions = []
-        // 不让安全区挤进来，背景透出窗口的点阵
-        controller.safeAreaRegions = []
-        controller.view.backgroundColor = .clear
-        self.controller = controller
-        return controller.view
-    }
-
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
-        super.update(row, context: context, resized: resized)
-        self.context = context
-        controller?.rootView = root()
-    }
-
-    private func root() -> AnyView {
-        guard let context else { return AnyView(EmptyView()) }
-        return AnyView(HostedRowFrame {
-            TranscriptRowView(row: row)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] in self?.reported($0) }
-        }
-        .environment(\.self, context.environment))
-    }
-
-    override func height(width: CGFloat) -> CGFloat {
-        if let measured, measured.width == width { return measured.height }
-        _ = view
-        guard let controller else { return 0 }
-        // 高留着小数，同 SwiftUI 版：位置累加完再对到像素，见 PhoneTranscriptView.realize
-        let height = controller.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
-        measured = (width, height)
-        return height
-    }
-
-    /// 排好以后报来的高：和量的不一样（自己展开收起了）就请列表重排。
-    private func reported(_ height: CGFloat) {
-        guard let measured, measured.width == frame.width, abs(measured.height - height) > 0.5 else { return }
-        self.measured = (measured.width, height)
-        heightChanged?(nil)
-    }
-
-    func didPlace() {
-        if let controller { adopt(controller) }
-    }
-
-    func releaseView() {
-        controller?.willMove(toParent: nil)
-        controller?.view.removeFromSuperview()
-        controller?.removeFromParent()
-        controller = nil
     }
 }
 

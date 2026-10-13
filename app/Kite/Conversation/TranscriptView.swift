@@ -128,7 +128,6 @@ private struct EventLabel: View {
 private struct CompactedDivider: View {
     let compaction: Compaction
     let children: [Item]
-    @Environment(WorkThread.self) private var thread
     @State private var expanded = false
     @State private var original = false
 
@@ -148,20 +147,34 @@ private struct CompactedDivider: View {
             }
             .buttonStyle(.pointingPlain)
             if expanded {
-                SelectableMarkdown(source: compaction.summary, color: .secondaryLabel).font(Theme.secondary).foregroundStyle(.secondary)
-                HStack(spacing: 16) {
-                    if !children.isEmpty {
-                        Button(original ? "收起原文" : "显示原文") { withAnimation(.snappy) { original.toggle() } }
-                    }
-                    if let id = compaction.id {
-                        Button("撤销压缩") { thread.revertCompaction(id) }.disabled(!thread.canCompact)
-                    }
-                }
-                .font(Theme.secondary)
-                .buttonStyle(.pointingPlain)
-                .foregroundStyle(Color.accentColor)
+                CompactionDetails(compaction: compaction, children: children, original: $original)
             }
-            if expanded && original {
+        }
+    }
+}
+
+/// 压缩分界点开以后的那一截：摘要，显示原文、撤销压缩，展开的原文。iOS 原生列表的压缩分界托管它（PhoneCompactedRowSlot）。
+struct CompactionDetails: View {
+    let compaction: Compaction
+    let children: [Item]
+    @Binding var original: Bool
+    @Environment(WorkThread.self) private var thread
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SelectableMarkdown(source: compaction.summary, color: .secondaryLabel).font(Theme.secondary).foregroundStyle(.secondary)
+            HStack(spacing: 16) {
+                if !children.isEmpty {
+                    Button(original ? "收起原文" : "显示原文") { withAnimation(.snappy) { original.toggle() } }
+                }
+                if let id = compaction.id {
+                    Button("撤销压缩") { thread.revertCompaction(id) }.disabled(!thread.canCompact)
+                }
+            }
+            .font(Theme.secondary)
+            .buttonStyle(.pointingPlain)
+            .foregroundStyle(Color.accentColor)
+            if original {
                 TranscriptView(items: children)
                     .padding(.leading, 12)
                     .overlay(alignment: .leading) { Rectangle().fill(Theme.rule).frame(width: 1) }
