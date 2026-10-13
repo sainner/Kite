@@ -34,6 +34,8 @@ struct TranscriptRowContext {
 
     /// 视图建好了没有。没建过的行按估的高占位。
     var hasView: Bool { false }
+    /// 托管原来的 SwiftUI 行视图：还读选中的行和刚发出的消息，这两样变了也要换内容。
+    var hosted: Bool { false }
     /// 视图，第一次要时建。
     var view: PlatformView { preconditionFailure("子类给出") }
 

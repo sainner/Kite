@@ -208,6 +208,7 @@ final class HostedRowSlot: TranscriptRowSlot {
     private var context: TranscriptRowContext?
 
     override var hasView: Bool { controller != nil }
+    override var hosted: Bool { true }
 
     override var view: NSView {
         if let controller { return controller.view }
