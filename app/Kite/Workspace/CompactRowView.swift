@@ -54,7 +54,7 @@ final class CompactRowView: UIView {
         headerShifter.addSubview(fade)
         fade.isUserInteractionEnabled = false
         fade.accessibilityElementsHidden = true
-        setOpacity(fade, 0, animated: false)
+        setLayerOpacity(fade, 0, animated: false)
         fade.rootView = shell.rooted(CompactTopFade())
         row.slide.onStart = { [weak self] motion in self?.slideStarted(motion) }
         #if DEBUG && KITE_LAYOUT_AUDIT
@@ -153,9 +153,9 @@ final class CompactRowView: UIView {
             let height = read.covered.top + thread.headerBar.height + Metrics.topFadeOverhang
             let frame = CGRect(x: 0, y: 0, width: width, height: height)
             if fade.frame != frame { fade.frame = frame }
-            setOpacity(fade, 1, animated: fades)
+            setLayerOpacity(fade, 1, animated: fades)
         } else {
-            setOpacity(fade, 0, animated: fades)
+            setLayerOpacity(fade, 0, animated: fades)
         }
         if usesDots != dots {
             usesDots = dots
@@ -412,24 +412,6 @@ final class CompactRowView: UIView {
     }
 }
 
-/// 透明度直接设在图层上，要动画时按 snappy 取样交给 Core Animation：UIView.alpha 在 0 和非 0 之间变时 UIKit 把整棵子树通知一遍看不看得见，
-/// 标题栏、输入区底下有好几个托管视图，换窗口时一次十几毫秒（2026-10-14 iPhone 真机 Time Profiler）。点按照样按透明度判断（alpha 读的就是图层的）。
-/// 和现在一样就不动，正在走的淡入淡出不被排版打断。
-@MainActor private func setOpacity(_ view: UIView, _ opacity: Float, animated: Bool) {
-    let layer = view.layer
-    guard layer.opacity != opacity else { return }
-    let from = layer.presentation()?.opacity ?? layer.opacity
-    CATransaction.begin()
-    CATransaction.setDisableActions(true)
-    layer.opacity = opacity
-    if animated {
-        layer.add(StageAnimation.spring("opacity", from: Double(from), to: Double(opacity), spring: .snappy), forKey: "chrome.opacity")
-    } else {
-        layer.removeAnimation(forKey: "chrome.opacity")
-    }
-    CATransaction.commit()
-}
-
 /// 一行窗口的那一层：排版时只交给外面重摆位置（平移在图层上），里面的窗口各自按 frame 摆。
 private final class StripView: UIView {
     var laidOut: (() -> Void)?
@@ -510,7 +492,7 @@ private final class CompactSlot {
     func setChromeOpacity(_ opacity: Float, animated: Bool) {
         for view in [thread?.headerBar, controlsArea, headerIsland, controlsIsland] as [UIView?] {
             guard let view else { continue }
-            setOpacity(view, opacity, animated: animated)
+            setLayerOpacity(view, opacity, animated: animated)
             view.isUserInteractionEnabled = opacity > 0
         }
     }

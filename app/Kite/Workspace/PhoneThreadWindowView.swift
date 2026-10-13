@@ -317,13 +317,17 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         backdrop.isHidden = !backdropShown
         if backdropShown { place(backdrop, bounds) }
         list.isHidden = state.empty
-        if insets != self.insets {
-            self.insets = insets
-            list.setInsets(insets)
-        }
-        if rowsDirty, !state.empty {
-            rowsDirty = false
-            list.update(rows, context: rowContext, presence: environment.panePresence)
+        // 键盘升降时外壳在键盘的动画块里排版：对话照 SwiftUI 版一次到位（那时列表拿到的就是终点的让位），不让新露出来的行从原点飞进来
+        UIView.performWithoutAnimation {
+            if insets != self.insets {
+                self.insets = insets
+                list.setInsets(insets)
+            }
+            if rowsDirty, !state.empty {
+                rowsDirty = false
+                list.update(rows, context: rowContext, presence: environment.panePresence)
+            }
+            list.layoutIfNeeded()
         }
     }
 

@@ -506,11 +506,11 @@ final class CompactShellView: UIView, DrawerDriving {
         updateDots()
     }
 
-    /// 新的淡入（替换另一样时），snappy；减少动态效果时直接换。
+    /// 新的淡入（替换另一样时），snappy；减少动态效果时直接换。透明度设在图层上，见 setLayerOpacity。
     private func fadeIn(_ view: UIView, from previous: UIView?) {
         guard previous != nil, look?.reduceMotion != true else { return }
-        view.alpha = 0
-        UIView.animate(springDuration: 0.5, bounce: 0.15) { view.alpha = 1 }
+        setLayerOpacity(view, 0, animated: false)
+        setLayerOpacity(view, 1, animated: true)
     }
 
     private func leave(_ view: UIView, finished: @escaping () -> Void) {
@@ -521,7 +521,8 @@ final class CompactShellView: UIView, DrawerDriving {
             return
         }
         leaving.append(view)
-        UIView.animate(springDuration: 0.5, bounce: 0.15) { view.alpha = 0 } completion: { [weak self] _ in
+        setLayerOpacity(view, 0, animated: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Spring.snappy.settlingDuration) { [weak self] in
             view.removeFromSuperview()
             self?.leaving.removeAll { $0 === view }
             finished()
@@ -732,6 +733,13 @@ final class CompactShellView: UIView, DrawerDriving {
 
     // MARK: - 读屏
 
+    /// 读屏的「返回」手势（双指划 Z）：拉开着侧栏或底栏时收起。
+    override func accessibilityPerformEscape() -> Bool {
+        guard let open = drawer.open, open != drawer.rest else { return false }
+        drawer.settle(nil)
+        return true
+    }
+
     override var accessibilityElements: [Any]? {
         get {
             var elements: [Any] = []
@@ -742,6 +750,24 @@ final class CompactShellView: UIView, DrawerDriving {
         }
         set {}
     }
+}
+
+/// 透明度直接设在图层上，要动画时按 snappy 取样交给 Core Animation：UIView.alpha 在 0 和非 0 之间变时 UIKit 把整棵子树通知一遍看不看得见，
+/// 窗口里有好几个托管视图和对话，换窗口时一次十几毫秒（2026-10-14 iPhone 真机 Time Profiler）。点按照样按透明度判断（alpha 读的就是图层的）。
+/// 和现在一样就不动，正在走的淡入淡出不被排版打断。
+@MainActor func setLayerOpacity(_ view: UIView, _ opacity: Float, animated: Bool) {
+    let layer = view.layer
+    guard layer.opacity != opacity else { return }
+    let from = layer.presentation()?.opacity ?? layer.opacity
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    layer.opacity = opacity
+    if animated {
+        layer.add(StageAnimation.spring("opacity", from: Double(from), to: Double(opacity), spring: .snappy), forKey: "fade.opacity")
+    } else {
+        layer.removeAnimation(forKey: "fade.opacity")
+    }
+    CATransaction.commit()
 }
 
 /// 抽屉一侧的一段弹簧：从 from 带着 velocity 走到 to。
