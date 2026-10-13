@@ -58,14 +58,16 @@ import SwiftUI
         following = distanceToBottom <= 1
     }
 
-    /// 可见区变矮时，等它最后一次变完 0.6 秒再让留白跟上，那时已经变回去了就不缩。
+    /// 可见区变矮时，等它最后一次变完 0.6 秒再让留白跟上，那时已经变回去了就不缩：每变一次都从头计时，同 TranscriptScroll。
+    /// 平台每次排版都报，高没变的不算一次变化，不然流式回复不停重排时留白一直缩不下去。
     func visibleChanged(_ height: CGFloat) {
+        guard height != visible else { return }
         visible = height
+        shrinking?.cancel()
+        shrinking = nil
         if height >= heldVisible {
-            shrinking?.cancel()
-            shrinking = nil
             heldVisible = height
-        } else if shrinking == nil {
+        } else {
             shrinking = Task { [weak self] in
                 do { try await Task.sleep(for: .seconds(0.6)) } catch { return }
                 guard let self else { return }
