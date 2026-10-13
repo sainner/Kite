@@ -322,6 +322,7 @@ import UIKit
     // MARK: - 侧栏改宽
 
     /// 侧栏改宽：对话停在底部，经模型逐帧改侧栏宽度（同拖侧栏的边），在可拖范围正中按正弦摆一趟 90 步；台面贴着侧栏的那一列跟着改宽。
+    /// 照 MainWindow 拖动时的走法：拖动中设 sidebarResizing；iPad 上宽不进 SwiftUI，交给原生台面（SidebarDrag），一轮完了才交给 sidebarWidth。
     private static func sidebar(_ session: Session) async throws {
         let model = session.model, layout = session.area.layout
         let width = model.sidebarWidth, collapsed = model.sidebarCollapsed
@@ -345,15 +346,22 @@ import UIKit
             try await Task.sleep(for: .seconds(1.2))
             var segment = Segment(name: "sidebar", index: index, start: .now)
             var step = 0
+            model.sidebarResizing = true
             try await measuring {
                 try await Clock().run { link in
                     segment.ticks.append(Tick(link, widths: stageWidth()))
                     guard step < positions.count else { return false }
+                    #if os(iOS)
+                    model.sidebarDrag.move(to: positions[step], base: center)
+                    #else
                     model.sidebarWidth = positions[step]
+                    #endif
                     step += 1
                     return true
                 }
             }
+            if let width = model.sidebarDrag.end() { model.sidebarWidth = width }
+            model.sidebarResizing = false
             segment.end = .now
             try await Task.sleep(for: .milliseconds(400))
             let settle = Mark.now
