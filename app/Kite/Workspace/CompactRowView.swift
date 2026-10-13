@@ -343,6 +343,7 @@ final class CompactRowView: UIView {
         controlsShifter.addSubview(area)
         slot.headerIsland.isHidden = true
         slot.controlsIsland.isHidden = true
+        if !slot.state.native { slot.state.native = true }
         slot.setChromeOpacity(slot.pane == currentPane ? 1 : 0, animated: false)
         slot.dotsPresence.stage = environment.dotStage
         slot.dotsPresence.track(slot.reports)
@@ -359,6 +360,7 @@ final class CompactRowView: UIView {
         slot.thread = nil
         slot.headerIsland.isHidden = false
         slot.controlsIsland.isHidden = false
+        if slot.state.native { slot.state.native = false }
         slot.dotsPresence.track(nil)
         setNeedsLayout()
     }
@@ -518,6 +520,8 @@ private final class CompactSlot {
 /// 一个窗口里托管视图读的：摆在点阵上的图形在不在场（只有当前窗口、没在横滑时），别的窗口量出来的标题栏高。
 @MainActor @Observable private final class CompactSlotState {
     var presented = true
+    /// 会话窗口的原生外框接上了，见 CompactContentPlacement 的 native。
+    var native = false
     var headerHeight: CGFloat?
 }
 
@@ -578,11 +582,11 @@ private struct CompactSlotRoot: View {
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             .environment(\.nativeThreadWindow, threadSlot)
             .environment(\.panePresence, presence)
-            .environment(\.sharedPaneHeaderHeight, slot.headerHeight ?? Metrics.paneHeaderButton + Metrics.paneMargin
+            .environment(\.sharedPaneHeaderHeight, slot.native ? 0 : slot.headerHeight ?? Metrics.paneHeaderButton + Metrics.paneMargin
                          + max(Metrics.paneMargin, shell.covered.top) - shell.covered.top)
             .environment(\.sharedPaneControls, controls)
             .modifier(DotsPresence(presented: slot.presented))
-            .modifier(CompactContentPlacement(state: shell))
+            .modifier(CompactContentPlacement(state: shell, native: slot.native))
             // 隔一拍交出去：托管视图可能在外壳这次排版当中更新
             .onPreferenceChange(WindowDotsActive.self) { uses in Task { @MainActor in usesDots(uses) } }
             .overlayPreferenceValue(CompactPaneHeaders.self) { headers in

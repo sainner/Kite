@@ -91,21 +91,24 @@ private struct CompactShellRepresentable: UIViewRepresentable {
 
 /// 窗口内容里的托管视图（一行窗口里的各个窗口、它们的标题栏和控制区、占位内容）共有的摆放和环境，同 WindowShell 交给内容的：
 /// 按停着的样子让出安全区，卡片坐标，点阵、抽屉、侧栏入口、拉底栏。托管视图自己不算安全区，见 HostIsland。
+/// native 是外框已经原生的会话窗口：岛里只剩桥，让位由原生外框自己做，安全区、几何这几项不读，键盘升降时这个岛不跟着逐帧重排。
 struct CompactContentPlacement: ViewModifier {
     let state: CompactShellState
+    var native = false
 
     func body(content: Content) -> some View {
+        let covered = native ? EdgeInsets() : state.covered
         content
-            .environment(\.homeIndicatorInset, state.home)
-            .environment(\.paneTopSafeInset, state.covered.top)
-            .safeAreaPadding(state.covered)
+            .environment(\.homeIndicatorInset, native ? 0 : state.home)
+            .environment(\.paneTopSafeInset, covered.top)
+            .safeAreaPadding(covered)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             .coordinateSpace(.named(DotCarrier.space))
             .environment(\.formMargin, state.formMargin)
             .environment(\.dotScope, state.scope)
             .environment(\.dotCarrier, state.carrier)
             .environment(\.drawerMotion, state.motion)
-            .environment(\.windowGeometry, state.geometry)
+            .environment(\.windowGeometry, native ? nil : state.geometry)
             .environment(\.openSidebar, state.motion.openSidebar)
             .environment(\.drawerPull, state.motion.actionsPull)
     }
