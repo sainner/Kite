@@ -35,6 +35,12 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
     /// 量出来的高取到像素，同原来 SwiftUI 版用的 sizeThatFits。
     var heightRounding: CGFloat { PhonePixel.scale }
 
+    /// 排完版，嵌着的卡片看看露没露出来：TextKit 挪的是包着它们的排版片段，卡片自己收不到位置变了，见 EmbeddedContainerView。
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        EmbeddedContainerView.synchronize(in: self)
+    }
+
     override func copy(_ sender: Any?) {
         guard let source, let text = source.map.text(for: selectedRange, in: source.text) else { return super.copy(sender) }
         UIPasteboard.general.string = text

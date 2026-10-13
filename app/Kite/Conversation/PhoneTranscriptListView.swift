@@ -178,11 +178,15 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
                         slot.layoutView(in: CGRect(origin: .zero, size: frame.size))
                     }
                     (slot as? PhoneRowSlot)?.didPlace()
+                    // 进窗口时卡片还按旧位置看的露没露出来，摆好再看一次
+                    EmbeddedContainerView.synchronize(in: view)
                     return
                 }
-                if view.isHidden { view.isHidden = false }
-                if view.frame != frame { view.frame = frame }
+                var moved = false
+                if view.isHidden { view.isHidden = false; moved = true }
+                if view.frame != frame { view.frame = frame; moved = true }
                 slot.layoutView(in: CGRect(origin: .zero, size: frame.size))
+                if moved { EmbeddedContainerView.synchronize(in: view) }
             case .hide:
                 if slot.view.superview != nil, !slot.view.isHidden { slot.view.isHidden = true }
             case .remove:

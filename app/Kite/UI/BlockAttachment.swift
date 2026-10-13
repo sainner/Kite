@@ -227,6 +227,14 @@ final class EmbeddedContainerView: PlatformView {
         return nil
     }
 
+    /// root 里嵌着的卡片各自看看露没露出来。容器自己只在外面一滚、自己改了尺寸时知道；TextKit 挪的是包着它的排版片段，
+    /// 对话列表挪的是整行，容器的 frame 都不变，由文本视图排完版（PhoneProseTextView）、列表摆完行（PhoneTranscriptView）后调。
+    static func synchronize(in root: UIView) {
+        for child in root.subviews {
+            if let container = child as? EmbeddedContainerView { container.synchronizeHost() } else { synchronize(in: child) }
+        }
+    }
+
     /// 露在外面滚动视图里（含标题栏、控制区底下）才跟上容器的大小、显示出来；TextKit 换了提供者、宿主已经挪走的不管。
     private func synchronizeHost() {
         guard let hostedView, hostedView.superview === self else { return }
