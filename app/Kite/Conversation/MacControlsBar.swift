@@ -24,19 +24,40 @@ struct MacControlsBar: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var state = ThreadControlsState()
 
+    /// 玻璃仍用 SwiftUI 的 glassEffect，原生的只是玻璃里的内容。2026-10-13 对照过 NSGlassEffectView（带不带容器、可不可按压）：
+    /// 它改宽时 AppKit 在里面另跑一张 SwiftUI 图，两窗拖缝每步比这样多约 1ms；玻璃里的字也被它另做一层处理，和现版逐像素对不上，
+    /// 这样包着则只剩图标的抗锯齿差别。macOS 26 上按下也有玻璃反馈。
     var body: some View {
-        ControlsBarHost(controls: ThreadControlsModel(thread: thread, model: model, area: area, instance: instance, stage: stage,
-                                                      scope: dotScope, voiceOwner: voiceOwner, state: state, send: send),
-                        enabled: isEnabled, colorScheme: colorScheme)
-            // 输入框有没有焦点照样记在窗口的 typing 上：原生输入框成为第一响应者时为真，窗口把它设成假时交出焦点（2026-10-13 实测）。
-            // 宽屏上只有标题栏的侧栏按钮用它先收起输入；点别处、Esc 都是 AppKit 的第一响应者照常处理，SwiftUI 版的输入框也是 NSTextField
-            .focused(typing)
-            .alert("修改思考强度失败", isPresented: Binding(get: { state.effortError != nil }, set: { if !$0 { state.effortError = nil } })) {
-                Button("好", role: .cancel) { state.effortError = nil }
-            } message: { Text(state.effortError ?? "") }
-            .alert("无法开始语音输入", isPresented: Binding(get: { state.voiceError != nil }, set: { if !$0 { state.voiceError = nil } })) {
-                Button("好", role: .cancel) { state.voiceError = nil }
-            } message: { Text(state.voiceError ?? "") }
+        let shape = RoundedRectangle(cornerRadius: Metrics.controlRadius, style: .continuous)
+        GlassEffectContainer(spacing: Metrics.paneButtonGap) {
+            ControlsBarHost(controls: ThreadControlsModel(thread: thread, model: model, area: area, instance: instance, stage: stage,
+                                                          scope: dotScope, voiceOwner: voiceOwner, state: state, send: send),
+                            enabled: isEnabled, colorScheme: colorScheme)
+                // 输入框有没有焦点照样记在窗口的 typing 上：原生输入框成为第一响应者时为真，窗口把它设成假时交出焦点（2026-10-13 实测）。
+                // 宽屏上只有标题栏的侧栏按钮用它先收起输入；点别处、Esc 都是 AppKit 的第一响应者照常处理，SwiftUI 版的输入框也是 NSTextField
+                .focused(typing)
+                // 同 ThreadControls：交互玻璃的同心形状有高光退回胶囊的复现，玻璃与交互轮廓统一用明确圆角
+                .contentShape(.interaction, shape)
+                .glassEffect(Self.glass, in: shape)
+                .frame(maxWidth: Metrics.transcriptWidth)
+        }
+        // 同 PaneControlsBar 在宽屏上的样子：左右、底各留 paneMargin，玻璃最宽 transcriptWidth 居中，玻璃以外不接点击
+        .padding(.horizontal, Metrics.paneMargin)
+        .padding(.bottom, Metrics.paneMargin)
+        .frame(maxWidth: .infinity)
+        .alert("修改思考强度失败", isPresented: Binding(get: { state.effortError != nil }, set: { if !$0 { state.effortError = nil } })) {
+            Button("好", role: .cancel) { state.effortError = nil }
+        } message: { Text(state.effortError ?? "") }
+        .alert("无法开始语音输入", isPresented: Binding(get: { state.voiceError != nil }, set: { if !$0 { state.voiceError = nil } })) {
+            Button("好", role: .cancel) { state.voiceError = nil }
+        } message: { Text(state.voiceError ?? "") }
+    }
+
+    private static var glass: Glass {
+        #if DEBUG
+        if ControlsBarVariant.noGlass { return .identity }
+        #endif
+        return .regular.interactive()
     }
 }
 
@@ -58,12 +79,9 @@ private struct ControlsBarHost: NSViewRepresentable {
     }
 }
 
-/// 底栏本身：左右、底各留 paneMargin，玻璃最宽 transcriptWidth 居中，玻璃以外不接点击（同 PaneControlsBar 在宽屏上的样子）。
-/// 玻璃里照 ThreadControls 的版式：输入框左右留 controlInset + 8、上下 6，下面一行思考强度和按钮，放不下时思考强度单独一行。
+/// 玻璃里的内容，和玻璃一样大，圆角以外不接点击。照 ThreadControls 的版式：输入框左右留 controlInset + 8、上下 6，
+/// 下面一行思考强度和按钮，放不下时思考强度单独一行。在空白处按下不拖窗口。
 final class ControlsBarView: NSView {
-    private let container = NSGlassEffectContainerView()
-    private let glass = NSGlassEffectView()
-    private let panel = ControlsPanelView()
     private let field = ComposerField()
     private let fadingView = FadingSnapshotView()
     private let effort = EffortIsland(rootView: AnyView(EmptyView()))
@@ -76,6 +94,8 @@ final class ControlsBarView: NSView {
     private var controls: ThreadControlsModel?
     private var enabled = true
     private var effortKey: EffortKey?
+    /// 思考强度的理想大小，托管视图报大小变了再量。
+    private var effortSize: CGSize?
     /// 交给按钮解析颜色的环境，外观变了再换。
     private var buttonsEnvironment: ColorScheme?
     /// 第几次登记观察，见 refresh。
@@ -90,30 +110,15 @@ final class ControlsBarView: NSView {
 
     init() {
         super.init(frame: .zero)
-        glass.cornerRadius = Metrics.controlRadius
-        if #available(macOS 27, *) { glass.effectIsInteractive = true }
-        let content = FlippedView()
-        container.spacing = Metrics.paneButtonGap
-        container.contentView = content
-        addSubview(container)
-        #if DEBUG
-        if ControlsBarVariant.noGlass {
-            content.addSubview(panel)
-        } else {
-            glass.contentView = panel
-            content.addSubview(glass)
-        }
-        #else
-        glass.contentView = panel
-        content.addSubview(glass)
-        #endif
-
-        panel.addSubview(field)
-        panel.addSubview(fadingView)
-        panel.addSubview(effort)
-        for button in [attach, voice, stop, resume, send] { panel.addSubview(button) }
+        addSubview(field)
+        addSubview(fadingView)
+        addSubview(effort)
+        for button in [attach, voice, stop, resume, send] { addSubview(button) }
         effort.sizingOptions = [.intrinsicContentSize]
-        effort.sizeChanged = { [weak self] in self?.contentChanged() }
+        effort.sizeChanged = { [weak self] in
+            self?.effortSize = nil
+            self?.contentChanged()
+        }
 
         attach.label = .symbol("paperclip")
         attach.title = "添加附件"
@@ -154,6 +159,7 @@ final class ControlsBarView: NSView {
         if key != effortKey {
             effortKey = key
             effort.rootView = AnyView(ThreadEffortControl(controls: controls).environment(\.self, environment))
+            effortSize = nil
         }
         refresh()
     }
@@ -214,7 +220,7 @@ final class ControlsBarView: NSView {
     /// 飞行中的缩放平移只在图层上，换算按停着的位置。窗口的内容视图没翻转时上下翻过来，同 MouseDragArea。
     private var glassFrameInWindow: CGRect {
         guard let root = window?.contentView else { return .zero }
-        var frame = panel.convert(panel.bounds, to: root)
+        var frame = convert(bounds, to: root)
         if !root.isFlipped { frame.origin.y = root.bounds.height - frame.maxY }
         return frame
     }
@@ -228,14 +234,13 @@ final class ControlsBarView: NSView {
     private static let rowSpacing: CGFloat = 2
 
     private struct Plan {
-        var panel: CGRect
+        var height: CGFloat
         var field: CGFloat
         var effort: CGSize
         var stacked: Bool
-        var height: CGFloat { panel.maxY + Metrics.paneMargin }
     }
 
-    /// 给 SwiftUI 的高：玻璃的高加底边留白。
+    /// 给 SwiftUI 的高：玻璃的高。
     func height(forWidth width: CGFloat) -> CGFloat {
         let height = plan(width: width).height
         reported = (width, height)
@@ -243,19 +248,23 @@ final class ControlsBarView: NSView {
     }
 
     private func plan(width: CGFloat) -> Plan {
-        let margin = Metrics.paneMargin
-        let panelWidth = max(min(Metrics.transcriptWidth, width - 2 * margin), 0)
-        let fieldWidth = max(panelWidth - 2 * Self.fieldInset, 0) + 2 * ComposerField.fieldInset
+        let width = max(width, 0)
+        let fieldWidth = max(width - 2 * Self.fieldInset, 0) + 2 * ComposerField.fieldInset
         var fieldHeight = field.height(width: fieldWidth, text: field.text)
         if let fading = controls?.state.fading { fieldHeight = max(fieldHeight, fading.height) }
-        let effortSize = effort.intrinsicContentSize
-        let buttons = buttonsWidth
-        let rowWidth = panelWidth - 2 * Metrics.controlButtonInset
-        let stacked = effortSize.width + 2 * Metrics.paneButtonGap + buttons > rowWidth
+        let effortSize = currentEffortSize
+        let rowWidth = width - 2 * Metrics.controlButtonInset
+        let stacked = effortSize.width + 2 * Metrics.paneButtonGap + buttonsWidth > rowWidth
         let row = stacked ? effortSize.height + Self.rowSpacing + Metrics.paneButton : max(effortSize.height, Metrics.paneButton)
-        let panelHeight = Metrics.controlInset + 2 * Self.fieldPadding + fieldHeight + Self.rowSpacing + row + Metrics.controlButtonInset
-        let x = margin + (width - 2 * margin - panelWidth) / 2
-        return Plan(panel: CGRect(x: x, y: 0, width: panelWidth, height: panelHeight), field: fieldHeight, effort: effortSize, stacked: stacked)
+        let height = Metrics.controlInset + 2 * Self.fieldPadding + fieldHeight + Self.rowSpacing + row + Metrics.controlButtonInset
+        return Plan(height: height, field: fieldHeight, effort: effortSize, stacked: stacked)
+    }
+
+    private var currentEffortSize: CGSize {
+        if let effortSize { return effortSize }
+        let size = effort.intrinsicContentSize
+        effortSize = size
+        return size
     }
 
     private var shownButtons: [PaneButtonView] { [stop, resume, send].filter { !$0.isHidden } }
@@ -266,41 +275,41 @@ final class ControlsBarView: NSView {
 
     override func layout() {
         super.layout()
-        let plan = plan(width: bounds.width)
-        let panelFrame = backingAlignedRect(plan.panel, options: .alignAllEdgesNearest)
-        container.frame = bounds
-        container.contentView?.frame = bounds
-        glass.frame = panelFrame
-        panel.frame = panel.superview === glass ? glass.bounds : panelFrame
-        let width = panelFrame.width
+        let width = bounds.width
+        let plan = plan(width: width)
 
         let fieldWidth = max(width - 2 * Self.fieldInset, 0)
         let top = Metrics.controlInset + Self.fieldPadding
-        field.frame = CGRect(x: Self.fieldInset - ComposerField.fieldInset, y: top, width: fieldWidth + 2 * ComposerField.fieldInset,
-                             height: field.drawHeight(width: fieldWidth + 2 * ComposerField.fieldInset, text: field.text))
-        fadingView.frame = CGRect(x: field.frame.minX, y: top, width: field.frame.width, height: plan.field)
+        place(field, CGRect(x: Self.fieldInset - ComposerField.fieldInset, y: top, width: fieldWidth + 2 * ComposerField.fieldInset,
+                            height: field.drawHeight(width: fieldWidth + 2 * ComposerField.fieldInset, text: field.text)))
+        place(fadingView, CGRect(x: field.frame.minX, y: top, width: field.frame.width, height: plan.field))
 
         var rowTop = top + plan.field + Self.fieldPadding + Self.rowSpacing
         let inset = Metrics.controlButtonInset
         let buttonsHeight = Metrics.paneButton
         if plan.stacked {
-            effort.frame = CGRect(x: inset, y: rowTop, width: plan.effort.width, height: plan.effort.height)
+            place(effort, CGRect(x: inset, y: rowTop, width: plan.effort.width, height: plan.effort.height))
             rowTop += plan.effort.height + Self.rowSpacing
         } else {
             let row = max(plan.effort.height, buttonsHeight)
-            effort.frame = CGRect(x: inset, y: rowTop + (row - plan.effort.height) / 2, width: plan.effort.width, height: plan.effort.height)
+            place(effort, CGRect(x: inset, y: rowTop + (row - plan.effort.height) / 2, width: plan.effort.width, height: plan.effort.height))
             rowTop += (row - buttonsHeight) / 2
         }
         var x = width - inset
         for button in shownButtons.reversed() {
             x -= button.width
-            button.frame = CGRect(x: x, y: rowTop, width: button.width, height: buttonsHeight)
+            place(button, CGRect(x: x, y: rowTop, width: button.width, height: buttonsHeight))
             x -= ThreadControls.actionGap
         }
         for button in [voice, attach] {
             x -= Metrics.paneButton
-            button.frame = CGRect(x: x, y: rowTop, width: Metrics.paneButton, height: buttonsHeight)
+            place(button, CGRect(x: x, y: rowTop, width: Metrics.paneButton, height: buttonsHeight))
         }
+    }
+
+    /// 和现在一样就不设：拖缝时每步都排，多数子视图只有横向位置在变。
+    private func place(_ view: NSView, _ frame: CGRect) {
+        if view.frame != frame { view.frame = frame }
     }
 
     /// 里面变了（行数、按钮、思考强度的宽）：高变了让 SwiftUI 重新量，没变只重摆。
@@ -310,11 +319,11 @@ final class ControlsBarView: NSView {
         invalidateIntrinsicContentSize()
     }
 
-    /// 玻璃以外不接点击，后面的内容照常可点；玻璃按圆角算。
+    /// 玻璃的圆角以外不接点击，后面的内容照常可点。
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let superview else { return nil }
         let local = convert(point, from: superview)
-        let path = NSBezierPath(roundedRect: glass.frame, xRadius: Metrics.controlRadius, yRadius: Metrics.controlRadius)
+        let path = NSBezierPath(roundedRect: bounds, xRadius: Metrics.controlRadius, yRadius: Metrics.controlRadius)
         guard path.contains(local) else { return nil }
         return super.hitTest(point)
     }
@@ -333,12 +342,6 @@ final class ControlsBarView: NSView {
             self.colorScheme = colorScheme
         }
     }
-}
-
-/// 玻璃里的内容；在空白处按下不拖窗口。
-private final class ControlsPanelView: NSView {
-    override var isFlipped: Bool { true }
-    override var mouseDownCanMoveWindow: Bool { false }
 }
 
 /// 思考强度的托管视图，按自己的理想大小摆；刻度展开、收起时自己改宽，通知底栏重排。

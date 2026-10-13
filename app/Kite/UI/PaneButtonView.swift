@@ -45,6 +45,8 @@ final class PaneButtonView: NSView {
     private let image = NSImageView()
     private var font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
     private var text = NSAttributedString()
+    /// text 的字宽，取整到点。
+    private var textWidth: CGFloat = 0
     private var hovered = false
     private var pressed = false
 
@@ -74,11 +76,12 @@ final class PaneButtonView: NSView {
         labelChanged()
     }
 
-    /// 按内容的宽：图标是 paneButton 见方，文字按字宽加两边留白，至少 paneButton。
+    /// 按内容的宽：图标是 paneButton 见方，文字按字宽加两边留白，至少 paneButton。字宽在标签、字体变了时量一次（textWidth），
+    /// 拖缝时底栏每步都要排，不再每次量字。
     var width: CGFloat {
         switch label {
         case .symbol: Metrics.paneButton
-        case .text: max(ceil(text.size().width) + 2 * Metrics.paneToolbarInset, Metrics.paneButton)
+        case .text: max(textWidth + 2 * Metrics.paneToolbarInset, Metrics.paneButton)
         }
     }
 
@@ -93,10 +96,12 @@ final class PaneButtonView: NSView {
             image.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
             image.isHidden = false
             text = NSAttributedString()
+            textWidth = 0
         case .text(let string):
             image.image = nil
             image.isHidden = true
             text = NSAttributedString(string: string, attributes: [.font: weightedFont])
+            textWidth = ceil(text.size().width)
         }
         applyColors()
         needsLayout = true
@@ -156,7 +161,7 @@ final class PaneButtonView: NSView {
             let scale = window?.backingScaleFactor ?? 2
             func pixel(_ value: CGFloat) -> CGFloat { (value * scale).rounded() / scale }
             let height = pixel(weightedFont.ascender - weightedFont.descender + weightedFont.leading)
-            let width = ceil(line.size().width)
+            let width = textWidth
             line.draw(with: CGRect(x: (bounds.width - width) / 2, y: pixel((bounds.height - height) / 2), width: width, height: height),
                       options: [.usesLineFragmentOrigin])
         }
