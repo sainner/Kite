@@ -62,6 +62,12 @@ final class PhoneTextLine: UIView {
     /// 量过的不折时多宽、按某个宽折成几行：拖缝时每步都要问，每问一次都要排一遍字。换了字作废。
     private var natural: CGFloat?
     private var counted: (width: CGFloat, count: Int)?
+    /// 拖缝中折了行的先不按新宽重新断行（见 wrapWidth），由用的一方把量的高记作不准、停下后重量。
+    var defersRewrap = false
+    /// 拖缝中照旧按哪个宽断行、画；平常 nil，按框的宽。
+    private(set) var keptWidth: CGFloat?
+    /// 上次画的时候按多宽断的行。
+    private var drawnWidth: CGFloat?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -84,10 +90,11 @@ final class PhoneTextLine: UIView {
     private func redrawIfNeeded(from old: CGSize) {
         let size = bounds.size
         let rewrapped = size.width != old.width && min(size.width, old.width) < naturalWidth
-        if rewrapped || size.height > old.height { setNeedsDisplay() }
+        if rewrapped && keptWidth == nil || size.height > old.height { setNeedsDisplay() }
     }
 
     func set(_ string: String, font: UIFont, color: UIColor) {
+        keptWidth = nil
         let style = NSMutableParagraphStyle()
         style.lineBreakMode = lines == 1 ? .byTruncatingTail : .byWordWrapping
         style.lineBreakStrategy = .standard
@@ -127,9 +134,28 @@ final class PhoneTextLine: UIView {
     /// 按 width 排出来多高。
     func height(width: CGFloat) -> CGFloat {
         guard lines != 1 else { return lineHeight }
-        let count = count(width: width)
+        let count = count(width: wrapWidth(for: width))
         return PhonePixel.ceil(CGFloat(count) * font.lineHeight + CGFloat(count - 1) * font.leading)
     }
+
+    /// 按多宽断行：平常按给的宽。拖缝中（defersRewrap）折了行的、和上次量准的宽差得不多时照旧按那个宽，不重新断行、不重画
+    /// （同 PhoneProseRowSlot.keptHeight：变宽时右边空出一截，变窄时字伸进右边的留白一点）；停下后再按给的宽。
+    private func wrapWidth(for width: CGFloat) -> CGFloat {
+        var kept: CGFloat?
+        if defersRewrap, WindowLayout.anyResizing, !PhoneProseRowSlot.exactResize, let counted, counted.count > 1, counted.width != width,
+           width >= counted.width ? width - counted.width <= 16 + 16 * spread : counted.width - width <= 2 + 6 * spread {
+            kept = counted.width
+        }
+        if kept != keptWidth {
+            keptWidth = kept
+            // 停下或差得多了：按框的宽重画
+            if kept == nil, let drawnWidth, drawnWidth != bounds.width { setNeedsDisplay() }
+        }
+        return kept ?? width
+    }
+
+    /// 0～1，每个一个，错开各行的余量。
+    private lazy var spread = CGFloat(UInt(bitPattern: ObjectIdentifier(self).hashValue) % 1009) / 1009
 
     /// 多行时相邻两行基线隔多远：行高加行距往上取到像素，同 Text（iPad 上并排截屏对过，第二行起差半点）。
     private var pitch: CGFloat { PhonePixel.ceil(font.lineHeight + font.leading) }
@@ -142,7 +168,9 @@ final class PhoneTextLine: UIView {
             return
         }
         // 多行：行与行按 pitch 隔开，整块贴着框的底边（框高按行高、行距算，比整块矮的那点伸到框上面），同 Text
-        let count = CGFloat(count(width: bounds.width))
+        let wrap = keptWidth ?? bounds.width
+        drawnWidth = wrap
+        let count = CGFloat(count(width: wrap))
         let spaced = NSMutableAttributedString(attributedString: text)
         let style = NSMutableParagraphStyle()
         style.lineBreakMode = .byWordWrapping
@@ -151,7 +179,7 @@ final class PhoneTextLine: UIView {
         spaced.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: spaced.length))
         let block = (count - 1) * pitch + font.lineHeight
         // 给够高：最后一行底下没有行距，不给够的话最后一行放不下、不画
-        spaced.draw(with: CGRect(x: 0, y: bounds.height - block, width: bounds.width, height: count * pitch),
+        spaced.draw(with: CGRect(x: 0, y: bounds.height - block, width: wrap, height: count * pitch),
                     options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
     }
 }

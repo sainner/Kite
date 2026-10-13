@@ -228,7 +228,7 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         return width
     }
 
-    /// Debug 带 --exact-resize 时拖缝中每步照旧按新宽重排（正文和折着的长消息），对照用。
+    /// Debug 带 --exact-resize 时拖缝中每步照旧按新宽重排（正文、折着的长消息、折了行的事件），对照用。
     static let exactResize: Bool = {
         #if DEBUG
         ProcessInfo.processInfo.arguments.contains("--exact-resize")

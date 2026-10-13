@@ -60,7 +60,7 @@ App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `
 
 iPhone 和窄的 iPad 的紧凑布局（抽屉、外壳、一行窗口、共用标题栏和控制区）是原生的 `CompactShellView`、`CompactRowView`；`--swiftui-compact` 切回 SwiftUI 版（`CompactLayout` 里的那一版，Mac 窄窗口一直用它）。
 
-iPhone、iPad 的原生对话列表拖缝时，正文和折着的长消息在列宽差得不多时先不按新宽重排，停下后再排准（`PhoneProseRowSlot.keptHeight`）；`--exact-resize` 让它们照旧每步按新宽重排，对照外观或测量。
+iPhone、iPad 的原生对话列表拖缝时，正文、折着的长消息和折了行的事件在列宽差得不多时先不按新宽重排，停下后再排准（`PhoneProseRowSlot.keptHeight`、`PhoneTextLine.wrapWidth`）；`--exact-resize` 让它们照旧每步按新宽重排，对照外观或测量。
 
 状态圆环和停靠栏头像的脉冲两端都是图层动画（`ContextRingLayers`、`DockPulseLayers`）。Mac 上 `--ring-preview` 另开一个窗口，左边是 SwiftUI 版各阶段、各进度的那一帧，右边是图层版停在同一处，加 `--capture-port <端口>` 时抓图后退出。
 
