@@ -290,37 +290,13 @@ final class CardSurfaceView: NSView {
 /// 卡片标题栏上的按钮，照 PaneButtonStyle：28 pt 见方，图标和正文一样大、次要色；悬停时垫一个灰色圆（每边缩 2），
 /// 按下时圆深一点、整体淡到 0.7；停用时淡到 0.45、不接悬停和点击。鼠标停住时提示名字，读屏读名字。
 /// 按下、松开时告诉卡片（press），卡片朝按钮倾斜。
-final class CardButton: NSView {
-    var action: (() -> Void)?
+final class CardButton: HighlightButton {
     var press: ((_ pressed: Bool, _ at: CGPoint) -> Void)?
-    var isEnabled = true {
-        didSet {
-            guard isEnabled != oldValue else { return }
-            hovered = hovered && isEnabled
-            update()
-            window?.invalidateCursorRects(for: self)
-        }
-    }
     private let icon = NSImageView()
-    private let highlight = CALayer()
     private var title = ""
-    private var hovered = false { didSet { if hovered != oldValue { update() } } }
-    private var pressed = false {
-        didSet {
-            guard pressed != oldValue else { return }
-            update()
-            press?(pressed, CGPoint(x: frame.midX, y: frame.midY))
-        }
-    }
-    private var tracking: NSTrackingArea?
-
-    override var isFlipped: Bool { true }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        wantsLayer = true
-        layer?.addSublayer(highlight)
-        highlight.actions = ["backgroundColor": NSNull(), "position": NSNull(), "bounds": NSNull()]
         icon.imageScaling = .scaleProportionallyUpOrDown
         icon.contentTintColor = .secondaryLabelColor
         addSubview(icon)
@@ -340,68 +316,13 @@ final class CardButton: NSView {
         super.layout()
         let size = NSFont.preferredFont(forTextStyle: .body).pointSize
         icon.frame = CGRect(x: (bounds.width - size) / 2, y: (bounds.height - size) / 2, width: size, height: size)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        let inset: CGFloat = 2
-        highlight.frame = bounds.insetBy(dx: inset, dy: inset)
-        highlight.cornerRadius = min(highlight.frame.width, highlight.frame.height) / 2
-        CATransaction.commit()
     }
 
-    private func update() {
-        let opacity: CGFloat = pressed && isEnabled ? 0.20 : hovered && isEnabled ? 0.10 : 0
-        var color = NSColor(Color.gray.opacity(opacity)).cgColor
-        effectiveAppearance.performAsCurrentDrawingAppearance { color = NSColor(Color.gray.opacity(opacity)).cgColor }
-        highlight.backgroundColor = color
-        alphaValue = !isEnabled ? 0.45 : pressed ? 0.7 : 1
+    override func pressChanged(_ pressed: Bool) {
+        press?(pressed, CGPoint(x: frame.midX, y: frame.midY))
     }
 
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        update()
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
-        addTrackingArea(area)
-        tracking = area
-    }
-
-    override func mouseEntered(with event: NSEvent) { hovered = isEnabled }
-    override func mouseExited(with event: NSEvent) { hovered = false }
-
-    override func resetCursorRects() {
-        if isEnabled { addCursorRect(bounds, cursor: .pointingHand) }
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        guard isEnabled else { return }
-        pressed = true
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard isEnabled else { return }
-        pressed = bounds.contains(convert(event.locationInWindow, from: nil))
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        guard isEnabled else { return }
-        let inside = bounds.contains(convert(event.locationInWindow, from: nil))
-        pressed = false
-        if inside { action?() }
-    }
-
-    override func isAccessibilityElement() -> Bool { true }
-    override func accessibilityRole() -> NSAccessibility.Role? { .button }
     override func accessibilityLabel() -> String? { title }
-    override func isAccessibilityEnabled() -> Bool { isEnabled }
-    override func accessibilityPerformPress() -> Bool {
-        guard isEnabled else { return false }
-        action?()
-        return true
-    }
 }
 
 // MARK: - 代码块

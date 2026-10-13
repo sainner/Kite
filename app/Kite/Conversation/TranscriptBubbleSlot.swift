@@ -4,9 +4,9 @@ import SwiftUI
 
 /// 人发的一条消息，原生气泡，样子和行为照 MessageBubble：靠右，贴着字宽（有代码段时占满）；收到了填上底色、白字，
 /// 排队中只描边、跟系统文字色，两者之间 0.3 秒淡入淡出；太长的折到 messageFold 高，底下渐隐，下面一个展开、收起的按钮；
-/// 附件排在气泡上面（托管原来的 MessageAttachmentRow，很少有）。正文和代码段用 SelectableText 同一套属性串，复制给打的原文。
+/// 附件排在气泡上面（AttachmentRowView，很少有）。正文和代码段用 SelectableText 同一套属性串，复制给打的原文。
 /// 刚发出去时从下面 bubbleRise 处浮上来、淡显，跟着对话往上滑的那一下走，见 TranscriptListView.rise。
-final class BubbleRowSlot: TranscriptRowSlot {
+final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     private let container = BubbleRowView()
     private let coordinator = ProseRowCoordinator()
     private let attachments = BlockAttachments()
@@ -91,8 +91,7 @@ final class BubbleRowSlot: TranscriptRowSlot {
             if !textChanged { container.text.setSelectedRange(selection) }
         }
         container.style(queued: queued, animated: !first && wasQueued != queued, environment: environment)
-        container.setAttachments(message.attachments.isEmpty ? nil : AnyView(
-            MessageAttachmentRow(attachments: message.attachments).environment(\.self, environment)))
+        container.setAttachments(message.attachments)
     }
 
     /// 量正文见 BubbleLayout：拖缝和吸附中按近似量，记作 provisional，停下后按精确的重量。
@@ -133,11 +132,47 @@ final class BubbleRowSlot: TranscriptRowSlot {
         layout.anchor(in: frame, attachmentsWidth: container.attachmentsWidth)
     }
 
-    override func actionBar() -> (side: HorizontalEdge, content: AnyView)? {
-        guard let message, let context, context.actionable else { return nil }
-        let expanded = Binding { [weak self] in self?.expanded ?? false } set: { [weak self] in self?.setExpanded($0) }
-        return (.trailing, AnyView(MessageActionButtons(message: message, queued: queued, foldable: foldable, expanded: expanded)
-            .environment(\.self, context.environment)))
+    /// 消息的操作栏，和气泡右边对齐，同 MessageActionButtons：排队中的是重试发送（发送失败时）、编辑、取消发送；收到了的是压缩起点和终点。
+    /// 都有复制，折起来的还有展开全文。点了先收起操作栏，再在 snappy 动画里做这件事。读着会话的状态，变了列表重排（见 TranscriptListView.placeActions）。
+    func actionItems() -> (side: HorizontalEdge, items: [ActionItem])? {
+        guard let message, let context, context.actionable, let thread = context.environment[WorkThread.self] else { return nil }
+        let selection = context.environment.selectedRow
+        let toast = context.environment.toast
+        func done(_ body: @escaping () -> Void) -> @MainActor () -> Void {
+            { selection.close(); withAnimation(.snappy, body) }
+        }
+        var items: [ActionItem] = []
+        if queued {
+            if thread.failed.contains(message.id) {
+                items.append(ActionItem(title: "重试发送", icon: "arrow.clockwise", enabled: thread.connected, perform: done { thread.retry(message) }))
+            }
+            items.append(ActionItem(title: "编辑", icon: "pencil", enabled: thread.canCancel, perform: done { thread.cancel(message, editing: true) }))
+            items.append(ActionItem(title: "取消发送", icon: "xmark", destructive: true, enabled: thread.canCancel,
+                                    perform: done { thread.cancel(message) }))
+        }
+        items.append(ActionItem(title: "复制", icon: "doc.on.doc") {
+            copyToPasteboard(message.typed, toast: toast)
+            done {}()
+        })
+        if !queued {
+            if thread.compactionStart == nil {
+                items.append(ActionItem(title: "从这里开始压缩", icon: "arrow.down.to.line", enabled: thread.canCompact) {
+                    done { thread.compactionStart = message.id }()
+                    toast?.show("已选起点，在这条或之后的消息上选「压缩到这里」", systemImage: "arrow.down.to.line")
+                })
+            } else {
+                items.append(ActionItem(title: "压缩到这里", icon: "rectangle.compress.vertical", enabled: thread.canCompact,
+                                        perform: done { thread.compact(through: message.id) }))
+                items.append(ActionItem(title: "取消压缩起点", icon: "xmark", perform: done { thread.compactionStart = nil }))
+            }
+        }
+        if foldable {
+            let expanded = expanded
+            items.append(ActionItem(title: expanded ? "收起" : "展开全文",
+                                    icon: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                                    perform: done { [weak self] in self?.setExpanded(!expanded) }))
+        }
+        return (.trailing, items)
     }
 
     /// 展开、收起：气泡和下面的行一起按 snappy 的弹簧动，见 TranscriptListView 的行高动画。
@@ -158,7 +193,7 @@ final class BubbleRowView: NSView {
     /// 正文按折起来的高截住，底下渐隐。
     private let clip = FlippedLayerView()
     private let fade = CAGradientLayer()
-    private var attachments: NSHostingController<AnyView>?
+    private var attachments: AttachmentRowView?
 
     override var isFlipped: Bool { true }
 
@@ -182,35 +217,34 @@ final class BubbleRowView: NSView {
         fold.style(color: color, font: Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont)
     }
 
-    func setAttachments(_ content: AnyView?) {
-        if let content {
-            if let attachments {
-                attachments.rootView = content
-            } else {
-                let controller = NSHostingController(rootView: content)
-                controller.sizingOptions = []
-                addSubview(controller.view)
-                attachments = controller
-            }
-        } else if let attachments {
-            attachments.view.removeFromSuperview()
-            self.attachments = nil
+    func setAttachments(_ list: [Attachment]) {
+        if list.isEmpty {
+            attachments?.removeFromSuperview()
+            attachments = nil
+            return
         }
+        let row = attachments ?? {
+            let row = AttachmentRowView()
+            addSubview(row)
+            attachments = row
+            return row
+        }()
+        row.show(list)
     }
 
     /// 附件那一行连同和气泡之间的间距多高，没有附件为 0。
     func attachmentsHeight(width: CGFloat) -> CGFloat {
         guard let attachments else { return 0 }
-        return ceil(attachments.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height) + 6
+        return ceil(attachments.size(width: width).height) + 6
     }
 
-    var attachmentsWidth: CGFloat { attachments?.view.frame.width ?? 0 }
+    var attachmentsWidth: CGFloat { attachments?.frame.width ?? 0 }
 
     /// 按 BubbleLayout 给的框摆：气泡、截住正文的那层（底下渐隐）、正文、折叠按钮。
     func place(_ frames: BubbleLayout.Frames, attachmentsHeight: CGFloat, foldable: Bool, expanded: Bool) {
         if let attachments {
-            let size = attachments.sizeThatFits(in: CGSize(width: bounds.width, height: .greatestFiniteMagnitude))
-            attachments.view.frame = CGRect(x: bounds.width - size.width, y: 0, width: size.width, height: attachmentsHeight - 6)
+            let size = attachments.size(width: bounds.width)
+            attachments.frame = CGRect(x: bounds.width - size.width, y: 0, width: size.width, height: attachmentsHeight - 6)
         }
         if bubble.frame != frames.bubble { bubble.frame = frames.bubble }
         clip.frame = CGRect(x: 0, y: 0, width: frames.bubble.width, height: frames.shown)
@@ -286,8 +320,7 @@ final class BubbleView: NSView {
 }
 
 /// 折起来的气泡下面的按钮：「展开全文」「收起」连同箭头，居中，跟着气泡的宽。
-final class BubbleFoldButton: NSView {
-    var action: (() -> Void)?
+final class BubbleFoldButton: NativeButton {
     var expanded = false {
         didSet {
             guard expanded != oldValue else { return }
@@ -347,24 +380,10 @@ final class BubbleFoldButton: NSView {
         label.attributedStringValue.size().width
     }
 
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .pointingHand)
-    }
+    override func drawFocusRingMask() { bounds.fill() }
 
-    override func mouseUp(with event: NSEvent) {
-        if bounds.contains(convert(event.locationInWindow, from: nil)) { action?() }
-    }
-
-    override func mouseDown(with event: NSEvent) {}
-
-    override func isAccessibilityElement() -> Bool { true }
-    override func accessibilityRole() -> NSAccessibility.Role? { .button }
     override func accessibilityLabel() -> String? { TranscriptSpeech.fold(expanded: expanded) }
     override func accessibilityChildren() -> [Any]? { [] }
-    override func accessibilityPerformPress() -> Bool {
-        action?()
-        return true
-    }
 }
 
 #endif

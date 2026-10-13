@@ -39,9 +39,21 @@ enum TranscriptSpeech {
         return parts.joined(separator: "，")
     }
 
+    /// 工具组里的一步：名字连同摘要，值是阶段（跑完了读「成功」），同 SwiftUI 版 CallRow；提示是点了会怎样（callHint）。
+    static func call(_ call: Call, summary: String) -> (label: String, value: String) {
+        (call.use.displayName + " " + summary, call.stageLabel.isEmpty ? "成功" : call.stageLabel)
+    }
+    static func callHint(expanded: Bool) -> String { expanded ? "收起参数与结果" : "展开参数与结果" }
+    static func patchLines(_ value: String) -> String { "补丁行数 \(value)" }
+    static func duration(_ value: String) -> String { "运行时间 \(value)" }
+
     static func thinking(_ text: String) -> String {
         text.isEmpty ? "思考中" : text.replacingOccurrences(of: "\n", with: " ")
     }
+
+    /// 消息上面的附件。
+    static func imageAttachment(_ name: String) -> String { "图片，\(name)" }
+    static func fileAttachment(_ name: String) -> String { "文件，\(name)" }
 
     /// 嵌在正文里的卡片。
     static func code(language: String) -> String { "代码，\(language)" }

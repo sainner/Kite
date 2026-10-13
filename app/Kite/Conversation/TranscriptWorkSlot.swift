@@ -2,9 +2,9 @@
 import AppKit
 import SwiftUI
 
-/// 两段话之间 agent 做的事折成的一行，照 WorkRow：汇总一行原生画（汇总、出错和没跑完的步数、箭头，一行，放不下截汇总）；
-/// 有调用在跑时托管原来的汇总行（WorkSummaryLine，正在做什么带像素扫掠，原生不画着色器）。点开后下面托管原来的步骤（WorkSteps），
-/// 展开收起和下面的行一起按 0.25 秒的普通缓出动，箭头跟着转、步骤跟着淡入淡出；收起走完拿掉步骤，同 SwiftUI 版不留展开状态。
+/// 两段话之间 agent 做的事折成的一行，照 WorkRow：汇总一行（汇总、出错和没跑完的步数、箭头，一行，放不下截汇总；有调用在跑时说正在做什么，
+/// 带像素扫掠，见 ToolActivityView）。点开后下面是步骤（WorkStepsView），展开收起和下面的行一起按 0.25 秒的普通缓出动，
+/// 箭头跟着转、步骤跟着淡入淡出；收起走完拿掉步骤，同 SwiftUI 版不留展开状态。某一步自己展开收起时只有步骤跟着变高，箭头和透明度不动。
 final class WorkRowSlot: TranscriptRowSlot {
     private let container = WorkRowView()
     private var work: Work?
@@ -12,9 +12,9 @@ final class WorkRowSlot: TranscriptRowSlot {
     private var context: TranscriptRowContext?
     private var headerHeight: CGFloat = 0
     private var stepsHeight: CGFloat = 0
-    private var steps: NSHostingController<AnyView>?
-    /// 有调用在跑时托管的汇总行。
-    private var running: NSHostingController<AnyView>?
+    private var steps: WorkStepsView?
+    /// 自己正在展开收起（不是里面某一步）：箭头、步骤的透明度跟着行高走。
+    private var toggling = false
 
     /// 汇总行和步骤之间的间距，同 WorkRow 的 VStack。
     private static let spacing: CGFloat = 6
@@ -33,66 +33,38 @@ final class WorkRowSlot: TranscriptRowSlot {
         guard case .item(let item) = row.content, case .work(let work) = item.kind else { return }
         self.work = work
         self.context = context
-        let environment = context.environment
-        if work.running != nil {
-            // 托管的汇总行只画，读屏由原生汇总行读
-            let root = AnyView(WorkSummaryLine(work: work, expanded: expanded).accessibilityHidden(true).environment(\.self, environment))
-            if let running {
-                running.rootView = root
-            } else {
-                let controller = NSHostingController(rootView: root)
-                controller.sizingOptions = []
-                // 托管的垫在原生汇总行下面只画，点击照样落在汇总行上
-                container.addSubview(controller.view, positioned: .below, relativeTo: container.header)
-                running = controller
-            }
-            container.header.showRunning(work)
-        } else {
-            running?.view.removeFromSuperview()
-            running = nil
-            container.header.show(work, environment: environment)
-        }
-        steps?.rootView = stepsRoot()
-    }
-
-    private func stepsRoot() -> AnyView {
-        guard let work, let context else { return AnyView(EmptyView()) }
-        return AnyView(HostedRowFrame {
-            WorkSteps(work: work)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] in self?.stepsReported($0) }
-        }
-        .environment(\.self, context.environment))
+        container.header.show(work, environment: context.environment, expanded: expanded)
+        steps?.show(work, environment: context.environment)
     }
 
     override func height(width: CGFloat) -> CGFloat {
         if let measured, measured.width == width { return measured.height }
-        if let running {
-            headerHeight = ceil(running.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height)
-        } else {
-            headerHeight = container.header.height
-        }
-        if expanded, let steps {
-            stepsHeight = ceil(steps.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height)
-        }
+        headerHeight = container.header.height
+        if expanded, let steps { stepsHeight = steps.height(width: width) }
         let height = headerHeight + (expanded ? Self.spacing + stepsHeight : 0)
         measured = (width, height)
         return height
     }
 
-    /// 动画中行的高在收起和展开之间：按它算走到哪了，箭头转多少、步骤多透明都跟着它。
+    /// 动画中行的高在收起和展开之间：自己展开收起时按它算走到哪了，箭头转多少、步骤多透明都跟着它；
+    /// 里面某一步在动时，步骤整块的高跟着行高走。
     override func layoutView(in frame: CGRect) {
         let full = Self.spacing + stepsHeight
-        let progress = full > 0 ? min(max((frame.height - headerHeight) / full, 0), 1) : (expanded ? 1 : 0)
-        let header = CGRect(x: 0, y: 0, width: frame.width, height: headerHeight)
-        container.header.frame = header
+        var progress: CGFloat = expanded ? 1 : 0
+        if toggling {
+            progress = full > 0 ? min(max((frame.height - headerHeight) / full, 0), 1) : progress
+            if let measured, abs(frame.height - measured.height) < 0.01 { toggling = false }
+        }
+        container.header.frame = CGRect(x: 0, y: 0, width: frame.width, height: headerHeight)
         container.header.turn = progress
-        running?.view.frame = header
         if let steps {
-            steps.view.frame = CGRect(x: 0, y: headerHeight + Self.spacing, width: frame.width, height: stepsHeight)
-            steps.view.alphaValue = progress
+            let current = steps.animating ? max(frame.height - headerHeight - Self.spacing, 0) : stepsHeight
+            steps.frame = CGRect(x: 0, y: headerHeight + Self.spacing, width: frame.width, height: current)
+            steps.layout(height: current)
+            steps.alphaValue = progress
             // 收起走完拿掉步骤
             if !expanded, progress == 0 {
-                steps.view.removeFromSuperview()
+                steps.removeFromSuperview()
                 self.steps = nil
             }
         }
@@ -100,39 +72,38 @@ final class WorkRowSlot: TranscriptRowSlot {
 
     private func toggle() {
         expanded.toggle()
-        if expanded, steps == nil {
-            let controller = NSHostingController(rootView: stepsRoot())
-            controller.sizingOptions = []
-            container.addSubview(controller.view)
-            controller.view.alphaValue = 0
-            steps = controller
+        if expanded, steps == nil, let work, let context {
+            let view = WorkStepsView()
+            view.changed = { [weak self] motion in self?.stepsChanged(motion) }
+            view.alphaValue = 0
+            container.addSubview(view)
+            view.show(work, environment: context.environment)
+            steps = view
         }
         container.header.expanded = expanded
-        if let work, let context, let running {
-            running.rootView = AnyView(WorkSummaryLine(work: work, expanded: expanded).accessibilityHidden(true)
-                .environment(\.self, context.environment))
-        }
+        if let work, let context { container.header.show(work, environment: context.environment, expanded: expanded) }
+        toggling = true
         measured = nil
         heightChanged?(Self.motion)
     }
 
-    /// 步骤自己变高变矮（点开某一步）：和它同样的走法。
-    private func stepsReported(_ height: CGFloat) {
-        let height = ceil(height)
-        guard expanded, abs(height - stepsHeight) > 0.5, let measured else { return }
-        stepsHeight = height
-        self.measured = (measured.width, headerHeight + Self.spacing + height)
-        heightChanged?(Self.motion)
+    /// 某一步自己变高变矮（点开参数和结果）：按它的走法，步骤整块跟着行高走。
+    private func stepsChanged(_ motion: RowMotion?) {
+        guard expanded, let measured, let steps else { return }
+        stepsHeight = steps.height(width: measured.width)
+        self.measured = (measured.width, headerHeight + Self.spacing + stepsHeight)
+        heightChanged?(motion)
     }
 }
 
 /// 工具组汇总行的原生版：一行次要色小字，汇总、出错步数（红）、没跑完步数，箭头；整行可点，指针是手形。
-final class WorkHeaderView: NSView {
-    var action: (() -> Void)?
+final class WorkHeaderView: NativeButton {
     /// 箭头转了多少：0 朝右，1 朝下。
     var turn: CGFloat = 0 {
         didSet { if turn != oldValue { chevron.frameCenterRotation = -90 * turn } }
     }
+    /// 汇总（有调用在跑时是正在做什么），扫掠只画在它上面，同 WorkSummaryLine。
+    private let activity = ToolActivityView()
     private let summary = LineLabel()
     private let failed = LineLabel()
     private let unfinished = LineLabel()
@@ -150,22 +121,25 @@ final class WorkHeaderView: NSView {
 
     init() {
         super.init(frame: .zero)
-        for label in [summary, failed, unfinished] {
-            addSubview(label)
-            label.setAccessibilityElement(false)
-        }
+        addSubview(activity)
+        activity.content.addSubview(summary)
+        for label in [failed, unfinished] { addSubview(label) }
+        for label in [summary, failed, unfinished] { label.setAccessibilityElement(false) }
         addSubview(chevron)
         chevron.hideFromAccessibility()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func show(_ work: Work, environment: EnvironmentValues) {
+    /// 汇总行：有调用在跑时说正在做什么，没展开、有调用在执行时带像素扫掠。
+    func show(_ work: Work, environment: EnvironmentValues, expanded: Bool) {
         speech = TranscriptSpeech.work(work)
         font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont
         let secondary = NSColor.secondaryLabelColor
         let failedCount = work.count(.failed) + work.count(.unknown), unfinishedCount = work.count(.unfinished)
-        set(summary, work.summary, color: secondary)
+        set(summary, work.running?.use.title ?? work.summary, color: secondary)
+        activity.mode = work.running != nil && !expanded && work.count(.running) > 0 ? .sweeping : .none
+        activity.contentChanged()
         set(failed, failedCount > 0 ? "\(failedCount) 步出错" : "", color: NSColor(cgColor: Theme.danger.resolve(in: environment).cgColor) ?? .systemRed)
         set(unfinished, unfinishedCount > 0 ? "\(unfinishedCount) 步没跑完" : "", color: secondary)
         let configuration = NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .regular, scale: .small)
@@ -173,12 +147,6 @@ final class WorkHeaderView: NSView {
         chevron.contentTintColor = secondary
         chevron.isHidden = false
         needsLayout = true
-    }
-
-    /// 有调用在跑：汇总行由下面托管的 WorkSummaryLine 画，这里不画字，只接点击和读屏。
-    func showRunning(_ work: Work) {
-        speech = TranscriptSpeech.work(work)
-        for view in subviews { view.isHidden = true }
     }
 
     private func set(_ label: LineLabel, _ text: String, color: NSColor) {
@@ -198,7 +166,8 @@ final class WorkHeaderView: NSView {
         let tailWidth = tail.reduce(0) { $0 + $1.textWidth + spacing } + imageSize.width
         let summaryWidth = min(summary.textWidth, max(bounds.width - tailWidth - spacing, 0))
         var x: CGFloat = 0
-        summary.frame = CGRect(x: x, y: 0, width: summaryWidth, height: bounds.height)
+        activity.frame = CGRect(x: x, y: 0, width: summaryWidth, height: bounds.height)
+        summary.frame = CGRect(x: 0, y: 0, width: summaryWidth, height: bounds.height)
         x += summaryWidth + spacing
         for label in tail {
             let width = label.textWidth
@@ -211,25 +180,12 @@ final class WorkHeaderView: NSView {
         chevron.frameCenterRotation = rotation
     }
 
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .pointingHand)
-    }
+    override func drawFocusRingMask() { bounds.fill() }
 
-    override func mouseDown(with event: NSEvent) {}
-
-    override func mouseUp(with event: NSEvent) {
-        if bounds.contains(convert(event.locationInWindow, from: nil)) { action?() }
-    }
-
-    override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .disclosureTriangle }
     override func accessibilityLabel() -> String? { speech }
     override func accessibilityValue() -> Any? { expanded ? 1 : 0 }
     override func isAccessibilityExpanded() -> Bool { expanded }
-    override func accessibilityPerformPress() -> Bool {
-        action?()
-        return true
-    }
 }
 
 /// 工具行的视图：汇总行、展开后的步骤，按自己的范围截（收起时退场的步骤不画到后面的行上，同 WorkRow 的 clipped）。
@@ -246,19 +202,6 @@ final class WorkRowView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-}
-
-/// 托管的步骤按内容的理想高报尺寸、贴顶摆：量高时给无限高也只报内容多高（不然 maxHeight 无限的框会把无限高原样报回来），
-/// 内容自己变高、行还没跟上的那一帧往下伸，不居中。
-struct HostedRowFrame: Layout {
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let size = subviews.first?.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) ?? .zero
-        return CGSize(width: proposal.width ?? size.width, height: size.height)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        subviews.first?.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(width: bounds.width, height: nil))
-    }
 }
 
 /// 生成中的思考，同 ThinkingRow：一行次要色小字，换行当空格，放不下截掉。

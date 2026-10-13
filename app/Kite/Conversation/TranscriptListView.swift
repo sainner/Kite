@@ -24,10 +24,11 @@ final class TranscriptListView: NSScrollView {
     private var takesGesture = false
     private var scrollMonitor: Any?
     private var pocketsRegistered = false
-    /// 原生行的操作栏：托管的 SwiftUI 浮层，放在文档最上面，跟着行一起滚，见 placeActions。
-    private var actions: (id: RowID, host: NSHostingView<AnyView>, above: Bool, side: HorizontalEdge)?
+    /// 开着的操作栏：原生的浮层（ActionBarView），放在文档最上面，跟着行一起滚，见 placeActions。
+    private var actions: (id: RowID, host: ActionBarView, above: Bool, side: HorizontalEdge)?
     private var heightTicker: FrameTicker?
-    private var actionsRemoval: Task<Void, Never>?
+    /// 操作栏里的按钮读着会话的状态（能不能取消、压缩起点这些），变了重排一次：在看哪一行的。
+    private var watchedActions: RowID?
     /// 有行开着操作栏时，点列表里别处（包括文本视图上）先收起它；文本视图照常接着处理这次点击。
     private var clickMonitor: Any?
     /// 拖缝时把滚动条藏了，见 layoutRows。
@@ -153,43 +154,48 @@ final class TranscriptListView: NSScrollView {
         let selected = context.environment.selectedRow.wrappedValue
         watchClicks(selected != nil)
         let slot = selected.flatMap { arrangement.byID[$0] }
-        let bar = slot?.actionBar()
+        let bar = slot.flatMap { slot in trackingActions(slot.id) { (slot as? ActionBarProviding)?.actionItems() } }
         if let actions, actions.id != slot?.id || bar == nil {
-            // 收起：同一个浮层改成不显示，播完动画再拿掉
+            // 收起：缩回角上，播完拿掉
             let host = actions.host
-            host.rootView = actionsRoot(nil, side: actions.side, above: actions.above, context: context)
             self.actions = nil
-            actionsRemoval?.cancel()
-            actionsRemoval = Task { [weak host] in
-                try? await Task.sleep(for: .milliseconds(300))
-                host?.removeFromSuperview()
-            }
+            host.disappear { [weak host] in host?.removeFromSuperview() }
         }
         guard let slot, let bar else { return }
         let anchor = slot.actionAnchor
         let above = TranscriptArrangement.actionBarAbove(anchor: anchor, visible: visibleArea)
-        let host: NSHostingView<AnyView>
+        let host: ActionBarView
+        let appearing: Bool
         if let actions, actions.id == slot.id {
             host = actions.host
-            // 内容（比如展开状态）和上下都可能变，每次排版都换一遍
-            host.rootView = actionsRoot(bar.content, side: bar.side, above: above, context: context)
+            appearing = false
         } else {
-            actionsRemoval?.cancel()
-            host = NSHostingView(rootView: actionsRoot(nil, side: bar.side, above: above, context: context))
-            host.sizingOptions = [.intrinsicContentSize]
+            host = ActionBarView()
             document.addSubview(host)
-            announce(host)
-            // 先按收着排好一次，再换成显示：ActionBar 按 shown 的变化自己播出现的动画
-            DispatchQueue.main.async { [weak self, weak host, weak slot] in
-                guard let self, let host, let slot, self.actions?.host === host, let bar = slot.actionBar() else { return }
-                host.rootView = self.actionsRoot(bar.content, side: bar.side, above: above, context: context)
-                // 显示出来以后才有真实的宽，靠右的要按它重新对齐
-                self.needsLayout = true
-            }
+            appearing = true
         }
+        // 按钮能不能按、展开状态这些每次排版都换一遍
+        host.show(bar.items)
         actions = (slot.id, host, above, bar.side)
         host.frame = TranscriptArrangement.actionBarFrame(anchor: anchor, size: host.fittingSize, above: above, side: bar.side)
         if document.subviews.last !== host { document.addSubview(host, positioned: .above, relativeTo: nil) }
+        if appearing {
+            host.layoutSubtreeIfNeeded()
+            host.appear(side: bar.side, from: above ? .bottom : .top)
+            announce(host)
+        }
+    }
+
+    /// 取操作栏的按钮，顺带看着它读到的会话状态，变了重排一次（同 SwiftUI 版跟着 WorkThread 变）。每一行只挂一个观察，变了重新挂。
+    private func trackingActions<T>(_ id: RowID, _ read: () -> T) -> T {
+        guard watchedActions != id else { return read() }
+        watchedActions = id
+        return withObservationTracking(read) { [weak self] in
+            Task { @MainActor in
+                self?.watchedActions = nil
+                self?.needsLayout = true
+            }
+        }
     }
 
     private func watchClicks(_ watching: Bool) {
@@ -206,14 +212,6 @@ final class TranscriptListView: NSScrollView {
             NSEvent.removeMonitor(monitor)
             clickMonitor = nil
         }
-    }
-
-    private func actionsRoot(_ content: AnyView?, side: HorizontalEdge, above: Bool, context: TranscriptRowContext) -> AnyView {
-        AnyView(ActionBar(shown: content != nil, side: side, from: above ? .bottom : .top) {
-            if let content { content }
-        }
-        .fixedSize()
-        .environment(\.self, context.environment))
     }
 
     // MARK: - 行高动画
@@ -239,7 +237,7 @@ final class TranscriptListView: NSScrollView {
 
     /// 开着的操作栏，读屏要它。
     fileprivate var actionsHost: (id: RowID, host: NSView)? {
-        actions.map { ($0.id, $0.host) }
+        actions.map { ($0.id, $0.host as NSView) }
     }
 
     // MARK: - 补量

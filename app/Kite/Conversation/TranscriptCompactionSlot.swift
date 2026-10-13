@@ -266,8 +266,7 @@ final class CompactionRowView: NSView {
 
 /// 分界的标签：一行字居中，两边各一道 1 pt 的细线，字和线之间 10，同 HStack(spacing: 10)。整行可点，指针是手形，按下没有反馈（同 SwiftUI 的 plain 按钮）。
 /// 展开后字换成「收起摘要」：fraction 是换到了哪，两种字交叉淡变，线跟着字宽伸缩。
-final class CompactionHeaderView: NSView {
-    var action: (() -> Void)?
+final class CompactionHeaderView: NativeButton {
     var expanded = false {
         didSet { if expanded != oldValue { NSAccessibility.post(element: self, notification: .valueChanged) } }
     }
@@ -284,7 +283,6 @@ final class CompactionHeaderView: NSView {
 
     init() {
         super.init(frame: .zero)
-        wantsLayer = true
         for rule in [left, right] {
             rule.actions = ["position": NSNull(), "bounds": NSNull()]
             layer?.addSublayer(rule)
@@ -335,27 +333,15 @@ final class CompactionHeaderView: NSView {
         return (value * scale).rounded() / scale
     }
 
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .pointingHand)
-    }
-
-    override func mouseDown(with event: NSEvent) {}
-
-    override func mouseUp(with event: NSEvent) {
-        if bounds.contains(convert(event.locationInWindow, from: nil)) { action?() }
-    }
+    /// 焦点环是整行的长条，不是胶囊。
+    override func drawFocusRingMask() { bounds.fill() }
 
     // MARK: - 读屏：展开收起的三角，读的是收起时那句话
 
-    override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .disclosureTriangle }
     override func accessibilityLabel() -> String? { collapsedText }
     override func accessibilityValue() -> Any? { expanded ? 1 : 0 }
     override func isAccessibilityExpanded() -> Bool { expanded }
-    override func accessibilityPerformPress() -> Bool {
-        action?()
-        return true
-    }
 }
 
 /// 摘要下面那排文字按钮：主题色、次要字号，按钮之间 16，同 HStack(spacing: 16)。「显示原文」换字时后面的按钮跟着它的宽挪。

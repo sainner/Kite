@@ -52,7 +52,7 @@ private enum NativeKind {
 }
 
 /// agent 说的一段话：原生文本视图，属性串、附件、装饰、复制原文都和 SelectableMarkdown 共用一套（见 MarkdownTextBlock）。
-final class ProseRowSlot: TranscriptRowSlot {
+final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
     private let body = MarkdownTextBlock()
     private var environment: EnvironmentValues?
     private var actionable = false
@@ -79,10 +79,21 @@ final class ProseRowSlot: TranscriptRowSlot {
     override var hasView: Bool { true }
     override var view: NSView { text }
 
-    /// 主对话里 agent 的话：复制、翻译、分叉，和这段话左边对齐。
-    override func actionBar() -> (side: HorizontalEdge, content: AnyView)? {
+    /// 主对话里 agent 的话：复制、翻译、分叉（后两个还没做），和这段话左边对齐，同 AgentTextActions。
+    func actionItems() -> (side: HorizontalEdge, items: [ActionItem])? {
         guard actionable, let source, let environment else { return nil }
-        return (.leading, AnyView(AgentTextActions(text: source).environment(\.self, environment)))
+        let selection = environment.selectedRow
+        let toast = environment.toast
+        return (.leading, [
+            ActionItem(title: "复制", icon: "doc.on.doc") {
+                copyToPasteboard(source, toast: toast)
+                selection.close()
+            },
+            // 翻译成另一种语言，还没做
+            ActionItem(title: "翻译", icon: "translate", enabled: false) { selection.close() },
+            // 分出一个新会话，从这段话之后接着说；还没做
+            ActionItem(title: "从这里分叉", icon: "arrow.triangle.branch", enabled: false) { selection.close() },
+        ])
     }
 
     override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
