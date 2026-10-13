@@ -320,18 +320,16 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         backdrop.isHidden = !backdropShown
         if backdropShown { place(backdrop, bounds) }
         list.isHidden = state.empty
-        // 键盘升降时外壳在键盘的动画块里排版：对话照 SwiftUI 版一次到位（那时列表拿到的就是终点的让位），不让新露出来的行从原点飞进来
-        UIView.performWithoutAnimation {
-            if insets != self.insets {
-                self.insets = insets
-                list.setInsets(insets)
-            }
-            if rowsDirty, !state.empty {
-                rowsDirty = false
-                list.update(rows, context: rowContext, presence: environment.panePresence)
-            }
-            list.layoutIfNeeded()
+        // 键盘升降时外壳在键盘的动画块里排版：对话当场排、滚动位置跟着键盘的曲线走（iOS 的惯例），新露出来的行不带动画放进去（见 PhoneTranscriptView.realize）
+        if insets != self.insets {
+            self.insets = insets
+            list.setInsets(insets)
         }
+        if rowsDirty, !state.empty {
+            rowsDirty = false
+            UIView.performWithoutAnimation { list.update(rows, context: rowContext, presence: environment.panePresence) }
+        }
+        list.layoutIfNeeded()
     }
 
     /// 排版当中改了读过的模型：这一轮排完 UIKit 会清掉待排，下一拍再标一次（同 PhoneStageView）。
