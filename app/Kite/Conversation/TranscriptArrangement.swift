@@ -137,23 +137,11 @@ enum TranscriptPlacement: Equatable {
         let keepsBottom = follow.keepsBottom
         let anchor = keepsBottom || follow.glide != nil ? nil : currentAnchor(in: visible)
         // 顶上那一行是长正文时按住看着的那截：拖缝时它上面没排的是估的高，停下整段排准时还会变，量完按它在行里挪了多少挪回去
-        if let anchor {
-            byID[anchor.id]?.pin(at: -anchor.offset)
-            #if DEBUG
-            trace?.pin = (anchor.id, -anchor.offset)
-            #endif
-        }
+        if let anchor { byID[anchor.id]?.pin(at: -anchor.offset) }
         let near = visible.insetBy(dx: 0, dy: -visible.height * (resizing ? Self.closeMargin : Self.margin))
         // 可见区和紧挨着的必须当场量准；再远些的在这一帧还有空时量，不然先用着旧的高，空闲时补（松手后上下半屏一起重量要卡一下）
         let urgent = visible.insetBy(dx: 0, dy: -visible.height * Self.closeMargin)
         let started = CACurrentMediaTime()
-        func budgetLeft(_ id: RowID) -> Bool {
-            let left = CACurrentMediaTime() - started < Self.layoutBudget
-            #if DEBUG
-            trace?.budget[id] = left
-            #endif
-            return left
-        }
         // 拖缝时长正文只排这一截：滚动区露出来的整个范围（标题栏、控制区底下也画字）上下各加十分之一屏。
         // 文本视图自己的视口越过排好的上沿时，补排的段落会和排好的叠在一起（见 TextKitMeasuring.measure(lineWidth:from:through:)）
         let reach = viewport.bounds.insetBy(dx: 0, dy: -visible.height * Self.closeMargin)
@@ -175,7 +163,7 @@ enum TranscriptPlacement: Equatable {
             func overlaps(_ area: CGRect) -> Bool {
                 old.maxY > area.minY && old.minY < area.maxY || old == .zero && y < area.maxY && y + estimate > area.minY
             }
-            let close = overlaps(near) && (overlaps(urgent) || budgetLeft(slot.id))
+            let close = overlaps(near) && (overlaps(urgent) || CACurrentMediaTime() - started < Self.layoutBudget)
             var height: CGFloat
             // 拖缝中按近似量的，停下后当作没量准
             let exact = !slot.provisional || resizing
@@ -187,14 +175,8 @@ enum TranscriptPlacement: Equatable {
                 let lower = max(reach.minY - old.minY, 0), upper = min(reach.maxY, old.maxY) - old.minY
                 if resizing, old != .zero, upper > lower {
                     height = slot.height(width: columnWidth, band: lower...upper)
-                    #if DEBUG
-                    trace?.measures[slot.id] = (columnWidth, lower...upper, height)
-                    #endif
                 } else {
                     height = slot.height(width: columnWidth)
-                    #if DEBUG
-                    trace?.measures[slot.id] = (columnWidth, nil, height)
-                    #endif
                 }
             } else {
                 height = estimate
@@ -372,14 +354,4 @@ enum TranscriptPlacement: Equatable {
             arriving = environment.arrivingMessages
         }
     }
-
-    #if DEBUG
-    /// 影子对照（Mac 见 TranscriptListView+Shadow）记下这一次排列量了什么，旧写法按它重放。
-    final class Trace {
-        var measures: [RowID: (width: CGFloat, band: ClosedRange<CGFloat>?, height: CGFloat)] = [:]
-        var pin: (id: RowID, y: CGFloat)?
-        var budget: [RowID: Bool] = [:]
-    }
-    var trace: Trace?
-    #endif
 }

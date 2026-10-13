@@ -100,13 +100,7 @@ final class TranscriptListView: NSScrollView {
             scrollerHidden = viewport.resizing
             verticalScroller?.alphaValue = viewport.resizing ? 0 : 1
         }
-        #if DEBUG
-        let shadow = TranscriptShadow(arrangement)
-        #endif
         let layout = arrangement.arrange(viewport, follow: follow)
-        #if DEBUG
-        shadow.compare(layout, viewport: viewport, follow: follow)
-        #endif
         adjusting = true
         if document.frame.size != CGSize(width: width, height: layout.documentHeight) {
             document.setFrameSize(CGSize(width: width, height: layout.documentHeight))
@@ -143,9 +137,6 @@ final class TranscriptListView: NSScrollView {
                 if slot.view.superview != nil { slot.view.removeFromSuperview() }
             }
         }
-        #if DEBUG
-        TranscriptShadow.compareRealize(arrangement, viewport: viewport)
-        #endif
     }
 
     // MARK: - 操作栏
