@@ -63,6 +63,9 @@ struct CompactPaneStack: View {
         .onChange(of: motion.collapsed) { _, collapsed in if !collapsed { row.snap() } }
         .onChange(of: reduceMotion, initial: true) { row.reduceMotion = reduceMotion }
         .task(id: panes) { await row.warmUp() }
+        #if DEBUG && KITE_LAYOUT_AUDIT
+        .onAppear { PerfProbe.row = row }
+        #endif
     }
 }
 

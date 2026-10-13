@@ -55,20 +55,13 @@ struct ContextRing: View {
 
     var body: some View {
         let still = period == 0 || reduceMotion
-        #if os(macOS)
-        // Mac 上旋转、明暗交给图层动画，跟屏幕刷新率走，主线程不逐帧重画
+        // 旋转、明暗交给图层动画，跟屏幕刷新率走，主线程不逐帧重画
         ContextRingLayers(phase: phase, fraction: fraction, lineWidth: lineWidth, still: still)
-        #else
-        PaneTimeline(paused: still) { timeline in
-            let progress = still ? 0 : timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
-            ContextRingFrame(phase: phase, fraction: fraction, lineWidth: lineWidth, progress: progress, still: still)
-        }
-        #endif
     }
 }
 
-/// 某一刻的圆环：progress 是一个周期里走到哪（0～1），still 是不动（空闲或减少动态效果）。SwiftUI 版逐帧画它，
-/// Mac 的图层版（ContextRingLayers）照它复刻。运行中整圈顺时针转、底轨明暗渐变；停止和收尾时整圈按余弦明暗起伏。
+/// 某一刻的圆环：progress 是一个周期里走到哪（0～1），still 是不动（空闲或减少动态效果）。原来的 SwiftUI 版逐帧画它，
+/// 图层版（ContextRingLayers）照它复刻，Mac 的圆环对照（StagePreview）也画它。运行中整圈顺时针转、底轨明暗渐变；停止和收尾时整圈按余弦明暗起伏。
 struct ContextRingFrame: View {
     let phase: String
     let fraction: Double?

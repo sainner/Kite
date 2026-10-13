@@ -3,6 +3,7 @@
  *
  *   bun kited/test/manual/measure-perf.ts mac [场景...] [选项]
  *   bun kited/test/manual/measure-perf.ts ipad --device <设备 ID> [场景...] [选项]
+ *   bun kited/test/manual/measure-perf.ts iphone --device <设备 ID> [场景...] [选项]
  *
  * App 里的那一半是 app/Kite/Verification/PerfProbe.swift；分析在 perf-analysis.ts。
  */
@@ -14,6 +15,7 @@ import { compare, mainThreadSamples, measureIntervals, profile, render, summariz
 const MAC_SCENES = ['drag-bottom', 'drag-work', 'drag-long', 'drag-fold', 'drag-running', 'drag-actions', 'sidebar', 'motion',
   'idle-normal', 'idle-empty', 'idle-ring', 'idle-pulse', 'idle-sweep', 'type', 'send'];
 const IPAD_SCENES = ['drag-bottom', 'sidebar', 'motion'];
+const IPHONE_SCENES = ['drawer', 'pull', 'swipe', 'keyboard'];
 /**
  * Time Profiler 默认按这些关键词分主线程：每个样本归到给的次序里第一个在栈上出现的（见 perf-analysis.ts 的 profile），
  * 所以里层的放前面，显示周期、CA 提交这些包着一切的放最后。
@@ -23,6 +25,8 @@ const KEYWORDS = {
     'CardView', 'StageView.layout', 'NSHostingView', 'ViewGraphRootValueUpdater', '_layoutViewTree', 'NSDisplayCycleFlush', 'CA::Transaction::commit'],
   ipad: ['PerfProbe', 'PhoneTranscriptView', 'PhoneProseTextView', 'UIHostingView', 'ViewGraphRootValueUpdater', 'layoutSubviews',
     'CA::Transaction::commit'],
+  iphone: ['PerfProbe', 'PhoneTranscriptView', 'PhoneProseTextView', 'UIHostingView', 'ViewGraphRootValueUpdater', 'layoutSubviews',
+    'CA::Transaction::commit'],
 };
 const BUNDLE = 'com.sainner.kite';
 const runID = (run: Run) => `${stamp}/${run.scene}/${run.variant}-${run.repeat}`;
@@ -30,8 +34,10 @@ const runID = (run: Run) => `${stamp}/${run.scene}/${run.variant}-${run.repeat}`
 const USAGE = `用法：
   bun kited/test/manual/measure-perf.ts mac [场景...] [选项]
   bun kited/test/manual/measure-perf.ts ipad --device <设备 ID> [场景...] [选项]
+  bun kited/test/manual/measure-perf.ts iphone --device <设备 ID> [场景...] [选项]
 Mac 场景：${MAC_SCENES.join(' ')}
 iPad 场景：${IPAD_SCENES.join(' ')}
+iPhone 场景：${IPHONE_SCENES.join(' ')}
 不给场景时跑全部。选项：
   --repeat N            每个场景、每个变体启动几次，默认 1
   --variant 名=参数     加一个对照变体：同一个测量版带这些启动参数（空格分开），和默认变体交替跑，如 --variant 'swiftui=--swiftui-stage'
@@ -43,6 +49,7 @@ iPad 场景：${IPAD_SCENES.join(' ')}
   --threads a,b         台面上只摆这几个会话（会话 id，按次序从停靠栏恢复），测完写回
   --window 宽x高        Mac 测量窗口的大小，默认 1200x924
   --rounds N            每次启动测几轮（拖缝、侧栏默认 Mac 2、iPad 3）
+  --pairs N             缩小恢复、iPhone 各场景每次启动做几次（默认 4）
   --no-build            用上次编好的测量版
   --compare <结果目录>  和之前一次的结果对比
   --out <目录>          结果放哪，默认 build/perf/<平台>-<时间>`;
@@ -51,13 +58,13 @@ iPad 场景：${IPAD_SCENES.join(' ')}
 
 const argv = process.argv.slice(2);
 const platform = argv.shift();
-if (platform !== 'mac' && platform !== 'ipad') {
+if (platform !== 'mac' && platform !== 'ipad' && platform !== 'iphone') {
   console.error(USAGE);
   process.exit(2);
 }
 const options = { repeat: 1, variants: [] as Array<{ name: string; args: string[] }>, base: undefined as string | undefined, trace: false,
   keywords: KEYWORDS[platform], lock: undefined as string | undefined, workspace: undefined as string | undefined, threads: undefined as string | undefined, window: '1200x924',
-  rounds: undefined as string | undefined, build: true, compare: undefined as string | undefined, out: undefined as string | undefined,
+  rounds: undefined as string | undefined, pairs: undefined as string | undefined, build: true, compare: undefined as string | undefined, out: undefined as string | undefined,
   device: undefined as string | undefined };
 const scenes: string[] = [];
 for (let i = 0; i < argv.length; i++) {
@@ -82,6 +89,7 @@ for (let i = 0; i < argv.length; i++) {
     case '--threads': options.threads = value(); break;
     case '--window': options.window = value(); break;
     case '--rounds': options.rounds = value(); break;
+    case '--pairs': options.pairs = value(); break;
     case '--no-build': options.build = false; break;
     case '--compare': options.compare = resolve(value()); break;
     case '--out': options.out = resolve(value()); break;
@@ -91,10 +99,10 @@ for (let i = 0; i < argv.length; i++) {
       scenes.push(arg);
   }
 }
-const known = platform === 'mac' ? MAC_SCENES : IPAD_SCENES;
+const known = platform === 'mac' ? MAC_SCENES : platform === 'ipad' ? IPAD_SCENES : IPHONE_SCENES;
 if (!scenes.length) scenes.push(...known);
 for (const scene of scenes) if (!known.includes(scene)) throw new Error(`${platform} 没有场景 ${scene}\n${USAGE}`);
-if (platform === 'ipad' && !options.device) throw new Error(`iPad 要给 --device\n${USAGE}`);
+if (platform !== 'mac' && !options.device) throw new Error(`${platform === 'ipad' ? 'iPad' : 'iPhone'} 要给 --device\n${USAGE}`);
 
 const ROOT = resolve(import.meta.dir, '..', '..', '..');
 const now = new Date();
@@ -173,6 +181,7 @@ function appArgs(run: Run, variant: Build): string[] {
     ...(options.workspace ? ['-perfWorkspace', options.workspace] : []),
     ...(options.threads ? ['-perfThreads', options.threads] : []),
     ...(options.rounds ? ['-perfRounds', options.rounds] : []),
+    ...(options.pairs ? ['-perfPairs', options.pairs] : []),
     ...(platform === 'mac' ? ['-perfWindowSize', options.window] : []),
     ...variant.args];
 }
@@ -339,9 +348,10 @@ async function measureMac(run: Run, variant: Build): Promise<void> {
   });
 }
 
-// MARK: - iPad
+// MARK: - iPad、iPhone
 
 const device = options.device!;
+const deviceName = platform === 'ipad' ? 'iPad' : 'iPhone';
 const devicectl = (args: string[], timeoutMs = 120_000) => command(['xcrun', 'devicectl', ...args], ROOT, timeoutMs);
 
 async function unlocked(): Promise<boolean> {
@@ -359,7 +369,7 @@ async function fetchFile(name: string, destination: string): Promise<string | un
   return existsSync(destination) ? readFileSync(destination, 'utf8') : undefined;
 }
 
-async function measureIpad(run: Run, variant: Build): Promise<void> {
+async function measureDevice(run: Run, variant: Build): Promise<void> {
   const args = appArgs(run, variant);
   const trace = join(run.dir, 'profile.trace');
   const tracer = options.trace
@@ -401,7 +411,7 @@ async function measureAll() {
         log(`${scene} · ${variant.variant} · 第 ${repeat} 次`);
         try {
           if (platform === 'mac') await measureMac(run, variant);
-          else await measureIpad(run, variant);
+          else await measureDevice(run, variant);
           if (run.report?.status !== 'completed') run.error = run.report?.failure ?? '没有完成';
           else if (!run.report.active || run.report.visible === false) {
             run.error = `测量版不在最前或窗口被挡住（最前的是 ${run.report.frontmost ?? '?'}），系统不正常出图，不算数`;
@@ -422,17 +432,17 @@ if (platform === 'mac') {
   // 整套设备操作（装、开、测、取回、重开）拿着同一把锁
   await locked(async () => {
     if (!await unlocked()) {
-      log('iPad 锁着屏，跳过');
+      log(`${deviceName} 锁着屏，跳过`);
       process.exit(3);
     }
     const apps = new Set(builds.map((b) => b.app));
-    if (apps.size > 1) throw new Error('iPad 一次只装一份测量版：--base 请分开跑');
+    if (apps.size > 1) throw new Error(`${deviceName} 一次只装一份测量版：--base 请分开跑`);
     log('装测量版');
     await devicectl(['device', 'install', 'app', '--device', device, builds[0]!.app], 10 * 60_000);
     try {
       await measureAll();
     } finally {
-      // 不带测量参数照常打开 Kite：用户的 iPad 靠它防锁屏
+      // 不带测量参数照常打开 Kite：用户的 iPad、iPhone 靠它防锁屏
       await devicectl(['device', 'process', 'launch', '--device', device, '--terminate-existing', BUNDLE]).catch((e: unknown) => log(`重开 Kite 失败：${String(e)}`));
     }
   });

@@ -18,7 +18,7 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
     let controls: (FocusState<Bool>.Binding) -> Controls
     let headerStatus: HeaderStatus
     let headerActions: HeaderActions
-    /// Mac 宽屏的整条底栏由窗口自己给（会话窗口的原生输入区，见 MacControlsBar），不再套 PaneControlsBar；紧凑布局仍用 controls。
+    /// 宽屏的整条底栏由窗口自己给（会话窗口的原生输入区，见 MacControlsBar、PhoneControlsBar），不再套 PaneControlsBar；紧凑布局仍用 controls。
     private var wideBar: ((FocusState<Bool>.Binding) -> AnyView)?
     @FocusState private var typing: Bool
     @Environment(\.headerPane) private var headerPane
@@ -95,8 +95,7 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
         .environment(\.paneNotice, shown)
     }
 
-    #if os(macOS)
-    /// Mac 宽屏时底栏整条换成 bar，见 wideBar。
+    /// 宽屏时底栏整条换成 bar（会话窗口的原生输入区），见 wideBar。
     func wideControls(@ViewBuilder _ bar: @escaping (_ typing: FocusState<Bool>.Binding) -> some View) -> Self {
         var window = self
         #if DEBUG
@@ -105,7 +104,6 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
         window.wideBar = { AnyView(bar($0)) }
         return window
     }
-    #endif
 
     /// 标题栏左边按钮的动作：先收起键盘，再拉开侧边栏。
     private var sidebarAction: (@MainActor () -> Void)? {

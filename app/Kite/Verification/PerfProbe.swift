@@ -11,12 +11,15 @@ import UIKit
 /// 带 -perfScene 启动时等 -perfAutoStart 秒（默认 8），在当前工作区里自动做一个场景，逐帧记主线程 CPU 和帧间隔；
 /// 测的那几段打 Points of Interest 区间，Time Profiler 只算这几段。
 /// Mac 的结果 POST 到 -perfPort 给的本机端口（沙盒写不出容器），开测前报到、等脚本放行（脚本在这中间挂上 Time Profiler），测完自己退出；
-/// iPad 写到 Library/Caches/perf/，脚本用 devicectl 取回。
+/// iPad、iPhone 写到 Library/Caches/perf/，脚本用 devicectl 取回。iPhone 测紧凑布局（抽屉、横滑、键盘），见 PerfProbe+Phone。
 /// 不留副作用：发送只排进本地（hold），改过的排布和窗口位置测完写回（测量版和用户的 Kite 共用一份 UserDefaults），
 /// 选中的工作区只在给了 -perfWorkspace 时切换，切换不存盘。
 @MainActor enum PerfProbe {
     static let scene = UserDefaults.standard.string(forKey: "perfScene")
     private static var armed = false
+    /// 紧凑布局出现时登记的抽屉和一行窗口（CompactLayout、CompactPaneStack），iPhone 的场景经它们开合、横滑。
+    static weak var drawer: DrawerMotion?
+    static weak var row: PaneRow?
 
     static func string(_ key: String) -> String? { UserDefaults.standard.string(forKey: key) }
     static func number(_ key: String) -> Double? { string(key).flatMap(Double.init) }
@@ -52,7 +55,8 @@ import UIKit
         }
     }
 
-    /// 测的一段：drag、sidebar 是一轮摆动，minimize、restore 是一次排布动画，idle 是一段静息，key、send 是一次按键、一次发送。
+    /// 测的一段：drag、sidebar 是一轮摆动，minimize、restore 是一次排布动画，idle 是一段静息，key、send 是一次按键、一次发送；
+    /// iPhone 的见 PerfProbe+Phone（抽屉开合、手指拉抽屉、横滑、键盘升降，各是一次动作到动画走完）。
     struct Segment: Encodable {
         let name: String
         let index: Int
@@ -134,14 +138,24 @@ import UIKit
         }
         var session: Session?
         do {
+            #if os(iOS)
+            let compact = isPhone
+            let area = try await compact ? compactStage(model) : stage(model)
+            #else
+            let compact = false
             let area = try await stage(model)
+            #endif
             let current = Session(model: model, area: area, report: report)
             session = current
             #if os(macOS)
             try await prepareWindow(current)
             #endif
-            current.report.stageAtStart = (area.layout.shown?.panes ?? []).compactMap { area.thread(in: $0)?.id }
+            current.report.stageAtStart = (compact ? area.layout.panes : area.layout.shown?.panes ?? []).compactMap { area.thread(in: $0)?.id }
+            #if os(iOS)
+            if compact { try await arrangeCompact(area) } else { try await arrange(area) }
+            #else
             try await arrange(area)
+            #endif
             try await historyLoaded(area)
             #if os(macOS)
             try await waitForRows(current)
@@ -192,7 +206,7 @@ import UIKit
             #if os(macOS)
             try await performMac(scene, session)
             #else
-            throw Failure("iPad 只有 drag-bottom、sidebar、motion，没有 \(scene)")
+            try await performPhone(scene, session)
             #endif
         }
     }
@@ -237,10 +251,11 @@ import UIKit
         }
     }
 
-    /// 等台面上各会话的历史读完，最多 30 秒；读不完照样测，报告里看得出对话是空的。
+    /// 等台面上各会话（紧凑布局是当前窗口）的历史读完，最多 30 秒；读不完照样测，报告里看得出对话是空的。
     private static func historyLoaded(_ area: WorkArea) async throws {
         for _ in 0..<60 {
-            let threads = (area.layout.shown?.panes ?? []).compactMap { area.thread(in: $0) }.filter { !$0.isDraft }
+            let panes = area.layout.presentation == .compact ? area.layout.focused.map { [$0] } ?? [] : area.layout.shown?.panes ?? []
+            let threads = panes.compactMap { area.thread(in: $0) }.filter { !$0.isDraft }
             if threads.allSatisfy(\.historyLoaded) { return }
             try await Task.sleep(for: .milliseconds(500))
         }
@@ -322,6 +337,7 @@ import UIKit
     // MARK: - 侧栏改宽
 
     /// 侧栏改宽：对话停在底部，经模型逐帧改侧栏宽度（同拖侧栏的边），在可拖范围正中按正弦摆一趟 90 步；台面贴着侧栏的那一列跟着改宽。
+    /// 照 MainWindow 拖动时的走法：拖动中设 sidebarResizing；iPad 上宽不进 SwiftUI，交给原生台面（SidebarDrag），一轮完了才交给 sidebarWidth。
     private static func sidebar(_ session: Session) async throws {
         let model = session.model, layout = session.area.layout
         let width = model.sidebarWidth, collapsed = model.sidebarCollapsed
@@ -351,20 +367,25 @@ import UIKit
             try await Task.sleep(for: .seconds(1.2))
             var segment = Segment(name: "sidebar", index: index, start: .now)
             var step = 0
-            // 同拖侧栏的边：拖着时台面另有安排（见 MainWindow.stageInset）
             model.sidebarResizing = true
             try await measuring {
                 try await Clock().run { link in
                     segment.ticks.append(Tick(link, widths: stageWidth()))
                     guard step < positions.count else { return false }
                     // 同 MainWindow.resizeSidebar 取到像素
-                    model.sidebarWidth = (positions[step] * displayScale).rounded() / displayScale
+                    let width = (positions[step] * displayScale).rounded() / displayScale
+                    #if os(iOS)
+                    model.sidebarDrag.move(to: width, base: center)
+                    #else
+                    model.sidebarWidth = width
+                    #endif
                     step += 1
                     return true
                 }
             }
-            segment.end = .now
+            if let width = model.sidebarDrag.end() { model.sidebarWidth = width }
             model.sidebarResizing = false
+            segment.end = .now
             try await Task.sleep(for: .milliseconds(400))
             let settle = Mark.now
             try await Task.sleep(for: .seconds(1.2))

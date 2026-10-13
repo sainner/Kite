@@ -123,24 +123,16 @@ struct DockPulse: View {
             let phase = area.activities[instance]?.phase ?? "idle"
             let color = ContextRing.color(phase), period = max(ContextRing.period(phase), 1)
             let margin = Metrics.dragBubble * Self.reach
-            Group {
-                #if os(macOS)
-                // Mac 上交给图层动画，跟屏幕刷新率走，主线程不逐帧重画
-                DockPulseLayers(color: color, period: period, margin: margin, still: reduceMotion)
-                #else
-                TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { timeline in
-                    let time = timeline.date.timeIntervalSinceReferenceDate / period
-                    DockPulseFrame(color: color, margin: margin, progress: reduceMotion ? 0.5 : time.truncatingRemainder(dividingBy: 1))
-                }
-                #endif
-            }
+            // 交给图层动画，跟屏幕刷新率走，主线程不逐帧重画
+            DockPulseLayers(color: color, period: period, margin: margin, still: reduceMotion)
             .padding(-margin)
             .allowsHitTesting(false)
         }
     }
 }
 
-/// 某一刻的脉冲：progress 是这一个波走到哪（0～1）。SwiftUI 版逐帧画它，Mac 的图层版（DockPulseLayers）照它复刻。
+/// 某一刻的脉冲：progress 是这一个波走到哪（0～1）。原来的 SwiftUI 版逐帧画它，图层版（DockPulseLayers）照它复刻，
+/// Mac 的脉冲对照（StagePreview）也画它。
 struct DockPulseFrame: View {
     let color: Color
     /// 四周伸出头像的那一截。

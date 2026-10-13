@@ -47,17 +47,20 @@ App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `
 
 `preview-mac.sh` 的参数原样传给 App。带 `--dock-preview` 打开停靠栏预览：用真实的停靠栏组件画各种窗口与活动状态下的头像，不建工作区、不发请求，头像签名取已连接工作机上的角色。
 
-会话输入区有两版：Mac 宽屏是原生的 `MacControlsBar`，iPhone、iPad 和 Mac 窄窗口是 SwiftUI 的 `ThreadControls`。对照两版用下面几个启动参数，都只在 Debug 版生效，Release 版不认：
+会话输入区有两版：Mac 宽屏是原生的 `MacControlsBar`，iPhone、iPad 是原生的 `ControlsBarView`（宽屏经 `PhoneControlsBar`，原生会话窗口和紧凑布局的外壳直接挂），Mac 窄窗口是 SwiftUI 的 `ThreadControls`。对照两版用下面几个启动参数，都只在 Debug 版生效，Release 版不认：
 
-- `--swiftui-composer`：Mac 宽屏的会话窗口也用 SwiftUI 版输入区，同一个构建切新旧两版，对照行为或测量。原生台面上会话窗口的外框是原生的、只用原生输入区，这个开关要和 `--swiftui-stage` 一起用才起作用。
+- `--swiftui-composer`：宽屏的会话窗口也用 SwiftUI 版输入区，同一个构建切新旧两版，对照行为或测量。原生台面上会话窗口的外框是原生的、只用原生输入区，这个开关要和 `--swiftui-stage`（iPad 也可以是 `--swiftui-thread-window`）一起用才起作用。
 - `--composer-preview`：主窗口留空，另开一个窗口并排画两版输入区（左 SwiftUI、右原生），用一个不连工作机的草稿会话逐种状态切换，用来逐像素对照。再加 `--capture-port <端口>` 时依次把每种状态的窗口图和布局 POST 到本机这个端口，抓完退出；`--composer-no-glass` 两版都不画玻璃，`--composer-inactive` 抓 App 不在前台时的样子，深色加 `-KiteAppearance dark`。
 
-宽屏台面（卡片、缝、拖动和窗口动画）也有两版：Mac 是原生的 `StageView`，iPad 是 SwiftUI 的 `SwiftUITilesLayer`。对照用：
+宽屏台面（卡片、缝、拖动和窗口动画）也有两版：原生的是 Mac 的 `StageView`、iPad 的 `PhoneStageView`，SwiftUI 版是 `SwiftUITilesLayer`。对照用：
 
-- `--swiftui-stage`：Mac 也用 SwiftUI 版台面，同一个构建切新旧两版。
+- `--swiftui-stage`：用 SwiftUI 版台面，同一个构建切新旧两版。
+- `--swiftui-thread-window`：iPad 原生台面上会话窗口的外框照旧是 SwiftUI 的 `ThreadPane`（原生的是 `PhoneThreadWindowView`）。
 - `--stage-preview`：主窗口留空，另开一个窗口并排画两版台面（左 SwiftUI、右原生），各用一个造出来的工作区，按同样的步骤改排布（缩小、展开、空台面、恢复、拖动预览、展开停靠栏）。加 `--capture-port <端口>` 时每一步等动画走完、缩小和恢复途中再各抓几帧，窗口图和两格位置 POST 到本机这个端口，抓完退出；`-stageHover swiftui|native` 把窗口挪到指针底下，让指针停在那一边的卡片上，比悬停露出的窗口按钮；深色加 `-KiteAppearance dark`。每一步还在进程里问几处点落在哪个视图上（hitTest，不发事件）；最后在原生会话窗口里用模型的接口摆出操作栏、拖缝、引用跳转、发送，各抓一张并导出读屏树，再拆掉两边看原生台面有没有漏。
 
-状态圆环和停靠栏头像的脉冲在 Mac 上是图层动画（`ContextRingLayers`、`DockPulseLayers`），iPhone、iPad 仍逐帧画 SwiftUI 版。`--ring-preview` 另开一个窗口，左边是 SwiftUI 版各阶段、各进度的那一帧，右边是图层版停在同一处，加 `--capture-port <端口>` 时抓图后退出。
+iPhone 和窄的 iPad 的紧凑布局（抽屉、外壳、一行窗口、共用标题栏和控制区）是原生的 `CompactShellView`、`CompactRowView`；`--swiftui-compact` 切回 SwiftUI 版（`CompactLayout` 里的那一版，Mac 窄窗口一直用它）。
+
+状态圆环和停靠栏头像的脉冲两端都是图层动画（`ContextRingLayers`、`DockPulseLayers`）。Mac 上 `--ring-preview` 另开一个窗口，左边是 SwiftUI 版各阶段、各进度的那一帧，右边是图层版停在同一处，加 `--capture-port <端口>` 时抓图后退出。
 
 初始配置预览使用 Debug build 带 `--onboarding-preview` 启动，需要从测试机桌面反复启动时，编译参数使用 `KITE_PREVIEW_FLAGS=KITE_ONBOARDING_PREVIEW`。界面在真实工作机和数据上迭代。
 
@@ -80,4 +83,4 @@ xcrun devicectl device copy from --device <设备 ID> --domain-type appDataConta
 
 放进环境的闭包和对象建好就不再换。闭包比不出相等，换一次就算环境变了：SwiftUI 要重算读环境的子树，并把新环境交给其中每个 UIKit、AppKit 视图（各个 representable 的 update 都再走一遍，原生对话列表也在其中）。`PaneRow` 的横滑动作、`DrawerMotion` 的 `openSidebar` 都这样处理。
 
-逐帧变化的量只在叶子视图读，排版用的量不随动画进度变。窗口内容按停着的样子排一次，运动交给合成层变换（`WindowMotion`、`CompactWindow`）；读 `.frame(in: .global)` 或 `Text.LayoutKey` 的视图在几何效果移动容器时每帧重算。
+逐帧变化的量只在叶子视图读，排版用的量不随动画进度变。窗口内容按停着的样子排一次，运动交给合成层变换（`WindowMotion`、`CompactWindow`；原生外壳整段交给 Core Animation）；读 `.frame(in: .global)` 或 `Text.LayoutKey` 的视图在几何效果移动容器时每帧重算。

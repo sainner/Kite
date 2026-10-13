@@ -5,4 +5,4 @@ node_modules/
 xcuserdata/
 /build/
 kited/net/bin/
-/app/Vendor/
+/app/Vendor

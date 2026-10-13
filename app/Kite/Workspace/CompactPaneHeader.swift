@@ -72,7 +72,7 @@ struct CompactPaneHeaderHost: ViewModifier {
 }
 
 /// 控制区同标题栏的按钮组一样按窗口淡入淡出；量出的高度记给窗口，窗口按它让位。
-private struct CompactPaneControlsBar: View {
+struct CompactPaneControlsBar: View {
     let source: CompactPaneHeader
     let controls: SharedPaneControls
     let keyboardShown: Bool
@@ -91,7 +91,7 @@ private struct CompactPaneControlsBar: View {
     }
 }
 
-private struct CompactPaneHeaderBar: View {
+struct CompactPaneHeaderBar: View {
     let source: CompactPaneHeader
 
     var body: some View {
@@ -139,16 +139,23 @@ struct PaneHeaderPlacement: ViewModifier {
     }
 
     #if os(iOS)
-    /// 从窗口顶边的不透明渐变到透明，与底部遮罩上下对称。
-    private var topFade: some View {
+    private var topFade: some View { PaneTopFade() }
+    #endif
+}
+
+#if os(iOS)
+/// 标题栏后面从窗口顶边的不透明渐变到透明，与底部遮罩上下对称，往下伸过标题栏底边 topFadeOverhang。
+/// SwiftUI 的标题栏（PaneHeaderPlacement）和原生标题栏下面的那条 safeAreaBar（PhoneThreadWindowView）共用。
+struct PaneTopFade: View {
+    var body: some View {
         let stops = (0...10).map { i in
             let h = Double(i) / 10
             return Gradient.Stop(color: Theme.card.opacity(1 - h * h), location: h)
         }
-        return LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
+        LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
             .padding(.bottom, -Metrics.topFadeOverhang)
             .ignoresSafeArea(.container, edges: .top)
             .allowsHitTesting(false)
     }
-    #endif
 }
+#endif

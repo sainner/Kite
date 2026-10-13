@@ -54,7 +54,7 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 
 ## 性能测量
 
-改完界面后，在真实 App、真实工作区里重跑一组固定场景，量每帧主线程和帧间隔，和之前的结果或另一份代码对比。App 里的那一半是 `app/Kite/Verification/PerfProbe.swift`（Mac 的部分在 `PerfProbe+Mac.swift`），只编进测量版（`KITE_PREVIEW_FLAGS=KITE_LAYOUT_AUDIT`），Release 和普通 Debug 都没有。`measure-perf.ts` 编测量版（`-O`，单独的 `build/perf-mac`、`build/perf-ios`，不搅日常的增量缓存）、启动、收结果、出表；分析在 `perf-analysis.ts`。
+改完界面后，在真实 App、真实工作区里重跑一组固定场景，量每帧主线程和帧间隔，和之前的结果或另一份代码对比。App 里的那一半是 `app/Kite/Verification/PerfProbe.swift`（Mac 的部分在 `PerfProbe+Mac.swift`，iPhone 的在 `PerfProbe+Phone.swift`），只编进测量版（`KITE_PREVIEW_FLAGS=KITE_LAYOUT_AUDIT`），Release 和普通 Debug 都没有。`measure-perf.ts` 编测量版（`-O`，单独的 `build/perf-mac`、`build/perf-ios`，不搅日常的增量缓存）、启动、收结果、出表；分析在 `perf-analysis.ts`。
 
 ```bash
 bun kited/test/manual/measure-perf.ts mac drag-work sidebar idle-empty --lock <锁文件>
@@ -62,6 +62,7 @@ bun kited/test/manual/measure-perf.ts mac drag-work --repeat 3 --variant 'swiftu
 bun kited/test/manual/measure-perf.ts mac drag-work --base ../Kite-base --repeat 3
 bun kited/test/manual/measure-perf.ts mac drag-work --compare build/perf/mac-20261014-022706
 bun kited/test/manual/measure-perf.ts ipad --device <设备 ID> drag-bottom sidebar
+bun kited/test/manual/measure-perf.ts iphone --device <设备 ID> drawer swipe keyboard
 ```
 
 测量版带 `-perfScene <场景>` 启动，等 `-perfAutoStart` 秒（脚本给 8），摆好台面、等会话的历史读完，自己做完场景；也可以在 Xcode 里给这些启动参数手动跑。拖缝和侧栏每一轮 90 步、每帧一步，Mac 默认两轮、iPad 三轮。
@@ -76,6 +77,10 @@ bun kited/test/manual/measure-perf.ts ipad --device <设备 ID> drag-bottom side
 | `drag-actions` | Mac | 同上，工具行那一段，可见区上半截开着操作栏；只在原生台面上有 | 同上 |
 | `sidebar` | Mac、iPad | 对话停在底部，经模型逐帧改侧栏宽度（同拖侧栏的边），在可拖范围正中按正弦来回摆；台面贴着侧栏的那一列跟着改宽 | 同拖缝，另有「改了宽的步数」确认台面真的跟着变 |
 | `motion` | Mac、iPad | 台面上最后一个窗口缩小、恢复，各 4 次 | 动作到第一帧、这之间的主线程、到动画走完的主线程、丢帧、最长一帧 |
+| `drawer` | iPhone | 紧凑布局开着窗口，经抽屉模型（同点按钮）拉开、收起侧栏各 4 次，再拉开、收起底栏各 4 次；每次记 0.8 秒 | 同 `motion` |
+| `pull` | iPhone | 手指拉侧栏：经拉手的处理每帧挪一截，0.2 秒拖到侧栏宽的 6 成后按这个速度甩开，再往回拖甩回，各 4 次；每次记 1 秒 | 同 `motion` |
+| `swipe` | iPhone | 控制区横滑：经一行窗口的横滑处理 0.2 秒滑过 0.45 屏宽后松手，换到相邻窗口再滑回来，各 4 次；开测前等一行窗口都预热好 | 同 `motion` |
+| `keyboard` | iPhone | 当前窗口的输入框接焦点、放焦点，键盘升降各 4 次；每次记 1 秒 | 同 `motion` |
 | `idle-normal`、`idle-empty`、`idle-ring`、`idle-pulse`、`idle-sweep` | Mac | 什么也不改、全部缩小只剩空画板、标题栏圆环转着、停靠栏头像脉冲、对话里有个工具调用在跑（扫掠）；稳 3 秒后记 10 秒 | 主线程、整个进程的 CPU 占用 |
 | `type` | Mac | 最左边一个已建好代理的会话里每 100ms 打一个字，3 轮各 20 个，每轮后清空 | 每键主线程（到键后第 4 帧）、键后最长一帧 |
 | `send` | Mac | 每轮打完发出去；消息只排进本地、不发给工作机，每轮后撤掉 | 发送后的首帧、前 300ms 和 1.5 秒的主线程、帧间隔 |
@@ -83,12 +88,13 @@ bun kited/test/manual/measure-perf.ts ipad --device <设备 ID> drag-bottom side
 不给场景时跑这个平台的全部。选项：
 
 - `--repeat N`：每个场景、每个变体启动几次。单次受负载、指针位置影响，判断改动至少跑 3 次看中位。
-- `--variant 名=参数`：同一个测量版带另一组启动参数作为对照变体，如 `--swiftui-stage`；`--base <检出目录>` 用另一个检出编一份测量版作对照变体（那个检出也要有测量代码，`app/Vendor` 要链好）。各变体按场景交替启动，同一时段的负载对它们一样；比新旧代码优先用这两个，比 `--compare` 和旧结果比更可靠。iPad 一次只装得下一份测量版，不支持 `--base`。
+- `--variant 名=参数`：同一个测量版带另一组启动参数作为对照变体，如 `--swiftui-stage`；`--base <检出目录>` 用另一个检出编一份测量版作对照变体（那个检出也要有测量代码，`app/Vendor` 要链好）。各变体按场景交替启动，同一时段的负载对它们一样；比新旧代码优先用这两个，比 `--compare` 和旧结果比更可靠。iPad、iPhone 一次只装得下一份测量版，不支持 `--base`。
 - `--trace`：每次附一份 Time Profiler（Mac 挂到测量版进程上，iPad 由 xctrace 启动），只算测量区间（测量版打的 Points of Interest 区间 `measure`）里的主线程样本，按关键词分：每个样本归到给的次序里第一个在栈上出现的关键词，都没有的归「其他」，各项加起来等于合计；拖缝、侧栏摊到每步。`--keywords a,b` 换关键词，里层的放前面，显示周期、CA 提交这类包着一切的放最后，默认的一组见脚本开头。
 - `--lock <文件>`：编译和每次测量都用 `lockf` 拿着这把锁，和同时编译、测量的其他检出排队；iPad 从装测量版到测完重开整段拿着锁。整条命令已经套在同一把锁的 `lockf` 里时不要再给，会自己等自己。
 - `--workspace <ID>`：临时切到这个工作区再测，不存盘；不给就测 App 打开时选中的工作区。
 - `--threads a,b`：台面上只摆这几个会话（会话 id），其余缩进停靠栏，这几个按次序从停靠栏恢复，测完写回。不给时台面上的会话窗口不到两个，就按停靠栏的次序恢复到两个。排布存在共用的 UserDefaults 里，别的 Kite、别的测量版都可能改过，比较前后两次时给同一组会话。
 - `--window 宽x高`：Mac 测量窗口的大小，默认 1200x924，左右两个窗口都窄于对话最大宽度（720）；窗口宽于它时拖缝不重排正文，测不出差别。
+- `--pairs N`：缩小恢复和 iPhone 各场景每次启动做几次，默认 4。
 - `--rounds N`、`--no-build`、`--out <目录>`、`--compare <结果目录>`：每次测几轮、用上次编好的测量版、结果放哪、和之前一次的 `summary.json` 逐项对比。
 
 结果默认在 `build/perf/<平台>-<时间>/`：`summary.md` 是各张表（同一场景、同一变体的所有次数取中位，主要一项附最小到最大），`summary.json` 供以后 `--compare`，每次启动一个目录，有测量版的 `report.json`（逐帧原始数据；`stageAtStart` 是摆台面之前台面上有哪些会话，和上一次不同说明共用的排布被改过）、布置好和测完的截图、失败时当时的截图、启动时的负载，`--trace` 时还有 trace 和导出的表。基线和历次值得留的结论记在项目记忆 `todo-window-motion-remaining`，不写在这里。
@@ -98,8 +104,8 @@ bun kited/test/manual/measure-perf.ts ipad --device <设备 ID> drag-bottom side
 - 测量版和用户的 Kite 共用 bundle ID、登录和 UserDefaults。测量版测完把改过的排布（`KiteWindowLayout.*`）和窗口位置写回原样再自己退出，报告里列出写回了哪些；测量进行中别在自己的 Kite 里改排布，会被写回覆盖。脚本只结束自己启动的那个测量版（按可执行文件路径认），主检出和别的检出里开着的 Kite 都不碰。
 - 测量不留副作用：发送只排进本地，台面上的状态（在跑、压缩、操作栏）是本地造的；草稿会话发送会真的建代理，打字和发送只用已建好代理的会话。
 - Mac 要在已解锁、有人登录的图形会话里跑：测量版会跳到最前、窗口改成测量大小，测量中别动鼠标键盘。脚本放行前会按进程号把测量版请到最前，测量版开测时再查一次；不在最前或窗口被挡住时系统不正常出图，这一次判为没测成，不进表。别的检出正在编译时先等它编完（最多 3 分钟）。
-- iPad 要连着、解锁，脚本先查锁屏，锁着就跳过。装上去的测量版替换掉 iPad 上原来那份 Kite（同一个 bundle ID），测完不带测量参数重开 Kite（它让 iPad 不自动锁屏）；不带 `-perfScene` 时测量版和平常一样。
-- 测量代码不在 `.kite/check` 的编译里。改了它用到的接口（`WindowLayout` 的拖缝、`TranscriptListView` 的行、`ThreadWindowView` 等）时测量版可能编不过，跑测量时一并修。产品代码里的挂钩只有两处：`KiteApp` 建好模型后交给 `PerfProbe.arm`，`WorkThread.send` 开头问 `PerfProbe.hold`。
+- iPad、iPhone 要连着、解锁，脚本先查锁屏，锁着就跳过。装上去的测量版替换掉设备上原来那份 Kite（同一个 bundle ID），测完不带测量参数重开 Kite（它让设备不自动锁屏）；不带 `-perfScene` 时测量版和平常一样。iPhone 的场景要工作区开着窗口（紧凑布局），横滑要一行里不止一个窗口，键盘要当前窗口有输入框。
+- 测量代码不在 `.kite/check` 的编译里。改了它用到的接口（`WindowLayout` 的拖缝、`TranscriptListView` 的行、`ThreadWindowView` 等）时测量版可能编不过，跑测量时一并修。产品代码里的挂钩：`KiteApp` 建好模型后交给 `PerfProbe.arm`，`WorkThread.send` 开头问 `PerfProbe.hold`，紧凑布局出现时把抽屉、一行窗口登记给 `PerfProbe.drawer`、`PerfProbe.row`。
 
 ## 真实订阅验收
 
