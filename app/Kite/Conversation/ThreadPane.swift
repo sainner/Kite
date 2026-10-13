@@ -48,6 +48,10 @@ struct ThreadPane: View {
             ThreadHeaderActions()
         }
         #if os(macOS)
+        .wideControls { typing in
+            MacControlsBar(typing: typing, send: send, voiceOwner: patternSlot)
+                .disabled(area.creatingWindow != nil || thread.configuringTemplate)
+        }
         // 指针移到标题栏、输入区上时图案照样跟着
         .onContinuousHover(coordinateSpace: .global) { phase in
             if case .active(let point) = phase { stage?.patternPointer(point, slot: patternSlot) }

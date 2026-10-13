@@ -109,7 +109,7 @@ struct PaneHeaderButtonLabel: View {
     }
 }
 
-/// 控制区和工具条共用尺寸、字体、命中范围和交互反馈；玻璃由所属容器提供。
+/// 控制区和工具条共用尺寸、字体、命中范围和交互反馈；玻璃由所属容器提供。Mac 宽屏输入区的原生按钮（PaneButtonView）照这里复刻，改一处两处一起改。
 struct PaneButtonStyle: ButtonStyle {
     var text = false
     var fill: Color?
