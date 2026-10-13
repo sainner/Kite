@@ -2,13 +2,6 @@
 import AppKit
 import SwiftUI
 
-#if DEBUG
-/// --swiftui-stage：Mac 宽屏台面也用 SwiftUI 版（SwiftUITilesLayer），同一个构建对照新旧两版。
-enum StageVariant {
-    static let swiftUI = ProcessInfo.processInfo.arguments.contains("--swiftui-stage")
-}
-#endif
-
 /// Mac 宽屏的台面，原生版：各张卡片、卡片之间的缝、拖动时的占位都是 AppKit 视图（StageView、CardView），拖缝改宽时
 /// 每步只重算排布、按新位置摆，不经过 SwiftUI。停靠栏、空台面的画板、停靠栏上面那一层（脉冲、展开的面板）
 /// 不随拖缝改尺寸，仍是 SwiftUI，各放进一个铺满台面的托管视图（StageIsland）。窗口正文也还是每张卡片一个托管视图。

@@ -1,5 +1,12 @@
 import SwiftUI
 
+#if DEBUG
+/// --swiftui-stage：宽屏台面也用 SwiftUI 版（SwiftUITilesLayer），同一个构建对照新旧两版。
+enum StageVariant {
+    static let swiftUI = ProcessInfo.processInfo.arguments.contains("--swiftui-stage")
+}
+#endif
+
 /// 原生台面（Mac 的 StageView、iPad 的 PhoneStageView）两端共用的部分：往上报的几项、台面几何、图层动画的曲线，
 /// 和放进托管视图的几块 SwiftUI（停靠栏、停靠栏上面那一层、空画板、卡片里的正文、点阵、头像、窗口按钮）。
 
@@ -165,7 +172,8 @@ struct CardContent: View {
     let link: HostedContentLink
     let carrier: DotCarrier
     let scope: DotScope
-    let threadSlot: ThreadWindowSlot
+    /// 会话窗口的原生外框接在哪；没有时会话窗口照旧是 SwiftUI 的 ThreadPane。
+    let threadSlot: ThreadWindowSlot?
 
     var body: some View {
         HostedPlaced(content: PaneCardBody(group: group, pane: pane, minimized: state.minimized, header: header, headerRegions: headerRegions,
