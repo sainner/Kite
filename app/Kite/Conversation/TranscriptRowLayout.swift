@@ -86,8 +86,10 @@ struct BubbleLayout {
     /// 按内容列的宽量正文。有代码段时占满气泡能给的宽度，只有字时贴着字，同 SelectableText。贴字的宽照 SelectableText 用 boundingRect 量：
     /// 它按最优断行量，长消息改宽时每次几毫秒（2026-10-13 实测）。拖缝和吸附中（resizing）改用近似：按能给的最宽排，取最宽的一行，
     /// 和 boundingRect 只差零点几点，但中文避头尾在临界宽度下会让个别行折得不一样（逐像素对过），所以返回 true，停下后按精确的重量。
-    /// 拖缝中按能给的宽排出来的每行都放得下贴字的宽，行和高都一样，容器就留在能给的宽，不再按贴字的宽排第二遍
+    /// 拖缝中容器留在能给的宽、只排这一遍：每行都放得下贴字的宽，显示的就是这一遍的断行和高，不再按贴字的宽排第二遍
     /// （iPad 真机拖缝时气泡量高占了大头；Mac 两窗贴底时两条折着的长消息每步约 1.5 ms，2026-10-14）。
+    /// 按贴字的宽重排时个别行会差一个词：上一行以全角收尾标点（」等）结束时，CoreText 要多出约半个字宽才放得下这一行
+    /// （2026-10-14 实测，五组样本、每 0.25 pt 一个宽，只有标点密集的那组在约 5% 的宽上差一个词，行数不变）；停下后照常按精确的重量。
     mutating func measure(_ text: some TextKitMeasuring, storage: NSAttributedString, width: CGFloat, hasBlocks: Bool,
                           resizing: Bool, expanded: Bool, foldHeight: CGFloat) -> Bool {
         let padding = Metrics.bubblePadding
@@ -114,7 +116,8 @@ struct BubbleLayout {
 
     /// 折着的长消息拖缝时只排露出来的那截：贴字的宽按这截里最宽的一行，全文多高按上次量的随宽度反比估，只用来判断还折不折。
     /// 不然每步都要把整条长消息重排一遍，露出来的只有开头几行。
-    /// 变窄、还放得下上次排的最宽的一行时不重排：行宽只在放不下时折，排出来每行都和上次一样，容器留在上次的宽。
+    /// 变窄、还放得下上次排的最宽的一行时不重排：容器留在上次的宽，显示的还是上次那一遍（每行都放得下贴字的宽）；
+    /// 和按新宽实排比，个别行可能差一个词（见 measure），停下后照常重量。
     private mutating func foldedHeight(_ text: some TextKitMeasuring, most: CGFloat, foldHeight: CGFloat) -> CGFloat? {
         let previous = (height: contentHeight - Metrics.bubblePadding.height * 2, width: textWidth)
         let laid: (lineWidth: CGFloat, widest: CGFloat, bottom: CGFloat)
