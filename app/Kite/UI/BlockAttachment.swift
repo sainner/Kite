@@ -116,13 +116,7 @@ nonisolated final class BlockAttachment: NSTextAttachment {
     @MainActor fileprivate func adopt(into container: EmbeddedContainerView) {
         #if canImport(UIKit)
         // UIKit 的 view 是隐式解包的可选值，AppKit 不是
-        let view: PlatformView = controller.view
-        if view.superview !== container {
-            view.removeFromSuperview()
-            view.frame = container.bounds
-            view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            container.addSubview(view)
-        }
+        container.host(controller.view)
         // 挂进视图控制器的层级，ShareLink 这类要弹出界面的按钮才找得到从哪弹
         var responder: UIResponder? = container.superview
         while let current = responder, !(current is UIViewController) { responder = current.next }
@@ -190,12 +184,63 @@ nonisolated final class BlockAttachment: NSTextAttachment {
 }
 
 /// 一个提供者的容器：TextKit 按附件的边界摆它，它进了窗口就把附件的宿主接过来；iPhone 上顺带把宿主挂进视图控制器的层级。
+/// 宿主不跟着容器自动改尺寸：屏外的先藏着、不改宽，滚进来（或露出来）时再跟上容器的大小。长回复拖缝、改窗口宽时，
+/// TextKit 按新宽给每个附件定边界，屏外的卡片要是跟着改宽，每步都要把里面的 SwiftUI 重排一遍；两端同一个做法。
 final class EmbeddedContainerView: PlatformView {
     weak var attachment: BlockAttachment?
 
     #if canImport(UIKit)
+    private weak var hostedView: UIView?
+    /// 外面的滚动视图（对话列表；文本视图自己也是滚动视图，不算）：它一滚就看看露没露出来。
+    private weak var outer: UIScrollView?
+    private var scrolling: NSKeyValueObservation?
+
+    func host(_ view: UIView) {
+        hostedView = view
+        view.autoresizingMask = []
+        if view.superview !== self {
+            view.removeFromSuperview()
+            addSubview(view)
+        }
+        synchronizeHost()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        synchronizeHost()
+    }
+
+    private func observe(_ scroll: UIScrollView?) {
+        if scroll != nil, outer === scroll { return }
+        outer = scroll
+        scrolling = scroll?.observe(\.contentOffset, options: []) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.synchronizeHost() }
+        }
+    }
+
+    private var enclosingOuterScroll: UIScrollView? {
+        var current = superview
+        while let view = current {
+            if let scroll = view as? UIScrollView, !(view is UITextView) { return scroll }
+            current = view.superview
+        }
+        return nil
+    }
+
+    /// 露在外面滚动视图里（含标题栏、控制区底下）才跟上容器的大小、显示出来；TextKit 换了提供者、宿主已经挪走的不管。
+    private func synchronizeHost() {
+        guard let hostedView, hostedView.superview === self else { return }
+        if let outer, !convert(bounds, to: outer).intersects(outer.bounds) {
+            if !hostedView.isHidden { hostedView.isHidden = true }
+            return
+        }
+        if hostedView.frame != bounds { hostedView.frame = bounds }
+        if hostedView.isHidden { hostedView.isHidden = false }
+    }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        observe(window == nil ? nil : enclosingOuterScroll)
         guard window != nil else { return }
         attachment?.adopt(into: self)
         // 卡片横着滚的那层不接点状态栏回顶：SwiftUI 的横向 ScrollView 默认开着（模拟器读过），同一窗口里有几个开着的滚动视图时
