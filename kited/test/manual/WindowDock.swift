@@ -692,6 +692,7 @@ private struct WindowDockContract {
     private static func requirePlacementPersists(_ layout: WindowLayout, panes: [Pane], key: String,
                                                defaults: UserDefaults, suite: String, in bounds: CGRect) throws {
         let committed = LayoutState(layout, in: bounds)
+        WindowLayout.flushPendingSaves()
         defaults.synchronize()
         let rebuilt = WindowLayout(panes: panes, arrangement: .stacked, storageKey: key,
                                    defaults: UserDefaults(suiteName: suite)!)
@@ -1058,6 +1059,7 @@ private struct WindowDockContract {
                     "第二设备继承了第一设备的 dock 布局")
         otherDevice.focus(d)
         otherDevice.minimize(e)
+        WindowLayout.flushPendingSaves()
         defaultsB.synchronize()
         let rebuiltOtherDevice = WindowLayout(panes: [b, d, e], arrangement: .sideBySide, storageKey: key,
                                               defaults: UserDefaults(suiteName: suiteB)!)

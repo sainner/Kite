@@ -250,7 +250,7 @@ final class CardView: NSView {
 
         if content.minimized != minimized { content.minimized = minimized }
         // 窗口按钮飞行中看不见（见 CardButtons），「展开」的有无等停下再换：动画开始的这一轮不重排按钮组和让位的标题栏
-        if !placed.motion.moving, placed.motion.target == target || kind.duration == 0 { updateExpands() }
+        if content.expands == nil || !placed.motion.moving && (placed.motion.target == target || kind.duration == 0) { updateExpands() }
         if (content.openSidebar == nil) != (arrangement.openSidebar == nil) { content.openSidebar = arrangement.openSidebar }
         if presence.onScreen != !minimized { presence.onScreen = !minimized }
         // 正文标题栏按这几项算给窗口按钮让出多少，见 PaneHeaderControlsSpace；会话窗口推迟改大小时一起推迟
@@ -345,8 +345,11 @@ final class CardView: NSView {
         CATransaction.commit()
     }
 
+    /// 缩在停靠栏里的窗口没有按钮，「展开」的有无不跟着台面换：别的窗口缩小、恢复时它看不见的按钮组也要重排一遍玻璃，
+    /// 首帧里几毫秒（2026-10-14 实测，挡住以后 Mac 缩小、恢复的首帧约 27 → 24、35 → 28 毫秒），等它回到台面停下再换。
+    /// 头一次照样给，没给时按钮组退回去读排布，台面一变就跟着更新。
     private func updateExpands() {
-        guard let arrangement, content.expands != arrangement.expands else { return }
+        guard let arrangement, let placed, content.expands == nil || !placed.minimized, content.expands != arrangement.expands else { return }
         content.expands = arrangement.expands
     }
 

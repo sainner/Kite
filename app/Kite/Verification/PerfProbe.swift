@@ -175,8 +175,9 @@ import UIKit
             #endif
         }
         session?.finish()
-        // 侧栏改宽后排布 0.5 秒才存（WindowLayout.saveSoon），等它存完再写回
+        // 撤回的改动等界面排完一轮；排布推迟存盘，先落盘再写回，免得退出时才落盘、盖掉写回的值
         try? await Task.sleep(for: .seconds(1.2))
+        WindowLayout.flushPendingSaves()
         var final = session?.report ?? report
         final.restored = restore(defaults)
         await deliver("report.json", final)
