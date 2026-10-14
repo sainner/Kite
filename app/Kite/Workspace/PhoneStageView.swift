@@ -287,7 +287,8 @@ final class PhoneStageView: UIView, StageDotsReporting {
                 placed: placed, dockFrame: plan.dockFrame(of: pane, area: area), closing: closing, family: plan.familyID(of: pane),
                 openSidebar: pane == plan.first ? openSidebar : nil, dimmed: dimmed, acceptsInput: accepts, dotsHidden: resizing || dotsHidden,
                 dragged: dragged, hasThread: hasThread, fixed: layout.isFixed,
-                header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width, hasThread: hasThread))
+                header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width, hasThread: hasThread),
+                expands: (layout.shown?.panes.count ?? 0) > 1)
             arranged.cards.append((card, arrangement, CardPresentation.motionKind(layout: layout, pane: pane, reduceMotion: reduceMotion)))
         }
         arranged.visible = Set(plan.onStage.compactMap { area?.dockInstanceID($0) })
@@ -321,7 +322,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
             let kind = immediate ? .immediate : kind
             // 卡片铺满台面，里面各层按台面坐标摆
             place(card, bounds)
-            card.arrange(arrangement)
+            card.arrange(arrangement, kind: kind)
             card.move(to: arrangement.placed.target, kind: kind)
         }
         if dragging != arranged.drag {

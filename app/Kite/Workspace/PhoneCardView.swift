@@ -27,6 +27,8 @@ final class PhoneCardView: UIView {
         let fixed: Bool
         /// 标题栏一层这一轮怎么摆，在台面的观察里读，见 headerState。
         let header: HeaderState
+        /// 台面上不止一个窗口，窗口按钮里有「展开」。
+        let expands: Bool
     }
 
     /// 标题栏一层要读的卡片状态：正文报的标题栏高、右边菜单宽、窗口按钮的尺寸、挖空的范围，和窗口按钮露不露。
@@ -93,6 +95,12 @@ final class PhoneCardView: UIView {
     var needsFrames: Bool { guard let motion = placed?.motion else { return false }; return motion.moving && motion.tracking }
     /// 这一段已经交给 Core Animation。
     private var flying = false
+    /// 会话窗口的原生外框眼下按多大排着，见 placeContent。
+    private var nativeSize: CGSize?
+    /// 排布动画开始的那几轮，正文里要跟着重排的几项先不改，等这一段交给 Core Animation 以后的下一帧再改（见 arrange）：
+    /// 会话窗口的原生外框改大小、标题栏给窗口按钮的让位、正文回到台面上（PanePresence）。记的是推迟到哪个终点。
+    private var contentPending: WindowPose?
+    private var contentLink: CADisplayLink?
 
     /// 读屏排序用：停着时的外框。
     var accessibilityOrder: CGRect { placed?.target.frame ?? .zero }
@@ -154,6 +162,7 @@ final class PhoneCardView: UIView {
         }
         headerView.tapped = { [weak self] in self?.click() }
         headerView.buildMenu = { [weak self] in self?.menu() }
+        headerView.menuPreview = { [weak self] in self?.menuPreview() }
         motion.onStart = { [weak self] motion in self?.flightStarted(motion) }
         environmentChanged()
         trackMotion()
@@ -170,7 +179,7 @@ final class PhoneCardView: UIView {
             group: group, pane: pane, state: content, header: header, headerRegions: headerRegions, presence: presence, motion: motion,
             reports: bodyReports, link: link, carrier: carrier, scope: scope, threadSlot: threadSlot))
         backdrop.rootView = stage.rooted(CardDots(reports: bodyReports, carrier: carrier, scope: scope, motion: motion))
-        buttons.rootView = stage.rooted(CardButtons(group: group, pane: pane, header: header, state: content, motion: motion))
+        buttons.rootView = stage.rooted(CardButtons(group: group, pane: pane, header: header, state: content, motion: motion, managesVisibility: false))
         iconKey = nil
         updateIcon()
         updateColors()
@@ -179,6 +188,8 @@ final class PhoneCardView: UIView {
     /// 拆掉：不再跟模型，收掉闭包和岛里的东西，原生外框一起拆。
     func dismantle() {
         motionTracking.cancel()
+        contentLink?.invalidate()
+        contentLink = nil
         threadWindow?.dismantle()
         threadWindow = nil
         threadSlot.attach = nil
@@ -189,6 +200,7 @@ final class PhoneCardView: UIView {
         headerView.dragged = nil
         headerView.tapped = nil
         headerView.buildMenu = nil
+        headerView.menuPreview = nil
         container?.island.rootView = AnyView(EmptyView())
         backdrop?.rootView = AnyView(EmptyView())
         icon.rootView = AnyView(EmptyView())
@@ -228,9 +240,19 @@ final class PhoneCardView: UIView {
     // MARK: - 排布
 
     /// 台面这一轮排布（在台面的观察之外调）：记下终点和状态，摆好不随时钟走的各层，再由台面把终点交给 motion（见 move）。
-    func arrange(_ arrangement: Arrangement) {
+    func arrange(_ arrangement: Arrangement, kind: WindowMotionKind) {
         let placed = arrangement.placed
         let first = self.placed == nil
+        // 缩小、恢复时：别的窗口跟着改大小，动画开始的这一轮会话窗口先按原来的大小留在终点的位置上，不当场按新大小重排整段对话
+        // （同 Mac 的 CardView）；缩小、恢复的这个窗口，标题栏的让位和回到台面要做的也一起推迟。这一段交给 Core Animation 以后的
+        // 下一帧再改（见 flightStarted），外框、正文的动画由 Core Animation 照常走。动画开始那一刻窗口还是原来的大小、恢复的正文
+        // 还没淡入，看着一样。2026-10-14 iPad 实测，连同 updateExpands、updateButtons 和正文的露出，缩小、恢复的首帧从约 45、49 毫秒
+        // 降到约 14、11 毫秒，推迟的那一帧主线程约 25～30 毫秒
+        let resizes = nativeSize.map { threadWindow != nil && !placed.minimized && $0 != placed.contentSize } ?? false
+        let pending = resizes || header.placement != headerPlacement(placed, hasThread: arrangement.hasThread)
+            || !presence.onScreen && !placed.minimized
+        let starting = kind == .settle && placed.motion.target != placed.target || contentPending == placed.target
+        contentPending = pending && starting ? placed.target : nil
         self.placed = placed
         self.arrangement = arrangement
         if first { install(motion: placed.motion) }
@@ -239,11 +261,10 @@ final class PhoneCardView: UIView {
         let target = placed.target, minimized = placed.minimized
 
         if content.minimized != minimized { content.minimized = minimized }
+        // 窗口按钮飞行中看不见（见 updateButtons），「展开」的有无等停下再换：动画开始的这一轮不重排按钮组和让位的标题栏
+        if content.expands == nil || !placed.motion.moving && (placed.motion.target == target || kind.duration == 0) { updateExpands() }
         if (content.openSidebar == nil) != (arrangement.openSidebar == nil) { content.openSidebar = arrangement.openSidebar }
-        if presence.onScreen != !minimized { presence.onScreen = !minimized }
-        // 正文标题栏按这几项算给窗口按钮让出多少，见 PaneHeaderControlsSpace
-        let headerPlacement = HeaderPlacement(minimized: minimized, width: target.frame.width, hasThread: arrangement.hasThread)
-        if header.placement != headerPlacement { header.placement = headerPlacement }
+        if contentPending == nil { placePendingContent() } else if minimized, presence.onScreen { presence.onScreen = false }
 
         placeContent(target: target, contentSize: placed.contentSize)
         placeHeader(target: target, minimized: minimized, fixed: arrangement.fixed, state: arrangement.header)
@@ -271,7 +292,7 @@ final class PhoneCardView: UIView {
     /// 这一段开始计时（这次排版已经交上去）：按 WindowMotion 的曲线每 1/120 秒取一帧，外框、最小化色、描边、头像、正文的变换和遮罩、
     /// 标题两侧整段交给 Core Animation，模型值停在终点。取样和逐帧驱动用的是同一个 presentation，飞出来一样。
     private func flightStarted(_ motion: WindowMotion) {
-        guard motion === placed?.motion, !motion.tracking, let flight = motion.flight, let placed else { return }
+        guard motion === placed?.motion, !motion.tracking, let flight = motion.flight else { return }
         let steps = max(Int((flight.duration * 120).rounded(.up)), 1)
         let poses = (0...steps).map { motion.presentation(at: flight.start.addingTimeInterval(flight.duration * Double($0) / Double(steps))) }
         flying = true
@@ -285,14 +306,72 @@ final class PhoneCardView: UIView {
         iconMover.alpha = poses[poses.count - 1].iconOpacity
         iconMover.layer.add(StageKeyframes.make("sublayerTransform", transforms, duration: flight.duration), forKey: "flight")
         iconMover.layer.add(StageKeyframes.make("opacity", poses.map { Float($0.iconOpacity) }, duration: flight.duration), forKey: "flight-opacity")
-        if let container {
-            let destination = placed.target.contentOrigin(size: placed.contentSize)
-            let area = container.frame
-            link.animate(poses.map { HostedContentFrame(pose: $0, target: placed.target, destination: destination, area: area,
-                                                         contentSize: placed.contentSize) }, duration: flight.duration)
-        }
+        animateContent(poses, duration: flight.duration)
         CATransaction.commit()
         stage?.updateDisplayLink()
+        // 这一段交上去以后的下一帧再改推迟的那几项，见 arrange。下一轮运行循环可能赶在下一帧之前，就把这一帧也压住了
+        if contentPending != nil, contentLink == nil {
+            let link = CADisplayLink(target: self, selector: #selector(contentTick(_:)))
+            link.add(to: .main, forMode: .common)
+            contentLink = link
+        }
+    }
+
+    @objc private func contentTick(_ link: CADisplayLink) {
+        link.invalidate()
+        contentLink = nil
+        updateContentNow()
+    }
+
+    /// 正文的变换、裁切和标题两侧整段交给 Core Animation，poses 按时间均匀取。
+    private func animateContent(_ poses: [WindowPose], duration: TimeInterval) {
+        guard let placed, let container else { return }
+        let destination = placed.target.contentOrigin(size: placed.contentSize)
+        let area = container.frame
+        link.animate(poses.map { HostedContentFrame(pose: $0, target: placed.target, destination: destination, area: area,
+                                                     contentSize: placed.contentSize) }, duration: duration)
+    }
+
+    /// 推迟的那几项：按终点摆正文和标题栏。标题右边的截法按标题栏当时的宽算（见 WindowHeaderAnchored.follow），
+    /// 还在飞的这一段先按新的大小排好，再从这一刻接着交给 Core Animation。
+    private func updateContentNow() {
+        guard contentPending != nil, let placed else { return }
+        contentPending = nil
+        placePendingContent()
+        placeContent(target: placed.target, contentSize: placed.contentSize)
+        let motion = placed.motion
+        guard flying, let flight = motion.flight else { return }
+        // 先排好再取时刻：iPad 上整段对话按新宽重排要几十毫秒，按排之前的时刻接着交，正文会比外框落后这么一截
+        container?.layoutIfNeeded()
+        let now = Date.now, remaining = flight.start.addingTimeInterval(flight.duration).timeIntervalSince(now)
+        guard remaining > 0 else { return }
+        let steps = max(Int((remaining * 120).rounded(.up)), 1)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        animateContent((0...steps).map { motion.presentation(at: now.addingTimeInterval(remaining * Double($0) / Double(steps))) },
+                       duration: remaining)
+        CATransaction.commit()
+    }
+
+    /// 缩在停靠栏里的窗口没有按钮，「展开」的有无不跟着台面换：别的窗口缩小、恢复时它的按钮组也要重排一遍玻璃，几毫秒
+    /// （2026-10-14 iPad 实测，停靠栏里一个窗口的按钮组在缩小、恢复的首帧里约 2.5～7 毫秒），等它回到台面停下再换。
+    /// 头一次照样给，没给时按钮组退回去读排布，台面一变就跟着更新。
+    private func updateExpands() {
+        guard let arrangement, let placed, content.expands == nil || !placed.minimized, content.expands != arrangement.expands else { return }
+        content.expands = arrangement.expands
+    }
+
+    /// 正文标题栏按这几项算给窗口按钮让出多少，见 PaneHeaderControlsSpace。
+    private func headerPlacement(_ placed: CardPresentation.Placement, hasThread: Bool) -> HeaderPlacement {
+        HeaderPlacement(minimized: placed.minimized, width: placed.target.frame.width, hasThread: hasThread)
+    }
+
+    /// 动画开始的那一轮可以推迟的几项（见 arrange）：标题栏的让位、正文在不在台面上。
+    private func placePendingContent() {
+        guard let placed, let arrangement else { return }
+        let placement = headerPlacement(placed, hasThread: arrangement.hasThread)
+        if header.placement != placement { header.placement = placement }
+        if presence.onScreen != !placed.minimized { presence.onScreen = !placed.minimized }
     }
 
     /// 收掉交给 Core Animation 的那一段（换终点、停下）。
@@ -317,11 +396,13 @@ final class PhoneCardView: UIView {
         let area = CGRect(origin: destination, size: contentSize).union(target.frame)
         let origin = stage.origin
         if threadWindow != nil {
-            // 原生外框：岛里的正文只剩桥，不跟着改尺寸；外框按正文停着的位置摆在这一层里
+            // 原生外框：岛里的正文只剩桥，不跟着改尺寸；外框按正文停着的位置摆在这一层里，推迟改大小时先留着原来的大小
             let placement = HostedPlacementValue()
             if link.placement.value != placement { link.placement.value = placement }
+            let size = contentPending != nil ? nativeSize ?? contentSize : contentSize
+            nativeSize = size
             container.nativeFrame = CGRect(x: destination.x - area.minX, y: destination.y - area.minY,
-                                           width: contentSize.width, height: contentSize.height)
+                                           width: size.width, height: size.height)
         } else {
             let placement = HostedPlacementValue(origin: CGPoint(x: origin.x + area.minX, y: origin.y + area.minY),
                                                  contentSize: contentSize,
@@ -352,7 +433,7 @@ final class PhoneCardView: UIView {
         let drag = headerView.drag
         drag.isHidden = fixed
         let shown = state.buttonsShown
-        if content.buttonsShown != shown { content.buttonsShown = shown }
+        buttonsShown = shown
         let menu = state.menuWidth
         let trailing = minimized ? 0 : menu + (shown ? state.controlsSize.width + Metrics.paneButtonGap : 0) + Metrics.paneMargin
         let dragFrame = CGRect(x: 0, y: 0, width: max(frame.width - trailing, 0), height: height)
@@ -360,7 +441,7 @@ final class PhoneCardView: UIView {
         drag.threshold = minimized ? Metrics.dragThreshold : max(state.height, Metrics.dragThreshold)
         drag.excluded = minimized ? [] : state.excluded
         // 窗口按钮组让开正文的菜单，在标题栏里竖着居中
-        buttons.isHidden = minimized || fixed
+        updateButtons()
         let size = state.controlsSize == .zero ? buttons.idealSize : state.controlsSize
         let x = frame.width - Metrics.paneMargin - (menu > 0 ? menu + Metrics.paneButtonGap : 0) - size.width
         let buttonsFrame = CGRect(x: x, y: (height - size.height) / 2, width: size.width, height: size.height)
@@ -391,6 +472,27 @@ final class PhoneCardView: UIView {
 
     private var iconSize: CGFloat { min(placed?.target.frame.width ?? Metrics.dragBubble, Metrics.dragBubble) }
 
+    /// 窗口按钮露不露（见 PaneHeaderControls），placeHeader 交过来。
+    private var buttonsShown = false
+
+    /// 窗口按钮缩成停靠形状、固定排布时没有，不该露时（见 PaneHeaderControls）和飞行中看不见、不接输入，都在这一层做，
+    /// 托管视图不跟着更新（见 CardButtons.managesVisibility）。改图层的透明度，不改 isHidden、alpha：改那两样 UIKit 也把整棵子树
+    /// 通知一遍看不看得见，按钮组照样重画。
+    private func updateButtons() {
+        guard let placed, let arrangement else { return }
+        let absent = placed.minimized || arrangement.fixed || !buttonsShown
+        let shown = !absent && !placed.motion.moving
+        let opacity: Float = shown ? 1 : 0
+        if buttons.layer.opacity != opacity {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            buttons.layer.opacity = opacity
+            CATransaction.commit()
+        }
+        if buttons.isUserInteractionEnabled != shown { buttons.isUserInteractionEnabled = shown }
+        if buttons.accessibilityElementsHidden != absent { buttons.accessibilityElementsHidden = absent }
+    }
+
     /// 只看 moving：开始、停下时更新叠放、命中、点阵和报给排布的 settling；通知在属性改之前，下一拍再读。
     private func trackMotion() {
         guard let motion = placed?.motion else { return }
@@ -409,9 +511,12 @@ final class PhoneCardView: UIView {
         let moving = motion.moving
         if moving != lastMoving {
             lastMoving = moving
+            updateButtons()
             if moving {
                 setHovered(false)
             } else {
+                updateContentNow()
+                updateExpands()
                 if headerRegions.settled != headerRegions.rects { headerRegions.settled = headerRegions.rects }
                 if flying {
                     // Core Animation 那一段已经走完，模型值就是终点；正文按终点交一次（飞行中一直显示着，缩进停靠栏的这时藏起来）
@@ -610,6 +715,21 @@ final class PhoneCardView: UIView {
         return UIMenu(children: items)
     }
 
+    /// 长按菜单浮起来的：标题栏那一截，缩成停靠形状时整个外框。从卡片上截一份图，菜单开着时原处照常显示。
+    private func menuPreview() -> UITargetedPreview? {
+        guard let placed, let arrangement else { return nil }
+        let frame = placed.target.frame
+        let rect = placed.minimized ? frame
+            : CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: min(max(arrangement.header.height, Metrics.dragBubble), frame.height))
+        guard let snapshot = resizableSnapshotView(from: rect, afterScreenUpdates: false, withCapInsets: .zero) else { return nil }
+        let parameters = UIPreviewParameters()
+        parameters.backgroundColor = .clear
+        let radius = min(placed.minimized ? placed.target.radius : Metrics.cardRadius, rect.height / 2)
+        parameters.visiblePath = UIBezierPath(roundedRect: CGRect(origin: .zero, size: rect.size), cornerRadius: radius)
+        return UITargetedPreview(view: snapshot, parameters: parameters,
+                                 target: UIPreviewTarget(container: self, center: CGPoint(x: rect.midX, y: rect.midY)))
+    }
+
     // MARK: - 命中与读屏
 
     /// 卡片铺满台面，自己不接点按，只有里面的正文和标题栏一层接；不接输入时（过渡中、退出、拖缝、被压暗）整张都不接。
@@ -651,6 +771,12 @@ final class PhoneCardView: UIView {
             guard let placed, !placed.minimized else { return nil }
             return [container, buttons].compactMap { $0 }
         }
+        set {}
+    }
+
+    /// 标题栏上为手指长按起拖挂了 UIDragInteraction（见 CardHeaderView），读屏不因此多出拖动的入口，照旧用下面的动作。
+    override var accessibilityDragSourceDescriptors: [UIAccessibilityLocationDescriptor]? {
+        get { [] }
         set {}
     }
 
@@ -778,6 +904,8 @@ final class PhoneContentContainer: UIView, HostedContentSurface {
     private var frameState = HostedContentFrame()
     /// 交给 Core Animation 的那一段还在走，正文一直显示着（见 animate）。
     private var flying = false
+    /// 藏着的正文要在下一帧露出来，见 place。
+    private var revealLink: CADisplayLink?
 
     init(motion: WindowMotion) {
         self.motion = motion
@@ -828,10 +956,34 @@ final class PhoneContentContainer: UIView, HostedContentSurface {
     private func place(_ state: HostedContentFrame) {
         frameState = state
         let shown = state.shown || flying
-        if isHidden == shown { isHidden = !shown }
+        // 缩在停靠栏里藏着的正文开始飞回台面（恢复、松手放下）：这一刻它还没淡入，等下一帧再露。改 isHidden 时 UIKit 把整棵子树
+        // 通知一遍看不看得见，托管的正文跟着排一遍（2026-10-14 iPad 实测，恢复窗口的首帧里约 6 毫秒），挪到动画开始以后
+        if shown, isHidden, motion?.moving == true {
+            revealLater()
+        } else {
+            cancelReveal()
+            if isHidden == shown { isHidden = !shown }
+        }
         mover.layer.sublayerTransform = CATransform3DMakeAffineTransform(state.transform)
         RingGeometry.place(clip, frame: state.clip, radius: state.radius)
         clip.opacity = Float(state.opacity)
+    }
+
+    private func revealLater() {
+        guard revealLink == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(reveal(_:)))
+        link.add(to: .main, forMode: .common)
+        revealLink = link
+    }
+
+    @objc private func reveal(_ link: CADisplayLink) {
+        cancelReveal()
+        if isHidden, frameState.shown || flying { isHidden = false }
+    }
+
+    private func cancelReveal() {
+        revealLink?.invalidate()
+        revealLink = nil
     }
 
     func animate(_ frames: [HostedContentFrame], duration: TimeInterval) {
@@ -854,25 +1006,41 @@ final class PhoneContentContainer: UIView, HostedContentSurface {
 }
 
 /// 标题栏一层：拖动区和窗口按钮，按停着的外框摆，命中按外框的圆角裁。
-private final class CardHeaderView: UIView, UIContextMenuInteractionDelegate {
+/// 拖动卡片分输入方式起拖：iPad 指针（触控板、鼠标）按住挪过一段距离就起拖，同 Mac（ThresholdDrag，只认指针）；
+/// 手指和笔要先长按，按系统拖放的惯例交给 UIDragInteraction：和长按菜单（UIContextMenuInteraction）放在同一个视图上，
+/// 长按到时标题栏浮起、弹出菜单，不动就留着菜单，动了菜单收起、转成拖动（系统协调两者，时长也用系统的）；没长按就滑动的不起拖，
+/// 照常交给别的手势。系统的拖动只借它的长按和跟踪：拖着的东西看不见，卡片照旧缩成停靠形状跟着手指（PhoneStageView.drag），
+/// 松手由排布按落点放（系统那边没有放的地方，一律当取消）。
+private final class CardHeaderView: UIView, UIContextMenuInteractionDelegate, UIDragInteractionDelegate {
     let drag = CardDragArea()
     var dragged: ((UIGestureRecognizer.State, CGPoint) -> Void)?
     var tapped: (() -> Void)?
     var buildMenu: (() -> UIMenu?)?
+    /// 长按菜单浮起来的样子：卡片标题栏那一截（缩成停靠形状时整个圆），卡片给。
+    var menuPreview: (() -> UITargetedPreview?)?
     /// 外框在这一层里的范围和圆角。
     var clip = CGRect.zero
     var radius: CGFloat = 0
+    /// 这一次按下是不是指针：指针的拖动交给 ThresholdDrag，系统的拖动不接。
+    private let touchKind = TouchKindObserver()
+    /// 系统的拖动开始了、还没交出松手或取消。
+    private var dragging = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         addSubview(drag)
         let pan = ThresholdDrag()
+        pan.allowedTouchTypes = [UITouch.TouchType.indirectPointer.rawValue as NSNumber]
         pan.addTarget(self, action: #selector(panned(_:)))
         drag.addGestureRecognizer(pan)
         drag.pan = pan
         let tap = UITapGestureRecognizer(target: self, action: #selector(tap(_:)))
         drag.addGestureRecognizer(tap)
+        drag.addGestureRecognizer(touchKind)
         drag.addInteraction(UIContextMenuInteraction(delegate: self))
+        let lift = UIDragInteraction(delegate: self)
+        lift.isEnabled = true
+        drag.addInteraction(lift)
         drag.isAccessibilityElement = false
     }
 
@@ -892,10 +1060,101 @@ private final class CardHeaderView: UIView, UIContextMenuInteractionDelegate {
         if recognizer.state == .ended { tapped?() }
     }
 
+    // MARK: 长按菜单
+
     func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
                                 configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
         guard let menu = buildMenu?() else { return nil }
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in menu }
+    }
+
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configuration: UIContextMenuConfiguration,
+                                highlightPreviewForItemWithIdentifier identifier: any NSCopying) -> UITargetedPreview? {
+        menuPreview?()
+    }
+
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configuration: UIContextMenuConfiguration,
+                                dismissalPreviewForItemWithIdentifier identifier: any NSCopying) -> UITargetedPreview? {
+        menuPreview?()
+    }
+
+    // MARK: 手指、笔的长按起拖
+
+    func dragInteraction(_ interaction: UIDragInteraction, itemsForBeginning session: any UIDragSession) -> [UIDragItem] {
+        guard !touchKind.pointer, !drag.isHidden, dragged != nil else { return [] }
+        let item = UIDragItem(itemProvider: NSItemProvider())
+        item.previewProvider = { UIDragPreview(view: Self.invisible(), parameters: Self.invisibleParameters()) }
+        return [item]
+    }
+
+    /// 浮起来的是长按菜单的那份（见 menuPreview）；拖动本身看不见，卡片自己跟着手指。
+    func dragInteraction(_ interaction: UIDragInteraction, previewForLifting item: UIDragItem,
+                         session: any UIDragSession) -> UITargetedDragPreview? {
+        UITargetedDragPreview(view: Self.invisible(), parameters: Self.invisibleParameters(),
+                              target: UIDragPreviewTarget(container: drag, center: session.location(in: drag)))
+    }
+
+    func dragInteraction(_ interaction: UIDragInteraction, previewForCancelling item: UIDragItem,
+                         withDefault defaultPreview: UITargetedDragPreview) -> UITargetedDragPreview? { nil }
+
+    func dragInteraction(_ interaction: UIDragInteraction, sessionIsRestrictedToDraggingApplication session: any UIDragSession) -> Bool { true }
+
+    func dragInteraction(_ interaction: UIDragInteraction, sessionWillBegin session: any UIDragSession) {
+        dragging = true
+        // 卡片拿起来：缩成停靠形状到手指下，轻触一下（iPad 没有触感马达，只有支持触感的笔会震）
+        UIImpactFeedbackGenerator(style: .light, view: drag).impactOccurred(at: session.location(in: drag))
+        dragged?(.began, windowLocation(session))
+    }
+
+    func dragInteraction(_ interaction: UIDragInteraction, sessionDidMove session: any UIDragSession) {
+        guard dragging else { return }
+        dragged?(.changed, windowLocation(session))
+    }
+
+    func dragInteraction(_ interaction: UIDragInteraction, session: any UIDragSession, willEndWith operation: UIDropOperation) {
+        guard dragging else { return }
+        dragging = false
+        // 系统那边没有放的地方，结果总是取消；放在哪由排布按最后的落点定
+        dragged?(.ended, windowLocation(session))
+    }
+
+    func dragInteraction(_ interaction: UIDragInteraction, session: any UIDragSession, didEndWith operation: UIDropOperation) {
+        guard dragging else { return }
+        dragging = false
+        dragged?(.cancelled, .zero)
+    }
+
+    /// 手指在窗口里的位置，同 ThresholdDrag 报的。
+    private func windowLocation(_ session: any UIDragSession) -> CGPoint {
+        drag.convert(session.location(in: drag), to: nil)
+    }
+
+    private static func invisible() -> UIView { UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1)) }
+
+    private static func invisibleParameters() -> UIDragPreviewParameters {
+        let parameters = UIDragPreviewParameters()
+        parameters.backgroundColor = .clear
+        parameters.shadowPath = UIBezierPath()
+        return parameters
+    }
+}
+
+/// 记下这一次按下是不是指针（触控板、鼠标），见 CardHeaderView 的 itemsForBeginning。只看不认：按下就放弃，不挡别的手势。
+private final class TouchKindObserver: UIGestureRecognizer {
+    private(set) var pointer = false
+
+    override init(target: Any?, action: Selector?) {
+        super.init(target: target, action: action)
+        cancelsTouchesInView = false
+        delaysTouchesEnded = false
+        allowedTouchTypes = [UITouch.TouchType.direct, .indirect, .pencil, .indirectPointer].map { $0.rawValue as NSNumber }
+    }
+
+    convenience init() { self.init(target: nil, action: nil) }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        pointer = touches.first?.type == .indirectPointer
+        state = .failed
     }
 }
 

@@ -325,6 +325,8 @@ struct CardDrag {
     /// 脱离后剩下的排布；只剩这一张卡片时为 nil。
     var rest: Tile?
     var spot: DropSpot?
+    /// 贴着内容区外缘放时，其余窗口挤不下、给它腾地方收进停靠栏的那几个，见 WindowLayout.edgeRoom。
+    var displaced: [Pane] = []
     /// 拖动中显示的排布：剩下的，或者插了占位的预览。
     var layout: Tile?
     /// 拖动期间的停靠顺序，包含落点占位所对应的窗口。
@@ -334,7 +336,7 @@ struct CardDrag {
     func placing(_ tile: Tile, in canvas: CGRect) -> Tile? {
         switch spot {
         case .edge(let edge):
-            guard let rest else { return nil }
+            guard let rest = displaced.reduce(rest, { $0?.removing($1) }) else { return nil }
             let horizontal = edge == .leading || edge == .trailing
             let before = edge == .leading || edge == .top
             let length = { (size: CGSize) in horizontal ? size.width : size.height }
