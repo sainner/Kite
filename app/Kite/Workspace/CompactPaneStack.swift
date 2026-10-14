@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 #if os(macOS)
 /// Mac 窄窗口里紧凑布局的窗口按底栏的顺序排成一行，铺满时只露出当前窗口；控制区横滑时整行跟着手指走，松手滑到相邻窗口或回原处。
@@ -104,6 +107,13 @@ final class PaneRow {
     @ObservationIgnored let drawer: DrawerMotion
     @ObservationIgnored var width: CGFloat
     @ObservationIgnored var reduceMotion = false
+    private static let switchFraction: CGFloat = 0.25
+    #if os(iOS)
+    @ObservationIgnored private let feedback = UIImpactFeedbackGenerator(style: .rigid)
+    @ObservationIgnored private let edgeFeedback = UINotificationFeedbackGenerator()
+    /// 这次横滑在头尾往外拖过了切换距离：那边没有窗口，震一下表示到头。
+    @ObservationIgnored private var pastEdge = false
+    #endif
     /// 各窗口在不在屏上的盒子，放进窗口环境后不再换；第一次要时建，和 warm 一样只增不减。
     @ObservationIgnored private var presences: [Pane: PanePresence] = [:]
     /// 放进环境的动作，建好就不再换。
@@ -157,7 +167,12 @@ final class PaneRow {
 
     private func drag(_ translation: CGFloat) {
         guard drawer.collapsed, width > 0, let page else { return }
-        if swipe?.dragging != true {
+        let holding = swipe?.dragging == true
+        if !holding {
+            #if os(iOS)
+            feedback.prepare()
+            edgeFeedback.prepare()
+            #endif
             // 正在滑的半路接住：从这一帧实际的位置接着拖
             swipe = Swipe(origin: slide.presentation(at: .now).frame.minX, page: page, dragging: true)
             slide.interacting = true
@@ -169,15 +184,41 @@ final class PaneRow {
         // 只能滑到开始时那个窗口的两旁，到头或滑过一个窗口后越拖越吃力
         let low = rest(min(swipe.page + 1, layout.panes.count - 1)), high = rest(max(swipe.page - 1, 0))
         let x = swipe.origin + translation
+        #if os(iOS)
+        // 同抽屉：拖过切换分界、再拖回来都震一下；接手动画和松手不补震。
+        if holding, feedbackTarget(at: slide.target.frame.minX, from: swipe.page) != feedbackTarget(at: x, from: swipe.page) {
+            feedback.impactOccurred()
+            feedback.prepare()
+        }
+        let distance = x - rest(swipe.page)
+        let edge = abs(distance) >= width * Self.switchFraction
+            && !layout.panes.indices.contains(swipe.page + (distance < 0 ? 1 : -1))
+        if !holding { pastEdge = edge }
+        else if edge != pastEdge {
+            pastEdge = edge
+            if edge { edgeFeedback.notificationOccurred(.warning) }
+        }
+        #endif
         move(x > high ? high + (x - high) * 0.2 : x < low ? low + (x - low) * 0.2 : x, kind: .immediate)
     }
+
+    #if os(iOS)
+    private func feedbackTarget(at x: CGFloat, from page: Int) -> Int {
+        let distance = x - rest(page)
+        guard abs(distance) >= width * Self.switchFraction else { return page }
+        let target = page + (distance < 0 ? 1 : -1)
+        return layout.panes.indices.contains(target) ? target : page
+    }
+    #endif
 
     private func release(_ translation: CGFloat, predicted: CGFloat) {
         guard let swipe, swipe.dragging else { return }
         let distance = swipe.origin + translation - rest(swipe.page)
         let projected = swipe.origin + predicted - rest(swipe.page)
-        let commit = abs(distance) >= width * 0.25 || (abs(projected) >= width * 0.4 && projected * distance > 0)
-        settle(to: commit ? swipe.page + (distance < 0 ? 1 : -1) : swipe.page)
+        let commit = abs(distance) >= width * Self.switchFraction || (abs(projected) >= width * 0.4 && projected * distance > 0)
+        let target = swipe.page + (distance < 0 ? 1 : -1)
+        // 到头了那边没有窗口：同没拖够一样滑回来，不直接跳回去
+        settle(to: commit && layout.panes.indices.contains(target) ? target : swipe.page)
     }
 
     private func abandon() {

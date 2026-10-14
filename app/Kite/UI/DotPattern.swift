@@ -37,7 +37,8 @@ struct PatternSlot {
     var area: CGRect
     /// 文字压在上面的范围，图案在这里收弱。
     var quiet: [PatternQuiet]
-    /// 随声音从底边往上涨：静音时只铺到底边往上这么高（同 area 的坐标），响度到 1 时铺满整块；nil 时一直铺满。
+    /// 随声音从底边往上涨：静音时中间只铺到底边往上这么高（同 area 的坐标），响度到 1 时中间涨到顶，两侧低一些；nil 时一直铺满。
+    /// 涨的图案以底边中点为原点（见 PatternGrid.originRow），其余以中心为原点。
     var rise: CGFloat?
     var carrier: DotCarrier?
 }
@@ -71,8 +72,10 @@ nonisolated enum PatternMotion {
     static let quietReach = 3.0
     /// 响度到 1 时整幅涨大多少：签名里 v 只占一小项，不另外涨的话说话时看不出在听。
     static let soundSwell = 0.8
-    /// 随声音往上涨的图案，上沿淡出的格数。
-    static let riseEdge = 2.0
+    /// 随声音往上涨的图案：从底边往上占整块高的几成一直是满的，再往上一路淡到上沿（语音那一带占窗口的六成，这里是窗口的一成）；
+    /// 上沿两端比中间低几成，是一道中间高、两侧低的弧，不是一条直线。
+    static let riseFloor = 1.0 / 6
+    static let riseArch = 0.35
 }
 
 /// 一块图案只随位置、大小和压字范围变的逐格量，按行排满整块：表达式里只与格位有关的变量，以及压字处收弱的系数。
@@ -81,6 +84,8 @@ nonisolated struct PatternGrid: Sendable {
     let columns: ClosedRange<Int>
     let rows: ClosedRange<Int>
     let quiet: [PatternQuiet]
+    /// 原点在底边中点，见 originRow。
+    let bottom: Bool
     /// 各格相对图案左上角的列号、行号。
     let column: [Double]
     let row: [Double]
@@ -93,10 +98,11 @@ nonisolated struct PatternGrid: Sendable {
     /// 收弱的系数；没有压字的范围时为空。
     let quietFactors: [Double]
 
-    init(columns: ClosedRange<Int>, rows: ClosedRange<Int>, quiet: [PatternQuiet]) {
+    init(columns: ClosedRange<Int>, rows: ClosedRange<Int>, quiet: [PatternQuiet], bottom: Bool) {
         self.columns = columns
         self.rows = rows
         self.quiet = quiet
+        self.bottom = bottom
         let width = columns.count, count = width * rows.count
         let w = Double(width), h = Double(rows.count)
         let ramp: [Double] = vDSP.ramp(withInitialValue: 0, increment: 1, count: width)
@@ -107,7 +113,7 @@ nonisolated struct PatternGrid: Sendable {
             column += ramp
             row += repeatElement(Double(line), count: width)
         }
-        let x = vDSP.add(-(w / 2).rounded(.down), column), y = vDSP.add(-(h / 2).rounded(.down), row)
+        let x = vDSP.add(-(w / 2).rounded(.down), column), y = vDSP.add(-Double(Self.originRow(height: rows.count, bottom: bottom)), row)
         self.column = column
         self.row = row
         self.x = x
@@ -118,9 +124,15 @@ nonisolated struct PatternGrid: Sendable {
         quietFactors = quiet.isEmpty ? [] : Self.factors(quiet, columns: columns, rows: rows)
     }
 
-    func matches(columns: ClosedRange<Int>, rows: ClosedRange<Int>, quiet: [PatternQuiet]) -> Bool {
-        self.columns == columns && self.rows == rows && self.quiet == quiet
+    func matches(columns: ClosedRange<Int>, rows: ClosedRange<Int>, quiet: [PatternQuiet], bottom: Bool) -> Bool {
+        self.columns == columns && self.rows == rows && self.quiet == quiet && self.bottom == bottom
     }
+
+    /// 原点所在的行，相对图案顶行：一般在正中；从底边往上涨的图案在最底一行，签名从窗口底边往上展开。
+    static func originRow(height: Int, bottom: Bool) -> Int { bottom ? height - 1 : height / 2 }
+
+    /// 离原点最远的格大约多远，由原点向外长出来时按它错开。
+    static func reach(width: Double, height: Double, bottom: Bool) -> Double { hypot(width / 2, bottom ? height : height / 2) }
 
     /// 文字压着的范围里各格收弱的系数，按行排；同 ResolvedPattern.dot 里的算法。一格到范围的距离拆成列上和行上的两段。
     private static func factors(_ quiet: [PatternQuiet], columns: ClosedRange<Int>, rows: ClosedRange<Int>) -> [Double] {
@@ -298,17 +310,22 @@ nonisolated struct ResolvedPattern: Sendable {
             let old = previous.expression.evaluate(batch: variables, count: count)
             value = vDSP.add(vDSP.multiply(old, vDSP.add(1, vDSP.negative(progress))), vDSP.multiply(value, progress))
         } else if elapsed < PatternMotion.growSpread + DotMetrics.morphDuration {
-            // 由中心向外长出来；全部长完后系数都是 1，不用再乘
-            let reach = hypot(w / 2, h / 2)
+            // 由原点向外长出来；全部长完后系数都是 1，不用再乘
+            let reach = PatternGrid.reach(width: w, height: h, bottom: grid.bottom)
             value = vDSP.multiply(value, eased(reach > 0 ? vDSP.multiply(PatternMotion.growSpread / reach, grid.r[range]) : zeros()))
         }
         if sound > 0 {
             value = vDSP.multiply(1 + PatternMotion.soundSwell * sound, value)
         }
         if let rise {
-            // 从底边往上铺到 reach 格，上沿几格淡出；第 row 行的格心离底边 h − 0.5 − row 格
+            // 中间从底边往上铺到 reach 格，两侧按离中间的远近平方低下去；底下几格一直是满的，往上到上沿一路淡出。
+            // 第 row 行的格心离底边 h − 0.5 − row 格
             let reach = rise + sound * (h - rise)
-            let t = vDSP.clip(vDSP.multiply(1 / PatternMotion.riseEdge, vDSP.add(reach - h + 0.5, grid.row[range])), to: 0...1)
+            let half = max((w - 1) / 2, 1)
+            let offset = vDSP.add(-half, grid.column[range])
+            let edge = vDSP.add(reach, vDSP.multiply(-reach * PatternMotion.riseArch / (half * half), vDSP.multiply(offset, offset)))
+            let span = vDSP.clip(vDSP.add(-h * PatternMotion.riseFloor, edge), to: 1...Double.greatestFiniteMagnitude)
+            let t = vDSP.clip(vDSP.divide(vDSP.add(edge, vDSP.add(0.5 - h, grid.row[range])), span), to: 0...1)
             value = vDSP.multiply(value, vDSP.multiply(vDSP.multiply(t, t), vDSP.add(3, vDSP.multiply(-2, t))))
         }
         if let leaving, live {
@@ -359,7 +376,7 @@ nonisolated struct ResolvedPattern: Sendable {
     private func value(_ pattern: DotPattern, column: Int, row: Int, at date: Date, live: Bool) -> Double {
         guard column >= 0, column < columns.count, row >= 0, row < rows.count else { return 0 }
         let w = Double(columns.count), h = Double(rows.count)
-        let x = Double(column) - (w / 2).rounded(.down), y = Double(row) - (h / 2).rounded(.down)
+        let x = Double(column) - (w / 2).rounded(.down), y = Double(row - PatternGrid.originRow(height: rows.count, bottom: grid.bottom))
         var scope = DotExpression.Scope()
         scope[.t] = live ? date.timeIntervalSince(start) : 0
         scope[.x] = x
@@ -381,15 +398,18 @@ nonisolated struct ResolvedPattern: Sendable {
             let eased = morphed(Double(column + row), at: date, live: live)
             value = previous.expression.evaluate(scope) * (1 - eased) + value * eased
         } else {
-            // 由中心向外长出来
-            let reach = hypot(w / 2, h / 2)
+            // 由原点向外长出来
+            let reach = PatternGrid.reach(width: w, height: h, bottom: grid.bottom)
             let delay = reach > 0 ? scope[.r] / reach * PatternMotion.growSpread : 0
             let elapsed = live ? date.timeIntervalSince(changed) : .infinity
             value *= easeOutCubic((elapsed - delay) / DotMetrics.morphDuration)
         }
         value *= 1 + PatternMotion.soundSwell * sound
         if let rise {
-            value *= smoothstep((rise + sound * (h - rise) - h + 0.5 + Double(row)) / PatternMotion.riseEdge)
+            let reach = rise + sound * (h - rise)
+            let half = max((w - 1) / 2, 1), offset = Double(column) - half
+            let edge = reach * (1 - PatternMotion.riseArch * offset * offset / (half * half))
+            value *= smoothstep((edge - h + 0.5 + Double(row)) / max(edge - h * PatternMotion.riseFloor, 1))
         }
         if let leaving, live {
             value *= 1 - easeOutCubic(date.timeIntervalSince(leaving) / PatternMotion.leaveDuration)

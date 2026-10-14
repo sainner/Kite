@@ -12,6 +12,8 @@ final class HostIsland: UIView {
     var hitRegion: (() -> CGRect?)?
     /// 接点按的范围按圆角算（输入区的玻璃）。
     var hitRadius: CGFloat = 0
+    /// 共用控制区换窗口时，新的拖动桥接接手；仍在淡出的旧内容不能再接同一次手势。
+    weak var controlsDragOwner: PaneControlDragView?
 
     var rootView: AnyView {
         get { controller.rootView }

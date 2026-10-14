@@ -78,6 +78,7 @@ struct ThreadHeaderActions: View {
         PhoneThreadHeaderMenus(modelTitle: modelTier, modelName: modelName,
             modelEnabled: canOpenModels, models: modelMenu, commands: moreCommands)
             .fixedSize()
+            .modifier(PhoneThreadMenuGlass())
         #else
         MacThreadHeaderMenus(modelTitle: modelTier, modelName: modelName,
             modelEnabled: canOpenModels, models: modelMenu, commands: moreCommands)

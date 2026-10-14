@@ -153,8 +153,8 @@ enum ContextBlockAction {
     case delete
 }
 
-/// 窗口底部的工具栏：添加块、当前块、行级、行内四组，与标题栏同一套按钮组，整体右对齐；变量也是行内的内容，放在行内组里。
-/// 格式与变量作用在最后放过光标的段落上，块工具作用在当前块上，添加按选中的节、段落或条件决定位置。放不下一行时，添加与当前块一行，行级与行内一行。
+/// 窗口底部的工具栏：添加块、当前块、格式三组，与标题栏同一套按钮组，整体右对齐；格式组里先行级、后行内，变量也是行内的内容，排在最后。
+/// 格式与变量作用在最后放过光标的段落上，块工具作用在当前块上，添加按选中的节、段落或条件决定位置。放不下一行时，添加与当前块一行，格式一行。
 struct ContextEditorToolbar: View {
     let variables: [ContextScene.Variable]
     /// 放在窗口底栏时自己排收起键盘；弹窗里工具栏在正文上方，收起键盘由弹窗的按钮栏给。
@@ -171,8 +171,7 @@ struct ContextEditorToolbar: View {
             }
             addMenu(current).layoutValue(key: ContextToolbarLayout.UpperRow.self, value: true)
             blockTools(current).layoutValue(key: ContextToolbarLayout.UpperRow.self, value: true)
-            lineFormat
-            inlineFormat
+            textFormat
         }
         .alert(deleteTitle, isPresented: Binding(get: { confirmingDelete != nil }, set: { if !$0 { confirmingDelete = nil } })) {
             Button("删除", role: .destructive) { confirmingDelete?.perform(.delete) }
@@ -189,8 +188,16 @@ struct ContextEditorToolbar: View {
         return state.kind == .condition ? "删除按「\(state.title)」选择的条件？" : "删除「\(state.title)」？"
     }
 
-    private var inlineFormat: some View {
+    private var textFormat: some View {
         PaneHeaderButtonGroup {
+            ActionMenu("标题", icon: "number") {
+                Button("一级标题") { editor.target?.apply(.heading(1)) }
+                Button("二级标题") { editor.target?.apply(.heading(2)) }
+                Button("三级标题") { editor.target?.apply(.heading(3)) }
+            }
+            format("无序列表", "list.bullet", .bullet)
+            format("有序列表", "list.number", .numbered)
+            format("引用", "text.quote", .quote)
             format("粗体", "bold", .bold)
             format("斜体", "italic", .italic)
             format("行内代码", "chevron.left.forwardslash.chevron.right", .code)
@@ -203,20 +210,6 @@ struct ContextEditorToolbar: View {
                 }
             }
             .disabled(variables.isEmpty)
-        }
-        .disabled(editor.target == nil || editor.naming != nil)
-    }
-
-    private var lineFormat: some View {
-        PaneHeaderButtonGroup {
-            ActionMenu("标题", icon: "number") {
-                Button("一级标题") { editor.target?.apply(.heading(1)) }
-                Button("二级标题") { editor.target?.apply(.heading(2)) }
-                Button("三级标题") { editor.target?.apply(.heading(3)) }
-            }
-            format("无序列表", "list.bullet", .bullet)
-            format("有序列表", "list.number", .numbered)
-            format("引用", "text.quote", .quote)
         }
         .disabled(editor.target == nil || editor.naming != nil)
     }

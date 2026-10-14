@@ -66,7 +66,7 @@ struct TemplatePane: View {
     private var canSave: Bool { !saving && model.connected }
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: definition?.title ?? "", subtitle: category.title)) {
+        PaneWindow(header: PaneHeader(title: definition?.title ?? "", subtitle: category.title), actions: PaneHeaderActions(groups: headerGroups)) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let error { CardCallout(text: error) }
@@ -90,27 +90,6 @@ struct TemplatePane: View {
             }
         } controls: { _ in
             if definition != nil { ContextEditorToolbar(variables: variables).disabled(saving) }
-        } headerActions: {
-            PaneHeaderButtonGroup {
-                Button { refresh() } label: { PaneHeaderButtonLabel("刷新", systemImage: "arrow.clockwise") }
-                    .help("刷新")
-                    .disabled(refreshing)
-            }
-            // 有草稿才能保存或放弃。模板不能新建或删除，放弃只撤掉没保存的修改。
-            if draft != nil {
-                PaneHeaderButtonGroup {
-                    Button { discard = true } label: { PaneHeaderButtonLabel("放弃修改", systemImage: "xmark") }
-                        .help("放弃修改")
-                        .disabled(saving)
-                    Button(action: save) {
-                        PaneHeaderButtonLabel("保存", systemImage: "checkmark")
-                            .opacity(saving ? 0 : 1)
-                            .overlay { if saving { CardSpinner().scaleEffect(0.6) } }
-                    }
-                    .help(model.connected ? "保存" : "工作机未连接")
-                    .disabled(!canSave)
-                }
-            }
         }
         // 辅助生成按模板自己的模型数；其他模板没有自己的模型（压缩实际用会话的模型），模型不能计数的（语音识别），由工作机按默认模型数。
         .contextEditor(editor, counting: model.contextCounting(
@@ -128,6 +107,19 @@ struct TemplatePane: View {
             do { try await model.refreshContextTemplates() }
             catch { self.error = error.localizedDescription }
         }
+    }
+
+    /// 刷新；有草稿才能保存或放弃。模板不能新建或删除，放弃只撤掉没保存的修改。
+    private var headerGroups: [[PaneHeaderAction]] {
+        var groups = [[PaneHeaderAction(title: "刷新", systemImage: "arrow.clockwise", disabled: refreshing) { refresh() }]]
+        if draft != nil {
+            groups.append([
+                PaneHeaderAction(title: "放弃修改", systemImage: "xmark", disabled: saving) { discard = true },
+                PaneHeaderAction(title: "保存", systemImage: "checkmark", help: model.connected ? "保存" : "工作机未连接",
+                                 busy: saving, disabled: !canSave, action: save),
+            ])
+        }
+        return groups
     }
 
     private func save() {

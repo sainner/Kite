@@ -1,6 +1,8 @@
 import SwiftUI
 
 extension EnvironmentValues {
+    /// 外壳提供稳定的玻璃容器，窗口内部不再嵌套随内容销毁的容器。
+    @Entry var compactSharedGlass = false
     @Entry var headerPane: Pane?
     /// 紧凑窗口的标题栏由外壳显示，正文只为它让出实际高度。
     @Entry var sharedPaneHeaderHeight: CGFloat?
@@ -29,7 +31,9 @@ struct CompactPaneHeader {
     let status: AnyView?
     let actions: AnyView
     let controls: AnyView
-    let environment: EnvironmentValues
+    /// 控制区里有没有控件，没有时外壳上只有一块不显示的 identity 玻璃，换窗口时据此选玻璃的过渡（见 CompactRowView）。
+    let hasControls: Bool
+    var environment: EnvironmentValues
     let openSidebar: (@MainActor () -> Void)?
     let endTyping: () -> Void
 }
@@ -79,10 +83,14 @@ struct CompactPaneControlsBar: View {
     let source: CompactPaneHeader
     let controls: SharedPaneControls
     let keyboardShown: Bool
+    var glassNamespace: Namespace.ID?
+    /// 玻璃原地显现、消散，不借别的形状变形：换窗口时只有一边有控件用它，见 CompactRowView。
+    var materialize = false
 
     var body: some View {
         let pane = source.pane
         source.controls
+            .glassEffectTransition(materialize ? .materialize : .matchedGeometry)
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { controls.measured($0, for: pane) }
             // 键盘升没升只有这一条控制区知道，见 KeyboardDismissButton、PaneControlsBottom。
             // 要写在接回源环境的里面：接回源环境是整份替换，写在外面会被源窗口环境里的默认值盖掉
@@ -90,24 +98,41 @@ struct CompactPaneControlsBar: View {
             // 控制区移出正文后仍使用源窗口的会话、实例与动作环境。
             .environment(\.self, source.environment)
             .id(pane)
+            .modifier(CompactGlassIdentity(id: "controls", namespace: glassNamespace))
             .transition(.opacity)
     }
 }
 
 struct CompactPaneHeaderBar: View {
     let source: CompactPaneHeader
+    var glassNamespace: Namespace.ID?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GlassEffectContainer(spacing: Metrics.paneButtonGap) {
             PaneHeaderBar(header: source.header, status: Group {
+                // 信息区、右组都原地更新，不按窗口整块换（.id）：整块换只剩淡入淡出，没有玻璃形变里图标的模糊替换
+                // （2026-10-14 iPhone 实测；各窗口的右组为什么是同一种视图见 PaneHeaderActions）
                 if let status = source.status {
-                    status.id(source.pane).transition(.opacity)
+                    status.modifier(CompactGlassIdentity(id: "status", namespace: glassNamespace))
                 }
-            }, actions: source.actions.id(source.pane).transition(.opacity), openSidebar: source.openSidebar)
+            }, actions: source.actions, openSidebar: source.openSidebar)
         }
         .modifier(PaneHeaderPlacement(endTyping: source.endTyping))
         // 标题栏移出正文后仍使用源窗口的会话、实例与动作环境。
         .environment(\.self, source.environment)
+        // 原生外壳随后还会收到当前窗口的偏好更新；换页动画由消费这一状态的视图保证。
+        .animation(reduceMotion ? nil : .snappy, value: source.pane)
+    }
+}
+
+private struct CompactGlassIdentity: ViewModifier {
+    let id: String
+    let namespace: Namespace.ID?
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if let namespace { content.glassEffectID(id, in: namespace) }
+        else { content }
     }
 }
 

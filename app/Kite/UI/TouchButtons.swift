@@ -3,15 +3,15 @@ import SwiftUI
 import UIKit
 
 /// iPhone、iPad 原生按钮的公共底子，行为同 SwiftUI 的 Button：按下变样，拖出范围不算按着、拖回来接着算，在范围里松手才算一次
-/// （UIControl 的跟踪）；所在的地方起了拖动手势（拉抽屉、横滑、滚动）时这次按下作废。子类只管自己的样子（stateChanged）。
+/// （UIButton 的跟踪）；所在的地方起了拖动手势（拉抽屉、横滑、滚动）时这次按下作废。子类只管自己的样子（stateChanged）。
 /// - 停用：不接点按，读屏是停用的按钮。
 /// - iPad 指针：tracksHover 打开时跟悬停（UIHoverGestureRecognizer），同 SwiftUI 的 onHover；过渡中整块不接输入时没有悬停。
 /// - 读屏：按钮，按下就是这个动作；名字由子类给（accessibilityLabel）。
 /// Mac 的对应是 NativeButton（AppKit）。
-class NativeButton: UIControl {
+class NativeButton: UIButton {
     var action: (() -> Void)?
-    private(set) var hovered = false {
-        didSet { if hovered != oldValue { stateChanged() } }
+    private(set) var pointerHovered = false {
+        didSet { if pointerHovered != oldValue { stateChanged() } }
     }
     /// 悬停时要不要变样子。
     var tracksHover = false {
@@ -24,7 +24,7 @@ class NativeButton: UIControl {
             } else if let hover {
                 removeGestureRecognizer(hover)
                 self.hover = nil
-                hovered = false
+                pointerHovered = false
             }
         }
     }
@@ -44,7 +44,7 @@ class NativeButton: UIControl {
     override var isEnabled: Bool {
         didSet {
             guard isEnabled != oldValue else { return }
-            if !isEnabled { hovered = false }
+            if !isEnabled { pointerHovered = false }
             accessibilityTraits = isEnabled ? .button : [.button, .notEnabled]
             stateChanged()
         }
@@ -89,8 +89,8 @@ class NativeButton: UIControl {
 
     @objc private func hoverChanged(_ recognizer: UIHoverGestureRecognizer) {
         switch recognizer.state {
-        case .began, .changed: hovered = isEnabled && contains(recognizer.location(in: self))
-        default: hovered = false
+        case .began, .changed: pointerHovered = isEnabled && contains(recognizer.location(in: self))
+        default: pointerHovered = false
         }
     }
 
@@ -140,7 +140,7 @@ class HighlightButton: NativeButton {
     }
 
     override func stateChanged() {
-        let opacity: CGFloat = pressed ? 0.20 : hovered && isEnabled ? 0.10 : 0
+        let opacity: CGFloat = pressed ? 0.20 : pointerHovered && isEnabled ? 0.10 : 0
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         highlight.backgroundColor = resolved(Color.gray.opacity(opacity), traits: traitCollection).cgColor

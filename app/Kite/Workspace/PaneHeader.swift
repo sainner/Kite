@@ -58,7 +58,7 @@ struct PaneNoticeIcon: View {
 }
 
 /// 卡片标题栏按容器排列标题、侧栏入口与窗口菜单。标题前是信息区；容器给出侧栏入口时，
-/// 入口与信息区合成一块标题栏玻璃；紧凑触屏布局直接点击信息区打开侧栏。手指长按信息区弹出它的说明。
+/// 入口与信息区合成一块标题栏玻璃；紧凑布局直接点击信息区打开侧栏。手指长按信息区弹出它的说明。
 struct PaneHeaderBar<Status: View, Actions: View>: View {
     let header: PaneHeader
     let status: Status
@@ -69,7 +69,7 @@ struct PaneHeaderBar<Status: View, Actions: View>: View {
     @State private var statusText: String?
     @State private var showsStatusText = false
 
-    private var statusOpensSidebar: Bool { presentation.isCompactTouch }
+    private var statusOpensSidebar: Bool { presentation == .compact }
 
     var body: some View {
         // 合进玻璃的信息缩小；环境要在拆分子视图之前给出
@@ -115,7 +115,7 @@ struct PaneHeaderBar<Status: View, Actions: View>: View {
 
 }
 
-/// 标题前的信息区：紧凑触屏下圆环就是打开侧栏的按钮；给了侧栏入口时入口和圆环合成一块玻璃；否则只有圆环。
+/// 标题前的信息区：紧凑布局下圆环就是打开侧栏的按钮；给了侧栏入口时入口和圆环合成一块玻璃；否则只有圆环。
 /// 指针悬停看说明，手指长按弹出说明（showsStatusText）。PaneHeaderBar 和原生标题栏（PhoneHeaderBar 的信息区岛）共用。
 struct PaneHeaderStatus: View {
     let statusViews: SubviewsCollection
@@ -137,6 +137,7 @@ struct PaneHeaderStatus: View {
                 .contentShape(.circle)
             }
             .buttonStyle(.plain)
+            .clickPointer()
             .accessibilityHint("打开侧边栏")
             .reportsHeaderInteraction()
             .modifier(PaneStatusTextPopover(text: statusText, presented: $showsStatusText))

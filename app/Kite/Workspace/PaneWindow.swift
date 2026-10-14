@@ -10,15 +10,18 @@ import SwiftUI
 /// 控制区里的输入框拿 typing 绑定焦点。iPhone 上打字时点控制区以外的地方收起键盘，键盘升起时控制区最左边有收起键盘；不打字时从控制区往上拖拉出 action 栏。
 /// 窄屏控制区左右滑动切换窗口，键盘显示或控制区已聚焦时禁用。紧凑布局里标题栏和控制区都由外壳统一显示，只有正文跟着切换平移，
 /// 见 CompactPaneHeaderHost（Mac 窄窗口）、CompactRowView（iPhone、iPad）。
-/// 标题栏左侧负责打开侧栏；紧凑触屏布局由会话状态圆环承接，其他情况显示侧栏按钮。
-struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActions: View>: View {
+/// 标题栏是固定结构：信息区、标题与副标题、右组。信息区只收窗口给的一个组件（会话的状态圆环、账号的额度圆环），可以不给；
+/// 侧栏按钮、提示图标由窗口按固定规则加（见 statusArea、PaneHeaderStatus）：紧凑布局里给了组件就由它打开侧栏，没给就是侧栏按钮。
+/// 右组按数据给，由窗口统一画（PaneHeaderActions）。各窗口的信息区、右组都是同一种视图，紧凑布局共用一条标题栏时换窗口原地更新。
+struct PaneWindow<Content: View, Controls: View>: View {
     let header: PaneHeader
     let usesDots: Bool
     let notice: PaneNotice?
     let content: Content
     let controls: (FocusState<Bool>.Binding) -> Controls
-    let headerStatus: HeaderStatus
-    let headerActions: HeaderActions
+    /// 信息区里窗口自己的组件，不给是 nil。
+    let status: AnyView?
+    let actions: PaneHeaderActions
     @FocusState private var typing: Bool
     @Environment(\.headerPane) private var headerPane
     @Environment(\.sharedPaneHeaderHeight) private var sharedHeaderHeight
@@ -29,17 +32,17 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
     /// 量好的范围写进这个盒子交给内容：只有读它的视图（铺满窗口的签名）随它重算，窗口本身不跟着重算。
     @State private var frame = PaneWindowFrame()
 
-    init(header: PaneHeader, usesDots: Bool = false, notice: PaneNotice? = nil, @ViewBuilder content: () -> Content,
-         @ViewBuilder controls: @escaping (_ typing: FocusState<Bool>.Binding) -> Controls,
-         @ViewBuilder headerStatus: () -> HeaderStatus = { EmptyView() },
-         @ViewBuilder headerActions: () -> HeaderActions = { EmptyView() }) {
+    init(header: PaneHeader, usesDots: Bool = false, notice: PaneNotice? = nil, status: AnyView? = nil,
+         actions: PaneHeaderActions = PaneHeaderActions(),
+         @ViewBuilder content: () -> Content,
+         @ViewBuilder controls: @escaping (_ typing: FocusState<Bool>.Binding) -> Controls) {
         self.header = header
         self.usesDots = usesDots
         self.notice = notice
+        self.status = status
+        self.actions = actions
         self.content = content()
         self.controls = controls
-        self.headerStatus = headerStatus()
-        self.headerActions = headerActions()
     }
 
     var body: some View {
@@ -59,15 +62,17 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
                 if let sharedHeaderHeight, headerPane != nil {
                     Color.clear.frame(height: sharedHeaderHeight).allowsHitTesting(false)
                 } else {
-                    PaneHeaderBar(header: header, status: status, actions: headerActions, openSidebar: sidebarAction)
+                    PaneHeaderBar(header: header, status: statusArea, actions: actions, openSidebar: sidebarAction)
                         .modifier(PaneHeaderPlacement(endTyping: { typing = false }))
                 }
             }
             .background {
-                Group(subviews: status) { statusViews in
-                    CompactPaneHeaderReport(header: header, status: statusViews.isEmpty ? nil : AnyView(status),
-                                            actions: AnyView(headerActions),
-                                            controls: AnyView(PaneControlsBar(controls: controls($typing), typing: typing)),
+                Group {
+                    let shown = controls($typing)
+                    CompactPaneHeaderReport(header: header, status: hasStatus ? AnyView(statusArea) : nil,
+                                            actions: AnyView(actions),
+                                            controls: AnyView(PaneControlsBar(controls: shown, typing: typing)),
+                                            hasControls: Self.hasControls(shown),
                                             openSidebar: sidebarAction, endTyping: { typing = false })
                 }
             }
@@ -79,17 +84,24 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
             .onGeometryChange(for: CGRect.self) { $0.frame(in: DotCarrier.coordinateSpace(carrier)) } action: { frame.rect = $0 }
     }
 
-    /// 信息区：窗口给的圆环，提示出现时虚化盖住；没有圆环时只放提示图标。
-    private var status: some View {
+    /// 信息区：窗口给的组件，提示出现时虚化盖住；没给时只放提示图标，再没有提示就空着（侧栏按钮由 PaneHeaderStatus 加）。
+    private var statusArea: some View {
         let shown = connectionNotice ?? notice
-        return Group(subviews: headerStatus) { statusViews in
-            if !statusViews.isEmpty {
-                ForEach(statusViews) { $0 }
+        return Group {
+            if let status {
+                status
             } else if let shown {
                 PaneNoticeIcon(notice: shown)
             }
         }
         .environment(\.paneNotice, shown)
+    }
+
+    private var hasStatus: Bool { status != nil || connectionNotice != nil || notice != nil }
+
+    /// 控制区里有没有控件：不给是 EmptyView，按条件给（if）而条件不成立时是 nil。
+    private static func hasControls(_ controls: Controls) -> Bool {
+        Controls.self != EmptyView.self && (controls as? any OptionalControls)?.isNone != true
     }
 
     /// 标题栏左边按钮的动作：先收起键盘，再拉开侧边栏。
@@ -101,6 +113,14 @@ struct PaneWindow<Content: View, Controls: View, HeaderStatus: View, HeaderActio
         }
     }
 
+}
+
+private protocol OptionalControls {
+    var isNone: Bool { get }
+}
+
+extension Optional: OptionalControls {
+    fileprivate var isNone: Bool { self == nil }
 }
 
 /// 含有窗口的视图淡入淡出时用蒙版，不用 opacity，也不留给动画里插入视图时默认的 opacity 转场。
@@ -199,7 +219,7 @@ struct PaneControlsBar<Controls: View>: View {
 
     var body: some View {
         Group(subviews: controls) { controlViews in
-            GlassEffectContainer(spacing: Metrics.paneButtonGap) {
+            Group {
                 HStack(alignment: .bottom, spacing: Metrics.paneButtonGap) {
                     if !controlViews.contains(where: { $0.containerValues.placesKeyboardButton }) {
                         KeyboardDismissButton()
@@ -220,6 +240,7 @@ struct PaneControlsBar<Controls: View>: View {
                     }
                 }
             }
+                .modifier(PaneControlsGlassContainer())
                 .padding(.horizontal, Metrics.paneMargin)
                 .modifier(PaneControlsBottom())
                 .drawerShift(.bottom)
@@ -234,10 +255,28 @@ struct PaneControlsBar<Controls: View>: View {
     }
 }
 
+private struct PaneControlsGlassContainer: ViewModifier {
+    @Environment(\.compactSharedGlass) private var shared
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if shared { content }
+        else { GlassEffectContainer(spacing: Metrics.paneButtonGap) { content } }
+    }
+}
+
 /// 在这里往上拖拉出 action 栏，只在窄屏触控下。和控制区里的点按、输入同时生效，不抢它们。
 private struct DrawerPullModifier: ViewModifier {
     let enabled: Bool
     @Environment(\.drawerPull) private var pull
+    @Environment(\.compactSharedGlass) private var sharedGlass
+
+    private var native: Bool {
+        #if os(iOS)
+        sharedGlass
+        #else
+        false
+        #endif
+    }
 
     // 有没有 pull 都是同一个结构，没有时只停掉手势；分成两支的话，pull 有无一变控制区就被当成换了一个视图，淡出再淡入。
     // 紧凑布局的窗口一直给着，能不能拉由它自己判断
@@ -245,7 +284,7 @@ private struct DrawerPullModifier: ViewModifier {
         content
             .contentShape(Rectangle())
             .simultaneousGesture((pull ?? DrawerPull(changed: { _, _ in }, ended: { _ in })).gesture,
-                                 isEnabled: enabled && pull != nil)
+                                 isEnabled: enabled && pull != nil && !native)
     }
 }
 
@@ -269,6 +308,7 @@ private struct CompactPaneHeaderReport: View {
     let status: AnyView?
     let actions: AnyView
     let controls: AnyView
+    let hasControls: Bool
     let openSidebar: (@MainActor () -> Void)?
     let endTyping: () -> Void
     @Environment(\.headerPane) private var headerPane
@@ -282,6 +322,6 @@ private struct CompactPaneHeaderReport: View {
     private var headers: [CompactPaneHeader] {
         guard sharedHeaderHeight != nil, let pane = headerPane else { return [] }
         return [CompactPaneHeader(pane: pane, header: header, status: status, actions: actions, controls: controls,
-                                  environment: environment, openSidebar: openSidebar, endTyping: endTyping)]
+                                  hasControls: hasControls, environment: environment, openSidebar: openSidebar, endTyping: endTyping)]
     }
 }

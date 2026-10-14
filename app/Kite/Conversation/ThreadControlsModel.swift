@@ -4,7 +4,7 @@ import SwiftUI
 @Observable final class ThreadControlsState {
     /// 刚发出去、正在淡掉的字，见 ThreadControlsModel.submit。控制区里由 SwiftUI 逐帧驱动的动画会和对话滑动抢同一帧，
     /// 发送时掉帧（2026-10-11 Mac 实测，字的模糊淡出和发送键的淡出各自都会）：输入框先藏起来，字画成图盖在原处
-    /// 交给 Core Animation 淡掉（见 FadingSnapshotView），发送键直接消失。
+    /// 交给 Core Animation 淡掉（见 FadingSnapshotView），主按钮按清空后的草稿与会话状态更新。
     fileprivate(set) var fading: FadingText?
     /// 正在选、还没存下的思考强度。
     var effortDraft: Effort?
@@ -29,16 +29,60 @@ struct ThreadControlsModel {
     /// 发一条消息；第二个参数和对话往上滑在同一次更新里调。
     let send: (Message, _ alongside: @escaping () -> Void) -> Void
 
-    /// 附件、语音这组按钮与后面停止、继续、发送键的间距，比通用的按钮间距紧，发送键贴着左边的按钮组。
+    /// 附件、语音与固定主按钮之间的间距。
     static let actionGap: CGFloat = 4
 
     var placeholder: String { thread.transcriptRunning ? "插话，agent 做完手上这一步就会看到" : "回复" }
     var listening: Bool { model.voice.owner == voiceOwner }
     var blank: Bool { thread.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    /// 发送键：空草稿、发出去的字还在淡的时候不显示。
-    var showsSend: Bool { !blank && state.fading == nil }
-    var showsStop: Bool { thread.showStop }
-    var showsResume: Bool { thread.state?.capabilities.resume == true }
+    enum PrimaryAction {
+        case send, stop, resume
+
+        var symbol: String {
+            switch self {
+            case .send: "arrow.up"
+            case .stop: "stop.fill"
+            case .resume: "play.fill"
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .send: "发送"
+            case .stop: "停止"
+            case .resume: "继续"
+            }
+        }
+    }
+
+    /// 草稿优先；空闲时仍保留发送键，由可用状态把它置灰。
+    var primaryAction: PrimaryAction {
+        if !blank { return .send }
+        if thread.showStop { return .stop }
+        if thread.state?.capabilities.resume == true { return .resume }
+        return .send
+    }
+
+    var canPerformPrimaryAction: Bool {
+        switch primaryAction {
+        case .send: canSubmit
+        case .stop: thread.canStop
+        case .resume: thread.canResume
+        }
+    }
+
+    var primaryActionFill: Color {
+        primaryAction == .stop || !canPerformPrimaryAction ? Theme.strongPlaceholder : .accentColor
+    }
+
+    func performPrimaryAction(submit: () -> Void) {
+        guard canPerformPrimaryAction else { return }
+        switch primaryAction {
+        case .send: submit()
+        case .stop: stop()
+        case .resume: resume()
+        }
+    }
 
     func stop() { thread.stop() }
     func resume() { thread.control("resume") }

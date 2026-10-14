@@ -46,18 +46,13 @@ struct ThreadControls: View {
                 .overlay { FadingSnapshot(fading: fading) }
                 .padding(.horizontal, Metrics.controlInset + 8)
                 .padding(.vertical, 6)
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: Metrics.paneButtonGap) {
-                    ThreadEffortControl(controls: controls).fixedSize()
-                    Spacer(minLength: 0)
+            HStack(spacing: Metrics.paneButtonGap) {
+                ThreadEffortControl(controls: controls).fixedSize().layoutPriority(1)
+                Spacer(minLength: 0)
+                // 只替换右侧按钮组，effort 保持同一个视图，展开途中不会因空间不足丢掉手势。
+                ViewThatFits(in: .horizontal) {
                     actionButtons(controls).fixedSize()
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    ThreadEffortControl(controls: controls)
-                    HStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        actionButtons(controls)
-                    }
+                    Color.clear.frame(width: 0, height: Metrics.paneButton).allowsHitTesting(false)
                 }
             }
             .padding(.horizontal, Metrics.controlButtonInset)
@@ -87,24 +82,15 @@ struct ThreadControls: View {
                     .buttonStyle(PaneButtonStyle(foreground: listening ? .accentColor : .secondary))
                     .accessibilityLabel(listening ? "结束语音输入" : "语音输入")
             }
-            if controls.showsStop {
-                Button(action: controls.stop) { Image(systemName: "stop.fill") }
-                    .buttonStyle(PaneButtonStyle(fill: Theme.strongPlaceholder))
-                    .disabled(!thread.canStop)
-                    .accessibilityLabel("停止")
+            Button {
+                controls.performPrimaryAction(submit: submit)
+            } label: {
+                Image(systemName: controls.primaryAction.symbol)
             }
-            if controls.showsResume {
-                Button("继续", action: controls.resume)
-                    .buttonStyle(PaneButtonStyle(text: true))
-                    .disabled(!thread.canResume)
-                    .accessibilityLabel("继续")
-            }
-            if controls.showsSend {
-                Button(action: submit) { Image(systemName: "arrow.up") }
-                    .buttonStyle(PaneButtonStyle(fill: .accentColor))
-                    .disabled(!thread.canSend)
-                    .accessibilityLabel("发送")
-            }
+            .buttonStyle(PaneButtonStyle(fill: controls.primaryActionFill))
+            .disabled(!controls.canPerformPrimaryAction)
+            .accessibilityLabel(controls.primaryAction.title)
+            .help(controls.primaryAction.title)
         }
     }
 

@@ -80,7 +80,9 @@ final class PaneButtonView: HighlightButton {
     private func labelChanged() {
         switch label {
         case .symbol(let name):
-            let configuration = NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: fill == nil ? .regular : .bold, scale: .medium)
+            // 实心按钮（发送、停止）的图标比普通按钮小一号，填色圆里留出更多边距。
+            let size = fill == nil ? font.pointSize : font.pointSize - 3
+            let configuration = NSImage.SymbolConfiguration(pointSize: size, weight: fill == nil ? .regular : .bold, scale: .medium)
             image.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
             image.isHidden = false
             text.isHidden = true

@@ -24,7 +24,7 @@ Mac、iPhone 和 iPad 共用一个 SwiftUI 工程、一个多平台 target。使
 
 宽屏台面（卡片、缝、拖动和窗口动画）是原生的：Mac 的 `StageView`、iPad 的 `PhoneStageView`；会话窗口的外框也是原生的（`ThreadWindowView`、`PhoneThreadWindowView`），别的窗口和停靠栏、空画板仍是 SwiftUI，各放进台面上的托管视图。会话输入区 Mac 宽屏是 `MacControlsBar`，iPhone、iPad 是 `ControlsBarView`。
 
-iPhone 和窄的 iPad 的紧凑布局（抽屉、外壳、一行窗口、共用标题栏和控制区）是原生的 `CompactShellView`、`CompactRowView`；Mac 的窄窗口用 `CompactLayout` 里的 SwiftUI 版（`MacCompactLayout`、`CompactWindow`、`CompactPaneStack`），会话窗口是 SwiftUI 的 `ThreadPane`、输入区是 `ThreadControls`，对话仍是原生列表。
+iPhone 和窄的 iPad 的紧凑布局（抽屉、外壳、一行窗口）是原生的 `CompactShellView`、`CompactRowView`；标题栏和控制区通过 `CompactChromeView` 共用稳定的 SwiftUI 玻璃容器，输入框仍是原生的 `ControlsBarView`。Mac 的窄窗口用 `CompactLayout` 里的 SwiftUI 版（`MacCompactLayout`、`CompactWindow`、`CompactPaneStack`），会话窗口是 SwiftUI 的 `ThreadPane`、输入区是 `ThreadControls`，对话仍是原生列表。
 
 状态圆环和停靠栏头像的脉冲两端都是图层动画（`ContextRingLayers`、`DockPulseLayers`）。
 

@@ -210,9 +210,10 @@ final class CompactShellView: UIView, DrawerDriving {
     private var keyboard: CGFloat = 0
     private(set) var geometry: WindowGeometry?
     private var placedRule: ActionsRule?
+    private var focusedGroupID: String?
     private var focusedNil = true
     private var crossings = 0
-    private let feedback = UIImpactFeedbackGenerator(style: .light)
+    private let feedback = UIImpactFeedbackGenerator(style: .rigid)
     private var placeholderDots = false
 
     // 抽屉的弹簧：每一侧当前的一段，跟手时显示链接逐帧摆，否则整段交给 Core Animation
@@ -280,7 +281,21 @@ final class CompactShellView: UIView, DrawerDriving {
 
     private func installIslands() {
         let state = state, drawer = drawer
-        sidebar.rootView = rooted(CompactSidebarRoot(state: state) { drawer.settle(nil) })
+        // 侧栏是独立的 SwiftUI 根：只传它使用的数据和外观，保留自己宿主的事件环境。
+        // 整份覆盖 EnvironmentValues 会把外层宿主的内部环境一起带进来，窗口换岛时影响普通按钮的手势注册。
+        sidebar.rootView = AnyView(CompactSidebarRoot(state: state) {
+            drawer.settle(nil)
+        }
+            .environment(model)
+            .environment(\.workspacePresentation, environment.workspacePresentation)
+            .environment(\.toast, environment.toast)
+            .environment(\.colorScheme, environment.colorScheme)
+            .environment(\.dynamicTypeSize, environment.dynamicTypeSize)
+            .environment(\.displayScale, environment.displayScale)
+            .environment(\.isEnabled, environment.isEnabled)
+            .environment(\.locale, environment.locale)
+            .environment(\.layoutDirection, environment.layoutDirection)
+            .buttonStyle(.pointingAutomatic))
         tabs.rootView = rooted(CompactTabsRoot(state: state))
         dots.rootView = rooted(CompactWindowDots(state: state))
         placeholder?.rootView = placeholderRoot
@@ -355,6 +370,7 @@ final class CompactShellView: UIView, DrawerDriving {
         var focusedNil = true
         var open: WorkspaceDrawer?
         var shown: WorkspaceDrawer?
+        var rest: WorkspaceDrawer?
         var crossings = 0
     }
 
@@ -413,11 +429,16 @@ final class CompactShellView: UIView, DrawerDriving {
         sidebar.accessibilityElementsHidden = read.shown != .sidebar
         // 拉开着、正往开里走时不接点按，会挡住露出来的侧边栏、底栏。正往回收的从收起那一刻就接：弹簧走完要 0.7 秒，
         // 看着 0.4 秒左右就停了，原来要等走完，这中间点窗口里的东西没反应（2026-10-14 用户说触控有点不灵敏，查出的一处）
-        content.isUserInteractionEnabled = read.shown == nil || read.shown == drawer.rest || read.open == drawer.rest
-        catcher.update(drawer: drawer, geometry: geometry)
+        content.isUserInteractionEnabled = read.shown == nil || read.shown == read.rest || read.open == read.rest
+        updateCatcher(geometry)
 
-        // 观察之外：规则、几何交给抽屉，开出第一个窗口时收起，越过一半轻震
-        let focusedNil = read.focusedNil, crossings = read.crossings
+        // 只在同一组里开出第一个窗口时收起；切栏目可能换到已有窗口的一组，侧栏仍应留着供继续选择。
+        let groupID = read.group?.id
+        let openedFirstWindow = groupID != nil && focusedGroupID == groupID && focusedNil && !read.focusedNil
+        focusedGroupID = groupID
+        focusedNil = read.focusedNil
+        // 观察之外：规则、几何交给抽屉，越过一半轻震。
+        let crossings = read.crossings
         let rule = geometry.rule
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -430,8 +451,9 @@ final class CompactShellView: UIView, DrawerDriving {
                 placedRule = rule
                 drawer.setRule(rule)
             }
-            if self.focusedNil, !focusedNil { drawer.settle(nil) }
-            self.focusedNil = focusedNil
+            if openedFirstWindow, model.paneGroup?.id == groupID, model.paneGroup?.layout.focused != nil {
+                drawer.settle(nil)
+            }
             if self.crossings != crossings {
                 self.crossings = crossings
                 feedback.impactOccurred()
@@ -460,6 +482,7 @@ final class CompactShellView: UIView, DrawerDriving {
         read.focusedNil = group?.layout.focused == nil
         read.open = drawer.open
         read.shown = drawer.shown
+        read.rest = drawer.rest
         read.crossings = drawer.crossings
         return read
     }
@@ -472,6 +495,11 @@ final class CompactShellView: UIView, DrawerDriving {
 
     private func place(_ view: UIView, _ frame: CGRect) {
         if view.frame != frame { view.frame = frame }
+    }
+
+    /// 进度只更新命中区域，不进外壳的观察范围；跟手和换终点由原生动画驱动调用。
+    private func updateCatcher(_ geometry: WindowGeometry) {
+        catcher.update(open: drawer.open, rest: drawer.rest, target: drawer.target, geometry: geometry)
     }
 
     /// 窗口里的内容：开着窗口时是一行窗口（CompactRowView），否则是占位内容的岛。
@@ -558,8 +586,18 @@ final class CompactShellView: UIView, DrawerDriving {
 
     // MARK: - 命中
 
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard isUserInteractionEnabled, !isHidden, alpha > 0.01, self.point(inside: point, with: event) else { return nil }
+        // 页面切换与抽屉转场各自更新，窗口的接手势层不能挡住已经露出的侧栏导航。
+        if drawer.open == .sidebar, let geometry, point.x < geometry.windowRect(drawer.target).minX,
+           let hit = sidebar.hitTest(sidebar.convert(point, from: self), with: event) {
+            return hit
+        }
+        return super.hitTest(point, with: event)
+    }
+
     private var sidebarRegion: CGRect? {
-        drawer.shown == .sidebar ? sidebar.bounds : nil
+        drawer.open == .sidebar || drawer.shown == .sidebar ? sidebar.bounds : nil
     }
 
     private var tabsRegion: CGRect? {
@@ -582,7 +620,10 @@ final class CompactShellView: UIView, DrawerDriving {
         segments = [:]
         settled = openness
         stopLink()
-        if let geometry { apply(DrawerPose(geometry, openness)) }
+        if let geometry {
+            updateCatcher(geometry)
+            apply(DrawerPose(geometry, openness))
+        }
         finish(at: CACurrentMediaTime())
     }
 
@@ -611,6 +652,7 @@ final class CompactShellView: UIView, DrawerDriving {
     private func refresh(at time: CFTimeInterval) {
         flightGeneration += 1
         guard let geometry else { return }
+        updateCatcher(geometry)
         if segments.values.contains(where: \.tracking) {
             stopFlight()
             startLink()
@@ -847,11 +889,11 @@ private final class DrawerCatcher: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func update(drawer: DrawerMotion, geometry: WindowGeometry) {
-        let window = geometry.windowRect(drawer.target)
-        if let open = drawer.open, open != drawer.rest {
+    func update(open: WorkspaceDrawer?, rest: WorkspaceDrawer?, target: Openness, geometry: WindowGeometry) {
+        let window = geometry.windowRect(target)
+        if let open, open != rest {
             covering = true
-            radius = geometry.placement(drawer.target).radius
+            radius = geometry.placement(target).radius
             if frame != window { frame = window }
         } else {
             covering = false

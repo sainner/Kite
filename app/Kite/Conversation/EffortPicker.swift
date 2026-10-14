@@ -54,11 +54,17 @@ struct EffortPicker: View {
     var body: some View {
         HStack(spacing: 0) {
             EffortTicks(effort: effort, origin: origin, shown: showsTicks, adjusting: adjusting, reached: touch?.farthest)
-            Text(effort.name)
-                .font(Theme.secondary)
-                .foregroundStyle(showsTicks ? .primary : .secondary)
-                .padding(.horizontal, 8)
-                .frame(height: Metrics.paneButton)
+            ZStack(alignment: .leading) {
+                // 整个档位词一起替换，避免 SwiftUI 把新旧词的相同字母单独配对做过渡。
+                Text(effort.name)
+                    .id(effort)
+                    .transition(.scale(scale: 0.85, anchor: .leading).combined(with: .opacity))
+            }
+            .font(Theme.secondary)
+            .foregroundStyle(showsTicks ? .primary : .secondary)
+            .animation(.snappy, value: effort)
+            .padding(.horizontal, 8)
+            .frame(height: Metrics.paneButton)
         }
         .contentShape(Rectangle())
         .reservesPaneSwipe()
@@ -75,6 +81,8 @@ struct EffortPicker: View {
         }
         .onHover { hovering in
             withAnimation(.snappy) {
+                // 悬停在原地展开：刻度线从控件左边起，不沿用上次按下收着的档位名时挪过的位置
+                if hovering, !showsTicks { origin = 0 }
                 self.hovering = hovering
                 if !hovering { settled = false }
             }

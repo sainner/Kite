@@ -10,6 +10,8 @@ struct PaneSwipeActions {
 extension EnvironmentValues {
     /// 紧凑布局提供；宽屏没有，控制区不接横滑。
     @Entry var paneSwipe: PaneSwipeActions?
+    /// 原生控件保留自己的横拖区域；起手时直接换算坐标，不逐帧向 SwiftUI 上报几何。
+    @Entry var nativePaneSwipeReservation: (@MainActor (CGPoint) -> Bool)?
 }
 
 private struct PaneControlsFocus: FocusedValueKey {
@@ -42,7 +44,13 @@ extension View {
 struct PaneControlSwipe: ViewModifier {
     let typing: Bool
     @Environment(\.paneSwipe) private var paneSwipe
+    @Environment(\.nativePaneSwipeReservation) private var nativeReservation
     @Environment(\.keyboardShown) private var keyboardShown
+    @Environment(\.compactSharedGlass) private var sharedGlass
+    #if os(iOS)
+    @Environment(\.drawerPull) private var drawerPull
+    @Environment(\.workspacePresentation) private var presentation
+    #endif
     @FocusedValue(\.paneControls) private var focusedControls
     @State private var focusID = UUID()
     @State private var reservations: [CGRect] = []
@@ -53,6 +61,14 @@ struct PaneControlSwipe: ViewModifier {
         paneSwipe != nil && !keyboardShown && !typing && focusedControls != focusID
     }
 
+    private var native: Bool {
+        #if os(iOS)
+        sharedGlass
+        #else
+        false
+        #endif
+    }
+
     func body(content: Content) -> some View {
         content
             .focusedValue(\.paneControls, focusID)
@@ -60,7 +76,16 @@ struct PaneControlSwipe: ViewModifier {
             .onPreferenceChange(PaneSwipeReservations.self) { frames in
                 Task { @MainActor in reservations = frames }
             }
-            .simultaneousGesture(swipe, isEnabled: enabled)
+            .simultaneousGesture(swipe, isEnabled: enabled && !native)
+            #if os(iOS)
+            .background {
+                if native {
+                    PaneControlDrag(swipe: enabled ? paneSwipe : nil,
+                                    pull: !typing && presentation.isCompactTouch ? drawerPull : nil,
+                                    reservations: reservations, nativeReservation: nativeReservation)
+                }
+            }
+            #endif
             .onChange(of: dragging) { _, dragging in if !dragging { stopSwitching() } }
             .onChange(of: enabled) { _, enabled in if !enabled { stopSwitching() } }
     }
@@ -78,6 +103,7 @@ struct PaneControlSwipe: ViewModifier {
                     // 起手方向只判一次；竖向拉底栏和控件自身的横拖都不能半路变成切窗口。
                     switching = enabled && DrawerPull.isHorizontal(value.translation)
                         && !reservations.contains { $0.contains(value.startLocation) }
+                        && nativeReservation?(value.startLocation) != true
                 }
                 if switching == true { paneSwipe?.track(value.translation.width) }
             }

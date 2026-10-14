@@ -73,7 +73,7 @@ struct RoleContextPane: View {
         PaneWindow(header: PaneHeader(title: role?.title ?? "", subtitle: AgentContextCategory.role.title,
                                       titleEdit: role == nil ? nil : .init(label: "重命名角色", enabled: !saving) { title in
                                           model.editRole(id) { $0.role.title = title }
-                                      })) {
+                                      }), actions: PaneHeaderActions(groups: headerGroups)) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let error { CardCallout(text: error) }
@@ -90,38 +90,28 @@ struct RoleContextPane: View {
             }
         } controls: { _ in
             if role != nil { ContextEditorToolbar(variables: catalog?.variables ?? []).disabled(saving) }
-        } headerActions: {
-            PaneHeaderButtonGroup {
-                Button { refresh() } label: { PaneHeaderButtonLabel("刷新", systemImage: "arrow.clockwise") }
-                    .help("刷新")
-                    .disabled(refreshing)
-                Button { model.newLibraryRole(from: role) } label: { PaneHeaderButtonLabel("基于此新建角色", systemImage: "doc.on.doc") }
-                    .help("基于此新建角色")
-                    .disabled(role == nil)
-            }
-            // 有草稿才能保存或放弃。角色不能删除，放弃时新角色整个丢掉，已有角色撤掉没保存的修改。
-            if draft != nil {
-                PaneHeaderButtonGroup {
-                    Button { discard = true } label: {
-                        PaneHeaderButtonLabel(discardTitle, systemImage: isNew ? "trash" : "xmark")
-                    }
-                    .help(discardTitle)
-                    .disabled(saving)
-                    Button(action: save) {
-                        PaneHeaderButtonLabel("保存", systemImage: "checkmark")
-                            .opacity(saving ? 0 : 1)
-                            .overlay { if saving { CardSpinner().scaleEffect(0.6) } }
-                    }
-                    .help(model.connected ? "保存" : "工作机未连接")
-                    .disabled(!canSave)
-                }
-            }
         }
         // 按初始配置里的默认模型数 token，改了默认模型就重数。
         .contextEditor(editor, counting: model.contextCounting(model: role?.model.model, connection: model.activeConnection))
         .discardAlert(isNew ? "放弃这个新角色？" : "放弃未保存的角色修改？", isPresented: $discard, discardLabel: discardTitle) {
             model.roleDrafts.removeAll { $0.id == id }
         }
+    }
+
+    /// 刷新、基于此新建；有草稿才能保存或放弃。角色不能删除，放弃时新角色整个丢掉，已有角色撤掉没保存的修改。
+    private var headerGroups: [[PaneHeaderAction]] {
+        var groups = [[
+            PaneHeaderAction(title: "刷新", systemImage: "arrow.clockwise", disabled: refreshing) { refresh() },
+            PaneHeaderAction(title: "基于此新建角色", systemImage: "doc.on.doc", disabled: role == nil) { model.newLibraryRole(from: role) },
+        ]]
+        if draft != nil {
+            groups.append([
+                PaneHeaderAction(title: discardTitle, systemImage: isNew ? "trash" : "xmark", disabled: saving) { discard = true },
+                PaneHeaderAction(title: "保存", systemImage: "checkmark", help: model.connected ? "保存" : "工作机未连接",
+                                 busy: saving, disabled: !canSave, action: save),
+            ])
+        }
+        return groups
     }
 
     private func refresh() {
@@ -163,7 +153,7 @@ struct RoleSettingsPane: View {
     private var saving: Bool { model.savingRoles.contains(id) }
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: "初始配置", subtitle: "以此角色新建代理时的默认配置")) {
+        PaneWindow(header: PaneHeader(title: "初始配置", subtitle: "以此角色新建代理时的默认配置"), actions: headerActions) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let role = model.libraryRole(id) {
@@ -176,14 +166,17 @@ struct RoleSettingsPane: View {
             }
         } controls: { _ in
             EmptyView()
-        } headerActions: {
-            if let role = model.libraryRole(id) {
-                AgentModelMenus(configuration: Binding(get: { model.libraryRole(id)?.model ?? role.model },
-                                                       set: { value in model.editRole(id) { $0.role.model = value } }),
-                                vendors: model.roleCatalog?.vendors ?? [], models: model.roleCatalog?.models ?? [])
-                    .disabled(saving)
-            }
         }
+    }
+
+    /// 默认模型与思考强度菜单。
+    private var headerActions: PaneHeaderActions {
+        PaneHeaderActions(menus: model.libraryRole(id).map { role in
+            AnyView(AgentModelMenus(configuration: Binding(get: { model.libraryRole(id)?.model ?? role.model },
+                                                           set: { value in model.editRole(id) { $0.role.model = value } }),
+                                    vendors: model.roleCatalog?.vendors ?? [], models: model.roleCatalog?.models ?? [])
+                .disabled(saving))
+        })
     }
 }
 

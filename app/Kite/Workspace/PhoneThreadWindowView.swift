@@ -23,7 +23,9 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
 
     private let backdrop = HostIsland()
     private let list = PhoneTranscriptView()
-    let controls = ControlsBarView()
+    let controls: ControlsBarView
+    private let compactComposer: CompactComposerState
+    private(set) var compactChrome: CompactPaneHeader?
     /// 对话列表，和它上面给滚动软边占位的标题栏（safeAreaBar，透明，高同标题栏）。
     private let surface = HostIsland()
     /// 标题栏，原生的，压在对话上面。
@@ -37,8 +39,10 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         didSet { if compactInsets != oldValue { setNeedsLayout() } }
     }
 
-    /// 紧凑布局里标题栏、输入区的高变了：外壳重摆。
+    /// 紧凑布局里标题栏换了内容（compactChrome）：外壳重新交给共用的标题栏、控制区。
     var chromeChanged: (() -> Void)?
+    /// 紧凑布局里输入区变高变矮了：外壳重摆，对话的让位按输入区当场算（见 CompactRowView.layoutChrome）。标题栏没变，不重交。
+    var controlsResized: (() -> Void)?
     private let headerTracking = ModelTracking()
     private let metrics = ThreadWindowMetrics()
     /// 窗口的范围（正文坐标），交给铺满窗口的签名，同 PaneWindow 的 paneWindowFrame。
@@ -72,6 +76,8 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         self.reports = reports
         self.motion = motion
         self.compact = compact
+        controls = ControlsBarView(glassManagedExternally: compact)
+        compactComposer = CompactComposerState(bar: controls)
         super.init(frame: .zero)
         pane.scroll.list = list
         for view in (compact ? [backdrop, surface] : [backdrop, surface, fade, headerBar, controls]) as [UIView] { addSubview(view) }
@@ -82,7 +88,13 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         list.isHidden = true
         controls.heightChanged = { [weak self] in
             guard let self else { return }
-            if compact { chromeChanged?() } else { invalidate() }
+            if compact {
+                compactComposer.sizeRevision += 1
+                controlsResized?()
+            } else { invalidate() }
+        }
+        if compact {
+            controls.focusChanged = { [weak self] typing in self?.compactComposer.typing = typing }
         }
         installIslands()
         refreshRows()
@@ -114,8 +126,10 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         fade.environment = environment
         let roots = ThreadIslandEnvironment(group: group, pane: paneID, header: header, model: pane)
         surface.rootView = rooted(PhoneTranscriptSurface(list: list, metrics: metrics, compact: compact))
-        headerBar.install(status: rooted(ThreadHeaderStatusRoot(openSidebar: sidebarAction).modifier(roots)),
-                          actions: rooted(ThreadHeaderActions().fixedSize().modifier(roots)), environment: environment)
+        if !compact {
+            headerBar.install(status: rooted(ThreadHeaderStatusRoot(openSidebar: sidebarAction).modifier(roots)),
+                              actions: rooted(ThreadHeaderActions().fixedSize().modifier(roots)), environment: environment)
+        }
         backdrop.rootView = rooted(ThreadBackdropRoot(pane: pane, metrics: metrics, windowFrame: windowFrame, reports: reports).modifier(roots))
     }
 
@@ -131,9 +145,12 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         headerBar.changed = nil
         headerBar.tapped = nil
         chromeChanged = nil
+        controlsResized = nil
         rowsTracking.cancel()
         controlsTracking.cancel()
         controls.heightChanged = nil
+        controls.focusChanged = nil
+        compactChrome = nil
         for island in [surface, backdrop] {
             island.hitRegion = nil
             island.rootView = AnyView(EmptyView())
@@ -162,6 +179,16 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
             Task { @MainActor in self?.refreshHeader() }
         }
         let roots = ThreadIslandEnvironment(group: group, pane: paneID, header: self.header, model: pane)
+        if compact {
+            compactChrome = CompactPaneHeader(pane: paneID, header: header,
+                status: AnyView(CompactThreadStatus()),
+                // 同 PaneWindow 画的右组一种视图，换窗口时原地更新（见 PaneHeaderActions）
+                actions: AnyView(PaneHeaderActions(menus: AnyView(ThreadHeaderActions().modifier(roots)))),
+                controls: AnyView(CompactNativeControls(bar: controls, state: compactComposer)), hasControls: true,
+                environment: environment, openSidebar: sidebarAction, endTyping: { [weak self] in self?.controls.endTyping() })
+            chromeChanged?()
+            return
+        }
         headerBar.update(.init(header: header, openSidebar: sidebarAction)) {
             rooted(PaneHeaderTitle(header: header).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading).clipped().modifier(roots))
         }
