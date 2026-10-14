@@ -199,6 +199,14 @@ final class ComposerField: UITextView, UITextViewDelegate {
         focusChanged?(isFirstResponder)
     }
 
+    /// 没在打字时自己的拖动不起：框里往上拖是拉底栏、横着拖是换窗口。只关 panGestureRecognizer 关不住：2026-10-14 iPhone 真机
+    /// 进程内看手势状态，刚开 App 和不在当前的窗口里，没在打字的输入框的拖动都是开着的，UIKit 会把它重新打开（哪一步打开的没查）。
+    /// 在这里拦住，谁再打开都不起；打字时照常滚，8 行以上的草稿在框里滚。
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === panGestureRecognizer, !isFirstResponder { return false }
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
+    }
+
     func textViewDidChange(_ textView: UITextView) {
         placeholderLabel.isHidden = !text.isEmpty
         textChanged?(text)
