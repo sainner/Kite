@@ -178,6 +178,8 @@ private struct WindowDockContract {
         try allCardsCanDockAndReturn()
         try reorderCancelAndSwitchArrangement()
         try canvasEdgesPreviewAndCommit()
+        try narrowCanvasEdgeDocksFarthestPane()
+        try canvasTooNarrowForTwoHasNoSideEdge()
         try headerActionsPreserveWindowsAndCancelDrag()
         try persistedLayoutReconcilesRemoteWindows()
         try automaticPlacementPreservesFramesAndWindows()
@@ -188,7 +190,7 @@ private struct WindowDockContract {
         try squeezedColumnsReturnWithinOneDrag()
         try nestedGapsMoveOnlyAdjacentPanes()
         try sidebarResizeMovesOnlyLeadingColumn()
-        print("窗口停靠十三组手动合同验证通过")
+        print("窗口停靠十五组手动合同验证通过")
     }
 
     /// 左右三列 A | B | C：两栏预设再在整个排布右边加一列，树是 H(H(A, B), C)。内容区宽高不是 12 的倍数。
@@ -821,6 +823,89 @@ private struct WindowDockContract {
         try require(layout.root?.layout(in: canvas).panes[floating] == localPlaceholder,
                     "内部卡片的预览和最终窗口帧不一致")
         try requireComplete(layout, "内部卡片局部分割后")
+    }
+
+    // 真实 bug：iPad 上台面已有两个左右并排的窗口（触屏窗口最小宽 360），从停靠栏拖一个到内容区左右外缘，
+    // 其余窗口照旧排、让出这一边放不下，这条边被判成没有落点，排布不换成沿这一边贴满的预览，只有卡片里的局部分栏在变。
+    // 修法是挤不下时把离这条边远的那扇收进停靠栏。这里用 Mac 的最小宽 168 取窄内容区（放得下两列、放不下三列），
+    // 同时验 Mac 窗口窄时也走这条路：落点判断、预览排布（shown、shownDock）与松手提交的状态交接，
+    // 占位帧等于松手后的窗口帧，被腾出的窗口留在停靠栏末尾，树与停靠栏的窗口集合完整不重复。
+    private static func narrowCanvasEdgeDocksFarthestPane() throws {
+        let minimum = Metrics.minPane, gap = Metrics.gap
+        let bounds = placementBounds(canvasWidth: 450, canvasHeight: 500)
+        for edge in [Edge.leading, .trailing] {
+            let panes = fixturePanes("narrow-edge-\(edge)", count: 4)
+            let a = panes[0], b = panes[1], floating = panes[2], waiting = panes[3]
+            let layout = WindowLayout(panes: panes, arrangement: .sideBySide)
+            layout.updateViewport(bounds.size, presentation: .tiled)
+            let canvas = layout.regions(in: bounds).canvas
+            try require(canvas.width >= minimum * 2 + gap && canvas.width < minimum * 3 + gap * 2,
+                        "窄内容区 \(canvas.width) 应放得下两列、放不下三列")
+            try require(layout.shown?.panes == [a, b] && layout.shownDock == [floating, waiting],
+                        "夹具没有排成台面左右两扇、停靠栏两扇")
+            let (kept, pushed) = edge == .leading ? (a, b) : (b, a)
+            let point = edge == .leading
+                ? CGPoint(x: canvas.minX + 1, y: canvas.midY)
+                : CGPoint(x: canvas.maxX - 1, y: canvas.midY)
+
+            layout.drag(floating, to: point, in: bounds)
+            try require(layout.drag?.spot == DropSpot.edge(edge),
+                        "窄内容区 \(edge) 外缘没有成为整条边的落点，实际 \(String(describing: layout.drag?.spot))")
+            guard let preview = layout.shown?.layout(in: canvas), let placeholder = preview.placeholder else {
+                throw DockContractError.failed("窄内容区 \(edge) 外缘没有占位预览")
+            }
+            try requireSpansCanvas(placeholder, along: edge, canvas: canvas)
+            try require(Array(preview.panes.keys) == [kept],
+                        "窄内容区 \(edge) 的预览台面上应只留离这条边近的 \(kept.id)，实际 \(preview.panes.keys.map(\.id))")
+            try require(layout.shownDock.contains(pushed) && layout.shownDock.contains(waiting)
+                        && !layout.shownDock.contains(kept) && !layout.shownDock.contains(floating),
+                        "窄内容区 \(edge) 的预览停靠栏应有被腾出的 \(pushed.id)，实际 \(layout.shownDock.map(\.id))")
+            let previewed = Array(preview.panes.keys) + layout.shownDock + [floating]
+            try require(previewed.count == panes.count && Set(previewed) == Set(panes),
+                        "窄内容区 \(edge) 的预览遗漏或重复了窗口")
+
+            layout.drop(in: bounds)
+            let committed = shownTiles(layout, in: bounds).panes
+            guard let placed = committed[floating] else {
+                throw DockContractError.failed("窄内容区 \(edge) 松手后放进去的窗口不在台面上")
+            }
+            try require(placed == placeholder, "窄内容区 \(edge) 的预览占位 \(placeholder) 和松手后的窗口帧 \(placed) 不一致")
+            try require(committed[kept] == preview.panes[kept],
+                        "窄内容区 \(edge) 留在台面上的 \(kept.id) 松手后和预览位置不一致")
+            try require(Set(committed.keys) == [floating, kept] && Set(layout.root?.panes ?? []) == [floating, kept],
+                        "窄内容区 \(edge) 松手后台面应是放进去的窗口和 \(kept.id)")
+            try require(layout.docked == [waiting, pushed],
+                        "窄内容区 \(edge) 被腾出的 \(pushed.id) 没有追加到停靠栏末尾，实际 \(layout.docked.map(\.id))")
+            try requireProjectionComplete(layout, "窄内容区 \(edge) 松手后")
+        }
+    }
+
+    // 这个方向连两张卡片都放不下时，这条边才不算落点：内容区比两列窄，左边外缘没有落点，松手回原位；
+    // 同一内容区上下放得下两张，顶边仍是落点，挡住把「没有落点」放宽到所有方向。
+    private static func canvasTooNarrowForTwoHasNoSideEdge() throws {
+        let minimum = Metrics.minPane, gap = Metrics.gap
+        let bounds = placementBounds(canvasWidth: 300, canvasHeight: 500)
+        let panes = fixturePanes("too-narrow-edge", count: 4)
+        let floating = panes[2]
+        let layout = WindowLayout(panes: panes, arrangement: .sideBySide)
+        layout.updateViewport(bounds.size, presentation: .tiled)
+        let canvas = layout.regions(in: bounds).canvas
+        try require(canvas.width < minimum * 2 + gap && canvas.height >= minimum * 2 + gap,
+                    "内容区 \(canvas.size) 应左右放不下两列、上下放得下两行")
+        let before = LayoutState(layout, in: bounds)
+
+        layout.drag(floating, to: CGPoint(x: canvas.minX + 1, y: canvas.midY), in: bounds)
+        try require(layout.drag != nil && layout.drag?.spot == nil,
+                    "左右放不下两张卡片时左边外缘仍成了落点：\(String(describing: layout.drag?.spot))")
+        layout.drop(in: bounds)
+        try requireSame(layout, as: before, in: bounds, "左边外缘没有落点时松手")
+        try requireProjectionComplete(layout, "左边外缘没有落点时松手后")
+
+        layout.drag(floating, to: CGPoint(x: canvas.midX, y: canvas.minY + 1), in: bounds)
+        try require(layout.drag?.spot == DropSpot.edge(.top),
+                    "上下放得下两张卡片时顶边不是落点：\(String(describing: layout.drag?.spot))")
+        layout.cancelDrag()
+        try requireSame(layout, as: before, in: bounds, "取消顶边拖动")
     }
 
     // 展开、恢复、缩小与服务端删除连续改变树与 dock；各动作取消拖动，旧 drop 不能让已删窗口复活。
