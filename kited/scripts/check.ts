@@ -64,7 +64,7 @@ const scope = full ? '全量' : '受影响的';
 // 2. 静态检查都是几秒的事，同时跑。lint 只开 TypeScript 查不出来的规则，见 eslint.config.js；
 // 用 --bun 在 Bun 里跑，工作机不用另装 Node。App 有改动才编译，Mac 和 iOS 两端一起编。
 // 编译缓存用 Xcode 的默认位置：系统框架的预编译模块各工程共用，新工作树第一次编译约 5 秒；
-// 关掉索引，每个工作树的缓存约 9 MB，不关约 70 MB
+// 关掉索引，不写索引库。每个工作树的缓存约 650 MB，按工程路径各占一份，删工作树不会跟着删
 const APP = join(root, 'app');
 const buildApp = full || changed.some((f) => f.startsWith('app/') || f.startsWith('kited/web/') || f === 'kited/scripts/build-plugin-web.ts');
 // App 与工作机之间的 JSON 合同及原生账号 HTTP 行为：编译真实 Swift，连接真实后端，各约 2 秒，
