@@ -99,7 +99,7 @@ func slotKind(_ row: TranscriptRow) -> SlotKind {
         case .thinking: .thinking
         case .kite: .kite
         case .compacted: .compaction
-        case .notification, .interrupted, .apiError: .event
+        case .notification, .interrupted: .event
         }
     }
 }

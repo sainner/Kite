@@ -12,11 +12,29 @@ struct FilePane: View {
         let root = cwd.isEmpty ? "工作区" : cwd
         // 主标题是当前文件或目录的名字
         return PaneHeader(title: filePath.map { ($0 as NSString).lastPathComponent }
-            ?? (directory == "." ? root : (directory as NSString).lastPathComponent), subtitle: "文件")
+            ?? (directory == "." ? root : (directory as NSString).lastPathComponent), subtitle: status ?? "文件")
+    }
+
+    /// 窗口现在的情况写在副标题，正文只放目录和文件内容：正在读取、目录或文件是空的、还没选文件。
+    private var status: String? {
+        if browser.displayingFile {
+            if browser.loadingText { return "正在读取文件…" }
+            return browser.diff != nil && browser.diffRows.isEmpty ? "文件内容为空" : nil
+        }
+        if browser.loadingDirectory { return "正在读取目录…" }
+        if browser.showDirectory { return browser.directory?.entries.isEmpty == true ? "此目录为空" : nil }
+        return browser.selection.path == nil ? "选择文件，或点击消息中的引用" : nil
+    }
+
+    /// 读取、选择失败与指定行定位不到在信息区，失败优先。
+    private var notice: PaneNotice? {
+        if let error = (browser.displayingFile ? browser.textError : nil) ?? browser.directoryError { return .failure(error) }
+        guard browser.displayingFile, let message = browser.locationMessage else { return nil }
+        return PaneNotice(text: message, symbol: "info.circle", tint: .secondary)
     }
 
     var body: some View {
-        PaneWindow(header: header) {
+        PaneWindow(header: header, notice: notice) {
             GeometryReader { geometry in
                 HStack(spacing: 0) {
                     if browser.showDirectory {
@@ -111,10 +129,7 @@ struct FilePane: View {
                     Spacer()
                     Button { Task { await browser.list() } } label: { Image(systemName: "arrow.clockwise") }
                 }.buttonStyle(.pointingPlain)
-                if let error = browser.directoryError { Text(error).foregroundStyle(.secondary) }
-                if browser.loadingDirectory { ProgressView() }
                 if let directory = browser.directory {
-                    if directory.entries.isEmpty { Text("此目录为空").foregroundStyle(.secondary) }
                     ForEach(directory.entries) { entry in
                         Button {
                             Task {
@@ -143,9 +158,6 @@ struct FilePane: View {
         ScrollViewReader { proxy in
             ScrollView([.vertical, .horizontal]) {
                 VStack(alignment: .leading, spacing: 8) {
-                    if let error = browser.textError { Text(error).foregroundStyle(.secondary) }
-                    if let message = browser.locationMessage { Text(message).font(Theme.secondary).foregroundStyle(.secondary) }
-                    if browser.loadingText { ProgressView() }
                     if let diff = browser.diff {
                         if diff.files.count > 1 {
                             HStack {
@@ -156,7 +168,6 @@ struct FilePane: View {
                                 }
                             }.buttonStyle(.pointingPlain).font(Theme.secondary)
                         }
-                        if browser.diffRows.isEmpty { Text("文件内容为空").foregroundStyle(.secondary) }
                         LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(browser.diffRows) { row in
                                 diffRow(row).id(row.id)
@@ -179,7 +190,7 @@ struct FilePane: View {
                                 }
                             }
                         }
-                    } else if browser.selection.path == nil { Text("选择文件，或点击消息中的引用").foregroundStyle(.secondary) }
+                    }
                 }
                 .font(Theme.code).textSelection(.enabled).padding(Metrics.padding)
                 .frame(maxWidth: .infinity, alignment: .leading)

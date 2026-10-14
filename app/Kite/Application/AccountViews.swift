@@ -173,14 +173,14 @@ struct TokenPriceSection: View {
 
     var body: some View {
         let connection = model.availableWorkers.first
-        CardSection("计价表", note: table.map {
+        CardSection("计价表", info: table.map {
             "美元 / 百万 token，取自 Claude 与 OpenAI 官方 API 价格页的标准档，\($0.checked) 核对。Claude 的「缓存写入」是 5 分钟缓存。"
         }) {
             if let table {
                 ScrollView(.horizontal) { grid(table).padding(.vertical, 10) }
                     .scrollIndicators(.hidden)
-                    // 表格靠左与标题、说明对齐，左边保持硬边，前后还有没有由右边的一对箭头提醒。
-                    .hintsScrollOverflow(.horizontal, carets: .atEnd)
+                    // 截掉的那一头渐隐，箭头各在那一头。
+                    .hintsScrollOverflow(.horizontal)
             } else if let error {
                 Text(error).foregroundStyle(Theme.danger)
             } else {

@@ -87,7 +87,6 @@ private extension Item.Kind {
             hasher.combine(7)
             hasher.combine(compaction.summary.utf8.count)
             hasher.combine(children.count)
-        case .apiError(let text): hasher.combine(8); hasher.combine(text.utf8.count)
         }
     }
 }

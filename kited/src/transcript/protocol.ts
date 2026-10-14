@@ -8,7 +8,7 @@ import type { Waiting } from '../waiting.ts';
 
 export type DisplayBlock =
   | { type: 'human'; id: string; text: string; midTurn: boolean }
-  | { type: 'kite' | 'error'; text: string }
+  | { type: 'kite'; text: string }
   /** from、through 是被压缩范围首尾记录的 id；Claude 原生压缩没有范围。 */
   | { type: 'compacted'; text: string; id?: string; from?: string; through?: string; automatic?: boolean; reverted?: boolean }
   | { type: 'text' | 'thinking'; text: string; parts?: string[] }

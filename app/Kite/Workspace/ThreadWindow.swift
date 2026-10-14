@@ -158,7 +158,7 @@ final class ThreadWindowView: NSView {
         laying = true
         defer { laying = false }
         let state = tracking.track({
-            State(initial: pane.initial(thread), empty: !thread.hasTranscript, listening: pane.listening(model), headerHeight: headerHeight)
+            State(initial: thread.isInitial, empty: !thread.hasTranscript, listening: pane.listening(model), headerHeight: headerHeight)
         }) { [weak self] in self?.invalidate() }
         let width = bounds.width, height = bounds.height
 

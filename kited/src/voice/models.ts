@@ -4,7 +4,7 @@ export type SpeechProvider = 'dashscope';
 export const speechVendors: { id: SpeechProvider; title: string }[] = [{ id: 'dashscope', title: '千问（百炼）' }];
 
 export const speechModels: { id: string; title: string; name: string; reasoning: string[]; vendor: SpeechProvider }[] = [
-  { id: 'qwen3-asr-flash-realtime', title: 'realtime', name: 'qwen3-asr-flash-realtime', reasoning: [], vendor: 'dashscope' },
+  { id: 'qwen3-asr-flash-realtime', title: 'qwen', name: 'qwen3-asr-flash-realtime', reasoning: [], vendor: 'dashscope' },
 ];
 
 export const defaultSpeechModel = { model: speechModels[0]!.id, reasoning: 'default' };

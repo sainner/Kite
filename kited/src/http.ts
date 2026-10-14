@@ -289,6 +289,8 @@ export function serve(kite: Kite, listen: Listen) {
         const { expectedRevision, ...template } = await body(req);
         return kite.updateContextTemplate(req.params.id, str(expectedRevision, 'expectedRevision'), template);
       }) },
+      '/context-templates/:id/reset': { POST: bound(async (req) =>
+        kite.resetContextTemplate(req.params.id, str((await body(req)).expectedRevision, 'expectedRevision'))) },
       '/token-counts': { POST: bound(async (req) => {
         const parsed = z.object({ texts: z.array(z.string()).max(200), model: z.string().min(1).optional() })
           .strict().safeParse(await body(req));
@@ -305,6 +307,8 @@ export function serve(kite: Kite, listen: Listen) {
         const b = await body(req);
         return kite.updateRole(req.params.id, str(b.expectedRevision, 'expectedRevision'), b.role);
       }) },
+      '/roles/:id/reset': { POST: bound(async (req) =>
+        kite.resetRole(req.params.id, str((await body(req)).expectedRevision, 'expectedRevision'))) },
       '/roles/:id/emblem': { PUT: bound(async (req) => kite.emblems.save(req.params.id, (await body(req)).emblem)) },
       '/roles/:id/emblem/generate': { POST: bound(async (req) => {
         const b = await body(req);

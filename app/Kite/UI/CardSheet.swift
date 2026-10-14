@@ -229,12 +229,14 @@ struct CardSheetAction: View {
 }
 
 extension View {
-    /// 放弃未保存修改前的确认：居中的警告框，放弃标成危险操作，另有取消。
-    func discardAlert(_ title: String, isPresented: Binding<Bool>, discardLabel: String = "放弃修改",
+    /// 放弃未保存修改前的确认：居中的警告框，放弃标成危险操作，另有取消；message 说明会丢掉什么。
+    func discardAlert(_ title: String, isPresented: Binding<Bool>, discardLabel: String = "放弃修改", message: String? = nil,
                       discard: @escaping () -> Void) -> some View {
         alert(title, isPresented: isPresented) {
             Button(discardLabel, role: .destructive, action: discard)
             Button("取消", role: .cancel) {}
+        } message: {
+            if let message { Text(message) }
         }
     }
 

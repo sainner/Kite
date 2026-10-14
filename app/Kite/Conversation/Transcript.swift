@@ -56,8 +56,6 @@ enum Block {
     case interrupted
     /// 一段对话压缩成了这份摘要。
     case compacted(Compaction)
-    /// 调用模型出错。
-    case apiError(String)
 }
 
 /// 人发的一条消息。id 由客户端给出，排队、投递确认和重连历史沿用它。
@@ -213,7 +211,6 @@ struct Item: Identifiable {
         case interrupted
         /// 压缩的摘要；children 是被收起的原文。
         case compacted(Compaction, children: [Item])
-        case apiError(String)
     }
 }
 
@@ -298,7 +295,6 @@ extension Transcript {
             case .compacted(let compaction):
                 if let id = compaction.id, folds.contains(id) { continue }
                 append(.compacted(compaction, children: []))
-            case .apiError(let message): append(.apiError(message))
             case .thinking(let text): append(.thinking(text))
             case .toolUse(let use):
                 let call = Call(use: use, state: Self.callState(use, result: nil, running: running), children: derive(under: use.id, byParent))

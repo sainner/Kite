@@ -279,7 +279,8 @@ export class TranscriptProjection {
         if (row.recovery) this.recovery = row.recovery;
         this.error = undefined;
         if (row.outcome.kind === 'interrupted') put(`journal:${row.seq}`, { type: 'interrupted' });
-        if ('message' in row.outcome) { this.error = row.outcome.message; put(`journal:${row.seq}`, { type: 'error', text: row.outcome.message }); }
+        // 失败说明只在状态里，客户端显示在窗口标题栏，不进记录。
+        if ('message' in row.outcome) this.error = row.outcome.message;
         break;
       case 'recovery.confirmed':
         this.phase = 'idle'; this.busy = false; this.waitingForResume = true;

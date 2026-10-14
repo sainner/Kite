@@ -13,7 +13,7 @@ import { GitHosting } from './git-hosting.ts';
 import { CredentialConflictError, CredentialStore } from './credential-store.ts';
 import { createCredentialService } from './credential-service.ts';
 import { bearerToken, RequestError, result } from './http.ts';
-import { Library, LibraryConflict, LibraryEvents, libraryKind, libraryWrite } from './library.ts';
+import { Library, LibraryConflict, LibraryEvents, libraryKind, libraryRemove, libraryWrite } from './library.ts';
 
 interface Options {
   databasePath: string;
@@ -310,6 +310,13 @@ export async function createAccountService(options: Options) {
         catch (error) { if (error instanceof LibraryConflict) throw new RequestError(error.message, 409); throw error; }
         events.notify(userId);
         return result(saved);
+      }
+      if (request.method === 'DELETE') {
+        let removed;
+        try { removed = library.remove(userId, kind, id, libraryRemove.parse(await request.json())); }
+        catch (error) { if (error instanceof LibraryConflict) throw new RequestError(error.message, 409); throw error; }
+        if (removed) events.notify(userId);
+        return result({ ok: true });
       }
       throw new RequestError('找不到接口', 404);
     }

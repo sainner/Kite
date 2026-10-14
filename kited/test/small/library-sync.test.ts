@@ -99,6 +99,104 @@ test('A 改的角色经推送同步到 B 后是同一版本，B 用过期版本�
   expect(instance.config.packageRevision).toBe(installed.body.revision);
 }, 1000);
 
+interface RoleEntry { role: Role; revision: string; defaultRevision?: string }
+interface TemplateEntry { definition: ContextDefinition; model?: unknown; revision: string; defaultRevision: string }
+
+async function builtinRole(k: Kited, id: string): Promise<RoleEntry> {
+  const catalog = await k.call('GET', '/roles');
+  expect(catalog.status).toBe(200);
+  const entry = (catalog.body.roles as RoleEntry[]).find((candidate) => candidate.role.id === id);
+  if (!entry) throw new Error(`缺少内置角色 ${id}`);
+  return entry;
+}
+
+async function template(k: Kited, id: string): Promise<TemplateEntry> {
+  const catalog = await k.call('GET', '/context-templates');
+  expect(catalog.status).toBe(200);
+  const entry = (catalog.body.templates as TemplateEntry[]).find((candidate) => candidate.definition.id === id);
+  if (!entry) throw new Error(`缺少上下文模板 ${id}`);
+  return entry;
+}
+
+// 恢复默认在账号里是删除：删除带的 expectedRevision 是工作机按本机缓存算的版本，须与账号按写入内容算的版本对上才删得掉；
+// 删掉后账号推送给 B，B 全量同步发现账号里没有这一条，要从缓存去掉、退回内置默认。
+// B 用 A 改之前的版本恢复默认时账号里已是 A 的修改，删除要被拒，B 随后追上 A 的修改。
+test('A 恢复内置角色默认后账号里不留这一条，B 经推送退回默认；B 用 A 改之前的版本恢复默认被拒后追上', async () => {
+  const root = makeTemp('library-reset-role-');
+  shared = { account: startFakeAccount(join(root, 'account')), root };
+  const a = startKited(undefined, false, shared.account);
+  const b = startKited(undefined, false, shared.account);
+  kiteds.push(a, b);
+  const original = await builtinRole(a, 'kite.review');
+  expect(original.revision).toBe(original.defaultRevision!);
+
+  // A 的修改推给 B 与 B 的过期恢复谁先到不定；两条路都要让 B 追上，所以从 A 修改前开始等。
+  const changed = mark(b);
+  const updated = await a.call('PUT', '/roles/kite.review', {
+    expectedRevision: original.revision, role: { ...original.role, maxRequestsPerTurn: original.role.maxRequestsPerTurn + 1 },
+  });
+  expect(updated.status).toBe(200);
+  expect(updated.body.revision).not.toBe(original.defaultRevision);
+  expect(updated.body.defaultRevision).toBe(original.defaultRevision);
+  const stale = await b.call('POST', '/roles/kite.review/reset', { expectedRevision: original.revision });
+  expect(stale.status).toBe(409);
+  await b.waitEvent((event) => event.type === 'roles.changed' && after(b, changed)(event));
+  expect(await builtinRole(b, 'kite.review')).toMatchObject({ revision: updated.body.revision, role: updated.body.role });
+  expect(shared.account.library.get('fake-user', 'role', 'kite.review')?.revision).toBe(updated.body.revision);
+
+  const restored = mark(b);
+  const reset = await a.call('POST', '/roles/kite.review/reset', { expectedRevision: updated.body.revision });
+  expect(reset.status).toBe(200);
+  expect(reset.body).toMatchObject({ role: original.role, revision: original.defaultRevision, defaultRevision: original.defaultRevision });
+  expect(shared.account.library.get('fake-user', 'role', 'kite.review')).toBeUndefined();
+  await b.waitEvent((event) => event.type === 'roles.changed' && after(b, restored)(event));
+  expect(await builtinRole(b, 'kite.review')).toMatchObject({
+    role: original.role, revision: original.defaultRevision, defaultRevision: original.defaultRevision,
+  });
+}, 1000);
+
+// 保存的内容与默认一样时不写账号而是删除，版本要像恢复默认一样对上；B 退回默认靠推送后的全量同步。
+// A 改回默认的推送与 B 基于 A 修改版的保存谁先到不定：B 还没同步时这次保存发到账号，账号里已没有这一条，
+// 带着版本的写入不能当新建放进去，两条路都要被拒，账号里仍没有，B 最终是默认。
+test('A 把改过的模板原样改回默认时账号删掉这一条，B 经推送退回默认；B 基于已删掉的版本保存被拒，账号里仍没有', async () => {
+  const root = makeTemp('library-reset-template-');
+  shared = { account: startFakeAccount(join(root, 'account')), root };
+  const a = startKited(undefined, false, shared.account);
+  const b = startKited(undefined, false, shared.account);
+  kiteds.push(a, b);
+  const original = await template(a, emblemTemplate.id);
+  expect(original.revision).toBe(original.defaultRevision);
+  const edited = (text: string): ContextDefinition => ({ ...original.definition, blocks: [...original.definition.blocks,
+    { type: 'paragraph', id: 'test-extra', title: '补充规则', parts: [{ type: 'text', text }] }] });
+
+  const changed = mark(b);
+  const modified = await a.call('PUT', `/context-templates/${emblemTemplate.id}`, {
+    expectedRevision: original.revision, definition: edited('A 加的规则。'), model: original.model,
+  });
+  expect(modified.status).toBe(200);
+  expect(modified.body.revision).not.toBe(original.defaultRevision);
+  await b.waitEvent((event) => event.type === 'context-templates.changed' && after(b, changed)(event));
+  expect((await template(b, emblemTemplate.id)).revision).toBe(modified.body.revision);
+  expect(shared.account.library.get('fake-user', 'template', emblemTemplate.id)?.revision).toBe(modified.body.revision);
+
+  const restored = mark(b);
+  const reverted = await a.call('PUT', `/context-templates/${emblemTemplate.id}`, {
+    expectedRevision: modified.body.revision, definition: original.definition, model: original.model,
+  });
+  expect(reverted.status).toBe(200);
+  expect(reverted.body).toMatchObject({ definition: original.definition, revision: original.defaultRevision,
+    defaultRevision: original.defaultRevision });
+  expect(shared.account.library.get('fake-user', 'template', emblemTemplate.id)).toBeUndefined();
+  const stale = await b.call('PUT', `/context-templates/${emblemTemplate.id}`, {
+    expectedRevision: modified.body.revision, definition: edited('B 基于 A 的修改版再改。'), model: original.model,
+  });
+  expect(stale.status).toBe(409);
+  await b.waitEvent((event) => event.type === 'context-templates.changed' && after(b, restored)(event));
+  expect(await template(b, emblemTemplate.id)).toMatchObject({ definition: original.definition,
+    revision: original.defaultRevision, defaultRevision: original.defaultRevision });
+  expect(shared.account.library.get('fake-user', 'template', emblemTemplate.id)).toBeUndefined();
+}, 1000);
+
 // 真实 bug：首次同步时本机还没有此项目，之后登记账号已有项目不会再收到约束变更事件，因而留下无限制缓存。
 // 账号读取失败、登记入库与开代理必须一起验证：首次约束未取到不能留下可运行工作区，重试成功返回时约束已生效。
 test('首次同步后登记账号已有项目，取不到首次约束不留下工作区，恢复后登记成功时 shell 已禁用', async () => {

@@ -1,7 +1,7 @@
 import SwiftUI
 import WebKit
 
-/// 插件只提供窗口内容；标题、控制区及停靠继续由原生容器管理。
+/// 插件只提供窗口内容；标题、控制区及停靠继续由原生容器管理。打开中写在副标题，失败在信息区。
 struct PluginPane: View {
     let target: WindowTarget
     let title: String
@@ -19,18 +19,21 @@ struct PluginPane: View {
             if case .failed(let message) = self { return message }
             return nil
         }
+
+        var loading: Bool {
+            if case .loading = self { return true }
+            return false
+        }
     }
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: title, subtitle: "插件"), notice: loadState.error.map(PaneNotice.failure)) {
+        PaneWindow(header: PaneHeader(title: title, subtitle: loadState.loading ? "正在打开插件…" : "插件"),
+                   notice: loadState.error.map(PaneNotice.failure)) {
             PluginWebView(target: target, client: client, theme: colorScheme == .dark ? "dark" : "light",
                           state: state, connection: connection, report: { [loadState = $loadState] message in
                               loadState.wrappedValue = message.map(LoadState.failed) ?? .ready
                           })
                 .id(generation)
-                .overlay {
-                    if case .loading = loadState { ProgressView("正在打开插件") }
-                }
         } controls: { _ in
             HStack(spacing: Metrics.paneButtonGap) {
                 Spacer(minLength: 0)

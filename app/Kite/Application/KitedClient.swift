@@ -95,7 +95,6 @@ struct RemoteRecord: Decodable, Identifiable {
         case "kite": content = .kite(block.text ?? "")
         case "text": content = .text(block.text ?? "")
         case "thinking": content = .thinking(block.text ?? "")
-        case "error": content = .apiError(block.text ?? "")
         case "compacted":
             // 撤销后范围照原样显示，摘要不再出现。
             if block.reverted == true { return nil }

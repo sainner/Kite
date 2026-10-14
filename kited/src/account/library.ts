@@ -9,10 +9,15 @@ import { z } from 'zod';
 export const libraryKind = z.enum(['role', 'template', 'emblem', 'plugin']);
 export type LibraryKind = z.infer<typeof libraryKind>;
 export const libraryWrite = z.object({
-  /** null 表示新建，同 ID 已有不同内容时冲突；省略表示不做版本校验，用于签名这类后写为准的内容。 */
+  /**
+   * 写入方看到的版本：字符串须等于账号里现有的版本，这一项已被删掉时也冲突；null 表示账号里还没有这一项
+   * （新建，或首次修改还跟随默认的内置内容），同 ID 已有不同内容时冲突；省略表示不做版本校验，用于签名这类后写为准的内容。
+   */
   expectedRevision: z.string().min(1).nullable().optional(),
   body: z.record(z.string(), z.unknown()),
 }).strict();
+/** 删除时看到的版本，含义同写入；null 时账号里有这一项就冲突。 */
+export const libraryRemove = z.object({ expectedRevision: z.string().min(1).nullable() }).strict();
 
 export interface LibraryItem { kind: LibraryKind; id: string; revision: string; updatedAt: number; body: Record<string, unknown> }
 interface Row { kind: LibraryKind; id: string; revision: string; updatedAt: number; body: string }
@@ -94,12 +99,23 @@ export class Library {
       const current = this.db.query<{ revision: string }, [string, string, string]>('SELECT revision FROM kite_library WHERE userId = ? AND kind = ? AND id = ?')
         .get(userId, kind, id);
       if (write.expectedRevision === null && current && current.revision !== revision) throw new LibraryConflict('同 ID 已有其他内容，请另存为新的条目');
-      // 账号里还没有这一项时按新建处理：工作机上首次修改内置内容，没有其他设备的修改会被覆盖。
-      if (write.expectedRevision && current && current.revision !== write.expectedRevision) throw new LibraryConflict('内容已被其他设备修改，请刷新后重试');
+      if (write.expectedRevision && current?.revision !== write.expectedRevision) throw new LibraryConflict('内容已被其他设备修改，请刷新后重试');
       this.db.query(`INSERT INTO kite_library VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(userId, kind, id) DO UPDATE SET body = excluded.body, revision = excluded.revision, updatedAt = excluded.updatedAt`)
         .run(userId, kind, id, text, revision, now);
       return { kind, id, revision, updatedAt: now, body: write.body };
+    })();
+  }
+
+  /** 内置内容恢复默认时删掉账号里的副本，各工作机同步时退回默认；期望的就是没有这一项时不做事，返回是否删了。 */
+  remove(userId: string, kind: LibraryKind, id: string, { expectedRevision }: z.infer<typeof libraryRemove>): boolean {
+    return this.db.transaction(() => {
+      const current = this.db.query<{ revision: string }, [string, string, string]>('SELECT revision FROM kite_library WHERE userId = ? AND kind = ? AND id = ?')
+        .get(userId, kind, id);
+      if (current?.revision !== (expectedRevision ?? undefined)) throw new LibraryConflict('内容已被其他设备修改，请刷新后重试');
+      if (!current) return false;
+      this.db.query('DELETE FROM kite_library WHERE userId = ? AND kind = ? AND id = ?').run(userId, kind, id);
+      return true;
     })();
   }
 }

@@ -129,7 +129,7 @@ struct CompactThreadStatus: View {
 
     var body: some View {
         ThreadStatusRing().environment(\.paneNotice,
-            model.connectionNotice(model.connection(for: area)) ?? thread.problem.map(PaneNotice.failure))
+            model.connectionNotice(model.connection(for: area)) ?? model.threadNotice(thread, in: area))
     }
 }
 #endif

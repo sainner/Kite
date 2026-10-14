@@ -24,11 +24,10 @@ const editableScenes: Partial<Record<ContextScene, 'notification' | 'compaction'
 };
 
 /**
- * 辅助生成场景可选的模型，连同编辑器里模型一节的标题与说明。一般用工作机的 ChatGPT 订阅，只能选其中的型号，内置模板默认用最轻的一档；
+ * 辅助生成场景可选的模型，连同模板窗口里用什么凭据调用的说明。一般用工作机的 ChatGPT 订阅，只能选其中的型号，内置模板默认用最轻的一档；
  * 语音识别另选识别模型（见 voice/），没有思考强度，也没有计数接口，背景文本按默认模型估。
  */
 interface SceneModels {
-  title: string;
   note: string;
   vendors: { id: string; title: string }[];
   models: { id: string; reasoning: string[] }[];
@@ -38,12 +37,12 @@ interface SceneModels {
 
 function sceneModels(scene: ContextScene): SceneModels {
   if (scene === 'thread.voice') {
-    return { title: '识别模型', note: '使用 Kite 账号凭据里的语音识别 Key。', vendors: speechVendors, models: speechModels, counts: false,
+    return { note: '使用 Kite 账号凭据里的语音识别 Key。', vendors: speechVendors, models: speechModels, counts: false,
       default: defaultSpeechModel };
   }
   const catalog = agentModelCatalog();
   const models = catalog.models.filter((model) => agentModels.models.some((entry) => entry.id === model.id));
-  return { title: '模型', note: '使用工作机的 ChatGPT 订阅，不调用工具。', models, counts: true,
+  return { note: '使用工作机的 ChatGPT 订阅，不调用工具。', models, counts: true,
     vendors: catalog.vendors.filter((vendor) => models.some((model) => model.vendor === vendor.id)),
     default: { model: agentModels.models.find((model) => model.tier === 'luna')!.id, reasoning: 'low' } };
 }
@@ -75,21 +74,21 @@ function parse(value: unknown): Template {
 }
 
 export class ContextTemplates {
-  /** 内置模板的默认内容，只有这些模板可编辑。本机与账号只存改过的，没改过的跟随 kited 版本的默认。 */
+  /**
+   * 内置模板的默认内容，只有这些模板可编辑。账号只存改过的，没改过的跟随 kited 版本的默认；
+   * 本机缓存是账号的镜像，账号里有的才存，写账号时据此给出期望的版本。
+   */
   private readonly defaults: Map<string, Template>;
 
   constructor(private store: Store, defaults: ContextDefinition[]) {
     this.defaults = new Map(defaults.map((definition) => [definition.id, parse({ definition,
       ...(editableScenes[definition.scene] === 'generation' ? { model: sceneModels(definition.scene).default } : {}) })]));
-    store.transaction(() => {
-      for (const template of store.contextTemplates()) if (this.isDefault(template)) store.deleteContextTemplate(template.definition.id);
-    });
   }
 
   /** 辅助生成的场景带上可选的模型。 */
   list() {
     return {
-      templates: [...this.defaults.keys()].sort().map((id) => snapshot(this.current(id)!)),
+      templates: [...this.defaults.keys()].sort().map((id) => this.entry(this.current(id)!)),
       scenes: Object.entries(editableScenes).map(([id, kind]) => {
         if (kind !== 'generation') return { id, kind, ...contextScenes[id as ContextScene] };
         const { default: _, ...models } = sceneModels(id as ContextScene);
@@ -111,13 +110,22 @@ export class ContextTemplates {
     return value;
   }
 
-  /** 账号里拉来的版本直接替换本机缓存；不是本机已知场景的跳过，返回是否有变化。 */
+  /** 账号里拉来的版本直接替换本机缓存，等于默认的也照存；不是本机已知场景的跳过。返回看到的内容是否有变化。 */
   cache(value: unknown): boolean {
     const template = this.named(parse(value));
-    const current = this.current(template.definition.id);
-    if (!current || snapshot(current).revision === snapshot(template).revision) return false;
-    this.save(template);
-    return true;
+    const { id } = template.definition;
+    const before = this.current(id);
+    if (!before) return false;
+    const stored = this.store.contextTemplate(id);
+    if (stored && snapshot(stored).revision === snapshot(template).revision) return false;
+    this.store.saveContextTemplate(template);
+    return snapshot(before).revision !== snapshot(template).revision;
+  }
+
+  /** 账号里这一项的版本：本机缓存是账号的镜像，没有缓存副本的在账号里也没有，是 null。 */
+  accountRevision(id: string): string | null {
+    const stored = this.store.contextTemplate(id);
+    return stored ? snapshot(stored).revision : null;
   }
 
   /** 账号里已经没有的从缓存去掉，退回默认；返回是否有变化。 */
@@ -135,17 +143,32 @@ export class ContextTemplates {
     return template;
   }
 
-  /** template 已经过 validate；写账号期间账号推来的同步可能已更新本机缓存，事务里再核对一次版本，已是这次的内容就不再核对。 */
-  update(expectedRevision: string, template: Template): ContextTemplate {
+  /**
+   * template 已经过 validate，账号里已写入或删掉；写账号期间账号推来的同步可能已更新本机缓存，事务里再核对一次版本，
+   * 已是这次的内容就不再核对。本机缓存随账号：等于默认的已从账号删掉，本机也不留。
+   */
+  update(expectedRevision: string, template: Template): ContextTemplate & { defaultRevision: string } {
     return this.store.transaction(() => {
-      const value = snapshot(template);
+      const value = this.entry(template);
       const { id, scene } = template.definition;
-      if (this.get(id, scene).revision !== value.revision) {
-        this.get(id, scene, expectedRevision);
-        this.save(template);
-      }
+      if (this.get(id, scene).revision !== value.revision) this.get(id, scene, expectedRevision);
+      if (this.isDefault(template)) this.store.deleteContextTemplate(id);
+      else this.store.saveContextTemplate(template);
       return value;
     });
+  }
+
+  /** 内置模板的默认内容，恢复默认时按它保存。 */
+  builtin(id: string): Template {
+    const template = this.defaults.get(id);
+    if (!template) throw new KiteError('上下文模板不存在，请刷新列表', 404);
+    return template;
+  }
+
+  /** 和默认内容一样的不算改过，账号里不留副本。 */
+  isDefault(template: Template): boolean {
+    const builtin = this.defaults.get(template.definition.id);
+    return !!builtin && snapshot(builtin).revision === snapshot(template).revision;
   }
 
   /** 名称固定为内置名称，用户只改内容。 */
@@ -158,14 +181,8 @@ export class ContextTemplates {
     return this.defaults.has(id) ? this.store.contextTemplate(id) ?? this.defaults.get(id) : undefined;
   }
 
-  /** 改回与默认一样的不算改过，不留副本。 */
-  private save(template: Template) {
-    if (this.isDefault(template)) this.store.deleteContextTemplate(template.definition.id);
-    else this.store.saveContextTemplate(template);
-  }
-
-  private isDefault(template: Template): boolean {
-    const builtin = this.defaults.get(template.definition.id);
-    return !!builtin && snapshot(builtin).revision === snapshot(template).revision;
+  /** 列表与保存结果带上默认内容的版本，与 revision 不同就是改过，可以恢复默认。 */
+  private entry(template: Template): ContextTemplate & { defaultRevision: string } {
+    return { ...snapshot(template), defaultRevision: snapshot(this.defaults.get(template.definition.id)!).revision };
   }
 }

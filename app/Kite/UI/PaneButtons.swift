@@ -77,7 +77,7 @@ struct PaneHeaderButtonGroup<Content: View>: View {
 /// 只能整块换掉，过渡是硬切或淡入淡出（2026-10-14 iPhone，角色上下文和签名之间；见 CompactPaneHeaderBar 的右组）。
 struct PaneHeaderActions: View {
     var groups: [[PaneHeaderAction]] = []
-    /// 菜单：会话的模型与更多操作、角色初始配置的默认模型与思考强度。放在各组前面。
+    /// 菜单：会话的模型与更多操作、角色初始配置的默认模型与思考强度、辅助生成模板的模型。放在各组前面。
     var menus: AnyView?
 
     var body: some View {

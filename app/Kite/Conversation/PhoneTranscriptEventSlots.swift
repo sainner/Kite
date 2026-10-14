@@ -2,12 +2,12 @@
 import SwiftUI
 import UIKit
 
-/// 会话里发生的事，不是谁说的话：后台任务结束的通知（铃铛）、打断（举手）、API 错误（三角，红色）。
+/// 会话里发生的事，不是谁说的话：后台任务结束的通知（铃铛）、打断（举手）。回合失败是会话的状态，在标题栏的信息区，不进对话。
 /// 一行次要色小字带图标，长了折行；长按弹出拷贝、共享，同 Text 的 textSelection。
 final class PhoneEventRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var label: PhoneIconLabel?
     private let menu = PhoneCopyMenu()
-    private var content: (text: String, icon: String, color: UIColor, speech: String?) = ("", "bell", .secondaryLabel, nil)
+    private var content: (text: String, icon: String, speech: String?) = ("", "bell", nil)
     private var font = UIFont.preferredFont(forTextStyle: .subheadline)
     /// 上次摆的尺寸：变了才重新摆，字变了由 set 自己标。
     private var laidSize: CGSize?
@@ -30,9 +30,8 @@ final class PhoneEventRowSlot: TranscriptRowSlot, PhoneRowSlot {
         super.update(row, context: context)
         guard case .item(let item) = row.content else { return }
         switch item.kind {
-        case .notification(let text): content = (text, "bell", .secondaryLabel, TranscriptSpeech.notification)
-        case .interrupted: content = (TranscriptSpeech.interrupted, "hand.raised", .secondaryLabel, nil)
-        case .apiError(let text): content = (text, "exclamationmark.triangle", UIColor(Theme.danger), TranscriptSpeech.apiError)
+        case .notification(let text): content = (text, "bell", TranscriptSpeech.notification)
+        case .interrupted: content = (TranscriptSpeech.interrupted, "hand.raised", nil)
         default: return
         }
         font = Theme.secondary.resolve(in: context.environment.fontResolutionContext).ctFont as UIFont
@@ -43,8 +42,8 @@ final class PhoneEventRowSlot: TranscriptRowSlot, PhoneRowSlot {
 
     private func show() {
         guard let label else { return }
-        label.set(content.text, systemImage: content.icon, font: font, color: content.color)
-        // 读屏先读是什么（通知、出错），再读字；打断只读「已打断」
+        label.set(content.text, systemImage: content.icon, font: font, color: .secondaryLabel)
+        // 读屏先读是什么（通知），再读字；打断只读「已打断」
         label.accessibilityLabel = content.speech ?? content.text
         label.accessibilityValue = content.speech == nil ? nil : content.text
     }

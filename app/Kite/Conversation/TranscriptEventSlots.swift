@@ -2,7 +2,8 @@
 import AppKit
 import SwiftUI
 
-/// 会话里发生的事，不是谁说的话：图标连着一段次要字号的字，后台任务的通知、打断、调用模型出错（红）。字能选，复制给原文。
+/// 会话里发生的事，不是谁说的话：图标连着一段次要字号的字，后台任务的通知、打断。字能选，复制给原文。
+/// 回合失败是会话的状态，在标题栏的信息区，不进对话。
 final class EventRowSlot: TranscriptRowSlot {
     private let container = SymbolTextView()
 
@@ -12,17 +13,13 @@ final class EventRowSlot: TranscriptRowSlot {
     override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
         super.update(row, context: context)
         guard case .item(let item) = row.content else { return }
-        let environment = context.environment
-        let font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont
+        let font = Theme.secondary.resolve(in: context.environment.fontResolutionContext).ctFont as NSFont
         let secondary = NSColor.secondaryLabelColor
         switch item.kind {
         case .notification(let text):
             container.show(text, symbol: "bell", font: font, color: secondary, label: TranscriptSpeech.notification)
         case .interrupted:
             container.show(TranscriptSpeech.interrupted, symbol: "hand.raised", font: font, color: secondary, label: nil)
-        case .apiError(let text):
-            let danger = NSColor(cgColor: Theme.danger.resolve(in: environment).cgColor) ?? .systemRed
-            container.show(text, symbol: "exclamationmark.triangle", font: font, color: danger, label: TranscriptSpeech.apiError)
         default:
             break
         }

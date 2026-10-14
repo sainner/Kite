@@ -2,7 +2,7 @@
  * 资源库随账号保存：角色、上下文模板、点阵签名与插件包写入时先到账号服务，成功后更新本机缓存；读取一律用缓存。
  * 加入账号后与账号服务保持一条事件流：连上时先全量同步一遍，之后账号里有变化（含其他设备的修改与项目约束）就再同步；
  * 断线后退避重连，重连时同样先同步。角色与模板的缓存以账号为准，账号里没有的从缓存去掉，内置的退回默认。
- * 工作机没加入账号时只用本机。
+ * 工作机没加入账号时不能写资源库，只有点阵签名先存在本机，加入账号后同步时补传。
  */
 import type { AccountClient, LibraryItem } from './account-client.ts';
 import type { ContextTemplates } from './context-templates.ts';
@@ -77,18 +77,28 @@ export class LibrarySync {
     return this.pending;
   }
 
-  /** 写到账号服务；没加入账号时不做事，由调用方只存本机。版本冲突时补拉一次，让本机缓存跟上。 */
-  async write(kind: LibraryItem['kind'], id: string, body: object, expectedRevision?: string | null): Promise<void> {
-    if (!this.linked) return;
-    try { await this.deps.account.putLibrary(kind, id, body, expectedRevision); }
+  /** 写到账号服务，没加入账号时报错。 */
+  write(kind: LibraryItem['kind'], id: string, body: object, expectedRevision?: string | null): Promise<void> {
+    return this.followConflicts(this.deps.account.putLibrary(kind, id, body, expectedRevision));
+  }
+
+  /** 从账号服务删掉；各工作机同步时发现账号里没有，内置的退回默认。 */
+  remove(kind: LibraryItem['kind'], id: string, expectedRevision: string | null): Promise<void> {
+    return this.followConflicts(this.deps.account.deleteLibrary(kind, id, expectedRevision));
+  }
+
+  /** 版本冲突时补拉一次，让本机缓存跟上。 */
+  private async followConflicts(request: Promise<unknown>): Promise<void> {
+    try { await request; }
     catch (error) {
       if (error instanceof KiteError && error.status === 409) void this.refresh();
       throw error;
     }
   }
 
-  /** 后写为准的内容（点阵签名）在后台写出，失败等下次同步时再上传。 */
+  /** 后写为准的内容（点阵签名）在后台写出，失败或没加入账号时等下次同步再上传。 */
   publish(kind: LibraryItem['kind'], id: string, body: object): void {
+    if (!this.linked) return;
     const key = `${kind}:${id}`;
     this.publishing.set(key, (this.publishing.get(key) ?? 0) + 1);
     this.write(kind, id, body).catch((error: unknown) => console.warn('[资源库同步]', kind, id, (error as Error).message))
