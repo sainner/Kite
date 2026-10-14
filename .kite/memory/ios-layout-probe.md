@@ -14,7 +14,8 @@ iOS App 要登录 Kite 账号和组网才进得去，量排版不必走完整流
 - 截图在 App 里画：`window.drawHierarchy(in:afterScreenUpdates: true)` 存 PNG 到 `Library/Caches`，探针跑完自己退出，下一次启动是新进程。
 - 夹具和结果用 `devicectl` 放进、取回 App 的缓存目录（取回的命令见 `app/README.md`），放进去时目的地要写到文件名，写目录会失败。`launch` 的 App 参数放 `--` 后面，并带 `--terminate-existing`：App 已在跑时不带它参数不生效，探针不跑，取回的是上一次的结果（看文件时间）。新设备第一次装报描述文件不含它时，用 `-destination id=<设备> -allowProvisioningUpdates -allowProvisioningDeviceRegistration` 编一次。
 - 和旧版对照：在 `git worktree add --detach` 出来的旧提交上加同一个探针编一份，两份先后装同一台设备、同样的参数跑，截图对比，只改看得出的差别（间距、颜色、字号、位置），1pt 以内的取整、基线、抗锯齿差不追——用户 2026-10-14 纠正过：外观一样不等于逐像素一致；对不上时让探针导出文本视图的 frame、视口、附件的显隐这类数值，比猜快。
-- 整屏某个状态的样子（抽屉拉开、拉到一半、横滑途中、键盘升起）不必在 App 里画：测量版里临时加一个按启动参数摆状态的探针（经 `PerfProbe.drawer`、`PerfProbe.row` 拿抽屉和一行窗口），停住后本机 `xcrun devicectl device capture screenshot --device <ID> --destination x.png` 截真机屏，玻璃、滚动软边、键盘都在；新旧两版用 Debug 开关（如 `--swiftui-compact`）切，同一次装机先后截（2026-10-14 iPhone 紧凑布局改原生时这样对过）。
+- 整屏某个状态的样子（抽屉拉开、拉到一半、横滑途中、键盘升起）不必在 App 里画：测量版里临时加一个按启动参数摆状态的探针（经 `PerfProbe.drawer`、`PerfProbe.row` 拿抽屉和一行窗口），停住后本机 `xcrun devicectl device capture screenshot --device <ID> --destination x.png` 截真机屏，玻璃、滚动软边、键盘都在（2026-10-14 iPhone 紧凑布局改原生时这样对过）。当时新旧两版用 Debug 开关在同一次装机里切，这些开关已随旧版删掉；要和旧实现比，在旧提交的 worktree 上编，同上一条。
+- 拖缝途中的样子也这样截：探针用 `WindowLayout.resize` 把缝分 20 步挪出去、不松手，停住后截屏，再摆一次松手的对照；探针同时把各个正文文本视图的容器宽、TextKit 视口和排好的段落位置写进缓存目录，空白、错段一看就知道是哪一层（2026-10-14 查出拖缝中贴底长回复底下空一截，是 TextKit 视口把上次顶上那段摆回原处）。
 - 为性能改了排版机制（视口、容器、按需排）以后要重跑截屏对照：拖缝测量看不出漏画，2026-10-13 一处正文只排第一段就是截屏才发现的。
 - 量出的是布局数值和像素；手感和最终效果仍由用户在真机验收。
 

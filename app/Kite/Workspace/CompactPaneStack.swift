@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// 紧凑布局的窗口按底栏的顺序排成一行，铺满时只露出当前窗口；控制区横滑时整行跟着手指走，松手滑到相邻窗口或回原处。
+#if os(macOS)
+/// Mac 窄窗口里紧凑布局的窗口按底栏的顺序排成一行，铺满时只露出当前窗口；控制区横滑时整行跟着手指走，松手滑到相邻窗口或回原处。
 /// 标题栏和控制区由外壳统一显示（CompactPaneHeaderHost），换窗口时原地过渡；这里平移的是窗口本身。
 ///
 /// 窗口建好就一直留着，滑动时不新建也不回收：新建会话窗口要把整段对话重新建一遍、排一遍、画一遍，重新订阅还会收到整段历史再排一遍，
@@ -63,13 +64,25 @@ struct CompactPaneStack: View {
         .onChange(of: motion.collapsed) { _, collapsed in if !collapsed { row.snap() } }
         .onChange(of: reduceMotion, initial: true) { row.reduceMotion = reduceMotion }
         .task(id: panes) { await row.warmUp() }
-        #if DEBUG && KITE_LAYOUT_AUDIT
-        .onAppear { PerfProbe.row = row }
-        #endif
     }
 }
 
-/// 一行窗口的横滑状态与手势处理，CompactPaneStack 持有一个。
+/// 窗口摆到行里的位置：只在渲染时平移已经排好的窗口，不把逐帧进度传进窗口内容与安全区排版。
+private struct RowPlacement<Content: View>: View {
+    let motion: WindowMotion
+    /// 窗口在行里的位置：序号 × 宽。
+    let offset: CGFloat
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        WindowClock(motion: motion) { pose in
+            content.modifier(WindowTranslation(point: CGPoint(x: pose.frame.minX + offset, y: 0)).ignoredByLayout())
+        }
+    }
+}
+#endif
+
+/// 一行窗口的横滑状态与手势处理，一行窗口（Mac 窄窗口的 CompactPaneStack、iOS 的 CompactRowView）各持有一个。
 @MainActor @Observable
 final class PaneRow {
     /// 整行的横向位置，记在 frame.minX：第 i 个窗口铺满时是 -i × 宽。
@@ -201,19 +214,5 @@ final class PaneRow {
 
     private func move(_ x: CGFloat, kind: WindowMotionKind) {
         slide.move(to: WindowPose(frame: CGRect(x: x, y: 0, width: 0, height: 0)), kind: kind)
-    }
-}
-
-/// 窗口摆到行里的位置：只在渲染时平移已经排好的窗口，不把逐帧进度传进窗口内容与安全区排版。
-private struct RowPlacement<Content: View>: View {
-    let motion: WindowMotion
-    /// 窗口在行里的位置：序号 × 宽。
-    let offset: CGFloat
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        WindowClock(motion: motion) { pose in
-            content.modifier(WindowTranslation(point: CGPoint(x: pose.frame.minX + offset, y: 0)).ignoredByLayout())
-        }
     }
 }

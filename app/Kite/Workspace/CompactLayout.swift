@@ -8,86 +8,45 @@ import UIKit
 /// 内容不重新换行，只露边距的那个方向等比缩放：让出侧边栏时右边裁掉；让出 action 栏时内容变矮，浮在底下的控制区跟着窗口底边走，
 /// 圆角从屏幕圆角变成屏幕圆角减去边距。
 /// 打开时点窗口或往回拖收起。
-/// iOS 上是原生外壳（PhoneCompactLayout，见 CompactShellView）；Mac 的窄窗口和 Debug 带 --swiftui-compact 时是下面的 SwiftUI 版。
+/// iPhone 和窄的 iPad 上是原生外壳（PhoneCompactLayout，见 CompactShellView）；Mac 的窄窗口是下面的 SwiftUI 版（MacCompactLayout）。
 struct CompactLayout: View {
     var body: some View {
         #if os(iOS)
-        if CompactShellVariant.native {
-            PhoneCompactLayout()
-        } else {
-            SwiftUICompactLayout()
-        }
+        PhoneCompactLayout()
         #else
-        SwiftUICompactLayout()
+        MacCompactLayout()
         #endif
     }
 }
 
-#if os(iOS)
-/// 紧凑布局用原生外壳；Debug 带 --swiftui-compact 时照旧是 SwiftUI 版，同一个构建对照新旧两版。
-enum CompactShellVariant {
-    static let native: Bool = {
-        #if DEBUG
-        !ProcessInfo.processInfo.arguments.contains("--swiftui-compact")
-        #else
-        true
-        #endif
-    }()
-}
-#endif
-
-/// 紧凑布局的 SwiftUI 版，见 CompactLayout。
-private struct SwiftUICompactLayout: View {
+#if os(macOS)
+/// Mac 窄窗口的紧凑布局，见 CompactLayout。没有屏幕圆角、Home 条和键盘：窗口按 phoneMinWindow 给侧边栏让位。
+private struct MacCompactLayout: View {
     @Environment(AppModel.self) private var model
-    #if os(macOS)
     @Environment(\.windowChrome) private var chrome
-    #endif
 
     /// 拉开侧边栏、底栏的状态与手势；进度只有窗口外壳和侧栏平移这些小修饰器读，这里的 body 不随开合重算。
     @State private var motion = DrawerMotion()
-    /// 屏幕圆角，读到之前按 0 算：铺满时窗口的角本来就被屏幕圆角盖住。
-    @State private var screenRadius: CGFloat = 0
     /// 页签和 action 栏合起来多高，按实际排出来的量。
     @State private var drawerHeight: CGFloat = 0
-    /// Home 条让出的那一截，不含键盘，从 UIKit 读；读到之前按 SwiftUI 的算。
-    @State private var homeInset: CGFloat?
-    /// 根视图的左右边距，从 UIKit 读，给窗口里的分组表单，见 pageForm。
-    @State private var formMargin: CGFloat?
 
     var body: some View {
         GeometryReader { geo in
-            // SwiftUI 的安全区把状态栏、Home 条和键盘合在一起（分区只能用来忽略，读不出各占多少）
             let safe = geo.safeAreaInsets
-            #if os(macOS)
             let insets = EdgeInsets(top: max(safe.top, chrome.top), leading: safe.leading,
                                     bottom: safe.bottom, trailing: safe.trailing)
-            #else
-            let insets = safe
-            #endif
             let screen = CGSize(width: geo.size.width + safe.leading + safe.trailing,
                                 height: geo.size.height + safe.top + safe.bottom)
-            let home = homeInset ?? insets.bottom
-            // 侧边栏拉开后，窗口收成竖着的胶囊：宽度等于此时圆角（屏幕圆角减去边距）的直径，其余宽度都给侧边栏。
-            // 没有屏幕圆角（Mac、还没读到）或圆角小到点不着时，窗口留 phoneMinWindow 宽，侧边栏不超过 312
-            let capsule = 2 * (screenRadius - Metrics.padding)
-            let sidebarWidth = capsule >= Metrics.phoneMinCapsule
-                ? screen.width - Metrics.padding - capsule
-                : DotMetrics.snapDown(min(screen.width - Metrics.padding - Metrics.phoneMinWindow, 312))
+            let home = insets.bottom
+            // 侧边栏拉开后窗口留 phoneMinWindow 宽，侧边栏不超过 312
+            let sidebarWidth = DotMetrics.snapDown(min(screen.width - Metrics.padding - Metrics.phoneMinWindow, 312))
             // 窗口底边要升到页签上面，页签在 action 栏上面，action 栏在 Home 条上面
             let actionsHeight = drawerHeight + home + Metrics.padding
             let geometry = WindowGeometry(screen: screen, insets: insets, homeInset: home, avoidsKeyboard: avoidsKeyboard,
-                                          sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: screenRadius,
+                                          sidebarWidth: sidebarWidth, actionsHeight: actionsHeight, screenRadius: 0,
                                           rule: windowed ? .free : windowless ? .pinned : .none,
                                           padding: Metrics.padding, margin: Metrics.paneMargin)
             ZStack(alignment: .topLeading) {
-                #if os(iOS)
-                ScreenReader { radius, bottom, margin in
-                    screenRadius = radius
-                    homeInset = bottom
-                    formMargin = margin
-                }
-                .ignoresSafeArea()
-                #endif
                 // 侧栏收起时滑到屏幕外，不跟着露出的一侧藏：收起侧栏时底栏可能同时钉回来，露出的一侧立刻换成底栏，侧栏还在往外滑
                 CompactSidebarColumn(logoTop: CompactSidebarColumn.logoBarTop(screen: screen, insets: insets)) { motion.settle(nil) }
                 .frame(width: sidebarWidth)
@@ -110,16 +69,8 @@ private struct SwiftUICompactLayout: View {
             // 没有窗口时窗口里放占位内容，见 CompactWindow
             .overlay(alignment: .topLeading) {
                 CompactWindow(motion: motion, geometry: geometry)
-                    .environment(\.formMargin, formMargin)
             }
         }
-        // 保留 Home 条自动隐藏，不推测系统何时隐藏它。
-        #if os(iOS)
-        .persistentSystemOverlays(.hidden)
-        #endif
-        #if DEBUG && KITE_LAYOUT_AUDIT
-        .onAppear { PerfProbe.drawer = motion }
-        #endif
         .onChange(of: model.paneGroup?.id, initial: true) { _, _ in
             model.paneGroup?.layout.updateViewport(.zero, presentation: .compact)
         }
@@ -150,8 +101,34 @@ private struct SwiftUICompactLayout: View {
     }
 }
 
+/// 侧栏、底栏露出来的时候才给读屏（侧栏）、才显示（底栏）。露出的一侧只在开合起止时变，读它的只有这一层。
+private struct DrawerReveal: ViewModifier {
+    let motion: DrawerMotion
+    let drawer: WorkspaceDrawer
+
+    func body(content: Content) -> some View {
+        if drawer == .sidebar {
+            content.accessibilityHidden(motion.shown != .sidebar)
+        } else {
+            content.opacity(motion.shown == .actions ? 1 : 0)
+        }
+    }
+}
+
+/// 侧边栏贴着窗口左边从左滑入：按窗口同样的进度（含推过头的阻尼）平移，右边缘始终挨着窗口左边。
+/// 平移量和窗口的左边距对进度都是线性的，同一个弹簧插值下逐帧对齐。
+private struct SidebarSlide: ViewModifier {
+    let motion: DrawerMotion
+    let width: CGFloat
+
+    func body(content: Content) -> some View {
+        content.offset(x: (Openness.shown(motion.target.sidebar, extent: width) - 1) * width)
+    }
+}
+#endif
+
 /// 侧栏一列：顶部是标志栏（只有搜索按钮），下面是一级导航和当前一栏的列表，底部是用户栏，与窗口控制区底边对齐。
-/// 点一个工作区就切过去并收起（collapse）。SwiftUI 版和原生外壳共用，宽度、平移和安全区由外面给。
+/// 点一个工作区就切过去并收起（collapse）。Mac 窄窗口和 iOS 的原生外壳共用，宽度、平移和安全区由外面给。
 struct CompactSidebarColumn: View {
     /// 标志栏离安全区顶边多远，见 logoBarTop。
     let logoTop: CGFloat
@@ -207,7 +184,7 @@ struct CompactSidebarColumn: View {
 }
 
 /// 底栏上面那一行页签：窗口都排在底部，当前窗口垫一块选中底、图标换成向上的箭头；点别的窗口换过去，点当前窗口收起底栏。
-/// SwiftUI 版和原生外壳共用。
+/// Mac 窄窗口和 iOS 的原生外壳共用。
 struct CompactTabBar: View {
     let motion: DrawerMotion
     @Environment(AppModel.self) private var model
@@ -248,22 +225,8 @@ struct CompactTabBar: View {
     }
 }
 
-/// 侧栏、底栏露出来的时候才给读屏（侧栏）、才显示（底栏）。露出的一侧只在开合起止时变，读它的只有这一层。
-private struct DrawerReveal: ViewModifier {
-    let motion: DrawerMotion
-    let drawer: WorkspaceDrawer
-
-    func body(content: Content) -> some View {
-        if drawer == .sidebar {
-            content.accessibilityHidden(motion.shown != .sidebar)
-        } else {
-            content.opacity(motion.shown == .actions ? 1 : 0)
-        }
-    }
-}
-
 #if os(iOS)
-/// 用一个铺满屏幕的 UIView 读 SwiftUI 读不到的三样：
+/// 用一个铺满屏幕的 UIView 读 SwiftUI 读不到的三样，给初始配置页和紧凑布局的原生外壳（CompactShellView 直接用 Probe）：
 /// - 屏幕圆角：圆角和容器同心的 UIView，它的实际圆角就是屏幕圆角（iOS 26 起的公开接口）。
 /// - Home 条让出的那一截：UIKit 的安全区不含键盘，键盘另有 keyboardLayoutGuide。
 ///   SwiftUI 的安全区分成 container 和 keyboard 两区，但只能按区忽略，读出来的是合在一起的。

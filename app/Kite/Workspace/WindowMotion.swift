@@ -131,209 +131,6 @@ final class WindowMotion {
 
 extension EnvironmentValues {
     @Entry var windowMotion: WindowMotion?
-    @Entry var windowContentSize = CGSize.zero
-}
-
-/// 稳定的舞台：排版框始终覆盖内容区，所有裁切都发生在同一坐标系，飞行途中不经过终点的小框。
-struct WindowSurface<Content: View, Icon: View, Header: View>: View {
-    let motion: WindowMotion
-    /// 这次排布给的终点，和交给 motion 的是同一个，见 body。
-    let target: WindowPose
-    let contentSize: CGSize
-    let viewport: CGSize
-    let iconSize: CGFloat
-    let color: Color
-    let minimizedColor: Color?
-    /// 头像的描边，画在外框上，随头像淡入：飞过同色的窗口时也看得出轮廓，落进停靠栏外框就是头像那一圈。
-    let ring: (color: Color, width: CGFloat)?
-    let content: Content
-    let icon: Icon
-    let background: AnyView
-    /// 点阵层另外要收起的时候（如拖缝调整大小）。窗口自己在动时总是收起，停下后淡入，见 WindowLayout.transitioning。
-    let backgroundHidden: Bool
-    let headerHeight: CGFloat?
-    let onHover: (Bool) -> Void
-    let header: Header
-    #if os(macOS)
-    @State private var hosted = HostedContentLink()
-    /// 舞台左上角在窗口里的位置，正文的托管视图按它对齐窗口原点，见 HostedContentContainer。
-    @State private var stageOrigin = CGPoint.zero
-    #endif
-
-    init(motion: WindowMotion, target: WindowPose, contentSize: CGSize, viewport: CGSize, iconSize: CGFloat, color: Color, minimizedColor: Color? = nil,
-         ring: (color: Color, width: CGFloat)? = nil, background: AnyView = AnyView(EmptyView()), backgroundHidden: Bool = false,
-         headerHeight: CGFloat? = nil, onHover: @escaping (Bool) -> Void = { _ in },
-         @ViewBuilder content: () -> Content, @ViewBuilder icon: () -> Icon, @ViewBuilder header: () -> Header = { EmptyView() }) {
-        self.motion = motion
-        self.target = target
-        self.contentSize = contentSize
-        self.viewport = viewport
-        self.iconSize = iconSize
-        self.color = color
-        self.minimizedColor = minimizedColor
-        self.ring = ring
-        self.background = background
-        self.backgroundHidden = backgroundHidden
-        self.headerHeight = headerHeight
-        self.onHover = onHover
-        self.content = content()
-        self.icon = icon()
-        self.header = header()
-    }
-
-    /// 终点用排布给的 target，不读 motion 的：排布一变，卡片随即把新终点交给 motion，读 motion 的话窗口和正文要跟着再算一轮。
-    /// 动画开始、结束（moving 翻转）也只更新读它的几层（WindowClock、WindowDots），窗口本身和正文不跟着重算。
-    var body: some View {
-        let destination = target.contentOrigin(size: contentSize)
-        // 底色、点阵和舞台各自按同一时钟取样。点阵本来就按视口坐标画，不放进下面会移动的舞台，只用轮廓遮住；
-        // 窗口移动时它的内容不变，不能跟着逐帧重画（见 WindowBackdrop）
-        ZStack(alignment: .topLeading) {
-            WindowClock(motion: motion) { pose in
-                let outline = WindowOutline(frame: pose.frame, radius: pose.radius)
-                ZStack {
-                    outline.fill(color).opacity(min(pose.contentOpacity + pose.iconOpacity, 1))
-                    if let minimizedColor { outline.fill(minimizedColor).opacity(pose.iconOpacity) }
-                }
-            }
-            WindowDots(motion: motion, content: background, hidden: backgroundHidden)
-            #if os(macOS)
-            hostedContent(destination: destination)
-            #endif
-            WindowClock(motion: motion) { pose in
-                ZStack(alignment: .topLeading) {
-                    stage(pose: pose, destination: destination)
-                    if let ring { outlineRing(ring, pose: pose) }
-                    #if os(macOS)
-                    // 正文的缩放、平移和外框按同一次取样，同一帧交上去；动画开始、结束时接不接输入也从这里交
-                    HostedContentDriver(link: hosted,
-                                        placement: hostedPlacement(destination: destination), onHover: onHover,
-                                        frame: hostedFrame(pose, destination: destination, area: hostedArea(destination)))
-                        .frame(width: 0, height: 0)
-                        .allowsHitTesting(false)
-                    #endif
-                }
-            }
-            #if os(macOS)
-            headerLayer
-            #endif
-        }
-        .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
-        #if os(macOS)
-        .onGeometryChange(for: CGPoint.self) { $0.frame(in: .global).origin } action: { stageOrigin = $0 }
-        #endif
-        .transaction { $0.windowContentAnimation = $0.animation; $0.animation = nil }
-        .environment(\.windowMotion, motion)
-        // 标题两侧按正文尺寸贴外框（见 WindowHeaderAnchor）。Mac 上两侧的挪动在图层上算（见 hostedFrame），不放进环境：
-        // 放了的话正文尺寸一变就是一次环境变化，窗口正文里每个文本视图都要跟着更新
-        #if !os(macOS)
-        .environment(\.windowContentSize, contentSize)
-        #endif
-    }
-
-    /// 描边压在舞台外面，不经过舞台的圆角裁切，外缘与外框贴合。
-    private func outlineRing(_ ring: (color: Color, width: CGFloat), pose: WindowPose) -> some View {
-        let inset = ring.width / 2
-        return WindowOutline(frame: pose.frame.insetBy(dx: inset, dy: inset), radius: max(pose.radius - inset, 0))
-            .stroke(ring.color, lineWidth: ring.width)
-            .opacity(pose.iconOpacity)
-            .allowsHitTesting(false)
-    }
-
-    #if os(macOS)
-    /// Mac 的正文托管在自己的视图里，按停着的样子排在 destination，飞行中的缩放、平移只改外层图层（见 HostedContent）。
-    /// 停着、看得见时由正文自己接悬停；收成停靠形状、飞行中舞台接（见 stage）。
-    private func hostedContent(destination: CGPoint) -> some View {
-        let area = hostedArea(destination)
-        return HostedContent(link: hosted, motion: motion, content: content)
-            .frame(width: area.width, height: area.height)
-            .modifier(WindowTranslation(point: area.origin))
-            .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
-    }
-
-    private func hostedPlacement(destination: CGPoint) -> HostedPlacementValue {
-        let area = hostedArea(destination)
-        // 托管视图的原点对齐窗口原点（见 HostedContentContainer），正文也保留窗口坐标。
-        return HostedPlacementValue(origin: CGPoint(x: stageOrigin.x + area.minX, y: stageOrigin.y + area.minY),
-                                    contentSize: contentSize,
-                                    offset: CGPoint(x: stageOrigin.x + destination.x, y: stageOrigin.y + destination.y),
-                                    extent: CGSize(width: max(stageOrigin.x + area.maxX, 0), height: max(stageOrigin.y + area.maxY, 0)))
-    }
-
-    /// Mac 的标题栏一层（拖动区和窗口按钮）按停着的外框摆，不跟时钟走。飞行中它看不见（按钮淡出、拖动区透明）也不接输入；
-    /// 跟着外框逐帧变大小的话，拖动区这个 AppKit 视图每帧改尺寸，连带焦点、可见范围、跟踪区域和光标逐帧重算（2026-10-12 Mac 实测）。
-    /// 拖起时缩小那一段拖动区直接到终点，拖动照常由按下时的视图接。
-    private var headerLayer: some View {
-        let frame = target.frame
-        return header
-            .frame(width: frame.width, height: headerHeight ?? frame.height)
-            .frame(width: frame.width, height: frame.height, alignment: .top)
-            .clipShape(RoundedRectangle(cornerRadius: target.radius))
-            .position(x: frame.midX, y: frame.midY)
-            .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
-    }
-
-    /// 托管视图的范围：正文的排版框加上停着时的外框。标题两侧按外框贴边（见 WindowHeaderAnchor），外框比正文宽时按钮在正文外面，
-    /// 托管视图要盖住它们才接得到点击。
-    private func hostedArea(_ destination: CGPoint) -> CGRect {
-        CGRect(origin: destination, size: contentSize).union(target.frame)
-    }
-
-    /// 正文这一帧的摆放，都在托管视图（area）的坐标里：排在 destination、原尺寸的正文按 scale 缩放、左上角落在 contentOrigin，
-    /// 按外框裁切、按 contentOpacity 淡出。标题两侧要挪多少、标题右边截掉多少，见 WindowHeaderAnchored。
-    private func hostedFrame(_ pose: WindowPose, destination: CGPoint, area: CGRect) -> HostedContentFrame {
-        HostedContentFrame(pose: pose, target: target, destination: destination, area: area, contentSize: contentSize)
-    }
-    #endif
-
-    /// 正文、头像和标题栏的舞台：排版框始终覆盖内容区，按当前外框裁切。Mac 的正文和标题栏不在这里，见 hostedContent、headerLayer。
-    private func stage(pose: WindowPose, destination: CGPoint) -> some View {
-        ZStack(alignment: .topLeading) {
-            #if !os(macOS)
-            content
-                // 外层去掉了事务里的动画（外框按每帧取样）；内容自己的动画照常，如发送时对话滑动、气泡浮起。
-                // 窗口改尺寸和排布变化带来的改动不带动画，内容一次排到位：原位恢复时尺寸不变，标题栏跟着窗口状态改的排版若带上恢复的动画，
-                // 按钮组外层的平台容器会从窄插值到宽，按钮组被从右往左裁开（2026-10-11 Mac 实测，鼠标停在停靠栏不动时，图层树里裁它的是 _NSGraphicsView）
-                .transaction(value: contentSize) { $0.animation = nil }
-                .transaction { $0.animation = $0.windowLayoutChange ? nil : $0.windowContentAnimation }
-                .frame(width: contentSize.width, height: contentSize.height)
-                .modifier(WindowTranslation(point: destination))
-                .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
-                .modifier(WindowContentTransform(pose: pose, destination: destination, contentSize: contentSize).ignoredByLayout())
-                // 蒙版保留 Mac 标题栏滚动软边的登记，不能对整段正文使用 opacity。
-                .mask { Rectangle().opacity(pose.contentOpacity) }
-            #endif
-            icon
-                .frame(width: iconSize, height: iconSize)
-                .position(x: pose.frame.midX, y: pose.frame.midY)
-                .opacity(pose.iconOpacity)
-                .allowsHitTesting(false)
-            #if !os(macOS)
-            header
-                .frame(width: pose.frame.width, height: headerHeight ?? pose.frame.height)
-                .position(x: pose.frame.midX, y: pose.frame.minY + (headerHeight ?? pose.frame.height) / 2)
-            #endif
-        }
-        .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
-        // onHover 按排版框登记区域；裁切全舞台的轮廓不能隔开相邻窗口的悬停。
-        .modifier(WindowTranslation(point: CGPoint(x: -pose.frame.minX, y: -pose.frame.minY)))
-        .frame(width: pose.frame.width, height: pose.frame.height, alignment: .topLeading)
-        .clipShape(RoundedRectangle(cornerRadius: pose.radius))
-        #if os(macOS)
-        // 正文在舞台下面另一个视图里。舞台整块可命中会挡住点正文，只在收成停靠形状停着时垫一层接悬停；
-        // 飞行中悬停本来不用（见 PaneCard），不让它逐帧随外框重算
-        .background {
-            RoundedRectangle(cornerRadius: pose.radius).fill(.clear)
-                .contentShape(RoundedRectangle(cornerRadius: pose.radius))
-                .onHover(perform: onHover)
-                .allowsHitTesting(!motion.moving && target.contentOpacity == 0)
-        }
-        #else
-        .contentShape(RoundedRectangle(cornerRadius: pose.radius))
-        .onHover(perform: onHover)
-        #endif
-        .position(x: pose.frame.midX, y: pose.frame.midY)
-        .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
-    }
 }
 
 /// 按 motion 逐帧取样，只在动画进行中走。动画开始、结束只更新这一层，外面的窗口不跟着重算。
@@ -349,108 +146,21 @@ struct WindowClock<Content: View>: View {
     }
 }
 
-/// 点阵层按外框遮住。点阵不参与过渡：窗口在动就收起，停下后淡入；收起时遮罩也不逐帧取样。
-private struct WindowDots: View {
-    let motion: WindowMotion
-    let content: AnyView
-    let hidden: Bool
-
-    var body: some View {
-        let hidden = hidden || motion.moving
-        WindowBackdrop(content: content, hidden: hidden)
-            .mask {
-                WindowClock(motion: motion, paused: hidden) { pose in
-                    WindowOutline(frame: pose.frame, radius: pose.radius).fill().opacity(pose.contentOpacity)
-                }
-            }
-            #if !os(macOS)
-            // Mac 上由 WindowBackdrop 自己在图层上淡入
-            .opacity(hidden ? 0 : 1)
-            .animation(hidden ? nil : .easeOut(duration: 0.25), value: hidden)
-            #endif
-            .allowsHitTesting(false)
-    }
-}
-
-/// 窗口的点阵层。Mac 上托管在自己的视图里：窗口移动时只改外面的遮罩，里面整窗大小的点阵着色器不跟着卡片逐帧重画
-/// （2026-10-11 Mac 实测，三个窗口并排缩小、恢复时，每帧多画三遍整窗点阵，掉到约 30 帧；挪进单独的视图后这部分开销消失）。
-/// 环境整份转交，点阵照常读舞台、卡片和配色。
 #if os(macOS)
-private struct WindowBackdrop: NSViewRepresentable {
-    let content: AnyView
-    let hidden: Bool
-
-    func makeNSView(context: Context) -> BackdropHost {
-        let host = BackdropHost(rootView: rooted(in: context))
-        host.sizingOptions = []
-        host.alphaValue = hidden ? 0 : 1
-        return host
-    }
-
-    func updateNSView(_ host: BackdropHost, context: Context) {
-        host.rootView = rooted(in: context)
-        // 点阵不参与过渡：一开始就收起，停下后淡入。淡入交给图层动画，主线程不逐帧插值（2026-10-12 Mac 实测，SwiftUI 插值每次多约 35 毫秒）；
-        // 不经过 animator()：它由 AppKit 的动画管理器驱动，收起时在首帧后面多一次整窗排版（2026-10-12 Mac 实测约 7 毫秒）
-        let alpha: CGFloat = hidden ? 0 : 1
-        guard host.alphaValue != alpha else { return }
-        host.alphaValue = alpha
-        // 收起要当场收：淡入还在走的话图层动画会盖过新的透明度，点阵照样淡出来（2026-10-13 用户看到松手时点阵闪一下）
-        if hidden { host.layer?.removeAnimation(forKey: "fade") }
-        guard !hidden, let layer = host.layer else { return }
-        let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 0
-        fade.toValue = 1
-        fade.duration = 0.25
-        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        layer.add(fade, forKey: "fade")
-    }
-
-    private func rooted(in context: Context) -> AnyView {
-        AnyView(content.environment(\.self, context.environment))
-    }
-}
-
+/// 窗口的点阵层（CardView 的 backdrop）：托管在自己的视图里，窗口移动时只改外面的遮罩，里面整窗大小的点阵着色器不跟着卡片逐帧重画
+/// （2026-10-11 Mac 实测，三个窗口并排缩小、恢复时，每帧多画三遍整窗点阵，掉到约 30 帧；挪进单独的视图后这部分开销消失）。
 /// 只负责显示，点击和读屏都穿过去。
 final class BackdropHost: NSHostingView<AnyView> {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func isAccessibilityElement() -> Bool { false }
 }
 
-/// Mac 的窗口正文托管在自己的视图里，按停着的样子排一次；缩小、恢复途中只改外层图层的 sublayerTransform。
-/// 正文若和舞台一起由 SwiftUI 几何效果缩放，SwiftUI 会把变换落到里面每个 AppKit 视图上（setFrameTransform、滚动区的 setBoundsOrigin），
+/// Mac 台面上卡片的正文（CardView）托管在这里，按停着的样子排一次；缩小、恢复途中只改外层图层的 sublayerTransform。
+/// 正文若由 SwiftUI 几何效果缩放，SwiftUI 会把变换落到里面每个 AppKit 视图上（setFrameTransform、滚动区的 setBoundsOrigin），
 /// 对话的滚动区和每个文本视图逐帧重排可见范围、按新比例重画字形（2026-10-12 Mac 实测：缩小、恢复后 0.5 秒里主线程忙 360～410 毫秒，
 /// 一半以上花在这上面；离屏对照每帧 8～12 毫秒，只改外层图层后 1～4 毫秒）。
 /// 外层图层的变换 AppKit 和 SwiftUI 都不知道：飞行中按停着时的位置命中，所以只在停着、看得见时接点击；
-/// 收成停靠形状停着时整块隐藏，原尺寸摆着的文本视图不接光标和点击。环境整份转交，同 WindowBackdrop。
-private struct HostedContent<Content: View>: NSViewRepresentable {
-    let link: HostedContentLink
-    let motion: WindowMotion
-    let content: Content
-
-    func makeNSView(context: Context) -> HostedContentContainer {
-        let container = HostedContentContainer(rootView: rooted(in: context))
-        container.motion = motion
-        container.origin = link.placement.value.origin
-        link.container = container
-        container.apply(link.frame)
-        return container
-    }
-
-    /// 尺寸由外面的 frame 定。不给的话 SwiftUI 按 Auto Layout 量 fittingSize，每次排版都把整段正文的 AppKit 视图树
-    /// 塞进临时约束引擎求解（2026-10-12 Mac 实测，一分钟操作里累计 1.5 秒）。
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: HostedContentContainer, context: Context) -> CGSize? {
-        proposal.replacingUnspecifiedDimensions()
-    }
-
-    func updateNSView(_ container: HostedContentContainer, context: Context) {
-        container.host.rootView = rooted(in: context)
-    }
-
-    private func rooted(in context: Context) -> AnyView {
-        AnyView(HostedPlaced(content: content, link: link).environment(\.self, context.environment))
-    }
-}
-
+/// 收成停靠形状停着时整块隐藏，原尺寸摆着的文本视图不接光标和点击。
 /// 外框裁切和淡出是这一层图层上的遮罩：SwiftUI 的 mask 加在 AppKit 视图上时，每帧按整个窗口区域的大小重画遮罩
 /// （2026-10-12 Mac 实测，缩小、恢复各多 30～50 毫秒主线程）。缩放、平移放在里面一层：sublayerTransform 连遮罩一起变换。
 /// 托管视图从窗口原点铺到这一层的右下角，里面的坐标就是窗口坐标：嵌套的托管视图按自己的原点报标题栏给滚动软边，
@@ -540,8 +250,11 @@ final class HostedContentContainer: NSView, HostedContentSurface {
         frameState = state
         let shown = state.shown || flying
         if isHidden == shown { isHidden = !shown }
-        guard let layer else { return }
-        mover.layer?.sublayerTransform = CATransform3DMakeAffineTransform(state.transform)
+        guard let layer, let moverLayer = mover.layer else { return }
+        // 改它时 AppKit 把里面所有图层标成要按新的缩放重画（_NSInvalidateSuggestedContentsScaleBelow），正文里的图片、文字整块重画
+        // （2026-10-14 Mac 实测：拖侧栏改宽时停靠栏里收着的窗口每步换缩放，见 StageView.arrange），没变就不设
+        let transform = CATransform3DMakeAffineTransform(state.transform)
+        if !CATransform3DEqualToTransform(moverLayer.sublayerTransform, transform) { moverLayer.sublayerTransform = transform }
         clip.frame = layer.bounds
         clip.path = clipPath(state, in: layer)
         clip.opacity = Float(state.opacity)
@@ -576,64 +289,13 @@ final class HostedContentView: NSHostingView<AnyView> {
     override var mouseDownCanMoveWindow: Bool { false }
 }
 
-/// 放在舞台的时钟里，每帧把正文的摆放交给托管视图。
-private struct HostedContentDriver: NSViewRepresentable {
-    let link: HostedContentLink
-    let placement: HostedPlacementValue
-    let onHover: (Bool) -> Void
-    let frame: HostedContentFrame
-
-    func makeNSView(context: Context) -> NSView { DriverView() }
-
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> CGSize? { .zero }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        link.onHover = onHover
-        if link.placement.value != placement { link.placement.value = placement }
-        (link.container as? HostedContentContainer)?.origin = placement.origin
-        guard link.frame != frame else { return }
-        link.apply(frame)
-    }
-
-    private final class DriverView: NSView {
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-        override func isAccessibilityElement() -> Bool { false }
-    }
-}
-
-#else
-private struct WindowBackdrop: View {
-    let content: AnyView
-    let hidden: Bool
-
-    var body: some View { content }
-}
 #endif
-
-extension Transaction {
-    /// WindowSurface 外层去掉动画前的动画，交还给窗口里的内容。
-    @Entry var windowContentAnimation: Animation?
-    /// 窗口排布的变化（缩小、恢复、展开、排列、拖放）。它带的动画只给外框和停靠栏，不交给窗口内容。
-    @Entry var windowLayoutChange = false
-}
 
 /// 不可插值的排版位置。动画由 WindowMotion 统一采样，SwiftUI 不再额外补一次位移。
 struct WindowTranslation: GeometryEffect {
     let point: CGPoint
     func effectValue(size: CGSize) -> ProjectionTransform {
         ProjectionTransform(CGAffineTransform(translationX: point.x, y: point.y))
-    }
-}
-
-private struct WindowContentTransform: GeometryEffect {
-    let pose: WindowPose
-    let destination: CGPoint
-    let contentSize: CGSize
-    func effectValue(size: CGSize) -> ProjectionTransform {
-        let origin = pose.contentOrigin(size: contentSize)
-        return ProjectionTransform(CGAffineTransform(a: pose.scale, b: 0, c: 0, d: pose.scale,
-                                                     tx: origin.x - destination.x * pose.scale,
-                                                     ty: origin.y - destination.y * pose.scale))
     }
 }
 
@@ -678,44 +340,17 @@ enum StageKeyframes {
     }
 }
 
-/// 标题两侧只读同一时钟，不自己加动画；正文尺寸变了也不会产生另一段补位时序。
-/// 锚定只平移，不加遮罩：遮罩会让按钮组套上一层按自身大小裁切的容器，按下时放大的交互玻璃被切掉边（2026-10-11 Mac 实测）。
-struct WindowHeaderAnchor: ViewModifier {
-    let edge: HorizontalEdge
-    @Environment(\.windowMotion) private var motion
-    @Environment(\.windowContentSize) private var contentSize
-
-    func body(content: Content) -> some View {
-        TimelineView(.animation(paused: motion?.moving != true)) { clock in
-            let shift = motion?.presentation(at: clock.date).headerShift(contentSize: contentSize) ?? .zero
-            content.modifier(WindowTranslation(point: CGPoint(x: edge == .leading ? shift.dx : -shift.dx, y: shift.dy)))
-        }
-    }
-}
-
-/// 标题仍按终点宽度排版，运动中只露出两侧控件之间的部分；读同一时钟，与 WindowHeaderAnchor 同步。
-/// 只遮标题，不遮它前面的侧栏按钮，理由同 WindowHeaderAnchor：标题在一组的最右，遮罩按右边截掉的量不变。
-/// 原生台面上标题在自己这一侧的托管视图里，遮罩在那一层图层上，这里只报标题的左边，见 WindowHeaderAnchored。
+/// 标题按终点宽度排版，台面上的窗口缩小、恢复途中只露出两侧控件之间的部分：标题在自己这一侧的托管视图里，
+/// 遮罩在那一层图层上（见 WindowHeaderAnchored），这里只报标题的左边，截得再多也不截到标题前面的按钮。
+/// 不在台面的托管视图里（紧凑布局、单页）时外框和正文一样大，不用遮。
 struct WindowHeaderTitleMask: ViewModifier {
-    @Environment(\.windowMotion) private var motion
-    @Environment(\.windowContentSize) private var contentSize
     @Environment(\.windowHeaderTitleEdge) private var edge
 
     func body(content: Content) -> some View {
         if let edge {
             content.onGeometryChange(for: CGFloat.self) { $0.frame(in: .named("pane-header")).minX } action: { edge.minX = $0 }
         } else {
-            masked(content)
-        }
-    }
-
-    private func masked(_ content: Content) -> some View {
-        TimelineView(.animation(paused: motion?.moving != true)) { clock in
-            let pose = motion?.presentation(at: clock.date)
-            let visible = pose.map { $0.frame.width / $0.scale } ?? contentSize.width
-            content.mask(alignment: .leading) {
-                Rectangle().padding(.trailing, max(0, contentSize.width - visible))
-            }
+            content
         }
     }
 }

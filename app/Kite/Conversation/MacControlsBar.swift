@@ -2,11 +2,10 @@
 import AppKit
 import SwiftUI
 
-/// Mac 宽屏会话窗口的底栏，原生版：替代 PaneControlsBar 套 ThreadControls 的整块 SwiftUI。拖缝改宽时它每帧跟着改尺寸，
-/// 整块 SwiftUI 子树每步约 2.2ms 一个窗口（2026-10-13 测量，两窗换成空白帧间隔中位就到 16.7ms），原生的只按宽度重摆。
-/// 外观、行为逐项照 SwiftUI 版（ThreadControls、PaneControlsBar、PaneButtonStyle），逻辑共用 ThreadControlsModel；
+/// Mac 宽屏会话窗口（ThreadWindowView）的底栏：玻璃里是原生的输入框和按钮（ControlsBarView），拖缝改宽时只按宽度重摆
+/// （整块 SwiftUI 子树每步约 2.2ms 一个窗口，2026-10-13 测量）。版式同 Mac 窄窗口的 ThreadControls：输入框左右留 controlInset + 8、
+/// 上下 6，下面一行思考强度和按钮，放不下时思考强度单独一行；逻辑共用 ThreadControlsModel。
 /// 思考强度控件留在 SwiftUI（ThreadEffortControl），放进一个按自己大小摆的托管视图，只在它自己改宽时重排。
-/// iPhone、iPad 和 Mac 窄窗口（紧凑布局，底栏由外壳统一显示）仍用 SwiftUI 版。
 struct MacControlsBar: View {
     var typing: FocusState<Bool>.Binding
     /// 发一条消息；第二个参数和对话往上滑在同一次更新里调。
@@ -36,14 +35,14 @@ struct MacControlsBar: View {
                                                           scope: dotScope, voiceOwner: voiceOwner, state: state, send: send),
                             enabled: isEnabled, colorScheme: colorScheme, link: link)
                 // 输入框有没有焦点照样记在窗口的 typing 上：原生输入框成为第一响应者时为真，窗口把它设成假时交出焦点（2026-10-13 实测）。
-                // 宽屏上只有标题栏的侧栏按钮用它先收起输入；点别处、Esc 都是 AppKit 的第一响应者照常处理，SwiftUI 版的输入框也是 NSTextField
+                // 宽屏上只有标题栏的侧栏按钮用它先收起输入；点别处、Esc 都是 AppKit 的第一响应者照常处理
                 .focused(typing)
-                // 同 ThreadControls：交互玻璃的同心形状有高光退回胶囊的复现，玻璃与交互轮廓统一用明确圆角
+                // 交互玻璃的同心形状有高光退回胶囊的复现，玻璃与交互轮廓统一用明确圆角
                 .contentShape(.interaction, shape)
-                .glassEffect(Self.glass, in: shape)
+                .glassEffect(.regular.interactive(), in: shape)
                 .frame(maxWidth: Metrics.transcriptWidth)
         }
-        // 同 PaneControlsBar 在宽屏上的样子：左右、底各留 paneMargin，玻璃最宽 transcriptWidth 居中，玻璃以外不接点击
+        // 左右、底各留 paneMargin，玻璃最宽 transcriptWidth 居中（同 PaneControlsBar 在宽屏上的样子），玻璃以外不接点击
         .padding(.horizontal, Metrics.paneMargin)
         .padding(.bottom, Metrics.paneMargin)
         .frame(maxWidth: .infinity)
@@ -53,13 +52,6 @@ struct MacControlsBar: View {
         .alert("无法开始语音输入", isPresented: Binding(get: { state.voiceError != nil }, set: { if !$0 { state.voiceError = nil } })) {
             Button("好", role: .cancel) { state.voiceError = nil }
         } message: { Text(state.voiceError ?? "") }
-    }
-
-    private static var glass: Glass {
-        #if DEBUG
-        if ControlsBarVariant.noGlass { return .identity }
-        #endif
-        return .regular.interactive()
     }
 }
 
@@ -229,7 +221,7 @@ final class ControlsBarView: RepresentedRoot {
     }
 
     /// 玻璃在窗口坐标（SwiftUI 的 .global：左上角起、往下为正）中的位置，发送时点阵的波从这里推开，DotScope.frame 也是这个坐标。
-    /// 按视图层级换算，和 SwiftUI 版在托管正文里取的 .global 一样：正文的托管视图摆在窗口原点上（见 HostedContentContainer），
+    /// 按视图层级换算，和 SwiftUI 在托管正文里取的 .global 一样：正文的托管视图摆在窗口原点上（见 HostedContentContainer），
     /// 飞行中的缩放平移只在图层上，换算按停着的位置。窗口的内容视图没翻转时上下翻过来，同 MouseDragArea。
     private var glassFrameInWindow: CGRect {
         guard let root = window?.contentView else { return .zero }
@@ -283,7 +275,7 @@ final class ControlsBarView: RepresentedRoot {
     private var shownButtons: [PaneButtonView] { [stop, resume, send].filter { !$0.isHidden } }
 
     private var buttonsWidth: CGFloat {
-        2 * Metrics.paneButton + shownButtons.reduce(0) { $0 + ThreadControls.actionGap + $1.width }
+        2 * Metrics.paneButton + shownButtons.reduce(0) { $0 + ThreadControlsModel.actionGap + $1.width }
     }
 
     override func layout() {
@@ -312,7 +304,7 @@ final class ControlsBarView: RepresentedRoot {
         for button in shownButtons.reversed() {
             x -= button.width
             place(button, CGRect(x: x, y: rowTop, width: button.width, height: buttonsHeight))
-            x -= ThreadControls.actionGap
+            x -= ThreadControlsModel.actionGap
         }
         for button in [voice, attach] {
             x -= Metrics.paneButton

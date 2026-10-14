@@ -1,50 +1,18 @@
 import SwiftUI
 
-/// 用户消息的正文，整条排进一个文本视图，选字能从头拖到尾：iPhone 上长按再拖，Mac 上左键拖。
+/// 用户消息的正文，整条排进一个文本视图（两端原生气泡里的 ProseTextView、PhoneProseTextView），选字能从头拖到尾。
 /// 不解析 Markdown，只把 ``` 围起来的一段排成代码块卡片（附件，见 BlockAttachment），选区拖过就是整块；
 /// 斜杠命令的命令名用等宽字排在最前面。字色由气泡状态决定（收到了是白字，排队中跟系统文字色）。复制给打的原文（Message.typed）。
-struct SelectableText: View {
-    @Environment(\.fontResolutionContext) private var fontContext
-    let message: Message
-    let color: PlatformColor
-    @State private var attachments = BlockAttachments()
-    #if os(iOS)
-    let showActions: () -> Void
-    let dismissActions: () -> Void
-    #endif
-
-    var body: some View {
-        let content = content
-        // 有代码块时占满气泡能给的宽度，和原来代码块卡片把气泡撑满一样；只有字时贴着字
-        #if os(iOS)
-        SelectableTextView(content: content, inset: .zero, fillsWidth: !content.blocks.isEmpty, showActions: showActions,
-                           dismissActions: dismissActions)
-        #else
-        SelectableTextView(content: content, inset: .zero, fillsWidth: !content.blocks.isEmpty)
-        #endif
-    }
-
-    private var content: TextViewContent {
-        #if canImport(UIKit)
-        let (body, code) = Self.phoneFonts
-        #else
-        // 直接取 SwiftUI 解析出的字体，和原来 Text 用的是同一个：Theme.code 解析出的 SF Mono 带 leading，
-        // monospacedSystemFont 不带，只有命令名的一行会差 1 pt 行高
-        let body = Theme.body.resolve(in: fontContext).ctFont as NSFont
-        let code = Theme.code.resolve(in: fontContext).ctFont as NSFont
-        #endif
-        return Self.content(message, color: color, body: body, code: code, attachments: attachments)
-    }
-
+enum SelectableText {
     #if canImport(UIKit)
-    /// iPhone、iPad 上正文和代码段的字体，原生气泡（PhoneBubbleRowSlot）也用。代码是 Theme.code：等宽的 subheadline。
+    /// iPhone、iPad 上正文和代码段的字体（PhoneBubbleRowSlot）。代码是 Theme.code：等宽的 subheadline。
     static var phoneFonts: (body: UIFont, code: UIFont) {
         (UIFont.preferredFont(forTextStyle: .body),
          UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: .monospacedSystemFont(ofSize: 15, weight: .regular)))
     }
     #endif
 
-    /// 文字和代码块之间空 messageSegmentGap，和原来一段一个视图竖着排的间距一样。Mac 主对话的原生气泡也用它（见 BubbleRowSlot）。
+    /// 拼成气泡里的属性串，文字和代码块之间空 messageSegmentGap。两端的原生气泡（BubbleRowSlot、PhoneBubbleRowSlot）用。
     static func content(_ message: Message, color: PlatformColor, body: PlatformFont, code: PlatformFont,
                         attachments: BlockAttachments) -> TextViewContent {
         let typed = message.typed as NSString

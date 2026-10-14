@@ -2,13 +2,14 @@
 import SwiftUI
 import UIKit
 
-/// 紧凑布局里的一行窗口，原生版：替代 CompactPaneStack 和 CompactPaneHeaderHost。窗口按底栏的顺序排成一行，铺满时只露出当前窗口；
+/// iPhone 和窄的 iPad 紧凑布局里的一行窗口（Mac 窄窗口是 SwiftUI 的 CompactPaneStack）。窗口按底栏的顺序排成一行，铺满时只露出当前窗口；
 /// 控制区横滑时整行跟着手指走（PaneRow 照旧管状态和手势的规则），松手按 WindowMotion 的曲线整段交给 Core Animation。
 /// 每个窗口是一个格（CompactSlot）：正文是一个岛（PaneBody）；会话窗口在岛里只留桥（ThreadPaneBridge），外框是原生的
 /// PhoneThreadWindowView，只放对话和签名。标题栏和控制区都留在外壳上（换窗口时原地淡入淡出，只有正文跟着横滑平移）：
 /// 会话窗口的是原生的（PhoneHeaderBar、ControlsBarView），开合时由外壳在图层上补位；别的窗口的是 SwiftUI（CompactPaneHeaderBar、
 /// CompactPaneControlsBar），各在一个岛里，照旧在 SwiftUI 里跟着抽屉的弹簧补位（drawerShift）。
-/// 窗口建好就一直留着，当前窗口先建，其余的由近到远预热（PaneRow.warmUp），同 CompactPaneStack。
+/// 窗口建好就一直留着，当前窗口先建，其余的由近到远预热（PaneRow.warmUp）：新建会话窗口要把整段对话重新建一遍、排一遍、画一遍，
+/// 不赶在滑动和抽屉开合的时候；手指比预热先到时，当场建出相邻的那个。
 final class CompactRowView: UIView {
     private(set) var group: PaneGroup
     var groupID: String { group.id }

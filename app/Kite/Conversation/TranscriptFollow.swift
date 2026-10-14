@@ -53,14 +53,14 @@ import SwiftUI
     }
 
     /// 滑完（含惯性）：停在最底下就接着跟。wasFollowing：这次按下前跟着、手指没拖起来（iOS 的轻点、长按），按着的那会儿
-    /// 流式变长、底下没跟上也照旧跟，同原来 SwiftUI 版轻点不影响跟底。
+    /// 流式变长、底下没跟上也照旧跟：轻点不影响跟底。
     func userEnded(distanceToBottom: CGFloat, wasFollowing: Bool = false) {
         userScrolling = false
         following = wasFollowing || distanceToBottom <= 1
     }
 
     /// 可见区变矮时，等它最后一次变完 0.6 秒再让留白跟上，那时已经变回去了就不缩：每变一次都从头计时。
-    /// 原来 iPhone 的 SwiftUI 版试出来：键盘升起的动画没走完时内容变短，滚动视图会把对话往下挪一个键盘高，所以等一会儿再缩，缩掉的在键盘后面。
+    /// iPhone 上试出来的：键盘升起的动画没走完时内容变短，滚动视图会把对话往下挪一个键盘高，所以等一会儿再缩，缩掉的在键盘后面。
     /// 平台每次排版都报，高没变的不算一次变化，不然流式回复不停重排时留白一直缩不下去。
     func visibleChanged(_ height: CGFloat) {
         guard height != visible else { return }

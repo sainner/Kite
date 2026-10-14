@@ -239,19 +239,3 @@ struct ReferenceNavigation: ViewModifier {
             } message: { Text(error ?? "") }
     }
 }
-
-struct ToolReferenceSummary: View {
-    let references: [FileReference]
-    @Environment(\.referenceScope) private var scope
-    var body: some View {
-        let text = references.enumerated().reduce(Text("")) { result, entry in
-            let separator = entry.offset > 0 ? " · " : ""
-            var label = AttributedString(entry.element.label)
-            label.link = entry.element.url(in: scope)
-            label.swiftUI.underlineStyle = .init(pattern: .solid)
-            let link = Text(label).referenceLink()
-            return Text("\(result)\(separator)\(link)")
-        }
-        text.referencePointer().truncationMode(.middle)
-    }
-}

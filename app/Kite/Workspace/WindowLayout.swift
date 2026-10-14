@@ -191,7 +191,7 @@ final class WindowLayout {
             }
             focused = pane
         }
-        save()
+        saveSoon()
     }
 
     func focus(_ pane: Pane) {
@@ -209,7 +209,7 @@ final class WindowLayout {
         if let data = try? JSONEncoder().encode(saved) { defaults.set(data, forKey: storageKey) }
     }
 
-    /// 侧栏拖动时比例每步都在变，停下一会儿再存。
+    /// 侧栏拖动时比例每步都在变，停下一会儿再存；排布动画（缩小、恢复、展开、放下）开始的那一轮也不当场编码写盘，动画走完再存。
     @ObservationIgnored private var pendingSave: Task<Void, Never>?
 
     private func saveSoon() {
@@ -276,7 +276,7 @@ final class WindowLayout {
             docked = remaining
             focusVisiblePane()
         }
-        save()
+        saveSoon()
     }
 
     /// 收进停靠栏，保留窗口和内容。
@@ -295,7 +295,7 @@ final class WindowLayout {
             docked.append(pane)
             focusVisiblePane()
         }
-        save()
+        saveSoon()
     }
 
     /// 当前窗口铺满内容区，其余窗口依次收进停靠栏。
@@ -309,7 +309,7 @@ final class WindowLayout {
             self.root = .pane(pane)
             focused = pane
         }
-        save()
+        saveSoon()
     }
 
     /// 点击停靠窗口与新建窗口使用同一放置顺序和展开动画。
@@ -467,12 +467,10 @@ final class WindowLayout {
         return sizes(current) != sizes(next)
     }
 
-    /// 排布变化按 kind 的曲线和时长在动画里提交，逐帧取样读同一个 motionKind；事务上标明，见 Transaction.windowLayoutChange。
+    /// 排布变化按 kind 的曲线和时长在动画里提交，逐帧取样读同一个 motionKind。
     private func withLayoutAnimation(_ kind: WindowMotionKind, _ body: () -> Void) {
         motionKind = kind
-        var transaction = Transaction(animation: kind.animation)
-        transaction.windowLayoutChange = true
-        withTransaction(transaction, body)
+        withAnimation(kind.animation, body)
     }
 
     func drop(in bounds: CGRect) {
@@ -481,7 +479,7 @@ final class WindowLayout {
         guard let committed = drag else { return }
         let next = pendingDrag ?? committed
         clearPendingPreview()
-        // 一次提交树和停靠顺序；同一张 CardSlot 在圆和卡片之间直接动画，不留下延迟回调覆盖新拖动。
+        // 一次提交树和停靠顺序；同一张卡片在圆和卡片之间直接动画，不留下延迟回调覆盖新拖动。
         withLayoutAnimation(.settle) {
             switch next.spot {
             case .dock:
@@ -499,7 +497,7 @@ final class WindowLayout {
             drag = nil
             focusVisiblePane()
         }
-        save()
+        saveSoon()
     }
 }
 

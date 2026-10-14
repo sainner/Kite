@@ -4,12 +4,13 @@ import ObjectiveC
 import QuartzCore
 import SwiftUI
 
-// Mac 对话正文的 NSTextView（TextKit 2）原生合同。真实的 SelectableMarkdown、MacSelectableTextView、TextKitDecorations、
-// PlatformText、BlockAttachment 与原生卡片 MacBlockCards、MacTextControls 连同它们依赖的 Theme、Markdown、MarkdownTable、Dots、
-// InlineCode、ReferenceViews 一起编进来，放进离屏 NSWindow 里的 NSHostingView，
-// 由 SwiftUI 真实地量高、更新；第八场景使用屏上窗口验证实际呈现；鼠标按 NSWindow 的命中办法交给文本视图（离屏窗口成不了 key，见 ProseHost.press）；
+// Mac 对话正文的 NSTextView（TextKit 2）原生合同。真实的 ProseTextView、ProseRowCoordinator（MacProseTextView）、
+// SelectableMarkdown 拼的属性串、TextKitMeasuring、TextKitDecorations、PlatformText、BlockAttachment 与原生卡片 MacBlockCards、
+// MacTextControls 连同它们依赖的 Theme、Markdown、MarkdownTable、Dots、InlineCode、ReferenceViews 一起编进来。
+// 文本视图按原生行和表格卡片的配法（makeReadOnly、ProseRowCoordinator）放进夹具自己的 MarkdownProse 表示视图，
+// 摆在离屏 NSWindow 里的 NSHostingView，按 TextKitMeasuring 量高；鼠标按 NSWindow 的命中办法交给文本视图（离屏窗口成不了 key，见 ProseHost.press）；
 // 颜色资源由运行脚本用 actool 编成 Assets.car 放进 .app 包，Theme 的颜色才是真值。
-// 下面八个场景都是 TextKit 2、CoreText、AppKit 与 SwiftUI 宿主配合出来的结果，读代码推不出，每个场景上方写它挡的回归。
+// 下面七个场景都是 TextKit 2、CoreText 与 AppKit 配合出来的结果，读代码推不出，每个场景上方写它挡的回归。
 
 // MARK: - 桩：提示条、宿主模型、语法高亮、读屏文案和指针/按钮样式；附件、原生代码卡片与折叠逻辑使用生产实现
 
@@ -19,8 +20,6 @@ import SwiftUI
 
 extension EnvironmentValues {
     @Entry var toast: ToastCenter?
-    /// MessageBubble.swift 里定义，气泡上浮时关掉选字；这里固定可选。
-    @Entry var messageTextSelectable = true
 }
 
 func copyToPasteboard(_ text: String, toast: ToastCenter?) {}
@@ -91,6 +90,65 @@ extension View {
 
 // MARK: - 夹具
 
+/// 一段 Markdown 放进一个 ProseTextView：属性串、附件、复制原文按 SelectableMarkdown，文本视图按原生对话行的配法（makeReadOnly、
+/// 不裁视口，同表格卡片），链接经 ProseRowCoordinator 交给 openURL。两侧各留 inlineCodePadding 给行内代码的底色，外面用负 padding 抵消；
+/// 开头是标题时半个块距放在视图外面（见 SelectableMarkdown.startsWithHeading）。
+private struct MarkdownProse: View {
+    let source: String
+    @Environment(\.referenceScope) private var referenceScope
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.font) private var font
+    @Environment(\.fontResolutionContext) private var fontContext
+    @State private var document = MarkdownDocument()
+    @State private var attachments = BlockAttachments()
+
+    var body: some View {
+        let blocks = document.blocks(for: source)
+        let body = (font ?? .body).resolve(in: fontContext).ctFont as NSFont
+        let content = SelectableMarkdown.content(blocks, source: source, body: body, color: .labelColor, colorScheme: colorScheme,
+                                                 scope: referenceScope, attachments: attachments)
+        ProseRepresentable(content: content, inset: CGSize(width: Metrics.inlineCodePadding, height: 0))
+            .padding(.horizontal, -Metrics.inlineCodePadding)
+            .padding(.top, SelectableMarkdown.startsWithHeading(blocks) ? Metrics.markdownBlockGap(body.pointSize) / 2 : 0)
+    }
+}
+
+private struct ProseRepresentable: NSViewRepresentable {
+    let content: TextViewContent
+    let inset: CGSize
+
+    func makeCoordinator() -> ProseRowCoordinator { ProseRowCoordinator() }
+
+    func makeNSView(context: Context) -> ProseTextView {
+        let view = ProseTextView.makeReadOnly()
+        view.clipsViewport = false
+        view.delegate = context.coordinator
+        view.textLayoutManager?.delegate = context.coordinator
+        context.coordinator.view = view
+        return view
+    }
+
+    func updateNSView(_ view: ProseTextView, context: Context) {
+        let coordinator = context.coordinator, text = content.text
+        coordinator.openURL = context.environment.openURL
+        view.textContainerInset = NSSize(width: inset.width, height: inset.height)
+        view.source = content.source
+        coordinator.update(content.blocks, environment: EmbeddedEnvironment(context.environment))
+        guard coordinator.shown != text, !coordinator.appendTail(of: text) else { return }
+        let textChanged = coordinator.shown?.string != text.string
+        let selection = view.selectedRange()
+        coordinator.shown = text
+        view.textStorage?.setAttributedString(text)
+        if !textChanged { view.setSelectedRange(selection) }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView view: ProseTextView, context: Context) -> CGSize? {
+        let proposed = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? 360
+        let width = max(proposed - inset.width * 2, 0)
+        return CGSize(width: width + inset.width * 2, height: view.measure(lineWidth: width) + inset.height * 2)
+    }
+}
+
 private enum TextFailure: Error, CustomStringConvertible {
     case failed(String)
 
@@ -109,13 +167,13 @@ private final class ProseState {
     init(source: String) { self.source = source }
 }
 
-/// 和 TranscriptView 里一样，SelectableMarkdown 直接放在给定宽度的列里；openURL 记下收到的链接。
+/// 一段正文直接放在给定宽度的列里；openURL 记下收到的链接。
 private struct ProseFixture: View {
     let state: ProseState
     static let margin: CGFloat = 20
 
     var body: some View {
-        SelectableMarkdown(source: state.source)
+        MarkdownProse(source: state.source)
             .frame(width: state.width, alignment: .topLeading)
             .padding(Self.margin)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -137,9 +195,9 @@ private struct ClippedProseFixture: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 0) {
                 Color.clear.frame(height: 9458)
-                SelectableMarkdown(source: Self.short).frame(width: 572, alignment: .leading)
+                MarkdownProse(source: Self.short).frame(width: 572, alignment: .leading)
                 Color.clear.frame(height: 800)
-                SelectableMarkdown(source: Self.long).frame(width: 572, alignment: .leading)
+                MarkdownProse(source: Self.long).frame(width: 572, alignment: .leading)
                 Color.clear.frame(height: 1200)
             }
             .padding(.horizontal, 20)
@@ -160,7 +218,7 @@ private struct AttachmentProseFixture: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 0) {
                 Color.clear.frame(height: 600)
-                SelectableMarkdown(source: state.source).frame(width: state.width, alignment: .leading)
+                MarkdownProse(source: state.source).frame(width: state.width, alignment: .leading)
                 Color.clear.frame(height: 1200)
             }
             .padding(.horizontal, 20)
@@ -310,7 +368,7 @@ private final class ProseHost {
         return nil
     }
 
-    /// 等到文本视图放好、宽度是列宽加两侧余量（SelectableMarkdown 用负 padding 抵消的绘制余量）。
+    /// 等到文本视图放好、宽度是列宽加两侧余量（MarkdownProse 用负 padding 抵消的绘制余量）。
     func settled(_ label: String) throws -> NSTextView {
         var found: NSTextView?
         try wait(label) {
@@ -421,498 +479,21 @@ private final class ProseHost {
     }
 }
 
-// MARK: - 计数：sizeThatFits 让 TextKit 排版的次数
-
-/// 记下 sizeThatFits 每次调 ensureLayout(for:) 时文本容器的宽度：它只在量过的宽度之外才调，同一宽度出现两次就是缓存没起作用。
-/// NSTextView 自己的 viewport 排版（layoutViewport、_updateContentHeight）也走这个选择子，按直接调用者过滤掉。
-private enum LayoutCount {
-    nonisolated(unsafe) static var enabled = false
-    nonisolated(unsafe) static var widths: [CGFloat] = []
-
-    static func install() {
-        guard let original = class_getInstanceMethod(NSTextLayoutManager.self, NSSelectorFromString("ensureLayoutForRange:")),
-              let replacement = class_getInstanceMethod(NSTextLayoutManager.self, #selector(NSTextLayoutManager.contract_ensureLayout(for:))) else {
-            return
-        }
-        method_exchangeImplementations(original, replacement)
-    }
-
-    nonisolated static func record(width: CGFloat) {
-        guard enabled else { return }
-        // 跳过 record 自己和换上去的方法（含它的 @objc 壳），第一个外部帧就是直接调用者
-        let caller = Thread.callStackSymbols.first { !$0.contains("LayoutCount") && !$0.contains("contract_ensure") }
-        // 量高抽到了 TextKitMeasuring 的 measure(lineWidth:)，由 sizeThatFits 调它
-        guard let caller, caller.contains("sizeThatFits") || caller.contains("7measure9lineWidth") else { return }
-        widths.append(width)
-    }
-}
-
-extension NSTextLayoutManager {
-    @objc dynamic nonisolated func contract_ensureLayout(for range: NSTextRange) {
-        if let width = textContainer?.size.width { LayoutCount.record(width: width) }
-        contract_ensureLayout(for: range)
-    }
-}
-
-// 历史 6845be2 的可复现输入：40 条混合消息，760×700，LazyVStack 首次从底部露出新消息。
-// 样例内容用于保留当时的换行与片段形态，不是当前产品说明；不导入原实验的 hook 或补排版。
-private enum LazyMessageSamples {
-    static let templates: [String] = [
-        "好的，我先看一下 `TranscriptView.swift` 里按需排版那一段，再回来说结论。",
-        """
-        ## 这次改动的范围
-
-        把 Mac 的对话正文换成 `NSTextView`，和 iPhone 共用属性串构建。涉及的文件：
-
-        - app/Kite/UI/MacSelectableTextView.swift：representable，没有自己的滚动视图
-        - app/Kite/UI/SelectableMarkdown.swift：散文块合成一个文本视图
-        - app/Kite/UI/TextKitDecorations.swift：引用竖线和行内代码背景
-
-        > 外观必须与现状一致：字体、行距、块距、行内代码背景、引用竖线、列表缩进都是反复调过的。
-
-        下一步是每条回复一个文本视图，把代码块和表格作附件嵌进去。
-        """,
-        """
-        我量了三轮，中位数如下：
-
-        1. 发送后一秒内帧间隔最大 **48 ms**，丢 3 帧
-        2. 文本视图 `sizeThatFits` 被问 78 次，只有 21 种宽度
-        3. 改窗口宽度时每个视图重排一次
-
-        结论先写在 .kite/memory/performance-diagnosis.md 里，详见 https://developer.apple.com/documentation/appkit/nstextview 的说明。
-        """,
-        "收到。",
-        """
-        ### 为什么先空白再出现
-
-        TextKit 2 只排、只画视口里的片段。视口按 `enclosingScrollView` 的可见范围算，外层一滚，片段要到下一轮 layout 才建出来。
-        iPhone 的 `UITextView` 自己就是滚动视图、尺寸等于内容，视口就是整段，所以没有这个现象。
-
-        - 第一步：量出视口与 bounds 的关系
-        - 第二步：逐帧抓图看新露出的行
-          - 看是不是先空白
-          - 看是不是逐段出现
-        - 第三步：数丢帧
-
-        > 卡顿先量再改：手感只能说明卡不卡，说明不了卡在哪。
-        """,
-        """
-        这段比较长，模拟一条完整的回复。先说背景：Mac 上每个 Markdown 块原来是独立的 SwiftUI `Text`，系统不支持跨 `Text` 选择，连两个段落都选不到一起；iPhone 的散文已经合成一个 `UITextView`，但在代码块处断开。近期的性能修补也都聚在平台文本视图这一层。
-
-        然后是做法。属性串构建放在 `SelectableMarkdown.attributed`，两端共用；平台差异收在 `PlatformText.swift`。块距、引用竖线顶边、行内代码背景高按 Mac 上与 SwiftUI 版并排逐行量过的差异补偿：
-
-        1. TextKit 2 把 `lineSpacing` 放在每一行上方，段落第一行也有，所以段前距要减掉一个行距
-        2. 文档第一段不认 `paragraphSpacingBefore`，开头是标题时半个块距放在视图外面
-        3. 引用竖线从第一行字的顶边起，片段顶边在段前距之上还高出一个行距
-
-        > 这是 SwiftUI 的不一致，TextKit 反而整齐；一段里差不超过 1.4 pt。
-
-        最后是风险。`offset` 动画让 `NSTextView` 每帧重画，发送时上浮的那条消息会多一次完整的文本绘制；行内代码前有引用图标时背景画偏是两端共用的缺陷，已在 3aac1c4 修掉。
-
-        #### 待办
-
-        - 真机验收
-        - 每条回复一个文本视图嵌入附件
-        - 复制出 Markdown 原文
-        """,
-        "改完了，跑 `.kite/check` 通过，合同也过。要不要我把结论记进 docs/？",
-        """
-        > 用户 2026-10-12 确认：接受标题行高 1～2 pt、个别行 0.69 pt、中文折行位置这三项残差。
-
-        那我就不再追这三项了，把精力放到滚动卡顿上。看 kited/test/manual/verify-mac-selectable-text-swift.ts 怎么把源文件编进 .app。
-        """,
-        """
-        ## 候选方案
-
-        按侵入性从小到大：
-
-        1. 让视口等于整段：子类里覆盖 `visibleRect` 返回 `bounds`
-        2. 套一个按内容尺寸的 `NSScrollView`，滚轮透传给外层
-        3. Mac 的对话改回不按需建行
-
-        每个各量一次，取外观不变且有效的。第三条若要改要说明取舍让用户定。
-        """,
-        """
-        说明一下测法：`CADisplayLink` 记主线程帧间隔，`CGWindowListCreateImage` 抓自己窗口的像素（经 `dlsym` 调，不需要录屏权限），单次测量受指针位置和其他会话活动影响，同一份代码中位丢帧会在 2 和 11 之间跳，所以至少跑 3 次看中位。
-        """,
-    ]
-
-    static func messages(_ count: Int) -> [String] {
-        (0..<count).map { index in
-            let template = templates[index % templates.count]
-            return template + "\n\n（第 \(index + 1) 条）"
-        }
-    }
-}
-
-
-private struct LazyViewportFixture: View {
-    let messages = LazyMessageSamples.messages(40)
-    var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: Metrics.rowSpacing) {
-                ForEach(Array(messages.enumerated()), id: \.offset) { _, text in
-                    SelectableMarkdown(source: text).frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .font(Theme.body)
-            .frame(maxWidth: Metrics.transcriptWidth)
-            .padding(.horizontal, Metrics.padding * 2)
-            .padding(.vertical, Metrics.transcriptPadding)
-            .frame(maxWidth: .infinity)
-        }
-        .background(Color.white)
-        .environment(\.openURL, OpenURLAction { _ in .handled })
-        .transaction { $0.disablesAnimations = true }
-    }
-}
-
-private final class LazyFrameMarker: NSView {
-    var token = 0 { didSet { needsDisplay = true } }
-    var onPaint: (() -> Void)?
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.white.setFill()
-        bounds.fill()
-        for bit in 0..<10 {
-            ((token & (1 << bit)) != 0 ? NSColor.red : NSColor.green).setFill()
-            CGRect(x: CGFloat(bit * 10), y: 0, width: 8, height: 8).fill()
-        }
-        NSColor.blue.setFill()
-        CGRect(x: 112, y: 0, width: 8, height: 8).fill()
-        // 读当次真实绘制的视图坐标，再用截图中的条码匹配，避免抓图和几何错拍。
-        onPaint?()
-    }
-}
-
-private final class LazyFrameClock: NSObject {
-    var ticks = 0
-    var link: CADisplayLink?
-    func start(_ window: NSWindow) {
-        let link = window.displayLink(target: self, selector: #selector(tick(_:)))
-        link.add(to: .main, forMode: .common)
-        self.link = link
-    }
-    func stop() { link?.invalidate(); link = nil }
-    @objc private func tick(_ link: CADisplayLink) { ticks += 1 }
-    func next() throws {
-        let target = ticks + 1
-        let deadline = Date().addingTimeInterval(3)
-        while ticks < target {
-            guard Date() < deadline else { throw TextFailure.failed("Lazy 屏幕合同没有 display link；检查锁屏/可用显示器") }
-            RunLoop.main.run(mode: .default, before: deadline)
-        }
-    }
-}
-
-private enum LazyViewportContract {
-    struct ViewPosition {
-        let id: String
-        let object: ObjectIdentifier
-        let rect: CGRect
-    }
-    struct Geometry {
-        let views: [ViewPosition]
-    }
-    struct ScreenInk {
-        let token: Int
-        let width: Int
-        let height: Int
-        let ink: [UInt8]
-        func at(_ point: CGPoint) -> Bool {
-            let x = Int(floor(point.x)), y = height - 1 - Int(floor(point.y))
-            guard x >= 0, x < width, y >= 0, y < height else { return false }
-            return ink[y * width + x] != 0
-        }
-        func hasInk(near point: CGPoint) -> Bool {
-            for dy in -1...1 {
-                for dx in -1...1 where at(CGPoint(x: point.x + CGFloat(dx), y: point.y + CGFloat(dy))) {
-                    return true
-                }
-            }
-            return false
-        }
-    }
-    struct Shot {
-        let image: ScreenInk
-        let geometry: Geometry
-    }
-    typealias CreateWindowImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
-
-    static func screen(_ window: NSWindow) throws -> ScreenInk? {
-        guard let handle = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", RTLD_NOW) else {
-            throw TextFailure.failed("无法打开 CoreGraphics")
-        }
-        defer { dlclose(handle) }
-        guard let symbol = dlsym(handle, "CGWindowListCreateImage") else { throw TextFailure.failed("没有窗口截图接口") }
-        let create = unsafeBitCast(symbol, to: CreateWindowImage.self)
-        guard let image = create(.null, CGWindowListOption.optionIncludingWindow.rawValue, CGWindowID(window.windowNumber),
-                                 CGWindowImageOption.boundsIgnoreFraming.rawValue | CGWindowImageOption.bestResolution.rawValue)?.takeRetainedValue() else {
-            throw TextFailure.failed("当前会话无法读取测试窗口的实际屏幕图像；不是产品坐标失败")
-        }
-        // 统一为 1 像素/pt，整趟只保存二值墨迹，避免逐帧保留 Retina RGBA 的高内存。
-        let width = 760, height = 700
-        let nativeWidth = image.width, nativeHeight = image.height
-        let sx = CGFloat(nativeWidth) / CGFloat(width), sy = CGFloat(nativeHeight) / CGFloat(height)
-        var bytes = [UInt8](repeating: 0, count: nativeWidth * nativeHeight * 4)
-        let rendered = bytes.withUnsafeMutableBytes { data -> Bool in
-            guard let context = CGContext(data: data.baseAddress, width: nativeWidth, height: nativeHeight, bitsPerComponent: 8,
-                                          bytesPerRow: nativeWidth * 4, space: CGColorSpaceCreateDeviceRGB(),
-                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
-            context.interpolationQuality = .none
-            context.draw(image, in: CGRect(x: 0, y: 0, width: nativeWidth, height: nativeHeight))
-            return true
-        }
-        guard rendered else { throw TextFailure.failed("无法读取屏幕像素") }
-        func color(x: Int, y: Int) -> (Int, Int, Int) {
-            let px = Int((CGFloat(x) + 0.5) * sx), py = Int((CGFloat(height - 1 - y) + 0.5) * sy)
-            let i = (py * nativeWidth + px) * 4
-            return (Int(bytes[i]), Int(bytes[i + 1]), Int(bytes[i + 2]))
-        }
-        let anchor = color(x: 117, y: 5)
-        guard anchor.0 < 80, anchor.1 < 80, anchor.2 > 180 else { return nil }
-        var token = 0
-        for bit in 0..<10 {
-            let c = color(x: 6 + bit * 10, y: 5)
-            if c.0 > 180, c.1 < 80, c.2 < 80 { token |= 1 << bit }
-            else if !(c.1 > 180 && c.0 < 80 && c.2 < 80) { return nil }
-        }
-        // 每 pt 汇总覆盖到的所有原生像素；不能先 nearest-neighbor 缩图抽掉浅灰文字的细笔画。
-        var ink = [UInt8](repeating: 0, count: width * height)
-        for y in 0..<nativeHeight {
-            let row = min(height - 1, Int(CGFloat(y) / sy)) * width
-            for x in 0..<nativeWidth {
-                let i = (y * nativeWidth + x) * 4
-                if bytes[i] < 160 && bytes[i + 1] < 160 && bytes[i + 2] < 160 {
-                    ink[row + min(width - 1, Int(CGFloat(x) / sx))] = 1
-                }
-            }
-        }
-        return ScreenInk(token: token, width: width, height: height, ink: ink)
-    }
-
-    static func verify() throws {
-        let host = NSHostingView(rootView: LazyViewportFixture())
-        let visibleFrame = NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1000, height: 800)
-        let window = NSWindow(contentRect: CGRect(x: visibleFrame.minX + 40, y: visibleFrame.minY + 40, width: 760, height: 700),
-                              styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.appearance = NSAppearance(named: .aqua)
-        let root = NSView(frame: CGRect(x: 0, y: 0, width: 760, height: 700))
-        host.frame = root.bounds
-        host.autoresizingMask = [.width, .height]
-        root.addSubview(host)
-        let marker = LazyFrameMarker(frame: CGRect(x: 2, y: 2, width: 122, height: 8))
-        root.addSubview(marker)
-        window.contentView = root
-        window.orderFront(nil)
-        let clock = LazyFrameClock()
-        clock.start(window)
-        defer { clock.stop(); marker.onPaint = nil; window.close() }
-        func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
-            ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { descendants(type, in: $0) }
-        }
-        var scroll: NSScrollView?
-        for _ in 0..<20 {
-            try clock.next()
-            scroll = descendants(NSScrollView.self, in: host).first
-            if scroll?.documentView?.bounds.height ?? 0 > 700 { break }
-        }
-        guard let scroll, let document = scroll.documentView else { throw TextFailure.failed("Lazy 合同没有外层滚动视图") }
-        let clip = scroll.contentView
-        func scrollTo(_ y: CGFloat) {
-            let maxY = max(0, document.frame.height - clip.bounds.height)
-            clip.scroll(to: CGPoint(x: 0, y: min(max(y, 0), maxY)))
-            scroll.reflectScrolledClipView(clip)
-        }
-        var geometries: [Int: Geometry] = [:]
-        marker.onPaint = {
-            let texts = descendants(NSTextView.self, in: host)
-            let positions = texts.compactMap { view -> ViewPosition? in
-                let rect = view.convert(view.bounds, to: nil)
-                guard rect.intersects(root.bounds), !view.string.isEmpty else { return nil }
-                return ViewPosition(id: String(view.string.suffix(16)).replacingOccurrences(of: "\n", with: " "), object: ObjectIdentifier(view), rect: rect)
-            }
-            geometries[marker.token] = Geometry(views: positions)
-        }
-        // Lazy 内容高会随新行测量改变。等真实底边和文档高连续稳定，不按秒休眠，也不触碰文本排版。
-        var lastBottom: CGFloat = -1, stable = 0
-        for _ in 0..<40 {
-            let bottom = max(0, document.frame.height - clip.bounds.height)
-            scrollTo(bottom)
-            marker.token = 0
-            try clock.next()
-            let current = max(0, document.frame.height - clip.bounds.height)
-            if abs(current - lastBottom) <= 0.5, abs(clip.bounds.minY - current) <= 0.5 { stable += 1 } else { stable = 0 }
-            lastBottom = current
-            if stable >= 3 { break }
-        }
-        guard stable >= 3 else { throw TextFailure.failed("Lazy 文档底部未稳定") }
-        let start = clip.bounds.minY
-        let initialObjects = Set(descendants(NSTextView.self, in: host).map(ObjectIdentifier.init))
-        guard initialObjects.count < 40, start > 1680 else {
-            throw TextFailure.failed("未形成按需创建的长对话；初始 native \(initialObjects.count)，底部 \(start)")
-        }
-        func pass(base: Int) throws -> [Shot] {
-            var images: [ScreenInk] = []
-            scrollTo(start)
-            marker.token = base
-            try clock.next()
-            for step in 0...72 {
-                if let image = try screen(window) { images.append(image) }
-                if step < 70 {
-                    scrollTo(start - CGFloat(step + 1) * 24)
-                    marker.token = base + step + 1
-                }
-                try clock.next()
-            }
-            var seen = Set<Int>()
-            let shots = images.compactMap { image -> Shot? in
-                guard image.token >= base, image.token <= base + 70, seen.insert(image.token).inserted,
-                      let geometry = geometries[image.token] else { return nil }
-                return Shot(image: image, geometry: geometry)
-            }
-            guard shots.count >= 30 else { throw TextFailure.failed("可配对的屏幕帧不足；\(shots.count)/71，不能判定绘制") }
-            return shots
-        }
-        // 整趟采集结束前不读 TextKit 行片段、不调用 cacheDisplay，不让验证主动重画掩盖首次空白。
-        let cold = try pass(base: 1)
-        let warm = try pass(base: 101)
-        var reference: [String: (ScreenInk, ViewPosition)] = [:]
-        for shot in warm {
-            for view in shot.geometry.views where view.rect.minY >= 12 && view.rect.maxY <= 698 && reference[view.id] == nil {
-                reference[view.id] = (shot.image, view)
-            }
-        }
-        guard reference.count >= 3 else { throw TextFailure.failed("暖趟完整参考不足：\(reference.count)") }
-        func compare(_ actualImage: ScreenInk, rect actualRect: CGRect, to expectedImage: ScreenInk, rect expectedRect: CGRect) -> (Int, Int, CGRect) {
-            let visible = actualRect.intersection(CGRect(x: 0, y: 12, width: 760, height: 686)).insetBy(dx: 4, dy: 4)
-            var missing = 0, ink = 0
-            var missingBounds = CGRect.null
-            for y in stride(from: ceil(visible.minY) + 0.5, to: floor(visible.maxY), by: 1) {
-                for x in stride(from: ceil(visible.minX) + 0.5, to: floor(visible.maxX), by: 1) {
-                    let point = CGPoint(x: x, y: y)
-                    let wanted = CGPoint(x: expectedRect.minX + x - actualRect.minX,
-                                         y: expectedRect.maxY - (actualRect.maxY - y))
-                    let a = actualImage.at(point), b = expectedImage.at(wanted)
-                    if a {
-                        ink += 1
-                        if !expectedImage.hasInk(near: wanted) {
-                            missing += 1
-                            missingBounds = missingBounds.union(CGRect(x: x, y: y, width: 1, height: 1))
-                        }
-                    }
-                    if b {
-                        ink += 1
-                        if !actualImage.hasInk(near: point) {
-                            missing += 1
-                            missingBounds = missingBounds.union(CGRect(x: x, y: y, width: 1, height: 1))
-                        }
-                    }
-                }
-            }
-            return (missing, ink, missingBounds)
-        }
-        var checks = 0, coldPartialObjects = Set<ObjectIdentifier>(), failures: [String] = []
-        var comparedIDs = Set<String>(), worstMismatch = 0.0
-        for shot in cold {
-            for view in shot.geometry.views {
-                guard let (expectedImage, expectedView) = reference[view.id],
-                      abs(view.rect.width - expectedView.rect.width) <= 1,
-                      abs(view.rect.height - expectedView.rect.height) <= 1 else { continue }
-                let visible = view.rect.intersection(CGRect(x: 0, y: 12, width: 760, height: 686)).insetBy(dx: 4, dy: 4)
-                guard visible.width > 100, visible.height > 12 else { continue }
-                if !initialObjects.contains(view.object), view.rect.maxY > 702, view.rect.minY > 12 {
-                    coldPartialObjects.insert(view.object)
-                }
-                let (missing, ink, missingBounds) = compare(shot.image, rect: view.rect, to: expectedImage, rect: expectedView.rect)
-                guard ink > 100 else { continue }
-                checks += 1
-                comparedIDs.insert(view.id)
-                worstMismatch = max(worstMismatch, Double(missing) / Double(ink))
-                if missing * 200 > ink {
-                    failures.append("帧 \(shot.image.token) 消息 \(view.id) 高 \(view.rect.height)，露出 \(visible.height)，错位/缺墨 \(missing)/\(ink)，差异屏幕范围 \(missingBounds)")
-                }
-            }
-        }
-        guard checks >= 30, coldPartialObjects.count >= 1 else {
-            throw TextFailure.failed("未覆盖新的 Lazy 原生行首次仅底部露出；比较 \(checks)，新 partial 对象 \(coldPartialObjects.count)，参考 \(reference.count)")
-        }
-        guard failures.isEmpty else {
-            throw TextFailure.failed("Lazy 首次部分露出像素与完整参考不一致；冷帧 \(cold.count)，暖帧 \(warm.count)，新 partial \(coldPartialObjects.count)；\n" + failures.prefix(3).joined(separator: "\n"))
-        }
-        // 每次改宽前保持同一原生行顶部裁切，抓首次真正呈现的画面，再完整滚入该行建立参考。
-        // 不先滚到顶部暖布局，也不通过等待像素正确来跳过失败首帧。
-        guard let target = descendants(NSTextView.self, in: host).first(where: {
-            let rect = $0.convert($0.bounds, to: nil)
-            return rect.intersects(root.bounds) && rect.height > 170 && rect.height < 430
-        }), let targetStorage = target.textStorage else {
-            throw TextFailure.failed("改宽夹具没有可完整显示的中长消息")
-        }
-        guard targetStorage.length >= 5 else { throw TextFailure.failed("改宽夹具正文不足以建立非空选区") }
-        target.setSelectedRange(NSRange(location: 1, length: 4))
-        let identity = ObjectIdentifier(target), selection = target.selectedRange()
-        guard selection.length > 0 else { throw TextFailure.failed("改宽前未建立非空选区") }
-        func markedShot(_ token: Int) throws -> Shot {
-            marker.token = token
-            for _ in 0..<12 {
-                try clock.next()
-                if let image = try screen(window), image.token == token, let geometry = geometries[token] {
-                    return Shot(image: image, geometry: geometry)
-                }
-            }
-            throw TextFailure.failed("改宽帧标记没有呈现：\(token)")
-        }
-        for (index, width) in [CGFloat(520), CGFloat(760)].enumerated() {
-            let before = target.convert(target.bounds, to: clip)
-            scrollTo(before.minY + min(120, before.height / 3))
-            let cropped = try markedShot(201 + index * 3)
-            guard let croppedPosition = cropped.geometry.views.first(where: { $0.object == identity }),
-                  croppedPosition.rect.maxY > 720, croppedPosition.rect.minY < 680 else {
-                throw TextFailure.failed("改宽前同一消息顶部必须已被裁切")
-            }
-            let wantedWidth = target.bounds.width + width - host.bounds.width
-            host.setFrameSize(CGSize(width: width, height: 700))
-            let first = try markedShot(202 + index * 3)
-            guard let firstPosition = first.geometry.views.first(where: { $0.object == identity }),
-                  firstPosition.rect.maxY > 702, firstPosition.rect.minY < 698,
-                  abs(firstPosition.rect.width - wantedWidth) <= 1,
-                  target.textStorage === targetStorage, target.selectedRange() == selection else {
-                throw TextFailure.failed("改宽首次显示未保持裁切的同一正文/Storage/选区或尺寸；目标宿主宽 \(width)，正文宽 \(target.bounds.width)，期望 \(wantedWidth)")
-            }
-            let now = target.convert(target.bounds, to: clip)
-            scrollTo(now.minY - 24)
-            let reference = try markedShot(203 + index * 3)
-            guard let full = reference.geometry.views.first(where: { $0.object == identity }),
-                  full.rect.minY >= 12, full.rect.maxY <= 698,
-                  full.rect.size == firstPosition.rect.size else {
-                throw TextFailure.failed("改宽完整参考未包含同一消息的当前全部内容；高 \(target.bounds.height)")
-            }
-            let (missing, ink, rect) = compare(first.image, rect: firstPosition.rect, to: reference.image, rect: full.rect)
-            guard ink > 1000, missing * 200 <= ink else {
-                throw TextFailure.failed("顶部裁切时改宽到 \(width - 40) pt 的首帧错位/缺墨 \(missing)/\(ink)，范围 \(rect)，消息 \(firstPosition.id)")
-            }
-        }
-        print("通过：Lazy 40 条消息冷滚 70×24 pt，冷/暖配对 \(cold.count)/\(warm.count) 帧；\(coldPartialObjects.count) 个新原生对象部分露出，\(comparedIDs.count) 条消息 \(checks) 个切片与完整参考对齐，最大不匹配 \(worstMismatch)；同实例720→480→720首帧对齐，Storage/选区保持")
-    }
-}
-
 // MARK: - 场景
 
 @MainActor @main
 private struct MacSelectableTextContract {
     static func main() {
         NSApplication.shared.setActivationPolicy(.accessory)
-        LayoutCount.install()
         do {
             try selectionSpansParagraphHeadingAndQuote()
             try nestedListInlineCodeBackgroundWrapsGlyphs()
-            try heightFollowsWidthAndLaysOutOncePerWidth()
+            try heightFollowsWidth()
             try streamingAppendOnlyEditsTheTail()
             try linkClickReachesOpenURLButPlainTextDoesNot()
             try clippedTextReportsEmptyOnlyWhenFullyOutsideAndKeepsLongParagraphStable()
             try offscreenAttachmentResumesAtCurrentWidthWithItsStateAndSelection()
-            try LazyViewportContract.verify()
-            print("Mac 文本视图的八个原生场景验证通过")
+            print("Mac 文本视图的七个原生场景验证通过")
             exit(0)
         } catch {
             FileHandle.standardError.write(Data("\(error)\n".utf8))
@@ -1069,13 +650,9 @@ private struct MacSelectableTextContract {
     }
 
     // 3. 按宽度量高。
-    // sizeThatFits 把宽度放到文本容器上再量，SwiftUI 一轮布局会用多种宽度反复问；frame 高是否等于 TextKit 排出来的高、末行是否越界、
-    // 改回同宽是否同高、同一宽度是否只排一次，取决于 TextKit 2 的容器几何与 SwiftUI 的提案顺序怎么配合。
-    // 排版次数由 LayoutCount 从 ensureLayout(for:) 数，只认 sizeThatFits 发起的；缓存失效时 360 会被排不止一次、改回 360 会再排。
-    private static func heightFollowsWidthAndLaysOutOncePerWidth() throws {
-        LayoutCount.widths = []
-        LayoutCount.enabled = true
-        defer { LayoutCount.enabled = false }
+    // TextKitMeasuring.measure 把宽度放到文本容器上再量：frame 高是否等于 TextKit 排出来的高、末行是否越界、改回同宽是否同高，
+    // 取决于 TextKit 2 的容器几何怎么跟着改宽。
+    private static func heightFollowsWidth() throws {
         let harness = ProseHost(source: """
         ## 量高对照
 
@@ -1091,9 +668,7 @@ private struct MacSelectableTextContract {
         func check(_ label: String) throws -> CGFloat {
             let view = try harness.settled(label)
             guard let layout = view.textLayoutManager else { throw TextFailure.failed("\(label)：文本视图没有 textLayoutManager") }
-            LayoutCount.enabled = false
             layout.ensureLayout(for: layout.documentRange)
-            LayoutCount.enabled = true
             let usage = layout.usageBoundsForTextContainer.height
             var lastLine: CGFloat = 0
             layout.enumerateTextLayoutFragments(from: nil, options: []) { fragment in
@@ -1109,27 +684,17 @@ private struct MacSelectableTextContract {
             guard lastLine <= height + 0.5 else {
                 throw TextFailure.failed("\(label)：末行底边 \(lastLine) 越出 frame 高 \(height)")
             }
-            print("通过：\(label)，frame \(view.frame.size)，TextKit usage 高 \(usage)，末行底边 \(lastLine)，排版过的容器宽 \(LayoutCount.widths)")
+            print("通过：\(label)，frame \(view.frame.size)，TextKit usage 高 \(usage)，末行底边 \(lastLine)")
             return height
         }
 
         let wide = try check("宽 360")
-        let firstPass = LayoutCount.widths
-        let containerWidth = 360.0
-        guard firstPass.filter({ abs($0 - containerWidth) < 0.5 }).count == 1 else {
-            throw TextFailure.failed("宽 360 的一轮布局里，容器宽 \(containerWidth) 应只排一次；实际排版过的宽 \(firstPass)")
-        }
         harness.state.width = 240
         let narrow = try check("改窄到 240")
         guard narrow > wide else { throw TextFailure.failed("改窄到 240 后应比 360 时更高；360 高 \(wide)，240 高 \(narrow)") }
-        let afterNarrow = LayoutCount.widths.count
         harness.state.width = 360
         let wideAgain = try check("改回 360")
         guard wideAgain == wide else { throw TextFailure.failed("改回 360 应与第一次同高；第一次 \(wide)，改回 \(wideAgain)") }
-        guard LayoutCount.widths.count == afterNarrow else {
-            throw TextFailure.failed("改回量过的宽度不应再排版；240 之后又排了 \(Array(LayoutCount.widths[afterNarrow...]))")
-        }
-        print("通过：三种宽度共排版 \(LayoutCount.widths.count) 次，改回 360 没有再排")
     }
 
     // 4. 流式追加只补末尾。

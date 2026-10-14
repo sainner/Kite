@@ -1,12 +1,11 @@
 #include <metal_stdlib>
-#include <SwiftUI/SwiftUI.h>
 using namespace metal;
 
 // 像素化范围持续展开，并在循环前完全离开文字。
 static float kiteSweep(float2 position, float4 bounds, float travel) {
     float x = position.x - bounds.x;
     float baseHalfWidth = clamp(bounds.z * 0.2, 24.0, 64.0);
-    // 范围随扫掠持续展开，推进使用 SwiftUI 传入的系统 easeInOut 进度。
+    // 范围随扫掠持续展开，推进按调用方给的系统 easeInOut 进度。
     float maxHalfWidth = baseHalfWidth * 1.35;
     float halfWidth = mix(baseHalfWidth * 0.45, maxHalfWidth, travel);
     // 终点留出最大范围，让整个像素化区域离开文字后再开始下一轮。
@@ -31,26 +30,9 @@ static half4 kiteCellColor(float2 grid, half4 average) {
     return half4(palette[colorIndex] * alpha, alpha);
 }
 
-// 扫掠经过时笔画短暂变成彩色方块，离开后恢复；网格和配色固定，边缘平滑混合。
-[[ stitchable ]] half4 kitePixels(float2 position, SwiftUI::Layer layer,
-                                 float4 bounds, float travel) {
-    half4 source = layer.sample(position);
-    float intensity = kiteSweep(position, bounds, travel);
-    if (intensity < 0.001) return source;
-    float cell = clamp(bounds.w * 0.2, 2.5, 4.0);
-    float2 grid = floor((position - bounds.xy) / cell);
-    float2 center = (grid + 0.5) * cell + bounds.xy;
-    half4 pixel = half4(0.0h);
-    for (int row = -1; row <= 1; ++row) {
-        for (int column = -1; column <= 1; ++column) {
-            pixel += layer.sample(center + float2(column, row) * cell / 3.0) / 9.0h;
-        }
-    }
-    return mix(source, kiteCellColor(grid, pixel), half(intensity));
-}
-
-// 同一个扫掠给原生的工具行用（iOS 对话，见 PhoneActivityView）：字先画进贴图，CAMetalLayer 按屏幕刷新率逐帧画。
-// 贴图比字的范围四边各多 inset 点（同 SwiftUI 的 maxSampleOffset），按点取样，同 layer.sample。
+// 工具在跑时的像素扫掠（iOS 对话的工具行，见 PhoneActivityView）：扫掠经过时笔画短暂变成彩色方块，离开后恢复；
+// 网格和配色固定，边缘平滑混合。字先画进贴图，CAMetalLayer 按屏幕刷新率逐帧画；贴图比字的范围四边各多 inset 点，按点取样。
+// Mac 的工具行在 CPU 上画同样的效果，见 MacToolActivity。
 
 struct KiteSweepVertex {
     float4 position [[position]];

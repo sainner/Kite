@@ -109,25 +109,20 @@ class StatusLayerView: StatusHostView {
     #endif
 }
 
-/// 会话状态圆环的图层版：外观照 ContextRingFrame 逐项复刻，转动和明暗起伏交给 Core Animation，跟屏幕刷新率走，主线程不逐帧重画
-/// （SwiftUI 版每秒 30 帧重算 body）。节奏按绝对时间对齐（同 SwiftUI 版按 timeIntervalSinceReferenceDate 取进度），几个圆环同阶段时同步。
+/// 会话状态圆环：0.25 透明的底轨（运行中是锥形明暗渐变，否则纯色）上压一段上下文用量的弧（圆头，从 12 点顺时针）。
+/// 运行中整圈顺时针转、一圈一个周期；停止和收尾时整圈按余弦明暗起伏（0.65～1）；空闲或减少动态效果时不动。
+/// 转动和明暗起伏交给 Core Animation，跟屏幕刷新率走，主线程不逐帧重画。节奏按绝对时间对齐（timeIntervalSinceReferenceDate 取进度），
+/// 几个圆环同阶段时同步。
 struct ContextRingLayers {
     let phase: String
     let fraction: Double?
     let lineWidth: CGFloat
     let still: Bool
-    #if DEBUG
-    /// 对照用：停在一个周期里的这一处，见 StagePreview 的圆环对照。
-    var frozen: Double?
-    #endif
 
     fileprivate func update(_ view: ContextRingLayerView, environment: EnvironmentValues) {
         let color = ContextRing.color(phase)
         view.configure(.init(phase: phase, fraction: fraction, lineWidth: lineWidth, still: still, period: ContextRing.period(phase)),
                        color: color, environment: environment)
-        #if DEBUG
-        view.frozen = frozen
-        #endif
     }
 }
 
@@ -169,11 +164,6 @@ final class ContextRingLayerView: StatusLayerView {
     private var look: Look?
     private var color: Color = .secondary
     private var environment = EnvironmentValues()
-    #if DEBUG
-    var frozen: Double? {
-        didSet { if frozen != oldValue { restartAnimations() } }
-    }
-    #endif
 
     override init() {
         super.init()
@@ -269,27 +259,17 @@ final class ContextRingLayerView: StatusLayerView {
     }
 
     /// 运行中整圈顺时针转一圈一个周期；停止、收尾时整圈按余弦明暗起伏。节奏按绝对时间对齐。
-    /// 明暗分别乘在底轨（0.25）和弧上，同 SwiftUI 的 opacity 加在 ZStack 上时各个子视图各自变淡：弧压着底轨的地方底轨照样透上来。
+    /// 明暗分别乘在底轨（0.25）和弧上，各自变淡：弧压着底轨的地方底轨照样透上来。
     private func restartAnimations() {
         for layer in [ring, track, gradient, arc] { layer.removeAnimation(forKey: "status") }
         guard let look, look.period > 0, !look.still else { return }
         let period = look.period
-        var progress = Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
-        #if DEBUG
-        if let frozen { progress = frozen }
-        #endif
+        let progress = Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
         func start(_ animation: CAAnimation, on layer: CALayer) {
             animation.duration = period
             animation.repeatCount = .infinity
             animation.isRemovedOnCompletion = false
             animation.beginTime = layer.convertTime(CACurrentMediaTime(), from: nil) - progress * period
-            #if DEBUG
-            if frozen != nil {
-                animation.speed = 0
-                animation.timeOffset = progress * period
-                animation.beginTime = 0
-            }
-            #endif
             layer.add(animation, forKey: "status")
         }
         if look.phase == "running" {
@@ -311,23 +291,17 @@ final class ContextRingLayerView: StatusLayerView {
     }
 }
 
-/// 停靠栏头像的脉冲的图层版：外观照 DockPulseFrame 逐项复刻（实心的一圈从头像外缘往外扩、边扩边淡），交给 Core Animation，
-/// 跟屏幕刷新率走。节奏按绝对时间对齐，同阶段的几个头像同步；减少动态效果时停在半路。
+/// 停靠栏头像的脉冲：实心的一圈从头像外缘往外扩、边扩边淡，交给 Core Animation，跟屏幕刷新率走。
+/// 节奏按绝对时间对齐，同阶段的几个头像同步；减少动态效果时停在半路。
 struct DockPulseLayers {
     let color: Color
     let period: Double
     /// 四周伸出头像的那一截。
     let margin: CGFloat
     let still: Bool
-    #if DEBUG
-    var frozen: Double?
-    #endif
 
     fileprivate func update(_ view: DockPulseLayerView, environment: EnvironmentValues) {
         view.configure(.init(period: period, margin: margin, still: still), color: color, environment: environment)
-        #if DEBUG
-        view.frozen = frozen
-        #endif
     }
 }
 
@@ -361,11 +335,6 @@ final class DockPulseLayerView: StatusLayerView {
     private var color: Color = .secondary
     private var environment = EnvironmentValues()
     private var size = CGSize.zero
-    #if DEBUG
-    var frozen: Double? {
-        didSet { if frozen != oldValue { restart() } }
-    }
-    #endif
 
     override init() {
         super.init()
@@ -414,18 +383,12 @@ final class DockPulseLayerView: StatusLayerView {
         CATransaction.setDisableActions(true)
         disc.frame = bounds
         disc.removeAllAnimations()
-        var progress = look.still ? 0.5 : Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: look.period) / look.period
-        #if DEBUG
-        if let frozen { progress = frozen }
-        #endif
+        let progress = look.still ? 0.5 : Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: look.period) / look.period
         let now = shape(progress, color: resolved)
         disc.path = now.path
         disc.fillColor = now.color
         CATransaction.commit()
         guard !look.still else { return }
-        #if DEBUG
-        if frozen != nil { return }
-        #endif
         // 每个波从 0 走到 1（散尽、全透明），下一个波从头发；关键帧之间线性插值，跟屏幕刷新率走
         let steps = max(Int(look.period * 60), 2)
         let frames = (0...steps).map { shape(Double($0) / Double(steps), color: resolved) }

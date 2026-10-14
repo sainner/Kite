@@ -354,3 +354,53 @@ extension Call {
         return [FileReference(path: path, startLine: start, endLine: start + count - 1)]
     }
 }
+
+extension Call {
+    /// 详情里的参数：description 已经在标题行说过，不再列。
+    var detailInput: JSON {
+        guard case .object(let fields) = use.input else { return use.input }
+        return .object(fields.filter { $0.key != "description" })
+    }
+
+    /// 详情里的结果：输出、diff 引用；旧记录里的非文本内容也列出来。
+    var detailResult: JSON {
+        var fields: [String: JSON] = [:]
+        if let result {
+            fields["output"] = .string(result.text)
+            if let diff = result.diff {
+                fields["diff"] = .object(["id": .string(diff.id), "paths": .array(diff.paths.map(JSON.string))])
+            }
+            // 旧记录中的非文本内容仍保留在结果卡片中。
+            if result.content.contains(where: { if case .image = $0 { true } else { false } }) {
+                fields["content"] = .array(result.content.map { part in
+                    switch part {
+                    case .text(let text): .object(["type": "text", "text": .string(text)])
+                    case .image(let width, let height): .object(["type": "image", "width": .number(Double(width)), "height": .number(Double(height))])
+                    }
+                })
+            }
+        } else if !use.output.isEmpty {
+            fields["output"] = .string(use.output)
+            fields["outputTruncated"] = .bool(use.outputTruncated)
+        }
+        return .object(fields)
+    }
+}
+
+extension JSON {
+    /// 详情里一个值的写法：整个值序列化成一行 JSON，键排序、斜杠不转义。
+    var detailText: String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(self) else { return "无法序列化" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// 详情里列哪几行：对象按键排序，每个键一行；别的（和空对象）整个值一行，键为空。
+    var detailFields: [(key: String, value: JSON)] {
+        if case .object(let object) = self, !object.isEmpty {
+            return object.keys.sorted().compactMap { key in object[key].map { (key, $0) } }
+        }
+        return [("", self)]
+    }
+}

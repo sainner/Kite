@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// 会话窗口：标题显示会话名称，控制区包含输入框和一行按钮。
-/// 人发的消息靠右、带气泡；agent 的话铺满这一栏；两段话之间 agent 做的事折成一行，点开看每一步。
+#if os(macOS)
+/// Mac 窄窗口（紧凑布局）里的会话窗口：标题显示会话名称，控制区包含输入框和一行按钮，都由外壳统一显示（CompactPaneHeaderHost），
+/// 对话是原生列表（TranscriptListView）。宽屏的会话窗口外框是原生的 ThreadWindowView，iPhone、iPad 的是 PhoneThreadWindowView；
+/// 那几处在 SwiftUI 正文里只放 ThreadPaneBridge。
 struct ThreadPane: View {
     @Environment(WorkThread.self) private var thread
     @Environment(AppModel.self) private var model
@@ -30,35 +32,19 @@ struct ThreadPane: View {
         } headerActions: {
             ThreadHeaderActions()
         }
-        #if os(macOS)
-        .wideControls { typing in
-            MacControlsBar(typing: typing, send: send, voiceOwner: pane.patternSlot)
-                .disabled(area.creatingWindow != nil || thread.configuringTemplate)
-        }
         // 指针移到标题栏、输入区上时图案照样跟着
         .modifier(ThreadPatternPointer(slot: pane.patternSlot))
-        #else
-        .wideControls { typing in
-            PhoneControlsBar(typing: typing, send: send, voiceOwner: pane.patternSlot)
-                .disabled(area.creatingWindow != nil || thread.configuringTemplate)
-        }
-        #endif
         .environment(\.workingDirectory, thread.transcriptRoot)
         .modifier(ThreadPaneSupport(pane: pane))
     }
 
-    /// 列表铺满窗口，标题栏、控制区（iOS 还有键盘、左右安全区）让出的距离量出来交给它（GeometryReader 的安全区），
+    /// 列表铺满窗口，标题栏、控制区让出的距离量出来交给它（GeometryReader 的安全区），
     /// 内容从它们后面滚过去。选中的行显式传进去：列表是原生的，不在这个视图层级里，只靠环境里的绑定收不到它变了。
     private var scrollingTranscript: some View {
         @Bindable var pane = pane
         return GeometryReader { proxy in
-            #if os(macOS)
             MacThreadTranscript(scroll: pane.scroll, arriving: pane.arriving, insets: proxy.safeAreaInsets, selected: pane.selected)
                 .ignoresSafeArea()
-            #else
-            PhoneThreadTranscript(scroll: pane.scroll, arriving: pane.arriving, insets: proxy.safeAreaInsets, selected: pane.selected)
-                .ignoresSafeArea()
-            #endif
         }
         .background {
             GeometryReader { proxy in
@@ -69,7 +55,38 @@ struct ThreadPane: View {
     }
 }
 
-/// 会话窗口的状态和动作，SwiftUI 版（ThreadPane）和 Mac 宽屏的原生外框（ThreadWindowView）共用。窗口在就一直是同一个。
+/// Mac 上指针在整个窗口里移动，空会话的签名都跟着。
+private struct ThreadPatternPointer: ViewModifier {
+    let slot: String
+    @Environment(\.dotStage) private var stage
+
+    func body(content: Content) -> some View {
+        content.onContinuousHover(coordinateSpace: .global) { phase in
+            if case .active(let point) = phase { stage?.patternPointer(point, slot: slot) }
+            else { stage?.patternPointer(nil, slot: slot) }
+        }
+    }
+}
+
+/// 对话本身：窗口里只有它读 transcript，收发消息和流式刷新只重算这一块，不牵动标题栏和控制区。
+private struct MacThreadTranscript: View {
+    let scroll: MacTranscriptScroll
+    let arriving: ArrivingMessages
+    let insets: EdgeInsets
+    let selected: RowID?
+    @Environment(WorkThread.self) private var thread
+
+    var body: some View {
+        MacTranscript(rows: TranscriptRow.rows(items: thread.transcript.items, pending: thread.transcript.pending),
+                      scroll: scroll, insets: insets, selected: selected)
+            .font(Theme.body)
+            .environment(\.arrivingMessages, arriving.ids)
+    }
+}
+#endif
+
+/// 会话窗口的状态和动作，建好就一直是同一个：Mac 窄窗口的 ThreadPane、各个原生会话窗口外框（ThreadWindowView、
+/// PhoneThreadWindowView、紧凑布局里的原生会话窗口）经 ThreadPaneBridge 各持一个。
 @MainActor @Observable final class ThreadPaneModel {
     /// 对话怎么滚：跟不跟着最底下、发送后滑到哪、底下留多少空白。两端都是原生列表，见 TranscriptListView、PhoneTranscriptView。
     #if os(macOS)
@@ -158,7 +175,7 @@ struct ThreadPane: View {
 }
 
 /// 会话窗口里不占地方的几样：录音时空会话的签名和底部那一带随响度起伏、窗口关掉时停掉自己的录音、
-/// 窗口动画走完才订阅历史、选中的行、标题和角色的弹窗。SwiftUI 版挂在 ThreadPane 上，Mac 原生外框挂在 ThreadPaneBridge 上。
+/// 窗口动画走完才订阅历史、选中的行、标题和角色的弹窗。Mac 窄窗口挂在 ThreadPane 上，原生外框挂在 ThreadPaneBridge 上。
 struct ThreadPaneSupport: ViewModifier {
     let pane: ThreadPaneModel
     @Environment(WorkThread.self) private var thread
@@ -200,20 +217,6 @@ struct ThreadPaneSupport: ViewModifier {
     }
 }
 
-#if os(macOS)
-/// Mac 上指针在整个窗口里移动，空会话的签名都跟着。
-private struct ThreadPatternPointer: ViewModifier {
-    let slot: String
-    @Environment(\.dotStage) private var stage
-
-    func body(content: Content) -> some View {
-        content.onContinuousHover(coordinateSpace: .global) { phase in
-            if case .active(let point) = phase { stage?.patternPointer(point, slot: slot) }
-            else { stage?.patternPointer(nil, slot: slot) }
-        }
-    }
-}
-#endif
 
 /// 录音时铺在窗口底部一带的签名，录着才有图案。bottom 是控制区的高。
 struct ThreadVoiceBand: View {
@@ -249,38 +252,6 @@ private struct VoiceBand: View {
     }
 }
 
-/// 对话本身：窗口里只有它读 transcript，收发消息和流式刷新只重算这一块，不牵动标题栏和控制区。
-#if os(macOS)
-private struct MacThreadTranscript: View {
-    let scroll: MacTranscriptScroll
-    let arriving: ArrivingMessages
-    let insets: EdgeInsets
-    let selected: RowID?
-    @Environment(WorkThread.self) private var thread
-
-    var body: some View {
-        MacTranscript(rows: TranscriptRow.rows(items: thread.transcript.items, pending: thread.transcript.pending),
-                      scroll: scroll, insets: insets, selected: selected)
-            .font(Theme.body)
-            .environment(\.arrivingMessages, arriving.ids)
-    }
-}
-#else
-private struct PhoneThreadTranscript: View {
-    let scroll: PhoneTranscriptScroll
-    let arriving: ArrivingMessages
-    let insets: EdgeInsets
-    let selected: RowID?
-    @Environment(WorkThread.self) private var thread
-
-    var body: some View {
-        PhoneTranscript(rows: TranscriptRow.rows(items: thread.transcript.items, pending: thread.transcript.pending),
-                        scroll: scroll, insets: insets, selected: selected)
-            .font(Theme.body)
-            .environment(\.arrivingMessages, arriving.ids)
-    }
-}
-#endif
 
 /// 刚发出、还没浮上来的消息，只由对话那一块读，发送时不重算整个窗口。
 @Observable final class ArrivingMessages {

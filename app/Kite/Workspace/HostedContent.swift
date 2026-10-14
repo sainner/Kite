@@ -3,7 +3,8 @@ import SwiftUI
 /// 原生台面（Mac 的 StageView、iPad 的 PhoneStageView）上，窗口正文按停着的样子排一次，飞行中只改外层图层的变换和遮罩。
 /// 这里是两端共用的部分：一帧的摆放、正文所在的容器（HostedContentSurface，各端一个原生视图）、标题两侧的跟随、正文托管树的摆放。
 
-/// 正文一帧的摆放，见 WindowSurface.hostedFrame。
+/// 正文一帧的摆放，在托管视图（area）的坐标里：排在 destination、原尺寸的正文按 scale 缩放、左上角落在 contentOrigin，
+/// 按外框裁切、按 contentOpacity 淡出。标题两侧要挪多少、标题右边截掉多少，见 WindowHeaderAnchored。
 struct HostedContentFrame: Equatable {
     init() {}
 

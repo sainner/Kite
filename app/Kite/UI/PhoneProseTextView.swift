@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 
 /// 对话正文的 UIKit 文本视图（TextKit 2）：不可编辑，平时不开系统的选字，没有自己的滚动，也不接点状态栏回顶。
-/// iPhone、iPad 的原生对话列表（PhoneTranscriptView）和 SwiftUI 里的 SelectableTextView 共用；触摸见 PhoneTextInteraction，
+/// iPhone、iPad 的原生对话列表（PhoneTranscriptView）用；触摸见 PhoneTextInteraction，
 /// 补字、附件重排、装饰片段见 ProseTextCoordinator。拷贝给原文：有对照（TextSourceMap）时选区换成原文放进剪贴板，只放纯文本。
 final class PhoneProseTextView: UITextView, TextKitMeasuring {
     var source: (text: String, map: TextSourceMap)?
@@ -128,8 +128,18 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
         guard clipsViewport, #available(iOS 27.0, *), let outer = outerScroll else { return }
         var visible = outer.convert(outer.bounds, to: self).intersection(bounds)
         if let shownHeight { visible = visible.intersection(CGRect(x: visible.minX, y: 0, width: visible.width, height: shownHeight)) }
-        guard !visible.isNull, visible.height > 0, !viewport.contains(visible) else { return }
+        // 只比上下：段落整行排，横着挪（拖缝时列跟着居中、行左右挪）不用重排
+        guard !visible.isNull, visible.height > 0, !(viewport.minY <= visible.minY && viewport.maxY >= visible.maxY) else { return }
         textLayoutManager?.textViewportLayoutController.layoutViewport()
+    }
+
+    /// 改宽重排过（整段或一截）以后让 TextKit 的视口从新排的位置找起。视口记着上次排在顶上的那段和它的 y，
+    /// 那段还在视口里时下次照旧摆回那个 y：上面的段落变高了它也不往下挪，和量出来的位置、高对不上，
+    /// 行底下空出一截或露出别的段落（拖缝中，2026-10-14 iPad 真机）。
+    func relocateViewport() {
+        guard clipsViewport, #available(iOS 27.0, *), !viewport.isNull, let layout = textLayoutManager,
+              let fragment = laidFragment(at: max(viewport.minY, 0)) else { return }
+        layout.textViewportLayoutController.relocateViewport(to: fragment.rangeInElement.location)
     }
 
     /// 读屏的焦点框按字的宽：视图宽固定成最宽的内容列（clipViewport），iPhone 上比屏幕宽，框会伸出屏幕。
@@ -142,7 +152,7 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
         set { super.accessibilityFrame = newValue }
     }
 
-    /// 量出来的高取到像素，同原来 SwiftUI 版用的 sizeThatFits。
+    /// 量出来的高取到像素，同 UITextView.sizeThatFits。
     var pixelScale: CGFloat { PhonePixel.scale }
     var measuresPixels: Bool { true }
 
@@ -309,7 +319,7 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
         text.resignFirstResponder()
     }
 }
-/// 原生对话列表按像素对齐尺寸：原来的 SwiftUI 版把每个视图的位置和大小都对到像素（3 倍屏上 1/3 pt），
+/// 原生对话列表按像素对齐尺寸：每个视图的位置和大小都对到像素（3 倍屏上 1/3 pt），
 /// 原生行的高、边距照样对齐，排出来才和原来逐像素一样（模拟器并排截屏对过）。
 enum PhonePixel {
     /// 一点几个像素。还没进窗口时按当前的特征取，取不到按 3 倍屏算。

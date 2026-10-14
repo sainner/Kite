@@ -2,7 +2,7 @@
 import AppKit
 import SwiftUI
 
-/// Mac 宽屏会话窗口的外框，原生版：替代 PaneWindow 套 ThreadPane 的整块 SwiftUI。拖缝改宽时它每步跟着改尺寸，
+/// Mac 宽屏会话窗口的外框（窄窗口是 SwiftUI 的 ThreadPane）。拖缝改宽时它每步跟着改尺寸，
 /// 原生的对话列表直接挂在这里（不再经过 MacTranscript 和窗口的 SwiftUI 根），标题栏和输入区各是一个托管视图，只按宽度重摆；
 /// 空会话的签名、录音时底部那一带是铺满窗口的托管视图，只在有它们时才在。层次从下到上：签名或那一带、对话、输入区、标题栏。
 /// 标题栏的托管视图里照样用 safeAreaBar，SwiftUI 照旧给它建滚动软边的容器，对话列表登记它（见 registerPanePockets）。

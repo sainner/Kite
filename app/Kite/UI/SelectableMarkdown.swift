@@ -1,54 +1,21 @@
 import CoreText
 import SwiftUI
 
-/// agent 说的一段话，整段排进一个文本视图（iPhone 是 UITextView，Mac 是 NSTextView，都是 TextKit 2），选字能从头拖到尾。
-/// 代码块、表格、分隔线各是文本里的一个附件字符，显示成卡片（BlockAttachment：iOS 托管原来的 SwiftUI 视图，Mac 是原生卡片）：
+/// agent 说的一段话，整段排进一个文本视图（Mac 的 ProseTextView、iOS 的 PhoneProseTextView，都是 TextKit 2），选字能从头拖到尾。
+/// 代码块、表格、分隔线各是文本里的一个附件字符，显示成卡片（BlockAttachment：iOS 托管 SwiftUI 视图，Mac 是原生卡片）：
 /// 卡片要横着滚、太长折起来，表格排不进文本视图；选区拖过它们就是整块选上。复制给 Markdown 原文（TextSourceMap）。
-/// 样子照 MarkdownView：正文字号跟着环境里的字体（对话里是正文，压缩摘要和子 agent 做的事里小一号），标题字号固定。
-/// 两端的对话（主对话、子 agent 做的事、压缩前的原文）都是原生列表，不用它，操作栏也由列表摆。
-struct SelectableMarkdown: View {
-    @Environment(\.referenceScope) private var referenceScope
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.font) private var font
-    @Environment(\.fontResolutionContext) private var fontContext
-    let source: String
-    /// 正文的字色；引用一律用次要色。
-    var color: PlatformColor = .label
-    @State private var document = MarkdownDocument()
-    @State private var attachments = BlockAttachments()
-
-    var body: some View {
-        let blocks = document.blocks(for: source)
-        let urls = blocks.flatMap { ReferenceText.decorate($0.text, scope: referenceScope).runs.compactMap(\.link) }
-        // SwiftUI 解析出的字体就是 Text 实际用的那一个（Mac 上八种用途与 preferredFont(forTextStyle:) 逐一核对过，见 spikes/mac-textkit-prose）
-        let body = (font ?? .body).resolve(in: fontContext).ctFont as PlatformFont
-        let content = Self.content(blocks, source: source, body: body, color: color, colorScheme: colorScheme, scope: referenceScope,
-                                   attachments: attachments)
-        // 文本视图为背景留出绘制余量，外层抵消这段边距，正文宽度与起点不变。
-        // 开头是标题时，标题上方的半个块距放在视图外面：TextKit 不认文档第一段的 paragraphSpacingBefore，
-        // 而 MarkdownBlockView 给标题的 padding(.top) 对第一块也生效（Mac 量到开头的标题少 6 pt 上留白）。
-        textView(content)
-            .padding(.horizontal, -Metrics.inlineCodePadding)
-            .padding(.top, Self.startsWithHeading(blocks) ? Metrics.markdownBlockGap(body.pointSize) / 2 : 0)
-            .task(id: urls) { await ReferenceIcons.shared.load(urls) }
-    }
-
-    private func textView(_ content: TextViewContent) -> some View {
-        #if os(iOS)
-        SelectableTextView(content: content, inset: CGSize(width: Metrics.inlineCodePadding, height: 0), fillsWidth: true,
-                           showActions: {}, dismissActions: {})
-        #else
-        SelectableTextView(content: content, inset: CGSize(width: Metrics.inlineCodePadding, height: 0), fillsWidth: true)
-        #endif
-    }
-
+/// 样子照 MarkdownView：正文字号跟着调用方给的字体（对话里是正文，压缩摘要和子 agent 做的事里小一号），标题字号固定。
+/// 两端原生对话的行（ProseRowSlot、PhoneProseRowSlot 和压缩摘要）按这里拼属性串。
+enum SelectableMarkdown {
+    /// 开头是标题时，标题上方的半个块距由行视图放在文本视图外面：TextKit 不认文档第一段的 paragraphSpacingBefore，
+    /// 而 MarkdownBlockView 给标题的 padding(.top) 对第一块也生效（Mac 量到开头的标题少 6 pt 上留白）。
     static func startsWithHeading(_ blocks: [MarkdownBlock]) -> Bool {
         if case .heading = blocks.first?.kind { return true }
         return false
     }
 
     /// 几块拼成一段带属性的字，块和块之间空 markdownBlockGap，标题上面再多空一点，和 MarkdownBlockView 排的一样。
-    /// 块距、引用竖线顶边、行内代码背景高按 Mac 上与 SwiftUI 版并排逐行量过的差异补偿，两端共用这一套
+    /// 块距、引用竖线顶边、行内代码背景高按 Mac 上与 MarkdownView 并排逐行量过的差异补偿，两端共用这一套
     /// （用户 2026-10-12 决定；量到的数值见 spikes/mac-textkit-prose/README.md「外观对照」）。
     /// 代码块、表格、分隔线各占一个附件字符、自成一段，段前空一个块距；附件按第几个复用（attachments）。
     /// body 是环境里解析出的正文字体，行距、块距、列表编号和行内代码的字号都从它推。
@@ -56,7 +23,7 @@ struct SelectableMarkdown: View {
                         scope: ReferenceScope, attachments: BlockAttachments) -> TextViewContent {
         let blockGap = Metrics.markdownBlockGap(body.pointSize)
         let lineSpacing = Metrics.markdownLineSpacing(body.pointSize)
-        // 文件图标的颜色：SwiftUI 版在 Mac 上用 .tint（主题色），iPhone 版一直用链接色，各自保持现状。
+        // 文件图标的颜色：Mac 用主题色，iPhone、iPad 用链接色。
         // 链接文字的颜色不在这里定，由文本视图的 linkTextAttributes 给系统 link 色，和 SwiftUI 的 Text 一样。
         #if canImport(UIKit)
         let iconTint = PlatformColor.link.resolved(for: colorScheme)
@@ -113,7 +80,7 @@ struct SelectableMarkdown: View {
             switch block.kind {
             case .heading(let level):
                 font = level <= 1 ? .semibold(.title2) : level == 2 ? .semibold(.title3) : .preferredFont(forTextStyle: .headline)
-                // 标题上方再多半个块距；开头的标题 TextKit 不认段前距，这半个块距由 body 里的 padding(.top) 补
+                // 标题上方再多半个块距；开头的标题 TextKit 不认段前距，这半个块距由行视图补，见 startsWithHeading
                 if index > 0 { style.paragraphSpacingBefore += blockGap / 2 }
             case .quote:
                 color = .secondaryLabel

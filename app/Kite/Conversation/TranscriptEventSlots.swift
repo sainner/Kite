@@ -2,15 +2,15 @@
 import AppKit
 import SwiftUI
 
-/// 会话里发生的事，不是谁说的话，照 EventLabel：图标连着一段次要字号的字，后台任务的通知、打断、调用模型出错（红）。字能选，复制给原文。
+/// 会话里发生的事，不是谁说的话：图标连着一段次要字号的字，后台任务的通知、打断、调用模型出错（红）。字能选，复制给原文。
 final class EventRowSlot: TranscriptRowSlot {
     private let container = SymbolTextView()
 
     override var hasView: Bool { true }
     override var view: NSView { container }
 
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
-        super.update(row, context: context, resized: resized)
+    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
+        super.update(row, context: context)
         guard case .item(let item) = row.content else { return }
         let environment = context.environment
         let font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont
@@ -36,15 +36,15 @@ final class EventRowSlot: TranscriptRowSlot {
     }
 }
 
-/// Kite 发给 agent 的消息，照 ItemView 的 .kite：圆角描边的框，里面上面一行「Kite 发给 agent」带图标，下面正文（能选），都是次要色。
+/// Kite 发给 agent 的消息：圆角描边的框，里面上面一行「Kite 发给 agent」带图标，下面正文（能选），都是次要色。
 final class KiteRowSlot: TranscriptRowSlot {
     private let container = KiteRowView()
 
     override var hasView: Bool { true }
     override var view: NSView { container }
 
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
-        super.update(row, context: context, resized: resized)
+    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
+        super.update(row, context: context)
         guard case .item(let item) = row.content, case .kite(let text) = item.kind else { return }
         container.show(text, environment: context.environment)
     }

@@ -34,23 +34,18 @@ extension PerfProbe {
 
     // MARK: - 会话窗口
 
-    /// 台面上的一个会话窗口：原生列表和它的会话。原生外框（ThreadWindowView）直接给会话和窗口状态；
-    /// 别的台面（--swiftui-stage）按从左到右、从上到下的次序对上排布里的会话，pane 为 nil。
+    /// 台面上的一个会话窗口：原生列表和它的会话、窗口状态，由原生外框（ThreadWindowView）给出。
     struct Conversation {
         let list: TranscriptListView
-        let thread: WorkThread?
-        let pane: ThreadPaneModel?
+        let thread: WorkThread
+        let pane: ThreadPaneModel
     }
 
     static func conversations(_ session: Session) -> [Conversation] {
         let lists = views(TranscriptListView.self).filter { !$0.isHiddenOrHasHiddenAncestor && $0.bounds.width > 100 }.sorted(by: leftToRight)
         let hosts = views(ThreadWindowView.self)
-        let threads = threadsLeftToRight(session.area)
-        return lists.enumerated().map { index, list in
-            if let host = hosts.first(where: { $0.pane.scroll.list === list }) {
-                return Conversation(list: list, thread: host.thread, pane: host.pane)
-            }
-            return Conversation(list: list, thread: lists.count == threads.count ? threads[index] : nil, pane: nil)
+        return lists.compactMap { list in
+            hosts.first(where: { $0.pane.scroll.list === list }).map { Conversation(list: list, thread: $0.thread, pane: $0.pane) }
         }
     }
 
@@ -68,14 +63,6 @@ extension PerfProbe {
     private static func leftToRight(_ a: NSView, _ b: NSView) -> Bool {
         let first = a.convert(a.bounds, to: nil), second = b.convert(b.bounds, to: nil)
         return first.minX != second.minX ? first.minX < second.minX : first.maxY > second.maxY
-    }
-
-    private static func threadsLeftToRight(_ area: WorkArea) -> [WorkThread] {
-        let layout = area.layout
-        guard let viewport = layout.availableSize,
-              let arranged = layout.shown?.layout(in: layout.regions(in: CGRect(origin: .zero, size: viewport)).canvas) else { return [] }
-        return arranged.panes.sorted { $0.value.minX != $1.value.minX ? $0.value.minX < $1.value.minX : $0.value.minY < $1.value.minY }
-            .compactMap { area.thread(in: $0.key) }
     }
 
     // MARK: - 拖缝前的布置
@@ -99,8 +86,7 @@ extension PerfProbe {
             if kind == "actions" {
                 try await Task.sleep(for: .seconds(0.5))
                 for conversation in conversations {
-                    guard let pane = conversation.pane else { throw Failure("开着操作栏只在原生台面上测") }
-                    let list = conversation.list, shown = visible(list)
+                    let pane = conversation.pane, list = conversation.list, shown = visible(list)
                     // 可见区上半截的一段回复或一个气泡
                     guard let slot = list.arrangement.slots.first(where: {
                         ($0 is ProseRowSlot || $0 is BubbleRowSlot) && $0.frame.minY > shown.minY + 20 && $0.frame.minY < shown.midY
@@ -112,8 +98,7 @@ extension PerfProbe {
             }
         case "fold":
             for conversation in conversations {
-                guard let thread = conversation.thread else { continue }
-                let transcript = thread.transcript
+                let thread = conversation.thread, transcript = thread.transcript
                 session.onFinish { thread.transcript = transcript }
                 injectCompaction(thread)
             }
@@ -127,8 +112,7 @@ extension PerfProbe {
             try await scroll(lists, to: "compaction")
         case "running":
             for conversation in conversations {
-                guard let thread = conversation.thread else { continue }
-                let transcript = thread.transcript, state = thread.state
+                let thread = conversation.thread, transcript = thread.transcript, state = thread.state
                 session.onFinish {
                     thread.transcript = transcript
                     thread.state = state
@@ -253,7 +237,8 @@ extension PerfProbe {
         case "normal": break
         case "ring":
             for conversation in conversations {
-                guard let thread = conversation.thread, let running = runningState(thread.state) else { continue }
+                let thread = conversation.thread
+                guard let running = runningState(thread.state) else { continue }
                 let state = thread.state
                 session.onFinish { thread.state = state }
                 thread.state = running
@@ -267,8 +252,7 @@ extension PerfProbe {
             }
         case "sweep":
             for conversation in conversations {
-                guard let thread = conversation.thread else { continue }
-                let transcript = thread.transcript
+                let thread = conversation.thread, transcript = thread.transcript
                 session.onFinish { thread.transcript = transcript }
                 injectRunningTool(thread)
             }
@@ -293,7 +277,7 @@ extension PerfProbe {
     /// 打字：在最左边一个已建好代理的会话里，每 100ms 打一个字，每轮 -perfKeys 个（默认 20），-perfRounds 轮（默认 3）；
     /// 每个键记之后 4 帧。send 时每轮打完再发出去，记发送后 1.5 秒；消息只排进本地（hold），每轮后撤掉。
     private static func typing(_ session: Session, send: Bool) async throws {
-        guard let window, let field = composer(session) else { throw Failure("没有已建好代理的会话输入框") }
+        guard let window, let field = composer() else { throw Failure("没有已建好代理的会话输入框") }
         holdsSends = send
         session.onFinish {
             holdsSends = false
@@ -338,14 +322,12 @@ extension PerfProbe {
     }
 
     /// 最左边一个已建好代理（不是草稿：草稿发送会真的建代理）的会话的输入框。
-    private static func composer(_ session: Session) -> ComposerField? {
+    private static func composer() -> ComposerField? {
         let fields = views(ComposerField.self).filter { !$0.isHiddenOrHasHiddenAncestor }.sorted(by: leftToRight)
-        let threads = threadsLeftToRight(session.area)
-        for (index, field) in fields.enumerated() {
+        for field in fields {
             var host: NSView? = field
             while let view = host, !(view is ThreadWindowView) { host = view.superview }
-            let thread = (host as? ThreadWindowView)?.thread ?? (fields.count == threads.count ? threads[index] : nil)
-            if let thread, !thread.isDraft { return field }
+            if let thread = (host as? ThreadWindowView)?.thread, !thread.isDraft { return field }
         }
         return nil
     }

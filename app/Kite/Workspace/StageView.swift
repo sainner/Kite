@@ -2,10 +2,10 @@
 import AppKit
 import SwiftUI
 
-/// Mac 宽屏的台面，原生版：各张卡片、卡片之间的缝、拖动时的占位都是 AppKit 视图（StageView、CardView），拖缝改宽时
+/// Mac 宽屏的台面：各张卡片、卡片之间的缝、拖动时的占位都是 AppKit 视图（StageView、CardView），拖缝改宽时
 /// 每步只重算排布、按新位置摆，不经过 SwiftUI。停靠栏、空台面的画板、停靠栏上面那一层（脉冲、展开的面板）
 /// 不随拖缝改尺寸，仍是 SwiftUI，各放进一个铺满台面的托管视图（StageIsland）。窗口正文也还是每张卡片一个托管视图。
-/// 行为照 SwiftUI 版（SwiftUITilesLayer、CardSlot、PaneCard、WindowSurface），排布的计算共用 StagePlan。
+/// 排布的计算和 iPad 的台面（PhoneStageView）共用 StagePlan。
 /// 原生层报不了偏好，有没有窗口开点阵、摆在点阵上的图形、停靠栏悬停标签由这里接着往上报（见 StageReports）。
 struct StageHost: View {
     let group: PaneGroup
@@ -17,17 +17,44 @@ struct StageHost: View {
     @Environment(\.displayScale) private var displayScale
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.dotStage) private var dotStage
+    @Environment(\.stageLeadingInset) private var leadingInset
     @Environment(AppModel.self) private var model
     @State private var reports = StageReports()
 
     var body: some View {
-        StageRepresentable(group: group, model: model, reports: reports, openSidebar: openSidebar,
-                           appearance: StageAppearance(colorScheme: colorScheme, activeState: activeState, reduceMotion: reduceMotion,
-                                                       displayScale: displayScale, isEnabled: isEnabled,
-                                                       dotStage: dotStage.map(ObjectIdentifier.init)))
-            .preference(key: WindowDotsActive.self, value: reports.usesDots)
-            .preference(key: DotSlots.self, value: reports.dotSlots)
-            .dockHoverSource(reports.hoverTip)
+        // 拖侧栏改宽时往左多排被侧栏盖住的那一段，台面视图不跟着每步改尺寸，见 MainWindow.stageInset
+        StageOverflow(inset: leadingInset) {
+            StageRepresentable(group: group, model: model, reports: reports, openSidebar: openSidebar, leadingInset: leadingInset,
+                               appearance: StageAppearance(colorScheme: colorScheme, activeState: activeState, reduceMotion: reduceMotion,
+                                                           displayScale: displayScale, isEnabled: isEnabled,
+                                                           dotStage: dotStage.map(ObjectIdentifier.init)))
+                // 让出的一段按参数交进去，台面里面的环境不跟着每步变：环境变了 SwiftUI 要把台面里每个托管视图的环境重交一遍
+                .environment(\.stageLeadingInset, 0)
+                .preference(key: WindowDotsActive.self, value: reports.usesDots)
+                .preference(key: DotSlots.self, value: reports.dotSlots)
+                .dockHoverSource(reports.hoverTip)
+        }
+    }
+}
+
+extension EnvironmentValues {
+    /// 台面左边被侧栏盖住的一段，见 MainWindow.stageInset。
+    @Entry var stageLeadingInset: CGFloat = 0
+}
+
+/// 按给的地方再往左多排 inset：宽是格子宽加 inset，右边对齐格子；量尺寸照里面的内容。inset 为 0 时和直接放一样。
+private struct StageOverflow: Layout {
+    var inset: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        subviews.first?.sizeThatFits(proposal) ?? proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for subview in subviews {
+            subview.place(at: CGPoint(x: bounds.minX - inset, y: bounds.minY), anchor: .topLeading,
+                          proposal: ProposedViewSize(width: bounds.width + inset, height: bounds.height))
+        }
     }
 }
 
@@ -36,6 +63,7 @@ private struct StageRepresentable: NSViewRepresentable {
     let model: AppModel
     let reports: StageReports
     let openSidebar: (@MainActor () -> Void)?
+    let leadingInset: CGFloat
     let appearance: StageAppearance
 
     func makeNSView(context: Context) -> StageView {
@@ -43,7 +71,8 @@ private struct StageRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ stage: StageView, context: Context) {
-        stage.update(group: group, environment: context.environment, appearance: appearance, openSidebar: openSidebar)
+        stage.update(group: group, environment: context.environment, appearance: appearance, openSidebar: openSidebar,
+                     leadingInset: leadingInset)
     }
 
     /// 铺满给的地方；不给的话 SwiftUI 按 Auto Layout 量 fittingSize，整个台面的视图树塞进临时约束引擎。
@@ -88,6 +117,15 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     private var displayLink: CADisplayLink?
     /// 报给排布模型的视口，变了才报。
     private var viewport: CGSize?
+    /// 拖侧栏改宽时台面左边被侧栏盖住的一段（见 MainWindow.stageInset），平时为 0。台面的视图这时按侧栏最窄时的宽度排，
+    /// 每步不改尺寸；卡片、停靠栏、命中都按让出这一段以后的 stageRect，坐标仍是台面自己的。
+    private var leadingInset: CGFloat = 0
+    /// 拖侧栏改宽时收着的窗口按哪个大小排正文，见 arrange。
+    private var frozenFallback: CGSize?
+    /// 看得见的台面，台面自己的坐标：排布、停靠栏、命中都按它。
+    private var stageRect: CGRect {
+        CGRect(x: leadingInset, y: 0, width: max(bounds.width - leadingInset, 0), height: bounds.height)
+    }
     /// 台面左上角在窗口里的位置（左上角起、往下为正，同 SwiftUI 的 .global）。拖动报的窗口坐标按它换回台面坐标。
     private(set) var origin = CGPoint.zero
     private var cursorsFrozen = false
@@ -106,19 +144,11 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
 
-    #if DEBUG
-    /// 还活着的台面和卡片，台面对照拆掉台面后看有没有漏（StagePreview）。
-    static let alive = NSHashTable<NSView>.weakObjects()
-    #endif
-
     init(group: PaneGroup, model: AppModel, reports: StageReports) {
         self.group = group
         self.model = model
         self.reports = reports
         super.init(frame: .zero)
-        #if DEBUG
-        Self.alive.add(self)
-        #endif
         wantsLayer = true
         for island in [dockRail, windowless] { addSubview(island) }
         addSubview(placeholder)
@@ -135,8 +165,13 @@ final class StageView: RepresentedRoot, StageDotsReporting {
 
     // MARK: - 环境
 
-    func update(group: PaneGroup, environment: EnvironmentValues, appearance: StageAppearance, openSidebar: (@MainActor () -> Void)?) {
+    func update(group: PaneGroup, environment: EnvironmentValues, appearance: StageAppearance, openSidebar: (@MainActor () -> Void)?,
+                leadingInset: CGFloat) {
         self.environment = environment
+        if self.leadingInset != leadingInset {
+            self.leadingInset = leadingInset
+            needsLayout = true
+        }
         let groupChanged = GroupKey(group) != GroupKey(self.group)
         self.group = group
         let sidebarChanged = (openSidebar == nil) != (self.openSidebar == nil)
@@ -225,16 +260,16 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         super.layout()
         // 环境交过来以前不建卡片：托管的正文要从环境里取 App 模型
         guard look != nil else { return }
-        let size = bounds.size
+        let stage = stageRect
         origin = windowOrigin
-        if viewport != size {
-            viewport = size
+        if viewport != stage.size {
+            viewport = stage.size
             // 报视口会改排布模型，自己的改动不回头再排一遍
-            tracking.quietly { group.layout.updateViewport(size, presentation: .tiled, leading: origin.x) }
+            tracking.quietly { group.layout.updateViewport(stage.size, presentation: .tiled, leading: origin.x + stage.minX) }
         }
         for island in [dockRail, windowless, dockOverlay] { place(island, bounds) }
         place(placeholder, bounds)
-        if geometry.bounds != bounds { geometry.bounds = bounds }
+        if geometry.bounds != stage { geometry.bounds = stage }
         laying = true
         defer { laying = false }
         let arranged = tracking.track({ arrange() }) { [weak self] in self?.invalidateArrangement() }
@@ -275,7 +310,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     /// 读模型、算这一轮的排布并摆好；读到的属性变了会再来一轮。卡片的终点在这里算好，交给 motion 放到观察之外（见 settle）。
     private func arrange() -> Arranged {
         let layout = group.layout, area = group.workspace
-        let plan = StagePlan(layout: layout, area: area, bounds: bounds)
+        let plan = StagePlan(layout: layout, area: area, bounds: stageRect)
         var arranged = Arranged()
         arranged.transitioning = layout.transitioning
         arranged.expanded = plan.expanded
@@ -296,12 +331,16 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         let reduceMotion = look?.reduceMotion ?? false
         let resizing = layout.resizing != nil
         let blocksInput = layout.blocksInput
+        // 没在台面上停过的窗口（停靠栏里的）按台面的大小排正文：拖侧栏改宽时台面每步都变，收着的窗口不跟着每步重排，
+        // 用开始拖时的大小，停下后照常
+        let fallback = leadingInset > 0 ? frozenFallback ?? plan.regions.canvas.size : plan.regions.canvas.size
+        frozenFallback = leadingInset > 0 ? fallback : nil
         for pane in retained {
             let card = cards[pane] ?? makeCard(pane)
             let closing = !layout.panes.contains(pane)
             let rect = plan.tiles.panes[pane]
             let placed = card.presentation.place(group: group, pane: pane, rect: rect, dockFrame: plan.dockFrame(of: pane, area: area),
-                                                 fallbackSize: plan.regions.canvas.size, regions: plan.regions, closing: closing)
+                                                 fallbackSize: fallback, regions: plan.regions, closing: closing)
             let dimmed = plan.expanded && rect == nil && layout.drag?.pane != pane
             let arrangement = CardView.Arrangement(
                 placed: placed, dockFrame: plan.dockFrame(of: pane, area: area), closing: closing, family: plan.familyID(of: pane),
@@ -309,7 +348,8 @@ final class StageView: RepresentedRoot, StageDotsReporting {
                 acceptsInput: !blocksInput && !resizing && !closing && !dimmed, dotsHidden: resizing,
                 dragged: layout.drag?.pane == pane, hasThread: area?.thread(in: pane) != nil, fixed: layout.isFixed,
                 header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width,
-                                         hasThread: area?.thread(in: pane) != nil))
+                                         hasThread: area?.thread(in: pane) != nil),
+                expands: (layout.shown?.panes.count ?? 0) > 1)
             arranged.cards.append((card, arrangement, CardPresentation.motionKind(layout: layout, pane: pane, reduceMotion: reduceMotion)))
         }
         arranged.visible = Set(plan.onStage.compactMap { area?.dockInstanceID($0) })
@@ -321,7 +361,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         return arranged
     }
 
-    /// 拖动、拖缝时不浮标签；家族格里的父代理是窗口卡片报上来的，按窗口找。同 SwiftUI 版的 DockOverlay。
+    /// 拖动、拖缝时不浮标签；家族格里的父代理是窗口卡片报上来的，按窗口找。
     private func hoverTip(plan: StagePlan) -> DockHoverTip? {
         let layout = group.layout
         guard layout.drag == nil, layout.resizing == nil, let area = group.workspace, let hover = area.dockHover,
@@ -342,7 +382,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         for (card, arrangement, kind) in arranged.cards {
             // 卡片铺满台面，里面各层按台面坐标摆
             place(card, bounds)
-            card.arrange(arrangement)
+            card.arrange(arrangement, kind: kind)
             card.move(to: arrangement.placed.target, kind: kind)
         }
         if dragging != arranged.drag {
@@ -431,7 +471,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     // MARK: - 卡片的拖动、点击
 
     func drag(_ pane: Pane, to point: CGPoint) {
-        let layout = group.layout, area = group.workspace, bounds = bounds
+        let layout = group.layout, area = group.workspace, bounds = stageRect
         area?.collapseDock()
         area?.dockHover = nil
         let regions = layout.regions(in: bounds)
@@ -442,13 +482,13 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     }
 
     func drop() {
-        group.layout.drop(in: bounds)
+        group.layout.drop(in: stageRect)
     }
 
     /// 点最小化的窗口：恢复；家族格里的父代理先展开家族，展开后再点父代理才放上台面。
     func activate(_ pane: Pane, family: String?) {
         if let family { group.workspace?.toggleDock(family, depth: 0) }
-        else { group.layout.restore(pane, in: bounds) }
+        else { group.layout.restore(pane, in: stageRect) }
     }
 
     // MARK: - 逐帧
@@ -477,7 +517,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
 
     // MARK: - 过渡中的光标、拖动系统窗口
 
-    /// 过渡中整个窗口不换光标：暂停窗口的光标区域，停下后恢复并按指针当前位置重设。拖动中压栈的光标不受影响，同 freezesCursor。
+    /// 过渡中（见 WindowLayout.transitioning）整个窗口不换光标：暂停窗口的光标区域，停下后恢复并按指针当前位置重设。拖动中压栈的光标不受影响。
     private func freezeCursors(_ frozen: Bool) {
         guard frozen != cursorsFrozen, let window else { return }
         cursorsFrozen = frozen
@@ -521,11 +561,11 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     func refreshHover() {
         guard let window else { return }
         let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
-        pointerInside = bounds.contains(point)
+        pointerInside = stageRect.contains(point)
         if pointerInside { hover(at: point) } else { for card in cards.values { card.setHovered(false) } }
     }
 
-    /// 悬停在最上面那张接输入、停着的卡片上，同 SwiftUI 版正文和收成停靠形状时垫的那一层的 onHover。
+    /// 悬停在最上面那张接输入、停着的卡片上。
     private func hover(at point: CGPoint) {
         let found = subviews.reversed().lazy.compactMap { $0 as? CardView }.first { $0.contains(point) }
         for card in cards.values where card !== found { card.setHovered(false) }
@@ -548,7 +588,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         escapeMonitor = nil
     }
 
-    /// 点窗口任何地方（正文、标题栏、输入区、对话里的字）都聚焦它，同 SwiftUI 版正文上的 paneFocus：按下松手挪得不多才算点了一下。
+    /// 点窗口任何地方（正文、标题栏、输入区、对话里的字）都聚焦它：按下松手挪得不多才算点了一下。
     /// 原生的会话窗口外框里点到的多是 AppKit 视图，SwiftUI 的点按手势收不到，所以在台面这一层看。
     private func installFocusMonitor() {
         guard focusMonitor == nil else { return }
@@ -563,7 +603,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         focusMonitor = nil
     }
 
-    /// 按下时实际点进了哪张卡片（命中的视图在它里面）：停靠栏展开着面板时点空白落在面板那一层上，只收起面板，不聚焦下面的卡片，同旧版。
+    /// 按下时实际点进了哪张卡片（命中的视图在它里面）：停靠栏展开着面板时点空白落在面板那一层上，只收起面板，不聚焦下面的卡片。
     private func focusClick(_ event: NSEvent) {
         guard event.window === window else { return }
         let point = convert(event.locationInWindow, from: nil)
@@ -592,14 +632,14 @@ final class StageView: RepresentedRoot, StageDotsReporting {
 
     // MARK: - 命中
 
-    private var regions: WindowRegions { group.layout.regions(in: bounds) }
+    private var regions: WindowRegions { group.layout.regions(in: stageRect) }
 
     /// 停靠栏只在停靠栏那一列接点击；过渡中不接，同 PausedInTransition。
     private var dockHitRegion: CGRect? {
         group.layout.transitioning || group.workspace == nil ? nil : regions.dock
     }
 
-    /// 台面上没有窗口、也没在拖窗口时空画板接，同它在 SwiftUI 版里只在显示着时接。
+    /// 台面上没有窗口、也没在拖窗口时空画板接，只在显示着时接。
     private var windowlessHitRegion: CGRect? {
         let layout = group.layout
         return (layout.shown?.panes.isEmpty ?? true) && layout.drag == nil && !layout.transitioning ? regions.canvas : nil
@@ -608,7 +648,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     /// 停靠栏展开时铺满台面接点空白收起；收着时上面只有脉冲，不接。
     private var overlayHitRegion: CGRect? {
         guard let area = group.workspace, !area.dockExpansion.isEmpty, !group.layout.transitioning else { return nil }
-        return bounds
+        return stageRect
     }
 
     // MARK: - 点阵
@@ -756,7 +796,7 @@ private final class PlaceholderView: NSView {
         updateColors()
     }
 
-    /// 同 SwiftUI 版的 Color.accentColor：主题色 8% 填充、描边，按这个视图的外观解析。
+    /// 主题色 8% 填充、描边，按这个视图的外观解析。
     private func updateColors() {
         var environment = environment
         environment.colorScheme = effectiveAppearance.isDark ? .dark : .light
@@ -775,7 +815,7 @@ private final class PlaceholderView: NSView {
         shape.frame = bounds
     }
 
-    /// 同 SwiftUI 版：占位在预览的事务里插值位置和大小，出现、消失是默认的淡入淡出，同曲线同时长。
+    /// 占位跟着预览插值位置和大小，出现、消失淡入淡出，和窗口同曲线同时长。
     func show(_ rect: CGRect?, kind: WindowMotionKind, reduceMotion: Bool) {
         guard rect != shown else { return }
         let previous = shown

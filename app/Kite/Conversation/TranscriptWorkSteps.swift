@@ -2,8 +2,8 @@
 import AppKit
 import SwiftUI
 
-/// 工具行点开后的步骤，原生画，照 WorkSteps：一步一行，同批调用之间横向虚线、不同批实线（都占 1 pt），外面 8 pt 圆角描边、按它截。
-/// 每一步再点开看参数和结果（CallDetail），和下面的行一起按 0.25 秒的普通缓出动；步骤按原来的序号认，后续调用到来时不重建已经展开的那步。
+/// 工具行点开后的步骤：一步一行，同批调用之间横向虚线、不同批实线（都占 1 pt），外面 8 pt 圆角描边、按它截。
+/// 每一步再点开看参数和结果（CallDetailView），和下面的行一起按 0.25 秒的普通缓出动；步骤按原来的序号认，后续调用到来时不重建已经展开的那步。
 /// 某一步自己变高变矮时报给工具行（changed 带着走法），工具行按这个走法变高，这一步跟着工具行的高走。
 final class WorkStepsView: NSView {
     /// 有一步自己变高变矮了：motion 是它的走法，nil 是直接换。
@@ -40,8 +40,8 @@ final class WorkStepsView: NSView {
 
     var animating: Bool { animation != nil }
 
-    /// resized：内容或外观变了（同 TranscriptRowSlot.update），子 agent 的行跟着重排。
-    func show(_ work: Work, environment: EnvironmentValues, resized: Bool) {
+    /// 内容或外观变了才调（同 TranscriptRowSlot.update），子 agent 的行跟着重排。
+    func show(_ work: Work, environment: EnvironmentValues) {
         self.work = work
         self.environment = environment
         while rows.count < work.calls.count {
@@ -55,7 +55,7 @@ final class WorkStepsView: NSView {
             rows.append(row)
         }
         while rows.count > work.calls.count { rows.removeLast().removeFromSuperview() }
-        for (row, call) in zip(rows, work.calls) { row.show(call, environment: environment, resized: resized) }
+        for (row, call) in zip(rows, work.calls) { row.show(call, environment: environment) }
         while separators.count < max(rows.count - 1, 0) {
             let line = CAShapeLayer()
             line.lineWidth = 1
@@ -148,7 +148,7 @@ final class WorkStepsView: NSView {
     }
 }
 
-/// 一次工具调用，照 CallRow：标题行（图标、名字、摘要或文件引用、补丁行数、运行时间），点开下面是参数和结果；按自己的范围截。
+/// 一次工具调用：标题行（图标、名字、摘要或文件引用、补丁行数、运行时间），点开下面是参数和结果；按自己的范围截。
 final class CallRowView: NSView {
     var changed: ((RowMotion?) -> Void)?
     let header = CallHeaderView()
@@ -158,7 +158,7 @@ final class CallRowView: NSView {
     private var expanded = false
     private var detailHeight: CGFloat = 0
 
-    /// 详情左右、底下的留白，同 CallRow。
+    /// 详情左右、底下的留白。
     private static let inset = Metrics.toolRowInset
 
     override var isFlipped: Bool { true }
@@ -173,11 +173,11 @@ final class CallRowView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func show(_ call: Call, environment: EnvironmentValues, resized: Bool) {
+    func show(_ call: Call, environment: EnvironmentValues) {
         self.call = call
         self.environment = environment
         header.show(call, environment: environment, expanded: expanded)
-        detail?.show(call, environment: environment, resized: resized)
+        detail?.show(call, environment: environment)
     }
 
     /// 量出来的详情是不是近似的，见 WorkStepsView.approximate。
@@ -222,7 +222,7 @@ final class CallRowView: NSView {
             view.changed = { [weak self] motion in self?.changed?(motion) }
             view.alphaValue = 0
             addSubview(view)
-            view.show(call, environment: environment, resized: true)
+            view.show(call, environment: environment)
             detail = view
         }
         if let call, let environment { header.show(call, environment: environment, expanded: expanded) }
@@ -296,7 +296,7 @@ final class CallHeaderView: NativeButton {
         needsLayout = true
     }
 
-    /// 命令的运行时间：跑完了是总时长，还在跑时每秒走一次，同 ToolDurationChip。
+    /// 命令的运行时间：跑完了是总时长，还在跑时每秒走一次。
     private func showDuration(environment: EnvironmentValues) {
         timer?.invalidate()
         timer = nil
@@ -385,7 +385,7 @@ final class CallHeaderView: NativeButton {
     }
 }
 
-/// 工具行右边的小 chip，照 ToolInfoChip：最小一号的数字等宽字，次要色，左右 6、上下 2，代码底色的胶囊。
+/// 工具行右边的小 chip：最小一号的数字等宽字，次要色，左右 6、上下 2，代码底色的胶囊。
 final class ToolChipView: NSView {
     private let label = LineLabel()
     private let background = CALayer()
@@ -428,7 +428,7 @@ final class ToolChipView: NSView {
     }
 }
 
-/// 结果里的文件引用排成一行，照 ToolReferenceSummary：文件名带下划线、和整行一样的颜色，之间「 · 」，放不下从中间截；
+/// 结果里的文件引用排成一行：文件名带下划线、和整行一样的颜色，之间「 · 」，放不下从中间截；
 /// 指针停在文件名上是手形，点了交给 openURL（ReferenceNavigation 打开），点在别处落给标题行。
 final class ReferenceLineView: NSView {
     private var text = NSAttributedString()
@@ -577,7 +577,7 @@ nonisolated final class ReferenceLinkElement: NSAccessibilityElement {
     }
 }
 
-/// 一次调用的详情，照 CallDetail：参数、结果各一张卡片（键在左、最宽 96，值在右能折行，等宽字、能选），之间 6；
+/// 一次调用的详情：参数、结果各一张卡片（键在左、最宽 96，值在右能折行，等宽字、能选），之间 6；
 /// 子 agent 做的事接在下面，往里缩 12（一列原生的行，见 TranscriptStack）。
 final class CallDetailView: NSView {
     /// 子 agent 的行自己变高了：motion 是它的走法。
@@ -598,7 +598,7 @@ final class CallDetailView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func show(_ call: Call, environment: EnvironmentValues, resized: Bool) {
+    func show(_ call: Call, environment: EnvironmentValues) {
         var fields = Self.fields(Self.input(call))
         if call.state == .generating { fields.append(("arguments（原文）", .string(call.use.arguments ?? ""))) }
         input.show(fields, environment: environment)
@@ -615,7 +615,7 @@ final class CallDetailView: NSView {
                 return stack
             }()
             stack.update(TranscriptRow.rows(items: call.children, pending: []),
-                         context: TranscriptRowContext(environment: environment, actionable: false, toggleActions: { _ in }), resized: resized)
+                         context: TranscriptRowContext(environment: environment, actionable: false, toggleActions: { _ in }))
         }
         needsLayout = true
     }
@@ -679,7 +679,7 @@ final class CallDetailView: NSView {
     }
 }
 
-/// 参数或结果的卡片，照 ToolDetailCard 和 JSONField：代码底色、8 pt 圆角，内边距 10；一行一个键，键在左（次要色，占 96 宽，放不下折行），
+/// 参数或结果的卡片：代码底色、8 pt 圆角，内边距 10；只列顶层键，嵌套对象和数组整个序列化成一行；一行一个键，键在左（次要色，占 96 宽，放不下折行），
 /// 值在右（JSON 序列化，文件路径、网址可点，能折行），列间 12、行间 8，都是等宽字、能选，复制给原样的字。
 final class ToolDetailCardView: NSView {
     private var rows: [(key: ProseTextView, value: ProseTextView, coordinator: ProseRowCoordinator)] = []

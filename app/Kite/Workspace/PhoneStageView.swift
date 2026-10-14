@@ -2,10 +2,9 @@
 import SwiftUI
 import UIKit
 
-/// iPad 宽屏的台面，原生版：各张卡片、卡片之间的缝、拖动时的占位都是 UIKit 视图（PhoneStageView、PhoneCardView），拖缝改宽时
+/// iPad 宽屏的台面：各张卡片、卡片之间的缝、拖动时的占位都是 UIKit 视图（PhoneStageView、PhoneCardView），拖缝改宽时
 /// 每步只重算排布、按新位置摆，不经过 SwiftUI。停靠栏、空画板、停靠栏上面那一层（脉冲、展开的面板）不随拖缝改尺寸，仍是 SwiftUI，
-/// 各放进一个铺满台面的岛（HostIsland）。行为照 SwiftUI 版（SwiftUITilesLayer、CardSlot、PaneCard、WindowSurface）和 Mac 的原生台面
-/// （StageView），排布的计算共用 StagePlan。原生层报不了偏好，有没有窗口开点阵、摆在点阵上的图形、停靠栏悬停标签由这里接着往上报。
+/// 各放进一个铺满台面的岛（HostIsland）。行为和结构照 Mac 的台面（StageView），排布的计算共用 StagePlan。原生层报不了偏好，有没有窗口开点阵、摆在点阵上的图形、停靠栏悬停标签由这里接着往上报。
 struct PhoneStageHost: View {
     let group: PaneGroup
     @Environment(\.openSidebar) private var openSidebar
@@ -96,19 +95,11 @@ final class PhoneStageView: UIView, StageDotsReporting {
     /// iPad 指针在台面上的位置（悬停）。
     private var pointer: CGPoint?
 
-    #if DEBUG
-    /// 还活着的台面和卡片，拆掉台面后看有没有漏。
-    static let alive = NSHashTable<UIView>.weakObjects()
-    #endif
-
     init(group: PaneGroup, model: AppModel, reports: StageReports) {
         self.group = group
         self.model = model
         self.reports = reports
         super.init(frame: .zero)
-        #if DEBUG
-        Self.alive.add(self)
-        #endif
         for island in [dockRail, windowless] { addSubview(island) }
         addSubview(placeholder)
         addSubview(dockOverlay)
@@ -286,7 +277,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
             let dimmed = plan.expanded && rect == nil && layout.drag?.pane != pane
             let dragged = layout.drag?.pane == pane
             let hasThread = area?.thread(in: pane) != nil
-            // 被拖的卡片照常接：跟手拖动是它标题栏上的手势，中途设成不接会把拖动取消，同 CardMotionState
+            // 被拖的卡片照常接：跟手拖动是它标题栏上的手势，中途设成不接会把拖动取消
             let accepts = (!blocksInput || dragged) && !resizing && !closing && !dimmed
             let arrangement = PhoneCardView.Arrangement(
                 placed: placed, dockFrame: plan.dockFrame(of: pane, area: area), closing: closing, family: plan.familyID(of: pane),
@@ -304,7 +295,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
         return arranged
     }
 
-    /// 拖动、拖缝时不浮标签；家族格里的父代理是窗口卡片报上来的，按窗口找。同 SwiftUI 版的 DockOverlay。
+    /// 拖动、拖缝时不浮标签；家族格里的父代理是窗口卡片报上来的，按窗口找。
     private func hoverTip(plan: StagePlan) -> DockHoverTip? {
         let layout = group.layout
         guard layout.drag == nil, layout.resizing == nil, let area = group.workspace, let hover = area.dockHover,
@@ -479,7 +470,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
         if let pointer { hover(at: pointer) } else { for card in cards.values { card.setHovered(false) } }
     }
 
-    /// 悬停在最上面那张接输入、停着的卡片上，同 SwiftUI 版的 onHover。
+    /// 悬停在最上面那张接输入、停着的卡片上。
     private func hover(at point: CGPoint) {
         let found = subviews.sorted { $0.layer.zPosition < $1.layer.zPosition }.reversed().lazy
             .compactMap { $0 as? PhoneCardView }.first { $0.contains(point) }
@@ -496,7 +487,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
         group.layout.transitioning || group.workspace == nil ? nil : regions.dock
     }
 
-    /// 台面上没有窗口、也没在拖窗口时空画板接，同它在 SwiftUI 版里只在显示着时接。
+    /// 台面上没有窗口、也没在拖窗口时空画板接，只在显示着时接。
     private var windowlessHitRegion: CGRect? {
         let layout = group.layout
         return (layout.shown?.panes.isEmpty ?? true) && layout.drag == nil && !layout.transitioning ? regions.canvas : nil
@@ -624,7 +615,7 @@ private final class StagePlaceholderView: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// 同 SwiftUI 版的 Color.accentColor：主题色 8% 填充、描边，按这个视图的外观解析。
+    /// 主题色 8% 填充、描边，按这个视图的外观解析。
     private func updateColors() {
         let accent = resolved(.accentColor, traits: traitCollection, in: environment)
         CATransaction.begin()
@@ -634,7 +625,7 @@ private final class StagePlaceholderView: UIView {
         CATransaction.commit()
     }
 
-    /// 同 SwiftUI 版：占位在预览的事务里插值位置和大小，出现、消失是默认的淡入淡出，同曲线同时长。
+    /// 占位跟着预览插值位置和大小，出现、消失淡入淡出，和窗口同曲线同时长。
     func show(_ rect: CGRect?, kind: WindowMotionKind, reduceMotion: Bool) {
         guard rect != shown else { return }
         let previous = shown

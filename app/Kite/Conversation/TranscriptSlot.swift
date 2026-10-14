@@ -1,5 +1,12 @@
 import SwiftUI
 
+extension EnvironmentValues {
+    /// 会话的工作目录，工具参数里的路径按它显示成相对路径。
+    @Entry var workingDirectory = ""
+    /// 刚发出、气泡还在下面藏着的消息：对话往上滑的同时，气泡从下往上浮进来。会话窗口给出，见 ThreadPaneModel.send。
+    @Entry var arrivingMessages: Set<String> = []
+}
+
 /// 原生对话列表里一行要用的外部环境。Mac、iOS 的原生列表共用。
 struct TranscriptRowContext {
     /// 字体、外观、引用范围、打开链接、选中的行等，主对话的 SwiftUI 环境整份转交。
@@ -34,7 +41,7 @@ extension TranscriptRowContext {
     var resizing = false
     /// 在文档里占的范围（内容列的宽），排列时算出来。
     var frame = CGRect.zero
-    /// 自己变高变矮时告诉列表：motion 是人点了展开收起时和 SwiftUI 版同样的走法，下面的行跟着挪；附件量完、图标载完这类给 nil，直接换。
+    /// 自己变高变矮时告诉列表：motion 是人点了展开收起时的走法（RowMotion），下面的行跟着挪；附件量完、图标载完这类给 nil，直接换。
     var heightChanged: ((_ motion: RowMotion?) -> Void)?
     /// 刚发出去、还在下面藏着的程度：1 在下面，0 到位，见 TranscriptListView 的发送。
     var rise: CGFloat = 0
@@ -49,10 +56,10 @@ extension TranscriptRowContext {
     /// 视图，第一次要时建。
     var view: PlatformView { preconditionFailure("子类给出") }
 
-    /// 换上这一行的新内容和环境。resized：内容或外观变了，量过的高作废。
-    func update(_ row: TranscriptRow, context: TranscriptRowContext, resized: Bool) {
+    /// 换上这一行的新内容和环境（内容或外观变了才调），量过的高作废。
+    func update(_ row: TranscriptRow, context: TranscriptRowContext) {
         self.row = row
-        if resized { measured = nil }
+        measured = nil
     }
 
     /// 按内容列的宽量出多高，量过同宽的直接给。

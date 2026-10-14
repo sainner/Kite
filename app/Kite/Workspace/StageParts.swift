@@ -1,12 +1,5 @@
 import SwiftUI
 
-#if DEBUG
-/// --swiftui-stage：宽屏台面也用 SwiftUI 版（SwiftUITilesLayer），同一个构建对照新旧两版。
-enum StageVariant {
-    static let swiftUI = ProcessInfo.processInfo.arguments.contains("--swiftui-stage")
-}
-#endif
-
 /// 原生台面（Mac 的 StageView、iPad 的 PhoneStageView）两端共用的部分：往上报的几项、台面几何、图层动画的曲线，
 /// 和放进托管视图的几块 SwiftUI（停靠栏、停靠栏上面那一层、空画板、卡片里的正文、点阵、头像、窗口按钮）。
 
@@ -32,7 +25,8 @@ struct StageAppearance: Equatable {
     var dotStage: ObjectIdentifier?
 }
 
-/// 台面的大小，和关闭途中、停靠栏里那一格先不显示的实例。停靠栏、空画板的托管视图读它，自己从排布模型算停靠栏各格：
+/// 看得见的台面（台面自己的坐标；Mac 拖侧栏改宽时左边让出被侧栏盖住的一段，见 StageView.stageRect），
+/// 和关闭途中、停靠栏里那一格先不显示的实例。停靠栏、空画板的托管视图读它，铺到 bounds 的右下角，自己从排布模型算停靠栏各格：
 /// 排布的改动在 SwiftUI 的事务里，岛自己读模型才接得到同一个动画（见 StagePlan.dock）；原生层不把算好的格子推进去。
 @MainActor @Observable final class StageGeometry {
     var bounds: CGRect = .zero
@@ -99,7 +93,7 @@ struct StageDockRail: View {
             DockRail(geometry: dock, hiddenInstances: geometry.retiring)
                 .environment(area)
                 .modifier(PausedInTransition(layout: layout))
-                .frame(width: geometry.bounds.width, height: geometry.bounds.height, alignment: .topLeading)
+                .frame(width: geometry.bounds.maxX, height: geometry.bounds.maxY, alignment: .topLeading)
                 .coordinateSpace(.named(DockSpace.name))
                 .environment(\.dockCardsDrawPanes, true)
         }
@@ -122,7 +116,7 @@ struct StageDockOverlay: View {
             }
             .environment(area)
             .modifier(PausedInTransition(layout: layout))
-            .frame(width: bounds.width, height: bounds.height, alignment: .topLeading)
+            .frame(width: bounds.maxX, height: bounds.maxY, alignment: .topLeading)
             .coordinateSpace(.named(DockSpace.name))
             .environment(\.dockCardsDrawPanes, true)
         }
@@ -138,7 +132,7 @@ struct StageWindowless: View {
     var body: some View {
         let canvas = layout.regions(in: geometry.bounds).canvas
         SettledWindowlessStage(layout: layout, canvas: canvas, wanted: (layout.shown?.panes.isEmpty ?? true) && layout.drag == nil)
-            .frame(width: geometry.bounds.width, height: geometry.bounds.height, alignment: .topLeading)
+            .frame(width: geometry.bounds.maxX, height: geometry.bounds.maxY, alignment: .topLeading)
             // 隔一拍交出去：托管视图可能在台面这次排版当中更新
             .onPreferenceChange(WindowDotsActive.self) { uses in Task { @MainActor in reports.update(uses: uses) } }
             .onPreferenceChange(DotSlots.self) { slots in Task { @MainActor in reports.update(slots: slots) } }
@@ -147,18 +141,20 @@ struct StageWindowless: View {
 
 // MARK: - 卡片上的托管视图
 
-/// 正文、窗口按钮读的卡片状态，建好不换：缩没缩成停靠形状、侧栏入口、窗口按钮露不露、会话窗口的外框是不是原生的，
+/// 正文、窗口按钮读的卡片状态，建好不换：缩没缩成停靠形状、侧栏入口、窗口按钮露不露、是不是会话窗口（标题栏在原生外框里），
 /// 变了只更新读它的那一层。
 @MainActor @Observable final class CardContentState {
     var minimized = false
     var openSidebar: (@MainActor () -> Void)?
     var buttonsShown = false
+    /// 台面上不止一个窗口、窗口按钮里有「展开」。Mac 原生台面由卡片在动画停下时交（见 CardView.arrange）；没给时按排布现算。
+    var expands: Bool?
     var nativeThread = false
     /// 卡片交给托管视图的环境换过几次，会话窗口的桥按它把新环境再交给原生外框。
     var environment = 0
 }
 
-/// 卡片的正文：同 SwiftUI 版 WindowSurface 交给托管视图的 PaneCardBody 和它的环境。缩没缩成停靠形状、侧栏入口从卡片状态读，
+/// 卡片的正文：托管视图里的 PaneCardBody 和它的环境。缩没缩成停靠形状、侧栏入口从卡片状态读，
 /// 变了只更新这一层。
 struct CardContent: View {
     let group: PaneGroup
@@ -172,8 +168,8 @@ struct CardContent: View {
     let link: HostedContentLink
     let carrier: DotCarrier
     let scope: DotScope
-    /// 会话窗口的原生外框接在哪；没有时会话窗口照旧是 SwiftUI 的 ThreadPane。
-    let threadSlot: ThreadWindowSlot?
+    /// 会话窗口的原生外框接在哪。
+    let threadSlot: ThreadWindowSlot
 
     var body: some View {
         HostedPlaced(content: PaneCardBody(group: group, pane: pane, minimized: state.minimized, header: header, headerRegions: headerRegions,
@@ -203,7 +199,7 @@ struct CardDots: View {
     }
 }
 
-/// 头像：代理是停靠栏的头像（不带脉冲、描边交给外框画），其余是图标，同 PaneCard 的 icon。
+/// 头像：代理是停靠栏的头像（不带脉冲、描边交给外框画），其余是图标。
 struct CardIcon: View {
     let appearance: WindowAppearance
     let area: WorkArea?
@@ -228,7 +224,7 @@ struct CardIcon: View {
     }
 }
 
-/// 窗口按钮（缩小、展开、关闭）：悬停卡片时露出来（触屏一直露），飞行中、拖动和拖缝时看不见也不接输入，同 PaneCard 的 headerActions。
+/// 窗口按钮（缩小、展开、关闭）：悬停卡片时露出来（触屏一直露），飞行中、拖动和拖缝时看不见也不接输入。
 /// 露不露由卡片算好放在状态里（见 PaneHeaderControls），实际尺寸报给标题栏让位。
 struct CardButtons: View {
     let group: PaneGroup
@@ -241,7 +237,7 @@ struct CardButtons: View {
     var body: some View {
         if let area = group.workspace {
             let layout = group.layout
-            let expands = (layout.shown?.panes.count ?? 0) > 1
+            let expands = state.expands ?? ((layout.shown?.panes.count ?? 0) > 1)
             PaneHeaderButtonGroup {
                 button("缩小", icon: "minus") { layout.minimize(pane) }
                 if expands {

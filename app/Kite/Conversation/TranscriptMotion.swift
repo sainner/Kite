@@ -13,7 +13,7 @@ extension Spring {
     static let glide = Spring.smooth(duration: 0.5)
 }
 
-/// 一行展开收起怎么动，和 SwiftUI 版的那一下对上：气泡折叠是弹簧，工具行是普通缓出。
+/// 一行展开收起怎么动：气泡折叠是弹簧，工具行是普通缓出。
 enum RowMotion {
     case spring(Spring)
     case curve(UnitCurve, duration: TimeInterval)

@@ -28,7 +28,7 @@ final class DotStage {
     /// 按弹簧走的波，每个窗口（不限窗口的是 nil）推过几道：每推一道加一，取景框按 springAnimation 逐帧插值（见 springProgress），
     /// 减去起步时的值就是波这一帧走了多少。
     private var springs: [ObjectIdentifier?: Double] = [:]
-    /// 最近一道按弹簧走的波的弹簧。取景框自己按它插值，不靠外面传进来的动画：Mac 的窗口外层去掉了事务里的动画（见 WindowSurface）。
+    /// 最近一道按弹簧走的波的弹簧。取景框自己按它插值，不靠外面传进来的动画：原生卡片的点阵层托管在自己的视图里，接不到外面事务里的动画。
     private(set) var springAnimation: Animation?
     /// 铺满一块区域的图案（点阵签名），见 DotPattern。
     private var patterns: [String: PatternSlot] = [:]

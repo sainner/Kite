@@ -6,7 +6,7 @@ nonisolated enum WorkspaceDrawer { case sidebar, actions }
 /// 底栏跟着窗口怎么动：开着窗口时可以展开收起；工作区载入后没有窗口时一直展开，只在拉开侧边栏时让开；单页和目录状态没有底栏。
 nonisolated enum ActionsRule: Sendable { case free, pinned, none }
 
-/// 紧凑布局拉开侧边栏、底栏的状态与手势。CompactLayout 持有一个，经环境交给窗口。
+/// 紧凑布局拉开侧边栏、底栏的状态与手势。紧凑布局的外壳（Mac 窄窗口的 MacCompactLayout、iOS 的 CompactShellView）持有一个，经环境交给窗口。
 ///
 /// 打开、收起分两段，照系统可交互转场的做法：
 /// - 拖着：窗口跟着手指走，挪多少走多少，拖回去就收回来；越过一半时轻震一下，松手就会去这一头。
@@ -52,7 +52,7 @@ final class DrawerMotion {
     @ObservationIgnored private var offAxis = false
     /// 拉开侧边栏，给标题栏左边的按钮。
     @ObservationIgnored private(set) var openSidebar: @MainActor () -> Void = {}
-    /// 给底栏的打开状态，改它就是 settle。建好就不再换，CompactLayout 重算时底栏不跟着重算。
+    /// 给底栏的打开状态，改它就是 settle。建好就不再换，外壳重算时底栏不跟着重算。
     @ObservationIgnored private(set) var openBinding: Binding<WorkspaceDrawer?> = .constant(nil)
     /// 从左边缘往右拉侧边栏、从控制区往上拉底栏；打开以后往回拖收起也用它们。
     @ObservationIgnored private(set) var sidebarPull = DrawerPull(changed: { _, _ in }, ended: { _ in })
@@ -411,16 +411,5 @@ private struct ShiftEffect: GeometryEffect {
 
     func effectValue(size: CGSize) -> ProjectionTransform {
         ProjectionTransform(CGAffineTransform(translationX: 0, y: y))
-    }
-}
-
-/// 侧边栏贴着窗口左边从左滑入：按窗口同样的进度（含推过头的阻尼）平移，右边缘始终挨着窗口左边。
-/// 平移量和窗口的左边距对进度都是线性的，同一个弹簧插值下逐帧对齐。
-struct SidebarSlide: ViewModifier {
-    let motion: DrawerMotion
-    let width: CGFloat
-
-    func body(content: Content) -> some View {
-        content.offset(x: (Openness.shown(motion.target.sidebar, extent: width) - 1) * width)
     }
 }

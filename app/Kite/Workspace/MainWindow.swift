@@ -59,9 +59,25 @@ struct MainWindow: View {
             .transition(.paneFade)
             // 侧栏收起后，展开按钮移到内容区第一个窗口的标题栏
             .environment(\.openSidebar, expandSidebar)
+            #if os(macOS)
+            // 拖侧栏改宽时原生台面不跟着每步改宽，见 stageInset
+            .environment(\.stageLeadingInset, stageInset)
+            #endif
         }
         .padding(.leading, Metrics.sidebarInset)
         .padding([.trailing, .bottom], Metrics.padding)
+    }
+
+    /// 拖侧栏改宽时，原生台面按侧栏最窄时的宽度排、往左伸进侧栏底下，被盖住的这一段由台面让出（见 StageHost、StageView.stageRect）：
+    /// 台面的视图每步不改尺寸、不挪，只有贴着侧栏的那一列改宽，同拖缝；不然铺满台面的卡片、停靠栏每步都跟着改尺寸重排。
+    /// 收起着（拖到收起、展开那一下有动画）照常。只有原生台面读它，别的栏目、独立窗口里不受影响。
+    private var stageInset: CGFloat {
+        #if os(macOS)
+        guard model.sidebarResizing, !model.sidebarCollapsed else { return 0 }
+        return max(sidebarWidth - Metrics.sidebarMin, 0)
+        #else
+        return 0
+        #endif
     }
 
     private var expandSidebar: (@MainActor () -> Void)? {
@@ -105,7 +121,7 @@ struct MainWindow: View {
             withAnimation(.snappy) { model.sidebarCollapsed = collapse }
         }
         guard !collapse else { return }
-        // 取到像素：侧栏的宽带零头时右边整块台面落在半像素上，里面的图片、文字每步都要按新的位置重画
+        // 取到像素：贴着侧栏的那一列跟着侧栏的边走，不落在半像素上
         let width = min(max((width * displayScale).rounded() / displayScale, Metrics.sidebarMin), Metrics.sidebarMax)
         if nativeStage {
             model.sidebarDrag.move(to: min(width, maximumSidebar), base: sidebarWidth)

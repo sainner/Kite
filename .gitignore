@@ -1,6 +1,6 @@
 .DS_Store
 .claude/settings.local.json
-node_modules/
+node_modules
 .claude/scheduled_tasks.lock
 xcuserdata/
 /build/

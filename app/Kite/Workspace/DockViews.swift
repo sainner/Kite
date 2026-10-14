@@ -131,28 +131,6 @@ struct DockPulse: View {
     }
 }
 
-/// 某一刻的脉冲：progress 是这一个波走到哪（0～1）。原来的 SwiftUI 版逐帧画它，图层版（DockPulseLayers）照它复刻，
-/// Mac 的脉冲对照（StagePreview）也画它。
-struct DockPulseFrame: View {
-    let color: Color
-    /// 四周伸出头像的那一截。
-    let margin: CGFloat
-    let progress: Double
-
-    var body: some View {
-        Canvas { canvas, size in
-            let side = min(size.width, size.height) - 2 * margin
-            let center = CGPoint(x: size.width / 2, y: size.height / 2)
-            let circle = { (radius: CGFloat) in
-                Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius))
-            }
-            var disc = circle(side / 2 + side * DockPulse.reach * progress)
-            disc.addPath(circle(side / 2))
-            canvas.fill(disc, with: .color(color.opacity(0.6 * (1 - progress))), style: FillStyle(eoFill: true))
-        }
-    }
-}
-
 /// 家族格：一格宽的长胶囊。父代理在最前面（竖排在上，横排在右），子代理和它一样大，
 /// 一个压一个叠在后面往后错开，各露出一截；最多露三个，再多不再变长。
 struct DockFamilyFace: View {

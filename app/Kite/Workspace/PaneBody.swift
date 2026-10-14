@@ -46,9 +46,14 @@ private struct WorkspacePaneBody: View {
         Group {
             if let thread = area.thread(in: pane) {
                 // 不按线程 id 区分身份：草稿发出后同一个会话对象变成真实代理，id 随之改变，窗口内容不能跟着重建。
-                // 原生台面上，会话窗口的外框是原生的（ThreadWindowView、PhoneThreadWindowView），这里只留不占地方的那几样，见 ThreadPaneBridge
+                // 台面和 iPhone、iPad 的紧凑布局里会话窗口的外框是原生的（ThreadWindowView、PhoneThreadWindowView），
+                // 这里只留不占地方的那几样，见 ThreadPaneBridge；Mac 窄窗口是 SwiftUI 的 ThreadPane
+                #if os(macOS)
                 if let slot = nativeThreadWindow { ThreadPaneBridge(slot: slot).environment(thread) }
                 else { ThreadPane().environment(thread) }
+                #else
+                if let slot = nativeThreadWindow { ThreadPaneBridge(slot: slot).environment(thread) }
+                #endif
             } else if let browser = area.files(in: pane), renderer == "files" {
                 FilePane(browser: browser).id(pane.id)
             } else if renderer == "web", let target = area.windows.first(where: { $0.id == pane.id })?.target,

@@ -39,7 +39,7 @@ enum TranscriptSpeech {
         return parts.joined(separator: "，")
     }
 
-    /// 工具组里的一步：名字连同摘要，值是阶段（跑完了读「成功」），同 SwiftUI 版 CallRow；提示是点了会怎样（callHint）。
+    /// 工具组里的一步：名字连同摘要，值是阶段（跑完了读「成功」）；提示是点了会怎样（callHint）。
     static func call(_ call: Call, summary: String) -> (label: String, value: String) {
         (call.use.displayName + " " + summary, call.stageLabel.isEmpty ? "成功" : call.stageLabel)
     }
