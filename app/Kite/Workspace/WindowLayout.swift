@@ -214,12 +214,34 @@ final class WindowLayout {
 
     private func saveSoon() {
         guard storageKey != nil else { return }
+        _ = Self.flushesOnLeave
         pendingSave?.cancel()
         pendingSave = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(0.5)) } catch { return }
             self?.save()
         }
     }
+
+    /// 所有窗口组还挂着的存盘立刻落盘。推迟存盘的那 0.5 秒里退出，这次排布改动就丢了：App 失去活跃、进后台、要退出时都调；
+    /// 别处要立刻读到存好的排布（测量版写回原样之前）也调这个。
+    static func flushPendingSaves() {
+        for layout in all.allObjects where layout.pendingSave != nil { layout.save() }
+    }
+
+    /// 头一次推迟存盘时挂上，之后一直在。不给队列，通知在发出的主线程上当场处理，退出前就落完盘。
+    /// Mac 失去活跃先于退出；iOS 从多任务里划掉之前先失去活跃，不一定等到进后台。
+    private static let flushesOnLeave: Void = {
+        #if os(macOS)
+        let names = [NSApplication.willResignActiveNotification, NSApplication.willTerminateNotification]
+        #else
+        let names = [UIScene.willDeactivateNotification, UIScene.didEnterBackgroundNotification]
+        #endif
+        for name in names {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { _ in
+                MainActor.assumeIsolated { flushPendingSaves() }
+            }
+        }
+    }()
 
     var panes: [Pane] { (root?.panes ?? []) + docked }
 
