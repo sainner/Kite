@@ -230,22 +230,26 @@ struct ThreadVoiceBand: View {
     }
 }
 
-/// 语音输入时铺在窗口底部一带的签名：从窗口底边往上，盖过控制区再高出几格，随录音的响度（v）起伏、往上涨，停下就收回。
-/// 大半在控制区的玻璃后面，透出来的是模糊的光，高出来的几格和两侧露出图案本身。bottom 是控制区的高，图案铺到窗口底边。
+/// 语音输入时铺在窗口底部一带的签名：从窗口底边往上，盖过控制区、占到窗口的大半截，随录音的响度（v）起伏、往上涨，停下就收回。
+/// 控制区的玻璃后面透出来的是模糊的光，上面和两侧露出图案本身。bottom 是控制区的高，图案铺到窗口底边。
 private struct VoiceBand: View {
     let pattern: DotPattern?
     let slot: String
     let bottom: CGFloat
 
-    /// 静音时高出控制区的格数，和响度到 1 时涨到的格数。
-    private static let quiet: CGFloat = 3
-    private static let loud: CGFloat = 9
+    /// 响度到 1 时中间涨到窗口高的几成，静音时铺到其中的几成；静音时至少高出控制区几格。
+    private static let loud: CGFloat = 0.6
+    private static let quiet: CGFloat = 0.6
+    private static let above: CGFloat = 3
 
     var body: some View {
-        DotPatternArea(pattern: pattern, rise: bottom + Self.quiet * DotMetrics.pitch, slot: slot)
-            .frame(height: bottom + Self.loud * DotMetrics.pitch)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-            .allowsHitTesting(false)
+        GeometryReader { proxy in
+            let height = proxy.size.height * Self.loud
+            DotPatternArea(pattern: pattern, rise: min(max(height * Self.quiet, bottom + Self.above * DotMetrics.pitch), height), slot: slot)
+                .frame(height: height)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        }
+        .allowsHitTesting(false)
     }
 }
 

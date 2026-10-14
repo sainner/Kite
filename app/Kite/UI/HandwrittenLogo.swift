@@ -63,7 +63,7 @@ struct HandwrittenLogo: View {
 
 /// 标志的墨迹：每一笔按弧长采好的点、笔宽和「写到这里用了多久」，只算一次。
 /// 笔画和参数在 spikes/logo-writing 里调定后抄过来，算法只留了用到的部分：
-/// 速度按 1 / (1 + 转弯减速 × 曲率) 降、起收笔在 0.3 倍速和全速之间过渡；笔宽是行书笔刷的起笔、出锋、扁笔笔锋，再乘 1 + 转弯加粗 × (1 − 速度比)。
+/// 全局速度由总时长反推；速度按 1 / (1 + 转弯减速 × 曲率) 降、起收笔在 0.3 倍速和全速之间过渡；笔宽是行书笔刷的起笔、出锋、扁笔笔锋，再乘 1 + 转弯加粗 × (1 − 速度比)。
 struct LogoInk {
     /// 一笔。路径只认绝对坐标的 M 和 C，和设计稿导出的一致；长度都是设计稿的 viewBox 单位。
     struct Stroke {
@@ -78,17 +78,23 @@ struct LogoInk {
         var taperExit: Bool
         /// 上一笔写完到这一笔落笔之间停多久，秒。
         var pause: Double
+        /// 平起：一落笔就是正常粗细，不走笔刷的起笔。
+        var flatEntry = false
+        /// 路径从终点往起点写。
+        var reversed = false
     }
 
-    /// 按书写顺序：先写主体，再点 i。
+    /// 按书写顺序：先写主体，再点 i，最后是 t 的横。
     static let strokes = [
-        Stroke(path: "M7.28788 0.301392C11.3224 13.0629 4.15753 23.8578 1.27388 26.0173C-1.60977 28.1767 19.3063 4.1895 15.8528 6.27651C12.3993 8.36352 9.49626 12.1821 9.10987 14.672C8.55665 18.2369 13.0934 21.0869 15.8528 20.3446C20.5395 19.0838 25.0251 11.4495 23.3239 10.8125C21.6227 10.1755 19.4085 19.7562 23.9618 20.3446C28.515 20.933 32.8 14.3695 34.5312 11.6466C36.2624 8.92377 35.1532 3.82851 32.3444 8.62123C29.5357 13.4139 31.2553 20.2527 34.5312 20.3446C37.8072 20.4364 42.7346 18.1131 46.8028 14.672C50.8711 11.2308 46.8028 8.75455 43.3365 10.0054C39.8702 11.2563 36.6638 19.3549 51.0131 21.0907",
-               size: 0.685, cornering: 8.32, easeIn: 17.47, easeOut: 7.41, pressure: 0.38, taperExit: false, pause: 0),
-        Stroke(path: "M25.2448 4.64514C24.7679 5.86404 24.3335 6.36962 22.8755 6.61157",
-               size: 1, cornering: 8.09, easeIn: 4, easeOut: 7.41, pressure: 0.5, taperExit: true, pause: 0.54),
+        Stroke(path: "M7.14648 0.126953C11.4111 16.3772 3.8376 30.1234 0.789499 32.8732C-2.2586 35.623 19.8503 5.07802 16.1999 7.73559C12.5494 10.3932 9.4808 15.2557 9.07237 18.4262C8.4876 22.9658 13.283 26.595 16.1999 25.6497C21.1538 24.0442 25.8953 14.3228 24.0971 13.5117C22.2988 12.7005 19.9584 24.9004 24.7712 25.6497C29.5841 26.3989 34.1136 18.0411 35.9435 14.5738C37.7734 11.1066 36.6009 4.61834 33.632 10.7213C30.6631 16.8243 31.6018 25.1267 35.9435 25.6497C40.2852 26.1726 46.069 22.9556 47.8024 17.0015C49.5359 11.0473 41.7443 13.4522 41.363 18.4262C40.9817 23.4003 45.8921 30.44 54.202 21.4954",
+               size: 0.6407, cornering: 10, easeIn: 4, easeOut: 32.808, pressure: 0.5, taperExit: false, pause: 0),
+        Stroke(path: "M25.1273 10.2067C23.889 9.14374 23.4717 8.47211 23.7809 6.93113",
+               size: 1, cornering: 1.5, easeIn: 4, easeOut: 6, pressure: 0.5, taperExit: true, pause: 0.15, reversed: true),
+        Stroke(path: "M28.6758 12.7832C31.0005 13.8574 34.9324 13.7523 37.7589 12.3442",
+               size: 1, cornering: 1.5, easeIn: 4, easeOut: 10.396, pressure: 0, taperExit: true, pause: 0.15, flatEntry: true),
     ]
-    /// 直线上的全速，单位每秒。
-    static let speed = 480.0
+    /// 所有笔合起来写完的时间，秒，不含笔间停顿；全局速度由它反推。
+    static let writeDuration = 1.8
     // 行书笔刷：笔宽、起笔（尖起）、出锋，扁笔笔锋的扁度和角度（度，屏幕上逆时针）
     static let brushSize = 2.2
     static let entryLength = 2.0, entryWeight = 0.5
@@ -114,8 +120,12 @@ struct LogoInk {
 
     private init(_ strokes: [Stroke]) {
         var tracks: [Track] = [], bounds = CGRect.null, t = 0.0
+        // 时间表先按单位速度排，再整体缩放到总时长
+        let unit = strokes.reduce(0.0) { $0 + (Self.track($1).times.last ?? 0) }
+        let scale = unit > 0 ? Self.writeDuration / unit : 1
         for (n, stroke) in strokes.enumerated() {
             var track = Self.track(stroke)
+            track.times = track.times.map { $0 * scale }
             if n > 0 { t += stroke.pause }
             track.start = t
             t += track.times.last ?? 0
@@ -180,7 +190,7 @@ struct LogoInk {
     // MARK: 采样与时间表
 
     private static func track(_ stroke: Stroke) -> Track {
-        let points = resample(dense(stroke.path))
+        let points = resample(stroke.reversed ? dense(stroke.path).reversed() : dense(stroke.path))
         var lengths = [0.0]
         for i in points.indices.dropFirst() {
             lengths.append(lengths[i - 1] + Double(hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y)))
@@ -193,10 +203,10 @@ struct LogoInk {
         }
         var times = [0.0]
         for i in lengths.indices.dropFirst() {
-            times.append(times[i - 1] + (lengths[i] - lengths[i - 1]) / (0.5 * (ratio[i - 1] + ratio[i])) / speed)
+            times.append(times[i - 1] + (lengths[i] - lengths[i - 1]) / (0.5 * (ratio[i - 1] + ratio[i])))
         }
         // 短笔起笔最多占三成、出锋最多占一半，不然整笔都落在出锋里
-        let entry = min(entryLength, total * 0.3), exit = stroke.taperExit ? min(exitLength, total * 0.5) : 0
+        let entry = stroke.flatEntry ? 0 : min(entryLength, total * 0.3), exit = stroke.taperExit ? min(exitLength, total * 0.5) : 0
         let nib = -nibAngle * .pi / 180, base = brushSize * stroke.size
         let widths = lengths.indices.map { i in
             // 扁笔：笔锋是一条斜放的椭圆，宽度取它在行进方向法线上的投影

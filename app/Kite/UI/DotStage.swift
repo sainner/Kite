@@ -157,8 +157,9 @@ final class DotStage {
             let columns = cells.columns.lowerBound, lastColumn = cells.columns.upperBound - 1
             let rows = cells.rows.lowerBound, lastRow = cells.rows.upperBound - 1
             let input = patternInputs[key] ?? PatternInput()
+            let bottom = slot.rise != nil
             let center = (x: Double(columns) + Double((lastColumn - columns + 1) / 2),
-                          y: Double(rows) + Double((lastRow - rows + 1) / 2))
+                          y: Double(rows + PatternGrid.originRow(height: lastRow - rows + 1, bottom: bottom)))
             let pointer = input.pointer.map { follow?.apply($0) ?? $0 }
                 .map { (x: Double($0.x / pitch) - 0.5 - center.x, y: Double($0.y / pitch) - 0.5 - center.y) }
             // 形变走完就不再算旧图案
@@ -169,13 +170,13 @@ final class DotStage {
                                    quiet: quiet, pointer: pointer,
                                    activity: live ? input.level(at: date) : 0, sound: live ? input.sound?.level(at: date) ?? 0 : 0,
                                    rise: slot.rise.map { Double($0 * (mapping?.scale ?? 1) / pitch) },
-                                   grid: grid(key, columns: columns...lastColumn, rows: rows...lastRow, quiet: quiet))
+                                   grid: grid(key, columns: columns...lastColumn, rows: rows...lastRow, quiet: quiet, bottom: bottom))
         }
     }
 
-    private func grid(_ slot: String, columns: ClosedRange<Int>, rows: ClosedRange<Int>, quiet: [PatternQuiet]) -> PatternGrid {
-        if let grid = patternGrids[slot], grid.matches(columns: columns, rows: rows, quiet: quiet) { return grid }
-        let grid = PatternGrid(columns: columns, rows: rows, quiet: quiet)
+    private func grid(_ slot: String, columns: ClosedRange<Int>, rows: ClosedRange<Int>, quiet: [PatternQuiet], bottom: Bool) -> PatternGrid {
+        if let grid = patternGrids[slot], grid.matches(columns: columns, rows: rows, quiet: quiet, bottom: bottom) { return grid }
+        let grid = PatternGrid(columns: columns, rows: rows, quiet: quiet, bottom: bottom)
         patternGrids[slot] = grid
         return grid
     }
