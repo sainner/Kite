@@ -35,6 +35,13 @@ function candidates(cwd: string, nativeId: string): string[] {
   return [...new Set(paths)];
 }
 
+/** 会话文件现在的位置；没有会话时为 undefined。 */
+export const claudeRecordPath = (cwd: string, nativeId: string): string | undefined =>
+  candidates(cwd, nativeId).find((candidate) => existsSync(candidate));
+
+/** CLI 按这个目录查找会话时的文件位置（流转到新目录时写在这里）。 */
+export const claudeRecordTarget = (cwd: string, nativeId: string): string => candidates(cwd, nativeId)[0]!;
+
 /** 读取完整落盘的条目；没有会话时为空。 */
 export function readClaudeEntries(cwd: string, nativeId: string): ClaudeEntry[] {
   const path = candidates(cwd, nativeId).find((candidate) => existsSync(candidate));

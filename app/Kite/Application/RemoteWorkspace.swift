@@ -10,8 +10,10 @@ enum RemoteWorkspaceKind: String, Codable {
     case root, worktree
 }
 
+/// handingOff：正在交给另一台工作机，暂不接受新的执行；transferred：执行权已流转走，这一份是冻结的旧记录。
 enum RemoteWorkspaceStatus: String, Codable {
-    case preparing, open, failed, archived
+    case preparing, open, failed, archived, transferred
+    case handingOff = "handing_off"
 }
 
 enum RemoteRuntime: String, Decodable {
@@ -62,6 +64,8 @@ struct RemoteWorkspace: Decodable, Identifiable {
 
 struct WorkspaceInfo: Codable, Identifiable {
     let id: String
+    /// 同一工作区 ID 在不同工作机上的记录以它区分新旧，每次接管加 1；托管目录里较早上报的快照没有。
+    let epoch: Int?
     let checkoutId: String
     let name: String
     let cwd: String

@@ -2,7 +2,7 @@
 import { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
-import type { AgentInstance, Checkout, Machine, PluginInstance, Project, Thread, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
+import type { AgentInstance, Checkout, Machine, PluginInstance, Project, Report, ReportStatus, Thread, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
 import type { ThreadNotification } from './harness/types.ts';
 import type { Template } from './context-templates.ts';
 import type { HourlyUsage, UsageDay, UsageStore } from './account-usage.ts';
@@ -18,6 +18,14 @@ export interface ThreadTitle {
   through: string | null;
 }
 
+const workspacesTable = (name: string) => `create table if not exists ${name} (
+  id text primary key, checkout_id text not null references checkouts(id), name text not null, cwd text not null,
+  kind text not null check (kind in ('root', 'worktree')), branch text, base text,
+  status text not null check (status in ('preparing', 'open', 'failed', 'archived', 'handing_off', 'transferred')), created_at integer not null,
+  epoch integer not null default 1 check (epoch >= 1),
+  check ((kind = 'root' and branch is null and base is null) or (kind = 'worktree' and branch is not null and base is not null))
+);`;
+const WORKSPACES = workspacesTable('workspaces');
 const SCHEMA = `
 create table if not exists machine (
   slot integer primary key check (slot = 1), id text not null unique, name text not null, created_at integer not null
@@ -30,13 +38,10 @@ create table if not exists checkouts (
   path text not null, remote text not null, created_at integer not null,
   unique(machine_id, path)
 );
-create table if not exists workspaces (
-  id text primary key, checkout_id text not null references checkouts(id), name text not null, cwd text not null unique,
-  kind text not null check (kind in ('root', 'worktree')), branch text, base text,
-  status text not null check (status in ('preparing', 'open', 'failed', 'archived')), created_at integer not null,
-  check ((kind = 'root' and branch is null and base is null) or (kind = 'worktree' and branch is not null and base is not null))
-);
-create unique index if not exists root_workspace on workspaces(checkout_id) where kind = 'root';
+${WORKSPACES}
+-- 根工作区流转走后本地记录冻结，检出另建一个可用的根工作区，目录相同。
+create unique index if not exists root_workspace on workspaces(checkout_id) where kind = 'root' and status != 'transferred';
+create unique index if not exists workspace_cwd on workspaces(cwd) where status != 'transferred';
 create table if not exists plugin_instances (
   id text primary key, workspace_id text not null references workspaces(id), definition_id text not null, title text not null,
   config text not null, state text not null, presentation text not null check (presentation in ('window', 'inline', 'background')),
@@ -89,13 +94,31 @@ create table if not exists usage_hours (
   account text not null, day text not null, hour integer not null, tokens integer not null,
   cost real not null, unpriced integer not null, primary key(account, day, hour)
 );
+-- origin 是创建它的工具调用，同一调用重试返回同一上报；answer_input 单列出来，按输入 ID 找到答复。
+create table if not exists reports (
+  id text primary key, thread_id text not null references threads(instance_id),
+  kind text not null check (kind in ('question', 'confirm', 'done', 'blocked')), text text not null, refs text not null,
+  status text not null check (status in ('open', 'answered', 'delivered', 'incorporated', 'closed', 'superseded', 'archived')),
+  answer_input text, answer text, closure text, origin text not null, created_at integer not null, updated_at integer not null,
+  unique(thread_id, origin)
+);
+create unique index if not exists open_report on reports(thread_id) where status = 'open';
+-- Line 用过的确认上报：每条用户的同意只放行一次动作。
+create table if not exists line_confirmations (
+  report_id text primary key references reports(id), action text not null, target text not null, at integer not null
+);
+-- 用户确认过可以把流转材料推到这个项目的远程（公开仓库或看不出是否公开的平台）。
+create table if not exists transfer_allowed (
+  project_id text primary key references projects(id)
+);
+create index if not exists report_input on reports(thread_id, answer_input);
 `;
 const projectOf = (r: any): Project => ({ id: r.id, name: r.name, remote: r.remote, createdAt: r.created_at });
 const checkoutOf = (r: any): Checkout => ({
   id: r.id, projectId: r.project_id, machineId: r.machine_id, path: r.path, remote: r.remote, createdAt: r.created_at,
 });
 const workspaceOf = (r: any): Workspace => ({
-  id: r.id, checkoutId: r.checkout_id, name: r.name, cwd: r.cwd, kind: r.kind, branch: r.branch, base: r.base,
+  id: r.id, epoch: r.epoch, checkoutId: r.checkout_id, name: r.name, cwd: r.cwd, kind: r.kind, branch: r.branch, base: r.base,
   status: r.status, createdAt: r.created_at,
 });
 const threadOf = (r: any): Thread => ({ instanceId: r.instance_id, runtime: r.runtime, nativeId: r.native_id });
@@ -109,6 +132,16 @@ const windowOf = (r: any): WorkspaceWindow => ({
   id: r.id, workspaceId: r.workspace_id, target: { instanceId: r.instance_id, viewId: r.view_id },
   state: r.state, createdAt: r.created_at,
 });
+const reportOf = (r: any): Report => ({
+  id: r.id, threadId: r.thread_id, workspaceId: r.workspace_id, kind: r.kind, text: r.text, refs: JSON.parse(r.refs), status: r.status,
+  ...(r.answer ? { answer: JSON.parse(r.answer) } : {}), ...(r.closure ? { closure: JSON.parse(r.closure) } : {}),
+  createdAt: r.created_at, updatedAt: r.updated_at,
+});
+const REPORTS = 'select r.*, i.workspace_id from reports r join plugin_instances i on i.id = r.thread_id';
+/** 随工作区流转的表，按外键依赖的先后排列。 */
+const workspaceTables = ['workspaces', 'plugin_instances', 'threads', 'thread_titles', 'workspace_windows', 'window_requests',
+  'instance_notifications', 'operation_receipts', 'reports', 'line_confirmations'] as const;
+export type WorkspaceRows = Record<(typeof workspaceTables)[number], Array<Record<string, unknown>>>;
 
 export class Store implements UsageStore {
   private db: Database;
@@ -120,6 +153,7 @@ export class Store implements UsageStore {
     this.dropLocalProjects();
     this.dropUnpricedUsage();
     this.dropBareContextTemplates();
+    this.rebuildWorkspaces();
     this.db.exec(SCHEMA);
     this.mergeAgentDefinitions();
     // 同一个数据库只属于一台工作机服务。端口、地址和主机名变化都不重建身份。
@@ -158,6 +192,25 @@ export class Store implements UsageStore {
   private dropBareContextTemplates(): void {
     const columns = this.db.query("select name from pragma_table_info('context_templates')").all() as Array<{ name: string }>;
     if (columns.some((c) => c.name === 'definition')) this.db.exec('drop table context_templates');
+  }
+
+  /**
+   * 工作区加上 epoch 与 transferred 之前的表：状态的 check 约束只能随表重建，照 SQLite 改表的步骤换成新表，
+   * 其他表对 workspaces 的外键按名字引用，不受影响。
+   */
+  private rebuildWorkspaces(): void {
+    const columns = this.db.query("select name from pragma_table_info('workspaces')").all() as Array<{ name: string }>;
+    if (!columns.length || columns.some((c) => c.name === 'epoch')) return;
+    this.db.exec('pragma foreign_keys = off');
+    try {
+      this.db.transaction(() => {
+        this.db.exec(workspacesTable('workspaces_next'));
+        this.db.exec(`insert into workspaces_next (id, checkout_id, name, cwd, kind, branch, base, status, created_at)
+          select id, checkout_id, name, cwd, kind, branch, base, status, created_at from workspaces`);
+        this.db.exec('drop table workspaces; alter table workspaces_next rename to workspaces;');
+        if (this.db.query('pragma foreign_key_check').all().length) throw new Error('重建工作区表后外键不一致');
+      })();
+    } finally { this.db.exec('pragma foreign_keys = on'); }
   }
 
   /**
@@ -306,15 +359,26 @@ export class Store implements UsageStore {
     return r ? workspaceOf(r) : null;
   }
   rootWorkspaceModel(checkoutId: string): WorkspaceModel | null {
-    const r = this.db.query("select * from workspaces where checkout_id = ? and kind = 'root'").get(checkoutId);
+    const r = this.db.query("select * from workspaces where checkout_id = ? and kind = 'root' and status != 'transferred'").get(checkoutId);
     return r ? this.modelOf(workspaceOf(r)) : null;
   }
   addWorkspace(w: Workspace, firstAgent?: { agent: AgentInstance; window: WorkspaceWindow }): void {
     this.db.transaction(() => {
-      this.db.query('insert into workspaces values (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(w.id, w.checkoutId, w.name, w.cwd, w.kind, w.branch, w.base, w.status, w.createdAt);
+      this.db.query(`insert into workspaces (id, checkout_id, name, cwd, kind, branch, base, status, created_at, epoch)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(w.id, w.checkoutId, w.name, w.cwd, w.kind, w.branch, w.base, w.status, w.createdAt, w.epoch);
       if (firstAgent) this.addAgent(firstAgent.agent, firstAgent.window);
     })();
+  }
+  /** 执行权流转走：本地记录改为 transferred；根工作区同时给检出另建一个可用的根工作区。 */
+  freezeWorkspace(id: string, replacementRoot?: Workspace): void {
+    this.db.transaction(() => {
+      this.setWorkspaceStatus(id, 'transferred');
+      if (replacementRoot) this.addWorkspace(replacementRoot);
+    })();
+  }
+  setWorkspaceEpoch(id: string, epoch: number): void {
+    this.db.query('update workspaces set epoch = ? where id = ?').run(epoch, id);
   }
   setWorkspaceStatus(id: string, status: WorkspaceStatus): void {
     this.db.query('update workspaces set status = ? where id = ?').run(status, id);
@@ -402,6 +466,140 @@ export class Store implements UsageStore {
   }
   finishOperation(caller: string, id: string, result: unknown): void {
     this.db.query('update operation_receipts set result = ? where caller = ? and id = ?').run(JSON.stringify(result), caller, id);
+  }
+  /**
+   * 工作区流转的原始行：工作区及其实例、线程、标题、窗口、窗口请求、通知、操作收据、上报与 Line 用过的确认。
+   * 操作收据按请求里的工作区或调用方实例归属。
+   */
+  exportWorkspaceRows(id: string): WorkspaceRows {
+    const instances = `select id from plugin_instances where workspace_id = ?`;
+    const all = (sql: string, ...values: string[]) => this.db.query(sql).all(...values) as Array<Record<string, unknown>>;
+    return {
+      workspaces: all('select * from workspaces where id = ?', id),
+      plugin_instances: all('select * from plugin_instances where workspace_id = ? order by created_at, id', id),
+      threads: all(`select * from threads where instance_id in (${instances})`, id),
+      thread_titles: all(`select * from thread_titles where instance_id in (${instances})`, id),
+      workspace_windows: all('select * from workspace_windows where workspace_id = ?', id),
+      window_requests: all('select * from window_requests where workspace_id = ?', id),
+      instance_notifications: all(`select * from instance_notifications where instance_id in (${instances}) order by seq`, id),
+      operation_receipts: all(`select * from operation_receipts where json_extract(request, '$.workspaceId') = ?
+        or caller in (select 'model:' || id from plugin_instances where workspace_id = ? union select 'plugin:' || id from plugin_instances where workspace_id = ?)`, id, id, id),
+      reports: all(`select * from reports where thread_id in (${instances})`, id),
+      line_confirmations: all(`select * from line_confirmations where report_id in (select id from reports where thread_id in (${instances}))`, id),
+    };
+  }
+  /**
+   * 导入流转来的原始行。workspace 覆盖工作区行里随机器变化的列；通知只导入游标之后、尚未交接的，
+   * 并在本库重新编号到游标之后（序号全库自增，两台机器各自计数）。
+   */
+  importWorkspaceRows(rows: WorkspaceRows, workspace: Record<string, unknown>, cursors: Map<string, number>): void {
+    this.transaction(() => {
+      for (const table of workspaceTables) {
+        for (const raw of rows[table]) {
+          let row = table === 'workspaces' ? { ...raw, ...workspace } : raw;
+          if (table === 'instance_notifications') {
+            const cursor = cursors.get(row.instance_id as string) ?? 0;
+            if ((row.seq as number) <= cursor) continue;
+            const max = (this.db.query('select coalesce(max(seq), 0) as max from instance_notifications').get() as { max: number }).max;
+            row = { ...row, seq: Math.max(max, cursor) + 1 };
+          }
+          this.insertRow(table, row);
+        }
+      }
+    });
+  }
+  /**
+   * 原样插回本库先前导出的行，用于流转接管失败时还原本机原有的冻结或归档记录：不改写列，通知保持原序号
+   * （它们本来就在这个库里，删掉的只是这次导入）。
+   */
+  restoreWorkspaceRows(rows: WorkspaceRows): void {
+    this.transaction(() => {
+      for (const table of workspaceTables) for (const row of rows[table]) this.insertRow(table, row);
+    });
+  }
+  /** 操作收据不随工作区删除，重复的忽略。 */
+  private insertRow(table: (typeof workspaceTables)[number], row: Record<string, unknown>): void {
+    const columns = Object.keys(row);
+    this.db.query(`insert ${table === 'operation_receipts' ? 'or ignore ' : ''}into ${table} (${columns.join(', ')}) values (${columns.map(() => '?').join(', ')})`)
+      .run(...columns.map((column) => row[column] as string | number | null));
+  }
+  /** 工作区内结果尚未确认的操作（进行中或崩溃后缺结果）。 */
+  unfinishedOperations(workspaceId: string): number {
+    return (this.db.query(`select count(*) as count from operation_receipts where result is null and json_extract(request, '$.workspaceId') = ?`)
+      .get(workspaceId) as { count: number }).count;
+  }
+  /** 用掉一条确认上报；已经用过返回 false。 */
+  useConfirmation(reportId: string, action: string, target: string): boolean {
+    return this.db.query('insert or ignore into line_confirmations values (?, ?, ?, ?)').run(reportId, action, target, Date.now()).changes > 0;
+  }
+  transferAllowed(projectId: string): boolean {
+    return this.db.query('select 1 from transfer_allowed where project_id = ?').get(projectId) !== null;
+  }
+  allowTransfer(projectId: string): void {
+    this.db.query('insert or ignore into transfer_allowed values (?)').run(projectId);
+  }
+  /** 删掉一个工作区的全部行，用于流转失败时清理半成品，或用流转回来的材料替换本机冻结的旧记录。 */
+  deleteWorkspaceRows(id: string): void {
+    const instances = `select id from plugin_instances where workspace_id = ?`;
+    this.transaction(() => {
+      this.db.query(`delete from line_confirmations where report_id in (select id from reports where thread_id in (${instances}))`).run(id);
+      this.db.query(`delete from reports where thread_id in (${instances})`).run(id);
+      this.db.query(`delete from instance_notifications where instance_id in (${instances})`).run(id);
+      this.db.query(`delete from thread_titles where instance_id in (${instances})`).run(id);
+      this.db.query(`delete from threads where instance_id in (${instances})`).run(id);
+      this.db.query('delete from window_requests where workspace_id = ?').run(id);
+      this.db.query('delete from workspace_windows where workspace_id = ?').run(id);
+      this.db.query('delete from plugin_instances where workspace_id = ?').run(id);
+      this.db.query('delete from workspaces where id = ?').run(id);
+    });
+  }
+  report(id: string): Report | null {
+    const row = this.db.query(`${REPORTS} where r.id = ?`).get(id);
+    return row ? reportOf(row) : null;
+  }
+  reports(threadId: string): Report[] {
+    return this.db.query(`${REPORTS} where r.thread_id = ? order by r.created_at, r.id`).all(threadId).map(reportOf);
+  }
+  /** 工作区内处于这些状态的上报，不传时返回全部。 */
+  workspaceReports(workspaceId: string, statuses?: readonly ReportStatus[]): Report[] {
+    return this.db.query(`${REPORTS} where i.workspace_id = ? order by r.created_at, r.id`).all(workspaceId).map(reportOf)
+      .filter((report) => !statuses || statuses.includes(report.status));
+  }
+  reportsInStatus(statuses: readonly ReportStatus[]): Report[] {
+    return this.db.query(`${REPORTS} where r.status in (${statuses.map(() => '?').join(', ')}) order by r.created_at, r.id`)
+      .all(...statuses).map(reportOf);
+  }
+  reportByOrigin(threadId: string, origin: string): Report | null {
+    const row = this.db.query(`${REPORTS} where r.thread_id = ? and r.origin = ?`).get(threadId, origin);
+    return row ? reportOf(row) : null;
+  }
+  reportByInput(threadId: string, inputId: string): Report | null {
+    const row = this.db.query(`${REPORTS} where r.thread_id = ? and r.answer_input = ?`).get(threadId, inputId);
+    return row ? reportOf(row) : null;
+  }
+  /** 同一线程已有 open 的上报时违反唯一约束，由调用方先查。 */
+  addReport(report: Report, origin: string): void {
+    this.db.query('insert into reports values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(report.id, report.threadId, report.kind, report.text, JSON.stringify(report.refs), report.status,
+        report.answer?.inputId ?? null, report.answer ? JSON.stringify(report.answer) : null,
+        report.closure ? JSON.stringify(report.closure) : null, origin, report.createdAt, report.updatedAt);
+  }
+  /** 当前状态在 from 之内才更新，返回是否更新；answer、closure 传 null 清除，省略保持不变。 */
+  moveReport(id: string, from: readonly ReportStatus[], status: ReportStatus,
+    changes: { answer?: Report['answer'] | null; closure?: Report['closure'] | null } = {}): boolean {
+    const sets = ['status = ?', 'updated_at = ?'];
+    const values: Array<string | number | null> = [status, Date.now()];
+    if (changes.answer !== undefined) {
+      sets.push('answer_input = ?', 'answer = ?');
+      values.push(changes.answer?.inputId ?? null, changes.answer ? JSON.stringify(changes.answer) : null);
+    }
+    if (changes.closure !== undefined) {
+      sets.push('closure = ?');
+      values.push(changes.closure ? JSON.stringify(changes.closure) : null);
+    }
+    const result = this.db.query(`update reports set ${sets.join(', ')} where id = ? and status in (${from.map(() => '?').join(', ')})`)
+      .run(...values, id, ...from);
+    return result.changes > 0;
   }
   archiveWorkspace(id: string): void {
     this.db.transaction(() => {

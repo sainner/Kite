@@ -2,7 +2,7 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { CheckResult } from './check.ts';
 import type { RunnerState } from './claude/runner.ts';
-import type { PluginInstance, WorkspaceStatus } from './model.ts';
+import type { PluginInstance, Report, WorkspaceStatus } from './model.ts';
 import type { HarnessEvent } from './harness/types.ts';
 import type { ClaudeState } from './claude/control.ts';
 import type { ModelAccountsSnapshot } from './model-accounts.ts';
@@ -14,7 +14,8 @@ export type RuntimeEvent =
   | { type: 'sdk'; message: SDKMessage }
   | { type: 'harness'; event: HarnessEvent }
   | { type: 'runner'; state: RunnerState; error?: string }
-  | { type: 'idle' }
+  /** completed：回合正常完成；停止、失败与恢复阻塞时为 false。 */
+  | { type: 'idle'; completed: boolean }
   | { type: 'check'; result: CheckResult }
   | { type: 'error'; message: string };
 export type ThreadEvent = RuntimeEvent & { threadId: string };
@@ -22,6 +23,8 @@ export type DomainEvent =
   | { type: 'checkout.changed'; projectId: string; checkoutId: string }
   | { type: 'workspace.changed'; workspaceId: string; status: WorkspaceStatus }
   | { type: 'thread.changed'; workspaceId: string; threadId: string; status: PluginInstance['status'] }
+  /** 上报的任何状态变化都带上完整的当前记录。 */
+  | { type: 'report.changed'; workspaceId: string; threadId: string; report: Report }
   | { type: 'model-accounts.changed'; modelAccounts: ModelAccountsSnapshot }
   /** 模板或点阵签名有变化，客户端重新读取模板列表。 */
   | { type: 'context-templates.changed' }

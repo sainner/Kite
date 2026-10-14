@@ -1,11 +1,11 @@
 /**
- * 工作树初始化时的忽略文件复制和上游设置加载。
+ * 工作树初始化时的忽略文件复制、上游设置加载和沙箱里的 setup。
  */
 import { expect, test } from 'bun:test';
-import { realpathSync, symlinkSync } from 'node:fs';
+import { chmodSync, realpathSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { addWorktree } from '../../src/workspace/worktrees.ts';
-import { git, isSymlink, lexists, newRepo, read, useTemp, writeFiles } from '../util.ts';
+import { addWorktree, runSetup } from '../../src/workspace/worktrees.ts';
+import { commitAll, git, gitWorktree, isSymlink, lexists, newRepo, read, useTemp, writeFiles } from '../util.ts';
 
 const temp = useTemp();
 
@@ -76,3 +76,44 @@ test('工作树按项目的 worktree.symlinkDirectories 设置链接主文件夹
   expect(isSymlink(join(wt, 'data/big'))).toBe(true);
   expect(realpathSync(join(wt, 'data/big'))).toBe(join(main, 'data/big'));
 });
+
+/*
+ * 依赖 macOS Seatbelt 的路径判定与 sh：setup 与模型的 shell 共用沙箱。工作树照实际布局放在 KITE_HOME/worktrees 下，
+ * 与登录凭据同在一个目录树里：工作树要能写、检出里的忽略文件要能读，同时读不到 KITE_HOME/auth，写不了检出；
+ * 环境只给约定的变量，kited 进程自己的变量不能带进去。网络放行依赖外网，不在这里测。
+ */
+test('setup 在沙箱里能读检出、写工作树，写不了检出、读不到 KITE_HOME 的登录凭据，也拿不到 kited 进程的环境变量', async () => {
+  const root = temp();
+  const home = join(root, 'kite');
+  const auth = join(home, 'auth', 'chatgpt', 'auth.json');
+  writeFiles(home, { 'auth/chatgpt/auth.json': '{"secret":"setup 不该读到"}\n' });
+  const probe = [
+    '#!/bin/sh',
+    'if v=$(cat "$KITE_MAIN_DIR/local.env" 2>/dev/null); then echo "main-read=$v"; else echo "main-read=denied"; fi',
+    'if (echo 来自 setup > "$KITE_MAIN_DIR/from-setup.txt") 2>/dev/null; then echo "main-write=ok"; else echo "main-write=denied"; fi',
+    'if (echo 来自 setup > ./from-setup.txt) 2>/dev/null; then echo "worktree-write=ok"; else echo "worktree-write=denied"; fi',
+    `if cat '${auth}' >/dev/null 2>&1; then echo "auth-read=ok"; else echo "auth-read=denied"; fi`,
+    'echo "process-only=${KITE_TEST_PROCESS_ONLY:-unset}"',
+    'echo "main=$KITE_MAIN_DIR"',
+    '',
+  ].join('\n');
+  const main = newRepo(root, 'main', { '.gitignore': 'local.env\n', '.kite/setup': probe });
+  chmodSync(join(main, '.kite/setup'), 0o755);
+  commitAll(main, '可执行');
+  writeFiles(main, { 'local.env': '检出里的忽略文件' });
+  const worktree = gitWorktree(main, join(home, 'worktrees', 'w1'), 'kite/w1');
+
+  process.env.KITE_TEST_PROCESS_ONLY = '只在 kited 进程里';
+  let result: Awaited<ReturnType<typeof runSetup>>;
+  try { result = await runSetup(main, worktree, join(home, 'logs', 'w1-setup.log'), home); }
+  finally { delete process.env.KITE_TEST_PROCESS_ONLY; }
+
+  expect(result?.exit).toBe(0);
+  const seen = Object.fromEntries(result!.tail.trim().split('\n').map((line) => line.split(/=(.*)/s).slice(0, 2)));
+  expect(seen).toEqual({
+    'main-read': '检出里的忽略文件', 'main-write': 'denied', 'worktree-write': 'ok', 'auth-read': 'denied',
+    'process-only': 'unset', main,
+  });
+  expect(lexists(join(main, 'from-setup.txt'))).toBe(false);
+  expect(read(join(worktree, 'from-setup.txt'))).toBe('来自 setup\n');
+}, 1000);

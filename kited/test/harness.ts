@@ -55,14 +55,18 @@ export async function call(
   return { status: r.status, body: await r.json() };
 }
 
+/**
+ * peers.directory 替换账号目录：同一进程里的几台 kited 直接按各自的监听地址互相访问（Line 的跨机调用），不经 kite-net。
+ */
 export function startKited(
   model?: (thread: ThreadContext) => Model, lightTasks: RuntimeOptions['lightTasks'] = false, shared?: FakeAccount,
+  options: Pick<RuntimeOptions, 'peers'> = {},
 ): Kited {
   const root = makeTemp('kited-');
   const home = join(root, 'kite');
   const account = shared ?? startFakeAccount(join(root, 'account'));
   linkAccount(home, account);
-  const daemon = startDaemon({ home, port: 0, model, lightTasks });
+  const daemon = startDaemon({ home, port: 0, model, lightTasks, ...options });
   let machineId: Promise<string> | undefined;
   const events: Envelope[] = [];
   const waiters: Array<{ pred: (e: Envelope) => boolean; resolve: (e: Envelope) => void }> = [];

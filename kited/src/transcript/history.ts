@@ -98,6 +98,7 @@ export class TranscriptHistory {
         case 'workspace.setup':
         case 'workspace.snapshot':
         case 'workspace.adopt':
+        case 'report.changed':
           this.feed.emit(event);
           break;
         default:

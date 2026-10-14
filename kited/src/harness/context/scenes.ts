@@ -67,6 +67,13 @@ export const contextScenes = {
     title: '基础上下文更新',
     variables: [{ name: 'context.instructions', title: '更新后的基础上下文', description: '重新组装的完整基础正文，替代先前发过的那份。' }],
   },
+  'line.monitor': {
+    title: 'Line 的工作区变化',
+    variables: [
+      { name: 'monitor.added', title: '新出现的待办', description: '这次新出现、需要 Line 核对的事项，每行一条，写明工作机、项目、线程与上报；至少一条。' },
+      { name: 'monitor.pending', title: '仍未处理的待办', description: '之前已告知、现在仍未处理的事项，每行一条；没有时为空。' },
+    ],
+  },
   'thread.execution_permissions_changed': {
     title: '执行授权变更',
     variables: [

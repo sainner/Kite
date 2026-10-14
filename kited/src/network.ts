@@ -19,6 +19,8 @@ export interface NetworkStatus {
   address?: string;
   /** App 复用 kited 的节点访问其他工作机，避免同一台 Mac 登记两次。 */
   socksPort?: number;
+  /** kited 自己调用其他工作机用的本机 HTTP 代理端口，只转发到组网地址。 */
+  httpProxyPort?: number;
   /** 对端设备及当前连接方式，上线后由 kite-net 每秒采样。 */
   peers?: NetworkPeer[];
   error?: string;

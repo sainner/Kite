@@ -49,6 +49,10 @@ bun run harness --resume <会话id>
 | `src/execution/` | 共用沙箱、执行授权、文件工具、命令与进程组 |
 | `src/workspace/` | 项目登记、工作树、Git、快照、文件与历史差异 |
 | `src/workspace/checkout-management.ts` | 检出登记、远程同步与现场推送 |
+| `src/workspace/lease.ts`、`src/transfer/` | 工作区执行权与跨机流转；契约见 [Line 与工作区流转](../docs/Line与工作区流转.md) |
+| `src/reports.ts` | 线程向用户的上报与交接链 |
+| `src/environment.ts` | 按项目建工作区前的环境检查 |
+| `src/line/` | 个人 agent Line：跨机调用、管理工具、monitor 与项目说明 |
 | `src/plugins/` | 插件定义、安装目录、实例宿主、进程与工具绑定 |
 | `src/operations/` | 实例操作契约、授权入口与操作收据 |
 | `src/agents/` | Agent 定义、工具的逐层约束、后端能力与共享模型清单入口 |

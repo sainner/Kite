@@ -210,7 +210,7 @@ function snapshot(machineId: string, project: Project): CatalogSnapshot {
   };
   return {
     machine: { id: machineId, name: '目录工作机', createdAt: project.createdAt }, projects: [project], checkouts: [checkout],
-    workspaces: [{ id: crypto.randomUUID(), checkoutId: checkout.id, name: project.name, cwd: checkout.path,
+    workspaces: [{ id: crypto.randomUUID(), epoch: 1, checkoutId: checkout.id, name: project.name, cwd: checkout.path,
       kind: 'root', branch: 'main', base: null, status: 'open', createdAt: project.createdAt }],
   };
 }
@@ -588,9 +588,11 @@ test('目录发布只授权已绑定的本机工作机会话，专用凭据不�
     const otherGrant = await k.publisher(peer.token, other, otherId);
     expect(grant.token).not.toBe(owner.token);
     expect(grant.token).not.toBe(otherGrant.token);
-    for (const path of ['/api/account', '/api/catalog', '/api/devices']) {
+    for (const path of ['/api/account', '/api/devices']) {
       expect((await k.call('GET', path, grant.token)).status).toBe(401);
     }
+    // 工作机凭据可以读本账号的目录，Line 据此找到同账号其他工作机；轮换和删设备后旧凭据同样读不到。
+    expect((await k.catalog(grant.token)).map((entry) => entry.device.id).sort()).toEqual([worker.device.id, other.device.id].sort());
     expectRejected(await k.call('POST', grantPath, grant.token, { machineId }));
     const project = { id: crypto.randomUUID(), name: '私有项目', remote: 'example.test/owner/private', createdAt: 1_700_000_000_000 };
     const catalog = snapshot(machineId, project);
@@ -604,9 +606,11 @@ test('目录发布只授权已绑定的本机工作机会话，专用凭据不�
     const rotated = await k.publisher(owner.token, worker, machineId);
     expect(rotated.token).not.toBe(grant.token);
     expectRejected(await k.call('PUT', path, grant.token, { revision: 2, snapshot: catalog }));
+    expect((await k.call('GET', '/api/catalog', grant.token)).status).toBe(401);
     expectSuccess(await k.call('PUT', path, rotated.token, { revision: 2, snapshot: catalog }));
     expectSuccess(await k.call('DELETE', `/api/devices/${worker.device.id}`, controller.token));
     expectRejected(await k.call('PUT', path, rotated.token, { revision: 3, snapshot: catalog }));
+    expect((await k.call('GET', '/api/catalog', rotated.token)).status).toBe(401);
     expect((await k.catalog(controller.token)).some((entry) => entry.device.id === worker.device.id)).toBe(false);
   } finally { await k.stop(); }
 }, 1_000);

@@ -7,7 +7,7 @@
 - [卡顿怎么量](performance-diagnosis.md) — 测量入口与交替对照、帧间隔、真机 Time Profiler、合成滚动、软边诊断、UIKit 透明度坑，Mac 结论不外推到 iPhone
 - [真机量 iPhone、iPad 排版](ios-layout-probe.md) — 不登录：kited 取数据、参数开的探针渲染生产视图、App 里截图、devicectl 取回；不用模拟器
 - [对话正文的文本容器](text-container-direction.md) — 每条回复一个 TextKit 2 文本视图、附件嵌代码块、复制给原文、外观不改，第三步 iPhone 待验收
-- [Line 与工作区流转](line-direction.md) — 契约在 docs，未批准编码；材料推项目远程、lease 锚仓库、目标侧不区分、根工作区
+- [Line 与工作区流转](line-direction.md) — 分支 claude/line；收件箱、托管、审批与提问、关注设备、monitor 事件路由；部署须先上账号服务
 - [界面改原生](decision-native-ui.md) — Mac 对话与外壳改 AppKit、iOS 改 UIKit，为拖缝 60 帧，外观逐项复刻；骨架、点阵是退路
 - [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、术语词典与整理后做、点阵表现、未选的识别候选
 

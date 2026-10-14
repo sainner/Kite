@@ -1,6 +1,6 @@
 /** kited 的执行入口：Claude 与自研 harness 各自负责完整 agent 循环，共用 Kite 的能力。 */
 import { join } from 'node:path';
-import type { AccountClient } from './account-client.ts';
+import type { AccountClient, AccountMachine } from './account-client.ts';
 import { KiteError } from './errors.ts';
 import type { RuntimeEvent } from './events.ts';
 import type { RunnerState } from './claude/runner.ts';
@@ -18,6 +18,7 @@ import type { ContextDefinition } from './harness/context/types.ts';
 import { agentRevision, instanceAgent } from './agents/definition.ts';
 import { agentTools } from './plugins/definitions.ts';
 import type { OperationToolSelection } from './operations/operations.ts';
+import { lineToolNames, operationToolNames } from './operations/contract.ts';
 import type { CompactionRequest, Input, Model, Phase, Recovery, StopRequest, ThreadNotification, Tool } from './harness/types.ts';
 import type { LightTaskOptions } from './light-tasks.ts';
 import type { ProjectToolRule } from './roles.ts';
@@ -44,6 +45,8 @@ export interface RuntimeOptions {
   model?(thread: ThreadContext): Model;
   /** 后台轻任务独立选模型；false 关闭，测试可注入受控模型。 */
   lightTasks?: false | Partial<LightTaskOptions>;
+  /** 测试里替换 Line 看到的账号目录：同一进程里的几台 kited 按给出的地址直接互访，不经组网。 */
+  peers?: { directory(): Promise<AccountMachine[]> };
 }
 
 export interface RuntimeEvents {
@@ -65,6 +68,7 @@ export interface RuntimeHost {
   /** 每次请求重新读取，配置和授权变化在下一次请求生效。 */
   current(): ThreadContext;
   notifications(after: number): ThreadNotification[];
+  /** 宿主提供的 Kite 工具：协作操作（另须授权）与线程自己的上报。 */
   operations: { tools: Tool[]; prepare(instance: PluginInstance): OperationToolSelection };
   contextUpdateTemplate(): ContextDefinition;
   compactionTemplates(): { compact: ContextDefinition; fileChanges: ContextDefinition };
@@ -76,11 +80,11 @@ export interface RuntimeHost {
 
 const constraintAllows = (rule: ProjectToolRule | undefined, name: string) => !rule || ruleAllows(rule, name);
 
-/** 两个后端共用的工具筛选：agent 配置声明的工具中，须未被项目约束禁用，操作工具还须获得授权；插件工具只看授权。 */
+/** 两个后端共用的工具筛选：agent 配置声明的工具中，须未被项目约束禁用，协作与 Line 的工具还须获得授权；插件工具只看授权。 */
 function selectTools(current: ThreadContext, operations: RuntimeHost['operations'], constraint: ProjectToolRule | undefined) {
   const agent = instanceAgent(current);
   const selection = operations.prepare(current);
-  const operationNames = new Set(operations.tools.map((tool) => tool.name));
+  const operationNames = new Set<string>([...operationToolNames, ...lineToolNames]);
   const configured = new Set<string>(agent.tools);
   const permitted = (name: string) => configured.has(name) && constraintAllows(constraint, name)
     && (!operationNames.has(name) || selection.allowed.has(name));
@@ -115,7 +119,6 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       compaction: { templates: () => host.compactionTemplates(), files: (range) => host.compactionFiles(range) },
     });
   }
-  const declaredTools = new Set<string>(agentTools);
   const inputs = new Map<string, string>();
   const thread = await openThreadHost({
     cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, startPaused: true, policy, secrets,
@@ -123,14 +126,16 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       const current = host.current();
       const execution = instanceExecutionGrants(current);
       const { agent, selection, permitted, plugins } = selectTools(current, operations, host.toolConstraint());
-      const declared = [...tools, ...operations.tools].filter((tool) => declaredTools.has(tool.name));
+      // 声明顺序取代理插件的工具目录，与实例配置一致。
+      const available = [...tools, ...operations.tools];
+      const declared = agentTools.flatMap((name) => available.find((tool) => tool.name === name) ?? []);
       return {
         model: options.model?.(current) ?? new ChatGPTModel({ ...agent.model, threadId: current.nativeId,
           credentials: () => readSubscriptionCredentials(join(home, 'auth', 'chatgpt', 'auth.json')),
           observeLimits: host.chatgptLimits }),
         tools: [...declared.filter((tool) => permitted(tool.name)), ...plugins],
         // 请求发出后项目约束收紧时，这次请求里的调用也在执行前拦下。
-        blocked: (name) => declaredTools.has(name) && !constraintAllows(host.toolConstraint(), name) ? `项目约束已禁用 ${name}` : undefined,
+        blocked: (name) => (agentTools as readonly string[]).includes(name) && !constraintAllows(host.toolConstraint(), name) ? `项目约束已禁用 ${name}` : undefined,
         toolDefinitions: [...declared, ...selection.plugins].map(({ name, description, parameters }) => ({ name, description, parameters })),
         instructions: projectContext(current.workspace.cwd, agent.context),
         contextUpdateTemplate: host.contextUpdateTemplate(),

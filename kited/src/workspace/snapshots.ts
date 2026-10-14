@@ -22,7 +22,16 @@ const indexes = new Map<string, string>();
 /** 每个工作树最近一个已经在快照链上的 HEAD：HEAD 没动就不用再问它是不是上一枚的祖先。 */
 const chainedHeads = new Map<string, string>();
 
-/** 工作树自己的 git 目录下的 kite/index。工作树的 git 目录不会变，查一次就记住。 */
+/**
+ * 工作树删掉或在同一路径重建、快照链被流转来的材料替换时调用：git 目录可能换了名字，链上的 HEAD 也可能不再在新链上，
+ * 两份缓存都按路径记着旧值，不清掉就会往已删除的 git 目录写索引锁，或漏挂 HEAD。
+ */
+export function forgetWorktree(worktree: string): void {
+  indexes.delete(worktree);
+  chainedHeads.delete(worktree);
+}
+
+/** 工作树自己的 git 目录下的 kite/index。同一工作树的 git 目录不会变，查一次就记住；删掉重建时见 forgetWorktree。 */
 async function privateIndex(worktree: string): Promise<string> {
   let index = indexes.get(worktree);
   if (!index) {
