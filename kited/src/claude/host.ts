@@ -12,7 +12,7 @@ import type { SecretProvider } from '../secrets.ts';
 import { KiteError } from '../errors.ts';
 import { localTools } from '../execution/local-tools.ts';
 import { commandEnvironment, type ExecutionPolicy } from '../execution/sandbox.ts';
-import { processGroupAlive } from '../execution/command.ts';
+import { processGroupAlive, type NetworkAsk } from '../execution/command.ts';
 import type { CompactionRequest, Input, Outcome, Phase, StopRequest, Tool } from '../harness/types.ts';
 import type { ContextDefinition } from '../harness/context/types.ts';
 import { HarnessRunner } from '../harness/runner.ts';
@@ -45,6 +45,7 @@ export function openClaudeHost(options: {
   cwd: string; directory: string; diffDir: string; nativeId: string; title: string;
   policy(): ExecutionPolicy;
   secrets?: SecretProvider;
+  network?(): NetworkAsk | undefined;
   prepare(afterNotification: number): { agent: AgentDefinition; instructions: string; contextUpdate: string; tools: Tool[]; allowed: Set<string>; notificationText: string; through: number };
   events: RuntimeEvents;
   /** 压缩所需的模板与净文件变化；不提供时不开放压缩。 */
@@ -97,6 +98,7 @@ export function openClaudeHost(options: {
   if (data.processes.some(processGroupAlive)) data.recovery = { message: 'Claude 的命令进程组仍可能运行，请先核查再恢复。' };
   const tools = localTools({ cwd: options.cwd, diffDir: options.diffDir, logDir: join(options.directory, 'commands'),
     env: commandEnvironment(process.env), policy: options.policy, secrets: options.secrets,
+    ...(options.network ? { network: options.network } : {}),
     onProcess(pid, active) {
       data.processes = active ? [...new Set([...data.processes, pid])] : data.processes.filter((value) => value !== pid);
       save();

@@ -71,7 +71,11 @@ function paths(values: string[]): string[] {
   }))];
 }
 
-export function prepareSandbox(command: string, options: { cwd: string; env: NodeJS.ProcessEnv; policy: ExecutionPolicy; credentials?: Record<string, SecretValue> }) {
+/**
+ * network 决定名单外的主机：缺省一律拒绝；open 一律放行（项目级网络授权落地前的 .kite/setup、全放行模式）；
+ * ask 逐个问宿主，宿主在返回的 askSocket 上监听，须在启动命令前开好。
+ */
+export function prepareSandbox(command: string, options: { cwd: string; env: NodeJS.ProcessEnv; policy: ExecutionPolicy; credentials?: Record<string, SecretValue>; network?: 'open' | 'ask' }) {
   if (process.platform !== 'darwin' && process.platform !== 'linux') throw new Error('当前工作机不支持 Kite 沙箱，命令未启动');
   if (!Bun.semver.satisfies(Bun.version, '>=1.4.2')) throw new Error('Kite 沙箱需要 Bun 1.4.2 或更新版本，请使用 kited/node_modules/.bin/bun 启动');
   // macOS 的 Unix socket 路径很短；不能使用可能很长的工作区 TMPDIR 放上游代理 socket。
@@ -97,7 +101,7 @@ export function prepareSandbox(command: string, options: { cwd: string; env: Nod
           join(options.env.HOME ?? homedir(), '.npm/_logs'), join(options.env.HOME ?? homedir(), '.claude/debug'),
           ...(policy.denyWrite ?? [])]),
       },
-      network: { allowedDomains: [...policy.network], deniedDomains: [], strictAllowlist: true, allowLocalBinding: false, allowAllUnixSockets: false },
+      network: { allowedDomains: [...policy.network], deniedDomains: [], strictAllowlist: !options.network, allowLocalBinding: false, allowAllUnixSockets: false },
       allowAppleEvents: false, enableWeakerNetworkIsolation: false, enableWeakerNestedSandbox: false,
     };
     const settings = join(control, 'settings.json');
@@ -106,7 +110,11 @@ export function prepareSandbox(command: string, options: { cwd: string; env: Nod
     writeFileSync(bunfig, '[run]\nshell = "system"\n', { mode: 0o600 });
     const env: NodeJS.ProcessEnv = { ...options.env, TMPDIR: control, TMP: control, TEMP: control };
     // 保留系统 Git 配置的真实来源，同时避开 macOS /etc 链接本身的元数据探测。
-    if (process.platform === 'darwin') env.GIT_CONFIG_SYSTEM = canonicalPath('/etc/gitconfig');
+    // 系统 CA 同理：curl 等按 /etc/ssl/cert.pem 找证书，经过 /etc 链接就读不到。
+    if (process.platform === 'darwin') {
+      env.GIT_CONFIG_SYSTEM = canonicalPath('/etc/gitconfig');
+      if (existsSync('/etc/ssl/cert.pem')) env.SSL_CERT_FILE ??= canonicalPath('/etc/ssl/cert.pem');
+    }
     const developer = developerDirectory(options.env);
     if (developer) {
       env.DEVELOPER_DIR = developer;
@@ -129,10 +137,12 @@ export function prepareSandbox(command: string, options: { cwd: string; env: Nod
       } else env[key] = credential.value;
     }
     // 可信 CLI 在沙箱外初始化代理；用户命令直到进入 OS 沙箱后才由 sh 解释。
-    const cli = fileURLToPath(new URL('./sandbox-host.ts', import.meta.url));
+    const cli = fileURLToPath(new URL(options.network ? './sandbox-callback-host.ts' : './sandbox-host.ts', import.meta.url));
     const wrapped = `TMPDIR=${quote(scratch)} TMP=${quote(scratch)} TEMP=${quote(scratch)} exec /bin/sh -c ${quote(command)}`;
+    // 控制目录对命令不可读写，询问通道放在这里，命令连不上它。
+    const askSocket = options.network === 'ask' ? join(control, 'ask.sock') : undefined;
     return { executable: process.execPath,
-      args: ['run', '--no-env-file', '--no-install', `--config=${bunfig}`, cli, '--settings', settings, '-c', wrapped],
-      env, dispose };
+      args: ['run', '--no-env-file', '--no-install', `--config=${bunfig}`, cli, '--settings', settings, ...(askSocket ? ['--ask', askSocket] : []), '-c', wrapped],
+      env, askSocket, dispose };
   } catch (error) { dispose(); throw error; }
 }

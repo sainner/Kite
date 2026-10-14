@@ -15,14 +15,24 @@ const snapshotRef = (workspaceId: string) => `refs/kite/snapshots/${workspaceId}
 
 interface Captured { commit: string; tree: string; created: boolean; changedFiles: number }
 
-export interface Snapshot { commit: string; at: number; label: string; toolUseIds: string[] }
+/** threadId 是触发它的线程；工作区里几个线程并行时，内容可能含其他线程的改动。 */
+export interface Snapshot { commit: string; at: number; label: string; toolUseIds: string[]; threadId?: string }
 
 // 每次调用 git 约 10 毫秒，快照在每批工具调用后都要打，agent 等它打完才继续，所以尽量少调
 const indexes = new Map<string, string>();
 /** 每个工作树最近一个已经在快照链上的 HEAD：HEAD 没动就不用再问它是不是上一枚的祖先。 */
 const chainedHeads = new Map<string, string>();
 
-/** 工作树自己的 git 目录下的 kite/index。工作树的 git 目录不会变，查一次就记住。 */
+/**
+ * 工作树删掉或在同一路径重建、快照链被流转来的材料替换时调用：git 目录可能换了名字，链上的 HEAD 也可能不再在新链上，
+ * 两份缓存都按路径记着旧值，不清掉就会往已删除的 git 目录写索引锁，或漏挂 HEAD。
+ */
+export function forgetWorktree(worktree: string): void {
+  indexes.delete(worktree);
+  chainedHeads.delete(worktree);
+}
+
+/** 工作树自己的 git 目录下的 kite/index。同一工作树的 git 目录不会变，查一次就记住；删掉重建时见 forgetWorktree。 */
 async function privateIndex(worktree: string): Promise<string> {
   let index = indexes.get(worktree);
   if (!index) {
@@ -41,9 +51,10 @@ async function resolve(cwd: string, names: string[]): Promise<(string | null)[]>
 }
 
 /** 标签是一行字，原样作为提交说明的第一行，列快照时读回来的和事件里的一致。 */
-function message(workspaceId: string, label: string, toolUseIds: string[]): string {
+function message(workspaceId: string, label: string, toolUseIds: string[], threadId?: string): string {
   // 提交时间只到秒；毫秒时间用来与会话记录对齐（压缩范围的净变化）。
-  return [label, '', `Kite-Workspace: ${workspaceId}`, `Kite-At: ${Date.now()}`, ...toolUseIds.map((id) => `Kite-Tool-Use: ${id}`)].join('\n');
+  return [label, '', `Kite-Workspace: ${workspaceId}`, `Kite-At: ${Date.now()}`, ...(threadId ? [`Kite-Thread: ${threadId}`] : []),
+    ...toolUseIds.map((id) => `Kite-Tool-Use: ${id}`)].join('\n');
 }
 
 interface NewSnapshot {
@@ -56,7 +67,7 @@ interface NewSnapshot {
 }
 
 /** 把一棵树记成会话的一枚新快照，挂在 previous 之后。数改动和提交互不依赖，同时做，agent 少等一次 git。 */
-async function record(worktree: string, workspaceId: string, r: NewSnapshot, label: string, toolUseIds: string[]): Promise<Captured> {
+async function record(worktree: string, workspaceId: string, r: NewSnapshot, label: string, toolUseIds: string[], threadId?: string): Promise<Captured> {
   const count = git(worktree, r.fromTree
     ? ['diff-tree', '-r', '--name-only', '--no-renames', r.fromTree, r.tree]
     : ['ls-tree', '-r', '--name-only', r.tree]);
@@ -68,7 +79,7 @@ async function record(worktree: string, workspaceId: string, r: NewSnapshot, lab
       parents.push('-p', r.head);
     }
     const commit = await git(worktree, ['commit-tree', r.tree, ...parents, '-F', '-'], {
-      env: KITE_IDENTITY, input: message(workspaceId, label, toolUseIds),
+      env: KITE_IDENTITY, input: message(workspaceId, label, toolUseIds, threadId),
     });
     // 比较并交换：引用在读取之后被动过就失败，不覆盖
     await git(worktree, ['update-ref', '--no-deref', snapshotRef(workspaceId), commit, r.previous ?? '']);
@@ -81,7 +92,7 @@ async function record(worktree: string, workspaceId: string, r: NewSnapshot, lab
 }
 
 /** 捕获整个工作树。树没变就复用上一枚，不产生新提交。 */
-export async function capture(worktree: string, workspaceId: string, label: string, toolUseIds: string[] = []): Promise<Captured> {
+export async function capture(worktree: string, workspaceId: string, label: string, toolUseIds: string[] = [], threadId?: string): Promise<Captured> {
   const ref = snapshotRef(workspaceId);
   const [previous, prevTree, head, headTree] = await resolve(worktree, [`${ref}^{commit}`, `${ref}^{tree}`, 'HEAD^{commit}', 'HEAD^{tree}']);
   const env = { GIT_INDEX_FILE: await privateIndex(worktree) };
@@ -105,7 +116,7 @@ export async function capture(worktree: string, workspaceId: string, label: stri
   const tree = await git(worktree, ['write-tree'], { env });
 
   if (previous && prevTree === tree) return { commit: previous, tree, created: false, changedFiles: 0 };
-  return record(worktree, workspaceId, { tree, fromTree: prevTree ?? headTree, previous, head }, label, toolUseIds);
+  return record(worktree, workspaceId, { tree, fromTree: prevTree ?? headTree, previous, head }, label, toolUseIds, threadId);
 }
 
 /**
@@ -172,16 +183,17 @@ export async function findSnapshot(cwd: string, workspaceId: string, commit: str
 
 /** 会话的快照链，新的在前，最多 1000 枚。沿第一父节点走，遇到不属于本会话的提交就停。 */
 export async function list(cwd: string, workspaceId: string): Promise<Snapshot[]> {
-  const fmt = '%H%x1f%ct%x1f%s%x1f%(trailers:key=Kite-Workspace,valueonly,separator=%x2C)%x1f%(trailers:key=Kite-Tool-Use,valueonly,separator=%x2C)%x1f%(trailers:key=Kite-At,valueonly)%x1e';
+  const fmt = '%H%x1f%ct%x1f%s%x1f%(trailers:key=Kite-Workspace,valueonly,separator=%x2C)%x1f%(trailers:key=Kite-Tool-Use,valueonly,separator=%x2C)%x1f%(trailers:key=Kite-At,valueonly)%x1f%(trailers:key=Kite-Thread,valueonly)%x1e';
   // 还没有快照时引用不存在，log 失败
   const r = await gitTry(cwd, ['log', '--first-parent', '-n1000', `--format=${fmt}`, snapshotRef(workspaceId)]);
   if (r.code !== 0) return [];
   const out = r.stdout.trim();
   const snaps: Snapshot[] = [];
   for (const rec of out.split('\x1e')) {
-    const [commit, at, label, owner, tools, ms] = rec.trim().split('\x1f');
+    const [commit, at, label, owner, tools, ms, thread] = rec.trim().split('\x1f');
     if (!commit || owner?.trim() !== workspaceId) break;
-    snaps.push({ commit, at: Number(ms?.trim()) || Number(at) * 1000, label: label ?? '', toolUseIds: (tools ?? '').split(',').map((s) => s.trim()).filter(Boolean) });
+    snaps.push({ commit, at: Number(ms?.trim()) || Number(at) * 1000, label: label ?? '', toolUseIds: (tools ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+      ...(thread?.trim() ? { threadId: thread.trim() } : {}) });
   }
   return snaps;
 }

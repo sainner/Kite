@@ -13,9 +13,11 @@ import type { Checkout, Project, WorkspaceModel } from '../../src/model.ts';
 import { Store } from '../../src/store.ts';
 import { type FakeAccount, startFakeAccount } from '../fake-account.ts';
 import { call, type Kited, type KitedProcess, registerCheckout, spawnKited, startKited } from '../harness.ts';
-import { git, lexists, makeTemp, newDir, newRepo, read, until } from '../util.ts';
+import { git, lexists, makeTemp, newDir, newRepo, read, until, writeFiles } from '../util.ts';
 
 let kited: Kited | undefined;
+/** 同一账号下的第二台工作机。 */
+let second: Kited | undefined;
 let child: KitedProcess | undefined;
 let account: FakeAccount | undefined;
 const dirs: string[] = [];
@@ -24,6 +26,8 @@ afterEach(async () => {
   for (const release of releases.splice(0)) release();
   await kited?.stop();
   kited = undefined;
+  await second?.stop();
+  second = undefined;
   await child?.kill('SIGTERM');
   child = undefined;
   account?.stop();
@@ -134,6 +138,8 @@ test('clone 等远程时独立 clone 和本地登记可完成，父子目录及�
   const held = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void | Response>();
   releases.push(() => release.resolve());
+  // 登记后后台的执行权核对会 ls-remote 同一个托管远程，也走 upload-pack；先等它这一轮结束，挂住的才是 clone 的请求。
+  await running.daemon.kite.syncLeases();
   let fetches = 0;
   running.account.beforeFetch = () => {
     if (fetches++ !== 0) return;
@@ -210,4 +216,54 @@ test('关闭等待已经接收的 clone 登记完成后才允许关闭数据库'
     if (stopping) await stopping;
     else { await kite.shutdown(); store.close(); }
   }
+}, 1_000);
+
+/** 未过期的 ChatGPT 订阅登录：access_token 是 exp 在一小时后的 JWT。 */
+function chatgptLogin(home: string): void {
+  const encoded = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const accessToken = `${encoded({ alg: 'RS256', typ: 'JWT' })}.${encoded({ exp: Math.floor(Date.now() / 1000) + 3600 })}.${encoded('仅测试')}`;
+  writeFiles(home, { 'auth/chatgpt/auth.json': JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: accessToken, account_id: 'test-account' } }) });
+}
+
+/*
+ * 几个部分的配合：账号登记表、本机环境检查、真实 git clone（托管仓库的 http-backend）、按 origin 登记和工作树准备。
+ * 真实 bug：Bun 的 os.homedir() 在进程启动时缓存，不随 setup.ts 改过的 HOME 变化，按项目建工作区的默认 clone
+ * 曾落到真实的 ~/code。这里的第二台工作机在本进程里起，clone 位置必须在隔离的 HOME 下；环境检查先报出这个位置，
+ * 位置不对时测试在 clone 之前就失败。
+ */
+test('按项目建工作区：所选模型的厂商未登录时 409 且不 clone，登录后 clone 到默认位置登记为同一项目并建好工作树', async () => {
+  const root = makeTemp('project-workspace-');
+  dirs.push(root);
+  account = startFakeAccount(join(root, 'account'));
+  kited = startKited(undefined, false, account);
+  const source = newRepo(kited.root, 'source', { 'a.txt': '原始\n' }, null);
+  const registered = await registerCheckout(kited, source);
+  const projectId = registered.project.id;
+  dirs.push(join(process.env.HOME!, 'code', registered.project.remote.split('/')[0]!));
+
+  second = startKited(undefined, false, account);
+  const other = second;
+  const before = await other.call('GET', `/environment?project=${projectId}`);
+  expect(before.status).toBe(200);
+  expect(before.body).toMatchObject({ checkout: null, logins: { chatgpt: { status: 'missing' } } });
+  const clonePath = before.body.clonePath as string;
+  expect(clonePath).toBe(join(process.env.HOME!, 'code', ...registered.project.remote.split('/')));
+
+  const refused = await other.call('POST', '/workspaces', { project: projectId });
+  expect(refused.status).toBe(409);
+  expect(lexists(clonePath)).toBe(false);
+  expect((await other.call('GET', '/checkouts')).body).toEqual([]);
+
+  chatgptLogin(other.home);
+  const created = await other.call('POST', '/workspaces', { project: projectId });
+  expect(created.status).toBe(200);
+  const model = created.body as WorkspaceModel;
+  expect(model.project.id).toBe(projectId);
+  expect(model.checkout.path).toBe(clonePath);
+  expect(git(clonePath, 'rev-parse', 'HEAD')).toBe(git(source, 'rev-parse', 'HEAD'));
+  expect(model.workspace).toMatchObject({ kind: 'worktree', checkoutId: model.checkout.id });
+  await other.waitEvent((e) => e.type === 'workspace.changed' && e.workspaceId === model.workspace.id && e.status === 'open');
+  expect(read(join(model.workspace.cwd, 'a.txt'))).toBe('原始\n');
+  const environment = await other.call('GET', `/environment?project=${projectId}`);
+  expect(environment.body).toMatchObject({ checkout: { id: model.checkout.id, path: clonePath }, logins: { chatgpt: { status: 'ready' } } });
 }, 1_000);

@@ -8,6 +8,7 @@ import type { ClaudeState } from '../claude/control.ts';
 import { ToolInputPreview } from './tool-input-preview.ts';
 import type { TranscriptFeed } from './feed.ts';
 import type { DisplayBlock, DisplayRecord, DisplayDelta, PendingInput, DisplayState, History, ThreadDisplayEvent } from './protocol.ts';
+import type { Waiting } from '../waiting.ts';
 
 const textParts = (value: unknown, separator = ''): string => Array.isArray(value)
   ? value.map((part) => object(part).text).filter((text) => typeof text === 'string').join(separator) : '';
@@ -31,6 +32,7 @@ export class TranscriptProjection {
   private phase: Phase = 'idle';
   private busy = false;
   private waitingForResume = false;
+  private waiting?: Waiting;
   private lastOutcome?: Outcome;
   private recovery?: Recovery;
   private error?: string;
@@ -113,6 +115,7 @@ export class TranscriptProjection {
       context = { ...context, windowTokens: this.claudeWindow.tokens };
     }
     return { phase: this.phase, busy: this.busy, ...(this.compacting ? { compacting: true } : {}), waitingForResume: this.waitingForResume, status,
+      ...(this.waiting ? { waiting: this.waiting } : {}),
       ...(this.lastOutcome ? { lastOutcome: this.lastOutcome } : {}),
       ...(this.recovery ? { recovery: this.recovery } : {}),
       ...(error ? { error } : {}),
@@ -176,6 +179,7 @@ export class TranscriptProjection {
         this.emit({ type: 'thread.state', state: this.state() });
         this.emit({ type: 'thread.idle' });
         break;
+      case 'waiting': this.waiting = event.waiting; this.emit({ type: 'thread.state', state: this.state() }); break;
       case 'error': this.error = event.message; this.emit({ type: 'thread.state', state: this.state() }); this.emit({ type: 'thread.error', message: event.message }); break;
       case 'check': this.emit({ type: 'thread.check', result: event.result }); break;
     }

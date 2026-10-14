@@ -5,7 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Input, Outcome, Phase, Recovery } from '../harness/types.ts';
 
-const input = z.object({ id: z.string().min(1), text: z.string(), source: z.enum(['human', 'kite']) });
+const input = z.object({ id: z.string().min(1), text: z.string(), source: z.enum(['human', 'kite']),
+  via: z.object({ kind: z.literal('line'), machine: z.string().min(1), instance: z.string().min(1) }).optional() });
 const schema = z.object({
   inputs: z.array(z.object({ input, sdkId: z.string(), at: z.number(), status: z.enum(['queued', 'submitted', 'unconfirmed', 'active', 'done', 'cancelled']), delivered: z.boolean(), midTurn: z.boolean().default(false) })),
   stops: z.array(z.object({ id: z.string(), request: z.string(), returned: z.array(input), completed: z.boolean().default(false) })),

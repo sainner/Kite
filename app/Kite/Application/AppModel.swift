@@ -405,7 +405,12 @@ final class AppModel {
     }
 
     private func replaceWorkspaces(_ areas: [WorkArea], on machine: String) {
-        workspaces = workspaces.filter { $0.remote?.machine.id != machine } + areas
+        // 工作区流转后同一 ID 出现在几台工作机上：epoch 最高、未冻结的是当前宿主，冻结的旧记录不另列。
+        let merged = workspaces.filter { $0.remote?.machine.id != machine } + areas
+        let rank = { (area: WorkArea) in (area.remote?.workspace.status == .transferred ? 0 : 1, area.remote?.workspace.epoch ?? 1) }
+        var hosts: [String: WorkArea] = [:]
+        for area in merged where hosts[area.id].map({ rank(area) > rank($0) }) ?? true { hosts[area.id] = area }
+        workspaces = merged.filter { hosts[$0.id] === $0 }
         workspaces.sort {
             let left = $0.remote?.workspace.createdAt ?? 0, right = $1.remote?.workspace.createdAt ?? 0
             return left == right ? $0.id < $1.id : left > right

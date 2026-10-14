@@ -32,6 +32,8 @@ type status struct {
 	IPs       []string `json:"ips,omitempty"`
 	Name      string   `json:"name,omitempty"`
 	SocksPort int      `json:"socksPort,omitempty"`
+	// kited 调用同账号的其他工作机时用的本机 HTTP 代理；Bun 的 fetch 不支持 SOCKS。
+	HTTPProxyPort int `json:"httpProxyPort,omitempty"`
 	Peers     []peer   `json:"peers,omitempty"`
 }
 
@@ -104,6 +106,12 @@ func main() {
 	}
 	defer socks.Close()
 	go (&socks5.Server{Dialer: srv.Dial}).Serve(socks)
+	forward, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer forward.Close()
+	go http.Serve(forward, peerProxy(srv))
 	var active sync.Map
 	changed := func() {
 		active.Range(func(key, value any) bool {
@@ -117,7 +125,8 @@ func main() {
 			return true
 		})
 	}
-	report := &reporter{out: json.NewEncoder(os.Stdout), current: status{SocksPort: socks.Addr().(*net.TCPAddr).Port}}
+	report := &reporter{out: json.NewEncoder(os.Stdout), current: status{SocksPort: socks.Addr().(*net.TCPAddr).Port,
+		HTTPProxyPort: forward.Addr().(*net.TCPAddr).Port}}
 	go watch(srv, report, changed)
 	go func() {
 		for range time.Tick(time.Second) {
@@ -150,6 +159,36 @@ func main() {
 		proxy.ServeHTTP(w, r.WithContext(ctx))
 	})
 	log.Fatal(http.Serve(ln, handler))
+}
+
+// tailnet 地址段：IPv4 的 CGNAT 段与 Tailscale 的 IPv6 段。代理只转发到这里，不是通往外网的出口。
+var tailnetRanges = []netip.Prefix{netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("fd7a:115c:a1e0::/48")}
+
+// peerProxy 是本机的 HTTP 正向代理：请求行带完整地址，经 tsnet 拨到对端的组网端口。对端的 kite-net 自己核验来源身份。
+func peerProxy(srv *tsnet.Server) http.Handler {
+	proxy := &httputil.ReverseProxy{
+		Director:      func(*http.Request) {},
+		Transport:     &http.Transport{DialContext: srv.Dial},
+		FlushInterval: -1,
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.URL.Host)
+		addr, parseErr := netip.ParseAddr(host)
+		if r.URL.Scheme != "http" || err != nil || parseErr != nil || !inTailnet(addr) {
+			http.Error(w, "只转发到组网内的工作机", http.StatusForbidden)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	})
+}
+
+func inTailnet(addr netip.Addr) bool {
+	for _, prefix := range tailnetRanges {
+		if prefix.Contains(addr.Unmap()) {
+			return true
+		}
+	}
+	return false
 }
 
 func authorized(lc *local.Client, r *http.Request) bool {

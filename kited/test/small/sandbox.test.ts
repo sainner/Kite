@@ -2,7 +2,9 @@ import { expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
-import { runCommand } from '../../src/execution/command.ts';
+// 询问与放行模式的沙箱宿主按路径起子进程，不在 import 链上；按文本引入，宿主改动时 .kite/check 才会选中这里。
+import '../../src/execution/sandbox-callback-host.ts' with { type: 'text' };
+import { runCommand, type NetworkAsk } from '../../src/execution/command.ts';
 import { harnessPolicy } from '../../src/execution/policy.ts';
 import { localTools } from '../../src/execution/local-tools.ts';
 import { workspacePolicy } from '../../src/execution/sandbox.ts';
@@ -202,5 +204,60 @@ test('并行沙箱分别执行文件和本机端口授权，不能借用另一�
   } finally {
     await leftServer.stop(true);
     await rightServer.stop(true);
+  }
+}, 1000);
+
+/*
+ * 依赖上游 @anthropic-ai/sandbox-runtime 的代理：名单外主机在 DNS 解析前交给放行回调，HTTP 代理上拒绝回 403、
+ * 放行后 .invalid 解析失败回 502，不靠外网也能分清放行与拒绝。回调经沙箱宿主进程与 kited 之间的 socket 往返；
+ * 同一主机的决定在这条命令里复用，三条命令同时跑、各问各的；命令自己结束（curl 超时）时还挂着的询问要作废。
+ * 回环一条挡住真实漏洞：.kite/setup 用的「名单外一律放行」宿主对 127.0.0.1 这类 IP 字面量和 localhost 直接放行
+ * （上游的解析地址检查只判主机名，IP 字面量原样放过，localhost 也被认作该连回环），沙箱里的命令能经代理连到
+ * kited 只监听回环、信任回环客户端的本机接口。上游给命令的 NO_PROXY 含回环，curl 默认直连会先被 Seatbelt 挡住，
+ * 要 --noproxy '' 强制走代理才测得到；SOCKS 走上游放在 FTP_PROXY 里的 socks5h 地址。
+ */
+test('名单外主机按询问结果放行或拒绝，同一命令里同一主机只问一次，命令结束时没回应的询问作废；回环地址不问也连不上', async () => {
+  const cwd = temp('sandbox-ask-');
+  const selectedEnv = env(cwd);
+  let hits = 0;
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => { hits += 1; return new Response('reachable'); } });
+  try {
+    const probe = (label: string, url: string, options = '') => `curl --silent --output /dev/null --noproxy '' ${options}`
+      + ` --max-time 1 --write-out 'RESULT ${label} %{http_code}\\n' ${quote(url)};`;
+    const statuses = (output: string) => Object.fromEntries(output.split('\n')
+      .filter((line) => line.startsWith('RESULT ')).map((line) => line.split(' ').slice(1, 3)));
+    const execute = (command: string, askNetwork: NetworkAsk) => runCommand(command, 3000, new AbortController().signal,
+      { cwd, logDir: join(cwd, 'logs'), env: selectedEnv, policy: workspacePolicy(cwd, selectedEnv), askNetwork });
+    const twice = `${probe('first', 'http://kite-ask.invalid:8080/')} ${probe('second', 'http://kite-ask.invalid:8080/again')}`;
+    const loopback = `http://127.0.0.1:${server.port}/`;
+    const asked: Record<'deny' | 'allow' | 'pending', Array<{ host: string; port?: number }>> = { deny: [], allow: [], pending: [] };
+    let voided!: () => void;
+    const pendingVoided = new Promise<void>((resolve) => { voided = resolve; });
+    const [denied, allowed] = await Promise.all([
+      execute(twice, async (target) => { asked.deny.push(target); return false; }),
+      execute([twice,
+        probe('loopback', loopback),
+        probe('localhost', `http://localhost:${server.port}/`),
+        probe('numeric', `http://2130706433:${server.port}/`),
+        probe('socks', loopback, '--proxy "$FTP_PROXY"'),
+      ].join(' '), async (target) => { asked.allow.push(target); return true; }),
+      // 不回应，只在作废时结束；作废等的是 abort 事件，不卡命令返回的那一刻。
+      execute(`curl --silent --max-time 0.3 http://kite-pending.invalid:8080/`, (target, signal) => new Promise<boolean>((resolve) => {
+        asked.pending.push(target);
+        signal.addEventListener('abort', () => { voided(); resolve(false); }, { once: true });
+        if (signal.aborted) { voided(); resolve(false); }
+      })),
+    ]);
+    expect(statuses(denied.output)).toEqual({ first: '403', second: '403' });
+    expect(asked.deny).toEqual([{ host: 'kite-ask.invalid', port: 8080 }]);
+    expect(statuses(allowed.output)).toEqual({
+      first: '502', second: '502', loopback: '403', localhost: '403', numeric: '403', socks: '000',
+    });
+    expect(asked.allow).toEqual([{ host: 'kite-ask.invalid', port: 8080 }]);
+    expect(hits).toBe(0);
+    expect(asked.pending).toEqual([{ host: 'kite-pending.invalid', port: 8080 }]);
+    await pendingVoided;
+  } finally {
+    await server.stop(true);
   }
 }, 1000);

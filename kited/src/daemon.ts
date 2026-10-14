@@ -38,7 +38,9 @@ export function startDaemon(opts: DaemonOptions): Daemon {
   const account = new AccountClient((): AccountLink | undefined => publisher.link());
   const kite = new Kite(store, opts.home, new Bus(), opts, account);
   // 迁移远程由用户在 App 中操作，工作机定期对照登记表；离线的工作机上线后在下一轮赶上。
-  const sync = () => kite.syncProjects().catch((error: unknown) => console.error(`[项目同步] ${(error as Error).message}`));
+  // 执行权随项目同步一起核对：别的机器已接管的工作区在这里冻结。
+  const sync = () => kite.syncProjects().catch((error: unknown) => console.error(`[项目同步] ${(error as Error).message}`))
+    .then(() => kite.syncLeases());
   // 资源库与项目约束由账号服务推送，加入账号或换了凭据时重连事件流。
   const publisher: CatalogPublisher = new CatalogPublisher(join(opts.home, 'catalog-publisher.json'), kite, () => { void sync(); kite.library.connect(); });
   const syncTimer = setInterval(() => void sync(), PROJECT_SYNC_MS);
@@ -55,6 +57,8 @@ export function startDaemon(opts: DaemonOptions): Daemon {
     port: opts.port || 5483, target: remote.port!, proxyToken,
   });
   const server = serve(kite, { hostname: '127.0.0.1', port: opts.port, network, publisher });
+  kite.listening({ url: `http://127.0.0.1:${server.port}`, network });
+  kite.monitor.start();
   return {
     url: `http://127.0.0.1:${server.port}`,
     remoteUrl: `http://127.0.0.1:${remote.port}`,

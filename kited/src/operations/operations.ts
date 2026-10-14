@@ -6,7 +6,7 @@ import { FileDiffStore } from '../workspace/file-diffs.ts';
 import { KiteError, OperationError, operationError } from '../errors.ts';
 import type { Kite } from '../kite.ts';
 import type { PluginInstance } from '../model.ts';
-import { operationContracts, operationGrantsSchema, type OperationCaller, type OperationGrant, type OperationInput, type OperationName } from './contract.ts';
+import { grantTools, operationContracts, operationGrantsSchema, type OperationCaller, type OperationGrant, type OperationInput, type OperationName } from './contract.ts';
 import type { JsonObject, Tool, ToolResult } from '../harness/types.ts';
 import { WorkspaceFiles, fileSelection } from '../workspace/files.ts';
 import { assertFileAccess, hostPrivatePaths } from '../execution/sandbox.ts';
@@ -157,7 +157,9 @@ export class InstanceOperations {
       }
       case 'agent.send': {
         const input = args as OperationInput<'agent.send'>;
-        return this.kite.send(input.instanceId, input.text, inputId(caller, input.operationId), caller.kind === 'ui' ? 'human' : 'kite', check);
+        // Line 自己的说明是 Kite 来源。
+        return this.kite.send(input.instanceId, input.text, inputId(caller, input.operationId),
+          caller.kind === 'ui' && !caller.via ? 'human' : 'kite', check, caller.kind === 'ui' ? caller.via : undefined);
       }
       case 'agent.resume':
         await this.kite.resume(args.instanceId as string, check);
@@ -216,10 +218,7 @@ export class InstanceOperations {
   prepareTools(instance: PluginInstance): OperationToolSelection {
     const grants = parse(operationGrantsSchema, instance.config.grants ?? []);
     const bindings = pluginToolBindings(instance);
-    const allowed = new Set([...grants.flatMap((grant) => {
-      const tool = operationContracts[grant.operation].tool;
-      return tool ? [tool] : [];
-    }), ...bindings.filter((binding) => pluginToolGranted(binding, grants)).map((binding) => binding.modelName)]);
+    const allowed = new Set([...grants.flatMap(grantTools), ...bindings.filter((binding) => pluginToolGranted(binding, grants)).map((binding) => binding.modelName)]);
     return { plugins: this.pluginTools(instance.id, instance.workspaceId, bindings), allowed, sources: bindings.map(pluginToolSource) };
   }
 

@@ -8,7 +8,11 @@ export interface Input {
   id: string;
   text: string;
   source: 'human' | 'kite';
+  /** 经 Line 转达：human 是转达的用户原文，kite 是 Line 自己的说明。只用于显示与去重，不改变权限。 */
+  via?: InputVia;
 }
+
+export interface InputVia { kind: 'line'; machine: string; instance: string }
 
 export interface ToolCall {
   id: string;

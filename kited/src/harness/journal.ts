@@ -10,7 +10,8 @@ import type { Journal, JournalEvent, JournalRecord } from './types.ts';
 
 const id = z.string().min(1);
 const raw = z.record(z.string(), z.json());
-const input = z.object({ id, text: z.string(), source: z.enum(['human', 'kite']) });
+const input = z.object({ id, text: z.string(), source: z.enum(['human', 'kite']),
+  via: z.object({ kind: z.literal('line'), machine: id, instance: id }).optional() });
 const call = z.object({ id, name: id, arguments: z.json() });
 const item = z.object({ id, raw, format: z.literal('anthropic').optional(), call: call.optional() });
 const result = z.object({ status: z.enum(['success', 'error', 'not_executed', 'unknown']), output: z.string(), diff: diffReferenceSchema.optional(),

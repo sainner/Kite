@@ -4,6 +4,7 @@ import type { DomainEvent, Stamped } from '../events.ts';
 import type { CheckResult } from '../check.ts';
 import type { Input, Json, Phase, Outcome, Recovery } from '../harness/types.ts';
 import type { WorkspaceStatus } from '../model.ts';
+import type { Waiting } from '../waiting.ts';
 
 export type DisplayBlock =
   | { type: 'human'; id: string; text: string; midTurn: boolean }
@@ -25,6 +26,8 @@ export interface DisplayState {
   /** 正在生成压缩摘要。 */
   compacting?: boolean;
   waitingForResume: boolean;
+  /** 回合卡在一个提问上等人回应；phase 仍为 running。 */
+  waiting?: Waiting;
   lastOutcome?: Outcome;
   recovery?: Recovery;
   status: WorkspaceStatus;

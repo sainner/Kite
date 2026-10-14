@@ -5,7 +5,8 @@ import { inScope } from './transcript/feed.ts';
 import { z } from 'zod';
 import type { Server, ServerWebSocket } from 'bun';
 import type { Kite } from './kite.ts';
-import { operationCatalog } from './operations/contract.ts';
+import { inputVia, operationCatalog } from './operations/contract.ts';
+import type { InputVia } from './harness/types.ts';
 import { roleSelection } from './roles.ts';
 import { agentDefinitionSchema } from './agents/definition.ts';
 import { defaultAgentModel } from './agents/models.ts';
@@ -13,6 +14,7 @@ import type { Network } from './network.ts';
 import { publisherConfig, type CatalogPublisher } from './catalog-publisher.ts';
 import { tokenPrices } from './token-prices.ts';
 import type { VoiceSocket } from './voice/sessions.ts';
+import { WaitingConflict } from './waiting.ts';
 
 async function body(req: Request): Promise<Record<string, unknown>> {
   try { return (await req.json()) as Record<string, unknown>; } catch { throw new KiteError('请求体不是 JSON'); }
@@ -42,7 +44,19 @@ function handle<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
 
 function errorResponse(e: unknown) {
   const status = e instanceof KiteError ? e.status : 500;
-  return Response.json({ error: (e as Error).message, ...(e instanceof OperationError ? { outcome: e.outcome } : {}) }, { status });
+  return Response.json({ error: (e as Error).message, ...(e instanceof OperationError ? { outcome: e.outcome } : {}),
+    ...(e instanceof WaitingConflict ? { waiting: e.waiting } : {}) }, { status });
+}
+
+/** 另一台工作机上的 Line 调用时在 X-Kite-Source 声明的来源；只记入输入，不参与授权，可信度等于调用方工作机。 */
+function sourceOf(req: Request): InputVia | undefined {
+  const raw = req.headers.get('X-Kite-Source');
+  if (!raw) return undefined;
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { throw new KiteError('X-Kite-Source 不是 JSON'); }
+  const parsed = inputVia.safeParse(value);
+  if (!parsed.success) throw new KiteError('X-Kite-Source 无效');
+  return parsed.data;
 }
 
 /** Git 网络操作和轻任务可能长时间没有响应数据，由各自的生命周期控制结束。 */
@@ -228,12 +242,43 @@ export function serve(kite: Kite, listen: Listen) {
           const workspaces = kite.workspaces(new URL(req.url).searchParams.get('project') ?? undefined);
           return Response.json(workspaces, { headers: { 'X-Kite-Cursor': kite.events.cursor, 'Cache-Control': 'no-store' } });
         }),
-        POST: bound(async (req) => {
+        // 写 project 时可能先 clone，请求不受空闲超时限制。
+        POST: long(bound(async (req) => {
           const b = await body(req);
-          return kite.createWorkspace(str(b.checkout, 'checkout'), b.name === undefined ? '' : str(b.name, 'name'),
-            b.prompt === undefined ? undefined : str(b.prompt, 'prompt'), roleSelection(b.role));
-        }),
+          if ((b.checkout === undefined) === (b.project === undefined)) throw new KiteError('创建工作区要写 checkout 或 project 中的一个');
+          const name = b.name === undefined ? '' : str(b.name, 'name');
+          const prompt = b.prompt === undefined ? undefined : str(b.prompt, 'prompt');
+          return b.project === undefined ? kite.createWorkspace(str(b.checkout, 'checkout'), name, prompt, roleSelection(b.role))
+            : kite.createProjectWorkspace(str(b.project, 'project'), name, prompt, roleSelection(b.role));
+        })),
       },
+      '/summary': { GET: bound(() => kite.summary()) },
+      // 启用 Line 要建托管项目并推送，请求不受空闲超时限制。
+      '/line': { POST: long(bound(() => kite.enableLine())) },
+      '/environment': { GET: bound((req) => kite.environment(str(new URL(req.url).searchParams.get('project') ?? undefined, 'project'))) },
+      '/workspaces/:id/setup': { POST: bound((req) => kite.retrySetup(req.params.id)) },
+      '/workspaces/:id/handover': { POST: long(bound(async (req) => {
+        const raw = await req.text();
+        let data: unknown;
+        try { data = raw ? JSON.parse(raw) : {}; } catch { throw new KiteError('请求体不是 JSON'); }
+        const parsed = z.object({ allowMaterials: z.boolean().optional() }).strict().safeParse(data);
+        if (!parsed.success) throw new KiteError('交接请求无效');
+        return kite.transfers.handover(req.params.id, parsed.data);
+      })) },
+      '/workspaces/:id/handover/cancel': { POST: long(bound((req) => kite.transfers.cancel(req.params.id))) },
+      '/workspaces/:id/monitor': { GET: bound((req) => {
+        const line = kite.lineInstance();
+        if (!line || line.workspaceId !== req.params.id) throw new KiteError('这个工作区没有 Line', 404);
+        return kite.monitor.state();
+      }) },
+      '/workspaces/:id/lease/check': { POST: long(bound((req) => kite.transfers.check(req.params.id))) },
+      '/workspaces/restore': { POST: long(bound(async (req) => {
+        const parsed = z.object({ project: z.string().min(1), workspaceId: z.string().min(1), operationId: z.string().min(1) }).strict().safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('还原请求要写 project、workspaceId 与 operationId');
+        const { project, workspaceId, operationId } = parsed.data;
+        return kite.receipts.run({ actor: 'ui', id: operationId, request: JSON.stringify({ name: 'workspace.restore', workspaceId, project }),
+          execute: () => kite.transfers.restore(project, workspaceId) });
+      })) },
       '/plugin-definitions': {
         GET: bound(() => kite.catalog.definitions()),
         POST: bound(async (req) => kite.installPlugin(await body(req))),
@@ -339,6 +384,10 @@ export function serve(kite: Kite, listen: Listen) {
           return kite.configureExecutionGrants(req.params.id, parsed.data.expectedRevision, parsed.data.grants);
         }),
       },
+      '/instances/:id/approval-mode': {
+        GET: bound((req) => kite.approvalMode(req.params.id)),
+        PUT: bound(async (req) => kite.configureApprovalMode(req.params.id, await body(req))),
+      },
       '/workspaces/:id/threads': {
         POST: bound(async (req) => {
           const b = await body(req);
@@ -365,7 +414,8 @@ export function serve(kite: Kite, listen: Listen) {
       '/threads/:id/messages': {
         POST: bound(async (req) => {
           const b = await body(req);
-          return kite.operations.invoke({ kind: 'ui' }, kite.thread(req.params.id).workspaceId, 'agent.send', {
+          const via = sourceOf(req);
+          return kite.operations.invoke({ kind: 'ui', ...(via ? { via } : {}) }, kite.thread(req.params.id).workspaceId, 'agent.send', {
             instanceId: req.params.id, text: str(b.text, 'text'), operationId: b.id === undefined ? crypto.randomUUID() : str(b.id, 'id'),
           }, req.signal);
         }),
@@ -394,6 +444,11 @@ export function serve(kite: Kite, listen: Listen) {
         }, req.signal);
       }) },
       '/threads/:id/recover': { POST: bound((req) => kite.recover(req.params.id)) },
+      '/threads/:id/waiting/:waiting': { POST: bound(async (req) => {
+        kite.thread(req.params.id);
+        kite.waits.respond(req.params.id, req.params.waiting, await body(req));
+        return { ok: true };
+      }) },
       '/threads/:id/compactions': { POST: bound(async (req) => {
         const parsed = z.object({ id: z.string().min(1), from: z.string().min(1), through: z.string().min(1) }).strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('压缩请求无效');

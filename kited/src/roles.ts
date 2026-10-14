@@ -10,6 +10,7 @@ import { defaultContextDefinition } from './harness/context/project.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
 import type { PluginInstance, Workspace } from './model.ts';
 import { agentTools } from './plugins/definitions.ts';
+import { lineToolNames } from './operations/contract.ts';
 import type { Store } from './store.ts';
 
 export const roleSchema = z.object({
@@ -86,10 +87,26 @@ const reviewContext: ContextDefinition = { ...defaultContextDefinition, id: 'kit
     text: '你是 Kite 的只读审查助手。使用简体中文，读取用户指定的文件，报告有证据的问题、影响与修改建议。当前只有 read 工具；需要目录或 diff 时请用户提供，不声称已执行修改或检查命令。' }] },
   ...defaultContextDefinition.blocks.filter((block) => ['environment', 'project-rules', 'documents'].includes(block.id)),
 ] };
+export const lineRoleId = 'kite.line';
+const lineTools: ToolRule = { mode: 'allow', tools: ['read', 'patch', 'question', ...lineToolNames], required: ['line_status'] };
+const lineContext: ContextDefinition = { ...defaultContextDefinition, id: lineRoleId, title: 'Line', blocks: [
+  { type: 'paragraph', id: 'identity', title: 'Line 的职责', parts: [{ type: 'text', text: [
+    '你是 Line，用户的个人 agent，统一协调账号下各项目的工作区，减少用户巡视进度、搬运上下文、转发问答和记挂事项的负担。使用简体中文。',
+    '你不亲自写代码、做研究或跑测试，这些交给各项目里的代理。',
+    '- 用 line_status 查看各工作机、工作区、线程，以及它们在等用户回应的提问或审批；做判断前先核对最新状态。',
+    '- 需要用户知道或决定的事写在你的回复里，说清是哪台工作机、哪个项目、哪个线程的什么事；要用户在几个做法之间拍板时可以用 question 提问。其他线程在等的提问与审批由用户在原线程回应，你不替用户回答。',
+    '- line_control 可以向线程发送说明、继续、停止或归档；line_workspace 可以在指定工作机创建工作区，或把工作区流转到另一台工作机。停止、归档、创建、流转执行前会等用户批准，用户拒绝就不执行，不要换别的办法绕过。',
+    '- 收到工作区变化的通知时先核对，没有需要用户处理的事就简短说明核对结果；一句「收到」不收尾任何事。',
+    '- 你的记忆在本项目的 .kite/memory/ 下，用 read 和 patch 维护；回合结束时宿主会提交并推送。',
+  ].join('\n') }] },
+  ...defaultContextDefinition.blocks.filter((block) => ['environment', 'project-rules', 'documents'].includes(block.id)),
+] };
 const builtinRoles: Role[] = [
-  { version: 1, id: defaultRoleId, title: defaultContextDefinition.title, context: defaultContextDefinition, tools: allTools,
-    model: defaultModel, maxRequestsPerTurn: 50 },
+  // 工作角色不带 Line 的管理工具：它们的目标范围是整个账号。
+  { version: 1, id: defaultRoleId, title: defaultContextDefinition.title, context: defaultContextDefinition,
+    tools: { mode: 'deny', tools: [...lineToolNames], required: [] }, model: defaultModel, maxRequestsPerTurn: 50 },
   { version: 1, id: 'kite.review', title: reviewContext.title, context: reviewContext, tools: reviewTools, model: defaultModel, maxRequestsPerTurn: 50 },
+  { version: 1, id: lineRoleId, title: 'Line', context: lineContext, tools: lineTools, model: defaultModel, maxRequestsPerTurn: 30 },
 ];
 
 const snapshot = (role: Role): RoleSnapshot => ({ role, revision: createHash('sha256').update(JSON.stringify(role)).digest('hex') });

@@ -6,6 +6,7 @@ import type { PluginInstance, WorkspaceStatus } from './model.ts';
 import type { HarnessEvent } from './harness/types.ts';
 import type { ClaudeState } from './claude/control.ts';
 import type { ModelAccountsSnapshot } from './model-accounts.ts';
+import type { Waiting } from './waiting.ts';
 
 export type RuntimeEvent =
   | { type: 'claude.control'; state: ClaudeState }
@@ -14,7 +15,10 @@ export type RuntimeEvent =
   | { type: 'sdk'; message: SDKMessage }
   | { type: 'harness'; event: HarnessEvent }
   | { type: 'runner'; state: RunnerState; error?: string }
-  | { type: 'idle' }
+  /** completed：回合正常完成；停止、失败与恢复阻塞时为 false。 */
+  | { type: 'idle'; completed: boolean }
+  /** 等你回应的对象出现或解除（waiting 缺省）；对象由宿主的 Waits 持有，两个后端共用。 */
+  | { type: 'waiting'; waiting?: Waiting }
   | { type: 'check'; result: CheckResult }
   | { type: 'error'; message: string };
 export type ThreadEvent = RuntimeEvent & { threadId: string };

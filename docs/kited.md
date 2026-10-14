@@ -53,7 +53,7 @@ bun run harness --resume <会话id>
 
 当前提供 `read`、`patch`、`shell`、`credentials`，参数、失败和取消语义见 [基础工具契约](harness-主循环.md#工具执行约定)。上下文的编辑与生效见 [上下文模板](harness-上下文组装.md)。
 
-文件工具限制在工作目录内，shell 使用操作系统沙箱。默认工作区可读写、必要工具链可读、网络关闭；宿主凭据和内部记录受保护，Git 元数据只读。授权范围和平台限制见 [执行边界](Agent与插件契约.md#71-插件与-harness-共用操作系统沙箱)。独立终端尚无授权编辑入口，服务中的实例可在 App「执行授权」页编辑，见 [实例执行授权](实例操作.md#实例执行授权)。每回合的请求上限可用 `--max-requests` 调整，达到上限后等待显式继续。
+文件工具限制在工作目录内，shell 使用操作系统沙箱。默认工作区可读写、必要工具链可读、网络关闭；命令连接网络许可之外的主机时按实例的审批模式处理，默认直接拒绝，见 [工具审批与提问](工具审批与提问.md)。宿主凭据和内部记录受保护，Git 元数据只读。授权范围和平台限制见 [执行边界](Agent与插件契约.md#71-插件与-harness-共用操作系统沙箱)。独立终端尚无授权编辑入口，服务中的实例可在 App「执行授权」页编辑，见 [实例执行授权](实例操作.md#实例执行授权)。每回合的请求上限可用 `--max-requests` 调整，达到上限后等待显式继续。
 
 这个终端入口直接修改指定目录。需要独立工作树、快照与采纳时，通过 kited 创建工作区。独立终端不提供 agent 协作工具、账号凭据服务、skill 自动发现或外部 MCP 连接；上下文压缩只有自动触发，没有手动入口。服务中的 MCP 工具由 [Bun 插件宿主](Bun插件.md) 接入并授权。
 
@@ -69,7 +69,7 @@ bun run harness --resume <会话id>
 
 Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新验证上下文交接与压缩后的恢复，条件和证据见 [上下文翻译实验](research/2026-10-08-跨后端上下文翻译.md) 和 [Claude 会话重组实验](research/2026-10-09-Claude会话重组.md)。
 
-代理配置由创建时的角色加草稿里的调整得来，绑定到实例，重启沿用已保存内容。内置角色「工作」可用全部工具（read、patch、shell、credentials 及 agent 操作），「只读审查」只用 read 且 read 为必需；工具的逐层约束见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)，工具选择不能扩大授权。默认型号见 [共享模型目录](../shared/agent-models.json)，配置生效见 [线程通知投递](线程通知投递.md)，执行与恢复要求见 [harness 执行约定](harness-主循环.md) 和 [会话状态机](会话状态机.md)。
+代理配置由创建时的角色加草稿里的调整得来，绑定到实例，重启沿用已保存内容。内置角色「工作」可用全部工具（read、patch、shell、credentials、向用户提问的 question 及 agent 操作），「只读审查」只用 read 且 read 为必需；工具的逐层约束见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)，工具选择不能扩大授权。默认型号见 [共享模型目录](../shared/agent-models.json)，配置生效见 [线程通知投递](线程通知投递.md)，执行与恢复要求见 [harness 执行约定](harness-主循环.md) 和 [会话状态机](会话状态机.md)。
 
 ## 运行
 
@@ -148,7 +148,7 @@ bun src/cli.ts net up              # 开启已登录设备的组网
 
 Kite 托管账号与组网。Mac 和 iPhone 在 App 中使用账号密码登录，或扫描已登录设备的一次性二维码。两种 Mac 角色都入网，同账号设备可直接控制工作机；账号、设备发现与撤销的完整约定见 [托管账号与设备](托管账号与设备.md)。
 
-工作机由 kite-net（tsnet）接入网络，控制端由 App 内的 TailscaleKit 接入，不占用系统 VPN。本机执行模式的 App 复用 kited 的 SOCKS 入口，只维护一个网络节点。链路加密由 WireGuard 承担，Headscale 策略限制同账号互通；kite-net 还通过 WhoIs 核验请求来源与本节点属于同一用户。内部代理使用进程内随机凭据，外部传入的同名字段被覆盖。
+工作机由 kite-net（tsnet）接入网络，控制端由 App 内的 TailscaleKit 接入，不占用系统 VPN。本机执行模式的 App 复用 kited 的 SOCKS 入口，只维护一个网络节点。kite-net 另开一个本机 HTTP 代理入口，只转发到组网地址，供 kited 自己（Line）调用同账号的其他工作机，对端照常核验来源身份。链路加密由 WireGuard 承担，Headscale 策略限制同账号互通；kite-net 还通过 WhoIs 核验请求来源与本节点属于同一用户。内部代理使用进程内随机凭据，外部传入的同名字段被覆盖。
 
 `kite net` 查看状态及各对端是直连还是经中继；已登录后可用 `kite net up`、`kite net down` 开启或暂停组网。新设备的入网密钥来自账号服务，工作机不保存 Headscale 管理密钥。移除设备会撤销其网络节点和账号会话；已有远程请求随撤销传播而关闭。网络错误和服务重启可以重连，401 提示重新登录，409 表示目标工作机身份不符。
 
@@ -159,15 +159,20 @@ Kite 托管账号与组网。Mac 和 iPhone 在 App 中使用账号密码登录�
 | 操作 | 行为与限制 |
 |---|---|
 | 登记检出 | 按目录的 origin 归入项目，建立直接使用登记目录的根工作区，不创建线程。没有 origin 时建托管远程并推送，普通文件夹先由 Kite 初始化仓库并提交初始版本 |
-| 创建独立工作区 | 从检出当前 HEAD 建立独立工作树；现场未提交的改动不带入，也不由 Kite 代为提交。可以先建空工作区，也可在准备完成后运行首条消息 |
-| 添加线程 | 根工作区和独立工作区都可有多个线程，各自保存对话；当前同一 cwd 有执行或恢复阻塞时，不能启动另一线程。App 的新代理草稿只在本机，第一条消息连同所选角色和调整过的模型、工具、预算一次创建实例、线程与窗口 |
-| 快照与回退 | 每批工具后与回合结束时保存变更，快照不改变 HEAD、分支或暂存区。回退先保存现状，再恢复文件；执行或恢复阻塞期间不允许回退 |
+| 创建独立工作区 | 从检出当前 HEAD 建立独立工作树；现场未提交的改动不带入，也不由 Kite 代为提交。可以先建空工作区，也可在准备完成后运行首条消息。可以只指定项目：先检查这台工作机的环境，不满足就不建；没有该项目的检出时自动 clone 到默认位置并登记，检出保留 |
+| 添加线程 | 根工作区和独立工作区都可有多个线程，各自保存对话；线程之间默认并行，一个线程在执行、等你回应或恢复阻塞时，其他线程照常启动，见 [工作区并行](工作区并行.md)。App 的新代理草稿只在本机，第一条消息连同所选角色和调整过的模型、工具、预算一次创建实例、线程与窗口 |
+| 快照与回退 | 每批工具后与回合结束时保存整个工作区的变更并记下触发的线程，快照不改变 HEAD、分支或暂存区。回退先保存现状，再恢复文件；任一线程在执行或恢复阻塞期间不允许回退 |
 | 采纳（集成） | 将独立工作区改动合回检出主线并推送到远程。现场有未提交的改动或不在分支上时拒绝。同一检出的采纳串行执行，冲突留在独立工作树；采纳后工作区与线程仍可继续使用 |
 | 现场提交并推送 | 由用户触发，把现场改动提交后推送。远程领先而现场没有新内容时快进；两边都有新内容时拒绝，提示新建工作区集成 |
 | 归档实例 | 停止该实例的执行并关闭它的窗口，保留会话、业务数据、工作区和快照；随窗口回收的实例关闭窗口即可，不提供归档 |
 | 归档工作区 | 停止所有线程、保存最后快照，回收独立工作树和分支，归档实例并关闭共享窗口。未采纳改动须显式 `force`；根工作区不能通过此操作删除 |
+| 跨机流转 | 所有线程空闲时交出工作区，恢复材料推到项目远程；另一台工作机还原并接管后，本机记录冻结为 `transferred`。工作区 ID 不变，`epoch` 加 1；见 [工作区流转](Line与工作区流转.md#工作区流转) |
 
-工作树准备可用 `worktree.symlinkDirectories` 链接依赖目录，用 `.worktreeinclude` 带入指定的忽略文件；随后运行项目的 `.kite/setup`，通过 `KITE_MAIN_DIR` 提供检出目录。准备失败或被打断时工作区为 `failed`；成功后保存初始快照并开放使用。准备中的首个线程被打断也会中止初始化。
+工作树准备可用 `worktree.symlinkDirectories` 链接依赖目录，用 `.worktreeinclude` 带入指定的忽略文件；随后运行项目的 `.kite/setup`，通过 `KITE_MAIN_DIR` 提供检出目录。准备失败或被打断时工作区为 `failed`，可以用 `POST /workspaces/:id/setup` 重跑，不自动重跑；成功后保存初始快照并开放使用。准备中的首个线程被打断也会中止初始化。
+
+`.kite/setup` 与模型的 shell 共用操作系统沙箱：工作树可写，检出目录与必要工具链可读，宿主凭据、数据库与会话记录受保护，Git 元数据只读。环境只带开发工具的基础设置（与 shell 相同）和 `KITE_MAIN_DIR`，不继承 kited 进程的完整环境。网络在项目级网络授权落地前放行，回环与本机地址仍不可达。完整输出只写工作区的 `setup.log`，事件只带退出码和输出末尾；setup 尚不能领取凭据。
+
+按项目创建前的环境检查读 `GET /environment?project=`，只读本机：平台与系统版本、ChatGPT 与 Claude 订阅在这台工作机的登录（凭据在且未过期为 `ready`，不代表额度可用）、放工作树的卷与检出（或将要 clone 到的位置）所在卷的剩余空间，以及已有检出。按项目创建时，所选角色默认模型的厂商未登录或任一卷剩余不足 1 GB 返回 409。项目声明的凭据引用待 setup 能声明后再检查。
 
 采纳先拉取远程主线，把本地主线和远程主线依次合进工作区分支，主目录快进后推送；推送被拒时重新拉取、合并再推，最多三次。拉取或推送失败不撤销本地主线，结果中的 `push` 报告失败原因，下次采纳或现场推送时一并推上去。采纳冲突交给独立工作区中的一个打开线程处理，主目录不进入冲突状态。agent 仅编辑文件，Git 合并由宿主完成；解决回合正常完成后自动重试一次，仍有冲突则报告，等待用户手动重试。
 
@@ -253,7 +258,13 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | GET/PUT | `/network` | 仅本机：组网状态，上线后 `peers` 列出对端设备的连接方式（`direct` 直连、`relay` 经中继、`idle` 近期无流量）；`{enabled}` 开启或关闭组网节点 |
 | GET | `/projects` | 列出本机已登记的项目身份 |
 | GET/POST | `/checkouts` | 列出本机检出（`?project=`）；登记本机文件夹 `{path}` 或 clone 远程 `{remote, path?}`，返回根工作区聚合 |
-| GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, role?}`，`role` 为 `{id, revision}`，准备过程看事件 |
+| GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, role?}`，或以 `project` 代替 `checkout`（先检查环境，没有检出时先 clone），`role` 为 `{id, revision}`，准备过程看事件 |
+| GET | `/environment?project=` | 这台工作机为该项目建工作区前的环境，只读，见 [工作区与线程的生命周期](#工作区与线程的生命周期) |
+| POST | `/workspaces/:id/setup` | 准备失败的独立工作区重跑准备；工作树没建成时重建 |
+| POST | `/workspaces/:id/handover` | 交出工作区：进入可交接状态并把恢复材料推到项目远程 `{allowMaterials?}`；`/handover/cancel` 撤回，`/lease/check` 立即核对执行权。约定见 [工作区流转](Line与工作区流转.md#工作区流转) |
+| POST | `/workspaces/restore` | 在本机还原并接管流转来的工作区 `{project, workspaceId, operationId}` |
+| GET | `/summary` | 这台工作机的状态汇总：未归档工作区、线程执行状态与等你回应的对象 |
+| POST | `/line` | 在这台工作机启用个人 agent Line；`GET /workspaces/:id/monitor` 读 Line 的 monitor 状态。约定见 [Line](Line与工作区流转.md#line) |
 | GET | `/workspaces/:id` | 工作区上下文及 instances、threads、windows 的完整聚合 |
 | GET / POST | `/plugin-definitions` | 读取定义（含账号资源库里尚未装到本机的包）或登记自定义包；包格式见 Bun 插件契约 |
 | GET | `/operations` | 操作输入、输出、错误 schema，以及重试与取消规则 |
@@ -271,7 +282,8 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | POST | `/token-counts` | 以 `{texts, model?, scene?}` 逐段计数，返回 `{model, results}`；没给模型时按场景推出。账号里有对应厂商的 API Key 时用官方计数接口（`method: api`），否则 OpenAI 按 o200k 估算、Claude 不给数；`exact` 标明是否准确 |
 | GET / PUT | `/threads/:id/title` | 读取标题与生成进度；以 expectedRevision 手动改名或恢复自动标题 |
 | POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不阻塞主会话控制 |
-| GET / PUT | `/instances/:id/execution-grants` | 读取或修改执行授权；须停止且无恢复阻塞 |
+| GET / PUT | `/instances/:id/execution-grants` | 读取或修改执行授权；须停止且无恢复阻塞，「允许并记住」追加网络许可例外 |
+| GET / PUT | `/instances/:id/approval-mode` | 读取或设置审批模式 `{mode}`：`allowlist`（默认）、`ask` 或 `allow_all`，运行中也可改，下一次越界请求生效 |
 | GET / PUT | `/instances/:id/operation-grants` | 读取实例操作授权及 revision；以 expectedRevision 和 grants 更新 |
 | POST | `/workspaces/:id/windows` | 创建实例及默认窗口，或打开已有实例视图；请求使用稳定 id |
 | DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口；最后窗口按插件生命周期回收实例或保留 |
@@ -284,6 +296,7 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | POST | `/threads/:id/interrupt` | 停止会话，返回尚未纳入请求的队列；请求 `{id, inputs?}`，响应 `{returned}` |
 | POST | `/threads/:id/resume` | 继续暂停的线程；可带 operationId 以安全重试 |
 | POST | `/threads/:id/recover` | 确认恢复，不自动执行 |
+| POST | `/threads/:id/waiting/:waiting` | 回应线程在等的提问 `{answers}` 或审批 `{decision}`；已回应或已作废返回 409 与当前的 `waiting`。约定见 [工具审批与提问](工具审批与提问.md) |
 | POST | `/threads/:id/compactions` | 手动压缩上下文 `{id, from, through}`，起止为输入 id；校验通过即返回，结果经显示事件送达 |
 | DELETE | `/threads/:id/compactions/:compaction` | 撤销最外层的一次压缩 |
 | POST | `/instances/:id/archive` | 归档独立存续的实例（agent 或 Bun 插件），保留所属工作区 |

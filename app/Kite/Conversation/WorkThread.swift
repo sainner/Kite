@@ -68,6 +68,8 @@ final class WorkThread: Identifiable {
         switch state?.status {
         case "preparing": return "正在准备工作区"
         case "archived": return "已归档"
+        case "handing_off": return "正在交给另一台工作机"
+        case "transferred": return "已流转到另一台工作机"
         default: break
         }
         return Self.turnStatus(phase: state?.phase, outcome: state?.lastOutcome?.kind, waitingForResume: state?.waitingForResume == true)

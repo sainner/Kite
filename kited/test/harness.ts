@@ -12,6 +12,7 @@ import type { Model } from '../src/harness/types.ts';
 import type { Machine, Thread, ThreadContext, WorkspaceModel } from '../src/model.ts';
 import type { Role } from '../src/roles.ts';
 import type { RuntimeOptions } from '../src/runtime.ts';
+import type { Snapshot } from '../src/workspace/snapshots.ts';
 import { type FakeAccount, linkAccount, startFakeAccount } from './fake-account.ts';
 import { api } from './setup.ts';
 import { makeTemp } from './util.ts';
@@ -55,14 +56,18 @@ export async function call(
   return { status: r.status, body: await r.json() };
 }
 
+/**
+ * peers.directory 替换账号目录：同一进程里的几台 kited 直接按各自的监听地址互相访问（Line 的跨机调用），不经 kite-net。
+ */
 export function startKited(
   model?: (thread: ThreadContext) => Model, lightTasks: RuntimeOptions['lightTasks'] = false, shared?: FakeAccount,
+  options: Pick<RuntimeOptions, 'peers'> = {},
 ): Kited {
   const root = makeTemp('kited-');
   const home = join(root, 'kite');
   const account = shared ?? startFakeAccount(join(root, 'account'));
   linkAccount(home, account);
-  const daemon = startDaemon({ home, port: 0, model, lightTasks });
+  const daemon = startDaemon({ home, port: 0, model, lightTasks, ...options });
   let machineId: Promise<string> | undefined;
   const events: Envelope[] = [];
   const waiters: Array<{ pred: (e: Envelope) => boolean; resolve: (e: Envelope) => void }> = [];
@@ -165,7 +170,7 @@ export async function sendThreadMessage(k: Kited, id: string, text: string): Pro
   if (r.status !== 200) throw new Error(`发消息失败：${r.status} ${JSON.stringify(r.body)}`);
 }
 
-export async function listSnapshots(k: Kited, workspaceId: string): Promise<Array<{ commit: string; at: number; label: string; toolUseIds: string[] }>> {
+export async function listSnapshots(k: Kited, workspaceId: string): Promise<Snapshot[]> {
   const r = await k.call('GET', `/workspaces/${workspaceId}/snapshots`);
   if (r.status !== 200) throw new Error(`取快照失败：${r.status} ${JSON.stringify(r.body)}`);
   return r.body;

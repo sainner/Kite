@@ -414,6 +414,17 @@ export async function createAccountService(options: Options) {
       }
       return result({ token: session.token, user: { id: existing.user.id, email: existing.user.email, name: existing.user.name } });
     }
+    // 工作机也能读同账号的目录：Line 所在的工作机据此找到其他工作机的组网地址。
+    if (path === '/api/catalog' && request.method === 'GET') {
+      const { userId } = await owner(request);
+      const devices = db.query<Device, [string, string]>('SELECT * FROM kite_device WHERE userId = ? AND role = ? ORDER BY createdAt, rowid').all(userId, 'worker');
+      const all = devices.length ? await nodes() : [];
+      return result(devices.map((device) => {
+        const catalog = db.query<Catalog, [string]>('SELECT * FROM kite_catalog WHERE deviceId = ?').get(device.id);
+        return catalog && { device: view(device, all), machineId: catalog.machineId, updatedAt: catalog.updatedAt,
+          revision: catalog.revision, snapshot: catalog.snapshot ? JSON.parse(catalog.snapshot) : null };
+      }).filter(Boolean));
+    }
     const login = await auth.api.getSession({ headers: request.headers });
     if (!login) throw new RequestError('请登录 Kite', 401);
     if (path === '/api/account' && request.method === 'GET') return result({ user: login.user });
@@ -441,15 +452,6 @@ export async function createAccountService(options: Options) {
       if (polled.status !== 'authorized') return result({ status: polled.status });
       credentialService.saveCredential(login.user.id, 'github.com', polled.login, polled.token);
       return result({ status: 'authorized', account: polled.login });
-    }
-    if (path === '/api/catalog' && request.method === 'GET') {
-      const devices = db.query<Device, [string, string]>('SELECT * FROM kite_device WHERE userId = ? AND role = ? ORDER BY createdAt, rowid').all(login.user.id, 'worker');
-      const all = devices.length ? await nodes() : [];
-      return result(devices.map((device) => {
-        const catalog = db.query<Catalog, [string]>('SELECT * FROM kite_catalog WHERE deviceId = ?').get(device.id);
-        return catalog && { device: view(device, all), machineId: catalog.machineId, updatedAt: catalog.updatedAt,
-          revision: catalog.revision, snapshot: catalog.snapshot ? JSON.parse(catalog.snapshot) : null };
-      }).filter(Boolean));
     }
     const publisher = /^\/api\/devices\/([^/]+)\/catalog-publisher$/.exec(path);
     if (publisher && request.method === 'POST') {

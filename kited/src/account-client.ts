@@ -22,6 +22,14 @@ export interface RegisteredProject {
   createdAt: number;
 }
 
+/** 账号目录里的一台工作机；address 是组网地址，入网后才有。 */
+export interface AccountMachine {
+  id: string;
+  name: string;
+  online: boolean;
+  address?: string;
+}
+
 /** 账号里的一把模型 API Key；OpenAI、Anthropic 可以只有组织管理 Key。 */
 export interface ApiKey {
   id: string;
@@ -105,6 +113,14 @@ export class AccountClient {
   createHosted(name: string): Promise<RegisteredProject> { return this.request('POST', '/api/projects', { hosted: { name } }); }
 
   projects(): Promise<RegisteredProject[]> { return this.request('GET', '/api/projects'); }
+
+  /** 同账号的工作机及其组网地址；目录快照不在这里用，各机状态直接向工作机读取。 */
+  async machines(signal?: AbortSignal): Promise<AccountMachine[]> {
+    const entries = await this.request<Array<{ device: { name: string; online: boolean; address?: string }; machineId: string | null }>>(
+      'GET', '/api/catalog', undefined, signal);
+    return entries.flatMap((entry) => entry.machineId ? [{ id: entry.machineId, name: entry.device.name, online: entry.device.online,
+      ...(entry.device.address ? { address: entry.device.address } : {}) }] : []);
+  }
 
   /** 资源库与项目约束的变化通知，是一直开着的事件流；连上时服务先发一次。 */
   async libraryEvents(signal: AbortSignal): Promise<ReadableStream<Uint8Array>> {

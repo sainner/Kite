@@ -3,9 +3,20 @@ import { z } from 'zod';
 import { diffID, fileDiffSchema } from '../workspace/file-diffs.ts';
 import { fileSelectionSchema, readFileArgs } from '../workspace/files.ts';
 
+/**
+ * Line 的管理动作与对应工具。停止、归档、创建、流转须经用户批准，审批层接入之前不执行，见 line/tools.ts。
+ */
+export const lineActions = ['status', 'send', 'resume', 'stop', 'archive', 'create', 'transfer'] as const;
+export type LineAction = (typeof lineActions)[number];
+export const lineToolNames = ['line_status', 'line_control', 'line_workspace'] as const;
+export const lineToolActions: Record<(typeof lineToolNames)[number], readonly LineAction[]> = {
+  line_status: ['status'], line_control: ['send', 'resume', 'stop', 'archive'], line_workspace: ['create', 'transfer'],
+};
+
 const id = z.string().min(1);
 const text = z.string().refine((value) => !!value.trim(), '内容不能为空');
-const input = z.object({ id, text, source: z.enum(['human', 'kite']) }).strict();
+export const inputVia = z.object({ kind: z.literal('line'), machine: id, instance: id }).strict();
+const input = z.object({ id, text, source: z.enum(['human', 'kite']), via: inputVia.optional() }).strict();
 const target = z.object({ operationId: id, instanceId: id }).strict();
 const ok = z.object({ ok: z.literal(true) }).strict();
 const summary = z.object({
@@ -76,7 +87,8 @@ export const operationContracts = {
 
 export type OperationName = keyof typeof operationContracts;
 export type OperationInput<N extends OperationName> = z.infer<(typeof operationContracts)[N]['input']>;
-export type OperationCaller = { kind: 'ui' } | {
+/** ui 的 via 是另一台工作机上的 Line 经界面入口调用时声明的来源，只记入输入与收据，不参与授权。 */
+export type OperationCaller = { kind: 'ui'; via?: z.infer<typeof inputVia> } | {
   kind: 'model' | 'plugin'; instanceId: string; turnId?: string; callId?: string;
 };
 
@@ -91,8 +103,17 @@ export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
   ...(['agent.send', 'agent.resume', 'agent.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
   ...(['files.list', 'files.read', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
     targets: z.object({ kind: z.literal('instances'), instanceIds: z.array(id) }).strict() }).strict()),
+  /** Line 的管理动作，目标范围是账号目录里的全部工作区；actions 是用户允许的白名单。 */
+  z.object({ operation: z.literal('line'), actions: z.array(z.enum(lineActions)) }).strict(),
 ]));
 export type OperationGrant = z.infer<typeof operationGrantsSchema>[number];
+
+/** 授权对应的模型工具；文件、插件授权不经模型工具。 */
+export function grantTools(grant: OperationGrant): string[] {
+  if (grant.operation === 'line') return lineToolNames.filter((tool) => lineToolActions[tool].some((action) => grant.actions.includes(action)));
+  const tool = operationContracts[grant.operation].tool;
+  return tool ? [tool] : [];
+}
 
 /** 仅宿主登记的代理获得默认授权，可按内置角色创建代理；自定义 manifest 不能自行授予。 */
 export function defaultOperationGrants(definitionId: string): OperationGrant[] {
@@ -104,6 +125,9 @@ export function defaultOperationGrants(definitionId: string): OperationGrant[] {
   ] : [];
 }
 
+/** Line 实例启用时得到的管理授权；其他代理即使角色放开了 Line 的工具，也要用户另行授予。 */
+export const lineGrant: OperationGrant = { operation: 'line', actions: [...lineActions] };
+
 /**
  * 协作操作的授权只给角色允许使用对应工具的代理，例如只读审查不带。创建和改选角色都按此调整：
  * 去掉新角色用不了的；旧角色用不了、新角色能用的补上默认授权。两个角色都能用的保持原样，用户撤回的不会被补回。
@@ -111,8 +135,8 @@ export function defaultOperationGrants(definitionId: string): OperationGrant[] {
  */
 export function roleOperationGrants(definitionId: string, grants: OperationGrant[], before: readonly string[], after: readonly string[]): OperationGrant[] {
   const usable = (grant: OperationGrant, tools: readonly string[]) => {
-    const tool = operationContracts[grant.operation].tool;
-    return !tool || tools.includes(tool);
+    const granted = grantTools(grant);
+    return grant.operation !== 'line' && !granted.length || granted.some((tool) => tools.includes(tool));
   };
   const kept = grants.filter((grant) => usable(grant, after));
   return [...kept, ...defaultOperationGrants(definitionId).filter((grant) => usable(grant, after) && !usable(grant, before)

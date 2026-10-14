@@ -9,7 +9,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, isAbsolute } from 'node:path';
 import { KiteError } from '../errors.ts';
 import { commitAll, git, gitTry, revParse } from './git.ts';
-import { within } from '../paths.ts';
+import { defaultClonePath, within } from '../paths.ts';
 import { normalizeRemote } from '../remote-url.ts';
 import { clone, originAccess, originURL, pushAll, seedRemote } from './remote.ts';
 import type { AccountClient, RegisteredProject } from '../account-client.ts';
@@ -88,7 +88,7 @@ export async function register(store: Store, home: string, account: AccountClien
   const constraints = store.projectConstraints(project.id) ?? await account.constraints(project.id);
   const checkout: Checkout = { id: checkoutId, projectId: project.id, machineId: store.machine.id, path,
     remote: project.remote, createdAt: Date.now() };
-  const workspace: Workspace = { id: randomUUID(), checkoutId: checkout.id, name: basename(path), cwd: path,
+  const workspace: Workspace = { id: randomUUID(), epoch: 1, checkoutId: checkout.id, name: basename(path), cwd: path,
     kind: 'root', branch: null, base: null, status: 'open', createdAt: checkout.createdAt };
   store.transaction(() => {
     store.register(project, checkout, workspace);
@@ -104,7 +104,7 @@ export async function register(store: Store, home: string, account: AccountClien
 export function cloneTarget(store: Store, home: string, remote: string, rawPath: string | undefined, cloning: Iterable<string>): string {
   const normalized = normalizeRemote(remote);
   if (!normalized) throw new KiteError('远程地址格式无法识别');
-  const dest = rawPath ?? join(homedir(), 'code', ...normalized.split('/'));
+  const dest = rawPath ?? defaultClonePath(normalized);
   if (!isAbsolute(dest)) throw new KiteError('路径要写绝对路径');
   if (existsSync(dest) && (!statSync(dest).isDirectory() || readdirSync(dest).length)) {
     throw new KiteError(`目标位置已有内容：${dest}`, 409);

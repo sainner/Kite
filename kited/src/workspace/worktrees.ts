@@ -11,12 +11,18 @@ import { dirname, isAbsolute, join } from 'node:path';
 import { git, gitTry } from './git.ts';
 import { within } from '../paths.ts';
 import { runScript } from '../script.ts';
+import { commandEnvironment, prepareSandbox } from '../execution/sandbox.ts';
+import { harnessPolicy } from '../execution/policy.ts';
+import { forgetWorktree } from './snapshots.ts';
 
 const SETUP_TIMEOUT_MS = 15 * 60_000;
 
-export async function addWorktree(main: string, worktree: string, branch: string, base: string): Promise<void> {
+/** base 为 null 时检出已有的分支（流转来的工作区），否则从 base 新建分支。 */
+export async function addWorktree(main: string, worktree: string, branch: string, base: string | null): Promise<void> {
+  // 同一路径可能刚删过旧工作树（流转回原机），快照的路径缓存要按新建的 git 目录重查。
+  forgetWorktree(worktree);
   mkdirSync(dirname(worktree), { recursive: true });
-  await git(main, ['worktree', 'add', '-q', '-b', branch, worktree, base]);
+  await git(main, ['worktree', 'add', '-q', ...(base === null ? [worktree, branch] : ['-b', branch, worktree, base])]);
   // escapes 按真实路径判断目标有没有经链接逃出工作树
   const real = realpathSync(worktree);
   await linkDirectories(main, real);
@@ -72,15 +78,22 @@ async function copyIncludes(main: string, real: string): Promise<void> {
 /**
  * 跑工作树里的 .kite/setup，没有这个文件返回 null。只看退出码；主文件夹位置经 KITE_MAIN_DIR 告诉脚本，
  * 脚本不需要自己判断身份，也不写状态文件。输出写进 logPath，另外留下最后 4000 个字符给事件用。
+ * 与模型的 shell 共用沙箱：工作树可写、主文件夹与工具链可读，宿主数据受保护，Git 元数据只读；
+ * 环境只带开发工具的基础设置与 KITE_MAIN_DIR。网络在项目级网络授权落地前放行。
  */
-export async function runSetup(main: string, worktree: string, logPath: string, signal?: AbortSignal): Promise<{ exit: number; tail: string } | null> {
+export async function runSetup(main: string, worktree: string, logPath: string, home: string, signal?: AbortSignal): Promise<{ exit: number; tail: string } | null> {
   const script = join(worktree, '.kite', 'setup');
   if (!existsSync(script)) return null;
   mkdirSync(dirname(logPath), { recursive: true });
+  const env = { ...commandEnvironment(process.env), KITE_MAIN_DIR: main };
+  const policy = await harnessPolicy({ cwd: worktree, env, home, repository: main });
   const fd = openSync(logPath, 'w');
+  let sandbox: ReturnType<typeof prepareSandbox> | undefined;
   try {
-    const r = await runScript(script, {
-      cwd: worktree, env: { ...process.env, KITE_MAIN_DIR: main }, timeoutMs: SETUP_TIMEOUT_MS, keep: 4000, signal,
+    sandbox = prepareSandbox(`exec '${script.replaceAll("'", "'\\''")}'`, { cwd: worktree, env, network: 'open',
+      policy: { ...policy, read: [...policy.read, main] } });
+    const r = await runScript(sandbox.executable, {
+      args: sandbox.args, cwd: worktree, env: sandbox.env, timeoutMs: SETUP_TIMEOUT_MS, keep: 4000, signal,
       onOutput: (text) => writeSync(fd, text),
     });
     if (!r.stopped) return { exit: r.code ?? 124, tail: r.tail };
@@ -89,12 +102,14 @@ export async function runSetup(main: string, worktree: string, logPath: string, 
     // 超时按 timeout 命令的惯例记 124
     return { exit: 124, tail: (r.tail + note).slice(-4000) };
   } finally {
+    sandbox?.dispose();
     closeSync(fd);
   }
 }
 
 /** 删掉工作树和会话分支。快照引用 refs/kite/snapshots/<会话> 不动。 */
 export async function removeWorktree(main: string, worktree: string, branch: string): Promise<void> {
+  forgetWorktree(worktree);
   if ((await gitTry(main, ['worktree', 'remove', '--force', '--force', worktree])).code !== 0) {
     await git(main, ['worktree', 'prune']);
   }

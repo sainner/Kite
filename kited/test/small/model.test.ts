@@ -44,9 +44,9 @@ function connectWorkspace(url: string, machineId: string, workspaceId: string) {
 
 /*
  * 项目登记、异步工作树准备、模型启动、HTTP 聚合与 SQLite 线程关系要一起成立：
- * root 无线程，首线程在工作树 cwd 运行；首线程空闲后第二线程共享 cwd，归档首线程保留工作树。
+ * root 无线程，首线程在工作树 cwd 运行；首线程还在工作时第二线程就能启动并共享 cwd，归档首线程保留工作树。
  */
-test('登记检出创建同工作区线程，暂停后 CLI resume 续接，归档首线程保留第二线程', async () => {
+test('登记检出后首线程工作时即可并行创建同工作区线程，暂停后 CLI resume 续接，归档首线程保留第二线程', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
@@ -98,13 +98,7 @@ test('登记检出创建同工作区线程，暂停后 CLI resume 续接，归�
   const first = await model.call(1);
   expect(first.request.cwd).toBe(workspace.workspace.cwd);
 
-  const busy = await kk.call('POST', `/workspaces/${workspace.workspace.id}/threads`, {
-    prompt: '不应并行启动',
-  });
-  expect(busy.status).toBe(409);
-
-  first.response.complete();
-  await kk.waitEvent((event) => event.type === 'idle' && event.threadId === firstThreadId);
+  // 首线程的请求还挂着，同一工作区就能起第二线程，两个线程共享工作树 cwd 并行执行。
   const secondCreated = await kk.call('POST', `/workspaces/${workspace.workspace.id}/threads`, {
     prompt: '第二线程',
   });
@@ -122,8 +116,11 @@ test('登记检出创建同工作区线程，暂停后 CLI resume 续接，归�
   expect(secondThreadId).not.toBe(firstThreadId);
   const second = await model.call(2);
   expect(second.request.cwd).toBe(workspace.workspace.cwd);
+  expect(first.signal.aborted).toBe(false);
   second.response.complete();
   await kk.waitEvent((event) => event.type === 'idle' && event.threadId === secondThreadId);
+  first.response.complete();
+  await kk.waitEvent((event) => event.type === 'idle' && event.threadId === firstThreadId);
 
   const beforePause = mark(kk);
   expect((await kk.call('POST', `/threads/${secondThreadId}/messages`, { text: '准备暂停' })).status).toBe(200);

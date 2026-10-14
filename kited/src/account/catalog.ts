@@ -14,10 +14,11 @@ export const catalogSnapshot = z.object({
     /** 检出实际使用的远程（归一化）；托管仓库迁移后据此判断各检出是否已切换。 */
     remote: z.string().min(1).max(2048),
   }).strict()).max(10_000),
+  /** 同一工作区 ID 可能出现在多台工作机上，epoch 最高的是当前宿主，其余为已流转的冻结记录。 */
   workspaces: z.array(z.object({
-    id, checkoutId: id, name: named.name, cwd: z.string().startsWith('/').max(4096),
+    id, epoch: z.number().int().positive().safe(), checkoutId: id, name: named.name, cwd: z.string().startsWith('/').max(4096),
     kind: z.enum(['root', 'worktree']), branch: z.string().nullable(), base: z.string().nullable(),
-    status: z.enum(['preparing', 'open', 'failed', 'archived']), createdAt: time,
+    status: z.enum(['preparing', 'open', 'failed', 'archived', 'handing_off', 'transferred']), createdAt: time,
   }).strict()).max(10_000),
 }).strict().superRefine((value, ctx) => {
   const projects = new Set(value.projects.map((p) => p.id));

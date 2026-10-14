@@ -1,5 +1,9 @@
 /** 项目以远程仓库为身份；检出是某台机器上的 clone；工作区拥有文件和快照；线程拥有对话及执行。 */
-export type WorkspaceStatus = 'preparing' | 'open' | 'failed' | 'archived';
+/**
+ * handing_off：已进入可交接状态，材料已经或正要推到远程，拒绝新的执行，目标接管前可以撤回。
+ * transferred：执行权已流转到别的机器，本地记录冻结，只读历史仍可用。
+ */
+export type WorkspaceStatus = 'preparing' | 'open' | 'failed' | 'archived' | 'handing_off' | 'transferred';
 export type RuntimeKind = 'claude' | 'harness';
 
 /** 一个工作机服务的持久身份，随 KITE_HOME 保存；网络地址由客户端管理。 */
@@ -28,8 +32,10 @@ export interface Checkout {
   createdAt: number;
 }
 
+/** 工作区 ID 创建时生成，流转到别的机器后不变；epoch 区分同一 ID 在不同机器上的记录新旧，每次接管加 1。 */
 export interface Workspace {
   id: string;
+  epoch: number;
   checkoutId: string;
   name: string;
   cwd: string;
