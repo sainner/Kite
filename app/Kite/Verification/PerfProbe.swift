@@ -342,6 +342,7 @@ import UIKit
         let model = session.model, layout = session.area.layout
         let width = model.sidebarWidth, collapsed = model.sidebarCollapsed
         session.onFinish {
+            model.sidebarResizing = false
             model.sidebarWidth = width
             model.sidebarCollapsed = collapsed
         }
@@ -354,6 +355,11 @@ import UIKit
         let lower = Metrics.sidebarMin + 2, upper = Metrics.sidebarMax - 2
         let center = ((lower + upper) / 2).rounded()
         let positions = sweep(center: center, amplitude: min(96, (upper - lower) / 2))
+        #if os(macOS)
+        let displayScale = window?.backingScaleFactor ?? 2
+        #else
+        let displayScale = UITraitCollection.current.displayScale
+        #endif
         func stageWidth() -> [Double] { [Double(layout.availableSize?.width ?? 0)] }
         try await ready(session)
         for index in 0..<rounds(isMac ? 2 : 3) {
@@ -366,10 +372,12 @@ import UIKit
                 try await Clock().run { link in
                     segment.ticks.append(Tick(link, widths: stageWidth()))
                     guard step < positions.count else { return false }
+                    // 同 MainWindow.resizeSidebar 取到像素
+                    let width = (positions[step] * displayScale).rounded() / displayScale
                     #if os(iOS)
-                    model.sidebarDrag.move(to: positions[step], base: center)
+                    model.sidebarDrag.move(to: width, base: center)
                     #else
-                    model.sidebarWidth = positions[step]
+                    model.sidebarWidth = width
                     #endif
                     step += 1
                     return true

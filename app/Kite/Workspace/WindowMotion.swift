@@ -250,8 +250,11 @@ final class HostedContentContainer: NSView, HostedContentSurface {
         frameState = state
         let shown = state.shown || flying
         if isHidden == shown { isHidden = !shown }
-        guard let layer else { return }
-        mover.layer?.sublayerTransform = CATransform3DMakeAffineTransform(state.transform)
+        guard let layer, let moverLayer = mover.layer else { return }
+        // 改它时 AppKit 把里面所有图层标成要按新的缩放重画（_NSInvalidateSuggestedContentsScaleBelow），正文里的图片、文字整块重画
+        // （2026-10-14 Mac 实测：拖侧栏改宽时停靠栏里收着的窗口每步换缩放，见 StageView.arrange），没变就不设
+        let transform = CATransform3DMakeAffineTransform(state.transform)
+        if !CATransform3DEqualToTransform(moverLayer.sublayerTransform, transform) { moverLayer.sublayerTransform = transform }
         clip.frame = layer.bounds
         clip.path = clipPath(state, in: layer)
         clip.opacity = Float(state.opacity)

@@ -27,6 +27,8 @@ final class CardView: NSView {
         let fixed: Bool
         /// 标题栏一层这一轮怎么摆，在台面的观察里读，见 headerState。
         let header: HeaderState
+        /// 台面上不止一个窗口，窗口按钮里有「展开」。
+        let expands: Bool
     }
 
     /// 标题栏一层要读的卡片状态：正文报的标题栏高、右边菜单宽、窗口按钮的尺寸、挖空的范围，和窗口按钮露不露。
@@ -95,6 +97,11 @@ final class CardView: NSView {
     var needsFrames: Bool { guard let motion = placed?.motion else { return false }; return motion.moving && motion.tracking }
     /// 这一段已经交给 Core Animation。
     private var flying = false
+    /// 会话窗口的原生外框眼下按多大排着，见 placeContent。
+    private var nativeSize: CGSize?
+    /// 排布动画开始的那几轮，会话窗口的原生外框先不按终点改大小，等这一段交给 Core Animation 以后的下一帧再改（见 arrange）。
+    /// 记的是推迟到哪个终点。
+    private var resizePending: WindowPose?
 
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -169,6 +176,8 @@ final class CardView: NSView {
     /// 拆掉：不再跟模型，收掉闭包和托管视图里的东西，原生外框一起拆。闭包都只弱持有台面和卡片，这里清掉是为了不留着已经没用的模型。
     func dismantle() {
         motionTracking.cancel()
+        resizeLink?.invalidate()
+        resizeLink = nil
         threadWindow?.dismantle()
         threadWindow = nil
         threadSlot.attach = nil
@@ -220,9 +229,18 @@ final class CardView: NSView {
     // MARK: - 排布
 
     /// 台面这一轮排布（在台面的观察之外调）：记下终点和状态，摆好不随时钟走的各层，再由台面把终点交给 motion（见 move）。
-    func arrange(_ arrangement: Arrangement) {
+    func arrange(_ arrangement: Arrangement, kind: WindowMotionKind) {
         let placed = arrangement.placed
         let first = self.placed == nil
+        // 缩小、恢复时别的窗口跟着改大小：动画开始的这一轮会话窗口先按原来的大小留在终点的位置上，不当场按新大小重排整段对话，
+        // 这一段交给 Core Animation 以后的下一帧再改（见 flightStarted）。动画开始那一刻窗口还是原来的大小，看着一样；动作到第一帧
+        // 少了整个窗口的重排（2026-10-14 Mac 实测约 10 毫秒），重排挪到动画开始以后，外框、正文的动画由 Core Animation 照常走
+        if let nativeSize, threadWindow != nil, !placed.minimized, nativeSize != placed.contentSize,
+           kind == .settle && placed.motion.target != placed.target || resizePending == placed.target {
+            resizePending = placed.target
+        } else {
+            resizePending = nil
+        }
         self.placed = placed
         self.arrangement = arrangement
         if first { install(motion: placed.motion) }
@@ -231,11 +249,12 @@ final class CardView: NSView {
         let target = placed.target, minimized = placed.minimized
 
         if content.minimized != minimized { content.minimized = minimized }
+        // 窗口按钮飞行中看不见（见 CardButtons），「展开」的有无等停下再换：动画开始的这一轮不重排按钮组和让位的标题栏
+        if !placed.motion.moving, placed.motion.target == target || kind.duration == 0 { updateExpands() }
         if (content.openSidebar == nil) != (arrangement.openSidebar == nil) { content.openSidebar = arrangement.openSidebar }
         if presence.onScreen != !minimized { presence.onScreen = !minimized }
-        // 正文标题栏按这几项算给窗口按钮让出多少，见 PaneHeaderControlsSpace
-        let headerPlacement = HeaderPlacement(minimized: minimized, width: target.frame.width, hasThread: arrangement.hasThread)
-        if header.placement != headerPlacement { header.placement = headerPlacement }
+        // 正文标题栏按这几项算给窗口按钮让出多少，见 PaneHeaderControlsSpace；会话窗口推迟改大小时一起推迟
+        if resizePending == nil { placeHeaderControls() }
 
         placeContent(target: target, contentSize: placed.contentSize)
         placeHeader(target: target, minimized: minimized, fixed: arrangement.fixed, state: arrangement.header)
@@ -278,14 +297,63 @@ final class CardView: NSView {
             layer.add(StageKeyframes.make("sublayerTransform", transforms, duration: flight.duration), forKey: "flight")
             layer.add(StageKeyframes.make("opacity", poses.map { Float($0.iconOpacity) }, duration: flight.duration), forKey: "flight-opacity")
         }
-        if let container {
-            let destination = placed.target.contentOrigin(size: placed.contentSize)
-            let area = container.frame
-            link.animate(poses.map { HostedContentFrame(pose: $0, target: placed.target, destination: destination, area: area,
-                                                         contentSize: placed.contentSize) }, duration: flight.duration)
-        }
+        animateContent(poses, duration: flight.duration)
         CATransaction.commit()
         stage?.updateDisplayLink()
+        // 这一段交上去以后的下一帧再按终点改会话窗口的大小，见 arrange。下一轮运行循环可能赶在下一帧之前，就把这一帧也压住了
+        if resizePending != nil, resizeLink == nil {
+            let link = displayLink(target: self, selector: #selector(resizeTick(_:)))
+            link.add(to: .main, forMode: .common)
+            resizeLink = link
+        }
+    }
+
+    private var resizeLink: CADisplayLink?
+
+    @objc private func resizeTick(_ link: CADisplayLink) {
+        link.invalidate()
+        resizeLink = nil
+        resizeNow()
+    }
+
+    /// 正文的变换、裁切和标题两侧整段交给 Core Animation，poses 按时间均匀取。
+    private func animateContent(_ poses: [WindowPose], duration: TimeInterval) {
+        guard let placed, let container else { return }
+        let destination = placed.target.contentOrigin(size: placed.contentSize)
+        let area = container.frame
+        link.animate(poses.map { HostedContentFrame(pose: $0, target: placed.target, destination: destination, area: area,
+                                                     contentSize: placed.contentSize) }, duration: duration)
+    }
+
+    /// 推迟的会话窗口改大小：按终点摆正文和标题栏。标题右边的截法按标题栏当时的宽算（见 WindowHeaderAnchored.follow），
+    /// 还在飞的这一段先按新的大小排好，再从这一刻接着交给 Core Animation。
+    private func resizeNow() {
+        guard resizePending != nil, let placed else { return }
+        resizePending = nil
+        placeHeaderControls()
+        placeContent(target: placed.target, contentSize: placed.contentSize)
+        let motion = placed.motion
+        guard flying, let flight = motion.flight else { return }
+        let now = Date.now, remaining = flight.start.addingTimeInterval(flight.duration).timeIntervalSince(now)
+        guard remaining > 0 else { return }
+        container?.layoutSubtreeIfNeeded()
+        let steps = max(Int((remaining * 120).rounded(.up)), 1)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        animateContent((0...steps).map { motion.presentation(at: now.addingTimeInterval(remaining * Double($0) / Double(steps))) },
+                       duration: remaining)
+        CATransaction.commit()
+    }
+
+    private func updateExpands() {
+        guard let arrangement, content.expands != arrangement.expands else { return }
+        content.expands = arrangement.expands
+    }
+
+    private func placeHeaderControls() {
+        guard let placed, let arrangement else { return }
+        let headerPlacement = HeaderPlacement(minimized: placed.minimized, width: placed.target.frame.width, hasThread: arrangement.hasThread)
+        if header.placement != headerPlacement { header.placement = headerPlacement }
     }
 
     /// 收掉交给 Core Animation 的那一段（换终点、停下）。
@@ -311,11 +379,13 @@ final class CardView: NSView {
         let area = CGRect(origin: destination, size: contentSize).union(target.frame)
         let origin = stage.origin
         if threadWindow != nil {
-            // 原生外框：托管的正文只剩桥，不跟着改尺寸；外框按正文停着的位置摆在这一层里
+            // 原生外框：托管的正文只剩桥，不跟着改尺寸；外框按正文停着的位置摆在这一层里，推迟改大小时先留着原来的大小
             let placement = HostedPlacementValue()
             if link.placement.value != placement { link.placement.value = placement }
+            let size = resizePending != nil ? nativeSize ?? contentSize : contentSize
+            nativeSize = size
             container.nativeFrame = CGRect(x: destination.x - area.minX, y: destination.y - area.minY,
-                                           width: contentSize.width, height: contentSize.height)
+                                           width: size.width, height: size.height)
             threadWindow?.windowOrigin = CGPoint(x: origin.x + destination.x, y: origin.y + destination.y)
         } else {
             let placement = HostedPlacementValue(origin: CGPoint(x: origin.x + area.minX, y: origin.y + area.minY),
@@ -416,6 +486,8 @@ final class CardView: NSView {
             if moving {
                 setHovered(false)
             } else {
+                resizeNow()
+                updateExpands()
                 if headerRegions.settled != headerRegions.rects { headerRegions.settled = headerRegions.rects }
                 if flying {
                     // Core Animation 那一段已经走完，模型值就是终点；正文按终点交一次（飞行中一直显示着，缩进停靠栏的这时藏起来）

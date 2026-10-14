@@ -115,7 +115,8 @@ struct DockOverlay: View {
                     .frame(width: 0, height: 0)
             }
         }
-        .frame(width: bounds.width, height: bounds.height, alignment: .topLeading)
+        // 原生台面拖侧栏改宽时 bounds 左边让出一段（见 StageView.stageRect），格子按台面坐标摆，这一层从台面原点铺到右下角
+        .frame(width: bounds.maxX, height: bounds.maxY, alignment: .topLeading)
         .dockHoverSource(hoverTip)
     }
 

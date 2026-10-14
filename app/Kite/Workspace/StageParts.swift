@@ -25,7 +25,8 @@ struct StageAppearance: Equatable {
     var dotStage: ObjectIdentifier?
 }
 
-/// 台面的大小，和关闭途中、停靠栏里那一格先不显示的实例。停靠栏、空画板的托管视图读它，自己从排布模型算停靠栏各格：
+/// 看得见的台面（台面自己的坐标；Mac 拖侧栏改宽时左边让出被侧栏盖住的一段，见 StageView.stageRect），
+/// 和关闭途中、停靠栏里那一格先不显示的实例。停靠栏、空画板的托管视图读它，铺到 bounds 的右下角，自己从排布模型算停靠栏各格：
 /// 排布的改动在 SwiftUI 的事务里，岛自己读模型才接得到同一个动画（见 StagePlan.dock）；原生层不把算好的格子推进去。
 @MainActor @Observable final class StageGeometry {
     var bounds: CGRect = .zero
@@ -92,7 +93,7 @@ struct StageDockRail: View {
             DockRail(geometry: dock, hiddenInstances: geometry.retiring)
                 .environment(area)
                 .modifier(PausedInTransition(layout: layout))
-                .frame(width: geometry.bounds.width, height: geometry.bounds.height, alignment: .topLeading)
+                .frame(width: geometry.bounds.maxX, height: geometry.bounds.maxY, alignment: .topLeading)
                 .coordinateSpace(.named(DockSpace.name))
                 .environment(\.dockCardsDrawPanes, true)
         }
@@ -115,7 +116,7 @@ struct StageDockOverlay: View {
             }
             .environment(area)
             .modifier(PausedInTransition(layout: layout))
-            .frame(width: bounds.width, height: bounds.height, alignment: .topLeading)
+            .frame(width: bounds.maxX, height: bounds.maxY, alignment: .topLeading)
             .coordinateSpace(.named(DockSpace.name))
             .environment(\.dockCardsDrawPanes, true)
         }
@@ -131,7 +132,7 @@ struct StageWindowless: View {
     var body: some View {
         let canvas = layout.regions(in: geometry.bounds).canvas
         SettledWindowlessStage(layout: layout, canvas: canvas, wanted: (layout.shown?.panes.isEmpty ?? true) && layout.drag == nil)
-            .frame(width: geometry.bounds.width, height: geometry.bounds.height, alignment: .topLeading)
+            .frame(width: geometry.bounds.maxX, height: geometry.bounds.maxY, alignment: .topLeading)
             // 隔一拍交出去：托管视图可能在台面这次排版当中更新
             .onPreferenceChange(WindowDotsActive.self) { uses in Task { @MainActor in reports.update(uses: uses) } }
             .onPreferenceChange(DotSlots.self) { slots in Task { @MainActor in reports.update(slots: slots) } }
@@ -146,6 +147,8 @@ struct StageWindowless: View {
     var minimized = false
     var openSidebar: (@MainActor () -> Void)?
     var buttonsShown = false
+    /// 台面上不止一个窗口、窗口按钮里有「展开」。Mac 原生台面由卡片在动画停下时交（见 CardView.arrange）；没给时按排布现算。
+    var expands: Bool?
     var nativeThread = false
     /// 卡片交给托管视图的环境换过几次，会话窗口的桥按它把新环境再交给原生外框。
     var environment = 0
@@ -234,7 +237,7 @@ struct CardButtons: View {
     var body: some View {
         if let area = group.workspace {
             let layout = group.layout
-            let expands = (layout.shown?.panes.count ?? 0) > 1
+            let expands = state.expands ?? ((layout.shown?.panes.count ?? 0) > 1)
             PaneHeaderButtonGroup {
                 button("缩小", icon: "minus") { layout.minimize(pane) }
                 if expands {
