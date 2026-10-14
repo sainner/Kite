@@ -539,7 +539,16 @@ extension PhoneTranscriptView {
 
 /// 列表的滚动视图：从按钮（折叠、工具行的汇总行）上拖起来也照样滚。UIScrollView 默认不让 UIControl 上起手的拖动取消它的触摸，
 /// 拖动就滚不起来；SwiftUI 的按钮不是 UIControl，原来没有这个问题。
+/// 按下不等：默认先压住触摸约 150 毫秒看是不是要滚，行里的按钮、链接按下的样子和长按都晚一拍；关掉以后手指一落下就交给它们，
+/// 动起来滚的时候照上面取消它们的触摸。
 private final class PhoneTranscriptScrollView: UIScrollView {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        delaysContentTouches = false
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
     override func touchesShouldCancel(in view: UIView) -> Bool { true }
 }
 

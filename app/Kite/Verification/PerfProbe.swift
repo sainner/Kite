@@ -337,7 +337,7 @@ import UIKit
     // MARK: - 侧栏改宽
 
     /// 侧栏改宽：对话停在底部，经模型逐帧改侧栏宽度（同拖侧栏的边），在可拖范围正中按正弦摆一趟 90 步；台面贴着侧栏的那一列跟着改宽。
-    /// 照 MainWindow 拖动时的走法：拖动中设 sidebarResizing；iPad 上宽不进 SwiftUI，交给原生台面（SidebarDrag），一轮完了才交给 sidebarWidth。
+    /// 照 MainWindow 拖动时的走法：拖动中设 sidebarResizing；iPad 上宽不进 SwiftUI，侧栏和原生台面各按实时的宽画、让（SidebarDrag），一轮完了才交给 sidebarWidth。
     private static func sidebar(_ session: Session) async throws {
         let model = session.model, layout = session.area.layout
         let width = model.sidebarWidth, collapsed = model.sidebarCollapsed
@@ -375,7 +375,8 @@ import UIKit
                     // 同 MainWindow.resizeSidebar 取到像素
                     let width = (positions[step] * displayScale).rounded() / displayScale
                     #if os(iOS)
-                    model.sidebarDrag.move(to: width, base: center)
+                    // 拖动中侧栏在排版上只占最窄的宽，见 MainWindow.sidebarSlot
+                    model.sidebarDrag.move(to: width, from: center, base: Metrics.sidebarMin)
                     #else
                     model.sidebarWidth = width
                     #endif

@@ -195,11 +195,14 @@ final class PhoneStageView: UIView, StageDotsReporting {
         super.layoutSubviews()
         // 环境交过来以前不建卡片：托管的正文要从环境里取 App 模型
         guard look != nil else { return }
+        let previousOrigin = origin
         origin = window.map { convert(CGPoint.zero, to: $0) } ?? .zero
+        // 台面在窗口里挪了（拖侧栏起手、松手时内容区往左伸、缩回，见 SidebarDrag）：卡片在台面坐标里跟着反向挪，窗口里看着不动，当场摆过去不走动画
+        let moved = origin.x != previousOrigin.x
         laying = true
         defer { laying = false }
         let sidebarResizing = tracking.track({ model.sidebarResizing }) { [weak self] in self?.invalidateArrangement() }
-        // 拖侧栏改宽时 SwiftUI 按开始拖时的宽摆着台面，台面自己把左边挪到侧栏实时的右边，见 SidebarDrag
+        // 拖侧栏改宽时内容区从侧栏最窄的宽起，台面自己把排窗口的那块让到侧栏实时的右边，见 SidebarDrag
         let shift = model.sidebarDrag.offset
         stageRect = CGRect(x: shift, y: 0, width: max(bounds.width - shift, 0), height: bounds.height)
         let size = stageRect.size
@@ -210,11 +213,12 @@ final class PhoneStageView: UIView, StageDotsReporting {
         }
         for island in [dockRail, windowless, dockOverlay] { place(island, bounds) }
         place(placeholder, bounds)
-        // 停靠栏贴着台面右边，侧栏改宽时不动，按整个台面排；空画板拖侧栏时不跟着挪（没有窗口时才露出来），松手再排
+        // 停靠栏贴着台面右边，侧栏改宽时不动，按整个台面排；空画板（没有窗口时才露出来）拖侧栏时每步不跟着挪，
+        // 只在起手、松手台面往左伸、缩回时按整个台面重排一次
         if geometry.bounds != bounds { geometry.bounds = bounds }
         if windowlessGeometry.bounds != bounds { windowlessGeometry.bounds = bounds }
         let arranged = tracking.track({ arrange(dotsHidden: sidebarResizing) }) { [weak self] in self?.invalidateArrangement() }
-        settle(arranged)
+        settle(arranged, immediate: moved)
     }
 
     /// 台面上排窗口的那一块（台面坐标）：平时是整个台面，拖侧栏改宽时左边挪到侧栏实时的右边。
@@ -312,8 +316,9 @@ final class PhoneStageView: UIView, StageDotsReporting {
     }
 
     /// 观察之外：把终点交给各张卡片的 motion，再按这一轮的过渡状态报看得见的实例和悬停标签。
-    private func settle(_ arranged: Arranged) {
+    private func settle(_ arranged: Arranged, immediate: Bool) {
         for (card, arrangement, kind) in arranged.cards {
+            let kind = immediate ? .immediate : kind
             // 卡片铺满台面，里面各层按台面坐标摆
             place(card, bounds)
             card.arrange(arrangement)

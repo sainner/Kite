@@ -20,7 +20,7 @@ struct MainWindow: View {
     private var content: some View {
         HStack(spacing: 0) {
             WorkspaceSidebar()
-                .frame(width: sidebarWidth)
+                .modifier(SidebarLiveWidth(drag: model.sidebarDrag, width: sidebarWidth, slot: sidebarSlot))
                 .allowsHitTesting(resizingFrom == nil)
             LayoutDragArea(cursor: .columnResize) { drag in
                 let from = resizingFrom ?? sidebarWidth
@@ -85,6 +85,13 @@ struct MainWindow: View {
         return { withAnimation(.snappy) { model.sidebarCollapsed = false } }
     }
 
+    /// 侧栏在排版上占的宽：平时就是 sidebarWidth；iPad 拖侧栏改宽时只占最窄的宽，内容区（原生台面）往左伸到那里，
+    /// 之后每步不用再排，侧栏和台面各自按实时的宽画、让，见 SidebarDrag。
+    private var sidebarSlot: CGFloat {
+        guard nativeStage, model.sidebarResizing, !model.sidebarCollapsed else { return sidebarWidth }
+        return min(Metrics.sidebarMin, sidebarWidth)
+    }
+
     private var sidebarWidth: CGFloat {
         if model.sidebarCollapsed {
             #if os(macOS)
@@ -124,7 +131,7 @@ struct MainWindow: View {
         // 取到像素：贴着侧栏的那一列跟着侧栏的边走，不落在半像素上
         let width = min(max((width * displayScale).rounded() / displayScale, Metrics.sidebarMin), Metrics.sidebarMax)
         if nativeStage {
-            model.sidebarDrag.move(to: min(width, maximumSidebar), base: sidebarWidth)
+            model.sidebarDrag.move(to: min(width, maximumSidebar), from: sidebarWidth, base: sidebarSlot)
         } else {
             model.sidebarWidth = width
         }
@@ -134,6 +141,20 @@ struct MainWindow: View {
     private var maximumSidebar: CGFloat {
         let remaining = availableWidth - 2 * Metrics.sidebarInset - Metrics.padding - Metrics.gap - Metrics.dockWidth - Metrics.minPane
         return max(Metrics.sidebarMin, remaining)
+    }
+}
+
+/// 侧栏按 width 画，在排版上占 slot。iPad 拖侧栏改宽时（SidebarDrag）slot 是最窄的宽，侧栏按实时的宽画、伸进内容区底下，
+/// 台面把排窗口的那块让到它右边。实时的宽只在这里读，每步只有侧栏这一棵重算。
+private struct SidebarLiveWidth: ViewModifier {
+    let drag: SidebarDrag
+    let width: CGFloat
+    let slot: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .frame(width: drag.width ?? width, alignment: .leading)
+            .frame(width: slot, alignment: .leading)
     }
 }
 

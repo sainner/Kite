@@ -19,6 +19,12 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
     private let statusIsland = HostIsland(sizing: [.intrinsicContentSize, .preferredContentSize])
     private let actionsIsland = HostIsland(sizing: [.intrinsicContentSize, .preferredContentSize])
     private let titleIsland = HostIsland(sizing: [])
+    /// 标题、副标题换字的那一下盖在字上面的岛，过渡交给 SwiftUI，见 swapTitle。
+    private let swapIsland = HostIsland(sizing: [])
+    private let swapModel = HeaderTitleSwapModel()
+    /// 每换一次字加一，过渡走完时只有最后那次收起岛。
+    private var swapGeneration = 0
+    private var swapping = false
     private let titleLabel = UILabel()
     private let subtitleLabel = UILabel()
     private let refresh = TitleIconButton()
@@ -56,6 +62,7 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
         leading.addSubview(subtitleLabel)
         leading.addSubview(refresh)
         leading.addSubview(titleIsland)
+        leading.addSubview(swapIsland)
         trailing.addSubview(actionsIsland)
         for label in [titleLabel, subtitleLabel] {
             label.lineBreakMode = .byTruncatingTail
@@ -64,6 +71,9 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
         titleLabel.textColor = .label
         subtitleLabel.textColor = .secondaryLabel
         titleIsland.isHidden = true
+        swapIsland.isHidden = true
+        swapIsland.isUserInteractionEnabled = false
+        swapIsland.accessibilityElementsHidden = true
         statusIsland.sizeChanged = { [weak self] in self?.sizeChanged() }
         actionsIsland.sizeChanged = { [weak self] in self?.sizeChanged() }
         let tap = UITapGestureRecognizer(target: self, action: #selector(tap(_:)))
@@ -84,6 +94,7 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
         subtitleLabel.font = subtitleFont
         refresh.font = titleFont
         refresh.environment = environment
+        swapIsland.rootView = AnyView(HeaderTitleSwap(model: swapModel).environment(\.self, environment))
         measuredRow = nil
         link = environment.windowHeaderAnchors
         if window != nil { link?.add(self) }
@@ -101,19 +112,15 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
         }
         titleIsland.isHidden = !island
         measuredRow = nil
-        for view in [titleLabel, subtitleLabel] as [UIView] { view.isHidden = island }
-        if previous?.header.title != header.title, previous != nil, !island {
-            // 标题换字：同 SwiftUI 的 blurReplace 跟 snappy 走，这里淡入淡出
-            UIView.transition(with: titleLabel, duration: 0.35, options: .transitionCrossDissolve) { self.titleLabel.text = header.title }
-        } else {
-            titleLabel.text = header.title
+        if let previous, !island, previous.header.title != header.title || previous.header.subtitle != header.subtitle {
+            swapTitle(from: previous.header, to: header)
+        } else if island, swapping {
+            endSwap()
         }
+        for view in [titleLabel, subtitleLabel] as [UIView] { view.isHidden = island || swapping }
+        titleLabel.text = header.title
         titleLabel.accessibilityLabel = header.title
-        if previous?.header.subtitle != header.subtitle, previous != nil, !island {
-            UIView.transition(with: subtitleLabel, duration: 0.35, options: .transitionCrossDissolve) { self.subtitleLabel.text = header.subtitle }
-        } else {
-            subtitleLabel.text = header.subtitle
-        }
+        subtitleLabel.text = header.subtitle
         if let action = header.titleRefresh, !island {
             refresh.isHidden = false
             refresh.configure(action, title: header.title, reduceMotion: environment.accessibilityReduceMotion)
@@ -122,6 +129,45 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
         }
         setNeedsLayout()
         changed?()
+    }
+
+    // MARK: - 换字
+
+    /// 标题、副标题换字：同 PaneHeaderTitle，旧字、新字按 id 换，系统的 blurReplace 跟 snappy 走（旧字模糊着缩小淡出，新字从模糊里出来）。
+    /// 平时标题是 UILabel（拖缝时只按宽度截断，不经 SwiftUI），只在换字的这一下把字交给一个盖在上面的 SwiftUI 岛：先按旧字摆出来，
+    /// 这一轮交上去以后再在动画里换成新字，走完收起岛、露出已经换好的 UILabel。刷新图标跟着新标题的宽挪，同 snappy。
+    private func swapTitle(from old: PaneHeader, to new: PaneHeader) {
+        swapGeneration += 1
+        let generation = swapGeneration
+        guard !swapping else {
+            animateSwap(to: new, generation: generation)
+            return
+        }
+        swapping = true
+        swapModel.title = old.title
+        swapModel.subtitle = old.subtitle
+        swapIsland.isHidden = false
+        DispatchQueue.main.async { [weak self] in
+            guard let self, swapping else { return }
+            animateSwap(to: new, generation: generation)
+        }
+    }
+
+    private func animateSwap(to header: PaneHeader, generation: Int) {
+        withAnimation(.snappy) {
+            swapModel.title = header.title
+            swapModel.subtitle = header.subtitle
+        } completion: { [weak self] in
+            guard let self, generation == swapGeneration else { return }
+            endSwap()
+        }
+    }
+
+    private func endSwap() {
+        swapping = false
+        swapIsland.isHidden = true
+        let island = !titleIsland.isHidden
+        for view in [titleLabel, subtitleLabel] as [UIView] { view.isHidden = island }
     }
 
     private func sizeChanged() {
@@ -203,10 +249,17 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
                                                          limitedToNumberOfLines: 1).width), titleRoom)
             place(titleLabel, CGRect(x: titleX, y: blockTop, width: titleWidth, height: titleHeight))
             if !refresh.isHidden {
-                place(refresh, CGRect(x: titleX + titleWidth + Metrics.titleRefreshGap, y: blockTop + (titleHeight - refreshSize.height) / 2,
-                                      width: refreshSize.width, height: refreshSize.height))
+                let frame = CGRect(x: titleX + titleWidth + Metrics.titleRefreshGap, y: blockTop + (titleHeight - refreshSize.height) / 2,
+                                   width: refreshSize.width, height: refreshSize.height)
+                // 换字时跟着新标题的宽挪，同 snappy
+                if swapping, refresh.frame != frame, refresh.frame != .zero {
+                    UIView.animate(springDuration: 0.5, bounce: 0.15) { self.refresh.frame = frame }
+                } else {
+                    place(refresh, frame)
+                }
             }
             place(subtitleLabel, CGRect(x: titleX, y: blockTop + titleHeight + 2, width: available, height: subtitleHeight))
+            if swapping { place(swapIsland, CGRect(x: titleX, y: top, width: titleRoom, height: row)) }
         }
         applyFollow(shift: shift, titleCut: titleCut)
     }
@@ -320,6 +373,34 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
             return elements
         }
         set {}
+    }
+}
+
+/// 换字时盖在标题上的：标题、副标题，同 PaneHeaderTitle 的字体、颜色和过渡，竖着在标题栏里居中。
+@MainActor @Observable private final class HeaderTitleSwapModel {
+    var title = ""
+    var subtitle: String?
+}
+
+private struct HeaderTitleSwap: View {
+    let model: HeaderTitleSwapModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(model.title)
+                .font(Theme.secondary.weight(.semibold))
+                .id(model.title)
+                .transition(.blurReplace)
+            if let subtitle = model.subtitle {
+                Text(subtitle)
+                    .font(Theme.caption)
+                    .foregroundStyle(.secondary)
+                    .id(subtitle)
+                    .transition(.blurReplace)
+            }
+        }
+        .lineLimit(1)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 }
 

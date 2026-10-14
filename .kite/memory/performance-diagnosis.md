@@ -30,7 +30,7 @@ metadata:
 - 先分清是计算还是渲染：计数显示 body 和取样一次都没跑而开销还在，就是渲染，换成纯色对照即可确认。2026-10-11 卡片点阵就是这样查出的：整窗大小的着色器层随所在渲染层每帧重画。
 - 改完要验证：用 Instruments 的 SwiftUI 模板数一次流式刷新或一次动作里重算了多少个 body，同时看 Time Profiler 里布局与渲染的耗时。只数 body 不够，body 没少跑开销也可能在排版和渲染上；真机和 Mac 分别量。
 - SwiftUI 用几何效果移动容器时（`ignoredByLayout`、`visualEffect` 都一样），里面所有 `.frame(in: .global)` 和读 `Text.LayoutKey` 锚点的视图每帧重算，只读本地尺寸的不受影响（2026-10-11 离屏实测）。
-- UIKit 的两个坑（2026-10-14 iPhone 真机 Time Profiler）：`UIView.alpha` 在 0 和非 0 之间变时 UIKit 把整棵子树通知一遍看不看得见（`_notifySubtreeVisibilityDidChange`），底下有托管视图、文本视图时一次十几毫秒，换窗口时的淡入淡出改设 `layer.opacity` 并自己加图层动画；托管视图里全透明的 `safeAreaBar` 不算滚动软边的元素，软边会变成滚动视图自带的那条（高度不随标题栏），要垫一层看不出来的底，软边高是元素底边再往下约 40 点。
+- UIKit 的两个坑（2026-10-14 iPhone 真机 Time Profiler）：`UIView.alpha` 在 0 和非 0 之间变时 UIKit 把整棵子树通知一遍看不看得见（`_notifySubtreeVisibilityDidChange`），底下有托管视图、文本视图时一次十几毫秒，换窗口时的淡入淡出改设 `layer.opacity` 并自己加图层动画——代价是里面的 SwiftUI 收不到「看得见了」：建出来时图层透明度就是 0 的托管视图不建玻璃，之后只改图层透明度一直没有（2026-10-14 iPhone 换到开 App 时不在前面的窗口，标题栏按钮没玻璃），第一次露出来要经 `alpha` 设一次（见 CompactRowView.revealToUIKit）；托管视图里全透明的 `safeAreaBar` 不算滚动软边的元素，软边会变成滚动视图自带的那条（高度不随标题栏），要垫一层看不出来的底，软边高是元素底边再往下约 40 点。
 - 交替跑之间台面可能被改：2026-10-14 一次拖缝测量中途有个会话被收进停靠栏，之后几次测的换了会话，主线程从 16.5 掉到 11.9ms，看着像变快了。比数字前先核对报告里的 `stageAtStart`，要比的几次用 `--threads` 钉住同样的会话。
 - iPhone 测量别让设备停在测量版外面太久：2026-10-14 键盘场景挂 Time Profiler 时 10 分钟没出报告，期间没有 Kite 在前台防锁屏，iPhone 锁了，后面的真机测量都做不了。挂 `--trace` 先单独试一个短场景。
 - iPhone 上点阵取景框逐帧刷新约 60Hz，旁边的滚动是 120Hz，原因没查。用户看过认为点阵波 60 帧够用（2026-10-11），不必为它追 120Hz。
