@@ -147,7 +147,7 @@ struct StageWindowless: View {
     var minimized = false
     var openSidebar: (@MainActor () -> Void)?
     var buttonsShown = false
-    /// 台面上不止一个窗口、窗口按钮里有「展开」。Mac 原生台面由卡片在动画停下时交（见 CardView.arrange）；没给时按排布现算。
+    /// 台面上不止一个窗口、窗口按钮里有「展开」。由卡片在动画停下时交（见 CardView.arrange、PhoneCardView.arrange）；没给时按排布现算。
     var expands: Bool?
     var nativeThread = false
     /// 卡片交给托管视图的环境换过几次，会话窗口的桥按它把新环境再交给原生外框。
@@ -232,13 +232,16 @@ struct CardButtons: View {
     let header: PaneCardHeader
     let state: CardContentState
     let motion: WindowMotion
+    /// 露不露（state.buttonsShown、飞行中）由这里做；为 false 时卡片在原生那一层做（iPad 的 PhoneCardView），这里两样都不读，
+    /// 缩小、恢复、拖动时这个托管视图不跟着更新（2026-10-14 iPad 实测，缩小、恢复的首帧里每个在动的窗口省约 1 毫秒）。
+    var managesVisibility = true
     @Environment(AppModel.self) private var model
 
     var body: some View {
         if let area = group.workspace {
             let layout = group.layout
             let expands = state.expands ?? ((layout.shown?.panes.count ?? 0) > 1)
-            PaneHeaderButtonGroup {
+            let buttons = PaneHeaderButtonGroup {
                 button("缩小", icon: "minus") { layout.minimize(pane) }
                 if expands {
                     button("展开", icon: "arrow.up.left.and.arrow.down.right") { layout.expand(pane) }
@@ -253,8 +256,13 @@ struct CardButtons: View {
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
                 if header.controlsSize != size { header.controlsSize = size }
             }
-            .modifier(WhileSettled(motion: motion, shown: state.buttonsShown))
-            .accessibilityHidden(!state.buttonsShown)
+            if managesVisibility {
+                buttons
+                    .modifier(WhileSettled(motion: motion, shown: state.buttonsShown))
+                    .accessibilityHidden(!state.buttonsShown)
+            } else {
+                buttons
+            }
         }
     }
 
