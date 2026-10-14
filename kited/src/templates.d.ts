@@ -3,3 +3,7 @@ declare module '*/templates/gitignore' {
   const text: string;
   export default text;
 }
+declare module '*/templates/gitattributes' {
+  const text: string;
+  export default text;
+}

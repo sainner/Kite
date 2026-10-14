@@ -5,6 +5,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import { realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import GITATTRIBUTES_TEMPLATE from '../../../.claude/skills/kite-onboard/templates/gitattributes' with { type: 'text' };
 import { AccountClient } from '../../src/account-client.ts';
 import { Bus } from '../../src/events.ts';
 import { Kite } from '../../src/kite.ts';
@@ -41,7 +42,7 @@ function reported(account: FakeAccount, checkoutId: string, remote: string) {
 }
 
 /*
- * 几条真实 git 命令与账号服务的交接：git init、写 .gitignore、初始提交，向账号建托管项目，
+ * 几条真实 git 命令与账号服务的交接：git init、写 .gitignore 与 .gitattributes（模板）、初始提交，向账号建托管项目，
  * remote add 后经 git http-backend 推到托管裸仓库；目录上报随登记发出。
  * 迁移完成后同步一次：登记表、git remote set-url、SQLite 与目录上报交接，账号服务据新远程回收托管仓库。
  */
@@ -58,8 +59,9 @@ test('普通文件夹登记后推到新建的托管仓库并上报远程，迁�
   const bare = join(kited.account.repos, `${hosted.id}.git`);
   const head = git(folder, 'rev-parse', 'HEAD');
   expect(git(bare, 'rev-parse', `refs/heads/${git(folder, 'branch', '--show-current')}`)).toBe(head);
-  expect(git(bare, 'ls-tree', '--name-only', head).split('\n').sort()).toEqual(['.gitignore', 'readme.txt']);
+  expect(git(bare, 'ls-tree', '--name-only', head).split('\n').sort()).toEqual(['.gitattributes', '.gitignore', 'readme.txt']);
   expect(git(bare, 'show', `${head}:.gitignore`)).toBe(read(join(folder, '.gitignore')).replace(/\n$/, ''));
+  expect(git(bare, 'show', `${head}:.gitattributes`)).toBe(GITATTRIBUTES_TEMPLATE.replace(/\n$/, ''));
   expect(git(folder, 'status', '--porcelain')).toBe('');
   await reported(kited.account, model.checkout.id, hosted.remote);
 

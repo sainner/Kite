@@ -33,7 +33,7 @@ async function main(): Promise<void> {
     cpSync(join(root, 'shared'), join(runtime, 'shared'), { recursive: true });
     const templates = '.claude/skills/kite-onboard/templates';
     mkdirSync(join(runtime, templates), { recursive: true });
-    copyFileSync(join(root, templates, 'gitignore'), join(runtime, templates, 'gitignore'));
+    for (const file of ['gitignore', 'gitattributes']) copyFileSync(join(root, templates, file), join(runtime, templates, file));
     for (const file of ['package.json', 'bun.lock']) copyFileSync(join(root, 'kited', file), join(kited, file));
     copyFileSync(join(import.meta.dir, 'install-macos.ts'), join(kited, 'scripts/install-macos.ts'));
     writeFileSync(join(kited, 'bunfig.toml'), '[run]\nshell = "system"\n');

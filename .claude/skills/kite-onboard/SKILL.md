@@ -5,7 +5,7 @@ description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录�
 
 # Kite 项目规范
 
-本 skill 检查准备接入 Kite 的本地文件夹。Kite 的项目以远程仓库为身份，文件夹登记为工作机上的检出：已有仓库沿用，无远程时由 Kite 建托管远程；普通文件夹先初始化 Git、写入 .gitignore 并提交初始版本。身份与登记契约见 [项目与远程仓库](../../../docs/项目与远程仓库.md)。
+本 skill 检查准备接入 Kite 的本地文件夹。Kite 的项目以远程仓库为身份，文件夹登记为工作机上的检出：已有仓库沿用，无远程时由 Kite 建托管远程；普通文件夹先初始化 Git、写入 .gitignore 与 .gitattributes 并提交初始版本。身份与登记契约见 [项目与远程仓库](../../../docs/项目与远程仓库.md)。
 
 体检和补齐的原则：缺什么补什么，已有的不动；要改用户已有的文件，先说明要改什么、为什么，得到同意再改。
 
@@ -17,6 +17,7 @@ description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录�
 │                          放在 iCloud、Dropbox 等同步目录里的项目，这里是一个一行字的指针文件，
 │                          仓库本体放到同步目录之外（git init --separate-git-dir）
 ├── .gitignore             Kite 初始化时写入 templates/gitignore；已有仓库不改
+├── .gitattributes         Kite 初始化时写入 templates/gitattributes：记忆索引按行合并，各工作区同时追加不冲突
 ├── AGENTS.md              给 agent 的项目说明，唯一的指令源；按 templates/AGENTS.md 写
 ├── .claude/
 │   ├── agents/
@@ -44,12 +45,13 @@ description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录�
 
 1. **git 仓库**：不是仓库就停下，提示用户在 Kite 里登记这个文件夹，由 kited 初始化。
 2. **.gitignore**：Kite 初始化的仓库应当是 templates/gitignore 的内容；已有的仓库用它自己的，不改。
-3. **大文件**：列出项目里按 templates/gitignore 属于大文件类型、却被 git 跟踪的文件，建议挪进资源库，不自动挪。
-4. **AGENTS.md**：没有就按 templates/AGENTS.md 写，尖括号处向用户问清楚或从项目里读出来再填。已有的不重写，只检查代码项目有没有「测试」一节。
-5. **不放 CLAUDE.md**：Claude Code 在项目没有 CLAUDE.md 时直接读 AGENTS.md。已有 CLAUDE.md 且只有一行 `@AGENTS.md` 的，建议删掉；内容不同的，提示用户把内容并进 AGENTS.md 后再删，不自己合并。
-6. **记忆目录**：在 Kite 之外直接用 Claude Code 的机器上，在 `.claude/settings.local.json`（不进 git）里把 `autoMemoryDirectory` 设成本项目 `.kite/memory` 的绝对路径，否则记忆写进用户目录（`~/.claude/projects/…/memory/`）。上游只认绝对路径或 `~/` 开头的路径，所以不写进提交的 `.claude/settings.json`。用户目录里已有的、关于这个项目的记忆，挪进来。
-7. **检查**：能判断「改坏了没有」的项目提供 `.kite/check`，契约见上面的目录图，写法见下一节。代码项目再按 templates/test-writer.md 写 `.claude/agents/test-writer.md`，分层表里填本项目的小、中、大各指什么。
-8. **报告**：补了哪些文件；哪些需要用户决定。
+3. **.gitattributes**：没有就按 templates/gitattributes 写。已有的缺记忆索引那一行，说明并得到同意后追加，其余规则不动。
+4. **大文件**：列出项目里按 templates/gitignore 属于大文件类型、却被 git 跟踪的文件，建议挪进资源库，不自动挪。
+5. **AGENTS.md**：没有就按 templates/AGENTS.md 写，尖括号处向用户问清楚或从项目里读出来再填。已有的不重写，只检查代码项目有没有「测试」一节。
+6. **不放 CLAUDE.md**：Claude Code 在项目没有 CLAUDE.md 时直接读 AGENTS.md。已有 CLAUDE.md 且只有一行 `@AGENTS.md` 的，建议删掉；内容不同的，提示用户把内容并进 AGENTS.md 后再删，不自己合并。
+7. **记忆目录**：在 Kite 之外直接用 Claude Code 的机器上，在 `.claude/settings.local.json`（不进 git）里把 `autoMemoryDirectory` 设成本项目 `.kite/memory` 的绝对路径，否则记忆写进用户目录（`~/.claude/projects/…/memory/`）。上游只认绝对路径或 `~/` 开头的路径，所以不写进提交的 `.claude/settings.json`。用户目录里已有的、关于这个项目的记忆，挪进来。
+8. **检查**：能判断「改坏了没有」的项目提供 `.kite/check`，契约见上面的目录图，写法见下一节。代码项目再按 templates/test-writer.md 写 `.claude/agents/test-writer.md`，分层表里填本项目的小、中、大各指什么。
+9. **报告**：补了哪些文件；哪些需要用户决定。
 
 ## .kite/check 怎么写
 

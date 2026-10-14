@@ -18,6 +18,7 @@ import type { Project, Checkout, Workspace, WorkspaceModel } from '../model.ts';
 import { randomUUID } from 'node:crypto';
 // 模板只有一份，在项目规范（kite-onboard skill）里。文本 import：模板一改，依赖图就会选中登记相关的测试
 import GITIGNORE_TEMPLATE from '../../../.claude/skills/kite-onboard/templates/gitignore' with { type: 'text' };
+import GITATTRIBUTES_TEMPLATE from '../../../.claude/skills/kite-onboard/templates/gitattributes' with { type: 'text' };
 
 /** 同步目录。iCloud「桌面与文稿」的判断方式未核实。 */
 function isSynced(path: string): boolean {
@@ -127,8 +128,10 @@ async function initFolder(path: string, home: string, id: string): Promise<void>
   if (synced) mkdirSync(repos, { recursive: true });
   const separate = synced ? [`--separate-git-dir=${join(repos, `${id}.git`)}`] : [];
   await git(path, ['init', '-q', '-b', 'main', ...separate, path]);
-  const ignore = join(path, '.gitignore');
-  if (!existsSync(ignore)) writeFileSync(ignore, GITIGNORE_TEMPLATE);
+  for (const [name, template] of [['.gitignore', GITIGNORE_TEMPLATE], ['.gitattributes', GITATTRIBUTES_TEMPLATE]] as const) {
+    const file = join(path, name);
+    if (!existsSync(file)) writeFileSync(file, template);
+  }
   await commitAll(path, ['--allow-empty', '-m', 'Kite：初始版本']);
   // 首次提交时每个文件一个松散对象，立刻打包，否则对象库会膨胀
   await git(path, ['repack', '-adq']);
