@@ -411,8 +411,9 @@ final class CompactShellView: UIView, DrawerDriving {
         arrangeContent(read, size: size)
         tabs.alpha = read.shown == .actions ? 1 : 0
         sidebar.accessibilityElementsHidden = read.shown != .sidebar
-        // 只在停着时接点按：拉开或正在走时会挡住露出来的侧边栏、底栏
-        content.isUserInteractionEnabled = read.shown == nil || read.shown == drawer.rest
+        // 拉开着、正往开里走时不接点按，会挡住露出来的侧边栏、底栏。正往回收的从收起那一刻就接：弹簧走完要 0.7 秒，
+        // 看着 0.4 秒左右就停了，原来要等走完，这中间点窗口里的东西没反应（2026-10-14 用户说触控有点不灵敏，查出的一处）
+        content.isUserInteractionEnabled = read.shown == nil || read.shown == drawer.rest || read.open == drawer.rest
         catcher.update(drawer: drawer, geometry: geometry)
 
         // 观察之外：规则、几何交给抽屉，开出第一个窗口时收起，越过一半轻震
