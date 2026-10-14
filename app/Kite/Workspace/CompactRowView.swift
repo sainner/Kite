@@ -499,9 +499,30 @@ private final class CompactSlot {
     func setChromeOpacity(_ opacity: Float, animated: Bool) {
         for view in [thread?.headerBar, controlsArea, headerIsland, controlsIsland] as [UIView?] {
             guard let view else { continue }
+            if opacity > 0, !revealed.contains(view) {
+                revealed.add(view)
+                revealToUIKit(view)
+            }
             setLayerOpacity(view, opacity, animated: animated)
             view.isUserInteractionEnabled = opacity > 0
         }
+    }
+
+    /// 已经经 UIView.alpha 露出来过一次的标题栏、控制区。
+    private let revealed = NSHashTable<UIView>.weakObjects()
+
+    /// 第一次露出来：经 UIView.alpha 从 0 设成看得见一次，UIKit 才把「看得见了」通知给里面的 SwiftUI，标题栏按钮、输入区的玻璃这时才建。
+    /// 不在当前的窗口建出来时图层透明度就是 0，SwiftUI 当它看不见、不建玻璃；之后只改图层透明度（为了不在每次换窗口时把整棵子树
+    /// 通知一遍，见 setLayerOpacity）它收不到，换到这个窗口时按钮就没有玻璃（2026-10-14 iPhone，开 App 时不在前面的窗口都这样）。
+    /// 建好以后再藏起来玻璃也留着。设完马上把图层透明度放回去，由调用方照常淡入。
+    private func revealToUIKit(_ view: UIView) {
+        let opacity = view.layer.opacity
+        guard opacity == 0 else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        view.alpha = 1
+        view.layer.opacity = opacity
+        CATransaction.commit()
     }
 
     func dismantle() {
