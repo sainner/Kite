@@ -195,8 +195,9 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
                 if view.frame != frame { view.frame = frame; moved = true }
                 slot.layoutView(in: CGRect(origin: .zero, size: frame.size))
                 if moved { EmbeddedContainerView.synchronize(in: view) }
-                // 滚了、挪了：文本视图露出来的那截出了上次的视口就按新视口重排。拖缝中每步改了容器宽，文本视图本来就按新视口重排
-                if !viewport.resizing { Self.refreshViewports(in: view) }
+                // 滚了、挪了：文本视图露出来的那截出了上次的视口就按新视口重排。拖缝中也要：没改容器宽的行（见 PhoneProseRowSlot.keptHeight）
+                // 不会自己重排，贴底时别的行变高变矮，滚动位置跟着变，它露出来的那截就换了（只比上下，没出视口时很便宜）
+                Self.refreshViewports(in: view)
             case .hide:
                 if slot.view.superview != nil, !slot.view.isHidden { slot.view.isHidden = true }
             case .remove:

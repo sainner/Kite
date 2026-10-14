@@ -175,8 +175,14 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
 
     override func height(width: CGFloat) -> CGFloat {
         if let measured, measured.width == width, !provisional { return measured.height }
-        let height = textView.measure(lineWidth: width) + topInset
-        provisional = false
+        if let kept = keptHeight(width) { return kept }
+        let lineWidth = resizeLineWidth(width)
+        let rewrapped = laidLineWidth != lineWidth
+        let height = textView.measure(lineWidth: lineWidth) + topInset
+        if rewrapped { textView.relocateViewport() }
+        // 拖缝中整段排过：之后只排一截时按这次的段高估没排的
+        if resizing { layout.remember(textView, width: lineWidth) }
+        provisional = lineWidth != width
         measured = (width, height)
         return height
     }
@@ -184,13 +190,55 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
     /// 拖缝时只排 band 那一截，见 ProseLayout；这截占了大半行时整段排。
     override func height(width: CGFloat, band: ClosedRange<CGFloat>) -> CGFloat {
         if let measured, measured.width == width { return measured.height }
+        if let kept = keptHeight(width) { return kept }
         guard let measured,
               let banded = layout.height(of: textView, width: width, band: band, topInset: topInset, measured: measured, exact: !provisional)
         else { return height(width: width) }
+        textView.relocateViewport()
         provisional = true
         self.measured = (width, banded)
         return banded
     }
+
+    // MARK: 拖缝中少排
+
+    /// 拖缝中字还放得下新的列宽就先不按新宽重排（拖缝中允许暂时不精确，停下后按精确的重量，同气泡的 unwrapped）：
+    /// 列变宽时字比列窄，右边多出一截空白；列变窄时字伸进右边的留白一点。超出这些才重排，每步省下文本视图的重排和重画
+    /// （iPad 真机拖缝每步约一半的主线程在这上面）。每行的余量错开一点，免得几行挤在同一步重排。
+    private func keptHeight(_ width: CGFloat) -> CGFloat? {
+        guard resizing, !Self.exactResize, let measured, let laid = laidLineWidth else { return nil }
+        let keeps = width >= laid ? width - laid <= 16 + 16 * spread : laid - width <= 2 + 6 * spread
+        guard keeps else { return nil }
+        // 停着时整段排准的：先记下段高，之后只排一截时用（标成不准以后 ProseLayout 不会再记）
+        if !provisional, let text { layout.remember(text, width: laid) }
+        provisional = true
+        self.measured = (width, measured.height)
+        return measured.height
+    }
+
+    /// 拖缝中重排时排多宽：列变窄时比列再窄一截，接下来几步不用再排（见 keptHeight），别的时候按列宽。
+    private func resizeLineWidth(_ width: CGFloat) -> CGFloat {
+        guard resizing, !Self.exactResize, let laid = laidLineWidth, width < laid else { return width }
+        return max(width - 8 - 8 * spread, width * 0.85)
+    }
+
+    /// 文本视图眼下排的行宽。
+    private var laidLineWidth: CGFloat? {
+        guard let width = text?.textContainer.size.width, width > 0, width < .greatestFiniteMagnitude else { return nil }
+        return width
+    }
+
+    /// Debug 带 --exact-resize 时拖缝中每步照旧按新宽重排（正文、折着的长消息、折了行的事件），对照用。
+    static let exactResize: Bool = {
+        #if DEBUG
+        ProcessInfo.processInfo.arguments.contains("--exact-resize")
+        #else
+        false
+        #endif
+    }()
+
+    /// 0～1，每行一个，错开各行的余量。
+    private lazy var spread = CGFloat(UInt(bitPattern: ObjectIdentifier(self).hashValue) % 1009) / 1009
 
     override func pin(at y: CGFloat) {
         guard let text else { return }

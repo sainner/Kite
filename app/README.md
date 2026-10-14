@@ -53,6 +53,8 @@ App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `
 
 `preview-mac.sh` 的参数原样传给 App。带 `--dock-preview` 打开停靠栏预览：用真实的停靠栏组件画各种窗口与活动状态下的头像，不建工作区、不发请求，头像签名取已连接工作机上的角色。
 
+iPhone、iPad 的原生对话列表拖缝时，正文、折着的长消息和折了行的事件在列宽差得不多时先不按新宽重排，停下后再排准（`PhoneProseRowSlot.keptHeight`、`PhoneTextLine.wrapWidth`）；`--exact-resize` 让它们照旧每步按新宽重排，对照外观或测量。
+
 初始配置预览使用 Debug build 带 `--onboarding-preview` 启动，需要从测试机桌面反复启动时，编译参数使用 `KITE_PREVIEW_FLAGS=KITE_ONBOARDING_PREVIEW`。界面在真实工作机和数据上迭代。
 
 Swift 类型、窗口排布、草稿交接、滚动与 WebKit 验证统一在 [手动验证目录](../kited/test/manual/README.md)。移动或拆分 Swift 文件时同步更新这些脚本引用的源码路径。

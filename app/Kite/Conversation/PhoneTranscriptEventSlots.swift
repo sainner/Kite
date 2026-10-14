@@ -17,6 +17,7 @@ final class PhoneEventRowSlot: TranscriptRowSlot, PhoneRowSlot {
     override var view: UIView {
         if let label { return label }
         let label = PhoneIconLabel(lines: 0)
+        label.title.defersRewrap = true
         label.isAccessibilityElement = true
         label.accessibilityTraits = .staticText
         label.addInteraction(UIContextMenuInteraction(delegate: menu))
@@ -52,6 +53,8 @@ final class PhoneEventRowSlot: TranscriptRowSlot, PhoneRowSlot {
         if let measured, measured.width == width { return measured.height }
         let label = view as! PhoneIconLabel
         let height = label.height(width: width)
+        // 拖缝中先不重新断行的（见 PhoneTextLine.wrapWidth），停下后按精确的重量
+        provisional = label.title.keptWidth != nil
         measured = (width, height)
         return height
     }

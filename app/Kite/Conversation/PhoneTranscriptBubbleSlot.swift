@@ -193,16 +193,25 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         if resizing, foldable, !expanded, let measured {
             fold(true)
             let most = max(width - Metrics.bubblePadding.width * 2, 0)
-            layout.keepFolded(most: most, wraps: foldWraps)
-            container.text.fit(lineWidth: layout.textWidth)
+            // 折了行的：行宽和能给的宽差得不多就先不重排（同 PhoneProseRowSlot.keptHeight），气泡跟着字的宽，变窄时往里多让一截
+            let current = layout.textWidth
+            let keeps = foldWraps && current > 0 && !PhoneProseRowSlot.exactResize
+                && (most >= current ? most - current <= 16 + 16 * spread : current - most <= 2 + 6 * spread)
+            if !keeps {
+                let slack = foldWraps && most < current && !PhoneProseRowSlot.exactResize
+                layout.keepFolded(most: slack ? max(most - 8 - 8 * spread, most * 0.85) : most, wraps: foldWraps)
+                container.text.fit(lineWidth: layout.textWidth)
+            }
             provisional = true
             self.measured = (width, measured.height)
             return measured.height
         }
         // 停下来按精确量：要全文多高（折着时放的是开头那截）
         if !resizing { fold(false) }
+        let lineWidth = container.text.textContainer.size.width
         provisional = layout.measure(container.text, storage: container.text.textStorage, width: width, hasBlocks: hasBlocks,
                                      resizing: resizing, expanded: expanded, foldHeight: foldHeight)
+        if container.text.textContainer.size.width != lineWidth { container.text.relocateViewport() }
         // 折着、拖缝中只排了露出来那截的长消息不算：底下没排的可能折了行
         let whole = !(provisional && foldable && !expanded)
         unwrapped = !hasBlocks && message?.attachments.isEmpty == true && whole && !container.text.softWraps ? layout.textWidth : nil
@@ -215,6 +224,9 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         measured = (width, height)
         return height
     }
+
+    /// 0～1，每行一个，错开拖缝中各行的余量。
+    private lazy var spread = CGFloat(UInt(bitPattern: ObjectIdentifier(self).hashValue) % 1009) / 1009
 
     /// 气泡多高：折起来的正文，加上能折时的按钮。
     private func bubbleHeight(expanded: Bool) -> CGFloat {

@@ -49,6 +49,12 @@ import AppKit
         return topInset + text.roundedHeight(laid.bottom + below)
     }
 
+    /// 眼下整段排好了（按 width 的行宽）：记下各段的高，之后只排一截时估没排的那些（iOS 拖缝中先不重排、或比列窄一截整段排的行）。
+    func remember(_ text: some TextKitMeasuring, width: CGFloat) {
+        guard let layout = text.textLayoutManager, let laid = RestLayout(layout, width: width) else { return }
+        rest = laid
+    }
+
     /// 量高前记下行内 y 处的那段，量完由 pinShift 给出它在行里挪了多少，见 TranscriptRowSlot.pin。
     func pin(_ text: some TextKitMeasuring, at y: CGFloat, topInset: CGFloat) {
         pinned = nil
