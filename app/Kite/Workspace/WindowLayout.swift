@@ -387,12 +387,17 @@ final class WindowLayout {
         // 按脱离后、插占位之前的排布判断落点：预览一变卡片就挪位置，按预览判断会来回跳。
         // 指针在卡片之间的缝里时保持原来的落点，出了内容区才取消
         let remainingDock = dockedPanes(outside: fitted).filter { $0 != pane }
+        let previous = next.spot
         if regions.dock.contains(location) {
             next.spot = .dock(dockIndex?(remainingDock, location) ?? regions.dockIndex(at: location, count: remainingDock.count))
         } else if regions.canvas.contains(location), let rest = next.rest {
             if let edge = regions.canvasEdge(at: location) {
-                let minimum = rest.inserting(.placeholder, on: edge).minimumSize
-                next.spot = minimum.width <= regions.canvas.width && minimum.height <= regions.canvas.height ? .edge(edge) : nil
+                // 剩下的排布这一次拖动里不变，同一条边腾出的窗口也不变
+                if previous != .edge(edge) {
+                    let displaced = Self.edgeRoom(for: edge, rest: rest, canvas: regions.canvas)
+                    next.spot = displaced == nil ? nil : .edge(edge)
+                    next.displaced = displaced ?? []
+                }
             } else if let (target, frame) = rest.layout(in: regions.canvas).panes.first(where: { $0.value.contains(location) }) {
                 // 离哪条边近放哪边；这张卡片在那个方向上不够切成两张的，那条边不算
                 let x = (location.x - frame.minX) / frame.width
@@ -421,8 +426,9 @@ final class WindowLayout {
             if hypot(location.x - dwellAnchor.x, location.y - dwellAnchor.y) > Self.previewSlop { schedulePreview(at: location) }
             return
         }
+        if case .edge = next.spot {} else { next.displaced = [] }
         next.layout = next.placing(.placeholder, in: regions.canvas) ?? next.rest
-        next.docked = remainingDock
+        next.docked = remainingDock + next.displaced
         if case .dock(let index) = next.spot { next.docked.insert(pane, at: index) }
         // 刚起拖时立刻缩成停靠形状、让出位置；不改窗口尺寸的落点（停靠栏里换位置）也立刻跟上
         guard let drag, resizesPanes(from: drag, to: next, in: regions.canvas) else {
@@ -431,6 +437,45 @@ final class WindowLayout {
         }
         pendingDrag = next
         schedulePreview(at: location)
+    }
+
+    /// 沿内容区的 edge 贴满放一张卡片时，其余窗口里要收进停靠栏的。先照原样挤：其余窗口照旧排、让出这一边（同 Mac）；
+    /// 挤不下（触屏的窗口最小尺寸大，iPad 上两个并排的窗口再从左右边放一个就放不下）就收掉最少的几个，一样多时收离这条边远的，
+    /// 像是被推出去；这个方向连两张卡片都放不下时为 nil，这条边不算落点。
+    static func edgeRoom(for edge: Edge, rest: Tile, canvas: CGRect) -> [Pane]? {
+        func fits(_ tile: Tile?) -> Bool {
+            guard let minimum = tile?.inserting(.placeholder, on: edge).minimumSize else { return false }
+            return minimum.width <= canvas.width && minimum.height <= canvas.height
+        }
+        if fits(rest) { return [] }
+        let frames = rest.layout(in: canvas).panes
+        func distance(_ pane: Pane) -> CGFloat {
+            guard let frame = frames[pane] else { return 0 }
+            switch edge {
+            case .leading: return frame.minX - canvas.minX
+            case .trailing: return canvas.maxX - frame.maxX
+            case .top: return frame.minY - canvas.minY
+            case .bottom: return canvas.maxY - frame.maxY
+            }
+        }
+        let panes = rest.panes
+        guard panes.count > 1 else { return nil }
+        // 挑出 count 个的各种组合，按排布里的先后
+        func combinations(_ count: Int, from start: Int = 0) -> [[Pane]] {
+            guard count > 0 else { return [[]] }
+            guard start < panes.count else { return [] }
+            return (start..<panes.count).flatMap { index in combinations(count - 1, from: index + 1).map { [panes[index]] + $0 } }
+        }
+        for count in 1..<panes.count {
+            var best: (panes: [Pane], distance: CGFloat)?
+            for removed in combinations(count) where fits(removed.reduce(rest, { $0?.removing($1) })) {
+                let total = removed.map(distance).reduce(0, +)
+                // 一样远时收排布里靠后的（右边、下边的）
+                if total >= best?.distance ?? -.infinity { best = (removed, total) }
+            }
+            if let best { return best.panes }
+        }
+        return nil
     }
 
     /// 拖动中换落点，等指针停下这么久再换预览。换一次预览，尺寸变了的窗口要按新尺寸重排正文，
