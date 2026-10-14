@@ -586,24 +586,35 @@ final class AppModel {
     }
 }
 
-/// iPad 上拖侧栏改宽：拖动中不改 AppModel.sidebarWidth（改了 SwiftUI 的整棵根每步重算、侧栏列表每步重排，2026-10-14 iPad 真机
-/// 只留外壳时每步约 9ms），侧栏按开始拖时的宽摆着不动，原生台面按实时的宽把自己的左边挪过去（见 PhoneStageView）；松手才把宽交给
-/// sidebarWidth，SwiftUI 排一次。拖动中侧栏的行照开始时的宽排着：拖宽时右边多出的是底色，拖窄时被窗口盖住一截，松手排准。
-@MainActor final class SidebarDrag {
-    /// 开始拖时侧栏摆出来的宽，SwiftUI 按它排着。
-    private(set) var base: CGFloat?
+/// iPad 上拖侧栏改宽：拖动中不改 AppModel.sidebarWidth（改了 SwiftUI 的整棵根每步重算，2026-10-14 iPad 真机只留外壳时每步约 9ms）。
+/// 起拖时排版上侧栏只占最窄的宽（base），内容区往左伸到那里，之后每步不再排：侧栏自己按实时的宽画（MainWindow 的 SidebarLiveWidth，
+/// 只有侧栏这一棵跟着重算），原生台面按实时的宽把排窗口的那块往右让（见 PhoneStageView），两者之间不露空、不叠；
+/// 内容区伸出来的那段只在拖动中有，松手才把宽交给 sidebarWidth，SwiftUI 排一次。只有侧栏读 width（观察它），台面收通知。
+@MainActor @Observable final class SidebarDrag {
+    /// 拖动中侧栏在排版上占的宽，内容区从它右边起。
+    @ObservationIgnored private(set) var base: CGFloat?
+    /// 起拖前侧栏多宽：内容区往左伸出来的那段是 start - base。
+    @ObservationIgnored private(set) var start: CGFloat?
     /// 侧栏这一步该有多宽。
     private(set) var width: CGFloat?
-    /// 原生台面的左边要比 SwiftUI 摆的往右挪多少（拖窄时是负的）。
+    /// 原生台面排窗口的那块，左边比内容区的左边往右多少。
     var offset: CGFloat {
         guard let base, let width else { return 0 }
         return width - base
     }
+    /// 内容区比起拖前往左多伸出的一段：停靠栏、空画板这些不跟着拖的按起拖前的位置摆。
+    var lead: CGFloat {
+        guard let base, let start else { return 0 }
+        return start - base
+    }
 
     static let changed = Notification.Name("SidebarDragChanged")
 
-    func move(to width: CGFloat, base: CGFloat) {
-        if self.base == nil { self.base = base }
+    func move(to width: CGFloat, from start: CGFloat, base: CGFloat) {
+        if self.base == nil {
+            self.base = base
+            self.start = start
+        }
         guard width != self.width else { return }
         self.width = width
         NotificationCenter.default.post(name: Self.changed, object: self)
@@ -614,6 +625,7 @@ final class AppModel {
     func end() -> CGFloat? {
         let last = width
         base = nil
+        start = nil
         width = nil
         NotificationCenter.default.post(name: Self.changed, object: self)
         return last
