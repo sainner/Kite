@@ -90,7 +90,7 @@ export async function runSetup(main: string, worktree: string, logPath: string, 
   const fd = openSync(logPath, 'w');
   let sandbox: ReturnType<typeof prepareSandbox> | undefined;
   try {
-    sandbox = prepareSandbox(`exec '${script.replaceAll("'", "'\\''")}'`, { cwd: worktree, env, openNetwork: true,
+    sandbox = prepareSandbox(`exec '${script.replaceAll("'", "'\\''")}'`, { cwd: worktree, env, network: 'open',
       policy: { ...policy, read: [...policy.read, main] } });
     const r = await runScript(sandbox.executable, {
       args: sandbox.args, cwd: worktree, env: sandbox.env, timeoutMs: SETUP_TIMEOUT_MS, keep: 4000, signal,

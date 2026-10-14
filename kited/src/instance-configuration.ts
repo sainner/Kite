@@ -1,10 +1,11 @@
 /** 实例配置、执行授权和操作授权的版本校验与通知；控制队列及运行时生命周期由 Kite 提供。 */
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { agentCapabilities, agentModelCatalog, configurationBoundary } from './agents/capabilities.ts';
 import { agentRevision, chooseAgentModel, claudeReasoning, instanceAgent, parseAgentDefinition, type AgentDefinition } from './agents/definition.ts';
 import { KiteError } from './errors.ts';
-import { applyExecutionGrants, executionRevision, instanceExecutionGrants, normalizeExecutionGrants } from './execution/grants.ts';
+import { applyExecutionGrants, approvalModes, executionRevision, instanceApprovalMode, instanceExecutionGrants, normalizeExecutionGrants, type ExecutionGrants } from './execution/grants.ts';
 import { harnessPolicy } from './execution/policy.ts';
 import { assembleContext } from './harness/context/assembler.ts';
 import {
@@ -118,13 +119,44 @@ export class InstanceConfiguration {
       if (runtime?.busy || runtime?.recovery || runtime?.state === 'stopping') throw new KiteError('请先停止实例并确认执行结果，再修改执行授权', 409);
       const base = await harnessPolicy({ cwd: instance.workspace.cwd, env: process.env, home: this.kite.home, repository: instance.checkout.path });
       applyExecutionGrants(base, instance.workspace.cwd, grants);
-      this.kite.store.setInstanceConfig(id, { ...instance.config, execution: grants }, {
-        id: randomUUID(), kind: 'execution.permissions.changed', source: `instance:${id}`, authority: 'instruction',
-        context: assembleContext(executionPermissionsContext(nextRevision, grants,
-          this.kite.contextTemplates.get(executionPermissionsContextDefinition.id, executionPermissionsContextDefinition.scene).definition)).snapshot,
-      });
-      this.control.changed(instance.workspaceId);
+      this.saveExecutionGrants(instance, grants);
       return this.executionGrants(id);
+    });
+  }
+  /**
+   * 「允许并记住」一台主机：只追加网络许可，是「运行中不能改执行授权」的例外；在后续连接与调用生效，
+   * 不重放已失败的命令，授权变化照常通知模型。
+   */
+  rememberNetwork(id: string, domain: string): Promise<void> {
+    return this.control.run(this.control.context(id).workspaceId, async () => {
+      const instance = this.control.openThread(id);
+      const current = instanceExecutionGrants(instance);
+      const grants = await normalizeExecutionGrants({ ...current, network: [...current.network, domain] });
+      if (executionRevision(grants) !== executionRevision(current)) this.saveExecutionGrants(instance, grants);
+    });
+  }
+  private saveExecutionGrants(instance: ThreadContext, grants: ExecutionGrants): void {
+    this.kite.store.setInstanceConfig(instance.id, { ...instance.config, execution: grants }, {
+      id: randomUUID(), kind: 'execution.permissions.changed', source: `instance:${instance.id}`, authority: 'instruction',
+      context: assembleContext(executionPermissionsContext(executionRevision(grants), grants,
+        this.kite.contextTemplates.get(executionPermissionsContextDefinition.id, executionPermissionsContextDefinition.scene).definition)).snapshot,
+    });
+    this.control.changed(instance.workspaceId);
+  }
+
+  approvalMode(id: string) { return { mode: instanceApprovalMode(this.control.context(id)) }; }
+  /** 审批模式在下一次越界请求时生效，运行中也可以改。 */
+  configureApprovalMode(id: string, value: unknown) {
+    const parsed = z.object({ mode: z.enum(approvalModes) }).strict().safeParse(value);
+    if (!parsed.success) throw new KiteError('审批模式无效');
+    const { mode } = parsed.data;
+    return this.control.run(this.control.context(id).workspaceId, async () => {
+      const instance = this.control.openThread(id);
+      if (instanceApprovalMode(instance) !== mode) {
+        this.kite.store.setInstanceConfig(id, { ...instance.config, approval: mode });
+        this.control.changed(instance.workspaceId);
+      }
+      return { mode };
     });
   }
 

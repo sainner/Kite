@@ -47,8 +47,6 @@ export function startDaemon(opts: DaemonOptions): Daemon {
   syncTimer.unref();
   void sync();
   kite.library.connect();
-  // 上次停在已答复、还没送到线程的答复，启动后补送。
-  void kite.reports.retry();
   // kite-net 核验组网身份；随机内部凭据阻止绕过代理伪造同账号请求。
   const proxyToken = crypto.randomUUID();
   const remote = serve(kite, { hostname: '127.0.0.1', port: 0, remote: true, proxyToken });

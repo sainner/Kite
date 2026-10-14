@@ -61,6 +61,14 @@ export async function normalizeExecutionGrants(value: unknown): Promise<Executio
   }
 }
 
+/**
+ * 审批模式：越出执行授权的请求怎么处理（docs/工具审批与提问.md）。allowlist 直接拒绝，ask 停下来问人，
+ * allow_all 自动允许；沙箱在任何模式下都在。目前只管命令连接授权之外的主机。
+ */
+export const approvalModes = ['allowlist', 'ask', 'allow_all'] as const;
+export type ApprovalMode = (typeof approvalModes)[number];
+export const instanceApprovalMode = (instance: PluginInstance): ApprovalMode => z.enum(approvalModes).default('allowlist').parse(instance.config.approval);
+
 export function instanceExecutionGrants(instance: PluginInstance): ExecutionGrants {
   return parseExecutionGrants(instance.config.execution ?? pluginDefinitions().find((definition) => definition.id === instance.definitionId)?.execution
     ?? { workspace: 'read', read: [], write: [], network: [] });

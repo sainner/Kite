@@ -57,7 +57,8 @@ export function claudeToolServer(options: {
   allowed(name: string): boolean;
   finished(callId: string, result: ToolResult): void;
 }) {
-  return createSdkMcpServer({ name: 'kite', alwaysLoad: true, tools: options.tools.map((entry) => {
+  // 提问与审批等用户回应不设时限；上游对单次调用有硬时限，这里取它允许的最大值（约 24.8 天）。
+  return { ...createSdkMcpServer({ name: 'kite', alwaysLoad: true, tools: options.tools.map((entry) => {
     const schema = z.fromJSONSchema(entry.parameters);
     if (!(schema instanceof z.ZodObject)) throw new Error(`工具 ${entry.name} 的参数须为对象`);
     return tool(entry.name, entry.description, schema.shape, async (args, extra) => {
@@ -84,5 +85,5 @@ export function claudeToolServer(options: {
         ...(images ?? []).map((image) => ({ type: 'image' as const, data: image.data, mimeType: image.mediaType }))],
         ...(structured ? { structuredContent: { ...rest } } : {}), ...(result.status === 'success' ? {} : { isError: true }) };
     }, { annotations: { readOnlyHint: entry.parallel === true, destructiveHint: entry.parallel !== true, openWorldHint: true } });
-  }) });
+  }) }), timeout: 2_147_483_647 };
 }

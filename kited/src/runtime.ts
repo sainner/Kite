@@ -23,6 +23,7 @@ import type { CompactionRequest, Input, Model, Phase, Recovery, StopRequest, Thr
 import type { LightTaskOptions } from './light-tasks.ts';
 import type { ProjectToolRule } from './roles.ts';
 import { ruleAllows } from './agents/tool-policy.ts';
+import type { NetworkAsk } from './execution/command.ts';
 
 export interface Runtime {
   readonly state: RunnerState | Phase;
@@ -68,7 +69,7 @@ export interface RuntimeHost {
   /** 每次请求重新读取，配置和授权变化在下一次请求生效。 */
   current(): ThreadContext;
   notifications(after: number): ThreadNotification[];
-  /** 宿主提供的 Kite 工具：协作操作（另须授权）与线程自己的上报。 */
+  /** 宿主提供的 Kite 工具：协作操作（另须授权）与线程自己的提问。 */
   operations: { tools: Tool[]; prepare(instance: PluginInstance): OperationToolSelection };
   contextUpdateTemplate(): ContextDefinition;
   compactionTemplates(): { compact: ContextDefinition; fileChanges: ContextDefinition };
@@ -76,6 +77,8 @@ export interface RuntimeHost {
   compactionFiles(range: { from: number; to: number }): Promise<string | undefined>;
   /** 所在项目的工具约束；每次请求和每次调用工具时读取，收紧即时生效。 */
   toolConstraint(): ProjectToolRule | undefined;
+  /** 每条命令开始时按实例的审批模式取：名单外主机交给谁决定，白名单模式没有。 */
+  network(): NetworkAsk | undefined;
 }
 
 const constraintAllows = (rule: ProjectToolRule | undefined, name: string) => !rule || ruleAllows(rule, name);
@@ -105,7 +108,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   } : undefined;
   const diffDir = join(home, 'diffs', workspaceId);
   if (runtime === 'claude') {
-    return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy, secrets,
+    return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy, secrets, network: host.network,
       prepare(afterNotification) {
         const { agent, permitted, plugins } = selectTools(host.current(), operations, host.toolConstraint());
         const allowed = new Set([...agent.tools.filter(permitted), ...plugins.map((tool) => tool.name)]);
@@ -121,7 +124,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   }
   const inputs = new Map<string, string>();
   const thread = await openThreadHost({
-    cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, startPaused: true, policy, secrets,
+    cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, startPaused: true, policy, secrets, network: host.network,
     prepareRequest(tools, { afterNotification }) {
       const current = host.current();
       const execution = instanceExecutionGrants(current);

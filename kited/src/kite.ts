@@ -15,7 +15,7 @@ import { openRuntime, type Runtime, type RuntimeOptions } from './runtime.ts';
 import { capture, changesBetween, findSnapshot, list, restore, type Snapshot } from './workspace/snapshots.ts';
 import { compactTemplate } from './harness/compaction.ts';
 import type { Store } from './store.ts';
-import type { AgentInstance, Checkout, Machine, OpenWindowRequest, PluginInstance, Project, Report, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
+import type { AgentInstance, Checkout, Machine, OpenWindowRequest, PluginInstance, Project, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
 import { PluginCatalog } from './plugins/catalog.ts';
 import { PluginHost } from './plugins/host.ts';
 import { InstanceConfiguration } from './instance-configuration.ts';
@@ -31,7 +31,7 @@ import {
   agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
   pluginToolsContextDefinition,
 } from './harness/context/notifications.ts';
-import { instanceExecutionGrants } from './execution/grants.ts';
+import { instanceApprovalMode, instanceExecutionGrants } from './execution/grants.ts';
 import { InstanceOperations } from './operations/operations.ts';
 import { OperationReceipts } from './operations/receipts.ts';
 import { lineGrant, type OperationGrant, type OperationInput } from './operations/contract.ts';
@@ -55,7 +55,7 @@ import { ModelAccounts, readModelAccounts } from './model-accounts.ts';
 import { agentModelCatalog } from './agents/capabilities.ts';
 import { TokenCounter } from './token-counts.ts';
 import { VoiceSessions, voiceTemplate } from './voice/sessions.ts';
-import { Reports } from './reports.ts';
+import { type Waiting, Waits } from './waiting.ts';
 import { readLease, remoteLeases } from './workspace/lease.ts';
 import { WorkspaceTransfers } from './transfer/transfers.ts';
 import { MIN_FREE_BYTES, readEnvironment, type Environment } from './environment.ts';
@@ -68,8 +68,7 @@ export interface MachineSummary {
   workspaces: Array<{
     id: string; epoch: number; status: WorkspaceStatus; kind: Workspace['kind']; name: string; project: { id: string; name: string };
     threads: Array<{ id: string; title: string; role: string | null; phase: string; busy: boolean; waitingForResume: boolean;
-      lastOutcome?: string; recovery?: string }>;
-    reports: Report[];
+      lastOutcome?: string; recovery?: string; waiting?: Waiting }>;
   }>;
 }
 const firstLine = (text: string) => text.trim().split('\n')[0]!.trim() || '（空消息）';
@@ -100,7 +99,7 @@ export class Kite {
   readonly emblems: TemplateEmblems;
   readonly tokenCounts: TokenCounter;
   readonly voice: VoiceSessions;
-  readonly reports: Reports;
+  readonly waits: Waits;
   readonly transfers: WorkspaceTransfers;
   /** Line 调用同账号的工作机。 */
   readonly peers: Peers;
@@ -140,16 +139,15 @@ export class Kite {
       changed: (changes) => this.libraryChanged(changes) });
     this.receipts = new OperationReceipts(store);
     this.operations = new InstanceOperations(this);
-    this.reports = new Reports({ store, bus, deliver: (threadId, text, inputId, via) => this.send(threadId, text, inputId, 'human', undefined, via),
-      control: (workspaceId, action) => this.control(workspaceId, action) });
+    this.waits = new Waits((threadId, waiting) => bus.emit({ type: 'waiting', threadId, ...(waiting ? { waiting } : {}) }));
     this.plugins = new PluginHost(this);
     this.peers = new Peers({ account, self: () => ({ id: store.machine.id, name: store.machine.name, url: this.serving?.url }),
       proxyPort: () => this.serving?.network?.status().httpProxyPort, ...(options.peers ? { directory: options.peers.directory } : {}) });
     this.monitor = new LineMonitor({ store, peers: this.peers,
       line: () => this.lineInstance(), deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, 'kite'),
       template: () => this.contextTemplates.get(lineMonitorContextDefinition.id, 'line.monitor').definition });
-    // 本机的上报与回合变化很快读一轮，远程工作机靠定时读取。
-    bus.subscribe((event) => event.type === 'report.changed' || event.type === 'idle', () => this.monitor.nudge());
+    // 本机的等待与回合变化很快读一轮，远程工作机靠定时读取。
+    bus.subscribe((event) => event.type === 'waiting' || event.type === 'idle', () => this.monitor.nudge());
     this.transfers = new WorkspaceTransfers({
       store, home, account,
       control: (id, action) => this.control(id, action),
@@ -164,7 +162,6 @@ export class Kite {
       environment: (projectId) => this.environment(projectId),
       ensureCheckout: (projectId) => this.ensureCheckout(projectId),
       freeze: (id) => this.freeze(id),
-      opened: (id) => void this.reports.retry(id),
       beforeHandover: (id) => this.isLineWorkspace(id) ? this.saveLineScene(id) : Promise.resolve(),
     });
     this.configuration = new InstanceConfiguration(this, {
@@ -273,7 +270,7 @@ export class Kite {
     }) }));
   }
   /**
-   * 这台工作机的状态汇总，供 Line 查询与 monitor 核对：未归档的工作区、其中线程的执行状态与未结束的上报。
+   * 这台工作机的状态汇总，供 Line 查询与 monitor 核对：未归档的工作区、其中线程的执行状态与等你回应的对象。
    * 线程状态从显示投影读，首次读取会载入历史，不启动执行。
    */
   async summary(): Promise<MachineSummary> {
@@ -284,9 +281,8 @@ export class Kite {
         const state = await this.threadState(instance.id);
         return { id: instance.id, title: instance.title, role: (instanceRole(instance)?.id ?? null), phase: state.phase, busy: state.busy,
           waitingForResume: state.waitingForResume, ...(state.lastOutcome ? { lastOutcome: state.lastOutcome.kind } : {}),
-          ...(state.recovery ? { recovery: state.recovery.message } : {}) };
+          ...(state.recovery ? { recovery: state.recovery.message } : {}), ...(state.waiting ? { waiting: state.waiting } : {}) };
       })),
-      reports: this.store.workspaceReports(model.workspace.id, ['open', 'answered', 'delivered', 'incorporated']),
     })));
     return { machine: { id: this.store.machine.id, name: this.store.machine.name }, workspaces };
   }
@@ -452,7 +448,6 @@ export class Kite {
       if (workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
       if (!prompt.trim()) throw new KiteError('第一条消息不能为空');
       if (windowId && this.store.window(windowId)) throw new KiteError('窗口 ID 已使用', 409);
-      await this.assertIdle(workspaceId);
       await this.snapshot(workspace, [], '线程开始');
       const t = this.newThread(workspaceId, prompt, workspace.kind, choice);
       this.store.addAgent(t, this.instances.newWindow(t, windowId));
@@ -468,10 +463,7 @@ export class Kite {
       check();
       const { workspace } = this.workspace(workspaceId);
       if (workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
-      if (input.prompt !== undefined) {
-        await this.assertIdle(workspaceId);
-        await this.snapshot(workspace, [], '线程开始');
-      }
+      if (input.prompt !== undefined) await this.snapshot(workspace, [], '线程开始');
       check();
       const instance = this.instances.newInstance(workspaceId, agentDefinitionId, input.title ?? (input.prompt ? titleOf(input.prompt) : '新代理'), workspace.kind,
         { role: { id: input.role ?? defaultRoleId } });
@@ -530,6 +522,8 @@ export class Kite {
     return this.configuration.configureOperationGrants(id, expectedRevision, value);
   }
   executionGrants(id: string) { return this.configuration.executionGrants(id); }
+  approvalMode(id: string) { return this.configuration.approvalMode(id); }
+  configureApprovalMode(id: string, value: unknown) { return this.configuration.configureApprovalMode(id, value); }
   configureExecutionGrants(id: string, expectedRevision: string, value: unknown) {
     return this.configuration.configureExecutionGrants(id, expectedRevision, value);
   }
@@ -647,8 +641,9 @@ export class Kite {
       current: () => this.context(id),
       notifications: (after) => this.store.instanceNotifications(id, after),
       // Line 的管理工具只声明给 Line 角色的实例，免得每个代理的请求都带着它们的说明。
-      operations: { tools: [...this.operations.tools(id), this.reports.tool(id),
-        ...(instanceRole(t)?.id === lineRoleId ? lineTools({ store: this.store, peers: this.peers, machine: this.store.machine.id, instanceId: id }) : [])],
+      operations: { tools: [...this.operations.tools(id), this.waits.question(id),
+        ...(instanceRole(t)?.id === lineRoleId ? lineTools({ store: this.store, peers: this.peers, machine: this.store.machine.id, instanceId: id,
+          approve: (request, signal) => this.waits.approve(id, request, signal) }) : [])],
       prepare: (instance) => this.operations.prepareTools(instance) },
       contextUpdateTemplate: () => this.contextTemplates.get(contextUpdateContextDefinition.id, contextUpdateContextDefinition.scene).definition,
       compactionTemplates: () => ({
@@ -657,18 +652,35 @@ export class Kite {
       }),
       compactionFiles: ({ from, to }) => changesBetween(workspace.cwd, workspaceId, from, to),
       toolConstraint: () => this.store.projectConstraints(t.project.id)?.tools,
+      network: () => instanceApprovalMode(this.context(id)) === 'allowlist' ? undefined : (target, signal) => this.askNetwork(id, target, signal),
     });
     this.runners.set(id, r);
     return r;
   }
-  /** 恢复检查只打开 journal，不执行旧输入；共享 cwd 的并行执行在工具调度接入后开放。 */
+  /**
+   * 命令要连接执行授权之外的主机：按实例此刻的审批模式放行、拒绝或在线程上问人；「允许并记住」把它加进网络许可，
+   * 记不住（如线程已归档）也放行这一次。
+   */
+  private async askNetwork(id: string, target: { host: string; port?: number }, signal: AbortSignal): Promise<boolean> {
+    const mode = instanceApprovalMode(this.context(id));
+    if (mode !== 'ask') return mode === 'allow_all';
+    const host = target.host.includes(':') ? `[${target.host}]` : target.host;
+    const domain = target.port === undefined ? host : `${host}:${target.port}`;
+    const decision = await this.waits.approve(id, { tool: 'shell', target: domain, reason: '命令要连接网络许可之外的主机', mustAsk: false }, signal);
+    if (decision === 'remember') {
+      await this.configuration.rememberNetwork(id, domain).catch((error) => console.error(`[审批] 记住网络许可失败：${(error as Error).message}`));
+    }
+    return decision === 'once' || decision === 'remember';
+  }
+  /** 恢复检查只打开 journal，不执行旧输入。 */
   private async runnerForManagement(t: AgentInstance): Promise<Runtime | undefined> {
     return this.runners.get(t.id) ?? (t.status === 'open' && existsSync(join(this.home, 'sessions', t.id))
       ? await this.runner(this.context(t.id)) : undefined);
   }
-  private async assertIdle(workspaceId: string, except?: string): Promise<void> {
+  /** 动整个工作区的操作（回退、采纳）要求全员空闲；线程之间的启动、发送与继续默认并行，见 docs/工作区并行.md。 */
+  private async assertIdle(workspaceId: string): Promise<void> {
     for (const t of this.store.threads(workspaceId)) {
-      if (t.status === 'archived' || t.id === except) continue;
+      if (t.status === 'archived') continue;
       const r = await this.runnerForManagement(t);
       if (r?.busy || r?.recovery) throw new KiteError('工作区有线程正在工作或等待恢复确认', 409);
     }
@@ -680,7 +692,6 @@ export class Kite {
     return this.controlThread(id, async () => {
       check();
       const t = this.openThread(id);
-      await this.assertIdle(t.workspaceId, id);
       await this.sendInput(t, { id: inputId, text, source, ...(via ? { via } : {}) }, check);
       return { id: inputId };
     });
@@ -689,7 +700,6 @@ export class Kite {
     const runner = await this.runner(thread);
     check();
     await runner.send(input);
-    if (input.source === 'human') this.reports.inputReceived(thread.id, input.id);
     // 还没有标题记录（没起过名、没手动改过）时，用第一条消息作标题
     if (this.store.threadTitle(thread.id)?.revision === 'initial') {
       this.store.renameInstance(thread.id, titleOf(input.text));
@@ -721,7 +731,6 @@ export class Kite {
     return this.controlThread(id, async () => {
       check();
       const t = this.openThread(id);
-      await this.assertIdle(t.workspaceId, id);
       const r = await this.runner(t);
       check();
       if (!r.resume) throw new KiteError('这个后端通过发消息继续', 409);
@@ -755,7 +764,7 @@ export class Kite {
 
   private snapshot(w: Workspace, toolUseIds: string[], label: string, threadId?: string): Promise<void> {
     return this.serial(`snap:${w.id}`, async () => {
-      const r = await capture(w.cwd, w.id, label, toolUseIds);
+      const r = await capture(w.cwd, w.id, label, toolUseIds, threadId);
       if (r.created) this.bus.emit({ type: 'workspace.snapshot', workspaceId: w.id, originThreadId: threadId, commit: r.commit, changedFiles: r.changedFiles, label });
     });
   }
@@ -851,7 +860,6 @@ export class Kite {
       if (current.status === 'archived') return;
       await this.stopThread(current);
       this.store.archiveInstance(id);
-      this.reports.archive([id], '线程已归档');
       this.threadChanged({ ...current, status: 'archived' });
     });
   }
@@ -875,7 +883,6 @@ export class Kite {
       try {
         await removeWorktree(checkout.path, w.cwd, w.branch!);
         this.store.archiveWorkspace(id);
-        this.reports.archive(threads.map((t) => t.id), '工作区已归档');
       } finally { releasePlugins(); }
       for (const t of threads) if (t.status !== 'archived') this.threadChanged({ ...t, status: 'archived' });
       this.changed(id);

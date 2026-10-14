@@ -2,11 +2,15 @@
 import { spawn } from 'node:child_process';
 import { closeSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { createServer, type Server } from 'node:net';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { prepareSandbox, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
 import type { ToolResult } from '../harness/types.ts';
 import type { SecretValue } from '../secrets.ts';
+
+/** 名单外主机的放行决定；port 缺省表示上游没给端口。 */
+export type NetworkAsk = (target: { host: string; port?: number }, signal: AbortSignal) => Promise<boolean>;
 
 export interface CommandOptions {
   cwd: string;
@@ -22,6 +26,39 @@ export interface CommandOptions {
   onOutput?(text: string, limit: number): void;
   /** 进程组登记由宿主保存，恢复时据此确认是否仍有执行。 */
   onProcess?(pid: number, active: boolean): void;
+  /** 有它时名单外的主机不直接拒绝，交给它决定；命令结束时仍在问的一并作废。 */
+  askNetwork?: NetworkAsk;
+}
+
+/** 沙箱宿主经控制目录里的 socket 问名单外的主机，一行一条 JSON：同一主机在这条命令里只问一次，几台主机依次问。 */
+function askServer(path: string, ask: NetworkAsk, signal: AbortSignal): Promise<Server> {
+  const decisions = new Map<string, Promise<boolean>>();
+  let queue: Promise<unknown> = Promise.resolve();
+  const decide = (host: string, port?: number) => {
+    const key = `${host}:${port ?? ''}`;
+    let decision = decisions.get(key);
+    if (!decision) {
+      decision = queue.then(() => !signal.aborted && ask({ host, ...(port === undefined ? {} : { port }) }, signal)).catch(() => false);
+      queue = decision;
+      decisions.set(key, decision);
+    }
+    return decision;
+  };
+  const server = createServer((socket) => {
+    let buffer = '';
+    socket.setEncoding('utf8').on('error', () => {}).on('data', (chunk: string) => {
+      buffer += chunk;
+      for (let end = buffer.indexOf('\n'); end >= 0; end = buffer.indexOf('\n')) {
+        let request: { id: unknown; host: unknown; port: unknown };
+        try { request = JSON.parse(buffer.slice(0, end)); } catch { socket.destroy(); return; }
+        buffer = buffer.slice(end + 1);
+        const { id, host, port } = request;
+        if (typeof id !== 'number' || typeof host !== 'string' || !(port === null || typeof port === 'number')) { socket.destroy(); return; }
+        void decide(host, port ?? undefined).then((allow) => { if (!socket.destroyed) socket.write(`${JSON.stringify({ id, allow })}\n`); });
+      }
+    });
+  });
+  return new Promise((resolve, reject) => { server.once('error', reject); server.listen(path, () => resolve(server)); });
 }
 
 export function processGroupAlive(pid: number): boolean {
@@ -43,10 +80,14 @@ export async function runCommand(command: string, timeout: number, signal: Abort
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   let child;
   let sandbox: ReturnType<typeof prepareSandbox> | undefined;
+  let asking: Server | undefined;
+  const askingEnded = new AbortController();
   try {
-    sandbox = prepareSandbox(command, { cwd: options.cwd, env: options.env, policy: options.policy ?? workspacePolicy(options.cwd, options.env), credentials: options.credentials });
+    sandbox = prepareSandbox(command, { cwd: options.cwd, env: options.env, policy: options.policy ?? workspacePolicy(options.cwd, options.env),
+      credentials: options.credentials, ...(options.askNetwork ? { network: 'ask' as const } : {}) });
+    if (sandbox.askSocket) asking = await askServer(sandbox.askSocket, options.askNetwork!, AbortSignal.any([signal, askingEnded.signal]));
     child = spawn(sandbox.executable, sandbox.args, { cwd: options.cwd, env: sandbox.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  } catch (error) { closeSync(fd); sandbox?.dispose(); throw error; }
+  } catch (error) { closeSync(fd); asking?.close(); sandbox?.dispose(); throw error; }
   const pid = child.pid;
   const stop = (reason: string) => {
     stopped ??= reason;
@@ -114,6 +155,8 @@ export async function runCommand(command: string, timeout: number, signal: Abort
     clearTimeout(timer);
     if (killTimer) clearTimeout(killTimer);
     signal.removeEventListener('abort', onAbort);
+    askingEnded.abort();
+    asking?.close();
     closeSync(fd);
     // 结果未知时保留运行所需目录，避免仍存活的进程使用已经删除或复用的路径。
     if (!pid || !processGroupAlive(pid)) sandbox.dispose();

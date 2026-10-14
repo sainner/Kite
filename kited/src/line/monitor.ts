@@ -27,7 +27,7 @@ export const lineMonitorContextDefinition: ContextDefinition = {
         { type: 'variable', name: 'monitor.pending' },
       ] }] } },
     { type: 'paragraph', id: 'guidance', title: '处理方式', parts: [{ type: 'text',
-      text: '先用 line_status 核对最新状态，需要用户回答、决定或验收的再用 report 告诉用户；不需要用户处理的不必上报。' }] },
+      text: '先用 line_status 核对最新状态，再在回复里告诉用户哪些事需要用户处理、在哪台工作机的哪个线程；不需要用户处理的简短带过。' }] },
   ],
 };
 
@@ -48,13 +48,13 @@ export const monitorState = (instance: Pick<AgentInstance, 'state'>): MonitorSta
 const UNREACHABLE_MS = 30 * 60_000;
 const clip = (text: string, limit: number) => text.replace(/\s+/g, ' ').length > limit ? `${text.replace(/\s+/g, ' ').slice(0, limit)}…` : text.replace(/\s+/g, ' ');
 
-/** 由一台工作机的汇总派生待办：未答复的上报、恢复阻塞、失败后等待继续的线程、准备失败的工作区。Line 自己的线程与冻结副本不算。 */
+/** 由一台工作机的汇总派生待办：等用户回应的提问与审批、恢复阻塞、失败后等待继续的线程、准备失败的工作区。Line 自己的线程与冻结副本不算。 */
 export function deriveTodo(summary: MachineSummary, line: string): Map<string, string> {
   const items = new Map<string, string>();
   const where = (workspace: MachineSummary['workspaces'][number], title?: string) =>
     `工作机「${summary.machine.name}」(${summary.machine.id}) 项目「${workspace.project.name}」工作区「${workspace.name}」(${workspace.id})${title ? ` 线程「${title}」` : ''}`;
   for (const workspace of summary.workspaces) {
-    // 已流转走的是冻结副本，它的上报与线程状态以当前宿主为准。
+    // 已流转走的是冻结副本，它的线程状态以当前宿主为准。
     if (workspace.status === 'transferred') continue;
     if (workspace.status === 'failed') items.set(`workspace:${workspace.id}:failed`, `${where(workspace)}准备失败`);
     for (const thread of workspace.threads) {
@@ -62,11 +62,10 @@ export function deriveTodo(summary: MachineSummary, line: string): Map<string, s
       const at = `${where(workspace, thread.title)}(${thread.id})`;
       if (thread.recovery) items.set(`thread:${thread.id}:recovery`, `${at}需要恢复确认：${clip(thread.recovery, 200)}`);
       else if (thread.lastOutcome === 'failed' && thread.waitingForResume) items.set(`thread:${thread.id}:failed`, `${at}上一回合失败，等待继续`);
-    }
-    for (const report of workspace.reports) {
-      if (report.threadId === line || report.status !== 'open') continue;
-      const thread = workspace.threads.find((entry) => entry.id === report.threadId);
-      items.set(`report:${report.id}`, `${where(workspace, thread?.title)}(${report.threadId}) 提出 ${report.kind} 上报 ${report.id}：${clip(report.text, 300)}`);
+      const waiting = thread.waiting;
+      if (waiting) items.set(`waiting:${waiting.id}`, waiting.kind === 'question'
+        ? `${at}在等用户回答：${clip(waiting.questions.map((q) => q.question).join(' / '), 300)}`
+        : `${at}在等用户批准：${clip(waiting.target, 300)}`);
     }
   }
   return items;

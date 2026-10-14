@@ -14,7 +14,7 @@ import type { Network } from './network.ts';
 import { publisherConfig, type CatalogPublisher } from './catalog-publisher.ts';
 import { tokenPrices } from './token-prices.ts';
 import type { VoiceSocket } from './voice/sessions.ts';
-import { ReportConflict, reportAnswerRequest, reportCloseRequest } from './reports.ts';
+import { WaitingConflict } from './waiting.ts';
 
 async function body(req: Request): Promise<Record<string, unknown>> {
   try { return (await req.json()) as Record<string, unknown>; } catch { throw new KiteError('请求体不是 JSON'); }
@@ -45,7 +45,7 @@ function handle<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
 function errorResponse(e: unknown) {
   const status = e instanceof KiteError ? e.status : 500;
   return Response.json({ error: (e as Error).message, ...(e instanceof OperationError ? { outcome: e.outcome } : {}),
-    ...(e instanceof ReportConflict ? { report: e.report } : {}) }, { status });
+    ...(e instanceof WaitingConflict ? { waiting: e.waiting } : {}) }, { status });
 }
 
 /** 另一台工作机上的 Line 调用时在 X-Kite-Source 声明的来源；只记入输入，不参与授权，可信度等于调用方工作机。 */
@@ -384,6 +384,10 @@ export function serve(kite: Kite, listen: Listen) {
           return kite.configureExecutionGrants(req.params.id, parsed.data.expectedRevision, parsed.data.grants);
         }),
       },
+      '/instances/:id/approval-mode': {
+        GET: bound((req) => kite.approvalMode(req.params.id)),
+        PUT: bound(async (req) => kite.configureApprovalMode(req.params.id, await body(req))),
+      },
       '/workspaces/:id/threads': {
         POST: bound(async (req) => {
           const b = await body(req);
@@ -440,16 +444,10 @@ export function serve(kite: Kite, listen: Listen) {
         }, req.signal);
       }) },
       '/threads/:id/recover': { POST: bound((req) => kite.recover(req.params.id)) },
-      '/threads/:id/reports': { GET: bound((req) => { kite.thread(req.params.id); return kite.reports.list(req.params.id); }) },
-      '/threads/:id/reports/:report/answer': { POST: long(bound(async (req) => {
-        const parsed = reportAnswerRequest.safeParse(await body(req));
-        if (!parsed.success) throw new KiteError('答复请求无效');
-        return kite.reports.answer(req.params.id, req.params.report, parsed.data, sourceOf(req));
-      })) },
-      '/threads/:id/reports/:report/close': { POST: bound(async (req) => {
-        const parsed = reportCloseRequest.safeParse(await body(req));
-        if (!parsed.success) throw new KiteError('关闭请求无效');
-        return kite.reports.close(req.params.id, req.params.report, parsed.data.outcome);
+      '/threads/:id/waiting/:waiting': { POST: bound(async (req) => {
+        kite.thread(req.params.id);
+        kite.waits.respond(req.params.id, req.params.waiting, await body(req));
+        return { ok: true };
       }) },
       '/threads/:id/compactions': { POST: bound(async (req) => {
         const parsed = z.object({ id: z.string().min(1), from: z.string().min(1), through: z.string().min(1) }).strict().safeParse(await body(req));

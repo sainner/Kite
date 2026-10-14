@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { WorkspaceFiles, readFileArgs } from '../workspace/files.ts';
 import { PDF_PAGE_SPAN, PdfReader, fileKind, readImage } from '../workspace/documents.ts';
 import { FileDiffStore, type FileDiff } from '../workspace/file-diffs.ts';
-import { runCommand, type CommandOptions } from './command.ts';
+import { runCommand, type CommandOptions, type NetworkAsk } from './command.ts';
 import { assertFileAccess, commandEnvironment, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
 import type { Json, JsonObject, Tool, ToolResult } from '../harness/types.ts';
 import { secretBindings, secretValue, type SecretProvider, type SecretValue } from '../secrets.ts';
@@ -44,7 +44,9 @@ const readDescription = `读取当前工作目录内的文件，按内容自动�
 图片（PNG、JPEG、WebP、GIF、BMP、TIFF、HEIC）附给你直接查看，过大时先缩放。
 PDF 转为 Markdown 按页返回，用 pages 选页；结果会说明总页数和续读的 pages。没有文本层的扫描页给出 OCR 结果并附上页面图片。`;
 
-export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials'> & { diffDir?: string; policy?: ExecutionPolicy | (() => ExecutionPolicy); secrets?: SecretProvider }): Tool[] {
+export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials' | 'askNetwork'> & { diffDir?: string; policy?: ExecutionPolicy | (() => ExecutionPolicy); secrets?: SecretProvider;
+  /** 每条命令开始时取一次：名单外主机交给谁决定；没有时直接拒绝。 */
+  network?(): NetworkAsk | undefined }): Tool[] {
   const files = new WorkspaceFiles(options.cwd);
   const root = files.root;
   const policy = () => typeof options.policy === 'function' ? options.policy() : options.policy ?? workspacePolicy(root, options.env);
@@ -87,6 +89,8 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       return { status: 'success', output: `共 ${result.totalLines} 行\n${output}` };
     }, true),
     make('patch', patchDescription, patchArgs, async ({ operations }) => {
+      // 同一工作区的线程并行时，整批的读、算、写在一个同步段里完成：同一进程里别的线程的 patch 插不进来，
+      // 后到的按新内容匹配，改到同一处就明确失败。这里不能在读到写之间 await。
       const granted = policy();
       const paths = new Set<string>();
       const plan = operations.map((operation) => {
@@ -147,7 +151,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       }
       return { status: 'success', output: output.join('\n'), diff: reference() };
     }),
-    make('shell', '在当前工作目录的操作系统沙箱中运行 shell 命令，可用 rg 搜索、运行构建及 .kite/check。网络和工作区外的资源仅按宿主授权访问；禁止时说明所需权限，不自行绕过或重放。不支持后台任务。Git 元数据只读，快照与采纳由宿主执行。输出过长时查看完整日志。使用 secrets 绑定密钥时只返回执行状态，隐藏全部标准输出和错误输出；不要把密钥写入工作区文件、命令参数或日志。', shellArgs,
+    make('shell', '在当前工作目录的操作系统沙箱中运行 shell 命令，可用 rg 搜索、运行构建及 .kite/check。网络和工作区外的资源按宿主授权访问，连接授权之外的主机时可能要等用户批准；被禁止或拒绝时说明所需权限，不自行绕过或重放。不支持后台任务。Git 元数据只读，快照与采纳由宿主执行。输出过长时查看完整日志。使用 secrets 绑定密钥时只返回执行状态，隐藏全部标准输出和错误输出；不要把密钥写入工作区文件、命令参数或日志。', shellArgs,
       async ({ command, secrets, timeout_ms = 120_000 }, signal, output) => {
         const credentials: Record<string, SecretValue> = {};
         if (secrets && Object.keys(secrets).length) {
@@ -162,7 +166,9 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
             credentials[key] = parsed.data;
           }
         }
-        return runCommand(command, timeout_ms, signal, { ...options, cwd: root, policy: policy(), credentials, onOutput: output ?? options.onOutput });
+        const askNetwork = options.network?.();
+        return runCommand(command, timeout_ms, signal, { ...options, cwd: root, policy: policy(), credentials, onOutput: output ?? options.onOutput,
+          ...(askNetwork ? { askNetwork } : {}) });
       }),
     make('credentials', '列出本账号共享和当前项目的可用密钥引用及类型，不返回密钥内容。仅在 shell 的 secrets 参数里使用这些引用，项目身份由宿主固定。', z.object({}).strict(), async (_, signal) => {
       if (!options.secrets?.list) throw new Error('当前宿主未连接凭据服务');

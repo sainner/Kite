@@ -41,8 +41,6 @@ export interface TransferHost {
   ensureCheckout(projectId: string): Promise<Checkout>;
   /** 核对执行权后发现已被接管时冻结。 */
   freeze(workspaceId: string): Promise<void>;
-  /** 流转来的工作区开放后，补送已答复的上报等收尾。 */
-  opened(workspaceId: string): void;
   /** 交接检查现场之前的准备：Line 的根工作区先由宿主提交并推送现场。 */
   beforeHandover(workspaceId: string): Promise<void>;
 }
@@ -283,7 +281,6 @@ export class WorkspaceTransfers {
       if (replacedRoot) this.host.removed(replacedRoot.id);
       try { await deleteMaterials(checkout.path, access, workspaceId); }
       catch (error) { console.error(`[流转] 接管后删除材料失败：${(error as Error).message}`); }
-      this.host.opened(workspaceId);
       return this.host.workspace(workspaceId);
     } catch (error) {
       let restored = true;

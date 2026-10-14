@@ -53,7 +53,7 @@ bun run harness --resume <会话id>
 
 当前提供 `read`、`patch`、`shell`、`credentials`，参数、失败和取消语义见 [基础工具契约](harness-主循环.md#工具执行约定)。上下文的编辑与生效见 [上下文模板](harness-上下文组装.md)。
 
-文件工具限制在工作目录内，shell 使用操作系统沙箱。默认工作区可读写、必要工具链可读、网络关闭；宿主凭据和内部记录受保护，Git 元数据只读。授权范围和平台限制见 [执行边界](Agent与插件契约.md#71-插件与-harness-共用操作系统沙箱)。独立终端尚无授权编辑入口，服务中的实例可在 App「执行授权」页编辑，见 [实例执行授权](实例操作.md#实例执行授权)。每回合的请求上限可用 `--max-requests` 调整，达到上限后等待显式继续。
+文件工具限制在工作目录内，shell 使用操作系统沙箱。默认工作区可读写、必要工具链可读、网络关闭；命令连接网络许可之外的主机时按实例的审批模式处理，默认直接拒绝，见 [工具审批与提问](工具审批与提问.md)。宿主凭据和内部记录受保护，Git 元数据只读。授权范围和平台限制见 [执行边界](Agent与插件契约.md#71-插件与-harness-共用操作系统沙箱)。独立终端尚无授权编辑入口，服务中的实例可在 App「执行授权」页编辑，见 [实例执行授权](实例操作.md#实例执行授权)。每回合的请求上限可用 `--max-requests` 调整，达到上限后等待显式继续。
 
 这个终端入口直接修改指定目录。需要独立工作树、快照与采纳时，通过 kited 创建工作区。独立终端不提供 agent 协作工具、账号凭据服务、skill 自动发现或外部 MCP 连接；上下文压缩只有自动触发，没有手动入口。服务中的 MCP 工具由 [Bun 插件宿主](Bun插件.md) 接入并授权。
 
@@ -69,7 +69,7 @@ bun run harness --resume <会话id>
 
 Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新验证上下文交接与压缩后的恢复，条件和证据见 [上下文翻译实验](research/2026-10-08-跨后端上下文翻译.md) 和 [Claude 会话重组实验](research/2026-10-09-Claude会话重组.md)。
 
-代理配置由创建时的角色加草稿里的调整得来，绑定到实例，重启沿用已保存内容。内置角色「工作」可用全部工具（read、patch、shell、credentials、向用户上报的 report 及 agent 操作），「只读审查」只用 read 且 read 为必需；工具的逐层约束见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)，工具选择不能扩大授权。默认型号见 [共享模型目录](../shared/agent-models.json)，配置生效见 [线程通知投递](线程通知投递.md)，执行与恢复要求见 [harness 执行约定](harness-主循环.md) 和 [会话状态机](会话状态机.md)。
+代理配置由创建时的角色加草稿里的调整得来，绑定到实例，重启沿用已保存内容。内置角色「工作」可用全部工具（read、patch、shell、credentials、向用户提问的 question 及 agent 操作），「只读审查」只用 read 且 read 为必需；工具的逐层约束见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)，工具选择不能扩大授权。默认型号见 [共享模型目录](../shared/agent-models.json)，配置生效见 [线程通知投递](线程通知投递.md)，执行与恢复要求见 [harness 执行约定](harness-主循环.md) 和 [会话状态机](会话状态机.md)。
 
 ## 运行
 
@@ -160,8 +160,8 @@ Kite 托管账号与组网。Mac 和 iPhone 在 App 中使用账号密码登录�
 |---|---|
 | 登记检出 | 按目录的 origin 归入项目，建立直接使用登记目录的根工作区，不创建线程。没有 origin 时建托管远程并推送，普通文件夹先由 Kite 初始化仓库并提交初始版本 |
 | 创建独立工作区 | 从检出当前 HEAD 建立独立工作树；现场未提交的改动不带入，也不由 Kite 代为提交。可以先建空工作区，也可在准备完成后运行首条消息。可以只指定项目：先检查这台工作机的环境，不满足就不建；没有该项目的检出时自动 clone 到默认位置并登记，检出保留 |
-| 添加线程 | 根工作区和独立工作区都可有多个线程，各自保存对话；当前同一 cwd 有执行或恢复阻塞时，不能启动另一线程（已决定改为并行，见 [工作区并行](工作区并行.md)）。App 的新代理草稿只在本机，第一条消息连同所选角色和调整过的模型、工具、预算一次创建实例、线程与窗口 |
-| 快照与回退 | 每批工具后与回合结束时保存变更，快照不改变 HEAD、分支或暂存区。回退先保存现状，再恢复文件；执行或恢复阻塞期间不允许回退 |
+| 添加线程 | 根工作区和独立工作区都可有多个线程，各自保存对话；线程之间默认并行，一个线程在执行、等你回应或恢复阻塞时，其他线程照常启动，见 [工作区并行](工作区并行.md)。App 的新代理草稿只在本机，第一条消息连同所选角色和调整过的模型、工具、预算一次创建实例、线程与窗口 |
+| 快照与回退 | 每批工具后与回合结束时保存整个工作区的变更并记下触发的线程，快照不改变 HEAD、分支或暂存区。回退先保存现状，再恢复文件；任一线程在执行或恢复阻塞期间不允许回退 |
 | 采纳（集成） | 将独立工作区改动合回检出主线并推送到远程。现场有未提交的改动或不在分支上时拒绝。同一检出的采纳串行执行，冲突留在独立工作树；采纳后工作区与线程仍可继续使用 |
 | 现场提交并推送 | 由用户触发，把现场改动提交后推送。远程领先而现场没有新内容时快进；两边都有新内容时拒绝，提示新建工作区集成 |
 | 归档实例 | 停止该实例的执行并关闭它的窗口，保留会话、业务数据、工作区和快照；随窗口回收的实例关闭窗口即可，不提供归档 |
@@ -263,7 +263,7 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | POST | `/workspaces/:id/setup` | 准备失败的独立工作区重跑准备；工作树没建成时重建 |
 | POST | `/workspaces/:id/handover` | 交出工作区：进入可交接状态并把恢复材料推到项目远程 `{allowMaterials?}`；`/handover/cancel` 撤回，`/lease/check` 立即核对执行权。约定见 [工作区流转](Line与工作区流转.md#工作区流转) |
 | POST | `/workspaces/restore` | 在本机还原并接管流转来的工作区 `{project, workspaceId, operationId}` |
-| GET | `/summary` | 这台工作机的状态汇总：未归档工作区、线程执行状态与未结束的上报 |
+| GET | `/summary` | 这台工作机的状态汇总：未归档工作区、线程执行状态与等你回应的对象 |
 | POST | `/line` | 在这台工作机启用个人 agent Line；`GET /workspaces/:id/monitor` 读 Line 的 monitor 状态。约定见 [Line](Line与工作区流转.md#line) |
 | GET | `/workspaces/:id` | 工作区上下文及 instances、threads、windows 的完整聚合 |
 | GET / POST | `/plugin-definitions` | 读取定义（含账号资源库里尚未装到本机的包）或登记自定义包；包格式见 Bun 插件契约 |
@@ -282,7 +282,8 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | POST | `/token-counts` | 以 `{texts, model?, scene?}` 逐段计数，返回 `{model, results}`；没给模型时按场景推出。账号里有对应厂商的 API Key 时用官方计数接口（`method: api`），否则 OpenAI 按 o200k 估算、Claude 不给数；`exact` 标明是否准确 |
 | GET / PUT | `/threads/:id/title` | 读取标题与生成进度；以 expectedRevision 手动改名或恢复自动标题 |
 | POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不阻塞主会话控制 |
-| GET / PUT | `/instances/:id/execution-grants` | 读取或修改执行授权；须停止且无恢复阻塞 |
+| GET / PUT | `/instances/:id/execution-grants` | 读取或修改执行授权；须停止且无恢复阻塞，「允许并记住」追加网络许可例外 |
+| GET / PUT | `/instances/:id/approval-mode` | 读取或设置审批模式 `{mode}`：`allowlist`（默认）、`ask` 或 `allow_all`，运行中也可改，下一次越界请求生效 |
 | GET / PUT | `/instances/:id/operation-grants` | 读取实例操作授权及 revision；以 expectedRevision 和 grants 更新 |
 | POST | `/workspaces/:id/windows` | 创建实例及默认窗口，或打开已有实例视图；请求使用稳定 id |
 | DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口；最后窗口按插件生命周期回收实例或保留 |
@@ -295,9 +296,7 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | POST | `/threads/:id/interrupt` | 停止会话，返回尚未纳入请求的队列；请求 `{id, inputs?}`，响应 `{returned}` |
 | POST | `/threads/:id/resume` | 继续暂停的线程；可带 operationId 以安全重试 |
 | POST | `/threads/:id/recover` | 确认恢复，不自动执行 |
-| GET | `/threads/:id/reports` | 线程向用户的上报及状态；答复与关闭见下两行。上报已决定移除，由会话状态与关注设备的转发取代，见 [Line 与工作区流转](Line与工作区流转.md#会话状态与关注设备) |
-| POST | `/threads/:id/reports/:report/answer` | 答复上报 `{id, text?, decision?, note?}`，`id` 为送到线程的输入 ID |
-| POST | `/threads/:id/reports/:report/close` | 关闭 `done` / `blocked` 上报 `{outcome}` |
+| POST | `/threads/:id/waiting/:waiting` | 回应线程在等的提问 `{answers}` 或审批 `{decision}`；已回应或已作废返回 409 与当前的 `waiting`。约定见 [工具审批与提问](工具审批与提问.md) |
 | POST | `/threads/:id/compactions` | 手动压缩上下文 `{id, from, through}`，起止为输入 id；校验通过即返回，结果经显示事件送达 |
 | DELETE | `/threads/:id/compactions/:compaction` | 撤销最外层的一次压缩 |
 | POST | `/instances/:id/archive` | 归档独立存续的实例（agent 或 Bun 插件），保留所属工作区 |

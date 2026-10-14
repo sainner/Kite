@@ -3,7 +3,7 @@ import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
-import type { Json, ModelItem } from '../../src/harness/types.ts';
+import type { Json, ModelItem, ModelRequest } from '../../src/harness/types.ts';
 import type { FakeAccount } from '../fake-account.ts';
 import { after, call, createWorkspace, type Kited, linkNewAccount, listSnapshots, mark, registerCheckout, startKited } from '../harness.ts';
 import { item, ManualModel, Seen } from '../harness-loop.ts';
@@ -75,6 +75,72 @@ test('默认 harness 线程的真实工具只改工作树，结果和快照先�
   expect(existsSync(session.workspace.cwd)).toBe(false);
   expect(gitOk(repo, 'rev-parse', '--verify', '--quiet', `refs/kite/snapshots/${session.workspace.id}`)).toBe(true);
   expect((await listSnapshots(kk, session.workspace.id)).map((value) => value.commit)).toContain(afterTools!.commit);
+}, 1000);
+
+/*
+ * 几个部分的配合：同一工作区两个线程的 runner 并行，各自工具批次后的快照拍整个工作区、接在同一条快照链上；
+ * 触发线程写进提交说明的 Kite-Thread trailer，列快照时经 git 的 %(trailers:key=...) 读回。回退动整个工作区，有线程在忙时仍拒绝。
+ */
+test('同一工作区 A 的请求挂着时 B 能发消息并跑完改文件的工具批次，两批快照各带触发线程，A 在忙时回退得 409', async () => {
+  const models = new Map<string, ManualModel>();
+  const modelOf = (threadId: string) => {
+    let model = models.get(threadId);
+    if (!model) { model = new ManualModel(); models.set(threadId, model); }
+    return model;
+  };
+  kited = startKited((thread) => modelOf(thread.id));
+  const kk = kited;
+  const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' });
+  const project = await registerCheckout(kk, repo);
+  const a = await createWorkspace(kk, project.checkout.id, 'A 的任务', 'harness');
+  const workspaceId = a.workspace.id;
+  const cwd = a.workspace.cwd;
+  const aFirst = await modelOf(a.id).call(1);
+  const patch = (id: string, path: string, text: string) =>
+    calledItem(id, 'patch', { operations: [{ type: 'create_file', path, diff: `+${text}\n+` }] });
+  const resultOf = (request: ModelRequest, callId: string) => {
+    const found = request.history.find((entry) => entry.type === 'tool_result' && entry.callId === callId);
+    return found?.type === 'tool_result' ? found.result.status : undefined;
+  };
+
+  const started = await kk.call('POST', `/workspaces/${workspaceId}/operations/agent.start`, { operationId: 'thread-b' });
+  expect(started.status).toBe(200);
+  const b = started.body.instanceId as string;
+  expect((await kk.call('POST', `/threads/${b}/messages`, { id: 'b-kickoff', text: 'B 的任务' })).status).toBe(200);
+  const bFirst = await modelOf(b).call(1);
+  expect(bFirst.request.cwd).toBe(cwd);
+  await bFirst.response.emit({ type: 'item', item: patch('b-patch', 'b.txt', 'B 写的') });
+  bFirst.response.complete();
+  const bSecond = await modelOf(b).call(2);
+  expect(resultOf(bSecond.request, 'b-patch')).toBe('success');
+  const bSince = mark(kk);
+  bSecond.response.complete();
+  await kk.waitEvent((event) => event.type === 'idle' && event.threadId === b && after(kk, bSince)(event));
+  expect(aFirst.signal.aborted).toBe(false);
+
+  const bSnapshot = (await listSnapshots(kk, workspaceId)).find((value) => value.toolUseIds.includes('b-patch'));
+  expect(bSnapshot?.threadId).toBe(b);
+  const refused = await kk.call('POST', `/workspaces/${workspaceId}/restore`, { commit: bSnapshot!.commit });
+  expect(refused.status).toBe(409);
+  expect(aFirst.signal.aborted).toBe(false);
+  expect(read(join(cwd, 'b.txt'))).toBe('B 写的\n');
+
+  await aFirst.response.emit({ type: 'item', item: patch('a-patch', 'a.txt', 'A 写的') });
+  aFirst.response.complete();
+  const aSecond = await modelOf(a.id).call(2);
+  expect(resultOf(aSecond.request, 'a-patch')).toBe('success');
+  const aSince = mark(kk);
+  aSecond.response.complete();
+  await kk.waitEvent((event) => event.type === 'idle' && event.threadId === a.id && after(kk, aSince)(event));
+
+  const snapshots = await listSnapshots(kk, workspaceId);
+  const byTool = (id: string) => snapshots.find((value) => value.toolUseIds.includes(id));
+  expect(byTool('a-patch')?.threadId).toBe(a.id);
+  expect(byTool('b-patch')).toEqual(bSnapshot);
+  // 新的在前：A 这一批接在 B 那一批后面，内容是整个工作区，含 B 先写的文件。
+  expect(snapshots.indexOf(byTool('a-patch')!)).toBeLessThan(snapshots.indexOf(byTool('b-patch')!));
+  expect(git(repo, 'show', `${byTool('a-patch')!.commit}:b.txt`)).toBe('B 写的');
+  expect(gitOk(repo, 'cat-file', '-e', `${bSnapshot!.commit}:a.txt`)).toBe(false);
 }, 1000);
 
 // HTTP 采纳、git 冲突状态、自研 harness 输入来源及回合结束后的自动重试必须连起来验证。

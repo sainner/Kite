@@ -30,10 +30,9 @@ export const agentToolCatalog: { name: AgentTool; title: string; group: string }
   { name: 'patch', title: '修改文件', group: '文件与命令' },
   { name: 'shell', title: '运行命令', group: '文件与命令' },
   { name: 'credentials', title: '列出密钥引用', group: '凭据' },
-  { name: 'report', title: '向用户上报', group: '用户交接' },
+  { name: 'question', title: '向用户提问', group: '用户交接' },
   ...operationToolNames.map((name) => ({ name, title: operationTitle(name), group: '代理协作' })),
   { name: 'line_status', title: '查看全部工作区', group: '个人 agent' },
-  { name: 'line_reply', title: '转达用户答复', group: '个人 agent' },
   { name: 'line_control', title: '管理线程', group: '个人 agent' },
   { name: 'line_workspace', title: '创建与流转工作区', group: '个人 agent' },
 ];

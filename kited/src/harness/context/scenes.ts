@@ -70,7 +70,7 @@ export const contextScenes = {
   'line.monitor': {
     title: 'Line 的工作区变化',
     variables: [
-      { name: 'monitor.added', title: '新出现的待办', description: '这次新出现、需要 Line 核对的事项，每行一条，写明工作机、项目、线程与上报；至少一条。' },
+      { name: 'monitor.added', title: '新出现的待办', description: '这次新出现、需要 Line 核对的事项，每行一条，写明工作机、项目、线程与事项；至少一条。' },
       { name: 'monitor.pending', title: '仍未处理的待办', description: '之前已告知、现在仍未处理的事项，每行一条；没有时为空。' },
     ],
   },

@@ -4,13 +4,13 @@ import { diffID, fileDiffSchema } from '../workspace/file-diffs.ts';
 import { fileSelectionSchema, readFileArgs } from '../workspace/files.ts';
 
 /**
- * Line 的管理动作与对应工具。停止、归档、创建、流转与关闭上报还须引用用户已同意的确认上报，由宿主核验，见 line/tools.ts。
+ * Line 的管理动作与对应工具。停止、归档、创建、流转须经用户批准，审批层接入之前不执行，见 line/tools.ts。
  */
-export const lineActions = ['status', 'reply', 'send', 'resume', 'stop', 'archive', 'create', 'transfer'] as const;
+export const lineActions = ['status', 'send', 'resume', 'stop', 'archive', 'create', 'transfer'] as const;
 export type LineAction = (typeof lineActions)[number];
-export const lineToolNames = ['line_status', 'line_reply', 'line_control', 'line_workspace'] as const;
+export const lineToolNames = ['line_status', 'line_control', 'line_workspace'] as const;
 export const lineToolActions: Record<(typeof lineToolNames)[number], readonly LineAction[]> = {
-  line_status: ['status'], line_reply: ['reply'], line_control: ['send', 'resume', 'stop', 'archive'], line_workspace: ['create', 'transfer'],
+  line_status: ['status'], line_control: ['send', 'resume', 'stop', 'archive'], line_workspace: ['create', 'transfer'],
 };
 
 const id = z.string().min(1);

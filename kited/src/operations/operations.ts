@@ -157,7 +157,7 @@ export class InstanceOperations {
       }
       case 'agent.send': {
         const input = args as OperationInput<'agent.send'>;
-        // Line 自己的说明是 Kite 来源；转达的用户原文走上报答复，不经这里。
+        // Line 自己的说明是 Kite 来源。
         return this.kite.send(input.instanceId, input.text, inputId(caller, input.operationId),
           caller.kind === 'ui' && !caller.via ? 'human' : 'kite', check, caller.kind === 'ui' ? caller.via : undefined);
       }

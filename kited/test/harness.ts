@@ -12,6 +12,7 @@ import type { Model } from '../src/harness/types.ts';
 import type { Machine, Thread, ThreadContext, WorkspaceModel } from '../src/model.ts';
 import type { Role } from '../src/roles.ts';
 import type { RuntimeOptions } from '../src/runtime.ts';
+import type { Snapshot } from '../src/workspace/snapshots.ts';
 import { type FakeAccount, linkAccount, startFakeAccount } from './fake-account.ts';
 import { api } from './setup.ts';
 import { makeTemp } from './util.ts';
@@ -169,7 +170,7 @@ export async function sendThreadMessage(k: Kited, id: string, text: string): Pro
   if (r.status !== 200) throw new Error(`发消息失败：${r.status} ${JSON.stringify(r.body)}`);
 }
 
-export async function listSnapshots(k: Kited, workspaceId: string): Promise<Array<{ commit: string; at: number; label: string; toolUseIds: string[] }>> {
+export async function listSnapshots(k: Kited, workspaceId: string): Promise<Snapshot[]> {
   const r = await k.call('GET', `/workspaces/${workspaceId}/snapshots`);
   if (r.status !== 200) throw new Error(`取快照失败：${r.status} ${JSON.stringify(r.body)}`);
   return r.body;

@@ -2,7 +2,7 @@
 import { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
-import type { AgentInstance, Checkout, Machine, PluginInstance, Project, Report, ReportStatus, Thread, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
+import type { AgentInstance, Checkout, Machine, PluginInstance, Project, Thread, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
 import type { ThreadNotification } from './harness/types.ts';
 import type { Template } from './context-templates.ts';
 import type { HourlyUsage, UsageDay, UsageStore } from './account-usage.ts';
@@ -94,24 +94,10 @@ create table if not exists usage_hours (
   account text not null, day text not null, hour integer not null, tokens integer not null,
   cost real not null, unpriced integer not null, primary key(account, day, hour)
 );
--- origin 是创建它的工具调用，同一调用重试返回同一上报；answer_input 单列出来，按输入 ID 找到答复。
-create table if not exists reports (
-  id text primary key, thread_id text not null references threads(instance_id),
-  kind text not null check (kind in ('question', 'confirm', 'done', 'blocked')), text text not null, refs text not null,
-  status text not null check (status in ('open', 'answered', 'delivered', 'incorporated', 'closed', 'superseded', 'archived')),
-  answer_input text, answer text, closure text, origin text not null, created_at integer not null, updated_at integer not null,
-  unique(thread_id, origin)
-);
-create unique index if not exists open_report on reports(thread_id) where status = 'open';
--- Line 用过的确认上报：每条用户的同意只放行一次动作。
-create table if not exists line_confirmations (
-  report_id text primary key references reports(id), action text not null, target text not null, at integer not null
-);
 -- 用户确认过可以把流转材料推到这个项目的远程（公开仓库或看不出是否公开的平台）。
 create table if not exists transfer_allowed (
   project_id text primary key references projects(id)
 );
-create index if not exists report_input on reports(thread_id, answer_input);
 `;
 const projectOf = (r: any): Project => ({ id: r.id, name: r.name, remote: r.remote, createdAt: r.created_at });
 const checkoutOf = (r: any): Checkout => ({
@@ -132,15 +118,9 @@ const windowOf = (r: any): WorkspaceWindow => ({
   id: r.id, workspaceId: r.workspace_id, target: { instanceId: r.instance_id, viewId: r.view_id },
   state: r.state, createdAt: r.created_at,
 });
-const reportOf = (r: any): Report => ({
-  id: r.id, threadId: r.thread_id, workspaceId: r.workspace_id, kind: r.kind, text: r.text, refs: JSON.parse(r.refs), status: r.status,
-  ...(r.answer ? { answer: JSON.parse(r.answer) } : {}), ...(r.closure ? { closure: JSON.parse(r.closure) } : {}),
-  createdAt: r.created_at, updatedAt: r.updated_at,
-});
-const REPORTS = 'select r.*, i.workspace_id from reports r join plugin_instances i on i.id = r.thread_id';
 /** 随工作区流转的表，按外键依赖的先后排列。 */
 const workspaceTables = ['workspaces', 'plugin_instances', 'threads', 'thread_titles', 'workspace_windows', 'window_requests',
-  'instance_notifications', 'operation_receipts', 'reports', 'line_confirmations'] as const;
+  'instance_notifications', 'operation_receipts'] as const;
 export type WorkspaceRows = Record<(typeof workspaceTables)[number], Array<Record<string, unknown>>>;
 
 export class Store implements UsageStore {
@@ -468,7 +448,7 @@ export class Store implements UsageStore {
     this.db.query('update operation_receipts set result = ? where caller = ? and id = ?').run(JSON.stringify(result), caller, id);
   }
   /**
-   * 工作区流转的原始行：工作区及其实例、线程、标题、窗口、窗口请求、通知、操作收据、上报与 Line 用过的确认。
+   * 工作区流转的原始行：工作区及其实例、线程、标题、窗口、窗口请求、通知与操作收据。
    * 操作收据按请求里的工作区或调用方实例归属。
    */
   exportWorkspaceRows(id: string): WorkspaceRows {
@@ -484,8 +464,6 @@ export class Store implements UsageStore {
       instance_notifications: all(`select * from instance_notifications where instance_id in (${instances}) order by seq`, id),
       operation_receipts: all(`select * from operation_receipts where json_extract(request, '$.workspaceId') = ?
         or caller in (select 'model:' || id from plugin_instances where workspace_id = ? union select 'plugin:' || id from plugin_instances where workspace_id = ?)`, id, id, id),
-      reports: all(`select * from reports where thread_id in (${instances})`, id),
-      line_confirmations: all(`select * from line_confirmations where report_id in (select id from reports where thread_id in (${instances}))`, id),
     };
   }
   /**
@@ -528,10 +506,6 @@ export class Store implements UsageStore {
     return (this.db.query(`select count(*) as count from operation_receipts where result is null and json_extract(request, '$.workspaceId') = ?`)
       .get(workspaceId) as { count: number }).count;
   }
-  /** 用掉一条确认上报；已经用过返回 false。 */
-  useConfirmation(reportId: string, action: string, target: string): boolean {
-    return this.db.query('insert or ignore into line_confirmations values (?, ?, ?, ?)').run(reportId, action, target, Date.now()).changes > 0;
-  }
   transferAllowed(projectId: string): boolean {
     return this.db.query('select 1 from transfer_allowed where project_id = ?').get(projectId) !== null;
   }
@@ -542,8 +516,6 @@ export class Store implements UsageStore {
   deleteWorkspaceRows(id: string): void {
     const instances = `select id from plugin_instances where workspace_id = ?`;
     this.transaction(() => {
-      this.db.query(`delete from line_confirmations where report_id in (select id from reports where thread_id in (${instances}))`).run(id);
-      this.db.query(`delete from reports where thread_id in (${instances})`).run(id);
       this.db.query(`delete from instance_notifications where instance_id in (${instances})`).run(id);
       this.db.query(`delete from thread_titles where instance_id in (${instances})`).run(id);
       this.db.query(`delete from threads where instance_id in (${instances})`).run(id);
@@ -552,54 +524,6 @@ export class Store implements UsageStore {
       this.db.query('delete from plugin_instances where workspace_id = ?').run(id);
       this.db.query('delete from workspaces where id = ?').run(id);
     });
-  }
-  report(id: string): Report | null {
-    const row = this.db.query(`${REPORTS} where r.id = ?`).get(id);
-    return row ? reportOf(row) : null;
-  }
-  reports(threadId: string): Report[] {
-    return this.db.query(`${REPORTS} where r.thread_id = ? order by r.created_at, r.id`).all(threadId).map(reportOf);
-  }
-  /** 工作区内处于这些状态的上报，不传时返回全部。 */
-  workspaceReports(workspaceId: string, statuses?: readonly ReportStatus[]): Report[] {
-    return this.db.query(`${REPORTS} where i.workspace_id = ? order by r.created_at, r.id`).all(workspaceId).map(reportOf)
-      .filter((report) => !statuses || statuses.includes(report.status));
-  }
-  reportsInStatus(statuses: readonly ReportStatus[]): Report[] {
-    return this.db.query(`${REPORTS} where r.status in (${statuses.map(() => '?').join(', ')}) order by r.created_at, r.id`)
-      .all(...statuses).map(reportOf);
-  }
-  reportByOrigin(threadId: string, origin: string): Report | null {
-    const row = this.db.query(`${REPORTS} where r.thread_id = ? and r.origin = ?`).get(threadId, origin);
-    return row ? reportOf(row) : null;
-  }
-  reportByInput(threadId: string, inputId: string): Report | null {
-    const row = this.db.query(`${REPORTS} where r.thread_id = ? and r.answer_input = ?`).get(threadId, inputId);
-    return row ? reportOf(row) : null;
-  }
-  /** 同一线程已有 open 的上报时违反唯一约束，由调用方先查。 */
-  addReport(report: Report, origin: string): void {
-    this.db.query('insert into reports values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(report.id, report.threadId, report.kind, report.text, JSON.stringify(report.refs), report.status,
-        report.answer?.inputId ?? null, report.answer ? JSON.stringify(report.answer) : null,
-        report.closure ? JSON.stringify(report.closure) : null, origin, report.createdAt, report.updatedAt);
-  }
-  /** 当前状态在 from 之内才更新，返回是否更新；answer、closure 传 null 清除，省略保持不变。 */
-  moveReport(id: string, from: readonly ReportStatus[], status: ReportStatus,
-    changes: { answer?: Report['answer'] | null; closure?: Report['closure'] | null } = {}): boolean {
-    const sets = ['status = ?', 'updated_at = ?'];
-    const values: Array<string | number | null> = [status, Date.now()];
-    if (changes.answer !== undefined) {
-      sets.push('answer_input = ?', 'answer = ?');
-      values.push(changes.answer?.inputId ?? null, changes.answer ? JSON.stringify(changes.answer) : null);
-    }
-    if (changes.closure !== undefined) {
-      sets.push('closure = ?');
-      values.push(changes.closure ? JSON.stringify(changes.closure) : null);
-    }
-    const result = this.db.query(`update reports set ${sets.join(', ')} where id = ? and status in (${from.map(() => '?').join(', ')})`)
-      .run(...values, id, ...from);
-    return result.changes > 0;
   }
   archiveWorkspace(id: string): void {
     this.db.transaction(() => {

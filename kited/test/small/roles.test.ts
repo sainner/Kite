@@ -213,7 +213,7 @@ test('只读审查角色建的代理只有 read，模型强发 patch 与 shell �
     expect(catalog.status).toBe(200);
     const universe = catalog.body.tools as string[];
     // Line 的管理工具目标范围是整个账号，只给 Line 角色；工作角色是全集减去它们。
-    const lineTools = ['line_status', 'line_reply', 'line_control', 'line_workspace'];
+    const lineTools = ['line_status', 'line_control', 'line_workspace'];
     expect(universe).toEqual(expect.arrayContaining(lineTools));
     const work = findRole(catalog.body, 'kite.work');
     const review = findRole(catalog.body, 'kite.review');

@@ -108,35 +108,3 @@ export interface ThreadContext extends AgentInstance {
   checkout: Checkout;
   workspace: Workspace;
 }
-
-export type ReportKind = 'question' | 'confirm' | 'done' | 'blocked';
-/** 每一步各有凭据：答复已保存、已作为输入送到线程、已纳入模型请求、纳入后的回合结束。 */
-export type ReportStatus = 'open' | 'answered' | 'delivered' | 'incorporated' | 'closed' | 'superseded' | 'archived';
-
-/** 用户的答复；inputId 是送到线程的输入 ID，重试以它去重。确认类给 decision，可附 note；其余给 text。 */
-export interface ReportAnswer {
-  inputId: string;
-  text?: string;
-  decision?: 'yes' | 'no';
-  note?: string;
-  /** 经 Line 转达；用户直接在原线程答时没有。 */
-  via?: { kind: 'line'; machine: string; instance: string };
-  at: number;
-}
-
-/** 线程向用户提出的结构化事项，归线程所有；同一线程同时只有一个 open 的上报。 */
-export interface Report {
-  id: string;
-  threadId: string;
-  workspaceId: string;
-  kind: ReportKind;
-  text: string;
-  /** 资源引用的写法，见资源引用契约。 */
-  refs: string[];
-  status: ReportStatus;
-  answer?: ReportAnswer;
-  /** 结束的时间与原因：outcome 只在用户关闭 done / blocked 时有；returned 是退还给答复方、未纳入请求的正文。 */
-  closure?: { at: number; outcome?: 'accepted' | 'dismissed'; reason?: string; returned?: string };
-  createdAt: number;
-  updatedAt: number;
-}
