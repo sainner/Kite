@@ -41,15 +41,18 @@ extension NSScrollView {
     /// 自己建的 NSScrollView 没人登记，内容直接压在标题上（2026-10-13 Mac 实测）。这里照它的样子登记：系统标题栏和贴着这里顶边的那条，
     /// 顶边用软边；底边不登记，同主对话的 scrollEdgeEffectHidden(true, for: .bottom)。取样另起一组，同 separateScrollPocket。
     /// 用的是 NSScrollView 没公开的 registerPocketContainer:onEdge:、setScrollPocketStyle:onEdge:，系统去掉它们时只是没有软边。
+    /// 贴着顶边的那条只在 scope 里找，不给就在整个窗口里找。换页的淡入淡出当中旧页面还在，它的窗口标题栏也贴着同一条顶边：
+    /// 自己那条还没建好时会登记上旧页面的，旧页面一移走软边就没了（2026-10-14 Mac 实测，切回工作区时软边闪一下后消失）。
     /// 登记上了返回 true；还没进窗口、SwiftUI 还没建好那一条时返回 false，下次排版再试。
-    func registerPanePockets() -> Bool {
+    func registerPanePockets(in scope: NSView? = nil) -> Bool {
         guard let window, let root = window.contentView?.superview else { return false }
         let mine = convert(bounds, to: nil)
+        var titlebars: [NSView] = []
         var containers: [NSView] = []
         func visit(_ view: NSView) {
             if String(describing: type(of: view)) == "NSTitlebarContainerView" {
-                containers.append(view)
-            } else if NSStringFromClass(type(of: view)).contains("AppKitPocketContainer") {
+                titlebars.append(view)
+            } else if NSStringFromClass(type(of: view)).contains("AppKitPocketContainer"), scope.map(view.isDescendant) ?? true {
                 let frame = view.convert(view.bounds, to: nil)
                 // 窗口坐标原点在左下：贴着这里顶边、横向有重叠的那条
                 if abs(frame.maxY - mine.maxY) < 2, frame.minX < mine.maxX - 1, frame.maxX > mine.minX + 1 { containers.append(view) }
@@ -57,7 +60,8 @@ extension NSScrollView {
             for child in view.subviews { visit(child) }
         }
         visit(root)
-        guard containers.count > 1 else { return false }
+        guard !containers.isEmpty else { return false }
+        containers += titlebars
         typealias Register = @convention(c) (AnyObject, Selector, NSView, Int) -> Void
         typealias Style = @convention(c) (AnyObject, Selector, Int, Int) -> Void
         let register = NSSelectorFromString("registerPocketContainer:onEdge:")

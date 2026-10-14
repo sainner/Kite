@@ -60,6 +60,7 @@ final class ThreadWindowView: NSView {
         self.motion = motion
         super.init(frame: .zero)
         pane.scroll.list = list
+        list.pocketScope = headerIsland
         for view in [backdrop, list, controls, headerIsland] as [NSView] { addSubview(view) }
         backdrop.isHidden = true
         list.isHidden = true
@@ -185,6 +186,8 @@ final class ThreadWindowView: NSView {
 
         list.isHidden = state.empty
         place(list, bounds)
+        // 标题栏的托管视图排在列表后面，列表头几次排版时它还没建好软边的那一条；标题栏报上高以后这里再排，让列表接着登记
+        if !list.pocketsRegistered { list.needsLayout = true }
         let insets = NSEdgeInsets(top: state.headerHeight, left: 0, bottom: barHeight, right: 0)
         if insets.top != self.insets.top || insets.bottom != self.insets.bottom {
             self.insets = insets

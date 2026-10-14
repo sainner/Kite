@@ -23,7 +23,9 @@ final class TranscriptListView: NSScrollView {
     /// 这一段滑动落在行里的横向滚动视图上、主方向竖向，由列表接过来滚，见 takeScroll。
     private var takesGesture = false
     private var scrollMonitor: Any?
-    private var pocketsRegistered = false
+    /// 滚动软边的容器在这里面找，见 registerPanePockets；不给就在整个窗口里找（Mac 窄窗口里列表托管在 SwiftUI 的窗口里）。
+    weak var pocketScope: NSView?
+    private(set) var pocketsRegistered = false
     /// 开着的操作栏：原生的浮层（ActionBarView），放在文档最上面，跟着行一起滚，见 placeActions。
     private var actions: (id: RowID, host: ActionBarView, above: Bool, side: HorizontalEdge)?
     private var heightTicker: FrameTicker?
@@ -88,7 +90,7 @@ final class TranscriptListView: NSScrollView {
 
     override func layout() {
         super.layout()
-        if !pocketsRegistered { pocketsRegistered = registerPanePockets() }
+        if !pocketsRegistered { pocketsRegistered = registerPanePockets(in: pocketScope) }
         layoutRows()
     }
 
