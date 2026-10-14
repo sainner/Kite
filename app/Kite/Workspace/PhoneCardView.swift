@@ -162,6 +162,7 @@ final class PhoneCardView: UIView {
         }
         headerView.tapped = { [weak self] in self?.click() }
         headerView.buildMenu = { [weak self] in self?.menu() }
+        headerView.menuPreview = { [weak self] in self?.menuPreview() }
         motion.onStart = { [weak self] motion in self?.flightStarted(motion) }
         environmentChanged()
         trackMotion()
@@ -199,6 +200,7 @@ final class PhoneCardView: UIView {
         headerView.dragged = nil
         headerView.tapped = nil
         headerView.buildMenu = nil
+        headerView.menuPreview = nil
         container?.island.rootView = AnyView(EmptyView())
         backdrop?.rootView = AnyView(EmptyView())
         icon.rootView = AnyView(EmptyView())
@@ -290,7 +292,7 @@ final class PhoneCardView: UIView {
     /// 这一段开始计时（这次排版已经交上去）：按 WindowMotion 的曲线每 1/120 秒取一帧，外框、最小化色、描边、头像、正文的变换和遮罩、
     /// 标题两侧整段交给 Core Animation，模型值停在终点。取样和逐帧驱动用的是同一个 presentation，飞出来一样。
     private func flightStarted(_ motion: WindowMotion) {
-        guard motion === placed?.motion, !motion.tracking, let flight = motion.flight, let placed else { return }
+        guard motion === placed?.motion, !motion.tracking, let flight = motion.flight else { return }
         let steps = max(Int((flight.duration * 120).rounded(.up)), 1)
         let poses = (0...steps).map { motion.presentation(at: flight.start.addingTimeInterval(flight.duration * Double($0) / Double(steps))) }
         flying = true
@@ -713,6 +715,21 @@ final class PhoneCardView: UIView {
         return UIMenu(children: items)
     }
 
+    /// 长按菜单浮起来的：标题栏那一截，缩成停靠形状时整个外框。从卡片上截一份图，菜单开着时原处照常显示。
+    private func menuPreview() -> UITargetedPreview? {
+        guard let placed, let arrangement else { return nil }
+        let frame = placed.target.frame
+        let rect = placed.minimized ? frame
+            : CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: min(max(arrangement.header.height, Metrics.dragBubble), frame.height))
+        guard let snapshot = resizableSnapshotView(from: rect, afterScreenUpdates: false, withCapInsets: .zero) else { return nil }
+        let parameters = UIPreviewParameters()
+        parameters.backgroundColor = .clear
+        let radius = min(placed.minimized ? placed.target.radius : Metrics.cardRadius, rect.height / 2)
+        parameters.visiblePath = UIBezierPath(roundedRect: CGRect(origin: .zero, size: rect.size), cornerRadius: radius)
+        return UITargetedPreview(view: snapshot, parameters: parameters,
+                                 target: UIPreviewTarget(container: self, center: CGPoint(x: rect.midX, y: rect.midY)))
+    }
+
     // MARK: - 命中与读屏
 
     /// 卡片铺满台面，自己不接点按，只有里面的正文和标题栏一层接；不接输入时（过渡中、退出、拖缝、被压暗）整张都不接。
@@ -754,6 +771,12 @@ final class PhoneCardView: UIView {
             guard let placed, !placed.minimized else { return nil }
             return [container, buttons].compactMap { $0 }
         }
+        set {}
+    }
+
+    /// 标题栏上为手指长按起拖挂了 UIDragInteraction（见 CardHeaderView），读屏不因此多出拖动的入口，照旧用下面的动作。
+    override var accessibilityDragSourceDescriptors: [UIAccessibilityLocationDescriptor]? {
+        get { [] }
         set {}
     }
 
@@ -983,25 +1006,41 @@ final class PhoneContentContainer: UIView, HostedContentSurface {
 }
 
 /// 标题栏一层：拖动区和窗口按钮，按停着的外框摆，命中按外框的圆角裁。
-private final class CardHeaderView: UIView, UIContextMenuInteractionDelegate {
+/// 拖动卡片分输入方式起拖：iPad 指针（触控板、鼠标）按住挪过一段距离就起拖，同 Mac（ThresholdDrag，只认指针）；
+/// 手指和笔要先长按，按系统拖放的惯例交给 UIDragInteraction：和长按菜单（UIContextMenuInteraction）放在同一个视图上，
+/// 长按到时标题栏浮起、弹出菜单，不动就留着菜单，动了菜单收起、转成拖动（系统协调两者，时长也用系统的）；没长按就滑动的不起拖，
+/// 照常交给别的手势。系统的拖动只借它的长按和跟踪：拖着的东西看不见，卡片照旧缩成停靠形状跟着手指（PhoneStageView.drag），
+/// 松手由排布按落点放（系统那边没有放的地方，一律当取消）。
+private final class CardHeaderView: UIView, UIContextMenuInteractionDelegate, UIDragInteractionDelegate {
     let drag = CardDragArea()
     var dragged: ((UIGestureRecognizer.State, CGPoint) -> Void)?
     var tapped: (() -> Void)?
     var buildMenu: (() -> UIMenu?)?
+    /// 长按菜单浮起来的样子：卡片标题栏那一截（缩成停靠形状时整个圆），卡片给。
+    var menuPreview: (() -> UITargetedPreview?)?
     /// 外框在这一层里的范围和圆角。
     var clip = CGRect.zero
     var radius: CGFloat = 0
+    /// 这一次按下是不是指针：指针的拖动交给 ThresholdDrag，系统的拖动不接。
+    private let touchKind = TouchKindObserver()
+    /// 系统的拖动开始了、还没交出松手或取消。
+    private var dragging = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         addSubview(drag)
         let pan = ThresholdDrag()
+        pan.allowedTouchTypes = [UITouch.TouchType.indirectPointer.rawValue as NSNumber]
         pan.addTarget(self, action: #selector(panned(_:)))
         drag.addGestureRecognizer(pan)
         drag.pan = pan
         let tap = UITapGestureRecognizer(target: self, action: #selector(tap(_:)))
         drag.addGestureRecognizer(tap)
+        drag.addGestureRecognizer(touchKind)
         drag.addInteraction(UIContextMenuInteraction(delegate: self))
+        let lift = UIDragInteraction(delegate: self)
+        lift.isEnabled = true
+        drag.addInteraction(lift)
         drag.isAccessibilityElement = false
     }
 
@@ -1021,10 +1060,101 @@ private final class CardHeaderView: UIView, UIContextMenuInteractionDelegate {
         if recognizer.state == .ended { tapped?() }
     }
 
+    // MARK: 长按菜单
+
     func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
                                 configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
         guard let menu = buildMenu?() else { return nil }
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in menu }
+    }
+
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configuration: UIContextMenuConfiguration,
+                                highlightPreviewForItemWithIdentifier identifier: any NSCopying) -> UITargetedPreview? {
+        menuPreview?()
+    }
+
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configuration: UIContextMenuConfiguration,
+                                dismissalPreviewForItemWithIdentifier identifier: any NSCopying) -> UITargetedPreview? {
+        menuPreview?()
+    }
+
+    // MARK: 手指、笔的长按起拖
+
+    func dragInteraction(_ interaction: UIDragInteraction, itemsForBeginning session: any UIDragSession) -> [UIDragItem] {
+        guard !touchKind.pointer, !drag.isHidden, dragged != nil else { return [] }
+        let item = UIDragItem(itemProvider: NSItemProvider())
+        item.previewProvider = { UIDragPreview(view: Self.invisible(), parameters: Self.invisibleParameters()) }
+        return [item]
+    }
+
+    /// 浮起来的是长按菜单的那份（见 menuPreview）；拖动本身看不见，卡片自己跟着手指。
+    func dragInteraction(_ interaction: UIDragInteraction, previewForLifting item: UIDragItem,
+                         session: any UIDragSession) -> UITargetedDragPreview? {
+        UITargetedDragPreview(view: Self.invisible(), parameters: Self.invisibleParameters(),
+                              target: UIDragPreviewTarget(container: drag, center: session.location(in: drag)))
+    }
+
+    func dragInteraction(_ interaction: UIDragInteraction, previewForCancelling item: UIDragItem,
+                         withDefault defaultPreview: UITargetedDragPreview) -> UITargetedDragPreview? { nil }
+
+    func dragInteraction(_ interaction: UIDragInteraction, sessionIsRestrictedToDraggingApplication session: any UIDragSession) -> Bool { true }
+
+    func dragInteraction(_ interaction: UIDragInteraction, sessionWillBegin session: any UIDragSession) {
+        dragging = true
+        // 卡片拿起来：缩成停靠形状到手指下，轻触一下（iPad 没有触感马达，只有支持触感的笔会震）
+        UIImpactFeedbackGenerator(style: .light, view: drag).impactOccurred(at: session.location(in: drag))
+        dragged?(.began, windowLocation(session))
+    }
+
+    func dragInteraction(_ interaction: UIDragInteraction, sessionDidMove session: any UIDragSession) {
+        guard dragging else { return }
+        dragged?(.changed, windowLocation(session))
+    }
+
+    func dragInteraction(_ interaction: UIDragInteraction, session: any UIDragSession, willEndWith operation: UIDropOperation) {
+        guard dragging else { return }
+        dragging = false
+        // 系统那边没有放的地方，结果总是取消；放在哪由排布按最后的落点定
+        dragged?(.ended, windowLocation(session))
+    }
+
+    func dragInteraction(_ interaction: UIDragInteraction, session: any UIDragSession, didEndWith operation: UIDropOperation) {
+        guard dragging else { return }
+        dragging = false
+        dragged?(.cancelled, .zero)
+    }
+
+    /// 手指在窗口里的位置，同 ThresholdDrag 报的。
+    private func windowLocation(_ session: any UIDragSession) -> CGPoint {
+        drag.convert(session.location(in: drag), to: nil)
+    }
+
+    private static func invisible() -> UIView { UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1)) }
+
+    private static func invisibleParameters() -> UIDragPreviewParameters {
+        let parameters = UIDragPreviewParameters()
+        parameters.backgroundColor = .clear
+        parameters.shadowPath = UIBezierPath()
+        return parameters
+    }
+}
+
+/// 记下这一次按下是不是指针（触控板、鼠标），见 CardHeaderView 的 itemsForBeginning。只看不认：按下就放弃，不挡别的手势。
+private final class TouchKindObserver: UIGestureRecognizer {
+    private(set) var pointer = false
+
+    override init(target: Any?, action: Selector?) {
+        super.init(target: target, action: action)
+        cancelsTouchesInView = false
+        delaysTouchesEnded = false
+        allowedTouchTypes = [UITouch.TouchType.direct, .indirect, .pencil, .indirectPointer].map { $0.rawValue as NSNumber }
+    }
+
+    convenience init() { self.init(target: nil, action: nil) }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        pointer = touches.first?.type == .indirectPointer
+        state = .failed
     }
 }
 
