@@ -53,25 +53,17 @@ struct RoleEmblemPane: View {
 
     var body: some View {
         PaneWindow(header: PaneHeader(title: "签名", subtitle: status), usesDots: true,
-                   notice: saved?.emblemState == "failed" ? .failure("签名生成失败：\(saved?.emblemError ?? "未知原因")") : nil) {
+                   notice: saved?.emblemState == "failed" ? .failure("签名生成失败：\(saved?.emblemError ?? "未知原因")") : nil,
+                   actions: PaneHeaderActions(groups: saved.map { saved in [[
+                       PaneHeaderAction(title: "重新生成", systemImage: "sparkles", help: generating ? "正在生成" : "按提示词重新生成签名",
+                                        busy: generating, disabled: generating || saving || !model.connected) { regenerate(saved) },
+                   ]] } ?? [])) {
             EmblemStage(check: check, slot: slot)
         } controls: { typing in
             EmblemControls(design: Binding(get: { design }, set: { value in model.editRole(id) { $0.emblem = value } }),
                            check: check, typing: typing)
                 .disabled(saving)
                 .frame(maxWidth: Metrics.transcriptWidth)
-        } headerActions: {
-            if let saved {
-                PaneHeaderButtonGroup {
-                    Button { regenerate(saved) } label: {
-                        PaneHeaderButtonLabel("重新生成", systemImage: "sparkles")
-                            .opacity(generating ? 0 : 1)
-                            .overlay { if generating { CardSpinner().scaleEffect(0.6) } }
-                    }
-                    .help(generating ? "正在生成" : "按提示词重新生成签名")
-                    .disabled(generating || saving || !model.connected)
-                }
-            }
         }
         #if os(macOS)
         .onContinuousHover(coordinateSpace: .global) { phase in

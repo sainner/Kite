@@ -42,7 +42,7 @@ enum WorkspacePresentation: Equatable {
         self = size.width >= 720 && size.height >= 480 ? .tiled : .compact
     }
 
-    /// 窄屏触控：标题栏圆环拉开侧栏、空控制区接上拉与横滑，都只在这时。
+    /// 窄屏触控：空控制区接上拉与横滑只在这时。
     var isCompactTouch: Bool { self == .compact && InputMode.current.isTouch }
 }
 

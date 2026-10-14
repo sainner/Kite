@@ -145,7 +145,7 @@ private struct WindowShell<Content: View>: View {
         .overlay(alignment: .topLeading) { catcher(window: geometry.windowRect(openness)) }
         .frame(width: geometry.screen.width, height: geometry.screen.height, alignment: .topLeading)
         .ignoresSafeArea()
-        .sensoryFeedback(.impact(weight: .light), trigger: motion.crossings)
+        .sensoryFeedback(.impact(flexibility: .rigid), trigger: motion.crossings)
     }
 
     /// 盖在窗口上接手势的：打开时盖住窗口，点了收起、拖了往回收；铺满（或底栏钉着）时只有窗口左边缘一条，往右拖拉出侧边栏。

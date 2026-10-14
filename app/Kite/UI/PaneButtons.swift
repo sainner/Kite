@@ -71,6 +71,53 @@ struct PaneHeaderButtonGroup<Content: View>: View {
     }
 }
 
+/// 窗口标题栏的右组：前面可以有一块菜单，后面几组图标按钮（每组一块玻璃）。窗口只交数据，由 PaneWindow 统一画，
+/// 原生会话窗口交给紧凑布局外壳的也是它：所有窗口的右组是同一种视图，iPhone 紧凑布局里几个窗口共用一条标题栏，
+/// 换窗口时各组、各按钮按位置原地更新，玻璃形变、图标替换走系统自带的过渡。各窗口各写一套时右组的视图类型不同，
+/// 只能整块换掉，过渡是硬切或淡入淡出（2026-10-14 iPhone，角色上下文和签名之间；见 CompactPaneHeaderBar 的右组）。
+struct PaneHeaderActions: View {
+    var groups: [[PaneHeaderAction]] = []
+    /// 菜单：会话的模型与更多操作、角色初始配置的默认模型与思考强度。放在各组前面。
+    var menus: AnyView?
+
+    var body: some View {
+        if let menus { menus }
+        ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+            PaneHeaderButtonGroup {
+                ForEach(Array(group.enumerated()), id: \.offset) { _, action in
+                    PaneHeaderActionButton(action: action)
+                }
+            }
+        }
+    }
+}
+
+/// 标题栏右组的一个图标按钮，见 PaneHeaderActions。
+struct PaneHeaderAction {
+    let title: String
+    let systemImage: String
+    /// 悬停说明，不给时同标题。
+    var help: String?
+    /// 在忙（保存、生成中）：图标换成转圈。
+    var busy = false
+    var disabled = false
+    let action: () -> Void
+}
+
+private struct PaneHeaderActionButton: View {
+    let action: PaneHeaderAction
+
+    var body: some View {
+        Button(action: action.action) {
+            PaneHeaderButtonLabel(action.title, systemImage: action.systemImage)
+                .opacity(action.busy ? 0 : 1)
+                .overlay { if action.busy { CardSpinner().scaleEffect(0.6) } }
+        }
+        .help(action.help ?? action.title)
+        .disabled(action.disabled)
+    }
+}
+
 /// 原生菜单展开时沿用按钮的按下状态，背景随菜单收起自动清除。
 /// 按钮只带半个间距，反馈向两侧多出一点，图标入口的反馈仍是圆形。
 /// 触屏上按压反馈由可交互的玻璃负责，不再叠灰色背景。禁用时内容变暗，与 PaneButtonStyle 相同。

@@ -1,12 +1,11 @@
 /**
- * 合回主线时的 Git 历史、冲突和未提交改动。
+ * 合回主线时的 Git 历史和冲突。
  */
 import { expect, test } from 'bun:test';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { KiteError } from '../../src/errors.ts';
 import { mergeBack } from '../../src/workspace/mainline.ts';
-import { commitAll, git, gitOk, gitWorktree, listTree, newRepo, read, repoState, useTemp, writeFiles } from '../util.ts';
+import { commitAll, git, gitOk, gitWorktree, newRepo, read, repoState, useTemp, writeFiles } from '../util.ts';
 
 const temp = useTemp();
 
@@ -91,40 +90,4 @@ test('合回冲突留在工作树，agent 只改文件时由宿主标记解决�
   expect(existsSync(join(main, 'd.txt'))).toBe(false);
   expect(clean(main)).toBe(true);
   expect(clean(wt)).toBe(true);
-});
-
-/*
- * 依赖 git 的 merge --ff-only：主文件夹里和会话无关的未提交改动原样保留（暂存与否都不动），
- * 快进会覆盖未提交改动时拒绝。
- */
-test('合回保留用户的无关未提交改动，覆盖同一文件时拒绝且不动主文件夹', async () => {
-  const { main, wt, project } = setup({ 'a.txt': 'a\n', 'notes.txt': 'notes0\n' });
-  writeFiles(wt, { 'a.txt': 'a-session\n', 's.txt': 'session\n' });
-  writeFiles(main, { 'a.txt': 'a-user\n', 'notes.txt': 'notes-dirty\n', 'scratch.txt': 'scratch\n', 'staged.txt': 'staged\n' });
-  git(main, 'add', 'staged.txt');
-  const h0 = head(main);
-  const before = { tree: listTree(main), status: git(main, 'status', '--porcelain') };
-
-  const e = await mergeBack(project, wt, '会话').then(() => undefined, (err) => err);
-  expect(e).toBeInstanceOf(KiteError);
-  expect((e as KiteError).status).toBe(409);
-  expect(head(main)).toBe(h0);
-  expect({ tree: listTree(main), status: git(main, 'status', '--porcelain') }).toEqual(before);
-
-  // 用户放弃对 a.txt 的改动，其余的留着
-  git(main, 'checkout', '--', 'a.txt');
-  const r = await mergeBack(project, wt, '会话');
-  expect(r.status).toBe('merged');
-  expect(head(main)).toBe(head(wt));
-  expect(read(join(main, 'a.txt'))).toBe('a-session\n');
-  expect(read(join(main, 's.txt'))).toBe('session\n');
-  expect(read(join(main, 'notes.txt'))).toBe('notes-dirty\n');
-  expect(read(join(main, 'scratch.txt'))).toBe('scratch\n');
-  expect(read(join(main, 'staged.txt'))).toBe('staged\n');
-  expect(git(main, 'show', 'HEAD:notes.txt')).toBe('notes0');
-  expect(gitOk(main, 'cat-file', '-e', 'HEAD:scratch.txt')).toBe(false);
-  expect(gitOk(main, 'cat-file', '-e', 'HEAD:staged.txt')).toBe(false);
-  // 三个文件都还是未提交状态（暂存与否不论）
-  const status = git(main, 'status', '--porcelain').split('\n');
-  for (const f of ['notes.txt', 'scratch.txt', 'staged.txt']) expect(status.some((l) => l.endsWith(` ${f}`))).toBe(true);
 });

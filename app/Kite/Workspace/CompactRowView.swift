@@ -5,9 +5,8 @@ import UIKit
 /// iPhone 和窄的 iPad 紧凑布局里的一行窗口（Mac 窄窗口是 SwiftUI 的 CompactPaneStack）。窗口按底栏的顺序排成一行，铺满时只露出当前窗口；
 /// 控制区横滑时整行跟着手指走（PaneRow 照旧管状态和手势的规则），松手按 WindowMotion 的曲线整段交给 Core Animation。
 /// 每个窗口是一个格（CompactSlot）：正文是一个岛（PaneBody）；会话窗口在岛里只留桥（ThreadPaneBridge），外框是原生的
-/// PhoneThreadWindowView，只放对话和签名。标题栏和控制区都留在外壳上（换窗口时原地淡入淡出，只有正文跟着横滑平移）：
-/// 会话窗口的是原生的（PhoneHeaderBar、ControlsBarView），开合时由外壳在图层上补位；别的窗口的是 SwiftUI（CompactPaneHeaderBar、
-/// CompactPaneControlsBar），各在一个岛里，照旧在 SwiftUI 里跟着抽屉的弹簧补位（drawerShift）。
+/// PhoneThreadWindowView，只放对话和签名。标题栏和控制区共用外壳上两个稳定的 SwiftUI 玻璃容器，换窗口时由系统过渡，
+/// 会话输入框仍是保留的 ControlsBarView。只有正文跟着横滑平移，抽屉开合时标题栏和控制区仍在原生图层上补位。
 /// 窗口建好就一直留着，当前窗口先建，其余的由近到远预热（PaneRow.warmUp）：新建会话窗口要把整段对话重新建一遍、排一遍、画一遍，
 /// 不赶在滑动和抽屉开合的时候；手指比预热先到时，当场建出相邻的那个。
 final class CompactRowView: UIView {
@@ -19,19 +18,19 @@ final class CompactRowView: UIView {
     /// 各个窗口，整行平移：拖着时每挪一下只重摆这一层（StripView 自己的排版），不把整行重排一遍。
     private let strip = StripView()
     private let slideTracking = ModelTracking()
-    /// 别的窗口的标题栏、控制区（SwiftUI 的岛）。
-    private let islandChrome = PassThroughView()
-    /// 会话窗口的标题栏、控制区（原生），开合时外壳在这两层上补位。
+    /// 标题栏和控制区共用两个稳定的玻璃容器，抽屉的补位仍在原生图层上完成。
     private let headerShifter = PassThroughView()
     private let controlsShifter = PassThroughView()
-    /// 会话窗口标题栏后面的渐变，同 PaneHeaderPlacement 的 topFade：从窗口顶边铺到标题栏底边再往下 topFadeOverhang，跟着标题栏补位。
-    private let fade = HostIsland()
+    private let headerIsland = HostIsland()
+    private let controlsIsland = HostIsland()
+    private let chrome = CompactChromeState()
     private var slots: [Pane: CompactSlot] = [:]
     /// 外壳上量出来的各窗口控制区高度（别的窗口的 SwiftUI 控制区报的），窗口按它让位。
     let controls = SharedPaneControls()
 
     private let tracking = ModelTracking()
     private var laying = false
+    private var chromeDirty = false
     private var currentPane: Pane?
     private var page: Int?
     private var width: CGFloat?
@@ -49,14 +48,20 @@ final class CompactRowView: UIView {
         super.init(frame: .zero)
         addSubview(strip)
         strip.laidOut = { [weak self] in self?.placeStrip() }
-        addSubview(islandChrome)
         addSubview(headerShifter)
         addSubview(controlsShifter)
-        headerShifter.addSubview(fade)
-        fade.isUserInteractionEnabled = false
-        fade.accessibilityElementsHidden = true
-        setLayerOpacity(fade, 0, animated: false)
-        fade.rootView = shell.rooted(CompactTopFade())
+        headerShifter.addSubview(headerIsland)
+        controlsShifter.addSubview(controlsIsland)
+        headerIsland.hitRegion = { [weak self] in
+            guard let self, chrome.source != nil else { return nil }
+            return CGRect(x: 0, y: shell.state.covered.top, width: bounds.width, height: chrome.headerHeight)
+        }
+        controlsIsland.hitRegion = { [weak self] in
+            guard let self, let pane = chrome.source?.pane else { return nil }
+            let height = controls.height(for: pane)
+            return CGRect(x: 0, y: bounds.height - shell.state.covered.bottom - height, width: bounds.width, height: height)
+        }
+        installChrome()
         row.slide.onStart = { [weak self] motion in self?.slideStarted(motion) }
         #if DEBUG && KITE_LAYOUT_AUDIT
         PerfProbe.row = row
@@ -74,9 +79,14 @@ final class CompactRowView: UIView {
 
     /// 外观类的环境变了：各个岛重新交环境，会话窗口的原生外框跟着桥换（桥按 nativeThreadGeneration 再交一遍）。
     func environmentChanged() {
-        fade.rootView = shell.rooted(CompactTopFade())
+        installChrome()
         for slot in slots.values { slot.install(row: self) }
         setNeedsLayout()
+    }
+
+    private func installChrome() {
+        headerIsland.rootView = rooted(CompactSharedHeader(chrome: chrome, shell: shell.state))
+        controlsIsland.rootView = rooted(CompactSharedControls(chrome: chrome, shell: shell.state, controls: controls))
     }
 
     func dismantle() {
@@ -88,6 +98,9 @@ final class CompactRowView: UIView {
         row.slide.onStart = nil
         for slot in slots.values { slot.dismantle() }
         slots = [:]
+        chrome.source = nil
+        headerIsland.rootView = AnyView(EmptyView())
+        controlsIsland.rootView = AnyView(EmptyView())
     }
 
     /// 淡出时：里面摆在点阵上的图形先收回（同 dotsPresence 转场）。
@@ -118,15 +131,15 @@ final class CompactRowView: UIView {
         defer { laying = false }
         let read = tracking.track({ readModel() }) { [weak self] in self?.invalidate() }
         let width = bounds.width, height = bounds.height
-        for view in [strip, islandChrome, headerShifter, controlsShifter] where view.bounds.size != bounds.size {
+        for view in [strip, headerShifter, controlsShifter, headerIsland, controlsIsland] where view.bounds.size != bounds.size {
             view.bounds = CGRect(origin: .zero, size: bounds.size)
             view.center = CGPoint(x: bounds.midX, y: bounds.midY)
         }
         placeStrip()
 
-        // 各个窗口：当前的和预热过的。当前窗口换了时标题栏、控制区淡入淡出（snappy），同 CompactPaneHeaderHost 的 .animation(.snappy, value: focused)
         let focusChanged = currentPane != read.focused
-        let fades = focusChanged && currentPane != nil && !(shell.look?.reduceMotion ?? false)
+        let animateChrome = focusChanged && currentPane != nil && !(shell.look?.reduceMotion ?? false)
+        if focusChanged { currentPane.flatMap { slots[$0]?.thread }?.controls.endTyping() }
         currentPane = read.focused
         for (pane, slot) in slots where !read.panes.contains(pane) {
             slot.dismantle()
@@ -147,16 +160,12 @@ final class CompactRowView: UIView {
             slot.view.accessibilityElementsHidden = !current
             if exposed, slot.usesDots { dots = true }
             layoutChrome(slot, exposed: exposed, read: read)
-            slot.setChromeOpacity(current ? 1 : 0, animated: fades)
         }
-        // 渐变：当前窗口是会话窗口时露出来，铺到它的标题栏底下
-        if let slot = read.focused.flatMap({ slots[$0] }), let thread = slot.thread {
-            let height = read.covered.top + thread.headerBar.height + Metrics.topFadeOverhang
-            let frame = CGRect(x: 0, y: 0, width: width, height: height)
-            if fade.frame != frame { fade.frame = frame }
-            setLayerOpacity(fade, 1, animated: fades)
-        } else {
-            setLayerOpacity(fade, 0, animated: fades)
+        if focusChanged || chromeDirty {
+            chromeDirty = false
+            let source = read.focused.flatMap { slots[$0]?.source }
+            if animateChrome { prepareControlsTransition(to: source) }
+            withAnimation(animateChrome ? .snappy : nil) { chrome.source = source }
         }
         if usesDots != dots {
             usesDots = dots
@@ -205,6 +214,8 @@ final class CompactRowView: UIView {
         read.home = state.home
         read.keyboardShown = state.keyboardShown
         read.collapsed = shell.drawer.collapsed
+        _ = chrome.headerHeight
+        for pane in read.panes { _ = controls.height(for: pane) }
         return read
     }
 
@@ -227,8 +238,6 @@ final class CompactRowView: UIView {
             detachThread(slot, pane: pane)
         }
         slot.install(row: self)
-        islandChrome.addSubview(slot.headerIsland)
-        islandChrome.addSubview(slot.controlsIsland)
         return slot
     }
 
@@ -285,39 +294,29 @@ final class CompactRowView: UIView {
         controlsShifter.layer.removeAnimation(forKey: "drawer.transform")
     }
 
-    /// 一个窗口的标题栏和控制区：当前窗口的露出来，别的藏着（换窗口时淡入淡出，见 fadeChrome）；会话窗口按外壳的安全区摆原生的两块，
-    /// 让出的距离交给对话；别的窗口的两个岛铺满窗口，按它们报的高接点按。
-    /// 没露出来的会话窗口按键盘收着的样子排：键盘升降时只有露出来的窗口重排对话（每个窗口一次几十毫秒，iPad 强制紧凑布局真机实测），
-    /// 键盘升着时不能横滑，换过去时再按当时的样子排。
+    /// 共享标题栏和控制区给正文让位；键盘升降只更新当前露出的会话。
     private func layoutChrome(_ slot: CompactSlot, exposed: Bool, read: Read) {
-        let width = bounds.width, height = bounds.height
-        var covered = read.covered
-        guard let thread = slot.thread, let area = slot.controlsArea else {
-            for island in [slot.headerIsland, slot.controlsIsland] where island.frame != bounds { island.frame = bounds }
-            slot.chromeHeight = (top: covered.top, header: slot.state.headerHeight ?? defaultHeaderHeight(covered.top),
-                                 controls: controls.height(for: slot.pane), bottom: covered.bottom)
-            return
+        if slot.pane == read.focused, chrome.source?.pane == slot.pane,
+           chrome.headerHeight > 0, slot.state.headerHeight != chrome.headerHeight {
+            slot.state.headerHeight = chrome.headerHeight
         }
-        let keyboardShown = read.keyboardShown && exposed
+        guard let thread = slot.thread else { return }
+        var covered = read.covered
         if read.keyboardShown, !exposed { covered.bottom = read.home }
-        let header = thread.headerBar
-        header.topInset = covered.top
-        let headerHeight = header.height
-        let headerFrame = CGRect(x: covered.leading, y: covered.top, width: max(width - covered.leading - covered.trailing, 0), height: headerHeight)
-        if header.frame != headerFrame { header.frame = headerFrame }
-        // 控制区：左右留 paneMargin，玻璃最宽 transcriptWidth 居中；键盘升起时最左边是收起键盘（只在 iPhone 上）。
-        // 底边距取 max(paneMargin, Home 条) 只算一次，键盘升起时在键盘上方留 paneMargin，同 PaneControlsBottom
-        let safe = keyboardShown ? 0 : read.home
-        let bottomPadding = max(Metrics.paneMargin, safe) - safe
-        area.showsKeyboardButton = ScreenKeyboard.applies && keyboardShown
-        area.typing = { [weak thread] in thread?.controls.typing ?? false }
-        area.keyboardShown = keyboardShown
-        let available = max(width - covered.leading - covered.trailing - 2 * Metrics.paneMargin, 0)
-        let glassHeight = area.layout(available: available)
-        let areaHeight = glassHeight + bottomPadding
-        area.frame = CGRect(x: covered.leading + Metrics.paneMargin, y: height - covered.bottom - areaHeight, width: available, height: areaHeight)
+        let headerHeight = slot.state.headerHeight ?? defaultHeaderHeight(covered.top)
         thread.compactInsets = EdgeInsets(top: covered.top + headerHeight, leading: covered.leading,
-                                          bottom: covered.bottom + areaHeight, trailing: covered.trailing)
+            bottom: covered.bottom + controlsHeight(thread, keyboardShown: read.keyboardShown && exposed, read: read),
+            trailing: covered.trailing)
+    }
+
+    /// 会话窗口的控制区多高：玻璃按原生输入区当前的宽当场量，底下的留白同 PaneControlsBottom（键盘升起时只留 paneMargin），
+    /// 不等共用控制区的 SwiftUI 量完报上来（晚一轮，键盘升降时对话的让位会落在键盘动画后面）。
+    /// 还没显示过的输入区按可用宽度量自己的内容，不借当前窗口的高度，避免打字增高时连带重排屏外会话。
+    private func controlsHeight(_ thread: PhoneThreadWindowView, keyboardShown: Bool, read: Read) -> CGFloat {
+        let available = max(bounds.width - read.covered.leading - read.covered.trailing - 2 * Metrics.paneMargin, 0)
+        let width = thread.controls.bounds.width > 0 ? thread.controls.bounds.width : min(Metrics.transcriptWidth, available)
+        let safe = keyboardShown ? 0 : read.home
+        return thread.controls.height(forWidth: width) + max(Metrics.paneMargin, safe) - safe
     }
 
     /// 别的窗口的标题栏还没量出来时按这个高让位，同 CompactPaneHeaderHost。
@@ -336,20 +335,17 @@ final class CompactRowView: UIView {
         let window = PhoneThreadWindowView(thread: thread, pane: threadPane, environment: environment, group: group, paneID: slot.pane,
                                            model: shell.model, header: slot.cardHeader, regions: slot.regions, reports: slot.reports,
                                            motion: row.slide, compact: true)
-        window.chromeChanged = { [weak self] in self?.setNeedsLayout() }
+        window.chromeChanged = { [weak self, weak slot, weak window] in
+            guard let self, let slot else { return }
+            reported(window?.compactChrome, for: slot)
+        }
+        window.controlsResized = { [weak self] in self?.setNeedsLayout() }
         slot.thread = window
         slot.view.addSubview(window)
         window.frame = slot.view.bounds
         window.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        let area = CompactControlsArea(bar: window.controls)
-        area.row = self
-        slot.controlsArea = area
-        headerShifter.addSubview(window.headerBar)
-        controlsShifter.addSubview(area)
-        slot.headerIsland.isHidden = true
-        slot.controlsIsland.isHidden = true
         if !slot.state.native { slot.state.native = true }
-        slot.setChromeOpacity(slot.pane == currentPane ? 1 : 0, animated: false)
+        reported(window.compactChrome, for: slot)
         slot.dotsPresence.stage = environment.dotStage
         slot.dotsPresence.track(slot.reports)
         setNeedsLayout()
@@ -359,23 +355,36 @@ final class CompactRowView: UIView {
         guard let window = slot.thread, threadPane == nil || window.pane === threadPane else { return }
         window.dismantle()
         window.removeFromSuperview()
-        window.headerBar.removeFromSuperview()
-        slot.controlsArea?.removeFromSuperview()
-        slot.controlsArea = nil
         slot.thread = nil
-        slot.headerIsland.isHidden = false
-        slot.controlsIsland.isHidden = false
+        reported(nil, for: slot)
         if slot.state.native { slot.state.native = false }
         slot.dotsPresence.track(nil)
         setNeedsLayout()
+    }
+
+    /// 换窗口时控制区的玻璃怎么过渡。两边都有控件时按 matchedGeometry 从一边形变到另一边；只有一边有时，另一边只有一块
+    /// 不显示的 identity 玻璃，容器间距里没有可借的形状，matchedGeometry 会把玻璃缩成小圆球，动画末尾一下没了，所以改成原地 materialize。
+    /// 系统登记每块玻璃时连同过渡一起存下，移除时按最后一次登记的算：要走的这份控制区得先带着新过渡更新一次，再换掉。
+    private func prepareControlsTransition(to source: CompactPaneHeader?) {
+        let materialize = (chrome.source?.hasControls ?? false) != (source?.hasControls ?? false)
+        guard chrome.controlsMaterialize != materialize else { return }
+        chrome.controlsMaterialize = materialize
+        controlsIsland.controller.view.layoutIfNeeded()
     }
 
     // MARK: - 别的窗口报上来的
 
     /// 别的窗口报上来标题栏和控制区（CompactPaneHeaders），放进外壳上的两个岛。
     fileprivate func reported(_ header: CompactPaneHeader?, for slot: CompactSlot) {
-        slot.source = header
-        slot.installChrome(row: self)
+        // 原生会话的空桥也会报 nil，不能覆盖它已经交给外壳的标题栏。
+        if header == nil, let source = slot.thread?.compactChrome { slot.source = source }
+        else { slot.source = header }
+        if slot.pane == currentPane {
+            if laying { chromeDirty = true }
+            else {
+                chrome.source = slot.source
+            }
+        }
         setNeedsLayout()
     }
 
@@ -399,8 +408,7 @@ final class CompactRowView: UIView {
     override var accessibilityElements: [Any]? {
         get {
             guard let currentPane, let slot = slots[currentPane] else { return [] }
-            if let thread = slot.thread, let area = slot.controlsArea { return [thread.headerBar, slot.view, area] }
-            return [slot.headerIsland, slot.view, slot.controlsIsland]
+            return [headerIsland, slot.view, controlsIsland]
         }
         set {}
     }
@@ -427,6 +435,17 @@ private final class StripView: UIView {
         super.layoutSubviews()
         laidOut?()
     }
+
+    /// 一行窗口并排摆在这里，整层平移露出当前那个，自己只有一屏宽：命中按窗口的范围算，不按 bounds 截，
+    /// 否则第二个起的窗口都落在 bounds 外，整页点不到也滚不动（2026-10-14 iPhone，角色的签名、初始配置）。
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        subviews.contains { $0.frame.contains(point) }
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return hit === self ? nil : hit
+    }
 }
 
 // MARK: - 一个窗口
@@ -445,28 +464,14 @@ private final class CompactSlot {
     let reports = PaneCardBodyReports()
     let dotsPresence = NativeDotsPresence()
     var thread: PhoneThreadWindowView?
-    var controlsArea: CompactControlsArea?
     /// 别的窗口：报上来的标题栏和控制区，和放它们的两个岛。
     var source: CompactPaneHeader?
-    let headerIsland = HostIsland()
-    let controlsIsland = HostIsland()
     var usesDots = false
-    /// 别的窗口：状态栏让出的、标题栏高、控制区高、底下让出的，接点按的范围按它们算。
-    var chromeHeight: (top: CGFloat, header: CGFloat, controls: CGFloat, bottom: CGFloat) = (0, 0, 0, 0)
 
     init(pane: Pane) {
         self.pane = pane
         view.addSubview(island)
         island.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        headerIsland.hitRegion = { [weak self] in
-            guard let self else { return nil }
-            return CGRect(x: 0, y: chromeHeight.top, width: headerIsland.bounds.width, height: chromeHeight.header)
-        }
-        controlsIsland.hitRegion = { [weak self] in
-            guard let self else { return nil }
-            let height = controlsIsland.bounds.height
-            return CGRect(x: 0, y: height - chromeHeight.bottom - chromeHeight.controls, width: controlsIsland.bounds.width, height: chromeHeight.controls)
-        }
     }
 
     /// 正文的岛：PaneBody，会话窗口换成桥（nativeThreadWindow），同 CompactPaneStack 给窗口的环境。
@@ -482,59 +487,15 @@ private final class CompactSlot {
                                                          guard let row, let self else { return }
                                                          row.reportedDots(uses, for: self)
                                                      }))
-        installChrome(row: row)
-    }
-
-    func installChrome(row: CompactRowView) {
-        guard let source else {
-            headerIsland.rootView = AnyView(EmptyView())
-            controlsIsland.rootView = AnyView(EmptyView())
-            return
-        }
-        let state = state, shellState = row.shell.state, controls = row.controls
-        headerIsland.rootView = row.rooted(CompactChromeHeaderRoot(source: source, slot: state, shell: shellState))
-        controlsIsland.rootView = row.rooted(CompactChromeControlsRoot(source: source, shell: shellState, controls: controls))
-    }
-
-    func setChromeOpacity(_ opacity: Float, animated: Bool) {
-        for view in [thread?.headerBar, controlsArea, headerIsland, controlsIsland] as [UIView?] {
-            guard let view else { continue }
-            if opacity > 0, !revealed.contains(view) {
-                revealed.add(view)
-                revealToUIKit(view)
-            }
-            setLayerOpacity(view, opacity, animated: animated)
-            view.isUserInteractionEnabled = opacity > 0
-        }
-    }
-
-    /// 已经经 UIView.alpha 露出来过一次的标题栏、控制区。
-    private let revealed = NSHashTable<UIView>.weakObjects()
-
-    /// 第一次露出来：经 UIView.alpha 从 0 设成看得见一次，UIKit 才把「看得见了」通知给里面的 SwiftUI，标题栏按钮、输入区的玻璃这时才建。
-    /// 不在当前的窗口建出来时图层透明度就是 0，SwiftUI 当它看不见、不建玻璃；之后只改图层透明度（为了不在每次换窗口时把整棵子树
-    /// 通知一遍，见 setLayerOpacity）它收不到，换到这个窗口时按钮就没有玻璃（2026-10-14 iPhone，开 App 时不在前面的窗口都这样）。
-    /// 建好以后再藏起来玻璃也留着。设完马上把图层透明度放回去，由调用方照常淡入。
-    private func revealToUIKit(_ view: UIView) {
-        let opacity = view.layer.opacity
-        guard opacity == 0 else { return }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        view.alpha = 1
-        view.layer.opacity = opacity
-        CATransaction.commit()
     }
 
     func dismantle() {
         thread?.dismantle()
-        thread?.headerBar.removeFromSuperview()
         thread = nil
-        controlsArea?.removeFromSuperview()
-        controlsArea = nil
         threadSlot.attach = nil
         threadSlot.detach = nil
         dotsPresence.release()
-        for island in [island, headerIsland, controlsIsland] {
+        for island in [island] {
             island.hitRegion = nil
             island.rootView = AnyView(EmptyView())
             island.removeFromSuperview()
@@ -621,17 +582,6 @@ private struct CompactSlotRoot: View {
     }
 }
 
-/// 会话窗口标题栏后面的渐变：岛的高是窗口顶边到标题栏底边再加 topFadeOverhang，渐变自己往下伸出那一截。
-private struct CompactTopFade: View {
-    var body: some View {
-        GeometryReader { proxy in
-            PaneTopFade()
-                .frame(height: max(proxy.size.height - Metrics.topFadeOverhang, 0))
-                .frame(maxHeight: .infinity, alignment: .top)
-        }
-    }
-}
-
 /// 把报上来的标题栏交出去：偏好的值不能比较，用一个不占地方的原生视图，每次更新时交。
 private struct CompactHeaderReporter: UIViewRepresentable {
     let header: CompactPaneHeader?
@@ -652,180 +602,4 @@ private struct CompactHeaderReporter: UIViewRepresentable {
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIView, context: Context) -> CGSize? { .zero }
 }
 
-/// 别的窗口的标题栏：同 CompactPaneHeaderHost 里的 CompactPaneHeaderBar，量出来的高交给窗口让位。
-private struct CompactChromeHeaderRoot: View {
-    let source: CompactPaneHeader
-    let slot: CompactSlotState
-    let shell: CompactShellState
-
-    var body: some View {
-        CompactPaneHeaderBar(source: source)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                if slot.headerHeight != height { slot.headerHeight = height }
-            }
-            .frame(maxHeight: .infinity, alignment: .top)
-            .safeAreaPadding(shell.covered)
-    }
-}
-
-/// 别的窗口的控制区：同 CompactPaneHeaderHost 里的 CompactPaneControlsBar，量出来的高记给窗口。
-private struct CompactChromeControlsRoot: View {
-    let source: CompactPaneHeader
-    let shell: CompactShellState
-    let controls: SharedPaneControls
-
-    var body: some View {
-        CompactPaneControlsBar(source: source, controls: controls, keyboardShown: shell.keyboardShown)
-            .frame(maxHeight: .infinity, alignment: .bottom)
-            .safeAreaPadding(shell.covered)
-    }
-}
-
-// MARK: - 会话窗口的控制区
-
-/// 会话窗口的控制区（紧凑布局）：原生输入区，键盘升起时最左边是收起键盘，两块玻璃在同一个玻璃容器里（间距 paneButtonGap），
-/// 同 PaneControlsBar。整条（连同左右边距和底下的留白）接上拉底栏和横滑换窗口：挪过 dragThreshold 时看横着挪得多还是竖着挪得多，
-/// 竖着的拉底栏（打字时不接），横着的换窗口（打字、键盘升起时不接，从思考强度起手的留给它调档），同 DrawerPullModifier 和 PaneControlSwipe。
-private final class CompactControlsArea: UIView, UIGestureRecognizerDelegate {
-    let bar: ControlsBarView
-    weak var row: CompactRowView?
-    var typing: () -> Bool = { false }
-    var keyboardShown = false
-    var showsKeyboardButton = false {
-        didSet {
-            guard showsKeyboardButton != oldValue else { return }
-            // 收起键盘按钮插进来、撤出去时旁边让位，跟着键盘的动画（外壳在键盘的动画块里排版）
-            keyboardButton.alpha = showsKeyboardButton ? 1 : 0
-            setNeedsLayout()
-        }
-    }
-    private let container: UIVisualEffectView
-    private let keyboardButton = KeyboardGlassButton()
-    private let drag = ThresholdDrag()
-    private enum Mode { case pull, swipe }
-    private var mode: Mode?
-    private var glassWidth: CGFloat = 0
-    private var glassHeight: CGFloat = 0
-
-    init(bar: ControlsBarView) {
-        self.bar = bar
-        let effect = UIGlassContainerEffect()
-        effect.spacing = Metrics.paneButtonGap
-        container = UIVisualEffectView(effect: effect)
-        super.init(frame: .zero)
-        addSubview(container)
-        container.contentView.addSubview(keyboardButton)
-        container.contentView.addSubview(bar)
-        keyboardButton.alpha = 0
-        drag.delegate = self
-        drag.addTarget(self, action: #selector(dragged(_:)))
-        addGestureRecognizer(drag)
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    /// 按给的宽摆：键盘按钮（有的话）加间距，后面是最宽 transcriptWidth 的玻璃，整组居中；返回玻璃的高。
-    func layout(available: CGFloat) -> CGFloat {
-        let button = showsKeyboardButton ? keyboardButton.size.width + Metrics.paneButtonGap : 0
-        glassWidth = max(min(Metrics.transcriptWidth, available - button), 0)
-        glassHeight = bar.height(forWidth: glassWidth)
-        setNeedsLayout()
-        return glassHeight
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        container.frame = bounds
-        let button = showsKeyboardButton ? keyboardButton.size.width + Metrics.paneButtonGap : 0
-        let x = (bounds.width - button - glassWidth) / 2
-        let size = keyboardButton.size
-        keyboardButton.frame = CGRect(x: x, y: glassHeight - size.height, width: size.width, height: size.height)
-        let glass = CGRect(x: x + button, y: 0, width: glassWidth, height: glassHeight)
-        if bar.frame != glass { bar.frame = glass }
-    }
-
-    /// 整条接触摸（玻璃以外的边距和底下的留白也是），同 PaneControlsBar 的 contentShape。
-    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool { bounds.contains(point) }
-
-    // MARK: - 拉底栏、横滑
-
-    override func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
-        guard recognizer === drag else { return super.gestureRecognizerShouldBegin(recognizer) }
-        let translation = drag.translation
-        if DrawerPull.isHorizontal(translation) {
-            guard !typing(), !keyboardShown, let start = drag.start, let row else { return false }
-            if bar.effortFrame.contains(bar.convert(start, from: nil)) || !row.shell.drawer.collapsed { return false }
-            mode = .swipe
-        } else {
-            guard !typing() else { return false }
-            mode = .pull
-        }
-        return true
-    }
-
-    func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
-
-    @objc private func dragged(_ recognizer: ThresholdDrag) {
-        guard let row, let mode else { return }
-        let pull = row.shell.drawer.actionsPull, swipe = row.row.swipeActions
-        switch recognizer.state {
-        case .began, .changed:
-            if mode == .pull { pull.changed(recognizer.translation, recognizer.velocity) } else { swipe.track(recognizer.translation.width) }
-        case .ended:
-            if mode == .pull { pull.ended(recognizer.velocity) } else { swipe.end(recognizer.translation.width, recognizer.predictedTranslation.width) }
-            self.mode = nil
-        case .cancelled, .failed:
-            if mode == .pull { pull.ended(.zero) } else { swipe.cancel() }
-            self.mode = nil
-        default:
-            break
-        }
-    }
-
-    override var accessibilityElements: [Any]? {
-        get { showsKeyboardButton ? [keyboardButton, bar] : [bar] }
-        set {}
-    }
-}
-
-/// 收起键盘：同 KeyboardDismissButton（PaneHeaderButtonGroup 里一个 ActionButton）——交互玻璃的胶囊，正文字号的图标。
-private final class KeyboardGlassButton: UIView {
-    private let glass: UIVisualEffectView
-    private let button = UIButton(type: .custom)
-
-    override init(frame: CGRect) {
-        let effect = UIGlassEffect(style: .regular)
-        effect.isInteractive = true
-        glass = UIVisualEffectView(effect: effect)
-        super.init(frame: frame)
-        glass.cornerConfiguration = .capsule()
-        addSubview(glass)
-        glass.contentView.addSubview(button)
-        button.tintColor = .label
-        button.accessibilityLabel = "收起键盘"
-        // 等按钮松手这次更新过去再收：同步收的话键盘让位会沿用玻璃松手的回弹
-        button.addAction(UIAction { _ in Task { @MainActor in dismissKeyboard() } }, for: .primaryActionTriggered)
-        updateImage()
-        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: Self, _) in self.updateImage() }
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    private func updateImage() {
-        let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
-        button.setImage(UIImage(systemName: KeyboardDismissButton.icon, withConfiguration: UIImage.SymbolConfiguration(font: font)), for: .normal)
-    }
-
-    /// 图标方框（正文字号缩放的 labelExtent）加按钮自带的半个间距、组两端的留白，高是标题栏按钮高。
-    var size: CGSize {
-        let extent = UIFontMetrics(forTextStyle: .body).scaledValue(for: InputMode.current.labelExtent, compatibleWith: traitCollection)
-        return CGSize(width: extent + Metrics.paneHeaderButtonGap + 2 * Metrics.paneHeaderGroupInset, height: Metrics.paneHeaderButton)
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        glass.frame = bounds
-        button.frame = glass.contentView.bounds
-    }
-}
 #endif

@@ -4,7 +4,7 @@ import UIKit
 
 /// iPhone、iPad 会话窗口的输入区：玻璃和里面的内容，和玻璃一样大，圆角以外不接点按。原生会话窗口（PhoneThreadWindowView）
 /// 和紧凑布局的外壳直接挂它，拖缝改宽时只按宽度重摆。版式同 Mac 的输入区：输入框左右留 controlInset + 8、上下 6，
-/// 下面一行思考强度和按钮，放不下时思考强度单独一行。玻璃是 UIKit 的交互玻璃（UIGlassEffect，圆角 controlRadius）。
+/// 下面一行思考强度和按钮，放不下时隐藏按钮组。玻璃是 UIKit 的交互玻璃（UIGlassEffect，圆角 controlRadius）。
 /// 逻辑共用 ThreadControlsModel；思考强度留在 SwiftUI（ThreadEffortControl），放进一个按自己大小摆的托管视图，只在它自己改宽时重排。
 final class ControlsBarView: UIView {
     private let glass: UIVisualEffectView
@@ -13,14 +13,12 @@ final class ControlsBarView: UIView {
     private let effort = EffortHost(rootView: AnyView(EmptyView()))
     private let attach = PaneButtonView()
     private let voice = PaneButtonView()
-    private let stop = PaneButtonView()
-    private let resume = PaneButtonView()
-    private let send = PaneButtonView()
+    private let primary = PaneButtonView()
 
     private var controls: ThreadControlsModel?
     private var enabled = true
     private var effortKey: EffortKey?
-    /// 思考强度的理想大小，托管视图报大小变了再量。
+    /// 思考强度的理想大小，由它自己的几何报（effortResized）；换了内容、还没报过时按固有尺寸量。
     private var effortSize: CGSize?
     /// 跟着会话、App 模型和 state 变，见 refresh。
     private let tracking = ModelTracking()
@@ -40,10 +38,10 @@ final class ControlsBarView: UIView {
     /// 思考强度占的地方（本视图坐标）：紧凑布局里从这里起手的横拖留给它自己调档，不切窗口（同 reservesPaneSwipe）。
     var effortFrame: CGRect { effort.view.frame }
 
-    init() {
+    init(glassManagedExternally: Bool = false) {
         let effect = UIGlassEffect(style: .regular)
         effect.isInteractive = true
-        glass = UIVisualEffectView(effect: effect)
+        glass = UIVisualEffectView(effect: glassManagedExternally ? nil : effect)
         super.init(frame: .zero)
         // 交互玻璃的同心形状有高光退回胶囊的复现；玻璃用明确的圆角
         glass.cornerConfiguration = .corners(radius: .fixed(Metrics.controlRadius))
@@ -53,29 +51,18 @@ final class ControlsBarView: UIView {
         content.addSubview(fadingView)
         content.addSubview(effort.view)
         effort.view.backgroundColor = .clear
-        effort.sizingOptions = [.intrinsicContentSize, .preferredContentSize]
+        effort.sizingOptions = [.intrinsicContentSize]
         effort.safeAreaRegions = []
-        effort.sizeChanged = { [weak self] in
-            self?.effortSize = nil
-            self?.contentChanged()
-        }
-        for button in [attach, voice, stop, resume, send] { content.addSubview(button) }
+        for button in [attach, voice, primary] { content.addSubview(button) }
 
         attach.label = .symbol("paperclip")
         attach.title = "添加附件"
         attach.isEnabled = false
-        stop.label = .symbol("stop.fill")
-        stop.fill = Theme.strongPlaceholder
-        stop.title = "停止"
-        resume.label = .text("继续")
-        resume.title = "继续"
-        send.label = .symbol("arrow.up")
-        send.fill = .accentColor
-        send.title = "发送"
         voice.action = { [weak self] in self?.toggleVoice() }
-        stop.action = { [weak self] in self?.controls?.stop() }
-        resume.action = { [weak self] in self?.controls?.resume() }
-        send.action = { [weak self] in self?.submit() }
+        primary.action = { [weak self] in
+            guard let self, enabled else { return }
+            controls?.performPrimaryAction(submit: submit)
+        }
         field.textChanged = { [weak self] text in
             guard let self, let thread = controls?.thread else { return }
             if thread.draft != text { thread.draft = text }
@@ -90,15 +77,20 @@ final class ControlsBarView: UIView {
         self.controls = controls
         self.enabled = enabled
         if self.environment?.colorScheme != environment.colorScheme || self.environment == nil {
-            for button in [attach, voice, stop, resume, send] { button.environment = environment }
+            for button in [attach, voice, primary] { button.environment = environment }
         }
         self.environment = environment
         fontChanged()
         let key = EffortKey(controls: controls, enabled: enabled, colorScheme: environment.colorScheme, typeSize: environment.dynamicTypeSize)
         if key != effortKey {
             effortKey = key
+            // 同 Mac 的输入区：刻度展开、收起时宽由 TimelineView 逐帧变，托管视图报的大小不跟着逐帧变，框停在收着的宽时
+            // 档位名被挤得换行、右边的刻度落在框外。按理想大小画、靠左，宽高由内容自己的几何报
             effort.rootView = AnyView(ThreadEffortControl(controls: controls)
                 .disabled(!enabled)
+                .fixedSize()
+                .onGeometryChange(for: CGSize.self) { $0.size } action: { [weak self] in self?.effortResized($0) }
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                 .environment(\.self, environment))
             effortSize = nil
         }
@@ -112,7 +104,7 @@ final class ControlsBarView: UIView {
         let body = environment.map { Theme.body.resolve(in: $0.fontResolutionContext).ctFont as UIFont }
             ?? UIFont.preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
         field.applyFont(body)
-        for button in [attach, voice, stop, resume, send] { button.setFont(body) }
+        for button in [attach, voice, primary] { button.setFont(body) }
         contentChanged()
     }
 
@@ -143,12 +135,10 @@ final class ControlsBarView: UIView {
         voice.foreground = listening ? .accentColor : .secondary
         voice.title = listening ? "结束语音输入" : "语音输入"
         voice.isEnabled = enabled
-        stop.isHidden = !controls.showsStop
-        stop.isEnabled = enabled && thread.canStop
-        resume.isHidden = !controls.showsResume
-        resume.isEnabled = enabled && thread.canResume
-        send.isHidden = !controls.showsSend
-        send.isEnabled = enabled && thread.canSend
+        primary.label = .symbol(controls.primaryAction.symbol)
+        primary.title = controls.primaryAction.title
+        primary.fill = controls.primaryActionFill
+        primary.isEnabled = enabled && controls.canPerformPrimaryAction
         let fading = controls.state.fading
         field.alpha = fading == nil ? 1 : 0
         if fading == nil { shownFading = nil }
@@ -204,7 +194,7 @@ final class ControlsBarView: UIView {
     // MARK: - 排版
 
     /// 版式常量：输入框左右 controlInset + 8、上下 6；输入框和按钮行之间 2；按钮行左右、底 controlButtonInset；
-    /// 顶 controlInset。附件、语音一组间距 0，和后面的停止、继续、发送间距 4；横排时思考强度和按钮组之间至少两个按钮间距。
+    /// 顶 controlInset。附件、语音一组间距 0，和后面的主按钮间距 4；横排时思考强度和按钮组之间至少两个按钮间距。
     private static let fieldInset = Metrics.controlInset + 8
     private static let fieldPadding: CGFloat = 6
     private static let rowSpacing: CGFloat = 2
@@ -213,7 +203,7 @@ final class ControlsBarView: UIView {
         var height: CGFloat
         var field: CGFloat
         var effort: CGSize
-        var stacked: Bool
+        var hidesActions: Bool
     }
 
     /// 玻璃的高。
@@ -230,10 +220,10 @@ final class ControlsBarView: UIView {
         if let fading = controls?.state.fading { fieldHeight = max(fieldHeight, fading.height) }
         let effortSize = currentEffortSize
         let rowWidth = width - 2 * Metrics.controlButtonInset
-        let stacked = effortSize.width + 2 * Metrics.paneButtonGap + buttonsWidth > rowWidth
-        let row = stacked ? effortSize.height + Self.rowSpacing + Metrics.paneButton : max(effortSize.height, Metrics.paneButton)
+        let hidesActions = effortSize.width + 2 * Metrics.paneButtonGap + buttonsWidth > rowWidth
+        let row = max(effortSize.height, Metrics.paneButton)
         let height = Metrics.controlInset + 2 * Self.fieldPadding + fieldHeight + Self.rowSpacing + row + Metrics.controlButtonInset
-        return Plan(height: height, field: fieldHeight, effort: effortSize, stacked: stacked)
+        return Plan(height: height, field: fieldHeight, effort: effortSize, hidesActions: hidesActions)
     }
 
     private var currentEffortSize: CGSize {
@@ -243,10 +233,15 @@ final class ControlsBarView: UIView {
         return size
     }
 
-    private var shownButtons: [PaneButtonView] { [stop, resume, send].filter { !$0.isHidden } }
+    /// 思考强度改了大小（刻度展开、收起时逐帧）：重摆，高变了再报。
+    private func effortResized(_ size: CGSize) {
+        guard size != effortSize else { return }
+        effortSize = size
+        contentChanged()
+    }
 
     private var buttonsWidth: CGFloat {
-        2 * Metrics.paneButton + shownButtons.reduce(0) { $0 + ThreadControlsModel.actionGap + $1.width }
+        3 * Metrics.paneButton + ThreadControlsModel.actionGap
     }
 
     override func layoutSubviews() {
@@ -263,20 +258,17 @@ final class ControlsBarView: UIView {
         var rowTop = top + plan.field + Self.fieldPadding + Self.rowSpacing
         let inset = Metrics.controlButtonInset
         let buttonsHeight = Metrics.paneButton
-        if plan.stacked {
-            place(effort.view, CGRect(x: inset, y: rowTop, width: plan.effort.width, height: plan.effort.height))
-            rowTop += plan.effort.height + Self.rowSpacing
-        } else {
-            let row = max(plan.effort.height, buttonsHeight)
-            place(effort.view, CGRect(x: inset, y: rowTop + (row - plan.effort.height) / 2, width: plan.effort.width, height: plan.effort.height))
-            rowTop += (row - buttonsHeight) / 2
+        let row = max(plan.effort.height, buttonsHeight)
+        place(effort.view, CGRect(x: inset, y: rowTop + (row - plan.effort.height) / 2, width: plan.effort.width, height: plan.effort.height))
+        rowTop += (row - buttonsHeight) / 2
+        // 复用本次排版的宽度比较，只在跨过阈值时改变可见性；控件保留，effort 的手势不中断。
+        for button in [attach, voice, primary] where button.isHidden != plan.hidesActions {
+            button.isHidden = plan.hidesActions
         }
-        var x = width - inset
-        for button in shownButtons.reversed() {
-            x -= button.width
-            place(button, CGRect(x: x, y: rowTop, width: button.width, height: buttonsHeight))
-            x -= ThreadControlsModel.actionGap
-        }
+        guard !plan.hidesActions else { return }
+        var x = width - inset - Metrics.paneButton
+        place(primary, CGRect(x: x, y: rowTop, width: Metrics.paneButton, height: buttonsHeight))
+        x -= ThreadControlsModel.actionGap
         for button in [voice, attach] {
             x -= Metrics.paneButton
             place(button, CGRect(x: x, y: rowTop, width: Metrics.paneButton, height: buttonsHeight))
@@ -322,12 +314,6 @@ final class ControlsBarView: UIView {
     }
 }
 
-/// 思考强度的托管视图，按自己的理想大小摆；刻度展开、收起时自己改宽，通知底栏重排。
-private final class EffortHost: UIHostingController<AnyView> {
-    var sizeChanged: (() -> Void)?
-
-    override var preferredContentSize: CGSize {
-        didSet { if preferredContentSize != oldValue { sizeChanged?() } }
-    }
-}
+/// 思考强度的托管视图，按里面报的理想大小摆。
+private typealias EffortHost = UIHostingController<AnyView>
 #endif

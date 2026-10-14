@@ -22,18 +22,30 @@ struct ModelAccountPane: View {
         let connection = model.accountWorker
         let account = connection?.modelAccounts?.accounts.first { $0.id == subscriptionID }
         let stale = account.map { connection?.showsStaleData($0) ?? true } ?? false
-        // 订阅窗口的档位是标题右边的标签，副行是账号邮箱，账号状态写在正文顶部；还没有身份时副行退回状态。
-        let subtitle = account.map { $0.identity ?? $0.statusTitle }
-        // API 窗口的副行说明密钥存放位置。
-        return PaneWindow(header: PaneHeader(title: title, subtitle: subscriptionID == nil ? "API Key 保存在资源库的凭据中" : subtitle,
-                                             badge: account?.planTitle), usesDots: subscriptionID != nil,
-                          notice: notice(connection, account: account)) {
+        // 状态不进正文：还没有数据时副行写现在是什么情况；订阅窗口的档位是标题右边的标签，副行是账号邮箱，
+        // 没登录或还没有身份时是账号状态；需要处理的状态和服务的说明在信息区（notice）。
+        let subtitle = pending(connection, subscriptionID: subscriptionID)
+            ?? (subscriptionID == nil ? "API Key 保存在资源库的凭据中"
+                : account.map { $0.status == "unconfigured" ? $0.statusTitle : $0.identity ?? $0.statusTitle })
+        // 订阅窗口：登录、重新登录；API 窗口：添加。
+        var actions: [[PaneHeaderAction]] = []
+        if let connection, let account {
+            let title = account.status == "ready" ? "重新登录" : "登录"
+            actions = [[PaneHeaderAction(title: title, systemImage: "person.crop.circle", disabled: !connection.connected) {
+                login = SubscriptionLoginRequest(account: account, connection: connection)
+            }]]
+        } else if subscriptionID == nil {
+            actions = [[PaneHeaderAction(title: "添加", systemImage: "plus",
+                                         help: model.account.signedIn ? "添加 API Key" : "登录 Kite 账号后添加 API Key",
+                                         disabled: !model.account.signedIn) { addingApiKey = true }]]
+        }
+        return PaneWindow(header: PaneHeader(title: title, subtitle: subtitle, badge: account?.planTitle), usesDots: subscriptionID != nil,
+                          notice: notice(connection, account: account),
+                          status: account.flatMap { $0.sharedQuotas.isEmpty ? nil : AnyView(AccountQuotaRing(quotas: $0.sharedQuotas, stale: stale)) },
+                          actions: PaneHeaderActions(groups: actions)) {
             let content = VStack(alignment: .leading, spacing: DotMetrics.module * 2) {
-                if let connection {
-                    accountContent(connection, subscriptionID: subscriptionID)
-                } else {
-                    Label("暂无已连接的工作机", systemImage: "desktopcomputer")
-                        .font(Theme.secondary).foregroundStyle(.secondary)
+                if let accounts = connection?.modelAccounts?.accounts {
+                    accountContent(accounts, connection: connection, subscriptionID: subscriptionID)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -49,88 +61,61 @@ struct ModelAccountPane: View {
             }
         } controls: { _ in
             EmptyView()
-        } headerStatus: {
-            if let account, !account.sharedQuotas.isEmpty {
-                AccountQuotaRing(quotas: account.sharedQuotas, stale: stale)
-            }
-        } headerActions: {
-            if let connection, let account {
-                let title = account.status == "ready" ? "重新登录" : "登录"
-                PaneHeaderButtonGroup {
-                    Button {
-                        login = SubscriptionLoginRequest(account: account, connection: connection)
-                    } label: {
-                        PaneHeaderButtonLabel(title, systemImage: "person.crop.circle")
-                    }
-                    .disabled(!connection.connected)
-                    .help(title)
-                }
-            } else if subscriptionID == nil {
-                PaneHeaderButtonGroup {
-                    Button { addingApiKey = true } label: {
-                        PaneHeaderButtonLabel("添加", systemImage: "plus")
-                    }
-                    .disabled(!model.account.signedIn)
-                    .help(model.account.signedIn ? "添加 API Key" : "登录 Kite 账号后添加 API Key")
-                }
-            }
         }
     }
 
     @ViewBuilder
-    private func accountContent(_ connection: WorkerConnection, subscriptionID: String?) -> some View {
-        if let snapshot = connection.modelAccounts {
-            let accounts = snapshot.accounts.filter {
-                if let subscriptionID { $0.id == subscriptionID }
-                else { $0.kind == "api" }
+    private func accountContent(_ accounts: [ModelAccount], connection: WorkerConnection?, subscriptionID: String?) -> some View {
+        let accounts = accounts.filter {
+            if let subscriptionID { $0.id == subscriptionID }
+            else { $0.kind == "api" }
+        }
+        ForEach(accounts) { account in
+            let stale = connection?.showsStaleData(account) ?? true
+            if subscriptionID == nil {
+                if account.id != accounts.first?.id { Divider() }
+                ApiAccountRow(account: account, stale: stale)
+            } else {
+                ModelAccountRow(account: account, stale: stale)
             }
-            if accounts.isEmpty {
-                if subscriptionID == nil {
-                    Text("还没有 API 账号，点「添加」保存 API Key 后即可查询额度与余额")
-                        .font(Theme.secondary).foregroundStyle(.secondary)
-                } else {
-                    pendingNotice(connection)
-                }
-            }
-            ForEach(accounts) { account in
-                let stale = connection.showsStaleData(account)
-                if subscriptionID == nil {
-                    if account.id != accounts.first?.id { Divider() }
-                    ApiAccountRow(account: account, stale: stale)
-                } else {
-                    ModelAccountRow(account: account, stale: stale)
-                }
-            }
-        } else if connection.readingModelAccounts {
-            HStack(spacing: DotMetrics.module) {
-                ProgressView().controlSize(.small)
-                Text("正在读取账号与额度…").font(Theme.secondary).foregroundStyle(.secondary)
-            }
-        } else {
-            pendingNotice(connection)
         }
     }
 
-    /// 窗口自己的提示：这次更新失败，或工作机沿用了上次的数据。工作机离线由窗口外层的连接提示表达。
+    /// 还没有可显示的账号数据时副行写的情况；有数据时是 nil。额度只在点刷新或会话带回时更新，打开页面不查询。
+    private func pending(_ connection: WorkerConnection?, subscriptionID: String?) -> String? {
+        guard let connection else { return "暂无已连接的工作机" }
+        guard let snapshot = connection.modelAccounts else {
+            if connection.readingModelAccounts { return "正在读取账号与额度…" }
+            return connection.connected ? "以该账号运行 agent 以更新数据" : "连接工作机后可查看账号与额度"
+        }
+        if let subscriptionID {
+            return snapshot.accounts.contains { $0.id == subscriptionID } ? nil : "以该账号运行 agent 以更新数据"
+        }
+        return snapshot.accounts.contains { $0.kind == "api" } ? nil : "还没有 API 账号，添加 API Key 后可查询额度与余额"
+    }
+
+    /// 窗口自己的提示，同时只有一项：账号要重新授权，这次更新失败，工作机沿用了上次的数据，账号暂不可查询，服务对额度的说明。
+    /// 工作机离线由窗口外层的连接提示表达。
     private func notice(_ connection: WorkerConnection?, account: ModelAccount?) -> PaneNotice? {
         guard let connection else { return nil }
+        let detail = account?.message.map { "：\($0)" } ?? ""
+        if let account, account.status == "reauthentication" { return .failure(account.statusTitle + detail) }
         if let error = connection.modelAccountsError {
             return .failure(connection.modelAccounts == nil ? "本次更新失败：\(error)" : "本次更新失败，显示的是上次数据：\(error)")
         }
-        if account?.showsPreviousData == true {
-            return PaneNotice(text: "暂时查询不到，显示的是上次数据", symbol: "clock.arrow.circlepath", tint: .secondary)
+        guard let account else { return nil }
+        if account.showsPreviousData {
+            return PaneNotice(text: "暂时查询不到，显示的是上次数据" + detail, symbol: "clock.arrow.circlepath", tint: .secondary)
+        }
+        if account.status == "unavailable" { return .failure(account.statusTitle + detail) }
+        if account.status == "ready", let message = account.message {
+            return PaneNotice(text: message, symbol: "info.circle", tint: .secondary)
         }
         return nil
     }
-
-    /// 额度只在点刷新或会话带回时更新，打开页面不查询。
-    private func pendingNotice(_ connection: WorkerConnection) -> some View {
-        Text(connection.connected ? "尚未取得账号数据，代理运行后自动更新，也可在侧栏的账号行刷新" : "连接工作机后可查看账号与额度")
-            .font(Theme.secondary).foregroundStyle(.secondary)
-    }
 }
 
-/// 订阅账号：额度在标题前的圆环里，正文是状态提示、一组数字、用量统计图与按模型的周期。
+/// 订阅账号：额度在标题前的圆环里，正文是一组数字、用量统计图与按模型的周期；账号状态在标题栏，见 ModelAccountPane。
 private struct ModelAccountRow: View {
     let account: ModelAccount
     let stale: Bool
@@ -147,7 +132,6 @@ private struct ModelAccountRow: View {
         TimelineView(.everyMinute) { context in
             let now = context.date.timeIntervalSince1970
             VStack(alignment: .leading, spacing: DotMetrics.module * 2) {
-                notice
                 if account.usage != nil || !account.sharedQuotas.isEmpty || account.credits != nil || account.extraUsage != nil {
                     // 栈先给其他部分留够最小高度，剩下的交给数字挑排法。
                     figureBlock(now: now).layoutPriority(1)
@@ -186,31 +170,6 @@ private struct ModelAccountRow: View {
             .hintsScrollOverflow(.horizontal, carets: .atEnd)
             // 横向滚动区在竖直方向也会占满给它的高度，限定为内容高度，剩下的空间留给柱状图。
             .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    /// 订阅窗口的标题副行只放身份和档位；未登录、需要重新授权、暂不可查询这些账号状态写在额度上方，
-    /// 沿用旧数据由窗口信息区提示。
-    @ViewBuilder
-    private var notice: some View {
-        let unconfigured = account.status == "unconfigured"
-        let warns = account.status == "reauthentication" || account.status == "unavailable"
-        let detail = unconfigured ? "这台工作机尚未登录此订阅账号。" : account.message
-        if unconfigured || warns {
-            HStack(alignment: .firstTextBaseline, spacing: DotMetrics.module / 2) {
-                Image(systemName: unconfigured ? "person.crop.circle.badge.questionmark" : "exclamationmark.triangle.fill")
-                    .foregroundStyle(warns ? Theme.warning : .secondary)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(account.statusTitle).font(Theme.secondary.weight(.medium))
-                    if let detail {
-                        Text(detail).font(Theme.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        } else if let message = account.message {
-            Text(message).font(Theme.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

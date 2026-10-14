@@ -29,8 +29,8 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
     private let subtitleLabel = UILabel()
     private let refresh = TitleIconButton()
     /// 左右两侧：飞行中各自平移，标题右边截掉的遮罩挂在左侧。
-    private let leading = UIView()
-    private let trailing = UIView()
+    private let leading = PassThroughView()
+    private let trailing = PassThroughView()
     private let titleClip = CAShapeLayer()
 
     private var content: Content?
@@ -231,8 +231,8 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
         // 信息区
         let status = statusIsland.idealSize
         place(statusIsland, CGRect(x: Metrics.paneMargin, y: center - status.height / 2, width: status.width, height: status.height))
-        // 标题前统一留一个按钮间距；单独显示的圆环按方框计算，扣掉方框里已有的空白。紧凑触屏下圆环本身就是侧栏入口，不另放侧栏按钮
-        let sidebarButton = content?.openSidebar != nil && !environment.workspacePresentation.isCompactTouch
+        // 标题前统一留一个按钮间距；单独显示的圆环按方框计算，扣掉方框里已有的空白。紧凑布局下圆环本身就是侧栏入口，不另放侧栏按钮
+        let sidebarButton = content?.openSidebar != nil && environment.workspacePresentation != .compact
         let titleX = statusIsland.frame.maxX + (status.width == 0 || sidebarButton ? Metrics.paneButtonGap : Metrics.paneButtonGap - Metrics.statusRingMargin)
         let available = max(trailingEdge - titleX, 0)
         if !titleIsland.isHidden {
@@ -272,9 +272,8 @@ final class PhoneHeaderBar: UIView, WindowHeaderFollower {
 
     /// 标题栏整条都接点按（同 PaneHeaderPlacement 的 contentShape）：空白处点了收起键盘，不落到后面的对话上。
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard bounds.contains(point) else { return nil }
-        let hit = super.hitTest(point, with: event)
-        return hit === leading || hit === trailing || hit == nil ? self : hit
+        // 未聚焦窗口的标题栏仍留在同一层里，不能把 UIKit 因隐藏或停用返回的 nil 接成自己。
+        super.hitTest(point, with: event)
     }
 
     @objc private func tap(_ recognizer: UITapGestureRecognizer) {
@@ -472,7 +471,7 @@ struct PhoneHeaderStatusRoot<Status: View>: View {
     @State private var showsStatusText = false
 
     var body: some View {
-        let statusOpensSidebar = presentation.isCompactTouch
+        let statusOpensSidebar = presentation == .compact
         Group(subviews: status.environment(\.paneHeaderStatusGrouped, openSidebar != nil && !statusOpensSidebar)) { statusViews in
             HStack(spacing: 0) {
                 PaneHeaderStatus(statusViews: statusViews, openSidebar: openSidebar, statusOpensSidebar: statusOpensSidebar,

@@ -2,6 +2,15 @@
 import SwiftUI
 import UIKit
 
+struct PhoneThreadMenuGlass: ViewModifier {
+    @Environment(\.compactSharedGlass) private var shared
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if shared { content.glassEffect(.regular.interactive(), in: .capsule) }
+        else { content }
+    }
+}
+
 /// 模型与更多入口共用一个原生菜单控件和标题栏玻璃，按点在哪一侧决定弹出哪份菜单。
 struct PhoneThreadHeaderMenus: UIViewRepresentable {
     let modelTitle: String
@@ -9,11 +18,12 @@ struct PhoneThreadHeaderMenus: UIViewRepresentable {
     let modelEnabled: Bool
     let models: ThreadModelMenu
     let commands: [[ThreadHeaderCommand]]
+    @Environment(\.compactSharedGlass) private var sharedGlass
     @ScaledMetric(relativeTo: .body) private var controlHeight = Metrics.paneHeaderButton
 
     func makeUIView(context: Context) -> PhoneThreadMenuButton { PhoneThreadMenuButton() }
     func updateUIView(_ button: PhoneThreadMenuButton, context: Context) {
-        button.update(self)
+        button.update(self, sharedGlass: sharedGlass)
     }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: PhoneThreadMenuButton, context: Context) -> CGSize? {
         CGSize(width: uiView.intrinsicContentSize.width, height: controlHeight)
@@ -25,12 +35,29 @@ final class PhoneThreadMenuButton: UIButton {
     private var content: PhoneThreadHeaderMenus?
     private var activeMenu: MenuKind = .model
     private var accessibilityMenu: MenuKind?
+    private var sharedGlass = false
     private lazy var modelElement = PhoneMenuAccessibilityElement(accessibilityContainer: self)
     private lazy var moreElement = PhoneMenuAccessibilityElement(accessibilityContainer: self)
 
     init() {
         super.init(frame: .zero)
-        var appearance = UIButton.Configuration.glass()
+        configuration = Self.appearance(sharedGlass: false)
+        titleLabel?.numberOfLines = 1
+        showsMenuAsPrimaryAction = true
+        isAccessibilityElement = false
+        modelElement.accessibilityLabel = "模型"
+        moreElement.accessibilityLabel = "更多操作"
+        moreElement.accessibilityTraits = .button
+        modelElement.activate = { [weak self] in self?.openAccessibleMenu(.model) ?? false }
+        moreElement.activate = { [weak self] in self?.openAccessibleMenu(.more) ?? false }
+        accessibilityElements = [modelElement, moreElement]
+        menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] complete in
+            complete(self?.menuElements() ?? [])
+        }])
+    }
+
+    private static func appearance(sharedGlass: Bool) -> UIButton.Configuration {
+        var appearance = sharedGlass ? UIButton.Configuration.plain() : UIButton.Configuration.glass()
         appearance.cornerStyle = .capsule
         appearance.buttonSize = .large
         appearance.baseForegroundColor = .label
@@ -46,22 +73,15 @@ final class PhoneThreadMenuButton: UIButton {
         }
         // 内容与玻璃都由 UIButton 自己生成，沿用系统默认的菜单转场来源。
         appearance.titleLineBreakMode = .byClipping
-        configuration = appearance
-        titleLabel?.numberOfLines = 1
-        showsMenuAsPrimaryAction = true
-        isAccessibilityElement = false
-        modelElement.accessibilityLabel = "模型"
-        moreElement.accessibilityLabel = "更多操作"
-        moreElement.accessibilityTraits = .button
-        modelElement.activate = { [weak self] in self?.openAccessibleMenu(.model) ?? false }
-        moreElement.activate = { [weak self] in self?.openAccessibleMenu(.more) ?? false }
-        accessibilityElements = [modelElement, moreElement]
-        menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] complete in
-            complete(self?.menuElements() ?? [])
-        }])
+        return appearance
     }
 
-    func update(_ next: PhoneThreadHeaderMenus) {
+    func update(_ next: PhoneThreadHeaderMenus, sharedGlass: Bool) {
+        if self.sharedGlass != sharedGlass {
+            self.sharedGlass = sharedGlass
+            // 保留菜单的配置和命中分区，只把玻璃交回共享容器。
+            configuration = Self.appearance(sharedGlass: sharedGlass)
+        }
         content = next
         if configuration?.title != next.modelTitle { configuration?.title = next.modelTitle }
         modelElement.accessibilityValue = next.modelName ?? next.modelTitle

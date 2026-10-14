@@ -17,7 +17,8 @@ struct ThreadPane: View {
             pane.send(message, thread: thread, model: model, area: area, alongside: alongside)
         }
         return PaneWindow(header: pane.header(thread: thread, model: model, area: area, initial: initial), usesDots: true,
-                          notice: thread.problem.map(PaneNotice.failure)) {
+                          notice: thread.problem.map(PaneNotice.failure), status: AnyView(ThreadStatusRing()),
+                          actions: PaneHeaderActions(menus: AnyView(ThreadHeaderActions()))) {
             if initial {
                 NewThreadStage(slot: pane.patternSlot, roleError: Bindable(pane).roleError)
             } else if !empty {
@@ -27,10 +28,6 @@ struct ThreadPane: View {
             ThreadControls(typing: typing, send: send, voiceOwner: pane.patternSlot)
                 .disabled(area.creatingWindow != nil || thread.configuringTemplate)
                 .frame(maxWidth: Metrics.transcriptWidth)
-        } headerStatus: {
-            ThreadStatusRing()
-        } headerActions: {
-            ThreadHeaderActions()
         }
         // 指针移到标题栏、输入区上时图案照样跟着
         .modifier(ThreadPatternPointer(slot: pane.patternSlot))
