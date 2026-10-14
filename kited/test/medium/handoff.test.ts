@@ -8,7 +8,7 @@ import type { ContextItem, ModelItem } from '../../src/harness/types.ts';
 import type { History } from '../../src/transcript/protocol.ts';
 import { after, api, type Kited, mark, openAgent, registerCheckout, startKited } from '../harness.ts';
 import { item, ManualModel } from '../harness-loop.ts';
-import { newRepo } from '../util.ts';
+import { newRepo, transcript } from '../util.ts';
 
 setDefaultTimeout(3_000);
 let kited: Kited | undefined;
@@ -27,12 +27,16 @@ const inputIds = (history: ContextItem[]) => history.flatMap((entry) => entry.ty
 // 能力目录查询只做 SDK 初始化，不发模型请求。
 // 配合：HTTP 配置、两份原生记录的增量交接、harness journal 重放与压缩、压缩后整体重组 Claude 会话、
 // 显示投影拼接（去掉重组条目、按导入标记排序）与输入 id 去重，单看各部分都确认不了。
+// 回归：CLI 因前缀失配写出的 thinking_stripped 曾使导入报错；收据后的重组不能复活已删除的签名块。
 test('来回切换后端时双方都按顺序看到对方各段一次，harness 压缩后切到 Claude 只接续压缩后的上下文，配置边界跟随后端而模型目录不变，显示不重复且旧输入 id 不再投递', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
   const k = kited;
   const workspace = await registerCheckout(k, newRepo(k.root, 'project', { 'base.txt': '基线文件正文\n' }));
   const id = await openAgent(k.call, workspace.workspace.id);
+  const nativeId = (await k.call('GET', `/threads/${id}`)).body.nativeId as string;
+  const firstThinking = { type: 'thinking' as const, thinking: '先读取基线，再检查交接。', signature: 'handoff-first-thinking' };
+  const laterThinking = { type: 'thinking' as const, thinking: '继续核对已经追加的上下文。', signature: 'handoff-later-thinking' };
   const configPath = `/instances/${id}/agent-config`;
   const capabilitiesPath = `/instances/${id}/agent-capabilities`;
   const initial = await k.call('GET', configPath);
@@ -75,6 +79,7 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
   expect(claudeCapabilities.body).toEqual({ ...harnessCapabilities.body, configurationBoundary: 'idle', toolCatalogBoundary: 'idle' });
   expect(api.log).toHaveLength(beforeClaude);
   since = mark(k);
+  api.thinkingNext([firstThinking], (entry) => entry.lastUserText.includes('第二段交给 Claude'));
   expect((await k.call('POST', `/threads/${id}/messages`, { id: 'claude-1', text: '第二段交给 Claude\nREAD {"path":"base.txt"}' })).status).toBe(200);
   const claudeFirst = await api.waitRequest((l) => l.main && l.lastUserText.includes('第二段交给 Claude'));
   const sent = JSON.stringify(claudeFirst.body.messages);
@@ -120,9 +125,13 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
   // 第四段：再切回 Claude，只多看到第三段；之前的内容各一次。
   await switchTo(claudeAgent);
   since = mark(k);
+  api.rejectThinking(firstThinking.signature);
+  api.thinkingNext([laterThinking], (entry) => entry.lastUserText.includes('第四段再交给 Claude'));
   expect((await k.call('POST', `/threads/${id}/messages`, { id: 'claude-2', text: '第四段再交给 Claude' })).status).toBe(200);
   const claudeAgain = await api.waitRequest((l) => l.main && l.lastUserText.includes('第四段再交给 Claude'));
   const resent = JSON.stringify(claudeAgain.body.messages);
+  expect(resent).toContain(firstThinking.signature);
+  expect(claudeAgain.thinkingRejected).toBe(firstThinking.signature);
   for (const text of ['第一段由自研后端读取基线', '自研后端读完了基线', '第二段交给 Claude', '第三段回到自研后端', '自研后端第三段的回复']) {
     expect(count(resent, text)).toBe(1);
   }
@@ -137,6 +146,11 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
   expect(resent.indexOf('第二段交给 Claude')).toBeLessThan(resent.indexOf('第三段回到自研后端'));
   expect(resent.indexOf('自研后端第三段的回复')).toBeLessThan(resent.indexOf('第四段再交给 Claude'));
   await idle(since);
+  const retry = api.log.filter((entry) => entry.main && entry.lastUserText.includes('第四段再交给 Claude'));
+  expect(retry).toHaveLength(2);
+  expect(JSON.stringify(retry[1]!.body.messages)).not.toContain(firstThinking.signature);
+  expect(transcript(nativeId).some((entry) => entry.attachment?.type === 'thinking_stripped'
+    && entry.attachment.scope === 'partial')).toBe(true);
 
   // 第五段：回到 harness 跑一轮，再把第三段压缩成摘要。压缩发生在上次交接之后，下次切到 Claude 要整体重组会话。
   await switchTo(harnessAgent);
@@ -163,6 +177,8 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
   expect((await k.call('POST', `/threads/${id}/messages`, { id: 'claude-3', text: '第六段在压缩后交给 Claude' })).status).toBe(200);
   const rebased = await api.waitRequest((l) => l.main && l.lastUserText.includes('第六段在压缩后交给 Claude'));
   const context = JSON.stringify(rebased.body.messages);
+  expect(context).not.toContain(firstThinking.signature);
+  expect(context).not.toContain(laterThinking.signature);
   for (const text of ['第一段由自研后端读取基线', '自研后端读完了基线', '第二段交给 Claude', '第三段的压缩摘要正文',
     '第五段回到自研后端', '自研后端第五段的回复', '第六段在压缩后交给 Claude']) {
     expect(count(context, text)).toBe(1);
@@ -181,6 +197,7 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
 
   // 显示不受重组影响：两份原生记录的各段都在、按顺序、不重复，重组合成的条目和 Claude 的分界不出现。
   const final = await history();
+  expect(final.records.some(({ block }) => block.type === 'thinking' && block.text === firstThinking.thinking)).toBe(true);
   expect(final.state.capabilities.switchRuntime).toBe(true);
   const shown = final.records.flatMap(({ block }) => block.type === 'human' ? [`human:${block.id}`]
     : block.type === 'tool_use' ? [`tool_use:${block.id}`]

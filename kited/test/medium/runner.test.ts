@@ -12,9 +12,11 @@ setDefaultTimeout(3_000);
 
 // 先关 Runner 再删临时目录：afterEach 按登记的先后执行
 const runners: Runner[] = [];
+const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   api.releaseAll();
   for (const r of runners.splice(0)) await r.shutdown();
+  for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 const temp = useTemp();
 
@@ -25,7 +27,7 @@ type Rec =
   | { kind: 'state'; state: RunnerState };
 
 /** 起一个 Runner，记录回合与状态事件。 */
-function startRunner() {
+function startRunner(message: RunnerEvents['message'] = () => {}) {
   const log: Rec[] = [];
   const waiters: Array<{ pred: (r: Rec) => boolean; resolve: () => void }> = [];
   const push = (r: Rec) => {
@@ -33,7 +35,7 @@ function startRunner() {
     for (const w of [...waiters]) if (w.pred(r)) { waiters.splice(waiters.indexOf(w), 1); w.resolve(); }
   };
   const on: RunnerEvents = {
-    message() {},
+    message,
     async toolBatch() {},
     turnStart: () => push({ kind: 'turnStart' }),
     turnEnd: async () => push({ kind: 'turnEnd' }),
@@ -58,9 +60,59 @@ function startRunner() {
 const tag = (name: string) => `${name}-${randomUUID().slice(0, 8)}`;
 const closed = (r: Rec) => r.kind === 'state' && r.state === 'closed';
 
-/* 回归一个 bug：回合开始前（进程刚从 closed 启动、正在 resume）的打断曾被忽略，回合照常跑完。 */
-test('Claude 支持生成中打断，续接前打断的消息不进入模型历史', async () => {
-  const { runner, wait, mark } = startRunner();
+/* 回归一个 bug：回合开始前（进程刚从 closed 启动、正在 resume）的打断曾被忽略，回合照常跑完。
+ * 上游 CLI 的请求合并与 beta 路由、SDK 的流式块转换须实际运行：短 thinking 更新及签名应保留。
+ */
+test('Claude 发送短思考更新配置并保留签名，支持生成中打断，续接前打断的消息不进入模型历史', async () => {
+  const finalPrompt = `收尾 ${tag('收尾')}`;
+  const thinking = { type: 'thinking', thinking: '先核对并发调用的交接，再检查返回结果。', signature: 'test-thinking-signature' };
+  const sent: Array<{ thinking: unknown; beta: string | null }> = [];
+  const received: unknown[] = [];
+  const finalRequest = Promise.withResolvers<void>();
+  let finalRequestAt = 0;
+  const endpoint = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const url = new URL(req.url);
+      const text = await req.text();
+      if (url.pathname.endsWith('/v1/messages')) {
+        const body = JSON.parse(text);
+        const lastUser = body.messages.findLast((message: { role: string }) => message.role === 'user');
+        if (body.stream && JSON.stringify(lastUser).includes(finalPrompt)) {
+          sent.push({ thinking: body.thinking, beta: req.headers.get('anthropic-beta') });
+          finalRequestAt = mark();
+          finalRequest.resolve();
+          const events = [
+            { type: 'message_start', message: { id: 'msg_thinking_update', type: 'message', role: 'assistant',
+              model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } },
+            { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } },
+            { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: thinking.thinking } },
+            { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: thinking.signature } },
+            { type: 'content_block_stop', index: 0 },
+            { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+            { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '检查完成。' } },
+            { type: 'content_block_stop', index: 1 },
+            { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 5 } },
+            { type: 'message_stop' },
+          ];
+          return new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''),
+            { headers: { 'content-type': 'text/event-stream' } });
+        }
+      }
+      return fetch(new URL(url.pathname + url.search, api.url), {
+        method: req.method, headers: req.headers, body: text || undefined, signal: req.signal,
+      });
+    },
+  });
+  const originalApi = process.env.ANTHROPIC_BASE_URL;
+  process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${endpoint.port}`;
+  cleanups.push(async () => {
+    process.env.ANTHROPIC_BASE_URL = originalApi;
+    await endpoint.stop(true);
+  });
+  const { runner, wait, mark } = startRunner((message) => {
+    if (message.type === 'assistant') received.push(...message.message.content.filter((block) => block.type === 'thinking'));
+  });
 
   // 回合进行中：请求挂在假端点上，不打断就永远不结束
   const a = tag('生成中打断');
@@ -72,9 +124,13 @@ test('Claude 支持生成中打断，续接前打断的消息不进入模型历�
   api.release(a);
 
   // 正常跑完一回合，runner 关闭
-  const m = mark();
-  runner.send({ text: `收尾 ${tag('收尾')}`, human: true });
-  await wait(closed, m);
+  runner.send({ text: finalPrompt, human: true });
+  await finalRequest.promise;
+  await wait(closed, finalRequestAt);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]!.thinking).toEqual({ type: 'adaptive', display: 'updates' });
+  expect(sent[0]!.beta?.split(',').map((value) => value.trim())).toContain('thinking-display-updates-2026-08-18');
+  expect(received).toEqual([thinking]);
 
   // runner 从 closed 刚启动、回合还没开始就打断
   const b = tag('续接前打断');

@@ -10,6 +10,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { engineAttachmentTypes } from '../claude/context-filter/hooks/register.ts';
 import { acquireClaudeLock } from '../claude/host.ts';
 import { readClaudeControl, saveClaudeControl, type ClaudeControl } from '../claude/control.ts';
@@ -24,7 +25,40 @@ import { appendClaudeEntries, readClaudeEntries, type ClaudeEntry } from './clau
 
 const object = (value: unknown): Record<string, any> => value && typeof value === 'object' ? value as Record<string, any> : {};
 // 另有只写进记录、不发给模型的标记附件。
-const skippedAttachments = new Set<string>([...engineAttachmentTypes, 'batching_reminder_sent']);
+const skippedAttachments = new Set<string>([...engineAttachmentTypes, 'batching_reminder_sent', 'thinking_stripped']);
+const isThinking = (block: Record<string, unknown>) => block.type === 'thinking' || block.type === 'redacted_thinking';
+
+/**
+ * 当前原生上下文里仍有效的块。CLI 2.1.280 的删除收据按 message.id 下的 thinking 序号定位（不计正文），
+ * 删除目标及其后的块；目标找不到时删除此前全部 thinking。先落实收据，再换 ID，避免重组或撤销时复活旧块。
+ */
+function activeClaudeThinking(entries: readonly ClaudeEntry[]): Set<string> {
+  const kept = new Set<string>();
+  const blocks: Array<{ messageId: string; index: number; key: string }> = [];
+  const counts = new Map<string, number>();
+  for (const entry of entries) {
+    if (entry.isSidechain) continue;
+    if (entry.type === 'system' && entry.subtype === 'compact_boundary') {
+      kept.clear(); blocks.length = 0; counts.clear();
+    } else if (entry.type === 'assistant') {
+      const message = object(entry.message);
+      for (const block of Array.isArray(message.content) ? message.content.map(object) : []) {
+        if (!isThinking(block)) continue;
+        const index = counts.get(message.id) ?? 0;
+        const key = JSON.stringify(block);
+        blocks.push({ messageId: message.id, index, key });
+        counts.set(message.id, index + 1);
+        kept.add(key);
+      }
+    } else if (entry.type === 'attachment' && object(entry.attachment).type === 'thinking_stripped') {
+      const attachment = object(entry.attachment), from = object(attachment.from);
+      const start = attachment.scope === 'partial'
+        ? blocks.findIndex((block) => block.messageId === from.messageId && block.index === from.thinkingIndex) : 0;
+      for (const block of blocks.slice(Math.max(0, start))) kept.delete(block.key);
+    }
+  }
+  return kept;
+}
 
 /** 调用方须已停止并关闭来源后端，且持有线程的控制队列。 */
 export async function handOff(options: { home: string; thread: ThreadContext; to: RuntimeKind; model: string }): Promise<void> {
@@ -169,9 +203,17 @@ function claudeBlocks(item: ModelItem, calls: Map<string, { id: string; name: st
  * 并把 last-prompt 指向新叶子。CLI 加载时丢弃分界之前的条目，原条目留在文件里供显示（见 readClaudeMessages）。
  * 2026-10-09 在 CLI 2.1.280 上验证，见 spikes/compaction：分界的 type、subtype 须排在行首附近，CLI 只在每行开头一段里识别；
  * 合成的助手消息须用新的 message.id，同 id 的条目会被合并，分界之前的原条目也会并进来；不更新 last-prompt 时新输入接到旧叶子上。
- * 来自 Claude 的段拷贝原生条目（只换 uuid、message.id 与时间），请求与原来逐字节一致，前缀缓存不受影响；其余部分按中立历史合成。
+ * 来自 Claude 的段拷贝原生条目（换 uuid、message.id 与时间）；thinking 只保留在未改动的共同前缀中，且须仍在当前原生上下文里。
+ * 删除收据先落实到块，不把引用旧 message.id 的收据复制到新链；原始条目仍留在文件里供显示。
  */
-function rebaseToClaude(records: readonly JournalRecord[], options: ClaudeTarget & { importId: string; through: string }) {
+function rebaseToClaude(records: readonly JournalRecord[], options: ClaudeTarget & { importId: string; through: string; after: number }) {
+  const units = replayUnits(records);
+  // 移除尚未交给 Claude 的压缩/撤销，得到重组前的上下文；后面新产生的普通段仍在，才能比较完整共同前缀。
+  const before = replayUnits(records.filter((row) => row.seq <= options.after
+    || (row.type !== 'context.compacted' && row.type !== 'context.compaction.reverted')));
+  const thinking = activeClaudeThinking(options.native ?? []);
+  let unchanged = true;
+  const keep = (block: Record<string, unknown>) => !isThinking(block) || (unchanged && thinking.has(JSON.stringify(block)));
   const marks = { kite: { import: options.importId, through: options.through }, kiteRebase: options.importId };
   const entries: ClaudeEntry[] = [];
   let at = Math.max(Date.now(), ...records.map((row) => row.at));
@@ -228,13 +270,16 @@ function rebaseToClaude(records: readonly JournalRecord[], options: ClaudeTarget
     const uuids = new Map<string, string>();
     const messageIds = new Map<string, string>();
     for (const row of rows) {
+      if (row.type === 'attachment' && object(row.attachment).type === 'thinking_stripped') continue;
       const uuid = randomUUID();
       const message = object(row.message);
+      const content = row.type === 'assistant' && Array.isArray(message.content) ? message.content.filter((block: unknown) => keep(object(block))) : undefined;
+      if (content?.length === 0) continue;
       const owner = typeof row.sourceToolAssistantUUID === 'string' ? uuids.get(row.sourceToolAssistantUUID) : undefined;
       if (row.type === 'assistant' && typeof message.id === 'string' && !messageIds.has(message.id)) messageIds.set(message.id, `msg_kite_${randomUUID()}`);
       entries.push({ ...row, uuid, parentUuid: (typeof row.parentUuid === 'string' && uuids.get(row.parentUuid)) || parent,
         timestamp: new Date(++at).toISOString(), ...marks,
-        ...(row.type === 'assistant' && typeof message.id === 'string' ? { message: { ...message, id: messageIds.get(message.id) } } : {}),
+        ...(row.type === 'assistant' && typeof message.id === 'string' ? { message: { ...message, id: messageIds.get(message.id), ...(content ? { content } : {}) } } : {}),
         ...(owner ? { sourceToolAssistantUUID: owner } : {}) });
       uuids.set(row.uuid!, uuid);
       parent = uuid;
@@ -243,7 +288,8 @@ function rebaseToClaude(records: readonly JournalRecord[], options: ClaudeTarget
     const last = object(rows.at(-1)?.message);
     afterResult = rows.at(-1)?.type === 'user' && Array.isArray(last.content) && last.content.some((block: unknown) => object(block).type === 'tool_result');
   };
-  for (const unit of replayUnits(records)) {
+  for (const [index, unit] of units.entries()) {
+    unchanged &&= isDeepStrictEqual(unit, before[index]);
     for (const item of unit.items) if (item.type === 'input') inputIds.push(item.input.id);
     const span = unit.imported && spans.get(unit.imported.id);
     if (span?.length) { copy(span); continue; }
@@ -251,7 +297,7 @@ function rebaseToClaude(records: readonly JournalRecord[], options: ClaudeTarget
       case 'output':
         release();
         assistant ??= { id: `msg_kite_${randomUUID()}`, blocks: [] };
-        assistant.blocks.push(...claudeBlocks(item.item, calls));
+        assistant.blocks.push(...claudeBlocks(item.item, calls).filter(keep));
         afterResult = false;
         break;
       case 'tool_result': {
@@ -319,7 +365,7 @@ export function harnessToClaude(records: readonly JournalRecord[], after: number
       instructions = contexts.get(row.contextId);
     }
   }
-  if (reshaped) return { ...rebaseToClaude(records, { ...options, importId, through }), through, notificationCursor, instructions };
+  if (reshaped) return { ...rebaseToClaude(records, { ...options, importId, through, after }), through, notificationCursor, instructions };
   const entries: ClaudeEntry[] = [];
   const inputIds: string[] = [];
   let parent = options.parent;

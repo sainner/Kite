@@ -31,6 +31,10 @@ const count = (haystack: string, needle: string) => haystack.split(needle).lengt
 const json = (value: unknown) => JSON.stringify(value);
 /** CLI 合并相邻的用户消息时把字符串正文改成文本块；比较正文时按块比较。 */
 const blocks = (content: unknown) => typeof content === 'string' ? [{ type: 'text', text: content }] : content as unknown[];
+const withoutThinking = (messages: Array<{ role: string; content: unknown }>) => messages.map((message) => ({ ...message,
+  content: typeof message.content === 'string' ? message.content
+    : (message.content as Array<{ type: string }>).filter((block) => block.type !== 'thinking' && block.type !== 'redacted_thinking'),
+}));
 /** 这个原生会话的 Claude Code 进程。依赖 SDK 起 CLI 时把原生会话 id 放在命令行参数里（新建 --session-id，续接 --resume）。 */
 const sessionProcesses = (nativeId: string) => Bun.spawnSync(['pgrep', '-f', nativeId], { env: ENV(), stdout: 'pipe' })
   .stdout.toString().split('\n').filter(Boolean).map(Number);
@@ -43,8 +47,9 @@ const sessionProcesses = (nativeId: string) => Bun.spawnSync(['pgrep', '-f', nat
  * （关闭原生压缩时不发请求，直接报 Prompt is too long），所以自动压缩要按它算阈值，分叉才发得出摘要请求。
  * 配合：常驻进程退出与重启、Claude 内容导入 journal、journal 上的压缩与撤销、会话重组、显示投影，
  * 以及控制查询先完成、再保存窗口并推送、最后决定自动压缩的时序，单看各部分都确认不了。
+ * 签名块绑定生成时的前缀：中段压缩后只能继续发送未改动开头的 thinking，撤销也不能复活已经失效的块。
  */
-test('Claude 线程压缩中间两轮：摘要在不落盘的分叉上按主会话的上下文生成，期间消息排队，之后范围换成摘要、前后各轮逐字节不变，显示能折叠；撤销后恢复原历史；每回合等待动态窗口查询，同模型失败保留窗口，用量达新窗口的 85% 后自动压缩全部历史', async () => {
+test('Claude 中段压缩保留前缀思考与后段正文工具，撤销恢复正文且不复活失效思考；摘要在不落盘的分叉生成，期间输入排队；每回合等待动态窗口查询，同模型失败保留窗口，用量达新窗口的 85% 后自动压缩', async () => {
   k = startKited();
   const kk = k;
   const query = spyOn(Runner.prototype, 'contextUsage');
@@ -98,6 +103,10 @@ test('Claude 线程压缩中间两轮：摘要在不落盘的分叉上按主会�
     r4: `第四轮 ${tag('丁')}\nREAD {"path":"a.txt"}`,
     r5: `第五轮 ${tag('戊')}`,
   };
+  const firstThinking = { type: 'thinking' as const, thinking: '检查第一轮的基线。', signature: 'compact-first-thinking' };
+  const fourthThinking = { type: 'thinking' as const, thinking: '按前三轮材料继续检查。', signature: 'compact-fourth-thinking' };
+  const fourthRedacted = { type: 'redacted_thinking' as const, data: 'compact-fourth-redacted' };
+  api.thinkingNext([firstThinking], (entry) => entry.lastUserText.includes(texts.r1));
   const first = await round('r1', texts.r1);
   expect(first.flatMap((l) => l.toolUseIds)).toHaveLength(1);
   await measured(undefined);
@@ -108,6 +117,7 @@ test('Claude 线程压缩中间两轮：摘要在不落盘的分叉上按主会�
   query.mockResolvedValueOnce(undefined);
   await round('r3', texts.r3);
   await measured(initialWindow);
+  api.thinkingNext([fourthThinking, fourthRedacted], (entry) => entry.lastUserText.includes(texts.r4));
   const fourth = await round('r4', texts.r4);
   const fourthCall = fourth.flatMap((l) => l.toolUseIds)[0]!;
   expect(fourthCall).toStartWith('toolu_');
@@ -163,14 +173,17 @@ test('Claude 线程压缩中间两轮：摘要在不落盘的分叉上按主会�
   expect(json(after.slice(0, at))).toBe(json(reference.slice(0, at)));
   expect(json(reference[at]!.content)).toContain(json(texts.r2).slice(1, -1));
   expect(json(blocks(after[at]!.content).slice(1))).toBe(json(blocks(reference[fourthAt]!.content)));
-  expect(json(after.slice(at + 1, -1))).toBe(json(reference.slice(fourthAt + 1, -1)));
+  expect(json(after.slice(at + 1, -1))).toBe(json(withoutThinking(reference.slice(fourthAt + 1, -1))));
   expect(json(blocks(after.at(-1)!.content).map((part: any) => part.text))).toBe(json([texts.r5]));
   const sent = json(after);
+  expect(sent).toContain(firstThinking.signature);
+  expect(sent).not.toContain(fourthThinking.signature);
+  expect(sent).not.toContain(fourthRedacted.data);
   expect(count(sent, json(block.text).slice(1, -1))).toBe(1);
   for (const text of [texts.r2, texts.r3]) expect(sent).not.toContain(json(text).slice(1, -1));
   expect(count(sent, `"tool_use_id":"${fourthCall}"`)).toBe(1);
 
-  // 显示：原有记录各一次，压缩块按输入的显示记录指向第二轮开头到第三轮末尾，追加在压缩发生时的位置。
+  // 显示保留原记录；模型上下文清理失效思考不影响本地回看。压缩块指向第二轮开头到第三轮末尾。
   const ids = display.records.map((entry) => entry.id);
   expect(display.records.flatMap((entry) => entry.block.type === 'human' ? [entry.block.id] : [])).toEqual(['r1', 'r2', 'r3', 'r4', 'r5']);
   expect(display.records.filter((entry) => entry.block.type === 'tool_use' && entry.block.id === fourthCall)).toHaveLength(1);
@@ -186,7 +199,7 @@ test('Claude 线程压缩中间两轮：摘要在不落盘的分叉上按主会�
   expect(rejected.records.filter((entry) => entry.block.type === 'compacted')).toHaveLength(1);
   expect(rejected.state.compacting).toBeFalsy();
 
-  // 撤销后再一轮：恢复压缩前的原历史，第五轮接在后面，摘要不再出现，各条目不重复。
+  // 撤销后再一轮：恢复原正文和工具，第五轮接在后面；失效思考不复活，摘要不再出现。
   const reverting = mark(kk);
   expect((await kk.call('DELETE', `/threads/${id}/compactions/c1`)).status).toBe(200);
   await kk.waitEvent((e) => record(e, 'context.compaction.reverted', 'c1') && kk.events.indexOf(e) >= reverting);
@@ -194,10 +207,14 @@ test('Claude 线程压缩中间两轮：摘要在不落盘的分叉上按主会�
   const sixth = (await round('r6', `第六轮 ${tag('己')}`))[0]!;
   await measured(300_000);
   const restored = sixth.body.messages as Array<{ role: string; content: unknown }>;
-  expect(json(restored.slice(0, reference.length - 1))).toBe(json(reference.slice(0, -1)));
+  expect(json(restored.slice(0, reference.length - 1)))
+    .toBe(json([...reference.slice(0, at), ...withoutThinking(reference.slice(at, -1))]));
   expect(restored.slice(reference.length - 1).map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
   expect(json(blocks(restored[reference.length - 1]!.content))).toBe(json(blocks(texts.r5)));
   const resent = json(restored);
+  expect(resent).toContain(firstThinking.signature);
+  expect(resent).not.toContain(fourthThinking.signature);
+  expect(resent).not.toContain(fourthRedacted.data);
   expect(resent).not.toContain(json(block.text).slice(1, -1));
   expect(count(resent, json(`echo: ${texts.r5}`).slice(1, -1))).toBe(1);
   expect(count(resent, `"tool_use_id":"${fourthCall}"`)).toBe(1);

@@ -24,7 +24,12 @@ export interface Logged {
   toolUseIds: string[];
   /** 因 HOLD 挂起过的标记。 */
   hold?: string;
+  /** 这次合成 prefix-lock 400 拒绝的 thinking 签名。 */
+  thinkingRejected?: string;
 }
+
+export type ThinkingReply = { type: 'thinking'; thinking: string; signature: string }
+  | { type: 'redacted_thinking'; data: string };
 
 export interface FakeApi {
   url: string;
@@ -37,6 +42,10 @@ export interface FakeApi {
   release(tag: string): void;
   /** 下一次满足条件的请求按标记挂起（只挂一次），之后同样用 held、release。 */
   holdNext(tag: string, pred: (l: Logged) => boolean): void;
+  /** 下一次匹配的成功流式回复在正文/工具前加合成 thinking 块，只生效一次。 */
+  thinkingNext(blocks: ThinkingReply[], pred: (l: Logged) => boolean): void;
+  /** 下次看到指定签名时返回真实 prefix-mismatch 400 形态，让 CLI 自己删除并重试。 */
+  rejectThinking(signature: string): void;
   /** 放行所有挂着的请求，测试收尾用。 */
   releaseAll(): void;
   /** 关掉端点，连同还开着的连接。 */
@@ -58,7 +67,7 @@ function lastUser(body: any, skipResults = false): { text: string; results: any[
 }
 
 let seq = 0;
-type Reply = { type: 'text'; text: string } | { type: 'tool_use'; id: string; name: string; input: unknown };
+type Reply = { type: 'text'; text: string } | { type: 'tool_use'; id: string; name: string; input: unknown } | ThinkingReply;
 function sse(model: string, content: Reply[], stop: string, usage: Record<string, unknown> = {}): string {
   const ev: Array<[string, unknown]> = [
     ['message_start', { type: 'message_start', message: {
@@ -70,6 +79,12 @@ function sse(model: string, content: Reply[], stop: string, usage: Record<string
     if (block.type === 'text') {
       ev.push(['content_block_start', { type: 'content_block_start', index, content_block: { type: 'text', text: '' } }]);
       ev.push(['content_block_delta', { type: 'content_block_delta', index, delta: { type: 'text_delta', text: block.text } }]);
+    } else if (block.type === 'thinking') {
+      ev.push(['content_block_start', { type: 'content_block_start', index, content_block: { type: 'thinking', thinking: '', signature: '' } }]);
+      ev.push(['content_block_delta', { type: 'content_block_delta', index, delta: { type: 'thinking_delta', thinking: block.thinking } }]);
+      ev.push(['content_block_delta', { type: 'content_block_delta', index, delta: { type: 'signature_delta', signature: block.signature } }]);
+    } else if (block.type === 'redacted_thinking') {
+      ev.push(['content_block_start', { type: 'content_block_start', index, content_block: block }]);
     } else {
       ev.push(['content_block_start', { type: 'content_block_start', index, content_block: { type: 'tool_use', id: block.id, name: block.name, input: {} } }]);
       ev.push(['content_block_delta', { type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(block.input) } }]);
@@ -87,6 +102,8 @@ export function startFakeApi(): FakeApi {
   const released = new Set<string>();
   const holding = new Map<string, Array<() => void>>();
   const holdRules: Array<{ tag: string; pred: (l: Logged) => boolean }> = [];
+  const thinkingRules: Array<{ blocks: ThinkingReply[]; pred: (l: Logged) => boolean }> = [];
+  const rejectedThinking = new Set<string>();
 
   const notify = (l: Logged) => {
     for (const w of [...waiters]) if (w.pred(l)) { waiters.splice(waiters.indexOf(w), 1); w.resolve(l); }
@@ -142,6 +159,25 @@ export function startFakeApi(): FakeApi {
       const tag = match ? match[1] : streaming ? streaming[1] : undefined;
       let hold = tag && !released.has(tag) ? tag : undefined;
       const entry: Logged = { at: Date.now(), main, body, lastUserText: text, toolUseIds };
+      if (main) {
+        for (const [mi, message] of (body.messages ?? []).entries()) {
+          for (const [bi, block] of (Array.isArray(message.content) ? message.content : []).entries()) {
+            if (block.type !== 'thinking' || !rejectedThinking.delete(block.signature)) continue;
+            entry.thinkingRejected = block.signature;
+            log.push(entry);
+            notify(entry);
+            return Response.json({ type: 'error', error: { type: 'invalid_request_error',
+              message: `messages.${mi}.content.${bi}: This thinking block is bound to a different conversation prefix.` } },
+            { status: 400, headers: { 'anthropic-thinking-prefix-mismatch': `block=messages.${mi}.content.${bi};kind=thinking`,
+              'request-id': 'req_fake_prefix_lock' } });
+          }
+        }
+        const thinking = thinkingRules.find((rule) => rule.pred(entry));
+        if (thinking) {
+          thinkingRules.splice(thinkingRules.indexOf(thinking), 1);
+          content.unshift(...thinking.blocks);
+        }
+      }
       const rule = hold ? undefined : holdRules.find((r) => r.pred(entry));
       if (rule) {
         holdRules.splice(holdRules.indexOf(rule), 1);
@@ -193,8 +229,12 @@ export function startFakeApi(): FakeApi {
     held: (tag, timeoutMs) => waitRequest((l) => l.hold === tag, timeoutMs),
     release,
     holdNext(tag, pred) { holdRules.push({ tag, pred }); },
+    thinkingNext(blocks, pred) { thinkingRules.push({ blocks, pred }); },
+    rejectThinking(signature) { rejectedThinking.add(signature); },
     releaseAll() {
       holdRules.length = 0;
+      thinkingRules.length = 0;
+      rejectedThinking.clear();
       for (const tag of holding.keys()) release(tag);
     },
     stop: () => server.stop(true),
