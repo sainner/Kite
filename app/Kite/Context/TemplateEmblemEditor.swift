@@ -22,26 +22,29 @@ struct TemplateEmblemField: View {
 
 /// 资源库角色的签名窗口：签名铺满整个窗口，连同标题栏和控制区后面，同新代理的空白页；指针划过时跟着起反应。
 /// 头像在控制区上方点阵的正中，签名各项在控制区里，算式输入框的位置同空白页的输入区。
-/// 生成进度写在副标题，失败在信息区；「重新生成」交给模型按提示词重画，连手改过的一起替换。
+/// 改了即时存到工作机：颜色与形状一点就存，算式停下来一会儿、两条都有效才存；新角色记在本机，随角色一起建。
+/// 生成进度写在副标题，失败在信息区；「重新生成」交给模型按提示词重画，连手改过的一起替换，生成期间签名各项不能改。
 struct RoleEmblemPane: View {
     let id: String
     @Environment(AppModel.self) private var model
     @Environment(\.dotStage) private var stage
     @Environment(\.self) private var environment
     @State private var check = EmblemCheck()
+    @State private var error: String?
     @State private var slot = "emblem.\(UUID().uuidString)"
 
     private var saved: AgentRole? { model.roleCatalog?.roles.first { $0.id == id } }
-    private var edited: EmblemDesign? { model.roleDraft(id)?.emblem }
+    private var newRole: NewRole? { model.newRole(id) }
+    private var edited: EmblemDesign? { newRole?.emblem ?? model.roleEmblems[id] }
     /// 没手改时跟随工作机上的最新签名，重新生成的结果直接显示。
     private var design: EmblemDesign { edited ?? saved?.emblem?.design ?? .fallback }
     private var generating: Bool { saved?.emblemState == "generating" }
-    private var saving: Bool { model.savingRoles.contains(id) }
 
     private var status: String {
         if generating { return "正在按提示词生成" }
-        if edited != nil { return "已手改，保存后不再自动替换" }
-        guard let saved else { return "保存后按提示词生成" }
+        if let newRole { return newRole.emblem == nil ? "保存后按提示词生成" : "已手改，保存后不再自动替换" }
+        if model.roleEmblems[id] != nil { return "手改过，不会被自动替换" }
+        guard let saved else { return "" }
         switch saved.emblemState {
         case "failed": return "生成失败"
         case "stale": return "提示词已修改，会重新生成"
@@ -51,18 +54,21 @@ struct RoleEmblemPane: View {
         }
     }
 
+    private var notice: PaneNotice? {
+        if let error { return .failure(error) }
+        return saved?.emblemState == "failed" ? .failure("签名生成失败：\(saved?.emblemError ?? "未知原因")") : nil
+    }
+
     var body: some View {
-        PaneWindow(header: PaneHeader(title: "签名", subtitle: status), usesDots: true,
-                   notice: saved?.emblemState == "failed" ? .failure("签名生成失败：\(saved?.emblemError ?? "未知原因")") : nil,
-                   actions: PaneHeaderActions(groups: saved.map { saved in [[
+        PaneWindow(header: PaneHeader(title: "签名", subtitle: status), usesDots: true, notice: notice,
+                   actions: PaneHeaderActions(groups: saved.map { _ in [[
                        PaneHeaderAction(title: "重新生成", systemImage: "sparkles", help: generating ? "正在生成" : "按提示词重新生成签名",
-                                        busy: generating, disabled: generating || saving || !model.connected) { regenerate(saved) },
+                                        busy: generating, disabled: generating || !model.connected) { regenerate() },
                    ]] } ?? [])) {
             EmblemStage(check: check, slot: slot)
         } controls: { typing in
-            EmblemControls(design: Binding(get: { design }, set: { value in model.editRole(id) { $0.emblem = value } }),
-                           check: check, typing: typing)
-                .disabled(saving)
+            EmblemControls(design: Binding(get: { design }, set: change), check: check, typing: typing)
+                .disabled(generating || !model.roleEditable(id))
                 .frame(maxWidth: Metrics.transcriptWidth)
         }
         #if os(macOS)
@@ -75,10 +81,20 @@ struct RoleEmblemPane: View {
         .onChange(of: environment.colorScheme) { check.update(design, in: environment) }
     }
 
+    /// 颜色与形状一点就存；算式停下来一会儿再存，打字时不逐字存。
+    private func change(_ value: EmblemDesign) {
+        let typing = value.expression != design.expression || value.avatar != design.avatar
+        guard let task = model.changeRoleEmblem(id, value, after: typing ? .milliseconds(800) : .zero) else { return }
+        error = nil
+        Task {
+            do { try await task.value } catch { self.error = "签名保存失败：\(error.localizedDescription)" }
+        }
+    }
+
     /// 手改的签名随之作废。
-    private func regenerate(_ role: AgentRole) {
-        model.editRole(id) { $0.emblem = nil }
-        Task { try? await model.generateRoleEmblem(role, force: true, connection: model.connectionRevision) }
+    private func regenerate() {
+        error = nil
+        model.regenerateRoleEmblem(id)
     }
 }
 

@@ -58,8 +58,16 @@ final class AppModel {
     var extensionPage = ExtensionLibrary.plugins
     /// 资源库代理上下文页选中的角色或模板，见 agentContextItem。
     var selectedAgentContext: AgentContextItem?
-    /// 资源库里改过还没保存的角色，按侧栏里的先后排。
+    /// 资源库角色没保存的提示词。
     var roleDrafts: [RoleDraft] = []
+    /// 资源库里还没存过的新角色，按侧栏里的先后排。
+    var newRoles: [NewRole] = []
+    /// 资源库角色即时生效、还没存好的修改，按先后排。
+    var roleChanges: [String: [RoleChange]] = [:]
+    /// 资源库角色手改、还没存好的签名；算式无效的一直留着，等改对。
+    var roleEmblems: [String: EmblemDesign] = [:]
+    /// 每个角色排队中的最后一次写入，见 queueRoleWrite。
+    @ObservationIgnored var roleWrites: [String: Task<Void, Error>] = [:]
     /// 资源库里改过还没保存的模板。
     var templateDrafts: [TemplateDraft] = []
     /// 设置一栏在内容区显示的页面。
@@ -73,7 +81,7 @@ final class AppModel {
         .pane(Pane("context")),
         .split(Split(.vertical, 0.5, .pane(Pane("emblem")), .pane(Pane("settings")))))))
     let templateWindows = WindowLayout(fixed: .pane(Pane("context")))
-    /// 正在保存的资源库角色；角色分在几个窗口里，保存期间都不能改。
+    /// 正在保存提示词、恢复默认或新建的资源库角色：这期间提示词不能改，新角色的名称、签名与初始配置也不能改。
     var savingRoles: Set<String> = []
 
     var selectedProject: RemoteProject? {
@@ -200,6 +208,10 @@ final class AppModel {
         selectedProjectID = nil
         selected = ""
         roleDrafts = []
+        newRoles = []
+        roleChanges = [:]
+        roleEmblems = [:]
+        roleWrites = [:]
         selectedAgentContext = nil
         templateDrafts = []
         draftWorkspace.draftThread.role = nil

@@ -134,6 +134,9 @@ nonisolated struct EmblemDesign: Codable, Equatable, Sendable {
     /// 头像的图案，颜色与点的形状同签名；头像算式无效时为 nil。
     func avatarPattern(accent: DotColor) -> DotPattern? { pattern(avatar, accent: accent) }
 
+    /// 两条算式都能解析。
+    var isValid: Bool { DotExpression.cached(expression) != nil && DotExpression.cached(avatar) != nil }
+
     /// 正值的颜色，不用解析算式。
     func positiveColor(accent: DotColor) -> DotColor { color(positive, accent: accent) }
 

@@ -18,6 +18,7 @@
 - [状态放标题栏](feedback-pane-status-placement.md) — 正文不放错误、读取中、空状态等窗口状态，归信息区或副行；列表项状态除外，单页待定
 - [测试要克制](test-restraint.md) — 测试准入主来源、事件断言与 PDF 验证要求
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行与数据流判断，不能只看引用
+- [什么要保存](feedback-save-scope.md) — 只有提示词这类文稿改完要保存，其他修改即时生效；新角色在上下文窗口一次建好
 
 ## 未决事项
 

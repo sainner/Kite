@@ -128,7 +128,7 @@ private struct AgentContextSection: View {
             }
         }
         return model.libraryRoles.map {
-            Item(id: $0.id, title: $0.title.isEmpty ? "未命名角色" : $0.title, unsaved: model.roleDraft($0.id) != nil)
+            Item(id: $0.id, title: $0.title.isEmpty ? "未命名角色" : $0.title, unsaved: model.roleUnsaved($0.id))
         }
     }
 

@@ -1,57 +1,197 @@
 import SwiftUI
 
-/// 资源库里改过还没保存的角色。切到别的角色或页面再回来还在，保存或放弃后清掉。
+/// 资源库角色没保存的提示词。资源库的角色只有提示词改完要保存，名称、签名与初始配置改了即时存到工作机。
+/// 切到别的角色或页面再回来还在，保存或放弃后清掉。
 struct RoleDraft: Identifiable {
+    let id: String
+    var blocks: [ContextBlock]
+    /// 开始修改时工作机上的提示词，保存前据此检查是否已在别处改过。
+    var base: [ContextBlock]
+}
+
+/// 还没存过的新角色：工作机上还没有，名称、提示词、签名与初始配置都先记在本机，在上下文窗口保存时一起建。
+struct NewRole: Identifiable {
     var role: RoleDefinition
-    /// 手改过的点阵签名；没改时跟随工作机上的最新签名，重新生成的结果直接显示。
+    /// 手改过的签名；没改时保存后由模型按提示词生成。
     var emblem: EmblemDesign?
-    /// 开始修改时角色的版本，保存时据此检查冲突；新角色没有。
-    var revision: String?
     var id: String { role.id }
 }
 
+/// 资源库角色即时生效的一次修改，存好之前先按改后的显示。
+struct RoleChange: Identifiable {
+    let id = UUID()
+    let apply: (inout RoleDefinition) -> Void
+}
+
 extension AppModel {
-    /// 资源库侧栏里的角色：工作机目录里的按草稿显示，后面接着还没保存的新角色。
+    /// 资源库侧栏里的角色：工作机目录里的按现在的样子显示，后面接着还没存过的新角色。
     var libraryRoles: [RoleDefinition] {
-        (roleCatalog?.roles ?? []).map { role in roleDrafts.first { $0.id == role.id }?.role ?? role.role }
-            + roleDrafts.filter { $0.revision == nil }.map(\.role)
+        (roleCatalog?.roles ?? []).compactMap { libraryRole($0.id) } + newRoles.map(\.role)
     }
 
     func roleDraft(_ id: String) -> RoleDraft? { roleDrafts.first { $0.id == id } }
 
-    /// 资源库里一个角色现在的样子：有草稿按草稿。
+    func newRole(_ id: String) -> NewRole? { newRoles.first { $0.id == id } }
+
+    /// 资源库里一个角色现在的样子：新角色是本机的；已有角色是工作机上的，叠上还没存好的修改与没保存的提示词。
     func libraryRole(_ id: String) -> RoleDefinition? {
-        roleDraft(id)?.role ?? roleCatalog?.roles.first { $0.id == id }?.role
+        if let role = newRole(id)?.role { return role }
+        guard var role = roleCatalog?.roles.first(where: { $0.id == id })?.role else { return nil }
+        for change in roleChanges[id] ?? [] { change.apply(&role) }
+        if let draft = roleDraft(id) { role.context.blocks = draft.blocks }
+        return role
     }
 
-    /// 改动资源库里的角色；改回与工作机上一致时不再算草稿。
-    func editRole(_ id: String, _ change: (inout RoleDraft) -> Void) {
-        let saved = roleCatalog?.roles.first { $0.id == id }
-        let index = roleDrafts.firstIndex { $0.id == id }
-        guard var draft = index.map({ roleDrafts[$0] }) ?? saved.map({ RoleDraft(role: $0.role, revision: $0.revision) }) else { return }
-        change(&draft)
-        if draft.emblem == (saved?.emblem?.design ?? .fallback) { draft.emblem = nil }
-        let unchanged = saved.map { draft.role == $0.role && draft.emblem == nil && draft.revision == $0.revision } ?? false
-        if let index {
-            if unchanged { roleDrafts.remove(at: index) } else { roleDrafts[index] = draft }
-        } else if !unchanged {
-            roleDrafts.append(draft)
+    /// 有没保存的内容：改过提示词，或是还没存过的新角色。
+    func roleUnsaved(_ id: String) -> Bool { roleDraft(id) != nil || newRole(id) != nil }
+
+    /// 名称、签名与初始配置能不能改：新角色正在建时不能改；已有角色即时存到工作机，没连上时不能改。
+    func roleEditable(_ id: String) -> Bool {
+        newRole(id) != nil ? !savingRoles.contains(id) : connected
+    }
+
+    /// 改提示词，记成草稿等保存；改回与工作机上一致时草稿自动消失。新角色直接改在本机。
+    func editRolePrompt(_ id: String, _ blocks: [ContextBlock]) {
+        if let index = newRoles.firstIndex(where: { $0.id == id }) {
+            newRoles[index].role.context.blocks = blocks
+            return
+        }
+        guard let saved = roleCatalog?.roles.first(where: { $0.id == id })?.role.context.blocks else { return }
+        if let index = roleDrafts.firstIndex(where: { $0.id == id }) {
+            if blocks == saved { roleDrafts.remove(at: index) } else { roleDrafts[index].blocks = blocks }
+        } else if blocks != saved {
+            roleDrafts.append(RoleDraft(id: id, blocks: blocks, base: saved))
         }
     }
 
-    /// 基于已有角色新建一个角色草稿并选中；没给角色时以默认角色为底，保留运行环境与项目材料等段落。
+    /// 即时生效地改名称或初始配置：新角色改在本机；已有角色先按改后的显示，再排队存到工作机，每次都改在工作机上最新的角色上。
+    /// 返回存的过程；失败时这次修改撤掉，显示退回工作机上的样子，由改的窗口报错。
+    @discardableResult
+    func changeRole(_ id: String, _ apply: @escaping (inout RoleDefinition) -> Void) -> Task<Void, Error>? {
+        if let index = newRoles.firstIndex(where: { $0.id == id }) {
+            apply(&newRoles[index].role)
+            return nil
+        }
+        guard roleCatalog?.roles.contains(where: { $0.id == id }) == true else { return nil }
+        let connection = connectionRevision
+        let change = RoleChange(apply: apply)
+        roleChanges[id, default: []].append(change)
+        return queueRoleWrite(id) { [self] in
+            defer { roleChanges[id]?.removeAll { $0.id == change.id } }
+            let saved = try savedRole(id, connection: connection)
+            var role = saved.role
+            apply(&role)
+            guard role != saved.role else { return }
+            guard role.isSavable else { throw KitedError(message: "角色需要名称，每回合至少能发一次请求") }
+            _ = try await saveRole(role, expectedRevision: saved.revision, connection: connection)
+        }
+    }
+
+    /// 即时生效地改签名：新角色改在本机；已有角色先按改后的显示，停 delay 没再改、两条算式都有效才排队存到工作机，
+    /// 写到一半无效的留着等改对。存失败时撤掉，显示退回工作机上的签名，由签名窗口报错。
+    @discardableResult
+    func changeRoleEmblem(_ id: String, _ design: EmblemDesign, after delay: Duration = .zero) -> Task<Void, Error>? {
+        if let index = newRoles.firstIndex(where: { $0.id == id }) {
+            newRoles[index].emblem = design
+            return nil
+        }
+        guard roleCatalog?.roles.contains(where: { $0.id == id }) == true else { return nil }
+        let connection = connectionRevision
+        roleEmblems[id] = design
+        return Task { [self] in
+            try await Task.sleep(for: delay)
+            // 等的时候又改了，交给后一次。
+            guard roleEmblems[id] == design, design.isValid else { return }
+            defer { if roleEmblems[id] == design { roleEmblems[id] = nil } }
+            try await queueRoleWrite(id) { [self] in
+                try await saveRoleEmblem(design, for: savedRole(id, connection: connection), connection: connection)
+            }.value
+        }
+    }
+
+    /// 按提示词重新生成签名，连手改过的一起替换；排在已改的签名后面，免得生成之后又被它盖掉。
+    func regenerateRoleEmblem(_ id: String) {
+        let connection = connectionRevision
+        roleEmblems[id] = nil
+        queueRoleWrite(id) { [self] in
+            try await generateRoleEmblem(savedRole(id, connection: connection), force: true, connection: connection)
+        }
+    }
+
+    /// 保存改过的提示词，只换提示词；开始修改之后提示词已在别处改过时不覆盖。
+    func saveRolePrompt(_ id: String) -> Task<Void, Error>? {
+        guard let draft = roleDraft(id) else { return nil }
+        let connection = connectionRevision
+        savingRoles.insert(id)
+        return queueRoleWrite(id) { [self] in
+            defer { savingRoles.remove(id) }
+            let saved = try savedRole(id, connection: connection)
+            guard saved.role.context.blocks == draft.base else { throw KitedError(message: "提示词已在别处修改，放弃修改后再改") }
+            var role = saved.role
+            role.context.blocks = draft.blocks
+            _ = try await saveRole(role, expectedRevision: saved.revision, connection: connection)
+            roleDrafts.removeAll { $0.id == id }
+        }
+    }
+
+    /// 内置角色恢复默认，没保存的提示词一并放弃。
+    func resetLibraryRole(_ id: String) -> Task<Void, Error> {
+        let connection = connectionRevision
+        savingRoles.insert(id)
+        return queueRoleWrite(id) { [self] in
+            defer { savingRoles.remove(id) }
+            try await resetRole(savedRole(id, connection: connection), connection: connection)
+            roleDrafts.removeAll { $0.id == id }
+        }
+    }
+
+    /// 把新角色建到工作机上，手改过的签名随后存；签名没存上时角色已经建好，签名回到按提示词生成。
+    func createLibraryRole(_ id: String) -> Task<Void, Error>? {
+        guard let new = newRole(id) else { return nil }
+        let connection = connectionRevision
+        savingRoles.insert(id)
+        return Task { [self] in
+            defer { savingRoles.remove(id) }
+            _ = try await saveRole(new.role, expectedRevision: nil, connection: connection)
+            newRoles.removeAll { $0.id == id }
+            guard let emblem = new.emblem else { return }
+            do { try await changeRoleEmblem(id, emblem)?.value }
+            catch { throw KitedError(message: "角色已建好，签名没存上：\(error.localizedDescription)") }
+        }
+    }
+
+    /// 基于已有角色新建一个角色并选中；没给角色时以默认角色为底，保留运行环境与项目材料等段落。
     func newLibraryRole(from base: RoleDefinition? = nil) {
         guard var role = (base ?? roleCatalog?.defaultRole?.role)?.copy() else { return }
         if base == nil { role.title = "新角色" }
-        roleDrafts.append(RoleDraft(role: role))
+        newRoles.append(NewRole(role: role))
         extensionPage = .contexts
         selectedAgentContext = AgentContextItem(category: .role, id: role.id)
     }
+
+    /// 同一角色的写入一次一个：前一次存完才开始下一次，每次都按工作机上最新的版本改，免得带着旧版本被拒。
+    @discardableResult
+    private func queueRoleWrite(_ id: String, _ write: @escaping () async throws -> Void) -> Task<Void, Error> {
+        let previous = roleWrites[id]
+        let task = Task {
+            _ = await previous?.result
+            try await write()
+        }
+        roleWrites[id] = task
+        return task
+    }
+
+    private func savedRole(_ id: String, connection: UUID) throws -> AgentRole {
+        guard let target = templateConnection(connection), target.connected, let role = target.roles?.roles.first(where: { $0.id == id }) else {
+            throw KitedError(message: "工作机连接已变化")
+        }
+        return role
+    }
 }
 
-/// 资源库角色的上下文窗口：标题是角色名称，可原地改名；另存、恢复默认与保存都在标题栏，保存连同签名与初始配置的修改一起存。
-/// 底部控制区是编辑工具栏。
-/// 修改即时记成草稿，与工作机上一致时草稿自动消失。账号里的变化经工作机推过来，不用手动刷新。
+/// 资源库角色的上下文窗口：标题是角色名称，原地改名即时存；提示词改完要保存，另存、恢复默认、放弃与保存都在标题栏。
+/// 新角色还没存过，另外两个窗口的修改也记在本机，在这里保存时一起建。底部控制区是编辑工具栏。
+/// 改回与工作机上一致时草稿自动消失。账号里的变化经工作机推过来，不用手动刷新。
 struct RoleContextPane: View {
     let id: String
     @Environment(AppModel.self) private var model
@@ -66,13 +206,13 @@ struct RoleContextPane: View {
     private var role: RoleDefinition? { model.libraryRole(id) }
     private var saving: Bool { model.savingRoles.contains(id) }
     private var canSave: Bool { !saving && model.connected && role?.isSavable == true }
-    private var isNew: Bool { saved == nil }
+    private var isNew: Bool { model.newRole(id) != nil }
     private var discardTitle: String { isNew ? "放弃新角色" : "放弃修改" }
 
     var body: some View {
         PaneWindow(header: PaneHeader(title: role?.title ?? "", subtitle: AgentContextCategory.role.title,
-                                      titleEdit: role == nil ? nil : .init(label: "重命名角色", enabled: !saving) { title in
-                                          model.editRole(id) { $0.role.title = title }
+                                      titleEdit: role == nil ? nil : .init(label: "重命名角色", enabled: model.roleEditable(id)) { title in
+                                          change { $0.title = title }
                                       }), notice: error.map(PaneNotice.failure), actions: PaneHeaderActions(groups: headerGroups)) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
@@ -80,7 +220,7 @@ struct RoleContextPane: View {
                         ContextVariablePreview(variables: catalog?.variables ?? [])
                         ContextBlocksSection("系统规则",
                                              blocks: Binding(get: { [model, id] in model.libraryRole(id)?.context.blocks ?? [] },
-                                                             set: { [model, id] blocks in model.editRole(id) { $0.role.context.blocks = blocks } }),
+                                                             set: { [model, id] blocks in model.editRolePrompt(id, blocks) }),
                                              variables: catalog?.variables ?? [])
                             .disabled(saving)
                     }
@@ -92,14 +232,15 @@ struct RoleContextPane: View {
         }
         // 按初始配置里的默认模型数 token，改了默认模型就重数。
         .contextEditor(editor, counting: model.contextCounting(model: role?.model.model, connection: model.activeConnection))
-        .discardAlert(isNew ? "放弃这个新角色？" : "放弃未保存的角色修改？", isPresented: $discard, discardLabel: discardTitle) {
+        .discardAlert(isNew ? "放弃这个新角色？" : "放弃未保存的提示词修改？", isPresented: $discard, discardLabel: discardTitle) {
+            model.newRoles.removeAll { $0.id == id }
             model.roleDrafts.removeAll { $0.id == id }
         }
         .discardAlert("恢复默认内容？", isPresented: $confirmReset, discardLabel: "恢复默认",
-                      message: "名称、提示词与初始配置都换回内置的默认内容\(draft == nil ? "。" : "，未保存的修改一并放弃。")", discard: reset)
+                      message: "名称、提示词与初始配置都换回内置的默认内容\(draft == nil ? "。" : "，未保存的提示词修改一并放弃。")", discard: reset)
     }
 
-    /// 基于此新建；内置角色改过才能恢复默认；有草稿才能保存或放弃。角色不能删除，放弃时新角色整个丢掉，已有角色撤掉没保存的修改。
+    /// 基于此新建；内置角色改过才能恢复默认；改过提示词或是新角色才能保存或放弃。角色不能删除，放弃时新角色整个丢掉，已有角色撤掉没保存的提示词。
     private var headerGroups: [[PaneHeaderAction]] {
         var first = [
             PaneHeaderAction(title: "基于此新建角色", systemImage: "doc.on.doc", disabled: role == nil) { model.newLibraryRole(from: role) },
@@ -109,7 +250,7 @@ struct RoleContextPane: View {
                                           disabled: saving || !model.connected) { confirmReset = true })
         }
         var groups = [first]
-        if draft != nil {
+        if isNew || draft != nil {
             groups.append([
                 PaneHeaderAction(title: discardTitle, systemImage: isNew ? "trash" : "xmark", disabled: saving) { discard = true },
                 PaneHeaderAction(title: "保存", systemImage: "checkmark", help: model.connected ? "保存" : "工作机未连接",
@@ -119,58 +260,47 @@ struct RoleContextPane: View {
         return groups
     }
 
+    private func change(_ apply: @escaping (inout RoleDefinition) -> Void) {
+        report("保存失败", model.changeRole(id, apply))
+    }
+
     private func save() {
-        guard let draft, canSave else { return }
-        let connection = model.connectionRevision
-        model.savingRoles.insert(id)
-        error = nil
-        Task {
-            defer { model.savingRoles.remove(draft.id) }
-            do {
-                let saved = try await model.saveRole(draft.role, expectedRevision: draft.revision, connection: connection)
-                // 角色先存好；签名另存失败时，草稿里只剩手改的签名。
-                model.editRole(saved.id) { $0.role = saved.role; $0.revision = saved.revision }
-                if let emblem = draft.emblem { try await model.saveRoleEmblem(emblem, for: saved, connection: connection) }
-                model.roleDrafts.removeAll { $0.id == saved.id }
-            } catch {
-                self.error = "保存失败：\(error.localizedDescription)"
-            }
-        }
+        guard canSave else { return }
+        report("保存失败", isNew ? model.createLibraryRole(id) : model.saveRolePrompt(id))
     }
 
     private func reset() {
-        guard let saved, !saving, model.connected else { return }
-        let connection = model.connectionRevision
-        model.savingRoles.insert(id)
+        guard saved != nil, !saving, model.connected else { return }
+        report("恢复默认失败", model.resetLibraryRole(id))
+    }
+
+    private func report(_ title: String, _ task: Task<Void, Error>?) {
+        guard let task else { return }
         error = nil
         Task {
-            defer { model.savingRoles.remove(saved.id) }
-            do {
-                try await model.resetRole(saved, connection: connection)
-                model.roleDrafts.removeAll { $0.id == saved.id }
-            } catch {
-                self.error = "恢复默认失败：\(error.localizedDescription)"
-            }
+            do { try await task.value } catch { self.error = "\(title)：\(error.localizedDescription)" }
         }
     }
 }
 
-/// 资源库角色的初始配置窗口：用这个角色新建代理时的默认模型、每回合请求上限与工具；默认模型与思考强度在标题栏。
+/// 资源库角色的初始配置窗口：用这个角色新建代理时的默认模型、每回合请求上限与工具，改了即时存到工作机；默认模型与思考强度在标题栏。
 struct RoleSettingsPane: View {
     let id: String
     @Environment(AppModel.self) private var model
+    @State private var error: String?
     @FocusState private var focus: RoleField?
 
-    private var saving: Bool { model.savingRoles.contains(id) }
-
     var body: some View {
-        PaneWindow(header: PaneHeader(title: "初始配置", subtitle: "以此角色新建代理时的默认配置"), actions: headerActions) {
+        PaneWindow(header: PaneHeader(title: "初始配置", subtitle: "以此角色新建代理时的默认配置"), notice: error.map(PaneNotice.failure),
+                   actions: headerActions) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let role = model.libraryRole(id) {
-                        RoleSettingsForm(role: Binding(get: { model.libraryRole(id) ?? role }, set: { value in model.editRole(id) { $0.role = value } }),
+                        RoleSettingsForm(role: Binding(get: { model.libraryRole(id) ?? role }, set: { value in
+                                             change { $0.tools = value.tools; $0.maxRequestsPerTurn = value.maxRequestsPerTurn }
+                                         }),
                                          catalog: model.roleCatalog, focus: $focus)
-                            .disabled(saving)
+                            .disabled(!model.roleEditable(id))
                     }
                 }
                 .agentContextColumn()
@@ -184,10 +314,18 @@ struct RoleSettingsPane: View {
     private var headerActions: PaneHeaderActions {
         PaneHeaderActions(menus: model.libraryRole(id).map { role in
             AnyView(AgentModelMenus(configuration: Binding(get: { model.libraryRole(id)?.model ?? role.model },
-                                                           set: { value in model.editRole(id) { $0.role.model = value } }),
+                                                           set: { value in change { $0.model = value } }),
                                     vendors: model.roleCatalog?.vendors ?? [], models: model.roleCatalog?.models ?? [])
-                .disabled(saving))
+                .disabled(!model.roleEditable(id)))
         })
+    }
+
+    private func change(_ apply: @escaping (inout RoleDefinition) -> Void) {
+        guard let task = model.changeRole(id, apply) else { return }
+        error = nil
+        Task {
+            do { try await task.value } catch { self.error = "保存失败：\(error.localizedDescription)" }
+        }
     }
 }
 

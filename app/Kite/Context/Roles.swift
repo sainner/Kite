@@ -94,8 +94,7 @@ extension AppModel {
         let result = try await client.request(path, method: expectedRevision == nil ? "POST" : "PUT",
             body: RoleSave(role: role, expectedRevision: expectedRevision), as: AgentRole.self)
         guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
-        target.roles?.roles.removeAll { $0.id == result.id }
-        target.roles?.roles.append(result)
+        target.replaceRole(result)
         return result
     }
 
@@ -106,8 +105,7 @@ extension AppModel {
         let result = try await client.request("/roles/\(role.id.pathComponent)/reset", method: "POST",
             body: LibraryReset(expectedRevision: role.revision), as: AgentRole.self)
         guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
-        target.roles?.roles.removeAll { $0.id == result.id }
-        target.roles?.roles.append(result)
+        target.replaceRole(result)
     }
 
     func saveRoleEmblem(_ design: EmblemDesign, for role: AgentRole, connection: UUID) async throws {
@@ -116,7 +114,7 @@ extension AppModel {
         let result = try await client.request("/roles/\(role.id.pathComponent)/emblem", method: "PUT",
             body: EmblemSave(emblem: design), as: AgentRole.self)
         guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
-        if let index = target.roles?.roles.firstIndex(where: { $0.id == result.id }) { target.roles?.roles[index] = result }
+        target.replaceRole(result)
     }
 
     /// 请工作机生成签名；force 时连手改的一起重新生成。结果随角色变化事件送达。
@@ -254,5 +252,12 @@ struct NewThreadRoleMenu: View {
         Button("基于「\(selected?.role.title ?? model.roleTitle(for: thread, in: area))」新建角色…", systemImage: "plus") {
             if let selected { copy(selected) }
         }.disabled(selected == nil)
+    }
+}
+
+extension WorkerConnection {
+    /// 工作机存好的角色换进目录，位置不变，侧栏不跳；新角色排在最后。
+    func replaceRole(_ role: AgentRole) {
+        if let index = roles?.roles.firstIndex(where: { $0.id == role.id }) { roles?.roles[index] = role } else { roles?.roles.append(role) }
     }
 }
