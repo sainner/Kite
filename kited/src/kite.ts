@@ -197,6 +197,7 @@ export class Kite {
       setStatus: (id, status) => this.setWorkspaceStatus(id, status),
       changed: (id) => this.changed(id),
       removed: (id) => bus.emit({ type: 'workspace.changed', workspaceId: id, status: 'archived' }),
+      recordsReplaced: (ids) => this.transcripts.forget(ids),
       environment: (projectId) => this.environment(projectId),
       ensureCheckout: (projectId) => this.ensureCheckout(projectId),
       freeze: (id) => this.freeze(id),

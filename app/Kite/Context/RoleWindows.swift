@@ -97,11 +97,13 @@ extension AppModel {
         }
         guard roleCatalog?.roles.contains(where: { $0.id == id }) == true else { return nil }
         let connection = connectionRevision
+        let edit = UUID()
         roleEmblems[id] = design
+        roleEmblemEdits[id] = edit
         return Task { [self] in
             try await Task.sleep(for: delay)
-            // 等的时候又改了，交给后一次。
-            guard roleEmblems[id] == design, design.isValid else { return }
+            // 等的时候又改了（改回同一条算式也算），交给后一次。
+            guard roleEmblemEdits[id] == edit, roleEmblems[id] == design, design.isValid else { return }
             defer { if roleEmblems[id] == design { roleEmblems[id] = nil } }
             try await queueRoleWrite(id) { [self] in
                 try await saveRoleEmblem(design, for: savedRole(id, connection: connection), connection: connection)
@@ -297,7 +299,8 @@ struct RoleSettingsPane: View {
                 VStack(alignment: .leading, spacing: 16) {
                     if let role = model.libraryRole(id) {
                         RoleSettingsForm(role: Binding(get: { model.libraryRole(id) ?? role }, set: { value in
-                                             change { $0.tools = value.tools; $0.maxRequestsPerTurn = value.maxRequestsPerTurn }
+                                             let before = model.libraryRole(id) ?? role, universe = model.roleCatalog?.tools ?? []
+                                             change { $0.adopt(value, since: before, in: universe) }
                                          }),
                                          catalog: model.roleCatalog, focus: $focus)
                             .disabled(!model.roleEditable(id))
@@ -336,5 +339,25 @@ extension View {
             .padding(CardMetrics.inset)
             .frame(maxWidth: .infinity)
             .separateScrollPocket()
+    }
+}
+
+private extension RoleDefinition {
+    /// 表单交回的是整份改后的角色：只把这一下改了的（换规则方向、开关哪几个工具、是否必需、每回合上限）落到排队写入时
+    /// 工作机上最新的角色上。整份覆盖会把排在前面、没存上已撤掉的改动和别的设备的改动一起写回去。
+    mutating func adopt(_ after: RoleDefinition, since before: RoleDefinition, in universe: [String]) {
+        if after.maxRequestsPerTurn != before.maxRequestsPerTurn { maxRequestsPerTurn = after.maxRequestsPerTurn }
+        if after.tools.mode != before.tools.mode { tools.setMode(after.tools.mode, in: universe) }
+        var seen = Set<String>()
+        for name in universe + before.tools.tools + after.tools.tools where seen.insert(name).inserted {
+            let enabled = after.tools.allows(name)
+            if enabled != before.tools.allows(name) { tools.setEnabled(name, enabled) }
+        }
+        for name in before.tools.required + after.tools.required {
+            let required = after.tools.required.contains(name)
+            guard required != before.tools.required.contains(name), required != tools.required.contains(name) else { continue }
+            tools.required.removeAll { $0 == name }
+            if required { tools.required.append(name) }
+        }
     }
 }

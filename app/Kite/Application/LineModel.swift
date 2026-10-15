@@ -7,11 +7,16 @@ extension AppModel {
     static let monitorDefinition = "kite.monitor"
 
     /// Line 所在的工作区。
+    /// 侧栏、输入区在观察里读它：上次找到的还是 Line 时只看那一个工作区，观察范围不铺到所有工作区的实例。
     var lineArea: WorkArea? {
-        workspaces.first { area in
-            area.remote?.workspace.status == .open
-                && area.instances.contains { $0.status == .open && $0.config?.role?.id == Self.lineRole }
-        }
+        if let hint = lineAreaHint, let area = workspaces.first(where: { $0.id == hint }), hostsLine(area) { return area }
+        let found = workspaces.first(where: hostsLine)
+        lineAreaHint = found?.id
+        return found
+    }
+
+    private func hostsLine(_ area: WorkArea) -> Bool {
+        area.remote?.workspace.status == .open && lineThread(in: area) != nil
     }
 
     /// Line 的线程（实例 ID）。

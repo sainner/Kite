@@ -68,6 +68,10 @@ final class AppModel {
     var roleEmblems: [String: EmblemDesign] = [:]
     /// 每个角色排队中的最后一次写入，见 queueRoleWrite。
     @ObservationIgnored var roleWrites: [String: Task<Void, Error>] = [:]
+    /// 每个角色最后一次手改签名的记号，见 changeRoleEmblem。
+    @ObservationIgnored var roleEmblemEdits: [String: UUID] = [:]
+    /// 上次找到的 Line 工作区，见 lineArea。
+    @ObservationIgnored var lineAreaHint: String?
     /// 资源库里改过还没保存的模板。
     var templateDrafts: [TemplateDraft] = []
     /// 资源库代理上下文页的变量窗口看的变量；窗口关掉后留着，关的动画里内容不变。见 openContextVariable。

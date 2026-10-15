@@ -8,6 +8,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { chmodSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { WorkspaceModel } from '../../src/model.ts';
+import type { History } from '../../src/transcript/protocol.ts';
 import { transferRef } from '../../src/transfer/materials.ts';
 import { leaseRef, writeLease } from '../../src/workspace/lease.ts';
 import { type FakeAccount, startFakeAccount } from '../fake-account.ts';
@@ -172,9 +173,10 @@ test('目标机 setup 失败时还原清掉工作树、记录与会话目录且 
 /*
  * 流转回原机，几个部分的配合：源机核对执行权冻结、强制归档，目标机交回，源机还原时替换本机已有的同 ID 记录。
  * 真实 bug：还原失败时原有的归档记录被删掉了；成功还原后工作树在同一路径重建，快照模块按路径缓存的私有索引失效，
- * 回合收尾报 kite/index.lock 不存在。
+ * 回合收尾报 kite/index.lock 不存在；会话历史按线程缓存显示投影，还原换上 B 带回来的记录后原机仍返回离开前的投影
+ * （下面 before 那次读历史时缓存住），看不到在 B 上的回合，要等 kited 重启。
  */
-test('流转回原机：还原失败时原机已有的归档记录原样保留且不留备份，再还原成功后 epoch 3 能发送并存快照', async () => {
+test('流转回原机：还原失败时原机已有的归档记录原样保留且不留备份，再还原成功后读到的历史有在 B 上的回合，epoch 3 能发送并存快照', async () => {
   const { root, a, b, models } = machines();
   chatgptLogin(a.home);
   const { repo, registered } = await hostedProject(root, a, { 'base.txt': '原始\n' });
@@ -188,6 +190,9 @@ test('流转回原机：还原失败时原机已有的归档记录原样保留�
 
   expect((await handover(a, workspaceId)).status).toBe(200);
   expect((await restore(b, registered.project.id, workspaceId, 'to-b')).status).toBe(200);
+  expect((await b.call('POST', `/threads/${thread.id}/messages`, { id: 'on-b', text: '在 B 上的回合' })).status).toBe(200);
+  (await models.b.call(1)).response.complete();
+  await b.waitEvent((e) => e.type === 'idle' && e.threadId === thread.id);
   expect(((await a.call('POST', `/workspaces/${workspaceId}/lease/check`)).body as WorkspaceModel).workspace.status).toBe('transferred');
   expect((await a.call('POST', `/workspaces/${workspaceId}/archive`, { force: true })).status).toBe(200);
   expect((await handover(b, workspaceId)).status).toBe(200);
@@ -211,6 +216,9 @@ test('流转回原机：还原失败时原机已有的归档记录原样保留�
   const back = await restore(a, registered.project.id, workspaceId, 'back');
   expect(back.status).toBe(200);
   expect((back.body as WorkspaceModel).workspace).toMatchObject({ epoch: 3, status: 'open' });
+  const humans = ((await a.call('GET', `/threads/${thread.id}/history`)).body as History).records
+    .flatMap((record) => record.block.type === 'human' ? [record.block.text] : []);
+  expect(humans).toEqual(['第一回合', '在 B 上的回合']);
   const since = mark(a);
   expect((await a.call('POST', `/threads/${thread.id}/messages`, { id: 'back-home', text: '回到原机继续' })).status).toBe(200);
   const resumed = await models.a.call(2);

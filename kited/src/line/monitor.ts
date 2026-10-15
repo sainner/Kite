@@ -376,7 +376,8 @@ export function collect(state: MonitorState, now: number, focused: boolean, note
     if (!asked.length) return undefined;
   }
   for (const item of delegated) item.delegated = { ...item.delegated!, sent: now };
-  state.wakes = { day: day(now), count: count + 1 };
+  // 只有用户点的代处理时不计入预算
+  if (automatic) state.wakes = { day: day(now), count: count + 1 };
   const briefing = queue.find((wake) => wake.kind === 'briefing');
   return {
     delegated,
@@ -591,7 +592,8 @@ export class LineMonitor {
       if (state.delegation.timeoutMinutes !== undefined && !item.delegated && !item.left && delegable(item) && item.waiting) {
         due.push(item.addedAt + state.delegation.timeoutMinutes * 60_000);
       }
-      if (state.away !== undefined && item.kind === 'turn' && !item.notified) due.push(Math.max(state.away, state.digestAt ?? 0) + DIGEST_MS);
+      // 同 route 的摘要：交给 Line 的不进摘要，不能拿它约时刻，否则到点后一直按最短间隔空转
+      if (state.away !== undefined && item.kind === 'turn' && !item.notified && !item.delegated) due.push(Math.max(state.away, state.digestAt ?? 0) + DIGEST_MS);
     }
     const next = Math.min(...due);
     if (!Number.isFinite(next) || next - now >= this.intervalMs) return;

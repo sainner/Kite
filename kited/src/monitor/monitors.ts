@@ -159,9 +159,10 @@ export class Monitors {
     });
   }
 
-  /** 工作区里代理开的 monitor 与来源状态。 */
+  /** 工作区里代理开的 monitor 与来源状态；Line 的收件箱也是 monitor，不列。 */
   list(workspaceId: string) {
-    return this.monitors().filter((instance) => instance.workspaceId === workspaceId && instance.status === 'open')
+    return this.monitors().filter((instance) => instance.workspaceId === workspaceId && instance.status === 'open'
+      && 'sources' in monitorConfig(instance))
       .map((instance) => this.summary(instance));
   }
 

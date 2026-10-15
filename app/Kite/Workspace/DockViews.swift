@@ -579,16 +579,19 @@ struct CompactDockBar: View {
                             }
                         }
                         .overlay(alignment: .leading) {
-                            DockStackView(scroll: scroll, stacking: !dimmed) {
-                                ForEach(items) { item in
-                                    switch item {
-                                    case .entry(let entry, let veiled):
-                                        self.item(entry, dimmed: dimmed, veiled: veiled)
-                                    case .divider:
-                                        DockStackDivider(scroll: scroll, position: divider, total: total, region: region, stacking: !dimmed)
-                                            .modifier(DockDimmed(dimmed: dimmed))
-                                            .transition(.opacity)
+                            DockStackView(scroll: scroll, stacking: !dimmed, total: total) {
+                                ForEach(Array(zip(items, positions)), id: \.0.id) { item, position in
+                                    Group {
+                                        switch item {
+                                        case .entry(let entry, let veiled):
+                                            self.item(entry, dimmed: dimmed, veiled: veiled)
+                                        case .divider:
+                                            DockStackDivider(scroll: scroll, position: divider, total: total, region: region, stacking: !dimmed)
+                                                .modifier(DockDimmed(dimmed: dimmed))
+                                                .transition(.opacity)
+                                        }
                                     }
+                                    .layoutValue(key: DockStackPosition.self, value: position)
                                 }
                             }
                             .environment(\.dockAxis, .horizontal)
@@ -618,7 +621,8 @@ struct CompactDockBar: View {
                 }
                 // 新窗口加进来和切过去可能不在同一次更新里，先记下，切过去时再滚
                 .onChange(of: layout.panes) { old, new in
-                    fresh = Set(new).subtracting(old)
+                    // 累加：新窗口加进来、切过去之前别的窗口又有增减，也还记着它
+                    fresh = fresh.union(Set(new).subtracting(old)).intersection(new)
                     reveal(proxy)
                 }
                 .onChange(of: layout.focused) {
@@ -761,31 +765,36 @@ private nonisolated struct DockStackCurve {
 private struct DockStackView<Content: View>: View {
     let scroll: DockScroll
     let stacking: Bool
+    let total: CGFloat
     @ViewBuilder let content: Content
 
     var body: some View {
-        DockStackLayout(distance: scroll.distance, stacking: stacking, gap: Metrics.gap) { content }
+        DockStackLayout(distance: scroll.distance, stacking: stacking, total: total) { content }
     }
 }
 
-/// 从左往右排一串格子，间距一个 gap，位置按 DockStackCurve，靠右的压在上面。位置是排版算出来的，变化时由排版的动画过渡。
+/// 一格照原来的间距排开时离最左一项多远，body 按格子算好交给排版（DockStackPosition）。
+private nonisolated struct DockStackPosition: LayoutValueKey {
+    static let defaultValue: CGFloat = 0
+}
+
+/// 从左往右排一串格子，位置按 DockStackCurve，靠右的压在上面。位置是排版算出来的，变化时由排版的动画过渡。
+/// 每格离最左多远、整串多长都用 body 算好的，和轨道、分隔线、替身同一套，滚动时不再逐格量：正在淡出的格子还在
+/// subviews 里，但不占位置（留在原来那格淡出），别的格子当场带着动画让位，淡出完不会再跳一下。
 private struct DockStackLayout: Layout {
     var distance: CGFloat
     var stacking: Bool
-    var gap: CGFloat
+    var total: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         proposal.replacingUnspecifiedDimensions()
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let widths = subviews.map { $0.sizeThatFits(.unspecified).width }
-        let total = widths.reduce(0, +) + gap * CGFloat(max(widths.count - 1, 0))
         let curve = DockStackCurve(total: total, region: bounds.width, distance: distance, stacking: stacking)
-        var position: CGFloat = 0
-        for (subview, width) in zip(subviews, widths) {
-            subview.place(at: CGPoint(x: bounds.minX + curve(position), y: bounds.midY), anchor: .leading, proposal: .unspecified)
-            position += width + gap
+        for subview in subviews {
+            subview.place(at: CGPoint(x: bounds.minX + curve(subview[DockStackPosition.self]), y: bounds.midY), anchor: .leading,
+                          proposal: .unspecified)
         }
     }
 }

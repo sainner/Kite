@@ -54,7 +54,8 @@ struct TranscriptRow: Identifiable {
         return rows
     }
 
-    /// 排出来多高取决于的内容，只取便宜的：种类、字数、几步工具和各步状态。字数不变的改字不算（记录只追加，不会这样改）。
+    /// 排出来多高、显示什么取决于的内容，只取便宜的：种类、字数、几步工具和各步状态，展开后看得到的参数原文、跑着的输出和子 agent 做的事。
+    /// 字数不变的改字不算（记录只追加，不会这样改）。
     func shape(into hasher: inout Hasher) {
         hasher.combine(id)
         hasher.combine(gap)
@@ -80,7 +81,15 @@ private extension Item.Kind {
             for call in work.calls {
                 hasher.combine(call.state)
                 hasher.combine(call.result != nil)
+                hasher.combine(call.use.arguments?.utf8.count)
+                hasher.combine(call.use.output.utf8.count)
+                hasher.combine(call.use.outputTruncated)
                 hasher.combine(call.children.count)
+                for child in call.children {
+                    hasher.combine(child.id)
+                    hasher.combine(child.generation)
+                    child.kind.shape(into: &hasher)
+                }
             }
         case .interrupted: hasher.combine(6)
         case .compacted(let compaction, let children):

@@ -219,13 +219,14 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
     private func refreshControls() {
         guard let area = group.workspace else { return }
         let thread = thread, pane = pane, model = model, paneID = paneID
-        let enabled = controlsTracking.track({
-            environment.isEnabled && area.creatingWindow == nil && !thread.configuringTemplate
+        // 实例也在观察里：改推理强度、换模型（本机或别的设备）后输入区跟着换，同 Mac 经环境拿的 paneInstance
+        let (enabled, instance) = controlsTracking.track({
+            (environment.isEnabled && area.creatingWindow == nil && !thread.configuringTemplate,
+             area.windows.first(where: { $0.id == paneID.id }).flatMap { window in
+                 area.instances.first { $0.id == window.target.instanceId }
+             })
         }) { [weak self] in
             Task { @MainActor in self?.refreshControls() }
-        }
-        let instance = area.windows.first(where: { $0.id == paneID.id }).flatMap { window in
-            area.instances.first { $0.id == window.target.instanceId }
         }
         let controlsModel = ThreadControlsModel(thread: thread, model: model, area: area, instance: instance, stage: environment.dotStage,
                                                 scope: environment.dotScope, voiceOwner: pane.patternSlot, state: controlsState) { message, alongside in

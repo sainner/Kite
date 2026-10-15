@@ -79,6 +79,8 @@ private struct CompactShellRepresentable: UIViewRepresentable {
     var geometry: WindowGeometry?
     /// 窗口里的内容开了点阵；开合途中摆在窗口上的图形跟着窗口走时的换算，见 CompactWindowDots。
     var usesDots = false
+    /// 底栏露着（抽屉拉到放底栏的那一档）；收着时底栏的头像不动，见 avatarsPaused。
+    var tabsShown = false
     var follow: DotCarrier.Mapping?
     /// 占位内容在场（换成一行窗口时淡出，里面摆在点阵上的图形先收回）。
     var placeholderPresented = true
@@ -143,6 +145,7 @@ private struct CompactTabsRoot: View {
         .padding(.horizontal, Metrics.padding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         .safeAreaPadding(state.insets)
+        .environment(\.avatarsPaused, !state.tabsShown)
     }
 }
 
@@ -433,6 +436,7 @@ final class CompactShellView: UIView, DrawerDriving {
         // 窗口里放一行窗口还是占位内容；换一组窗口直接替换，一行窗口和占位内容之间淡入淡出（snappy）
         arrangeContent(read, size: size)
         tabs.alpha = read.shown == .actions ? 1 : 0
+        if state.tabsShown != (read.shown == .actions) { state.tabsShown = read.shown == .actions }
         sidebar.accessibilityElementsHidden = read.shown != .sidebar
         // 拉开着、正往开里走时不接点按，会挡住露出来的侧边栏、底栏。正往回收的从收起那一刻就接：弹簧走完要 0.7 秒，
         // 看着 0.4 秒左右就停了，原来要等走完，这中间点窗口里的东西没反应（2026-10-14 用户说触控有点不灵敏，查出的一处）

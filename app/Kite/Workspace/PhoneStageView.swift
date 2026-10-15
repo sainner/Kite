@@ -280,6 +280,9 @@ final class PhoneStageView: UIView, StageDotsReporting {
         let reduceMotion = look?.reduceMotion ?? false
         let resizing = layout.resizing != nil
         let blocksInput = layout.blocksInput
+        // 拖动、拖缝、拖侧栏改宽（dotsHidden）时每步都来一轮，展开、还原按钮要等卡片停下才换（updateExpands）：
+        // 沿用上一轮算的，松手那一轮（这几样都在观察里）再算
+        let keepsExpansion = layout.drag != nil || resizing || dotsHidden
         for pane in retained {
             let card = cards[pane] ?? makeCard(pane)
             let closing = !layout.panes.contains(pane)
@@ -298,7 +301,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
                 dragged: dragged, hasThread: hasThread, fixed: layout.isFixed,
                 header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width, hasThread: hasThread,
                                          pinned: pinned),
-                expansion: layout.expansion(of: pane), pinned: pinned)
+                expansion: (keepsExpansion ? card.arrangement?.expansion : nil) ?? layout.expansion(of: pane), pinned: pinned)
             arranged.cards.append((card, arrangement, CardPresentation.motionKind(layout: layout, pane: pane, reduceMotion: reduceMotion)))
         }
         arranged.visible = Set(plan.onStage.compactMap { area?.dockInstanceID($0) })

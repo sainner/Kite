@@ -37,6 +37,8 @@ export interface TransferHost {
   changed(workspaceId: string): void;
   /** 工作区记录已从本机删除（还原失败清理，或根工作区被流转来的替换）。 */
   removed(workspaceId: string): void;
+  /** 这些线程的会话记录换了：按旧记录读出的显示历史作废。 */
+  recordsReplaced(threadIds: string[]): void;
   environment(projectId: string): Promise<Environment>;
   /** 本机该项目的检出；没有时 clone 到默认位置并登记。 */
   ensureCheckout(projectId: string): Promise<Checkout>;
@@ -288,11 +290,14 @@ export class WorkspaceTransfers {
         this.host.store.importWorkspaceRows(rows, { checkout_id: checkout.id, cwd, status: 'preparing', epoch: manifest.epoch }, cursors);
       });
       storeTouched = true;
+      // 流转回来过的工作机还留着离开前读出的历史，换成材料里的记录后要重读；还原时同样
+      const threadIds = manifest.threads.map((thread) => thread.instanceId);
+      this.host.recordsReplaced(threadIds);
       cleanup.push(() => this.host.store.transaction(() => {
         this.host.store.deleteWorkspaceRows(workspaceId);
         if (previousRows) this.host.store.restoreWorkspaceRows(previousRows);
         if (rootRows) this.host.store.restoreWorkspaceRows(rootRows);
-      }));
+      }), () => this.host.recordsReplaced(threadIds));
       this.host.changed(workspaceId);
       const model = this.host.workspace(workspaceId);
       if (manifest.kind === 'worktree') {

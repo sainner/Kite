@@ -331,6 +331,9 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         let reduceMotion = look?.reduceMotion ?? false
         let resizing = layout.resizing != nil
         let blocksInput = layout.blocksInput
+        // 拖动、拖缝时每步都来一轮，展开、还原按钮要等卡片停下才换（updateExpands）：沿用上一轮算的，松手那一轮再算。
+        // 拖侧栏改宽不算：台面大小在变，能不能展开可能跟着变，停下后也未必再来一轮
+        let keepsExpansion = layout.drag != nil || resizing
         // 没在台面上停过的窗口（停靠栏里的）按台面的大小排正文：拖侧栏改宽时台面每步都变，收着的窗口不跟着每步重排，
         // 用开始拖时的大小，停下后照常
         let fallback = leadingInset > 0 ? frozenFallback ?? plan.regions.canvas.size : plan.regions.canvas.size
@@ -349,7 +352,8 @@ final class StageView: RepresentedRoot, StageDotsReporting {
                 dragged: layout.drag?.pane == pane, hasThread: area?.thread(in: pane) != nil, fixed: layout.isFixed,
                 header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width,
                                          hasThread: area?.thread(in: pane) != nil, pinned: layout.pinned.contains(pane)),
-                expansion: layout.expansion(of: pane), pinned: layout.pinned.contains(pane))
+                expansion: (keepsExpansion ? card.arrangement?.expansion : nil) ?? layout.expansion(of: pane),
+                pinned: layout.pinned.contains(pane))
             arranged.cards.append((card, arrangement, CardPresentation.motionKind(layout: layout, pane: pane, reduceMotion: reduceMotion)))
         }
         arranged.visible = Set(plan.onStage.compactMap { area?.dockInstanceID($0) })

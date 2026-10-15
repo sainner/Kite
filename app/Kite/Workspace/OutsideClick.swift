@@ -127,7 +127,11 @@ extension OutsideClickDismissal: UIViewRepresentable {
 
         private func check(_ touch: UITouch) {
             guard !paused(), let card = enclosing(PhoneCardView.self) else { return }
-            if let hit = touch.view, hit.isDescendant(of: card) || hit.enclosing(OutsideClickButton.Target.self) != nil { return }
+            if let hit = touch.view {
+                // 菜单、弹出的面板由系统放在窗口里 App 内容之外的一层（卡片自己弹的取值对象、标题菜单也在那）：点它们不算点外面
+                if let content = window?.rootViewController?.view, !hit.isDescendant(of: content) { return }
+                if hit.isDescendant(of: card) || hit.enclosing(OutsideClickButton.Target.self) != nil { return }
+            }
             dismiss()
         }
     }

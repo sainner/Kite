@@ -9,11 +9,14 @@ import UIKit
 /// - 呼吸是 Core Animation 的关键帧动画，按绝对时间对齐，几行一起起伏，和 SwiftUI 里的 waitingBreath 共用一个时钟。
 /// - 扫掠时 content 画进一张贴图，盖在上面的 CAMetalLayer 按屏幕刷新率逐帧画（着色器 kiteSweepFragment，和 Mac 的
 ///   MacToolActivity 同一套算法）：每帧只编一次绘制，字和尺寸变了才重画贴图。拖缝、吸附中尺寸一直在变，先不扫、只显示字，停下再接着扫。
-/// - 减弱动态效果时不动；所在窗口不在屏上（PanePresence）时停。
+/// - 减弱动态效果时不动；所在窗口不在屏上（PanePresence）时停。这一行被列表藏起、所在的层透明、滚出窗口或窗口在过渡中时
+///   不画，看不见时显示链接降到低频，只等着看得见，不把屏幕拖在高刷新率上。
 final class PhoneActivityView: UIView {
     let content = UIView()
     private let metal = CAMetalLayer()
     private var link: CADisplayLink?
+    /// 显示链接降到了低频（看不见时）。
+    private var idling = false
     private var texture: MTLTexture?
     private var state: Call.State?
     private var presence: PanePresence?
@@ -86,10 +89,10 @@ final class PhoneActivityView: UIView {
         let sweeping = state == .running && onScreen && Self.renderer != nil
         if sweeping, link == nil {
             let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
-            let maximum = Float(window?.screen.maximumFramesPerSecond ?? 60)
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: min(60, maximum), maximum: maximum, preferred: maximum)
             link.add(to: .main, forMode: .common)
             self.link = link
+            idling = true
+            idle(false)
         } else if !sweeping, let link {
             link.invalidate()
             self.link = nil
@@ -122,9 +125,20 @@ final class PhoneActivityView: UIView {
         CATransaction.commit()
     }
 
+    /// 看不见时显示链接降到低频，看得见了回到屏幕刷新率。
+    private func idle(_ idle: Bool) {
+        guard idle != idling, let link else { return }
+        idling = idle
+        let maximum = Float(window?.screen.maximumFramesPerSecond ?? 60)
+        link.preferredFrameRateRange = idle ? CAFrameRateRange(minimum: 4, maximum: 10, preferred: 10)
+            : CAFrameRateRange(minimum: min(60, maximum), maximum: maximum, preferred: maximum)
+    }
+
     @objc private func tick(_ link: CADisplayLink) {
-        // 拖缝、吸附中尺寸一直在变：先只显示字，不每帧重画贴图
-        guard !WindowLayout.anyResizing, bounds.width > 0, bounds.height > 0, let renderer = Self.renderer else {
+        let visible = isVisibleInWindow
+        idle(!visible)
+        // 看不见、窗口在过渡中，或拖缝、吸附中尺寸一直在变：先只显示字，不每帧重画贴图
+        guard visible, !WindowLayout.anyTransitioning, !WindowLayout.anyResizing, let renderer = Self.renderer else {
             showSweep(false)
             return
         }
@@ -174,6 +188,20 @@ final class PhoneActivityView: UIView {
 
     /// 着色器和命令队列只建一份；建不出来（没有 Metal）就不扫。
     @MainActor private static let renderer = KiteSweepRenderer()
+}
+
+extension UIView {
+    /// 真的看得见：在窗口里、有大小，自己和上层都没藏起、没透明，并且和窗口的范围有交集。对话列表藏起滚远的行只设
+    /// isHidden（不移出窗口），紧凑布局预热的窗口在屏外，逐帧、逐秒的更新靠它跳过。
+    var isVisibleInWindow: Bool {
+        guard let window, bounds.width > 0, bounds.height > 0 else { return false }
+        var view: UIView? = self
+        while let current = view {
+            if current.isHidden || current.alpha < 0.01 { return false }
+            view = current.superview
+        }
+        return convert(bounds, to: window).intersects(window.bounds)
+    }
 }
 
 /// 着色器 kiteSweepFragment 的参数，和 KitePixels.metal 里的结构一样排。

@@ -128,7 +128,7 @@ export class TranscriptHistory {
     if (cached) return Promise.resolve(cached);
     const loading = this.loadingTranscripts.get(t.id);
     if (loading) return loading;
-    const promise = (async () => {
+    const read = async () => {
       const projection = new TranscriptProjection(t, this.feed);
       const directory = join(this.home, 'sessions', t.id);
       const control = claudeState(readClaudeControl(directory));
@@ -145,12 +145,24 @@ export class TranscriptHistory {
       if (!current) throw new KiteError(`没有这个线程：${t.id}`, 404);
       projection.lifecycle(current.workspace.status, current.status);
       projection.finishReplay();
+      // 读的途中记录被换掉（forget）的，读出来的只交给这次的调用方，不留作缓存
+      if (this.loadingTranscripts.get(t.id) !== promise) return projection;
       this.transcripts.set(t.id, projection);
       this.observe(t.id, projection.state());
       return projection;
-    })().finally(() => this.loadingTranscripts.delete(t.id));
+    };
+    const promise = read().finally(() => { if (this.loadingTranscripts.get(t.id) === promise) this.loadingTranscripts.delete(t.id); });
     this.loadingTranscripts.set(t.id, promise);
     return promise;
+  }
+
+  /** 线程的会话记录在磁盘上被整份换掉（流转导入、还原）：丢掉按旧记录建的投影和摘要，下次读时重建。 */
+  forget(ids: string[]): void {
+    for (const id of ids) {
+      this.transcripts.delete(id);
+      this.loadingTranscripts.delete(id);
+      this.activities.delete(id);
+    }
   }
 
   activity(id: string): ThreadActivity | undefined { return this.activities.get(id); }

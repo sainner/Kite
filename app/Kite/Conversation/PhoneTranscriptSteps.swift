@@ -278,7 +278,8 @@ final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
             showDuration(Date().timeIntervalSince1970 * 1000 - start)
             timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    guard let self, self.window != nil else { return }
+                    // 列表藏起的行、屏外预热的窗口里也在窗口上，看不见就不更新
+                    guard let self, self.isVisibleInWindow else { return }
                     self.showDuration(Date().timeIntervalSince1970 * 1000 - start)
                     self.setNeedsLayout()
                 }

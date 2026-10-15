@@ -75,7 +75,7 @@ final class PhoneCardView: UIView {
     private let buttons = HostIsland(sizing: [.intrinsicContentSize])
 
     private var placed: CardPresentation.Placement?
-    private var arrangement: Arrangement?
+    private(set) var arrangement: Arrangement?
     private(set) var closing = false
     private var hovered = false
     private var acceptsInput = false

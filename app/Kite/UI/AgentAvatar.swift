@@ -11,6 +11,7 @@ struct AgentAvatar: View {
     var tint: Color?
     @Environment(\.self) private var environment
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.avatarsPaused) private var avatarsPaused
 
     private static let half = 4
 
@@ -35,7 +36,7 @@ struct AgentAvatar: View {
     }
 
     private func frames(pattern: DotPattern?, rest: DotColor, seed: Double) -> some View {
-        TimelineView(.animation(minimumInterval: Self.interval, paused: !animating || reduceMotion)) { context in
+        TimelineView(.animation(minimumInterval: Self.interval, paused: !animating || reduceMotion || avatarsPaused)) { context in
             let t = animating && !reduceMotion ? Self.time(seed: seed, at: context.date) : seed
             Canvas { canvas, size in
                 guard let pattern else { return }
@@ -283,3 +284,8 @@ private final class AvatarFramesView: NSView {
     }
 }
 #endif
+
+extension EnvironmentValues {
+    /// 头像所在的那一层眼下看不见（紧凑布局收着的底栏只是透明，SwiftUI 不会因此停掉 TimelineView）：动着的头像停在当前帧。
+    @Entry var avatarsPaused = false
+}

@@ -5,7 +5,7 @@
  * 每个测试换一个 HOME：Line 的项目固定在 ~/code/kite-line，同一进程里前一个测试删掉再建的同路径仓库会碰上
  * 快照模块按路径记住的私有索引目录（src/workspace/snapshots.ts 的 indexes），回合收尾失败。
  */
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, expect, jest, spyOn, test } from 'bun:test';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AccountMachine } from '../../src/account-client.ts';
@@ -528,6 +528,57 @@ test('Line 用 line_control send 发起的工作在用户离开期间结束回�
   // 结果只交一次。
   await s.a.daemon.kite.monitor.check();
   expect(wakesOf(s.a, s.lineId)).toHaveLength(1);
+}, 1000);
+
+/*
+ * 真实 bug：用户离开超过摘要间隔（10 分钟）后，收件箱里有交给 Line、还没通知过的回合结束时，摘要不收交给 Line 的事项，
+ * 安排下一次读取的计时却照样拿它算到期时刻；到期时刻落在过去，monitor 按最短间隔反复读账号目录、对每台在线工作机读汇总，
+ * 直到 Line 处理完或用户回来。摘要的筛选、代处理的投递和定时三处在真实计时器上合起来才看得出会不会空转。
+ * 依赖运行时：Bun（1.4.2 上验证）的 jest.useFakeTimers 接管之后新建的 setTimeout 与 Date.now，advanceTimersByTime 同步推进两者并
+ * 触发到点的计时器；之前建的计时器照旧是真的，daemon 起 monitor 时那个 60 秒的定时读在测试期间不会到点。
+ * monitor.stop() 不另起一轮，只交出进行中的那一轮，用它等计时器触发的读取做完。
+ */
+test('用户离开超过摘要间隔、收件箱里只有交给 Line 还没了结的回合结束时，monitor 不按最短间隔反复读各工作机', async () => {
+  const s = await lineSetup();
+  const work = s.modelOf(s.workId);
+  const line = s.modelOf(s.lineId);
+  const monitor = s.a.daemon.kite.monitor;
+  const inboxId = inboxInstance(s.a).id;
+  await watch(s.a, 'mac');
+  await focus(s.a, 'mac', true);
+  await focus(s.a, 'mac', false);
+  expect(typeof (await attentionOf(s.a)).awaySince).toBe('number');
+
+  // 离开期间 B 上的回合结束进收件箱，用户交给 Line；Line 这一回合挂着不结束，事项一直是交出去、没了结。
+  await send(s.b, s.workId, 'kickoff', '开始');
+  const since = mark(s.b);
+  (await work.call(1)).response.complete();
+  await waitIdle(s.b, s.workId, since);
+  await monitor.check();
+  const turn = `turn:${s.workId}`;
+  expect((await inboxOf(s.a)).items.map((entry) => entry.id)).toEqual([turn]);
+  expect((await delegate(s.a, turn)).status).toBe(200);
+  await line.call(1);
+  // 等投递的那一轮做完，下面的 check 才是新起的一轮。
+  await monitor.check();
+
+  const reads = spyOn(s.a.daemon.kite.peers, 'machines');
+  jest.useFakeTimers();
+  try {
+    // 时间推过摘要间隔后读一轮；之后 30 秒里不该再读。一轮读几次账号目录不归这里管，只比较前后。
+    jest.advanceTimersByTime(11 * 60_000);
+    await monitor.check();
+    const perRound = reads.mock.calls.length;
+    expect(perRound).toBeGreaterThan(0);
+    jest.advanceTimersByTime(30_000);
+    await monitor.stop();
+    expect(reads).toHaveBeenCalledTimes(perRound);
+  } finally {
+    jest.useRealTimers();
+    reads.mockRestore();
+  }
+  const item = monitorState(s.a.daemon.kite.store.instance(inboxId)!).items[turn];
+  expect([item?.delegated?.by, item?.notified]).toEqual(['user', undefined]);
 }, 1000);
 
 /*

@@ -68,7 +68,8 @@ private struct MonitorTimelinePane: View {
                 VStack(alignment: .leading, spacing: 10) {
                     if let snapshot {
                         ForEach(snapshot.sources, id: \.id) { source in sourceBlock(source) }
-                        VStack(alignment: .leading, spacing: 0) {
+                        // 事件最多几百条、每条可以很长，只建看得到的那些
+                        LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(snapshot.events.reversed()) { event in eventRow(event) }
                         }
                     }
@@ -114,13 +115,21 @@ private struct MonitorTimelinePane: View {
         .padding(.vertical, 4)
     }
 
+    /// 每次变化都整份重读：一阵连着来的变化稍等合成一次（新的一次会取消等着的这次），读回来没变就不换。
     private func load() async {
         guard let client = area.pluginClient else { return }
+        if snapshot != nil {
+            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+        }
         do {
-            snapshot = try await client.request("/workspaces/\(area.id.pathComponent)/operations/monitor.read", method: "POST",
+            let read = try await client.request("/workspaces/\(area.id.pathComponent)/operations/monitor.read", method: "POST",
                                                 body: ["instanceId": instance.id], as: MonitorSnapshot.self)
+            guard !Task.isCancelled else { return }
+            if read != snapshot { snapshot = read }
             failure = nil
-        } catch { failure = error.localizedDescription }
+        } catch {
+            if !Task.isCancelled { failure = error.localizedDescription }
+        }
     }
 
     private func stop() {

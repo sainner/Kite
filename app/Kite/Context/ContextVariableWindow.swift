@@ -95,7 +95,8 @@ extension AppModel {
 
     /// 某一层可选的取值对象，按菜单里的先后排。
     func contextVariableSources(_ layer: ContextVariableLayer) -> [ContextVariableSource] {
-        let machines = Set(contextVariableAreas.map(\.remote.machine.id)).count > 1
+        let areas = contextVariableAreas
+        let machines = Set(areas.map(\.remote.machine.id)).count > 1
         func onMachine(_ remote: RemoteWorkspace, _ title: String) -> String { machines ? "\(title) · \(remote.machine.name)" : title }
         switch layer {
         case .environment:
@@ -104,17 +105,17 @@ extension AppModel {
         case .project:
             // 同一项目在几台工作机上都有检出时，按先排到的（当前工作机优先）
             var seen = Set<String>()
-            return contextVariableAreas.filter { seen.insert($0.remote.project.id).inserted }.map { _, remote in
+            return areas.filter { seen.insert($0.remote.project.id).inserted }.map { _, remote in
                 ContextVariableSource(id: remote.project.id, machine: remote.machine.id, path: "/checkouts/\(remote.checkout.id)/context-variables",
                                       section: nil, title: projectLabel(remote.project))
             }
         case .workspace:
-            return contextVariableAreas.map { _, remote in
+            return areas.map { _, remote in
                 ContextVariableSource(id: remote.id, machine: remote.machine.id, path: "/workspaces/\(remote.id)/context-variables",
                                       section: projectLabel(remote.project), title: onMachine(remote, remote.workspace.name))
             }
         case .agent:
-            return contextVariableAreas.flatMap { area, remote in
+            return areas.flatMap { area, remote in
                 area.threads.map { thread in
                     ContextVariableSource(id: thread.id, machine: remote.machine.id, path: "/instances/\(thread.id)/context-variables",
                                           section: onMachine(remote, "\(projectLabel(remote.project)) · \(remote.workspace.name)"), title: thread.title)
@@ -124,8 +125,9 @@ extension AppModel {
     }
 
     /// 某一层按哪个对象取值：选过的还在就用它，不然是当前所在的（当前工作机、当前工作区和它的项目、当前工作区里聚焦的代理），再不然是第一个。
-    func contextVariableSource(_ layer: ContextVariableLayer) -> ContextVariableSource? {
-        let sources = contextVariableSources(layer)
+    /// 已经列出这一层的对象时传进来，不再列一遍。
+    func contextVariableSource(_ layer: ContextVariableLayer, among listed: [ContextVariableSource]? = nil) -> ContextVariableSource? {
+        let sources = listed ?? contextVariableSources(layer)
         let here: String? = switch layer {
         case .environment: activeConnection?.machine.id
         case .project: current?.remote?.project.id
@@ -209,24 +211,44 @@ struct ContextVariablePane: View {
     @State private var editor = ContextEditor()
 
     private var name: String { model.contextVariable ?? "" }
-    private var variable: ContextScene.Variable? { model.agentContextVariables.first { $0.name == name } }
-    private var layer: ContextVariableLayer? { variable?.layer.flatMap(ContextVariableLayer.init(rawValue:)) }
-    private var source: ContextVariableSource? { layer.flatMap(model.contextVariableSource) }
-    /// 列出来的文件：读到的各份，加上开始新建、还没存过的那份。
-    private var paths: [String] {
-        guard let source else { return [] }
-        var paths = value?.files?.map(\.path) ?? []
-        if let create = value?.create, model.contextFileDraft(create, on: source.machine) != nil { paths.append(create) }
-        return paths
+
+    /// 这一次显示要用的：变量、所在的层、这一层可选的对象和选中的那个、列出来的文件。body 里算一次往下传，
+    /// 列取值对象要走遍连着的工作区（代理层还要走遍各工作区的线程），不在各处各算一遍。
+    private struct Shown {
+        let variable: ContextScene.Variable?
+        let layer: ContextVariableLayer?
+        let sources: [ContextVariableSource]
+        let source: ContextVariableSource?
+        /// 列出来的文件：读到的各份，加上开始新建、还没存过的那份。
+        let paths: [String]
+        /// 其中改过还没保存的。
+        let changed: [String]
     }
-    private var changed: [String] { source.map { source in paths.filter { model.contextFileDraft($0, on: source.machine) != nil } } ?? [] }
+
+    private func shown() -> Shown {
+        let name = name
+        let variable = model.agentContextVariables.first { $0.name == name }
+        let layer = variable?.layer.flatMap(ContextVariableLayer.init(rawValue:))
+        let sources = layer.map(model.contextVariableSources) ?? []
+        let source = layer.flatMap { model.contextVariableSource($0, among: sources) }
+        var paths: [String] = []
+        var changed: [String] = []
+        if let source {
+            paths = value?.files?.map(\.path) ?? []
+            if let create = value?.create, model.contextFileDraft(create, on: source.machine) != nil { paths.append(create) }
+            changed = paths.filter { model.contextFileDraft($0, on: source.machine) != nil }
+        }
+        return Shown(variable: variable, layer: layer, sources: sources, source: source, paths: paths, changed: changed)
+    }
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: variable?.title ?? name, subtitle: status ?? (paths.count == 1 ? paths[0] : name)),
-                   notice: error.map(PaneNotice.failure), actions: PaneHeaderActions(groups: headerGroups, menus: sourceMenu)) {
+        let shown = shown()
+        let source = shown.source, paths = shown.paths
+        PaneWindow(header: PaneHeader(title: shown.variable?.title ?? name, subtitle: status(shown) ?? (paths.count == 1 ? paths[0] : name)),
+                   notice: error.map(PaneNotice.failure), actions: PaneHeaderActions(groups: headerGroups(shown), menus: sourceMenu(shown))) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if let value, let source { content(value, source: source) }
+                    if let value, let source { content(value, source: source, labeled: paths.count > 1) }
                 }
                 .agentContextColumn()
             }
@@ -239,14 +261,16 @@ struct ContextVariablePane: View {
                 model.closeContextVariable()
             }
         }
-        .task(id: "\(source.map { "\(model.connections[$0.machine]?.catalog.generation.uuidString ?? "")|\($0.path)" } ?? "")|\(name)") { await load() }
+        .task(id: "\(source.map { "\(model.connections[$0.machine]?.catalog.generation.uuidString ?? "")|\($0.path)" } ?? "")|\(name)") {
+            await load(from: source)
+        }
     }
 
     /// 窗口现在的情况写在副行：取不到值的原因、正在取值、值是空的、文件一份都没有。
-    private var status: String? {
-        guard let variable else { return nil }
-        guard let layer else { return "场景材料，生成时才有，这里看不到取值" }
-        guard let source else { return "没有可以取值的\(layer.noun)" }
+    private func status(_ shown: Shown) -> String? {
+        guard shown.variable != nil else { return nil }
+        guard let layer = shown.layer else { return "场景材料，生成时才有，这里看不到取值" }
+        guard let source = shown.source else { return "没有可以取值的\(layer.noun)" }
         guard let value else { return loading ? "正在取值…" : nil }
         if let files = value.files {
             guard files.isEmpty, let create = value.create, model.contextFileDraft(create, on: source.machine) == nil else { return nil }
@@ -256,10 +280,12 @@ struct ContextVariablePane: View {
     }
 
     /// 取值直接放在正文里，不套卡片。文件只有一份时路径在副行，几份时各自标在上面。
-    @ViewBuilder private func content(_ value: ContextVariableValue, source: ContextVariableSource) -> some View {
+    @ViewBuilder private func content(_ value: ContextVariableValue, source: ContextVariableSource, labeled: Bool) -> some View {
         if let files = value.files {
-            ForEach(files) { file in fileEditor(file.path, saved: file, source: source) }
-            if let create = value.create, model.contextFileDraft(create, on: source.machine) != nil { fileEditor(create, saved: nil, source: source) }
+            ForEach(files) { file in fileEditor(file.path, saved: file, source: source, labeled: labeled) }
+            if let create = value.create, model.contextFileDraft(create, on: source.machine) != nil {
+                fileEditor(create, saved: nil, source: source, labeled: labeled)
+            }
         } else if !value.text.isEmpty {
             Text(value.text)
                 .font(Theme.body)
@@ -269,19 +295,18 @@ struct ContextVariablePane: View {
         }
     }
 
-    private func fileEditor(_ path: String, saved: ContextVariableValue.File?, source: ContextVariableSource) -> some View {
+    private func fileEditor(_ path: String, saved: ContextVariableValue.File?, source: ContextVariableSource, labeled: Bool) -> some View {
         let machine = source.machine
-        return ContextFileEditor(path: path, labeled: paths.count > 1,
+        return ContextFileEditor(path: path, labeled: labeled,
                                  text: Binding(get: { [model] in model.contextFileDraft(path, on: machine)?.content ?? saved?.content ?? "" },
                                                set: { [model] content in model.editContextFile(path, on: machine, content: content, saved: saved) }))
             .disabled(saving)
     }
 
     /// 取值对象的菜单：图标和名字随变量所在的层，几节时按节分开。
-    private var sourceMenu: AnyView? {
-        guard let layer, let source else { return nil }
-        let sources = model.contextVariableSources(layer)
-        let sections = sources.reduce(into: [(title: String?, sources: [ContextVariableSource])]()) { sections, source in
+    private func sourceMenu(_ shown: Shown) -> AnyView? {
+        guard let layer = shown.layer, let source = shown.source else { return nil }
+        let sections = shown.sources.reduce(into: [(title: String?, sources: [ContextVariableSource])]()) { sections, source in
             if let last = sections.last, last.title == source.section { sections[sections.count - 1].sources.append(source) }
             else { sections.append((source.section, [source])) }
         }
@@ -308,30 +333,31 @@ struct ContextVariablePane: View {
     }
 
     /// 取到值就能复制；文件一份都没有时可以新建；改过文件才能放弃或保存。
-    private var headerGroups: [[PaneHeaderAction]] {
+    private func headerGroups(_ shown: Shown) -> [[PaneHeaderAction]] {
         var groups: [[PaneHeaderAction]] = []
         if let text = value?.text, !text.isEmpty {
             groups.append([PaneHeaderAction(title: "复制取值", systemImage: "doc.on.doc") { [toast] in copyToPasteboard(text, toast: toast) }])
         }
-        guard let source else { return groups }
+        guard let source = shown.source else { return groups }
         let machine = source.machine
         if let value, value.files?.isEmpty == true, let create = value.create, model.contextFileDraft(create, on: machine) == nil {
             groups.append([PaneHeaderAction(title: "在项目文件夹新建", systemImage: "doc.badge.plus") { [model] in
                 model.editContextFile(create, on: machine, content: "", saved: nil)
             }])
         }
+        let changed = shown.changed
         if !changed.isEmpty {
             let connected = model.connections[machine]?.connected == true
             groups.append([
-                PaneHeaderAction(title: "放弃修改", systemImage: "xmark", disabled: saving) { [model, changed] in model.discardContextFiles(changed, on: machine) },
+                PaneHeaderAction(title: "放弃修改", systemImage: "xmark", disabled: saving) { [model] in model.discardContextFiles(changed, on: machine) },
                 PaneHeaderAction(title: "保存", systemImage: "checkmark", help: connected ? "保存" : "工作机未连接",
-                                 busy: saving, disabled: saving || !connected, action: save),
+                                 busy: saving, disabled: saving || !connected) { save(changed, to: source) },
             ])
         }
         return groups
     }
 
-    private func load() async {
+    private func load(from source: ContextVariableSource?) async {
         value = nil
         error = nil
         guard let source else { return }
@@ -345,9 +371,9 @@ struct ContextVariablePane: View {
         }
     }
 
-    private func save() {
-        guard let source, !saving else { return }
-        let name = name, paths = changed
+    private func save(_ paths: [String], to source: ContextVariableSource) {
+        guard !saving else { return }
+        let name = name
         saving = true
         error = nil
         Task {
