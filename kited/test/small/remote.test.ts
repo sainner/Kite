@@ -4,8 +4,8 @@ import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon } from '../../src/daemon.ts';
 import { serve } from '../../src/http.ts';
-import { machine } from '../harness.ts';
-import { makeTemp } from '../util.ts';
+import { connect, machine, registerCheckout, startKited } from '../harness.ts';
+import { makeTemp, newDir } from '../util.ts';
 
 function start() {
   const root = makeTemp('kite-remote-');
@@ -86,5 +86,50 @@ test('受信代理仍需正确机器身份且不能管理组网，目录事件�
     controller.abort();
     try { await proxy?.stop(true); }
     finally { await k.stop(); }
+  }
+}, 1_000);
+
+/*
+ * 几个部分的配合：组网来的拉取（账号级数据的 /sync/changes，没有远程的项目的 /git/:project）只给目录里的工作机，
+ * 按 kite-net 给的来源 IP（X-Kite-Peer）找组网对端，再读它的 /machine 确认是 kited。不在组网对端里的地址、
+ * 组网里不是 kited 的设备（手机等，这里是 IPv6 回环上一个 /machine 404 的服务）都拒绝；本机监听不看来源（见 peer-git.test.ts）。
+ */
+test('远程监听上的账号同步和检出拉取只给目录里的工作机：来源不是组网对端或对端不是 kited 时 403，是工作机时放行', async () => {
+  const a = startKited();
+  const b = startKited();
+  // 组网里的另一台设备没有跑 kited：/machine 读不到。记下被读了几次，确认来源 IP 确实对上了它。
+  let probed = 0;
+  const phone = Bun.serve({ hostname: '::1', port: 0, fetch: () => { probed++; return Response.json({ error: '不是 kited' }, { status: 404 }); } });
+  let proxy: ReturnType<typeof serve> | undefined;
+  try {
+    const registered = await registerCheckout(a, newDir(a.root, 'notes', { 'a.txt': '一\n' }));
+    proxy = serve(a.daemon.kite, { hostname: '127.0.0.1', port: 0, remote: true, proxyToken: 'fixture-secret' });
+    const url = proxy.url.origin;
+    const machineId = a.daemon.kite.store.machine.id;
+    const pulls = [
+      { method: 'GET', path: '/sync/changes?wait=0' },
+      { method: 'GET', path: `/git/${registered.project.id}/info/refs?service=git-upload-pack` },
+      { method: 'POST', path: `/git/${registered.project.id}/git-upload-pack` },
+    ];
+    const from = (peer: string, requests = pulls) => Promise.all(requests.map(async ({ method, path }) => {
+      const response = await fetch(url + path, { method,
+        headers: { 'X-Kite-Network': 'fixture-secret', 'X-Kite-Machine': machineId, 'X-Kite-Peer': peer } });
+      await response.arrayBuffer();
+      return response.status;
+    }));
+
+    a.candidates.push({ address: `http://[::1]:${phone.port}`, online: true });
+    expect(await from('100.64.0.9')).toEqual([403, 403, 403]);
+    expect(probed).toBe(0);
+    expect(await from('::1')).toEqual([403, 403, 403]);
+    expect(probed).toBeGreaterThan(0);
+
+    await connect(a, b);
+    expect(await from('127.0.0.1', pulls.slice(0, 2))).toEqual([200, 200]);
+  } finally {
+    await proxy?.stop(true);
+    await phone.stop(true);
+    await b.stop();
+    await a.stop();
   }
 }, 1_000);

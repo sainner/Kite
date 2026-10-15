@@ -4,7 +4,7 @@
  * Claude 订阅登录只能在 Claude Code 里用，不拿来计数。
  */
 import { createHash } from 'node:crypto';
-import type { ApiKey } from './account-client.ts';
+import type { ApiKey } from './account-data/credentials.ts';
 import { agentModels } from './agents/models.ts';
 
 export type TokenCountMethod = 'api' | 'o200k' | 'none';

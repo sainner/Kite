@@ -1,12 +1,13 @@
+import AuthenticationServices
 import SwiftUI
 
 extension AppModel {
-    /// 初始配置以账号和设备入网为准；完成后进入统一项目目录。
+    /// 初始配置以登录 Tailscale、设备上线为准；完成后进入统一项目目录。
     var needsOnboarding: Bool { OnboardingPreview.enabled || !account.ready }
 }
 
 /// Debug build 带 --onboarding-preview 启动，或编译时开启 KITE_ONBOARDING_PREVIEW，从头走一遍初始配置：
-/// 不连接服务，登录和入网只模拟等待，完成后可回到开头。
+/// 不连接组网，登录只模拟等待，完成后可回到开头。
 enum OnboardingPreview {
     static var enabled: Bool {
         #if DEBUG && KITE_ONBOARDING_PREVIEW
@@ -19,52 +20,48 @@ enum OnboardingPreview {
     }
 }
 
-/// 两端完成设备入网后，直接浏览所有工作机的项目与检出。
+/// 两端登录上线后，直接浏览所有工作机的项目与检出。登录地址出现时（首次配置或登录失效后重新登录）在这里弹出登录页。
 struct AppRoot: View {
     @Environment(AppModel.self) private var model
+    /// 正在显示的登录页；登录完成或放弃时关掉。
+    @State private var login = LoginPage()
 
     var body: some View {
-        if model.needsOnboarding {
-            Onboarding()
-        } else {
-            AdaptiveWorkspace()
+        Group {
+            if model.needsOnboarding {
+                Onboarding()
+            } else {
+                AdaptiveWorkspace()
+            }
+        }
+        // 用户关掉登录页就不再等。
+        .onChange(of: model.account.loginURL) { _, url in
+            guard let url else { login.close(); return }
+            login.open(url) { model.account.cancelJoin() }
         }
     }
 }
 
-/// 首次使用的账号与设备配置，两端都铺满整个窗口。
-/// 从上到下：点阵在背景上拼出这一步的标志，进入下一步时逐格形变成下一个；标题直接压在背景上；
-/// 底部的卡片只放这一步要填的、要做的，高度随内容，没有要操作的步骤不出卡片。
-/// 先登录或扫码加入账号，Mac 再选择执行任务或仅远程控制；入网完成直接进入 App，项目创建留在之后。
+/// 首次使用的设备配置，两端都铺满整个窗口。
+/// 只有「组网」一页：登录 Tailscale，Mac 在同一页里先选执行任务还是仅远程控制。上线后直接进入 App，项目创建留在之后。
+/// 从上到下：点阵在背景上拼出标志；标题直接压在背景上；底部的卡片放 Mac 的用途和登录按钮，高度随内容，正在登录时不出卡片。
 struct Onboarding: View {
-    /// 登录账号的两种方式；扫码在 iPhone 和 iPad 上提供。
-    enum Method: Hashable { case scan, manual }
-
-    /// 当前这一步，各有自己的标志。
-    /// 入网完成后直接进入 App，没有收尾页。
+    /// 上线后直接进入 App，没有收尾页。
     enum Phase: Hashable {
-        case prepare
-        case connect(Method)
-        /// 扫码或手动发起连接之后，直到连上或失败。
-        case connecting(Method)
+        case network
+        /// 发起登录之后，直到上线或失败；登录页在浏览器里。
+        case connecting
 
-        /// 正在连接时没有要操作的，不出卡片。
-        var hasCard: Bool {
-            if case .connecting = self { false } else { true }
-        }
+        /// 正在登录时没有要操作的，不出卡片。
+        var hasCard: Bool { self == .network }
     }
 
     @Environment(AppModel.self) private var model
     @Environment(\.self) private var environment
     @State private var stage = DotStage()
-    /// 连接之前停在哪一页：准备工作机或连接。
-    @State private var page = Phase.connect(.manual)
-    @State private var address = ""
-    @State private var code = ""
-    @State private var registering = false
+    #if os(macOS)
     @State private var role = "worker"
-    /// 正在填的输入框；点卡片外、输入框外收起键盘。
-    @FocusState private var focus: String?
+    #endif
     @State private var progress = CardPhase.idle
     private var working: Bool { progress.working }
     /// 标志区在窗口坐标中的范围：标题以上露出背景的那块。
@@ -79,37 +76,28 @@ struct Onboarding: View {
     @State private var homeInset: CGFloat = 0
     #endif
     #if DEBUG
-    /// 预览时代替真实的账号状态；入网完成时回到开头。
-    private struct Simulation: Equatable {
-        var signedIn = false
-        var joining = false
-    }
-    @State private var simulation: Simulation?
+    /// 预览时只模拟等待，上线时回到开头。
+    @State private var previewing = false
     #endif
 
     private static let inset = CardMetrics.inset
-    /// 完成一步时的波比发送消息的慢，配合标志形变。
-    private static let wavePace = 0.24
     /// 标题与卡片那一栏的宽度：窄窗口里居中，宽窗口里靠右。
     private static let columnWidth: CGFloat = 504
 
     var body: some View {
         GeometryReader { geo in
-            // 键盘之外的安全区都忽略了，底部还剩的就是键盘
-            let keyboard = geo.safeAreaInsets.bottom > 0
             Group {
                 if Self.isWide(geo.size) {
                     wideLayout(size: geo.size)
                 } else {
-                    narrowLayout(size: geo.size, keyboard: keyboard)
+                    narrowLayout(size: geo.size)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .contentShape(Rectangle())
-            .endsTyping(focus != nil) { focus = nil }
             #if DEBUG
             .overlay(alignment: .topTrailing) {
-                if simulation != nil {
+                if previewing {
                     Button("重新开始", systemImage: "arrow.counterclockwise", action: restartPreview)
                         .buttonStyle(.glass)
                         .padding(Metrics.padding * 2)
@@ -141,58 +129,16 @@ struct Onboarding: View {
         .frame(minWidth: 528, minHeight: 576)
         #endif
         .onAppear {
-
             #if DEBUG
             if OnboardingPreview.enabled { restartPreview() }
             #endif
         }
-        #if os(iOS)
-        .onChange(of: model.invite, initial: true) { _, invite in
-            // 也可能是用系统相机扫的码，从链接打开
-            if case .failed(let message) = invite {
-                page = .connect(.scan)
-                progress = .failed(message) {
-                    if signedIn { joinDevice() } else { go(.connect(.scan)) }
-                }
-            }
-        }
-        #endif
         .onChange(of: logo, initial: true) { refreshLogo() }
         .animation(.snappy, value: phase)
     }
 
-    /// 账号状态：预览时用模拟的。
-    private var signedIn: Bool {
-        #if DEBUG
-        if let simulation { return simulation.signedIn }
-        #endif
-        return model.account.signedIn
-    }
-
-    private var joining: Bool {
-        #if DEBUG
-        if let simulation { return simulation.joining }
-        #endif
-        #if os(iOS)
-        return model.invite == .joining
-        #else
-        return false
-        #endif
-    }
-
-    private var previewing: Bool {
-        #if DEBUG
-        simulation != nil
-        #else
-        false
-        #endif
-    }
-
     private var phase: Phase {
-        if joining || model.account.joining { return .connecting(.scan) }
-        if working { return .connecting(.manual) }
-        if signedIn { return .prepare }
-        return page == .prepare ? .connect(.manual) : page
+        model.account.joining || working ? .connecting : .network
     }
 
     // MARK: 排布
@@ -201,16 +147,16 @@ struct Onboarding: View {
     private static func isWide(_ size: CGSize) -> Bool { size.width >= 840 && size.height >= 480 }
 
     /// 上面露出背景拼标志，下面标题和贴底的卡片。标题和卡片按内容定高，剩下的才给标志；
-    /// 键盘弹出等放不下的时候标志先让，卡片最多占到标题以下，再放不下正文才滚动。
-    private func narrowLayout(size: CGSize, keyboard: Bool) -> some View {
+    /// 放不下的时候标志先让，卡片最多占到标题以下，再放不下正文才滚动。
+    private func narrowLayout(size: CGSize) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             logoSpace
             titleBlock
                 .padding(.horizontal, Self.inset)
-                .padding(.bottom, phase.hasCard ? Self.inset : Self.inset * 2 + bottomInset(keyboard: keyboard))
+                .padding(.bottom, phase.hasCard ? Self.inset : Self.inset * 2 + bottomInset)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { titleHeight = $0 }
             if phase.hasCard {
-                card(keyboard: keyboard, wide: false, maxHeight: size.height - Metrics.padding * 2 - titleHeight)
+                card(wide: false, maxHeight: size.height - Metrics.padding * 2 - titleHeight)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -231,7 +177,7 @@ struct Onboarding: View {
                     .padding(.bottom, Self.inset)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { titleHeight = $0 }
                 if phase.hasCard {
-                    card(keyboard: false, wide: true, maxHeight: size.height - Metrics.padding * 2 - titleHeight)
+                    card(wide: true, maxHeight: size.height - Metrics.padding * 2 - titleHeight)
                         .transition(.opacity.combined(with: .offset(y: Self.inset)))
                 }
                 Spacer(minLength: 0)
@@ -243,7 +189,7 @@ struct Onboarding: View {
         .padding(.vertical, Metrics.padding)
     }
 
-    /// 露出背景、拼标志的那块；iPhone 和 iPad 扫码时放取景框。
+    /// 露出背景、拼标志的那块。
     private var logoSpace: some View {
         Color.clear
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -252,9 +198,6 @@ struct Onboarding: View {
                 // onChange(of: logo) 拿到的区域会慢一拍，区域一变就按当前状态重摆
                 refreshLogo()
             }
-            #if os(iOS)
-            .overlay(alignment: .topLeading) { scanWindow }
-            #endif
     }
 
     /// 窄布局里一栏居中，左边落在模块线上；放不下一栏时卡片两边各留一个模块。
@@ -262,16 +205,16 @@ struct Onboarding: View {
         DotMetrics.snapDown(max(Metrics.padding, (width - Self.columnWidth) / 2))
     }
 
-    /// iPhone 上卡片伸到屏幕底边，内容在 Home 条之上结束；键盘弹出时卡片落在键盘上。
-    private func bottomInset(keyboard: Bool) -> CGFloat {
+    /// iPhone 上卡片伸到屏幕底边，内容在 Home 条之上结束。
+    private var bottomInset: CGFloat {
         #if os(iOS)
-        keyboard ? 0 : max(0, homeInset - Metrics.padding - 8)
+        max(0, homeInset - Metrics.padding - 8)
         #else
         0
         #endif
     }
 
-    /// 背景上要拼的标志：哪一个、放在哪、是否在等待。标志区放不下整个标志时（键盘弹出、窗口太矮）退回点。
+    /// 背景上要拼的标志：放在哪、是否在等待。标志区放不下整个标志时（窗口太矮）退回点。
     private struct Logo: Equatable {
         var figure: DotFigure?
         var area: CGRect
@@ -281,13 +224,11 @@ struct Onboarding: View {
     private var logo: Logo? {
         guard let logoArea else { return nil }
         let colors = DotFigure.letters(accent: DotColor(Color.accentColor.resolve(in: environment)))
-        let figure = OnboardingLogos.figure(for: phase, colors: colors)?.trimmed()
+        let figure = OnboardingLogos.figure(colors: colors).trimmed()
         // 标志区放不下时往上借到窗口顶边（iPhone 上是状态栏那一截背景），还放不下才退回点
         let tall = CGRect(x: logoArea.minX, y: 0, width: logoArea.width, height: logoArea.maxY)
-        let area = figure.flatMap { figure in
-            [logoArea, tall].first {
-                CGFloat(figure.rows) * DotMetrics.pitch <= $0.height && CGFloat(figure.columns) * DotMetrics.pitch <= $0.width
-            }
+        let area = [logoArea, tall].first {
+            CGFloat(figure.rows) * DotMetrics.pitch <= $0.height && CGFloat(figure.columns) * DotMetrics.pitch <= $0.width
         }
         return Logo(figure: area == nil ? nil : figure, area: area ?? logoArea, breathing: !phase.hasCard)
     }
@@ -295,44 +236,12 @@ struct Onboarding: View {
     /// 按当前状态摆标志；同一个标志在同一处时什么也不做。
     private func refreshLogo() {
         guard let logo else { return }
-        let previous = stage.shownFigure()
-        let previousFrame = stage.figureFrame()
         stage.show(logo.figure, in: logo.area, breathing: logo.breathing)
-        // 登录完成、换到选择用途时，从刚完成的登录标志发波。
-        if phase == .prepare, previous != nil, previous != logo.figure, logo.figure != nil, let frame = previousFrame {
-            stage.emitWave(from: frame, pace: Self.wavePace)
-        }
     }
-
-    #if os(iOS)
-    /// 扫码时取景框占住标志区：正方形，边落在模块线上。
-    /// 中线取离区域中线最近的模块线或模块中线，边长的模块数随之取奇偶，两侧露出的点数相同，不会一边宽一边窄。
-    private func scanFrame(in area: CGRect) -> CGRect {
-        let half = DotMetrics.module / 2
-        let center = (area.midX / half).rounded()
-        var modules = Int(min(area.width - Metrics.padding * 2, area.height - Metrics.padding * 2, 336) / DotMetrics.module)
-        if (Int(center) - modules) % 2 != 0 { modules -= 1 }
-        let side = CGFloat(modules) * DotMetrics.module
-        return CGRect(x: center * half - side / 2, y: DotMetrics.snapDown(area.midY - side / 2),
-                      width: side, height: side)
-    }
-
-    @ViewBuilder
-    private var scanWindow: some View {
-        if phase == .connect(.scan), let logoArea {
-            let frame = scanFrame(in: logoArea)
-            let simulate: (() -> Void)? = previewing ? { simulateScan() } : nil
-            QRScanWindow(onScan: { scanned($0) }, onSimulate: simulate)
-                .frame(width: frame.width, height: frame.height)
-                .offset(x: frame.minX - logoArea.minX, y: frame.minY - logoArea.minY)
-                .transition(.opacity.combined(with: .scale(scale: 0.96)))
-        }
-    }
-    #endif
 
     // MARK: 标题
 
-    /// 标题与说明直接压在背景上；换步骤时新的标题从下面浮上来，旧的淡掉。
+    /// 标题与说明直接压在背景上；开始登录时新的标题从下面浮上来，旧的淡掉。
     private var titleBlock: some View {
         ZStack(alignment: .bottomLeading) {
             VStack(alignment: .leading, spacing: 10) {
@@ -349,10 +258,8 @@ struct Onboarding: View {
 
     private var title: String {
         switch phase {
-        case .connecting: signedIn ? "正在加入设备" : "正在登录"
-        case .prepare: "这台设备用来做什么"
-        case .connect(.scan): "扫码登录 Kite"
-        case .connect(.manual): registering ? "创建 Kite 账号" : "登录 Kite"
+        case .network: "组网"
+        case .connecting: "正在登录"
         }
     }
 
@@ -360,13 +267,9 @@ struct Onboarding: View {
     private var detail: some View {
         switch phase {
         case .connecting:
-            note("正在完成账号登录和设备入网，请稍候。")
-        case .prepare:
-            note("同一账号下的设备会自动加入网络，随时可以选择工作机。")
-        case .connect(.scan):
-            note("扫描已登录设备在“我的设备”中显示的二维码。")
-        case .connect(.manual):
-            note("使用一个账号管理你的设备。")
+            note("在打开的页面里登录 Tailscale，完成后自动继续。")
+        case .network:
+            note("用 Tailscale 完成设备组网。")
         }
     }
 
@@ -378,9 +281,9 @@ struct Onboarding: View {
     // MARK: 卡片
 
     /// 窄窗口里卡片贴底，iPhone 上底边跟着屏幕圆角；宽窗口里是一张四角相同的卡片。
-    private func card(keyboard: Bool, wide: Bool, maxHeight: CGFloat) -> some View {
+    private func card(wide: Bool, maxHeight: CGFloat) -> some View {
         #if os(iOS)
-        let bottomRadius = keyboard || wide ? Metrics.cardRadius : max(Metrics.cardRadius, screenRadius - Metrics.padding)
+        let bottomRadius = wide ? Metrics.cardRadius : max(Metrics.cardRadius, screenRadius - Metrics.padding)
         #else
         let bottomRadius = Metrics.cardRadius
         #endif
@@ -390,21 +293,20 @@ struct Onboarding: View {
         // 卡片总高取模块的整数倍，底边落在模块线上时顶边也在
         let total = DotMetrics.snapUp(bodyHeight + footerHeight)
         return VStack(spacing: 0) {
+            // iPhone、iPad 只做控制端，卡片里只有按钮
+            #if os(macOS)
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 16) { cardBody }
-                        .id(phase)
-                        .transition(.opacity)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding([.horizontal, .top], Self.inset)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { bodyHeight = $0 }
+                roles
+                    .padding([.horizontal, .top], Self.inset)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { bodyHeight = $0 }
             }
             .scrollBounceBehavior(.basedOnSize)
             .frame(height: max(0, min(total, maxHeight) - footerHeight))
-            footer
+            #endif
+            CardActions(primary: "用 Tailscale 登录", icon: Image("BrandTailscale"), enabled: !working,
+                        phase: $progress, action: joinDevice)
                 .padding(Self.inset)
-                .padding(.bottom, wide ? 0 : bottomInset(keyboard: keyboard))
+                .padding(.bottom, wide ? 0 : bottomInset)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { footerHeight = $0 }
         }
         .background(Theme.card, in: shape)
@@ -412,143 +314,37 @@ struct Onboarding: View {
         .animation(.snappy, value: total)
     }
 
-    @ViewBuilder
-    private var cardBody: some View {
-        switch phase {
-        case .connecting:
-            EmptyView()
-        case .prepare:
-            #if os(macOS)
-            Picker("设备用途", selection: Binding(get: { model.account.role ?? role }, set: { role = $0 })) {
-                Text("在这台 Mac 上运行任务").tag("worker")
-                Text("仅远程控制").tag("controller")
-            }.pickerStyle(.radioGroup).disabled(model.account.role != nil)
-            note((model.account.role ?? role) == "worker" ? "安装 kited，让任务在这台 Mac 上运行。你也可以控制其他工作机。" : "加入设备网络，控制账号下的工作机。这台 Mac 不安装 kited。")
-            #else
-            note("这台设备用来控制账号下的工作机。")
-            #endif
-        case .connect(.scan):
-            note("二维码五分钟内有效，只能使用一次。")
-        case .connect(.manual):
-            OnboardingField(label: "邮箱", prompt: "you@example.com", text: $address, focus: $focus,
-                            submit: connect, scan: { registering = false; go(.connect(.scan)) })
-            CardField(label: "密码", focused: focus == "密码") {
-                SecureField(registering ? "至少 10 个字符" : "账号密码", text: $code)
-                    .textContentType(registering ? .newPassword : .password)
-                    .focused($focus, equals: "密码")
-                    .onSubmit(connect)
-                    .cardInput { focus = "密码" }
+    #if os(macOS)
+    /// 这台 Mac 的用途，两张卡片并排。
+    private var roles: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            CardLabel("选择这台设备的用途")
+            HStack(spacing: 12) {
+                CardChoice(title: "控制端", detail: "远程控制其他工作机", symbol: .remote, selected: role == "controller") { role = "controller" }
+                CardChoice(title: "执行端", detail: "在这台 Mac 上运行任务", symbol: .cloudComputing, selected: role == "worker") { role = "worker" }
             }
-            Button(registering ? "已有账号，去登录" : "没有账号？创建一个") { registering.toggle(); progress = .idle }
-                .buttonStyle(.pointingPlain).font(Theme.secondary)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
         }
+        .disabled(working)
     }
-
-    @ViewBuilder
-    private var footer: some View {
-        switch phase {
-        case .connecting:
-            EmptyView()
-        case .prepare:
-            buttons(primary: "加入设备", enabled: !working, action: joinDevice, secondary: "退出登录") {
-                perform { try await model.account.signOut() } simulated: { restartPreview() }
-            }
-        case .connect(.scan):
-            buttons(primary: "账号密码登录", enabled: !working, action: { go(.connect(.manual)) }, prominent: false)
-        case .connect(.manual):
-            buttons(primary: registering ? "创建账号" : "登录", enabled: !working && address.contains("@") && (registering ? code.count >= 10 : !code.isEmpty), action: connect)
-        }
-    }
-
-    private func buttons(primary: String, enabled: Bool, action: @escaping () -> Void,
-                         prominent: Bool = true,
-                         secondary: String? = nil, secondaryAction: @escaping () -> Void = {}) -> some View {
-        CardActions(primary: primary, enabled: enabled, prominent: prominent, secondary: secondary,
-                    secondaryEnabled: !working, phase: $progress, action: action, secondaryAction: secondaryAction)
-    }
+    #endif
 
     // MARK: 操作
-
-    private func go(_ page: Phase) {
-        focus = nil
-        progress = .idle
-        #if os(iOS)
-        model.invite = nil
-        #endif
-        self.page = page
-    }
-
-    private func connect() {
-        perform {
-            // iPhone 登录成功后还要入网；入网失败重试时沿用已保存的登录，不再使用已清空的密码。
-            if !model.account.signedIn {
-                try await model.account.signIn(email: address, password: code, register: registering)
-                code = ""
-            }
-            #if os(iOS)
-            try await model.account.join(role: "controller", name: AppModel.deviceName)
-            #endif
-        } simulated: {
-            #if DEBUG && os(macOS)
-            simulation?.signedIn = true
-            #elseif os(iOS)
-            restartPreview()
-            #endif
-        }
-    }
 
     private func joinDevice() {
         perform {
             #if os(macOS)
-            try await model.account.join(role: role, name: AppModel.deviceName)
+            try await model.account.join(role: role)
             #else
-            try await model.account.join(role: "controller", name: AppModel.deviceName)
+            try await model.account.join(role: "controller")
             #endif
         } simulated: { restartPreview() }
     }
-
-    #if os(iOS)
-    /// 只认 kite://join 链接；扫到别的码提示一下，取景框继续扫。
-    private func scanned(_ text: String) {
-        guard !joining, let url = URL(string: text) else { return }
-        guard url.scheme == "kite", url.host() == "join" else {
-            progress = .failed("这不是 Kite 的登录二维码") { go(.connect(.scan)) }
-            return
-        }
-        progress = .idle
-        #if DEBUG
-        if simulation != nil { simulateScan(); return }
-        #endif
-        emitScanWave()
-        model.invite = nil
-        Task { await model.acceptInvite(url) }
-    }
-
-    private func simulateScan() {
-        #if DEBUG
-        guard simulation != nil, !joining else { return }
-        emitScanWave()
-        simulation?.joining = true
-        Task {
-            try? await Task.sleep(for: .seconds(2.5))
-            restartPreview()
-        }
-        #endif
-    }
-
-    /// 扫到码时从镜头取景框外沿推开一道波。
-    private func emitScanWave() {
-        if let logoArea { stage.emitWave(from: scanFrame(in: logoArea), pace: Self.wavePace) }
-    }
-    #endif
 
     /// simulated 只用于预览：不执行 action，等一会儿后改模拟的状态。
     private func perform(_ action: @escaping () async throws -> Void, simulated: @escaping () -> Void) {
         $progress.run {
             #if DEBUG
-            if simulation != nil {
+            if previewing {
                 try? await Task.sleep(for: .seconds(2.5))
                 simulated()
                 return
@@ -558,45 +354,52 @@ struct Onboarding: View {
         }
     }
 
-    /// 预览从未登录开始，入网完成后回到这里。
+    /// 预览从头开始，上线后回到这里。
     private func restartPreview() {
         #if DEBUG
-        simulation = Simulation()
-        page = .connect(.manual)
+        previewing = true
         progress = .idle
-        code = ""
         #endif
     }
 }
 
-/// 卡片里的邮箱输入框，iPhone 上右侧带扫码登录。焦点由整页共用，按标签区分。
-private struct OnboardingField: View {
-    let label: String
-    let prompt: String
-    @Binding var text: String
-    var focus: FocusState<String?>.Binding
-    let submit: () -> Void
-    let scan: () -> Void
+/// 登录页：在 App 里弹出的网页登录（ASWebAuthenticationSession），App 停在前台，iPhone 不会因切到浏览器而关掉组网节点。
+/// Tailscale 登录完不会跳回 App，登录页由 App 在设备上线后关掉；用户自己关掉时调 cancelled。
+@MainActor final class LoginPage: NSObject, ASWebAuthenticationPresentationContextProviding {
+    private var session: ASWebAuthenticationSession?
+    private var url: URL?
 
-    var body: some View {
-        CardField(label: label, focused: focus.wrappedValue == label) {
-            HStack(spacing: 0) {
-                TextField(prompt, text: $text)
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
-                    .focused(focus, equals: label)
-                    .onSubmit(submit)
-                    .cardInput { focus.wrappedValue = label }
-                #if os(iOS)
-                Button(action: scan) {
-                    PaneButtonLabel("扫码登录", systemImage: "qrcode.viewfinder")
-                }
-                .buttonStyle(PaneButtonStyle())
-                .padding(.trailing, 4)
-                #endif
+    func open(_ url: URL, cancelled: @escaping @MainActor () -> Void) {
+        guard url != self.url else { return }
+        close()
+        self.url = url
+        // 回调在系统的 XPC 队列上（登录完成后 close 取消会话时也会回调），闭包不能继承主线程隔离，否则一进来就被运行时的隔离检查终止
+        let session = ASWebAuthenticationSession(url: url, callbackURLScheme: nil) { @Sendable [weak self] _, error in
+            Task { @MainActor in
+                guard let self, self.url == url else { return }
+                self.session = nil
+                self.url = nil
+                if (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin { cancelled() }
             }
+        }
+        session.presentationContextProvider = self
+        self.session = session
+        session.start()
+    }
+
+    func close() {
+        url = nil
+        session?.cancel()
+        session = nil
+    }
+
+    nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        MainActor.assumeIsolated {
+            #if os(macOS)
+            NSApp.keyWindow ?? NSApp.windows.first ?? ASPresentationAnchor()
+            #else
+            UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first ?? ASPresentationAnchor()
+            #endif
         }
     }
 }

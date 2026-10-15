@@ -45,11 +45,6 @@ final class AppModel {
         set { activeConnection?.templates = newValue }
     }
     var error: String?
-    #if os(iOS)
-    /// 扫码登录的进度；后台重连的错误不覆盖它。
-    enum InviteState: Equatable { case joining, failed(String) }
-    var invite: InviteState?
-    #endif
     /// 正在打开的新建表单：添加项目或新建工作区。
     var newWorkspace: NewWorkspace.Mode?
     /// 设备一栏在内容区显示的页面。
@@ -189,19 +184,6 @@ final class AppModel {
         }
     }
 
-    #if os(iOS)
-    /// iPhone 扫描已登录设备显示的二维码，获得独立账号会话并入网。
-    func acceptInvite(_ url: URL) async {
-        guard url.scheme == "kite", url.host() == "join", invite != .joining else { return }
-        invite = .joining
-        do {
-            try await account.accept(url)
-            try await account.join(role: "controller", name: Self.deviceName)
-            invite = nil
-        } catch { invite = .failed(error.localizedDescription) }
-    }
-    #endif
-
     #if os(macOS)
     static var deviceName: String { Host.current().localizedName ?? "Mac" }
     #else
@@ -234,7 +216,7 @@ final class AppModel {
     }
     var knownProjects: [RemoteProject] {
         var seen = Set<String>()
-        return (account.catalogs.flatMap { $0.snapshot?.projects ?? [] } + workspaces.compactMap(\.remote?.project))
+        return (account.catalogs.flatMap(\.snapshot.projects) + workspaces.compactMap(\.remote?.project))
             .filter { seen.insert($0.id).inserted }
     }
     var availableWorkers: [WorkerConnection] { connections.values.filter(\.connected).sorted { $0.machine.name < $1.machine.name } }
@@ -243,7 +225,7 @@ final class AppModel {
         knownProjects.filter { $0.name == project.name }.count > 1 ? "\(project.name)（\(project.id.prefix(8))）" : project.name
     }
 
-    /// 账号目录决定设备集合；各机事件流、错误与游标独立存续。
+    /// 账号的设备列表决定设备集合，目录摘要从一台连着的工作机读；各机事件流、错误与游标独立存续。
     func connect() async {
         guard account.ready else { return }
         let run = UUID()
@@ -268,7 +250,17 @@ final class AppModel {
             }
             guard !Task.isCancelled, account.ready, connectionRun == run else { return }
             startConnections()
-            do { try await Task.sleep(for: .seconds(15)) } catch { return }
+            // 目录摘要要等一台工作机连上才读得到：每轮先读一次，没读到就每秒再试，读到后等满这一轮。
+            var directory = false
+            for _ in 0..<15 {
+                if !directory, await refreshDirectory() {
+                    directory = true
+                    guard connectionRun == run else { return }
+                    mergeDirectory()
+                    startConnections()
+                }
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            }
         }
     }
 
@@ -279,7 +271,7 @@ final class AppModel {
     }
 
     private func address(_ device: AccountDevice) -> String? {
-        device.id == account.deviceID && account.role == "worker" ? "http://127.0.0.1:5483" : device.address
+        device.id == account.deviceID && account.role == "worker" ? KitedClient.local : device.address
     }
 
     private func discover(_ device: AccountDevice) async {
@@ -302,7 +294,8 @@ final class AppModel {
             workspaces.removeAll { $0.remote?.machine.id == id }
         }
         for entry in account.catalogs {
-            guard let snapshot = entry.snapshot, let address = address(entry.device) else { continue }
+            let snapshot = entry.snapshot
+            guard let address = address(entry.device) else { continue }
             let connection = connections[entry.machineId] ?? WorkerConnection(deviceID: entry.device.id, machine: snapshot.machine, address: address)
             if connection.client.address != address {
                 connection.task?.cancel(); connection.task = nil

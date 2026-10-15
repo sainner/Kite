@@ -5,7 +5,7 @@
 import { existsSync, statfsSync } from 'node:fs';
 import { arch, release } from 'node:os';
 import { dirname, join } from 'node:path';
-import { defaultClonePath, userHome } from './paths.ts';
+import { defaultCheckoutPath, userHome } from './paths.ts';
 import { readSubscriptionCredentials } from './harness/auth.ts';
 import { readClaudeLogin } from './model-accounts.ts';
 import type { Checkout, Machine } from './model.ts';
@@ -26,6 +26,11 @@ export interface Environment {
 
 /** 低于这个剩余空间不建工作区。 */
 export const MIN_FREE_BYTES = 1024 ** 3;
+
+/** 某个会话后端在这台工作机上要的订阅登录。 */
+export const runtimeLogin = (environment: Environment, runtime: string): LoginStatus => environment.logins[runtime === 'claude' ? 'claude' : 'chatgpt'];
+/** 工作树与检出所在的卷都还够用。 */
+export const diskEnough = (environment: Environment): boolean => Math.min(environment.disk.worktrees, environment.disk.checkout) >= MIN_FREE_BYTES;
 
 function freeBytes(path: string): number {
   let existing = path;
@@ -58,9 +63,10 @@ async function claudeLogin(): Promise<LoginStatus> {
   } catch (error) { return { status: 'invalid', message: (error as Error).message }; }
 }
 
-/** checkout 是本机已有的检出；没有时 remote 是项目的归一化远程，用来算默认 clone 位置。 */
-export async function readEnvironment(home: string, machine: Machine, checkout: Checkout | undefined, remote?: string): Promise<Environment> {
-  const clonePath = checkout ? undefined : remote ? defaultClonePath(remote) : undefined;
+/** checkout 是本机已有的检出；没有时按项目的远程（没有远程时按名字）算默认 clone 位置。 */
+export async function readEnvironment(home: string, machine: Machine, checkout: Checkout | undefined,
+  project?: { remote: string | null; name: string }): Promise<Environment> {
+  const clonePath = checkout || !project ? undefined : defaultCheckoutPath(project);
   const [version, chatgpt, claude] = await Promise.all([systemVersion(), chatgptLogin(home), claudeLogin()]);
   return {
     machine: { id: machine.id, name: machine.name },

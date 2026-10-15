@@ -7,6 +7,7 @@ struct ProjectSettingsPage: View {
     @State private var accountProject: AccountProject?
     @State private var target = ""
     @State private var migrating = false
+    @State private var savingHandover = false
     @State private var error: String?
 
     private var checkouts: [RemoteCheckout] { model.checkouts.filter { $0.projectId == project.id } }
@@ -20,17 +21,23 @@ struct ProjectSettingsPage: View {
                 }
                 Section("远程仓库") {
                     LabeledContent("名称", value: project.name)
-                    LabeledContent("地址") {
-                        Text(accountProject?.remote ?? project.remote)
-                            .textSelection(.enabled)
-                    }
-                    if accountProject?.hosted == true {
-                        LabeledContent("托管方式", value: "Kite 托管")
-                        TextField("正式远程，如 github.com/me/repo", text: $target)
+                    if let remote = accountProject?.remote ?? project.remote {
+                        LabeledContent("地址") { Text(remote).textSelection(.enabled) }
+                    } else {
+                        LabeledContent("地址", value: "没有远程，各工作机上的检出互相同步")
+                        TextField("远程地址，如 github.com/me/repo", text: $target)
                             .autocorrectionDisabled()
-                        Button(migrating ? "正在迁移…" : "迁移到正式远程") { migrate() }
+                        Button(migrating ? "正在推送…" : "设为远程") { migrate() }
                             .disabled(migrating || target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
+                }
+                Section {
+                    Toggle("工作机睡眠前自动换机", isOn: Binding(get: { accountProject?.autoHandover == true }, set: { setAutoHandover($0) }))
+                        .disabled(accountProject == nil || savingHandover)
+                } header: {
+                    Text("换机")
+                } footer: {
+                    Text("打开后，工作机将要睡眠时，把这个项目里正在工作的工作区换到另一台在线、已登录模型的工作机，被打断的回合在那边接着做。空闲的工作区不动。")
                 }
                 ProjectConstraintsSection(projectID: project.id)
                 Section("检出") {
@@ -54,7 +61,7 @@ struct ProjectSettingsPage: View {
             }
             .pageForm()
             .task(id: project.id) {
-                do { accountProject = try await model.account.projects().first { $0.id == project.id } }
+                do { accountProject = try await model.registeredProjects().first { $0.id == project.id } }
                 catch is CancellationError { }
                 catch { self.error = error.localizedDescription }
             }
@@ -65,13 +72,23 @@ struct ProjectSettingsPage: View {
         model.workspaces.first { $0.remote?.checkout.id == checkout.id }?.remote?.machine.name ?? "工作机"
     }
 
+    private func setAutoHandover(_ enabled: Bool) {
+        savingHandover = true
+        error = nil
+        Task {
+            defer { savingHandover = false }
+            do { accountProject = try await model.setProjectAutoHandover(project.id, enabled: enabled) }
+            catch { self.error = error.localizedDescription }
+        }
+    }
+
     private func migrate() {
         migrating = true
         error = nil
         Task {
             defer { migrating = false }
             do {
-                accountProject = try await model.account.migrate(project.id, to: target.trimmingCharacters(in: .whitespacesAndNewlines))
+                accountProject = try await model.setProjectRemote(project.id, remote: target.trimmingCharacters(in: .whitespacesAndNewlines))
                 target = ""
             } catch { self.error = error.localizedDescription }
         }

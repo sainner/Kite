@@ -9,8 +9,7 @@ import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import { startCli } from '../cli.ts';
-import { type FakeAccount, startFakeAccount } from '../fake-account.ts';
-import { after, call, linkNewAccount, machine, mark, registerCheckout, startKited, type Kited } from '../harness.ts';
+import { after, call, connect, machine, mark, registerCheckout, startKited, synced, type Kited } from '../harness.ts';
 import { ManualModel, Seen } from '../harness-loop.ts';
 import { connectSse } from '../sse.ts';
 import { git, makeTemp, newRepo } from '../util.ts';
@@ -19,7 +18,6 @@ let kited: Kited | undefined;
 let otherKited: Kited | undefined;
 let restarted: Daemon | undefined;
 const roots: string[] = [];
-const accounts: FakeAccount[] = [];
 afterEach(async () => {
   await restarted?.stop();
   restarted = undefined;
@@ -27,7 +25,6 @@ afterEach(async () => {
   kited = undefined;
   await otherKited?.stop();
   otherKited = undefined;
-  for (const account of accounts.splice(0)) account.stop();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -191,24 +188,22 @@ test('登记检出后首线程工作时即可并行创建同工作区线程，�
 
 /*
  * 依赖 SQLite 外键重建和 git worktree 清理的配合：重启后仍须按 project→checkout→workspace→thread
- * 找到同一聚合；归档工作区才是删除其工作树的操作。同一项目的第二个检出 clone 自托管远程。
+ * 找到同一聚合；归档工作区才是删除其工作树的操作。同一项目的第二个检出是同一远程的另一份 clone。
  */
 test('重启后保留项目到线程的 SQLite 关系，归档工作区删除工作树', async () => {
   const root = makeTemp('model-');
   roots.push(root);
   const home = join(root, 'kite');
-  const account = linkNewAccount(home);
-  accounts.push(account);
-  const repo = newRepo(root, 'project', { 'base.txt': '原始\n' }, null);
+  const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
   const secondRepo = join(root, 'second-project-dir');
+  git(root, 'clone', '-q', repo, secondRepo);
+  git(secondRepo, 'remote', 'set-url', 'origin', git(repo, 'remote', 'get-url', 'origin'));
   const model = new ManualModel();
   restarted = startDaemon({ home, port: 0, lightTasks: false, model: () => model });
 
   const project = await call(restarted.url, 'POST', '/checkouts', { path: repo });
   expect(project.status).toBe(200);
-  const secondCheckout = await call(restarted.url, 'POST', '/checkouts', {
-    remote: account.projects.get(project.body.project.id)!.url, path: secondRepo,
-  });
+  const secondCheckout = await call(restarted.url, 'POST', '/checkouts', { path: secondRepo });
   expect(secondCheckout.status).toBe(200);
   expect(secondCheckout.body.checkout.id).not.toBe(project.body.checkout.id);
   expect(secondCheckout.body.workspace.id).not.toBe(project.body.workspace.id);
@@ -270,19 +265,16 @@ test('重启后保留项目到线程的 SQLite 关系，归档工作区删除工
 });
 
 /*
- * 两份 SQLite 数据库经同一账号的项目登记表决定身份：两台机器上 origin 指向同一远程（SSH 与 HTTPS 写法）的检出
+ * 两份 SQLite 数据库经同步的项目登记表决定身份：两台机器上 origin 指向同一远程（SSH 与 HTTPS 写法）的检出
  * 自动归入同一项目，不再手动关联；错误目标的写请求必须在登记前拒绝。并发请求还要经过同一登记队列、
- * 账号服务和 SQLite/Git 操作，其中一次失败不能影响排在后面的重复登记。
+ * 本机登记表和 SQLite/Git 操作，其中一次失败不能影响排在后面的重复登记。
  */
 test('两台工作机登记同一远程的检出自动得到同一项目 ID，并发登记遇到失败后仍幂等', async () => {
-  const accountRoot = makeTemp('model-account-');
-  roots.push(accountRoot);
-  const account = startFakeAccount(accountRoot);
-  accounts.push(account);
-  kited = startKited(undefined, false, account);
-  otherKited = startKited(undefined, false, account);
+  kited = startKited();
+  otherKited = startKited();
   const left = kited;
   const right = otherKited;
+  await connect(left, right);
   // 按 origin 登记不访问远程，地址只需能归一化。
   const leftRepo = newRepo(left.root, 'project', { 'base.txt': '左\n' }, 'https://example.test/Owner/Project.git');
   const rightRepo = newRepo(right.root, 'checkout', { 'base.txt': '右\n' }, 'git@example.test:owner/project.git');
@@ -300,6 +292,7 @@ test('两台工作机登记同一远程的检出自动得到同一项目 ID，�
   expect((await right.call('GET', '/projects')).body).toEqual([]);
 
   const leftProject = await registerCheckout(left, leftRepo);
+  await synced(right, () => right.daemon.kite.registry.get(leftProject.project.id), '右边同步到左边登记的项目');
   const rightProject = await registerCheckout(right, rightRepo);
   expect(rightProject.project).toEqual(leftProject.project);
   expect(leftProject.project.remote).toBe('example.test/owner/project');
@@ -326,7 +319,7 @@ test('两台工作机登记同一远程的检出自动得到同一项目 ID，�
   const filtered = await right.call('GET', `/checkouts?project=${leftProject.project.id}`);
   expect(filtered.body.map((checkout: any) => checkout.id)).toEqual([rightProject.checkout.id]);
   expect((await right.call('GET', '/checkouts')).body).toHaveLength(2);
-  expect(account.projects.size).toBe(2);
+  expect(right.daemon.kite.registry.list()).toHaveLength(2);
 });
 
 /*
@@ -337,7 +330,6 @@ test('插件窗口命令去重，重连保留打开目标且回收后的关窗�
   const root = makeTemp('window-model-');
   roots.push(root);
   const home = join(root, 'kite');
-  accounts.push(linkNewAccount(home));
   const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
   restarted = startDaemon({ home, port: 0, lightTasks: false });
   const daemon = restarted;

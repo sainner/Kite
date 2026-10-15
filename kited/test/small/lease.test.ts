@@ -9,13 +9,20 @@ import { join } from 'node:path';
 import type { Workspace, WorkspaceModel } from '../../src/model.ts';
 import { Store } from '../../src/store.ts';
 import { readLease, remoteLeases, writeLease } from '../../src/workspace/lease.ts';
+import { type FakeGit, startFakeGit } from '../fake-git.ts';
 import { type Kited, listSnapshots, registerCheckout, startKited } from '../harness.ts';
 import { ManualModel } from '../harness-loop.ts';
 import { git, gitOk, newDir, newRepo, useTemp, writeFiles } from '../util.ts';
 
 const temp = useTemp();
 let kited: Kited | undefined;
-afterEach(async () => { await kited?.stop(); kited = undefined; });
+let remotes: FakeGit | undefined;
+afterEach(async () => {
+  await kited?.stop();
+  kited = undefined;
+  remotes?.stop();
+  remotes = undefined;
+});
 
 /** 只用来写对象和推送的空仓库，代表另一台工作机上的检出。 */
 function emptyRepo(parent: string, name: string): string {
@@ -63,7 +70,7 @@ test('lease 比较后更新：同时创建只有一方成功，拿过期的值�
 }, 1000);
 
 /*
- * 几个部分的配合：托管远程上的 lease（ls-remote 与经 http-backend 取回）、线程停止、快照、插件关闭与工作区登记。
+ * 几个部分的配合：项目远程上的 lease（ls-remote 与经 http-backend 取回）、线程停止、快照、插件关闭与工作区登记。
  * 别的机器以更高 epoch 接管后，本机核对要停下运行中的线程、把本机多出的改动存成快照、冻结记录；
  * 根工作区冻结后同一检出目录要另有一个可用的根工作区。独立工作区走同一条冻结路径，只少了另建根工作区。
  */
@@ -71,7 +78,9 @@ test('别的机器以更高 epoch 接管根工作区后核对执行权：运行�
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
-  const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' }, null);
+  remotes = startFakeGit();
+  const remote = remotes.create('project');
+  const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' }, remote.url);
   const registered = await registerCheckout(kk, repo);
   const root = registered.workspace;
   const started = await kk.call('POST', `/workspaces/${root.id}/operations/agent.start`, { operationId: 'worker' });
@@ -81,9 +90,9 @@ test('别的机器以更高 epoch 接管根工作区后核对执行权：运行�
   const running = await model.call(1);
   writeFiles(repo, { 'local.txt': '只在本机\n' });
 
-  // 另一台工作机接管：直接推到托管远程的裸仓库。
+  // 另一台工作机接管：直接推到远程的裸仓库。
   const other = emptyRepo(kk.root, 'other-machine');
-  const access = { url: join(kk.account.repos, `${registered.project.id}.git`), env: {} };
+  const access = { url: remote.bare, env: {} };
   const written = await writeLease(other, root.id, { machine: 'other-machine', epoch: 2, state: 'active' }, null, access);
   expect(written.status).toBe('written');
   // 启动时的那一轮核对若还没结束，第一次调用会并入它；第二次保证有一轮在 lease 写好之后开始。

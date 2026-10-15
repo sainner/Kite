@@ -45,7 +45,8 @@ export type DomainEvent =
   ));
 export type KiteEvent = ThreadEvent | DomainEvent;
 /** 集成在本地完成后推送到远程；推送失败不撤销本地主线，下次集成或现场推送时一并推上去。 */
-export type PushOutcome = { status: 'pushed' } | { status: 'failed'; message: string };
+/** local：项目没有远程，只合回本机主线，其他工作机同步时快进过来。 */
+export type PushOutcome = { status: 'pushed' } | { status: 'local' } | { status: 'failed'; message: string };
 export type AdoptResult =
   | { status: 'adopted'; commit: string; push: PushOutcome }
   /** 有开放线程时交给 agent 解决冲突，回合结束后自动重试。 */

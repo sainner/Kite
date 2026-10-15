@@ -49,13 +49,14 @@ struct SettingsContent: View {
 
 /// 每台工作机的子页。文件尚未接通。
 nonisolated enum DrivePage: String, SidebarPage {
-    case accounts, files
+    case accounts, network, files
 
     var id: Self { self }
 
     var title: String {
         switch self {
         case .accounts: "账号"
+        case .network: "网络"
         case .files: "文件"
         }
     }
@@ -63,6 +64,7 @@ nonisolated enum DrivePage: String, SidebarPage {
     var icon: TablerSymbol {
         switch self {
         case .accounts: .user
+        case .network: .world
         case .files: .folder
         }
     }
@@ -78,6 +80,10 @@ struct DriveContent: View {
         Group {
             switch model.drivePage {
             case .accounts: TilesLayer(group: .accounts(model.accountWindows))
+            case .network:
+                SectionPage(header: PaneHeader(title: model.accountWorker?.machine.name ?? "设备", subtitle: model.drivePage.title)) {
+                    if let worker = model.accountWorker { NetworkSettingsPage(connection: worker) }
+                }
             case .files:
                 SectionPage(header: PaneHeader(title: model.accountWorker?.machine.name ?? "设备", subtitle: model.drivePage.title)) {
                     EmptyView()
@@ -136,7 +142,7 @@ struct NewWorkspace: View {
         }
         .task(id: source) {
             guard source == .remote, repositories == nil else { return }
-            repositories = try? await model.account.gitHubRepositories()
+            repositories = try? await model.gitHubRepositories()
         }
     }
 
@@ -368,7 +374,6 @@ struct ServiceConnection: ViewModifier {
                 if !signedIn { model.clearAccountConnections(); Task { await Tailnet.shared.stop() } }
             }
             #if os(iOS)
-            .onOpenURL { url in Task { await model.acceptInvite(url) } }
             .onChange(of: phase) { _, phase in
                 guard phase == .background else { return }
                 TimingTrace.mark("进入后台")

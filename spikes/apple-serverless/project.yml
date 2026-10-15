@@ -1,0 +1,54 @@
+name: KiteSpike
+options:
+  deploymentTarget:
+    iOS: "26.0"
+    macOS: "26.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: KURDN59Q7P
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    GENERATE_INFOPLIST_FILE: YES
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  KiteSpike:
+    type: application
+    platform: iOS
+    sources: [iOS, Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sainner.kite.spike
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Kite 实验
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: iOS/Info.plist
+      properties:
+        # 组网里的工作机走明文 HTTP（链路由 WireGuard 加密），与 Kite App 一样放开 ATS。
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+    dependencies:
+      - framework: ../../app/Vendor/TailscaleKit.xcframework
+        embed: true
+    # iCloud 与推送要付费开发者团队，个人团队签不出描述文件；开通后恢复下面的权限再做 CloudKit 实验。
+    # entitlements:
+    #   path: iOS/KiteSpike.entitlements
+    #   properties:
+    #     aps-environment: development
+    #     com.apple.developer.icloud-container-identifiers: [iCloud.com.sainner.kite]
+    #     com.apple.developer.icloud-services: [CloudKit]
+  KiteSpikeMac:
+    type: application
+    platform: macOS
+    sources: [Mac, Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sainner.kite.spike.mac
+        INFOPLIST_KEY_LSUIElement: YES
+    entitlements:
+      path: Mac/KiteSpikeMac.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers: [iCloud.com.sainner.kite]
+        com.apple.developer.icloud-services: [CloudKit]

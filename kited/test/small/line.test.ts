@@ -1,26 +1,23 @@
 /**
- * Line（docs/Line与工作区流转.md「Line」）：两台本进程 kited 共用一个账号替身，A 启用 Line，B 上有工作线程。
- * 跨机调用经 startKited 的 peers.directory 直达 B 的监听地址。Line 的项目是托管项目，启用时照常经 http 推送；
- * 之后的现场推送经 HOME 的 url.insteadOf 直接写托管裸仓库。
+ * Line（docs/Line与工作区流转.md「Line」）：两台本进程 kited，A 启用 Line，B 上有工作线程。
+ * 跨机调用经 startKited 的 peers.directory 直达 B 的监听地址。Line 的项目是没有远程的项目，回合结束只在本机提交现场。
  * 每个测试换一个 HOME：Line 的项目固定在 ~/code/kite-line，同一进程里前一个测试删掉再建的同路径仓库会碰上
  * 快照模块按路径记住的私有索引目录（src/workspace/snapshots.ts 的 indexes），回合收尾失败。
  */
 import { afterEach, expect, jest, spyOn, test } from 'bun:test';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AccountMachine } from '../../src/account-client.ts';
+import type { AccountMachine } from '../../src/account-data/directory.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { Input, Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
 import { type Delegation, type InboxItem, type InboxRecord, monitorState } from '../../src/line/monitor.ts';
 import type { WorkspaceModel } from '../../src/model.ts';
 import type { DisplayState } from '../../src/transcript/protocol.ts';
-import { type FakeAccount, startFakeAccount } from '../fake-account.ts';
 import { after, type Kited, mark, registerCheckout, startKited, waitIdle } from '../harness.ts';
 import { deferred, diskRecords, item, ManualModel } from '../harness-loop.ts';
 import { connectSse } from '../sse.ts';
-import { git, gitOk, makeTemp, newDir, newRepo, until, writeFiles } from '../util.ts';
+import { gitOk, makeTemp, newDir, newRepo, until, writeFiles } from '../util.ts';
 
-let account: FakeAccount | undefined;
 const kiteds: Kited[] = [];
 const dirs: string[] = [];
 /** 测试前的 HOME，测试结束时换回。 */
@@ -33,8 +30,6 @@ afterEach(async () => {
   for (const release of holds.splice(0)) release();
   for (const stream of streams.splice(0)) await stream.close().catch(() => {});
   for (const k of kiteds.splice(0)) await k.stop();
-  account?.stop();
-  account = undefined;
   const home = homes.pop();
   if (home) process.env.HOME = home;
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -54,7 +49,6 @@ async function lineSetup() {
   dirs.push(root);
   homes.push(process.env.HOME!);
   process.env.HOME = newDir(root, 'home');
-  account = startFakeAccount(join(root, 'account'));
   const models = new Map<string, ManualModel>();
   const modelOf = (threadId: string) => {
     let model = models.get(threadId);
@@ -63,7 +57,7 @@ async function lineSetup() {
   };
   const directory: AccountMachine[] = [];
   let hold: { reached: () => void; released: Promise<void> } | undefined;
-  const a = startKited((thread) => modelOf(thread.id), false, account, { peers: { directory: async () => {
+  const a = startKited((thread) => modelOf(thread.id), false, { peers: { directory: async () => {
     const current = hold;
     hold = undefined;
     if (current) { current.reached(); await current.released; }
@@ -77,7 +71,7 @@ async function lineSetup() {
     holds.push(released.resolve);
     return { reached: reached.promise, release: released.resolve };
   };
-  const b = startKited((thread) => modelOf(thread.id), false, account);
+  const b = startKited((thread) => modelOf(thread.id), false);
   kiteds.push(a, b);
   const machineB = b.daemon.kite.store.machine.id;
   directory.push({ id: machineB, name: '工作机 B', online: true, address: b.url });
@@ -86,14 +80,12 @@ async function lineSetup() {
   expect(enabled.status).toBe(200);
   const lineWorkspace = enabled.body as WorkspaceModel;
   const lineId = lineWorkspace.threads[0]!.instanceId;
-  const bare = join(account.repos, `${lineWorkspace.project.id}.git`);
-  git(root, 'config', '--global', `url.${bare}.insteadOf`, account.projects.get(lineWorkspace.project.id)!.url);
 
   const registered = await registerCheckout(b, newRepo(b.root, 'work', { 'a.txt': 'a\n' }));
   const started = await b.call('POST', `/workspaces/${registered.workspace.id}/operations/agent.start`, { operationId: 'worker' });
   expect(started.status).toBe(200);
   const workId = started.body.instanceId as string;
-  return { a, b, modelOf, holdDirectory, directory, machineA: a.daemon.kite.store.machine.id, machineB, lineWorkspace, lineId, bare, workId };
+  return { a, b, modelOf, holdDirectory, directory, machineA: a.daemon.kite.store.machine.id, machineB, lineWorkspace, lineId, workId };
 }
 
 async function send(k: Kited, threadId: string, id: string, text: string) {
@@ -228,10 +220,10 @@ test('Line 停止线程须经用户逐次批准：等待挂在 Line 的线程上
 /*
  * 几个部分的配合：A 的 monitor 跨机读 B 的汇总，把 B 上的提问放进收件箱而不唤醒 Line；用户点代处理才投一条 Kite 来源的输入；
  * Line 的 line_handle 经跨机调用（带 X-Kite-Source）写回 B 上那个等待，B 的工具结果写明由 Line 代答及理由；了结后事项
- * 移出收件箱，没有设备关注时用户算离开，这一项记进离开期间的记录；Line 回合结束后宿主提交并推送现场。
+ * 移出收件箱，没有设备关注时用户算离开，这一项记进离开期间的记录；Line 回合结束后宿主在本机提交现场（没有远程，不推送）。
  * 工作线程能用 question，line_* 只声明给 Line 角色的实例；Line 的角色工具与默认的操作授权合起来，它能用 monitor_*。
  */
-test('B 上的提问进 Line 收件箱而不唤醒 Line，用户点代处理才唤醒；Line 用 line_handle 答复后 B 的线程拿到 Line 代答的结果，事项移出收件箱进处理记录，Line 的现场推到托管远程', async () => {
+test('B 上的提问进 Line 收件箱而不唤醒 Line，用户点代处理才唤醒；Line 用 line_handle 答复后 B 的线程拿到 Line 代答的结果，事项移出收件箱进处理记录，Line 的现场提交到本机', async () => {
   const s = await lineSetup();
   const work = s.modelOf(s.workId);
   const line = s.modelOf(s.lineId);
@@ -276,7 +268,7 @@ test('B 上的提问进 Line 收件箱而不唤醒 Line，用户点代处理才�
   const since = mark(s.a);
   handled.response.complete();
   await waitIdle(s.a, s.lineId, since);
-  await until(() => gitOk(s.bare, 'cat-file', '-e', 'HEAD:.kite/memory/notes.md'), 'Line 的现场推到托管远程', 900);
+  await until(() => gitOk(s.lineWorkspace.checkout.path, 'cat-file', '-e', 'HEAD:.kite/memory/notes.md'), 'Line 的现场提交到本机', 900);
   // 了结的事项不再回到收件箱，也不再唤醒 Line。
   await s.a.daemon.kite.monitor.check();
   expect((await inboxOf(s.a)).items).toEqual([]);

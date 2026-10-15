@@ -36,7 +36,8 @@ enum RemoteWindowState: String, Decodable {
 struct RemoteProject: Codable, Identifiable, Equatable {
     let id: String
     let name: String
-    let remote: String
+    /// 归一化的远程地址；没有远程的项目为空，各工作机上的检出互为远程。
+    let remote: String?
     let createdAt: Int
 }
 
@@ -46,7 +47,7 @@ struct RemoteCheckout: Codable, Identifiable {
     let projectId: String
     let machineId: String
     let path: String
-    let remote: String
+    let remote: String?
     let createdAt: Int
 }
 

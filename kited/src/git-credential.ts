@@ -8,19 +8,22 @@ export interface GitCredential {
   password: string;
 }
 
+/** 按 HTTPS 地址给出访问凭据；没有绑定时为 null，交给用户本机的 git 配置。 */
+export interface GitCredentials {
+  credential(url: string): Promise<GitCredential | null>;
+}
+
 const HELPER = '!f() { test "$1" = get && printf "username=%s\\npassword=%s\\n" "$KITE_GIT_USERNAME" "$KITE_GIT_PASSWORD"; }; f';
 
 export function credentialEnv(url: string, credential: GitCredential | null): Record<string, string> {
-  const env: Record<string, string> = { GIT_TERMINAL_PROMPT: '0' };
-  if (!credential) return env;
+  if (!credential) return { GIT_TERMINAL_PROMPT: '0' };
   const { protocol, host } = new URL(url);
   const key = `credential.${protocol}//${host}.helper`;
-  return {
-    ...env,
-    GIT_CONFIG_COUNT: '2',
-    GIT_CONFIG_KEY_0: key, GIT_CONFIG_VALUE_0: '',
-    GIT_CONFIG_KEY_1: key, GIT_CONFIG_VALUE_1: HELPER,
-    KITE_GIT_USERNAME: credential.username,
-    KITE_GIT_PASSWORD: credential.password,
-  };
+  return { ...gitConfigEnv([[key, ''], [key, HELPER]]), KITE_GIT_USERNAME: credential.username, KITE_GIT_PASSWORD: credential.password };
+}
+
+/** 只对这一次 git 子进程生效的配置（GIT_CONFIG_COUNT），不写配置文件；同时关掉交互式提示。 */
+export function gitConfigEnv(pairs: Array<[string, string]>): Record<string, string> {
+  return { GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_COUNT: String(pairs.length),
+    ...Object.fromEntries(pairs.flatMap(([key, value], index) => [[`GIT_CONFIG_KEY_${index}`, key], [`GIT_CONFIG_VALUE_${index}`, value]])) };
 }

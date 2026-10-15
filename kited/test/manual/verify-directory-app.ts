@@ -5,9 +5,9 @@
 import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import type { Candidate } from '../../src/account-data/directory.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Machine, WorkspaceModel } from '../../src/model.ts';
-import { linkAccount, startFakeAccount } from '../fake-account.ts';
 import { newRepo } from '../util.ts';
 
 async function call(url: string, method: string, path: string, body?: unknown, machineId?: string) {
@@ -52,22 +52,36 @@ async function main() {
   let holdB = false;
   let completed = false;
   let control: Bun.Server<undefined> | undefined;
-  // 两台工作机加入同一账号，项目 ID 由账号的项目登记表按远程分配。
-  const account = startFakeAccount(join(root, 'account'));
+  // 两台工作机互为组网对端：项目登记与目录摘要随账号级数据同步，B 从 A 的检出 clone 没有远程的项目，得到同一项目。
   try {
-    for (const name of ['a', 'b']) {
-      linkAccount(join(root, `kite-${name}`), account);
+    const peers: Candidate[][] = [[], []];
+    for (const [index, name] of ['a', 'b'].entries()) {
       daemons.push(startDaemon({ home: join(root, `kite-${name}`), port: 0, lightTasks: false,
-        model: () => ({ async *stream() { yield { type: 'completed', responseId: 'directory-verification' }; } }) }));
+        model: () => ({ async *stream() { yield { type: 'completed', responseId: 'directory-verification' }; } }),
+        directory: { candidates: () => peers[index]! } }));
     }
     const [a, b] = daemons as [Daemon, Daemon];
+    peers[0]!.push({ address: b.url, online: true });
+    peers[1]!.push({ address: a.url, online: true });
+    await Promise.all([a.kite.directory.refresh(), b.kite.directory.refresh()]);
     const [machineA, machineB] = await Promise.all([machine(a.url), machine(b.url)]);
     const first = await call(a.url, 'POST', '/checkouts', { path: newRepo(root, 'repo-a', { 'base.txt': 'A\n' }, null) }, machineA.id);
     if (first.status !== 200) throw new Error('登记 A 检出失败');
     const shared = first.body as WorkspaceModel;
-    const second = await call(b.url, 'POST', '/checkouts', {
-      remote: account.projects.get(shared.project.id)!.url, path: join(root, 'repo-b'),
-    }, machineB.id);
+    // A 的目录摘要在检出变化后合并约 1 秒才写，B 从摘要里看到这份检出才知道从哪台 clone。
+    const ready = () => !!b.kite.registry.get(shared.project.id) && b.kite.directory.entries()
+      .some((entry) => entry.id === machineA.id && entry.snapshot?.checkouts.some((checkout) => checkout.projectId === shared.project.id));
+    await new Promise<void>((resolve, reject) => {
+      if (ready()) return resolve();
+      const timer = setTimeout(() => { unsubscribe(); reject(new Error('B 没有同步到项目登记和 A 的检出')); }, 10_000);
+      const unsubscribe = b.kite.accountData.subscribe(() => {
+        if (!ready()) return;
+        clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      });
+    });
+    const second = await call(b.url, 'POST', '/checkouts', { project: shared.project.id, path: join(root, 'repo-b') }, machineB.id);
     if (second.status !== 200) throw new Error('登记 B 的同身份项目失败');
     const other = second.body as WorkspaceModel;
     const opened = await call(a.url, 'POST', `/workspaces/${shared.workspace.id}/windows`, {
@@ -167,7 +181,6 @@ async function main() {
     await Promise.all(proxies.map((server) => server.stop(true)));
     await control?.stop(true);
     await Promise.all(daemons.map((daemon) => daemon.stop()));
-    account.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }

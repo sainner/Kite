@@ -38,7 +38,9 @@ function plist(c: Installation): string {
   // launchd 不读取 shell 配置，也不保存发起安装的终端中的凭据或代理。
   const env = { HOME: homedir(), USER: userInfo().username, LOGNAME: userInfo().username, SHELL: '/bin/zsh', LANG: 'en_US.UTF-8',
     PATH: [join(runtime, 'bin'), join(homedir(), '.local/bin'), join(homedir(), '.bun/bin'), '/opt/homebrew/bin', '/opt/homebrew/sbin',
-      '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':'), KITE_HOME: c.home, KITE_PORT: String(c.port) };
+      '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':'), KITE_HOME: c.home, KITE_PORT: String(c.port),
+    // 凭据的封装密钥放登录钥匙串，见 kited/src/account-data/key.ts。
+    KITE_KEYCHAIN: '1' };
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>

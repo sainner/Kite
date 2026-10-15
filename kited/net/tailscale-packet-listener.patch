@@ -1,0 +1,77 @@
+diff --git a/tsnet/tsnet.go b/tsnet/tsnet.go
+index 8aaef64..8d32eb6 100644
+--- a/tsnet/tsnet.go
++++ b/tsnet/tsnet.go
+@@ -314,6 +314,11 @@ type Server struct {
+ 	// field at zero unless you know what you are doing.
+ 	Port uint16
+ 
++	// PacketListener, if non-nil, creates the UDP sockets for WireGuard,
++	// disco and STUN instead of the host network stack. The portmapper is
++	// disabled so that all UDP traffic uses the same path (Kite patch).
++	PacketListener nettype.PacketListener
++
+ 	// AdvertiseTags specifies tags that should be applied to this node, for
+ 	// purposes of ACL enforcement. These can be referenced from the ACL policy
+ 	// document. Note that advertising a tag on the client doesn't guarantee
+@@ -885,16 +890,17 @@ func (s *Server) start() (reterr error) {
+ 	s.dialer = &tsdial.Dialer{Logf: tsLogf} // mutated below (before used)
+ 	s.dialer.SetBus(sys.Bus.Get())
+ 	eng, err := wgengine.NewUserspaceEngine(tsLogf, wgengine.Config{
+-		Tun:           s.Tun,
+-		EventBus:      sys.Bus.Get(),
+-		ListenPort:    s.Port,
+-		NetMon:        s.netMon,
+-		Dialer:        s.dialer,
+-		SetSubsystem:  sys.Set,
+-		ControlKnobs:  sys.ControlKnobs(),
+-		HealthTracker: sys.HealthTracker.Get(),
+-		ExtraRootCAs:  sys.ExtraRootCAs,
+-		Metrics:       sys.UserMetricsRegistry(),
++		Tun:            s.Tun,
++		EventBus:       sys.Bus.Get(),
++		ListenPort:     s.Port,
++		PacketListener: s.PacketListener,
++		NetMon:         s.netMon,
++		Dialer:         s.dialer,
++		SetSubsystem:   sys.Set,
++		ControlKnobs:   sys.ControlKnobs(),
++		HealthTracker:  sys.HealthTracker.Get(),
++		ExtraRootCAs:   sys.ExtraRootCAs,
++		Metrics:        sys.UserMetricsRegistry(),
+ 	})
+ 	if err != nil {
+ 		return err
+diff --git a/wgengine/userspace.go b/wgengine/userspace.go
+index cc45fd4..4ebd467 100644
+--- a/wgengine/userspace.go
++++ b/wgengine/userspace.go
+@@ -46,6 +46,7 @@
+ 	"tailscale.com/types/ipproto"
+ 	"tailscale.com/types/key"
+ 	"tailscale.com/types/logger"
++	"tailscale.com/types/nettype"
+ 	"tailscale.com/types/views"
+ 	"tailscale.com/util/checkchange"
+ 	"tailscale.com/util/clientmetric"
+@@ -226,6 +227,10 @@ type Config struct {
+ 	// If nil, defaults are used.
+ 	ControlKnobs *controlknobs.Knobs
+ 
++	// PacketListener, if non-nil, is passed to magicsock to create its UDP
++	// sockets, and disables the portmapper (Kite patch).
++	PacketListener nettype.PacketListener
++
+ 	// ListenPort is the port on which the engine will listen.
+ 	// If zero, a port is automatically selected.
+ 	ListenPort uint16
+@@ -442,6 +447,9 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error)
+ 		PeerByKeyFunc:  e.PeerByKey,
+ 		ForceDiscoKey:  conf.ForceDiscoKey,
+ 		OnDERPRecv:     conf.OnDERPRecv,
++
++		TestOnlyPacketListener: conf.PacketListener,
++		DisablePortMapper:      conf.PacketListener != nil,
+ 	}
+ 	var err error
+ 	e.magicConn, err = magicsock.NewConn(magicsockOpts)

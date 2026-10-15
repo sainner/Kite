@@ -144,7 +144,7 @@ export class Monitors {
     return this.host.run(workspaceId, async () => {
       const target = this.host.store.instance(origin.instanceId);
       if (!target || target.status !== 'open' || target.workspaceId !== workspaceId) throw new KiteError('只有工作区里打开着的代理能开 monitor', 409);
-      if (this.monitors().filter((instance) => instance.status === 'open' && monitorConfig(instance).target === target.id).length >= PER_TARGET) {
+      if (this.monitors(workspaceId).filter((instance) => instance.status === 'open' && monitorConfig(instance).target === target.id).length >= PER_TARGET) {
         throw new KiteError(`同时开着的 monitor 最多 ${PER_TARGET} 个，先用 monitor_stop 停掉不需要的`, 409);
       }
       const source: MonitorSource = input.command !== undefined ? { id: 'command', kind: 'command', command: input.command }
@@ -161,8 +161,7 @@ export class Monitors {
 
   /** 工作区里代理开的 monitor 与来源状态；Line 的收件箱也是 monitor，不列。 */
   list(workspaceId: string) {
-    return this.monitors().filter((instance) => instance.workspaceId === workspaceId && instance.status === 'open'
-      && 'sources' in monitorConfig(instance))
+    return this.monitors(workspaceId).filter((instance) => instance.status === 'open' && 'sources' in monitorConfig(instance))
       .map((instance) => this.summary(instance));
   }
 
@@ -235,9 +234,11 @@ export class Monitors {
     await Promise.all(all.map((entry) => entry.stop()));
   }
 
-  private monitors(): PluginInstance[] {
-    return this.host.store.workspaces().flatMap((workspace) => this.host.store.instances(workspace.id))
-      .filter((instance) => instance.definitionId === monitorDefinitionId);
+  private monitors(workspaceId?: string): PluginInstance[] {
+    const instances = workspaceId === undefined
+      ? this.host.store.workspaces().flatMap((workspace) => this.host.store.instances(workspace.id))
+      : this.host.store.instances(workspaceId);
+    return instances.filter((instance) => instance.definitionId === monitorDefinitionId);
   }
 
   private launch(instance: PluginInstance, source: MonitorSource): Running {

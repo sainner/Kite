@@ -1,7 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 账号里的一条凭据：类型决定由谁取用，项目为空表示账号共享。保密内容只在新建或替换时提交，之后只看到公开信息。
+/// 工作机上的一条凭据：类型决定由谁取用，项目为空表示账号共享。保密内容只在新建或替换时提交，之后只看到公开信息。
 struct AccountCredential: Decodable, Identifiable, Equatable {
     let id: String
     let type: String
@@ -12,29 +12,6 @@ struct AccountCredential: Decodable, Identifiable, Equatable {
 
     /// 共享密钥在命令里的引用。
     var reference: String { "{\(projectId == nil ? "account" : "project").\(name)}" }
-}
-
-extension KiteAccount {
-    func credentials(type: String, projectID: String = "") async throws -> [AccountCredential] {
-        try await request("/api/credentials?type=\(type)" + (projectID.isEmpty ? "" : "&projectId=\(projectID)"), as: [AccountCredential].self)
-    }
-
-    func createCredential(type: String, name: String, projectID: String = "", meta: [String: String] = [:], secret: [String: String]) async throws {
-        struct Body: Encodable { let type: String; let name: String; let projectId: String?; let meta: [String: String]; let secret: [String: String] }
-        let _: AccountCredential = try await request("/api/credentials", method: "POST",
-            body: Body(type: type, name: name, projectId: projectID.isEmpty ? nil : projectID, meta: meta, secret: secret), as: AccountCredential.self)
-    }
-
-    /// 类型与范围不变；不提供的项保留原样。
-    func updateCredential(_ id: String, name: String? = nil, meta: [String: String]? = nil, secret: [String: String]? = nil) async throws {
-        struct Body: Encodable { let name: String?; let meta: [String: String]?; let secret: [String: String]? }
-        let _: AccountCredential = try await request("/api/credentials/\(id)", method: "PUT",
-            body: Body(name: name, meta: meta, secret: secret), as: AccountCredential.self)
-    }
-
-    func deleteCredential(_ id: String) async throws {
-        let _: JSON = try await request("/api/credentials/\(id)", method: "DELETE", as: JSON.self)
-    }
 }
 
 struct CredentialsLibrary: View {
@@ -50,8 +27,8 @@ struct CredentialsLibrary: View {
                     KeysSection<SpeechProvider>()
                 } else {
                     Section {
-                        Text("登录 Kite 账号后管理 Git 授权、共享密钥、模型 API Key 和语音识别 Key。")
-                        Button("登录 Kite 账号") { model.openSettings(.account) }
+                        Text("登录后管理 Git 授权、共享密钥、模型 API Key 和语音识别 Key。")
+                        Button("去登录") { model.openSettings(.account) }
                     }
                 }
             }
@@ -104,7 +81,7 @@ struct SecretsSection: View {
                         editing = true
                     }
                     Button("删除", role: .destructive) {
-                        perform { try await model.account.deleteCredential(entry.id); try await load() }
+                        perform { try await model.deleteCredential(entry.id); try await load() }
                     }
                 }
             }
@@ -128,9 +105,9 @@ struct SecretsSection: View {
                     let existing = entries.first { $0.name == savedName }
                     perform {
                         if let existing {
-                            try await model.account.updateCredential(existing.id, meta: ["kind": savedKind], secret: ["value": savedValue])
+                            try await model.updateCredential(existing.id, meta: ["kind": savedKind], secret: ["value": savedValue])
                         } else {
-                            try await model.account.createCredential(type: "secret", name: savedName, projectID: scope,
+                            try await model.createCredential(type: "secret", name: savedName, projectID: scope,
                                                                      meta: ["kind": savedKind], secret: ["value": savedValue])
                         }
                         clearDraft()
@@ -143,11 +120,11 @@ struct SecretsSection: View {
         } header: {
             Text("共享密钥")
         } footer: {
-            Text("密钥加密保存在 Kite 账号中，供所选范围内的 agent 执行命令时使用。保存后不显示内容；使用密钥的命令只返回执行状态，不显示输出。")
+            Text("密钥加密保存在你的工作机上、在工作机之间同步，供所选范围内的 agent 执行命令时使用。保存后不显示内容；使用密钥的命令只返回执行状态，不显示输出。")
         }
         .disabled(working)
         .task {
-            do { projects = try await model.account.projects() }
+            do { projects = try await model.registeredProjects() }
             catch is CancellationError { }
             catch { self.error = error.localizedDescription }
         }
@@ -184,7 +161,7 @@ struct SecretsSection: View {
 
     private func load() async throws {
         let requested = projectID
-        let loaded = try await model.account.credentials(type: "secret", projectID: requested)
+        let loaded = try await model.credentials(type: "secret", projectID: requested)
         guard requested == projectID else { return }
         entries = loaded
     }
@@ -203,7 +180,7 @@ struct SecretsSection: View {
 
 /// 一类带 Key 的凭据（模型 API、语音识别）的供应商，连同这一类在资源库和添加表单里的文案。
 protocol KeyProvider: RawRepresentable<String>, CaseIterable, Identifiable, Hashable where AllCases: RandomAccessCollection {
-    /// 账号服务里的凭据类型。
+    /// 工作机上的凭据类型。
     static var type: String { get }
     static var header: String { get }
     static var footer: String { get }
@@ -229,9 +206,9 @@ nonisolated enum ApiProvider: String, KeyProvider {
 
     static let type = "api"
     static let header = "模型 API"
-    static let footer = "API Key 随 Kite 账号分发给各台工作机，只用于查询额度与余额，agent 执行的命令里无法引用。"
+    static let footer = "API Key 加密保存在工作机上、在工作机之间同步，只用于查询额度与余额，agent 执行的命令里无法引用。"
     static let addTitle = "添加 API Key"
-    static let sheetSubtitle = "保存到 Kite 账号，各工作机查询额度时使用"
+    static let sheetSubtitle = "保存到工作机，各工作机查询额度时使用"
     var id: Self { self }
     var title: String {
         switch self {
@@ -252,9 +229,9 @@ nonisolated enum SpeechProvider: String, KeyProvider {
 
     static let type = "speech"
     static let header = "语音识别"
-    static let footer = "语音识别 Key 随 Kite 账号分发给各台工作机，只用于识别语音输入，agent 执行的命令里无法引用。"
+    static let footer = "语音识别 Key 加密保存在工作机上、在工作机之间同步，只用于识别语音输入，agent 执行的命令里无法引用。"
     static let addTitle = "添加语音识别 Key"
-    static let sheetSubtitle = "保存到 Kite 账号，各工作机识别语音输入时使用"
+    static let sheetSubtitle = "保存到工作机，各工作机识别语音输入时使用"
     var id: Self { self }
     var title: String {
         switch self {
@@ -265,7 +242,7 @@ nonisolated enum SpeechProvider: String, KeyProvider {
     var keyNote: String? { "百炼控制台的 API Key，北京地域。" }
 }
 
-/// 保存一把 Key 到 Kite 账号；工作机查询额度、识别语音时领取，命令里无法引用。
+/// 保存一把 Key 到工作机；查询额度、识别语音时使用，命令里无法引用。
 struct KeySheet<Provider: KeyProvider>: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -325,7 +302,7 @@ struct KeySheet<Provider: KeyProvider>: View {
         let name = trimmed(name).isEmpty ? provider.title : trimmed(name)
         let provider = provider
         $phase.run {
-            try await model.account.createCredential(type: Provider.type, name: name, meta: ["provider": provider.rawValue], secret: secret)
+            try await model.createCredential(type: Provider.type, name: name, meta: ["provider": provider.rawValue], secret: secret)
             Provider.changed(model)
             dismiss()
         }
@@ -350,7 +327,7 @@ struct KeysSection<Provider: KeyProvider>: View {
                     Spacer()
                     Button("删除", role: .destructive) {
                         $phase.run {
-                            try await model.account.deleteCredential(entry.id)
+                            try await model.deleteCredential(entry.id)
                             Provider.changed(model)
                             try await load()
                         }
@@ -377,5 +354,5 @@ struct KeysSection<Provider: KeyProvider>: View {
         return provider + hint + (entry.meta["admin"]?.bool == true ? " · 含管理 Key" : "")
     }
 
-    private func load() async throws { entries = try await model.account.credentials(type: Provider.type) }
+    private func load() async throws { entries = try await model.credentials(type: Provider.type) }
 }

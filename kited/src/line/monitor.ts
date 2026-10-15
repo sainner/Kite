@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { assembleContext, bindContext, sceneValues } from '../harness/context/assembler.ts';
 import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
-import type { AccountMachine } from '../account-client.ts';
+import type { AccountMachine } from '../account-data/directory.ts';
 import type { MachineSummary } from '../kite.ts';
 import type { AgentInstance, PluginInstance } from '../model.ts';
 import type { Store } from '../store.ts';
@@ -556,7 +556,7 @@ export class LineMonitor {
     const machines = await this.host.peers.machines();
     const summaries = new Map<string, MachineSummary>();
     await Promise.all(machines.filter((machine) => machine.online).map(async (machine) => {
-      try { summaries.set(machine.id, await this.host.peers.call<MachineSummary>(machine.id, 'GET', '/summary')); } catch { /* 记为连不上。 */ }
+      try { summaries.set(machine.id, await this.host.peers.call<MachineSummary>(machine, 'GET', '/summary')); } catch { /* 记为连不上。 */ }
     }));
     const notes: LineNotification[] = [];
     this.mutate((state) => {

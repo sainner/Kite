@@ -39,7 +39,8 @@ async function main(): Promise<void> {
     writeFileSync(join(kited, 'bunfig.toml'), '[run]\nshell = "system"\n');
     console.log('构建组网程序 kite-net…');
     if (!Bun.which('go')) throw new Error('构建组网程序需要 Go，请先安装（如 brew install go）');
-    await run(['go', 'build', '-trimpath', '-o', join(kited, 'net/bin/kite-net'), '.'], join(root, 'kited/net'));
+    // 构建脚本先给 tailscale 打上受管网络通道要用的补丁。
+    await run([join(root, 'kited/net/build.sh'), join(kited, 'net/bin/kite-net')], join(root, 'kited/net'));
     await run([process.execPath, 'install', '--production', '--frozen-lockfile', '--ignore-scripts'], kited);
     // 在独立目录加载入口依赖，尽早发现仓库外模板或运行资源漏装；不启动服务或读取用户数据库。
     await run([join(runtime, 'bin/bun'), '--no-env-file', '--no-install', '-e', 'await import("./src/daemon.ts")'], kited);

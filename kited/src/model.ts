@@ -4,6 +4,8 @@
  * transferred：执行权已流转到别的机器，本地记录冻结，只读历史仍可用。
  */
 export type WorkspaceStatus = 'preparing' | 'open' | 'failed' | 'archived' | 'handing_off' | 'transferred';
+/** 本机仍持有这个工作区：没流转走，也没归档。 */
+export const holds = (workspace: { status: WorkspaceStatus }) => workspace.status !== 'transferred' && workspace.status !== 'archived';
 export type RuntimeKind = 'claude' | 'harness';
 
 /** 一个工作机服务的持久身份，随 KITE_HOME 保存；网络地址由客户端管理。 */
@@ -13,12 +15,12 @@ export interface Machine {
   createdAt: number;
 }
 
-/** 项目 ID 由账号服务的项目登记表分配，同一账号、同一远程总是同一个 ID。 */
+/** 项目 ID 由项目登记表分配，同一远程总是同一个 ID。 */
 export interface Project {
   id: string;
   name: string;
-  /** 归一化的远程地址（`域名/owner/repo`），迁移后随登记表更新。 */
-  remote: string;
+  /** 归一化的远程地址（`域名/owner/repo`），设了远程后随登记表更新；没有远程的项目为 null，各工作机的检出互为远程。 */
+  remote: string | null;
   createdAt: number;
 }
 
@@ -27,8 +29,8 @@ export interface Checkout {
   projectId: string;
   machineId: string;
   path: string;
-  /** 检出 origin 当前指向的远程（归一化）；托管仓库迁移后，账号服务据此判断各检出是否已切换。 */
-  remote: string;
+  /** 检出 origin 当前指向的远程（归一化）；没有远程的项目为 null。 */
+  remote: string | null;
   createdAt: number;
 }
 

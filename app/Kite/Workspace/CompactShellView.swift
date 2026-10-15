@@ -225,8 +225,6 @@ final class CompactShellView: UIView, DrawerDriving {
     private var finishing: [WorkspaceDrawer: [@MainActor () -> Void]] = [:]
     private var link: CADisplayLink?
     private var flightGeneration = 0
-    /// 交给 Core Animation 的那一段走完的时刻；途中点阵层要跟着窗口走时显示链接也跑到这时。
-    private var flightEnd: CFTimeInterval = 0
 
     init(model: AppModel) {
         self.model = model
@@ -680,7 +678,6 @@ final class CompactShellView: UIView, DrawerDriving {
         let steps = max(Int(((end - time) * 120).rounded(.up)), 1)
         let poses = (0...steps).map { DrawerPose(geometry, openness(at: time + (end - time) * Double($0) / Double(steps))) }
         animate(poses, duration: end - time)
-        flightEnd = end
         // 摆在窗口上的图形跟着窗口走时，点阵层逐帧换算（同 WindowDots），其余的不逐帧
         if carriesFigures { startLink() } else { stopLink() }
         let generation = flightGeneration

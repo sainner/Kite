@@ -9,8 +9,6 @@ import { serve } from './http.ts';
 import { Kite } from './kite.ts';
 import { Network } from './network.ts';
 import { Store } from './store.ts';
-import { CatalogPublisher } from './catalog-publisher.ts';
-import { AccountClient, type AccountLink } from './account-client.ts';
 import type { RuntimeOptions } from './runtime.ts';
 
 const PROJECT_SYNC_MS = 5 * 60_000;
@@ -35,18 +33,14 @@ export interface DaemonOptions extends RuntimeOptions {
 export function startDaemon(opts: DaemonOptions): Daemon {
   mkdirSync(opts.home, { recursive: true });
   const store = new Store(join(opts.home, 'kite.db'));
-  const account = new AccountClient((): AccountLink | undefined => publisher.link());
-  const kite = new Kite(store, opts.home, new Bus(), opts, account);
-  // 迁移远程由用户在 App 中操作，工作机定期对照登记表；离线的工作机上线后在下一轮赶上。
+  const kite = new Kite(store, opts.home, new Bus(), opts);
+  // 项目登记表随账号级数据同步，工作机定期对照：改了远程的检出跟上，没有远程的项目从别的工作机快进主线；离线的上线后在下一轮赶上。
   // 执行权随项目同步一起核对：别的机器已接管的工作区在这里冻结。
   const sync = () => kite.syncProjects().catch((error: unknown) => console.error(`[项目同步] ${(error as Error).message}`))
     .then(() => kite.syncLeases());
-  // 资源库与项目约束由账号服务推送，加入账号或换了凭据时重连事件流。
-  const publisher: CatalogPublisher = new CatalogPublisher(join(opts.home, 'catalog-publisher.json'), kite, () => { void sync(); kite.library.connect(); });
   const syncTimer = setInterval(() => void sync(), PROJECT_SYNC_MS);
   syncTimer.unref();
   void sync();
-  kite.library.connect();
   // kite-net 核验组网身份；随机内部凭据阻止绕过代理伪造同账号请求。
   const proxyToken = crypto.randomUUID();
   const remote = serve(kite, { hostname: '127.0.0.1', port: 0, remote: true, proxyToken });
@@ -55,9 +49,12 @@ export function startDaemon(opts: DaemonOptions): Daemon {
     binary: opts.networkBinary ?? join(import.meta.dir, '../net/bin/kite-net'),
     hostname: `kite-${kite.machine().name.split('.')[0]}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-+$/, '').slice(0, 63),
     port: opts.port || 5483, target: remote.port!, proxyToken,
+    // 系统给睡眠留的时间约 30 秒，kite-net 最多等 25 秒；交接在 20 秒内收尾。
+    power: { sleep: () => kite.leaving(Date.now() + 20_000), wake: () => void kite.returned() },
   });
-  const server = serve(kite, { hostname: '127.0.0.1', port: opts.port, network, publisher });
+  const server = serve(kite, { hostname: '127.0.0.1', port: opts.port, network });
   kite.listening({ url: `http://127.0.0.1:${server.port}`, network });
+  kite.startAccountData();
   kite.monitor.start();
   kite.monitors.reconcile();
   return {
@@ -67,7 +64,6 @@ export function startDaemon(opts: DaemonOptions): Daemon {
     kite,
     async stop() {
       clearInterval(syncTimer);
-      await publisher.stop();
       await network.stop();
       await kite.shutdown();
       await Promise.all([server.stop(true), remote.stop(true)]);

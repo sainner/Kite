@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
-import type { ApiKey } from './account-client.ts';
+import type { ApiKey } from './account-data/credentials.ts';
 import { parseSubscriptionCredentials } from './harness/auth.ts';
 import { localUsage, scanChatgptUsage, scanClaudeUsage, type AccountUsage, type HourlyUsage, type UsageStore } from './account-usage.ts';
 

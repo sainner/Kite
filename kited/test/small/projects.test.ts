@@ -1,25 +1,26 @@
 /**
- * 项目以远程仓库为身份（docs/项目与远程仓库.md）：经 HTTP 登记、clone、迁移同步，
- * kited 与账号服务替身、托管仓库（git http-backend）和目录上报之间的交接。集成与现场推送见 integration.test.ts。
+ * 项目登记（docs/项目与远程仓库.md）：经 HTTP 登记本机文件夹、clone 远程或另一台工作机的检出，
+ * kited 与本机项目登记表、Git 平台替身上的裸仓库（git http-backend）之间的交接。集成与现场推送见 integration.test.ts，
+ * 没有远程的项目在工作机之间拉取与设远程见 peer-git.test.ts。
  */
 import { afterEach, expect, test } from 'bun:test';
 import { realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import GITATTRIBUTES_TEMPLATE from '../../../.claude/skills/kite-onboard/templates/gitattributes' with { type: 'text' };
-import { AccountClient } from '../../src/account-client.ts';
+import type { RegisteredProject } from '../../src/account-data/registry.ts';
 import { Bus } from '../../src/events.ts';
 import { Kite } from '../../src/kite.ts';
-import type { Checkout, Project, WorkspaceModel } from '../../src/model.ts';
+import type { Checkout, WorkspaceModel } from '../../src/model.ts';
 import { Store } from '../../src/store.ts';
-import { type FakeAccount, startFakeAccount } from '../fake-account.ts';
-import { call, type Kited, type KitedProcess, registerCheckout, spawnKited, startKited } from '../harness.ts';
-import { git, lexists, makeTemp, newDir, newRepo, read, until, writeFiles } from '../util.ts';
+import { type FakeGit, startFakeGit } from '../fake-git.ts';
+import { call, chatgptLogin, connect, type Kited, type KitedProcess, registerBeforeStart, registerCheckout, spawnKited, startKited, synced } from '../harness.ts';
+import { git, lexists, makeTemp, newDir, newRepo, read } from '../util.ts';
 
 let kited: Kited | undefined;
-/** 同一账号下的第二台工作机。 */
+/** 同一用户的第二台工作机。 */
 let second: Kited | undefined;
 let child: KitedProcess | undefined;
-let account: FakeAccount | undefined;
+let remotes: FakeGit | undefined;
 const dirs: string[] = [];
 const releases: Array<() => void> = [];
 afterEach(async () => {
@@ -30,82 +31,72 @@ afterEach(async () => {
   second = undefined;
   await child?.kill('SIGTERM');
   child = undefined;
-  account?.stop();
-  account = undefined;
+  remotes?.stop();
+  remotes = undefined;
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** 等账号替身收到的目录快照里，这个检出和它的项目都带上 remote。 */
-function reported(account: FakeAccount, checkoutId: string, remote: string) {
-  return until(() => {
-    const snapshot = account.snapshot;
-    const checkout = snapshot?.checkouts.find((entry) => entry.id === checkoutId);
-    const project = snapshot?.projects.find((entry) => entry.id === checkout?.projectId);
-    return checkout?.remote === remote && project?.remote === remote && snapshot;
-  }, `目录上报带上 ${remote}`, 900);
+/**
+ * 在替身上新建裸仓库，在 parent 下建一个 origin 指向它、主线已推上去的仓库。直接推到裸仓库路径：
+ * util 的 git 是同步调用，替身的 HTTP 服务在本进程里，经 http 推会互相等住。
+ */
+function pushedRepo(parent: string, name: string, files: Record<string, string>) {
+  const { url, bare } = (remotes ??= startFakeGit()).create(name);
+  const repo = newRepo(parent, name, files, url);
+  git(repo, 'push', '-q', bare, 'main');
+  return { repo, url, bare };
 }
 
 /*
- * 几条真实 git 命令与账号服务的交接：git init、写 .gitignore 与 .gitattributes（模板）、初始提交，向账号建托管项目，
- * remote add 后经 git http-backend 推到托管裸仓库；目录上报随登记发出。
- * 迁移完成后同步一次：登记表、git remote set-url、SQLite 与目录上报交接，账号服务据新远程回收托管仓库。
+ * 几条真实 git 命令的配合：git init、写 .gitignore 与 .gitattributes（模板）、初始提交。没有 origin 的文件夹登记成
+ * 没有远程的项目，不建远程、不推送，提交后现场是干净的。
  */
-test('普通文件夹登记后推到新建的托管仓库并上报远程，迁移后同步把 origin 改到新地址并上报新远程', async () => {
+test('普通文件夹登记成没有远程的项目：Kite 初始化仓库并提交模板文件，不加 origin，现场干净', async () => {
   kited = startKited();
   const folder = newDir(kited.root, 'notes', { 'readme.txt': '笔记\n' });
   const model = await registerCheckout(kited, folder);
-  const hosted = kited.account.projects.get(model.project.id)!;
-  expect(hosted.hosted).toBe(true);
-  expect(model.project.remote).toBe(hosted.remote);
-  expect(model.checkout.remote).toBe(hosted.remote);
-  expect(git(folder, 'remote', 'get-url', 'origin')).toBe(hosted.url);
-
-  const bare = join(kited.account.repos, `${hosted.id}.git`);
+  expect(model.project.remote).toBeNull();
+  expect(model.checkout.remote).toBeNull();
+  expect(kited.daemon.kite.registry.get(model.project.id)).toMatchObject({ name: 'notes', remote: null, url: null });
+  expect(git(folder, 'remote')).toBe('');
   const head = git(folder, 'rev-parse', 'HEAD');
-  expect(git(bare, 'rev-parse', `refs/heads/${git(folder, 'branch', '--show-current')}`)).toBe(head);
-  expect(git(bare, 'ls-tree', '--name-only', head).split('\n').sort()).toEqual(['.gitattributes', '.gitignore', 'readme.txt']);
-  expect(git(bare, 'show', `${head}:.gitignore`)).toBe(read(join(folder, '.gitignore')).replace(/\n$/, ''));
-  expect(git(bare, 'show', `${head}:.gitattributes`)).toBe(GITATTRIBUTES_TEMPLATE.replace(/\n$/, ''));
+  expect(git(folder, 'ls-tree', '--name-only', head).split('\n').sort()).toEqual(['.gitattributes', '.gitignore', 'readme.txt']);
+  expect(git(folder, 'show', `${head}:.gitattributes`)).toBe(GITATTRIBUTES_TEMPLATE.replace(/\n$/, ''));
   expect(git(folder, 'status', '--porcelain')).toBe('');
-  await reported(kited.account, model.checkout.id, hosted.remote);
-
-  const moved = kited.account.migrate(model.project.id, 'https://example.test/Owner/Notes.git');
-  await kited.daemon.kite.syncProjects();
-  expect(git(folder, 'remote', 'get-url', 'origin')).toBe('https://example.test/Owner/Notes.git');
-  expect(moved.remote).toBe('example.test/owner/notes');
-  expect((await kited.call('GET', '/checkouts')).body).toEqual([{ ...model.checkout, remote: moved.remote }]);
-  expect((await kited.call('GET', '/projects')).body).toEqual([{ ...model.project, remote: moved.remote }]);
-  await reported(kited.account, model.checkout.id, moved.remote);
 });
 
 /*
  * 两处都看 homedir()：同步目录（Dropbox 等）的判定和 clone 的默认位置。Bun 在进程启动时缓存 homedir()，
  * 本进程里的 kited 会用真实的 HOME（clone 会落到真实的 ~/code），所以起子进程，让它从启动起就用 setup.ts 的隔离 HOME。
- * 同步目录里的普通文件夹由 Kite git init，仓库本体放进 Kite 目录、按检出 ID 命名，文件夹里只留 .git 指针，再推到托管远程；
- * 另一份检出经真实 git clone（托管仓库的 http-backend）后按 origin 登记，应得到同一项目；目标非空时不碰用户文件。
+ * 同步目录里的普通文件夹由 Kite git init，仓库本体放进 Kite 目录、按检出 ID 命名，文件夹里只留 .git 指针；
+ * 设远程时从这份检出推上去，另一份检出经真实 git clone（替身的 http-backend）后按 origin 登记，应得到同一项目；目标非空时不碰用户文件。
  */
-test('同步目录里的普通文件夹把仓库放进 Kite 目录，按托管地址 clone 到 ~/code 下得到同一项目，目标非空时拒绝', async () => {
+test('同步目录里的普通文件夹把仓库放进 Kite 目录，设远程后按地址 clone 到 ~/code 下得到同一项目，目标非空时拒绝', async () => {
   const root = makeTemp('clone-checkout-');
   dirs.push(root);
   const home = join(root, 'kite');
-  account = startFakeAccount(join(root, 'account'));
-  child = await spawnKited(home, account);
+  remotes = startFakeGit();
+  child = await spawnKited(home);
   const dropbox = newDir(process.env.HOME!, `Dropbox/kite-projects-${crypto.randomUUID()}`);
   dirs.push(dropbox);
   const source = newDir(dropbox, 'source', { 'a.txt': '原始\n' });
   const first = await call(child.url, 'POST', '/checkouts', { path: source });
   expect(first.status).toBe(200);
   expect(git(source, 'rev-parse', '--absolute-git-dir')).toBe(realpathSync(join(home, 'repos', `${first.body.checkout.id}.git`)));
-  const project = first.body.project as Project;
-  const url = account.projects.get(project.id)!.url;
-  const host = project.remote.split('/')[0]!;
+  const { url, bare } = remotes.create('source');
+  const set = await call(child.url, 'PUT', `/project-registry/${first.body.project.id}/remote`, { remote: url });
+  expect(set.status).toBe(200);
+  const project = set.body as RegisteredProject;
+  expect(project.id).toBe(first.body.project.id);
+  expect(git(bare, 'rev-parse', `refs/heads/${git(source, 'branch', '--show-current')}`)).toBe(git(source, 'rev-parse', 'HEAD'));
+  const host = project.remote!.split('/')[0]!;
   dirs.push(join(process.env.HOME!, 'code', host));
 
   const cloned = await call(child.url, 'POST', '/checkouts', { remote: url });
   expect(cloned.status).toBe(200);
   const model = cloned.body as WorkspaceModel;
-  const expected = join(process.env.HOME!, 'code', ...project.remote.split('/'));
-  expect(model.project).toEqual(project);
+  const expected = join(process.env.HOME!, 'code', ...project.remote!.split('/'));
+  expect(model.project).toMatchObject({ id: project.id, remote: project.remote });
   expect(model.checkout).toMatchObject({ path: expected, remote: project.remote });
   expect(model.checkout.id).not.toBe(first.body.checkout.id);
   expect(git(expected, 'rev-parse', 'HEAD')).toBe(git(source, 'rev-parse', 'HEAD'));
@@ -128,9 +119,8 @@ test('同步目录里的普通文件夹把仓库放进 Kite 目录，按托管�
 test('clone 等远程时独立 clone 和本地登记可完成，父子目录及别名拒绝登记，失败后原路径可重试', async () => {
   kited = startKited();
   const running = kited;
-  const source = newDir(running.root, 'source', { 'a.txt': '原始\n' });
+  const { repo: source, url: remote } = pushedRepo(running.root, 'source', { 'a.txt': '原始\n' });
   const first = await registerCheckout(running, source);
-  const remote = running.account.projects.get(first.project.id)!.url;
   const parent = newRepo(running.root, 'parent', { 'parent.txt': '父目录\n' });
   const target = join(parent, 'cloned');
   const alias = join(running.root, 'alias');
@@ -138,10 +128,10 @@ test('clone 等远程时独立 clone 和本地登记可完成，父子目录及�
   const held = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void | Response>();
   releases.push(() => release.resolve());
-  // 登记后后台的执行权核对会 ls-remote 同一个托管远程，也走 upload-pack；先等它这一轮结束，挂住的才是 clone 的请求。
+  // 登记后后台的执行权核对会 ls-remote 同一个远程，也走 upload-pack；先等它这一轮结束，挂住的才是 clone 的请求。
   await running.daemon.kite.syncLeases();
   let fetches = 0;
-  running.account.beforeFetch = () => {
+  remotes!.beforeFetch = () => {
     if (fetches++ !== 0) return;
     held.resolve();
     return release.promise;
@@ -183,22 +173,18 @@ test('关闭等待已经接收的 clone 登记完成后才允许关闭数据库'
   const root = makeTemp('shutdown-clone-');
   dirs.push(root);
   const home = newDir(root, 'kite');
-  account = startFakeAccount(join(root, 'account'));
-  const fake = account;
   const store = new Store(join(home, 'kite.sqlite'));
-  const kite = new Kite(store, home, new Bus(), { lightTasks: false },
-    new AccountClient(() => ({ url: fake.url, token: fake.token })));
+  const kite = new Kite(store, home, new Bus(), { lightTasks: false });
   const held = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   releases.push(() => release.resolve());
   const completed: string[] = [];
   let stopping: Promise<void> | undefined;
   try {
-    const source = newDir(root, 'source', { 'a.txt': '关闭前收到的 clone\n' });
+    const { repo: source, url: remote } = pushedRepo(root, 'source', { 'a.txt': '关闭前收到的 clone\n' });
     const first = await kite.registerCheckout({ path: source });
-    const remote = fake.projects.get(first.project.id)!.url;
     const target = join(root, 'cloned');
-    fake.beforeFetch = () => { held.resolve(); return release.promise; };
+    remotes!.beforeFetch = () => { held.resolve(); return release.promise; };
     const cloning = kite.registerCheckout({ remote, path: target }).then((model) => {
       completed.push('registered');
       return model;
@@ -218,36 +204,35 @@ test('关闭等待已经接收的 clone 登记完成后才允许关闭数据库'
   }
 }, 1_000);
 
-/** 未过期的 ChatGPT 订阅登录：access_token 是 exp 在一小时后的 JWT。 */
-function chatgptLogin(home: string): void {
-  const encoded = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
-  const accessToken = `${encoded({ alg: 'RS256', typ: 'JWT' })}.${encoded({ exp: Math.floor(Date.now() / 1000) + 3600 })}.${encoded('仅测试')}`;
-  writeFiles(home, { 'auth/chatgpt/auth.json': JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: accessToken, account_id: 'test-account' } }) });
-}
-
 /*
- * 几个部分的配合：账号登记表、本机环境检查、真实 git clone（托管仓库的 http-backend）、按 origin 登记和工作树准备。
+ * 几个部分的配合：同步来的项目登记与目录摘要、本机环境检查、从另一台工作机的检出 clone（对端 kited 转接 git http-backend）、
+ * 登记和工作树准备。没有远程的项目在 B 上没有检出时，从目录里有检出的 A 取。
  * 真实 bug：Bun 的 os.homedir() 在进程启动时缓存，不随 setup.ts 改过的 HOME 变化，按项目建工作区的默认 clone
  * 曾落到真实的 ~/code。这里的第二台工作机在本进程里起，clone 位置必须在隔离的 HOME 下；环境检查先报出这个位置，
  * 位置不对时测试在 clone 之前就失败。
  */
-test('按项目建工作区：所选模型的厂商未登录时 409 且不 clone，登录后 clone 到默认位置登记为同一项目并建好工作树', async () => {
+test('按项目建工作区：所选模型的厂商未登录时 409 且不 clone，登录后从另一台工作机 clone 到默认位置登记为同一项目并建好工作树', async () => {
   const root = makeTemp('project-workspace-');
   dirs.push(root);
-  account = startFakeAccount(join(root, 'account'));
-  kited = startKited(undefined, false, account);
-  const source = newRepo(kited.root, 'source', { 'a.txt': '原始\n' }, null);
-  const registered = await registerCheckout(kited, source);
-  const projectId = registered.project.id;
-  dirs.push(join(process.env.HOME!, 'code', registered.project.remote.split('/')[0]!));
+  const name = `peer-${crypto.randomUUID().slice(0, 8)}`;
+  const source = newDir(root, name, { 'a.txt': '原始\n' });
+  const [registered] = await registerBeforeStart(root, [source]);
+  const projectId = registered!.project.id;
+  kited = startKited(undefined, false, { root });
+  const machineA = kited.daemon.kite.store.machine.id;
+  dirs.push(join(process.env.HOME!, 'code', name));
 
-  second = startKited(undefined, false, account);
+  second = startKited();
   const other = second;
+  await connect(kited, other);
+  await synced(other, () => other.daemon.kite.registry.get(projectId) && other.daemon.kite.directory.entries()
+    .some((entry) => entry.id === machineA && entry.snapshot?.checkouts.some((checkout) => checkout.projectId === projectId)),
+  '第二台工作机同步到项目登记和 A 的检出');
   const before = await other.call('GET', `/environment?project=${projectId}`);
   expect(before.status).toBe(200);
   expect(before.body).toMatchObject({ checkout: null, logins: { chatgpt: { status: 'missing' } } });
   const clonePath = before.body.clonePath as string;
-  expect(clonePath).toBe(join(process.env.HOME!, 'code', ...registered.project.remote.split('/')));
+  expect(clonePath).toBe(join(process.env.HOME!, 'code', name));
 
   const refused = await other.call('POST', '/workspaces', { project: projectId });
   expect(refused.status).toBe(409);
@@ -258,9 +243,10 @@ test('按项目建工作区：所选模型的厂商未登录时 409 且不 clone
   const created = await other.call('POST', '/workspaces', { project: projectId });
   expect(created.status).toBe(200);
   const model = created.body as WorkspaceModel;
-  expect(model.project.id).toBe(projectId);
+  expect(model.project).toMatchObject({ id: projectId, remote: null });
   expect(model.checkout.path).toBe(clonePath);
   expect(git(clonePath, 'rev-parse', 'HEAD')).toBe(git(source, 'rev-parse', 'HEAD'));
+  expect(git(clonePath, 'remote')).toBe('');
   expect(model.workspace).toMatchObject({ kind: 'worktree', checkoutId: model.checkout.id });
   await other.waitEvent((e) => e.type === 'workspace.changed' && e.workspaceId === model.workspace.id && e.status === 'open');
   expect(read(join(model.workspace.cwd, 'a.txt'))).toBe('原始\n');

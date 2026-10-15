@@ -9,7 +9,7 @@ import type { Template } from './context-templates.ts';
 import type { HourlyUsage, UsageDay, UsageStore } from './account-usage.ts';
 import type { TemplateEmblem } from './template-emblems.ts';
 import type { Role } from './roles.ts';
-import type { ProjectConstraints } from './account-client.ts';
+import type { ProjectConstraints } from './account-data/registry.ts';
 
 export interface ThreadTitle {
   title: string;
@@ -27,18 +27,21 @@ const workspacesTable = (name: string) => `create table if not exists ${name} (
   check ((kind = 'root' and branch is null and base is null) or (kind = 'worktree' and branch is not null and base is not null))
 );`;
 const WORKSPACES = workspacesTable('workspaces');
+// 没有远程的项目 remote 为空，各工作机上的检出互为远程。
+const projectsTable = (name: string) => `create table if not exists ${name} (
+  id text primary key, name text not null, remote text, created_at integer not null
+);`;
+const checkoutsTable = (name: string) => `create table if not exists ${name} (
+  id text primary key, project_id text not null references projects(id), machine_id text not null references machine(id),
+  path text not null, remote text, created_at integer not null,
+  unique(machine_id, path)
+);`;
 const SCHEMA = `
 create table if not exists machine (
   slot integer primary key check (slot = 1), id text not null unique, name text not null, created_at integer not null
 );
-create table if not exists projects (
-  id text primary key, name text not null, remote text not null, created_at integer not null
-);
-create table if not exists checkouts (
-  id text primary key, project_id text not null references projects(id), machine_id text not null references machine(id),
-  path text not null, remote text not null, created_at integer not null,
-  unique(machine_id, path)
-);
+${projectsTable('projects')}
+${checkoutsTable('checkouts')}
 ${WORKSPACES}
 -- 根工作区流转走后本地记录冻结，检出另建一个可用的根工作区，目录相同。
 create unique index if not exists root_workspace on workspaces(checkout_id) where kind = 'root' and status != 'transferred';
@@ -95,10 +98,6 @@ create table if not exists usage_hours (
   account text not null, day text not null, hour integer not null, tokens integer not null,
   cost real not null, unpriced integer not null, primary key(account, day, hour)
 );
--- 用户确认过可以把流转材料推到这个项目的远程（公开仓库或看不出是否公开的平台）。
-create table if not exists transfer_allowed (
-  project_id text primary key references projects(id)
-);
 `;
 const projectOf = (r: any): Project => ({ id: r.id, name: r.name, remote: r.remote, createdAt: r.created_at });
 const checkoutOf = (r: any): Checkout => ({
@@ -135,6 +134,7 @@ export class Store implements UsageStore {
     this.dropUnpricedUsage();
     this.dropBareContextTemplates();
     this.rebuildWorkspaces();
+    this.relaxRemotes();
     this.db.exec(SCHEMA);
     this.mergeAgentDefinitions();
     this.splitProjectDocuments();
@@ -177,22 +177,41 @@ export class Store implements UsageStore {
   }
 
   /**
+   * 没有远程的项目出现之前，项目与检出的 remote 不能为空：照 SQLite 改表的步骤换成新表，其他表的外键按名字引用，不受影响。
+   */
+  private relaxRemotes(): void {
+    const remote = (this.db.query("select \"notnull\" as required from pragma_table_info('projects') where name = 'remote'").get() as { required: number } | null);
+    if (!remote?.required) return;
+    this.rebuild('放开项目远程', `${projectsTable('projects_next')}
+      insert into projects_next select id, name, remote, created_at from projects;
+      drop table projects; alter table projects_next rename to projects;
+      ${checkoutsTable('checkouts_next')}
+      insert into checkouts_next select id, project_id, machine_id, path, remote, created_at from checkouts;
+      drop table checkouts; alter table checkouts_next rename to checkouts;`);
+  }
+
+  /** 照 SQLite 改表的步骤换表：关外键，在事务里执行，核对外键再打开。 */
+  private rebuild(what: string, sql: string): void {
+    this.db.exec('pragma foreign_keys = off');
+    try {
+      this.db.transaction(() => {
+        this.db.exec(sql);
+        if (this.db.query('pragma foreign_key_check').all().length) throw new Error(`${what}后外键不一致`);
+      })();
+    } finally { this.db.exec('pragma foreign_keys = on'); }
+  }
+
+  /**
    * 工作区加上 epoch 与 transferred 之前的表：状态的 check 约束只能随表重建，照 SQLite 改表的步骤换成新表，
    * 其他表对 workspaces 的外键按名字引用，不受影响。
    */
   private rebuildWorkspaces(): void {
     const columns = this.db.query("select name from pragma_table_info('workspaces')").all() as Array<{ name: string }>;
     if (!columns.length || columns.some((c) => c.name === 'epoch')) return;
-    this.db.exec('pragma foreign_keys = off');
-    try {
-      this.db.transaction(() => {
-        this.db.exec(workspacesTable('workspaces_next'));
-        this.db.exec(`insert into workspaces_next (id, checkout_id, name, cwd, kind, branch, base, status, created_at)
-          select id, checkout_id, name, cwd, kind, branch, base, status, created_at from workspaces`);
-        this.db.exec('drop table workspaces; alter table workspaces_next rename to workspaces;');
-        if (this.db.query('pragma foreign_key_check').all().length) throw new Error('重建工作区表后外键不一致');
-      })();
-    } finally { this.db.exec('pragma foreign_keys = on'); }
+    this.rebuild('重建工作区表', `${workspacesTable('workspaces_next')}
+      insert into workspaces_next (id, checkout_id, name, cwd, kind, branch, base, status, created_at)
+        select id, checkout_id, name, cwd, kind, branch, base, status, created_at from workspaces;
+      drop table workspaces; alter table workspaces_next rename to workspaces;`);
   }
 
   /**
@@ -347,7 +366,18 @@ export class Store implements UsageStore {
     this.db.query('insert into projects values (?, ?, ?, ?) on conflict(id) do update set name = excluded.name, remote = excluded.remote')
       .run(project.id, project.name, project.remote, project.createdAt);
   }
-  setCheckoutRemote(id: string, remote: string): void {
+  /** 登记表把 from 并入了 to：本机的检出改挂到 to，from 的本机记录删掉。 */
+  mergeProject(from: string, to: Project): void {
+    this.db.transaction(() => {
+      this.saveProject(to);
+      this.db.query('update checkouts set project_id = ? where project_id = ?').run(to.id, from);
+      // 保留的项目在本机还没有约束缓存时接过并入项目的，合并后不会有一段时间没有约束；资源库同步随后按登记表对齐。
+      this.db.query('update or ignore project_constraints set project_id = ? where project_id = ?').run(to.id, from);
+      this.db.query('delete from project_constraints where project_id = ?').run(from);
+      this.db.query('delete from projects where id = ?').run(from);
+    })();
+  }
+  setCheckoutRemote(id: string, remote: string | null): void {
     this.db.query('update checkouts set remote = ? where id = ?').run(remote, id);
   }
   checkouts(projectId?: string): Checkout[] {
@@ -541,12 +571,6 @@ export class Store implements UsageStore {
   unfinishedOperations(workspaceId: string): number {
     return (this.db.query(`select count(*) as count from operation_receipts where result is null and json_extract(request, '$.workspaceId') = ?`)
       .get(workspaceId) as { count: number }).count;
-  }
-  transferAllowed(projectId: string): boolean {
-    return this.db.query('select 1 from transfer_allowed where project_id = ?').get(projectId) !== null;
-  }
-  allowTransfer(projectId: string): void {
-    this.db.query('insert or ignore into transfer_allowed values (?)').run(projectId);
   }
   /** 删掉一个工作区的全部行，用于流转失败时清理半成品，或用流转回来的材料替换本机冻结的旧记录。 */
   deleteWorkspaceRows(id: string): void {

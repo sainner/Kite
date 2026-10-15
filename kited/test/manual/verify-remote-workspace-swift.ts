@@ -8,12 +8,12 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Candidate } from '../../src/account-data/directory.ts';
 import { startDaemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { Model } from '../../src/harness/types.ts';
 import type { Machine, Project, ThreadContext, WorkspaceModel, WorkspaceWindow } from '../../src/model.ts';
 import type { PluginDefinition } from '../../src/plugins/definitions.ts';
-import { linkAccount, startFakeAccount } from '../fake-account.ts';
 import { bunPluginSource } from '../fixtures/bun-plugin-source.ts';
 import { newRepo } from '../util.ts';
 import { command } from './command.ts';
@@ -88,13 +88,15 @@ async function main() {
   const root = mkdtempSync(join(tmpdir(), 'swift-workspace-contract-'));
   const home = join(root, 'kite');
   const repository = newRepo(root, 'project', { 'base.txt': '原始\n' }, null);
-  // 两台工作机加入同一账号：项目 ID 由账号的项目登记表按远程分配。
-  const account = startFakeAccount(join(root, 'account'));
+  // 两台工作机互为组网对端：项目登记与目录摘要随账号级数据同步，第二台从第一台的检出 clone 没有远程的项目，得到同一项目。
   const otherHome = join(root, 'other-kite');
-  linkAccount(home, account);
-  linkAccount(otherHome, account);
-  const daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => completeModel });
-  const otherDaemon = startDaemon({ home: otherHome, port: 0, lightTasks: false, model: () => completeModel });
+  const peers: { self: Candidate[]; other: Candidate[] } = { self: [], other: [] };
+  const daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => completeModel, directory: { candidates: () => peers.self } });
+  const otherDaemon = startDaemon({ home: otherHome, port: 0, lightTasks: false, model: () => completeModel,
+    directory: { candidates: () => peers.other } });
+  peers.self.push({ address: otherDaemon.url, online: true });
+  peers.other.push({ address: daemon.url, online: true });
+  await Promise.all([daemon.kite.directory.refresh(), otherDaemon.kite.directory.refresh()]);
   const events: Envelope[] = [];
   const waiters: Array<{ predicate: (event: Envelope) => boolean; resolve: () => void }> = [];
   const unsubscribe = daemon.kite.bus.subscribe(undefined, (event) => {
@@ -123,13 +125,27 @@ async function main() {
     if (otherMachine.status !== 200 || otherMachine.body.id === machine.body.id) throw new Error('第二个 home 未提供独立工作机身份');
     const project = await call<WorkspaceModel>(daemon.url, 'POST', '/checkouts', { path: repository }, machine.body.id);
     if (project.status !== 200) throw new Error(`登记项目失败：${project.status}`);
+    const projectId = project.body.project.id;
+    // 第一台的目录摘要在检出变化后合并约 1 秒才写，第二台从摘要里看到这份检出才知道从哪台 clone。
+    const ready = () => !!otherDaemon.kite.registry.get(projectId) && otherDaemon.kite.directory.entries()
+      .some((entry) => entry.id === machine.body.id && entry.snapshot?.checkouts.some((checkout) => checkout.projectId === projectId));
+    await new Promise<void>((resolve, reject) => {
+      if (ready()) return resolve();
+      const timer = setTimeout(() => { unsubscribe(); reject(new Error('第二台工作机没有同步到项目登记和第一台的检出')); }, 10_000);
+      const unsubscribe = otherDaemon.kite.accountData.subscribe(() => {
+        if (!ready()) return;
+        clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      });
+    });
     const sharedParent = join(root, 'remote-shared');
     const separateParent = join(root, 'remote-separate');
     mkdirSync(sharedParent);
     mkdirSync(separateParent);
-    // 同一项目：clone 第一台登记时建好的托管远程；同名的另一个普通文件夹是另一个托管项目。
+    // 同一项目：从第一台的检出 clone；同名的另一个普通文件夹是另一个没有远程的项目。
     const shared = await call<WorkspaceModel>(otherDaemon.url, 'POST', '/checkouts', {
-      remote: account.projects.get(project.body.project.id)!.url, path: join(sharedParent, 'project'),
+      project: projectId, path: join(sharedParent, 'project'),
     }, otherMachine.body.id);
     const separate = await call<WorkspaceModel>(otherDaemon.url, 'POST', '/checkouts', {
       path: newRepo(separateParent, 'project', { 'base.txt': '原始\n' }, null),
@@ -286,7 +302,6 @@ async function main() {
     unsubscribe();
     await otherDaemon.stop();
     await daemon.stop();
-    account.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }

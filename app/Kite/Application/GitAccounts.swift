@@ -1,13 +1,16 @@
 import SwiftUI
 
-/// 账号的项目登记表。托管项目可以迁移到正式远程，项目 ID 不变。
+/// 项目登记表里的项目，存在工作机上、随工作机之间同步。没有远程的项目可以之后再设远程，项目 ID 不变。
 struct AccountProject: Decodable, Identifiable, Equatable {
     let id: String
     let name: String
-    let remote: String
-    let hosted: Bool
+    let remote: String?
     let icon: String?
     let color: String?
+    /// 工作机睡眠前，把这个项目里正在工作的工作区换到别的工作机。
+    let autoHandover: Bool?
+
+    var appearance: ProjectAppearance { ProjectAppearance(icon: icon ?? "folder", color: color ?? "primary") }
 }
 
 struct GitHubDevice: Decodable, Equatable {
@@ -15,6 +18,10 @@ struct GitHubDevice: Decodable, Equatable {
     let userCode: String
     let verificationURI: String
     let interval: Int
+    /// 发起授权的工作机：授权流程只在它那里。
+    var machineID = ""
+
+    private enum CodingKeys: String, CodingKey { case flow, userCode, verificationURI, interval }
 }
 
 struct GitHubRepository: Decodable, Identifiable, Equatable {
@@ -24,37 +31,10 @@ struct GitHubRepository: Decodable, Identifiable, Equatable {
     var id: String { fullName }
 }
 
-extension KiteAccount {
-    func startGitHub() async throws -> GitHubDevice {
-        return try await request("/api/git/github/device", method: "POST", as: GitHubDevice.self)
-    }
-
-    /// 返回 pending、slow_down、expired、denied 或 authorized。
-    func pollGitHub(_ flow: String) async throws -> String {
-        struct Poll: Decodable { let status: String }
-        return try await request("/api/git/github/device/\(flow)", method: "POST", as: Poll.self).status
-    }
-
-    /// 没有绑定 GitHub 时为空。
-    func gitHubRepositories() async throws -> [GitHubRepository] {
-        do { return try await request("/api/git/github/repos", as: [GitHubRepository].self) }
-        catch let error as KitedError where error.status == 404 { return [] }
-    }
-
-    func projects() async throws -> [AccountProject] {
-        return try await request("/api/projects", as: [AccountProject].self)
-    }
-
-    /// 服务器直接把托管仓库推到新远程，大仓库需要较长时间。
-    func migrate(_ project: String, to remote: String) async throws -> AccountProject {
-        try await request("/api/projects/\(project)/migrate", method: "POST", body: ["remote": remote], timeout: 600, as: AccountProject.self)
-    }
-}
-
 struct GitAccountsSection: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
-    /// 账号绑定的 Git 平台；凭据只在托管服务和工作机之间流转，App 只看到主机与账号名。
+    /// 绑定的 Git 平台；凭据只在工作机之间流转，App 只看到主机与账号名。
     @State private var accounts: [AccountCredential] = []
     @State private var device: GitHubDevice?
     @State private var host = ""
@@ -74,7 +54,7 @@ struct GitAccountsSection: View {
                     }
                     Spacer()
                     Button("解除绑定", role: .destructive) {
-                        perform { try await model.account.deleteCredential(account.id); try await load() }
+                        perform { try await model.deleteCredential(account.id); try await load() }
                     }
                 }
             }
@@ -88,7 +68,7 @@ struct GitAccountsSection: View {
                     }
                 }
             } else {
-                Button("绑定 GitHub") { perform { device = try await model.account.startGitHub() } }
+                Button("绑定 GitHub") { perform { device = try await model.startGitHub() } }
             }
             DisclosureGroup("用访问令牌绑定其他平台", isExpanded: $tokenForm) {
                 TextField("域名，如 gitlab.com", text: $host).autocorrectionDisabled()
@@ -107,23 +87,23 @@ struct GitAccountsSection: View {
         } header: {
             Text("Git 账号")
         } footer: {
-            Text("绑定的凭据随 Kite 账号分发给各台工作机，用于克隆与推送。GitHub 授权覆盖该账号下的全部仓库。")
+            Text("绑定的凭据加密保存在工作机上、在工作机之间同步，用于克隆与推送。GitHub 授权覆盖该账号下的全部仓库。")
         }
         .disabled(working)
         .task { perform { try await load() } }
         .task(id: device?.flow) { await poll() }
     }
 
-    private func load() async throws { accounts = try await model.account.credentials(type: "git") }
+    private func load() async throws { accounts = try await model.credentials(type: "git") }
 
     /// 同一主机只有一条 Git 凭据，已绑定就替换。
     private func bind(host: String, username: String, token: String) async throws {
         // 不填用户名时由服务端补上默认的 oauth2
         let meta = username.isEmpty ? [:] : ["username": username]
         if let existing = accounts.first(where: { $0.name == host }) {
-            try await model.account.updateCredential(existing.id, meta: meta, secret: ["token": token])
+            try await model.updateCredential(existing.id, meta: meta, secret: ["token": token])
         } else {
-            try await model.account.createCredential(type: "git", name: host, meta: meta, secret: ["token": token])
+            try await model.createCredential(type: "git", name: host, meta: meta, secret: ["token": token])
         }
     }
 
@@ -135,7 +115,7 @@ struct GitAccountsSection: View {
             try? await Task.sleep(for: .seconds(interval))
             guard !Task.isCancelled, self.device?.flow == device.flow else { return }
             do {
-                switch try await model.account.pollGitHub(device.flow) {
+                switch try await model.pollGitHub(device) {
                 case "pending": continue
                 case "slow_down": interval += 5
                 case "authorized": self.device = nil; try await load()

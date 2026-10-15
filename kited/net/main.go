@@ -1,12 +1,18 @@
-// kite-net 把 kited 接入组网：用 tsnet 以独立节点上线，不依赖系统 VPN。
-// 只转发同账号设备的 HTTP 请求，来源身份由 tsnet 的 WhoIs 提供。
+// kite-net 把 kited 接入组网：用 tsnet 以独立节点上线，不依赖系统 VPN。默认连 Tailscale 官方协调服务，用户在浏览器里登录。
+// 只转发同账号设备的 HTTP 请求，来源身份由 tsnet 的 WhoIs 提供，来源的组网 IP 放在 X-Kite-Peer 里交给 kited。
 // 节点状态以 JSON 行写到标准输出，供 kited 显示登录网址、组网地址和对端连接方式。
+// 系统将要睡眠时状态里带一个睡眠事件，kited 交出要换机的工作区后在标准输入回「power-ready <序号>」，最多等 25 秒再放行睡眠。
+// 退出登录时 kited 在标准输入写「logout」，节点在 Tailscale 上注销自己后退出，管理页里不留下这台设备。
+// 配了受管网络通道（KITE_NET_CHANNEL）时，组网的 UDP 只经到路由器的认证通道出网，见 channel.go；
+// `kite-net key` 打印通道公钥供网络管理员登记。
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -24,23 +30,49 @@ import (
 
 	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
+	"tailscale.com/types/views"
 )
 
 type status struct {
-	State     string   `json:"state"`
-	LoginURL  string   `json:"loginURL,omitempty"`
-	IPs       []string `json:"ips,omitempty"`
-	Name      string   `json:"name,omitempty"`
-	SocksPort int      `json:"socksPort,omitempty"`
+	State    string   `json:"state"`
+	LoginURL string   `json:"loginURL,omitempty"`
+	IPs      []string `json:"ips,omitempty"`
+	Name     string   `json:"name,omitempty"`
+	// 本节点的稳定 ID，重新登录前不变。
+	ID string `json:"id,omitempty"`
+	// 登录的 Tailscale 用户；上线后才有。
+	User      *user `json:"user,omitempty"`
+	SocksPort int   `json:"socksPort,omitempty"`
 	// kited 调用同账号的其他工作机时用的本机 HTTP 代理；Bun 的 fetch 不支持 SOCKS。
-	HTTPProxyPort int `json:"httpProxyPort,omitempty"`
-	Peers     []peer   `json:"peers,omitempty"`
+	HTTPProxyPort int    `json:"httpProxyPort,omitempty"`
+	Peers         []peer `json:"peers,omitempty"`
+	// 本机对外报告的端点：STUN 探到的公网映射、通道地址或本地地址。
+	Endpoints []string `json:"endpoints,omitempty"`
+	// 受管网络通道的状态；没配通道时没有。
+	Channel *channelStatus `json:"channel,omitempty"`
+	// 最近一次系统电源事件：sleep 将要睡眠，wake 醒来；序号递增，kited 按序号认新事件。
+	Power *power `json:"power,omitempty"`
 }
 
-// peer 是对端设备当前的连接方式：direct 为点对点直连，relay 经中继，idle 表示近两分钟没有流量、尚未确定路径。
+type power struct {
+	Event string `json:"event"`
+	ID    int64  `json:"id"`
+}
+
+type user struct {
+	ID          string `json:"id"`
+	LoginName   string `json:"loginName"`
+	DisplayName string `json:"displayName,omitempty"`
+}
+
+// peer 是同一用户的一台对端设备与当前的连接方式：direct 为点对点直连，relay 经中继，idle 表示近两分钟没有流量、尚未确定路径。
 type peer struct {
+	// 节点的稳定 ID，重新登录前不变。
+	ID         string `json:"id"`
 	Name       string `json:"name"`
 	IP         string `json:"ip,omitempty"`
+	OS         string `json:"os,omitempty"`
+	Online     bool   `json:"online"`
 	Connection string `json:"connection"`
 	// 直连时是对端的实际地址，中继时是 DERP 区域或对端中继地址。
 	Endpoint string `json:"endpoint,omitempty"`
@@ -67,11 +99,19 @@ func (r *reporter) update(change func(*status)) {
 
 func main() {
 	log.SetFlags(0)
+	if len(os.Args) > 1 && os.Args[1] == "key" {
+		public, err := channelPublicKey()
+		if err != nil {
+			log.Fatal(err)
+		}
+		json.NewEncoder(os.Stdout).Encode(map[string]string{"publicKey": public})
+		return
+	}
 	// tsnet 不创建系统隧道，无需绑物理网卡来防止路由回环；交给系统路由才能使用代理的虚拟地址。
 	netns.SetDisableBindConnToInterface(log.Printf, true)
 	env := func(key string) string {
 		value := os.Getenv(key)
-		if value == "" && key != "KITE_NET_CONTROL_URL" {
+		if value == "" {
 			log.Fatalf("缺少 %s", key)
 		}
 		return value
@@ -84,17 +124,33 @@ func main() {
 		logf = log.New(f, "", log.LstdFlags|log.Lmicroseconds).Printf
 	}
 	srv := &tsnet.Server{
-		Dir:        dir,
-		Hostname:   env("KITE_NET_HOSTNAME"),
-		ControlURL: env("KITE_NET_CONTROL_URL"),
-		// 只在节点需要登录时生效，已登录的节点忽略它。
-		AuthKey:  os.Getenv("KITE_NET_AUTH_KEY"),
-		Logf:     logf,
-		UserLogf: log.Printf,
+		Dir:      dir,
+		Hostname: env("KITE_NET_HOSTNAME"),
+		// 留空即 Tailscale 官方协调服务；组网层保持可替换，测试或自建时可以另指。
+		ControlURL: os.Getenv("KITE_NET_CONTROL_URL"),
+		Logf:       logf,
+		UserLogf:   log.Printf,
 	}
 	defer srv.Close()
+	var ch *channel
+	if text := os.Getenv("KITE_NET_CHANNEL"); text != "" {
+		var err error
+		if ch, err = parseChannel(text); err != nil {
+			log.Fatal(err)
+		}
+		srv.Port = channelPort
+		srv.PacketListener = ch
+		ch.start()
+	}
 	if err := srv.Start(); err != nil {
 		log.Fatalf("组网节点启动失败：%v", err)
+	}
+	if ch != nil {
+		if endpoint, ok := ch.staticEndpoint(); ok {
+			if conn, ok := srv.Sys().MagicSock.GetOK(); ok {
+				conn.SetStaticEndpoints(views.SliceOf([]netip.AddrPort{endpoint}))
+			}
+		}
 	}
 	lc, err := srv.LocalClient()
 	if err != nil {
@@ -127,11 +183,22 @@ func main() {
 	}
 	report := &reporter{out: json.NewEncoder(os.Stdout), current: status{SocksPort: socks.Addr().(*net.TCPAddr).Port,
 		HTTPProxyPort: forward.Addr().(*net.TCPAddr).Port}}
+	ready := make(chan int64, 8)
+	go readCommands(lc, ready)
+	watchPower(report, ready)
 	go watch(srv, report, changed)
 	go func() {
 		for range time.Tick(time.Second) {
 			changed()
-			report.update(func(s *status) { s.Peers = peers(lc, s.State) })
+			endpoints := selfEndpoints(lc)
+			report.update(func(s *status) {
+				s.Peers = peers(lc, s.State)
+				s.Endpoints = endpoints
+				if ch != nil {
+					state := ch.status()
+					s.Channel = &state
+				}
+			})
 		}
 	}()
 	ln, err := srv.Listen("tcp", ":"+env("KITE_NET_PORT"))
@@ -156,6 +223,11 @@ func main() {
 		defer active.Delete(r)
 		// 外部传入的身份字段一律覆盖，内部端口也不能独立信任这些字段。
 		r.Header.Set("X-Kite-Network", token)
+		if source, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
+			r.Header.Set("X-Kite-Peer", source.Addr().Unmap().String())
+		} else {
+			r.Header.Del("X-Kite-Peer")
+		}
 		proxy.ServeHTTP(w, r.WithContext(ctx))
 	})
 	log.Fatal(http.Serve(ln, handler))
@@ -202,18 +274,30 @@ func authorized(lc *local.Client, r *http.Request) bool {
 		self.Self.UserID != 0 && peer.Node.User == self.Self.UserID
 }
 
-// peers 采样对端连接方式，判断方式与上游 tailscale status 一致。
+// selfEndpoints 是本机对外报告的端点，顺序照组网库给的。
+func selfEndpoints(lc *local.Client) []string {
+	st, err := lc.StatusWithoutPeers(context.Background())
+	if err != nil || st.Self == nil {
+		return nil
+	}
+	return st.Self.Addrs
+}
+
+// peers 采样同一用户、不带标签的对端设备及连接方式，判断方式与上游 tailscale status 一致；共享进来的、别的用户的设备不列。
 func peers(lc *local.Client, state string) []peer {
 	if state != ipn.Running.String() {
 		return nil
 	}
 	st, err := lc.Status(context.Background())
-	if err != nil {
+	if err != nil || st.Self == nil || st.Self.UserID == 0 {
 		return nil
 	}
 	var list []peer
 	for _, ps := range st.Peer {
-		p := peer{Name: ps.HostName, Connection: "idle"}
+		if ps.UserID != st.Self.UserID || (ps.Tags != nil && ps.Tags.Len() > 0) || ps.ShareeNode {
+			continue
+		}
+		p := peer{ID: string(ps.ID), Name: ps.HostName, OS: ps.OS, Online: ps.Online, Connection: "idle"}
 		if len(ps.TailscaleIPs) > 0 {
 			p.IP = ps.TailscaleIPs[0].String()
 		}
@@ -276,9 +360,14 @@ func watch(srv *tsnet.Server, report *reporter, changed func()) {
 				}
 				if st, err := lc.StatusWithoutPeers(ctx); err == nil && st.Self != nil {
 					next.Name = st.Self.DNSName
+					next.ID = string(st.Self.ID)
+					if profile, ok := st.User[st.Self.UserID]; ok {
+						next.User = &user{ID: fmt.Sprint(int64(st.Self.UserID)), LoginName: profile.LoginName, DisplayName: profile.DisplayName}
+					}
 				}
 			} else {
 				next.Peers = nil
+				next.User = nil
 			}
 		})
 		if needsLogin && !requested {
@@ -288,4 +377,58 @@ func watch(srv *tsnet.Server, report *reporter, changed func()) {
 			}
 		}
 	}
+}
+
+// readCommands 读 kited 写在标准输入的命令：power-ready <序号> 放行睡眠，logout 注销本节点后退出。
+func readCommands(lc *local.Client, ready chan<- int64) {
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		line := scanner.Text()
+		var id int64
+		if _, err := fmt.Sscanf(line, "power-ready %d", &id); err == nil {
+			// 没有在等的睡眠时不积压，免得挡住后面的命令；睡眠只认不小于自己序号的回复。
+			select {
+			case ready <- id:
+			default:
+			}
+		} else if line == "logout" {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			err := lc.Logout(ctx)
+			cancel()
+			if err != nil {
+				log.Fatalf("在 Tailscale 上注销节点失败：%v", err)
+			}
+			os.Exit(0)
+		}
+	}
+}
+
+// watchPower 把系统电源事件写进状态；睡眠要等 kited 回 power-ready 或 25 秒后放行。
+func watchPower(report *reporter, ready <-chan int64) {
+	var next int64
+	watchSystemPower(func(sleep bool, allow func()) {
+		next++
+		id := next
+		event := "wake"
+		if sleep {
+			event = "sleep"
+		}
+		report.update(func(s *status) { s.Power = &power{Event: event, ID: id} })
+		if !sleep {
+			return
+		}
+		timeout := time.After(25 * time.Second)
+	wait:
+		for {
+			select {
+			case got := <-ready:
+				if got >= id {
+					break wait
+				}
+			case <-timeout:
+				break wait
+			}
+		}
+		allow()
+	})
 }

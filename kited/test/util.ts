@@ -67,8 +67,7 @@ export function newDir(parent: string, name: string, files: Record<string, strin
 
 /**
  * 建一个已有提交的 git 仓库（分支 main）。origin 默认指向一个不存在的示例远程，各仓库互不相同：
- * 登记时按 origin 向账号登记成各自的项目，不访问网络，也省去托管远程的建库和推送（每次约 0.1 秒）。
- * 要没有远程的仓库（登记时走托管远程）传 null。
+ * 登记时按 origin 登记成各自的项目，不访问网络。要没有远程的仓库（登记成没有远程的项目）传 null。
  */
 export function newRepo(parent: string, name: string, files: Record<string, string>,
   origin: string | null = `https://example.test/kite-test/${crypto.randomUUID()}.git`): string {

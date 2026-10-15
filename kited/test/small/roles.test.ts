@@ -8,7 +8,7 @@ import type { Envelope } from '../../src/events.ts';
 import type { OperationGrant } from '../../src/operations/contract.ts';
 import type { Role } from '../../src/roles.ts';
 import type { EmblemStatus } from '../../src/template-emblems.ts';
-import { call, linkNewAccount, openAgent, registerCheckout, startKited } from '../harness.ts';
+import { call, openAgent, registerCheckout, startKited } from '../harness.ts';
 import { diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
 import { makeTemp, newRepo } from '../util.ts';
 
@@ -49,7 +49,6 @@ const byOperation = (grants: OperationGrant[]) => [...grants].sort((a, b) => a.o
 test('角色保存处理重试与冲突，重启后按所选版本创建的首请求使用已存提示词', async () => {
   const root = makeTemp('roles-');
   const home = join(root, 'kite');
-  const account = linkNewAccount(home);
   const model = new ManualModel();
   let daemon: Daemon | undefined;
   try {
@@ -98,7 +97,6 @@ test('角色保存处理重试与冲突，重启后按所选版本创建的首�
     await events.wait((event) => event.type === 'idle' && event.threadId === id);
   } finally {
     await daemon?.stop();
-    account.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }, 1000);
@@ -350,7 +348,6 @@ test('只读审查的空代理改选为工作后拿到协作授权，再改选�
 test('发出第一条消息后改选角色返回 409，回合进行中与重启后都不改变实例配置和授权', async () => {
   const root = makeTemp('roles-started-');
   const home = join(root, 'kite');
-  const account = linkNewAccount(home);
   const model = new ManualModel();
   let daemon: Daemon | undefined;
   try {
@@ -396,7 +393,6 @@ test('发出第一条消息后改选角色返回 409，回合进行中与重启�
     expect(model.calls.values).toHaveLength(1);
   } finally {
     await daemon?.stop();
-    account.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }, 1000);

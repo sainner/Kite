@@ -7,6 +7,10 @@ export const userHome = (): string => process.env.HOME || homedir();
 /** clone 远程的默认位置：~/code/<域名>/<owner>/<repo>，remote 是归一化地址。 */
 export const defaultClonePath = (remote: string): string => join(userHome(), 'code', ...remote.split('/'));
 
+/** 项目在这台工作机的默认检出位置：有远程按远程（~/code/<域名>/<owner>/<repo>），没有按名字（~/code/<项目名>，路径符号换掉）。 */
+export const defaultCheckoutPath = (project: { remote: string | null; name: string }): string => project.remote ? defaultClonePath(project.remote)
+  : join(userHome(), 'code', project.name.replace(/[/\\:]+/g, '-').replace(/^\.+/, '') || '未命名项目');
+
 /** 工作区的工作树：<home>/worktrees/<项目>/<工作区>。新建和流转还原都放这里。 */
 export const worktreePath = (home: string, projectId: string, workspaceId: string): string => join(home, 'worktrees', projectId, workspaceId);
 

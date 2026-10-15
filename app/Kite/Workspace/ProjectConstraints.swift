@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 项目约束：按项目保存在账号服务，只能由用户在 App 里修改。工作机拉取后作为实时过滤，与角色、代理自己的选择逐层求交。
+/// 项目约束：随项目登记表在工作机之间同步，由用户在 App 里修改。工作机据此实时过滤，与角色、代理自己的选择逐层求交。
 nonisolated struct ProjectConstraints: Codable, Equatable, Sendable {
     struct Tools: Codable, Equatable, Sendable, ToolFilter {
         var mode: String
@@ -8,22 +8,6 @@ nonisolated struct ProjectConstraints: Codable, Equatable, Sendable {
     }
     var tools: Tools
     var revision: String
-}
-
-private struct ConstraintsSave: Encodable {
-    let tools: ProjectConstraints.Tools
-    let expectedRevision: String
-}
-
-extension KiteAccount {
-    func projectConstraints(_ projectID: String) async throws -> ProjectConstraints {
-        try await request("/api/projects/\(projectID)/constraints", as: ProjectConstraints.self)
-    }
-
-    func saveProjectConstraints(_ projectID: String, tools: ProjectConstraints.Tools, expectedRevision: String) async throws -> ProjectConstraints {
-        try await request("/api/projects/\(projectID)/constraints", method: "PUT",
-                          body: ConstraintsSave(tools: tools, expectedRevision: expectedRevision), as: ProjectConstraints.self)
-    }
 }
 
 /// 项目配置页里的「代理约束」：这个项目里的代理能用哪些工具。收紧后正在运行的代理也立即受限。
@@ -65,7 +49,7 @@ struct ProjectConstraintsSection: View {
     private func load() async {
         do {
             try? await model.ensureRoles()
-            let value = try await model.account.projectConstraints(projectID)
+            let value = try await model.projectConstraints(projectID)
             saved = value
             draft = value.tools
             error = nil
@@ -81,7 +65,7 @@ struct ProjectConstraintsSection: View {
         Task {
             defer { saving = false }
             do {
-                let value = try await model.account.saveProjectConstraints(projectID, tools: draft, expectedRevision: saved.revision)
+                let value = try await model.saveProjectConstraints(projectID, tools: draft, expectedRevision: saved.revision)
                 self.saved = value
                 self.draft = value.tools
             } catch { self.error = error.localizedDescription }

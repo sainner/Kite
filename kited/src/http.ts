@@ -10,8 +10,9 @@ import type { InputVia } from './harness/types.ts';
 import { roleSelection } from './roles.ts';
 import { agentDefinitionSchema } from './agents/definition.ts';
 import { defaultAgentModel } from './agents/models.ts';
-import type { Network } from './network.ts';
-import { publisherConfig, type CatalogPublisher } from './catalog-publisher.ts';
+import { networkChannelSchema, type Network } from './network.ts';
+import { changesSince } from './account-data/replication.ts';
+import { credentialType } from './account-data/credentials.ts';
 import { tokenPrices } from './token-prices.ts';
 import type { VoiceSocket } from './voice/sessions.ts';
 import { WaitingConflict } from './waiting.ts';
@@ -25,10 +26,14 @@ const str = (v: unknown, name: string): string => {
   return v;
 };
 
-/** 登记本机文件夹写 path；clone 远程写 remote，path 可选，默认放在 ~/code/<域名>/<owner>/<repo>。 */
+/**
+ * 登记本机文件夹写 path；clone 远程写 remote，path 可选，默认放在 ~/code/<域名>/<owner>/<repo>；
+ * 从别的工作机 clone 没有远程的项目写 project，path 可选，默认放在 ~/code/<项目名>。
+ */
 const checkoutRequest = z.union([
   z.object({ path: z.string().min(1) }).strict(),
   z.object({ remote: z.string().trim().min(1).max(2048), path: z.string().min(1).optional() }).strict(),
+  z.object({ project: z.string().min(1), path: z.string().min(1).optional() }).strict(),
 ]);
 
 function handle<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
@@ -135,7 +140,6 @@ export interface Listen {
   remote?: boolean;
   /** 本机监听管理此设备的组网状态。 */
   network?: Network;
-  publisher?: CatalogPublisher;
   /** 仅 kite-net 持有；代理已核验来源和本节点属于同一组网用户。 */
   proxyToken?: string;
 }
@@ -157,6 +161,14 @@ export function serve(kite: Kite, listen: Listen) {
   });
   const bound = <R extends Request>(fn: (req: R) => Promise<unknown> | unknown) => access((req: R) => {
     checkMachine(req);
+    return fn(req);
+  });
+  /**
+   * 账号级数据的同步带着凭据明文，只给工作机：组网来的请求要出自目录里的一台工作机（按 kite-net 给的来源 IP 核对），
+   * 本机监听的请求来自本机，本来就能读本机的数据。
+   */
+  const peerOnly = <R extends Request>(fn: (req: R) => Promise<unknown> | unknown) => bound(async (req: R) => {
+    if (listen.remote && !(await kite.directory.verify(req.headers.get('X-Kite-Peer') ?? ''))) throw new KiteError('只有工作机能同步账号数据', 403);
     return fn(req);
   });
   /** 语音输入升级成 WebSocket，检查同 bound；thread 是正在输入的会话，新会话不带。 */
@@ -184,16 +196,37 @@ export function serve(kite: Kite, listen: Listen) {
     port: listen.port,
     idleTimeout: 60,
     routes: {
-      '/catalog/account': {
-        GET: localOnly(bound(() => listen.publisher?.status() ?? {})),
-        PUT: localOnly(bound(async (req) => {
-          if (!listen.publisher) throw new KiteError('此服务不支持目录上报', 404);
-          const parsed = publisherConfig.safeParse(await body(req));
-          if (!parsed.success) throw new KiteError('目录上报设置无效');
-          await listen.publisher.configure(parsed.data);
-          return listen.publisher.status();
-        })),
+      '/machines': { GET: bound(() => kite.directory.entries()) },
+      '/project-registry': { GET: bound(() => kite.registry.list()) },
+      '/project-registry/:id/appearance': { PUT: bound(async (req) => kite.registry.setAppearance(req.params.id, await body(req))) },
+      '/project-registry/:id/settings': { PUT: bound(async (req) => kite.registry.setSettings(req.params.id, await body(req))) },
+      // 推送整个仓库可能很久，请求不受空闲超时限制。
+      '/project-registry/:id/remote': { PUT: long(bound(async (req) => kite.setProjectRemote(req.params.id, str((await body(req)).remote, 'remote')))) },
+      // 没有远程的项目，其他工作机从这里拉取本机检出（只读）。
+      '/git/:project/info/refs': { GET: peerOnly((req) => kite.serveCheckout(req, req.params.project, '/info/refs')) },
+      '/git/:project/git-upload-pack': { POST: long(peerOnly((req) => kite.serveCheckout(req, req.params.project, '/git-upload-pack'))) },
+      '/project-registry/:id/constraints': {
+        GET: bound((req) => kite.registry.constraints(req.params.id)),
+        PUT: bound(async (req) => kite.registry.saveConstraints(req.params.id, await body(req))),
       },
+      '/credentials': {
+        GET: bound((req) => {
+          const query = new URL(req.url).searchParams;
+          const type = credentialType.optional().safeParse(query.get('type') ?? undefined);
+          if (!type.success) throw new KiteError('凭据类型无效');
+          return kite.credentials.list(type.data, query.get('projectId') || null);
+        }),
+        POST: bound(async (req) => Response.json(await kite.credentials.create(await body(req)), { status: 201 })),
+      },
+      '/credentials/:id': {
+        PUT: bound(async (req) => kite.credentials.update(req.params.id, await body(req))),
+        DELETE: bound((req) => { kite.credentials.delete(req.params.id); return { ok: true }; }),
+      },
+      '/git/github/device': { POST: bound(() => kite.github.start()) },
+      '/git/github/device/:flow': { POST: bound((req) => kite.github.poll(req.params.flow)) },
+      '/git/github/repos': { GET: bound(() => kite.github.repositories()) },
+      '/sync/changes': { GET: long(peerOnly((req) => changesSince(kite.accountData, new URL(req.url).searchParams, req.signal))) },
+      '/sync/conflicts': { GET: bound(() => kite.conflicts()) },
       '/network': {
         GET: localOnly(bound(() => network().status())),
         PUT: localOnly(bound(async (req) => {
@@ -202,11 +235,17 @@ export function serve(kite: Kite, listen: Listen) {
           return parsed.data.enabled ? network().enable() : network().disable();
         })),
       },
-      '/network/account': { PUT: localOnly(bound(async (req) => {
-        const config = z.object({ deviceId: z.uuid(), controlURL: z.url().startsWith('https://'), authKey: z.string().min(1) }).strict().safeParse(await body(req));
-        if (!config.success) throw new KiteError('入网设置无效');
-        return network().joinAccount(config.data);
-      })) },
+      '/network/channel': {
+        GET: localOnly(bound(() => ({ channel: network().channel() ?? null }))),
+        PUT: localOnly(bound(async (req) => {
+          const parsed = networkChannelSchema.safeParse(await body(req));
+          if (!parsed.success) throw new KiteError(parsed.error.issues.map((issue) => issue.message).join('；'));
+          return network().setChannel(parsed.data);
+        })),
+        DELETE: localOnly(bound(() => network().setChannel(null))),
+      },
+      '/network/channel/key': { GET: long(localOnly(bound(async () => ({ publicKey: await network().channelKey() })))) },
+      '/network/logout': { POST: localOnly(bound(() => network().logout())) },
       '/machine': { GET: access(() => kite.machine()) },
       '/subscription-logins': { POST: bound(async (req) => {
         const parsed = z.object({ id: z.uuid(), provider: z.enum(['chatgpt', 'claude']) }).strict().safeParse(await body(req));
@@ -238,7 +277,7 @@ export function serve(kite: Kite, listen: Listen) {
         GET: bound((req) => kite.checkouts(new URL(req.url).searchParams.get('project') ?? undefined)),
         POST: long(bound(async (req) => {
           const parsed = checkoutRequest.safeParse(await body(req));
-          if (!parsed.success) throw new KiteError('登记检出要写 path（本机文件夹）或 remote（远程地址）');
+          if (!parsed.success) throw new KiteError('登记检出要写 path（本机文件夹）、remote（远程地址）或 project（没有远程的项目）');
           return kite.registerCheckout(parsed.data);
         })),
       },
@@ -281,22 +320,32 @@ export function serve(kite: Kite, listen: Listen) {
       },
       '/environment': { GET: bound((req) => kite.environment(str(new URL(req.url).searchParams.get('project') ?? undefined, 'project'))) },
       '/workspaces/:id/setup': { POST: bound((req) => kite.retrySetup(req.params.id)) },
-      '/workspaces/:id/handover': { POST: long(bound(async (req) => {
-        const raw = await req.text();
-        let data: unknown;
-        try { data = raw ? JSON.parse(raw) : {}; } catch { throw new KiteError('请求体不是 JSON'); }
-        const parsed = z.object({ allowMaterials: z.boolean().optional() }).strict().safeParse(data);
-        if (!parsed.success) throw new KiteError('交接请求无效');
-        return kite.transfers.handover(req.params.id, parsed.data);
-      })) },
+      '/workspaces/:id/handover': { POST: long(bound((req) => kite.transfers.handover(req.params.id))) },
       '/workspaces/:id/handover/cancel': { POST: long(bound((req) => kite.transfers.cancel(req.params.id))) },
+      // 没有远程的项目：目标机装好后通知源机交出。
+      '/workspaces/:id/handover/complete': { POST: long(peerOnly(async (req) => {
+        const parsed = z.object({ epoch: z.number().int().positive() }).strict().safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('交出通知要写 epoch');
+        return kite.transfers.complete(req.params.id, parsed.data.epoch);
+      })) },
+      // 工作区副本：其他工作机拉取本机持有的工作区执行数据。
+      '/replica': { GET: peerOnly(() => kite.replicaEntries()) },
+      '/replica/:id': { POST: long(peerOnly(async (req) => {
+        const parsed = z.object({ known: z.record(z.string(), z.object({ size: z.number(), mtime: z.number(), hash: z.string() }).strict()) })
+          .strict().safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('副本请求要写 known');
+        return kite.replicaPage(req.params.id, parsed.data.known);
+      })) },
       '/workspaces/:id/lease/check': { POST: long(bound((req) => kite.transfers.check(req.params.id))) },
       '/workspaces/restore': { POST: long(bound(async (req) => {
-        const parsed = z.object({ project: z.string().min(1), workspaceId: z.string().min(1), operationId: z.string().min(1) }).strict().safeParse(await body(req));
-        if (!parsed.success) throw new KiteError('还原请求要写 project、workspaceId 与 operationId');
-        const { project, workspaceId, operationId } = parsed.data;
-        return kite.receipts.run({ actor: 'ui', id: operationId, request: JSON.stringify({ name: 'workspace.restore', workspaceId, project }),
-          execute: () => kite.transfers.restore(project, workspaceId) });
+        const parsed = z.object({ project: z.string().min(1).optional(), workspaceId: z.string().min(1), operationId: z.string().min(1),
+          from: z.string().min(1).optional(), force: z.boolean().optional(),
+          continue: z.array(z.object({ threadId: z.string().min(1), inputs: z.array(z.object({ id: z.string().min(1), text: z.string(),
+            source: z.enum(['human', 'kite']), via: inputVia.optional() }).strict()) }).strict()).optional() }).strict().safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('还原请求要写 workspaceId 与 operationId，可带 project、from（交出它的工作机）或 force（强制接管）');
+        const { project, workspaceId, operationId, from, force } = parsed.data;
+        return kite.receipts.run({ actor: 'ui', id: operationId, request: JSON.stringify({ name: 'workspace.restore', workspaceId, project, from, force }),
+          execute: () => kite.restoreWorkspace(project, workspaceId, { from, force, continue: parsed.data.continue }) });
       })) },
       '/plugin-definitions': {
         GET: bound(() => kite.catalog.definitions()),

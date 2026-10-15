@@ -32,7 +32,7 @@ function projectVariables(machine: Machine, project: Project, cwd: string) {
   return {
     ...environmentVariables(machine),
     'project.name': text(() => project.name),
-    'project.remote': text(() => project.remote),
+    'project.remote': text(() => project.remote ?? '没有远程'),
     'project.rules': directory['project.rules'],
     'project.memory': directory['project.memory'],
   } satisfies Record<LayerVariable<'environment' | 'project'>, () => ContextBinding>;

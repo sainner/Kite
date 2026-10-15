@@ -18,7 +18,9 @@ bun run start
 
 默认监听 `127.0.0.1:5483`，`KITE_PORT` 可改端口；`KITE_HOME` 默认 `~/.kite`，保存数据库、工作树与线程记录。命令行客户端入口是 `src/cli.ts`，用法见 [启动服务与 CLI](../docs/kited.md#启动服务)。
 
-排查组网连接时，在节点目录 `$KITE_HOME/tailnet/accounts/<设备 ID>/` 下新建空文件 `debug.log`，组网程序 kite-net 下次启动时会把组网库日志带时间追加写进去；删除文件并重启组网即关闭。重启组网可以用 `kite net down` 再 `kite net up`，或结束 kite-net 进程，kited 会自动拉起。可与 App 的 TimingTrace（见 [App 说明](../app/README.md#预览和验证)）对照时间，iPhone 的时钟可能与工作机有偏差。
+组网程序 kite-net 是 `net/` 下的 Go 程序，用 `net/build.sh` 构建到 `net/bin/kite-net`：脚本先把 tailscale 打上 `net/tailscale-packet-listener.patch`（受管网络通道要用的自定义 UDP 监听），副本放在仓库的 `build/tailscale-kite`。重新编译过的 kite-net 第一次读钥匙串里的通道私钥时，系统会弹窗请用户允许。
+
+排查组网连接时，在节点目录 `$KITE_HOME/tailnet/node/` 下新建空文件 `debug.log`，组网程序 kite-net 下次启动时会把组网库日志带时间追加写进去；删除文件并重启组网即关闭。重启组网可以用 `kite net down` 再 `kite net up`，或结束 kite-net 进程，kited 会自动拉起。可与 App 的 TimingTrace（见 [App 说明](../app/README.md#预览和验证)）对照时间，iPhone 的时钟可能与工作机有偏差。
 
 ## 终端试用
 
@@ -36,8 +38,8 @@ bun run harness --resume <会话id>
 | 路径 | 职责 |
 |---|---|
 | `src/main.ts`、`daemon.ts`、`http.ts`、`cli.ts` | 服务与客户端入口、HTTP 和 SSE |
-| `src/account/`、`catalog-publisher.ts` | 托管账号、资源库与目录服务、工作机目录上报；契约见 [托管账号与设备](../docs/托管账号与设备.md) |
-| `src/account/credential-service.ts` | 账号凭据管理与工作机凭据分发 |
+| `src/account-data/` | 账号级数据：本机存储与版本、工作机之间的同步、工作机发现与目录摘要、凭据、项目登记与约束、GitHub 绑定；契约见 [工作机](../docs/kited.md#账号级数据) |
+| `src/network.ts`、`net/` | 组网：kite-net（tsnet）连 Tailscale 官方协调服务、受管网络通道、系统睡眠预告；身份见 [身份与设备](../docs/身份与设备.md) |
 | `src/kite.ts`、`model.ts`、`store.ts`、`events.ts` | 业务编排、领域对象、持久化与事件 |
 | `src/instance-lifecycle.ts` | 实例与窗口创建、请求去重及回收 |
 | `src/instance-configuration.ts` | 实例配置、授权变更与对应通知 |
@@ -49,7 +51,8 @@ bun run harness --resume <会话id>
 | `src/execution/` | 共用沙箱、执行授权、文件工具、命令与进程组 |
 | `src/workspace/` | 项目登记、工作树、Git、快照、文件与历史差异 |
 | `src/workspace/checkout-management.ts` | 检出登记、远程同步与现场推送 |
-| `src/workspace/lease.ts`、`src/transfer/` | 工作区执行权与跨机流转；契约见 [Line 与工作区流转](../docs/Line与工作区流转.md) |
+| `src/workspace/peer-git.ts` | 没有远程的项目：本机检出的只读 Git 服务、从其他工作机 clone 与快进主线 |
+| `src/workspace/lease.ts`、`src/transfer/` | 工作区执行权、工作区副本的跟进与跨机流转；契约见 [Line 与工作区流转](../docs/Line与工作区流转.md) |
 | `src/waiting.ts` | 回合中途等人回应：提问工具与必问动作的审批；契约见 [工具审批与提问](../docs/工具审批与提问.md) |
 | `src/environment.ts` | 按项目建工作区前的环境检查 |
 | `src/line/` | 个人 agent Line：跨机调用、管理工具、关注设备、Line 的 monitor（事件路由与收件箱）、项目说明 |
@@ -58,7 +61,7 @@ bun run harness --resume <会话id>
 | `src/operations/` | 实例操作契约、授权入口与操作收据 |
 | `src/agents/` | Agent 定义、工具的逐层约束、后端能力与共享模型清单入口 |
 | `src/roles.ts` | 角色目录，以及由角色生成代理初始配置 |
-| `src/library-sync.ts` | 资源库与项目约束在账号服务和本机缓存之间的同步 |
+| `src/library-sync.ts` | 资源库与项目约束从账号级数据到本机缓存的同步 |
 | `src/context-templates.ts` | 后台场景的上下文模板目录 |
 | `src/template-emblems.ts` | 角色的点阵签名 |
 | `src/light-tasks.ts`、`thread-titles.ts` | 辅助模型任务与会话标题 |

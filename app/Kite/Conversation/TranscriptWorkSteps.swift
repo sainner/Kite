@@ -599,10 +599,10 @@ final class CallDetailView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func show(_ call: Call, environment: EnvironmentValues) {
-        var fields = Self.fields(Self.input(call))
+        var fields = call.detailInput.detailFields
         if call.state == .generating { fields.append(("arguments（原文）", .string(call.use.arguments ?? ""))) }
         input.show(fields, environment: environment)
-        result.show(Self.fields(Self.result(call)), environment: environment)
+        result.show(call.detailResult.detailFields, environment: environment)
         if call.children.isEmpty {
             children?.view.removeFromSuperview()
             children = nil
@@ -640,42 +640,6 @@ final class CallDetailView: NSView {
             children.view.frame = CGRect(x: 12, y: result.frame.maxY + 6, width: max(width - 12, 0), height: heights.children)
             children.layout(height: heights.children)
         }
-    }
-
-    /// 只列顶层键（参数里的 description 不列）；嵌套的对象和数组整个序列化，不再递归排。不是对象或是空对象时一行，键是空的。
-    private static func fields(_ value: JSON) -> [(key: String, value: JSON)] {
-        if case .object(let object) = value, !object.isEmpty {
-            return object.keys.sorted().compactMap { key in object[key].map { (key, $0) } }
-        }
-        return [("", value)]
-    }
-
-    private static func input(_ call: Call) -> JSON {
-        guard case .object(let fields) = call.use.input else { return call.use.input }
-        return .object(fields.filter { $0.key != "description" })
-    }
-
-    private static func result(_ call: Call) -> JSON {
-        var fields: [String: JSON] = [:]
-        if let result = call.result {
-            fields["output"] = .string(result.text)
-            if let diff = result.diff {
-                fields["diff"] = .object(["id": .string(diff.id), "paths": .array(diff.paths.map(JSON.string))])
-            }
-            // 旧记录中的非文本内容仍保留在结果卡片中。
-            if result.content.contains(where: { if case .image = $0 { true } else { false } }) {
-                fields["content"] = .array(result.content.map { part in
-                    switch part {
-                    case .text(let text): .object(["type": "text", "text": .string(text)])
-                    case .image(let width, let height): .object(["type": "image", "width": .number(Double(width)), "height": .number(Double(height))])
-                    }
-                })
-            }
-        } else if !call.use.output.isEmpty {
-            fields["output"] = .string(call.use.output)
-            fields["outputTruncated"] = .bool(call.use.outputTruncated)
-        }
-        return .object(fields)
     }
 }
 
@@ -726,19 +690,11 @@ final class ToolDetailCardView: NSView {
         for (row, field) in zip(rows, fields) {
             row.key.showPlain(field.key, font: font, color: .secondaryLabelColor)
             row.coordinator.openURL = environment.openURL
-            let serialized = Self.serialized(field.value)
-            row.value.showLinked(serialized, scope: environment.referenceScope, font: font)
+            row.value.showLinked(field.value.detailText, scope: environment.referenceScope, font: font)
             row.value.setAccessibilityLabel(field.key)
         }
         background.fillColor = Theme.codeBackground.resolve(in: environment).cgColor
         needsLayout = true
-    }
-
-    private static func serialized(_ value: JSON) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        guard let data = try? encoder.encode(value) else { return "无法序列化" }
-        return String(decoding: data, as: UTF8.self)
     }
 
     func height(width: CGFloat) -> CGFloat {

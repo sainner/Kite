@@ -67,6 +67,8 @@ extension Binding where Value == CardPhase {
 /// 失败变成错误色，按钮里一行写原因，点它把完整原因复制到剪贴板，左边冒出圆形的重试。几个状态之间的形变交给玻璃效果的容器。
 struct CardActions: View {
     let primary: String
+    /// 主按钮文字前面的图标。
+    var icon: Image?
     var enabled: Bool
     var prominent: Bool
     var secondary: String?
@@ -81,10 +83,11 @@ struct CardActions: View {
     /// 刚复制了报错，按钮里短暂换成已复制。
     @State private var copied = false
 
-    init(primary: String, enabled: Bool = true, prominent: Bool = true, secondary: String? = nil, secondaryEnabled: Bool = true,
+    init(primary: String, icon: Image? = nil, enabled: Bool = true, prominent: Bool = true, secondary: String? = nil, secondaryEnabled: Bool = true,
          phase: Binding<CardPhase>, succeeded: String = "已保存", working: String? = nil,
          action: @escaping () -> Void, secondaryAction: @escaping () -> Void = {}, succeededAction: (() -> Void)? = nil) {
         self.primary = primary
+        self.icon = icon
         self.enabled = enabled
         self.prominent = prominent
         self.secondary = secondary
@@ -148,7 +151,10 @@ struct CardActions: View {
             ZStack {
                 switch state {
                 case .idle:
-                    Text(primary).transition(.blurReplace)
+                    Group {
+                        if let icon { Label { Text(primary) } icon: { icon } } else { Text(primary) }
+                    }
+                    .transition(.blurReplace)
                 case .working:
                     HStack(spacing: 8) {
                         CardSpinner()

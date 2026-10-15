@@ -8,14 +8,26 @@ import { KiteError } from './errors.ts';
 import { type AdoptResult, Bus, type PushOutcome } from './events.ts';
 import { hasUnmerged, mainline, mergeBack } from './workspace/mainline.ts';
 import { CheckoutManagement } from './workspace/checkout-management.ts';
-import { AccountClient } from './account-client.ts';
+import { AccountData } from './account-data/store.ts';
+import { Credentials } from './account-data/credentials.ts';
+import { ProjectRegistry } from './account-data/registry.ts';
+import { Directory, type Candidate } from './account-data/directory.ts';
+import { Replication } from './account-data/replication.ts';
+import { GitHubBinding } from './account-data/github.ts';
+import { fileKey, keychainKey } from './account-data/key.ts';
+import type { GitCredentials } from './git-credential.ts';
+import type { CheckoutRequest } from './workspace/checkout-management.ts';
+import { fetchPeerRefs, serveCheckout, syncPeer, type Peer, type PeerRoute } from './workspace/peer-git.ts';
+import { replicaDigest, replicaFiles, replicaManifest, replicaSources, ReplicaStore, Replicas, type FileState, type ReplicaEntry, type ReplicaPage } from './transfer/replica.ts';
+import { revParse } from './workspace/git.ts';
+import { normalizeRemote, remoteHost } from './remote-url.ts';
 import { commitAll, isDirty } from './workspace/git.ts';
 import { currentBranch, fetchBranch, originAccess, pushBranch, type CheckoutSync, type RemoteAccess } from './workspace/remote.ts';
 import { openRuntime, type Runtime, type RuntimeOptions } from './runtime.ts';
-import { capture, changesBetween, findSnapshot, list, restore, type Snapshot } from './workspace/snapshots.ts';
+import { capture, changesBetween, findSnapshot, list, restore, snapshotRef, type Snapshot } from './workspace/snapshots.ts';
 import { compactTemplate } from './harness/compaction.ts';
 import type { Store } from './store.ts';
-import type { AgentInstance, Checkout, Machine, OpenWindowRequest, PluginInstance, Project, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
+import { holds, type AgentInstance, type Checkout, type Machine, type OpenWindowRequest, type PluginInstance, type Project, type ThreadContext, type Workspace, type WorkspaceModel, type WorkspaceStatus, type WorkspaceWindow } from './model.ts';
 import { PluginCatalog } from './plugins/catalog.ts';
 import { PluginHost } from './plugins/host.ts';
 import { InstanceConfiguration } from './instance-configuration.ts';
@@ -62,7 +74,7 @@ import { TokenCounter } from './token-counts.ts';
 import { VoiceSessions, voiceTemplate } from './voice/sessions.ts';
 import { type Waiting, Waits } from './waiting.ts';
 import { WorkspaceTransfers } from './transfer/transfers.ts';
-import { MIN_FREE_BYTES, readEnvironment, type Environment } from './environment.ts';
+import { diskEnough, readEnvironment, runtimeLogin, type Environment } from './environment.ts';
 import { runtimeOfModel } from './agents/models.ts';
 
 export interface ThreadView extends ThreadContext { runner: Runtime['state']; busy: boolean }
@@ -83,6 +95,8 @@ const firstLine = (text: string) => text.trim().split('\n')[0]!.trim() || '（�
 const titleOf = (prompt: string) => firstLine(prompt).slice(0, 80);
 
 const PUSH_ATTEMPTS = 3;
+/** 睡眠前被打断、换到另一台工作机后补的说明。 */
+const CONTINUE_AFTER_MOVE = '这台工作机睡眠前，这个工作区换到了这里，刚才的回合被打断了。接着刚才的工作继续。';
 
 function conflictPrompt(branch: string, files: string[]): string {
   return [`Kite 正在把工作区的改动合回主线。主线（本机或远程）有了新提交，把它合进 ${branch} 时这些文件冲突了：`,
@@ -100,6 +114,17 @@ export class Kite {
   readonly catalog: PluginCatalog;
   readonly contextTemplates: ContextTemplates;
   readonly roles: Roles;
+  /** 账号级数据（资源库、项目登记与约束、凭据、各工作机的目录摘要），在工作机之间同步，见 docs/分布式架构.md。 */
+  readonly accountData: AccountData;
+  readonly registry: ProjectRegistry;
+  readonly credentials: Credentials;
+  readonly directory: Directory;
+  readonly replication: Replication;
+  /** 其他工作机持有的工作区，在本机跟进的副本。 */
+  readonly replicas: Replicas;
+  readonly github: GitHubBinding;
+  /** Git 访问凭据：按远程所在的主机用绑定的凭据。 */
+  readonly git: GitCredentials;
   readonly library: LibrarySync;
   readonly plugins: PluginHost;
   readonly lightTasks?: LightTasks;
@@ -139,13 +164,43 @@ export class Kite {
   private leaseSync?: Promise<void>;
   /** 含锁外网络操作的项目任务，关闭时仍需等待它们完成登记。 */
   private projectOperations = new Set<Promise<unknown>>();
+  private projectSync?: Timer;
+  /** 睡眠前交出、还没确认交出去的工作区；醒来时还在本机的撤回交接。 */
+  private leavingIds = new Set<string>();
 
-  constructor(readonly store: Store, readonly home: string, readonly bus: Bus, private options: RuntimeOptions = {},
-    readonly account = new AccountClient(() => undefined)) {
-    this.checkoutManagement = new CheckoutManagement(store, home, account, bus, (key, action) => this.serial(key, action));
+  constructor(readonly store: Store, readonly home: string, readonly bus: Bus, private options: RuntimeOptions = {}) {
+    this.accountData = new AccountData(join(home, 'account.db'), store.machine.id,
+      options.keychain ? keychainKey(store.machine.id) : fileKey(join(home, 'credentials.key')));
+    this.registry = new ProjectRegistry(this.accountData);
+    this.credentials = new Credentials(this.accountData, { projectExists: (id) => !!this.registry.get(id) });
+    this.git = {
+      credential: async (url) => {
+        const remote = normalizeRemote(url);
+        return remote ? this.credentials.git(remoteHost(remote)) : null;
+      },
+    };
+    this.github = new GitHubBinding((login, token) => this.credentials.saveGit('github.com', login, token),
+      async () => (await this.credentials.git('github.com'))?.password);
+    this.directory = new Directory({
+      data: this.accountData, self: () => store.machine, address: () => this.serving?.network?.status().address,
+      snapshot: () => ({ machine: store.machine, projects: store.projects(), checkouts: store.checkouts(), workspaces: store.workspaces() }),
+      candidates: () => options.directory?.candidates() ?? this.tailnetPeers(),
+      fetch: (address, path, init) => this.peerFetch(address, path, init),
+      changed: () => this.replication.sync(),
+      ...(options.catalogDelayMs !== undefined ? { publishDelayMs: options.catalogDelayMs } : {}),
+    });
+    this.replication = new Replication({ data: this.accountData, directory: this.directory, fetch: (address, path, init) => this.peerFetch(address, path, init) });
+    bus.subscribe((event) => event.type === 'checkout.changed' || event.type === 'workspace.changed', () => this.directory.schedule());
+    this.accountData.subscribe((changed) => {
+      if (!changed.some((entry) => entry.kind === 'project')) return;
+      this.registry.reconcile();
+      this.projectSync ??= setTimeout(() => { this.projectSync = undefined; void this.syncProjects(); }, 500);
+    });
+    this.checkoutManagement = new CheckoutManagement(store, home, { registry: this.registry, git: this.git, peers: (projectId) => this.projectPeers(projectId) }, bus,
+      (key, action) => this.serial(key, action));
     this.subscriptionLogins = new SubscriptionLogins(home);
     this.modelAccounts = new ModelAccounts(home, (modelAccounts) => bus.emit({ type: 'model-accounts.changed', modelAccounts }),
-      (home) => readModelAccounts(home, { usage: store, apiKeys: async () => this.account.linked ? this.account.apiKeys() : [] }));
+      (home) => readModelAccounts(home, { usage: store, apiKeys: () => this.credentials.apiKeys() }));
     this.catalog = new PluginCatalog(join(home, 'plugins'));
     this.roles = new Roles(store);
     this.contextTemplates = new ContextTemplates(store, [
@@ -153,14 +208,15 @@ export class Kite {
       agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
       pluginToolsContextDefinition, voiceTemplate, lineMonitorContextDefinition, monitorEventsContextDefinition,
     ]);
-    this.library = new LibrarySync({ account, store, roles: this.roles, templates: this.contextTemplates, catalog: this.catalog,
-      changed: (changes) => this.libraryChanged(changes) });
+    this.library = new LibrarySync({ data: this.accountData, registry: this.registry, store, roles: this.roles, templates: this.contextTemplates,
+      catalog: this.catalog, changed: (changes) => this.libraryChanged(changes) });
     this.receipts = new OperationReceipts(store);
     this.operations = new InstanceOperations(this);
     this.waits = new Waits((threadId, waiting) => bus.emit({ type: 'waiting', threadId, ...(waiting ? { waiting } : {}) }));
     this.plugins = new PluginHost(this);
-    this.peers = new Peers({ account, self: () => ({ id: store.machine.id, name: store.machine.name, url: this.serving?.url }),
-      proxyPort: () => this.serving?.network?.status().httpProxyPort, ...(options.peers ? { directory: options.peers.directory } : {}) });
+    this.peers = new Peers({ self: () => ({ id: store.machine.id, name: store.machine.name, url: this.serving?.url }),
+      machines: options.peers?.directory ?? (async () => this.directory.list()),
+      fetch: (address, path, init) => this.peerFetch(address, path, init) });
     this.monitor = new LineMonitor({ store, peers: this.peers,
       line: () => this.lineInstance(), inbox: () => this.lineInbox(true), deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, 'kite'),
       template: () => this.contextTemplates.get(lineMonitorContextDefinition.id, 'line.monitor').definition,
@@ -186,8 +242,22 @@ export class Kite {
       ...(options.monitorWakeDelayMs !== undefined ? { wakeDelayMs: options.monitorWakeDelayMs } : {}) });
     // 工作区开放、交接、冻结、归档与代理归档都会改变 monitor 能不能运行。
     bus.subscribe((event) => event.type === 'workspace.changed' || event.type === 'thread.changed', () => this.monitors.soon());
+    this.replicas = new Replicas(new ReplicaStore(join(home, 'replicas')), {
+      holders: () => this.directory.online(),
+      held: (id) => { const w = store.workspace(id); return w && holds(w) ? w.epoch : undefined; },
+      checkout: (projectId) => store.checkouts(projectId)[0]?.path,
+      fetch: (address, path, init) => this.peerFetch(address, path, init),
+      fetchRefs: (cwd, holder, projectId, specs) => fetchPeerRefs(cwd, holder, projectId, this.peerRoute(), specs),
+    });
     this.transfers = new WorkspaceTransfers({
-      store, home, account,
+      store, home, git: this.git, replicas: this.replicas,
+      online: (machine) => this.directory.online().find((entry) => entry.id === machine),
+      elsewhere: (workspaceId) => this.directory.copies(workspaceId),
+      call: (machine, method, path, body) => this.peers.call(machine, method, path, { body, timeoutMs: 60_000 }),
+      syncFrom: async (checkout, machine) => {
+        const peer = this.directory.online().find((entry) => entry.id === machine);
+        return peer ? syncPeer(checkout.path, peer, checkout.projectId, this.peerRoute()) : 'absent';
+      },
       control: (id, action) => this.control(id, action),
       workspace: (id) => this.workspace(id),
       threadState: (id) => this.threadState(id),
@@ -200,7 +270,7 @@ export class Kite {
       recordsReplaced: (ids) => this.transcripts.forget(ids),
       environment: (projectId) => this.environment(projectId),
       ensureCheckout: (projectId) => this.ensureCheckout(projectId),
-      freeze: (id) => this.freeze(id),
+      freeze: (id, handingOff) => this.freeze(id, handingOff),
       beforeHandover: (id) => this.isLineWorkspace(id) ? this.saveLineScene(id) : Promise.resolve(),
     });
     this.configuration = new InstanceConfiguration(this, {
@@ -215,9 +285,9 @@ export class Kite {
       changed: (workspaceId) => this.changed(workspaceId),
       revokeGrants: (instance) => this.configuration.revokeInstanceGrants(instance),
     });
-    this.tokenCounts = new TokenCounter({ apiKeys: async () => this.account.linked ? this.account.apiKeys() : [] });
+    this.tokenCounts = new TokenCounter({ apiKeys: () => this.credentials.apiKeys() });
     this.voice = new VoiceSessions({
-      keys: async () => this.account.linked ? this.account.speechKeys() : [],
+      keys: () => this.credentials.speechKeys(),
       template: () => this.contextTemplates.get(voiceTemplate.id, voiceTemplate.scene),
       history: (id) => this.history(id),
       variables: () => environmentVariables(store.machine),
@@ -241,18 +311,18 @@ export class Kite {
       });
     }
     this.emblems = new TemplateEmblems(store, this.roles, this.contextTemplates, this.lightTasks,
-      () => bus.emit({ type: 'roles.changed' }), (id, emblem) => this.library.publish('emblem', id, emblem));
+      () => bus.emit({ type: 'roles.changed' }), (id, emblem) => this.library.write('emblem', id, emblem));
     for (const w of store.workspaces()) if (w.status === 'preparing') store.setWorkspaceStatus(w.id, 'failed');
     this.transcripts = new TranscriptHistory(store, home, bus, this.events);
   }
 
   machine(): Machine { return this.store.machine; }
   /**
-   * 资源库的写入先到账号服务（见 LibrarySync.save），成功后存本机；没加入账号时报错。期望的版本按本机缓存给出，缓存里没有就是账号里也没有。
+   * 资源库的写入先进账号级数据（见 LibrarySync.save），再存本机缓存。期望的版本按本机缓存给出，缓存里没有就是账号级数据里也没有。
    */
   async updateContextTemplate(id: string, expectedRevision: string, template: unknown) {
     const valid = this.contextTemplates.validate(id, expectedRevision, template);
-    await this.library.save('template', id, valid, this.contextTemplates.accountRevision(id), this.contextTemplates.isDefault(valid));
+    this.library.save('template', id, valid, this.contextTemplates.accountRevision(id), this.contextTemplates.isDefault(valid));
     const saved = this.contextTemplates.update(expectedRevision, valid);
     this.bus.emit({ type: 'context-templates.changed' });
     return saved;
@@ -268,22 +338,22 @@ export class Kite {
   }
   async createRole(value: unknown) {
     const role = this.roles.validateNew(value);
-    await this.library.write('role', role.id, role, null);
+    this.library.write('role', role.id, role, null);
     return this.roleSaved(this.roles.create(role));
   }
   async updateRole(id: string, expectedRevision: string, value: unknown) {
     const role = this.roles.validate(id, expectedRevision, value);
-    await this.library.save('role', id, role, this.roles.accountRevision(id), this.roles.isDefault(role));
+    this.library.save('role', id, role, this.roles.accountRevision(id), this.roles.isDefault(role));
     return this.roleSaved(this.roles.update(expectedRevision, role));
   }
   /** 只有内置角色能恢复默认；签名照常随提示词更新，手改过的保留。 */
   resetRole(id: string, expectedRevision: string) {
     return this.updateRole(id, expectedRevision, this.roles.builtin(id));
   }
-  /** 插件包先存到账号资源库，再装到本机；其他工作机用到时再下载。 */
+  /** 插件包先存进账号资源库，再装到本机；其他工作机同步到后用到时再装。 */
   async installPlugin(raw: unknown) {
     const value = this.catalog.validate(raw);
-    await this.library.write('plugin', value.id, value, null);
+    this.library.write('plugin', value.id, value, null);
     return this.catalog.install(value);
   }
   private libraryChanged(changes: LibraryChanges) {
@@ -300,12 +370,189 @@ export class Kite {
   projects(): Project[] { return this.store.projects(); }
   checkouts(projectId?: string): Checkout[] { return this.store.checkouts(projectId); }
   /** 登记任务包含锁外 clone，停机时仍要等它完成登记。 */
-  registerCheckout(request: { path: string; remote?: undefined } | { remote: string; path?: string }): Promise<WorkspaceModel> {
+  registerCheckout(request: CheckoutRequest): Promise<WorkspaceModel> {
     return this.projectOperation(() => this.checkoutManagement.register(request));
   }
   syncProjects(): Promise<void> {
-    if (!this.account.linked || this.stopping) return Promise.resolve();
-    return this.projectOperation(() => this.checkoutManagement.syncProjects());
+    if (this.stopping) return Promise.resolve();
+    // 并入别的项目后本机的约束缓存挂到保留的项目上，按登记表重对一遍，有变化时通知正在运行的实例。
+    return this.projectOperation(async () => { if (await this.checkoutManagement.syncProjects()) this.library.refresh(); });
+  }
+  /** 给没有远程的项目设远程：用本机检出把全部分支和标签推上去，再写进登记表；各工作机的检出随项目同步改用它。 */
+  setProjectRemote(projectId: string, remote: string) {
+    return this.projectOperation(() => this.checkoutManagement.setRemote(projectId, remote));
+  }
+
+  /** 并发修改时被覆盖的版本，按发生先后，最近的在前；凭据只给公开信息。 */
+  conflicts() {
+    return this.accountData.list('conflict').map(({ body }) => {
+      const { kind, id, at, by, body: value } = body as { kind: string; id: string; at: number; by: string; body: Record<string, unknown> };
+      const { sealed: _, ...shown } = value;
+      return { kind, id, at, by, body: shown };
+    }).sort((a, b) => b.at - a.at);
+  }
+  /** 别的工作机拉取本机检出（没有远程的项目）。 */
+  serveCheckout(request: Request, projectId: string, rest: string): Promise<Response> {
+    const checkout = this.store.checkouts(projectId)[0];
+    if (!checkout) throw new KiteError('这台工作机没有这个项目的检出', 404);
+    return serveCheckout(request, checkout.path, rest);
+  }
+
+  /**
+   * 还原流转来的工作区（见 WorkspaceTransfers.restore）。continue 是源机睡眠前打断的线程及收回的排队输入：
+   * 接管后先补一条说明让它接着做被打断的回合，再把排队的输入按原来的正文、来源与经由重发。
+   */
+  async restoreWorkspace(projectId: string | undefined, workspaceId: string, options: { from?: string; force?: boolean;
+    continue?: Array<{ threadId: string; inputs: Input[] }> } = {}): Promise<WorkspaceModel> {
+    // 没给项目时从本机手上的副本里取（强制接管时源机已不在线）。
+    const project = projectId ?? this.replicas.store.state(workspaceId)?.projectId;
+    if (!project) throw new KiteError('这台工作机上没有这个工作区的副本，要写 project', 404);
+    const model = await this.transfers.restore(project, workspaceId, options);
+    for (const item of options.continue ?? []) await this.continueThread(item);
+    return model;
+  }
+  private async continueThread({ threadId, inputs }: { threadId: string; inputs: Input[] }): Promise<void> {
+    try {
+      await this.send(threadId, CONTINUE_AFTER_MOVE, randomUUID(), 'kite');
+      // 收回的输入已记在线程里（收到后又被打断收回），原 id 会被当成重复；正文、来源与经由照旧，换新 id 重发。
+      for (const input of inputs) await this.send(threadId, input.text, randomUUID(), input.source, () => {}, input.via);
+    } catch (error) { console.error(`[换机] 线程 ${threadId} 没能接着做：${(error as Error).message}`); }
+  }
+
+  /**
+   * 有预告的离开（系统将要睡眠）：把属于自动换机范围的工作区交给合适的目标——Line 的总是换；项目打开了自动换机的，只换正在工作的。
+   * 正在工作的线程先打断、收回排队的输入，到了目标机接着做被打断的回合。在时限里能交多少交多少，交不出去的撤回，留在本机。
+   * 见 docs/分布式架构.md「执行权」。
+   */
+  async leaving(deadline: number): Promise<void> {
+    // 先按 Line 与项目设置挑，再看线程；没起过运行器的线程不可能正在工作，不为判断它去载入历史。
+    const plans = this.store.workspaces().filter((w) => w.status === 'open').flatMap((w) => {
+      const projectId = this.store.checkout(w.checkoutId)!.projectId;
+      const line = this.isLineWorkspace(w.id);
+      if (!line && this.registry.get(projectId)?.autoHandover !== true) return [];
+      const threads = this.store.threads(w.id).filter((t) => t.status !== 'archived');
+      const busy = threads.filter((t) => this.runners.get(t.id)?.busy);
+      return line || busy.length ? [{ workspace: w, projectId, busy, runtimes: new Set<string>(threads.map((t) => t.runtime)) }] : [];
+    });
+    await Promise.all(plans.map((plan) => this.leave(plan, deadline)));
+  }
+  private async leave(plan: { workspace: Workspace; projectId: string; busy: AgentInstance[]; runtimes: Set<string> }, deadline: number): Promise<void> {
+    const { workspace: w, projectId } = plan;
+    const target = await this.handoverTarget(projectId, plan.runtimes, deadline);
+    if (!target) { console.warn(`[换机] 工作区 ${w.name} 没有合适的工作机可交，留在本机`); return; }
+    const resumes: Array<{ threadId: string; inputs: Input[] }> = [];
+    for (const t of plan.busy) {
+      try { resumes.push({ threadId: t.id, inputs: (await this.interrupt(t.id)).returned }); }
+      catch (error) { console.warn(`[换机] 打断线程 ${t.id} 失败：${(error as Error).message}`); }
+    }
+    this.leavingIds.add(w.id);
+    try {
+      await this.transfers.handover(w.id);
+      await this.peers.call(target, 'POST', '/workspaces/restore', {
+        body: { project: projectId, workspaceId: w.id, operationId: randomUUID(), from: this.store.machine.id, continue: resumes },
+        timeoutMs: Math.max(1_000, deadline - Date.now()) });
+      this.leavingIds.delete(w.id);
+    } catch (error) {
+      console.warn(`[换机] 工作区 ${w.name} 没交出去，留在本机：${(error as Error).message}`);
+      try {
+        if (this.store.workspace(w.id)?.status === 'handing_off') await this.transfers.cancel(w.id);
+        this.leavingIds.delete(w.id);
+        for (const item of resumes) await this.continueThread(item);
+      } catch { /* 醒来时再核对。 */ }
+    }
+  }
+  /** 合适的目标：在线、工作区所用的模型厂商已登录、磁盘够用；已有这个项目检出的优先。 */
+  /** 各台一起问，连不上或读不到的跳过；按已有检出优先的顺序取第一台合适的。 */
+  private async handoverTarget(projectId: string, runtimes: Set<string>, deadline: number): Promise<string | undefined> {
+    const holders = this.directory.holders(projectId);
+    const machines = this.directory.online().sort((a, b) => Number(holders.has(b.id)) - Number(holders.has(a.id)));
+    const timeoutMs = Math.min(5_000, deadline - Date.now() - 2_000);
+    if (timeoutMs <= 0) return undefined;
+    const fits = await Promise.all(machines.map(async (machine) => {
+      try {
+        const environment = await this.peers.call<Environment>(machine.id, 'GET', `/environment?project=${encodeURIComponent(projectId)}`, { timeoutMs });
+        return [...runtimes].every((runtime) => runtimeLogin(environment, runtime).status === 'ready') && diskEnough(environment);
+      } catch { return false; }
+    }));
+    return machines.find((_, index) => fits[index])?.id;
+  }
+  /** 醒来：睡眠前没交出去、还停在可交接状态的，核对后撤回，在本机接着做。 */
+  async returned(): Promise<void> {
+    for (const id of [...this.leavingIds]) {
+      this.leavingIds.delete(id);
+      try {
+        await this.transfers.check(id);
+        if (this.store.workspace(id)?.status === 'handing_off') await this.transfers.cancel(id);
+      } catch (error) { console.warn(`[换机] 醒来后核对工作区 ${id} 失败：${(error as Error).message}`); }
+    }
+  }
+
+  /** 服务起来后开始发现其他工作机、同步账号级数据。 */
+  startAccountData(): void {
+    this.directory.start();
+    this.library.start();
+    this.replicas.start();
+  }
+  /** 测试里替换了对端时，几台 kited 按本机地址直接互访，不经组网。 */
+  private get direct(): boolean { return !!(this.options.peers || this.options.directory); }
+  /** 别的工作机里在线、有这个项目检出的那几台，按目录里最近的摘要找；没有远程的项目从它们那里拉取。 */
+  private projectPeers(projectId: string): { route: PeerRoute; peers: Peer[] } {
+    const holders = this.directory.holders(projectId);
+    return { route: this.peerRoute(), peers: this.directory.online().filter((machine) => holders.has(machine.id)) };
+  }
+  /** kite-net 的本机 HTTP 代理；组网没开或测试里直接访问时没有。 */
+  private proxyAddress(): string | undefined {
+    const port = this.direct ? undefined : this.serving?.network?.status().httpProxyPort;
+    return port ? `http://127.0.0.1:${port}` : undefined;
+  }
+  /** git 访问别的工作机的方式。 */
+  private peerRoute(): PeerRoute {
+    const proxy = this.proxyAddress();
+    return proxy ? { proxy } : {};
+  }
+
+  /** 各工作区副本摘要的短暂缓存：几台跟进方同一轮来问时只算一次。 */
+  private replicaDigests = new Map<string, { at: number; digest: string }>();
+  /** 本机持有的工作区（未流转走、未归档）与各自副本的摘要，供其他工作机跟进。 */
+  replicaEntries(): ReplicaEntry[] {
+    const now = Date.now();
+    return this.store.workspaces().filter(holds).map((w) => {
+      const checkout = this.store.checkout(w.checkoutId)!;
+      let cached = this.replicaDigests.get(w.id);
+      if (!cached || now - cached.at > 3_000) {
+        cached = { at: now, digest: replicaDigest(w, this.store.exportWorkspaceRows(w.id), replicaSources(this.home, w, this.store.threads(w.id))) };
+        this.replicaDigests.set(w.id, cached);
+      }
+      return { workspaceId: w.id, projectId: checkout.projectId, epoch: w.epoch, status: w.status, digest: cached.digest };
+    });
+  }
+  /** 一页工作区副本：known 是跟进方手上的文件情况；数据库行、清单与 Git 的位置只在最后一页给。 */
+  async replicaPage(id: string, known: Record<string, FileState>): Promise<ReplicaPage> {
+    const { workspace: w, checkout } = this.workspace(id);
+    if (!holds(w)) throw new KiteError('这台工作机不再持有这个工作区', 404);
+    const threads = this.store.threads(id);
+    const sources = replicaSources(this.home, w, threads);
+    const files = replicaFiles(sources, known);
+    if (files.more) return { epoch: w.epoch, ...files };
+    const rows = this.store.exportWorkspaceRows(id);
+    const [head, snapshots, branch] = await Promise.all([w.kind === 'root' ? revParse(checkout.path, 'HEAD') : null,
+      revParse(checkout.path, snapshotRef(id)), w.branch ? revParse(checkout.path, `refs/heads/${w.branch}`) : null]);
+    return { epoch: w.epoch, ...files, digest: replicaDigest(w, rows, sources), rows, git: { snapshots, branch },
+      manifest: replicaManifest({ home: this.home, machine: this.store.machine.id, projectId: checkout.projectId, workspace: w, head, threads }) };
+  }
+  /** 组网里同一用户的对端设备；组网没开时为 undefined。 */
+  private tailnetPeers(): Candidate[] | undefined {
+    const network = this.serving?.network;
+    const status = network?.status();
+    if (!network || status?.state !== 'Running') return undefined;
+    return (status.peers ?? []).flatMap((peer) => peer.ip
+      ? [{ address: `http://${peer.ip.includes(':') ? `[${peer.ip}]` : peer.ip}:${network.port}`, online: peer.online === true }] : []);
+  }
+  /** 访问别的工作机：经 kite-net 的本机代理；测试替换了对端时直接访问。 */
+  private peerFetch(address: string, path: string, init: RequestInit = {}): Promise<Response> {
+    const proxy = this.proxyAddress();
+    if (!this.direct && !proxy) return Promise.reject(new KiteError('这台工作机没有开启组网', 409));
+    return fetch(new URL(path, address), { ...init, ...(proxy ? { proxy } : {}) });
   }
   checkoutSync(id: string): Promise<CheckoutSync> { return this.checkoutManagement.sync(id); }
   pushCheckout(id: string, message?: string): Promise<CheckoutSync> {
@@ -422,13 +669,8 @@ export class Kite {
   /** 在这台工作机为项目建工作区前的环境；项目在本机没有检出时，按账号登记表里的远程算 clone 位置。 */
   async environment(projectId: string): Promise<Environment> {
     const checkout = this.store.checkouts(projectId)[0];
-    const remote = checkout ? undefined : this.store.project(projectId)?.remote ?? (await this.registeredProject(projectId)).remote;
-    return readEnvironment(this.home, this.store.machine, checkout, remote);
-  }
-  private async registeredProject(projectId: string) {
-    const project = (await this.account.projects()).find((p) => p.id === projectId);
-    if (!project) throw new KiteError('账号里没有这个项目', 404);
-    return project;
+    const project = checkout ? undefined : this.registry.require(projectId);
+    return readEnvironment(this.home, this.store.machine, checkout, project && { remote: project.remote, name: project.name });
   }
 
   /** 按项目建工作区：先检查环境，不满足就不建；本机没有检出时自动 clone 到默认位置并登记，检出保留。 */
@@ -437,11 +679,9 @@ export class Kite {
     if (prompt !== undefined && !prompt.trim()) throw new KiteError('第一条消息不能为空');
     const environment = await this.environment(projectId);
     const model = this.roles.get(role?.id ?? defaultRoleId, role?.revision).role.model.model;
-    const login = environment.logins[runtimeOfModel(model) === 'claude' ? 'claude' : 'chatgpt'];
+    const login = runtimeLogin(environment, runtimeOfModel(model));
     if (login.status !== 'ready') throw new KiteError(`这台工作机不能运行所选模型：${login.message}`, 409);
-    if (Math.min(environment.disk.worktrees, environment.disk.checkout) < MIN_FREE_BYTES) {
-      throw new KiteError('这台工作机的磁盘剩余空间不足 1 GB', 409);
-    }
+    if (!diskEnough(environment)) throw new KiteError('这台工作机的磁盘剩余空间不足 1 GB', 409);
     return this.createWorkspace((await this.ensureCheckout(projectId)).id, name, prompt, role, via);
   }
 
@@ -449,7 +689,8 @@ export class Kite {
   private async ensureCheckout(projectId: string): Promise<Checkout> {
     const existing = this.store.checkouts(projectId)[0];
     if (existing) return existing;
-    const cloned = await this.registerCheckout({ remote: (await this.registeredProject(projectId)).url });
+    const project = this.registry.require(projectId);
+    const cloned = await this.registerCheckout(project.url ? { remote: project.url } : { project: projectId });
     if (cloned.project.id !== projectId) throw new KiteError('clone 下来的仓库登记成了另一个项目', 409);
     return cloned.checkout;
   }
@@ -589,12 +830,12 @@ export class Kite {
   }
 
   async openWindow(workspaceId: string, request: OpenWindowRequest): Promise<WorkspaceWindow> {
-    if (request.content.kind === 'create') await this.library.ensurePlugin(request.content.definitionId);
+    if (request.content.kind === 'create') this.library.ensurePlugin(request.content.definitionId);
     return this.instances.openWindow(workspaceId, request);
   }
 
   async createPluginInstance(workspaceId: string, id: string, definitionId: string, title?: string) {
-    await this.library.ensurePlugin(definitionId);
+    this.library.ensurePlugin(definitionId);
     return this.instances.createPluginInstance(workspaceId, id, definitionId, title);
   }
 
@@ -706,7 +947,7 @@ export class Kite {
     const { id, workspaceId, workspace, title } = t;
     await this.transcripts.load(t);
     const r = await openRuntime(t, {
-      home: this.home, account: this.account, repository: t.checkout.path, options: this.options,
+      home: this.home, credentials: this.credentials, repository: t.checkout.path, options: this.options,
       chatgptLimits: (headers) => this.modelAccounts.observeChatGPT(headers),
       events: {
         emit: (event) => {
@@ -902,10 +1143,15 @@ export class Kite {
         const branch = await currentBranch(checkout.path);
         if (!branch) throw new KiteError('检出现场不在任何分支上，先切回主线分支再集成', 409);
         // 拿不到远程时照常合回本地主线，结果里报告推送失败。
+        // 没有远程的项目：先从别的工作机快进主线，合回本机主线就结束，其他工作机同步时快进过来。
+        const local = !this.store.project(checkout.projectId)?.remote;
+        if (local) await this.checkoutManagement.syncPeers(checkout, true);
         let access: RemoteAccess | undefined;
         let offline: string | undefined;
-        try { access = await originAccess(checkout.path, this.account); }
-        catch (error) { offline = (error as Error).message; }
+        if (!local) {
+          try { access = await originAccess(checkout.path, this.git); }
+          catch (error) { offline = (error as Error).message; }
+        }
         // 推送被拒说明远程刚有新提交：重新拉取、合并后再推，冲突同样留在工作区。
         for (let attempt = 1; ; attempt++) {
           let upstream: string | null = null;
@@ -927,6 +1173,7 @@ export class Kite {
           }
           const adopted = (push: PushOutcome): AdoptResult => ({ status: 'adopted', commit: r.commit, push });
           const failed = (message: string) => adopted({ status: 'failed', message });
+          if (local) return adopted({ status: 'local' });
           if (!access || offline) return failed(offline ?? '无法访问远程');
           try { if (await pushBranch(checkout.path, branch, access) === 'pushed') return adopted({ status: 'pushed' }); }
           catch (error) { return failed((error as Error).message); }
@@ -1030,8 +1277,8 @@ export class Kite {
   }
 
   /**
-   * 启用 Line：在这台工作机建一个 Kite 托管项目（放在 ~/code/kite-line），以它的根工作区承载 Line 代理，
-   * 带上账号范围的 line 授权。本机已有 Line 时返回它所在的工作区。
+   * 启用 Line：在这台工作机建一个没有远程的项目（放在 ~/code/kite-line），以它的根工作区承载 Line 代理，
+   * 带上账号范围的 line 授权；其他工作机从这台的检出拉取。本机已有 Line 时返回它所在的工作区。
    */
   async enableLine(): Promise<WorkspaceModel> {
     const existing = this.lineInstance();
@@ -1058,8 +1305,8 @@ export class Kite {
   }
 
   /**
-   * Line 的根工作区由宿主在回合结束与交接前提交并推送现场：这是「根工作区不自动提交」的例外，只适用于 Line 的项目。
-   * 失败只记日志，下次再推。
+   * Line 的根工作区由宿主在回合结束与交接前提交现场，项目有远程时再推送：这是「根工作区不自动提交」的例外，只适用于 Line 的项目。
+   * 没有远程时其他工作机从这里拉取。失败只记日志，下次再推。
    */
   private async saveLineScene(workspaceId: string): Promise<void> {
     const { workspace: w, checkout } = this.workspace(workspaceId);
@@ -1068,8 +1315,8 @@ export class Kite {
       await this.serial(`checkout:${checkout.id}`, async () => {
         if (await isDirty(checkout.path)) await commitAll(checkout.path, ['-m', 'Line：保存记忆与待办']);
         const branch = await currentBranch(checkout.path);
-        if (!branch) return;
-        if (await pushBranch(checkout.path, branch, await originAccess(checkout.path, this.account)) === 'rejected') {
+        if (!branch || !this.store.project(checkout.projectId)?.remote) return;
+        if (await pushBranch(checkout.path, branch, await originAccess(checkout.path, this.git)) === 'rejected') {
           throw new KiteError('远程有新的提交，Line 的现场没有推上去');
         }
       });
@@ -1084,10 +1331,13 @@ export class Kite {
   }
 
   /** 执行权已在别的机器：停下本地线程与插件，本机多出的改动存成快照留给人合并，记录冻结；根工作区给检出另建一个。 */
-  private freeze(id: string): Promise<void> {
-    this.preparations.get(id)?.abort();
+  private freeze(id: string, handingOff?: number): Promise<void> {
+    if (handingOff === undefined) this.preparations.get(id)?.abort();
     return this.control(id, async () => {
       const { workspace: w, checkout } = this.workspace(id);
+      if (handingOff !== undefined && !(w.epoch === handingOff && (w.status === 'handing_off' || w.status === 'transferred'))) {
+        throw new KiteError('源工作机没有在交接这个工作区，可能已撤回', 409);
+      }
       if (w.status === 'transferred' || w.status === 'archived') return;
       for (const t of this.store.threads(id)) if (t.status !== 'archived') await this.stopThread(t);
       if (existsSync(w.cwd)) await this.snapshot(w, [], '流转后本机留下的改动');
@@ -1102,7 +1352,10 @@ export class Kite {
 
   async shutdown(): Promise<void> {
     this.stopping = true;
-    await Promise.all([this.titles?.close(), this.emblems.close(), this.lightTasks?.close(), this.subscriptionLogins.close(), this.library.close()]);
+    clearTimeout(this.projectSync);
+    this.directory.close();
+    this.library.close();
+    await Promise.all([this.titles?.close(), this.emblems.close(), this.lightTasks?.close(), this.subscriptionLogins.close(), this.replication.close(), this.replicas.close()]);
     await this.monitor.stop();
     await this.monitors.close();
     await this.plugins.close();
@@ -1111,5 +1364,6 @@ export class Kite {
     await Promise.allSettled(this.projectOperations);
     await Promise.allSettled([...this.queues.values(), ...this.openingRunners.values()]);
     await Promise.all([...this.runners.values()].map((r) => r.shutdown()));
+    this.accountData.close();
   }
 }

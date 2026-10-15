@@ -4,21 +4,18 @@ import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { Json, ModelItem, ModelRequest } from '../../src/harness/types.ts';
-import type { FakeAccount } from '../fake-account.ts';
-import { after, call, createWorkspace, type Kited, linkNewAccount, listSnapshots, mark, registerCheckout, startKited, waitIdle } from '../harness.ts';
+import { after, call, createWorkspace, type Kited, listSnapshots, mark, registerCheckout, startKited, waitIdle } from '../harness.ts';
 import { item, ManualModel, Seen } from '../harness-loop.ts';
 import { commitAll, git, gitOk, makeTemp, newRepo, read, writeFiles } from '../util.ts';
 
 const roots: string[] = [];
 let kited: Kited | undefined;
 let restarted: Daemon | undefined;
-const accounts: FakeAccount[] = [];
 afterEach(async () => {
   await restarted?.stop();
   restarted = undefined;
   await kited?.stop();
   kited = undefined;
-  for (const account of accounts.splice(0)) account.stop();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -252,7 +249,6 @@ test('同一 home 重启后用原 nativeId 续接旧 opaque 历史且不重执�
   const root = makeTemp();
   roots.push(root);
   const home = join(root, 'kite');
-  accounts.push(linkNewAccount(home));
   const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
   const firstModel = new ManualModel();
   let daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => firstModel });
@@ -302,7 +298,6 @@ test('挂起请求关闭后直接归档不会执行排队消息，工作树仍�
   const root = makeTemp();
   roots.push(root);
   const home = join(root, 'kite');
-  accounts.push(linkNewAccount(home));
   const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
   const firstModel = new ManualModel();
   let daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => firstModel });

@@ -4,7 +4,7 @@
  * 汇总的形状照 B 上真实的 GET /summary：在等提问的线程 phase 为 running、busy 为真并带 waiting；结束回合后 phase 为 idle、带 settledAt。
  */
 import { expect, test } from 'bun:test';
-import type { AccountMachine } from '../../src/account-client.ts';
+import type { AccountMachine } from '../../src/account-data/directory.ts';
 import type { MachineSummary } from '../../src/kite.ts';
 import { attend, collect, DAILY_WAKES, monitorState, type MonitorState, route } from '../../src/line/monitor.ts';
 import type { Waiting } from '../../src/waiting.ts';

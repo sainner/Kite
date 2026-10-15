@@ -281,6 +281,39 @@ struct CardSelectStyle: ButtonStyle {
     }
 }
 
+/// 填充框样式的一张选项卡片：图标在左，右边是名称和一行说明；选中时描主题色边框，图标换成主题色的填充版。
+/// 几张并排时等宽，说明放不下时折行。
+struct CardChoice: View {
+    let title: String
+    let detail: String
+    let symbol: TablerSymbol
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                TablerIcon(symbol, selected: selected)
+                    .font(.system(size: 22))
+                    .foregroundStyle(selected ? Color.accentColor : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(Theme.body.weight(.medium)).foregroundStyle(.primary)
+                    Text(detail).font(Theme.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(Theme.codeBackground, in: cardShape)
+            .cardFocusRing(selected, in: cardShape)
+            .contentShape(cardShape)
+        }
+        .buttonStyle(.pointingPlain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
 /// 卡片里的一条提示，如出错原因。
 struct CardCallout: View {
     let text: String

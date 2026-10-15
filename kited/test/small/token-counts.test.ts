@@ -1,5 +1,5 @@
 import { expect, setSystemTime, test } from 'bun:test';
-import type { ApiKey } from '../../src/account-client.ts';
+import type { ApiKey } from '../../src/account-data/credentials.ts';
 import { TokenCounter, type TokenCountResult } from '../../src/token-counts.ts';
 
 const scenarios = [

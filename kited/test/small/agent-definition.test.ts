@@ -7,7 +7,7 @@ import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import { restoreContext } from '../../src/harness/context/assembler.ts';
 import type { Json, ModelItem, ThreadNotification } from '../../src/harness/types.ts';
-import { call, linkNewAccount, openAgent, registerCheckout, startKited, type Kited } from '../harness.ts';
+import { call, openAgent, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
 import { editNotificationTemplate } from '../notification-templates.ts';
 import { makeTemp, newRepo, read } from '../util.ts';
@@ -165,7 +165,6 @@ test('按草稿选择创建代理时显式模型压过角色默认值和 KITE_MO
 test('原样保存保留配置快照，通知跨重启保留且按请求边界采用新模板', async () => {
   const root = makeTemp();
   const home = join(root, 'kite');
-  const account = linkNewAccount(home);
   const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
   const firstModel = new ManualModel();
   let daemon: Daemon | undefined;
@@ -313,7 +312,6 @@ test('原样保存保留配置快照，通知跨重启保留且按请求边界�
       && secondEvents.values.indexOf(event) >= thirdEventStart);
   } finally {
     await daemon?.stop();
-    account.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }, 1000);

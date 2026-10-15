@@ -17,12 +17,22 @@ struct CatalogSnapshot: Codable {
     }
 }
 
+/// 工作机目录里的一台（kited 的 `GET /machines`）：最近一次的摘要随工作机之间的同步传开。
+struct DirectoryMachine: Decodable {
+    let id: String
+    let name: String
+    let online: Bool
+    let address: String?
+    let updatedAt: Int?
+    let snapshot: CatalogSnapshot?
+}
+
+/// 一台工作机最近一次的目录摘要，对上了组网里的设备。
 struct HostedCatalog: Codable {
     let device: AccountDevice
     let machineId: String
-    let revision: Int
     let updatedAt: Int?
-    let snapshot: CatalogSnapshot?
+    let snapshot: CatalogSnapshot
 }
 
 struct ProjectAppearance: Codable, Equatable {

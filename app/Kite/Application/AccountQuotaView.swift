@@ -36,7 +36,7 @@ struct ModelAccountPane: View {
             }]]
         } else if subscriptionID == nil {
             actions = [[PaneHeaderAction(title: "添加", systemImage: "plus",
-                                         help: model.account.signedIn ? "添加 API Key" : "登录 Kite 账号后添加 API Key",
+                                         help: model.account.signedIn ? "添加 API Key" : "登录后添加 API Key",
                                          disabled: !model.account.signedIn) { addingApiKey = true }]]
         }
         return PaneWindow(header: PaneHeader(title: title, subtitle: subtitle, badge: account?.planTitle), usesDots: subscriptionID != nil,

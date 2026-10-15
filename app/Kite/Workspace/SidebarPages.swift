@@ -198,17 +198,11 @@ private struct DeviceSidebar: View {
     @Environment(AppModel.self) private var model
     @Environment(\.sidebarMetrics) private var metrics
     @State private var collapsed: Set<String> = []
-    @State private var removing: Set<String> = []
-    @State private var error: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             deviceList("工作机", devices: model.account.devices.filter { $0.role == "worker" })
             deviceList("控制端", devices: model.account.devices.filter { $0.role != "worker" })
-            if let error {
-                Text(error).font(Theme.caption).foregroundStyle(Theme.danger)
-                    .padding(.horizontal, metrics.itemInset)
-            }
         }
     }
 
@@ -234,16 +228,6 @@ private struct DeviceSidebar: View {
                         } else {
                             SidebarListLabel(title: device.name, selected: selected).padding(.leading, 8)
                         }
-                        if device.id != model.account.deviceID {
-                            Button(role: .destructive) { remove(device) } label: {
-                                Image(systemName: "trash")
-                            }
-                            .buttonStyle(SidebarButtonStyle(foreground: foreground, size: metrics.control))
-                            .help("删除设备")
-                            .accessibilityLabel("删除\(device.name)")
-                            .disabled(removing.contains(device.id))
-                            .modifier(SidebarRevealedControl())
-                        }
                         if connection != nil {
                             SidebarDisclosureButton(title: device.name, noun: "设备", isExpanded: isExpanded, foreground: foreground)
                         }
@@ -258,18 +242,6 @@ private struct DeviceSidebar: View {
                 Text("暂无\(title)").font(Theme.caption).foregroundStyle(.tertiary)
                     .padding(.horizontal, metrics.itemInset)
             }
-        }
-    }
-
-    private func remove(_ device: AccountDevice) {
-        guard device.id != model.account.deviceID, removing.insert(device.id).inserted else { return }
-        error = nil
-        Task {
-            defer { removing.remove(device.id) }
-            do {
-                try await model.account.remove(device.id)
-                model.mergeDirectory()
-            } catch { self.error = "删除\(device.name)失败：\(error.localizedDescription)" }
         }
     }
 

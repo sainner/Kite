@@ -1,6 +1,8 @@
 /** kited 的执行入口：Claude 与自研 harness 各自负责完整 agent 循环，共用 Kite 的能力。 */
 import { join } from 'node:path';
-import type { AccountClient, AccountMachine } from './account-client.ts';
+import type { AccountMachine } from './account-data/directory.ts';
+import type { Credentials } from './account-data/credentials.ts';
+import type { Candidate } from './account-data/directory.ts';
 import { KiteError } from './errors.ts';
 import type { RuntimeEvent } from './events.ts';
 import type { RunnerState } from './claude/runner.ts';
@@ -49,8 +51,14 @@ export interface RuntimeOptions {
   lightTasks?: false | Partial<LightTaskOptions>;
   /** 测试里替换 Line 看到的账号目录：同一进程里的几台 kited 按给出的地址直接互访，不经组网。 */
   peers?: { directory(): Promise<AccountMachine[]> };
+  /** 测试里替换组网里的对端：同一进程里的几台 kited 按给出的地址直接互访，发现与同步都不经组网。 */
+  directory?: { candidates(): Candidate[] };
+  /** 凭据的封装密钥放登录钥匙串（安装版 macOS 服务）；否则放数据目录里的文件。 */
+  keychain?: boolean;
   /** 测试里缩短 monitor 事件到唤醒之间的合批等待（毫秒），默认 1 秒。 */
   monitorWakeDelayMs?: number;
+  /** 测试里缩短本机目录变化到写进目录摘要之间的合批等待（毫秒），默认 1 秒。 */
+  catalogDelayMs?: number;
 }
 
 export interface RuntimeEvents {
@@ -62,7 +70,7 @@ export interface RuntimeEvents {
 
 export interface RuntimeHost {
   home: string;
-  account?: AccountClient;
+  credentials?: Credentials;
   /** 检出主目录，用来解析 Git 元数据。 */
   repository: string;
   events: RuntimeEvents;
@@ -104,10 +112,10 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   if (runtime !== 'claude' && runtime !== 'harness') throw new KiteError(`不支持的会话后端：${runtime}`, 409);
   const basePolicy = await harnessPolicy({ cwd, env: process.env, home, repository: host.repository });
   const policy = () => applyExecutionGrants(basePolicy, cwd, instanceExecutionGrants(host.current()));
-  const account = host.account;
-  const secrets = account ? {
-    list: (signal: AbortSignal) => account.listSecrets(projectId, signal),
-    resolve: (references: string[], signal: AbortSignal) => account.resolveSecrets(references, projectId, signal),
+  const credentials = host.credentials;
+  const secrets = credentials ? {
+    list: async () => credentials.available(projectId),
+    resolve: (references: string[]) => credentials.resolve(references, projectId),
   } : undefined;
   const diffDir = join(home, 'diffs', workspaceId);
   if (runtime === 'claude') {

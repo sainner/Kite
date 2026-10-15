@@ -25,7 +25,7 @@ const controlArgs = z.object({ action: z.enum(['send', 'resume', 'stop', 'archiv
   text: z.string().trim().min(1).max(20_000).optional() }).strict();
 const workspaceArgs = z.object({ action: z.enum(['create', 'transfer']), machine: id.optional(), project: id.optional(), name: z.string().max(200).optional(),
   prompt: z.string().trim().min(1).max(20_000).optional(), workspaceId: id.optional(), from: id.optional(), to: id.optional(),
-  allowMaterials: z.boolean().optional() }).strict();
+  force: z.boolean().optional() }).strict();
 
 type ToolContext = Parameters<Tool['execute']>[1];
 
@@ -92,7 +92,7 @@ export function lineTools(options: LineToolOptions): Tool[] {
       const states = await Promise.all(machines.map(async (entry) => {
         if (!entry.online) return { machine: entry.id, name: entry.name, online: false };
         try {
-          const summary = await peers.call<MachineSummary>(entry.id, 'GET', '/summary', { signal: context.signal });
+          const summary = await peers.call<MachineSummary>(entry, 'GET', '/summary', { signal: context.signal });
           return { machine: entry.id, name: entry.name, online: true, workspaces: summary.workspaces };
         } catch (error) { return { machine: entry.id, name: entry.name, online: true, error: (error as Error).message }; }
       }));
@@ -181,7 +181,8 @@ export function lineTools(options: LineToolOptions): Tool[] {
     }),
     tool('line_workspace', [
       'create：在 machine 上为 project 建独立工作区，可带 name 与第一条消息 prompt；那台工作机没有检出时会先 clone。',
-      'transfer：把 workspaceId 从 from 工作机流转到 to 工作机，源工作区须所有线程空闲；公开或看不出是否公开的仓库要用户同意推流转材料后传 allowMaterials。',
+      'transfer：把 workspaceId 从 from 工作机流转到 to 工作机，源工作区须所有线程空闲，两台都要在线。',
+      'from 已经丢失（用户确认过）时传 force：to 用手上的副本强制接管，不联系 from，副本落后的部分会丢；from 回来后自己冻结旧记录。',
       '两者执行前都会等用户批准，用户拒绝时不执行。',
     ].join(''), workspaceArgs, async (args, context) => {
       allowed(args.action);
@@ -193,12 +194,20 @@ export function lineTools(options: LineToolOptions): Tool[] {
         return { workspaceId: model.workspace.id, status: model.workspace.status, cwd: model.workspace.cwd };
       }
       if (!args.workspaceId || !args.from || !args.to || args.from === args.to) throw new KiteError('transfer 需要 workspaceId 与不同的 from、to');
+      if (args.force) {
+        await mustAsk('line_workspace', `工作机 ${args.from} 已丢失，在 ${args.to} 上用副本强制接管工作区 ${args.workspaceId}`, context);
+        // from 不在线，项目由 to 从自己手上的副本里取。
+        const restored = await peers.call(args.to, 'POST', '/workspaces/restore', {
+          body: { workspaceId: args.workspaceId, operationId: operationId(context), force: true },
+          via, signal: context.signal, timeoutMs: 30 * 60_000 });
+        return { workspaceId: args.workspaceId, machine: args.to, status: restored.workspace.status };
+      }
       await mustAsk('line_workspace', `把工作区 ${args.workspaceId} 从工作机 ${args.from} 流转到 ${args.to}`, context);
       const model = await peers.call(args.from, 'GET', `/workspaces/${args.workspaceId}`, { signal: context.signal });
-      const handover = await peers.call(args.from, 'POST', `/workspaces/${args.workspaceId}/handover`, {
-        body: args.allowMaterials ? { allowMaterials: true } : {}, via, signal: context.signal, timeoutMs: 10 * 60_000 });
+      const handover = await peers.call(args.from, 'POST', `/workspaces/${args.workspaceId}/handover`, { via, signal: context.signal, timeoutMs: 10 * 60_000 });
       const restored = await peers.call(args.to, 'POST', '/workspaces/restore', {
-        body: { project: model.project.id, workspaceId: args.workspaceId, operationId: operationId(context) }, via, signal: context.signal, timeoutMs: 30 * 60_000 });
+        body: { project: model.project.id, workspaceId: args.workspaceId, operationId: operationId(context), from: args.from },
+        via, signal: context.signal, timeoutMs: 30 * 60_000 });
       // 源机下次核对执行权时也会冻结；这里立即核对，失败不影响已完成的流转。
       await peers.call(args.from, 'POST', `/workspaces/${args.workspaceId}/lease/check`, { via, signal: context.signal }).catch(() => {});
       return { workspaceId: args.workspaceId, epoch: handover.epoch + 1, machine: args.to, status: restored.workspace.status };

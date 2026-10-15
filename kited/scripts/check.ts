@@ -19,7 +19,7 @@ const LOG = join(LOG_DIR, 'log');
 /** 预算，和 .claude/agents/test-writer.md 里的分层表一致。 */
 const MEDIUM_MAX = 8;
 const TOTAL_MAX = 30;
-/** 单独放宽的文件：跨机流转一次交接加还原要起八十个左右 git 进程，压不到小测试的 1 秒以内。 */
+/** 单独放宽的文件：有远程的项目交出再交回，连同远程上的 lease 要起上百个 git 进程，压不到小测试的 1 秒以内。 */
 const FILE_LIMITS: Record<string, number> = { 'test/small/transfer.test.ts': 5 };
 
 /**
@@ -69,9 +69,9 @@ const scope = full ? '全量' : '受影响的';
 // 关掉索引，不写索引库。每个工作树的缓存约 650 MB，按工程路径各占一份，删工作树不会跟着删
 const APP = join(root, 'app');
 const buildApp = full || changed.some((f) => f.startsWith('app/') || f.startsWith('kited/web/') || f === 'kited/scripts/build-plugin-web.ts');
-// App 与工作机之间的 JSON 合同及原生账号 HTTP 行为：编译真实 Swift，连接真实后端，各约 2 秒，
+// App 与工作机之间的 JSON 合同：编译真实 Swift，连接真实后端，各约 2 秒，
 // 两边任一处改动都跑。其余需要原生界面或 WebKit 的验证仍在 test/manual/ 手动运行
-const CONTRACTS = ['verify-transcript-swift.ts', 'verify-remote-workspace-swift.ts', 'verify-resource-reference-swift.ts', 'verify-account-http-swift.ts'];
+const CONTRACTS = ['verify-transcript-swift.ts', 'verify-remote-workspace-swift.ts', 'verify-resource-reference-swift.ts'];
 const checkContracts = buildApp || changed.some((f) => f.startsWith('kited/src/') || f.startsWith('kited/test/manual/'));
 const [tsc, lint, app, ...contracts] = await Promise.all([
   run(['bunx', 'tsc', '--noEmit']),

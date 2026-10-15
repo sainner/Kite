@@ -12,8 +12,6 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 
 | 入口 | 验证内容 | 命令 |
 | --- | --- | --- |
-| `verify-account-network.ts` | 真实账号与 Headscale 入网、账号隔离、撤销后令牌和新请求失效、模拟客户端响应 401 关闭 SSE；仅手动运行 | `bun kited/test/manual/verify-account-network.ts` |
-| `verify-account-http-swift.ts` | 真实 Foundation Cookie 残留复现、生产模式来源校验、Bearer 身份隔离及注销重登；常规合同检查自动运行 | `bun kited/test/manual/verify-account-http-swift.ts` |
 | `verify-directory-app.ts` | 真实 DEBUG AppModel 的两机目录汇总、离线隔离、按工作区操作、旧响应丢弃及目录摘要保留布局；仅手动运行 | `bun kited/test/manual/verify-directory-app.ts --app /path/Kite.app` |
 | `verify-plugin-management.ts` | Swift 配置编辑与真实后端往返、授权和版本冲突 | `bun kited/test/manual/verify-plugin-management.ts` |
 | `verify-remote-workspace-swift.ts` | 真实后端工作区与跨工作机项目身份的 Swift 解码、目录同步 | `bun kited/test/manual/verify-remote-workspace-swift.ts` |
@@ -39,13 +37,7 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 
 `verify-card-sheet-sizing-swift.ts` 使用真实 SwiftUI sheet 验证共享弹窗随内容增减调整高度、超长内容受屏幕可用范围限制，且始终使用同一窗口。测试窗口透明且不接收鼠标，只读取窗口尺寸；不涵盖登录服务、实际滚动手势或视觉验收。第一个参数可指定包含完整控件定义的 `CardControls.swift` 快照，此时替代生产控件文件参与编译。
 
-`verify-account-http-swift.ts` 直接编译真实 `AccountHTTP.swift`，连接本机真实账号服务和临时 SQLite；Foundation shared Cookie 存储也隔离到临时目录。服务启用生产模式的来源检查，旧客户端与新客户端使用不同的夹具 IP 避免互相消耗登录限流额度；不访问公网，不测试限流策略。预期拒绝旧 Cookie 请求时，Better Auth 会输出 `Missing or null Origin` 与 `Invalid origin` 日志，脚本最终退出码为 0 才算通过。
-
 `verify-directory-app.ts` 接收已经编译的 macOS DEBUG App 包或可执行文件，不自行编译。它在临时目录启动两个真实 kited，经本机代理控制 SSE 断线与 HTTP 响应交接，在原生进程运行真实 `AppModel`；子进程期限 35 秒。登录与托管目录是隔离夹具，不连接公网账号或 Tailnet、不使用 Keychain。这验证 `clearAccountConnections()` 后的旧响应丢弃，不证明真实撤销会自动触发原生 App 收口，也不涵盖 iPhone 界面验收。
-
-`verify-account-network.ts` 可在 macOS 或 Linux 的 Bun 1.4.2 环境运行，需要 `curl` 和当前平台构建的 `kited/net/bin/kite-net`，也可用 `KITE_NETWORK_BINARY` 指定组网程序路径。账号服务默认使用 `https://hs.sainner.top`，可通过 `KITE_ACCOUNT_URL` 覆盖。它创建两个随机测试账号和三个临时节点，经 `curl --socks5-hostname` 验证访问与撤销。总期限 90 秒，最后 10 秒预留清理；无论成功失败都尝试删除登记设备、停止节点并删除临时目录。脚本只输出阶段结果与待清理测试账号的 user IDs，不输出凭据；账号数据库记录由操作者在对应托管实例清理。该脚本不在常规 `.kite/check` 中执行。
-
-撤销验收先保留 controller 本机网络，确认其令牌访问 `/api/account` 返回 401，并在十五秒传播窗口内确认新组网请求无法取得 2xx；随后模拟客户端响应 401 调用 `network.stop()`，要求既有 SSE 在五秒内结束。不要求控制面撤销自然产生 EOF，也不验证原生 App 的自动轮询与收口。异账号访问若被 ACL 提前拒绝，也不能单独证明请求到达了 Go 的 WhoIs 校验。
 
 ## 性能测量
 

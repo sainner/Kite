@@ -253,9 +253,13 @@ extension String {
 
 /// 地址来自账号目录；每个连接实例拥有身份，旧账号的迟到响应不能被新连接接收。
 struct KitedClient: Equatable {
+    /// 本机 kited 的地址：作为工作机的 Mac 直接访问它，不经组网。
+    static let local = "http://127.0.0.1:5483"
     let identity = UUID()
     let address: String
     var machineID: String? = nil
+
+    var isLocal: Bool { address == Self.local }
 
     private func url(_ path: String) throws -> URL {
         guard let base = URL(string: address), ["http", "https"].contains(base.scheme), base.host != nil,

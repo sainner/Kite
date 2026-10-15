@@ -9,17 +9,15 @@ import { startCli } from '../cli.ts';
 import { after, createWorkspace, machine, type Kited, mark, registerCheckout, startKited } from '../harness.ts';
 import { ManualModel } from '../harness-loop.ts';
 import { connectSse } from '../sse.ts';
-import { commitAll, git, newRepo, read } from '../util.ts';
+import { git, newDir, newRepo, read } from '../util.ts';
 
 let k: Kited | undefined;
 afterEach(async () => { await k?.stop(); k = undefined; });
 
-/** 带 .kite/setup 的已有仓库；script 是脚本正文（不含 #!）。 */
+/** 带 .kite/setup 的已有仓库；script 是脚本正文（不含 #!）。先写好脚本并设成可执行再建仓库，一次提交带上可执行位。 */
 function repoWithSetup(parent: string, name: string, script: string): string {
-  const dir = newRepo(parent, name, { '.kite/setup': `#!/bin/sh\n${script}`, 'a.txt': 'a\n' });
-  chmodSync(join(dir, '.kite/setup'), 0o755);
-  commitAll(dir, '可执行');
-  return dir;
+  chmodSync(join(newDir(parent, name, { '.kite/setup': `#!/bin/sh\n${script}` }), '.kite/setup'), 0o755);
+  return newRepo(parent, name, { 'a.txt': 'a\n' });
 }
 
 /* 依赖 Bun 的流式响应与工作区准备时序；别的工作区先结束后，本订阅只收到自己的变化。 */
@@ -59,35 +57,57 @@ test('工作区 SSE 在连接开着时推送本工作区准备结果，不串入
   }
 });
 
-/*
- * 几个部分的配合：准备流程、git worktree 的登记与分支、重跑入口。工作树还在时重跑只跑 setup，不能再去建一次已存在的工作树；
- * 工作树目录没了而 git 仍登记着它和它的分支时，重跑要重建工作树再跑 setup。两种都要从 failed 转为 open。
+/**
+ * 建一个 setup 会失败的工作区，等它准备失败（setup 退出码 3），返回它和重跑的入口。
+ * 每次 setup 都要起一个沙箱宿主进程，约 0.2 秒；一个测试只准备一个工作区、重跑一次，免得全量并行时挤过小测试的 1 秒。
  */
-test('准备失败的工作区修好条件后重跑转为 open，工作树目录丢了的重跑先重建工作树再转为 open', async () => {
-  k = startKited();
-  const kk = k;
-  const repo = repoWithSetup(kk.root, 'proj', '[ -e "$KITE_MAIN_DIR/ready" ] || exit 3\n');
+async function failedWorkspace(kk: Kited, script: string) {
+  const repo = repoWithSetup(kk.root, 'proj', script);
   const p = await registerCheckout(kk, repo);
-  const create = async () => {
-    const created = await kk.call('POST', '/workspaces', { checkout: p.checkout.id });
-    expect(created.status).toBe(200);
-    return created.body as WorkspaceModel;
+  const created = await kk.call('POST', '/workspaces', { checkout: p.checkout.id });
+  expect(created.status).toBe(200);
+  const w = created.body as WorkspaceModel;
+  // since 之后这个工作区准备结束（转为 open 或 failed）时的状态和 setup 结果。
+  const settled = async (since: number) => {
+    const isAfter = after(kk, since);
+    const end = await kk.waitEvent((e) => e.type === 'workspace.changed' && e.workspaceId === w.workspace.id
+      && (e.status === 'open' || e.status === 'failed') && isAfter(e));
+    const setup = kk.events.find((e) => e.type === 'workspace.setup' && e.workspaceId === w.workspace.id && isAfter(e));
+    return { status: end.type === 'workspace.changed' ? end.status : undefined, exit: setup?.type === 'workspace.setup' ? setup.exit : undefined };
   };
-  const [kept, lost] = await Promise.all([create(), create()]);
-  const status = (w: WorkspaceModel, value: string, since = 0) => kk.waitEvent((e) => e.type === 'workspace.changed'
-    && e.workspaceId === w.workspace.id && e.status === value && after(kk, since)(e));
-  await Promise.all([status(kept, 'failed'), status(lost, 'failed')]);
-  expect(kk.events.find((e) => e.type === 'workspace.setup' && e.workspaceId === kept.workspace.id)).toMatchObject({ exit: 3 });
+  expect(await settled(0)).toEqual({ status: 'failed', exit: 3 });
+  // 重跑：接口受理后，这一轮的 setup 跑过且成功，工作区转为 open。
+  const retry = async () => {
+    const since = mark(kk);
+    expect((await kk.call('POST', `/workspaces/${w.workspace.id}/setup`)).status).toBe(200);
+    expect(await settled(since)).toEqual({ status: 'open', exit: 0 });
+  };
+  return { repo, workspace: w.workspace, retry };
+}
 
-  rmSync(lost.workspace.cwd, { recursive: true, force: true });
+/*
+ * 几个部分的配合：准备流程、git worktree 的登记、重跑入口。工作树还在时重跑只跑 setup，不能再去建一次已存在的工作树，
+ * 也不能删掉重建：条件是在工作树里修好的（未跟踪文件），工作树被重建就会丢掉它，setup 再失败一次。
+ */
+test('准备失败的工作区在工作树里修好条件后重跑，只重跑 setup，从 failed 转为 open', async () => {
+  k = startKited();
+  const { workspace, retry } = await failedWorkspace(k, '[ -e ready ] || exit 3\n');
+  writeFileSync(join(workspace.cwd, 'ready'), '');
+  await retry();
+}, 1000);
+
+/*
+ * git worktree 的登记与分支：工作树目录没了而 git 仍登记着它和它的分支时，直接再 add 会失败，
+ * 重跑要先重建工作树（检出原分支）再跑 setup，从 failed 转为 open。
+ */
+test('工作树目录丢了的失败工作区重跑先重建工作树再跑 setup，从 failed 转为 open', async () => {
+  k = startKited();
+  const { repo, workspace, retry } = await failedWorkspace(k, '[ -e "$KITE_MAIN_DIR/ready" ] || exit 3\n');
+  rmSync(workspace.cwd, { recursive: true, force: true });
   writeFileSync(join(repo, 'ready'), '');
-  const since = mark(kk);
-  const retried = await Promise.all([kept, lost].map((w) => kk.call('POST', `/workspaces/${w.workspace.id}/setup`)));
-  expect(retried.map((r) => r.status)).toEqual([200, 200]);
-  await Promise.all([status(kept, 'open', since), status(lost, 'open', since)]);
-  expect(read(join(lost.workspace.cwd, 'a.txt'))).toBe('a\n');
-  expect(git(lost.workspace.cwd, 'branch', '--show-current')).toBe(lost.workspace.branch!);
-  expect(git(kept.workspace.cwd, 'branch', '--show-current')).toBe(kept.workspace.branch!);
+  await retry();
+  expect(read(join(workspace.cwd, 'a.txt'))).toBe('a\n');
+  expect(git(workspace.cwd, 'branch', '--show-current')).toBe(workspace.branch!);
 }, 1000);
 
 // CLI 子进程、HTTP 创建/发送、模型完成和 SSE 历史交接；快速结束时仍应跟到本回合结果。

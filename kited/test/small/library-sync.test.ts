@@ -1,32 +1,23 @@
-import { afterEach, expect, jest, test } from 'bun:test';
+/**
+ * 资源库与项目约束（src/library-sync.ts）：写入先进本机的账号级数据，再对缓存；别的工作机经同步拿到同一条，
+ * 对完缓存后两边按同一内容算出同一版本，乐观锁才对得上。几台 kited 用 harness 的 connect 互为组网对端。
+ */
+import { afterEach, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { AccountClient, type LibraryItem, type ProjectConstraints } from '../../src/account-client.ts';
-import { ContextTemplates } from '../../src/context-templates.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
-import type { Envelope } from '../../src/events.ts';
 import type { ContextDefinition } from '../../src/harness/context/types.ts';
 import type { Json, ModelItem } from '../../src/harness/types.ts';
-import { LibrarySync } from '../../src/library-sync.ts';
-import { PluginCatalog } from '../../src/plugins/catalog.ts';
-import { Roles, type Role } from '../../src/roles.ts';
-import { Store } from '../../src/store.ts';
+import type { Role } from '../../src/roles.ts';
 import { emblemTemplate } from '../../src/template-emblems.ts';
-import { startFakeAccount, type FakeAccount } from '../fake-account.ts';
-import { after, call, linkNewAccount, mark, openAgent, registerCheckout, startKited, type Kited } from '../harness.ts';
-import { item, ManualModel, Seen } from '../harness-loop.ts';
+import { after, call, connect, mark, openAgent, registerCheckout, startKited, synced, type Kited } from '../harness.ts';
+import { item, ManualModel } from '../harness-loop.ts';
 import { makeTemp, newRepo, until } from '../util.ts';
 
-let kiteds: Kited[] = [];
-let shared: { account: FakeAccount; root: string } | undefined;
+const kiteds: Kited[] = [];
 afterEach(async () => {
   for (const k of kiteds.splice(0)) await k.stop();
-  if (shared) {
-    shared.account.stop();
-    rmSync(shared.root, { recursive: true, force: true });
-    shared = undefined;
-  }
 });
 
 function calledItem(id: string, name: string, args: Json): ModelItem {
@@ -38,42 +29,37 @@ function sharedRole(work: Role, text: string): Role {
     blocks: [{ type: 'paragraph', id: 'rules', title: '规则', parts: [{ type: 'text', text }] }] } };
 }
 
-// 两台工作机经同一账号资源库交接：A 写入后账号服务经事件流推给 B，B 全量同步；账号按写入内容算版本，
-// 工作机按本机缓存算版本，两边必须一致，乐观锁才对得上；版本冲突被拒后要追上账号；插件包在列表里只有元数据，
-// 开窗口时才单独下载安装，装好后的版本须与另一台一致。
-test('A 改的角色经推送同步到 B 后是同一版本，B 用过期版本改被拒后自动追上；A 导入的插件 B 能列出，开窗口时才下载安装', async () => {
-  const root = makeTemp('library-sync-');
-  shared = { account: startFakeAccount(join(root, 'account')), root };
-  const a = startKited(undefined, false, shared.account);
-  const b = startKited(undefined, false, shared.account);
-  kiteds.push(a, b);
-  const roleEntry = async (k: Kited) => {
-    const catalog = await k.call('GET', '/roles');
-    expect(catalog.status).toBe(200);
-    return { work: catalog.body.roles.find((entry: { role: Role }) => entry.role.id === 'kite.work').role as Role,
-      shared: catalog.body.roles.find((entry: { role: Role }) => entry.role.id === 'test.shared') as { role: Role; revision: string } | undefined };
-  };
+const roleOn = (k: Kited, id: string) => k.daemon.kite.roles.list().find((entry) => entry.role.id === id);
+const templateOn = (k: Kited, id: string) => k.daemon.kite.contextTemplates.list().templates.find((entry) => entry.definition.id === id);
+/** 等 k 对完缓存并通知客户端：收到 type 事件时缓存已满足 check。 */
+const cached = (k: Kited, type: 'roles.changed' | 'context-templates.changed', check: () => boolean) =>
+  k.waitEvent((event) => event.type === type && check());
 
-  const { work } = await roleEntry(a);
-  const pushed = mark(b);
+// 两台工作机经账号级数据交接资源库：A 写入后 B 从 A 拉到这一条再对缓存；B 按缓存算的版本须与 A 给出的一致，
+// B 用同步前的版本改才会被拒。插件包在 B 的列表里只有元数据，开窗口时才从账号级数据取出安装，装好后的版本须与 A 一致。
+test('A 建、改的角色同步到 B 后是同一版本，B 用同步前的版本改被拒；A 导入的插件 B 能列出，开窗口时才安装', async () => {
+  const a = startKited();
+  const b = startKited();
+  kiteds.push(a, b);
+  await connect(a, b);
+  const work = roleOn(a, 'kite.work')!.role;
+
   const created = await a.call('POST', '/roles', { role: sharedRole(work, '第一版：先读需求。') });
   expect(created.status).toBe(200);
-  await b.waitEvent((event) => event.type === 'roles.changed' && after(b, pushed)(event));
-  expect((await roleEntry(b)).shared).toMatchObject({ revision: created.body.revision, role: created.body.role });
+  await cached(b, 'roles.changed', () => roleOn(b, 'test.shared')?.revision === created.body.revision);
+  expect(roleOn(b, 'test.shared')!.role).toEqual(created.body.role);
 
-  // A 的修改也会推给 B，与 B 的过期写入谁先到不定；两条路都要让 B 追上，所以从 A 修改前开始等。
-  const since = mark(b);
   const updated = await a.call('PUT', '/roles/test.shared', {
     expectedRevision: created.body.revision, role: sharedRole(work, '第二版：A 改过。'),
   });
   expect(updated.status).toBe(200);
+  await cached(b, 'roles.changed', () => roleOn(b, 'test.shared')?.revision === updated.body.revision);
+  expect(roleOn(b, 'test.shared')!.role).toEqual(updated.body.role);
   const stale = await b.call('PUT', '/roles/test.shared', {
     expectedRevision: created.body.revision, role: sharedRole(work, '第三版：B 基于过期版本改。'),
   });
   expect(stale.status).toBe(409);
-  await b.waitEvent((event) => event.type === 'roles.changed' && after(b, since)(event));
-  expect((await roleEntry(b)).shared).toMatchObject({ revision: updated.body.revision, role: updated.body.role });
-  expect(shared.account.library.get('fake-user', 'role', 'test.shared')?.revision).toBe(updated.body.revision);
+  expect(roleOn(b, 'test.shared')!.revision).toBe(updated.body.revision);
 
   const pack = { id: 'custom.shared', title: '共享插件', lifetime: 'persistent', bundle: 'export const marker = "共享插件代码";',
     views: [{ id: 'main', title: '主视图', resourceUri: 'ui://shared/main.html' }] };
@@ -82,7 +68,7 @@ test('A 改的角色经推送同步到 B 后是同一版本，B 用过期版本�
   const listed = await until(async () => {
     const definitions = await b.call('GET', '/plugin-definitions');
     return definitions.body.some((definition: { id: string }) => definition.id === pack.id) && definitions;
-  }, 'B 经推送同步到 A 导入的插件');
+  }, 'B 同步到 A 导入的插件', 900);
   expect(listed.body).toContainEqual(expect.objectContaining({ id: pack.id, revision: installed.body.revision }));
   expect(b.daemon.kite.catalog.installed(pack.id)).toBe(false);
 
@@ -99,234 +85,89 @@ test('A 改的角色经推送同步到 B 后是同一版本，B 用过期版本�
   expect(instance.config.packageRevision).toBe(installed.body.revision);
 }, 1000);
 
-interface RoleEntry { role: Role; revision: string; defaultRevision?: string }
-interface TemplateEntry { definition: ContextDefinition; model?: unknown; revision: string; defaultRevision: string }
-
-async function builtinRole(k: Kited, id: string): Promise<RoleEntry> {
-  const catalog = await k.call('GET', '/roles');
-  expect(catalog.status).toBe(200);
-  const entry = (catalog.body.roles as RoleEntry[]).find((candidate) => candidate.role.id === id);
-  if (!entry) throw new Error(`缺少内置角色 ${id}`);
-  return entry;
-}
-
-async function template(k: Kited, id: string): Promise<TemplateEntry> {
-  const catalog = await k.call('GET', '/context-templates');
-  expect(catalog.status).toBe(200);
-  const entry = (catalog.body.templates as TemplateEntry[]).find((candidate) => candidate.definition.id === id);
-  if (!entry) throw new Error(`缺少上下文模板 ${id}`);
-  return entry;
-}
-
-// 恢复默认在账号里是删除：删除带的 expectedRevision 是工作机按本机缓存算的版本，须与账号按写入内容算的版本对上才删得掉；
-// 删掉后账号推送给 B，B 全量同步发现账号里没有这一条，要从缓存去掉、退回内置默认。
-// B 用 A 改之前的版本恢复默认时账号里已是 A 的修改，删除要被拒，B 随后追上 A 的修改。
-test('A 恢复内置角色默认后账号里不留这一条，B 经推送退回默认；B 用 A 改之前的版本恢复默认被拒后追上', async () => {
-  const root = makeTemp('library-reset-role-');
-  shared = { account: startFakeAccount(join(root, 'account')), root };
-  const a = startKited(undefined, false, shared.account);
-  const b = startKited(undefined, false, shared.account);
+// 恢复默认在账号级数据里是删除：删除带的 expectedRevision 是按本机缓存算的版本，须与账号级数据里的对上才删得掉；
+// 模板把内容原样改回默认也是删除，不留一份等于默认的副本。删除同步到 B 后，B 对缓存时发现没有这一条，
+// 要从缓存去掉、退回内置默认；B 再用删掉前的版本保存要被拒，不能当新建写进去。
+test('A 恢复内置角色默认、把模板原样改回默认后账号级数据不留这两条，B 同步后退回默认，再用删掉前的版本保存被拒', async () => {
+  const a = startKited();
+  const b = startKited();
   kiteds.push(a, b);
-  const original = await builtinRole(a, 'kite.review');
-  expect(original.revision).toBe(original.defaultRevision!);
+  await connect(a, b);
+  const role = roleOn(a, 'kite.review')!;
+  expect(role.revision).toBe(role.defaultRevision!);
+  const template = templateOn(a, emblemTemplate.id)!;
+  expect(template.revision).toBe(template.defaultRevision);
+  const edited: ContextDefinition = { ...template.definition, blocks: [...template.definition.blocks,
+    { type: 'paragraph', id: 'test-extra', title: '补充规则', parts: [{ type: 'text', text: 'A 加的规则。' }] }] };
 
-  // A 的修改推给 B 与 B 的过期恢复谁先到不定；两条路都要让 B 追上，所以从 A 修改前开始等。
-  const changed = mark(b);
-  const updated = await a.call('PUT', '/roles/kite.review', {
-    expectedRevision: original.revision, role: { ...original.role, maxRequestsPerTurn: original.role.maxRequestsPerTurn + 1 },
+  const changedRole = await a.call('PUT', '/roles/kite.review', {
+    expectedRevision: role.revision, role: { ...role.role, maxRequestsPerTurn: role.role.maxRequestsPerTurn + 1 },
   });
-  expect(updated.status).toBe(200);
-  expect(updated.body.revision).not.toBe(original.defaultRevision);
-  expect(updated.body.defaultRevision).toBe(original.defaultRevision);
-  const stale = await b.call('POST', '/roles/kite.review/reset', { expectedRevision: original.revision });
-  expect(stale.status).toBe(409);
-  await b.waitEvent((event) => event.type === 'roles.changed' && after(b, changed)(event));
-  expect(await builtinRole(b, 'kite.review')).toMatchObject({ revision: updated.body.revision, role: updated.body.role });
-  expect(shared.account.library.get('fake-user', 'role', 'kite.review')?.revision).toBe(updated.body.revision);
+  expect(changedRole.status).toBe(200);
+  const changedTemplate = await a.call('PUT', `/context-templates/${emblemTemplate.id}`, {
+    expectedRevision: template.revision, definition: edited, model: template.model,
+  });
+  expect(changedTemplate.status).toBe(200);
+  await cached(b, 'roles.changed', () => roleOn(b, 'kite.review')?.revision === changedRole.body.revision);
+  await cached(b, 'context-templates.changed', () => templateOn(b, emblemTemplate.id)?.revision === changedTemplate.body.revision);
 
-  const restored = mark(b);
-  const reset = await a.call('POST', '/roles/kite.review/reset', { expectedRevision: updated.body.revision });
+  const reset = await a.call('POST', '/roles/kite.review/reset', { expectedRevision: changedRole.body.revision });
   expect(reset.status).toBe(200);
-  expect(reset.body).toMatchObject({ role: original.role, revision: original.defaultRevision, defaultRevision: original.defaultRevision });
-  expect(shared.account.library.get('fake-user', 'role', 'kite.review')).toBeUndefined();
-  await b.waitEvent((event) => event.type === 'roles.changed' && after(b, restored)(event));
-  expect(await builtinRole(b, 'kite.review')).toMatchObject({
-    role: original.role, revision: original.defaultRevision, defaultRevision: original.defaultRevision,
-  });
-}, 1000);
-
-// 保存的内容与默认一样时不写账号而是删除，版本要像恢复默认一样对上；B 退回默认靠推送后的全量同步。
-// A 改回默认的推送与 B 基于 A 修改版的保存谁先到不定：B 还没同步时这次保存发到账号，账号里已没有这一条，
-// 带着版本的写入不能当新建放进去，两条路都要被拒，账号里仍没有，B 最终是默认。
-test('A 把改过的模板原样改回默认时账号删掉这一条，B 经推送退回默认；B 基于已删掉的版本保存被拒，账号里仍没有', async () => {
-  const root = makeTemp('library-reset-template-');
-  shared = { account: startFakeAccount(join(root, 'account')), root };
-  const a = startKited(undefined, false, shared.account);
-  const b = startKited(undefined, false, shared.account);
-  kiteds.push(a, b);
-  const original = await template(a, emblemTemplate.id);
-  expect(original.revision).toBe(original.defaultRevision);
-  const edited = (text: string): ContextDefinition => ({ ...original.definition, blocks: [...original.definition.blocks,
-    { type: 'paragraph', id: 'test-extra', title: '补充规则', parts: [{ type: 'text', text }] }] });
-
-  const changed = mark(b);
-  const modified = await a.call('PUT', `/context-templates/${emblemTemplate.id}`, {
-    expectedRevision: original.revision, definition: edited('A 加的规则。'), model: original.model,
-  });
-  expect(modified.status).toBe(200);
-  expect(modified.body.revision).not.toBe(original.defaultRevision);
-  await b.waitEvent((event) => event.type === 'context-templates.changed' && after(b, changed)(event));
-  expect((await template(b, emblemTemplate.id)).revision).toBe(modified.body.revision);
-  expect(shared.account.library.get('fake-user', 'template', emblemTemplate.id)?.revision).toBe(modified.body.revision);
-
-  const restored = mark(b);
+  expect(reset.body).toMatchObject({ role: role.role, revision: role.defaultRevision });
   const reverted = await a.call('PUT', `/context-templates/${emblemTemplate.id}`, {
-    expectedRevision: modified.body.revision, definition: original.definition, model: original.model,
+    expectedRevision: changedTemplate.body.revision, definition: template.definition, model: template.model,
   });
   expect(reverted.status).toBe(200);
-  expect(reverted.body).toMatchObject({ definition: original.definition, revision: original.defaultRevision,
-    defaultRevision: original.defaultRevision });
-  expect(shared.account.library.get('fake-user', 'template', emblemTemplate.id)).toBeUndefined();
-  const stale = await b.call('PUT', `/context-templates/${emblemTemplate.id}`, {
-    expectedRevision: modified.body.revision, definition: edited('B 基于 A 的修改版再改。'), model: original.model,
+  expect(reverted.body).toMatchObject({ definition: template.definition, revision: template.defaultRevision });
+  expect(a.daemon.kite.accountData.get('role', 'kite.review')).toBeUndefined();
+  expect(a.daemon.kite.accountData.get('template', emblemTemplate.id)).toBeUndefined();
+
+  await cached(b, 'roles.changed', () => roleOn(b, 'kite.review')?.revision === role.defaultRevision);
+  expect(roleOn(b, 'kite.review')!.role).toEqual(role.role);
+  await cached(b, 'context-templates.changed', () => templateOn(b, emblemTemplate.id)?.revision === template.defaultRevision);
+  expect(templateOn(b, emblemTemplate.id)!.definition).toEqual(template.definition);
+
+  const staleRole = await b.call('PUT', '/roles/kite.review', {
+    expectedRevision: changedRole.body.revision, role: { ...role.role, maxRequestsPerTurn: role.role.maxRequestsPerTurn + 2 },
   });
-  expect(stale.status).toBe(409);
-  await b.waitEvent((event) => event.type === 'context-templates.changed' && after(b, restored)(event));
-  expect(await template(b, emblemTemplate.id)).toMatchObject({ definition: original.definition,
-    revision: original.defaultRevision, defaultRevision: original.defaultRevision });
-  expect(shared.account.library.get('fake-user', 'template', emblemTemplate.id)).toBeUndefined();
+  expect(staleRole.status).toBe(409);
+  const staleTemplate = await b.call('PUT', `/context-templates/${emblemTemplate.id}`, {
+    expectedRevision: changedTemplate.body.revision, definition: edited, model: template.model,
+  });
+  expect(staleTemplate.status).toBe(409);
+  expect(b.daemon.kite.accountData.get('role', 'kite.review')).toBeUndefined();
+  expect(b.daemon.kite.accountData.get('template', emblemTemplate.id)).toBeUndefined();
 }, 1000);
 
-// 真实 bug：首次同步时本机还没有此项目，之后登记账号已有项目不会再收到约束变更事件，因而留下无限制缓存。
-// 账号读取失败、登记入库与开代理必须一起验证：首次约束未取到不能留下可运行工作区，重试成功返回时约束已生效。
-test('首次同步后登记账号已有项目，取不到首次约束不留下工作区，恢复后登记成功时 shell 已禁用', async () => {
-  const root = makeTemp('library-register-');
-  shared = { account: startFakeAccount(join(root, 'account')), root };
-  const projectId = crypto.randomUUID();
-  const remote = 'example.test/library/existing';
-  const url = `https://${remote}.git`;
-  shared.account.projects.set(projectId, { id: projectId, name: '已有限制的项目', remote, url,
-    hosted: false, createdAt: Date.now() });
-  shared.account.constraints.set(projectId, { tools: { mode: 'deny', tools: ['shell'] } });
-  const k = startKited(undefined, false, shared.account);
-  kiteds.push(k);
-  await k.daemon.kite.library.refresh();
-  const path = newRepo(k.root, 'existing', { 'base.txt': '账号已有项目\n' }, url);
+// 真实 bug：首次同步时本机还没有此项目，之后登记已有项目不会再收到约束变更，因而留下无限制缓存。
+// 约束随账号级数据同步：B 先同步到 A 登记的项目和收紧的约束，之后才登记同一远程的检出，登记完开的代理就要受约束。
+test('B 先同步到别的工作机已收紧约束的项目、再登记它的检出时，开的代理已禁用 shell', async () => {
+  const a = startKited();
+  const b = startKited();
+  kiteds.push(a, b);
+  await connect(a, b);
+  const url = `https://example.test/library/${crypto.randomUUID()}.git`;
+  const registered = await registerCheckout(a, newRepo(a.root, 'project', { 'base.txt': 'A\n' }, url));
+  const projectId = registered.project.id;
+  const current = await a.call('GET', `/project-registry/${projectId}/constraints`);
+  expect(current.status).toBe(200);
+  const saved = await a.call('PUT', `/project-registry/${projectId}/constraints`, {
+    tools: { mode: 'deny', tools: ['shell'] }, expectedRevision: current.body.revision,
+  });
+  expect(saved.status).toBe(200);
+  await synced(b, () => b.daemon.kite.registry.get(projectId) && b.daemon.kite.registry.constraints(projectId).revision === saved.body.revision,
+    'B 同步到项目与收紧的约束');
 
-  shared.account.beforeConstraints = () => Response.json({ error: '项目约束暂时不可用' }, { status: 503 });
-  const unavailable = await k.call('POST', '/checkouts', { path });
-  expect(unavailable.status).toBeGreaterThanOrEqual(400);
-  expect((await k.call('GET', '/checkouts')).body).toEqual([]);
-  expect(k.daemon.kite.workspaces()).toEqual([]);
-
-  shared.account.beforeConstraints = undefined;
-  const registered = await registerCheckout(k, path);
-  expect(registered.project.id).toBe(projectId);
-  expect(k.daemon.kite.store.projectConstraints(projectId)?.tools).toEqual({ mode: 'deny', tools: ['shell'] });
-  const id = await openAgent(k.call, registered.workspace.id);
-  expect((await k.call('GET', `/instances/${id}/agent-capabilities`)).body.blocked).toContain('shell');
+  const other = await registerCheckout(b, newRepo(b.root, 'project', { 'base.txt': 'B\n' }, url));
+  expect(other.project.id).toBe(projectId);
+  expect(b.daemon.kite.store.projectConstraints(projectId)?.tools).toEqual({ mode: 'deny', tools: ['shell'] });
+  const id = await openAgent(b.call, other.workspace.id);
+  expect((await b.call('GET', `/instances/${id}/agent-capabilities`)).body.blocked).toContain('shell');
 }, 1000);
 
-// 真实 bug：事件流仍持续心跳时一次拉取失败，缓存只能等下一次变更或重连才能追上。
-// 资源库和项目约束分开失败，每次只发一条变更事件；后续只有心跳与退避时间推进，验证各自自动恢复和关闭取消。
-test('事件流仍通时资源库和约束的临时失败自动重试并更新缓存，关闭后不再重试', async () => {
-  const root = makeTemp('library-retry-');
-  const store = new Store(join(root, 'kite.sqlite'));
-  const roles = new Roles(store);
-  const projectId = crypto.randomUUID();
-  store.saveProject({ id: projectId, name: '重试约束', remote: 'example.test/library/retry', createdAt: Date.now() });
-  const role = sharedRole(roles.get('kite.work').role, '同步恢复后使用的新规则。');
-  const initial = Promise.withResolvers<void>();
-  let source: LibraryItem[] = [];
-  let constraints: ProjectConstraints = { tools: { mode: 'deny', tools: [] }, revision: 'initial' };
-  let failLibrary = false;
-  let failConstraints = false;
-  let requests = 0;
-  let streamClosed = false;
-  let stream!: ReadableStreamDefaultController<Uint8Array>;
-  const account = new class extends AccountClient {
-    override async libraryEvents(signal: AbortSignal) {
-      return new ReadableStream<Uint8Array>({
-        start(controller) {
-          stream = controller;
-          signal.addEventListener('abort', () => {
-            if (!streamClosed) { streamClosed = true; controller.close(); }
-          }, { once: true });
-          controller.enqueue(new TextEncoder().encode('data: ready\n\n'));
-        },
-        cancel() { streamClosed = true; },
-      });
-    }
-    override async library() {
-      requests++;
-      if (failLibrary) { failLibrary = false; throw new Error('资源库暂时不可用'); }
-      return source;
-    }
-    override async constraints() {
-      requests++;
-      if (failConstraints) { failConstraints = false; throw new Error('项目约束暂时不可用'); }
-      return constraints;
-    }
-  }(() => ({ url: 'http://account.test', token: 'test' }));
-  const sync = new LibrarySync({ account, store, roles, templates: new ContextTemplates(store, []),
-    catalog: new PluginCatalog(join(root, 'plugins')), changed: () => initial.resolve() });
-  // 用一个真实事件循环边界排空 Promise/流读取；不靠睡眠等待，也不主动 refresh 帮重试补请求。
-  const immediate = globalThis.setImmediate;
-  const settled = () => new Promise<void>((resolve) => { immediate(resolve); });
-  const send = (text: string) => stream.enqueue(new TextEncoder().encode(text));
-  const retryUntil = async (caughtUp: () => boolean) => {
-    // 不再发送 changed；最多推进一分钟，覆盖退避而不绑定调用次数或具体间隔。
-    for (let seconds = 0; seconds < 60 && !caughtUp(); seconds++) {
-      send(': \n\n');
-      await settled();
-      jest.advanceTimersByTime(1000);
-      await settled();
-    }
-  };
-  jest.useFakeTimers();
-  try {
-    sync.connect();
-    await initial.promise;
-    await settled();
-    source = [{ kind: 'role', id: role.id, body: role, revision: 'changed', updatedAt: Date.now() }];
-    failLibrary = true;
-    send('data: changed\n\n');
-    await settled();
-    expect(failLibrary).toBe(false);
-    expect(store.role(role.id)).toBeUndefined();
-    await retryUntil(() => store.role(role.id) !== undefined);
-    expect(roles.get(role.id).role).toEqual(role);
-
-    constraints = { tools: { mode: 'deny', tools: ['shell'] }, revision: 'blocked' };
-    failConstraints = true;
-    send('data: changed\n\n');
-    await settled();
-    expect(failConstraints).toBe(false);
-    expect(store.projectConstraints(projectId)?.revision).toBe('initial');
-    await retryUntil(() => store.projectConstraints(projectId)?.revision === 'blocked');
-    expect(store.projectConstraints(projectId)).toEqual(constraints);
-    expect(streamClosed).toBe(false);
-
-    failLibrary = true;
-    send('data: changed\n\n');
-    await settled();
-    await sync.close();
-    const atClose = requests;
-    jest.advanceTimersByTime(120_000);
-    await settled();
-    expect(requests).toBe(atClose);
-    expect(streamClosed).toBe(true);
-  } finally {
-    await sync.close();
-    jest.useRealTimers();
-    store.close();
-    rmSync(root, { recursive: true, force: true });
-  }
-}, 1000);
-
-// 项目约束是实时过滤：账号里改了约束、账号服务推送后工作机同步，正在跑的回合里已经发出的 shell 调用在执行前被拦下，
+// 项目约束是实时过滤：改了约束后对缓存，正在跑的回合里已经发出的 shell 调用在执行前被拦下，
 // 下一次请求不再放行 shell；只有有效工具真的变了的代理收到一条配置通知；放宽后实例配置里留着的 shell 恢复。
-// 账号拉取、SQLite 缓存、配置通知与 harness 请求边界的执行检查要合起来才看得出。
+// 账号级数据、SQLite 缓存、配置通知与 harness 请求边界的执行检查要合起来才看得出。
 test('项目约束禁用 shell 后在跑的回合里已发出的 shell 调用不执行，下一请求不再放行，只通知受影响的代理一次，放宽后恢复', async () => {
   const model = new ManualModel();
   const k = startKited(() => model);
@@ -334,6 +175,13 @@ test('项目约束禁用 shell 后在跑的回合里已发出的 shell 调用不
   const workspace = await registerCheckout(k, newRepo(k.root, 'project', { 'base.txt': '原始\n' }));
   const projectId = workspace.project.id;
   const workspaceId = workspace.workspace.id;
+  const constrain = async (tools: string[]) => {
+    const current = await k.call('GET', `/project-registry/${projectId}/constraints`);
+    const saved = await k.call('PUT', `/project-registry/${projectId}/constraints`, {
+      tools: { mode: 'deny', tools }, expectedRevision: current.body.revision,
+    });
+    expect(saved.status).toBe(200);
+  };
   const id = await openAgent(k.call, workspaceId);
   const readerId = await openAgent(k.call, workspaceId);
   const readerConfig = await k.call('GET', `/instances/${readerId}/agent-config`);
@@ -349,8 +197,8 @@ test('项目约束禁用 shell 后在跑的回合里已发出的 shell 调用不
   expect((await k.call('POST', `/threads/${id}/messages`, { id: 'run', text: '跑一个命令' })).status).toBe(200);
   const first = await model.call(1);
   expect(first.request.allowedTools).toContain('shell');
-  k.account.constraints.set(projectId, { tools: { mode: 'deny', tools: ['shell'] } });
-  await until(() => notices(id).length > 0, '收紧约束推送后受影响的代理收到配置通知');
+  await constrain(['shell']);
+  await until(() => notices(id).length > 0, '收紧约束后受影响的代理收到配置通知', 900);
   expect((await k.call('GET', `/instances/${id}/agent-capabilities`)).body).toMatchObject({ tools, blocked: ['shell'] });
   expect(notices(id)).toHaveLength(1);
   expect(notices(readerId)).toHaveLength(readerNotices);
@@ -373,8 +221,8 @@ test('项目约束禁用 shell 后在跑的回合里已发出的 shell 调用不
   second.response.complete();
   await k.waitEvent((event) => event.type === 'idle' && event.threadId === id);
 
-  k.account.constraints.set(projectId, { tools: { mode: 'deny', tools: [] } });
-  await until(() => notices(id).length > 1, '放宽约束推送后受影响的代理收到配置通知');
+  await constrain([]);
+  await until(() => notices(id).length > 1, '放宽约束后受影响的代理收到配置通知', 900);
   expect(notices(id)).toHaveLength(2);
   expect((await k.call('GET', `/instances/${id}/agent-config`)).body.instance.config.agent.tools).toEqual(tools);
   const since = mark(k);
@@ -386,22 +234,23 @@ test('项目约束禁用 shell 后在跑的回合里已发出的 shell 调用不
 }, 1000);
 
 // 真实出过的 bug：内置角色和模板曾预先写进本机库。kited 升级后默认的点阵签名规则变了，本机那份
-// kite.template-emblem.generate 旧副本（用户从没改过）和新默认对不上，加入账号后第一次同步被当成用户修改上传，
-// 之后各工作机都拉到这份旧规则，新默认再也生效不了；预先写进去的内置角色也被整份上传。
-// 要 daemon 启动、SQLite 缓存、事件流连上后的首次同步与账号服务合起来才看得出。
-test('本机留着旧版内置模板和内置角色副本时加入空账号，首次同步不上传角色与模板，签名模板回到当前默认', async () => {
+// kite.template-emblem.generate 旧副本（用户从没改过）和新默认对不上，第一次同步时被当成用户修改写进账号，
+// 之后各工作机都拿到这份旧规则，新默认再也生效不了；预先写进去的内置角色也被整份写进去。
+// 升级到本机账号级数据时同样的副本还在缓存里：第一次对缓存不能把它们写进账号级数据，要从缓存去掉。
+// 要 daemon 启动、SQLite 缓存与第一次对缓存合起来才看得出。
+test('本机缓存留着旧版内置模板和内置角色副本时，第一次对缓存不把它们写进账号级数据，签名模板回到当前默认', async () => {
   const root = makeTemp('library-stale-');
   const home = join(root, 'kite');
   let daemon: Daemon | undefined;
-  let account: FakeAccount | undefined;
   try {
-    // 先在没加入账号时起一次建好本机库，停下后放进升级前的 kited 留下的副本。
+    // 先起一次建好本机库，停下后放进升级前的 kited 留下的副本，并去掉账号级数据，相当于第一次有它。
     daemon = startDaemon({ home, port: 0, lightTasks: false });
     const builtins = ((await call(daemon.url, 'GET', '/roles')).body.roles as Array<{ role: Role }>)
       .map((entry) => entry.role).filter((role) => role.id === 'kite.work' || role.id === 'kite.review');
     expect(builtins).toHaveLength(2);
     await daemon.stop();
     daemon = undefined;
+    for (const suffix of ['', '-wal', '-shm']) rmSync(join(home, `account.db${suffix}`), { force: true });
     const stale: ContextDefinition = { ...emblemTemplate, blocks: [{ type: 'paragraph', id: 'instructions', title: '设计规则',
       parts: [{ type: 'text', text: '旧版设计规则：签名是一行算式，结果在 0 到 1 之间。' }] }] };
     const db = new Database(join(home, 'kite.db'));
@@ -412,20 +261,17 @@ test('本机留着旧版内置模板和内置角色副本时加入空账号，�
       db.close();
     }
 
-    account = linkNewAccount(home);
     daemon = startDaemon({ home, port: 0, lightTasks: false });
-    const events = new Seen<Envelope>();
-    daemon.kite.bus.subscribe(undefined, (event) => events.add(event));
-    const uploaded = () => account!.library.list('fake-user').filter((entry) => entry.kind === 'role' || entry.kind === 'template');
-    // 首次同步去掉账号里没有的旧副本后通知客户端刷新模板；出错时则是账号里多出条目，两种情况都不再等。
-    await until(() => events.values.some((event) => event.type === 'context-templates.changed') || uploaded().length > 0,
-      '加入账号后的首次同步');
-    expect(uploaded()).toEqual([]);
+    const kite = daemon.kite;
+    const written = () => [...kite.accountData.list('role'), ...kite.accountData.list('template')];
+    const emblem = () => kite.contextTemplates.list().templates.find((template) => template.definition.id === emblemTemplate.id)?.definition;
+    // 对完缓存时签名模板回到默认；出错时则是账号级数据里多出条目，两种情况都不再等。
+    await until(() => Bun.deepEquals(emblem(), emblemTemplate) || written().length > 0, '启动后第一次对缓存', 900);
+    expect(written()).toEqual([]);
     const templates = (await call(daemon.url, 'GET', '/context-templates')).body.templates as Array<{ definition: ContextDefinition }>;
     expect(templates.find((template) => template.definition.id === emblemTemplate.id)?.definition).toEqual(emblemTemplate);
   } finally {
     await daemon?.stop();
-    account?.stop();
     rmSync(root, { recursive: true, force: true });
   }
 }, 1000);

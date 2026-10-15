@@ -7,7 +7,7 @@ const BASE = process.env.KITE_URL ?? `http://127.0.0.1:${process.env.KITE_PORT ?
 
 const USAGE = `用法：
   kite projects                       列出项目
-  kite add <文件夹>                   登记本机文件夹，没有远程的建托管远程
+  kite add <文件夹>                   登记本机文件夹，没有远程的登记为各工作机互取的项目
   kite clone <远程地址> [文件夹]      clone 远程并登记，默认放在 ~/code/<域名>/<owner>/<repo>
   kite checkouts [项目]               列出本机检出
   kite ls [项目]                      列出工作区和线程
@@ -23,7 +23,7 @@ const USAGE = `用法：
   kite adopt <工作区>                   把工作区的改动合回主线并推送
   kite push <检出> [提交说明]           提交检出现场的改动并推送
   kite archive <工作区> [--force]       归档工作区，删掉工作树
-  kite net [up|down]                  查看、开启或关闭已登录设备的组网`;
+  kite net [up|down|logout]           查看、开启或关闭组网，或退出 Tailscale 登录；第一次开启时给出登录地址`;
 
 function unreachable(): never {
   console.error(`连不上 kited（${BASE}）`);
@@ -274,6 +274,7 @@ async function main(): Promise<void> {
       break;
     case 'net': {
       if (args[0] === 'up' || args[0] === 'down') await call('PUT', '/network', { enabled: args[0] === 'up' });
+      else if (args[0] === 'logout') await call('POST', '/network/logout');
       else if (args[0]) { console.log(USAGE); process.exit(1); }
       let s = await call('GET', '/network');
       // 开启后等节点给出登录网址或上线，最多 30 秒。
@@ -283,13 +284,13 @@ async function main(): Promise<void> {
       }
       if (!s.enabled) console.log('组网已关闭');
       else if (s.state === 'Running') {
-        console.log(`组网已上线：${s.name ?? ''}\n远程地址 ${s.address}，同账号设备可直接访问`);
+        console.log(`组网已上线：${s.name ?? ''}（${s.user?.loginName ?? ''}）\n远程地址 ${s.address}，同一 Tailscale 用户的设备可直接访问`);
         const labels: Record<string, string> = { direct: '直连', relay: '中继', idle: '空闲' };
         for (const peer of s.peers ?? []) {
           console.log(`  ${peer.name}${peer.ip ? ` ${peer.ip}` : ''}：${labels[peer.connection] ?? peer.connection}${peer.endpoint ? ` ${peer.endpoint}` : ''}`);
         }
       }
-      else if (s.loginURL) console.log(`在浏览器中打开以登录组网：\n${s.loginURL}`);
+      else if (s.loginURL) console.log(`在浏览器中打开以登录 Tailscale：\n${s.loginURL}`);
       else console.log(`组网状态：${s.state}${s.error ? `\n${s.error}` : ''}`);
       break;
     }

@@ -1,5 +1,6 @@
 ## 当前取舍与资料入口
 
+- [分布式架构](decentralized-direction.md) — 不再自营服务器：Tailscale 身份、见证方可替换、设备间同步；实施顺序，第 1 步已做；设计待评审
 - [自研 harness 与订阅授权](harness-direction.md) — 独立宿主、每台工作机授权和辅助模型的选型理由
 - [PDF 读取方案](pdf-read-direction.md) — Vision 与无备用解析器的明确取舍
 - [视觉参考与范围](visual-style-direction.md) — 色板、角色点阵、项目色和字体范围
@@ -32,4 +33,4 @@
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
 - [真实终端](todo-terminal-plugin.md) — PTY 与跨端重连、停止和资源生命周期
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据
-- [个人组网清理](todo-headscale-cleanup.md) — lisa 实验资源的存在与清理状态待核验
+- [去中心化改造收尾](todo-decentralized-rollout.md) — 没做的租约续约与过期、CloudKit、环境声明、关机预告、App 流转入口

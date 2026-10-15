@@ -45,7 +45,7 @@ function alive(pid: number): boolean {
 /** 一个工作区和其中的一个工作代理；代理已经开始第一回合，第一次模型请求挂着。 */
 async function agentSetup() {
   const model = new ManualModel();
-  const k = startKited(() => model, false, undefined, { monitorWakeDelayMs: 50 });
+  const k = startKited(() => model, false, { monitorWakeDelayMs: 50 });
   kited = k;
   const registered = await registerCheckout(k, newRepo(k.root, 'project', { 'a.txt': 'a\n' }));
   const workspaceId = registered.workspace.id;

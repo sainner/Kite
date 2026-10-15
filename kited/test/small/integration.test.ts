@@ -1,21 +1,25 @@
 /**
  * 工作区集成与检出现场推送（docs/项目与远程仓库.md「工作区与集成」）：经 HTTP 接口，
- * kited 用真实 git fetch/merge/push 访问账号服务替身的托管仓库（git http-backend）。
+ * kited 用真实 git fetch/merge/push 访问 Git 平台替身上的裸仓库（git http-backend）。
  */
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { WorkspaceModel } from '../../src/model.ts';
+import { type FakeGit, startFakeGit } from '../fake-git.ts';
 import { type Kited, registerCheckout, startKited } from '../harness.ts';
 import { git, gitOk, newDir, read, repoState, writeFiles } from '../util.ts';
 
 let kited: Kited | undefined;
+let remotes: FakeGit | undefined;
 afterEach(async () => {
   await kited?.stop();
   kited = undefined;
+  remotes?.stop();
+  remotes = undefined;
 });
 
-/** 直接在托管裸仓库的分支上加一个提交（沿用父提交的文件），模拟另一台机器刚推了提交；返回这个提交。 */
+/** 直接在裸仓库的分支上加一个提交（沿用父提交的文件），模拟另一台机器刚推了提交；返回这个提交。 */
 function advanceRemote(bare: string, branch: string, message: string): string {
   const ref = `refs/heads/${branch}`;
   const commit = git(bare, 'commit-tree', `${ref}^{tree}`, '-p', ref, '-m', message);
@@ -23,11 +27,13 @@ function advanceRemote(bare: string, branch: string, message: string): string {
   return commit;
 }
 
-/** 登记一个普通文件夹（托管远程），返回检出、托管裸仓库路径和分支名。 */
-async function hostedCheckout(k: Kited, name: string, files: Record<string, string>) {
+/** 登记一个普通文件夹（Kite 初始化仓库），再给项目设远程，内容推到替身的裸仓库；返回检出、裸仓库路径和分支名。 */
+async function remoteCheckout(k: Kited, name: string, files: Record<string, string>) {
   const folder = newDir(k.root, name, files);
   const model = await registerCheckout(k, folder);
-  const bare = join(k.account.repos, `${model.project.id}.git`);
+  const { url, bare } = (remotes ??= startFakeGit()).create(name);
+  const set = await k.call('PUT', `/project-registry/${model.project.id}/remote`, { remote: url });
+  if (set.status !== 200) throw new Error(`设远程失败：${set.status} ${JSON.stringify(set.body)}`);
   return { folder, model, bare, branch: git(folder, 'branch', '--show-current') };
 }
 
@@ -47,7 +53,7 @@ async function openWorkspace(k: Kited, checkoutId: string): Promise<WorkspaceMod
  */
 test('现场有未提交改动时建工作区不自动提交，集成和远程领先时的推送都拒绝，现场与远程不变', async () => {
   kited = startKited();
-  const { folder, model, bare, branch } = await hostedCheckout(kited, 'draft', { 'a.txt': '已提交\n' });
+  const { folder, model, bare, branch } = await remoteCheckout(kited, 'draft', { 'a.txt': '已提交\n' });
   const remoteHead = advanceRemote(bare, branch, '另一台机器的提交');
   writeFiles(folder, { 'a.txt': '现场改动\n', 'new.txt': '新文件\n' });
   const head = git(folder, 'rev-parse', 'HEAD');
@@ -72,7 +78,7 @@ test('现场有未提交改动时建工作区不自动提交，集成和远程�
  */
 test('现场推送在远程领先时快进，现场领先时提交并推送，也能建立远程缺少的分支，sync 显示一致', async () => {
   kited = startKited();
-  const { folder, model, bare, branch } = await hostedCheckout(kited, 'site', { 'a.txt': 'a\n' });
+  const { folder, model, bare, branch } = await remoteCheckout(kited, 'site', { 'a.txt': 'a\n' });
   const remoteHead = advanceRemote(bare, branch, '另一台机器的提交');
   expect((await kited.call('POST', `/checkouts/${model.checkout.id}/push`, {})).status).toBe(200);
   expect(git(folder, 'rev-parse', 'HEAD')).toBe(remoteHead);
@@ -102,13 +108,13 @@ test('现场推送在远程领先时快进，现场领先时提交并推送，�
  */
 test('集成推送被拒后重新拉取合并再推送，远程与主目录包含双方的提交', async () => {
   kited = startKited();
-  const { folder, model, bare, branch } = await hostedCheckout(kited, 'app', { 'a.txt': 'a\n' });
+  const { folder, model, bare, branch } = await remoteCheckout(kited, 'app', { 'a.txt': 'a\n' });
   const workspace = await openWorkspace(kited, model.checkout.id);
   writeFiles(workspace.cwd, { 'w.txt': '工作区\n' });
 
   let late: string | undefined;
   let pushes = 0;
-  kited.account.beforePush = () => {
+  remotes!.beforePush = () => {
     if (pushes++ === 0) late = advanceRemote(bare, branch, '推送前刚到的提交');
   };
   const adopted = await kited.call('POST', `/workspaces/${workspace.id}/adopt`);

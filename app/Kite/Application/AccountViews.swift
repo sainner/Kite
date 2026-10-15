@@ -1,7 +1,6 @@
-import CoreImage.CIFilterBuiltins
 import SwiftUI
 
-/// Kite 账号页：宽处分两栏，左栏是账号与计价表，右栏是用量；右栏放不下半年的热力图时排成一栏。
+/// 账号页：宽处分两栏，左栏是登录的 Tailscale 账号与计价表，右栏是用量；右栏放不下半年的热力图时排成一栏。
 struct AccountSettingsPage: View {
     /// 量到宽度之前为 nil，先排成一栏。
     @State private var columns: Bool?
@@ -26,7 +25,7 @@ struct AccountSettingsPage: View {
 
 /// 依次放账号、用量、计价表三块。两栏时左栏宽度固定，账号下面接计价表，表格放不下时横向滚动；右栏的用量最宽到一整年（53 周）的热力图，
 /// 柱状图与热力图左右对齐。一栏时依次排下来，宽度同样以一整年为限。
-/// 自己排而不是在 HStack 与 VStack 之间切换：两种排法下各块的身份不变，二维码这类状态不丢，切换时位置能连续过渡。
+/// 自己排而不是在 HStack 与 VStack 之间切换：两种排法下各块的身份不变，状态不丢，切换时位置能连续过渡。
 private struct AccountPageLayout: Layout {
     let columns: Bool
 
@@ -73,14 +72,15 @@ private struct AccountPageLayout: Layout {
     }
 }
 
-/// Kite 账号：当前登录的邮箱、设备概况与退出登录，右侧是让新设备扫码登录的按钮。邮箱过长时省略中间。
+/// 账号：登录的 Tailscale 用户、设备概况与退出登录，右侧是去 Tailscale 管理后台管设备的按钮。登录名过长时省略中间。
+/// 设备就是这个 Tailscale 账号下的节点，移除设备在管理后台做。
 struct KiteAccountSection: View {
     @Environment(AppModel.self) private var model
     @State private var error: String?
     @State private var working = false
 
     var body: some View {
-        let devices = model.account.devices.filter(\.joined)
+        let devices = model.account.devices
         CardSection("账号") {
             HStack(spacing: 12) {
                 SidebarAvatar()
@@ -88,35 +88,49 @@ struct KiteAccountSection: View {
                     Text(model.account.user?.email ?? "未登录").font(Theme.title)
                         .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                     if model.account.signedIn {
-                        Text("\(devices.count) 台设备 · \(devices.filter(\.online).count) 台在线")
+                        Text("Tailscale · \(devices.count) 台设备 · \(devices.filter(\.online).count) 台在线")
                             .font(Theme.caption).foregroundStyle(.secondary).monospacedDigit()
                     }
                 }
                 Spacer(minLength: 0)
-                DeviceInvitationButton()
+                Link(destination: KiteAccount.adminURL) {
+                    PaneButtonLabel("在 Tailscale 管理设备", systemImage: "network")
+                }
+                .buttonStyle(PaneButtonStyle())
+                .fixedSize()
+                .help("在 Tailscale 管理设备")
             }
             .padding(.vertical, 8)
+            // 登录失效（节点要求重新登录）时就地重新登录，登录页由 AppRoot 弹出。
+            if model.account.error != nil, let role = model.account.role {
+                Button("重新登录 Tailscale") { run { try await model.account.join(role: role) } }
+                    .buttonStyle(.borderless)
+            }
             Button("退出登录", role: .destructive) {
-                guard !working else { return }
-                error = nil
-                working = true
-                Task {
-                    defer { working = false }
-                    do {
-                        try await model.account.signOut()
-                        model.clearAccountConnections()
-                        model.sidebarSection = .workspaces
-                    } catch { self.error = error.localizedDescription }
+                run {
+                    try await model.account.signOut()
+                    model.clearAccountConnections()
+                    model.sidebarSection = .workspaces
                 }
             }
             .buttonStyle(.borderless)
             .foregroundStyle(Theme.danger)
             .disabled(!model.account.signedIn)
             if let error { Text(error).foregroundStyle(Theme.danger) }
-            // 账号层的错误只在这一页写全，侧栏用户栏的提示点开到这里。
+            // 登录与组网层的错误只在这一页写全，侧栏用户栏的提示点开到这里。
             if let error = model.account.error { Text(error).foregroundStyle(Theme.danger).textSelection(.enabled) }
         }
         .disabled(working)
+    }
+
+    private func run(_ action: @escaping () async throws -> Void) {
+        guard !working else { return }
+        error = nil
+        working = true
+        Task {
+            defer { working = false }
+            do { try await action() } catch { self.error = error.localizedDescription }
+        }
     }
 }
 
@@ -231,72 +245,5 @@ struct TokenPriceSection: View {
                 Text(column.value(rates).map { $0.formatted(.number.precision(.fractionLength(2...3))) } ?? "—").foregroundStyle(tint)
             }
         }
-    }
-}
-
-/// 账号行右侧的图标按钮：点开生成一次性登录二维码，新设备扫码即可登录。二维码过期前再点开仍是同一张。
-struct DeviceInvitationButton: View {
-    @Environment(AppModel.self) private var model
-    @State private var presented = false
-    @State private var invitation: (image: Image?, expiresAt: Date)?
-    @State private var error: String?
-    @State private var working = false
-
-    var body: some View {
-        Button { presented = true } label: {
-            PaneButtonLabel("新设备扫码登录", systemImage: "qrcode")
-        }
-        .buttonStyle(PaneButtonStyle())
-        .fixedSize()
-        .help("新设备扫码登录")
-        .disabled(!model.account.signedIn)
-        .popover(isPresented: $presented) {
-            content
-                .padding(CardMetrics.sheetInset)
-                .frame(width: 248)
-                .presentationCompactAdaptation(.popover)
-                .onAppear { if invitation.map({ $0.expiresAt <= .now }) ?? true { generate() } }
-        }
-    }
-
-    private var content: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            VStack(spacing: 12) {
-                Text("新设备扫码登录").font(Theme.title)
-                if let invitation, context.date < invitation.expiresAt, let image = invitation.image {
-                    image.resizable().interpolation(.none).scaledToFit().frame(width: 200, height: 200)
-                    Text("用新设备扫描即可登录你的账号。\(invitation.expiresAt.formatted(date: .omitted, time: .shortened)) 前有效，只能使用一次。")
-                        .font(Theme.caption).foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
-                } else if working {
-                    ProgressView().frame(width: 200, height: 200)
-                } else {
-                    Text(error ?? "二维码已过期").font(Theme.secondary)
-                        .foregroundStyle(error == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Theme.danger))
-                        .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
-                    Button("重新生成", action: generate)
-                }
-            }
-        }
-    }
-
-    private func generate() {
-        guard !working else { return }
-        error = nil
-        working = true
-        Task {
-            defer { working = false }
-            do {
-                let url = try await model.account.invitation()
-                invitation = (qrCode(url.absoluteString), Date().addingTimeInterval(5 * 60))
-            } catch { self.error = error.localizedDescription }
-        }
-    }
-
-    private func qrCode(_ text: String) -> Image? {
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(text.utf8)
-        guard let output = filter.outputImage, let image = CIContext().createCGImage(output, from: output.extent) else { return nil }
-        return Image(decorative: image, scale: 1)
     }
 }

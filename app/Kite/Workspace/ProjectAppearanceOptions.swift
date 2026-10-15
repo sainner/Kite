@@ -62,7 +62,7 @@ struct ProjectAppearanceOptions: View {
         Task {
             defer { saving = false }
             do {
-                try await model.account.setProjectAppearance(values, projectID: projectID)
+                try await model.setProjectAppearance(values, projectID: projectID)
             } catch { self.error = error.localizedDescription }
         }
     }

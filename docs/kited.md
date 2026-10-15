@@ -83,7 +83,7 @@ Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新�
 
 ### 语音识别
 
-语音识别也是辅助生成的一类：App 录音，经 `/voice` 把声音推给工作机，工作机连识别服务，识别结果不进入代理上下文。识别模型随「语音识别」模板保存，只能选识别模型目录里的型号，目前是千问 `qwen3-asr-flash-realtime`；凭据用 Kite 账号里的语音识别 Key（见 [凭据服务](托管账号与设备.md#凭据服务)）。
+语音识别也是辅助生成的一类：App 录音，经 `/voice` 把声音推给工作机，工作机连识别服务，识别结果不进入代理上下文。识别模型随「语音识别」模板保存，只能选识别模型目录里的型号，目前是千问 `qwen3-asr-flash-realtime`；凭据用工作机上的语音识别 Key（见 [凭据](#凭据)）。
 
 识别不按停顿分句，说完一次提交：边收声音边推中间结果，App 发出结束后给整段定稿。开录时按模板把这个会话最近的请求和回复（代码不略去，取到 6000 字）作为背景文本交给识别服务；新会话还没有实例时不带对话。定稿再做一次确定性整理，不用 LLM：夹在英文之间念出来的「点」「斜杠」「杠」「下划线」换成符号，英文词对得上背景文本里的标识符时按它的写法恢复。选型依据见 [语音识别选型](research/2026-10-12-语音识别选型.md)。
 
@@ -97,11 +97,36 @@ Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新�
 
 显式重生不受相同消息位置的限制，使更早的在途标题结果失效。标题生成不打断或阻塞主会话控制。
 
-### 资源库与项目约束
+### 账号级数据
 
-角色、后台场景的上下文模板、点阵签名与插件包随 Kite 账号保存，接口见 [托管账号与设备](托管账号与设备.md#资源库)。角色、模板和插件包先写账号服务，成功后更新本机缓存，版本冲突返回 409；点阵签名先保存在本机，再后台同步。读取使用缓存。内置角色和模板只有自建或修改的内容写入账号，未修改项跟随 kited 版本；改回与默认一样或恢复默认时删掉账号里的条目，其他工作机同步后退回默认。本机缓存是账号的镜像，账号里有的才存，写账号时据此给出期望的版本，因此基于已被删掉或改过的旧内容保存会冲突。工作机通过账号事件同步资源，连接和重连均重新核对；离线时沿用缓存。未加入账号时不能写入角色、模板和插件包，点阵签名先存本机，加入后同步时补传。
+资源库（角色、后台场景的上下文模板、点阵签名、插件包）、项目登记表与项目外观、项目约束、凭据，以及各工作机的目录摘要，是所有工作机共有的账号级数据，任一台都能修改，设计见 [分布式架构](分布式架构.md#数据的归属与同步)。每台工作机在数据目录的 `account.db` 里存一份完整副本，离线时照常读写。
 
-项目约束同样拉取后缓存，离线时沿用。它在创建代理、每次模型请求和每次工具调用前过滤工具，不改写实例配置；有效工具因此变化的代理收到配置通知。分层规则见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)。
+- **同步。** 工作机之间直接同步，不经服务器。发现见 [远程连接](#远程连接)；每台工作机向其他每台在线的工作机增量拉取，没有新变化时请求挂着等，对方一有变化就返回，断线后从上次的位置续传。收到的变化也会被第三台拉走，不要求两两直接连通。只有工作机能拉取（`/sync/changes`），因为其中有凭据明文；App 经任一台连着的工作机读写。
+- **并发修改。** 每条数据带版本，两台工作机同时改了同一条时以后写的为准，被覆盖的那份另存下来，`/sync/conflicts` 可以找回。删除也是一次修改，与另一台的并发修改相遇时，修改的那份同样另存。
+- **凭据落地加密。** 保密内容用每台工作机自己的密钥加密保存：安装版的 macOS 服务把密钥放登录钥匙串，其他情况放数据目录里只有本人可读的文件。明文只在工作机之间经组网的 WireGuard 传输，收到后用本机密钥重新加密。
+
+资源库的写入先进账号级数据，再更新本机缓存；读取用缓存。内置角色和模板只保存自建或修改的内容，未修改项跟随 kited 版本；改回与默认一样或恢复默认时删掉那一条，其他工作机同步后退回默认。写入时按本机缓存给出期望的版本，基于已被删掉或改过的旧内容保存返回 409。插件包装到本机时一并写入，其他工作机同步后用到时再装。
+
+项目约束随项目登记表同步，只由用户在 App 里修改。它在创建代理、每次模型请求和每次工具调用前过滤工具，不改写实例配置；有效工具因此变化的代理收到配置通知。分层规则见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)。
+
+#### 凭据
+
+凭据分四类，类型决定由谁、以什么方式取用，可见范围与类型相互独立：
+
+| 类型 `type` | 名称 `name` | 公开信息 `meta` | 保密内容 `secret` | 可见范围 | 取用方 |
+|---|---|---|---|---|---|
+| `secret` 共享密钥 | 引用名 | `{kind}`，`text` 或 `file` | `{value}` | 账号共享或项目专用 | 执行命令时按 `{account.名称}`、`{project.名称}` 引用 |
+| `git` Git 凭据 | 主机名，如 `gitlab.com` | `{username}`，默认 `oauth2` | `{token}` | 账号共享 | 访问对应平台的远程时使用 |
+| `api` 模型 API | 用户起的名称 | `{provider, hint, admin}` | `{key?, adminKey?}` | 账号共享 | 查询额度或调用 token 计数接口时使用 |
+| `speech` 语音识别 | 用户起的名称 | `{provider, hint}`，`provider` 目前只有 `dashscope`（千问，北京地域） | `{key}` | 账号共享 | 识别语音输入时使用 |
+
+类型、范围与名称的组合唯一；两台工作机没同步上时各建了同名的一条，取用时用最近改过的那条。同一供应商可以保存多把 API Key，各自作为一个 API 账号查询。命令中无法引用 Git 凭据、API Key 或语音识别 Key。订阅登录不是凭据，仍由各工作机自行完成，见 [模型账号与额度](#模型账号与额度)。
+
+账号共享密钥供各项目的 agent 使用；项目专用密钥只对所属项目的执行开放。同名密钥按引用前缀区分，不回退或互相覆盖。宿主按实例实际归属固定项目 ID，不接受模型自报的项目。当前不细分项目内各 agent 的密钥权限，保存到相应范围即允许该范围内的 agent 使用。执行前按需读取，替换或删除影响后续取用，已经启动的命令不会因此中断。执行中的环境变量、临时文件、输出与清理约定见 [基础工具契约](harness-主循环.md#shell)。
+
+共享密钥的名称以英文字母开头，仅含英文字母、数字、下划线与短横线，最长 64 个字符；内容为 1–65536 个 UTF-16 单元的文本，不含 NUL，文件类型也按 UTF-8 文本使用。Git 主机名为小写域名，可带端口；token 最长 4096 个字符。API 名称为 1–64 个字符；`provider` 为 `openai`、`anthropic` 或 `deepseek`。OpenAI、Anthropic 至少提供调用 Key 或组织管理 Key 之一，DeepSeek 只接受调用 Key；`hint` 是 Key 末四位，`admin` 表示是否含管理 Key，二者由 kited 生成。管理接口只返回公开信息，App 只在新建或替换时提交保密内容。
+
+GitHub 用 Kite 的 OAuth App 做设备码授权绑定，在工作机上完成，不需要 client secret，token 不经过 App。这个 App 开着 Device Flow、关着令牌过期，kited 不做令牌续期；`KITE_GITHUB_CLIENT_ID` 可以换成别的 App。
 
 ### 角色点阵签名
 
@@ -121,9 +146,9 @@ bun src/main.ts
 
 `KITE_HOME` 指定数据目录，默认 `~/.kite`；保存工作区、会话、登录及服务数据。`KITE_PORT` 默认是 5483，监听 127.0.0.1；组网与远程监听见下节。
 
-同一数据目录重启或更换端口后，工作机身份保持不变；新数据目录生成新身份。名称初始取主机名，地址由账号目录发现并在客户端缓存。
+同一数据目录重启或更换端口后，工作机身份保持不变；新数据目录生成新身份。名称初始取主机名，地址由组网发现，见 [远程连接](#远程连接)。
 
-项目以远程仓库为身份，项目 ID 由账号服务的项目登记表分配，规格见 [项目与远程仓库](项目与远程仓库.md)。登记检出要求工作机已加入 Kite 账号，否则返回 409。同一远程在本机或其他工作机的多个检出自动归入同一项目，各自保有工作区。每台 kited 只保存本机的目录、工作区、线程与执行记录。
+项目 ID 由项目登记表分配，规格见 [项目与远程仓库](项目与远程仓库.md)。有远程的项目以远程为身份，同一远程在本机或其他工作机的多个检出自动归入同一项目；没有远程的项目以 ID 为身份，各工作机上的检出互为远程。每个检出各自保有工作区。工作区、线程与执行记录由执行它的工作机写，其他工作机持有副本，见 [工作区流转](Line与工作区流转.md#工作区流转)；账号级数据见上文。
 
 默认 harness 使用前文独立授权的 ChatGPT 凭据。只有 `claude` 会话需要 Claude 登录，开放范围见下文附加功能清单。Claude 会话不自动读取用户、项目或本地设置，OAuth 与钥匙串认证保留。
 
@@ -146,11 +171,17 @@ bun src/cli.ts net up              # 开启已登录设备的组网
 
 ## 远程连接
 
-Kite 托管账号与组网。Mac 和 iPhone 在 App 中使用账号密码登录，或扫描已登录设备的一次性二维码。两种 Mac 角色都入网，同账号设备可直接控制工作机；账号、设备发现与撤销的完整约定见 [托管账号与设备](托管账号与设备.md)。
+身份与组网交给 Tailscale：登录 Tailscale 即登录 Kite，同一 Tailscale 用户的设备可直接控制工作机。工作机第一次开启组网时，状态里给出登录地址（App 首次配置时打开，或 `kite net up` 打印），用户在浏览器里登录。身份、入网与撤销的完整约定见 [身份与设备](身份与设备.md)。
 
-工作机由 kite-net（tsnet）接入网络，控制端由 App 内的 TailscaleKit 接入，不占用系统 VPN。本机执行模式的 App 复用 kited 的 SOCKS 入口，只维护一个网络节点。kite-net 另开一个本机 HTTP 代理入口，只转发到组网地址，供 kited 自己（Line）调用同账号的其他工作机，对端照常核验来源身份。链路加密由 WireGuard 承担，Headscale 策略限制同账号互通；kite-net 还通过 WhoIs 核验请求来源与本节点属于同一用户。内部代理使用进程内随机凭据，外部传入的同名字段被覆盖。
+工作机互相发现不经服务器：kite-net 列出组网里同一用户、不带标签的对端设备与在线状态，kited 读各对端的 `/machine`，答得上的就是工作机。各工作机把自己的目录摘要（项目、检出与工作区，见 [目录与工作机的职责](身份与设备.md#目录与工作机的职责)）随账号级数据同步给其他工作机，App 连上任意一台在线的工作机，就能读到其他工作机最近一次的摘要（`/machines`）。从组网移除的设备不再列出。
 
-`kite net` 查看状态及各对端是直连还是经中继；已登录后可用 `kite net up`、`kite net down` 开启或暂停组网。新设备的入网密钥来自账号服务，工作机不保存 Headscale 管理密钥。移除设备会撤销其网络节点和账号会话；已有远程请求随撤销传播而关闭。网络错误和服务重启可以重连，401 提示重新登录，409 表示目标工作机身份不符。
+工作机由 kite-net（tsnet）接入网络，控制端由 App 内的 TailscaleKit 接入，不占用系统 VPN。本机执行模式的 App 复用 kited 的 SOCKS 入口，只维护一个网络节点。kite-net 另开一个本机 HTTP 代理入口，只转发到组网地址，供 kited 自己（发现、同步、Line）调用同账号的其他工作机，对端照常核验来源身份。链路加密由 WireGuard 承担；kite-net 通过 WhoIs 核验请求来源与本节点属于同一 Tailscale 用户、不带标签，并把来源的组网 IP 交给 kited，只给工作机用的接口据此只接受工作机。内部代理使用进程内随机凭据，外部传入的同名字段被覆盖。
+
+**受管网络通道**是给特殊网络用的可选项，默认不配，普通网络不需要。有的网络不允许宿主直接用 UDP 出网，要求组网流量先经一条只跨局域网、由路由器认证身份的 WireGuard 通道，路由器认证后才给原生出站。配置后，kite-net 在进程内建这条通道，组网的 UDP（STUN、探测与点对点数据）只经它出网，端口固定为 41641；系统里不出现网卡，通道也不作为整台机器的出口。私钥由 kite-net 生成并存在登录钥匙串里，不落文件；公钥交给网络管理员登记。私钥取到、与路由器握手之前，组网的 UDP 一律不发，也不退回未认证的直连；这期间只能经中继。通道配了全局 IPv6 时，把它报成静态端点，便于与有 IPv6 的设备直连。配置按机器保存，与账号无关；只能在本机设置。
+
+`kite net` 查看状态及各对端是直连还是经中继；`kite net up`、`kite net down` 开启或暂停组网，`kite net logout` 退出 Tailscale 登录。在 Tailscale 管理后台移除设备后，已有远程请求随状态变化关闭。网络错误和服务重启可以重连，401 表示来源未通过组网认证，409 表示目标工作机身份不符。
+
+**睡眠前换机。** macOS 上 kite-net 接收系统的睡眠预告，kited 在系统给的时限里把属于自动换机范围的工作区交给别的工作机（Line 的总是换，项目打开了自动换机的只换正在工作的），再放行睡眠，见 [工作区流转](Line与工作区流转.md#工作区流转)。
 
 本机接口边界见 [接口](#接口)，SSE 重连见 [会话显示协议](会话显示协议.md#历史与连接)。原生 iPhone 的新账号流程、前后台重连和蜂窝网络仍需真机验收。
 
@@ -158,7 +189,7 @@ Kite 托管账号与组网。Mac 和 iPhone 在 App 中使用账号密码登录�
 
 | 操作 | 行为与限制 |
 |---|---|
-| 登记检出 | 按目录的 origin 归入项目，建立直接使用登记目录的根工作区，不创建线程。没有 origin 时建托管远程并推送，普通文件夹先由 Kite 初始化仓库并提交初始版本 |
+| 登记检出 | 按目录的 origin 归入项目，建立直接使用登记目录的根工作区，不创建线程。没有 origin 时登记为没有远程的项目，普通文件夹先由 Kite 初始化仓库并提交初始版本 |
 | 创建独立工作区 | 从检出当前 HEAD 建立独立工作树；现场未提交的改动不带入，也不由 Kite 代为提交。可以先建空工作区，也可在准备完成后运行首条消息。可以只指定项目：先检查这台工作机的环境，不满足就不建；没有该项目的检出时自动 clone 到默认位置并登记，检出保留 |
 | 添加线程 | 根工作区和独立工作区都可有多个线程，各自保存对话；线程之间默认并行，一个线程在执行、等你回应或恢复阻塞时，其他线程照常启动，见 [工作区并行](工作区并行.md)。App 的新代理草稿只在本机，第一条消息连同所选角色和调整过的模型、工具、预算一次创建实例、线程与窗口 |
 | 快照与回退 | 每批工具后与回合结束时保存整个工作区的变更并记下触发的线程，快照不改变 HEAD、分支或暂存区。回退先保存现状，再恢复文件；任一线程在执行或恢复阻塞期间不允许回退 |
@@ -166,7 +197,7 @@ Kite 托管账号与组网。Mac 和 iPhone 在 App 中使用账号密码登录�
 | 现场提交并推送 | 由用户触发，把现场改动提交后推送。远程领先而现场没有新内容时快进；两边都有新内容时拒绝，提示新建工作区集成 |
 | 归档实例 | 停止该实例的执行并关闭它的窗口，保留会话、业务数据、工作区和快照；随窗口回收的实例关闭窗口即可，不提供归档 |
 | 归档工作区 | 停止所有线程、保存最后快照，回收独立工作树和分支，归档实例并关闭共享窗口。未采纳改动须显式 `force`；根工作区不能通过此操作删除 |
-| 跨机流转 | 所有线程空闲时交出工作区，恢复材料推到项目远程；另一台工作机还原并接管后，本机记录冻结为 `transferred`。工作区 ID 不变，`epoch` 加 1；见 [工作区流转](Line与工作区流转.md#工作区流转) |
+| 跨机流转 | 所有线程空闲时交出工作区；另一台工作机把副本补到末尾、装到本机并接管后，本机记录冻结为 `transferred`。工作区 ID 不变，`epoch` 加 1；见 [工作区流转](Line与工作区流转.md#工作区流转) |
 
 工作树准备可用 `worktree.symlinkDirectories` 链接依赖目录，用 `.worktreeinclude` 带入指定的忽略文件；随后运行项目的 `.kite/setup`，通过 `KITE_MAIN_DIR` 提供检出目录。准备失败或被打断时工作区为 `failed`，可以用 `POST /workspaces/:id/setup` 重跑，不自动重跑；成功后保存初始快照并开放使用。准备中的首个线程被打断也会中止初始化。
 
@@ -217,7 +248,7 @@ harness 与 Claude 均通过共享 shell 执行项目的 `.kite/check`。项目�
 
 额度查询只使用工作机本身持有的授权，不登录、不续期、不分发模型凭据，也不发送模型请求。ChatGPT 使用前文的 Kite 专用认证目录；Claude 使用 Claude Code 原生登录存储（包括 macOS 钥匙串与显式指定的配置目录），或 `CLAUDE_CODE_OAUTH_TOKEN`。缺失和过期凭据分别返回未配置和需要重新授权，不借用日常 Codex 的登录。
 
-App 的订阅登录由所选工作机执行原生登录工具，凭据不经过 App 或账号服务：ChatGPT 复用 [官方设备码登录](https://developers.openai.com/codex/auth)，写入 Kite 专用认证目录；Claude 复用 [原生 `auth login --claudeai`](https://code.claude.com/docs/en/cli-reference)，保留 Claude 自身的凭据存储。工作机须有可用的 Codex CLI；Claude 登录工具随固定版本的 Agent SDK 提供。登录完成不等于额度接口必定可用，额度查询失败单独显示。
+App 的订阅登录由所选工作机执行原生登录工具，凭据不经过 App：ChatGPT 复用 [官方设备码登录](https://developers.openai.com/codex/auth)，写入 Kite 专用认证目录；Claude 复用 [原生 `auth login --claudeai`](https://code.claude.com/docs/en/cli-reference)，保留 Claude 自身的凭据存储。工作机须有可用的 Codex CLI；Claude 登录工具随固定版本的 Agent SDK 提供。登录完成不等于额度接口必定可用，额度查询失败单独显示。
 
 | 方法与路径 | 调用约定 |
 |---|---|
@@ -229,7 +260,7 @@ App 的订阅登录由所选工作机执行原生登录工具，凭据不经过 
 这些接口沿用工作机身份与同账号组网鉴权。弹窗关闭时取消登录，超时十分钟或服务正常关闭时也结束等待。自动续期仍未接入。
 
 
-API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管账号与设备.md#凭据服务)），每把 Key 一个账号，`id` 为 `api:<凭据ID>`，`identity` 为用户起的名称；每次查询前重新领取；领取失败时无法得知有哪些账号，改为返回一条 `id` 为 `account-api`、状态为 `unavailable` 的账号说明原因。工作机还没加入 Kite 账号时不领取。kited 进程环境中的 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`DEEPSEEK_API_KEY` 与组织管理凭据 `OPENAI_ADMIN_KEY`、`ANTHROPIC_ADMIN_KEY` 另作为本机账号查询，`id` 为 `<供应商>-api`，未设置时不列出。查询 OpenAI、Anthropic 的组织费用需要管理 Key。账号读取不代表该 API 已被配置为会话的模型后端。
+API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 Key 一个账号，`id` 为 `api:<凭据ID>`，`identity` 为用户起的名称；每次查询前重新读取；读取失败时无法得知有哪些账号，改为返回一条 `id` 为 `account-api`、状态为 `unavailable` 的账号说明原因。kited 进程环境中的 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`DEEPSEEK_API_KEY` 与组织管理凭据 `OPENAI_ADMIN_KEY`、`ANTHROPIC_ADMIN_KEY` 另作为本机账号查询，`id` 为 `<供应商>-api`，未设置时不列出。查询 OpenAI、Anthropic 的组织费用需要管理 Key。账号读取不代表该 API 已被配置为会话的模型后端。
 
 额度不由客户端轮询，打开账号页也不查询。kited 在内存中保留本机最新的账号快照：首个客户端订阅目录事件流时，若还没有查询过就查询一次上游；之后只在显式刷新时查询。会话响应带回的额度按观测时间覆盖对应周期；查询结果到达之前，快照只含会话观测到的订阅账号及其周期：Claude 取 SDK `rate_limit_event` 中的 5 小时与每周周期，ChatGPT 取订阅响应头中的主要、次要周期与 credits。按模型分开的周额度、ChatGPT 附加额度和 API 费用/余额没有会话来源，保留上次查询结果。刷新时某个账号暂时查询失败（限流、超时、服务错误等，状态为 `unavailable`），该账号沿用上次查询结果与会话观测，只更新状态与提示；未登录或需要重新授权时不沿用。快照变化时在目录事件流推送 `model-accounts.changed`（`modelAccounts` 字段），目录首帧 `catalog.snapshot` 也带当前快照，缓存为空时为 `null`。
 
@@ -253,16 +284,33 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | GET | `/model-accounts` | 读取本机模型账号、订阅额度与 API 费用/余额的当前快照，详见 [模型账号与额度](#模型账号与额度) |
 | POST | `/model-accounts/refresh` | 立即查询上游并推送新快照 |
 | GET | `/token-prices` | 读取用量折算金额用的价格表，只列 Kite 模型目录里的模型（计价本身覆盖更多型号）：`checked`（核对日期）与 `models`，每项是 `model`（目录里的显示名）、`provider`，以及每百万 token 的美元单价 `input`、`cacheRead`、`output`，价格页列出时带 `cacheWrite`、`cacheWrite1h`（Claude 的 1 小时缓存写入）与长提示档 `long`（`above`、`rates`） |
-| PUT | `/network/account` | 仅本机：`{deviceId, controlURL, authKey}`，接收账号服务的一次性入网授权 |
-| GET/PUT | `/catalog/account` | 仅本机：查询上报状态，或用 `{deviceId, url, token}` 设置目录上报凭据；签发与版本约定见 [托管账号与设备](托管账号与设备.md) |
-| GET/PUT | `/network` | 仅本机：组网状态，上线后 `peers` 列出对端设备的连接方式（`direct` 直连、`relay` 经中继、`idle` 近期无流量）；`{enabled}` 开启或关闭组网节点 |
+| POST | `/network/logout` | 仅本机：退出 Tailscale 登录。节点在线时先在 Tailscale 上注销，不在线时只删本机状态（设备要到 Tailscale 管理页删）；组网开着时重起节点，状态里给出新的登录地址 |
+| GET | `/machines` | 工作机目录：本机在前，每项 `{id, name, online, address?, updatedAt?, snapshot?}`，`snapshot` 是那台工作机最近一次的目录摘要，见 [账号级数据](#账号级数据) |
+| GET | `/project-registry` | 项目登记表 `[{id, name, remote, url, createdAt, icon, color, autoHandover?}]`；`remote` 为归一化地址，`url` 为 HTTPS 访问地址，没有远程的项目两者为 null |
+| PUT | `/project-registry/:id/remote` | 给没有远程的项目设远程 `{remote}`：在这台有检出的工作机上把全部分支和标签推到远程，加上 origin，写进登记表；其他工作机的检出随项目同步加上 origin。推送被拒或这台没有检出 409 |
+| PUT | `/project-registry/:id/settings` | `{autoHandover}`：工作机睡眠前，把这个项目里正在工作的工作区换到别的工作机 |
+| PUT | `/project-registry/:id/appearance` | `{icon?, color?}` 至少一项，未提供项不变；`icon` 为内置图标名（1–100 个 ASCII 字母、数字或句点，默认 `folder`），`color` 为 `primary`（默认）、`accent`、`green`、`purple`、`orange` 或 `pink`；返回完整项目，未登记的项目 404 |
+| GET/PUT | `/project-registry/:id/constraints` | 项目约束 `{tools: {mode, tools}, revision}`，没设置过时为不限制的黑名单；PUT `{expectedRevision, tools}`，`mode` 为 `allow` 或 `deny`，最多 64 个工具名，版本不符 409 |
+| GET/POST | `/credentials` | 列出凭据的公开信息（`?type=&projectId=`，省略项目时列账号共享）`[{id, type, name, projectId, meta, createdAt, updatedAt}]`；POST `{type, name, projectId?, meta, secret}` 新建，返回 201，同类型、范围与名称已存在 409，`git`、`api`、`speech` 不接受项目。规则见 [凭据](#凭据) |
+| PUT/DELETE | `/credentials/:id` | PUT `{name?, meta?, secret?}` 至少一项，改名或替换内容，类型与范围不可改，改换 API 供应商须同时提供新密钥；DELETE 不存在也成功 |
+| POST | `/git/github/device` | 开始 GitHub 设备码授权 `{flow, userCode, verificationURI, expiresAt, interval}`；GitHub 无法访问时 502。`/git/github/device/:flow` 按 `interval` 轮询，返回 `{status}`（`pending`、`slow_down`、`expired`、`denied`）或 `{status: "authorized", account}`，授权成功即保存或替换 `github.com` 的 Git 凭据 |
+| GET | `/git/github/repos` | 已绑定 GitHub 账号能访问的仓库 `[{fullName, url, private, pushedAt}]`，按最近推送排序，最多 100 个；没绑定时为空，GitHub 拒绝时 502 |
+| GET | `/sync/changes` | 仅工作机：`?epoch=&since=&wait=` 增量拉取账号级数据，返回 `{epoch, seq, entries, more}`；`epoch` 对不上时从头给，`wait`（最多 25 秒）期间没有新变化才返回空页。组网来的请求要出自目录里的工作机，否则 403 |
+| GET | `/sync/conflicts` | 并发修改时被覆盖的版本 `[{kind, id, at, by, body}]`，最近的在前；凭据只含公开信息 |
+| GET/POST | `/git/:project/info/refs`、`/git/:project/git-upload-pack` | 仅工作机：本机这个项目检出的 Git 智能 HTTP，只能拉取；没有远程的项目在别的工作机上从这里 clone、快进主线，工作区副本从这里取快照链与分支 |
+| GET | `/replica` | 仅工作机：本机持有的工作区（未流转走、未归档）`[{workspaceId, projectId, epoch, status, digest}]`，`digest` 在数据库行、状态或任一记录文件变化时变 |
+| POST | `/replica/:id` | 仅工作机：`{known}` 是跟进方手上各记录文件的 `{size, mtime, hash}`（`hash` 是已有部分末尾一段的摘要），返回一页增量 `{epoch, files, removed, more}`，最后一页另带 `digest`、`manifest`、`rows` 与快照链和分支的提交 `git`；只长不改的文件从原来的末尾追加，大文件分几页取。见 [工作区流转](Line与工作区流转.md#工作区流转) |
+| GET/PUT | `/network` | 仅本机：组网状态，上线后 `peers` 列出对端设备的连接方式（`direct` 直连、`relay` 经中继、`idle` 近期无流量），`endpoints` 是本机对外报告的端点，配了受管网络通道时 `channel` 给出通道状态（`waitingKey`、`handshaking`、`up`、`error`）与最近握手时刻；`{enabled}` 开启或关闭组网节点 |
+| GET/PUT/DELETE | `/network/channel` | 仅本机：读取 `{channel}`；PUT `{endpoint, routerKey, address4, address6?}` 设置受管网络通道，DELETE 清除；组网开着时重启组网节点生效 |
+| GET | `/network/channel/key` | 仅本机：通道公钥 `{publicKey}`，没有私钥时先生成；kite-net 读钥匙串可能要等用户允许 |
 | GET | `/projects` | 列出本机已登记的项目身份 |
 | GET/POST | `/checkouts` | 列出本机检出（`?project=`）；登记本机文件夹 `{path}` 或 clone 远程 `{remote, path?}`，返回根工作区聚合 |
 | GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, role?}`，或以 `project` 代替 `checkout`（先检查环境，没有检出时先 clone），`role` 为 `{id, revision}`，准备过程看事件 |
 | GET | `/environment?project=` | 这台工作机为该项目建工作区前的环境，只读，见 [工作区与线程的生命周期](#工作区与线程的生命周期) |
 | POST | `/workspaces/:id/setup` | 准备失败的独立工作区重跑准备；工作树没建成时重建 |
-| POST | `/workspaces/:id/handover` | 交出工作区：进入可交接状态并把恢复材料推到项目远程 `{allowMaterials?}`；`/handover/cancel` 撤回，`/lease/check` 立即核对执行权。约定见 [工作区流转](Line与工作区流转.md#工作区流转) |
-| POST | `/workspaces/restore` | 在本机还原并接管流转来的工作区 `{project, workspaceId, operationId}` |
+| POST | `/workspaces/:id/handover` | 交出工作区：停下线程、保存最后的快照，进入可交接状态，返回 `{epoch}`；`/handover/cancel` 撤回，`/lease/check` 立即核对执行权。约定见 [工作区流转](Line与工作区流转.md#工作区流转) |
+| POST | `/workspaces/:id/handover/complete` | 仅工作机：没有远程的项目，目标装好后通知源机交出 `{epoch}`，源机冻结本地记录；源机已撤回或 epoch 不符 409，已交出的再通知照样成功 |
+| POST | `/workspaces/restore` | 在本机还原并接管流转来的工作区 `{project?, workspaceId, operationId, from?, force?, continue?}`（没给 `project` 时从本机副本里取）：`from` 是交出它的工作机，先把副本补到它的末尾；`force` 是用户确认源机已丢失后用本机副本强制接管；`continue` 是源机睡眠前打断的线程与收回的排队输入，接管后接着做 |
 | GET | `/summary` | 这台工作机的状态汇总：未归档工作区、线程执行状态、等你回应的对象、最近一次回合结束的时间（`settledAt`）与是否 Line 发起的工作（`byLine`） |
 | POST | `/line` | 在这台工作机启用个人 agent Line，同时建它的收件箱（Line 的 monitor 实例）；收件箱的读取、代处理与托管走实例操作，见 [实例操作](实例操作.md#monitor)。约定见 [Line](Line与工作区流转.md#line) |
 | GET / PUT | `/attention` | 关注设备：`PUT {device, focused}` 声明这台设备是否在关注 Kite，须同时连着带 `device` 的事件流才生效；`GET` 返回 `{focusedDevices, awaySince?}` |
@@ -325,13 +373,13 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 
 `POST /checkouts` 登记本机文件夹时：
 
-- 目录是仓库根且有 origin：按 origin 向账号登记，不访问 Git 远程。origin 无法识别为平台地址（如本地路径）时返回 400。
-- 没有 origin：在托管服务建远程，写入 origin，并在托管远程为空时推送全部分支与标签。普通文件夹先初始化仓库、写入 `.gitignore` 与 `.gitattributes` 模板并提交初始版本；放在同步目录里的，仓库本体放到 Kite 目录。中途失败可以重试，已写入的 origin 会找回同一个托管项目。
+- 目录是仓库根且有 origin：按 origin 在项目登记表登记，不访问 Git 远程。origin 无法识别为平台地址（如本地路径）时返回 400。
+- 没有 origin：登记为没有远程的项目，不建远程、不推送。普通文件夹先初始化仓库、写入 `.gitignore` 与 `.gitattributes` 模板并提交初始版本；放在同步目录里的，仓库本体放到 Kite 目录。
 - 仓库没有任何提交、目录位于仓库内部、与已有检出重叠时拒绝。重复登记同一目录返回原检出及根工作区。
 
-clone 远程时 `path` 默认为 `~/code/<域名>/<owner>/<repo>`，目标已有内容时返回 409；clone 期间请求不受空闲超时限制。访问远程时，账号为该平台绑定了凭据则临时改用 HTTPS 并注入凭据，否则照原样使用 origin 与用户自己的 Git 配置；kited 不改写 origin 的写法。
+clone 远程（`{remote, path?}`）时 `path` 默认为 `~/code/<域名>/<owner>/<repo>`；从别的工作机取没有远程的项目（`{project, path?}`）时，从在线、有它检出的工作机 clone，默认放在 `~/code/<项目名>`，不留 origin。目标已有内容时返回 409；clone 期间请求不受空闲超时限制。访问远程时，为该平台绑定了 Git 凭据则临时改用 HTTPS 并注入凭据，否则照原样使用 origin 与用户自己的 Git 配置；kited 不改写 origin 的写法。
 
-kited 在启动、加入账号后和每 5 分钟对照一次项目登记表。项目远程迁移后，各检出的 origin 改为新地址，目录上报随之带上新远程，托管服务据此回收托管仓库。
+kited 在启动、登记表变化时和每 5 分钟对照一次项目登记表：项目改了名或远程的，本机记录跟上，各检出的 origin 改为新地址；项目并入了另一个项目的，本机检出改挂过去。没有远程的项目从有它检出的其他工作机拉取全部分支，本机主线干净且落后时快进；两边都有新提交时不合并，留给用户在工作区里集成。采纳与现场「提交并推送」在没有远程的项目上只到本机主线（`push.status` 为 `local`），其他工作机同步时快进过来。
 
 连接时先读 `GET /machine`。其余接口（包括 SSE）必须带 `X-Kite-Machine: <id>`：缺失返回 400，和服务身份不符返回 409，并在执行请求前拒绝。这个检查用于防止地址复用时操作错机器，不承担认证。本机监听的接口只接受 `Host` 为 `127.0.0.1` 或 `localhost` 的请求，其他主机名返回 403，用于阻止网页借 DNS 重绑定访问本机服务；远程监听只接受已核验身份的组网代理，见[远程连接](#远程连接)。App 会保存身份，重连时继续使用原 ID；CLI 在一次命令内固定目标 ID。
 

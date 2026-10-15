@@ -10,6 +10,7 @@ struct RemoteAdoptResult: Decodable {
     var summary: String {
         if status == "conflict" { return "合并有冲突，已交给工作区里的 agent 处理：\((files ?? []).joined(separator: "、"))" }
         if push?.status == "pushed" { return "已合回主线并推送到远程" }
+        if push?.status == "local" { return "已合回主线；项目没有远程，其他工作机同步时会快进过来" }
         return "已合回主线，推送失败：\(push?.message ?? "未知原因")"
     }
 }
