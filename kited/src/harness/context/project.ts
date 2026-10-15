@@ -23,7 +23,7 @@ export const defaultContextDefinition: ContextDefinition = {
     paragraph('project-rules', '项目约定', '进入子目录前读取适用的 AGENTS.md。项目记忆只使用 .kite/memory，不新建另一份。'),
     paragraph('commands', '命令执行', 'shell 命令直接在当前目录执行，不要启动后台任务或脱离进程组的守护进程。'),
     paragraph('verification', '验证和交付', '修改文件后做与任务相关的检查。不要擅自提交、推送或部署。'),
-    paragraph('capabilities', '当前能力', '以本次请求实际开放的工具为准。只有提供 agent 工具的宿主才支持创建和管理其他 agent；共享工作区的执行互斥仍然适用。没有 MCP 工具，不声称已经调用未开放的能力。'),
+    paragraph('capabilities', '当前能力', '以本次请求实际开放的工具为准。只有提供 agent 工具的宿主才支持创建和管理其他 agent；同一工作区的其他线程可能同时在改文件。没有 MCP 工具，不声称已经调用未开放的能力。'),
     {
       type: 'condition', id: 'documents', title: '项目材料', variable: 'project.documents',
       cases: [{ id: 'documents-absent', title: '没有项目材料', equals: '', blocks: [] }],

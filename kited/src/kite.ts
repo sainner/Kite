@@ -131,7 +131,11 @@ export class Kite {
   private preparations = new Map<string, AbortController>();
   private stopping = false;
   private turnLabels = new Map<string, string>();
-  private adoptAfterTurn = new Set<string>();
+  /**
+   * 采纳冲突转交的线程，按工作区。处理回合期间工作区停在合并中途，同一工作区的其他线程不能开始工作；
+   * 回合正常结束后宿主接着采纳，见 docs/工作区并行.md。
+   */
+  private resolving = new Map<string, string>();
   private leaseSync?: Promise<void>;
   /** 含锁外网络操作的项目任务，关闭时仍需等待它们完成登记。 */
   private projectOperations = new Set<Promise<unknown>>();
@@ -498,6 +502,7 @@ export class Kite {
       if (workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
       if (!prompt.trim()) throw new KiteError('第一条消息不能为空');
       if (windowId && this.store.window(windowId)) throw new KiteError('窗口 ID 已使用', 409);
+      this.assertNotResolving(workspaceId);
       await this.snapshot(workspace, [], '线程开始');
       const t = this.newThread(workspaceId, prompt, workspace.kind, choice);
       this.store.addAgent(t, this.instances.newWindow(t, windowId));
@@ -513,7 +518,10 @@ export class Kite {
       check();
       const { workspace } = this.workspace(workspaceId);
       if (workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
-      if (input.prompt !== undefined) await this.snapshot(workspace, [], '线程开始');
+      if (input.prompt !== undefined) {
+        this.assertNotResolving(workspaceId);
+        await this.snapshot(workspace, [], '线程开始');
+      }
       check();
       const instance = this.instances.newInstance(workspaceId, agentDefinitionId, input.title ?? (input.prompt ? titleOf(input.prompt) : '新代理'), workspace.kind,
         { role: { id: input.role ?? defaultRoleId } });
@@ -704,7 +712,7 @@ export class Kite {
         idle: (completed) => {
           this.bus.emit({ type: 'idle', threadId: id, completed });
           if (completed && !this.stopping) {
-            if (this.adoptAfterTurn.delete(id)) {
+            if (this.resolving.get(workspaceId) === id) {
               this.adopt(workspaceId, id, true).catch((e) => this.bus.emit({ type: 'workspace.error', workspaceId, originThreadId: id, message: `自动采纳失败：${(e as Error).message}` }));
             }
             if (instanceRole(this.context(id))?.id === lineRoleId) void this.saveLineScene(workspaceId);
@@ -726,7 +734,7 @@ export class Kite {
       }),
       compactionFiles: ({ from, to }) => changesBetween(workspace.cwd, workspaceId, from, to),
       toolConstraint: () => this.store.projectConstraints(t.project.id)?.tools,
-      network: () => instanceApprovalMode(this.context(id)) === 'allowlist' ? undefined : (target, signal) => this.askNetwork(id, target, signal),
+      askNetwork: (target, signal) => this.askNetwork(id, target, signal),
     });
     this.runners.set(id, r);
     return r;
@@ -751,6 +759,15 @@ export class Kite {
     return this.runners.get(t.id) ?? (t.status === 'open' && existsSync(join(this.home, 'sessions', t.id))
       ? await this.runner(this.context(t.id)) : undefined);
   }
+  /** 线程不再处理采纳冲突：停下、归档，或宿主已接着采纳。 */
+  private endResolving(t: { id: string; workspaceId: string }): void {
+    if (this.resolving.get(t.workspaceId) === t.id) this.resolving.delete(t.workspaceId);
+  }
+  /** 采纳冲突的处理回合期间，只有处理冲突的那个线程能开始工作。 */
+  private assertNotResolving(workspaceId: string, threadId?: string): void {
+    const resolver = this.resolving.get(workspaceId);
+    if (resolver && resolver !== threadId) throw new KiteError('工作区停在合回主线的冲突里，等处理冲突的线程结束或停下它再开始', 409);
+  }
   /** 动整个工作区的操作（回退、采纳）要求全员空闲；线程之间的启动、发送与继续默认并行，见 docs/工作区并行.md。 */
   private async assertIdle(workspaceId: string): Promise<void> {
     for (const t of this.store.threads(workspaceId)) {
@@ -771,6 +788,7 @@ export class Kite {
     });
   }
   private async sendInput(thread: ThreadContext, input: Input, check: () => void = () => {}): Promise<void> {
+    this.assertNotResolving(thread.workspaceId, thread.id);
     const runner = await this.runner(thread);
     check();
     await runner.send(input);
@@ -799,7 +817,7 @@ export class Kite {
       this.preparations.get(this.context(id).workspaceId)?.abort();
       const r = await this.runner(this.context(id));
       check();
-      this.adoptAfterTurn.delete(id);
+      this.endResolving(this.context(id));
       return { completion: r.interrupt(request) };
     });
     return { returned: await completion };
@@ -808,6 +826,7 @@ export class Kite {
     return this.controlThread(id, async () => {
       check();
       const t = this.openThread(id);
+      this.assertNotResolving(t.workspaceId, t.id);
       const r = await this.runner(t);
       check();
       if (!r.resume) throw new KiteError('这个后端通过发消息继续', 409);
@@ -866,6 +885,8 @@ export class Kite {
   /** afterResolution：线程处理冲突的回合已正常结束，由宿主提交其结果；这次仍失败不再转交，避免往复。 */
   adopt(id: string, originThreadId?: string, afterResolution = false): Promise<AdoptResult> {
     return this.control(id, async () => {
+      // 采纳全程持有工作区锁，此时放开不会让其他线程插进来。
+      if (afterResolution && originThreadId) this.endResolving({ id: originThreadId, workspaceId: id });
       const { workspace: w, checkout } = this.workspace(id);
       const threads = this.store.threads(id);
       if (w.kind === 'root' || w.status !== 'open') throw new KiteError('只能采纳已打开的独立工作区', 409);
@@ -892,8 +913,9 @@ export class Kite {
             const t = threads.findLast((t) => t.status === 'open');
             // 手动重试遗留冲突同样转交，处理回合被打断后仍能继续。
             if (!afterResolution && t) {
-              this.adoptAfterTurn.add(t.id);
-              await this.sendInput(this.context(t.id), { id: randomUUID(), text: conflictPrompt(w.branch!, r.files), source: 'kite' });
+              this.resolving.set(id, t.id);
+              try { await this.sendInput(this.context(t.id), { id: randomUUID(), text: conflictPrompt(w.branch!, r.files), source: 'kite' }); }
+              catch (error) { this.endResolving(t); throw error; }
             }
             return { status: 'conflict', files: r.files };
           }
@@ -911,7 +933,7 @@ export class Kite {
   }
   private async stopThread(t: AgentInstance): Promise<void> {
     const r = await this.runnerForManagement(t);
-    this.adoptAfterTurn.delete(t.id);
+    this.endResolving(t);
     if (r) { await r.shutdown(); this.runners.delete(t.id); }
     this.turnLabels.delete(t.id);
   }

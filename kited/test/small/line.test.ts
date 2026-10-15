@@ -48,7 +48,7 @@ const resultOf = (request: ModelRequest, callId: string): ToolResult | undefined
   return found?.type === 'tool_result' ? found.result : undefined;
 };
 
-/** A 启用 Line，B 的根工作区里有一个工作代理（还没发消息）。 */
+/** A 启用 Line，B 的根工作区里有一个工作代理（还没发消息）。directory 是 A 读到的账号目录，测试可以往里加工作机。 */
 async function lineSetup() {
   const root = makeTemp('line-');
   dirs.push(root);
@@ -93,7 +93,7 @@ async function lineSetup() {
   const started = await b.call('POST', `/workspaces/${registered.workspace.id}/operations/agent.start`, { operationId: 'worker' });
   expect(started.status).toBe(200);
   const workId = started.body.instanceId as string;
-  return { a, b, modelOf, holdDirectory, machineA: a.daemon.kite.store.machine.id, machineB, lineWorkspace, lineId, bare, workId };
+  return { a, b, modelOf, holdDirectory, directory, machineA: a.daemon.kite.store.machine.id, machineB, lineWorkspace, lineId, bare, workId };
 }
 
 async function send(k: Kited, threadId: string, id: string, text: string) {
@@ -528,4 +528,37 @@ test('Line 用 line_control send 发起的工作在用户离开期间结束回�
   // 结果只交一次。
   await s.a.daemon.kite.monitor.check();
   expect(wakesOf(s.a, s.lineId)).toHaveLength(1);
+}, 1000);
+
+/*
+ * 几个部分的配合：Line 的工具经跨机调用等对端时，停止 Line 的线程要中止这次等待，停止很快完成，工具结果是错误。
+ * 真实 bug：跨机调用只带超时（读回复 30 秒，建工作区、流转最长 30 分钟），对端收下请求却不回应时，停止 Line 要等到超时；
+ * 这里靠测试的时限挡住。对端用一个只挂住读回复的服务替代，monitor 读汇总等其他请求照常答，免得停 kited 时等它这一轮。
+ */
+test('Line 等一台收下请求却不回应的工作机时，停止 Line 很快完成，这次工具调用以错误结束', async () => {
+  const s = await lineSetup();
+  const line = s.modelOf(s.lineId);
+  const reached = deferred();
+  const silent = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(request) {
+    if (!new URL(request.url).pathname.endsWith('/reply')) return Response.json({ error: '没有这个接口' }, { status: 404 });
+    reached.resolve();
+    return new Promise<Response>(() => {});
+  } });
+  try {
+    s.directory.push({ id: 'machine-silent', name: '不回应的工作机', online: true, address: `http://127.0.0.1:${silent.port}` });
+    await send(s.a, s.lineId, 'read', '看看那台机器上线程的回复');
+    const l1 = await line.call(1);
+    await l1.response.emit({ type: 'item', item: calledItem('read-1', 'line_status', { machine: 'machine-silent', threadId: 'silent-thread' }) });
+    l1.response.complete();
+    await reached.promise;
+    const since = mark(s.a);
+    expect((await s.a.call('POST', `/threads/${s.lineId}/interrupt`)).status).toBe(200);
+    const finished = await s.a.waitEvent((e) => e.type === 'harness' && e.threadId === s.lineId && e.event.type === 'record'
+      && e.event.record.type === 'tool.finished' && e.event.record.callId === 'read-1');
+    expect(finished.type === 'harness' && finished.event.type === 'record' && finished.event.record.type === 'tool.finished'
+      && finished.event.record.result.status).toBe('error');
+    await waitIdle(s.a, s.lineId, since);
+  } finally {
+    await silent.stop(true);
+  }
 }, 1000);

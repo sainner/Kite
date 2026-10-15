@@ -82,17 +82,17 @@ export function lineTools(options: LineToolOptions): Tool[] {
     tool('line_status', [
       '查看账号下各工作机的工作区、线程执行状态、在等用户回应的提问或审批，以及用户的收件箱。machine 只看一台；离线或连不上的工作机标明原因。',
       '带 machine 与 threadId 时只读那个线程最后一回合的回复。',
-    ].join(''), statusArgs, async (args) => {
+    ].join(''), statusArgs, async (args, context) => {
       allowed('status');
       if (args.threadId) {
         if (!args.machine) throw new KiteError('读线程的回复要写 machine');
-        return peers.call(args.machine, 'GET', `/threads/${args.threadId}/reply`);
+        return peers.call(args.machine, 'GET', `/threads/${args.threadId}/reply`, { signal: context.signal });
       }
       const machines = (await peers.machines()).filter((entry) => !args.machine || entry.id === args.machine);
       const states = await Promise.all(machines.map(async (entry) => {
         if (!entry.online) return { machine: entry.id, name: entry.name, online: false };
         try {
-          const summary = await peers.call<MachineSummary>(entry.id, 'GET', '/summary');
+          const summary = await peers.call<MachineSummary>(entry.id, 'GET', '/summary', { signal: context.signal });
           return { machine: entry.id, name: entry.name, online: true, workspaces: summary.workspaces };
         } catch (error) { return { machine: entry.id, name: entry.name, online: true, error: (error as Error).message }; }
       }));
@@ -104,7 +104,7 @@ export function lineTools(options: LineToolOptions): Tool[] {
       '审批：decision 为 once（批准这一次）或 deny（拒绝），不能替用户允许并记住。提问：answers 按问题顺序，每项写 selected（选项标签）或 other（自己写的回答）。',
       '回合结束与失败：读过回复、回答或继续之后用 done 清掉。拿不准的用 leave 留给用户。reason 写明依据，会给用户看。',
       '没交给你的、你自己发起的请求都不能处理。',
-    ].join(''), handleArgs, async (args) => {
+    ].join(''), handleArgs, async (args, context) => {
       allowed('reply');
       const item = monitor.claim(args.item);
       if (args.decision === 'leave') {
@@ -121,7 +121,7 @@ export function lineTools(options: LineToolOptions): Tool[] {
           if (!args.answers) throw new KiteError('回答提问要写 answers');
           body = { answers: args.answers, reason: args.reason };
         }
-        try { await peers.call(item.machine.id, 'POST', `/threads/${item.thread.id}/waiting/${waiting.id}`, { body, via }); }
+        try { await peers.call(item.machine.id, 'POST', `/threads/${item.thread.id}/waiting/${waiting.id}`, { body, via, signal: context.signal }); }
         catch (error) {
           if (error instanceof PeerError && error.status === 409) throw new KiteError('这一项已被回应或作废，不用再处理');
           throw error;
@@ -136,22 +136,22 @@ export function lineTools(options: LineToolOptions): Tool[] {
     tool('line_relay', [
       '把用户在你线程里说的话照原文转达给另一个线程：线程在等提问时作为「其他」的回答，否则作为一条用户消息（经你转达）。',
       'from 是用户那条消息的输入 ID，省略时取用户最近的一条。不要改写用户原文，你自己的补充说明另用 line_control send。线程在等审批时不能转达。',
-    ].join(''), relayArgs, async (args) => {
+    ].join(''), relayArgs, async (args, context) => {
       allowed('reply');
       const message = await options.message(args.from);
       if (!message) throw new KiteError(args.from ? `你的线程里没有用户的这条消息：${args.from}` : '你的线程里还没有用户的消息');
       const key = `${message.id}:${args.machine}:${args.threadId}`;
       const done = monitor.relayed(key);
       if (done) return { relayed: done, duplicate: true };
-      const state = await peers.call<DisplayState>(args.machine, 'GET', `/threads/${args.threadId}/state`);
+      const state = await peers.call<DisplayState>(args.machine, 'GET', `/threads/${args.threadId}/state`, { signal: context.signal });
       if (state.waiting?.kind === 'approval') throw new KiteError('这个线程在等审批，用户的话不能当作批准；请用户在收件箱里回应，或把这一项交给你代处理');
       if (state.waiting?.kind === 'question') {
         await peers.call(args.machine, 'POST', `/threads/${args.threadId}/waiting/${state.waiting.id}`, {
-          body: { answers: state.waiting.questions.map(() => ({ other: message.text })) }, via });
+          body: { answers: state.waiting.questions.map(() => ({ other: message.text })) }, via, signal: context.signal });
         monitor.markRelayed(key, 'answered');
         return { relayed: 'answered' };
       }
-      await peers.call(args.machine, 'POST', `/threads/${args.threadId}/messages`, { body: { text: message.text, id: `relay:${key}`, relay: true }, via, timeoutMs: 120_000 });
+      await peers.call(args.machine, 'POST', `/threads/${args.threadId}/messages`, { body: { text: message.text, id: `relay:${key}`, relay: true }, via, signal: context.signal, timeoutMs: 120_000 });
       monitor.markRelayed(key, 'sent');
       return { relayed: 'sent' };
     }),
@@ -164,19 +164,19 @@ export function lineTools(options: LineToolOptions): Tool[] {
       switch (args.action) {
         case 'send':
           if (!args.text) throw new KiteError('send 需要 text');
-          return peers.call(args.machine, 'POST', `/threads/${thread()}/messages`, { body: { text: args.text, id: operationId(context) }, via, timeoutMs: 120_000 });
+          return peers.call(args.machine, 'POST', `/threads/${thread()}/messages`, { body: { text: args.text, id: operationId(context) }, via, signal: context.signal, timeoutMs: 120_000 });
         case 'resume':
-          return peers.call(args.machine, 'POST', `/threads/${thread()}/resume`, { body: { operationId: operationId(context) }, via });
+          return peers.call(args.machine, 'POST', `/threads/${thread()}/resume`, { body: { operationId: operationId(context) }, via, signal: context.signal });
         case 'stop':
           await mustAsk('line_control', `停止工作机 ${args.machine} 上的线程 ${thread()}`, context);
-          return peers.call(args.machine, 'POST', `/threads/${thread()}/interrupt`, { body: { id: operationId(context) }, via, timeoutMs: 120_000 });
+          return peers.call(args.machine, 'POST', `/threads/${thread()}/interrupt`, { body: { id: operationId(context) }, via, signal: context.signal, timeoutMs: 120_000 });
         case 'archive':
           if (args.workspaceId) {
             await mustAsk('line_control', `归档工作机 ${args.machine} 上的工作区 ${args.workspaceId}`, context);
-            return peers.call(args.machine, 'POST', `/workspaces/${args.workspaceId}/archive`, { body: {}, via, timeoutMs: 120_000 });
+            return peers.call(args.machine, 'POST', `/workspaces/${args.workspaceId}/archive`, { body: {}, via, signal: context.signal, timeoutMs: 120_000 });
           }
           await mustAsk('line_control', `归档工作机 ${args.machine} 上的线程 ${thread()}`, context);
-          return peers.call(args.machine, 'POST', `/instances/${thread()}/archive`, { via, timeoutMs: 120_000 });
+          return peers.call(args.machine, 'POST', `/instances/${thread()}/archive`, { via, signal: context.signal, timeoutMs: 120_000 });
       }
     }),
     tool('line_workspace', [
@@ -189,18 +189,18 @@ export function lineTools(options: LineToolOptions): Tool[] {
         if (!args.machine || !args.project) throw new KiteError('create 需要 machine 与 project');
         await mustAsk('line_workspace', `在工作机 ${args.machine} 上为项目 ${args.project} 创建工作区`, context);
         const model = await peers.call(args.machine, 'POST', '/workspaces', { body: { project: args.project, ...(args.name ? { name: args.name } : {}),
-          ...(args.prompt ? { prompt: args.prompt } : {}) }, via, timeoutMs: 30 * 60_000 });
+          ...(args.prompt ? { prompt: args.prompt } : {}) }, via, signal: context.signal, timeoutMs: 30 * 60_000 });
         return { workspaceId: model.workspace.id, status: model.workspace.status, cwd: model.workspace.cwd };
       }
       if (!args.workspaceId || !args.from || !args.to || args.from === args.to) throw new KiteError('transfer 需要 workspaceId 与不同的 from、to');
       await mustAsk('line_workspace', `把工作区 ${args.workspaceId} 从工作机 ${args.from} 流转到 ${args.to}`, context);
-      const model = await peers.call(args.from, 'GET', `/workspaces/${args.workspaceId}`);
+      const model = await peers.call(args.from, 'GET', `/workspaces/${args.workspaceId}`, { signal: context.signal });
       const handover = await peers.call(args.from, 'POST', `/workspaces/${args.workspaceId}/handover`, {
-        body: args.allowMaterials ? { allowMaterials: true } : {}, via, timeoutMs: 10 * 60_000 });
+        body: args.allowMaterials ? { allowMaterials: true } : {}, via, signal: context.signal, timeoutMs: 10 * 60_000 });
       const restored = await peers.call(args.to, 'POST', '/workspaces/restore', {
-        body: { project: model.project.id, workspaceId: args.workspaceId, operationId: operationId(context) }, via, timeoutMs: 30 * 60_000 });
+        body: { project: model.project.id, workspaceId: args.workspaceId, operationId: operationId(context) }, via, signal: context.signal, timeoutMs: 30 * 60_000 });
       // 源机下次核对执行权时也会冻结；这里立即核对，失败不影响已完成的流转。
-      await peers.call(args.from, 'POST', `/workspaces/${args.workspaceId}/lease/check`, { via }).catch(() => {});
+      await peers.call(args.from, 'POST', `/workspaces/${args.workspaceId}/lease/check`, { via, signal: context.signal }).catch(() => {});
       return { workspaceId: args.workspaceId, epoch: handover.epoch + 1, machine: args.to, status: restored.workspace.status };
     }),
   ];

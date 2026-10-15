@@ -17,8 +17,8 @@ export interface ThreadHostOptions extends Pick<HarnessOptions, 'onEvent' | 'aft
   env: NodeJS.ProcessEnv;
   secrets?: SecretProvider;
   policy?: ExecutionPolicy | (() => ExecutionPolicy);
-  /** 命令连接授权之外的主机时交给谁决定，见 localTools。 */
-  network?(): NetworkAsk | undefined;
+  /** 命令连接授权之外的主机时交给谁决定，见 CommandOptions.askNetwork。 */
+  askNetwork?: NetworkAsk;
   prepareRequest(tools: Tool[], cursor: { afterNotification: number }): HarnessRequest;
   /** 独立终端的配置来源；kited 使用实例配置，不在 metadata 重复保存。 */
   settings?: RequestSettings;
@@ -107,7 +107,7 @@ export async function openThreadHost(options: ThreadHostOptions): Promise<Thread
     const policy = () => typeof options.policy === 'function' ? options.policy() : options.policy ?? workspacePolicy(cwd, env);
     const tools = localTools({
       cwd, secrets: options.secrets, logDir: join(directory, 'commands'), diffDir: options.diffDir ?? join(directory, 'diffs'), env,
-      ...(options.network ? { network: options.network } : {}),
+      ...(options.askNetwork ? { askNetwork: options.askNetwork } : {}),
       policy: () => {
         const current = policy();
         return { ...current, denyRead: [...(current.denyRead ?? []), directory], denyWrite: [...(current.denyWrite ?? []), directory] };

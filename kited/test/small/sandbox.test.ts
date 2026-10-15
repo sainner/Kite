@@ -215,8 +215,13 @@ test('并行沙箱分别执行文件和本机端口授权，不能借用另一�
  * （上游的解析地址检查只判主机名，IP 字面量原样放过，localhost 也被认作该连回环），沙箱里的命令能经代理连到
  * kited 只监听回环、信任回环客户端的本机接口。上游给命令的 NO_PROXY 含回环，curl 默认直连会先被 Seatbelt 挡住，
  * 要 --noproxy '' 强制走代理才测得到；SOCKS 走上游放在 FTP_PROXY 里的 socks5h 地址。
+ * 名单里写了本机地址一条挡住真实漏洞：上游只对名单外主机调回调，网络许可里写了 127.0.0.1:端口 就绕过本机检查，
+ * 回调一律放行也不该连上，HTTP 与 SOCKS 都是。
+ * 回应晚于命令 timeout 一条挡住真实 bug：超时计时器在等审批时照走，默认 120 秒一到就杀掉命令、询问随之作废；
+ * 等人回应的时间不算命令的运行时间。这里的回应延迟就是场景本身：比 timeout 长，从沙箱启动到问出来约 0.1 秒，
+ * 计时不停的话回应到达前命令已超时。
  */
-test('名单外主机按询问结果放行或拒绝，同一命令里同一主机只问一次，命令结束时没回应的询问作废；回环地址不问也连不上', async () => {
+test('名单外主机按询问结果放行或拒绝，同一命令里同一主机只问一次，等回应的时间不算命令超时，命令结束时没回应的询问作废；回环地址不问也连不上，写进网络许可也连不上', async () => {
   const cwd = temp('sandbox-ask-');
   const selectedEnv = env(cwd);
   let hits = 0;
@@ -226,21 +231,28 @@ test('名单外主机按询问结果放行或拒绝，同一命令里同一主�
       + ` --max-time 1 --write-out 'RESULT ${label} %{http_code}\\n' ${quote(url)};`;
     const statuses = (output: string) => Object.fromEntries(output.split('\n')
       .filter((line) => line.startsWith('RESULT ')).map((line) => line.split(' ').slice(1, 3)));
-    const execute = (command: string, askNetwork: NetworkAsk) => runCommand(command, 3000, new AbortController().signal,
-      { cwd, logDir: join(cwd, 'logs'), env: selectedEnv, policy: workspacePolicy(cwd, selectedEnv), askNetwork });
+    const execute = (command: string, askNetwork: NetworkAsk, options: { timeout?: number; network?: string[] } = {}) =>
+      runCommand(command, options.timeout ?? 3000, new AbortController().signal, { cwd, logDir: join(cwd, 'logs'), env: selectedEnv,
+        policy: { ...workspacePolicy(cwd, selectedEnv), ...(options.network ? { network: options.network } : {}) }, askNetwork });
     const twice = `${probe('first', 'http://kite-ask.invalid:8080/')} ${probe('second', 'http://kite-ask.invalid:8080/again')}`;
     const loopback = `http://127.0.0.1:${server.port}/`;
-    const asked: Record<'deny' | 'allow' | 'pending', Array<{ host: string; port?: number }>> = { deny: [], allow: [], pending: [] };
+    const asked: Record<'deny' | 'allow' | 'pending' | 'slow', Array<{ host: string; port?: number }>> = { deny: [], allow: [], pending: [], slow: [] };
     let voided!: () => void;
     const pendingVoided = new Promise<void>((resolve) => { voided = resolve; });
-    const [denied, allowed] = await Promise.all([
+    const [denied, allowed, slow] = await Promise.all([
       execute(twice, async (target) => { asked.deny.push(target); return false; }),
+      // 回环端口写进网络许可，回调又一律放行：两条路都不能让它连上。
       execute([twice,
         probe('loopback', loopback),
         probe('localhost', `http://localhost:${server.port}/`),
         probe('numeric', `http://2130706433:${server.port}/`),
         probe('socks', loopback, '--proxy "$FTP_PROXY"'),
-      ].join(' '), async (target) => { asked.allow.push(target); return true; }),
+      ].join(' '), async (target) => { asked.allow.push(target); return true; }, { network: [`127.0.0.1:${server.port}`] }),
+      execute(probe('slow', 'http://kite-slow.invalid:8080/'), async (target) => {
+        asked.slow.push(target);
+        await Bun.sleep(450);
+        return true;
+      }, { timeout: 400 }),
       // 不回应，只在作废时结束；作废等的是 abort 事件，不卡命令返回的那一刻。
       execute(`curl --silent --max-time 0.3 http://kite-pending.invalid:8080/`, (target, signal) => new Promise<boolean>((resolve) => {
         asked.pending.push(target);
@@ -255,6 +267,9 @@ test('名单外主机按询问结果放行或拒绝，同一命令里同一主�
     });
     expect(asked.allow).toEqual([{ host: 'kite-ask.invalid', port: 8080 }]);
     expect(hits).toBe(0);
+    expect(slow).toMatchObject({ status: 'success' });
+    expect(statuses(slow.output)).toEqual({ slow: '502' });
+    expect(asked.slow).toEqual([{ host: 'kite-slow.invalid', port: 8080 }]);
     expect(asked.pending).toEqual([{ host: 'kite-pending.invalid', port: 8080 }]);
     await pendingVoided;
   } finally {

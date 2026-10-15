@@ -54,7 +54,9 @@ test('空闲时授权保留通知快照，重试不重复投递或改动历史',
   first.response.complete();
   await k.waitEvent((event) => event.type === 'idle' && event.threadId === id);
 
-  for (const endpoint of ['localhost:8080', '127.0.0.1:8080', '[::1]:8080', '[::ffff:127.0.0.1]:8080', '2130706433:8080']) {
+  // 本机地址的各种写法都不能写进授权：依赖运行时 URL 对数字 IPv4、IPv4 映射 IPv6 的规范化和 BlockList 对映射地址按 IPv4 网段的判断。
+  for (const endpoint of ['localhost:8080', '127.0.0.1:8080', '[::1]:8080', '[::ffff:127.0.0.1]:8080', '2130706433:8080',
+    '169.254.169.254:80', '[fe80::1]:80', '[::ffff:169.254.1.1]:80']) {
     const localhost: ExecutionGrants = { ...readOnly, network: [endpoint] };
     expect((await k.call('PUT', grantsPath(id), {
       expectedRevision: initial.body.revision, grants: localhost,

@@ -1,11 +1,11 @@
 ---
 name: line-direction
-description: 个人 agent Line 与工作区流转的状态入口：前三步已合回 main，第 4 步在分支 claude/line；收件箱是 Line 的 monitor、点 Logo 进入、第 5 步界面取舍已定；部署前的缺口、部署注意与待验证项
+description: 个人 agent Line 与工作区流转的状态入口：五步都已合回 main，界面未经真机验收；收件箱是 Line 的 monitor、点 Logo 进入；已知待改进、部署注意与待验证项
 metadata:
   type: decision
 ---
 
-正文是 [Line 与工作区流转](../../docs/Line与工作区流转.md)、[工具审批与提问](../../docs/工具审批与提问.md)、[工作区并行](../../docs/工作区并行.md)。2026-10-14 用户批准编码，在分支 `claude/line` 上实施，前三步 2026-10-15 合回 main，第 4 步（收件箱、托管、关注设备、通用 monitor）在同一分支继续；已实现与待实施的范围以各篇开头的状态行为准。App 只解码了新的工作区状态，界面入口按 [[feedback-ui-workflow]] 先给视觉方案再做。
+正文是 [Line 与工作区流转](../../docs/Line与工作区流转.md)、[工具审批与提问](../../docs/工具审批与提问.md)、[工作区并行](../../docs/工作区并行.md)。2026-10-14 用户批准编码，前三步 2026-10-15 合回 main；第 4 步（收件箱、托管、关注设备、通用 monitor）与第 5 步（回应卡片、收件箱窗口、Line 入口、系统通知）同日合回 main，界面还没在新 build 里验收（Debug 预览只连已安装的 kited，要先重装）。已实现与待实施的范围以各篇开头的状态行为准。
 
 最初确认的决定：流转材料推到项目自己的远程 `refs/kite/*`，不建托管 sidecar；执行权 lease 锚在仓库 ref；目标侧不区分代理与用户，权限只在 Line 所在机器检查；Line 住托管项目的根工作区，由宿主提交现场。
 
@@ -14,4 +14,4 @@ metadata:
 2026-10-14 实现上报后与用户讨论改了方向：去掉由代理声明的「完成 / 在等你」，回合结束就是轮到用户；回合中途等人回应只有审批与提问两种（提问工具照 Claude Code，单选多选都带「其他」）；Line 首先是收件箱（同一对象原样汇集，默认不唤醒 Line），其次才是代理人（代处理按钮、按时段与超时两种托管并存，不能处理自己发起的请求）；转发与通知看 `focusedDevices`（窗口焦点、前台且连着），离开从变空那刻追溯；Line 找用户走系统通知；monitor 归结为 Line 的事件路由（进收件箱、发通知、唤醒 Line），自约唤醒与回来简报是它的事件；Line 的记忆以用户为中心，不收集项目专业经验；同一工作区线程默认并行。
 
 **Why:** 材料随仓库走最省事，且利于多账号协作。上报靠模型自觉，挡不住直接停下；Devin 的 `waiting_for_user` 本质是回合结束，`waiting_for_approval` 与沙箱配套。「已读」会被停着的窗口误判，键鼠空闲不等于在用 Kite。用户要 Line 主动，但默认不该花钱跑模型。
-**How to apply:** 细化或实施前读这几篇契约；实施后改状态行，并替换各篇末尾列出的现行文档冲突陈述。部署前的缺口：`question` 工具已声明给所有线程，App 还没有回应提问与审批的界面，线程一提问就停在运行中，只能停止后用消息回答；部署前先暂时从内置角色拿掉它，或先做回应卡片（2026-10-15 已向用户提出，待定）。上线要先部署账号服务（目录校验放行 `epoch` 与新状态、工作机可读 `/api/catalog`），kite-net 要重新构建才有给 Line 用的本机 HTTP 代理端口。测试预算已放宽：全量 30 秒，流转测试单个 5 秒（check.ts 的 FILE_LIMITS）。待验证：跨账号的加密推理与思考签名、GitHub/GitLab 对自定义 ref 的接受、材料大小。相关未决见 [[todo-workspace-collaboration]]、[[todo-event-sources]]、[[todo-execution-boundaries]]。
+**How to apply:** 细化或实施前读这几篇契约；实施后改状态行，并替换各篇末尾列出的现行文档冲突陈述。已知待改进：回应卡片切换时玻璃高度跳变；远程工作机的等待最多 60 秒才进收件箱，之前点「交给 Line」会 404；手机推送、流转界面入口、强制接管未做。上线要先部署账号服务（目录校验放行 `epoch` 与新状态、工作机可读 `/api/catalog`），kite-net 要重新构建才有给 Line 用的本机 HTTP 代理端口。测试预算已放宽：全量 30 秒，流转测试单个 5 秒（check.ts 的 FILE_LIMITS）。待验证：跨账号的加密推理与思考签名、GitHub/GitLab 对自定义 ref 的接受、材料大小。相关未决见 [[todo-workspace-collaboration]]、[[todo-event-sources]]、[[todo-execution-boundaries]]。

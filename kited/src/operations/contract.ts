@@ -46,7 +46,7 @@ export const operationContracts = {
     input: z.object({}).strict(), output: z.object({ agents: z.array(summary) }).strict(),
   },
   'agent.send': {
-    title: '发送消息', description: '向获准的 agent 实例发送消息。消息落盘后返回；共享工作区的执行互斥仍然适用。',
+    title: '发送消息', description: '向获准的 agent 实例发送消息。消息落盘后返回；同一工作区的线程可以同时执行。',
     tool: 'agent_send', effect: 'write', retry: 'input',
     input: target.extend({ text }).strict(), output: z.object({ id }).strict(),
   },
