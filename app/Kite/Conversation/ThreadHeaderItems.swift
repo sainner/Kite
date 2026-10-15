@@ -20,6 +20,17 @@ struct ThreadModelMenu {
     /// 不能换到其他厂商的原因。
     let note: String?
     let select: (String) -> Void
+
+    /// 模型按钮里模型名前的厂商标志，按工作机给的厂商 id 对应；没有标志的厂商只显示模型名。
+    /// 百炼（dashscope）目前只有千问的语音识别模型，用 Qwen 标志。
+    static func logo(vendor: String?) -> ImageResource? {
+        switch vendor {
+        case "openai": .brandOpenAI
+        case "anthropic": .brandAnthropic
+        case "dashscope": .brandQwen
+        default: nil
+        }
+    }
 }
 
 /// 模型菜单的条目，SwiftUI 原生菜单共用：每个厂商一节，当前模型打勾。

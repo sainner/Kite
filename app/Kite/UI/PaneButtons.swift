@@ -142,17 +142,28 @@ private struct PaneHeaderButtonStyle: ButtonStyle {
 struct PaneHeaderButtonLabel: View {
     let title: String
     var systemImage: String?
+    /// 文字前的标志，随文字颜色着色。
+    var logo: ImageResource?
+    @ScaledMetric(relativeTo: .body) private var logoSize = Metrics.paneHeaderLogo
 
-    init(_ title: String, systemImage: String? = nil) {
+    init(_ title: String, systemImage: String? = nil, logo: ImageResource? = nil) {
         self.title = title
         self.systemImage = systemImage
+        self.logo = logo
     }
 
     var body: some View {
-        PaneButtonLabel(title, systemImage: systemImage)
-            .padding(.horizontal, Metrics.paneHeaderButtonGap / 2)
-            .frame(height: Metrics.paneHeaderButton)
-            .contentShape(.capsule)
+        HStack(spacing: Metrics.paneHeaderLogoGap) {
+            if let logo {
+                Image(logo).resizable().scaledToFit()
+                    .frame(width: logoSize, height: logoSize)
+                    .accessibilityHidden(true)
+            }
+            PaneButtonLabel(title, systemImage: systemImage)
+        }
+        .padding(.horizontal, Metrics.paneHeaderButtonGap / 2)
+        .frame(height: Metrics.paneHeaderButton)
+        .contentShape(.capsule)
     }
 }
 
