@@ -59,6 +59,7 @@ export function startDaemon(opts: DaemonOptions): Daemon {
   const server = serve(kite, { hostname: '127.0.0.1', port: opts.port, network, publisher });
   kite.listening({ url: `http://127.0.0.1:${server.port}`, network });
   kite.monitor.start();
+  kite.monitors.reconcile();
   return {
     url: `http://127.0.0.1:${server.port}`,
     remoteUrl: `http://127.0.0.1:${remote.port}`,

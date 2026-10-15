@@ -199,7 +199,7 @@ async function main() {
       operationId: 'decode-state-increment', arguments: { action: 'increment' },
     }, machine.body.id);
     if ([installed.status, plugin.status, incremented.status].some((status) => status !== 200)) {
-      throw new Error('真实插件业务状态未写入合同工作区');
+      throw new Error(`真实插件业务状态未写入合同工作区：${JSON.stringify([installed, plugin, incremented])}`);
     }
 
     catalog = await openCatalog(daemon.url, machine.body.id);
@@ -263,7 +263,7 @@ async function main() {
     const clientSource = readFileSync(join(app, 'Application', 'KitedClient.swift'), 'utf8');
     const clientTypes = join(root, 'KitedClientTypes.swift');
     writeFileSync(clientTypes, `import Foundation\n\n${[
-      'extension JSON: Codable', 'nonisolated struct RemoteState', 'nonisolated struct ContextUsage',
+      'extension JSON: Codable', 'nonisolated struct RemoteState', 'nonisolated struct RemoteWaiting', 'nonisolated struct ContextUsage',
     ].map((signature) => declaration(clientSource, signature)).join('\n\n')}\n`);
     await command([
       compiler,

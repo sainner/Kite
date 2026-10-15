@@ -48,6 +48,8 @@ export interface RuntimeOptions {
   lightTasks?: false | Partial<LightTaskOptions>;
   /** 测试里替换 Line 看到的账号目录：同一进程里的几台 kited 按给出的地址直接互访，不经组网。 */
   peers?: { directory(): Promise<AccountMachine[]> };
+  /** 测试里缩短 monitor 事件到唤醒之间的合批等待（毫秒），默认 1 秒。 */
+  monitorWakeDelayMs?: number;
 }
 
 export interface RuntimeEvents {

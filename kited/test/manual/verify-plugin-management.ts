@@ -112,7 +112,7 @@ try {
   const clientSource = readFileSync(join(app, 'Application', 'KitedClient.swift'), 'utf8');
   const clientTypes = join(root, 'KitedClientTypes.swift');
   writeFileSync(clientTypes, `import Foundation\n\n${[
-    'extension JSON: Codable', 'nonisolated struct RemoteState', 'nonisolated struct ContextUsage',
+    'extension JSON: Codable', 'nonisolated struct RemoteState', 'nonisolated struct RemoteWaiting', 'nonisolated struct ContextUsage',
   ].map((signature) => declaration(clientSource, signature)).join('\n\n')}\n`);
   await command([compiler, '-sdk', sdk, '-target', `${architecture}-apple-macosx26.0`,
     join(app, 'Conversation', 'Transcript.swift'), clientTypes, join(app, 'Conversation', 'AgentConfiguration.swift'),

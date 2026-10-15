@@ -90,6 +90,8 @@ struct RemoteThread: Decodable {
 struct ThreadActivity: Decodable, Equatable {
     let phase: String
     let waitingForResume: Bool
+    /// 回合卡在审批（approval）或提问（question）上等人回应。
+    var waiting: String? = nil
     var outcome: String? = nil
     var error: Bool? = nil
     var changedAt: Double? = nil

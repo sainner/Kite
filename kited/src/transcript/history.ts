@@ -95,6 +95,9 @@ export class TranscriptHistory {
         case 'model-accounts.changed':
         case 'context-templates.changed':
         case 'roles.changed':
+        case 'line.inbox':
+        case 'line.notification':
+        case 'monitor.changed':
         case 'workspace.setup':
         case 'workspace.snapshot':
         case 'workspace.adopt':
@@ -156,8 +159,9 @@ export class TranscriptHistory {
   private observe(id: string, state: DisplayState, at?: number): void {
     const previous = this.activities.get(id);
     const next: ThreadActivity = { phase: state.phase, waitingForResume: state.waitingForResume,
+      ...(state.waiting ? { waiting: state.waiting.kind } : {}),
       ...(state.lastOutcome ? { outcome: state.lastOutcome.kind } : {}), ...(state.error ? { error: true as const } : {}) };
-    if (previous && previous.phase === next.phase && previous.waitingForResume === next.waitingForResume
+    if (previous && previous.phase === next.phase && previous.waitingForResume === next.waitingForResume && previous.waiting === next.waiting
       && previous.outcome === next.outcome && previous.error === next.error) return;
     const settled = at !== undefined && previous !== undefined && previous.phase !== 'idle' && next.phase === 'idle' && next.outcome !== undefined;
     const changedAt = at ?? previous?.changedAt;

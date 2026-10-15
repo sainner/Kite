@@ -20,6 +20,8 @@ struct KiteApp: App {
         #endif
         let model = AppModel()
         _model = State(initialValue: model)
+        LineAttention.shared.install(model: model)
+        LineNotifications.shared.install(model: model)
         #if DEBUG && KITE_LAYOUT_AUDIT
         PerfProbe.arm(model: model)
         #endif

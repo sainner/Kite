@@ -68,10 +68,19 @@ export const contextScenes = {
     variables: [{ name: 'context.instructions', title: '更新后的基础上下文', description: '重新组装的完整基础正文，替代先前发过的那份。' }],
   },
   'line.monitor': {
-    title: 'Line 的工作区变化',
+    title: 'Line 的唤醒',
     variables: [
-      { name: 'monitor.added', title: '新出现的待办', description: '这次新出现、需要 Line 核对的事项，每行一条，写明工作机、项目、线程与事项；至少一条。' },
-      { name: 'monitor.pending', title: '仍未处理的待办', description: '之前已告知、现在仍未处理的事项，每行一条；没有时为空。' },
+      { name: 'monitor.delegated', title: '交给 Line 的事项', description: '用户点了代处理或托管中交给 Line 的收件箱事项，每项一段：方括号里是事项 ID，写明工作机、项目、线程，审批带工具、目标与原因，提问带问题与选项；没有时为空。' },
+      { name: 'monitor.results', title: 'Line 发起的工作的结果', description: 'Line 发过说明或创建的线程结束了回合或失败，每行一条；没有时为空。' },
+      { name: 'monitor.briefing', title: '回来时的简报', description: '用户离开够久后回到 Kite 时有值：离开多久、要写简报的要求，以及离开期间进收件箱的事项；其余时候为空。' },
+    ],
+  },
+  'monitor.events': {
+    title: 'monitor 的事件',
+    variables: [
+      { name: 'monitor.title', title: '监视的标题', description: '代理开 monitor 时写的标题，说明在盯什么。' },
+      { name: 'monitor.id', title: 'monitor 的实例 ID', description: '用 monitor_stop 停掉它时用的 ID。' },
+      { name: 'monitor.events', title: '新事件', description: '还没交给代理的事件，每条一行，带时刻；来源结束的事件写明原因。至少一条。' },
     ],
   },
   'thread.execution_permissions_changed': {

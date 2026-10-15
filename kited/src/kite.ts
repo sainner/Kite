@@ -1,5 +1,5 @@
 /** 工作区负责文件、快照和采纳；线程负责模型执行及独立的对话记录。 */
-import type { CompactionRequest, Input, StopRequest } from './harness/types.ts';
+import type { CompactionRequest, Input, InputVia, StopRequest } from './harness/types.ts';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { FileDiffStore } from './workspace/file-diffs.ts';
@@ -31,7 +31,10 @@ import {
   agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
   pluginToolsContextDefinition,
 } from './harness/context/notifications.ts';
-import { instanceApprovalMode, instanceExecutionGrants } from './execution/grants.ts';
+import { applyExecutionGrants, instanceApprovalMode, instanceExecutionGrants } from './execution/grants.ts';
+import { harnessPolicy } from './execution/policy.ts';
+import { commandEnvironment } from './execution/sandbox.ts';
+import { monitorConfig, monitorDefinitionId, monitorEventsContextDefinition, Monitors } from './monitor/monitors.ts';
 import { InstanceOperations } from './operations/operations.ts';
 import { OperationReceipts } from './operations/receipts.ts';
 import { lineGrant, type OperationGrant, type OperationInput } from './operations/contract.ts';
@@ -39,6 +42,7 @@ import { Peers } from './line/peers.ts';
 import { LineMonitor, lineMonitorContextDefinition } from './line/monitor.ts';
 import { lineTools } from './line/tools.ts';
 import { LINE_AGENTS } from './line/project.ts';
+import { Attention } from './line/attention.ts';
 import { userHome } from './paths.ts';
 import type { Network } from './network.ts';
 import { WorkspaceFiles, fileSelection } from './workspace/files.ts';
@@ -68,7 +72,11 @@ export interface MachineSummary {
   workspaces: Array<{
     id: string; epoch: number; status: WorkspaceStatus; kind: Workspace['kind']; name: string; project: { id: string; name: string };
     threads: Array<{ id: string; title: string; role: string | null; phase: string; busy: boolean; waitingForResume: boolean;
-      lastOutcome?: string; recovery?: string; waiting?: Waiting }>;
+      lastOutcome?: string; failure?: string; recovery?: string; waiting?: Waiting;
+      /** 这台工作机实时看到的最近一次回合结束时间；重启后要等下一次回合结束才有。 */
+      settledAt?: number;
+      /** 最近一条输入是 Line 自己的说明：这一回合是 Line 发起的工作，结果交给 Line。 */
+      byLine?: true }>;
   }>;
 }
 const firstLine = (text: string) => text.trim().split('\n')[0]!.trim() || '（空消息）';
@@ -105,6 +113,12 @@ export class Kite {
   readonly peers: Peers;
   /** Line 的 monitor；daemon 服务起来后启动。 */
   readonly monitor: LineMonitor;
+  /** 正在关注 Kite 的设备；Line 所在的工作机据此决定通知与收件箱。 */
+  readonly attention: Attention;
+  /** 代理用 monitor_start 开的 monitor；Line 的那个由 monitor（LineMonitor）负责。 */
+  readonly monitors: Monitors;
+  /** 最近一条输入是 Line 自己说明的线程；只在内存里，重启后按用户的工作对待。 */
+  private lineWork = new Set<string>();
   /** 服务起来后才知道本机监听地址与组网，Line 调本机和别的工作机时用。 */
   private serving?: { url: string; network?: Network };
   private readonly transcripts: TranscriptHistory;
@@ -133,7 +147,7 @@ export class Kite {
     this.contextTemplates = new ContextTemplates(store, [
       titleTemplate, compactTemplate, emblemTemplate,
       agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
-      pluginToolsContextDefinition, voiceTemplate, lineMonitorContextDefinition,
+      pluginToolsContextDefinition, voiceTemplate, lineMonitorContextDefinition, monitorEventsContextDefinition,
     ]);
     this.library = new LibrarySync({ account, store, roles: this.roles, templates: this.contextTemplates, catalog: this.catalog,
       changed: (changes) => this.libraryChanged(changes) });
@@ -144,17 +158,35 @@ export class Kite {
     this.peers = new Peers({ account, self: () => ({ id: store.machine.id, name: store.machine.name, url: this.serving?.url }),
       proxyPort: () => this.serving?.network?.status().httpProxyPort, ...(options.peers ? { directory: options.peers.directory } : {}) });
     this.monitor = new LineMonitor({ store, peers: this.peers,
-      line: () => this.lineInstance(), deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, 'kite'),
-      template: () => this.contextTemplates.get(lineMonitorContextDefinition.id, 'line.monitor').definition });
+      line: () => this.lineInstance(), inbox: () => this.lineInbox(true), deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, 'kite'),
+      template: () => this.contextTemplates.get(lineMonitorContextDefinition.id, 'line.monitor').definition,
+      focused: () => this.attention.devices().length > 0,
+      notify: (notification) => bus.emit({ type: 'line.notification', notification }),
+      changed: () => bus.emit({ type: 'line.inbox' }) });
+    this.attention = new Attention((devices) => this.monitor.attention(devices.length > 0));
     // 本机的等待与回合变化很快读一轮，远程工作机靠定时读取。
     bus.subscribe((event) => event.type === 'waiting' || event.type === 'idle', () => this.monitor.nudge());
+    this.monitors = new Monitors({ store, home, env: commandEnvironment(process.env),
+      policy: async (target) => {
+        const { workspace, checkout } = this.workspace(target.workspaceId);
+        return applyExecutionGrants(await harnessPolicy({ cwd: workspace.cwd, env: process.env, home, repository: checkout.path }), workspace.cwd,
+          instanceExecutionGrants(target));
+      },
+      deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, 'kite'),
+      template: () => this.contextTemplates.get(monitorEventsContextDefinition.id, 'monitor.events').definition,
+      run: (workspaceId, action) => this.control(workspaceId, action),
+      changed: (workspaceId) => this.changed(workspaceId),
+      updated: (workspaceId, instanceId) => bus.emit({ type: 'monitor.changed', workspaceId, instanceId }),
+      ...(options.monitorWakeDelayMs !== undefined ? { wakeDelayMs: options.monitorWakeDelayMs } : {}) });
+    // 工作区开放、交接、冻结、归档与代理归档都会改变 monitor 能不能运行。
+    bus.subscribe((event) => event.type === 'workspace.changed' || event.type === 'thread.changed', () => this.monitors.soon());
     this.transfers = new WorkspaceTransfers({
       store, home, account,
       control: (id, action) => this.control(id, action),
       workspace: (id) => this.workspace(id),
       threadState: (id) => this.threadState(id),
       stopThread: (thread) => this.stopThread(thread),
-      closePlugins: (id) => this.plugins.closeWorkspace(id),
+      closePlugins: (id) => this.closeExtensions(id),
       snapshot: (workspace, label) => this.snapshot(workspace, [], label),
       setStatus: (id, status) => this.setWorkspaceStatus(id, status),
       changed: (id) => this.changed(id),
@@ -279,9 +311,12 @@ export class Kite {
       project: { id: model.project.id, name: model.project.name },
       threads: await Promise.all(model.instances.filter((instance) => instance.status === 'open' && this.store.thread(instance.id)).map(async (instance) => {
         const state = await this.threadState(instance.id);
+        const settledAt = this.transcripts.activity(instance.id)?.settledAt;
         return { id: instance.id, title: instance.title, role: (instanceRole(instance)?.id ?? null), phase: state.phase, busy: state.busy,
           waitingForResume: state.waitingForResume, ...(state.lastOutcome ? { lastOutcome: state.lastOutcome.kind } : {}),
-          ...(state.recovery ? { recovery: state.recovery.message } : {}), ...(state.waiting ? { waiting: state.waiting } : {}) };
+          ...(state.lastOutcome?.kind === 'failed' ? { failure: state.lastOutcome.message } : {}),
+          ...(state.recovery ? { recovery: state.recovery.message } : {}), ...(state.waiting ? { waiting: state.waiting } : {}),
+          ...(settledAt !== undefined ? { settledAt } : {}), ...(this.lineWork.has(instance.id) ? { byLine: true as const } : {}) };
       })),
     })));
     return { machine: { id: this.store.machine.id, name: this.store.machine.name }, workspaces };
@@ -344,8 +379,8 @@ export class Kite {
     return { ...instance, instanceId: instance.id, runtime: instanceAgent(instance).runtime, nativeId: randomUUID() };
   }
 
-  /** 可以先建空工作区；带首条消息时，准备完成才启动首个线程。 */
-  async createWorkspace(checkoutId: string, name: string, prompt?: string, role?: RoleSelection): Promise<WorkspaceModel> {
+  /** 可以先建空工作区；带首条消息时，准备完成才启动首个线程。via 是经 Line 创建：首条消息是 Line 的说明。 */
+  async createWorkspace(checkoutId: string, name: string, prompt?: string, role?: RoleSelection, via?: InputVia): Promise<WorkspaceModel> {
     this.assertRunning();
     const c = this.checkoutManagement.get(checkoutId);
     if (prompt !== undefined && !prompt.trim()) throw new KiteError('第一条消息不能为空');
@@ -357,7 +392,7 @@ export class Kite {
       status: 'preparing', createdAt: Date.now() };
     const t = prompt === undefined ? undefined : this.newThread(id, prompt, w.kind, { role }, c.projectId);
     this.store.addWorkspace(w, t ? { agent: t, window: this.instances.newWindow(t) } : undefined);
-    this.prepare(w, c, t && { thread: t, prompt: prompt! });
+    this.prepare(w, c, t && { thread: t, prompt: prompt!, via });
     this.changed(id);
     if (t) this.threadChanged(t);
     return this.workspace(id);
@@ -376,7 +411,7 @@ export class Kite {
   }
 
   /** 按项目建工作区：先检查环境，不满足就不建；本机没有检出时自动 clone 到默认位置并登记，检出保留。 */
-  async createProjectWorkspace(projectId: string, name: string, prompt?: string, role?: RoleSelection): Promise<WorkspaceModel> {
+  async createProjectWorkspace(projectId: string, name: string, prompt?: string, role?: RoleSelection, via?: InputVia): Promise<WorkspaceModel> {
     this.assertRunning();
     if (prompt !== undefined && !prompt.trim()) throw new KiteError('第一条消息不能为空');
     const environment = await this.environment(projectId);
@@ -386,7 +421,7 @@ export class Kite {
     if (Math.min(environment.disk.worktrees, environment.disk.checkout) < MIN_FREE_BYTES) {
       throw new KiteError('这台工作机的磁盘剩余空间不足 1 GB', 409);
     }
-    return this.createWorkspace((await this.ensureCheckout(projectId)).id, name, prompt, role);
+    return this.createWorkspace((await this.ensureCheckout(projectId)).id, name, prompt, role, via);
   }
 
   /** 本机该项目的检出；没有时 clone 到默认位置并登记，检出保留。 */
@@ -413,7 +448,7 @@ export class Kite {
    * 建工作树、跑 setup、存初始快照后开放；带首条消息的线程在开放后才收到它。失败或被打断时工作区为 failed。
    * 重跑时工作树若没建成，先清掉残留的登记与分支：准备失败的工作区从未开放，分支上没有用户的改动。
    */
-  private prepare(w: Workspace, c: Checkout, first?: { thread: AgentInstance; prompt: string }, retry = false): void {
+  private prepare(w: Workspace, c: Checkout, first?: { thread: AgentInstance; prompt: string; via?: InputVia }, retry = false): void {
     const { id } = w;
     const t = first?.thread;
     const controller = new AbortController();
@@ -430,8 +465,8 @@ export class Kite {
         controller.signal.throwIfAborted();
         this.setWorkspaceStatus(id, 'open');
         if (first) {
-          await this.sendInput(this.context(first.thread.id), { id: randomUUID(), text: first.prompt, source: 'human' },
-            () => controller.signal.throwIfAborted());
+          await this.sendInput(this.context(first.thread.id), { id: randomUUID(), text: first.prompt,
+            ...(first.via ? { source: 'kite' as const, via: first.via } : { source: 'human' as const }) }, () => controller.signal.throwIfAborted());
         }
       } catch (e) {
         this.bus.emit({ type: 'workspace.error', workspaceId: id, originThreadId: t?.id, message: (e as Error).message });
@@ -587,6 +622,29 @@ export class Kite {
   async history(id: string): Promise<History> { return (await this.transcripts.load(this.context(id))).snapshot(); }
   async threadState(id: string): Promise<DisplayState> { return (await this.transcripts.load(this.context(id))).state(); }
   historyNow(id: string): History { return this.transcripts.snapshot(id); }
+  /** 线程最后一回合的回复：最后一条输入之后的正文，供 Line 读取；太长时保留结尾。 */
+  async reply(id: string) {
+    const state = await this.threadState(id);
+    const records = this.transcripts.snapshot(id).records;
+    const texts: string[] = [];
+    let at: number | undefined;
+    for (let index = records.length - 1; index >= 0; index--) {
+      const record = records[index]!;
+      if (record.id.startsWith('input:')) break;
+      if (record.block.type === 'text' && record.block.text.trim()) { texts.unshift(record.block.text); at ??= record.at; }
+    }
+    const text = texts.join('\n\n');
+    return { threadId: id, phase: state.phase, busy: state.busy, ...(state.lastOutcome ? { lastOutcome: state.lastOutcome } : {}),
+      ...(state.waiting ? { waiting: state.waiting } : {}),
+      ...(text ? { reply: { text: text.length > 20_000 ? `…${text.slice(-20_000)}` : text, at } } : {}) };
+  }
+  /** Line 线程里用户的一条消息：给了输入 ID 就取那条，否则取最近的一条；不是用户的消息时没有。 */
+  private async userMessage(lineId: string, inputId?: string): Promise<{ id: string; text: string } | undefined> {
+    const records = (await this.history(lineId)).records;
+    const record = inputId === undefined ? records.findLast((entry) => entry.block.type === 'human')
+      : records.find((entry) => entry.id === `input:${inputId}`);
+    return record?.block.type === 'human' ? { id: record.block.id, text: record.block.text } : undefined;
+  }
   /**
    * 调用方持有工作区控制锁，发送与切换不能同时通过状态检查。先把上下文追加到目标后端的原生记录再保存后端；
    * 保存失败后重试只会导入尚未导入的部分。
@@ -643,6 +701,7 @@ export class Kite {
       // Line 的管理工具只声明给 Line 角色的实例，免得每个代理的请求都带着它们的说明。
       operations: { tools: [...this.operations.tools(id), this.waits.question(id),
         ...(instanceRole(t)?.id === lineRoleId ? lineTools({ store: this.store, peers: this.peers, machine: this.store.machine.id, instanceId: id,
+          monitor: this.monitor, message: (inputId) => this.userMessage(id, inputId),
           approve: (request, signal) => this.waits.approve(id, request, signal) }) : [])],
       prepare: (instance) => this.operations.prepareTools(instance) },
       contextUpdateTemplate: () => this.contextTemplates.get(contextUpdateContextDefinition.id, contextUpdateContextDefinition.scene).definition,
@@ -700,6 +759,9 @@ export class Kite {
     const runner = await this.runner(thread);
     check();
     await runner.send(input);
+    // Line 自己的说明让这一回合成为 Line 的工作；用户的消息（含经 Line 转达的原文）收回给用户。
+    if (input.via && input.source === 'kite') this.lineWork.add(thread.id);
+    else if (input.source === 'human') this.lineWork.delete(thread.id);
     // 还没有标题记录（没起过名、没手动改过）时，用第一条消息作标题
     if (this.store.threadTitle(thread.id)?.revision === 'initial') {
       this.store.renameInstance(thread.id, titleOf(input.text));
@@ -844,6 +906,7 @@ export class Kite {
     if (!instance) throw new KiteError(`没有这个实例：${id}`, 404);
     const definition = this.catalog.get(instance.definitionId);
     if (definition.agent) return this.archiveThread(id);
+    if (definition.id === monitorDefinitionId && 'system' in monitorConfig(instance)) throw new KiteError('Line 的收件箱随 Line 存在，不能单独归档', 409);
     if (definition.lifetime === 'window') throw new KiteError('此实例随窗口回收，关闭窗口即可');
     return this.control(instance.workspaceId, async () => {
       if (this.store.instance(id)!.status === 'archived') return;
@@ -879,7 +942,7 @@ export class Kite {
       for (const t of threads) if (t.status !== 'archived') await this.stopThread(t);
       await assertMerged();
       if (existsSync(w.cwd)) await this.snapshot(w, [], '归档前保存');
-      const releasePlugins = await this.plugins.closeWorkspace(id);
+      const releasePlugins = await this.closeExtensions(id);
       try {
         await removeWorktree(checkout.path, w.cwd, w.branch!);
         this.store.archiveWorkspace(id);
@@ -895,6 +958,27 @@ export class Kite {
   lineInstance(): AgentInstance | undefined {
     return this.store.threads().find((thread) => thread.status === 'open' && instanceRole(thread)?.id === lineRoleId
       && this.store.workspace(thread.workspaceId)?.status === 'open');
+  }
+  /** Line 的 monitor 实例（收件箱）；ensure 时没有就补建一个，带窗口。 */
+  lineInbox(ensure = false): PluginInstance | undefined {
+    const line = this.lineInstance();
+    if (!line) return undefined;
+    const found = this.store.instances(line.workspaceId).find((instance) => instance.definitionId === monitorDefinitionId
+      && instance.status === 'open' && 'system' in monitorConfig(instance));
+    if (found || !ensure) return found;
+    const inbox = this.newLineInbox(line);
+    this.store.addPluginInstance(inbox, this.instances.newWindow(inbox));
+    this.changed(line.workspaceId);
+    return inbox;
+  }
+  private newLineInbox(line: Pick<AgentInstance, 'id' | 'workspaceId'>): PluginInstance {
+    return { id: randomUUID(), workspaceId: line.workspaceId, definitionId: monitorDefinitionId, title: '收件箱',
+      config: { monitor: { target: line.id, system: 'line' } }, state: {}, presentation: 'window', status: 'open', createdAt: Date.now() };
+  }
+  /** 工作区交接、冻结或归档前停下插件进程与 monitor 的来源；monitor 的来源不算结束，工作区再开放时重新开始。 */
+  private async closeExtensions(workspaceId: string): Promise<() => void> {
+    await this.monitors.closeWorkspace(workspaceId);
+    return this.plugins.closeWorkspace(workspaceId);
   }
   private isLineWorkspace(workspaceId: string): boolean {
     return this.store.threads(workspaceId).some((thread) => thread.status === 'open' && instanceRole(thread)?.id === lineRoleId);
@@ -921,6 +1005,8 @@ export class Kite {
       instance.config.grants = [...(instance.config.grants as OperationGrant[]), lineGrant];
       const agent: AgentInstance = { ...instance, instanceId: instance.id, runtime: instanceAgent(instance).runtime, nativeId: randomUUID() };
       this.store.addAgent(agent, this.instances.newWindow(agent));
+      const inbox = this.newLineInbox(agent);
+      this.store.addPluginInstance(inbox, this.instances.newWindow(inbox));
       this.store.saveThreadTitle(agent.id, 'initial', { title: 'Line', mode: 'manual', generatedAt: null, through: null });
       this.threadChanged(agent);
       this.changed(model.workspace.id);
@@ -987,7 +1073,7 @@ export class Kite {
       if (w.status === 'transferred' || w.status === 'archived') return;
       for (const t of this.store.threads(id)) if (t.status !== 'archived') await this.stopThread(t);
       if (existsSync(w.cwd)) await this.snapshot(w, [], '流转后本机留下的改动');
-      const release = await this.plugins.closeWorkspace(id);
+      const release = await this.closeExtensions(id);
       const root: Workspace | undefined = w.kind === 'root' ? { id: randomUUID(), epoch: 1, checkoutId: checkout.id, name: w.name,
         cwd: w.cwd, kind: 'root', branch: null, base: null, status: 'open', createdAt: Date.now() } : undefined;
       try { this.store.freezeWorkspace(id, root); } finally { release(); }
@@ -1000,6 +1086,7 @@ export class Kite {
     this.stopping = true;
     await Promise.all([this.titles?.close(), this.emblems.close(), this.lightTasks?.close(), this.subscriptionLogins.close(), this.library.close()]);
     await this.monitor.stop();
+    await this.monitors.close();
     await this.plugins.close();
     await this.operations.close();
     for (const c of this.preparations.values()) c.abort();

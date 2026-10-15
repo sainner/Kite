@@ -32,7 +32,32 @@ struct ThreadControls: View {
         let controls = controls
         let fading = state.fading
         let shape = RoundedRectangle(cornerRadius: Metrics.controlRadius, style: .continuous)
-        VStack(spacing: 2) {
+        // 等你回应时同一张玻璃里换成回应卡片，回应后换回输入框
+        Group {
+            if let waiting = thread.waiting {
+                WaitingResponseCard(waiting: waiting, respond: { [thread] in try await thread.respond(waiting, $0) },
+                                    stop: { [thread] in thread.stop() }, canStop: thread.canStop, delegate: controls.delegate)
+                    .transition(.opacity)
+            } else {
+                composer(controls, fading: fading).transition(.opacity)
+            }
+        }
+        .animation(.smooth(duration: 0.25), value: thread.waiting?.id)
+        // 交互玻璃的同心形状有高光退回胶囊的复现；玻璃与交互轮廓统一使用明确圆角。
+        .contentShape(.interaction, shape)
+        .glassEffect(.regular.interactive(), in: shape)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
+        .alert("修改思考强度失败", isPresented: Binding(get: { state.effortError != nil }, set: { if !$0 { state.effortError = nil } })) {
+            Button("好", role: .cancel) { state.effortError = nil }
+        } message: { Text(state.effortError ?? "") }
+        .alert("无法开始语音输入", isPresented: Binding(get: { state.voiceError != nil }, set: { if !$0 { state.voiceError = nil } })) {
+            Button("好", role: .cancel) { state.voiceError = nil }
+        } message: { Text(state.voiceError ?? "") }
+    }
+
+    private func composer(_ controls: ThreadControlsModel, fading: FadingText?) -> some View {
+        @Bindable var thread = thread
+        return VStack(spacing: 2) {
             TextField(controls.placeholder, text: $thread.draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(Theme.body)
@@ -59,16 +84,6 @@ struct ThreadControls: View {
         }
         .padding(.top, Metrics.controlInset)
         .padding(.bottom, Metrics.controlButtonInset)
-        // 交互玻璃的同心形状有高光退回胶囊的复现；玻璃与交互轮廓统一使用明确圆角。
-        .contentShape(.interaction, shape)
-        .glassEffect(.regular.interactive(), in: shape)
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
-        .alert("修改思考强度失败", isPresented: Binding(get: { state.effortError != nil }, set: { if !$0 { state.effortError = nil } })) {
-            Button("好", role: .cancel) { state.effortError = nil }
-        } message: { Text(state.effortError ?? "") }
-        .alert("无法开始语音输入", isPresented: Binding(get: { state.voiceError != nil }, set: { if !$0 { state.voiceError = nil } })) {
-            Button("好", role: .cancel) { state.voiceError = nil }
-        } message: { Text(state.voiceError ?? "") }
     }
 
     private func actionButtons(_ controls: ThreadControlsModel) -> some View {

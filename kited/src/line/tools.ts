@@ -1,7 +1,7 @@
 /**
  * Line 的管理工具。目标范围是账号目录里的全部工作区，调用经 Peers 直达目标工作机。授权全部在 Line 所在机器：
  * 动作须在 Line 实例的 line 授权白名单里；停止、归档、创建、流转是必问动作，执行前在 Line 的线程上挂起等用户批准，
- * 与审批模式无关（docs/工具审批与提问.md）。
+ * 与审批模式无关（docs/工具审批与提问.md）。代处理只能处理交给 Line 的收件箱事项，不能处理 Line 自己发起的请求。
  */
 import { z } from 'zod';
 import { KiteError } from '../errors.ts';
@@ -9,11 +9,18 @@ import type { InputVia, JsonObject, Tool, ToolResult } from '../harness/types.ts
 import type { MachineSummary } from '../kite.ts';
 import { operationGrantsSchema, type LineAction } from '../operations/contract.ts';
 import type { Store } from '../store.ts';
+import type { DisplayState } from '../transcript/protocol.ts';
 import type { ApprovalDecision, ApprovalRequest } from '../waiting.ts';
+import { type LineMonitor, where } from './monitor.ts';
 import { PeerError, type Peers } from './peers.ts';
 
 const id = z.string().min(1);
-const statusArgs = z.object({ machine: id.optional() }).strict();
+const reason = z.string().trim().min(1).max(2000);
+const statusArgs = z.object({ machine: id.optional(), threadId: id.optional() }).strict();
+const handleArgs = z.object({ item: id, decision: z.enum(['once', 'deny', 'done', 'leave']).optional(),
+  answers: z.array(z.object({ selected: z.array(z.string().min(1)).max(4).optional(), other: z.string().trim().min(1).max(20_000).optional() }).strict())
+    .min(1).max(4).optional(), reason }).strict();
+const relayArgs = z.object({ machine: id, threadId: id, from: id.optional() }).strict();
 const controlArgs = z.object({ action: z.enum(['send', 'resume', 'stop', 'archive']), machine: id, threadId: id.optional(), workspaceId: id.optional(),
   text: z.string().trim().min(1).max(20_000).optional() }).strict();
 const workspaceArgs = z.object({ action: z.enum(['create', 'transfer']), machine: id.optional(), project: id.optional(), name: z.string().max(200).optional(),
@@ -27,12 +34,15 @@ export interface LineToolOptions {
   peers: Peers;
   machine: string;
   instanceId: string;
+  monitor: LineMonitor;
+  /** Line 线程里用户的一条消息；省略 ID 时是最近的一条。 */
+  message(inputId?: string): Promise<{ id: string; text: string } | undefined>;
   /** 在 Line 的线程上挂起，等用户批准这一次或拒绝；会话停止时为 undefined。 */
   approve(request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalDecision | undefined>;
 }
 
 export function lineTools(options: LineToolOptions): Tool[] {
-  const { store, peers, machine, instanceId } = options;
+  const { store, peers, machine, instanceId, monitor } = options;
   const via: InputVia = { kind: 'line', machine, instance: instanceId };
 
   const allowed = (action: LineAction) => {
@@ -66,17 +76,84 @@ export function lineTools(options: LineToolOptions): Tool[] {
     return `line:${instanceId}:${context.turnId}:${context.callId}`;
   };
 
+  const when = (at: number) => new Date(at).toLocaleString('zh-CN', { hour12: false, timeZoneName: 'short' });
+
   return [
-    tool('line_status', '查看账号下各工作机的工作区、线程执行状态和在等用户回应的提问或审批。machine 只看一台；离线或连不上的工作机标明原因。', statusArgs, async (args) => {
+    tool('line_status', [
+      '查看账号下各工作机的工作区、线程执行状态、在等用户回应的提问或审批，以及用户的收件箱。machine 只看一台；离线或连不上的工作机标明原因。',
+      '带 machine 与 threadId 时只读那个线程最后一回合的回复。',
+    ].join(''), statusArgs, async (args) => {
       allowed('status');
+      if (args.threadId) {
+        if (!args.machine) throw new KiteError('读线程的回复要写 machine');
+        return peers.call(args.machine, 'GET', `/threads/${args.threadId}/reply`);
+      }
       const machines = (await peers.machines()).filter((entry) => !args.machine || entry.id === args.machine);
-      return Promise.all(machines.map(async (entry) => {
+      const states = await Promise.all(machines.map(async (entry) => {
         if (!entry.online) return { machine: entry.id, name: entry.name, online: false };
         try {
           const summary = await peers.call<MachineSummary>(entry.id, 'GET', '/summary');
           return { machine: entry.id, name: entry.name, online: true, workspaces: summary.workspaces };
         } catch (error) { return { machine: entry.id, name: entry.name, online: true, error: (error as Error).message }; }
       }));
+      const inbox = monitor.inbox().items.map(({ waiting: _, ...item }) => ({ ...item, where: where(item) }));
+      return { now: when(Date.now()), machines: states, inbox };
+    }),
+    tool('line_handle', [
+      '了结收件箱里交给你处理的一项（用户点了代处理或在托管中）。item 是事项 ID。',
+      '审批：decision 为 once（批准这一次）或 deny（拒绝），不能替用户允许并记住。提问：answers 按问题顺序，每项写 selected（选项标签）或 other（自己写的回答）。',
+      '回合结束与失败：读过回复、回答或继续之后用 done 清掉。拿不准的用 leave 留给用户。reason 写明依据，会给用户看。',
+      '没交给你的、你自己发起的请求都不能处理。',
+    ].join(''), handleArgs, async (args) => {
+      allowed('reply');
+      const item = monitor.claim(args.item);
+      if (args.decision === 'leave') {
+        monitor.leave(item.id, args.reason);
+        return { item: item.id, result: '已留给用户' };
+      }
+      const waiting = item.waiting;
+      if (waiting && item.thread) {
+        let body: Record<string, unknown>;
+        if (waiting.kind === 'approval') {
+          if (args.decision !== 'once' && args.decision !== 'deny') throw new KiteError('审批只能批准这一次（once）或拒绝（deny）');
+          body = { decision: args.decision, reason: args.reason };
+        } else {
+          if (!args.answers) throw new KiteError('回答提问要写 answers');
+          body = { answers: args.answers, reason: args.reason };
+        }
+        try { await peers.call(item.machine.id, 'POST', `/threads/${item.thread.id}/waiting/${waiting.id}`, { body, via }); }
+        catch (error) {
+          if (error instanceof PeerError && error.status === 409) throw new KiteError('这一项已被回应或作废，不用再处理');
+          throw error;
+        }
+        monitor.resolve(item.id, waiting.kind === 'approval' ? args.decision! : 'answered', args.reason);
+        return { item: item.id, result: waiting.kind === 'approval' ? (args.decision === 'once' ? '已批准这一次' : '已拒绝') : '已回答' };
+      }
+      if (args.decision !== 'done') throw new KiteError('这一项读完、处理完之后用 done 清掉，拿不准用 leave');
+      monitor.resolve(item.id, 'done', args.reason);
+      return { item: item.id, result: '已清掉' };
+    }),
+    tool('line_relay', [
+      '把用户在你线程里说的话照原文转达给另一个线程：线程在等提问时作为「其他」的回答，否则作为一条用户消息（经你转达）。',
+      'from 是用户那条消息的输入 ID，省略时取用户最近的一条。不要改写用户原文，你自己的补充说明另用 line_control send。线程在等审批时不能转达。',
+    ].join(''), relayArgs, async (args) => {
+      allowed('reply');
+      const message = await options.message(args.from);
+      if (!message) throw new KiteError(args.from ? `你的线程里没有用户的这条消息：${args.from}` : '你的线程里还没有用户的消息');
+      const key = `${message.id}:${args.machine}:${args.threadId}`;
+      const done = monitor.relayed(key);
+      if (done) return { relayed: done, duplicate: true };
+      const state = await peers.call<DisplayState>(args.machine, 'GET', `/threads/${args.threadId}/state`);
+      if (state.waiting?.kind === 'approval') throw new KiteError('这个线程在等审批，用户的话不能当作批准；请用户在收件箱里回应，或把这一项交给你代处理');
+      if (state.waiting?.kind === 'question') {
+        await peers.call(args.machine, 'POST', `/threads/${args.threadId}/waiting/${state.waiting.id}`, {
+          body: { answers: state.waiting.questions.map(() => ({ other: message.text })) }, via });
+        monitor.markRelayed(key, 'answered');
+        return { relayed: 'answered' };
+      }
+      await peers.call(args.machine, 'POST', `/threads/${args.threadId}/messages`, { body: { text: message.text, id: `relay:${key}`, relay: true }, via, timeoutMs: 120_000 });
+      monitor.markRelayed(key, 'sent');
+      return { relayed: 'sent' };
     }),
     tool('line_control', [
       '管理一个线程：send 发送你自己的说明（来源记为 Kite、经 Line），resume 继续暂停的线程，stop 停止，archive 归档线程（threadId）或独立工作区（workspaceId）。',

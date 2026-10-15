@@ -7,6 +7,7 @@ import type { HarnessEvent } from './harness/types.ts';
 import type { ClaudeState } from './claude/control.ts';
 import type { ModelAccountsSnapshot } from './model-accounts.ts';
 import type { Waiting } from './waiting.ts';
+import type { LineNotification } from './line/monitor.ts';
 
 export type RuntimeEvent =
   | { type: 'claude.control'; state: ClaudeState }
@@ -30,6 +31,12 @@ export type DomainEvent =
   /** 模板或点阵签名有变化，客户端重新读取模板列表。 */
   | { type: 'context-templates.changed' }
   | { type: 'roles.changed' }
+  /** Line 的收件箱变了：客户端更新标志旁的数目，打开着的收件箱重新读取。 */
+  | { type: 'line.inbox' }
+  /** Line 找用户：App 发系统通知，点开是收件箱里的那一项。 */
+  | { type: 'line.notification'; notification: LineNotification }
+  /** monitor 的时间线或来源状态变了，打开着的窗口重新读取。 */
+  | { type: 'monitor.changed'; workspaceId: string; instanceId: string }
   | ({ workspaceId: string; originThreadId?: string } & (
     | { type: 'workspace.setup'; exit: number | null; log: string }
     | { type: 'workspace.snapshot'; commit: string; label: string; changedFiles: number }

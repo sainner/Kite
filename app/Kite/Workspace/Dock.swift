@@ -209,7 +209,7 @@ extension WorkArea {
     func attention(of id: String) -> DockAttention? {
         guard let activity = activities[id] else { return nil }
         if activity.outcome == "failed" || activity.error == true { return .failed }
-        if activity.waitingForResume { return .waiting }
+        if activity.waiting != nil || activity.waitingForResume { return .waiting }
         return unseen(id) ? .unseen : nil
     }
 
@@ -242,7 +242,7 @@ extension WorkArea {
     func statusText(of id: String) -> String {
         guard let activity = activities[id] else { return "空闲" }
         return WorkThread.turnStatus(phase: activity.phase, outcome: activity.error == true ? "failed" : activity.outcome,
-                                     waitingForResume: activity.waitingForResume, unseen: unseen(id))
+                                     waitingForResume: activity.waitingForResume, unseen: unseen(id), waiting: activity.waiting)
     }
 
     func dockLabel(_ entry: DockEntry) -> String {

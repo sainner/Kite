@@ -14,6 +14,10 @@ final class ControlsBarView: UIView {
     private let attach = PaneButtonView()
     private let voice = PaneButtonView()
     private let primary = PaneButtonView()
+    /// 等你回应时代替输入框的卡片（WaitingResponseCard），和输入框共用这张玻璃。
+    private let response = UIHostingController(rootView: AnyView(EmptyView()))
+    /// 卡片正在显示的等待；没有时显示输入框。
+    private var shownWaiting: String?
 
     private var controls: ThreadControlsModel?
     private var enabled = true
@@ -54,6 +58,12 @@ final class ControlsBarView: UIView {
         effort.sizingOptions = [.intrinsicContentSize]
         effort.safeAreaRegions = []
         for button in [attach, voice, primary] { content.addSubview(button) }
+        response.view.backgroundColor = .clear
+        response.safeAreaRegions = []
+        response.sizingOptions = []
+        response.view.alpha = 0
+        response.view.isHidden = true
+        content.addSubview(response.view)
 
         attach.label = .symbol("paperclip")
         attach.title = "添加附件"
@@ -139,12 +149,42 @@ final class ControlsBarView: UIView {
         primary.title = controls.primaryAction.title
         primary.fill = controls.primaryActionFill
         primary.isEnabled = enabled && controls.canPerformPrimaryAction
+        showWaiting(thread.waiting, controls: controls)
         let fading = controls.state.fading
-        field.alpha = fading == nil ? 1 : 0
+        field.alpha = fading == nil && shownWaiting == nil ? 1 : 0
         if fading == nil { shownFading = nil }
         // 失败提示
         if let error = controls.state.effortError { present("修改思考强度失败", error) { controls.state.effortError = nil } }
         if let error = controls.state.voiceError { present("无法开始语音输入", error) { controls.state.voiceError = nil } }
+    }
+
+    /// 出现审批或提问时输入框淡出、回应卡片淡入，回应后换回来；高由 contentChanged 报给外面。
+    private func showWaiting(_ waiting: RemoteWaiting?, controls: ThreadControlsModel) {
+        if let waiting {
+            let thread = controls.thread
+            response.rootView = AnyView(WaitingResponseCard(waiting: waiting, respond: { try await thread.respond(waiting, $0) },
+                                                            stop: { thread.stop() }, canStop: thread.canStop, delegate: controls.delegate)
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] _ in self?.contentChanged() }
+                .environment(\.self, environment ?? EnvironmentValues()))
+        }
+        guard waiting?.id != shownWaiting else { return }
+        let entering = shownWaiting == nil
+        shownWaiting = waiting?.id
+        guard entering || waiting == nil else { return }
+        if entering { endTyping() }
+        let composer: [UIView] = [field, effort.view, attach, voice, primary]
+        response.view.isHidden = false
+        for view in composer { view.isHidden = false }
+        UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            self.response.view.alpha = entering ? 1 : 0
+            for view in composer { view.alpha = entering ? 0 : 1 }
+        } completion: { [weak self] _ in
+            guard let self else { return }
+            response.view.isHidden = shownWaiting == nil
+            for view in composer { view.isHidden = shownWaiting != nil }
+            setNeedsLayout()
+        }
     }
 
     /// 弹出的提示，同一条不弹两次。
@@ -215,6 +255,10 @@ final class ControlsBarView: UIView {
 
     private func plan(width: CGFloat) -> Plan {
         let width = max(width, 0)
+        if shownWaiting != nil {
+            let height = response.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
+            return Plan(height: height, field: 0, effort: .zero, hidesActions: true)
+        }
         let fieldWidth = max(width - 2 * Self.fieldInset, 0)
         var fieldHeight = field.height(width: fieldWidth, text: field.text)
         if let fading = controls?.state.fading { fieldHeight = max(fieldHeight, fading.height) }
@@ -247,8 +291,10 @@ final class ControlsBarView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let width = bounds.width
-        let plan = plan(width: width)
         place(glass, bounds)
+        place(response.view, bounds)
+        guard shownWaiting == nil else { return }
+        let plan = plan(width: width)
 
         let fieldWidth = max(width - 2 * Self.fieldInset, 0)
         let top = Metrics.controlInset + Self.fieldPadding

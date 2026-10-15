@@ -24,6 +24,8 @@ export interface CommandOptions {
   outputLimit?: number;
   /** 输出已写入日志后通知观察者；不等待界面消费。 */
   onOutput?(text: string, limit: number): void;
+  /** 只收标准输出，同样在写入日志之后；monitor 把它的每一行当作事件。 */
+  onStdout?(text: string): void;
   /** 进程组登记由宿主保存，恢复时据此确认是否仍有执行。 */
   onProcess?(pid: number, active: boolean): void;
   /** 有它时名单外的主机不直接拒绝，交给它决定；命令结束时仍在问的一并作废。 */
@@ -113,7 +115,10 @@ export async function runCommand(command: string, timeout: number, signal: Abort
       options.onOutput?.(part, limit);
     } catch (error) { ioError = error; stop('命令输出处理失败'); }
   };
-  child.stdout.setEncoding('utf8').on('data', onOutput);
+  child.stdout.setEncoding('utf8').on('data', (part: string) => {
+    onOutput(part);
+    if (!confidential && !ioError) options.onStdout?.(part);
+  });
   child.stderr.setEncoding('utf8').on('data', onOutput);
   const onAbort = () => stop('命令被打断，已经发生的改动未撤销');
   signal.addEventListener('abort', onAbort, { once: true });

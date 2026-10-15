@@ -17,10 +17,56 @@ nonisolated struct RemoteState: Decodable, Equatable, Sendable {
     var waitingForResume = false
     var lastOutcome: Outcome?
     var recovery: Recovery?
+    /// 回合卡在审批或提问上等人回应；phase 仍是 running。
+    var waiting: RemoteWaiting?
     var context: ContextUsage?
     let status: String
     let error: String?
     let capabilities: Capabilities
+}
+
+/// 回合中途等人回应的对象（docs/工具审批与提问.md）：提问带问题与选项，审批带工具、目标与原因；必问的不能「允许并记住」。
+nonisolated struct RemoteWaiting: Decodable, Equatable, Sendable {
+    nonisolated struct Option: Decodable, Equatable, Sendable {
+        let label: String
+        let description: String
+    }
+    nonisolated struct Question: Decodable, Equatable, Sendable {
+        let header: String
+        let question: String
+        let options: [Option]
+        let multiSelect: Bool
+    }
+    let id: String
+    /// question 或 approval。
+    let kind: String
+    let since: Double
+    var questions: [Question]?
+    var tool: String?
+    var target: String?
+    var reason: String?
+    var mustAsk: Bool?
+
+    var isQuestion: Bool { kind == "question" }
+}
+
+/// 回应等你的那一项：提问按问题顺序给出选中的选项或「其他」，审批给出 once、remember 或 deny。
+nonisolated enum WaitingReply: Encodable, Sendable {
+    nonisolated struct Answer: Encodable, Sendable {
+        var selected: [String]?
+        var other: String?
+    }
+    case answers([Answer])
+    case decision(String)
+
+    private enum Keys: String, CodingKey { case answers, decision }
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: Keys.self)
+        switch self {
+        case .answers(let answers): try container.encode(answers, forKey: .answers)
+        case .decision(let decision): try container.encode(decision, forKey: .decision)
+        }
+    }
 }
 
 /// 最近一次完成请求的测量值，不把待发送文字和当前生成内容估算成 token。
@@ -174,6 +220,18 @@ struct RemoteEvent: Decodable {
     var state: RemoteState?
     var message: String?
     var modelAccounts: ModelAccountsSnapshot?
+    /// monitor.changed 的实例。
+    var instanceId: String?
+    /// line.notification 带的系统通知。
+    var notification: LineNotificationPayload?
+}
+
+/// Line 所在的工作机推来的系统通知（line.notification）：点开是收件箱里的 item。
+nonisolated struct LineNotificationPayload: Decodable, Sendable {
+    let id: String
+    let title: String
+    let body: String
+    var item: String?
 }
 
 enum KitedEventScope {
@@ -247,7 +305,8 @@ struct KitedClient: Equatable {
         case .catalog: nil
         case .thread(let id): id
         }
-        let (connection, stream) = try await streamRequest("/events", thread: thread)
+        // 目录流带上这台设备：连着 Line 所在的工作机时，App 报的关注状态才算数（见 LineAttention）
+        let (connection, stream) = try await streamRequest("/events", thread: thread, device: thread == nil ? LineAttention.deviceID : nil)
         defer { connection.invalidateAndCancel() }
         var request = stream
         request.timeoutInterval = 60
@@ -283,11 +342,14 @@ struct KitedClient: Equatable {
     }
 
     /// 长连接（事件流、语音）用的独立会话和带工作机校验的请求；thread 给出时只关于这个会话。组网会话的配置带着节点的代理设置。
-    private func streamRequest(_ path: String, thread: String?, webSocket: Bool = false) async throws -> (URLSession, URLRequest) {
+    private func streamRequest(_ path: String, thread: String?, device: String? = nil, webSocket: Bool = false) async throws -> (URLSession, URLRequest) {
         guard let machineID else { throw KitedError(message: "请先连接工作机") }
         var components = URLComponents(url: try url(path), resolvingAgainstBaseURL: true)!
         if webSocket { components.scheme = components.scheme == "https" ? "wss" : "ws" }
-        if let thread { components.queryItems = [URLQueryItem(name: "thread", value: thread)] }
+        var query: [URLQueryItem] = []
+        if let thread { query.append(URLQueryItem(name: "thread", value: thread)) }
+        if let device { query.append(URLQueryItem(name: "device", value: device)) }
+        if !query.isEmpty { components.queryItems = query }
         var request = URLRequest(url: components.url!)
         request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
         let session = URLSession(configuration: Tailnet.covers(address) ? try await Tailnet.shared.urlSession().configuration : .ephemeral)

@@ -265,6 +265,7 @@ struct WindowAppearance {
         case "files": .init(name: "文件", icon: "folder")
         case "terminal": .init(name: "终端", icon: "terminal")
         case "preview": .init(name: "预览", icon: "eye")
+        case "monitor": .init(name: "监视", icon: "tray")
         default: .init(name: "插件", icon: "puzzlepiece.extension")
         }
     }

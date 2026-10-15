@@ -383,6 +383,13 @@ export class Store implements UsageStore {
   setThreadRuntime(id: string, runtime: Thread['runtime']): void {
     this.db.query('update threads set runtime = ? where instance_id = ?').run(runtime, id);
   }
+  /** 非代理实例与可选的首窗口原子创建。 */
+  addPluginInstance(instance: PluginInstance, window?: WorkspaceWindow): void {
+    this.db.transaction(() => {
+      this.addInstance(instance);
+      if (window) this.addWindow(window);
+    })();
+  }
   /** 实例身份、会话专有记录与可选窗口原子创建。 */
   addAgent(agent: AgentInstance, window?: WorkspaceWindow): void {
     this.db.transaction(() => {
