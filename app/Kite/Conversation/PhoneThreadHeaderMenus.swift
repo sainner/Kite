@@ -85,15 +85,19 @@ final class PhoneThreadMenuButton: UIButton {
     }
 
     /// 厂商标志作为文字附件排在模型名前，随文字颜色着色，竖直居中于大写字母；命中分界仍按标题末尾算。
+    /// 和模型名的间隔画成附件图右侧的留白：附件字符上加 kern 在按钮标题里拉不开间距。
     private static func title(_ text: String, logo: ImageResource?, size: UIContentSizeCategory) -> AttributedString {
         guard let logo else { return AttributedString(text) }
         let traits = UITraitCollection(preferredContentSizeCategory: size)
         let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traits)
         let extent = UIFontMetrics(forTextStyle: .body).scaledValue(for: Metrics.paneHeaderLogo, compatibleWith: traits)
-        let attachment = NSTextAttachment(image: UIImage(resource: logo))
-        attachment.bounds = CGRect(x: 0, y: (font.capHeight - extent) / 2, width: extent, height: extent)
+        let width = extent + Metrics.paneHeaderLogoGap
+        let image = UIGraphicsImageRenderer(size: CGSize(width: width, height: extent)).image { _ in
+            UIImage(resource: logo).draw(in: CGRect(x: 0, y: 0, width: extent, height: extent))
+        }
+        let attachment = NSTextAttachment(image: image.withRenderingMode(.alwaysTemplate))
+        attachment.bounds = CGRect(x: 0, y: (font.capHeight - extent) / 2, width: width, height: extent)
         let title = NSMutableAttributedString(attachment: attachment)
-        title.addAttribute(.kern, value: Metrics.paneHeaderLogoGap, range: NSRange(location: 0, length: title.length))
         title.append(NSAttributedString(string: text))
         return (try? AttributedString(title, including: \.uiKit)) ?? AttributedString(text)
     }
