@@ -269,7 +269,7 @@ struct AgentModelMenus: View {
             Menu {
                 ThreadModelMenuItems(models: menu)
             } label: {
-                PaneHeaderButtonLabel(current?.title ?? configuration.model)
+                PaneHeaderButtonLabel(current?.title ?? configuration.model, logo: ThreadModelMenu.logo(vendor: current?.vendor))
             }
             .help(configuration.model)
             .accessibilityLabel("模型")

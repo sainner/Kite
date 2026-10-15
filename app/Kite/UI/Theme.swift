@@ -156,6 +156,9 @@ enum Metrics {
         InputMode.current.isTouch ? max(paneButtonGap, paneButton - InputMode.current.labelExtent) : paneButtonGap
     }
     static let paneButtonGap: CGFloat = 10
+    /// 标题栏文字前的标志（模型按钮的厂商）比图标小一号，宽的标志与大写字母差不多高，和文字隔半个按钮间距。
+    static var paneHeaderLogo: CGFloat { InputMode.current.labelExtent - 2 }
+    static let paneHeaderLogoGap: CGFloat = paneButtonGap / 2
     /// 按钮到所属工具条容器的四边留白。
     static let paneToolbarInset: CGFloat = 8
     static let paneToolbarHeight: CGFloat = paneButton + 2 * paneToolbarInset

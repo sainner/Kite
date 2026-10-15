@@ -24,6 +24,9 @@ struct ThreadHeaderActions: View {
         guard let modelName else { return "模型" }
         return availableModels.first { modelName == $0.id }?.title ?? modelName
     }
+    private var modelLogo: ImageResource? {
+        ThreadModelMenu.logo(vendor: availableModels.first { $0.id == modelName }?.vendor)
+    }
     /// 重新读取期间沿用上次的能力显示模型名，但不凭它放开修改。
     private var canChangeModel: Bool {
         if choice != nil { return model.isConnected(area) && thread.agentCapabilities != nil }
@@ -75,12 +78,12 @@ struct ThreadHeaderActions: View {
 
     private var menuGroup: some View {
         #if os(iOS)
-        PhoneThreadHeaderMenus(modelTitle: modelTier, modelName: modelName,
+        PhoneThreadHeaderMenus(modelTitle: modelTier, modelLogo: modelLogo, modelName: modelName,
             modelEnabled: canOpenModels, models: modelMenu, commands: moreCommands)
             .fixedSize()
             .modifier(PhoneThreadMenuGlass())
         #else
-        MacThreadHeaderMenus(modelTitle: modelTier, modelName: modelName,
+        MacThreadHeaderMenus(modelTitle: modelTier, modelLogo: modelLogo, modelName: modelName,
             modelEnabled: canOpenModels, models: modelMenu, commands: moreCommands)
             .fixedSize()
         #endif
