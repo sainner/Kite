@@ -29,7 +29,7 @@ struct AgentSettings: View {
     }
 
     var body: some View {
-        CardSheet(title: "代理配置", subtitle: instance.title, typing: editingLimit, back: true, size: InstanceSettings.size,
+        CardSheet(title: "代理配置", subtitle: instance.title, error: phase.error, typing: editingLimit, back: true, size: InstanceSettings.size,
                   close: { if changed { discard = "back" } else { back() } }) {
             Group {
                 if draft != nil, let capabilities {
@@ -51,8 +51,8 @@ struct AgentSettings: View {
                 if changed { discard = "reload" } else { perform { try await load() } }
             }
             .disabled(working || !available)
-        } footer: {
-            CardActions(primary: "保存", enabled: canSave, phase: $phase) { perform(succeeds: true) { try await save() } }
+            CardSheetAction(title: "保存", systemImage: "checkmark", busy: working) { perform { try await save() } }
+                .disabled(!canSave)
         }
         .endsTyping(editingLimit) { editingLimit = false }
         .interactiveDismissDisabled(working || changed)
@@ -87,8 +87,8 @@ struct AgentSettings: View {
         self.saved = value; self.draft = value.instance.config.agent
         if let index = area.instances.firstIndex(where: { $0.id == instance.id }) { area.instances[index].config = value.instance.config }
     }
-    private func perform(succeeds: Bool = false, _ action: @escaping () async throws -> Void) {
-        $phase.run(succeeds: succeeds, action)
+    private func perform(_ action: @escaping () async throws -> Void) {
+        $phase.run(action)
     }
 }
 
@@ -124,7 +124,6 @@ struct DraftAgentSettings: View {
     @Environment(\.dismiss) private var dismiss
     @State private var tools: [String] = []
     @State private var budget = 50
-    @State private var phase = CardPhase.idle
     @FocusState private var editingLimit: Bool
 
     private var role: AgentRole? { model.newThreadRole(for: thread, in: area) }
@@ -142,8 +141,9 @@ struct DraftAgentSettings: View {
             } else {
                 ProgressView()
             }
-        } footer: {
-            CardActions(primary: "完成", enabled: capabilities != nil && budget >= 1, phase: $phase, succeeded: "已更新") { save() }
+        } actions: {
+            CardSheetAction(title: "完成", systemImage: "checkmark", action: save)
+                .disabled(capabilities == nil || budget < 1)
         }
         .endsTyping(editingLimit) { editingLimit = false }
         .onAppear {

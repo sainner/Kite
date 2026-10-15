@@ -227,7 +227,7 @@ struct ContextEditorToolbar: View {
     }
 }
 
-/// 只改文字的编辑区（变量窗口里的文件）的底栏：只有格式一组，没有块工具和变量。
+/// 只改文字的编辑区（变量弹窗里的文件）的底栏：只有格式一组，没有块工具和变量。
 struct ContextTextToolbar: View {
     var body: some View {
         ContextToolbarLayout(spacing: Metrics.paneButtonGap) {

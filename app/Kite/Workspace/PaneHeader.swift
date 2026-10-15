@@ -10,6 +10,8 @@ struct PaneHeader {
     /// 主标题右边的小标签，例如订阅账号的档位。
     var badge: String?
     var titleEdit: TitleEdit?
+    /// 换掉副行的失败原因：弹窗没有信息区，失败写在副行（见 CardSheet），警告色，放不下时悬停或长按看全文。
+    var failure: String?
 
     /// 由主标题尾部的刷新图标触发，生成期间保持原题。
     struct TitleRefresh {
@@ -364,7 +366,14 @@ struct PaneHeaderTitle: View {
                 }
             }
             .font((InputMode.current.isTouch ? Theme.secondary : Theme.title).weight(.semibold))
-            if let subtitle = header.subtitle {
+            if let failure = header.failure {
+                Text(failure)
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.warning)
+                    .modifier(FullTextReveal(text: failure))
+                    .id(failure)
+                    .transition(.blurReplace)
+            } else if let subtitle = header.subtitle {
                 Group {
                     if let menu = header.subtitleMenu { PaneSubtitleMenu(subtitle: subtitle, menu: menu) }
                     else { Text(subtitle) }
@@ -379,7 +388,21 @@ struct PaneHeaderTitle: View {
         .onChange(of: header.titleEdit?.enabled) { _, enabled in if enabled != true { editing = false } }
         .animation(.snappy, value: header.title)
         .animation(.snappy, value: header.subtitle)
+        .animation(.snappy, value: header.failure)
         .animation(.snappy, value: header.badge)
+    }
+}
+
+/// 一行可能放不下的文字看全文：指针悬停显示系统提示，手指长按在下方弹出系统气泡，同信息区的说明。
+private struct FullTextReveal: ViewModifier {
+    let text: String
+    @State private var presented = false
+
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            .help(text)
+            .modifier(PaneStatusTextPopover(text: text, presented: $presented))
     }
 }
 

@@ -46,7 +46,6 @@ enum PaneGroup: Identifiable {
             switch pane.id {
             case "emblem": return .init(name: "签名", icon: "circle.grid.3x3")
             case "settings": return .init(name: "初始配置", icon: "slider.horizontal.3")
-            case AppModel.contextVariablePane.id: return .init(name: "变量", icon: ContextScene.Variable.icon)
             default: return .init(name: "上下文", icon: "text.alignleft")
             }
         }

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 变量窗口按代理取到的值，见 GET /instances/:id/context-variables/:name。来自文件的（项目规则、记忆索引）另带逐级找到的各份文件，
+/// 变量弹窗按取值对象取到的值，见 GET /instances/:id/context-variables/:name。来自文件的（项目规则、记忆索引）另带逐级找到的各份文件，
 /// 由外到内；一份都没有时 create 是在工作目录新建的位置。
 nonisolated struct ContextVariableValue: Decodable, Sendable {
     struct File: Decodable, Sendable, Identifiable {
@@ -15,7 +15,7 @@ nonisolated struct ContextVariableValue: Decodable, Sendable {
     let create: String?
 }
 
-/// 变量窗口里改过还没保存的一份文件。
+/// 变量弹窗里改过还没保存的一份文件。
 struct ContextFileDraft: Identifiable {
     let machine: String
     let path: String
@@ -59,32 +59,6 @@ struct ContextVariableSource: Identifiable {
 }
 
 extension AppModel {
-    /// 代理上下文页的变量窗口。
-    static let contextVariablePane = Pane("variable")
-
-    /// 代理上下文页这一项可用的变量：角色的提示词变量，或模板所在场景的变量。
-    var agentContextVariables: [ContextScene.Variable] {
-        guard let item = agentContextItem else { return [] }
-        if item.category == .role { return roleCatalog?.variables ?? [] }
-        let scene = libraryTemplate(item.id)?.scene
-        return contextTemplates?.scenes.first { $0.id == scene }?.variables ?? []
-    }
-
-    var contextVariableShown: Bool { agentContextGroup?.layout.root?.panes.contains(Self.contextVariablePane) == true }
-
-    /// 点可用变量里的一个：上下文窗口原地不动，变量窗口占掉它以外的地方；开着时换成这个变量，再点开着的那个就关掉。
-    func openContextVariable(_ name: String) {
-        guard let layout = agentContextGroup?.layout else { return }
-        if contextVariableShown, contextVariable == name { return closeContextVariable() }
-        contextVariable = name
-        layout.present(Self.contextVariablePane, beside: Pane("context"))
-    }
-
-    func closeContextVariable() {
-        roleWindows.dismiss(Self.contextVariablePane)
-        templateWindows.dismiss(Self.contextVariablePane)
-    }
-
     /// 连着的工作机上的工作区，先放当前工作机的。
     private var contextVariableAreas: [(area: WorkArea, remote: RemoteWorkspace)] {
         let active = activeConnection?.machine.id
@@ -142,7 +116,7 @@ extension AppModel {
         contextFileDrafts.first { $0.machine == machine && $0.path == path }
     }
 
-    /// 改变量窗口里的文件：改回与读到的一致时不再算草稿；新建的（saved 为 nil）一直留着，保存或放弃才清掉。
+    /// 改变量弹窗里的文件：改回与读到的一致时不再算草稿；新建的（saved 为 nil）一直留着，保存或放弃才清掉。
     func editContextFile(_ path: String, on machine: String, content: String, saved: ContextVariableValue.File?) {
         let index = contextFileDrafts.firstIndex { $0.machine == machine && $0.path == path }
         if let saved, content == saved.content {
@@ -198,24 +172,29 @@ private nonisolated struct ContextFileWrite: Encodable {
     private enum CodingKeys: String, CodingKey { case path, content, expectedSha256 }
 }
 
-/// 资源库代理上下文的变量窗口：按变量所在的层选一个对象取现在的值，环境层选工作机，项目层选项目，工作区层选工作区，代理层选代理，
+/// 资源库代理上下文里点可用变量弹出的变量弹窗：按变量所在的层选一个对象取现在的值，环境层选工作机，项目层选项目，工作区层选工作区，代理层选代理，
 /// 在标题栏选，默认是当前所在的那个。项目规则与记忆索引逐份列出原文，直接改，改完保存，写回项目在那台工作机上的文件夹，
-/// 下一次请求时生效，底栏是格式工具；其他变量只读。台面上点窗口外面就关掉，上下文窗口原地不动；改了没保存的文件关掉也留着，再打开接着改。
-struct ContextVariablePane: View {
+/// 下一次请求时生效，底栏是格式工具；其他变量只读。改了没保存的文件关掉也留着，再打开接着改。
+struct ContextVariableSheet: View {
+    let variable: ContextScene.Variable
     @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
     @State private var value: ContextVariableValue?
     @State private var loading = false
     @State private var saving = false
     @State private var error: String?
     @Environment(\.toast) private var toast
     @State private var editor = ContextEditor()
+    /// 正在改的那份文件：iPhone 上弹窗据此给键盘让位。
+    @State private var typing: String?
 
-    private var name: String { model.contextVariable ?? "" }
+    private static let size = CGSize(width: 640, height: 720)
 
-    /// 这一次显示要用的：变量、所在的层、这一层可选的对象和选中的那个、列出来的文件。body 里算一次往下传，
+    private var name: String { variable.name }
+
+    /// 这一次显示要用的：所在的层、这一层可选的对象和选中的那个、列出来的文件。body 里算一次往下传，
     /// 列取值对象要走遍连着的工作区（代理层还要走遍各工作区的线程），不在各处各算一遍。
     private struct Shown {
-        let variable: ContextScene.Variable?
         let layer: ContextVariableLayer?
         let sources: [ContextVariableSource]
         let source: ContextVariableSource?
@@ -226,9 +205,7 @@ struct ContextVariablePane: View {
     }
 
     private func shown() -> Shown {
-        let name = name
-        let variable = model.agentContextVariables.first { $0.name == name }
-        let layer = variable?.layer.flatMap(ContextVariableLayer.init(rawValue:))
+        let layer = variable.layer.flatMap(ContextVariableLayer.init(rawValue:))
         let sources = layer.map(model.contextVariableSources) ?? []
         let source = layer.flatMap { model.contextVariableSource($0, among: sources) }
         var paths: [String] = []
@@ -238,37 +215,29 @@ struct ContextVariablePane: View {
             if let create = value?.create, model.contextFileDraft(create, on: source.machine) != nil { paths.append(create) }
             changed = paths.filter { model.contextFileDraft($0, on: source.machine) != nil }
         }
-        return Shown(variable: variable, layer: layer, sources: sources, source: source, paths: paths, changed: changed)
+        return Shown(layer: layer, sources: sources, source: source, paths: paths, changed: changed)
     }
 
     var body: some View {
         let shown = shown()
         let source = shown.source, paths = shown.paths
-        PaneWindow(header: PaneHeader(title: shown.variable?.title ?? name, subtitle: status(shown) ?? (paths.count == 1 ? paths[0] : name)),
-                   notice: error.map(PaneNotice.failure), actions: PaneHeaderActions(groups: headerGroups(shown), menus: sourceMenu(shown))) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if let value, let source { content(value, source: source, labeled: paths.count > 1) }
-                }
-                .agentContextColumn()
-            }
-        } controls: { _ in
+        CardSheet(title: variable.title, subtitle: status(shown) ?? (paths.count == 1 ? paths[0] : name), error: error,
+                  typing: typing != nil, size: Self.size, close: { dismiss() }) {
+            if let value, let source { content(value, source: source, labeled: paths.count > 1) }
+        } actions: {
+            PaneHeaderActions(groups: headerGroups(shown), menus: sourceMenu(shown))
+        } footer: {
             if !paths.isEmpty { ContextTextToolbar().disabled(saving) }
         }
         .contextEditor(editor, counting: nil)
-        .background {
-            OutsideClickDismissal(paused: { [model] in model.agentContextGroup?.layout.transitioning ?? false }) { [model] in
-                model.closeContextVariable()
-            }
-        }
+        .interactiveDismissDisabled(saving)
         .task(id: "\(source.map { "\(model.connections[$0.machine]?.catalog.generation.uuidString ?? "")|\($0.path)" } ?? "")|\(name)") {
             await load(from: source)
         }
     }
 
-    /// 窗口现在的情况写在副行：取不到值的原因、正在取值、值是空的、文件一份都没有。
+    /// 弹窗现在的情况写在副行：取不到值的原因、正在取值、值是空的、文件一份都没有；出错时副行换成失败原因（见 CardSheet）。
     private func status(_ shown: Shown) -> String? {
-        guard shown.variable != nil else { return nil }
         guard let layer = shown.layer else { return "场景材料，生成时才有，这里看不到取值" }
         guard let source = shown.source else { return "没有可以取值的\(layer.noun)" }
         guard let value else { return loading ? "正在取值…" : nil }
@@ -299,7 +268,10 @@ struct ContextVariablePane: View {
         let machine = source.machine
         return ContextFileEditor(path: path, labeled: labeled,
                                  text: Binding(get: { [model] in model.contextFileDraft(path, on: machine)?.content ?? saved?.content ?? "" },
-                                               set: { [model] content in model.editContextFile(path, on: machine, content: content, saved: saved) }))
+                                               set: { [model] content in model.editContextFile(path, on: machine, content: content, saved: saved) }),
+                                 focused: Binding(get: { typing == path }, set: { focused in
+                                     if focused { typing = path } else if typing == path { typing = nil }
+                                 }))
             .disabled(saving)
     }
 
@@ -360,6 +332,7 @@ struct ContextVariablePane: View {
     private func load(from source: ContextVariableSource?) async {
         value = nil
         error = nil
+        typing = nil
         guard let source else { return }
         loading = true
         defer { loading = false }
@@ -379,9 +352,7 @@ struct ContextVariablePane: View {
         Task {
             defer { saving = false }
             do {
-                if let saved = try await model.saveContextFiles(name, to: source, paths: paths), saved.name == model.contextVariable {
-                    value = saved
-                }
+                if let saved = try await model.saveContextFiles(name, to: source, paths: paths) { value = saved }
             } catch {
                 self.error = "保存失败：\(error.localizedDescription)"
             }
@@ -389,12 +360,12 @@ struct ContextVariablePane: View {
     }
 }
 
-/// 变量窗口里的一份文件：和段落一样直接改，Markdown 标记按样式显示，存回去的是原文。不套卡片，字和正文的边对齐；几份文件时上面标出路径。
+/// 变量弹窗里的一份文件：和段落一样直接改，Markdown 标记按样式显示，存回去的是原文。不套卡片，字和正文的边对齐；几份文件时上面标出路径。
 private struct ContextFileEditor: View {
     let path: String
     let labeled: Bool
     @Binding var text: String
-    @State private var focused = false
+    @Binding var focused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {

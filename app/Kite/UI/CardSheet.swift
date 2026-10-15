@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// 卡片样式的弹窗骨架。标题栏在 iPhone 上依次是关闭、标题、其他操作，Mac 上关闭在右、其他操作在左；
-/// 子页面把关闭换成返回，两端都在左边。主按钮贴底，iPhone 上紧挨安全区，Mac 上没有安全区，底边留白同左右。
+/// 卡片样式的弹窗骨架。标题栏两端都是关闭、标题、其他操作，关闭固定在左上角；子页面把关闭换成返回。
+/// 保存放在哪按弹窗的用途：编辑内容、填表的放在标题栏的操作区，同窗口；信息展示、步骤引导的主按钮（下一步、提交、推送）贴底，
+/// iPhone 上紧挨安全区，Mac 上没有安全区，底边留白同左右。没有信息区，失败原因换掉副行（error）。
+/// iPhone 键盘升起时底栏放收起键盘：有主按钮时由 CardActions 放，底栏是工具栏时由工具栏放，底栏空着时由这里放。
 /// 正文从两条栏后面滚过，滚到标题栏下时由系统的软边滚动边缘效果模糊。
 /// 不给 size 时按内容定高，放不下（键盘升起）时正文滚动；给了 size 的（设置、编辑器这类会变长的）Mac 上用这个尺寸，iPhone 上铺满高度。
 struct CardSheet<Content: View, Actions: View, Footer: View>: View {
@@ -12,8 +14,8 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
     var typing = false
     /// 子页面：左上角是返回而不是关闭。
     var back = false
-    /// 需要把操作组放在关闭按钮旁边的弹窗使用；其他 Mac 弹窗沿用左侧操作区。
-    var trailingActions = false
+    /// 失败原因，有时换掉副行。
+    var error: String?
     var size: CGSize?
     let close: () -> Void
     let content: Content
@@ -25,14 +27,14 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
     /// 弹窗自身的底部安全区，不含键盘。
     @State private var bottomSafeArea: CGFloat = 0
 
-    init(title: String, subtitle: String? = nil, typing: Bool = false, back: Bool = false, trailingActions: Bool = false, size: CGSize? = nil,
+    init(title: String, subtitle: String? = nil, error: String? = nil, typing: Bool = false, back: Bool = false, size: CGSize? = nil,
          close: @escaping () -> Void, @ViewBuilder content: () -> Content,
          @ViewBuilder actions: () -> Actions = { EmptyView() }, @ViewBuilder footer: () -> Footer = { EmptyView() }) {
         self.titleText = title
         self.subtitle = subtitle
+        self.error = error
         self.typing = typing
         self.back = back
-        self.trailingActions = trailingActions
         self.size = size
         self.close = close
         self.content = content()
@@ -50,14 +52,16 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
     }
 
     private var title: some View {
-        PaneHeaderTitle(header: PaneHeader(title: titleText, subtitle: subtitle))
+        PaneHeaderTitle(header: PaneHeader(title: titleText, subtitle: subtitle, failure: error))
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     #if os(macOS)
     /// Mac 弹窗没有安全区，底边留白和左右一样。
     private var footerBottom: CGFloat { CardMetrics.sheetInset }
+    private var keyboardShown: Bool { false }
     #else
+    private var keyboardShown: Bool { ScreenKeyboard.shared.shown }
     /// 按钮栏不走系统的底部安全区，从弹窗底边起固定留出 Home 条那一截：平时按钮正好在安全区上沿，
     /// 键盘把弹窗顶起、底下没了安全区时，按钮和弹窗高度都不变，不跟着键盘的动画跳。
     private var footerBottom: CGFloat { bottomSafeArea }
@@ -116,27 +120,12 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
 
     private var header: some View {
         HStack(spacing: Metrics.paneButtonGap) {
-            #if os(macOS)
-            if back {
-                dismissButton
-                title
-                actions
-            } else {
-                if !trailingActions { actions }
-                // 左边没有操作按钮时，标题和正文左边对齐
-                title.padding(.leading, trailingActions || Actions.self == EmptyView.self ? CardMetrics.sheetInset - Metrics.paneMargin : 0)
-                if trailingActions { actions }
-                dismissButton
-            }
-            #else
             dismissButton
             title
             actions
-            #endif
         }
-        .padding(.leading, Metrics.paneMargin)
-        // 窗口标题栏的边距在 Mac 上偏紧，弹窗标题栏上下和右边至少留 padding，角上的关闭按钮离两边一样远
-        .padding([.vertical, .trailing], max(Metrics.paneMargin, Metrics.padding))
+        // 窗口标题栏的边距在 Mac 上偏紧，弹窗标题栏四周至少留 padding，角上的关闭按钮离两边一样远
+        .padding(max(Metrics.paneMargin, Metrics.padding))
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
     }
 
@@ -151,19 +140,24 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
             }
     }
 
-    /// 没有主按钮时，正文已有一段底边留白，只补足剩下的安全距离。
+    /// 底栏空着时，正文已有一段底边留白，只补足剩下的安全距离；键盘升起时放收起键盘。
+    /// 收起键盘撑高的那截不算进弹窗高度：按内容定高的弹窗不跟着键盘变高，正文滚动。
     private var footerBar: some View {
         Group(subviews: footer) { buttons in
-            if buttons.isEmpty {
-                Color.clear.frame(height: max(0, footerBottom - Metrics.padding))
+            if !buttons.isEmpty || keyboardShown {
+                VStack(spacing: 0) {
+                    if buttons.isEmpty { KeyboardDismissButton().frame(maxWidth: .infinity, alignment: .leading) } else { buttons }
+                }
+                .padding(.horizontal, CardMetrics.sheetInset)
+                .padding(.top, Metrics.padding)
+                .padding(.bottom, footerBottom)
             } else {
-                VStack(spacing: 0) { buttons }
-                    .padding(.horizontal, CardMetrics.sheetInset)
-                    .padding(.top, Metrics.padding)
-                    .padding(.bottom, footerBottom)
+                Color.clear.frame(height: max(0, footerBottom - Metrics.padding))
             }
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { footerHeight = $0 }
+        // 弹窗由系统顶到键盘上方，底栏里的工具栏也放收起键盘
+        .environment(\.keyboardShown, true)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if !keyboardShown { footerHeight = $0 } }
     }
 }
 
@@ -214,17 +208,15 @@ private struct CardSheetWindowSize: NSViewRepresentable {
 }
 #endif
 
-/// 标题栏上的图标操作，如重新读取。
+/// 标题栏上的图标操作，如重新读取；编辑、填表的弹窗把保存也放在这里，在忙时图标换成转圈，同窗口的右组。
 struct CardSheetAction: View {
     let title: String
     let systemImage: String
+    var busy = false
     let action: () -> Void
 
     var body: some View {
-        PaneHeaderButtonGroup {
-            Button(action: action) { PaneHeaderButtonLabel(title, systemImage: systemImage) }
-                .help(title)
-        }
+        PaneHeaderActions(groups: [[PaneHeaderAction(title: title, systemImage: systemImage, busy: busy, action: action)]])
     }
 }
 

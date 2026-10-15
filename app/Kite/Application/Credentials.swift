@@ -259,7 +259,7 @@ struct KeySheet<Provider: KeyProvider>: View {
     private var valid: Bool { !trimmed(key).isEmpty || (provider.acceptsAdminKey && !trimmed(adminKey).isEmpty) }
 
     var body: some View {
-        CardSheet(title: Provider.addTitle, subtitle: Provider.sheetSubtitle, typing: focus != nil, close: { dismiss() }) {
+        CardSheet(title: Provider.addTitle, subtitle: Provider.sheetSubtitle, error: phase.error, typing: focus != nil, close: { dismiss() }) {
             CardField(label: "供应商") {
                 Menu {
                     ForEach(Provider.allCases) { item in
@@ -287,8 +287,9 @@ struct KeySheet<Provider: KeyProvider>: View {
                         .cardInput { focus = .admin }
                 }
             }
-        } footer: {
-            CardActions(primary: "保存", enabled: valid, phase: $phase, action: save)
+        } actions: {
+            CardSheetAction(title: "保存", systemImage: "checkmark", busy: phase.working, action: save)
+                .disabled(!valid || phase.working)
         }
         .endsTyping(focus != nil) { focus = nil }
         .onChange(of: provider) { _, value in if !value.acceptsAdminKey { adminKey = "" } }

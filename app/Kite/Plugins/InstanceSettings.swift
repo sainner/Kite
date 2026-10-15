@@ -56,7 +56,7 @@ struct InstanceSettings: View {
     }
 
     private var main: some View {
-        CardSheet(title: "实例设置与授权", subtitle: instance.title, size: Self.size,
+        CardSheet(title: "实例设置与授权", subtitle: instance.title, error: progress.error, size: Self.size,
                   close: { if changed { discardAction = "close" } else { dismiss() } }) {
             Group {
                 CardSection("实例", note: definition?.lifetime.explanation) {
@@ -106,12 +106,10 @@ struct InstanceSettings: View {
                 if changed { discardAction = "reload" } else { perform { try await load() } }
             }
             .disabled(working || !available)
-        } footer: {
-            // 不能编辑的实例没有保存，出错时也借这里显示原因和重试
-            if editable || progress.error != nil {
-                CardActions(primary: "保存", enabled: editable && !working && available && changed && draft != nil, phase: $progress) {
-                    perform(succeeds: true) { try await save() }
-                }
+            // 不能编辑的实例没有保存
+            if editable {
+                CardSheetAction(title: "保存", systemImage: "checkmark", busy: working) { perform { try await save() } }
+                    .disabled(working || !available || !changed || draft == nil)
             }
         }
         .interactiveDismissDisabled(working || changed)
@@ -250,8 +248,8 @@ struct InstanceSettings: View {
         } catch { toolErrors[id] = error.localizedDescription }
     }
 
-    private func perform(succeeds: Bool = false, _ action: @escaping () async throws -> Void) {
-        $progress.run(succeeds: succeeds, action)
+    private func perform(_ action: @escaping () async throws -> Void) {
+        $progress.run(action)
     }
 }
 

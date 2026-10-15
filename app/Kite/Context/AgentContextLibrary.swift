@@ -75,9 +75,6 @@ struct AgentContextLibrary: View {
                 }
             }
         }
-        // 换一项或离开这一页时关掉变量窗口
-        .onChange(of: model.agentContextItem) { model.closeContextVariable() }
-        .onDisappear { model.closeContextVariable() }
         .task(id: model.connectionRevision) {
             error = nil
             do {
@@ -98,7 +95,6 @@ struct AgentContextPane: View {
     var body: some View {
         Group {
             switch (item.category, pane.id) {
-            case (_, AppModel.contextVariablePane.id): ContextVariablePane()
             case (.role, "emblem"): RoleEmblemPane(id: item.id)
             case (.role, "settings"): RoleSettingsPane(id: item.id)
             case (.role, _): RoleContextPane(id: item.id)

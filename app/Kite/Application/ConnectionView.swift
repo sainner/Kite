@@ -125,13 +125,14 @@ struct NewWorkspace: View {
     private var subtitle: String { mode == .project ? "克隆远程仓库，或登记工作机上已有的目录" : "在已登记的工作目录上新建工作区" }
 
     var body: some View {
-        CardSheet(title: title, subtitle: subtitle, typing: focus != nil, close: { dismiss() }) {
+        CardSheet(title: title, subtitle: subtitle, error: phase.error, typing: focus != nil, close: { dismiss() }) {
             switch mode {
             case .project: projectFields
             case .session, .checkout: sessionFields
             }
-        } footer: {
-            CardActions(primary: primary.title, enabled: primary.enabled, phase: $phase, action: primary.run)
+        } actions: {
+            CardSheetAction(title: primary.title, systemImage: "checkmark", busy: working, action: primary.run)
+                .disabled(!primary.enabled)
         }
         .endsTyping(focus != nil) { focus = nil }
         .onAppear {
@@ -381,6 +382,7 @@ struct ServiceConnection: ViewModifier {
             }
             #endif
             .sheet(item: $model.newWorkspace) { NewWorkspace(mode: $0).environment(model).toastHost().appAppearance() }
+            .sheet(item: $model.contextVariable) { ContextVariableSheet(variable: $0).environment(model).toastHost().appAppearance() }
             .modifier(WorkspaceGitPresentation())
     }
 }

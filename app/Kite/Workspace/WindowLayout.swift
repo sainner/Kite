@@ -155,33 +155,8 @@ final class WindowLayout {
         storageKey = nil
         defaults = .standard
         self.root = root
-        fixedRoot = root
         focused = root.panes.first
         Self.all.add(self)
-    }
-
-    /// 固定排布本来的样子，临时放上来的窗口关掉后回到它，见 present。
-    @ObservationIgnored private var fixedRoot: Tile?
-
-    /// 固定排布里临时放上来一个窗口（资源库的变量窗口）：anchor 像固定了一样原地不动，pane 占掉它以外的地方，
-    /// 那里的窗口暂时让开；anchor 以外没有地方时在右边切出四成。聚焦 pane，关掉（dismiss）回到本来的排布。
-    func present(_ pane: Pane, beside anchor: Pane) {
-        guard isFixed, let fixedRoot, fixedRoot.panes.contains(anchor), root?.panes.contains(pane) != true else { return focus(pane) }
-        let next = fixedRoot.blocks(without: [anchor]).first.map { fixedRoot.replacing(block: $0, with: .pane(pane)) }
-            ?? fixedRoot.inserting(.pane(pane), on: .trailing, ratio: 0.6)
-        withLayoutAnimation(.settle) {
-            root = next
-            focused = pane
-        }
-    }
-
-    /// 关掉 present 放上来的窗口，让开的窗口回到原处。
-    func dismiss(_ pane: Pane) {
-        guard isFixed, let fixedRoot, !fixedRoot.panes.contains(pane), root?.panes.contains(pane) == true else { return }
-        withLayoutAnimation(.settle) {
-            root = fixedRoot
-            if focused == pane { focused = fixedRoot.panes.first }
-        }
     }
 
     func regions(in bounds: CGRect) -> WindowRegions {

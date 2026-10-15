@@ -140,10 +140,10 @@ struct ContextEditing<Content: View>: View {
 }
 
 /// 正文开头的可用变量一节：标题后是工具栏插入变量的同一个图标，按组列出，胶囊和正文里的变量同样子，后面是说明；分割线右端可以收起。
-/// 窄屏上胶囊一行、说明换到下一行，宽屏胶囊与说明并排对齐，各组共用一列宽。插入在工具栏；给了 open 时点胶囊打开变量窗口。
+/// 窄屏上胶囊一行、说明换到下一行，宽屏胶囊与说明并排对齐，各组共用一列宽。插入在工具栏；给了 open 时点胶囊弹出变量弹窗。
 struct ContextVariablePreview: View {
     let variables: [ContextScene.Variable]
-    var open: ((String) -> Void)?
+    var open: ((ContextScene.Variable) -> Void)?
     @Environment(\.workspacePresentation) private var presentation
     /// 收起与否本机记住，各个模板和角色窗口一致。
     @AppStorage("context.variables.expanded") private var expanded = true
@@ -185,7 +185,7 @@ struct ContextVariablePreview: View {
 
     @ViewBuilder private func chip(_ variable: ContextScene.Variable) -> some View {
         if let open {
-            ContextVariableOpener(title: variable.title) { open(variable.name) }
+            ContextVariableOpener(title: variable.title) { open(variable) }
         } else {
             ContextVariableChip(title: variable.title)
         }
@@ -206,18 +206,16 @@ struct ContextVariablePreview: View {
     }
 }
 
-/// 可用变量里能点的胶囊：点了打开变量窗口。原生按钮盖在胶囊上接点击，变量窗口开着时点这里不算点在它外面（见 OutsideClickButton），
-/// 换成这个变量还是关掉由 open 决定；按下变淡，同条件里的变量菜单。
+/// 可用变量里能点的胶囊：点了弹出变量弹窗；按下变淡，同条件里的变量菜单。
 private struct ContextVariableOpener: View {
     let title: String
     let open: () -> Void
-    @State private var pressed = false
 
     var body: some View {
-        ContextVariableChip(title: title)
-            .accessibilityHidden(true)
-            .opacity(pressed ? 0.7 : 1)
-            .overlay { OutsideClickButton(label: "查看\(title)", action: open, pressed: $pressed) }
+        Button(action: open) { ContextVariableChip(title: title) }
+            .buttonStyle(ContextPressFadeStyle())
+            .help("查看\(title)")
+            .accessibilityLabel("查看\(title)")
     }
 }
 

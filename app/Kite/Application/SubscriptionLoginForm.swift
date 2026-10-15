@@ -44,7 +44,7 @@ struct SubscriptionLoginForm: View {
 
     var body: some View {
         CardSheet(title: "登录 \(name)", subtitle: machine,
-                  typing: typing, trailingActions: true, close: close) {
+                  typing: typing, close: close) {
             if starting {
                 HStack(spacing: 10) {
                     CardSpinner()

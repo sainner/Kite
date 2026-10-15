@@ -105,7 +105,7 @@ struct RoleEditor: View {
 
     var body: some View {
         CardSheet(title: "新建角色",
-                  subtitle: "工具、模型与预算是用这个角色新建代理时的初始值，草稿里还能在此范围内调整。",
+                  subtitle: "工具、模型与预算是用这个角色新建代理时的初始值，草稿里还能在此范围内调整。", error: phase.error,
                   typing: focus != nil, size: CGSize(width: 720, height: 720),
                   close: { if changed { discard = true } else { dismiss() } }) {
             Group {
@@ -127,10 +127,9 @@ struct RoleEditor: View {
             }
             .disabled(working || !available)
             if !available { CardCallout(text: "工作机连接已变化，请返回后重新打开角色。草稿尚未保存。", systemImage: "info.circle", tint: .secondary) }
-        } footer: {
-            CardActions(primary: "保存",
-                        enabled: !working && available && draft.isSavable,
-                        phase: $phase, action: save)
+        } actions: {
+            CardSheetAction(title: "保存", systemImage: "checkmark", busy: working, action: save)
+                .disabled(working || !available || !draft.isSavable)
         }
         .interactiveDismissDisabled(working || changed)
         .discardAlert("放弃未保存的角色修改？", isPresented: $discard) { dismiss() }
