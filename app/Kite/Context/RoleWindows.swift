@@ -49,15 +49,15 @@ extension AppModel {
     }
 }
 
-/// 资源库角色的上下文窗口：标题是角色名称，可原地改名；刷新、另存与保存都在标题栏，保存连同签名与初始配置的修改一起存。
+/// 资源库角色的上下文窗口：标题是角色名称，可原地改名；另存、恢复默认与保存都在标题栏，保存连同签名与初始配置的修改一起存。
 /// 底部控制区是编辑工具栏。
-/// 修改即时记成草稿，与工作机上一致时草稿自动消失。
+/// 修改即时记成草稿，与工作机上一致时草稿自动消失。账号里的变化经工作机推过来，不用手动刷新。
 struct RoleContextPane: View {
     let id: String
     @Environment(AppModel.self) private var model
-    @State private var refreshing = false
     @State private var error: String?
     @State private var discard = false
+    @State private var confirmReset = false
     @State private var editor = ContextEditor()
 
     private var catalog: RoleCatalog? { model.roleCatalog }
@@ -73,10 +73,9 @@ struct RoleContextPane: View {
         PaneWindow(header: PaneHeader(title: role?.title ?? "", subtitle: AgentContextCategory.role.title,
                                       titleEdit: role == nil ? nil : .init(label: "重命名角色", enabled: !saving) { title in
                                           model.editRole(id) { $0.role.title = title }
-                                      }), actions: PaneHeaderActions(groups: headerGroups)) {
+                                      }), notice: error.map(PaneNotice.failure), actions: PaneHeaderActions(groups: headerGroups)) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if let error { CardCallout(text: error) }
                     if role != nil {
                         ContextVariablePreview(variables: catalog?.variables ?? [])
                         ContextBlocksSection("系统规则",
@@ -96,14 +95,20 @@ struct RoleContextPane: View {
         .discardAlert(isNew ? "放弃这个新角色？" : "放弃未保存的角色修改？", isPresented: $discard, discardLabel: discardTitle) {
             model.roleDrafts.removeAll { $0.id == id }
         }
+        .discardAlert("恢复默认内容？", isPresented: $confirmReset, discardLabel: "恢复默认",
+                      message: "名称、提示词与初始配置都换回内置的默认内容\(draft == nil ? "。" : "，未保存的修改一并放弃。")", discard: reset)
     }
 
-    /// 刷新、基于此新建；有草稿才能保存或放弃。角色不能删除，放弃时新角色整个丢掉，已有角色撤掉没保存的修改。
+    /// 基于此新建；内置角色改过才能恢复默认；有草稿才能保存或放弃。角色不能删除，放弃时新角色整个丢掉，已有角色撤掉没保存的修改。
     private var headerGroups: [[PaneHeaderAction]] {
-        var groups = [[
-            PaneHeaderAction(title: "刷新", systemImage: "arrow.clockwise", disabled: refreshing) { refresh() },
+        var first = [
             PaneHeaderAction(title: "基于此新建角色", systemImage: "doc.on.doc", disabled: role == nil) { model.newLibraryRole(from: role) },
-        ]]
+        ]
+        if saved?.canReset == true {
+            first.append(PaneHeaderAction(title: "恢复默认", systemImage: "arrow.counterclockwise", help: model.connected ? "恢复默认" : "工作机未连接",
+                                          disabled: saving || !model.connected) { confirmReset = true })
+        }
+        var groups = [first]
         if draft != nil {
             groups.append([
                 PaneHeaderAction(title: discardTitle, systemImage: isNew ? "trash" : "xmark", disabled: saving) { discard = true },
@@ -112,16 +117,6 @@ struct RoleContextPane: View {
             ])
         }
         return groups
-    }
-
-    private func refresh() {
-        refreshing = true
-        error = nil
-        Task {
-            defer { refreshing = false }
-            do { try await model.refreshRoles() }
-            catch { self.error = error.localizedDescription }
-        }
     }
 
     private func save() {
@@ -139,6 +134,22 @@ struct RoleContextPane: View {
                 model.roleDrafts.removeAll { $0.id == saved.id }
             } catch {
                 self.error = "保存失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func reset() {
+        guard let saved, !saving, model.connected else { return }
+        let connection = model.connectionRevision
+        model.savingRoles.insert(id)
+        error = nil
+        Task {
+            defer { model.savingRoles.remove(saved.id) }
+            do {
+                try await model.resetRole(saved, connection: connection)
+                model.roleDrafts.removeAll { $0.id == saved.id }
+            } catch {
+                self.error = "恢复默认失败：\(error.localizedDescription)"
             }
         }
     }

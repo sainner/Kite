@@ -24,7 +24,8 @@ export const roleSchema = z.object({
   maxRequestsPerTurn: z.number().int().positive(),
 }).strict();
 export type Role = z.infer<typeof roleSchema>;
-export interface RoleSnapshot { role: Role; revision: string }
+/** defaultRevision 只有内置角色有，是默认内容的版本；与 revision 不同就是改过，可以恢复默认。 */
+export interface RoleSnapshot { role: Role; revision: string; defaultRevision?: string }
 export interface RoleSelection { id: string; revision: string }
 
 export function roleSelection(value: unknown): RoleSelection | undefined {
@@ -117,28 +118,35 @@ const snapshot = (role: Role): RoleSnapshot => ({ role, revision: createHash('sh
 export const contextRevision = (role: Role): string => createHash('sha256').update(JSON.stringify(role.context)).digest('hex');
 
 export class Roles {
-  /** 内置角色的默认内容。本机与账号只存自建的和改过的内置角色，没改过的跟随 kited 版本的默认。 */
+  /**
+   * 内置角色的默认内容。账号只存自建的和改过的内置角色，没改过的跟随 kited 版本的默认；
+   * 本机缓存是账号的镜像，账号里有的才存，写账号时据此给出期望的版本。
+   */
   private readonly builtins: Map<string, Role>;
 
   constructor(private store: Store) {
     this.builtins = new Map(builtinRoles.map((role) => [role.id, this.parse(role)]));
-    store.transaction(() => {
-      for (const role of store.roles()) if (this.isDefault(role)) store.deleteRole(role.id);
-    });
   }
 
   list(): RoleSnapshot[] {
     const ids = new Set([...this.builtins.keys(), ...this.store.roles().map((role) => role.id)]);
-    return [...ids].sort().map((id) => snapshot(this.current(id)!));
+    return [...ids].sort().map((id) => this.entry(this.current(id)!));
   }
 
-  /** 账号里拉来的版本直接替换本机缓存；内容不合本机契约的跳过，返回是否有变化。 */
+  /** 账号里拉来的版本直接替换本机缓存，等于默认的也照存；内容不合本机契约的跳过。返回看到的内容是否有变化。 */
   cache(value: unknown): boolean {
     const role = this.parse(value);
-    const saved = this.current(role.id);
-    if (saved && snapshot(saved).revision === snapshot(role).revision) return false;
-    this.save(role);
-    return true;
+    const stored = this.store.role(role.id);
+    if (stored && snapshot(stored).revision === snapshot(role).revision) return false;
+    const before = this.current(role.id);
+    this.store.saveRole(role);
+    return !before || snapshot(before).revision !== snapshot(role).revision;
+  }
+
+  /** 账号里这一项的版本：本机缓存是账号的镜像，没有缓存副本的内置角色在账号里也没有，是 null。 */
+  accountRevision(id: string): string | null {
+    const stored = this.store.role(id);
+    return stored ? snapshot(stored).revision : null;
   }
 
   /** 账号里已经没有的从缓存去掉，内置角色退回默认；返回是否有变化。 */
@@ -151,18 +159,32 @@ export class Roles {
   get(id: string, revision?: string): RoleSnapshot {
     const role = this.current(id);
     if (!role) throw new KiteError('角色不存在，请刷新列表', 404);
-    const value = snapshot(role);
+    const value = this.entry(role);
     if (revision !== undefined && revision !== value.revision) throw new KiteError('角色已更新，请刷新后重新选择', 409);
     return value;
   }
 
-  /** role 已经过 parse。 */
+  /** 内置角色的默认内容，恢复默认时按它保存。 */
+  builtin(id: string): Role {
+    const role = this.builtins.get(id);
+    if (!role) throw new KiteError('自建角色没有默认内容');
+    return role;
+  }
+
+  /** 新建前的校验，结果先写到账号服务再存本机：内置角色只能修改，同 ID 已有不同内容时冲突，相同内容重复保存是幂等的。 */
+  validateNew(value: unknown): Role {
+    const role = this.parse(value);
+    if (this.builtins.has(role.id)) throw new KiteError('内置角色不能新建，请直接修改', 409);
+    this.assertNew(role);
+    return role;
+  }
+
+  /** role 已经过 validateNew；写账号期间同 ID 的角色可能已经同步过来，事务里再核对一次。 */
   create(role: Role): RoleSnapshot {
     return this.store.transaction(() => {
-      const saved = this.current(role.id);
-      if (saved && snapshot(saved).revision !== snapshot(role).revision) throw new KiteError('角色 ID 已存在，请另存为新角色', 409);
-      if (!saved) this.store.saveRole(role);
-      return snapshot(role);
+      this.assertNew(role);
+      this.store.saveRole(role);
+      return this.entry(role);
     });
   }
 
@@ -174,29 +196,36 @@ export class Roles {
     return role;
   }
 
-  /** role 已经过 validate；写账号期间账号推来的同步可能已更新本机缓存，事务里再核对一次版本，已是这次的内容就不再核对。 */
+  /**
+   * role 已经过 validate，账号里已写入或删掉；写账号期间账号推来的同步可能已更新本机缓存，事务里再核对一次版本，
+   * 已是这次的内容就不再核对。本机缓存随账号：等于默认的已从账号删掉，本机也不留。
+   */
   update(expectedRevision: string, role: Role): RoleSnapshot {
     return this.store.transaction(() => {
-      const value = snapshot(role);
-      if (this.get(role.id).revision !== value.revision) {
-        this.get(role.id, expectedRevision);
-        this.save(role);
-      }
+      const value = this.entry(role);
+      if (this.get(role.id).revision !== value.revision) this.get(role.id, expectedRevision);
+      if (this.isDefault(role)) this.store.deleteRole(role.id);
+      else this.store.saveRole(role);
       return value;
     });
   }
 
-  private current(id: string): Role | undefined { return this.store.role(id) ?? this.builtins.get(id); }
-
-  /** 改回与默认一样的内置角色不算改过，不留副本。 */
-  private save(role: Role) {
-    if (this.isDefault(role)) this.store.deleteRole(role.id);
-    else this.store.saveRole(role);
-  }
-
-  private isDefault(role: Role): boolean {
+  /** 和默认内容一样的内置角色不算改过，账号里不留副本。 */
+  isDefault(role: Role): boolean {
     const builtin = this.builtins.get(role.id);
     return !!builtin && snapshot(builtin).revision === snapshot(role).revision;
+  }
+
+  private assertNew(role: Role): void {
+    const stored = this.store.role(role.id);
+    if (stored && snapshot(stored).revision !== snapshot(role).revision) throw new KiteError('角色 ID 已存在，请另存为新角色', 409);
+  }
+
+  private current(id: string): Role | undefined { return this.store.role(id) ?? this.builtins.get(id); }
+
+  private entry(role: Role): RoleSnapshot {
+    const builtin = this.builtins.get(role.id);
+    return { ...snapshot(role), ...(builtin ? { defaultRevision: snapshot(builtin).revision } : {}) };
   }
 
   parse(value: unknown): Role {

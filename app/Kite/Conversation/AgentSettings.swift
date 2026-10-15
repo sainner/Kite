@@ -252,7 +252,8 @@ struct AgentModelFields: View {
     }
 }
 
-/// AgentModelFields 放在标题栏的样子：模型与思考强度是同一块玻璃里的两个原生菜单，中间一道竖线，选项与表单相同。
+/// AgentModelFields 放在标题栏的样子：模型与思考强度是同一块玻璃里的两个原生菜单，中间一道竖线，选项与表单相同，
+/// 目录里都没有思考强度（语音识别）时也只有模型一个菜单。
 struct AgentModelMenus: View {
     @Binding var configuration: AgentModelConfiguration
     let vendors: [AgentCapabilities.Vendor]
@@ -273,18 +274,20 @@ struct AgentModelMenus: View {
             .help(configuration.model)
             .accessibilityLabel("模型")
             .accessibilityValue(configuration.model)
-            Rectangle().fill(Theme.rule).frame(width: 1, height: dividerHeight)
-                .allowsHitTesting(false).accessibilityHidden(true)
-            Menu {
-                ReasoningPicker(reasoning: $configuration.reasoning, levels: levels)
-                    .pickerStyle(.inline)
-            } label: {
-                PaneHeaderButtonLabel(configuration.reasoning == "default" ? "自动" : configuration.reasoning)
+            if models.isEmpty || models.contains(where: { !$0.reasoning.isEmpty }) {
+                Rectangle().fill(Theme.rule).frame(width: 1, height: dividerHeight)
+                    .allowsHitTesting(false).accessibilityHidden(true)
+                Menu {
+                    ReasoningPicker(reasoning: $configuration.reasoning, levels: levels)
+                        .pickerStyle(.inline)
+                } label: {
+                    PaneHeaderButtonLabel(configuration.reasoning == "default" ? "自动" : configuration.reasoning)
+                }
+                .disabled(levels.isEmpty)
+                .help("思考强度")
+                .accessibilityLabel("思考强度")
+                .accessibilityValue(configuration.reasoning)
             }
-            .disabled(levels.isEmpty)
-            .help("思考强度")
-            .accessibilityLabel("思考强度")
-            .accessibilityValue(configuration.reasoning)
         }
     }
 

@@ -28,6 +28,8 @@ final class WorkThread: Identifiable {
     /// 收到过工作机发来的完整历史。已有代理在这之前对话是空的，只是还没读出来。
     private(set) var historyLoaded = false
     var error: String?
+    /// 还没有消息时读角色列表或套用角色失败的说明，见 AppModel.loadNewThreadRoles。
+    var roleError: String?
     private(set) var regeneratingTitle = false
     /// 选好的压缩起点（一条人发消息的 id），等在这条或之后的消息上选终点。
     var compactionStart: String?
@@ -48,6 +50,8 @@ final class WorkThread: Identifiable {
     private(set) var stopping = false
 
     var isDraft: Bool { client == nil }
+    /// 还没有消息的代理，窗口铺满点阵签名（NewThreadStage）。已有代理的历史还没到时不算，免得签名长出来又马上收回。
+    var isInitial: Bool { !hasTranscript && (isDraft || historyLoaded) }
     var canSend: Bool { stopRequest == nil && connected && (state?.capabilities.send ?? isDraft) }
     var canResume: Bool { stopRequest == nil && connected && state?.capabilities.resume == true }
     var canStop: Bool { connected && !stopping && showStop }

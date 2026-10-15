@@ -12,15 +12,15 @@ struct ThreadPane: View {
 
     var body: some View {
         let empty = !thread.hasTranscript
-        let initial = pane.initial(thread)
+        let initial = thread.isInitial
         let send = { (message: Message, alongside: @escaping () -> Void) in
             pane.send(message, thread: thread, model: model, area: area, alongside: alongside)
         }
         return PaneWindow(header: pane.header(thread: thread, model: model, area: area, initial: initial), usesDots: true,
-                          notice: thread.problem.map(PaneNotice.failure), status: AnyView(ThreadStatusRing()),
+                          notice: model.threadNotice(thread, in: area), status: AnyView(ThreadStatusRing()),
                           actions: PaneHeaderActions(menus: AnyView(ThreadHeaderActions()))) {
             if initial {
-                NewThreadStage(slot: pane.patternSlot, roleError: Bindable(pane).roleError)
+                NewThreadStage(slot: pane.patternSlot)
             } else if !empty {
                 scrollingTranscript
             }
@@ -96,18 +96,12 @@ private struct MacThreadTranscript: View {
     /// 点开了操作栏的那一行。
     var selected: RowID?
     var titleError: String?
-    /// 标题栏模板菜单里「基于…新建模板」打开的编辑器，与模板读取、套用失败的说明。
+    /// 标题栏模板菜单里「基于…新建模板」打开的编辑器；读取、套用失败的说明在会话的 roleError。
     var roleEdit: RoleDefinition?
-    var roleError: String?
     /// 空会话铺在窗口上的点阵签名，见 NewThreadStage。也是这个窗口录语音时的标识，见 VoiceInput.owner。
     @ObservationIgnored let patternSlot = "pattern.\(UUID().uuidString)"
     /// 已有对话时，语音输入铺在窗口底部一带的签名，见 VoiceBand。
     @ObservationIgnored let voiceSlot = "voice.\(UUID().uuidString)"
-
-    /// 还没有消息的代理，铺满整窗的点阵签名。已有代理的历史还没到时先什么也不画，不铺新代理的点阵图案，免得长出来又马上收回。
-    func initial(_ thread: WorkThread) -> Bool {
-        !thread.hasTranscript && (thread.isDraft || thread.historyLoaded)
-    }
 
     func listening(_ model: AppModel) -> Bool { model.voice.owner == patternSlot }
 
@@ -117,11 +111,11 @@ private struct MacThreadTranscript: View {
         return (model.emblem(for: thread.id, in: area) ?? .fallback).pattern(accent: accent)
     }
 
-    /// 副标题是代理的角色。还没有对话时副标题带下拉箭头，在这里换角色；标题还没生成，不给重新生成。
+    /// 副标题是代理的角色。还没有对话时副标题带下拉箭头，在这里换角色，角色没读到时在这里重读；标题还没生成，不给重新生成。
     func header(thread: WorkThread, model: AppModel, area: WorkArea, initial: Bool) -> PaneHeader {
         PaneHeader(title: thread.title, subtitle: model.roleTitle(for: thread, in: area),
             subtitleMenu: initial ? .init(label: "角色", isBusy: thread.configuringTemplate,
-                enabled: model.canSelectRole(for: thread, in: area),
+                enabled: model.canSelectRole(for: thread, in: area) || model.canReloadNewThreadRoles(for: thread, in: area),
                 content: AnyView(NewThreadRoleMenu(select: { [weak self] in self?.selectRole($0, thread: thread, model: model, area: area) }) {
                     [weak self] in self?.roleEdit = $0.role.copy()
                 }))
@@ -133,10 +127,10 @@ private struct MacThreadTranscript: View {
     }
 
     func selectRole(_ role: AgentRole, thread: WorkThread, model: AppModel, area: WorkArea) {
-        roleError = nil
+        thread.roleError = nil
         Task {
             do { try await model.selectNewThreadRole(role, for: thread, in: area) }
-            catch { roleError = error.localizedDescription }
+            catch { thread.roleError = error.localizedDescription }
         }
     }
 

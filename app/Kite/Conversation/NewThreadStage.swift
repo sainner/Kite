@@ -15,8 +15,6 @@ struct NewThreadStage: View {
     @Environment(\.paneWindowFrame) private var windowFrame
     private var window: CGRect? { windowFrame?.rect }
     let slot: String
-    /// 角色读取或套用失败的说明，套用由标题栏的角色菜单发起。
-    @Binding var roleError: String?
     @State private var center: CGRect?
     @State private var content: CGRect?
     /// 解析好的签名；body 随打字和窗口拖动频繁重算，只在签名或主题色变化时重新解析表达式。
@@ -34,29 +32,13 @@ struct NewThreadStage: View {
         let role = model.newThreadRole(for: thread, in: area)
         ZStack {
             DotPatternArea(pattern: pattern, quiet: quiet, area: window, slot: slot)
-            VStack(spacing: 14) {
-                Text("说说要做什么")
-                    .font(Theme.heading1)
-                if let roleError {
-                    HStack(spacing: 8) {
-                        Text(roleError).foregroundStyle(Theme.danger).lineLimit(2)
-                        Button("重新读取") { Task { await loadRoles() } }
-                            .buttonStyle(.borderless).foregroundStyle(Color.accentColor).clickPointer()
-                    }
-                    .font(Theme.caption)
-                    .multilineTextAlignment(.center)
-                }
-                if role?.emblemState == "generating" {
-                    Text("正在为这个角色画点阵签名…")
-                        .font(Theme.caption).foregroundStyle(.secondary)
-                        .transition(.opacity)
-                }
-            }
-            .padding(.horizontal, 16)
-            .animation(.easeOut(duration: 0.2), value: role?.emblemState)
-            .onGeometryChange(for: CGRect.self) {
-                $0.frame(in: DotCarrier.coordinateSpace(carrier))
-            } action: { center = $0 }
+            // 角色读取、套用失败与签名生成中都是窗口的状态，在标题栏的信息区（AppModel.threadNotice）
+            Text("说说要做什么")
+                .font(Theme.heading1)
+                .padding(.horizontal, 16)
+                .onGeometryChange(for: CGRect.self) {
+                    $0.frame(in: DotCarrier.coordinateSpace(carrier))
+                } action: { center = $0 }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
@@ -74,13 +56,7 @@ struct NewThreadStage: View {
             pattern = source.design?.pattern(accent: source.accent) ?? EmblemDesign.fallback.pattern(accent: source.accent)
         }
         .task(id: role.map { "\($0.id):\($0.revision):\($0.emblemState ?? "")" }) { await ensureEmblem(role) }
-        .task(id: model.revision(for: area)) { await loadRoles() }
-    }
-
-    private func loadRoles() async {
-        do { try await model.ensureRoles(in: area); roleError = nil }
-        catch is CancellationError { }
-        catch { roleError = error.localizedDescription }
+        .task(id: model.revision(for: area)) { await model.loadNewThreadRoles(for: thread, in: area) }
     }
 
     private var quiet: [PatternQuiet] {

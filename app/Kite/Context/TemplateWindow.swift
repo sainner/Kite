@@ -47,17 +47,19 @@ extension AppModel {
 }
 
 /// 资源库代理上下文里一个模板的窗口，占满内容区；名称固定，操作与保存都在标题栏，底部控制区是编辑工具栏。
-/// 辅助生成的模板在正文前选模型与思考强度。修改即时记成草稿，与工作机上一致时草稿自动消失。
+/// 辅助生成的模板在标题栏选模型与思考强度，副行是用什么凭据调用。修改即时记成草稿，与工作机上一致时草稿自动消失。
+/// 账号里的变化经工作机推过来，不用手动刷新。
 struct TemplatePane: View {
     let id: String
     let category: AgentContextCategory
     @Environment(AppModel.self) private var model
     @State private var saving = false
-    @State private var refreshing = false
     @State private var error: String?
     @State private var discard = false
+    @State private var confirmReset = false
     @State private var editor = ContextEditor()
 
+    private var saved: ContextTemplate? { model.contextTemplates?.templates.first { $0.id == id } }
     private var draft: TemplateDraft? { model.templateDraft(id) }
     private var definition: ContextDefinition? { model.libraryTemplate(id) }
     private var configuration: AgentModelConfiguration? { model.libraryTemplateModel(id) }
@@ -66,19 +68,11 @@ struct TemplatePane: View {
     private var canSave: Bool { !saving && model.connected }
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: definition?.title ?? "", subtitle: category.title), actions: PaneHeaderActions(groups: headerGroups)) {
+        PaneWindow(header: PaneHeader(title: definition?.title ?? "", subtitle: scene?.models?.note ?? category.title), notice: error.map(PaneNotice.failure),
+                   actions: PaneHeaderActions(groups: headerGroups, menus: modelMenus)) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if let error { CardCallout(text: error) }
                     if let definition {
-                        if let configuration, let choices = scene?.models {
-                            CardSection(choices.title, note: choices.note) {
-                                AgentModelFields(configuration: Binding(get: { [model, id] in model.libraryTemplateModel(id) ?? configuration },
-                                                                        set: { [model, id] value in model.editTemplate(id) { $0.model = value } }),
-                                                 vendors: choices.vendors, models: choices.models)
-                            }
-                            .disabled(saving)
-                        }
                         ContextVariablePreview(variables: variables)
                         ContextTemplateForm(definition: Binding(get: { [model, id] in model.libraryTemplate(id) ?? definition },
                                                                 set: { [model, id] value in model.editTemplate(id) { $0.definition = value } }),
@@ -97,21 +91,27 @@ struct TemplatePane: View {
         .discardAlert("放弃未保存的模板修改？", isPresented: $discard, discardLabel: "放弃修改") {
             model.templateDrafts.removeAll { $0.id == id }
         }
+        .discardAlert("恢复默认内容？", isPresented: $confirmReset, discardLabel: "恢复默认",
+                      message: "\(scene?.models == nil ? "模板内容" : "模板内容与模型")换回内置的默认\(draft == nil ? "。" : "，未保存的修改一并放弃。")",
+                      discard: reset)
     }
 
-    private func refresh() {
-        refreshing = true
-        error = nil
-        Task {
-            defer { refreshing = false }
-            do { try await model.refreshContextTemplates() }
-            catch { self.error = error.localizedDescription }
-        }
+    /// 辅助生成模板的模型与思考强度菜单，同角色初始配置的默认模型。
+    private var modelMenus: AnyView? {
+        guard let configuration, let choices = scene?.models else { return nil }
+        return AnyView(AgentModelMenus(configuration: Binding(get: { [model, id] in model.libraryTemplateModel(id) ?? configuration },
+                                                              set: { [model, id] value in model.editTemplate(id) { $0.model = value } }),
+                                       vendors: choices.vendors, models: choices.models)
+            .disabled(saving))
     }
 
-    /// 刷新；有草稿才能保存或放弃。模板不能新建或删除，放弃只撤掉没保存的修改。
+    /// 改过才能恢复默认；有草稿才能保存或放弃。模板不能新建或删除，放弃只撤掉没保存的修改。
     private var headerGroups: [[PaneHeaderAction]] {
-        var groups = [[PaneHeaderAction(title: "刷新", systemImage: "arrow.clockwise", disabled: refreshing) { refresh() }]]
+        var groups: [[PaneHeaderAction]] = []
+        if saved?.canReset == true {
+            groups.append([PaneHeaderAction(title: "恢复默认", systemImage: "arrow.counterclockwise", help: model.connected ? "恢复默认" : "工作机未连接",
+                                            disabled: !canSave) { confirmReset = true }])
+        }
         if draft != nil {
             groups.append([
                 PaneHeaderAction(title: "放弃修改", systemImage: "xmark", disabled: saving) { discard = true },
@@ -134,6 +134,22 @@ struct TemplatePane: View {
                 model.templateDrafts.removeAll { $0.id == draft.id }
             } catch {
                 self.error = "保存失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func reset() {
+        guard let saved, canSave else { return }
+        let connection = model.connectionRevision
+        saving = true
+        error = nil
+        Task {
+            defer { saving = false }
+            do {
+                try await model.resetContextTemplate(saved, connection: connection)
+                model.templateDrafts.removeAll { $0.id == saved.id }
+            } catch {
+                self.error = "恢复默认失败：\(error.localizedDescription)"
             }
         }
     }

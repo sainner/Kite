@@ -25,12 +25,16 @@ nonisolated struct RoleDefinition: Codable, Equatable, Identifiable, Sendable {
 nonisolated struct AgentRole: Decodable, Identifiable, Sendable {
     var role: RoleDefinition
     var revision: String
+    /// 内置角色默认内容的版本，自建角色没有。
+    var defaultRevision: String?
     var emblem: TemplateEmblem?
     /// ready、stale、missing、generating 或 failed。
     var emblemState: String?
     var emblemError: String?
     var id: String { role.id }
     var selection: RoleSelection { .init(id: id, revision: revision) }
+    /// 内置角色改过才能恢复默认。
+    var canReset: Bool { defaultRevision.map { $0 != revision } ?? false }
 }
 
 nonisolated struct RoleSelection: Encodable, Sendable {
@@ -95,6 +99,17 @@ extension AppModel {
         return result
     }
 
+    /// 内置角色恢复默认：提示词与初始配置一起换回默认，签名照常随提示词更新。
+    func resetRole(_ role: AgentRole, connection: UUID) async throws {
+        guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
+        let client = target.client
+        let result = try await client.request("/roles/\(role.id.pathComponent)/reset", method: "POST",
+            body: LibraryReset(expectedRevision: role.revision), as: AgentRole.self)
+        guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
+        target.roles?.roles.removeAll { $0.id == result.id }
+        target.roles?.roles.append(result)
+    }
+
     func saveRoleEmblem(_ design: EmblemDesign, for role: AgentRole, connection: UUID) async throws {
         guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
         let client = target.client
@@ -148,6 +163,28 @@ extension AppModel {
             && (area.instances.first { $0.id == thread.id }?.config?.agent != nil || thread.isDraft)
     }
 
+    /// 还没有消息的会话读角色列表。读不到的说明记在会话上，由标题栏的信息区显示，角色菜单里可以重读。
+    func loadNewThreadRoles(for thread: WorkThread, in area: WorkArea) async {
+        do { try await ensureRoles(in: area); thread.roleError = nil }
+        catch is CancellationError { }
+        catch { thread.roleError = error.localizedDescription }
+    }
+
+    /// 角色列表没读到而且读失败过，角色菜单里只给重读。
+    func canReloadNewThreadRoles(for thread: WorkThread, in area: WorkArea) -> Bool {
+        thread.roleError != nil && roles(in: area) == nil && isConnected(area)
+    }
+
+    /// 会话窗口信息区里会话自己的提示：会话出的问题优先；还没有消息时再看角色读取、套用失败和所选角色的签名正在生成。
+    /// 所属工作机的连接提示更优先，由各处放在前面。
+    func threadNotice(_ thread: WorkThread, in area: WorkArea) -> PaneNotice? {
+        if let problem = thread.problem { return .failure(problem) }
+        guard thread.isInitial else { return nil }
+        if let error = thread.roleError { return .failure(error) }
+        guard newThreadRole(for: thread, in: area)?.emblemState == "generating" else { return nil }
+        return PaneNotice(text: "正在为这个角色画点阵签名", symbol: "sparkles", tint: .secondary)
+    }
+
     /// 草稿改选角色时清掉在旧角色上改过的参数；已有代理由工作机换上角色的全部配置。套用期间输入区与角色菜单禁用。
     func selectNewThreadRole(_ role: AgentRole, for thread: WorkThread, in area: WorkArea) async throws {
         guard canSelectRole(for: thread, in: area) else { return }
@@ -182,6 +219,7 @@ extension AppModel {
 }
 
 /// 首次发送前在代理窗口标题栏的角色菜单里选用角色，或使用同一编辑器另存新角色；必需工具不可用的角色不可选。
+/// 角色列表读失败时只有重读，失败的说明在标题栏的信息区。
 struct NewThreadRoleMenu: View {
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
@@ -190,6 +228,16 @@ struct NewThreadRoleMenu: View {
     let copy: (AgentRole) -> Void
 
     var body: some View {
+        if model.canReloadNewThreadRoles(for: thread, in: area) {
+            Button("重新读取角色", systemImage: "arrow.clockwise") {
+                Task { await model.loadNewThreadRoles(for: thread, in: area) }
+            }
+        } else {
+            roles
+        }
+    }
+
+    @ViewBuilder private var roles: some View {
         let selected = model.newThreadRole(for: thread, in: area)
         Section("角色") {
             ForEach(model.roles(in: area)?.roles ?? []) { role in

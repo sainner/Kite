@@ -239,13 +239,22 @@ export class Kite {
   }
 
   machine(): Machine { return this.store.machine; }
-  /** 资源库的写入先到账号服务，成功后存本机；没加入账号时只存本机。 */
+  /**
+   * 资源库的写入先到账号服务，成功后存本机；没加入账号时报错。期望的版本按本机缓存给出，缓存里没有就是账号里也没有。
+   * 改回与默认一样的内置内容从账号删掉，不留一份等于默认的副本，否则 kited 升级换了默认后它会被当成改过的内容。
+   */
   async updateContextTemplate(id: string, expectedRevision: string, template: unknown) {
     const valid = this.contextTemplates.validate(id, expectedRevision, template);
-    await this.library.write('template', id, valid, expectedRevision);
+    const base = this.contextTemplates.accountRevision(id);
+    if (this.contextTemplates.isDefault(valid)) await this.library.remove('template', id, base);
+    else await this.library.write('template', id, valid, base);
     const saved = this.contextTemplates.update(expectedRevision, valid);
     this.bus.emit({ type: 'context-templates.changed' });
     return saved;
+  }
+  /** 恢复默认就是保存默认内容。 */
+  resetContextTemplate(id: string, expectedRevision: string) {
+    return this.updateContextTemplate(id, expectedRevision, this.contextTemplates.builtin(id));
   }
   /** 角色列表带上点阵签名状态，以及角色编辑器要用的代理插件全部工具（连同界面名称与分组）、提示词变量和模型目录。 */
   roleCatalog() {
@@ -253,14 +262,20 @@ export class Kite {
       variables: this.contextTemplates.sceneVariables('thread.create'), ...agentModelCatalog() };
   }
   async createRole(value: unknown) {
-    const role = this.roles.parse(value);
+    const role = this.roles.validateNew(value);
     await this.library.write('role', role.id, role, null);
     return this.roleSaved(this.roles.create(role));
   }
   async updateRole(id: string, expectedRevision: string, value: unknown) {
     const role = this.roles.validate(id, expectedRevision, value);
-    await this.library.write('role', id, role, expectedRevision);
+    const base = this.roles.accountRevision(id);
+    if (this.roles.isDefault(role)) await this.library.remove('role', id, base);
+    else await this.library.write('role', id, role, base);
     return this.roleSaved(this.roles.update(expectedRevision, role));
+  }
+  /** 只有内置角色能恢复默认；签名照常随提示词更新，手改过的保留。 */
+  resetRole(id: string, expectedRevision: string) {
+    return this.updateRole(id, expectedRevision, this.roles.builtin(id));
   }
   /** 插件包先存到账号资源库，再装到本机；其他工作机用到时再下载。 */
   async installPlugin(raw: unknown) {

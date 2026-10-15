@@ -174,7 +174,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         guard let area = group.workspace else { return }
         let thread = thread, pane = pane, model = model
         let header = headerTracking.track({
-            pane.header(thread: thread, model: model, area: area, initial: pane.initial(thread))
+            pane.header(thread: thread, model: model, area: area, initial: thread.isInitial)
         }) { [weak self] in
             Task { @MainActor in self?.refreshHeader() }
         }
@@ -291,7 +291,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
             return
         }
         let state = tracking.track({
-            State(initial: pane.initial(thread), empty: !thread.hasTranscript, listening: pane.listening(model), headerHeight: headerHeight,
+            State(initial: thread.isInitial, empty: !thread.hasTranscript, listening: pane.listening(model), headerHeight: headerHeight,
                   controlsInset: header.inset)
         }) { [weak self] in self?.invalidate() }
         let width = bounds.width, height = bounds.height
@@ -334,7 +334,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
     /// 紧凑布局：对话铺满，上下让出外壳给的距离；标题栏后面的渐变、滚动软边从窗口顶边铺到标题栏底边。
     private func layoutCompact() {
         let state = tracking.track({
-            State(initial: pane.initial(thread), empty: !thread.hasTranscript, listening: pane.listening(model), headerHeight: 0, controlsInset: 0)
+            State(initial: thread.isInitial, empty: !thread.hasTranscript, listening: pane.listening(model), headerHeight: 0, controlsInset: 0)
         }) { [weak self] in self?.invalidate() }
         let insets = compactInsets
         if metrics.controlsHeight != insets.bottom { metrics.controlsHeight = insets.bottom }
@@ -456,14 +456,16 @@ final class TopFadeView: UIView {
     }
 }
 
-/// 原生标题栏的信息区：会话的状态圆环，所属工作机的连接提示优先于会话自己的错误，提示出现时虚化盖住。
+/// 原生标题栏的信息区：会话的状态圆环，所属工作机的连接提示优先于会话自己的提示，提示出现时虚化盖住。
 private struct ThreadHeaderStatusRoot: View {
     let openSidebar: (@MainActor () -> Void)?
     @Environment(WorkThread.self) private var thread
+    @Environment(AppModel.self) private var model
+    @Environment(WorkArea.self) private var area
     @Environment(\.paneConnectionNotice) private var connectionNotice
 
     var body: some View {
-        PhoneHeaderStatusRoot(status: ThreadStatusRing().environment(\.paneNotice, connectionNotice ?? thread.problem.map(PaneNotice.failure)),
+        PhoneHeaderStatusRoot(status: ThreadStatusRing().environment(\.paneNotice, connectionNotice ?? model.threadNotice(thread, in: area)),
                               openSidebar: openSidebar)
     }
 }

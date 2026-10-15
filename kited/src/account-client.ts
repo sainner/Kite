@@ -138,6 +138,11 @@ export class AccountClient {
     return this.request('PUT', `/api/library/${kind}/${encodeURIComponent(id)}`, { body, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
   }
 
+  /** expectedRevision 为 null 表示看到的是账号里没有这一项。 */
+  async deleteLibrary(kind: LibraryItem['kind'], id: string, expectedRevision: string | null): Promise<void> {
+    await this.request('DELETE', `/api/library/${kind}/${encodeURIComponent(id)}`, { expectedRevision });
+  }
+
   constraints(projectId: string, signal?: AbortSignal): Promise<ProjectConstraints> {
     return this.request('GET', `/api/projects/${encodeURIComponent(projectId)}/constraints`, undefined, signal);
   }

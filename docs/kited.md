@@ -99,7 +99,7 @@ Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新�
 
 ### 资源库与项目约束
 
-角色、后台场景的上下文模板、点阵签名与插件包随 Kite 账号保存，接口见 [托管账号与设备](托管账号与设备.md#资源库)。角色、模板和插件包先写账号服务，成功后更新本机缓存，版本冲突返回 409；点阵签名先保存在本机，再后台同步。读取使用缓存。内置角色和模板只有自建或修改的内容写入账号，未修改项跟随 kited 版本。工作机通过账号事件同步资源，连接和重连均重新核对；离线时沿用缓存，未加入账号时只用本机。
+角色、后台场景的上下文模板、点阵签名与插件包随 Kite 账号保存，接口见 [托管账号与设备](托管账号与设备.md#资源库)。角色、模板和插件包先写账号服务，成功后更新本机缓存，版本冲突返回 409；点阵签名先保存在本机，再后台同步。读取使用缓存。内置角色和模板只有自建或修改的内容写入账号，未修改项跟随 kited 版本；改回与默认一样或恢复默认时删掉账号里的条目，其他工作机同步后退回默认。本机缓存是账号的镜像，账号里有的才存，写账号时据此给出期望的版本，因此基于已被删掉或改过的旧内容保存会冲突。工作机通过账号事件同步资源，连接和重连均重新核对；离线时沿用缓存。未加入账号时不能写入角色、模板和插件包，点阵签名先存本机，加入后同步时补传。
 
 项目约束同样拉取后缓存，离线时沿用。它在创建代理、每次模型请求和每次工具调用前过滤工具，不改写实例配置；有效工具因此变化的代理收到配置通知。分层规则见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)。
 
@@ -274,13 +274,15 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | GET | `/instances/:id/agent-capabilities` | 按厂商分组的模型与思考档位、这个代理可开的工具（`tools`）与角色必需的工具（`required`）、工具的界面名称与分组（`toolCatalog`），以及配置生效边界；不发模型请求 |
 | GET | `/workspaces/:id/agent-options` | 尚无实例的新代理草稿读取模型目录、工具的界面名称与分组（`toolCatalog`），以及各角色在这个工作区可开的工具；必需工具不可用的角色带 `unavailable` 原因 |
 | GET / PUT | `/instances/:id/agent-config` | 读取绑定配置及 revision；以 expectedRevision 和完整 agent 配置更新，工具不能超出创建时角色的规则，也不能关闭必需工具 |
-| GET / POST | `/roles` | 列出角色（带签名状态），附代理插件的全部工具及其界面名称与分组（`toolCatalog`）、提示词变量与模型目录；以 `{role}` 新建角色 |
+| GET / POST | `/roles` | 列出角色（带签名状态，内置角色另带默认内容的版本 `defaultRevision`，与 `revision` 不同即改过），附代理插件的全部工具及其界面名称与分组（`toolCatalog`）、提示词变量与模型目录；以 `{role}` 新建角色 |
 | PUT | `/roles/:id` | 以 `{expectedRevision, role}` 更新角色；不修改已有代理 |
+| POST | `/roles/:id/reset` | 以 `{expectedRevision}` 把内置角色恢复默认，等同于保存默认内容；自建角色 400 |
 | PUT | `/roles/:id/emblem` | 以 `{emblem}` 保存手改的点阵签名，返回带签名状态的角色；表达式不可用时 400 |
 | POST | `/roles/:id/emblem/generate` | `{force}`：为 `true` 时连手改的签名一起重新生成，否则只补缺失或过期的签名；立即返回 `{emblem?, emblemState, emblemError?}`，结果随 `roles.changed` 送达；未启用轻任务时 503 |
 | PUT | `/instances/:id/role` | 以 `{expectedRevision, roleId, roleRevision}` 为代理改选角色，换上角色的提示词、工具、默认模型与预算，协作操作授权随角色增减，其余授权不变；已有对话时返回 409 |
-| GET | `/context-templates` | 列出标题、上下文压缩、点阵签名、语音识别及五类通知模板和场景变量，附辅助生成可选的模型目录（`vendors`、`models`）与语音识别可选的识别模型（`speech`） |
+| GET | `/context-templates` | 列出标题、上下文压缩、点阵签名、语音识别及各类通知模板（带默认内容的版本 `defaultRevision`）和场景变量，辅助生成的场景附可选的模型目录（`models`） |
 | PUT | `/context-templates/:id` | 以 `{expectedRevision, definition, model?}` 更新模板；模板由工作机提供，不能新建 |
+| POST | `/context-templates/:id/reset` | 以 `{expectedRevision}` 把模板恢复默认，等同于保存默认内容 |
 | POST | `/token-counts` | 以 `{texts, model?, scene?}` 逐段计数，返回 `{model, results}`；没给模型时按场景推出。账号里有对应厂商的 API Key 时用官方计数接口（`method: api`），否则 OpenAI 按 o200k 估算、Claude 不给数；`exact` 标明是否准确 |
 | GET / PUT | `/threads/:id/title` | 读取标题与生成进度；以 expectedRevision 手动改名或恢复自动标题 |
 | POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不阻塞主会话控制 |

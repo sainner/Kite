@@ -62,9 +62,8 @@ nonisolated struct ContextScene: Decodable, Identifiable, Sendable {
         /// 表示变量的图标：工具栏的插入变量和正文开头的可用变量用同一个，用户才认得出。
         static let icon = "curlybraces"
     }
-    /// 辅助生成可选的模型，连同编辑器里模型一节的标题与说明；counts 是能不能按这些模型计数，不能时按工作机的默认模型估。
+    /// 辅助生成可选的模型，连同模板窗口副行里用什么凭据调用的说明；counts 是能不能按这些模型计数，不能时按工作机的默认模型估。
     struct Models: Decodable, Sendable {
-        let title: String
         let note: String
         let vendors: [AgentCapabilities.Vendor]
         let models: [AgentCapabilities.Model]
@@ -85,7 +84,11 @@ nonisolated struct ContextTemplate: Decodable, Identifiable, Sendable {
     /// 辅助生成的模型与思考强度，其他模板没有。
     var model: AgentModelConfiguration?
     var revision: String
+    /// 默认内容的版本，模板都是内置的。
+    var defaultRevision: String
     var id: String { definition.id }
+    /// 改过才能恢复默认。
+    var canReset: Bool { defaultRevision != revision }
 }
 
 /// 角色点阵签名的设计：一行表达式、正负两种颜色（字母见 DotFigure.letters）和点的形状。
@@ -168,6 +171,11 @@ struct ContextTemplateSave: Encodable {
     let expectedRevision: String
 }
 
+/// 内置角色或模板恢复默认，带上看到的版本。
+struct LibraryReset: Encodable {
+    let expectedRevision: String
+}
+
 /// 新代理连同草稿里的角色与改过的参数一次创建；新工作区带首条消息时只带角色。
 struct CreateThreadRequest: Encodable {
     let prompt: String
@@ -232,6 +240,17 @@ extension AppModel {
         let client = target.client
         let result = try await client.request("/context-templates/\(draft.id.pathComponent)", method: "PUT",
             body: ContextTemplateSave(definition: draft.definition, model: draft.model, expectedRevision: draft.revision), as: ContextTemplate.self)
+        guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请重试") }
+        target.templates?.templates.removeAll { $0.id == result.id }
+        target.templates?.templates.append(result)
+    }
+
+    /// 模板恢复默认：内容连同辅助生成的模型一起换回默认。
+    func resetContextTemplate(_ template: ContextTemplate, connection: UUID) async throws {
+        guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请重试") }
+        let client = target.client
+        let result = try await client.request("/context-templates/\(template.id.pathComponent)/reset", method: "POST",
+            body: LibraryReset(expectedRevision: template.revision), as: ContextTemplate.self)
         guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请重试") }
         target.templates?.templates.removeAll { $0.id == result.id }
         target.templates?.templates.append(result)

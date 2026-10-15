@@ -72,11 +72,11 @@ struct ThreadHeaderRoot: View {
     @Environment(\.paneConnectionNotice) private var connectionNotice
 
     var body: some View {
-        let initial = pane.initial(thread)
+        let initial = thread.isInitial
         below
             .safeAreaBar(edge: .top, spacing: 0) {
                 PaneHeaderBar(header: pane.header(thread: thread, model: model, area: area, initial: initial),
-                              status: ThreadStatusRing().environment(\.paneNotice, connectionNotice ?? thread.problem.map(PaneNotice.failure)),
+                              status: ThreadStatusRing().environment(\.paneNotice, connectionNotice ?? model.threadNotice(thread, in: area)),
                               actions: ThreadHeaderActions(), openSidebar: sidebarAction)
                     .modifier(PaneHeaderPlacement(endTyping: endTyping))
             }
@@ -108,9 +108,9 @@ struct ThreadBackdropRoot: View {
 
     var body: some View {
         Group {
-            if pane.initial(thread) {
+            if thread.isInitial {
                 // 标题和说明排在标题栏和输入区之间，同 PaneWindow 的正文让出 safeAreaBar；图案照样铺满整个窗口（按 paneWindowFrame）
-                NewThreadStage(slot: pane.patternSlot, roleError: Bindable(pane).roleError)
+                NewThreadStage(slot: pane.patternSlot)
                     .padding(.top, metrics.header.size.height)
                     .padding(.bottom, metrics.controlsHeight)
             } else if thread.hasTranscript {

@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { GitHosting } from '../src/account/git-hosting.ts';
-import { Library, LibraryConflict, LibraryEvents, libraryKind, libraryWrite } from '../src/account/library.ts';
+import { Library, LibraryConflict, LibraryEvents, libraryKind, libraryRemove, libraryWrite } from '../src/account/library.ts';
 import type { CatalogSnapshot } from '../src/account/catalog.ts';
 import type { ProjectConstraints, RegisteredProject } from '../src/account-client.ts';
 import type { GitCredential } from '../src/git-credential.ts';
@@ -132,6 +132,13 @@ export function startFakeAccount(root: string): FakeAccount {
           catch (error) { if (error instanceof LibraryConflict) return json({ error: error.message }, 409); throw error; }
           notify();
           return json(saved);
+        }
+        if (request.method === 'DELETE') {
+          let removed;
+          try { removed = library.remove(userId, kind, id, libraryRemove.parse(await request.json())); }
+          catch (error) { if (error instanceof LibraryConflict) return json({ error: error.message }, 409); throw error; }
+          if (removed) notify();
+          return json({ ok: true });
         }
       }
       const constraint = /^\/api\/projects\/([^/]+)\/constraints$/.exec(path);

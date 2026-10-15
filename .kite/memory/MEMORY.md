@@ -15,7 +15,7 @@
 
 - [界面工作与验收](feedback-ui-workflow.md) — 方案、目标定位、连续推进、失灵诊断不靠猜、真机验收和工具链选择
 - [交互连续性](feedback-interaction-quality.md) — 公共控件完整行为、对象身份、动效的性能优化；窗口动画不回弹，过渡中点阵收起；改尺寸只动相邻窗口；触屏长按起拖
-- [状态放标题栏](feedback-pane-status-placement.md) — 正文不放按系统条件出现的状态，归信息区或副行；列表项自己的状态除外
+- [状态放标题栏](feedback-pane-status-placement.md) — 正文不放错误、读取中、空状态等窗口状态，归信息区或副行；列表项状态除外，单页待定
 - [测试要克制](test-restraint.md) — 测试准入主来源、事件断言与 PDF 验证要求
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行与数据流判断，不能只看引用
 

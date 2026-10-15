@@ -57,6 +57,7 @@ function brief(input: any): string {
 
 const printedText = new Map<string, { text: string; parts: string[] }>();
 const printedTools = new Map<string, string>();
+const printedErrors = new Map<string, string | undefined>();
 const isPaused = (e: any): boolean => e.type === 'thread.state' && !e.state.busy && (e.state.waitingForResume || e.state.recovery);
 
 function printText(key: string, parts: string[], text = parts.join('\n\n')): void {
@@ -79,7 +80,6 @@ function print(e: any): void {
         if (printedTools.get(key) !== label) { console.log(`\n→ ${label}`); printedTools.set(key, label); }
       }
       else if (block.type === 'tool_result') console.log(`· 工具 ${block.status}\n${block.output.slice(-1200)}`);
-      else if (block.type === 'error') console.log(`! ${block.text}`);
       else if (block.type === 'interrupted') console.log('· 已打断');
       break;
     }
@@ -99,6 +99,9 @@ function print(e: any): void {
     case 'thread.state':
       if (e.state.status === 'failed') console.log(`! 工作区准备失败${e.state.error ? `：${e.state.error}` : ''}`);
       else if (e.state.status === 'archived') console.log('· 线程已归档');
+      // 回合失败、恢复阻塞的说明只在状态里，变了才打一次。
+      else if (e.state.error && e.state.error !== printedErrors.get(e.threadId)) console.log(`! ${e.state.error}`);
+      printedErrors.set(e.threadId, e.state.error);
       if (isPaused(e)) console.log(`· 会话 已停止，${e.state.recovery ? '确认旧执行停止后用 recover，再用 resume 继续' : '用 resume 继续'}`);
       break;
     case 'workspace.changed': console.log(`· 工作区 ${e.workspaceId}：${e.status}`); break;
@@ -108,7 +111,7 @@ function print(e: any): void {
     case 'workspace.model': console.log(`· 工作区 ${e.workspaceId}：${e.model.workspace.status}`); break;
     case 'thread.history':
       for (const record of e.records) print({ type: 'thread.record', threadId: e.threadId, record });
-      print({ type: 'thread.state', state: e.state });
+      print({ type: 'thread.state', threadId: e.threadId, state: e.state });
       break;
     case 'workspace.setup':
       console.log(e.exit === null ? '· 没有初始化脚本' : `· 初始化脚本退出码 ${e.exit}${e.exit ? `\n${e.log}` : ''}`);
