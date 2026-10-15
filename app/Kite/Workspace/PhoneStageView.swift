@@ -111,13 +111,21 @@ final class PhoneStageView: UIView, StageDotsReporting {
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(hovered(_:)))
         addGestureRecognizer(hover)
         NotificationCenter.default.addObserver(self, selector: #selector(sidebarDragged), name: SidebarDrag.changed, object: model.sidebarDrag)
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
+            guard let look = self.look else { return }
+            self.update(group: self.group, environment: self.environment, appearance: look, openSidebar: self.openSidebar)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     // MARK: - 环境
 
+    /// 颜色模式以台面自己的 UIKit 外观为准，外观变了再交一遍，同 CompactShellView.update。
     func update(group: PaneGroup, environment: EnvironmentValues, appearance: StageAppearance, openSidebar: (@MainActor () -> Void)?) {
+        var environment = environment, appearance = appearance
+        environment.colorScheme = traitCollection.userInterfaceStyle == .dark ? .dark : .light
+        appearance.colorScheme = environment.colorScheme
         self.environment = environment
         let groupChanged = GroupKey(group) != GroupKey(self.group)
         self.group = group

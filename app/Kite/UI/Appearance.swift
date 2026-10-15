@@ -18,6 +18,16 @@ enum Appearance: String, CaseIterable {
         case .dark: .dark
         }
     }
+
+    #if os(iOS)
+    var interfaceStyle: UIUserInterfaceStyle {
+        switch self {
+        case .system: .unspecified
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+    #endif
 }
 
 /// 设置页和 Mac 菜单共用同一份偏好，各个窗口也读取它。
@@ -52,7 +62,12 @@ private struct AppAppearance: ViewModifier {
     #endif
 
     func body(content: Content) -> some View {
-        content.preferredColorScheme(appearance.colorScheme)
+        content
+            #if os(iOS)
+            .background(WindowInterfaceStyle(style: appearance.interfaceStyle))
+            #else
+            .preferredColorScheme(appearance.colorScheme)
+            #endif
             .buttonStyle(.pointingAutomatic)
             #if os(iOS)
             .onChange(of: keepAwake, initial: true) { UIApplication.shared.isIdleTimerDisabled = keepAwake }
@@ -63,3 +78,31 @@ private struct AppAppearance: ViewModifier {
 extension View {
     func appAppearance() -> some View { modifier(AppAppearance()) }
 }
+
+#if os(iOS)
+/// iOS 上颜色偏好设在所在窗口的 overrideUserInterfaceStyle 上，UIKit 往下传给窗口里的原生视图、各个托管视图和弹出的页面。
+/// 不用 preferredColorScheme：从浅色改回跟随系统（nil）时它不撤掉之前设下的，系统变深色 App 仍停在浅色。
+private struct WindowInterfaceStyle: UIViewRepresentable {
+    let style: UIUserInterfaceStyle
+
+    func makeUIView(context: Context) -> Applier { Applier() }
+
+    func updateUIView(_ view: Applier, context: Context) { view.style = style }
+
+    final class Applier: UIView {
+        var style = UIUserInterfaceStyle.unspecified {
+            didSet { apply() }
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            apply()
+        }
+
+        private func apply() {
+            guard let window, window.overrideUserInterfaceStyle != style else { return }
+            window.overrideUserInterfaceStyle = style
+        }
+    }
+}
+#endif

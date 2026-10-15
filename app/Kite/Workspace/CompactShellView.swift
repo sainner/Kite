@@ -256,7 +256,10 @@ final class CompactShellView: UIView, DrawerDriving {
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(keyboardChanged(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         center.addObserver(self, selector: #selector(keyboardChanged(_:)), name: UIResponder.keyboardWillHideNotification, object: nil)
-        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in self.updateColors() }
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
+            self.updateColors()
+            if let look = self.look { self.update(environment: self.environment, appearance: look) }
+        }
         updateColors()
     }
 
@@ -264,7 +267,12 @@ final class CompactShellView: UIView, DrawerDriving {
 
     // MARK: - 环境
 
+    /// 颜色模式以外壳自己的 UIKit 外观为准，外观变了再交一遍：回主屏幕时系统按深浅两种外观各拍一张快照，
+    /// SwiftUI 交进来的颜色模式不一定跟着切回来，岛里抄的那份会停在深色（2026-10-15 iPhone 侧栏浅底白字）。
     func update(environment: EnvironmentValues, appearance: StageAppearance) {
+        var environment = environment, appearance = appearance
+        environment.colorScheme = traitCollection.userInterfaceStyle == .dark ? .dark : .light
+        appearance.colorScheme = environment.colorScheme
         self.environment = environment
         guard appearance != look else { return }
         look = appearance
@@ -281,7 +289,7 @@ final class CompactShellView: UIView, DrawerDriving {
 
     private func installIslands() {
         let state = state, drawer = drawer
-        // 侧栏是独立的 SwiftUI 根：只传它使用的数据和外观，保留自己宿主的事件环境。
+        // 侧栏是独立的 SwiftUI 根：只传它使用的数据和外观，保留自己宿主的事件环境；颜色模式不传，由宿主按 UIKit 外观给。
         // 整份覆盖 EnvironmentValues 会把外层宿主的内部环境一起带进来，窗口换岛时影响普通按钮的手势注册。
         sidebar.rootView = AnyView(CompactSidebarRoot(state: state) {
             drawer.settle(nil)
@@ -289,7 +297,6 @@ final class CompactShellView: UIView, DrawerDriving {
             .environment(model)
             .environment(\.workspacePresentation, environment.workspacePresentation)
             .environment(\.toast, environment.toast)
-            .environment(\.colorScheme, environment.colorScheme)
             .environment(\.dynamicTypeSize, environment.dynamicTypeSize)
             .environment(\.displayScale, environment.displayScale)
             .environment(\.isEnabled, environment.isEnabled)
