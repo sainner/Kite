@@ -23,14 +23,37 @@ class ProseTextCoordinator: NSObject, NSTextLayoutManagerDelegate {
     /// 新串只是旧串原样接着往后长时，只往 textStorage 末尾补字，TextKit 2 从编辑处起重排；选区在前面的字上，不动它。
     /// 流式回复每次整段重设会让 TextKit 2 把整段从头重排，iPhone 真机上卡几百毫秒（2026-10-11 Time Profiler）。
     /// 前缀用 isEqual 连属性一起比：装饰按值比，但引用图标的 NSTextAttachment 按身份比，带图标的段落走整段重设，接受。
-    /// 补了返回 true；不是接着长的返回 false，由调用方整段重设。
-    func appendTail(of text: NSAttributedString) -> Bool {
+    /// 补了返回 true；不是接着长的返回 false，由 show 整段重设。
+    private func appendTail(of text: NSAttributedString) -> Bool {
         guard let old = shown, text.length > old.length,
               text.attributedSubstring(from: NSRange(location: 0, length: old.length)).isEqual(to: old) else { return false }
         let added = text.attributedSubstring(from: NSRange(location: old.length, length: text.length - old.length))
         storage?.replaceCharacters(in: NSRange(location: old.length, length: 0), with: added)
         shown = text
         return true
+    }
+
+    /// 放字：接着长的只补末尾，否则整段重设。外观变化时也换掉已经解析成 CGColor 的装饰；字没变、只换颜色时保留选区。
+    /// refreshingAppearance 在整段重设前后各调一次（只换外观时先给真、换完给假），iOS 的交互借它不把这次重设当成取消选择。
+    func show(_ text: NSAttributedString, refreshingAppearance: (Bool) -> Void = { _ in }) {
+        guard shown != text, !appendTail(of: text), let view else { return }
+        let textChanged = shown?.string != text.string
+        shown = text
+        #if canImport(UIKit)
+        let selection = view.selectedRange
+        let selectable = view.isSelectable
+        refreshingAppearance(!textChanged)
+        view.attributedText = text
+        if !textChanged {
+            view.isSelectable = selectable
+            view.selectedRange = selection
+        }
+        refreshingAppearance(false)
+        #else
+        let selection = view.selectedRange()
+        view.textStorage?.setAttributedString(text)
+        if !textChanged { view.setSelectedRange(selection) }
+        #endif
     }
 
     /// 不占满时贴着字的宽度，最多 most。多留一点，免得文本视图排出来比量的宽、多折一行。

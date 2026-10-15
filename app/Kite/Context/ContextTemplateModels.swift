@@ -223,6 +223,16 @@ extension AppModel {
         connections.values.first { $0.catalog.generation == revision }
     }
 
+    /// 资源库的写请求：发出前、回来后都核对还是打开时那一次连接，变了就报 changed。
+    func libraryRequest<T: Decodable>(_ path: String, method: String, body: some Encodable, connection: UUID,
+                                      changed: String, as type: T.Type) async throws -> (WorkerConnection, T) {
+        guard let target = templateConnection(connection), target.connected else { throw KitedError(message: changed) }
+        let client = target.client
+        let result = try await client.request(path, method: method, body: body, as: type)
+        guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: changed) }
+        return (target, result)
+    }
+
     func refreshContextTemplates(in area: WorkArea? = nil) async throws {
         guard let connection = connection(for: area), connection.connected else { throw KitedError(message: "所属工作机未连接") }
         try await refreshTemplates(of: connection)
@@ -262,23 +272,24 @@ extension AppModel {
 
     /// 模板只能修改，各场景的模板由工作机提供。
     func saveContextTemplate(_ draft: TemplateDraft, connection: UUID) async throws {
-        guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请重试") }
-        let client = target.client
-        let result = try await client.request("/context-templates/\(draft.id.pathComponent)", method: "PUT",
-            body: ContextTemplateSave(definition: draft.definition, model: draft.model, expectedRevision: draft.revision), as: ContextTemplate.self)
-        guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请重试") }
-        target.templates?.templates.removeAll { $0.id == result.id }
-        target.templates?.templates.append(result)
+        let (target, result) = try await libraryRequest("/context-templates/\(draft.id.pathComponent)", method: "PUT",
+            body: ContextTemplateSave(definition: draft.definition, model: draft.model, expectedRevision: draft.revision),
+            connection: connection, changed: "工作机连接已变化，请重试", as: ContextTemplate.self)
+        target.replaceTemplate(result)
     }
 
     /// 模板恢复默认：内容连同辅助生成的模型一起换回默认。
     func resetContextTemplate(_ template: ContextTemplate, connection: UUID) async throws {
-        guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请重试") }
-        let client = target.client
-        let result = try await client.request("/context-templates/\(template.id.pathComponent)/reset", method: "POST",
-            body: LibraryReset(expectedRevision: template.revision), as: ContextTemplate.self)
-        guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请重试") }
-        target.templates?.templates.removeAll { $0.id == result.id }
-        target.templates?.templates.append(result)
+        let (target, result) = try await libraryRequest("/context-templates/\(template.id.pathComponent)/reset", method: "POST",
+            body: LibraryReset(expectedRevision: template.revision), connection: connection, changed: "工作机连接已变化，请重试", as: ContextTemplate.self)
+        target.replaceTemplate(result)
+    }
+}
+
+extension WorkerConnection {
+    /// 工作机存好的模板换进目录。
+    func replaceTemplate(_ template: ContextTemplate) {
+        templates?.templates.removeAll { $0.id == template.id }
+        templates?.templates.append(template)
     }
 }

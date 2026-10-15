@@ -85,13 +85,7 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
         hasBlocks = !content.blocks.isEmpty
         container.text.source = content.source
         coordinator.update(content.blocks, environment: EmbeddedEnvironment(environment))
-        if coordinator.shown != content.text, !coordinator.appendTail(of: content.text) {
-            let textChanged = coordinator.shown?.string != content.text.string
-            let selection = container.text.selectedRange()
-            coordinator.shown = content.text
-            container.text.textStorage?.setAttributedString(content.text)
-            if !textChanged { container.text.setSelectedRange(selection) }
-        }
+        coordinator.show(content.text)
         container.style(queued: queued, animated: !first && wasQueued != queued, environment: environment)
         container.setAttachments(message.attachments)
     }

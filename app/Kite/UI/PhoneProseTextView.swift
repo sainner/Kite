@@ -123,9 +123,9 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
         return viewport
     }
 
-    /// 外层滚了、这一行挪了：露出来的那截出了上次的视口就请 TextKit 按新视口重排。折着的（shownHeight）只看截住以内的那截。
-    func outerScrolled() {
-        guard clipsViewport, #available(iOS 27.0, *), let outer = outerScroll else { return }
+    /// 外层（对话列表的滚动视图）滚了、这一行挪了：露出来的那截出了上次的视口就请 TextKit 按新视口重排。折着的（shownHeight）只看截住以内的那截。
+    func outerScrolled(in outer: UIScrollView) {
+        guard clipsViewport, #available(iOS 27.0, *) else { return }
         var visible = outer.convert(outer.bounds, to: self).intersection(bounds)
         if let shownHeight { visible = visible.intersection(CGRect(x: visible.minX, y: 0, width: visible.width, height: shownHeight)) }
         // 只比上下：段落整行排，横着挪（拖缝时列跟着居中、行左右挪）不用重排

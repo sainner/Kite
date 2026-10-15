@@ -116,7 +116,6 @@ final class CardView: NSView {
         wantsLayer = true
         layerUsesCoreImageFilters = true
         header.layout = stage.group.layout
-        link.onHover = { _ in }
         addSubview(fill)
         iconMover.wantsLayer = true
         iconMover.addSubview(icon)
@@ -286,8 +285,7 @@ final class CardView: NSView {
     /// 标题两侧整段交给 Core Animation，模型值停在终点。取样和逐帧驱动用的是同一个 presentation，飞出来一样。
     private func flightStarted(_ motion: WindowMotion) {
         guard motion === placed?.motion, !motion.tracking, let flight = motion.flight, let placed else { return }
-        let steps = max(Int((flight.duration * 120).rounded(.up)), 1)
-        let poses = (0...steps).map { motion.presentation(at: flight.start.addingTimeInterval(flight.duration * Double($0) / Double(steps))) }
+        let poses = motion.presentations(from: flight.start, duration: flight.duration)
         flying = true
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -341,11 +339,9 @@ final class CardView: NSView {
         let now = Date.now, remaining = flight.start.addingTimeInterval(flight.duration).timeIntervalSince(now)
         guard remaining > 0 else { return }
         container?.layoutSubtreeIfNeeded()
-        let steps = max(Int((remaining * 120).rounded(.up)), 1)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        animateContent((0...steps).map { motion.presentation(at: now.addingTimeInterval(remaining * Double($0) / Double(steps))) },
-                       duration: remaining)
+        animateContent(motion.presentations(from: now, duration: remaining), duration: remaining)
         CATransaction.commit()
     }
 
@@ -738,25 +734,16 @@ final class CardView: NSView {
         return true
     }
 
-    /// 读屏的动作：固定、缩小、展开或还原、关闭窗口；缩在停靠栏里时展开窗口。最小化时正文对读屏隐藏，见 PaneCardBody。
+    /// 读屏的动作同窗口按钮收进更多菜单时的那几项（paneWindowActions）；缩在停靠栏里时展开窗口。最小化时正文对读屏隐藏，见 PaneCardBody。
     override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
         guard let placed, let stage, !closing else { return nil }
-        let layout = stage.group.layout, pane = pane, family = arrangement?.family
+        let pane = pane, family = arrangement?.family
         if placed.minimized {
             return [NSAccessibilityCustomAction(name: "展开窗口") { [weak stage] in stage?.activate(pane, family: family); return true }]
         }
-        guard let area = stage.group.workspace else { return nil }
-        let pin = layout.pinned.contains(pane) ? "取消固定" : "固定窗口"
-        var actions = [NSAccessibilityCustomAction(name: pin) { layout.togglePin(pane); return true },
-                       NSAccessibilityCustomAction(name: "缩小窗口") { layout.minimize(pane); return true }]
-        switch layout.expansion(of: pane) {
-        case .expand: actions.append(NSAccessibilityCustomAction(name: "展开窗口") { layout.expand(pane); return true })
-        case .restore: actions.append(NSAccessibilityCustomAction(name: "还原窗口") { layout.collapse(pane); return true })
-        case .unavailable: break
+        return paneWindowActions(group: stage.group, pane: pane, model: stage.model)?.commands.filter(\.enabled).map { command in
+            NSAccessibilityCustomAction(name: command.title) { command.action(); return true }
         }
-        let model = stage.model
-        actions.append(NSAccessibilityCustomAction(name: "关闭窗口") { model.closeWindow(pane, in: area); return true })
-        return actions
     }
 }
 

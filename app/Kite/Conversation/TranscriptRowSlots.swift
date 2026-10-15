@@ -186,16 +186,11 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
     private func build() {
         guard let source, let environment else { return }
         let content = tracking.track {
-            let blocks = document.blocks(for: source)
             let body = font.resolve(in: environment.fontResolutionContext).ctFont as NSFont
-            topInset = SelectableMarkdown.startsWithHeading(blocks) ? Metrics.markdownBlockGap(body.pointSize) / 2 : 0
-            let urls = blocks.flatMap { ReferenceText.decorate($0.text, scope: environment.referenceScope).runs.compactMap(\.link) }
-            if urls != self.urls {
-                self.urls = urls
-                Task { await ReferenceIcons.shared.load(urls) }
-            }
-            return SelectableMarkdown.content(blocks, source: source, body: body, color: color, colorScheme: environment.colorScheme,
-                                              scope: environment.referenceScope, attachments: attachments)
+            let prose = SelectableMarkdown.prose(document.blocks(for: source), source: source, body: body, color: color,
+                                                 environment: environment, attachments: attachments, loaded: &urls)
+            topInset = prose.topInset
+            return prose.content
         } changed: { [weak self] in
             // 通知在图标写进去之前发出，下一拍再按新的排
             DispatchQueue.main.async { [weak self] in
@@ -208,13 +203,7 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
         hasBlocks = !content.blocks.isEmpty
         // 附件先换好内容再放字：放字时 TextKit 就会量附件的高
         coordinator.update(content.blocks, environment: EmbeddedEnvironment(environment))
-        guard coordinator.shown != content.text, !coordinator.appendTail(of: content.text) else { return }
-        // 外观变化时也换掉已经解析成 CGColor 的装饰；只换颜色时保留选区。
-        let textChanged = coordinator.shown?.string != content.text.string
-        let selection = text.selectedRange()
-        coordinator.shown = content.text
-        text.textStorage?.setAttributedString(content.text)
-        if !textChanged { text.setSelectedRange(selection) }
+        coordinator.show(content.text)
     }
 
     /// 按这一段的宽整段排出来多高。

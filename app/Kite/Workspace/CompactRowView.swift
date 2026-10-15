@@ -264,8 +264,7 @@ final class CompactRowView: UIView {
     /// 松手后的一段开始计时：按 WindowMotion 的曲线每 1/120 秒取一帧，整段交给 Core Animation，模型值停在终点。
     private func slideStarted(_ motion: WindowMotion) {
         guard let flight = motion.flight else { return }
-        let steps = max(Int((flight.duration * 120).rounded(.up)), 1)
-        let xs = (0...steps).map { motion.presentation(at: flight.start.addingTimeInterval(flight.duration * Double($0) / Double(steps))).frame.minX }
+        let xs = motion.presentations(from: flight.start, duration: flight.duration).map(\.frame.minX)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         strip.layer.transform = CATransform3DMakeTranslation(xs[xs.count - 1], 0, 0)
@@ -464,7 +463,7 @@ private final class CompactSlot {
     let reports = PaneCardBodyReports()
     let dotsPresence = NativeDotsPresence()
     var thread: PhoneThreadWindowView?
-    /// 别的窗口：报上来的标题栏和控制区，和放它们的两个岛。
+    /// 别的窗口报上来的标题栏和控制区。
     var source: CompactPaneHeader?
     var usesDots = false
 
@@ -495,11 +494,9 @@ private final class CompactSlot {
         threadSlot.attach = nil
         threadSlot.detach = nil
         dotsPresence.release()
-        for island in [island] {
-            island.hitRegion = nil
-            island.rootView = AnyView(EmptyView())
-            island.removeFromSuperview()
-        }
+        island.hitRegion = nil
+        island.rootView = AnyView(EmptyView())
+        island.removeFromSuperview()
         view.removeFromSuperview()
     }
 }

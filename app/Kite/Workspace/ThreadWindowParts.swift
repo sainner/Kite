@@ -13,6 +13,26 @@ import SwiftUI
     var header = Header()
 }
 
+extension ThreadPaneModel {
+    /// 对话的行：读会话记录、选中的行、刚发出的消息（行的样子跟着后两样变），在 ModelTracking 的登记里读。
+    func transcriptRows(of thread: WorkThread) -> [TranscriptRow] {
+        _ = selected
+        _ = arriving.ids
+        return TranscriptRow.rows(items: thread.transcript.items, pending: thread.transcript.pending)
+    }
+
+    /// 行看到的环境：窗口的环境加上正文字号、刚发出的消息、选中的行、工作目录。
+    func rowContext(environment: EnvironmentValues, thread: WorkThread) -> TranscriptRowContext {
+        var environment = environment
+        environment.font = Theme.body
+        environment.arrivingMessages = arriving.ids
+        let selection = Binding<RowID?>(get: { self.selected }, set: { self.selected = $0 })
+        environment.selectedRow = selection
+        environment.workingDirectory = thread.transcriptRoot
+        return TranscriptRowContext(environment: environment, actionable: true, toggleActions: { selection.toggle($0) })
+    }
+}
+
 /// 标题栏摆在从窗口原点铺起的托管视图里正文的位置上，同 HostedPlaced。
 struct ThreadHeaderPlacement: ViewModifier {
     let metrics: ThreadWindowMetrics

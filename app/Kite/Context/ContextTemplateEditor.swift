@@ -42,7 +42,7 @@ struct ContextSection<Content: View>: View {
             if let expanded {
                 let shown = expanded.wrappedValue
                 Button { expanded.wrappedValue.toggle() } label: { header(chevron: shown) }
-                    .buttonStyle(ContextSectionToggleStyle())
+                    .buttonStyle(ContextPressFadeStyle())
                     .help(shown ? "收起\(title)" : "展开\(title)")
                     .accessibilityLabel(shown ? "收起\(title)" : "展开\(title)")
             } else {
@@ -76,18 +76,6 @@ struct ContextSection<Content: View>: View {
             if let chevron { ContextSectionChevron(expanded: chevron) }
         }
         .foregroundStyle(selected ? Color.accentColor : .primary)
-    }
-}
-
-/// 可收起的节，整行标题都是展开、收起按钮：没有悬停底色，按下时整行变淡，同条件里的变量菜单。
-private struct ContextSectionToggleStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .contentShape(Rectangle())
-            .opacity(!isEnabled ? 0.45 : configuration.isPressed ? 0.7 : 1)
-            .clickPointer()
     }
 }
 
@@ -639,7 +627,7 @@ private struct ContextConditionEditor<Grip: View>: View {
             .frame(minHeight: Metrics.paneButton)
         }
         // 横向不固定：窄屏放不下时变量名跟着截断，不把整个窗口撑宽
-        .menuStyle(.button).buttonStyle(ContextVariableMenuStyle()).menuIndicator(.hidden).fixedSize(horizontal: false, vertical: true)
+        .menuStyle(.button).buttonStyle(ContextPressFadeStyle()).menuIndicator(.hidden).fixedSize(horizontal: false, vertical: true)
         .help(variable?.description ?? "选择变量")
     }
 
@@ -778,8 +766,9 @@ private struct ContextConditionEditor<Grip: View>: View {
     }
 }
 
-/// 条件的变量菜单只有胶囊和箭头：系统菜单按钮在 Mac 上会垫一层底框，这里不要；点击范围占满标题栏高度，按下变淡。
-private struct ContextVariableMenuStyle: ButtonStyle {
+/// 没有悬停底色和底框，整块都能点，按下变淡：可收起的节整行标题是展开、收起按钮；
+/// 条件的变量菜单只有胶囊和箭头（系统菜单按钮在 Mac 上会垫一层底框，这里不要），点击范围占满标题栏高度。
+private struct ContextPressFadeStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {

@@ -61,7 +61,6 @@ struct HostedContentFrame: Equatable {
     weak var container: (any HostedContentSurface)?
     private(set) var frame = HostedContentFrame()
     let placement = HostedPlacement()
-    var onHover: (Bool) -> Void = { _ in }
     private let followers = NSHashTable<AnyObject>.weakObjects()
 
     /// 加进来时先按当前这一帧摆好。
@@ -131,7 +130,6 @@ struct HostedPlaced<Content: View>: View {
     var body: some View {
         let placement = link.placement.value
         content
-            .onHover { link.onHover($0) }
             .environment(\.windowHeaderAnchors, link)
             .frame(width: placement.contentSize.width, height: placement.contentSize.height)
             .offset(x: placement.offset.x, y: placement.offset.y)

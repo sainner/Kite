@@ -142,8 +142,8 @@ final class PhoneTextLine: UIView {
     /// （同 PhoneProseRowSlot.keptHeight：变宽时右边空出一截，变窄时字伸进右边的留白一点）；停下后再按给的宽。
     private func wrapWidth(for width: CGFloat) -> CGFloat {
         var kept: CGFloat?
-        if defersRewrap, WindowLayout.anyResizing, !PhoneProseRowSlot.exactResize, let counted, counted.count > 1, counted.width != width,
-           width >= counted.width ? width - counted.width <= 16 + 16 * spread : counted.width - width <= 2 + 6 * spread {
+        if defersRewrap, WindowLayout.anyResizing, let counted, counted.count > 1, counted.width != width,
+           rewrap.keeps(laid: counted.width, width: width) {
             kept = counted.width
         }
         if kept != keptWidth {
@@ -154,8 +154,7 @@ final class PhoneTextLine: UIView {
         return kept ?? width
     }
 
-    /// 0～1，每个一个，错开各行的余量。
-    private lazy var spread = CGFloat(UInt(bitPattern: ObjectIdentifier(self).hashValue) % 1009) / 1009
+    private lazy var rewrap = ResizeRewrap(self)
 
     /// 多行时相邻两行基线隔多远：行高加行距往上取到像素，同 Text（iPad 上并排截屏对过，第二行起差半点）。
     private var pitch: CGFloat { PhonePixel.ceil(font.lineHeight + font.leading) }

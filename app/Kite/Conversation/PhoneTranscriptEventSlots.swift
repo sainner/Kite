@@ -413,16 +413,11 @@ final class PhoneCompactionDetails: UIView {
         guard let (source, context) = self.source else { return }
         let environment = context.environment
         let content = summaryTracking.track { () -> TextViewContent in
-            let blocks = document.blocks(for: source)
             let body = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as UIFont
-            topInset = SelectableMarkdown.startsWithHeading(blocks) ? PhonePixel.round(Metrics.markdownBlockGap(body.pointSize) / 2) : 0
-            let urls = blocks.flatMap { ReferenceText.decorate($0.text, scope: environment.referenceScope).runs.compactMap(\.link) }
-            if urls != self.urls {
-                self.urls = urls
-                Task { await ReferenceIcons.shared.load(urls) }
-            }
-            return SelectableMarkdown.content(blocks, source: source, body: body, color: .secondaryLabel, colorScheme: environment.colorScheme,
-                                              scope: environment.referenceScope, attachments: attachments)
+            let prose = SelectableMarkdown.prose(document.blocks(for: source), source: source, body: body, color: .secondaryLabel,
+                                                 environment: environment, attachments: attachments, loaded: &urls)
+            topInset = prose.topInset
+            return prose.content
         } changed: { [weak self] in
             // 通知在图标写进去之前发出，下一拍再按新的排
             DispatchQueue.main.async { [weak self] in

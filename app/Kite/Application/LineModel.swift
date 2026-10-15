@@ -15,26 +15,27 @@ extension AppModel {
     }
 
     /// Line 的线程（实例 ID）。
-    var lineThreadID: String? {
-        lineArea?.instances.first { $0.status == .open && $0.config?.role?.id == Self.lineRole }?.id
-    }
+    var lineThreadID: String? { lineArea.flatMap(lineThread(in:)) }
 
     /// Line 的收件箱实例。
-    var lineInbox: RemotePluginInstance? {
-        lineArea?.instances.first { $0.status == .open && $0.definitionId == Self.monitorDefinition && $0.config?.monitor?.system == "line" }
+    var lineInbox: RemotePluginInstance? { lineArea.flatMap(inboxInstance(in:)) }
+
+    private func lineThread(in area: WorkArea) -> String? {
+        area.instances.first { $0.status == .open && $0.config?.role?.id == Self.lineRole }?.id
+    }
+
+    private func inboxInstance(in area: WorkArea) -> RemotePluginInstance? {
+        area.instances.first { $0.status == .open && $0.definitionId == Self.monitorDefinition && $0.config?.monitor?.system == "line" }
     }
 
     /// 回应卡片上的「交给 Line」：把这一项交给 Line 代处理；没有 Line，或这是 Line 自己线程上的请求时为空。
     /// 远程工作机上的等待要等 Line 那边读到汇总（最多一分钟）才在收件箱里，那之前交不出去，工作机会返回 404。
     func lineDelegate(_ thread: WorkThread) -> (() async throws -> Void)? {
-        guard let area = lineArea, let inbox = lineInbox, let client = area.pluginClient, thread.id != lineThreadID else { return nil }
-        let workspace = area.id
-        return { [weak thread] in
-            guard let waiting = thread?.waiting else { return }
-            let body = ["operationId": UUID().uuidString.lowercased(), "instanceId": inbox.id, "item": "waiting:\(waiting.id)"]
+        guard let area = lineArea, area.pluginClient != nil, inboxInstance(in: area) != nil, thread.id != lineThread(in: area) else { return nil }
+        return { [weak self, weak thread] in
+            guard let self, let waiting = thread?.waiting else { return }
             do {
-                let _: JSON = try await client.request("/workspaces/\(workspace.pathComponent)/operations/monitor.delegate", method: "POST",
-                                                       body: body, as: JSON.self)
+                try await lineInboxOperation("monitor.delegate", ["item": .string("waiting:\(waiting.id)")])
             } catch let error as KitedError where error.status == 404 {
                 throw KitedError(message: "Line 还没看到这一项，稍后再试", status: 404)
             }
@@ -105,7 +106,6 @@ extension AppModel {
             let snapshot = try await client.request("/workspaces/\(area.id.pathComponent)/operations/monitor.read", method: "POST",
                                                     body: ["instanceId": inbox.id], as: LineInbox.self)
             if lineInboxSnapshot != snapshot { lineInboxSnapshot = snapshot }
-            monitorRevisions[inbox.id, default: 0] += 1
         } catch {
             TimingTrace.mark("读取收件箱失败：\(error.localizedDescription)")
         }

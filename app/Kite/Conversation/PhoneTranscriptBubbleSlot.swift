@@ -9,6 +9,7 @@ import UIKit
 /// iPad 指针右键开关操作栏。刚发出去时从下面 bubbleRise 处浮上来、淡显，跟着对话往上滑的那一下走，浮的途中不能选字（同 Mac）。
 final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var container: PhoneBubbleRowView?
+    var proseViews: [PhoneProseTextView]? { container.map { [$0.text] } ?? [] }
     private var interaction: PhoneTextInteraction?
     private let coordinator = ProseTextCoordinator()
     private let attachments = BlockAttachments()
@@ -115,20 +116,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         coordinator.update(content.blocks, environment: EmbeddedEnvironment(embedded))
         full = content.text
         showsPrefix = false
-        if coordinator.shown != content.text, !coordinator.appendTail(of: content.text) {
-            let text = container.text
-            let textChanged = coordinator.shown?.string != content.text.string
-            let selection = text.selectedRange
-            let selectable = text.isSelectable
-            interaction?.refreshingAppearance = !textChanged
-            coordinator.shown = content.text
-            text.attributedText = content.text
-            if !textChanged {
-                text.isSelectable = selectable
-                text.selectedRange = selection
-            }
-            interaction?.refreshingAppearance = false
-        }
+        coordinator.show(content.text) { interaction?.refreshingAppearance = $0 }
         container.style(queued: queued, animated: !first && wasQueued.map { $0 != queued } == true, environment: environment)
         container.setAttachments(message.attachments.isEmpty ? nil : AnyView(
             MessageAttachmentRow(attachments: message.attachments).environment(\.self, environment)))
@@ -195,11 +183,8 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
             let most = max(width - Metrics.bubblePadding.width * 2, 0)
             // 折了行的：行宽和能给的宽差得不多就先不重排（同 PhoneProseRowSlot.keptHeight），气泡跟着字的宽，变窄时往里多让一截
             let current = layout.textWidth
-            let keeps = foldWraps && current > 0 && !PhoneProseRowSlot.exactResize
-                && (most >= current ? most - current <= 16 + 16 * spread : current - most <= 2 + 6 * spread)
-            if !keeps {
-                let slack = foldWraps && most < current && !PhoneProseRowSlot.exactResize
-                layout.keepFolded(most: slack ? max(most - 8 - 8 * spread, most * 0.85) : most, wraps: foldWraps)
+            if !(foldWraps && current > 0 && rewrap.keeps(laid: current, width: most)) {
+                layout.keepFolded(most: foldWraps ? rewrap.narrowed(most, from: current) : most, wraps: foldWraps)
                 container.text.fit(lineWidth: layout.textWidth)
             }
             provisional = true
@@ -225,8 +210,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         return height
     }
 
-    /// 0～1，每行一个，错开拖缝中各行的余量。
-    private lazy var spread = CGFloat(UInt(bitPattern: ObjectIdentifier(self).hashValue) % 1009) / 1009
+    private lazy var rewrap = ResizeRewrap(self)
 
     /// 气泡多高：折起来的正文，加上能折时的按钮。
     private func bubbleHeight(expanded: Bool) -> CGFloat {
@@ -322,6 +306,7 @@ final class PhoneBubbleRowView: UIView {
     }
 
     func setAttachments(_ content: AnyView?) {
+        measuredAttachments = nil
         if let content {
             if let attachments {
                 attachments.rootView = content
@@ -349,8 +334,19 @@ final class PhoneBubbleRowView: UIView {
 
     /// 附件那一行连同和气泡之间的间距多高，没有附件为 0。
     func attachmentsHeight(width: CGFloat) -> CGFloat {
-        guard let attachments else { return 0 }
-        return PhonePixel.ceil(attachments.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height) + 6
+        guard let size = attachmentsSize(width: width) else { return 0 }
+        return PhonePixel.ceil(size.height) + 6
+    }
+
+    /// 附件按某个宽量出的大小：量高时量过，摆的时候直接用，不在每个滚动帧让托管视图再跑一遍 SwiftUI 布局；换了内容作废。
+    private var measuredAttachments: (width: CGFloat, size: CGSize)?
+
+    private func attachmentsSize(width: CGFloat) -> CGSize? {
+        guard let attachments else { return nil }
+        if let measuredAttachments, measuredAttachments.width == width { return measuredAttachments.size }
+        let size = attachments.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
+        measuredAttachments = (width, size)
+        return size
     }
 
     var attachmentsWidth: CGFloat { attachments?.view.frame.width ?? 0 }
@@ -359,8 +355,7 @@ final class PhoneBubbleRowView: UIView {
     /// 由截住的那层截：关了滚动的 UITextView 只排到视图那么高，跨过折叠线的那一行就不排、不画了（原来渐隐里露着半行）；
     /// 展开收起的动画中也只改截住那层的高，不逐帧改文本视图的高（每改一次都要整段重排，spikes/ios-native-transcript V1）。
     func place(_ frames: BubbleLayout.Frames, textHeight: CGFloat, attachmentsHeight: CGFloat, foldable: Bool, expanded: Bool) {
-        if let attachments {
-            let size = attachments.sizeThatFits(in: CGSize(width: bounds.width, height: .greatestFiniteMagnitude))
+        if let attachments, let size = attachmentsSize(width: bounds.width) {
             attachments.view.frame = CGRect(x: bounds.width - size.width, y: 0, width: size.width, height: attachmentsHeight - 6)
         }
         if bubble.frame != frames.bubble { bubble.frame = frames.bubble }

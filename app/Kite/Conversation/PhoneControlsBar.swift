@@ -18,6 +18,7 @@ final class ControlsBarView: UIView {
     private let response = UIHostingController(rootView: AnyView(EmptyView()))
     /// 卡片正在显示的等待；没有时显示输入框。
     private var shownWaiting: String?
+    private var responseKey: WaitingResponseKey?
 
     private var controls: ThreadControlsModel?
     private var enabled = true
@@ -162,11 +163,19 @@ final class ControlsBarView: UIView {
     private func showWaiting(_ waiting: RemoteWaiting?, controls: ThreadControlsModel) {
         if let waiting {
             let thread = controls.thread
-            response.rootView = AnyView(WaitingResponseCard(waiting: waiting, respond: { try await thread.respond(waiting, $0) },
-                                                            stop: { thread.stop() }, canStop: thread.canStop, delegate: controls.delegate)
-                .fixedSize(horizontal: false, vertical: true)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] _ in self?.contentChanged() }
-                .environment(\.self, environment ?? EnvironmentValues()))
+            let delegate = controls.delegate
+            let key = WaitingResponseKey(waiting: waiting, canStop: thread.canStop, delegable: delegate != nil,
+                                         colorScheme: environment?.colorScheme, dynamicTypeSize: environment?.dynamicTypeSize)
+            if key != responseKey {
+                responseKey = key
+                response.rootView = AnyView(WaitingResponseCard(waiting: waiting, respond: { try await thread.respond(waiting, $0) },
+                                                                stop: { thread.stop() }, canStop: thread.canStop, delegate: delegate)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] _ in self?.contentChanged() }
+                    .environment(\.self, environment ?? EnvironmentValues()))
+            }
+        } else {
+            responseKey = nil
         }
         guard waiting?.id != shownWaiting else { return }
         let entering = shownWaiting == nil
@@ -233,41 +242,23 @@ final class ControlsBarView: UIView {
 
     // MARK: - 排版
 
-    /// 版式常量：输入框左右 controlInset + 8、上下 6；输入框和按钮行之间 2；按钮行左右、底 controlButtonInset；
-    /// 顶 controlInset。附件、语音一组间距 0，和后面的主按钮间距 4；横排时思考强度和按钮组之间至少两个按钮间距。
-    private static let fieldInset = Metrics.controlInset + 8
-    private static let fieldPadding: CGFloat = 6
-    private static let rowSpacing: CGFloat = 2
-
-    private struct Plan {
-        var height: CGFloat
-        var field: CGFloat
-        var effort: CGSize
-        var hidesActions: Bool
-    }
-
-    /// 玻璃的高。
+    /// 玻璃的高，版式见 ComposerLayout。
     func height(forWidth width: CGFloat) -> CGFloat {
         let height = plan(width: width).height
         reported = (width, height)
         return height
     }
 
-    private func plan(width: CGFloat) -> Plan {
+    private func plan(width: CGFloat) -> ComposerLayout.Plan {
         let width = max(width, 0)
         if shownWaiting != nil {
             let height = response.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
-            return Plan(height: height, field: 0, effort: .zero, hidesActions: true)
+            return ComposerLayout.Plan(height: height, field: 0, effort: .zero, hidesActions: true)
         }
-        let fieldWidth = max(width - 2 * Self.fieldInset, 0)
+        let fieldWidth = max(width - 2 * ComposerLayout.fieldInset, 0)
         var fieldHeight = field.height(width: fieldWidth, text: field.text)
         if let fading = controls?.state.fading { fieldHeight = max(fieldHeight, fading.height) }
-        let effortSize = currentEffortSize
-        let rowWidth = width - 2 * Metrics.controlButtonInset
-        let hidesActions = effortSize.width + 2 * Metrics.paneButtonGap + buttonsWidth > rowWidth
-        let row = max(effortSize.height, Metrics.paneButton)
-        let height = Metrics.controlInset + 2 * Self.fieldPadding + fieldHeight + Self.rowSpacing + row + Metrics.controlButtonInset
-        return Plan(height: height, field: fieldHeight, effort: effortSize, hidesActions: hidesActions)
+        return ComposerLayout.plan(width: width, field: fieldHeight, effort: currentEffortSize)
     }
 
     private var currentEffortSize: CGSize {
@@ -284,10 +275,6 @@ final class ControlsBarView: UIView {
         contentChanged()
     }
 
-    private var buttonsWidth: CGFloat {
-        3 * Metrics.paneButton + ThreadControlsModel.actionGap
-    }
-
     override func layoutSubviews() {
         super.layoutSubviews()
         let width = bounds.width
@@ -296,29 +283,21 @@ final class ControlsBarView: UIView {
         guard shownWaiting == nil else { return }
         let plan = plan(width: width)
 
-        let fieldWidth = max(width - 2 * Self.fieldInset, 0)
-        let top = Metrics.controlInset + Self.fieldPadding
-        place(field, CGRect(x: Self.fieldInset, y: top, width: fieldWidth, height: field.height(width: fieldWidth, text: field.text)))
-        place(fadingView, CGRect(x: Self.fieldInset, y: top, width: fieldWidth, height: plan.field))
+        let fieldWidth = max(width - 2 * ComposerLayout.fieldInset, 0)
+        let top = ComposerLayout.fieldTop
+        place(field, CGRect(x: ComposerLayout.fieldInset, y: top, width: fieldWidth, height: field.height(width: fieldWidth, text: field.text)))
+        place(fadingView, CGRect(x: ComposerLayout.fieldInset, y: top, width: fieldWidth, height: plan.field))
 
-        var rowTop = top + plan.field + Self.fieldPadding + Self.rowSpacing
-        let inset = Metrics.controlButtonInset
-        let buttonsHeight = Metrics.paneButton
-        let row = max(plan.effort.height, buttonsHeight)
-        place(effort.view, CGRect(x: inset, y: rowTop + (row - plan.effort.height) / 2, width: plan.effort.width, height: plan.effort.height))
-        rowTop += (row - buttonsHeight) / 2
+        let row = ComposerLayout.row(width: width, plan: plan)
+        place(effort.view, row.effort)
         // 复用本次排版的宽度比较，只在跨过阈值时改变可见性；控件保留，effort 的手势不中断。
         for button in [attach, voice, primary] where button.isHidden != plan.hidesActions {
             button.isHidden = plan.hidesActions
         }
         guard !plan.hidesActions else { return }
-        var x = width - inset - Metrics.paneButton
-        place(primary, CGRect(x: x, y: rowTop, width: Metrics.paneButton, height: buttonsHeight))
-        x -= ThreadControlsModel.actionGap
-        for button in [voice, attach] {
-            x -= Metrics.paneButton
-            place(button, CGRect(x: x, y: rowTop, width: Metrics.paneButton, height: buttonsHeight))
-        }
+        place(primary, row.primary)
+        place(voice, row.voice)
+        place(attach, row.attach)
     }
 
     /// 四边取整到像素再摆，同 SwiftUI（输入框 8 行以上时高带小数）；和现在一样就不设：拖缝时每步都排，多数子视图只有横向位置在变。

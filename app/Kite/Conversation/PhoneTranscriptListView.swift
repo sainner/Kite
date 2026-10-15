@@ -197,7 +197,11 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
                 if moved { EmbeddedContainerView.synchronize(in: view) }
                 // 滚了、挪了：文本视图露出来的那截出了上次的视口就按新视口重排。拖缝中也要：没改容器宽的行（见 PhoneProseRowSlot.keptHeight）
                 // 不会自己重排，贴底时别的行变高变矮，滚动位置跟着变，它露出来的那截就换了（只比上下，没出视口时很便宜）
-                Self.refreshViewports(in: view)
+                if let texts = (slot as? PhoneRowSlot)?.proseViews {
+                    for text in texts { text.outerScrolled(in: scrollView) }
+                } else {
+                    refreshViewports(in: view)
+                }
             case .hide:
                 if slot.view.superview != nil, !slot.view.isHidden { slot.view.isHidden = true }
             case .remove:
@@ -528,9 +532,9 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
 
 extension PhoneTranscriptView {
     /// 行里的文本视图看看要不要按新视口重排（见 PhoneProseTextView.outerScrolled）。找到文本视图就不往里找了。
-    static func refreshViewports(in view: UIView) {
+    fileprivate func refreshViewports(in view: UIView) {
         if let text = view as? PhoneProseTextView {
-            text.outerScrolled()
+            text.outerScrolled(in: scrollView)
             return
         }
         for child in view.subviews { refreshViewports(in: child) }

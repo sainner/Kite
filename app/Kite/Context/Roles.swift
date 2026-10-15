@@ -88,34 +88,27 @@ extension AppModel {
     }
 
     func saveRole(_ role: RoleDefinition, expectedRevision: String?, connection: UUID) async throws -> AgentRole {
-        guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
-        let client = target.client
         let path = expectedRevision == nil ? "/roles" : "/roles/\(role.id.pathComponent)"
-        let result = try await client.request(path, method: expectedRevision == nil ? "POST" : "PUT",
-            body: RoleSave(role: role, expectedRevision: expectedRevision), as: AgentRole.self)
-        guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
+        let (target, result) = try await libraryRequest(path, method: expectedRevision == nil ? "POST" : "PUT",
+            body: RoleSave(role: role, expectedRevision: expectedRevision), connection: connection, changed: Self.roleConnectionChanged, as: AgentRole.self)
         target.replaceRole(result)
         return result
     }
 
     /// 内置角色恢复默认：提示词与初始配置一起换回默认，签名照常随提示词更新。
     func resetRole(_ role: AgentRole, connection: UUID) async throws {
-        guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
-        let client = target.client
-        let result = try await client.request("/roles/\(role.id.pathComponent)/reset", method: "POST",
-            body: LibraryReset(expectedRevision: role.revision), as: AgentRole.self)
-        guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
+        let (target, result) = try await libraryRequest("/roles/\(role.id.pathComponent)/reset", method: "POST",
+            body: LibraryReset(expectedRevision: role.revision), connection: connection, changed: Self.roleConnectionChanged, as: AgentRole.self)
         target.replaceRole(result)
     }
 
     func saveRoleEmblem(_ design: EmblemDesign, for role: AgentRole, connection: UUID) async throws {
-        guard let target = templateConnection(connection), target.connected else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
-        let client = target.client
-        let result = try await client.request("/roles/\(role.id.pathComponent)/emblem", method: "PUT",
-            body: EmblemSave(emblem: design), as: AgentRole.self)
-        guard target.catalog.generation == connection, accepts(client) else { throw KitedError(message: "工作机连接已变化，请返回角色列表") }
+        let (target, result) = try await libraryRequest("/roles/\(role.id.pathComponent)/emblem", method: "PUT",
+            body: EmblemSave(emblem: design), connection: connection, changed: Self.roleConnectionChanged, as: AgentRole.self)
         target.replaceRole(result)
     }
+
+    private static let roleConnectionChanged = "工作机连接已变化，请返回角色列表"
 
     /// 请工作机生成签名；force 时连手改的一起重新生成。结果随角色变化事件送达。
     func generateRoleEmblem(_ role: AgentRole, force: Bool, connection: UUID) async throws {

@@ -112,7 +112,6 @@ final class PhoneCardView: UIView {
         self.stage = stage
         super.init(frame: .zero)
         header.layout = stage.group.layout
-        link.onHover = { _ in }
         layer.addSublayer(fill.base)
         layer.addSublayer(fill.minimized)
         iconMover.addSubview(icon)
@@ -296,8 +295,7 @@ final class PhoneCardView: UIView {
     /// 标题两侧整段交给 Core Animation，模型值停在终点。取样和逐帧驱动用的是同一个 presentation，飞出来一样。
     private func flightStarted(_ motion: WindowMotion) {
         guard motion === placed?.motion, !motion.tracking, let flight = motion.flight else { return }
-        let steps = max(Int((flight.duration * 120).rounded(.up)), 1)
-        let poses = (0...steps).map { motion.presentation(at: flight.start.addingTimeInterval(flight.duration * Double($0) / Double(steps))) }
+        let poses = motion.presentations(from: flight.start, duration: flight.duration)
         flying = true
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -348,11 +346,9 @@ final class PhoneCardView: UIView {
         container?.layoutIfNeeded()
         let now = Date.now, remaining = flight.start.addingTimeInterval(flight.duration).timeIntervalSince(now)
         guard remaining > 0 else { return }
-        let steps = max(Int((remaining * 120).rounded(.up)), 1)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        animateContent((0...steps).map { motion.presentation(at: now.addingTimeInterval(remaining * Double($0) / Double(steps))) },
-                       duration: remaining)
+        animateContent(motion.presentations(from: now, duration: remaining), duration: remaining)
         CATransaction.commit()
     }
 
@@ -784,26 +780,17 @@ final class PhoneCardView: UIView {
         set {}
     }
 
-    /// 读屏的动作：固定、缩小、展开或还原、关闭窗口；缩在停靠栏里时展开窗口。
+    /// 读屏的动作同窗口按钮收进更多菜单时的那几项（paneWindowActions）；缩在停靠栏里时展开窗口。
     override var accessibilityCustomActions: [UIAccessibilityCustomAction]? {
         get {
             guard let placed, let stage, !closing else { return nil }
-            let layout = stage.group.layout, pane = pane, family = arrangement?.family
+            let pane = pane, family = arrangement?.family
             if placed.minimized {
                 return [UIAccessibilityCustomAction(name: "展开窗口") { [weak stage] _ in stage?.activate(pane, family: family); return true }]
             }
-            guard let area = stage.group.workspace else { return nil }
-            let pin = layout.pinned.contains(pane) ? "取消固定" : "固定窗口"
-            var actions = [UIAccessibilityCustomAction(name: pin) { _ in layout.togglePin(pane); return true },
-                           UIAccessibilityCustomAction(name: "缩小窗口") { _ in layout.minimize(pane); return true }]
-            switch layout.expansion(of: pane) {
-            case .expand: actions.append(UIAccessibilityCustomAction(name: "展开窗口") { _ in layout.expand(pane); return true })
-            case .restore: actions.append(UIAccessibilityCustomAction(name: "还原窗口") { _ in layout.collapse(pane); return true })
-            case .unavailable: break
+            return paneWindowActions(group: stage.group, pane: pane, model: stage.model)?.commands.filter(\.enabled).map { command in
+                UIAccessibilityCustomAction(name: command.title) { _ in command.action(); return true }
             }
-            let model = stage.model
-            actions.append(UIAccessibilityCustomAction(name: "关闭窗口") { _ in model.closeWindow(pane, in: area); return true })
-            return actions
         }
         set {}
     }

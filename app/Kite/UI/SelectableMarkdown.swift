@@ -14,6 +14,23 @@ enum SelectableMarkdown {
         return false
     }
 
+    /// 原生对话行（正文、压缩摘要）的一段：属性串和开头是标题时要让出的上边距（见 startsWithHeading）。
+    /// 要看的引用图标和上次（loaded）不一样就交给 ReferenceIcons 去载；在 ModelTracking 的登记里调，图标载完由登记通知重排。
+    static func prose(_ blocks: [MarkdownBlock], source: String, body: PlatformFont, color: PlatformColor, environment: EnvironmentValues,
+                      attachments: BlockAttachments, loaded: inout [URL]) -> (content: TextViewContent, topInset: CGFloat) {
+        let urls = blocks.flatMap { ReferenceText.decorate($0.text, scope: environment.referenceScope).runs.compactMap(\.link) }
+        if urls != loaded {
+            loaded = urls
+            Task { await ReferenceIcons.shared.load(urls) }
+        }
+        var topInset = startsWithHeading(blocks) ? Metrics.markdownBlockGap(body.pointSize) / 2 : 0
+        #if os(iOS)
+        topInset = PhonePixel.round(topInset)
+        #endif
+        return (content(blocks, source: source, body: body, color: color, colorScheme: environment.colorScheme,
+                        scope: environment.referenceScope, attachments: attachments), topInset)
+    }
+
     /// 几块拼成一段带属性的字，块和块之间空 markdownBlockGap，标题上面再多空一点，和 MarkdownBlockView 排的一样。
     /// 块距、引用竖线顶边、行内代码背景高按 Mac 上与 MarkdownView 并排逐行量过的差异补偿，两端共用这一套
     /// （用户 2026-10-12 决定；量到的数值见 spikes/mac-textkit-prose/README.md「外观对照」）。

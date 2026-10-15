@@ -212,3 +212,12 @@ struct WaitingResponseCard: View {
         }
     }
 }
+
+/// 原生输入区里回应卡片的托管视图按它换：这几样变了才重建，免得每次读模型都让 SwiftUI 整个重新比对、重新量高。
+struct WaitingResponseKey: Equatable {
+    let waiting: RemoteWaiting
+    let canStop: Bool
+    let delegable: Bool
+    let colorScheme: ColorScheme?
+    let dynamicTypeSize: DynamicTypeSize?
+}

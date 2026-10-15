@@ -121,16 +121,8 @@ struct DockOverlay: View {
     }
 
     private var hoverTip: DockHoverTip? {
-        guard workspace.drag == nil, workspace.resizing == nil,
-              let hover = area.dockHover, let entry = hoverEntry(hover.id) else { return nil }
-        return DockHoverTip(text: area.dockLabel(entry), frame: hover.frame)
-    }
-
-    /// 家族格里的父代理是窗口卡片报上来的，按窗口找。
-    private func hoverEntry(_ id: String) -> DockEntry? {
-        if let entry = DockModel(agents: geometry.allCells.map(\.entry)).entry(id) { return entry }
-        guard id.hasPrefix("pane:") else { return nil }
-        return .pane(Pane(String(id.dropFirst("pane:".count))))
+        guard workspace.drag == nil, workspace.resizing == nil else { return nil }
+        return area.dockHoverTip(in: geometry)
     }
 
     @ViewBuilder

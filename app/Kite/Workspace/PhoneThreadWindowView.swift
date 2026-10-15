@@ -241,11 +241,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
     /// 读会话记录、选中的行、刚发出的消息，变了换一遍行；行交给列表放在排版里（观察之外），见 layoutSubviews。
     private func refreshRows() {
         let thread = thread, pane = pane
-        rows = rowsTracking.track({
-            _ = pane.selected
-            _ = pane.arriving.ids
-            return TranscriptRow.rows(items: thread.transcript.items, pending: thread.transcript.pending)
-        }) { [weak self] in
+        rows = rowsTracking.track({ pane.transcriptRows(of: thread) }) { [weak self] in
             // 通知在属性改之前，下一拍再读
             Task { @MainActor in self?.refreshRows() }
         }
@@ -253,17 +249,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         setNeedsLayout()
     }
 
-    /// 行看到的环境：窗口的环境加上正文字号、刚发出的消息、选中的行、工作目录。
-    private var rowContext: TranscriptRowContext {
-        var environment = environment
-        environment.font = Theme.body
-        environment.arrivingMessages = pane.arriving.ids
-        let pane = pane
-        let selection = Binding<RowID?>(get: { pane.selected }, set: { pane.selected = $0 })
-        environment.selectedRow = selection
-        environment.workingDirectory = thread.transcriptRoot
-        return TranscriptRowContext(environment: environment, actionable: true, toggleActions: { selection.toggle($0) })
-    }
+    private var rowContext: TranscriptRowContext { pane.rowContext(environment: environment, thread: thread) }
 
     // MARK: - 排版
 
@@ -309,26 +295,8 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         place(headerBar, CGRect(x: 0, y: 0, width: width, height: state.headerHeight))
         headerBar.layoutIfNeeded()
         reportRegions()
-        let placement = ThreadWindowMetrics.Header(origin: .zero, size: CGSize(width: width, height: state.headerHeight))
-        if metrics.header != placement { metrics.header = placement }
-        let window = CGRect(origin: .zero, size: bounds.size)
-        if windowFrame.rect != window { windowFrame.rect = window }
-
-        // 空会话的签名、录音时底部那一带：有它们时才铺满窗口
-        let backdropShown = state.initial || (state.listening && !state.empty)
-        backdrop.isHidden = !backdropShown
-        if backdropShown { place(backdrop, bounds) }
-
-        list.isHidden = state.empty
-        let insets = EdgeInsets(top: state.headerHeight, leading: 0, bottom: barHeight, trailing: 0)
-        if insets != self.insets {
-            self.insets = insets
-            list.setInsets(insets)
-        }
-        if rowsDirty, !state.empty {
-            rowsDirty = false
-            list.update(rows, context: rowContext, presence: environment.panePresence)
-        }
+        placeTranscript(state, headerHeight: state.headerHeight,
+                        insets: EdgeInsets(top: state.headerHeight, leading: 0, bottom: barHeight, trailing: 0))
     }
 
     /// 紧凑布局：对话铺满，上下让出外壳给的距离；标题栏后面的渐变、滚动软边从窗口顶边铺到标题栏底边。
@@ -339,7 +307,14 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         let insets = compactInsets
         if metrics.controlsHeight != insets.bottom { metrics.controlsHeight = insets.bottom }
         place(surface, bounds)
-        let placement = ThreadWindowMetrics.Header(origin: .zero, size: CGSize(width: bounds.width, height: insets.top))
+        // 键盘升降时外壳在键盘的动画块里排版：对话当场排、滚动位置跟着键盘的曲线走（iOS 的惯例），新露出来的行不带动画放进去（见 PhoneTranscriptView.realize）
+        placeTranscript(state, headerHeight: insets.top, insets: insets, rowsWithoutAnimation: true)
+        list.layoutIfNeeded()
+    }
+
+    /// 两种布局共用的后半段：报标题栏的位置和窗口的框；空会话的签名、录音时底部那一带有它们时才铺满窗口；对话让出上下的距离，行变了换行。
+    private func placeTranscript(_ state: State, headerHeight: CGFloat, insets: EdgeInsets, rowsWithoutAnimation: Bool = false) {
+        let placement = ThreadWindowMetrics.Header(origin: .zero, size: CGSize(width: bounds.width, height: headerHeight))
         if metrics.header != placement { metrics.header = placement }
         let window = CGRect(origin: .zero, size: bounds.size)
         if windowFrame.rect != window { windowFrame.rect = window }
@@ -347,16 +322,17 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         backdrop.isHidden = !backdropShown
         if backdropShown { place(backdrop, bounds) }
         list.isHidden = state.empty
-        // 键盘升降时外壳在键盘的动画块里排版：对话当场排、滚动位置跟着键盘的曲线走（iOS 的惯例），新露出来的行不带动画放进去（见 PhoneTranscriptView.realize）
         if insets != self.insets {
             self.insets = insets
             list.setInsets(insets)
         }
-        if rowsDirty, !state.empty {
-            rowsDirty = false
+        guard rowsDirty, !state.empty else { return }
+        rowsDirty = false
+        if rowsWithoutAnimation {
             UIView.performWithoutAnimation { list.update(rows, context: rowContext, presence: environment.panePresence) }
+        } else {
+            list.update(rows, context: rowContext, presence: environment.panePresence)
         }
-        list.layoutIfNeeded()
     }
 
     /// 排版当中改了读过的模型：这一轮排完 UIKit 会清掉待排，下一拍再标一次（同 PhoneStageView）。

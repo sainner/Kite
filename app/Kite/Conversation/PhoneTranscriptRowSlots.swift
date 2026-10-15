@@ -10,10 +10,13 @@ protocol PhoneRowSlot: TranscriptRowSlot {
     func releaseView()
     /// 这一行的操作栏：和哪边对齐、上面的按钮。没有操作栏的行给 nil。Mac 的见 ActionBarProviding。
     func actionBar() -> (side: HorizontalEdge, content: AnyView)?
+    /// 行里直接放着的文本视图，滚动时列表逐帧请它们看要不要按新视口重排；nil 表示不定，由列表往行的视图里找。
+    var proseViews: [PhoneProseTextView]? { get }
 }
 
 extension PhoneRowSlot {
     func actionBar() -> (side: HorizontalEdge, content: AnyView)? { nil }
+    var proseViews: [PhoneProseTextView]? { nil }
 }
 
 /// iOS 上按 slotKind（两端共用，见 TranscriptSlot）建这一行的实现。
@@ -47,6 +50,7 @@ extension PhoneRowSlot {
 /// 文本视图两边各伸出 inlineCodePadding 给行内代码背景留绘制余量，正文的宽和起点不变；开头是标题时上面多半个块距，同 SelectableMarkdown。
 final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var text: PhoneProseTextView?
+    var proseViews: [PhoneProseTextView]? { text.map { [$0] } ?? [] }
     private var interaction: PhoneTextInteraction?
     private let coordinator = ProseTextCoordinator()
     private let document = MarkdownDocument()
@@ -132,16 +136,11 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         guard let source, let context, let text else { return }
         let environment = context.environment
         let content = tracking.track { () -> TextViewContent in
-            let blocks = document.blocks(for: source)
             let body = (environment.font ?? .body).resolve(in: environment.fontResolutionContext).ctFont as UIFont
-            topInset = SelectableMarkdown.startsWithHeading(blocks) ? PhonePixel.round(Metrics.markdownBlockGap(body.pointSize) / 2) : 0
-            let urls = blocks.flatMap { ReferenceText.decorate($0.text, scope: environment.referenceScope).runs.compactMap(\.link) }
-            if urls != self.urls {
-                self.urls = urls
-                Task { await ReferenceIcons.shared.load(urls) }
-            }
-            return SelectableMarkdown.content(blocks, source: source, body: body, color: .label, colorScheme: environment.colorScheme,
-                                              scope: environment.referenceScope, attachments: attachments)
+            let prose = SelectableMarkdown.prose(document.blocks(for: source), source: source, body: body, color: .label,
+                                                 environment: environment, attachments: attachments, loaded: &urls)
+            topInset = prose.topInset
+            return prose.content
         } changed: { [weak self] in
             // 通知在图标写进去之前发出，下一拍再按新的排
             DispatchQueue.main.async { [weak self] in
@@ -158,19 +157,7 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         let longPress: @MainActor () -> Void = { context.select(id) }
         embedded.blockCardLongPress = context.actionable ? longPress : nil
         coordinator.update(content.blocks, environment: EmbeddedEnvironment(embedded))
-        guard coordinator.shown != content.text, !coordinator.appendTail(of: content.text) else { return }
-        // 外观变化时也换掉已经解析成 CGColor 的装饰；只换颜色时保留选区。
-        let textChanged = coordinator.shown?.string != content.text.string
-        let selection = text.selectedRange
-        let selectable = text.isSelectable
-        interaction?.refreshingAppearance = !textChanged
-        coordinator.shown = content.text
-        text.attributedText = content.text
-        if !textChanged {
-            text.isSelectable = selectable
-            text.selectedRange = selection
-        }
-        interaction?.refreshingAppearance = false
+        coordinator.show(content.text) { interaction?.refreshingAppearance = $0 }
     }
 
     override func height(width: CGFloat) -> CGFloat {
@@ -206,9 +193,7 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
     /// 列变宽时字比列窄，右边多出一截空白；列变窄时字伸进右边的留白一点。超出这些才重排，每步省下文本视图的重排和重画
     /// （iPad 真机拖缝每步约一半的主线程在这上面）。每行的余量错开一点，免得几行挤在同一步重排。
     private func keptHeight(_ width: CGFloat) -> CGFloat? {
-        guard resizing, !Self.exactResize, let measured, let laid = laidLineWidth else { return nil }
-        let keeps = width >= laid ? width - laid <= 16 + 16 * spread : laid - width <= 2 + 6 * spread
-        guard keeps else { return nil }
+        guard resizing, let measured, let laid = laidLineWidth, rewrap.keeps(laid: laid, width: width) else { return nil }
         // 停着时整段排准的：先记下段高，之后只排一截时用（标成不准以后 ProseLayout 不会再记）
         if !provisional, let text { layout.remember(text, width: laid) }
         provisional = true
@@ -218,8 +203,8 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
 
     /// 拖缝中重排时排多宽：列变窄时比列再窄一截，接下来几步不用再排（见 keptHeight），别的时候按列宽。
     private func resizeLineWidth(_ width: CGFloat) -> CGFloat {
-        guard resizing, !Self.exactResize, let laid = laidLineWidth, width < laid else { return width }
-        return max(width - 8 - 8 * spread, width * 0.85)
+        guard resizing, let laid = laidLineWidth else { return width }
+        return rewrap.narrowed(width, from: laid)
     }
 
     /// 文本视图眼下排的行宽。
@@ -228,17 +213,7 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         return width
     }
 
-    /// Debug 带 --exact-resize 时拖缝中每步照旧按新宽重排（正文、折着的长消息、折了行的事件），对照用。
-    static let exactResize: Bool = {
-        #if DEBUG
-        ProcessInfo.processInfo.arguments.contains("--exact-resize")
-        #else
-        false
-        #endif
-    }()
-
-    /// 0～1，每行一个，错开各行的余量。
-    private lazy var spread = CGFloat(UInt(bitPattern: ObjectIdentifier(self).hashValue) % 1009) / 1009
+    private lazy var rewrap = ResizeRewrap(self)
 
     override func pin(at y: CGFloat) {
         guard let text else { return }
@@ -279,4 +254,34 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
     controller.didMove(toParent: parent)
 }
 
+
+/// 拖缝中「差得不多先不重新断行」的余量（正文见 PhoneProseRowSlot.keptHeight，还有折着的长消息、折了行的事件）：
+/// 列变宽时字比列窄，右边多出一截空白；列变窄时字伸进右边的留白一点。每个持有者按自己的身份错开一点，免得几行挤在同一步重排。
+struct ResizeRewrap {
+    /// 0～1。
+    private let spread: CGFloat
+
+    init(_ owner: AnyObject) {
+        spread = CGFloat(UInt(bitPattern: ObjectIdentifier(owner).hashValue) % 1009) / 1009
+    }
+
+    /// Debug 带 --exact-resize 时拖缝中每步照旧按新宽重排，对照用。
+    private static let exact: Bool = {
+        #if DEBUG
+        ProcessInfo.processInfo.arguments.contains("--exact-resize")
+        #else
+        false
+        #endif
+    }()
+
+    /// 按 laid 宽排好的字换到 width 还算放得下。
+    func keeps(laid: CGFloat, width: CGFloat) -> Bool {
+        !Self.exact && (width >= laid ? width - laid <= 16 + 16 * spread : laid - width <= 2 + 6 * spread)
+    }
+
+    /// 要重排时排多宽：比 laid 窄时再窄一截，接下来几步不用再排，别的时候按 width。
+    func narrowed(_ width: CGFloat, from laid: CGFloat) -> CGFloat {
+        !Self.exact && width < laid ? max(width - 8 - 8 * spread, width * 0.85) : width
+    }
+}
 #endif

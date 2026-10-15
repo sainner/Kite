@@ -90,6 +90,12 @@ final class WindowMotion {
         return source.interpolated(to: target, progress: progress)
     }
 
+    /// 从 start 起 duration 秒里每 1/120 秒取一帧（含两端），整段交给 Core Animation 用（见 StageKeyframes）。
+    func presentations(from start: Date, duration: TimeInterval) -> [WindowPose] {
+        let steps = max(Int((duration * 120).rounded(.up)), 1)
+        return (0...steps).map { presentation(at: start.addingTimeInterval(duration * Double($0) / Double(steps))) }
+    }
+
     func move(to next: WindowPose, kind: WindowMotionKind, at date: Date = .now) {
         guard next != target || (kind == .immediate && moving) else { return }
         if kind == .tracking, self.kind == .tracking,

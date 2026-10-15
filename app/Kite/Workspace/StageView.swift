@@ -361,20 +361,11 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         return arranged
     }
 
-    /// 拖动、拖缝时不浮标签；家族格里的父代理是窗口卡片报上来的，按窗口找。
+    /// 拖动、拖缝时不浮标签。
     private func hoverTip(plan: StagePlan) -> DockHoverTip? {
         let layout = group.layout
-        guard layout.drag == nil, layout.resizing == nil, let area = group.workspace, let hover = area.dockHover,
-              let geometry = plan.dock else { return nil }
-        let entry: DockEntry
-        if let found = DockModel(agents: geometry.allCells.map(\.entry)).entry(hover.id) {
-            entry = found
-        } else if hover.id.hasPrefix("pane:") {
-            entry = .pane(Pane(String(hover.id.dropFirst("pane:".count))))
-        } else {
-            return nil
-        }
-        return DockHoverTip(text: area.dockLabel(entry), frame: hover.frame)
+        guard layout.drag == nil, layout.resizing == nil, let area = group.workspace, let geometry = plan.dock else { return nil }
+        return area.dockHoverTip(in: geometry)
     }
 
     /// 观察之外：把终点交给各张卡片的 motion，再按这一轮的过渡状态冻结光标、报看得见的实例和悬停标签。

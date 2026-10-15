@@ -265,6 +265,20 @@ extension WorkArea {
             return instance.title + " · " + statusText(of: instance.id)
         }
     }
+
+    /// 停靠栏上悬停的那一格的标签；家族格里的父代理是窗口卡片报上来的，按窗口找。
+    func dockHoverTip(in geometry: DockGeometry) -> DockHoverTip? {
+        guard let hover = dockHover else { return nil }
+        let entry: DockEntry
+        if let found = DockModel(agents: geometry.allCells.map(\.entry)).entry(hover.id) {
+            entry = found
+        } else if hover.id.hasPrefix("pane:") {
+            entry = .pane(Pane(String(hover.id.dropFirst("pane:".count))))
+        } else {
+            return nil
+        }
+        return DockHoverTip(text: dockLabel(entry), frame: hover.frame)
+    }
 }
 
 extension AppModel {

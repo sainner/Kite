@@ -115,11 +115,7 @@ final class ThreadWindowView: NSView {
     /// 读会话记录、选中的行、刚发出的消息，变了换一遍行；行交给列表放在排版里（观察之外），见 layout。
     private func refreshRows() {
         let thread = thread, pane = pane
-        rows = rowsTracking.track({
-            _ = pane.selected
-            _ = pane.arriving.ids
-            return TranscriptRow.rows(items: thread.transcript.items, pending: thread.transcript.pending)
-        }) { [weak self] in
+        rows = rowsTracking.track({ pane.transcriptRows(of: thread) }) { [weak self] in
             // 通知在属性改之前，下一拍再读
             Task { @MainActor in self?.refreshRows() }
         }
@@ -127,17 +123,8 @@ final class ThreadWindowView: NSView {
         needsLayout = true
     }
 
-    /// 行看到的环境：窗口的环境加上正文字号、刚发出的消息、选中的行、工作目录，同 MacThreadTranscript 交给 MacTranscript 的。
-    private var rowContext: TranscriptRowContext {
-        var environment = environment
-        environment.font = Theme.body
-        environment.arrivingMessages = pane.arriving.ids
-        let pane = pane
-        let selection = Binding<RowID?>(get: { pane.selected }, set: { pane.selected = $0 })
-        environment.selectedRow = selection
-        environment.workingDirectory = thread.transcriptRoot
-        return TranscriptRowContext(environment: environment, actionable: true, toggleActions: { selection.toggle($0) })
-    }
+    /// 行看到的环境，同 MacThreadTranscript 交给 MacTranscript 的。
+    private var rowContext: TranscriptRowContext { pane.rowContext(environment: environment, thread: thread) }
 
     // MARK: - 排版
 

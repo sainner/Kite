@@ -242,3 +242,40 @@ struct ThreadEffortControl: View {
         }
     }
 }
+
+/// 两端原生输入区（MacControlsBar、PhoneControlsBar）的版式，照 ThreadControls：输入框左右 controlInset + 8、上下 6；输入框和按钮行之间 2；
+/// 按钮行左右、底 controlButtonInset；顶 controlInset。附件、语音一组间距 0，和后面的主按钮间距 actionGap；横排时思考强度和按钮组之间至少两个按钮间距。
+enum ComposerLayout {
+    static let fieldInset = Metrics.controlInset + 8
+    static let fieldPadding: CGFloat = 6
+    static let rowSpacing: CGFloat = 2
+    /// 输入框的顶边。
+    static let fieldTop = Metrics.controlInset + fieldPadding
+
+    struct Plan {
+        var height: CGFloat
+        var field: CGFloat
+        var effort: CGSize
+        var hidesActions: Bool
+    }
+
+    /// 输入框（连同淡出的字）排出 field 高、思考强度是 effort 大时：玻璃多高，按钮行还放不放得下附件、语音和主按钮。
+    static func plan(width: CGFloat, field: CGFloat, effort: CGSize) -> Plan {
+        let buttons = 3 * Metrics.paneButton + ThreadControlsModel.actionGap
+        let hidesActions = effort.width + 2 * Metrics.paneButtonGap + buttons > width - 2 * Metrics.controlButtonInset
+        let row = max(effort.height, Metrics.paneButton)
+        let height = Metrics.controlInset + 2 * fieldPadding + field + rowSpacing + row + Metrics.controlButtonInset
+        return Plan(height: height, field: field, effort: effort, hidesActions: hidesActions)
+    }
+
+    /// 按钮行：思考强度靠左，附件、语音、主按钮靠右，都在这一行里竖直居中。
+    static func row(width: CGFloat, plan: Plan) -> (effort: CGRect, attach: CGRect, voice: CGRect, primary: CGRect) {
+        let top = fieldTop + plan.field + fieldPadding + rowSpacing
+        let inset = Metrics.controlButtonInset, size = Metrics.paneButton
+        let row = max(plan.effort.height, size)
+        let effort = CGRect(x: inset, y: top + (row - plan.effort.height) / 2, width: plan.effort.width, height: plan.effort.height)
+        let primary = CGRect(x: width - inset - size, y: top + (row - size) / 2, width: size, height: size)
+        let voice = primary.offsetBy(dx: -ThreadControlsModel.actionGap - size, dy: 0)
+        return (effort, voice.offsetBy(dx: -size, dy: 0), voice, primary)
+    }
+}
