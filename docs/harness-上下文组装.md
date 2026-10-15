@@ -17,7 +17,7 @@
 
 已有代理显式修改基础上下文时，在后端允许的交接边界追加更新，保留原有历史前缀。角色选择及其对配置与授权的影响统一见 [角色与代理配置](Agent与插件契约.md#32-角色与代理配置)。
 
-`GET /context-templates` 返回后台场景的模板（`definition`，辅助生成另有 `model: {model, reasoning}`）、`revision` 与默认内容的 `defaultRevision`（二者不同即改过），以及场景目录；场景带可引用的变量（显示名称、说明与分组 `group`：场景材料或公共变量所在的层）与所属分类 `kind`（`notification`、`compaction`、`generation`），辅助生成的场景另带可选的模型目录与调用凭据的说明（`models`）。`PUT /context-templates/:id` 携带 `expectedRevision`、`definition` 与辅助生成的 `model` 更新，不能改变场景或名称，也不新建模板；`POST /context-templates/:id/reset` 携带 `expectedRevision` 恢复默认，等同于保存默认内容。冲突返回 409，编辑器保留草稿。标题及通知不提供脱离实际调用的无效副本。角色经 `/roles` 读写，接口见 [工作机](kited.md#接口)。
+`GET /context-templates` 返回后台场景的模板（`definition`，辅助生成另有 `model: {model, reasoning}`）、`revision` 与默认内容的 `defaultRevision`（二者不同即改过），以及场景目录；场景带可引用的变量（显示名称、说明与分组 `group`：场景材料或公共变量所在的层；公共变量另带层的标识 `layer`）与所属分类 `kind`（`notification`、`compaction`、`generation`），辅助生成的场景另带可选的模型目录与调用凭据的说明（`models`）。`PUT /context-templates/:id` 携带 `expectedRevision`、`definition` 与辅助生成的 `model` 更新，不能改变场景或名称，也不新建模板；`POST /context-templates/:id/reset` 携带 `expectedRevision` 恢复默认，等同于保存默认内容。冲突返回 409，编辑器保留草稿。标题及通知不提供脱离实际调用的无效副本。角色经 `/roles` 读写，接口见 [工作机](kited.md#接口)。公共变量按所在的层选取值对象：`GET /context-variables/:name` 按工作机，`/checkouts/:id/context-variables/:name` 按检出（项目在这台工作机上的文件夹），`/workspaces/:id/…` 按工作区，`/instances/:id/…` 按代理；范围取不到变量所在的层时返回 400，场景材料返回 404。返回 `{name, text}`，项目规则与记忆索引另带 `files: [{path, content, sha256}]`（由外到内），一份都没有时带新建的位置 `create`。`PUT /checkouts/:id/context-variables/:name/file` 以 `{path, content, expectedSha256}` 写回其中一份，新建时 `expectedSha256` 为 `null`，越出查找位置返回 400，摘要对不上返回 409。
 
 首消息创建请求可携带 `role: {id, revision}`；已创建的空代理可通过 `PUT /instances/:id/role` 携带实例配置 revision、角色 ID 和角色 revision 改选。两条路径均须在发出第一条消息前完成，对话开始后改选会被拒绝。未选择时使用默认角色「工作」。
 
@@ -102,7 +102,9 @@ HTTP 模板定义使用 `version: 2`，包含标识、名称、场景和有序�
 
 ## 预览与历史
 
-编辑不改变条件求值规则，实际展开由当次变量决定。编辑器展示模板文字与变量说明，不提供按真实工作区变量展开的最终正文预览。
+编辑不改变条件求值规则，实际展开由当次变量决定。编辑器展示模板文字与变量说明，可以查看单个公共变量现在的取值，取值对象随变量所在的层：环境层选工作机，项目层选项目，工作区层选工作区，代理层选代理。不提供按真实变量展开的整段正文预览；场景材料只在生成时才有，不能这样查看。
+
+项目规则与记忆索引在编辑器里显示从项目文件夹逐级找到的各份文件，可以直接修改并写回，只能写这个变量逐级查找的位置；文件在读取后被别处改过时拒绝写入。写回的是项目在那台工作机上的文件夹（根工作区），独立工作树里的副本随分支各自变化；代理下一次请求组装时生效。其他变量只读。
 
 请求发出后修改模板或材料，不改变在途请求及历史。历史展示当时的内容与来源，不受当前文件、插件状态、模板或变量目录增删的影响；有效正文相同不重复发送。
 

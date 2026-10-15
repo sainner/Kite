@@ -222,6 +222,15 @@ export function serve(kite: Kite, listen: Listen) {
       '/model-accounts/refresh': { POST: bound(async () => Response.json(await kite.modelAccounts.refresh(), { headers: { 'Cache-Control': 'no-store' } })) },
       '/token-prices': { GET: bound(() => tokenPrices()) },
       '/instances/:id/agent-capabilities': { GET: bound((req) => kite.agentCapabilities(req.params.id)) },
+      '/context-variables/:name': { GET: bound((req) => kite.contextVariable({ kind: 'machine' }, req.params.name)) },
+      '/checkouts/:id/context-variables/:name': { GET: bound((req) => kite.contextVariable({ kind: 'checkout', id: req.params.id }, req.params.name)) },
+      '/workspaces/:id/context-variables/:name': { GET: bound((req) => kite.contextVariable({ kind: 'workspace', id: req.params.id }, req.params.name)) },
+      '/instances/:id/context-variables/:name': { GET: bound((req) => kite.contextVariable({ kind: 'instance', id: req.params.id }, req.params.name)) },
+      '/checkouts/:id/context-variables/:name/file': { PUT: bound(async (req) => {
+        const parsed = z.object({ path: z.string().min(1), content: z.string(), expectedSha256: z.string().nullable() }).strict().safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('写回文件要写 path、content 与 expectedSha256');
+        return kite.writeContextVariableFile(req.params.id, req.params.name, parsed.data);
+      }) },
       '/projects': {
         GET: bound(() => kite.projects()),
       },

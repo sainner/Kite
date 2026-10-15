@@ -171,7 +171,7 @@ struct ContextEditorToolbar: View {
             }
             addMenu(current).layoutValue(key: ContextToolbarLayout.UpperRow.self, value: true)
             blockTools(current).layoutValue(key: ContextToolbarLayout.UpperRow.self, value: true)
-            textFormat
+            ContextFormatTools(variables: variables)
         }
         .alert(deleteTitle, isPresented: Binding(get: { confirmingDelete != nil }, set: { if !$0 { confirmingDelete = nil } })) {
             Button("删除", role: .destructive) { confirmingDelete?.perform(.delete) }
@@ -186,40 +186,6 @@ struct ContextEditorToolbar: View {
     private var deleteTitle: String {
         guard let state = confirmingDelete?.state() else { return "" }
         return state.kind == .condition ? "删除按「\(state.title)」选择的条件？" : "删除「\(state.title)」？"
-    }
-
-    private var textFormat: some View {
-        PaneHeaderButtonGroup {
-            ActionMenu("标题", icon: "number") {
-                Button("一级标题") { editor.target?.apply(.heading(1)) }
-                Button("二级标题") { editor.target?.apply(.heading(2)) }
-                Button("三级标题") { editor.target?.apply(.heading(3)) }
-            }
-            format("无序列表", "list.bullet", .bullet)
-            format("有序列表", "list.number", .numbered)
-            format("引用", "text.quote", .quote)
-            format("粗体", "bold", .bold)
-            format("斜体", "italic", .italic)
-            format("行内代码", "chevron.left.forwardslash.chevron.right", .code)
-            ActionMenu("插入变量", icon: ContextScene.Variable.icon) {
-                ForEach(variables.grouped) { group in
-                    Section(group.title) {
-                        ForEach(group.variables) { variable in
-                            Button { editor.target?.insert(variable: variable.name) } label: {
-                                Text(variable.title)
-                                Text(variable.description)
-                            }
-                        }
-                    }
-                }
-            }
-            .disabled(variables.isEmpty)
-        }
-        .disabled(editor.target == nil || editor.naming != nil)
-    }
-
-    private func format(_ title: String, _ icon: String, _ format: ContextFormat) -> some View {
-        ActionButton(title, icon: icon) { editor.target?.apply(format) }
     }
 
     /// 添加是新建一块，单独一组；当前块组里的都是对这一块本身的操作。
@@ -258,6 +224,59 @@ struct ContextEditorToolbar: View {
         guard let handle else { return }
         editor.focusRequest = block.id
         handle.perform(.add(block))
+    }
+}
+
+/// 只改文字的编辑区（变量窗口里的文件）的底栏：只有格式一组，没有块工具和变量。
+struct ContextTextToolbar: View {
+    var body: some View {
+        ContextToolbarLayout(spacing: Metrics.paneButtonGap) {
+            KeyboardDismissButton()
+            ContextFormatTools()
+        }
+        .containerValue(\.placesKeyboardButton, true)
+    }
+}
+
+/// 格式一组：先行级、后行内，作用在最后放过光标的段落上。给了 variables 时末尾是插入变量，变量也是行内的内容。
+struct ContextFormatTools: View {
+    var variables: [ContextScene.Variable]?
+    @Environment(ContextEditor.self) private var editor
+
+    var body: some View {
+        PaneHeaderButtonGroup {
+            ActionMenu("标题", icon: "number") {
+                Button("一级标题") { editor.target?.apply(.heading(1)) }
+                Button("二级标题") { editor.target?.apply(.heading(2)) }
+                Button("三级标题") { editor.target?.apply(.heading(3)) }
+            }
+            format("无序列表", "list.bullet", .bullet)
+            format("有序列表", "list.number", .numbered)
+            format("引用", "text.quote", .quote)
+            format("粗体", "bold", .bold)
+            format("斜体", "italic", .italic)
+            format("行内代码", "chevron.left.forwardslash.chevron.right", .code)
+            if let variables {
+                ActionMenu("插入变量", icon: ContextScene.Variable.icon) {
+                    ForEach(variables.grouped) { group in
+                        Section(group.title) {
+                            ForEach(group.variables) { variable in
+                                Button { editor.target?.insert(variable: variable.name) } label: {
+                                    Text(variable.title)
+                                    Text(variable.description)
+                                }
+                            }
+                        }
+                    }
+                }
+                .disabled(variables.isEmpty)
+            }
+        }
+        .disabled(editor.target == nil || editor.naming != nil)
+    }
+
+    private func format(_ title: String, _ icon: String, _ format: ContextFormat) -> some View {
+        ActionButton(title, icon: icon) { editor.target?.apply(format) }
     }
 }
 

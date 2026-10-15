@@ -73,7 +73,7 @@ struct TemplatePane: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let definition {
-                        ContextVariablePreview(variables: variables)
+                        ContextVariablePreview(variables: variables, open: model.openContextVariable)
                         ContextTemplateForm(definition: Binding(get: { [model, id] in model.libraryTemplate(id) ?? definition },
                                                                 set: { [model, id] value in model.editTemplate(id) { $0.definition = value } }),
                                             variables: variables)

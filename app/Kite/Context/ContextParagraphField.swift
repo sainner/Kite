@@ -15,6 +15,7 @@ struct ContextParagraphField: View {
     /// 刚加的段落出现时直接放光标，放好后调 focusHandled。
     var focusRequested = false
     var focusHandled: () -> Void = {}
+    var placeholder = "段落文字"
     @Environment(ContextEditor.self) private var editor: ContextEditor?
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.colorScheme) private var colorScheme
@@ -27,7 +28,7 @@ struct ContextParagraphField: View {
                         focusRequested: focusRequested, focusHandled: focusHandled)
             .overlay(alignment: .topLeading) {
                 if parts.isEmpty {
-                    Text("段落文字")
+                    Text(placeholder)
                         .font(Theme.body)
                         .foregroundStyle(.tertiary)
                         .padding(ContextTextStyle.inset)

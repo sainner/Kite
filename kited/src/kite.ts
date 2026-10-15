@@ -24,7 +24,7 @@ import { instanceAgent, type AgentDefinition } from './agents/definition.ts';
 import { InstanceLifecycle, type AgentChoice } from './instance-lifecycle.ts';
 import { ContextTemplates } from './context-templates.ts';
 import { defaultRoleId, instanceRole, lineRoleId, Roles, type RoleSelection, type RoleSnapshot } from './roles.ts';
-import { environmentVariables, storedThreadVariables } from './context-variables.ts';
+import { environmentVariables, previewVariable, storedThreadVariables, writeVariableFile, type VariableScope } from './context-variables.ts';
 import { LibrarySync, type LibraryChanges } from './library-sync.ts';
 import { agentDefinitionId, agentToolCatalog, agentTools } from './plugins/definitions.ts';
 import { addWorktree, removeWorktree, runSetup } from './workspace/worktrees.ts';
@@ -606,6 +606,10 @@ export class Kite {
 
   agentConfig(id: string) { return this.configuration.agentConfig(id); }
   agentCapabilities(id: string) { return this.configuration.agentCapabilities(id); }
+  contextVariable(scope: VariableScope, name: string) { return previewVariable(this.store, scope, name); }
+  writeContextVariableFile(checkoutId: string, name: string, input: { path: string; content: string; expectedSha256: string | null }) {
+    return writeVariableFile(this.store, checkoutId, name, input);
+  }
   agentOptions(workspaceId: string) { return this.configuration.agentOptions(workspaceId); }
   configureAgent(id: string, expectedRevision: string, value: unknown) {
     return this.configuration.configureAgent(id, expectedRevision, value);

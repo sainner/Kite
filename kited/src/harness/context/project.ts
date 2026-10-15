@@ -56,18 +56,35 @@ function folders(cwd: string): { folders: string[]; git?: string } {
   }
 }
 
-function documents(cwd: string, name: string): ContextBinding {
-  const texts: string[] = [];
-  const sources: NonNullable<ContextBinding['sources']> = [];
-  for (const directory of folders(cwd).folders) {
-    const path = join(directory, name);
-    if (!existsSync(path)) continue;
+/** 来自文件的公共变量：从仓库根目录到工作目录逐级找到的同名文件。 */
+export const documentVariables = {
+  'project.rules': 'AGENTS.md',
+  'project.memory': '.kite/memory/MEMORY.md',
+} as const satisfies Partial<Record<PublicVariable, string>>;
+export type DocumentVariable = keyof typeof documentVariables;
+
+/** 一份文件的内容上限，读进上下文和从编辑器写回都按它。 */
+export const documentLimit = 100_000;
+
+export interface DocumentFile { path: string; content: string; sha256: string }
+
+export const contentHash = (content: string) => createHash('sha256').update(content).digest('hex');
+
+/** 逐级可以放这份文件的位置，由外到内。 */
+export const documentPaths = (cwd: string, name: string) => folders(cwd).folders.map((directory) => join(directory, name));
+
+/** 逐级找到的文件，由外到内。 */
+export function documentFiles(cwd: string, name: string): DocumentFile[] {
+  return documentPaths(cwd, name).filter((path) => existsSync(path)).map((path) => {
     const content = readFileSync(path, 'utf8');
-    if (content.length > 100_000) throw new Error(`项目指令文件过大：${path}`);
-    texts.push(`文件 ${path}：\n${content}`);
-    sources.push({ path, sha256: createHash('sha256').update(content).digest('hex') });
-  }
-  return { text: texts.join('\n\n'), sources };
+    if (content.length > documentLimit) throw new Error(`项目指令文件过大：${path}`);
+    return { path, content, sha256: contentHash(content) };
+  });
+}
+
+function documents(cwd: string, name: string): ContextBinding {
+  const files = documentFiles(cwd, name);
+  return { text: files.map((file) => `文件 ${file.path}：\n${file.content}`).join('\n\n'), sources: files.map(({ path, sha256 }) => ({ path, sha256 })) };
 }
 
 /** 读 HEAD 文件而不起 git 子进程：每次请求组装都可能取值，同步读文件不阻塞事件循环。工作树的 .git 是指向自己 gitdir 的文件。 */
@@ -86,8 +103,8 @@ export function directoryVariables(cwd: string) {
   return {
     'environment.cwd': () => ({ text: realpathSync(cwd) }),
     'workspace.branch': () => branch(realpathSync(cwd)),
-    'project.rules': () => documents(realpathSync(cwd), 'AGENTS.md'),
-    'project.memory': () => documents(realpathSync(cwd), '.kite/memory/MEMORY.md'),
+    'project.rules': () => documents(realpathSync(cwd), documentVariables['project.rules']),
+    'project.memory': () => documents(realpathSync(cwd), documentVariables['project.memory']),
   } satisfies Partial<Record<PublicVariable, () => ContextBinding>>;
 }
 

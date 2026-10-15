@@ -217,7 +217,7 @@ struct RoleContextPane: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if role != nil {
-                        ContextVariablePreview(variables: catalog?.variables ?? [])
+                        ContextVariablePreview(variables: catalog?.variables ?? [], open: model.openContextVariable)
                         ContextBlocksSection("系统规则",
                                              blocks: Binding(get: { [model, id] in model.libraryRole(id)?.context.blocks ?? [] },
                                                              set: { [model, id] blocks in model.editRolePrompt(id, blocks) }),

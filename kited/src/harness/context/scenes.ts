@@ -150,13 +150,16 @@ export type ContextVariable<S extends ContextScene> = (typeof contextScenes)[S][
 export type PublicVariable = (typeof contextLayers)[ContextLayer]['variables'][number]['name'];
 export type LayerVariable<L extends ContextLayer> = (typeof contextLayers)[L]['variables'][number]['name'];
 
-export interface SceneVariable { name: string; title: string; description: string; group: string }
+export interface SceneVariable { name: string; title: string; description: string; group: string; layer?: ContextLayer }
 
-/** 场景可引用的全部变量：专有变量在前，公共变量按层排在后面；group 是编辑器分组显示的名称。 */
+/** 场景可引用的全部变量：专有变量在前，公共变量按层排在后面；group 是编辑器分组显示的名称，公共变量另带所在的层。 */
 export function sceneVariables(scene: ContextScene): SceneVariable[] {
   const { variables, layers } = contextScenes[scene];
   return [
     ...variables.map((variable) => ({ ...variable, group: '场景材料' })),
-    ...layers.flatMap((layer) => contextLayers[layer].variables.map((variable) => ({ ...variable, group: contextLayers[layer].title }))),
+    ...layers.flatMap((layer) => contextLayers[layer].variables.map((variable) => ({ ...variable, group: contextLayers[layer].title, layer }))),
   ];
 }
+
+export const isPublicVariable = (name: string): name is PublicVariable =>
+  Object.values(contextLayers).some((layer) => layer.variables.some((variable) => variable.name === name));

@@ -59,6 +59,8 @@ nonisolated struct ContextScene: Decodable, Identifiable, Sendable {
         let description: String
         /// 分组显示的名称：场景自己的材料，或公共变量的层（环境、项目、工作区、代理）。
         let group: String
+        /// 公共变量所在的层；场景材料没有，只在生成时才有，不能按代理取值。
+        let layer: String?
         var id: String { name }
 
         /// 表示变量的图标：工具栏的插入变量和正文开头的可用变量用同一个，用户才认得出。

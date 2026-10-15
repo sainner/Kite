@@ -70,6 +70,12 @@ final class AppModel {
     @ObservationIgnored var roleWrites: [String: Task<Void, Error>] = [:]
     /// 资源库里改过还没保存的模板。
     var templateDrafts: [TemplateDraft] = []
+    /// 资源库代理上下文页的变量窗口看的变量；窗口关掉后留着，关的动画里内容不变。见 openContextVariable。
+    var contextVariable: String?
+    /// 变量窗口各层选过的取值对象，按层，见 contextVariableSource。
+    var contextVariableChoices: [String: String] = [:]
+    /// 变量窗口里改过还没保存的文件；窗口关掉再打开还在，保存或放弃后清掉。
+    var contextFileDrafts: [ContextFileDraft] = []
     /// 设置一栏在内容区显示的页面。
     var settingsPage = SettingsPage.account
     var accountMachineID: String?
