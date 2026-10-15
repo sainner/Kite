@@ -289,14 +289,16 @@ final class PhoneStageView: UIView, StageDotsReporting {
             let dimmed = plan.expanded && rect == nil && layout.drag?.pane != pane
             let dragged = layout.drag?.pane == pane
             let hasThread = area?.thread(in: pane) != nil
+            let pinned = layout.pinned.contains(pane)
             // 被拖的卡片照常接：跟手拖动是它标题栏上的手势，中途设成不接会把拖动取消
             let accepts = (!blocksInput || dragged) && !resizing && !closing && !dimmed
             let arrangement = PhoneCardView.Arrangement(
                 placed: placed, dockFrame: plan.dockFrame(of: pane, area: area), closing: closing, family: plan.familyID(of: pane),
                 openSidebar: pane == plan.first ? openSidebar : nil, dimmed: dimmed, acceptsInput: accepts, dotsHidden: resizing || dotsHidden,
                 dragged: dragged, hasThread: hasThread, fixed: layout.isFixed,
-                header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width, hasThread: hasThread),
-                expands: (layout.shown?.panes.count ?? 0) > 1)
+                header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width, hasThread: hasThread,
+                                         pinned: pinned),
+                expansion: layout.expansion(of: pane), pinned: pinned)
             arranged.cards.append((card, arrangement, CardPresentation.motionKind(layout: layout, pane: pane, reduceMotion: reduceMotion)))
         }
         arranged.visible = Set(plan.onStage.compactMap { area?.dockInstanceID($0) })

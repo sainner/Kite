@@ -228,6 +228,20 @@ extension Tile {
         }
     }
 
+    /// 不含 kept 里窗口的几块，每块尽量大（再往上一层就含了），从左上到右下。
+    func blocks(without kept: Set<Pane>) -> [Tile] {
+        if !panes.contains(where: kept.contains) { return [self] }
+        guard case .split(let split) = self else { return [] }
+        return split.first.blocks(without: kept) + split.second.blocks(without: kept)
+    }
+
+    /// 把 block 这一整块换成 tile，别处的刀和比例不变。
+    func replacing(block: Tile, with tile: Tile) -> Tile {
+        if isSame(block) { return tile }
+        guard case .split(let split) = self else { return self }
+        return rebuilt(split, split.first.replacing(block: block, with: tile), split.second.replacing(block: block, with: tile))
+    }
+
     /// 从 target 的 edge 那边切一刀，把 tile 放进去，两半各占一半。
     func inserting(_ tile: Tile, beside target: Pane, on edge: Edge) -> Tile {
         replacing(target, with: Tile.pane(target).inserting(tile, on: edge))

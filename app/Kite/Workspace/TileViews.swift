@@ -298,10 +298,9 @@ struct PaneHeaderReports: ViewModifier {
 @MainActor func paneWindowActions(group: PaneGroup, pane: Pane, model: AppModel) -> PaneWindowActions? {
     guard let area = group.workspace else { return nil }
     let layout = group.layout
-    let expand: (@MainActor () -> Void)?
-    if (layout.shown?.panes.count ?? 0) > 1 { expand = { layout.expand(pane) } }
-    else { expand = nil }
-    return PaneWindowActions(minimize: { layout.minimize(pane) }, expand: expand,
+    return PaneWindowActions(pinned: layout.pinned.contains(pane), togglePin: { layout.togglePin(pane) },
+                             minimize: { layout.minimize(pane) }, expansion: layout.expansion(of: pane),
+                             expand: { layout.expand(pane) }, collapse: { layout.collapse(pane) },
                              close: { model.closeWindow(pane, in: area) },
                              canClose: !area.isDraft && !area.changingWindows && area.creatingWindow != pane.id)
 }
@@ -312,8 +311,10 @@ struct PaneHeaderReports: ViewModifier {
     var hovered = false
     /// 正文标题栏右侧菜单的宽度。
     var menuWidth: CGFloat = 0
-    /// 窗口按钮组（缩小、展开、关闭）的实际尺寸。
+    /// 窗口按钮组（缩小、展开、关闭、固定）的实际尺寸。
     var controlsSize = CGSize.zero
+    /// 固定的窗口按钮组藏着时单独露出来的图钉的尺寸，见 PaneHeaderControls.pinShown。
+    var pinSize = CGSize.zero
     /// 正文标题栏的实际高度。
     var height: CGFloat = 0
     /// 卡片报来的几项，正文标题栏按它们算让出多少（见 PaneHeaderControlsSpace）。
@@ -323,8 +324,9 @@ struct PaneHeaderReports: ViewModifier {
     var inset: CGFloat {
         guard let layout else { return 0 }
         let controls = PaneHeaderControls(header: self, layout: layout, minimized: placement.minimized, width: placement.width,
-                                          hasThread: placement.hasThread)
-        return controls.shown ? controlsSize.width + Metrics.paneButtonGap : 0
+                                          hasThread: placement.hasThread, pinned: placement.pinned)
+        if controls.shown { return controlsSize.width + Metrics.paneButtonGap }
+        return controls.pinShown ? pinSize.width + Metrics.paneButtonGap : 0
     }
 
     var minHeight: CGFloat { controlsSize.height }
@@ -335,6 +337,7 @@ struct HeaderPlacement: Equatable {
     var minimized = false
     var width: CGFloat = 0
     var hasThread = false
+    var pinned = false
 }
 
 /// 窗口按钮放在哪：标题栏上露出来、藏着，还是收进正文的更多菜单。读 PaneCardHeader 的几层各自用它算。
@@ -344,6 +347,7 @@ struct PaneHeaderControls {
     let minimized: Bool
     let width: CGFloat
     let hasThread: Bool
+    let pinned: Bool
 
     /// 按完整控制组计算，不能随悬停显隐改变判断；圆环占一个按钮宽，标题至少保留两个按钮宽。
     var inMenu: Bool {
@@ -357,6 +361,12 @@ struct PaneHeaderControls {
         !layout.isFixed && !inMenu && InputMode.current.revealsControls(hovered: header.hovered) && !minimized
             && layout.drag == nil && layout.resizing == nil
     }
+
+    /// 固定的窗口按钮组藏着时（Mac 上指针不在卡片上）单独露出图钉，看得出固定了；指针一到卡片上就换成整组。
+    /// 收进更多菜单、缩成停靠形状、拖动和拖缝时不露。
+    var pinShown: Bool {
+        pinned && !shown && !layout.isFixed && !inMenu && !minimized && layout.drag == nil && layout.resizing == nil
+    }
 }
 
 /// 正文标题栏按窗口按钮让位（见 PaneHeaderControlsSpace）、收进菜单；在正文的托管视图里读，卡片不跟着重算。
@@ -369,7 +379,7 @@ struct PaneHeaderEnvironment: ViewModifier {
     func body(content: Content) -> some View {
         let placement = header.placement
         let controls = PaneHeaderControls(header: header, layout: group.layout, minimized: placement.minimized,
-                                          width: placement.width, hasThread: placement.hasThread)
+                                          width: placement.width, hasThread: placement.hasThread, pinned: placement.pinned)
         content
             .environment(\.paneOverflowActions, controls.inMenu ? paneWindowActions(group: group, pane: pane, model: model) : nil)
             .environment(\.paneHeaderControlsSpace, header)

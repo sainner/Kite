@@ -27,8 +27,9 @@ final class CardView: NSView {
         let fixed: Bool
         /// 标题栏一层这一轮怎么摆，在台面的观察里读，见 headerState。
         let header: HeaderState
-        /// 台面上不止一个窗口，窗口按钮里有「展开」。
-        let expands: Bool
+        /// 窗口按钮里展开那一格是展开、还原还是没有。
+        let expansion: PaneExpansion
+        let pinned: Bool
     }
 
     /// 标题栏一层要读的卡片状态：正文报的标题栏高、右边菜单宽、窗口按钮的尺寸、挖空的范围，和窗口按钮露不露。
@@ -39,12 +40,14 @@ final class CardView: NSView {
         let controlsSize: CGSize
         let excluded: [CGRect]
         let buttonsShown: Bool
+        let pinShown: Bool
     }
 
-    func headerState(layout: WindowLayout, minimized: Bool, width: CGFloat, hasThread: Bool) -> HeaderState {
-        let controls = PaneHeaderControls(header: header, layout: layout, minimized: minimized, width: width, hasThread: hasThread)
+    func headerState(layout: WindowLayout, minimized: Bool, width: CGFloat, hasThread: Bool, pinned: Bool) -> HeaderState {
+        let controls = PaneHeaderControls(header: header, layout: layout, minimized: minimized, width: width, hasThread: hasThread,
+                                          pinned: pinned)
         return HeaderState(height: header.height, menuWidth: header.menuWidth, controlsSize: header.controlsSize,
-                           excluded: headerRegions.settled, buttonsShown: controls.shown)
+                           excluded: headerRegions.settled, buttonsShown: controls.shown, pinShown: controls.pinShown)
     }
 
     let pane: Pane
@@ -250,7 +253,8 @@ final class CardView: NSView {
 
         if content.minimized != minimized { content.minimized = minimized }
         // 窗口按钮飞行中看不见（见 CardButtons），「展开」的有无等停下再换：动画开始的这一轮不重排按钮组和让位的标题栏
-        if content.expands == nil || !placed.motion.moving && (placed.motion.target == target || kind.duration == 0) { updateExpands() }
+        if content.expansion == nil || !placed.motion.moving && (placed.motion.target == target || kind.duration == 0) { updateExpands() }
+        if content.pinned != arrangement.pinned { content.pinned = arrangement.pinned }
         if (content.openSidebar == nil) != (arrangement.openSidebar == nil) { content.openSidebar = arrangement.openSidebar }
         if presence.onScreen != !minimized { presence.onScreen = !minimized }
         // 正文标题栏按这几项算给窗口按钮让出多少，见 PaneHeaderControlsSpace；会话窗口推迟改大小时一起推迟
@@ -349,13 +353,14 @@ final class CardView: NSView {
     /// 首帧里几毫秒（2026-10-14 实测，挡住以后 Mac 缩小、恢复的首帧约 27 → 24、35 → 28 毫秒），等它回到台面停下再换。
     /// 头一次照样给，没给时按钮组退回去读排布，台面一变就跟着更新。
     private func updateExpands() {
-        guard let arrangement, let placed, content.expands == nil || !placed.minimized, content.expands != arrangement.expands else { return }
-        content.expands = arrangement.expands
+        guard let arrangement, let placed, content.expansion == nil || !placed.minimized, content.expansion != arrangement.expansion else { return }
+        content.expansion = arrangement.expansion
     }
 
     private func placeHeaderControls() {
         guard let placed, let arrangement else { return }
-        let headerPlacement = HeaderPlacement(minimized: placed.minimized, width: placed.target.frame.width, hasThread: arrangement.hasThread)
+        let headerPlacement = HeaderPlacement(minimized: placed.minimized, width: placed.target.frame.width, hasThread: arrangement.hasThread,
+                                              pinned: arrangement.pinned)
         if header.placement != headerPlacement { header.placement = headerPlacement }
     }
 
@@ -423,6 +428,7 @@ final class CardView: NSView {
         drag.isHidden = fixed
         let shown = state.buttonsShown
         if content.buttonsShown != shown { content.buttonsShown = shown }
+        if content.pinShown != state.pinShown { content.pinShown = state.pinShown }
         let menu = state.menuWidth
         let trailing = minimized ? 0 : menu + (shown ? state.controlsSize.width + Metrics.paneButtonGap : 0) + Metrics.paneMargin
         let dragFrame = CGRect(x: 0, y: 0, width: max(frame.width - trailing, 0), height: height)
@@ -732,7 +738,7 @@ final class CardView: NSView {
         return true
     }
 
-    /// 读屏的动作：缩小、展开、关闭窗口；缩在停靠栏里时展开窗口。最小化时正文对读屏隐藏，见 PaneCardBody。
+    /// 读屏的动作：固定、缩小、展开或还原、关闭窗口；缩在停靠栏里时展开窗口。最小化时正文对读屏隐藏，见 PaneCardBody。
     override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
         guard let placed, let stage, !closing else { return nil }
         let layout = stage.group.layout, pane = pane, family = arrangement?.family
@@ -740,9 +746,13 @@ final class CardView: NSView {
             return [NSAccessibilityCustomAction(name: "展开窗口") { [weak stage] in stage?.activate(pane, family: family); return true }]
         }
         guard let area = stage.group.workspace else { return nil }
-        var actions = [NSAccessibilityCustomAction(name: "缩小窗口") { layout.minimize(pane); return true }]
-        if (layout.shown?.panes.count ?? 0) > 1 {
-            actions.append(NSAccessibilityCustomAction(name: "展开窗口") { layout.expand(pane); return true })
+        let pin = layout.pinned.contains(pane) ? "取消固定" : "固定窗口"
+        var actions = [NSAccessibilityCustomAction(name: pin) { layout.togglePin(pane); return true },
+                       NSAccessibilityCustomAction(name: "缩小窗口") { layout.minimize(pane); return true }]
+        switch layout.expansion(of: pane) {
+        case .expand: actions.append(NSAccessibilityCustomAction(name: "展开窗口") { layout.expand(pane); return true })
+        case .restore: actions.append(NSAccessibilityCustomAction(name: "还原窗口") { layout.collapse(pane); return true })
+        case .unavailable: break
         }
         let model = stage.model
         actions.append(NSAccessibilityCustomAction(name: "关闭窗口") { model.closeWindow(pane, in: area); return true })

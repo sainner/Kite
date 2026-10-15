@@ -348,8 +348,8 @@ final class StageView: RepresentedRoot, StageDotsReporting {
                 acceptsInput: !blocksInput && !resizing && !closing && !dimmed, dotsHidden: resizing,
                 dragged: layout.drag?.pane == pane, hasThread: area?.thread(in: pane) != nil, fixed: layout.isFixed,
                 header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width,
-                                         hasThread: area?.thread(in: pane) != nil),
-                expands: (layout.shown?.panes.count ?? 0) > 1)
+                                         hasThread: area?.thread(in: pane) != nil, pinned: layout.pinned.contains(pane)),
+                expansion: layout.expansion(of: pane), pinned: layout.pinned.contains(pane))
             arranged.cards.append((card, arrangement, CardPresentation.motionKind(layout: layout, pane: pane, reduceMotion: reduceMotion)))
         }
         arranged.visible = Set(plan.onStage.compactMap { area?.dockInstanceID($0) })

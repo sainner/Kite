@@ -27,8 +27,9 @@ final class PhoneCardView: UIView {
         let fixed: Bool
         /// 标题栏一层这一轮怎么摆，在台面的观察里读，见 headerState。
         let header: HeaderState
-        /// 台面上不止一个窗口，窗口按钮里有「展开」。
-        let expands: Bool
+        /// 窗口按钮里展开那一格是展开、还原还是没有。
+        let expansion: PaneExpansion
+        let pinned: Bool
     }
 
     /// 标题栏一层要读的卡片状态：正文报的标题栏高、右边菜单宽、窗口按钮的尺寸、挖空的范围，和窗口按钮露不露。
@@ -41,8 +42,9 @@ final class PhoneCardView: UIView {
         let buttonsShown: Bool
     }
 
-    func headerState(layout: WindowLayout, minimized: Bool, width: CGFloat, hasThread: Bool) -> HeaderState {
-        let controls = PaneHeaderControls(header: header, layout: layout, minimized: minimized, width: width, hasThread: hasThread)
+    func headerState(layout: WindowLayout, minimized: Bool, width: CGFloat, hasThread: Bool, pinned: Bool) -> HeaderState {
+        let controls = PaneHeaderControls(header: header, layout: layout, minimized: minimized, width: width, hasThread: hasThread,
+                                          pinned: pinned)
         return HeaderState(height: header.height, menuWidth: header.menuWidth, controlsSize: header.controlsSize,
                            excluded: headerRegions.settled, buttonsShown: controls.shown)
     }
@@ -249,7 +251,7 @@ final class PhoneCardView: UIView {
         // 还没淡入，看着一样。2026-10-14 iPad 实测，连同 updateExpands、updateButtons 和正文的露出，缩小、恢复的首帧从约 45、49 毫秒
         // 降到约 14、11 毫秒，推迟的那一帧主线程约 25～30 毫秒
         let resizes = nativeSize.map { threadWindow != nil && !placed.minimized && $0 != placed.contentSize } ?? false
-        let pending = resizes || header.placement != headerPlacement(placed, hasThread: arrangement.hasThread)
+        let pending = resizes || header.placement != headerPlacement(placed, arrangement: arrangement)
             || !presence.onScreen && !placed.minimized
         let starting = kind == .settle && placed.motion.target != placed.target || contentPending == placed.target
         contentPending = pending && starting ? placed.target : nil
@@ -262,7 +264,8 @@ final class PhoneCardView: UIView {
 
         if content.minimized != minimized { content.minimized = minimized }
         // 窗口按钮飞行中看不见（见 updateButtons），「展开」的有无等停下再换：动画开始的这一轮不重排按钮组和让位的标题栏
-        if content.expands == nil || !placed.motion.moving && (placed.motion.target == target || kind.duration == 0) { updateExpands() }
+        if content.expansion == nil || !placed.motion.moving && (placed.motion.target == target || kind.duration == 0) { updateExpands() }
+        if content.pinned != arrangement.pinned { content.pinned = arrangement.pinned }
         if (content.openSidebar == nil) != (arrangement.openSidebar == nil) { content.openSidebar = arrangement.openSidebar }
         if contentPending == nil { placePendingContent() } else if minimized, presence.onScreen { presence.onScreen = false }
 
@@ -357,19 +360,20 @@ final class PhoneCardView: UIView {
     /// （2026-10-14 iPad 实测，停靠栏里一个窗口的按钮组在缩小、恢复的首帧里约 2.5～7 毫秒），等它回到台面停下再换。
     /// 头一次照样给，没给时按钮组退回去读排布，台面一变就跟着更新。
     private func updateExpands() {
-        guard let arrangement, let placed, content.expands == nil || !placed.minimized, content.expands != arrangement.expands else { return }
-        content.expands = arrangement.expands
+        guard let arrangement, let placed, content.expansion == nil || !placed.minimized, content.expansion != arrangement.expansion else { return }
+        content.expansion = arrangement.expansion
     }
 
     /// 正文标题栏按这几项算给窗口按钮让出多少，见 PaneHeaderControlsSpace。
-    private func headerPlacement(_ placed: CardPresentation.Placement, hasThread: Bool) -> HeaderPlacement {
-        HeaderPlacement(minimized: placed.minimized, width: placed.target.frame.width, hasThread: hasThread)
+    private func headerPlacement(_ placed: CardPresentation.Placement, arrangement: Arrangement) -> HeaderPlacement {
+        HeaderPlacement(minimized: placed.minimized, width: placed.target.frame.width, hasThread: arrangement.hasThread,
+                        pinned: arrangement.pinned)
     }
 
     /// 动画开始的那一轮可以推迟的几项（见 arrange）：标题栏的让位、正文在不在台面上。
     private func placePendingContent() {
         guard let placed, let arrangement else { return }
-        let placement = headerPlacement(placed, hasThread: arrangement.hasThread)
+        let placement = headerPlacement(placed, arrangement: arrangement)
         if header.placement != placement { header.placement = placement }
         if presence.onScreen != !placed.minimized { presence.onScreen = !placed.minimized }
     }
@@ -780,7 +784,7 @@ final class PhoneCardView: UIView {
         set {}
     }
 
-    /// 读屏的动作：缩小、展开、关闭窗口；缩在停靠栏里时展开窗口。
+    /// 读屏的动作：固定、缩小、展开或还原、关闭窗口；缩在停靠栏里时展开窗口。
     override var accessibilityCustomActions: [UIAccessibilityCustomAction]? {
         get {
             guard let placed, let stage, !closing else { return nil }
@@ -789,9 +793,13 @@ final class PhoneCardView: UIView {
                 return [UIAccessibilityCustomAction(name: "展开窗口") { [weak stage] _ in stage?.activate(pane, family: family); return true }]
             }
             guard let area = stage.group.workspace else { return nil }
-            var actions = [UIAccessibilityCustomAction(name: "缩小窗口") { _ in layout.minimize(pane); return true }]
-            if (layout.shown?.panes.count ?? 0) > 1 {
-                actions.append(UIAccessibilityCustomAction(name: "展开窗口") { _ in layout.expand(pane); return true })
+            let pin = layout.pinned.contains(pane) ? "取消固定" : "固定窗口"
+            var actions = [UIAccessibilityCustomAction(name: pin) { _ in layout.togglePin(pane); return true },
+                           UIAccessibilityCustomAction(name: "缩小窗口") { _ in layout.minimize(pane); return true }]
+            switch layout.expansion(of: pane) {
+            case .expand: actions.append(UIAccessibilityCustomAction(name: "展开窗口") { _ in layout.expand(pane); return true })
+            case .restore: actions.append(UIAccessibilityCustomAction(name: "还原窗口") { _ in layout.collapse(pane); return true })
+            case .unavailable: break
             }
             let model = stage.model
             actions.append(UIAccessibilityCustomAction(name: "关闭窗口") { _ in model.closeWindow(pane, in: area); return true })

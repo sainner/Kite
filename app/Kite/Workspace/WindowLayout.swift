@@ -6,11 +6,18 @@ import SwiftUI
 final class WindowLayout {
     private(set) var motionKind = WindowMotionKind.immediate
     let isFixed: Bool
-    private(set) var root: Tile?
+    private(set) var root: Tile? {
+        // 只有台面上的窗口算固定：缩小、拖进停靠栏、关掉就不再固定
+        didSet { if !pinned.isEmpty { pinned.formIntersection(root?.panes ?? []) } }
+    }
     /// 缩小的窗口仍属于这个工作区，按停靠顺序保存。
     private(set) var docked: [Pane] = []
     /// 紧凑布局显示聚焦窗口；宽屏空间不足时优先保留它。
     private(set) var focused: Pane?
+    /// 固定在台面上的窗口：展开、打开别的窗口时留在原处，别的窗口占它们以外的地方（见 occupying）；台面放不下时也最后才藏。
+    private(set) var pinned: Set<Pane> = []
+    /// 上一步：展开、打开、缩小之前的排布，见 LayoutMemory；还算不算数见 steps。
+    private var memory: LayoutMemory?
     private(set) var drag: CardDrag?
     /// 指针所在、还没换上预览的落点，见 previewDwell。
     @ObservationIgnored private var pendingDrag: CardDrag?
@@ -129,6 +136,8 @@ final class WindowLayout {
             root = saved.root?.tile
             docked = saved.docked
             focused = saved.focused
+            pinned = Set(saved.pinned ?? []).intersection(root?.panes ?? [])
+            memory = saved.memory
             // 托管目录尚未加载窗口；此时不能把未知窗口当成已删除。
             if reconcileOnLoad { reconcile(panes) }
         } else {
@@ -162,8 +171,13 @@ final class WindowLayout {
         guard Set(panes) != allowed else { return }
         drag = nil
         let hadWindows = !panes.isEmpty
-        for pane in panes where !allowed.contains(pane) { root = root?.removing(pane) }
-        docked.removeAll { !allowed.contains($0) }
+        let removed = Set(panes).subtracting(allowed)
+        // 展开、打开的那个窗口关掉了：回到那一步之前
+        let occupant = steps.first { $0.kind != .minimize && removed.contains($0.pane) }
+        for pane in removed { root = root?.removing(pane) }
+        docked.removeAll { removed.contains($0) }
+        memory = memory?.removing(removed)
+        if let occupant { goBack(occupant.removing(removed)) }
         let known = Set(panes)
         let added = available.filter { !known.contains($0) }
         if root == nil && docked.isEmpty, let first = added.first {
@@ -183,15 +197,86 @@ final class WindowLayout {
         withLayoutAnimation(.settle) {
             drag = nil
             carriedFocus = nil
-            if docked.contains(pane) {
-                if presentation == .tiled {
-                    place(pane, in: bounds ?? availableSize.map { CGRect(origin: .zero, size: $0) })
-                    docked.removeAll { $0 == pane }
-                }
-            }
+            if docked.contains(pane), presentation == .tiled { open(pane, in: bounds) }
             focused = pane
         }
         saveSoon()
+    }
+
+    /// 停靠栏里的窗口放上台面，记下这一步，缩小或关掉它时回来（见 minimize、reconcile）。刚缩小的窗口直接回到缩小之前；
+    /// 有固定的窗口时占掉它们以外的地方，没有时照常放（见 place）。
+    private func open(_ pane: Pane, in bounds: CGRect?) {
+        if let step = steps.first(where: { $0.kind == .minimize && $0.pane == pane }) {
+            goBack(step)
+            return
+        }
+        let bounds = bounds ?? availableSize.map { CGRect(origin: .zero, size: $0) }
+        remember(.open, pane) {
+            if !pinned.isEmpty, let root, let next = occupying(pane, in: root, canvas: bounds.map { regions(in: $0).canvas }) {
+                let placed = Set(next.panes)
+                docked = (docked + root.panes).filter { !placed.contains($0) }
+                self.root = next
+            } else {
+                place(pane, in: bounds)
+                docked.removeAll { $0 == pane }
+            }
+        }
+    }
+
+    /// pane 占掉台面上别的固定窗口以外的地方以后的排布：台面上的窗口占它所在的那一块，新放上来的占最大的一块；
+    /// 不含固定窗口的地方不连成一块时（比如两个固定窗口斜对着），别的几块不动。没有这样一块时为 nil。
+    private func occupying(_ pane: Pane, in root: Tile, canvas: CGRect?) -> Tile? {
+        let blocks = root.blocks(without: pinned.subtracting([pane]))
+        if let own = blocks.first(where: { $0.panes.contains(pane) }) { return root.replacing(block: own, with: .pane(pane)) }
+        let frames = root.layout(in: canvas ?? CGRect(x: 0, y: 0, width: 1000, height: 1000)).panes
+        func area(_ block: Tile) -> CGFloat {
+            let frame = block.panes.compactMap { frames[$0] }.reduce(CGRect.null) { $0.union($1) }
+            return frame.isNull ? 0 : frame.width * frame.height
+        }
+        return blocks.max { area($0) < area($1) }.map { root.replacing(block: $0, with: .pane(pane)) }
+    }
+
+    /// 还算数的几步，最近的在前：排布还是那一步刚做完时的样子（只比怎么切、各放哪个窗口，拖缝改过大小也算数），期间被别的操作改过就不算；
+    /// 展开、打开的窗口还在台面上，缩小的还在停靠栏里。缩小底下可能压着同样算数的一步，见 LayoutMemory.beneath。
+    private var steps: [LayoutMemory] {
+        var steps: [LayoutMemory] = []
+        var next = memory
+        while let step = next, holds(step) {
+            steps.append(step)
+            next = step.beneath
+        }
+        return steps
+    }
+
+    private func holds(_ step: LayoutMemory) -> Bool {
+        guard SavedTile.sameShape(step.after, root) else { return false }
+        return step.kind == .minimize ? docked.contains(step.pane) : root?.panes.contains(step.pane) == true
+    }
+
+    /// 做 change 这一步，记下做之前的排布，回去时用（见 goBack）：回去以后接着用做之前还算数的那一步；做完以后还算数的那一步压在底下。
+    private func remember(_ kind: LayoutMemory.Kind, _ pane: Pane, _ change: () -> Void) {
+        let resumes = steps.first
+        let before = root.map(SavedTile.init), dockedBefore = docked, pinnedBefore = pinned
+        change()
+        let depth = LayoutMemory.depth - 1
+        memory = LayoutMemory(kind: kind, pane: pane, root: before, docked: dockedBefore, unpinned: Array(pinnedBefore.subtracting(pinned)),
+                              after: root.map(SavedTile.init), resumes: resumes?.trimmed(depth), beneath: steps.first?.trimmed(depth))
+    }
+
+    /// 回到 step 之前的排布，接着用做它之前还算数的那一步。期间关掉的窗口不回来，期间新来的窗口留在停靠栏；leaving 是这时要收进停靠栏的窗口，
+    /// 回去以后也不放上台面，排在停靠栏最后。
+    private func goBack(_ step: LayoutMemory, leaving: Pane? = nil) {
+        let current = panes
+        var tile = step.root?.tile
+        for pane in tile?.panes ?? [] where pane == leaving || !current.contains(pane) { tile = tile?.removing(pane) }
+        let placed = Set(tile?.panes ?? [])
+        var next = step.docked.filter { current.contains($0) && !placed.contains($0) && $0 != leaving }
+        next += current.filter { !placed.contains($0) && !next.contains($0) && $0 != leaving }
+        if let leaving { next.append(leaving) }
+        root = tile
+        docked = next
+        pinned.formUnion(step.unpinned.filter(placed.contains))
+        memory = step.resumes
     }
 
     func focus(_ pane: Pane) {
@@ -205,7 +290,8 @@ final class WindowLayout {
         pendingSave?.cancel()
         pendingSave = nil
         guard let storageKey else { return }
-        let saved = SavedLayout(root: root.map(SavedTile.init), docked: docked, focused: focused)
+        let saved = SavedLayout(root: root.map(SavedTile.init), docked: docked, focused: focused,
+                                pinned: root?.panes.filter(pinned.contains), memory: memory)
         if let data = try? JSONEncoder().encode(saved) { defaults.set(data, forKey: storageKey) }
     }
 
@@ -272,8 +358,8 @@ final class WindowLayout {
         if let carriedFocus, carriedFocus == focused, docked.contains(carriedFocus) {
             tile = tile?.inserting(.pane(carriedFocus), on: .trailing) ?? .pane(carriedFocus)
         }
-        let candidates = (tile?.panes ?? []).filter { $0 != focused }
-        for pane in candidates {
+        let others = (tile?.panes ?? []).filter { $0 != focused }
+        for pane in others.filter({ !pinned.contains($0) }) + others.filter(pinned.contains) {
             guard let current = tile, current.panes.count > 1 else { break }
             let minimum = current.minimumSize
             if minimum.width <= canvas.width && minimum.height <= canvas.height { break }
@@ -311,27 +397,76 @@ final class WindowLayout {
             return
         }
         guard root?.panes.contains(pane) == true else { return }
+        // 展开、打开它的那一步回去：让给它的窗口回到原处
+        let occupant = steps.first { $0.kind != .minimize && $0.pane == pane }
         withLayoutAnimation(.settle) {
             drag = nil
-            root = root?.removing(pane)
-            docked.append(pane)
+            // 记下缩小之前的排布，从停靠栏点回它时原样回来（见 open）
+            remember(.minimize, pane) {
+                if let occupant {
+                    goBack(occupant, leaving: pane)
+                } else {
+                    root = root?.removing(pane)
+                    docked.append(pane)
+                }
+            }
             focusVisiblePane()
         }
         saveSoon()
     }
 
-    /// 当前窗口铺满内容区，其余窗口依次收进停靠栏。
+    /// 当前窗口占满内容区里别的固定窗口以外的地方，让出来的窗口依次收进停靠栏；记下这一步，还原、缩小或关掉它时回来。
     func expand(_ pane: Pane) {
-        guard !isFixed else { return }
-        guard shown?.panes.contains(pane) == true else { return }
+        guard let next = expanded(pane) else { return }
         withLayoutAnimation(.settle) {
             drag = nil
             carriedFocus = nil
-            docked = docked.filter { $0 != pane } + (root?.panes ?? []).filter { $0 != pane }
-            self.root = .pane(pane)
+            remember(.expand, pane) {
+                let placed = Set(next.panes)
+                docked = (docked + (root?.panes ?? [])).filter { !placed.contains($0) }
+                root = next
+            }
             focused = pane
         }
         saveSoon()
+    }
+
+    /// 还原展开的窗口：回到展开之前的排布。
+    func collapse(_ pane: Pane) {
+        guard let step = expandedStep(pane) else { return }
+        withLayoutAnimation(.settle) {
+            drag = nil
+            carriedFocus = nil
+            goBack(step)
+            focused = pane
+            focusVisiblePane()
+        }
+        saveSoon()
+    }
+
+    /// 窗口按钮里展开那一格是展开、还原，还是没有（没有可让的窗口）。
+    func expansion(of pane: Pane) -> PaneExpansion {
+        if expandedStep(pane) != nil { return .restore }
+        return expanded(pane) == nil ? .unavailable : .expand
+    }
+
+    private func expandedStep(_ pane: Pane) -> LayoutMemory? {
+        steps.first { $0.kind == .expand && $0.pane == pane }
+    }
+
+    /// 展开 pane 以后的排布；没有窗口可让时为 nil。
+    private func expanded(_ pane: Pane) -> Tile? {
+        guard !isFixed, let shown, shown.panes.contains(pane), shown.panes.count > 1, let root else { return nil }
+        let canvas = availableSize.map { regions(in: CGRect(origin: .zero, size: $0)).canvas }
+        guard let next = occupying(pane, in: root, canvas: canvas), next.panes != root.panes else { return nil }
+        return next
+    }
+
+    /// 固定或取消固定台面上的窗口，不改排布，也不算一步。
+    func togglePin(_ pane: Pane) {
+        guard !isFixed, root?.panes.contains(pane) == true else { return }
+        if pinned.remove(pane) == nil { pinned.insert(pane) }
+        save()
     }
 
     /// 点击停靠窗口与新建窗口使用同一放置顺序和展开动画。
@@ -352,8 +487,9 @@ final class WindowLayout {
             let rows = root.inserting(.pane(pane), beside: target, on: .bottom)
             if fits(rows) { self.root = rows; return }
         }
-        // 保留当前聚焦窗口；容量已满时，用一个非聚焦窗口的位置接住新窗口。
-        if let victim = root.panes.first(where: { $0 != focused }) ?? root.panes.first {
+        // 保留当前聚焦窗口；容量已满时，用一个非聚焦窗口的位置接住新窗口，先换没固定的。
+        if let victim = root.panes.first(where: { $0 != focused && !pinned.contains($0) })
+            ?? root.panes.first(where: { $0 != focused }) ?? root.panes.first {
             self.root = root.replacing(victim, with: .pane(pane))
             docked.append(victim)
         }
@@ -569,11 +705,76 @@ final class WindowLayout {
 }
 
 
+/// 窗口按钮里展开那一格，见 WindowLayout.expansion。
+enum PaneExpansion: Equatable {
+    case unavailable, expand, restore
+}
+
 /// 本地文件只记录窗口 ID 和布局数值，不缓存窗口目标或业务对象。
 private struct SavedLayout: Codable {
     let root: SavedTile?
     let docked: [Pane]
     let focused: Pane?
+    let pinned: [Pane]?
+    let memory: LayoutMemory?
+}
+
+/// 展开、打开、缩小之前的排布，回到上一步时用，见 WindowLayout.steps。
+private final class LayoutMemory: Codable {
+    enum Kind: String, Codable {
+        /// 展开：pane 占了别的窗口的地方，还原、缩小或关掉它时回去。
+        case expand
+        /// 打开：pane 从停靠栏或新建放上台面，缩小或关掉它时回去。
+        case open
+        /// 缩小：pane 收进停靠栏，从停靠栏点回它时回去。
+        case minimize
+    }
+
+    /// 最多往回记这么多步。
+    static let depth = 6
+
+    let kind: Kind
+    let pane: Pane
+    /// 这一步之前的排布和停靠顺序。
+    let root: SavedTile?
+    let docked: [Pane]
+    /// 这一步取消固定的窗口（缩小了固定的窗口），回去时再固定上。
+    let unpinned: [Pane]
+    /// 这一步刚做完时的排布，只看它怎么切、各放哪个窗口。
+    let after: SavedTile?
+    /// 回去以后接着用的一步：做这一步之前还算数的那一步。
+    let resumes: LayoutMemory?
+    /// 做完这一步以后同样算数、压在它底下的一步。缩小打开的窗口时回到打开之前，打开之前的那一步又算数了：
+    /// 先后打开 X、Y，缩小 Y 回到有 X 的样子，点回 Y 用这一步，缩小 X 用底下打开 X 的那一步。
+    let beneath: LayoutMemory?
+
+    init(kind: Kind, pane: Pane, root: SavedTile?, docked: [Pane], unpinned: [Pane], after: SavedTile?,
+         resumes: LayoutMemory?, beneath: LayoutMemory?) {
+        self.kind = kind
+        self.pane = pane
+        self.root = root
+        self.docked = docked
+        self.unpinned = unpinned
+        self.after = after
+        self.resumes = resumes
+        self.beneath = beneath
+    }
+
+    /// 只留往回 depth 步，0 时为 nil。
+    func trimmed(_ depth: Int) -> LayoutMemory? {
+        guard depth > 0 else { return nil }
+        return LayoutMemory(kind: kind, pane: pane, root: root, docked: docked, unpinned: unpinned, after: after,
+                            resumes: resumes?.trimmed(depth - 1), beneath: beneath?.trimmed(depth - 1))
+    }
+
+    /// 窗口关掉了：各步都拿掉它，排布里它所在的那一刀由另一半补上，同台面上一样。
+    func removing(_ panes: Set<Pane>) -> LayoutMemory {
+        guard !panes.isEmpty else { return self }
+        func strip(_ tile: SavedTile?) -> SavedTile? { panes.reduce(tile?.tile) { $0?.removing($1) }.map(SavedTile.init) }
+        return LayoutMemory(kind: kind, pane: pane, root: strip(root), docked: docked.filter { !panes.contains($0) },
+                            unpinned: unpinned.filter { !panes.contains($0) }, after: strip(after),
+                            resumes: resumes?.removing(panes), beneath: beneath?.removing(panes))
+    }
 }
 
 private indirect enum SavedTile: Codable {
@@ -595,6 +796,17 @@ private indirect enum SavedTile: Codable {
         case .pane(let pane): return .pane(pane)
         case .split(let horizontal, let ratio, let first, let second):
             return .split(Split(horizontal ? .horizontal : .vertical, min(max(ratio, 0), 1), first.tile, second.tile))
+        }
+    }
+
+    /// 切法和各处的窗口一样，不比比例。
+    static func sameShape(_ saved: SavedTile?, _ tile: Tile?) -> Bool {
+        switch (saved, tile) {
+        case (nil, nil): true
+        case (.pane(let a)?, .pane(let b)?): a == b
+        case (.split(let horizontal, _, let first, let second)?, .split(let split)?):
+            horizontal == (split.axis == .horizontal) && sameShape(first, split.first) && sameShape(second, split.second)
+        default: false
         }
     }
 }

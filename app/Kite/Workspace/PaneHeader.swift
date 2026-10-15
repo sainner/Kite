@@ -483,16 +483,26 @@ private extension View {
 
 /// 标题栏与更多菜单共用当前卡片的窗口动作。
 struct PaneWindowActions {
+    let pinned: Bool
+    let togglePin: @MainActor () -> Void
     let minimize: @MainActor () -> Void
-    let expand: (@MainActor () -> Void)?
+    let expansion: PaneExpansion
+    let expand: @MainActor () -> Void
+    let collapse: @MainActor () -> Void
     let close: @MainActor () -> Void
     let canClose: Bool
 
     /// 收进更多菜单时的菜单项。
     var commands: [ThreadHeaderCommand] {
         var items = [ThreadHeaderCommand(title: "缩小窗口", symbol: "minus", action: minimize)]
-        if let expand { items.append(.init(title: "展开窗口", symbol: "arrow.up.left.and.arrow.down.right", action: expand)) }
+        switch expansion {
+        case .expand: items.append(.init(title: "展开窗口", symbol: "arrow.up.left.and.arrow.down.right", action: expand))
+        case .restore: items.append(.init(title: "还原窗口", symbol: "arrow.down.right.and.arrow.up.left", action: collapse))
+        case .unavailable: break
+        }
         items.append(.init(title: "关闭窗口", symbol: "xmark", enabled: canClose, action: close))
+        items.append(pinned ? .init(title: "取消固定", symbol: "pin.slash", action: togglePin)
+                            : .init(title: "固定窗口", symbol: "pin", action: togglePin))
         return items
     }
 }

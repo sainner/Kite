@@ -147,8 +147,11 @@ struct StageWindowless: View {
     var minimized = false
     var openSidebar: (@MainActor () -> Void)?
     var buttonsShown = false
-    /// 台面上不止一个窗口、窗口按钮里有「展开」。由卡片在动画停下时交（见 CardView.arrange、PhoneCardView.arrange）；没给时按排布现算。
-    var expands: Bool?
+    /// 窗口按钮组藏着时单独露出图钉，见 PaneHeaderControls.pinShown。
+    var pinShown = false
+    var pinned = false
+    /// 窗口按钮里展开那一格是展开、还原还是没有。由卡片在动画停下时交（见 CardView.arrange、PhoneCardView.arrange）；没给时按排布现算。
+    var expansion: PaneExpansion?
     var nativeThread = false
     /// 卡片交给托管视图的环境换过几次，会话窗口的桥按它把新环境再交给原生外框。
     var environment = 0
@@ -224,8 +227,8 @@ struct CardIcon: View {
     }
 }
 
-/// 窗口按钮（缩小、展开、关闭）：悬停卡片时露出来（触屏一直露），飞行中、拖动和拖缝时看不见也不接输入。
-/// 露不露由卡片算好放在状态里（见 PaneHeaderControls），实际尺寸报给标题栏让位。
+/// 窗口按钮（缩小、展开或还原、关闭、固定）：悬停卡片时露出来（触屏一直露），飞行中、拖动和拖缝时看不见也不接输入；
+/// 固定的窗口不悬停时单独露出图钉。露不露由卡片算好放在状态里（见 PaneHeaderControls），实际尺寸报给标题栏让位。
 struct CardButtons: View {
     let group: PaneGroup
     let pane: Pane
@@ -240,30 +243,49 @@ struct CardButtons: View {
     var body: some View {
         if let area = group.workspace {
             let layout = group.layout
-            let expands = state.expands ?? ((layout.shown?.panes.count ?? 0) > 1)
+            let expansion = state.expansion ?? layout.expansion(of: pane)
+            let pinned = state.pinned
             let buttons = PaneHeaderButtonGroup {
                 button("缩小", icon: "minus") { layout.minimize(pane) }
-                if expands {
-                    button("展开", icon: "arrow.up.left.and.arrow.down.right") { layout.expand(pane) }
+                switch expansion {
+                case .expand: button("展开", icon: "arrow.up.left.and.arrow.down.right") { layout.expand(pane) }
+                case .restore: button("还原", icon: "arrow.down.right.and.arrow.up.left") { layout.collapse(pane) }
+                case .unavailable: EmptyView()
                 }
                 button("关闭", icon: "xmark") { model.closeWindow(pane, in: area) }
                     .disabled(area.isDraft || area.changingWindows || area.creatingWindow == pane.id)
+                pin(pinned, layout: layout)
             }
             // 缩小、恢复时台面上的窗口数变了，展开按钮出现消失不跟排布的动画走：飞行中按钮组本来看不见，
             // 带着动画这个托管视图每帧要重排几遍（2026-10-14 实测，一次缩小或恢复约 117 次、合计约 49 ms）
-            .animation(nil, value: expands)
+            .animation(nil, value: expansion)
             // 按系统控件的实际尺寸安排标题栏并避让拖动
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
                 if header.controlsSize != size { header.controlsSize = size }
             }
             if managesVisibility {
-                buttons
-                    .modifier(WhileSettled(motion: motion, shown: state.buttonsShown))
-                    .accessibilityHidden(!state.buttonsShown)
+                // 按钮组按整组的大小摆，单独的图钉贴在右边，和组里的图钉同一个位置
+                ZStack(alignment: .trailing) {
+                    buttons
+                        .modifier(WhileSettled(motion: motion, shown: state.buttonsShown))
+                        .accessibilityHidden(!state.buttonsShown)
+                    if pinned {
+                        PaneHeaderButtonGroup { pin(true, layout: layout) }
+                            .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                                if header.pinSize != size { header.pinSize = size }
+                            }
+                            .modifier(WhileSettled(motion: motion, shown: state.pinShown))
+                            .accessibilityHidden(true)
+                    }
+                }
             } else {
                 buttons
             }
         }
+    }
+
+    private func pin(_ pinned: Bool, layout: WindowLayout) -> some View {
+        button(pinned ? "取消固定" : "固定", icon: pinned ? "pin.fill" : "pin") { layout.togglePin(pane) }
     }
 
     private func button(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
