@@ -4,11 +4,11 @@
  * 资源库经同一链路交接见 library-sync.test.ts。
  */
 import { afterEach, expect, test } from 'bun:test';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Project, WorkspaceModel } from '../../src/model.ts';
 import { connect, type Kited, registerCheckout, startKited, synced } from '../harness.ts';
-import { newRepo } from '../util.ts';
+import { git, newRepo, read } from '../util.ts';
 
 const kiteds: Kited[] = [];
 afterEach(async () => {
@@ -82,4 +82,41 @@ test('两台工作机没同步时各自登记同一远程，连上同步后两�
   expect(workspaces.map((model) => [model.workspace.id, model.project.id])).toEqual([[second.workspace.id, first.project.id]]);
   expect(((await a.call('GET', '/projects')).body as Project[]).map((project) => project.id)).toEqual([first.project.id]);
   expect((await a.call('GET', '/checkouts')).body).toEqual([expect.objectContaining({ id: first.checkout.id, projectId: first.project.id })]);
+}, 1000);
+
+// 删除是账号级数据的一次写入（正文为空），随同步传到 B，B 的 syncProjects 认出「删过」才移除本机的检出，目录留在磁盘上。
+// 账号级数据重建过的工作机从没收到过这条登记，分不出删过还是没收到；syncProjects 不能把它当成删了而移除检出（防误删）。
+// 要同步链路、删除记录与各机本地移除合起来才看得出。
+test('A 删除项目后 B 同步到删除、移除本机检出而目录还在；账号级数据重建过、从没收到过这条登记的工作机不移除', async () => {
+  const a = startKited();
+  const b = startKited();
+  kiteds.push(a, b);
+  await connect(a, b);
+  const origin = `https://example.test/owner/${crypto.randomUUID()}.git`;
+  const first = await registerCheckout(a, newRepo(a.root, 'project', { 'a.txt': 'A\n' }, origin));
+  const projectId = first.project.id;
+  await synced(b, () => b.daemon.kite.registry.get(projectId), 'B 同步到 A 登记的项目');
+  const repoB = newRepo(b.root, 'project', { 'b.txt': 'B\n' }, origin);
+  expect((await registerCheckout(b, repoB)).project.id).toBe(projectId);
+  const headB = git(repoB, 'rev-parse', 'HEAD');
+
+  await a.daemon.kite.deleteProject(projectId);
+  await synced(b, () => b.daemon.kite.registry.deleted(projectId), 'B 同步到 A 删除项目');
+  await b.daemon.kite.syncProjects();
+  expect(b.daemon.kite.store.projects()).toEqual([]);
+  expect(b.daemon.kite.store.checkouts()).toEqual([]);
+  expect(b.daemon.kite.store.workspaces()).toEqual([]);
+  expect(read(join(repoB, 'b.txt'))).toBe('B\n');
+  expect(git(repoB, 'rev-parse', 'HEAD')).toBe(headB);
+
+  const before = startKited();
+  kiteds.push(before);
+  const kept = await registerCheckout(before, newRepo(before.root, 'kept', { 'c.txt': 'C\n' }));
+  await before.halt();
+  for (const name of ['account.db', 'account.db-wal', 'account.db-shm']) rmSync(join(before.home, name), { force: true });
+  const c = startKited(undefined, false, { root: before.root });
+  kiteds.splice(kiteds.indexOf(before), 1, c);
+  expect(c.daemon.kite.registry.get(kept.project.id)).toBeUndefined();
+  await c.daemon.kite.syncProjects();
+  expect(c.daemon.kite.store.checkouts()).toEqual([expect.objectContaining({ id: kept.checkout.id, projectId: kept.project.id })]);
 }, 1000);

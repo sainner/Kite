@@ -109,6 +109,11 @@ export class Credentials {
 
   delete(id: string): void { this.data.remove('credential', id); }
 
+  /** 项目删除后它专用的密钥没人能取用，一起删掉。 */
+  deleteProject(projectId: string): void {
+    for (const entry of this.entries()) if (entry.projectId === projectId) this.delete(entry.id);
+  }
+
   /** 执行能用的共享密钥：账号共享的，加上当前项目专用的。 */
   available(projectId?: string): Array<SecretMetadata & { reference: string }> {
     const scoped = (scope: string | null) => this.list('secret', scope)

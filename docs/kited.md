@@ -287,6 +287,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/network/logout` | 仅本机：退出 Tailscale 登录。节点在线时先在 Tailscale 上注销，不在线时只删本机状态（设备要到 Tailscale 管理页删）；组网开着时重起节点，状态里给出新的登录地址 |
 | GET | `/machines` | 工作机目录：本机在前，每项 `{id, name, online, address?, updatedAt?, snapshot?}`，`snapshot` 是那台工作机最近一次的目录摘要，见 [账号级数据](#账号级数据) |
 | GET | `/project-registry` | 项目登记表 `[{id, name, remote, url, createdAt, icon, color, autoHandover?}]`；`remote` 为归一化地址，`url` 为 HTTPS 访问地址，没有远程的项目两者为 null |
+| DELETE | `/project-registry/:id` | 删除项目，语义见 [删除项目](项目与远程仓库.md#删除项目)：登记、约束与项目专用的密钥一起删，这台先移除本机的检出再返回，其他工作机同步到删除后各自移除。未登记的项目 404，Line 所在的项目 409 |
 | PUT | `/project-registry/:id/remote` | 给没有远程的项目设远程 `{remote}`：在这台有检出的工作机上把全部分支和标签推到远程，加上 origin，写进登记表；其他工作机的检出随项目同步加上 origin。推送被拒或这台没有检出 409 |
 | PUT | `/project-registry/:id/settings` | `{autoHandover}`：工作机睡眠前，把这个项目里正在工作的工作区换到别的工作机 |
 | PUT | `/project-registry/:id/appearance` | `{icon?, color?}` 至少一项，未提供项不变；`icon` 为内置图标名（1–100 个 ASCII 字母、数字或句点，默认 `folder`），`color` 为 `primary`（默认）、`accent`、`green`、`purple`、`orange` 或 `pink`；返回完整项目，未登记的项目 404 |

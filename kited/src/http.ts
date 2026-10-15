@@ -198,6 +198,8 @@ export function serve(kite: Kite, listen: Listen) {
     routes: {
       '/machines': { GET: bound(() => kite.directory.entries()) },
       '/project-registry': { GET: bound(() => kite.registry.list()) },
+      // 本机要先停下这个项目的线程、回收工作树，请求不受空闲超时限制。
+      '/project-registry/:id': { DELETE: long(bound(async (req) => { await kite.deleteProject(req.params.id); return { ok: true }; })) },
       '/project-registry/:id/appearance': { PUT: bound(async (req) => kite.registry.setAppearance(req.params.id, await body(req))) },
       '/project-registry/:id/settings': { PUT: bound(async (req) => kite.registry.setSettings(req.params.id, await body(req))) },
       // 推送整个仓库可能很久，请求不受空闲超时限制。

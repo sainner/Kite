@@ -377,6 +377,14 @@ export class Store implements UsageStore {
       this.db.query('delete from projects where id = ?').run(from);
     })();
   }
+  /** 登记表删掉了项目：本机的检出、约束缓存与项目记录一起删；工作区的行由调用方先删（deleteWorkspaceRows）。 */
+  removeProject(id: string): void {
+    this.db.transaction(() => {
+      this.db.query('delete from checkouts where project_id = ?').run(id);
+      this.db.query('delete from project_constraints where project_id = ?').run(id);
+      this.db.query('delete from projects where id = ?').run(id);
+    })();
+  }
   setCheckoutRemote(id: string, remote: string | null): void {
     this.db.query('update checkouts set remote = ? where id = ?').run(remote, id);
   }

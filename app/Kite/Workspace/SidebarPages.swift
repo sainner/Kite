@@ -36,7 +36,7 @@ private struct SidebarPageRow<Page: SidebarPage>: View {
     }
 }
 
-/// 资源库的侧栏：代理上下文像空间里的项目一样，分类作小标题、各项作树状子项列在下面；其余各页一行。
+/// 资源库的侧栏：代理上下文像项目一栏里的项目一样，分类作小标题、各项作树状子项列在下面；其余各页一行。
 private struct ExtensionSidebar: View {
     var onSelect: () -> Void
     @Environment(AppModel.self) private var model
@@ -192,7 +192,7 @@ struct DeviceStatusIcon: View {
     }
 }
 
-/// 每台工作机下并列账号、文件，与空间共用吸顶分区和树状子项。状态色只用在设备图标上，文字与选中沿用侧栏默认颜色。
+/// 每台工作机下并列账号、文件，与项目一栏共用吸顶分区和树状子项。状态色只用在设备图标上，文字与选中沿用侧栏默认颜色。
 private struct DeviceSidebar: View {
     var onSelect: () -> Void
     @Environment(AppModel.self) private var model

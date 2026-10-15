@@ -96,7 +96,7 @@ extension AppModel {
         var groups: [WorkspaceGroup] = []
         let line = lineArea?.id
         for area in workspaces {
-            // Line 的工作区从侧栏顶部的标志进，不列在空间里
+            // Line 的工作区从侧栏顶部的标志进，不列在项目一栏里
             guard let remote = area.remote, area.id != line else { continue }
             if !groups.contains(where: { $0.id == remote.project.id }) {
                 groups.append(.init(id: remote.project.id, title: projectLabel(remote.project), checkouts: []))
@@ -139,8 +139,10 @@ private struct WorkspaceProjectSection<Row: View>: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
     @Environment(\.sidebarMetrics) private var metrics
+    @Environment(\.toast) private var toast
     @State private var isExpanded = true
     @State private var hoveringIcon = false
+    @State private var confirmingDeletion = false
 
     private var theme: ProjectTheme {
         ProjectTheme(rawValue: model.account.projectAppearances[group.id]?.color ?? "primary") ?? .primary
@@ -188,7 +190,11 @@ private struct WorkspaceProjectSection<Row: View>: View {
                 .contextMenu {
                     if checkouts.count == 1, let root = checkouts.first?.root {
                         WorkspaceGitActions(workspace: root)
+                        Divider()
                     }
+                    // Line 所在的项目不能删，Line 在别的工作机上时接请求的那台查不到，这里也拦着
+                    Button("删除项目…", role: .destructive) { confirmingDeletion = true }
+                        .disabled(model.availableWorkers.isEmpty || model.lineArea?.remote?.project.id == group.id)
                 }
                 .accessibilityAddTraits(selected ? .isSelected : [])
                 Button {
@@ -238,6 +244,21 @@ private struct WorkspaceProjectSection<Row: View>: View {
         }
         .environment(\.sidebarProjectTint, tint)
         .environment(\.sidebarHighlight, highlight)
+        .alert("删除项目", isPresented: $confirmingDeletion) {
+            Button("删除", role: .destructive) { delete() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("「\(group.title ?? "项目")」会从各台工作机上移除：停止其中的线程，删除工作区、对话和项目专用的密钥。检出目录里的文件不动，工作区里没合回主线的改动存成快照留在检出的 Git 里。")
+        }
+    }
+
+    /// 删除成功后项目从列表里消失，提示由外层的 toast 显示。
+    private func delete() {
+        let toast = toast
+        Task {
+            do { try await model.deleteProject(group.id); toast?.show("已删除项目") }
+            catch { toast?.show(error.localizedDescription, systemImage: "exclamationmark.triangle") }
+        }
     }
 
     private func selectRoot(_ root: WorkArea) {

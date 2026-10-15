@@ -44,6 +44,16 @@ extension AppModel {
         try await checkoutWorker(projectID).request("/project-registry/\(projectID)/remote", method: "PUT", body: ["remote": remote], timeout: 600, as: AccountProject.self)
     }
 
+    /// 删除项目：登记、约束与项目专用的密钥一起删，各工作机随后移除本机的检出，检出目录留在磁盘上。
+    /// 接请求的工作机先停下本机这个项目的线程，可能要一会儿。
+    func deleteProject(_ projectID: String) async throws {
+        let client = try dataWorker()
+        let _: JSON = try await client.request("/project-registry/\(projectID)", method: "DELETE", timeout: 120, as: JSON.self)
+        if selectedProjectID == projectID { selectedProjectID = nil }
+        try await refresh(client)
+        _ = await refreshDirectory()
+    }
+
     func setProjectAutoHandover(_ projectID: String, enabled: Bool) async throws -> AccountProject {
         try await dataWorker().request("/project-registry/\(projectID)/settings", method: "PUT", body: ["autoHandover": enabled], as: AccountProject.self)
     }

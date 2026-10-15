@@ -1,7 +1,7 @@
 /**
  * 项目登记（docs/项目与远程仓库.md）：经 HTTP 登记本机文件夹、clone 远程或另一台工作机的检出，
  * kited 与本机项目登记表、Git 平台替身上的裸仓库（git http-backend）之间的交接。集成与现场推送见 integration.test.ts，
- * 没有远程的项目在工作机之间拉取与设远程见 peer-git.test.ts。
+ * 没有远程的项目在工作机之间拉取与设远程见 peer-git.test.ts。删除项目在别的工作机上的移除见 account-sync.test.ts。
  */
 import { afterEach, expect, test } from 'bun:test';
 import { realpathSync, rmSync, symlinkSync } from 'node:fs';
@@ -12,9 +12,13 @@ import { Bus } from '../../src/events.ts';
 import { Kite } from '../../src/kite.ts';
 import type { Checkout, WorkspaceModel } from '../../src/model.ts';
 import { Store } from '../../src/store.ts';
+import { snapshotRef } from '../../src/workspace/snapshots.ts';
 import { type FakeGit, startFakeGit } from '../fake-git.ts';
-import { call, chatgptLogin, connect, type Kited, type KitedProcess, registerBeforeStart, registerCheckout, spawnKited, startKited, synced } from '../harness.ts';
-import { git, lexists, makeTemp, newDir, newRepo, read } from '../util.ts';
+import {
+  call, chatgptLogin, connect, createWorkspace, type Kited, type KitedProcess, registerBeforeStart, registerCheckout, spawnKited, startKited, synced,
+} from '../harness.ts';
+import { ManualModel } from '../harness-loop.ts';
+import { git, gitOk, lexists, makeTemp, newDir, newRepo, read, writeFiles } from '../util.ts';
 
 let kited: Kited | undefined;
 /** 同一用户的第二台工作机。 */
@@ -252,4 +256,51 @@ test('按项目建工作区：所选模型的厂商未登录时 409 且不 clone
   expect(read(join(model.workspace.cwd, 'a.txt'))).toBe('原始\n');
   const environment = await other.call('GET', `/environment?project=${projectId}`);
   expect(environment.body).toMatchObject({ checkout: { id: model.checkout.id, path: clonePath }, logins: { chatgpt: { status: 'ready' } } });
+}, 1_000);
+
+/*
+ * 删除项目在接请求的这台（docs/项目与远程仓库.md「删除项目」）：停下正在跑的回合，工作树先存快照再回收，
+ * 再删工作区、会话、检出与项目。几条 git 命令合起来的效果（快照引用留在检出里、git worktree 的登记和工作区分支都去掉），
+ * 以及 SQLite 的外键与唯一索引（checkouts(machine_id, path)、workspaces(cwd)）在这个删除顺序下成不成立，
+ * 要跑起来才知道：同一文件夹再登记要越过这两个唯一索引，得到新项目。
+ */
+test('删除项目：停下回合，工作树里未提交的改动存进检出的快照引用后回收工作树和分支，记录与会话都删掉而检出目录原样，同一文件夹再登记是新项目', async () => {
+  const model = new ManualModel();
+  kited = startKited(() => model);
+  const running = kited;
+  const kite = running.daemon.kite;
+  const folder = newDir(running.root, 'notes', { 'readme.txt': '笔记\n' });
+  const registered = await registerCheckout(running, folder);
+  const projectId = registered.project.id;
+  const thread = await createWorkspace(running, registered.checkout.id, '开始写', 'harness');
+  const workspace = thread.workspace;
+  const turn = await model.call(1);
+  writeFiles(workspace.cwd, { 'readme.txt': '工作区里改过\n', 'draft.txt': '未提交的草稿\n' });
+  expect(workspace.kind).toBe('worktree');
+  expect(gitOk(folder, 'show-ref', '--verify', `refs/heads/${workspace.branch}`)).toBe(true);
+  const head = git(folder, 'rev-parse', 'HEAD');
+
+  await kite.deleteProject(projectId);
+
+  expect(turn.signal.aborted).toBe(true);
+  expect(kite.registry.get(projectId)).toBeUndefined();
+  expect(kite.store.projects().map((project) => project.id)).not.toContain(projectId);
+  expect(kite.store.checkouts()).toEqual([]);
+  expect(kite.store.workspaces()).toEqual([]);
+  expect(kite.store.thread(thread.id)).toBeNull();
+  expect(lexists(join(running.home, 'sessions', thread.id))).toBe(false);
+  expect(lexists(workspace.cwd)).toBe(false);
+  expect(git(folder, 'worktree', 'list', '--porcelain')).not.toContain(workspace.cwd);
+  expect(gitOk(folder, 'show-ref', '--verify', `refs/heads/${workspace.branch}`)).toBe(false);
+  const snapshot = snapshotRef(workspace.id);
+  expect(git(folder, 'show', `${snapshot}:draft.txt`)).toBe('未提交的草稿');
+  expect(git(folder, 'show', `${snapshot}:readme.txt`)).toBe('工作区里改过');
+  expect(read(join(folder, 'readme.txt'))).toBe('笔记\n');
+  expect(git(folder, 'rev-parse', 'HEAD')).toBe(head);
+  expect(git(folder, 'status', '--porcelain')).toBe('');
+
+  const again = await registerCheckout(running, folder);
+  expect(again.project.id).not.toBe(projectId);
+  expect(again.checkout.path).toBe(folder);
+  expect(kite.registry.get(again.project.id)).toMatchObject({ name: 'notes' });
 }, 1_000);

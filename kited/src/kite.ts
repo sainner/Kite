@@ -1,7 +1,7 @@
 /** 工作区负责文件、快照和采纳；线程负责模型执行及独立的对话记录。 */
 import type { CompactionRequest, Input, InputVia, StopRequest } from './harness/types.ts';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { FileDiffStore } from './workspace/file-diffs.ts';
 import { join, relative } from 'node:path';
 import { KiteError } from './errors.ts';
@@ -376,7 +376,55 @@ export class Kite {
   syncProjects(): Promise<void> {
     if (this.stopping) return Promise.resolve();
     // 并入别的项目后本机的约束缓存挂到保留的项目上，按登记表重对一遍，有变化时通知正在运行的实例。
-    return this.projectOperation(async () => { if (await this.checkoutManagement.syncProjects()) this.library.refresh(); });
+    return this.projectOperation(async () => {
+      if (await this.checkoutManagement.syncProjects()) this.library.refresh();
+      for (const project of this.store.projects()) if (this.registry.deleted(project.id)) await this.removeLocalProject(project.id);
+    });
+  }
+  /**
+   * 删除项目：从登记表删掉，项目专用的密钥一起删；本机先移除自己的检出再返回，其他工作机同步到删除后各自移除。
+   * 检出目录留在磁盘上。Line 所在的项目不能删。
+   */
+  async deleteProject(id: string): Promise<void> {
+    this.assertRunning();
+    const line = this.lineInstance();
+    if (line && this.workspace(line.workspaceId).project.id === id) throw new KiteError('Line 所在的项目不能删除', 409);
+    this.registry.remove(id);
+    this.credentials.deleteProject(id);
+    await this.syncProjects();
+  }
+  /**
+   * 登记表删掉了项目：停下本机这个项目的线程与插件，Kite 建的工作树先存快照（留在检出的 Git 里）再回收，
+   * 工作区的记录与会话文件删掉，最后去掉检出与项目记录。检出目录本身不动。
+   */
+  private removeLocalProject(projectId: string): Promise<void> {
+    return this.serial('register', async () => {
+      if (!this.store.project(projectId)) return;
+      for (const w of this.store.workspaces(projectId)) {
+        this.preparations.get(w.id)?.abort();
+        await this.control(w.id, async () => {
+          const checkout = this.store.checkout(w.checkoutId)!;
+          const threads = this.store.threads(w.id);
+          for (const t of threads) if (t.status !== 'archived') await this.stopThread(t);
+          const release = await this.closeExtensions(w.id);
+          try {
+            if (w.kind === 'worktree' && existsSync(w.cwd)) {
+              if (w.status !== 'transferred') await this.snapshot(w, [], '删除项目前保存');
+              await removeWorktree(checkout.path, w.cwd, w.branch!);
+            }
+            this.store.deleteWorkspaceRows(w.id);
+          } finally { release(); }
+          for (const path of [...threads.map((t) => join(this.home, 'sessions', t.id)), join(this.home, 'diffs', w.id), join(this.home, 'workspaces', w.id)]) {
+            rmSync(path, { recursive: true, force: true });
+          }
+          this.transcripts.forget(threads.map((t) => t.id));
+          this.bus.emit({ type: 'workspace.changed', workspaceId: w.id, status: 'archived' });
+        });
+      }
+      const checkouts = this.store.checkouts(projectId);
+      this.store.removeProject(projectId);
+      for (const c of checkouts) this.bus.emit({ type: 'checkout.changed', projectId, checkoutId: c.id });
+    });
   }
   /** 给没有远程的项目设远程：用本机检出把全部分支和标签推上去，再写进登记表；各工作机的检出随项目同步改用它。 */
   setProjectRemote(projectId: string, remote: string) {
