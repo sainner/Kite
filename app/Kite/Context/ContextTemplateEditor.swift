@@ -18,36 +18,38 @@ struct ContextTemplateForm: View {
 
 /// 编辑区的一节：标题后面一条分割线通到右边，比块名高一级。节与节之间多留一截空白。
 /// 给了选中动作的节，点标题、块之间或内容两侧的空白就选中，选中时标题和分割线用强调色。
+/// 给了 expanded 的节整行标题都能点着展开、收起，分割线右端有箭头，收起时只留标题行。
 struct ContextSection<Content: View>: View {
     let title: String
     let icon: String?
     let selected: Bool
     let select: (() -> Void)?
+    let expanded: Binding<Bool>?
     @ViewBuilder let content: Content
 
-    init(_ title: String, icon: String? = nil, selected: Bool = false, select: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
+    init(_ title: String, icon: String? = nil, selected: Bool = false, select: (() -> Void)? = nil, expanded: Binding<Bool>? = nil,
+         @ViewBuilder content: () -> Content) {
         self.title = title
         self.icon = icon
         self.selected = selected
         self.select = select
+        self.expanded = expanded
         self.content = content()
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                HStack(spacing: 6) {
-                    Text(title)
-                    if let icon { Image(systemName: icon) }
-                }
-                .font(Theme.heading3)
-                .fixedSize()
-                Rectangle().fill(selected ? Color.accentColor : Theme.rule).frame(height: 1)
+            if let expanded {
+                let shown = expanded.wrappedValue
+                Button { expanded.wrappedValue.toggle() } label: { header(chevron: shown) }
+                    .buttonStyle(ContextSectionToggleStyle())
+                    .help(shown ? "收起\(title)" : "展开\(title)")
+                    .accessibilityLabel(shown ? "收起\(title)" : "展开\(title)")
+            } else {
+                // 标题只是文字，点击交给背后的选中区
+                header(chevron: nil).allowsHitTesting(false)
             }
-            .foregroundStyle(selected ? Color.accentColor : .primary)
-            // 标题只是文字，点击交给背后的选中区
-            .allowsHitTesting(false)
-            content
+            if expanded?.wrappedValue ?? true { content }
         }
         .padding(.bottom, 12)
         .background {
@@ -59,6 +61,45 @@ struct ContextSection<Content: View>: View {
                     .onTapGesture(perform: select)
             }
         }
+    }
+
+    /// chevron 是展开与否，没有时不画箭头。
+    private func header(chevron: Bool?) -> some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Text(title)
+                if let icon { Image(systemName: icon) }
+            }
+            .font(Theme.heading3)
+            .fixedSize()
+            Rectangle().fill(selected ? Color.accentColor : Theme.rule).frame(height: 1)
+            if let chevron { ContextSectionChevron(expanded: chevron) }
+        }
+        .foregroundStyle(selected ? Color.accentColor : .primary)
+    }
+}
+
+/// 可收起的节，整行标题都是展开、收起按钮：没有悬停底色，按下时整行变淡，同条件里的变量菜单。
+private struct ContextSectionToggleStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .contentShape(Rectangle())
+            .opacity(!isEnabled ? 0.45 : configuration.isPressed ? 0.7 : 1)
+            .clickPointer()
+    }
+}
+
+/// 行末箭头。
+private struct ContextSectionChevron: View {
+    let expanded: Bool
+
+    var body: some View {
+        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+            .font(Theme.status.weight(.semibold))
+            .imageScale(.small)
+            .foregroundStyle(.secondary)
     }
 }
 
@@ -110,15 +151,17 @@ struct ContextEditing<Content: View>: View {
     }
 }
 
-/// 正文开头的可用变量一节：标题后是工具栏插入变量的同一个图标，按组列出，胶囊和正文里的变量同样子，后面是说明。
+/// 正文开头的可用变量一节：标题后是工具栏插入变量的同一个图标，按组列出，胶囊和正文里的变量同样子，后面是说明；分割线右端可以收起。
 /// 窄屏上胶囊一行、说明换到下一行，宽屏胶囊与说明并排对齐，各组共用一列宽。只供查看，插入在工具栏。
 struct ContextVariablePreview: View {
     let variables: [ContextScene.Variable]
     @Environment(\.workspacePresentation) private var presentation
+    /// 收起与否本机记住，各个模板和角色窗口一致。
+    @AppStorage("context.variables.expanded") private var expanded = true
 
     var body: some View {
         if !variables.isEmpty {
-            ContextSection("可用变量", icon: ContextScene.Variable.icon) {
+            ContextSection("可用变量", icon: ContextScene.Variable.icon, expanded: $expanded) {
                 Group {
                     if presentation == .compact {
                         VStack(alignment: .leading, spacing: 10) {
