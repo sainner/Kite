@@ -34,7 +34,11 @@ function freeBytes(path: string): number {
   return stats.bavail * stats.bsize;
 }
 
-async function systemVersion(): Promise<string> {
+/** 系统版本在进程生命期里不变，只读一次。 */
+let version: Promise<string> | undefined;
+const systemVersion = (): Promise<string> => version ??= readSystemVersion();
+
+async function readSystemVersion(): Promise<string> {
   if (process.platform !== 'darwin') return release();
   const child = Bun.spawn(['/usr/bin/sw_vers', '-productVersion'], { env: { PATH: '/usr/bin:/bin' }, stdout: 'pipe', stderr: 'ignore' });
   const text = (await new Response(child.stdout).text()).trim();

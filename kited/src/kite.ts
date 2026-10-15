@@ -44,7 +44,7 @@ import { LineMonitor, lineMonitorContextDefinition } from './line/monitor.ts';
 import { lineTools } from './line/tools.ts';
 import { LINE_AGENTS } from './line/project.ts';
 import { Attention } from './line/attention.ts';
-import { userHome } from './paths.ts';
+import { setupLogPath, userHome, worktreePath } from './paths.ts';
 import type { Network } from './network.ts';
 import { WorkspaceFiles, fileSelection } from './workspace/files.ts';
 import { TranscriptFeed } from './transcript/feed.ts';
@@ -61,7 +61,6 @@ import { agentModelCatalog } from './agents/capabilities.ts';
 import { TokenCounter } from './token-counts.ts';
 import { VoiceSessions, voiceTemplate } from './voice/sessions.ts';
 import { type Waiting, Waits } from './waiting.ts';
-import { readLease, remoteLeases } from './workspace/lease.ts';
 import { WorkspaceTransfers } from './transfer/transfers.ts';
 import { MIN_FREE_BYTES, readEnvironment, type Environment } from './environment.ts';
 import { runtimeOfModel } from './agents/models.ts';
@@ -248,14 +247,11 @@ export class Kite {
 
   machine(): Machine { return this.store.machine; }
   /**
-   * 资源库的写入先到账号服务，成功后存本机；没加入账号时报错。期望的版本按本机缓存给出，缓存里没有就是账号里也没有。
-   * 改回与默认一样的内置内容从账号删掉，不留一份等于默认的副本，否则 kited 升级换了默认后它会被当成改过的内容。
+   * 资源库的写入先到账号服务（见 LibrarySync.save），成功后存本机；没加入账号时报错。期望的版本按本机缓存给出，缓存里没有就是账号里也没有。
    */
   async updateContextTemplate(id: string, expectedRevision: string, template: unknown) {
     const valid = this.contextTemplates.validate(id, expectedRevision, template);
-    const base = this.contextTemplates.accountRevision(id);
-    if (this.contextTemplates.isDefault(valid)) await this.library.remove('template', id, base);
-    else await this.library.write('template', id, valid, base);
+    await this.library.save('template', id, valid, this.contextTemplates.accountRevision(id), this.contextTemplates.isDefault(valid));
     const saved = this.contextTemplates.update(expectedRevision, valid);
     this.bus.emit({ type: 'context-templates.changed' });
     return saved;
@@ -276,9 +272,7 @@ export class Kite {
   }
   async updateRole(id: string, expectedRevision: string, value: unknown) {
     const role = this.roles.validate(id, expectedRevision, value);
-    const base = this.roles.accountRevision(id);
-    if (this.roles.isDefault(role)) await this.library.remove('role', id, base);
-    else await this.library.write('role', id, role, base);
+    await this.library.save('role', id, role, this.roles.accountRevision(id), this.roles.isDefault(role));
     return this.roleSaved(this.roles.update(expectedRevision, role));
   }
   /** 只有内置角色能恢复默认；签名照常随提示词更新，手改过的保留。 */
@@ -329,19 +323,22 @@ export class Kite {
    * 线程状态从显示投影读，首次读取会载入历史，不启动执行。
    */
   async summary(): Promise<MachineSummary> {
-    const workspaces = await Promise.all(this.store.workspaceModels().filter((model) => model.workspace.status !== 'archived').map(async (model) => ({
-      id: model.workspace.id, epoch: model.workspace.epoch, status: model.workspace.status, kind: model.workspace.kind, name: model.workspace.name,
-      project: { id: model.project.id, name: model.project.name },
-      threads: await Promise.all(model.instances.filter((instance) => instance.status === 'open' && this.store.thread(instance.id)).map(async (instance) => {
-        const state = await this.threadState(instance.id);
-        const settledAt = this.transcripts.activity(instance.id)?.settledAt;
-        return { id: instance.id, title: instance.title, role: (instanceRole(instance)?.id ?? null), phase: state.phase, busy: state.busy,
-          waitingForResume: state.waitingForResume, ...(state.lastOutcome ? { lastOutcome: state.lastOutcome.kind } : {}),
-          ...(state.lastOutcome?.kind === 'failed' ? { failure: state.lastOutcome.message } : {}),
-          ...(state.recovery ? { recovery: state.recovery.message } : {}), ...(state.waiting ? { waiting: state.waiting } : {}),
-          ...(settledAt !== undefined ? { settledAt } : {}), ...(this.lineWork.has(instance.id) ? { byLine: true as const } : {}) };
-      })),
-    })));
+    const workspaces = await Promise.all(this.store.workspaceModels().filter((model) => model.workspace.status !== 'archived').map(async (model) => {
+      const threads = new Set(model.threads.map((thread) => thread.instanceId));
+      return {
+        id: model.workspace.id, epoch: model.workspace.epoch, status: model.workspace.status, kind: model.workspace.kind, name: model.workspace.name,
+        project: { id: model.project.id, name: model.project.name },
+        threads: await Promise.all(model.instances.filter((instance) => instance.status === 'open' && threads.has(instance.id)).map(async (instance) => {
+          const state = await this.threadState(instance.id);
+          const settledAt = this.transcripts.activity(instance.id)?.settledAt;
+          return { id: instance.id, title: instance.title, role: (instanceRole(instance)?.id ?? null), phase: state.phase, busy: state.busy,
+            waitingForResume: state.waitingForResume, ...(state.lastOutcome ? { lastOutcome: state.lastOutcome.kind } : {}),
+            ...(state.lastOutcome?.kind === 'failed' ? { failure: state.lastOutcome.message } : {}),
+            ...(state.recovery ? { recovery: state.recovery.message } : {}), ...(state.waiting ? { waiting: state.waiting } : {}),
+            ...(settledAt !== undefined ? { settledAt } : {}), ...(this.lineWork.has(instance.id) ? { byLine: true as const } : {}) };
+        })),
+      };
+    }));
     return { machine: { id: this.store.machine.id, name: this.store.machine.name }, workspaces };
   }
   workspace(id: string): WorkspaceModel {
@@ -411,7 +408,7 @@ export class Kite {
     this.assertRunning();
     const id = randomUUID();
     const w: Workspace = { id, epoch: 1, checkoutId: c.id, name: name.trim() || (prompt ? titleOf(prompt) : '新工作区'),
-      cwd: join(this.home, 'worktrees', c.projectId, id), kind: 'worktree', branch: `kite/${id}`, base,
+      cwd: worktreePath(this.home, c.projectId, id), kind: 'worktree', branch: `kite/${id}`, base,
       status: 'preparing', createdAt: Date.now() };
     const t = prompt === undefined ? undefined : this.newThread(id, prompt, { role }, c.projectId);
     this.store.addWorkspace(w, t ? { agent: t, window: this.instances.newWindow(t) } : undefined);
@@ -481,7 +478,7 @@ export class Kite {
         if (retry && !existsSync(w.cwd)) await removeWorktree(c.path, w.cwd, w.branch!);
         if (!existsSync(w.cwd)) await addWorktree(c.path, w.cwd, w.branch!, w.base!);
         controller.signal.throwIfAborted();
-        const setup = await runSetup(c.path, w.cwd, join(this.home, 'workspaces', id, 'setup.log'), this.home, controller.signal);
+        const setup = await runSetup(c.path, w.cwd, setupLogPath(this.home, id), this.home, controller.signal);
         this.bus.emit({ type: 'workspace.setup', workspaceId: id, originThreadId: t?.id, exit: setup?.exit ?? null, log: setup?.tail ?? '' });
         if (setup && setup.exit !== 0) throw new KiteError(`初始化脚本退出码 ${setup.exit}`);
         await this.snapshot(w, [], '工作区开始', t?.id);
@@ -1011,14 +1008,16 @@ export class Kite {
     const found = this.store.instances(line.workspaceId).find((instance) => instance.definitionId === monitorDefinitionId
       && instance.status === 'open' && 'system' in monitorConfig(instance));
     if (found || !ensure) return found;
-    const inbox = this.newLineInbox(line);
-    this.store.addPluginInstance(inbox, this.instances.newWindow(inbox));
+    const inbox = this.addLineInbox(line);
     this.changed(line.workspaceId);
     return inbox;
   }
-  private newLineInbox(line: Pick<AgentInstance, 'id' | 'workspaceId'>): PluginInstance {
-    return { id: randomUUID(), workspaceId: line.workspaceId, definitionId: monitorDefinitionId, title: '收件箱',
+  /** 给 Line 建收件箱，连同窗口入库。 */
+  private addLineInbox(line: Pick<AgentInstance, 'id' | 'workspaceId'>): PluginInstance {
+    const inbox: PluginInstance = { id: randomUUID(), workspaceId: line.workspaceId, definitionId: monitorDefinitionId, title: '收件箱',
       config: { monitor: { target: line.id, system: 'line' } }, state: {}, presentation: 'window', status: 'open', createdAt: Date.now() };
+    this.store.addPluginInstance(inbox, this.instances.newWindow(inbox));
+    return inbox;
   }
   /** 工作区交接、冻结或归档前停下插件进程与 monitor 的来源；monitor 的来源不算结束，工作区再开放时重新开始。 */
   private async closeExtensions(workspaceId: string): Promise<() => void> {
@@ -1046,12 +1045,10 @@ export class Kite {
     }
     const model = registered ? this.store.rootWorkspaceModel(registered.id)! : await this.registerCheckout({ path: folder });
     return this.control(model.workspace.id, async () => {
-      const instance = this.instances.newInstance(model.workspace.id, agentDefinitionId, 'Line', { role: { id: lineRoleId } }, model.project.id);
-      instance.config.grants = [...(instance.config.grants as OperationGrant[]), lineGrant];
-      const agent: AgentInstance = { ...instance, instanceId: instance.id, runtime: instanceAgent(instance).runtime, nativeId: randomUUID() };
+      const agent = this.newThread(model.workspace.id, 'Line', { role: { id: lineRoleId } }, model.project.id);
+      agent.config.grants = [...(agent.config.grants as OperationGrant[]), lineGrant];
       this.store.addAgent(agent, this.instances.newWindow(agent));
-      const inbox = this.newLineInbox(agent);
-      this.store.addPluginInstance(inbox, this.instances.newWindow(inbox));
+      this.addLineInbox(agent);
       this.store.saveThreadTitle(agent.id, 'initial', { title: 'Line', mode: 'manual', generatedAt: null, through: null });
       this.threadChanged(agent);
       this.changed(model.workspace.id);
@@ -1078,36 +1075,11 @@ export class Kite {
     } catch (error) { console.error(`[Line] 保存现场失败：${(error as Error).message}`); }
   }
 
-  /**
-   * 联网后核对本机持有的工作区：远程 lease 的 epoch 更高且机器不是自己，本地记录冻结。从未流转过的没有 lease；
-   * 查不到远程时按仍持有继续，所以接管默认要求源机先进入可交接状态。
-   */
+  /** 联网后核对本机持有的工作区，已被接管的冻结（见 WorkspaceTransfers.checkAll）。 */
   syncLeases(): Promise<void> {
     // 远程不通时一轮可能很久，上一轮没完就不叠加新的一轮。
-    this.leaseSync ??= this.checkLeases().finally(() => { this.leaseSync = undefined; });
+    this.leaseSync ??= (this.stopping ? Promise.resolve() : this.transfers.checkAll()).finally(() => { this.leaseSync = undefined; });
     return this.leaseSync;
-  }
-  private async checkLeases(): Promise<void> {
-    if (this.stopping) return;
-    const held = this.store.workspaces().filter((w) => w.status !== 'transferred' && w.status !== 'archived');
-    for (const checkout of this.store.checkouts()) {
-      const local = held.filter((w) => w.checkoutId === checkout.id);
-      if (!local.length || !existsSync(checkout.path)) continue;
-      let leases: Map<string, string>;
-      let access: RemoteAccess;
-      try {
-        access = await originAccess(checkout.path, this.account);
-        leases = await remoteLeases(checkout.path, access);
-      } catch { continue; }
-      for (const w of local) {
-        const commit = leases.get(w.id);
-        if (!commit) continue;
-        try {
-          const lease = await readLease(checkout.path, w.id, commit, access);
-          if (lease.machine !== this.store.machine.id && lease.epoch > w.epoch) await this.freeze(w.id);
-        } catch (error) { console.error(`[执行权] 核对工作区 ${w.id} 失败：${(error as Error).message}`); }
-      }
-    }
   }
 
   /** 执行权已在别的机器：停下本地线程与插件，本机多出的改动存成快照留给人合并，记录冻结；根工作区给检出另建一个。 */

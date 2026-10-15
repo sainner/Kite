@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path';
 import { KiteError } from '../errors.ts';
 import { git, gitTry, isAncestor, KITE_IDENTITY } from './git.ts';
 
-const snapshotRef = (workspaceId: string) => `refs/kite/snapshots/${workspaceId}`;
+export const snapshotRef = (workspaceId: string) => `refs/kite/snapshots/${workspaceId}`;
 
 interface Captured { commit: string; tree: string; created: boolean; changedFiles: number }
 

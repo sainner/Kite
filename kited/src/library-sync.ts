@@ -87,6 +87,14 @@ export class LibrarySync {
     return this.followConflicts(this.deps.account.deleteLibrary(kind, id, expectedRevision));
   }
 
+  /**
+   * 保存内置或自建的一项：改回与默认一样的内置内容从账号删掉，不留一份等于默认的副本，
+   * 否则 kited 升级换了默认后它会被当成改过的内容；其余写入。
+   */
+  save(kind: LibraryItem['kind'], id: string, body: object, expectedRevision: string | null, isDefault: boolean): Promise<void> {
+    return isDefault ? this.remove(kind, id, expectedRevision) : this.write(kind, id, body, expectedRevision);
+  }
+
   /** 版本冲突时补拉一次，让本机缓存跟上。 */
   private async followConflicts(request: Promise<unknown>): Promise<void> {
     try { await request; }

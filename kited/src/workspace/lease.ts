@@ -6,24 +6,17 @@
 import { z } from 'zod';
 import { KiteError } from '../errors.ts';
 import { KITE_IDENTITY, git, gitTry } from './git.ts';
-import type { RemoteAccess } from './remote.ts';
+import { gitFailure, lsRemote, type RemoteAccess } from './remote.ts';
 
 const leaseSchema = z.object({ machine: z.string().min(1), epoch: z.number().int().positive(), state: z.enum(['active', 'handing_off']) }).strict();
 export type Lease = z.infer<typeof leaseSchema>;
 
 export const leaseRef = (workspaceId: string) => `refs/kite/lease/${workspaceId}`;
 
-const failure = (action: string, stderr: string) =>
-  new KiteError(`${action}失败：${stderr.trim().split('\n').slice(-3).join('\n') || '未知错误'}`, 409);
-
 /** 远程上全部工作区 lease 的当前提交，按工作区 ID。 */
 export async function remoteLeases(cwd: string, access: RemoteAccess): Promise<Map<string, string>> {
-  const r = await gitTry(cwd, ['ls-remote', '--', access.url, 'refs/kite/lease/*'], { env: access.env });
-  if (r.code !== 0) throw failure('读取执行权', r.stderr);
-  return new Map(r.stdout.split('\n').filter(Boolean).map((line) => {
-    const [commit, ref] = line.split('\t') as [string, string];
-    return [ref.slice('refs/kite/lease/'.length), commit];
-  }));
+  const refs = await lsRemote(cwd, access, leaseRef('*'), '读取执行权');
+  return new Map([...refs].map(([ref, commit]) => [ref.slice(leaseRef('').length), commit]));
 }
 
 /** 本地还没有这个 lease 提交时从远程取回。 */
@@ -31,7 +24,7 @@ async function ensureLease(cwd: string, workspaceId: string, commit: string, acc
   if ((await gitTry(cwd, ['cat-file', '-e', `${commit}^{commit}`])).code === 0) return;
   const ref = leaseRef(workspaceId);
   const r = await gitTry(cwd, ['fetch', '-q', '--no-tags', '--', access.url, `+${ref}:${ref}`], { env: access.env });
-  if (r.code !== 0) throw failure('取回执行权', r.stderr);
+  if (r.code !== 0) throw gitFailure('取回执行权', r.stderr);
 }
 
 /** 读出一个 lease 提交的内容。 */
@@ -64,7 +57,7 @@ export async function writeLease(cwd: string, workspaceId: string, lease: Lease,
       || /^!\t.*\[remote rejected\] \((?:reference already exists|cannot lock ref|failed to (?:lock|update ref)|incorrect old value|.*but expected)/m.test(r.stdout)) {
       return { status: 'conflict' };
     }
-    throw failure('更新执行权', r.stderr || r.stdout);
+    throw gitFailure('更新执行权', r.stderr || r.stdout);
   }
   await git(cwd, ['update-ref', ref, commit]);
   return { status: 'written', commit };

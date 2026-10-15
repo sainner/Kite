@@ -6,6 +6,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from '
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { KiteError } from '../errors.ts';
+import { setupLogPath, worktreePath } from '../paths.ts';
 import type { AccountClient } from '../account-client.ts';
 import type { AgentInstance, Checkout, Project, Workspace, WorkspaceModel, WorkspaceStatus } from '../model.ts';
 import type { Store } from '../store.ts';
@@ -14,7 +15,7 @@ import { KITE_IDENTITY, git, gitTry, isAncestor, isDirty, revParse } from '../wo
 import { currentBranch, fetchBranch, originAccess, type RemoteAccess } from '../workspace/remote.ts';
 import { readLease, remoteLeases, writeLease, type Lease } from '../workspace/lease.ts';
 import { addWorktree, removeWorktree, runSetup } from '../workspace/worktrees.ts';
-import { forgetWorktree } from '../workspace/snapshots.ts';
+import { forgetWorktree, snapshotRef } from '../workspace/snapshots.ts';
 import { commitDirectory, deleteMaterials, emptyDirectory, extractCommit, fetchMaterials, pushMaterials, type Materials } from './materials.ts';
 import { installRecords, readRecords, recordPaths, writeRecords } from './records.ts';
 import { repositoryVisibility } from './visibility.ts';
@@ -45,7 +46,10 @@ export interface TransferHost {
   beforeHandover(workspaceId: string): Promise<void>;
 }
 
-const snapshotRef = (workspaceId: string) => `refs/kite/snapshots/${workspaceId}`;
+/** 执行权还是本机这一代的。 */
+const heldHere = (lease: Lease, w: Workspace, machine: string) => lease.machine === machine && lease.epoch === w.epoch;
+/** 执行权已被别的机器接管：机器不是本机，epoch 比本地记录高。 */
+const takenOver = (lease: Lease, w: Workspace, machine: string) => lease.machine !== machine && lease.epoch > w.epoch;
 
 export class WorkspaceTransfers {
   constructor(private host: TransferHost) {}
@@ -101,9 +105,7 @@ export class WorkspaceTransfers {
       }
       // lease 的推送同时探测平台是否接受自定义 ref：被拒时在这里明确报错，不改走别的路径。
       const current = await this.lease(checkout, id, access);
-      if (current && (current.lease.machine !== this.machine || current.lease.epoch !== w.epoch)) {
-        throw new KiteError('执行权已不在这台工作机', 409);
-      }
+      if (current && !heldHere(current.lease, w, this.machine)) throw new KiteError('执行权已不在这台工作机', 409);
       if (current?.lease.state !== 'handing_off') {
         const written = await writeLease(checkout.path, id, { machine: this.machine, epoch: w.epoch, state: 'handing_off' }, current?.commit ?? null, access);
         if (written.status === 'conflict') throw new KiteError('执行权刚被别的工作机改动，请稍后重试', 409);
@@ -138,27 +140,27 @@ export class WorkspaceTransfers {
 
   /** 目标还没接管时撤回交接：lease 改回 active，删掉材料，工作区重新开放。已被接管时 409，并冻结本地记录。 */
   async cancel(id: string): Promise<WorkspaceModel> {
-    let takenOver = false;
+    let lost = false;
     try {
       return await this.host.control(id, async () => {
         const { workspace: w, checkout } = this.host.workspace(id);
         if (w.status !== 'handing_off') throw new KiteError('工作区没有在交接', 409);
         const access = await originAccess(checkout.path, this.host.account);
         const current = await this.lease(checkout, id, access);
-        if (current && (current.lease.machine !== this.machine || current.lease.epoch !== w.epoch)) {
-          takenOver = true;
+        if (current && !heldHere(current.lease, w, this.machine)) {
+          lost = true;
           throw new KiteError('另一台工作机已经接管了这个工作区', 409);
         }
         if (current?.lease.state === 'handing_off') {
           const written = await writeLease(checkout.path, id, { machine: this.machine, epoch: w.epoch, state: 'active' }, current.commit, access);
-          if (written.status === 'conflict') { takenOver = true; throw new KiteError('另一台工作机正在接管这个工作区', 409); }
+          if (written.status === 'conflict') { lost = true; throw new KiteError('另一台工作机正在接管这个工作区', 409); }
         }
         try { await deleteMaterials(checkout.path, access, id); }
         catch (error) { console.error(`[流转] 撤回后删除材料失败：${(error as Error).message}`); }
         this.host.setStatus(id, 'open');
         return this.host.workspace(id);
       });
-    } finally { if (takenOver) await this.check(id); }
+    } finally { if (lost) await this.check(id); }
   }
 
   /** 立即核对一个工作区的执行权；已被别的机器接管就冻结。 */
@@ -166,9 +168,35 @@ export class WorkspaceTransfers {
     const { workspace: w, checkout } = this.host.workspace(id);
     if (w.status !== 'transferred' && w.status !== 'archived') {
       const current = await this.lease(checkout, id, await originAccess(checkout.path, this.host.account));
-      if (current && current.lease.machine !== this.machine && current.lease.epoch > w.epoch) await this.host.freeze(id);
+      if (current && takenOver(current.lease, w, this.machine)) await this.host.freeze(id);
     }
     return this.host.workspace(id);
+  }
+
+  /**
+   * 联网后核对本机持有的全部工作区，已被接管的冻结。各检出的远程互不相干，一起查，一个远程卡住不耽误别的；
+   * 同一检出里的逐个读，免得同一仓库里的 git 互相抢锁。从未流转过的没有 lease；查不到远程时按仍持有继续，
+   * 所以接管默认要求源机先进入可交接状态。
+   */
+  async checkAll(): Promise<void> {
+    const held = this.host.store.workspaces().filter((w) => w.status !== 'transferred' && w.status !== 'archived');
+    await Promise.all(this.host.store.checkouts().map(async (checkout) => {
+      const local = held.filter((w) => w.checkoutId === checkout.id);
+      if (!local.length || !existsSync(checkout.path)) return;
+      let leases: Map<string, string>;
+      let access: RemoteAccess;
+      try {
+        access = await originAccess(checkout.path, this.host.account);
+        leases = await remoteLeases(checkout.path, access);
+      } catch { return; }
+      for (const w of local) {
+        const commit = leases.get(w.id);
+        if (!commit) continue;
+        try {
+          if (takenOver(await readLease(checkout.path, w.id, commit, access), w, this.machine)) await this.host.freeze(w.id);
+        } catch (error) { console.error(`[执行权] 核对工作区 ${w.id} 失败：${(error as Error).message}`); }
+      }
+    }));
   }
 
   /**
@@ -211,7 +239,7 @@ export class WorkspaceTransfers {
       }
       let cwd: string;
       if (manifest.kind === 'worktree') {
-        cwd = join(this.host.home, 'worktrees', projectId, workspaceId);
+        cwd = worktreePath(this.host.home, projectId, workspaceId);
         if (existsSync(cwd)) throw new KiteError('本机还留着这个工作区的旧工作树，先归档本机的旧记录', 409);
         await git(checkout.path, ['update-ref', `refs/heads/${manifest.branch}`, materials.branch!]);
         cleanup.push(() => removeWorktree(checkout.path, cwd, manifest.branch!));
@@ -268,7 +296,7 @@ export class WorkspaceTransfers {
       this.host.changed(workspaceId);
       const model = this.host.workspace(workspaceId);
       if (manifest.kind === 'worktree') {
-        const setup = await runSetup(checkout.path, cwd, join(this.host.home, 'workspaces', workspaceId, 'setup.log'), this.host.home);
+        const setup = await runSetup(checkout.path, cwd, setupLogPath(this.host.home, workspaceId), this.host.home);
         if (setup && setup.exit !== 0) throw new KiteError(`初始化脚本退出码 ${setup.exit}`, 409);
       }
       await this.host.snapshot(model.workspace, '流转到这台工作机');

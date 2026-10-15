@@ -34,15 +34,25 @@ export async function originAccess(cwd: string, account: AccountClient): Promise
 }
 
 /** 失败时只保留 git 输出的最后几行，凭据不会出现在其中。 */
-function failure(action: string, stderr: string): KiteError {
+export function gitFailure(action: string, stderr: string): KiteError {
   return new KiteError(`${action}失败：${stderr.trim().split('\n').slice(-3).join('\n') || '未知错误'}`, 409);
+}
+
+/** 远程上匹配 pattern（如 refs/kite/lease/*）的 ref 与各自的提交；失败按 action 报错。 */
+export async function lsRemote(cwd: string, access: RemoteAccess, pattern: string, action: string): Promise<Map<string, string>> {
+  const r = await gitTry(cwd, ['ls-remote', '--', access.url, pattern], { env: access.env });
+  if (r.code !== 0) throw gitFailure(action, r.stderr);
+  return new Map(r.stdout.split('\n').filter(Boolean).map((line) => {
+    const [commit, ref] = line.split('\t') as [string, string];
+    return [ref, commit];
+  }));
 }
 
 /** clone 后 origin 保留用户填写的写法（去掉其中的凭据）。 */
 export async function clone(remote: string, dest: string, account: AccountClient): Promise<void> {
   const access = await remoteAccess(remote, account);
   const r = await gitTry('/', ['clone', '-q', '--origin', 'origin', '--', access.url, dest], { env: access.env });
-  if (r.code !== 0) throw failure('clone', r.stderr);
+  if (r.code !== 0) throw gitFailure('clone', r.stderr);
   const origin = /^https?:\/\//i.test(remote.trim()) ? httpsRemote(remote)! : remote.trim();
   if (origin !== access.url) await git(dest, ['remote', 'set-url', 'origin', origin]);
 }
@@ -50,13 +60,13 @@ export async function clone(remote: string, dest: string, account: AccountClient
 /** 把检出的全部分支和标签推到远程。用于 Kite 新建的托管远程，远程上原本没有内容。 */
 export async function pushAll(cwd: string, access: RemoteAccess): Promise<void> {
   const r = await gitTry(cwd, ['push', '-q', '--', access.url, 'refs/heads/*:refs/heads/*', 'refs/tags/*:refs/tags/*'], { env: access.env });
-  if (r.code !== 0) throw failure('推送到远程', r.stderr);
+  if (r.code !== 0) throw gitFailure('推送到远程', r.stderr);
 }
 
 /** 远程还没有任何分支时才推送；用于上次推送没完成就中断的托管远程。 */
 export async function seedRemote(cwd: string, access: RemoteAccess): Promise<void> {
   const heads = await gitTry(cwd, ['ls-remote', '--heads', '--', access.url], { env: access.env });
-  if (heads.code !== 0) throw failure('读取远程', heads.stderr);
+  if (heads.code !== 0) throw gitFailure('读取远程', heads.stderr);
   if (!heads.stdout.trim()) await pushAll(cwd, access);
 }
 
@@ -74,7 +84,7 @@ export async function fetchBranch(cwd: string, branch: string, access: RemoteAcc
   const r = await gitTry(cwd, ['fetch', '-q', '--no-tags', '--', access.url, `+refs/heads/${branch}:${tracking(branch)}`], { env: { ...access.env, LC_ALL: 'C' } });
   if (r.code !== 0) {
     if (/couldn't find remote ref/i.test(r.stderr)) return null;
-    throw failure('拉取远程', r.stderr);
+    throw gitFailure('拉取远程', r.stderr);
   }
   return git(cwd, ['rev-parse', tracking(branch)]);
 }
@@ -85,7 +95,7 @@ export async function pushBranch(cwd: string, branch: string, access: RemoteAcce
   const r = await gitTry(cwd, ['push', '--porcelain', '--', access.url, `${ref}:${ref}`], { env: access.env });
   if (r.code !== 0) {
     if (/^!\t.*\[rejected\]/m.test(r.stdout)) return 'rejected';
-    throw failure('推送', r.stderr || r.stdout);
+    throw gitFailure('推送', r.stderr || r.stdout);
   }
   await git(cwd, ['update-ref', tracking(branch), ref]);
   return 'pushed';
