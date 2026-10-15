@@ -14,7 +14,7 @@ import { localTools } from '../execution/local-tools.ts';
 import { commandEnvironment, type ExecutionPolicy } from '../execution/sandbox.ts';
 import { processGroupAlive, type NetworkAsk } from '../execution/command.ts';
 import type { CompactionRequest, Input, Outcome, Phase, StopRequest, Tool } from '../harness/types.ts';
-import type { ContextDefinition } from '../harness/context/types.ts';
+import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
 import { HarnessRunner } from '../harness/runner.ts';
 import { withThreadJournal } from '../harness/thread-host.ts';
 import { importClaude, syncToClaude } from '../handoff/handoff.ts';
@@ -52,6 +52,8 @@ export function openClaudeHost(options: {
   compaction?: {
     templates(): { compact: ContextDefinition; fileChanges: ContextDefinition };
     files(range: { from: number; to: number }): Promise<string | undefined>;
+    /** 线程的公共变量，压缩时取一份。 */
+    variables(): ContextValues;
   };
 }): Runtime {
   const data = readClaudeControl(options.directory);
@@ -205,7 +207,7 @@ export function openClaudeHost(options: {
       await withThreadJournal(options.directory, async (journal) => {
         const runner = new HarnessRunner({ cwd: options.cwd, journal, startPaused: true,
           prepareRequest: () => ({ model, tools: [], instructions: prepared.instructions, settings: { model: prepared.agent.model },
-            compactionTemplates: settings.templates() }),
+            compactionTemplates: settings.templates(), variables: settings.variables() }),
           compactionFiles: (range) => settings.files(range),
           onEvent(event) {
             if (event.type === 'record') {

@@ -4,7 +4,7 @@ import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { KiteError } from './errors.ts';
 import type { Kite } from './kite.ts';
-import type { OpenWindowRequest, PluginInstance, Thread, Workspace, WorkspaceWindow } from './model.ts';
+import type { OpenWindowRequest, PluginInstance, Thread, WorkspaceWindow } from './model.ts';
 import { roleOperationGrants } from './operations/contract.ts';
 import { defaultRoleId, roleAgent, toolLimits, type RoleChoice } from './roles.ts';
 import { instanceAgent } from './agents/definition.ts';
@@ -27,10 +27,10 @@ export class InstanceLifecycle {
   constructor(private kite: InstanceServices, private control: InstanceControl) {}
 
   /** projectId 供尚未入库的新工作区使用，其余情况从工作区查出。 */
-  newInstance(workspaceId: string, definitionId: string, title: string, kind: Workspace['kind'], choice: AgentChoice = {}, projectId?: string): PluginInstance {
+  newInstance(workspaceId: string, definitionId: string, title: string, choice: AgentChoice = {}, projectId?: string): PluginInstance {
     const definition = this.kite.catalog.get(definitionId);
     const project = definition.agent && (projectId ? this.kite.store.projectConstraints(projectId) : this.kite.store.workspaceConstraints(workspaceId))?.tools;
-    const bound = definition.agent && roleAgent(this.kite.roles.get(choice.role?.id ?? defaultRoleId, choice.role?.revision), kind, choice, project);
+    const bound = definition.agent && roleAgent(this.kite.roles.get(choice.role?.id ?? defaultRoleId, choice.role?.revision), choice, project);
     const grants = bound ? roleOperationGrants(definitionId, [], [], toolLimits(bound.role.tools).allowed) : [];
     return { id: randomUUID(), workspaceId, definitionId, title,
       config: bound ? { ...bound, grants, execution: definition.execution } : definition.runtime === 'bun' ? { packageRevision: definition.revision, grants: [] } : {}, state: {},
@@ -67,7 +67,7 @@ export class InstanceLifecycle {
         const titles = new Set(model.instances.filter((p) => p.definitionId === definition.id).map((p) => p.title));
         let number = 1;
         while (titles.has(`${definition.title} ${number}`)) number++;
-        created = this.newInstance(workspaceId, definition.id, definition.agent ? '新代理' : `${definition.title} ${number}`, model.workspace.kind);
+        created = this.newInstance(workspaceId, definition.id, definition.agent ? '新代理' : `${definition.title} ${number}`);
         if (definition.agent) thread = { instanceId: created.id, runtime: instanceAgent(created).runtime, nativeId: randomUUID() };
         window = this.newWindow(created, request.id);
       } else {
@@ -100,7 +100,7 @@ export class InstanceLifecycle {
         return existing;
       }
       if (this.kite.store.hasInstanceWindows(id)) throw new KiteError('实例 ID 已回收，不能重新使用', 409);
-      const instance = { ...this.newInstance(workspaceId, definitionId, title ?? definition.title, workspace.kind), id, presentation: 'background' as const };
+      const instance = { ...this.newInstance(workspaceId, definitionId, title ?? definition.title), id, presentation: 'background' as const };
       this.kite.store.addInstance(instance);
       this.control.changed(workspaceId);
       return instance;

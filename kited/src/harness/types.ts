@@ -1,6 +1,6 @@
 /** 主循环的公开契约。模型传输、具体工具和工作树操作由宿主注入。 */
 import type { DiffReference } from '../workspace/file-diffs.ts';
-import type { ContextDefinition, ContextSnapshot, ContextSource } from './context/types.ts';
+import type { ContextDefinition, ContextSnapshot, ContextSource, ContextValues } from './context/types.ts';
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type JsonObject = { [key: string]: Json };
 
@@ -87,6 +87,8 @@ export interface HarnessRequest {
   /** 每次调用启动前再查一次；返回原因时不执行，结果为 not_executed。请求发出后才收紧的限制靠它拦下。 */
   blocked?(name: string): string | undefined;
   instructions: string | ContextSource;
+  /** 宿主的公共变量，组装基础上下文更新、压缩与文件变化的模板时与场景专有变量一起使用；未提供时这些模板只能引用专有变量。 */
+  variables?: ContextValues;
   /** 本次基础上下文变化时使用的通知模板；独立宿主未指定时使用内置定义。 */
   contextUpdateTemplate?: ContextDefinition;
   /** 压缩指令与摘要包装（thread.compact）及净文件变化通知（thread.file_changes）；未指定时使用内置定义。 */

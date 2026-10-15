@@ -9,7 +9,7 @@ import { defaultAuthFile, readSubscriptionCredentials } from './harness/auth.ts'
 import { CHATGPT_CONTEXT_WINDOW, ChatGPTModel } from './harness/chatgpt.ts';
 import { openThreadHost, readThreadMetadata } from './harness/thread-host.ts';
 import { harnessPolicy } from './execution/policy.ts';
-import { projectContext } from './harness/context/project.ts';
+import { defaultContextDefinition, directoryVariables, projectContext, today } from './harness/context/project.ts';
 import type { HarnessEvent } from './harness/types.ts';
 import { defaultAgentModel } from './agents/models.ts';
 
@@ -89,10 +89,12 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
     }
   };
   const settings = { model: { model: modelName, reasoning }, contextWindow: CHATGPT_CONTEXT_WINDOW, maxRequestsPerTurn: maxRequests };
+  // 独立终端直接在指定目录工作，没有 Kite 的工作机、项目与实例，只提供目录本身取得到的变量。
+  const variables = { 'environment.date': today, ...directoryVariables(cwd), 'workspace.kind': () => ({ text: 'root' }) };
   const host = await openThreadHost({
     cwd, threadDir: directory, env: { ...process.env }, onEvent: render, settings,
     policy: await harnessPolicy({ cwd, env: process.env, home, authFile: resolve(values.auth ?? defaultAuthFile()) }),
-    prepareRequest: (tools) => ({ model, tools, instructions: projectContext(cwd), settings }),
+    prepareRequest: (tools) => ({ model, tools, instructions: projectContext(defaultContextDefinition, variables), variables, settings }),
   });
   const status = () => line(JSON.stringify(host.runner.state, null, 2));
   line(`Kite · ${modelName} · ${reasoning}\n工作目录：${cwd}\n会话：${basename(directory)}\n记录：${directory}`);

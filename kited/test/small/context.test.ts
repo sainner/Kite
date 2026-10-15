@@ -1,10 +1,12 @@
 import { expect, test } from 'bun:test';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { restoreContext } from '../../src/harness/context/assembler.ts';
-import { projectContext } from '../../src/harness/context/project.ts';
-import type { ContextSource } from '../../src/harness/context/types.ts';
+import { assembleContext, bindContext, restoreContext } from '../../src/harness/context/assembler.ts';
+import { directoryVariables, projectContext } from '../../src/harness/context/project.ts';
+import type { ContextDefinition, ContextSource } from '../../src/harness/context/types.ts';
 import { diskRecords, input, item, ManualModel, success, tool, useHarness } from '../harness-loop.ts';
+import { git, gitWorktree, newDir, newRepo } from '../util.ts';
 
 const h = useHarness();
 
@@ -15,10 +17,10 @@ test('首次指令固定，后续上下文变化落盘并作为通知追加到�
       version: 2, id: 'editable', title: '可编辑上下文', scene: 'thread.create',
       blocks: [{
         type: 'paragraph', id: 'rules', title: '规则',
-        parts: [{ type: 'text', text: '旧段落：' }, { type: 'variable', name: 'project.documents' }],
+        parts: [{ type: 'text', text: '旧段落：' }, { type: 'variable', name: 'project.rules' }],
       }],
     },
-    bindings: { 'project.documents': { text: '旧材料', sources: [{ path: 'AGENTS.md', sha256: 'a'.repeat(64) }] } },
+    bindings: { 'project.rules': { text: '旧材料', sources: [{ path: 'AGENTS.md', sha256: 'a'.repeat(64) }] } },
   };
   const root = h.root();
   const model = new ManualModel();
@@ -42,10 +44,10 @@ test('首次指令固定，后续上下文变化落盘并作为通知追加到�
 
   source.definition.blocks[0] = {
     type: 'paragraph', id: 'rules', title: '规则',
-    parts: [{ type: 'text', text: '新段落：' }, { type: 'variable', name: 'project.documents' }],
+    parts: [{ type: 'text', text: '新段落：' }, { type: 'variable', name: 'project.rules' }],
   };
-  source.bindings['project.documents']!.text = '新材料';
-  source.bindings['project.documents']!.sources![0]!.sha256 = 'b'.repeat(64);
+  source.bindings['project.rules']!.text = '新材料';
+  source.bindings['project.rules']!.sources![0]!.sha256 = 'b'.repeat(64);
   await first.response.emit({ type: 'item', item: item('continue', 'next') });
   first.response.complete();
 
@@ -59,11 +61,11 @@ test('首次指令固定，后续上下文变化落盘并作为通知追加到�
     expect(snapshots[index]!.seq).toBeLessThan(starts[index]!.seq);
     expect(starts[index]!.contextId).toBe(snapshots[index]!.snapshot.id);
   }
-  expect(snapshots[0]!.snapshot.bindings['project.documents']!.text).toBe('旧材料');
+  expect(snapshots[0]!.snapshot.bindings['project.rules']!.text).toBe('旧材料');
   expect(snapshots[0]!.snapshot.definition.blocks[0]).toMatchObject({
-    parts: [{ type: 'text', text: '旧段落：' }, { type: 'variable', name: 'project.documents' }],
+    parts: [{ type: 'text', text: '旧段落：' }, { type: 'variable', name: 'project.rules' }],
   });
-  expect(snapshots[1]!.snapshot.bindings['project.documents']!.text).toBe('新材料');
+  expect(snapshots[1]!.snapshot.bindings['project.rules']!.text).toBe('新材料');
   expect(snapshots[0]!.snapshot.id).not.toBe(snapshots[1]!.snapshot.id);
   expect(second.request.instructions).toBe(first.request.instructions);
   const updates = second.request.history.filter((entry) => entry.type === 'notification');
@@ -79,7 +81,7 @@ test('首次指令固定，后续上下文变化落盘并作为通知追加到�
   expect(starts[1]!.notifications).toHaveLength(1);
   second.response.complete();
   await runner.settled();
-  source.bindings['project.documents']!.sources![0]!.sha256 = 'c'.repeat(64);
+  source.bindings['project.rules']!.sources![0]!.sha256 = 'c'.repeat(64);
   await runner.send(input('same-context'));
   const third = await model.call(3);
   const reusedRecords = diskRecords(path);
@@ -123,7 +125,7 @@ test('未引用的项目材料不读取，也不触发重复通知', async () =>
   };
   const model = new ManualModel();
   const { runner, path } = h.runner(root, {
-    model, instructions: () => projectContext(root, source.definition),
+    model, instructions: () => projectContext(source.definition, directoryVariables(root)),
   });
   await runner.send(input('fixed-first'));
   const first = await model.call(1);
@@ -148,11 +150,11 @@ test('未引用的项目材料不读取，也不触发重复通知', async () =>
     type: 'condition', id: 'selected', title: '实际路径', variable: 'environment.cwd',
     cases: [{ id: 'hidden', title: '隐藏材料', equals: '另一个项目',
       blocks: [{ type: 'paragraph', id: 'documents', title: '项目材料',
-        parts: [{ type: 'variable', name: 'project.documents' }] }] }],
+        parts: [{ type: 'variable', name: 'project.rules' }] }] }],
     otherwise: { id: 'fixed-branch', title: '固定规则', blocks: [{ type: 'paragraph', id: 'fixed', title: '固定规则',
       parts: [{ type: 'text', text: '仅遵守这一段固定文字。' }] }] },
   }];
-  expect(Object.keys(projectContext(root, source.definition).bindings)).toEqual(['environment.cwd']);
+  expect(Object.keys(projectContext(source.definition, directoryVariables(root)).bindings)).toEqual(['environment.cwd']);
   await runner.send(input('hidden-material'));
   const third = await model.call(3);
   expect(third.request.instructions).toBe(first.request.instructions);
@@ -171,7 +173,7 @@ test('缺少上下文绑定时保留输入，补齐后恢复并保存分支快�
         type: 'condition', id: 'project-rule', title: '项目规则', variable: 'environment.cwd',
         cases: [{
           id: 'with-project', title: '带项目', equals: 'project',
-          blocks: [{ type: 'paragraph', id: 'documents', title: '材料', parts: [{ type: 'variable', name: 'project.documents' }] }],
+          blocks: [{ type: 'paragraph', id: 'documents', title: '材料', parts: [{ type: 'variable', name: 'project.rules' }] }],
         }],
         otherwise: { id: 'without-project', title: '无项目', blocks: [] },
       }],
@@ -189,7 +191,7 @@ test('缺少上下文绑定时保留输入，补齐后恢复并保存分支快�
   expect(records.filter((record) => record.type === 'input.received')).toHaveLength(1);
   expect(records.some((record) => record.type === 'request.started' || record.type === 'context.prepared')).toBe(false);
 
-  source.bindings['project.documents'] = { text: '恢复后的项目规则' };
+  source.bindings['project.rules'] = { text: '恢复后的项目规则' };
   await runner.resume();
   const call = await model.call(1);
   records = diskRecords(path);
@@ -207,4 +209,74 @@ test('缺少上下文绑定时保留输入，补齐后恢复并保存分支快�
   await runner.settled();
   expect(runner.state).toMatchObject({ phase: 'idle', busy: false, waitingForResume: false });
   expect(runner.state.lastOutcome).toEqual({ kind: 'completed' });
+}, 1000);
+
+// 依赖 git 的磁盘布局，不起 git 进程直接读：HEAD 文件在分支上写 `ref: refs/heads/<分支>`，分离时写提交号；
+// 子目录要往上找到 .git；`git worktree add` 出来的工作树里 .git 是写着 `gitdir: <主仓库>/.git/worktrees/<名字>` 的文件，
+// 工作树自己的 HEAD 在那个目录里，不是主仓库的 HEAD。
+test('当前分支按 git 实际布局取：带斜杠的分支、子目录、工作树各取自己的 HEAD，分离 HEAD 和仓库外为空', () => {
+  const root = h.root();
+  const repo = newRepo(root, 'repo', { 'sub/dir/a.txt': 'a\n' }, null);
+  git(repo, 'checkout', '-q', '-b', 'feature/x');
+  const worktree = gitWorktree(repo, join(root, 'wt'), 'wt/own');
+  const outside = newDir(root, 'outside');
+  const branch = (cwd: string) => directoryVariables(cwd)['workspace.branch']().text;
+
+  expect(branch(repo)).toBe('feature/x');
+  expect(branch(join(repo, 'sub', 'dir'))).toBe('feature/x');
+  expect(branch(worktree)).toBe('wt/own');
+  expect(branch(join(worktree, 'sub'))).toBe('wt/own');
+  expect(branch(outside)).toBe('');
+
+  git(repo, 'checkout', '-q', '--detach');
+  expect(branch(repo)).toBe('');
+  expect(branch(worktree)).toBe('wt/own');
+}, 1000);
+
+// 日志解析（contextSnapshotSchema）、快照摘要校验与 runner 恢复历史要一起成立。project.documents 拆成 rules 和 memory 时，
+// 记录里的快照若按当前变量目录校验，引用已删除名字的旧会话会全部打不开；旧名字只允许留在历史里，不能再用于新模板。
+test('变量目录删掉旧名字后，引用旧名字的会话记录仍能还原并继续请求，新组装拒绝旧名字', async () => {
+  const root = h.root();
+  const source: ContextSource = {
+    definition: {
+      version: 2, id: 'legacy', title: '旧模板', scene: 'thread.create',
+      blocks: [{ type: 'paragraph', id: 'documents', title: '项目材料',
+        parts: [{ type: 'text', text: '旧段落：' }, { type: 'variable', name: 'project.rules' }] }],
+    },
+    bindings: { 'project.rules': { text: '旧文档材料' } },
+  };
+  const model = new ManualModel();
+  const { runner, path } = h.runner(root, { model, instructions: () => source });
+  await runner.send(input('before-rename'));
+  const first = await model.call(1);
+  first.response.complete();
+  await runner.settled();
+  await runner.shutdown();
+
+  // 把记录改写成拆分前的样子：定义与绑定引用 project.documents，摘要按快照的算法重算
+  //（sha256 of JSON {definition, bindings}，绑定键排序；这里只有一个键），引用旧摘要的地方一并替换。
+  const prepared = diskRecords(path).find((record) => record.type === 'context.prepared');
+  if (prepared?.type !== 'context.prepared') throw new Error('缺少上下文快照记录');
+  const legacy = JSON.parse(JSON.stringify({ definition: prepared.snapshot.definition, bindings: prepared.snapshot.bindings })
+    .replaceAll('"project.rules"', '"project.documents"')) as { definition: ContextDefinition; bindings: ContextSource['bindings'] };
+  const legacyId = createHash('sha256').update(JSON.stringify(legacy)).digest('hex');
+  expect(legacyId).not.toBe(prepared.snapshot.id);
+  writeFileSync(path, readFileSync(path, 'utf8')
+    .replaceAll('"project.rules"', '"project.documents"').replaceAll(prepared.snapshot.id, legacyId));
+  expect(Object.keys(diskRecords(path).find((record) => record.type === 'context.prepared')!.snapshot.bindings))
+    .toEqual(['project.documents']);
+
+  expect(() => bindContext(legacy.definition, { 'project.documents': () => ({ text: '旧文档材料' }) })).toThrow(/project\.documents/);
+  expect(() => assembleContext({ definition: legacy.definition, bindings: legacy.bindings })).toThrow(/project\.documents/);
+
+  source.bindings['project.rules'] = { text: '新规则材料' };
+  const reopenedModel = new ManualModel();
+  const reopened = h.runner(root, { model: reopenedModel, instructions: () => source });
+  await reopened.runner.send(input('after-rename'));
+  const second = await reopenedModel.call(1);
+  expect(second.request.instructions).toBe('旧段落：旧文档材料');
+  expect(second.request.history.filter((entry) => entry.type === 'input').map((entry) => entry.type === 'input' && entry.input.id))
+    .toEqual(['before-rename', 'after-rename']);
+  second.response.complete();
+  await reopened.runner.settled();
 }, 1000);

@@ -14,6 +14,7 @@ import { openThreadHost } from './harness/thread-host.ts';
 import { harnessPolicy } from './execution/policy.ts';
 import { applyExecutionGrants, executionRevision, instanceExecutionGrants } from './execution/grants.ts';
 import { projectContext } from './harness/context/project.ts';
+import { threadVariables } from './context-variables.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
 import { agentRevision, instanceAgent } from './agents/definition.ts';
 import { agentTools } from './plugins/definitions.ts';
@@ -112,16 +113,19 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   if (runtime === 'claude') {
     return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy, secrets, askNetwork: host.askNetwork,
       prepare(afterNotification) {
-        const { agent, permitted, plugins } = selectTools(host.current(), operations, host.toolConstraint());
+        const current = host.current();
+        const { agent, permitted, plugins } = selectTools(current, operations, host.toolConstraint());
         const allowed = new Set([...agent.tools.filter(permitted), ...plugins.map((tool) => tool.name)]);
         const updates = host.notifications(afterNotification);
-        const instructions = assembleContext(projectContext(cwd, agent.context)).instructions;
-        return { agent, instructions, contextUpdate: assembleContext(contextUpdateContext(instructions, host.contextUpdateTemplate())).instructions,
+        const variables = threadVariables(current, host.toolConstraint());
+        const instructions = assembleContext(projectContext(agent.context, variables)).instructions;
+        return { agent, instructions, contextUpdate: assembleContext(contextUpdateContext(instructions, variables, host.contextUpdateTemplate())).instructions,
           tools: [...operations.tools, ...plugins], allowed,
           notificationText: updates.map((notification) => restoreContext(notification.context).instructions).join('\n\n'),
           through: updates.at(-1)?.sequence ?? afterNotification };
       }, events: on,
-      compaction: { templates: () => host.compactionTemplates(), files: (range) => host.compactionFiles(range) },
+      compaction: { templates: () => host.compactionTemplates(), files: (range) => host.compactionFiles(range),
+        variables: () => threadVariables(host.current(), host.toolConstraint()) },
     });
   }
   const inputs = new Map<string, string>();
@@ -131,6 +135,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       const current = host.current();
       const execution = instanceExecutionGrants(current);
       const { agent, selection, permitted, plugins } = selectTools(current, operations, host.toolConstraint());
+      const variables = threadVariables(current, host.toolConstraint());
       // 声明顺序取代理插件的工具目录，与实例配置一致。
       const available = [...tools, ...operations.tools];
       const declared = agentTools.flatMap((name) => available.find((tool) => tool.name === name) ?? []);
@@ -142,7 +147,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         // 请求发出后项目约束收紧时，这次请求里的调用也在执行前拦下。
         blocked: (name) => (agentTools as readonly string[]).includes(name) && !constraintAllows(host.toolConstraint(), name) ? `项目约束已禁用 ${name}` : undefined,
         toolDefinitions: [...declared, ...selection.plugins].map(({ name, description, parameters }) => ({ name, description, parameters })),
-        instructions: projectContext(current.workspace.cwd, agent.context),
+        instructions: projectContext(agent.context, variables), variables,
         contextUpdateTemplate: host.contextUpdateTemplate(),
         compactionTemplates: host.compactionTemplates(),
         settings: { model: agent.model, contextWindow: CHATGPT_CONTEXT_WINDOW, maxRequestsPerTurn: agent.maxRequestsPerTurn,

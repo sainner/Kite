@@ -55,8 +55,10 @@ nonisolated struct ContextScene: Decodable, Identifiable, Sendable {
     struct Variable: Decodable, Identifiable, Sendable {
         let name: String
         let title: String
-        /// 变量里是什么、什么时候为空。
+        /// 变量里是什么、什么时候为空、什么时候变化。
         let description: String
+        /// 分组显示的名称：场景自己的材料，或公共变量的层（环境、项目、工作区、代理）。
+        let group: String
         var id: String { name }
 
         /// 表示变量的图标：工具栏的插入变量和正文开头的可用变量用同一个，用户才认得出。
@@ -77,6 +79,25 @@ nonisolated struct ContextScene: Decodable, Identifiable, Sendable {
     let variables: [Variable]
     /// 只有辅助生成的场景有。
     let models: Models?
+}
+
+/// 变量按 group 分组，组和组内的顺序照工作机给出的。
+nonisolated struct ContextVariableGroup: Identifiable, Sendable {
+    let title: String
+    let variables: [ContextScene.Variable]
+    var id: String { title }
+}
+
+extension Array where Element == ContextScene.Variable {
+    var grouped: [ContextVariableGroup] {
+        reduce(into: []) { groups, variable in
+            if groups.last?.title == variable.group {
+                groups[groups.count - 1] = ContextVariableGroup(title: variable.group, variables: groups[groups.count - 1].variables + [variable])
+            } else {
+                groups.append(ContextVariableGroup(title: variable.group, variables: [variable]))
+            }
+        }
+    }
 }
 
 nonisolated struct ContextTemplate: Decodable, Identifiable, Sendable {

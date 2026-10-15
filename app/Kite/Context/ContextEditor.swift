@@ -202,10 +202,14 @@ struct ContextEditorToolbar: View {
             format("斜体", "italic", .italic)
             format("行内代码", "chevron.left.forwardslash.chevron.right", .code)
             ActionMenu("插入变量", icon: ContextScene.Variable.icon) {
-                ForEach(variables) { variable in
-                    Button { editor.target?.insert(variable: variable.name) } label: {
-                        Text(variable.title)
-                        Text(variable.description)
+                ForEach(variables.grouped) { group in
+                    Section(group.title) {
+                        ForEach(group.variables) { variable in
+                            Button { editor.target?.insert(variable: variable.name) } label: {
+                                Text(variable.title)
+                                Text(variable.description)
+                            }
+                        }
                     }
                 }
             }

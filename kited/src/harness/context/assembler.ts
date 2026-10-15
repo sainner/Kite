@@ -1,9 +1,9 @@
-/** 预览和实际请求共用的纯组装器。不读取文件、不执行模板表达式、不改会话历史。 */
+/** 预览和实际请求共用的纯组装器。不执行模板表达式、不改会话历史；自己不读文件，变量取值交给调用方给的函数。 */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { contextScenes, type ContextScene } from './scenes.ts';
+import { contextScenes, sceneVariables, type ContextScene, type ContextVariable } from './scenes.ts';
 import type {
-  ContextAssembly, ContextBlock, ContextDefinition, ContextSnapshot, ContextSource, ResolvedContextBlock,
+  ContextAssembly, ContextBinding, ContextBlock, ContextDefinition, ContextSnapshot, ContextSource, ContextValues, ResolvedContextBlock,
 } from './types.ts';
 
 const name = z.string().min(1);
@@ -21,15 +21,16 @@ const block: z.ZodType<ContextBlock> = z.lazy(() => z.discriminatedUnion('type',
   }).strict(),
 ]));
 
-function validateDefinition(definition: ContextSnapshot['definition'], ctx: z.RefinementCtx): void {
-  const variables = new Set<string>(contextScenes[definition.scene].variables.map((variable) => variable.name));
+/** catalog 为 false 时只查结构：历史快照当时有效，变量目录之后的增删不能让旧记录无法还原。 */
+function validateDefinition(definition: ContextSnapshot['definition'], ctx: z.RefinementCtx, catalog = true): void {
+  const variables = new Set<string>(sceneVariables(definition.scene).map((variable) => variable.name));
   const ids = new Set<string>();
   const error = (message: string) => ctx.addIssue({ code: 'custom', message });
   if ('input' in contextScenes[definition.scene] !== (definition.input !== undefined)) {
     error(`${contextScenes[definition.scene].title}${'input' in contextScenes[definition.scene] ? '模板须同时包含指令与材料' : '模板仅使用正文'}`);
   }
   const reference = (variable: string) => {
-    if (!variables.has(variable)) error(`当前定义不支持变量：${variable}`);
+    if (catalog && !variables.has(variable)) error(`当前定义不支持变量：${variable}`);
   };
   const identify = (id: string) => {
     if (ids.has(id)) error(`段落或分支 id 重复：${id}`);
@@ -55,27 +56,26 @@ function validateDefinition(definition: ContextSnapshot['definition'], ctx: z.Re
   if (definition.input) visit(definition.input);
 }
 
-export const contextDefinitionSchema: z.ZodType<ContextDefinition> = z.object({
+const definitionShape = z.object({
   version: z.literal(2), id: name, title: name,
   scene: z.enum(Object.keys(contextScenes) as ContextScene[]),
   blocks: z.array(block),
   input: z.array(block).optional(),
-}).strict().superRefine(validateDefinition);
+}).strict();
+export const contextDefinitionSchema: z.ZodType<ContextDefinition> = definitionShape.superRefine((definition, ctx) => validateDefinition(definition, ctx));
+const recordedDefinitionSchema: z.ZodType<ContextDefinition> = definitionShape.superRefine((definition, ctx) => validateDefinition(definition, ctx, false));
 
-const sourceFields = {
-  definition: contextDefinitionSchema,
-  bindings: z.record(z.string(), z.object({
-    text: z.string(), sources: z.array(z.object({ path: name, sha256: digest }).strict()).optional(),
-  }).strict()),
-};
+const bindingsSchema = z.record(z.string(), z.object({
+  text: z.string(), sources: z.array(z.object({ path: name, sha256: digest }).strict()).optional(),
+}).strict());
 type StoredSource = Pick<ContextSnapshot, 'definition' | 'bindings'>;
 function validateBindings(source: StoredSource, ctx: z.RefinementCtx): void {
-  const variables = new Set<string>(contextScenes[source.definition.scene].variables.map((variable) => variable.name));
+  const variables = new Set<string>(sceneVariables(source.definition.scene).map((variable) => variable.name));
   for (const key of Object.keys(source.bindings)) {
     if (!variables.has(key)) ctx.addIssue({ code: 'custom', message: `绑定了当前定义不支持的变量：${key}` });
   }
 }
-export const contextSourceSchema = z.object(sourceFields).strict().superRefine(validateBindings);
+export const contextSourceSchema = z.object({ definition: contextDefinitionSchema, bindings: bindingsSchema }).strict().superRefine(validateBindings);
 
 function snapshotId(source: StoredSource): string {
   // 绑定的对象键没有顺序含义；段落和分支的数组顺序属于定义，必须保留。
@@ -83,13 +83,44 @@ function snapshotId(source: StoredSource): string {
   return createHash('sha256').update(JSON.stringify({ definition: source.definition, bindings })).digest('hex');
 }
 
+/** 记录里的快照只核对结构与摘要，变量以当时的目录为准。 */
 export const contextSnapshotSchema: z.ZodType<ContextSnapshot> = z.object({
-  id: digest, ...sourceFields,
+  id: digest, definition: recordedDefinitionSchema, bindings: bindingsSchema,
 }).strict()
-  .superRefine(validateBindings)
   .refine((snapshot) => snapshot.id === snapshotId(snapshot), { message: '上下文快照摘要不匹配' });
 
-/** 实时组装和历史还原使用同一份场景契约。 */
+/** 场景专有变量的取值：文本已经在手里，要求给全该场景的专有变量。 */
+export function sceneValues<S extends ContextScene>(texts: Record<ContextVariable<S>, string>): ContextValues {
+  return Object.fromEntries(Object.entries<string>(texts).map(([variable, text]) => [variable, () => ({ text })]));
+}
+
+/** 按定义收集变量：段落里引用的都取，条件只沿选中的分支往下取。缺少取值时明确报错。 */
+export function bindContext(definition: ContextDefinition, values: ContextValues): ContextSource {
+  definition = contextDefinitionSchema.parse(definition);
+  const bindings: Record<string, ContextBinding> = {};
+  const binding = (variable: string) => {
+    if (!Object.hasOwn(bindings, variable)) {
+      if (!Object.hasOwn(values, variable)) throw new Error(`上下文变量未提供：${variable}`);
+      bindings[variable] = values[variable]!();
+    }
+    return bindings[variable]!;
+  };
+  const collect = (blocks: ContextBlock[]) => {
+    for (const block of blocks) {
+      if (block.type === 'paragraph') {
+        for (const part of block.parts) if (part.type === 'variable') binding(part.name);
+      } else {
+        const value = binding(block.variable).text;
+        collect((block.cases.find((branch) => branch.equals === value) ?? block.otherwise).blocks);
+      }
+    }
+  };
+  collect(definition.blocks);
+  if (definition.input) collect(definition.input);
+  return { definition, bindings };
+}
+
+/** 实时组装按当前的变量目录校验，历史还原见 restoreContext。 */
 export function assembleContext(source: ContextSource): ContextAssembly {
   const parsed = contextSourceSchema.parse(source);
   return renderContext({ id: snapshotId(parsed), ...parsed });

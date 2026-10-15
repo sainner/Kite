@@ -24,6 +24,7 @@ import { instanceAgent, type AgentDefinition } from './agents/definition.ts';
 import { InstanceLifecycle, type AgentChoice } from './instance-lifecycle.ts';
 import { ContextTemplates } from './context-templates.ts';
 import { defaultRoleId, instanceRole, lineRoleId, Roles, type RoleSelection, type RoleSnapshot } from './roles.ts';
+import { environmentVariables, storedThreadVariables } from './context-variables.ts';
 import { LibrarySync, type LibraryChanges } from './library-sync.ts';
 import { agentDefinitionId, agentToolCatalog, agentTools } from './plugins/definitions.ts';
 import { addWorktree, removeWorktree, runSetup } from './workspace/worktrees.ts';
@@ -164,6 +165,7 @@ export class Kite {
     this.monitor = new LineMonitor({ store, peers: this.peers,
       line: () => this.lineInstance(), inbox: () => this.lineInbox(true), deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, 'kite'),
       template: () => this.contextTemplates.get(lineMonitorContextDefinition.id, 'line.monitor').definition,
+      variables: (threadId) => storedThreadVariables(store, threadId),
       focused: () => this.attention.devices().length > 0,
       notify: (notification) => bus.emit({ type: 'line.notification', notification }),
       changed: () => bus.emit({ type: 'line.inbox' }) });
@@ -178,6 +180,7 @@ export class Kite {
       },
       deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, 'kite'),
       template: () => this.contextTemplates.get(monitorEventsContextDefinition.id, 'monitor.events').definition,
+      variables: (threadId) => storedThreadVariables(store, threadId),
       run: (workspaceId, action) => this.control(workspaceId, action),
       changed: (workspaceId) => this.changed(workspaceId),
       updated: (workspaceId, instanceId) => bus.emit({ type: 'monitor.changed', workspaceId, instanceId }),
@@ -217,6 +220,7 @@ export class Kite {
       keys: async () => this.account.linked ? this.account.speechKeys() : [],
       template: () => this.contextTemplates.get(voiceTemplate.id, voiceTemplate.scene),
       history: (id) => this.history(id),
+      variables: () => environmentVariables(store.machine),
     });
     if (options.lightTasks !== false && process.env.KITE_LIGHT_TASKS !== '0') {
       const light = options.lightTasks;
@@ -393,8 +397,8 @@ export class Kite {
   private controlThread<T>(id: string, fn: () => Promise<T>): Promise<T> {
     return this.control(this.context(id).workspaceId, fn);
   }
-  private newThread(workspaceId: string, prompt: string, kind: Workspace['kind'], choice: AgentChoice, projectId?: string): AgentInstance {
-    const instance = this.instances.newInstance(workspaceId, agentDefinitionId, titleOf(prompt), kind, choice, projectId);
+  private newThread(workspaceId: string, prompt: string, choice: AgentChoice, projectId?: string): AgentInstance {
+    const instance = this.instances.newInstance(workspaceId, agentDefinitionId, titleOf(prompt), choice, projectId);
     return { ...instance, instanceId: instance.id, runtime: instanceAgent(instance).runtime, nativeId: randomUUID() };
   }
 
@@ -409,7 +413,7 @@ export class Kite {
     const w: Workspace = { id, epoch: 1, checkoutId: c.id, name: name.trim() || (prompt ? titleOf(prompt) : '新工作区'),
       cwd: join(this.home, 'worktrees', c.projectId, id), kind: 'worktree', branch: `kite/${id}`, base,
       status: 'preparing', createdAt: Date.now() };
-    const t = prompt === undefined ? undefined : this.newThread(id, prompt, w.kind, { role }, c.projectId);
+    const t = prompt === undefined ? undefined : this.newThread(id, prompt, { role }, c.projectId);
     this.store.addWorkspace(w, t ? { agent: t, window: this.instances.newWindow(t) } : undefined);
     this.prepare(w, c, t && { thread: t, prompt: prompt!, via });
     this.changed(id);
@@ -504,7 +508,7 @@ export class Kite {
       if (windowId && this.store.window(windowId)) throw new KiteError('窗口 ID 已使用', 409);
       this.assertNotResolving(workspaceId);
       await this.snapshot(workspace, [], '线程开始');
-      const t = this.newThread(workspaceId, prompt, workspace.kind, choice);
+      const t = this.newThread(workspaceId, prompt, choice);
       this.store.addAgent(t, this.instances.newWindow(t, windowId));
       this.threadChanged(t);
       await this.sendInput(this.context(t.id), { id: messageId ?? randomUUID(), text: prompt, source: 'human' });
@@ -523,7 +527,7 @@ export class Kite {
         await this.snapshot(workspace, [], '线程开始');
       }
       check();
-      const instance = this.instances.newInstance(workspaceId, agentDefinitionId, input.title ?? (input.prompt ? titleOf(input.prompt) : '新代理'), workspace.kind,
+      const instance = this.instances.newInstance(workspaceId, agentDefinitionId, input.title ?? (input.prompt ? titleOf(input.prompt) : '新代理'),
         { role: { id: input.role ?? defaultRoleId } });
       instance.presentation = input.presentation;
       instance.origin = origin;
@@ -1038,7 +1042,7 @@ export class Kite {
     }
     const model = registered ? this.store.rootWorkspaceModel(registered.id)! : await this.registerCheckout({ path: folder });
     return this.control(model.workspace.id, async () => {
-      const instance = this.instances.newInstance(model.workspace.id, agentDefinitionId, 'Line', 'root', { role: { id: lineRoleId } }, model.project.id);
+      const instance = this.instances.newInstance(model.workspace.id, agentDefinitionId, 'Line', { role: { id: lineRoleId } }, model.project.id);
       instance.config.grants = [...(instance.config.grants as OperationGrant[]), lineGrant];
       const agent: AgentInstance = { ...instance, instanceId: instance.id, runtime: instanceAgent(instance).runtime, nativeId: randomUUID() };
       this.store.addAgent(agent, this.instances.newWindow(agent));

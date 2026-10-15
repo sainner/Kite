@@ -1,8 +1,9 @@
-/** 通知正文复用场景、段落和变量契约；来源、权限与投递时机由宿主决定。 */
-import type { ContextVariable } from './scenes.ts';
-import type { ContextBinding, ContextDefinition, ContextSource } from './types.ts';
-import type { ExecutionGrants } from '../../execution/grants.ts';
-import type { PluginToolSource } from '../../plugins/tools.ts';
+/**
+ * 通知正文复用场景、段落和变量契约；来源、权限与投递时机由宿主决定。
+ * values 是宿主给的公共变量，取变化之后的状态，通知在生成时取值并随通知固定。
+ */
+import { bindContext, sceneValues } from './assembler.ts';
+import type { ContextDefinition, ContextSource, ContextValues } from './types.ts';
 
 export const pluginToolsContextDefinition: ContextDefinition = {
   version: 2, id: 'kite.plugin-tools', title: '插件工具授权变更', scene: 'thread.plugin_tools_changed',
@@ -13,11 +14,9 @@ export const pluginToolsContextDefinition: ContextDefinition = {
   ] }],
 };
 
-export function pluginToolsContext(tools: PluginToolSource[], definition: ContextDefinition = pluginToolsContextDefinition): ContextSource {
+export function pluginToolsContext(values: ContextValues, definition: ContextDefinition = pluginToolsContextDefinition): ContextSource {
   if (definition.scene !== 'thread.plugin_tools_changed') throw new Error('插件工具通知须使用 thread.plugin_tools_changed 场景');
-  return { definition, bindings: {
-    'plugin.tools': { text: JSON.stringify(tools) },
-  } satisfies Record<ContextVariable<'thread.plugin_tools_changed'>, ContextBinding> };
+  return bindContext(definition, values);
 }
 
 export const executionPermissionsContextDefinition: ContextDefinition = {
@@ -32,12 +31,10 @@ export const executionPermissionsContextDefinition: ContextDefinition = {
 };
 
 export function executionPermissionsContext(
-  revision: string, grants: ExecutionGrants, definition: ContextDefinition = executionPermissionsContextDefinition,
+  revision: string, values: ContextValues, definition: ContextDefinition = executionPermissionsContextDefinition,
 ): ContextSource {
   if (definition.scene !== 'thread.execution_permissions_changed') throw new Error('执行授权通知须使用 thread.execution_permissions_changed 场景');
-  return { definition, bindings: {
-    'execution.revision': { text: revision }, 'execution.grants': { text: JSON.stringify(grants) },
-  } satisfies Record<ContextVariable<'thread.execution_permissions_changed'>, ContextBinding> };
+  return bindContext(definition, { ...values, ...sceneValues<'thread.execution_permissions_changed'>({ 'execution.revision': revision }) });
 }
 
 export const agentConfigurationContextDefinition: ContextDefinition = {
@@ -71,11 +68,11 @@ export const fileChangesContextDefinition: ContextDefinition = {
   ] }],
 };
 
-export function fileChangesContext(changes: string, origin: string, definition: ContextDefinition = fileChangesContextDefinition): ContextSource {
+export function fileChangesContext(
+  changes: string, origin: string, values: ContextValues = {}, definition: ContextDefinition = fileChangesContextDefinition,
+): ContextSource {
   if (definition.scene !== 'thread.file_changes') throw new Error('文件变化通知须使用 thread.file_changes 场景');
-  return { definition, bindings: {
-    'files.changes': { text: changes }, 'files.origin': { text: origin },
-  } satisfies Record<ContextVariable<'thread.file_changes'>, ContextBinding> };
+  return bindContext(definition, { ...values, ...sceneValues<'thread.file_changes'>({ 'files.changes': changes, 'files.origin': origin }) });
 }
 
 export const contextUpdateContextDefinition: ContextDefinition = {
@@ -93,26 +90,16 @@ export const contextUpdateContextDefinition: ContextDefinition = {
 };
 
 export function agentConfigurationContext(
-  configuration: { revision: string; model: string; reasoning: string; tools: readonly string[]; maxRequestsPerTurn: number },
-  definition: ContextDefinition = agentConfigurationContextDefinition,
+  revision: string, values: ContextValues, definition: ContextDefinition = agentConfigurationContextDefinition,
 ): ContextSource {
   if (definition.scene !== 'thread.configuration_changed') throw new Error('配置变更通知须使用 thread.configuration_changed 场景');
-  const bindings = {
-    'agent.revision': { text: configuration.revision },
-    'agent.model': { text: configuration.model },
-    'agent.reasoning': { text: configuration.reasoning },
-    'agent.tools': { text: configuration.tools.join('、') || '无' },
-    'agent.max_requests_per_turn': { text: String(configuration.maxRequestsPerTurn) },
-  } satisfies Record<ContextVariable<'thread.configuration_changed'>, ContextBinding>;
-  return { definition, bindings };
+  return bindContext(definition, { ...values, ...sceneValues<'thread.configuration_changed'>({ 'agent.revision': revision }) });
 }
 
 export function contextUpdateContext(
-  instructions: string, definition: ContextDefinition = contextUpdateContextDefinition,
+  instructions: string, values: ContextValues = {}, definition: ContextDefinition = contextUpdateContextDefinition,
 ): ContextSource {
   if (definition.scene !== 'thread.context_updated') throw new Error('基础上下文更新通知须使用 thread.context_updated 场景');
-  const bindings = {
-    'context.instructions': { text: instructions },
-  } satisfies Record<ContextVariable<'thread.context_updated'>, ContextBinding>;
-  return { definition, bindings };
+  return bindContext(definition, { ...values, ...sceneValues<'thread.context_updated'>({ 'context.instructions': instructions }) });
 }
+

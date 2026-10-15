@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import type { AgentInstance, Checkout, Machine, PluginInstance, Project, Thread, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
 import type { ThreadNotification } from './harness/types.ts';
+import { defaultContextDefinition } from './harness/context/project.ts';
 import type { Template } from './context-templates.ts';
 import type { HourlyUsage, UsageDay, UsageStore } from './account-usage.ts';
 import type { TemplateEmblem } from './template-emblems.ts';
@@ -136,6 +137,7 @@ export class Store implements UsageStore {
     this.rebuildWorkspaces();
     this.db.exec(SCHEMA);
     this.mergeAgentDefinitions();
+    this.splitProjectDocuments();
     // 同一个数据库只属于一台工作机服务。端口、地址和主机名变化都不重建身份。
     this.machine = this.db.transaction(() => {
       const saved = this.db.query('select id, name, created_at from machine where slot = 1').get() as
@@ -212,6 +214,33 @@ export class Store implements UsageStore {
           tools: legacy === 'kite.review' ? { mode: 'allow', tools: ['read'], required: ['read'] } : { mode: 'deny', tools: [], required: [] } };
         this.db.query('update plugin_instances set definition_id = ?, config = ? where id = ?')
           .run(legacy ? 'kite.agent' : row.definition_id, JSON.stringify(config), row.id);
+      }
+    })();
+  }
+
+  /**
+   * 项目规则与记忆索引拆成两个变量之前，实例里拷贝的提示词引用 project.documents。在研期间就地改写：
+   * 按它选择的条件换成默认角色里规则与记忆索引两段，段落里的引用换成规则加记忆索引。会话记录里的旧快照照原样还原，不改。
+   */
+  private splitProjectDocuments(): void {
+    const rows = this.db.query(`select id, config from plugin_instances where config like '%"project.documents"%'`).all() as
+      Array<{ id: string; config: string }>;
+    const materials = defaultContextDefinition.blocks.filter((block) => block.id === 'rules' || block.id === 'memory');
+    const rewrite = (blocks: any[]): any[] => blocks.flatMap((block) => {
+      if (block.type === 'condition') {
+        if (block.variable === 'project.documents') return structuredClone(materials);
+        return [{ ...block, cases: block.cases.map((branch: any) => ({ ...branch, blocks: rewrite(branch.blocks) })),
+          otherwise: { ...block.otherwise, blocks: rewrite(block.otherwise.blocks) } }];
+      }
+      return [{ ...block, parts: block.parts.flatMap((part: any) => part.type === 'variable' && part.name === 'project.documents'
+        ? [{ type: 'variable', name: 'project.rules' }, { type: 'text', text: '\n\n' }, { type: 'variable', name: 'project.memory' }] : [part]) }];
+    });
+    this.db.transaction(() => {
+      for (const row of rows) {
+        const config = JSON.parse(row.config);
+        if (!config.agent?.context) continue;
+        config.agent.context.blocks = rewrite(config.agent.context.blocks);
+        this.db.query('update plugin_instances set config = ? where id = ?').run(JSON.stringify(config), row.id);
       }
     })();
   }

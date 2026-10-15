@@ -2,7 +2,8 @@
 import { z } from 'zod';
 import { checkEmblemExpression, emblemFunctions, maxExpressionLength } from './emblem-expression.ts';
 import { KiteError } from './errors.ts';
-import { assembleContext } from './harness/context/assembler.ts';
+import { assembleContext, bindContext, sceneValues } from './harness/context/assembler.ts';
+import { environmentVariables } from './context-variables.ts';
 import type { ContextBlock, ContextDefinition } from './harness/context/types.ts';
 import type { ContextTemplates } from './context-templates.ts';
 import type { LightTasks } from './light-tasks.ts';
@@ -194,13 +195,13 @@ export class TemplateEmblems {
     const { role } = this.roles.get(id);
     if (!force && this.store.templateEmblem(id)?.source === 'manual') return;
     const template = this.templates.get(emblemTemplate.id, 'template.emblem');
-    const { instructions, input } = assembleContext({
-      definition: template.definition,
-      bindings: {
-        'template.title': { text: role.title },
-        'template.content': { text: outline(role.context.blocks).join('\n').slice(0, 6_000) || '（空）' },
-      },
-    });
+    const { instructions, input } = assembleContext(bindContext(template.definition, {
+      ...environmentVariables(this.store.machine),
+      ...sceneValues<'template.emblem'>({
+        'template.title': role.title,
+        'template.content': outline(role.context.blocks).join('\n').slice(0, 6_000) || '（空）',
+      }),
+    }));
     let feedback = '';
     let lastError = '模型没有给出可用的签名';
     for (let attempt = 0; attempt < 2; attempt++) {

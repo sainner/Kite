@@ -4,9 +4,8 @@ import { z } from 'zod';
 import { KiteError } from '../errors.ts';
 import { contextDefinitionSchema } from '../harness/context/assembler.ts';
 import { runtimeOfModel } from './models.ts';
-import type { PluginInstance, Workspace } from '../model.ts';
+import type { PluginInstance } from '../model.ts';
 import { lineToolNames, operationToolNames } from '../operations/contract.ts';
-import type { ContextDefinition } from '../harness/context/types.ts';
 
 export const agentDefinitionSchema = z.object({
   runtime: z.enum(['harness', 'claude']),
@@ -23,10 +22,9 @@ export function parseAgentDefinition(value: unknown): AgentDefinition {
   return parsed.data;
 }
 
-export function bindAgentDefinition(definition: AgentDefinition, kind: Workspace['kind']): AgentDefinition {
+export function bindAgentDefinition(definition: AgentDefinition): AgentDefinition {
   const bound = parseAgentDefinition(definition);
   bound.model.model = (bound.runtime === 'claude' ? process.env.KITE_CLAUDE_MODEL : process.env.KITE_MODEL) ?? bound.model.model;
-  bound.context = bindAgentContext(bound.context, kind);
   return parseAgentDefinition(bound);
 }
 
@@ -37,15 +35,6 @@ export function chooseAgentModel(agent: AgentDefinition, model?: AgentDefinition
   const chosen = parseAgentDefinition({ ...agent, ...(model ? { model, runtime: runtimeOfModel(model.model) } : {}) });
   if (chosen.runtime === 'claude' && !claudeReasoning.includes(chosen.model.reasoning)) throw new KiteError('Claude 思考强度无效');
   return chosen;
-}
-
-export function bindAgentContext(definition: ContextDefinition, kind: Workspace['kind']): ContextDefinition {
-  const context = contextDefinitionSchema.parse(definition);
-  if (kind === 'worktree') context.blocks.push({
-    type: 'paragraph', id: 'worktree', title: '工作树边界', parts: [{ type: 'text',
-      text: '当前目录是 Kite 为这个工作区创建的独立工作树，请在这里完成工作，不要切回主文件夹修改。Kite 在工具批次和回合结束后保存快照，由用户决定采纳或回退。不要自行删除工作树或分支。' }],
-  });
-  return contextDefinitionSchema.parse(context);
 }
 
 export const agentRevision = (agent: AgentDefinition): string =>

@@ -6,8 +6,8 @@
 import type { ServerWebSocket } from 'bun';
 import type { ContextTemplate } from '../context-templates.ts';
 import { KiteError } from '../errors.ts';
-import { assembleContext } from '../harness/context/assembler.ts';
-import type { ContextDefinition } from '../harness/context/types.ts';
+import { assembleContext, bindContext, sceneValues } from '../harness/context/assembler.ts';
+import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
 import type { History } from '../transcript/protocol.ts';
 import { recognize, type Recognition } from './dashscope.ts';
 import { speechModels, type SpeechProvider } from './models.ts';
@@ -18,7 +18,7 @@ export const voiceTemplate: ContextDefinition = {
   blocks: [{ type: 'paragraph', id: 'scene', title: '场景', parts: [{
     type: 'text', text: '用户在 Kite 里口述发给编程 agent 的消息。下面是这个会话最近的对话，其中出现过的名称、标识符、文件名和命令照原样写。',
   }] }],
-  input: [{ type: 'paragraph', id: 'messages', title: '近期对话', parts: [{ type: 'variable', name: 'thread.messages' }] }],
+  input: [{ type: 'paragraph', id: 'messages', title: '近期对话', parts: [{ type: 'variable', name: 'voice.messages' }] }],
 };
 
 /** 最近的请求和回复，从最近往前取到 6000 字；代码不略去，标识符多半在代码里。 */
@@ -49,6 +49,8 @@ export interface VoiceOptions {
   keys(): Promise<{ provider: SpeechProvider; key: string }[]>;
   template(): ContextTemplate;
   history(thread: string): Promise<History>;
+  /** 环境层的公共变量；新会话可能还没有线程，语音识别只开放这一层。 */
+  variables(): ContextValues;
   /** 识别服务地址，测试换成本机假服务。 */
   url?: string;
 }
@@ -103,7 +105,8 @@ class VoiceSession {
       const key = keys.find((entry) => entry.provider === model.vendor)?.key;
       if (!key) throw new KiteError('没有语音识别凭据：在 Kite 账号的凭据里添加千问（百炼）的 API Key');
       const messages = history ? voiceMaterial(history) : '';
-      const { instructions, input } = assembleContext({ definition: template.definition, bindings: { 'thread.messages': { text: messages } } });
+      const { instructions, input } = assembleContext(bindContext(template.definition,
+        { ...options.variables(), ...sceneValues<'thread.voice'>({ 'voice.messages': messages }) }));
       const context = [instructions, input].filter(Boolean).join('\n\n');
       if (this.ended) return;
       this.known = identifiers(context);

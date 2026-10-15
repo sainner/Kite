@@ -9,9 +9,8 @@
  */
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { assembleContext } from '../harness/context/assembler.ts';
-import type { ContextVariable } from '../harness/context/scenes.ts';
-import type { ContextBinding, ContextDefinition } from '../harness/context/types.ts';
+import { assembleContext, bindContext, sceneValues } from '../harness/context/assembler.ts';
+import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
 import type { AccountMachine } from '../account-client.ts';
 import type { MachineSummary } from '../kite.ts';
 import type { AgentInstance, PluginInstance } from '../model.ts';
@@ -396,6 +395,8 @@ export interface MonitorHost {
   /** 投给 Line 线程的 Kite 来源输入；同一 ID 重复送达只去重。 */
   deliver(threadId: string, text: string, inputId: string): Promise<unknown>;
   template(): ContextDefinition;
+  /** Line 线程的公共变量。 */
+  variables(threadId: string): ContextValues;
   /** 此刻有没有设备在关注 Kite。 */
   focused(): boolean;
   notify(notification: LineNotification): void;
@@ -565,7 +566,7 @@ export class LineMonitor {
       const collected = collect(state, now, focused, notes);
       if (!collected) return;
       state.seq += 1;
-      state.pending = { id: `monitor:${line.id}:${state.seq}`, text: this.render(collected, now) };
+      state.pending = { id: `monitor:${line.id}:${state.seq}`, text: this.render(line.id, collected, now) };
     });
     for (const note of notes) this.host.notify(note);
     const pending = this.state()?.pending;
@@ -598,16 +599,15 @@ export class LineMonitor {
     this.next.unref();
   }
 
-  private render(collected: Collected, now: number): string {
+  private render(threadId: string, collected: Collected, now: number): string {
     const minutes = collected.briefing ? Math.round((now - collected.briefing.since) / 60_000) : 0;
-    const bindings: Record<ContextVariable<'line.monitor'>, ContextBinding> = {
-      'monitor.delegated': { text: collected.delegated.map(detail).join('\n') },
-      'monitor.results': { text: collected.results.map((text) => `- ${text}`).join('\n') },
-      'monitor.briefing': { text: collected.briefing ? [
+    return assembleContext(bindContext(this.host.template(), { ...this.host.variables(threadId), ...sceneValues<'line.monitor'>({
+      'monitor.delegated': collected.delegated.map(detail).join('\n'),
+      'monitor.results': collected.results.map((text) => `- ${text}`).join('\n'),
+      'monitor.briefing': collected.briefing ? [
         `用户离开了约 ${minutes} 分钟，刚回到 Kite。给用户一段简报：离开期间发生了什么、哪几件需要用户、建议先处理哪个。收件箱里离开期间进来的事项：`,
         ...(collected.briefing.items.length ? collected.briefing.items.map(detail) : ['（都已处理完）']),
-      ].join('\n') : '' },
-    };
-    return assembleContext({ definition: this.host.template(), bindings }).instructions;
+      ].join('\n') : '',
+    }) })).instructions;
   }
 }

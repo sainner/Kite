@@ -6,7 +6,7 @@ import { agentDefinitionSchema } from './agents/definition.ts';
 import { agentModels } from './agents/models.ts';
 import { KiteError } from './errors.ts';
 import { contextDefinitionSchema } from './harness/context/assembler.ts';
-import { contextScenes, type ContextScene } from './harness/context/scenes.ts';
+import { contextScenes, sceneVariables, type ContextScene } from './harness/context/scenes.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
 import type { Store } from './store.ts';
 import { defaultSpeechModel, speechModels, speechVendors } from './voice/models.ts';
@@ -90,15 +90,16 @@ export class ContextTemplates {
     return {
       templates: [...this.defaults.keys()].sort().map((id) => this.entry(this.current(id)!)),
       scenes: Object.entries(editableScenes).map(([id, kind]) => {
-        if (kind !== 'generation') return { id, kind, ...contextScenes[id as ContextScene] };
+        const scene = { id, kind, title: contextScenes[id as ContextScene].title, variables: sceneVariables(id as ContextScene) };
+        if (kind !== 'generation') return scene;
         const { default: _, ...models } = sceneModels(id as ContextScene);
-        return { id, kind, ...contextScenes[id as ContextScene], models };
+        return { ...scene, models };
       }),
     };
   }
 
   /** 不在模板列表里的场景（如角色提示词使用的创建会话场景）也按同一目录给出变量。 */
-  sceneVariables(scene: ContextScene) { return contextScenes[scene].variables; }
+  sceneVariables(scene: ContextScene) { return sceneVariables(scene); }
 
   /** 辅助生成场景的模板一定带模型。 */
   get(id: string, scene: ContextScene, revision?: string): ContextTemplate {

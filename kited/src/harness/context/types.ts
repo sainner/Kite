@@ -36,6 +36,9 @@ export interface ContextBinding {
   sources?: Array<{ path: string; sha256: string }>;
 }
 
+/** 变量取值：公共变量与场景专有变量都以这种形式交给 bindContext，只有模板实际用到的才取。 */
+export type ContextValues = Readonly<Record<string, () => ContextBinding>>;
+
 export interface ContextSource {
   definition: ContextDefinition;
   bindings: Record<string, ContextBinding>;

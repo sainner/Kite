@@ -415,7 +415,7 @@ export class HarnessRunner implements ThreadRunner {
     for await (const event of prepared.model.stream({
       id: randomUUID(), turnId: options.turnId, cwd: this.options.cwd,
       instructions: this.history.baseInstructions ?? options.context.instructions,
-      history: [...this.history.items(until), { type: 'feedback', text: compactInstructions(definition, options.range) }],
+      history: [...this.history.items(until), { type: 'feedback', text: compactInstructions(definition, options.range, prepared.variables) }],
       tools: structuredClone(options.configuration.tools), allowedTools: [],
     }, signal)) {
       signal.throwIfAborted();
@@ -430,7 +430,7 @@ export class HarnessRunner implements ThreadRunner {
     const changes = await this.options.compactionFiles?.({ from: at(from), to: until === undefined ? Date.now() : at(until) }, signal);
     signal.throwIfAborted();
     const replacement = compactionItems({ range: this.history.items(until, from), after: until === undefined ? [] : this.history.items(undefined, until),
-      automatic: options.automatic, summary, definition,
+      automatic: options.automatic, summary, definition, ...(prepared.variables ? { values: prepared.variables } : {}),
       ...(changes ? { files: { changes, ...(prepared.compactionTemplates?.fileChanges ? { definition: prepared.compactionTemplates.fileChanges } : {}) } } : {}) });
     this.record({ type: 'context.compacted', id: options.id, range: { from, ...(until !== undefined ? { until } : {}) },
       automatic: options.automatic, items: replacement, summary, ...(usage ? { usage } : {}) });
@@ -457,7 +457,7 @@ export class HarnessRunner implements ThreadRunner {
     }
     if (this.history.currentInstructions !== undefined && this.history.currentInstructions !== context.instructions) notifications.push({
       id: randomUUID(), kind: 'context.updated', source: 'host.context', authority: 'instruction',
-      context: assembleContext(contextUpdateContext(context.instructions, prepared.contextUpdateTemplate)).snapshot,
+      context: assembleContext(contextUpdateContext(context.instructions, prepared.variables, prepared.contextUpdateTemplate)).snapshot,
     });
     await this.autoCompact(turn, prepared, context, configuration, notifications.map(({ context, ...notification }) => ({
       type: 'notification', notification, text: restoreContext(context).instructions })));

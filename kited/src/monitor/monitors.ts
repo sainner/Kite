@@ -11,9 +11,8 @@ import { z } from 'zod';
 import { KiteError } from '../errors.ts';
 import { processGroupAlive, runCommand } from '../execution/command.ts';
 import type { ExecutionPolicy } from '../execution/sandbox.ts';
-import { assembleContext } from '../harness/context/assembler.ts';
-import type { ContextVariable } from '../harness/context/scenes.ts';
-import type { ContextBinding, ContextDefinition } from '../harness/context/types.ts';
+import { assembleContext, bindContext, sceneValues } from '../harness/context/assembler.ts';
+import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
 import type { PluginInstance } from '../model.ts';
 import type { Store } from '../store.ts';
 
@@ -109,6 +108,8 @@ export interface MonitorsHost {
   /** 投给对象代理的 Kite 来源输入；同一 ID 重复送达只去重。 */
   deliver(threadId: string, text: string, inputId: string): Promise<unknown>;
   template(): ContextDefinition;
+  /** 对象代理线程的公共变量。 */
+  variables(threadId: string): ContextValues;
   /** 在工作区的控制队列里执行。 */
   run<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
   /** 实例增删或归档：工作区聚合变了。 */
@@ -374,7 +375,7 @@ export class Monitors {
       }
       state.wakes = { day: day(now), count: count + 1 };
       state.deliveries += 1;
-      state.pending = { id: `monitor:${instanceId}:${state.deliveries}`, text: this.render(instance, fresh), through };
+      state.pending = { id: `monitor:${instanceId}:${state.deliveries}`, text: this.render(instance, config.target, fresh), through };
       return state.pending;
     });
     if (!pending) return;
@@ -393,13 +394,12 @@ export class Monitors {
     }
   }
 
-  private render(instance: PluginInstance, events: MonitorEvent[]): string {
-    const bindings: Record<ContextVariable<'monitor.events'>, ContextBinding> = {
-      'monitor.title': { text: instance.title },
-      'monitor.id': { text: instance.id },
-      'monitor.events': { text: events.map((event) => `- [${time(event.at)}] ${event.kind === 'end' ? `（来源结束）${event.text}` : event.text}`).join('\n') },
-    };
-    return assembleContext({ definition: this.host.template(), bindings }).instructions;
+  private render(instance: PluginInstance, target: string, events: MonitorEvent[]): string {
+    return assembleContext(bindContext(this.host.template(), { ...this.host.variables(target), ...sceneValues<'monitor.events'>({
+      'monitor.title': instance.title,
+      'monitor.id': instance.id,
+      'monitor.events': events.map((event) => `- [${time(event.at)}] ${event.kind === 'end' ? `（来源结束）${event.text}` : event.text}`).join('\n'),
+    }) })).instructions;
   }
 
   private mutate<T>(instanceId: string, change: (state: MonitorRuntimeState) => T): T {

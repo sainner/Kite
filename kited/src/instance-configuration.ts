@@ -17,13 +17,10 @@ import type { Kite } from './kite.ts';
 import type { AgentInstance, PluginInstance, ThreadContext } from './model.ts';
 import { roleOperationGrants, type OperationGrant } from './operations/contract.ts';
 import { agentToolCatalog } from './plugins/definitions.ts';
-import { mergePluginTools, pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding } from './plugins/tools.ts';
-import { permittedTools } from './agents/tool-policy.ts';
+import { mergePluginTools, pluginToolBindings, pluginToolGranted, type PluginToolBinding } from './plugins/tools.ts';
+import { effectiveTools, threadVariables } from './context-variables.ts';
 import { checkTools, instanceRole, roleAgent, toolLimits, type ProjectToolRule, type RoleBinding, type RoleSelection } from './roles.ts';
 import type { Runtime } from './runtime.ts';
-
-/** 代理配置里的工具经项目约束实时过滤后的有效集。 */
-const effectiveTools = (agent: AgentDefinition, project: ProjectToolRule | undefined) => permittedTools(agent.tools, project ? [project] : []);
 
 type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates' | 'roles' | 'history'>;
 
@@ -73,13 +70,14 @@ export class InstanceConfiguration {
     const frozen = isAgent && (previous.length > 0 || selected.length > 0)
       && this.journalIndex.firstConfiguration(join(this.kite.home, 'sessions', instance.id, 'journal.jsonl')) !== undefined;
     const pluginTools = mergePluginTools(previous, selected, frozen);
-    const allowed = pluginTools.filter((binding) => pluginToolGranted(binding, grants)).map(pluginToolSource);
+    const allowed = pluginTools.filter((binding) => pluginToolGranted(binding, grants)).map((binding) => binding.modelName);
     const currentGrants = this.kite.operations.grants(instance.id).grants;
     const before = previous.filter((binding) => pluginToolGranted(binding, currentGrants)).map((binding) => binding.modelName);
-    const changed = JSON.stringify(before) !== JSON.stringify(allowed.map((binding) => binding.modelName));
-    this.kite.store.setInstanceConfig(instance.id, { ...instance.config, grants, pluginTools }, isAgent && changed ? {
+    const changed = JSON.stringify(before) !== JSON.stringify(allowed);
+    const config = { ...instance.config, grants, pluginTools };
+    this.kite.store.setInstanceConfig(instance.id, config, isAgent && changed ? {
       id: randomUUID(), kind: 'plugin.tools.changed', source: 'host', authority: 'instruction',
-      context: assembleContext(pluginToolsContext(allowed,
+      context: assembleContext(pluginToolsContext(this.variables({ ...this.control.context(instance.id), config }),
         this.kite.contextTemplates.get(pluginToolsContextDefinition.id, pluginToolsContextDefinition.scene).definition)).snapshot,
     } : undefined);
   }
@@ -136,9 +134,10 @@ export class InstanceConfiguration {
     });
   }
   private saveExecutionGrants(instance: ThreadContext, grants: ExecutionGrants): void {
-    this.kite.store.setInstanceConfig(instance.id, { ...instance.config, execution: grants }, {
+    const config = { ...instance.config, execution: grants };
+    this.kite.store.setInstanceConfig(instance.id, config, {
       id: randomUUID(), kind: 'execution.permissions.changed', source: `instance:${instance.id}`, authority: 'instruction',
-      context: assembleContext(executionPermissionsContext(executionRevision(grants), grants,
+      context: assembleContext(executionPermissionsContext(executionRevision(grants), this.variables({ ...instance, config }),
         this.kite.contextTemplates.get(executionPermissionsContextDefinition.id, executionPermissionsContextDefinition.scene).definition)).snapshot,
     });
     this.control.changed(instance.workspaceId);
@@ -194,19 +193,23 @@ export class InstanceConfiguration {
       for (const instance of this.kite.store.threads(workspace.id).filter((thread) => thread.status === 'open')) {
         const agent = instanceAgent(instance);
         if (JSON.stringify(effectiveTools(agent, before)) === JSON.stringify(effectiveTools(agent, after))) continue;
-        this.kite.store.setInstanceConfig(instance.id, instance.config, this.configurationNotice('host', agent, after));
+        this.kite.store.setInstanceConfig(instance.id, instance.config, this.configurationNotice('host', this.control.context(instance.id), agent, after));
       }
       this.control.changed(workspace.id);
     }
   }
   /** 配置变化通知；告诉模型的工具已按项目约束过滤，被禁的不算可用。 */
-  private configurationNotice(source: string, agent: AgentDefinition, project: ProjectToolRule | undefined) {
+  private configurationNotice(source: string, thread: ThreadContext, agent: AgentDefinition, project: ProjectToolRule | undefined) {
     return {
       id: randomUUID(), kind: 'agent.configuration.changed', source, authority: 'instruction',
-      context: assembleContext(agentConfigurationContext({
-        revision: agentRevision(agent), ...agent.model, tools: effectiveTools(agent, project), maxRequestsPerTurn: agent.maxRequestsPerTurn,
-      }, this.kite.contextTemplates.get(agentConfigurationContextDefinition.id, agentConfigurationContextDefinition.scene).definition)).snapshot,
+      context: assembleContext(agentConfigurationContext(agentRevision(agent),
+        threadVariables({ ...thread, config: { ...thread.config, agent } }, project),
+        this.kite.contextTemplates.get(agentConfigurationContextDefinition.id, agentConfigurationContextDefinition.scene).definition)).snapshot,
     } as const;
+  }
+  /** 通知里的公共变量取 thread 给出的变化之后的状态。 */
+  private variables(thread: ThreadContext) {
+    return threadVariables(thread, this.projectRule(thread.workspaceId));
   }
   configureAgent(id: string, expectedRevision: string, value: unknown) {
     return this.updateAgentConfiguration(id, expectedRevision, value);
@@ -214,8 +217,7 @@ export class InstanceConfiguration {
   /** 改选角色：提示词、工具、默认模型、预算与协作授权一起换成角色的，并记下新的角色约束。只在还没有对话时可用。 */
   configureRole(id: string, expectedRevision: string, selection: RoleSelection) {
     const thread = this.control.context(id);
-    const bound = roleAgent(this.kite.roles.get(selection.id, selection.revision), thread.workspace.kind,
-      {}, this.projectRule(thread.workspaceId));
+    const bound = roleAgent(this.kite.roles.get(selection.id, selection.revision), {}, this.projectRule(thread.workspaceId));
     return this.updateAgentConfiguration(id, expectedRevision, bound.agent, bound.role);
   }
   private updateAgentConfiguration(id: string, expectedRevision: string, value: unknown, role?: RoleBinding) {
@@ -243,7 +245,7 @@ export class InstanceConfiguration {
       const nextRevision = agentRevision(agent);
       const roleChanged = role !== undefined && JSON.stringify(role) !== JSON.stringify(instanceRole(instance));
       if (nextRevision === revision && !roleChanged) return snapshot;
-      const notification = this.configurationNotice(`instance:${id}`, agent, this.projectRule(instance.workspaceId));
+      const notification = this.configurationNotice(`instance:${id}`, this.control.context(id), agent, this.projectRule(instance.workspaceId));
       const save = () => this.kite.store.transaction(() => {
         if (runtimeChanged) this.kite.store.setThreadRuntime(id, agent.runtime);
         this.kite.store.setInstanceConfig(id, { ...instance.config, agent,

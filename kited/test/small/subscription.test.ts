@@ -5,7 +5,7 @@ import { readSubscriptionCredentials } from '../../src/harness/auth.ts';
 import { ChatGPTModel } from '../../src/harness/chatgpt.ts';
 import { assembleContext, restoreContext } from '../../src/harness/context/assembler.ts';
 import { contextUpdateContext } from '../../src/harness/context/notifications.ts';
-import { projectContext } from '../../src/harness/context/project.ts';
+import { defaultContextDefinition, directoryVariables, projectContext, today } from '../../src/harness/context/project.ts';
 import type { ContextSource } from '../../src/harness/context/types.ts';
 import { localTools } from '../../src/execution/local-tools.ts';
 import { openThreadHost } from '../../src/harness/thread-host.ts';
@@ -400,7 +400,7 @@ test('终端线程关闭等工具停止，重开保留历史并更新项目材�
     cwd, threadDir, env: ENV(),
     prepareRequest: () => ({
       model: currentModel,
-      instructions: projectContext(cwd),
+      instructions: projectContext(defaultContextDefinition, { 'environment.date': today, ...directoryVariables(cwd), 'workspace.kind': () => ({ text: 'root' }) }),
       tools: [tool('hold', async (_args, { signal }) => { started.resolve(signal); await aborted(signal); return stopped.promise; })],
       settings: { model: { model: 'test', reasoning: 'high' } },
     }),

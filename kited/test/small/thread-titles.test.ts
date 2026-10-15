@@ -49,11 +49,11 @@ async function saveTitleTemplate(k: Kited, version: string, inputVersion = versi
   const definition: ContextDefinition = {
     ...original.definition,
     blocks: [{ type: 'paragraph', id: 'title-rules', title: '命名规则', parts: [
-      { type: 'text', text: `标题规则${version}；当前标题：` }, { type: 'variable', name: 'thread.title' },
+      { type: 'text', text: `标题规则${version}；当前标题：` }, { type: 'variable', name: 'title.current' },
     ] }],
     input: [{ type: 'paragraph', id: 'title-input', title: '标题材料', parts: [
-      { type: 'text', text: `标题材料${inputVersion}；当前标题：` }, { type: 'variable', name: 'thread.title' },
-      { type: 'text', text: '\n近期正文：' }, { type: 'variable', name: 'thread.messages' },
+      { type: 'text', text: `标题材料${inputVersion}；当前标题：` }, { type: 'variable', name: 'title.current' },
+      { type: 'text', text: '\n近期正文：' }, { type: 'variable', name: 'title.messages' },
     ] }],
   };
   const response = await k.call('PUT', `/context-templates/${titleTemplate.id}`, {

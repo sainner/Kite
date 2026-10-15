@@ -17,27 +17,59 @@
 
 已有代理显式修改基础上下文时，在后端允许的交接边界追加更新，保留原有历史前缀。角色选择及其对配置与授权的影响统一见 [角色与代理配置](Agent与插件契约.md#32-角色与代理配置)。
 
-`GET /context-templates` 返回后台场景的模板（`definition`，辅助生成另有 `model: {model, reasoning}`）、`revision` 与默认内容的 `defaultRevision`（二者不同即改过），以及场景目录；场景带变量（显示名称与说明）与所属分类 `kind`（`notification`、`compaction`、`generation`），辅助生成的场景另带可选的模型目录与调用凭据的说明（`models`）。`PUT /context-templates/:id` 携带 `expectedRevision`、`definition` 与辅助生成的 `model` 更新，不能改变场景或名称，也不新建模板；`POST /context-templates/:id/reset` 携带 `expectedRevision` 恢复默认，等同于保存默认内容。冲突返回 409，编辑器保留草稿。标题及通知不提供脱离实际调用的无效副本。角色经 `/roles` 读写，接口见 [工作机](kited.md#接口)。
+`GET /context-templates` 返回后台场景的模板（`definition`，辅助生成另有 `model: {model, reasoning}`）、`revision` 与默认内容的 `defaultRevision`（二者不同即改过），以及场景目录；场景带可引用的变量（显示名称、说明与分组 `group`：场景材料或公共变量所在的层）与所属分类 `kind`（`notification`、`compaction`、`generation`），辅助生成的场景另带可选的模型目录与调用凭据的说明（`models`）。`PUT /context-templates/:id` 携带 `expectedRevision`、`definition` 与辅助生成的 `model` 更新，不能改变场景或名称，也不新建模板；`POST /context-templates/:id/reset` 携带 `expectedRevision` 恢复默认，等同于保存默认内容。冲突返回 409，编辑器保留草稿。标题及通知不提供脱离实际调用的无效副本。角色经 `/roles` 读写，接口见 [工作机](kited.md#接口)。
 
 首消息创建请求可携带 `role: {id, revision}`；已创建的空代理可通过 `PUT /instances/:id/role` 携带实例配置 revision、角色 ID 和角色 revision 改选。两条路径均须在发出第一条消息前完成，对话开始后改选会被拒绝。未选择时使用默认角色「工作」。
 
-## 场景契约
+## 场景与变量
 
-场景规定模板适用的用途和可引用变量；它不是调度器。新增场景不意味着已有事件来源，也不自动触发模型。
+变量分两类。公共变量描述代理所处的环境、项目、工作区和实例，在所有场景中含义与格式一致，用户据此自由组装上下文；场景专有变量是某种用途才有的材料，只在该场景可用。场景声明自己开放哪几层公共变量和哪些专有变量；它不是调度器，新增场景不意味着已有事件来源，也不自动触发模型。
 
-| 场景 | 可用变量 | 用途 |
+### 公共变量
+
+公共变量只收变化不频繁的状态。基础上下文在每次请求边界重新组装，正文一变就追加一整份基础上下文更新；未提交改动、diff、检查结果、快照和排队输入这类随工具批次变化的状态不做公共变量，由工具按需读取。每个变量的说明写明内容、何时为空和何时变化，编辑器据此提示。
+
+| 层 | 变量 | 内容与变化 |
 |---|---|---|
-| `thread.create` | `environment.cwd`、`environment.date`、`project.documents` | 角色提示词，即代理的基础上下文 |
-| `thread.title` | `thread.title`、`thread.messages` | 当前标题与近期对话材料 |
-| `thread.compact` | `compaction.range`、`compaction.summary` | 压缩指令与摘要在历史中的包装 |
-| `thread.file_changes` | `files.changes`、`files.origin` | 文件变化与来源；目前由上下文压缩生成 |
-| `thread.configuration_changed` | `agent.revision`、`agent.model`、`agent.reasoning`、`agent.tools`、`agent.max_requests_per_turn` | 实例配置变化 |
-| `thread.context_updated` | `context.instructions` | 更新后的基础正文 |
-| `thread.execution_permissions_changed` | `execution.revision`、`execution.grants` | 执行授权变化 |
-| `thread.plugin_tools_changed` | `plugin.tools` | 已授权插件工具及目标 |
-| `template.emblem` | `template.title`、`template.content` | 按角色名称与提示词设计点阵签名 |
+| 环境 | `environment.date` | 取值时的 UTC 日期，每天变化 |
+| | `machine.name` | 工作机名称；工作区流转到别的机器后变化 |
+| 项目 | `project.name`、`project.remote` | 项目名称与归一化的远程地址；仓库迁移后远程地址变化 |
+| | `project.rules` | 从仓库根目录到工作目录逐级找到的 `AGENTS.md`，由外到内；一个都没有时为空，文件修改后变化 |
+| | `project.memory` | 同一范围内的 `.kite/memory/MEMORY.md`，取法同上 |
+| 工作区 | `environment.cwd` | 工作目录的真实路径；流转到别的机器后可能变化 |
+| | `workspace.name`、`workspace.kind` | 工作区名称；`root` 或 `worktree` |
+| | `workspace.branch` | 当前分支，根工作区跟随检出的 HEAD；分离 HEAD 时为空 |
+| 代理实例 | `agent.title` | 会话标题，纯文本；生成新标题或改名后变化 |
+| | `agent.role` | 创建代理时所选角色的名称，随实例保存，之后修改角色不影响 |
+| | `agent.model`、`agent.reasoning`、`agent.tools`、`agent.max_requests_per_turn` | 实例配置；工具用顿号分隔，一个都没有时是「无」 |
+| | `execution.grants` | 当前执行授权，JSON |
+| | `plugin.tools` | 已授权的插件工具及目标实例，JSON；全部撤回时是 `[]` |
 
-模板只能引用工作机公布的场景变量，不能自行增加变量。变量的取值、来源、使用时机和保存期限由业务确定；文件或插件的观察材料不能自行取得指令权限。
+规则是指令，记忆索引是背景，两者分开提供，角色各自决定标题、引导语和位置；例如 Line 的记忆索引是关于用户的记忆，普通代理的是项目里积累的决定。工作树边界由默认角色按 `workspace.kind` 的条件段落表达，宿主不再在工作树里另外追加段落。
+
+公共变量在组装时取值，只取模板实际引用的：基础上下文在请求边界取值，通知在生成时取值并随通知固定，压缩与辅助生成在生成时取值。角色提示词引用实例配置后，修改配置会同时产生配置通知和基础上下文更新，这是自由组装的代价，由编辑器提示。
+
+### 场景
+
+| 场景 | 公共变量 | 专有变量 | 用途 |
+|---|---|---|---|
+| `thread.create` | 全部 | 无 | 角色提示词，即代理的基础上下文 |
+| `thread.title` | 全部 | `title.current`、`title.messages` | 带引号的当前标题与近期对话，均为 JSON |
+| `thread.voice` | 环境 | `voice.messages` | 近期对话，作为语音识别的背景文本 |
+| `thread.compact` | 全部 | `compaction.range`、`compaction.summary` | 压缩指令与摘要在历史中的包装 |
+| `thread.file_changes` | 全部 | `files.changes`、`files.origin` | 文件变化与来源；目前由上下文压缩生成 |
+| `thread.configuration_changed` | 全部 | `agent.revision` | 实例配置变化 |
+| `thread.context_updated` | 全部 | `context.instructions` | 更新后的基础正文 |
+| `thread.execution_permissions_changed` | 全部 | `execution.revision` | 执行授权变化 |
+| `thread.plugin_tools_changed` | 全部 | 无 | 插件工具授权变化 |
+| `line.monitor` | 全部 | `monitor.delegated`、`monitor.results`、`monitor.briefing` | 唤醒 Line：交给它的事项、它发起的工作的结果与回来时的简报 |
+| `monitor.events` | 全部 | `monitor.title`、`monitor.id`、`monitor.events` | 代理开的 monitor 投来的新事件 |
+| `template.emblem` | 环境 | `template.title`、`template.content` | 按角色名称与提示词设计点阵签名 |
+
+- 同一变量在所有场景格式一致。作为待处理数据、须用特定格式的材料（标题场景的当前标题与对话、语音识别的近期对话）是场景专有，名称按场景区分。
+- revision 是内容摘要，只在对应变更通知里有意义，留在该场景；`template.*` 描述正在设计签名的角色，不是当前代理。
+- 场景取不到某一层时不开放该层，不以空值代替：语音识别可能还没有线程，点阵签名面向资源库里的角色，二者只开放环境层。
+- 模板只能引用场景公布的变量，不能自行增加变量。变量的保存期限由业务确定；文件或插件的观察材料不能自行取得指令权限。
 
 ## 定义与变量
 
@@ -72,7 +104,7 @@ HTTP 模板定义使用 `version: 2`，包含标识、名称、场景和有序�
 
 编辑不改变条件求值规则，实际展开由当次变量决定。编辑器展示模板文字与变量说明，不提供按真实工作区变量展开的最终正文预览。
 
-请求发出后修改模板或材料，不改变在途请求及历史。历史展示当时的内容与来源，不受当前文件、插件状态或模板影响；有效正文相同不重复发送。
+请求发出后修改模板或材料，不改变在途请求及历史。历史展示当时的内容与来源，不受当前文件、插件状态、模板或变量目录增删的影响；有效正文相同不重复发送。
 
 历史须能还原当次上下文与执行设置，但不包含凭据。可编辑模板不能篡改用户原文、模型原生记录或工具结果。
 
@@ -80,9 +112,9 @@ HTTP 模板定义使用 `version: 2`，包含标识、名称、场景和有序�
 
 首次基础指令固定，后续有效正文变化在自然请求边界追加，保留已经发送的历史。组装失败不消费待处理输入、不调用模型。harness 与 Claude 的交接差异、配置和工具变更统一见 [线程通知投递](线程通知投递.md)。模板可编辑不表示任意执行阶段都可改变配置。
 
-项目材料默认来自工作目录到最近仓库根目录之间适用的 `AGENTS.md` 与 `.kite/memory/MEMORY.md`；无仓库时沿父目录查找，按由外到内的顺序提供。子目录规则与记忆正文按需读取。
+项目规则与记忆索引分别来自工作目录到最近仓库根目录之间适用的 `AGENTS.md` 与 `.kite/memory/MEMORY.md`；无仓库时沿父目录查找，按由外到内的顺序提供。子目录规则与记忆正文按需读取。
 
-独立终端沿用自身入口定义；App 编辑的资源库模板按账号同步，但不会自动改写独立终端配置。
+独立终端沿用自身入口定义，只提供日期、工作目录、分支、规则与记忆索引，工作区类型按直接在文件夹里工作算；App 编辑的资源库模板按账号同步，但不会自动改写独立终端配置。
 
 ## 通知正文
 

@@ -110,8 +110,8 @@ struct ContextEditing<Content: View>: View {
     }
 }
 
-/// 正文开头的可用变量一节：标题后是工具栏插入变量的同一个图标，胶囊和正文里的变量同样子，后面是说明。
-/// 窄屏上胶囊一行、说明换到下一行，宽屏胶囊与说明并排对齐。只供查看，插入在工具栏。
+/// 正文开头的可用变量一节：标题后是工具栏插入变量的同一个图标，按组列出，胶囊和正文里的变量同样子，后面是说明。
+/// 窄屏上胶囊一行、说明换到下一行，宽屏胶囊与说明并排对齐，各组共用一列宽。只供查看，插入在工具栏。
 struct ContextVariablePreview: View {
     let variables: [ContextScene.Variable]
     @Environment(\.workspacePresentation) private var presentation
@@ -122,19 +122,26 @@ struct ContextVariablePreview: View {
                 Group {
                     if presentation == .compact {
                         VStack(alignment: .leading, spacing: 10) {
-                            ForEach(variables) { variable in
-                                VStack(alignment: .leading, spacing: 4) {
-                                    ContextVariableChip(title: variable.title)
-                                    description(variable)
+                            ForEach(variables.grouped) { group in
+                                header(group.title)
+                                ForEach(group.variables) { variable in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        ContextVariableChip(title: variable.title)
+                                        description(variable)
+                                    }
                                 }
                             }
                         }
                     } else {
                         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 6) {
-                            ForEach(variables) { variable in
-                                GridRow {
-                                    ContextVariableChip(title: variable.title)
-                                    description(variable)
+                            ForEach(variables.grouped) { group in
+                                // 不在 GridRow 里的视图横跨各列
+                                header(group.title)
+                                ForEach(group.variables) { variable in
+                                    GridRow {
+                                        ContextVariableChip(title: variable.title)
+                                        description(variable)
+                                    }
                                 }
                             }
                         }
@@ -142,6 +149,13 @@ struct ContextVariablePreview: View {
                 }
             }
         }
+    }
+
+    private func header(_ title: String) -> some View {
+        Text(title)
+            .font(Theme.secondary.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.top, 4)
     }
 
     private func description(_ variable: ContextScene.Variable) -> some View {
@@ -543,8 +557,12 @@ private struct ContextConditionEditor<Grip: View>: View {
     private var variableMenu: some View {
         let variable = variables.first { $0.name == block.variable }
         return Menu {
-            ForEach(variables) { item in
-                Button(item.title) { block.variable = item.name }
+            ForEach(variables.grouped) { group in
+                Section(group.title) {
+                    ForEach(group.variables) { item in
+                        Button(item.title) { block.variable = item.name }
+                    }
+                }
             }
         } label: {
             HStack(spacing: 3) {

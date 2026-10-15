@@ -1,9 +1,8 @@
 /** 上下文压缩的内容规则：范围内哪些条目原样保留、哪些并入摘要或丢弃，以及摘要的指令与包装。触发和记录由 runner 负责。 */
 import { randomUUID } from 'node:crypto';
-import { assembleContext } from './context/assembler.ts';
+import { assembleContext, bindContext, sceneValues } from './context/assembler.ts';
 import { fileChangesContext } from './context/notifications.ts';
-import type { ContextVariable } from './context/scenes.ts';
-import type { ContextBinding, ContextDefinition } from './context/types.ts';
+import type { ContextDefinition, ContextValues } from './context/types.ts';
 import type { ContextItem, ModelItem } from './types.ts';
 
 export const compactTemplate: ContextDefinition = {
@@ -72,10 +71,9 @@ export function summaryText(items: ModelItem[]): string {
   return text.trim();
 }
 
-export function compactInstructions(definition: ContextDefinition, range: string): string {
-  return assembleContext({ definition, bindings: {
-    'compaction.range': { text: range }, 'compaction.summary': { text: '' },
-  } satisfies Record<ContextVariable<'thread.compact'>, ContextBinding> }).instructions;
+/** values 是宿主给的公共变量，独立宿主没有时模板只能引用压缩自己的变量。 */
+export function compactInstructions(definition: ContextDefinition, range: string, values: ContextValues = {}): string {
+  return assembleContext(bindContext(definition, { ...values, ...sceneValues<'thread.compact'>({ 'compaction.range': range, 'compaction.summary': '' }) })).instructions;
 }
 
 /**
@@ -84,7 +82,7 @@ export function compactInstructions(definition: ContextDefinition, range: string
  */
 export function compactionItems(options: {
   range: ContextItem[]; after: ContextItem[]; automatic: boolean; summary: string;
-  definition: ContextDefinition; files?: { changes: string; definition?: ContextDefinition };
+  definition: ContextDefinition; files?: { changes: string; definition?: ContextDefinition }; values?: ContextValues;
 }): ContextItem[] {
   const { range, after } = options;
   const retained: ContextItem[] = [];
@@ -102,13 +100,13 @@ export function compactionItems(options: {
       budget -= tokens;
     }
   }
-  const wrapped = assembleContext({ definition: options.definition, bindings: {
-    'compaction.range': { text: '' }, 'compaction.summary': { text: options.summary },
-  } satisfies Record<ContextVariable<'thread.compact'>, ContextBinding> }).input!;
+  const values = options.values ?? {};
+  const wrapped = assembleContext(bindContext(options.definition,
+    { ...values, ...sceneValues<'thread.compact'>({ 'compaction.range': '', 'compaction.summary': options.summary }) })).input!;
   const items: ContextItem[] = [...retained, { type: 'notification', text: wrapped,
     notification: { id: randomUUID(), kind: 'context.summary', source: 'host.compaction', authority: 'observation' } }];
   if (options.files) items.push({ type: 'notification',
-    text: assembleContext(fileChangesContext(options.files.changes, '包括 agent 自己与其他来源的改动', options.files.definition)).instructions,
+    text: assembleContext(fileChangesContext(options.files.changes, '包括 agent 自己与其他来源的改动', values, options.files.definition)).instructions,
     notification: { id: randomUUID(), kind: 'files.changed', source: 'host.compaction', authority: 'observation' } });
   const later = new Set(after.flatMap((item) => item.type === 'notification' ? [item.notification.kind] : []));
   const latest = new Map<string, ContextItem>();

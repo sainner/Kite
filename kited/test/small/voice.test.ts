@@ -38,6 +38,7 @@ function startKited(options: { upstream: number; thread?: string; history?(threa
     keys: async () => [{ provider: 'dashscope', key: 'voice-key' }],
     template: () => ({ definition: voiceTemplate, model: defaultSpeechModel, revision: '' }),
     history: options.history ?? (async () => history([])),
+    variables: () => ({}),
     url: `ws://127.0.0.1:${options.upstream}/`,
   });
   const server = Bun.serve({
