@@ -67,7 +67,9 @@ struct DockModel {
 
     var agents: [DockEntry] = []
     var tools: [DockEntry] = []
-    /// 没有窗口的代理和工具按创建先后排，状态变化不挪位置；小头像就表示没有窗口。
+    /// 没有窗口的代理和工具，按创建先后排，状态变化不挪位置。紧凑布局的底栏直接排它们，不收进「更多」。
+    var windowless: [DockEntry] = []
+    /// 宽屏把 windowless 排成小头像，小头像就表示没有窗口。
     var minis: [DockMini] = []
     var all: [DockEntry] { agents + tools + minis.map(\.entry) }
     /// 小头像占的格数。
@@ -189,7 +191,8 @@ extension WorkArea {
             }
         }
         model.agents = families + agentPanes
-        model.minis = DockModel.pack(loose.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }.map(entry))
+        model.windowless = loose.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }.map(entry)
+        model.minis = DockModel.pack(model.windowless)
         return model
     }
 

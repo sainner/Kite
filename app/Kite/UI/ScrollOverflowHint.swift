@@ -14,6 +14,8 @@ enum ScrollOverflowCarets {
     case apart
     /// 两个箭头并排在末端（右边或底边），开头那条边不渐隐。内容靠开头对齐时用，对齐的那条边保持硬边。
     case atEnd
+    /// 只提醒末端，开头保持硬边、不放箭头：开头那头滚出去的内容另有表示，例如紧凑布局底栏左边的堆叠。
+    case endOnly
 }
 
 private struct ScrollOverflowHint: ViewModifier {
@@ -35,7 +37,7 @@ private struct ScrollOverflowHint: ViewModifier {
 
     /// 渐隐的长度：边上留的距离、箭头，再加一个模数的过渡，箭头落在靠外的一段里；并排的两个箭头占得多，渐隐也长一些。
     private var length: CGFloat {
-        Self.caretInset + Self.caretExtent * (carets == .apart ? 1 : 2) + DotMetrics.module
+        Self.caretInset + Self.caretExtent * (carets == .atEnd ? 2 : 1) + DotMetrics.module
     }
 
     func body(content: Content) -> some View {
@@ -58,7 +60,7 @@ private struct ScrollOverflowHint: ViewModifier {
             .overlay(alignment: vertical ? .bottom : .trailing) {
                 Group {
                     switch carets {
-                    case .apart:
+                    case .apart, .endOnly:
                         caret(vertical: vertical, before: false)
                     case .atEnd:
                         let pair = vertical ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))
@@ -76,7 +78,7 @@ private struct ScrollOverflowHint: ViewModifier {
     /// 箭头并排时开头保持硬边，末端只要有一头被截掉就渐隐，给箭头留出干净的底。
     private func fade(vertical: Bool) -> some View {
         let before = carets == .apart && overflow.before
-        let after = carets == .apart ? overflow.after : overflow.any
+        let after = carets == .atEnd ? overflow.any : overflow.after
         return GeometryReader { proxy in
             let extent = vertical ? proxy.size.height : proxy.size.width
             let end = min(0.5, length / max(extent, 1))

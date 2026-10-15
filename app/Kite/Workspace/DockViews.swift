@@ -227,6 +227,8 @@ struct DockCellButton: View {
     let entry: DockEntry
     let depth: Int
     var mini = false
+    /// 紧凑布局里没有窗口的实例不缩成小头像，盖一层半透明的底色。
+    var veiled = false
     var hoverFrame: CGRect?
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
@@ -237,6 +239,7 @@ struct DockCellButton: View {
         Button(action: activate) {
             DockCell(entry: entry, mini: mini)
                 .frame(width: size.width, height: size.height)
+                .overlay { if veiled { outline(size).fill(Theme.background.opacity(0.5)) } }
                 .contentShape(Rectangle())
         }
         .buttonStyle(.pointingPlain)
@@ -244,7 +247,18 @@ struct DockCellButton: View {
         .onHover { hovering in
             if let hoverFrame { area.setDockHover(entry.id, frame: hoverFrame, hovering: hovering) }
         }
+        .contextMenuOutline(outline(size))
         .contextMenu { DockEntryMenu(entry: entry) }
+    }
+
+    private func outline(_ size: CGSize) -> DockOutline {
+        let width = min(size.width, size.height)
+        switch entry {
+        case .family(let family): return DockOutline(length: DockFamilyFace.length(family, width: width), axis: axis)
+        case .more: return DockOutline()
+        case .instance(let instance): return .face(agent: area.isAgent(instance), width: width)
+        case .pane(let pane): return .face(agent: area.isAgentPane(pane), width: width)
+        }
     }
 
     private func activate() {
@@ -358,6 +372,7 @@ struct DockPanel: View {
         .buttonStyle(.pointingPlain)
         .modifier(DockItemHover(id: DockEntry.instance(family.parent).id))
         .accessibilityLabel(area.dockLabel(.instance(family.parent)))
+        .contextMenuOutline(Circle())
         .contextMenu {
             Text(area.dockLabel(.instance(family.parent)))
             InstanceActions(instance: family.parent)
@@ -468,49 +483,152 @@ struct DockSelection: View {
     }
 }
 
-/// 紧凑布局的底栏：与宽屏停靠栏同样的分组与样式，横着倒序排、靠右，加号在最右端，当前窗口也在里面；
-/// 没有窗口的代理和工具排成两行小头像贴着左端。「更多」与家族格原地拉宽展开，其余的模糊淡出。
+/// 长按菜单浮起的轮廓，与格子画出来的同形；不指定时系统按格子的方框取圆角矩形。
+nonisolated struct DockOutline: Shape {
+    /// 圆角；nil 是代理头像的圆和家族的胶囊。
+    var cornerRadius: CGFloat?
+    /// 家族胶囊沿排列方向的长度：小头像里的家族比格子短，竖排贴上端、横排贴右端，同 DockCell。nil 是铺满格子。
+    var length: CGFloat?
+    var axis: Axis = .vertical
+
+    /// 一个头像：代理是圆，工具的圆角随格子大小缩放，同 DockFace。
+    @MainActor static func face(agent: Bool, width: CGFloat = Metrics.dragBubble) -> Self {
+        Self(cornerRadius: agent ? nil : Metrics.dockRadius * width / Metrics.dragBubble)
+    }
+
+    func path(in rect: CGRect) -> Path {
+        var frame = rect
+        if let length {
+            if axis == .vertical { frame.size.height = min(length, rect.height) }
+            else { frame = CGRect(x: rect.maxX - min(length, rect.width), y: rect.minY, width: min(length, rect.width), height: rect.height) }
+        }
+        if let cornerRadius { return RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).path(in: frame) }
+        return Capsule().path(in: frame)
+    }
+}
+
+extension View {
+    /// 长按菜单浮起的轮廓；Mac 的右键菜单没有浮起的预览。
+    func contextMenuOutline(_ shape: some Shape) -> some View {
+        #if os(iOS)
+        contentShape(.contextMenuPreview, shape)
+        #else
+        self
+        #endif
+    }
+}
+
+/// 紧凑布局的底栏：加号固定在最右端；其余的与宽屏停靠栏同样的样式，从右往左依次是代理、工具、没有窗口的实例，
+/// 组内按先后从左往右排，新的在同组最右端，从上面落进来、两边让开；排不满时靠右，当前窗口也在里面。
+/// 左边还有滚出去的时候堆叠起来（见 DockStackCurve），右边滚出去的渐隐、画箭头。
+/// 没有窗口的不缩成小头像，盖一层底色，也不收进「更多」。家族格原地拉宽展开，其余的模糊淡出。
+///
+/// 滚动区只借它的手势、惯性和滚动范围：里面是一条和照原来间距排开一样长的空轨道，头像钉在可视区里，由 DockStackLayout
+/// 按离右端滚了多远来摆，加减格子、展开收起时由排版的动画过渡。头像若直接排在滚动内容里、用 visualEffect 挪成堆叠，
+/// 内容变长时右端锚定会让滚动偏移跟着动画，visualEffect 拿到的却是格子的终点，两者对不上，堆叠会先散开再收回。
 struct CompactDockBar: View {
     @Binding var open: WorkspaceDrawer?
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
+    /// 滚动区的宽，含四周让出的一圈。
     @State private var width: CGFloat = 0
+    @State private var scroll = DockScroll()
+    /// 刚加进底栏的窗口：切过去时把它滚到最右，见 reveal。
+    @State private var fresh: Set<Pane> = []
+
+    /// 头像的脉冲和选中底伸出格子，滚动区向四周多让出这一圈，免得被截掉；排版仍按格子算。
+    private var margin: CGFloat { Metrics.dragBubble * DockPulse.reach }
+    /// 展开的那一项在轨道上的替身，滚动到它让那一项居中。
+    private static let focus = "dock-focus"
+    /// 当前窗口在轨道上的替身，见 reveal。
+    private static let current = "dock-current"
 
     var body: some View {
         let layout = area.layout
         let dock = area.dockModel(docked: layout.panes, onStage: [])
         let dimmed = !area.dockExpansion.isEmpty
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Metrics.gap) {
-                    if !dock.minis.isEmpty {
-                        minis(dock.minis, cells: dock.miniCells, dimmed: dimmed)
-                        Spacer(minLength: 0)
-                    }
-                    ForEach(dock.tools.reversed()) { item($0, dimmed: dimmed) }
-                    if !dock.agents.isEmpty && !dock.tools.isEmpty {
-                        Rectangle().fill(Theme.rule)
-                            .frame(width: 1, height: Metrics.dragBubble * 0.6)
-                            .modifier(DockDimmed(dimmed: dimmed))
-                    }
-                    ForEach(dock.agents.reversed()) { item($0, dimmed: dimmed) }
-                    AddWindowButton(concentric: false)
-                        .modifier(DockDimmed(dimmed: dimmed))
+        let region = max(width - 2 * margin, 0)
+        // 代理按窗口先后排，有子代理的不提前：窗口有了子代理也不挪位置
+        let agents = dock.agents.sorted { rank($0, in: layout.panes) < rank($1, in: layout.panes) }
+        let items = dock.windowless.map { DockStackItem.entry($0, veiled: true) } + dock.tools.map { .entry($0, veiled: false) }
+            + (agents.isEmpty || dock.tools.isEmpty ? [] : [.divider]) + agents.map { .entry($0, veiled: false) }
+        let current = items.firstIndex { if case .entry(let entry, _) = $0 { window(of: entry) == layout.focused } else { false } }
+        // 照原来的间距排开时每一项的长、离最左一项多远，整串多长
+        let extents = items.map(extent)
+        let positions = extents.indices.map { extents[..<$0].reduce(0, +) + Metrics.gap * CGFloat($0) }
+        let total = (positions.last ?? 0) + (extents.last ?? 0)
+        // 轨道两头含让出的一圈，不用 contentMargins：有内边距时滚动区坐标的原点不在边上，钉住会偏一圈
+        let track = max(total, region) + 2 * margin, height = Metrics.dragBubble + 2 * margin
+        let divider = items.firstIndex { $0.id == DockStackItem.divider.id }.map { positions[$0] } ?? 0
+        HStack(spacing: Metrics.gap) {
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Color.clear
+                        .frame(width: track, height: height)
+                        .overlay(alignment: .leading) {
+                            if let index = items.firstIndex(where: { $0.id == area.dockExpansion.first }) {
+                                Color.clear.frame(width: extents[index], height: 1).id(Self.focus)
+                                    .padding(.leading, track - margin - total + positions[index])
+                            }
+                        }
+                        .overlay(alignment: .leading) {
+                            // 右边多出让出的那一圈：替身的右端贴着可视区右边时，格子正好贴着头像那一段的右端
+                            if let current {
+                                Color.clear.frame(width: extents[current] + margin, height: 1).id(Self.current)
+                                    .padding(.leading, track - margin - total + positions[current])
+                            }
+                        }
+                        .overlay(alignment: .leading) {
+                            DockStackView(scroll: scroll, stacking: !dimmed) {
+                                ForEach(items) { item in
+                                    switch item {
+                                    case .entry(let entry, let veiled):
+                                        self.item(entry, dimmed: dimmed, veiled: veiled)
+                                    case .divider:
+                                        DockStackDivider(scroll: scroll, position: divider, total: total, region: region, stacking: !dimmed)
+                                            .modifier(DockDimmed(dimmed: dimmed))
+                                            .transition(.opacity)
+                                    }
+                                }
+                            }
+                            .environment(\.dockAxis, .horizontal)
+                            .environment(\.dockCurrentPane, layout.focused)
+                            .animation(.snappy, value: items.map(\.id) + area.dockExpansion)
+                            .padding(margin)
+                            .frame(width: width, height: height)
+                            // 钉在可视区：滚动挪了多少，反着挪回来
+                            .visualEffect { content, proxy in
+                                content.offset(x: -proxy.frame(in: .scrollView(axis: .horizontal)).minX)
+                            }
+                        }
                 }
-                .frame(height: Metrics.dragBubble)
-                .environment(\.dockAxis, .horizontal)
-                .environment(\.dockCurrentPane, layout.focused)
-                // 至少和底栏一样宽，小头像才能隔着空白贴到左端
-                .frame(minWidth: width)
-                .animation(.snappy, value: dock.all.map(\.id))
+                // 排满时停在右端，增减格子时右端不动
+                .defaultScrollAnchor(.trailing)
+                // 轨道变长变短时不跟着动画，右端立刻锚住、离右端的距离不变，格子让位交给 DockStackLayout 的动画
+                .transaction(value: track) { $0.animation = nil }
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.contentSize.width - geometry.visibleRect.maxX
+                } action: { _, distance in
+                    withTransaction(Transaction(animation: nil)) { scroll.distance = distance }
+                }
+                .hintsScrollOverflow(.horizontal, carets: .endOnly)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+                .onChange(of: area.dockExpansion.first) { _, id in
+                    if id != nil { withAnimation(.snappy) { proxy.scrollTo(Self.focus, anchor: .center) } }
+                }
+                // 新窗口加进来和切过去可能不在同一次更新里，先记下，切过去时再滚
+                .onChange(of: layout.panes) { old, new in
+                    fresh = Set(new).subtracting(old)
+                    reveal(proxy)
+                }
+                .onChange(of: layout.focused) {
+                    reveal(proxy)
+                    fresh = []
+                }
+                .padding(-margin)
             }
-            // 排不满时靠右，排满时停在右端，增减格子时右端不动
-            .defaultScrollAnchor(.trailing)
-            .scrollClipDisabled()
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
-            .onChange(of: area.dockExpansion.first) { _, id in
-                if let id { withAnimation(.snappy) { proxy.scrollTo(id, anchor: .center) } }
-            }
+            AddWindowButton(concentric: false)
+                .modifier(DockDimmed(dimmed: dimmed))
         }
         .onChange(of: layout.focused.map(area.dockInstanceID), initial: true) { _, id in
             area.noteVisible(id.map { [$0] } ?? [])
@@ -521,58 +639,68 @@ struct CompactDockBar: View {
         }
     }
 
-    private func item(_ entry: DockEntry, dimmed: Bool) -> some View {
+    /// 照原来的间距排开时这一项沿底栏的长：展开的家族格、「更多」按面板算。
+    private func extent(_ item: DockStackItem) -> CGFloat {
+        guard case .entry(let entry, _) = item else { return 1 }
+        if entry.expands, area.dockExpansion.first == entry.id { return DockPanel.extent(entry, path: area.dockExpansion.dropFirst()) }
+        return DockGeometry.cellSize(entry, axis: .horizontal).width
+    }
+
+    private func item(_ entry: DockEntry, dimmed: Bool, veiled: Bool) -> some View {
         let expanded = area.dockExpansion.first == entry.id
-        return Group {
+        // 包一层容器：进出底栏的过渡只管整格，不落到里面展开、收起的切换上
+        return ZStack {
             if entry.expands, expanded {
                 DockPanel(entry: entry, depth: 0, axis: .horizontal, showPane: show)
                     .transition(.scale(scale: 0.7, anchor: .trailing).combined(with: .opacity))
             } else if case .pane(let pane) = entry {
                 paneButton(pane)
             } else {
-                DockCellButton(entry: entry, depth: 0)
+                DockCellButton(entry: entry, depth: 0, veiled: veiled)
                     .background { if current(entry) { DockSelection() } }
             }
         }
-        .id(entry.id)
         .modifier(DockDimmed(dimmed: dimmed && !expanded))
+        .transition(.move(edge: .top).combined(with: .opacity))
     }
 
-    /// 小头像每格两列两行，从左端往右排：宽屏的每一行在这里是一列，先排左边一列，列内从上到下；
-    /// 家族横着占一行两个位置。展开的那项接在后面向右拉宽。
-    @ViewBuilder
-    private func minis(_ minis: [DockMini], cells: Int, dimmed: Bool) -> some View {
-        let expanded = area.dockExpansion.first, step = DockGeometry.miniSize + DockGeometry.miniGap
-        ForEach(0..<cells, id: \.self) { cell in
-            ZStack(alignment: .topLeading) {
-                ForEach(minis.filter { $0.cell == cell }) { mini in
-                    DockCellButton(entry: mini.entry, depth: 0, mini: true)
-                        .offset(x: CGFloat(mini.row) * step, y: CGFloat(mini.column) * step)
-                        .modifier(DockDimmed(dimmed: dimmed && expanded != mini.id))
-                }
-            }
-            .frame(width: Metrics.dragBubble, height: Metrics.dragBubble, alignment: .topLeading)
+    /// 新加的窗口切过去时（新建的窗口会自动切过去），把它滚到头像那一段的最右；离左端太近滚不到最右时停在左端，
+    /// 全部照原来的间距排开，它也就尽量靠右了。
+    private func reveal(_ proxy: ScrollViewProxy) {
+        guard let focused = area.layout.focused, fresh.contains(focused) else { return }
+        fresh = []
+        withAnimation(.snappy) { proxy.scrollTo(Self.current, anchor: .trailing) }
+    }
+
+    /// 一格代表的窗口：家族按父代理的窗口算。
+    private func window(of entry: DockEntry) -> Pane? {
+        switch entry {
+        case .pane(let pane): pane
+        case .family(let family): family.pane
+        default: nil
         }
-        if let entry = minis.first(where: { $0.id == expanded })?.entry {
-            DockPanel(entry: entry, depth: 0, axis: .horizontal, showPane: show)
-                .transition(.scale(scale: 0.7, anchor: .leading).combined(with: .opacity))
-                .id(entry.id)
-        }
+    }
+
+    /// 一格在窗口里的先后。
+    private func rank(_ entry: DockEntry, in panes: [Pane]) -> Int {
+        window(of: entry).flatMap { panes.firstIndex(of: $0) } ?? panes.count
     }
 
     private func paneButton(_ pane: Pane) -> some View {
-        let current = area.layout.focused == pane
+        let current = area.layout.focused == pane, agent = area.isAgentPane(pane)
         return Button {
             if !current { area.layout.focus(pane) }
             open = nil
         } label: {
             DockEntryFace(subject: .pane(pane))
                 .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
-                .background { if current { DockSelection(cornerRadius: area.isAgentPane(pane) ? nil : Metrics.dockRadius) } }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(area.dockLabel(.pane(pane)))
+        .contextMenuOutline(DockOutline.face(agent: agent))
         .contextMenu { DockEntryMenu(entry: .pane(pane)) }
+        // 选中底垫在菜单外面，同家族格：长按浮起的只有头像，选中底留在底栏里
+        .background { if current { DockSelection(cornerRadius: agent ? nil : Metrics.dockRadius) } }
     }
 
     /// 家族格的父代理是当前窗口时也垫选中底。
@@ -584,5 +712,99 @@ struct CompactDockBar: View {
     private func show(_ pane: Pane) {
         area.layout.focus(pane)
         open = nil
+    }
+}
+
+/// 底栏里排成一串的一项：格子或工具与代理之间的分隔线。
+private enum DockStackItem: Identifiable {
+    case entry(DockEntry, veiled: Bool)
+    case divider
+
+    var id: String {
+        switch self {
+        case .entry(let entry, _): entry.id
+        case .divider: "divider"
+        }
+    }
+}
+
+/// 底栏离右端滚了多远。单独放一个对象：滚动时只有读它的排版和分隔线重算，外面的停靠栏不跟着重算。
+@MainActor @Observable private final class DockScroll {
+    var distance: CGFloat = 0
+}
+
+/// 堆叠的摆法：照原来的间距排开时离最左一项 c 远的格子，画在头像那一段（宽 region）的哪里。
+/// 左边还有滚出去的时候，靠右的一段照原来的间距，左边那段越往左挤得越紧，滚出去的都叠进最左端，越远叠得越密、最后完全重合。
+/// 从内容开头到挤的那段右端共 span 长，按 zone·(c/span)^(span/zone) 收进宽 zone 的那段：开头贴着左端，右端接上原来的间距、
+/// 连斜率也接上。挤的程度随滚出去的多少连续变化：滑到最左时全部照原来的间距排开；排不满时靠右；展开时不挤。
+private nonisolated struct DockStackCurve {
+    /// 左边挤起来的那段占头像那一段的比例，靠右的其余部分照原来的间距。
+    static let squeeze: CGFloat = 0.6
+
+    /// 左边滚出去多长。
+    let hidden: CGFloat
+    let zone: CGFloat
+
+    init(total: CGFloat, region: CGFloat, distance: CGFloat, stacking: Bool) {
+        hidden = total - region - distance
+        zone = stacking ? region * Self.squeeze : 0
+    }
+
+    func callAsFunction(_ c: CGFloat) -> CGFloat {
+        guard hidden > 0, zone > 0, c - hidden < zone else { return c - hidden }
+        let span = hidden + zone
+        return zone * pow(max(c, 0) / span, span / zone)
+    }
+}
+
+/// 按离右端滚了多远摆一串格子：滚动时只有这里重算。
+private struct DockStackView<Content: View>: View {
+    let scroll: DockScroll
+    let stacking: Bool
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        DockStackLayout(distance: scroll.distance, stacking: stacking, gap: Metrics.gap) { content }
+    }
+}
+
+/// 从左往右排一串格子，间距一个 gap，位置按 DockStackCurve，靠右的压在上面。位置是排版算出来的，变化时由排版的动画过渡。
+private struct DockStackLayout: Layout {
+    var distance: CGFloat
+    var stacking: Bool
+    var gap: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let widths = subviews.map { $0.sizeThatFits(.unspecified).width }
+        let total = widths.reduce(0, +) + gap * CGFloat(max(widths.count - 1, 0))
+        let curve = DockStackCurve(total: total, region: bounds.width, distance: distance, stacking: stacking)
+        var position: CGFloat = 0
+        for (subview, width) in zip(subviews, widths) {
+            subview.place(at: CGPoint(x: bounds.minX + curve(position), y: bounds.midY), anchor: .leading, proposal: .unspecified)
+            position += width + gap
+        }
+    }
+}
+
+/// 工具和代理之间的分隔线：跟着格子堆叠，挤到和两边的格子没有间距时淡出。左边挨着的工具一格宽。
+private struct DockStackDivider: View {
+    let scroll: DockScroll
+    /// 照原来的间距排开时离最左一项多远，整串多长。
+    let position: CGFloat
+    let total: CGFloat
+    let region: CGFloat
+    let stacking: Bool
+
+    var body: some View {
+        let gap = Metrics.gap, cell = Metrics.dragBubble
+        let curve = DockStackCurve(total: total, region: region, distance: scroll.distance, stacking: stacking)
+        let spacing = min(curve(position) - curve(position - gap - cell) - cell, curve(position + 1 + gap) - curve(position) - 1)
+        Rectangle().fill(Theme.rule)
+            .frame(width: 1, height: Metrics.dragBubble * 0.6)
+            .opacity(min(max(spacing / (gap / 3), 0), 1))
     }
 }
