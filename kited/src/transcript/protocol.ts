@@ -59,6 +59,8 @@ export type ThreadDisplayEvent =
 export interface ThreadActivity {
   phase: Phase;
   waitingForResume: boolean;
+  /** 回合卡在审批或提问上等人回应。 */
+  waiting?: Waiting['kind'];
   outcome?: Outcome['kind'];
   error?: true;
   changedAt?: number;

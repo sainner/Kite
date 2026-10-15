@@ -24,21 +24,31 @@ export interface CommandOptions {
   outputLimit?: number;
   /** 输出已写入日志后通知观察者；不等待界面消费。 */
   onOutput?(text: string, limit: number): void;
+  /** 只收标准输出，同样在写入日志之后；monitor 把它的每一行当作事件。 */
+  onStdout?(text: string): void;
   /** 进程组登记由宿主保存，恢复时据此确认是否仍有执行。 */
   onProcess?(pid: number, active: boolean): void;
   /** 有它时名单外的主机不直接拒绝，交给它决定；命令结束时仍在问的一并作废。 */
   askNetwork?: NetworkAsk;
 }
 
-/** 沙箱宿主经控制目录里的 socket 问名单外的主机，一行一条 JSON：同一主机在这条命令里只问一次，几台主机依次问。 */
-function askServer(path: string, ask: NetworkAsk, signal: AbortSignal): Promise<Server> {
+/**
+ * 沙箱宿主经控制目录里的 socket 问名单外的主机，一行一条 JSON：同一主机在这条命令里只问一次，几台主机依次问。
+ * hold 在问的期间挂住命令的超时计时，返回的函数放开。
+ */
+function askServer(path: string, ask: NetworkAsk, signal: AbortSignal, hold: () => () => void): Promise<Server> {
   const decisions = new Map<string, Promise<boolean>>();
   let queue: Promise<unknown> = Promise.resolve();
+  const asking = async (target: { host: string; port?: number }) => {
+    if (signal.aborted) return false;
+    const release = hold();
+    try { return await ask(target, signal); } finally { release(); }
+  };
   const decide = (host: string, port?: number) => {
     const key = `${host}:${port ?? ''}`;
     let decision = decisions.get(key);
     if (!decision) {
-      decision = queue.then(() => !signal.aborted && ask({ host, ...(port === undefined ? {} : { port }) }, signal)).catch(() => false);
+      decision = queue.then(() => asking({ host, ...(port === undefined ? {} : { port }) })).catch(() => false);
       queue = decision;
       decisions.set(key, decision);
     }
@@ -82,10 +92,21 @@ export async function runCommand(command: string, timeout: number, signal: Abort
   let sandbox: ReturnType<typeof prepareSandbox> | undefined;
   let asking: Server | undefined;
   const askingEnded = new AbortController();
+  // 等人回应网络审批的时间不算命令的运行时间：问的期间停下超时计时，问完按剩余时间接着计。
+  let remaining = timeout;
+  let since = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let held = 0;
+  const startTimer = () => { since = Date.now(); timer = setTimeout(() => stop('命令超时'), remaining); };
+  const hold = () => {
+    if (held++ === 0 && timer) { clearTimeout(timer); timer = undefined; remaining -= Date.now() - since; }
+    // 命令结束后才放开的（询问随之作废）不再计时。
+    return () => { if (--held === 0 && !stopped && !askingEnded.signal.aborted) startTimer(); };
+  };
   try {
     sandbox = prepareSandbox(command, { cwd: options.cwd, env: options.env, policy: options.policy ?? workspacePolicy(options.cwd, options.env),
       credentials: options.credentials, ...(options.askNetwork ? { network: 'ask' as const } : {}) });
-    if (sandbox.askSocket) asking = await askServer(sandbox.askSocket, options.askNetwork!, AbortSignal.any([signal, askingEnded.signal]));
+    if (sandbox.askSocket) asking = await askServer(sandbox.askSocket, options.askNetwork!, AbortSignal.any([signal, askingEnded.signal]), hold);
     child = spawn(sandbox.executable, sandbox.args, { cwd: options.cwd, env: sandbox.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (error) { closeSync(fd); asking?.close(); sandbox?.dispose(); throw error; }
   const pid = child.pid;
@@ -113,11 +134,14 @@ export async function runCommand(command: string, timeout: number, signal: Abort
       options.onOutput?.(part, limit);
     } catch (error) { ioError = error; stop('命令输出处理失败'); }
   };
-  child.stdout.setEncoding('utf8').on('data', onOutput);
+  child.stdout.setEncoding('utf8').on('data', (part: string) => {
+    onOutput(part);
+    if (!confidential && !ioError) options.onStdout?.(part);
+  });
   child.stderr.setEncoding('utf8').on('data', onOutput);
   const onAbort = () => stop('命令被打断，已经发生的改动未撤销');
   signal.addEventListener('abort', onAbort, { once: true });
-  const timer = setTimeout(() => stop('命令超时'), timeout);
+  if (!held) startTimer();
   const closed = new Promise<number | null>((resolve) => {
     child.once('error', () => { stopped = '命令进程启动失败'; });
     child.once('exit', () => {

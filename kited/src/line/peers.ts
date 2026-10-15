@@ -33,8 +33,12 @@ export class Peers {
       ...listed.filter((machine) => machine.id !== self.id)];
   }
 
-  /** 调用一台工作机的 HTTP 接口；非 2xx 抛 PeerError，带对端的状态码与正文。timeoutMs 默认 30 秒。 */
-  async call<T = any>(machineId: string, method: string, path: string, options: { body?: unknown; via?: InputVia; timeoutMs?: number } = {}): Promise<T> {
+  /**
+   * 调用一台工作机的 HTTP 接口；非 2xx 抛 PeerError，带对端的状态码与正文。timeoutMs 默认 30 秒。
+   * signal 是调用方回合的停止：停下只是不再等，请求可能已经送到，对端照样做完。
+   */
+  async call<T = any>(machineId: string, method: string, path: string,
+    options: { body?: unknown; via?: InputVia; timeoutMs?: number; signal?: AbortSignal } = {}): Promise<T> {
     const self = this.options.self();
     let base: string | undefined;
     let proxy: string | undefined;
@@ -57,9 +61,12 @@ export class Peers {
         headers: { 'X-Kite-Machine': machineId, ...(options.via ? { 'X-Kite-Source': JSON.stringify(options.via) } : {}),
           ...(options.body === undefined ? {} : { 'content-type': 'application/json' }) },
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
-        signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
+        signal: AbortSignal.any([AbortSignal.timeout(options.timeoutMs ?? 30_000), ...(options.signal ? [options.signal] : [])]),
       });
-    } catch (error) { throw new KiteError(`连不上工作机 ${machineId}：${(error as Error).message}`, 502); }
+    } catch (error) {
+      if (options.signal?.aborted) throw new KiteError(`已停止，不再等工作机 ${machineId} 的结果；请求可能已经送到`);
+      throw new KiteError(`连不上工作机 ${machineId}：${(error as Error).message}`, 502);
+    }
     const data = await response.json().catch(() => ({})) as Record<string, unknown>;
     if (!response.ok) throw new PeerError(typeof data.error === 'string' ? data.error : `工作机返回 ${response.status}`, response.status, data);
     return data as T;

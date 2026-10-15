@@ -52,7 +52,8 @@ bun run harness --resume <会话id>
 | `src/workspace/lease.ts`、`src/transfer/` | 工作区执行权与跨机流转；契约见 [Line 与工作区流转](../docs/Line与工作区流转.md) |
 | `src/waiting.ts` | 回合中途等人回应：提问工具与必问动作的审批；契约见 [工具审批与提问](../docs/工具审批与提问.md) |
 | `src/environment.ts` | 按项目建工作区前的环境检查 |
-| `src/line/` | 个人 agent Line：跨机调用、管理工具、monitor 与项目说明 |
+| `src/line/` | 个人 agent Line：跨机调用、管理工具、关注设备、Line 的 monitor（事件路由与收件箱）、项目说明 |
+| `src/monitor/` | 通用 monitor：命令与定时来源、时间线、唤醒对象代理与刹车 |
 | `src/plugins/` | 插件定义、安装目录、实例宿主、进程与工具绑定 |
 | `src/operations/` | 实例操作契约、授权入口与操作收据 |
 | `src/agents/` | Agent 定义、工具的逐层约束、后端能力与共享模型清单入口 |

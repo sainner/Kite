@@ -289,7 +289,7 @@ struct SidebarLogoBar<Buttons: View>: View {
         let tiled = presentation == .tiled
         return VStack(spacing: Metrics.sidebarRuleGap) {
             HStack(alignment: tiled ? .bottom : .center, spacing: Metrics.paneButtonGap) {
-                KiteWordmark(hovering: hovering)
+                LineEntry(hovering: hovering)
                 controlPanel
                     .padding(.leading, tiled && searchPresented ? Metrics.padding : 0)
                     .frame(maxWidth: .infinity, alignment: .trailing)
@@ -374,5 +374,59 @@ struct SidebarLogoBar<Buttons: View>: View {
         searchFocused = false
         searchText = ""
         withAnimation { searchPresented = false }
+    }
+}
+
+/// 侧栏顶部的标志就是 Line 的入口（docs/Line与工作区流转.md）：点一下进 Line 的工作区，旁边是 Line 的头像和收件箱里等你的数目；
+/// 还没启用 Line 时点开是在哪台工作机上启用。
+private struct LineEntry: View {
+    var hovering: Bool
+    @Environment(AppModel.self) private var model
+    @State private var choosing = false
+    @State private var failure: String?
+
+    private var waitingCount: Int { model.lineInboxSnapshot?.waiting.count ?? 0 }
+    private var selected: Bool { model.lineArea.map { model.current?.id == $0.id } ?? false }
+
+    var body: some View {
+        Button {
+            if model.lineArea != nil { model.openLine() } else { choosing = true }
+        } label: {
+            HStack(alignment: .center, spacing: 6) {
+                KiteWordmark(hovering: hovering)
+                if waitingCount > 0 {
+                    Text("\(waitingCount)")
+                        .font(Theme.status.weight(.bold).monospacedDigit())
+                        .foregroundStyle(.black.opacity(0.75))
+                        .padding(.horizontal, 5)
+                        .frame(minWidth: 18, minHeight: 18)
+                        .background(Theme.warning, in: Capsule())
+                        .accessibilityLabel("收件箱里 \(waitingCount) 项等你")
+                }
+            }
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(selected ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, -6)
+        .help(model.lineArea == nil ? "启用个人 agent Line" : "Line 的工作区：收件箱与 Line 的对话")
+        .confirmationDialog("在哪台工作机上启用 Line？", isPresented: $choosing, titleVisibility: .visible) {
+            ForEach(model.availableWorkers) { connection in
+                Button("在「\(connection.machine.name)」上启用") { enable(on: connection) }
+            }
+        } message: {
+            Text("Line 是你的个人 agent：汇集各项目等你处理的事，你也可以交给它代处理。")
+        }
+        .alert("没能启用 Line", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
+            Button("好", role: .cancel) { failure = nil }
+        } message: { Text(failure ?? "") }
+    }
+
+    private func enable(on connection: WorkerConnection) {
+        Task {
+            do { try await model.enableLine(on: connection) }
+            catch { failure = error.localizedDescription }
+        }
     }
 }

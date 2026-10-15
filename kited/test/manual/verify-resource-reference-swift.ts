@@ -30,7 +30,7 @@ try {
   writeFileSync(diffTypes, `import Foundation\n\n${[
     'func splitLines(', 'struct LineDiff',
   ].map((signature) => declaration(diffSource, signature)).join('\n\n')}\n\n${[
-    'extension JSON: Codable', 'nonisolated struct RemoteState', 'nonisolated struct ContextUsage',
+    'extension JSON: Codable', 'nonisolated struct RemoteState', 'nonisolated struct RemoteWaiting', 'nonisolated struct ContextUsage',
   ].map((signature) => declaration(clientSource, signature)).join('\n\n')}\n`);
   const fixture = join(root, 'ResourceReferenceContract.swift');
   writeFileSync(fixture, String.raw`

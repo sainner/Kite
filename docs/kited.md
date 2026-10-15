@@ -174,7 +174,7 @@ Kite 托管账号与组网。Mac 和 iPhone 在 App 中使用账号密码登录�
 
 按项目创建前的环境检查读 `GET /environment?project=`，只读本机：平台与系统版本、ChatGPT 与 Claude 订阅在这台工作机的登录（凭据在且未过期为 `ready`，不代表额度可用）、放工作树的卷与检出（或将要 clone 到的位置）所在卷的剩余空间，以及已有检出。按项目创建时，所选角色默认模型的厂商未登录或任一卷剩余不足 1 GB 返回 409。项目声明的凭据引用待 setup 能声明后再检查。
 
-采纳先拉取远程主线，把本地主线和远程主线依次合进工作区分支，主目录快进后推送；推送被拒时重新拉取、合并再推，最多三次。拉取或推送失败不撤销本地主线，结果中的 `push` 报告失败原因，下次采纳或现场推送时一并推上去。采纳冲突交给独立工作区中的一个打开线程处理，主目录不进入冲突状态。agent 仅编辑文件，Git 合并由宿主完成；解决回合正常完成后自动重试一次，仍有冲突则报告，等待用户手动重试。
+采纳先拉取远程主线，把本地主线和远程主线依次合进工作区分支，主目录快进后推送；推送被拒时重新拉取、合并再推，最多三次。拉取或推送失败不撤销本地主线，结果中的 `push` 报告失败原因，下次采纳或现场推送时一并推上去。采纳冲突交给独立工作区中的一个打开线程处理，主目录不进入冲突状态，处理期间同一工作区的其他线程不能开始工作。agent 仅编辑文件，Git 合并由宿主完成；解决回合正常完成后自动重试一次，仍有冲突则报告，等待用户手动重试。
 
 发送、停止、队列退回和恢复属于线程控制，见 [会话状态机](会话状态机.md)。回退只恢复文件，不回退或分叉对话历史。
 
@@ -263,8 +263,10 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | POST | `/workspaces/:id/setup` | 准备失败的独立工作区重跑准备；工作树没建成时重建 |
 | POST | `/workspaces/:id/handover` | 交出工作区：进入可交接状态并把恢复材料推到项目远程 `{allowMaterials?}`；`/handover/cancel` 撤回，`/lease/check` 立即核对执行权。约定见 [工作区流转](Line与工作区流转.md#工作区流转) |
 | POST | `/workspaces/restore` | 在本机还原并接管流转来的工作区 `{project, workspaceId, operationId}` |
-| GET | `/summary` | 这台工作机的状态汇总：未归档工作区、线程执行状态与等你回应的对象 |
-| POST | `/line` | 在这台工作机启用个人 agent Line；`GET /workspaces/:id/monitor` 读 Line 的 monitor 状态。约定见 [Line](Line与工作区流转.md#line) |
+| GET | `/summary` | 这台工作机的状态汇总：未归档工作区、线程执行状态、等你回应的对象、最近一次回合结束的时间（`settledAt`）与是否 Line 发起的工作（`byLine`） |
+| POST | `/line` | 在这台工作机启用个人 agent Line，同时建它的收件箱（Line 的 monitor 实例）；收件箱的读取、代处理与托管走实例操作，见 [实例操作](实例操作.md#monitor)。约定见 [Line](Line与工作区流转.md#line) |
+| GET / PUT | `/attention` | 关注设备：`PUT {device, focused}` 声明这台设备是否在关注 Kite，须同时连着带 `device` 的事件流才生效；`GET` 返回 `{focusedDevices, awaySince?}` |
+| GET | `/threads/:id/reply` | 线程最后一回合的回复（最后一条输入之后的正文）与执行状态，供 Line 读取 |
 | GET | `/workspaces/:id` | 工作区上下文及 instances、threads、windows 的完整聚合 |
 | GET / POST | `/plugin-definitions` | 读取定义（含账号资源库里尚未装到本机的包）或登记自定义包；包格式见 Bun 插件契约 |
 | GET | `/operations` | 操作输入、输出、错误 schema，以及重试与取消规则 |
@@ -293,12 +295,12 @@ API 账号来自 Kite 账号中保存的 API 凭据（见 [凭据服务](托管�
 | GET | `/threads/:id` | 线程和上下文，附带 `runner`、`busy` |
 | GET | `/threads/:id/state` | 只读执行与恢复状态，不启动模型 |
 | GET | `/threads/:id/history` | v1 显示历史、pending、state 和 cursor，只读 |
-| POST | `/threads/:id/messages` | 发消息 `{text, id?}`，返回 `{id}`；harness 落盘后确认，同 id 和内容去重 |
+| POST | `/threads/:id/messages` | 发消息 `{text, id?, relay?}`，返回 `{id}`；harness 落盘后确认，同 id 和内容去重。带 `X-Kite-Source` 时是 Line 的说明（来源 kite），再带 `relay: true` 是 Line 照原文转达的用户的话（来源仍是人） |
 | POST | `/threads/:id/messages/:message/cancel` | 按后端能力撤回尚未交接的输入 |
 | POST | `/threads/:id/interrupt` | 停止会话，返回尚未纳入请求的队列；请求 `{id, inputs?}`，响应 `{returned}` |
 | POST | `/threads/:id/resume` | 继续暂停的线程；可带 operationId 以安全重试 |
 | POST | `/threads/:id/recover` | 确认恢复，不自动执行 |
-| POST | `/threads/:id/waiting/:waiting` | 回应线程在等的提问 `{answers}` 或审批 `{decision}`；已回应或已作废返回 409 与当前的 `waiting`。约定见 [工具审批与提问](工具审批与提问.md) |
+| POST | `/threads/:id/waiting/:waiting` | 回应线程在等的提问 `{answers}` 或审批 `{decision}`，可带 `reason`；带 `X-Kite-Source` 时是 Line 代处理，提问的结果写明由 Line 代答及理由。已回应或已作废返回 409 与当前的 `waiting`。约定见 [工具审批与提问](工具审批与提问.md) |
 | POST | `/threads/:id/compactions` | 手动压缩上下文 `{id, from, through}`，起止为输入 id；校验通过即返回，结果经显示事件送达 |
 | DELETE | `/threads/:id/compactions/:compaction` | 撤销最外层的一次压缩 |
 | POST | `/instances/:id/archive` | 归档独立存续的实例（agent 或 Bun 插件），保留所属工作区 |

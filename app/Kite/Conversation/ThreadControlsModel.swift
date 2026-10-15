@@ -33,6 +33,8 @@ struct ThreadControlsModel {
     static let actionGap: CGFloat = 4
 
     var placeholder: String { thread.transcriptRunning ? "插话，agent 做完手上这一步就会看到" : "回复" }
+    /// 回应卡片上的「交给 Line」：有 Line、这不是 Line 自己发起的请求时才有。
+    var delegate: (() async throws -> Void)? { model.lineDelegate(thread) }
     var listening: Bool { model.voice.owner == voiceOwner }
     var blank: Bool { thread.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     enum PrimaryAction {

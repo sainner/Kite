@@ -120,7 +120,9 @@ struct DockPulse: View {
 
     var body: some View {
         if area.isRunning(instance) {
-            let phase = area.activities[instance]?.phase ?? "idle"
+            // 等你回应时按等待的节奏起伏，颜色同头像换上的警示黄
+            let activity = area.activities[instance]
+            let phase = activity?.waiting != nil ? "waiting" : activity?.phase ?? "idle"
             let color = ContextRing.color(phase), period = max(ContextRing.period(phase), 1)
             let margin = Metrics.dragBubble * Self.reach
             // 交给图层动画，跟屏幕刷新率走，主线程不逐帧重画

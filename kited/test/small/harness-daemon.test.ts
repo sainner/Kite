@@ -5,7 +5,7 @@ import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { Json, ModelItem, ModelRequest } from '../../src/harness/types.ts';
 import type { FakeAccount } from '../fake-account.ts';
-import { after, call, createWorkspace, type Kited, linkNewAccount, listSnapshots, mark, registerCheckout, startKited } from '../harness.ts';
+import { after, call, createWorkspace, type Kited, linkNewAccount, listSnapshots, mark, registerCheckout, startKited, waitIdle } from '../harness.ts';
 import { item, ManualModel, Seen } from '../harness-loop.ts';
 import { commitAll, git, gitOk, makeTemp, newRepo, read, writeFiles } from '../util.ts';
 
@@ -143,44 +143,80 @@ test('同一工作区 A 的请求挂着时 B 能发消息并跑完改文件的�
   expect(gitOk(repo, 'cat-file', '-e', `${bSnapshot!.commit}:a.txt`)).toBe(false);
 }, 1000);
 
-// HTTP 采纳、git 冲突状态、自研 harness 输入来源及回合结束后的自动重试必须连起来验证。
+// HTTP 采纳、git 冲突状态、自研 harness 输入来源、同一工作区线程之间的启动约束及回合结束后的自动重试必须连起来验证。
 // 真实 bug：agent 的命令跑在沙箱里，Git 元数据只读，只能改文件不能 add/commit；原来自动重试只认已提交的解决，
 // 冲突永远合不回去。这里只改工作树文件模拟 agent，不在沙箱外替它跑 git。
-test('采纳冲突通知线程后自动重试合回，用户输入与系统通知保持不同来源', async () => {
-  const model = new ManualModel();
-  kited = startKited(() => model);
+// 真实 bug：冲突转交后工作树停在合并中途（MERGE_HEAD），同一工作区的其他线程照常能开始工作、改文件；处理回合结束后
+// 自动采纳先查全员空闲，有线程在忙就 409，冲突要再走一轮。处理回合期间其他线程发消息、新建带首条消息的线程都要被拒，
+// 停下处理冲突的线程即放开；手动重试遗留冲突仍转交，这次回合正常结束才由宿主接着采纳。
+test('采纳冲突转交一个线程处理：回合期间同一工作区的其他线程不能开始工作，停下它即放开；重试仍转交，回合结束后自动合回，用户输入与系统通知保持不同来源', async () => {
+  const models = new Map<string, ManualModel>();
+  const modelOf = (id: string) => {
+    let model = models.get(id);
+    if (!model) { model = new ManualModel(); models.set(id, model); }
+    return model;
+  };
+  kited = startKited((thread) => modelOf(thread.id));
   const kk = kited;
   const repo = newRepo(kk.root, 'proj', { 'c.txt': 'base\n' });
   const project = await registerCheckout(kk, repo);
   const thread = await createWorkspace(kk, project.checkout.id, '改一下 c.txt', 'harness');
-  const first = await model.call(1);
-  first.response.complete();
-  await kk.waitEvent((event) => event.type === 'idle' && event.threadId === thread.id);
+  const workspaceId = thread.workspace.id;
+  (await modelOf(thread.id).call(1)).response.complete();
+  await waitIdle(kk, thread.id);
+  const opened = await kk.call('POST', `/workspaces/${workspaceId}/threads`, { prompt: '看看文档' });
+  expect(opened.status).toBe(200);
+  const prompts = new Map([[thread.id, '改一下 c.txt'], [opened.body.id as string, '看看文档']]);
+  (await modelOf(opened.body.id).call(1)).response.complete();
+  await waitIdle(kk, opened.body.id);
   writeFiles(thread.workspace.cwd, { 'c.txt': 'session\n' });
   writeFiles(repo, { 'c.txt': 'main\n' });
   const mainCommit = commitAll(repo, '主线改了 c');
 
   const since = mark(kk);
-  const conflict = await kk.call('POST', `/workspaces/${thread.workspace.id}/adopt`);
+  const conflict = await kk.call('POST', `/workspaces/${workspaceId}/adopt`);
   expect(conflict.status).toBe(200);
   expect(conflict.body).toMatchObject({ status: 'conflict', files: ['c.txt'] });
   expect(git(repo, 'rev-parse', 'HEAD')).toBe(mainCommit);
 
-  const notice = await model.call(2);
-  const inputs = notice.request.history.flatMap((item) => item.type === 'input' ? [item.input] : []);
-  expect(inputs).toContainEqual(expect.objectContaining({ source: 'human', text: '改一下 c.txt' }));
+  // 冲突转交给其中一个线程，另一个在旁边。
+  const notice = await Promise.race([...prompts.keys()].map((id) => modelOf(id).call(2).then((call) => ({ id, call }))));
+  const resolver = notice.id;
+  const bystander = [...prompts.keys()].find((id) => id !== resolver)!;
+  const inputs = notice.call.request.history.flatMap((item) => item.type === 'input' ? [item.input] : []);
+  expect(inputs).toContainEqual(expect.objectContaining({ source: 'human', text: prompts.get(resolver) }));
   expect(inputs).toContainEqual(expect.objectContaining({ source: 'kite', text: expect.stringContaining('冲突') }));
-  // 模拟沙箱里的 agent 采用会话一侧：只把文件改成去掉冲突标记的内容，不碰 git；完成这个回合后 kited 才能自动重试采纳。
+  expect((await kk.call('POST', `/threads/${bystander}/messages`, { text: '顺手改别的' })).status).toBe(409);
+  expect((await kk.call('POST', `/workspaces/${workspaceId}/threads`, { prompt: '再开一个' })).status).toBe(409);
+  expect(notice.call.signal.aborted).toBe(false);
+
+  // 停下处理冲突的线程，其他线程随即能开始工作；工作区仍停在冲突里。
+  expect((await kk.call('POST', `/threads/${resolver}/interrupt`)).status).toBe(200);
+  const freed = mark(kk);
+  expect((await kk.call('POST', `/threads/${bystander}/messages`, { text: '顺手改别的' })).status).toBe(200);
+  (await modelOf(bystander).call(2)).response.complete();
+  await waitIdle(kk, bystander, freed);
+
+  // 手动重试：遗留冲突仍转交给它。模拟沙箱里的 agent 采用会话一侧：只把文件改成去掉冲突标记的内容，不碰 git；
+  // 完成这个回合后 kited 才能自动重试采纳。
+  const retried = await kk.call('POST', `/workspaces/${workspaceId}/adopt`);
+  expect(retried.body).toMatchObject({ status: 'conflict', files: ['c.txt'] });
+  const resolving = await modelOf(resolver).call(3);
   writeFiles(thread.workspace.cwd, { 'c.txt': 'session\n' });
-  notice.response.complete();
-  const adopted = await kk.waitEvent((event) => event.type === 'workspace.adopt' && event.workspaceId === thread.workspace.id
+  resolving.response.complete();
+  const adopted = await kk.waitEvent((event) => event.type === 'workspace.adopt' && event.workspaceId === workspaceId
     && event.result.status === 'adopted' && after(kk, since)(event));
   expect(adopted.type === 'workspace.adopt' && adopted.result.status === 'adopted' && adopted.result.commit)
     .toBe(git(repo, 'rev-parse', 'HEAD'));
   expect(gitOk(repo, 'merge-base', '--is-ancestor', mainCommit, 'HEAD')).toBe(true);
   expect(read(join(repo, 'c.txt'))).toBe('session\n');
   expect(git(repo, 'status', '--porcelain')).toBe('');
-  await kk.waitEvent((event) => event.type === 'idle' && event.threadId === thread.id && after(kk, since)(event));
+  await waitIdle(kk, resolver, freed);
+
+  const settled = mark(kk);
+  expect((await kk.call('POST', `/threads/${bystander}/messages`, { text: '合回之后接着做' })).status).toBe(200);
+  (await modelOf(bystander).call(3)).response.complete();
+  await waitIdle(kk, bystander, settled);
 }, 1000);
 
 // 真实 bug：不带 force 归档时先停止所有线程再检查未采纳改动，「先试探、收到 409 再问用户」的流程

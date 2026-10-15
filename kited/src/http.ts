@@ -79,8 +79,10 @@ function encode(e: EventFrame): string {
   return text;
 }
 
+/** device 是 App 所在设备，事件流连着才算在关注 Kite；其余参数选择范围。 */
 function eventScope(url: string): EventScope {
   const params = new URL(url).searchParams;
+  params.delete('device');
   if (params.size === 0) return 'catalog';
   if (params.size !== 1) throw new KiteError('事件订阅只能选择一个工作区或线程');
   const [key, id] = [...params][0]!;
@@ -88,12 +90,14 @@ function eventScope(url: string): EventScope {
   return key === 'workspace' ? { workspaceId: id } : { threadId: id };
 }
 
-async function events(kite: Kite, scope: EventScope): Promise<Response> {
+async function events(kite: Kite, scope: EventScope, device?: string): Promise<Response> {
   if (scope !== 'catalog') {
     if ('threadId' in scope) await kite.threadState(scope.threadId);
     else kite.workspace(scope.workspaceId);
   }
+  if (device !== undefined && !device.trim()) throw new KiteError('device 不能为空');
   let unsubscribe = () => {};
+  let disconnect = () => {};
   let heartbeat: Timer | undefined;
   const stream = new ReadableStream<string>({
     start(controller) {
@@ -110,8 +114,9 @@ async function events(kite: Kite, scope: EventScope): Promise<Response> {
       if (scope === 'catalog') kite.modelAccounts.ensure();
       heartbeat = setInterval(() => controller.enqueue(': \n\n'), 15_000);
       controller.enqueue(': connected\n\n');
+      if (device) disconnect = kite.attention.connect(device);
     },
-    cancel() { unsubscribe(); clearInterval(heartbeat); },
+    cancel() { unsubscribe(); disconnect(); clearInterval(heartbeat); },
   });
   return new Response(stream, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' } });
 }
@@ -248,13 +253,23 @@ export function serve(kite: Kite, listen: Listen) {
           if ((b.checkout === undefined) === (b.project === undefined)) throw new KiteError('创建工作区要写 checkout 或 project 中的一个');
           const name = b.name === undefined ? '' : str(b.name, 'name');
           const prompt = b.prompt === undefined ? undefined : str(b.prompt, 'prompt');
-          return b.project === undefined ? kite.createWorkspace(str(b.checkout, 'checkout'), name, prompt, roleSelection(b.role))
-            : kite.createProjectWorkspace(str(b.project, 'project'), name, prompt, roleSelection(b.role));
+          const via = sourceOf(req);
+          return b.project === undefined ? kite.createWorkspace(str(b.checkout, 'checkout'), name, prompt, roleSelection(b.role), via)
+            : kite.createProjectWorkspace(str(b.project, 'project'), name, prompt, roleSelection(b.role), via);
         })),
       },
       '/summary': { GET: bound(() => kite.summary()) },
       // 启用 Line 要建托管项目并推送，请求不受空闲超时限制。
       '/line': { POST: long(bound(() => kite.enableLine())) },
+      '/attention': {
+        GET: bound(() => ({ focusedDevices: kite.attention.devices(), ...(kite.monitor.state()?.away !== undefined ? { awaySince: kite.monitor.state()!.away } : {}) })),
+        PUT: bound(async (req) => {
+          const parsed = z.object({ device: z.string().trim().min(1).max(200), focused: z.boolean() }).strict().safeParse(await body(req));
+          if (!parsed.success) throw new KiteError('关注状态要写 device 与 focused');
+          kite.attention.set(parsed.data.device, parsed.data.focused);
+          return { focusedDevices: kite.attention.devices() };
+        }),
+      },
       '/environment': { GET: bound((req) => kite.environment(str(new URL(req.url).searchParams.get('project') ?? undefined, 'project'))) },
       '/workspaces/:id/setup': { POST: bound((req) => kite.retrySetup(req.params.id)) },
       '/workspaces/:id/handover': { POST: long(bound(async (req) => {
@@ -266,11 +281,6 @@ export function serve(kite: Kite, listen: Listen) {
         return kite.transfers.handover(req.params.id, parsed.data);
       })) },
       '/workspaces/:id/handover/cancel': { POST: long(bound((req) => kite.transfers.cancel(req.params.id))) },
-      '/workspaces/:id/monitor': { GET: bound((req) => {
-        const line = kite.lineInstance();
-        if (!line || line.workspaceId !== req.params.id) throw new KiteError('这个工作区没有 Line', 404);
-        return kite.monitor.state();
-      }) },
       '/workspaces/:id/lease/check': { POST: long(bound((req) => kite.transfers.check(req.params.id))) },
       '/workspaces/restore': { POST: long(bound(async (req) => {
         const parsed = z.object({ project: z.string().min(1), workspaceId: z.string().min(1), operationId: z.string().min(1) }).strict().safeParse(await body(req));
@@ -354,6 +364,7 @@ export function serve(kite: Kite, listen: Listen) {
         }),
       },
       '/threads/:id/state': { GET: bound((req) => kite.threadState(req.params.id)) },
+      '/threads/:id/reply': { GET: bound((req) => kite.reply(req.params.id)) },
       '/threads/:id/title/regenerate': { POST: long(bound(async (req) => {
         const parsed = z.object({ expectedRevision: z.string().min(1) }).strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('标题重新生成请求无效');
@@ -419,7 +430,9 @@ export function serve(kite: Kite, listen: Listen) {
         POST: bound(async (req) => {
           const b = await body(req);
           const via = sourceOf(req);
-          return kite.operations.invoke({ kind: 'ui', ...(via ? { via } : {}) }, kite.thread(req.params.id).workspaceId, 'agent.send', {
+          // relay：Line 照原文转达用户的话，输入来源仍是人。
+          if (b.relay !== undefined && (b.relay !== true || !via)) throw new KiteError('relay 只用于 Line 转达用户原文');
+          return kite.operations.invoke({ kind: 'ui', ...(via ? { via } : {}), ...(b.relay ? { relayed: true } : {}) }, kite.thread(req.params.id).workspaceId, 'agent.send', {
             instanceId: req.params.id, text: str(b.text, 'text'), operationId: b.id === undefined ? crypto.randomUUID() : str(b.id, 'id'),
           }, req.signal);
         }),
@@ -450,7 +463,7 @@ export function serve(kite: Kite, listen: Listen) {
       '/threads/:id/recover': { POST: bound((req) => kite.recover(req.params.id)) },
       '/threads/:id/waiting/:waiting': { POST: bound(async (req) => {
         kite.thread(req.params.id);
-        kite.waits.respond(req.params.id, req.params.waiting, await body(req));
+        kite.waits.respond(req.params.id, req.params.waiting, await body(req), sourceOf(req));
         return { ok: true };
       }) },
       '/threads/:id/compactions': { POST: bound(async (req) => {
@@ -471,7 +484,7 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/adopt': { POST: long(bound((req) => kite.adopt(req.params.id))) },
       '/instances/:id/archive': { POST: bound((req) => kite.archiveInstance(req.params.id)) },
       '/workspaces/:id/archive': { POST: bound(async (req) => kite.archiveWorkspace(req.params.id, (await body(req)).force === true)) },
-      '/events': { GET: bound((req) => events(kite, eventScope(req.url))) },
+      '/events': { GET: bound((req) => events(kite, eventScope(req.url), new URL(req.url).searchParams.get('device') ?? undefined)) },
       '/voice': { GET: voice },
     },
     websocket: {

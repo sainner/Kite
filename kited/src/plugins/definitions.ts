@@ -5,6 +5,7 @@ import { defaultContextDefinition } from '../harness/context/project.ts';
 import { operationContracts, operationToolNames, type OperationName } from '../operations/contract.ts';
 import type { ExecutionGrants } from '../execution/grants.ts';
 import { defaultAgentModel } from '../agents/models.ts';
+import { monitorDefinitionId } from '../monitor/monitors.ts';
 
 export interface PluginDefinition {
   id: string;
@@ -31,8 +32,10 @@ export const agentToolCatalog: { name: AgentTool; title: string; group: string }
   { name: 'shell', title: '运行命令', group: '文件与命令' },
   { name: 'credentials', title: '列出密钥引用', group: '凭据' },
   { name: 'question', title: '向用户提问', group: '用户交接' },
-  ...operationToolNames.map((name) => ({ name, title: operationTitle(name), group: '代理协作' })),
+  ...operationToolNames.map((name) => ({ name, title: operationTitle(name), group: name.startsWith('monitor_') ? '监视' : '代理协作' })),
   { name: 'line_status', title: '查看全部工作区', group: '个人 agent' },
+  { name: 'line_handle', title: '代处理收件箱', group: '个人 agent' },
+  { name: 'line_relay', title: '转达用户的话', group: '个人 agent' },
   { name: 'line_control', title: '管理线程', group: '个人 agent' },
   { name: 'line_workspace', title: '创建与流转工作区', group: '个人 agent' },
 ];
@@ -54,6 +57,10 @@ const definitions: PluginDefinition[] = [
     { id: 'files', title: '文件', renderer: 'files' },
   ] },
   { id: 'kite.terminal', title: '终端', lifetime: 'window', defaultView: 'terminal', operations: [], views: [{ id: 'terminal', title: '终端', renderer: 'terminal' }] },
+  /** 由代理的 monitor_start 或启用 Line 时由宿主创建，界面不能直接新建；Line 的那个视图就是收件箱。 */
+  { id: monitorDefinitionId, title: '监视', lifetime: 'persistent', defaultView: 'timeline',
+    operations: ['monitor.stop', 'monitor.read', 'monitor.delegate', 'monitor.dismiss', 'monitor.hosting'],
+    views: [{ id: 'timeline', title: '时间线', renderer: 'monitor' }] },
 ];
 
 export const pluginDefinitions = (): readonly PluginDefinition[] => structuredClone(definitions);

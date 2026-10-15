@@ -20,6 +20,12 @@ final class AppModel {
     /// 侧栏底部一级导航选中的一栏。
     var sidebarSection = SidebarSection.workspaces
     var contentSize: CGSize = .zero
+    /// Line 的收件箱，从 Line 所在的工作机读；标志旁的数目和收件箱窗口都用它，见 LineModel。
+    var lineInboxSnapshot: LineInbox?
+    /// monitor 窗口的读取版本：工作机推 monitor.changed 时加一，打开着的窗口重新读取。
+    var monitorRevisions: [String: Int] = [:]
+    /// 点了系统通知、要在收件箱里展开的那一项。
+    var lineFocusItem: String?
     let account: KiteAccount
     /// 语音输入的录音，整个 App 共用一支麦克风。
     let voice = VoiceInput()
@@ -345,6 +351,18 @@ final class AppModel {
                 connection.modelAccountsError = nil
             }
             if event.type == "model-accounts.changed" { return }
+            if event.type == "line.inbox" {
+                Task { await self.refreshLineInbox() }
+                return
+            }
+            if event.type == "monitor.changed" {
+                if let instance = event.instanceId { self.monitorRevisions[instance, default: 0] += 1 }
+                return
+            }
+            if event.type == "line.notification" {
+                if let notification = event.notification { LineNotifications.shared.post(notification) }
+                return
+            }
             if event.type == "context-templates.changed" {
                 if connection.templates != nil { Task { try? await self.refreshTemplates(of: connection, fresh: true) } }
                 return
@@ -367,6 +385,9 @@ final class AppModel {
             if event.type == "catalog.snapshot" {
                 guard event.version == 1, let remote = event.workspaces else { throw KitedError(message: "工作区快照无效") }
                 try self.apply(remote, from: client, cursor: cursor, generation: generation)
+                // 目录流（重新）连上了：收件箱重读，关注状态再报一次（事件流断开时工作机已把这台设备移出）
+                Task { await self.refreshLineInbox() }
+                LineAttention.shared.report()
                 // 断线期间收不到角色与模板的变化事件，重连后读过的重新读一遍
                 if connection.roles != nil { Task { try? await self.refreshRoles(of: connection, fresh: true) } }
                 if connection.templates != nil { Task { try? await self.refreshTemplates(of: connection, fresh: true) } }

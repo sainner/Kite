@@ -38,7 +38,7 @@ struct ContextRing: View {
     static func color(_ phase: String) -> Color {
         switch phase {
         case "running": .accentColor
-        case "stopping": Theme.warning
+        case "stopping", "waiting": Theme.warning
         case "finishing": Palette.dewy
         default: .secondary
         }
@@ -48,6 +48,8 @@ struct ContextRing: View {
         switch phase {
         case "running": 2.4
         case "stopping": 1
+        // 等你回应：警示黄，按等待的节奏明暗起伏，不转
+        case "waiting": WaitingBreath.period
         case "finishing": 1.6
         default: 0
         }

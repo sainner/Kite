@@ -18,7 +18,7 @@ import { defaultSpeechModel, speechModels, speechVendors } from './voice/models.
 const editableScenes: Partial<Record<ContextScene, 'notification' | 'compaction' | 'generation'>> = {
   'thread.configuration_changed': 'notification', 'thread.context_updated': 'notification',
   'thread.execution_permissions_changed': 'notification', 'thread.plugin_tools_changed': 'notification',
-  'thread.file_changes': 'notification', 'line.monitor': 'notification',
+  'thread.file_changes': 'notification', 'line.monitor': 'notification', 'monitor.events': 'notification',
   'thread.compact': 'compaction',
   'thread.title': 'generation', 'template.emblem': 'generation', 'thread.voice': 'generation',
 };

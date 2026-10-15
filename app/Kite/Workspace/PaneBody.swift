@@ -56,6 +56,9 @@ private struct WorkspacePaneBody: View {
                 #endif
             } else if let browser = area.files(in: pane), renderer == "files" {
                 FilePane(browser: browser).id(pane.id)
+            } else if renderer == "monitor", let target = area.windows.first(where: { $0.id == pane.id })?.target,
+                      let instance = area.instances.first(where: { $0.id == target.instanceId }) {
+                MonitorPane(instance: instance).id(pane.id)
             } else if renderer == "web", let target = area.windows.first(where: { $0.id == pane.id })?.target,
                       let instance = area.instances.first(where: { $0.id == target.instanceId }),
                       let client = area.pluginClient {

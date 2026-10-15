@@ -48,6 +48,8 @@ export interface RuntimeOptions {
   lightTasks?: false | Partial<LightTaskOptions>;
   /** 测试里替换 Line 看到的账号目录：同一进程里的几台 kited 按给出的地址直接互访，不经组网。 */
   peers?: { directory(): Promise<AccountMachine[]> };
+  /** 测试里缩短 monitor 事件到唤醒之间的合批等待（毫秒），默认 1 秒。 */
+  monitorWakeDelayMs?: number;
 }
 
 export interface RuntimeEvents {
@@ -77,8 +79,8 @@ export interface RuntimeHost {
   compactionFiles(range: { from: number; to: number }): Promise<string | undefined>;
   /** 所在项目的工具约束；每次请求和每次调用工具时读取，收紧即时生效。 */
   toolConstraint(): ProjectToolRule | undefined;
-  /** 每条命令开始时按实例的审批模式取：名单外主机交给谁决定，白名单模式没有。 */
-  network(): NetworkAsk | undefined;
+  /** 命令连接名单外的主机时交给它决定：按问的那一刻实例的审批模式放行、拒绝或问人，中途改模式对运行中的命令也生效。 */
+  askNetwork: NetworkAsk;
 }
 
 const constraintAllows = (rule: ProjectToolRule | undefined, name: string) => !rule || ruleAllows(rule, name);
@@ -108,7 +110,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   } : undefined;
   const diffDir = join(home, 'diffs', workspaceId);
   if (runtime === 'claude') {
-    return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy, secrets, network: host.network,
+    return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy, secrets, askNetwork: host.askNetwork,
       prepare(afterNotification) {
         const { agent, permitted, plugins } = selectTools(host.current(), operations, host.toolConstraint());
         const allowed = new Set([...agent.tools.filter(permitted), ...plugins.map((tool) => tool.name)]);
@@ -124,7 +126,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   }
   const inputs = new Map<string, string>();
   const thread = await openThreadHost({
-    cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, startPaused: true, policy, secrets, network: host.network,
+    cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, startPaused: true, policy, secrets, askNetwork: host.askNetwork,
     prepareRequest(tools, { afterNotification }) {
       const current = host.current();
       const execution = instanceExecutionGrants(current);

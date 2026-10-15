@@ -1,11 +1,12 @@
 /**
- * 手动合同验证：真实显示投影的 JSON 经 App 解码后，思考独立于工具组，迟到结果仍回填原调用。
+ * 手动合同验证：真实显示投影的 JSON 经 App 解码后，思考独立于工具组，迟到结果仍回填原调用，等你回应的提问与审批字段齐全。
  * 运行：bun kited/test/manual/verify-transcript-swift.ts
  * Swift 编译不计入 small 测试耗时预算。
  */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type { AgentDefinition } from '../../src/agents/definition.ts';
 import { TranscriptFeed } from '../../src/transcript/feed.ts';
 import { TranscriptProjection } from '../../src/transcript/projection.ts';
@@ -16,6 +17,7 @@ import { localTools } from '../../src/execution/local-tools.ts';
 import { requestSnapshot } from '../../src/harness/request-config.ts';
 import type { JournalEvent, JournalRecord, ModelItem, ToolResult } from '../../src/harness/types.ts';
 import type { ThreadContext } from '../../src/model.ts';
+import type { Waiting } from '../../src/waiting.ts';
 import { command } from './command.ts';
 
 // patch 的磁盘副作用与 journal 的 schema 解析交接后，投影和 Swift 仍须保留可回看的 diff 引用。
@@ -276,19 +278,38 @@ if (correctedRecord?.block.type !== 'tool_use' || correctedRecord.generation !==
   throw new Error('损坏草稿未被完整模型条目按原调用校正');
 }
 
+// 宿主的 waiting 事件经投影进入 thread.state，Swift 按 RemoteWaiting 分别解出提问和审批；解除后不残留。
+const asked: Waiting = { id: 'fixture-question', since: 3_000, kind: 'question', questions: [{
+  header: '做法', question: '用哪种做法？', multiSelect: true,
+  options: [{ label: '甲（推荐）', description: '改动小' }, { label: '乙', description: '更彻底' }],
+}] };
+const approval: Waiting = { id: 'fixture-approval', since: 3_001, kind: 'approval',
+  tool: 'shell', target: 'rm -rf ../build', reason: '删除工作区外的目录', mustAsk: true };
+projection.accept({ type: 'waiting', threadId: thread.id, at: 3_000, waiting: asked });
+const asking = projection.snapshot().state;
+projection.accept({ type: 'waiting', threadId: thread.id, at: 3_001 });
+projection.accept({ type: 'waiting', threadId: thread.id, at: 3_002, waiting: approval });
+const approving = projection.snapshot().state;
+projection.accept({ type: 'waiting', threadId: thread.id, at: 3_003 });
+const answered = projection.snapshot().state;
+if (!isDeepStrictEqual(asking.waiting, asked) || !isDeepStrictEqual(approving.waiting, approval)
+  || answered.waiting !== undefined) {
+  throw new Error(`waiting 事件未原样进入显示状态或解除后残留：${JSON.stringify([asking.waiting, approving.waiting, answered.waiting])}`);
+}
+
 const root = mkdtempSync(join(tmpdir(), 'transcript-swift-contract-'));
 try {
   const app = join(import.meta.dir, '..', '..', '..', 'app', 'Kite');
   const clientSource = readFileSync(join(app, 'Application', 'KitedClient.swift'), 'utf8');
   const extracted = join(root, 'RemoteTranscriptTypes.swift');
   writeFileSync(extracted, `import Foundation\n\n${[
-    'struct RemoteState:', 'struct ContextUsage:', 'struct RemoteRecord:', 'struct RemoteDelta:',
+    'struct RemoteState:', 'struct RemoteWaiting:', 'struct ContextUsage:', 'struct RemoteRecord:', 'struct RemoteDelta:',
     'struct KitedError:', 'extension RemoteRecord', 'extension JSON: Codable',
   ].map((signature) => declaration(clientSource, signature)).join('\n\n')}\n`);
   const recordsPath = join(root, 'records.json');
   const statesPath = join(root, 'states.json');
   writeFileSync(recordsPath, JSON.stringify(records));
-  writeFileSync(statesPath, JSON.stringify([measured.state, stillMeasured.state, invalid.state]));
+  writeFileSync(statesPath, JSON.stringify([measured.state, stillMeasured.state, invalid.state, asking, approving, answered]));
   const streamPath = join(root, 'stream.json');
   writeFileSync(streamPath, JSON.stringify({
     thoughtStart, thoughtDeltas: deltas.filter((delta) => delta.id === thoughtStart.id), thoughtComplete,
@@ -325,7 +346,7 @@ struct TranscriptContract {
             from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])))
         let states = try JSONDecoder().decode([RemoteState].self,
             from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2])))
-        require(states.count == 3, "状态夹具数量错误")
+        require(states.count == 6, "状态夹具数量错误")
         require(states[0].context?.requestId == "fixture-request"
             && states[0].context?.inputTokens == 321
             && states[0].context?.windowTokens == nil
@@ -334,6 +355,20 @@ struct TranscriptContract {
         require(states[1].context?.requestId == states[0].context?.requestId,
             "运行中不应把上次测量改属新请求")
         require(states[2].context == nil, "无效用量未解码为空")
+        guard let asking = states[3].waiting, let approving = states[4].waiting else {
+            fatalError("thread.state 的 waiting 未解码")
+        }
+        let question = asking.questions?.first
+        require(asking.isQuestion && asking.id == "fixture-question" && asking.since == 3000
+            && asking.questions?.count == 1 && question?.header == "做法" && question?.multiSelect == true
+            && question?.options.map { $0.label } == ["甲（推荐）", "乙"] && question?.options[1].description == "更彻底"
+            && asking.tool == nil && asking.mustAsk == nil,
+            "提问的问题、选项或多选未解码")
+        require(!approving.isQuestion && approving.id == "fixture-approval" && approving.questions == nil
+            && approving.tool == "shell" && approving.target == "rm -rf ../build"
+            && approving.reason == "删除工作区外的目录" && approving.mustAsk == true,
+            "审批的工具、目标、原因或必问未解码")
+        require(states[5].waiting == nil, "等待解除后仍解出 waiting")
 
         let stream = try JSONDecoder().decode(StreamFixture.self,
             from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[3])))
@@ -444,7 +479,7 @@ struct TranscriptContract {
         require(firstWork.calls[0].result?.diff?.id == CommandLine.arguments[4]
             && firstWork.calls[0].result?.diff?.paths == ["目录/带 空格.ts"],
             "journal 和显示投影中的 diff 引用未抵达 Swift 工具结果")
-        print("投影记录经 Swift 解码后保持独立思考、工具分组与迟到结果")
+        print("投影记录经 Swift 解码后保持独立思考、工具分组与迟到结果，等待对象按提问和审批解出")
     }
 
     private static func verify(_ transcript: Transcript, before: String, thought: String, after: String) {

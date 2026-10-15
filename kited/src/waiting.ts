@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { KiteError } from './errors.ts';
-import type { JsonObject, Tool, ToolResult } from './harness/types.ts';
+import type { InputVia, JsonObject, Tool, ToolResult } from './harness/types.ts';
 
 const option = z.object({
   label: z.string().trim().min(1).max(100),
@@ -21,14 +21,17 @@ const question = z.object({
 const questionArguments = z.object({ questions: z.array(question).min(1).max(4) }).strict();
 export type Question = z.infer<typeof question>;
 
+/** Line 代处理时写明的理由，随结果交回模型。 */
+const reason = z.string().trim().min(1).max(2000).optional();
 /** 对提问的回应：按问题顺序，每项是选中的选项标签，或用户写的「其他」，多选时两者可以并存。 */
 const answersRequest = z.object({
   answers: z.array(z.object({
     selected: z.array(z.string().min(1).max(100)).max(4).optional(),
     other: z.string().trim().min(1).max(20_000).optional(),
   }).strict()).min(1).max(4),
+  reason,
 }).strict();
-const decisionRequest = z.object({ decision: z.enum(['once', 'remember', 'deny']) }).strict();
+const decisionRequest = z.object({ decision: z.enum(['once', 'remember', 'deny']), reason }).strict();
 
 /** 审批：tool 与 target 说明要做什么，reason 说明为什么要问；必问的动作每次都问，不接受「允许并记住」。 */
 export interface ApprovalRequest { tool: string; target: string; reason: string; mustAsk: boolean }
@@ -68,8 +71,8 @@ export class Waits {
       },
       execute: async (value, { signal }): Promise<ToolResult> => {
         try {
-          const answers = await this.wait(threadId, { kind: 'question', questions: questionArguments.parse(value).questions }, signal);
-          return answers ? { status: 'success', output: JSON.stringify({ answers }) } : { status: 'error', output: '会话已停止，用户没有回答。' };
+          const result = await this.wait(threadId, { kind: 'question', questions: questionArguments.parse(value).questions }, signal);
+          return result ? { status: 'success', output: JSON.stringify(result) } : { status: 'error', output: '会话已停止，用户没有回答。' };
         } catch (error) {
           if (error instanceof KiteError) return { status: 'error', output: error.message };
           throw error;
@@ -101,11 +104,17 @@ export class Waits {
     });
   }
 
-  /** 回应线程当前的等待；对不上时 409，回应内容与等待不符时 400。 */
-  respond(threadId: string, id: string, value: unknown): void {
+  /**
+   * 回应线程当前的等待；对不上时 409，回应内容与等待不符时 400。via 是代用户处理的 Line：提问的结果写明由 Line 代答及理由，
+   * 审批的记录留在 Line 的收件箱。
+   */
+  respond(threadId: string, id: string, value: unknown, via?: InputVia): void {
     const entry = this.waits.get(threadId);
     if (entry?.waiting.id !== id) throw new WaitingConflict(entry?.waiting ?? null);
-    entry.settle(entry.waiting.kind === 'question' ? answersOf(entry.waiting.questions, value) : decisionOf(value, entry.waiting.mustAsk));
+    if (entry.waiting.kind === 'approval') return entry.settle(decisionOf(value, entry.waiting.mustAsk));
+    const answers = answersOf(entry.waiting.questions, value);
+    const why = (value as { reason?: string }).reason;
+    entry.settle({ answers, ...(via ? { answeredBy: 'Line', ...(why ? { reason: why } : {}) } : {}) });
   }
 }
 

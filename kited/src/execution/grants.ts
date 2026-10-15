@@ -2,34 +2,22 @@
 import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { BlockList, isIP } from 'node:net';
 import { z } from 'zod';
 import { KiteError } from '../errors.ts';
 import type { PluginInstance } from '../model.ts';
 import { pluginDefinitions } from '../plugins/definitions.ts';
 import { within } from '../paths.ts';
+import { localEndpoint } from './local-address.ts';
 import { canonicalPath, type ExecutionPolicy } from './sandbox.ts';
 
+const LOCAL_REJECTED = '本机控制接口尚未鉴权，执行授权不开放回环、链路本地与本机地址';
 const path = z.string().refine((value) => isAbsolute(value) && !/[*?\[\]{}\0\n\r]/.test(value), '须使用无通配符的绝对路径');
-const loopback = new BlockList();
-loopback.addSubnet('127.0.0.0', 8, 'ipv4');
-loopback.addSubnet('0.0.0.0', 8, 'ipv4');
-loopback.addAddress('::1', 'ipv6');
-loopback.addAddress('::', 'ipv6');
-function permitsLoopback(domain: string): boolean {
-  const host = domain.startsWith('[') ? domain.slice(1, domain.indexOf(']')) : domain.split(':')[0]!;
-  if (host === 'localhost' || host.endsWith('.localhost')) return true;
-  // URL 规范化数字形式的 IPv4（例如 2130706433），防止通过另一种拼写绕过回环检查。
-  let normalized = host;
-  try { normalized = new URL(`http://${domain}`).hostname.replace(/^\[|\]$/g, ''); } catch { /* 通配域名仍交给上游校验。 */ }
-  const family = isIP(normalized);
-  return family !== 0 && loopback.check(normalized, family === 4 ? 'ipv4' : 'ipv6');
-}
 export const executionGrantsSchema = z.object({
   workspace: z.enum(['read', 'write']),
   read: z.array(path), write: z.array(path),
   network: z.array(z.string().min(1))
-    .refine((domains) => !domains.some((domain) => permitsLoopback(domain.toLowerCase())), '本机 HTTP 尚未鉴权，执行授权暂不开放回环地址'),
+    // 读取已保存的授权时只判固定网段：本机网卡的地址会变，不能让存下的授权因此失效；写入时另查本机此刻的地址。
+    .refine((domains) => !domains.some((domain) => localEndpoint(domain, false)), LOCAL_REJECTED),
 }).strict();
 export type ExecutionGrants = z.infer<typeof executionGrantsSchema>;
 
@@ -42,6 +30,7 @@ export function parseExecutionGrants(value: unknown): ExecutionGrants {
 /** 授权时绑定真实位置；以后重定向符号链接不能把原许可变成新目录的许可。 */
 export async function normalizeExecutionGrants(value: unknown): Promise<ExecutionGrants> {
   const grants = parseExecutionGrants(value);
+  if (grants.network.some((domain) => localEndpoint(domain))) throw new KiteError(`执行授权无效：${LOCAL_REJECTED}`);
   // 仅管理入口新增网络许可时加载上游校验，历史解析和每次工具调用不加载整个沙箱运行时。
   if (grants.network.length) {
     const { NetworkConfigSchema } = await import('@anthropic-ai/sandbox-runtime');

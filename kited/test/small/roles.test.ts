@@ -34,12 +34,13 @@ const findRole = (body: { roles: Entry[] }, id: string) => {
   return found;
 };
 
-/** 代理的默认协作授权，对应模型工具 agent_*。 */
+/** 代理的默认协作授权，对应模型工具 agent_* 与 monitor_*。 */
 const collaboration: OperationGrant[] = [
   { operation: 'agent.list' }, { operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] },
   { operation: 'agent.send', targets: { kind: 'created' } },
   { operation: 'agent.resume', targets: { kind: 'created' } },
   { operation: 'agent.stop', targets: { kind: 'created' } },
+  { operation: 'monitor.start' }, { operation: 'monitor.list' }, { operation: 'monitor.stop', targets: { kind: 'created' } },
 ];
 /** 授权按操作名排序后比较；顺序不是约定。 */
 const byOperation = (grants: OperationGrant[]) => [...grants].sort((a, b) => a.operation.localeCompare(b.operation));
@@ -213,7 +214,7 @@ test('只读审查角色建的代理只有 read，模型强发 patch 与 shell �
     expect(catalog.status).toBe(200);
     const universe = catalog.body.tools as string[];
     // Line 的管理工具目标范围是整个账号，只给 Line 角色；工作角色是全集减去它们。
-    const lineTools = ['line_status', 'line_control', 'line_workspace'];
+    const lineTools = ['line_status', 'line_handle', 'line_relay', 'line_control', 'line_workspace'];
     expect(universe).toEqual(expect.arrayContaining(lineTools));
     const work = findRole(catalog.body, 'kite.work');
     const review = findRole(catalog.body, 'kite.review');

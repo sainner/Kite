@@ -65,8 +65,14 @@ nonisolated struct ToolRule: Codable, Equatable, Sendable, ToolFilter {
 nonisolated struct InstanceAgentConfig: Decodable, Sendable {
     /// 创建时的角色与它的工具规则。
     struct Role: Decodable, Sendable { let id: String }
+    /// monitor 实例的配置：唤醒的对象代理；Line 的收件箱带 system。
+    struct Monitor: Decodable, Sendable {
+        let target: String
+        var system: String?
+    }
     var agent: AgentConfiguration?
     var role: Role?
+    var monitor: Monitor?
 }
 
 nonisolated struct AgentConfigurationSnapshot: Decodable, Sendable {

@@ -58,10 +58,11 @@ export async function call(
 
 /**
  * peers.directory 替换账号目录：同一进程里的几台 kited 直接按各自的监听地址互相访问（Line 的跨机调用），不经 kite-net。
+ * monitorWakeDelayMs 缩短 monitor 从事件到唤醒的合批等待，观察唤醒的测试不必真等默认的 1 秒。
  */
 export function startKited(
   model?: (thread: ThreadContext) => Model, lightTasks: RuntimeOptions['lightTasks'] = false, shared?: FakeAccount,
-  options: Pick<RuntimeOptions, 'peers'> = {},
+  options: Pick<RuntimeOptions, 'peers' | 'monitorWakeDelayMs'> = {},
 ): Kited {
   const root = makeTemp('kited-');
   const home = join(root, 'kite');

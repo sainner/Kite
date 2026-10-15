@@ -97,6 +97,11 @@ final class ControlsBarView: RepresentedRoot {
     private let attach = PaneButtonView()
     private let voice = PaneButtonView()
     private let primary = PaneButtonView()
+    /// 等你回应时代替输入框的卡片（WaitingResponseCard），和输入框共用这张玻璃。
+    private let response = NSHostingController(rootView: AnyView(EmptyView()))
+    /// 卡片正在显示的等待；没有时显示输入框。
+    private var shownWaiting: String?
+    private var environment: EnvironmentValues?
 
     private var controls: ThreadControlsModel?
     private var enabled = true
@@ -123,6 +128,10 @@ final class ControlsBarView: RepresentedRoot {
         addSubview(effort)
         for button in [attach, voice, primary] { addSubview(button) }
         effort.sizingOptions = [.intrinsicContentSize]
+        response.sizingOptions = []
+        response.view.alphaValue = 0
+        response.view.isHidden = true
+        addSubview(response.view)
 
         attach.label = .symbol("paperclip")
         attach.title = "添加附件"
@@ -145,6 +154,7 @@ final class ControlsBarView: RepresentedRoot {
     func update(controls: ThreadControlsModel, enabled: Bool, environment: EnvironmentValues) {
         self.controls = controls
         self.enabled = enabled
+        self.environment = environment
         let body = Theme.body.resolve(in: environment.fontResolutionContext).ctFont as NSFont
         if field.font != body { field.font = body }
         for button in [attach, voice, primary] { button.setFont(body) }
@@ -194,9 +204,40 @@ final class ControlsBarView: RepresentedRoot {
         primary.title = controls.primaryAction.title
         primary.fill = controls.primaryActionFill
         primary.isEnabled = enabled && controls.canPerformPrimaryAction
+        showWaiting(thread.waiting, controls: controls)
         let fading = controls.state.fading
-        field.alphaValue = fading == nil ? 1 : 0
+        field.alphaValue = fading == nil && shownWaiting == nil ? 1 : 0
         if fading == nil { shownFading = nil }
+    }
+
+    /// 出现审批或提问时输入框淡出、回应卡片淡入，回应后换回来；高由 contentChanged 报给外框。
+    private func showWaiting(_ waiting: RemoteWaiting?, controls: ThreadControlsModel) {
+        if let waiting {
+            let thread = controls.thread
+            response.rootView = AnyView(WaitingResponseCard(waiting: waiting, respond: { try await thread.respond(waiting, $0) },
+                                                            stop: { thread.stop() }, canStop: thread.canStop, delegate: controls.delegate)
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] _ in self?.contentChanged() }
+                .environment(\.self, environment ?? EnvironmentValues()))
+        }
+        guard waiting?.id != shownWaiting else { return }
+        let entering = shownWaiting == nil
+        shownWaiting = waiting?.id
+        guard entering || waiting == nil else { return }
+        if entering, field.currentEditor() != nil { window?.makeFirstResponder(nil) }
+        let composer: [NSView] = [field, effort, attach, voice, primary]
+        response.view.isHidden = false
+        for view in composer { view.isHidden = false }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.25
+            response.view.animator().alphaValue = entering ? 1 : 0
+            for view in composer { view.animator().alphaValue = entering ? 0 : 1 }
+        }, completionHandler: { [weak self] in
+            guard let self else { return }
+            response.view.isHidden = shownWaiting == nil
+            for view in composer { view.isHidden = shownWaiting != nil }
+            needsLayout = true
+        })
     }
 
     private func submit() {
@@ -245,6 +286,10 @@ final class ControlsBarView: RepresentedRoot {
 
     private func plan(width: CGFloat) -> Plan {
         let width = max(width, 0)
+        if shownWaiting != nil {
+            let height = response.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
+            return Plan(height: height, field: 0, effort: .zero, hidesActions: true)
+        }
         let fieldWidth = max(width - 2 * Self.fieldInset, 0) + 2 * ComposerField.fieldInset
         var fieldHeight = field.height(width: fieldWidth, text: field.text)
         if let fading = controls?.state.fading { fieldHeight = max(fieldHeight, fading.height) }
@@ -277,6 +322,8 @@ final class ControlsBarView: RepresentedRoot {
     override func layout() {
         super.layout()
         let width = bounds.width
+        place(response.view, bounds)
+        guard shownWaiting == nil else { return }
         let plan = plan(width: width)
 
         let fieldWidth = max(width - 2 * Self.fieldInset, 0)

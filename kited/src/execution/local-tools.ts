@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { WorkspaceFiles, readFileArgs } from '../workspace/files.ts';
 import { PDF_PAGE_SPAN, PdfReader, fileKind, readImage } from '../workspace/documents.ts';
 import { FileDiffStore, type FileDiff } from '../workspace/file-diffs.ts';
-import { runCommand, type CommandOptions, type NetworkAsk } from './command.ts';
+import { runCommand, type CommandOptions } from './command.ts';
 import { assertFileAccess, commandEnvironment, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
 import type { Json, JsonObject, Tool, ToolResult } from '../harness/types.ts';
 import { secretBindings, secretValue, type SecretProvider, type SecretValue } from '../secrets.ts';
@@ -44,9 +44,7 @@ const readDescription = `读取当前工作目录内的文件，按内容自动�
 图片（PNG、JPEG、WebP、GIF、BMP、TIFF、HEIC）附给你直接查看，过大时先缩放。
 PDF 转为 Markdown 按页返回，用 pages 选页；结果会说明总页数和续读的 pages。没有文本层的扫描页给出 OCR 结果并附上页面图片。`;
 
-export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials' | 'askNetwork'> & { diffDir?: string; policy?: ExecutionPolicy | (() => ExecutionPolicy); secrets?: SecretProvider;
-  /** 每条命令开始时取一次：名单外主机交给谁决定；没有时直接拒绝。 */
-  network?(): NetworkAsk | undefined }): Tool[] {
+export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials'> & { diffDir?: string; policy?: ExecutionPolicy | (() => ExecutionPolicy); secrets?: SecretProvider }): Tool[] {
   const files = new WorkspaceFiles(options.cwd);
   const root = files.root;
   const policy = () => typeof options.policy === 'function' ? options.policy() : options.policy ?? workspacePolicy(root, options.env);
@@ -166,9 +164,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
             credentials[key] = parsed.data;
           }
         }
-        const askNetwork = options.network?.();
-        return runCommand(command, timeout_ms, signal, { ...options, cwd: root, policy: policy(), credentials, onOutput: output ?? options.onOutput,
-          ...(askNetwork ? { askNetwork } : {}) });
+        return runCommand(command, timeout_ms, signal, { ...options, cwd: root, policy: policy(), credentials, onOutput: output ?? options.onOutput });
       }),
     make('credentials', '列出本账号共享和当前项目的可用密钥引用及类型，不返回密钥内容。仅在 shell 的 secrets 参数里使用这些引用，项目身份由宿主固定。', z.object({}).strict(), async (_, signal) => {
       if (!options.secrets?.list) throw new Error('当前宿主未连接凭据服务');

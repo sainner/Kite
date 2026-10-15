@@ -60,7 +60,8 @@ final class WorkThread: Identifiable {
     var canCancel: Bool { stopRequest == nil && connected && state?.capabilities.cancel == true }
     var canCompact: Bool { !isDraft && connected && state?.capabilities.compact == true }
     var canRegenerateTitle: Bool { !isDraft && connected && state?.status == "open" && !regeneratingTitle }
-    var statusPhase: String { stopping ? "stopping" : state?.phase ?? "idle" }
+    /// 圆环的阶段：卡在审批或提问上时是 waiting，圆环换警示黄、明暗起伏。
+    var statusPhase: String { stopping ? "stopping" : waiting != nil ? "waiting" : state?.phase ?? "idle" }
     /// 会话自身的错误：本地操作失败，或工作机报回的错误（含恢复阻塞与上一轮失败的说明）。
     /// 作为窗口信息区的提示盖住圆环，圆环的说明里不再重复。
     var problem: String? { error ?? state?.error ?? (state?.status == "failed" ? "工作区准备失败" : nil) }
@@ -76,12 +77,14 @@ final class WorkThread: Identifiable {
         case "transferred": return "已流转到另一台工作机"
         default: break
         }
-        return Self.turnStatus(phase: state?.phase, outcome: state?.lastOutcome?.kind, waitingForResume: state?.waitingForResume == true)
+        return Self.turnStatus(phase: state?.phase, outcome: state?.lastOutcome?.kind, waitingForResume: state?.waitingForResume == true,
+                               waiting: state?.waiting?.kind)
     }
 
     /// 回合的状态文字，标题栏圆环与停靠栏共用：先看是否在跑，再看上一轮结果，等待继续优先级最低。
-    static func turnStatus(phase: String?, outcome: String?, waitingForResume: Bool, unseen: Bool = false) -> String {
-        switch phase {
+    static func turnStatus(phase: String?, outcome: String?, waitingForResume: Bool, unseen: Bool = false, waiting: String? = nil) -> String {
+        if let waiting { return waiting == "question" ? "等你回答" : "等你批准" }
+        return switch phase {
         case "running": "运行中"
         case "stopping": "正在停止"
         case "finishing": "正在收尾"
@@ -398,6 +401,15 @@ final class WorkThread: Identifiable {
             do { let _: JSON = try await client.request("/threads/\(id)/compactions/\(compaction)", method: "DELETE", as: JSON.self); error = nil }
             catch { self.error = error.localizedDescription }
         }
+    }
+
+    /// 线程在等的提问或审批，连着工作机时才能回应。
+    var waiting: RemoteWaiting? { connected ? state?.waiting : nil }
+
+    /// 回应等你的那一项；回应后等待由会话事件撤下。已回应或已作废时工作机返回 409，等待同样随事件更新。
+    func respond(_ waiting: RemoteWaiting, _ reply: WaitingReply) async throws {
+        guard let client else { throw KitedError(message: "请先连接工作机") }
+        let _: JSON = try await client.request("/threads/\(id)/waiting/\(waiting.id.pathComponent)", method: "POST", body: reply, as: JSON.self)
     }
 
     func control(_ action: String) {

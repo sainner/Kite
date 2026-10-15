@@ -8,6 +8,7 @@ import type { OpenWindowRequest, PluginInstance, Thread, Workspace, WorkspaceWin
 import { roleOperationGrants } from './operations/contract.ts';
 import { defaultRoleId, roleAgent, toolLimits, type RoleChoice } from './roles.ts';
 import { instanceAgent } from './agents/definition.ts';
+import { monitorDefinitionId } from './monitor/monitors.ts';
 
 /** 新代理在本机草稿里选好的角色与初始参数，创建时一次写入实例配置；省略 revision 时用角色的最新版本。 */
 export interface AgentChoice extends RoleChoice {
@@ -62,6 +63,7 @@ export class InstanceLifecycle {
       const content = request.content;
       if (content.kind === 'create') {
         const definition = this.kite.catalog.get(content.definitionId);
+        if (definition.id === monitorDefinitionId) throw new KiteError('monitor 由代理用 monitor_start 开启，或随 Line 创建');
         const titles = new Set(model.instances.filter((p) => p.definitionId === definition.id).map((p) => p.title));
         let number = 1;
         while (titles.has(`${definition.title} ${number}`)) number++;

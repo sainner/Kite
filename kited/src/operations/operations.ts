@@ -14,7 +14,8 @@ import { instanceAgent } from '../agents/definition.ts';
 import { defaultRoleId, instanceRole } from '../roles.ts';
 import { pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding, type PluginToolSource } from '../plugins/tools.ts';
 
-type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'interrupt' | 'resume' | 'selectFile'>;
+type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'interrupt' | 'resume' | 'selectFile'
+  | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox'>;
 
 export interface OperationToolSelection {
   plugins: Tool[];
@@ -157,9 +158,9 @@ export class InstanceOperations {
       }
       case 'agent.send': {
         const input = args as OperationInput<'agent.send'>;
-        // Line 自己的说明是 Kite 来源。
+        // Line 自己的说明是 Kite 来源，经 Line 转达的用户原文仍是人。
         return this.kite.send(input.instanceId, input.text, inputId(caller, input.operationId),
-          caller.kind === 'ui' && !caller.via ? 'human' : 'kite', check, caller.kind === 'ui' ? caller.via : undefined);
+          caller.kind === 'ui' && (!caller.via || caller.relayed) ? 'human' : 'kite', check, caller.kind === 'ui' ? caller.via : undefined);
       }
       case 'agent.resume':
         await this.kite.resume(args.instanceId as string, check);
@@ -181,6 +182,48 @@ export class InstanceOperations {
           if (error instanceof KiteError) throw error;
           throw new KiteError(`读取文件失败：${error instanceof Error ? error.message : String(error)}`);
         }
+      }
+      case 'monitor.start': {
+        if (caller.kind === 'ui') throw new OperationError('monitor 由代理开启，唤醒的是开启它的代理', 'denied', 403);
+        const input = args as OperationInput<'monitor.start'>;
+        const timed = input.at !== undefined || input.minutes !== undefined;
+        if ((input.command === undefined) === !timed || (input.at !== undefined && input.minutes !== undefined)) {
+          throw new OperationError('来源要写 command，或者 at、minutes 中的一个', 'denied', 400);
+        }
+        if (input.repeat && !timed) throw new OperationError('repeat 只用于定时', 'denied', 400);
+        let at: number | undefined;
+        if (timed) {
+          at = input.minutes !== undefined ? Date.now() + input.minutes * 60_000 : Date.parse(input.at!);
+          if (!Number.isFinite(at)) throw new OperationError('at 不是有效的时间，要写带时区的 ISO 8601', 'denied', 400);
+          if (at <= Date.now()) throw new OperationError('at 要晚于现在', 'denied', 400);
+          if (at > Date.now() + 366 * 24 * 3_600_000) throw new OperationError('最多约一年以内的时刻', 'denied', 400);
+        }
+        check();
+        return this.kite.monitors.create(workspaceId, {
+          instanceId: caller.instanceId, operationId: input.operationId, ...(caller.kind === 'model' ? { turnId: caller.turnId, callId: caller.callId } : {}),
+        }, { title: input.title, ...(input.command !== undefined ? { command: input.command } : { at: at!, ...(input.repeat ? { repeat: input.repeat } : {}) }) });
+      }
+      case 'monitor.list': return { monitors: this.kite.monitors.list(workspaceId) };
+      case 'monitor.stop':
+        check();
+        await this.kite.archiveInstance(args.instanceId as string);
+        return { ok: true };
+      case 'monitor.read': {
+        const instance = this.kite.store.instance(args.instanceId as string)!;
+        return this.kite.lineInbox()?.id === instance.id ? this.kite.monitor.inbox() : this.kite.monitors.read(instance);
+      }
+      case 'monitor.delegate':
+      case 'monitor.dismiss':
+      case 'monitor.hosting': {
+        if (this.kite.lineInbox()?.id !== args.instanceId) throw new OperationError('只有 Line 的收件箱有这个操作', 'denied', 409);
+        check();
+        if (name === 'monitor.delegate') return this.kite.monitor.delegate(args.item as string);
+        if (name === 'monitor.dismiss') { this.kite.monitor.dismiss(args.item as string); return { ok: true }; }
+        const input = args as OperationInput<'monitor.hosting'>;
+        const current = this.kite.monitor.delegation();
+        const until = input.until === undefined ? current.until : input.until ?? undefined;
+        const timeoutMinutes = input.timeoutMinutes === undefined ? current.timeoutMinutes : input.timeoutMinutes ?? undefined;
+        return this.kite.monitor.configureDelegation({ ...(until !== undefined ? { until } : {}), ...(timeoutMinutes !== undefined ? { timeoutMinutes } : {}) });
       }
     }
   }

@@ -4,13 +4,15 @@ import { diffID, fileDiffSchema } from '../workspace/file-diffs.ts';
 import { fileSelectionSchema, readFileArgs } from '../workspace/files.ts';
 
 /**
- * Line 的管理动作与对应工具。停止、归档、创建、流转须经用户批准，审批层接入之前不执行，见 line/tools.ts。
+ * Line 的管理动作与对应工具。停止、归档、创建、流转是必问动作，每次执行前等用户批准，见 line/tools.ts。
+ * reply 是代处理收件箱与转达用户原话；自约唤醒用通用的 monitor_start。
  */
-export const lineActions = ['status', 'send', 'resume', 'stop', 'archive', 'create', 'transfer'] as const;
+export const lineActions = ['status', 'reply', 'send', 'resume', 'stop', 'archive', 'create', 'transfer'] as const;
 export type LineAction = (typeof lineActions)[number];
-export const lineToolNames = ['line_status', 'line_control', 'line_workspace'] as const;
+export const lineToolNames = ['line_status', 'line_handle', 'line_relay', 'line_control', 'line_workspace'] as const;
 export const lineToolActions: Record<(typeof lineToolNames)[number], readonly LineAction[]> = {
-  line_status: ['status'], line_control: ['send', 'resume', 'stop', 'archive'], line_workspace: ['create', 'transfer'],
+  line_status: ['status'], line_handle: ['reply'], line_relay: ['reply'], line_control: ['send', 'resume', 'stop', 'archive'],
+  line_workspace: ['create', 'transfer'],
 };
 
 const id = z.string().min(1);
@@ -44,7 +46,7 @@ export const operationContracts = {
     input: z.object({}).strict(), output: z.object({ agents: z.array(summary) }).strict(),
   },
   'agent.send': {
-    title: '发送消息', description: '向获准的 agent 实例发送消息。消息落盘后返回；共享工作区的执行互斥仍然适用。',
+    title: '发送消息', description: '向获准的 agent 实例发送消息。消息落盘后返回；同一工作区的线程可以同时执行。',
     tool: 'agent_send', effect: 'write', retry: 'input',
     input: target.extend({ text }).strict(), output: z.object({ id }).strict(),
   },
@@ -83,12 +85,53 @@ export const operationContracts = {
     tool: null, effect: 'write', retry: 'receipt',
     input: target.extend({ expectedRevision: id, path: id.nullable(), diffId: diffID.optional() }).strict(), output: fileSelectionSchema,
   },
+  'monitor.start': {
+    title: '开始监视', description: [
+      '开一个常驻的 monitor 盯着某件事，有事件时宿主把它们合成一条消息交给你，你空闲时开始新回合，运行中在下一次请求纳入。title 简短写清在盯什么，会出现在每次唤醒里。',
+      '两种来源选一种：command 是 shell 命令，每一行标准输出是一个事件，200 毫秒内的几行合成一个，命令退出也是一个事件并结束这个来源；at（带时区的 ISO 8601 时间）或 minutes（多少分钟后）是定时，repeat 为 daily 或 weekly 时按天或按周重复。',
+      '命令在你的沙箱里、按你的执行授权运行，越界直接拒绝，不能用密钥。只输出你会据此行动的行，成功和失败的信号都要覆盖（没有输出不等于成功）；grep 加 --line-buffered；轮询远程接口间隔 30 秒以上，单次失败用 || true 吞掉；等一件事完成就让命令在那时退出。',
+      '事件太密（一分钟超过 60 个）会被停掉，每天最多唤醒你 40 次。工作机重启后命令重新开始，事件可能重复。不需要时用 monitor_stop 停掉。',
+    ].join(''),
+    tool: 'monitor_start', effect: 'create', retry: 'receipt',
+    input: z.object({ operationId: id, title: z.string().trim().min(1).max(80), command: z.string().min(1).max(20_000).optional(),
+      at: z.string().optional(), minutes: z.number().int().min(1).max(366 * 24 * 60).optional(), repeat: z.enum(['daily', 'weekly']).optional() }).strict(),
+    output: z.object({ instanceId: id }).strict(),
+  },
+  'monitor.list': {
+    title: '查看监视', description: '列出当前工作区里开着的 monitor：标题、来源与是否已结束、今天唤醒的次数。',
+    tool: 'monitor_list', effect: 'read', retry: 'read', input: z.object({}).strict(), output: z.object({ monitors: z.array(z.unknown()) }).strict(),
+  },
+  'monitor.stop': {
+    title: '停止监视', description: '停掉一个 monitor：停下它的来源并归档，时间线保留。',
+    tool: 'monitor_stop', effect: 'write', retry: 'receipt', input: target, output: ok,
+  },
+  'monitor.read': {
+    title: '读取 monitor', description: '读取 monitor 的来源与时间线；Line 的 monitor 返回收件箱。',
+    tool: null, effect: 'read', retry: 'read', input: z.object({ instanceId: id }).strict(), output: z.unknown(),
+  },
+  'monitor.delegate': {
+    title: '交给 Line', description: '把 Line 收件箱里的一项交给 Line 代处理，立即唤醒 Line。',
+    tool: null, effect: 'write', retry: 'receipt', input: target.extend({ item: id }).strict(), output: z.unknown(),
+  },
+  'monitor.dismiss': {
+    title: '知道了', description: '把收件箱里结束的回合移出；其余事项随原线程的状态解除才移出。',
+    tool: null, effect: 'write', retry: 'receipt', input: target.extend({ item: id }).strict(), output: ok,
+  },
+  'monitor.hosting': {
+    title: '设置托管', description: 'Line 的两种托管：按时段托管到 until（毫秒），超时托管 timeoutMinutes；null 关闭。',
+    tool: null, effect: 'write', retry: 'receipt',
+    input: target.extend({ until: z.number().nullable().optional(), timeoutMinutes: z.number().int().min(1).max(24 * 60).nullable().optional() }).strict(),
+    output: z.object({ until: z.number().optional(), timeoutMinutes: z.number().optional() }).strict(),
+  },
 } as const;
 
 export type OperationName = keyof typeof operationContracts;
 export type OperationInput<N extends OperationName> = z.infer<(typeof operationContracts)[N]['input']>;
-/** ui 的 via 是另一台工作机上的 Line 经界面入口调用时声明的来源，只记入输入与收据，不参与授权。 */
-export type OperationCaller = { kind: 'ui'; via?: z.infer<typeof inputVia> } | {
+/**
+ * ui 的 via 是另一台工作机上的 Line 经界面入口调用时声明的来源，只记入输入与收据，不参与授权。
+ * relayed 表示 Line 照原文转达用户的话，输入来源仍是人。
+ */
+export type OperationCaller = { kind: 'ui'; via?: z.infer<typeof inputVia>; relayed?: boolean } | {
   kind: 'model' | 'plugin'; instanceId: string; turnId?: string; callId?: string;
 };
 
@@ -100,7 +143,9 @@ export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('plugin.call'), instanceId: id, tools: z.array(id).min(1) }).strict(),
   z.object({ operation: z.literal('agent.start'), roleIds: z.array(id) }).strict(),
   z.object({ operation: z.literal('agent.list') }).strict(),
-  ...(['agent.send', 'agent.resume', 'agent.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
+  ...(['agent.send', 'agent.resume', 'agent.stop', 'monitor.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
+  z.object({ operation: z.literal('monitor.start') }).strict(),
+  z.object({ operation: z.literal('monitor.list') }).strict(),
   ...(['files.list', 'files.read', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
     targets: z.object({ kind: z.literal('instances'), instanceIds: z.array(id) }).strict() }).strict()),
   /** Line 的管理动作，目标范围是账号目录里的全部工作区；actions 是用户允许的白名单。 */
@@ -122,6 +167,7 @@ export function defaultOperationGrants(definitionId: string): OperationGrant[] {
     { operation: 'agent.send', targets: { kind: 'created' } },
     { operation: 'agent.resume', targets: { kind: 'created' } },
     { operation: 'agent.stop', targets: { kind: 'created' } },
+    { operation: 'monitor.start' }, { operation: 'monitor.list' }, { operation: 'monitor.stop', targets: { kind: 'created' } },
   ] : [];
 }
 
@@ -143,7 +189,7 @@ export function roleOperationGrants(definitionId: string, grants: OperationGrant
     && !kept.some((other) => other.operation === grant.operation))];
 }
 
-export const operationToolNames = ['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop'] as const;
+export const operationToolNames = ['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop', 'monitor_start', 'monitor_list', 'monitor_stop'] as const;
 const failure = z.object({ error: z.string(), outcome: z.enum(['denied', 'failed', 'cancelled', 'unknown']) }).strict();
 
 export function operationCatalog() {

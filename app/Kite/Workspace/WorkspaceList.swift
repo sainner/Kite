@@ -94,8 +94,10 @@ extension AppModel {
     /// 沿用工作区列表的顺序，项目和检出排在其中第一个工作区出现的位置。草稿不是工作区，不列出。
     var workspaceGroups: [WorkspaceGroup] {
         var groups: [WorkspaceGroup] = []
+        let line = lineArea?.id
         for area in workspaces {
-            guard let remote = area.remote else { continue }
+            // Line 的工作区从侧栏顶部的标志进，不列在空间里
+            guard let remote = area.remote, area.id != line else { continue }
             if !groups.contains(where: { $0.id == remote.project.id }) {
                 groups.append(.init(id: remote.project.id, title: projectLabel(remote.project), checkouts: []))
             }
