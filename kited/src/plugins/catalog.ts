@@ -1,8 +1,8 @@
 /** 只接收预构建单文件包；安装与读取不执行插件代码，也不运行依赖安装脚本。 */
-import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { revisionOf } from '../account-data/store.ts';
 import { KiteError } from '../errors.ts';
 import { pluginDefinition, pluginDefinitions, type PluginDefinition } from './definitions.ts';
 
@@ -20,7 +20,7 @@ export const pluginPackageSchema = z.object({
   && (value.defaultView === undefined || value.views.some((view) => view.id === value.defaultView)), '默认视图或视图 ID 无效')
   .refine((value) => value.lifetime !== 'window' || value.views.length > 0, '随窗口回收的插件必须声明视图');
 export type PluginPackage = z.infer<typeof pluginPackageSchema>;
-export const packageRevision = (value: PluginPackage): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+export const packageRevision = (value: PluginPackage): string => revisionOf(value);
 
 export class PluginCatalog {
   private packages = new Map<string, { value: PluginPackage; definition: PluginDefinition }>();

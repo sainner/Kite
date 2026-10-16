@@ -102,7 +102,7 @@ func (c *channel) connect() error {
 	if err != nil || len(routerKey) != 32 {
 		return fmt.Errorf("路由器公钥要是 base64 的 32 字节")
 	}
-	private, _, err := channelKey()
+	private, err := channelKey()
 	if err != nil {
 		return err
 	}

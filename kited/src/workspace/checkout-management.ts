@@ -115,10 +115,7 @@ export class CheckoutManagement {
     const checkout = this.store.checkouts(projectId)[0];
     if (!checkout) throw new KiteError('这台工作机上没有这个项目的检出，到有检出的工作机上设远程', 409);
     const { registry } = this.projects;
-    if (registry.require(projectId).remote) throw new KiteError('这个项目已经有远程', 409);
-    const remote = normalizeRemote(raw);
-    if (!remote) throw new KiteError('远程地址格式无法识别');
-    if (registry.byRemote(remote)) throw new KiteError('这个远程已属于另一个项目', 409);
+    registry.checkRemote(projectId, raw);
     return this.serial(`checkout:${checkout.id}`, async () => {
       await pushAll(checkout.path, await remoteAccess(raw, this.projects.git));
       const updated = registry.setRemote(projectId, raw);

@@ -6,10 +6,9 @@
 import { basename, dirname } from 'node:path';
 import { gitConfigEnv } from '../git-credential.ts';
 import { git, gitTry, isAncestor, isDirty, revParse } from './git.ts';
+import type { Peer } from '../peer-fetch.ts';
 import { currentBranch, fetchRef, gitFailure, type RemoteAccess } from './remote.ts';
 
-/** 别的工作机：组网上的访问地址与机器 ID（请求带 X-Kite-Machine）。 */
-export interface Peer { id: string; address: string }
 /** 访问对端 kited 的方式：组网上经 kite-net 的本机 HTTP 代理；测试里同一进程的几台直接访问，没有代理。 */
 export interface PeerRoute { proxy?: string }
 
@@ -91,8 +90,8 @@ function indexOfBlankLine(buffer: Uint8Array): [number, number] {
   return [-1, 0];
 }
 
-/** 把 CGI 输出转成 HTTP 响应：先读出响应头，正文边读边转发，大仓库不进内存。 */
-async function cgiResponse(stdout: ReadableStream<Uint8Array>): Promise<Response> {
+/** 把 CGI 输出转成 HTTP 响应：先读出响应头，正文边读边转发，大仓库不进内存。测试的 Git 平台替身也用它。 */
+export async function cgiResponse(stdout: ReadableStream<Uint8Array>): Promise<Response> {
   const reader = stdout.getReader();
   let buffer = new Uint8Array(0);
   let [end, gap] = [-1, 0];

@@ -54,8 +54,10 @@ test('A 新建的 Git 凭据和共享密钥同步到 B 后 B 能取用、两边�
 
 // 两台工作机没同步上时各自登记了同一远程（HTTPS 与 SSH 写法），各得一个项目；连上后登记表随同步合并，
 // 先登记的保留、后登记的记为并入它，各机 syncProjects 时把本机检出与工作区改挂过去。
+// 后登记的那个设了工具约束、有一条项目专用的密钥，合并后都要归到保留的项目。
 // 要登记表、同步、两边各自合并与本机 SQLite 改挂合起来才看得出。
-test('两台工作机没同步时各自登记同一远程，连上同步后两边都只剩先登记的项目，后登记那台的检出和工作区改挂过去', async () => {
+// 真实 bug（旧实现）：合并只改挂检出，保留的项目读到默认的不限制约束，密钥还绑在并入的旧 ID 上，按保留的项目列不出、取不到。
+test('两台工作机没同步时各自登记同一远程，连上同步后两边都只剩先登记的项目，后登记那台的检出和工作区改挂过去，它禁用的 shell 与项目密钥归到保留的项目', async () => {
   const a = startKited();
   const b = startKited();
   kiteds.push(a, b);
@@ -65,12 +67,31 @@ test('两台工作机没同步时各自登记同一远程，连上同步后两�
   expect(second.project.id).not.toBe(first.project.id);
   expect(second.project.remote).toBe(first.project.remote);
   expect(b.daemon.kite.registry.get(second.project.id)!.createdAt).toBeGreaterThan(a.daemon.kite.registry.get(first.project.id)!.createdAt);
+  const constraints = await b.call('GET', `/project-registry/${second.project.id}/constraints`);
+  expect((await b.call('PUT', `/project-registry/${second.project.id}/constraints`, {
+    tools: { mode: 'deny', tools: ['shell'] }, expectedRevision: constraints.body.revision,
+  })).status).toBe(200);
+  const value = `project-secret-${crypto.randomUUID()}`;
+  const secret = await b.call('POST', '/credentials', {
+    type: 'secret', name: 'DEPLOY_TOKEN', projectId: second.project.id, meta: { kind: 'text' }, secret: { value },
+  });
+  expect(secret.status).toBe(201);
 
   await connect(a, b);
   for (const k of [a, b]) {
-    await synced(k, () => k.daemon.kite.registry.canonical(second.project.id) === first.project.id, '后登记的项目并入先登记的');
+    await synced(k, () => k.daemon.kite.registry.canonical(second.project.id) === first.project.id
+      && k.daemon.kite.accountData.get('credential', secret.body.id), '后登记的项目并入先登记的，B 的密钥同步到');
   }
   await Promise.all([a.daemon.kite.syncProjects(), b.daemon.kite.syncProjects()]);
+  for (const k of [a, b]) {
+    const kept = await k.call('GET', `/project-registry/${first.project.id}/constraints`);
+    expect(kept.status).toBe(200);
+    expect(kept.body.tools).toEqual({ mode: 'deny', tools: ['shell'] });
+    const listed = await k.call('GET', `/credentials?type=secret&projectId=${first.project.id}`);
+    expect(listed.body).toEqual([expect.objectContaining({ id: secret.body.id, name: 'DEPLOY_TOKEN' })]);
+    expect(await k.daemon.kite.credentials.resolve(['{project.DEPLOY_TOKEN}'], first.project.id))
+      .toEqual([{ reference: '{project.DEPLOY_TOKEN}', kind: 'text', value }]);
+  }
 
   for (const k of [a, b]) {
     expect(k.daemon.kite.registry.list().filter((project) => project.remote === first.project.remote).map((project) => project.id))

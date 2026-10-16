@@ -145,17 +145,15 @@ async function main() {
         return Response.json({ ok: true });
       },
     });
-    const deviceA = { id: crypto.randomUUID(), name: '验证工作机 A', role: 'worker', online: true, joined: true, address: proxyA.url.origin };
-    const deviceB = { id: crypto.randomUUID(), name: '验证工作机 B', role: 'worker', online: true, joined: true, address: proxyB.url.origin };
+    const deviceA = { id: crypto.randomUUID(), name: '验证工作机 A', role: 'worker', online: true, address: proxyA.url.origin };
+    const deviceB = { id: crypto.randomUUID(), name: '验证工作机 B', role: 'worker', online: true, address: proxyB.url.origin };
     function catalog(device: typeof deviceA, machine: Machine, model: WorkspaceModel) {
-      return { device, machineId: machine.id, revision: 1, updatedAt: Date.now(), snapshot: {
+      return { device, machineId: machine.id, updatedAt: Date.now(), snapshot: {
         machine, projects: [model.project], checkouts: [model.checkout], workspaces: [model.workspace],
       } };
     }
     const userID = crypto.randomUUID();
-    const login = { token: 'directory-verification-token', user: { id: userID, email: 'directory-verification@example.com', name: '目录验收' },
-      enrollment: { device: { id: crypto.randomUUID(), name: '验证控制端', role: 'controller' },
-        controlURL: 'https://network.example.invalid', authKey: 'verification-only' }, ready: true };
+    const login = { user: { id: userID, email: 'directory-verification@example.com', name: '目录验收' } };
     // 小型夹具直接交给子进程，避免签名 App 沙箱与宿主临时目录的文件权限交接。
     const fixture = JSON.stringify({ login: Buffer.from(JSON.stringify(login)).toString('base64'), userID,
       directory: { devices: [deviceA, deviceB], catalogs: [catalog(deviceA, machineA, shared), catalog(deviceB, machineB, other)] },

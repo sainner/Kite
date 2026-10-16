@@ -17,7 +17,8 @@ import { GitHubBinding } from './account-data/github.ts';
 import { fileKey, keychainKey } from './account-data/key.ts';
 import type { GitCredentials } from './git-credential.ts';
 import type { CheckoutRequest } from './workspace/checkout-management.ts';
-import { fetchPeerRefs, serveCheckout, syncPeer, type Peer, type PeerRoute } from './workspace/peer-git.ts';
+import type { Peer } from './peer-fetch.ts';
+import { fetchPeerRefs, serveCheckout, syncPeer, type PeerRoute } from './workspace/peer-git.ts';
 import { replicaDigest, replicaFiles, replicaManifest, replicaSources, ReplicaStore, Replicas, type FileState, type ReplicaEntry, type ReplicaPage } from './transfer/replica.ts';
 import { revParse } from './workspace/git.ts';
 import { normalizeRemote, remoteHost } from './remote-url.ts';
@@ -175,7 +176,8 @@ export class Kite {
     this.accountData = new AccountData(join(home, 'account.db'), store.machine.id,
       options.keychain ? keychainKey(store.machine.id) : fileKey(join(home, 'credentials.key')));
     this.registry = new ProjectRegistry(this.accountData);
-    this.credentials = new Credentials(this.accountData, { projectExists: (id) => !!this.registry.get(id) });
+    this.credentials = new Credentials(this.accountData, { projectExists: (id) => !!this.registry.get(id),
+      canonicalProject: (id) => this.registry.canonical(id) });
     this.git = {
       credential: async (url) => {
         const remote = normalizeRemote(url);
@@ -1387,12 +1389,13 @@ export class Kite {
   }
 
   /** 执行权已在别的机器：停下本地线程与插件，本机多出的改动存成快照留给人合并，记录冻结；根工作区给检出另建一个。 */
-  private freeze(id: string, handingOff?: number): Promise<void> {
+  private freeze(id: string, handingOff?: { epoch: number; to: string }): Promise<void> {
     if (handingOff === undefined) this.preparations.get(id)?.abort();
     return this.control(id, async () => {
       const { workspace: w, checkout } = this.workspace(id);
-      if (handingOff !== undefined && !(w.epoch === handingOff && (w.status === 'handing_off' || w.status === 'transferred'))) {
-        throw new KiteError('源工作机没有在交接这个工作区，可能已撤回', 409);
+      if (handingOff && !(w.epoch === handingOff.epoch && (w.status === 'handing_off'
+        || (w.status === 'transferred' && this.store.workspaceReceiver(id, w.epoch) === handingOff.to)))) {
+        throw new KiteError('源工作机没有在把这个工作区交给本机，可能已撤回或已交给别的工作机', 409);
       }
       if (w.status === 'transferred' || w.status === 'archived') return;
       for (const t of this.store.threads(id)) if (t.status !== 'archived') await this.stopThread(t);
@@ -1400,7 +1403,7 @@ export class Kite {
       const release = await this.closeExtensions(id);
       const root: Workspace | undefined = w.kind === 'root' ? { id: randomUUID(), epoch: 1, checkoutId: checkout.id, name: w.name,
         cwd: w.cwd, kind: 'root', branch: null, base: null, status: 'open', createdAt: Date.now() } : undefined;
-      try { this.store.freezeWorkspace(id, root); } finally { release(); }
+      try { this.store.freezeWorkspace(id, root, handingOff && { epoch: w.epoch, machine: handingOff.to }); } finally { release(); }
       this.changed(id);
       if (root) this.changed(root.id);
     });

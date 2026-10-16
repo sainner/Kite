@@ -54,10 +54,10 @@ export interface TransferHost {
   /** 本机该项目的检出；没有时 clone 到默认位置并登记。 */
   ensureCheckout(projectId: string): Promise<Checkout>;
   /**
-   * 执行权已在别的机器：冻结本地记录。handingOff 给出时只冻结仍以这一 epoch 交接中的工作区，已撤回的 409；
-   * 状态在冻结的锁里核对，与撤回交接互斥。
+   * 执行权已在别的机器：冻结本地记录。handingOff 给出时只冻结仍以这一 epoch 交接中的工作区，并记下交给的那台；
+   * 已撤回、或已交给别的那台时 409。状态在冻结的锁里核对，与撤回交接互斥。
    */
-  freeze(workspaceId: string, handingOff?: number): Promise<void>;
+  freeze(workspaceId: string, handingOff?: { epoch: number; to: string }): Promise<void>;
   /** 交接检查现场之前的准备：Line 的根工作区先由宿主提交现场。 */
   beforeHandover(workspaceId: string): Promise<void>;
 }
@@ -149,13 +149,14 @@ export class WorkspaceTransfers {
   }
 
   /**
-   * 没有远程的项目：目标机装好工作区后通知源机交出，源机冻结本地记录。源机已撤回交接（工作区重新开放）或 epoch 对不上时 409，
-   * 目标放弃这次接管。已经交出过的再收到通知照样成功，目标重试不出错。
+   * 没有远程的项目：目标机装好工作区后通知源机交出，源机冻结本地记录并记下目标。源机已撤回交接（工作区重新开放）、epoch 对不上，
+   * 或这次交接已经交给了别的工作机时 409，目标放弃这次接管：几台同时拿着副本来接，只有先到的那台成功。
+   * 已经交给同一台的再收到通知照样成功，目标重试不出错。
    */
-  async complete(id: string, epoch: number): Promise<{ ok: true }> {
+  async complete(id: string, epoch: number, machine: string): Promise<{ ok: true }> {
     const w = this.host.store.workspace(id);
     if (!w) throw new KiteError('这台工作机上没有这个工作区', 404);
-    await this.host.freeze(id, epoch);
+    await this.host.freeze(id, { epoch, to: machine });
     return { ok: true };
   }
 
@@ -280,6 +281,16 @@ export class WorkspaceTransfers {
         if (manifest.head && (await revParse(cwd, manifest.head))) {
           if (!(await isAncestor(cwd, 'HEAD', manifest.head))) throw new KiteError('目标检出与源工作机的现场分叉了，不能快进', 409);
           await git(cwd, ['merge', '-q', '--ff-only', manifest.head]);
+          // 强制接管时源机可能留着没提交的改动：最后一个快照以这个主线为底时，它的树就是源机当时的现场，照搬过来。
+          // 目标检出接管前是干净的，失败时改过的文件恢复、新加的删掉，回到接管前。
+          if (options.force && snapshots && await isAncestor(cwd, manifest.head, snapshots)) {
+            const added = (await git(cwd, ['diff', '--name-only', '-z', '--no-renames', '--diff-filter=A', 'HEAD', snapshots])).split('\0').filter(Boolean);
+            cleanup.push(async () => {
+              await git(cwd, ['restore', '--source=HEAD', '--worktree', '--', ':/']);
+              for (const path of added) rmSync(join(cwd, path), { force: true });
+            });
+            await git(cwd, ['restore', `--source=${snapshots}`, '--worktree', '--', ':/']);
+          }
         } else if (!options.force) throw new KiteError('目标检出没取到源工作机的现场', 409);
         replacedRoot = root?.workspace;
       }
@@ -333,12 +344,10 @@ export class WorkspaceTransfers {
         const taken = await writeLease(checkout.path, workspaceId, { machine: this.machine, epoch, state: 'active' }, current?.commit ?? null, access);
         if (taken.status === 'conflict') throw new KiteError('接管时执行权已被改动，源工作机可能撤回了交接', 409);
       } else if (!options.force) {
-        try { await this.host.call(manifest.machine, 'POST', `/workspaces/${workspaceId}/handover/complete`, { epoch: manifest.epoch }); }
-        catch (error) {
-          // 源机可能已经交出、只是回应没送到：问一次它那边的状态，已冻结就算交出了，否则放弃这次接管。
-          const source = await this.host.call(manifest.machine, 'GET', `/workspaces/${workspaceId}`).catch(() => undefined) as WorkspaceModel | undefined;
-          if (source?.workspace.status !== 'transferred' || source.workspace.epoch !== manifest.epoch) throw error;
-        }
+        const complete = () => this.host.call(manifest.machine, 'POST', `/workspaces/${workspaceId}/handover/complete`,
+          { epoch: manifest.epoch, machine: this.machine });
+        // 源机可能已经交给本机、只是回应没送到：再通知一次，交给本机的照样成功；已撤回或交给了别的工作机时仍然失败，放弃这次接管。
+        try { await complete(); } catch { await complete(); }
       }
       cleanup.length = 0;
       rmSync(backup, { recursive: true, force: true });

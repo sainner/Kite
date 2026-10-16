@@ -67,6 +67,8 @@ export class Credentials {
   constructor(private data: AccountData, private options: {
     /** 项目专用的密钥要求项目在登记表里。 */
     projectExists(id: string): boolean;
+    /** 项目并入了别的项目时给出保留的那个：并入项目的凭据按保留的项目列出和取用，改动时写回新的项目。 */
+    canonicalProject(id: string): string | undefined;
   }) {}
 
   /** projectId 为 null 时只列账号共享的。 */
@@ -166,7 +168,7 @@ export class Credentials {
   private entries(): Credential[] {
     return this.data.list('credential').map(({ id, body }) => {
       const { secret: _, sealed: __, ...view } = body as unknown as Stored;
-      return { id, ...view };
+      return { id, ...view, projectId: view.projectId && (this.options.canonicalProject(view.projectId) ?? view.projectId) };
     });
   }
 

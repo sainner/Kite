@@ -1,9 +1,9 @@
 /** 角色：代理的提示词、工具约束、默认模型与预算。创建代理时拷贝进实例配置，之后修改角色不影响已有代理。 */
-import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { agentDefinitionSchema, bindAgentDefinition, chooseAgentModel, claudeReasoning, type AgentDefinition } from './agents/definition.ts';
 import { agentModels, defaultAgentModel, runtimeOfModel } from './agents/models.ts';
 import { allTools, missingRequired, permittedTools, toolRuleSchema, type ToolRule } from './agents/tool-policy.ts';
+import { revisionOf } from './account-data/store.ts';
 import { KiteError } from './errors.ts';
 import { contextDefinitionSchema } from './harness/context/assembler.ts';
 import { defaultContextDefinition } from './harness/context/project.ts';
@@ -113,9 +113,9 @@ const builtinRoles: Role[] = [
   { version: 1, id: lineRoleId, title: 'Line', context: lineContext, tools: lineTools, model: defaultModel, maxRequestsPerTurn: 30 },
 ];
 
-const snapshot = (role: Role): RoleSnapshot => ({ role, revision: createHash('sha256').update(JSON.stringify(role)).digest('hex') });
+const snapshot = (role: Role): RoleSnapshot => ({ role, revision: revisionOf(role) });
 /** 点阵签名只随提示词变化，改工具或模型不让签名过期。 */
-export const contextRevision = (role: Role): string => createHash('sha256').update(JSON.stringify(role.context)).digest('hex');
+export const contextRevision = (role: Role): string => revisionOf(role.context);
 
 export class Roles {
   /**
@@ -171,7 +171,7 @@ export class Roles {
     return role;
   }
 
-  /** 新建前的校验，结果先写到账号服务再存本机：内置角色只能修改，同 ID 已有不同内容时冲突，相同内容重复保存是幂等的。 */
+  /** 新建前的校验，结果先写进账号级数据再存本机：内置角色只能修改，同 ID 已有不同内容时冲突，相同内容重复保存是幂等的。 */
   validateNew(value: unknown): Role {
     const role = this.parse(value);
     if (this.builtins.has(role.id)) throw new KiteError('内置角色不能新建，请直接修改', 409);
@@ -188,7 +188,7 @@ export class Roles {
     });
   }
 
-  /** 修改前的校验，结果先写到账号服务再存本机。 */
+  /** 修改前的校验，结果先写进账号级数据再存本机。 */
   validate(id: string, expectedRevision: string, value: unknown): Role {
     const role = this.parse(value);
     if (id !== role.id) throw new KiteError('角色 ID 与请求目标不一致');

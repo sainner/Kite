@@ -233,7 +233,7 @@ export function route(state: MonitorState, input: RouteInput): LineNotification[
     if (now - since >= UNREACHABLE_MS) put({ id: `machine:${machine.id}`, kind: 'unreachable', machine: { id: machine.id, name: machine.name },
       text: `工作机「${machine.name}」已连不上超过 30 分钟`, at: since });
   }
-  // 账号目录暂时读不到时没列出的工作机，保留上次的连不上记录与事项，免得恢复后当成新事项。
+  // 工作机目录暂时读不到时没列出的工作机，保留上次的连不上记录与事项，免得恢复后当成新事项。
   for (const [machine, since] of Object.entries(state.unreachable)) {
     if (!input.summaries.has(machine) && !input.machines.some((entry) => entry.id === machine)) unreachable[machine] = since;
   }
@@ -243,7 +243,7 @@ export function route(state: MonitorState, input: RouteInput): LineNotification[
   // 读到汇总的工作机按本轮重建，归档掉的线程随之清掉。
   const seen = Object.fromEntries(Object.entries(state.seen).filter(([key]) => !input.summaries.has(key.slice(0, key.indexOf(':')))));
   for (const [machineId, summary] of input.summaries) {
-    // 名字以账号目录为准，和 App 里看到的一致；目录读不到时用工作机自己报的。
+    // 名字以工作机目录为准，和 App 里看到的一致；目录读不到时用工作机自己报的。
     const machine = { id: summary.machine.id, name: input.machines.find((entry) => entry.id === machineId)?.name ?? summary.machine.name };
     for (const workspace of summary.workspaces) {
       // 已流转走的是冻结副本，它的线程状态以当前宿主为准。

@@ -35,7 +35,7 @@ struct DeviceStatus {
     let ready: Bool
     let waiting: Bool
 
-    /// 工作机以本机的连接为准，控制端没有连接，按账号目录的在线状态；目录里找不到的设备按离线处理。
+    /// 工作机以本机的连接为准，控制端没有连接，按工作机目录的在线状态；目录里找不到的设备按离线处理。
     init(device: AccountDevice?, connection: WorkerConnection?) {
         ready = connection?.connected == true || (device.map { $0.role != "worker" && $0.online } ?? false)
         waiting = !ready && device?.online == true

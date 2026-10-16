@@ -49,7 +49,7 @@ export interface RuntimeOptions {
   model?(thread: ThreadContext): Model;
   /** 后台轻任务独立选模型；false 关闭，测试可注入受控模型。 */
   lightTasks?: false | Partial<LightTaskOptions>;
-  /** 测试里替换 Line 看到的账号目录：同一进程里的几台 kited 按给出的地址直接互访，不经组网。 */
+  /** 测试里替换 Line 看到的工作机目录：同一进程里的几台 kited 按给出的地址直接互访，不经组网。 */
   peers?: { directory(): Promise<AccountMachine[]> };
   /** 测试里替换组网里的对端：同一进程里的几台 kited 按给出的地址直接互访，发现与同步都不经组网。 */
   directory?: { candidates(): Candidate[] };

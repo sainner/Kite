@@ -139,7 +139,7 @@ extension WorkArea {
     }
 
     /// docked 是停靠栏里按顺序放的窗口，onStage 是台面上的窗口（只用来找带着子代理的父代理）。
-    /// windowless 是按没有窗口来排的实例：正要关窗口或刚打开窗口的，用来算卡片飞去、飞出哪一格。
+    /// windowless 是按没有窗口来排的实例：正要关窗口的那个，用来算卡片飞回哪一格。
     func dockModel(docked: [Pane], onStage: Set<Pane>, windowless: String? = nil) -> DockModel {
         let open = instances.filter { $0.status == .open }
         let byID = Dictionary(open.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })

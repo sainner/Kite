@@ -63,32 +63,32 @@ const (
 
 // channelKey 取出受管网络通道的 WireGuard 私钥；没有就生成一把存进登录钥匙串。
 // 钥匙串条目由创建它的程序独占，其他程序（包括重新编译后签名变了的 kite-net）读取要用户在弹窗里允许；私钥不落任何文件。
-func channelKey() (private [32]byte, created bool, err error) {
+func channelKey() (private [32]byte, err error) {
 	cService, cAccount := C.CString(keychainService), C.CString(keychainAccount)
 	defer C.free(unsafe.Pointer(cService))
 	defer C.free(unsafe.Pointer(cAccount))
 	var length C.int
 	status := C.kite_read(cService, cAccount, unsafe.Pointer(&private[0]), 32, &length)
 	if status == C.errSecSuccess && length == 32 {
-		return private, false, nil
+		return private, nil
 	}
 	if status != C.errSecItemNotFound {
-		return private, false, fmt.Errorf("读钥匙串失败（OSStatus %d）", int(status))
+		return private, fmt.Errorf("读钥匙串失败（OSStatus %d）", int(status))
 	}
 	if _, err := rand.Read(private[:]); err != nil {
-		return private, false, err
+		return private, err
 	}
 	private[0] &= 248
 	private[31] = private[31]&127 | 64
 	if status := C.kite_add(cService, cAccount, unsafe.Pointer(&private[0]), 32); status != C.errSecSuccess {
-		return private, false, fmt.Errorf("写钥匙串失败（OSStatus %d）", int(status))
+		return private, fmt.Errorf("写钥匙串失败（OSStatus %d）", int(status))
 	}
-	return private, true, nil
+	return private, nil
 }
 
 // channelPublicKey 是交给网络管理员登记的公钥（base64）；私钥还没有就先生成。
 func channelPublicKey() (string, error) {
-	private, _, err := channelKey()
+	private, err := channelKey()
 	if err != nil {
 		return "", err
 	}

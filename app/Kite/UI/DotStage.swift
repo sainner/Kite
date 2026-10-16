@@ -55,8 +55,6 @@ final class DotStage {
         slots.values.contains { $0.carrier === carrier && ($0.figure != nil || $0.previous != nil) }
             || patterns.values.contains { $0.carrier === carrier }
     }
-    /// slot 上正拼着的图形。
-    func shownFigure(_ slot: String = FigureSlot.main) -> DotFigure? { slots[slot]?.figure?.figure }
     /// slot 上的图形在窗口坐标中占的范围。
     func figureFrame(_ slot: String = FigureSlot.main) -> CGRect? {
         guard let shown = slots[slot] else { return nil }

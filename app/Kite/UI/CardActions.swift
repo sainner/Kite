@@ -62,7 +62,7 @@ extension Binding where Value == CardPhase {
     }
 }
 
-/// 卡片底部的按钮：主按钮占满剩下的宽度，次要按钮在它左边。iPhone 键盘升起时最左边多一个收起键盘。
+/// 卡片底部的按钮：主按钮占满剩下的宽度。iPhone 键盘升起时最左边多一个收起键盘。
 /// 给了 phase 时主按钮跟着进度变：加载中转圈；成功打勾，直到再次能提交（又改了内容）才变回来；
 /// 失败变成错误色，按钮里一行写原因，点它把完整原因复制到剪贴板，左边冒出圆形的重试。几个状态之间的形变交给玻璃效果的容器。
 struct CardActions: View {
@@ -70,34 +70,26 @@ struct CardActions: View {
     /// 主按钮文字前面的图标。
     var icon: Image?
     var enabled: Bool
-    var prominent: Bool
-    var secondary: String?
-    var secondaryEnabled: Bool
     var phase: Binding<CardPhase>
     var succeeded: String
     var working: String?
     let action: () -> Void
     var succeededAction: (() -> Void)?
-    var secondaryAction: () -> Void
     @Namespace private var glass
     /// 刚复制了报错，按钮里短暂换成已复制。
     @State private var copied = false
 
-    init(primary: String, icon: Image? = nil, enabled: Bool = true, prominent: Bool = true, secondary: String? = nil, secondaryEnabled: Bool = true,
+    init(primary: String, icon: Image? = nil, enabled: Bool = true,
          phase: Binding<CardPhase>, succeeded: String = "已保存", working: String? = nil,
-         action: @escaping () -> Void, secondaryAction: @escaping () -> Void = {}, succeededAction: (() -> Void)? = nil) {
+         action: @escaping () -> Void, succeededAction: (() -> Void)? = nil) {
         self.primary = primary
         self.icon = icon
         self.enabled = enabled
-        self.prominent = prominent
-        self.secondary = secondary
-        self.secondaryEnabled = secondaryEnabled
         self.phase = phase
         self.succeeded = succeeded
         self.working = working
         self.action = action
         self.succeededAction = succeededAction
-        self.secondaryAction = secondaryAction
     }
 
     var body: some View {
@@ -115,12 +107,6 @@ struct CardActions: View {
                     .glassEffectID("keyboard", in: glass)
                 }
                 #endif
-                if let secondary {
-                    Button(secondary, action: secondaryAction)
-                        .buttonStyle(.glass)
-                        .disabled(!secondaryEnabled || state.working)
-                        .glassEffectID("secondary", in: glass)
-                }
                 if case .failed(_, let retry) = state {
                     Button(action: retry) {
                         Image(systemName: "arrow.clockwise").accessibilityLabel("重试")
@@ -181,11 +167,7 @@ struct CardActions: View {
         .disabled(state == .idle && !enabled)
         .allowsHitTesting(state != .working && (state != .succeeded || succeededAction != nil))
         .tint(state.error != nil ? Theme.danger : nil)
-        if prominent || state.error != nil {
-            button.buttonStyle(.glassProminent)
-        } else {
-            button.buttonStyle(.glass)
-        }
+        .buttonStyle(.glassProminent)
     }
 
     private func copy(_ message: String) {
@@ -207,15 +189,13 @@ struct CardActionsPreview: View {
     @State private var phase = CardPhase.idle
     @State private var fails = true
     @State private var changed = true
-    @State private var secondary = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Toggle("请求失败", isOn: $fails)
             Toggle("有改动（成功后打开，按钮变回保存）", isOn: $changed)
-            Toggle("带次要按钮", isOn: $secondary)
             Spacer(minLength: 0)
-            CardActions(primary: "保存", enabled: changed, secondary: secondary ? "返回" : nil, phase: $phase) {
+            CardActions(primary: "保存", enabled: changed, phase: $phase) {
                 $phase.run(succeeds: true) {
                     try await Task.sleep(for: .seconds(1.5))
                     if fails { throw KitedError(message: "工作机连接已断开：请求 /instances/agent/execution-grants 超时（25 秒），请检查组网状态与 kited 是否仍在运行后重试。") }

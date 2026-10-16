@@ -6,6 +6,7 @@
  */
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { cgiResponse } from '../src/workspace/peer-git.ts';
 import { git, makeTemp } from './util.ts';
 
 export interface FakeGit {
@@ -19,51 +20,6 @@ export interface FakeGit {
   /** 拉取引用广告前调用（clone、fetch、ls-remote 都经过这里），测试可以挂起它，或返回失败响应。 */
   beforeFetch?: (name: string) => void | Response | Promise<void | Response>;
   stop(): void;
-}
-
-function blankLine(buffer: Uint8Array): [number, number] {
-  for (let i = 0; i < buffer.length - 1; i++) {
-    if (buffer[i] === 10 && buffer[i + 1] === 10) return [i, 2];
-    if (buffer[i] === 13 && buffer[i + 1] === 10 && buffer[i + 2] === 13 && buffer[i + 3] === 10) return [i, 4];
-  }
-  return [-1, 0];
-}
-
-/** CGI 输出转成 HTTP 响应：先读出响应头，正文照转。 */
-async function cgiResponse(stdout: ReadableStream<Uint8Array>): Promise<Response> {
-  const reader = stdout.getReader();
-  let buffer = new Uint8Array(0);
-  let [end, gap] = [-1, 0];
-  while (end < 0) {
-    const { value, done } = await reader.read();
-    if (done) return new Response('http-backend 没有响应', { status: 502 });
-    const next = new Uint8Array(buffer.length + value.length);
-    next.set(buffer);
-    next.set(value, buffer.length);
-    buffer = next;
-    [end, gap] = blankLine(buffer);
-  }
-  let status = 200;
-  const headers = new Headers({ 'cache-control': 'no-store' });
-  for (const line of new TextDecoder().decode(buffer.subarray(0, end)).split(/\r?\n/)) {
-    const colon = line.indexOf(':');
-    if (colon < 0) continue;
-    const name = line.slice(0, colon).trim();
-    const value = line.slice(colon + 1).trim();
-    if (name.toLowerCase() === 'status') status = Number.parseInt(value, 10) || 500;
-    else headers.set(name, value);
-  }
-  const rest = buffer.subarray(end + gap);
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) { if (rest.length) controller.enqueue(rest); },
-    async pull(controller) {
-      const { value, done } = await reader.read();
-      if (done) controller.close();
-      else controller.enqueue(value);
-    },
-    cancel() { return reader.cancel(); },
-  });
-  return new Response(body, { status, headers });
 }
 
 export function startFakeGit(): FakeGit {

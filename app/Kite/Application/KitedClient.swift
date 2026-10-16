@@ -251,7 +251,7 @@ extension String {
     }
 }
 
-/// 地址来自账号目录；每个连接实例拥有身份，旧账号的迟到响应不能被新连接接收。
+/// 地址来自工作机目录；每个连接实例拥有身份，旧账号的迟到响应不能被新连接接收。
 struct KitedClient: Equatable {
     /// 本机 kited 的地址：作为工作机的 Mac 直接访问它，不经组网。
     static let local = "http://127.0.0.1:5483"

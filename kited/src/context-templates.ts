@@ -1,6 +1,6 @@
 /** 工作机共享的可编辑上下文：事件通知、上下文压缩与辅助生成（标题、签名）的模板，在生成时读取并固定快照。代理的提示词属于角色，见 roles.ts。 */
-import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { revisionOf } from './account-data/store.ts';
 import { agentModelCatalog } from './agents/capabilities.ts';
 import { agentDefinitionSchema } from './agents/definition.ts';
 import { agentModels } from './agents/models.ts';
@@ -52,9 +52,7 @@ const templateSchema = z.object({ definition: contextDefinitionSchema, model: ag
 export type Template = z.infer<typeof templateSchema>;
 export interface ContextTemplate extends Template { revision: string }
 
-const snapshot = (template: Template): ContextTemplate => ({
-  ...template, revision: createHash('sha256').update(JSON.stringify(template)).digest('hex'),
-});
+const snapshot = (template: Template): ContextTemplate => ({ ...template, revision: revisionOf(template) });
 
 function parse(value: unknown): Template {
   const result = templateSchema.safeParse(value);
@@ -136,7 +134,7 @@ export class ContextTemplates {
     return gone.length > 0;
   }
 
-  /** 修改前的校验，结果先写到账号服务再存本机。 */
+  /** 修改前的校验，结果先写进账号级数据再存本机。 */
   validate(id: string, expectedRevision: string, value: unknown): Template {
     const template = this.named(parse(value));
     if (id !== template.definition.id) throw new KiteError('模板 ID 与请求目标不一致');

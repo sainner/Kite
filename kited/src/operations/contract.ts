@@ -148,7 +148,7 @@ export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('monitor.list') }).strict(),
   ...(['files.list', 'files.read', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
     targets: z.object({ kind: z.literal('instances'), instanceIds: z.array(id) }).strict() }).strict()),
-  /** Line 的管理动作，目标范围是账号目录里的全部工作区；actions 是用户允许的白名单。 */
+  /** Line 的管理动作，目标范围是工作机目录里的全部工作区；actions 是用户允许的白名单。 */
   z.object({ operation: z.literal('line'), actions: z.array(z.enum(lineActions)) }).strict(),
 ]));
 export type OperationGrant = z.infer<typeof operationGrantsSchema>[number];

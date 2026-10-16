@@ -160,7 +160,8 @@ export function replicaManifest(options: { home: string; machine: string; projec
   };
 }
 
-interface ReplicaState { holder: string; epoch: number; digest: string; complete: boolean; projectId?: string; files: Record<string, FileState> }
+/** refsPending：最后一页指到的快照链或工作区分支还没取到本机检出（还没有检出，或取失败了），摘要没变也要再拉。 */
+interface ReplicaState { holder: string; epoch: number; digest: string; complete: boolean; projectId?: string; refsPending?: boolean; files: Record<string, FileState> }
 
 /** 跟进方一侧：本机手上的各工作区副本，放在 <home>/replicas/<工作区>/，目录布局同流转记录。 */
 export class ReplicaStore {
@@ -183,7 +184,7 @@ export class ReplicaStore {
     const dir = this.dir(workspaceId);
     const previous = this.state(workspaceId);
     const state: ReplicaState = { holder, epoch: page.epoch, digest: '', complete: false, files: previous?.files ?? {},
-      ...(previous?.projectId ? { projectId: previous.projectId } : {}) };
+      ...(previous?.projectId ? { projectId: previous.projectId } : {}), refsPending: previous?.refsPending ?? false };
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     let broken = false;
     for (const file of page.files) {
@@ -214,10 +215,21 @@ export class ReplicaStore {
       state.projectId = page.manifest.projectId;
     }
     if (!page.more && !broken) { state.complete = true; state.digest = page.digest ?? ''; }
-    const temporary = join(dir, 'state.json.tmp');
-    writeFileSync(temporary, JSON.stringify(state));
-    renameSync(temporary, join(dir, 'state.json'));
+    if (!page.more) state.refsPending = !!(page.git?.snapshots || page.git?.branch);
+    this.write(workspaceId, state);
     return state.complete;
+  }
+
+  /** 最后一页指到的 Git 已取到本机检出。 */
+  refsFetched(workspaceId: string): void {
+    const state = this.state(workspaceId);
+    if (state?.refsPending) this.write(workspaceId, { ...state, refsPending: false });
+  }
+
+  private write(workspaceId: string, state: ReplicaState): void {
+    const temporary = join(this.dir(workspaceId), 'state.json.tmp');
+    writeFileSync(temporary, JSON.stringify(state));
+    renameSync(temporary, join(this.dir(workspaceId), 'state.json'));
   }
 
   remove(workspaceId: string): void { rmSync(this.dir(workspaceId), { recursive: true, force: true }); }
@@ -225,7 +237,7 @@ export class ReplicaStore {
 
 /**
  * 跟进方一侧的轮询：定时向各台在线的工作机要它持有的工作区清单，摘要变了就按文件增量拉，再从它的检出取变了的快照链与工作区分支
- * （本机有这个项目的检出时）。同一工作区出现在几台上时跟 epoch 最高的那台；本机自己持有的不跟。各台之间并行，同一工作区同时只拉一份。
+ * （本机有这个项目的检出时；检出后来才有、或上次取失败的，摘要没变也再拉一次补上）。同一工作区出现在几台上时跟 epoch 最高的那台；本机自己持有的不跟。各台之间并行，同一工作区同时只拉一份。
  * 执行设备在线却不再列出的（已归档或流转回本机），副本删掉。
  */
 export class Replicas {
@@ -305,7 +317,8 @@ export class Replicas {
       if ((this.deps.held(entry.workspaceId) ?? 0) >= entry.epoch) return false;
       const state = this.store.state(entry.workspaceId);
       if (state && state.epoch > entry.epoch) return false;
-      return !(state?.holder === holder.id && state.epoch === entry.epoch && state.digest === entry.digest);
+      const current = state?.holder === holder.id && state.epoch === entry.epoch && state.digest === entry.digest;
+      return !current || (!!state.refsPending && !!this.deps.checkout(entry.projectId));
     });
     // 各台之间并行，同一台上的逐个拉，免得一台的大文件拖住别的。
     const byHolder = Map.groupBy(due, ({ holder }) => holder.id);
@@ -350,6 +363,7 @@ export class Replicas {
         if (sha && ref && await revParse(checkout, replicaRef(workspaceId, name)) !== sha) specs.push(`+${ref}:${replicaRef(workspaceId, name)}`);
       }
       await this.deps.fetchRefs(checkout, holder, projectId, specs);
+      this.store.refsFetched(workspaceId);
     })().finally(() => { if (this.pulling.get(workspaceId) === running) this.pulling.delete(workspaceId); });
     this.pulling.set(workspaceId, running);
     return running;

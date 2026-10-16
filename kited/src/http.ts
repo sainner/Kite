@@ -329,9 +329,9 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/handover/cancel': { POST: long(bound((req) => kite.transfers.cancel(req.params.id))) },
       // 没有远程的项目：目标机装好后通知源机交出。
       '/workspaces/:id/handover/complete': { POST: long(peerOnly(async (req) => {
-        const parsed = z.object({ epoch: z.number().int().positive() }).strict().safeParse(await body(req));
-        if (!parsed.success) throw new KiteError('交出通知要写 epoch');
-        return kite.transfers.complete(req.params.id, parsed.data.epoch);
+        const parsed = z.object({ epoch: z.number().int().positive(), machine: z.string().min(1) }).strict().safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('交出通知要写 epoch 与 machine（接收方）');
+        return kite.transfers.complete(req.params.id, parsed.data.epoch, parsed.data.machine);
       })) },
       // 工作区副本：其他工作机拉取本机持有的工作区执行数据。
       '/replica': { GET: peerOnly(() => kite.replicaEntries()) },

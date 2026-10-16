@@ -7,7 +7,7 @@ import type { Peer } from '../peer-fetch.ts';
 import type { CatalogSnapshot } from './catalog.ts';
 import type { AccountData } from './store.ts';
 
-/** 一台工作机；address 是组网上的访问地址，入网后才有。 */
+/** 一台工作机；address 是组网上的访问地址，在组网上发现它之后才有。 */
 export interface AccountMachine {
   id: string;
   name: string;

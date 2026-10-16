@@ -90,7 +90,11 @@ create table if not exists template_emblems (
 create table if not exists roles (
   id text primary key, role text not null
 );
--- 项目约束以账号服务为准，这里是缓存，离线时沿用。
+-- 没有远程的项目交出工作区时记下接收方：同一次交接（epoch）只交给一台，别的目标再来通知时拒绝。
+create table if not exists workspace_receivers (
+  workspace_id text primary key, epoch integer not null, machine text not null
+);
+-- 项目约束以账号级数据为准，这里是本机缓存。
 create table if not exists project_constraints (
   project_id text primary key, constraints text not null
 );
@@ -417,12 +421,17 @@ export class Store implements UsageStore {
       if (firstAgent) this.addAgent(firstAgent.agent, firstAgent.window);
     })();
   }
-  /** 执行权流转走：本地记录改为 transferred；根工作区同时给检出另建一个可用的根工作区。 */
-  freezeWorkspace(id: string, replacementRoot?: Workspace): void {
+  /** 执行权流转走：本地记录改为 transferred；根工作区同时给检出另建一个可用的根工作区。receiver 是交给的那台（没有远程的项目）。 */
+  freezeWorkspace(id: string, replacementRoot?: Workspace, receiver?: { epoch: number; machine: string }): void {
     this.db.transaction(() => {
       this.setWorkspaceStatus(id, 'transferred');
       if (replacementRoot) this.addWorkspace(replacementRoot);
+      if (receiver) this.db.query('insert or replace into workspace_receivers values (?, ?, ?)').run(id, receiver.epoch, receiver.machine);
     })();
+  }
+  /** 工作区在这一 epoch 交给了哪台；没有记录时为 undefined。 */
+  workspaceReceiver(id: string, epoch: number): string | undefined {
+    return (this.db.query('select machine from workspace_receivers where workspace_id = ? and epoch = ?').get(id, epoch) as { machine: string } | null)?.machine;
   }
   setWorkspaceEpoch(id: string, epoch: number): void {
     this.db.query('update workspaces set epoch = ? where id = ?').run(epoch, id);

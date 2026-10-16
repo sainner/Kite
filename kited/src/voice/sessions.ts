@@ -100,7 +100,6 @@ class VoiceSession {
       const template = options.template();
       const model = speechModels.find((entry) => entry.id === template.model?.model) ?? speechModels[0]!;
       const thread = this.socket.data.thread;
-      // 凭据要问账号服务，和读会话记录同时进行
       const [keys, history] = await Promise.all([options.keys(), thread ? options.history(thread) : undefined]);
       const key = keys.find((entry) => entry.provider === model.vendor)?.key;
       if (!key) throw new KiteError('没有语音识别凭据：在 Kite 账号的凭据里添加千问（百炼）的 API Key');

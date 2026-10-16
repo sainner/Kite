@@ -165,7 +165,7 @@ export class InstanceConfiguration {
     const agent = instanceAgent(instance);
     return { instance, revision: agentRevision(agent), configurationBoundary: configurationBoundary(agent.runtime) };
   }
-  /** 项目当前的工具约束，以账号服务为准，这里读本机缓存。 */
+  /** 项目当前的工具约束，以账号级数据为准，这里读本机缓存。 */
   private projectRule(workspaceId: string) {
     return this.kite.store.workspaceConstraints(workspaceId)?.tools;
   }

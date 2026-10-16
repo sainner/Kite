@@ -12,7 +12,8 @@ import { commitAll, git, gitTry, revParse } from './git.ts';
 import { defaultCheckoutPath, defaultClonePath, within } from '../paths.ts';
 import { normalizeRemote } from '../remote-url.ts';
 import { clone, originURL } from './remote.ts';
-import { clonePeer, type Peer, type PeerRoute } from './peer-git.ts';
+import type { Peer } from '../peer-fetch.ts';
+import { clonePeer, type PeerRoute } from './peer-git.ts';
 import type { GitCredentials } from '../git-credential.ts';
 import type { ProjectRegistry, RegisteredProject } from '../account-data/registry.ts';
 import type { Store } from '../store.ts';
@@ -40,13 +41,22 @@ function realDirectory(rawPath: string): string {
   return path;
 }
 
-/** 新检出不能和已登记的检出、正在 clone 的目录或 Kite 自己的目录重叠。 */
-function assertFree(store: Store, home: string, path: string, cloning: Iterable<string> = []): void {
-  const overlap = store.checkouts().find((p) => within(path, p.path) || within(p.path, path));
-  if (overlap) throw new KiteError(`和已登记的检出 ${overlap.id}（${overlap.path}）重叠`, 409);
-  for (const p of cloning) if (within(path, p) || within(p, path)) throw new KiteError(`和正在 clone 的 ${p} 重叠`, 409);
-  if (within(path, home) || within(home, path)) throw new KiteError('不能登记 Kite 自己的目录');
+/** 新检出不能和已登记的检出、正在 clone 的目录或 Kite 自己的目录重叠；重叠时给出原因。 */
+function overlap(store: Store, home: string, path: string, cloning: Iterable<string> = []): KiteError | undefined {
+  const checkout = store.checkouts().find((p) => within(path, p.path) || within(p.path, path));
+  if (checkout) return new KiteError(`和已登记的检出 ${checkout.id}（${checkout.path}）重叠`, 409);
+  for (const p of cloning) if (within(path, p) || within(p, path)) return new KiteError(`和正在 clone 的 ${p} 重叠`, 409);
+  if (within(path, home) || within(home, path)) return new KiteError('不能登记 Kite 自己的目录');
+  return undefined;
 }
+
+function assertFree(store: Store, home: string, path: string, cloning: Iterable<string> = []): void {
+  const error = overlap(store, home, path, cloning);
+  if (error) throw error;
+}
+
+/** 位置上已有内容：是文件，或者是非空的文件夹。 */
+const occupied = (path: string) => existsSync(path) && (!statSync(path).isDirectory() || readdirSync(path).length > 0);
 
 export const projectOf = (r: RegisteredProject): Project => ({ id: r.id, name: r.name, remote: r.remote, createdAt: r.createdAt });
 
@@ -112,14 +122,10 @@ export function cloneTarget(store: Store, home: string, source: { remote: string
   } else if (!dest) {
     // 没有远程的项目按名字放，同名的几个会抢同一个位置：已被占用时名字后加项目 ID 的前 8 位。
     const plain = defaultCheckoutPath({ remote: null, name: source.name });
-    const taken = (existsSync(plain) && (!statSync(plain).isDirectory() || readdirSync(plain).length > 0))
-      || (() => { try { assertFree(store, home, plain, cloning); return false; } catch { return true; } })();
-    dest = taken ? `${plain}-${source.id.slice(0, 8)}` : plain;
+    dest = occupied(plain) || overlap(store, home, plain, cloning) ? `${plain}-${source.id.slice(0, 8)}` : plain;
   }
   if (!isAbsolute(dest)) throw new KiteError('路径要写绝对路径');
-  if (existsSync(dest) && (!statSync(dest).isDirectory() || readdirSync(dest).length)) {
-    throw new KiteError(`目标位置已有内容：${dest}`, 409);
-  }
+  if (occupied(dest)) throw new KiteError(`目标位置已有内容：${dest}`, 409);
   mkdirSync(dirname(dest), { recursive: true });
   const real = existsSync(dest) ? realpathSync(dest) : join(realpathSync(dirname(dest)), basename(dest));
   assertFree(store, home, real, cloning);

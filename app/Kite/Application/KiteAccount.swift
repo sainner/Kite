@@ -36,8 +36,8 @@ private struct Identity: Codable {
     private(set) var appearanceRevision = 0
     /// 正在登录时要在浏览器里打开的地址；界面据此打开登录页。
     private(set) var loginURL: URL?
-    /// 组网地址是不是工作机，及确认的时刻；不是的过一阵再试。
-    @ObservationIgnored private var probes: [String: (worker: Bool, at: Date)] = [:]
+    /// 组网地址是不是工作机，连续读不到 /machine 的次数，及最近一次读的时刻；读不到的过一阵再试。
+    @ObservationIgnored private var probes: [String: (worker: Bool, failures: Int, at: Date)] = [:]
     /// 上次写盘的目录缓存。
     @ObservationIgnored private var savedDirectory: Data?
     /// 用户关掉了登录页，正在等的登录就此放弃。
@@ -205,7 +205,8 @@ private struct Identity: Codable {
         let pending = peers.filter(\.online).compactMap(\.ip).map(Self.workerAddress).filter { address in
             guard !known.contains(address) else { return false }
             guard let probe = probes[address] else { return true }
-            return Date().timeIntervalSince(probe.at) >= (probe.worker ? 60 : 600)
+            // 读不到可能只是一时超时，先隔一分钟再试，连续读不到才逐次拉长到十分钟。
+            return Date().timeIntervalSince(probe.at) >= (probe.worker ? 60 : min(600, 60 * pow(2, Double(probe.failures - 1))))
         }
         await withTaskGroup(of: Void.self) { group in
             for address in pending { group.addTask { await self.probe(address) } }
@@ -224,7 +225,7 @@ private struct Identity: Codable {
 
     private func probe(_ address: String) async {
         let machine = try? await KitedClient(address: address).request("/machine", timeout: 8, as: RemoteMachine.self)
-        probes[address] = (machine != nil, Date())
+        probes[address] = (machine != nil, machine == nil ? (probes[address]?.failures ?? 0) + 1 : 0, Date())
     }
 
     /// 工作机在组网上的访问地址；各工作机的 kited 都监听同一个端口。
