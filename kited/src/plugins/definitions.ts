@@ -10,6 +10,8 @@ import { monitorDefinitionId } from '../monitor/monitors.ts';
 export interface PluginDefinition {
   id: string;
   title: string;
+  /** 一句话的用途，创建实例时显示；只有内置定义有。 */
+  description?: string;
   lifetime: 'window' | 'persistent';
   views: { id: string; title: string; renderer: string; resourceUri?: string }[];
   defaultView: string;
@@ -50,13 +52,13 @@ const agent: AgentDefinition = {
 };
 
 const definitions: PluginDefinition[] = [
-  { id: agentDefinitionId, title: '代理', lifetime: 'persistent', defaultView: 'conversation',
+  { id: agentDefinitionId, title: '代理', description: '与 agent 协作', lifetime: 'persistent', defaultView: 'conversation',
     execution: { workspace: 'write', read: [], write: [], network: [] },
     agent, operations: ['agent.send', 'agent.resume', 'agent.stop'], views: [{ id: 'conversation', title: '代理窗口', renderer: 'conversation' }] },
-  { id: 'kite.files', title: '文件', lifetime: 'window', defaultView: 'files', operations: ['files.list', 'files.read', 'files.diff', 'files.state', 'files.select'], views: [
+  { id: 'kite.files', title: '文件', description: '预览工作区文件', lifetime: 'window', defaultView: 'files', operations: ['files.list', 'files.read', 'files.diff', 'files.state', 'files.select'], views: [
     { id: 'files', title: '文件', renderer: 'files' },
   ] },
-  { id: 'kite.terminal', title: '终端', lifetime: 'window', defaultView: 'terminal', operations: [], views: [{ id: 'terminal', title: '终端', renderer: 'terminal' }] },
+  { id: 'kite.terminal', title: '终端', description: '在工作目录执行命令', lifetime: 'window', defaultView: 'terminal', operations: [], views: [{ id: 'terminal', title: '终端', renderer: 'terminal' }] },
   /** 由代理的 monitor_start 或启用 Line 时由宿主创建，界面不能直接新建；Line 的那个视图就是收件箱。 */
   { id: monitorDefinitionId, title: '监视', lifetime: 'persistent', defaultView: 'timeline',
     operations: ['monitor.stop', 'monitor.read', 'monitor.delegate', 'monitor.dismiss', 'monitor.hosting'],

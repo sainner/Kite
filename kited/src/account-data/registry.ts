@@ -72,6 +72,24 @@ export class ProjectRegistry {
     return undefined;
   }
 
+  /** 项目（或它最终并入的项目）从登记表删掉了。 */
+  deleted(id: string): boolean {
+    for (let current = id, hops = 0; hops < 16; hops++) {
+      const body = this.data.get('project', current)?.body as Stored | undefined;
+      if (!body) return this.data.removed('project', current);
+      if (!('mergedInto' in body)) return false;
+      current = body.mergedInto;
+    }
+    return false;
+  }
+
+  /** 删除项目：登记与约束一起删，各工作机看到后移除本机的检出。之后再添加同一远程或文件夹是新项目。 */
+  remove(id: string): void {
+    this.require(id);
+    this.data.remove('project', id);
+    this.data.remove('constraints', id);
+  }
+
   byRemote(remote: string): RegisteredProject | undefined {
     return this.list().find((project) => project.remote === remote);
   }

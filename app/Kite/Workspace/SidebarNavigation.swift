@@ -8,7 +8,7 @@ enum SidebarSection: CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .workspaces: "空间"
+        case .workspaces: "项目"
         case .drive: "设备"
         case .extensions: "资源库"
         case .settings: "设置"
@@ -255,19 +255,35 @@ struct SidebarSettingsButton: View {
     }
 }
 
+/// 列表上方的栏名；项目一栏右侧是添加项目的入口，按钮浮在标题上，不撑高这一行，各栏的列表起点一致。
 struct SidebarListHeader: View {
     @Environment(AppModel.self) private var model
     @Environment(\.sidebarMetrics) private var metrics
 
     var body: some View {
         if model.sidebarSection != .drive {
-            Text(model.sidebarSection == .workspaces ? "项目" : model.sidebarSection.title)
+            Text(model.sidebarSection.title)
                 .font(Theme.caption)
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, metrics.itemInset)
-                .padding(.bottom, 8)
                 .accessibilityAddTraits(.isHeader)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(alignment: .trailing) {
+                    if model.sidebarSection == .workspaces {
+                        Button { model.newWorkspace = .project } label: {
+                            TablerIcon(.tablerPlus)
+                        }
+                        .buttonStyle(SidebarButtonStyle(size: metrics.control))
+                        .disabled(model.availableWorkers.isEmpty)
+                        .help("添加项目")
+                        .accessibilityLabel("添加项目")
+                    }
+                }
+                // 加号与项目行末尾的按钮右对齐
+                .padding(.leading, metrics.itemInset)
+                .padding(.trailing, 4)
+                .padding(.bottom, 8)
+                // 触屏的按钮比标题高，压在列表顶边上的那一截也归它
+                .zIndex(1)
         }
     }
 }

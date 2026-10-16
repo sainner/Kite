@@ -105,7 +105,7 @@ struct RoleEditor: View {
 
     var body: some View {
         CardSheet(title: "新建角色",
-                  subtitle: "工具、模型与预算是用这个角色新建代理时的初始值，草稿里还能在此范围内调整。", error: phase.error,
+                  subtitle: "设定代理的提示词、模型与工具", error: phase.error,
                   typing: focus != nil, size: CGSize(width: 720, height: 720),
                   close: { if changed { discard = true } else { dismiss() } }) {
             Group {

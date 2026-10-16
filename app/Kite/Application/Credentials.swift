@@ -208,7 +208,7 @@ nonisolated enum ApiProvider: String, KeyProvider {
     static let header = "模型 API"
     static let footer = "API Key 加密保存在工作机上、在工作机之间同步，只用于查询额度与余额，agent 执行的命令里无法引用。"
     static let addTitle = "添加 API Key"
-    static let sheetSubtitle = "保存到工作机，各工作机查询额度时使用"
+    static let sheetSubtitle = "添加第三方 API Key"
     var id: Self { self }
     var title: String {
         switch self {
@@ -231,7 +231,7 @@ nonisolated enum SpeechProvider: String, KeyProvider {
     static let header = "语音识别"
     static let footer = "语音识别 Key 加密保存在工作机上、在工作机之间同步，只用于识别语音输入，agent 执行的命令里无法引用。"
     static let addTitle = "添加语音识别 Key"
-    static let sheetSubtitle = "保存到工作机，各工作机识别语音输入时使用"
+    static let sheetSubtitle = "用于语音输入"
     var id: Self { self }
     var title: String {
         switch self {

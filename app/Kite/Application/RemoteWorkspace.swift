@@ -161,6 +161,8 @@ struct RemotePluginDefinition: Decodable, Identifiable {
     }
     let id: String
     let title: String
+    /// 一句话的用途，只有内置定义有。
+    var description: String? = nil
     let lifetime: PluginLifetime
     let views: [PluginView]
     let defaultView: String

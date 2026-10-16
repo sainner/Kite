@@ -84,6 +84,12 @@ export class AccountData {
     return row?.body == null ? undefined : item(row);
   }
 
+  /** 删过的条目；从没收到过的不算，重建过的库从头拉取期间不会把还没拉到的当成删了。 */
+  removed(kind: EntryKind, id: string): boolean {
+    const row = this.row(kind, id);
+    return !!row && row.body == null;
+  }
+
   /** 现有的条目；omit 列出的顶层字段在 SQL 里去掉，例如插件包列表不带代码。 */
   list(kind: EntryKind, omit: string[] = []): Item[] {
     const body = omit.reduce((expression, key) => `json_remove(${expression}, '$.${key}')`, 'body');

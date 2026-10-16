@@ -221,9 +221,10 @@ struct ContextVariableSheet: View {
     var body: some View {
         let shown = shown()
         let source = shown.source, paths = shown.paths
-        CardSheet(title: variable.title, subtitle: status(shown) ?? (paths.count == 1 ? paths[0] : name), error: error,
+        CardSheet(title: variable.title, subtitle: "查看变量现在的取值", error: error,
                   typing: typing != nil, size: Self.size, close: { dismiss() }) {
-            if let value, let source { content(value, source: source, labeled: paths.count > 1) }
+            if let status = status(shown) { Text(status).font(Theme.body).foregroundStyle(.secondary) }
+            if let value, let source { content(value, source: source) }
         } actions: {
             PaneHeaderActions(groups: headerGroups(shown), menus: sourceMenu(shown))
         } footer: {
@@ -236,7 +237,7 @@ struct ContextVariableSheet: View {
         }
     }
 
-    /// 弹窗现在的情况写在副行：取不到值的原因、正在取值、值是空的、文件一份都没有；出错时副行换成失败原因（见 CardSheet）。
+    /// 取值的情况写在正文开头：取不到值的原因、正在取值、值是空的、文件一份都没有。副行只放说明，出错时换成失败原因（见 CardSheet）。
     private func status(_ shown: Shown) -> String? {
         guard let layer = shown.layer else { return "场景材料，生成时才有，这里看不到取值" }
         guard let source = shown.source else { return "没有可以取值的\(layer.noun)" }
@@ -248,12 +249,12 @@ struct ContextVariableSheet: View {
         return value.text.isEmpty ? "现在为空" : nil
     }
 
-    /// 取值直接放在正文里，不套卡片。文件只有一份时路径在副行，几份时各自标在上面。
-    @ViewBuilder private func content(_ value: ContextVariableValue, source: ContextVariableSource, labeled: Bool) -> some View {
+    /// 取值直接放在正文里，不套卡片。文件各自在上面标出路径。
+    @ViewBuilder private func content(_ value: ContextVariableValue, source: ContextVariableSource) -> some View {
         if let files = value.files {
-            ForEach(files) { file in fileEditor(file.path, saved: file, source: source, labeled: labeled) }
+            ForEach(files) { file in fileEditor(file.path, saved: file, source: source) }
             if let create = value.create, model.contextFileDraft(create, on: source.machine) != nil {
-                fileEditor(create, saved: nil, source: source, labeled: labeled)
+                fileEditor(create, saved: nil, source: source)
             }
         } else if !value.text.isEmpty {
             Text(value.text)
@@ -264,9 +265,9 @@ struct ContextVariableSheet: View {
         }
     }
 
-    private func fileEditor(_ path: String, saved: ContextVariableValue.File?, source: ContextVariableSource, labeled: Bool) -> some View {
+    private func fileEditor(_ path: String, saved: ContextVariableValue.File?, source: ContextVariableSource) -> some View {
         let machine = source.machine
-        return ContextFileEditor(path: path, labeled: labeled,
+        return ContextFileEditor(path: path,
                                  text: Binding(get: { [model] in model.contextFileDraft(path, on: machine)?.content ?? saved?.content ?? "" },
                                                set: { [model] content in model.editContextFile(path, on: machine, content: content, saved: saved) }),
                                  focused: Binding(get: { typing == path }, set: { focused in
@@ -363,20 +364,17 @@ struct ContextVariableSheet: View {
 /// 变量弹窗里的一份文件：和段落一样直接改，Markdown 标记按样式显示，存回去的是原文。不套卡片，字和正文的边对齐；几份文件时上面标出路径。
 private struct ContextFileEditor: View {
     let path: String
-    let labeled: Bool
     @Binding var text: String
     @Binding var focused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if labeled {
-                Text(path)
-                    .font(Theme.secondary)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
-                    .help(path)
-            }
+            Text(path)
+                .font(Theme.secondary)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.head)
+                .help(path)
             ContextParagraphField(parts: Binding(get: { text.isEmpty ? [] : [.text(text)] }, set: { text = $0.plainText }),
                                   variables: [], focused: $focused, placeholder: "文件内容")
                 // 段落的字离卡片边留了一圈，这里没有卡片，收回去

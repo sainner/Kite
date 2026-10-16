@@ -56,7 +56,7 @@ struct InstanceSettings: View {
     }
 
     private var main: some View {
-        CardSheet(title: "实例设置与授权", subtitle: instance.title, error: progress.error, size: Self.size,
+        CardSheet(title: "实例设置与授权", subtitle: "管理实例的运行与可用能力", error: progress.error, size: Self.size,
                   close: { if changed { discardAction = "close" } else { dismiss() } }) {
             Group {
                 CardSection("实例", note: definition?.lifetime.explanation) {
@@ -261,12 +261,15 @@ struct InstanceSettingsPresentation: ViewModifier {
         content.sheet(item: $area.settingsInstance) { instance in
             InstanceSettings(instance: instance).environment(model).environment(area).toastHost().appAppearance()
         }
+        .sheet(isPresented: $area.creatingInstance) {
+            CreateInstanceSheet().environment(model).environment(area).toastHost().appAppearance()
+        }
         .modifier(ArchiveInstanceConfirmation(instance: $area.archiveRequest))
         // 归档先在本机生效、弹窗当场关掉，工作机归档不成时报在这里
         .alert("归档失败", isPresented: Binding(get: { area.archiveError != nil }, set: { if !$0 { area.archiveError = nil } })) {
             Button("好", role: .cancel) { area.archiveError = nil }
         } message: { Text(area.archiveError ?? "") }
-        .onChange(of: model.revision(for: area)) { area.settingsInstance = nil; area.archiveRequest = nil }
+        .onChange(of: model.revision(for: area)) { area.settingsInstance = nil; area.archiveRequest = nil; area.creatingInstance = false }
     }
 }
 

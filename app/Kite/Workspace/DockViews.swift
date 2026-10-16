@@ -431,17 +431,20 @@ struct DockDimmed: ViewModifier {
 }
 
 /// 加号：宽屏是圆、右上角与窗口右上角同心；紧凑布局的底栏边上没有窗口角，是正圆。
+/// 点开是创建窗口的弹窗；草稿工作区还没有工作机上的实例，直接新建工作区。
 struct AddWindowButton: View {
     var concentric = true
+    @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
-    @State private var presented = false
 
     /// 右上角与窗口同心时圆角的下限，窗口角太小时不至于变成尖角。
     private static var minimumCorner: CGFloat { Metrics.dragBubble * 19 / 72 }
 
     var body: some View {
         let size = Metrics.dragBubble, radius = size / 2
-        Button { presented = true } label: {
+        Button {
+            if area.isDraft { model.newWorkspace = .session } else { area.creatingInstance = true }
+        } label: {
             if concentric {
                 face(ConcentricRectangle(topLeadingCorner: .fixed(radius),
                                          topTrailingCorner: .concentric(minimum: .fixed(Self.minimumCorner)),
@@ -452,9 +455,8 @@ struct AddWindowButton: View {
         }
         .buttonStyle(.pointingPlain)
         .fixedSize()
-        .help("创建实例")
+        .help("创建窗口")
         .accessibilityLabel("添加")
-        .popover(isPresented: $presented) { CreateInstanceMenu(presented: $presented) }
         .modifier(WindowErrorAlert())
     }
 

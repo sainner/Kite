@@ -32,7 +32,7 @@ struct ExecutionGrantSettings: View {
     }
 
     var body: some View {
-        CardSheet(title: "执行授权", subtitle: instance.title, error: phase.error, typing: focus != nil, back: true, size: InstanceSettings.size,
+        CardSheet(title: "执行授权", subtitle: "设定代理能访问的路径与网络", error: phase.error, typing: focus != nil, back: true, size: InstanceSettings.size,
                   close: { if changed { discardAction = .back } else { back() } }) {
             Group {
                 CardSection("当前执行", note: state?.recovery?.message) {

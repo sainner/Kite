@@ -43,7 +43,7 @@ struct SubscriptionLoginForm: View {
     }
 
     var body: some View {
-        CardSheet(title: "登录 \(name)", subtitle: machine,
+        CardSheet(title: "登录 \(name)", subtitle: "让工作机 \(machine) 使用这个订阅",
                   typing: typing, close: close) {
             if starting {
                 HStack(spacing: 10) {
