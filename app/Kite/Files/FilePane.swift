@@ -17,6 +17,8 @@ struct FilePane: View {
     @State private var markdownMatches: [Int] = []
     /// PDF 里找到几个。
     @State private var pdfMatches = 0
+    /// 交给 PDF 预览的关键字：PDFKit 同步搜整份文档，等输入停下再给。
+    @State private var pdfQuery: String?
     /// 从搜索结果展开的目录，目录树滚到它。
     @State private var revealed: Reveal?
 
@@ -60,7 +62,7 @@ struct FilePane: View {
     /// 读取、选择失败与指定行定位不到在信息区，失败优先。
     private var notice: PaneNotice? {
         if let error = (browser.displayingFile ? browser.textError ?? browser.pageError : nil) ?? browser.directoryError { return .failure(error) }
-        let unversioned = browser.selection.diffId == nil && (browser.content?.unversioned ?? browser.info?.unversioned ?? false)
+        let unversioned = browser.selection.diffId == nil && ((browser.content?.info ?? browser.info)?.unversioned ?? false)
         guard browser.displayingFile, let message = browser.locationMessage
                 ?? (browser.format == .other ? nil : browser.infoNote)
                 ?? (unversioned ? "超过 10 MiB 的文件不进工作区快照，没有历史版本" : nil) else { return nil }
@@ -204,6 +206,7 @@ struct FilePane: View {
         guard searching, let target = searchTarget else {
             browser.endSearch()
             browser.endFind()
+            pdfQuery = nil
             return
         }
         try? await Task.sleep(for: .milliseconds(200))
@@ -211,7 +214,8 @@ struct FilePane: View {
         switch target {
         case .directory: await browser.search(query)
         case .text, .diff: await browser.find(query)
-        case .markdown, .pdf: break
+        case .pdf: pdfQuery = fileQuery
+        case .markdown: break
         }
     }
 
@@ -234,8 +238,8 @@ struct FilePane: View {
                         .help("回到这个文件现在的内容")
                 }
             } else if fileVisible, browser.format.renderable {
-                FileToggle(title: "显示原文", icon: "chevron.left.forwardslash.chevron.right", on: !browser.rendered,
-                           help: browser.rendered ? "显示原文" : "显示预览") { browser.rendered.toggle() }
+                PaneHeaderActions(groups: [[PaneHeaderAction(title: "显示原文", systemImage: "chevron.left.forwardslash.chevron.right",
+                                                             help: browser.rendered ? "显示原文" : "显示预览", on: !browser.rendered) { browser.rendered.toggle() }]])
             }
         }
     }
@@ -328,16 +332,14 @@ struct FilePane: View {
     private func resultRow(_ entry: FileDirectory.Entry) -> some View {
         let folder = entry.kind == "directory"
         let parent = (entry.path as NSString).deletingLastPathComponent
-        return Button {
-            Task {
-                if folder {
-                    query = ""
-                    withAnimation { searching = false }
-                    await browser.reveal(entry.path)
-                    revealed = Reveal(path: entry.path)
-                } else {
-                    try? await browser.navigate(FileReference(path: entry.path))
-                }
+        return entryButton(entry) {
+            if folder {
+                query = ""
+                withAnimation { searching = false }
+                await browser.reveal(entry.path)
+                revealed = Reveal(path: entry.path)
+            } else {
+                try? await browser.navigate(FileReference(path: entry.path))
             }
         } label: {
             HStack(spacing: 8) {
@@ -345,17 +347,24 @@ struct FilePane: View {
                 Spacer(minLength: 0)
                 Text(parent).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.head)
             }
-            .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
-            .contentShape(.rect)
-            .background {
-                if entry.path == browser.selection.path {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.accentColor.opacity(0.12))
-                        .padding(.horizontal, -6)
+        }
+        .accessibilityValue(parent)
+    }
+
+    /// 目录树和搜索结果里的一行：整行都能点，不只是文字和图标；选中的垫底色。只有文件和目录能点。
+    private func entryButton(_ entry: FileDirectory.Entry, action: @escaping () async -> Void, @ViewBuilder label: () -> some View) -> some View {
+        Button { Task { await action() } } label: {
+            label()
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
+                .contentShape(.rect)
+                .background {
+                    if entry.path == browser.selection.path {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.accentColor.opacity(0.12))
+                            .padding(.horizontal, -6)
+                    }
                 }
-            }
         }
         .buttonStyle(.pointingPlain).disabled(browser.selecting || !["file", "directory"].contains(entry.kind))
-        .accessibilityValue(parent)
     }
 
     @ViewBuilder
@@ -365,11 +374,9 @@ struct FilePane: View {
         case .entry(let entry, let open):
             let folder = entry.kind == "directory"
             let selected = entry.path == browser.selection.path
-            Button {
-                Task {
-                    if folder { await browser.toggle(entry.path) }
-                    else { try? await browser.navigate(FileReference(path: entry.path)) }
-                }
+            entryButton(entry) {
+                if folder { await browser.toggle(entry.path) }
+                else { try? await browser.navigate(FileReference(path: entry.path)) }
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.right")
@@ -380,17 +387,7 @@ struct FilePane: View {
                     Label(entry.name, systemImage: folder ? "folder" : FileFormat(path: entry.path).symbol).lineLimit(1)
                 }
                 .padding(.leading, indent)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
-                // 整行都能点，不只是文字和图标
-                .contentShape(.rect)
-                .background {
-                    if selected {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.accentColor.opacity(0.12))
-                            .padding(.horizontal, -6)
-                    }
-                }
             }
-            .buttonStyle(.pointingPlain).disabled(browser.selecting || !["file", "directory"].contains(entry.kind))
             .accessibilityValue(folder ? (open ? "已展开" : "已收起") : "")
             .accessibilityAddTraits(selected ? .isSelected : [])
         case .loading:
@@ -418,7 +415,7 @@ struct FilePane: View {
         } else if browser.format == .other {
             FileInfoView(browser: browser)
         } else if let content = browser.content, browser.format == .pdf {
-            PDFPreview(url: content.url, search: fileQuery.map { SearchHighlight(query: $0, current: matchIndex) },
+            PDFPreview(url: content.url, search: pdfQuery.map { SearchHighlight(query: $0, current: matchIndex) },
                        found: { pdfMatches = $0 })
         } else if let content = browser.content, browser.format == .quickLook {
             QuickLookPreview(url: content.url)
@@ -438,7 +435,8 @@ struct FilePane: View {
                         .separateScrollPocket()
                 }
                 .onPreferenceChange(MarkdownMatches.self) { markdownMatches = $0 }
-                .task(id: "\(matchIndex) \(markdownMatches)") {
+                // 只看当前匹配落在哪一块，不拿整个匹配数组当 id。
+                .task(id: [matchIndex, markdownMatches.indices.contains(matchIndex) ? markdownMatches[matchIndex] : -1]) {
                     guard fileQuery != nil, markdownMatches.indices.contains(matchIndex) else { return }
                     withAnimation { proxy.scrollTo(MarkdownView.blockID(markdownMatches[matchIndex]), anchor: .center) }
                 }
@@ -523,24 +521,6 @@ struct FilePane: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 2)
         .background(focused ? Color.accentColor.opacity(0.18) : color.opacity(row.kind == .same ? 0 : 0.07))
-    }
-}
-
-/// 开关按钮单独一组，开着时整组用选中样式（主题色玻璃、白色图标），同侧栏的设置按钮。
-private struct FileToggle: View {
-    let title: String
-    let icon: String
-    let on: Bool
-    let help: String
-    let action: () -> Void
-
-    var body: some View {
-        PaneHeaderButtonGroup(selected: on) {
-            Button(action: action) { PaneHeaderButtonLabel(title, systemImage: icon) }
-                .foregroundStyle(on ? Color.white : Color.primary)
-                .help(help)
-                .accessibilityAddTraits(on ? .isSelected : [])
-        }
     }
 }
 

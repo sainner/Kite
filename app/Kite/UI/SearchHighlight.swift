@@ -13,13 +13,19 @@ struct SearchHighlight: Equatable {
         let plain = String(text.characters)
         let found = TextSearch.ranges(of: query, in: plain)
         guard !found.isEmpty else { return text }
-        var result = text
+        // 按字符偏移换成 AttributedString 的下标，从上一个匹配接着数；在原文上切段拼出结果，不在改过的串上取下标。
+        var result = AttributedString()
+        var (plainCursor, cursor) = (plain.startIndex, text.startIndex)
         for (index, range) in found.enumerated() {
-            // 按字符偏移换成 AttributedString 的下标
-            let start = result.characters.index(result.startIndex, offsetBy: plain.distance(from: plain.startIndex, to: range.lowerBound))
-            let end = result.characters.index(start, offsetBy: plain.distance(from: range.lowerBound, to: range.upperBound))
-            result[start..<end].backgroundColor = index == current ? Self.currentMatch : Self.match
+            let start = text.characters.index(cursor, offsetBy: plain.distance(from: plainCursor, to: range.lowerBound))
+            let end = text.characters.index(start, offsetBy: plain.distance(from: range.lowerBound, to: range.upperBound))
+            result.append(text[cursor..<start])
+            var match = AttributedString(text[start..<end])
+            match.backgroundColor = index == current ? Self.currentMatch : Self.match
+            result.append(match)
+            (plainCursor, cursor) = (range.upperBound, end)
         }
+        result.append(text[cursor...])
         return result
     }
 

@@ -14,9 +14,7 @@ struct ExecutionGrantSettings: View {
     @State private var approval: InstanceApprovalMode?
     @State private var phase = CardPhase.idle
     @State private var discardAction: DiscardAction?
-    @FocusState private var focus: Field?
-
-    private enum Field { case read, write, network, unsandboxed }
+    @FocusState private var focus: ExecutionScope.Key?
 
     private enum DiscardAction { case back, reload }
     private var changed: Bool { draft != saved.map(ExecutionGrantDraft.init(snapshot:)) }
@@ -66,46 +64,28 @@ struct ExecutionGrantSettings: View {
                         }
                         LabeledContent("访问权限") {
                             Picker("访问权限", selection: field(\.workspace, fallback: .read)) {
-                                Text("只读").tag(ExecutionGrants.WorkspaceAccess.read)
-                                Text("读写").tag(ExecutionGrants.WorkspaceAccess.write)
+                                Text("只读").tag(WorkspaceAccess.read)
+                                Text("读写").tag(WorkspaceAccess.write)
                             }
                             .pickerStyle(.segmented).labelsHidden().fixedSize()
                             .disabled(draft.project.workspace == .read)
                         }
                     }
-                    Group {
-                        CardField(label: "额外只读路径", focused: focus == .read, note: projectNote(.read)) {
-                            TextField("每行一个绝对路径", text: field(\.readPaths, fallback: ""), axis: .vertical)
-                                .lineLimit(2...5).focused($focus, equals: .read)
-                                .scrollsOnlyWhileTyping(focus == .read)
-                                .cardInput { focus = .read }
-                        }
-                        CardField(label: "额外读写路径", focused: focus == .write,
-                                  note: "每行填写一个工作机上已存在的绝对路径，读写包含读取。命令可访问这些路径；文件读取和补丁工具仍限于工作区。" + (projectNote(.write).map { "\n" + $0 } ?? "")) {
-                            TextField("每行一个绝对路径", text: field(\.writePaths, fallback: ""), axis: .vertical)
-                                .lineLimit(2...5).focused($focus, equals: .write)
-                                .scrollsOnlyWhileTyping(focus == .write)
-                                .cardInput { focus = .write }
-                        }
-                        CardField(label: "允许访问的网络地址", focused: focus == .network,
-                                  note: "每行一个域名或 IP，可带端口，支持 *.example.com。留空禁止网络；不支持全网通配或本机回环地址。" + (projectNote(.network).map { "\n" + $0 } ?? "")) {
-                            TextField("例如 registry.npmjs.org:443", text: field(\.networkDomains, fallback: ""), axis: .vertical)
-                                .lineLimit(2...5).focused($focus, equals: .network)
-                                .scrollsOnlyWhileTyping(focus == .network)
-                                .cardInput { focus = .network }
-                        }
-                        CardField(label: "沙箱外命令", focused: focus == .unsandboxed,
-                                  note: "每行一条，匹配的命令不进沙箱、以你的用户身份运行。以「 *」结尾表示带任意参数，例如 docker compose *；否则须一字不差。命令会执行工作区里的脚本（如 package.json），代理能修改它们。" + (projectNote(.unsandboxed).map { "\n" + $0 } ?? "")) {
-                            TextField("例如 npm run dev", text: field(\.unsandboxedCommands, fallback: ""), axis: .vertical)
-                                .lineLimit(2...5).focused($focus, equals: .unsandboxed)
-                                .scrollsOnlyWhileTyping(focus == .unsandboxed)
-                                .cardInput { focus = .unsandboxed }
-                        }
+                    CardField(label: "额外只读路径", focused: focus == .read, note: projectNote(.read)) {
+                        scopeField(.read, placeholder: "每行一个绝对路径")
                     }
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
+                    CardField(label: "额外读写路径", focused: focus == .write,
+                              note: "每行填写一个工作机上已存在的绝对路径，读写包含读取。命令可访问这些路径；文件读取和补丁工具仍限于工作区。" + (projectNote(.write).map { "\n" + $0 } ?? "")) {
+                        scopeField(.write, placeholder: "每行一个绝对路径")
+                    }
+                    CardField(label: "允许访问的网络地址", focused: focus == .network,
+                              note: "每行一个域名或 IP，可带端口，支持 *.example.com。留空禁止网络；不支持全网通配或本机回环地址。" + (projectNote(.network).map { "\n" + $0 } ?? "")) {
+                        scopeField(.network, placeholder: "例如 registry.npmjs.org:443")
+                    }
+                    CardField(label: "沙箱外命令", focused: focus == .unsandboxed,
+                              note: "每行一条，匹配的命令不进沙箱、以你的用户身份运行。以「 *」结尾表示带任意参数，例如 docker compose *；否则须一字不差。命令会执行工作区里的脚本（如 package.json），代理能修改它们。" + (projectNote(.unsandboxed).map { "\n" + $0 } ?? "")) {
+                        scopeField(.unsandboxed, placeholder: "例如 npm run dev")
+                    }
                     CardNote("先停止执行，再保存授权。保存后用于后续工具调用，并在下一次模型请求追加通知。")
                 }
             }
@@ -166,6 +146,13 @@ struct ExecutionGrantSettings: View {
 
     private func field<Value>(_ keyPath: WritableKeyPath<ExecutionGrantDraft, Value>, fallback: Value) -> Binding<Value> {
         Binding(get: { draft?[keyPath: keyPath] ?? fallback }, set: { draft?[keyPath: keyPath] = $0 })
+    }
+
+    private func scopeField(_ key: ExecutionScope.Key, placeholder: String) -> some View {
+        LinesField(placeholder: placeholder, values: Binding(get: { draft?.scope[key] ?? [] }, set: { draft?.scope[key] = $0 }))
+            .lineLimit(2...5).focused($focus, equals: key)
+            .scrollsOnlyWhileTyping(focus == key)
+            .cardInput { focus = key }
     }
 
     private func boundClient() throws -> KitedClient {

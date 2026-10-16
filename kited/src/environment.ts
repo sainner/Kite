@@ -11,6 +11,7 @@ import { defaultCheckoutPath, userHome } from './paths.ts';
 import { readSubscriptionCredentials } from './harness/auth.ts';
 import { readClaudeLogin } from './model-accounts.ts';
 import type { Checkout, Machine } from './model.ts';
+import { systemCommand } from './system-command.ts';
 
 export type LoginStatus = { status: 'ready' } | { status: 'missing' | 'invalid'; message: string };
 
@@ -55,9 +56,8 @@ const systemVersion = (): Promise<string> => version ??= readSystemVersion();
 
 async function readSystemVersion(): Promise<string> {
   if (process.platform !== 'darwin') return release();
-  const child = Bun.spawn(['/usr/bin/sw_vers', '-productVersion'], { env: { PATH: '/usr/bin:/bin' }, stdout: 'pipe', stderr: 'ignore' });
-  const text = (await new Response(child.stdout).text()).trim();
-  return (await child.exited) === 0 && text ? `macOS ${text}` : release();
+  const { code, stdout } = await systemCommand(['/usr/bin/sw_vers', '-productVersion']);
+  return code === 0 && stdout.trim() ? `macOS ${stdout.trim()}` : release();
 }
 
 /** 有没有电池随硬件不变，只读一次。 */
@@ -69,28 +69,18 @@ async function readBattery(): Promise<boolean> {
     try { return readdirSync('/sys/class/power_supply').some((name) => name.startsWith('BAT')); } catch { return false; }
   }
   if (process.platform !== 'darwin') return false;
-  const child = Bun.spawn(['/usr/bin/pmset', '-g', 'batt'], { env: { PATH: '/usr/bin:/bin' }, stdout: 'pipe', stderr: 'ignore' });
-  const text = await new Response(child.stdout).text();
-  return (await child.exited) === 0 && text.includes('InternalBattery');
+  const { code, stdout } = await systemCommand(['/usr/bin/pmset', '-g', 'batt']);
+  return code === 0 && stdout.includes('InternalBattery');
 }
 
-/** 跑一个系统命令，超时就杀掉；返回退出码与标准输出。 */
-async function system(command: string[], timeoutMs: number): Promise<{ code: number; stdout: string }> {
-  const child = Bun.spawn(command, {
-    env: { PATH: '/usr/bin:/bin', HOME: userHome(), ...(process.env.DEVELOPER_DIR ? { DEVELOPER_DIR: process.env.DEVELOPER_DIR } : {}) },
-    stdout: 'pipe', stderr: 'ignore',
-  });
-  const timer = setTimeout(() => child.kill(), timeoutMs);
-  try {
-    const stdout = await new Response(child.stdout).text();
-    return { code: await child.exited, stdout };
-  } finally { clearTimeout(timer); }
-}
+/** xcode-select、xcrun 按 HOME 与 DEVELOPER_DIR 找选中的开发者目录。 */
+const xcode = (command: string[], timeoutMs: number) => systemCommand(command, { timeoutMs,
+  env: { PATH: '/usr/bin:/bin', HOME: userHome(), ...(process.env.DEVELOPER_DIR ? { DEVELOPER_DIR: process.env.DEVELOPER_DIR } : {}) } });
 
 /** 选中的开发者目录是完整的 Xcode：只装了命令行工具时没有 xcodebuild。 */
 async function xcodeReady(): Promise<boolean> {
   if (process.platform !== 'darwin') return false;
-  const { code, stdout } = await system(['/usr/bin/xcode-select', '-p'], 5_000);
+  const { code, stdout } = await xcode(['/usr/bin/xcode-select', '-p'], 5_000);
   return code === 0 && !!stdout.trim() && existsSync(join(stdout.trim(), 'usr', 'bin', 'xcodebuild'));
 }
 
@@ -102,7 +92,7 @@ async function iosDeviceReady(): Promise<boolean> {
   if (process.platform !== 'darwin' || !await xcodeReady()) return false;
   const file = join(tmpdir(), `kite-devices-${randomUUID()}.json`);
   try {
-    if ((await system(['/usr/bin/xcrun', 'devicectl', 'list', 'devices', '--quiet', '--json-output', file], 10_000)).code !== 0) return false;
+    if ((await xcode(['/usr/bin/xcrun', 'devicectl', 'list', 'devices', '--quiet', '--json-output', file], 10_000)).code !== 0) return false;
     const devices = (JSON.parse(readFileSync(file, 'utf8')) as { result?: { devices?: Array<{
       hardwareProperties?: { platform?: string; reality?: string };
       connectionProperties?: { pairingState?: string; transportType?: string; tunnelState?: string };

@@ -25,8 +25,8 @@ struct RoleSettingsForm: View {
                 Picker("工作区", selection: Binding(get: { role.execution?.workspace ?? .write }, set: { value in
                     update { $0.workspace = value == .write ? nil : value }
                 })) {
-                    Text("读写").tag(ExecutionGrants.WorkspaceAccess.write)
-                    Text("只读").tag(ExecutionGrants.WorkspaceAccess.read)
+                    Text("读写").tag(WorkspaceAccess.write)
+                    Text("只读").tag(WorkspaceAccess.read)
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
             }

@@ -18,10 +18,14 @@ final class TerminalSession {
     /// 这次连接里收到的进程状态：比工作区推送的实例状态早一步，窗口先用它。
     private(set) var status: TerminalStatus?
     @ObservationIgnored private(set) var view: KiteTerminalView?
+    /// 上次给视图设的外观。
+    @ObservationIgnored private var appliedDark: Bool?
     @ObservationIgnored private var socket: URLSessionWebSocketTask?
     @ObservationIgnored private var urlSession: URLSession?
     /// 窗口放得下的行列；排好版之前没有，连接要等它。
     @ObservationIgnored private var size: (cols: Int, rows: Int)?
+    /// 这次连接时报给工作机的尺寸；连上之前窗口又变了，连上后补发。
+    @ObservationIgnored private var connectedSize: (cols: Int, rows: Int)?
     @ObservationIgnored private var sizeWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
     init(instanceID: String) {
@@ -42,9 +46,10 @@ final class TerminalSession {
         return view
     }
 
-    /// 前景色跟着浅色、深色外观换；底色透明，露出窗口本身的底。
+    /// 前景色跟着浅色、深色外观换；底色透明，露出窗口本身的底。SwiftTerm 每次设色都整屏重画，外观没变就不设。
     func applyColors(dark: Bool) {
-        guard let view else { return }
+        guard let view, dark != appliedDark else { return }
+        appliedDark = dark
         #if os(macOS)
         view.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         view.nativeForegroundColor = dark ? .white : .black
@@ -68,6 +73,7 @@ final class TerminalSession {
             link = .connecting
             do {
                 let (urlSession, socket) = try await client.terminalSocket(instance: instanceID, cols: size.cols, rows: size.rows)
+                connectedSize = size
                 self.urlSession = urlSession
                 self.socket = socket
                 socket.resume()
@@ -119,6 +125,7 @@ final class TerminalSession {
                     view?.feed(text: message.data ?? "")
                     status = message.status
                     link = .connected
+                    if let size, size.cols != connectedSize?.cols || size.rows != connectedSize?.rows { sendResize(size) }
                 case "exit":
                     status = message.status
                 default:
@@ -136,8 +143,12 @@ final class TerminalSession {
         size = (cols, rows)
         for waiter in sizeWaiters.values { waiter.resume() }
         sizeWaiters = [:]
-        guard let socket, link == .connected else { return }
-        socket.send(.string(#"{"type":"resize","cols":\#(cols),"rows":\#(rows)}"#)) { _ in }
+        guard link == .connected else { return }
+        sendResize((cols, rows))
+    }
+
+    private func sendResize(_ size: (cols: Int, rows: Int)) {
+        socket?.send(.string(#"{"type":"resize","cols":\#(size.cols),"rows":\#(size.rows)}"#)) { _ in }
     }
 
     private func sizeKnown() async {

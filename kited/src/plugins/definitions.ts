@@ -3,7 +3,6 @@ import { KiteError } from '../errors.ts';
 import type { AgentDefinition } from '../agents/definition.ts';
 import { defaultContextDefinition } from '../harness/context/project.ts';
 import { operationContracts, operationToolNames, type OperationName } from '../operations/contract.ts';
-import type { ExecutionChanges } from '../execution/grants.ts';
 import { defaultAgentModel } from '../agents/models.ts';
 import { monitorDefinitionId } from '../monitor/monitors.ts';
 import { terminalDefinitionId } from '../terminal/terminals.ts';
@@ -20,8 +19,6 @@ export interface PluginDefinition {
   agent?: AgentDefinition;
   runtime?: 'bun';
   revision?: string;
-  /** 支持执行授权的定义给出实例在项目基础上的默认增减。 */
-  execution?: ExecutionChanges;
   operations: OperationName[];
 }
 
@@ -59,7 +56,6 @@ const agent: AgentDefinition = {
 
 const definitions: PluginDefinition[] = [
   { id: agentDefinitionId, title: '代理', description: '与 agent 协作', lifetime: 'persistent', defaultView: 'conversation',
-    execution: { workspace: 'write', add: { read: [], write: [], network: [], unsandboxed: [] }, remove: { read: [], write: [], network: [], unsandboxed: [] } },
     agent, operations: ['agent.send', 'agent.resume', 'agent.stop'], views: [{ id: 'conversation', title: '代理窗口', renderer: 'conversation' }] },
   { id: 'kite.files', title: '文件', description: '预览工作区文件', lifetime: 'window', defaultView: 'files', operations: ['files.list', 'files.search', 'files.read', 'files.diff', 'files.state', 'files.select'], views: [
     { id: 'files', title: '文件', renderer: 'files' },

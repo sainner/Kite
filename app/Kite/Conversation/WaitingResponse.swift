@@ -170,18 +170,9 @@ struct WaitingResponseCard: View {
                 .padding(.horizontal, ComposerLayout.fieldInset - Metrics.controlInset)
                 .padding(.vertical, ComposerLayout.fieldPadding)
                 .background(ComposerLayout.fieldFill, in: RoundedRectangle(cornerRadius: fillRadius, style: .continuous))
-                .onSubmit(advance)
+                .onSubmit { state.advance(submit: submitAnswers) }
             HStack(spacing: 0) {
-                if questions.count > 1 {
-                    Button { state.step -= 1 } label: { Image(systemName: "arrow.left") }
-                        .buttonStyle(PaneButtonStyle())
-                        .disabled(state.step == 0)
-                        .accessibilityLabel("上一题").help("上一题")
-                    Button { state.step += 1 } label: { Image(systemName: "arrow.right") }
-                        .buttonStyle(PaneButtonStyle())
-                        .disabled(state.step + 1 >= questions.count)
-                        .accessibilityLabel("下一题").help("下一题")
-                }
+                if questions.count > 1 { QuestionStepButtons(answers: state) }
                 Spacer(minLength: Metrics.paneButtonGap)
                 Button(action: submitAnswers) { Image(systemName: "arrow.up") }
                     .buttonStyle(PaneButtonStyle(fill: state.complete ? .accentColor : Theme.strongPlaceholder))
@@ -189,13 +180,6 @@ struct WaitingResponseCard: View {
                     .accessibilityLabel("发送").help("发送")
             }
         }
-    }
-
-    /// 在「其他」里回车：这题答了就去下一题，最后一题答齐了就发送。
-    private func advance() {
-        let state = state
-        guard state.answered(state.step) else { return }
-        if state.step + 1 < questions.count { state.step += 1 } else { submitAnswers() }
     }
 
     private func submitAnswers() {
@@ -287,6 +271,17 @@ struct WaitingResponseCard: View {
     /// 每一题都答了，可以发送。
     var complete: Bool { !questions.isEmpty && questions.indices.allSatisfy(answered) }
 
+    var canGoBack: Bool { step > 0 }
+    var canGoForward: Bool { step + 1 < questions.count }
+    func back() { if canGoBack { step -= 1 } }
+    func forward() { if canGoForward { step += 1 } }
+
+    /// 回车：这题答了就去下一题，最后一题交给 submit，答齐没有由它核对。
+    func advance(submit: () -> Void) {
+        guard answered(step) else { return }
+        if canGoForward { step += 1 } else { submit() }
+    }
+
     func chosen(_ label: String) -> Bool { (selected[step] ?? []).contains(label) }
 
     func choose(_ label: String) {
@@ -330,6 +325,24 @@ struct WaitingResponseCard: View {
             defer { busy = false }
             do { try await action() }
             catch { failure = (error as? KitedError)?.status == 409 ? "这一项已经回应或作废了" : error.localizedDescription }
+        }
+    }
+}
+
+/// 多题作答时的上一题、下一题：收件箱里的卡片和 SwiftUI 输入区共用。
+struct QuestionStepButtons: View {
+    let answers: WaitingAnswers
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: answers.back) { Image(systemName: "arrow.left") }
+                .buttonStyle(PaneButtonStyle())
+                .disabled(!answers.canGoBack)
+                .accessibilityLabel("上一题").help("上一题")
+            Button(action: answers.forward) { Image(systemName: "arrow.right") }
+                .buttonStyle(PaneButtonStyle())
+                .disabled(!answers.canGoForward)
+                .accessibilityLabel("下一题").help("下一题")
         }
     }
 }

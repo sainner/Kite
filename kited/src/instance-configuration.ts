@@ -157,9 +157,9 @@ export class InstanceConfiguration {
   /** mode 是实例的选择，effective 是按项目上限收紧后实际用的。 */
   approvalMode(id: string) {
     const instance = this.control.context(id);
-    const max = this.projectExecution(instance.workspaceId)?.approval ?? 'allow_all';
+    const project = this.projectExecution(instance.workspaceId);
     const mode = instanceApprovalMode(instance);
-    return { mode, effective: effectiveApprovalMode(mode, this.projectExecution(instance.workspaceId)), max };
+    return { mode, effective: effectiveApprovalMode(mode, project), max: project?.approval ?? 'allow_all' };
   }
   /** 审批模式在下一次越界请求时生效，运行中也可以改。 */
   configureApprovalMode(id: string, value: unknown) {
@@ -207,9 +207,9 @@ export class InstanceConfiguration {
   /** 新代理的草稿还没有实例：给出模型目录、工具的界面名称与分组，以及各角色在这个工作区可开的工具与被项目禁用的工具；必需工具被禁的角色附上原因。 */
   agentOptions(workspaceId: string) {
     const project = this.projectRule(workspaceId);
+    const all = toolLimits(undefined, project);
     return { ...agentModelCatalog(), toolCatalog: agentToolCatalog, roles: this.kite.roles.list().map(({ role, revision }) => {
       const limits = toolLimits(role.tools, project);
-      const all = toolLimits(undefined, project);
       return { id: role.id, revision, tools: all.allowed, defaults: limits.allowed, required: limits.required, blocked: all.blocked,
         ...(limits.missing.length ? { unavailable: `项目约束禁用了必需的 ${limits.missing.join('、')}` } : {}) };
     }) };
@@ -248,7 +248,7 @@ export class InstanceConfiguration {
     const thread = this.control.context(id);
     const bound = roleAgent(this.kite.roles.get(selection.id, selection.revision), {}, this.projectRule(thread.workspaceId));
     return this.updateAgentConfiguration(id, expectedRevision, bound.agent, bound.role,
-      { execution: bound.execution ?? this.kite.catalog.get(thread.definitionId).execution, approval: bound.approval });
+      { execution: bound.execution, approval: bound.approval });
   }
   private updateAgentConfiguration(id: string, expectedRevision: string, value: unknown, role?: RoleBinding,
     defaults?: { execution?: ExecutionChanges; approval?: ApprovalMode }) {
@@ -279,7 +279,8 @@ export class InstanceConfiguration {
       const notification = this.configurationNotice(`instance:${id}`, this.control.context(id), agent, this.projectRule(instance.workspaceId));
       const save = () => this.kite.store.transaction(() => {
         if (runtimeChanged) this.kite.store.setThreadRuntime(id, agent.runtime);
-        const { approval: _approval, ...config } = instance.config;
+        // 换角色时执行授权与审批模式重置为新角色的，没给的回到默认。
+        const { approval: _approval, execution: _execution, ...config } = instance.config;
         this.kite.store.setInstanceConfig(id, { ...(role ? config : instance.config), agent,
           ...(role ? { role, grants: roleOperationGrants(instance.definitionId, this.kite.operations.grants(id).grants,
             toolLimits(instanceRole(instance)?.tools).allowed, toolLimits(role.tools).allowed),

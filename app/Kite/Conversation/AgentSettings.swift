@@ -147,7 +147,7 @@ struct DraftAgentSettings: View {
         }
         .endsTyping(editingLimit) { editingLimit = false }
         .onAppear {
-            tools = thread.draftChoice?.tools ?? capabilities?.defaultTools ?? []
+            tools = thread.draftChoice?.tools ?? capabilities?.defaults ?? []
             budget = thread.draftChoice?.maxRequestsPerTurn ?? roleBudget
         }
     }
@@ -156,7 +156,7 @@ struct DraftAgentSettings: View {
     private func save() {
         guard let capabilities else { return }
         let selected = capabilities.tools.filter { tools.contains($0) }
-        thread.draftChoice?.tools = selected == capabilities.tools.filter(capabilities.defaultTools.contains) ? nil : selected
+        thread.draftChoice?.tools = selected == capabilities.tools.filter(capabilities.defaults.contains) ? nil : selected
         thread.draftChoice?.maxRequestsPerTurn = budget == roleBudget ? nil : budget
         dismiss()
     }

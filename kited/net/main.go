@@ -56,7 +56,6 @@ type status struct {
 	// 最近一次系统电源事件：sleep 将要睡眠，wake 醒来，shutdown 将要登出、重启或关机，stay 登出被取消；序号递增，kited 按序号认新事件。
 	Power *power `json:"power,omitempty"`
 	// 正在转发的网页预览端口。
-	Forwards []int `json:"forwards,omitempty"`
 }
 
 type power struct {
@@ -189,7 +188,7 @@ func main() {
 	report := &reporter{out: json.NewEncoder(os.Stdout), current: status{SocksPort: socks.Addr().(*net.TCPAddr).Port,
 		HTTPProxyPort: forward.Addr().(*net.TCPAddr).Port}}
 	ready := make(chan int64, 8)
-	fw := &forwards{srv: srv, lc: lc, active: &active, report: report, servers: map[int]*http.Server{},
+	fw := &forwards{srv: srv, lc: lc, active: &active, servers: map[int]*http.Server{},
 		reserved: reservedPorts(env("KITE_NET_PORT"), target)}
 	go readCommands(lc, ready, fw)
 	watchPower(report, ready)
@@ -219,7 +218,22 @@ func main() {
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
 	proxy.FlushInterval = -1
 	token := env("KITE_NET_PROXY_TOKEN")
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := guard(lc, &active, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 外部传入的身份字段一律覆盖，内部端口也不能独立信任这些字段。
+		r.Header.Set("X-Kite-Network", token)
+		if source, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
+			r.Header.Set("X-Kite-Peer", source.Addr().Unmap().String())
+		} else {
+			r.Header.Del("X-Kite-Peer")
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	log.Fatal(http.Serve(ln, handler))
+}
+
+// guard 只放行本账号仍有授权的设备，并登记连接：设备失去授权时由主循环取消，WebSocket 这类长连接随之断开。
+func guard(lc *local.Client, active *sync.Map, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(lc, r) {
 			http.Error(w, "设备不属于本账号或授权已撤销", http.StatusUnauthorized)
 			return
@@ -228,16 +242,8 @@ func main() {
 		defer cancel()
 		active.Store(r, cancel)
 		defer active.Delete(r)
-		// 外部传入的身份字段一律覆盖，内部端口也不能独立信任这些字段。
-		r.Header.Set("X-Kite-Network", token)
-		if source, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
-			r.Header.Set("X-Kite-Peer", source.Addr().Unmap().String())
-		} else {
-			r.Header.Del("X-Kite-Peer")
-		}
-		proxy.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
-	log.Fatal(http.Serve(ln, handler))
 }
 
 // tailnet 地址段：IPv4 的 CGNAT 段与 Tailscale 的 IPv6 段。代理只转发到这里，不是通往外网的出口。

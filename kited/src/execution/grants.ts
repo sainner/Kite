@@ -5,12 +5,11 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { basename, isAbsolute, join } from 'node:path';
 import { z } from 'zod';
 import { KiteError } from '../errors.ts';
 import type { PluginInstance } from '../model.ts';
-import { within } from '../paths.ts';
+import { userHome, within } from '../paths.ts';
 import { localEndpoint } from './local-address.ts';
 import { canonicalPath, type ExecutionPolicy } from './sandbox.ts';
 
@@ -85,6 +84,12 @@ export function parseExecutionChanges(value: unknown): ExecutionChanges {
   return parsed.data;
 }
 
+/** 角色的增减拷进实例时，本机存在的绝对路径同实例里写的一样绑定真实位置；~/ 开头和本机没有的原样留着，按各工作机解析。 */
+export function bindRoleExecution(changes: ExecutionChanges): ExecutionChanges {
+  const bind = (values: string[]) => [...new Set(values.map((value) => !value.startsWith('~/') && existsSync(value) ? realpathSync(value) : value))].sort();
+  return { ...changes, add: { ...changes.add, read: bind(changes.add.read), write: bind(changes.add.write) } };
+}
+
 export const instanceExecutionChanges = (instance: Pick<PluginInstance, 'config'>): ExecutionChanges => parseExecutionChanges(instance.config.execution);
 export const instanceApprovalMode = (instance: Pick<PluginInstance, 'config'>): ApprovalMode =>
   z.enum(approvalModes).default('allowlist').parse(instance.config.approval);
@@ -93,8 +98,8 @@ export const effectiveApprovalMode = (mode: ApprovalMode, project: ProjectExecut
   approvalModes[Math.min(approvalModes.indexOf(mode), approvalModes.indexOf(project?.approval ?? 'allow_all'))]!;
 
 /**
- * 写进实例的增减：网络不收本机地址并按上游规则校验；绝对路径须存在，绑定真实位置，以后重定向符号链接不能把原许可变成新目录的许可；
- * ~/ 开头的保留原样，按各工作机解析。
+ * 写进实例的增减：网络不收本机地址并按上游规则校验；加的绝对路径须存在，绑定真实位置，以后重定向符号链接不能把原许可变成新目录的许可；
+ * ~/ 开头的保留原样，按各工作机解析。去掉的按项目里写的原样比对，不解析。
  */
 export async function normalizeExecutionChanges(value: unknown): Promise<ExecutionChanges> {
   const changes = parseExecutionChanges(value);
@@ -109,10 +114,12 @@ export async function normalizeExecutionChanges(value: unknown): Promise<Executi
   }
   const unique = (values: string[]) => [...new Set(values)].sort();
   const real = (value: string) => value.startsWith('~/') ? value : realpathSync(value);
-  const scope = (from: ExecutionScope): ExecutionScope => ({ read: unique(from.read.map(real)), write: unique(from.write.map(real)),
+  const scope = (from: ExecutionScope, bind: boolean): ExecutionScope => ({
+    read: unique(bind ? from.read.map(real) : from.read), write: unique(bind ? from.write.map(real) : from.write),
     network: unique(from.network.map((domain) => domain.toLowerCase())), unsandboxed: unique(from.unsandboxed.map((item) => item.trim())) });
   try {
-    return executionChangesSchema.parse({ ...(changes.workspace ? { workspace: changes.workspace } : {}), add: scope(changes.add), remove: scope(changes.remove) });
+    return executionChangesSchema.parse({ ...(changes.workspace ? { workspace: changes.workspace } : {}),
+      add: scope(changes.add, true), remove: scope(changes.remove, false) });
   } catch (error) {
     if (error instanceof KiteError) throw error;
     throw new KiteError('授权目录或文件必须存在且可解析');
@@ -143,14 +150,15 @@ const hostMatches = (rule: string, domain: string) => {
 };
 
 /** 三层合成实际生效的执行授权；project 为空时按没有约束的项目算。 */
-export function effectiveExecution(changes: ExecutionChanges, project: ProjectExecution | undefined, home = homedir()): EffectiveExecution {
+export function effectiveExecution(changes: ExecutionChanges, project: ProjectExecution | undefined, home = userHome()): EffectiveExecution {
   const base = project ?? defaultProjectExecution();
   const lenient = new Set<string>();
-  // ~/ 开头的按本机主目录解析成真实位置，本机没有就略过；绝对路径保持原样，失效由执行器拒绝。
-  const local = (value: string): string | undefined => {
-    if (!value.startsWith('~/')) return value;
-    const target = join(home, value.slice(2));
+  // 项目给的路径各工作机自己解析：~/ 按本机主目录，链接跟到真实位置，与宿主保护重叠时略过。实例里加的绝对路径（含新建时拷来的角色的）
+  // 写入时已绑定真实位置，原样交给执行器，被换成指向别处的链接由它拒绝。本机没有的一律略过。
+  const local = (value: string, bound: boolean): string | undefined => {
+    const target = value.startsWith('~/') ? join(home, value.slice(2)) : value;
     if (!existsSync(target)) return undefined;
+    if (bound && target === value) return value;
     const real = realpathSync(target);
     lenient.add(real);
     return real;
@@ -165,8 +173,10 @@ export function effectiveExecution(changes: ExecutionChanges, project: ProjectEx
     const removed = new Set(changes.remove[key].map(expand));
     return [...new Set([...base.allow[key], ...changes.add[key]])].filter((value) => !removed.has(expand(value)));
   };
-  const paths = (key: 'read' | 'write', keys: ('read' | 'write')[]) => [...new Set(pick(key).flatMap((value) => local(value) ?? []))]
-    .filter((value) => !blockedPath(value, keys)).sort();
+  const paths = (key: 'read' | 'write', keys: ('read' | 'write')[]) => {
+    const added = new Set(changes.add[key]);
+    return [...new Set(pick(key).flatMap((value) => local(value, added.has(value)) ?? []))].filter((value) => !blockedPath(value, keys)).sort();
+  };
   const grants = executionGrantsSchema.parse({
     workspace: base.workspace === 'read' ? 'read' : changes.workspace ?? 'write',
     read: paths('read', ['read']),
@@ -186,7 +196,7 @@ export function applyExecutionGrants(base: ExecutionPolicy, cwd: string, { grant
     try { if (realpathSync(path) === path) continue; } catch { /* 失效许可拒绝执行，不跟随新的目标。 */ }
     throw new KiteError(`授权路径已消失或改变位置，请重新授权：${path}`, 409);
   }
-  // 与宿主保护范围重叠的额外许可：实例里写的拒绝执行，项目和角色里 ~/ 开头的略过（各工作机的主目录布局不同）。
+  // 与宿主保护范围重叠的额外许可：实例里写的拒绝执行，项目给的和 ~/ 开头的略过（各工作机的目录布局不同）。
   const overlapping = (path: string, blocked: string[] | undefined) =>
     blocked?.some((root) => within(path, canonicalPath(root)) || within(canonicalPath(root), path));
   const keep = (paths: string[], blocked: string[] | undefined) => paths.filter((path) => {
@@ -211,13 +221,27 @@ const segmentMatches = (segment: string, rule: string) => rule.endsWith(' *')
   ? segment === rule.slice(0, -2) || segment.startsWith(rule.slice(0, -1)) : segment === rule;
 
 /**
+ * 核对项目禁止：去掉引号和反斜杠，括号、反引号与 $( 当作分隔，空白合成一个，不分大小写；从每个词起算的后半段都拿去比，带路径的程序只看名字。
+ * `FOO=1 sudo …`、`env sudo …`、`/usr/bin/sudo …`、`sh -c "sudo …"` 都算命中，提到它的 `echo sudo` 也算，宁可多拦。
+ */
+function deniedSegment(segment: string, rules: string[]): boolean {
+  const words = segment.toLowerCase().replace(/['"\\]/g, '').replace(/[(){}`]|\$\(/g, ' ').split(/\s+/).filter(Boolean);
+  return words.some((word, index) => {
+    const rest = [basename(word), ...words.slice(index + 1)].join(' ');
+    return rules.some((rule) => segmentMatches(rest, rule));
+  });
+}
+
+/**
  * 一条 shell 调用能不能在沙箱外运行：allowed 是在生效的沙箱外命令里，denied 是有一段命中项目禁止，unlisted 是都不在。
- * 整条原样登记过的直接算；否则含命令替换、反引号、重定向或换行的一律不算，用 &&、||、;、| 连起来的每一段都要匹配。
+ * 按 &&、||、;、|、& 与换行切段。整条原样登记过的直接算；否则含命令替换、反引号、重定向或换行的一律不算，每一段都要匹配。
+ * 项目禁止按词比对（见 deniedSegment），运行时才拼出来的命令（变量、脚本）认不出。
  */
 export function unsandboxedVerdict(command: string, allowed: string[], denied: string[]): 'allowed' | 'denied' | 'unlisted' {
   const call = command.trim();
-  const segments = call.split(/&&|\|\||;|\|/).map((segment) => segment.trim()).filter(Boolean);
-  if (segments.some((segment) => denied.some((rule) => segmentMatches(segment, rule)))) return 'denied';
+  const segments = call.split(/&&|\|\||[;|&\n\r]/).map((segment) => segment.trim()).filter(Boolean);
+  const rules = denied.map((rule) => rule.toLowerCase().split(/\s+/).join(' '));
+  if (segments.some((segment) => deniedSegment(segment, rules))) return 'denied';
   if (allowed.includes(call)) return 'allowed';
   if (/\$\(|`|[<>]|[\n\r]/.test(call) || !segments.length) return 'unlisted';
   return segments.every((segment) => allowed.some((rule) => segmentMatches(segment, rule))) ? 'allowed' : 'unlisted';

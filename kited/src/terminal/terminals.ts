@@ -27,6 +27,8 @@ import { assembleContext, bindContext, sceneValues } from '../harness/context/as
 import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
 import type { PluginInstance } from '../model.ts';
 import type { Store } from '../store.ts';
+import { systemCommand } from '../system-command.ts';
+import { terminalState, type TerminalState } from './state.ts';
 
 export const terminalDefinitionId = 'kite.terminal';
 
@@ -43,22 +45,6 @@ export const terminalExitContextDefinition: ContextDefinition = {
   ],
 };
 
-const stateSchema = z.object({
-  phase: z.enum(['running', 'exited']),
-  /** 正常退出的退出码；被信号停下时为 null，signal 写信号名。 */
-  exitCode: z.number().int().nullable().optional(),
-  signal: z.string().optional(),
-  /** 不是自己退出的原因：用户停止、工作区交接、工作机重启、启动失败。 */
-  reason: z.string().optional(),
-  endedAt: z.number().optional(),
-  /** 运行中进程树正在监听的 TCP 端口，按端口号排；http 是能不能用 HTTP 打开。结束后没有。 */
-  ports: z.array(z.object({ port: z.number().int(), http: z.boolean() }).strict()).optional(),
-  /** 网页视图选的端口，跨设备共享；没选或不再监听时界面用第一个能响应 HTTP 的。 */
-  port: z.number().int().optional(),
-}).strict();
-export type TerminalState = z.infer<typeof stateSchema>;
-export const terminalState = (instance: Pick<PluginInstance, 'state'>): TerminalState | undefined =>
-  instance.state.terminal === undefined ? undefined : stateSchema.parse(instance.state.terminal);
 /** 转到后台的命令在实例配置里记下命令与完整日志的位置。 */
 const configSchema = z.object({ command: z.string(), log: z.string() }).strict();
 const terminalConfig = (instance: Pick<PluginInstance, 'config'>) =>
@@ -114,8 +100,9 @@ const TAIL_CHARS = 3000;
 const READ_WINDOW = 4 * 1024 * 1024;
 const NOTIFY_RETRY_MS = 30_000;
 const PORT_SCAN_MS = 2000;
-/** 一个端口最多试这么多次 HTTP，之后当它不是网页，免得一直去敲数据库这类服务。 */
+/** 一个端口开头连着试这么多次 HTTP；还不像网页的之后每隔 HTTP_RETRY_SCANS 次扫描（约半分钟）再试，不一直去敲数据库这类服务。 */
 const HTTP_PROBES = 5;
+const HTTP_RETRY_SCANS = 15;
 
 /** 终端里跑的进程。命令没有输入，也不跟着 PTY 尺寸走。 */
 interface Child {
@@ -146,8 +133,10 @@ class Session {
   recent = '';
   /** 进程树正在监听的端口 → 能不能用 HTTP 打开。 */
   ports = new Map<number, boolean>();
-  /** 每个端口试过几次 HTTP。 */
+  /** 每个端口扫描过几次，用来定 HTTP 探测的间隔。 */
   probes = new Map<number, number>();
+  /** 进程树里各作业所在的进程组（交互 shell 开着作业控制，每个作业各在一组），端口扫描和停止时更新；shell 退出后它们就脱离了进程树。 */
+  groups = new Set<number>();
 
   constructor() {
     this.mirror = new Mirror({ ...this.size, scrollback: SCROLLBACK, allowProposedApi: true });
@@ -280,8 +269,8 @@ export class Terminals {
       pid, write: (data) => terminal?.write(data), resize: ({ cols, rows }) => terminal?.resize(cols, rows),
       done: child.exited.then(async () => {
         await Promise.race([eof.promise, delay(DRAIN_MS)]);
-        // shell 退出后同组里还活着的（后台任务）一并停掉，免得没有归属的进程留在工作机上。
-        if (processGroupAlive(pid)) { try { process.kill(-pid, 'SIGKILL'); } catch {} }
+        // shell 退出后同组和记下的作业进程组里还活着的（后台任务）一并停掉，免得没有归属的进程留在工作机上。
+        for (const group of [pid, ...session.groups]) if (processGroupAlive(group)) { try { process.kill(-group, 'SIGKILL'); } catch {} }
         terminal?.close();
         return { exitCode: child.exitCode, ...(child.signalCode ? { signal: child.signalCode } : {}) };
       }),
@@ -335,13 +324,16 @@ export class Terminals {
       ...(reason ? { reason } : {}), endedAt: Date.now() };
     try { writeFileSync(this.screenFile(id), await session.screen(), { mode: 0o600 }); } catch {}
     rmSync(this.marker(id), { force: true });
-    session.ports.clear();
     session.finish(state);
     this.forwardAll();
     const instance = this.host.store.instance(id);
     if (!instance) { this.sessions.delete(id); return; }
     this.save(id, state);
-    if (session.notify && instance.origin && terminalConfig(instance)) this.notify(instance, state, session.recent);
+    if (session.notify && instance.origin && terminalConfig(instance)) {
+      // 模板或变量出错时通知发不出，回收照常进行。
+      try { this.notify(instance, state, session.recent); }
+      catch (error) { console.error(`[终端] ${id} 的结束通知没有发出：${(error as Error).message}`); }
+    }
     if (!this.closed) await this.collectIfWindowless(instance.workspaceId, id);
   }
 
@@ -392,10 +384,13 @@ export class Terminals {
     if (existing) return existing;
     session.reason = reason;
     const { pid } = session.child;
-    const signal = (name: NodeJS.Signals) => { try { process.kill(-pid, name); } catch {} };
+    const signal = (name: NodeJS.Signals) => { for (const group of [pid, ...session.groups]) try { process.kill(-group, name); } catch {} };
     const finished = session.finished.then(() => true);
     const within = (ms: number) => Promise.race([finished, delay(ms).then(() => false)]);
     const stopping = (async () => {
+      // 作业各在自己的进程组：发信号前从进程树里找全，shell 一退出它们就脱离进程树了。
+      const table = await processTable().catch(() => undefined);
+      if (table) for (const group of treeGroups(pid, table)) session.groups.add(group);
       signal('SIGHUP');
       if (!await within(STOP_GRACE_MS)) {
         signal('SIGTERM');
@@ -426,18 +421,18 @@ export class Terminals {
       this.forwardAll();
       return;
     }
-    const { children, ports } = await listening();
+    const { table, ports } = await listening();
     for (const [id, session] of live()) {
+      session.groups = treeGroups(session.child!.pid, table);
       const found = new Set<number>();
-      for (const pid of descendants(session.child!.pid, children)) for (const port of ports.get(pid) ?? []) found.add(port);
+      for (const pid of descendants(session.child!.pid, table.children)) for (const port of ports.get(pid) ?? []) found.add(port);
       const next = new Map<number, boolean>();
       for (const port of [...found].sort((a, b) => a - b)) {
-        const tries = session.probes.get(port) ?? 0;
+        const scans = (session.probes.get(port) ?? 0) + 1;
+        session.probes.set(port, scans);
         let http = session.ports.get(port) === true;
-        if (!http && tries < HTTP_PROBES) {
-          session.probes.set(port, tries + 1);
-          http = await speaksHttp(port);
-        }
+        // 开头几次扫描都试；还不像网页的之后隔一阵再试，冷启动要编译很久的开发服务器晚些也认得出来。
+        if (!http && (scans <= HTTP_PROBES || scans % HTTP_RETRY_SCANS === 0)) http = await speaksHttp(port);
         next.set(port, http);
       }
       for (const port of session.probes.keys()) if (!found.has(port)) session.probes.delete(port);
@@ -577,23 +572,32 @@ export class Terminals {
   }
 }
 
-const toolEnv = { PATH: '/usr/sbin:/usr/bin:/bin', LANG: 'C' };
-async function capture(command: string[]): Promise<string> {
-  const child = Bun.spawn(command, { env: toolEnv, stdout: 'pipe', stderr: 'ignore' });
-  const timer = setTimeout(() => child.kill(), 5000);
-  try { return await new Response(child.stdout).text(); }
-  finally { clearTimeout(timer); await child.exited; }
-}
+const capture = async (command: string[]) => (await systemCommand(command, { env: { PATH: '/usr/sbin:/usr/bin:/bin', LANG: 'C' } })).stdout;
 
-/** 本用户进程的父子关系，以及每个进程正在监听的 TCP 端口。lsof 没找到监听时输出为空。 */
-async function listening(): Promise<{ children: Map<number, number[]>; ports: Map<number, Set<number>> }> {
-  const [table, open] = await Promise.all([capture(['ps', '-Ao', 'pid=,ppid=']), capture(['lsof', '-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn'])]);
-  const children = new Map<number, number[]>();
-  for (const line of table.split('\n')) {
-    const [pid, parent] = line.trim().split(/\s+/).map(Number);
+interface ProcessTable { children: Map<number, number[]>; groups: Map<number, number> }
+
+/** 进程的父子关系与各自所在的进程组。 */
+async function processTable(): Promise<ProcessTable> {
+  const children = new Map<number, number[]>(), groups = new Map<number, number>();
+  for (const line of (await capture(['ps', '-Ao', 'pid=,ppid=,pgid='])).split('\n')) {
+    const [pid, parent, group] = line.trim().split(/\s+/).map(Number);
     if (!pid || parent === undefined || Number.isNaN(parent)) continue;
     children.set(parent, [...children.get(parent) ?? [], pid]);
+    if (group) groups.set(pid, group);
   }
+  return { children, groups };
+}
+
+/** root 的进程树占了哪些进程组；kited 自己所在的组不算。 */
+function treeGroups(root: number, { children, groups }: ProcessTable): Set<number> {
+  const found = new Set([...descendants(root, children)].flatMap((pid) => groups.get(pid) ?? []));
+  found.delete(groups.get(process.pid) ?? -1);
+  return found;
+}
+
+/** 进程表，以及每个进程正在监听的 TCP 端口。lsof 没找到监听时输出为空。 */
+async function listening(): Promise<{ table: ProcessTable; ports: Map<number, Set<number>> }> {
+  const [table, open] = await Promise.all([processTable(), capture(['lsof', '-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn'])]);
   const ports = new Map<number, Set<number>>();
   let pid = 0;
   for (const line of open.split('\n')) {
@@ -603,7 +607,7 @@ async function listening(): Promise<{ children: Map<number, number[]>; ports: Ma
       if (Number.isInteger(port) && port > 0) ports.set(pid, (ports.get(pid) ?? new Set()).add(port));
     }
   }
-  return { children, ports };
+  return { table, ports };
 }
 
 function descendants(root: number, children: Map<number, number[]>): Set<number> {

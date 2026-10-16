@@ -22,7 +22,8 @@ final class ControlsBarView: UIView {
     /// 等你回应时摆在输入框上面的卡片（WaitingResponseCard），和输入框共用这张玻璃。按自己的高摆，
     /// 过渡途中玻璃比它矮，超出顶边的由 responseClip 裁掉。
     private let response = UIHostingController(rootView: AnyView(EmptyView()))
-    private let responseClip = ResponseClip()
+    /// 裁卡片的那一层和玻璃一样大：自己不接点按，卡片收起时下面的输入框照常点得中。
+    private let responseClip = PassThroughView()
     /// 卡片正在显示的等待；没有时只有输入区。
     private var shownWaiting: String?
     private var responseKey: WaitingResponseKey?
@@ -34,7 +35,7 @@ final class ControlsBarView: UIView {
     /// 上一次排出来的样子，过渡从这里起。
     private var pose: ComposerMotion.Pose?
     /// motion 在走时逐帧取样。
-    private var motionLink: CADisplayLink?
+    private let motionTicker = FrameTicker()
 
     private var controls: ThreadControlsModel?
     private var enabled = true
@@ -94,10 +95,10 @@ final class ControlsBarView: UIView {
         attach.isEnabled = false
         previousButton.label = .symbol("arrow.left")
         previousButton.title = "上一题"
-        previousButton.action = { [weak self] in self?.controls?.previousQuestion() }
+        previousButton.action = { [weak self] in self?.controls?.answering?.back() }
         nextButton.label = .symbol("arrow.right")
         nextButton.title = "下一题"
-        nextButton.action = { [weak self] in self?.controls?.nextQuestion() }
+        nextButton.action = { [weak self] in self?.controls?.answering?.forward() }
         voice.action = { [weak self] in self?.toggleVoice() }
         primary.action = { [weak self] in
             guard let self, enabled else { return }
@@ -179,9 +180,8 @@ final class ControlsBarView: UIView {
         primary.title = controls.primaryAction.title
         primary.fill = controls.primaryActionFill
         primary.isEnabled = enabled && controls.canPerformPrimaryAction
-        let steps = controls.questionSteps
-        previousButton.isEnabled = enabled && (steps.map { $0.step > 0 } ?? false)
-        nextButton.isEnabled = enabled && (steps.map { $0.step + 1 < $0.count } ?? false)
+        previousButton.isEnabled = enabled && controls.answering?.canGoBack == true
+        nextButton.isEnabled = enabled && controls.answering?.canGoForward == true
         let answering = controls.answering?.waiting?.id
         if answering != answeringShown {
             answeringShown = answering
@@ -242,30 +242,24 @@ final class ControlsBarView: UIView {
     private func begin(cardOnTop: Bool) {
         let now = window != nil && pose != nil ? CACurrentMediaTime() : nil
         motion.begin(from: pose ?? ComposerMotion.target(composer: 0, card: nil), cardOnTop: cardOnTop, at: now)
-        guard motion.moving, motionLink == nil else { return }
-        let link = CADisplayLink(target: self, selector: #selector(motionTick(_:)))
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
-        link.add(to: .main, forMode: .common)
-        motionLink = link
+        guard motion.moving, !motionTicker.running else { return }
+        motionTicker.start(in: self) { [weak self] in self?.motionTick(at: $0) ?? false }
     }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        guard window == nil, let motionLink else { return }
-        motionLink.invalidate()
-        self.motionLink = nil
+        guard window == nil, motionTicker.running else { return }
+        motionTicker.stop()
         motion.finish()
         applyPose(fading: controls?.state.fading)
         contentChanged()
     }
 
-    @objc private func motionTick(_ link: CADisplayLink) {
-        if !motion.sample(at: link.targetTimestamp) {
-            link.invalidate()
-            motionLink = nil
-        }
+    private func motionTick(at time: CFTimeInterval) -> Bool {
+        let moving = motion.sample(at: time)
         applyPose(fading: controls?.state.fading)
         contentChanged()
+        return moving
     }
 
     /// 卡片的不透明度跟着这一刻的样子；发送淡出时输入框藏着，见 FadingSnapshotView。显隐在 layoutSubviews 里定。
@@ -355,7 +349,7 @@ final class ControlsBarView: UIView {
     /// 按钮行左边那一格：平常是思考强度；作答时多题是上一题、下一题，一题时空着。
     private var leftSize: CGSize {
         guard let controls, controls.answering != nil else { return currentEffortSize }
-        return controls.questionSteps == nil ? .zero : CGSize(width: 2 * Metrics.paneButton, height: Metrics.paneButton)
+        return !controls.questionSteps ? .zero : CGSize(width: 2 * Metrics.paneButton, height: Metrics.paneButton)
     }
 
     private var currentEffortSize: CGSize {
@@ -399,7 +393,7 @@ final class ControlsBarView: UIView {
 
         let row = ComposerLayout.row(width: width, plan: plan)
         let left = row.effort.offsetBy(dx: 0, dy: dy)
-        let answering = controls?.answering != nil, navigating = controls?.questionSteps != nil
+        let answering = controls?.answering != nil, navigating = controls?.questionSteps == true
         if effort.view.isHidden != answering { effort.view.isHidden = answering }
         if !answering { place(effort.view, left) }
         for button in [previousButton, nextButton] where button.isHidden != !navigating { button.isHidden = !navigating }
@@ -459,12 +453,4 @@ final class ControlsBarView: UIView {
 
 /// 思考强度的托管视图，按里面报的理想大小摆。
 private typealias EffortHost = UIHostingController<AnyView>
-
-/// 裁卡片的那一层和玻璃一样大：自己不接点按，卡片收起时下面的输入框照常点得中。
-private final class ResponseClip: UIView {
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        let hit = super.hitTest(point, with: event)
-        return hit === self ? nil : hit
-    }
-}
 #endif

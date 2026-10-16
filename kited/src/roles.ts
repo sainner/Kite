@@ -11,7 +11,7 @@ import type { ContextDefinition } from './harness/context/types.ts';
 import type { PluginInstance } from './model.ts';
 import { agentTools } from './plugins/definitions.ts';
 import { lineToolNames } from './operations/contract.ts';
-import { approvalModes, executionChangesSchema, type ApprovalMode } from './execution/grants.ts';
+import { approvalModes, bindRoleExecution, executionChangesSchema, type ApprovalMode } from './execution/grants.ts';
 import type { Store } from './store.ts';
 
 export const roleSchema = z.object({
@@ -87,7 +87,7 @@ export function roleAgent({ role, revision }: RoleSnapshot, choice: RoleChoice =
   const binding: RoleBinding = { id: role.id, revision, tools: role.tools };
   // 草稿里选的审批模式优先于角色的默认。
   const approval = choice.approval ?? role.approval;
-  return { agent, role: binding, ...(role.execution ? { execution: role.execution } : {}), ...(approval ? { approval } : {}) };
+  return { agent, role: binding, ...(role.execution ? { execution: bindRoleExecution(role.execution) } : {}), ...(approval ? { approval } : {}) };
 }
 const defaultModel = { model: defaultAgentModel, reasoning: 'medium' };
 const reviewTools: ToolRule = { mode: 'allow', tools: ['read'], required: ['read'] };

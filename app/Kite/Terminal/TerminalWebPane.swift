@@ -41,20 +41,19 @@ struct TerminalWebPane: View {
                     }
                 }
                 Spacer(minLength: 0)
-                if !ports.isEmpty || port != nil {
+                // 网页端口一定在监听的端口里，没有端口就没有可选也没有可重新加载的。
+                if !ports.isEmpty {
                     PaneHeaderButtonGroup {
-                        if !ports.isEmpty {
-                            Menu {
-                                ForEach(ports, id: \.port) { item in
-                                    Button { select(item.port) } label: {
-                                        let title = item.http ? "\(item.port)" : "\(item.port)（不是网页）"
-                                        if item.port == port { Label(title, systemImage: "checkmark") } else { Text(title) }
-                                    }
+                        Menu {
+                            ForEach(ports, id: \.port) { item in
+                                Button { select(item.port) } label: {
+                                    let title = item.http ? "\(item.port)" : "\(item.port)（不是网页）"
+                                    if item.port == port { Label(title, systemImage: "checkmark") } else { Text(title) }
                                 }
-                            } label: { PaneHeaderButtonLabel(port.map { "端口 \($0)" } ?? "选端口") }
-                                .foregroundStyle(Color.primary)
-                                .help("选要打开的端口")
-                        }
+                            }
+                        } label: { PaneHeaderButtonLabel(port.map { "端口 \($0)" } ?? "选端口") }
+                            .foregroundStyle(Color.primary)
+                            .help("选要打开的端口")
                         if port != nil {
                             ActionButton("重新加载", icon: "arrow.clockwise") { failure = nil; reload = UUID() }
                         }

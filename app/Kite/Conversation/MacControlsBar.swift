@@ -92,8 +92,8 @@ private struct ControlsBarHost: NSViewRepresentable {
 /// 思考强度的托管视图、输入框更新时不让外面的 SwiftUI 重量这一块（见 RepresentedRoot），高变了由 contentChanged 报。
 final class ControlsBarView: RepresentedRoot {
     private let field = ComposerField()
-    /// 作答时输入框的灰底，见 ComposerLayout.fieldFill。
-    private let fieldFill = FieldFill()
+    /// 作答时输入框的灰底，见 ComposerLayout.fieldFill；点击和光标都交给上面的输入框。
+    private let fieldFill = PassThroughView()
     private let fadingView = FadingSnapshotView()
     private let effort = EffortIsland(rootView: AnyView(EmptyView()))
     private let attach = PaneButtonView()
@@ -117,7 +117,7 @@ final class ControlsBarView: RepresentedRoot {
     /// 上一次排出来的样子，过渡从这里起。
     private var pose: ComposerMotion.Pose?
     /// motion 在走时逐帧取样。
-    private var motionLink: CADisplayLink?
+    private let motionTicker = FrameTicker()
     private var environment: EnvironmentValues?
 
     private var controls: ThreadControlsModel?
@@ -162,10 +162,10 @@ final class ControlsBarView: RepresentedRoot {
         attach.isEnabled = false
         previousButton.label = .symbol("arrow.left")
         previousButton.title = "上一题"
-        previousButton.action = { [weak self] in self?.controls?.previousQuestion() }
+        previousButton.action = { [weak self] in self?.controls?.answering?.back() }
         nextButton.label = .symbol("arrow.right")
         nextButton.title = "下一题"
-        nextButton.action = { [weak self] in self?.controls?.nextQuestion() }
+        nextButton.action = { [weak self] in self?.controls?.answering?.forward() }
         voice.action = { [weak self] in self?.controls?.toggleVoice() }
         primary.action = { [weak self] in
             guard let self, enabled else { return }
@@ -234,9 +234,8 @@ final class ControlsBarView: RepresentedRoot {
         primary.title = controls.primaryAction.title
         primary.fill = controls.primaryActionFill
         primary.isEnabled = enabled && controls.canPerformPrimaryAction
-        let steps = controls.questionSteps
-        previousButton.isEnabled = enabled && (steps.map { $0.step > 0 } ?? false)
-        nextButton.isEnabled = enabled && (steps.map { $0.step + 1 < $0.count } ?? false)
+        previousButton.isEnabled = enabled && controls.answering?.canGoBack == true
+        nextButton.isEnabled = enabled && controls.answering?.canGoForward == true
         let answering = controls.answering?.waiting?.id
         if answering != answeringShown {
             answeringShown = answering
@@ -297,29 +296,24 @@ final class ControlsBarView: RepresentedRoot {
     private func begin(cardOnTop: Bool) {
         let now = window != nil && pose != nil ? CACurrentMediaTime() : nil
         motion.begin(from: pose ?? ComposerMotion.target(composer: 0, card: nil), cardOnTop: cardOnTop, at: now)
-        guard motion.moving, motionLink == nil else { return }
-        let link = displayLink(target: self, selector: #selector(motionTick(_:)))
-        link.add(to: .main, forMode: .common)
-        motionLink = link
+        guard motion.moving, !motionTicker.running else { return }
+        motionTicker.start(in: self) { [weak self] in self?.motionTick(at: $0) ?? false }
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard window == nil, let motionLink else { return }
-        motionLink.invalidate()
-        self.motionLink = nil
+        guard window == nil, motionTicker.running else { return }
+        motionTicker.stop()
         motion.finish()
         applyPose(fading: controls?.state.fading)
         contentChanged()
     }
 
-    @objc private func motionTick(_ link: CADisplayLink) {
-        if !motion.sample(at: link.targetTimestamp) {
-            link.invalidate()
-            motionLink = nil
-        }
+    private func motionTick(at time: CFTimeInterval) -> Bool {
+        let moving = motion.sample(at: time)
         applyPose(fading: controls?.state.fading)
         contentChanged()
+        return moving
     }
 
     /// 卡片的不透明度跟着这一刻的样子；发送淡出时输入框藏着，见 FadingSnapshotView。显隐在 layout 里定。
@@ -389,7 +383,7 @@ final class ControlsBarView: RepresentedRoot {
     /// 按钮行左边那一格：平常是思考强度；作答时多题是上一题、下一题，一题时空着。
     private var leftSize: CGSize {
         guard let controls, controls.answering != nil else { return currentEffortSize }
-        return controls.questionSteps == nil ? .zero : CGSize(width: 2 * Metrics.paneButton, height: Metrics.paneButton)
+        return !controls.questionSteps ? .zero : CGSize(width: 2 * Metrics.paneButton, height: Metrics.paneButton)
     }
 
     private var currentEffortSize: CGSize {
@@ -434,7 +428,7 @@ final class ControlsBarView: RepresentedRoot {
 
         let row = ComposerLayout.row(width: width, plan: plan)
         let left = row.effort.offsetBy(dx: 0, dy: dy)
-        let answering = controls?.answering != nil, navigating = controls?.questionSteps != nil
+        let answering = controls?.answering != nil, navigating = controls?.questionSteps == true
         if effort.isHidden != answering { effort.isHidden = answering }
         if !answering { place(effort, left) }
         for button in [previousButton, nextButton] where button.isHidden != !navigating { button.isHidden = !navigating }
@@ -489,11 +483,6 @@ final class ControlsBarView: RepresentedRoot {
             self.colorScheme = colorScheme
         }
     }
-}
-
-/// 输入框的灰底，点击和光标都交给上面的输入框。
-private final class FieldFill: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// 裁卡片的那一层和玻璃一样大：自己不接点击、不挡光标，卡片收起时下面的输入框照常点得中。

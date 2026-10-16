@@ -11,7 +11,7 @@ import { join } from 'node:path';
 // 沙箱宿主按路径起子进程，不在 import 链上；按文本引入，宿主改动时 .kite/check 才会选中这里。
 import '../../src/execution/sandbox-callback-host.ts' with { type: 'text' };
 import {
-  applyExecutionGrants, effectiveExecution, normalizeExecutionChanges, parseProjectExecution,
+  applyExecutionGrants, effectiveExecution, normalizeExecutionChanges, parseProjectExecution, unsandboxedVerdict,
   type ExecutionChanges, type ExecutionGrants, type ExecutionScope,
 } from '../../src/execution/grants.ts';
 import { runCommand } from '../../src/execution/command.ts';
@@ -307,6 +307,65 @@ test('实例授权的路径消失或被换成指向别处的链接后拒绝执�
   symlinkSync(join(real, 'ref'), swapped);
   expect(() => applyExecutionGrants(base, cwd, relinked)).toThrow();
 }, 1000);
+
+/*
+ * 真实 bug：项目里写的绝对路径和实例加的一样按严格方式核对，本机不存在的、经过符号链接的（含 macOS 的系统链接 /var → /private/var）
+ * 都让 applyExecutionGrants 抛「授权路径已消失或改变位置」，整个项目的代理都不能执行。项目约束随账号级数据到各工作机，
+ * 本机没有的要略过，经链接的按真实位置授权。
+ * 关联 bug：实例按项目里的原文 remove 经链接的路径，normalizeExecutionChanges 把 remove 也解析成真实位置，和项目原文对不上而去不掉；
+ * 本机不存在的 remove 直接报错。
+ * 代码之外的东西：路径的真实位置要经文件系统解析（realpath、用户建的链接、系统链接），结果要合成到基础策略上才看得出。
+ */
+test('项目里的绝对路径本机没有时略过、经链接的按真实位置授权，照常能执行；实例按项目原文 remove 去得掉经链接的和本机没有的路径', async () => {
+  const root = temp('layers-absolute-');
+  const { real, home } = linkedHome(root);
+  const kiteHome = join(real, '.kite');
+  mkdirSync(kiteHome);
+  mkdirSync(join(real, 'ref'));
+  const elsewhere = join(root, 'elsewhere');
+  const dropped = join(root, 'dropped');
+  mkdirSync(elsewhere);
+  mkdirSync(dropped);
+  symlinkSync(elsewhere, join(real, 'linked'));
+  symlinkSync(dropped, join(real, 'dropped-link'));
+  const absent = join(root, 'absent');
+  const absentRemoved = join(root, 'absent-removed');
+  const cwd = join(root, 'workspace');
+  mkdirSync(cwd);
+  const empty = { read: [], write: [], network: [], unsandboxed: [] };
+
+  // home 是经链接的写法：join(home, …) 都要经过 /var（或测试建的链接）才到真实位置，linked、dropped-link 再多经一层。
+  const project = parseProjectExecution({ allow: { ...empty, read: [
+    join(home, 'ref'), join(home, 'linked'), join(home, 'dropped-link'), absent, absentRemoved,
+  ] } });
+  const changes = await normalizeExecutionChanges({ remove: { ...empty, read: [join(home, 'dropped-link'), absentRemoved] } });
+  const effective = effectiveExecution(changes, project, home);
+  expect(effective.grants.read).toEqual(expect.arrayContaining([join(real, 'ref'), elsewhere]));
+  const gone = [dropped, join(real, 'dropped-link'), join(home, 'dropped-link'), absent, absentRemoved];
+  for (const path of gone) expect(effective.grants.read).not.toContain(path);
+
+  const policy = applyExecutionGrants(await harnessPolicy({ cwd, env: ENV(), home: kiteHome }), cwd, effective);
+  expect(policy.read).toEqual(expect.arrayContaining([join(real, 'ref'), elsewhere]));
+  for (const path of gone) expect(policy.read).not.toContain(path);
+}, 1000);
+
+/*
+ * 真实 bug（沙箱外命令的安全边界被绕过）：
+ * 一、单个 & 没被当成分隔符：允许 `npm run dev *` 时 `npm run dev & rm -rf ~/x` 整条判为允许，后一条跟着出了沙箱；
+ *    禁止 `sudo *` 时 `ls & sudo rm -rf /` 不判为禁止。
+ * 二、项目禁止只按字面前缀比对：`env sudo …`、`/usr/bin/sudo …`、`FOO=1 sudo …`、`sh -c "sudo …"` 都不算禁止。
+ * 依赖 sh 的语法：& 把前一条放到后台、接着跑下一条；env、变量赋值前缀、程序的完整路径、sh -c 都会真的运行后面的 sudo。
+ */
+test('沙箱外命令里单个 & 后面的那条另算，不沾前一条的允许、碰到禁止就整条禁止；项目禁止的程序经 env、完整路径、变量前缀或 sh -c 运行也判为禁止', () => {
+  // 对照：允许的写法本身生效，下面的 unlisted 只能是因为 & 后面那条。
+  expect(unsandboxedVerdict('npm run dev --port 3000', ['npm run dev *'], [])).toBe('allowed');
+  expect(unsandboxedVerdict('npm run dev & rm -rf ~/x', ['npm run dev *'], [])).toBe('unlisted');
+  expect(unsandboxedVerdict('ls & sudo rm -rf /', ['ls *'], ['sudo *'])).toBe('denied');
+  expect(unsandboxedVerdict('ls & sudo rm -rf /', [], ['sudo *'])).toBe('denied');
+  for (const command of ['env sudo launchctl list', '/usr/bin/sudo ls', 'FOO=1 sudo ls', 'sh -c "sudo ls"']) {
+    expect([command, unsandboxedVerdict(command, [], ['sudo *'])]).toEqual([command, 'denied']);
+  }
+});
 
 type Tools = ReturnType<typeof localTools>;
 

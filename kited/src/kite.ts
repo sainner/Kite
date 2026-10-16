@@ -45,7 +45,7 @@ import {
   agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
   pluginToolsContextDefinition,
 } from './harness/context/notifications.ts';
-import { applyExecutionGrants, effectiveApprovalMode, effectiveExecution, instanceApprovalMode, instanceExecutionChanges, unsandboxedVerdict } from './execution/grants.ts';
+import { applyExecutionGrants, effectiveExecution, instanceExecutionChanges, unsandboxedVerdict } from './execution/grants.ts';
 import { harnessPolicy } from './execution/policy.ts';
 import { commandEnvironment } from './execution/sandbox.ts';
 import { monitorConfig, monitorDefinitionId, monitorEventsContextDefinition, Monitors } from './monitor/monitors.ts';
@@ -74,7 +74,7 @@ import { agentModelCatalog } from './agents/capabilities.ts';
 import { TokenCounter } from './token-counts.ts';
 import { VoiceSessions, voiceTemplate } from './voice/sessions.ts';
 import { Terminals, terminalExitContextDefinition } from './terminal/terminals.ts';
-import { type Waiting, Waits } from './waiting.ts';
+import { type ApprovalRequest, type Waiting, Waits } from './waiting.ts';
 import { WorkspaceTransfers } from './transfer/transfers.ts';
 import { diskEnough, readEnvironment, runtimeLogin, type Environment, type HandoverNeed } from './environment.ts';
 import { runtimeOfModel } from './agents/models.ts';
@@ -108,6 +108,12 @@ function conflictPrompt(branch: string, files: string[]): string {
     ...files.map((f) => `- ${f}`), '',
     '请直接编辑这些文件解决冲突，保留双方意图，并删除全部冲突标记；需要删除的文件直接删除。',
     'Git 元数据由 Kite 管理，不要运行 git add 或 git commit。本回合正常结束后，Kite 会提交合并并继续合回主线。'].join('\n');
+}
+
+/** 确认恢复：后端核对交接后把阻塞解开。 */
+async function recoverRuntime(r: Runtime): Promise<void> {
+  if (!r.recover) throw new KiteError('这个后端不支持恢复确认', 409);
+  await r.recover();
 }
 
 export class Kite {
@@ -1024,8 +1030,9 @@ export class Kite {
     if (runner?.busy) throw new KiteError('请先停止会话，再切换后端', 409);
     // 用户在 App 里换后端连带确认恢复：旧后端先核对交接，再把会话交出去。
     if (runner?.recovery) {
-      if (!runner.recover) throw new KiteError('这个后端不支持恢复确认', 409);
-      await runner.recover();
+      await recoverRuntime(runner);
+      // 换过去只带走原生记录里已有的内容，交接结果未知的输入会丢，先由用户继续或撤回。
+      if (!(await this.threadState(id)).capabilities.switchRuntime) throw new KiteError('有交接结果未知的消息，请先继续或撤回，再切换后端', 409);
     }
     await runner?.shutdown();
     this.runners.delete(id);
@@ -1084,7 +1091,11 @@ export class Kite {
       compactionFiles: ({ from, to }) => changesBetween(workspace.cwd, workspaceId, from, to),
       toolConstraint: () => this.store.projectConstraints(t.project.id)?.tools,
       executionConstraint: () => this.store.projectConstraints(t.project.id)?.execution,
-      askNetwork: (target, signal) => this.askNetwork(id, target, signal),
+      askNetwork: ({ host, port }, signal) => {
+        const target = host.includes(':') ? `[${host}]` : host;
+        return this.askApproval(id, { tool: 'shell', target: port === undefined ? target : `${target}:${port}`,
+          reason: '命令要连接网络许可之外的主机', mustAsk: false }, signal);
+      },
       background: {
         interjected: (listener) => {
           const listeners = this.interjections.get(id) ?? new Set();
@@ -1099,39 +1110,25 @@ export class Kite {
           const { grants, denied } = effectiveExecution(instanceExecutionChanges(this.context(id)), this.store.projectConstraints(t.project.id)?.execution);
           return unsandboxedVerdict(command, grants.unsandboxed, denied.unsandboxed);
         },
-        ask: (command, description, signal) => this.askOutside(id, command, description, signal),
+        // 以「 *」结尾的命令记下来就成了带任意参数的模式，只能批准这一次。
+        ask: (command, description, signal) => this.askApproval(id, { tool: 'shell', target: command.trim(), reason: description,
+          mustAsk: command.trim().endsWith(' *'), outside: true }, signal),
       },
     });
     this.runners.set(id, r);
     return r;
   }
   /**
-   * 命令要连接执行授权之外的主机：按实例此刻的审批模式放行、拒绝或在线程上问人；「允许并记住」把它加进网络许可，
-   * 记不住（如线程已归档）也放行这一次。
+   * 命令要连接执行授权之外的主机，或代理申请在沙箱外运行一条命令：按实例此刻的审批模式放行、拒绝或在线程上问人。
+   * 「允许并记住」把主机加进网络许可、把整条命令原样记成实例的沙箱外命令；记不住（如线程已归档）也放行这一次。
    */
-  private async askNetwork(id: string, target: { host: string; port?: number }, signal: AbortSignal): Promise<boolean> {
-    const thread = this.context(id);
-    const mode = effectiveApprovalMode(instanceApprovalMode(thread), this.store.projectConstraints(thread.project.id)?.execution);
+  private async askApproval(id: string, request: ApprovalRequest, signal: AbortSignal): Promise<boolean> {
+    const mode = this.configuration.approvalMode(id).effective;
     if (mode !== 'ask') return mode === 'allow_all';
-    const host = target.host.includes(':') ? `[${target.host}]` : target.host;
-    const domain = target.port === undefined ? host : `${host}:${target.port}`;
-    const decision = await this.waits.approve(id, { tool: 'shell', target: domain, reason: '命令要连接网络许可之外的主机', mustAsk: false }, signal);
+    const decision = await this.waits.approve(id, request, signal);
     if (decision === 'remember') {
-      await this.configuration.remember(id, 'network', domain).catch((error: Error) => console.error(`[审批] 记住网络许可失败：${error.message}`));
-    }
-    return decision === 'once' || decision === 'remember';
-  }
-  /**
-   * 代理申请在沙箱外运行一条命令：按审批模式放行、拒绝或在线程上问人；「允许并记住」把整条命令原样记成实例的沙箱外命令，
-   * 记不住（如线程已归档）也放行这一次。
-   */
-  private async askOutside(id: string, command: string, description: string, signal: AbortSignal): Promise<boolean> {
-    const thread = this.context(id);
-    const mode = effectiveApprovalMode(instanceApprovalMode(thread), this.store.projectConstraints(thread.project.id)?.execution);
-    if (mode !== 'ask') return mode === 'allow_all';
-    const decision = await this.waits.approve(id, { tool: 'shell', target: command.trim(), reason: description, mustAsk: false, outside: true }, signal);
-    if (decision === 'remember') {
-      await this.configuration.remember(id, 'unsandboxed', command.trim()).catch((error: Error) => console.error(`[审批] 记住沙箱外命令失败：${error.message}`));
+      await this.configuration.remember(id, request.outside ? 'unsandboxed' : 'network', request.target)
+        .catch((error: Error) => console.error(`[审批] 记住${request.outside ? '沙箱外命令' : '网络许可'}失败：${error.message}`));
     }
     return decision === 'once' || decision === 'remember';
   }
@@ -1234,11 +1231,7 @@ export class Kite {
   }
   /** 只确认恢复，`kite` 命令行用；App 在发送、继续和停止时连带确认，见 confirmRecovery。 */
   recover(id: string): Promise<void> {
-    return this.controlThread(id, async () => {
-      const r = await this.runner(this.openThread(id));
-      if (!r.recover) throw new KiteError('这个后端不支持恢复确认', 409);
-      await r.recover();
-    });
+    return this.controlThread(id, async () => recoverRuntime(await this.runner(this.openThread(id))));
   }
   /**
    * 用户在 App 里发送、继续或停止时连带确认恢复。没有阻塞或还在收尾时不动，由随后的操作按当时状态处理：
@@ -1247,9 +1240,7 @@ export class Kite {
   confirmRecovery(id: string): Promise<void> {
     return this.controlThread(id, async () => {
       const r = await this.runner(this.openThread(id));
-      if (!r.recovery || r.busy) return;
-      if (!r.recover) throw new KiteError('这个后端不支持恢复确认', 409);
-      await r.recover();
+      if (r.recovery && !r.busy) await recoverRuntime(r);
     });
   }
   /** 用户在 App 里合回主线或手动流转时，连带确认工作区里待恢复的线程；自动换机和冲突处理后的自动合回不经过这里。 */
