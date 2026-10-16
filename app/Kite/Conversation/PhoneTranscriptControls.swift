@@ -13,7 +13,9 @@ class PhonePlainControl: UIControl, UIPointerInteractionDelegate {
         super.init(frame: .zero)
         content.isUserInteractionEnabled = false
         addSubview(content)
-        addTarget(self, action: #selector(triggered), for: .primaryActionTriggered)
+        // 按 touchUpInside 接：直接继承 UIControl 的按 primaryActionTriggered 注册时，iPhone 上按下变淡、松手不触发
+        // （2026-10-16：工具行汇总行、展开全文都点不开）；UIButton（NativeButton）不受影响
+        addTarget(self, action: #selector(triggered), for: .touchUpInside)
         addInteraction(UIPointerInteraction(delegate: self))
         isAccessibilityElement = true
         accessibilityTraits = .button

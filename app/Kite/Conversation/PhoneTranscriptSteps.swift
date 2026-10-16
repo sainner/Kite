@@ -213,7 +213,8 @@ final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
         icon.contentMode = .center
         addSubview(diff)
         addSubview(duration)
-        addTarget(self, action: #selector(triggered), for: .primaryActionTriggered)
+        // 同 PhonePlainControl：直接继承 UIControl 的按 touchUpInside 接
+        addTarget(self, action: #selector(triggered), for: .touchUpInside)
         addInteraction(UIPointerInteraction(delegate: self))
         isAccessibilityElement = true
         accessibilityTraits = .button
