@@ -11,7 +11,7 @@ import SwiftUI
 /// - 停用：不接悬停和点击，指针不变手形，读屏是停用的按钮。可点时手形指针。
 /// - 键盘：打开系统的「键盘导航」时能用 Tab 走到，画焦点环（胶囊，整行的按钮画矩形），空格、回车按下。
 /// - 读屏：按钮，按下就是这个动作；名字由子类给（accessibilityLabel 或 setAccessibilityLabel）。
-class NativeButton: NSView {
+class NativeButton: NSView, NativeCursor {
     var action: (() -> Void)?
     var isEnabled = true {
         didSet {
@@ -84,6 +84,8 @@ class NativeButton: NSView {
     override func resetCursorRects() {
         if isEnabled { addCursorRect(bounds, cursor: .pointingHand) }
     }
+
+    var nativeCursor: NSCursor? { isEnabled ? .pointingHand : nil }
 
     override func mouseDown(with event: NSEvent) {
         guard isEnabled else { return }
@@ -187,6 +189,29 @@ class HighlightButton: NativeButton {
         highlight.backgroundColor = color
         CATransaction.commit()
         alphaValue = !isEnabled ? 0.45 : pressed ? pressedOpacity : 1
+    }
+}
+
+/// 原生视图在指针下要的光标，和它的光标区域（addCursorRect）一致。托管在 SwiftUI 里时（输入区玻璃里的输入框、按钮），
+/// AppKit 把 cursorUpdate 交给托管视图里面 SwiftUI 自己的视图，往外传到窗口设回箭头，原生视图的光标区域和 cursorUpdate 都轮不到
+/// （2026-10-16 记录到）。托管它们的视图在 cursorUpdate 里按 nativeCursorUnderPointer 设，见 ThreadIsland。
+@MainActor protocol NativeCursor: NSView {
+    /// 指针在这个视图上时的光标；nil 交给外层。
+    var nativeCursor: NSCursor? { get }
+}
+
+extension NSView {
+    /// 指针下、在这个视图里面的原生视图要的光标：从指针下最里面的视图往外，到这个视图为止，第一个给出光标的 NativeCursor。
+    func nativeCursorUnderPointer() -> NSCursor? {
+        guard let window, let root = window.contentView?.superview else { return nil }
+        var view = root.hitTest(window.mouseLocationOutsideOfEventStream)
+        var cursor: NSCursor?
+        while let current = view {
+            if current === self { return cursor }
+            if cursor == nil { cursor = (current as? NativeCursor)?.nativeCursor }
+            view = current.superview
+        }
+        return nil
     }
 }
 #endif
