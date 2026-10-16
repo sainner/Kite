@@ -2,7 +2,7 @@
 import SwiftUI
 import UIKit
 
-/// 两段话之间 agent 做的事折成的一行：汇总一行（汇总或正在做什么、出错和没跑完的步数、箭头，一行，放不下截汇总；
+/// 两段话之间 agent 做的事折成的一行：汇总一行（思考、正在做什么或汇总，出错和没跑完的步数、箭头，一行，放不下截汇总；
 /// 有调用在跑时正在做什么带像素扫掠，见 PhoneActivityView），点开后下面是每一步（PhoneWorkSteps）。
 /// 展开收起和下面的行一起按 0.25 秒的普通缓出动，箭头跟着转、步骤跟着淡入淡出；收起走完拿掉步骤，不留各步的展开状态。
 /// 一步自己展开收起时，这一行的高由列表的行高动画给，多出、少掉的那截交给步骤去摆。量法、展开进度和 Mac 共用（WorkLayout）。
@@ -128,7 +128,7 @@ final class PhoneWorkRowView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
-/// 工具组的汇总行：一行次要色小字，间距 8、竖着居中：汇总（有调用在跑时是正在做什么）、
+/// 工具组的汇总行：一行次要色小字，间距 8、竖着居中：汇总（见 Work.headline）、
 /// 出错步数（红）、没跑完步数、小号箭头；汇总放不下截掉。有调用在跑、没展开时正在做什么带像素扫掠（PhoneActivityView）。整行可点。
 final class PhoneWorkHeader: PhonePlainControl {
     /// 箭头转了多少：0 朝右，1 朝下。
@@ -156,7 +156,7 @@ final class PhoneWorkHeader: PhonePlainControl {
     func show(_ work: Work, expanded: Bool, environment: EnvironmentValues) {
         font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as UIFont
         let failedCount = work.count(.failed) + work.count(.unknown), unfinishedCount = work.count(.unfinished)
-        set(summary, work.running?.use.title ?? work.summary, color: .secondaryLabel)
+        set(summary, work.headline, color: .secondaryLabel)
         set(failed, failedCount > 0 ? "\(failedCount) 步出错" : "", color: UIColor(Theme.danger))
         set(unfinished, unfinishedCount > 0 ? "\(unfinishedCount) 步没跑完" : "", color: .secondaryLabel)
         chevron.image = UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(font: font, scale: .small))
@@ -200,7 +200,7 @@ final class PhoneWorkHeader: PhonePlainControl {
     }
 }
 
-/// 生成中的思考：一行次要色小字，换行当空格，放不下截掉。
+/// 生成中、前面不是工具组的思考：一行次要色小字，换行当空格，放不下截掉。
 final class PhoneThinkingRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var label: PhoneTextLine?
     private var text = ""

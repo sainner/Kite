@@ -194,8 +194,8 @@ extension JSON: ExpressibleByStringInterpolation, ExpressibleByIntegerLiteral, E
 
 // MARK: - 界面上的样子
 
-/// 界面上的一项。思考独立保留，连续的工具调用折成一项 Work，工具结果并到它的调用上。
-/// 记录只追加，所以序号就是稳定的 id。
+/// 界面上的一项。连续的工具调用折成一项 Work，工具结果并到它的调用上。思考只在生成时出现：
+/// 接在工具组后面的由这组的汇总行暂时说它，否则单独一行。记录只追加，所以序号就是稳定的 id。
 struct Item: Identifiable {
     let id: Int
     var kind: Kind
@@ -214,9 +214,11 @@ struct Item: Identifiable {
     }
 }
 
-/// 连续的工具调用；思考与正文都会分开前后的工具组。
+/// 连续的工具调用。正文、消息等会分开前后的工具组；结束的思考和空正文不出现，也不分开。
 struct Work {
     var calls: [Call]
+    /// 接在这组后面正在生成的思考，汇总行先说它；又有调用并进来时清掉。
+    var thinking: String? = nil
 }
 
 struct Call {
@@ -269,6 +271,7 @@ extension Transcript {
                 return (list.count - 1, 0)
             }
             work.calls.append(call)
+            work.thinking = nil
             list[list.count - 1].kind = .work(work)
             return (list.count - 1, work.calls.count - 1)
         }
@@ -290,12 +293,24 @@ extension Transcript {
             case .human(let message): append(.human(message))
             case .kite(let text): append(.kite(text))
             case .notification(let text): append(.notification(text))
-            case .text(let text): append(.text(text))
+            case .text(let text):
+                // 开了头没写出字的草稿
+                if text.isEmpty { continue }
+                append(.text(text))
             case .interrupted: append(.interrupted)
             case .compacted(let compaction):
                 if let id = compaction.id, folds.contains(id) { continue }
                 append(.compacted(compaction, children: []))
-            case .thinking(let text): append(.thinking(text))
+            case .thinking(let text):
+                // 结束的思考不显示，完整摘要仍在记录里
+                guard record.generation == "streaming" else { continue }
+                if case .work(var work) = list.last?.kind {
+                    work.thinking = text
+                    list[list.count - 1].kind = .work(work)
+                    if parent == nil && top { locations[recordIndex] = (list.count - 1, nil) }
+                } else {
+                    append(.thinking(text))
+                }
             case .toolUse(let use):
                 let call = Call(use: use, state: Self.callState(use, result: nil, running: running), children: derive(under: use.id, byParent))
                 let at = add(call)
@@ -317,7 +332,7 @@ extension Transcript {
         return list
     }
 
-    /// 同种记录只刷新对应行；归属、种类或工具分组变化时重新派生。
+    /// 同种记录只刷新对应行；归属、种类或工具分组变化、思考结束时重新派生。
     mutating func replaceRecord(at index: Int, with record: Record) {
         guard records.indices.contains(index) else { return }
         let previous = records[index]
@@ -326,8 +341,17 @@ extension Transcript {
         replacingRecord = false
         guard record.parent == nil, previous.parent == nil, let at = locations[index] else { items = derive(); return }
         switch (previous.block, record.block) {
-        case (.text, .text(let text)): items[at.item].kind = .text(text)
-        case (.thinking, .thinking(let text)): items[at.item].kind = .thinking(text)
+        case (.text, .text(let text)) where !text.isEmpty: items[at.item].kind = .text(text)
+        case (.thinking, .thinking(let text)) where record.generation == "streaming":
+            switch items[at.item].kind {
+            case .thinking: items[at.item].kind = .thinking(text)
+            case .work(var work) where work.thinking != nil:
+                // 说的是工具组，组的生成状态不跟着思考
+                work.thinking = text
+                items[at.item].kind = .work(work)
+                return
+            default: items = derive(); return
+            }
         case (.toolUse(let old), .toolUse(let use)) where old.id == use.id && old.batch == use.batch:
             guard let step = at.call, case .work(var work) = items[at.item].kind else { items = derive(); return }
             work.calls[step].use = use

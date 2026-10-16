@@ -406,6 +406,9 @@ extension Work {
     /// 正在跑的那次调用。
     var running: Call? { calls.first { [.generating, .queued, .running].contains($0.state) } }
 
+    /// 汇总行说的：接在后面的思考正在生成时说思考，其次是正在跑的调用，再是汇总。
+    var headline: String { thinking.map(TranscriptSpeech.thinking) ?? running?.use.title ?? summary }
+
 }
 
 func firstLine(_ text: String?) -> String {

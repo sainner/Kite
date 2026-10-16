@@ -1,5 +1,5 @@
 /**
- * 手动合同验证：真实显示投影的 JSON 经 App 解码后，思考独立于工具组，迟到结果仍回填原调用，等你回应的提问与审批字段齐全。
+ * 手动合同验证：真实显示投影的 JSON 经 App 解码后，迟到结果仍回填原调用，等你回应的提问与审批字段齐全。
  * 运行：bun kited/test/manual/verify-transcript-swift.ts
  * Swift 编译不计入 small 测试耗时预算。
  */
@@ -383,9 +383,6 @@ struct TranscriptContract {
         require(live.items.first?.generation == "streaming", "正在生成的思考未保留生成状态")
         guard let completedThought = stream.thoughtComplete.record else { fatalError("完整思考未转换为记录") }
         live.replaceRecord(at: 0, with: completedThought)
-        require(live.items.first?.generation == "complete", "思考完成后未收起生成状态")
-        guard case .thinking(let thoughtText) = live.items[0].kind else { fatalError("思考记录丢失") }
-        require(thoughtText == "顶层思考", "完整思考校正后出现重字")
 
         var generatedTool = stream.toolStart
         require(generatedTool.block.stage == "generating", "工具参数草稿阶段未解码")
@@ -410,11 +407,11 @@ struct TranscriptContract {
         live.records.append(startedTool)
         live.replaceRecord(at: 1, with: generatedTool.record!)
         live.replaceRecord(at: 1, with: queuedTool)
-        guard case .work(let queuedWork) = live.items[1].kind else { fatalError("等待工具未归入工具组") }
+        guard case .work(let queuedWork) = live.items[0].kind else { fatalError("等待工具未归入工具组") }
         require(queuedWork.calls.count == 1 && queuedWork.calls[0].state == .queued,
             "原工具记录校正为 queued 后显示状态未更新")
         live.replaceRecord(at: 1, with: runningRecord)
-        guard case .work(let runningWork) = live.items[1].kind else { fatalError("运行工具未归入工具组") }
+        guard case .work(let runningWork) = live.items[0].kind else { fatalError("运行工具未归入工具组") }
         require(runningWork.calls[0].state == .running && runningWork.calls[0].use.output == "输出前段后段",
             "原工具记录校正为 running 后状态或输出未更新")
         live.replaceRecord(at: 1, with: completedTool)
@@ -422,7 +419,7 @@ struct TranscriptContract {
         require(finalTool.id == "stream-call" && finalTool.stage == "finished", "工具完成时身份或阶段变化")
         guard let finalToolResult = stream.toolResultComplete.record else { fatalError("工具结果转换失败") }
         live.records.append(finalToolResult)
-        guard case .work(let finishedWork) = live.items[1].kind else { fatalError("完成工具未归入工具组") }
+        guard case .work(let finishedWork) = live.items[0].kind else { fatalError("完成工具未归入工具组") }
         require(finishedWork.calls.count == 1 && finishedWork.calls[0].state == .done
             && finishedWork.calls[0].result?.text == "中文执行完成",
             "原工具记录校正为 finished 后未完成或重复了调用")
@@ -435,12 +432,13 @@ struct TranscriptContract {
         require(finalText == "最终文字" && correctedText.items[0].generation == "complete",
             "最终文字没有替换草稿或清除生成状态")
         correctedText.records.append(completedTool)
-        correctedText.replaceRecord(at: 0, with: Record(block: .thinking("改种类的思考")))
+        // 结束的思考不显示，改种类、改 parent 用生成中的思考，前面没有工具组时它仍是独立一项。
+        correctedText.replaceRecord(at: 0, with: Record(block: .thinking("改种类的思考"), generation: "streaming"))
         guard case .thinking(let changedKind) = correctedText.items[0].kind else {
             fatalError("种类变化未重建显示分组")
         }
         require(changedKind == "改种类的思考", "种类变化保留了旧正文")
-        correctedText.replaceRecord(at: 0, with: Record(parent: "stream-call", block: .thinking("改父级的思考")))
+        correctedText.replaceRecord(at: 0, with: Record(parent: "stream-call", block: .thinking("改父级的思考"), generation: "streaming"))
         guard correctedText.items.count == 1, case .work(let reparentedWork) = correctedText.items[0].kind,
               reparentedWork.calls[0].children.count == 1,
               case .thinking(let reparentedText) = reparentedWork.calls[0].children[0].kind else {
@@ -453,13 +451,13 @@ struct TranscriptContract {
             guard let record = remote.record else { fatalError("投影记录未解码：\(remote.id)") }
             transcript.records.append(record)
             if remote.block.type == "tool_result" && remote.block.call == "top-before" {
-                verify(transcript, before: "top-before", thought: "顶层思考", after: "top-after")
+                verify(transcript, before: "top-before")
             }
             if remote.block.type == "tool_result" && remote.block.call == "child-before" {
                 verifyChild(transcript)
             }
         }
-        verify(transcript, before: "top-before", thought: "顶层思考", after: "top-after")
+        verify(transcript, before: "top-before")
         verifyChild(transcript)
         guard let resultIndex = records.firstIndex(where: { $0.block.type == "tool_result" && $0.block.call == "top-before" }),
               case .toolResult(let savedResult) = transcript.records[resultIndex].block else {
@@ -471,7 +469,7 @@ struct TranscriptContract {
         transcript.replaceRecord(at: resultIndex,
             with: Record(parent: transcript.records[resultIndex].parent, block: .toolResult(correctedResult)))
         require(transcript.records.count == records.count, "同种结果校正新增了记录")
-        verify(transcript, before: "top-before", thought: "顶层思考", after: "top-after")
+        verify(transcript, before: "top-before")
         verifyChild(transcript)
         guard case .work(let firstWork) = transcript.items[0].kind else { fatalError("缺少首个工具组") }
         require(firstWork.calls[0].result?.text == "完成 top-before，结果已校正",
@@ -479,48 +477,27 @@ struct TranscriptContract {
         require(firstWork.calls[0].result?.diff?.id == CommandLine.arguments[4]
             && firstWork.calls[0].result?.diff?.paths == ["目录/带 空格.ts"],
             "journal 和显示投影中的 diff 引用未抵达 Swift 工具结果")
-        print("投影记录经 Swift 解码后保持独立思考、工具分组与迟到结果，等待对象按提问和审批解出")
+        print("投影记录经 Swift 解码后迟到结果回填原调用，等待对象按提问和审批解出")
     }
 
-    private static func verify(_ transcript: Transcript, before: String, thought: String, after: String) {
-        let items = transcript.items
-        guard items.count >= 3,
-              case .work(let first) = items[0].kind,
-              case .thinking(let text) = items[1].kind,
-              case .work(let second) = items[2].kind else {
-            fatalError("思考未分开前后工具组")
+    private static func verify(_ transcript: Transcript, before: String) {
+        guard case .work(let first)? = transcript.items.first?.kind, first.calls[0].use.id == before else {
+            fatalError("缺少首个工具组")
         }
-        require(text == thought && first.calls.count == 1 && second.calls.count == 1,
-            "工具组或思考内容不正确")
-        require(first.calls[0].use.id == before && second.calls[0].use.id == after,
-            "工具组顺序错误")
         require(first.calls[0].result?.text.contains("完成 \(before)") == true,
             "思考后到达的结果未回填到思考前的工具")
     }
 
     private static func verifyChild(_ transcript: Transcript) {
-        guard transcript.items.count >= 3,
-              case .work(let top) = transcript.items[2].kind,
-              top.calls.count == 1 else { fatalError("缺少顶层工具") }
-        let children = top.calls[0].children
-        guard children.count >= 3,
-              case .work(let first) = children[0].kind,
-              case .thinking(let text) = children[1].kind,
-              case .work(let second) = children[2].kind else {
-            let shape = children.map { item -> String in
-                switch item.kind {
-                case .work(let work): return "work:\(work.calls.map { $0.use.id })"
-                case .thinking(let text): return "thinking:\(text)"
-                default: return "other"
-                }
-            }
-            fatalError("子调用思考未分开工具组：\(shape)")
+        let top = transcript.items.lazy.compactMap { item -> Call? in
+            guard case .work(let work) = item.kind else { return nil }
+            return work.calls.first { $0.use.id == "top-after" }
+        }.first
+        guard let top else { fatalError("缺少顶层工具") }
+        guard case .work(let first)? = top.children.first?.kind, first.calls[0].use.id == "child-before" else {
+            fatalError("缺少子调用工具组")
         }
-        require(text == "子调用思考" && first.calls.count == 1 && second.calls.count == 1,
-            "子调用内容或分组错误")
-        require(first.calls[0].use.id == "child-before"
-            && second.calls[0].use.id == "child-after"
-            && first.calls[0].result?.text.contains("完成 child-before") == true,
+        require(first.calls[0].result?.text.contains("完成 child-before") == true,
             "子调用迟到结果未回填原调用")
     }
 }

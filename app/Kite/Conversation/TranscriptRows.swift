@@ -39,9 +39,6 @@ struct TranscriptRow: Identifiable {
             rows.append(TranscriptRow(id: id, content: content, gap: gap, startsHumanTurn: humanTurn))
         }
         for item in items {
-            // 隐藏结束的思考，但保留派生项身份和它分隔工具组的位置。
-            if case .thinking = item.kind, item.generation != "streaming" { continue }
-            if case .text(let text) = item.kind, text.isEmpty { continue }
             if case .human(let message) = item.kind {
                 append(.message(message.id), .message(message, queued: false), startsTurn: item.startsTurn)
             } else {
@@ -78,6 +75,7 @@ private extension Item.Kind {
         case .thinking(let text): hasher.combine(4); hasher.combine(text.utf8.count)
         case .work(let work):
             hasher.combine(5)
+            hasher.combine(work.thinking?.utf8.count)
             for call in work.calls {
                 hasher.combine(call.state)
                 hasher.combine(call.result != nil)

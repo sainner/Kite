@@ -2,8 +2,8 @@
 import AppKit
 import SwiftUI
 
-/// 两段话之间 agent 做的事折成的一行：汇总一行（汇总、出错和没跑完的步数、箭头，一行，放不下截汇总；有调用在跑时说正在做什么，
-/// 带像素扫掠，见 ToolActivityView）。点开后下面是步骤（WorkStepsView），展开收起和下面的行一起按 0.25 秒的普通缓出动，
+/// 两段话之间 agent 做的事折成的一行：汇总一行（汇总、出错和没跑完的步数、箭头，一行，放不下截汇总；接着生成思考时先说思考，
+/// 有调用在跑时说正在做什么，带像素扫掠，见 ToolActivityView）。点开后下面是步骤（WorkStepsView），展开收起和下面的行一起按 0.25 秒的普通缓出动，
 /// 箭头跟着转、步骤跟着淡入淡出；收起走完拿掉步骤，不留各步的展开状态。某一步自己展开收起时只有步骤跟着变高，箭头和透明度不动。
 final class WorkRowSlot: TranscriptRowSlot {
     private let container = WorkRowView()
@@ -102,7 +102,7 @@ final class WorkHeaderView: NativeButton {
     var turn: CGFloat = 0 {
         didSet { if turn != oldValue { chevron.frameCenterRotation = -90 * turn } }
     }
-    /// 汇总（有调用在跑时是正在做什么），扫掠只画在它上面。
+    /// 汇总（见 Work.headline），扫掠只画在它上面。
     private let activity = ToolActivityView()
     private let summary = LineLabel()
     private let failed = LineLabel()
@@ -112,7 +112,7 @@ final class WorkHeaderView: NativeButton {
 
     override var isFlipped: Bool { true }
 
-    /// 读屏读的：汇总连同出错、没跑完的步数，有调用在跑时是正在做什么。
+    /// 读屏读的：汇总行说的连同出错、没跑完的步数。
     private var speech = ""
     /// 展开了步骤，读屏读成展开收起的三角。
     var expanded = false {
@@ -131,13 +131,13 @@ final class WorkHeaderView: NativeButton {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// 汇总行：有调用在跑时说正在做什么，没展开、有调用在执行时带像素扫掠。
+    /// 汇总行：思考、正在做什么或汇总，没展开、有调用在执行时带像素扫掠。
     func show(_ work: Work, environment: EnvironmentValues, expanded: Bool) {
         speech = TranscriptSpeech.work(work)
         font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont
         let secondary = NSColor.secondaryLabelColor
         let failedCount = work.count(.failed) + work.count(.unknown), unfinishedCount = work.count(.unfinished)
-        set(summary, work.running?.use.title ?? work.summary, color: secondary)
+        set(summary, work.headline, color: secondary)
         activity.presence = environment.panePresence
         activity.mode = work.running != nil && !expanded && work.count(.running) > 0 ? .sweeping : .none
         activity.contentChanged()
@@ -205,7 +205,7 @@ final class WorkRowView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
-/// 生成中的思考：一行次要色小字，换行当空格，放不下截掉。思考条目只在生成期间显示，完整摘要仍保留在记录中。
+/// 生成中、前面不是工具组的思考：一行次要色小字，换行当空格，放不下截掉。思考条目只在生成期间显示，完整摘要仍保留在记录中。
 final class ThinkingRowSlot: TranscriptRowSlot {
     private let label = LineLabel()
 
