@@ -54,6 +54,19 @@ private struct HeaderAnchorReports: ViewModifier {
     }
 }
 
+/// 标题一侧交给里面托管视图的内容。托管视图的 rootView 只在建的时候给一次，之后的内容经这里转交：
+/// 重赋 rootView 送进去的变化，里面按 id 换视图的过渡不做（标题的 blurReplace 当场换字，只剩刷新图标的位移），
+/// 经观察送进去的照常做（2026-10-16 Mac 实测，逐帧比过图层的模糊、缩放和透明度）。
+@MainActor @Observable private final class HeaderAnchorContent {
+    var view = AnyView(EmptyView())
+}
+
+private struct HeaderAnchorRoot: View {
+    let content: HeaderAnchorContent
+
+    var body: some View { content.view }
+}
+
 /// 标题一侧托管在自己的视图里。环境整份转交。
 private struct HeaderAnchorHost<Content: View> {
     let edge: HorizontalEdge
@@ -64,12 +77,12 @@ private struct HeaderAnchorHost<Content: View> {
     private func make(environment: EnvironmentValues) -> HeaderAnchorContainer {
         let container = HeaderAnchorContainer(edge: edge, link: link)
         relay.container = container
-        container.controller.rootView = rooted(environment, title: container.title)
+        container.content.view = rooted(environment, title: container.title)
         return container
     }
 
     private func update(_ container: HeaderAnchorContainer, environment: EnvironmentValues) {
-        container.controller.rootView = rooted(environment, title: container.title)
+        container.content.view = rooted(environment, title: container.title)
     }
 
     /// 偏好值和尺寸隔一拍交出去：里面的托管视图可能在外面这次更新当中排版，不能当场改外面的状态。
@@ -124,7 +137,8 @@ extension HeaderAnchorHost: UIViewRepresentable {
 
 /// 外面按停着的位置摆；里面一层按飞行中的挪动平移，标题右边截掉的部分是这一层图层上的遮罩。
 private final class HeaderAnchorContainer: NSView, WindowHeaderFollower {
-    let controller = NSHostingController(rootView: AnyView(EmptyView()))
+    let content = HeaderAnchorContent()
+    let controller: NSHostingController<AnyView>
     let title = WindowHeaderTitleEdge()
     private let edge: HorizontalEdge
     private weak var link: HostedContentLink?
@@ -136,6 +150,7 @@ private final class HeaderAnchorContainer: NSView, WindowHeaderFollower {
     init(edge: HorizontalEdge, link: HostedContentLink) {
         self.edge = edge
         self.link = link
+        controller = .init(rootView: AnyView(HeaderAnchorRoot(content: content)))
         // 量尺寸要理想大小（见 measure）；不另算安全区
         controller.sizingOptions = [.intrinsicContentSize]
         controller.safeAreaRegions = []
@@ -258,7 +273,8 @@ private final class HeaderAnchorContainer: NSView, WindowHeaderFollower {
 #if os(iOS)
 /// 外面按停着的位置摆；里面一层按飞行中的挪动平移，标题右边截掉的部分是这一层图层上的遮罩。同 Mac 版。
 private final class HeaderAnchorContainer: UIView, WindowHeaderFollower {
-    let controller = UIHostingController(rootView: AnyView(EmptyView()))
+    let content = HeaderAnchorContent()
+    let controller: UIHostingController<AnyView>
     let title = WindowHeaderTitleEdge()
     private let edge: HorizontalEdge
     private weak var link: HostedContentLink?
@@ -270,6 +286,7 @@ private final class HeaderAnchorContainer: UIView, WindowHeaderFollower {
     init(edge: HorizontalEdge, link: HostedContentLink) {
         self.edge = edge
         self.link = link
+        controller = .init(rootView: AnyView(HeaderAnchorRoot(content: content)))
         // 量尺寸要理想大小（见 measure）；不另算安全区
         controller.sizingOptions = [.intrinsicContentSize]
         controller.safeAreaRegions = []
