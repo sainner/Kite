@@ -7,8 +7,10 @@ struct AccountProject: Decodable, Identifiable, Equatable {
     let remote: String?
     let icon: String?
     let color: String?
-    /// 工作机睡眠前，把这个项目里正在工作的工作区换到别的工作机。
+    /// 工作机睡眠、登出、重启或关机前，把这个项目里正在工作的工作区换到别的工作机。
     let autoHandover: Bool?
+    /// 自动换机的目标须满足的环境，取值见 HandoverNeed。
+    let handoverNeeds: [String]?
 
     var appearance: ProjectAppearance { ProjectAppearance(icon: icon ?? "folder", color: color ?? "primary") }
 }

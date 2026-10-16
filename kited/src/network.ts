@@ -36,8 +36,8 @@ export interface NetworkStatus {
   endpoints?: string[];
   /** 受管网络通道的状态，配了通道才有。 */
   channel?: NetworkChannelStatus;
-  /** 最近一次系统电源事件（只有 macOS 有），序号递增。 */
-  power?: { event: 'sleep' | 'wake'; id: number };
+  /** 最近一次系统电源事件（只有 macOS 有），序号递增：shutdown 是将要登出、重启或关机，stay 是登出被取消。 */
+  power?: { event: 'sleep' | 'wake' | 'shutdown' | 'stay'; id: number };
   error?: string;
 }
 
@@ -92,8 +92,11 @@ export interface NetworkOptions {
   /** kite-net 转发到的远程监听端口。 */
   target: number;
   proxyToken?: string;
-  /** 系统将要睡眠时调用，返回后才放行睡眠（kite-net 最多等 25 秒）；醒来时调用 wake。 */
-  power?: { sleep(): Promise<void>; wake(): void };
+  /**
+   * 系统将要睡眠、登出、重启或关机时调用 leaving；睡眠要等它返回才放行（kite-net 最多等 25 秒），其余的系统不等。
+   * 醒来或登出被取消时调用 returned。
+   */
+  power?: { leaving(): Promise<void>; returned(): void };
 }
 
 const RESTART_DELAY = 5_000;
@@ -233,11 +236,11 @@ export class Network {
       const power = this.node.power;
       if (!power || power.id <= this.powerEvent) return;
       this.powerEvent = power.id;
-      if (power.event === 'wake') { this.opts.power?.wake(); return; }
+      if (power.event === 'wake' || power.event === 'stay') { this.opts.power?.returned(); return; }
       const ready = () => {
         try { void child.stdin.write(`power-ready ${power.id}\n`); void child.stdin.flush(); } catch { /* 节点已退出。 */ }
       };
-      void (this.opts.power?.sleep() ?? Promise.resolve()).catch((error: unknown) => console.error(`[换机] ${(error as Error).message}`)).finally(ready);
+      void (this.opts.power?.leaving() ?? Promise.resolve()).catch((error: unknown) => console.error(`[换机] ${(error as Error).message}`)).finally(ready);
     });
     let lastError = '';
     void this.read(child.stderr, (line) => { lastError = line; console.error(`kite-net：${line}`); });

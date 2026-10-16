@@ -43,14 +43,17 @@ export function startDaemon(opts: DaemonOptions): Daemon {
   void sync();
   // kite-net 核验组网身份；随机内部凭据阻止绕过代理伪造同账号请求。
   const proxyToken = crypto.randomUUID();
+  /** 最近一次有预告的离开：登出、重启、关机时 SIGTERM 跟着预告来，停服务之前等它交完。 */
+  let departure: Promise<void> | undefined;
   const remote = serve(kite, { hostname: '127.0.0.1', port: 0, remote: true, proxyToken });
   const network = new Network({
     dir: join(opts.home, 'tailnet'),
     binary: opts.networkBinary ?? join(import.meta.dir, '../net/bin/kite-net'),
     hostname: `kite-${kite.machine().name.split('.')[0]}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-+$/, '').slice(0, 63),
     port: opts.port || 5483, target: remote.port!, proxyToken,
-    // 系统给睡眠留的时间约 30 秒，kite-net 最多等 25 秒；交接在 20 秒内收尾。
-    power: { sleep: () => kite.leaving(Date.now() + 20_000), wake: () => void kite.returned() },
+    // 系统给睡眠留的时间约 30 秒，kite-net 最多等 25 秒；登出、重启、关机时 launchd 发 SIGTERM 后最多等 30 秒（安装的 ExitTimeOut），
+    // stop 先等交接收尾。交接都在 20 秒内收尾。
+    power: { leaving: () => departure = kite.leaving(Date.now() + 20_000), returned: () => void kite.returned() },
   });
   const server = serve(kite, { hostname: '127.0.0.1', port: opts.port, network });
   kite.listening({ url: `http://127.0.0.1:${server.port}`, network });
@@ -64,6 +67,7 @@ export function startDaemon(opts: DaemonOptions): Daemon {
     kite,
     async stop() {
       clearInterval(syncTimer);
+      await departure?.catch(() => {});
       await network.stop();
       await kite.shutdown();
       await Promise.all([server.stop(true), remote.stop(true)]);

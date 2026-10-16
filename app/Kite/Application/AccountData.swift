@@ -54,8 +54,11 @@ extension AppModel {
         _ = await refreshDirectory()
     }
 
-    func setProjectAutoHandover(_ projectID: String, enabled: Bool) async throws -> AccountProject {
-        try await dataWorker().request("/project-registry/\(projectID)/settings", method: "PUT", body: ["autoHandover": enabled], as: AccountProject.self)
+    /// 只改给了的那一项。
+    func setProjectHandover(_ projectID: String, enabled: Bool? = nil, needs: [String]? = nil) async throws -> AccountProject {
+        struct Settings: Encodable { let autoHandover: Bool?; let handoverNeeds: [String]? }
+        return try await dataWorker().request("/project-registry/\(projectID)/settings", method: "PUT",
+                                              body: Settings(autoHandover: enabled, handoverNeeds: needs), as: AccountProject.self)
     }
 
     func setProjectAppearance(_ values: [String: String], projectID: String) async throws {

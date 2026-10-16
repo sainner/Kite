@@ -75,7 +75,7 @@ import { TokenCounter } from './token-counts.ts';
 import { VoiceSessions, voiceTemplate } from './voice/sessions.ts';
 import { type Waiting, Waits } from './waiting.ts';
 import { WorkspaceTransfers } from './transfer/transfers.ts';
-import { diskEnough, readEnvironment, runtimeLogin, type Environment } from './environment.ts';
+import { diskEnough, readEnvironment, runtimeLogin, type Environment, type HandoverNeed } from './environment.ts';
 import { runtimeOfModel } from './agents/models.ts';
 
 export interface ThreadView extends ThreadContext { runner: Runtime['state']; busy: boolean }
@@ -99,8 +99,8 @@ const titleOf = (prompt: string) => firstLine(prompt).slice(0, 80);
 export interface NewWorkspaceIds { id?: string; windowId?: string; messageId?: string }
 
 const PUSH_ATTEMPTS = 3;
-/** 睡眠前被打断、换到另一台工作机后补的说明。 */
-const CONTINUE_AFTER_MOVE = '这台工作机睡眠前，这个工作区换到了这里，刚才的回合被打断了。接着刚才的工作继续。';
+/** 有预告的离开时被打断、换到另一台工作机后补的说明。 */
+const CONTINUE_AFTER_MOVE = '原来那台工作机将要睡眠或关机，这个工作区换到了这里，刚才的回合被打断了。接着刚才的工作继续。';
 
 function conflictPrompt(branch: string, files: string[]): string {
   return [`Kite 正在把工作区的改动合回主线。主线（本机或远程）有了新提交，把它合进 ${branch} 时这些文件冲突了：`,
@@ -169,7 +169,7 @@ export class Kite {
   /** 含锁外网络操作的项目任务，关闭时仍需等待它们完成登记。 */
   private projectOperations = new Set<Promise<unknown>>();
   private projectSync?: Timer;
-  /** 睡眠前交出、还没确认交出去的工作区；醒来时还在本机的撤回交接。 */
+  /** 有预告的离开时交出、还没确认交出去的工作区；醒来或登出被取消时还在本机的撤回交接。 */
   private leavingIds = new Set<string>();
 
   constructor(readonly store: Store, readonly home: string, readonly bus: Bus, private options: RuntimeOptions = {}) {
@@ -452,7 +452,7 @@ export class Kite {
   }
 
   /**
-   * 还原流转来的工作区（见 WorkspaceTransfers.restore）。continue 是源机睡眠前打断的线程及收回的排队输入：
+   * 还原流转来的工作区（见 WorkspaceTransfers.restore）。continue 是源机有预告地离开时打断的线程及收回的排队输入：
    * 接管后先补一条说明让它接着做被打断的回合，再把排队的输入按原来的正文、来源与经由重发。
    */
   async restoreWorkspace(projectId: string | undefined, workspaceId: string, options: { from?: string; force?: boolean;
@@ -473,7 +473,31 @@ export class Kite {
   }
 
   /**
-   * 有预告的离开（系统将要睡眠）：把属于自动换机范围的工作区交给合适的目标——Line 的总是换；项目打开了自动换机的，只换正在工作的。
+   * 把本机持有的工作区流转到 target（App 与 Line 的手动流转、有预告的离开都走这里）：进入可交接状态，目标补齐副本、装好后接过执行权，
+   * 本机随即核对、冻结。没成就撤回交接，留在本机；目标其实已接管时撤回会冻结本地记录，照成功算。continue 见 restoreWorkspace。
+   */
+  async transferWorkspace(id: string, target: string, options: { operationId?: string; timeoutMs?: number;
+    continue?: Array<{ threadId: string; inputs: Input[] }> } = {}): Promise<{ workspaceId: string; machine: string; epoch: number }> {
+    if (target === this.store.machine.id) throw new KiteError('工作区已经在这台工作机上', 409);
+    const { project } = this.workspace(id);
+    const { epoch } = await this.transfers.handover(id);
+    try {
+      await this.peers.call(target, 'POST', '/workspaces/restore', {
+        body: { project: project.id, workspaceId: id, operationId: options.operationId ?? randomUUID(), from: this.store.machine.id,
+          ...(options.continue?.length ? { continue: options.continue } : {}) },
+        timeoutMs: options.timeoutMs ?? 30 * 60_000 });
+    } catch (error) {
+      try { if (this.store.workspace(id)?.status === 'handing_off') await this.transfers.cancel(id); }
+      catch { /* 撤回不了的留在可交接状态，可以重试或再撤回。 */ }
+      if (this.store.workspace(id)?.status !== 'transferred') throw error;
+    }
+    // 有远程的项目目标在 lease 上接管，本机下次核对才冻结；这里立即核对，失败不影响已完成的流转。
+    await this.transfers.check(id).catch(() => {});
+    return { workspaceId: id, machine: target, epoch: epoch + 1 };
+  }
+
+  /**
+   * 有预告的离开（系统将要睡眠、登出、重启或关机）：把属于自动换机范围的工作区交给合适的目标——Line 的总是换；项目打开了自动换机的，只换正在工作的。
    * 正在工作的线程先打断、收回排队的输入，到了目标机接着做被打断的回合。在时限里能交多少交多少，交不出去的撤回，留在本机。
    * 见 docs/分布式架构.md「执行权」。
    */
@@ -500,36 +524,35 @@ export class Kite {
     }
     this.leavingIds.add(w.id);
     try {
-      await this.transfers.handover(w.id);
-      await this.peers.call(target, 'POST', '/workspaces/restore', {
-        body: { project: projectId, workspaceId: w.id, operationId: randomUUID(), from: this.store.machine.id, continue: resumes },
-        timeoutMs: Math.max(1_000, deadline - Date.now()) });
-      this.leavingIds.delete(w.id);
+      await this.transferWorkspace(w.id, target, { continue: resumes, timeoutMs: Math.max(1_000, deadline - Date.now()) });
     } catch (error) {
       console.warn(`[换机] 工作区 ${w.name} 没交出去，留在本机：${(error as Error).message}`);
-      try {
-        if (this.store.workspace(w.id)?.status === 'handing_off') await this.transfers.cancel(w.id);
-        this.leavingIds.delete(w.id);
-        for (const item of resumes) await this.continueThread(item);
-      } catch { /* 醒来时再核对。 */ }
+      if (this.store.workspace(w.id)?.status === 'open') for (const item of resumes) await this.continueThread(item);
     }
+    // 还停在可交接状态的留给醒来时再核对。
+    if (this.store.workspace(w.id)?.status !== 'handing_off') this.leavingIds.delete(w.id);
   }
-  /** 合适的目标：在线、工作区所用的模型厂商已登录、磁盘够用；已有这个项目检出的优先。 */
-  /** 各台一起问，连不上或读不到的跳过；按已有检出优先的顺序取第一台合适的。 */
+  /**
+   * 合适的目标：在线、工作区所用的模型厂商已登录、满足项目声明的环境、磁盘够用。各台一起问，连不上或读不到的跳过；
+   * 几台都合适时优先不带电池的，再优先已有这个项目检出的。
+   */
   private async handoverTarget(projectId: string, runtimes: Set<string>, deadline: number): Promise<string | undefined> {
+    const needs: HandoverNeed[] = this.registry.get(projectId)?.handoverNeeds ?? [];
     const holders = this.directory.holders(projectId);
-    const machines = this.directory.online().sort((a, b) => Number(holders.has(b.id)) - Number(holders.has(a.id)));
     const timeoutMs = Math.min(5_000, deadline - Date.now() - 2_000);
     if (timeoutMs <= 0) return undefined;
-    const fits = await Promise.all(machines.map(async (machine) => {
+    const query = `/environment?project=${encodeURIComponent(projectId)}${needs.length ? `&needs=${needs.join(',')}` : ''}`;
+    const fits = await Promise.all(this.directory.online().map(async (machine) => {
       try {
-        const environment = await this.peers.call<Environment>(machine.id, 'GET', `/environment?project=${encodeURIComponent(projectId)}`, { timeoutMs });
-        return [...runtimes].every((runtime) => runtimeLogin(environment, runtime).status === 'ready') && diskEnough(environment);
-      } catch { return false; }
+        const environment = await this.peers.call<Environment>(machine.id, 'GET', query, { timeoutMs });
+        const fit = [...runtimes].every((runtime) => runtimeLogin(environment, runtime).status === 'ready') && diskEnough(environment)
+          && needs.every((need) => environment.needs?.[need] === true);
+        return fit ? [{ id: machine.id, battery: environment.battery === true, holder: holders.has(machine.id) }] : [];
+      } catch { return []; }
     }));
-    return machines.find((_, index) => fits[index])?.id;
+    return fits.flat().sort((a, b) => Number(a.battery) - Number(b.battery) || Number(b.holder) - Number(a.holder))[0]?.id;
   }
-  /** 醒来：睡眠前没交出去、还停在可交接状态的，核对后撤回，在本机接着做。 */
+  /** 醒来或登出被取消：离开前没交出去、还停在可交接状态的，核对后撤回，在本机接着做。 */
   async returned(): Promise<void> {
     for (const id of [...this.leavingIds]) {
       this.leavingIds.delete(id);
@@ -723,11 +746,11 @@ export class Kite {
     return this.workspace(id);
   }
 
-  /** 在这台工作机为项目建工作区前的环境；项目在本机没有检出时，按账号登记表里的远程算 clone 位置。 */
-  async environment(projectId: string): Promise<Environment> {
+  /** 在这台工作机为项目建工作区前的环境；项目在本机没有检出时，按账号登记表里的远程算 clone 位置。needs 是要查的换机环境需求。 */
+  async environment(projectId: string, needs: HandoverNeed[] = []): Promise<Environment> {
     const checkout = this.store.checkouts(projectId)[0];
     const project = checkout ? undefined : this.registry.require(projectId);
-    return readEnvironment(this.home, this.store.machine, checkout, project && { remote: project.remote, name: project.name });
+    return readEnvironment(this.home, this.store.machine, checkout, project && { remote: project.remote, name: project.name }, needs);
   }
 
   /** 按项目建工作区：先检查环境，不满足就不建；本机没有检出时自动 clone 到默认位置并登记，检出保留。 */

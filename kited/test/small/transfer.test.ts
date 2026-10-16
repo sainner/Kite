@@ -184,6 +184,44 @@ test('有远程的项目：独立工作区交给 B 后未提交的改增删、�
 }, 5_000);
 
 /*
+ * 几个部分的配合：手动流转（POST /workspaces/:id/transfer）在源机上一步做完交接、目标还原、源机核对，跨两台 kited、
+ * 经 Git 平台上 lease 的比较后更新。目标还原被拒（B 没登录线程所用的 ChatGPT）时源机撤回交接：工作区回到 open、lease 改回 A 的 active；
+ * B 登录后的第二次流转能成功，说明撤回留下的状态让下一次交接、目标接管都走得通（lease 不归 A 时交接会被拒）。
+ * 成功返回时 A 已核对并冻结，直接读本机记录，不经 lease/check。
+ */
+test('手动流转：目标没登录模型厂商时还原被拒，A 撤回交接、工作区回到 open、lease 回到 A；B 登录后再流转成功，返回时 A 已冻结、B 以 epoch 2 持有', async () => {
+  const models = { a: new ManualModel(), b: new ManualModel() };
+  const a = machine(models.a);
+  const b = startKited(() => models.b, false, { catalogDelayMs: 0 });
+  kiteds.push(b);
+  await connect(a, b);
+  const machineA = a.daemon.kite.store.machine.id;
+  const machineB = b.daemon.kite.store.machine.id;
+  remotes = startFakeGit();
+  const remote = remotes.create(projectName());
+  const { registered } = await project(a, { 'a.txt': '一\n' }, [b], remote);
+
+  const thread = await createWorkspace(a, registered.checkout.id, '第一回合', 'harness');
+  const workspaceId = thread.workspace.id;
+  const first = await models.a.call(1);
+  first.response.complete();
+  await a.waitEvent((e) => e.type === 'idle' && e.threadId === thread.id);
+  const transfer = () => a.call('POST', `/workspaces/${workspaceId}/transfer`, { to: machineB, operationId: crypto.randomUUID() });
+
+  const refused = await transfer();
+  expect(refused.status).toBeGreaterThanOrEqual(400);
+  expect(await statusOf(a, workspaceId)).toBe('open');
+  expect(leaseOf(remote.bare, workspaceId)).toEqual({ machine: machineA, epoch: 1, state: 'active' });
+
+  chatgptLogin(b.home);
+  const moved = await transfer();
+  expect(moved.status).toBe(200);
+  expect(moved.body).toMatchObject({ workspaceId, machine: machineB, epoch: 2 });
+  expect(a.daemon.kite.store.workspace(workspaceId)?.status).toBe('transferred');
+  expect(b.daemon.kite.store.workspace(workspaceId)).toMatchObject({ status: 'open', epoch: 2 });
+}, 5_000);
+
+/*
  * 几个部分的配合与 git：没有远程的根工作区交接，目标检出从源机的检出快进到源机现场的提交，沿用流转来的工作区 ID；
  * 目标装好后经 /handover/complete 通知源机，源机冻结记录、检出另得一个新的根工作区（目录不动）。
  * 撤回交接：交接停下了线程，撤回后工作区重新开放，线程能再起回合。

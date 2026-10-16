@@ -427,6 +427,10 @@ private struct LineEntry: View {
         .buttonStyle(.plain)
         .padding(.leading, -6)
         .help(model.lineArea == nil ? "启用个人 agent Line" : "Line 的工作区：收件箱与 Line 的对话")
+        // Line 的工作区不列在项目一栏，流转与强制接管从这里的菜单进。
+        .contextMenu {
+            if let line = model.lineArea { WorkspaceTransferMenu(workspace: line) }
+        }
         .confirmationDialog("在哪台工作机上启用 Line？", isPresented: $choosing, titleVisibility: .visible) {
             ForEach(model.availableWorkers) { connection in
                 Button("在「\(connection.machine.name)」上启用") { enable(on: connection) }

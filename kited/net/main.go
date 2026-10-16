@@ -1,7 +1,8 @@
 // kite-net 把 kited 接入组网：用 tsnet 以独立节点上线，不依赖系统 VPN。默认连 Tailscale 官方协调服务，用户在浏览器里登录。
 // 只转发同账号设备的 HTTP 请求，来源身份由 tsnet 的 WhoIs 提供，来源的组网 IP 放在 X-Kite-Peer 里交给 kited。
 // 节点状态以 JSON 行写到标准输出，供 kited 显示登录网址、组网地址和对端连接方式。
-// 系统将要睡眠时状态里带一个睡眠事件，kited 交出要换机的工作区后在标准输入回「power-ready <序号>」，最多等 25 秒再放行睡眠。
+// 系统将要睡眠时状态里带一个睡眠事件，kited 交出要换机的工作区后在标准输入回「power-ready <序号>」，最多等 25 秒再放行睡眠；
+// 将要登出、重启、关机时带一个 shutdown 事件，系统不等这里，kited 收到 SIGTERM 后自己等交接收尾。
 // 退出登录时 kited 在标准输入写「logout」，节点在 Tailscale 上注销自己后退出，管理页里不留下这台设备。
 // 配了受管网络通道（KITE_NET_CHANNEL）时，组网的 UDP 只经到路由器的认证通道出网，见 channel.go；
 // `kite-net key` 打印通道公钥供网络管理员登记。
@@ -50,7 +51,7 @@ type status struct {
 	Endpoints []string `json:"endpoints,omitempty"`
 	// 受管网络通道的状态；没配通道时没有。
 	Channel *channelStatus `json:"channel,omitempty"`
-	// 最近一次系统电源事件：sleep 将要睡眠，wake 醒来；序号递增，kited 按序号认新事件。
+	// 最近一次系统电源事件：sleep 将要睡眠，wake 醒来，shutdown 将要登出、重启或关机，stay 登出被取消；序号递增，kited 按序号认新事件。
 	Power *power `json:"power,omitempty"`
 }
 
@@ -406,15 +407,17 @@ func readCommands(lc *local.Client, ready chan<- int64) {
 // watchPower 把系统电源事件写进状态；睡眠要等 kited 回 power-ready 或 25 秒后放行。
 func watchPower(report *reporter, ready <-chan int64) {
 	var next int64
-	watchSystemPower(func(sleep bool, allow func()) {
+	last := ""
+	watchSystemPower(func(event string, allow func()) {
+		// 登出、重启、关机的预告可能接连来几条，到取消或醒来之前只报第一条。
+		if event == "shutdown" && last == "shutdown" {
+			return
+		}
+		last = event
 		next++
 		id := next
-		event := "wake"
-		if sleep {
-			event = "sleep"
-		}
 		report.update(func(s *status) { s.Power = &power{Event: event, ID: id} })
-		if !sleep {
+		if event != "sleep" {
 			return
 		}
 		timeout := time.After(25 * time.Second)

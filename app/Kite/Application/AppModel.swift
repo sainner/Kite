@@ -118,9 +118,10 @@ final class AppModel {
     func closeSettings() {
         sidebarSection = sectionBeforeSettings
     }
-    /// 侧栏菜单发起的现场推送与归档确认，由 WorkspaceGitPresentation 呈现。
+    /// 侧栏菜单发起的现场推送、归档与强制接管确认，由 WorkspaceGitPresentation 呈现。
     var scenePush: WorkArea?
     var archiveRequest: WorkArea?
+    var takeoverRequest: TakeoverRequest?
     /// 本机新建、工作机还没列出来的工作区，见 create。
     @ObservationIgnored private var creatingWorkspaces: [String: WorkArea] = [:]
 

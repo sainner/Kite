@@ -203,14 +203,9 @@ export function lineTools(options: LineToolOptions): Tool[] {
         return { workspaceId: args.workspaceId, machine: args.to, status: restored.workspace.status };
       }
       await mustAsk('line_workspace', `把工作区 ${args.workspaceId} 从工作机 ${args.from} 流转到 ${args.to}`, context);
-      const model = await peers.call(args.from, 'GET', `/workspaces/${args.workspaceId}`, { signal: context.signal });
-      const handover = await peers.call(args.from, 'POST', `/workspaces/${args.workspaceId}/handover`, { via, signal: context.signal, timeoutMs: 10 * 60_000 });
-      const restored = await peers.call(args.to, 'POST', '/workspaces/restore', {
-        body: { project: model.project.id, workspaceId: args.workspaceId, operationId: operationId(context), from: args.from },
-        via, signal: context.signal, timeoutMs: 30 * 60_000 });
-      // 源机下次核对执行权时也会冻结；这里立即核对，失败不影响已完成的流转。
-      await peers.call(args.from, 'POST', `/workspaces/${args.workspaceId}/lease/check`, { via, signal: context.signal }).catch(() => {});
-      return { workspaceId: args.workspaceId, epoch: handover.epoch + 1, machine: args.to, status: restored.workspace.status };
+      // 源机交接、通知目标还原，没成就撤回，见 Kite.transferWorkspace。
+      return await peers.call(args.from, 'POST', `/workspaces/${args.workspaceId}/transfer`, {
+        body: { to: args.to, operationId: operationId(context) }, via, signal: context.signal, timeoutMs: 30 * 60_000 });
     }),
   ];
 }

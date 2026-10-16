@@ -1,5 +1,18 @@
 import SwiftUI
 
+/// 项目可以为自动换机声明的环境需求，与 kited 的 HANDOVER_NEEDS 对应。
+enum HandoverNeed: String, CaseIterable, Identifiable {
+    case xcode, iosDevice
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .xcode: "需要 Xcode"
+        case .iosDevice: "需要连着的 iPhone 或 iPad"
+        }
+    }
+}
+
 /// 项目级配置作为内容区单页显示，复用账号的远程配置。
 struct ProjectSettingsPage: View {
     let project: RemoteProject
@@ -32,12 +45,19 @@ struct ProjectSettingsPage: View {
                     }
                 }
                 Section {
-                    Toggle("工作机睡眠前自动换机", isOn: Binding(get: { accountProject?.autoHandover == true }, set: { setAutoHandover($0) }))
+                    Toggle("工作机睡眠或关机前自动换机", isOn: Binding(get: { accountProject?.autoHandover == true }, set: { setHandover(enabled: $0) }))
                         .disabled(accountProject == nil || savingHandover)
+                    if accountProject?.autoHandover == true {
+                        ForEach(HandoverNeed.allCases) { need in
+                            Toggle(need.title, isOn: Binding(get: { accountProject?.handoverNeeds?.contains(need.rawValue) == true },
+                                                             set: { setNeed(need, $0) }))
+                                .disabled(savingHandover)
+                        }
+                    }
                 } header: {
                     Text("换机")
                 } footer: {
-                    Text("打开后，工作机将要睡眠时，把这个项目里正在工作的工作区换到另一台在线、已登录模型的工作机，被打断的回合在那边接着做。空闲的工作区不动。")
+                    Text("打开后，工作机将要睡眠、登出、重启或关机时，把这个项目里正在工作的工作区换到另一台在线、已登录模型、满足所需环境的工作机，被打断的回合在那边接着做；有几台时优先不带电池的。空闲的工作区不动。")
                 }
                 ProjectConstraintsSection(projectID: project.id)
                 Section("检出") {
@@ -72,12 +92,17 @@ struct ProjectSettingsPage: View {
         model.workspaces.first { $0.remote?.checkout.id == checkout.id }?.remote?.machine.name ?? "工作机"
     }
 
-    private func setAutoHandover(_ enabled: Bool) {
+    private func setNeed(_ need: HandoverNeed, _ on: Bool) {
+        let current = accountProject?.handoverNeeds ?? []
+        setHandover(needs: on ? current + [need.rawValue] : current.filter { $0 != need.rawValue })
+    }
+
+    private func setHandover(enabled: Bool? = nil, needs: [String]? = nil) {
         savingHandover = true
         error = nil
         Task {
             defer { savingHandover = false }
-            do { accountProject = try await model.setProjectAutoHandover(project.id, enabled: enabled) }
+            do { accountProject = try await model.setProjectHandover(project.id, enabled: enabled, needs: needs) }
             catch { self.error = error.localizedDescription }
         }
     }

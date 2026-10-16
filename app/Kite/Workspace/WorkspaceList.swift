@@ -28,7 +28,13 @@ struct WorkspaceRow<Interaction: View>: View {
                 .frame(maxWidth: .infinity, minHeight: metrics.workspaceRowHeight)
                 .contentShape(Rectangle())
                 .overlay { interaction() }
-                .contextMenu { WorkspaceGitActions(workspace: workspace, showsWorkspaceMenu: !InputMode.current.isTouch) }
+                .contextMenu {
+                    WorkspaceGitActions(workspace: workspace, showsWorkspaceMenu: !InputMode.current.isTouch)
+                    if !InputMode.current.isTouch {
+                        Divider()
+                        WorkspaceTransferMenu(workspace: workspace)
+                    }
+                }
                 HStack(spacing: 0) {
                     if InputMode.current.isTouch {
                         Menu {
@@ -44,6 +50,8 @@ struct WorkspaceRow<Interaction: View>: View {
                             }
                             Divider()
                             WorkspaceGitActions(workspace: workspace)
+                            Divider()
+                            WorkspaceTransferMenu(workspace: workspace)
                         } label: {
                             TablerIcon(.tablerDots)
                         }
@@ -58,6 +66,8 @@ struct WorkspaceRow<Interaction: View>: View {
                         .accessibilityLabel("归档工作区")
                         Menu {
                             WorkspaceGitActions(workspace: workspace, showsWorkspaceMenu: true)
+                            Divider()
+                            WorkspaceTransferMenu(workspace: workspace)
                         } label: {
                             TablerIcon(.tablerDots, size: 14)
                         }

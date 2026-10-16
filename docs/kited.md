@@ -181,7 +181,7 @@ bun src/cli.ts net up              # 开启已登录设备的组网
 
 `kite net` 查看状态及各对端是直连还是经中继；`kite net up`、`kite net down` 开启或暂停组网，`kite net logout` 退出 Tailscale 登录。在 Tailscale 管理后台移除设备后，已有远程请求随状态变化关闭。网络错误和服务重启可以重连，401 表示来源未通过组网认证，409 表示目标工作机身份不符。
 
-**睡眠前换机。** macOS 上 kite-net 接收系统的睡眠预告，kited 在系统给的时限里把属于自动换机范围的工作区交给别的工作机（Line 的总是换，项目打开了自动换机的只换正在工作的），再放行睡眠，见 [工作区流转](Line与工作区流转.md#工作区流转)。
+**有预告的离开。** macOS 上 kite-net 接收系统的睡眠预告与 loginwindow 的登出、重启、关机预告，kited 在时限里把属于自动换机范围的工作区交给别的工作机（Line 的总是换，项目打开了自动换机的只换正在工作的）：睡眠等交接收尾才放行；登出、重启、关机拦不住，kited 收到 SIGTERM 后先等交接收尾再停。服务停止不带预告，不算离开。见 [工作区流转](Line与工作区流转.md#工作区流转)。
 
 本机接口边界见 [接口](#接口)，SSE 重连见 [会话显示协议](会话显示协议.md#历史与连接)。原生 iPhone 的新账号流程、前后台重连和蜂窝网络仍需真机验收。
 
@@ -203,7 +203,7 @@ bun src/cli.ts net up              # 开启已登录设备的组网
 
 `.kite/setup` 与模型的 shell 共用操作系统沙箱：工作树可写，检出目录与必要工具链可读，宿主凭据、数据库与会话记录受保护，Git 元数据只读。环境只带开发工具的基础设置（与 shell 相同）和 `KITE_MAIN_DIR`，不继承 kited 进程的完整环境。网络在项目级网络授权落地前放行，回环与本机地址仍不可达。完整输出只写工作区的 `setup.log`，事件只带退出码和输出末尾；setup 尚不能领取凭据。
 
-按项目创建前的环境检查读 `GET /environment?project=`，只读本机：平台与系统版本、ChatGPT 与 Claude 订阅在这台工作机的登录（凭据在且未过期为 `ready`，不代表额度可用）、放工作树的卷与检出（或将要 clone 到的位置）所在卷的剩余空间，以及已有检出。按项目创建时，所选角色默认模型的厂商未登录或任一卷剩余不足 1 GB 返回 409。项目声明的凭据引用待 setup 能声明后再检查。
+按项目创建前的环境检查读 `GET /environment?project=`，只读本机：平台与系统版本、ChatGPT 与 Claude 订阅在这台工作机的登录（凭据在且未过期为 `ready`，不代表额度可用）、放工作树的卷与检出（或将要 clone 到的位置）所在卷的剩余空间，以及已有检出；还有这台工作机带不带电池，和 `needs` 里问到的换机环境需求各自是否满足（`xcode` 看选中的开发者目录是不是完整的 Xcode，`iosDevice` 看 devicectl 列出的已配对 iPhone、iPad 此刻有没有连接方式）。按项目创建时，所选角色默认模型的厂商未登录或任一卷剩余不足 1 GB 返回 409。项目声明的凭据引用待 setup 能声明后再检查。
 
 采纳先拉取远程主线，把本地主线和远程主线依次合进工作区分支，主目录快进后推送；推送被拒时重新拉取、合并再推，最多三次。拉取或推送失败不撤销本地主线，结果中的 `push` 报告失败原因，下次采纳或现场推送时一并推上去。采纳冲突交给独立工作区中的一个打开线程处理，主目录不进入冲突状态，处理期间同一工作区的其他线程不能开始工作。agent 仅编辑文件，Git 合并由宿主完成；解决回合正常完成后自动重试一次，仍有冲突则报告，等待用户手动重试。
 
@@ -286,10 +286,10 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/token-prices` | 读取用量折算金额用的价格表，只列 Kite 模型目录里的模型（计价本身覆盖更多型号）：`checked`（核对日期）与 `models`，每项是 `model`（目录里的显示名）、`provider`，以及每百万 token 的美元单价 `input`、`cacheRead`、`output`，价格页列出时带 `cacheWrite`、`cacheWrite1h`（Claude 的 1 小时缓存写入）与长提示档 `long`（`above`、`rates`） |
 | POST | `/network/logout` | 仅本机：退出 Tailscale 登录。节点在线时先在 Tailscale 上注销，不在线时只删本机状态（设备要到 Tailscale 管理页删）；组网开着时重起节点，状态里给出新的登录地址 |
 | GET | `/machines` | 工作机目录：本机在前，每项 `{id, name, online, address?, updatedAt?, snapshot?}`，`snapshot` 是那台工作机最近一次的目录摘要，见 [账号级数据](#账号级数据) |
-| GET | `/project-registry` | 项目登记表 `[{id, name, remote, url, createdAt, icon, color, autoHandover?}]`；`remote` 为归一化地址，`url` 为 HTTPS 访问地址，没有远程的项目两者为 null |
+| GET | `/project-registry` | 项目登记表 `[{id, name, remote, url, createdAt, icon, color, autoHandover?, handoverNeeds?}]`；`remote` 为归一化地址，`url` 为 HTTPS 访问地址，没有远程的项目两者为 null |
 | DELETE | `/project-registry/:id` | 删除项目，语义见 [删除项目](项目与远程仓库.md#删除项目)：登记、约束与项目专用的密钥一起删，这台先移除本机的检出再返回，其他工作机同步到删除后各自移除。未登记的项目 404，Line 所在的项目 409 |
 | PUT | `/project-registry/:id/remote` | 给没有远程的项目设远程 `{remote}`：在这台有检出的工作机上把全部分支和标签推到远程，加上 origin，写进登记表；其他工作机的检出随项目同步加上 origin。推送被拒或这台没有检出 409 |
-| PUT | `/project-registry/:id/settings` | `{autoHandover}`：工作机睡眠前，把这个项目里正在工作的工作区换到别的工作机 |
+| PUT | `/project-registry/:id/settings` | `{autoHandover?, handoverNeeds?}`，至少一项：`autoHandover` 是工作机睡眠、登出、重启或关机前，把这个项目里正在工作的工作区换到别的工作机；`handoverNeeds` 是换机目标须满足的环境，取值 `xcode`（完整的 Xcode）、`iosDevice`（连着的 iPhone 或 iPad） |
 | PUT | `/project-registry/:id/appearance` | `{icon?, color?}` 至少一项，未提供项不变；`icon` 为内置图标名（1–100 个 ASCII 字母、数字或句点，默认 `folder`），`color` 为 `primary`（默认）、`accent`、`green`、`purple`、`orange` 或 `pink`；返回完整项目，未登记的项目 404 |
 | GET/PUT | `/project-registry/:id/constraints` | 项目约束 `{tools: {mode, tools}, revision}`，没设置过时为不限制的黑名单；PUT `{expectedRevision, tools}`，`mode` 为 `allow` 或 `deny`，最多 64 个工具名，版本不符 409 |
 | GET/POST | `/credentials` | 列出凭据的公开信息（`?type=&projectId=`，省略项目时列账号共享）`[{id, type, name, projectId, meta, createdAt, updatedAt}]`；POST `{type, name, projectId?, meta, secret}` 新建，返回 201，同类型、范围与名称已存在 409，`git`、`api`、`speech` 不接受项目。规则见 [凭据](#凭据) |
@@ -307,11 +307,12 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/projects` | 列出本机已登记的项目身份 |
 | GET/POST | `/checkouts` | 列出本机检出（`?project=`）；登记本机文件夹 `{path}` 或 clone 远程 `{remote, path?}`，返回根工作区聚合 |
 | GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, role?, id?, windowId?, messageId?}`，或以 `project` 代替 `checkout`（先检查环境，没有检出时先 clone），`role` 为 `{id, revision}`，准备过程看事件；`id`、`windowId`、`messageId` 是客户端生成的 UUID，分别用作工作区、首个代理窗口和第一条消息的 ID，工作区或窗口 ID 已用过返回 409，省略时由 kited 生成 |
-| GET | `/environment?project=` | 这台工作机为该项目建工作区前的环境，只读，见 [工作区与线程的生命周期](#工作区与线程的生命周期) |
+| GET | `/environment?project=&needs=` | 这台工作机为该项目建工作区前的环境，只读；`needs` 是逗号分隔的换机环境需求，见 [工作区与线程的生命周期](#工作区与线程的生命周期) |
 | POST | `/workspaces/:id/setup` | 准备失败的独立工作区重跑准备；工作树没建成时重建 |
+| POST | `/workspaces/:id/transfer` | 在持有工作区的工作机上调用，把它流转到 `{to, operationId}`：本机交出，目标补齐副本后还原并接管，返回 `{workspaceId, machine, epoch}`，返回时本机记录已冻结；目标没接成时撤回交接、工作区重新开放并返回错误 |
 | POST | `/workspaces/:id/handover` | 交出工作区：停下线程、保存最后的快照，进入可交接状态，返回 `{epoch}`；`/handover/cancel` 撤回，`/lease/check` 立即核对执行权。约定见 [工作区流转](Line与工作区流转.md#工作区流转) |
 | POST | `/workspaces/:id/handover/complete` | 仅工作机：没有远程的项目，目标装好后通知源机交出 `{epoch, machine}`（machine 是目标自己），源机冻结本地记录并记下目标；源机已撤回、epoch 不符或这次交接已交给别的工作机时 409，已交给同一台的再通知照样成功 |
-| POST | `/workspaces/restore` | 在本机还原并接管流转来的工作区 `{project?, workspaceId, operationId, from?, force?, continue?}`（没给 `project` 时从本机副本里取）：`from` 是交出它的工作机，先把副本补到它的末尾；`force` 是用户确认源机已丢失后用本机副本强制接管；`continue` 是源机睡眠前打断的线程与收回的排队输入，接管后接着做 |
+| POST | `/workspaces/restore` | 在本机还原并接管流转来的工作区 `{project?, workspaceId, operationId, from?, force?, continue?}`（没给 `project` 时从本机副本里取）：`from` 是交出它的工作机，先把副本补到它的末尾；`force` 是用户确认源机已丢失后用本机副本强制接管；`continue` 是源机有预告地离开时打断的线程与收回的排队输入，接管后接着做 |
 | GET | `/summary` | 这台工作机的状态汇总：未归档工作区、线程执行状态、等你回应的对象、最近一次回合结束的时间（`settledAt`）与是否 Line 发起的工作（`byLine`） |
 | POST | `/line` | 在这台工作机启用个人 agent Line，同时建它的收件箱（Line 的 monitor 实例）；收件箱的读取、代处理与托管走实例操作，见 [实例操作](实例操作.md#monitor)。约定见 [Line](Line与工作区流转.md#line) |
 | GET / PUT | `/attention` | 关注设备：`PUT {device, focused}` 声明这台设备是否在关注 Kite，须同时连着带 `device` 的事件流才生效；`GET` 返回 `{focusedDevices, awaySince?}` |

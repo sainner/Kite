@@ -6,6 +6,7 @@
  */
 import { z } from 'zod';
 import { KiteError } from '../errors.ts';
+import { HANDOVER_NEEDS, type HandoverNeed } from '../environment.ts';
 import { httpsRemote, normalizeRemote, remoteName } from '../remote-url.ts';
 import { revisionOf, type AccountData } from './store.ts';
 
@@ -18,8 +19,10 @@ export interface RegisteredProject {
   createdAt: number;
   icon: string;
   color: string;
-  /** 工作机睡眠前，把这个项目里正在工作的工作区换到别的工作机。 */
+  /** 工作机睡眠、登出、重启或关机前，把这个项目里正在工作的工作区换到别的工作机。 */
   autoHandover?: boolean;
+  /** 自动换机的目标须满足的环境。 */
+  handoverNeeds?: HandoverNeed[];
 }
 
 /** 项目约束，首期只有工具规则；没设置过时是不限制的黑名单。 */
@@ -34,7 +37,10 @@ const appearance = z.object({
   icon: z.string().min(1).max(100).regex(/^[a-zA-Z0-9.]+$/).optional(),
   color: z.enum(['primary', 'accent', 'green', 'purple', 'orange', 'pink']).optional(),
 }).strict().refine((value) => value.icon !== undefined || value.color !== undefined);
-const settings = z.object({ autoHandover: z.boolean() }).strict();
+const settings = z.object({
+  autoHandover: z.boolean().optional(),
+  handoverNeeds: z.array(z.enum(HANDOVER_NEEDS)).transform((needs) => [...new Set(needs)]).optional(),
+}).strict().refine((value) => value.autoHandover !== undefined || value.handoverNeeds !== undefined);
 const constraintsWrite = z.object({
   tools: z.object({ mode: z.enum(['allow', 'deny']), tools: z.array(z.string().trim().min(1).max(64)).max(64) }).strict(),
   expectedRevision: z.string().min(1),
@@ -138,7 +144,9 @@ export class ProjectRegistry {
 
   setAppearance(id: string, raw: unknown): RegisteredProject { return this.change(id, appearance, raw, '项目外观要写 icon 或 color'); }
 
-  setSettings(id: string, raw: unknown): RegisteredProject { return this.change(id, settings, raw, '项目设置要写 autoHandover'); }
+  setSettings(id: string, raw: unknown): RegisteredProject {
+    return this.change(id, settings, raw, `项目设置要写 autoHandover 或 handoverNeeds（${HANDOVER_NEEDS.join('、')}）`);
+  }
 
   private change<T extends object>(id: string, schema: z.ZodType<T>, raw: unknown, message: string): RegisteredProject {
     const project = this.require(id);

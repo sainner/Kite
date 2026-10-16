@@ -16,6 +16,7 @@ import { credentialType } from './account-data/credentials.ts';
 import { tokenPrices } from './token-prices.ts';
 import type { VoiceSocket } from './voice/sessions.ts';
 import { WaitingConflict } from './waiting.ts';
+import { HANDOVER_NEEDS } from './environment.ts';
 
 async function body(req: Request): Promise<Record<string, unknown>> {
   try { return (await req.json()) as Record<string, unknown>; } catch { throw new KiteError('请求体不是 JSON'); }
@@ -323,8 +324,19 @@ export function serve(kite: Kite, listen: Listen) {
           return { focusedDevices: kite.attention.devices() };
         }),
       },
-      '/environment': { GET: bound((req) => kite.environment(str(new URL(req.url).searchParams.get('project') ?? undefined, 'project'))) },
+      '/environment': { GET: bound((req) => {
+        const params = new URL(req.url).searchParams;
+        const needs = z.array(z.enum(HANDOVER_NEEDS)).safeParse(params.get('needs')?.split(',').filter(Boolean) ?? []);
+        if (!needs.success) throw new KiteError(`needs 只能是 ${HANDOVER_NEEDS.join('、')}，用逗号分隔`);
+        return kite.environment(str(params.get('project') ?? undefined, 'project'), needs.data);
+      }) },
       '/workspaces/:id/setup': { POST: bound((req) => kite.retrySetup(req.params.id)) },
+      '/workspaces/:id/transfer': { POST: long(bound(async (req) => {
+        const parsed = z.object({ to: z.string().min(1), operationId: z.string().min(1) }).strict().safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('流转要写 to（目标工作机）与 operationId');
+        // 不另记回执：执行中的回执会被交接当成结果未知的操作挡住自己。重试照样安全，交接可以重入，目标的还原按 operationId 去重。
+        return kite.transferWorkspace(req.params.id, parsed.data.to, { operationId: parsed.data.operationId });
+      })) },
       '/workspaces/:id/handover': { POST: long(bound((req) => kite.transfers.handover(req.params.id))) },
       '/workspaces/:id/handover/cancel': { POST: long(bound((req) => kite.transfers.cancel(req.params.id))) },
       // 没有远程的项目：目标机装好后通知源机交出。
