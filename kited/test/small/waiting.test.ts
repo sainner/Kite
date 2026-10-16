@@ -26,11 +26,11 @@ const resultOf = (request: ModelRequest, callId: string): ToolResult | undefined
 };
 
 const questions: Question[] = [
-  { header: '存储', question: '用哪个存储方案？', multiSelect: false, options: [
+  { question: '用哪个存储方案？', multiSelect: false, options: [
     { label: 'SQLite（推荐）', description: '单文件，随工作区走' },
     { label: 'Postgres', description: '要另起服务' },
   ] },
-  { header: '平台', question: '先支持哪些平台？', multiSelect: true, options: [
+  { question: '先支持哪些平台？', multiSelect: true, options: [
     { label: 'macOS', description: 'Mac App' },
     { label: 'iOS', description: 'iPhone 与 iPad' },
     { label: 'Linux', description: '只跑 kited' },
@@ -119,6 +119,38 @@ test('提问挂起时停止会话：停止能完成、线程回到 idle 且等�
   const nextSince = mark(k);
   next.response.complete();
   await waitIdle(k, threadId, nextSince);
+}, 1000);
+
+/*
+ * 几个部分的配合：带 skipWaiting 的消息先经 agent.send 排进 runner 的待处理输入，再由 Waits.skip 放行挂着的 question 工具；
+ * 工具返回后 runner 发下一次请求时要同时带上跳过的结果和这条消息，不能先发一次只带工具结果的请求。
+ * 工具返回到下一次请求之间 runner 还要做工具后的收尾（afterTools），这段空当足够让晚到的消息也赶上，
+ * 光看请求内容分不出先后；所以同时按 runner 的记录核对：消息的 input.received 在这次调用的 tool.finished 之前。
+ */
+test('提问挂起时用户不回答、直接发带 skipWaiting 的消息：等待撤下，模型下一次请求里这次调用是跳过说明、紧跟着这条人发的消息，中间没有只带工具结果的请求', async () => {
+  const { k, model, threadId, waiting } = await ask();
+  const since = mark(k);
+  const text = '先不选了，存储用 SQLite，平台只做 macOS';
+  const sent = await k.call('POST', `/threads/${threadId}/messages`, { id: 'skip', text, skipWaiting: waiting.id });
+  expect(sent.status).toBe(200);
+  await k.waitEvent((e) => e.type === 'waiting' && e.threadId === threadId && !e.waiting && after(k, since)(e));
+
+  const second = await model.call(2);
+  const records = k.events.flatMap((e) => e.type === 'harness' && e.threadId === threadId && e.event.type === 'record' ? [e.event.record] : []);
+  const received = records.findIndex((record) => record.type === 'input.received' && record.input.id === 'skip');
+  expect(received).toBeGreaterThanOrEqual(0);
+  expect(received).toBeLessThan(records.findIndex((record) => record.type === 'tool.finished' && record.callId === 'ask'));
+  const result = resultOf(second.request, 'ask');
+  expect(result?.status).toBe('success');
+  expect(result?.output).toBe('用户没有回答，跳过了这些问题，直接发了一条新消息，见随后的输入。');
+  const message = second.request.history.findIndex((entry) => entry.type === 'input' && entry.input.id === 'skip');
+  expect(second.request.history[message]).toEqual({ type: 'input', input: { id: 'skip', text, source: 'human' } });
+  expect(message).toBeGreaterThan(second.request.history.findIndex((entry) => entry.type === 'tool_result' && entry.callId === 'ask'));
+  expect((await state(k, threadId)).waiting).toBeUndefined();
+
+  const idle = mark(k);
+  second.response.complete();
+  await waitIdle(k, threadId, idle);
 }, 1000);
 
 /*

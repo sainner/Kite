@@ -170,7 +170,7 @@ function detail(item: InboxItem): string {
   const waiting = item.waiting;
   if (waiting?.kind === 'approval') return `${head}\n  工具 ${waiting.tool}，目标：${waiting.target}；原因：${waiting.reason}`;
   if (waiting?.kind === 'question') return [head, ...waiting.questions.map((q, index) =>
-    `  问题 ${index + 1}（${q.multiSelect ? '可多选' : '单选'}）${q.header}：${q.question}\n    选项：${q.options.map((o) => `「${o.label}」${o.description}`).join('；')}`)].join('\n');
+    `  问题 ${index + 1}（${q.multiSelect ? '可多选' : '单选'}）：${q.question}\n    选项：${q.options.map((o) => `「${o.label}」${o.description}`).join('；')}`)].join('\n');
   return `${head}\n  ${item.text}`;
 }
 

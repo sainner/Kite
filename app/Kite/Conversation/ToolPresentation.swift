@@ -6,6 +6,11 @@ import Foundation
 enum ToolKind: Hashable {
     case read, edit, notebookEdit, write, command, check, webSearch, webFetch, agent, skill, tools
     case cronCreate, cronDelete, cronList, monitor, taskStop, listAgents, sendMessage
+    /// Kite 自己的工具：提问、密钥引用、代理协作、监视和个人 agent（Line）的工具，见 kited 的 agentToolCatalog。
+    case question, credentials, agentStart, agentResume, agentStop, monitorStart, monitorList, monitorStop
+    case lineStatus, lineHandle, lineRelay, lineControl, lineWorkspace
+    /// 插件实例的工具。
+    case plugin
     /// 项目自己配的 MCP 服务里的工具，带服务名。
     case mcp(String)
     case other
@@ -26,7 +31,18 @@ enum ToolKind: Hashable {
         case .monitor: "waveform.path.ecg"
         case .taskStop: "stop.circle"
         case .listAgents, .sendMessage: "paperplane"
-        case .mcp: "puzzlepiece.extension"
+        case .question: "questionmark.bubble"
+        case .credentials: "key"
+        case .agentStart: "person.badge.plus"
+        case .agentResume: "play.circle"
+        case .agentStop, .monitorStop: "stop.circle"
+        case .monitorStart, .monitorList: "waveform.path.ecg"
+        case .lineStatus: "square.grid.2x2"
+        case .lineHandle: "tray"
+        case .lineRelay: "arrowshape.turn.up.right"
+        case .lineControl: "slider.horizontal.3"
+        case .lineWorkspace: "folder.badge.plus"
+        case .plugin, .mcp: "puzzlepiece.extension"
         case .other: "circle.dashed"
         }
     }
@@ -54,6 +70,20 @@ enum ToolKind: Hashable {
         case .taskStop: "停了 \(count) 个后台任务"
         case .listAgents: "查看了能联系的 agent"
         case .sendMessage: "给其他 agent 发了 \(count) 条消息"
+        case .question: "向用户提了 \(count) 次问题"
+        case .credentials: "查看了密钥引用"
+        case .agentStart: "创建了 \(count) 个 agent"
+        case .agentResume: "让 agent 继续了 \(count) 次"
+        case .agentStop: "停了 \(count) 次 agent"
+        case .monitorStart: "开了 \(count) 个监视"
+        case .monitorList: "查看了监视"
+        case .monitorStop: "停了 \(count) 个监视"
+        case .lineStatus: "查看了 \(count) 次工作区"
+        case .lineHandle: "代处理了 \(count) 项收件箱事项"
+        case .lineRelay: "转达了 \(count) 次用户的话"
+        case .lineControl: "管理了 \(count) 次线程"
+        case .lineWorkspace: "创建或流转了 \(count) 次工作区"
+        case .plugin: "调了 \(count) 次插件工具"
         case .mcp(let server): "调了 \(count) 次 \(server)"
         case .other: "其他 \(count) 个操作"
         }
@@ -79,9 +109,22 @@ extension ToolUse {
         case "CronList": .cronList
         case "Monitor": .monitor
         case "TaskStop": .taskStop
-        case "ListAgents": .listAgents
-        case "SendMessage": .sendMessage
-        default: mcp.map { .mcp($0.server) } ?? .other
+        case "ListAgents", "agent_list": .listAgents
+        case "SendMessage", "agent_send": .sendMessage
+        case "question": .question
+        case "credentials": .credentials
+        case "agent_start": .agentStart
+        case "agent_resume": .agentResume
+        case "agent_stop": .agentStop
+        case "monitor_start": .monitorStart
+        case "monitor_list": .monitorList
+        case "monitor_stop": .monitorStop
+        case "line_status": .lineStatus
+        case "line_handle": .lineHandle
+        case "line_relay": .lineRelay
+        case "line_control": .lineControl
+        case "line_workspace": .lineWorkspace
+        default: mcp.map { .mcp($0.server) } ?? (pluginTool == nil ? .other : .plugin)
         }
     }
 
@@ -100,6 +143,18 @@ extension ToolUse {
         let parts = name.components(separatedBy: "__")
         guard parts.count >= 3, parts[0] == "mcp" else { return nil }
         return (parts[1], parts[2...].joined(separator: "__"))
+    }
+
+    /// 插件实例的工具：plugin_<绑定摘要>_<工具名>，工具名里的其他字符已换成下划线，最长 24 个字符。
+    var pluginTool: String? {
+        let parts = name.split(separator: "_", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0] == "plugin", !parts[1].isEmpty, !parts[2].isEmpty else { return nil }
+        return String(parts[2])
+    }
+
+    private var questionTexts: [String] {
+        guard case .array(let questions) = input["questions"] else { return [] }
+        return questions.compactMap { $0["question"]?.string }.map(firstLine)
     }
 
     /// 工具名和本次调用摘要分开，名字不会随参数流式生成而变化。
@@ -122,6 +177,20 @@ extension ToolUse {
         case .taskStop: "停止任务"
         case .listAgents: "agent 列表"
         case .sendMessage: "发消息"
+        case .question: "提问"
+        case .credentials: "密钥引用"
+        case .agentStart: "创建 agent"
+        case .agentResume: "继续 agent"
+        case .agentStop: "停止 agent"
+        case .monitorStart: "开始监视"
+        case .monitorList: "监视列表"
+        case .monitorStop: "停止监视"
+        case .lineStatus: "工作区概况"
+        case .lineHandle: "代处理"
+        case .lineRelay: "转达"
+        case .lineControl: "管理线程"
+        case .lineWorkspace: "工作区"
+        case .plugin: pluginTool ?? name
         case .mcp, .other: mcp?.tool ?? name
         }
     }
@@ -145,9 +214,39 @@ extension ToolUse {
             return paths.joined(separator: " · ")
         case .command:
             return input["description"]?.string ?? firstLine(input["command"]?.string)
+        case .question:
+            return questionTexts.joined(separator: " · ")
+        case .agentStart:
+            return input["title"]?.string ?? firstLine(input["prompt"]?.string)
+        case .monitorStart:
+            return input["title"]?.string ?? ""
+        case .lineStatus, .lineRelay:
+            return input["machine"]?.string ?? ""
+        case .lineHandle:
+            return firstLine(input["reason"]?.string)
+        case .lineControl:
+            return [lineControlAction, input["machine"]?.string].compactMap { $0 }.joined(separator: " · ")
+        case .lineWorkspace:
+            switch input["action"]?.string {
+            case "create": return ["新建", input["project"]?.string, input["machine"]?.string].compactMap { $0 }.joined(separator: " · ")
+            case "transfer": return [input["from"]?.string, input["to"]?.string].compactMap { $0 }.joined(separator: " → ")
+            default: return ""
+            }
         default:
             return input["description"]?.string ?? input["query"]?.string ?? input["url"]?.string
-                ?? input["skill"]?.string ?? input["to"]?.string ?? (path.isEmpty ? mcp?.server ?? "" : path)
+                ?? input["skill"]?.string ?? input["to"]?.string ?? input["text"]?.string.map(firstLine)
+                ?? (path.isEmpty ? mcp?.server ?? "" : path)
+        }
+    }
+
+    /// line_control 这次做什么。
+    private var lineControlAction: String? {
+        switch input["action"]?.string {
+        case "send": "发说明"
+        case "resume": "继续"
+        case "stop": "停止"
+        case "archive": input["workspaceId"] != nil ? "归档工作区" : "归档线程"
+        default: nil
         }
     }
 
@@ -201,6 +300,45 @@ extension ToolUse {
         case .taskStop: return "停掉后台任务 \(input["task_id"]?.string ?? input["shell_id"]?.string ?? "")"
         case .listAgents: return "查看能联系的 agent"
         case .sendMessage: return "给 \(input["to"]?.string ?? "agent") 发消息"
+        case .question:
+            let texts = questionTexts
+            return texts.count == 1 ? "问「\(texts[0])」" : "问 \(texts.count) 个问题"
+        case .credentials: return "列出密钥引用"
+        case .agentStart: return input["title"]?.string.map { "创建 agent「\($0)」" } ?? "创建 agent"
+        case .agentResume: return "让 agent 继续"
+        case .agentStop: return "停下 agent"
+        case .monitorStart: return input["title"]?.string.map { "开始监视「\($0)」" } ?? "开始监视"
+        case .monitorList: return "查看监视"
+        case .monitorStop: return "停掉监视"
+        case .lineStatus:
+            if input["threadId"] != nil { return "读线程最后的回复" }
+            return input["machine"]?.string.map { "查看 \($0) 的工作区" } ?? "查看全部工作区"
+        case .lineHandle:
+            switch input["decision"]?.string {
+            case "once": return "代为批准一次"
+            case "deny": return "代为拒绝"
+            case "done": return "清掉收件箱事项"
+            case "leave": return "留给用户处理"
+            default: return input["answers"] != nil ? "代为回答提问" : "代处理收件箱事项"
+            }
+        case .lineRelay: return "转达用户的话"
+        case .lineControl:
+            switch input["action"]?.string {
+            case "send": return "给线程发说明"
+            case "resume": return "让线程继续"
+            case "stop": return "停下线程"
+            case "archive": return input["workspaceId"] != nil ? "归档工作区" : "归档线程"
+            default: return "管理线程"
+            }
+        case .lineWorkspace:
+            switch input["action"]?.string {
+            case "create": return input["machine"]?.string.map { "在 \($0) 上新建工作区" } ?? "新建工作区"
+            case "transfer":
+                let to = input["to"]?.string ?? "另一台工作机"
+                return input["force"]?.bool == true ? "在 \(to) 上强制接管工作区" : "把工作区流转到 \(to)"
+            default: return "创建或流转工作区"
+            }
+        case .plugin: return "插件 · \(pluginTool ?? name)"
         case .mcp: return mcp.map { "\($0.server) · \($0.tool)" } ?? name
         case .other: return name
         }

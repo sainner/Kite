@@ -105,7 +105,7 @@ async function hang(k: Kited, model: ManualModel, threadId: string, number: numb
 
 /** 工作线程在第 number 次请求里提一个单选问题，回合挂在这次调用上。 */
 const ask = (k: Kited, model: ManualModel, threadId: string, number: number, text: string) =>
-  hang(k, model, threadId, number, `ask-${number}`, 'question', { questions: [{ header: '问题', question: text, multiSelect: false, options: [
+  hang(k, model, threadId, number, `ask-${number}`, 'question', { questions: [{ question: text, multiSelect: false, options: [
     { label: '甲', description: '选甲' }, { label: '乙', description: '选乙' },
   ] }] });
 

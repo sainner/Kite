@@ -280,7 +280,7 @@ if (correctedRecord?.block.type !== 'tool_use' || correctedRecord.generation !==
 
 // 宿主的 waiting 事件经投影进入 thread.state，Swift 按 RemoteWaiting 分别解出提问和审批；解除后不残留。
 const asked: Waiting = { id: 'fixture-question', since: 3_000, kind: 'question', questions: [{
-  header: '做法', question: '用哪种做法？', multiSelect: true,
+  question: '用哪种做法？', multiSelect: true,
   options: [{ label: '甲（推荐）', description: '改动小' }, { label: '乙', description: '更彻底' }],
 }] };
 const approval: Waiting = { id: 'fixture-approval', since: 3_001, kind: 'approval',
@@ -360,7 +360,7 @@ struct TranscriptContract {
         }
         let question = asking.questions?.first
         require(asking.isQuestion && asking.id == "fixture-question" && asking.since == 3000
-            && asking.questions?.count == 1 && question?.header == "做法" && question?.multiSelect == true
+            && asking.questions?.count == 1 && question?.question == "用哪种做法？" && question?.multiSelect == true
             && question?.options.map { $0.label } == ["甲（推荐）", "乙"] && question?.options[1].description == "更彻底"
             && asking.tool == nil && asking.mustAsk == nil,
             "提问的问题、选项或多选未解码")

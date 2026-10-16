@@ -1,3 +1,4 @@
+import QuartzCore
 import SwiftUI
 
 /// 会话输入区的状态，建好不换：每个输入区（原生的 MacControlsBar、ControlsBarView，Mac 窄窗口的 SwiftUI 版 ThreadControls）各持一份。
@@ -33,9 +34,66 @@ struct ThreadControlsModel {
     static let actionGap: CGFloat = 4
 
     var placeholder: String {
+        if answering != nil { return "其他" }
         if thread.state?.recovery != nil { return "核查上次执行后，再继续或回复" }
+        if let waiting = skipping { return waiting.isQuestion ? "跳过问题" : "跳过审批" }
         return thread.transcriptRunning ? "插话，agent 做完手上这一步就会看到" : "回复"
     }
+
+    // MARK: - 回应卡片
+
+    /// 提问的卡片展开着：输入框写当前这题的「其他」，左边是上一题、下一题，主按钮发送答案（没答齐时是停止）。
+    var answering: WaitingAnswers? {
+        let answers = thread.answers
+        guard let waiting = thread.waiting, waiting.isQuestion, answers.waiting?.id == waiting.id, !answers.collapsed else { return nil }
+        return answers
+    }
+
+    /// 输入框发的消息会跳过的那一项：收起着的提问，或审批（审批的决定在卡片的按钮上）。见 WorkThread.skip。
+    var skipping: RemoteWaiting? {
+        guard let waiting = thread.waiting, !waiting.isQuestion || thread.answers.collapsed else { return nil }
+        return waiting
+    }
+
+    /// 输入框里的字：作答时是当前这题的「其他」，否则是草稿。
+    var fieldText: String { answering?.currentOther ?? thread.draft }
+
+    func setFieldText(_ text: String) {
+        if let answers = answering {
+            if answers.currentOther != text { answers.currentOther = text }
+        } else if thread.draft != text {
+            thread.draft = text
+        }
+    }
+
+    /// 多题作答时左边的上一题、下一题：第几题、共几题。
+    var questionSteps: (step: Int, count: Int)? {
+        guard let answers = answering, answers.questions.count > 1 else { return nil }
+        return (answers.step, answers.questions.count)
+    }
+
+    func previousQuestion() {
+        guard let answers = answering, answers.step > 0 else { return }
+        answers.step -= 1
+    }
+
+    func nextQuestion() {
+        guard let answers = answering, answers.step + 1 < answers.questions.count else { return }
+        answers.step += 1
+    }
+
+    /// 作答时在输入框里回车：这题答了就去下一题，最后一题答齐了就发送。
+    func advanceAnswer() {
+        guard let answers = answering, answers.answered(answers.step) else { return }
+        if answers.step + 1 < answers.questions.count { answers.step += 1 } else { submitAnswers() }
+    }
+
+    func submitAnswers() {
+        guard let answers = answering, let waiting = thread.waiting, answers.complete, !answers.busy else { return }
+        let thread = thread, replies = answers.replies
+        answers.run { try await thread.respond(waiting, .answers(replies)) }
+    }
+
     /// 回应卡片上的「交给 Line」：有 Line、这不是 Line 自己发起的请求时才有。
     var delegate: (() async throws -> Void)? { model.lineDelegate(thread) }
     var listening: Bool { model.voice.owner == voiceOwner }
@@ -63,6 +121,7 @@ struct ThreadControlsModel {
     /// 草稿优先；暂停着能继续时继续优先于停止（排着的消息逐条可撤回），停止没确认时先重试停止；
     /// 空闲时仍保留发送键，由可用状态把它置灰。
     var primaryAction: PrimaryAction {
+        if let answers = answering { return answers.complete ? .send : .stop }
         if !blank { return .send }
         if thread.hasUnconfirmedStop { return .stop }
         if thread.state?.capabilities.resume == true { return .resume }
@@ -72,7 +131,7 @@ struct ThreadControlsModel {
 
     var canPerformPrimaryAction: Bool {
         switch primaryAction {
-        case .send: canSubmit
+        case .send: answering.map { $0.complete && !$0.busy } ?? canSubmit
         case .stop: thread.canStop
         case .resume: thread.canResume
         }
@@ -85,7 +144,7 @@ struct ThreadControlsModel {
     func performPrimaryAction(submit: () -> Void) {
         guard canPerformPrimaryAction else { return }
         switch primaryAction {
-        case .send: submit()
+        case .send: if answering != nil { submitAnswers() } else { submit() }
         case .stop: stop()
         case .resume: resume()
         }
@@ -94,21 +153,32 @@ struct ThreadControlsModel {
     func stop() { thread.stop() }
     func resume() { thread.resume() }
 
-    /// 开始或结束录语音。识别出的字接在开录时的草稿后面，每次都是到目前为止的全文；started 在开录以后调。
+    /// 开始或结束录语音。识别出的字接在开录时输入框里的字后面（草稿，作答时是这题的「其他」），每次都是到目前为止的全文；
+    /// started 在开录以后调。
     func toggleVoice(started: @escaping @MainActor () -> Void = {}) {
+        if let answers = answering {
+            let index = answers.step
+            dictate(base: answers.currentOther, started: started) { answers.setOther($0, at: index) }
+        } else {
+            let thread = thread
+            dictate(base: thread.draft, started: started) { thread.draft = $0 }
+        }
+    }
+
+    /// 开始或停下语音输入：识别出的字接在 base 后面交给 write。
+    private func dictate(base: String, started: @escaping @MainActor () -> Void = {}, write: @escaping @MainActor (String) -> Void) {
         let voice = model.voice
         if listening {
             voice.stop()
             return
         }
-        let base = thread.draft
         let thread = thread, model = model, area = area, owner = voiceOwner, state = state
         Task {
             do {
                 let client = try thread.client ?? model.activeClient(in: area)
                 try await voice.start(owner: owner, target: VoiceTarget(client: client, thread: thread.isDraft ? nil : thread.id)) { text in
                     switch text {
-                    case .partial(let value), .final(let value): thread.draft = base + value
+                    case .partial(let value), .final(let value): write(base + value)
                     case .failed(let message):
                         voice.stop(owner: owner)
                         state.voiceError = message
@@ -188,7 +258,9 @@ struct ThreadControlsModel {
         // 波只画在窗口里，朝窗口顶边走，和对话往上滑同一次更新起步
         let stage = stage, scope = scope
         let reach = frame.minY - (scope?.frame.minY ?? frame.minY)
-        send(Message(typed: sent.trimmingCharacters(in: .whitespacesAndNewlines))) {
+        let message = Message(typed: sent.trimmingCharacters(in: .whitespacesAndNewlines))
+        if let waiting = skipping { thread.skip(waiting, sending: message) }
+        send(message) {
             stage?.emitWave(from: frame, parameters: Self.sendWave(from: frame, reach: reach), in: scope)
         }
         guard !area.isDraft else { return }
@@ -256,6 +328,14 @@ enum ComposerLayout {
     static let rowSpacing: CGFloat = 2
     /// 输入框的顶边。
     static let fieldTop = Metrics.controlInset + fieldPadding
+    /// 作答时输入框和回应卡片选项的灰底：左右离玻璃边 controlInset，上下包住输入框的 fieldPadding，圆角和玻璃同心。
+    static let fieldFill = Color.gray.opacity(0.12)
+    static var fieldFillRadius: CGFloat { Metrics.controlRadius - Metrics.controlInset }
+
+    /// 输入框灰底的框（输入框那一边的坐标，顶边往下量）。
+    static func fieldFillFrame(width: CGFloat, plan: Plan) -> CGRect {
+        CGRect(x: Metrics.controlInset, y: Metrics.controlInset, width: max(width - 2 * Metrics.controlInset, 0), height: plan.field + 2 * fieldPadding)
+    }
 
     struct Plan {
         var height: CGFloat
@@ -282,5 +362,76 @@ enum ComposerLayout {
         let primary = CGRect(x: width - inset - size, y: top + (row - size) / 2, width: size, height: size)
         let voice = primary.offsetBy(dx: -ThreadControlsModel.actionGap - size, dy: 0)
         return (effort, voice.offsetBy(dx: -size, dy: 0), voice, primary)
+    }
+}
+
+/// 回应卡片在输入区上方长出来、收回去的过渡：输入区一直在、贴着底边，卡片摆在它上面。玻璃的高和卡片的不透明度从改变那一刻的样子
+/// 按窗口动画那条不冲过头的曲线走到目标，目标每帧按当时量出的高重算，中途再改从当时的样子接着走。卡片出现、消失时贴着输入区
+/// （随玻璃长高从顶边露出来、收进顶边）；收起、展开、换题时卡片贴着顶边，标题行跟着玻璃的顶边走，卡片自己的内容淡入淡出、超出的裁掉。
+/// 原生输入区（MacControlsBar、PhoneControlsBar）用显示链接逐帧取样，Mac 窄窗口（ThreadControls）交给 SwiftUI 的动画。
+struct ComposerMotion {
+    struct Pose {
+        var height: CGFloat
+        /// 卡片的不透明度。
+        var card: CGFloat
+    }
+
+    static let duration: TimeInterval = 0.25
+    static var animation: Animation { .timingCurve(WindowMotionKind.curve, duration: duration) }
+
+    private var origin: Pose?
+    private var start: CFTimeInterval?
+    private var progress: CGFloat = 1
+    /// 这一段里卡片贴着顶边（收起、展开、换题），否则贴着下面的输入区。
+    private(set) var cardOnTop = false
+
+    var moving: Bool { start != nil }
+
+    /// 从 current 起往目标走，从 now 起算；now 为空时当场到。
+    mutating func begin(from current: Pose, cardOnTop: Bool, at now: CFTimeInterval?) {
+        guard let now else {
+            finish()
+            return
+        }
+        origin = current
+        start = now
+        progress = 0
+        self.cardOnTop = cardOnTop
+    }
+
+    /// 取 time 那一刻走到哪；走完了返回假。
+    mutating func sample(at time: CFTimeInterval) -> Bool {
+        guard let start else { return false }
+        progress = CGFloat(WindowMotionKind.curve.value(at: min(max((time - start) / Self.duration, 0), 1)))
+        guard progress < 1 else {
+            finish()
+            return false
+        }
+        return true
+    }
+
+    /// 当场走到头（输入区离开了窗口，显示链接不再回调）。
+    mutating func finish() {
+        origin = nil
+        start = nil
+        progress = 1
+        cardOnTop = false
+    }
+
+    /// 目标：card 为空时只有输入区，否则卡片在上、输入区在下。
+    static func target(composer: CGFloat, card: CGFloat?) -> Pose {
+        guard let card else { return Pose(height: composer, card: 0) }
+        return Pose(height: card + composer, card: 1)
+    }
+
+    /// 卡片顶边离玻璃顶边多远：贴着顶边时是 0，否则贴着下面的输入区。
+    func cardTop(glass: CGFloat, card: CGFloat, composer: CGFloat) -> CGFloat {
+        cardOnTop ? 0 : glass - card - composer
+    }
+
+    /// 这一刻的样子：没在走就是目标。
+    func pose(toward target: Pose) -> Pose {
+        guard let origin else { return target }
+        return Pose(height: origin.height + (target.height - origin.height) * progress, card: origin.card + (target.card - origin.card) * progress)
     }
 }

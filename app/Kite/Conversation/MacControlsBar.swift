@@ -92,16 +92,32 @@ private struct ControlsBarHost: NSViewRepresentable {
 /// 思考强度的托管视图、输入框更新时不让外面的 SwiftUI 重量这一块（见 RepresentedRoot），高变了由 contentChanged 报。
 final class ControlsBarView: RepresentedRoot {
     private let field = ComposerField()
+    /// 作答时输入框的灰底，见 ComposerLayout.fieldFill。
+    private let fieldFill = FieldFill()
     private let fadingView = FadingSnapshotView()
     private let effort = EffortIsland(rootView: AnyView(EmptyView()))
     private let attach = PaneButtonView()
     private let voice = PaneButtonView()
     private let primary = PaneButtonView()
-    /// 等你回应时代替输入框的卡片（WaitingResponseCard），和输入框共用这张玻璃。
+    /// 提问作答时按钮行左边的上一题、下一题，占思考强度的位置（见 ThreadControlsModel.answering）。
+    private let previousButton = PaneButtonView()
+    private let nextButton = PaneButtonView()
+    /// 等你回应时摆在输入框上面的卡片（WaitingResponseCard），和输入框共用这张玻璃。按自己的高摆，
+    /// 过渡途中玻璃比它矮，超出顶边的由 responseClip 裁掉。
     private let response = NSHostingController(rootView: AnyView(EmptyView()))
-    /// 卡片正在显示的等待；没有时显示输入框。
+    private let responseClip = ResponseClip()
+    /// 卡片正在显示的等待；没有时只有输入区。
     private var shownWaiting: String?
     private var responseKey: WaitingResponseKey?
+    /// 卡片按宽量出的高，内容换了或它自己报了新高时作废。
+    private var cardSize: (width: CGFloat, height: CGFloat)?
+    /// 输入框在答哪一项提问的「其他」；换了就交出焦点，免得打着的字换成另一段。
+    private var answeringShown: String?
+    private var motion = ComposerMotion()
+    /// 上一次排出来的样子，过渡从这里起。
+    private var pose: ComposerMotion.Pose?
+    /// motion 在走时逐帧取样。
+    private var motionLink: CADisplayLink?
     private var environment: EnvironmentValues?
 
     private var controls: ThreadControlsModel?
@@ -124,19 +140,32 @@ final class ControlsBarView: RepresentedRoot {
 
     init() {
         super.init(frame: .zero)
+        fieldFill.wantsLayer = true
+        fieldFill.layer?.backgroundColor = NSColor(ComposerLayout.fieldFill).cgColor
+        fieldFill.layer?.cornerCurve = .continuous
+        fieldFill.alphaValue = 0
+        addSubview(fieldFill)
         addSubview(field)
         addSubview(fadingView)
         addSubview(effort)
-        for button in [attach, voice, primary] { addSubview(button) }
+        for button in [attach, voice, primary, previousButton, nextButton] { addSubview(button) }
         effort.sizingOptions = [.intrinsicContentSize]
         response.sizingOptions = []
-        response.view.alphaValue = 0
-        response.view.isHidden = true
-        addSubview(response.view)
+        responseClip.clipsToBounds = true
+        responseClip.alphaValue = 0
+        responseClip.isHidden = true
+        responseClip.addSubview(response.view)
+        addSubview(responseClip)
 
         attach.label = .symbol("paperclip")
         attach.title = "添加附件"
         attach.isEnabled = false
+        previousButton.label = .symbol("arrow.left")
+        previousButton.title = "上一题"
+        previousButton.action = { [weak self] in self?.controls?.previousQuestion() }
+        nextButton.label = .symbol("arrow.right")
+        nextButton.title = "下一题"
+        nextButton.action = { [weak self] in self?.controls?.nextQuestion() }
         voice.action = { [weak self] in self?.controls?.toggleVoice() }
         primary.action = { [weak self] in
             guard let self, enabled else { return }
@@ -144,8 +173,8 @@ final class ControlsBarView: RepresentedRoot {
         }
         field.submit = { [weak self] in self?.submit() }
         field.textChanged = { [weak self] text in
-            guard let self, let thread = controls?.thread else { return }
-            if thread.draft != text { thread.draft = text }
+            guard let self else { return }
+            controls?.setFieldText(text)
             contentChanged()
         }
     }
@@ -158,10 +187,10 @@ final class ControlsBarView: RepresentedRoot {
         self.environment = environment
         let body = Theme.body.resolve(in: environment.fontResolutionContext).ctFont as NSFont
         if field.font != body { field.font = body }
-        for button in [attach, voice, primary] { button.setFont(body) }
+        for button in [attach, voice, primary, previousButton, nextButton] { button.setFont(body) }
         if buttonsEnvironment != environment.colorScheme {
             buttonsEnvironment = environment.colorScheme
-            for button in [attach, voice, primary] { button.environment = environment }
+            for button in [attach, voice, primary, previousButton, nextButton] { button.environment = environment }
         }
         let key = EffortKey(controls: controls, enabled: enabled, colorScheme: environment.colorScheme)
         if key != effortKey {
@@ -194,7 +223,7 @@ final class ControlsBarView: RepresentedRoot {
         field.placeholder = controls.placeholder
         // 读屏念的名字是占位文字，同 SwiftUI 的 TextField 以占位作标题
         if field.accessibilityLabel() != controls.placeholder { field.setAccessibilityLabel(controls.placeholder) }
-        field.setText(thread.draft)
+        field.setText(controls.fieldText)
         field.isEnabled = enabled
         let listening = controls.listening
         voice.label = .symbol(listening ? "mic.fill" : "mic")
@@ -205,52 +234,111 @@ final class ControlsBarView: RepresentedRoot {
         primary.title = controls.primaryAction.title
         primary.fill = controls.primaryActionFill
         primary.isEnabled = enabled && controls.canPerformPrimaryAction
+        let steps = controls.questionSteps
+        previousButton.isEnabled = enabled && (steps.map { $0.step > 0 } ?? false)
+        nextButton.isEnabled = enabled && (steps.map { $0.step + 1 < $0.count } ?? false)
+        let answering = controls.answering?.waiting?.id
+        if answering != answeringShown {
+            answeringShown = answering
+            if field.currentEditor() != nil { window?.makeFirstResponder(nil) }
+            let alpha: CGFloat = answering == nil ? 0 : 1
+            if window == nil { fieldFill.alphaValue = alpha } else {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = ComposerMotion.duration
+                    fieldFill.animator().alphaValue = alpha
+                }
+            }
+        }
         showWaiting(thread.waiting, controls: controls)
         let fading = controls.state.fading
-        field.alphaValue = fading == nil && shownWaiting == nil ? 1 : 0
+        applyPose(fading: fading)
         if fading == nil { shownFading = nil }
     }
 
-    /// 出现审批或提问时输入框淡出、回应卡片淡入，回应后换回来；高由 contentChanged 报给外框。
+    /// 出现审批或提问时卡片从输入区上方长出来，回应后收回去；过渡见 ComposerMotion，高由 contentChanged 报给外框。
     private func showWaiting(_ waiting: RemoteWaiting?, controls: ThreadControlsModel) {
         if let waiting {
             let thread = controls.thread
             let delegate = controls.delegate
-            let key = WaitingResponseKey(waiting: waiting, canStop: thread.canStop, delegable: delegate != nil,
+            let key = WaitingResponseKey(waiting: waiting, delegable: delegate != nil,
                                          colorScheme: environment?.colorScheme, dynamicTypeSize: environment?.dynamicTypeSize)
             if key != responseKey {
                 responseKey = key
+                cardSize = nil
+                responseClip.resetHover()
                 response.rootView = AnyView(WaitingResponseCard(waiting: waiting, respond: { try await thread.respond(waiting, $0) },
-                                                                stop: { thread.stop() }, canStop: thread.canStop, delegate: delegate)
+                                                                delegate: delegate, answers: thread.answers)
+                    .environment(\.clickPointerHover) { [weak clip = responseClip] in clip?.hover($0) }
                     .fixedSize(horizontal: false, vertical: true)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] _ in self?.contentChanged() }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] _ in self?.cardResized() }
                     .environment(\.self, environment ?? EnvironmentValues()))
             }
         } else {
             responseKey = nil
         }
         guard waiting?.id != shownWaiting else { return }
-        let entering = shownWaiting == nil
+        let entering = shownWaiting == nil, leaving = waiting == nil
         shownWaiting = waiting?.id
-        guard entering || waiting == nil else { return }
-        if entering, field.currentEditor() != nil { window?.makeFirstResponder(nil) }
-        let composer: [NSView] = [field, effort, attach, voice, primary]
-        response.view.isHidden = false
-        for view in composer { view.isHidden = false }
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.25
-            response.view.animator().alphaValue = entering ? 1 : 0
-            for view in composer { view.animator().alphaValue = entering ? 0 : 1 }
-        }, completionHandler: { [weak self] in
-            guard let self else { return }
-            response.view.isHidden = shownWaiting == nil
-            for view in composer { view.isHidden = shownWaiting != nil }
-            needsLayout = true
-        })
+        // 出现、消失贴着输入区；换成另一项等待时卡片原地换内容，贴着顶边
+        begin(cardOnTop: !(entering || leaving))
+    }
+
+    /// 卡片自己变高变矮了（收起、展开、换题）：玻璃跟着平滑变，卡片贴着顶边；出现、消失的途中按当时的高跟着。
+    private func cardResized() {
+        let old = cardSize
+        cardSize = nil
+        if shownWaiting != nil, let old, cardHeight(width: old.width) != old.height, !(motion.moving && !motion.cardOnTop) {
+            begin(cardOnTop: true)
+        }
+        contentChanged()
+    }
+
+    /// 从上一次排出来的样子往新的目标过渡；还没排过、不在窗口里的（打开时就在等）当场换好。
+    private func begin(cardOnTop: Bool) {
+        let now = window != nil && pose != nil ? CACurrentMediaTime() : nil
+        motion.begin(from: pose ?? ComposerMotion.target(composer: 0, card: nil), cardOnTop: cardOnTop, at: now)
+        guard motion.moving, motionLink == nil else { return }
+        let link = displayLink(target: self, selector: #selector(motionTick(_:)))
+        link.add(to: .main, forMode: .common)
+        motionLink = link
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window == nil, let motionLink else { return }
+        motionLink.invalidate()
+        self.motionLink = nil
+        motion.finish()
+        applyPose(fading: controls?.state.fading)
+        contentChanged()
+    }
+
+    @objc private func motionTick(_ link: CADisplayLink) {
+        if !motion.sample(at: link.targetTimestamp) {
+            link.invalidate()
+            motionLink = nil
+        }
+        applyPose(fading: controls?.state.fading)
+        contentChanged()
+    }
+
+    /// 卡片的不透明度跟着这一刻的样子；发送淡出时输入框藏着，见 FadingSnapshotView。显隐在 layout 里定。
+    private func applyPose(fading: FadingText?) {
+        responseClip.alphaValue = currentPose(width: nil).card
+        field.alphaValue = fading == nil ? 1 : 0
+    }
+
+    /// 这一刻的样子，见 ComposerMotion；width 为空时只要不透明度，不量高。
+    private func currentPose(width: CGFloat?) -> ComposerMotion.Pose {
+        let composer = width.map { plan(width: $0).height } ?? 0
+        let card = shownWaiting == nil ? nil : width.map { cardHeight(width: $0) } ?? 0
+        return motion.pose(toward: ComposerMotion.target(composer: composer, card: card))
     }
 
     private func submit() {
-        guard let controls, controls.canSubmit, enabled else { return }
+        guard let controls, enabled else { return }
+        if controls.answering != nil { return controls.advanceAnswer() }
+        guard controls.canSubmit else { return }
         // 发送会清空草稿：先把字画下来，淡出时盖在原处
         let image = field.snapshot()
         controls.submit(from: glassFrameInWindow, fieldHeight: field.height(width: field.frame.width, text: field.text))
@@ -275,21 +363,33 @@ final class ControlsBarView: RepresentedRoot {
 
     /// 版式见 ComposerLayout。给 SwiftUI 的高：玻璃的高。
     func height(forWidth width: CGFloat) -> CGFloat {
-        let height = plan(width: width).height
-        reported = (width, height)
+        let pose = currentPose(width: width)
+        self.pose = pose
+        reported = (width, pose.height)
+        return pose.height
+    }
+
+    private func cardHeight(width: CGFloat) -> CGFloat {
+        let width = max(width, 0)
+        if let cardSize, cardSize.width == width { return cardSize.height }
+        let height = response.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
+        cardSize = (width, height)
         return height
     }
 
+    /// 输入框这一边的版式。
     private func plan(width: CGFloat) -> ComposerLayout.Plan {
         let width = max(width, 0)
-        if shownWaiting != nil {
-            let height = response.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
-            return ComposerLayout.Plan(height: height, field: 0, effort: .zero, hidesActions: true)
-        }
         let fieldWidth = max(width - 2 * ComposerLayout.fieldInset, 0) + 2 * ComposerField.fieldInset
         var fieldHeight = field.height(width: fieldWidth, text: field.text)
         if let fading = controls?.state.fading { fieldHeight = max(fieldHeight, fading.height) }
-        return ComposerLayout.plan(width: width, field: fieldHeight, effort: currentEffortSize)
+        return ComposerLayout.plan(width: width, field: fieldHeight, effort: leftSize)
+    }
+
+    /// 按钮行左边那一格：平常是思考强度；作答时多题是上一题、下一题，一题时空着。
+    private var leftSize: CGSize {
+        guard let controls, controls.answering != nil else { return currentEffortSize }
+        return controls.questionSteps == nil ? .zero : CGSize(width: 2 * Metrics.paneButton, height: Metrics.paneButton)
     }
 
     private var currentEffortSize: CGSize {
@@ -309,26 +409,48 @@ final class ControlsBarView: RepresentedRoot {
     override func layout() {
         super.layout()
         let width = bounds.width
-        place(response.view, bounds)
-        guard shownWaiting == nil else { return }
+        let pose = currentPose(width: width)
+        self.pose = pose
         let plan = plan(width: width)
+        // 收回去以后藏起来，不接点击
+        if responseClip.isHidden != (pose.card == 0) { responseClip.isHidden = pose.card == 0 }
+        place(responseClip, bounds)
+        if pose.card > 0 {
+            let height = cardHeight(width: width)
+            let top = motion.cardTop(glass: bounds.height, card: height, composer: plan.height)
+            // clip 没翻转
+            place(response.view, CGRect(x: 0, y: bounds.height - top - height, width: width, height: height))
+        }
+        // 有卡片时输入区贴着底边
+        let dy = pose.card > 0 ? bounds.height - plan.height : 0
 
+        place(fieldFill, ComposerLayout.fieldFillFrame(width: width, plan: plan).offsetBy(dx: 0, dy: dy))
+        if fieldFill.layer?.cornerRadius != ComposerLayout.fieldFillRadius { fieldFill.layer?.cornerRadius = ComposerLayout.fieldFillRadius }
         let fieldWidth = max(width - 2 * ComposerLayout.fieldInset, 0)
-        let top = ComposerLayout.fieldTop
+        let top = ComposerLayout.fieldTop + dy
         place(field, CGRect(x: ComposerLayout.fieldInset - ComposerField.fieldInset, y: top, width: fieldWidth + 2 * ComposerField.fieldInset,
                             height: field.drawHeight(width: fieldWidth + 2 * ComposerField.fieldInset, text: field.text)))
         place(fadingView, CGRect(x: field.frame.minX, y: top, width: field.frame.width, height: plan.field))
 
         let row = ComposerLayout.row(width: width, plan: plan)
-        place(effort, row.effort)
+        let left = row.effort.offsetBy(dx: 0, dy: dy)
+        let answering = controls?.answering != nil, navigating = controls?.questionSteps != nil
+        if effort.isHidden != answering { effort.isHidden = answering }
+        if !answering { place(effort, left) }
+        for button in [previousButton, nextButton] where button.isHidden != !navigating { button.isHidden = !navigating }
+        if navigating {
+            let size = Metrics.paneButton
+            place(previousButton, CGRect(x: left.minX, y: left.minY, width: size, height: size))
+            place(nextButton, CGRect(x: left.minX + size, y: left.minY, width: size, height: size))
+        }
         // 复用本次排版的宽度比较，只在跨过阈值时改变可见性；控件保留，effort 的手势不中断。
         for button in [attach, voice, primary] where button.isHidden != plan.hidesActions {
             button.isHidden = plan.hidesActions
         }
         guard !plan.hidesActions else { return }
-        place(primary, row.primary)
-        place(voice, row.voice)
-        place(attach, row.attach)
+        place(primary, row.primary.offsetBy(dx: 0, dy: dy))
+        place(voice, row.voice.offsetBy(dx: 0, dy: dy))
+        place(attach, row.attach.offsetBy(dx: 0, dy: dy))
     }
 
     /// 和现在一样就不设：拖缝时每步都排，多数子视图只有横向位置在变。
@@ -339,7 +461,7 @@ final class ControlsBarView: RepresentedRoot {
     /// 里面变了（行数、按钮、思考强度的宽）：高变了让 SwiftUI 和原生外框重新量，没变只重摆。
     private func contentChanged() {
         needsLayout = true
-        guard let reported, plan(width: reported.width).height != reported.height else { return }
+        guard let reported, currentPose(width: reported.width).height != reported.height else { return }
         invalidateIntrinsicContentSize()
         link?.changed?()
     }
@@ -366,6 +488,32 @@ final class ControlsBarView: RepresentedRoot {
             self.enabled = enabled
             self.colorScheme = colorScheme
         }
+    }
+}
+
+/// 输入框的灰底，点击和光标都交给上面的输入框。
+private final class FieldFill: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// 裁卡片的那一层和玻璃一样大：自己不接点击、不挡光标，卡片收起时下面的输入框照常点得中。
+/// 卡片里可点的控件的手形也由它给：托管的 SwiftUI 的 pointerStyle 轮不到（见 clickPointerHover），指针在控件上时按 NativeCursor 给手形。
+private final class ResponseClip: NSView, NativeCursor {
+    /// 指针正停在几个可点的控件上（进出成对报，相邻的两个可能先进后出）。
+    private var hovered = 0
+
+    var nativeCursor: NSCursor? { hovered > 0 ? .pointingHand : nil }
+
+    func hover(_ entered: Bool) {
+        hovered = max(hovered + (entered ? 1 : -1), 0)
+        (nativeCursor ?? .arrow).set()
+    }
+
+    func resetHover() { hovered = 0 }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
     }
 }
 

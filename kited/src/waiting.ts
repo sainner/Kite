@@ -13,7 +13,6 @@ const option = z.object({
   description: z.string().trim().min(1).max(1000),
 }).strict();
 const question = z.object({
-  header: z.string().trim().min(1).max(30),
   question: z.string().trim().min(1).max(4000),
   options: z.array(option).min(2).max(4).refine((options) => new Set(options.map((o) => o.label)).size === options.length, '同一问题的选项标签不能重复'),
   multiSelect: z.boolean(),
@@ -41,7 +40,7 @@ export type Waiting = { id: string; since: number } & WaitingRequest;
 
 const description = [
   '向用户提问，等用户回答后本回合接着往下走。需要用户在几个具体做法之间拍板、补充偏好或澄清含糊的要求时用。',
-  '一次 1 到 4 个问题；每个问题写简短标题 header、问题正文 question、2 到 4 个选项（label 简短，description 说明选它意味着什么），',
+  '一次 1 到 4 个问题；每个问题写问题正文 question、2 到 4 个选项（label 简短，description 说明选它意味着什么），',
   'multiSelect 为 true 时可多选。用户总能选「其他」写自己的回答，不要自己加「其他」选项；推荐某个选项时把它放在第一个，并在 label 末尾注明（推荐）。',
   '结果是每个问题选中的选项标签，或用户写的「其他」原文。不问也能做好的事不要问；也可以把问题写在回复里结束回合。',
 ].join('');
@@ -72,6 +71,7 @@ export class Waits {
       execute: async (value, { signal }): Promise<ToolResult> => {
         try {
           const result = await this.wait(threadId, { kind: 'question', questions: questionArguments.parse(value).questions }, signal);
+          if (result === skipped) return { status: 'success', output: '用户没有回答，跳过了这些问题，直接发了一条新消息，见随后的输入。' };
           return result ? { status: 'success', output: JSON.stringify(result) } : { status: 'error', output: '会话已停止，用户没有回答。' };
         } catch (error) {
           if (error instanceof KiteError) return { status: 'error', output: error.message };
@@ -116,7 +116,20 @@ export class Waits {
     const why = (value as { reason?: string }).reason;
     entry.settle({ answers, ...(via ? { answeredBy: 'Line', ...(why ? { reason: why } : {}) } : {}) });
   }
+
+  /**
+   * 用户没回应、直接发了一条新消息（新消息已先排进输入）：提问按跳过、审批按拒绝交回，新消息在下一次请求里随结果送到。
+   * 对不上当前等待（已回应或已作废）时什么也不做。
+   */
+  skip(threadId: string, id: string): void {
+    const entry = this.waits.get(threadId);
+    if (entry?.waiting.id !== id) return;
+    entry.settle(entry.waiting.kind === 'approval' ? 'deny' satisfies ApprovalDecision : skipped);
+  }
 }
+
+/** 提问被跳过时交回的结果，见 Waits.skip。 */
+const skipped = Symbol('skipped');
 
 /** 提问的结果交给模型：每个问题带上原文，以及选中的标签或「其他」原文。 */
 function answersOf(questions: Question[], value: unknown) {

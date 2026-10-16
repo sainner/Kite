@@ -173,21 +173,33 @@ struct PaneButtonStyle: ButtonStyle {
     var fill: Color?
     var foreground: Color = .secondary
     var size: CGFloat?
+    /// 次级按钮：半透明灰底，字仍按 foreground，和不带底的图标按钮区分开（回应卡片里的拒绝、允许并记住）。
+    var secondary = false
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.fontResolutionContext) private var fontContext
 
     func makeBody(configuration: Configuration) -> some View {
         let size = size ?? Metrics.paneButton
         return configuration.label
-            .font(fill == nil ? Theme.body : Theme.body.weight(.bold))
+            .font(font)
             .foregroundStyle(fill == nil ? foreground : .white)
             .lineLimit(1)
             .fixedSize(horizontal: text, vertical: false)
             .padding(.horizontal, text ? Metrics.paneToolbarInset : 0)
             .frame(width: text ? nil : size, height: size)
             .frame(minWidth: size)
-            .modifier(PaneButtonHover(inset: 2, fill: fill, isPressed: configuration.isPressed))
+            .modifier(PaneButtonHover(inset: 2, fill: secondary ? Color.gray.opacity(0.16) : fill, isPressed: configuration.isPressed))
             .opacity(!isEnabled ? 0.45 : configuration.isPressed ? 0.7 : 1)
             .clickPointer()
+    }
+
+    private var font: Font {
+        guard fill != nil else { return Theme.body }
+        #if os(macOS)
+        // 同 Mac 的原生按钮（PaneButtonView）：实心的图标按钮（发送、停止）图标小一号，填色圆里留出更多边距
+        if !text { return .system(size: (Theme.body.resolve(in: fontContext).ctFont as NSFont).pointSize - 3, weight: .bold) }
+        #endif
+        return Theme.body.weight(.bold)
     }
 }
 

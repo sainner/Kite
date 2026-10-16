@@ -21,6 +21,10 @@ struct ThreadControls: View {
     @State private var frame: CGRect = .zero
     /// 输入框的高度，发送时记进 FadingText。
     @State private var fieldHeight: CGFloat = 0
+    /// 输入框和回应卡片之间的过渡，见 ComposerMotion：0 是输入框、1 是卡片。
+    @State private var mix: CGFloat = 0
+    /// 卡片上的等待：回应以后淡出的途中还要画它。
+    @State private var shownWaiting: RemoteWaiting?
 
     private var controls: ThreadControlsModel {
         ThreadControlsModel(thread: thread, model: model, area: area, instance: instance, stage: stage, scope: dotScope,
@@ -32,17 +36,21 @@ struct ThreadControls: View {
         let controls = controls
         let fading = state.fading
         let shape = RoundedRectangle(cornerRadius: Metrics.controlRadius, style: .continuous)
-        // 等你回应时同一张玻璃里换成回应卡片，回应后换回输入框
-        Group {
-            if let waiting = thread.waiting {
+        // 等你回应时同一张玻璃里，卡片从输入区上方长出来，回应后收回去；输入区一直在，作答时输入框写「其他」
+        ComposerSwapLayout(mix: mix) {
+            composer(controls, fading: fading)
+            if let waiting = thread.waiting ?? shownWaiting {
                 WaitingResponseCard(waiting: waiting, respond: { [thread] in try await thread.respond(waiting, $0) },
-                                    stop: { [thread] in thread.stop() }, canStop: thread.canStop, delegate: controls.delegate)
-                    .transition(.opacity)
-            } else {
-                composer(controls, fading: fading).transition(.opacity)
+                                    delegate: controls.delegate, answers: thread.answers)
+                    .opacity(mix)
+                    .allowsHitTesting(thread.waiting != nil)
+                    .layoutValue(key: ComposerSwapLayout.Card.self, value: true)
             }
         }
-        .animation(.smooth(duration: 0.25), value: thread.waiting?.id)
+        .clipShape(shape)
+        .onChange(of: thread.waiting?.id, initial: true) { old, new in swapWaiting(from: old, to: new) }
+        // 输入框换成另一段字（草稿、某一项提问的「其他」）时交出焦点
+        .onChange(of: controls.answering?.waiting?.id) { typing.wrappedValue = false }
         // 交互玻璃的同心形状有高光退回胶囊的复现；玻璃与交互轮廓统一使用明确圆角。
         .contentShape(.interaction, shape)
         .glassEffect(.regular.interactive(), in: shape)
@@ -57,22 +65,47 @@ struct ThreadControls: View {
 
     private func composer(_ controls: ThreadControlsModel, fading: FadingText?) -> some View {
         @Bindable var thread = thread
+        @Bindable var answers = thread.answers
+        let answering = controls.answering != nil
         return VStack(spacing: 2) {
-            TextField(controls.placeholder, text: $thread.draft, axis: .vertical)
+            TextField(controls.placeholder, text: answering ? $answers.currentOther : $thread.draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(Theme.body)
                 .lineLimit(1...8)
                 .focused(typing)
                 .scrollsOnlyWhileTyping(typing.wrappedValue)
-                .onSubmit(submit)
+                .onSubmit { if controls.answering != nil { controls.advanceAnswer() } else { submit() } }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fieldHeight = $0 }
                 .frame(minHeight: fading?.height, alignment: .top)
                 .opacity(fading == nil ? 1 : 0)
                 .overlay { FadingSnapshot(fading: fading) }
                 .padding(.horizontal, Metrics.controlInset + 8)
                 .padding(.vertical, 6)
+                // 作答时的灰底，见 ComposerLayout.fieldFill
+                .background {
+                    RoundedRectangle(cornerRadius: ComposerLayout.fieldFillRadius, style: .continuous).fill(ComposerLayout.fieldFill)
+                        .padding(.horizontal, Metrics.controlInset)
+                        .opacity(answering ? 1 : 0)
+                        .animation(ComposerMotion.animation, value: answering)
+                }
             HStack(spacing: Metrics.paneButtonGap) {
-                ThreadEffortControl(controls: controls).fixedSize().layoutPriority(1)
+                // 作答时思考强度的位置是上一题、下一题（多题时），一题时空着
+                if answering {
+                    if let steps = controls.questionSteps {
+                        HStack(spacing: 0) {
+                            Button(action: controls.previousQuestion) { Image(systemName: "arrow.left") }
+                                .buttonStyle(PaneButtonStyle())
+                                .disabled(steps.step == 0)
+                                .accessibilityLabel("上一题").help("上一题")
+                            Button(action: controls.nextQuestion) { Image(systemName: "arrow.right") }
+                                .buttonStyle(PaneButtonStyle())
+                                .disabled(steps.step + 1 >= steps.count)
+                                .accessibilityLabel("下一题").help("下一题")
+                        }
+                    }
+                } else {
+                    ThreadEffortControl(controls: controls).fixedSize().layoutPriority(1)
+                }
                 Spacer(minLength: 0)
                 // 只替换右侧按钮组，effort 保持同一个视图，展开途中不会因空间不足丢掉手势。
                 ViewThatFits(in: .horizontal) {
@@ -115,6 +148,53 @@ struct ThreadControls: View {
 
     private func submit() {
         controls.submit(from: frame, fieldHeight: fieldHeight)
+    }
+
+    /// 出现等待时卡片长出来、回应后收回去；换成另一项等待时卡片原地换内容。打开时就在等的当场摆好。
+    private func swapWaiting(from old: String?, to new: String?) {
+        if let waiting = thread.waiting { shownWaiting = waiting }
+        switch (old, new) {
+        case (_, .some) where old == new:
+            mix = 1
+        case (nil, .some):
+            withAnimation(ComposerMotion.animation) { mix = 1 }
+        case (.some, nil):
+            withAnimation(ComposerMotion.animation) { mix = 0 } completion: {
+                if thread.waiting == nil { shownWaiting = nil }
+            }
+        default: break
+        }
+    }
+}
+
+/// 窄窗口里回应卡片在输入区上方长出来、收回去，同原生输入区的 ComposerMotion：输入区贴着底边，卡片贴着它的上沿，
+/// 高是输入区加上按 mix 插值的卡片高，卡片随玻璃长高从顶边露出来（外面按玻璃的形状裁）。卡片收起、展开、换题时由 SwiftUI 的动画过渡。
+private struct ComposerSwapLayout: Layout {
+    var mix: CGFloat
+
+    /// 标出卡片那一边。
+    struct Card: LayoutValueKey { static let defaultValue = false }
+
+    var animatableData: CGFloat {
+        get { mix }
+        set { mix = newValue }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = subviews.map { $0.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) }
+        let card = subviews.indices.first { subviews[$0][Card.self] }.map { sizes[$0].height } ?? 0
+        let composer = subviews.indices.first { !subviews[$0][Card.self] }.map { sizes[$0].height } ?? 0
+        return CGSize(width: proposal.width ?? sizes.map(\.width).max() ?? 0, height: composer + card * mix)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let heights = subviews.map { $0.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil)).height }
+        let composer = subviews.indices.first { !subviews[$0][Card.self] }.map { heights[$0] } ?? 0
+        for (index, subview) in subviews.enumerated() {
+            let bottom = bounds.maxY - (subview[Card.self] ? composer : 0)
+            subview.place(at: CGPoint(x: bounds.minX, y: bottom), anchor: .bottomLeading,
+                          proposal: ProposedViewSize(width: bounds.width, height: heights[index]))
+        }
     }
 }
 

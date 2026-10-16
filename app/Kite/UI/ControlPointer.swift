@@ -3,15 +3,27 @@ import SwiftUI
 /// 只给可操作的控件加手形，不覆盖文字选择、窗口拖动与缩放的光标。
 private struct ClickPointer: ViewModifier {
     @Environment(\.isEnabled) private var enabled
+    #if os(macOS)
+    @Environment(\.clickPointerHover) private var report
+    #endif
 
-    func body(content: Content) -> some View {
+    @ViewBuilder func body(content: Content) -> some View {
         #if os(macOS)
-        content.pointerStyle(enabled ? .link : .default)
+        let styled = content.pointerStyle(enabled ? .link : .default)
+        if let report { styled.onHover { report($0) } } else { styled }
         #else
         content
         #endif
     }
 }
+
+#if os(macOS)
+extension EnvironmentValues {
+    /// 托管在原生视图里、外层又是 SwiftUI 的内容（输入区里的回应卡片）：pointerStyle 轮不到，cursorUpdate 被外层收走设回箭头。
+    /// 指针进出可点的控件时报给托管它的原生视图，由它按 NativeCursor 给手形（见 ControlsBarView 的 ResponseClip）。
+    @Entry var clickPointerHover: (@MainActor (Bool) -> Void)?
+}
+#endif
 
 extension View {
     func clickPointer() -> some View { modifier(ClickPointer()) }

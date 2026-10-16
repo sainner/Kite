@@ -512,9 +512,14 @@ export function serve(kite: Kite, listen: Listen) {
           // 用户在 App 里发送即确认恢复；Line 和其他 agent 的发送仍被恢复阻塞挡住。
           if (b.confirmRecovery !== undefined && (b.confirmRecovery !== true || via)) throw new KiteError('confirmRecovery 只用于用户在 App 里发送');
           if (b.confirmRecovery) await kite.confirmRecovery(req.params.id);
-          return kite.operations.invoke({ kind: 'ui', ...(via ? { via } : {}), ...(b.relay ? { relayed: true } : {}) }, kite.thread(req.params.id).workspaceId, 'agent.send', {
+          // skipWaiting：用户没回应线程在等的那一项、直接发了这条，消息排进输入以后再按跳过交回那一项（见 Waits.skip）。
+          if (b.skipWaiting !== undefined && via) throw new KiteError('skipWaiting 只用于用户在 App 里发送');
+          const skip = b.skipWaiting === undefined ? undefined : str(b.skipWaiting, 'skipWaiting');
+          const sent = await kite.operations.invoke({ kind: 'ui', ...(via ? { via } : {}), ...(b.relay ? { relayed: true } : {}) }, kite.thread(req.params.id).workspaceId, 'agent.send', {
             instanceId: req.params.id, text: str(b.text, 'text'), operationId: b.id === undefined ? crypto.randomUUID() : str(b.id, 'id'),
           }, req.signal);
+          if (skip) kite.waits.skip(req.params.id, skip);
+          return sent;
         }),
       },
       '/threads/:id/interrupt': { POST: bound(async (req) => {

@@ -22,7 +22,11 @@ final class WorkThread: Identifiable {
     /// 草稿的模型目录与各角色可开的工具，按工作区读取。
     var agentOptions: AgentOptions?
     var configuringTemplate = false
-    var state: RemoteState?
+    var state: RemoteState? {
+        didSet { if let waiting = state?.waiting { answers.adopt(waiting) } }
+    }
+    /// 在等的那一项的作答，回应卡片和输入区共用，见 WaitingAnswers。
+    let answers = WaitingAnswers()
     var agentCapabilities: AgentCapabilities?
     var connected = false
     /// 收到过工作机发来的完整历史。已有代理在这之前对话是空的，只是还没读出来。
@@ -46,6 +50,8 @@ final class WorkThread: Identifiable {
     private(set) var failed: Set<String> = []
     private var sending: Set<String> = []
     private var returned: Set<String> = []
+    /// 收起回应卡片时发的消息跳过哪一项等待，按消息 ID 记，重试照样带上。
+    private var skips: [String: String] = [:]
     private var stopRequest: StopRequest?
     private(set) var stopping = false
 
@@ -312,8 +318,11 @@ final class WorkThread: Identifiable {
         error = nil
         Task {
             defer { sending.remove(message.id) }
-            do { try await client.post("/threads/\(id)/messages", body: SendBody(id: message.id, text: message.typed, confirmRecovery: confirmsRecovery)) }
-            catch {
+            do {
+                try await client.post("/threads/\(id)/messages", body: SendBody(id: message.id, text: message.typed, confirmRecovery: confirmsRecovery,
+                                                                                 skipWaiting: skips[message.id]))
+                skips[message.id] = nil
+            } catch {
                 guard !returned.contains(message.id) else { return }
                 markUnconfirmed(message, error.localizedDescription)
             }
@@ -411,12 +420,18 @@ final class WorkThread: Identifiable {
         }
     }
 
-    /// 线程在等的提问或审批，连着工作机时才能回应。
-    var waiting: RemoteWaiting? { connected ? state?.waiting : nil }
+    /// 不回应 waiting、直接发 message：工作机先把消息排进输入，再按跳过交回这一项（提问记为跳过，审批记为拒绝）。在 send 之前调。
+    func skip(_ waiting: RemoteWaiting, sending message: Message) {
+        skips[message.id] = waiting.id
+    }
+
+    /// 线程在等的提问或审批。断线重连时照旧显示最后知道的那一项，卡片和答了一半的选择都不丢，重连后的历史再定它还在不在；
+    /// 连着工作机时才能回应，见 respond。
+    var waiting: RemoteWaiting? { state?.waiting }
 
     /// 回应等你的那一项；回应后等待由会话事件撤下。已回应或已作废时工作机返回 409，等待同样随事件更新。
     func respond(_ waiting: RemoteWaiting, _ reply: WaitingReply) async throws {
-        guard let client else { throw KitedError(message: "请先连接工作机") }
+        guard let client, connected else { throw KitedError(message: "工作机未连接，连上后再提交") }
         let _: JSON = try await client.request("/threads/\(id)/waiting/\(waiting.id.pathComponent)", method: "POST", body: reply, as: JSON.self)
     }
 
@@ -430,7 +445,7 @@ final class WorkThread: Identifiable {
 
     /// 恢复阻塞时，用户发送、继续或停止就算确认旧执行已核查，由工作机先解除阻塞再处理。
     private var confirmsRecovery: Bool? { state?.recovery != nil ? true : nil }
-    private struct SendBody: Encodable { let id: String; let text: String; let confirmRecovery: Bool? }
+    private struct SendBody: Encodable { let id: String; let text: String; let confirmRecovery: Bool?; let skipWaiting: String? }
     private struct ResumeBody: Encodable { let confirmRecovery: Bool? }
 }
 

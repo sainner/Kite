@@ -9,16 +9,32 @@ import UIKit
 final class ControlsBarView: UIView {
     private let glass: UIVisualEffectView
     private let field = ComposerField.make()
+    /// 作答时输入框的灰底，见 ComposerLayout.fieldFill。
+    private let fieldFill = UIView()
     private let fadingView = FadingSnapshotView()
     private let effort = EffortHost(rootView: AnyView(EmptyView()))
     private let attach = PaneButtonView()
     private let voice = PaneButtonView()
     private let primary = PaneButtonView()
-    /// 等你回应时代替输入框的卡片（WaitingResponseCard），和输入框共用这张玻璃。
+    /// 提问作答时按钮行左边的上一题、下一题，占思考强度的位置（见 ThreadControlsModel.answering）。
+    private let previousButton = PaneButtonView()
+    private let nextButton = PaneButtonView()
+    /// 等你回应时摆在输入框上面的卡片（WaitingResponseCard），和输入框共用这张玻璃。按自己的高摆，
+    /// 过渡途中玻璃比它矮，超出顶边的由 responseClip 裁掉。
     private let response = UIHostingController(rootView: AnyView(EmptyView()))
-    /// 卡片正在显示的等待；没有时显示输入框。
+    private let responseClip = ResponseClip()
+    /// 卡片正在显示的等待；没有时只有输入区。
     private var shownWaiting: String?
     private var responseKey: WaitingResponseKey?
+    /// 卡片按宽量出的高，内容换了或它自己报了新高时作废。
+    private var cardSize: (width: CGFloat, height: CGFloat)?
+    /// 输入框在答哪一项提问的「其他」；换了就交出焦点，免得打着的字换成另一段。
+    private var answeringShown: String?
+    private var motion = ComposerMotion()
+    /// 上一次排出来的样子，过渡从这里起。
+    private var pose: ComposerMotion.Pose?
+    /// motion 在走时逐帧取样。
+    private var motionLink: CADisplayLink?
 
     private var controls: ThreadControlsModel?
     private var enabled = true
@@ -41,7 +57,7 @@ final class ControlsBarView: UIView {
     /// 正在打字（输入框是第一响应者）。
     var typing: Bool { field.isFirstResponder }
     /// 思考强度占的地方（本视图坐标）：紧凑布局里从这里起手的横拖留给它自己调档，不切窗口（同 reservesPaneSwipe）。
-    var effortFrame: CGRect { effort.view.frame }
+    var effortFrame: CGRect { effort.view.isHidden ? .null : effort.view.frame }
 
     init(glassManagedExternally: Bool = false) {
         let effect = UIGlassEffect(style: .regular)
@@ -52,31 +68,44 @@ final class ControlsBarView: UIView {
         glass.cornerConfiguration = .corners(radius: .fixed(Metrics.controlRadius))
         addSubview(glass)
         let content = glass.contentView
+        fieldFill.backgroundColor = UIColor(ComposerLayout.fieldFill)
+        fieldFill.layer.cornerCurve = .continuous
+        fieldFill.isUserInteractionEnabled = false
+        fieldFill.alpha = 0
+        content.addSubview(fieldFill)
         content.addSubview(field)
         content.addSubview(fadingView)
         content.addSubview(effort.view)
         effort.view.backgroundColor = .clear
         effort.sizingOptions = [.intrinsicContentSize]
         effort.safeAreaRegions = []
-        for button in [attach, voice, primary] { content.addSubview(button) }
+        for button in [attach, voice, primary, previousButton, nextButton] { content.addSubview(button) }
         response.view.backgroundColor = .clear
         response.safeAreaRegions = []
         response.sizingOptions = []
-        response.view.alpha = 0
-        response.view.isHidden = true
-        content.addSubview(response.view)
+        responseClip.clipsToBounds = true
+        responseClip.alpha = 0
+        responseClip.isHidden = true
+        responseClip.addSubview(response.view)
+        content.addSubview(responseClip)
 
         attach.label = .symbol("paperclip")
         attach.title = "添加附件"
         attach.isEnabled = false
+        previousButton.label = .symbol("arrow.left")
+        previousButton.title = "上一题"
+        previousButton.action = { [weak self] in self?.controls?.previousQuestion() }
+        nextButton.label = .symbol("arrow.right")
+        nextButton.title = "下一题"
+        nextButton.action = { [weak self] in self?.controls?.nextQuestion() }
         voice.action = { [weak self] in self?.toggleVoice() }
         primary.action = { [weak self] in
             guard let self, enabled else { return }
             controls?.performPrimaryAction(submit: submit)
         }
         field.textChanged = { [weak self] text in
-            guard let self, let thread = controls?.thread else { return }
-            if thread.draft != text { thread.draft = text }
+            guard let self else { return }
+            controls?.setFieldText(text)
             contentChanged()
         }
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: Self, _) in self.fontChanged() }
@@ -88,7 +117,7 @@ final class ControlsBarView: UIView {
         self.controls = controls
         self.enabled = enabled
         if self.environment?.colorScheme != environment.colorScheme || self.environment == nil {
-            for button in [attach, voice, primary] { button.environment = environment }
+            for button in [attach, voice, primary, previousButton, nextButton] { button.environment = environment }
         }
         self.environment = environment
         fontChanged()
@@ -115,7 +144,7 @@ final class ControlsBarView: UIView {
         let body = environment.map { Theme.body.resolve(in: $0.fontResolutionContext).ctFont as UIFont }
             ?? UIFont.preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
         field.applyFont(body)
-        for button in [attach, voice, primary] { button.setFont(body) }
+        for button in [attach, voice, primary, previousButton, nextButton] { button.setFont(body) }
         contentChanged()
     }
 
@@ -138,7 +167,7 @@ final class ControlsBarView: UIView {
     private func apply(_ controls: ThreadControlsModel) {
         let thread = controls.thread
         field.placeholder = controls.placeholder
-        field.setText(thread.draft)
+        field.setText(controls.fieldText)
         field.isEditable = enabled
         field.isUserInteractionEnabled = enabled
         let listening = controls.listening
@@ -150,50 +179,106 @@ final class ControlsBarView: UIView {
         primary.title = controls.primaryAction.title
         primary.fill = controls.primaryActionFill
         primary.isEnabled = enabled && controls.canPerformPrimaryAction
+        let steps = controls.questionSteps
+        previousButton.isEnabled = enabled && (steps.map { $0.step > 0 } ?? false)
+        nextButton.isEnabled = enabled && (steps.map { $0.step + 1 < $0.count } ?? false)
+        let answering = controls.answering?.waiting?.id
+        if answering != answeringShown {
+            answeringShown = answering
+            endTyping()
+            let alpha: CGFloat = answering == nil ? 0 : 1
+            if window == nil { fieldFill.alpha = alpha } else {
+                UIView.animate(withDuration: ComposerMotion.duration, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+                    self.fieldFill.alpha = alpha
+                }
+            }
+        }
         showWaiting(thread.waiting, controls: controls)
         let fading = controls.state.fading
-        field.alpha = fading == nil && shownWaiting == nil ? 1 : 0
+        applyPose(fading: fading)
         if fading == nil { shownFading = nil }
         // 失败提示
         if let error = controls.state.effortError { present("修改思考强度失败", error) { controls.state.effortError = nil } }
         if let error = controls.state.voiceError { present("无法开始语音输入", error) { controls.state.voiceError = nil } }
     }
 
-    /// 出现审批或提问时输入框淡出、回应卡片淡入，回应后换回来；高由 contentChanged 报给外面。
+    /// 出现审批或提问时卡片从输入区上方长出来，回应后收回去；过渡见 ComposerMotion，高由 contentChanged 报给外面。
     private func showWaiting(_ waiting: RemoteWaiting?, controls: ThreadControlsModel) {
         if let waiting {
             let thread = controls.thread
             let delegate = controls.delegate
-            let key = WaitingResponseKey(waiting: waiting, canStop: thread.canStop, delegable: delegate != nil,
+            let key = WaitingResponseKey(waiting: waiting, delegable: delegate != nil,
                                          colorScheme: environment?.colorScheme, dynamicTypeSize: environment?.dynamicTypeSize)
             if key != responseKey {
                 responseKey = key
+                cardSize = nil
                 response.rootView = AnyView(WaitingResponseCard(waiting: waiting, respond: { try await thread.respond(waiting, $0) },
-                                                                stop: { thread.stop() }, canStop: thread.canStop, delegate: delegate)
+                                                                delegate: delegate, answers: thread.answers)
                     .fixedSize(horizontal: false, vertical: true)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] _ in self?.contentChanged() }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] _ in self?.cardResized() }
                     .environment(\.self, environment ?? EnvironmentValues()))
             }
         } else {
             responseKey = nil
         }
         guard waiting?.id != shownWaiting else { return }
-        let entering = shownWaiting == nil
+        let entering = shownWaiting == nil, leaving = waiting == nil
         shownWaiting = waiting?.id
-        guard entering || waiting == nil else { return }
-        if entering { endTyping() }
-        let composer: [UIView] = [field, effort.view, attach, voice, primary]
-        response.view.isHidden = false
-        for view in composer { view.isHidden = false }
-        UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
-            self.response.view.alpha = entering ? 1 : 0
-            for view in composer { view.alpha = entering ? 0 : 1 }
-        } completion: { [weak self] _ in
-            guard let self else { return }
-            response.view.isHidden = shownWaiting == nil
-            for view in composer { view.isHidden = shownWaiting != nil }
-            setNeedsLayout()
+        // 出现、消失贴着输入区；换成另一项等待时卡片原地换内容，贴着顶边
+        begin(cardOnTop: !(entering || leaving))
+    }
+
+    /// 卡片自己变高变矮了（收起、展开、换题）：玻璃跟着平滑变，卡片贴着顶边；出现、消失的途中按当时的高跟着。
+    private func cardResized() {
+        let old = cardSize
+        cardSize = nil
+        if shownWaiting != nil, let old, cardHeight(width: old.width) != old.height, !(motion.moving && !motion.cardOnTop) {
+            begin(cardOnTop: true)
         }
+        contentChanged()
+    }
+
+    /// 从上一次排出来的样子往新的目标过渡；还没排过、不在窗口里的（打开时就在等）当场换好。
+    private func begin(cardOnTop: Bool) {
+        let now = window != nil && pose != nil ? CACurrentMediaTime() : nil
+        motion.begin(from: pose ?? ComposerMotion.target(composer: 0, card: nil), cardOnTop: cardOnTop, at: now)
+        guard motion.moving, motionLink == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(motionTick(_:)))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        link.add(to: .main, forMode: .common)
+        motionLink = link
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window == nil, let motionLink else { return }
+        motionLink.invalidate()
+        self.motionLink = nil
+        motion.finish()
+        applyPose(fading: controls?.state.fading)
+        contentChanged()
+    }
+
+    @objc private func motionTick(_ link: CADisplayLink) {
+        if !motion.sample(at: link.targetTimestamp) {
+            link.invalidate()
+            motionLink = nil
+        }
+        applyPose(fading: controls?.state.fading)
+        contentChanged()
+    }
+
+    /// 卡片的不透明度跟着这一刻的样子；发送淡出时输入框藏着，见 FadingSnapshotView。显隐在 layoutSubviews 里定。
+    private func applyPose(fading: FadingText?) {
+        responseClip.alpha = currentPose(width: nil).card
+        field.alpha = fading == nil ? 1 : 0
+    }
+
+    /// 这一刻的样子，见 ComposerMotion；width 为空时只要不透明度，不量高。
+    private func currentPose(width: CGFloat?) -> ComposerMotion.Pose {
+        let composer = width.map { plan(width: $0).height } ?? 0
+        let card = shownWaiting == nil ? nil : width.map { cardHeight(width: $0) } ?? 0
+        return motion.pose(toward: ComposerMotion.target(composer: composer, card: card))
     }
 
     /// 弹出的提示，同一条不弹两次。
@@ -244,21 +329,33 @@ final class ControlsBarView: UIView {
 
     /// 玻璃的高，版式见 ComposerLayout。
     func height(forWidth width: CGFloat) -> CGFloat {
-        let height = plan(width: width).height
-        reported = (width, height)
+        let pose = currentPose(width: width)
+        self.pose = pose
+        reported = (width, pose.height)
+        return pose.height
+    }
+
+    private func cardHeight(width: CGFloat) -> CGFloat {
+        let width = max(width, 0)
+        if let cardSize, cardSize.width == width { return cardSize.height }
+        let height = response.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
+        cardSize = (width, height)
         return height
     }
 
+    /// 输入框这一边的版式。
     private func plan(width: CGFloat) -> ComposerLayout.Plan {
         let width = max(width, 0)
-        if shownWaiting != nil {
-            let height = response.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
-            return ComposerLayout.Plan(height: height, field: 0, effort: .zero, hidesActions: true)
-        }
         let fieldWidth = max(width - 2 * ComposerLayout.fieldInset, 0)
         var fieldHeight = field.height(width: fieldWidth, text: field.text)
         if let fading = controls?.state.fading { fieldHeight = max(fieldHeight, fading.height) }
-        return ComposerLayout.plan(width: width, field: fieldHeight, effort: currentEffortSize)
+        return ComposerLayout.plan(width: width, field: fieldHeight, effort: leftSize)
+    }
+
+    /// 按钮行左边那一格：平常是思考强度；作答时多题是上一题、下一题，一题时空着。
+    private var leftSize: CGSize {
+        guard let controls, controls.answering != nil else { return currentEffortSize }
+        return controls.questionSteps == nil ? .zero : CGSize(width: 2 * Metrics.paneButton, height: Metrics.paneButton)
     }
 
     private var currentEffortSize: CGSize {
@@ -279,25 +376,46 @@ final class ControlsBarView: UIView {
         super.layoutSubviews()
         let width = bounds.width
         place(glass, bounds)
-        place(response.view, bounds)
-        guard shownWaiting == nil else { return }
+        let pose = currentPose(width: width)
+        self.pose = pose
         let plan = plan(width: width)
+        // 收回去以后藏起来，不接点按
+        if responseClip.isHidden != (pose.card == 0) { responseClip.isHidden = pose.card == 0 }
+        place(responseClip, bounds)
+        if pose.card > 0 {
+            let height = cardHeight(width: width)
+            let top = motion.cardTop(glass: bounds.height, card: height, composer: plan.height)
+            place(response.view, CGRect(x: 0, y: top, width: width, height: height))
+        }
+        // 有卡片时输入区贴着底边
+        let dy = pose.card > 0 ? bounds.height - plan.height : 0
 
+        place(fieldFill, ComposerLayout.fieldFillFrame(width: width, plan: plan).offsetBy(dx: 0, dy: dy))
+        if fieldFill.layer.cornerRadius != ComposerLayout.fieldFillRadius { fieldFill.layer.cornerRadius = ComposerLayout.fieldFillRadius }
         let fieldWidth = max(width - 2 * ComposerLayout.fieldInset, 0)
-        let top = ComposerLayout.fieldTop
+        let top = ComposerLayout.fieldTop + dy
         place(field, CGRect(x: ComposerLayout.fieldInset, y: top, width: fieldWidth, height: field.height(width: fieldWidth, text: field.text)))
         place(fadingView, CGRect(x: ComposerLayout.fieldInset, y: top, width: fieldWidth, height: plan.field))
 
         let row = ComposerLayout.row(width: width, plan: plan)
-        place(effort.view, row.effort)
+        let left = row.effort.offsetBy(dx: 0, dy: dy)
+        let answering = controls?.answering != nil, navigating = controls?.questionSteps != nil
+        if effort.view.isHidden != answering { effort.view.isHidden = answering }
+        if !answering { place(effort.view, left) }
+        for button in [previousButton, nextButton] where button.isHidden != !navigating { button.isHidden = !navigating }
+        if navigating {
+            let size = Metrics.paneButton
+            place(previousButton, CGRect(x: left.minX, y: left.minY, width: size, height: size))
+            place(nextButton, CGRect(x: left.minX + size, y: left.minY, width: size, height: size))
+        }
         // 复用本次排版的宽度比较，只在跨过阈值时改变可见性；控件保留，effort 的手势不中断。
         for button in [attach, voice, primary] where button.isHidden != plan.hidesActions {
             button.isHidden = plan.hidesActions
         }
         guard !plan.hidesActions else { return }
-        place(primary, row.primary)
-        place(voice, row.voice)
-        place(attach, row.attach)
+        place(primary, row.primary.offsetBy(dx: 0, dy: dy))
+        place(voice, row.voice.offsetBy(dx: 0, dy: dy))
+        place(attach, row.attach.offsetBy(dx: 0, dy: dy))
     }
 
     /// 四边取整到像素再摆，同 SwiftUI（输入框 8 行以上时高带小数）；和现在一样就不设：拖缝时每步都排，多数子视图只有横向位置在变。
@@ -312,7 +430,7 @@ final class ControlsBarView: UIView {
     /// 里面变了（行数、按钮、思考强度的宽）：高变了让外面重新量，没变只重摆。
     private func contentChanged() {
         setNeedsLayout()
-        guard let reported, plan(width: reported.width).height != reported.height else { return }
+        guard let reported, currentPose(width: reported.width).height != reported.height else { return }
         heightChanged?()
     }
 
@@ -341,4 +459,12 @@ final class ControlsBarView: UIView {
 
 /// 思考强度的托管视图，按里面报的理想大小摆。
 private typealias EffortHost = UIHostingController<AnyView>
+
+/// 裁卡片的那一层和玻璃一样大：自己不接点按，卡片收起时下面的输入框照常点得中。
+private final class ResponseClip: UIView {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return hit === self ? nil : hit
+    }
+}
 #endif

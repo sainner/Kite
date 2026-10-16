@@ -32,7 +32,6 @@ nonisolated struct RemoteWaiting: Decodable, Equatable, Sendable {
         let description: String
     }
     nonisolated struct Question: Decodable, Equatable, Sendable {
-        let header: String
         let question: String
         let options: [Option]
         let multiSelect: Bool

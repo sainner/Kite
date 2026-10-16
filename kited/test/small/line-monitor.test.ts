@@ -20,7 +20,7 @@ const t0 = new Date(2026, 9, 15, 9, 0, 0).getTime();
 const machineB: AccountMachine = { id: 'machine-b', name: '工作机 B', online: true, address: 'http://machine-b.invalid' };
 
 const question = (id: string, since: number): Waiting => ({ id, since, kind: 'question', questions: [{
-  header: '问题', question: `问题 ${id}`, multiSelect: false,
+  question: `问题 ${id}`, multiSelect: false,
   options: [{ label: '甲', description: '选甲' }, { label: '乙', description: '选乙' }],
 }] });
 /** 别人发起、正卡在一个提问上的线程。 */
