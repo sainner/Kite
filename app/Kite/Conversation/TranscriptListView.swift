@@ -61,16 +61,21 @@ final class TranscriptListView: NSScrollView {
 
     // MARK: - 内容
 
-    /// SwiftUI 那边每次更新都调：换上新的行和环境，insets 是标题栏、控制区让出的高。
-    func update(_ rows: [TranscriptRow], context: TranscriptRowContext, insets: NSEdgeInsets) {
+    /// 标题栏、控制区让出的高。会话还空着、列表藏着时也要交：排版时按它记下留白按多高的可见区算（TranscriptFollow.visibleChanged），
+    /// 按整窗记的话，第一条消息发出去留白多出这两截，滑过了头，等留白跟上变矮的可见区再跳回顶上。
+    func setInsets(_ insets: NSEdgeInsets) {
+        guard contentInsets.top != insets.top || contentInsets.bottom != insets.bottom else { return }
+        // 设 insets 时滚动视图把可见区挪到顶上，这一下是程序改的，不当成人在滚：列表排过以后再交 insets 时，
+        // 当成人滚的话就不跟着最底下了，停在顶上
+        adjusting = true
+        contentInsets = insets
+        adjusting = false
+        needsLayout = true
+    }
+
+    /// SwiftUI 那边每次更新都调：换上新的行和环境。
+    func update(_ rows: [TranscriptRow], context: TranscriptRowContext) {
         self.context = context
-        if contentInsets.top != insets.top || contentInsets.bottom != insets.bottom {
-            // 设 insets 时滚动视图把可见区挪到顶上，这一下是程序改的，不当成人在滚：原生会话窗口先排了空列表再交 insets，
-            // 当成人滚的话打开就不跟着最底下了，停在顶上
-            adjusting = true
-            contentInsets = insets
-            adjusting = false
-        }
         let removed = arrangement.update(rows, context: context, make: { row in
             let slot = makeTranscriptRowSlot(row)
             slot.heightChanged = { [weak self, weak slot] motion in

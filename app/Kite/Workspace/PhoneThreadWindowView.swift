@@ -53,7 +53,6 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
     private let tracking = ModelTracking()
     private let rowsTracking = ModelTracking()
     private let controlsTracking = ModelTracking()
-    private var rows: [TranscriptRow] = []
     private var rowsDirty = true
     private var insets = EdgeInsets()
     private var laying = false
@@ -97,7 +96,6 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
             controls.focusChanged = { [weak self] typing in self?.compactComposer.typing = typing }
         }
         installIslands()
-        refreshRows()
         refreshControls()
         refreshHeader()
 
@@ -239,15 +237,14 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
 
     // MARK: - 对话的行
 
-    /// 读会话记录、选中的行、刚发出的消息，变了换一遍行；行交给列表放在排版里（观察之外），见 layoutSubviews。
-    private func refreshRows() {
+    /// 读会话记录、选中的行、刚发出的消息，变了标记重排；在排版里读，交给列表在观察之外，见 placeTranscript。
+    /// 为什么不下一拍再读见 ThreadWindowView.readRows。
+    private func readRows() -> [TranscriptRow] {
         let thread = thread, pane = pane
-        rows = rowsTracking.track({ pane.transcriptRows(of: thread) }) { [weak self] in
-            // 通知在属性改之前，下一拍再读
-            Task { @MainActor in self?.refreshRows() }
+        return rowsTracking.track({ pane.transcriptRows(of: thread) }) { [weak self] in
+            self?.rowsDirty = true
+            self?.invalidate()
         }
-        rowsDirty = true
-        setNeedsLayout()
     }
 
     private var rowContext: TranscriptRowContext { pane.rowContext(environment: environment, thread: thread) }
@@ -329,6 +326,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         }
         guard rowsDirty, !state.empty else { return }
         rowsDirty = false
+        let rows = readRows()
         if rowsWithoutAnimation {
             UIView.performWithoutAnimation { list.update(rows, context: rowContext, presence: environment.panePresence) }
         } else {

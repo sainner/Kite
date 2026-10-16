@@ -5,12 +5,19 @@ import SwiftUI
 /// Mac 主对话的滚动：原生列表建好后接上，发送时让它滑，见 TranscriptListView.send。iPhone、iPad 是 PhoneTranscriptScroll。
 @MainActor final class MacTranscriptScroll {
     /// 原生列表：MacTranscript 建好时接上，Mac 宽屏的原生会话窗口（ThreadWindowView）自己建列表时也接上。
-    weak var list: TranscriptListView?
+    weak var list: TranscriptListView? {
+        didSet {
+            guard let list, let waiting else { return }
+            self.waiting = nil
+            list.send({ waiting.startsTurn }, alongside: waiting.alongside)
+        }
+    }
+    /// 窄窗口的空会话还没有列表：发第一条时先记下，列表建好接着滑，气泡照样浮入。
+    private var waiting: (startsTurn: Bool, alongside: () -> Void)?
 
     func send(_ append: () -> Bool, alongside: @escaping () -> Void) {
         guard let list else {
-            _ = append()
-            alongside()
+            waiting = (append(), alongside)
             return
         }
         list.send(append, alongside: alongside)
@@ -33,9 +40,9 @@ struct MacTranscript: NSViewRepresentable {
 
     func updateNSView(_ list: TranscriptListView, context: Context) {
         let selection = context.environment.selectedRow
+        list.setInsets(NSEdgeInsets(top: insets.top, left: 0, bottom: insets.bottom, right: 0))
         list.update(rows, context: TranscriptRowContext(environment: context.environment, actionable: true,
-                                                        toggleActions: { selection.toggle($0) }),
-                    insets: NSEdgeInsets(top: insets.top, left: 0, bottom: insets.bottom, right: 0))
+                                                        toggleActions: { selection.toggle($0) }))
     }
 
     /// 尺寸由外面给。不给的话 SwiftUI 按 Auto Layout 量 fittingSize，见 HostedContent。

@@ -32,9 +32,7 @@ final class ThreadWindowView: NSView {
 
     private let tracking = ModelTracking()
     private let rowsTracking = ModelTracking()
-    private var rows: [TranscriptRow] = []
     private var rowsDirty = true
-    private var insets = NSEdgeInsets()
     private var laying = false
     /// 底栏玻璃在这个视图里的范围，输入区的托管视图只在这里面接点击。
     private var glass = CGRect.zero
@@ -70,7 +68,6 @@ final class ThreadWindowView: NSView {
         controls.hitRadius = Metrics.controlRadius
         controlsLink.changed = { [weak self] in self?.invalidate() }
         installIslands()
-        refreshRows()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -112,15 +109,15 @@ final class ThreadWindowView: NSView {
 
     // MARK: - 对话的行
 
-    /// 读会话记录、选中的行、刚发出的消息，变了换一遍行；行交给列表放在排版里（观察之外），见 layout。
-    private func refreshRows() {
+    /// 读会话记录、选中的行、刚发出的消息，变了标记重排；在排版里读，交给列表在观察之外，见 layout。
+    /// 通知在属性改之前，不能当场读；也不能下一拍再读：排版可能抢在那一拍前头，把旧的行交给列表。
+    /// 空会话发第一条时就是这样，列表的版本先变了，发送的那一下没等到新消息就滑，气泡不浮入。
+    private func readRows() -> [TranscriptRow] {
         let thread = thread, pane = pane
-        rows = rowsTracking.track({ pane.transcriptRows(of: thread) }) { [weak self] in
-            // 通知在属性改之前，下一拍再读
-            Task { @MainActor in self?.refreshRows() }
+        return rowsTracking.track({ pane.transcriptRows(of: thread) }) { [weak self] in
+            self?.rowsDirty = true
+            self?.invalidate()
         }
-        rowsDirty = true
-        needsLayout = true
     }
 
     /// 行看到的环境，同 MacThreadTranscript 交给 MacTranscript 的。
@@ -175,14 +172,11 @@ final class ThreadWindowView: NSView {
         place(list, bounds)
         // 标题栏的托管视图排在列表后面，列表头几次排版时它还没建好软边的那一条；标题栏报上高以后这里再排，让列表接着登记
         if !list.pocketsRegistered { list.needsLayout = true }
-        let insets = NSEdgeInsets(top: state.headerHeight, left: 0, bottom: barHeight, right: 0)
-        if insets.top != self.insets.top || insets.bottom != self.insets.bottom {
-            self.insets = insets
-            rowsDirty = true
-        }
+        // 空会话也交：列表藏着时照样排版，见 TranscriptListView.setInsets
+        list.setInsets(NSEdgeInsets(top: state.headerHeight, left: 0, bottom: barHeight, right: 0))
         if rowsDirty, !state.empty {
             rowsDirty = false
-            list.update(rows, context: rowContext, insets: insets)
+            list.update(readRows(), context: rowContext)
         }
     }
 
@@ -253,6 +247,11 @@ final class ThreadIsland: NSHostingView<AnyView> {
 
     @MainActor required init(rootView: AnyView) { fatalError("init(rootView:) has not been implemented") }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 里面的原生视图（输入区的输入框、按钮）的光标：cursorUpdate 交给的是托管视图里面 SwiftUI 的视图，往外传经过这里，见 NativeCursor。
+    override func cursorUpdate(with event: NSEvent) {
+        if let cursor = nativeCursorUnderPointer() { cursor.set() } else { super.cursorUpdate(with: event) }
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let superview else { return nil }
