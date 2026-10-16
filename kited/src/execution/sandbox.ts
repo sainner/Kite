@@ -13,6 +13,8 @@ export interface ExecutionPolicy {
   network: string[];
   denyRead?: string[];
   denyWrite?: string[];
+  /** 项目禁止的主机：名单里有也不放行，也不问人。 */
+  deniedNetwork?: string[];
 }
 
 /** 宿主内部数据不随工作区目录授权暴露给执行代码。 */
@@ -101,7 +103,7 @@ export function prepareSandbox(command: string, options: { cwd: string; env: Nod
           join(options.env.HOME ?? homedir(), '.npm/_logs'), join(options.env.HOME ?? homedir(), '.claude/debug'),
           ...(policy.denyWrite ?? [])]),
       },
-      network: { allowedDomains: [...policy.network], deniedDomains: [], strictAllowlist: !options.network, allowLocalBinding: false, allowAllUnixSockets: false },
+      network: { allowedDomains: [...policy.network], deniedDomains: [...policy.deniedNetwork ?? []], strictAllowlist: !options.network, allowLocalBinding: false, allowAllUnixSockets: false },
       allowAppleEvents: false, enableWeakerNetworkIsolation: false, enableWeakerNestedSandbox: false,
     };
     const settings = join(control, 'settings.json');

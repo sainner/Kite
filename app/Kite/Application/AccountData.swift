@@ -69,10 +69,11 @@ extension AppModel {
         try await dataWorker().request("/project-registry/\(projectID)/constraints", as: ProjectConstraints.self)
     }
 
-    func saveProjectConstraints(_ projectID: String, tools: ProjectConstraints.Tools, expectedRevision: String) async throws -> ProjectConstraints {
-        struct Save: Encodable { let tools: ProjectConstraints.Tools; let expectedRevision: String }
+    func saveProjectConstraints(_ projectID: String, tools: ProjectConstraints.Tools, execution: ProjectExecution,
+                                expectedRevision: String) async throws -> ProjectConstraints {
+        struct Save: Encodable { let tools: ProjectConstraints.Tools; let execution: ProjectExecution; let expectedRevision: String }
         return try await dataWorker().request("/project-registry/\(projectID)/constraints", method: "PUT",
-                                                 body: Save(tools: tools, expectedRevision: expectedRevision), as: ProjectConstraints.self)
+                                                 body: Save(tools: tools, execution: execution, expectedRevision: expectedRevision), as: ProjectConstraints.self)
     }
 
     func credentials(type: String, projectID: String = "") async throws -> [AccountCredential] {

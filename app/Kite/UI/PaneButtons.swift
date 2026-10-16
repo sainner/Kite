@@ -26,24 +26,6 @@ struct PaneButtonLabel: View {
     }
 }
 
-/// 两端共用系统玻璃按钮，尺寸和交互由原生组件负责。
-struct PaneButtonGroup<Content: View>: View {
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        GlassEffectContainer(spacing: Metrics.paneButtonGap) {
-            HStack(spacing: Metrics.paneButtonGap) {
-                content
-            }
-            .menuStyle(.button)
-            .buttonStyle(.glass)
-            .controlSize(.large)
-            .buttonSizing(.fitted)
-        }
-        .fixedSize()
-    }
-}
-
 /// 标题栏的窗口操作与会话菜单共用一块玻璃，与 iPhone 的组合菜单按钮同一规则：
 /// 相邻内容之间隔一个按钮间距，两端留出图标在按钮高度里的空白，单个图标入口仍是圆形。
 /// 选中时玻璃使用主题色，内容统一为白色。
@@ -103,6 +85,8 @@ struct PaneHeaderAction {
     var disabled = false
     /// 开关开着。开关单独成组，开着时整组用选中样式（主题色玻璃、白色图标），同侧栏的设置按钮。
     var on = false
+    /// 图标颜色，不给时随组；停止这类结束动作用 Theme.danger。
+    var tint: Color?
     let action: () -> Void
 }
 
@@ -111,9 +95,15 @@ private struct PaneHeaderActionButton: View {
 
     var body: some View {
         Button(action: action.action) {
-            PaneHeaderButtonLabel(action.title, systemImage: action.systemImage)
-                .opacity(action.busy ? 0 : 1)
-                .overlay { if action.busy { CardSpinner().scaleEffect(0.6) } }
+            Group {
+                if let tint = action.tint {
+                    PaneHeaderButtonLabel(action.title, systemImage: action.systemImage).foregroundStyle(tint)
+                } else {
+                    PaneHeaderButtonLabel(action.title, systemImage: action.systemImage)
+                }
+            }
+            .opacity(action.busy ? 0 : 1)
+            .overlay { if action.busy { CardSpinner().scaleEffect(0.6) } }
         }
         .help(action.help ?? action.title)
         .disabled(action.disabled)

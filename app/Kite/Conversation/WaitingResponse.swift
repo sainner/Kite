@@ -209,13 +209,22 @@ struct WaitingResponseCard: View {
     private var approval: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(approvalTitle).font(Theme.body.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+            // 出沙箱的申请：命令原文、代理写的用途，再提示命令会执行代理能改的脚本
+            if waiting.outside == true, let command = waiting.target {
+                Text(verbatim: command).font(Theme.code).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
             if let reason = waiting.reason {
                 Text(reason).font(Theme.secondary).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if waiting.outside == true {
+                Text("以你的用户身份运行，不受执行授权限制；命令会执行工作区里的脚本（如 package.json、Makefile），代理能修改它们。")
+                    .font(Theme.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
     private var approvalTitle: String {
+        if waiting.outside == true { return "运行命令（不在沙箱里）" }
         let target = waiting.target ?? ""
         return waiting.tool == "shell" ? "命令要连 \(target)" : target
     }

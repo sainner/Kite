@@ -11,14 +11,15 @@ struct ExecutionGrantSettings: View {
     @State private var saved: InstanceExecutionGrants?
     @State private var draft: ExecutionGrantDraft?
     @State private var state: RemoteState?
+    @State private var approval: InstanceApprovalMode?
     @State private var phase = CardPhase.idle
     @State private var discardAction: DiscardAction?
     @FocusState private var focus: Field?
 
-    private enum Field { case read, write, network }
+    private enum Field { case read, write, network, unsandboxed }
 
     private enum DiscardAction { case back, reload }
-    private var changed: Bool { draft?.grants != saved?.grants }
+    private var changed: Bool { draft != saved.map(ExecutionGrantDraft.init(snapshot:)) }
     private var working: Bool { phase.working }
     private var available: Bool {
         model.isConnected(area) && area.remote?.workspace.status == .open
@@ -31,7 +32,7 @@ struct ExecutionGrantSettings: View {
     }
 
     var body: some View {
-        CardSheet(title: "执行授权", subtitle: "设定代理能访问的路径与网络", error: phase.error, typing: focus != nil, back: true, size: InstanceSettings.size,
+        CardSheet(title: "执行授权", subtitle: "设定代理能访问的路径、网络与沙箱外命令", error: phase.error, typing: focus != nil, back: true, size: InstanceSettings.size,
                   close: { if changed { discardAction = .back } else { back() } }) {
             Group {
                 CardSection("当前执行", note: state?.recovery?.message) {
@@ -47,8 +48,19 @@ struct ExecutionGrantSettings: View {
                     }
                     Button("刷新执行状态") { perform { try await readState() } }.disabled(!available)
                 }
-                if draft != nil {
-                    CardSection("工作区", note: "系统工具链保留基础读取权限；宿主数据和 Git 元数据仍受保护。") {
+                if let approval {
+                    CardSection("越界请求", note: approvalNote(approval)) {
+                        LabeledContent("审批模式") {
+                            Picker("审批模式", selection: Binding(get: { approval.mode }, set: { mode in perform { try await setApproval(mode) } })) {
+                                ForEach(ApprovalMode.allCases, id: \.self) { Text($0.title).tag($0) }
+                            }
+                            .pickerStyle(.segmented).labelsHidden().fixedSize()
+                        }
+                    }
+                }
+                if let draft {
+                    CardSection("工作区", note: draft.project.workspace == .read ? "项目定为只读，这里改不了。"
+                                : "系统工具链保留基础读取权限；宿主数据和 Git 元数据仍受保护。") {
                         if let path = area.remote?.workspace.cwd {
                             Text(path).font(Theme.code).foregroundStyle(.secondary).textSelection(.enabled)
                         }
@@ -58,28 +70,36 @@ struct ExecutionGrantSettings: View {
                                 Text("读写").tag(ExecutionGrants.WorkspaceAccess.write)
                             }
                             .pickerStyle(.segmented).labelsHidden().fixedSize()
+                            .disabled(draft.project.workspace == .read)
                         }
                     }
                     Group {
-                        CardField(label: "额外只读路径", focused: focus == .read) {
+                        CardField(label: "额外只读路径", focused: focus == .read, note: projectNote(.read)) {
                             TextField("每行一个绝对路径", text: field(\.readPaths, fallback: ""), axis: .vertical)
                                 .lineLimit(2...5).focused($focus, equals: .read)
                                 .scrollsOnlyWhileTyping(focus == .read)
                                 .cardInput { focus = .read }
                         }
                         CardField(label: "额外读写路径", focused: focus == .write,
-                                  note: "每行填写一个工作机上已存在的绝对路径，读写包含读取。命令可访问这些路径；文件读取和补丁工具仍限于工作区。") {
+                                  note: "每行填写一个工作机上已存在的绝对路径，读写包含读取。命令可访问这些路径；文件读取和补丁工具仍限于工作区。" + (projectNote(.write).map { "\n" + $0 } ?? "")) {
                             TextField("每行一个绝对路径", text: field(\.writePaths, fallback: ""), axis: .vertical)
                                 .lineLimit(2...5).focused($focus, equals: .write)
                                 .scrollsOnlyWhileTyping(focus == .write)
                                 .cardInput { focus = .write }
                         }
                         CardField(label: "允许访问的网络地址", focused: focus == .network,
-                                  note: "每行一个域名或 IP，可带端口，支持 *.example.com。留空禁止网络；不支持全网通配或本机回环地址。") {
+                                  note: "每行一个域名或 IP，可带端口，支持 *.example.com。留空禁止网络；不支持全网通配或本机回环地址。" + (projectNote(.network).map { "\n" + $0 } ?? "")) {
                             TextField("例如 registry.npmjs.org:443", text: field(\.networkDomains, fallback: ""), axis: .vertical)
                                 .lineLimit(2...5).focused($focus, equals: .network)
                                 .scrollsOnlyWhileTyping(focus == .network)
                                 .cardInput { focus = .network }
+                        }
+                        CardField(label: "沙箱外命令", focused: focus == .unsandboxed,
+                                  note: "每行一条，匹配的命令不进沙箱、以你的用户身份运行。以「 *」结尾表示带任意参数，例如 docker compose *；否则须一字不差。命令会执行工作区里的脚本（如 package.json），代理能修改它们。" + (projectNote(.unsandboxed).map { "\n" + $0 } ?? "")) {
+                            TextField("例如 npm run dev", text: field(\.unsandboxedCommands, fallback: ""), axis: .vertical)
+                                .lineLimit(2...5).focused($focus, equals: .unsandboxed)
+                                .scrollsOnlyWhileTyping(focus == .unsandboxed)
+                                .cardInput { focus = .unsandboxed }
                         }
                     }
                     .autocorrectionDisabled()
@@ -123,6 +143,27 @@ struct ExecutionGrantSettings: View {
         }
     }
 
+    /// 项目给的基础许可与禁止，写在对应的输入框下面。
+    private func projectNote(_ key: ExecutionScope.Key) -> String? {
+        guard let project = draft?.project else { return nil }
+        let given = project.allow[key], denied = project.deny[key]
+        let parts = [given.isEmpty ? nil : "项目给的：\(given.joined(separator: "、"))（去掉就从这里删）",
+                     denied.isEmpty ? nil : "项目禁止：\(denied.joined(separator: "、"))"].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: "\n")
+    }
+
+    private func approvalNote(_ value: InstanceApprovalMode) -> String {
+        let base = "命令连接网络许可之外的主机，或代理申请在沙箱外运行命令时怎么处理。运行中也能改，下一次越界时生效。"
+        return value.effective == value.mode ? base : base + "项目上限是「\(value.max.title)」，实际按「\(value.effective.title)」处理。"
+    }
+
+    private func setApproval(_ mode: ApprovalMode) async throws {
+        struct Update: Encodable { let mode: ApprovalMode }
+        let value = try await boundClient().request("/instances/\(instance.id)/approval-mode", method: "PUT", body: Update(mode: mode), as: InstanceApprovalMode.self)
+        _ = try boundClient()
+        approval = value
+    }
+
     private func field<Value>(_ keyPath: WritableKeyPath<ExecutionGrantDraft, Value>, fallback: Value) -> Binding<Value> {
         Binding(get: { draft?[keyPath: keyPath] ?? fallback }, set: { draft?[keyPath: keyPath] = $0 })
     }
@@ -140,8 +181,10 @@ struct ExecutionGrantSettings: View {
         self.client = client
         async let snapshot = client.request("/instances/\(instance.id)/execution-grants", as: InstanceExecutionGrants.self)
         async let execution = client.request("/threads/\(instance.id)/state", as: RemoteState.self)
-        let (value, state) = try await (snapshot, execution)
+        async let mode = client.request("/instances/\(instance.id)/approval-mode", as: InstanceApprovalMode.self)
+        let (value, state, approval) = try await (snapshot, execution, mode)
         _ = try boundClient()
+        self.approval = approval
         saved = value
         draft = ExecutionGrantDraft(snapshot: value)
         self.state = state

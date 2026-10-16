@@ -30,6 +30,8 @@ struct DraftAgentChoice: Equatable {
     var model: AgentModelConfiguration?
     var tools: [String]?
     var maxRequestsPerTurn: Int?
+    /// 草稿里改过的审批模式；没改时用角色的默认。
+    var approval: ApprovalMode?
 }
 
 /// 工具的黑白名单：白名单只准列出的，黑名单排除列出的。角色规则与项目约束共用，开关的含义都是「能用这个工具」。
@@ -73,6 +75,8 @@ nonisolated struct InstanceAgentConfig: Decodable, Sendable {
     var agent: AgentConfiguration?
     var role: Role?
     var monitor: Monitor?
+    /// 审批模式；没设过时是仅白名单。
+    var approval: ApprovalMode?
 }
 
 nonisolated struct AgentConfigurationSnapshot: Decodable, Sendable {
@@ -107,7 +111,8 @@ nonisolated extension [AgentToolInfo] {
     }
 }
 
-/// 模型按厂商分组，后端由所选模型推出；tools 是这个代理可开的工具，required 是角色必需、不能关闭的，blocked 是其中正被项目约束禁用的。
+/// 模型按厂商分组，后端由所选模型推出；tools 是这个代理可开的工具（代理插件的全部工具），defaults 是角色给的默认，
+/// required 是角色必需、不能关闭的，blocked 是正被项目约束禁用的。
 nonisolated struct AgentCapabilities: Decodable, Sendable {
     struct Vendor: Decodable, Identifiable, Sendable {
         let id: String
@@ -123,6 +128,7 @@ nonisolated struct AgentCapabilities: Decodable, Sendable {
     let vendors: [Vendor]
     let models: [Model]
     let tools: [String]
+    var defaults: [String]? = nil
     let required: [String]
     let blocked: [String]
     let toolCatalog: [AgentToolInfo]
@@ -130,9 +136,11 @@ nonisolated struct AgentCapabilities: Decodable, Sendable {
     let toolCatalogBoundary: String
 
     func model(_ id: String) -> Model? { models.first { $0.id == id } }
-    /// 配置页里工具名旁的注明：项目禁用或角色必需。
+    /// 角色给的默认工具；旧工作机没有 defaults 时可开的就是默认。
+    var defaultTools: [String] { defaults ?? tools }
+    /// 配置页里工具名旁的注明：项目禁用、角色必需，或角色没给、由这个代理自己开的。
     func toolNote(_ name: String) -> String? {
-        blocked.contains(name) ? "项目禁用" : required.contains(name) ? "角色必需" : nil
+        blocked.contains(name) ? "项目禁用" : required.contains(name) ? "角色必需" : defaultTools.contains(name) ? nil : "角色未给"
     }
     var toolGroups: [AgentToolGroup] { toolCatalog.groups(of: tools) }
     func canEdit(_ state: RemoteState?) -> Bool {
@@ -148,6 +156,7 @@ nonisolated struct AgentOptions: Decodable, Sendable {
         let id: String
         let revision: String
         let tools: [String]
+        var defaults: [String]? = nil
         let required: [String]
         let blocked: [String]
         let unavailable: String?
@@ -160,7 +169,7 @@ nonisolated struct AgentOptions: Decodable, Sendable {
     /// 草稿还没有实例，按所选角色给出与已有代理同形的能力，模型菜单与配置页共用。
     func capabilities(for role: String) -> AgentCapabilities? {
         guard let option = roles.first(where: { $0.id == role }) else { return nil }
-        return AgentCapabilities(vendors: vendors, models: models, tools: option.tools, required: option.required, blocked: option.blocked, toolCatalog: toolCatalog,
+        return AgentCapabilities(vendors: vendors, models: models, tools: option.tools, defaults: option.defaults, required: option.required, blocked: option.blocked, toolCatalog: toolCatalog,
                                  configurationBoundary: "request", toolCatalogBoundary: "session")
     }
 }

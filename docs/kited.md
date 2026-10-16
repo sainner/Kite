@@ -329,7 +329,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/roles/:id/reset` | 以 `{expectedRevision}` 把内置角色恢复默认，等同于保存默认内容；自建角色 400 |
 | PUT | `/roles/:id/emblem` | 以 `{emblem}` 保存手改的点阵签名，返回带签名状态的角色；表达式不可用时 400 |
 | POST | `/roles/:id/emblem/generate` | `{force}`：为 `true` 时连手改的签名一起重新生成，否则只补缺失或过期的签名；立即返回 `{emblem?, emblemState, emblemError?}`，结果随 `roles.changed` 送达；未启用轻任务时 503 |
-| PUT | `/instances/:id/role` | 以 `{expectedRevision, roleId, roleRevision}` 为代理改选角色，换上角色的提示词、工具、默认模型与预算，协作操作授权随角色增减，其余授权不变；已有对话时返回 409 |
+| PUT | `/instances/:id/role` | 以 `{expectedRevision, roleId, roleRevision}` 为代理改选角色，换上角色的提示词、工具、默认模型与预算，协作授权随角色增减，执行授权与审批模式换成角色的；已有对话时返回 409 |
 | GET | `/context-templates` | 列出标题、上下文压缩、点阵签名、语音识别及各类通知模板（带默认内容的版本 `defaultRevision`）和场景变量，辅助生成的场景附可选的模型目录（`models`） |
 | PUT | `/context-templates/:id` | 以 `{expectedRevision, definition, model?}` 更新模板；模板由工作机提供，不能新建 |
 | POST | `/context-templates/:id/reset` | 以 `{expectedRevision}` 把模板恢复默认，等同于保存默认内容 |
@@ -340,7 +340,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不阻塞主会话控制 |
 | GET / PUT | `/instances/:id/execution-grants` | 读取或修改执行授权；须停止，「允许并记住」追加网络许可例外 |
 | GET / PUT | `/instances/:id/approval-mode` | 读取或设置审批模式 `{mode}`：`allowlist`（默认）、`ask` 或 `allow_all`，运行中也可改，下一次越界请求生效 |
-| GET / PUT | `/instances/:id/operation-grants` | 读取实例操作授权及 revision；以 expectedRevision 和 grants 更新 |
+| GET / PUT | `/instances/:id/operation-grants` | 读取实例的协作授权及 revision；以 expectedRevision 和 grants 更新 |
 | POST | `/workspaces/:id/windows` | 创建实例及默认窗口，或打开已有实例视图；请求使用稳定 id |
 | DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口；最后窗口按插件生命周期回收实例或保留 |
 | POST | `/workspaces/:id/threads` | 在已有工作区创建代理并打开窗口 `{prompt, role?, model?, tools?, maxRequestsPerTurn?, windowId?, messageId?}`；`windowId` 是客户端生成的 UUID，用作新窗口的 ID，已用过返回 409，省略时由 kited 生成；`messageId` 是客户端生成的 UUID，用作第一条消息的 ID，省略时由 kited 生成；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具 |
@@ -367,7 +367,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/events?thread=<id>` | 线程 SSE：首帧 `thread.history`，随后线程显示与状态事件 |
 | GET | `/voice?thread=<id>` | 语音输入的 WebSocket，见 [语音识别](#语音识别)；`thread` 是正在输入的会话，新会话不带。App 推 16 kHz 单声道 s16le 的 PCM 二进制帧，说完发 `{"type":"finish"}`；工作机推 `{"type":"partial","text"}`（到目前为止的全文），最后推 `{"type":"final","text"}` 或 `{"type":"error","message"}` 后关闭。连上之后的错误（如没有凭据）都以 `error` 消息给出 |
 
-窗口创建请求为 `{id, content: {kind: "create", definitionId, instanceId?}}`，`instanceId` 是客户端生成的 UUID，用作新实例的 ID，已用过返回 409，省略时由 kited 生成；打开已有视图为 `{id, content: {kind: "open", instanceId, viewId}}`。`id` 使用 UUID。内置代理（`kite.agent`）提供 `conversation`，文件提供 `files`，终端占位提供 `terminal`；文件视图包含预览。新建的空 agent 不调用模型；目标实例须属于当前工作区且处于可用状态，视图须由定义声明。
+窗口创建请求为 `{id, content: {kind: "create", definitionId, instanceId?}}`，`instanceId` 是客户端生成的 UUID，用作新实例的 ID，已用过返回 409，省略时由 kited 生成；打开已有视图为 `{id, content: {kind: "open", instanceId, viewId}}`。`id` 使用 UUID。内置代理（`kite.agent`）提供 `conversation`，文件提供 `files`，终端提供 `terminal` 与 `web`；文件视图包含预览。新建的空 agent 不调用模型；目标实例须属于当前工作区且处于可用状态，视图须由定义声明。
 
 窗口响应包含 `{id, workspaceId, target: {instanceId, viewId}, state, createdAt}`。新建的窗口以请求 `id` 作窗口 ID，App 据此在工作机确认前先按这个 ID（和 `instanceId`）打开窗口；实例已有同一视图的窗口时返回原来那个。同一请求 ID 重试返回原结果，内容改变或窗口已关闭时拒绝，迟到重试不会复活窗口。实例回收与跨端布局的完整规则见 [Agent 与插件契约](Agent与插件契约.md#34-workspacewindow实例的一种呈现)。
 

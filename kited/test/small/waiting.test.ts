@@ -173,43 +173,39 @@ test('审批模式改成越界询问后，shell 连名单外主机时线程挂�
   const asked = (since: number) => k.events.filter((e) => e.type === 'waiting' && e.threadId === thread.id && !!e.waiting && after(k, since)(e));
   const initial = await k.call('GET', `/instances/${thread.id}/execution-grants`);
   expect(initial.status).toBe(200);
-  expect(initial.body.grants.network).not.toContain(target);
+  expect(initial.body.effective.network).not.toContain(target);
 
+  // 回合已经开始（首条请求在途）时改审批模式。
+  expect(await k.call('PUT', `/instances/${thread.id}/approval-mode`, { mode: 'ask' })).toMatchObject({ status: 200, body: { mode: 'ask', effective: 'ask' } });
   const first = await model.call(1);
-  await first.response.emit({ type: 'item', item: curl('default') });
-  first.response.complete();
-  const second = await model.call(2);
-  expect(resultOf(second.request, 'default')?.output).toContain('status=403');
-  expect(asked(0)).toEqual([]);
-
-  expect(await k.call('PUT', `/instances/${thread.id}/approval-mode`, { mode: 'ask' })).toEqual({ status: 200, body: { mode: 'ask' } });
   const since = mark(k);
-  await second.response.emit({ type: 'item', item: curl('ask') });
-  second.response.complete();
+  await first.response.emit({ type: 'item', item: curl('ask') });
+  first.response.complete();
   const event = await k.waitEvent((e) => e.type === 'waiting' && e.threadId === thread.id && !!e.waiting && after(k, since)(e));
   const waiting = (event as Extract<Envelope, { type: 'waiting' }>).waiting!;
   expect(waiting).toMatchObject({ kind: 'approval', tool: 'shell', target, mustAsk: false });
   const pending = await state(k, thread.id);
   expect(pending.phase).toBe('running');
   expect(pending.waiting).toEqual(waiting);
-  expect(model.calls.values).toHaveLength(2);
+  expect(model.calls.values).toHaveLength(1);
 
   expect(await k.call('POST', `/threads/${thread.id}/waiting/${waiting.id}`, { decision: 'remember' })).toEqual({ status: 200, body: { ok: true } });
-  const third = await model.call(3);
-  expect(resultOf(third.request, 'ask')?.output).toContain('status=502');
+  const second = await model.call(2);
+  expect(resultOf(second.request, 'ask')?.output).toContain('status=502');
   expect((await state(k, thread.id)).waiting).toBeUndefined();
   const remembered = await k.call('GET', `/instances/${thread.id}/execution-grants`);
-  expect(remembered.body.grants.network).toEqual([...initial.body.grants.network, target]);
-  expect(third.request.history.filter((entry) => entry.type === 'notification'
+  expect(remembered.body.grants.add.network).toEqual([...initial.body.grants.add.network, target]);
+  expect(remembered.body.effective.network).toContain(target);
+  expect(second.request.history.filter((entry) => entry.type === 'notification'
     && entry.notification.kind === 'execution.permissions.changed')).toHaveLength(1);
 
   const again = mark(k);
-  await third.response.emit({ type: 'item', item: curl('remembered') });
-  third.response.complete();
-  const fourth = await model.call(4);
-  expect(resultOf(fourth.request, 'remembered')?.output).toContain('status=502');
+  await second.response.emit({ type: 'item', item: curl('remembered') });
+  second.response.complete();
+  const third = await model.call(3);
+  expect(resultOf(third.request, 'remembered')?.output).toContain('status=502');
   expect(asked(again)).toEqual([]);
   const idle = mark(k);
-  fourth.response.complete();
+  third.response.complete();
   await waitIdle(k, thread.id, idle);
 }, 1000);

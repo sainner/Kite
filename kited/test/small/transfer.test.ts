@@ -4,7 +4,7 @@
  * 有远程的项目用 fake-git.ts 的 Git 平台替身，lease 记在那里的裸仓库；没有远程的项目以各工作机的检出互为远程。
  * 目标机没有检出时还原会 clone 到 HOME 下的 ~/code/<项目名>，项目名各测试不同，测试结束时删掉。
  * 一次交接加还原要起几十个 git 进程；有远程的那个测试经 http 的 Git 平台替身来回流转两次，约 2 秒，超过小测试 1 秒的预算，
- * 这个文件单个上限 5 秒（scripts/check.ts 的 FILE_LIMITS）。睡眠前自动换机在 leaving.test.ts，守 1 秒。
+ * 这个文件单个上限 5 秒（scripts/check.ts 的 FILE_LIMITS）。睡眠前自动换机在 takeover.test.ts，守 1 秒。
  */
 import { afterEach, expect, test } from 'bun:test';
 import { chmodSync, existsSync, rmSync } from 'node:fs';
@@ -99,11 +99,13 @@ const inputs = (request: ModelRequest) => request.history.flatMap((entry) => ent
  * 几个部分的配合：副本（数据库行、journal、通知游标）的跟进与导入、执行设备检出上的快照链与工作区分支经对端取到目标检出、
  * 用最后一个快照还原未提交的改动、lease 在 Git 平台上的比较后更新、源机核对后冻结，以及副本随执行设备换人：
  * 目标机接管后原来的副本删掉，冻结的源机改跟新的执行设备。
+ * 去程走手动流转（POST /workspaces/:id/transfer），源机一步做完交接、目标还原、源机核对，返回时 A 已冻结，直接读本机记录；
+ * 回程分开调交接（B）与还原（A）两个入口。
  * 真实 bug（旧实现）：交接只带未归档线程的会话文件，交接前归档的线程到了目标机没有历史；
  * 流转回原机时工作树在同一路径重建，快照模块按路径缓存的私有索引失效，回合收尾报 kite/index.lock 不存在；
  * 会话历史按线程缓存显示投影，还原换上带回来的记录后原机仍返回离开前的投影（下面先读一次历史把它缓存住），看不到在 B 上的回合。
  */
-test('有远程的项目：独立工作区交给 B 后未提交的改增删、会话历史、交接前归档的线程都在，通知只到一次，lease 是 B 的 epoch 2，A 核对后冻结；B 交回 A 替换冻结记录，epoch 3 续接并存快照', async () => {
+test('有远程的项目：手动流转把独立工作区交给 B，未提交的改增删、会话历史、交接前归档的线程都在，通知只到一次，lease 是 B 的 epoch 2，返回时 A 已冻结；B 交回 A 替换冻结记录，epoch 3 续接并存快照', async () => {
   const models = { a: new ManualModel(), b: new ManualModel() };
   const a = machine(models.a);
   const b = machine(models.b);
@@ -136,11 +138,11 @@ test('有远程的项目：独立工作区交给 B 后未提交的改增删、�
   const notice = a.daemon.kite.store.instanceNotifications(thread.id, 0).find((n) => n.kind === 'agent.configuration.changed');
   if (!notice) throw new Error('改配置没有产生通知');
 
-  expect((await handover(a, workspaceId)).status).toBe(200);
-  expect(leaseOf(bare, workspaceId)).toEqual({ machine: machineA, epoch: 1, state: 'handing_off' });
-  const taken = await restore(b, { project: projectId, workspaceId, from: machineA });
-  expect(taken.status).toBe(200);
-  const onB = (taken.body as WorkspaceModel).workspace;
+  const moved = await a.call('POST', `/workspaces/${workspaceId}/transfer`, { to: machineB, operationId: crypto.randomUUID() });
+  expect(moved.status).toBe(200);
+  expect(moved.body).toMatchObject({ workspaceId, machine: machineB, epoch: 2 });
+  expect(a.daemon.kite.store.workspace(workspaceId)?.status).toBe('transferred');
+  const onB = b.daemon.kite.store.workspace(workspaceId)!;
   expect(onB).toMatchObject({ id: workspaceId, epoch: 2, status: 'open' });
   expect(onB.cwd.startsWith(b.root + '/')).toBe(true);
   expect(read(join(onB.cwd, 'tracked.txt'))).toBe('本机改过\n');
@@ -155,7 +157,6 @@ test('有远程的项目：独立工作区交给 B 后未提交的改增删、�
   expect(history).toContainEqual({ type: 'output', item: item('a-reply') });
   expect(history.filter((entry) => entry.type === 'notification' && entry.notification.id === notice.id)).toHaveLength(1);
 
-  expect(((await a.call('POST', `/workspaces/${workspaceId}/lease/check`)).body as WorkspaceModel).workspace.status).toBe('transferred');
   expect((await a.call('POST', `/threads/${thread.id}/messages`, { id: 'on-frozen', text: '冻结后不该执行' })).status).toBe(409);
   // 本机还留着旧工作树时，流转回来之前要先归档旧记录。
   expect((await a.call('POST', `/workspaces/${workspaceId}/archive`, { force: true })).status).toBe(200);
@@ -185,11 +186,10 @@ test('有远程的项目：独立工作区交给 B 后未提交的改增删、�
 
 /*
  * 几个部分的配合：手动流转（POST /workspaces/:id/transfer）在源机上一步做完交接、目标还原、源机核对，跨两台 kited、
- * 经 Git 平台上 lease 的比较后更新。目标还原被拒（B 没登录线程所用的 ChatGPT）时源机撤回交接：工作区回到 open、lease 改回 A 的 active；
- * B 登录后的第二次流转能成功，说明撤回留下的状态让下一次交接、目标接管都走得通（lease 不归 A 时交接会被拒）。
- * 成功返回时 A 已核对并冻结，直接读本机记录，不经 lease/check。
+ * 经 Git 平台上 lease 的比较后更新。目标还原被拒（B 没登录线程所用的 ChatGPT）时源机撤回交接：工作区回到 open、lease 改回 A 的 active，
+ * B 上不留这个工作区。流转成功的一路在上一个测试的去程。
  */
-test('手动流转：目标没登录模型厂商时还原被拒，A 撤回交接、工作区回到 open、lease 回到 A；B 登录后再流转成功，返回时 A 已冻结、B 以 epoch 2 持有', async () => {
+test('手动流转：目标没登录模型厂商时还原被拒，A 撤回交接、工作区回到 open、lease 回到 A，B 上不留这个工作区', async () => {
   const models = { a: new ManualModel(), b: new ManualModel() };
   const a = machine(models.a);
   const b = startKited(() => models.b, false, { catalogDelayMs: 0 });
@@ -206,68 +206,12 @@ test('手动流转：目标没登录模型厂商时还原被拒，A 撤回交接
   const first = await models.a.call(1);
   first.response.complete();
   await a.waitEvent((e) => e.type === 'idle' && e.threadId === thread.id);
-  const transfer = () => a.call('POST', `/workspaces/${workspaceId}/transfer`, { to: machineB, operationId: crypto.randomUUID() });
 
-  const refused = await transfer();
+  const refused = await a.call('POST', `/workspaces/${workspaceId}/transfer`, { to: machineB, operationId: crypto.randomUUID() });
   expect(refused.status).toBeGreaterThanOrEqual(400);
   expect(await statusOf(a, workspaceId)).toBe('open');
   expect(leaseOf(remote.bare, workspaceId)).toEqual({ machine: machineA, epoch: 1, state: 'active' });
-
-  chatgptLogin(b.home);
-  const moved = await transfer();
-  expect(moved.status).toBe(200);
-  expect(moved.body).toMatchObject({ workspaceId, machine: machineB, epoch: 2 });
-  expect(a.daemon.kite.store.workspace(workspaceId)?.status).toBe('transferred');
-  expect(b.daemon.kite.store.workspace(workspaceId)).toMatchObject({ status: 'open', epoch: 2 });
-}, 5_000);
-
-/*
- * 几个部分的配合与 git：没有远程的根工作区交接，目标检出从源机的检出快进到源机现场的提交，沿用流转来的工作区 ID；
- * 目标装好后经 /handover/complete 通知源机，源机冻结记录、检出另得一个新的根工作区（目录不动）。
- * 撤回交接：交接停下了线程，撤回后工作区重新开放，线程能再起回合。
- */
-test('没有远程的项目：A 现场提交后交出根工作区，B 的检出快进到这个提交并以同一 ID 接管，A 收到通知后冻结、检出另得新的根工作区；撤回交接后工作区重新开放能继续', async () => {
-  const models = { a: new ManualModel(), b: new ManualModel() };
-  const a = machine(models.a);
-  const b = machine(models.b);
-  await connect(a, b);
-  const machineA = a.daemon.kite.store.machine.id;
-  const { repo, registered, projectId } = await project(a, { 'a.txt': '一\n' }, [b]);
-  const name = registered.checkout.path.split('/').pop()!;
-  const cloned = await b.call('POST', '/checkouts', { project: projectId, path: join(b.root, name) });
-  expect(cloned.status).toBe(200);
-  const target = (cloned.body as WorkspaceModel).checkout;
-
-  const root = registered.workspace;
-  const started = await a.call('POST', `/workspaces/${root.id}/operations/agent.start`, { operationId: 'worker' });
-  expect(started.status).toBe(200);
-  const threadId = started.body.instanceId as string;
-  await turn(a, models.a, threadId, 1, '在根工作区的回合');
-  writeFiles(repo, { 'a.txt': '二\n' });
-  const head = commitAll(repo, 'A 现场的提交');
-
-  expect((await handover(a, root.id)).status).toBe(200);
-  const taken = await restore(b, { project: projectId, workspaceId: root.id, from: machineA });
-  expect(taken.status).toBe(200);
-  expect((taken.body as WorkspaceModel).workspace).toMatchObject({ id: root.id, kind: 'root', epoch: 2, status: 'open', cwd: target.path });
-  expect(git(target.path, 'rev-parse', 'HEAD')).toBe(head);
-  expect(read(join(target.path, 'a.txt'))).toBe('二\n');
-  expect(git(target.path, 'status', '--porcelain')).toBe('');
-  expect(b.daemon.kite.store.rootWorkspaceModel(target.id)?.workspace.id).toBe(root.id);
-  expect(await humans(b, threadId)).toEqual(['在根工作区的回合']);
-
-  expect(await statusOf(a, root.id)).toBe('transferred');
-  const fresh = a.daemon.kite.store.rootWorkspaceModel(registered.checkout.id)?.workspace;
-  expect(fresh).toMatchObject({ kind: 'root', status: 'open', cwd: repo });
-  expect(fresh?.id).not.toBe(root.id);
-
-  expect((await handover(b, root.id)).status).toBe(200);
-  expect(await statusOf(b, root.id)).toBe('handing_off');
-  const cancelled = await b.call('POST', `/workspaces/${root.id}/handover/cancel`);
-  expect(cancelled.status).toBe(200);
-  expect((cancelled.body as WorkspaceModel).workspace.status).toBe('open');
-  const resumed = await turn(b, models.b, threadId, 1, '撤回以后继续');
-  expect(inputs(resumed.request).map((input) => input.text)).toEqual(['在根工作区的回合', '撤回以后继续']);
+  expect(b.daemon.kite.store.workspace(workspaceId)).toBeNull();
 }, 5_000);
 
 /**
@@ -309,50 +253,13 @@ function recordingProxy(target: string) {
 /*
  * 跟进方与执行设备的配合：跟进方按手上各文件的 {size, mtime, hash} 要增量，执行设备认出只长不改的 journal 是在原来末尾追加的，
  * 只发新增部分，跟进方写在原来的末尾；两边各自算的状态对不上时会退回整份重发，结果一样但每轮都传整份。
- * B 访问 A 都经一个记录代理，看 B 实际拿到的增量页。第一轮走定期跟进的入口（看清单上的摘要）；执行设备上清单的摘要
- * 几秒才重算一次，紧接着的第二轮可能还看不出变化，所以第二轮用交接时「补到末尾」的入口，不看摘要直接要增量。
- */
-test('副本增量：A 上线程的 journal 增长后，B 补到末尾时只拿到从原来末尾开始的新增部分，副本里的 journal 与 A 的一致', async () => {
-  const models = { a: new ManualModel(), b: new ManualModel() };
-  const a = machine(models.a);
-  const b = machine(models.b);
-  const proxy = recordingProxy(a.url);
-  a.candidates.push({ address: b.url, online: true });
-  b.candidates.push({ address: proxy.url, online: true });
-  await Promise.all([a, b].map((k) => k.daemon.kite.directory.refresh()));
-  const { registered } = await project(a, { 'a.txt': '一\n' }, []);
-  const thread = await createWorkspace(a, registered.checkout.id, '第一回合', 'harness');
-  const workspaceId = thread.workspace.id;
-  const first = await models.a.call(1);
-  first.response.complete();
-  await a.waitEvent((e) => e.type === 'idle' && e.threadId === thread.id);
-  const journal = `sessions/${thread.id}/journal.jsonl`;
-  const source = join(a.home, journal);
-  const copy = join(b.home, 'replicas', workspaceId, journal);
-
-  await b.daemon.kite.replicas.sync();
-  const before = read(source);
-  expect(read(copy)).toBe(before);
-  const known = Buffer.byteLength(before);
-  proxy.pages.splice(0);
-
-  await turn(a, models.a, thread.id, 2, '第二回合', 'a-reply');
-  const grown = read(source);
-  expect(grown.startsWith(before)).toBe(true);
-  expect(Buffer.byteLength(grown)).toBeGreaterThan(known);
-  await b.daemon.kite.replicas.catchUp({ id: a.daemon.kite.store.machine.id, address: proxy.url }, workspaceId);
-  const sent = proxy.pages.filter((entry) => entry.workspaceId === workspaceId).flatMap((entry) => entry.page.files)
-    .filter((file) => file.path === journal);
-  expect(sent.map((file) => file.offset)).toEqual([known]);
-  expect(read(copy)).toBe(grown);
-}, 5_000);
-
-/*
+ * B 访问 A 都经一个记录代理，看 B 实际拿到的增量页（只列变了的文件）。
  * 两条异步路径的并发。真实 bug（旧实现）：交接时的补到末尾（catchUp）与定期跟进的一轮各自拉同一工作区，按同一份本地情况
- * 要到同一段增量，按偏移追加的 journal 被追加了两次。代理扣住副本页的回应，等这一轮的清单答复出去才放行，让两条路径确实重叠。
+ * 要到同一段增量，按偏移追加的 journal 被追加了两次。代理扣住副本页的回应，等这一轮的清单答复出去才放行，让两条路径确实重叠；
+ * 两条要么都拿到从原来末尾起的这一段，要么后一条看出已经跟上、不再列 journal，哪种都不能是整份。
  * 起初的副本经 catchUp 取，不经清单：执行设备上清单的摘要缓存几秒，先跟过一轮的话，紧接着的一轮看不出变化，不会去拉。
  */
-test('定期跟进与补到末尾同时拉同一工作区：A 上的 journal 增长后两条一起跑完，副本里的 journal 与 A 的逐字节一致', async () => {
+test('副本增量：A 上线程的 journal 增长后，定期跟进与补到末尾同时拉这个工作区，拿到的都只是从原来末尾开始的新增部分，副本里的 journal 与 A 的逐字节一致', async () => {
   const models = { a: new ManualModel(), b: new ManualModel() };
   const a = machine(models.a);
   const b = machine(models.b);
@@ -373,13 +280,17 @@ test('定期跟进与补到末尾同时拉同一工作区：A 上的 journal 增
   const replicas = b.daemon.kite.replicas;
 
   await replicas.catchUp(holder, workspaceId);
-  expect(read(copy)).toBe(read(source));
+  const before = read(source);
+  expect(read(copy)).toBe(before);
+  const known = Buffer.byteLength(before);
   const digest = replicas.store.state(workspaceId)?.digest;
   expect(digest).toEqual(expect.any(String));
 
   await turn(a, models.a, thread.id, 2, '第二回合', 'a-reply');
   const grown = read(source);
-  expect(Buffer.byteLength(grown)).toBeGreaterThan(Buffer.byteLength(read(copy)));
+  expect(grown.startsWith(before)).toBe(true);
+  expect(Buffer.byteLength(grown)).toBeGreaterThan(known);
+  proxy.pages.splice(0);
   proxy.listings.splice(0);
   proxy.holdPagesUntilListed();
   await Promise.all([replicas.sync(), replicas.catchUp(holder, workspaceId)]);
@@ -387,47 +298,11 @@ test('定期跟进与补到末尾同时拉同一工作区：A 上的 journal 增
   const listed = proxy.listings.flat().find((entry) => entry.workspaceId === workspaceId);
   expect(listed?.digest).toEqual(expect.any(String));
   expect(listed?.digest).not.toBe(digest);
+  const sent = proxy.pages.filter((entry) => entry.workspaceId === workspaceId).flatMap((entry) => entry.page.files)
+    .filter((file) => file.path === journal);
+  expect(sent.length).toBeGreaterThan(0);
+  expect(sent.map((file) => file.offset)).toEqual(sent.map(() => known));
   expect(read(copy)).toBe(grown);
-}, 5_000);
-
-/*
- * 几个部分的配合：B 有这个项目的检出时，副本跟进顺带从 A 的检出取快照链与工作区分支；A 停掉后 B 不联系 A，
- * 只用手上的副本强制接管（epoch 2）。没有远程的项目没有 lease，A 重启后从目录摘要里看到 B 以更高 epoch 持有，核对后冻结本地记录。
- */
-test('强制接管：A 停掉后 B 用手上的副本接管，工作树有 A 回合里的改动、历史在；A 重启后核对，从 B 的目录摘要看到更高 epoch，冻结本地记录', async () => {
-  const models = { a: new ManualModel(), b: new ManualModel(), restarted: new ManualModel() };
-  let a = machine(models.a);
-  const b = machine(models.b);
-  await connect(a, b);
-  const machineB = b.daemon.kite.store.machine.id;
-  const { registered, projectId } = await project(a, { 'a.txt': '一\n' }, [b]);
-  const name = registered.checkout.path.split('/').pop()!;
-  expect((await b.call('POST', '/checkouts', { project: projectId, path: join(b.root, name) })).status).toBe(200);
-
-  const thread = await createWorkspace(a, registered.checkout.id, '第一回合', 'harness');
-  const workspaceId = thread.workspace.id;
-  const since = mark(a);
-  const first = await models.a.call(1);
-  writeFiles(thread.workspace.cwd, { 'work.txt': 'A 回合里写的\n' });
-  first.response.complete();
-  await a.waitEvent((e) => e.type === 'workspace.snapshot' && e.workspaceId === workspaceId && after(a, since)(e));
-  await a.waitEvent((e) => e.type === 'idle' && e.threadId === thread.id);
-  await b.daemon.kite.replicas.sync();
-  await a.halt();
-
-  const taken = await restore(b, { project: projectId, workspaceId, force: true });
-  expect(taken.status).toBe(200);
-  const onB = (taken.body as WorkspaceModel).workspace;
-  expect(onB).toMatchObject({ id: workspaceId, epoch: 2, status: 'open' });
-  expect(read(join(onB.cwd, 'work.txt'))).toBe('A 回合里写的\n');
-  expect(await humans(b, thread.id)).toEqual(['第一回合']);
-
-  a = await restart(a, models.restarted);
-  await connect(a, b);
-  await synced(a, () => a.daemon.kite.directory.entries().some((entry) => entry.id === machineB
-    && entry.snapshot?.workspaces.some((w) => w.id === workspaceId && w.epoch === 2 && w.status === 'open')), 'A 看到 B 以 epoch 2 持有');
-  expect(((await a.call('POST', `/workspaces/${workspaceId}/lease/check`)).body as WorkspaceModel).workspace.status).toBe('transferred');
-  expect(await statusOf(b, workspaceId)).toBe('open');
 }, 5_000);
 
 /** B 的检出里有 fail 标记时，等到放行文件 go 出现后失败退出；没有标记时直接成功。 */
@@ -440,24 +315,68 @@ const FAILING_SETUP = [
 ].join('\n');
 
 /*
- * 还原与后台轮询两个流程的交错。真实 bug（旧实现）：还原中工作区记录已以 preparing 导入本机，这时跟一轮副本，
+ * 没有远程的项目，B 有自己的检出，两段接在一起，省一遍两台 kited、登记同步和 B 的 clone。
+ * 前一段，几个部分的配合与 git：根工作区交接，目标检出从源机的检出快进到源机现场的提交，沿用流转来的工作区 ID；
+ * 目标装好后经 /handover/complete 通知源机，源机冻结记录、检出另得一个新的根工作区（目录不动）。
+ * 撤回交接：交接停下了线程，撤回后工作区重新开放，线程能再起回合。
+ * 后一段是独立工作区，还原与后台轮询两个流程的交错。真实 bug（旧实现）：还原中工作区记录已以 preparing 导入本机，这时跟一轮副本，
  * 轮询把它当成本机已持有而删掉副本；之后 setup 失败、还原回滚，副本没了，源机丢失后强制接管时会话记录永久丢失。
  * 第一次从在线的 A 还原，这一轮照常向 A 要清单；setup 在 B 上等放行文件，测试在它结束之前（记录已导入）跟一轮副本，再放行让它失败。
+ * 之后接着强制接管：副本跟进顺带从 A 的检出取快照链与工作区分支；A 撤回交接后停掉，B 不联系 A，
+ * 只用手上的副本接管（epoch 2），工作树有 A 回合里的改动。没有远程的项目没有 lease，A 重启后从目录摘要里看到 B 以更高 epoch 持有，
+ * 核对后冻结本地记录。
  */
-test('还原中 setup 失败回滚后副本还在：还原期间跟一轮副本不删它；A 停掉后去掉失败原因，B 用这份副本强制接管，历史在', async () => {
+test('没有远程的项目：A 现场提交后交出根工作区，B 的检出快进到这个提交并以同一 ID 接管，A 收到通知后冻结、检出另得新的根工作区，撤回交接后工作区重新开放能继续；独立工作区还原中 setup 失败回滚后副本还在，A 撤回交接后停掉，B 用这份副本强制接管，工作树有 A 回合里的改动、历史在，A 重启后核对，从 B 的目录摘要看到更高 epoch，冻结本地记录', async () => {
   const models = { a: new ManualModel(), b: new ManualModel() };
-  const a = machine(models.a);
+  let a = machine(models.a);
   const b = machine(models.b);
   await connect(a, b);
   const machineA = a.daemon.kite.store.machine.id;
-  const { registered, projectId } = await project(a, { 'a.txt': '一\n', '.kite/setup': FAILING_SETUP }, [b]);
+  const machineB = b.daemon.kite.store.machine.id;
+  const { repo, registered, projectId } = await project(a, { 'a.txt': '一\n', '.kite/setup': FAILING_SETUP }, [b]);
   const checkoutB = join(b.root, registered.checkout.path.split('/').pop()!);
-  expect((await b.call('POST', '/checkouts', { project: projectId, path: checkoutB })).status).toBe(200);
+  const cloned = await b.call('POST', '/checkouts', { project: projectId, path: checkoutB });
+  expect(cloned.status).toBe(200);
+  const target = (cloned.body as WorkspaceModel).checkout;
+
+  const root = registered.workspace;
+  const started = await a.call('POST', `/workspaces/${root.id}/operations/agent.start`, { operationId: 'worker' });
+  expect(started.status).toBe(200);
+  const threadId = started.body.instanceId as string;
+  await turn(a, models.a, threadId, 1, '在根工作区的回合');
+  writeFiles(repo, { 'a.txt': '二\n' });
+  const head = commitAll(repo, 'A 现场的提交');
+
+  expect((await handover(a, root.id)).status).toBe(200);
+  const rooted = await restore(b, { project: projectId, workspaceId: root.id, from: machineA });
+  expect(rooted.status).toBe(200);
+  expect((rooted.body as WorkspaceModel).workspace).toMatchObject({ id: root.id, kind: 'root', epoch: 2, status: 'open', cwd: target.path });
+  expect(git(target.path, 'rev-parse', 'HEAD')).toBe(head);
+  expect(read(join(target.path, 'a.txt'))).toBe('二\n');
+  expect(git(target.path, 'status', '--porcelain')).toBe('');
+  expect(b.daemon.kite.store.rootWorkspaceModel(target.id)?.workspace.id).toBe(root.id);
+  expect(await humans(b, threadId)).toEqual(['在根工作区的回合']);
+
+  expect(await statusOf(a, root.id)).toBe('transferred');
+  const fresh = a.daemon.kite.store.rootWorkspaceModel(registered.checkout.id)?.workspace;
+  expect(fresh).toMatchObject({ kind: 'root', status: 'open', cwd: repo });
+  expect(fresh?.id).not.toBe(root.id);
+
+  expect((await handover(b, root.id)).status).toBe(200);
+  expect(await statusOf(b, root.id)).toBe('handing_off');
+  const cancelled = await b.call('POST', `/workspaces/${root.id}/handover/cancel`);
+  expect(cancelled.status).toBe(200);
+  expect((cancelled.body as WorkspaceModel).workspace.status).toBe('open');
+  const resumed = await turn(b, models.b, threadId, 1, '撤回以后继续');
+  expect(inputs(resumed.request).map((input) => input.text)).toEqual(['在根工作区的回合', '撤回以后继续']);
 
   const thread = await createWorkspace(a, registered.checkout.id, '第一回合', 'harness');
   const workspaceId = thread.workspace.id;
-  const first = await models.a.call(1);
+  const since = mark(a);
+  const first = await models.a.call(2);
+  writeFiles(thread.workspace.cwd, { 'work.txt': 'A 回合里写的\n' });
   first.response.complete();
+  await a.waitEvent((e) => e.type === 'workspace.snapshot' && e.workspaceId === workspaceId && after(a, since)(e));
   await a.waitEvent((e) => e.type === 'idle' && e.threadId === thread.id);
   const replicas = b.daemon.kite.replicas;
   await replicas.sync();
@@ -476,10 +395,20 @@ test('还原中 setup 失败回滚后副本还在：还原期间跟一轮副本�
   expect(existsSync(join(b.home, 'replicas', workspaceId, 'state.json'))).toBe(true);
   expect(replicas.store.state(workspaceId)?.complete).toBe(true);
 
+  expect(((await a.call('POST', `/workspaces/${workspaceId}/handover/cancel`)).body as WorkspaceModel).workspace.status).toBe('open');
   await a.halt();
   rmSync(join(checkoutB, 'fail'));
   const taken = await restore(b, { project: projectId, workspaceId, force: true });
   expect(taken.status).toBe(200);
-  expect((taken.body as WorkspaceModel).workspace).toMatchObject({ id: workspaceId, epoch: 2, status: 'open' });
+  const onB = (taken.body as WorkspaceModel).workspace;
+  expect(onB).toMatchObject({ id: workspaceId, epoch: 2, status: 'open' });
+  expect(read(join(onB.cwd, 'work.txt'))).toBe('A 回合里写的\n');
   expect(await humans(b, thread.id)).toEqual(['第一回合']);
+
+  a = await restart(a, new ManualModel());
+  await connect(a, b);
+  await synced(a, () => a.daemon.kite.directory.entries().some((entry) => entry.id === machineB
+    && entry.snapshot?.workspaces.some((w) => w.id === workspaceId && w.epoch === 2 && w.status === 'open')), 'A 看到 B 以 epoch 2 持有');
+  expect(((await a.call('POST', `/workspaces/${workspaceId}/lease/check`)).body as WorkspaceModel).workspace.status).toBe('transferred');
+  expect(await statusOf(b, workspaceId)).toBe('open');
 }, 5_000);

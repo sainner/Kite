@@ -47,7 +47,7 @@ export function lineTools(options: LineToolOptions): Tool[] {
 
   const allowed = (action: LineAction) => {
     const grants = operationGrantsSchema.parse(store.instance(instanceId)?.config.grants ?? []);
-    if (!grants.some((grant) => grant.operation === 'line' && grant.actions.includes(action))) throw new KiteError(`Line 未获准执行 ${action}，请用户在操作授权里打开`);
+    if (!grants.some((grant) => grant.operation === 'line' && grant.actions.includes(action))) throw new KiteError(`Line 未获准执行 ${action}，请用户在 Line 的协作授权里打开`);
   };
   /** 必问动作：用户批准这一次才往下执行，拒绝或会话停止都不执行。 */
   const mustAsk = async (tool: string, target: string, context: ToolContext) => {

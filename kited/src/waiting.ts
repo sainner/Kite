@@ -33,7 +33,11 @@ const answersRequest = z.object({
 const decisionRequest = z.object({ decision: z.enum(['once', 'remember', 'deny']), reason }).strict();
 
 /** 审批：tool 与 target 说明要做什么，reason 说明为什么要问；必问的动作每次都问，不接受「允许并记住」。 */
-export interface ApprovalRequest { tool: string; target: string; reason: string; mustAsk: boolean }
+export interface ApprovalRequest {
+  tool: string; target: string; reason: string; mustAsk: boolean;
+  /** 申请在沙箱外运行这条命令：target 是命令原文，reason 是代理写的用途。 */
+  outside?: boolean;
+}
 export type ApprovalDecision = 'once' | 'remember' | 'deny';
 type WaitingRequest = { kind: 'question'; questions: Question[] } | ({ kind: 'approval' } & ApprovalRequest);
 export type Waiting = { id: string; since: number } & WaitingRequest;

@@ -48,15 +48,16 @@ function bmp(width: number, height: number): Buffer {
 
 describe('read 读取图片', () => {
   // Bun 1.4 的 Bun.Image：metadata、resize（fit inside）与编码的运行时行为。
+  // 大图用 JPEG：同样尺寸编成 PNG 要多花约 0.3 秒，缩放这一步两种格式走的是同一个 resize。
   test('长边超过 2048 的图片按比例缩到 2048 并说明尺寸，小 PNG 原样附上', async () => {
     const cwd = temp();
-    const pngBytes = Buffer.from(await new BunImage(bmp(3000, 1500)).png().bytes());
-    writeFileSync(join(cwd, 'big.png'), pngBytes);
+    const jpegBytes = Buffer.from(await new BunImage(bmp(3000, 1500)).jpeg().bytes());
+    writeFileSync(join(cwd, 'big.jpg'), jpegBytes);
     const small = Buffer.from(await new BunImage(bmp(64, 40)).png().bytes());
     writeFileSync(join(cwd, 'small.png'), small);
     const tool = readTool(cwd);
 
-    const big = await read(tool, cwd, { path: 'big.png' });
+    const big = await read(tool, cwd, { path: 'big.jpg' });
     expect(big.status).toBe('success');
     expect(big.images).toHaveLength(1);
     const size = await decoded(big.images![0]!.data);

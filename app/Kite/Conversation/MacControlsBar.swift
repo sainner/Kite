@@ -197,7 +197,7 @@ final class ControlsBarView: RepresentedRoot {
             effortKey = key
             // 刻度展开、收起时宽由 TimelineView 逐帧变，托管视图的固有尺寸不跟着逐帧报：框停在收着的宽，内容在框里居中、
             // 档位名被挤得换行，右边的刻度落在框外，指针移过去算移开（2026-10-14 Mac 实测）。按理想大小画、靠左，宽高由内容自己的几何报
-            effort.rootView = AnyView(ThreadEffortControl(controls: controls)
+            effort.rootView = AnyView(HStack(spacing: 0) { ApprovalModeControl(controls: controls); ThreadEffortControl(controls: controls) }
                 .fixedSize()
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { [weak self] in self?.effortResized($0) }
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)

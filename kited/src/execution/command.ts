@@ -30,6 +30,34 @@ export interface CommandOptions {
   onProcess?(pid: number, active: boolean): void;
   /** 有它时名单外的主机不直接拒绝，交给它决定；命令结束时仍在问的一并作废。 */
   askNetwork?: NetworkAsk;
+  /** 有它时命令可以转到后台：超时、用户插话或一开始就要求时不停进程，交给它接着管，工具立刻返回。带凭据的命令不转。 */
+  background?: CommandBackground;
+  /** 已获准在沙箱外运行（沙箱外命令或审批放行）：直接以用户身份跑，不加文件与网络限制；带凭据的命令不能出沙箱。 */
+  unsandboxed?: boolean;
+}
+
+/** 转到后台的命令：进程照跑，输出接着写进日志并交给监听者，结束时 done 给出结果。 */
+export interface BackgroundCommand {
+  pid: number;
+  /** 完整输出的日志文件。 */
+  log: string;
+  /** 转后台之前的输出，只留尾部。 */
+  output: string;
+  /** 之后的输出，写进日志后通知。 */
+  listen(listener: (text: string) => void): void;
+  /** 进程组结束；被停下时 stopped 写原因，确认不了进程组已停止时 unknown。 */
+  done: Promise<{ code: number | null; stopped?: string; unknown?: boolean }>;
+  /** 停下整个进程组。 */
+  stop(reason: string): void;
+}
+
+export interface CommandBackground {
+  /** 触发时还在跑的命令转后台（用户发来了消息）。 */
+  now?: AbortSignal;
+  /** 一开始就转后台。 */
+  immediately?: boolean;
+  /** 接管转到后台的命令，返回告诉模型的说明。 */
+  adopt(command: BackgroundCommand): string;
 }
 
 /**
@@ -92,19 +120,30 @@ export async function runCommand(command: string, timeout: number, signal: Abort
   let sandbox: ReturnType<typeof prepareSandbox> | undefined;
   let asking: Server | undefined;
   const askingEnded = new AbortController();
+  const background = confidential ? undefined : options.background;
+  /** 转后台的原因；先到的算。 */
+  const moved = Promise.withResolvers<string>();
+  let detached = false;
+  const listeners: Array<(text: string) => void> = [];
   // 等人回应网络审批的时间不算命令的运行时间：问的期间停下超时计时，问完按剩余时间接着计。
   let remaining = timeout;
   let since = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let held = 0;
-  const startTimer = () => { since = Date.now(); timer = setTimeout(() => stop('命令超时'), remaining); };
+  const startTimer = () => {
+    since = Date.now();
+    const span = timeout >= 1000 ? `${Math.round(timeout / 1000)} 秒` : `${timeout} 毫秒`;
+    timer = setTimeout(() => background ? moved.resolve(`命令在 ${span}内没有结束，已转到后台接着运行。`) : stop('命令超时'), remaining);
+  };
   const hold = () => {
     if (held++ === 0 && timer) { clearTimeout(timer); timer = undefined; remaining -= Date.now() - since; }
     // 命令结束后才放开的（询问随之作废）不再计时。
     return () => { if (--held === 0 && !stopped && !askingEnded.signal.aborted) startTimer(); };
   };
   try {
-    sandbox = prepareSandbox(command, { cwd: options.cwd, env: options.env, policy: options.policy ?? workspacePolicy(options.cwd, options.env),
+    if (options.unsandboxed && confidential) throw new Error('带凭据的命令不能在沙箱外运行');
+    sandbox = options.unsandboxed ? { executable: '/bin/sh', args: ['-c', command], env: options.env, askSocket: undefined, dispose: () => {} }
+      : prepareSandbox(command, { cwd: options.cwd, env: options.env, policy: options.policy ?? workspacePolicy(options.cwd, options.env),
       credentials: options.credentials, ...(options.askNetwork ? { network: 'ask' as const } : {}) });
     if (sandbox.askSocket) asking = await askServer(sandbox.askSocket, options.askNetwork!, AbortSignal.any([signal, askingEnded.signal]), hold);
     child = spawn(sandbox.executable, sandbox.args, { cwd: options.cwd, env: sandbox.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -131,16 +170,20 @@ export async function runCommand(command: string, timeout: number, signal: Abort
         if (written === 0) throw new Error('命令日志写入失败');
         offset += written;
       }
-      options.onOutput?.(part, limit);
+      if (detached) for (const listener of listeners) listener(part);
+      else options.onOutput?.(part, limit);
     } catch (error) { ioError = error; stop('命令输出处理失败'); }
   };
   child.stdout.setEncoding('utf8').on('data', (part: string) => {
     onOutput(part);
-    if (!confidential && !ioError) options.onStdout?.(part);
+    if (!confidential && !ioError && !detached) options.onStdout?.(part);
   });
   child.stderr.setEncoding('utf8').on('data', onOutput);
   const onAbort = () => stop('命令被打断，已经发生的改动未撤销');
   signal.addEventListener('abort', onAbort, { once: true });
+  const onMove = () => moved.resolve('用户发来了新消息，命令转到后台接着运行，没有停下。');
+  background?.now?.addEventListener('abort', onMove, { once: true });
+  if (background?.immediately) moved.resolve('命令已在后台运行。');
   if (!held) startTimer();
   const closed = new Promise<number | null>((resolve) => {
     child.once('error', () => { stopped = '命令进程启动失败'; });
@@ -149,20 +192,57 @@ export async function runCommand(command: string, timeout: number, signal: Abort
     });
     child.once('close', (code) => resolve(code));
   });
+  // close 只保证管道关闭；同组进程可能已经重定向输出，仍须检查进程组。
+  const settle = async () => {
+    if (pid && processGroupAlive(pid)) {
+      stop('命令留下后台进程，正在停止');
+      const deadline = Date.now() + 600;
+      while (processGroupAlive(pid) && Date.now() < deadline) await delay(10);
+    }
+    return pid !== undefined && processGroupAlive(pid);
+  };
+  const cleanup = () => {
+    clearTimeout(timer);
+    if (killTimer) clearTimeout(killTimer);
+    signal.removeEventListener('abort', onAbort);
+    background?.now?.removeEventListener('abort', onMove);
+    askingEnded.abort();
+    asking?.close();
+    closeSync(fd);
+    // 结果未知时保留运行所需目录，避免仍存活的进程使用已经删除或复用的路径。
+    if (!pid || !processGroupAlive(pid)) sandbox.dispose();
+  };
+  /**
+   * 转后台：不再计时，不再跟着这次工具调用的打断停下，名单外的主机不再问人（直接拒绝）；进程登记交给接管方，
+   * 进程结束后在这里收尾。
+   */
+  const detach = (reason: string): ToolResult => {
+    detached = true;
+    clearTimeout(timer);
+    timer = undefined;
+    signal.removeEventListener('abort', onAbort);
+    askingEnded.abort();
+    if (pid) options.onProcess?.(pid, false);
+    const done = (async () => {
+      try {
+        const code = await closed;
+        const unknown = await settle();
+        return { code, ...(stopped ? { stopped } : {}), ...(unknown ? { unknown: true } : {}) };
+      } finally { cleanup(); }
+    })();
+    const message = background!.adopt({ pid: pid!, log, output: tail, listen: (listener) => { listeners.push(listener); }, done, stop });
+    return { status: 'success', output: reason + message };
+  };
   try {
     if (pid) {
       try { options.onProcess?.(pid, true); }
       catch (error) { ioError = error; stop('进程登记失败'); }
     }
     if (signal.aborted) onAbort();
-    const code = await closed;
-    // close 只保证管道关闭；同组进程可能已经重定向输出，仍须检查进程组。
-    if (pid && processGroupAlive(pid)) {
-      stop('命令留下后台进程，正在停止');
-      const deadline = Date.now() + 600;
-      while (processGroupAlive(pid) && Date.now() < deadline) await delay(10);
-    }
-    const alive = pid !== undefined && processGroupAlive(pid);
+    const first = await Promise.race([closed.then((code) => ({ code })), moved.promise.then((reason) => ({ reason }))]);
+    if ('reason' in first && pid && !stopped && !ioError) return detach(first.reason);
+    const code = 'code' in first ? first.code : await closed;
+    const alive = await settle();
     if (pid && !alive) options.onProcess?.(pid, false);
     if (ioError && !alive) throw ioError;
     const status = alive ? 'unknown' : stopped || code !== 0 ? 'error' : 'success';
@@ -176,13 +256,6 @@ export async function runCommand(command: string, timeout: number, signal: Abort
       ].filter(Boolean).join('\n'),
     };
   } finally {
-    clearTimeout(timer);
-    if (killTimer) clearTimeout(killTimer);
-    signal.removeEventListener('abort', onAbort);
-    askingEnded.abort();
-    asking?.close();
-    closeSync(fd);
-    // 结果未知时保留运行所需目录，避免仍存活的进程使用已经删除或复用的路径。
-    if (!pid || !processGroupAlive(pid)) sandbox.dispose();
+    if (!detached) cleanup();
   }
 }

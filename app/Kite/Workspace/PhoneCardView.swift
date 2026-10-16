@@ -715,38 +715,32 @@ final class PhoneCardView: UIView {
         else { stage.group.layout.focus(pane) }
     }
 
-    /// 长按（指针右键）菜单：缩成停靠形状时先写名字与状态，再是实例操作和关闭窗口。
+    /// 长按（指针右键）菜单只在缩成停靠形状时有（这时它就是停靠栏里那一格，同 DockEntryMenu）：先写名字与状态，再是实例操作（含关闭窗口）。
+    /// 标题栏上没有，长按直接拿起卡片。
     private func menu() -> UIMenu? {
-        guard let stage, let placed, let area = stage.group.workspace,
+        guard let stage, let placed, placed.minimized, let area = stage.group.workspace,
               let target = area.windows.first(where: { $0.id == pane.id })?.target,
               let instance = area.instances.first(where: { $0.id == target.instanceId }) else { return nil }
-        var items: [UIMenuElement] = []
-        if placed.minimized {
-            items.append(UIAction(title: area.dockLabel(.pane(pane)), attributes: .disabled) { _ in })
-        }
+        var items: [UIMenuElement] = [UIAction(title: area.dockLabel(.pane(pane)), attributes: .disabled) { _ in }]
         let model = stage.model
-        for action in InstanceAction.all(for: instance, in: area, model: model) {
+        for action in InstanceAction.all(for: instance, in: area, model: model, pane: pane) {
             var attributes: UIMenuElement.Attributes = []
             if !action.enabled { attributes.insert(.disabled) }
             if action.destructive { attributes.insert(.destructive) }
             let perform = action.perform
             items.append(UIAction(title: action.title, attributes: attributes) { _ in perform() })
         }
-        let pane = pane
-        items.append(UIAction(title: "关闭窗口") { _ in model.closeWindow(pane, in: area) })
         return UIMenu(children: items)
     }
 
-    /// 长按菜单浮起来的：标题栏那一截，缩成停靠形状时整个外框。从卡片上截一份图，菜单开着时原处照常显示。
+    /// 长按菜单浮起来的：缩成停靠形状的整个外框。从卡片上截一份图，菜单开着时原处照常显示。
     private func menuPreview() -> UITargetedPreview? {
-        guard let placed, let arrangement else { return nil }
-        let frame = placed.target.frame
-        let rect = placed.minimized ? frame
-            : CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: min(max(arrangement.header.height, Metrics.dragBubble), frame.height))
+        guard let placed else { return nil }
+        let rect = placed.target.frame
         guard let snapshot = resizableSnapshotView(from: rect, afterScreenUpdates: false, withCapInsets: .zero) else { return nil }
         let parameters = UIPreviewParameters()
         parameters.backgroundColor = .clear
-        let radius = min(placed.minimized ? placed.target.radius : Metrics.cardRadius, rect.height / 2)
+        let radius = min(placed.target.radius, rect.height / 2)
         parameters.visiblePath = UIBezierPath(roundedRect: CGRect(origin: .zero, size: rect.size), cornerRadius: radius)
         return UITargetedPreview(view: snapshot, parameters: parameters,
                                  target: UIPreviewTarget(container: self, center: CGPoint(x: rect.midX, y: rect.midY)))
@@ -1024,8 +1018,8 @@ final class PhoneContentContainer: UIView, HostedContentSurface {
 
 /// 标题栏一层：拖动区和窗口按钮，按停着的外框摆，命中按外框的圆角裁。
 /// 拖动卡片分输入方式起拖：iPad 指针（触控板、鼠标）按住挪过一段距离就起拖，同 Mac（ThresholdDrag，只认指针）；
-/// 手指和笔要先长按，按系统拖放的惯例交给 UIDragInteraction：和长按菜单（UIContextMenuInteraction）放在同一个视图上，
-/// 长按到时标题栏浮起、弹出菜单，不动就留着菜单，动了菜单收起、转成拖动（系统协调两者，时长也用系统的）；没长按就滑动的不起拖，
+/// 手指和笔要先长按，按系统拖放的惯例交给 UIDragInteraction，时长用系统的：标题栏上长按到时直接拿起卡片；缩成停靠形状时还有长按菜单
+/// （UIContextMenuInteraction，同一个视图上），长按到时浮起、弹出菜单，不动就留着菜单，动了菜单收起、转成拖动（系统协调两者）；没长按就滑动的不起拖，
 /// 照常交给别的手势。系统的拖动只借它的长按和跟踪：拖着的东西看不见，卡片照旧缩成停靠形状跟着手指（PhoneStageView.drag），
 /// 松手由排布按落点放（系统那边没有放的地方，一律当取消）。
 private final class CardHeaderView: UIView, UIContextMenuInteractionDelegate, UIDragInteractionDelegate {
@@ -1033,7 +1027,7 @@ private final class CardHeaderView: UIView, UIContextMenuInteractionDelegate, UI
     var dragged: ((UIGestureRecognizer.State, CGPoint) -> Void)?
     var tapped: (() -> Void)?
     var buildMenu: (() -> UIMenu?)?
-    /// 长按菜单浮起来的样子：卡片标题栏那一截（缩成停靠形状时整个圆），卡片给。
+    /// 长按菜单浮起来的样子：缩成停靠形状的整个外框，卡片给。
     var menuPreview: (() -> UITargetedPreview?)?
     /// 外框在这一层里的范围和圆角。
     var clip = CGRect.zero
@@ -1077,7 +1071,7 @@ private final class CardHeaderView: UIView, UIContextMenuInteractionDelegate, UI
         if recognizer.state == .ended { tapped?() }
     }
 
-    // MARK: 长按菜单
+    // MARK: 长按菜单（只在缩成停靠形状时）
 
     func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
                                 configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
@@ -1104,7 +1098,7 @@ private final class CardHeaderView: UIView, UIContextMenuInteractionDelegate, UI
         return [item]
     }
 
-    /// 浮起来的是长按菜单的那份（见 menuPreview）；拖动本身看不见，卡片自己跟着手指。
+    /// 有长按菜单时浮起来的是菜单的那份（见 menuPreview）；拖动本身看不见，卡片自己跟着手指。
     func dragInteraction(_ interaction: UIDragInteraction, previewForLifting item: UIDragItem,
                          session: any UIDragSession) -> UITargetedDragPreview? {
         UITargetedDragPreview(view: Self.invisible(), parameters: Self.invisibleParameters(),

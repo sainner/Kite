@@ -573,7 +573,7 @@ final class AppModel {
         let choice = draft.draftChoice
         _ = try await client.request("/workspaces/\(area.id)/threads", method: "POST",
             body: CreateThreadRequest(prompt: message.typed, role: newThreadRole(for: draft, in: area)?.selection, model: choice?.model,
-                                      tools: choice?.tools, maxRequestsPerTurn: choice?.maxRequestsPerTurn, windowId: window,
+                                      tools: choice?.tools, maxRequestsPerTurn: choice?.maxRequestsPerTurn, approval: choice?.approval, windowId: window,
                                       messageId: message.id), as: RemoteThread.self)
         // 读回的窗口指向新实例，草稿对象由 WorkArea.update 认领，接着当这个代理
         try await refresh(client)
@@ -657,6 +657,44 @@ final class AppModel {
             }
             return window
         }
+    }
+
+    /// 消息里的 localhost:端口 链接在所属工作区内解析：端口属于本工作区运行中的终端时，选中这个端口、打开那个终端的网页视图，
+    /// 否则报错（docs/成果查看与位置.md「运行中的网页」）。
+    func openLocalPort(_ port: Int, in area: WorkArea) async throws {
+        guard let instance = area.instances.first(where: { instance in
+            instance.status == .open && instance.state?.terminal?.running == true
+                && instance.state?.terminal?.ports?.contains(where: { $0.port == port }) == true
+        }) else { throw KitedError(message: "localhost:\(port) 不是这个工作区里运行中的终端在监听的端口") }
+        if instance.state?.terminal?.webPort != port { try await selectTerminalPort(port, of: instance.id, in: area) }
+        openWindow(.open(.init(instanceId: instance.id, viewId: "web")), in: area)
+    }
+
+    /// 停终端：先挂断 shell，等不到退出再停整个进程组；工作机确认进程结束才返回。
+    func stopTerminal(_ instance: String, in area: WorkArea) async throws {
+        struct Stop: Encodable { let operationId: String; let instanceId: String }
+        struct Stopped: Decodable { let ok: Bool }
+        let client = try activeClient(in: area)
+        _ = try await client.request("/workspaces/\(area.id)/operations/terminal.stop", method: "POST",
+                                     body: Stop(operationId: UUID().uuidString, instanceId: instance), as: Stopped.self)
+    }
+
+    /// 菜单里的停止终端：不等结果，失败报在窗口提示里。
+    func stopTerminal(_ instance: RemotePluginInstance, in area: WorkArea) {
+        Task {
+            do { try await stopTerminal(instance.id, in: area) }
+            catch { area.windowError = error.localizedDescription }
+        }
+    }
+
+    /// 选终端网页视图打开的端口，各设备共用；nil 换回默认。
+    func selectTerminalPort(_ port: Int?, of instance: String, in area: WorkArea) async throws {
+        struct Select: Encodable { let operationId: String; let instanceId: String; let port: Int? }
+        struct Selected: Decodable { let port: Int? }
+        let client = try activeClient(in: area)
+        _ = try await client.request("/workspaces/\(area.id)/operations/terminal.select", method: "POST",
+                                     body: Select(operationId: UUID().uuidString, instanceId: instance, port: port), as: Selected.self)
+        try await refresh(client)
     }
 
     /// 引用只选择资源；窗口身份仍按现有实例与视图复用。窗口先在本机打开（见 sendWindowRequest），再选文件；

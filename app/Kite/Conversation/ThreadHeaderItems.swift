@@ -66,5 +66,7 @@ struct ThreadHeaderCommand: Identifiable {
     let title: String
     let symbol: String
     var enabled = true
+    /// 结束性的操作（停止、归档）用危险色。
+    var destructive = false
     let action: @MainActor () -> Void
 }

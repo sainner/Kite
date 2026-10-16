@@ -74,6 +74,12 @@ private struct WorkspacePaneBody: View {
             } else if renderer == "monitor", let target = area.windows.first(where: { $0.id == pane.id })?.target,
                       let instance = area.instances.first(where: { $0.id == target.instanceId }) {
                 MonitorPane(instance: instance).id(pane.id)
+            } else if renderer == "terminal", let target, let client = area.pluginClient,
+                      let instance = area.instances.first(where: { $0.id == target.instanceId }) {
+                TerminalPane(instance: instance, client: client, connection: area.pluginConnection).id(pane.id)
+            } else if renderer == "preview", let target, let client = area.pluginClient,
+                      let instance = area.instances.first(where: { $0.id == target.instanceId }) {
+                TerminalWebPane(instance: instance, client: client).id(pane.id)
             } else if renderer == "web", let target = area.windows.first(where: { $0.id == pane.id })?.target,
                       let instance = area.instances.first(where: { $0.id == target.instanceId }),
                       let client = area.pluginClient {

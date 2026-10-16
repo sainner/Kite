@@ -146,7 +146,7 @@ test('agent.start 跨重启重试复用实例与窗口，后台实例不建窗�
     const reviewExecution = await call(daemon.url, 'GET', `/instances/${reviewId}/execution-grants`);
     const revisedExecution = await call(daemon.url, 'PUT', `/instances/${codingId}/execution-grants`, {
       expectedRevision: codingExecution.body.revision,
-      grants: { workspace: 'read', read: [], write: [], network: [] },
+      grants: { workspace: 'read', add: { read: [], write: [], network: [], unsandboxed: [] }, remove: { read: [], write: [], network: [], unsandboxed: [] } },
     });
     expect(revisedExecution.status).toBe(200);
     const journalPath = join(home, 'sessions', codingId, 'journal.jsonl');

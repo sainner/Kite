@@ -25,7 +25,7 @@ afterEach(async () => {
 });
 const temp = useTemp();
 const expectedTools = ['read', 'patch', 'shell', 'credentials', 'question', 'agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop',
-  'monitor_start', 'monitor_list', 'monitor_stop'].map((name) => `mcp__kite__${name}`).sort();
+  'monitor_start', 'monitor_list', 'monitor_stop', 'terminal_read', 'terminal_stop'].map((name) => `mcp__kite__${name}`).sort();
 
 /** pid 的直接子进程。 */
 function children(pid: number): number[] {

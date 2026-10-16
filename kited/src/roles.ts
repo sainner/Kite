@@ -11,6 +11,7 @@ import type { ContextDefinition } from './harness/context/types.ts';
 import type { PluginInstance } from './model.ts';
 import { agentTools } from './plugins/definitions.ts';
 import { lineToolNames } from './operations/contract.ts';
+import { approvalModes, executionChangesSchema, type ApprovalMode } from './execution/grants.ts';
 import type { Store } from './store.ts';
 
 export const roleSchema = z.object({
@@ -20,6 +21,10 @@ export const roleSchema = z.object({
   /** 提示词沿用创建会话场景的组装定义，ID 与名称随角色。 */
   context: contextDefinitionSchema,
   tools: toolRuleSchema,
+  /** 执行授权在项目基础上的增减，新建代理时拷进实例。 */
+  execution: executionChangesSchema.optional(),
+  /** 新建代理的默认审批模式，项目上限仍然适用。 */
+  approval: z.enum(approvalModes).optional(),
   model: agentDefinitionSchema.shape.model,
   maxRequestsPerTurn: z.number().int().positive(),
 }).strict();
@@ -38,7 +43,7 @@ export function roleSelection(value: unknown): RoleSelection | undefined {
 /** 实例配置里记下创建时的角色与它的工具规则，作为之后修改工具的上限。 */
 export interface RoleBinding { id: string; revision: string; tools: ToolRule }
 /** 草稿里可调的初始参数；工具与预算只能在角色允许的范围内收窄。 */
-export interface RoleChoice { model?: AgentDefinition['model']; tools?: AgentDefinition['tools']; maxRequestsPerTurn?: number }
+export interface RoleChoice { model?: AgentDefinition['model']; tools?: AgentDefinition['tools']; maxRequestsPerTurn?: number; approval?: ApprovalMode }
 
 /** 项目约束里的工具规则，没有必需项。 */
 export type ProjectToolRule = Pick<ToolRule, 'mode' | 'tools'>;
@@ -62,9 +67,10 @@ export function toolLimits(rule: Pick<ToolRule, 'mode' | 'tools' | 'required'> =
     missing: missingRequired(rule.required, permitted) };
 }
 
+/** 实例可以开角色没给的工具（项目约束另作实时过滤），但不能关闭角色必需的工具。 */
 export function checkTools(tools: readonly string[], limits: ReturnType<typeof toolLimits>): void {
-  const extra = tools.filter((name) => !limits.allowed.includes(name));
-  if (extra.length) throw new KiteError(`工具超出角色允许的范围：${extra.join('、')}`);
+  const unknown = tools.filter((name) => !universe.includes(name));
+  if (unknown.length) throw new KiteError(`代理插件没有这些工具：${unknown.join('、')}`);
   const off = limits.required.filter((name) => !tools.includes(name));
   if (off.length) throw new KiteError(`不能关闭角色必需的工具：${off.join('、')}`);
 }
@@ -79,7 +85,9 @@ export function roleAgent({ role, revision }: RoleSnapshot, choice: RoleChoice =
   const agent = chooseAgentModel(bindAgentDefinition({ runtime: runtimeOfModel(role.model.model), model: role.model, tools,
     context: role.context, maxRequestsPerTurn: choice.maxRequestsPerTurn ?? role.maxRequestsPerTurn }), choice.model);
   const binding: RoleBinding = { id: role.id, revision, tools: role.tools };
-  return { agent, role: binding };
+  // 草稿里选的审批模式优先于角色的默认。
+  const approval = choice.approval ?? role.approval;
+  return { agent, role: binding, ...(role.execution ? { execution: role.execution } : {}), ...(approval ? { approval } : {}) };
 }
 const defaultModel = { model: defaultAgentModel, reasoning: 'medium' };
 const reviewTools: ToolRule = { mode: 'allow', tools: ['read'], required: ['read'] };

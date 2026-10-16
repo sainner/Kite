@@ -136,6 +136,16 @@ export const contextScenes = {
       { name: 'monitor.events', title: '新事件', description: '还没交给代理的事件，每条一行，带时刻；来源结束的事件写明原因。至少一条。' },
     ],
   },
+  'terminal.exit': {
+    title: '后台命令结束',
+    layers: allLayers,
+    variables: [
+      { name: 'terminal.title', title: '命令的说明', description: '转到后台的命令在 shell 工具里写的 description。' },
+      { name: 'terminal.id', title: '终端的实例 ID', description: '后台终端的实例 ID，结束时没有窗口就已回收。' },
+      { name: 'terminal.result', title: '结果', description: '退出码，被停下时是停下的原因。' },
+      { name: 'terminal.output', title: '输出的末尾', description: '最后约 3000 个字符的输出；没有输出时写明。' },
+    ],
+  },
   'thread.execution_permissions_changed': {
     title: '执行授权变更',
     layers: allLayers,

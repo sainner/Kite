@@ -45,6 +45,8 @@ nonisolated struct RemoteWaiting: Decodable, Equatable, Sendable {
     var target: String?
     var reason: String?
     var mustAsk: Bool?
+    /// 代理申请在沙箱外运行命令：target 是命令原文，reason 是代理写的用途。
+    var outside: Bool?
 
     var isQuestion: Bool { kind == "question" }
 }
@@ -345,6 +347,13 @@ struct KitedClient: Equatable {
         return (session, session.webSocketTask(with: request))
     }
 
+    /// 接到终端的 WebSocket，协议见 kited 的 terminal/terminals.ts；带上窗口放得下的尺寸，工作机按它出画面。
+    func terminalSocket(instance: String, cols: Int, rows: Int) async throws -> (URLSession, URLSessionWebSocketTask) {
+        let (session, request) = try await streamRequest("/instances/\(instance)/terminal", thread: nil, webSocket: true,
+                                                         extra: [URLQueryItem(name: "cols", value: String(cols)), URLQueryItem(name: "rows", value: String(rows))])
+        return (session, session.webSocketTask(with: request))
+    }
+
     /// 按字节取文件，下载到临时文件，调用方挪走或删掉。304 时没有新内容，调用方用自己缓存的那一版。
     /// progress 拿到下载任务的进度对象；method 为 HEAD 时只取大小、类型和修改时间，不返回文件。
     func download(_ path: String, method: String = "GET", headers: [String: String] = [:],
@@ -375,14 +384,15 @@ struct KitedClient: Equatable {
     }
 
     /// 长连接（事件流、语音）用的独立会话和带工作机校验的请求；thread 给出时只关于这个会话。组网会话的配置带着节点的代理设置。
-    /// 长连接（事件流、语音）用的独立会话和带工作机校验的请求；thread 给出时只关于这个会话。组网会话的配置带着节点的代理设置。
-    private func streamRequest(_ path: String, thread: String?, device: String? = nil, webSocket: Bool = false) async throws -> (URLSession, URLRequest) {
+    private func streamRequest(_ path: String, thread: String?, device: String? = nil, webSocket: Bool = false,
+                               extra: [URLQueryItem] = []) async throws -> (URLSession, URLRequest) {
         guard let machineID else { throw KitedError(message: "请先连接工作机") }
         var components = URLComponents(url: try url(path), resolvingAgainstBaseURL: true)!
         if webSocket { components.scheme = components.scheme == "https" ? "wss" : "ws" }
         var query: [URLQueryItem] = []
         if let thread { query.append(URLQueryItem(name: "thread", value: thread)) }
         if let device { query.append(URLQueryItem(name: "device", value: device)) }
+        query += extra
         if !query.isEmpty { components.queryItems = query }
         var request = URLRequest(url: components.url!)
         request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")

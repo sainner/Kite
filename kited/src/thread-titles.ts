@@ -150,7 +150,7 @@ export class ThreadTitles {
     // 每次生成读取已保存的模板；本次展开后固定，不受后续编辑影响。
     const template = this.templates.get(titleTemplate.id, 'thread.title');
     const { instructions, input } = assembleContext(bindContext(template.definition, {
-      ...threadVariables(thread, this.store.workspaceConstraints(thread.workspaceId)?.tools),
+      ...threadVariables(thread, this.store.workspaceConstraints(thread.workspaceId)?.tools, this.store.workspaceConstraints(thread.workspaceId)?.execution),
       ...sceneValues<'thread.title'>({ 'title.current': JSON.stringify(title.title), 'title.messages': content.input }),
     }));
     let text: string;

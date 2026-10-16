@@ -293,8 +293,8 @@ struct DockEntryMenu: View {
                 }
             }
         case .pane(let pane):
-            if let instance = area.instance(of: pane) { InstanceActions(instance: instance) }
-            Button("关闭窗口") { model.closeWindow(pane, in: area) }
+            if let instance = area.instance(of: pane) { InstanceActions(instance: instance, pane: pane) }
+            else { Button("关闭窗口") { model.closeWindow(pane, in: area) } }
         case .more:
             EmptyView()
         }

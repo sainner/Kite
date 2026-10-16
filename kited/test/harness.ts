@@ -60,7 +60,7 @@ export async function call(
   return { status: r.status, body: await r.json() };
 }
 
-export interface KitedOptions extends Pick<RuntimeOptions, 'peers' | 'monitorWakeDelayMs' | 'catalogDelayMs'> {
+export interface KitedOptions extends Pick<RuntimeOptions, 'peers' | 'monitorWakeDelayMs' | 'catalogDelayMs' | 'terminalShell' | 'terminalPortScanMs'> {
   /** 用已有的临时根目录（数据目录沿用 root/kite），停止时同样删掉；见 registerBeforeStart。 */
   root?: string;
 }
@@ -70,6 +70,8 @@ export interface KitedOptions extends Pick<RuntimeOptions, 'peers' | 'monitorWak
  * 组网对端一律换成 candidates（起初为空，见 connect），发现与同步也直接访问对方的监听地址。
  * monitorWakeDelayMs 缩短 monitor 从事件到唤醒的合批等待，观察唤醒的测试不必真等默认的 1 秒；
  * catalogDelayMs 缩短本机检出与工作区变化写进目录摘要的合批等待，别的工作机要看到这些变化的测试不必等 1 秒。
+ * terminalShell 换掉终端插件起的 shell，测试用 /bin/sh，不起用户的登录 shell（慢，还带个人配置）。
+ * terminalPortScanMs 缩短终端探测监听端口的间隔，看端口变化的测试不必等默认的 2 秒。
  */
 export function startKited(
   model?: (thread: ThreadContext) => Model, lightTasks: RuntimeOptions['lightTasks'] = false,

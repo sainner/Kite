@@ -105,6 +105,7 @@ struct RemotePluginInstance: Decodable, Identifiable {
         let revision: String?
         var diffId: String? = nil
         var plugin: JSON? = nil
+        var terminal: TerminalStatus? = nil
     }
     let id: String
     let workspaceId: String
@@ -119,6 +120,37 @@ struct RemotePluginInstance: Decodable, Identifiable {
     var origin: Origin? = nil
 
     struct Origin: Decodable { let instanceId: String }
+}
+
+/// 终端进程的状态，kited 的 terminal/terminals.ts 写在实例状态里；结束时带退出码或信号，不是自己退出的带原因。
+struct TerminalStatus: Decodable, Equatable {
+    /// 进程树正在监听的端口；http 是工作机试过能用 HTTP 打开。
+    struct Port: Decodable, Equatable, Hashable {
+        let port: Int
+        let http: Bool
+    }
+    let phase: String
+    var exitCode: Int? = nil
+    var signal: String? = nil
+    var reason: String? = nil
+    /// 运行中才有，按端口号排。
+    var ports: [Port]? = nil
+    /// 网页视图选的端口，各设备共用。
+    var port: Int? = nil
+
+    var running: Bool { phase == "running" }
+    /// 网页视图打开的端口：选过且还在监听的，否则第一个能响应 HTTP 的。
+    var webPort: Int? {
+        let ports = ports ?? []
+        if let port, ports.contains(where: { $0.port == port }) { return port }
+        return ports.first(where: \.http)?.port
+    }
+    /// 结束后的副行：原因优先，其次退出码或信号。
+    var summary: String {
+        if let reason { return reason }
+        if let signal { return "已结束 · \(signal)" }
+        return exitCode.map { "已退出 · 退出码 \($0)" } ?? "已结束"
+    }
 }
 
 struct FileSelection: Decodable, Equatable {

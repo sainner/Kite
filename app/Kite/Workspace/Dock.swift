@@ -275,14 +275,13 @@ extension WorkArea {
 }
 
 extension AppModel {
-    /// 打开没有窗口的实例：有视图开默认视图，没有视图打开实例设置。
+    /// 打开没有窗口的实例：有视图开它该先显示的视图（见 WorkArea.openingView），没有视图打开实例设置。
     func openDockInstance(_ instance: RemotePluginInstance, in area: WorkArea) {
-        guard let definition = area.definition(of: instance) else { return }
-        guard let view = definition.views.first(where: { $0.id == definition.defaultView }) ?? definition.views.first else {
+        guard let view = area.openingView(of: instance) else {
             area.settingsInstance = instance
             return
         }
-        openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area)
+        openWindow(.open(.init(instanceId: instance.id, viewId: view)), in: area)
     }
 
     /// 代理头像用实例记下的角色签名；角色列表还没读到或角色没有签名时用默认图案。

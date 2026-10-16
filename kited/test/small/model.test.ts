@@ -8,7 +8,6 @@ import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
-import { startCli } from '../cli.ts';
 import { after, call, connect, machine, mark, registerCheckout, startKited, synced, type Kited } from '../harness.ts';
 import { ManualModel, Seen } from '../harness-loop.ts';
 import { connectSse } from '../sse.ts';
@@ -43,11 +42,12 @@ function connectWorkspace(url: string, machineId: string, workspaceId: string) {
  * 项目登记、异步工作树准备、模型启动、HTTP 聚合与 SQLite 线程关系要一起成立：
  * root 无线程，首线程在工作树 cwd 运行；首线程还在工作时第二线程就能启动并共享 cwd，归档首线程保留工作树。
  */
-test('登记检出后首线程工作时即可并行创建同工作区线程，暂停后 CLI resume 续接，归档首线程保留第二线程', async () => {
+test('登记检出后首线程工作时即可并行创建同工作区线程，暂停后 resume 续接，归档首线程保留第二线程', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
-  const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' });
+  // 没有远程的项目：合回只到本机主线。给了示例远程的话，每次合回都先拉一次连不上的远程，白等一百多毫秒。
+  const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' }, null);
   const root = await registerCheckout(kk, repo);
   const rootForAssertion = structuredClone(root);
   const localMachine = await machine(kk.url);
@@ -131,23 +131,13 @@ test('登记检出后首线程工作时即可并行创建同工作区线程，�
   expect((await kk.call('GET', `/threads/${secondThreadId}/history`)).body.state).toMatchObject({
     phase: 'idle', busy: false, waitingForResume: true, lastOutcome: { kind: 'failed' },
   });
-  const resuming = startCli(kk.url, 'resume', secondThreadId);
-  try {
-    const next = await Promise.race([
-      model.call(4).then((value) => ({ kind: 'request' as const, value })),
-      resuming.finished().then((value) => ({ kind: 'exit' as const, value })),
-    ]);
-    if (next.kind === 'exit') throw new Error(`CLI 在模型请求前退出：${JSON.stringify(next.value)}`);
-    const resumed = next.value;
-    await resumed.response.emit({ type: 'item', item: {
-      id: 'cli-resume-result', raw: { type: 'message', content: [{ type: 'output_text', text: 'CLI 恢复结果' }] },
-    } });
-    await resuming.waitText('CLI 恢复结果');
-    resumed.response.complete();
-    expect(await resuming.finished()).toMatchObject({ code: 0, stderr: '' });
-  } finally {
-    await resuming.stop();
-  }
+  // CLI 的 resume 只是调这个入口再跟到回合结束，跟随的那一段在 daemon.test.ts 的 CLI send 里。
+  const beforeResume = mark(kk);
+  expect((await kk.call('POST', `/threads/${secondThreadId}/resume`, {})).status).toBe(200);
+  const resumed = await model.call(4);
+  expect(resumed.request.history).toContainEqual(expect.objectContaining({ type: 'input', input: expect.objectContaining({ text: '恢复后继续' }) }));
+  resumed.response.complete();
+  await kk.waitEvent((event) => event.type === 'idle' && event.threadId === secondThreadId && after(kk, beforeResume)(event));
 
   const listed = await kk.call('GET', '/workspaces');
   const aggregate = listed.body.find((view: any) => view.workspace.id === workspace.workspace.id);

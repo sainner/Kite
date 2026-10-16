@@ -9,6 +9,7 @@ import { KiteError } from '../errors.ts';
 import { HANDOVER_NEEDS, type HandoverNeed } from '../environment.ts';
 import { httpsRemote, normalizeRemote, remoteName } from '../remote-url.ts';
 import { revisionOf, type AccountData } from './store.ts';
+import { parseProjectExecution, stricterExecution, type ProjectExecution } from '../execution/grants.ts';
 
 /** remote 是归一化的远程地址，url 是 HTTPS 写法的访问地址；没有远程的项目两者都为 null。 */
 export interface RegisteredProject {
@@ -25,9 +26,10 @@ export interface RegisteredProject {
   handoverNeeds?: HandoverNeed[];
 }
 
-/** 项目约束，首期只有工具规则；没设置过时是不限制的黑名单。 */
+/** 项目约束：工具规则与执行授权的基础和边界（docs/Agent与插件契约.md §3.2）；没设置过时工具是不限制的黑名单，执行授权没有基础许可也没有禁止。 */
 export interface ProjectConstraints {
   tools: { mode: 'allow' | 'deny'; tools: string[] };
+  execution?: ProjectExecution;
   revision: string;
 }
 
@@ -43,9 +45,10 @@ const settings = z.object({
 }).strict().refine((value) => value.autoHandover !== undefined || value.handoverNeeds !== undefined);
 const constraintsWrite = z.object({
   tools: z.object({ mode: z.enum(['allow', 'deny']), tools: z.array(z.string().trim().min(1).max(64)).max(64) }).strict(),
+  execution: z.unknown().optional(),
   expectedRevision: z.string().min(1),
 }).strict();
-const defaultConstraints = { tools: { mode: 'deny' as const, tools: [] as string[] } };
+const defaultConstraints: Omit<ProjectConstraints, 'revision'> = { tools: { mode: 'deny', tools: [] } };
 type ToolRule = ProjectConstraints['tools'];
 
 /** 两份工具规则里更严的组合：都是黑名单取并集，都是白名单取交集，一白一黑时白名单去掉黑名单里的。 */
@@ -170,7 +173,8 @@ export class ProjectRegistry {
   saveConstraints(id: string, raw: unknown): ProjectConstraints {
     const parsed = constraintsWrite.safeParse(raw);
     if (!parsed.success) throw new KiteError('项目约束要写 tools 与 expectedRevision；工具最多 64 个');
-    const { expectedRevision, ...body } = parsed.data;
+    const { expectedRevision, execution, ...rest } = parsed.data;
+    const body = { ...rest, ...(execution === undefined ? {} : { execution: parseProjectExecution(execution) }) };
     if (this.constraints(id).revision !== expectedRevision) throw new KiteError('项目约束已被其他设备修改，请刷新后重试', 409);
     this.data.put('constraints', id, body);
     return this.constraints(id);
@@ -187,7 +191,10 @@ export class ProjectRegistry {
       for (const project of merged) {
         const rule = this.storedConstraints(project.id);
         if (rule) {
-          this.data.put('constraints', kept!.id, { tools: stricter((this.storedConstraints(kept!.id) ?? defaultConstraints).tools, rule.tools) });
+          const keptRule = this.storedConstraints(kept!.id) ?? defaultConstraints;
+          const execution = rule.execution && keptRule.execution ? stricterExecution(parseProjectExecution(keptRule.execution), parseProjectExecution(rule.execution))
+            : rule.execution ?? keptRule.execution;
+          this.data.put('constraints', kept!.id, { tools: stricter(keptRule.tools, rule.tools), ...(execution ? { execution } : {}) });
           this.data.remove('constraints', project.id);
         }
         this.data.put('project', project.id, { mergedInto: kept!.id });

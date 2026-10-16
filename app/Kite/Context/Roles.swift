@@ -1,12 +1,16 @@
 import SwiftUI
 
-/// 角色：代理的提示词、工具规则、默认模型与预算。与工作机上的角色同形，提示词按组装契约往返。
+/// 角色：代理的提示词、工具规则、执行授权的增减、默认审批模式、默认模型与预算。与工作机上的角色同形，提示词按组装契约往返。
 nonisolated struct RoleDefinition: Codable, Equatable, Identifiable, Sendable {
     var version = 1
     var id: String
     var title: String
     var context: ContextDefinition
     var tools: ToolRule
+    /// 在项目基础上的增减，新建代理时拷进代理；没给时按项目的。
+    var execution: ExecutionChanges?
+    /// 新建代理的默认审批模式；没给时是仅白名单。
+    var approval: ApprovalMode?
     var model: AgentModelConfiguration
     var maxRequestsPerTurn: Int
 

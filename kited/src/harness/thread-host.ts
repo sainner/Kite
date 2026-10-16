@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { FileJournal } from './journal.ts';
 import { HarnessRunner } from './runner.ts';
-import { localTools } from '../execution/local-tools.ts';
+import { localTools, type ShellBackground, type ShellOutside } from '../execution/local-tools.ts';
 import type { SecretProvider } from '../secrets.ts';
 import { processGroupAlive, type NetworkAsk } from '../execution/command.ts';
 import { commandEnvironment, workspacePolicy, type ExecutionPolicy } from '../execution/sandbox.ts';
@@ -19,6 +19,10 @@ export interface ThreadHostOptions extends Pick<HarnessOptions, 'onEvent' | 'aft
   policy?: ExecutionPolicy | (() => ExecutionPolicy);
   /** 命令连接授权之外的主机时交给谁决定，见 CommandOptions.askNetwork。 */
   askNetwork?: NetworkAsk;
+  /** 长命令转到后台终端，见 ShellBackground；独立终端没有。 */
+  background?: ShellBackground;
+  /** 沙箱外运行的判断与申请，见 ShellOutside；独立终端没有，命令总在沙箱里。 */
+  outside?: ShellOutside;
   prepareRequest(tools: Tool[], cursor: { afterNotification: number }): HarnessRequest;
   /** 独立终端的配置来源；kited 使用实例配置，不在 metadata 重复保存。 */
   settings?: RequestSettings;
@@ -108,6 +112,8 @@ export async function openThreadHost(options: ThreadHostOptions): Promise<Thread
     const tools = localTools({
       cwd, secrets: options.secrets, logDir: join(directory, 'commands'), diffDir: options.diffDir ?? join(directory, 'diffs'), env,
       ...(options.askNetwork ? { askNetwork: options.askNetwork } : {}),
+      ...(options.background ? { background: options.background } : {}),
+      ...(options.outside ? { outside: options.outside } : {}),
       policy: () => {
         const current = policy();
         return { ...current, denyRead: [...(current.denyRead ?? []), directory], denyWrite: [...(current.denyWrite ?? []), directory] };

@@ -156,8 +156,10 @@ async function runTests(tier: Tier, path: string, index: number): Promise<void> 
   }
 }
 await Promise.all(TIERS.map(async (tier) => {
+  // 登记过的慢文件先发出去：排在最后的话，另一路跑完要空等它。
   const paths = tier.workers === 1 ? [`test/${tier.dir}`]
-    : [...new Bun.Glob(`test/${tier.dir}/**/*.test.ts`).scanSync({ cwd: KITED })].sort();
+    : [...new Bun.Glob(`test/${tier.dir}/**/*.test.ts`).scanSync({ cwd: KITED })]
+      .sort((a, b) => Number(b in FILE_LIMITS) - Number(a in FILE_LIMITS) || (a < b ? -1 : a > b ? 1 : 0));
   let next = 0;
   // 独立进程隔离各文件的 preload、环境变量与模块级清理。
   await Promise.all(Array.from({ length: tier.workers }, async () => {

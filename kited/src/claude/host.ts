@@ -10,7 +10,7 @@ import { claudeState, readClaudeControl, sameInput, saveClaudeControl } from './
 import { claudeInputTokens } from './usage.ts';
 import type { SecretProvider } from '../secrets.ts';
 import { KiteError } from '../errors.ts';
-import { localTools } from '../execution/local-tools.ts';
+import { localTools, type ShellBackground, type ShellOutside } from '../execution/local-tools.ts';
 import { commandEnvironment, type ExecutionPolicy } from '../execution/sandbox.ts';
 import { processGroupAlive, type NetworkAsk } from '../execution/command.ts';
 import type { CompactionRequest, Input, Outcome, Phase, StopRequest, Tool } from '../harness/types.ts';
@@ -46,6 +46,10 @@ export function openClaudeHost(options: {
   policy(): ExecutionPolicy;
   secrets?: SecretProvider;
   askNetwork?: NetworkAsk;
+  /** 长命令转到后台终端，见 ShellBackground。 */
+  background?: ShellBackground;
+  /** 沙箱外运行的判断与申请，见 ShellOutside。 */
+  outside?: ShellOutside;
   prepare(afterNotification: number): { agent: AgentDefinition; instructions: string; contextUpdate: string; tools: Tool[]; allowed: Set<string>; notificationText: string; through: number };
   events: RuntimeEvents;
   /** 压缩所需的模板与净文件变化；不提供时不开放压缩。 */
@@ -101,6 +105,8 @@ export function openClaudeHost(options: {
   const tools = localTools({ cwd: options.cwd, diffDir: options.diffDir, logDir: join(options.directory, 'commands'),
     env: commandEnvironment(process.env), policy: options.policy, secrets: options.secrets,
     ...(options.askNetwork ? { askNetwork: options.askNetwork } : {}),
+    ...(options.background ? { background: options.background } : {}),
+    ...(options.outside ? { outside: options.outside } : {}),
     onProcess(pid, active) {
       data.processes = active ? [...new Set([...data.processes, pid])] : data.processes.filter((value) => value !== pid);
       save();

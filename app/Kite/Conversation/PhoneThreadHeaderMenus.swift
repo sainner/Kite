@@ -172,8 +172,9 @@ final class PhoneThreadMenuButton: UIButton {
         case .more:
             return content.commands.map { section in
                 UIMenu(options: .displayInline, children: section.map { command in
-                    UIAction(title: command.title, image: UIImage(systemName: command.symbol),
-                        attributes: command.enabled ? [] : .disabled) { _ in command.action() }
+                    var attributes: UIMenuElement.Attributes = command.enabled ? [] : .disabled
+                    if command.destructive { attributes.insert(.destructive) }
+                    return UIAction(title: command.title, image: UIImage(systemName: command.symbol), attributes: attributes) { _ in command.action() }
                 })
             }
         }

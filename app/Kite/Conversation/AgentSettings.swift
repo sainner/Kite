@@ -38,7 +38,7 @@ struct AgentSettings: View {
                         AgentModelFields(configuration: Binding(get: { draft!.model }, set: { draft?.model = $0 }),
                                          vendors: capabilities.vendors, models: capabilities.models)
                     }
-                    CardSection("可用工具", note: "可开的工具由创建时的角色决定，角色必需的不能关闭；项目约束禁用的工具暂不可用，约束放宽后恢复。实例授权仍然有效；勾选工具不会增加文件、网络或其他实例的访问权限。") {
+                    CardSection("可用工具", note: "角色给出默认勾选，也可以开角色没给的；角色必需的不能关闭，项目禁用的暂不可用，项目放宽后恢复。勾选工具不会增加文件、网络或其他实例的访问权限，那些由执行授权和协作授权决定。") {
                         AgentToolToggles(capabilities: capabilities, tools: Binding(get: { draft?.tools ?? [] }, set: { draft?.tools = $0 }))
                     }
                     TurnBudgetField(value: Binding(get: { draft!.maxRequestsPerTurn }, set: { draft?.maxRequestsPerTurn = $0 }),
@@ -131,10 +131,10 @@ struct DraftAgentSettings: View {
     private var roleBudget: Int { role?.role.maxRequestsPerTurn ?? 50 }
 
     var body: some View {
-        CardSheet(title: "代理配置", subtitle: "选择可用工具与回合预算", typing: editingLimit, size: InstanceSettings.size,
+        CardSheet(title: "配置", subtitle: "选择可用工具与回合预算", typing: editingLimit, size: InstanceSettings.size,
                   close: { dismiss() }) {
             if let capabilities {
-                CardSection("可用工具", note: "可开的工具由角色决定，角色必需的不能关闭，项目约束禁用的暂不可用。") {
+                CardSection("可用工具", note: "角色给出默认勾选，也可以开角色没给的；角色必需的不能关闭，项目禁用的暂不可用。") {
                     AgentToolToggles(capabilities: capabilities, tools: $tools)
                 }
                 TurnBudgetField(value: $budget, focus: $editingLimit, field: true)
@@ -147,7 +147,7 @@ struct DraftAgentSettings: View {
         }
         .endsTyping(editingLimit) { editingLimit = false }
         .onAppear {
-            tools = thread.draftChoice?.tools ?? capabilities?.tools ?? []
+            tools = thread.draftChoice?.tools ?? capabilities?.defaultTools ?? []
             budget = thread.draftChoice?.maxRequestsPerTurn ?? roleBudget
         }
     }
@@ -156,7 +156,7 @@ struct DraftAgentSettings: View {
     private func save() {
         guard let capabilities else { return }
         let selected = capabilities.tools.filter { tools.contains($0) }
-        thread.draftChoice?.tools = selected == capabilities.tools ? nil : selected
+        thread.draftChoice?.tools = selected == capabilities.tools.filter(capabilities.defaultTools.contains) ? nil : selected
         thread.draftChoice?.maxRequestsPerTurn = budget == roleBudget ? nil : budget
         dismiss()
     }

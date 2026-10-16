@@ -5,7 +5,8 @@ import { z } from 'zod';
 import { agentCapabilities, agentModelCatalog, configurationBoundary } from './agents/capabilities.ts';
 import { agentRevision, chooseAgentModel, claudeReasoning, instanceAgent, parseAgentDefinition, type AgentDefinition } from './agents/definition.ts';
 import { KiteError } from './errors.ts';
-import { applyExecutionGrants, approvalModes, executionRevision, instanceApprovalMode, instanceExecutionGrants, normalizeExecutionGrants, type ExecutionGrants } from './execution/grants.ts';
+import { applyExecutionGrants, approvalModes, defaultProjectExecution, effectiveApprovalMode, effectiveExecution, executionRevision, instanceApprovalMode,
+  instanceExecutionChanges, normalizeExecutionChanges, type ApprovalMode, type ExecutionChanges, type ProjectExecution } from './execution/grants.ts';
 import { harnessPolicy } from './execution/policy.ts';
 import { assembleContext } from './harness/context/assembler.ts';
 import {
@@ -22,7 +23,7 @@ import { effectiveTools, threadVariables } from './context-variables.ts';
 import { checkTools, instanceRole, roleAgent, toolLimits, type ProjectToolRule, type RoleBinding, type RoleSelection } from './roles.ts';
 import type { Runtime } from './runtime.ts';
 
-type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates' | 'roles' | 'history'>;
+type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates' | 'roles' | 'history' | 'terminals'>;
 
 interface ConfigurationControl {
   run<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
@@ -100,51 +101,66 @@ export class InstanceConfiguration {
     }
   }
 
+  /** grants 是实例在项目基础上的增减，effective 是三层合成后生效的，project 是项目的基础与边界。 */
   executionGrants(id: string) {
     const instance = this.control.context(id);
-    const grants = instanceExecutionGrants(instance);
-    return { grants, revision: executionRevision(grants) };
+    const grants = instanceExecutionChanges(instance);
+    const project = this.projectExecution(instance.workspaceId);
+    return { grants, revision: executionRevision(grants), effective: effectiveExecution(grants, project).grants, project: project ?? defaultProjectExecution() };
   }
   configureExecutionGrants(id: string, expectedRevision: string, value: unknown) {
     return this.control.run(this.control.context(id).workspaceId, async () => {
       const instance = this.control.openThread(id);
       const { revision } = this.executionGrants(id);
       if (revision !== expectedRevision) throw new KiteError('执行授权已变化，请重新读取后修改', 409);
-      const grants = await normalizeExecutionGrants(value);
-      const nextRevision = executionRevision(grants);
-      if (nextRevision === revision) return { grants, revision };
+      const grants = await normalizeExecutionChanges(value);
+      if (executionRevision(grants) === revision) return this.executionGrants(id);
       const runtime = await this.control.runtime(instance);
       // 恢复阻塞期间不执行，新授权等发送或继续时生效。
       if (runtime?.busy || runtime?.state === 'stopping') throw new KiteError('请先停止实例，再修改执行授权', 409);
+      // 转到后台的命令按旧授权跑在沙箱里，收紧之前要先停下（Agent与插件契约 7.2）。
+      if (this.kite.terminals.owned(id).length) throw new KiteError('这个代理转到后台的命令还在运行，请先停下再修改执行授权', 409);
       const base = await harnessPolicy({ cwd: instance.workspace.cwd, env: process.env, home: this.kite.home, repository: instance.checkout.path });
-      applyExecutionGrants(base, instance.workspace.cwd, grants);
+      applyExecutionGrants(base, instance.workspace.cwd, effectiveExecution(grants, this.projectExecution(instance.workspaceId)));
       this.saveExecutionGrants(instance, grants);
       return this.executionGrants(id);
     });
   }
   /**
-   * 「允许并记住」一台主机：只追加网络许可，是「运行中不能改执行授权」的例外；在后续连接与调用生效，
-   * 不重放已失败的命令，授权变化照常通知模型。
+   * 「允许并记住」：在实例上追加一台主机或一条沙箱外命令，是「运行中不能改执行授权」的例外；在后续连接与调用生效，
+   * 不重放已失败的命令，授权变化照常通知模型。实例原先去掉过的同一项一并恢复。
    */
-  rememberNetwork(id: string, domain: string): Promise<void> {
+  remember(id: string, key: 'network' | 'unsandboxed', value: string): Promise<void> {
     return this.control.run(this.control.context(id).workspaceId, async () => {
       const instance = this.control.openThread(id);
-      const current = instanceExecutionGrants(instance);
-      const grants = await normalizeExecutionGrants({ ...current, network: [...current.network, domain] });
+      const current = instanceExecutionChanges(instance);
+      const grants = await normalizeExecutionChanges({ ...current, add: { ...current.add, [key]: [...current.add[key], value] },
+        remove: { ...current.remove, [key]: current.remove[key].filter((item) => item !== value) } });
       if (executionRevision(grants) !== executionRevision(current)) this.saveExecutionGrants(instance, grants);
     });
   }
-  private saveExecutionGrants(instance: ThreadContext, grants: ExecutionGrants): void {
+  private saveExecutionGrants(instance: ThreadContext, grants: ExecutionChanges): void {
     const config = { ...instance.config, execution: grants };
-    this.kite.store.setInstanceConfig(instance.id, config, {
-      id: randomUUID(), kind: 'execution.permissions.changed', source: `instance:${instance.id}`, authority: 'instruction',
-      context: assembleContext(executionPermissionsContext(executionRevision(grants), this.variables({ ...instance, config }),
-        this.kite.contextTemplates.get(executionPermissionsContextDefinition.id, executionPermissionsContextDefinition.scene).definition)).snapshot,
-    });
+    this.kite.store.setInstanceConfig(instance.id, config, this.executionNotice(`instance:${instance.id}`, { ...instance, config }));
     this.control.changed(instance.workspaceId);
   }
+  /** 执行授权变更通知；版本与正文取三层合成后生效的授权。 */
+  private executionNotice(source: string, thread: ThreadContext, project = this.projectExecution(thread.workspaceId)) {
+    const effective = effectiveExecution(instanceExecutionChanges(thread), project).grants;
+    return {
+      id: randomUUID(), kind: 'execution.permissions.changed', source, authority: 'instruction',
+      context: assembleContext(executionPermissionsContext(executionRevision(effective), threadVariables(thread, this.projectRule(thread.workspaceId), project),
+        this.kite.contextTemplates.get(executionPermissionsContextDefinition.id, executionPermissionsContextDefinition.scene).definition)).snapshot,
+    } as const;
+  }
 
-  approvalMode(id: string) { return { mode: instanceApprovalMode(this.control.context(id)) }; }
+  /** mode 是实例的选择，effective 是按项目上限收紧后实际用的。 */
+  approvalMode(id: string) {
+    const instance = this.control.context(id);
+    const max = this.projectExecution(instance.workspaceId)?.approval ?? 'allow_all';
+    const mode = instanceApprovalMode(instance);
+    return { mode, effective: effectiveApprovalMode(mode, this.projectExecution(instance.workspaceId)), max };
+  }
   /** 审批模式在下一次越界请求时生效，运行中也可以改。 */
   configureApprovalMode(id: string, value: unknown) {
     const parsed = z.object({ mode: z.enum(approvalModes) }).strict().safeParse(value);
@@ -156,7 +172,7 @@ export class InstanceConfiguration {
         this.kite.store.setInstanceConfig(id, { ...instance.config, approval: mode });
         this.control.changed(instance.workspaceId);
       }
-      return { mode };
+      return this.approvalMode(id);
     });
   }
 
@@ -170,31 +186,47 @@ export class InstanceConfiguration {
   private projectRule(workspaceId: string) {
     return this.kite.store.workspaceConstraints(workspaceId)?.tools;
   }
+  private projectExecution(workspaceId: string): ProjectExecution | undefined {
+    return this.kite.store.workspaceConstraints(workspaceId)?.execution;
+  }
+  /** 通知里的公共变量取 thread 给出的变化之后的状态。 */
+  private variables(thread: ThreadContext) {
+    return threadVariables(thread, this.projectRule(thread.workspaceId), this.projectExecution(thread.workspaceId));
+  }
   /** 这个代理可开的工具：代理插件声明的全部工具，经创建时角色的规则约束；项目约束另作实时过滤。 */
   private toolLimits(instance: PluginInstance) {
     return toolLimits(instanceRole(instance)?.tools, this.projectRule(instance.workspaceId));
   }
+  /** 实例可以开代理插件的全部工具（项目禁的划掉），角色给的是默认值。 */
   agentCapabilities(id: string) {
     const thread = this.control.context(id);
-    return agentCapabilities(instanceAgent(thread).runtime, this.toolLimits(thread));
+    const role = this.toolLimits(thread);
+    const all = toolLimits(undefined, this.projectRule(thread.workspaceId));
+    return agentCapabilities(instanceAgent(thread).runtime, { allowed: all.allowed, defaults: role.allowed, required: role.required, blocked: all.blocked });
   }
   /** 新代理的草稿还没有实例：给出模型目录、工具的界面名称与分组，以及各角色在这个工作区可开的工具与被项目禁用的工具；必需工具被禁的角色附上原因。 */
   agentOptions(workspaceId: string) {
     const project = this.projectRule(workspaceId);
     return { ...agentModelCatalog(), toolCatalog: agentToolCatalog, roles: this.kite.roles.list().map(({ role, revision }) => {
       const limits = toolLimits(role.tools, project);
-      return { id: role.id, revision, tools: limits.allowed, required: limits.required, blocked: limits.blocked,
+      const all = toolLimits(undefined, project);
+      return { id: role.id, revision, tools: all.allowed, defaults: limits.allowed, required: limits.required, blocked: all.blocked,
         ...(limits.missing.length ? { unavailable: `项目约束禁用了必需的 ${limits.missing.join('、')}` } : {}) };
     }) };
   }
-  /** 项目约束变化后，有效工具随之改变的代理在下一次请求收到配置通知。 */
-  constraintsChanged(projectId: string, before?: ProjectToolRule) {
-    const after = this.kite.store.projectConstraints(projectId)?.tools;
+  /** 项目约束变化后，有效工具或生效的执行授权随之改变的代理在下一次请求收到对应的通知。 */
+  constraintsChanged(projectId: string, before?: { tools?: ProjectToolRule; execution?: ProjectExecution }) {
+    const after = this.kite.store.projectConstraints(projectId);
     for (const workspace of this.kite.store.workspaces(projectId).filter((workspace) => workspace.status === 'open')) {
       for (const instance of this.kite.store.threads(workspace.id).filter((thread) => thread.status === 'open')) {
         const agent = instanceAgent(instance);
-        if (JSON.stringify(effectiveTools(agent, before)) === JSON.stringify(effectiveTools(agent, after))) continue;
-        this.kite.store.setInstanceConfig(instance.id, instance.config, this.configurationNotice('host', this.control.context(instance.id), agent, after));
+        if (JSON.stringify(effectiveTools(agent, before?.tools)) !== JSON.stringify(effectiveTools(agent, after?.tools))) {
+          this.kite.store.setInstanceConfig(instance.id, instance.config, this.configurationNotice('host', this.control.context(instance.id), agent, after?.tools));
+        }
+        const changes = instanceExecutionChanges(instance);
+        if (JSON.stringify(effectiveExecution(changes, before?.execution).grants) !== JSON.stringify(effectiveExecution(changes, after?.execution).grants)) {
+          this.kite.store.setInstanceConfig(instance.id, instance.config, this.executionNotice('host', this.control.context(instance.id), after?.execution));
+        }
       }
       this.control.changed(workspace.id);
     }
@@ -204,24 +236,22 @@ export class InstanceConfiguration {
     return {
       id: randomUUID(), kind: 'agent.configuration.changed', source, authority: 'instruction',
       context: assembleContext(agentConfigurationContext(agentRevision(agent),
-        threadVariables({ ...thread, config: { ...thread.config, agent } }, project),
+        threadVariables({ ...thread, config: { ...thread.config, agent } }, project, this.projectExecution(thread.workspaceId)),
         this.kite.contextTemplates.get(agentConfigurationContextDefinition.id, agentConfigurationContextDefinition.scene).definition)).snapshot,
     } as const;
-  }
-  /** 通知里的公共变量取 thread 给出的变化之后的状态。 */
-  private variables(thread: ThreadContext) {
-    return threadVariables(thread, this.projectRule(thread.workspaceId));
   }
   configureAgent(id: string, expectedRevision: string, value: unknown) {
     return this.updateAgentConfiguration(id, expectedRevision, value);
   }
-  /** 改选角色：提示词、工具、默认模型、预算与协作授权一起换成角色的，并记下新的角色约束。只在还没有对话时可用。 */
+  /** 改选角色：提示词、工具、执行授权、审批模式、默认模型、预算与协作授权一起换成角色的，并记下新的角色约束。只在还没有对话时可用。 */
   configureRole(id: string, expectedRevision: string, selection: RoleSelection) {
     const thread = this.control.context(id);
     const bound = roleAgent(this.kite.roles.get(selection.id, selection.revision), {}, this.projectRule(thread.workspaceId));
-    return this.updateAgentConfiguration(id, expectedRevision, bound.agent, bound.role);
+    return this.updateAgentConfiguration(id, expectedRevision, bound.agent, bound.role,
+      { execution: bound.execution ?? this.kite.catalog.get(thread.definitionId).execution, approval: bound.approval });
   }
-  private updateAgentConfiguration(id: string, expectedRevision: string, value: unknown, role?: RoleBinding) {
+  private updateAgentConfiguration(id: string, expectedRevision: string, value: unknown, role?: RoleBinding,
+    defaults?: { execution?: ExecutionChanges; approval?: ApprovalMode }) {
     return this.control.run(this.control.context(id).workspaceId, async () => {
       this.control.openThread(id);
       const snapshot = this.agentConfig(id);
@@ -249,9 +279,11 @@ export class InstanceConfiguration {
       const notification = this.configurationNotice(`instance:${id}`, this.control.context(id), agent, this.projectRule(instance.workspaceId));
       const save = () => this.kite.store.transaction(() => {
         if (runtimeChanged) this.kite.store.setThreadRuntime(id, agent.runtime);
-        this.kite.store.setInstanceConfig(id, { ...instance.config, agent,
+        const { approval: _approval, ...config } = instance.config;
+        this.kite.store.setInstanceConfig(id, { ...(role ? config : instance.config), agent,
           ...(role ? { role, grants: roleOperationGrants(instance.definitionId, this.kite.operations.grants(id).grants,
-            toolLimits(instanceRole(instance)?.tools).allowed, toolLimits(role.tools).allowed) } : {}) },
+            toolLimits(instanceRole(instance)?.tools).allowed, toolLimits(role.tools).allowed),
+          ...(defaults?.execution ? { execution: defaults.execution } : {}), ...(defaults?.approval ? { approval: defaults.approval } : {}) } : {}) },
           nextRevision === revision ? undefined : notification);
       });
       if (runtimeChanged) await this.control.switchRuntime(id, agent, save);

@@ -45,7 +45,7 @@ import {
   agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
   pluginToolsContextDefinition,
 } from './harness/context/notifications.ts';
-import { applyExecutionGrants, instanceApprovalMode, instanceExecutionGrants } from './execution/grants.ts';
+import { applyExecutionGrants, effectiveApprovalMode, effectiveExecution, instanceApprovalMode, instanceExecutionChanges, unsandboxedVerdict } from './execution/grants.ts';
 import { harnessPolicy } from './execution/policy.ts';
 import { commandEnvironment } from './execution/sandbox.ts';
 import { monitorConfig, monitorDefinitionId, monitorEventsContextDefinition, Monitors } from './monitor/monitors.ts';
@@ -73,6 +73,7 @@ import { ModelAccounts, readModelAccounts } from './model-accounts.ts';
 import { agentModelCatalog } from './agents/capabilities.ts';
 import { TokenCounter } from './token-counts.ts';
 import { VoiceSessions, voiceTemplate } from './voice/sessions.ts';
+import { Terminals, terminalExitContextDefinition } from './terminal/terminals.ts';
 import { type Waiting, Waits } from './waiting.ts';
 import { WorkspaceTransfers } from './transfer/transfers.ts';
 import { diskEnough, readEnvironment, runtimeLogin, type Environment, type HandoverNeed } from './environment.ts';
@@ -146,6 +147,7 @@ export class Kite {
   readonly attention: Attention;
   /** 代理用 monitor_start 开的 monitor；Line 的那个由 monitor（LineMonitor）负责。 */
   readonly monitors: Monitors;
+  readonly terminals: Terminals;
   /** 最近一条输入是 Line 自己说明的线程；只在内存里，重启后按用户的工作对待。 */
   private lineWork = new Set<string>();
   /** 服务起来后才知道本机监听地址与组网，Line 调本机和别的工作机时用。 */
@@ -159,6 +161,8 @@ export class Kite {
   private queues = new Map<string, Promise<unknown>>();
   private preparations = new Map<string, AbortController>();
   private stopping = false;
+  /** 正在跑 shell 命令的线程：用户发来消息时通知它们，命令转到后台，好让消息送到模型。 */
+  private interjections = new Map<string, Set<() => void>>();
   private turnLabels = new Map<string, string>();
   /**
    * 采纳冲突转交的线程，按工作区。处理回合期间工作区停在合并中途，同一工作区的其他线程不能开始工作；
@@ -211,7 +215,7 @@ export class Kite {
     this.contextTemplates = new ContextTemplates(store, [
       titleTemplate, compactTemplate, emblemTemplate,
       agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
-      pluginToolsContextDefinition, voiceTemplate, lineMonitorContextDefinition, monitorEventsContextDefinition,
+      pluginToolsContextDefinition, voiceTemplate, lineMonitorContextDefinition, monitorEventsContextDefinition, terminalExitContextDefinition,
     ]);
     this.library = new LibrarySync({ data: this.accountData, registry: this.registry, store, roles: this.roles, templates: this.contextTemplates,
       catalog: this.catalog, changed: (changes) => this.libraryChanged(changes) });
@@ -236,7 +240,7 @@ export class Kite {
       policy: async (target) => {
         const { workspace, checkout } = this.workspace(target.workspaceId);
         return applyExecutionGrants(await harnessPolicy({ cwd: workspace.cwd, env: process.env, home, repository: checkout.path }), workspace.cwd,
-          instanceExecutionGrants(target));
+          effectiveExecution(instanceExecutionChanges(target), store.workspaceConstraints(target.workspaceId)?.execution));
       },
       deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, 'kite'),
       template: () => this.contextTemplates.get(monitorEventsContextDefinition.id, 'monitor.events').definition,
@@ -290,6 +294,16 @@ export class Kite {
       changed: (workspaceId) => this.changed(workspaceId),
       revokeGrants: (instance) => this.configuration.revokeInstanceGrants(instance),
     });
+    this.terminals = new Terminals({ store, home, env: process.env,
+      run: (workspaceId, action) => this.control(workspaceId, action),
+      changed: (workspaceId) => this.changed(workspaceId),
+      collect: (instance) => this.instances.collect(instance),
+      deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, 'kite'),
+      template: () => this.contextTemplates.get(terminalExitContextDefinition.id, 'terminal.exit').definition,
+      variables: (threadId) => storedThreadVariables(store, threadId),
+      forward: (ports) => this.serving?.network?.forward(ports),
+      ...(options.terminalShell ? { shell: options.terminalShell } : {}),
+      ...(options.terminalPortScanMs !== undefined ? { portScanMs: options.terminalPortScanMs } : {}) });
     this.tokenCounts = new TokenCounter({ apiKeys: () => this.credentials.apiKeys() });
     this.voice = new VoiceSessions({
       keys: () => this.credentials.speechKeys(),
@@ -319,6 +333,7 @@ export class Kite {
       () => bus.emit({ type: 'roles.changed' }), (id, emblem) => this.library.write('emblem', id, emblem));
     for (const w of store.workspaces()) if (w.status === 'preparing') store.setWorkspaceStatus(w.id, 'failed');
     this.transcripts = new TranscriptHistory(store, home, bus, this.events);
+    this.terminals.recover();
   }
 
   machine(): Machine { return this.store.machine; }
@@ -851,8 +866,9 @@ export class Kite {
         { role: { id: input.role ?? defaultRoleId } });
       instance.presentation = input.presentation;
       instance.origin = origin;
-      if (origin && instanceExecutionGrants(this.store.instance(origin.instanceId)!).workspace === 'read') {
-        instance.config.execution = { ...instanceExecutionGrants(instance), workspace: 'read' };
+      const project = this.store.workspaceConstraints(workspaceId)?.execution;
+      if (origin && effectiveExecution(instanceExecutionChanges(this.store.instance(origin.instanceId)!), project).grants.workspace === 'read') {
+        instance.config.execution = { ...instanceExecutionChanges(instance), workspace: 'read' };
       }
       const agent: AgentInstance = { ...instance, instanceId: instance.id, runtime: instanceAgent(instance).runtime, nativeId: randomUUID() };
       const window = instance.presentation === 'window' ? this.instances.newWindow(instance) : undefined;
@@ -1067,7 +1083,24 @@ export class Kite {
       }),
       compactionFiles: ({ from, to }) => changesBetween(workspace.cwd, workspaceId, from, to),
       toolConstraint: () => this.store.projectConstraints(t.project.id)?.tools,
+      executionConstraint: () => this.store.projectConstraints(t.project.id)?.execution,
       askNetwork: (target, signal) => this.askNetwork(id, target, signal),
+      background: {
+        interjected: (listener) => {
+          const listeners = this.interjections.get(id) ?? new Set();
+          listeners.add(listener);
+          this.interjections.set(id, listeners);
+          return () => { listeners.delete(listener); if (!listeners.size) this.interjections.delete(id); };
+        },
+        adopt: (command, info) => this.terminals.adopt(id, command, info),
+      },
+      outside: {
+        verdict: (command) => {
+          const { grants, denied } = effectiveExecution(instanceExecutionChanges(this.context(id)), this.store.projectConstraints(t.project.id)?.execution);
+          return unsandboxedVerdict(command, grants.unsandboxed, denied.unsandboxed);
+        },
+        ask: (command, description, signal) => this.askOutside(id, command, description, signal),
+      },
     });
     this.runners.set(id, r);
     return r;
@@ -1077,13 +1110,28 @@ export class Kite {
    * 记不住（如线程已归档）也放行这一次。
    */
   private async askNetwork(id: string, target: { host: string; port?: number }, signal: AbortSignal): Promise<boolean> {
-    const mode = instanceApprovalMode(this.context(id));
+    const thread = this.context(id);
+    const mode = effectiveApprovalMode(instanceApprovalMode(thread), this.store.projectConstraints(thread.project.id)?.execution);
     if (mode !== 'ask') return mode === 'allow_all';
     const host = target.host.includes(':') ? `[${target.host}]` : target.host;
     const domain = target.port === undefined ? host : `${host}:${target.port}`;
     const decision = await this.waits.approve(id, { tool: 'shell', target: domain, reason: '命令要连接网络许可之外的主机', mustAsk: false }, signal);
     if (decision === 'remember') {
-      await this.configuration.rememberNetwork(id, domain).catch((error) => console.error(`[审批] 记住网络许可失败：${(error as Error).message}`));
+      await this.configuration.remember(id, 'network', domain).catch((error: Error) => console.error(`[审批] 记住网络许可失败：${error.message}`));
+    }
+    return decision === 'once' || decision === 'remember';
+  }
+  /**
+   * 代理申请在沙箱外运行一条命令：按审批模式放行、拒绝或在线程上问人；「允许并记住」把整条命令原样记成实例的沙箱外命令，
+   * 记不住（如线程已归档）也放行这一次。
+   */
+  private async askOutside(id: string, command: string, description: string, signal: AbortSignal): Promise<boolean> {
+    const thread = this.context(id);
+    const mode = effectiveApprovalMode(instanceApprovalMode(thread), this.store.projectConstraints(thread.project.id)?.execution);
+    if (mode !== 'ask') return mode === 'allow_all';
+    const decision = await this.waits.approve(id, { tool: 'shell', target: command.trim(), reason: description, mustAsk: false, outside: true }, signal);
+    if (decision === 'remember') {
+      await this.configuration.remember(id, 'unsandboxed', command.trim()).catch((error: Error) => console.error(`[审批] 记住沙箱外命令失败：${error.message}`));
     }
     return decision === 'once' || decision === 'remember';
   }
@@ -1125,6 +1173,7 @@ export class Kite {
     const runner = await this.runner(thread);
     check();
     await runner.send(input);
+    if (input.source === 'human') for (const listener of [...this.interjections.get(thread.id) ?? []]) listener();
     // Line 自己的说明让这一回合成为 Line 的工作；用户的消息（含经 Line 转达的原文）收回给用户。
     if (input.via && input.source === 'kite') this.lineWork.add(thread.id);
     else if (input.source === 'human') this.lineWork.delete(thread.id);
@@ -1303,6 +1352,7 @@ export class Kite {
     if (definition.agent) return this.archiveThread(id);
     if (definition.id === monitorDefinitionId && 'system' in monitorConfig(instance)) throw new KiteError('Line 的收件箱随 Line 存在，不能单独归档', 409);
     if (definition.lifetime === 'window') throw new KiteError('此实例随窗口回收，关闭窗口即可');
+    if (definition.lifetime === 'process') throw new KiteError('此实例随进程结束回收，停止进程即可');
     return this.control(instance.workspaceId, async () => {
       if (this.store.instance(id)!.status === 'archived') return;
       const release = await this.plugins.closeInstance(id);
@@ -1317,6 +1367,7 @@ export class Kite {
       const current = this.context(id);
       if (current.status === 'archived') return;
       await this.stopThread(current);
+      await this.terminals.stopOwned(id, '启动它的代理已归档');
       this.store.archiveInstance(id);
       this.threadChanged({ ...current, status: 'archived' });
     });
@@ -1347,7 +1398,10 @@ export class Kite {
     });
   }
   /** 服务起来后由 daemon 告知本机监听地址与组网，Line 据此调用本机与别的工作机。 */
-  listening(serving: { url: string; network?: Network }): void { this.serving = serving; }
+  listening(serving: { url: string; network?: Network }): void {
+    this.serving = serving;
+    this.terminals.forwardAll();
+  }
 
   /** 本机上的 Line 实例（未归档、在打开的工作区里）。账号下只有一个 Line，多个 Line 不在当前范围。 */
   lineInstance(): AgentInstance | undefined {
@@ -1372,8 +1426,9 @@ export class Kite {
     this.store.addPluginInstance(inbox, this.instances.newWindow(inbox));
     return inbox;
   }
-  /** 工作区交接、冻结或归档前停下插件进程与 monitor 的来源；monitor 的来源不算结束，工作区再开放时重新开始。 */
+  /** 工作区交接、冻结或归档前停下终端、插件进程与 monitor 的来源；monitor 的来源不算结束，工作区再开放时重新开始，终端不再拉起。 */
   private async closeExtensions(workspaceId: string): Promise<() => void> {
+    await this.terminals.closeWorkspace(workspaceId, '工作区已归档或交出，终端已停止');
     await this.monitors.closeWorkspace(workspaceId);
     return this.plugins.closeWorkspace(workspaceId);
   }
@@ -1464,6 +1519,7 @@ export class Kite {
     await Promise.all([this.titles?.close(), this.emblems.close(), this.lightTasks?.close(), this.subscriptionLogins.close(), this.replication.close(), this.replicas.close()]);
     await this.monitor.stop();
     await this.monitors.close();
+    await this.terminals.close();
     await this.plugins.close();
     await this.operations.close();
     for (const c of this.preparations.values()) c.abort();

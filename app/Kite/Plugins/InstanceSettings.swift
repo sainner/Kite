@@ -56,7 +56,7 @@ struct InstanceSettings: View {
     }
 
     private var main: some View {
-        CardSheet(title: "实例设置与授权", subtitle: "管理实例的运行与可用能力", error: progress.error, size: Self.size,
+        CardSheet(title: "配置", subtitle: "管理实例的运行与协作授权", error: progress.error, size: Self.size,
                   close: { if changed { discardAction = "close" } else { dismiss() } }) {
             Group {
                 CardSection("实例", note: definition?.lifetime.explanation) {
@@ -91,8 +91,10 @@ struct InstanceSettings: View {
                     }
                 }
                 if editable, draft != nil {
-                    CardSection("可用能力", note: "选择这个实例可以调用的能力。修改后保存，撤回对后续调用立即生效。"
-                        + (definition?.agent != nil ? "撤回授权立即阻止后续调用。新增工具的生效时机见代理配置。" : ""))
+                    CardSection("协作授权", note: (definition?.agent != nil
+                        ? "这个代理的协作工具能对准工作区里的哪些代理、monitor、后台终端和插件，能做什么；默认只能管它自己建的。新授权的插件工具何时生效见代理配置。"
+                        : "这个插件能经宿主调用工作区里的哪些实例和操作；默认都没有。")
+                        + "修改后保存，撤回对后续调用立即生效。")
                     workspaceGrants
                     ForEach(targets) { target in
                         if area.definition(of: target)?.runtime == "bun" { pluginGrants(target) }
@@ -303,36 +305,52 @@ struct ArchiveInstanceConfirmation: ViewModifier {
     }
 }
 
-/// 窗口图标和无窗口实例使用同一套实例操作。
+/// 窗口图标和无窗口实例使用同一套实例操作；给了窗口时带关闭窗口。
 struct InstanceActions: View {
     let instance: RemotePluginInstance
+    var pane: Pane?
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     var body: some View {
-        ForEach(Array(InstanceAction.all(for: instance, in: area, model: model).enumerated()), id: \.offset) { _, action in
+        ForEach(Array(InstanceAction.all(for: instance, in: area, model: model, pane: pane).enumerated()), id: \.offset) { _, action in
             Button(action.title, role: action.destructive ? .destructive : nil, action: action.perform)
                 .disabled(!action.enabled)
         }
     }
 }
 
-/// 一项实例操作。SwiftUI 的菜单（InstanceActions）和 Mac 原生台面的卡片右键菜单都从这里出。
+/// 一项实例操作。实例操作只有这一份：停靠栏的菜单（含缩成停靠形状的窗口）和会话窗口的更多菜单都从这里出；结束性的（停止、归档）用危险色。
 struct InstanceAction {
     let title: String
+    let symbol: String
     var enabled = true
     var destructive = false
     let perform: @MainActor () -> Void
 
-    /// 打开它的各个视图、实例设置与授权；持久实例还能归档。
-    @MainActor static func all(for instance: RemotePluginInstance, in area: WorkArea, model: AppModel) -> [InstanceAction] {
+    /// 打开它的各个视图，再是 managing 那几项；给了窗口时最后是关闭窗口。
+    @MainActor static func all(for instance: RemotePluginInstance, in area: WorkArea, model: AppModel, pane: Pane? = nil) -> [InstanceAction] {
         var actions = (area.definition(of: instance)?.views ?? []).map { view in
-            InstanceAction(title: "打开\(view.title)") {
+            InstanceAction(title: "打开\(view.title)", symbol: "macwindow") {
                 model.openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area)
             }
         }
-        actions.append(InstanceAction(title: "实例设置与授权") { area.settingsInstance = instance })
+        actions += managing(instance, in: area, model: model)
+        if let pane {
+            actions.append(InstanceAction(title: "关闭窗口", symbol: "xmark") { model.closeWindow(pane, in: area) })
+        }
+        return actions
+    }
+
+    /// 实例本身的：配置；终端在跑时能停止，独立存续的能归档。窗口自己的更多菜单只列这些，打开、关闭由窗口管。
+    @MainActor static func managing(_ instance: RemotePluginInstance, in area: WorkArea, model: AppModel) -> [InstanceAction] {
+        var actions = [InstanceAction(title: "配置", symbol: "slider.horizontal.3") { area.settingsInstance = instance }]
+        if instance.state?.terminal?.running == true {
+            actions.append(InstanceAction(title: "停止终端", symbol: "stop.fill", enabled: model.isConnected(area), destructive: true) {
+                model.stopTerminal(instance, in: area)
+            })
+        }
         if area.definition(of: instance)?.lifetime == .persistent {
-            actions.append(InstanceAction(title: "归档", enabled: model.isConnected(area), destructive: true) { area.archiveRequest = instance })
+            actions.append(InstanceAction(title: "归档", symbol: "archivebox", enabled: model.isConnected(area), destructive: true) { area.archiveRequest = instance })
         }
         return actions
     }

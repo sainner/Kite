@@ -139,11 +139,11 @@ final class CardPresentation {
             : layout.resizing != nil ? .immediate : layout.drag != nil ? .preview : layout.motionKind
     }
 
-    /// 关闭时飞回停靠栏的那一格：只有持久实例有。
+    /// 关闭时飞回停靠栏的那一格：只有关掉窗口后实例还在的有。
     private func returnFrame(group: PaneGroup, pane: Pane, regions: WindowRegions) -> CGRect? {
         let layout = group.layout
         guard let area = group.workspace, let instance = instance ?? area.instance(of: pane),
-              area.definition(of: instance)?.lifetime == .persistent else { return nil }
+              area.survivesWindowClose(instance) else { return nil }
         let model = area.dockModel(docked: layout.shownDock.filter { $0 != pane },
                                    onStage: Set(layout.shown?.panes ?? []).subtracting([pane]), windowless: instance.id)
         return DockGeometry(model: model, regions: regions).frame(containing: instance.id)

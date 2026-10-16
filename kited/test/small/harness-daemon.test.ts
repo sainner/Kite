@@ -32,7 +32,8 @@ test('默认 harness 线程的真实工具只改工作树，结果和快照先�
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
-  const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' });
+  // 没有远程的项目：合回只到本机主线。给了示例远程的话，每次合回都先拉一次连不上的远程，白等一百多毫秒。
+  const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' }, null);
   const project = await registerCheckout(kk, repo);
   const session = await createWorkspace(kk, project.checkout.id, '建立两个文件', 'harness');
 
@@ -159,7 +160,8 @@ test('采纳冲突转交一个线程处理：回合期间同一工作区的其�
   };
   kited = startKited((thread) => modelOf(thread.id));
   const kk = kited;
-  const repo = newRepo(kk.root, 'proj', { 'c.txt': 'base\n' });
+  // 没有远程的项目：合回只到本机主线。给了示例远程的话，每次合回都先拉一次连不上的远程，白等一百多毫秒。
+  const repo = newRepo(kk.root, 'proj', { 'c.txt': 'base\n' }, null);
   const project = await registerCheckout(kk, repo);
   const thread = await createWorkspace(kk, project.checkout.id, '改一下 c.txt', 'harness');
   const workspaceId = thread.workspace.id;

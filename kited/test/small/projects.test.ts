@@ -1,10 +1,15 @@
 /**
- * 项目登记（docs/项目与远程仓库.md）：经 HTTP 登记本机文件夹、clone 远程或另一台工作机的检出，
- * kited 与本机项目登记表、Git 平台替身上的裸仓库（git http-backend）之间的交接。集成与现场推送见 integration.test.ts，
- * 没有远程的项目在工作机之间拉取与设远程见 peer-git.test.ts。删除项目在别的工作机上的移除见 account-sync.test.ts。
+ * 项目与远程仓库（docs/项目与远程仓库.md），分三段：
+ * 一、项目登记：经 HTTP 登记本机文件夹、clone 远程或另一台工作机的检出，kited 与本机项目登记表、
+ *    Git 平台替身上的裸仓库（git http-backend）之间的交接；
+ * 二、工作区集成与检出现场推送：kited 用真实 git fetch/merge/push 访问替身上的裸仓库；
+ * 三、没有远程的项目以各工作机的检出互为远程（src/workspace/peer-git.ts，docs/分布式架构.md「数据的归属与同步」）：
+ *    两台本进程 kited 互为组网对端，B 从 A 的检出 clone 和拉取，git 经 A 的 /git/:project 转接到 A 检出上的 http-backend；
+ *    之后给项目设远程，全部分支和标签推上去，各工作机随项目同步加上 origin。
+ * 删除项目在别的工作机上的移除见 account-sync.test.ts。
  */
 import { afterEach, expect, test } from 'bun:test';
-import { realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import GITATTRIBUTES_TEMPLATE from '../../../.claude/skills/kite-onboard/templates/gitattributes' with { type: 'text' };
 import type { RegisteredProject } from '../../src/account-data/registry.ts';
@@ -18,11 +23,13 @@ import {
   call, chatgptLogin, connect, createWorkspace, type Kited, type KitedProcess, registerBeforeStart, registerCheckout, spawnKited, startKited, synced,
 } from '../harness.ts';
 import { ManualModel } from '../harness-loop.ts';
-import { git, gitOk, lexists, makeTemp, newDir, newRepo, read, writeFiles } from '../util.ts';
+import { commitAll, git, gitOk, lexists, makeTemp, newDir, newRepo, read, repoState, writeFiles } from '../util.ts';
 
 let kited: Kited | undefined;
 /** 同一用户的第二台工作机。 */
 let second: Kited | undefined;
+/** 互为组网对端的几台工作机（没有远程的项目一段）。 */
+const kiteds: Kited[] = [];
 let child: KitedProcess | undefined;
 let remotes: FakeGit | undefined;
 const dirs: string[] = [];
@@ -33,6 +40,7 @@ afterEach(async () => {
   kited = undefined;
   await second?.stop();
   second = undefined;
+  for (const k of kiteds.splice(0)) await k.stop();
   await child?.kill('SIGTERM');
   child = undefined;
   remotes?.stop();
@@ -303,4 +311,212 @@ test('删除项目：停下回合，工作树里未提交的改动存进检出�
   expect(again.project.id).not.toBe(projectId);
   expect(again.checkout.path).toBe(folder);
   expect(kite.registry.get(again.project.id)).toMatchObject({ name: 'notes' });
+}, 1_000);
+
+// ---- 工作区集成与检出现场推送 ----
+
+/** 直接在裸仓库的分支上加一个提交（沿用父提交的文件），模拟另一台机器刚推了提交；返回这个提交。 */
+function advanceRemote(bare: string, branch: string, message: string): string {
+  const ref = `refs/heads/${branch}`;
+  const commit = git(bare, 'commit-tree', `${ref}^{tree}`, '-p', ref, '-m', message);
+  git(bare, 'update-ref', ref, commit);
+  return commit;
+}
+
+/** 登记一个普通文件夹（Kite 初始化仓库），再给项目设远程，内容推到替身的裸仓库；返回检出、裸仓库路径和分支名。 */
+async function remoteCheckout(k: Kited, name: string, files: Record<string, string>) {
+  const folder = newDir(k.root, name, files);
+  const model = await registerCheckout(k, folder);
+  const { url, bare } = (remotes ??= startFakeGit()).create(name);
+  const set = await k.call('PUT', `/project-registry/${model.project.id}/remote`, { remote: url });
+  if (set.status !== 200) throw new Error(`设远程失败：${set.status} ${JSON.stringify(set.body)}`);
+  return { folder, model, bare, branch: git(folder, 'branch', '--show-current') };
+}
+
+/** 建一个工作区（不带线程），等它准备好。 */
+async function openWorkspace(k: Kited, checkoutId: string): Promise<WorkspaceModel['workspace']> {
+  const created = await k.call('POST', '/workspaces', { checkout: checkoutId });
+  expect(created.status).toBe(200);
+  const workspace = (created.body as WorkspaceModel).workspace;
+  await k.waitEvent((e) => e.type === 'workspace.changed' && e.workspaceId === workspace.id && e.status === 'open');
+  return ((await k.call('GET', `/workspaces/${workspace.id}`)).body as WorkspaceModel).workspace;
+}
+
+/*
+ * 现场归用户（真实回归方向：以前 Kite 初始化的文件夹建工作区时会把现场改动提交成「Kite：保存主文件夹里的改动」）。
+ * 建工作区经异步准备和 git worktree add，现场的 HEAD、暂存区和改动都不动，工作区从检出 HEAD 开始；
+ * 集成直接拒绝；远程领先时现场推送先真实 fetch，判定分叉后拒绝，不在现场提交或合并。
+ */
+test('现场有未提交改动时建工作区不自动提交，集成和远程领先时的推送都拒绝，现场与远程不变', async () => {
+  kited = startKited();
+  const { folder, model, bare, branch } = await remoteCheckout(kited, 'draft', { 'a.txt': '已提交\n' });
+  const remoteHead = advanceRemote(bare, branch, '另一台机器的提交');
+  writeFiles(folder, { 'a.txt': '现场改动\n', 'new.txt': '新文件\n' });
+  const head = git(folder, 'rev-parse', 'HEAD');
+  const before = repoState(folder);
+
+  const workspace = await openWorkspace(kited, model.checkout.id);
+  expect(repoState(folder)).toBe(before);
+  expect(workspace.base).toBe(head);
+  expect(read(join(workspace.cwd, 'a.txt'))).toBe('已提交\n');
+  expect(existsSync(join(workspace.cwd, 'new.txt'))).toBe(false);
+
+  writeFiles(workspace.cwd, { 'w.txt': '工作区\n' });
+  expect((await kited.call('POST', `/workspaces/${workspace.id}/adopt`)).status).toBe(409);
+  expect((await kited.call('POST', `/checkouts/${model.checkout.id}/push`, { message: '现场提交' })).status).toBe(409);
+  expect(repoState(folder)).toBe(before);
+  expect(git(bare, 'rev-parse', `refs/heads/${branch}`)).toBe(remoteHead);
+});
+
+/*
+ * 经真实 git fetch/merge/push 与 http-backend：远程领先、现场干净时推送只把现场快进到远程；
+ * 现场有新改动时提交并推送；切换到远程尚无的新分支时也能建立分支，跟踪引用与 sync 随之更新。
+ */
+test('现场推送在远程领先时快进，现场领先时提交并推送，也能建立远程缺少的分支，sync 显示一致', async () => {
+  kited = startKited();
+  const { folder, model, bare, branch } = await remoteCheckout(kited, 'site', { 'a.txt': 'a\n' });
+  const remoteHead = advanceRemote(bare, branch, '另一台机器的提交');
+  expect((await kited.call('POST', `/checkouts/${model.checkout.id}/push`, {})).status).toBe(200);
+  expect(git(folder, 'rev-parse', 'HEAD')).toBe(remoteHead);
+
+  writeFiles(folder, { 'local.txt': '现场\n' });
+  const pushed = await kited.call('POST', `/checkouts/${model.checkout.id}/push`, { message: '现场提交' });
+  expect(pushed.status).toBe(200);
+  expect(pushed.body).toEqual({ branch, dirty: false, ahead: 0, behind: 0 });
+  const [subject, parents, head] = git(folder, 'log', '-1', '--format=%s%n%P%n%H').split('\n');
+  expect(subject).toBe('现场提交');
+  expect(parents!.split(' ')[0]).toBe(remoteHead);
+  expect(git(bare, 'rev-parse', `refs/heads/${branch}`)).toBe(head!);
+  expect((await kited.call('GET', `/checkouts/${model.checkout.id}/sync`)).body).toEqual(pushed.body);
+
+  git(folder, 'switch', '-q', '-c', 'new-branch');
+  expect(gitOk(bare, 'show-ref', '--verify', 'refs/heads/new-branch')).toBe(false);
+  const created = await kited.call('POST', `/checkouts/${model.checkout.id}/push`, {});
+  expect(created.status).toBe(200);
+  expect(created.body).toEqual({ branch: 'new-branch', dirty: false, ahead: 0, behind: 0 });
+  expect(git(bare, 'rev-parse', 'refs/heads/new-branch')).toBe(git(folder, 'rev-parse', 'HEAD'));
+  expect((await kited.call('GET', `/checkouts/${model.checkout.id}/sync`)).body).toEqual(created.body);
+});
+
+/*
+ * 经真实 git fetch/merge/push 与 http-backend：推送前远程又多了另一台机器的提交（替身在 receive-pack 引用广告前注入），
+ * 推送在客户端被判非快进而被拒；kited 重新拉取、把远程合进来再推，远程和主目录都包含双方的提交。
+ */
+test('集成推送被拒后重新拉取合并再推送，远程与主目录包含双方的提交', async () => {
+  kited = startKited();
+  const { folder, model, bare, branch } = await remoteCheckout(kited, 'app', { 'a.txt': 'a\n' });
+  const workspace = await openWorkspace(kited, model.checkout.id);
+  writeFiles(workspace.cwd, { 'w.txt': '工作区\n' });
+
+  let late: string | undefined;
+  let pushes = 0;
+  remotes!.beforePush = () => {
+    if (pushes++ === 0) late = advanceRemote(bare, branch, '推送前刚到的提交');
+  };
+  const adopted = await kited.call('POST', `/workspaces/${workspace.id}/adopt`);
+  expect(adopted.status).toBe(200);
+  expect(adopted.body).toMatchObject({ status: 'adopted', push: { status: 'pushed' } });
+  expect(pushes).toBe(2);
+
+  const head = git(folder, 'rev-parse', 'HEAD');
+  expect(git(bare, 'rev-parse', `refs/heads/${branch}`)).toBe(head);
+  expect(gitOk(folder, 'merge-base', '--is-ancestor', late!, head)).toBe(true);
+  expect(git(folder, 'show', `${head}:w.txt`)).toBe('工作区');
+  expect(git(folder, 'status', '--porcelain')).toBe('');
+});
+
+// ---- 没有远程的项目以各工作机的检出互为远程 ----
+
+/**
+ * A 上登记了一个没有远程的普通文件夹（先登记再起，见 registerBeforeStart），B 与 A 互为对端，
+ * 已从同步来的登记表和目录摘要里看到这个项目和 A 的检出；B 把它 clone 到自己的临时目录下。
+ */
+async function cloned(files: Record<string, string>) {
+  const root = makeTemp('peer-git-');
+  dirs.push(root);
+  const folder = newDir(root, 'notes', files);
+  const [registered] = await registerBeforeStart(root, [folder]);
+  const projectId = registered!.project.id;
+  const a = startKited(undefined, false, { root });
+  const b = startKited();
+  kiteds.push(a, b);
+  const machineA = a.daemon.kite.store.machine.id;
+  await connect(a, b);
+  await synced(b, () => b.daemon.kite.registry.get(projectId) && b.daemon.kite.directory.entries()
+    .some((entry) => entry.id === machineA && entry.snapshot?.checkouts.some((checkout) => checkout.projectId === projectId)),
+  'B 同步到项目登记和 A 的检出');
+  const target = join(b.root, 'notes');
+  const response = await b.call('POST', '/checkouts', { project: projectId, path: target });
+  if (response.status !== 200) throw new Error(`B 从 A clone 失败：${response.status} ${JSON.stringify(response.body)}`);
+  return { a, b, folder, target, projectId, machineA, model: response.body };
+}
+
+/*
+ * 跨部分与 git 的配合：B 的 git clone、fetch 带 X-Kite-Machine 访问 A 的 /git/:project，A 转接给自己检出上的 git http-backend；
+ * B 的项目同步把 A 的全部分支取到 refs/kite/peers/<A>/，当前分支落后且干净时快进（工作树一起更新），
+ * 两边都有新提交时只更新对端的 ref，不合并、不动 B 的主线和现场。
+ * B 收到项目登记后约半秒会自己再同步一次；分叉前先让 B 提交，这次后台同步早晚都不改变结果。
+ */
+test('B 从 A 的检出 clone 没有远程的项目、不留 origin；A 再提交后 B 项目同步快进主线；B 的提交并推送只在本机提交，与 A 分叉后同步不合并、B 的主线不动', async () => {
+  const { b, folder, target, projectId, machineA, model } = await cloned({ 'a.txt': '一\n' });
+  const branch = git(folder, 'branch', '--show-current');
+  expect(model).toMatchObject({ project: { id: projectId, remote: null }, checkout: { path: target, remote: null } });
+  expect(git(target, 'rev-parse', 'HEAD')).toBe(git(folder, 'rev-parse', 'HEAD'));
+  expect(git(target, 'branch', '--show-current')).toBe(branch);
+  expect(read(join(target, 'a.txt'))).toBe('一\n');
+  expect(git(target, 'remote')).toBe('');
+
+  writeFiles(folder, { 'a.txt': '二\n' });
+  const second = commitAll(folder, 'A 的第二个提交');
+  git(folder, 'branch', 'feature');
+  await b.daemon.kite.syncProjects();
+  expect(git(target, 'rev-parse', 'HEAD')).toBe(second);
+  expect(read(join(target, 'a.txt'))).toBe('二\n');
+  expect(git(target, 'status', '--porcelain')).toBe('');
+  expect(git(target, 'for-each-ref', '--format=%(refname) %(objectname)', `refs/kite/peers/${machineA}/`).split('\n').sort())
+    .toEqual([`refs/kite/peers/${machineA}/${branch} ${second}`, `refs/kite/peers/${machineA}/feature ${second}`].sort());
+
+  // B 先在现场提交（经 kited 的「提交并推送」，没有远程的项目只提交；与后台的项目同步共用检出的锁），A 再提交，两边分叉。
+  writeFiles(target, { 'b.txt': 'B 的\n' });
+  expect((await b.call('POST', `/checkouts/${model.checkout.id}/push`, { message: 'B 自己的提交' })).status).toBe(200);
+  const ours = git(target, 'rev-parse', 'HEAD');
+  expect(git(target, 'log', '-1', '--format=%s%n%P')).toBe(`B 自己的提交\n${second}`);
+  writeFiles(folder, { 'a.txt': '三\n' });
+  const theirs = commitAll(folder, 'A 的第三个提交');
+  await b.daemon.kite.syncProjects();
+  expect(git(target, 'rev-parse', `refs/kite/peers/${machineA}/${branch}`)).toBe(theirs);
+  expect(git(target, 'rev-parse', 'HEAD')).toBe(ours);
+  expect(read(join(target, 'a.txt'))).toBe('二\n');
+  expect(git(target, 'status', '--porcelain')).toBe('');
+}, 1_000);
+
+/*
+ * 几条 git 命令与同步的配合：A 用本机检出把全部分支和标签推到新远程（替身上的空裸仓库，经 http-backend 接收推送）并加 origin，
+ * 写进登记表；登记表随账号级数据同步到 B，B 的项目同步给自己的检出加上 origin，本机记录的检出远程跟着改。
+ */
+test('没有远程的项目设远程：全部分支和标签推到远程、A 的检出加上 origin，B 同步到登记表后项目同步也给自己的检出加上 origin', async () => {
+  const { a, b, folder, target, projectId } = await cloned({ 'a.txt': '一\n' });
+  const branch = git(folder, 'branch', '--show-current');
+  git(folder, 'switch', '-q', '-c', 'feature');
+  writeFiles(folder, { 'f.txt': '功能\n' });
+  commitAll(folder, '功能分支');
+  git(folder, 'tag', 'v1');
+  git(folder, 'switch', '-q', branch);
+
+  remotes = startFakeGit();
+  const { url, bare } = remotes.create('notes');
+  const set = await a.call('PUT', `/project-registry/${projectId}/remote`, { remote: url });
+  expect(set.status).toBe(200);
+  const remote = `${new URL(url).host}/notes`;
+  expect(set.body).toMatchObject({ id: projectId, remote, url });
+  const refs = (dir: string) => git(dir, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads/', 'refs/tags/');
+  expect(refs(bare)).toBe(refs(folder));
+  expect(refs(bare).split('\n')).toHaveLength(3);
+  expect(git(folder, 'remote', 'get-url', 'origin')).toBe(url);
+
+  await synced(b, () => b.daemon.kite.registry.get(projectId)?.remote, 'B 同步到设好的远程');
+  await b.daemon.kite.syncProjects();
+  expect(git(target, 'remote', 'get-url', 'origin')).toBe(url);
+  expect(((await b.call('GET', '/checkouts')).body as Checkout[]).map((checkout) => [checkout.path, checkout.remote]))
+    .toEqual([[target, remote]]);
 }, 1_000);

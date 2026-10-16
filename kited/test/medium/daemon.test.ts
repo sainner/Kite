@@ -30,7 +30,8 @@ const readTool = 'mcp__kite__read';
 const patchTool = 'mcp__kite__patch';
 const shellTool = 'mcp__kite__shell';
 const expectedTools = [readTool, patchTool, shellTool, 'mcp__kite__credentials', 'mcp__kite__question',
-  ...['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop', 'monitor_start', 'monitor_list', 'monitor_stop']
+  ...['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop', 'monitor_start', 'monitor_list', 'monitor_stop',
+    'terminal_read', 'terminal_stop']
     .map((name) => `mcp__kite__${name}`)].sort();
 const tools = (request: Logged): string[] => (request.body.tools ?? []).map((tool: { name: string }) => tool.name);
 const resultFor = (request: Logged, id: string) => request.body.messages

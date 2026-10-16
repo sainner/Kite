@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		4B1E00000000000000000012 /* Highlighter in Frameworks */ = {isa = PBXBuildFile; productRef = 4B1E00000000000000000011 /* Highlighter */; };
+		4B1E00000000000000000022 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 4B1E00000000000000000021 /* SwiftTerm */; };
 		4B1E00000000000000000016 /* TailscaleKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4B1E00000000000000000015 /* TailscaleKit.xcframework */; };
 		4B1E00000000000000000017 /* TailscaleKit.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4B1E00000000000000000015 /* TailscaleKit.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -45,6 +46,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				4B1E00000000000000000012 /* Highlighter in Frameworks */,
+				4B1E00000000000000000022 /* SwiftTerm in Frameworks */,
 				4B1E00000000000000000016 /* TailscaleKit.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -91,6 +93,7 @@
 			name = Kite;
 			packageProductDependencies = (
 				4B1E00000000000000000011 /* Highlighter */,
+				4B1E00000000000000000021 /* SwiftTerm */,
 			);
 			productName = Kite;
 			productReference = 4B1E00000000000000000001 /* Kite.app */;
@@ -122,6 +125,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				4B1E00000000000000000010 /* HighlighterSwift */,
+				4B1E00000000000000000020 /* SwiftTerm */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4B1E00000000000000000005 /* Products */;
@@ -159,6 +163,11 @@
 			repositoryURL = "https://github.com/smittytone/HighlighterSwift.git";
 			requirement = {kind = exactVersion; version = 3.1.0; };
 		};
+		4B1E00000000000000000020 /* SwiftTerm */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm.git";
+			requirement = {kind = exactVersion; version = 1.18.0; };
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -166,6 +175,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 4B1E00000000000000000010 /* HighlighterSwift */;
 			productName = Highlighter;
+		};
+		4B1E00000000000000000021 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4B1E00000000000000000020 /* SwiftTerm */;
+			productName = SwiftTerm;
 		};
 /* End XCSwiftPackageProductDependency section */
 

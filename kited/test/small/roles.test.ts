@@ -34,13 +34,14 @@ const findRole = (body: { roles: Entry[] }, id: string) => {
   return found;
 };
 
-/** 代理的默认协作授权，对应模型工具 agent_* 与 monitor_*。 */
+/** 代理的默认协作授权，对应模型工具 agent_*、monitor_* 与 terminal_*。 */
 const collaboration: OperationGrant[] = [
   { operation: 'agent.list' }, { operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] },
   { operation: 'agent.send', targets: { kind: 'created' } },
   { operation: 'agent.resume', targets: { kind: 'created' } },
   { operation: 'agent.stop', targets: { kind: 'created' } },
   { operation: 'monitor.start' }, { operation: 'monitor.list' }, { operation: 'monitor.stop', targets: { kind: 'created' } },
+  { operation: 'terminal.read', targets: { kind: 'created' } }, { operation: 'terminal.stop', targets: { kind: 'created' } },
 ];
 /** 授权按操作名排序后比较；顺序不是约定。 */
 const byOperation = (grants: OperationGrant[]) => [...grants].sort((a, b) => a.operation.localeCompare(b.operation));
@@ -101,10 +102,10 @@ test('角色保存处理重试与冲突，重启后按所选版本创建的首�
   }
 }, 1000);
 
-// 角色目录、实例快照、改选角色与创建请求跨模块交接：改角色只影响之后创建的代理；改选角色把提示词、工具、
-// 默认模型与预算一起换成角色的并记下新的角色约束，执行授权不动；新旧角色都允许协作工具，操作授权（含用户收窄过的）
-// 也保持原样；版本过期的请求不改变实例。
-test('改角色不影响已有代理，改选到同样允许协作工具的角色换上角色的配置并保留执行与操作授权，过期的角色版本或配置版本都不改变实例', async () => {
+// 角色目录、实例快照、改选角色与创建请求跨模块交接：改角色只影响之后创建的代理；改选角色把提示词、工具、执行授权的增减、
+// 默认审批模式、默认模型与预算一起换成角色的并记下新的角色约束（用户此前改过的执行授权一并换掉）；新旧角色都允许协作工具，
+// 操作授权（含用户收窄过的）保持原样；版本过期的请求不改变实例。
+test('改角色不影响已有代理，改选到同样允许协作工具的角色换上角色的配置、执行授权与审批模式并保留操作授权，过期的角色版本或配置版本都不改变实例', async () => {
   const model = new ManualModel();
   const k = startKited(() => model);
   try {
@@ -128,7 +129,7 @@ test('改角色不影响已有代理，改选到同样允许协作工具的角�
     const initialGrants = await k.call('GET', grantsPath);
     const grants = await k.call('PUT', grantsPath, {
       expectedRevision: initialGrants.body.revision,
-      grants: { workspace: 'read', read: [], write: [], network: [] },
+      grants: { workspace: 'read', add: { read: [], write: [], network: [], unsandboxed: [] }, remove: { read: [], write: [], network: [], unsandboxed: [] } },
     });
     expect(grants.status).toBe(200);
     const initialOperations = await k.call('GET', operationsPath);
@@ -141,7 +142,10 @@ test('改角色不影响已有代理，改选到同样允许协作工具的角�
 
     const limited: Partial<Role> = {
       tools: { mode: 'deny', tools: ['shell'], required: [] }, model: { model: defaultAgentModel, reasoning: 'high' }, maxRequestsPerTurn: 3,
+      execution: { add: { read: [], write: [], network: ['registry.npmjs.org:443'], unsandboxed: [] }, remove: { read: [], write: [], network: [], unsandboxed: [] } },
+      approval: 'ask',
     };
+    const roleGrants = { workspace: 'write', read: [], write: [], network: ['registry.npmjs.org:443'], unsandboxed: [] };
     const first = role('test.switch', '角色版本一：只检查当前问题。', limited);
     const saved = await k.call('POST', '/roles', { role: first });
     expect(saved.status).toBe(200);
@@ -162,7 +166,9 @@ test('改角色不影响已有代理，改选到同样允许协作工具的角�
     });
     expect(applied.body.instance.config.agent.context.blocks).toContainEqual(next.context.blocks[0]);
     expect(applied.body.instance.config.role).toEqual({ id: first.id, revision: edited.body.revision, tools: limited.tools });
-    expect((await k.call('GET', grantsPath)).body).toEqual(grants.body);
+    const switched = await k.call('GET', grantsPath);
+    expect(switched.body.effective).toEqual(roleGrants);
+    expect((await k.call('GET', `/instances/${id}/approval-mode`)).body).toMatchObject({ mode: 'ask', effective: 'ask' });
     expect((await k.call('GET', operationsPath)).body).toEqual(operations.body);
 
     const third = role(first.id, '角色版本三：先复现再修改。', limited);
@@ -191,7 +197,7 @@ test('改角色不影响已有代理，改选到同样允许协作工具的角�
     });
     expect(reapplied.status).toBe(200);
     expect(reapplied.body.instance.config.agent.context.blocks).toContainEqual(third.context.blocks[0]);
-    expect((await k.call('GET', grantsPath)).body).toEqual(grants.body);
+    expect((await k.call('GET', grantsPath)).body).toEqual(switched.body);
     expect((await k.call('GET', operationsPath)).body).toEqual(operations.body);
     expect(model.calls.values).toHaveLength(1);
   } finally {
@@ -199,10 +205,11 @@ test('改角色不影响已有代理，改选到同样允许协作工具的角�
   }
 }, 1000);
 
-// 新需求：只读审查不再由定义的执行权限保证，只靠角色的工具白名单。规则要在草稿选项（agent-options）、创建代理
-// （角色给初始工具）和改配置（实例上记下的角色规则）三处都接上，漏了任何一处，审查代理就能开出写工具。
-// 模型流强发白名单之外的 patch 与 shell 时，执行侧仍须拒绝，不能只靠模型自觉遵守工具声明。
-test('只读审查角色建的代理只有 read，模型强发 patch 与 shell 均被拒且不写文件，改配置加 shell 或关掉必需的 read 都被拒，黑名单角色建代理时不能带被禁的工具', async () => {
+// 只读审查靠角色给的默认工具（白名单）：草稿选项（agent-options）列出可选的全部工具和角色给的默认，创建代理时角色给初始工具，
+// 模型流强发初始工具之外的 patch 与 shell 时执行侧仍须拒绝，不能只靠模型自觉遵守工具声明。
+// 角色的工具不是实例的上限（docs/Agent与插件契约.md §3.2「实例可以开角色没给的工具」），只有必需工具关不掉：
+// 改配置加 shell 可以、关掉 read 被拒，黑名单角色建代理时也能带上角色没给的工具，首个请求就放行。
+test('只读审查角色建的代理只有 read，模型强发 patch 与 shell 均被拒且不写文件，改配置关掉必需的 read 被拒、加开 shell 可以，黑名单角色建代理时能带上角色没给的工具', async () => {
   const model = new ManualModel();
   const k = startKited(() => model);
   try {
@@ -219,8 +226,8 @@ test('只读审查角色建的代理只有 read，模型强发 patch 与 shell �
     const options = await k.call('GET', `/workspaces/${workspaceId}/agent-options`);
     expect(options.status).toBe(200);
     expect(options.body.roles).toEqual(expect.arrayContaining([
-      { id: 'kite.work', revision: work.revision, tools: universe.filter((tool) => !lineTools.includes(tool)), required: [], blocked: [] },
-      { id: 'kite.review', revision: review.revision, tools: ['read'], required: ['read'], blocked: [] },
+      { id: 'kite.work', revision: work.revision, tools: universe, defaults: universe.filter((tool) => !lineTools.includes(tool)), required: [], blocked: [] },
+      { id: 'kite.review', revision: review.revision, tools: universe, defaults: ['read'], required: ['read'], blocked: [] },
     ]));
 
     const created = await k.call('POST', `/workspaces/${workspaceId}/threads`, {
@@ -252,29 +259,35 @@ test('只读审查角色建的代理只有 read，模型强发 patch 与 shell �
     const configPath = `/instances/${id}/agent-config`;
     const config = await k.call('GET', configPath);
     expect(config.body.instance.config.agent.tools).toEqual(['read']);
-    expect((await k.call('GET', `/instances/${id}/agent-capabilities`)).body).toMatchObject({ tools: ['read'], required: ['read'], blocked: [] });
-    for (const tools of [['read', 'shell'], []]) {
+    expect((await k.call('GET', `/instances/${id}/agent-capabilities`)).body).toMatchObject({ tools: universe, defaults: ['read'], required: ['read'], blocked: [] });
+    for (const tools of [['shell'], []]) {
       const rejected = await k.call('PUT', configPath, {
         expectedRevision: config.body.revision, agent: { ...config.body.instance.config.agent, tools },
       });
       expect(rejected.status).toBe(400);
     }
     expect((await k.call('GET', configPath)).body).toEqual(config.body);
+    const widened = await k.call('PUT', configPath, {
+      expectedRevision: config.body.revision, agent: { ...config.body.instance.config.agent, tools: ['read', 'shell'] },
+    });
+    expect(widened.status).toBe(200);
+    expect(widened.body.instance.config.agent.tools).toEqual(['read', 'shell']);
 
     const noShell = await k.call('POST', '/roles', {
       role: { ...work.role, id: 'test.no-shell', title: '不开 shell', tools: { mode: 'deny', tools: ['shell'], required: [] } },
     });
     expect(noShell.status).toBe(200);
     expect((await k.call('GET', `/workspaces/${workspaceId}/agent-options`)).body.roles).toContainEqual({
-      id: 'test.no-shell', revision: noShell.body.revision, tools: universe.filter((name) => name !== 'shell'), required: [], blocked: [],
+      id: 'test.no-shell', revision: noShell.body.revision, tools: universe, defaults: universe.filter((name) => name !== 'shell'), required: [], blocked: [],
     });
-    const before = (await k.call('GET', `/workspaces/${workspaceId}`)).body.instances;
-    const rejected = await k.call('POST', `/workspaces/${workspaceId}/threads`, {
-      prompt: '黑名单角色却要开 shell', role: { id: 'test.no-shell', revision: noShell.body.revision }, tools: ['read', 'shell'],
+    const withShell = await k.call('POST', `/workspaces/${workspaceId}/threads`, {
+      prompt: '黑名单角色也开 shell', role: { id: 'test.no-shell', revision: noShell.body.revision }, tools: ['read', 'shell'],
     });
-    expect(rejected.status).toBe(400);
-    expect((await k.call('GET', `/workspaces/${workspaceId}`)).body.instances).toEqual(before);
-    expect(model.calls.values).toHaveLength(1);
+    expect(withShell.status).toBe(200);
+    const second = await model.call(2);
+    expect(second.request.allowedTools).toEqual(['read', 'shell']);
+    second.response.complete();
+    await k.waitEvent((event) => event.type === 'idle' && event.threadId === withShell.body.instanceId);
   } finally {
     await k.stop();
   }

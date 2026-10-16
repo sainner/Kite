@@ -14,8 +14,9 @@ export const agentModelCatalog = () => ({
 });
 
 /** tools 是这个代理可开的工具（角色规则内），required 是角色必需、不能关闭的，blocked 是其中正被项目约束禁用的；toolCatalog 给出界面名称与分组。 */
-export function agentCapabilities(runtime: RuntimeKind, tools: { allowed: string[]; required: string[]; blocked: string[] }) {
-  return { ...agentModelCatalog(), tools: tools.allowed, required: tools.required, blocked: tools.blocked, toolCatalog: agentToolCatalog,
+/** tools 是代理能开的全部工具，defaults 是角色给的默认，required 不能关，blocked 是正被项目禁用的。 */
+export function agentCapabilities(runtime: RuntimeKind, tools: { allowed: string[]; defaults: string[]; required: string[]; blocked: string[] }) {
+  return { ...agentModelCatalog(), tools: tools.allowed, defaults: tools.defaults, required: tools.required, blocked: tools.blocked, toolCatalog: agentToolCatalog,
     configurationBoundary: configurationBoundary(runtime),
     toolCatalogBoundary: runtime === 'claude' ? 'idle' : 'session' };
 }

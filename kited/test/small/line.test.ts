@@ -164,8 +164,11 @@ const attentionOf = async (k: Kited) => (await k.call('GET', '/attention')).body
  * 停下 B 上的线程；拒绝时工具返回 error、不停目标。必问动作不接受「记住」，这样的回应被拒后等待仍在。
  * monitor 读本机汇总时把这个等待也放进收件箱，但标为 Line 自己的请求，代处理被拒、按时段托管也不交出，否则「必问」形同虚设。
  * 托管设置经 HTTP 的操作入口往返：省略的字段不变，null 关闭，JSON 里的 null 与省略要分得开。
+ * 最后是 Line 的工具经跨机调用等对端时，停止 Line 的线程要中止这次等待，停止很快完成，工具结果是错误。
+ * 真实 bug：跨机调用只带超时（读回复 30 秒，建工作区、流转最长 30 分钟），对端收下请求却不回应时，停止 Line 要等到超时；
+ * 这里靠测试的时限挡住。对端用一个只挂住读回复的服务替代，monitor 读汇总等其他请求照常答，免得停 kited 时等它这一轮。
  */
-test('Line 停止线程须经用户逐次批准：等待挂在 Line 的线程上并以 Line 自己的请求进收件箱、不能代处理也不随托管交出，记住被拒且等待仍在，拒绝时工具出错且目标不停，批准这一次后目标停下', async () => {
+test('Line 停止线程须经用户逐次批准：等待挂在 Line 的线程上并以 Line 自己的请求进收件箱、不能代处理也不随托管交出，记住被拒且等待仍在，拒绝时工具出错且目标不停，批准这一次后目标停下；Line 等一台收下请求却不回应的工作机时，停止 Line 很快完成，这次工具调用以错误结束', async () => {
   const s = await lineSetup();
   const work = s.modelOf(s.workId);
   const line = s.modelOf(s.lineId);
@@ -212,9 +215,33 @@ test('Line 停止线程须经用户逐次批准：等待挂在 Line 的线程上
   const approved = await line.call(3);
   expect(resultOf(approved.request, 'stop-2')?.status).toBe('success');
   expect(running.signal.aborted).toBe(true);
-  const since = mark(s.a);
+  let since = mark(s.a);
   approved.response.complete();
   await waitIdle(s.a, s.lineId, since);
+
+  const reached = deferred();
+  const silent = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(request) {
+    if (!new URL(request.url).pathname.endsWith('/reply')) return Response.json({ error: '没有这个接口' }, { status: 404 });
+    reached.resolve();
+    return new Promise<Response>(() => {});
+  } });
+  try {
+    s.directory.push({ id: 'machine-silent', name: '不回应的工作机', online: true, address: `http://127.0.0.1:${silent.port}` });
+    await send(s.a, s.lineId, 'read', '看看那台机器上线程的回复');
+    const l4 = await line.call(4);
+    await l4.response.emit({ type: 'item', item: calledItem('read-1', 'line_status', { machine: 'machine-silent', threadId: 'silent-thread' }) });
+    l4.response.complete();
+    await reached.promise;
+    since = mark(s.a);
+    expect((await s.a.call('POST', `/threads/${s.lineId}/interrupt`)).status).toBe(200);
+    const finished = await s.a.waitEvent((e) => e.type === 'harness' && e.threadId === s.lineId && e.event.type === 'record'
+      && e.event.record.type === 'tool.finished' && e.event.record.callId === 'read-1');
+    expect(finished.type === 'harness' && finished.event.type === 'record' && finished.event.record.type === 'tool.finished'
+      && finished.event.record.result.status).toBe('error');
+    await waitIdle(s.a, s.lineId, since);
+  } finally {
+    await silent.stop(true);
+  }
 }, 1000);
 
 /*
@@ -480,11 +507,19 @@ test('line_relay 照原文转达用户的话：B 在等提问时作为「其他�
 /*
  * 几个部分的配合：line_control send 经跨机调用给 B 的线程投 Line 的说明（来源 kite、带 via），B 的汇总据此把这一回合标为
  * Line 发起；monitor 读到它在离开期间结束回合时不放进用户的收件箱，改为唤醒 Line 告知结果。
+ * 接着是一个真实 bug：用户离开超过摘要间隔（10 分钟）后，收件箱里有交给 Line、还没通知过的回合结束时，摘要不收交给 Line 的事项，
+ * 安排下一次读取的计时却照样拿它算到期时刻；到期时刻落在过去，monitor 按最短间隔反复读账号目录、对每台在线工作机读汇总，
+ * 直到 Line 处理完或用户回来。摘要的筛选、代处理的投递和定时三处在真实计时器上合起来才看得出会不会空转。
+ * 依赖运行时：Bun（1.4.2 上验证）的 jest.useFakeTimers 接管之后新建的 setTimeout 与 Date.now，advanceTimersByTime 同步推进两者并
+ * 触发到点的计时器；之前建的计时器照旧是真的，daemon 起 monitor 时那个 60 秒的定时读在测试期间不会到点。
+ * monitor.stop() 不另起一轮，只交出进行中的那一轮，用它等计时器触发的读取做完。
  */
-test('Line 用 line_control send 发起的工作在用户离开期间结束回合，不进用户的收件箱，改为唤醒 Line 告知结果', async () => {
+test('Line 用 line_control send 发起的工作在用户离开期间结束回合，不进用户的收件箱，改为唤醒 Line 告知结果；用户离开超过摘要间隔、收件箱里只有交给 Line 还没了结的回合结束时，monitor 不按最短间隔反复读各工作机', async () => {
   const s = await lineSetup();
   const work = s.modelOf(s.workId);
   const line = s.modelOf(s.lineId);
+  const monitor = s.a.daemon.kite.monitor;
+  const inboxId = inboxInstance(s.a).id;
   // 先确立离开：这时别人发起的回合结束会进收件箱。
   await watch(s.a, 'mac');
   await focus(s.a, 'mac', true);
@@ -507,7 +542,7 @@ test('Line 用 line_control send 发起的工作在用户离开期间结束回�
   working.response.complete();
   await waitIdle(s.b, s.workId, since);
 
-  await s.a.daemon.kite.monitor.check();
+  await monitor.check();
   const woke = await line.call(3);
   const wake = inputs(woke.request).at(-1)!;
   expect(wake.source).toBe('kite');
@@ -518,39 +553,22 @@ test('Line 用 line_control send 发起的工作在用户离开期间结束回�
   woke.response.complete();
   await waitIdle(s.a, s.lineId, since);
   // 结果只交一次。
-  await s.a.daemon.kite.monitor.check();
-  expect(wakesOf(s.a, s.lineId)).toHaveLength(1);
-}, 1000);
-
-/*
- * 真实 bug：用户离开超过摘要间隔（10 分钟）后，收件箱里有交给 Line、还没通知过的回合结束时，摘要不收交给 Line 的事项，
- * 安排下一次读取的计时却照样拿它算到期时刻；到期时刻落在过去，monitor 按最短间隔反复读账号目录、对每台在线工作机读汇总，
- * 直到 Line 处理完或用户回来。摘要的筛选、代处理的投递和定时三处在真实计时器上合起来才看得出会不会空转。
- * 依赖运行时：Bun（1.4.2 上验证）的 jest.useFakeTimers 接管之后新建的 setTimeout 与 Date.now，advanceTimersByTime 同步推进两者并
- * 触发到点的计时器；之前建的计时器照旧是真的，daemon 起 monitor 时那个 60 秒的定时读在测试期间不会到点。
- * monitor.stop() 不另起一轮，只交出进行中的那一轮，用它等计时器触发的读取做完。
- */
-test('用户离开超过摘要间隔、收件箱里只有交给 Line 还没了结的回合结束时，monitor 不按最短间隔反复读各工作机', async () => {
-  const s = await lineSetup();
-  const work = s.modelOf(s.workId);
-  const line = s.modelOf(s.lineId);
-  const monitor = s.a.daemon.kite.monitor;
-  const inboxId = inboxInstance(s.a).id;
-  await watch(s.a, 'mac');
-  await focus(s.a, 'mac', true);
-  await focus(s.a, 'mac', false);
-  expect(typeof (await attentionOf(s.a)).awaySince).toBe('number');
-
-  // 离开期间 B 上的回合结束进收件箱，用户交给 Line；Line 这一回合挂着不结束，事项一直是交出去、没了结。
-  await send(s.b, s.workId, 'kickoff', '开始');
-  const since = mark(s.b);
-  (await work.call(1)).response.complete();
-  await waitIdle(s.b, s.workId, since);
   await monitor.check();
-  const turn = `turn:${s.workId}`;
+  expect(wakesOf(s.a, s.lineId)).toHaveLength(1);
+
+  // 离开期间 B 上另一个线程里用户发起的回合结束进收件箱，用户交给 Line；Line 这一回合挂着不结束，事项一直是交出去、没了结。
+  const started = await s.b.call('POST', `/workspaces/${s.b.daemon.kite.store.instance(s.workId)!.workspaceId}/operations/agent.start`, { operationId: 'worker-2' });
+  expect(started.status).toBe(200);
+  const otherId = started.body.instanceId as string;
+  await send(s.b, otherId, 'kickoff', '开始');
+  since = mark(s.b);
+  (await s.modelOf(otherId).call(1)).response.complete();
+  await waitIdle(s.b, otherId, since);
+  await monitor.check();
+  const turn = `turn:${otherId}`;
   expect((await inboxOf(s.a)).items.map((entry) => entry.id)).toEqual([turn]);
   expect((await delegate(s.a, turn)).status).toBe(200);
-  await line.call(1);
+  await line.call(4);
   // 等投递的那一轮做完，下面的 check 才是新起的一轮。
   await monitor.check();
 
@@ -571,37 +589,4 @@ test('用户离开超过摘要间隔、收件箱里只有交给 Line 还没了�
   }
   const item = monitorState(s.a.daemon.kite.store.instance(inboxId)!).items[turn];
   expect([item?.delegated?.by, item?.notified]).toEqual(['user', undefined]);
-}, 1000);
-
-/*
- * 几个部分的配合：Line 的工具经跨机调用等对端时，停止 Line 的线程要中止这次等待，停止很快完成，工具结果是错误。
- * 真实 bug：跨机调用只带超时（读回复 30 秒，建工作区、流转最长 30 分钟），对端收下请求却不回应时，停止 Line 要等到超时；
- * 这里靠测试的时限挡住。对端用一个只挂住读回复的服务替代，monitor 读汇总等其他请求照常答，免得停 kited 时等它这一轮。
- */
-test('Line 等一台收下请求却不回应的工作机时，停止 Line 很快完成，这次工具调用以错误结束', async () => {
-  const s = await lineSetup();
-  const line = s.modelOf(s.lineId);
-  const reached = deferred();
-  const silent = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(request) {
-    if (!new URL(request.url).pathname.endsWith('/reply')) return Response.json({ error: '没有这个接口' }, { status: 404 });
-    reached.resolve();
-    return new Promise<Response>(() => {});
-  } });
-  try {
-    s.directory.push({ id: 'machine-silent', name: '不回应的工作机', online: true, address: `http://127.0.0.1:${silent.port}` });
-    await send(s.a, s.lineId, 'read', '看看那台机器上线程的回复');
-    const l1 = await line.call(1);
-    await l1.response.emit({ type: 'item', item: calledItem('read-1', 'line_status', { machine: 'machine-silent', threadId: 'silent-thread' }) });
-    l1.response.complete();
-    await reached.promise;
-    const since = mark(s.a);
-    expect((await s.a.call('POST', `/threads/${s.lineId}/interrupt`)).status).toBe(200);
-    const finished = await s.a.waitEvent((e) => e.type === 'harness' && e.threadId === s.lineId && e.event.type === 'record'
-      && e.event.record.type === 'tool.finished' && e.event.record.callId === 'read-1');
-    expect(finished.type === 'harness' && finished.event.type === 'record' && finished.event.record.type === 'tool.finished'
-      && finished.event.record.result.status).toBe('error');
-    await waitIdle(s.a, s.lineId, since);
-  } finally {
-    await silent.stop(true);
-  }
 }, 1000);

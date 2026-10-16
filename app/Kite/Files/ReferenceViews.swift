@@ -223,6 +223,13 @@ struct ReferenceNavigation: ViewModifier {
         let scope = ReferenceScope(machineID: area.remote?.machine.id ?? "", workspaceID: area.id)
         content.environment(\.referenceScope, scope)
             .environment(\.openURL, OpenURLAction { url in
+                if let port = LocalPort.port(of: url) {
+                    Task {
+                        do { try await model.openLocalPort(port, in: area) }
+                        catch { self.error = error.localizedDescription }
+                    }
+                    return .handled
+                }
                 guard url.scheme == "kite" else { return .systemAction }
                 guard let file = FileReference(url: url), FileReference.scope(of: url) == scope else {
                     error = "引用不属于当前工作机和工作区，或暂不支持此引用类型。"

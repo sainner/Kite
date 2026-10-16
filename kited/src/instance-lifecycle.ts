@@ -9,13 +9,14 @@ import { roleOperationGrants } from './operations/contract.ts';
 import { defaultRoleId, roleAgent, toolLimits, type RoleChoice } from './roles.ts';
 import { instanceAgent } from './agents/definition.ts';
 import { monitorDefinitionId } from './monitor/monitors.ts';
+import { terminalDefinitionId } from './terminal/terminals.ts';
 
 /** 新代理在本机草稿里选好的角色与初始参数，创建时一次写入实例配置；省略 revision 时用角色的最新版本。 */
 export interface AgentChoice extends RoleChoice {
   role?: { id: string; revision?: string };
 }
 
-type InstanceServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'workspace' | 'plugins' | 'roles'>;
+type InstanceServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'workspace' | 'plugins' | 'roles' | 'terminals'>;
 
 interface InstanceControl {
   run<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
@@ -32,8 +33,10 @@ export class InstanceLifecycle {
     const project = definition.agent && (projectId ? this.kite.store.projectConstraints(projectId) : this.kite.store.workspaceConstraints(workspaceId))?.tools;
     const bound = definition.agent && roleAgent(this.kite.roles.get(choice.role?.id ?? defaultRoleId, choice.role?.revision), choice, project);
     const grants = bound ? roleOperationGrants(definitionId, [], [], toolLimits(bound.role.tools).allowed) : [];
-    return { id: randomUUID(), workspaceId, definitionId, title,
-      config: bound ? { ...bound, grants, execution: definition.execution } : definition.runtime === 'bun' ? { packageRevision: definition.revision, grants: [] } : {}, state: {},
+    // 执行授权与审批模式取角色的，角色没给就用定义的默认；项目的基础与边界不拷进实例，每次按项目此刻的约束合成。
+    const config = bound ? { agent: bound.agent, role: bound.role, grants, execution: bound.execution ?? definition.execution, ...(bound.approval ? { approval: bound.approval } : {}) }
+      : definition.runtime === 'bun' ? { packageRevision: definition.revision, grants: [] } : {};
+    return { id: randomUUID(), workspaceId, definitionId, title, config, state: {},
       presentation: 'window', status: 'open', createdAt: Date.now() };
   }
 
@@ -85,6 +88,7 @@ export class InstanceLifecycle {
       const existing = model.windows.find((w) => w.target.instanceId === target.instanceId && w.target.viewId === target.viewId);
       window = existing ?? window;
       this.kite.store.openWindow(window, { id: request.id, content: key }, created, thread);
+      if (created?.definitionId === terminalDefinitionId) this.kite.terminals.start(created);
       this.control.changed(workspaceId);
       return window;
     });
@@ -111,6 +115,7 @@ export class InstanceLifecycle {
     });
   }
 
+  /** 随窗口回收的实例关掉最后一个窗口时回收；process 实例的进程还在跑就留着，成为没有窗口的后台进程。 */
   closeWindow(workspaceId: string, id: string): Promise<void> {
     return this.control.run(workspaceId, async () => {
       if (this.kite.workspace(workspaceId).workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
@@ -118,21 +123,29 @@ export class InstanceLifecycle {
       if (!window || window.workspaceId !== workspaceId) throw new KiteError('工作区内没有这个窗口', 404);
       if (window.state === 'closed') return;
       const instance = this.kite.store.instance(window.target.instanceId)!;
-      const definition = this.kite.catalog.get(instance.definitionId);
-      const collect = definition.lifetime === 'window'
-        && !this.kite.store.windows(workspaceId).some((other) => other.id !== id && other.target.instanceId === instance.id);
+      const { lifetime } = this.kite.catalog.get(instance.definitionId);
+      const collect = !this.kite.store.windows(workspaceId).some((other) => other.id !== id && other.target.instanceId === instance.id)
+        && (lifetime === 'window' || (lifetime === 'process' && !this.kite.terminals.running(instance.id)));
       if (collect) {
         const release = await this.kite.plugins.closeInstance(instance.id);
         try {
-          rmSync(join(this.kite.home, 'sessions', instance.id), { recursive: true, force: true });
           this.kite.store.transaction(() => {
             this.kite.store.closeWindow(id);
-            this.control.revokeGrants(instance);
-            this.kite.store.deleteInstance(instance.id);
+            this.collect(instance);
           });
         } finally { release(); }
       } else this.kite.store.closeWindow(id);
       this.control.changed(workspaceId);
+    });
+  }
+
+  /** 回收已经没有窗口、也不再运行的实例：会话目录、指向它的授权和实例本身；实例 ID 不再复用。在控制队列里调用。 */
+  collect(instance: PluginInstance): void {
+    this.kite.terminals.forget(instance.id);
+    rmSync(join(this.kite.home, 'sessions', instance.id), { recursive: true, force: true });
+    this.kite.store.transaction(() => {
+      this.control.revokeGrants(instance);
+      this.kite.store.deleteInstance(instance.id);
     });
   }
 }

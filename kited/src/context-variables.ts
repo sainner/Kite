@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { instanceAgent, type AgentDefinition } from './agents/definition.ts';
 import { permittedTools } from './agents/tool-policy.ts';
 import { KiteError } from './errors.ts';
-import { instanceExecutionGrants } from './execution/grants.ts';
+import { effectiveExecution, instanceExecutionChanges, type ProjectExecution } from './execution/grants.ts';
 import {
   contentHash, directoryVariables, documentFiles, documentLimit, documentPaths, documentVariables, today, type DocumentFile, type DocumentVariable,
 } from './harness/context/project.ts';
@@ -54,7 +54,7 @@ function workspaceVariables(model: { machine: Machine; project: Project; workspa
  * thread 是取值时的状态：生成通知时传入变化之后的配置，变量取新值。每个值在模板引用时才取。
  * constraint 是项目的工具约束，允许的工具按它过滤，与配置通知一致。
  */
-export function threadVariables(thread: ThreadContext, constraint: ProjectToolRule | undefined): ContextValues {
+export function threadVariables(thread: ThreadContext, constraint: ProjectToolRule | undefined, execution?: ProjectExecution): ContextValues {
   const agent = () => instanceAgent(thread);
   return {
     ...workspaceVariables(thread),
@@ -65,7 +65,7 @@ export function threadVariables(thread: ThreadContext, constraint: ProjectToolRu
     'agent.reasoning': text(() => agent().model.reasoning),
     'agent.tools': text(() => effectiveTools(agent(), constraint).join('、') || '无'),
     'agent.max_requests_per_turn': text(() => String(agent().maxRequestsPerTurn)),
-    'execution.grants': text(() => JSON.stringify(instanceExecutionGrants(thread))),
+    'execution.grants': text(() => JSON.stringify(effectiveExecution(instanceExecutionChanges(thread), execution).grants)),
     'plugin.tools': text(() => {
       const grants = operationGrantsSchema.parse(thread.config.grants ?? []);
       return JSON.stringify(pluginToolBindings(thread).filter((binding) => pluginToolGranted(binding, grants)).map(pluginToolSource));
@@ -77,7 +77,8 @@ export function threadVariables(thread: ThreadContext, constraint: ProjectToolRu
 export function storedThreadVariables(store: Store, id: string): ContextValues {
   const thread = store.threadContext(id);
   if (!thread) throw new Error(`没有这个线程：${id}`);
-  return threadVariables(thread, store.workspaceConstraints(thread.workspaceId)?.tools);
+  const constraints = store.workspaceConstraints(thread.workspaceId);
+  return threadVariables(thread, constraints?.tools, constraints?.execution);
 }
 
 /**
@@ -111,7 +112,7 @@ function scopeValues(store: Store, scope: VariableScope): { layers: ContextLayer
       const thread = store.threadContext(scope.id);
       if (!thread) throw new KiteError(`没有这个线程：${scope.id}`, 404);
       return { layers: ['environment', 'project', 'workspace', 'agent'], cwd: thread.workspace.cwd,
-        values: threadVariables(thread, store.workspaceConstraints(thread.workspaceId)?.tools) };
+        values: threadVariables(thread, store.workspaceConstraints(thread.workspaceId)?.tools, store.workspaceConstraints(thread.workspaceId)?.execution) };
     }
   }
 }

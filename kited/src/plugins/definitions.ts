@@ -3,22 +3,25 @@ import { KiteError } from '../errors.ts';
 import type { AgentDefinition } from '../agents/definition.ts';
 import { defaultContextDefinition } from '../harness/context/project.ts';
 import { operationContracts, operationToolNames, type OperationName } from '../operations/contract.ts';
-import type { ExecutionGrants } from '../execution/grants.ts';
+import type { ExecutionChanges } from '../execution/grants.ts';
 import { defaultAgentModel } from '../agents/models.ts';
 import { monitorDefinitionId } from '../monitor/monitors.ts';
+import { terminalDefinitionId } from '../terminal/terminals.ts';
 
 export interface PluginDefinition {
   id: string;
   title: string;
   /** 一句话的用途，创建实例时显示；只有内置定义有。 */
   description?: string;
-  lifetime: 'window' | 'persistent';
+  /** window 随最后一个窗口回收；persistent 独立存续，不用时归档；process 进程运行中独立存续，结束后没有窗口就回收。 */
+  lifetime: 'window' | 'persistent' | 'process';
   views: { id: string; title: string; renderer: string; resourceUri?: string }[];
   defaultView: string;
   agent?: AgentDefinition;
   runtime?: 'bun';
   revision?: string;
-  execution?: ExecutionGrants;
+  /** 支持执行授权的定义给出实例在项目基础上的默认增减。 */
+  execution?: ExecutionChanges;
   operations: OperationName[];
 }
 
@@ -32,9 +35,12 @@ export const agentToolCatalog: { name: AgentTool; title: string; group: string }
   { name: 'read', title: '读取文件', group: '文件与命令' },
   { name: 'patch', title: '修改文件', group: '文件与命令' },
   { name: 'shell', title: '运行命令', group: '文件与命令' },
+  { name: 'terminal_read', title: operationTitle('terminal_read'), group: '文件与命令' },
+  { name: 'terminal_stop', title: operationTitle('terminal_stop'), group: '文件与命令' },
   { name: 'credentials', title: '列出密钥引用', group: '凭据' },
   { name: 'question', title: '向用户提问', group: '用户交接' },
-  ...operationToolNames.map((name) => ({ name, title: operationTitle(name), group: name.startsWith('monitor_') ? '监视' : '代理协作' })),
+  ...operationToolNames.filter((name) => !name.startsWith('terminal_'))
+    .map((name) => ({ name, title: operationTitle(name), group: name.startsWith('monitor_') ? '监视' : '代理协作' })),
   { name: 'line_status', title: '查看全部工作区', group: '个人 agent' },
   { name: 'line_handle', title: '代处理收件箱', group: '个人 agent' },
   { name: 'line_relay', title: '转达用户的话', group: '个人 agent' },
@@ -53,12 +59,18 @@ const agent: AgentDefinition = {
 
 const definitions: PluginDefinition[] = [
   { id: agentDefinitionId, title: '代理', description: '与 agent 协作', lifetime: 'persistent', defaultView: 'conversation',
-    execution: { workspace: 'write', read: [], write: [], network: [] },
+    execution: { workspace: 'write', add: { read: [], write: [], network: [], unsandboxed: [] }, remove: { read: [], write: [], network: [], unsandboxed: [] } },
     agent, operations: ['agent.send', 'agent.resume', 'agent.stop'], views: [{ id: 'conversation', title: '代理窗口', renderer: 'conversation' }] },
   { id: 'kite.files', title: '文件', description: '预览工作区文件', lifetime: 'window', defaultView: 'files', operations: ['files.list', 'files.search', 'files.read', 'files.diff', 'files.state', 'files.select'], views: [
     { id: 'files', title: '文件', renderer: 'files' },
   ] },
-  { id: 'kite.terminal', title: '终端', description: '在工作目录执行命令', lifetime: 'window', defaultView: 'terminal', operations: [], views: [{ id: 'terminal', title: '终端', renderer: 'terminal' }] },
+  /** 一个实例一个 PTY 会话，见 terminal/terminals.ts。 */
+  { id: terminalDefinitionId, title: '终端', description: '在工作目录执行命令', lifetime: 'process', defaultView: 'terminal',
+    operations: ['terminal.read', 'terminal.stop', 'terminal.select'], views: [
+      { id: 'terminal', title: '终端', renderer: 'terminal' },
+      /** 进程树里监听的端口上的网页，见 docs/成果查看与位置.md「运行中的网页」。 */
+      { id: 'web', title: '网页', renderer: 'preview' },
+    ] },
   /** 由代理的 monitor_start 或启用 Line 时由宿主创建，界面不能直接新建；Line 的那个视图就是收件箱。 */
   { id: monitorDefinitionId, title: '监视', lifetime: 'persistent', defaultView: 'timeline',
     operations: ['monitor.stop', 'monitor.read', 'monitor.delegate', 'monitor.dismiss', 'monitor.hosting'],

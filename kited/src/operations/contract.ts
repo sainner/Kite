@@ -92,6 +92,24 @@ export const operationContracts = {
     tool: null, effect: 'write', retry: 'receipt',
     input: target.extend({ expectedRevision: id, path: id.nullable(), diffId: diffID.optional() }).strict(), output: fileSelectionSchema,
   },
+  'terminal.read': {
+    title: '读取终端输出', description: '按行读取后台终端的输出：转到后台的命令读完整输出，交互终端读屏幕和回滚里的文字。不给 offset 时读最后 limit 行（默认 200）；结果带进程状态，结束了有退出码或原因。',
+    tool: 'terminal_read', effect: 'read', retry: 'read',
+    input: z.object({ instanceId: id, offset: z.number().int().min(1).optional(), limit: z.number().int().min(1).max(2000).default(200) }).strict(),
+    output: z.object({ instanceId: id, title: z.string(), command: z.string().optional(), phase: z.enum(['running', 'exited']),
+      exitCode: z.number().int().nullable().optional(), signal: z.string().optional(), reason: z.string().optional(), endedAt: z.number().optional(),
+      text: z.string(), offset: z.number().int(), totalLines: z.number().int(), nextOffset: z.number().int().nullable() }).strict(),
+  },
+  'terminal.stop': {
+    title: '停止终端', description: '停下后台终端里的进程：先挂断，等不到退出再停整个进程组；等到进程结束才返回。你自己停下的不再发结束通知。',
+    tool: 'terminal_stop', effect: 'write', retry: 'receipt', input: target, output: ok,
+  },
+  'terminal.select': {
+    title: '选择网页端口', description: '选终端网页视图打开的端口，所有设备共用；只能选正在监听的端口，null 换回默认（第一个能响应 HTTP 的）。',
+    tool: null, effect: 'write', retry: 'receipt',
+    input: target.extend({ port: z.number().int().min(1).max(65535).nullable() }).strict(),
+    output: z.object({ port: z.number().int().nullable() }).strict(),
+  },
   'monitor.start': {
     title: '开始监视', description: [
       '开一个常驻的 monitor 盯着某件事，有事件时宿主把它们合成一条消息交给你，你空闲时开始新回合，运行中在下一次请求纳入。title 简短写清在盯什么，会出现在每次唤醒里。',
@@ -150,7 +168,7 @@ export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('plugin.call'), instanceId: id, tools: z.array(id).min(1) }).strict(),
   z.object({ operation: z.literal('agent.start'), roleIds: z.array(id) }).strict(),
   z.object({ operation: z.literal('agent.list') }).strict(),
-  ...(['agent.send', 'agent.resume', 'agent.stop', 'monitor.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
+  ...(['agent.send', 'agent.resume', 'agent.stop', 'monitor.stop', 'terminal.read', 'terminal.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
   z.object({ operation: z.literal('monitor.start') }).strict(),
   z.object({ operation: z.literal('monitor.list') }).strict(),
   ...(['files.list', 'files.search', 'files.read', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
@@ -175,6 +193,7 @@ export function defaultOperationGrants(definitionId: string): OperationGrant[] {
     { operation: 'agent.resume', targets: { kind: 'created' } },
     { operation: 'agent.stop', targets: { kind: 'created' } },
     { operation: 'monitor.start' }, { operation: 'monitor.list' }, { operation: 'monitor.stop', targets: { kind: 'created' } },
+    { operation: 'terminal.read', targets: { kind: 'created' } }, { operation: 'terminal.stop', targets: { kind: 'created' } },
   ] : [];
 }
 
@@ -196,7 +215,8 @@ export function roleOperationGrants(definitionId: string, grants: OperationGrant
     && !kept.some((other) => other.operation === grant.operation))];
 }
 
-export const operationToolNames = ['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop', 'monitor_start', 'monitor_list', 'monitor_stop'] as const;
+export const operationToolNames = ['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop', 'monitor_start', 'monitor_list', 'monitor_stop',
+  'terminal_read', 'terminal_stop'] as const;
 const failure = z.object({ error: z.string(), outcome: z.enum(['denied', 'failed', 'cancelled', 'unknown']) }).strict();
 
 export function operationCatalog() {

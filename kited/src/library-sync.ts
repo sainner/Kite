@@ -10,12 +10,13 @@ import type { Store } from './store.ts';
 import type { TemplateEmblem } from './template-emblems.ts';
 import type { AccountData, EntryKind } from './account-data/store.ts';
 import type { ProjectRegistry } from './account-data/registry.ts';
+import type { ProjectExecution } from './execution/grants.ts';
 
 export type LibraryKind = Extract<EntryKind, 'role' | 'template' | 'emblem' | 'plugin'>;
 const synced = new Set<EntryKind>(['role', 'template', 'emblem', 'plugin', 'constraints']);
 
 /** constraints 列出约束变了的项目及变化前的规则。 */
-export interface LibraryChanges { roles: boolean; templates: boolean; constraints: Array<{ projectId: string; before?: ProjectToolRule }> }
+export interface LibraryChanges { roles: boolean; templates: boolean; constraints: Array<{ projectId: string; before?: { tools?: ProjectToolRule; execution?: ProjectExecution } }> }
 
 export class LibrarySync {
   private scheduled = false;
@@ -102,7 +103,7 @@ export class LibrarySync {
       const before = store.projectConstraints(project.id);
       if (JSON.stringify(before) === JSON.stringify(value)) continue;
       store.saveProjectConstraints(project.id, value);
-      changes.constraints.push({ projectId: project.id, before: before?.tools });
+      changes.constraints.push({ projectId: project.id, ...(before ? { before } : {}) });
     }
     this.deps.changed(changes);
   }

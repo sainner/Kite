@@ -39,6 +39,8 @@ export function voiceMaterial(history: History): string {
 }
 
 export interface VoiceSocket {
+  /** 和终端共用一个 WebSocket 服务，按 kind 分开；不是 terminal 的都是语音。 */
+  kind?: 'voice';
   /** 正在输入的会话；新会话还没有实例时为空，不带对话。 */
   thread?: string;
   session?: VoiceSession;

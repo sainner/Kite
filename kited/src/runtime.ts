@@ -10,11 +10,12 @@ import { openClaudeHost } from './claude/host.ts';
 import { assembleContext, restoreContext } from './harness/context/assembler.ts';
 import { contextUpdateContext } from './harness/context/notifications.ts';
 import type { PluginInstance, ThreadContext } from './model.ts';
+import type { ShellBackground, ShellOutside } from './execution/local-tools.ts';
 import { readSubscriptionCredentials } from './harness/auth.ts';
 import { CHATGPT_CONTEXT_WINDOW, ChatGPTModel } from './harness/chatgpt.ts';
 import { openThreadHost } from './harness/thread-host.ts';
 import { harnessPolicy } from './execution/policy.ts';
-import { applyExecutionGrants, executionRevision, instanceExecutionGrants } from './execution/grants.ts';
+import { applyExecutionGrants, effectiveExecution, executionRevision, instanceExecutionChanges, type ProjectExecution } from './execution/grants.ts';
 import { projectContext } from './harness/context/project.ts';
 import { threadVariables } from './context-variables.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
@@ -59,6 +60,10 @@ export interface RuntimeOptions {
   monitorWakeDelayMs?: number;
   /** 测试里缩短本机目录变化到写进目录摘要之间的合批等待（毫秒），默认 1 秒。 */
   catalogDelayMs?: number;
+  /** 测试里换掉终端起的 shell（默认是用户的登录 shell）。 */
+  terminalShell?: string[];
+  /** 测试里缩短终端探测监听端口的间隔（毫秒），默认 2 秒。 */
+  terminalPortScanMs?: number;
 }
 
 export interface RuntimeEvents {
@@ -88,8 +93,14 @@ export interface RuntimeHost {
   compactionFiles(range: { from: number; to: number }): Promise<string | undefined>;
   /** 所在项目的工具约束；每次请求和每次调用工具时读取，收紧即时生效。 */
   toolConstraint(): ProjectToolRule | undefined;
+  /** 所在项目的执行授权基础与边界；每次请求和每次调用工具时读取，收紧对之后的命令生效。 */
+  executionConstraint(): ProjectExecution | undefined;
   /** 命令连接名单外的主机时交给它决定：按问的那一刻实例的审批模式放行、拒绝或问人，中途改模式对运行中的命令也生效。 */
   askNetwork: NetworkAsk;
+  /** shell 的长命令转到后台终端：超时、用户插话或模型要求时接管，见 terminal/terminals.ts。 */
+  background?: ShellBackground;
+  /** 命令能不能出沙箱：生效的沙箱外命令直接放行，其余按审批模式申请。 */
+  outside?: ShellOutside;
 }
 
 const constraintAllows = (rule: ProjectToolRule | undefined, name: string) => !rule || ruleAllows(rule, name);
@@ -111,7 +122,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   const { id, nativeId, title, runtime, project: { id: projectId }, workspace: { cwd, id: workspaceId } } = s;
   if (runtime !== 'claude' && runtime !== 'harness') throw new KiteError(`不支持的会话后端：${runtime}`, 409);
   const basePolicy = await harnessPolicy({ cwd, env: process.env, home, repository: host.repository });
-  const policy = () => applyExecutionGrants(basePolicy, cwd, instanceExecutionGrants(host.current()));
+  const policy = () => applyExecutionGrants(basePolicy, cwd, effectiveExecution(instanceExecutionChanges(host.current()), host.executionConstraint()));
   const credentials = host.credentials;
   const secrets = credentials ? {
     list: async () => credentials.available(projectId),
@@ -120,12 +131,14 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   const diffDir = join(home, 'diffs', workspaceId);
   if (runtime === 'claude') {
     return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy, secrets, askNetwork: host.askNetwork,
+      ...(host.background ? { background: host.background } : {}),
+      ...(host.outside ? { outside: host.outside } : {}),
       prepare(afterNotification) {
         const current = host.current();
         const { agent, permitted, plugins } = selectTools(current, operations, host.toolConstraint());
         const allowed = new Set([...agent.tools.filter(permitted), ...plugins.map((tool) => tool.name)]);
         const updates = host.notifications(afterNotification);
-        const variables = threadVariables(current, host.toolConstraint());
+        const variables = threadVariables(current, host.toolConstraint(), host.executionConstraint());
         const instructions = assembleContext(projectContext(agent.context, variables)).instructions;
         return { agent, instructions, contextUpdate: assembleContext(contextUpdateContext(instructions, variables, host.contextUpdateTemplate())).instructions,
           tools: [...operations.tools, ...plugins], allowed,
@@ -133,17 +146,19 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
           through: updates.at(-1)?.sequence ?? afterNotification };
       }, events: on,
       compaction: { templates: () => host.compactionTemplates(), files: (range) => host.compactionFiles(range),
-        variables: () => threadVariables(host.current(), host.toolConstraint()) },
+        variables: () => threadVariables(host.current(), host.toolConstraint(), host.executionConstraint()) },
     });
   }
   const inputs = new Map<string, string>();
   const thread = await openThreadHost({
     cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, startPaused: true, policy, secrets, askNetwork: host.askNetwork,
+    ...(host.background ? { background: host.background } : {}),
+    ...(host.outside ? { outside: host.outside } : {}),
     prepareRequest(tools, { afterNotification }) {
       const current = host.current();
-      const execution = instanceExecutionGrants(current);
+      const execution = effectiveExecution(instanceExecutionChanges(current), host.executionConstraint()).grants;
       const { agent, selection, permitted, plugins } = selectTools(current, operations, host.toolConstraint());
-      const variables = threadVariables(current, host.toolConstraint());
+      const variables = threadVariables(current, host.toolConstraint(), host.executionConstraint());
       // 声明顺序取代理插件的工具目录，与实例配置一致。
       const available = [...tools, ...operations.tools];
       const declared = agentTools.flatMap((name) => available.find((tool) => tool.name === name) ?? []);

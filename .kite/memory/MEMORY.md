@@ -16,7 +16,7 @@
 ## 协作反馈
 
 - [界面工作与验收](feedback-ui-workflow.md) — 方案、目标定位、连续推进、失灵诊断不靠猜、真机验收和工具链选择
-- [交互连续性](feedback-interaction-quality.md) — 公共控件、对象身份、动效性能；窗口动画不回弹、新建从添加入口展开、点阵收起；改尺寸只动相邻窗口；上一步与固定；触屏长按起拖
+- [交互连续性](feedback-interaction-quality.md) — 公共控件、对象身份、动效性能；窗口动画不回弹、新建从添加入口展开、点阵收起；改尺寸只动相邻窗口；上一步与固定；触屏长按起拖、标题栏无右键菜单
 - [状态放标题栏](feedback-pane-status-placement.md) — 窗口状态归信息区或副行；弹窗副行只放简短说明，状态写正文
 - [测试要克制](test-restraint.md) — 测试准入主来源、事件断言与 PDF 验证要求
 - [设计讨论先给意见](feedback-design-discussion.md) — 用户的总结是征求意见，落文档前先问
@@ -29,11 +29,11 @@
 - [上下文能力](todo-context-capabilities.md) — skill/MCP、观察账本、预览、开场白与个人偏好
 - [工作区协作](todo-workspace-collaboration.md) — 跨线程竞争、后台交接与归档扩展
 - [事件来源](todo-event-sources.md) — 文件/插件观察的路由与合并；主动触发已定为通用 monitor
-- [执行边界](todo-execution-boundaries.md) — Linux、资源限制与项目文件/网络授权上限
+- [执行边界](todo-execution-boundaries.md) — Linux（含沙箱外命令、监听端口）、资源限制、项目收紧是否停旧命令
 - [开发工作流](todo-development-workflow.md) — 检查、宿主 Git、会话回退与分叉的待评估能力
 - [远程连接与托管运维](todo-remote-connections.md) — iPhone 重连、托管容量备份、凭据重绑和多机关系
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
-- [真实终端](todo-terminal-plugin.md) — PTY 与跨端重连、停止和资源生命周期
+- [终端插件收尾](todo-terminal-plugin.md) — 已实现待手测；旁观设备的尺寸、跨 kited 重启、后台命令的输入
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据
 - [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit 一起做、CloudKit、登出重启关机预告待真机实测、kite-net 重启后丢用户
 - [本机先行的收尾](todo-local-first-actions.md) — 各路径已改为本机先行、待手测；失败时的收回方式；进入工作区卡顿待量（Mac、iPhone）

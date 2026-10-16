@@ -71,6 +71,24 @@ struct FileReference: Equatable, Hashable, Sendable {
     }
 }
 
+/// 本机地址上某个端口的网页：工作机上运行中的终端监听的端口，在所属工作区内解析到那个终端（AppModel.openLocalPort）。
+enum LocalPort {
+    private static let hosts: Set<String> = ["localhost", "127.0.0.1", "::1", "0.0.0.0"]
+
+    static func port(of url: URL) -> Int? {
+        guard ["http", "https"].contains(url.scheme?.lowercased()), let host = url.host(percentEncoded: false)?.lowercased(),
+              hosts.contains(host), let port = url.port, (1...65535).contains(port) else { return nil }
+        return port
+    }
+
+    /// 正文里裸写的 localhost:端口，当作 http 链接。
+    static func bare(_ text: String) -> URL? {
+        let parts = text.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2, hosts.contains(parts[0].lowercased()), let port = Int(parts[1]), (1...65535).contains(port) else { return nil }
+        return URL(string: "http://\(text)")
+    }
+}
+
 /// 纯文本识别不访问磁盘或网络；正文保留在原始记录中，缩短的文件名只用于显示。
 enum ReferenceText {
     private static let tokens = try! NSRegularExpression(pattern: #"https?://[^\s<>`\"'，。；！？（）]+|(?:\.?\.?/|/)?[\p{L}\p{N}_@.~-]+(?:/[\p{L}\p{N}_@.~-]+)*(?::diff_[A-Za-z0-9_-]+)?(?::[1-9][0-9]*(?:-[1-9][0-9]*)?)?"#)
@@ -103,7 +121,7 @@ enum ReferenceText {
                 var raw = String(plain[range])
                 while raw.last.map({ ".,;!?)。".contains($0) }) == true { raw.removeLast() }
                 let file = FileReference.parse(raw)
-                let web = raw.hasPrefix("https://") || raw.hasPrefix("http://") ? URL(string: raw) : nil
+                let web = raw.hasPrefix("https://") || raw.hasPrefix("http://") ? URL(string: raw) : LocalPort.bare(raw)
                 guard file != nil || web != nil else { continue }
                 let end = plain.index(range.lowerBound, offsetBy: raw.count)
                 result.append(slice(part, plain: plain, range: cursor..<range.lowerBound))

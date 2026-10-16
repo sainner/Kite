@@ -210,6 +210,8 @@ struct CreateThreadRequest: Encodable {
     var model: AgentModelConfiguration? = nil
     var tools: [String]? = nil
     var maxRequestsPerTurn: Int? = nil
+    /// 草稿里选的审批模式；没选时用角色的默认。
+    var approval: ApprovalMode? = nil
     var windowId: String? = nil
     var messageId: String? = nil
     /// 新建工作区时本机定的工作区 ID，见 AppModel.create。

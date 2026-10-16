@@ -68,6 +68,7 @@ export function newDir(parent: string, name: string, files: Record<string, strin
 /**
  * 建一个已有提交的 git 仓库（分支 main）。origin 默认指向一个不存在的示例远程，各仓库互不相同：
  * 登记时按 origin 登记成各自的项目，不访问网络。要没有远程的仓库（登记成没有远程的项目）传 null。
+ * 合回这类要拉远程的操作会真去连示例远程，本机上白等一百多毫秒才失败；测试用不到远程时传 null。
  */
 export function newRepo(parent: string, name: string, files: Record<string, string>,
   origin: string | null = `https://example.test/kite-test/${crypto.randomUUID()}.git`): string {

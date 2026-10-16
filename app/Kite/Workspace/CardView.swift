@@ -152,7 +152,6 @@ final class CardView: NSView {
         headerView.drag.onChanged = { [weak stage] drag in stage?.drag(pane, to: drag.location) }
         headerView.drag.onEnded = { [weak stage] in stage?.drop() }
         headerView.drag.onClick = { [weak self] in self?.click() }
-        headerView.drag.menu = headerView.contextMenu
         headerView.contextMenu.delegate = headerView
         headerView.buildMenu = { [weak self] menu in self?.buildMenu(menu) }
         motion.onStart = { [weak self] motion in self?.flightStarted(motion) }
@@ -447,6 +446,8 @@ final class CardView: NSView {
         headerView.radius = target.radius
         let drag = headerView.drag
         drag.isHidden = fixed
+        let contextMenu = minimized ? headerView.contextMenu : nil
+        if drag.menu !== contextMenu { drag.menu = contextMenu }
         let shown = state.buttonsShown
         if content.buttonsShown != shown { content.buttonsShown = shown }
         if content.pinShown != state.pinShown { content.pinShown = state.pinShown }
@@ -714,23 +715,20 @@ final class CardView: NSView {
         else { stage.group.layout.focus(pane) }
     }
 
-    /// 右键菜单：缩成停靠形状时先写名字与状态，再是实例操作和关闭窗口。
+    /// 右键菜单只在缩成停靠形状时有（这时它就是停靠栏里那一格，同 DockEntryMenu）：先写名字与状态，再是实例操作和关闭窗口。标题栏上没有。
     private func buildMenu(_ menu: NSMenu) {
         menu.removeAllItems()
         guard let stage, let placed, let area = stage.group.workspace,
               let target = area.windows.first(where: { $0.id == pane.id })?.target,
               let instance = area.instances.first(where: { $0.id == target.instanceId }) else { return }
-        if placed.minimized {
-            let label = NSMenuItem(title: area.dockLabel(.pane(pane)), action: nil, keyEquivalent: "")
-            label.isEnabled = false
-            menu.addItem(label)
-        }
+        guard placed.minimized else { return }
+        let label = NSMenuItem(title: area.dockLabel(.pane(pane)), action: nil, keyEquivalent: "")
+        label.isEnabled = false
+        menu.addItem(label)
         let model = stage.model
-        for action in InstanceAction.all(for: instance, in: area, model: model) {
+        for action in InstanceAction.all(for: instance, in: area, model: model, pane: pane) {
             menu.addItem(MenuAction.item(action.title, enabled: action.enabled, destructive: action.destructive, perform: action.perform))
         }
-        let pane = pane
-        menu.addItem(MenuAction.item("关闭窗口", enabled: true) { model.closeWindow(pane, in: area) })
     }
 
     // MARK: - 命中与读屏
@@ -749,9 +747,9 @@ final class CardView: NSView {
         return window.convertToScreen(convert(placed.target.frame, to: nil))
     }
 
-    /// 读屏打开右键菜单（VO-Shift-M）：同标题栏上右键。
+    /// 读屏打开右键菜单（VO-Shift-M）：同缩成停靠形状时右键。
     override func accessibilityPerformShowMenu() -> Bool {
-        guard let placed, acceptsInput else { return false }
+        guard let placed, placed.minimized, acceptsInput else { return false }
         let menu = headerView.contextMenu
         buildMenu(menu)
         guard !menu.items.isEmpty else { return false }

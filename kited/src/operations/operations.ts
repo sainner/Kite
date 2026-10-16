@@ -15,7 +15,7 @@ import { defaultRoleId, instanceRole } from '../roles.ts';
 import { pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding, type PluginToolSource } from '../plugins/tools.ts';
 
 type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'interrupt' | 'resume' | 'selectFile'
-  | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox'>;
+  | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox' | 'terminals'>;
 
 export interface OperationToolSelection {
   plugins: Tool[];
@@ -204,6 +204,22 @@ export class InstanceOperations {
         return this.kite.monitors.create(workspaceId, {
           instanceId: caller.instanceId, operationId: input.operationId, ...(caller.kind === 'model' ? { turnId: caller.turnId, callId: caller.callId } : {}),
         }, { title: input.title, ...(input.command !== undefined ? { command: input.command } : { at: at!, ...(input.repeat ? { repeat: input.repeat } : {}) }) });
+      }
+      case 'terminal.read': {
+        const input = args as OperationInput<'terminal.read'>;
+        return this.kite.terminals.read(input.instanceId, input.offset, input.limit);
+      }
+      case 'terminal.select': {
+        check();
+        const input = args as OperationInput<'terminal.select'>;
+        return this.kite.terminals.selectPort(input.instanceId, input.port);
+      }
+      case 'terminal.stop': {
+        check();
+        const target = this.kite.store.instance(args.instanceId as string)!;
+        const owner = caller.kind !== 'ui' && target.origin?.instanceId === caller.instanceId;
+        await this.kite.terminals.stop(target.id, caller.kind === 'ui' ? '已在界面上停止' : owner ? '代理自己停下了这个命令' : '另一个代理停下了这个终端', owner);
+        return { ok: true };
       }
       case 'monitor.list': return { monitors: this.kite.monitors.list(workspaceId) };
       case 'monitor.stop':

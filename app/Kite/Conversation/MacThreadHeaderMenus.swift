@@ -33,7 +33,7 @@ struct MacThreadHeaderMenus: View {
             ForEach(commands.indices, id: \.self) { index in
                 Section {
                     ForEach(commands[index]) { command in
-                        Button(action: command.action) {
+                        Button(role: command.destructive ? .destructive : nil, action: command.action) {
                             Label(command.title, systemImage: command.symbol)
                         }
                         .disabled(!command.enabled)

@@ -92,7 +92,9 @@ function waitFile(path: string) {
 }
 
 // 真实 MCP SDK 的资源内容和 _meta 经 stdio 到 HTTP；关窗与运行进程的生命周期必须在一起验证。
-test('声明的 MCP App 视图读取本实例资源，拒绝不安全内容，关窗后实例继续运行', async () => {
+// 插件子进程停止与宿主拒绝重启跨进程交接：归档返回前插件进程须已退出；宿主撤下停止期间的启动阻止后，
+// UI 调用、工具发现和视图读取都不能把已归档实例的进程重新拉起。随窗口实例没有独立存续，不能归档。
+test('声明的 MCP App 视图读取本实例资源，拒绝不安全内容，关窗后实例继续运行；归档先停掉插件进程并收起窗口，之后的调用被拒绝且不再拉起进程，随窗口实例拒绝归档', async () => {
   const k = startKited();
   try {
     const repo = newRepo(k.root, 'project', { 'note.txt': '原始\n' });
@@ -115,37 +117,20 @@ test('声明的 MCP App 视图读取本实例资源，拒绝不安全内容，�
       expect(rejected.status, `${id} 不应成为可加载视图`).not.toBe(200);
     }
 
-    const windowId = randomUUID();
-    const opened = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
-      id: windowId, content: { kind: 'open', instanceId, viewId: 'state' },
+    const openView = () => k.call('POST', `/workspaces/${workspaceId}/windows`, {
+      id: randomUUID(), content: { kind: 'open', instanceId, viewId: 'state' },
     });
+    const opened = await openView();
     expect(opened.status).toBe(200);
     expect(opened.body.target.instanceId).toBe(instanceId);
     const beforeClose = output(await tool(k, instanceId, 'state', 'view-opened', { action: 'read' }));
-    expect((await k.call('DELETE', `/workspaces/${workspaceId}/windows/${windowId}`)).status).toBe(200);
-    const afterClose = output(await tool(k, instanceId, 'state', 'view-closed', { action: 'read' }));
-    expect(afterClose).toMatchObject({ pid: beforeClose.pid, value: { count: 1 } });
-  } finally {
-    await k.stop();
-  }
-}, 1000);
+    expect((await k.call('DELETE', `/workspaces/${workspaceId}/windows/${opened.body.id}`)).status).toBe(200);
+    const running = output(await tool(k, instanceId, 'state', 'view-closed', { action: 'read' }));
+    expect(running).toMatchObject({ pid: beforeClose.pid, value: { count: 1 } });
 
-// 插件子进程停止与宿主拒绝重启跨进程交接：归档返回前插件进程须已退出；宿主撤下停止期间的启动阻止后，
-// UI 调用、工具发现和视图读取都不能把已归档实例的进程重新拉起。随窗口实例没有独立存续，不能归档。
-test('归档常驻插件实例先停掉插件进程并收起窗口，之后的调用被拒绝且不再拉起进程，随窗口实例拒绝归档', async () => {
-  const k = startKited();
-  try {
-    const repo = newRepo(k.root, 'project', { 'note.txt': '原始\n' });
-    const workspaceId = await workspace(k, repo);
-    await install(k, [{ id: 'state', title: 'state', resourceUri: 'ui://test/state.html' }]);
-    const instanceId = await createInstance(k, workspaceId);
-    const opened = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
-      id: randomUUID(), content: { kind: 'open', instanceId, viewId: 'state' },
-    });
-    expect(opened.status).toBe(200);
-    const running = output(await tool(k, instanceId, 'state', 'archive-before', { action: 'increment' }));
+    // 再开一个窗口后归档：进程先停、窗口收起。
+    expect((await openView()).status).toBe(200);
     expect((await k.call('GET', `/instances/${instanceId}/plugin/process`)).body.phase).toBe('running');
-
     expect((await k.call('POST', `/instances/${instanceId}/archive`)).status).toBe(200);
     expect(() => process.kill(running.pid, 0)).toThrow();
     expect(k.daemon.kite.store.instance(instanceId)?.status).toBe('archived');
@@ -155,7 +140,7 @@ test('归档常驻插件实例先停掉插件进程并收起窗口，之后的�
 
     expect((await tool(k, instanceId, 'state', 'archive-after', { action: 'read' })).status).not.toBe(200);
     expect((await k.call('GET', `/instances/${instanceId}/plugin/tools`)).status).not.toBe(200);
-    expect((await k.call('GET', `/instances/${instanceId}/plugin/views/state`)).status).not.toBe(200);
+    expect((await readView('state')).status).not.toBe(200);
     const afterCalls = await k.call('GET', `/instances/${instanceId}/plugin/process`);
     expect(afterCalls.body.phase ?? 'stopped').toBe('stopped');
     expect(k.daemon.kite.store.instance(instanceId)?.status).toBe('archived');
@@ -266,8 +251,12 @@ test('随窗口插件等最后视图关闭才回收，清理失败可重试且�
 }, 1000);
 
 // 真实 Bun SDK、宿主授权与 SQLite 交接；工具发现等待时并发写入不能被工作区队列阻塞或被旧结果覆盖。
-test('Bun 插件的状态和工具收据跨进程重启保留，工作区回调随授权即时变化', async () => {
+// Seatbelt/bubblewrap 的真实进程隔离、后代继承和进程组取消不能由启动参数或 MCP 消息验证。
+test('Bun 插件及其后代被沙箱隔离，工作区回调随授权即时变化；停止阻塞工具后同一 operationId 保持 unknown，状态和工具收据跨进程重启保留', async () => {
+  const oldSecret = process.env.KITE_TEST_HOST_SECRET;
+  process.env.KITE_TEST_HOST_SECRET = 'fixture-host-secret';
   const k = startKited();
+  const listener = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('reachable') });
   const discoveryStarted = deferred();
   const releaseDiscovery = deferred();
   let discovery: ReturnType<typeof spyOn> | undefined;
@@ -285,6 +274,21 @@ test('Bun 插件的状态和工具收据跨进程重启保留，工作区回调�
     expect(output(await tool(k, instanceId, 'state', 'stale', {
       action: 'stale', expectedRevision: before.revision,
     })).staleRejected).toBe(true);
+
+    const externalFile = join(k.root, 'outside-secret.txt');
+    const hostFile = join(k.home, 'host-secret.txt');
+    writeFileSync(externalFile, '外部秘密');
+    mkdirSync(k.home, { recursive: true });
+    writeFileSync(hostFile, '宿主秘密');
+    const probe = output(await tool(k, instanceId, 'probe', 'probe', {
+      workspaceFile: join(repo, 'note.txt'), externalFile, hostFile, port: listener.port,
+    }));
+    expect(probe).toMatchObject({
+      workspaceRead: false, externalRead: false, hostRead: false, hostSecret: null,
+      tempWrite: true, childExit: 0, childRead: 'denied',
+    });
+    expect(probe.tcp).not.toBe('connected');
+    expect(probe.tcp).not.toBe('timeout');
 
     const targetId = await filesTarget(k, workspaceId);
     const args = { targetId, path: 'note.txt' };
@@ -333,44 +337,7 @@ test('Bun 插件的状态和工具收据跨进程重启保留，工作区回调�
     discovery.mockRestore();
     discovery = undefined;
 
-    expect((await k.call('DELETE', `/instances/${instanceId}/plugin/process`)).status).toBe(200);
-    const restored = output(await tool(k, instanceId, 'state', 'read-restarted', { action: 'read' }));
-    expect(restored.value.count).toBe(1);
-    expect(restored.pid).not.toBe(before.pid);
-  } finally {
-    releaseDiscovery.resolve();
-    discovery?.mockRestore();
-    await pendingGrant?.catch(() => {});
-    await k.stop();
-  }
-}, 1000);
-
-// Seatbelt/bubblewrap 的真实进程隔离、后代继承和进程组取消不能由启动参数或 MCP 消息验证。
-test('Bun 插件及其后代被沙箱隔离，停止阻塞工具后同一 operationId 保持 unknown', async () => {
-  const oldSecret = process.env.KITE_TEST_HOST_SECRET;
-  process.env.KITE_TEST_HOST_SECRET = 'fixture-host-secret';
-  const k = startKited();
-  const listener = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('reachable') });
-  try {
-    const repo = newRepo(k.root, 'project', { 'note.txt': '工作区秘密\n' });
-    const workspaceId = await workspace(k, repo);
-    await install(k);
-    const instanceId = await createInstance(k, workspaceId);
-    const externalFile = join(k.root, 'outside-secret.txt');
-    const hostFile = join(k.home, 'host-secret.txt');
-    writeFileSync(externalFile, '外部秘密');
-    mkdirSync(k.home, { recursive: true });
-    writeFileSync(hostFile, '宿主秘密');
-    const probe = output(await tool(k, instanceId, 'probe', 'probe', {
-      workspaceFile: join(repo, 'note.txt'), externalFile, hostFile, port: listener.port,
-    }));
-    expect(probe).toMatchObject({
-      workspaceRead: false, externalRead: false, hostRead: false, hostSecret: null,
-      tempWrite: true, childExit: 0, childRead: 'denied',
-    });
-    expect(probe.tcp).not.toBe('connected');
-    expect(probe.tcp).not.toBe('timeout');
-
+    // 阻塞的工具挂着时停掉插件进程：这次调用和同一 operationId 的重试都是 unknown，插件进程与后代都退出。
     const marker = join(probe.tmpdir, 'block-' + randomUUID());
     const pending = tool(k, instanceId, 'block', 'blocked-once', { marker });
     await waitFile(marker);
@@ -386,7 +353,15 @@ test('Bun 插件及其后代被沙箱隔离，停止阻塞工具后同一 operat
     expect((await k.call('GET', `/instances/${instanceId}/plugin/process`)).body.phase).toBe('stopped');
     expect(() => process.kill(blockedPids.parent, 0)).toThrow();
     expect(() => process.kill(blockedPids.child, 0)).toThrow();
+
+    // 下一次调用重新拉起插件进程，状态还在。
+    const restored = output(await tool(k, instanceId, 'state', 'read-restarted', { action: 'read' }));
+    expect(restored.value.count).toBe(1);
+    expect(restored.pid).not.toBe(before.pid);
   } finally {
+    releaseDiscovery.resolve();
+    discovery?.mockRestore();
+    await pendingGrant?.catch(() => {});
     await listener.stop(true);
     await k.stop();
     if (oldSecret === undefined) delete process.env.KITE_TEST_HOST_SECRET;

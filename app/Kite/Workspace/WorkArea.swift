@@ -147,6 +147,22 @@ final class WorkArea: Identifiable {
         definitions.first { $0.id == instance.definitionId }
     }
 
+    /// 打开实例时先显示哪个视图：终端有监听的端口时是网页，其余是默认视图。
+    func openingView(of instance: RemotePluginInstance) -> String? {
+        guard let definition = definition(of: instance) else { return nil }
+        if instance.state?.terminal?.ports?.isEmpty == false, definition.views.contains(where: { $0.id == "web" }) { return "web" }
+        return (definition.views.first { $0.id == definition.defaultView } ?? definition.views.first)?.id
+    }
+
+    /// 关掉最后一个窗口后实例还在：独立存续的，或者进程还在跑的终端。
+    func survivesWindowClose(_ instance: RemotePluginInstance) -> Bool {
+        switch definition(of: instance)?.lifetime {
+        case .persistent: true
+        case .process: instance.state?.terminal?.running == true
+        default: false
+        }
+    }
+
     /// 停靠栏要放下添加入口、每一格和两组之间的分隔；家族格更长，无窗口的代理每四个小头像占一格，最多两格。
     var minimumSize: CGSize {
         let content = layout.minimumSize

@@ -99,13 +99,12 @@ struct ThreadHeaderActions: View {
     private var moreCommands: [[ThreadHeaderCommand]] {
         var general: [ThreadHeaderCommand] = []
         if let instance {
-            general.append(.init(title: "实例设置与授权", symbol: "slider.horizontal.3",
-                                 enabled: model.isConnected(area)) { area.settingsInstance = instance })
-            general.append(.init(title: "归档代理", symbol: "archivebox",
-                                 enabled: model.isConnected(area)) { area.archiveRequest = instance })
+            general += InstanceAction.managing(instance, in: area, model: model).map { action in
+                ThreadHeaderCommand(title: action.title, symbol: action.symbol, enabled: action.enabled, destructive: action.destructive, action: action.perform)
+            }
         }
         if choice != nil {
-            general.append(.init(title: "代理配置", symbol: "slider.horizontal.3",
+            general.append(.init(title: "配置", symbol: "slider.horizontal.3",
                                  enabled: thread.agentCapabilities != nil) { showingDraftSettings = true })
         }
         // 停止、继续和恢复确认都归输入区：待恢复时发送或继续即确认。
