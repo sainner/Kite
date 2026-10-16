@@ -212,7 +212,8 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
 
     // MARK: - 操作栏
 
-    /// 选中了一行就在它旁边弹出操作栏：平常在这一行底下，底下放不下（会压到控制区）就放到上面；和这一行给的那一边对齐。
+    /// 选中了一行就在它旁边弹出操作栏：平常在这一行底下，底下放不下（会压到控制区）就放到上面，上下都放不下就压在这一行上；
+    /// 和这一行给的那一边对齐，见 TranscriptArrangement.actionBarFrame。
     /// 收起时先让浮层播完收起动画再拿掉。
     private func placeActions() {
         guard let context else { return }
@@ -258,7 +259,7 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
         }
         actions = (slot.id, host, above, bar.side)
         let size = host.sizeThatFits(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude))
-        let frame = TranscriptArrangement.actionBarFrame(anchor: anchor, size: size, above: above, side: bar.side)
+        let frame = TranscriptArrangement.actionBarFrame(anchor: anchor, size: size, above: above, side: bar.side, visible: visibleArea)
         if host.view.frame != frame { UIView.performWithoutAnimation { host.view.frame = frame } }
         if document.subviews.last !== host.view { document.bringSubviewToFront(host.view) }
     }

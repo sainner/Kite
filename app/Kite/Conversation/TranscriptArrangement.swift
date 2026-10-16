@@ -252,15 +252,17 @@ enum TranscriptPlacement: Equatable {
 
     // MARK: - 操作栏
 
-    /// 操作栏平常在这一行底下，底下放不下（会压到控制区）、上面放得下时放到上面。
+    /// 操作栏平常在这一行底下，底下放不下（会压到控制区）、上面放得下时放到上面；上下都放不下时见 actionBarFrame。
     static func actionBarAbove(anchor: CGRect, visible: CGRect) -> Bool {
         let room = Metrics.actionBarGap + Metrics.paneHeaderButton
         return anchor.maxY + room > visible.maxY && anchor.minY - room >= visible.minY
     }
 
-    /// 操作栏的位置：离这一行 actionBarGap，和这一行给的那一边对齐。
-    static func actionBarFrame(anchor: CGRect, size: CGSize, above: Bool, side: HorizontalEdge) -> CGRect {
-        let y = above ? anchor.minY - Metrics.actionBarGap - size.height : anchor.maxY + Metrics.actionBarGap
+    /// 操作栏的位置：离这一行 actionBarGap，和这一行给的那一边对齐。上下都放不下（这一行比可见区还高，或顶上那截滚出去了）时
+    /// 往上收进可见区，压在这一行的末尾上，不藏到控制区底下。
+    static func actionBarFrame(anchor: CGRect, size: CGSize, above: Bool, side: HorizontalEdge, visible: CGRect) -> CGRect {
+        let beside = above ? anchor.minY - Metrics.actionBarGap - size.height : anchor.maxY + Metrics.actionBarGap
+        let y = min(beside, visible.maxY - Metrics.actionBarGap - size.height)
         let x = side == .leading ? anchor.minX : anchor.maxX - size.width
         return CGRect(x: x, y: y, width: size.width, height: size.height)
     }

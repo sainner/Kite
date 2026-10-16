@@ -54,7 +54,7 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
 
     /// 原生对话列表里用，照 spikes/ios-native-transcript V1 的 H：关了滚动的 UITextView 一改 frame（宽或高）就把整段重设容器、重排，
     /// iPad 拖缝时这占了主线程的大头（2026-10-13 真机 Time Profiler：setFrame → _resyncContainerFrame → ensureLayout）。改成：
-    /// - 开着滚动（容器不再跟着视图高），关掉它自己的拖动、滚动条、回弹和安全区边距，滚不动也不滚；
+    /// - 开着滚动（容器不再跟着视图高），关掉它自己的拖动（gestureRecognizerShouldBegin 里拦住）、滚动条、回弹和安全区边距，滚不动也不滚；
     /// - 视图宽固定成最宽的内容列，改宽、量高都只改容器宽，视图只改高；比字宽出来的那截不接触摸（point(inside:)）；
     /// - iOS 27 起覆写 viewportBounds(for:)，视口裁到外层可见区上下各半屏（拖缝中十分之一屏），外层滚出这截时再请它重排（outerScrolled）。
     ///   iOS 26 不会问，照旧按整个视图排。
@@ -82,6 +82,14 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
         }
         let size = CGSize(width: lineWidth, height: .greatestFiniteMagnitude)
         if textContainer.size != size { textContainer.size = size }
+    }
+
+    /// 列表里的自己的拖动不起。只关 panGestureRecognizer 关不住，UIKit 会把它重新打开（同 PhoneComposerField）：
+    /// TextKit 估的内容常比视图高一点，手指往上推时它先接走、往自己的末尾滚，又被 layoutSubviews 归零，看着对话纹丝不动；
+    /// 往下拉时它在顶边、不回弹，才交给对话列表（2026-10-16 iPhone：从停着往上推总推不动，先往下拉再往上才行）。
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if clipsViewport, gestureRecognizer === panGestureRecognizer { return false }
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
     }
 
     /// 视图比字宽（固定成最宽的内容列），字以外的那截不接触摸，落到后面去。

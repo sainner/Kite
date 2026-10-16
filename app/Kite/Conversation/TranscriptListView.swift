@@ -173,8 +173,8 @@ final class TranscriptListView: NSScrollView {
 
     // MARK: - 操作栏
 
-    /// 选中了一行就在它旁边弹出操作栏（ActionBarView）：平常在这一行底下，底下放不下（会压到控制区）就放到上面；和这一行给的那一边对齐，
-    /// 见 TranscriptArrangement.actionBarAbove。收起时先让浮层播完收起动画再拿掉。
+    /// 选中了一行就在它旁边弹出操作栏（ActionBarView）：平常在这一行底下，底下放不下（会压到控制区）就放到上面，上下都放不下就压在这一行上；
+    /// 和这一行给的那一边对齐，见 TranscriptArrangement.actionBarAbove、actionBarFrame。收起时先让浮层播完收起动画再拿掉。
     private func placeActions() {
         guard let context else { return }
         let selected = context.environment.selectedRow.wrappedValue
@@ -209,7 +209,7 @@ final class TranscriptListView: NSScrollView {
         // 按钮能不能按、展开状态这些每次排版都换一遍
         host.show(bar.items)
         actions = (slot.id, host, above, bar.side)
-        host.frame = TranscriptArrangement.actionBarFrame(anchor: anchor, size: host.fittingSize, above: above, side: bar.side)
+        host.frame = TranscriptArrangement.actionBarFrame(anchor: anchor, size: host.fittingSize, above: above, side: bar.side, visible: visibleArea)
         if document.subviews.last !== host { document.addSubview(host, positioned: .above, relativeTo: nil) }
         if appearing {
             host.layoutSubtreeIfNeeded()
