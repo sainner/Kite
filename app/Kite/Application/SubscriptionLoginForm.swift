@@ -101,17 +101,23 @@ struct SubscriptionLoginForm: View {
     }
 
     private var providerIcon: some View {
-        Image(provider == "claude" ? .brandClaude : .brandOpenAI)
-            .renderingMode(.template)
-            .resizable()
-            .scaledToFit()
-            .frame(width: 48, height: 48)
-            .foregroundStyle(.primary)
-            .padding(CardMetrics.inset)
-            .background(Theme.codeBackground, in: Circle())
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, Metrics.padding)
-            .accessibilityHidden(true)
+        VStack(spacing: Metrics.padding) {
+            Image(provider == "claude" ? .brandClaude : .brandOpenAI)
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 48, height: 48)
+                .foregroundStyle(.primary)
+                .padding(CardMetrics.inset)
+                .background(Theme.codeBackground, in: Circle())
+                .accessibilityHidden(true)
+            if state?.status == "complete" {
+                Text("授权成功")
+                    .font(Theme.heading3)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, Metrics.padding)
     }
 
     private func deviceCode(_ value: String) -> some View {
