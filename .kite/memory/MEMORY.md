@@ -22,6 +22,7 @@
 - [设计讨论先给意见](feedback-design-discussion.md) — 用户的总结是征求意见，落文档前先问
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行与数据流判断，不能只看引用
 - [什么要保存](feedback-save-scope.md) — 只有提示词这类文稿改完要保存，其他修改即时生效；新角色在上下文窗口一次建好
+- [旧数据出错就删](feedback-stale-data.md) — 旧格式的本机数据读不了时删数据，不改代码兼容；删前确认并征得同意
 
 ## 未决事项
 

@@ -44,13 +44,14 @@ type channelStatus struct {
 }
 
 // channel 是到路由器的认证通道：进程内的用户态 WireGuard，经局域网连路由器，由路由器验证身份后给原生出站。
-// 系统里不出现网卡，只有组网的 UDP（STUN、探测与点对点 WireGuard）经它出网。私钥取到、通道建好之前，
-// 交给它的包一律发不出去，也不会退回本机网络直接发。
+// 系统里不出现网卡，组网的 UDP（STUN、探测与点对点 WireGuard）出网只经它。私钥取到、通道建好之前，
+// 交给它的包一律发不出去，也不会退回本机网络直接发。发往本机直连网段的不出网，直接走网卡，见 splitConn。
 type channel struct {
 	config         channelConfig
 	tun            tun.Device
 	net            *netstack.Net
 	local4, local6 netip.Addr
+	links          *localLinks
 
 	mu    sync.Mutex
 	dev   *device.Device
@@ -78,7 +79,8 @@ func parseChannel(text string) (*channel, error) {
 	if err != nil {
 		return nil, fmt.Errorf("建通道网络栈失败：%w", err)
 	}
-	return &channel{config: config, tun: tunDev, net: tnet, local4: local4, local6: local6, state: channelStatus{State: "waitingKey"}}, nil
+	return &channel{config: config, tun: tunDev, net: tnet, local4: local4, local6: local6, links: watchLocalLinks(),
+		state: channelStatus{State: "waitingKey"}}, nil
 }
 
 // start 在后台取私钥、建好到路由器的 WireGuard。取私钥可能要等用户在钥匙串弹窗里允许。
@@ -162,7 +164,8 @@ func (c *channel) staticEndpoint() (netip.AddrPort, bool) {
 	return netip.AddrPortFrom(c.local6, channelPort), c.local6.IsValid()
 }
 
-// ListenPacket 供 tsnet 创建 UDP：地址固定为通道内地址，端口照 tsnet 给的；没配 IPv6 时不给 IPv6。
+// ListenPacket 供 tsnet 创建 UDP：通道这一路固定用通道内地址和约定的端口；IPv4 另开一路局域网直连，
+// 端口照 tsnet 给的。没配 IPv6 时不给 IPv6。
 func (c *channel) ListenPacket(ctx context.Context, network, address string) (net.PacketConn, error) {
 	local := c.local4
 	switch {
@@ -179,11 +182,20 @@ func (c *channel) ListenPacket(ctx context.Context, network, address string) (ne
 	if err != nil {
 		return nil, err
 	}
-	udp, err := c.net.ListenUDPAddrPort(netip.AddrPortFrom(local, uint16(port)))
+	udp, err := c.net.ListenUDPAddrPort(netip.AddrPortFrom(local, channelPort))
 	if err != nil {
 		return nil, err
 	}
-	return packetConn{udp}, nil
+	tunnel := packetConn{udp}
+	if network != "udp4" {
+		return tunnel, nil
+	}
+	lan, err := listenLAN(uint16(port))
+	if err != nil {
+		log.Printf("受管网络通道：开不了局域网直连的 UDP，只走通道：%v", err)
+		return tunnel, nil
+	}
+	return newSplitConn(tunnel, lan, c.links), nil
 }
 
 // packetConn 补上 magicsock 要的 netip 收发接口。
