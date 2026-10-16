@@ -3,6 +3,7 @@
  * 对方一有变化就返回。收到的变化写进本机后也会被第三台工作机拉走，所以不必两两都直接连通。
  * 同步要按「可能一直走境外中继」设计：增量、可续传、不阻塞当前操作。
  */
+import { setTimeout as wait } from 'node:timers/promises';
 import { peerJSON, type Peer, type PeerFetch } from '../peer-fetch.ts';
 import type { Directory } from './directory.ts';
 import type { AccountData, Changes } from './store.ts';
@@ -61,10 +62,7 @@ export class Replication {
         if (signal.aborted) return;
         // 断线期间按退避重试，只在每轮断线的第一次记日志。
         if (delay === RETRY_MIN_MS) console.warn(`[账号数据同步] ${machine.id}：${(error as Error).message}`);
-        await new Promise((resolve) => {
-          const timer = setTimeout(resolve, delay);
-          signal.addEventListener('abort', () => { clearTimeout(timer); resolve(undefined); }, { once: true });
-        });
+        await wait(delay, undefined, { signal }).catch(() => {});
         delay = Math.min(delay * 2, RETRY_MAX_MS);
       }
     }

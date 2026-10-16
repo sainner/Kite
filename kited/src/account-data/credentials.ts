@@ -166,8 +166,8 @@ export class Credentials {
   }
 
   private entries(): Credential[] {
-    return this.data.list('credential').map(({ id, body }) => {
-      const { secret: _, sealed: __, ...view } = body as unknown as Stored;
+    return this.data.list('credential', ['secret', 'sealed']).map(({ id, body }) => {
+      const view = body as unknown as Omit<Credential, 'id'>;
       return { id, ...view, projectId: view.projectId && (this.options.canonicalProject(view.projectId) ?? view.projectId) };
     });
   }

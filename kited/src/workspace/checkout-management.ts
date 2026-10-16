@@ -86,7 +86,7 @@ export class CheckoutManagement {
         }
       }
     });
-    for (const checkout of local) await this.syncPeers(checkout);
+    await Promise.all(local.map((checkout) => this.syncPeers(checkout)));
     return merged;
   }
 
