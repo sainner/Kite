@@ -345,6 +345,36 @@ struct KitedClient: Equatable {
         return (session, session.webSocketTask(with: request))
     }
 
+    /// 按字节取文件，下载到临时文件，调用方挪走或删掉。304 时没有新内容，调用方用自己缓存的那一版。
+    /// progress 拿到下载任务的进度对象；method 为 HEAD 时只取大小、类型和修改时间，不返回文件。
+    func download(_ path: String, method: String = "GET", headers: [String: String] = [:],
+                  progress: (@Sendable (Progress) -> Void)? = nil) async throws -> (file: URL?, response: HTTPURLResponse) {
+        guard let machineID else { throw KitedError(message: "请先连接工作机") }
+        var request = URLRequest(url: try url(path))
+        request.httpMethod = method
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
+        for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+        let session = Tailnet.covers(address) ? try await Tailnet.shared.urlSession() : URLSession.shared
+        if method == "HEAD" {
+            let (_, response) = try await session.data(for: request)
+            try validate(response)
+            return (nil, response as! HTTPURLResponse)
+        }
+        let (file, response) = try await session.download(for: request, delegate: progress.map(DownloadProgress.init))
+        guard let http = response as? HTTPURLResponse, http.statusCode != 304 else {
+            try? FileManager.default.removeItem(at: file)
+            return (nil, response as! HTTPURLResponse)
+        }
+        if !(200..<300).contains(http.statusCode) {
+            let data = try? Data(contentsOf: file)
+            try? FileManager.default.removeItem(at: file)
+            try validate(response, data: data)
+        }
+        return (file, http)
+    }
+
+    /// 长连接（事件流、语音）用的独立会话和带工作机校验的请求；thread 给出时只关于这个会话。组网会话的配置带着节点的代理设置。
     /// 长连接（事件流、语音）用的独立会话和带工作机校验的请求；thread 给出时只关于这个会话。组网会话的配置带着节点的代理设置。
     private func streamRequest(_ path: String, thread: String?, device: String? = nil, webSocket: Bool = false) async throws -> (URLSession, URLRequest) {
         guard let machineID else { throw KitedError(message: "请先连接工作机") }
@@ -367,6 +397,13 @@ struct KitedClient: Equatable {
             throw KitedError(message: error ?? "服务返回 \(http.statusCode)", status: http.statusCode)
         }
     }
+}
+
+/// 下载任务建好时交出它的进度对象，界面直接观察。
+private final class DownloadProgress: NSObject, URLSessionTaskDelegate, Sendable {
+    let report: @Sendable (Progress) -> Void
+    init(_ report: @escaping @Sendable (Progress) -> Void) { self.report = report }
+    func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) { report(task.progress) }
 }
 
 extension JSON: Codable {

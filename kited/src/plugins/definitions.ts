@@ -55,7 +55,7 @@ const definitions: PluginDefinition[] = [
   { id: agentDefinitionId, title: '代理', description: '与 agent 协作', lifetime: 'persistent', defaultView: 'conversation',
     execution: { workspace: 'write', read: [], write: [], network: [] },
     agent, operations: ['agent.send', 'agent.resume', 'agent.stop'], views: [{ id: 'conversation', title: '代理窗口', renderer: 'conversation' }] },
-  { id: 'kite.files', title: '文件', description: '预览工作区文件', lifetime: 'window', defaultView: 'files', operations: ['files.list', 'files.read', 'files.diff', 'files.state', 'files.select'], views: [
+  { id: 'kite.files', title: '文件', description: '预览工作区文件', lifetime: 'window', defaultView: 'files', operations: ['files.list', 'files.search', 'files.read', 'files.diff', 'files.state', 'files.select'], views: [
     { id: 'files', title: '文件', renderer: 'files' },
   ] },
   { id: 'kite.terminal', title: '终端', description: '在工作目录执行命令', lifetime: 'window', defaultView: 'terminal', operations: [], views: [{ id: 'terminal', title: '终端', renderer: 'terminal' }] },

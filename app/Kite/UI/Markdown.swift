@@ -18,12 +18,111 @@ struct MarkdownView: View {
     var body: some View {
         let blocks = document.blocks(for: source)
         let fontSize = (font ?? .body).resolve(in: fontContext).pointSize
+        // 查找时每块有几个匹配；表格和分隔线不找
+        let counts = highlight.map { highlight in
+            blocks.map { $0.searchableText.map { TextSearch.ranges(of: highlight.query, in: $0).count } ?? 0 }
+        }
+        let firsts = counts?.reduce(into: [0]) { $0.append($0.last! + $1) }
         VStack(alignment: .leading, spacing: Metrics.markdownBlockGap(fontSize)) {
             ForEach(blocks.indices, id: \.self) { index in
-                MarkdownBlockView(block: blocks[index])
+                Group {
+                    if let images, let parts = MarkdownImagePart.split(blocks[index]) {
+                        ForEach(parts.indices, id: \.self) { part in
+                            switch parts[part] {
+                            case .text(let block): MarkdownBlockView(block: block)
+                            case .image(let source, let alt): MarkdownImage(source: source, alt: alt, loader: images)
+                            }
+                        }
+                    } else {
+                        MarkdownBlockView(block: blocks[index])
+                    }
+                }
+                .environment(\.searchHighlight, counts.flatMap { counts in
+                    guard let highlight, let firsts, counts[index] > 0 else { return nil }
+                    let current = highlight.current.map { $0 - firsts[index] }
+                    return SearchHighlight(query: highlight.query, current: current.flatMap { (0..<counts[index]).contains($0) ? $0 : nil })
+                })
+                .id(Self.blockID(index))
             }
         }
         .textSelection(.enabled)
+        .preference(key: MarkdownMatches.self, value: counts.map { counts in
+            counts.indices.flatMap { Array(repeating: $0, count: counts[$0]) }
+        } ?? [])
+    }
+
+    /// 第 index 块的视图 id，查找时滚到当前匹配所在的块用。
+    static func blockID(_ index: Int) -> String { "markdown-block-\(index)" }
+
+    @Environment(\.markdownImages) private var images
+    /// 查找的关键字，current 是在整篇里第几个。
+    @Environment(\.searchHighlight) private var highlight
+}
+
+/// 查找时每个匹配在第几块，按先后；用的地方据此数个数、滚到当前那个。
+struct MarkdownMatches: PreferenceKey {
+    static let defaultValue: [Int] = []
+    static func reduce(value: inout [Int], nextValue: () -> [Int]) { value += nextValue() }
+}
+
+/// 文件预览里的 Markdown 显示图片：按原文里写的地址（相对路径或网址）取图。环境里没有时，图片只显示替代文字。
+/// id 相同就当作同一个取图方式，免得每次重画都换掉环境。
+struct MarkdownImageLoader: Equatable {
+    let id: String
+    let load: (String) async throws -> PlatformImage
+
+    static func == (a: Self, b: Self) -> Bool { a.id == b.id }
+}
+
+extension EnvironmentValues {
+    @Entry var markdownImages: MarkdownImageLoader? = nil
+}
+
+/// 段落里的图片单独成块，前后的字仍是段落。
+private enum MarkdownImagePart {
+    case text(MarkdownBlock)
+    case image(source: String, alt: String)
+
+    static func split(_ block: MarkdownBlock) -> [Self]? {
+        guard case .paragraph = block.kind, block.text.runs.contains(where: { $0.imageURL != nil }) else { return nil }
+        var parts: [Self] = []
+        for (url, range) in block.text.runs[\.imageURL] {
+            let text = AttributedString(block.text[range])
+            if let url {
+                parts.append(.image(source: url.relativeString, alt: String(text.characters)))
+            } else if !String(text.characters).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                parts.append(.text(MarkdownBlock(kind: .paragraph, text: text, depth: block.depth)))
+            }
+        }
+        return parts
+    }
+}
+
+private struct MarkdownImage: View {
+    let source: String
+    let alt: String
+    let loader: MarkdownImageLoader
+    @State private var image: PlatformImage?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let image {
+                #if os(macOS)
+                Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: image.size.width)
+                #else
+                Image(uiImage: image).resizable().scaledToFit().frame(maxWidth: image.size.width)
+                #endif
+            } else if failed {
+                Label(alt.isEmpty ? source : alt, systemImage: "photo").foregroundStyle(.secondary)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, minHeight: 60)
+            }
+        }
+        .accessibilityLabel(alt)
+        .task(id: source) {
+            do { image = try await loader.load(source) } catch { failed = true }
+        }
     }
 }
 
@@ -59,6 +158,14 @@ struct MarkdownBlock: Equatable {
     var depth = 0
     /// 这一块在原文里的位置，复制时按选区取回 Markdown 原文用。
     var source: MarkdownSource?
+
+    /// 查找时在这一块里找的字；表格和分隔线是 nil。
+    var searchableText: String? {
+        switch kind {
+        case .paragraph, .heading, .code, .quote, .listItem: String(text.characters)
+        case .rule, .table: nil
+        }
+    }
 
     static func parse(_ source: String) -> [MarkdownBlock] {
         var options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible)
@@ -313,6 +420,10 @@ struct MarkdownBlockView: View {
     let block: MarkdownBlock
     @Environment(\.font) private var font
     @Environment(\.fontResolutionContext) private var fontContext
+    @Environment(\.searchHighlight) private var highlight
+
+    /// 查找时标出匹配的字。
+    private var text: AttributedString { highlight?.apply(to: block.text) ?? block.text }
 
     private var fontSize: CGFloat { (font ?? .body).resolve(in: fontContext).pointSize }
 
@@ -326,15 +437,16 @@ struct MarkdownBlockView: View {
     private var content: some View {
         switch block.kind {
         case .paragraph:
-            ReferenceLabel(block.text).fixedSize(horizontal: false, vertical: true)
+            ReferenceLabel(text).fixedSize(horizontal: false, vertical: true)
         case .heading(let level):
-            ReferenceLabel(block.text)
+            ReferenceLabel(text)
                 .font(level <= 1 ? Theme.heading1 : level == 2 ? Theme.heading2 : Theme.heading3)
                 .padding(.top, Metrics.markdownBlockGap(fontSize) / 2)
         case .code(let language):
-            CodeBlock(text: String(block.text.characters), language: language).lineSpacing(0)
+            // 有匹配时整段展开，折起来的部分里的匹配也看得见；高亮由代码块的语法高亮叠上
+            CodeBlock(text: String(block.text.characters), language: language, maxLines: highlight == nil ? 14 : nil).lineSpacing(0)
         case .quote:
-            ReferenceLabel(block.text)
+            ReferenceLabel(text)
                 .foregroundStyle(.secondary)
                 .padding(.leading, Metrics.quoteIndent)
                 .overlay(alignment: .leading) { Capsule().fill(Theme.rule).frame(width: 3) }
@@ -343,7 +455,7 @@ struct MarkdownBlockView: View {
         case .listItem(let marker):
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(marker ?? "").monospacedDigit().frame(minWidth: Metrics.listMarker, alignment: .trailing)
-                ReferenceLabel(block.text).fixedSize(horizontal: false, vertical: true)
+                ReferenceLabel(text).fixedSize(horizontal: false, vertical: true)
             }
         case .table(let header, let rows):
             MarkdownTable(header: header, rows: rows)

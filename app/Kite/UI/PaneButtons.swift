@@ -83,7 +83,7 @@ struct PaneHeaderActions: View {
     var body: some View {
         if let menus { menus }
         ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
-            PaneHeaderButtonGroup {
+            PaneHeaderButtonGroup(selected: !group.isEmpty && group.allSatisfy(\.on)) {
                 ForEach(Array(group.enumerated()), id: \.offset) { _, action in
                     PaneHeaderActionButton(action: action)
                 }
@@ -101,6 +101,8 @@ struct PaneHeaderAction {
     /// 在忙（保存、生成中）：图标换成转圈。
     var busy = false
     var disabled = false
+    /// 开关开着。开关单独成组，开着时整组用选中样式（主题色玻璃、白色图标），同侧栏的设置按钮。
+    var on = false
     let action: () -> Void
 }
 
@@ -115,6 +117,7 @@ private struct PaneHeaderActionButton: View {
         }
         .help(action.help ?? action.title)
         .disabled(action.disabled)
+        .accessibilityAddTraits(action.on ? .isSelected : [])
     }
 }
 

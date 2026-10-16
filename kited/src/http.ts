@@ -17,6 +17,8 @@ import { tokenPrices } from './token-prices.ts';
 import type { VoiceSocket } from './voice/sessions.ts';
 import { WaitingConflict } from './waiting.ts';
 import { HANDOVER_NEEDS } from './environment.ts';
+import { WorkspaceFiles } from './workspace/files.ts';
+import { fileContent } from './workspace/file-content.ts';
 
 async function body(req: Request): Promise<Record<string, unknown>> {
   try { return (await req.json()) as Record<string, unknown>; } catch { throw new KiteError('请求体不是 JSON'); }
@@ -185,6 +187,9 @@ export function serve(kite: Kite, listen: Listen) {
       return errorResponse(e);
     }
   };
+  /** 查看器按字节读取工作区文件，边界与文件操作相同；见 workspace/file-content.ts。 */
+  const workspaceFile = (req: Request & { params: { id: string } }) => fileContent(req,
+    new WorkspaceFiles(kite.workspace(req.params.id).workspace.cwd), str(new URL(req.url).searchParams.get('path'), 'path'));
   // 本机网络设置不对远程设备开放。
   const localOnly = <R extends Request>(fn: (req: R) => Promise<Response>) =>
     listen.remote ? handle<R>(() => { throw new KiteError('没有这个接口', 404); }) : fn;
@@ -424,6 +429,7 @@ export function serve(kite: Kite, listen: Listen) {
         DELETE: bound(async (req) => { kite.plugins.status(req.params.id); await kite.plugins.stop(req.params.id); return { ok: true }; }),
       },
       '/operations': { GET: bound(() => operationCatalog()) },
+      '/workspaces/:id/files/content': { GET: bound(workspaceFile), HEAD: bound(workspaceFile) },
       '/workspaces/:id/operations/:operation': { POST: bound(async (req) =>
         kite.operations.invoke({ kind: 'ui' }, req.params.id, req.params.operation, await body(req), req.signal)) },
       '/workspaces/:id': { GET: bound((req) => kite.workspace(req.params.id)) },

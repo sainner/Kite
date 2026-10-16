@@ -886,7 +886,7 @@ export class Kite {
           if (input.diffId) {
             const diff = new FileDiffStore(join(this.home, 'diffs', workspace.id)).read(input.diffId);
             if (!diff.files.some((file) => file.path === path)) throw new KiteError('这份差异中没有指定文件', 404);
-          } else files.text(target);
+          } else files.regular(target);
         }
         catch (error) {
           if (error instanceof KiteError) throw error;

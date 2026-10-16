@@ -38,6 +38,8 @@ export interface NetworkStatus {
   channel?: NetworkChannelStatus;
   /** 最近一次系统电源事件（只有 macOS 有），序号递增：shutdown 是将要登出、重启或关机，stay 是登出被取消。 */
   power?: { event: 'sleep' | 'wake' | 'shutdown' | 'stay'; id: number };
+  /** 正在转发给同账号设备的网页预览端口，见 forward。 */
+  forwards?: number[];
   error?: string;
 }
 
@@ -111,6 +113,7 @@ export class Network {
   private readonly channelFile: string;
   /** 节点状态（含登录凭据）所在的目录；退出登录时整个删掉。 */
   private readonly nodeDir: string;
+  private forwarded: number[] = [];
 
   constructor(private opts: NetworkOptions) {
     this.marker = join(opts.dir, 'enabled');
@@ -154,6 +157,23 @@ export class Network {
       if (code !== 0) throw new KiteError(`取通道公钥失败：${err.trim() || `组网程序退出（${code}）`}`, 409);
       return z.object({ publicKey: z.string() }).parse(JSON.parse(out)).publicKey;
     } finally { clearTimeout(timer); }
+  }
+
+  /**
+   * 换掉转发给同账号设备的网页预览端口：组网上的端口 N 转到本机 localhost:N（docs/成果查看与位置.md「运行中的网页」）。
+   * 调用方只能给本工作机上仍在运行的终端实例所监听的端口；kited 与组网自己的端口在这里和 kite-net 里都会被去掉。
+   * kite-net 重启后照最近一次的集合重新开。
+   */
+  forward(ports: number[]): void {
+    const next = [...new Set(ports)].filter((port) => Number.isInteger(port) && port > 0 && port < 65536
+      && port !== this.opts.port && port !== this.opts.target).sort((a, b) => a - b);
+    if (next.join() === this.forwarded.join()) return;
+    this.forwarded = next;
+    this.sendForwards();
+  }
+
+  private sendForwards(): void {
+    try { void this.child?.stdin.write(`forward ${this.forwarded.join(',')}\n`); void this.child?.stdin.flush(); } catch { /* 节点已退出，重启时再发。 */ }
   }
 
   status(): NetworkStatus {
@@ -230,6 +250,7 @@ export class Network {
     this.child = child;
     this.node = { state: 'Starting' };
     this.powerEvent = 0;
+    if (this.forwarded.length) this.sendForwards();
     void this.read(child.stdout, (line) => {
       if (this.child !== child) return;
       try { this.node = JSON.parse(line); } catch { return; /* 只接受状态行。 */ }

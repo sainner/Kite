@@ -11,6 +11,8 @@ struct HighlightedCode: View {
     let text: String
     let language: String?
     @Environment(\.colorScheme) private var colorScheme
+    /// 文件预览里查找时叠在语法高亮上，见 SearchHighlight。
+    @Environment(\.searchHighlight) private var search
     @State private var result: (request: Request, text: AttributedString)?
 
     private struct Request: Equatable {
@@ -21,7 +23,8 @@ struct HighlightedCode: View {
 
     var body: some View {
         let request = Request(text: text, language: language, dark: colorScheme == .dark)
-        Text(result?.request == request ? result!.text : AttributedString(text))
+        let shown = result?.request == request ? result!.text : AttributedString(text)
+        Text(search?.apply(to: shown) ?? shown)
             .task(id: request) {
                 let highlighted = await CodeHighlighter.shared.highlight(text, language: language, dark: request.dark)
                 guard !Task.isCancelled else { return }

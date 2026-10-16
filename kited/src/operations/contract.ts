@@ -66,6 +66,13 @@ export const operationContracts = {
     output: z.object({ path: id, entries: z.array(z.object({ name: id, path: id, kind: z.enum(['file', 'directory', 'symlink', 'other']) }).strict()),
       total: z.number().int(), nextOffset: z.number().int().nullable() }).strict(),
   },
+  'files.search': {
+    title: '搜索文件', description: '按名字找文件实例所属工作区内的文件和目录，不分大小写，跳过 .git 和 Git 忽略的路径；名字相同、开头相同的排在前面。',
+    tool: null, effect: 'read', retry: 'read',
+    input: z.object({ instanceId: id, query: z.string().trim().min(1).max(200), limit: z.number().int().min(1).max(1000).default(200) }).strict(),
+    output: z.object({ query: z.string(), entries: z.array(z.object({ name: id, path: id, kind: z.enum(['file', 'directory', 'symlink', 'other']) }).strict()),
+      truncated: z.boolean() }).strict(),
+  },
   'files.read': {
     title: '读取文本', description: '按行读取文件实例所属工作区内的文本，与 agent 的 read 使用同一文件服务。',
     tool: null, effect: 'read', retry: 'read', input: readFileArgs.extend({ instanceId: id }).strict(),
@@ -81,7 +88,7 @@ export const operationContracts = {
     tool: null, effect: 'read', retry: 'read', input: z.object({ instanceId: id }).strict(), output: fileSelectionSchema,
   },
   'files.select': {
-    title: '选择预览文件', description: '选择工作区内的文本文件，供这个实例的所有预览窗口使用；不修改文件内容。',
+    title: '选择预览文件', description: '选择工作区内的文件，供这个实例的所有预览窗口使用；不修改文件内容。',
     tool: null, effect: 'write', retry: 'receipt',
     input: target.extend({ expectedRevision: id, path: id.nullable(), diffId: diffID.optional() }).strict(), output: fileSelectionSchema,
   },
@@ -146,7 +153,7 @@ export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
   ...(['agent.send', 'agent.resume', 'agent.stop', 'monitor.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
   z.object({ operation: z.literal('monitor.start') }).strict(),
   z.object({ operation: z.literal('monitor.list') }).strict(),
-  ...(['files.list', 'files.read', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
+  ...(['files.list', 'files.search', 'files.read', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
     targets: z.object({ kind: z.literal('instances'), instanceIds: z.array(id) }).strict() }).strict()),
   /** Line 的管理动作，目标范围是工作机目录里的全部工作区；actions 是用户允许的白名单。 */
   z.object({ operation: z.literal('line'), actions: z.array(z.enum(lineActions)) }).strict(),

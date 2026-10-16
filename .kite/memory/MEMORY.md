@@ -10,6 +10,7 @@
 - [对话正文的文本容器](text-container-direction.md) — 每条回复一个 TextKit 2 文本视图、附件嵌代码块、复制给原文、外观不改，第三步 iPhone 待验收
 - [Line 与工作区流转](line-direction.md) — 已合回 main、界面待验收；收件箱是 Line 的 monitor；待改进与部署注意
 - [界面改原生](decision-native-ui.md) — Mac 对话与外壳改 AppKit、iOS 改 UIKit，为拖缝 60 帧，外观逐项复刻；骨架、点阵是退路
+- [NAS 的现状](nas-setup.md) — 常开 Mac mini 上的外置硬盘，暂未插上；命名位置的提供方
 - [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、术语词典与整理后做、点阵表现、未选的识别候选
 
 ## 协作反馈
@@ -18,6 +19,7 @@
 - [交互连续性](feedback-interaction-quality.md) — 公共控件、对象身份、动效性能；窗口动画不回弹、新建从添加入口展开、点阵收起；改尺寸只动相邻窗口；上一步与固定；触屏长按起拖
 - [状态放标题栏](feedback-pane-status-placement.md) — 窗口状态归信息区或副行；弹窗副行只放简短说明，状态写正文
 - [测试要克制](test-restraint.md) — 测试准入主来源、事件断言与 PDF 验证要求
+- [设计讨论先给意见](feedback-design-discussion.md) — 用户的总结是征求意见，落文档前先问
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行与数据流判断，不能只看引用
 - [什么要保存](feedback-save-scope.md) — 只有提示词这类文稿改完要保存，其他修改即时生效；新角色在上下文窗口一次建好
 

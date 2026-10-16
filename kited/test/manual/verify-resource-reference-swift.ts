@@ -31,14 +31,26 @@ try {
     'func splitLines(', 'struct LineDiff',
   ].map((signature) => declaration(diffSource, signature)).join('\n\n')}\n\n${[
     'extension JSON: Codable', 'nonisolated struct RemoteState', 'nonisolated struct RemoteWaiting', 'nonisolated struct ContextUsage',
+    'extension String {',
   ].map((signature) => declaration(clientSource, signature)).join('\n\n')}\n`);
   const fixture = join(root, 'ResourceReferenceContract.swift');
   writeFileSync(fixture, String.raw`
+import AppKit
 import Foundation
+
+typealias PlatformImage = NSImage
 
 // 工作机替身只提供当前文件和两份历史 diff，按真实接口的路径和字段应答。
 final class KitedClient: Equatable {
     static func == (lhs: KitedClient, rhs: KitedClient) -> Bool { lhs === rhs }
+    // 按字节读取（FileContentCache）只给图片、PDF 这类格式用，这里的文本与 diff 不会走到
+    let machineID: String? = "fixture-machine"
+    let address = "http://fixture"
+    var isLocal: Bool { false }
+    func download(_ path: String, method: String = "GET", headers: [String: String] = [:],
+                  progress: (@Sendable (Progress) -> Void)? = nil) async throws -> (file: URL?, response: HTTPURLResponse) {
+        throw KitedError(message: "未预期的下载：" + path)
+    }
     let current: String
     let diffs: [String: (before: String, after: String)]
     private var revision = 0
@@ -69,6 +81,7 @@ final class KitedClient: Equatable {
 
 struct KitedError: Error, LocalizedError {
     let message: String
+    var status: Int? = nil
     init(message: String) { self.message = message }
     var errorDescription: String? { message }
 }
@@ -208,7 +221,7 @@ struct ResourceReferenceContract {
     join(app, 'Conversation', 'AgentConfiguration.swift'),
     join(app, 'Plugins', 'PluginManagementModels.swift'),
     join(app, 'Files', 'ResourceReference.swift'), join(app, 'Application', 'RemoteWorkspace.swift'),
-    join(app, 'Files', 'FileBrowser.swift'), diffTypes, fixture, '-o', executable,
+    join(app, 'Files', 'FileBrowser.swift'), join(app, 'Files', 'FileContent.swift'), diffTypes, fixture, '-o', executable,
   ], root);
   console.log(await command([executable], root));
 } finally {

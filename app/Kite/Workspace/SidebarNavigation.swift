@@ -296,8 +296,6 @@ struct SidebarLogoBar<Buttons: View>: View {
     @Environment(\.sidebarMetrics) private var metrics
     @State private var searchPresented = false
     @State private var searchText = ""
-    @FocusState private var searchFocused: Bool
-    @Namespace private var glass
     @State private var hovering = false
 
     var body: some View {
@@ -323,73 +321,9 @@ struct SidebarLogoBar<Buttons: View>: View {
 
     private var controlPanel: some View {
         // 玻璃间距与控件间距一致，让关闭按钮从面板分裂出来，停稳后仍是两块玻璃。
-        // 面板始终是同一个视图，只随状态伸缩；拆进两个分支会变成移除再插入，iOS 上只剩模糊淡入。
         GlassEffectContainer(spacing: Metrics.paneButtonGap) {
-            HStack(spacing: Metrics.paneButtonGap) {
-                searchPanel
-                if searchPresented {
-                    PaneHeaderButtonGroup {
-                        closeSearchButton
-                    }
-                    .glassEffectID("search-close", in: glass)
-                    .glassEffectTransition(.matchedGeometry)
-                }
-            }
+            ExpandingSearch(presented: $searchPresented, text: $searchText) { buttons }
         }
-    }
-
-    private var searchPanel: some View {
-        searchPanelContent
-            .glassEffectID("search-panel", in: glass)
-            .glassEffectTransition(.matchedGeometry)
-    }
-
-    private var searchPanelContent: some View {
-        PaneHeaderButtonGroup(expands: searchPresented) {
-            searchControls
-        }
-    }
-
-    @ViewBuilder private var searchControls: some View {
-        Button {
-            // 面板展开停稳后再把焦点交给输入框。
-            withAnimation {
-                searchPresented = true
-            } completion: {
-                if searchPresented { searchFocused = true }
-            }
-        } label: {
-            PaneHeaderButtonLabel("搜索", systemImage: "magnifyingglass")
-        }
-        .help("搜索")
-        if searchPresented {
-            TextField("搜索", text: $searchText)
-                .textFieldStyle(.plain)
-                .font(Theme.body)
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity)
-                .frame(height: Metrics.paneHeaderButton)
-                .focused($searchFocused)
-                .keyboardDismissToolbar()
-                #if os(macOS)
-                .onExitCommand(perform: closeSearch)
-                #endif
-        } else {
-            buttons
-        }
-    }
-
-    private var closeSearchButton: some View {
-        Button(action: closeSearch) {
-            PaneHeaderButtonLabel("关闭搜索", systemImage: "xmark")
-        }
-        .help("关闭搜索")
-    }
-
-    private func closeSearch() {
-        searchFocused = false
-        searchText = ""
-        withAnimation { searchPresented = false }
     }
 }
 

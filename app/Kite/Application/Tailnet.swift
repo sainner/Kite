@@ -151,6 +151,16 @@ actor Tailnet {
         return ((response as? HTTPURLResponse)?.statusCode ?? 500) < 300
     }
 
+    /// 经组网拨出的 SOCKS 代理，给网页预览的转发连工作机（见 PortRelay）。复用 kited 的节点时是它的代理端口，自己的节点要带凭据。
+    func socksProxy() async throws -> SocksProxy {
+        if let workerPort { return SocksProxy(host: "127.0.0.1", port: UInt16(workerPort), password: nil) }
+        _ = try await urlSession()
+        guard let node, let loopback = try? await node.loopback(), let ip = loopback.ip, let port = loopback.port else {
+            throw KitedError(message: "组网节点未启动")
+        }
+        return SocksProxy(host: ip, port: UInt16(port), password: loopback.proxyCredential)
+    }
+
     /// 并发请求共用同一次节点启动。
     func urlSession() async throws -> URLSession {
         if let session { return session }
@@ -257,6 +267,13 @@ actor Tailnet {
         let name = "kite-app-\(device)".lowercased().map { $0.isLetter && $0.isASCII || $0.isNumber ? $0 : "-" }
         return String(String(name).prefix(63))
     }
+}
+
+/// 本机回环上的 SOCKS5 代理；password 不为空时按用户名 tsnet 认证（TailscaleKit 的约定）。
+nonisolated struct SocksProxy: Sendable {
+    let host: String
+    let port: UInt16
+    let password: String?
 }
 
 /// 节点的 ipnstate.Status：上游 Swift 类型缺少 Active、OS 等字段，直接解析 JSON。

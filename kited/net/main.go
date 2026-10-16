@@ -4,6 +4,7 @@
 // 系统将要睡眠时状态里带一个睡眠事件，kited 交出要换机的工作区后在标准输入回「power-ready <序号>」，最多等 25 秒再放行睡眠；
 // 将要登出、重启、关机时带一个 shutdown 事件，系统不等这里，kited 收到 SIGTERM 后自己等交接收尾。
 // 退出登录时 kited 在标准输入写「logout」，节点在 Tailscale 上注销自己后退出，管理页里不留下这台设备。
+// kited 在标准输入写「forward <端口,端口>」给出要转发的全部网页预览端口，组网上的同号端口转到本机，见 forward.go。
 // 配了受管网络通道（KITE_NET_CHANNEL）时，组网的 UDP 只经到路由器的认证通道出网，见 channel.go；
 // `kite-net key` 打印通道公钥供网络管理员登记。
 package main
@@ -23,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"tailscale.com/client/local"
 	"tailscale.com/net/netns"
@@ -53,6 +55,8 @@ type status struct {
 	Channel *channelStatus `json:"channel,omitempty"`
 	// 最近一次系统电源事件：sleep 将要睡眠，wake 醒来，shutdown 将要登出、重启或关机，stay 登出被取消；序号递增，kited 按序号认新事件。
 	Power *power `json:"power,omitempty"`
+	// 正在转发的网页预览端口。
+	Forwards []int `json:"forwards,omitempty"`
 }
 
 type power struct {
@@ -185,7 +189,9 @@ func main() {
 	report := &reporter{out: json.NewEncoder(os.Stdout), current: status{SocksPort: socks.Addr().(*net.TCPAddr).Port,
 		HTTPProxyPort: forward.Addr().(*net.TCPAddr).Port}}
 	ready := make(chan int64, 8)
-	go readCommands(lc, ready)
+	fw := &forwards{srv: srv, lc: lc, active: &active, report: report, servers: map[int]*http.Server{},
+		reserved: reservedPorts(env("KITE_NET_PORT"), target)}
+	go readCommands(lc, ready, fw)
 	watchPower(report, ready)
 	go watch(srv, report, changed)
 	go func() {
@@ -385,13 +391,15 @@ func watch(srv *tsnet.Server, report *reporter, changed func()) {
 	}
 }
 
-// readCommands 读 kited 写在标准输入的命令：power-ready <序号> 放行睡眠，logout 注销本节点后退出。
-func readCommands(lc *local.Client, ready chan<- int64) {
+// readCommands 读 kited 写在标准输入的命令：power-ready <序号> 放行睡眠，logout 注销本节点后退出，forward 换掉转发的端口。
+func readCommands(lc *local.Client, ready chan<- int64, fw *forwards) {
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
 		line := scanner.Text()
 		var id int64
-		if _, err := fmt.Sscanf(line, "power-ready %d", &id); err == nil {
+		if line == "forward" || strings.HasPrefix(line, "forward ") {
+			fw.set(parsePorts(strings.TrimPrefix(line, "forward")))
+		} else if _, err := fmt.Sscanf(line, "power-ready %d", &id); err == nil {
 			// 没有在等的睡眠时不积压，免得挡住后面的命令；睡眠只认不小于自己序号的回复。
 			select {
 			case ready <- id:

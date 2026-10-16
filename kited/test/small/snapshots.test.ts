@@ -2,9 +2,10 @@
  * 快照引用、历史查找和工作树回退。
  */
 import { expect, test } from 'bun:test';
-import { renameSync, rmSync, utimesSync } from 'node:fs';
-import { join } from 'node:path';
-import { capture, changesBetween, findSnapshot, list, restore } from '../../src/workspace/snapshots.ts';
+import { mkdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { KiteError } from '../../src/errors.ts';
+import { capture, changesBetween, findSnapshot, list, restore, SNAPSHOT_FILE_LIMIT } from '../../src/workspace/snapshots.ts';
 import { git, gitWorktree, lexists, listTree, newRepo, read, repoState, useTemp, writeFiles } from '../util.ts';
 
 const temp = useTemp();
@@ -112,13 +113,13 @@ test('回退恢复增删改名且保留忽略文件，自动快照能找回回�
 
 // 回归：旧快照中的文件曾覆盖当前同名的忽略文件，或删掉同名目录里的忽略内容；
 // 这些内容不在回退前的安全快照里，依赖真实 Git 的索引、忽略规则和工作树更新共同保护。
-// 不区分大小写的文件系统还会让 Config 文件与 config/ 目录指向同一路径。
+// 不区分大小写的文件系统还会让 Config 文件与 config/ 目录指向同一路径：同名目录里的忽略内容由这一例挡住
+// （macOS 上它就是「快照里是文件、本地是含忽略内容的同名目录」，只多了大小写），不另跑大小写相同的一例。
 // Git 对被忽略的嵌套仓库只列出目录，里面的文件和仓库也必须保留。
 test('回退拒绝覆盖忽略文件或含忽略内容的目录，保留工作文件和 Git 状态', async () => {
   const root = temp();
   for (const fixture of [
     { name: 'file', path: '.env', ignored: '.env', captureDeletion: true },
-    { name: 'directory', path: 'cache', ignored: 'cache/ignored.txt', captureDeletion: false },
     { name: 'case-directory', path: 'Config', ignored: 'config/ignored.txt', captureDeletion: false },
     { name: 'nested-repo', path: 'cache', ignored: 'cache/ignored.txt', captureDeletion: false },
   ]) {
@@ -208,4 +209,62 @@ test('压缩起止时刻之间的净文件变化取各自最近的快照，列�
     '删除 gone.txt (+0 -2)',
     '新增 new.txt (+2 -0)',
   ].sort());
+});
+
+/*
+ * 太大的未跟踪文件不进快照，靠几条 git 命令合起来，看代码确认不了：私有索引上的 status 找出大文件；排除用的
+ * `:(exclude,literal)` pathspec 从标准输入读给 add，路径里的空格和 * 不能被当成通配符、把同名样式的别的文件一起排除；
+ * 以前进过快照、后来长大的文件要用 rm --cached 从私有索引拿掉，工作树里的文件不动，而项目 HEAD 跟踪的文件同样长大却照样进快照；
+ * 回退的 read-tree 双树更新不能拿旧版本覆盖本地这个不在快照里的大文件。
+ */
+test('超过上限的未跟踪文件不进快照、长大后从下一枚拿掉且回退拒绝覆盖它，项目已跟踪的文件长大照样进快照', async () => {
+  const root = temp();
+  const big = (fill: string) => Buffer.alloc(SNAPSHOT_FILE_LIMIT + 1, fill);
+  const writeBytes = (dir: string, rel: string, data: Buffer) => {
+    mkdirSync(dirname(join(dir, rel)), { recursive: true });
+    writeFileSync(join(dir, rel), data);
+  };
+  // 已跟踪的文件和小文件的名字都匹配 large 被当成通配符时的样子
+  const tracked = '媒体 文件/录像 原始.mov';
+  const large = '媒体 文件/录像 *.mov';
+  const similar = '媒体 文件/录像 1.mov';
+  const grown = '日志 输出.log';
+  const main = newRepo(root, 'main', { [tracked]: '原始\n' });
+  const id = 'big';
+  const wt = gitWorktree(main, join(root, 'wt'), `kite/${id}`);
+  writeBytes(wt, large, big('a'));
+  writeFiles(wt, { [similar]: '小文件\n', [grown]: '开始很小\n' });
+  // 快照树里的路径 → 文件大小
+  const tree = (commit: string) => new Map(git(main, 'ls-tree', '-r', '-l', '-z', commit).split('\0').filter(Boolean).map((line) => {
+    const [meta, path] = line.split('\t') as [string, string];
+    return [path, Number(meta.trim().split(/\s+/)[3])] as const;
+  }));
+
+  const first = await capture(wt, id, '第一枚');
+  expect(first.skipped).toEqual([large]);
+  const firstTree = tree(first.commit);
+  expect(firstTree.has(large)).toBe(false);
+  expect(firstTree.get(similar)).toBe(Buffer.byteLength('小文件\n'));
+  expect(firstTree.get(grown)).toBe(Buffer.byteLength('开始很小\n'));
+
+  // 两个文件同样长过上限：只进过快照的拿掉，项目跟踪的照样进
+  const grownBytes = big('g');
+  writeBytes(wt, grown, grownBytes);
+  writeBytes(wt, tracked, big('t'));
+  const second = await capture(wt, id, '第二枚');
+  expect([...second.skipped ?? []].sort()).toEqual([large, grown].sort());
+  const secondTree = tree(second.commit);
+  expect(secondTree.has(grown)).toBe(false);
+  expect(secondTree.has(large)).toBe(false);
+  expect(secondTree.get(similar)).toBe(Buffer.byteLength('小文件\n'));
+  expect(secondTree.get(tracked)).toBe(SNAPSHOT_FILE_LIMIT + 1);
+  expect(readFileSync(join(wt, grown)).equals(grownBytes)).toBe(true);
+
+  // 第一枚里有这个路径的旧版本，本地的大文件不在任何快照里，回退会把它丢掉
+  const state = repoState(wt);
+  const error = await restore(wt, id, first.commit).then(() => undefined, (e: unknown) => e);
+  expect(error).toBeInstanceOf(KiteError);
+  expect((error as Error).message).toContain(grown);
+  expect(readFileSync(join(wt, grown)).equals(grownBytes)).toBe(true);
+  expect(repoState(wt)).toBe(state);
 });

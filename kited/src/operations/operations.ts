@@ -173,9 +173,11 @@ export class InstanceOperations {
       case 'files.state': return fileSelection(this.kite.store.instance(args.instanceId as string)!.state);
       case 'files.select': return this.kite.selectFile(args as OperationInput<'files.select'>, check);
       case 'files.list':
+      case 'files.search':
       case 'files.read': {
         try {
           const files = new WorkspaceFiles(this.kite.workspace(workspaceId).workspace.cwd);
+          if (name === 'files.search') return await files.search(args.query as string, args.limit as number);
           return name === 'files.list' ? files.list(args.path as string, args.offset as number, args.limit as number)
             : files.read(args as OperationInput<'files.read'>);
         } catch (error) {

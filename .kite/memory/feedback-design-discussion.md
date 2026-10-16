@@ -1,0 +1,14 @@
+---
+name: feedback-design-discussion
+description: 设计讨论中用户的总结或认可是在征求意见，落文档前先问
+metadata:
+  node_type: memory
+  type: feedback
+  originSessionId: 6540665c-1a55-4042-a4d9-97f02cd49897
+  modified: 2026-10-16T06:19:24.913Z
+---
+
+设计讨论时，用户给出总结并说「我觉得可以」，是在征求意见，不是要求写进 docs。
+
+**Why:** 2026-10-16 讨论文件插件定位时，把用户的总结直接写进了 docs/成果查看与位置.md，用户说明「我只是询问你的意见」。
+**How to apply:** 讨论阶段只回答意见；要把结论落进 docs 或记忆时，先说明打算写什么、写到哪里，用户同意再写。用户明确要求整理或记录时照做。

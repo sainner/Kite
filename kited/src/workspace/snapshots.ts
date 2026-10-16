@@ -6,14 +6,24 @@
  * 索引记着文件的修改时间，下次只需逐个 stat。快照的第一个父节点永远是上一枚快照，
  * agent 自己提交过时另挂当时的 HEAD。调用方负责同一会话内串行。
  */
-import { copyFileSync, existsSync, mkdirSync, statSync, utimesSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, statSync, utimesSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { KiteError } from '../errors.ts';
 import { git, gitTry, isAncestor, KITE_IDENTITY } from './git.ts';
 
 export const snapshotRef = (workspaceId: string) => `refs/kite/snapshots/${workspaceId}`;
 
-interface Captured { commit: string; tree: string; created: boolean; changedFiles: number }
+interface Captured {
+  commit: string; tree: string; created: boolean; changedFiles: number;
+  /** 这次因为太大没进快照的文件，见 SNAPSHOT_FILE_LIMIT。 */
+  skipped?: string[];
+}
+
+/**
+ * 单个文件超过这个大小、项目 Git 又没跟踪的，不进快照，与被忽略的文件一样：回退不碰，不随副本流转（docs/成果查看与位置.md「大文件」）。
+ * 快照在每批工具调用后进行，agent 等它完成；压缩过的媒体每改一次就全量存一份。
+ */
+export const SNAPSHOT_FILE_LIMIT = 10 * 1024 * 1024;
 
 /** threadId 是触发它的线程；工作区里几个线程并行时，内容可能含其他线程的改动。 */
 export interface Snapshot { commit: string; at: number; label: string; toolUseIds: string[]; threadId?: string }
@@ -91,13 +101,40 @@ async function record(worktree: string, workspaceId: string, r: NewSnapshot, lab
   return { commit, tree: r.tree, created: true, changedFiles: files.split('\n').filter(Boolean).length };
 }
 
+/**
+ * 这次要排除的大文件：私有索引看来是新增或改过的文件里，超过上限、项目 HEAD 里也没有的。
+ * indexed 是其中已经在私有索引里的（上限以内时进过快照），要从索引拿掉。
+ */
+async function oversized(worktree: string, env: Record<string, string>): Promise<{ paths: string[]; indexed: string[] }> {
+  // -t 给每行标上 ?（索引里没有）或 C（索引里有、工作树改过）
+  const listed = await gitTry(worktree, ['ls-files', '-z', '-t', '--others', '--modified', '--exclude-standard'], { env });
+  if (listed.code !== 0) throw new Error(`git ls-files 失败（${listed.code}）：${listed.stderr.trim()}`);
+  const large: { path: string; indexed: boolean }[] = [];
+  for (const entry of listed.stdout.split('\0')) {
+    const path = entry.slice(2);
+    if (!path) continue;
+    try {
+      const stat = lstatSync(join(worktree, path));
+      if (stat.isFile() && stat.size > SNAPSHOT_FILE_LIMIT) large.push({ path, indexed: entry[0] !== '?' });
+    } catch { /* 删掉了。 */ }
+  }
+  // 含换行的路径没法逐行查，当作项目没跟踪
+  const tracked = large.length ? await resolve(worktree, large.map(({ path }) => path.includes('\n') ? 'HEAD:' : `HEAD:${path}`)) : [];
+  const kept = large.filter(({ path }, index) => path.includes('\n') || tracked[index] === null);
+  return { paths: kept.map(({ path }) => path), indexed: kept.filter(({ indexed }) => indexed).map(({ path }) => path) };
+}
+
 /** 捕获整个工作树。树没变就复用上一枚，不产生新提交。 */
 export async function capture(worktree: string, workspaceId: string, label: string, toolUseIds: string[] = [], threadId?: string): Promise<Captured> {
   const ref = snapshotRef(workspaceId);
-  const [previous, prevTree, head, headTree] = await resolve(worktree, [`${ref}^{commit}`, `${ref}^{tree}`, 'HEAD^{commit}', 'HEAD^{tree}']);
   const env = { GIT_INDEX_FILE: await privateIndex(worktree) };
+  const fresh = !existsSync(env.GIT_INDEX_FILE);
+  // 私有索引已经在的时候，找大文件和查引用同时做，agent 少等一次 git
+  const scan = fresh ? undefined : oversized(worktree, env);
+  scan?.catch(() => undefined);
+  const [previous, prevTree, head, headTree] = await resolve(worktree, [`${ref}^{commit}`, `${ref}^{tree}`, 'HEAD^{commit}', 'HEAD^{tree}']);
 
-  if (!existsSync(env.GIT_INDEX_FILE)) {
+  if (fresh) {
     // 第一枚从工作树自己的索引起步：刚建的工作树的索引记着文件的修改时间，add 只需逐个 stat，
     // 按树重建的索引没有修改时间，得把每个文件重读一遍。已有快照链（私有索引丢了）才按上一枚重建
     const own = join(dirname(dirname(env.GIT_INDEX_FILE)), 'index');
@@ -112,17 +149,24 @@ export async function capture(worktree: string, workspaceId: string, label: stri
       await git(worktree, base ? ['read-tree', base] : ['read-tree', '--empty'], { env });
     }
   }
-  await git(worktree, ['add', '-A', '--', '.'], { env });
+  const large = await (scan ?? oversized(worktree, env));
+  if (large.indexed.length) {
+    await git(worktree, ['rm', '--cached', '-f', '-q', '--ignore-unmatch', '--pathspec-from-file=-', '--pathspec-file-nul'],
+      { env, input: large.indexed.map((path) => `:(literal)${path}`).join('\0') });
+  }
+  await git(worktree, large.paths.length ? ['add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'] : ['add', '-A', '--', '.'],
+    { env, ...(large.paths.length ? { input: ['.', ...large.paths.map((path) => `:(exclude,literal)${path}`)].join('\0') } : {}) });
   const tree = await git(worktree, ['write-tree'], { env });
 
-  if (previous && prevTree === tree) return { commit: previous, tree, created: false, changedFiles: 0 };
-  return record(worktree, workspaceId, { tree, fromTree: prevTree ?? headTree, previous, head }, label, toolUseIds, threadId);
+  const skipped = large.paths.length ? { skipped: large.paths } : {};
+  if (previous && prevTree === tree) return { commit: previous, tree, created: false, changedFiles: 0, ...skipped };
+  return { ...await record(worktree, workspaceId, { tree, fromTree: prevTree ?? headTree, previous, head }, label, toolUseIds, threadId), ...skipped };
 }
 
 /**
  * 把工作树整体恢复成某一枚快照：只动文件，不动 HEAD、分支和工作树自己的暂存区。
  * 先捕获一次当前状态，私有索引此时等于「现在」，回退本身因此可以撤销；
- * 再在私有索引上以安全快照为基线做双树更新：现在有而目标没有的文件被删，被忽略的文件不碰。
+ * 再在私有索引上以安全快照为基线做双树更新：现在有而目标没有的文件被删，被忽略的和太大没进快照的文件不碰。
  * Git 的合并更新仍会覆盖忽略内容，先拒绝这类路径碰撞；双树更新另保护已捕获文件的后续改动。
  * 之后工作树里未被忽略的部分正好是目标那棵树，直接把它记成新的一枚，不用再捕获一遍。
  */
@@ -157,7 +201,7 @@ export async function restore(worktree: string, workspaceId: string, target: str
   for (const file of files) {
     for (let directory = dirname(file); directory !== '.'; directory = dirname(directory)) directories.add(directory);
   }
-  for (const file of [...ignored.stdout.split('\0').filter(Boolean), ...nested.map((entry) => entry.path)]) {
+  for (const file of [...ignored.stdout.split('\0').filter(Boolean), ...nested.map((entry) => entry.path), ...safety.skipped ?? []]) {
     // 同名文件、文件挡住目标目录、目标文件覆盖整个本地目录，都必须保住未入快照的内容。
     const key = pathKey(file);
     let collision = directories.has(key);

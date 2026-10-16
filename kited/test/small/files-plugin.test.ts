@@ -6,9 +6,10 @@ import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import { localTools } from '../../src/execution/local-tools.ts';
 import type { Json, ToolResult } from '../../src/harness/types.ts';
-import { call, registerCheckout, startKited, type Kited } from '../harness.ts';
+import { WorkspaceFiles } from '../../src/workspace/files.ts';
+import { call, machine, registerCheckout, startKited, type Kited } from '../harness.ts';
 import { Seen } from '../harness-loop.ts';
-import { ENV, makeTemp, newRepo } from '../util.ts';
+import { ENV, makeTemp, newDir, newRepo, writeFiles } from '../util.ts';
 
 const operationPath = (workspaceId: string, name: string) => `/workspaces/${workspaceId}/operations/${name}`;
 
@@ -25,6 +26,18 @@ async function openFiles(k: Kited, workspaceId: string) {
   return { instanceId: opened.body.target.instanceId as string };
 }
 
+/** 按字节读取工作区文件（GET 或 HEAD /workspaces/:id/files/content）：k.call 只处理 JSON，这里直接 fetch，带上本机的 X-Kite-Machine。 */
+async function fileBytes(k: Kited, workspaceId: string, path: string, headers: Record<string, string> = {}, method = 'GET') {
+  const { id } = await machine(k.url);
+  return fetch(`${k.url}/workspaces/${workspaceId}/files/content?path=${encodeURIComponent(path)}`, {
+    method, headers: { 'X-Kite-Machine': id, ...headers },
+  });
+}
+
+/** 搜索结果的顺序另有约定，这里只比较集合：按路径排好再比。 */
+const byPath = (entries: Array<{ name: string; path: string; kind: string }>) =>
+  [...entries].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+
 async function readTool(cwd: string, logDir: string, path: string): Promise<ToolResult> {
   const tool = localTools({ cwd, logDir, env: ENV() }).find((candidate) => candidate.name === 'read');
   if (!tool) throw new Error('缺少 read 工具');
@@ -33,8 +46,8 @@ async function readTool(cwd: string, logDir: string, path: string): Promise<Tool
   return tool.execute(args, { cwd, signal: new AbortController().signal });
 }
 
-// 真实文件系统会解析目录和文件符号链接；HTTP 文件能力与模型 read 必须守住同一个工作区边界。
-test('文件插件与模型 read 读取同一工作区文本，并拒绝真实符号链接与上级目录逃逸', async () => {
+// 真实文件系统会解析目录和文件符号链接；文件操作、按字节读取与模型 read 必须守住同一个工作区边界。
+test('文件插件、按字节读取与模型 read 读取同一工作区文件，并拒绝真实符号链接与上级目录逃逸', async () => {
   const k = startKited();
   try {
     const repo = newRepo(k.root, 'project', { 'base.txt': '原始\n' });
@@ -66,12 +79,87 @@ test('文件插件与模型 read 读取同一工作区文本，并拒绝真实�
     expect(modelRead.output).toContain('乙');
     expect(modelRead.output).not.toMatch(/甲|丙/);
 
+    const bytes = await fileBytes(k, id, 'notes/one.txt');
+    expect(bytes.status).toBe(200);
+    expect(await bytes.text()).toBe('甲\n乙\n丙\n');
+
     for (const path of [relative(cwd, join(outside, 'secret.txt')), 'escape/secret.txt', 'notes/linked.txt']) {
       const viaPlugin = await k.call('POST', operationPath(id, 'files.read'), { instanceId, path });
       expect(viaPlugin.status).not.toBe(200);
       const viaModel = await readTool(cwd, join(k.root, 'logs'), path).catch(() => ({ status: 'error' as const, output: '' }));
       expect(viaModel.status).toBe('error');
+      const viaBytes = await fileBytes(k, id, path);
+      expect([path, viaBytes.status]).not.toEqual([path, 200]);
+      expect(await viaBytes.text()).not.toContain('外部秘密');
     }
+    // 目录和不存在的文件也没有字节可读
+    for (const path of ['notes', 'escape', 'notes/missing.txt']) {
+      const viaBytes = await fileBytes(k, id, path);
+      expect([path, viaBytes.status]).not.toEqual([path, 200]);
+      await viaBytes.arrayBuffer();
+    }
+  } finally {
+    await k.stop();
+  }
+}, 1000);
+
+/*
+ * 依赖 Bun 运行时，看代码确认不了：Bun.serve 的路由对 HEAD 只回头、Content-Length 仍是文件大小；Bun.file().slice
+ * 作为响应体时实际发出的字节范围和长度；二进制原样发出，不经文本解码。ETag 是缓存的版本，同样长度的内容改写后也要换。
+ */
+test('按字节读取返回原始字节与版本头，HEAD 只回头，同一 ETag 回 304、内容改了换 ETag，单段 Range 回 206、起点越界回 416', async () => {
+  const k = startKited();
+  try {
+    const repo = newRepo(k.root, 'project', { 'base.txt': '原始\n' });
+    const { id, cwd } = await workspace(k, repo);
+    const path = '截图 目录/首页 1.png';
+    const original = Buffer.from(Array.from({ length: 1000 }, (_, i) => (i * 7 + 3) % 256));
+    mkdirSync(join(cwd, '截图 目录'));
+    writeFileSync(join(cwd, path), original);
+    const get = (headers: Record<string, string> = {}) => fileBytes(k, id, path, headers);
+    const body = async (response: Response) => Buffer.from(await response.arrayBuffer());
+
+    const full = await get();
+    expect(full.status).toBe(200);
+    expect((await body(full)).equals(original)).toBe(true);
+    const etag = full.headers.get('etag');
+    expect(etag).toBeTruthy();
+    expect(full.headers.get('content-length')).toBe('1000');
+    expect(full.headers.get('content-type')).toBe('image/png');
+    expect(full.headers.get('accept-ranges')).toBe('bytes');
+
+    const head = await fileBytes(k, id, path, {}, 'HEAD');
+    expect(head.status).toBe(200);
+    expect(head.headers.get('content-length')).toBe('1000');
+    expect(head.headers.get('etag')).toBe(etag);
+    expect((await body(head)).length).toBe(0);
+
+    const cached = await get({ 'If-None-Match': etag! });
+    expect(cached.status).toBe(304);
+    expect((await body(cached)).length).toBe(0);
+
+    const middle = await get({ Range: 'bytes=10-19' });
+    expect(middle.status).toBe(206);
+    expect(middle.headers.get('content-range')).toBe('bytes 10-19/1000');
+    expect(middle.headers.get('content-length')).toBe('10');
+    expect((await body(middle)).equals(original.subarray(10, 20))).toBe(true);
+    const tail = await get({ Range: 'bytes=-100' });
+    expect(tail.status).toBe(206);
+    expect(tail.headers.get('content-range')).toBe('bytes 900-999/1000');
+    expect((await body(tail)).equals(original.subarray(900))).toBe(true);
+    for (const range of ['bytes=1000-', 'bytes=5000-5009']) {
+      const beyond = await get({ Range: range });
+      expect([range, beyond.status]).toEqual([range, 416]);
+      await beyond.arrayBuffer();
+    }
+
+    // 长度不变、内容改了：设备上按旧 ETag 缓存的版本要作废
+    const changed = Buffer.from(original.map((byte) => 255 - byte));
+    writeFileSync(join(cwd, path), changed);
+    const fresh = await get({ 'If-None-Match': etag! });
+    expect(fresh.status).toBe(200);
+    expect(fresh.headers.get('etag')).not.toBe(etag);
+    expect((await body(fresh)).equals(changed)).toBe(true);
   } finally {
     await k.stop();
   }
@@ -224,6 +312,79 @@ test('文件选择跨服务重启保留，回收后新实例读取历史 diff �
     }
   } finally {
     await daemon?.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 1000);
+
+/*
+ * 依赖几条 git 行为合起来的效果，看代码确认不了：ls-files 的 --others --exclude-standard 列出未跟踪但没被忽略的文件，
+ * 不列被忽略的文件和被忽略目录里的文件；--cached 对已跟踪但在工作区里删掉的文件照样列出（它还在索引里），要另外滤掉，
+ * 它推出的父目录也随之不见；-z 让中文和空格的路径原样输出，不加引号转义。
+ */
+test('Git 工作区按名字搜索不分大小写，未跟踪的文件和推出的目录能搜到，被忽略的、.git 里的和已删掉的已跟踪文件搜不到', async () => {
+  const k = startKited();
+  try {
+    const repo = newRepo(k.root, 'project', {
+      '.gitignore': 'cache-ignored/\n*.ignored-log\n',
+      'docs/Guide/intro.md': '介绍\n',
+      'docs/Guide/removed-gone.md': '会被删掉\n',
+      'stale-gone/tracked-gone.txt': '整个目录会被删掉\n',
+    });
+    const { id, cwd } = await workspace(k, repo);
+    writeFiles(cwd, {
+      'Untracked 笔记/草稿 untracked.md': '未跟踪\n',
+      'cache-ignored/inner-ignored.bin': '被忽略目录里的文件\n',
+      'trace.ignored-log': '按扩展名忽略\n',
+    });
+    rmSync(join(cwd, 'docs/Guide/removed-gone.md'));
+    rmSync(join(cwd, 'stale-gone'), { recursive: true });
+    const { instanceId } = await openFiles(k, id);
+    const search = async (query: string) => {
+      const r = await k.call('POST', operationPath(id, 'files.search'), { instanceId, query });
+      if (r.status !== 200) throw new Error(`搜索 ${query} 失败：${r.status} ${JSON.stringify(r.body)}`);
+      return r.body;
+    };
+
+    const untracked = await search('UNTRACKED');
+    expect({ ...untracked, entries: byPath(untracked.entries) }).toEqual({
+      query: 'UNTRACKED', truncated: false, entries: [
+        { name: 'Untracked 笔记', path: 'Untracked 笔记', kind: 'directory' },
+        { name: '草稿 untracked.md', path: 'Untracked 笔记/草稿 untracked.md', kind: 'file' },
+      ],
+    });
+    expect((await search('guide')).entries).toEqual([{ name: 'Guide', path: 'docs/Guide', kind: 'directory' }]);
+    for (const query of ['ignored', 'gone', 'HEAD', 'objects']) {
+      expect([query, (await search(query)).entries]).toEqual([query, []]);
+    }
+  } finally {
+    await k.stop();
+  }
+}, 1000);
+
+/*
+ * 不是 Git 仓库时 git ls-files 在这里失败，改为逐层查找；文件夹里嵌着别的仓库时，要跳过任何一层的 .git，
+ * 否则 HEAD、objects 这些 Git 内部文件会被搜出来。经操作入口登记的文件夹都会先变成仓库，所以直接构造 WorkspaceFiles。
+ */
+test('不是 Git 仓库的工作区逐层查找文件和目录，嵌在里面的仓库照样能搜到，但跳过它的 .git', async () => {
+  const root = makeTemp('files-search-');
+  try {
+    const folder = newDir(root, 'folder', { 'top-match.md': '顶层\n', 'Alpha/Beta-match.txt': '第二层\n' });
+    newRepo(join(folder, 'vendor'), 'lib-match', { 'src/deep-match.ts': 'export {};\n' }, null);
+    const files = new WorkspaceFiles(folder);
+
+    const found = await files.search('match');
+    expect({ ...found, entries: byPath(found.entries) }).toEqual({
+      query: 'match', truncated: false, entries: [
+        { name: 'Beta-match.txt', path: 'Alpha/Beta-match.txt', kind: 'file' },
+        { name: 'top-match.md', path: 'top-match.md', kind: 'file' },
+        { name: 'lib-match', path: 'vendor/lib-match', kind: 'directory' },
+        { name: 'deep-match.ts', path: 'vendor/lib-match/src/deep-match.ts', kind: 'file' },
+      ],
+    });
+    for (const query of ['head', 'objects']) {
+      expect([query, (await files.search(query)).entries]).toEqual([query, []]);
+    }
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }, 1000);
