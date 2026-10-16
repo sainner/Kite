@@ -364,6 +364,11 @@ func watch(srv *tsnet.Server, report *reporter, changed func()) {
 					next.ID = string(st.Self.ID)
 					if profile, ok := st.User[st.Self.UserID]; ok {
 						next.User = &user{ID: fmt.Sprint(int64(st.Self.UserID)), LoginName: profile.LoginName, DisplayName: profile.DisplayName}
+					} else if current, _, err := lc.ProfileStatus(ctx); err == nil && current.UserProfile.ID != 0 {
+						// 从保存的状态重启后，网络映射里可能没有自己这个用户的资料（2026-10-16 本机：运行中、有节点名，状态里却没有用户，
+						// App 以执行端登录时一直等不到）；登录档案存在本机，取那里的。
+						profile := current.UserProfile
+						next.User = &user{ID: fmt.Sprint(int64(profile.ID)), LoginName: profile.LoginName, DisplayName: profile.DisplayName}
 					}
 				}
 			} else {

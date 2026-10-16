@@ -33,5 +33,5 @@
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
 - [真实终端](todo-terminal-plugin.md) — PTY 与跨端重连、停止和资源生命周期
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据
-- [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit 一起做、CloudKit、登出重启关机预告待真机实测
+- [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit 一起做、CloudKit、登出重启关机预告待真机实测、kite-net 重启后丢用户
 - [本机先行的收尾](todo-local-first-actions.md) — 各路径已改为本机先行、待手测；失败时的收回方式；进入工作区卡顿待量（Mac、iPhone）
