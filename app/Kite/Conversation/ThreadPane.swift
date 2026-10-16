@@ -16,9 +16,10 @@ struct ThreadPane: View {
         let send = { (message: Message, alongside: @escaping () -> Void) in
             pane.send(message, thread: thread, model: model, area: area, alongside: alongside)
         }
+        // 圆环和菜单自己带着会话，同 PhoneThreadWindowView 的紧凑标题栏
         return PaneWindow(header: pane.header(thread: thread, model: model, area: area, initial: initial), usesDots: true,
-                          notice: model.threadNotice(thread, in: area), status: AnyView(ThreadStatusRing()),
-                          actions: PaneHeaderActions(menus: AnyView(ThreadHeaderActions()))) {
+                          notice: model.threadNotice(thread, in: area), status: AnyView(ThreadStatusRing().environment(thread)),
+                          actions: PaneHeaderActions(menus: AnyView(ThreadHeaderActions().environment(thread)))) {
             if initial {
                 NewThreadStage(slot: pane.patternSlot)
             } else if !empty {

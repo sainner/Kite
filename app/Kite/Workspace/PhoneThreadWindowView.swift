@@ -178,10 +178,12 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         }
         let roots = ThreadIslandEnvironment(group: group, pane: paneID, header: self.header, model: pane)
         if compact {
+            // 圆环和菜单自己带着会话：共用的标题栏换窗口时整份换成新窗口的环境，淡出途中的这两块还会再求值一次，
+            // 新建窗口、文件这些窗口的环境里没有会话，读不到就崩
             compactChrome = CompactPaneHeader(pane: paneID, header: header,
-                status: AnyView(CompactThreadStatus()),
+                status: AnyView(CompactThreadStatus().environment(thread)),
                 // 同 PaneWindow 画的右组一种视图，换窗口时原地更新（见 PaneHeaderActions）
-                actions: AnyView(PaneHeaderActions(menus: AnyView(ThreadHeaderActions().modifier(roots)))),
+                actions: AnyView(PaneHeaderActions(menus: AnyView(ThreadHeaderActions().modifier(roots).environment(thread)))),
                 controls: AnyView(CompactNativeControls(bar: controls, state: compactComposer)), hasControls: true,
                 environment: environment, openSidebar: sidebarAction, endTyping: { [weak self] in self?.controls.endTyping() })
             chromeChanged?()
