@@ -409,58 +409,75 @@ struct WindowSurfaceDots: View {
     }
 }
 
-/// 创建实例的菜单，由添加入口弹出。
-struct CreateInstanceMenu: View {
-    @Binding var presented: Bool
+/// 创建窗口的弹窗，由停靠栏的加号打开：内置插件两列卡片，自定义插件列在下面；点一项就创建，弹窗随之关闭。
+/// 打开时重新读一次定义，别处新装的插件也能列出。上次创建没成功时标题栏有重试。
+struct CreateInstanceSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @State private var error: String?
 
-    private var canAdd: Bool { area.canAddWindows(connected: model.isConnected(area)) }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("创建实例").font(.headline)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
-                    if area.isDraft {
-                        Button("创建工作区") { presented = false; model.newWorkspace = .session }
-                    } else {
-                        ForEach(area.definitions) { definition in
-                            Button {
-                                model.createInstance(definition, in: area)
-                                presented = false
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(definition.title)
-                                        Text(definition.views.isEmpty ? "后台实例" : definition.views.map(\.title).joined(separator: "、"))
-                                            .font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Image(systemName: "plus")
-                                }.padding(.vertical, 6).contentShape(Rectangle())
-                            }.buttonStyle(.pointingPlain)
+        // 监视只由代理或 Line 开启，工作机不接受从界面新建
+        let definitions = area.definitions.filter { $0.id != AppModel.monitorDefinition }
+        // 工作机自带的定义没有 runtime，插件包是 bun
+        let builtins = definitions.filter { $0.runtime == nil }, custom = definitions.filter { $0.runtime != nil }
+        let canAdd = area.canAddWindows(connected: model.isConnected(area))
+        CardSheet(title: "创建窗口", subtitle: "在工作区创建窗口", error: error, close: { area.creatingInstance = false }) {
+            if !builtins.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    CardLabel("内置插件")
+                    Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+                        ForEach(Array(stride(from: 0, to: builtins.count, by: 2)), id: \.self) { start in
+                            GridRow {
+                                ForEach(builtins[start..<min(start + 2, builtins.count)]) { definition in
+                                    CardTile(title: definition.title, detail: definition.description ?? views(of: definition),
+                                             systemImage: WindowAppearance.definition(definition).icon) { create(definition) }
+                                }
+                            }
                         }
                     }
-                }.disabled(!canAdd)
-            }.frame(maxHeight: 340)
-            if area.pendingWindowRequest != nil {
-                Button("重试创建") { model.retryOpenWindow(in: area); presented = false }.disabled(area.changingWindows)
+                }
+                .disabled(!canAdd)
             }
-            if area.pendingInstanceRequest != nil {
-                Button("重试创建") { model.retryCreateInstance(in: area); presented = false }.disabled(area.changingWindows)
+            if !custom.isEmpty {
+                CardSection("自定义插件") {
+                    ForEach(custom) { definition in
+                        Button { create(definition) } label: {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(definition.title).foregroundStyle(.primary)
+                                    Text(views(of: definition)).font(Theme.caption).foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                Image(systemName: "plus").font(Theme.caption.weight(.semibold))
+                            }
+                        }
+                    }
+                }
+                .disabled(!canAdd)
             }
-            if let error { Text(error).font(.caption).foregroundStyle(Theme.danger) }
+        } actions: {
+            if area.pendingWindowRequest != nil || area.pendingInstanceRequest != nil {
+                CardSheetAction(title: "重试创建", systemImage: "arrow.clockwise", busy: area.changingWindows) {
+                    if area.pendingWindowRequest != nil { model.retryOpenWindow(in: area) } else { model.retryCreateInstance(in: area) }
+                    area.creatingInstance = false
+                }
+                .disabled(area.changingWindows)
+            }
         }
-        .padding(16).frame(width: 280)
-        .toastHost()
-        .presentationCompactAdaptation(.popover)
         .task {
-            guard !area.isDraft else { return }
             do { try await model.refreshDefinitions(model.activeClient(in: area)); error = nil }
             catch { self.error = error.localizedDescription }
         }
+    }
+
+    private func create(_ definition: RemotePluginDefinition) {
+        model.createInstance(definition, in: area)
+        area.creatingInstance = false
+    }
+
+    private func views(of definition: RemotePluginDefinition) -> String {
+        definition.views.isEmpty ? "后台实例" : definition.views.map(\.title).joined(separator: "、")
     }
 }
 

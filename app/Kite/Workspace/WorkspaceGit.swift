@@ -120,7 +120,7 @@ struct ScenePushSheet: View {
     }
 
     var body: some View {
-        CardSheet(title: "提交并推送", subtitle: workspace.remote.map { "\($0.machine.name) · \($0.checkout.path)" } ?? workspace.title,
+        CardSheet(title: "提交并推送", subtitle: "提交现场改动并推送到远程",
                   typing: typing, close: { dismiss() }) {
             Text(sync?.summary ?? "正在读取现场状态…").font(Theme.body).foregroundStyle(.secondary)
             CardField(label: "提交说明", focused: typing) {

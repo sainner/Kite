@@ -29,7 +29,7 @@ struct AgentSettings: View {
     }
 
     var body: some View {
-        CardSheet(title: "代理配置", subtitle: instance.title, error: phase.error, typing: editingLimit, back: true, size: InstanceSettings.size,
+        CardSheet(title: "代理配置", subtitle: "选择模型、可用工具与回合预算", error: phase.error, typing: editingLimit, back: true, size: InstanceSettings.size,
                   close: { if changed { discard = "back" } else { back() } }) {
             Group {
                 if draft != nil, let capabilities {
@@ -131,7 +131,7 @@ struct DraftAgentSettings: View {
     private var roleBudget: Int { role?.role.maxRequestsPerTurn ?? 50 }
 
     var body: some View {
-        CardSheet(title: "代理配置", subtitle: role.map { "角色：\($0.role.title)" }, typing: editingLimit, size: InstanceSettings.size,
+        CardSheet(title: "代理配置", subtitle: "选择可用工具与回合预算", typing: editingLimit, size: InstanceSettings.size,
                   close: { dismiss() }) {
             if let capabilities {
                 CardSection("可用工具", note: "可开的工具由角色决定，角色必需的不能关闭，项目约束禁用的暂不可用。") {

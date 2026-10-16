@@ -314,6 +314,37 @@ struct CardChoice: View {
     }
 }
 
+/// 填充框样式的一张操作卡片：图标在左，右边是名称和一行说明，点了就执行。外观同 CardChoice，没有选中态；
+/// 排成网格时同一行等高。
+struct CardTile: View {
+    let title: String
+    let detail: String
+    let systemImage: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 20))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(Theme.body.weight(.medium)).foregroundStyle(.primary)
+                    Text(detail).font(Theme.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(Theme.codeBackground, in: cardShape)
+            .contentShape(cardShape)
+        }
+        .buttonStyle(.pointingPlain)
+    }
+}
+
 /// 卡片里的一条提示，如出错原因。
 struct CardCallout: View {
     let text: String

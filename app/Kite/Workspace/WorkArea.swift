@@ -26,6 +26,8 @@ final class WorkArea: Identifiable {
     var windowError: String?
     var settingsInstance: RemotePluginInstance?
     var archiveRequest: RemotePluginInstance?
+    /// 停靠栏加号打开的创建窗口弹窗。
+    var creatingInstance = false
     /// 代理的活动摘要，按实例 ID。目录快照与单条推送谁新用谁，见 updateActivity。
     private(set) var activities: [String: ThreadActivity] = [:]
     @ObservationIgnored private var activityCursors: [String: EventCursor] = [:]
@@ -138,7 +140,7 @@ final class WorkArea: Identifiable {
     }
 
     func appearance(of pane: Pane) -> WindowAppearance {
-        if let thread = thread(in: pane) { return .init(name: thread.title, icon: "bubble.left.and.bubble.right", tint: thread.tint, isAgent: true) }
+        if let thread = thread(in: pane) { return .init(name: thread.title, icon: WindowAppearance.agentIcon, tint: thread.tint, isAgent: true) }
         if let target = windows.first(where: { $0.id == pane.id })?.target,
            let instance = instances.first(where: { $0.id == target.instanceId }) {
             let view = view(in: pane)
@@ -258,6 +260,14 @@ struct WindowAppearance {
     /// 工具的圆角随格子大小缩放，和停靠栏里画的一样（见 DockFace）：关进小头像时，飞到终点的卡片和接手的小头像同形。
     func minimizedCornerRadius(width: CGFloat = Metrics.dragBubble) -> CGFloat {
         isAgent ? width / 2 : Metrics.dockRadius * width / Metrics.dragBubble
+    }
+
+    static let agentIcon = "bubble.left.and.bubble.right"
+
+    /// 还没建出实例时按定义取，同建好后的窗口：代理是对话，其余按默认视图。
+    static func definition(_ definition: RemotePluginDefinition) -> Self {
+        if definition.agent != nil { return .init(name: definition.title, icon: agentIcon, isAgent: true) }
+        return renderer(definition.views.first { $0.id == definition.defaultView }?.renderer ?? "")
     }
 
     static func renderer(_ id: String) -> Self {
