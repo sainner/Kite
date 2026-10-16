@@ -110,9 +110,9 @@ class StatusLayerView: StatusHostView {
 }
 
 /// 会话状态圆环：0.25 透明的底轨（运行中是锥形明暗渐变，否则纯色）上压一段上下文用量的弧（圆头，从 12 点顺时针）。
-/// 运行中整圈顺时针转、一圈一个周期；停止和收尾时整圈按余弦明暗起伏（0.65～1）；空闲或减少动态效果时不动。
+/// 运行中整圈顺时针转、一圈一个周期；停止、收尾和等你回应时整圈按余弦明暗起伏（0.65～1）；空闲或减少动态效果时不动。
 /// 转动和明暗起伏交给 Core Animation，跟屏幕刷新率走，主线程不逐帧重画。节奏按绝对时间对齐（timeIntervalSinceReferenceDate 取进度），
-/// 几个圆环同阶段时同步。
+/// 几个圆环同阶段时同步。换状态时颜色、底轨、明暗、用量弧都从屏上此刻的样子过渡过去，转动也接着此刻的角度和速度走（见 ContextRingLayerView）。
 struct ContextRingLayers {
     let phase: String
     let fraction: Double?
@@ -153,9 +153,14 @@ final class ContextRingLayerView: StatusLayerView {
         var period: Double
     }
 
-    /// 整圈：转动、明暗都在这一层上。
+    /// 换状态时颜色、底轨、明暗和用量弧过渡多久，曲线同台面的图层动画（不回弹）。
+    private static let blendDuration: TimeInterval = 0.35
+
+    /// 整圈：转动在这一层上。
     private let ring = CALayer()
-    /// 底轨：运行中是明暗渐变（锥形渐变按描边遮住），否则是纯色描边；整体 0.25 透明。
+    /// 明暗起伏在这一层上：不按组合成，透明度分别乘到底轨和弧上，弧压着底轨的地方底轨照样透上来。
+    private let pulse = CALayer()
+    /// 底轨：运行中是明暗渐变（锥形渐变按描边遮住），否则是纯色描边；整体 0.25 透明，两种之间淡入淡出。
     private let track = CAShapeLayer()
     private let gradient = CAGradientLayer()
     private let gradientMask = CAShapeLayer()
@@ -164,10 +169,16 @@ final class ContextRingLayerView: StatusLayerView {
     private var look: Look?
     private var color: Color = .secondary
     private var environment = EnvironmentValues()
+    /// 圆环此刻怎么转，换状态时从这里接着走。
+    private var spin = RingSpin.still
+    /// 正在明暗起伏的周期，不起伏时为空。
+    private var pulsing: Double?
 
     override init() {
         super.init()
         backing.addSublayer(ring)
+        ring.addSublayer(pulse)
+        pulse.allowsGroupOpacity = false
         track.fillColor = nil
         gradient.type = .conic
         gradient.mask = gradientMask
@@ -175,41 +186,75 @@ final class ContextRingLayerView: StatusLayerView {
         gradientMask.strokeColor = CGColor(gray: 0, alpha: 1)
         arc.fillColor = nil
         arc.lineCap = .round
-        ring.addSublayer(track)
-        ring.addSublayer(gradient)
-        ring.addSublayer(arc)
+        pulse.addSublayer(track)
+        pulse.addSublayer(gradient)
+        pulse.addSublayer(arc)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func configure(_ look: Look, color: Color, environment: EnvironmentValues) {
+        let previous = self.look
         self.color = color
         self.environment = environment
-        let changed = look != self.look
+        guard look != previous else { return }
         self.look = look
-        updateColors()
-        if changed {
-            markNeedsLayout()
-            restartAnimations()
-        }
+        if previous?.lineWidth != look.lineWidth { markNeedsLayout() }
+        apply(animated: previous != nil)
     }
 
-    override func appearanceChanged() { updateColors() }
+    override func appearanceChanged() { updateColors(animated: false) }
 
-    // 离开窗口时图层动画会被拿掉，回来接着按绝对时间转
-    override func enteredWindow() { restartAnimations() }
+    // 离开窗口时图层动画会被拿掉，回来直接按现在的状态接着按绝对时间走，不再过渡
+    override func enteredWindow() {
+        guard look != nil else { return }
+        spin = .still
+        pulsing = nil
+        apply(animated: false)
+    }
 
-    /// 颜色按这个视图的外观解析成 SwiftUI 里同样的值。
-    private func updateColors() {
-        let resolved = resolve(color, in: environment)
+    /// 按现在的状态摆：animated 时从屏上此刻的样子过渡过去。
+    private func apply(animated: Bool) {
+        guard let look else { return }
+        let now = CACurrentMediaTime()
+        let rotating = look.phase == "running" && !look.still
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        track.strokeColor = resolved.cgColor
-        arc.strokeColor = resolved.cgColor
+        updateColors(animated: animated)
+        blend(track, "opacity", to: Float(rotating ? 0 : 0.25), animated: animated)
+        blend(gradient, "opacity", to: Float(rotating ? 0.25 : 0), animated: animated)
+        blend(arc, "opacity", to: Float(look.fraction == nil ? 0 : 1), animated: animated)
+        // 没有用量时弧淡出，长度停在原处
+        if let fraction = look.fraction { blend(arc, "strokeEnd", to: min(max(fraction, 0), 1), animated: animated) }
+        updatePulse(look.period > 0 && !rotating && !look.still ? look.period : nil, animated: animated, now: now)
+        // 减少动态效果时不转，也不加转起来、停下来的过渡
+        updateSpin(rotating ? look.period : nil, animated: animated && !environment.accessibilityReduceMotion, now: now)
+        CATransaction.commit()
+    }
+
+    /// 颜色按这个视图的外观解析成 SwiftUI 里同样的值。
+    private func updateColors(animated: Bool) {
+        let resolved = resolve(color, in: environment)
         var faint = resolved
         faint.opacity *= 0.35
-        gradient.colors = [resolved.cgColor, faint.cgColor, resolved.cgColor]
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        blend(track, "strokeColor", to: resolved.cgColor, animated: animated)
+        blend(arc, "strokeColor", to: resolved.cgColor, animated: animated)
+        blend(gradient, "colors", to: [resolved.cgColor, faint.cgColor, resolved.cgColor], animated: animated)
         CATransaction.commit()
+    }
+
+    /// 把图层的一项改成新值；animated 时从屏上此刻的值过渡过去，否则当场换上并收掉还没走完的过渡。
+    private func blend(_ layer: CALayer, _ keyPath: String, to value: Any, animated: Bool) {
+        if let current = layer.value(forKeyPath: keyPath) as? NSObject, current.isEqual(value) { return }
+        let shown = layer.presentation()?.value(forKeyPath: keyPath)
+        layer.setValue(value, forKeyPath: keyPath)
+        guard animated, let shown else {
+            layer.removeAnimation(forKey: "blend-" + keyPath)
+            return
+        }
+        layer.add(StageAnimation.basic(keyPath, from: shown, to: value, duration: Self.blendDuration), forKey: "blend-" + keyPath)
     }
 
     override func layoutLayers() {
@@ -218,32 +263,21 @@ final class ContextRingLayerView: StatusLayerView {
         CATransaction.setDisableActions(true)
         ring.bounds = bounds
         ring.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        pulse.frame = bounds
         let side = min(bounds.width, bounds.height)
         let circle = CGRect(x: (bounds.width - side) / 2, y: (bounds.height - side) / 2, width: side, height: side)
-        let path = CGPath(ellipseIn: circle, transform: nil)
-        let gradientShown = look.phase == "running" && !look.still
         for shape in [track, arc] { shape.frame = bounds }
         for shape in [track, gradientMask, arc] { shape.lineWidth = look.lineWidth }
-        track.path = path
-        track.isHidden = gradientShown
-        gradient.isHidden = !gradientShown
+        track.path = CGPath(ellipseIn: circle, transform: nil)
         // 描边一半在边界外面：渐变层按边界裁，四周多留一截线宽
         let overhang = look.lineWidth
         gradient.frame = bounds.insetBy(dx: -overhang, dy: -overhang)
         gradientMask.frame = gradient.bounds
         gradientMask.path = CGPath(ellipseIn: circle.offsetBy(dx: overhang, dy: overhang), transform: nil)
-        track.opacity = 0.25
-        gradient.opacity = 0.25
         // 锥形渐变从 3 点钟方向起，同 AngularGradient 的起始角 0
         gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
         gradient.endPoint = CGPoint(x: 1, y: 0.5)
-        if let fraction = look.fraction {
-            arc.isHidden = false
-            arc.path = arcPath(in: circle)
-            arc.strokeEnd = min(max(fraction, 0), 1)
-        } else {
-            arc.isHidden = true
-        }
+        arc.path = arcPath(in: circle)
         CATransaction.commit()
     }
 
@@ -258,35 +292,188 @@ final class ContextRingLayerView: StatusLayerView {
         return path
     }
 
-    /// 运行中整圈顺时针转一圈一个周期；停止、收尾时整圈按余弦明暗起伏。节奏按绝对时间对齐。
-    /// 明暗分别乘在底轨（0.25）和弧上，各自变淡：弧压着底轨的地方底轨照样透上来。
-    private func restartAnimations() {
-        for layer in [ring, track, gradient, arc] { layer.removeAnimation(forKey: "status") }
-        guard let look, look.period > 0, !look.still else { return }
-        let period = look.period
-        let progress = Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
-        func start(_ animation: CAAnimation, on layer: CALayer) {
+    // MARK: - 明暗起伏
+
+    /// 停止、收尾、等你回应时整圈按余弦明暗起伏（0.65～1），节奏按绝对时间对齐。
+    /// 换节奏或停下时从屏上此刻的亮度接过去：新节奏照常对齐，差的那一截叠加在上面、随过渡收掉。
+    private func updatePulse(_ period: Double?, animated: Bool, now: CFTimeInterval) {
+        guard period != pulsing else { return }
+        pulsing = period
+        let shown = pulse.presentation()?.opacity
+        pulse.removeAnimation(forKey: "status")
+        pulse.opacity = 1
+        var target: Float = 1
+        if let period {
+            let steps = 60
+            let animation = CAKeyframeAnimation(keyPath: "opacity")
+            animation.values = (0...steps).map { Self.brightness(Double($0) / Double(steps)) }
+            animation.calculationMode = .linear
             animation.duration = period
             animation.repeatCount = .infinity
             animation.isRemovedOnCompletion = false
-            animation.beginTime = layer.convertTime(CACurrentMediaTime(), from: nil) - progress * period
-            layer.add(animation, forKey: "status")
+            let progress = Self.progress(now, period: period)
+            animation.beginTime = pulse.convertTime(now, from: nil) - progress * period
+            pulse.add(animation, forKey: "status")
+            target = Self.brightness(progress)
         }
-        if look.phase == "running" {
-            let flipped = flippedLayers
-            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
-            spin.fromValue = 0
-            spin.toValue = (flipped ? 2 : -2) * CGFloat.pi
-            start(spin, on: ring)
+        guard animated, let shown, abs(shown - target) > 0.001 else {
+            pulse.removeAnimation(forKey: "status-blend")
+            return
+        }
+        let settle = StageAnimation.basic("opacity", from: shown - target, to: Float(0), duration: Self.blendDuration)
+        settle.isAdditive = true
+        pulse.add(settle, forKey: "status-blend")
+    }
+
+    private static func brightness(_ progress: Double) -> Float {
+        Float(0.65 + 0.35 * cos(progress * 2 * .pi))
+    }
+
+    /// 媒体时间 time 时，按绝对时间对齐的节奏走到一个周期的哪里（0～1）。
+    private static func progress(_ time: CFTimeInterval, period: Double) -> Double {
+        let absolute = Date().timeIntervalSinceReferenceDate + (time - CACurrentMediaTime())
+        return absolute.truncatingRemainder(dividingBy: period) / period
+    }
+
+    // MARK: - 转动
+
+    /// 运行中整圈顺时针转，一圈一个周期，按绝对时间对齐。转起来、停下来都从此刻的角度和速度接着走：
+    /// 转起来时加速追上对齐的节奏、速度接上；停下来时顺时针减速停在下一个整圈，弧回到 12 点。
+    private func updateSpin(_ period: Double?, animated: Bool, now: CFTimeInterval) {
+        guard period != spin.target else { return }
+        let (angle, speed) = spin.state(at: now)
+        if animated, let segment = Self.settle(from: angle.truncatingRemainder(dividingBy: 2 * .pi), speed: speed, to: period, at: now) {
+            spin = .settling(segment, then: period)
         } else {
-            let steps = 60
-            let pulse = (0...steps).map { 0.65 + 0.35 * cos(Double($0) / Double(steps) * 2 * .pi) }
-            for (layer, base) in [(track, 0.25), (gradient, 0.25), (arc, 1.0)] as [(CALayer, Double)] {
-                let animation = CAKeyframeAnimation(keyPath: "opacity")
-                animation.values = pulse.map { Float(base * $0) }
-                animation.calculationMode = .linear
-                start(animation, on: layer)
+            spin = period.map { .steady(period: $0) } ?? .still
+        }
+        ring.removeAnimation(forKey: "spin")
+        ring.removeAnimation(forKey: "spin-settle")
+        // 角度按顺时针算；图层坐标上下没翻转时，顺时针在数学上是角度变小
+        let sign: Double = flippedLayers ? 1 : -1
+        switch spin {
+        case .still:
+            break
+        case .steady(let period):
+            ring.add(steadySpin(period, from: now, sign: sign), forKey: "spin")
+        case .settling(let segment, let then):
+            let steps = max(Int(segment.duration * 60), 1)
+            let values = (0...steps).map { sign * segment.angle(Double($0) / Double(steps)) }
+            let animation = StageKeyframes.make("transform.rotation.z", values, duration: segment.duration)
+            animation.beginTime = ring.convertTime(segment.start, from: nil)
+            ring.add(animation, forKey: "spin-settle")
+            // 过渡走完那一刻接上对齐的转动；在那之前它还没开始，不挡过渡
+            if let then { ring.add(steadySpin(then, from: segment.start + segment.duration, sign: sign), forKey: "spin") }
+        }
+    }
+
+    private func steadySpin(_ period: Double, from start: CFTimeInterval, sign: Double) -> CAAnimation {
+        let animation = CABasicAnimation(keyPath: "transform.rotation.z")
+        animation.fromValue = 0
+        animation.toValue = sign * 2 * .pi
+        animation.duration = period
+        animation.repeatCount = .infinity
+        animation.isRemovedOnCompletion = false
+        animation.beginTime = ring.convertTime(start, from: nil)
+        animation.timeOffset = Self.progress(start, period: period) * period
+        return animation
+    }
+
+    /// 从此刻的角度和速度接到目标的一段。要转：时长从短往长试，取第一段不倒转、最快不超过稳定转速 1.5 倍的，
+    /// 终点是那一刻对齐的角度（可以多转几圈追上）。要停：按匀减速停在下一个整圈，太远时（超过 1.6 秒）放宽时长，
+    /// 同样不倒转、不快过 1.5 倍。已经停着、或刚好停在整圈上时不用过渡。
+    private static func settle(from angle: Double, speed: Double, to period: Double?, at now: CFTimeInterval) -> RingSpinSegment? {
+        let turn = 2 * Double.pi
+        if let period {
+            let steady = turn / period
+            let limit = 1.5 * max(steady, speed)
+            for duration in stride(from: 0.4, through: 4, by: 0.05) {
+                let aligned = progress(now + duration, period: period) * turn
+                var end = aligned + turn * ((angle - aligned) / turn).rounded(.up)
+                for _ in 0..<3 {
+                    let segment = RingSpinSegment(start: now, duration: duration, from: angle, fromSpeed: speed, to: end, toSpeed: steady)
+                    if segment.smooth(limit: limit) { return segment }
+                    end += turn
+                }
             }
+            return nil
+        }
+        let end = turn * (angle / turn).rounded(.up)
+        guard speed > 0, end > angle else { return nil }
+        let stop = { (duration: Double) in RingSpinSegment(start: now, duration: duration, from: angle, fromSpeed: speed, to: end, toSpeed: 0) }
+        // 匀减速要的时长，全程只减速
+        let natural = 2 * (end - angle) / speed
+        guard natural > 1.6 else { return stop(natural) }
+        for duration in stride(from: 1.6, to: natural, by: 0.05) where stop(duration).smooth(limit: 1.5 * speed) {
+            return stop(duration)
+        }
+        return stop(natural)
+    }
+}
+
+/// 圆环的转动：顺时针转过的角度（弧度）随媒体时间走。
+private enum RingSpin {
+    case still
+    /// 按绝对时间对齐地转，period 秒一圈。
+    case steady(period: Double)
+    /// 过渡段，走完接 then：为空时停在整圈上，否则按它的周期对齐地转。
+    case settling(RingSpinSegment, then: Double?)
+
+    /// 最终要转的周期，停着为空。
+    var target: Double? {
+        switch self {
+        case .still: nil
+        case .steady(let period): period
+        case .settling(_, let then): then
+        }
+    }
+
+    /// 媒体时间 time 时的角度和角速度。
+    func state(at time: CFTimeInterval) -> (angle: Double, speed: Double) {
+        switch self {
+        case .still:
+            return (0, 0)
+        case .steady(let period):
+            let absolute = Date().timeIntervalSinceReferenceDate + (time - CACurrentMediaTime())
+            return (absolute.truncatingRemainder(dividingBy: period) / period * 2 * .pi, 2 * .pi / period)
+        case .settling(let segment, let then):
+            guard time < segment.start + segment.duration else {
+                return then.map { RingSpin.steady(period: $0).state(at: time) } ?? (0, 0)
+            }
+            let s = max(time - segment.start, 0) / segment.duration
+            return (segment.angle(s), segment.speed(s))
+        }
+    }
+}
+
+/// 一段转动的过渡：三次 Hermite，两头的角度和角速度都接上。
+private struct RingSpinSegment {
+    var start: CFTimeInterval
+    var duration: Double
+    var from: Double
+    var fromSpeed: Double
+    var to: Double
+    var toSpeed: Double
+
+    /// 走到 s（0～1）时的角度。
+    func angle(_ s: Double) -> Double {
+        let s2 = s * s, s3 = s2 * s
+        return (2 * s3 - 3 * s2 + 1) * from + (s3 - 2 * s2 + s) * duration * fromSpeed
+            + (3 * s2 - 2 * s3) * to + (s3 - s2) * duration * toSpeed
+    }
+
+    /// 走到 s 时的角速度（弧度每秒）。
+    func speed(_ s: Double) -> Double {
+        let s2 = s * s
+        return ((6 * s2 - 6 * s) * from + (3 * s2 - 4 * s + 1) * duration * fromSpeed
+            + (6 * s - 6 * s2) * to + (3 * s2 - 2 * s) * duration * toSpeed) / duration
+    }
+
+    /// 全程不倒转，最快不超过 limit。
+    func smooth(limit: Double) -> Bool {
+        (0...32).allSatisfy { step in
+            let speed = speed(Double(step) / 32)
+            return speed >= -1e-9 && speed <= limit + 1e-9
         }
     }
 }
