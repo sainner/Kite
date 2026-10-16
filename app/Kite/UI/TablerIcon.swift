@@ -61,6 +61,6 @@ struct TablerSymbol {
     static let remote = Self(outline: .tablerDeviceRemote, filled: .tablerDeviceRemoteFilled)
     static let cloudComputing = Self(outline: .tablerCloudComputing, filled: .tablerCloudComputingFilled)
     static let user = Self(outline: .tablerUser, filled: .tablerUserFilled)
-    static let link = Self(outline: .tablerLink, filled: .tablerLinkFilled)
+    static let key = Self(outline: .tablerKey, filled: .tablerKeyFilled)
     static let puzzle = Self(outline: .tablerPuzzle, filled: .tablerPuzzleFilled)
 }

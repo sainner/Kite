@@ -352,7 +352,7 @@ nonisolated enum ExtensionLibrary: String, SidebarPage {
         switch self {
         case .plugins: .puzzle
         case .contexts: .fileText
-        case .credentials: .link
+        case .credentials: .key
         case .skills: .sparkles
         }
     }
