@@ -17,6 +17,15 @@ final class WorkArea: Identifiable {
     private(set) var draftThread: WorkThread
     /// 草稿窗口的 ID，没打开草稿时为 nil。由本机生成，就是工作机要为这个代理建的窗口 ID，建好后排布和卡片都不动。
     private(set) var draftWindow: String?
+    /// 新建窗口的 ID：点添加当场打开的本机窗口，里面选插件，选好后原地变成那个插件的窗口，ID 不换（见 AppModel.choose）。
+    /// 同草稿一样只在本机、不同步，关掉就丢掉；没开着时为 nil。
+    private(set) var chooserWindow: String?
+    /// 新建窗口选了只在后台的插件、自己关掉时交给的实例：关闭的卡片飞进它在停靠栏的那一格（见 instance(of:)）。
+    @ObservationIgnored private(set) var handedOff: [String: String] = [:]
+    /// 换下新建窗口、本机先开的窗口：工作机明确拒绝时换回新建窗口（见 settleOpening）。
+    @ObservationIgnored private var replacedChooser: String?
+    /// 新建窗口刚变成会话的窗口：会话的原生外框接上时淡入，和淡出的新建窗口正文交叠（见 takeFadeIn）。
+    @ObservationIgnored private var fadingIn: Set<String> = []
     let layout: WindowLayout
     /// 正在发出的草稿窗口：期间输入区禁用，草稿不能关。
     var creatingWindow: String?
@@ -39,8 +48,6 @@ final class WorkArea: Identifiable {
     var archiveError: String?
     var settingsInstance: RemotePluginInstance?
     var archiveRequest: RemotePluginInstance?
-    /// 停靠栏加号打开的创建窗口弹窗。
-    var creatingInstance = false
     /// 代理的活动摘要，按实例 ID。目录快照与单条推送谁新用谁，见 updateActivity。
     private(set) var activities: [String: ThreadActivity] = [:]
     @ObservationIgnored private var activityCursors: [String: EventCursor] = [:]
@@ -154,6 +161,7 @@ final class WorkArea: Identifiable {
     }
 
     func appearance(of pane: Pane) -> WindowAppearance {
+        if pane.id == chooserWindow { return .init(name: "新建窗口", icon: "plus") }
         if let thread = thread(in: pane) { return .init(name: thread.title, icon: WindowAppearance.agentIcon, tint: thread.tint, isAgent: true) }
         if let target = windows.first(where: { $0.id == pane.id })?.target,
            let instance = instances.first(where: { $0.id == target.instanceId }) {
@@ -237,13 +245,19 @@ final class WorkArea: Identifiable {
         let stillOpen = closingWindows.intersection(open.map(\.id))
         if stillOpen != closingWindows { closingWindows = stillOpen }
         windows = open.filter { !closingWindows.contains($0.id) && !archivingInstances.contains($0.target.instanceId) } + openingWindows
+            + (chooserWindow.map { [Self.chooserWindow($0, workspace: id)] } ?? [])
             + (draftWindow.map { [Self.draftWindow($0, workspace: id, thread: draftThread)] } ?? [])
         layout.reconcile(windows.map { Pane($0.id) })
     }
 
-    /// 先在本机打开窗口，当场放上台面，见 openingWindows。
+    /// 先在本机打开窗口，当场放上台面，见 openingWindows。ID 是新建窗口的，就原地换下它（见 chooserWindow）。
     func openLocally(_ window: RemoteWorkspaceWindow) {
-        if !windows.contains(where: { $0.id == window.id }) {
+        let replacing = chooserWindow == window.id
+        if replacing {
+            chooserWindow = nil
+            replacedChooser = window.id
+        }
+        if replacing || !windows.contains(where: { $0.id == window.id }) {
             openingWindows.append(window)
             rebuildWindows()
         }
@@ -251,9 +265,14 @@ final class WorkArea: Identifiable {
     }
 
     /// 本机打开的这个窗口不再按本机的算：工作机建不成，或交回了这个实例原有的窗口。还在不在以工作机的列表为准。
-    func settleOpening(_ id: String) {
+    /// rejected 是工作机明确拒绝、没有建：换下新建窗口的，换回新建窗口，好另选一个。
+    func settleOpening(_ id: String, rejected: Bool = false) {
         guard openingWindows.contains(where: { $0.id == id }) else { return }
         openingWindows.removeAll { $0.id == id }
+        if replacedChooser == id {
+            replacedChooser = nil
+            if rejected, chooserWindow == nil { chooserWindow = id }
+        }
         rebuildWindows()
     }
 
@@ -344,6 +363,53 @@ final class WorkArea: Identifiable {
         guard draftWindow != nil, creatingWindow == nil else { return }
         draftWindow = nil
         rebuildWindows()
+    }
+
+    /// 点添加：当场打开新建窗口，已经开着一个就调到前面，见 chooserWindow。
+    func openChooser() {
+        guard remote != nil else { return }
+        if chooserWindow == nil {
+            handedOff = [:]
+            chooserWindow = Self.newWindowID()
+            rebuildWindows()
+        }
+        if let chooserWindow { layout.activate(Pane(chooserWindow)) }
+    }
+
+    /// 关掉新建窗口；instance 是刚建的后台实例，关闭的卡片飞进它那一格。
+    func closeChooser(into instance: String? = nil) {
+        guard let chooserWindow else { return }
+        if let instance { handedOff[chooserWindow] = instance }
+        self.chooserWindow = nil
+        rebuildWindows()
+    }
+
+    /// 新建窗口里选了代理：原地变成新代理的草稿。已经有草稿窗口的，关掉新建窗口、调出那个草稿：一份草稿不同时摆在两个窗口里。
+    func chooseAgent() {
+        guard let remote, let chooser = chooserWindow else { return }
+        guard draftWindow == nil else {
+            closeChooser()
+            openDraft()
+            return
+        }
+        draftThread = WorkThread(workspace: remote.workspace.cwd, project: remote.project.name)
+        draftThread.draftChoice = DraftAgentChoice()
+        draftThread.connected = remote.workspace.status == .open
+        chooserWindow = nil
+        draftWindow = chooser
+        fadingIn.insert(chooser)
+        rebuildWindows()
+    }
+
+    /// 这个窗口的会话外框接上时要不要淡入，问过一次就不再算，见 fadingIn。
+    func takeFadeIn(_ pane: Pane) -> Bool { fadingIn.remove(pane.id) != nil }
+
+    /// 新建窗口还没有实例和视图，按这个固定的目标排（见 PaneBody）。
+    static let chooserInstance = "new-window"
+
+    private static func chooserWindow(_ id: String, workspace: String) -> RemoteWorkspaceWindow {
+        RemoteWorkspaceWindow(id: id, workspaceId: workspace, target: WindowTarget(instanceId: chooserInstance, viewId: "chooser"),
+                              state: .open, createdAt: 0)
     }
 
     /// 本机新建、工作机还没建好的工作区（见 AppModel.create）：按本机定的工作区 ID 先建好，第一个代理先当草稿，

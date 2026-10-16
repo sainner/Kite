@@ -261,15 +261,12 @@ struct InstanceSettingsPresentation: ViewModifier {
         content.sheet(item: $area.settingsInstance) { instance in
             InstanceSettings(instance: instance).environment(model).environment(area).toastHost().appAppearance()
         }
-        .sheet(isPresented: $area.creatingInstance) {
-            CreateInstanceSheet().environment(model).environment(area).toastHost().appAppearance()
-        }
         .modifier(ArchiveInstanceConfirmation(instance: $area.archiveRequest))
         // 归档先在本机生效、弹窗当场关掉，工作机归档不成时报在这里
         .alert("归档失败", isPresented: Binding(get: { area.archiveError != nil }, set: { if !$0 { area.archiveError = nil } })) {
             Button("好", role: .cancel) { area.archiveError = nil }
         } message: { Text(area.archiveError ?? "") }
-        .onChange(of: model.revision(for: area)) { area.settingsInstance = nil; area.archiveRequest = nil; area.creatingInstance = false }
+        .onChange(of: model.revision(for: area)) { area.settingsInstance = nil; area.archiveRequest = nil }
     }
 }
 

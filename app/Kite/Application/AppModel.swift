@@ -158,10 +158,18 @@ final class AppModel {
         for area in workspaces where area.remote?.machine.id == id { area.definitions = values }
     }
 
-    func createInstance(_ definition: RemotePluginDefinition, in area: WorkArea) {
-        if definition.agent != nil { area.openDraft(); return }
-        if !definition.views.isEmpty { openWindow(.create(definition.id, instance: UUID().uuidString.lowercased()), in: area); return }
-        sendInstanceRequest(CreatePluginInstance(id: UUID().uuidString.lowercased(), definitionId: definition.id), in: area)
+    /// 新建窗口里选好了插件，这个窗口原地变成它（见 WorkArea.chooserWindow）：代理变成新代理的草稿；带视图的插件按这个窗口的 ID
+    /// 新建实例和窗口（见 sendWindowRequest）；只在后台的插件放进停靠栏，新建窗口飞进它那一格。
+    func choose(_ definition: RemotePluginDefinition, in area: WorkArea) {
+        guard let window = area.chooserWindow else { return }
+        if definition.agent != nil { area.chooseAgent(); return }
+        if !definition.views.isEmpty {
+            send(OpenWindowRequest(id: window, content: .create(definition.id, instance: UUID().uuidString.lowercased())), in: area)
+            return
+        }
+        let request = CreatePluginInstance(id: UUID().uuidString.lowercased(), definitionId: definition.id)
+        sendInstanceRequest(request, in: area)
+        area.closeChooser(into: request.id)
     }
 
     /// 后台实例不等工作机：ID 由本机定，本机先放进停靠栏（见 WorkArea.openingInstances），工作机按同一个 ID 建好后由它的列表接上；
@@ -635,7 +643,7 @@ final class AppModel {
                 guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
                 window = try await client.request("/workspaces/\(area.id)/windows", method: "POST", body: request, as: RemoteWorkspaceWindow.self)
             } catch {
-                area.settleOpening(request.id)
+                area.settleOpening(request.id, rejected: Self.rejected(error))
                 if let created { area.settleInstance(created) }
                 if !Self.rejected(error) { area.failedWindowRequests.append(request) }
                 throw error
@@ -677,6 +685,7 @@ final class AppModel {
     func closeWindow(_ pane: Pane, in area: WorkArea) {
         guard !area.isDraft else { return }
         if pane.id == area.draftWindow { area.closeDraft(); return }
+        if pane.id == area.chooserWindow { area.closeChooser(); return }
         guard area.windows.contains(where: { $0.id == pane.id }), !area.isOpening(pane), area.closeRequests[pane.id] == nil else { return }
         area.windowError = nil
         area.closeLocally(pane.id)

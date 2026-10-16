@@ -325,6 +325,8 @@ final class StageView: RepresentedRoot, StageDotsReporting {
             for window in area.windows where paneInstances[Pane(window.id)] != window.target.instanceId {
                 paneInstances[Pane(window.id)] = window.target.instanceId
             }
+            // 新建窗口交给了后台实例：飞进那一格，飞到之前那一格先不显示
+            for (pane, instance) in area.handedOff where paneInstances[Pane(pane)] != instance { paneInstances[Pane(pane)] = instance }
         }
         let retiring = Set(retained.filter { !layout.panes.contains($0) }.compactMap { paneInstances[$0] })
         if geometry.retiring != retiring { geometry.retiring = retiring }

@@ -343,6 +343,11 @@ final class CompactRowView: UIView {
         slot.view.addSubview(window)
         window.frame = slot.view.bounds
         window.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        // 新建窗口刚变成会话：外框淡入，和淡出的新建窗口正文交叠
+        if group.workspace?.takeFadeIn(slot.pane) == true {
+            window.alpha = 0
+            UIView.animate(withDuration: 0.2) { window.alpha = 1 }
+        }
         if !slot.state.native { slot.state.native = true }
         reported(window.compactChrome, for: slot)
         slot.dotsPresence.stage = environment.dotStage

@@ -229,6 +229,14 @@ final class CardView: NSView {
                                       model: stage.model, header: header, regions: headerRegions, reports: bodyReports, motion: motion)
         threadWindow = window
         container.native = window
+        // 新建窗口刚变成会话：外框淡入，和淡出的新建窗口正文交叠
+        if stage.group.workspace?.takeFadeIn(pane) == true {
+            window.alphaValue = 0
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.2
+                window.animator().alphaValue = 1
+            }
+        }
         if !content.nativeThread { content.nativeThread = true }
         stage.needsLayout = true
     }

@@ -41,7 +41,17 @@ private struct WorkspacePaneBody: View {
         }
     }
 
+    /// 新建窗口原地变成插件窗口时，正文淡过去（见 WorkArea.chooserWindow）。
     @ViewBuilder private var resolved: some View {
+        let choosing = pane.id == area.chooserWindow
+        Group {
+            if choosing { NewWindowChooser().transition(.opacity) }
+            else { content.transition(.opacity) }
+        }
+        .animation(.easeInOut(duration: 0.2), value: choosing)
+    }
+
+    @ViewBuilder private var content: some View {
         let renderer = area.view(in: pane)?.renderer
         let target = area.windows.first(where: { $0.id == pane.id })?.target
         // 本机先建、工作机还没建好的实例：正文要读工作机上的实例，先只有标题栏

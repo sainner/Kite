@@ -239,6 +239,11 @@ final class PhoneCardView: UIView {
                                            model: stage.model, header: header, regions: headerRegions, reports: bodyReports, motion: motion)
         threadWindow = window
         container.native = window
+        // 新建窗口刚变成会话：外框淡入，和淡出的新建窗口正文交叠
+        if stage.group.workspace?.takeFadeIn(pane) == true {
+            window.alpha = 0
+            UIView.animate(withDuration: 0.2) { window.alpha = 1 }
+        }
         if !content.nativeThread { content.nativeThread = true }
         stage.setNeedsLayout()
     }

@@ -90,6 +90,8 @@ final class CardPresentation {
     var appearance: WindowAppearance?
     var instance: RemotePluginInstance?
     var motion: WindowMotion?
+    /// 是新建窗口（见 WorkArea.chooserWindow）：没选插件就关掉的，收回添加入口。
+    private var chooser = false
 
     /// 这次排布算出来的：正文按哪个尺寸排、外观、是不是缩成停靠形状、终点和驱动它的 motion。
     struct Placement {
@@ -102,26 +104,31 @@ final class CardPresentation {
 
     /// rect 是台面上给它的位置（缩在停靠栏时为 nil），dockFrame 是停靠栏里那一格，closing 是窗口已经不在了、正飞走。
     /// 拖着的卡片缩成停靠形状跟着指针；关闭时持久实例飞回它在停靠栏的格子，否则原地淡出。
-    /// appearing 是台面排好以后才打开的窗口，和让位的窗口一起动：已有的实例从它在停靠栏的那一格展开，新建的（草稿、本机先建的实例）
-    /// 从停靠栏的添加入口 addButton 展开，没有停靠栏时原地淡入；台面头一次排的窗口直接摆好。
+    /// appearing 是台面排好以后才打开的窗口，和让位的窗口一起动：已有的实例从它在停靠栏的那一格展开，新建的（草稿、新建窗口、本机先建的实例）
+    /// 从停靠栏的添加入口 addButton 展开，没有停靠栏时原地淡入；台面头一次排的窗口直接摆好。没选插件就关掉的新建窗口收回添加入口。
+    /// 添加入口没有底色，在那一头卡片整个透明：从它那里长出来、底色跟着淡入，收回去时淡没，露出的就是底下的加号。
     func place(group: PaneGroup, pane: Pane, rect: CGRect?, dockFrame: CGRect?, fallbackSize: CGSize, regions: WindowRegions,
                closing: Bool, appearing: Bool = false, addButton: CGRect? = nil) -> Placement {
         let layout = group.layout
         let contentSize = rect?.size ?? size ?? fallbackSize
         let appearance = closing ? self.appearance ?? group.appearance(of: pane) : group.appearance(of: pane)
-        let returnTarget = closing || motion == nil ? returnFrame(group: group, pane: pane, regions: regions) : nil
+        if !closing { chooser = group.workspace?.chooserWindow == pane.id }
+        let instanceReturn = closing || motion == nil ? returnFrame(group: group, pane: pane, regions: regions) : nil
+        let intoAdd = closing && instanceReturn == nil && chooser && addButton != nil
+        let returnTarget = intoAdd ? addButton : instanceReturn
         // 不读 motion 的终点：读了的话，交给它新终点时这张卡片和里面的窗口要再算一轮
         let previous = frame ?? CGRect(origin: .zero, size: contentSize)
         let frame = closing ? returnTarget ?? previous : destination(layout: layout, pane: pane, rect: rect, dockFrame: dockFrame) ?? previous
         let minimized = closing ? returnTarget != nil : rect == nil || layout.drag?.pane == pane
         let target = WindowPose(frame: frame,
                                 scale: minimized ? max(frame.width / max(contentSize.width, 1), frame.height / max(contentSize.height, 1)) : 1,
-                                radius: minimized ? appearance.minimizedCornerRadius(width: frame.width) : Metrics.cardRadius,
+                                radius: intoAdd ? frame.width / 2 : minimized ? appearance.minimizedCornerRadius(width: frame.width) : Metrics.cardRadius,
                                 contentOpacity: minimized || closing ? 0 : 1,
-                                iconOpacity: minimized ? 1 : 0)
+                                iconOpacity: minimized && !intoAdd ? 1 : 0)
         let created = appearing && (group.workspace.map { area in area.instance(of: pane).map { area.isOpening(instance: $0.id) } ?? true } ?? false)
-        let start = dockFrame ?? (created ? addButton : returnTarget)
-        let motion = prepare(target: target, start: motion == nil ? start : nil, fadesIn: appearing, size: rect?.size,
+        let fromAdd = dockFrame == nil && created && addButton != nil
+        let start = fromAdd ? addButton : dockFrame ?? returnTarget
+        let motion = prepare(target: target, start: motion == nil ? start : nil, fromAdd: fromAdd, fadesIn: appearing, size: rect?.size,
                              contentSize: contentSize, appearance: appearance, instance: closing ? nil : group.workspace?.instance(of: pane))
         return Placement(contentSize: contentSize, appearance: appearance, minimized: minimized, target: target, motion: motion)
     }
@@ -150,7 +157,7 @@ final class CardPresentation {
         return rect ?? dockFrame
     }
 
-    private func prepare(target: WindowPose, start: CGRect?, fadesIn: Bool, size: CGSize?, contentSize: CGSize, appearance: WindowAppearance,
+    private func prepare(target: WindowPose, start: CGRect?, fromAdd: Bool, fadesIn: Bool, size: CGSize?, contentSize: CGSize, appearance: WindowAppearance,
                          instance: RemotePluginInstance?) -> WindowMotion {
         if let size { self.size = size }
         frame = target.frame
@@ -164,6 +171,10 @@ final class CardPresentation {
             initial.scale = max(start.width / max(contentSize.width, 1), start.height / max(contentSize.height, 1))
             initial.contentOpacity = 0
             initial.iconOpacity = 1
+            if fromAdd {
+                initial.radius = start.width / 2
+                initial.iconOpacity = 0
+            }
         } else if fadesIn {
             initial.contentOpacity = 0
             initial.iconOpacity = 0

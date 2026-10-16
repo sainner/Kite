@@ -409,9 +409,9 @@ struct WindowSurfaceDots: View {
     }
 }
 
-/// 创建窗口的弹窗，由停靠栏的加号打开：内置插件两列卡片，自定义插件列在下面；点一项就创建，弹窗随之关闭。
+/// 新建窗口的正文（见 WorkArea.chooserWindow），由停靠栏的加号打开：内置插件两列卡片，自定义插件列在下面；点一项，这个窗口原地变成它。
 /// 打开时重新读一次定义，别处新装的插件也能列出。上次创建没成功时标题栏有重试。
-struct CreateInstanceSheet: View {
+struct NewWindowChooser: View {
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @State private var error: String?
@@ -422,47 +422,47 @@ struct CreateInstanceSheet: View {
         // 工作机自带的定义没有 runtime，插件包是 bun
         let builtins = definitions.filter { $0.runtime == nil }, custom = definitions.filter { $0.runtime != nil }
         let canAdd = area.canAddWindows(connected: model.isConnected(area))
-        CardSheet(title: "创建窗口", subtitle: "在工作区创建窗口", error: error, close: { area.creatingInstance = false }) {
-            if !builtins.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    CardLabel("内置插件")
-                    Grid(horizontalSpacing: 12, verticalSpacing: 12) {
-                        ForEach(Array(stride(from: 0, to: builtins.count, by: 2)), id: \.self) { start in
-                            GridRow {
-                                ForEach(builtins[start..<min(start + 2, builtins.count)]) { definition in
-                                    CardTile(title: definition.title, detail: definition.description ?? views(of: definition),
-                                             systemImage: WindowAppearance.definition(definition).icon) { create(definition) }
+        PaneWindow(header: PaneHeader(title: "新建窗口", subtitle: "选择插件"), notice: error.map(PaneNotice.failure), actions: actions) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if !builtins.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            CardLabel("内置插件")
+                            Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+                                ForEach(Array(stride(from: 0, to: builtins.count, by: 2)), id: \.self) { start in
+                                    GridRow {
+                                        ForEach(builtins[start..<min(start + 2, builtins.count)]) { definition in
+                                            CardTile(title: definition.title, detail: definition.description ?? views(of: definition),
+                                                     systemImage: WindowAppearance.definition(definition).icon) { model.choose(definition, in: area) }
+                                        }
+                                    }
                                 }
                             }
                         }
+                        .disabled(!canAdd)
                     }
-                }
-                .disabled(!canAdd)
-            }
-            if !custom.isEmpty {
-                CardSection("自定义插件") {
-                    ForEach(custom) { definition in
-                        Button { create(definition) } label: {
-                            HStack(spacing: 12) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(definition.title).foregroundStyle(.primary)
-                                    Text(views(of: definition)).font(Theme.caption).foregroundStyle(.secondary)
+                    if !custom.isEmpty {
+                        CardSection("自定义插件") {
+                            ForEach(custom) { definition in
+                                Button { model.choose(definition, in: area) } label: {
+                                    HStack(spacing: 12) {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(definition.title).foregroundStyle(.primary)
+                                            Text(views(of: definition)).font(Theme.caption).foregroundStyle(.secondary)
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        Image(systemName: "plus").font(Theme.caption.weight(.semibold))
+                                    }
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                Image(systemName: "plus").font(Theme.caption.weight(.semibold))
                             }
                         }
+                        .disabled(!canAdd)
                     }
                 }
-                .disabled(!canAdd)
+                .agentContextColumn()
             }
-        } actions: {
-            if !area.failedWindowRequests.isEmpty || !area.failedInstanceRequests.isEmpty {
-                CardSheetAction(title: "重试创建", systemImage: "arrow.clockwise") {
-                    model.retryRequests(in: area)
-                    area.creatingInstance = false
-                }
-            }
+        } controls: { _ in
+            EmptyView()
         }
         .task {
             do { try await model.refreshDefinitions(model.activeClient(in: area)); error = nil }
@@ -470,9 +470,9 @@ struct CreateInstanceSheet: View {
         }
     }
 
-    private func create(_ definition: RemotePluginDefinition) {
-        model.createInstance(definition, in: area)
-        area.creatingInstance = false
+    private var actions: PaneHeaderActions {
+        guard !area.failedWindowRequests.isEmpty || !area.failedInstanceRequests.isEmpty else { return PaneHeaderActions() }
+        return PaneHeaderActions(groups: [[PaneHeaderAction(title: "重试创建", systemImage: "arrow.clockwise") { model.retryRequests(in: area) }]])
     }
 
     private func views(of definition: RemotePluginDefinition) -> String {

@@ -126,9 +126,10 @@ enum DockAttention: Int, Comparable {
 }
 
 extension WorkArea {
+    /// 新建窗口关掉、交给了后台实例的，按那个实例算（关闭的卡片飞进它那一格，见 handedOff）。
     func instance(of pane: Pane) -> RemotePluginInstance? {
-        guard let target = windows.first(where: { $0.id == pane.id })?.target else { return nil }
-        return instances.first { $0.id == target.instanceId }
+        let id = windows.first(where: { $0.id == pane.id })?.target.instanceId ?? handedOff[pane.id]
+        return id.flatMap { id in instances.first { $0.id == id } }
     }
 
     func isAgent(_ instance: RemotePluginInstance) -> Bool { definition(of: instance)?.agent != nil }
