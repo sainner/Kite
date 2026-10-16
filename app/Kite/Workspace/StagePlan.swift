@@ -8,8 +8,6 @@ struct StagePlan {
     /// 停靠栏里按顺序放的窗口。
     let docked: [Pane]
     let onStage: Set<Pane>
-    /// 正从停靠栏打开窗口的实例，见 WorkArea.openingInstance。
-    let opening: String?
     let dock: DockGeometry?
     /// 停靠栏展开着「更多」或家族格。
     let expanded: Bool
@@ -20,16 +18,15 @@ struct StagePlan {
         tiles = layout.shown?.layout(in: regions.canvas) ?? TileLayout()
         docked = layout.shownDock
         onStage = Set(tiles.panes.keys)
-        opening = area?.openingInstance
-        let regions = regions, docked = docked, onStage = onStage, opening = opening
-        dock = area.map { DockGeometry(model: $0.dockModel(docked: docked, onStage: onStage, windowless: opening), regions: regions) }
+        let regions = regions, docked = docked, onStage = onStage
+        dock = area.map { DockGeometry(model: $0.dockModel(docked: docked, onStage: onStage), regions: regions) }
         expanded = !(area?.dockExpansion.isEmpty ?? true)
     }
 
     /// 只算停靠栏，不排台面：不读拖缝改的比例，拖缝时读它的停靠栏不跟着每步重算。
     static func dock(layout: WindowLayout, area: WorkArea, bounds: CGRect) -> (regions: WindowRegions, dock: DockGeometry) {
         let regions = layout.regions(in: bounds)
-        let model = area.dockModel(docked: layout.shownDock, onStage: Set(layout.shown?.panes ?? []), windowless: area.openingInstance)
+        let model = area.dockModel(docked: layout.shownDock, onStage: Set(layout.shown?.panes ?? []))
         return (regions, DockGeometry(model: model, regions: regions))
     }
 
@@ -38,11 +35,9 @@ struct StagePlan {
         tiles.panes.min { ($0.value.minY, $0.value.minX) < ($1.value.minY, $1.value.minX) }?.key
     }
 
-    /// 卡片缩在停靠栏时摆在哪一格；正从停靠栏打开的窗口先待在它原来那一格。
-    func dockFrame(of pane: Pane, area: WorkArea?) -> CGRect? {
-        dock?.paneFrame(pane)
-            ?? opening.flatMap { area?.dockInstanceID(pane) == $0 ? dock?.frame(containing: $0) : nil }
-            ?? docked.firstIndex(of: pane).map { regions.dockFrame(at: $0) }
+    /// 卡片缩在停靠栏时摆在哪一格。
+    func dockFrame(of pane: Pane) -> CGRect? {
+        dock?.paneFrame(pane) ?? docked.firstIndex(of: pane).map { regions.dockFrame(at: $0) }
     }
 
     /// 最小化的父代理所在的家族格。
@@ -107,8 +102,10 @@ final class CardPresentation {
 
     /// rect 是台面上给它的位置（缩在停靠栏时为 nil），dockFrame 是停靠栏里那一格，closing 是窗口已经不在了、正飞走。
     /// 拖着的卡片缩成停靠形状跟着指针；关闭时持久实例飞回它在停靠栏的格子，否则原地淡出。
+    /// appearing 是台面排好以后才打开的窗口，和让位的窗口一起动：已有的实例从它在停靠栏的那一格展开，新建的（草稿、本机先建的实例）
+    /// 从停靠栏的添加入口 addButton 展开，没有停靠栏时原地淡入；台面头一次排的窗口直接摆好。
     func place(group: PaneGroup, pane: Pane, rect: CGRect?, dockFrame: CGRect?, fallbackSize: CGSize, regions: WindowRegions,
-               closing: Bool) -> Placement {
+               closing: Bool, appearing: Bool = false, addButton: CGRect? = nil) -> Placement {
         let layout = group.layout
         let contentSize = rect?.size ?? size ?? fallbackSize
         let appearance = closing ? self.appearance ?? group.appearance(of: pane) : group.appearance(of: pane)
@@ -122,8 +119,10 @@ final class CardPresentation {
                                 radius: minimized ? appearance.minimizedCornerRadius(width: frame.width) : Metrics.cardRadius,
                                 contentOpacity: minimized || closing ? 0 : 1,
                                 iconOpacity: minimized ? 1 : 0)
-        let motion = prepare(target: target, start: motion == nil ? dockFrame ?? returnTarget : nil, size: rect?.size, contentSize: contentSize,
-                             appearance: appearance, instance: closing ? nil : group.workspace?.instance(of: pane))
+        let created = appearing && (group.workspace.map { area in area.instance(of: pane).map { area.isOpening(instance: $0.id) } ?? true } ?? false)
+        let start = dockFrame ?? (created ? addButton : returnTarget)
+        let motion = prepare(target: target, start: motion == nil ? start : nil, fadesIn: appearing, size: rect?.size,
+                             contentSize: contentSize, appearance: appearance, instance: closing ? nil : group.workspace?.instance(of: pane))
         return Placement(contentSize: contentSize, appearance: appearance, minimized: minimized, target: target, motion: motion)
     }
 
@@ -151,7 +150,7 @@ final class CardPresentation {
         return rect ?? dockFrame
     }
 
-    private func prepare(target: WindowPose, start: CGRect?, size: CGSize?, contentSize: CGSize, appearance: WindowAppearance,
+    private func prepare(target: WindowPose, start: CGRect?, fadesIn: Bool, size: CGSize?, contentSize: CGSize, appearance: WindowAppearance,
                          instance: RemotePluginInstance?) -> WindowMotion {
         if let size { self.size = size }
         frame = target.frame
@@ -165,6 +164,9 @@ final class CardPresentation {
             initial.scale = max(start.width / max(contentSize.width, 1), start.height / max(contentSize.height, 1))
             initial.contentOpacity = 0
             initial.iconOpacity = 1
+        } else if fadesIn {
+            initial.contentOpacity = 0
+            initial.iconOpacity = 0
         }
         let motion = WindowMotion(initial)
         self.motion = motion

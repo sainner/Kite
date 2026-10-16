@@ -67,7 +67,11 @@ export class InstanceLifecycle {
         const titles = new Set(model.instances.filter((p) => p.definitionId === definition.id).map((p) => p.title));
         let number = 1;
         while (titles.has(`${definition.title} ${number}`)) number++;
-        created = this.newInstance(workspaceId, definition.id, definition.agent ? '新代理' : `${definition.title} ${number}`);
+        if (content.instanceId && (this.kite.store.instance(content.instanceId) || this.kite.store.hasInstanceWindows(content.instanceId))) {
+          throw new KiteError('实例 ID 已使用', 409);
+        }
+        created = { ...this.newInstance(workspaceId, definition.id, definition.agent ? '新代理' : `${definition.title} ${number}`),
+          ...(content.instanceId ? { id: content.instanceId } : {}) };
         if (definition.agent) thread = { instanceId: created.id, runtime: instanceAgent(created).runtime, nativeId: randomUUID() };
         window = this.newWindow(created, request.id);
       } else {

@@ -253,7 +253,7 @@ struct CardButtons: View {
                 case .unavailable: EmptyView()
                 }
                 button("关闭", icon: "xmark") { model.closeWindow(pane, in: area) }
-                    .disabled(area.isDraft || area.changingWindows || area.creatingWindow == pane.id)
+                    .disabled(area.isDraft || area.isOpening(pane) || area.creatingWindow == pane.id)
                 pin(pinned, layout: layout)
             }
             // 缩小、恢复时台面上的窗口数变了，展开按钮出现消失不跟排布的动画走：飞行中按钮组本来看不见，

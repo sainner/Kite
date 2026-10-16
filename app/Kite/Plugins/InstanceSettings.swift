@@ -69,7 +69,7 @@ struct InstanceSettings: View {
                     ForEach(definition?.views ?? []) { view in
                         Button("打开\(view.title)") {
                             model.openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area)
-                        }.disabled(!available || area.changingWindows || area.pendingWindowRequest != nil || area.pendingInstanceRequest != nil)
+                        }.disabled(!available)
                     }
                 }
                 if definition?.runtime == "bun" {
@@ -262,6 +262,10 @@ struct InstanceSettingsPresentation: ViewModifier {
             InstanceSettings(instance: instance).environment(model).environment(area).toastHost().appAppearance()
         }
         .modifier(ArchiveInstanceConfirmation(instance: $area.archiveRequest))
+        // 归档先在本机生效、弹窗当场关掉，工作机归档不成时报在这里
+        .alert("归档失败", isPresented: Binding(get: { area.archiveError != nil }, set: { if !$0 { area.archiveError = nil } })) {
+            Button("好", role: .cancel) { area.archiveError = nil }
+        } message: { Text(area.archiveError ?? "") }
         .onChange(of: model.revision(for: area)) { area.settingsInstance = nil; area.archiveRequest = nil }
     }
 }
@@ -289,14 +293,13 @@ struct ArchiveInstanceConfirmation: ViewModifier {
             } message: { Text(error ?? "") }
     }
 
+    /// 归档当场生效（见 AppModel.archiveInstance），这里只报发不出去的原因；工作机归档不成报在工作区一层。
     private func archive(_ target: RemotePluginInstance) {
-        Task {
-            do {
-                try await model.archiveInstance(target, in: area)
-                toast?.show("已归档")
-                archived()
-            } catch { self.error = error.localizedDescription }
-        }
+        do {
+            try model.archiveInstance(target, in: area)
+            toast?.show("已归档")
+            archived()
+        } catch { self.error = error.localizedDescription }
     }
 }
 
@@ -322,9 +325,8 @@ struct InstanceAction {
 
     /// 打开它的各个视图、实例设置与授权；持久实例还能归档。
     @MainActor static func all(for instance: RemotePluginInstance, in area: WorkArea, model: AppModel) -> [InstanceAction] {
-        let busy = area.changingWindows || area.pendingWindowRequest != nil || area.pendingInstanceRequest != nil
         var actions = (area.definition(of: instance)?.views ?? []).map { view in
-            InstanceAction(title: "打开\(view.title)", enabled: !busy) {
+            InstanceAction(title: "打开\(view.title)") {
                 model.openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area)
             }
         }

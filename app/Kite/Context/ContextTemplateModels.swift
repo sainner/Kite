@@ -212,6 +212,8 @@ struct CreateThreadRequest: Encodable {
     var maxRequestsPerTurn: Int? = nil
     var windowId: String? = nil
     var messageId: String? = nil
+    /// 新建工作区时本机定的工作区 ID，见 AppModel.create。
+    var id: String? = nil
 }
 
 extension AppModel {

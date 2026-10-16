@@ -187,16 +187,18 @@ struct OpenWindowRequest: Encodable {
     let id: String
     let content: Content
 
+    /// 新建实例的 ID 也由本机定：本机先按它建好实例和窗口（见 AppModel.sendWindowRequest）。
     enum Content: Encodable {
-        case create(String)
+        case create(String, instance: String)
         case open(WindowTarget)
         private enum Keys: String, CodingKey { case kind, definitionId, instanceId, viewId }
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
             switch self {
-            case .create(let definitionId):
+            case .create(let definitionId, let instanceId):
                 try c.encode("create", forKey: .kind)
                 try c.encode(definitionId, forKey: .definitionId)
+                try c.encode(instanceId, forKey: .instanceId)
             case .open(let target):
                 try c.encode("open", forKey: .kind)
                 try c.encode(target.instanceId, forKey: .instanceId)

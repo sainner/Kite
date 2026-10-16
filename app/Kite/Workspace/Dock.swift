@@ -138,7 +138,7 @@ extension WorkArea {
     }
 
     /// docked 是停靠栏里按顺序放的窗口，onStage 是台面上的窗口（只用来找带着子代理的父代理）。
-    /// windowless 是按没有窗口来排的实例：正要关窗口的，用来算卡片飞去哪一格；或正从停靠栏打开、窗口还没放上台面的。
+    /// windowless 是按没有窗口来排的实例：正要关窗口或刚打开窗口的，用来算卡片飞去、飞出哪一格。
     func dockModel(docked: [Pane], onStage: Set<Pane>, windowless: String? = nil) -> DockModel {
         let open = instances.filter { $0.status == .open }
         let byID = Dictionary(open.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -194,14 +194,6 @@ extension WorkArea {
         model.windowless = loose.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }.map(entry)
         model.minis = DockModel.pack(model.windowless)
         return model
-    }
-
-    /// 正从停靠栏打开窗口的实例。工作机建好的窗口先收进停靠栏，放上台面前仍按没有窗口来排，卡片从它原来那一格展开。
-    /// 实例已经有别的窗口时不算。
-    var openingInstance: String? {
-        guard case .open(let target) = pendingWindowRequest?.content else { return nil }
-        let panes = layout.panes.filter { dockInstanceID($0) == target.instanceId }
-        return panes.count <= 1 && panes.allSatisfy(layout.docked.contains) ? target.instanceId : nil
     }
 
     /// 按窗口集合的顺序取出台面上的窗口，结果稳定。
@@ -289,7 +281,6 @@ extension AppModel {
             area.settingsInstance = instance
             return
         }
-        guard !area.changingWindows, area.pendingWindowRequest == nil, area.pendingInstanceRequest == nil else { return }
         openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area)
     }
 

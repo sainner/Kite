@@ -133,10 +133,11 @@ final class WorkThread: Identifiable {
     }
 
     /// 草稿发出后工作机建好了实例：同一个对象接着当这个代理，窗口里的对话、排着的第一条消息和动画都不换。
-    /// 角色与参数此后以实例配置为准；接着 use 工作机连接，就不再是草稿。
-    func adopt(instance: String) {
+    /// 角色与参数此后以实例配置为准；接着 use 工作机连接，就不再是草稿。root 是工作区目录，新建工作区时本机先建的草稿还不知道。
+    func adopt(instance: String, root: String) {
         guard isDraft else { return }
         id = instance
+        if transcript.root != root { transcript.root = root }
         role = nil
         draftChoice = nil
         agentOptions = nil
@@ -277,6 +278,12 @@ final class WorkThread: Identifiable {
     }
 
     func retry(_ message: Message) { deliver(message) }
+
+    /// 新建工作区的第一条消息随创建请求发出（见 AppModel.create），这里只排进队里显示，同草稿发出的第一条。
+    func queueFirst(_ message: Message) {
+        outbox.append(message)
+        render()
+    }
 
     /// 草稿的第一条消息随创建请求发出，请求失败时：还是草稿就撤回消息，字退回输入框，好改了角色或参数再发；
     /// 工作机已经建好代理的，照普通消息标成未确认，点消息重试。

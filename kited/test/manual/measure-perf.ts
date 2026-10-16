@@ -13,8 +13,8 @@ import { command } from './command.ts';
 import { compare, mainThreadSamples, measureIntervals, profile, render, summarize, type Report, type Row, type Run } from './perf-analysis.ts';
 
 const MAC_SCENES = ['drag-bottom', 'drag-work', 'drag-long', 'drag-fold', 'drag-running', 'drag-actions', 'sidebar', 'motion',
-  'idle-normal', 'idle-empty', 'idle-ring', 'idle-pulse', 'idle-sweep', 'type', 'send'];
-const IPAD_SCENES = ['drag-bottom', 'sidebar', 'motion'];
+  'reopen', 'enter', 'idle-normal', 'idle-empty', 'idle-ring', 'idle-pulse', 'idle-sweep', 'type', 'send'];
+const IPAD_SCENES = ['drag-bottom', 'sidebar', 'motion', 'reopen', 'enter'];
 const IPHONE_SCENES = ['drawer', 'pull', 'swipe', 'keyboard'];
 /**
  * Time Profiler 默认按这些关键词分主线程：每个样本归到给的次序里第一个在栈上出现的（见 perf-analysis.ts 的 profile），
@@ -46,10 +46,11 @@ iPhone 场景：${IPHONE_SCENES.join(' ')}
   --keywords a,b        Time Profiler 合计的关键词，默认按平台给一组
   --lock <文件>         编译和测量都用 lockf 拿着这把锁，与同时编译、测量的其他检出排队
   --workspace <ID>      临时切到这个工作区再测（不存盘）
+  --enter <ID>          enter 场景切过去的工作区，默认同一台工作机上台面摆着窗口的另一个
   --threads a,b         台面上只摆这几个会话（会话 id，按次序从停靠栏恢复），测完写回
   --window 宽x高        Mac 测量窗口的大小，默认 1200x924
   --rounds N            每次启动测几轮（拖缝、侧栏默认 Mac 2、iPad 3）
-  --pairs N             缩小恢复、iPhone 各场景每次启动做几次（默认 4）
+  --pairs N             缩小恢复、打开关闭、切工作区、iPhone 各场景每次启动做几次（默认 4）
   --no-build            用上次编好的测量版
   --compare <结果目录>  和之前一次的结果对比
   --out <目录>          结果放哪，默认 build/perf/<平台>-<时间>`;
@@ -63,7 +64,7 @@ if (platform !== 'mac' && platform !== 'ipad' && platform !== 'iphone') {
   process.exit(2);
 }
 const options = { repeat: 1, variants: [] as Array<{ name: string; args: string[] }>, base: undefined as string | undefined, trace: false,
-  keywords: KEYWORDS[platform], lock: undefined as string | undefined, workspace: undefined as string | undefined, threads: undefined as string | undefined, window: '1200x924',
+  keywords: KEYWORDS[platform], lock: undefined as string | undefined, workspace: undefined as string | undefined, enter: undefined as string | undefined, threads: undefined as string | undefined, window: '1200x924',
   rounds: undefined as string | undefined, pairs: undefined as string | undefined, build: true, compare: undefined as string | undefined, out: undefined as string | undefined,
   device: undefined as string | undefined };
 const scenes: string[] = [];
@@ -86,6 +87,7 @@ for (let i = 0; i < argv.length; i++) {
     case '--keywords': options.keywords = value().split(',').filter(Boolean); break;
     case '--lock': options.lock = resolve(value()); break;
     case '--workspace': options.workspace = value(); break;
+    case '--enter': options.enter = value(); break;
     case '--threads': options.threads = value(); break;
     case '--window': options.window = value(); break;
     case '--rounds': options.rounds = value(); break;
@@ -179,6 +181,7 @@ const builds: Build[] = [];
 function appArgs(run: Run, variant: Build): string[] {
   return ['-perfScene', run.scene, '-perfRun', runID(run), '-perfAutoStart', '8',
     ...(options.workspace ? ['-perfWorkspace', options.workspace] : []),
+    ...(options.enter ? ['-perfEnter', options.enter] : []),
     ...(options.threads ? ['-perfThreads', options.threads] : []),
     ...(options.rounds ? ['-perfRounds', options.rounds] : []),
     ...(options.pairs ? ['-perfPairs', options.pairs] : []),

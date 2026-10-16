@@ -121,6 +121,8 @@ final class AppModel {
     /// 侧栏菜单发起的现场推送与归档确认，由 WorkspaceGitPresentation 呈现。
     var scenePush: WorkArea?
     var archiveRequest: WorkArea?
+    /// 本机新建、工作机还没列出来的工作区，见 create。
+    @ObservationIgnored private var creatingWorkspaces: [String: WorkArea] = [:]
 
     init(account: KiteAccount = KiteAccount()) {
         self.account = account
@@ -158,31 +160,49 @@ final class AppModel {
 
     func createInstance(_ definition: RemotePluginDefinition, in area: WorkArea) {
         if definition.agent != nil { area.openDraft(); return }
-        if !definition.views.isEmpty { openWindow(.create(definition.id), in: area); return }
-        guard !area.changingWindows, area.pendingWindowRequest == nil, area.pendingInstanceRequest == nil else { return }
-        area.pendingInstanceRequest = CreatePluginInstance(id: UUID().uuidString.lowercased(), definitionId: definition.id)
-        retryCreateInstance(in: area)
+        if !definition.views.isEmpty { openWindow(.create(definition.id, instance: UUID().uuidString.lowercased()), in: area); return }
+        sendInstanceRequest(CreatePluginInstance(id: UUID().uuidString.lowercased(), definitionId: definition.id), in: area)
     }
 
-    func retryCreateInstance(in area: WorkArea) {
-        guard let request = area.pendingInstanceRequest, !area.changingWindows else { return }
-        area.changingWindows = true
+    /// 后台实例不等工作机：ID 由本机定，本机先放进停靠栏（见 WorkArea.openingInstances），工作机按同一个 ID 建好后由它的列表接上；
+    /// 建不成再收回。
+    private func sendInstanceRequest(_ request: CreatePluginInstance, in area: WorkArea) {
+        guard let definition = area.definitions.first(where: { $0.id == request.definitionId }) else { return }
         area.windowError = nil
+        area.failedInstanceRequests.removeAll { $0.id == request.id }
+        area.createLocally(RemotePluginInstance(id: request.id, workspaceId: area.id, definitionId: definition.id,
+                                                title: area.newInstanceTitle(definition), status: .open, presentation: .background,
+                                                createdAt: Self.now))
         Task {
-            defer { area.changingWindows = false }
+            let client: KitedClient
             do {
-                let client = try activeClient(in: area)
+                client = try activeClient(in: area)
                 guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
                 let _: RemotePluginInstance = try await client.request("/workspaces/\(area.id)/plugin-instances", method: "POST", body: request, as: RemotePluginInstance.self)
-                try await refresh(client)
-                guard accepts(client) else { return }
-                area.pendingInstanceRequest = nil
             } catch {
-                if let status = (error as? KitedError)?.status, (400..<500).contains(status) { area.pendingInstanceRequest = nil }
+                area.settleInstance(request.id)
+                if !Self.rejected(error) { area.failedInstanceRequests.append(request) }
                 area.windowError = error.localizedDescription
+                return
             }
+            do { try await refresh(client) } catch { area.windowError = error.localizedDescription }
         }
     }
+
+    /// 重发网络中断时没得到确认的开窗口、建实例请求，ID 不变。
+    func retryRequests(in area: WorkArea) {
+        let windows = area.failedWindowRequests, instances = area.failedInstanceRequests
+        for request in windows { send(request, in: area) }
+        for request in instances { sendInstanceRequest(request, in: area) }
+    }
+
+    /// 明确拒绝可以结束这次请求；网络中断保留同一 ID，供用户安全重试。
+    private static func rejected(_ error: Error) -> Bool {
+        (error as? KitedError)?.status.map { (400..<500).contains($0) } ?? false
+    }
+
+    /// 和工作机一样的毫秒时间戳，本机先建的对象用。
+    private static var now: Int { Int(Date().timeIntervalSince1970 * 1000) }
 
     #if os(macOS)
     static var deviceName: String { Host.current().localizedName ?? "Mac" }
@@ -196,6 +216,7 @@ final class AppModel {
         connections = [:]
         accountMachineID = nil
         workspaces = []
+        creatingWorkspaces = [:]
         detached = []
         selectedProjectID = nil
         selected = ""
@@ -441,8 +462,11 @@ final class AppModel {
     }
 
     private func replaceWorkspaces(_ areas: [WorkArea], on machine: String) {
+        // 本机正新建、工作机还没列出来的留着，见 create
+        let listed = Set(areas.map(\.id))
+        let creating = creatingWorkspaces.values.filter { $0.remote?.machine.id == machine && !listed.contains($0.id) }
         // 工作区流转后同一 ID 出现在几台工作机上：epoch 最高、未冻结的是当前宿主，冻结的旧记录不另列。
-        let merged = workspaces.filter { $0.remote?.machine.id != machine } + areas
+        let merged = workspaces.filter { $0.remote?.machine.id != machine } + areas + creating
         let rank = { (area: WorkArea) in (area.remote?.workspace.status == .transferred ? 0 : 1, area.remote?.workspace.epoch ?? 1) }
         var hosts: [String: WorkArea] = [:]
         for area in merged where hosts[area.id].map({ rank(area) > rank($0) }) ?? true { hosts[area.id] = area }
@@ -477,21 +501,60 @@ final class AppModel {
         return result.checkout.id
     }
 
-    func create(checkout: String, prompt: String) async throws {
-        guard let machine = checkouts.first(where: { $0.id == checkout })?.machineId,
-              let connection = connections[machine], connection.connected else { throw KitedError(message: "检出所属工作机未连接") }
+    /// 新建工作区不等工作机：工作区、第一个代理的窗口和第一条消息的 ID 都由本机定，本机先按它们建好、选中（见 WorkArea.init(creating:)），
+    /// 弹窗当场关掉；工作机建好后目录接上同一个工作区对象，第一个代理照草稿发出第一条消息的路子接上。
+    /// 建不成就收回，话退回新工作区的草稿，原因报在那里。
+    func create(checkout: String, prompt: String) throws {
+        guard let base = workspaces.first(where: { $0.remote?.checkout.id == checkout })?.remote,
+              let connection = connections[base.machine.id], connection.connected else { throw KitedError(message: "检出所属工作机未连接") }
         let client = connection.client
-        let role = draftWorkspace.draftThread.role
+        let draft = draftWorkspace.draftThread
+        let role = draft.role
         if let role, connection.roles?.roles.contains(where: { $0.id == role.id && $0.revision == role.revision }) != true {
             throw KitedError(message: "所选角色不属于这台工作机，请重新选择")
         }
-        let area = try await client.request("/workspaces", method: "POST",
-            body: CreateThreadRequest(prompt: prompt, checkout: checkout, role: role?.selection), as: RemoteWorkspace.self)
-        try await refresh(client)
-        guard accepts(client) else { throw KitedError(message: "工作机已切换") }
-        selectWorkspace(area.id)
-        draftWorkspace.draftThread.draft = ""
-        draftWorkspace.draftThread.role = nil
+        let id = UUID().uuidString.lowercased(), window = UUID().uuidString.lowercased()
+        let message = Message(typed: prompt.trimmingCharacters(in: .whitespacesAndNewlines))
+        let info = WorkspaceInfo(id: id, epoch: 1, checkoutId: checkout, name: Self.title(of: message.typed), cwd: "", kind: .worktree,
+                                 branch: "kite/\(id)", base: nil, status: .preparing, createdAt: Self.now)
+        let area = WorkArea(creating: RemoteWorkspace(machine: base.machine, project: base.project, checkout: base.checkout, workspace: info,
+                                                     threads: [], instances: [], windows: []),
+                            window: window, first: message)
+        area.draftThread.role = role
+        creatingWorkspaces[id] = area
+        workspaces.insert(area, at: 0)
+        selectWorkspace(id)
+        let typed = draft.draft
+        draft.draft = ""
+        Task {
+            defer {
+                area.creatingWindow = nil
+                creatingWorkspaces[id] = nil
+            }
+            do {
+                _ = try await client.request("/workspaces", method: "POST",
+                    body: CreateThreadRequest(prompt: message.typed, checkout: checkout, role: role?.selection, windowId: window,
+                                              messageId: message.id, id: id), as: RemoteWorkspace.self)
+            } catch {
+                // 目录已经接上的（请求其实到了）留着
+                guard area.pluginClient == nil else { return }
+                workspaces.removeAll { $0 === area }
+                if selected == id { selectWorkspace(draftWorkspace.id) }
+                let kept = [typed == message.typed ? "" : typed, draft.draft].filter { !$0.isEmpty }
+                draft.draft = ([message.typed] + kept).joined(separator: "\n\n")
+                draft.error = error.localizedDescription
+                return
+            }
+            if draft.role?.id == role?.id { draft.role = nil }
+            try? await refresh(client)
+        }
+    }
+
+    /// 和工作机给工作区起的名字一样：第一条消息的第一行，最长 80 个字。
+    private static func title(of prompt: String) -> String {
+        let line = prompt.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n", omittingEmptySubsequences: false).first
+            .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        return String((line.isEmpty ? "（空消息）" : line).prefix(80))
     }
 
     func startThread(in area: WorkArea, message: Message, window: String) async throws {
@@ -508,114 +571,129 @@ final class AppModel {
         guard accepts(client) else { throw KitedError(message: "工作机已切换") }
     }
 
-    /// 归档保留会话与数据，工作机停止执行并关闭它的全部窗口。
-    func archiveInstance(_ instance: RemotePluginInstance, in area: WorkArea) async throws {
+    /// 归档不等工作机：本机先按已归档算，停靠栏里那一格和它的窗口当场收掉（见 WorkArea.archivingInstances）；工作机归档不成再放回来，
+    /// 报在归档失败的提示里。归档保留会话与数据，工作机停止执行并关闭它的全部窗口。
+    func archiveInstance(_ instance: RemotePluginInstance, in area: WorkArea) throws {
         let client = try activeClient(in: area)
         guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
-        let _: JSON = try await client.request("/instances/\(instance.id)/archive", method: "POST", as: JSON.self)
-        try await refresh(client)
+        area.archiveError = nil
+        area.archiveLocally(instance.id)
+        Task {
+            do {
+                let _: JSON = try await client.request("/instances/\(instance.id)/archive", method: "POST", as: JSON.self)
+            } catch {
+                area.restoreArchiving(instance.id)
+                area.archiveError = error.localizedDescription
+                return
+            }
+            do { try await refresh(client) } catch { area.windowError = error.localizedDescription }
+        }
     }
 
     func openWindow(_ content: OpenWindowRequest.Content, in area: WorkArea) {
         if area.isDraft { newWorkspace = .session; return }
-        guard !area.changingWindows else { return }
         if case .open(let target) = content, area.windows.contains(where: { $0.target == target }) {
             area.activateWindow(for: target)
             return
         }
-        guard area.pendingWindowRequest == nil, area.pendingInstanceRequest == nil else {
-            area.windowError = "请先重试并确认上一次创建操作"
-            return
-        }
-        area.pendingWindowRequest = OpenWindowRequest(id: UUID().uuidString.lowercased(), content: content)
-        retryOpenWindow(in: area)
+        send(OpenWindowRequest(id: UUID().uuidString.lowercased(), content: content), in: area)
     }
 
-    func retryOpenWindow(in area: WorkArea) {
-        guard let request = area.pendingWindowRequest, !area.changingWindows else { return }
-        area.changingWindows = true
+    /// 发出开窗口请求，失败报在窗口操作的提示里。
+    private func send(_ request: OpenWindowRequest, in area: WorkArea) {
+        let task = sendWindowRequest(request, in: area)
+        Task { if case .failure(let error) = await task.result { area.windowError = error.localizedDescription } }
+    }
+
+    /// 开窗口不等工作机：工作机用请求 ID 作新窗口的 ID、用请求里的实例 ID 建新实例（见 kited 的 openWindow），本机先按这两个 ID
+    /// 建好、放上台面（见 WorkArea.openingWindows、openingInstances），工作机建好后由它的列表接上，卡片不换；建不成再收回。
+    /// 几个请求可以同时在路上。返回工作机确认的窗口。
+    private func sendWindowRequest(_ request: OpenWindowRequest, in area: WorkArea) -> Task<RemoteWorkspaceWindow, Error> {
         area.windowError = nil
-        Task {
-            defer { area.changingWindows = false }
-            do {
-                let client = try activeClient(in: area)
-                guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
-                let window = try await client.request("/workspaces/\(area.id)/windows", method: "POST", body: request, as: RemoteWorkspaceWindow.self)
-                try await refresh(client)
-                guard accepts(client) else { return }
-                area.layout.activate(Pane(window.id))
-                area.pendingWindowRequest = nil
-            } catch {
-                // 明确拒绝可以结束这次请求；网络中断保留同一 ID，供用户安全重试。
-                if let status = (error as? KitedError)?.status, (400..<500).contains(status) {
-                    area.pendingWindowRequest = nil
-                }
-                area.windowError = error.localizedDescription
+        area.failedWindowRequests.removeAll { $0.id == request.id }
+        var local: WindowTarget?
+        var created: String?
+        switch request.content {
+        case .open(let target):
+            local = target
+        case .create(let definitionId, let instanceId):
+            if let definition = area.definitions.first(where: { $0.id == definitionId }) {
+                area.createLocally(RemotePluginInstance(id: instanceId, workspaceId: area.id, definitionId: definitionId,
+                                                        title: area.newInstanceTitle(definition), status: .open, presentation: .window,
+                                                        createdAt: Self.now))
+                created = instanceId
+                local = WindowTarget(instanceId: instanceId, viewId: definition.defaultView)
             }
         }
-    }
-
-    /// 引用只选择资源；窗口身份仍按现有实例与视图复用。
-    func openFileReference(_ reference: FileReference, in area: WorkArea) async throws {
-        guard !area.changingWindows else { throw KitedError(message: "窗口正在更新，请稍后重试") }
-        guard area.pendingInstanceRequest == nil else { throw KitedError(message: "请先重试并确认上一次创建操作") }
-        guard !area.isDraft else { throw KitedError(message: "请先创建工作区") }
-        area.changingWindows = true
-        defer { area.changingWindows = false }
-        let openFile = area.windows.first { area.files[$0.target.instanceId] != nil }
-        let instanceID = openFile?.target.instanceId ?? area.instances.first { $0.definitionId == "kite.files" && $0.status == .open }?.id
-        let target: WindowTarget
-        if let instanceID { target = WindowTarget(instanceId: instanceID, viewId: "files") }
-        else {
-            let request = area.pendingWindowRequest ?? OpenWindowRequest(id: UUID().uuidString, content: .create("kite.files"))
-            guard case .create("kite.files") = request.content else { throw KitedError(message: "请先完成上一次窗口操作") }
-            area.pendingWindowRequest = request
-            let window = try await openReferenceWindow(request, in: area)
-            area.pendingWindowRequest = nil
-            target = window.target
-        }
-        guard let browser = area.files[target.instanceId] else { throw KitedError(message: "文件窗口尚未就绪") }
-        try await browser.navigate(reference)
-        if area.windows.contains(where: { $0.target == target }) { area.activateWindow(for: target) }
-        else {
-            let request = area.pendingWindowRequest ?? OpenWindowRequest(id: UUID().uuidString, content: .open(target))
-            guard case .open(let pending) = request.content, pending == target else { throw KitedError(message: "请先完成上一次窗口操作") }
-            area.pendingWindowRequest = request
-            _ = try await openReferenceWindow(request, in: area)
-            area.pendingWindowRequest = nil
-        }
-    }
-
-    private func openReferenceWindow(_ request: OpenWindowRequest, in area: WorkArea) async throws -> RemoteWorkspaceWindow {
-        let client = try activeClient(in: area)
-        guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
-        do {
-            let window = try await client.request("/workspaces/\(area.id)/windows", method: "POST", body: request, as: RemoteWorkspaceWindow.self)
-            try await refresh(client)
-            guard accepts(client) else { throw KitedError(message: "工作机已切换") }
-            area.layout.activate(Pane(window.id))
+        if let local { area.openLocally(RemoteWorkspaceWindow(id: request.id, workspaceId: area.id, target: local, state: .open, createdAt: 0)) }
+        let closing = Array(area.closeRequests.values)
+        return Task {
+            let window: RemoteWorkspaceWindow, client: KitedClient
+            do {
+                for close in closing { await close.value }
+                client = try activeClient(in: area)
+                guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
+                window = try await client.request("/workspaces/\(area.id)/windows", method: "POST", body: request, as: RemoteWorkspaceWindow.self)
+            } catch {
+                area.settleOpening(request.id)
+                if let created { area.settleInstance(created) }
+                if !Self.rejected(error) { area.failedWindowRequests.append(request) }
+                throw error
+            }
+            do { try await refresh(client) } catch { area.windowError = error.localizedDescription }
+            if accepts(client), local == nil || window.id != request.id {
+                // 本机没先开，或工作机交回了这个实例原有的窗口：本机先开的那个换成它
+                area.settleOpening(request.id)
+                area.layout.activate(Pane(window.id))
+            }
             return window
-        } catch {
-            if let status = (error as? KitedError)?.status, (400..<500).contains(status) { area.pendingWindowRequest = nil }
-            throw error
         }
     }
 
+    /// 引用只选择资源；窗口身份仍按现有实例与视图复用。窗口先在本机打开（见 sendWindowRequest），再选文件；
+    /// 还没有文件实例的，等工作机建好实例才能选。
+    func openFileReference(_ reference: FileReference, in area: WorkArea) async throws {
+        guard !area.isDraft else { throw KitedError(message: "请先创建工作区") }
+        let browsing = area.windows.first { area.files[$0.target.instanceId] != nil }?.target.instanceId
+            ?? area.instances.first { $0.status == .open && area.files[$0.id] != nil }?.id
+        guard let instanceID = browsing else {
+            let request = OpenWindowRequest(id: UUID().uuidString.lowercased(), content: .create("kite.files", instance: UUID().uuidString.lowercased()))
+            let window = try await sendWindowRequest(request, in: area).value
+            guard let browser = area.files[window.target.instanceId] else { throw KitedError(message: "文件窗口尚未就绪") }
+            try await browser.navigate(reference)
+            return
+        }
+        let target = WindowTarget(instanceId: instanceID, viewId: "files")
+        var opening: Task<RemoteWorkspaceWindow, Error>?
+        if area.windows.contains(where: { $0.target == target }) { area.activateWindow(for: target) }
+        else { opening = sendWindowRequest(OpenWindowRequest(id: UUID().uuidString.lowercased(), content: .open(target)), in: area) }
+        guard let browser = area.files[instanceID] else { throw KitedError(message: "文件窗口尚未就绪") }
+        try await browser.navigate(reference)
+        _ = try await opening?.value
+    }
+
+    /// 关窗口不等工作机：本机先关掉、飞回停靠栏（见 WorkArea.closingWindows），工作机关不掉再放回来。
+    /// 本机先开、工作机还没建好的窗口要等建好才能关。
     func closeWindow(_ pane: Pane, in area: WorkArea) {
         guard !area.isDraft else { return }
         if pane.id == area.draftWindow { area.closeDraft(); return }
-        guard !area.changingWindows else { return }
-        area.changingWindows = true
+        guard area.windows.contains(where: { $0.id == pane.id }), !area.isOpening(pane), area.closeRequests[pane.id] == nil else { return }
         area.windowError = nil
-        Task {
-            defer { area.changingWindows = false }
+        area.closeLocally(pane.id)
+        area.closeRequests[pane.id] = Task {
+            defer { area.closeRequests[pane.id] = nil }
+            let client: KitedClient
             do {
-                let client = try activeClient(in: area)
+                client = try activeClient(in: area)
                 guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
                 struct Closed: Decodable { let ok: Bool }
                 _ = try await client.request("/workspaces/\(area.id)/windows/\(pane.id)", method: "DELETE", as: Closed.self)
-                try await refresh(client)
-            } catch { area.windowError = error.localizedDescription }
+            } catch {
+                area.reopenClosing(pane.id)
+                area.windowError = error.localizedDescription
+                return
+            }
+            do { try await refresh(client) } catch { area.windowError = error.localizedDescription }
         }
     }
 

@@ -92,6 +92,9 @@ final class CardView: NSView {
     private var iconKey: IconKey?
     /// 交给托管视图的环境，外观变了才换。
     private var installed = false
+    /// 正文（会话窗口连同原生外框和对话）、点阵和窗口按钮还没建。头一次排布就收在停靠栏里的卡片先只有外框和头像：
+    /// 进入工作区时台面上的窗口先出来，停靠栏里的由台面空闲时一张张补（见 StageView.warmUp），要露出来时当场建（见 arrange）。
+    private(set) var bodyDeferred = false
 
     var motionMoving: Bool { placed?.motion.moving ?? false }
 
@@ -153,6 +156,7 @@ final class CardView: NSView {
         headerView.contextMenu.delegate = headerView
         headerView.buildMenu = { [weak self] menu in self?.buildMenu(menu) }
         motion.onStart = { [weak self] motion in self?.flightStarted(motion) }
+        bodyDeferred = placed?.minimized == true
         environmentChanged()
         trackMotion()
     }
@@ -160,19 +164,31 @@ final class CardView: NSView {
     /// 外观类的环境变了，或窗口组换了一项（资源库同一类里换角色、模板）：各个托管视图重新交环境，正文按新的一项重建，
     /// 会话窗口的原生外框也换上。正文里的桥接上来的环境跟着变（CardContentState.environment 每次加一），见 ThreadPaneBridge。
     func environmentChanged() {
-        guard let stage, let motion = placed?.motion, let container, let backdrop else { return }
+        guard let stage, placed != nil, container != nil else { return }
         installed = true
+        header.layout = stage.group.layout
+        if !bodyDeferred { installBody() }
+        iconKey = nil
+        updateIcon()
+        updateColors()
+    }
+
+    /// 建推迟的正文、点阵和窗口按钮，见 bodyDeferred。
+    func buildBody() {
+        guard bodyDeferred else { return }
+        bodyDeferred = false
+        installBody()
+    }
+
+    private func installBody() {
+        guard let stage, let motion = placed?.motion, let container, let backdrop else { return }
         let group = stage.group
-        header.layout = group.layout
         content.environment += 1
         container.host.rootView = stage.rooted(CardContent(
             group: group, pane: pane, state: content, header: header, headerRegions: headerRegions, presence: presence, motion: motion,
             reports: bodyReports, link: link, carrier: carrier, scope: scope, threadSlot: threadSlot))
         backdrop.rootView = stage.rooted(CardDots(reports: bodyReports, carrier: carrier, scope: scope, motion: motion))
         buttons.rootView = stage.rooted(CardButtons(group: group, pane: pane, header: header, state: content, motion: motion))
-        iconKey = nil
-        updateIcon()
-        updateColors()
     }
 
     /// 拆掉：不再跟模型，收掉闭包和托管视图里的东西，原生外框一起拆。闭包都只弱持有台面和卡片，这里清掉是为了不留着已经没用的模型。
@@ -246,6 +262,7 @@ final class CardView: NSView {
         self.placed = placed
         self.arrangement = arrangement
         if first { install(motion: placed.motion) }
+        if !placed.minimized { buildBody() }
         closing = arrangement.closing
         acceptsInput = arrangement.acceptsInput
         let target = placed.target, minimized = placed.minimized

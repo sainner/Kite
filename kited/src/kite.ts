@@ -94,6 +94,9 @@ export interface MachineSummary {
 const firstLine = (text: string) => text.trim().split('\n')[0]!.trim() || '（空消息）';
 const titleOf = (prompt: string) => firstLine(prompt).slice(0, 80);
 
+/** 新建工作区时 App 定的几个 ID，见 Kite.createWorkspace。 */
+export interface NewWorkspaceIds { id?: string; windowId?: string; messageId?: string }
+
 const PUSH_ATTEMPTS = 3;
 /** 睡眠前被打断、换到另一台工作机后补的说明。 */
 const CONTINUE_AFTER_MOVE = '这台工作机睡眠前，这个工作区换到了这里，刚才的回合被打断了。接着刚才的工作继续。';
@@ -647,20 +650,24 @@ export class Kite {
     return { ...instance, instanceId: instance.id, runtime: instanceAgent(instance).runtime, nativeId: randomUUID() };
   }
 
-  /** 可以先建空工作区；带首条消息时，准备完成才启动首个线程。via 是经 Line 创建：首条消息是 Line 的说明。 */
-  async createWorkspace(checkoutId: string, name: string, prompt?: string, role?: RoleSelection, via?: InputVia): Promise<WorkspaceModel> {
+  /** 可以先建空工作区；带首条消息时，准备完成才启动首个线程。via 是经 Line 创建：首条消息是 Line 的说明。
+   * ids 由 App 生成：App 先按工作区、首个代理窗口和首条消息的 ID 在本机建好，目录和线程事件到了认得出是同一个。 */
+  async createWorkspace(checkoutId: string, name: string, prompt?: string, role?: RoleSelection, via?: InputVia,
+    ids: NewWorkspaceIds = {}): Promise<WorkspaceModel> {
     this.assertRunning();
     const c = this.checkoutManagement.get(checkoutId);
     if (prompt !== undefined && !prompt.trim()) throw new KiteError('第一条消息不能为空');
+    if (ids.id && this.store.workspace(ids.id)) throw new KiteError('工作区 ID 已使用', 409);
+    if (ids.windowId && this.store.window(ids.windowId)) throw new KiteError('窗口 ID 已使用', 409);
     const base = await this.serial(`checkout:${c.id}`, () => mainline(c));
     this.assertRunning();
-    const id = randomUUID();
+    const id = ids.id ?? randomUUID();
     const w: Workspace = { id, epoch: 1, checkoutId: c.id, name: name.trim() || (prompt ? titleOf(prompt) : '新工作区'),
       cwd: worktreePath(this.home, c.projectId, id), kind: 'worktree', branch: `kite/${id}`, base,
       status: 'preparing', createdAt: Date.now() };
     const t = prompt === undefined ? undefined : this.newThread(id, prompt, { role }, c.projectId);
-    this.store.addWorkspace(w, t ? { agent: t, window: this.instances.newWindow(t) } : undefined);
-    this.prepare(w, c, t && { thread: t, prompt: prompt!, via });
+    this.store.addWorkspace(w, t ? { agent: t, window: this.instances.newWindow(t, ids.windowId) } : undefined);
+    this.prepare(w, c, t && { thread: t, prompt: prompt!, via, messageId: ids.messageId });
     this.changed(id);
     if (t) this.threadChanged(t);
     return this.workspace(id);
@@ -674,7 +681,8 @@ export class Kite {
   }
 
   /** 按项目建工作区：先检查环境，不满足就不建；本机没有检出时自动 clone 到默认位置并登记，检出保留。 */
-  async createProjectWorkspace(projectId: string, name: string, prompt?: string, role?: RoleSelection, via?: InputVia): Promise<WorkspaceModel> {
+  async createProjectWorkspace(projectId: string, name: string, prompt?: string, role?: RoleSelection, via?: InputVia,
+    ids: NewWorkspaceIds = {}): Promise<WorkspaceModel> {
     this.assertRunning();
     if (prompt !== undefined && !prompt.trim()) throw new KiteError('第一条消息不能为空');
     const environment = await this.environment(projectId);
@@ -682,7 +690,7 @@ export class Kite {
     const login = runtimeLogin(environment, runtimeOfModel(model));
     if (login.status !== 'ready') throw new KiteError(`这台工作机不能运行所选模型：${login.message}`, 409);
     if (!diskEnough(environment)) throw new KiteError('这台工作机的磁盘剩余空间不足 1 GB', 409);
-    return this.createWorkspace((await this.ensureCheckout(projectId)).id, name, prompt, role, via);
+    return this.createWorkspace((await this.ensureCheckout(projectId)).id, name, prompt, role, via, ids);
   }
 
   /** 本机该项目的检出；没有时 clone 到默认位置并登记，检出保留。 */
@@ -710,7 +718,7 @@ export class Kite {
    * 建工作树、跑 setup、存初始快照后开放；带首条消息的线程在开放后才收到它。失败或被打断时工作区为 failed。
    * 重跑时工作树若没建成，先清掉残留的登记与分支：准备失败的工作区从未开放，分支上没有用户的改动。
    */
-  private prepare(w: Workspace, c: Checkout, first?: { thread: AgentInstance; prompt: string; via?: InputVia }, retry = false): void {
+  private prepare(w: Workspace, c: Checkout, first?: { thread: AgentInstance; prompt: string; via?: InputVia; messageId?: string }, retry = false): void {
     const { id } = w;
     const t = first?.thread;
     const controller = new AbortController();
@@ -727,7 +735,7 @@ export class Kite {
         controller.signal.throwIfAborted();
         this.setWorkspaceStatus(id, 'open');
         if (first) {
-          await this.sendInput(this.context(first.thread.id), { id: randomUUID(), text: first.prompt,
+          await this.sendInput(this.context(first.thread.id), { id: first.messageId ?? randomUUID(), text: first.prompt,
             ...(first.via ? { source: 'kite' as const, via: first.via } : { source: 'human' as const }) }, () => controller.signal.throwIfAborted());
         }
       } catch (e) {

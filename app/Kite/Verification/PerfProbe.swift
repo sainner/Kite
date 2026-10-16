@@ -55,7 +55,8 @@ import UIKit
         }
     }
 
-    /// 测的一段：drag、sidebar 是一轮摆动，minimize、restore 是一次排布动画，idle 是一段静息，key、send 是一次按键、一次发送；
+    /// 测的一段：drag、sidebar 是一轮摆动，minimize、restore、reopen、close 是一次排布动画，enter、back 是一次切工作区，
+    /// idle 是一段静息，key、send 是一次按键、一次发送；
     /// iPhone 的见 PerfProbe+Phone（抽屉开合、手指拉抽屉、横滑、键盘升降，各是一次动作到动画走完）。
     struct Segment: Encodable {
         let name: String
@@ -63,6 +64,8 @@ import UIKit
         let start: Mark
         var ticks: [Tick] = []
         var end: Mark?
+        /// 排布动画开始的时刻（有窗口报上来在走动画，CACurrentMediaTime 秒）。
+        var began: Double?
         /// 拖缝、侧栏松手后 1.2 秒的主线程（毫秒）。
         var settleCpuMs: Double?
     }
@@ -200,6 +203,8 @@ import UIKit
         switch scene {
         case "sidebar": try await sidebar(session)
         case "motion": try await motion(session)
+        case "reopen": try await reopen(session)
+        case "enter": try await enter(session)
         case let name where name.hasPrefix("drag-"):
             try await prepareDrag(String(name.dropFirst("drag-".count)), session)
             try await drag(session)
@@ -417,10 +422,9 @@ import UIKit
         }
     }
 
-    /// 做 action，逐帧记到排布动画走完（WindowLayout.settling 空了 40ms）或 2 秒。
+    /// 做 action，逐帧记到排布动画走完（WindowLayout.settling 空了 40ms）或 3 秒（要等工作机的动作，动画可能晚开始）。
     private static func settling(_ name: String, _ index: Int, _ layout: WindowLayout, _ action: () -> Void) async throws -> Segment {
         var segment = Segment(name: name, index: index, start: .now)
-        var began = false
         var quiet: Double?
         try await measuring {
             action()
@@ -428,14 +432,88 @@ import UIKit
                 let tick = Tick(link)
                 segment.ticks.append(tick)
                 if !layout.settling.isEmpty {
-                    began = true
+                    if segment.began == nil { segment.began = tick.wall }
                     quiet = nil
-                } else if began, quiet == nil {
+                } else if segment.began != nil, quiet == nil {
                     quiet = tick.wall
                 }
-                if tick.wall - segment.start.wall > 2 { return false }
+                if tick.wall - segment.start.wall > 3 { return false }
                 if let quiet, tick.wall - quiet >= 0.04 { return false }
                 return true
+            }
+        }
+        segment.end = .now
+        return segment
+    }
+
+    // MARK: - 打开关掉的窗口
+
+    /// 工作区里没开窗口的代理：经停靠栏打开（同点它的小头像，真的请工作机建窗口），过一会儿再关掉，-perfPairs 次（默认 4）；
+    /// 每次从动作起逐帧记到排布动画走完。测完窗口关着，同测之前。
+    private static func reopen(_ session: Session) async throws {
+        let model = session.model, area = session.area, layout = area.layout
+        func window(_ instance: RemotePluginInstance) -> Pane? {
+            area.windows.first { $0.target.instanceId == instance.id }.map { Pane($0.id) }
+        }
+        guard let instance = area.instances.first(where: { instance in
+            instance.status == .open && area.isAgent(instance) && window(instance) == nil && area.definition(of: instance)?.views.isEmpty == false
+        }) else { throw Failure("工作区里没有没开窗口的代理") }
+        session.onFinish { if let pane = window(instance) { model.closeWindow(pane, in: area) } }
+        try await ready(session)
+        for index in 0..<(number("perfPairs").map(Int.init) ?? 4) {
+            try await windowsIdle(area)
+            session.record(try await settling("reopen", index, layout) { model.openDockInstance(instance, in: area) })
+            if index == 0 { await capture("reopen-opened") }
+            // 历史读完、排好
+            try await Task.sleep(for: .seconds(1.5))
+            try await windowsIdle(area)
+            guard let pane = window(instance) else { throw Failure("窗口没有打开：\(area.windowError ?? "没有报错")") }
+            session.record(try await settling("close", index, layout) { model.closeWindow(pane, in: area) })
+            try await Task.sleep(for: .seconds(1.2))
+        }
+        try await windowsIdle(area)
+    }
+
+    /// 等窗口请求都回来，最多 10 秒。
+    private static func windowsIdle(_ area: WorkArea) async throws {
+        for _ in 0..<100 {
+            if area.windowsSettled { return }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        throw Failure("10 秒内窗口请求没有回来")
+    }
+
+    // MARK: - 切工作区
+
+    /// 切到另一个工作区再切回来（同在侧栏点工作区），-perfPairs 次（默认 4）；每次从动作起逐帧记 2 秒，台面重建、读历史、排对话都在里面。
+    /// 切过去的是 -perfEnter 给的工作区，没给时取同一台工作机上台面摆着窗口的另一个。
+    private static func enter(_ session: Session) async throws {
+        let model = session.model, area = session.area
+        let other = string("perfEnter").flatMap(model.workspace) ?? model.workspaces.first {
+            $0 !== area && !model.detached.contains($0.id) && $0.remote?.machine.id == area.remote?.machine.id
+                && $0.pluginClient != nil && !($0.layout.shown?.panes.isEmpty ?? true)
+        }
+        guard let other, other !== area else { throw Failure("没有可以切过去的另一个工作区") }
+        session.onFinish { model.selectWorkspace(area.id) }
+        try await ready(session)
+        for index in 0..<(number("perfPairs").map(Int.init) ?? 4) {
+            session.record(try await timed("enter", index, seconds: 2) { model.selectWorkspace(other.id) })
+            if index == 0 { await capture("enter-entered") }
+            try await Task.sleep(for: .seconds(1))
+            session.record(try await timed("back", index, seconds: 2) { model.selectWorkspace(area.id) })
+            try await Task.sleep(for: .seconds(1))
+        }
+    }
+
+    /// 做 action，逐帧记 seconds 秒。
+    private static func timed(_ name: String, _ index: Int, seconds: Double, _ action: () -> Void) async throws -> Segment {
+        var segment = Segment(name: name, index: index, start: .now)
+        try await measuring {
+            action()
+            try await Clock().run { link in
+                let tick = Tick(link)
+                segment.ticks.append(tick)
+                return tick.wall - segment.start.wall < seconds
             }
         }
         segment.end = .now

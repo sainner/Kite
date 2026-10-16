@@ -301,9 +301,12 @@ export function serve(kite: Kite, listen: Listen) {
           if ((b.checkout === undefined) === (b.project === undefined)) throw new KiteError('创建工作区要写 checkout 或 project 中的一个');
           const name = b.name === undefined ? '' : str(b.name, 'name');
           const prompt = b.prompt === undefined ? undefined : str(b.prompt, 'prompt');
+          const ids = z.object({ id: z.uuid().optional(), windowId: z.uuid().optional(), messageId: z.uuid().optional() })
+            .safeParse({ id: b.id, windowId: b.windowId, messageId: b.messageId });
+          if (!ids.success) throw new KiteError('工作区创建参数无效');
           const via = sourceOf(req);
-          return b.project === undefined ? kite.createWorkspace(str(b.checkout, 'checkout'), name, prompt, roleSelection(b.role), via)
-            : kite.createProjectWorkspace(str(b.project, 'project'), name, prompt, roleSelection(b.role), via);
+          return b.project === undefined ? kite.createWorkspace(str(b.checkout, 'checkout'), name, prompt, roleSelection(b.role), via, ids.data)
+            : kite.createProjectWorkspace(str(b.project, 'project'), name, prompt, roleSelection(b.role), via, ids.data);
         })),
       },
       '/summary': { GET: bound(() => kite.summary()) },
@@ -476,7 +479,7 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/windows': { POST: bound(async (req) => {
         const identity = z.string().trim().min(1);
         const parsed = z.object({ id: z.uuid(), content: z.discriminatedUnion('kind', [
-          z.object({ kind: z.literal('create'), definitionId: identity }).strict(),
+          z.object({ kind: z.literal('create'), definitionId: identity, instanceId: z.uuid().optional() }).strict(),
           z.object({ kind: z.literal('open'), instanceId: identity, viewId: identity }).strict(),
         ]) }).strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('窗口请求无效');

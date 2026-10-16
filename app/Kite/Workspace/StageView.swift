@@ -110,6 +110,8 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     private var retained: [Pane] = []
     /// 窗口指向的实例，窗口没了以后还要知道它属于哪个实例（停靠栏里那一格先不显示）。
     private var paneInstances: [Pane: String] = [:]
+    /// 排过一轮了：之后才有的卡片是新打开的窗口，要动着出来（见 CardPresentation.place 的 appearing）。
+    private var populated = false
 
     private let tracking = ModelTracking()
     /// 空画板报的点阵用量，台面合起来往上报。
@@ -217,6 +219,8 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     /// 台面拆掉（换工作区、离开这一栏）：停掉显示链接和事件监视，不再跟模型，卡片、缝和托管视图里的东西都清掉。
     /// 闭包都只弱持有台面和卡片（显示链接强持有台面，在这里废掉），这里清掉是为了不留着已经没用的模型和视图。
     func dismantle() {
+        warming?.cancel()
+        warming = nil
         displayLink?.invalidate()
         displayLink = nil
         removeEscapeMonitor()
@@ -338,15 +342,19 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         // 用开始拖时的大小，停下后照常
         let fallback = leadingInset > 0 ? frozenFallback ?? plan.regions.canvas.size : plan.regions.canvas.size
         frozenFallback = leadingInset > 0 ? fallback : nil
+        let appearing = populated
+        populated = true
         for pane in retained {
+            let fresh = cards[pane] == nil
             let card = cards[pane] ?? makeCard(pane)
             let closing = !layout.panes.contains(pane)
             let rect = plan.tiles.panes[pane]
-            let placed = card.presentation.place(group: group, pane: pane, rect: rect, dockFrame: plan.dockFrame(of: pane, area: area),
-                                                 fallbackSize: fallback, regions: plan.regions, closing: closing)
+            let placed = card.presentation.place(group: group, pane: pane, rect: rect, dockFrame: plan.dockFrame(of: pane),
+                                                 fallbackSize: fallback, regions: plan.regions, closing: closing,
+                                                 appearing: appearing && fresh, addButton: plan.dock?.add)
             let dimmed = plan.expanded && rect == nil && layout.drag?.pane != pane
             let arrangement = CardView.Arrangement(
-                placed: placed, dockFrame: plan.dockFrame(of: pane, area: area), closing: closing, family: plan.familyID(of: pane),
+                placed: placed, dockFrame: plan.dockFrame(of: pane), closing: closing, family: plan.familyID(of: pane),
                 openSidebar: pane == plan.first ? openSidebar : nil, dimmed: dimmed,
                 acceptsInput: !blocksInput && !resizing && !closing && !dimmed, dotsHidden: resizing,
                 dragged: layout.drag?.pane == pane, hasThread: area?.thread(in: pane) != nil, fixed: layout.isFixed,
@@ -398,6 +406,28 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         }
         reportDots()
         updateDisplayLink()
+        warmUp()
+    }
+
+    /// 停靠栏里正文还没建的卡片（见 CardView.bodyDeferred），空闲时由先到后一张张建：进入工作区那一刻只建台面上的窗口，
+    /// 它们的历史也先读；过渡中等它停下。
+    private var warming: Task<Void, Never>?
+
+    private func warmUp() {
+        guard warming == nil, cards.values.contains(where: { $0.bodyDeferred && !$0.closing }) else { return }
+        warming = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(400))
+                while true {
+                    while WindowLayout.anyTransitioning { try await Task.sleep(for: .milliseconds(100)) }
+                    guard let self else { return }
+                    guard let card = retained.lazy.compactMap({ self.cards[$0] }).first(where: { $0.bodyDeferred && !$0.closing }) else { break }
+                    card.buildBody()
+                    try await Task.sleep(for: .milliseconds(250))
+                }
+            } catch {}
+            self?.warming = nil
+        }
     }
 
     private func makeCard(_ pane: Pane) -> CardView {

@@ -5,7 +5,7 @@
 
 export interface Mark { wall: number; cpu: number; process: number }
 export interface Tick { time: number; wall: number; cpu: number; widths: number[] }
-export interface Segment { name: string; index: number; start: Mark; ticks: Tick[]; end?: Mark; settleCpuMs?: number }
+export interface Segment { name: string; index: number; start: Mark; ticks: Tick[]; end?: Mark; settleCpuMs?: number; began?: number }
 export interface Report {
   scene: string;
   run?: string;
@@ -62,24 +62,44 @@ function sweep(segment: Segment) {
   };
 }
 
-/** 一次动作到动画走完、逐帧记的段，按表分：iPad、Mac 的缩小恢复，iPhone 的抽屉开合、手指拉抽屉、横滑、键盘升降。 */
+/** 一次动作到动画走完、逐帧记的段，按表分：iPad、Mac 的缩小恢复、打开关掉的窗口，iPhone 的抽屉开合、手指拉抽屉、横滑、键盘升降。 */
 const ACTIONS: Record<string, string[]> = {
   '缩小与恢复': ['minimize', 'restore'],
+  '打开与关闭窗口': ['reopen', 'close'],
   '抽屉、横滑与键盘': ['sidebar-open', 'sidebar-close', 'actions-open', 'actions-close', 'pull-open', 'pull-close',
     'swipe-next', 'swipe-back', 'keyboard-show', 'keyboard-hide'],
 };
 
-/** 缩小、恢复这类的一次：动作到第一帧、这之间的主线程，到动画走完的主线程合计，丢帧（按屏幕刷新间隔算）和最长一帧。 */
+/**
+ * 缩小、恢复这类的一次：动作到第一帧、这之间的主线程，动作到窗口开始动（要等工作机的动作这一项大），
+ * 到动画走完的主线程合计，丢帧（按屏幕刷新间隔算）和最长一帧。
+ */
 function settle(segment: Segment, frame: number) {
   const ticks = segment.ticks;
   const first = ticks[0], last = ticks.at(-1);
   const intervals = diffs(ticks.map((t) => t.time * 1000));
   return {
     '首帧': first ? (first.wall - segment.start.wall) * 1000 : NaN,
+    '开始动': segment.began === undefined ? NaN : (segment.began - segment.start.wall) * 1000,
     '首帧前主线程': first ? first.cpu - segment.start.cpu : NaN,
     '整段主线程': last ? last.cpu - segment.start.cpu : NaN,
     '丢帧': sum(intervals.map((x) => Math.max(0, Math.round(x / frame) - 1))),
     '最长帧': intervals.length ? Math.max(...intervals) : NaN,
+  };
+}
+
+/** 切工作区的一次：动作到第一帧、这之间的主线程，前 300ms 和整段（2 秒，含读历史、排对话）的主线程，最长一帧、超 20ms 的帧。 */
+function switching(segment: Segment) {
+  const ticks = segment.ticks;
+  const intervals = diffs(ticks.map((t) => t.time * 1000));
+  const early = ticks.filter((t) => t.wall <= segment.start.wall + 0.3).at(-1);
+  return {
+    '首帧': ticks[0] ? (ticks[0].wall - segment.start.wall) * 1000 : NaN,
+    '首帧前主线程': ticks[0] ? ticks[0].cpu - segment.start.cpu : NaN,
+    '前 300ms 主线程': early ? early.cpu - segment.start.cpu : NaN,
+    '整段主线程': ticks.length ? ticks.at(-1)!.cpu - segment.start.cpu : NaN,
+    '最长帧': intervals.length ? Math.max(...intervals) : NaN,
+    '超 20ms 帧': intervals.filter((x) => x > 20).length,
   };
 }
 
@@ -145,6 +165,9 @@ export function summarize(runs: Run[]): Row[] {
       for (const name of names) {
         if (named(name).length) rows.push(combine(table, `${scene} ${name}`, variant, named(name).map((s) => settle(s, frame)), ['整段主线程']));
       }
+    }
+    for (const name of ['enter', 'back']) {
+      if (named(name).length) rows.push(combine('切工作区', `${scene} ${name}`, variant, named(name).map(switching), ['整段主线程']));
     }
     if (named('idle').length) rows.push(combine('静息占用', scene, variant, named('idle').map(idle), ['主线程 %']));
     if (named('key').length) {

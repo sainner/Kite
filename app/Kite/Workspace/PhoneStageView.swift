@@ -79,6 +79,8 @@ final class PhoneStageView: UIView, StageDotsReporting {
     private var retained: [Pane] = []
     /// 窗口指向的实例，窗口没了以后还要知道它属于哪个实例（停靠栏里那一格先不显示）。
     private var paneInstances: [Pane: String] = [:]
+    /// 排过一轮了：之后才有的卡片是新打开的窗口，要动着出来（见 CardPresentation.place 的 appearing）。
+    private var populated = false
 
     private let tracking = ModelTracking()
     /// 空画板报的点阵用量，台面合起来往上报。
@@ -171,6 +173,8 @@ final class PhoneStageView: UIView, StageDotsReporting {
 
     /// 台面拆掉（换工作区、离开这一栏）：停掉显示链接，不再跟模型，卡片、缝和岛里的东西都清掉。
     func dismantle() {
+        warming?.cancel()
+        warming = nil
         displayLink?.invalidate()
         displayLink = nil
         tracking.cancel()
@@ -283,12 +287,16 @@ final class PhoneStageView: UIView, StageDotsReporting {
         // 拖动、拖缝、拖侧栏改宽（dotsHidden）时每步都来一轮，展开、还原按钮要等卡片停下才换（updateExpands）：
         // 沿用上一轮算的，松手那一轮（这几样都在观察里）再算
         let keepsExpansion = layout.drag != nil || resizing || dotsHidden
+        let appearing = populated
+        populated = true
         for pane in retained {
+            let fresh = cards[pane] == nil
             let card = cards[pane] ?? makeCard(pane)
             let closing = !layout.panes.contains(pane)
             let rect = plan.tiles.panes[pane]
-            let placed = card.presentation.place(group: group, pane: pane, rect: rect, dockFrame: plan.dockFrame(of: pane, area: area),
-                                                 fallbackSize: plan.regions.canvas.size, regions: plan.regions, closing: closing)
+            let placed = card.presentation.place(group: group, pane: pane, rect: rect, dockFrame: plan.dockFrame(of: pane),
+                                                 fallbackSize: plan.regions.canvas.size, regions: plan.regions, closing: closing,
+                                                 appearing: appearing && fresh, addButton: plan.dock?.add)
             let dimmed = plan.expanded && rect == nil && layout.drag?.pane != pane
             let dragged = layout.drag?.pane == pane
             let hasThread = area?.thread(in: pane) != nil
@@ -296,7 +304,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
             // 被拖的卡片照常接：跟手拖动是它标题栏上的手势，中途设成不接会把拖动取消
             let accepts = (!blocksInput || dragged) && !resizing && !closing && !dimmed
             let arrangement = PhoneCardView.Arrangement(
-                placed: placed, dockFrame: plan.dockFrame(of: pane, area: area), closing: closing, family: plan.familyID(of: pane),
+                placed: placed, dockFrame: plan.dockFrame(of: pane), closing: closing, family: plan.familyID(of: pane),
                 openSidebar: pane == plan.first ? openSidebar : nil, dimmed: dimmed, acceptsInput: accepts, dotsHidden: resizing || dotsHidden,
                 dragged: dragged, hasThread: hasThread, fixed: layout.isFixed,
                 header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width, hasThread: hasThread,
@@ -345,6 +353,27 @@ final class PhoneStageView: UIView, StageDotsReporting {
         }
         reportDots()
         updateDisplayLink()
+        warmUp()
+    }
+
+    /// 停靠栏里正文还没建的卡片（见 PhoneCardView.bodyDeferred），空闲时由先到后一张张建，同 Mac 的 StageView.warmUp。
+    private var warming: Task<Void, Never>?
+
+    private func warmUp() {
+        guard warming == nil, cards.values.contains(where: { $0.bodyDeferred && !$0.closing }) else { return }
+        warming = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(400))
+                while true {
+                    while WindowLayout.anyTransitioning { try await Task.sleep(for: .milliseconds(100)) }
+                    guard let self else { return }
+                    guard let card = retained.lazy.compactMap({ self.cards[$0] }).first(where: { $0.bodyDeferred && !$0.closing }) else { break }
+                    card.buildBody()
+                    try await Task.sleep(for: .milliseconds(250))
+                }
+            } catch {}
+            self?.warming = nil
+        }
     }
 
     private func makeCard(_ pane: Pane) -> PhoneCardView {

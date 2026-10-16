@@ -90,6 +90,9 @@ final class PhoneCardView: UIView {
     /// 头像里放的东西，变了才换岛的 rootView。
     private var iconKey: IconKey?
     private var installed = false
+    /// 正文、点阵和窗口按钮还没建：头一次排布就收在停靠栏里的卡片先只有外框和头像，台面空闲时一张张补（见 PhoneStageView.warmUp），
+    /// 要露出来时当场建（见 arrange）。同 Mac 的 CardView。
+    private(set) var bodyDeferred = false
 
     var motionMoving: Bool { placed?.motion.moving ?? false }
 
@@ -165,25 +168,38 @@ final class PhoneCardView: UIView {
         headerView.buildMenu = { [weak self] in self?.menu() }
         headerView.menuPreview = { [weak self] in self?.menuPreview() }
         motion.onStart = { [weak self] motion in self?.flightStarted(motion) }
+        bodyDeferred = placed?.minimized == true
         environmentChanged()
         trackMotion()
     }
 
     /// 外观类的环境变了，或窗口组换了一项（资源库同一类里换角色、模板）：各个岛重新交环境，正文按新的一项重建。
     func environmentChanged() {
-        guard let stage, let motion = placed?.motion, let container, let backdrop else { return }
+        guard let stage, placed != nil, container != nil else { return }
         installed = true
+        header.layout = stage.group.layout
+        if !bodyDeferred { installBody() }
+        iconKey = nil
+        updateIcon()
+        updateColors()
+    }
+
+    /// 建推迟的正文、点阵和窗口按钮，见 bodyDeferred。
+    func buildBody() {
+        guard bodyDeferred else { return }
+        bodyDeferred = false
+        installBody()
+    }
+
+    private func installBody() {
+        guard let stage, let motion = placed?.motion, let container, let backdrop else { return }
         let group = stage.group
-        header.layout = group.layout
         content.environment += 1
         container.island.rootView = stage.rooted(CardContent(
             group: group, pane: pane, state: content, header: header, headerRegions: headerRegions, presence: presence, motion: motion,
             reports: bodyReports, link: link, carrier: carrier, scope: scope, threadSlot: threadSlot))
         backdrop.rootView = stage.rooted(CardDots(reports: bodyReports, carrier: carrier, scope: scope, motion: motion))
         buttons.rootView = stage.rooted(CardButtons(group: group, pane: pane, header: header, state: content, motion: motion, managesVisibility: false))
-        iconKey = nil
-        updateIcon()
-        updateColors()
     }
 
     /// 拆掉：不再跟模型，收掉闭包和岛里的东西，原生外框一起拆。
@@ -257,6 +273,7 @@ final class PhoneCardView: UIView {
         self.placed = placed
         self.arrangement = arrangement
         if first { install(motion: placed.motion) }
+        if !placed.minimized { buildBody() }
         closing = arrangement.closing
         acceptsInput = arrangement.acceptsInput
         let target = placed.target, minimized = placed.minimized

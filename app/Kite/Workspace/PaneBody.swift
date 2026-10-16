@@ -43,8 +43,13 @@ private struct WorkspacePaneBody: View {
 
     @ViewBuilder private var resolved: some View {
         let renderer = area.view(in: pane)?.renderer
+        let target = area.windows.first(where: { $0.id == pane.id })?.target
+        // 本机先建、工作机还没建好的实例：正文要读工作机上的实例，先只有标题栏
+        let opening = target.map { area.isOpening(instance: $0.instanceId) } ?? false
         Group {
-            if let thread = area.thread(in: pane) {
+            if opening {
+                PlaceholderPane(appearance: area.appearance(of: pane), kind: WindowAppearance.renderer(renderer ?? "").name, filled: false)
+            } else if let thread = area.thread(in: pane) {
                 // 不按线程 id 区分身份：草稿发出后同一个会话对象变成真实代理，id 随之改变，窗口内容不能跟着重建。
                 // 台面和 iPhone、iPad 的紧凑布局里会话窗口的外框是原生的（ThreadWindowView、PhoneThreadWindowView），
                 // 这里只留不占地方的那几样，见 ThreadPaneBridge；Mac 窄窗口是 SwiftUI 的 ThreadPane
@@ -69,9 +74,7 @@ private struct WorkspacePaneBody: View {
                 PlaceholderPane(appearance: area.appearance(of: pane), kind: WindowAppearance.renderer(renderer ?? "").name)
             }
         }
-        .environment(\.paneInstance, area.windows.first(where: { $0.id == pane.id }).flatMap { window in
-            area.instances.first { $0.id == window.target.instanceId }
-        })
+        .environment(\.paneInstance, opening ? nil : target.flatMap { target in area.instances.first { $0.id == target.instanceId } })
         .modifier(ReferenceNavigation())
     }
 }
@@ -85,14 +88,15 @@ private final class PaneExitContent {
     }
 }
 
-/// 插件内容接入之前仍使用原来的窗口占位。
+/// 插件内容接入之前仍使用原来的窗口占位；filled 为 false 时只有标题栏（实例还没建好）。
 private struct PlaceholderPane: View {
     let appearance: WindowAppearance
     let kind: String
+    var filled = true
 
     var body: some View {
         PaneWindow(header: PaneHeader(title: appearance.name, subtitle: kind)) {
-            RoundedRectangle(cornerRadius: 8).fill(appearance.tint.opacity(0.12))
+            RoundedRectangle(cornerRadius: 8).fill(appearance.tint.opacity(filled ? 0.12 : 0))
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)
         } controls: { _ in

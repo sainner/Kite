@@ -294,7 +294,7 @@ struct PaneHeaderReports: ViewModifier {
                              minimize: { layout.minimize(pane) }, expansion: layout.expansion(of: pane),
                              expand: { layout.expand(pane) }, collapse: { layout.collapse(pane) },
                              close: { model.closeWindow(pane, in: area) },
-                             canClose: !area.isDraft && !area.changingWindows && area.creatingWindow != pane.id)
+                             canClose: !area.isDraft && !area.isOpening(pane) && area.creatingWindow != pane.id)
 }
 
 /// 卡片标题栏的悬停和几项实际尺寸，由外框、按钮组和正文报上来，只有读它们的几层随之更新。
@@ -445,11 +445,8 @@ struct CreateInstanceMenu: View {
                     }
                 }.disabled(!canAdd)
             }.frame(maxHeight: 340)
-            if area.pendingWindowRequest != nil {
-                Button("重试创建") { model.retryOpenWindow(in: area); presented = false }.disabled(area.changingWindows)
-            }
-            if area.pendingInstanceRequest != nil {
-                Button("重试创建") { model.retryCreateInstance(in: area); presented = false }.disabled(area.changingWindows)
+            if !area.failedWindowRequests.isEmpty || !area.failedInstanceRequests.isEmpty {
+                Button("重试创建") { model.retryRequests(in: area); presented = false }
             }
             if let error { Text(error).font(.caption).foregroundStyle(Theme.danger) }
         }
@@ -465,10 +462,9 @@ struct CreateInstanceMenu: View {
 }
 
 extension WorkArea {
-    /// 没有窗口请求在路上、工作区在线且未归档时才能再加窗口。
+    /// 工作区在线且未归档时才能加窗口；别的窗口请求还在路上不妨碍。
     func canAddWindows(connected: Bool) -> Bool {
-        !changingWindows && pendingWindowRequest == nil && pendingInstanceRequest == nil &&
-            (isDraft || (connected && remote?.workspace.status == .open))
+        isDraft || (connected && remote?.workspace.status == .open)
     }
 }
 
@@ -480,8 +476,9 @@ struct WindowErrorAlert: ViewModifier {
     func body(content: Content) -> some View {
         content
             .alert("窗口操作失败", isPresented: Binding(get: { area.windowError != nil }, set: { if !$0 { area.windowError = nil } })) {
-                if area.pendingWindowRequest != nil { Button("重试添加") { model.retryOpenWindow(in: area) } }
-                if area.pendingInstanceRequest != nil { Button("重试添加") { model.retryCreateInstance(in: area) } }
+                if !area.failedWindowRequests.isEmpty || !area.failedInstanceRequests.isEmpty {
+                    Button("重试添加") { model.retryRequests(in: area) }
+                }
                 Button("好", role: .cancel) { area.windowError = nil }
             } message: { Text(area.windowError ?? "") }
     }

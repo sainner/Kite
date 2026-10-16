@@ -259,7 +259,7 @@ struct NewWorkspace: View {
         case .session, .checkout:
             return ("创建工作区",
                     !working && !checkoutID.isEmpty && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, {
-                perform { try await model.create(checkout: checkoutID, prompt: prompt); dismiss() }
+                perform { try model.create(checkout: checkoutID, prompt: prompt); dismiss() }
             })
         }
     }

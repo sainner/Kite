@@ -90,7 +90,8 @@ export interface WorkspaceWindow {
 
 export interface OpenWindowRequest {
   id: string;
-  content: ({ kind: 'open' } & WindowTarget) | { kind: 'create'; definitionId: string };
+  /** create 的 instanceId 是新实例的 ID，App 给的话按它建（App 先按它在本机打开窗口）。 */
+  content: ({ kind: 'open' } & WindowTarget) | { kind: 'create'; definitionId: string; instanceId?: string };
 }
 
 export interface WorkspaceModel {

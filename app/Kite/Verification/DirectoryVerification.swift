@@ -84,10 +84,10 @@ enum DirectoryVerification {
 
         model.selected = areaB.id
         let count = areaA.windows.count
-        model.openWindow(.create("kite.agent"), in: areaA)
+        model.openWindow(.create("kite.agent", instance: UUID().uuidString.lowercased()), in: areaA)
         try await wait("选中 B 时在 A 新建窗口") {
             guard let area = model.workspace(fixture.workspaceA) else { return false }
-            return !area.changingWindows && area.windows.count > count
+            return area.windowsSettled && area.windows.count > count
         }
         try await control(fixture, "/assert-operation-a")
         try require(model.workspace(fixture.workspaceB) != nil, "A 的实时快照清除了 B")

@@ -15,7 +15,7 @@
 ## 协作反馈
 
 - [界面工作与验收](feedback-ui-workflow.md) — 方案、目标定位、连续推进、失灵诊断不靠猜、真机验收和工具链选择
-- [交互连续性](feedback-interaction-quality.md) — 公共控件、对象身份、动效性能；窗口动画不回弹、点阵收起；改尺寸只动相邻窗口；上一步与固定；触屏长按起拖
+- [交互连续性](feedback-interaction-quality.md) — 公共控件、对象身份、动效性能；窗口动画不回弹、新建从添加入口展开、点阵收起；改尺寸只动相邻窗口；上一步与固定；触屏长按起拖
 - [状态放标题栏](feedback-pane-status-placement.md) — 正文不放错误、读取中、空状态等窗口状态，归信息区或副行；列表项状态除外，单页待定
 - [测试要克制](test-restraint.md) — 测试准入主来源、事件断言与 PDF 验证要求
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行与数据流判断，不能只看引用
@@ -34,3 +34,4 @@
 - [真实终端](todo-terminal-plugin.md) — PTY 与跨端重连、停止和资源生命周期
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据
 - [去中心化改造收尾](todo-decentralized-rollout.md) — 没做的租约续约与过期、CloudKit、环境声明、关机预告、App 流转入口
+- [本机先行的收尾](todo-local-first-actions.md) — 各路径已改为本机先行、待手测；失败时的收回方式；进入工作区卡顿待量（Mac、iPhone）

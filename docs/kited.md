@@ -305,7 +305,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/network/channel/key` | 仅本机：通道公钥 `{publicKey}`，没有私钥时先生成；kite-net 读钥匙串可能要等用户允许 |
 | GET | `/projects` | 列出本机已登记的项目身份 |
 | GET/POST | `/checkouts` | 列出本机检出（`?project=`）；登记本机文件夹 `{path}` 或 clone 远程 `{remote, path?}`，返回根工作区聚合 |
-| GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, role?}`，或以 `project` 代替 `checkout`（先检查环境，没有检出时先 clone），`role` 为 `{id, revision}`，准备过程看事件 |
+| GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, role?, id?, windowId?, messageId?}`，或以 `project` 代替 `checkout`（先检查环境，没有检出时先 clone），`role` 为 `{id, revision}`，准备过程看事件；`id`、`windowId`、`messageId` 是客户端生成的 UUID，分别用作工作区、首个代理窗口和第一条消息的 ID，工作区或窗口 ID 已用过返回 409，省略时由 kited 生成 |
 | GET | `/environment?project=` | 这台工作机为该项目建工作区前的环境，只读，见 [工作区与线程的生命周期](#工作区与线程的生命周期) |
 | POST | `/workspaces/:id/setup` | 准备失败的独立工作区重跑准备；工作树没建成时重建 |
 | POST | `/workspaces/:id/handover` | 交出工作区：停下线程、保存最后的快照，进入可交接状态，返回 `{epoch}`；`/handover/cancel` 撤回，`/lease/check` 立即核对执行权。约定见 [工作区流转](Line与工作区流转.md#工作区流转) |
@@ -365,9 +365,9 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/events?thread=<id>` | 线程 SSE：首帧 `thread.history`，随后线程显示与状态事件 |
 | GET | `/voice?thread=<id>` | 语音输入的 WebSocket，见 [语音识别](#语音识别)；`thread` 是正在输入的会话，新会话不带。App 推 16 kHz 单声道 s16le 的 PCM 二进制帧，说完发 `{"type":"finish"}`；工作机推 `{"type":"partial","text"}`（到目前为止的全文），最后推 `{"type":"final","text"}` 或 `{"type":"error","message"}` 后关闭。连上之后的错误（如没有凭据）都以 `error` 消息给出 |
 
-窗口创建请求为 `{id, content: {kind: "create", definitionId}}`；打开已有视图为 `{id, content: {kind: "open", instanceId, viewId}}`。`id` 使用 UUID。内置代理（`kite.agent`）提供 `conversation`，文件提供 `files`，终端占位提供 `terminal`；文件视图包含预览。新建的空 agent 不调用模型；目标实例须属于当前工作区且处于可用状态，视图须由定义声明。
+窗口创建请求为 `{id, content: {kind: "create", definitionId, instanceId?}}`，`instanceId` 是客户端生成的 UUID，用作新实例的 ID，已用过返回 409，省略时由 kited 生成；打开已有视图为 `{id, content: {kind: "open", instanceId, viewId}}`。`id` 使用 UUID。内置代理（`kite.agent`）提供 `conversation`，文件提供 `files`，终端占位提供 `terminal`；文件视图包含预览。新建的空 agent 不调用模型；目标实例须属于当前工作区且处于可用状态，视图须由定义声明。
 
-窗口响应包含 `{id, workspaceId, target: {instanceId, viewId}, state, createdAt}`。同一请求 ID 重试返回原结果，内容改变或窗口已关闭时拒绝，迟到重试不会复活窗口。实例回收与跨端布局的完整规则见 [Agent 与插件契约](Agent与插件契约.md#34-workspacewindow实例的一种呈现)。
+窗口响应包含 `{id, workspaceId, target: {instanceId, viewId}, state, createdAt}`。新建的窗口以请求 `id` 作窗口 ID，App 据此在工作机确认前先按这个 ID（和 `instanceId`）打开窗口；实例已有同一视图的窗口时返回原来那个。同一请求 ID 重试返回原结果，内容改变或窗口已关闭时拒绝，迟到重试不会复活窗口。实例回收与跨端布局的完整规则见 [Agent 与插件契约](Agent与插件契约.md#34-workspacewindow实例的一种呈现)。
 
 `/threads/:id` 使用 agent 实例 ID；原生后端 ID 不用于此接口。工作区聚合包含所属实例、线程与共享窗口，具体类型见 [领域模型](../kited/src/model.ts)。实例操作的参数、授权和收据统一见 [实例操作](实例操作.md)，文件引用见 [资源引用](资源引用.md)。
 

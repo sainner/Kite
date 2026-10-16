@@ -20,10 +20,23 @@ final class WorkArea: Identifiable {
     let layout: WindowLayout
     /// 正在发出的草稿窗口：期间输入区禁用，草稿不能关。
     var creatingWindow: String?
-    var changingWindows = false
-    var pendingWindowRequest: OpenWindowRequest?
-    var pendingInstanceRequest: CreatePluginInstance?
+    /// 本机打开、工作机还没建好的窗口：点下去就放上台面，和工作机的窗口一起排（见 rebuildWindows）。
+    /// 工作机按同一个 ID 建好后由它的列表接上，建不成就收回（见 AppModel.sendWindowRequest）。
+    private(set) var openingWindows: [RemoteWorkspaceWindow] = []
+    /// 本机新建、工作机还没建好的实例（新建工具窗口、后台实例）：当场放进实例集合，窗口和停靠栏先按它排；
+    /// 正文要用工作机上的实例，等建好再出来（见 isOpening(instance:)）。
+    private(set) var openingInstances: [RemotePluginInstance] = []
+    /// 本机关掉、工作机还没关的窗口：点下去就飞回停靠栏，工作机的列表还有它也不放回来，关不掉再放回来（见 AppModel.closeWindow）。
+    private(set) var closingWindows: Set<String> = []
+    /// 本机归档、工作机还没归档的实例：当场按已归档排，它的窗口一起收掉；归档不成再放回来（见 AppModel.archiveInstance）。
+    private(set) var archivingInstances: Set<String> = []
+    /// 在路上的关窗口请求。之后打开窗口的请求等它们回来再发：工作机先收到打开的话，会把还没关的那个窗口交回来。
+    @ObservationIgnored var closeRequests: [String: Task<Void, Never>] = [:]
+    /// 网络中断、没得到确认的开窗口和建实例请求：保留同一个 ID 重试，工作机已经建好的不会再建一份（见 AppModel.retryRequests）。
+    var failedWindowRequests: [OpenWindowRequest] = []
+    var failedInstanceRequests: [CreatePluginInstance] = []
     var windowError: String?
+    var archiveError: String?
     var settingsInstance: RemotePluginInstance?
     var archiveRequest: RemotePluginInstance?
     /// 代理的活动摘要，按实例 ID。目录快照与单条推送谁新用谁，见 updateActivity。
@@ -79,7 +92,7 @@ final class WorkArea: Identifiable {
         threads = remote.threads.compactMap { value in
             guard let instance = instancesByID[value.instanceId], instance.status == .open else { return nil }
             if let thread = previous[value.instanceId] ?? (value.instanceId == drafted ? draftThread : nil) {
-                if thread === draftThread { thread.adopt(instance: value.instanceId) }
+                if thread === draftThread { thread.adopt(instance: value.instanceId, root: remote.workspace.cwd) }
                 thread.title = instance.title; thread.project = remote.project.name
                 thread.use(client)
                 return thread
@@ -91,17 +104,18 @@ final class WorkArea: Identifiable {
             draftWindow = nil
             draftThread = WorkThread(workspace: remote.workspace.cwd, project: remote.project.name)
         }
-        instances = remote.instances
+        rebuildWindows()
         if let settingsInstance, !instances.contains(where: { $0.id == settingsInstance.id && $0.status == .open }) {
             self.settingsInstance = nil
         }
-        rebuildWindows()
         draftThread.connected = remote.workspace.status == .open
         updateFiles(client: client)
     }
 
+    /// 文件浏览要读工作机上的实例，本机先建、还没建好的不算。
     func updateFiles(client: KitedClient? = nil) {
-        files = Dictionary(uniqueKeysWithValues: instances.filter { $0.definitionId == "kite.files" && $0.status == .open }.map { instance in
+        let confirmed = instances.filter { $0.definitionId == "kite.files" && $0.status == .open && !isOpening(instance: $0.id) }
+        files = Dictionary(uniqueKeysWithValues: confirmed.map { instance in
             let browser = files[instance.id] ?? FileBrowser(instanceID: instance.id, workspaceID: id, client: client)
             browser.update(instance, client: client)
             return (instance.id, browser)
@@ -204,12 +218,102 @@ final class WorkArea: Identifiable {
         if let window = windows.first(where: { $0.target == target }) { layout.activate(Pane(window.id)) }
     }
 
-    /// 窗口集合是工作机上打开的窗口加本机草稿。
+    /// 实例集合是工作机上的实例，本机正归档的按已归档算，加上本机正建的；窗口集合是工作机上打开的窗口，
+    /// 减去本机正关的和正归档的实例的，加上本机正开的和草稿。
     private func rebuildWindows() {
         guard let remote else { return }
-        windows = remote.windows.filter { $0.state == .open && $0.id != draftWindow }
+        // 工作机列出了本机正开的窗口、正建的实例（开着或已经关了），就以它为准
+        let listed = Set(remote.windows.map(\.id))
+        if openingWindows.contains(where: { listed.contains($0.id) }) { openingWindows.removeAll { listed.contains($0.id) } }
+        let known = Set(remote.instances.map(\.id))
+        if openingInstances.contains(where: { known.contains($0.id) }) { openingInstances.removeAll { known.contains($0.id) } }
+        // 工作机已经归档了的不再算正归档，已经关了的不再算正关
+        let stillArchiving = archivingInstances.intersection(remote.instances.filter { $0.status == .open }.map(\.id))
+        if stillArchiving != archivingInstances { archivingInstances = stillArchiving }
+        instances = remote.instances.map { archivingInstances.contains($0.id) ? $0.archived : $0 } + openingInstances
+        let open = remote.windows.filter { $0.state == .open && $0.id != draftWindow }
+        let stillOpen = closingWindows.intersection(open.map(\.id))
+        if stillOpen != closingWindows { closingWindows = stillOpen }
+        windows = open.filter { !closingWindows.contains($0.id) && !archivingInstances.contains($0.target.instanceId) } + openingWindows
             + (draftWindow.map { [Self.draftWindow($0, workspace: id, thread: draftThread)] } ?? [])
         layout.reconcile(windows.map { Pane($0.id) })
+    }
+
+    /// 先在本机打开窗口，当场放上台面，见 openingWindows。
+    func openLocally(_ window: RemoteWorkspaceWindow) {
+        if !windows.contains(where: { $0.id == window.id }) {
+            openingWindows.append(window)
+            rebuildWindows()
+        }
+        layout.activate(Pane(window.id))
+    }
+
+    /// 本机打开的这个窗口不再按本机的算：工作机建不成，或交回了这个实例原有的窗口。还在不在以工作机的列表为准。
+    func settleOpening(_ id: String) {
+        guard openingWindows.contains(where: { $0.id == id }) else { return }
+        openingWindows.removeAll { $0.id == id }
+        rebuildWindows()
+    }
+
+    func isOpening(_ pane: Pane) -> Bool { openingWindows.contains { $0.id == pane.id } }
+
+    /// 先在本机建实例，见 openingInstances。
+    func createLocally(_ instance: RemotePluginInstance) {
+        guard !instances.contains(where: { $0.id == instance.id }) else { return }
+        openingInstances.append(instance)
+        rebuildWindows()
+    }
+
+    /// 本机建的这个实例工作机建不成：收回。
+    func settleInstance(_ id: String) {
+        guard openingInstances.contains(where: { $0.id == id }) else { return }
+        openingInstances.removeAll { $0.id == id }
+        rebuildWindows()
+    }
+
+    func isOpening(instance id: String) -> Bool { openingInstances.contains { $0.id == id } }
+
+    /// 本机新建实例时用的标题，和工作机起的一样：代理叫「新代理」，带窗口的按同一插件已有的标题往后编号，后台实例用插件名。
+    func newInstanceTitle(_ definition: RemotePluginDefinition) -> String {
+        if definition.agent != nil { return "新代理" }
+        guard !definition.views.isEmpty else { return definition.title }
+        let titles = Set(instances.filter { $0.definitionId == definition.id }.map(\.title))
+        var number = 1
+        while titles.contains("\(definition.title) \(number)") { number += 1 }
+        return "\(definition.title) \(number)"
+    }
+
+    /// 先在本机归档，见 archivingInstances。
+    func archiveLocally(_ id: String) {
+        guard !archivingInstances.contains(id) else { return }
+        archivingInstances.insert(id)
+        rebuildWindows()
+    }
+
+    /// 工作机没归档：放回来。
+    func restoreArchiving(_ id: String) {
+        guard archivingInstances.contains(id) else { return }
+        archivingInstances.remove(id)
+        rebuildWindows()
+    }
+
+    /// 窗口操作都有了着落：本机先开、先关、先建、先归档的都等到了工作机的列表。
+    var windowsSettled: Bool {
+        openingWindows.isEmpty && closingWindows.isEmpty && openingInstances.isEmpty && archivingInstances.isEmpty
+    }
+
+    /// 先在本机关掉窗口，当场飞回停靠栏，见 closingWindows。
+    func closeLocally(_ id: String) {
+        guard !closingWindows.contains(id) else { return }
+        closingWindows.insert(id)
+        rebuildWindows()
+    }
+
+    /// 工作机没关掉：放回来。
+    func reopenClosing(_ id: String) {
+        guard closingWindows.contains(id) else { return }
+        closingWindows.remove(id)
+        rebuildWindows()
     }
 
     private static func newWindowID() -> String { UUID().uuidString.lowercased() }
@@ -238,6 +342,24 @@ final class WorkArea: Identifiable {
         guard draftWindow != nil, creatingWindow == nil else { return }
         draftWindow = nil
         rebuildWindows()
+    }
+
+    /// 本机新建、工作机还没建好的工作区（见 AppModel.create）：按本机定的工作区 ID 先建好，第一个代理先当草稿，
+    /// 窗口 ID 和排着的第一条消息就是发给工作机的那一份。工作机建好后由 update 接上，同草稿发出第一条消息。
+    convenience init(creating remote: RemoteWorkspace, window: String, first message: Message) {
+        self.init(remote: remote)
+        draftThread.queueFirst(message)
+        draftWindow = window
+        creatingWindow = window
+        rebuildWindows()
+    }
+}
+
+extension RemotePluginInstance {
+    /// 本机先按已归档算的样子，见 WorkArea.archivingInstances。
+    var archived: Self {
+        Self(id: id, workspaceId: workspaceId, definitionId: definitionId, title: title, status: .archived, presentation: presentation,
+             createdAt: createdAt, state: state, config: config, origin: origin)
     }
 }
 
