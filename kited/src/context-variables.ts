@@ -111,8 +111,9 @@ function scopeValues(store: Store, scope: VariableScope): { layers: ContextLayer
     case 'instance': {
       const thread = store.threadContext(scope.id);
       if (!thread) throw new KiteError(`没有这个线程：${scope.id}`, 404);
+      const constraints = store.workspaceConstraints(thread.workspaceId);
       return { layers: ['environment', 'project', 'workspace', 'agent'], cwd: thread.workspace.cwd,
-        values: threadVariables(thread, store.workspaceConstraints(thread.workspaceId)?.tools, store.workspaceConstraints(thread.workspaceId)?.execution) };
+        values: threadVariables(thread, constraints?.tools, constraints?.execution) };
     }
   }
 }

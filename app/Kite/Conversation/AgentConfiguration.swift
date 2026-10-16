@@ -128,7 +128,8 @@ nonisolated struct AgentCapabilities: Decodable, Sendable {
     let vendors: [Vendor]
     let models: [Model]
     let tools: [String]
-    var defaults: [String]? = nil
+    /// 角色给的默认工具。
+    let defaults: [String]
     let required: [String]
     let blocked: [String]
     let toolCatalog: [AgentToolInfo]
@@ -136,11 +137,9 @@ nonisolated struct AgentCapabilities: Decodable, Sendable {
     let toolCatalogBoundary: String
 
     func model(_ id: String) -> Model? { models.first { $0.id == id } }
-    /// 角色给的默认工具；旧工作机没有 defaults 时可开的就是默认。
-    var defaultTools: [String] { defaults ?? tools }
     /// 配置页里工具名旁的注明：项目禁用、角色必需，或角色没给、由这个代理自己开的。
     func toolNote(_ name: String) -> String? {
-        blocked.contains(name) ? "项目禁用" : required.contains(name) ? "角色必需" : defaultTools.contains(name) ? nil : "角色未给"
+        blocked.contains(name) ? "项目禁用" : required.contains(name) ? "角色必需" : defaults.contains(name) ? nil : "角色未给"
     }
     var toolGroups: [AgentToolGroup] { toolCatalog.groups(of: tools) }
     func canEdit(_ state: RemoteState?) -> Bool {
@@ -156,7 +155,7 @@ nonisolated struct AgentOptions: Decodable, Sendable {
         let id: String
         let revision: String
         let tools: [String]
-        var defaults: [String]? = nil
+        let defaults: [String]
         let required: [String]
         let blocked: [String]
         let unavailable: String?

@@ -30,7 +30,6 @@ const shellArgs = z.object({
 }).strict();
 const backgroundArg = z.boolean().optional().describe('true 时命令一开始就在后台终端里运行，立刻返回；用于开发服务器、监听构建这类不会自己结束或要跑很久的命令。');
 const outsideArg = z.boolean().optional().describe('true 时申请这条命令不进沙箱，以用户身份运行；description 写清用途和为什么沙箱里跑不了。');
-const fullShellArgs = shellArgs.extend({ background: backgroundArg, outside_sandbox: outsideArg }).strict();
 
 /** 宿主决定一条命令能不能在沙箱外运行（docs/工具审批与提问.md）。 */
 export interface ShellOutside {
@@ -76,11 +75,10 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
   const pdfs = new PdfReader(commandEnvironment(options.env));
   const hash = (content: string) => createHash('sha256').update(content).digest('hex');
   const make = <T extends z.ZodType>(name: string, description: string, schema: T,
-    execute: (args: z.output<T>, signal: AbortSignal, output: Parameters<Tool['execute']>[1]['output'], context: Parameters<Tool['execute']>[1]) => Promise<ToolResult>,
-    parallel = false): Tool => ({
+    execute: (args: z.output<T>, context: Parameters<Tool['execute']>[1]) => Promise<ToolResult>, parallel = false): Tool => ({
     name, description, parameters: z.toJSONSchema(schema) as JsonObject, parallel,
     validate: (args: Json) => { schema.parse(args); },
-    execute: async (args, context) => { context.signal.throwIfAborted(); return execute(schema.parse(args), context.signal, context.output, context); },
+    execute: async (args, context) => { context.signal.throwIfAborted(); return execute(schema.parse(args), context); },
   });
   const background = options.background;
   const shellDescription = '在当前工作目录的操作系统沙箱中运行 shell 命令，可用 rg 搜索、运行构建及 .kite/check。网络和工作区外的资源按宿主授权访问，连接授权之外的主机时可能要等用户批准；被禁止或拒绝时说明所需权限，不自行绕过或重放。'
@@ -92,7 +90,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       : '')
     + 'Git 元数据只读，快照与采纳由宿主执行。输出过长时查看完整日志。使用 secrets 绑定密钥时只返回执行状态，隐藏全部标准输出和错误输出；不要把密钥写入工作区文件、命令参数或日志。';
   return [
-    make('read', readDescription, readArgs, async ({ pages, ...args }, signal) => {
+    make('read', readDescription, readArgs, async ({ pages, ...args }, { signal }) => {
       const target = files.resolve(args.path);
       assertFileAccess(target, 'read', policy());
       const kind = fileKind(target);
@@ -180,25 +178,24 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       return { status: 'success', output: output.join('\n'), diff: reference() };
     }),
     // 宿主给了哪项能力，shell 才收对应的参数；执行时按全部参数读，没收的自然为空。
-    make('shell', shellDescription, (background && options.outside ? fullShellArgs
-      : background ? shellArgs.extend({ background: backgroundArg }).strict()
-        : options.outside ? shellArgs.extend({ outside_sandbox: outsideArg }).strict() : shellArgs) as typeof fullShellArgs,
-      async (args, signal, output, context) => {
+    make('shell', shellDescription, shellArgs.extend({ ...(background ? { background: backgroundArg } : {}),
+      ...(options.outside ? { outside_sandbox: outsideArg } : {}) }).strict() as z.ZodType<z.output<typeof shellArgs> & { background?: boolean; outside_sandbox?: boolean }>,
+      async (args, { signal, output, ...context }) => {
         const { command, description, secrets, timeout_ms = 120_000 } = args;
         const confidential = !!secrets && Object.keys(secrets).length > 0;
         // 带凭据的命令总在沙箱里；用户允许过的沙箱外命令直接出沙箱，没允许过的要申请。
-        const verdict = options.outside && !confidential ? options.outside.verdict(command) : 'unlisted';
+        const { outside } = options;
+        const verdict = outside && !confidential ? outside.verdict(command) : 'unlisted';
         let unsandboxed = verdict === 'allowed';
-        if (args.outside_sandbox && !unsandboxed) {
-          if (!options.outside) return { status: 'error', output: '这里不能申请在沙箱外运行命令。' };
+        if (outside && args.outside_sandbox && !unsandboxed) {
           if (confidential) return { status: 'error', output: '带 secrets 的命令只能在沙箱里运行，命令没有执行。' };
           if (verdict === 'denied') return { status: 'error', output: '项目禁止这条命令在沙箱外运行，命令没有执行。' };
-          if (!await options.outside.ask(command, description, signal)) return { status: 'error', output: '没有获准在沙箱外运行，命令没有执行。' };
+          if (!await outside.ask(command, description, signal)) return { status: 'error', output: '没有获准在沙箱外运行，命令没有执行。' };
           signal.throwIfAborted();
           unsandboxed = true;
         }
         const credentials: Record<string, SecretValue> = {};
-        if (secrets && Object.keys(secrets).length) {
+        if (confidential) {
           if (!options.secrets) throw new Error('当前宿主未连接凭据服务');
           const references = [...new Set(Object.values(secrets))];
           const resolved = await options.secrets.resolve(references, signal);
@@ -220,7 +217,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
               adopt: (adopted) => background.adopt(adopted, { description, command, turnId: context.turnId, callId: context.callId }) } });
         } finally { unsubscribe?.(); }
       }),
-    make('credentials', '列出本账号共享和当前项目的可用密钥引用及类型，不返回密钥内容。仅在 shell 的 secrets 参数里使用这些引用，项目身份由宿主固定。', z.object({}).strict(), async (_, signal) => {
+    make('credentials', '列出本账号共享和当前项目的可用密钥引用及类型，不返回密钥内容。仅在 shell 的 secrets 参数里使用这些引用，项目身份由宿主固定。', z.object({}).strict(), async (_, { signal }) => {
       if (!options.secrets?.list) throw new Error('当前宿主未连接凭据服务');
       const entries = await options.secrets.list(signal);
       // 即使服务误带额外字段，也不能将明文作为工具结果返回。

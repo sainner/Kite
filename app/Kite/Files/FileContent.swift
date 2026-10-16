@@ -41,23 +41,20 @@ enum FileFormat: Equatable {
     }
 }
 
-/// 不下载时取到的文件信息：类型、大小与修改时间。
-struct FileInfo: Equatable {
+/// 文件信息：类型、大小与修改时间；不下载时也能取到。
+nonisolated struct FileInfo: Codable, Equatable, Sendable {
     let type: String
     let size: Int
     let modified: Date?
     /// 太大没进工作区快照，没有历史版本。
-    var unversioned = false
+    let unversioned: Bool
 }
 
 /// 设备上缓存的一份文件内容；version 是工作机给的版本，文件没变时重新打开不再下载。
 struct CachedFile: Equatable, Sendable {
     let url: URL
     let version: String
-    let type: String
-    let size: Int
-    let modified: Date?
-    var unversioned = false
+    let info: FileInfo
 }
 
 /// 文件内容按「工作机、工作区、路径」各留最新一版，打开时带版本向工作机校验。总量超过上限时删最久没用的。
@@ -66,14 +63,14 @@ final class FileContentCache {
     private nonisolated static let limit = 1 << 30
     private let root = URL.cachesDirectory.appending(path: "FileContent", directoryHint: .isDirectory)
     private var loading: [String: Task<CachedFile, Error>] = [:]
+    /// 清理同一时刻只跑一次；跑的时候又有下载完的，结束后带上它们再清一次。
+    private var trimming = false
+    private var trimKeeping: Set<String> = []
 
     private struct Meta: Codable {
         let name: String
         let version: String
-        let type: String
-        let size: Int
-        let modified: Date?
-        var unversioned: Bool?
+        let info: FileInfo
     }
 
     /// 同一文件同时只下载一次；后来的请求等同一个结果，进度只报给第一个。
@@ -90,8 +87,7 @@ final class FileContentCache {
     /// 只取大小、类型和修改时间，不下载。
     func info(client: KitedClient, workspace: String, path: String) async throws -> FileInfo {
         let (_, response) = try await client.download(Self.contentPath(workspace, path), method: "HEAD")
-        return FileInfo(type: response.mimeType ?? "", size: Int(response.expectedContentLength), modified: Self.modified(response),
-                        unversioned: Self.unversioned(response))
+        return Self.info(response)
     }
 
     private func fetch(key: String, client: KitedClient, workspace: String, path: String,
@@ -108,25 +104,38 @@ final class FileContentCache {
         if let cached, let cachedURL, response.statusCode == 304 {
             // 修改时间当作最近使用时间，清理时按它排
             try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: directory.path(percentEncoded: false))
-            return CachedFile(url: cachedURL, version: cached.version, type: cached.type, size: cached.size, modified: cached.modified,
-                              unversioned: cached.unversioned ?? false)
+            return CachedFile(url: cachedURL, version: cached.version, info: cached.info)
         }
         guard let file else { throw KitedError(message: "工作机没有返回文件内容") }
         let name = (path as NSString).lastPathComponent
-        let meta = Meta(name: name.isEmpty ? "file" : name, version: response.value(forHTTPHeaderField: "ETag") ?? "",
-                        type: response.mimeType ?? "", size: Int(response.expectedContentLength), modified: Self.modified(response),
-                        unversioned: Self.unversioned(response))
+        let meta = Meta(name: name.isEmpty ? "file" : name, version: response.value(forHTTPHeaderField: "ETag") ?? "", info: Self.info(response))
         let target = directory.appending(path: "file").appending(path: meta.name)
         try? FileManager.default.removeItem(at: directory)
         try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.moveItem(at: file, to: target)
         try JSONEncoder().encode(meta).write(to: metaURL)
-        Task.detached(priority: .background) { [root] in Self.trim(root, keeping: key) }
-        return CachedFile(url: target, version: meta.version, type: meta.type, size: meta.size, modified: meta.modified,
-                          unversioned: meta.unversioned ?? false)
+        scheduleTrim(keeping: key)
+        return CachedFile(url: target, version: meta.version, info: meta.info)
     }
 
-    private nonisolated static func trim(_ root: URL, keeping key: String) {
+    private func scheduleTrim(keeping key: String) {
+        trimKeeping.insert(key)
+        guard !trimming else { return }
+        trimming = true
+        let keeping = trimKeeping
+        trimKeeping = []
+        Task.detached(priority: .background) { [root] in
+            Self.trim(root, keeping: keeping)
+            await self.trimFinished()
+        }
+    }
+
+    private func trimFinished() {
+        trimming = false
+        if let key = trimKeeping.popFirst() { scheduleTrim(keeping: key) }
+    }
+
+    private nonisolated static func trim(_ root: URL, keeping: Set<String>) {
         let manager = FileManager.default
         let keys: [URLResourceKey] = [.contentModificationDateKey, .totalFileAllocatedSizeKey]
         guard let entries = try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: keys) else { return }
@@ -139,7 +148,7 @@ final class FileContentCache {
         var total = sized.reduce(0) { $0 + $1.1 }
         while total > Self.limit, let (oldest, bytes, _) = sized.first {
             sized.removeFirst()
-            guard oldest.lastPathComponent != key else { continue }
+            guard !keeping.contains(oldest.lastPathComponent) else { continue }
             try? manager.removeItem(at: oldest)
             total -= bytes
         }
@@ -153,8 +162,9 @@ final class FileContentCache {
         SHA256.hash(data: Data(parts.joined(separator: "\n").utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func unversioned(_ response: HTTPURLResponse) -> Bool {
-        response.value(forHTTPHeaderField: "X-Kite-Snapshot") == "skipped"
+    private static func info(_ response: HTTPURLResponse) -> FileInfo {
+        FileInfo(type: response.mimeType ?? "", size: Int(response.expectedContentLength), modified: modified(response),
+                 unversioned: response.value(forHTTPHeaderField: "X-Kite-Snapshot") == "skipped")
     }
 
     private static func modified(_ response: HTTPURLResponse) -> Date? {

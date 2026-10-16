@@ -38,8 +38,6 @@ export interface NetworkStatus {
   channel?: NetworkChannelStatus;
   /** 最近一次系统电源事件（只有 macOS 有），序号递增：shutdown 是将要登出、重启或关机，stay 是登出被取消。 */
   power?: { event: 'sleep' | 'wake' | 'shutdown' | 'stay'; id: number };
-  /** 正在转发给同账号设备的网页预览端口，见 forward。 */
-  forwards?: number[];
   error?: string;
 }
 

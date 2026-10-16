@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { diffID, fileDiffSchema } from '../workspace/file-diffs.ts';
 import { fileSelectionSchema, readFileArgs } from '../workspace/files.ts';
+import { stateSchema as terminalStateSchema } from '../terminal/state.ts';
 
 /**
  * Line 的管理动作与对应工具。停止、归档、创建、流转是必问动作，每次执行前等用户批准，见 line/tools.ts。
@@ -21,6 +22,7 @@ export const inputVia = z.object({ kind: z.literal('line'), machine: id, instanc
 const input = z.object({ id, text, source: z.enum(['human', 'kite']), via: inputVia.optional() }).strict();
 const target = z.object({ operationId: id, instanceId: id }).strict();
 const ok = z.object({ ok: z.literal(true) }).strict();
+const fileEntry = z.object({ name: id, path: id, kind: z.enum(['file', 'directory', 'symlink', 'other']) }).strict();
 const summary = z.object({
   instanceId: id, definitionId: id, title: z.string(), role: z.object({ id, title: z.string() }).strict().nullable(), presentation: z.enum(['window', 'inline', 'background']),
   status: z.enum(['open', 'archived']), phase: z.enum(['idle', 'running', 'stopping', 'finishing']),
@@ -63,15 +65,13 @@ export const operationContracts = {
     title: '浏览目录', description: '读取文件实例所属工作区内的一层目录，按目录优先、名称排序并分页。',
     tool: null, effect: 'read', retry: 'read',
     input: z.object({ instanceId: id, path: id.default('.'), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(1000).default(200) }).strict(),
-    output: z.object({ path: id, entries: z.array(z.object({ name: id, path: id, kind: z.enum(['file', 'directory', 'symlink', 'other']) }).strict()),
-      total: z.number().int(), nextOffset: z.number().int().nullable() }).strict(),
+    output: z.object({ path: id, entries: z.array(fileEntry), total: z.number().int(), nextOffset: z.number().int().nullable() }).strict(),
   },
   'files.search': {
     title: '搜索文件', description: '按名字找文件实例所属工作区内的文件和目录，不分大小写，跳过 .git 和 Git 忽略的路径；名字相同、开头相同的排在前面。',
     tool: null, effect: 'read', retry: 'read',
     input: z.object({ instanceId: id, query: z.string().trim().min(1).max(200), limit: z.number().int().min(1).max(1000).default(200) }).strict(),
-    output: z.object({ query: z.string(), entries: z.array(z.object({ name: id, path: id, kind: z.enum(['file', 'directory', 'symlink', 'other']) }).strict()),
-      truncated: z.boolean() }).strict(),
+    output: z.object({ query: z.string(), entries: z.array(fileEntry), truncated: z.boolean() }).strict(),
   },
   'files.read': {
     title: '读取文本', description: '按行读取文件实例所属工作区内的文本，与 agent 的 read 使用同一文件服务。',
@@ -96,8 +96,7 @@ export const operationContracts = {
     title: '读取终端输出', description: '按行读取后台终端的输出：转到后台的命令读完整输出，交互终端读屏幕和回滚里的文字。不给 offset 时读最后 limit 行（默认 200）；结果带进程状态，结束了有退出码或原因。',
     tool: 'terminal_read', effect: 'read', retry: 'read',
     input: z.object({ instanceId: id, offset: z.number().int().min(1).optional(), limit: z.number().int().min(1).max(2000).default(200) }).strict(),
-    output: z.object({ instanceId: id, title: z.string(), command: z.string().optional(), phase: z.enum(['running', 'exited']),
-      exitCode: z.number().int().nullable().optional(), signal: z.string().optional(), reason: z.string().optional(), endedAt: z.number().optional(),
+    output: terminalStateSchema.extend({ instanceId: id, title: z.string(), command: z.string().optional(),
       text: z.string(), offset: z.number().int(), totalLines: z.number().int(), nextOffset: z.number().int().nullable() }).strict(),
   },
   'terminal.stop': {

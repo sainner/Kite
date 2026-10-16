@@ -204,11 +204,14 @@ final class FileBrowser {
         guard let path = selection.path, let client else { return }
         do {
             let file = try await FileContentCache.shared.file(client: client, workspace: workspaceID, path: path)
-            let text = try String(contentsOf: file.url, encoding: .utf8)
+            // 读整份、逐行找放到后台，大文件不卡界面。
+            let found = try await Task.detached(priority: .userInitiated) {
+                try String(contentsOf: file.url, encoding: .utf8).components(separatedBy: "\n").enumerated().flatMap { index, line in
+                    TextSearch.ranges(of: query, in: line).indices.map { FileMatch(line: index + 1, occurrence: $0) }
+                }
+            }.value
             guard findRequest == request, !Task.isCancelled else { return }
-            matches = text.components(separatedBy: "\n").enumerated().flatMap { index, line in
-                TextSearch.ranges(of: query, in: line).indices.map { FileMatch(line: index + 1, occurrence: $0) }
-            }
+            matches = found
         } catch {
             if findRequest == request && !Task.isCancelled { textError = error.localizedDescription }
         }
@@ -326,7 +329,7 @@ final class FileBrowser {
             guard textRequest == request, !Task.isCancelled else { return }
             if format == .markdown {
                 // 太长的整篇排版很慢，只看原文
-                guard file.size <= 1 << 20 else {
+                guard file.info.size <= 1 << 20 else {
                     rendered = false
                     infoNote = "文件超过 1 MiB，只显示原文"
                     return
@@ -487,7 +490,7 @@ struct FileSearchResults: Decodable {
 }
 
 /// 文件里找到的一处：在第几行（历史差异里是差异行的 id），是这一行里的第几个。
-struct FileMatch: Equatable {
+nonisolated struct FileMatch: Equatable, Sendable {
     let line: Int
     let occurrence: Int
 }

@@ -91,18 +91,7 @@ struct ThreadControls: View {
             HStack(spacing: Metrics.paneButtonGap) {
                 // 作答时思考强度的位置是上一题、下一题（多题时），一题时空着
                 if answering {
-                    if let steps = controls.questionSteps {
-                        HStack(spacing: 0) {
-                            Button(action: controls.previousQuestion) { Image(systemName: "arrow.left") }
-                                .buttonStyle(PaneButtonStyle())
-                                .disabled(steps.step == 0)
-                                .accessibilityLabel("上一题").help("上一题")
-                            Button(action: controls.nextQuestion) { Image(systemName: "arrow.right") }
-                                .buttonStyle(PaneButtonStyle())
-                                .disabled(steps.step + 1 >= steps.count)
-                                .accessibilityLabel("下一题").help("下一题")
-                        }
-                    }
+                    if controls.questionSteps, let answers = controls.answering { QuestionStepButtons(answers: answers) }
                 } else {
                     HStack(spacing: 0) {
                         ApprovalModeControl(controls: controls)

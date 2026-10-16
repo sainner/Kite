@@ -158,26 +158,19 @@ nonisolated struct ExecutionScope: Codable, Equatable, Sendable {
     }
 }
 
-/// 三层合成后实际生效的执行授权。
-nonisolated struct ExecutionGrants: Codable, Equatable, Sendable {
-    nonisolated enum WorkspaceAccess: String, Codable, Sendable { case read, write }
-    var workspace: WorkspaceAccess
-    var read: [String]
-    var write: [String]
-    var network: [String]
-    var unsandboxed: [String] = []
-}
+/// 代理对工作区的访问权限。
+nonisolated enum WorkspaceAccess: String, Codable, Sendable { case read, write }
 
 /// 角色与实例在项目基础上的增减；workspace 为空时可写。
 nonisolated struct ExecutionChanges: Codable, Equatable, Sendable {
-    var workspace: ExecutionGrants.WorkspaceAccess?
+    var workspace: WorkspaceAccess?
     var add = ExecutionScope()
     var remove = ExecutionScope()
 
     init() {}
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        workspace = try c.decodeIfPresent(ExecutionGrants.WorkspaceAccess.self, forKey: .workspace)
+        workspace = try c.decodeIfPresent(WorkspaceAccess.self, forKey: .workspace)
         add = try c.decodeIfPresent(ExecutionScope.self, forKey: .add) ?? ExecutionScope()
         remove = try c.decodeIfPresent(ExecutionScope.self, forKey: .remove) ?? ExecutionScope()
     }
@@ -199,7 +192,7 @@ nonisolated enum ApprovalMode: String, Codable, CaseIterable, Sendable {
 
 /// 项目的基础与边界：allow 是本项目所有代理的起点，deny 任何层和审批都打不开；工作区可定为只读，审批模式有上限。
 nonisolated struct ProjectExecution: Codable, Equatable, Sendable {
-    var workspace: ExecutionGrants.WorkspaceAccess = .write
+    var workspace: WorkspaceAccess = .write
     var allow = ExecutionScope()
     var deny = ExecutionScope()
     var approval: ApprovalMode = .allowAll
@@ -207,18 +200,17 @@ nonisolated struct ProjectExecution: Codable, Equatable, Sendable {
     init() {}
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        workspace = try c.decodeIfPresent(ExecutionGrants.WorkspaceAccess.self, forKey: .workspace) ?? .write
+        workspace = try c.decodeIfPresent(WorkspaceAccess.self, forKey: .workspace) ?? .write
         allow = try c.decodeIfPresent(ExecutionScope.self, forKey: .allow) ?? ExecutionScope()
         deny = try c.decodeIfPresent(ExecutionScope.self, forKey: .deny) ?? ExecutionScope()
         approval = try c.decodeIfPresent(ApprovalMode.self, forKey: .approval) ?? .allowAll
     }
 }
 
-/// grants 是实例在项目上的增减，effective 是生效的，project 是项目的基础与边界。
+/// grants 是实例在项目上的增减，project 是项目的基础与边界。
 nonisolated struct InstanceExecutionGrants: Decodable, Sendable {
     let revision: String
     let grants: ExecutionChanges
-    let effective: ExecutionGrants
     let project: ProjectExecution
 }
 
@@ -239,41 +231,28 @@ nonisolated struct InstanceApprovalMode: Decodable, Sendable {
 struct ExecutionGrantDraft: Equatable {
     let revision: String
     let project: ProjectExecution
-    var workspace: ExecutionGrants.WorkspaceAccess
-    var readPaths: String
-    var writePaths: String
-    var networkDomains: String
-    var unsandboxedCommands: String
+    var workspace: WorkspaceAccess
+    var scope = ExecutionScope()
 
     init(snapshot: InstanceExecutionGrants) {
         revision = snapshot.revision
         project = snapshot.project
         workspace = snapshot.grants.workspace ?? .write
         let changes = snapshot.grants
-        func list(_ key: ExecutionScope.Key) -> String {
+        for key in ExecutionScope.Key.allCases {
             var seen = Set<String>()
-            return (snapshot.project.allow[key] + changes.add[key]).filter { !changes.remove[key].contains($0) && seen.insert($0).inserted }
-                .joined(separator: "\n")
+            scope[key] = (snapshot.project.allow[key] + changes.add[key]).filter { !changes.remove[key].contains($0) && seen.insert($0).inserted }
         }
-        readPaths = list(.read)
-        writePaths = list(.write)
-        networkDomains = list(.network)
-        unsandboxedCommands = list(.unsandboxed)
     }
 
     var grants: ExecutionChanges {
         var changes = ExecutionChanges()
         changes.workspace = workspace
-        for (key, text) in [(ExecutionScope.Key.read, readPaths), (.write, writePaths), (.network, networkDomains), (.unsandboxed, unsandboxedCommands)] {
-            let values = lines(text)
-            changes.add[key] = values.filter { !project.allow[key].contains($0) }
-            changes.remove[key] = project.allow[key].filter { !values.contains($0) }
+        for key in ExecutionScope.Key.allCases {
+            changes.add[key] = scope[key].filter { !project.allow[key].contains($0) }
+            changes.remove[key] = project.allow[key].filter { !scope[key].contains($0) }
         }
         return changes
     }
     var request: ExecutionGrantUpdate { .init(expectedRevision: revision, grants: grants) }
-
-    private func lines(_ text: String) -> [String] {
-        text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-    }
 }

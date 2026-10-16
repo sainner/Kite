@@ -1,14 +1,12 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,7 +22,6 @@ type forwards struct {
 	srv      *tsnet.Server
 	lc       *local.Client
 	active   *sync.Map
-	report   *reporter
 	reserved map[int]bool
 
 	mu      sync.Mutex
@@ -60,12 +57,6 @@ func (f *forwards) set(ports []int) {
 		f.servers[port] = server
 		go server.Serve(ln)
 	}
-	list := make([]int, 0, len(f.servers))
-	for port := range f.servers {
-		list = append(list, port)
-	}
-	sort.Ints(list)
-	f.report.update(func(s *status) { s.Forwards = list })
 }
 
 func (f *forwards) handler(port int) http.Handler {
@@ -77,18 +68,7 @@ func (f *forwards) handler(port int) http.Handler {
 		},
 		FlushInterval: -1,
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !authorized(f.lc, r) {
-			http.Error(w, "设备不属于本账号或授权已撤销", http.StatusUnauthorized)
-			return
-		}
-		// 设备失去授权时由主循环取消，WebSocket 这类长连接随之断开。
-		ctx, cancel := context.WithCancel(r.Context())
-		defer cancel()
-		f.active.Store(r, cancel)
-		defer f.active.Delete(r)
-		proxy.ServeHTTP(w, r.WithContext(ctx))
-	})
+	return guard(f.lc, f.active, proxy)
 }
 
 // parsePorts 读逗号分隔的端口，读不懂的跳过。

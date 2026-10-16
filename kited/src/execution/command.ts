@@ -159,8 +159,11 @@ export async function runCommand(command: string, timeout: number, signal: Abort
   };
   const onOutput = (part: string) => {
     if (confidential) return;
-    total += Array.from(part).length;
-    tail = Array.from(tail + part).slice(-limit).join('');
+    // 转后台时尾巴已经交给接管方，之后只写日志。
+    if (!detached) {
+      total += Array.from(part).length;
+      tail = Array.from(tail + part).slice(-limit).join('');
+    }
     if (ioError) return;
     try {
       const bytes = Buffer.from(part);

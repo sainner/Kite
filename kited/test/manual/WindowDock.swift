@@ -30,6 +30,24 @@ struct PaneTimeline<Content: View>: View {
     var body: some View { TimelineView(.animation, content: content) }
 }
 
+/// 只放内存的 UserDefaults，同一 suite 名的实例共用一份数据，新建实例就是按名字重读。
+/// 系统的具名 suite 即使 removePersistentDomain 也会在 ~/Library/Preferences 留下空 plist，合同反复跑会越积越多。
+/// WindowLayout 只用 data(forKey:) 与 set(_:forKey:)。
+private final class MemoryDefaults: UserDefaults, @unchecked Sendable {
+    nonisolated(unsafe) private static var suites: [String: [String: Any]] = [:]
+    private let suite: String
+
+    init(suite: String) {
+        self.suite = suite
+        super.init(suiteName: nil)!
+    }
+
+    override func object(forKey key: String) -> Any? { Self.suites[suite]?[key] }
+    override func data(forKey key: String) -> Data? { object(forKey: key) as? Data }
+    override func set(_ value: Any?, forKey key: String) { Self.suites[suite, default: [:]][key] = value }
+    override func removeObject(forKey key: String) { Self.suites[suite]?[key] = nil }
+}
+
 private struct LayoutState {
     let empty: Bool
     let active: [Pane]
@@ -218,10 +236,7 @@ private struct WindowDockContract {
     // 重建后两刀比例排出同样的位置尺寸。
     private static func columnGapMovesOnlyAdjacentColumns() throws {
         let suite = "kite-window-contract-gap-\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suite) else {
-            throw DockContractError.failed("无法建立拖缝的独立 UserDefaults suite")
-        }
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = MemoryDefaults(suite: suite)
         let bounds = placementBounds(canvasWidth: 1218, canvasHeight: 810)
         let canvas = WindowRegions(in: bounds).canvas
         try require(abs(canvas.width - 1218) <= 1 && abs(canvas.height - 810) <= 1, "内容区仍取到模数：\(canvas.size)")
@@ -251,9 +266,8 @@ private struct WindowDockContract {
         let released = shownTiles(layout, in: bounds).panes
         try requireFrames(released, row(panes, widths: afterSecond, in: canvas), fixed: [a], "第二条缝松手")
 
-        defaults.synchronize()
         let rebuilt = WindowLayout(panes: panes, arrangement: .stacked, storageKey: "layout",
-                                   defaults: UserDefaults(suiteName: suite)!)
+                                   defaults: MemoryDefaults(suite: suite))
         rebuilt.updateViewport(bounds.size, presentation: .tiled)
         try requireFrames(shownTiles(rebuilt, in: bounds).panes, released, "拖缝松手后重建")
     }
@@ -388,10 +402,7 @@ private struct WindowDockContract {
     // 紧凑视口、焦点切换与 UserDefaults 交接：选择原 dock 窗口不能把单卡片投影写成原宽屏排布。
     private static func compactFocusPreservesTiledArrangement() throws {
         let suite = "kite-window-contract-compact-\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suite) else {
-            throw DockContractError.failed("无法建立紧凑视口的独立 UserDefaults suite")
-        }
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = MemoryDefaults(suite: suite)
         let panes = fixturePanes("compact", count: 5)
         let layout = WindowLayout(panes: panes, arrangement: .oneAndThree,
                                   storageKey: "layout", defaults: defaults)
@@ -429,9 +440,8 @@ private struct WindowDockContract {
         try requireArrangement(layout, as: original, in: wide, "紧凑视口切回原活动窗口")
         try requireComplete(layout, "紧凑视口切换焦点后")
 
-        defaults.synchronize()
         let rebuilt = WindowLayout(panes: panes, arrangement: .stacked, storageKey: "layout",
-                                   defaults: UserDefaults(suiteName: suite)!)
+                                   defaults: MemoryDefaults(suite: suite))
         rebuilt.updateViewport(compact.size, presentation: .compact)
         try requireArrangement(rebuilt, as: original, in: wide, "紧凑视口重建")
         try require(rebuilt.focused == panes[2], "紧凑视口重建没有保留新焦点")
@@ -448,10 +458,7 @@ private struct WindowDockContract {
     // 尺寸投影、临时停靠与持久化交接：空间不足不能永久收起卡片，重建后仍须能恢复原排布。
     private static func viewportDockPreservesSavedArrangement() throws {
         let suite = "kite-window-contract-viewport-\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suite) else {
-            throw DockContractError.failed("无法建立视口投影的独立 UserDefaults suite")
-        }
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = MemoryDefaults(suite: suite)
         let panes = fixturePanes("viewport", count: 5)
         let layout = WindowLayout(panes: panes, arrangement: .oneAndThree,
                                   storageKey: "layout", defaults: defaults)
@@ -476,9 +483,8 @@ private struct WindowDockContract {
         }
         try requireProjectionComplete(layout, "空间不足时")
 
-        defaults.synchronize()
         let rebuilt = WindowLayout(panes: panes, arrangement: .stacked, storageKey: "layout",
-                                   defaults: UserDefaults(suiteName: suite)!)
+                                   defaults: MemoryDefaults(suite: suite))
         rebuilt.updateViewport(tight.size, presentation: .tiled)
         try requireSame(rebuilt, as: original, in: wide, "空间不足时重建")
         try requireProjectionComplete(rebuilt, "空间不足时重建")
@@ -591,10 +597,7 @@ private struct WindowDockContract {
     // 自动放置、真实 frame、焦点、dock 与 UserDefaults 交接；树的最小尺寸不足以保证嵌套分栏比例可用。
     private static func automaticPlacementPreservesFramesAndWindows() throws {
         let suite = "kite-window-contract-placement-\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suite) else {
-            throw DockContractError.failed("无法建立自动放置的独立 UserDefaults suite")
-        }
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = MemoryDefaults(suite: suite)
         let initial = fixturePanes("placement", count: 3)
         let a = initial[0], b = initial[1], opened = initial[2]
         let minimum = Metrics.minPane
@@ -693,9 +696,8 @@ private struct WindowDockContract {
                                                defaults: UserDefaults, suite: String, in bounds: CGRect) throws {
         let committed = LayoutState(layout, in: bounds)
         WindowLayout.flushPendingSaves()
-        defaults.synchronize()
         let rebuilt = WindowLayout(panes: panes, arrangement: .stacked, storageKey: key,
-                                   defaults: UserDefaults(suiteName: suite)!)
+                                   defaults: MemoryDefaults(suite: suite))
         try requireSame(rebuilt, as: committed, in: bounds, "自动放置的 \(key) 重建")
         try requireComplete(rebuilt, "自动放置的 \(key) 重建")
     }
@@ -979,14 +981,8 @@ private struct WindowDockContract {
     private static func persistedLayoutReconcilesRemoteWindows() throws {
         let suiteA = "kite-window-contract-a-\(UUID().uuidString)"
         let suiteB = "kite-window-contract-b-\(UUID().uuidString)"
-        guard let defaultsA = UserDefaults(suiteName: suiteA),
-              let defaultsB = UserDefaults(suiteName: suiteB) else {
-            throw DockContractError.failed("无法建立独立 UserDefaults suite")
-        }
-        defer {
-            defaultsA.removePersistentDomain(forName: suiteA)
-            defaultsB.removePersistentDomain(forName: suiteB)
-        }
+        let defaultsA = MemoryDefaults(suite: suiteA)
+        let defaultsB = MemoryDefaults(suite: suiteB)
         let key = "window-layout"
         let base = fixturePanes("persisted", count: 4)
         let a = base[0], b = base[1], c = base[2], d = base[3]
@@ -1007,15 +1003,13 @@ private struct WindowDockContract {
         first.resize(gap, to: CGPoint(x: gap.rect.midX + 40, y: gap.rect.midY))
         let resizing = LayoutState(first, in: bounds)
         try require(resizing.frames != beforeResize.frames, "调整比例没有改变卡片帧")
-        defaultsA.synchronize()
         let beforeRelease = WindowLayout(panes: base, arrangement: .stacked, storageKey: key,
-                                         defaults: UserDefaults(suiteName: suiteA)!)
+                                         defaults: MemoryDefaults(suite: suiteA))
         try require(LayoutState(beforeRelease, in: bounds).frames == beforeResize.frames,
                     "松手前的比例已写入磁盘")
         first.finishResize()
-        defaultsA.synchronize()
         let afterRelease = WindowLayout(panes: base, arrangement: .stacked, storageKey: key,
-                                        defaults: UserDefaults(suiteName: suiteA)!)
+                                        defaults: MemoryDefaults(suite: suiteA))
         try require(LayoutState(afterRelease, in: bounds).frames == resizing.frames,
                     "松手后重建没有恢复调整后的比例")
         first.focus(b)
@@ -1023,9 +1017,8 @@ private struct WindowDockContract {
 
         first.drag(b, to: WindowRegions(in: bounds).dockFrame(at: first.docked.count).center, in: bounds)
         try require(first.drag != nil, "重建前没有待提交拖动")
-        defaultsA.synchronize()
         let restored = WindowLayout(panes: base, arrangement: .stacked, storageKey: key,
-                                    defaults: UserDefaults(suiteName: suiteA)!)
+                                    defaults: MemoryDefaults(suite: suiteA))
         try requireSame(restored, as: committed, in: bounds, "同设备重建")
         try require(restored.drag == nil, "拖动预览被持久化")
 
@@ -1048,9 +1041,8 @@ private struct WindowDockContract {
         let afterDelete = LayoutState(restored, in: bounds)
         restored.drop(in: bounds)
         try requireSame(restored, as: afterDelete, in: bounds, "远程删除后松开旧拖动")
-        defaultsA.synchronize()
         let rebuiltAfterDelete = WindowLayout(panes: [b, d, e], arrangement: .oneAndThree, storageKey: key,
-                                              defaults: UserDefaults(suiteName: suiteA)!)
+                                              defaults: MemoryDefaults(suite: suiteA))
         try requireSame(rebuiltAfterDelete, as: afterDelete, in: bounds, "远程删除后重建")
         try requireComplete(rebuiltAfterDelete, "远程删除后重建")
 
@@ -1060,13 +1052,12 @@ private struct WindowDockContract {
         otherDevice.focus(d)
         otherDevice.minimize(e)
         WindowLayout.flushPendingSaves()
-        defaultsB.synchronize()
         let rebuiltOtherDevice = WindowLayout(panes: [b, d, e], arrangement: .sideBySide, storageKey: key,
-                                              defaults: UserDefaults(suiteName: suiteB)!)
+                                              defaults: MemoryDefaults(suite: suiteB))
         try require(rebuiltOtherDevice.focused == d && rebuiltOtherDevice.docked == [e],
                     "第二设备没有恢复自己的焦点和 dock")
         let firstDeviceAgain = WindowLayout(panes: [b, d, e], arrangement: .oneAndTwo, storageKey: key,
-                                            defaults: UserDefaults(suiteName: suiteA)!)
+                                            defaults: MemoryDefaults(suite: suiteA))
         try requireSame(firstDeviceAgain, as: afterDelete, in: bounds, "第二设备写入后重建第一设备")
         firstDeviceAgain.reconcile([])
         let replacement = Pane("contract-persisted-after-empty")

@@ -66,27 +66,11 @@ struct ThreadControlsModel {
         }
     }
 
-    /// 多题作答时左边的上一题、下一题：第几题、共几题。
-    var questionSteps: (step: Int, count: Int)? {
-        guard let answers = answering, answers.questions.count > 1 else { return nil }
-        return (answers.step, answers.questions.count)
-    }
-
-    func previousQuestion() {
-        guard let answers = answering, answers.step > 0 else { return }
-        answers.step -= 1
-    }
-
-    func nextQuestion() {
-        guard let answers = answering, answers.step + 1 < answers.questions.count else { return }
-        answers.step += 1
-    }
+    /// 多题作答：左边有上一题、下一题。
+    var questionSteps: Bool { (answering?.questions.count ?? 0) > 1 }
 
     /// 作答时在输入框里回车：这题答了就去下一题，最后一题答齐了就发送。
-    func advanceAnswer() {
-        guard let answers = answering, answers.answered(answers.step) else { return }
-        if answers.step + 1 < answers.questions.count { answers.step += 1 } else { submitAnswers() }
-    }
+    func advanceAnswer() { answering?.advance(submit: submitAnswers) }
 
     func submitAnswers() {
         guard let answers = answering, let waiting = thread.waiting, answers.complete, !answers.busy else { return }

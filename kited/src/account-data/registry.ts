@@ -192,8 +192,9 @@ export class ProjectRegistry {
         const rule = this.storedConstraints(project.id);
         if (rule) {
           const keptRule = this.storedConstraints(kept!.id) ?? defaultConstraints;
-          const execution = rule.execution && keptRule.execution ? stricterExecution(parseProjectExecution(keptRule.execution), parseProjectExecution(rule.execution))
-            : rule.execution ?? keptRule.execution;
+          // 没设执行约束的一方按默认（没有基础许可）算，合起来同样取更严的，不把另一方的基础许可带过去。
+          const execution = rule.execution || keptRule.execution
+            ? stricterExecution(parseProjectExecution(keptRule.execution), parseProjectExecution(rule.execution)) : undefined;
           this.data.put('constraints', kept!.id, { tools: stricter(keptRule.tools, rule.tools), ...(execution ? { execution } : {}) });
           this.data.remove('constraints', project.id);
         }

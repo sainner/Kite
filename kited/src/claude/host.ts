@@ -371,7 +371,10 @@ export function openClaudeHost(options: {
       if (existing) { if (!sameInput(existing.input, input)) throw new KiteError('消息 ID 已用于其他内容', 409); return; }
       if (data.importedInputs.includes(input.id)) return;
       if (closing || phase === 'stopping' || data.recovery) throw new KiteError('请先完成停止或恢复确认', 409);
-      // 新消息即继续：交接结果未知的输入先按原顺序重发。
+      // 用户发新消息即继续：交接结果未知的输入先按原顺序重发。Kite 自动送来的（事件、通知、协作消息）不替用户做这个决定。
+      if (input.source !== 'human' && data.inputs.some((entry) => entry.status === 'unconfirmed')) {
+        throw new KiteError('有交接结果未知的输入，等用户继续或撤回后再发', 409);
+      }
       for (const entry of data.inputs) if (entry.status === 'unconfirmed') entry.status = 'queued';
       data.inputs.push({ input, sdkId: randomUUID(), at: Date.now(), status: 'queued', delivered: false, midTurn: phase === 'running' });
       data.paused = false; save(); pump();

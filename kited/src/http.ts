@@ -27,6 +27,12 @@ async function body(req: Request): Promise<Record<string, unknown>> {
   try { return (await req.json()) as Record<string, unknown>; } catch { throw new KiteError('请求体不是 JSON'); }
 }
 
+/** 可以不带请求体的接口：空的按 fallback 处理。 */
+async function optionalBody(req: Request, fallback: unknown = {}): Promise<unknown> {
+  const raw = await req.text();
+  try { return raw ? JSON.parse(raw) : fallback; } catch { throw new KiteError('请求体不是 JSON'); }
+}
+
 const payload = (value: string): Payload => {
   if (value !== 'runtime' && value !== 'app') throw new KiteError('没有这份内容', 404);
   return value;
@@ -211,8 +217,11 @@ export function serve(kite: Kite, listen: Listen) {
     }
   };
   /** 查看器按字节读取工作区文件，边界与文件操作相同；见 workspace/file-content.ts。 */
-  const workspaceFile = (req: Request & { params: { id: string } }) => fileContent(req,
-    new WorkspaceFiles(kite.workspace(req.params.id).workspace.cwd), str(new URL(req.url).searchParams.get('path'), 'path'));
+  const workspaceFile = (req: Request & { params: { id: string } }) => {
+    const workspace = kite.store.workspace(req.params.id);
+    if (!workspace) throw new KiteError(`没有这个工作区：${req.params.id}`, 404);
+    return fileContent(req, new WorkspaceFiles(workspace.cwd), str(new URL(req.url).searchParams.get('path'), 'path'));
+  };
   // 本机网络设置不对远程设备开放。
   const localOnly = <R extends Request>(fn: (req: R) => Promise<Response>) =>
     listen.remote ? handle<R>(() => { throw new KiteError('没有这个接口', 404); }) : fn;
@@ -558,10 +567,7 @@ export function serve(kite: Kite, listen: Listen) {
         }),
       },
       '/threads/:id/interrupt': { POST: bound(async (req) => {
-        const raw = await req.text();
-        let data: unknown;
-        try { data = raw ? JSON.parse(raw) : { id: crypto.randomUUID() }; }
-        catch { throw new KiteError('请求体不是 JSON'); }
+        const data = await optionalBody(req, { id: crypto.randomUUID() });
         const parsed = z.object({ id: z.string().min(1), inputs: z.array(z.object({
           id: z.string().min(1), text: z.string().min(1), source: z.enum(['human', 'kite']),
         })).optional(), confirmRecovery: z.literal(true).optional() }).safeParse(data);
@@ -573,9 +579,7 @@ export function serve(kite: Kite, listen: Listen) {
         }, req.signal);
       }) },
       '/threads/:id/resume': { POST: bound(async (req) => {
-        const raw = await req.text();
-        let data: unknown;
-        try { data = raw ? JSON.parse(raw) : {}; } catch { throw new KiteError('请求体不是 JSON'); }
+        const data = await optionalBody(req);
         const parsed = z.object({ operationId: z.string().min(1).optional(), confirmRecovery: z.literal(true).optional() }).strict().safeParse(data);
         if (!parsed.success) throw new KiteError('继续请求无效');
         if (parsed.data.confirmRecovery) await kite.confirmRecovery(req.params.id);
@@ -605,9 +609,7 @@ export function serve(kite: Kite, listen: Listen) {
         POST: bound(async (req) => kite.restore(req.params.id, str((await body(req)).commit, 'commit'))),
       },
       '/workspaces/:id/adopt': { POST: long(bound(async (req) => {
-        const raw = await req.text();
-        let data: unknown;
-        try { data = raw ? JSON.parse(raw) : {}; } catch { throw new KiteError('请求体不是 JSON'); }
+        const data = await optionalBody(req);
         const parsed = z.object({ confirmRecovery: z.literal(true).optional() }).strict().safeParse(data);
         if (!parsed.success) throw new KiteError('合回请求无效');
         if (parsed.data.confirmRecovery) await kite.confirmWorkspaceRecovery(req.params.id);

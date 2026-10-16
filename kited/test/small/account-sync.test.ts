@@ -62,10 +62,12 @@ test('A 新建的 Git 凭据和共享密钥同步到 B 后 B 能取用、两边�
 
 // 两台工作机没同步上时各自登记了同一远程（HTTPS 与 SSH 写法），各得一个项目；连上后登记表随同步合并，
 // 先登记的保留、后登记的记为并入它，各机 syncProjects 时把本机检出与工作区改挂过去。
-// 后登记的那个设了工具约束、有一条项目专用的密钥，合并后都要归到保留的项目。
+// 后登记的那个设了工具约束和执行约束、有一条项目专用的密钥，合并后都要归到保留的项目；约束取两份里更严的组合。
 // 要登记表、同步、两边各自合并与本机 SQLite 改挂合起来才看得出。
 // 真实 bug（旧实现）：合并只改挂检出，保留的项目读到默认的不限制约束，密钥还绑在并入的旧 ID 上，按保留的项目列不出、取不到。
-test('两台工作机没同步时各自登记同一远程，连上同步后两边都只剩先登记的项目，后登记那台的检出和工作区改挂过去，它禁用的 shell 与项目密钥归到保留的项目', async () => {
+// 真实 bug（后来的实现）：保留的项目没设执行约束时，合并直接换成并入项目的那份，把它的基础许可（沙箱外命令、额外可读目录）
+// 带到保留的项目上；应当许可取交集（这里为空）、禁止取并集。
+test('两台工作机没同步时各自登记同一远程，连上同步后两边都只剩先登记的项目，后登记那台的检出和工作区改挂过去，它禁用的 shell、执行禁止与项目密钥归到保留的项目，它的执行许可不带过去', async () => {
   const a = startKited();
   const b = startKited();
   kiteds.push(a, b);
@@ -78,6 +80,10 @@ test('两台工作机没同步时各自登记同一远程，连上同步后两�
   const constraints = await b.call('GET', `/project-registry/${second.project.id}/constraints`);
   expect((await b.call('PUT', `/project-registry/${second.project.id}/constraints`, {
     tools: { mode: 'deny', tools: ['shell'] }, expectedRevision: constraints.body.revision,
+    execution: {
+      allow: { read: ['~/.aws'], write: [], network: [], unsandboxed: ['docker compose *'] },
+      deny: { read: ['~/.ssh'], write: [], network: [], unsandboxed: ['sudo *'] },
+    },
   })).status).toBe(200);
   const value = `project-secret-${crypto.randomUUID()}`;
   const secret = await b.call('POST', '/credentials', {
@@ -95,6 +101,10 @@ test('两台工作机没同步时各自登记同一远程，连上同步后两�
     const kept = await k.call('GET', `/project-registry/${first.project.id}/constraints`);
     expect(kept.status).toBe(200);
     expect(kept.body.tools).toEqual({ mode: 'deny', tools: ['shell'] });
+    expect(kept.body.execution).toMatchObject({
+      allow: { read: [], write: [], network: [], unsandboxed: [] },
+      deny: { read: ['~/.ssh'], write: [], network: [], unsandboxed: ['sudo *'] },
+    });
     const listed = await k.call('GET', `/credentials?type=secret&projectId=${first.project.id}`);
     expect(listed.body).toEqual([expect.objectContaining({ id: secret.body.id, name: 'DEPLOY_TOKEN' })]);
     expect(await k.daemon.kite.credentials.resolve(['{project.DEPLOY_TOKEN}'], first.project.id))

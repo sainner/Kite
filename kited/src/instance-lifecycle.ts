@@ -33,8 +33,8 @@ export class InstanceLifecycle {
     const project = definition.agent && (projectId ? this.kite.store.projectConstraints(projectId) : this.kite.store.workspaceConstraints(workspaceId))?.tools;
     const bound = definition.agent && roleAgent(this.kite.roles.get(choice.role?.id ?? defaultRoleId, choice.role?.revision), choice, project);
     const grants = bound ? roleOperationGrants(definitionId, [], [], toolLimits(bound.role.tools).allowed) : [];
-    // 执行授权与审批模式取角色的，角色没给就用定义的默认；项目的基础与边界不拷进实例，每次按项目此刻的约束合成。
-    const config = bound ? { agent: bound.agent, role: bound.role, grants, execution: bound.execution ?? definition.execution, ...(bound.approval ? { approval: bound.approval } : {}) }
+    // 执行授权与审批模式取角色的，角色没给就是在项目基础上不增不减；项目的基础与边界不拷进实例，每次按项目此刻的约束合成。
+    const config = bound ? { agent: bound.agent, role: bound.role, grants, ...(bound.execution ? { execution: bound.execution } : {}), ...(bound.approval ? { approval: bound.approval } : {}) }
       : definition.runtime === 'bun' ? { packageRevision: definition.revision, grants: [] } : {};
     return { id: randomUUID(), workspaceId, definitionId, title, config, state: {},
       presentation: 'window', status: 'open', createdAt: Date.now() };

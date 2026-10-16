@@ -943,18 +943,18 @@ private final class CardHeaderView: NSView, NSMenuDelegate {
 
     private init(_ perform: @escaping @MainActor () -> Void) { self.perform = perform }
 
-    /// destructive：同 SwiftUI 的 Button(role: .destructive) 在菜单里的样子。NSMenuItem 没有公开的接口，用的是它没公开的 setDestructive:，
-    /// 系统去掉它时只是退回普通样式。
+    /// destructive：标题用危险色，同 MenuButton。菜单只认标题自带的颜色，不可用时由菜单自己调淡。
     static func item(_ title: String, enabled: Bool, destructive: Bool = false, perform: @escaping @MainActor () -> Void) -> NSMenuItem {
         let target = MenuAction(perform)
         let item = NSMenuItem(title: title, action: enabled ? #selector(run) : nil, keyEquivalent: "")
         item.target = target
         item.representedObject = target
         item.isEnabled = enabled
-        let setDestructive = NSSelectorFromString("setDestructive:")
-        if destructive, item.responds(to: setDestructive) {
-            typealias Set = @convention(c) (AnyObject, Selector, Bool) -> Void
-            unsafeBitCast(item.method(for: setDestructive), to: Set.self)(item, setDestructive, true)
+        if destructive {
+            item.attributedTitle = NSAttributedString(string: title, attributes: [
+                .foregroundColor: NSColor(named: "Danger") ?? .systemRed,
+                .font: NSFont.menuFont(ofSize: 0),
+            ])
         }
         return item
     }

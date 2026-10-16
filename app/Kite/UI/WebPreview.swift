@@ -115,7 +115,7 @@ nonisolated private struct WorkspaceFileScheme: URLSchemeHandler {
                     let file = try await fetch(String(url.path(percentEncoded: false).dropFirst()))
                     let data = try Data(contentsOf: file.url, options: .mappedIfSafe)
                     let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
-                                                   headerFields: ["Content-Type": file.type, "Content-Length": String(data.count)])!
+                                                   headerFields: ["Content-Type": file.info.type, "Content-Length": String(data.count)])!
                     continuation.yield(.response(response))
                     continuation.yield(.data(data))
                     continuation.finish()
@@ -159,9 +159,10 @@ struct PortPreview: View {
                 report("本机转发没有打开：\(error.localizedDescription)")
                 return
             }
-            url = URL(string: "http://localhost:\(relay.port)")
-            // 视图在就一直转发，离开或换了目标时关掉
-            try? await Task.sleep(for: .seconds(Int.max))
+            // 转发只听 IPv4 回环；写 localhost 时 WebKit 先连 ::1，本机正好有服务占着同号端口就会打开错的页面。
+            url = URL(string: "http://127.0.0.1:\(relay.port)")
+            // 视图在就一直转发，离开或换了目标时（任务取消）关掉
+            while !Task.isCancelled { try? await Task.sleep(for: .seconds(3600)) }
             relay.stop()
         }
     }

@@ -14,7 +14,8 @@ import { localTools, type ShellBackground } from '../../src/execution/local-tool
 import type { Input, Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
 import type { PluginInstance, WorkspaceModel } from '../../src/model.ts';
 import type { Network, NetworkStatus } from '../../src/network.ts';
-import { terminalDefinitionId, terminalState, type TerminalState } from '../../src/terminal/terminals.ts';
+import { terminalState, type TerminalState } from '../../src/terminal/state.ts';
+import { terminalDefinitionId } from '../../src/terminal/terminals.ts';
 import { after, machine, mark, registerCheckout, startKited, waitIdle, type Kited } from '../harness.ts';
 import { item, ManualModel, Seen } from '../harness-loop.ts';
 import { ENV, newRepo, until, useTemp } from '../util.ts';
@@ -448,8 +449,52 @@ test('终端从进程树找出监听端口并认出 HTTP，本机端口整组转
     expect((await select(first.instanceId, v4Port)).status).toBe(409);
   } finally {
     for (const device of devices) device.close();
-    // 交互式 sh 的后台任务在自己的进程组里，停终端不一定带走它们，按 pid 清掉。
+    // 测试中途失败时终端可能没停，后台任务留着，按 pid 清掉。
     for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* 已经停了 */ } }
+    await k.stop();
+  }
+}, 5_000);
+
+/** ps 读进程的进程组和状态；进程不在了返回 undefined。 */
+function processInfo(pid: number): { pgid: number; stat: string } | undefined {
+  const r = Bun.spawnSync(['ps', '-o', 'pgid=,stat=', '-p', String(pid)], { env: ENV(), stdout: 'pipe', stderr: 'pipe' });
+  const [pgid, stat] = r.stdout.toString().trim().split(/\s+/);
+  return pgid && stat ? { pgid: Number(pgid), stat } : undefined;
+}
+
+/*
+ * 真实 bug：交互式 shell 开着作业控制，每个后台作业各在自己的进程组；停止终端原来只对 shell 自己的进程组发信号，
+ * shell 退出、状态记为 exited，忽略 SIGHUP 的后台作业却还活着。
+ * 依赖的运行时行为：sh 在 PTY 上交互运行时开作业控制，& 起的作业在独立的进程组（下面先核对这一点，不成立时这个测试测不出 bug）；
+ * nohup 让 sleep 忽略 SIGHUP，shell 收到 SIGHUP 时转发给作业也带不走它。被杀的作业在父进程收走前是僵尸（ps 状态含 Z），算已结束。
+ */
+test('停止终端时，shell 用作业控制放进别的进程组、忽略 SIGHUP 的后台作业也一起结束', async () => {
+  const k = startKited(undefined, false, { terminalShell });
+  // sleep 的参数带上本次的随机数，清理时按命令行找它，不按可能被复用的 pid。
+  const marker = `3001.${crypto.getRandomValues(new Uint32Array(1))[0]}`;
+  let device: Device | undefined;
+  try {
+    const machineId = (await machine(k.url)).id;
+    const workspaceId = await workspaceOf(k);
+    const { instanceId } = await openTerminal(k, workspaceId);
+    device = new Device(k.url, machineId, instanceId);
+    await device.snapshot();
+    device.type(`nohup sleep ${marker} >/dev/null 2>&1 & echo shell=$$ job=$!\n`);
+    const ids = await device.match(/shell=(\d+) job=(\d+)/);
+    const shell = Number(ids[1]);
+    const job = Number(ids[2]);
+    const jobBefore = processInfo(job);
+    expect(jobBefore?.stat).not.toContain('Z');
+    expect(jobBefore?.pgid).not.toBe(processInfo(shell)?.pgid);
+
+    const stopped = await k.call('POST', `/workspaces/${workspaceId}/operations/terminal.stop`, { operationId: crypto.randomUUID(), instanceId });
+    expect(stopped.status).toBe(200);
+    expect(stateIn(await aggregate(k, workspaceId), instanceId)).toMatchObject({ phase: 'exited' });
+    const left = processInfo(job);
+    expect(left && !left.stat.includes('Z') ? `仍在运行，状态 ${left.stat}` : '已结束').toBe('已结束');
+  } finally {
+    device?.close();
+    Bun.spawnSync(['pkill', '-KILL', '-f', `^sleep ${marker}$`], { env: ENV() });
     await k.stop();
   }
 }, 5_000);

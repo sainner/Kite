@@ -27,7 +27,7 @@ export PATH="$PWD/kited/node_modules/.bin:$PATH"
 | `verify-represented-root-swift.ts` | 生产 `RepresentedRoot` 截住里面托管视图（岛）的约束失效：屏上小窗口里岛的 `TimelineView(.animation)` 按帧走，外面 representable 所在的 SwiftUI 根不再每帧整轮重排；对照换成普通 `NSView`，外面每帧重排；同一个 `RepresentedRoot` 里的普通子视图逐帧标排版，`layout()` 仍按帧被调。挡系统改了约束上报的路径后外面又每帧重排（性能退回）或岛停住不动；仅手动运行 | `bun kited/test/manual/verify-represented-root-swift.ts` |
 | `verify-plugin-web.ts` | 真实 WKWebView 与 MCP Apps SDK 的隔离和生命周期 | `bun kited/test/manual/verify-plugin-web.ts`；iOS 加 `--ios <模拟器 UDID>` |
 
-`PluginWebProbe.swift` 是 `verify-plugin-web.ts` 编译和启动的原生探针，不单独运行。其余 Swift 文件是同名验证使用的夹具；`command.ts` 提供共用子进程执行入口。
+`PluginWebProbe.swift` 是 `verify-plugin-web.ts` 编译和启动的原生探针，不单独运行。其余 Swift 文件是同名验证使用的夹具；`command.ts` 提供共用子进程执行入口。这些 Swift 文件不在 Xcode 工程里，编辑器的 SourceKit 靠同目录的 `compile_commands.json`（不入库）拿到合同实际的编译参数：每次经 `command.ts` 用 swiftc 编译本目录的 Swift 文件都会更新它，新加或改了编译文件的合同跑一次即可。
 
 `verify-compact-pane-stack-swift.ts` 把生产的 `CompactPaneStack.swift`（Mac 窄窗口的紧凑布局）连同 `WindowMotion.swift`、`HostedContent.swift`、`CompactPaneHeader.swift`、`PaneControlSwipe.swift` 一起编译，`Pane`、`WindowLayout`、`DrawerMotion`、`PanePresence` 等由夹具给最小定义；两页模型放在离屏 `NSHostingView` 里，外面按 `CompactWindow` 的接法套 `CompactPaneHeaderHost`。一个场景顺序验证：直接调环境里 `paneSwipe` 的 `track`、`end` 横滑松手后焦点换到相邻窗口，`WindowMotion` 停稳后新窗口的原生 `NSButton` 从宿主可命中、换走的窗口平移到宿主之外；相邻窗口建出时拿到的 `paneSwipe` 在它成为当前窗口后仍能横滑切回；外壳控制区整份接回源窗口环境后仍读到外壳写入的 `keyboardShown`，并能用源环境里的 `paneSwipe` 横滑切换；`PanePresence` 拖动中对露出来的相邻窗口为在屏，停稳后换走的窗口翻成不在屏。不发真实手势、不验证点阵与抽屉、不截图、不打开或操作用户 App；脚本可接受 `CompactPaneStack.swift` 的路径作为第一个参数，用于编译保留的回归快照。
 

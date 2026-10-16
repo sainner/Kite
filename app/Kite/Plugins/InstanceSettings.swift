@@ -313,7 +313,7 @@ struct InstanceActions: View {
     @Environment(WorkArea.self) private var area
     var body: some View {
         ForEach(Array(InstanceAction.all(for: instance, in: area, model: model, pane: pane).enumerated()), id: \.offset) { _, action in
-            Button(action.title, role: action.destructive ? .destructive : nil, action: action.perform)
+            MenuButton(action.title, role: action.destructive ? .destructive : nil, action: action.perform)
                 .disabled(!action.enabled)
         }
     }

@@ -203,7 +203,7 @@ private struct WorkspaceProjectSection<Row: View>: View {
                         Divider()
                     }
                     // Line 所在的项目不能删，Line 在别的工作机上时接请求的那台查不到，这里也拦着
-                    Button("删除项目…", role: .destructive) { confirmingDeletion = true }
+                    MenuButton("删除项目…", role: .destructive) { confirmingDeletion = true }
                         .disabled(model.availableWorkers.isEmpty || model.lineArea?.remote?.project.id == group.id)
                 }
                 .accessibilityAddTraits(selected ? .isSelected : [])

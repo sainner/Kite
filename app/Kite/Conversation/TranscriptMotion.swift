@@ -55,12 +55,17 @@ struct HeightAnimation {
         self.link = link
     }
 
+    var running: Bool { link != nil }
+
+    /// 当场停下，不再调 step。
+    func stop() {
+        link?.invalidate()
+        link = nil
+        step = nil
+    }
+
     @objc private func tick(_ link: CADisplayLink) {
-        if step?(link.targetTimestamp) != true {
-            link.invalidate()
-            self.link = nil
-            step = nil
-        }
+        if step?(link.targetTimestamp) != true { stop() }
     }
 
     fileprivate static func link(in view: PlatformView, target: Any, selector: Selector) -> CADisplayLink {
