@@ -8,9 +8,9 @@
 
 /* Begin PBXBuildFile section */
 		4B1E00000000000000000012 /* Highlighter in Frameworks */ = {isa = PBXBuildFile; productRef = 4B1E00000000000000000011 /* Highlighter */; };
+		4B1E00000000000000000016 /* Vendor/TailscaleKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4B1E00000000000000000015 /* Vendor/TailscaleKit.xcframework */; };
+		4B1E00000000000000000017 /* Vendor/TailscaleKit.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4B1E00000000000000000015 /* Vendor/TailscaleKit.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		4B1E00000000000000000022 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 4B1E00000000000000000021 /* SwiftTerm */; };
-		4B1E00000000000000000016 /* TailscaleKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4B1E00000000000000000015 /* TailscaleKit.xcframework */; };
-		4B1E00000000000000000017 /* TailscaleKit.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4B1E00000000000000000015 /* TailscaleKit.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -20,7 +20,7 @@
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
-				4B1E00000000000000000017 /* TailscaleKit.xcframework in Embed Frameworks */,
+				4B1E00000000000000000017 /* Vendor/TailscaleKit.xcframework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -28,8 +28,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		4B1E00000000000000000015 /* TailscaleKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Vendor/TailscaleKit.xcframework; sourceTree = "<group>"; };
 		4B1E00000000000000000001 /* Kite.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Kite.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4B1E00000000000000000015 /* Vendor/TailscaleKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Vendor/TailscaleKit.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -47,7 +47,7 @@
 			files = (
 				4B1E00000000000000000012 /* Highlighter in Frameworks */,
 				4B1E00000000000000000022 /* SwiftTerm in Frameworks */,
-				4B1E00000000000000000016 /* TailscaleKit.xcframework in Frameworks */,
+				4B1E00000000000000000016 /* Vendor/TailscaleKit.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -58,7 +58,7 @@
 			isa = PBXGroup;
 			children = (
 				4B1E00000000000000000002 /* Kite */,
-				4B1E00000000000000000015 /* TailscaleKit.xcframework */,
+				4B1E00000000000000000015 /* Vendor/TailscaleKit.xcframework */,
 				4B1E00000000000000000005 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -124,8 +124,8 @@
 			mainGroup = 4B1E00000000000000000004;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				4B1E00000000000000000010 /* HighlighterSwift */,
-				4B1E00000000000000000020 /* SwiftTerm */,
+				4B1E00000000000000000010 /* XCRemoteSwiftPackageReference "HighlighterSwift" */,
+				4B1E00000000000000000020 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4B1E00000000000000000005 /* Products */;
@@ -156,32 +156,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		4B1E00000000000000000010 /* HighlighterSwift */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/smittytone/HighlighterSwift.git";
-			requirement = {kind = exactVersion; version = 3.1.0; };
-		};
-		4B1E00000000000000000020 /* SwiftTerm */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm.git";
-			requirement = {kind = exactVersion; version = 1.18.0; };
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		4B1E00000000000000000011 /* Highlighter */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 4B1E00000000000000000010 /* HighlighterSwift */;
-			productName = Highlighter;
-		};
-		4B1E00000000000000000021 /* SwiftTerm */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 4B1E00000000000000000020 /* SwiftTerm */;
-			productName = SwiftTerm;
-		};
-/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		4B1E0000000000000000000B /* Debug */ = {
@@ -301,19 +275,18 @@
 		4B1E0000000000000000000E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				KITE_PREVIEW_FLAGS = "";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = KURDN59Q7P;
 				ENABLE_APP_SANDBOX = YES;
-				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
-				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
+				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				"INFOPLIST_FILE[sdk=iphoneos*]" = "Info-iOS.plist";
@@ -331,6 +304,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				KITE_PREVIEW_FLAGS = "";
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
@@ -361,12 +335,12 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = KURDN59Q7P;
 				ENABLE_APP_SANDBOX = YES;
-				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
-				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
+				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				"INFOPLIST_FILE[sdk=iphoneos*]" = "Info-iOS.plist";
@@ -426,6 +400,38 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		4B1E00000000000000000010 /* XCRemoteSwiftPackageReference "HighlighterSwift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/smittytone/HighlighterSwift.git";
+			requirement = {
+				kind = exactVersion;
+				version = 3.1.0;
+			};
+		};
+		4B1E00000000000000000020 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm.git";
+			requirement = {
+				kind = exactVersion;
+				version = 1.18.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4B1E00000000000000000011 /* Highlighter */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4B1E00000000000000000010 /* XCRemoteSwiftPackageReference "HighlighterSwift" */;
+			productName = Highlighter;
+		};
+		4B1E00000000000000000021 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4B1E00000000000000000020 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 4B1E00000000000000000009 /* Project object */;
 }
