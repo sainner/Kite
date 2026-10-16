@@ -1,5 +1,8 @@
+import { recordSwiftCompile } from './compile-commands.ts';
+
 /** 执行合同脚本的子进程，同时读完输出，失败时带上错误。 */
 export async function command(args: string[], cwd: string, timeoutMs?: number): Promise<string> {
+  recordSwiftCompile(args, cwd);
   const proc = Bun.spawn(args, {
     cwd,
     env: { ...(process.env as Record<string, string>) },
