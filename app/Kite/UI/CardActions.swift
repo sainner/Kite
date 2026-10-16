@@ -128,8 +128,8 @@ struct CardActions: View {
         }
     }
 
-    @ViewBuilder private func main(_ state: CardPhase) -> some View {
-        let button = Button {
+    private func main(_ state: CardPhase) -> some View {
+        Button {
             if let message = state.error { copy(message) }
             else if state == .succeeded { succeededAction?() }
             else { action() }
