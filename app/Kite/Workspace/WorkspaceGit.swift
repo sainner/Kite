@@ -105,18 +105,18 @@ struct WorkspaceGitActions: View {
             Button("合入现场改动") { }
                 .disabled(true)
                 .help("尚未接通")
-            Button("丢弃改动", role: .destructive) { }
+            MenuButton("丢弃改动", role: .destructive) { }
                 .disabled(true)
                 .help("尚未接通")
             Divider()
-            Button("删除工作区", role: .destructive) { }
+            MenuButton("删除工作区", role: .destructive) { }
                 .disabled(true)
                 .help("尚未接通")
         } else if workspace.remote?.workspace.kind == .root {
             Button("提交并推送…") { model.scenePush = workspace }
         } else if workspace.remote != nil {
             Button("集成到主线并推送") { integrate() }
-            Button("归档工作区…", role: .destructive) { model.archiveRequest = workspace }
+            MenuButton("归档工作区…", role: .destructive) { model.archiveRequest = workspace }
         }
     }
 
