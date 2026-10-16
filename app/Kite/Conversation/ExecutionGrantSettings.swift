@@ -13,7 +13,6 @@ struct ExecutionGrantSettings: View {
     @State private var state: RemoteState?
     @State private var phase = CardPhase.idle
     @State private var discardAction: DiscardAction?
-    @State private var confirmingRecovery = false
     @FocusState private var focus: Field?
 
     private enum Field { case read, write, network }
@@ -27,7 +26,7 @@ struct ExecutionGrantSettings: View {
     }
     private var canSave: Bool {
         available && !working && changed && draft != nil && state?.status == "open"
-            && state?.busy == false && state?.phase != "stopping" && state?.recovery == nil
+            && state?.busy == false && state?.phase != "stopping"
             && !thread.stopping && !thread.hasUnconfirmedStop
     }
 
@@ -37,10 +36,6 @@ struct ExecutionGrantSettings: View {
             Group {
                 CardSection("当前执行", note: state?.recovery?.message) {
                     LabeledContent("状态") { Text(statusLabel).foregroundStyle(.secondary) }
-                    if state?.recovery != nil {
-                        Button("确认上次执行结果…") { confirmingRecovery = true }
-                            .disabled(!available || state?.busy == true || thread.stopping || thread.hasUnconfirmedStop)
-                    }
                     if thread.hasUnconfirmedStop || state?.capabilities.interrupt == true {
                         Button(thread.hasUnconfirmedStop ? "重试停止" : "停止执行") {
                             perform {
@@ -91,7 +86,7 @@ struct ExecutionGrantSettings: View {
                     #if os(iOS)
                     .textInputAutocapitalization(.never)
                     #endif
-                    CardNote("先停止执行并确认结果，再保存授权。保存后用于后续工具调用，并在下一次模型请求追加通知。")
+                    CardNote("先停止执行，再保存授权。保存后用于后续工具调用，并在下一次模型请求追加通知。")
                 }
             }
             .disabled(working)
@@ -107,17 +102,6 @@ struct ExecutionGrantSettings: View {
         .interactiveDismissDisabled(working || changed)
         .discardAlert("放弃未保存的执行授权修改？", item: $discardAction) { action in
             if action == .back { back() } else { perform { try await load() } }
-        }
-        .alert("确认上次执行结果？", isPresented: $confirmingRecovery) {
-            Button("已核对，确认结果") {
-                perform {
-                    try await boundClient().post("/threads/\(instance.id)/recover")
-                    try await readState()
-                }
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("请先核对文件改动，并确认残留命令已停止。确认后可修改授权；代理等待你显式继续。")
         }
         .task { perform { try await load() } }
         .onChange(of: thread.state) { _, value in

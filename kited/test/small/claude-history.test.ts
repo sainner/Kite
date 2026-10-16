@@ -63,12 +63,12 @@ test('Claude 恢复按原生记录确认已纳入输入，未知输入可撤回�
   expect((await call(reopened.url, 'POST', `/threads/${id}/recover`)).status).toBe(200);
   const ready = (await call(reopened.url, 'GET', `/threads/${id}/history`)).body as History;
   expect(ready.state).toMatchObject({ busy: false, waitingForResume: true });
-  expect(ready.state.capabilities).toMatchObject({ send: false, resume: true, cancel: true });
+  // 结果未知的输入留在待发送里，不再挡住发送：用户的新消息会先按原顺序重投它们（见 test/medium/crash.test.ts）。
+  expect(ready.state.capabilities).toMatchObject({ send: true, resume: true, cancel: true });
   expect(ready.state.recovery).toBeUndefined();
   expect(ready.pending.map((input) => input.id)).toEqual([cancelled.input.id, returned.input.id]);
   expect(ready.records.filter((record) => record.block.type === 'human' && record.block.id === accepted.input.id)).toHaveLength(1);
   expect(ready.records.filter((record) => record.block.type === 'human' && record.block.id === delivered.input.id)).toHaveLength(1);
-  expect((await call(reopened.url, 'POST', `/threads/${id}/messages`, { id: 'unrelated', text: '别的事情' })).status).toBe(409);
   expect((await call(reopened.url, 'POST', `/threads/${id}/messages/${cancelled.input.id}/cancel`)).status).toBe(200);
   const afterCancel = (await call(reopened.url, 'GET', `/threads/${id}/history`)).body as History;
   expect(afterCancel.pending.map((input) => input.id)).toEqual([returned.input.id]);
@@ -90,13 +90,17 @@ test('Claude 恢复按原生记录确认已纳入输入，未知输入可撤回�
     stops: [{ id: stop.id, request: JSON.stringify(stop.inputs), returned: [clientInput], completed: false }],
     processes: [], through: 0, paused: true, recovery: { message: '停止尚未完成' },
   });
+  // App 不再单独确认恢复：重试原停止请求时带 confirmRecovery，宿主先确认再交回这次停止的收据。
+  // 重开后已没有恢复阻塞，再带 confirmRecovery 重试什么都不确认，仍得到同一份收据。
   reopened = startDaemon({ home: k.home, port: 0, lightTasks: false });
-  expect((await call(reopened.url, 'POST', `/threads/${id}/recover`)).status).toBe(200);
-  const stopped = await call(reopened.url, 'POST', `/threads/${id}/interrupt`, stop);
+  const retry = { ...stop, confirmRecovery: true };
+  const stopped = await call(reopened.url, 'POST', `/threads/${id}/interrupt`, retry);
   expect(stopped).toEqual({ status: 200, body: { returned: [returned.input, clientInput] } });
-  expect((await call(reopened.url, 'GET', `/threads/${id}/history`)).body.pending).toEqual([]);
+  const afterStop = (await call(reopened.url, 'GET', `/threads/${id}/history`)).body as History;
+  expect(afterStop.pending).toEqual([]);
+  expect(afterStop.state.recovery).toBeUndefined();
   await reopened.stop(); reopened = startDaemon({ home: k.home, port: 0, lightTasks: false });
-  expect(await call(reopened.url, 'POST', `/threads/${id}/interrupt`, stop)).toEqual(stopped);
+  expect(await call(reopened.url, 'POST', `/threads/${id}/interrupt`, retry)).toEqual(stopped);
   expect(api.log).toHaveLength(requestCount);
 }, 1000);
 

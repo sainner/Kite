@@ -332,8 +332,10 @@ export function serve(kite: Kite, listen: Listen) {
       }) },
       '/workspaces/:id/setup': { POST: bound((req) => kite.retrySetup(req.params.id)) },
       '/workspaces/:id/transfer': { POST: long(bound(async (req) => {
-        const parsed = z.object({ to: z.string().min(1), operationId: z.string().min(1) }).strict().safeParse(await body(req));
+        const parsed = z.object({ to: z.string().min(1), operationId: z.string().min(1), confirmRecovery: z.literal(true).optional() })
+          .strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('流转要写 to（目标工作机）与 operationId');
+        if (parsed.data.confirmRecovery) await kite.confirmWorkspaceRecovery(req.params.id);
         // 不另记回执：执行中的回执会被交接当成结果未知的操作挡住自己。重试照样安全，交接可以重入，目标的还原按 operationId 去重。
         return kite.transferWorkspace(req.params.id, parsed.data.to, { operationId: parsed.data.operationId });
       })) },
@@ -507,6 +509,9 @@ export function serve(kite: Kite, listen: Listen) {
           const via = sourceOf(req);
           // relay：Line 照原文转达用户的话，输入来源仍是人。
           if (b.relay !== undefined && (b.relay !== true || !via)) throw new KiteError('relay 只用于 Line 转达用户原文');
+          // 用户在 App 里发送即确认恢复；Line 和其他 agent 的发送仍被恢复阻塞挡住。
+          if (b.confirmRecovery !== undefined && (b.confirmRecovery !== true || via)) throw new KiteError('confirmRecovery 只用于用户在 App 里发送');
+          if (b.confirmRecovery) await kite.confirmRecovery(req.params.id);
           return kite.operations.invoke({ kind: 'ui', ...(via ? { via } : {}), ...(b.relay ? { relayed: true } : {}) }, kite.thread(req.params.id).workspaceId, 'agent.send', {
             instanceId: req.params.id, text: str(b.text, 'text'), operationId: b.id === undefined ? crypto.randomUUID() : str(b.id, 'id'),
           }, req.signal);
@@ -519,8 +524,10 @@ export function serve(kite: Kite, listen: Listen) {
         catch { throw new KiteError('请求体不是 JSON'); }
         const parsed = z.object({ id: z.string().min(1), inputs: z.array(z.object({
           id: z.string().min(1), text: z.string().min(1), source: z.enum(['human', 'kite']),
-        })).optional() }).safeParse(data);
+        })).optional(), confirmRecovery: z.literal(true).optional() }).safeParse(data);
         if (!parsed.success) throw new KiteError('停止请求无效');
+        // 停止没确认就出了异常时，Claude 要先确认恢复才能交回这次停止的收据。
+        if (parsed.data.confirmRecovery) await kite.confirmRecovery(req.params.id);
         return kite.operations.invoke({ kind: 'ui' }, kite.thread(req.params.id).workspaceId, 'agent.stop', {
           instanceId: req.params.id, operationId: parsed.data.id, inputs: parsed.data.inputs,
         }, req.signal);
@@ -529,8 +536,9 @@ export function serve(kite: Kite, listen: Listen) {
         const raw = await req.text();
         let data: unknown;
         try { data = raw ? JSON.parse(raw) : {}; } catch { throw new KiteError('请求体不是 JSON'); }
-        const parsed = z.object({ operationId: z.string().min(1).optional() }).strict().safeParse(data);
+        const parsed = z.object({ operationId: z.string().min(1).optional(), confirmRecovery: z.literal(true).optional() }).strict().safeParse(data);
         if (!parsed.success) throw new KiteError('继续请求无效');
+        if (parsed.data.confirmRecovery) await kite.confirmRecovery(req.params.id);
         return kite.operations.invoke({ kind: 'ui' }, kite.thread(req.params.id).workspaceId, 'agent.resume', {
           instanceId: req.params.id, operationId: parsed.data.operationId ?? crypto.randomUUID(),
         }, req.signal);
@@ -556,7 +564,15 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/restore': {
         POST: bound(async (req) => kite.restore(req.params.id, str((await body(req)).commit, 'commit'))),
       },
-      '/workspaces/:id/adopt': { POST: long(bound((req) => kite.adopt(req.params.id))) },
+      '/workspaces/:id/adopt': { POST: long(bound(async (req) => {
+        const raw = await req.text();
+        let data: unknown;
+        try { data = raw ? JSON.parse(raw) : {}; } catch { throw new KiteError('请求体不是 JSON'); }
+        const parsed = z.object({ confirmRecovery: z.literal(true).optional() }).strict().safeParse(data);
+        if (!parsed.success) throw new KiteError('合回请求无效');
+        if (parsed.data.confirmRecovery) await kite.confirmWorkspaceRecovery(req.params.id);
+        return kite.adopt(req.params.id);
+      })) },
       '/instances/:id/archive': { POST: bound((req) => kite.archiveInstance(req.params.id)) },
       '/workspaces/:id/archive': { POST: bound(async (req) => kite.archiveWorkspace(req.params.id, (await body(req)).force === true)) },
       '/events': { GET: bound((req) => events(kite, eventScope(req.url), new URL(req.url).searchParams.get('device') ?? undefined)) },

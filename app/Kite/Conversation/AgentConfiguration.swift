@@ -136,7 +136,7 @@ nonisolated struct AgentCapabilities: Decodable, Sendable {
     }
     var toolGroups: [AgentToolGroup] { toolCatalog.groups(of: tools) }
     func canEdit(_ state: RemoteState?) -> Bool {
-        guard let state, state.status == "open", state.recovery == nil, state.phase != "stopping" else { return false }
+        guard let state, state.status == "open", state.phase != "stopping" else { return false }
         return configurationBoundary == "request" || !state.busy
     }
     var explanation: String { configurationBoundary == "request" ? "保存后在下一次模型请求时生效。" : "请在代理空闲时保存，下次执行生效。" }

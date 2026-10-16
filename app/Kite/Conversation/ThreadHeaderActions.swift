@@ -6,12 +6,10 @@ struct ThreadHeaderActions: View {
     @Environment(WorkArea.self) private var area
     @Environment(AppModel.self) private var model
     @Environment(\.paneInstance) private var instance
-    @Environment(\.toast) private var toast
     @Environment(\.paneOverflowActions) private var windowActions
     @State private var savingModel = false
     @State private var loadingModels = false
     @State private var modelError: String?
-    @State private var confirmingRecovery = false
     @State private var showingDraftSettings = false
     private var availableModels: [AgentCapabilities.Model] { thread.agentCapabilities?.models ?? [] }
     /// 草稿还没有实例，模型改的是本机选择，随第一条消息一起提交。
@@ -34,7 +32,7 @@ struct ThreadHeaderActions: View {
             && thread.agentCapabilities?.canEdit(thread.state) == true
     }
     private var canOpenModels: Bool { (instance != nil || choice != nil) && model.isConnected(area) }
-    /// 换到另一厂商的模型就是换后端，运行中、有排队消息或等待恢复确认时不能换。
+    /// 换到另一厂商的模型就是换后端，运行中或有排队消息时不能换；待恢复时换后端连带确认恢复。
     private var canChangeVendor: Bool {
         if choice != nil { return canOpenModels }
         return canOpenModels && !savingModel && !loadingModels && !thread.showStop && thread.state?.capabilities.switchRuntime == true
@@ -68,12 +66,6 @@ struct ThreadHeaderActions: View {
             )) {
                 Button("好", role: .cancel) { modelError = nil }
             } message: { Text(modelError ?? "") }
-            .alert("确认恢复代理", isPresented: $confirmingRecovery) {
-                Button("取消", role: .cancel) {}
-                Button("已核查，解除阻塞") { thread.control("recover") }
-            } message: {
-                Text("请先核查旧执行已经停止及其产生的改动。确认后只解除恢复阻塞。交接未知的消息会保留在待发送区；请核查后选择继续重发或撤回编辑。")
-            }
     }
 
     private var menuGroup: some View {
@@ -99,7 +91,7 @@ struct ThreadHeaderActions: View {
         }
         let locked = !canChangeVendor && thread.state?.capabilities.switchRuntime == false && sections.count > 1
         return ThreadModelMenu(vendors: status == nil ? sections : [], status: status,
-                               note: status == nil && locked ? "运行中、有排队消息或待确认恢复时不能换厂商" : nil,
+                               note: status == nil && locked ? "运行中或有排队消息时不能换厂商" : nil,
                                select: selectModel)
     }
 
@@ -116,21 +108,8 @@ struct ThreadHeaderActions: View {
             general.append(.init(title: "代理配置", symbol: "slider.horizontal.3",
                                  enabled: thread.agentCapabilities != nil) { showingDraftSettings = true })
         }
-        general.append(.init(title: "复制工作目录", symbol: "folder", enabled: !thread.transcriptRoot.isEmpty) {
-            copyToPasteboard(thread.transcriptRoot, toast: toast)
-        })
-        var execution: [ThreadHeaderCommand] = []
-        if thread.state?.recovery != nil {
-            execution.append(.init(title: "确认恢复", symbol: "arrow.clockwise",
-                                   enabled: model.isConnected(area) && thread.state?.busy != true) { confirmingRecovery = true })
-        }
-        if thread.showStop {
-            execution.append(.init(title: "停止执行", symbol: "stop", enabled: thread.canStop) { thread.stop() })
-        }
-        if thread.state?.capabilities.resume == true {
-            execution.append(.init(title: "继续执行", symbol: "play", enabled: thread.canResume) { thread.control("resume") })
-        }
-        return [windowActions?.commands ?? [], general, execution].filter { !$0.isEmpty }
+        // 停止、继续和恢复确认都归输入区：待恢复时发送或继续即确认。
+        return [windowActions?.commands ?? [], general].filter { !$0.isEmpty }
     }
 
     /// 草稿按工作区读取模型目录与各角色可开的工具，再按所选角色给出能力。

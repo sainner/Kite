@@ -114,7 +114,8 @@ export class InstanceConfiguration {
       const nextRevision = executionRevision(grants);
       if (nextRevision === revision) return { grants, revision };
       const runtime = await this.control.runtime(instance);
-      if (runtime?.busy || runtime?.recovery || runtime?.state === 'stopping') throw new KiteError('请先停止实例并确认执行结果，再修改执行授权', 409);
+      // 恢复阻塞期间不执行，新授权等发送或继续时生效。
+      if (runtime?.busy || runtime?.state === 'stopping') throw new KiteError('请先停止实例，再修改执行授权', 409);
       const base = await harnessPolicy({ cwd: instance.workspace.cwd, env: process.env, home: this.kite.home, repository: instance.checkout.path });
       applyExecutionGrants(base, instance.workspace.cwd, grants);
       this.saveExecutionGrants(instance, grants);
@@ -238,7 +239,7 @@ export class InstanceConfiguration {
       const runtimeChanged = agent.runtime !== this.control.context(id).runtime;
       if (agent.runtime === 'claude') {
         const running = await this.control.runtime(this.control.context(id));
-        if (running?.busy || running?.recovery || running?.state === 'stopping') throw new KiteError('请先停止会话并确认执行结果，再修改 Claude 配置', 409);
+        if (running?.busy || running?.state === 'stopping') throw new KiteError('请先停止会话，再修改 Claude 配置', 409);
         if (!claudeReasoning.includes(agent.model.reasoning)) throw new KiteError('Claude 思考强度无效');
       }
       checkTools(agent.tools, role ? toolLimits(role.tools) : this.toolLimits(instance));

@@ -365,7 +365,8 @@ export function openClaudeHost(options: {
       if (existing) { if (!sameInput(existing.input, input)) throw new KiteError('消息 ID 已用于其他内容', 409); return; }
       if (data.importedInputs.includes(input.id)) return;
       if (closing || phase === 'stopping' || data.recovery) throw new KiteError('请先完成停止或恢复确认', 409);
-      if (data.inputs.some((entry) => entry.status === 'unconfirmed')) throw new KiteError('有交接结果未知的输入，请先核查并明确继续，或撤回编辑', 409);
+      // 新消息即继续：交接结果未知的输入先按原顺序重发。
+      for (const entry of data.inputs) if (entry.status === 'unconfirmed') entry.status = 'queued';
       data.inputs.push({ input, sdkId: randomUUID(), at: Date.now(), status: 'queued', delivered: false, midTurn: phase === 'running' });
       data.paused = false; save(); pump();
     },
@@ -458,7 +459,7 @@ export function openClaudeHost(options: {
         receipt.completed = true;
       }
       if (data.inputs.some((entry) => entry.status === 'unconfirmed')) data.outcome = {
-        kind: 'failed', message: '部分输入的交接结果未知，已保留在待发送区；请核查后继续，或撤回编辑。继续会重新发送这些输入。',
+        kind: 'failed', message: '部分输入的交接结果未知，已保留在待发送区；继续或发送新消息会先重发这些输入，不需要的请先撤回。',
       };
       data.recovery = undefined; data.paused = true; save();
     },

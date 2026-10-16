@@ -36,10 +36,12 @@ struct CheckoutSync: Decodable, Equatable {
 }
 
 extension AppModel {
+    /// 用户手动合回、流转，连带确认工作区里待恢复的线程，见 kited 的 confirmWorkspaceRecovery。
     func adopt(_ area: WorkArea) async throws -> RemoteAdoptResult {
         guard let remote = area.remote else { throw KitedError(message: "工作区尚未创建") }
+        struct Adopt: Encodable { let confirmRecovery = true }
         let client = try activeClient(in: area)
-        let result = try await client.request("/workspaces/\(remote.workspace.id)/adopt", method: "POST", timeout: 600, as: RemoteAdoptResult.self)
+        let result = try await client.request("/workspaces/\(remote.workspace.id)/adopt", method: "POST", body: Adopt(), timeout: 600, as: RemoteAdoptResult.self)
         try await refresh(client)
         return result
     }
@@ -60,7 +62,7 @@ extension AppModel {
     /// 交给工作区所在的工作机办：它交出工作区、让目标还原，没成就撤回，见 kited 的 /workspaces/:id/transfer。
     func transfer(_ area: WorkArea, to target: WorkerConnection) async throws {
         guard let remote = area.remote else { throw KitedError(message: "工作区尚未创建") }
-        struct Transfer: Encodable { let to: String; let operationId: String }
+        struct Transfer: Encodable { let to: String; let operationId: String; let confirmRecovery = true }
         let client = try activeClient(in: area)
         let _: JSON = try await client.request("/workspaces/\(remote.workspace.id)/transfer", method: "POST",
                                                body: Transfer(to: target.machine.id, operationId: UUID().uuidString.lowercased()),

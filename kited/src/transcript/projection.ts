@@ -120,11 +120,11 @@ export class TranscriptProjection {
       ...(this.recovery ? { recovery: this.recovery } : {}),
       ...(error ? { error } : {}),
       ...(context ? { context } : {}),
-      capabilities: { send: interactive && !this.recovery && this.phase !== 'stopping'
-          && !this.claudeProjection.hasUnconfirmedInput,
+      // 恢复阻塞时，App 的发送、继续和换后端连带确认恢复，所以空闲后照常可用；交接未知的输入随发送或继续重发。
+      capabilities: { send: interactive && this.phase !== 'stopping' && (!this.recovery || !this.busy),
         interrupt: interactive && (this.busy || this.pending.size > 0) && this.phase !== 'stopping',
-        resume: interactive && !this.busy && !this.recovery && this.waitingForResume, cancel: interactive,
-        switchRuntime: open && !this.busy && !this.recovery && this.phase === 'idle' && this.pending.size === 0
+        resume: interactive && !this.busy && (!!this.recovery || this.waitingForResume), cancel: interactive,
+        switchRuntime: open && !this.busy && this.phase === 'idle' && this.pending.size === 0
           && !this.claudeProjection.hasUnconfirmedInput,
         compact: open && !this.busy && !this.recovery && this.phase === 'idle' && !this.claudeProjection.hasUnconfirmedInput } };
   }

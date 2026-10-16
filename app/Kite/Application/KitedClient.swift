@@ -93,6 +93,8 @@ struct RemoteInput: Codable {
 struct StopRequest: Encodable {
     let id: String
     let inputs: [RemoteInput]
+    /// 每次发出时按当时有没有恢复阻塞填，见 WorkThread.confirmsRecovery。
+    var confirmRecovery: Bool?
 }
 
 struct StopResponse: Decodable { let returned: [RemoteInput] }
@@ -298,7 +300,7 @@ struct KitedClient: Equatable {
                 (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Kite-Cursor"))
     }
 
-    func post(_ path: String, body: [String: String]? = nil) async throws {
+    func post(_ path: String, body: (any Encodable)? = nil) async throws {
         let _: JSON = try await request(path, method: "POST", body: body, as: JSON.self)
     }
 

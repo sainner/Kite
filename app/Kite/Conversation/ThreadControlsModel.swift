@@ -32,7 +32,10 @@ struct ThreadControlsModel {
     /// 附件、语音与固定主按钮之间的间距。
     static let actionGap: CGFloat = 4
 
-    var placeholder: String { thread.transcriptRunning ? "插话，agent 做完手上这一步就会看到" : "回复" }
+    var placeholder: String {
+        if thread.state?.recovery != nil { return "核查上次执行后，再继续或回复" }
+        return thread.transcriptRunning ? "插话，agent 做完手上这一步就会看到" : "回复"
+    }
     /// 回应卡片上的「交给 Line」：有 Line、这不是 Line 自己发起的请求时才有。
     var delegate: (() async throws -> Void)? { model.lineDelegate(thread) }
     var listening: Bool { model.voice.owner == voiceOwner }
@@ -57,11 +60,13 @@ struct ThreadControlsModel {
         }
     }
 
-    /// 草稿优先；空闲时仍保留发送键，由可用状态把它置灰。
+    /// 草稿优先；暂停着能继续时继续优先于停止（排着的消息逐条可撤回），停止没确认时先重试停止；
+    /// 空闲时仍保留发送键，由可用状态把它置灰。
     var primaryAction: PrimaryAction {
         if !blank { return .send }
-        if thread.showStop { return .stop }
+        if thread.hasUnconfirmedStop { return .stop }
         if thread.state?.capabilities.resume == true { return .resume }
+        if thread.showStop { return .stop }
         return .send
     }
 
@@ -87,7 +92,7 @@ struct ThreadControlsModel {
     }
 
     func stop() { thread.stop() }
-    func resume() { thread.control("resume") }
+    func resume() { thread.resume() }
 
     /// 开始或结束录语音。识别出的字接在开录时的草稿后面，每次都是到目前为止的全文；started 在开录以后调。
     func toggleVoice(started: @escaping @MainActor () -> Void = {}) {

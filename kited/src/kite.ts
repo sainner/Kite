@@ -1002,10 +1002,15 @@ export class Kite {
    */
   private async switchRuntime(id: string, agent: AgentDefinition, commit: () => void): Promise<void> {
     if (!(await this.threadState(id)).capabilities.switchRuntime) {
-      throw new KiteError('请先停止会话、处理排队消息并确认执行结果，再切换后端', 409);
+      throw new KiteError('请先停止会话、处理排队消息，再切换后端', 409);
     }
     const runner = await this.runnerForManagement(this.context(id));
-    if (runner?.busy || runner?.recovery) throw new KiteError('请先停止会话并确认执行结果，再切换后端', 409);
+    if (runner?.busy) throw new KiteError('请先停止会话，再切换后端', 409);
+    // 用户在 App 里换后端连带确认恢复：旧后端先核对交接，再把会话交出去。
+    if (runner?.recovery) {
+      if (!runner.recover) throw new KiteError('这个后端不支持恢复确认', 409);
+      await runner.recover();
+    }
     await runner?.shutdown();
     this.runners.delete(id);
     try { await handOff({ home: this.home, thread: this.context(id), to: agent.runtime, model: agent.model.model }); }
@@ -1178,12 +1183,31 @@ export class Kite {
       catch (error) { throw new KiteError((error as Error).message, 409); }
     });
   }
+  /** 只确认恢复，`kite` 命令行用；App 在发送、继续和停止时连带确认，见 confirmRecovery。 */
   recover(id: string): Promise<void> {
     return this.controlThread(id, async () => {
       const r = await this.runner(this.openThread(id));
       if (!r.recover) throw new KiteError('这个后端不支持恢复确认', 409);
       await r.recover();
     });
+  }
+  /**
+   * 用户在 App 里发送、继续或停止时连带确认恢复。没有阻塞或还在收尾时不动，由随后的操作按当时状态处理：
+   * 重试不会把已经继续的会话再停住，重试中的停止也照旧等原来那次。
+   */
+  confirmRecovery(id: string): Promise<void> {
+    return this.controlThread(id, async () => {
+      const r = await this.runner(this.openThread(id));
+      if (!r.recovery || r.busy) return;
+      if (!r.recover) throw new KiteError('这个后端不支持恢复确认', 409);
+      await r.recover();
+    });
+  }
+  /** 用户在 App 里合回主线或手动流转时，连带确认工作区里待恢复的线程；自动换机和冲突处理后的自动合回不经过这里。 */
+  async confirmWorkspaceRecovery(workspaceId: string): Promise<void> {
+    for (const t of this.store.threads(workspaceId)) {
+      if (t.status !== 'archived' && (await this.threadState(t.id)).recovery) await this.confirmRecovery(t.id);
+    }
   }
 
   private snapshot(w: Workspace, toolUseIds: string[], label: string, threadId?: string): Promise<void> {

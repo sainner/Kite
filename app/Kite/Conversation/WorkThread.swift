@@ -312,7 +312,7 @@ final class WorkThread: Identifiable {
         error = nil
         Task {
             defer { sending.remove(message.id) }
-            do { try await client.post("/threads/\(id)/messages", body: ["id": message.id, "text": message.typed]) }
+            do { try await client.post("/threads/\(id)/messages", body: SendBody(id: message.id, text: message.typed, confirmRecovery: confirmsRecovery)) }
             catch {
                 guard !returned.contains(message.id) else { return }
                 markUnconfirmed(message, error.localizedDescription)
@@ -352,9 +352,10 @@ final class WorkThread: Identifiable {
 
     private func startStop() throws -> Task<Void, Error> {
         guard let client, !stopping else { throw KitedError(message: "代理尚不可停止，请刷新状态后重试") }
-        let request = stopRequest ?? StopRequest(id: UUID().uuidString, inputs: outbox.map {
+        var request = stopRequest ?? StopRequest(id: UUID().uuidString, inputs: outbox.map {
             RemoteInput(id: $0.id, text: $0.typed, source: "human")
         })
+        request.confirmRecovery = confirmsRecovery
         // 同步冻结收据，点击停止后立即阻止继续发送或重复停止。
         stopRequest = request
         stopping = true
@@ -419,13 +420,18 @@ final class WorkThread: Identifiable {
         let _: JSON = try await client.request("/threads/\(id)/waiting/\(waiting.id.pathComponent)", method: "POST", body: reply, as: JSON.self)
     }
 
-    func control(_ action: String) {
+    func resume() {
         guard let client else { return }
         Task {
-            do { try await client.post("/threads/\(id)/\(action)"); error = nil }
+            do { try await client.post("/threads/\(id)/resume", body: ResumeBody(confirmRecovery: confirmsRecovery)); error = nil }
             catch { self.error = error.localizedDescription }
         }
     }
+
+    /// 恢复阻塞时，用户发送、继续或停止就算确认旧执行已核查，由工作机先解除阻塞再处理。
+    private var confirmsRecovery: Bool? { state?.recovery != nil ? true : nil }
+    private struct SendBody: Encodable { let id: String; let text: String; let confirmRecovery: Bool? }
+    private struct ResumeBody: Encodable { let confirmRecovery: Bool? }
 }
 
 /// 控件的刻度顺序；可选档位由服务端模型能力筛选。

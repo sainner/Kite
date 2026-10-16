@@ -3,9 +3,13 @@ import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
+import { FileJournal, readJournal } from '../../src/harness/journal.ts';
 import type { Json, ModelItem, ModelRequest } from '../../src/harness/types.ts';
-import { after, call, createWorkspace, type Kited, listSnapshots, mark, registerCheckout, startKited, waitIdle } from '../harness.ts';
-import { item, ManualModel, Seen } from '../harness-loop.ts';
+import type { History } from '../../src/transcript/protocol.ts';
+import {
+  after, call, createWorkspace, type Kited, listSnapshots, machine, mark, openAgent, registerCheckout, startKited, waitIdle,
+} from '../harness.ts';
+import { input, item, ManualModel, Seen } from '../harness-loop.ts';
 import { commitAll, git, gitOk, makeTemp, newRepo, read, writeFiles } from '../util.ts';
 
 const roots: string[] = [];
@@ -323,4 +327,113 @@ test('挂起请求关闭后直接归档不会执行排队消息，工作树仍�
   expect(existsSync(session.workspace.cwd)).toBe(false);
   const view = await call(daemon.url, 'GET', `/threads/${session.id}`);
   expect(view.body.status).toBe('archived');
+}, 1000);
+
+/**
+ * 构造自研后端的恢复阻塞，按真实崩溃留下的日志：线程的第一轮请求已发给 model，放它正常结束，日志里留下宿主自己的上下文和请求配置；
+ * 停掉 kk 后续写一轮工具 shell 已开始而没有结果的记录，重开后补成结果未知。
+ */
+async function crashMidTool(kk: Kited, id: string, model: ManualModel): Promise<void> {
+  const first = await model.call(1);
+  const since = mark(kk);
+  first.response.complete();
+  await waitIdle(kk, id, since);
+  await kk.halt();
+  const path = join(kk.home, 'sessions', id, 'journal.jsonl');
+  const records = readJournal(path);
+  const contextId = records.findLast((record) => record.type === 'context.prepared')!.snapshot.id;
+  const configurationId = records.findLast((record) => record.type === 'request.configured')!.snapshot.id;
+  const journal = new FileJournal(path);
+  const ids = { turnId: 'crashed-turn', requestId: 'crashed-request' };
+  const uncertain = item('uncertain', 'shell');
+  journal.append({ type: 'input.received', input: input('before-crash') });
+  journal.append({ type: 'turn.started', turnId: ids.turnId });
+  journal.append({ type: 'request.started', ...ids, inputIds: ['before-crash'], contextId, configurationId });
+  journal.append({ type: 'model.item', ...ids, item: uncertain });
+  journal.append({ type: 'tool.started', ...ids, callId: uncertain.id });
+  journal.close();
+}
+
+// 几个部分的配合：HTTP 的 confirmRecovery、宿主确认恢复和 agent.send 交接。自研主循环确认恢复后仍停在待继续，
+// 同一请求里的发送要接在确认之后进主循环，不能只确认不发送，也不能被尚未解除的恢复挡回；被拒的发送不能顺带确认。
+test('自研后端崩溃后的恢复阻塞只由 App 带确认的发送解除，新消息接在补齐的未知工具结果后交给模型，普通发送和 Line 的发送不解除', async () => {
+  const model = new ManualModel();
+  kited = startKited(() => model);
+  const kk = kited;
+  const project = await registerCheckout(kk, newRepo(kk.root, 'project', { 'base.txt': '原始\n' }));
+  const id = await openAgent(kk.call, project.workspace.id);
+  expect((await kk.call('POST', `/threads/${id}/messages`, { id: 'first', text: '先正常对话一轮' })).status).toBe(200);
+  await crashMidTool(kk, id, model);
+
+  const resumedModel = new ManualModel();
+  restarted = startDaemon({ home: kk.home, port: 0, lightTasks: false, model: () => resumedModel });
+  const url = restarted.url;
+  const events = new Seen<Envelope>();
+  restarted.kite.bus.subscribe(undefined, (event) => events.add(event));
+  const history = async () => (await call(url, 'GET', `/threads/${id}/history`)).body as History;
+  expect((await history()).state.recovery).toBeDefined();
+  expect((await call(url, 'POST', `/threads/${id}/messages`, { id: 'plain', text: '没带确认' })).status).toBe(409);
+  const fromLine = await fetch(`${url}/threads/${id}/messages`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json', 'X-Kite-Machine': (await machine(url)).id,
+      'X-Kite-Source': JSON.stringify({ kind: 'line', machine: 'line-machine', instance: 'line-instance' }),
+    },
+    body: JSON.stringify({ id: 'from-line', text: 'Line 想顺带确认', confirmRecovery: true }),
+  });
+  expect(fromLine.status).toBe(400);
+  expect((await history()).state.recovery).toBeDefined();
+  expect(resumedModel.calls.values).toHaveLength(0);
+
+  const sending = events.values.length;
+  const sent = await call(url, 'POST', `/threads/${id}/messages`, { id: 'after-crash', text: '确认并继续', confirmRecovery: true });
+  expect(sent.status).toBe(200);
+  const next = await resumedModel.call(1);
+  expect(next.request.history.flatMap((entry) => entry.type === 'input' ? [entry.input.id] : []))
+    .toEqual(['first', 'before-crash', 'after-crash']);
+  expect(next.request.history.flatMap((entry) => entry.type === 'tool_result' ? [[entry.callId, entry.result.status]] : []))
+    .toEqual([['uncertain', 'unknown']]);
+  expect(next.request.history.at(-1)).toEqual({ type: 'input', input: { id: 'after-crash', text: '确认并继续', source: 'human' } });
+  next.response.complete();
+  await events.wait((event) => event.type === 'idle' && event.threadId === id && events.values.indexOf(event) >= sending);
+  const done = await history();
+  expect(done.state.recovery).toBeUndefined();
+  expect(done.state.waitingForResume).toBe(false);
+  expect(resumedModel.calls.values).toHaveLength(1);
+}, 1000);
+
+/*
+ * 几个部分的配合：HTTP 的 adopt 带 confirmRecovery 时，宿主要在工作区里逐个找出待恢复的线程，打开它的主循环确认恢复，
+ * 再过合回前「没有线程在工作或等待恢复确认」的检查；只确认不合回、或确认后仍被挡回，都要跑起来才看得出。
+ * 重开后先不读线程状态，确认前是否已恢复看日志，免得测试自己先把线程的主循环打开，盖住合回这条路径上的打开。
+ */
+test('工作区的线程崩溃后恢复阻塞时合回被拒，带确认合回先解除线程的恢复再合回本机主线，不请求模型', async () => {
+  const model = new ManualModel();
+  kited = startKited(() => model);
+  const kk = kited;
+  // 没有远程的项目：合回只到本机主线，不去推送。
+  const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' }, null);
+  const project = await registerCheckout(kk, repo);
+  const session = await createWorkspace(kk, project.checkout.id, '先正常对话一轮', 'harness');
+  await crashMidTool(kk, session.id, model);
+  // 工作区是异步准备的，等首轮请求发出（crashMidTool 里）后工作树才在，这时再放要合回的改动。
+  writeFiles(session.workspace.cwd, { 'w.txt': '工作区\n' });
+
+  const resumedModel = new ManualModel();
+  restarted = startDaemon({ home: kk.home, port: 0, lightTasks: false, model: () => resumedModel });
+  const url = restarted.url;
+  const adopt = `/workspaces/${session.workspace.id}/adopt`;
+  const confirmations = () => readJournal(join(kk.home, 'sessions', session.id, 'journal.jsonl'))
+    .filter((record) => record.type === 'recovery.confirmed').length;
+  expect(await call(url, 'POST', adopt)).toEqual({ status: 409, body: { error: '工作区有线程正在工作或等待恢复确认' } });
+  expect(confirmations()).toBe(0);
+  expect(existsSync(join(repo, 'w.txt'))).toBe(false);
+
+  const adopted = await call(url, 'POST', adopt, { confirmRecovery: true });
+  expect(adopted).toMatchObject({ status: 200, body: { status: 'adopted', push: { status: 'local' } } });
+  expect(read(join(repo, 'w.txt'))).toBe('工作区\n');
+  expect(confirmations()).toBe(1);
+  const state = ((await call(url, 'GET', `/threads/${session.id}/history`)).body as History).state;
+  expect(state.recovery).toBeUndefined();
+  expect(resumedModel.calls.values).toHaveLength(0);
 }, 1000);

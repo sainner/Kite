@@ -63,7 +63,7 @@ bun run harness --resume <会话id>
 
 自研 harness 与 Claude 各自负责完整 agent 循环，Kite 宿主负责工作区、共享工具、授权、快照与显示协议。执行进程关闭后会话仍可继续，两种后端保留各自的原生恢复记录。
 
-后端由模型的厂商决定：Claude 模型经 Claude Code 订阅运行，其他厂商的模型由自研 harness 运行，调用方不单独指定后端。代理可通过 `/instances/:id/agent-config` 换用另一厂商的模型，后端随之更换，保留实例、窗口和其他配置；只改思考强度等、模型不变时后端不变。能力目录列出可选模型。`state.capabilities.switchRuntime` 表示当前能否切换后端：须空闲、没有排队或交接未确认的输入、没有恢复阻塞，否则返回 409。
+后端由模型的厂商决定：Claude 模型经 Claude Code 订阅运行，其他厂商的模型由自研 harness 运行，调用方不单独指定后端。代理可通过 `/instances/:id/agent-config` 换用另一厂商的模型，后端随之更换，保留实例、窗口和其他配置；只改思考强度等、模型不变时后端不变。能力目录列出可选模型。`state.capabilities.switchRuntime` 表示当前能否切换后端：须空闲、没有排队或交接未确认的输入，有恢复阻塞时切换连带确认恢复，否则返回 409。
 
 切换在回合边界交接上下文，两种后端各保留原生记录。人发消息、Kite 通知、助手文字、工具调用与结果及图片随当前有效上下文交接；压缩或撤销后的结果同样生效。推理内容不跨厂商传递；普通切换只追加历史，保留原后端的推理。Claude 历史经压缩或撤销重组时，只保留未改动前缀中仍有效的 thinking，已退出当前上下文的块不因撤销而恢复。原始记录仍供查看，显示记录不作为原生恢复数据。提示缓存是否复用取决于请求前缀与服务端缓存状态。重复切换不重复导入，翻译失败时不切换。
 
@@ -215,7 +215,7 @@ Claude 负责模型循环与原生对话恢复；Kite 负责工具、项目上�
 
 Claude 使用统一的 `kite.agent` 定义，工具由角色、实例选择、项目约束及授权共同决定。基础工具共用 [工具契约](harness-主循环.md#工具执行约定)，协作与授权共用 [实例操作](实例操作.md)，显示名称使用 Kite 短名称。工具执行完成并保存快照后才能继续模型请求。
 
-模型、工具、基础上下文与请求预算绑定到实例；`KITE_CLAUDE_MODEL` 可覆盖创建时的模型。配置和执行授权须在空闲且无恢复阻塞时修改；可选型号与思考档位通过能力接口获取。项目规则与记忆索引仅由 Kite 的模板提供，Claude 不自行扫描。具体生效时机见 [线程通知投递](线程通知投递.md#claude-的交接边界)。
+模型、工具、基础上下文与请求预算绑定到实例；`KITE_CLAUDE_MODEL` 可覆盖创建时的模型。配置和执行授权须在空闲时修改，恢复阻塞期间也可以改；可选型号与思考档位通过能力接口获取。项目规则与记忆索引仅由 Kite 的模板提供，Claude 不自行扫描。具体生效时机见 [线程通知投递](线程通知投递.md#claude-的交接边界)。
 
 Claude Code 进程随实例常驻：首次需要时启动，回合结束后不退出，在实例归档、切换后端、手动停止或 kited 退出时结束；回合之间意外退出的，下一条消息到来时恢复原生会话。运行中插话沿用 Claude 原生输入队列，在自然请求边界纳入，不要求等整轮结束。发送确认、撤回、停止与异常恢复遵守 [会话状态机](会话状态机.md#手动停止与消息交接)；已有原生记录不能重复投递，未知执行效果不能自动重放。
 
@@ -309,7 +309,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{checkout, name?, prompt?, role?, id?, windowId?, messageId?}`，或以 `project` 代替 `checkout`（先检查环境，没有检出时先 clone），`role` 为 `{id, revision}`，准备过程看事件；`id`、`windowId`、`messageId` 是客户端生成的 UUID，分别用作工作区、首个代理窗口和第一条消息的 ID，工作区或窗口 ID 已用过返回 409，省略时由 kited 生成 |
 | GET | `/environment?project=&needs=` | 这台工作机为该项目建工作区前的环境，只读；`needs` 是逗号分隔的换机环境需求，见 [工作区与线程的生命周期](#工作区与线程的生命周期) |
 | POST | `/workspaces/:id/setup` | 准备失败的独立工作区重跑准备；工作树没建成时重建 |
-| POST | `/workspaces/:id/transfer` | 在持有工作区的工作机上调用，把它流转到 `{to, operationId}`：本机交出，目标补齐副本后还原并接管，返回 `{workspaceId, machine, epoch}`，返回时本机记录已冻结；目标没接成时撤回交接、工作区重新开放并返回错误 |
+| POST | `/workspaces/:id/transfer` | 在持有工作区的工作机上调用，把它流转到 `{to, operationId, confirmRecovery?}`：`confirmRecovery: true` 先确认工作区里待恢复的线程（App 手动流转用），本机交出，目标补齐副本后还原并接管，返回 `{workspaceId, machine, epoch}`，返回时本机记录已冻结；目标没接成时撤回交接、工作区重新开放并返回错误 |
 | POST | `/workspaces/:id/handover` | 交出工作区：停下线程、保存最后的快照，进入可交接状态，返回 `{epoch}`；`/handover/cancel` 撤回，`/lease/check` 立即核对执行权。约定见 [工作区流转](Line与工作区流转.md#工作区流转) |
 | POST | `/workspaces/:id/handover/complete` | 仅工作机：没有远程的项目，目标装好后通知源机交出 `{epoch, machine}`（machine 是目标自己），源机冻结本地记录并记下目标；源机已撤回、epoch 不符或这次交接已交给别的工作机时 409，已交给同一台的再通知照样成功 |
 | POST | `/workspaces/restore` | 在本机还原并接管流转来的工作区 `{project?, workspaceId, operationId, from?, force?, continue?}`（没给 `project` 时从本机副本里取）：`from` 是交出它的工作机，先把副本补到它的末尾；`force` 是用户确认源机已丢失后用本机副本强制接管；`continue` 是源机有预告地离开时打断的线程与收回的排队输入，接管后接着做 |
@@ -338,7 +338,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/token-counts` | 以 `{texts, model?, scene?}` 逐段计数，返回 `{model, results}`；没给模型时按场景推出。账号里有对应厂商的 API Key 时用官方计数接口（`method: api`），否则 OpenAI 按 o200k 估算、Claude 不给数；`exact` 标明是否准确 |
 | GET / PUT | `/threads/:id/title` | 读取标题与生成进度；以 expectedRevision 手动改名或恢复自动标题 |
 | POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不阻塞主会话控制 |
-| GET / PUT | `/instances/:id/execution-grants` | 读取或修改执行授权；须停止且无恢复阻塞，「允许并记住」追加网络许可例外 |
+| GET / PUT | `/instances/:id/execution-grants` | 读取或修改执行授权；须停止，「允许并记住」追加网络许可例外 |
 | GET / PUT | `/instances/:id/approval-mode` | 读取或设置审批模式 `{mode}`：`allowlist`（默认）、`ask` 或 `allow_all`，运行中也可改，下一次越界请求生效 |
 | GET / PUT | `/instances/:id/operation-grants` | 读取实例操作授权及 revision；以 expectedRevision 和 grants 更新 |
 | POST | `/workspaces/:id/windows` | 创建实例及默认窗口，或打开已有实例视图；请求使用稳定 id |
@@ -347,18 +347,18 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/threads/:id` | 线程和上下文，附带 `runner`、`busy` |
 | GET | `/threads/:id/state` | 只读执行与恢复状态，不启动模型 |
 | GET | `/threads/:id/history` | v1 显示历史、pending、state 和 cursor，只读 |
-| POST | `/threads/:id/messages` | 发消息 `{text, id?, relay?}`，返回 `{id}`；harness 落盘后确认，同 id 和内容去重。带 `X-Kite-Source` 时是 Line 的说明（来源 kite），再带 `relay: true` 是 Line 照原文转达的用户的话（来源仍是人） |
+| POST | `/threads/:id/messages` | 发消息 `{text, id?, relay?, confirmRecovery?}`，返回 `{id}`；`confirmRecovery: true` 先确认恢复再发送，只用于 App 里用户的发送，带 `X-Kite-Source` 时拒绝；harness 落盘后确认，同 id 和内容去重。带 `X-Kite-Source` 时是 Line 的说明（来源 kite），再带 `relay: true` 是 Line 照原文转达的用户的话（来源仍是人） |
 | POST | `/threads/:id/messages/:message/cancel` | 按后端能力撤回尚未交接的输入 |
-| POST | `/threads/:id/interrupt` | 停止会话，返回尚未纳入请求的队列；请求 `{id, inputs?}`，响应 `{returned}` |
-| POST | `/threads/:id/resume` | 继续暂停的线程；可带 operationId 以安全重试 |
-| POST | `/threads/:id/recover` | 确认恢复，不自动执行 |
+| POST | `/threads/:id/interrupt` | 停止会话，返回尚未纳入请求的队列；请求 `{id, inputs?, confirmRecovery?}`，响应 `{returned}`；`confirmRecovery: true` 先确认恢复再停止 |
+| POST | `/threads/:id/resume` | 继续暂停的线程；可带 operationId 以安全重试，`confirmRecovery: true` 先确认恢复再继续 |
+| POST | `/threads/:id/recover` | 只确认恢复，不自动执行；`kite` 命令行使用 |
 | POST | `/threads/:id/waiting/:waiting` | 回应线程在等的提问 `{answers}` 或审批 `{decision}`，可带 `reason`；带 `X-Kite-Source` 时是 Line 代处理，提问的结果写明由 Line 代答及理由。已回应或已作废返回 409 与当前的 `waiting`。约定见 [工具审批与提问](工具审批与提问.md) |
 | POST | `/threads/:id/compactions` | 手动压缩上下文 `{id, from, through}`，起止为输入 id；校验通过即返回，结果经显示事件送达 |
 | DELETE | `/threads/:id/compactions/:compaction` | 撤销最外层的一次压缩 |
 | POST | `/instances/:id/archive` | 归档独立存续的实例（agent 或 Bun 插件），保留所属工作区 |
 | GET | `/workspaces/:id/snapshots` | 工作区快照，新的在前 |
 | POST | `/workspaces/:id/restore` | 恢复文件到快照 `{commit}` |
-| POST | `/workspaces/:id/adopt` | 合回主线并推送，返回 `{status: "adopted", commit, push}` 或 `{status: "conflict", files}`；`push` 为 `{status: "pushed"}` 或 `{status: "failed", message}` |
+| POST | `/workspaces/:id/adopt` | 合回主线并推送，可带 `{confirmRecovery: true}` 先确认工作区里待恢复的线程（App 手动合回用），返回 `{status: "adopted", commit, push}` 或 `{status: "conflict", files}`；`push` 为 `{status: "pushed"}` 或 `{status: "failed", message}` |
 | GET | `/checkouts/:id/sync` | 现场的 `{branch, dirty, ahead, behind}`，按最近一次拉取的远程分支计算，不访问网络；未拉取过时 `ahead`、`behind` 为 null |
 | POST | `/checkouts/:id/push` | 现场提交并推送，`{message?}`；有未提交改动时必须带说明。分叉返回 409，成功返回新的同步状态 |
 | POST | `/workspaces/:id/archive` | 归档独立工作区 `{force?}` |

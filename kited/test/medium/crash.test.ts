@@ -5,6 +5,7 @@ import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { readClaudeControl } from '../../src/claude/control.ts';
+import type { Logged } from '../fake-api.ts';
 import { api, call, claudeRole, type KitedProcess, spawnKited } from '../harness.ts';
 import { ENV, newRepo, transcript, until, useTemp } from '../util.ts';
 
@@ -44,8 +45,13 @@ async function stopOrphans() {
   orphans.length = 0;
 }
 
-/* 真实回归：stdin 已接收但尚未纳入的插话在宿主重启后丢失；普通发送也不能顺带重放结果未知的输入。 */
-test('kited 被 SIGKILL 后保留未知输入，确认恢复仍禁止普通发送，显式继续才续接原会话', async () => {
+/*
+ * 真实回归：stdin 已接收但尚未纳入的插话在宿主重启后丢失。
+ * 恢复阻塞只能由 App 用户的下一步操作确认：不带 confirmRecovery 的发送不能顺带重放结果未知的输入；
+ * 带 confirmRecovery 的发送先确认恢复，再把结果未知的插话按原顺序重新交给原生会话，之后才接新消息。
+ * 依赖 Claude Code：用 --resume 续接被杀进程留下的原生会话，stdin 先后收到的两条用户消息按到达顺序进入模型请求。
+ */
+test('kited 被 SIGKILL 后保留未知插话，不确认恢复的发送被拒，App 带确认发送时插话先于新消息各投一次并续接原会话', async () => {
   const root = temp();
   const home = join(root, 'kite');
   const repo = newRepo(root, 'proj', { 'a.txt': 'a\n' });
@@ -79,35 +85,43 @@ test('kited 被 SIGKILL 后保留未知输入，确认恢复仍禁止普通发�
   expect(recovery.body.state.recovery).toBeDefined();
   expect(recovery.body.pending).toContainEqual(expect.objectContaining(uncertain));
   expect(api.log.filter((entry) => entry.main && entry.lastUserText.includes(hold))).toHaveLength(1);
-  const confirmed = await call(kited.url, 'POST', `/threads/${s.instanceId}/recover`);
-  expect(confirmed.status).toBe(200);
-  const ready = await call(kited.url, 'GET', `/threads/${s.instanceId}/history`);
-  expect(ready.body.state.waitingForResume).toBe(true);
-  expect(ready.body.state.capabilities.resume).toBe(true);
-  expect(ready.body.pending).toContainEqual(expect.objectContaining(uncertain));
   expect((await call(kited.url, 'POST', `/threads/${s.instanceId}/messages`, {
-    id: 'unrelated-message', text: '无关的新消息不能顺带重发插话',
+    id: 'unconfirmed-send', text: '没确认恢复的发送不能顺带重发插话',
   })).status).toBe(409);
   expect(api.log.filter((entry) => entry.main)).toHaveLength(beforeRecovery);
+
   const since = api.log.length;
-  const resumed = await call(kited.url, 'POST', `/workspaces/${workspace.workspace.id}/operations/agent.resume`, {
-    operationId: 'resume-after-crash', instanceId: s.instanceId,
-  });
-  expect(resumed.status).toBe(200);
-  const continued = uncertain.text;
-  const req = await api.waitRequest((entry) => api.log.indexOf(entry) >= since && entry.main && entry.lastUserText.includes(continued));
+  const fresh = { id: 'confirmed-send', text: `确认后的新消息-${randomUUID().slice(0, 8)}` };
+  expect((await call(kited.url, 'POST', `/threads/${s.instanceId}/messages`, { ...fresh, confirmRecovery: true })).status).toBe(200);
+  const req = await api.waitRequest((entry) => api.log.indexOf(entry) >= since && entry.main && entry.lastUserText.includes(fresh.text));
+  // 只看用户一侧的文本：假端点的回显也会带上用户原文。
+  const userText = (entry: Logged) => (entry.body.messages as any[]).filter((message) => message.role === 'user')
+    .flatMap((message) => typeof message.content === 'string' ? [message.content]
+      : message.content.flatMap((block: any) => block.type === 'text' ? [block.text] : []))
+    .join('\n');
+  const occurrences = (text: string, part: string) => text.split(part).length - 1;
+  // 确认后的每个主循环请求都已带上插话且只带一次；见到新消息的请求里新消息也只一次，并排在插话之后。
+  for (const entry of api.log.slice(since).filter((entry) => entry.main)) {
+    const seen = userText(entry);
+    expect(occurrences(seen, uncertain.text)).toBe(1);
+    expect(occurrences(seen, fresh.text)).toBeLessThanOrEqual(1);
+    if (seen.includes(fresh.text)) expect(seen.indexOf(uncertain.text)).toBeLessThan(seen.indexOf(fresh.text));
+  }
   expect(JSON.stringify(req.body.messages)).toContain(hold);
   expect(req.body.tools.map((tool: { name: string }) => tool.name).sort()).toEqual(expectedTools);
   const v = (await call(kited.url, 'GET', `/threads/${s.instanceId}`)).body;
   expect(v.nativeId).toBe(s.nativeId);
-  // 公共状态由宿主投影为空闲；同时等到续接的最终文本，避免只见到启动前的空闲状态。
+  // 公共状态由宿主投影为空闲；同时等到新消息的最终回复，避免只见到启动前的空闲状态。
   await until(async () => {
     const history = (await call(kited!.url, 'GET', `/threads/${s.instanceId}/history`)).body;
     return history.state.phase === 'idle' && history.records.some((record: any) =>
-      record.block.type === 'text' && record.block.text.includes(continued) && record.generation === 'complete');
-  }, '续接完成并回到空闲');
+      record.block.type === 'text' && record.block.text.includes(fresh.text) && record.generation === 'complete');
+  }, '新消息回复完成并回到空闲');
   const completed = (await call(kited.url, 'GET', `/threads/${s.instanceId}/history`)).body;
+  expect(completed.state.recovery).toBeUndefined();
   expect(completed.pending).toEqual([]);
-  expect(completed.records.filter((record: any) => record.block.type === 'human'
-    && record.block.id === uncertain.id)).toHaveLength(1);
+  const humans = completed.records.filter((record: any) => record.block.type === 'human').map((record: any) => record.block.id);
+  expect(humans.filter((id: string) => id === uncertain.id)).toHaveLength(1);
+  expect(humans.filter((id: string) => id === fresh.id)).toHaveLength(1);
+  expect(humans.indexOf(uncertain.id)).toBeLessThan(humans.indexOf(fresh.id));
 });
