@@ -360,14 +360,19 @@ final class WorkArea: Identifiable {
                               target: WindowTarget(instanceId: thread.id, viewId: "conversation"), state: .open, createdAt: 0)
     }
 
+    private func makeDraftThread(_ remote: RemoteWorkspace) -> WorkThread {
+        let thread = WorkThread(workspace: remote.workspace.cwd, project: remote.project.name)
+        thread.draftChoice = DraftAgentChoice()
+        thread.connected = remote.workspace.status == .open
+        return thread
+    }
+
     /// 添加代理时先打开本机草稿；已有草稿时沿用其中的选择。
     /// 每次新开一个草稿对象：关掉的草稿淡出时仍显示原来的模型与输入，不闪成「模型」和空输入框。
     func openDraft() {
         guard let remote else { return }
         if draftWindow == nil {
-            draftThread = WorkThread(workspace: remote.workspace.cwd, project: remote.project.name)
-            draftThread.draftChoice = DraftAgentChoice()
-            draftThread.connected = remote.workspace.status == .open
+            draftThread = makeDraftThread(remote)
             draftWindow = Self.newWindowID()
             rebuildWindows()
         }
@@ -408,9 +413,7 @@ final class WorkArea: Identifiable {
             openDraft()
             return
         }
-        draftThread = WorkThread(workspace: remote.workspace.cwd, project: remote.project.name)
-        draftThread.draftChoice = DraftAgentChoice()
-        draftThread.connected = remote.workspace.status == .open
+        draftThread = makeDraftThread(remote)
         chooserWindow = nil
         draftWindow = chooser
         fadingIn.insert(chooser)
