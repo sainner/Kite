@@ -23,10 +23,10 @@ export class Replication {
     fetch: PeerFetch;
   }) {}
 
-  /** 按目录调整：在线的工作机各有一条拉取，离线、移除或换了地址的停掉。 */
+  /** 按目录调整：在线的工作机各有一条拉取，离线、移除或换了地址的停掉。不论版本，新版本的发布也经它传开。 */
   sync(): void {
     if (this.closed) return;
-    const wanted = new Map(this.deps.directory.online().map((machine) => [machine.id, machine]));
+    const wanted = new Map(this.deps.directory.reachable().map((machine) => [machine.id, machine]));
     for (const [id, loop] of this.loops) {
       if (wanted.get(id)?.address !== loop.address) { loop.abort.abort(); this.loops.delete(id); }
     }

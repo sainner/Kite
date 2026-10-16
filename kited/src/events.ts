@@ -37,6 +37,8 @@ export type DomainEvent =
   | { type: 'line.notification'; notification: LineNotification }
   /** monitor 的时间线或来源状态变了，打开着的窗口重新读取。 */
   | { type: 'monitor.changed'; workspaceId: string; instanceId: string }
+  /** 自动更新的状态变了：客户端重新读 /update。 */
+  | { type: 'update.changed' }
   | ({ workspaceId: string; originThreadId?: string } & (
     | { type: 'workspace.setup'; exit: number | null; log: string }
     | { type: 'workspace.snapshot'; commit: string; label: string; changedFiles: number }

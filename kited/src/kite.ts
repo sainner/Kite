@@ -13,6 +13,7 @@ import { Credentials } from './account-data/credentials.ts';
 import { ProjectRegistry } from './account-data/registry.ts';
 import { Directory, type Candidate } from './account-data/directory.ts';
 import { Replication } from './account-data/replication.ts';
+import { Updates } from './update/updates.ts';
 import { GitHubBinding } from './account-data/github.ts';
 import { fileKey, keychainKey } from './account-data/key.ts';
 import type { GitCredentials } from './git-credential.ts';
@@ -125,6 +126,8 @@ export class Kite {
   readonly credentials: Credentials;
   readonly directory: Directory;
   readonly replication: Replication;
+  /** 自动更新：发布本机手动装上的版本，跟进别处发布的版本，见 docs/macOS安装与打包.md「自动更新」。 */
+  readonly updates: Updates;
   /** 其他工作机持有的工作区，在本机跟进的副本。 */
   readonly replicas: Replicas;
   readonly github: GitHubBinding;
@@ -191,14 +194,19 @@ export class Kite {
     this.github = new GitHubBinding((login, token) => this.credentials.saveGit('github.com', login, token),
       async () => (await this.credentials.git('github.com'))?.password);
     this.directory = new Directory({
-      data: this.accountData, self: () => store.machine, address: () => this.serving?.network?.status().address,
+      data: this.accountData, self: () => store.machine, build: () => this.updates.version.build, address: () => this.serving?.network?.status().address,
       snapshot: () => ({ machine: store.machine, projects: store.projects(), checkouts: store.checkouts(), workspaces: store.workspaces() }),
       candidates: () => options.directory?.candidates() ?? this.tailnetPeers(),
       fetch: (address, path, init) => this.peerFetch(address, path, init),
-      changed: () => this.replication.sync(),
+      changed: () => { this.replication.sync(); this.updates.evaluate(); },
       ...(options.catalogDelayMs !== undefined ? { publishDelayMs: options.catalogDelayMs } : {}),
     });
     this.replication = new Replication({ data: this.accountData, directory: this.directory, fetch: (address, path, init) => this.peerFetch(address, path, init) });
+    this.updates = new Updates({ data: this.accountData, machineId: store.machine.id, peers: () => this.directory.reachable(),
+      fetch: (address, path, init) => this.peerFetch(address, path, init), busy: () => this.busy(),
+      changed: () => bus.emit({ type: 'update.changed' }) }, options.install);
+    // 回合结束、终端退出、工作区准备好或流转完、项目操作结束都会经这几种事件：新版在等空闲时据此马上再看。
+    bus.subscribe((event) => ['idle', 'workspace.changed', 'thread.changed', 'checkout.changed'].includes(event.type), () => this.updates.nudge());
     bus.subscribe((event) => event.type === 'checkout.changed' || event.type === 'workspace.changed', () => this.directory.schedule());
     this.accountData.subscribe((changed) => {
       if (!changed.some((entry) => entry.kind === 'project')) return;
@@ -583,6 +591,22 @@ export class Kite {
     this.directory.start();
     this.library.start();
     this.replicas.start();
+    this.updates.start();
+  }
+  /** 这台工作机还在忙的事项；自动更新等它们都结束才换版。 */
+  private busy(): string[] {
+    const turns = [...this.runners.values()].filter((runner) => runner.busy).length;
+    const terminals = this.terminals.active();
+    const handing = this.store.workspaces().filter((w) => w.status === 'handing_off').length;
+    return [
+      ...(turns ? [`${turns} 个回合正在进行`] : []),
+      ...(terminals ? [`${terminals} 个终端或后台命令在运行`] : []),
+      ...(this.preparations.size ? [`${this.preparations.size} 个工作区正在准备`] : []),
+      ...(handing ? [`${handing} 个工作区正在流转`] : []),
+      // 接收流转的还原、采纳、快照与文件写入都在工作区与检出的队列里。
+      ...(this.queues.size ? [`${this.queues.size} 项工作区操作正在进行`] : []),
+      ...(this.projectOperations.size ? ['项目操作正在进行'] : []),
+    ];
   }
   /** 测试里替换了对端时，几台 kited 按本机地址直接互访，不经组网。 */
   private get direct(): boolean { return !!(this.options.peers || this.options.directory); }
@@ -715,13 +739,14 @@ export class Kite {
     const tail = next.catch(() => {}).finally(() => {
       // 后续任务可能已经接上队列，只移除仍由本任务占据的尾项。
       if (this.queues.get(key) === tail) this.queues.delete(key);
+      this.updates.nudge();
     });
     this.queues.set(key, tail);
     return next;
   }
   private projectOperation<T>(fn: () => Promise<T>): Promise<T> {
     this.assertRunning();
-    const pending = Promise.resolve().then(fn).finally(() => this.projectOperations.delete(pending));
+    const pending = Promise.resolve().then(fn).finally(() => { this.projectOperations.delete(pending); this.updates.nudge(); });
     this.projectOperations.add(pending);
     return pending;
   }
@@ -1516,7 +1541,7 @@ export class Kite {
     clearTimeout(this.projectSync);
     this.directory.close();
     this.library.close();
-    await Promise.all([this.titles?.close(), this.emblems.close(), this.lightTasks?.close(), this.subscriptionLogins.close(), this.replication.close(), this.replicas.close()]);
+    await Promise.all([this.titles?.close(), this.emblems.close(), this.lightTasks?.close(), this.subscriptionLogins.close(), this.replication.close(), this.replicas.close(), this.updates.close()]);
     await this.monitor.stop();
     await this.monitors.close();
     await this.terminals.close();

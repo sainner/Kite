@@ -180,7 +180,7 @@ private struct Identity: Codable {
     func resume() async throws {
         guard ready, let role else { return }
         #if os(macOS)
-        // 作为工作机的 Mac：App 升级后本机 kited 跟着升级；运行文件与 App 带的一致时不做事。
+        // 作为工作机的 Mac：新装的 App 第一次启动时装上它带的服务，之后服务自动更新，见 LocalService。
         if role == "worker" { try await LocalService.installAndStart() }
         #endif
         await configureNetwork()
@@ -352,8 +352,24 @@ enum LocalService {
             throw KitedError(message: "此 App 未包含 kited，请使用完整的 Kite 安装包")
         }
         let installed = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support/Kite/runtime/manifest.json")
-        if let current = try? Data(contentsOf: installed), current == (try? Data(contentsOf: resource.appending(path: "manifest.json"))),
-           (try? await KitedClient(address: KitedClient.local).request("/machine", as: RemoteMachine.self)) != nil { return }
+        let current = try? Data(contentsOf: installed)
+        func responds() async -> Bool { (try? await KitedClient(address: KitedClient.local).request("/machine", as: RemoteMachine.self)) != nil }
+        var running = await responds()
+        if current != nil, current == (try? Data(contentsOf: resource.appending(path: "manifest.json"))), running {
+            UserDefaults.standard.set(AppBuild.current, forKey: installedBuildKey)
+            return
+        }
+        // 这个 App 带的服务装过一次后，服务按发布的版本自动更新，不再用 App 带的旧版覆盖：那等于发布旧版。
+        if current != nil, let build = AppBuild.current, UserDefaults.standard.string(forKey: installedBuildKey) == build {
+            // 刚登录时 launchd 还在拉起服务，自动换版时服务正在重启：等一会儿再下结论。
+            let deadline = Date.now.addingTimeInterval(30)
+            while !running, Date.now < deadline {
+                try await Task.sleep(for: .seconds(1))
+                running = await responds()
+            }
+            if running { return }
+            throw KitedError(message: "本机 kited 没有运行，可以用 kite-service start 启动")
+        }
         let process = Process()
         process.executableURL = resource.appending(path: "bin/bun")
         process.arguments = ["run", "--no-env-file", "--no-install", resource.appending(path: "kited/scripts/install-macos.ts").path, "install"]
@@ -369,7 +385,11 @@ enum LocalService {
             do { try process.run() } catch { continuation.resume(throwing: error) }
         }
         guard code == 0 else { throw KitedError(message: (try? String(contentsOf: log, encoding: .utf8)) ?? "安装 kited 失败") }
+        UserDefaults.standard.set(AppBuild.current, forKey: installedBuildKey)
         #endif
     }
+
+    /// 上次由这个 App 装上服务时 App 的构建号：新装的 App 第一次启动才装它带的服务，见 docs/macOS安装与打包.md「管理、升级和卸载」。
+    private static let installedBuildKey = "Kite.installedServiceBuild"
 }
 #endif

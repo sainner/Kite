@@ -248,6 +248,11 @@ export class Terminals {
     return !!session && !session.ended;
   }
 
+  /** 还在跑的终端与后台命令有几个；自动更新等它们结束才换版。 */
+  active(): number {
+    return [...this.sessions.keys()].filter((id) => this.running(id)).length;
+  }
+
   private directory(id: string) { return join(this.host.home, 'sessions', id); }
   private marker(id: string) { return join(this.directory(id), 'terminal-process.json'); }
   private screenFile(id: string) { return join(this.directory(id), 'terminal-screen.txt'); }

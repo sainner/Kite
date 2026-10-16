@@ -7,12 +7,13 @@ import type { Peer } from '../peer-fetch.ts';
 import type { CatalogSnapshot } from './catalog.ts';
 import type { AccountData } from './store.ts';
 
-/** 一台工作机；address 是组网上的访问地址，在组网上发现它之后才有。 */
+/** 一台工作机；address 是组网上的访问地址，在组网上发现它之后才有；build 是读 /machine 时它正在运行的构建号。 */
 export interface AccountMachine {
   id: string;
   name: string;
   online: boolean;
   address?: string;
+  build?: string;
 }
 
 /** 给 App 的目录：附最近一次的摘要与写入时刻。 */
@@ -24,8 +25,10 @@ export interface DirectoryEntry extends AccountMachine {
 /** 组网里的一台对端设备：address 是假定它跑着 kited 时的访问地址。 */
 export interface Candidate { address: string; online: boolean }
 
-interface Probe { machine?: { id: string; name: string }; at: number }
-type Catalog = CatalogSnapshot & { address?: string };
+/** 读 /machine 的结果：at 是上次读到的时刻（从没读到过的是上次试的时刻）；missed 是认得的工作机上次没读到的时刻。 */
+interface Probe { machine?: { id: string; name: string; build?: string }; at: number; missed?: number }
+/** 摘要附本机的访问地址与构建号：构建号随同步很快传开，工作机换版重启后其他工作机不必等到重读 /machine。 */
+type Catalog = CatalogSnapshot & { address?: string; build?: string };
 
 /** 确认是工作机的，在线时每分钟再读一次；不是的（例如手机、平板）十分钟后再试。 */
 const KITED_RECHECK_MS = 60_000;
@@ -48,6 +51,8 @@ export class Directory {
   constructor(private deps: {
     data: AccountData;
     self(): Machine;
+    /** 本机正在运行的构建号；工作区副本、流转等只与构建号相同的工作机往来。 */
+    build(): string;
     /** 本机在组网上的访问地址；组网没开时没有。 */
     address(): string | undefined;
     /** 本机此刻的目录摘要。 */
@@ -99,25 +104,38 @@ export class Directory {
     this.catalogs ??= new Map(this.deps.data.list('catalog').map(({ id, body, at }) => [id, { catalog: body as unknown as Catalog, at }]));
     for (const [id, { catalog, at }] of this.catalogs) {
       byId.set(id, { id, name: catalog.machine.name, online: false, ...(catalog.address ? { address: catalog.address } : {}),
+        ...(catalog.build ? { build: catalog.build } : {}),
         updatedAt: at, snapshot: { machine: catalog.machine, projects: catalog.projects, checkouts: catalog.checkouts, workspaces: catalog.workspaces } });
     }
     for (const [probed, { machine, at }] of this.probes) {
       if (!machine) continue;
       const entry = byId.get(machine.id) ?? { id: machine.id, name: machine.name, online: false };
       entry.address = probed;
+      // 构建号以较新的为准：摘要是对端自己写的，读 /machine 是本机读到的。
+      if (machine.build && !(entry.build && entry.updatedAt && entry.updatedAt > at)) entry.build = machine.build;
       entry.online = Date.now() - at < ONLINE_MS && present?.get(probed) === true;
       byId.set(machine.id, entry);
     }
     const others = [...byId.values()].filter((entry) => entry.id !== self.id && (!present || !entry.address || present.has(entry.address)));
     const own = byId.get(self.id);
-    return [{ ...own, id: self.id, name: self.name, online: true, ...(address ? { address } : {}) },
+    return [{ ...own, id: self.id, name: self.name, online: true, build: this.deps.build(), ...(address ? { address } : {}) },
       ...others.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))];
   }
 
-  /** 在线的其他工作机。 */
+  /**
+   * 在线、与本机构建号相同的其他工作机：工作区副本、流转与换机、没有远程的项目都只与它们往来，
+   * 不同版本之间的这些格式不保证兼容。
+   */
   online(): Peer[] {
+    const build = this.deps.build();
+    return this.reachable().filter((peer) => peer.build === build).map(({ id, address }) => ({ id, address }));
+  }
+
+  /** 在线的其他工作机，不论版本：账号级数据的同步与取新版本跨版本兼容，靠它们让各台收敛到同一版。 */
+  reachable(): Array<Peer & { build?: string }> {
     const self = this.deps.self().id;
-    return this.entries().filter((entry) => entry.id !== self && entry.online && entry.address).map((entry) => ({ id: entry.id, address: entry.address! }));
+    return this.entries().filter((entry) => entry.id !== self && entry.online && entry.address)
+      .map((entry) => ({ id: entry.id, address: entry.address!, ...(entry.build ? { build: entry.build } : {}) }));
   }
 
   /** 目录摘要里有这个项目检出的工作机。 */
@@ -144,7 +162,7 @@ export class Directory {
   private publish(): void {
     if (this.closed) return;
     const address = this.deps.address();
-    this.deps.data.put('catalog', this.deps.self().id, { ...this.deps.snapshot(), ...(address ? { address } : {}) });
+    this.deps.data.put('catalog', this.deps.self().id, { ...this.deps.snapshot(), ...(address ? { address } : {}), build: this.deps.build() });
   }
 
   /** 读一遍组网里的对端：没读过或该重读的读 /machine，目录有变化就通知。定时做，对端变了也可以立刻调用。 */
@@ -152,12 +170,13 @@ export class Directory {
     const candidates = this.deps.candidates() ?? [];
     // 本机组网地址变了要重新写摘要，其他工作机靠它找到这里。
     const own = this.deps.data.get('catalog', this.deps.self().id)?.body as Catalog | undefined;
-    if (own?.address !== this.deps.address()) this.publish();
+    if (own?.address !== this.deps.address() || own?.build !== this.deps.build()) this.publish();
     const before = JSON.stringify(this.list());
     await Promise.all(candidates.filter((candidate) => {
       if (!candidate.online) return false;
       const probe = this.probes.get(candidate.address);
-      return !probe || Date.now() - probe.at > (probe.machine ? KITED_RECHECK_MS : OTHER_RECHECK_MS);
+      // 认得的工作机上次没读到（多半正在重启）：每轮都再读，不等一分钟。
+      return !probe || !!probe.missed || Date.now() - probe.at > (probe.machine ? KITED_RECHECK_MS : OTHER_RECHECK_MS);
     }).map((candidate) => this.probe(candidate.address)));
     if (!this.closed && JSON.stringify(this.list()) !== before) this.deps.changed();
   }
@@ -169,10 +188,15 @@ export class Directory {
         let machine: Probe['machine'];
         try {
           const response = await this.deps.fetch(address, '/machine', { signal: AbortSignal.timeout(10_000) });
-          const body = response.ok ? await response.json() as { id?: unknown; name?: unknown } : {};
-          if (typeof body.id === 'string' && typeof body.name === 'string') machine = { id: body.id, name: body.name };
+          const body = response.ok ? await response.json() as { id?: unknown; name?: unknown; version?: { build?: unknown } } : {};
+          const build = body.version?.build;
+          if (typeof body.id === 'string' && typeof body.name === 'string') machine = { id: body.id, name: body.name, ...(typeof build === 'string' ? { build } : {}) };
         } catch { /* 连不上或不是 kited。 */ }
-        const probe = { ...(machine ? { machine } : {}), at: Date.now() };
+        // 认得的工作机一时没读到（例如正在重启换版）：在线期限内仍按工作机算，不当成别的设备隔十分钟才再读。
+        const previous = this.probes.get(address);
+        const probe: Probe = machine ? { machine, at: Date.now() }
+          : previous?.machine && Date.now() - previous.at < ONLINE_MS ? { machine: previous.machine, at: previous.at, missed: Date.now() }
+          : { at: Date.now() };
         this.probes.set(address, probe);
         return probe;
       })().finally(() => this.probing.delete(address));

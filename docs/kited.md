@@ -173,7 +173,7 @@ bun src/cli.ts net up              # 开启已登录设备的组网
 
 身份与组网交给 Tailscale：登录 Tailscale 即登录 Kite，同一 Tailscale 用户的设备可直接控制工作机。工作机第一次开启组网时，状态里给出登录地址（App 首次配置时打开，或 `kite net up` 打印），用户在浏览器里登录。身份、入网与撤销的完整约定见 [身份与设备](身份与设备.md)。
 
-工作机互相发现不经服务器：kite-net 列出组网里同一用户、不带标签的对端设备与在线状态，kited 读各对端的 `/machine`，答得上的就是工作机。各工作机把自己的目录摘要（项目、检出与工作区，见 [目录与工作机的职责](身份与设备.md#目录与工作机的职责)）随账号级数据同步给其他工作机，App 连上任意一台在线的工作机，就能读到其他工作机最近一次的摘要（`/machines`）。从组网移除的设备不再列出。
+工作机互相发现不经服务器：kite-net 列出组网里同一用户、不带标签的对端设备与在线状态，kited 读各对端的 `/machine`，答得上的就是工作机。各工作机把自己的目录摘要（项目、检出与工作区，见 [目录与工作机的职责](身份与设备.md#目录与工作机的职责)）随账号级数据同步给其他工作机，App 连上任意一台在线的工作机，就能读到其他工作机最近一次的摘要（`/machines`）。从组网移除的设备不再列出。`/machine` 还带着版本：工作区副本、流转与换机、没有远程的项目的拉取只在构建号相同的工作机之间进行，账号级数据照常同步，见 [自动更新](macOS安装与打包.md#自动更新)。
 
 工作机由 kite-net（tsnet）接入网络，控制端由 App 内的 TailscaleKit 接入，不占用系统 VPN。本机执行模式的 App 复用 kited 的 SOCKS 入口，只维护一个网络节点。kite-net 另开一个本机 HTTP 代理入口，只转发到组网地址，供 kited 自己（发现、同步、Line）调用同账号的其他工作机，对端照常核验来源身份。链路加密由 WireGuard 承担；kite-net 通过 WhoIs 核验请求来源与本节点属于同一 Tailscale 用户、不带标签，并把来源的组网 IP 交给 kited，只给工作机用的接口据此只接受工作机。内部代理使用进程内随机凭据，外部传入的同名字段被覆盖。
 
@@ -280,7 +280,10 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/machine` | 读取这台工作机服务的持久身份，无需 `X-Kite-Machine`；远程访问须通过同账号组网认证 |
+| GET | `/machine` | 读取这台工作机服务的持久身份 `{id, name, createdAt, version}`，`version` 为 `{build, protocol, builtAt?, commit?}`，源码运行时 `build` 为 `dev`；无需 `X-Kite-Machine`；远程访问须通过同账号组网认证 |
+| GET | `/update` | 这台工作机的版本与自动更新 `{version, release, state, …}`：`release` 是最近一次发布 `{build, protocol, builtAt, commit, platform, arch, by}`，没有时为 null；`state` 为 `dev`（源码运行，不更新）、`current`、`unsupported`（平台或架构不同，带 `reason`）、`waiting-source`（在线的工作机里没有运行这一版的）、`downloading`（带 `done`、`total` 字节）、`ready`（`waiting` 列出还在等的事项）、`installing` 或 `failed`（带 `error`；`retry` 为 false 时这一版不再自动重试）；本机服务已换上的那一版 Mac App 备好时带 `app: {build, path}`。变化时目录事件流推 `update.changed`。规则见 [自动更新](macOS安装与打包.md#自动更新) |
+| POST | `/update/apply` | 准备好的新版现在就换上，不等空闲，返回时多半还是 `ready`，换版开始后推 `update.changed`；进行中的回合、终端与后台命令随服务重启中断。没有准备好的新版 409 |
+| GET/POST | `/update/:build/:payload`、`/update/:build/:payload/files` | 仅工作机：从正在运行这一版的工作机取文件。`payload` 为 `runtime`（运行目录）或 `app`（装上服务的 Mac App 中运行目录以外的部分），GET 返回清单 `{files}`，每项为 `{path, sha256, size, executable}` 或符号链接 `{path, link}`。POST `{paths}` 返回这些文件的 tar 流，只给清单里有的路径。没在运行这一版或没有这份内容 404 |
 | GET | `/model-accounts` | 读取本机模型账号、订阅额度与 API 费用/余额的当前快照，详见 [模型账号与额度](#模型账号与额度) |
 | POST | `/model-accounts/refresh` | 立即查询上游并推送新快照 |
 | GET | `/token-prices` | 读取用量折算金额用的价格表，只列 Kite 模型目录里的模型（计价本身覆盖更多型号）：`checked`（核对日期）与 `models`，每项是 `model`（目录里的显示名）、`provider`，以及每百万 token 的美元单价 `input`、`cacheRead`、`output`，价格页列出时带 `cacheWrite`、`cacheWrite1h`（Claude 的 1 小时缓存写入）与长提示档 `long`（`above`、`rates`） |

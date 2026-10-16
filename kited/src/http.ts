@@ -21,10 +21,16 @@ import { WaitingConflict } from './waiting.ts';
 import { WorkspaceFiles } from './workspace/files.ts';
 import { fileContent } from './workspace/file-content.ts';
 import { HANDOVER_NEEDS } from './environment.ts';
+import type { Payload } from './update/updates.ts';
 
 async function body(req: Request): Promise<Record<string, unknown>> {
   try { return (await req.json()) as Record<string, unknown>; } catch { throw new KiteError('请求体不是 JSON'); }
 }
+
+const payload = (value: string): Payload => {
+  if (value !== 'runtime' && value !== 'app') throw new KiteError('没有这份内容', 404);
+  return value;
+};
 
 const str = (v: unknown, name: string): string => {
   if (typeof v !== 'string') throw new KiteError(`缺少 ${name}`);
@@ -271,7 +277,13 @@ export function serve(kite: Kite, listen: Listen) {
       },
       '/network/channel/key': { GET: long(localOnly(bound(async () => ({ publicKey: await network().channelKey() })))) },
       '/network/logout': { POST: localOnly(bound(() => network().logout())) },
-      '/machine': { GET: access(() => kite.machine()) },
+      '/machine': { GET: access(() => ({ ...kite.machine(), version: kite.updates.version })) },
+      // 自动更新：/update 与取文件的接口跨版本保持兼容，新旧版本靠它们收敛，见 update/updates.ts。
+      '/update': { GET: bound(() => kite.updates.status()) },
+      '/update/apply': { POST: bound(() => kite.updates.applyNow()) },
+      '/update/:build/:payload': { GET: long(peerOnly((req) => kite.updates.listing(req.params.build, payload(req.params.payload)))) },
+      '/update/:build/:payload/files': { POST: long(peerOnly(async (req) =>
+        kite.updates.files(req.params.build, payload(req.params.payload), (await body(req)).paths, req.signal))) },
       '/subscription-logins': { POST: bound(async (req) => {
         const parsed = z.object({ id: z.uuid(), provider: z.enum(['chatgpt', 'claude']) }).strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('订阅登录请求无效');

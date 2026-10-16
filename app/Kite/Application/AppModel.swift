@@ -26,6 +26,8 @@ final class AppModel {
     var monitorRevisions: [String: Int] = [:]
     /// 点了系统通知、要在收件箱里展开的那一项。
     var lineFocusItem: String?
+    /// 本机 kited 的自动更新状态（只有作为工作机的 Mac 有），侧栏的版本提示与重启以更新用，见 refreshLocalUpdate。
+    var localUpdate: UpdateStatus?
     let account: KiteAccount
     /// 语音输入的录音，整个 App 共用一支麦克风。
     let voice = VoiceInput()
@@ -367,6 +369,20 @@ final class AppModel {
         while !Task.isCancelled && accepts(client) {
             let generation = connection.catalog.reset()
             do {
+                // 先核对版本：协议号与 App 不同就不连，锁定为待更新；工作机可能正在自动更新，隔一阵再看。
+                let machine = try await client.request("/machine", timeout: 10, as: RemoteMachine.self)
+                guard accepts(client) else { return }
+                connection.version = machine.version
+                connection.outdated = VersionMismatch(machine.version)
+                if connection.outdated != nil {
+                    connection.connected = false
+                    connection.error = nil
+                    for area in workspaces where area.remote?.machine.id == connection.id { area.draftThread.connected = false }
+                    // 本机 kited 换了新版而 App 还旧时，它备好的新 App 就在更新状态里。
+                    await refreshLocalUpdate(connection)
+                    try await Task.sleep(for: .seconds(30))
+                    continue
+                }
                 // 插件定义和事件流并行请求，任一失败都按断线重连。
                 try await withThrowingTaskGroup(of: Void.self) { group in
                     group.addTask { try await self.refreshDefinitions(client) }
@@ -377,6 +393,8 @@ final class AppModel {
                 guard !Task.isCancelled, accepts(client), generation == connection.catalog.generation else { return }
                 if connection.connected { immediate = true }
                 connection.connected = false
+                // 读不到版本时不再沿用上次的待更新，显示真实的连接错误。
+                connection.outdated = nil
                 connection.error = error.localizedDescription
                 TimingTrace.mark("工作机 \(connection.machine.name) 连接失败：\(error.localizedDescription)")
                 for area in workspaces where area.remote?.machine.id == connection.id { area.draftThread.connected = false }
@@ -398,6 +416,11 @@ final class AppModel {
             if event.type == "model-accounts.changed" { return }
             if event.type == "line.inbox" {
                 Task { await self.refreshLineInbox() }
+                return
+            }
+            if event.type == "update.changed" {
+                connection.updateRevision += 1
+                Task { await self.refreshLocalUpdate(connection) }
                 return
             }
             if event.type == "monitor.changed" {
@@ -432,6 +455,7 @@ final class AppModel {
                 try self.apply(remote, from: client, cursor: cursor, generation: generation)
                 // 目录流（重新）连上了：收件箱重读，关注状态再报一次（事件流断开时工作机已把这台设备移出）
                 Task { await self.refreshLineInbox() }
+                Task { await self.refreshLocalUpdate(connection) }
                 LineAttention.shared.report()
                 // 断线期间收不到角色与模板的变化事件，重连后读过的重新读一遍
                 if connection.roles != nil { Task { try? await self.refreshRoles(of: connection, fresh: true) } }

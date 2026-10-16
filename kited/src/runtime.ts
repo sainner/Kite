@@ -24,6 +24,7 @@ import { agentTools } from './plugins/definitions.ts';
 import type { OperationToolSelection } from './operations/operations.ts';
 import { lineToolNames, operationToolNames } from './operations/contract.ts';
 import type { CompactionRequest, Input, Model, Phase, Recovery, StopRequest, ThreadNotification, Tool } from './harness/types.ts';
+import type { UpdatesOptions } from './update/updates.ts';
 import type { LightTaskOptions } from './light-tasks.ts';
 import type { ProjectToolRule } from './roles.ts';
 import { ruleAllows } from './agents/tool-policy.ts';
@@ -56,6 +57,8 @@ export interface RuntimeOptions {
   directory?: { candidates(): Candidate[] };
   /** 凭据的封装密钥放登录钥匙串（安装版 macOS 服务）；否则放数据目录里的文件。 */
   keychain?: boolean;
+  /** 安装版服务的安装目录（KITE_INSTALL_ROOT）；有它且运行目录带构建号时才发布与自动更新。 */
+  install?: UpdatesOptions;
   /** 测试里缩短 monitor 事件到唤醒之间的合批等待（毫秒），默认 1 秒。 */
   monitorWakeDelayMs?: number;
   /** 测试里缩短本机目录变化到写进目录摘要之间的合批等待（毫秒），默认 1 秒。 */

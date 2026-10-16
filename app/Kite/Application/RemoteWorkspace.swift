@@ -1,9 +1,24 @@
 import Foundation
 
+/// App 与工作机之间的协议号，与 kited/src/version.ts 的 PROTOCOL 一起改；不一致的工作机锁定为待更新（docs/App.md「版本」）。
+enum KiteProtocol {
+    static let version = 1
+}
+
+/// 工作机正在运行的版本（`/machine` 的 version）：build 标识一份运行文件，源码运行时为 dev。
+struct MachineVersion: Codable, Equatable {
+    let build: String
+    let `protocol`: Int
+    var builtAt: String?
+    var commit: String?
+}
+
+/// 工作机的身份；version 只在实时读 `/machine` 时有，目录摘要里没有。
 struct RemoteMachine: Codable, Identifiable, Equatable {
     let id: String
     let name: String
     let createdAt: Int
+    var version: MachineVersion?
 }
 
 enum RemoteWorkspaceKind: String, Codable {

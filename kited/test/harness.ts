@@ -40,10 +40,12 @@ export interface Kited {
   stop(): Promise<void>;
 }
 
+/** 读 /machine 里这台工作机的持久身份，与工作区聚合里的 machine 同形；/machine 另带的 version 不在其中。 */
 export async function machine(url: string): Promise<Machine> {
   const response = await fetch(url + '/machine');
   if (response.status !== 200) throw new Error(`读取工作机失败：${response.status}`);
-  return await response.json() as Machine;
+  const { id, name, createdAt } = await response.json() as Machine;
+  return { id, name, createdAt };
 }
 
 export async function call(
@@ -60,7 +62,7 @@ export async function call(
   return { status: r.status, body: await r.json() };
 }
 
-export interface KitedOptions extends Pick<RuntimeOptions, 'peers' | 'monitorWakeDelayMs' | 'catalogDelayMs' | 'terminalShell' | 'terminalPortScanMs'> {
+export interface KitedOptions extends Pick<RuntimeOptions, 'peers' | 'monitorWakeDelayMs' | 'catalogDelayMs' | 'terminalShell' | 'terminalPortScanMs' | 'install'> {
   /** 用已有的临时根目录（数据目录沿用 root/kite），停止时同样删掉；见 registerBeforeStart。 */
   root?: string;
 }
@@ -72,6 +74,7 @@ export interface KitedOptions extends Pick<RuntimeOptions, 'peers' | 'monitorWak
  * catalogDelayMs 缩短本机检出与工作区变化写进目录摘要的合批等待，别的工作机要看到这些变化的测试不必等 1 秒。
  * terminalShell 换掉终端插件起的 shell，测试用 /bin/sh，不起用户的登录 shell（慢，还带个人配置）。
  * terminalPortScanMs 缩短终端探测监听端口的间隔，看端口变化的测试不必等默认的 2 秒。
+ * install 让它当安装版：安装目录与运行目录由测试建好；通常连换版的钩子（apply）也换掉，不起安装进程，见 test/small/updates.test.ts。
  */
 export function startKited(
   model?: (thread: ThreadContext) => Model, lightTasks: RuntimeOptions['lightTasks'] = false,

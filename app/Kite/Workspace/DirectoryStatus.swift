@@ -8,7 +8,7 @@ struct DirectoryStatus: View {
     private var connection: WorkerConnection? { workspace.flatMap { model.connection(for: $0) } }
 
     private var scene: StageScene {
-        if workspace != nil { return connection?.error == nil ? .connecting : .unreachable }
+        if workspace != nil { return connection?.error == nil && connection?.outdated == nil ? .connecting : .unreachable }
         if model.account.workers.isEmpty { return .grounded }
         if !model.availableWorkers.isEmpty { return .addProject }
         return .connecting
@@ -17,7 +17,7 @@ struct DirectoryStatus: View {
     private var title: String {
         switch scene {
         case .connecting: "正在连接工作机"
-        case .unreachable: "工作机暂不可达"
+        case .unreachable: connection?.outdated != nil ? "工作机待更新" : "工作机暂不可达"
         case .grounded: "还没有工作机"
         case .addProject, .idle: "添加第一个项目"
         }
@@ -39,7 +39,7 @@ struct DirectoryStatus: View {
         }
     }
 
-    private var error: String? { workspace == nil ? model.account.error : connection?.error }
+    private var error: String? { workspace == nil ? model.account.error : connection?.outdated?.detail ?? connection?.error }
 
     var body: some View {
         EmptyStage(scene: scene, title: title, details: details, error: error, actions: actions)

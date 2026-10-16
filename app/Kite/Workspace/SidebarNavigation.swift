@@ -169,6 +169,19 @@ struct SidebarUserBar: View {
                         .help(error)
                         .accessibilityLabel(error)
                         .accessibilityHint("打开 Kite 账号设置")
+                    } else if let notice = model.appUpdateNotice {
+                        // 版本提示同样替换额度，点开那台工作机的版本页。
+                        Button { withAnimation(.snappy) { model.openUpdatePage(notice.machineID) } } label: {
+                            chip {
+                                Image(systemName: "arrow.down.circle.fill").foregroundStyle(Theme.warning)
+                                Text(notice.title)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .clickPointer()
+                        .help(notice.title)
+                        .accessibilityLabel(notice.title)
+                        .accessibilityHint("打开工作机的版本页")
                     } else if quotas.isEmpty {
                         chip { Text("额度未获取") }
                             .help("在设备的账号页查看登录和查询状态")

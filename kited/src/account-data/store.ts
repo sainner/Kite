@@ -1,5 +1,5 @@
 /**
- * 账号级数据：资源库、项目登记与约束、凭据和各工作机的目录摘要。所有工作机共有，任一台都能改，见 docs/分布式架构.md。
+ * 账号级数据：资源库、项目登记与约束、凭据、各工作机的目录摘要和 Kite 的发布记录。所有工作机共有，任一台都能改，见 docs/分布式架构.md。
  *
  * 每条按 (kind, id) 只存最新版本。版本是 {at, by}：at 是写入时刻，至少比被替换的版本大 1；by 是写入的工作机。
  * 每次写入同时记下它见过的各工作机写入（seen，机器 ID 到 at 的版本向量）。收到的一份见过本机这份就替换，本机这份见过它就不要；
@@ -14,7 +14,7 @@ import { Database } from 'bun:sqlite';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { KiteError } from '../errors.ts';
 
-export type EntryKind = 'role' | 'template' | 'emblem' | 'plugin' | 'project' | 'constraints' | 'credential' | 'catalog' | 'conflict';
+export type EntryKind = 'role' | 'template' | 'emblem' | 'plugin' | 'project' | 'constraints' | 'credential' | 'catalog' | 'release' | 'conflict';
 type Body = Record<string, unknown>;
 
 export interface Version { at: number; by: string }
@@ -267,9 +267,9 @@ export class AccountData {
       .run(kind, id, body, revision, version.at, version.by, JSON.stringify(seen));
   }
 
-  /** 冲突条目只在本机还没有时写；它自己不再产生冲突。 */
+  /** 冲突条目只在本机还没有时写；它自己不再产生冲突。目录摘要与发布记录只要最新的，被覆盖的不留。 */
   private saveConflict(kind: EntryKind, id: string, version: Version, body: Body, changed: Array<{ kind: EntryKind; id: string }>): void {
-    if (kind === 'conflict' || kind === 'catalog') return;
+    if (kind === 'conflict' || kind === 'catalog' || kind === 'release') return;
     const conflict = conflictId(kind, id, version);
     if (this.row('conflict', conflict)) return;
     const value = { kind, id, at: version.at, by: version.by, body };

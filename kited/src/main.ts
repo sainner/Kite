@@ -6,12 +6,15 @@
  * 新会话默认使用 harness 与 Kite 独立授权的 ChatGPT 凭据，旧会话保留各自的 runtime。
  */
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { startDaemon } from './daemon.ts';
 
 const home = process.env.KITE_HOME ?? join(homedir(), '.kite');
 // 安装版 macOS 服务把凭据密钥放登录钥匙串（安装脚本设 KITE_KEYCHAIN），开发与测试放数据目录。
-const daemon = startDaemon({ home, port: Number(process.env.KITE_PORT ?? 5483), keychain: process.platform === 'darwin' && process.env.KITE_KEYCHAIN === '1' });
+// 安装脚本还设 KITE_INSTALL_ROOT：有它、运行目录又带构建号，才发布与自动更新；运行目录就是这份代码所在的目录。
+const root = process.env.KITE_INSTALL_ROOT;
+const daemon = startDaemon({ home, port: Number(process.env.KITE_PORT ?? 5483), keychain: process.platform === 'darwin' && process.env.KITE_KEYCHAIN === '1',
+  ...(root ? { install: { root, runtime: resolve(import.meta.dir, '../..') } } : {}) });
 console.log(`kited 在 ${daemon.url}，数据在 ${home}`);
 
 let stopping = false;

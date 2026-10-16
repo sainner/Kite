@@ -14,7 +14,7 @@
 ## 项目阶段
 
 - 目前项目处于在研期间，暂不部署。
-- 编写代码时无需考虑兼容性。
+- 编写代码时无需考虑兼容性。例外：App 依赖的接口或事件格式有不兼容的改动时，把协议号加 1，`kited/src/version.ts` 的 `PROTOCOL` 与 App 的 `KiteProtocol.version` 一起改，检查核对两边一致；`/machine`、`/update` 系列与账号级数据的同步要跨版本兼容。规则见 docs/App.md「版本」。
 
 ## 测试
 

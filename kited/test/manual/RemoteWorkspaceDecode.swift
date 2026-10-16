@@ -11,6 +11,9 @@ struct RemoteWorkspaceDecode {
         let localProjectsURL = URL(fileURLWithPath: CommandLine.arguments[3])
         let remoteProjectsURL = URL(fileURLWithPath: CommandLine.arguments[4])
         let machine = try JSONDecoder().decode(RemoteMachine.self, from: Data(contentsOf: machineURL))
+        // 协议号 App 与 kited 各记一份，这里核对两边一致（AGENTS.md「项目阶段」）。
+        guard machine.version?.protocol == KiteProtocol.version else { throw DecodeError.protocolMismatch }
+        print("App 与工作机的协议号一致")
         let localProjects = try JSONDecoder().decode([RemoteProject].self, from: Data(contentsOf: localProjectsURL))
         let remoteProjects = try JSONDecoder().decode([RemoteProject].self, from: Data(contentsOf: remoteProjectsURL))
         let workspaces = try JSONDecoder().decode([RemoteWorkspace].self, from: Data(contentsOf: url))
@@ -186,4 +189,5 @@ private enum DecodeError: Error {
     case invalidProjects
     case invalidCatalog
     case invalidFiles
+    case protocolMismatch
 }

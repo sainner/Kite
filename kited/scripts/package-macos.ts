@@ -2,6 +2,8 @@
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { buildPluginHost } from './build-plugin-web.ts';
+import { buildOf, listFiles, unlisted } from '../src/update/files.ts';
+import { PROTOCOL } from '../src/version.ts';
 import pkg from '../package.json';
 
 const root = resolve(import.meta.dir, '../..');
@@ -12,6 +14,13 @@ const mode = process.argv[2];
 async function run(command: string[], cwd = root): Promise<void> {
   const child = Bun.spawn(command, { cwd, env: process.env, stdout: 'inherit', stderr: 'inherit' });
   if (await child.exited !== 0) throw new Error(`命令失败：${command[0]}`);
+}
+
+async function gitOutput(command: string[]): Promise<string> {
+  const child = Bun.spawn(command, { cwd: root, env: process.env, stdout: 'pipe', stderr: 'inherit' });
+  const [text, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+  if (code !== 0) throw new Error(`命令失败：${command[0]}`);
+  return text.trim();
 }
 
 async function main(): Promise<void> {
@@ -58,14 +67,21 @@ async function main(): Promise<void> {
       await run(['/usr/bin/ditto', join(derived, 'Build/Products/Release/Kite.app'), join(bundle, 'Kite.app')]);
       await run(['/usr/bin/codesign', '--verify', '--deep', '--strict', join(bundle, 'Kite.app')]);
     }
+    console.log('生成文件清单…');
+    const files = await listFiles(runtime, unlisted);
+    const buildId = buildOf(files);
+    const commit = await gitOutput(['git', 'rev-parse', '--short=12', 'HEAD']) + (await gitOutput(['git', 'status', '--porcelain']) ? '-dirty' : '');
+    writeFileSync(join(runtime, 'files.json'), JSON.stringify(files));
     writeFileSync(join(runtime, 'manifest.json'), JSON.stringify({ platform: 'darwin', arch: process.arch,
-      bun: Bun.version, builtAt: new Date().toISOString() }, null, 2) + '\n');
+      bun: Bun.version, builtAt: new Date().toISOString(), build: buildId, protocol: PROTOCOL, commit }, null, 2) + '\n');
     if (!serviceOnly) {
       const resources = join(bundle, 'Kite.app/Contents/Resources/Service');
       mkdirSync(resources, { recursive: true });
       renameSync(runtime, join(resources, 'runtime'));
       await run(['/usr/bin/codesign', '--force', '--deep', '--sign', '-', join(bundle, 'Kite.app')]);
       await run(['/usr/bin/codesign', '--verify', '--deep', '--strict', join(bundle, 'Kite.app')]);
+      // 自动更新按文件清单在工作机之间传运行目录，签名不能改动其中的文件。
+      if (buildOf(await listFiles(join(resources, 'runtime'), unlisted)) !== buildId) throw new Error('签名改动了运行目录里的文件');
     }
     writeFileSync(join(bundle, '安装.command'), serviceOnly ? `#!/bin/bash
 set -euo pipefail

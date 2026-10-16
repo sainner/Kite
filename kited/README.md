@@ -39,6 +39,7 @@ bun run harness --resume <会话id>
 |---|---|
 | `src/main.ts`、`daemon.ts`、`http.ts`、`cli.ts` | 服务与客户端入口、HTTP 和 SSE |
 | `src/account-data/` | 账号级数据：本机存储与版本、工作机之间的同步、工作机发现与目录摘要、凭据、项目登记与约束、GitHub 绑定；契约见 [工作机](../docs/kited.md#账号级数据) |
+| `src/version.ts`、`src/update/` | 版本（构建号与协议号）与工作机之间的自动更新：发布、从对端取文件、暂存、空闲时换版；规则见 [自动更新](../docs/macOS安装与打包.md#自动更新)，换版由 `scripts/install-macos.ts update` 完成 |
 | `src/network.ts`、`net/` | 组网：kite-net（tsnet）连 Tailscale 官方协调服务、受管网络通道、系统睡眠预告、网页预览的端口转发；身份见 [身份与设备](../docs/身份与设备.md) |
 | `src/kite.ts`、`model.ts`、`store.ts`、`events.ts` | 业务编排、领域对象、持久化与事件 |
 | `src/instance-lifecycle.ts` | 实例与窗口创建、请求去重及回收 |

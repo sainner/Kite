@@ -98,6 +98,7 @@ export class TranscriptHistory {
         case 'line.inbox':
         case 'line.notification':
         case 'monitor.changed':
+        case 'update.changed':
         case 'workspace.setup':
         case 'workspace.snapshot':
         case 'workspace.adopt':
