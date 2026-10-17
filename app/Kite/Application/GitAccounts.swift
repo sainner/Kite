@@ -39,10 +39,12 @@ struct ProjectCheck: Decodable, Equatable {
     let existing: AccountProject?
 }
 
-/// 要存成项目密钥的环境变量文件：path 是在工作区里的路径；value 为空时由文件夹所在的工作机读，内容不经过 App。
+/// 要存成项目密钥的环境变量文件：path 是在工作区里的路径。value 是从这台设备选的文件内容；
+/// from 是在工作机上选的文件的绝对路径；都为空时按 path 从添加的文件夹读。工作机上的文件由添加项目的那台读，内容不经过 App。
 struct ProjectEnvFile: Encodable, Equatable, Identifiable {
     let path: String
     var value: String? = nil
+    var from: String? = nil
     var id: String { path }
 }
 
@@ -64,111 +66,161 @@ struct GitHubRepository: Decodable, Identifiable, Equatable {
     var id: String { fullName }
 }
 
-struct GitAccountsSection: View {
+/// 用 GitHub 的设备码授权绑定 github.com：打开就向一台工作机要验证码，在 GitHub 页面输入后自动完成，授权完弹窗自己关掉。
+/// 凭据只在工作机之间流转，App 只看到主机与账号名。
+struct GitHubBindSheet: View {
+    let bound: () -> Void
     @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
-    /// 绑定的 Git 平台；凭据只在工作机之间流转，App 只看到主机与账号名。
-    @State private var accounts: [AccountCredential] = []
     @State private var device: GitHubDevice?
-    @State private var host = ""
-    @State private var username = ""
-    @State private var token = ""
-    @State private var tokenForm = false
-    @State private var working = false
-    @State private var error: String?
+    @State private var phase = CardPhase.working
+    /// 换一次就重新要验证码。
+    @State private var attempt = UUID()
 
     var body: some View {
-        Section {
-            ForEach(accounts) { account in
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text(account.name)
-                        Text(account.meta["username"]?.string ?? "").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("解除绑定", role: .destructive) {
-                        perform { try await model.deleteCredential(account.id); try await load() }
-                    }
-                }
-            }
+        CardSheet(title: "绑定 GitHub", subtitle: "授权访问你的 GitHub 仓库，各工作机共用", close: { dismiss() }) {
             if let device {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("在 GitHub 页面输入验证码，授权后自动完成绑定")
-                    Text(device.userCode).font(.title2.monospaced()).textSelection(.enabled)
-                    HStack {
-                        Button("打开 GitHub") { if let url = URL(string: device.verificationURI) { openURL(url) } }
-                        Button("取消") { self.device = nil }
-                    }
+                DeviceCodeView(code: device.userCode)
+                CardNote("在 GitHub 页面输入这个验证码，授权后自动完成绑定。")
+            } else if phase.working {
+                HStack(spacing: 10) {
+                    CardSpinner()
+                    Text("正在获取验证码…")
                 }
-            } else {
-                Button("绑定 GitHub") { perform { device = try await model.startGitHub() } }
+                .font(Theme.secondary)
+                .foregroundStyle(Color.accentColor)
+                .frame(maxWidth: .infinity)
+                .padding(12)
+                .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
-            DisclosureGroup("用访问令牌绑定其他平台", isExpanded: $tokenForm) {
-                TextField("域名，如 gitlab.com", text: $host).autocorrectionDisabled()
-                TextField("用户名（可选）", text: $username).autocorrectionDisabled()
-                SecureField("访问令牌", text: $token)
-                Button("保存") {
-                    perform {
-                        try await bind(host: host.trimmingCharacters(in: .whitespaces).lowercased(),
-                                       username: username.trimmingCharacters(in: .whitespaces), token: token)
-                        host = ""; username = ""; token = ""; tokenForm = false
-                        try await load()
+        } actions: {
+            if let device {
+                PaneHeaderButtonGroup {
+                    Button { open(device) } label: {
+                        PaneHeaderButtonLabel("打开 GitHub", systemImage: "arrow.up.right.square")
                     }
-                }.disabled(host.trimmingCharacters(in: .whitespaces).isEmpty || token.isEmpty)
+                    .help("打开 GitHub")
+                }
             }
-            if let error { Text(error).foregroundStyle(Theme.danger) }
-        } header: {
-            Text("Git 账号")
         } footer: {
-            Text("绑定的凭据加密保存在工作机上、在工作机之间同步，用于克隆与推送。GitHub 授权覆盖该账号下的全部仓库。")
+            if device != nil || phase.error != nil {
+                CardActions(primary: "重试", phase: .constant(phase), working: "等待授权完成…", action: restart)
+            }
         }
-        .disabled(working)
-        .task { perform { try await load() } }
-        .task(id: device?.flow) { await poll() }
+        .task(id: attempt) { await authorize() }
     }
 
-    private func load() async throws { accounts = try await model.credentials(type: "git") }
-
-    /// 同一主机只有一条 Git 凭据，已绑定就替换。
-    private func bind(host: String, username: String, token: String) async throws {
-        // 不填用户名时由服务端补上默认的 oauth2
-        let meta = username.isEmpty ? [:] : ["username": username]
-        if let existing = accounts.first(where: { $0.name == host }) {
-            try await model.updateCredential(existing.id, meta: meta, secret: ["token": token])
-        } else {
-            try await model.createCredential(type: "git", name: host, meta: meta, secret: ["token": token])
-        }
+    private func open(_ device: GitHubDevice) {
+        if let url = URL(string: device.verificationURI) { openURL(url) }
     }
 
-    /// 按服务端给的间隔轮询，授权完成、拒绝或过期即停。
-    private func poll() async {
-        guard let device else { return }
-        var interval = device.interval
-        while self.device?.flow == device.flow {
-            try? await Task.sleep(for: .seconds(interval))
-            guard !Task.isCancelled, self.device?.flow == device.flow else { return }
-            do {
+    private func restart() {
+        device = nil
+        phase = .working
+        attempt = UUID()
+    }
+
+    /// 要到验证码就打开 GitHub，再按服务端给的间隔轮询，授权完成、拒绝或过期即停。
+    private func authorize() async {
+        do {
+            let device = try await model.startGitHub()
+            try Task.checkCancellation()
+            self.device = device
+            open(device)
+            var interval = device.interval
+            while true {
+                try await Task.sleep(for: .seconds(interval))
                 switch try await model.pollGitHub(device) {
                 case "pending": continue
                 case "slow_down": interval += 5
-                case "authorized": self.device = nil; try await load()
-                case "denied": self.device = nil; error = "GitHub 授权被拒绝"
-                default: self.device = nil; error = "验证码已过期，请重新绑定"
+                case "authorized":
+                    bound()
+                    dismiss()
+                    return
+                case "denied": throw KitedError(message: "GitHub 授权被拒绝")
+                default: throw KitedError(message: "验证码已过期，请重试")
                 }
-            } catch {
-                self.device = nil
-                self.error = error.localizedDescription
             }
+        } catch {
+            guard !Task.isCancelled else { return }
+            device = nil
+            phase = .failed(error.localizedDescription, retry: restart)
+        }
+    }
+}
+
+extension AppModel {
+    /// 用访问令牌绑定一个 Git 平台，同一主机只有一条 Git 凭据，已绑定就替换；不填用户名时由服务端补上默认的 oauth2。
+    /// machineID 指定写到哪台工作机（马上要用它的那台，不等同步），为空时任一台。
+    func bindGit(host: String, username: String, token: String, on machineID: String? = nil) async throws {
+        var client: KitedClient?
+        if let machineID {
+            guard let connection = connections[machineID], connection.connected else { throw KitedError(message: "工作机未连接") }
+            client = connection.client
+        }
+        let meta = username.isEmpty ? [:] : ["username": username]
+        if let existing = try await credentials(type: "git", via: client).first(where: { $0.name == host }) {
+            try await updateCredential(existing.id, meta: meta, secret: ["token": token], via: client)
+        } else {
+            try await createCredential(type: "git", name: host, meta: meta, secret: ["token": token], via: client)
+        }
+    }
+}
+
+/// 用访问令牌绑定一个 Git 平台，存好后由调用方接着做。访问远程时平台要求登录就地绑定它（给了 host）；
+/// 凭据页绑定 GitHub 以外的平台时由用户填域名，换令牌时给 host。
+struct GitLoginSheet: View {
+    let host: String?
+    /// 存到哪台工作机，为空时任一台，见 AppModel.bindGit。
+    var machineID: String? = nil
+    let bound: () -> Void
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var typedHost = ""
+    @State private var username = ""
+    @State private var token = ""
+    @State private var phase = CardPhase.idle
+    @FocusState private var focus: Field?
+
+    private var target: String { host ?? typedHost.trimmingCharacters(in: .whitespaces).lowercased() }
+
+    var body: some View {
+        CardSheet(title: host.map { "登录 \($0)" } ?? "用访问令牌绑定", subtitle: "用访问令牌绑定 Git 平台，各工作机共用",
+                  error: phase.error, typing: focus != nil, close: { dismiss() }) {
+            if host == nil {
+                CardField(label: "域名", focused: focus == .host) {
+                    TextField("gitlab.com", text: $typedHost)
+                        .literal().focused($focus, equals: .host)
+                        .cardInput { focus = .host }
+                }
+            }
+            CardField(label: "用户名（可选）", focused: focus == .username) {
+                TextField("不填时用 oauth2", text: $username)
+                    .literal().focused($focus, equals: .username)
+                    .cardInput { focus = .username }
+            }
+            CardField(label: "访问令牌", focused: focus == .token, note: "在平台的个人设置里生成，要能读写仓库。") {
+                SecureField("访问令牌", text: $token)
+                    .focused($focus, equals: .token).onSubmit(save)
+                    .cardInput { focus = .token }
+            }
+        } actions: {
+            CardSheetAction(title: "保存", busy: phase.working, action: save)
+                .disabled(phase.working || token.isEmpty || target.isEmpty)
+        }
+        .endsTyping(focus != nil) { focus = nil }
+    }
+
+    private func save() {
+        guard !token.isEmpty, !target.isEmpty else { return }
+        let host = target
+        $phase.run {
+            try await model.bindGit(host: host, username: username.trimmingCharacters(in: .whitespaces), token: token, on: machineID)
+            dismiss()
+            bound()
         }
     }
 
-    private func perform(_ action: @escaping () async throws -> Void) {
-        guard !working else { return }
-        error = nil
-        working = true
-        Task {
-            defer { working = false }
-            do { try await action() } catch { self.error = error.localizedDescription }
-        }
-    }
+    private enum Field { case host, username, token }
 }

@@ -1,5 +1,5 @@
 /** HTTP 接口：本机监听信任回环客户端，远程监听只接受已核验组网身份的内部代理。事件流用 SSE，语音输入和终端用 WebSocket。 */
-import { KiteError, OperationError } from './errors.ts';
+import { GitLoginRequired, KiteError, OperationError } from './errors.ts';
 import type { EventScope } from './events.ts';
 import { inScope } from './transcript/feed.ts';
 import { z } from 'zod';
@@ -19,7 +19,7 @@ import type { VoiceSocket } from './voice/sessions.ts';
 import { requestedSize, type TerminalSocket } from './terminal/terminals.ts';
 import { approvalModes } from './execution/grants.ts';
 import { WaitingConflict } from './waiting.ts';
-import { WorkspaceFiles } from './workspace/files.ts';
+import { hostDirectory, WorkspaceFiles } from './workspace/files.ts';
 import { fileContent } from './workspace/file-content.ts';
 import { HANDOVER_NEEDS } from './environment.ts';
 import type { Payload } from './update/updates.ts';
@@ -50,7 +50,8 @@ const projectSource = <T extends z.ZodRawShape>(addition: T) => z.union([
   z.object({ path: z.string().min(1), ...addition }).strict(),
 ]);
 const projectAddition = projectSource({ integration: z.enum(INTEGRATIONS).optional(),
-  envFiles: z.array(z.object({ path: z.string().min(1).max(512), value: z.string().optional() }).strict()).max(32).optional() });
+  envFiles: z.array(z.object({ path: z.string().min(1).max(512), value: z.string().optional(), from: z.string().min(1).max(4096).optional() }).strict()
+    .refine((file) => file.value === undefined || file.from === undefined)).max(32).optional() });
 
 function handle<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
   return async (req: R) => {
@@ -66,6 +67,7 @@ function handle<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
 function errorResponse(e: unknown) {
   const status = e instanceof KiteError ? e.status : 500;
   return Response.json({ error: (e as Error).message, ...(e instanceof OperationError ? { outcome: e.outcome } : {}),
+    ...(e instanceof GitLoginRequired ? { gitLogin: e.host } : {}),
     ...(e instanceof WaitingConflict ? { waiting: e.waiting } : {}) }, { status });
 }
 
@@ -246,7 +248,7 @@ export function serve(kite: Kite, listen: Listen) {
         // 要访问远程、导入文件夹，请求不受空闲超时限制。
         POST: long(bound(async (req) => {
           const parsed = projectAddition.safeParse(await body(req));
-          if (!parsed.success) throw new KiteError('添加项目要写 remote 或 path 中的一个，可带 integration 与 envFiles');
+          if (!parsed.success) throw new KiteError('添加项目要写 remote 或 path 中的一个，可带 integration 与 envFiles（每项 value 与 from 至多一个）');
           const { integration, envFiles, ...source } = parsed.data;
           return kite.addProject(source, { ...(integration ? { integration } : {}), ...(envFiles ? { envFiles } : {}) });
         })),
@@ -256,6 +258,11 @@ export function serve(kite: Kite, listen: Listen) {
         if (!parsed.success) throw new KiteError('检查要写 remote 或 path 中的一个');
         return kite.checkProject(parsed.data);
       })) },
+      '/host-files': { GET: bound((req) => {
+        const query = new URL(req.url).searchParams;
+        const number = (name: string) => { const n = Number(query.get(name) ?? NaN); return Number.isInteger(n) && n >= 0 ? n : undefined; };
+        return hostDirectory(query.get('path'), number('offset'), Math.min(number('limit') ?? 200, 1000));
+      }) },
       // 本机要先停下这个项目的线程、回收工作树，请求不受空闲超时限制。
       '/project-registry/:id': { DELETE: long(bound(async (req) => { await kite.deleteProject(req.params.id); return { ok: true }; })) },
       '/project-registry/:id/appearance': { PUT: bound(async (req) => kite.registry.setAppearance(req.params.id, await body(req))) },

@@ -97,6 +97,8 @@ export interface MachineSummary {
 }
 const firstLine = (text: string) => text.trim().split('\n')[0]!.trim() || '（空消息）';
 const titleOf = (prompt: string) => firstLine(prompt).slice(0, 80);
+/** 没带名字和首条消息建的空工作区先叫这个，第一条用户消息到了再以它起名，见 Kite.sendInput。 */
+const UNNAMED_WORKSPACE = '新工作区';
 
 /** 新建工作区时 App 定的几个 ID，见 Kite.createWorkspace。 */
 export interface NewWorkspaceIds { id?: string; windowId?: string; messageId?: string }
@@ -859,7 +861,7 @@ export class Kite {
     });
     this.assertRunning();
     const id = ids.id ?? randomUUID();
-    const w: Workspace = { id, epoch: 1, checkoutId: c.id, name: name.trim() || (prompt ? titleOf(prompt) : '新工作区'),
+    const w: Workspace = { id, epoch: 1, checkoutId: c.id, name: name.trim() || (prompt ? titleOf(prompt) : UNNAMED_WORKSPACE),
       cwd: worktreePath(this.home, c.projectId, id), branch: `kite/${id}`, base, status: 'preparing', createdAt: Date.now(),
       behind: 0, pullRequest: null };
     const t = prompt === undefined ? undefined : this.newThread(id, prompt, { role }, c.projectId);
@@ -1334,6 +1336,11 @@ export class Kite {
     if (this.store.threadTitle(thread.id)?.revision === 'initial') {
       this.store.renameInstance(thread.id, titleOf(input.text));
       this.threadChanged(thread);
+    }
+    // 空工作区同样用第一条用户消息起名
+    if (input.source === 'human' && this.store.workspace(thread.workspaceId)?.name === UNNAMED_WORKSPACE) {
+      this.store.renameWorkspace(thread.workspaceId, titleOf(input.text));
+      this.changed(thread.workspaceId);
     }
     // 输入受理后即与主会话并行，标题材料包含尚未交给主模型的排队消息。
     void this.titles?.refresh(thread.id);

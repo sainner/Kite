@@ -63,10 +63,19 @@ extension AppModel {
         return project
     }
 
+    /// 文件夹由它所在的工作机检查、添加；从工作机上选了环境变量文件的远程项目由那台添加；其余任一台。
     private func projectWorker(_ source: ProjectSource, machineID: String?) throws -> KitedClient {
-        guard source.path != nil else { return try dataWorker() }
-        guard let machineID, let connection = connections[machineID], connection.connected else { throw KitedError(message: "文件夹所在的工作机未连接") }
+        guard source.path != nil || machineID != nil else { return try dataWorker() }
+        guard let machineID, let connection = connections[machineID], connection.connected else {
+            throw KitedError(message: source.path == nil ? "选了文件的工作机未连接" : "文件夹所在的工作机未连接")
+        }
         return connection.client
+    }
+
+    /// 工作机上的一个目录（kited 的 GET /host-files），添加项目时选文件夹和环境变量文件；path 为空时是主目录。
+    func hostDirectory(_ path: String?, offset: Int = 0, on machineID: String) async throws -> FileDirectory {
+        guard let connection = connections[machineID], connection.connected else { throw KitedError(message: "工作机未连接") }
+        return try await connection.client.request("/host-files?offset=\(offset)&limit=500" + (path.map { "&path=\($0.pathComponent)" } ?? ""), as: FileDirectory.self)
     }
 
     /// 改项目设置，只改给了的那几项：集成方式是直接合入（merge）或提交 PR（pullRequest），另有自动换机与换机的环境需求。
@@ -107,20 +116,23 @@ extension AppModel {
                                                  body: Save(tools: tools, execution: execution, expectedRevision: expectedRevision), as: ProjectConstraints.self)
     }
 
-    func credentials(type: String, projectID: String = "") async throws -> [AccountCredential] {
-        try await dataWorker().request("/credentials?type=\(type)" + (projectID.isEmpty ? "" : "&projectId=\(projectID)"), as: [AccountCredential].self)
+    /// 凭据接口默认找任一台工作机，client 指定时用它（马上要用这份凭据的那台，不等同步）。
+    func credentials(type: String, projectID: String = "", via client: KitedClient? = nil) async throws -> [AccountCredential] {
+        try await (client ?? dataWorker()).request("/credentials?type=\(type)" + (projectID.isEmpty ? "" : "&projectId=\(projectID)"), as: [AccountCredential].self)
     }
 
-    func createCredential(type: String, name: String, projectID: String = "", meta: [String: String] = [:], secret: [String: String]) async throws {
+    func createCredential(type: String, name: String, projectID: String = "", meta: [String: String] = [:], secret: [String: String],
+                          via client: KitedClient? = nil) async throws {
         struct Body: Encodable { let type: String; let name: String; let projectId: String?; let meta: [String: String]; let secret: [String: String] }
-        let _: AccountCredential = try await dataWorker().request("/credentials", method: "POST",
+        let _: AccountCredential = try await (client ?? dataWorker()).request("/credentials", method: "POST",
             body: Body(type: type, name: name, projectId: projectID.isEmpty ? nil : projectID, meta: meta, secret: secret), as: AccountCredential.self)
     }
 
     /// 类型与范围不变；不提供的项保留原样。
-    func updateCredential(_ id: String, name: String? = nil, meta: [String: String]? = nil, secret: [String: String]? = nil) async throws {
+    func updateCredential(_ id: String, name: String? = nil, meta: [String: String]? = nil, secret: [String: String]? = nil,
+                          via client: KitedClient? = nil) async throws {
         struct Body: Encodable { let name: String?; let meta: [String: String]?; let secret: [String: String]? }
-        let _: AccountCredential = try await dataWorker().request("/credentials/\(id)", method: "PUT",
+        let _: AccountCredential = try await (client ?? dataWorker()).request("/credentials/\(id)", method: "PUT",
             body: Body(name: name, meta: meta, secret: secret), as: AccountCredential.self)
     }
 

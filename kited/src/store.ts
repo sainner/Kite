@@ -437,6 +437,9 @@ export class Store implements UsageStore {
   setWorkspaceStatus(id: string, status: WorkspaceStatus): void {
     this.db.query('update workspaces set status = ? where id = ?').run(status, id);
   }
+  renameWorkspace(id: string, name: string): void {
+    this.db.query('update workspaces set name = ? where id = ?').run(name, id);
+  }
   threads(workspaceId?: string): AgentInstance[] {
     return this.db.query(`select i.*, t.* from threads t join plugin_instances i on i.id = t.instance_id
       where (? is null or i.workspace_id = ?) order by i.created_at, i.id`)

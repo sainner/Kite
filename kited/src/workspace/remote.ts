@@ -3,7 +3,7 @@
  * 没有绑定（例如用户自己配了 SSH key）就照原样使用 origin 与用户自己的 git 配置。
  * 一次操作开头取一次访问方式（地址与凭据），其中的拉取、推送与重试共用。
  */
-import { KiteError } from '../errors.ts';
+import { GitLoginRequired, KiteError } from '../errors.ts';
 import { credentialEnv, type GitCredentials } from '../git-credential.ts';
 import { httpsRemote } from '../remote-url.ts';
 import { git, gitTry } from './git.ts';
@@ -33,8 +33,18 @@ export async function originAccess(cwd: string, credentials: GitCredentials): Pr
   return remoteAccess(origin, credentials);
 }
 
-/** 失败时只保留 git 输出的最后几行，凭据不会出现在其中。 */
+/** 失败时只保留 git 输出的最后几行，凭据不会出现在其中。HTTPS 远程要账号或拒绝了令牌时，换成去哪里绑定的说明。 */
 export function gitFailure(action: string, stderr: string): KiteError {
+  const login = /could not read Username for '(https?:\/\/[^/']+)/.exec(stderr);
+  if (login) {
+    const host = new URL(login[1]!).host;
+    return new GitLoginRequired(`${action}失败：${host} 要求登录，到「资源库 → 凭据」的 Git 账号里用访问令牌绑定它`, host);
+  }
+  const rejected = /Authentication failed for '(https?:\/\/[^/']+)/.exec(stderr);
+  if (rejected) {
+    const host = new URL(rejected[1]!).host;
+    return new GitLoginRequired(`${action}失败：${host} 拒绝了访问令牌，到「资源库 → 凭据」的 Git 账号里重新绑定`, host);
+  }
   return new KiteError(`${action}失败：${stderr.trim().split('\n').slice(-3).join('\n') || '未知错误'}`, 409);
 }
 

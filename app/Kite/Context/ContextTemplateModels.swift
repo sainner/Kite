@@ -202,11 +202,9 @@ struct LibraryReset: Encodable {
     let expectedRevision: String
 }
 
-/// 新代理连同草稿里的角色与改过的参数一次创建；新工作区带首条消息时只带角色。
+/// 新代理连同草稿里的角色与改过的参数一次创建。
 struct CreateThreadRequest: Encodable {
     let prompt: String
-    /// 新建工作区时的项目：工作机没有它的检出时先 clone。
-    var project: String? = nil
     var role: RoleSelection? = nil
     var model: AgentModelConfiguration? = nil
     var tools: [String]? = nil
@@ -215,8 +213,12 @@ struct CreateThreadRequest: Encodable {
     var approval: ApprovalMode? = nil
     var windowId: String? = nil
     var messageId: String? = nil
-    /// 新建工作区时本机定的工作区 ID，见 AppModel.create。
-    var id: String? = nil
+}
+
+/// 新建空工作区：工作机没有项目的检出时先 clone；id 由本机定，见 AppModel.createWorkspace。
+struct CreateWorkspaceRequest: Encodable {
+    let project: String
+    let id: String
 }
 
 extension AppModel {

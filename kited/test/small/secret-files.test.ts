@@ -95,6 +95,30 @@ test('check 列出文件夹里任意层级被忽略的环境变量文件，带 .
   expect(statSync(join(workspace.cwd, '.env')).mode & 0o777).toBe(0o600);
 }, 1000);
 
+/*
+ * 几个部分的配合：环境变量文件写 {path, from} 时，from 是这台工作机上文件夹之外的绝对路径，由处理请求的 kited 自己读出内容，
+ * 经 http 校验、添加流程存成设了路径的项目密钥，建工作区时宿主写进工作树。文件夹里同一路径另有一份内容不同的 .env，
+ * 工作树里是 from 那份，证明读的是 from 而不是文件夹。from 指向不存在的文件时整个添加失败，返回 404，登记表里没有这个项目。
+ */
+test('环境变量文件写 from 指向文件夹外的文件：存成路径为 .env 的项目密钥，建工作区后工作树里是那个文件的内容；文件不存在时 404 且不登记项目', async () => {
+  const k = start();
+  const folder = newRepo(k.root, 'web', { '.gitignore': '.env\n', 'a.txt': 'a\n', '.env': 'FROM=文件夹\n' }, null);
+  const elsewhere = join(k.root, 'elsewhere');
+  const env = 'PORT=4000\nTOKEN=别处的值\n';
+  writeFiles(elsewhere, { 'app.env': env });
+
+  const missing = await k.call('POST', '/project-registry', { path: folder, envFiles: [{ path: '.env', from: join(elsewhere, 'missing.env') }] });
+  expect(missing.status).toBe(404);
+  expect((await k.call('GET', '/project-registry')).body).toEqual([]);
+
+  const project = await addProject(k, { path: folder, envFiles: [{ path: '.env', from: join(elsewhere, 'app.env') }] });
+  const secrets = (await k.call('GET', `/credentials?type=secret&projectId=${project.id}`)).body as Credential[];
+  expect(secrets.filter((c) => c.meta.path === '.env')).toEqual([expect.objectContaining({ projectId: project.id })]);
+  const { workspace } = await openWorkspace(k, project.id);
+  expect(workspace.status).toBe('open');
+  expect(read(join(workspace.cwd, '.env'))).toBe(env);
+}, 1000);
+
 /** 检出 info/exclude 里 Kite 两行标记之间的行：宿主记下的这个项目设了路径的密钥。 */
 function excludedSecrets(k: Kited, projectId: string): string[] {
   const lines = read(join(checkoutPath(k.home, projectId), 'info', 'exclude')).split('\n');

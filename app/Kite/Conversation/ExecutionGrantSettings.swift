@@ -95,7 +95,7 @@ struct ExecutionGrantSettings: View {
                 if changed { discardAction = .reload } else { perform { try await load() } }
             }
             .disabled(working || !available)
-            CardSheetAction(title: "保存", systemImage: "checkmark", busy: working) { perform { try await save() } }
+            CardSheetAction(title: "保存", busy: working) { perform { try await save() } }
                 .disabled(!canSave)
         }
         .endsTyping(focus != nil) { focus = nil }

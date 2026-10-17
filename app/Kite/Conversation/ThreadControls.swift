@@ -93,10 +93,7 @@ struct ThreadControls: View {
                 if answering {
                     if controls.questionSteps, let answers = controls.answering { QuestionStepButtons(answers: answers) }
                 } else {
-                    HStack(spacing: 0) {
-                        ApprovalModeControl(controls: controls)
-                        ThreadEffortControl(controls: controls)
-                    }.fixedSize().layoutPriority(1)
+                    ThreadEffortControl(controls: controls).fixedSize().layoutPriority(1)
                 }
                 Spacer(minLength: 0)
                 // 只替换右侧按钮组，effort 保持同一个视图，展开途中不会因空间不足丢掉手势。

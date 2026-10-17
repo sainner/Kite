@@ -11,6 +11,9 @@ struct ThreadHeaderActions: View {
     @State private var loadingModels = false
     @State private var modelError: String?
     @State private var showingDraftSettings = false
+    /// 选了审批模式、工作机推回的实例配置还没跟上时先按它算。
+    @State private var pendingApproval: ApprovalMode?
+    @State private var approvalError: String?
     private var availableModels: [AgentCapabilities.Model] { thread.agentCapabilities?.models ?? [] }
     /// 草稿还没有实例，模型改的是本机选择，随第一条消息一起提交。
     private var choice: DraftAgentChoice? { instance == nil ? thread.draftChoice : nil }
@@ -32,6 +35,13 @@ struct ThreadHeaderActions: View {
             && thread.agentCapabilities?.canEdit(thread.state) == true
     }
     private var canOpenModels: Bool { (instance != nil || choice != nil) && model.isConnected(area) }
+    /// 审批模式：已有代理是工作机上实例的；草稿是本机选择，没选是角色的默认。
+    private var storedApproval: ApprovalMode {
+        guard let instance else { return thread.draftChoice?.approval ?? roleApproval }
+        return area.instances.first { $0.id == instance.id }?.config?.approval ?? .standard
+    }
+    private var roleApproval: ApprovalMode { role?.role.approval ?? .standard }
+    private var approval: ApprovalMode { pendingApproval ?? storedApproval }
     /// 换到另一厂商的模型就是换后端，运行中或有排队消息时不能换；待恢复时换后端连带确认恢复。
     private var canChangeVendor: Bool {
         if choice != nil { return canOpenModels }
@@ -66,6 +76,10 @@ struct ThreadHeaderActions: View {
             )) {
                 Button("好", role: .cancel) { modelError = nil }
             } message: { Text(modelError ?? "") }
+            .onChange(of: storedApproval) { _, value in if value == pendingApproval { pendingApproval = nil } }
+            .alert("修改审批模式失败", isPresented: Binding(get: { approvalError != nil }, set: { if !$0 { approvalError = nil } })) {
+                Button("好", role: .cancel) { approvalError = nil }
+            } message: { Text(approvalError ?? "") }
     }
 
     private var menuGroup: some View {
@@ -107,8 +121,37 @@ struct ThreadHeaderActions: View {
             general.append(.init(title: "配置", symbol: "slider.horizontal.3",
                                  enabled: thread.agentCapabilities != nil) { showingDraftSettings = true })
         }
+        // 审批模式紧跟配置
+        if instance != nil || choice != nil {
+            general.insert(.choice("审批模式", symbol: approval.symbol, enabled: model.isConnected(area) && pendingApproval == nil,
+                                   options: ApprovalMode.allCases.map { mode in .init(title: mode.title, selected: mode == approval) { chooseApproval(mode) } }),
+                           at: min(1, general.count))
+        }
         // 停止、继续和恢复确认都归输入区：待恢复时发送或继续即确认。
         return [windowActions?.commands ?? [], general].filter { !$0.isEmpty }
+    }
+
+    /// 审批模式：越界请求（连名单外的主机、申请出沙箱）怎么处理。已有代理改工作机上的实例，运行中也能改，下一次越界时生效；
+    /// 草稿改本机选择，随第一条消息提交，和角色默认一样时不提交。
+    private func chooseApproval(_ mode: ApprovalMode) {
+        guard mode != approval else { return }
+        guard let instance else {
+            thread.draftChoice?.approval = mode == roleApproval ? nil : mode
+            return
+        }
+        pendingApproval = mode
+        let model = model, area = area
+        Task {
+            struct Update: Encodable { let mode: ApprovalMode }
+            do {
+                _ = try await model.activeClient(in: area).request("/instances/\(instance.id)/approval-mode", method: "PUT",
+                                                                   body: Update(mode: mode), as: InstanceApprovalMode.self)
+                if storedApproval == mode { pendingApproval = nil }
+            } catch {
+                pendingApproval = nil
+                approvalError = error.localizedDescription
+            }
+        }
     }
 
     /// 草稿按工作区读取模型目录与各角色可开的工具，再按所选角色给出能力。

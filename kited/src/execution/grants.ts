@@ -91,8 +91,9 @@ export function bindRoleExecution(changes: ExecutionChanges): ExecutionChanges {
 }
 
 export const instanceExecutionChanges = (instance: Pick<PluginInstance, 'config'>): ExecutionChanges => parseExecutionChanges(instance.config.execution);
+/** 实例和角色都没设时越界询问。 */
 export const instanceApprovalMode = (instance: Pick<PluginInstance, 'config'>): ApprovalMode =>
-  z.enum(approvalModes).default('allowlist').parse(instance.config.approval);
+  z.enum(approvalModes).default('ask').parse(instance.config.approval);
 /** 实例的选择与项目上限取较严的。 */
 export const effectiveApprovalMode = (mode: ApprovalMode, project: ProjectExecution | undefined): ApprovalMode =>
   approvalModes[Math.min(approvalModes.indexOf(mode), approvalModes.indexOf(project?.approval ?? 'allow_all'))]!;

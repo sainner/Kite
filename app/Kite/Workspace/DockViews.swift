@@ -443,7 +443,7 @@ struct AddWindowButton: View {
     var body: some View {
         let size = Metrics.dragBubble, radius = size / 2
         Button {
-            if area.isDraft { model.newWorkspace = .session } else { area.openChooser() }
+            area.openChooser()
         } label: {
             if concentric {
                 face(ConcentricRectangle(topLeadingCorner: .fixed(radius),

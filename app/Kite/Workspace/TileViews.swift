@@ -294,7 +294,7 @@ struct PaneHeaderReports: ViewModifier {
                              minimize: { layout.minimize(pane) }, expansion: layout.expansion(of: pane),
                              expand: { layout.expand(pane) }, collapse: { layout.collapse(pane) },
                              close: { model.closeWindow(pane, in: area) },
-                             canClose: !area.isDraft && !area.isOpening(pane) && area.creatingWindow != pane.id)
+                             canClose: !area.isOpening(pane) && area.creatingWindow != pane.id)
 }
 
 /// 卡片标题栏的悬停和几项实际尺寸，由外框、按钮组和正文报上来，只有读它们的几层随之更新。
@@ -483,7 +483,7 @@ struct NewWindowChooser: View {
 extension WorkArea {
     /// 工作区在线且未归档时才能加窗口；别的窗口请求还在路上不妨碍。
     func canAddWindows(connected: Bool) -> Bool {
-        isDraft || (connected && remote?.workspace.status == .open)
+        connected && remote?.workspace.status == .open
     }
 }
 

@@ -25,14 +25,6 @@ struct TerminalPane: View {
     private var status: TerminalStatus? { session.status ?? instance.state?.terminal }
     private var running: Bool { status?.running ?? true }
 
-    private var subtitle: String {
-        if let status, !status.running { return status.summary }
-        return switch session.link {
-        case .waiting, .connecting: "正在连接…"
-        case .connected, .failed: "终端"
-        }
-    }
-
     /// 停止放在标题栏右边，红色。用户开的终端也能在里面 Ctrl+C、exit；agent 转到后台的命令没有输入，只能靠它。
     private var headerActions: PaneHeaderActions {
         guard running else { return PaneHeaderActions() }
@@ -40,14 +32,19 @@ struct TerminalPane: View {
                                                             tint: Theme.danger, action: stop)]])
     }
 
+    /// 信息区：失败优先，其次是终端结束了、正在连接。
     private var notice: PaneNotice? {
         if let stopError { return .failure(stopError) }
         if case .failed(let message) = session.link, running { return .failure(message) }
-        return nil
+        if let status, !status.running { return PaneNotice(text: status.summary, symbol: "stop.circle", tint: .secondary) }
+        return switch session.link {
+        case .waiting, .connecting: PaneNotice(text: "正在连接…", symbol: "hourglass", tint: .secondary)
+        case .connected, .failed: nil
+        }
     }
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: instance.title, subtitle: subtitle), notice: notice, actions: headerActions) {
+        PaneWindow(header: PaneHeader(title: instance.title, subtitle: "终端"), notice: notice, actions: headerActions) {
             TerminalHost(session: session, dark: colorScheme == .dark)
                 .padding(.horizontal, Metrics.padding)
         } controls: { _ in

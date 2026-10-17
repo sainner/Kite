@@ -171,8 +171,15 @@ final class PhoneThreadMenuButton: UIButton {
             return elements
         case .more:
             return content.commands.map { section in
-                UIMenu(options: .displayInline, children: section.map { command in
+                UIMenu(options: .displayInline, children: section.map { command -> UIMenuElement in
                     var attributes: UIMenuElement.Attributes = command.enabled ? [] : .disabled
+                    guard command.options.isEmpty else {
+                        // 单选子菜单，副标题是当前选的
+                        return UIMenu(title: command.title, subtitle: command.options.first(where: \.selected)?.title,
+                                      image: UIImage(systemName: command.symbol), children: command.options.map { option in
+                            UIAction(title: option.title, attributes: attributes, state: option.selected ? .on : .off) { _ in option.select() }
+                        })
+                    }
                     if command.destructive { attributes.insert(.destructive) }
                     return UIAction(title: command.title, image: UIImage(systemName: command.symbol), attributes: attributes) { _ in command.action() }
                 })

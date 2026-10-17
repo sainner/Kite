@@ -247,7 +247,6 @@ struct ThreadControlsModel {
         send(message) {
             stage?.emitWave(from: frame, parameters: Self.sendWave(from: frame, reach: reach), in: scope)
         }
-        guard !area.isDraft else { return }
         // 发送时就清空，输入框撑着原来的高度淡完再变矮。清空时键盘处理、输入框重排要几十毫秒（2026-10-11 iPhone 实测），
         // 放在对话刚起步的时候，不落在滑得最快的时候
         let fading = FadingText(text: sent, height: fieldHeight)

@@ -15,18 +15,18 @@ struct TerminalWebPane: View {
     private var ports: [TerminalStatus.Port] { status?.ports ?? [] }
     private var port: Int? { status?.running == true ? status?.webPort : nil }
 
-    private var subtitle: String {
-        guard let status, status.running else { return status?.summary ?? "终端已结束" }
-        if let port { return "localhost:\(port)" }
-        return ports.isEmpty ? "还没有监听的端口" : "没有能用 HTTP 打开的端口"
-    }
-
+    /// 信息区：失败优先，其次是为什么还没有网页可看。
     private var notice: PaneNotice? {
-        (selectError ?? (port == nil ? nil : failure)).map(PaneNotice.failure)
+        if let error = selectError ?? (port == nil ? nil : failure) { return .failure(error) }
+        guard let status, status.running else {
+            return PaneNotice(text: status?.summary ?? "终端已结束", symbol: "stop.circle", tint: .secondary)
+        }
+        guard port == nil else { return nil }
+        return PaneNotice(text: ports.isEmpty ? "还没有监听的端口" : "没有能用 HTTP 打开的端口", symbol: "info.circle", tint: .secondary)
     }
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: instance.title, subtitle: subtitle), notice: notice) {
+        PaneWindow(header: PaneHeader(title: instance.title, subtitle: port.map { "localhost:\($0)" } ?? "网页预览"), notice: notice) {
             if let port, let store = UUID(uuidString: instance.id) {
                 PortPreview(client: client, port: port, store: store, report: { failure = $0 })
                     .id("\(port) \(reload)")

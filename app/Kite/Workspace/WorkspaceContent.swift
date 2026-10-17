@@ -6,7 +6,7 @@ struct WorkspaceContent: View {
 
     var body: some View {
         Group {
-            if !workspace.isDraft, workspace.pluginClient == nil {
+            if workspace.pluginClient == nil {
                 DirectoryStatus(workspace: workspace)
             } else {
                 TilesLayer(group: .workspace(workspace))

@@ -1,9 +1,9 @@
 /** 文件插件与 agent 共用工作目录边界和文本读取；不提供操作系统沙箱。 */
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { relative, resolve } from 'node:path';
+import { type Dirent, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { z } from 'zod';
-import { within } from '../paths.ts';
+import { userHome, within } from '../paths.ts';
 import { KiteError } from '../errors.ts';
 import { diffID } from './file-diffs.ts';
 import { gitTry } from './git.ts';
@@ -130,4 +130,36 @@ export class WorkspaceFiles {
     walk('');
     return files;
   }
+}
+
+/**
+ * 这台工作机上的一个目录，添加项目时 App 用来选文件夹和环境变量文件：只列名字，不读内容。
+ * 不给路径时列主目录，~/ 开头的按主目录解析；返回的形状同 WorkspaceFiles.list，路径都是绝对的。符号链接按目标归类后再排序，指向目录的也排在前面。
+ */
+export function hostDirectory(path: string | null, offset = 0, limit = 200) {
+  const target = !path ? userHome() : path === '~' || path.startsWith('~/') ? join(userHome(), path.slice(1)) : path;
+  if (!isAbsolute(target)) throw new KiteError('路径要写绝对路径，或 ~/ 开头');
+  const directory = resolve(target);
+  let dirents: Dirent[];
+  try { dirents = readdirSync(directory, { withFileTypes: true }); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') throw new KiteError(`找不到文件夹：${directory}`, 404);
+    if (code === 'ENOTDIR') throw new KiteError(`不是文件夹：${directory}`);
+    if (code === 'EACCES' || code === 'EPERM') throw new KiteError(`没有权限读取：${directory}`, 403);
+    throw error;
+  }
+  const kind = (entry: Dirent) => {
+    if (entry.isDirectory()) return 'directory' as const;
+    if (entry.isFile()) return 'file' as const;
+    if (!entry.isSymbolicLink()) return 'other' as const;
+    try {
+      const stat = statSync(join(directory, entry.name));
+      return stat.isDirectory() ? 'directory' as const : stat.isFile() ? 'file' as const : 'other' as const;
+    } catch { return 'symlink' as const; }
+  };
+  const entries = dirents.map((entry) => ({ name: entry.name, path: join(directory, entry.name), kind: kind(entry) }))
+    .sort((a, b) => Number(b.kind === 'directory') - Number(a.kind === 'directory') || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return { path: directory, entries: entries.slice(offset, offset + limit), total: entries.length,
+    nextOffset: offset + limit < entries.length ? offset + limit : null };
 }

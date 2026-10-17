@@ -53,7 +53,7 @@ bun run harness --resume <会话id>
 
 当前提供 `read`、`patch`、`shell`、`credentials`，参数、失败和取消语义见 [基础工具契约](harness-主循环.md#工具执行约定)。上下文的编辑与生效见 [上下文模板](harness-上下文组装.md)。
 
-文件工具限制在工作目录内，shell 使用操作系统沙箱。默认工作区可读写、必要工具链可读、网络关闭；命令连接网络许可之外的主机时按实例的审批模式处理，默认直接拒绝，见 [工具审批与提问](工具审批与提问.md)。宿主凭据和内部记录受保护，Git 元数据只读。授权范围和平台限制见 [执行边界](Agent与插件契约.md#71-插件与-harness-共用操作系统沙箱)。独立终端尚无授权编辑入口，服务中的实例可在 App「执行授权」页编辑，见 [实例执行授权](实例操作.md#实例执行授权)。每回合的请求上限可用 `--max-requests` 调整，达到上限后等待显式继续。
+文件工具限制在工作目录内，shell 使用操作系统沙箱。默认工作区可读写、必要工具链可读、网络关闭；命令连接网络许可之外的主机时按实例的审批模式处理，默认问人，见 [工具审批与提问](工具审批与提问.md)。宿主凭据和内部记录受保护，Git 元数据只读。授权范围和平台限制见 [执行边界](Agent与插件契约.md#71-插件与-harness-共用操作系统沙箱)。独立终端尚无授权编辑入口，服务中的实例可在 App「执行授权」页编辑，见 [实例执行授权](实例操作.md#实例执行授权)。每回合的请求上限可用 `--max-requests` 调整，达到上限后等待显式继续。
 
 这个终端入口直接修改指定目录。需要独立工作树、快照与采纳时，通过 kited 创建工作区。独立终端不提供 agent 协作工具、账号凭据服务、skill 自动发现或外部 MCP 连接；上下文压缩只有自动触发，没有手动入口。服务中的 MCP 工具由 [Bun 插件宿主](Bun插件.md) 接入并授权。
 
@@ -194,7 +194,7 @@ bun src/cli.ts net up              # 开启已登录设备的组网
 | 操作 | 行为与限制 |
 |---|---|
 | 登记项目 | 远程地址只写进项目登记表，不 clone。本机文件夹有 origin 的按远程登记；没有的在这台工作机上导入成没有远程的项目，原文件夹不动。可以一起保存环境变量文件为项目密钥。都不创建工作区 |
-| 创建工作区 | 在这台工作机上为项目建工作区：先检查环境，不满足就不建；没有该项目的检出时自动 clone 并登记，检出保留。先拉取主线，从最新的主线开出工作树。可以先建空工作区，也可在准备完成后运行首条消息 |
+| 创建工作区 | 在这台工作机上为项目建工作区：先检查环境，不满足就不建；没有该项目的检出时自动 clone 并登记，检出保留。先拉取主线，从最新的主线开出工作树。可以先建空工作区，也可在准备完成后运行首条消息。没给名字和首条消息的空工作区先叫「新工作区」，第一条用户消息被受理时以它的第一行起名 |
 | 添加线程 | 工作区可有多个线程，各自保存对话；线程之间默认并行，一个线程在执行、等你回应或恢复阻塞时，其他线程照常启动，见 [工作区并行](工作区并行.md)。App 的新代理草稿只在本机，第一条消息连同所选角色和调整过的模型、工具、预算一次创建实例、线程与窗口 |
 | 快照与回退 | 每批工具后与回合结束时保存整个工作区的变更并记下触发的线程，快照不改变 HEAD、分支或暂存区；超过 10 MiB 且项目 Git 未跟踪的文件不进快照，与被忽略的文件一样回退不碰（见 [成果查看与位置](成果查看与位置.md#大文件)）。回退先保存现状，再恢复文件；任一线程在执行或恢复阻塞期间不允许回退 |
 | 采纳（集成） | 按项目的集成方式：直接合入把工作区改动合进主线并推送到远程；提交 PR 把工作区分支推到远程并开 PR。同一检出的采纳串行执行，冲突留在工作树；采纳后工作区与线程仍可继续使用 |
@@ -294,8 +294,9 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/network/logout` | 仅本机：退出 Tailscale 登录。节点在线时先在 Tailscale 上注销，不在线时只删本机状态（设备要到 Tailscale 管理页删）；组网开着时重起节点，状态里给出新的登录地址 |
 | GET | `/machines` | 工作机目录：本机在前，每项 `{id, name, online, address?, updatedAt?, snapshot?}`，`snapshot` 是那台工作机最近一次的目录摘要，见 [账号级数据](#账号级数据) |
 | GET | `/project-registry` | 项目登记表 `[{id, name, remote, url, createdAt, icon, color, integration, integrationReason?, autoHandover?, handoverNeeds?}]`；`remote` 为归一化地址，`url` 为 HTTPS 访问地址，没有远程的项目两者为 null；`integration` 为 `merge`（直接合入）或 `pullRequest`（提交 PR），`integrationReason` 是自动选择时的理由 |
-| POST | `/project-registry/check` | 添加项目前的检查，不写任何东西：`{remote}` 或 `{path}`（这台工作机上的文件夹）。返回 `{remote, integration, integrationReason?, envFiles, existing?}`：`remote` 是归一化地址，没有远程的文件夹为 null；`integration` 是按仓库情况给的默认值；`envFiles` 是文件夹里被忽略的 `.env`、`.env.*` 的相对路径，远程为空；`existing` 是已登记的同一项目。远程访问不了 409，文件夹不存在 400 |
-| POST | `/project-registry` | 添加项目 `{remote}` 或 `{path}`，另带 `{integration?, envFiles?}`：`envFiles` 每项为 `{path}`（从文件夹读）或 `{path, value}`（从操作的设备上选的文件）。远程与有 origin 的文件夹先确认能访问，再写进登记表，不 clone；没有远程的文件夹在这台工作机上导入成检出，原文件夹不动。环境变量文件存成设了路径的项目密钥。全部成功才登记，返回项目；同一远程已登记时返回原项目，不改它的设置，带上的环境变量文件存进它的项目密钥（已有设在同一路径的换内容）。不能添加 Kite 的数据目录或包含它的文件夹 |
+| POST | `/project-registry/check` | 添加项目前的检查，不写任何东西：`{remote}` 或 `{path}`（这台工作机上的文件夹）。返回 `{remote, integration, integrationReason?, envFiles, existing?}`：`remote` 是归一化地址，没有远程的文件夹为 null；`integration` 是按仓库情况给的默认值；`envFiles` 是文件夹里被忽略的 `.env`、`.env.*` 的相对路径，远程为空；`existing` 是已登记的同一项目。远程访问不了 409，其中远程要账号或拒绝了访问令牌时错误体另带 `gitLogin`（主机），App 据此让用户就地绑定令牌；文件夹不存在 400 |
+| POST | `/project-registry` | 添加项目 `{remote}` 或 `{path}`，另带 `{integration?, envFiles?}`：`envFiles` 每项为 `{path}`（从文件夹读）、`{path, from}`（这台工作机上的绝对路径）或 `{path, value}`（从操作的设备上选的文件）。远程与有 origin 的文件夹先确认能访问，再写进登记表，不 clone；没有远程的文件夹在这台工作机上导入成检出，原文件夹不动。环境变量文件存成设了路径的项目密钥。全部成功才登记，返回项目；同一远程已登记时返回原项目，不改它的设置，带上的环境变量文件存进它的项目密钥（已有设在同一路径的换内容）。不能添加 Kite 的数据目录或包含它的文件夹。远程要账号时同检查，错误体带 `gitLogin` |
+| GET | `/host-files?path=&offset=&limit=` | 列这台工作机上的一个目录，添加项目时选文件夹和环境变量文件用，只列名字不读内容。`path` 是绝对路径或 `~/` 开头，不给时列主目录；`limit` 默认 200、最多 1000。返回 `{path, entries, total, nextOffset}`，`entries` 每项 `{name, path, kind}`，路径都是绝对的，`kind` 为 `directory`、`file`、`symlink`（目标读不到）或 `other`，目录在前。不存在 404，没有权限 403 |
 | DELETE | `/project-registry/:id` | 删除项目，语义见 [删除项目](项目与远程仓库.md#删除项目)：登记、约束与项目专用的密钥一起删，这台先移除本机的检出再返回，其他工作机同步到删除后各自移除。未登记的项目 404，Line 所在的项目 409 |
 | PUT | `/project-registry/:id/remote` | 给没有远程的项目设远程 `{remote}`：在这台有检出的工作机上把全部分支和标签推到远程，加上 origin，写进登记表；其他工作机的检出随项目同步加上 origin。推送被拒或这台没有检出 409 |
 | PUT | `/project-registry/:id/settings` | `{integration?, autoHandover?, handoverNeeds?}`，至少一项：`integration` 是集成方式，没有远程的项目只能是 `merge`，手动设置后清掉 `integrationReason`；`autoHandover` 是工作机睡眠、登出、重启或关机前，把这个项目里正在工作的工作区换到别的工作机；`handoverNeeds` 是换机目标须满足的环境，取值 `xcode`（完整的 Xcode）、`iosDevice`（连着的 iPhone 或 iPad） |
@@ -348,7 +349,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET / PUT | `/threads/:id/title` | 读取标题与生成进度；以 expectedRevision 手动改名或恢复自动标题 |
 | POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不阻塞主会话控制 |
 | GET / PUT | `/instances/:id/execution-grants` | 读取或修改执行授权；须停止，「允许并记住」追加网络许可例外 |
-| GET / PUT | `/instances/:id/approval-mode` | 读取或设置审批模式 `{mode}`：`allowlist`（默认）、`ask` 或 `allow_all`，运行中也可改，下一次越界请求生效 |
+| GET / PUT | `/instances/:id/approval-mode` | 读取或设置审批模式 `{mode}`：`allowlist`、`ask`（默认）或 `allow_all`，运行中也可改，下一次越界请求生效 |
 | GET / PUT | `/instances/:id/operation-grants` | 读取实例的协作授权及 revision；以 expectedRevision 和 grants 更新 |
 | POST | `/workspaces/:id/windows` | 创建实例及默认窗口，或打开已有实例视图；请求使用稳定 id |
 | DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口；最后窗口按插件生命周期回收实例或保留 |

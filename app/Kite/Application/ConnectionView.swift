@@ -101,109 +101,15 @@ struct DriveContent: View {
     }
 }
 
-/// 新建分成两个入口：添加项目只登记（远程不 clone，没有远程的文件夹由所在工作机导入），见 AddProject；
-/// 新建工作区选项目和工作机，工作机上还没有检出时由它先 clone。
-struct NewWorkspace: View {
-    enum Mode: Equatable, Identifiable {
-        case project, session, inProject(String)
-        var id: String {
-            switch self {
-            case .project: "project"
-            case .session: "session"
-            case .inProject(let id): "project:\(id)"
-            }
-        }
-    }
-
-    let mode: Mode
-
-    var body: some View {
-        if mode == .project { AddProject() } else { NewSession(mode: mode) }
-    }
-}
-
-/// 在选定的工作机上为项目建工作区，开场的话作为第一条消息。
-private struct NewSession: View {
-    let mode: NewWorkspace.Mode
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    @State private var projectID = ""
-    @State private var machineID = ""
-    @State private var prompt = ""
-    @State private var phase = CardPhase.idle
-    @FocusState private var typing: Bool
-
-    /// Line 的项目从侧栏顶部的标志进，不在这里建工作区。
-    private var projects: [RemoteProject] {
-        let line = model.lineArea?.remote?.project.id
-        return model.knownProjects.filter { $0.id != line }
-    }
-    private var project: RemoteProject? { projects.first { $0.id == projectID } }
-    private var enabled: Bool {
-        !phase.working && project != nil && model.connections[machineID]?.connected == true
-            && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    var body: some View {
-        let label = model.projectLabels()
-        CardSheet(title: "新建工作区", subtitle: "在一台工作机上为项目开一个工作区", error: phase.error, typing: typing, close: { dismiss() }) {
-            CardField(label: "项目") {
-                Menu {
-                    ForEach(projects) { project in
-                        Button(label(project)) { select(project.id) }
-                    }
-                } label: {
-                    CardSelection(title: project.map(label), placeholder: "选择项目")
-                }
-                .menuStyle(.button).buttonStyle(CardSelectStyle()).menuIndicator(.hidden)
-            }
-            CardField(label: "工作机", note: note) {
-                WorkerMenu(machineID: $machineID, placeholder: "选择工作机")
-            }
-            CardField(label: "要做什么", focused: typing) {
-                TextField("说说要做什么", text: $prompt, axis: .vertical).lineLimit(3...8)
-                    .focused($typing)
-                    .scrollsOnlyWhileTyping(typing)
-                    .cardInput { typing = true }
-            }
-        } actions: {
-            CardSheetAction(title: "创建工作区", systemImage: "checkmark", busy: phase.working, action: create)
-                .disabled(!enabled)
-        }
-        .endsTyping(typing) { typing = false }
-        .onAppear {
-            if case .inProject(let id) = mode { select(id) }
-            else { select(model.current?.remote?.project.id ?? projects.first?.id ?? "") }
-            prompt = model.draftWorkspace.draftThread.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-    }
-
-    /// 选中项目时工作机默认取已有它检出、连着的那台，其次是当前连着的工作机。
-    private func select(_ id: String) {
-        projectID = id
-        let holders = Set(model.checkouts.filter { $0.projectId == id }.map(\.machineId))
-        machineID = model.availableWorkers.first { holders.contains($0.id) }?.id
-            ?? (model.activeConnection?.connected == true ? model.machine?.id : nil) ?? model.availableWorkers.first?.id ?? ""
-    }
-
-    private var note: String? {
-        guard project != nil, !machineID.isEmpty else { return nil }
-        return model.checkouts.contains { $0.projectId == projectID && $0.machineId == machineID } ? nil : "这台工作机上还没有这个项目，建工作区前先 clone。"
-    }
-
-    private func create() {
-        guard enabled, let project else { return }
-        $phase.run { try model.create(project: project, machineID: machineID, prompt: prompt); dismiss() }
-    }
-}
-
 /// 添加项目分两步：先选来源（远程地址或工作机上的文件夹）和要带上的环境变量文件，再定集成方式。
-/// 没有远程的文件夹只能直接合入，跳过第二步。文件夹里的环境变量文件由所在工作机读，内容不经过 App。
+/// 没有远程的文件夹只能直接合入，跳过第二步。文件夹里的和在工作机上选的环境变量文件由那台工作机读，内容不经过 App；
+/// 所以工作机上选的文件只能来自添加项目的那台：文件夹所在的，远程项目则是第一次选文件的那台。
+/// 添加完成后打开项目页，工作区从项目上直接建，见 AppModel.createWorkspace。
 private struct AddProject: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var source = Source.remote
-    @State private var machineID = ""
+    @State private var machineID: String
     @State private var path = ""
     @State private var remote = ""
     @State private var repositories: [GitHubRepository]?
@@ -211,13 +117,22 @@ private struct AddProject: View {
     @State private var checked: (source: ProjectSource, machine: String, result: ProjectCheck)?
     /// 文件夹里找到的环境变量文件中选上的。
     @State private var found: Set<String> = []
-    /// 从这台设备选的文件，路径可以改。
+    /// 从这台设备或工作机上选的文件，路径可以改。
     @State private var picked: [PickedFile] = []
     @State private var importing = false
+    @State private var browsing: HostFilePicker.Request?
+    /// 远程要求登录：底部按钮换成登录这个平台，绑好令牌后重试被挡住的那一步。
+    @State private var gitLogin: GitLogin?
+    @State private var loggingIn = false
     @State private var integration = "merge"
     @State private var step = 1
     @State private var phase = CardPhase.idle
     @FocusState private var focus: Field?
+
+    /// 默认的工作机在建视图时就定好，见 CardSheet 按内容定高的说明。
+    init(model: AppModel) {
+        _machineID = State(initialValue: model.preferredWorker()?.id ?? "")
+    }
 
     private var current: ProjectSource {
         source == .folder ? ProjectSource(path: path.trimmingCharacters(in: .whitespaces))
@@ -233,11 +148,19 @@ private struct AddProject: View {
     }
     private var envFiles: [ProjectEnvFile] {
         found.intersection(check?.envFiles ?? []).sorted().map { ProjectEnvFile(path: $0) }
-            + picked.map { ProjectEnvFile(path: $0.path.trimmingCharacters(in: .whitespaces), value: $0.value) }
+            + picked.map { ProjectEnvFile(path: $0.path.trimmingCharacters(in: .whitespaces), value: $0.value, from: $0.from) }
     }
     private var filesValid: Bool {
         let paths = envFiles.map(\.path)
         return paths.allSatisfy { !$0.isEmpty && !$0.hasPrefix("/") && !$0.split(separator: "/").contains("..") } && Set(paths).count == paths.count
+    }
+
+    /// 在工作机上选的文件来自哪台；没选过时为空。
+    private var fileWorker: String? { picked.lazy.compactMap(\.machine).first }
+    /// 能从哪几台工作机选文件：文件夹只能是它所在的那台，远程项目选过一台后只能是那台。
+    private var fileWorkers: [WorkerConnection] {
+        let only = source == .folder ? machineID : fileWorker
+        return model.availableWorkers.filter { only == nil || $0.id == only }
     }
 
     var body: some View {
@@ -245,8 +168,27 @@ private struct AddProject: View {
             if step == 1 { sourceStep } else { integrationStep }
         }
         .endsTyping(focus != nil) { focus = nil }
-        .onAppear {
-            machineID = (model.activeConnection?.connected == true ? model.machine?.id : nil) ?? model.availableWorkers.first?.id ?? ""
+        .sheet(item: $browsing) { request in
+            HostFilePicker(request: request) { paths in
+                if request.folders { path = paths.first ?? path; inspect() } else { addWorkerFiles(paths, from: request.machineID) }
+            }
+        }
+        // 文件夹换了工作机：在别的工作机上选的文件这次带不上
+        .onChange(of: machineID) { dropForeignFiles() }
+        .onChange(of: source) { dropForeignFiles() }
+        // 失败原因显示在底部按钮里，改了来源就收起
+        .onChange(of: current) {
+            if phase.error != nil { phase = .idle }
+            gitLogin = nil
+        }
+        .sheet(isPresented: $loggingIn) {
+            if let gitLogin {
+                // 存到马上要重试的那台：文件夹所在的工作机；远程项目的检查任一台都行
+                GitLoginSheet(host: gitLogin.host, machineID: source == .folder ? machineID : nil) {
+                    self.gitLogin = nil
+                    attempt(gitLogin.retry)
+                }
+            }
         }
         .task(id: source) {
             guard source == .remote, repositories == nil else { return }
@@ -257,7 +199,7 @@ private struct AddProject: View {
                 for url in try result.get() {
                     let text = try readSecretText(url)
                     let name = url.lastPathComponent.hasPrefix(".env") ? url.lastPathComponent : ".env"
-                    picked.append(PickedFile(path: picked.contains { $0.path == name } || found.contains(name) ? "" : name, value: text))
+                    picked.append(PickedFile(path: freePath(name), value: text))
                 }
                 if phase.error != nil { phase = .idle }
             } catch { phase = .failed(error.localizedDescription) { importing = true } }
@@ -267,22 +209,34 @@ private struct AddProject: View {
     // MARK: 第一步：来源与环境变量文件
 
     private var sourceStep: some View {
-        CardSheet(title: "添加项目", subtitle: "选远程仓库或工作机上的文件夹，可以一起带上环境变量文件", error: phase.error,
+        CardSheet(title: "添加项目", subtitle: "从远程或任一工作机添加项目及所需环境变量",
                   typing: focus != nil, close: { dismiss() }) {
+            HStack(spacing: 12) {
+                CardChoice(title: "远程仓库", detail: "GitHub、GitLab 等平台上的仓库", symbol: .world, selected: source == .remote) { source = .remote }
+                CardChoice(title: "工作机文件夹", detail: "任一工作机上的本地仓库或文件夹", symbol: .folder, selected: source == .folder) { source = .folder }
+            }
             if source == .folder {
                 CardField(label: "工作机") { WorkerMenu(machineID: $machineID, placeholder: "选择文件夹所在的工作机") }
             }
             CardField(label: "仓库位置", focused: focus == .path || focus == .remote, note: locationNote) {
                 HStack(spacing: 0) {
-                    sourceMenu
                     if source == .folder {
                         TextField("工作机上的绝对路径，如 /Users/me/code/app", text: $path)
                             .literal().focused($focus, equals: .path).onSubmit(inspect)
-                            .cardInput(leading: 2) { focus = .path }
+                            .cardInput { focus = .path }
+                        Button {
+                            browsing = HostFilePicker.Request(machineID: machineID, folders: true, start: current.path.flatMap { $0.isEmpty ? nil : $0 })
+                        } label: {
+                            PaneButtonLabel("浏览", systemImage: "folder")
+                        }
+                        .buttonStyle(PaneButtonStyle()).fixedSize()
+                        .disabled(model.connections[machineID]?.connected != true)
+                        .help("在工作机上浏览")
+                        .padding(.trailing, 4)
                     } else {
                         TextField("github.com/me/repo", text: $remote)
                             .literal().focused($focus, equals: .remote).onSubmit(next)
-                            .cardInput(leading: 2) { focus = .remote }
+                            .cardInput { focus = .remote }
                         if let repositories, !repositories.isEmpty {
                             Menu {
                                 ForEach(repositories) { repository in
@@ -310,11 +264,22 @@ private struct AddProject: View {
                         Button("移除") { picked.removeAll { $0.id == file.id } }
                     }
                 }
-                Button("从这台设备选文件…") { importing = true }
+                Menu("选文件…") {
+                    Button("这台设备") { importing = true }
+                    Section("工作机") {
+                        ForEach(fileWorkers) { connection in
+                            Button(connection.machine.name) {
+                                let start = source == .folder && connection.id == machineID ? current.path.flatMap { $0.isEmpty ? nil : $0 } : nil
+                                browsing = HostFilePicker.Request(machineID: connection.id, folders: false, start: start)
+                            }
+                        }
+                    }
+                }
+                .menuStyle(.button).menuIndicator(.hidden)
             }
-        } actions: {
-            CardSheetAction(title: "下一步", systemImage: "arrow.right", busy: phase.working, action: next)
-                .disabled(phase.working || !sourceReady || !filesValid)
+        } footer: {
+            CardActions(primary: gitLogin.map { "登录 \($0.host)" } ?? "下一步", enabled: gitLogin != nil || (sourceReady && filesValid),
+                        phase: $phase) { if gitLogin != nil { loggingIn = true } else { next() } }
         }
         // 路径填完（回车或离开输入框）就去看一眼，找到的环境变量文件默认选上；打字途中不看，免得把上级目录整个扫一遍
         .onChange(of: focus) { old, new in
@@ -331,21 +296,6 @@ private struct AddProject: View {
         return nil
     }
 
-    private var sourceMenu: some View {
-        Menu {
-            Picker("来源", selection: $source) {
-                Label("工作机上的文件夹", systemImage: Source.folder.symbol).tag(Source.folder)
-                Label("远程仓库", systemImage: Source.remote.symbol).tag(Source.remote)
-            }
-            .pickerStyle(.inline).labelsHidden()
-        } label: {
-            PaneButtonLabel(source == .folder ? "文件夹" : "远程仓库", systemImage: source.symbol)
-        }
-        .menuStyle(.button).buttonStyle(PaneButtonStyle()).menuIndicator(.hidden).fixedSize()
-        .help("来源：\(source == .folder ? "工作机上的文件夹" : "远程仓库")")
-        .padding(.leading, 4)
-    }
-
     /// 检查当前来源：文件夹找到的环境变量文件默认选上，集成方式换成建议的。检查期间来源或工作机改了就作废，返回 nil。
     private func runCheck() async throws -> ProjectCheck? {
         let source = current, machine = machineID
@@ -359,13 +309,21 @@ private struct AddProject: View {
 
     private func inspect() {
         guard sourceReady, check == nil else { return }
-        $phase.run { _ = try await runCheck() }
+        attempt { _ = try await runCheck() }
+    }
+
+    /// 跑一次请求；远程要求登录时不算失败，记下来让底部按钮换成登录，绑好令牌后重跑。
+    private func attempt(_ action: @escaping () async throws -> Void) {
+        $phase.run {
+            do { try await action() }
+            catch let error as KitedError where error.gitLogin != nil { gitLogin = GitLogin(host: error.gitLogin!, retry: action) }
+        }
     }
 
     /// 下一步：先检查（远程要确认能访问），已登记的直接收下；没有远程的跳过第二步直接添加。
     private func next() {
         guard sourceReady, filesValid, !phase.working else { return }
-        $phase.run {
+        attempt {
             if check == nil {
                 guard let result = try await runCheck() else { return }
                 // 文件夹里找到了环境变量文件：先停在这一步，让用户看一眼默认选上的
@@ -389,8 +347,8 @@ private struct AddProject: View {
     // MARK: 第二步：集成方式
 
     private var integrationStep: some View {
-        CardSheet(title: "集成方式", subtitle: "工作区的改动怎样进入主线，之后可以在项目配置里改", error: phase.error, back: true,
-                  close: { step = 1 }) {
+        CardSheet(title: "集成方式", subtitle: "工作区的改动怎样进入主线，之后可以在项目配置里改", back: true,
+                  close: { phase = .idle; gitLogin = nil; step = 1 }) {
             VStack(spacing: 8) {
                 CardChoice(title: "直接合入", detail: "把工作区的改动合进主线，再推送到远程。适合只有自己用的仓库。",
                            symbol: .gitMerge, selected: integration == "merge") { integration = "merge" }
@@ -398,32 +356,58 @@ private struct AddProject: View {
                            symbol: .gitPullRequest, selected: integration == "pullRequest") { integration = "pullRequest" }
             }
             if let reason = check?.integrationReason { CardNote("已按仓库情况预选：\(reason)。") }
-        } actions: {
-            CardSheetAction(title: "添加", systemImage: "checkmark", busy: phase.working) {
-                $phase.run { try await add() }
+        } footer: {
+            CardActions(primary: gitLogin.map { "登录 \($0.host)" } ?? "添加", phase: $phase) {
+                if gitLogin != nil { loggingIn = true } else { attempt { try await add() } }
             }
-            .disabled(phase.working)
         }
     }
 
+    /// 环境变量文件在工作区里的路径还没被占用就用它，否则留空让用户填。
+    private func freePath(_ path: String) -> String {
+        picked.contains { $0.path == path } || found.contains(path) ? "" : path
+    }
+
+    /// 在工作机上选的文件：在要添加的文件夹里的照原来的相对路径放（检查时已找到的直接勾上），别处的按文件名，不是 .env 开头的放到 .env。
+    private func addWorkerFiles(_ paths: [String], from machine: String) {
+        let folder = source == .folder && machine == machineID ? current.path.map { $0.hasSuffix("/") ? $0 : $0 + "/" } : nil
+        for file in paths where !picked.contains(where: { $0.from == file }) {
+            let inside = folder.flatMap { file.hasPrefix($0) ? String(file.dropFirst($0.count)) : nil }
+            if let inside, check?.envFiles.contains(inside) == true { found.insert(inside); continue }
+            let name = (file as NSString).lastPathComponent
+            picked.append(PickedFile(path: freePath(inside ?? (name.hasPrefix(".env") ? name : ".env")), from: file, machine: machine))
+        }
+        if phase.error != nil { phase = .idle }
+    }
+
+    private func dropForeignFiles() {
+        guard source == .folder else { return }
+        picked.removeAll { $0.machine != nil && $0.machine != machineID }
+    }
+
     private func add() async throws {
-        let project = try await model.addProject(current, machineID: current.path == nil ? nil : machineID,
+        let project = try await model.addProject(current, machineID: current.path == nil ? fileWorker : machineID,
                                                  integration: check?.remote == nil ? nil : integration, envFiles: envFiles)
         model.selectProject(project.id)
         dismiss()
     }
 
+    /// 选的文件：从这台设备选的带着内容，从工作机上选的记着那台和绝对路径。
     private struct PickedFile: Identifiable {
         let id = UUID()
         var path: String
-        let value: String
+        var value: String?
+        var from: String?
+        var machine: String?
     }
 
     private enum Field { case path, remote }
 
-    private enum Source {
-        case folder, remote
-        var symbol: String { self == .folder ? "folder" : "globe" }
+    private enum Source { case folder, remote }
+
+    private struct GitLogin {
+        let host: String
+        let retry: () async throws -> Void
     }
 }
 
@@ -455,7 +439,7 @@ private struct WorkerMenu: View {
     }
 }
 
-private extension View {
+extension View {
     /// 路径、地址这类照原样输入的文字：不纠正拼写，iPhone 上不自动大写。
     func literal() -> some View {
         #if os(iOS)
@@ -555,7 +539,7 @@ struct ServiceConnection: ViewModifier {
                 NodeGrace.shared.background()
             }
             #endif
-            .sheet(item: $model.newWorkspace) { NewWorkspace(mode: $0).environment(model).toastHost().appAppearance() }
+            .sheet(isPresented: $model.addingProject) { AddProject(model: model).environment(model).toastHost().appAppearance() }
             .sheet(item: $model.contextVariable) { ContextVariableSheet(variable: $0).environment(model).toastHost().appAppearance() }
             .modifier(WorkspaceGitPresentation())
     }

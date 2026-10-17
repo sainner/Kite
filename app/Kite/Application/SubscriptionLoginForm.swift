@@ -24,7 +24,6 @@ struct SubscriptionLoginForm: View {
     let submit: () -> Void
     let restart: () -> Void
     @FocusState private var typing: Bool
-    @Environment(\.toast) private var toast
 
     private var authorizationURL: URL? { state?.url.flatMap(URL.init(string:)) }
     private var trimmedCode: String { code.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -59,7 +58,7 @@ struct SubscriptionLoginForm: View {
                 providerIcon
             } else if state?.finished != true, error == nil, authorizationURL != nil {
                 if let userCode = state?.userCode {
-                    deviceCode(userCode)
+                    DeviceCodeView(code: userCode)
                 } else if provider == "claude" {
                     CardField(label: "授权码", focused: typing) {
                         SecureField("在此处粘贴授权码", text: $code)
@@ -119,16 +118,22 @@ struct SubscriptionLoginForm: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, Metrics.padding)
     }
+}
 
-    private func deviceCode(_ value: String) -> some View {
+/// 设备码授权的验证码：一位一格，点任一格复制整串。订阅登录与绑定 GitHub 共用。
+struct DeviceCodeView: View {
+    let code: String
+    @Environment(\.toast) private var toast
+
+    var body: some View {
         HStack(spacing: 6) {
-            ForEach(Array(value.enumerated()), id: \.offset) { _, character in
+            ForEach(Array(code.enumerated()), id: \.offset) { _, character in
                 if character == "-" {
                     Text("-")
                         .font(Theme.heading2.monospaced())
                         .foregroundStyle(.secondary)
                 } else {
-                    Button { copyToPasteboard(value, toast: toast) } label: {
+                    Button { copyToPasteboard(code, toast: toast) } label: {
                         Text(String(character))
                             .font(Theme.heading2.monospaced())
                             .frame(maxWidth: .infinity, minHeight: 48)
@@ -137,7 +142,7 @@ struct SubscriptionLoginForm: View {
                     .buttonStyle(.pointingPlain)
                     .help("复制设备码")
                     .accessibilityLabel("\(String(character))，复制完整设备码")
-                    .accessibilityValue(value)
+                    .accessibilityValue(code)
                 }
             }
         }

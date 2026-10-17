@@ -280,7 +280,7 @@ struct SidebarListHeader: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .overlay(alignment: .trailing) {
                     if model.sidebarSection == .workspaces {
-                        Button { model.newWorkspace = .project } label: {
+                        Button { model.addingProject = true } label: {
                             TablerIcon(.tablerPlus)
                         }
                         .buttonStyle(SidebarButtonStyle(size: metrics.control))

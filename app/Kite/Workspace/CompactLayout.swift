@@ -152,7 +152,7 @@ struct CompactSidebarColumn: View {
                 switch model.sidebarSection {
                 case .workspaces:
                     WorkspaceList(onSelect: collapse) { workspace in
-                        WorkspaceRow(workspace: workspace, current: current == workspace.id) {
+                        WorkspaceRow(workspace: workspace, current: current == workspace.id, onSelect: collapse) {
                             Color.clear.contentShape(Rectangle())
                             .onTapGesture {
                                 model.selectWorkspace(workspace.id)

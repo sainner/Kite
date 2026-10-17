@@ -51,7 +51,7 @@ struct AgentSettings: View {
                 if changed { discard = "reload" } else { perform { try await load() } }
             }
             .disabled(working || !available)
-            CardSheetAction(title: "保存", systemImage: "checkmark", busy: working) { perform { try await save() } }
+            CardSheetAction(title: "保存", busy: working) { perform { try await save() } }
                 .disabled(!canSave)
         }
         .endsTyping(editingLimit) { editingLimit = false }
@@ -142,7 +142,7 @@ struct DraftAgentSettings: View {
                 ProgressView()
             }
         } actions: {
-            CardSheetAction(title: "完成", systemImage: "checkmark", action: save)
+            CardSheetAction(title: "完成", action: save)
                 .disabled(capabilities == nil || budget < 1)
         }
         .endsTyping(editingLimit) { editingLimit = false }

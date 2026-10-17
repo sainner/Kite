@@ -40,6 +40,7 @@ struct RoleEmblemPane: View {
     private var design: EmblemDesign { edited ?? saved?.emblem?.design ?? .fallback }
     private var generating: Bool { saved?.emblemState == "generating" }
 
+    /// 签名是怎么来的、接下来会不会被替换，在信息区。
     private var status: String {
         if generating { return "正在按提示词生成" }
         if let newRole { return newRole.emblem == nil ? "保存后按提示词生成" : "已手改，保存后不再自动替换" }
@@ -56,11 +57,12 @@ struct RoleEmblemPane: View {
 
     private var notice: PaneNotice? {
         if let error { return .failure(error) }
-        return saved?.emblemState == "failed" ? .failure("签名生成失败：\(saved?.emblemError ?? "未知原因")") : nil
+        if saved?.emblemState == "failed" { return .failure("签名生成失败：\(saved?.emblemError ?? "未知原因")") }
+        return status.isEmpty ? nil : PaneNotice(text: status, symbol: generating ? "sparkles" : "info.circle", tint: .secondary)
     }
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: "签名", subtitle: status), usesDots: true, notice: notice,
+        PaneWindow(header: PaneHeader(title: "签名", subtitle: "代理头像的点阵图案"), usesDots: true, notice: notice,
                    actions: PaneHeaderActions(groups: saved.map { _ in [[
                        PaneHeaderAction(title: "重新生成", systemImage: "sparkles", help: generating ? "正在生成" : "按提示词重新生成签名",
                                         busy: generating, disabled: generating || !model.connected) { regenerate() },

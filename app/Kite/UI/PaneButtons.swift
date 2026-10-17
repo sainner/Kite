@@ -61,23 +61,30 @@ struct PaneHeaderActions: View {
     var groups: [[PaneHeaderAction]] = []
     /// 菜单：会话的模型与更多操作、角色初始配置的默认模型与思考强度、辅助生成模板的模型。放在各组前面。
     var menus: AnyView?
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         if let menus { menus }
         ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
-            PaneHeaderButtonGroup(selected: !group.isEmpty && group.allSatisfy(\.on)) {
+            PaneHeaderButtonGroup(selected: !group.isEmpty && group.allSatisfy(highlighted)) {
                 ForEach(Array(group.enumerated()), id: \.offset) { _, action in
                     PaneHeaderActionButton(action: action)
                 }
             }
         }
     }
+
+    /// 开着的开关，或能按的确认动作；确认动作在忙时虽不能按，转圈仍留在主题色上。
+    private func highlighted(_ action: PaneHeaderAction) -> Bool {
+        action.on || action.prominent && (action.busy || isEnabled && !action.disabled)
+    }
 }
 
 /// 标题栏右组的一个图标按钮，见 PaneHeaderActions。
 struct PaneHeaderAction {
     let title: String
-    let systemImage: String
+    /// 不给时按钮显示文字。
+    let systemImage: String?
     /// 悬停说明，不给时同标题。
     var help: String?
     /// 在忙（保存、生成中）：图标换成转圈。
@@ -85,6 +92,8 @@ struct PaneHeaderAction {
     var disabled = false
     /// 开关开着。开关单独成组，开着时整组用选中样式（主题色玻璃、白色图标），同侧栏的设置按钮。
     var on = false
+    /// 弹窗里保存、创建这类确认动作，用文字不用图标，单独成组，样式同开着的开关；不能按时退回普通玻璃。
+    var prominent = false
     /// 图标颜色，不给时随组；停止这类结束动作用 Theme.danger。
     var tint: Color?
     let action: () -> Void

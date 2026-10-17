@@ -187,7 +187,8 @@ private final class ComposerFieldCell: NSTextFieldCell {
 
     override func fieldEditor(for controlView: NSView) -> NSTextView? {
         if let editor { return editor }
-        let editor = NSTextView(usingTextLayoutManager: true)
+        let editor = ComposerEditor(usingTextLayoutManager: true)
+        editor.field = controlView as? ComposerField
         editor.isFieldEditor = true
         editor.isRichText = false
         editor.importsGraphics = false
@@ -197,6 +198,17 @@ private final class ComposerFieldCell: NSTextFieldCell {
         editor.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor]
         self.editor = editor
         return editor
+    }
+}
+
+/// 组字中的字变了也交给输入框：系统只在确认组字、删字这类改动后发文字变化的通知，拼音一个个打进去时不发
+/// （2026-10-18 macOS 27.2 在 NSTextField 的字段编辑器上试过），草稿跟不上，新代理图案的打字活跃度也就只在选字、删字时动。
+private final class ComposerEditor: NSTextView {
+    weak var field: ComposerField?
+
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+        field?.textChanged?(self.string)
     }
 }
 #endif

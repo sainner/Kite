@@ -5,12 +5,15 @@ struct WorkspaceRow<Interaction: View>: View {
     let workspace: WorkArea
     let current: Bool
     var detached = false
+    /// 从这一行建了工作区之后；紧凑布局用它收起侧栏。
+    var onSelect: () -> Void = {}
     @ViewBuilder var interaction: () -> Interaction
 
     @Environment(AppModel.self) private var model
     @Environment(\.sidebarProjectTint) private var tint
     @Environment(\.sidebarHighlight) private var highlight
     @Environment(\.sidebarMetrics) private var metrics
+    @Environment(\.toast) private var toast
 
     var body: some View {
         SidebarTreeRow(selected: current) {
@@ -47,8 +50,8 @@ struct WorkspaceRow<Interaction: View>: View {
                         .help("版本操作")
                         .accessibilityLabel("版本操作")
                         Menu {
-                            Button("创建工作区…") {
-                                if let project = workspace.remote?.project { model.newWorkspace = .inProject(project.id) }
+                            Button("创建工作区") {
+                                if let project = workspace.remote?.project { model.createWorkspace(in: project.id, toast: toast); onSelect() }
                             }
                             Divider()
                             WorkspaceGitActions(workspace: workspace)
@@ -165,7 +168,6 @@ private struct WorkspaceProjectSection<Row: View>: View {
     @Environment(\.sidebarMetrics) private var metrics
     @Environment(\.toast) private var toast
     @State private var isExpanded = true
-    @State private var hoveringIcon = false
     /// 确认删除时的说明，点「删除项目…」时才算。
     @State private var deletion: String?
 
@@ -181,35 +183,17 @@ private struct WorkspaceProjectSection<Row: View>: View {
         let selected = model.selectedProjectID == group.id || group.workspaces.contains { $0.id == current }
         SidebarStickySection(headerHeight: metrics.rowHeight) {
             SidebarListRow(selected: selected) { foreground in
+                // 点项目进项目页，展开收起用行尾的箭头
                 Button {
                     model.selectProject(group.id)
                     onSelect()
                 } label: {
-                    Group {
-                        if hoveringIcon {
-                            Image(systemName: "info.circle")
-                        } else {
-                            TablerIcon(ProjectIcon.symbol(for: model.account.projectAppearances[group.id]?.icon), selected: selected)
-                        }
-                    }
-                        .opacity(0.65)
-                        .font(Theme.sidebarHeading.weight(.semibold))
-                        .frame(width: metrics.labelExtent, height: metrics.rowHeight)
+                    SidebarListLabel(title: group.title ?? "项目", icon: ProjectIcon.symbol(for: model.account.projectAppearances[group.id]?.icon),
+                                     selected: selected)
                 }
                 .buttonStyle(SidebarButtonStyle(foreground: foreground))
-                .onHover { hoveringIcon = $0 }
-                .help("项目配置")
-                .accessibilityLabel("\(group.title ?? "项目")的配置")
-                Button {
-                    if checkouts.isEmpty { model.newWorkspace = .inProject(group.id) } else { isExpanded.toggle() }
-                } label: {
-                    SidebarListLabel(title: group.title ?? "项目", selected: selected)
-                        .padding(.leading, 8)
-                }
-                .buttonStyle(SidebarButtonStyle(foreground: foreground))
-                .help(checkouts.isEmpty ? "还没有工作区，创建一个" : (isExpanded ? "收起项目" : "展开项目"))
                 .contextMenu {
-                    Button("创建工作区…") { model.newWorkspace = .inProject(group.id) }
+                    Button("创建工作区") { create() }
                     Divider()
                     // Line 所在的项目不能删，Line 在别的工作机上时接请求的那台查不到，这里也拦着
                     MenuButton("删除项目…", role: .destructive) { deletion = deletionMessage }
@@ -217,7 +201,7 @@ private struct WorkspaceProjectSection<Row: View>: View {
                 }
                 .accessibilityAddTraits(selected ? .isSelected : [])
                 Button {
-                    model.newWorkspace = .inProject(group.id)
+                    create()
                 } label: {
                     TablerIcon(.tablerPlus)
                 }
@@ -240,8 +224,8 @@ private struct WorkspaceProjectSection<Row: View>: View {
                             if checkouts.count > 1 {
                                 SidebarSubheader(title: workspaces.first?.remote?.machine.name ?? "工作机",
                                                  selected: checkoutSelected, help: "工作机", open: nil,
-                                                 add: SidebarSubheaderAdd(help: "创建工作区", label: "在这个项目中创建工作区") {
-                                                     model.newWorkspace = .inProject(group.id)
+                                                 add: SidebarSubheaderAdd(help: "在这台工作机上创建工作区", label: "在这台工作机上创建工作区") {
+                                                     create(on: checkout.id)
                                                  })
                             }
                         } content: {
@@ -271,6 +255,12 @@ private struct WorkspaceProjectSection<Row: View>: View {
         if !open.isEmpty { lines.append("这些工作区里没集成的改动会一起丢失：\(open.joined(separator: "、"))。") }
         if remote == nil { lines.append("这个项目没有远程，各工作机的检出就是它的全部副本，删除后只剩导入时的原文件夹。") }
         return lines.joined(separator: "\n\n")
+    }
+
+    /// 直接建，建好就选中它；紧凑布局随之收起侧栏。checkout 的 ID 就是所在工作机的 ID。
+    private func create(on machineID: String? = nil) {
+        model.createWorkspace(in: group.id, on: machineID, toast: toast)
+        onSelect()
     }
 
     /// 删除成功后项目从列表里消失，提示由外层的 toast 显示。

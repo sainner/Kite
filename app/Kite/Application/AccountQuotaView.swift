@@ -22,11 +22,10 @@ struct ModelAccountPane: View {
         let connection = model.accountWorker
         let account = connection?.modelAccounts?.accounts.first { $0.id == subscriptionID }
         let stale = account.map { connection?.showsStaleData($0) ?? true } ?? false
-        // 状态不进正文：还没有数据时副行写现在是什么情况；订阅窗口的档位是标题右边的标签，副行是账号邮箱，
-        // 没登录或还没有身份时是账号状态；需要处理的状态和服务的说明在信息区（notice）。
-        let subtitle = pending(connection, subscriptionID: subscriptionID)
-            ?? (subscriptionID == nil ? "API Key 保存在资源库的凭据中"
-                : account.map { $0.status == "unconfigured" ? $0.statusTitle : $0.identity ?? $0.statusTitle })
+        // 副行写这个窗口是什么：API 窗口说 Key 存在哪，订阅窗口是账号邮箱，没登录或还没有身份时说窗口里是什么；
+        // 订阅窗口的档位是标题右边的标签。状态不进正文也不进副行，都在信息区（notice）。
+        let subtitle = subscriptionID == nil ? "API Key 保存在资源库的凭据中"
+            : account.flatMap { $0.status == "unconfigured" ? nil : $0.identity } ?? "订阅的额度与用量"
         // 订阅窗口：登录、重新登录；API 窗口：添加。
         var actions: [[PaneHeaderAction]] = []
         if let connection, let account {
@@ -40,7 +39,7 @@ struct ModelAccountPane: View {
                                          disabled: !model.account.signedIn) { addingApiKey = true }]]
         }
         return PaneWindow(header: PaneHeader(title: title, subtitle: subtitle, badge: account?.planTitle), usesDots: subscriptionID != nil,
-                          notice: notice(connection, account: account),
+                          notice: notice(connection, account: account, subscriptionID: subscriptionID),
                           status: account.flatMap { $0.sharedQuotas.isEmpty ? nil : AnyView(AccountQuotaRing(quotas: $0.sharedQuotas, stale: stale)) },
                           actions: PaneHeaderActions(groups: actions)) {
             let content = VStack(alignment: .leading, spacing: DotMetrics.module * 2) {
@@ -81,7 +80,7 @@ struct ModelAccountPane: View {
         }
     }
 
-    /// 还没有可显示的账号数据时副行写的情况；有数据时是 nil。额度只在点刷新或会话带回时更新，打开页面不查询。
+    /// 还没有可显示的账号数据时的情况；有数据时是 nil。额度只在点刷新或会话带回时更新，打开页面不查询。
     private func pending(_ connection: WorkerConnection?, subscriptionID: String?) -> String? {
         guard let connection else { return "暂无已连接的工作机" }
         guard let snapshot = connection.modelAccounts else {
@@ -94,9 +93,21 @@ struct ModelAccountPane: View {
         return snapshot.accounts.contains { $0.kind == "api" } ? nil : "还没有 API 账号，添加 API Key 后可查询额度与余额"
     }
 
-    /// 窗口自己的提示，同时只有一项：账号要重新授权，这次更新失败，工作机沿用了上次的数据，账号暂不可查询，服务对额度的说明。
+    /// 窗口自己的提示，同时只有一项：先是要处理的（见 problem），再是还没有数据的情况（见 pending），最后是订阅没登录。
     /// 工作机离线由窗口外层的连接提示表达。
-    private func notice(_ connection: WorkerConnection?, account: ModelAccount?) -> PaneNotice? {
+    private func notice(_ connection: WorkerConnection?, account: ModelAccount?, subscriptionID: String?) -> PaneNotice? {
+        if let problem = problem(connection, account: account) { return problem }
+        if let pending = pending(connection, subscriptionID: subscriptionID) {
+            return PaneNotice(text: pending, symbol: connection?.readingModelAccounts == true ? "hourglass" : "info.circle", tint: .secondary)
+        }
+        if let account, account.status == "unconfigured" {
+            return PaneNotice(text: account.statusTitle, symbol: "person.crop.circle", tint: .secondary)
+        }
+        return nil
+    }
+
+    /// 要处理的提示：账号要重新授权，这次更新失败，工作机沿用了上次的数据，账号暂不可查询，服务对额度的说明。
+    private func problem(_ connection: WorkerConnection?, account: ModelAccount?) -> PaneNotice? {
         guard let connection else { return nil }
         let detail = account?.message.map { "：\($0)" } ?? ""
         if let account, account.status == "reauthentication" { return .failure(account.statusTitle + detail) }

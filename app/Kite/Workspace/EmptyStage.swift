@@ -17,13 +17,11 @@ struct EmptyStage: View {
     @Environment(\.openSidebar) private var openSidebar
     @Environment(\.paneTopSafeInset) private var topInset
     @Environment(\.stageCardOpacity) private var cardOpacity
-    @State private var canvas: CGRect?
     /// 画板卡片自己的点阵范围，卡片里面才读得到（见 WindowDotScope）。
     @State private var windowScope: DotScope?
     @State private var figureArea: CGRect?
     /// 放得下的画幅，见 StageFigures.sizes。
     @State private var sizeIndex: Int?
-    @State private var lastTrace: CGPoint?
 
     @State private var sceneSlot = "stage.scene.\(UUID().uuidString)"
     /// 场景切换（如连接成功）时发出的慢波，与初始配置完成一步相同。
@@ -40,17 +38,7 @@ struct EmptyStage: View {
                                                   height: CGFloat(StageFigures.sizes[$0].rows) * DotMetrics.pitch) }
             let showsFigure = figureSize != nil
             ZStack {
-                Color.clear
-                    .contentShape(Rectangle())
-                    #if os(macOS)
-                    .onContinuousHover(coordinateSpace: .global) { phase in
-                        if case .active(let point) = phase { trace(to: point) } else { lastTrace = nil }
-                    }
-                    #else
-                    .simultaneousGesture(DragGesture(minimumDistance: 4, coordinateSpace: .global)
-                        .onChanged { trace(to: $0.location) }
-                        .onEnded { _ in lastTrace = nil })
-                    #endif
+                Color.clear.dotTrace()
                 VStack(spacing: Metrics.padding * 2) {
                     if showsFigure, let figureSize {
                         Color.clear
@@ -96,10 +84,7 @@ struct EmptyStage: View {
                 .drawerShift(.top)
             }
         }
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
-            canvas = $0
-            refresh()
-        }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { _ in refresh() }
         .onChange(of: scene) { old, new in
             refresh()
             // 连上了：从刚才的图形发出一道慢波
@@ -160,19 +145,46 @@ struct EmptyStage: View {
         }
     }
 
+}
+
+extension View {
+    /// 指针划过（触屏是手指拖过）时在点阵上留下一串轨迹，空画板和空的凭据窗口共用。
+    func dotTrace() -> some View { modifier(DotTrace()) }
+}
+
+private struct DotTrace: ViewModifier {
+    @Environment(\.dotStage) private var stage
+    @State private var area: CGRect?
+    @State private var last: CGPoint?
+
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            #if os(macOS)
+            .onContinuousHover(coordinateSpace: .global) { phase in
+                if case .active(let point) = phase { trace(to: point) } else { last = nil }
+            }
+            #else
+            .simultaneousGesture(DragGesture(minimumDistance: 4, coordinateSpace: .global)
+                .onChanged { trace(to: $0.location) }
+                .onEnded { _ in last = nil })
+            #endif
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { area = $0 }
+    }
+
     /// 指针移得快时两次事件隔得远，中间按格补上，轨迹连成一条。
     private func trace(to point: CGPoint) {
-        guard let canvas, canvas.insetBy(dx: DotMetrics.pitch, dy: DotMetrics.pitch).contains(point) else {
-            lastTrace = nil
+        guard let area, area.insetBy(dx: DotMetrics.pitch, dy: DotMetrics.pitch).contains(point) else {
+            last = nil
             return
         }
-        let from = lastTrace ?? point
+        let from = last ?? point
         let steps = max(1, Int((hypot(point.x - from.x, point.y - from.y) / (DotMetrics.pitch / 2)).rounded(.up)))
         for step in 1...steps {
             let t = CGFloat(step) / CGFloat(steps)
             stage?.trace(at: CGPoint(x: from.x + (point.x - from.x) * t, y: from.y + (point.y - from.y) * t))
         }
-        lastTrace = point
+        last = point
     }
 }
 

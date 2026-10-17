@@ -62,6 +62,13 @@ export async function findEnvFiles(folder: Folder): Promise<string[]> {
 /** 环境变量文件的内容，供存成项目密钥：按文件夹的边界读（不跟着链接或 .. 出去），不是文本时报错。 */
 export const readEnvFile = (folder: Folder, path: string): string => new WorkspaceFiles(folder.path).text(path);
 
+/** 用户在 App 里从这台工作机任意位置选的环境变量文件，path 是绝对路径。 */
+export function readHostFile(path: string): string {
+  if (!isAbsolute(path)) throw new KiteError(`环境变量文件要写绝对路径：${path}`);
+  if (!existsSync(path)) throw new KiteError(`找不到文件：${path}`, 404);
+  return new WorkspaceFiles('/').text(path);
+}
+
 /**
  * 用 repo 的对象库在临时索引里写出一棵树：给了 folder 时按它的工作目录（从 base 的树开始，加上没被忽略的全部文件，含未跟踪的），
  * 再放进 extra 里的文件（相对路径 → 内容）。索引用完即删，文件夹本身不写任何东西。

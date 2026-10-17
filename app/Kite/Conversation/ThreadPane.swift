@@ -146,7 +146,6 @@ private struct MacThreadTranscript: View {
     /// 草稿的第一条也这样走，同时创建代理；建好后同一个会话对象原地变成这个代理，窗口不换，失败时消息退回输入框。
     func send(_ message: Message, thread: WorkThread, model: AppModel, area: WorkArea, alongside: @escaping () -> Void) {
         if thread.isDraft {
-            if area.isDraft { model.newWorkspace = .session; return }
             guard area.creatingWindow == nil, let window = area.draftWindow else { return }
             area.creatingWindow = window
             thread.error = nil

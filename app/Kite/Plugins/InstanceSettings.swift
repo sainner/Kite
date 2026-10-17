@@ -110,7 +110,7 @@ struct InstanceSettings: View {
             .disabled(working || !available)
             // 不能编辑的实例没有保存
             if editable {
-                CardSheetAction(title: "保存", systemImage: "checkmark", busy: working) { perform { try await save() } }
+                CardSheetAction(title: "保存", busy: working) { perform { try await save() } }
                     .disabled(working || !available || !changed || draft == nil)
             }
         }

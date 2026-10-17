@@ -14,14 +14,14 @@ import type { Integration, IntegrationChoice, ProjectRegistry, RegisteredProject
 import { git } from './git.ts';
 import { checkEnvFiles } from '../secrets.ts';
 import { fetchMainline, mainRefs } from './mainline.ts';
-import { clonePeers, createRepository, findEnvFiles, folderName, importFolder, inspectFolder, projectOf, readEnvFile, type Folder } from './projects.ts';
+import { clonePeers, createRepository, findEnvFiles, folderName, importFolder, inspectFolder, projectOf, readEnvFile, readHostFile, type Folder } from './projects.ts';
 import { clone, originAccess, originSpelling, originURL, pushAll, remoteAccess, remoteHead, type RemoteAccess } from './remote.ts';
 import { syncPeer, type PeerRoute } from './peer-git.ts';
 
 /** 添加项目的来源：远程地址，或这台工作机上的文件夹。 */
 export type ProjectSource = { remote: string } | { path: string };
-/** 要存成项目密钥的环境变量文件：path 是在工作区里的路径；不带 value 时从所选文件夹里读。 */
-export type EnvFile = { path: string; value?: string };
+/** 要存成项目密钥的环境变量文件：value 是带来的内容；from 是这台工作机上的绝对路径；都没有时按 path 从添加的文件夹读。 */
+export type EnvFile = { path: string; value?: string; from?: string };
 
 export interface ProjectCheck extends IntegrationChoice {
   /** 归一化的远程地址；没有远程的文件夹为 null。 */
@@ -88,9 +88,10 @@ export class CheckoutManagement {
    */
   async add(source: ProjectSource, options: { integration?: Integration; envFiles?: EnvFile[] } = {}): Promise<RegisteredProject> {
     const { folder, raw, remote } = await this.source(source);
-    const files = (options.envFiles ?? []).map(({ path, value }) => {
+    const files = (options.envFiles ?? []).map(({ path, value, from }) => {
       if (value !== undefined) return { path, value };
-      if (!folder) throw new KiteError('添加远程项目时环境变量文件要带内容');
+      if (from !== undefined) return { path, value: readHostFile(from) };
+      if (!folder) throw new KiteError('添加远程项目时环境变量文件要带内容或所在路径');
       return { path, value: readEnvFile(folder, path) };
     });
     checkEnvFiles(files);

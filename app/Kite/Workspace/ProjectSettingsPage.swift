@@ -17,6 +17,7 @@ enum HandoverNeed: String, CaseIterable, Identifiable {
 struct ProjectSettingsPage: View {
     let project: RemoteProject
     @Environment(AppModel.self) private var model
+    @Environment(\.toast) private var toast
     @State private var accountProject: AccountProject?
     @State private var target = ""
     @State private var migrating = false
@@ -81,7 +82,7 @@ struct ProjectSettingsPage: View {
                                 .textSelection(.enabled)
                         }
                     }
-                    Button("创建工作区") { model.newWorkspace = .inProject(project.id) }
+                    Button("创建工作区") { model.createWorkspace(in: project.id, toast: toast) }
                 } header: {
                     Text("检出")
                 } footer: {

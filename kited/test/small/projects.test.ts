@@ -88,6 +88,24 @@ test('建工作区 clone 等远程时别的项目照样能添加，clone 失败�
 }, 1_000);
 
 /*
+ * 代码之外的东西：git 在 GIT_TERMINAL_PROMPT=0、没有可用凭据时遇到 HTTP 401 的实际输出
+ * （`fatal: could not read Username for '<地址>': terminal prompts disabled`，地址只到主机和端口）。
+ * kited 按这段 stderr 认出「远程要账号」并从里面取出主机，识别的写法要和真实输出对得上，取出的主机要带端口。
+ * 系统 gitconfig 里的凭据助手（macOS 上是 osxkeychain）照常参与，和用户机器上一样，它给不出这个本机端口的账号。
+ */
+test('检查一个要登录的 HTTP 远程、本机没绑定这个主机的凭据时 409，错误体带上含端口的主机并指向资源库的凭据', async () => {
+  kited = startKited();
+  const { url } = (remotes ??= startFakeGit()).create('private');
+  remotes.beforeFetch = () => new Response('需要登录', { status: 401, headers: { 'WWW-Authenticate': 'Basic realm="x"' } });
+  const host = new URL(url).host;
+  const r = await kited.call('POST', '/project-registry/check', { remote: url });
+  expect(r.status).toBe(409);
+  expect(r.body.gitLogin).toBe(host);
+  expect(r.body.error).toContain(host);
+  expect(r.body.error).toContain('资源库 → 凭据');
+}, 1_000);
+
+/*
  * HTTP 挂起的 git 子进程、登记入库与关闭交错：直接进入 Kite.shutdown，排除服务外围收尾碰巧等够了的假通过。
  * 添加远程先 ls-remote 确认访问得到，调用方在 shutdown 返回时立刻关 SQLite，已接收的添加仍必须完成登记。
  */

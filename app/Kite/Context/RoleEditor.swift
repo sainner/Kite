@@ -31,7 +31,7 @@ struct RoleSettingsForm: View {
                 .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
             }
             LabeledContent("默认审批模式") {
-                Picker("默认审批模式", selection: Binding(get: { role.approval ?? .allowlist }, set: { role.approval = $0 == .allowlist ? nil : $0 })) {
+                Picker("默认审批模式", selection: Binding(get: { role.approval ?? .standard }, set: { role.approval = $0 == .standard ? nil : $0 })) {
                     ForEach(ApprovalMode.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
@@ -172,7 +172,7 @@ struct RoleEditor: View {
             .disabled(working || !available)
             if !available { CardCallout(text: "工作机连接已变化，请返回后重新打开角色。草稿尚未保存。", systemImage: "info.circle", tint: .secondary) }
         } actions: {
-            CardSheetAction(title: "保存", systemImage: "checkmark", busy: working, action: save)
+            CardSheetAction(title: "保存", busy: working, action: save)
                 .disabled(working || !available || !draft.isSavable)
         }
         .interactiveDismissDisabled(working || changed)

@@ -320,7 +320,7 @@ struct ExtensionContent: View {
             switch model.extensionPage {
             case .plugins: PluginLibrary()
             case .contexts: AgentContextLibrary()
-            case .credentials: CredentialsLibrary()
+            case .credentials: TilesLayer(group: .credentials(model.credentialWindows))
             case .skills: EmptyView()
             }
         }
@@ -333,7 +333,7 @@ struct ExtensionContent: View {
 
 /// 资源库一栏里的各页。
 nonisolated enum ExtensionLibrary: String, SidebarPage {
-    case plugins, contexts, credentials, skills
+    case credentials, plugins, contexts, skills
 
     var id: Self { self }
 

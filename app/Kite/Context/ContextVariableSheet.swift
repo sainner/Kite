@@ -314,11 +314,9 @@ struct ContextVariableSheet: View {
         let changed = shown.changed
         if !changed.isEmpty {
             let connected = model.connections[machine]?.connected == true
-            groups.append([
-                PaneHeaderAction(title: "放弃修改", systemImage: "xmark", disabled: saving) { [model] in model.discardContextFiles(changed, on: machine) },
-                PaneHeaderAction(title: "保存", systemImage: "checkmark", help: connected ? "保存" : "工作机未连接",
-                                 busy: saving, disabled: saving || !connected) { save(changed, to: source) },
-            ])
+            groups.append([PaneHeaderAction(title: "放弃修改", systemImage: "xmark", disabled: saving) { [model] in model.discardContextFiles(changed, on: machine) }])
+            groups.append([PaneHeaderAction(title: "保存", systemImage: nil, help: connected ? "保存" : "工作机未连接",
+                                            busy: saving, disabled: saving || !connected, prominent: true) { save(changed, to: source) }])
         }
         return groups
     }

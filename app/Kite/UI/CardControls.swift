@@ -73,16 +73,16 @@ struct CardNote: View {
     }
 }
 
-/// 上面一行标签，下面是不带边框的填充框，聚焦时描主题色，框下可带一段说明。框里放 cardInput 的输入框或 CardSelectStyle 的菜单。
+/// 上面一行标签（可省），下面是不带边框的填充框，聚焦时描主题色，框下可带一段说明。框里放 cardInput 的输入框或 CardSelectStyle 的菜单。
 struct CardField<Content: View>: View {
-    let label: String
+    let label: String?
     var focused = false
     var note: String?
     @ViewBuilder let content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            CardLabel(label)
+            if let label { CardLabel(label) }
             content
                 .frame(maxWidth: .infinity, minHeight: CardMetrics.fieldHeight, alignment: .leading)
                 .background(Theme.codeBackground, in: cardShape)

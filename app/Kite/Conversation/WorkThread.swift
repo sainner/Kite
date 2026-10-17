@@ -285,12 +285,6 @@ final class WorkThread: Identifiable {
 
     func retry(_ message: Message) { deliver(message) }
 
-    /// 新建工作区的第一条消息随创建请求发出（见 AppModel.create），这里只排进队里显示，同草稿发出的第一条。
-    func queueFirst(_ message: Message) {
-        outbox.append(message)
-        render()
-    }
-
     /// 草稿的第一条消息随创建请求发出，请求失败时：还是草稿就撤回消息，字退回输入框，好改了角色或参数再发；
     /// 工作机已经建好代理的，照普通消息标成未确认，点消息重试。
     func firstMessageFailed(_ message: Message, error: String) {

@@ -29,11 +29,10 @@ enum TranscriptSpeech {
     /// 展开收起的状态：iOS 的 UIKit 没有展开状态的属性，作为值读（Mac 用 isAccessibilityExpanded）。
     static func expanded(_ expanded: Bool) -> String { expanded ? "已展开" : "已收起" }
 
-    /// 工具组汇总行：汇总行说的（见 Work.headline），连同出错、没跑完的步数。
+    /// 工具组汇总行：汇总行说的（见 Work.headline），连同没跑完的步数。
     static func work(_ work: Work) -> String {
-        let failed = work.count(.failed) + work.count(.unknown), unfinished = work.count(.unfinished)
+        let unfinished = work.count(.unfinished)
         var parts = [work.headline]
-        if failed > 0 { parts.append("\(failed) 步出错") }
         if unfinished > 0 { parts.append("\(unfinished) 步没跑完") }
         return parts.joined(separator: "，")
     }

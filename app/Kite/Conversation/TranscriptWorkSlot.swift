@@ -96,7 +96,7 @@ final class WorkRowSlot: TranscriptRowSlot {
     }
 }
 
-/// 工具组的汇总行：一行次要色小字，汇总、出错步数（红）、没跑完步数，箭头；整行可点，指针是手形。
+/// 工具组的汇总行：一行次要色小字，汇总、没跑完步数，箭头；整行可点，指针是手形。
 final class WorkHeaderView: NativeButton {
     /// 箭头转了多少：0 朝右，1 朝下。
     var turn: CGFloat = 0 {
@@ -105,14 +105,13 @@ final class WorkHeaderView: NativeButton {
     /// 汇总（见 Work.headline），扫掠只画在它上面。
     private let activity = ToolActivityView()
     private let summary = LineLabel()
-    private let failed = LineLabel()
     private let unfinished = LineLabel()
     private let chevron = NSImageView()
     private var font = NSFont.systemFont(ofSize: 11)
 
     override var isFlipped: Bool { true }
 
-    /// 读屏读的：汇总行说的连同出错、没跑完的步数。
+    /// 读屏读的：汇总行说的连同没跑完的步数。
     private var speech = ""
     /// 展开了步骤，读屏读成展开收起的三角。
     var expanded = false {
@@ -123,8 +122,8 @@ final class WorkHeaderView: NativeButton {
         super.init(frame: .zero)
         addSubview(activity)
         activity.content.addSubview(summary)
-        for label in [failed, unfinished] { addSubview(label) }
-        for label in [summary, failed, unfinished] { label.setAccessibilityElement(false) }
+        addSubview(unfinished)
+        for label in [summary, unfinished] { label.setAccessibilityElement(false) }
         addSubview(chevron)
         chevron.hideFromAccessibility()
     }
@@ -136,12 +135,11 @@ final class WorkHeaderView: NativeButton {
         speech = TranscriptSpeech.work(work)
         font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont
         let secondary = NSColor.secondaryLabelColor
-        let failedCount = work.count(.failed) + work.count(.unknown), unfinishedCount = work.count(.unfinished)
+        let unfinishedCount = work.count(.unfinished)
         set(summary, work.headline, color: secondary)
         activity.presence = environment.panePresence
         activity.mode = work.running != nil && !expanded && work.count(.running) > 0 ? .sweeping : .none
         activity.contentChanged()
-        set(failed, failedCount > 0 ? "\(failedCount) 步出错" : "", color: NSColor(cgColor: Theme.danger.resolve(in: environment).cgColor) ?? .systemRed)
         set(unfinished, unfinishedCount > 0 ? "\(unfinishedCount) 步没跑完" : "", color: secondary)
         let configuration = NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .regular, scale: .small)
         chevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
@@ -162,7 +160,7 @@ final class WorkHeaderView: NativeButton {
         super.layout()
         // HStack(spacing: 8)：汇总放不下时截它，后面几样按自己的宽
         let spacing: CGFloat = 8
-        let tail = [failed, unfinished].filter { !$0.isHidden }
+        let tail = [unfinished].filter { !$0.isHidden }
         let imageSize = chevron.image?.size ?? .zero
         let tailWidth = tail.reduce(0) { $0 + $1.textWidth + spacing } + imageSize.width
         let summaryWidth = min(summary.textWidth, max(bounds.width - tailWidth - spacing, 0))

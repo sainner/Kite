@@ -61,32 +61,21 @@ final class WorkArea: Identifiable {
     var tint: Color { Palette.breeze }
     var title: String { remote?.workspace.name ?? "新工作区" }
     var header: PaneHeader { PaneHeader(title: title, subtitle: "工作区") }
-    var isDraft: Bool { remote == nil }
 
-    init(remote: RemoteWorkspace? = nil, client: KitedClient? = nil, definitions: [RemotePluginDefinition] = [], connection: UUID = UUID(), cursor: EventCursor? = nil) {
-        id = remote?.id ?? "draft-workspace"
+    init(remote: RemoteWorkspace, client: KitedClient? = nil, definitions: [RemotePluginDefinition] = [], connection: UUID = UUID(), cursor: EventCursor? = nil) {
+        id = remote.id
         pluginConnection = connection
         self.remote = remote
         self.definitions = definitions
-        let draftThread = WorkThread(workspace: remote?.workspace.cwd ?? "", project: remote?.project.name ?? "Kite")
-        self.draftThread = draftThread
-        if let remote {
-            let openWindows = remote.windows.filter { $0.state == .open }
-            windows = openWindows
-            instances = remote.instances
-            layout = WindowLayout(panes: openWindows.map { Pane($0.id) },
-                                  storageKey: "KiteWindowLayout.\(remote.machine.id).\(remote.id)",
-                                  reconcileOnLoad: client != nil)
-        } else {
-            let draft = Self.draftWindow(Self.newWindowID(), workspace: id, thread: draftThread)
-            draftWindow = draft.id
-            windows = [draft]
-            layout = WindowLayout(panes: [Pane(draft.id)])
-        }
-        if let remote {
-            seenTurns = UserDefaults.standard.dictionary(forKey: seenKey(remote)) as? [String: Double] ?? [:]
-            if let client { update(remote, client: client, connection: connection, cursor: cursor) }
-        }
+        draftThread = WorkThread(workspace: remote.workspace.cwd, project: remote.project.name)
+        let openWindows = remote.windows.filter { $0.state == .open }
+        windows = openWindows
+        instances = remote.instances
+        layout = WindowLayout(panes: openWindows.map { Pane($0.id) },
+                              storageKey: "KiteWindowLayout.\(remote.machine.id).\(remote.id)",
+                              reconcileOnLoad: client != nil)
+        seenTurns = UserDefaults.standard.dictionary(forKey: seenKey(remote)) as? [String: Double] ?? [:]
+        if let client { update(remote, client: client, connection: connection, cursor: cursor) }
     }
 
     func update(_ remote: RemoteWorkspace, client: KitedClient, connection: UUID, cursor: EventCursor? = nil) {
@@ -429,16 +418,6 @@ final class WorkArea: Identifiable {
     private static func chooserWindow(_ id: String, workspace: String) -> RemoteWorkspaceWindow {
         RemoteWorkspaceWindow(id: id, workspaceId: workspace, target: WindowTarget(instanceId: chooserInstance, viewId: "chooser"),
                               state: .open, createdAt: 0)
-    }
-
-    /// 本机新建、工作机还没建好的工作区（见 AppModel.create）：按本机定的工作区 ID 先建好，第一个代理先当草稿，
-    /// 窗口 ID 和排着的第一条消息就是发给工作机的那一份。工作机建好后由 update 接上，同草稿发出第一条消息。
-    convenience init(creating remote: RemoteWorkspace, window: String, first message: Message) {
-        self.init(remote: remote)
-        draftThread.queueFirst(message)
-        draftWindow = window
-        creatingWindow = window
-        rebuildWindows()
     }
 }
 

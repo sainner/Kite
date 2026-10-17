@@ -188,6 +188,18 @@ nonisolated enum ApprovalMode: String, Codable, CaseIterable, Sendable {
         case .allowAll: "全放行"
         }
     }
+
+    /// 角色和实例都没设时用的，同 kited 的 instanceApprovalMode。
+    static let standard = ApprovalMode.ask
+
+    /// 菜单里的图标：仅白名单是锁，越界询问是举手，全放行是打勾的盾。
+    var symbol: String {
+        switch self {
+        case .allowlist: "lock.shield"
+        case .ask: "hand.raised"
+        case .allowAll: "checkmark.shield"
+        }
+    }
 }
 
 /// 项目的基础与边界：allow 是本项目所有代理的起点，deny 任何层和审批都打不开；工作区可定为只读，审批模式有上限。

@@ -1,11 +1,12 @@
 import SwiftUI
 
-/// 窗口内容的来源与窗口容器分开；工作区、设备账号与资源库的代理上下文共用排布、底栏与切换手势。
+/// 窗口内容的来源与窗口容器分开；工作区、设备账号与资源库的代理上下文、凭据共用排布、底栏与切换手势。
 enum PaneGroup: Identifiable {
     case workspace(WorkArea)
     case accounts(WindowLayout)
     /// 资源库代理上下文里选中的一项；角色与模板各用一套固定窗口。
     case agentContext(AgentContextItem, WindowLayout)
+    case credentials(WindowLayout)
 
     var id: String {
         switch self {
@@ -13,6 +14,7 @@ enum PaneGroup: Identifiable {
         case .accounts: "machine-accounts"
         // 同一套窗口里换一项只换窗口内容，窗口不重建。
         case .agentContext(let item, _): "agent-context:\(item.category == .role ? "role" : "template")"
+        case .credentials: "credentials"
         }
     }
 
@@ -21,6 +23,7 @@ enum PaneGroup: Identifiable {
         case .workspace(let area): area.layout
         case .accounts(let layout): layout
         case .agentContext(_, let layout): layout
+        case .credentials(let layout): layout
         }
     }
 
@@ -48,6 +51,13 @@ enum PaneGroup: Identifiable {
             case "settings": return .init(name: "初始配置", icon: "slider.horizontal.3")
             default: return .init(name: "上下文", icon: "text.alignleft")
             }
+        case .credentials:
+            switch pane.id {
+            case "git": return .init(name: "Git 账号", icon: "arrow.triangle.branch")
+            case "api": return .init(name: ApiProvider.category, icon: "key")
+            case "speech": return .init(name: SpeechProvider.category, icon: "waveform")
+            default: return .init(name: "密钥", icon: "key")
+            }
         }
     }
 }
@@ -56,6 +66,7 @@ extension AppModel {
     var paneGroup: PaneGroup? {
         if sidebarSection == .drive, drivePage == .accounts { return .accounts(accountWindows) }
         if sidebarSection == .extensions, extensionPage == .contexts { return agentContextGroup }
+        if sidebarSection == .extensions, extensionPage == .credentials { return .credentials(credentialWindows) }
         guard sidebarSection == .workspaces, selectedProject == nil, let current else { return nil }
         return .workspace(current)
     }

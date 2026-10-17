@@ -3,7 +3,6 @@ import SwiftUI
 @Observable
 final class AppModel {
     var workspaces: [WorkArea] = []
-    let draftWorkspace = WorkArea()
     var selected = ""
     var selectedProjectID: String?
     var detached: Set<String> = []
@@ -47,12 +46,12 @@ final class AppModel {
         set { activeConnection?.templates = newValue }
     }
     var error: String?
-    /// 正在打开的新建表单：添加项目或新建工作区。
-    var newWorkspace: NewWorkspace.Mode?
+    /// 正在打开添加项目的表单。
+    var addingProject = false
     /// 设备一栏在内容区显示的页面。
     var drivePage = DrivePage.accounts
     /// 资源库一栏在内容区显示的页面。
-    var extensionPage = ExtensionLibrary.plugins
+    var extensionPage = ExtensionLibrary.credentials
     /// 资源库代理上下文页选中的角色或模板，见 agentContextItem。
     var selectedAgentContext: AgentContextItem?
     /// 资源库角色没保存的提示词。
@@ -88,6 +87,11 @@ final class AppModel {
         .pane(Pane("context")),
         .split(Split(.vertical, 0.5, .pane(Pane("emblem")), .pane(Pane("settings")))))))
     let templateWindows = WindowLayout(fixed: .pane(Pane("context")))
+    /// 资源库凭据的固定窗口：密钥占左边整列，右边从上到下是 Git 账号、模型 API、语音识别。
+    let credentialWindows = WindowLayout(fixed: .split(Split(.horizontal, 0.5,
+        .pane(Pane("secrets")),
+        .split(Split(.vertical, 1.0 / 3, .pane(Pane("git")),
+            .split(Split(.vertical, 0.5, .pane(Pane("api")), .pane(Pane("speech")))))))))
     /// 正在保存提示词、恢复默认或新建的资源库角色：这期间提示词不能改，新角色的名称、签名与初始配置也不能改。
     var savingRoles: Set<String> = []
 
@@ -123,7 +127,7 @@ final class AppModel {
     /// 侧栏菜单发起的归档与强制接管确认，由 WorkspaceGitPresentation 呈现。
     var archiveRequest: WorkArea?
     var takeoverRequest: TakeoverRequest?
-    /// 本机新建、工作机还没列出来的工作区，见 create。
+    /// 本机新建、工作机还没列出来的工作区，见 createWorkspace。
     @ObservationIgnored private var creatingWorkspaces: [String: WorkArea] = [:]
 
     init(account: KiteAccount = KiteAccount()) {
@@ -131,7 +135,7 @@ final class AppModel {
     }
 
     func connection(for area: WorkArea? = nil) -> WorkerConnection? {
-        guard let area, !area.isDraft else { return activeConnection }
+        guard let area else { return activeConnection }
         return area.remote.flatMap { connections[$0.machine.id] }
     }
 
@@ -237,8 +241,6 @@ final class AppModel {
         roleWrites = [:]
         selectedAgentContext = nil
         templateDrafts = []
-        draftWorkspace.draftThread.role = nil
-        draftWorkspace.draftThread.connected = false
     }
 
     /// 新建中的工作区在工作机还没有检出时带着空 ID 的占位检出，不算。
@@ -252,6 +254,18 @@ final class AppModel {
             .filter { seen.insert($0.id).inserted }
     }
     var availableWorkers: [WorkerConnection] { connections.values.filter(\.connected).sorted { $0.machine.name < $1.machine.name } }
+
+    /// 新工作区、添加项目默认用哪台工作机，各处都从这里取：这台设备是工作机时用它，其次是空闲的（没有正在跑的代理），
+    /// 再次是任一台连着的；同一档里已有这个项目检出的优先，省得再 clone。
+    func preferredWorker(for projectID: String? = nil) -> WorkerConnection? {
+        let holders = Set(checkouts.filter { $0.projectId == projectID }.map(\.machineId))
+        let busy = Set(workspaces.filter { $0.activities.values.contains { $0.phase != "idle" } }.compactMap(\.remote?.machine.id))
+        func rank(_ connection: WorkerConnection) -> (Int, Int) {
+            let id = connection.machine.id
+            return (connection.client.isLocal ? 0 : busy.contains(id) ? 2 : 1, holders.contains(id) ? 0 : 1)
+        }
+        return availableWorkers.min { rank($0) < rank($1) }
+    }
 
     func projectLabel(_ project: RemoteProject) -> String { projectLabels()(project) }
 
@@ -516,62 +530,41 @@ final class AppModel {
         if workspace(selected) == nil { selected = workspaces.first?.id ?? "" }
     }
 
-    /// 新建工作区不等工作机：工作区、第一个代理的窗口和第一条消息的 ID 都由本机定，本机先按它们建好、选中（见 WorkArea.init(creating:)），
-    /// 弹窗当场关掉；工作机建好后目录接上同一个工作区对象，第一个代理照草稿发出第一条消息的路子接上。
-    /// 工作机上还没有这个项目的检出时由它先 clone。建不成就收回，话退回新工作区的草稿，原因报在那里。
-    func create(project: RemoteProject, machineID: String, prompt: String) throws {
-        guard let connection = connections[machineID], connection.connected else { throw KitedError(message: "所选工作机未连接") }
-        let client = connection.client
-        let draft = draftWorkspace.draftThread
-        let role = draft.role
-        if let role, connection.roles?.roles.contains(where: { $0.id == role.id && $0.revision == role.revision }) != true {
-            throw KitedError(message: "所选角色不属于这台工作机，请重新选择")
-        }
-        let id = UUID().uuidString.lowercased(), window = UUID().uuidString.lowercased()
-        let message = Message(typed: prompt.trimmingCharacters(in: .whitespacesAndNewlines))
+    /// 新建工作区不弹表单、不等工作机：工作区 ID 由本机定，本机先按它建好、选中，开一个新代理的草稿窗口，第一条消息在那里写，工作区随它起名；
+    /// 工作机建好后目录接上同一个工作区对象。工作机上还没有这个项目的检出时由它先 clone。没指定工作机时用 preferredWorker。
+    /// 建不成就收回、回到原来的选中，原因用 toast 报。
+    func createWorkspace(in projectID: String, on machineID: String? = nil, toast: ToastCenter?) {
+        let fail = { (message: String) -> Void in toast?.show(message, systemImage: "exclamationmark.triangle") }
+        guard let project = knownProjects.first(where: { $0.id == projectID }) else { return fail("项目已不存在") }
+        let connection = if let machineID { connections[machineID] } else { preferredWorker(for: projectID) }
+        guard let connection, connection.connected else { return fail(machineID == nil ? "没有连上的工作机" : "这台工作机未连接") }
+        let id = UUID().uuidString.lowercased()
         // 工作机上还没有检出时先占个位，目录接上后换成工作机给的。
-        let checkout = checkouts.first { $0.projectId == project.id && $0.machineId == machineID }
-            ?? RemoteCheckout(id: "", projectId: project.id, machineId: machineID, path: "", remote: project.remote, createdAt: Self.now)
-        let info = WorkspaceInfo(id: id, epoch: 1, checkoutId: checkout.id, name: Self.title(of: message.typed), cwd: "",
+        let checkout = checkouts.first { $0.projectId == project.id && $0.machineId == connection.machine.id }
+            ?? RemoteCheckout(id: "", projectId: project.id, machineId: connection.machine.id, path: "", remote: project.remote, createdAt: Self.now)
+        let info = WorkspaceInfo(id: id, epoch: 1, checkoutId: checkout.id, name: "新工作区", cwd: "",
                                  branch: "kite/\(id)", base: nil, status: .preparing, createdAt: Self.now)
-        let area = WorkArea(creating: RemoteWorkspace(machine: connection.machine, project: project, checkout: checkout, workspace: info,
-                                                     threads: [], instances: [], windows: []),
-                            window: window, first: message)
-        area.draftThread.role = role
+        let area = WorkArea(remote: RemoteWorkspace(machine: connection.machine, project: project, checkout: checkout, workspace: info,
+                                                    threads: [], instances: [], windows: []))
+        area.openDraft()
+        let before = (selected, selectedProjectID)
         creatingWorkspaces[id] = area
         workspaces.insert(area, at: 0)
         selectWorkspace(id)
-        let typed = draft.draft
-        draft.draft = ""
         Task {
-            defer {
-                area.creatingWindow = nil
-                creatingWorkspaces[id] = nil
-            }
+            defer { creatingWorkspaces[id] = nil }
             do {
-                _ = try await client.request("/workspaces", method: "POST",
-                    body: CreateThreadRequest(prompt: message.typed, project: project.id, role: role?.selection, windowId: window,
-                                              messageId: message.id, id: id), timeout: 1800, as: RemoteWorkspace.self)
+                _ = try await connection.client.request("/workspaces", method: "POST", body: CreateWorkspaceRequest(project: project.id, id: id),
+                                                        timeout: 1800, as: RemoteWorkspace.self)
             } catch {
                 // 目录已经接上的（请求其实到了）留着
                 guard area.pluginClient == nil else { return }
                 workspaces.removeAll { $0 === area }
-                if selected == id { selectWorkspace(draftWorkspace.id) }
-                let kept = [typed == message.typed ? "" : typed, draft.draft].filter { !$0.isEmpty }
-                draft.draft = ([message.typed] + kept).joined(separator: "\n\n")
-                draft.error = error.localizedDescription
-                return
+                if selected == id { (selected, selectedProjectID) = before }
+                return fail(error.localizedDescription)
             }
-            if draft.role?.id == role?.id { draft.role = nil }
-            try? await refresh(client)
+            try? await refresh(connection.client)
         }
-    }
-
-    /// 和工作机给工作区起的名字一样：第一条消息的第一行，最长 80 个字。
-    private static func title(of prompt: String) -> String {
-        let line = prompt.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n", omittingEmptySubsequences: false).first
-            .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
-        return String((line.isEmpty ? "（空消息）" : line).prefix(80))
     }
 
     func startThread(in area: WorkArea, message: Message, window: String) async throws {
@@ -608,7 +601,6 @@ final class AppModel {
     }
 
     func openWindow(_ content: OpenWindowRequest.Content, in area: WorkArea) {
-        if area.isDraft { newWorkspace = .session; return }
         if case .open(let target) = content, area.windows.contains(where: { $0.target == target }) {
             area.activateWindow(for: target)
             return
@@ -708,7 +700,6 @@ final class AppModel {
     /// 引用只选择资源；窗口身份仍按现有实例与视图复用。窗口先在本机打开（见 sendWindowRequest），再选文件；
     /// 还没有文件实例的，等工作机建好实例才能选。
     func openFileReference(_ reference: FileReference, in area: WorkArea) async throws {
-        guard !area.isDraft else { throw KitedError(message: "请先创建工作区") }
         let browsing = area.windows.first { area.files[$0.target.instanceId] != nil }?.target.instanceId
             ?? area.instances.first { $0.status == .open && area.files[$0.id] != nil }?.id
         guard let instanceID = browsing else {
@@ -730,7 +721,6 @@ final class AppModel {
     /// 关窗口不等工作机：本机先关掉、飞回停靠栏（见 WorkArea.closingWindows），工作机关不掉再放回来。
     /// 本机先开、工作机还没建好的窗口要等建好才能关。
     func closeWindow(_ pane: Pane, in area: WorkArea) {
-        guard !area.isDraft else { return }
         if pane.id == area.draftWindow { area.closeDraft(); return }
         if pane.id == area.chooserWindow { area.closeChooser(); return }
         guard area.windows.contains(where: { $0.id == pane.id }), !area.isOpening(pane), area.closeRequests[pane.id] == nil else { return }
@@ -753,11 +743,13 @@ final class AppModel {
         }
     }
 
-    func workspace(_ id: String) -> WorkArea? { id == draftWorkspace.id ? draftWorkspace : workspaces.first { $0.id == id } }
+    func workspace(_ id: String) -> WorkArea? { workspaces.first { $0.id == id } }
+    /// 内容区的工作区：选中的那个；没选时默认侧栏里第一个项目的第一个工作区（即列表里第一个不是 Line 的），只有 Line 时是 Line。
     var current: WorkArea? {
         guard selectedProject == nil else { return nil }
         if !detached.contains(selected), let area = workspace(selected) { return area }
-        return workspaces.first { !detached.contains($0.id) }
+        let line = lineArea?.id
+        return workspaces.first { !detached.contains($0.id) && $0.id != line } ?? workspaces.first { !detached.contains($0.id) }
     }
 }
 

@@ -10,8 +10,9 @@ struct DirectoryStatus: View {
     private var scene: StageScene {
         if workspace != nil { return connection?.error == nil && connection?.outdated == nil ? .connecting : .unreachable }
         if model.account.workers.isEmpty { return .grounded }
-        if !model.availableWorkers.isEmpty { return .addProject }
-        return .connecting
+        if model.availableWorkers.isEmpty { return .connecting }
+        // 连上了：有项目就是还没有工作区
+        return model.workspaceGroups.isEmpty ? .addProject : .idle
     }
 
     private var title: String {
@@ -19,7 +20,8 @@ struct DirectoryStatus: View {
         case .connecting: "正在连接工作机"
         case .unreachable: connection?.outdated != nil ? "工作机待更新" : "工作机暂不可达"
         case .grounded: "还没有工作机"
-        case .addProject, .idle: "添加第一个项目"
+        case .addProject: "添加第一个项目"
+        case .idle: "还没有工作区"
         }
     }
 
@@ -27,8 +29,10 @@ struct DirectoryStatus: View {
         switch scene {
         case .grounded:
             return ["在一台 Mac 上登录此账号，并选择“在这台 Mac 上运行任务”。"]
-        case .addProject, .idle:
+        case .addProject:
             return ["把工作机上的文件夹或远程仓库登记为项目，即可开始工作。"]
+        case .idle:
+            return ["点侧栏里项目旁的加号创建。"]
         case .connecting, .unreachable:
             guard let remote = workspace?.remote else { return ["正在连接账号下的工作机。"] }
             var lines = ["\(remote.machine.name) · \(remote.workspace.cwd)", "目录已保留，连接后自动载入工作区内容。"]
@@ -47,6 +51,6 @@ struct DirectoryStatus: View {
 
     private var actions: [StageAction] {
         guard scene == .addProject else { return [] }
-        return [StageAction(title: "添加项目", prominent: true) { model.newWorkspace = .project }]
+        return [StageAction(title: "添加项目", prominent: true) { model.addingProject = true }]
     }
 }

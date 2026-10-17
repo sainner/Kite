@@ -1,5 +1,5 @@
 图标来源：https://github.com/lobehub/lobe-icons/tree/c385b2b8d1f9e19aa86e628d4e23c91ee1111a47/packages/static-svg/icons
-使用 claude.svg 与 openai.svg，仅将 currentColor 转为黑色，颜色由模板渲染提供。
+使用 claude.svg、openai.svg、anthropic.svg、qwen.svg 与 deepseek.svg，仅将 currentColor 转为黑色，颜色由模板渲染提供。
 
 MIT License
 

@@ -129,7 +129,7 @@ final class PhoneWorkRowView: UIView {
 }
 
 /// 工具组的汇总行：一行次要色小字，间距 8、竖着居中：汇总（见 Work.headline）、
-/// 出错步数（红）、没跑完步数、小号箭头；汇总放不下截掉。有调用在跑、没展开时正在做什么带像素扫掠（PhoneActivityView）。整行可点。
+/// 没跑完步数、小号箭头；汇总放不下截掉。有调用在跑、没展开时正在做什么带像素扫掠（PhoneActivityView）。整行可点。
 final class PhoneWorkHeader: PhonePlainControl {
     /// 箭头转了多少：0 朝右，1 朝下。
     var turn: CGFloat = 0 {
@@ -137,7 +137,6 @@ final class PhoneWorkHeader: PhonePlainControl {
     }
     private let activity = PhoneActivityView()
     private let summary = PhoneTextLine()
-    private let failed = PhoneTextLine()
     private let unfinished = PhoneTextLine()
     private let chevron = UIImageView()
     private var font = UIFont.preferredFont(forTextStyle: .subheadline)
@@ -146,7 +145,7 @@ final class PhoneWorkHeader: PhonePlainControl {
         super.init()
         content.addSubview(activity)
         activity.content.addSubview(summary)
-        for view in [failed, unfinished] as [UIView] { content.addSubview(view) }
+        content.addSubview(unfinished)
         content.addSubview(chevron)
         chevron.contentMode = .center
     }
@@ -155,9 +154,8 @@ final class PhoneWorkHeader: PhonePlainControl {
 
     func show(_ work: Work, expanded: Bool, environment: EnvironmentValues) {
         font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as UIFont
-        let failedCount = work.count(.failed) + work.count(.unknown), unfinishedCount = work.count(.unfinished)
+        let unfinishedCount = work.count(.unfinished)
         set(summary, work.headline, color: .secondaryLabel)
-        set(failed, failedCount > 0 ? "\(failedCount) 步出错" : "", color: UIColor(Theme.danger))
         set(unfinished, unfinishedCount > 0 ? "\(unfinishedCount) 步没跑完" : "", color: .secondaryLabel)
         chevron.image = UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(font: font, scale: .small))
         chevron.tintColor = .secondaryLabel
@@ -179,7 +177,7 @@ final class PhoneWorkHeader: PhonePlainControl {
     override func layoutSubviews() {
         super.layoutSubviews()
         let spacing: CGFloat = 8
-        let tail = [failed, unfinished].filter { !$0.isHidden }
+        let tail = [unfinished].filter { !$0.isHidden }
         let imageSize = chevron.image?.size ?? .zero
         let tailWidth = tail.reduce(0) { $0 + $1.naturalWidth + spacing } + imageSize.width
         let summaryWidth = min(summary.naturalWidth, max(bounds.width - tailWidth - spacing, 0))

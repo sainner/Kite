@@ -25,7 +25,7 @@ struct FilePane: View {
     private var header: PaneHeader {
         // 主标题是当前文件的名字，还没选文件时是工作区文件夹的名字
         PaneHeader(title: browser.selection.path.map { ($0 as NSString).lastPathComponent } ?? rootName,
-                   subtitle: status ?? (showingDiff ? "历史差异" : "文件"))
+                   subtitle: showingDiff ? "历史差异" : "文件")
     }
 
     private var showingDiff: Bool { browser.displayingFile && browser.selection.diffId != nil }
@@ -40,28 +40,30 @@ struct FilePane: View {
         return cwd.isEmpty ? "工作区" : cwd
     }
 
-    /// 窗口现在的情况写在副标题，正文只放目录和文件内容：正在搜索、正在读取、目录或文件是空的、还没选文件。
-    private var status: String? {
+    /// 窗口现在的情况，正文只放目录和文件内容：正在搜索、正在读取、目录或文件是空的、还没选文件。
+    private var status: PaneNotice? {
+        func note(_ text: String, _ symbol: String = "info.circle") -> PaneNotice { PaneNotice(text: text, symbol: symbol, tint: .secondary) }
         if searching, searchTarget == .directory, !query.trimmingCharacters(in: .whitespaces).isEmpty {
-            if browser.searchingFiles { return "正在搜索…" }
+            if browser.searchingFiles { return note("正在搜索…", "magnifyingglass") }
             if let results = browser.searchResults {
-                if results.entries.isEmpty { return "没有名字含「\(results.query)」的文件" }
-                if results.truncated { return "只列出最相近的 \(results.entries.count) 个" }
+                if results.entries.isEmpty { return note("没有名字含「\(results.query)」的文件", "magnifyingglass") }
+                if results.truncated { return note("只列出最相近的 \(results.entries.count) 个", "magnifyingglass") }
             }
         }
         if browser.displayingFile {
-            if browser.download != nil { return "正在下载文件…" }
-            if browser.loadingText { return "正在读取文件…" }
-            return browser.diff != nil && browser.diffRows.isEmpty ? "文件内容为空" : nil
+            if browser.download != nil { return note("正在下载文件…", "arrow.down.circle") }
+            if browser.loadingText { return note("正在读取文件…", "hourglass") }
+            return browser.diff != nil && browser.diffRows.isEmpty ? note("文件内容为空") : nil
         }
-        if browser.loadingDirectory { return "正在读取目录…" }
-        if browser.showDirectory { return browser.root?.entries.isEmpty == true ? "工作区是空的" : nil }
-        return browser.selection.path == nil ? "选择文件，或点击消息中的引用" : nil
+        if browser.loadingDirectory { return note("正在读取目录…", "hourglass") }
+        if browser.showDirectory { return browser.root?.entries.isEmpty == true ? note("工作区是空的") : nil }
+        return browser.selection.path == nil ? note("选择文件，或点击消息中的引用") : nil
     }
 
-    /// 读取、选择失败与指定行定位不到在信息区，失败优先。
+    /// 信息区：失败优先，其次是窗口现在的情况（见 status），再是指定行定位不到这类关于文件的说明。
     private var notice: PaneNotice? {
         if let error = (browser.displayingFile ? browser.textError ?? browser.pageError : nil) ?? browser.directoryError { return .failure(error) }
+        if let status { return status }
         let unversioned = browser.selection.diffId == nil && ((browser.content?.info ?? browser.info)?.unversioned ?? false)
         guard browser.displayingFile, let message = browser.locationMessage
                 ?? (browser.format == .other ? nil : browser.infoNote)

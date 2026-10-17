@@ -6,6 +6,8 @@ import SwiftUI
 /// iPhone 键盘升起时底栏放收起键盘：有主按钮时由 CardActions 放，底栏是工具栏时由工具栏放，底栏空着时由这里放。
 /// 正文从两条栏后面滚过，滚到标题栏下时由系统的软边滚动边缘效果模糊。
 /// 不给 size 时按内容定高，放不下（键盘升起）时正文滚动；给了 size 的（设置、编辑器这类会变长的）Mac 上用这个尺寸，iPhone 上铺满高度。
+/// 按内容定高时，影响排版的初始状态（默认选项、预填的字）在弹窗视图的 init 里定好：放到 onAppear 里改，Mac 上窗口先按改前量出的高度打开，
+/// 随后跳高。
 struct CardSheet<Content: View, Actions: View, Footer: View>: View {
     let titleText: String
     /// 标题下一句简短的说明，写这个弹窗做什么；不放状态，也不放所作用的对象。
@@ -208,15 +210,16 @@ private struct CardSheetWindowSize: NSViewRepresentable {
 }
 #endif
 
-/// 标题栏上的图标操作，如重新读取；编辑、填表的弹窗把保存也放在这里，在忙时图标换成转圈，同窗口的右组。
+/// 标题栏上的操作，在忙时换成转圈，同窗口的右组。重新读取这类给图标；不给图标的是保存、创建这类确认动作，
+/// 显示文字、用主题色，见 PaneHeaderAction.prominent。分步骤的弹窗（添加项目）的下一步与最后的确认不放这里，用底部的 CardActions。
 struct CardSheetAction: View {
     let title: String
-    let systemImage: String
+    var systemImage: String?
     var busy = false
     let action: () -> Void
 
     var body: some View {
-        PaneHeaderActions(groups: [[PaneHeaderAction(title: title, systemImage: systemImage, busy: busy, action: action)]])
+        PaneHeaderActions(groups: [[PaneHeaderAction(title: title, systemImage: systemImage, busy: busy, prominent: systemImage == nil, action: action)]])
     }
 }
 

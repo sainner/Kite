@@ -127,7 +127,7 @@ final class ControlsBarView: UIView {
             effortKey = key
             // 同 Mac 的输入区：刻度展开、收起时宽由 TimelineView 逐帧变，托管视图报的大小不跟着逐帧变，框停在收着的宽时
             // 档位名被挤得换行、右边的刻度落在框外。按理想大小画、靠左，宽高由内容自己的几何报
-            effort.rootView = AnyView(HStack(spacing: 0) { ApprovalModeControl(controls: controls); ThreadEffortControl(controls: controls) }
+            effort.rootView = AnyView(ThreadEffortControl(controls: controls)
                 .disabled(!enabled)
                 .fixedSize()
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { [weak self] in self?.effortResized($0) }

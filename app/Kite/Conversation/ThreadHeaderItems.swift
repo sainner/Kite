@@ -21,12 +21,13 @@ struct ThreadModelMenu {
     let note: String?
     let select: (String) -> Void
 
-    /// 模型按钮里模型名前的厂商标志，按工作机给的厂商 id 对应；没有标志的厂商只显示模型名。
+    /// 模型按钮里模型名前的厂商标志，按工作机给的厂商 id 对应；没有标志的厂商只显示模型名。凭据窗口的 Key 前面也用它。
     /// 百炼（dashscope）目前只有千问的语音识别模型，用 Qwen 标志。
     static func logo(vendor: String?) -> ImageResource? {
         switch vendor {
         case "openai": .brandOpenAI
         case "anthropic": .brandAnthropic
+        case "deepseek": .brandDeepSeek
         case "dashscope": .brandQwen
         default: nil
         }
@@ -62,11 +63,24 @@ struct ThreadModelMenuItems: View {
 }
 
 struct ThreadHeaderCommand: Identifiable {
+    /// 单选子菜单里的一项，当前的打勾。
+    struct Option: Identifiable {
+        var id: String { title }
+        let title: String
+        let selected: Bool
+        let select: @MainActor () -> Void
+    }
     var id: String { title }
     let title: String
     let symbol: String
     var enabled = true
     /// 结束性的操作（停止、归档）用危险色。
     var destructive = false
+    /// 不为空时这一项是单选子菜单（审批模式），点的是选项，不用 action。
+    var options: [Option] = []
     let action: @MainActor () -> Void
+
+    static func choice(_ title: String, symbol: String, enabled: Bool, options: [Option]) -> Self {
+        Self(title: title, symbol: symbol, enabled: enabled, options: options) {}
+    }
 }
