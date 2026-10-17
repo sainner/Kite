@@ -43,16 +43,21 @@ export type DomainEvent =
     | { type: 'workspace.setup'; exit: number | null; log: string }
     | { type: 'workspace.snapshot'; commit: string; label: string; changedFiles: number }
     | { type: 'workspace.adopt'; result: AdoptResult }
+    | { type: 'workspace.sync'; result: SyncResult }
     | { type: 'workspace.error'; message: string }
   ));
 export type KiteEvent = ThreadEvent | DomainEvent;
-/** 集成在本地完成后推送到远程；推送失败不撤销本地主线，下次集成或现场推送时一并推上去。 */
+/** 直接合入在本地完成后推送到远程；推送失败不撤销本地主线，下次集成时一并推上去。 */
 /** local：项目没有远程，只合回本机主线，其他工作机同步时快进过来。 */
 export type PushOutcome = { status: 'pushed' } | { status: 'local' } | { status: 'failed'; message: string };
 export type AdoptResult =
   | { status: 'adopted'; commit: string; push: PushOutcome }
+  /** 提交 PR：工作区分支推到了远程的 branch；url 是 PR 页面，不能自动开 PR 的平台是去开 PR 的网页，没有 number。 */
+  | { status: 'proposed'; branch: string; url: string; number?: number }
   /** 有开放线程时交给 agent 解决冲突，回合结束后自动重试。 */
   | { status: 'conflict'; files: string[] };
+/** 同步：主线的新改动合进了工作区分支（synced），或已是最新（current）；冲突同采纳。 */
+export type SyncResult = { status: 'synced'; commit: string } | { status: 'current' } | { status: 'conflict'; files: string[] };
 
 export type EventScope = 'catalog' | { workspaceId: string } | { threadId: string };
 export type Stamped<Event> = Event & { at: number };

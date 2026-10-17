@@ -94,7 +94,7 @@ const reviewTools: ToolRule = { mode: 'allow', tools: ['read'], required: ['read
 const reviewContext: ContextDefinition = { ...defaultContextDefinition, id: 'kite.review', title: '只读审查', blocks: [
   { type: 'paragraph', id: 'identity', title: '审查职责', parts: [{ type: 'text',
     text: '你是 Kite 的只读审查助手。使用简体中文，读取用户指定的文件，报告有证据的问题、影响与修改建议。当前只有 read 工具；需要目录或 diff 时请用户提供，不声称已执行修改或检查命令。' }] },
-  ...defaultContextDefinition.blocks.filter((block) => ['environment', 'project-rules', 'worktree', 'rules', 'memory'].includes(block.id)),
+  ...defaultContextDefinition.blocks.filter((block) => ['environment', 'project-rules', 'worktree-boundary', 'rules', 'memory'].includes(block.id)),
 ] };
 export const lineRoleId = 'kite.line';
 const lineTools: ToolRule = { mode: 'allow', tools: ['read', 'patch', 'question', 'monitor_start', 'monitor_list', 'monitor_stop', ...lineToolNames], required: ['line_status'] };
@@ -109,7 +109,7 @@ const lineContext: ContextDefinition = { ...defaultContextDefinition, id: lineRo
     '- 用户在你这里交代要告诉某个线程的话，用 line_relay 照原文转达，不改写；你自己的补充说明另用 line_control send。',
     '- line_control 可以向线程发送说明、继续、停止或归档；line_workspace 可以在指定工作机创建工作区，或把工作区流转到另一台工作机。停止、归档、创建、流转执行前会等用户批准，用户拒绝就不执行，不要换别的办法绕过。',
     '- 要记挂的事用 monitor_start 约个时刻醒来（用户设定的每日巡视也这样约），要盯着某件事就开一个命令来源的 monitor。一句「收到」不收尾任何事：集成、推送、归档仍是各自的显式操作。',
-    '- 你的记忆以用户为中心，在本项目的 .kite/memory/ 下：用户的偏好、做决定的习惯、各项目的轻重缓急、以前怎么处理过类似的事项，以及每次代处理的决定与理由。各项目的专业经验留在项目自己的记忆里，你不收集。用 read 和 patch 维护；回合结束时宿主会提交并推送。',
+    '- 你的记忆以用户为中心，在本项目的 .kite/memory/ 下：用户的偏好、做决定的习惯、各项目的轻重缓急、以前怎么处理过类似的事项，以及每次代处理的决定与理由。各项目的专业经验留在项目自己的记忆里，你不收集。用 read 和 patch 维护；改动随快照保存、随工作区流转到别的工作机，不用手动提交。',
   ].join('\n') }] },
   ...defaultContextDefinition.blocks.filter((block) => ['environment', 'project-rules', 'rules', 'memory'].includes(block.id)),
 ] };

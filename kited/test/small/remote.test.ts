@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { startDaemon } from '../../src/daemon.ts';
 import { serve } from '../../src/http.ts';
 import type { NetworkChannel } from '../../src/network.ts';
-import { call, connect, machine, registerCheckout, startKited } from '../harness.ts';
+import { addProject, call, connect, machine, startKited } from '../harness.ts';
 import { makeTemp, newDir, until } from '../util.ts';
 
 function start() {
@@ -106,14 +106,14 @@ test('远程监听上的账号同步和检出拉取只给目录里的工作机�
   const phone = Bun.serve({ hostname: '::1', port: 0, fetch: () => { probed++; return Response.json({ error: '不是 kited' }, { status: 404 }); } });
   let proxy: ReturnType<typeof serve> | undefined;
   try {
-    const registered = await registerCheckout(a, newDir(a.root, 'notes', { 'a.txt': '一\n' }));
+    const registered = await addProject(a, { path: newDir(a.root, 'notes', { 'a.txt': '一\n' }) });
     proxy = serve(a.daemon.kite, { hostname: '127.0.0.1', port: 0, remote: true, proxyToken: 'fixture-secret' });
     const url = proxy.url.origin;
     const machineId = a.daemon.kite.store.machine.id;
     const pulls = [
       { method: 'GET', path: '/sync/changes?wait=0' },
-      { method: 'GET', path: `/git/${registered.project.id}/info/refs?service=git-upload-pack` },
-      { method: 'POST', path: `/git/${registered.project.id}/git-upload-pack` },
+      { method: 'GET', path: `/git/${registered.id}/info/refs?service=git-upload-pack` },
+      { method: 'POST', path: `/git/${registered.id}/git-upload-pack` },
     ];
     const from = (peer: string, requests = pulls) => Promise.all(requests.map(async ({ method, path }) => {
       const response = await fetch(url + path, { method,

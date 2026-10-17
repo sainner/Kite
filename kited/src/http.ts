@@ -13,6 +13,7 @@ import { defaultAgentModel } from './agents/models.ts';
 import { networkChannelSchema, type Network } from './network.ts';
 import { changesSince } from './account-data/replication.ts';
 import { credentialType } from './account-data/credentials.ts';
+import { INTEGRATIONS } from './account-data/registry.ts';
 import { tokenPrices } from './token-prices.ts';
 import type { VoiceSocket } from './voice/sessions.ts';
 import { requestedSize, type TerminalSocket } from './terminal/terminals.ts';
@@ -43,15 +44,13 @@ const str = (v: unknown, name: string): string => {
   return v;
 };
 
-/**
- * 登记本机文件夹写 path；clone 远程写 remote，path 可选，默认放在 ~/code/<域名>/<owner>/<repo>；
- * 从别的工作机 clone 没有远程的项目写 project，path 可选，默认放在 ~/code/<项目名>。
- */
-const checkoutRequest = z.union([
-  z.object({ path: z.string().min(1) }).strict(),
-  z.object({ remote: z.string().trim().min(1).max(2048), path: z.string().min(1).optional() }).strict(),
-  z.object({ project: z.string().min(1), path: z.string().min(1).optional() }).strict(),
+/** 添加项目的来源：远程地址，或这台工作机上的文件夹，二选一；addition 是添加时另带的集成方式与环境变量文件。 */
+const projectSource = <T extends z.ZodRawShape>(addition: T) => z.union([
+  z.object({ remote: z.string().trim().min(1).max(2048), ...addition }).strict(),
+  z.object({ path: z.string().min(1), ...addition }).strict(),
 ]);
+const projectAddition = projectSource({ integration: z.enum(INTEGRATIONS).optional(),
+  envFiles: z.array(z.object({ path: z.string().min(1).max(512), value: z.string().optional() }).strict()).max(32).optional() });
 
 function handle<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
   return async (req: R) => {
@@ -235,7 +234,21 @@ export function serve(kite: Kite, listen: Listen) {
     idleTimeout: 60,
     routes: {
       '/machines': { GET: bound(() => kite.directory.entries()) },
-      '/project-registry': { GET: bound(() => kite.registry.list()) },
+      '/project-registry': {
+        GET: bound(() => kite.registry.list()),
+        // 要访问远程、导入文件夹，请求不受空闲超时限制。
+        POST: long(bound(async (req) => {
+          const parsed = projectAddition.safeParse(await body(req));
+          if (!parsed.success) throw new KiteError('添加项目要写 remote 或 path 中的一个，可带 integration 与 envFiles');
+          const { integration, envFiles, ...source } = parsed.data;
+          return kite.addProject(source, { ...(integration ? { integration } : {}), ...(envFiles ? { envFiles } : {}) });
+        })),
+      },
+      '/project-registry/check': { POST: long(bound(async (req) => {
+        const parsed = projectSource({}).safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('检查要写 remote 或 path 中的一个');
+        return kite.checkProject(parsed.data);
+      })) },
       // 本机要先停下这个项目的线程、回收工作树，请求不受空闲超时限制。
       '/project-registry/:id': { DELETE: long(bound(async (req) => { await kite.deleteProject(req.params.id); return { ok: true }; })) },
       '/project-registry/:id/appearance': { PUT: bound(async (req) => kite.registry.setAppearance(req.params.id, await body(req))) },
@@ -308,10 +321,9 @@ export function serve(kite: Kite, listen: Listen) {
       '/token-prices': { GET: bound(() => tokenPrices()) },
       '/instances/:id/agent-capabilities': { GET: bound((req) => kite.agentCapabilities(req.params.id)) },
       '/context-variables/:name': { GET: bound((req) => kite.contextVariable({ kind: 'machine' }, req.params.name)) },
-      '/checkouts/:id/context-variables/:name': { GET: bound((req) => kite.contextVariable({ kind: 'checkout', id: req.params.id }, req.params.name)) },
       '/workspaces/:id/context-variables/:name': { GET: bound((req) => kite.contextVariable({ kind: 'workspace', id: req.params.id }, req.params.name)) },
       '/instances/:id/context-variables/:name': { GET: bound((req) => kite.contextVariable({ kind: 'instance', id: req.params.id }, req.params.name)) },
-      '/checkouts/:id/context-variables/:name/file': { PUT: bound(async (req) => {
+      '/workspaces/:id/context-variables/:name/file': { PUT: bound(async (req) => {
         const parsed = z.object({ path: z.string().min(1), content: z.string(), expectedSha256: z.string().nullable() }).strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('写回文件要写 path、content 与 expectedSha256');
         return kite.writeContextVariableFile(req.params.id, req.params.name, parsed.data);
@@ -319,44 +331,27 @@ export function serve(kite: Kite, listen: Listen) {
       '/projects': {
         GET: bound(() => kite.projects()),
       },
-      '/checkouts': {
-        GET: bound((req) => kite.checkouts(new URL(req.url).searchParams.get('project') ?? undefined)),
-        POST: long(bound(async (req) => {
-          const parsed = checkoutRequest.safeParse(await body(req));
-          if (!parsed.success) throw new KiteError('登记检出要写 path（本机文件夹）、remote（远程地址）或 project（没有远程的项目）');
-          return kite.registerCheckout(parsed.data);
-        })),
-      },
-      '/checkouts/:id/sync': { GET: bound((req) => kite.checkoutSync(req.params.id)) },
-      '/checkouts/:id/push': {
-        POST: long(bound(async (req) => {
-          const parsed = z.object({ message: z.string().max(10_000).optional() }).strict().safeParse(await body(req));
-          if (!parsed.success) throw new KiteError('推送请求无效');
-          return kite.pushCheckout(req.params.id, parsed.data.message);
-        })),
-      },
+      '/checkouts': { GET: bound((req) => kite.checkouts(new URL(req.url).searchParams.get('project') ?? undefined)) },
       '/workspaces': {
         GET: bound((req) => {
           // 聚合和游标在同一同步段读取；客户端可以跳过这份列表已覆盖的事件。
           const workspaces = kite.workspaces(new URL(req.url).searchParams.get('project') ?? undefined);
           return Response.json(workspaces, { headers: { 'X-Kite-Cursor': kite.events.cursor, 'Cache-Control': 'no-store' } });
         }),
-        // 写 project 时可能先 clone，请求不受空闲超时限制。
+        // 本机没有检出时先 clone，请求不受空闲超时限制。
         POST: long(bound(async (req) => {
           const b = await body(req);
-          if ((b.checkout === undefined) === (b.project === undefined)) throw new KiteError('创建工作区要写 checkout 或 project 中的一个');
           const name = b.name === undefined ? '' : str(b.name, 'name');
           const prompt = b.prompt === undefined ? undefined : str(b.prompt, 'prompt');
           const ids = z.object({ id: z.uuid().optional(), windowId: z.uuid().optional(), messageId: z.uuid().optional() })
             .safeParse({ id: b.id, windowId: b.windowId, messageId: b.messageId });
           if (!ids.success) throw new KiteError('工作区创建参数无效');
           const via = sourceOf(req);
-          return b.project === undefined ? kite.createWorkspace(str(b.checkout, 'checkout'), name, prompt, roleSelection(b.role), via, ids.data)
-            : kite.createProjectWorkspace(str(b.project, 'project'), name, prompt, roleSelection(b.role), via, ids.data);
+          return kite.createWorkspace(str(b.project, 'project'), name, prompt, roleSelection(b.role), via, ids.data);
         })),
       },
       '/summary': { GET: bound(() => kite.summary()) },
-      // 启用 Line 要建托管项目并推送，请求不受空闲超时限制。
+      // 启用 Line 要建项目与工作区，请求不受空闲超时限制。
       '/line': { POST: long(bound(() => kite.enableLine())) },
       '/attention': {
         GET: bound(() => ({ focusedDevices: kite.attention.devices(), ...(kite.monitor.state()?.away !== undefined ? { awaySince: kite.monitor.state()!.away } : {}) })),
@@ -611,9 +606,15 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/adopt': { POST: long(bound(async (req) => {
         const data = await optionalBody(req);
         const parsed = z.object({ confirmRecovery: z.literal(true).optional() }).strict().safeParse(data);
-        if (!parsed.success) throw new KiteError('合回请求无效');
+        if (!parsed.success) throw new KiteError('集成请求无效');
         if (parsed.data.confirmRecovery) await kite.confirmWorkspaceRecovery(req.params.id);
         return kite.adopt(req.params.id);
+      })) },
+      '/workspaces/:id/sync': { POST: long(bound(async (req) => {
+        const parsed = z.object({ confirmRecovery: z.literal(true).optional() }).strict().safeParse(await optionalBody(req));
+        if (!parsed.success) throw new KiteError('同步请求无效');
+        if (parsed.data.confirmRecovery) await kite.confirmWorkspaceRecovery(req.params.id);
+        return kite.syncWorkspace(req.params.id);
       })) },
       '/instances/:id/archive': { POST: bound((req) => kite.archiveInstance(req.params.id)) },
       '/workspaces/:id/archive': { POST: bound(async (req) => kite.archiveWorkspace(req.params.id, (await body(req)).force === true)) },

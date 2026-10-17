@@ -51,7 +51,7 @@ bun run harness --resume <会话id>
 | `src/claude/` | Claude Code 会话宿主、进程控制、原生历史与工具适配 |
 | `src/execution/` | 共用沙箱、执行授权、文件工具、命令与进程组 |
 | `src/workspace/` | 项目登记、工作树、Git、快照、文件与历史差异 |
-| `src/workspace/checkout-management.ts` | 检出登记、远程同步与现场推送 |
+| `src/workspace/checkout-management.ts` | 添加项目（检查、导入文件夹、环境变量文件）、检出的建立与远程同步 |
 | `src/workspace/peer-git.ts` | 没有远程的项目：本机检出的只读 Git 服务、从其他工作机 clone 与快进主线 |
 | `src/workspace/lease.ts`、`src/transfer/` | 工作区执行权、工作区副本的跟进与跨机流转；契约见 [Line 与工作区流转](../docs/Line与工作区流转.md) |
 | `src/waiting.ts` | 回合中途等人回应：提问工具与必问动作的审批；契约见 [工具审批与提问](../docs/工具审批与提问.md) |
@@ -65,7 +65,7 @@ bun run harness --resume <会话id>
 | `src/library-sync.ts` | 资源库与项目约束从账号级数据到本机缓存的同步 |
 | `src/context-templates.ts` | 后台场景的上下文模板目录 |
 | `src/template-emblems.ts` | 角色的点阵签名 |
-| `src/light-tasks.ts`、`thread-titles.ts` | 辅助模型任务与会话标题 |
+| `src/light-tasks.ts`、`thread-titles.ts`、`pull-requests.ts` | 辅助模型任务、会话标题与提交 PR 时的标题和说明 |
 | `web/` | 随 App 打包的可信插件宿主页源码 |
 | `examples/` | 待办插件与视图样例 |
 | `scripts/` | 项目检查、构建、macOS 打包安装和样例预览入口 |

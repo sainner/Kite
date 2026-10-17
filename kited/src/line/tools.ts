@@ -113,6 +113,7 @@ export function lineTools(options: LineToolOptions): Tool[] {
       }
       const waiting = item.waiting;
       if (waiting && item.thread) {
+        if (waiting.kind === 'secret') throw new KiteError('密钥请求只能由用户填写，用 leave 留给用户');
         let body: Record<string, unknown>;
         if (waiting.kind === 'approval') {
           if (args.decision !== 'once' && args.decision !== 'deny') throw new KiteError('审批只能批准这一次（once）或拒绝（deny）');
@@ -145,6 +146,7 @@ export function lineTools(options: LineToolOptions): Tool[] {
       if (done) return { relayed: done, duplicate: true };
       const state = await peers.call<DisplayState>(args.machine, 'GET', `/threads/${args.threadId}/state`, { signal: context.signal });
       if (state.waiting?.kind === 'approval') throw new KiteError('这个线程在等审批，用户的话不能当作批准；请用户在收件箱里回应，或把这一项交给你代处理');
+      if (state.waiting?.kind === 'secret') throw new KiteError('这个线程在等用户填密钥，只能由用户在卡片里填写');
       if (state.waiting?.kind === 'question') {
         await peers.call(args.machine, 'POST', `/threads/${args.threadId}/waiting/${state.waiting.id}`, {
           body: { answers: state.waiting.questions.map(() => ({ other: message.text })) }, via, signal: context.signal });

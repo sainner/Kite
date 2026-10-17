@@ -260,6 +260,7 @@ private struct InboxItemView: View {
         let (symbol, tint): (String, Color) = switch item.kind {
         case "approval": ("checkmark.shield", Theme.warning)
         case "question": ("questionmark.bubble", Theme.warning)
+        case "secret": ("key", Theme.warning)
         case "turn": ("checkmark.circle", Theme.unseen)
         case "failed", "recovery", "preparation": ("exclamationmark.triangle", Theme.danger)
         default: ("bolt.horizontal", .secondary)
@@ -297,7 +298,11 @@ private struct InboxItemView: View {
         case "recovery": "等待恢复确认"
         case "preparation": "工作区准备失败"
         case "unreachable": "工作机「\(item.machine.name)」连不上"
-        default: item.waiting.map { $0.isQuestion ? ($0.questions?.first?.question ?? "") : ($0.target ?? "") } ?? item.text
+        default: item.waiting.map { waiting in
+            if waiting.isQuestion { return waiting.questions?.first?.question ?? "" }
+            if waiting.isSecret { return waiting.secretTitle }
+            return waiting.target ?? ""
+        } ?? item.text
         }
     }
 
@@ -305,6 +310,7 @@ private struct InboxItemView: View {
         switch item.kind {
         case "turn", "unreachable": ""
         case "approval", "question": item.delegated?.by == "timeout" ? "等了一阵没处理，按超时托管交给了 Line；你仍可以直接回应" : ""
+        case "secret": item.waiting?.reason ?? ""
         default: item.text
         }
     }
@@ -384,7 +390,7 @@ private struct RecordRow: View {
         case "left": "Line 留给你"
         default:
             switch record.item.kind {
-            case "approval", "question": "已回应"
+            case "approval", "question", "secret": "已回应"
             case "unreachable": "恢复连接"
             case "turn": "线程开始了新一轮"
             default: "已解除"

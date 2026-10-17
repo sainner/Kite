@@ -7,8 +7,9 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, rmSync, statfsSync } from 'node:fs';
 import { arch, release, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { defaultCheckoutPath, userHome } from './paths.ts';
+
 import { readSubscriptionCredentials } from './harness/auth.ts';
+import { userHome } from './paths.ts';
 import { readClaudeLogin } from './model-accounts.ts';
 import type { Checkout, Machine } from './model.ts';
 import { systemCommand } from './system-command.ts';
@@ -26,9 +27,8 @@ export interface Environment {
   logins: { chatgpt: LoginStatus; claude: LoginStatus };
   /** 剩余空间（字节）：worktrees 是 Kite 放工作树的卷，checkout 是已有检出或将要 clone 到的卷。 */
   disk: { worktrees: number; checkout: number };
-  /** 这台工作机上该项目已有的检出；没有时建工作区会先 clone 到 clonePath。 */
+  /** 这台工作机上该项目已有的检出；没有时建工作区会先 clone 到数据目录。 */
   checkout: Pick<Checkout, 'id' | 'path'> | null;
-  clonePath?: string;
   /** 带电池（笔记本）；自动换机有几台合适时优先不带电池的。 */
   battery: boolean;
   /** 问到的换机环境需求在这台工作机上是否满足；没问的不查。 */
@@ -119,19 +119,16 @@ async function claudeLogin(): Promise<LoginStatus> {
   } catch (error) { return { status: 'invalid', message: (error as Error).message }; }
 }
 
-/** checkout 是本机已有的检出；没有时按项目的远程（没有远程时按名字）算默认 clone 位置。needs 是要查的换机环境需求。 */
-export async function readEnvironment(home: string, machine: Machine, checkout: Checkout | undefined,
-  project?: { remote: string | null; name: string }, needs: HandoverNeed[] = []): Promise<Environment> {
-  const clonePath = checkout || !project ? undefined : defaultCheckoutPath(project);
+/** checkout 是本机已有的检出，检出都在数据目录的 repos 下。needs 是要查的换机环境需求。 */
+export async function readEnvironment(home: string, machine: Machine, checkout: Checkout | undefined, needs: HandoverNeed[] = []): Promise<Environment> {
   const [version, chatgpt, claude, onBattery, met] = await Promise.all([systemVersion(), chatgptLogin(home), claudeLogin(), hasBattery(),
     Promise.all(needs.map((need) => needChecks[need]()))]);
   return {
     machine: { id: machine.id, name: machine.name },
     platform: { os: process.platform, version, arch: arch() },
     logins: { chatgpt, claude },
-    disk: { worktrees: freeBytes(join(home, 'worktrees')), checkout: freeBytes(checkout?.path ?? clonePath ?? userHome()) },
+    disk: { worktrees: freeBytes(join(home, 'worktrees')), checkout: freeBytes(join(home, 'repos')) },
     checkout: checkout ? { id: checkout.id, path: checkout.path } : null,
-    ...(clonePath ? { clonePath } : {}),
     battery: onBattery,
     needs: Object.fromEntries(needs.map((need, index) => [need, met[index]])),
   };

@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { readClaudeControl } from '../../src/claude/control.ts';
 import type { Logged } from '../fake-api.ts';
-import { api, call, claudeRole, type KitedProcess, spawnKited } from '../harness.ts';
+import { api, call, chatgptLogin, claudeRole, type KitedProcess, spawnKited } from '../harness.ts';
 import { ENV, newRepo, transcript, until, useTemp } from '../util.ts';
 
 setDefaultTimeout(3_000);
@@ -54,14 +54,17 @@ async function stopOrphans() {
 test('kited 被 SIGKILL 后保留未知插话，不确认恢复的发送被拒，App 带确认发送时插话先于新消息各投一次并续接原会话', async () => {
   const root = temp();
   const home = join(root, 'kite');
-  const repo = newRepo(root, 'proj', { 'a.txt': 'a\n' });
+  const repo = newRepo(root, 'proj', { 'a.txt': 'a\n' }, null);
   kited = await spawnKited(home);
-  const p = (await call(kited.url, 'POST', '/checkouts', { path: repo })).body;
   const hold = `崩溃-${randomUUID().slice(0, 8)}`;
   const url = kited.url;
+  const project = (await call(url, 'POST', '/project-registry', { path: repo })).body;
+  // 建工作区先查默认角色的厂商登录；kited 是子进程，环境变量改不到它，写一份 ChatGPT 登录到它的数据目录。
+  chatgptLogin(home);
+  const workspace = (await call(url, 'POST', '/workspaces', { project: project.id })).body;
+  await until(async () => (await call(url, 'GET', `/workspaces/${workspace.workspace.id}`)).body.workspace.status === 'open', '工作区准备好');
   const role = await claudeRole((method, path, body) => call(url, method, path, body));
-  const workspace = (await call(url, 'POST', '/workspaces', { checkout: p.checkout.id, prompt: `HOLD ${hold} 开场`, role })).body;
-  const s = workspace.threads[0];
+  const s = (await call(url, 'POST', `/workspaces/${workspace.workspace.id}/threads`, { prompt: `HOLD ${hold} 开场`, role })).body;
   const first = await api.held(hold);
   expect(first.body.tools.map((tool: { name: string }) => tool.name).sort()).toEqual(expectedTools);
   const uncertain = { id: 'unconfirmed-after-crash', text: `待确认插话-${randomUUID()}`, source: 'human' };

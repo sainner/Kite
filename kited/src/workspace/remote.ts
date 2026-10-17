@@ -1,12 +1,12 @@
 /**
- * 检出与远程之间的网络操作。不改写用户的 origin 写法：为这个平台绑定了凭据时，执行时临时改用 HTTPS 地址带上凭据；
+ * 检出（裸仓库）与远程之间的网络操作。不改写用户的 origin 写法：为这个平台绑定了凭据时，执行时临时改用 HTTPS 地址带上凭据；
  * 没有绑定（例如用户自己配了 SSH key）就照原样使用 origin 与用户自己的 git 配置。
  * 一次操作开头取一次访问方式（地址与凭据），其中的拉取、推送与重试共用。
  */
 import { KiteError } from '../errors.ts';
 import { credentialEnv, type GitCredentials } from '../git-credential.ts';
 import { httpsRemote } from '../remote-url.ts';
-import { git, gitTry, isDirty } from './git.ts';
+import { git, gitTry } from './git.ts';
 
 export interface RemoteAccess {
   url: string;
@@ -51,10 +51,18 @@ export async function lsRemote(cwd: string, access: RemoteAccess, pattern: strin
 /** origin 保留用户填写的写法，http(s) 地址去掉其中的凭据。 */
 export const originSpelling = (remote: string): string => /^https?:\/\//i.test(remote.trim()) ? httpsRemote(remote)! : remote.trim();
 
-/** clone 后 origin 保留用户填写的写法。 */
+/** 确认能访问远程，返回远程的默认分支；远程还是空仓库时为 null。 */
+export async function remoteHead(remote: string, credentials: GitCredentials): Promise<string | null> {
+  const access = await remoteAccess(remote, credentials);
+  const r = await gitTry('/', ['ls-remote', '--symref', '--', access.url, 'HEAD'], { env: access.env });
+  if (r.code !== 0) throw gitFailure('访问远程', r.stderr);
+  return /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(r.stdout)?.[1] ?? null;
+}
+
+/** clone 成裸仓库，origin 保留用户填写的写法。 */
 export async function clone(remote: string, dest: string, credentials: GitCredentials): Promise<void> {
   const access = await remoteAccess(remote, credentials);
-  const r = await gitTry('/', ['clone', '-q', '--origin', 'origin', '--', access.url, dest], { env: access.env });
+  const r = await gitTry('/', ['clone', '-q', '--bare', '--', access.url, dest], { env: access.env });
   if (r.code !== 0) throw gitFailure('clone', r.stderr);
   const origin = originSpelling(remote);
   if (origin !== access.url) await git(dest, ['remote', 'set-url', 'origin', origin]);
@@ -66,13 +74,14 @@ export async function pushAll(cwd: string, access: RemoteAccess): Promise<void> 
   if (r.code !== 0) throw gitFailure('推送到远程', r.stderr);
 }
 
-/** 检出现场当前所在的分支，即主线；分离 HEAD 时为 null。 */
+/** 仓库 HEAD 指向的分支；检出里就是主线。分离 HEAD 时为 null。 */
 export async function currentBranch(cwd: string): Promise<string | null> {
   const r = await gitTry(cwd, ['symbolic-ref', '-q', '--short', 'HEAD']);
   return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : null;
 }
 
-const tracking = (branch: string) => `refs/remotes/origin/${branch}`;
+/** 远程分支在检出里的跟踪引用。 */
+export const tracking = (branch: string) => `refs/remotes/origin/${branch}`;
 
 /** 按 refspec 取一条 ref；远程没有这条 ref 时返回 false，其他失败按 action 报错。 */
 export async function fetchRef(cwd: string, access: RemoteAccess, spec: string, action: string): Promise<boolean> {
@@ -89,32 +98,17 @@ export async function fetchBranch(cwd: string, branch: string, access: RemoteAcc
   return git(cwd, ['rev-parse', tracking(branch)]);
 }
 
-/** 把本地分支推到远程同名分支。远程有本地没有的提交时返回 rejected，由调用方拉取后重试。 */
-export async function pushBranch(cwd: string, branch: string, access: RemoteAccess): Promise<'pushed' | 'rejected'> {
+/**
+ * 把本地分支推到远程分支 to（默认同名）。远程有本地没有的提交时返回 rejected，由调用方拉取后重试；因保护规则被拒时返回 protected。
+ */
+export async function pushBranch(cwd: string, branch: string, access: RemoteAccess, to = branch): Promise<'pushed' | 'rejected' | 'protected'> {
   const ref = `refs/heads/${branch}`;
-  const r = await gitTry(cwd, ['push', '--porcelain', '--', access.url, `${ref}:${ref}`], { env: access.env });
+  const r = await gitTry(cwd, ['push', '--porcelain', '--', access.url, `${ref}:refs/heads/${to}`], { env: access.env });
   if (r.code !== 0) {
     if (/^!\t.*\[rejected\]/m.test(r.stdout)) return 'rejected';
+    if (/protected branch|GH006|pre-receive hook declined/i.test(r.stderr + r.stdout)) return 'protected';
     throw gitFailure('推送', r.stderr || r.stdout);
   }
-  await git(cwd, ['update-ref', tracking(branch), ref]);
+  await git(cwd, ['update-ref', tracking(to), ref]);
   return 'pushed';
-}
-
-export interface CheckoutSync {
-  branch: string | null;
-  dirty: boolean;
-  /** 相对最近一次拉取到的远程分支；没有拉取过时为 null。 */
-  ahead: number | null;
-  behind: number | null;
-}
-
-/** 现场与远程的关系，只用本地已有的跟踪引用，不访问网络。 */
-export async function checkoutSync(cwd: string): Promise<CheckoutSync> {
-  const [branch, dirty] = await Promise.all([currentBranch(cwd), isDirty(cwd)]);
-  if (!branch) return { branch, dirty, ahead: null, behind: null };
-  const counts = await gitTry(cwd, ['rev-list', '--left-right', '--count', `HEAD...${tracking(branch)}`]);
-  if (counts.code !== 0) return { branch, dirty, ahead: null, behind: null };
-  const [ahead, behind] = counts.stdout.trim().split(/\s+/).map(Number);
-  return { branch, dirty, ahead: ahead!, behind: behind! };
 }

@@ -1,4 +1,4 @@
-/** 项目以远程仓库为身份；检出是某台机器上的 clone；工作区拥有文件和快照；线程拥有对话及执行。 */
+/** 项目以远程仓库为身份；检出是某台机器上 Kite 自己的裸仓库；工作区拥有文件和快照；线程拥有对话及执行。 */
 /**
  * handing_off：已进入可交接状态，材料已经或正要推到远程，拒绝新的执行，目标接管前可以撤回。
  * transferred：执行权已流转到别的机器，本地记录冻结，只读历史仍可用。
@@ -24,6 +24,7 @@ export interface Project {
   createdAt: number;
 }
 
+/** 检出是 <KITE_HOME>/repos/<项目>.git 的裸仓库，这台机器上该项目的工作区都从它开出工作树。 */
 export interface Checkout {
   id: string;
   projectId: string;
@@ -34,6 +35,16 @@ export interface Checkout {
   createdAt: number;
 }
 
+/** 提交 PR 的工作区最近一次集成：推到的远程分支、PR 页面与状态。不能自动开 PR 的平台 url 是去开 PR 的网页，没有 number。 */
+export interface PullRequest {
+  branch: string;
+  url: string;
+  number?: number;
+  state: 'open' | 'merged' | 'closed';
+  /** 推上去的提交：PR 合并后工作区没有新改动才算已采纳。 */
+  commit: string;
+}
+
 /** 工作区 ID 创建时生成，流转到别的机器后不变；epoch 区分同一 ID 在不同机器上的记录新旧，每次接管加 1。 */
 export interface Workspace {
   id: string;
@@ -41,12 +52,14 @@ export interface Workspace {
   checkoutId: string;
   name: string;
   cwd: string;
-  kind: 'root' | 'worktree';
-  /** 根工作区跟随检出当前的 HEAD，独立工作树保存创建时的分支和起点。 */
-  branch: string | null;
-  base: string | null;
+  /** 工作树的本地分支与开出时的主线提交。 */
+  branch: string;
+  base: string;
   status: WorkspaceStatus;
   createdAt: number;
+  /** 主线比工作区分支多出的提交数，按最近一次拉取计算；还没算过时为 null。 */
+  behind: number | null;
+  pullRequest: PullRequest | null;
 }
 
 /** agent 实例的专有记录。主键同时引用插件实例，不另造 agent / thread 身份。 */

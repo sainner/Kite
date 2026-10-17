@@ -6,7 +6,7 @@ import { readClaudeControl } from '../../src/claude/control.ts';
 import { Runner } from '../../src/claude/runner.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { History } from '../../src/transcript/protocol.ts';
-import { api, call, claudeModel, type Kited, mark, openAgent, registerCheckout, startKited, waitRunner } from '../harness.ts';
+import { api, call, claudeModel, folderWorkspace, type Kited, mark, openAgent, startKited, waitRunner } from '../harness.ts';
 import { deferred } from '../harness-loop.ts';
 import { newRepo, transcript, until, writeFiles } from '../util.ts';
 
@@ -43,8 +43,7 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
   const streamingTag = tag('流式工具结果');
   const oldRule = tag('最初项目规则');
   const updatedRule = tag('运行中项目规则更新');
-  const repo = newRepo(kk.root, 'project', { 'a.txt': `${streamingTag}\n`, 'AGENTS.md': oldRule });
-  const p = await registerCheckout(kk, repo);
+  const p = await folderWorkspace(kk, newRepo(kk.root, 'project', { 'a.txt': `${streamingTag}\n`, 'AGENTS.md': oldRule }, null));
   const id = await openAgent(kk.call, p.workspace.id, claudeModel);
   const getHistory = async () => (await kk.call('GET', `/threads/${id}/history`)).body as History;
   const sdkMessages = () => kk.events.flatMap((event) => event.type === 'sdk' && event.threadId === id ? [event.message as any] : []);
@@ -68,7 +67,7 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
   const firstRequest = await api.held(firstHold);
   expect(firstRequest.toolUseIds).toHaveLength(1);
   expect(JSON.stringify(firstRequest.body)).toContain(oldRule);
-  writeFiles(repo, { 'AGENTS.md': updatedRule });
+  writeFiles(p.workspace.cwd, { 'AGENTS.md': updatedRule });
   const cancelled = { id: 'cancel-in-sdk-queue', text: tag('取消消息') };
   const cancelledUuid = await submitQueued(cancelled);
   expect((await getHistory()).pending.map((input) => input.id)).toContain(cancelled.id);

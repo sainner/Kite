@@ -400,7 +400,7 @@ test('终端线程关闭等工具停止，重开保留历史并更新项目材�
     cwd, threadDir, env: ENV(),
     prepareRequest: () => ({
       model: currentModel,
-      instructions: projectContext(defaultContextDefinition, { 'environment.date': today, ...directoryVariables(cwd), 'workspace.kind': () => ({ text: 'root' }) }),
+      instructions: projectContext(defaultContextDefinition, { 'environment.date': today, ...directoryVariables(cwd) }),
       tools: [tool('hold', async (_args, { signal }) => { started.resolve(signal); await aborted(signal); return stopped.promise; })],
       settings: { model: { model: 'test', reasoning: 'high' } },
     }),

@@ -36,7 +36,7 @@ struct ThreadControlsModel {
     var placeholder: String {
         if answering != nil { return "其他" }
         if thread.state?.recovery != nil { return "核查上次执行后，再继续或回复" }
-        if let waiting = skipping { return waiting.isQuestion ? "跳过问题" : "跳过审批" }
+        if let waiting = skipping { return waiting.isQuestion ? "跳过问题" : waiting.isSecret ? "不提供密钥" : "跳过审批" }
         return thread.transcriptRunning ? "插话，agent 做完手上这一步就会看到" : "回复"
     }
 

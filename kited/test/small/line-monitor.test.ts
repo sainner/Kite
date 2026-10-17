@@ -37,7 +37,7 @@ const fresh = (): MonitorState => monitorState({ state: {} });
 /** 一轮 monitor：B 的汇总里是这些线程。 */
 function round(state: MonitorState, threads: ThreadSummary[], now: number, focused = false) {
   const summary: MachineSummary = { machine: { id: machineB.id, name: machineB.name }, workspaces: [{
-    id: 'workspace-b', epoch: 1, status: 'open', kind: 'root', name: 'work', project: { id: 'project-b', name: '项目 B' }, threads,
+    id: 'workspace-b', epoch: 1, status: 'open', name: 'work', project: { id: 'project-b', name: '项目 B' }, threads,
   }] };
   const notes = route(state, { line: 'line-thread', machines: [machineB], summaries: new Map([[machineB.id, summary]]), focused, now });
   return collect(state, now, focused, notes);

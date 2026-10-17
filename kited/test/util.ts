@@ -87,6 +87,25 @@ export function commitAll(dir: string, msg: string): string {
   return r.stdout.toString().trim();
 }
 
+/**
+ * 直接在检出（Kite 数据目录里的裸仓库）的主线 main 上加一个提交，模拟别的工作区刚合进来的改动：在主线的树上改写这些文件，
+ * 用临时索引一次起一个 shell 做完（比 clone 一份再推回去快得多），main 只在没被别人动过时才前移。返回这个提交。
+ */
+export function commitMainline(checkout: string, files: Record<string, string>, message: string): string {
+  const dir = makeTemp('mainline-');
+  try {
+    writeFiles(dir, files);
+    const script = [
+      'set -e', 'cd "$1"; dir=$2; msg=$3; shift 3', 'export GIT_INDEX_FILE="$dir/.git-index"',
+      'old=$(git rev-parse main)', 'git read-tree main', 'git --work-tree="$dir" add -f -- "$@"',
+      'commit=$(git commit-tree "$(git write-tree)" -p "$old" -m "$msg")', 'git update-ref refs/heads/main "$commit" "$old"', 'echo "$commit"',
+    ].join('\n');
+    const r = Bun.spawnSync(['sh', '-c', script, 'sh', checkout, dir, message, ...Object.keys(files)], { env: ENV(), stdout: 'pipe', stderr: 'pipe' });
+    if (r.exitCode !== 0) throw new Error(`往 ${checkout} 的主线提交失败：${r.stderr.toString()}`);
+    return r.stdout.toString().trim();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
 /** 列出目录下所有文件（跳过顶层 .git），值为内容；符号链接记为 `-> 目标`。 */
 export function listTree(dir: string): Record<string, string> {
   const out: Record<string, string> = {};

@@ -11,16 +11,17 @@ import modelCatalog from '../../../shared/agent-models.json';
 import type { AgentDefinition } from '../../src/agents/definition.ts';
 import { defaultAgentModel } from '../../src/agents/models.ts';
 import { startDaemon } from '../../src/daemon.ts';
-import type { ExecutionGrants } from '../../src/execution/grants.ts';
+import type { ExecutionChanges } from '../../src/execution/grants.ts';
 import type { Model } from '../../src/harness/types.ts';
+import type { WorkspaceModel } from '../../src/model.ts';
 import type { OperationGrant } from '../../src/operations/contract.ts';
 import { bunPluginSource } from '../fixtures/bun-plugin-source.ts';
-import { newRepo } from '../util.ts';
+import { newRepo, writeFiles } from '../util.ts';
 import { command } from './command.ts';
 
 interface InstanceGrants { revision: string; grants: OperationGrant[] }
 interface GrantUpdate { expectedRevision: string; grants: OperationGrant[] }
-interface InstanceExecutionGrants { revision: string; grants: ExecutionGrants }
+interface InstanceExecutionGrants { revision: string; grants: ExecutionChanges }
 interface AgentConfigurationSnapshot { revision: string; instance: { config: { agent: AgentDefinition } } }
 interface AgentConfigurationUpdate { expectedRevision: string; agent: AgentDefinition }
 
@@ -40,7 +41,14 @@ function declaration(source: string, signature: string): string {
 const root = mkdtempSync(join(tmpdir(), 'plugin-management-contract-'));
 let modelCalls = 0;
 const model: Model = { async *stream() { modelCalls++; yield { type: 'completed', responseId: 'fixture' }; } };
-const daemon = startDaemon({ home: join(root, 'kite'), port: 0, lightTasks: false, model: () => model });
+const home = join(root, 'kite');
+// 建工作区前 kited 按默认角色的模型检查厂商已登录：写一份一小时后过期的 ChatGPT 订阅登录（同 test/harness.ts 的 chatgptLogin）。
+const encoded = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+writeFiles(home, { 'auth/chatgpt/auth.json': JSON.stringify({ auth_mode: 'chatgpt', tokens: {
+  access_token: `${encoded({ alg: 'RS256', typ: 'JWT' })}.${encoded({ exp: Math.floor(Date.now() / 1000) + 3600 })}.${encoded('仅合同')}`,
+  account_id: 'contract-account',
+} }) });
+const daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => model });
 let machineID = '';
 
 async function request<T>(method: string, path: string, body?: unknown, expectedStatus = 200): Promise<T> {
@@ -59,9 +67,23 @@ async function request<T>(method: string, path: string, body?: unknown, expected
 
 try {
   machineID = (await request<{ id: string }>('GET', '/machine')).id;
-  const repository = newRepo(root, 'project', { 'note.txt': '授权合同\n' });
-  const checkout = await request<{ workspace: { id: string } }>('POST', '/checkouts', { path: repository });
-  const workspaceID = checkout.workspace.id;
+  // 没有远程的文件夹导入成检出，再为项目建工作区，等它准备完（open）才开窗口。
+  const repository = newRepo(root, 'project', { 'note.txt': '授权合同\n' }, null);
+  const project = await request<{ id: string }>('POST', '/project-registry', { path: repository });
+  const created = await request<WorkspaceModel>('POST', '/workspaces', { project: project.id });
+  const workspaceID = created.workspace.id;
+  await new Promise<void>((resolve, reject) => {
+    const settle = (status: string | undefined) => {
+      if (status === 'open') { done(); resolve(); }
+      else if (status === 'failed') { done(); reject(new Error(`工作区 ${workspaceID} 准备失败`)); }
+    };
+    const timer = setTimeout(() => { done(); reject(new Error(`等工作区 ${workspaceID} 准备完超时`)); }, 10_000);
+    const unsubscribe = daemon.kite.bus.subscribe(undefined, (event) => {
+      if (event.type === 'workspace.changed' && event.workspaceId === workspaceID) settle(event.status);
+    });
+    const done = () => { clearTimeout(timer); unsubscribe(); };
+    settle(daemon.kite.store.workspace(workspaceID)?.status);
+  });
   const openBuiltin = async (definitionId: string) => {
     const window = await request<{ target: { instanceId: string } }>('POST', `/workspaces/${workspaceID}/windows`, {
       id: randomUUID(), content: { kind: 'create', definitionId },
@@ -151,8 +173,10 @@ try {
   console.log(await command([executable, 'execution', executionInput, executionFixture, executionOutput], root));
   const executionSaved = await request<InstanceExecutionGrants>('GET', executionPath);
   if (!isDeepStrictEqual(executionSaved.grants, {
-    workspace: 'read', read: [canonicalReadPath], write: [canonicalWritePath], network: ['new.example.net'],
-  })) throw new Error('Swift 执行授权往返改变了已保存的目录或网络许可');
+    workspace: 'read',
+    add: { read: [canonicalReadPath], write: [canonicalWritePath], network: ['new.example.net'], unsandboxed: [] },
+    remove: { read: [], write: [], network: [], unsandboxed: [] },
+  } satisfies ExecutionChanges)) throw new Error('Swift 执行授权往返改变了已保存的目录或网络许可');
   if (!isDeepStrictEqual(await request<InstanceGrants>('GET', path), removed)) {
     throw new Error('编辑执行授权连带改写了操作授权');
   }

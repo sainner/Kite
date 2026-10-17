@@ -205,7 +205,8 @@ struct LibraryReset: Encodable {
 /// 新代理连同草稿里的角色与改过的参数一次创建；新工作区带首条消息时只带角色。
 struct CreateThreadRequest: Encodable {
     let prompt: String
-    var checkout: String? = nil
+    /// 新建工作区时的项目：工作机没有它的检出时先 clone。
+    var project: String? = nil
     var role: RoleSelection? = nil
     var model: AgentModelConfiguration? = nil
     var tools: [String]? = nil

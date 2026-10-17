@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { Json, ModelItem } from '../../src/harness/types.ts';
-import { call, registerCheckout, startKited, type Kited } from '../harness.ts';
+import { call, folderWorkspace, startKited, type Kited } from '../harness.ts';
 import { deferred, diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
 import { editNotificationTemplate } from '../notification-templates.ts';
 import { bunPluginSource } from '../fixtures/bun-plugin-source.ts';
-import { makeTemp, newRepo } from '../util.ts';
+import { makeTemp, newDir } from '../util.ts';
 
 const buildRoot = makeTemp('bun-plugin-bundle-');
 afterAll(() => rmSync(buildRoot, { recursive: true, force: true }));
@@ -24,9 +24,9 @@ const bundle = (async () => {
   return built.outputs[0]!.text();
 })();
 
+/** 按文件夹添加项目并建好工作区，返回工作区；工作区的文件在它的工作树（cwd）里，不在导入来源的文件夹里。 */
 async function workspace(k: Kited, repo: string) {
-  const registered = await registerCheckout(k, repo);
-  return registered.workspace.id;
+  return (await folderWorkspace(k, repo)).workspace;
 }
 
 async function install(k: Kited, views?: { id: string; title: string; resourceUri: string }[], lifetime: 'window' | 'persistent' = 'persistent') {
@@ -97,8 +97,7 @@ function waitFile(path: string) {
 test('声明的 MCP App 视图读取本实例资源，拒绝不安全内容，关窗后实例继续运行；归档先停掉插件进程并收起窗口，之后的调用被拒绝且不再拉起进程，随窗口实例拒绝归档', async () => {
   const k = startKited();
   try {
-    const repo = newRepo(k.root, 'project', { 'note.txt': '原始\n' });
-    const workspaceId = await workspace(k, repo);
+    const { id: workspaceId } = await workspace(k, newDir(k.root, 'project', { 'note.txt': '原始\n' }));
     const invalid = ['non-html', 'missing', 'multiple', 'wrong-uri', 'network', 'permissions', 'oversized'];
     await install(k, ['state', ...invalid].map((id) => ({
       id, title: id, resourceUri: `ui://test/${id}.html`,
@@ -157,8 +156,7 @@ test('随窗口插件等最后视图关闭才回收，清理失败可重试且�
   const k = startKited();
   let stopFailure: ReturnType<typeof spyOn> | undefined;
   try {
-    const repo = newRepo(k.root, 'project', { 'note.txt': '原始\n' });
-    const workspaceId = await workspace(k, repo);
+    const { id: workspaceId, cwd } = await workspace(k, newDir(k.root, 'project', { 'note.txt': '原始\n' }));
     await install(k, ['state', 'unlisted'].map((id) => ({
       id, title: id, resourceUri: `ui://test/${id}.html`,
     })), 'window');
@@ -197,7 +195,7 @@ test('随窗口插件等最后视图关闭才回收，清理失败可重试且�
     const marker = join('/private/tmp', 'kite-lifetime-block-' + randomUUID());
     // 沙箱只允许自身 TMPDIR；取现有 fixture 的真实临时目录，避免增加专用探针协议。
     const probe = output(await tool(k, instanceId, 'probe', 'lifetime-tmpdir', {
-      workspaceFile: join(repo, 'note.txt'), externalFile: marker, hostFile: marker, port: 1,
+      workspaceFile: join(cwd, 'note.txt'), externalFile: marker, hostFile: marker, port: 1,
     }));
     const blockMarker = join(probe.tmpdir, 'lifetime-' + randomUUID());
     const pending = tool(k, instanceId, 'block', 'lifetime-block', { marker: blockMarker });
@@ -262,8 +260,7 @@ test('Bun 插件及其后代被沙箱隔离，工作区回调随授权即时变�
   let discovery: ReturnType<typeof spyOn> | undefined;
   let pendingGrant: ReturnType<Kited['call']> | undefined;
   try {
-    const repo = newRepo(k.root, 'project', { 'note.txt': '可读内容\n' });
-    const workspaceId = await workspace(k, repo);
+    const { id: workspaceId, cwd } = await workspace(k, newDir(k.root, 'project', { 'note.txt': '可读内容\n' }));
     await install(k);
     const instanceId = await createInstance(k, workspaceId);
 
@@ -281,7 +278,7 @@ test('Bun 插件及其后代被沙箱隔离，工作区回调随授权即时变�
     mkdirSync(k.home, { recursive: true });
     writeFileSync(hostFile, '宿主秘密');
     const probe = output(await tool(k, instanceId, 'probe', 'probe', {
-      workspaceFile: join(repo, 'note.txt'), externalFile, hostFile, port: listener.port,
+      workspaceFile: join(cwd, 'note.txt'), externalFile, hostFile, port: listener.port,
     }));
     expect(probe).toMatchObject({
       workspaceRead: false, externalRead: false, hostRead: false, hostSecret: null,
@@ -374,8 +371,7 @@ test('模型按实例授权调用同名 Bun 工具，原始参数 schema 拦住�
   const model = new ManualModel();
   const k = startKited(() => model);
   try {
-    const repo = newRepo(k.root, 'project', { 'base.txt': '原始\n' });
-    const workspaceId = await workspace(k, repo);
+    const { id: workspaceId } = await workspace(k, newDir(k.root, 'project', { 'base.txt': '原始\n' }));
     await install(k);
     const firstId = await createInstance(k, workspaceId);
     const secondId = await createInstance(k, workspaceId);
@@ -448,7 +444,7 @@ test('模型按实例授权调用同名 Bun 工具，原始参数 schema 拦住�
 test('撤权拒绝旧模型调用，工具通知按生成时模板冻结且目录与收据跨重启保留', async () => {
   const root = makeTemp('plugin-model-');
   const home = join(root, 'kite');
-  const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
+  const repo = newDir(root, 'project', { 'base.txt': '原始\n' });
   const model = new ManualModel();
   let daemon: Daemon | undefined;
   try {
@@ -456,9 +452,7 @@ test('撤权拒绝旧模型调用，工具通知按生成时模板冻结且目�
     const events = new Seen<Envelope>();
     daemon.kite.bus.subscribe(undefined, (event) => events.add(event));
     const apiCall = (method: string, path: string, body?: unknown) => call(daemon!.url, method, path, body);
-    const registered = await apiCall('POST', '/checkouts', { path: repo });
-    expect(registered.status).toBe(200);
-    const workspaceId = registered.body.workspace.id as string;
+    const workspaceId = (await folderWorkspace(daemon, repo)).workspace.id;
     expect((await apiCall('POST', '/plugin-definitions', {
       id: 'custom.test', title: '测试', bundle: await bundle, lifetime: 'persistent',
     })).status).toBe(200);

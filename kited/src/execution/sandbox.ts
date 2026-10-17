@@ -15,6 +15,8 @@ export interface ExecutionPolicy {
   denyWrite?: string[];
   /** 项目禁止的主机：名单里有也不放行，也不问人。 */
   deniedNetwork?: string[];
+  /** 宿主按项目密钥写进工作区的文件（绝对路径），已在 denyWrite 里；patch 据此提示改用密钥请求。 */
+  secretFiles?: string[];
 }
 
 /** 宿主内部数据不随工作区目录授权暴露给执行代码。 */

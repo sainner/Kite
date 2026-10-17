@@ -44,6 +44,13 @@ export async function commitIdentity(cwd: string): Promise<Record<string, string
   return name.stdout.trim() && email.stdout.trim() ? {} : KITE_IDENTITY;
 }
 
+/** 在 repo 的 branch 上记一个树为 tree 的提交，父提交为 parent（没有时是初始提交），分支按预期旧值 parent 更新过去。返回提交。 */
+export async function commitOnto(repo: string, branch: string, tree: string, message: string, parent: string | null = null): Promise<string> {
+  const commit = await git(repo, ['commit-tree', tree, ...(parent ? ['-p', parent] : []), '-m', message], { env: await commitIdentity(repo) });
+  await git(repo, ['update-ref', `refs/heads/${branch}`, commit, parent ?? '']);
+  return commit;
+}
+
 /** 提交工作树里的全部改动（含未跟踪的），身份见 commitIdentity。args 是 commit 的其余参数。 */
 export async function commitAll(cwd: string, args: string[]): Promise<void> {
   const [, env] = await Promise.all([git(cwd, ['add', '-A']), commitIdentity(cwd)]);

@@ -39,14 +39,13 @@ function projectVariables(machine: Machine, project: Project, cwd: string) {
 }
 
 /** 环境、项目与工作区三层，项目规则与记忆索引从工作目录往上找。 */
-function workspaceVariables(model: { machine: Machine; project: Project; workspace: Workspace }) {
+export function workspaceVariables(model: { machine: Machine; project: Project; workspace: Workspace }) {
   const directory = directoryVariables(model.workspace.cwd);
   return {
     ...projectVariables(model.machine, model.project, model.workspace.cwd),
     'environment.cwd': directory['environment.cwd'],
     'workspace.branch': directory['workspace.branch'],
     'workspace.name': text(() => model.workspace.name),
-    'workspace.kind': text(() => model.workspace.kind),
   } satisfies Record<LayerVariable<'environment' | 'project' | 'workspace'>, () => ContextBinding>;
 }
 
@@ -82,11 +81,11 @@ export function storedThreadVariables(store: Store, id: string): ContextValues {
 }
 
 /**
- * 编辑器里看一个公共变量现在的值，按变量所在的层选取值的对象：环境层按工作机，项目层按检出（项目在这台工作机上的文件夹），
- * 工作区层按工作区，代理层按代理实例；范围大的也能取范围小的层。来自文件的另带逐级找到的各份文件，供直接编辑；
+ * 编辑器里看一个公共变量现在的值，按变量所在的层选取值的对象：环境层按工作机，项目层与工作区层按工作区，代理层按代理实例；
+ * 范围大的也能取范围小的层。来自文件的另带从工作区根目录逐级找到的各份文件，供直接编辑；
  * 一份都没有时 create 是在最里面那一级新建的位置。场景材料只在生成时才有，不能这样取。
  */
-export type VariableScope = { kind: 'machine' } | { kind: 'checkout' | 'workspace' | 'instance'; id: string };
+export type VariableScope = { kind: 'machine' } | { kind: 'workspace' | 'instance'; id: string };
 
 export interface VariablePreview { name: string; text: string; files?: DocumentFile[]; create?: string }
 
@@ -98,11 +97,6 @@ function scopeValues(store: Store, scope: VariableScope): { layers: ContextLayer
   switch (scope.kind) {
     case 'machine':
       return { layers: ['environment'], values: environmentVariables(store.machine) };
-    case 'checkout': {
-      const checkout = store.checkout(scope.id);
-      if (!checkout) throw new KiteError(`没有这个检出：${scope.id}`, 404);
-      return { layers: ['environment', 'project'], cwd: checkout.path, values: projectVariables(store.machine, store.project(checkout.projectId)!, checkout.path) };
-    }
     case 'workspace': {
       const model = store.workspaceModel(scope.id);
       if (!model) throw new KiteError(`没有这个工作区：${scope.id}`, 404);
@@ -136,15 +130,15 @@ export function previewVariable(store: Store, scope: VariableScope, name: string
 }
 
 /**
- * 从编辑器写回来自文件的变量（项目规则、记忆索引）：按检出写进项目在这台工作机上的文件夹，只能写这个变量从那里逐级查找的位置；
- * expectedSha256 是读到时的摘要，新建时为 null，文件在别处改过就拒绝。下一次请求组装时生效。
+ * 从编辑器写回来自文件的变量（项目规则、记忆索引）：写进工作区的工作树，只能写这个变量从工作区根目录逐级查找的位置；
+ * expectedSha256 是读到时的摘要，新建时为 null，文件在别处改过就拒绝。这个工作区里的代理下一次请求组装时生效。
  */
-export function writeVariableFile(store: Store, checkoutId: string, name: string,
+export function writeVariableFile(store: Store, workspaceId: string, name: string,
   input: { path: string; content: string; expectedSha256: string | null }): VariablePreview {
   if (!Object.hasOwn(documentVariables, name)) throw new KiteError(`${name} 不来自文件，不能这样修改`);
-  const checkout = store.checkout(checkoutId);
-  if (!checkout) throw new KiteError(`没有这个检出：${checkoutId}`, 404);
-  if (!documentPaths(realpathSync(checkout.path), documentVariables[name as DocumentVariable]).includes(input.path)) {
+  const workspace = store.workspace(workspaceId);
+  if (!workspace) throw new KiteError(`没有这个工作区：${workspaceId}`, 404);
+  if (!documentPaths(realpathSync(workspace.cwd), documentVariables[name as DocumentVariable]).includes(input.path)) {
     throw new KiteError('只能写这个变量逐级查找的文件');
   }
   if (input.content.length > documentLimit) throw new KiteError(`文件不能超过 ${documentLimit} 字`);
@@ -152,5 +146,5 @@ export function writeVariableFile(store: Store, checkoutId: string, name: string
   if (current !== input.expectedSha256) throw new KiteError('文件已在别处修改，请重新读取', 409);
   mkdirSync(dirname(input.path), { recursive: true });
   writeFileSync(input.path, input.content);
-  return previewVariable(store, { kind: 'checkout', id: checkoutId }, name);
+  return previewVariable(store, { kind: 'workspace', id: workspaceId }, name);
 }

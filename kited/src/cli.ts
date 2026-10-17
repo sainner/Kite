@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 /** kite 命令行：kited 的薄客户端，第 2 步没有界面时用它走通流程。 */
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { EventScope } from './events.ts';
 
@@ -7,11 +8,10 @@ const BASE = process.env.KITE_URL ?? `http://127.0.0.1:${process.env.KITE_PORT ?
 
 const USAGE = `用法：
   kite projects                       列出项目
-  kite add <文件夹>                   登记本机文件夹，没有远程的登记为各工作机互取的项目
-  kite clone <远程地址> [文件夹]      clone 远程并登记，默认放在 ~/code/<域名>/<owner>/<repo>
+  kite add <文件夹|远程地址>          添加项目：远程只登记不 clone；没有远程的文件夹导入成各工作机互取的项目
   kite checkouts [项目]               列出本机检出
   kite ls [项目]                      列出工作区和线程
-  kite new <检出> <消息>              开新工作区，跟到这一轮结束
+  kite new <项目> <消息>              在本机开新工作区（没有检出时先 clone），跟到这一轮结束
   kite send <线程> <消息>             发消息，跟到这一轮结束
   kite follow [线程]                  跟线程正文；省略时跟目录概要
   kite follow-workspace <工作区>      跟工作区操作事件
@@ -20,8 +20,8 @@ const USAGE = `用法：
   kite recover <线程>                 确认旧执行已停止，随后用 resume 继续
   kite snapshots <工作区>               列出快照
   kite restore <工作区> <快照>          把工作树恢复到某一枚快照
-  kite adopt <工作区>                   把工作区的改动合回主线并推送
-  kite push <检出> [提交说明]           提交检出现场的改动并推送
+  kite adopt <工作区>                   按项目的集成方式集成：直接合入或提交 PR
+  kite sync <工作区>                    把主线的新改动合进工作区
   kite archive <工作区> [--force]       归档工作区，删掉工作树
   kite net [up|down|logout]           查看、开启或关闭组网，或退出 Tailscale 登录；第一次开启时给出登录地址`;
 
@@ -118,6 +118,7 @@ function print(e: any): void {
       break;
     case 'workspace.snapshot': console.log(`· 快照 ${e.commit.slice(0, 8)}，${e.changedFiles} 个文件：${e.label}`); break;
     case 'workspace.adopt': printAdopt(e.result); break;
+    case 'workspace.sync': printSync(e.result); break;
     case 'thread.idle': console.log('\n· 回合结束'); break;
     case 'workspace.error':
     case 'thread.error': console.log(`! ${e.message}`); break;
@@ -126,9 +127,17 @@ function print(e: any): void {
 
 function printAdopt(r: any): void {
   if (r.status === 'adopted') {
-    console.log(`· 已合回主线：${r.commit.slice(0, 8)}`);
-    console.log(r.push.status === 'pushed' ? '· 已推送到远程' : `! 推送失败：${r.push.message}`);
+    console.log(`· 已合进主线：${r.commit.slice(0, 8)}`);
+    if (r.push.status === 'pushed') console.log('· 已推送到远程');
+    else if (r.push.status === 'failed') console.log(`! 推送失败：${r.push.message}`);
   }
+  else if (r.status === 'proposed') console.log(`· 已推到分支 ${r.branch}：${r.url}`);
+  else console.log(`· 合并冲突，已交给 agent 解决：${r.files.join('、')}`);
+}
+
+function printSync(r: any): void {
+  if (r.status === 'synced') console.log(`· 已把主线合进工作区：${r.commit.slice(0, 8)}`);
+  else if (r.status === 'current') console.log('· 已是最新');
   else console.log(`· 合并冲突，已交给 agent 解决：${r.files.join('、')}`);
 }
 
@@ -193,20 +202,10 @@ async function main(): Promise<void> {
       break;
     case 'add': {
       need(1);
-      const m = await call('POST', '/checkouts', { path: resolve(args[0]!) });
-      console.log(`已登记 ${m.project.name}（${m.project.remote}）：${m.checkout.path}\n检出 ${m.checkout.id}`);
-      break;
-    }
-    case 'push': {
-      need(1);
-      const r = await call('POST', `/checkouts/${args[0]}/push`, args[1] ? { message: args[1] } : {});
-      console.log(`· ${r.branch}：领先 ${r.ahead ?? '?'}，落后 ${r.behind ?? '?'}${r.dirty ? '，有未提交的改动' : ''}`);
-      break;
-    }
-    case 'clone': {
-      need(1);
-      const m = await call('POST', '/checkouts', { remote: args[0], ...(args[1] ? { path: resolve(args[1]) } : {}) });
-      console.log(`已 clone ${m.project.name}（${m.project.remote}）：${m.checkout.path}\n检出 ${m.checkout.id}`);
+      // 本机存在的路径按文件夹添加，其余按远程地址。
+      const source = existsSync(resolve(args[0]!)) ? { path: resolve(args[0]!) } : { remote: args[0] };
+      const p = await call('POST', '/project-registry', source);
+      console.log(`已添加 ${p.name}（${p.remote ?? '没有远程'}，${p.integration === 'pullRequest' ? '提交 PR' : '直接合入'}）\n项目 ${p.id}`);
       break;
     }
     case 'checkouts':
@@ -222,7 +221,7 @@ async function main(): Promise<void> {
       break;
     case 'new': {
       need(2);
-      const m = await call('POST', '/workspaces', { checkout: args[0], prompt: args.slice(1).join(' ') });
+      const m = await call('POST', '/workspaces', { project: args[0], prompt: args.slice(1).join(' ') });
       console.log(`· 工作区 ${m.workspace.id}，目录 ${m.workspace.cwd}，线程 ${m.threads[0].instanceId}`);
       await follow({ threadId: m.threads[0].instanceId }, true);
       break;
@@ -267,6 +266,10 @@ async function main(): Promise<void> {
       printAdopt(await call('POST', `/workspaces/${args[0]}/adopt`));
       break;
     }
+    case 'sync':
+      need(1);
+      printSync(await call('POST', `/workspaces/${args[0]}/sync`));
+      break;
     case 'archive':
       need(1);
       await call('POST', `/workspaces/${args[0]}/archive`, { force: args.includes('--force') });

@@ -14,14 +14,23 @@ import type { Json, ModelItem } from '../../src/harness/types.ts';
 import type { Project, WorkspaceModel } from '../../src/model.ts';
 import type { Role } from '../../src/roles.ts';
 import { emblemTemplate } from '../../src/template-emblems.ts';
-import { after, call, connect, type Kited, mark, openAgent, registerCheckout, startKited, synced } from '../harness.ts';
+import { type FakeGit, startFakeGit } from '../fake-git.ts';
+import {
+  addProject, after, call, connect, folderWorkspace, type Kited, mark, openAgent, openWorkspace, startKited, synced,
+} from '../harness.ts';
 import { item, ManualModel } from '../harness-loop.ts';
-import { git, makeTemp, newRepo, read, until } from '../util.ts';
+import { lexists, makeTemp, newDir, until } from '../util.ts';
 
 const kiteds: Kited[] = [];
+let remotes: FakeGit | undefined;
 afterEach(async () => {
   for (const k of kiteds.splice(0)) await k.stop();
+  remotes?.stop();
+  remotes = undefined;
 });
+
+/** Git 平台替身上的一个空远程；登记远程要先确认访问得到。 */
+const remoteUrl = (name: string) => (remotes ??= startFakeGit()).create(name).url;
 
 /** 账号级数据落地的文件（含 WAL），按字节拼起来查有没有明文。 */
 const stored = (k: Kited) => ['account.db', 'account.db-wal'].map((name) => join(k.home, name)).filter(existsSync)
@@ -60,8 +69,8 @@ test('A 新建的 Git 凭据和共享密钥同步到 B 后 B 能取用、两边�
   }));
 }, 1000);
 
-// 两台工作机没同步上时各自登记了同一远程（HTTPS 与 SSH 写法），各得一个项目；连上后登记表随同步合并，
-// 先登记的保留、后登记的记为并入它，各机 syncProjects 时把本机检出与工作区改挂过去。
+// 两台工作机没同步上时各自登记了同一远程，各得一个项目；连上后登记表随同步合并，
+// 先登记的保留、后登记的记为并入它，各机 syncProjects 时把本机检出与工作区改挂过去（后登记的那台建过工作区，有检出）。
 // 后登记的那个设了工具约束和执行约束、有一条项目专用的密钥，合并后都要归到保留的项目；约束取两份里更严的组合。
 // 要登记表、同步、两边各自合并与本机 SQLite 改挂合起来才看得出。
 // 真实 bug（旧实现）：合并只改挂检出，保留的项目读到默认的不限制约束，密钥还绑在并入的旧 ID 上，按保留的项目列不出、取不到。
@@ -71,12 +80,12 @@ test('两台工作机没同步时各自登记同一远程，连上同步后两�
   const a = startKited();
   const b = startKited();
   kiteds.push(a, b);
-  const path = `owner/${crypto.randomUUID()}`;
-  const first = await registerCheckout(a, newRepo(a.root, 'project', { 'a.txt': 'A\n' }, `https://example.test/${path}.git`));
-  const second = await registerCheckout(b, newRepo(b.root, 'project', { 'b.txt': 'B\n' }, `git@example.test:${path}.git`));
-  expect(second.project.id).not.toBe(first.project.id);
-  expect(second.project.remote).toBe(first.project.remote);
-  expect(b.daemon.kite.registry.get(second.project.id)!.createdAt).toBeGreaterThan(a.daemon.kite.registry.get(first.project.id)!.createdAt);
+  const url = remoteUrl('project');
+  const first = await addProject(a, { remote: url });
+  const second = await openWorkspace(b, (await addProject(b, { remote: url })).id);
+  expect(second.project.id).not.toBe(first.id);
+  expect(second.project.remote).toBe(first.remote);
+  expect(b.daemon.kite.registry.get(second.project.id)!.createdAt).toBeGreaterThan(a.daemon.kite.registry.get(first.id)!.createdAt);
   const constraints = await b.call('GET', `/project-registry/${second.project.id}/constraints`);
   expect((await b.call('PUT', `/project-registry/${second.project.id}/constraints`, {
     tools: { mode: 'deny', tools: ['shell'] }, expectedRevision: constraints.body.revision,
@@ -93,51 +102,46 @@ test('两台工作机没同步时各自登记同一远程，连上同步后两�
 
   await connect(a, b);
   for (const k of [a, b]) {
-    await synced(k, () => k.daemon.kite.registry.canonical(second.project.id) === first.project.id
+    await synced(k, () => k.daemon.kite.registry.canonical(second.project.id) === first.id
       && k.daemon.kite.accountData.get('credential', secret.body.id), '后登记的项目并入先登记的，B 的密钥同步到');
   }
   await Promise.all([a.daemon.kite.syncProjects(), b.daemon.kite.syncProjects()]);
   for (const k of [a, b]) {
-    const kept = await k.call('GET', `/project-registry/${first.project.id}/constraints`);
+    const kept = await k.call('GET', `/project-registry/${first.id}/constraints`);
     expect(kept.status).toBe(200);
     expect(kept.body.tools).toEqual({ mode: 'deny', tools: ['shell'] });
     expect(kept.body.execution).toMatchObject({
       allow: { read: [], write: [], network: [], unsandboxed: [] },
       deny: { read: ['~/.ssh'], write: [], network: [], unsandboxed: ['sudo *'] },
     });
-    const listed = await k.call('GET', `/credentials?type=secret&projectId=${first.project.id}`);
+    const listed = await k.call('GET', `/credentials?type=secret&projectId=${first.id}`);
     expect(listed.body).toEqual([expect.objectContaining({ id: secret.body.id, name: 'DEPLOY_TOKEN' })]);
-    expect(await k.daemon.kite.credentials.resolve(['{project.DEPLOY_TOKEN}'], first.project.id))
+    expect(await k.daemon.kite.credentials.resolve(['{project.DEPLOY_TOKEN}'], first.id))
       .toEqual([{ reference: '{project.DEPLOY_TOKEN}', kind: 'text', value }]);
   }
 
   for (const k of [a, b]) {
-    expect(k.daemon.kite.registry.list().filter((project) => project.remote === first.project.remote).map((project) => project.id))
-      .toEqual([first.project.id]);
+    expect(k.daemon.kite.registry.list().filter((project) => project.remote === first.remote).map((project) => project.id))
+      .toEqual([first.id]);
   }
-  expect(((await b.call('GET', '/projects')).body as Project[]).map((project) => project.id)).toEqual([first.project.id]);
-  expect((await b.call('GET', '/checkouts')).body).toEqual([expect.objectContaining({ id: second.checkout.id, projectId: first.project.id })]);
+  expect(((await b.call('GET', '/projects')).body as Project[]).map((project) => project.id)).toEqual([first.id]);
+  expect((await b.call('GET', '/checkouts')).body).toEqual([expect.objectContaining({ id: second.checkout.id, projectId: first.id })]);
   const workspaces = (await b.call('GET', '/workspaces')).body as WorkspaceModel[];
-  expect(workspaces.map((model) => [model.workspace.id, model.project.id])).toEqual([[second.workspace.id, first.project.id]]);
-  expect(((await a.call('GET', '/projects')).body as Project[]).map((project) => project.id)).toEqual([first.project.id]);
-  expect((await a.call('GET', '/checkouts')).body).toEqual([expect.objectContaining({ id: first.checkout.id, projectId: first.project.id })]);
+  expect(workspaces.map((model) => [model.workspace.id, model.project.id])).toEqual([[second.workspace.id, first.id]]);
 }, 1000);
 
-// 删除是账号级数据的一次写入（正文为空），随同步传到 B，B 的 syncProjects 认出「删过」才移除本机的检出，目录留在磁盘上。
+// 删除是账号级数据的一次写入（正文为空），随同步传到 B，B 的 syncProjects 认出「删过」才移除本机的工作区、工作树与 Kite 的检出。
 // 账号级数据重建过的工作机从没收到过这条登记，分不出删过还是没收到；syncProjects 不能把它当成删了而移除检出（防误删）。
 // 要同步链路、删除记录与各机本地移除合起来才看得出。
-test('A 删除项目后 B 同步到删除、移除本机检出而目录还在；账号级数据重建过、从没收到过这条登记的工作机不移除', async () => {
+test('A 删除项目后 B 同步到删除、移除本机的工作区、工作树与检出；账号级数据重建过、从没收到过这条登记的工作机不移除', async () => {
   const a = startKited();
   const b = startKited();
   kiteds.push(a, b);
   await connect(a, b);
-  const origin = `https://example.test/owner/${crypto.randomUUID()}.git`;
-  const first = await registerCheckout(a, newRepo(a.root, 'project', { 'a.txt': 'A\n' }, origin));
-  const projectId = first.project.id;
+  const projectId = (await addProject(a, { remote: remoteUrl('project') })).id;
   await synced(b, () => b.daemon.kite.registry.get(projectId), 'B 同步到 A 登记的项目');
-  const repoB = newRepo(b.root, 'project', { 'b.txt': 'B\n' }, origin);
-  expect((await registerCheckout(b, repoB)).project.id).toBe(projectId);
-  const headB = git(repoB, 'rev-parse', 'HEAD');
+  const onB = await openWorkspace(b, projectId);
+  expect(lexists(onB.checkout.path)).toBe(true);
 
   await a.daemon.kite.deleteProject(projectId);
   await synced(b, () => b.daemon.kite.registry.deleted(projectId), 'B 同步到 A 删除项目');
@@ -145,19 +149,21 @@ test('A 删除项目后 B 同步到删除、移除本机检出而目录还在；
   expect(b.daemon.kite.store.projects()).toEqual([]);
   expect(b.daemon.kite.store.checkouts()).toEqual([]);
   expect(b.daemon.kite.store.workspaces()).toEqual([]);
-  expect(read(join(repoB, 'b.txt'))).toBe('B\n');
-  expect(git(repoB, 'rev-parse', 'HEAD')).toBe(headB);
+  expect(lexists(onB.workspace.cwd)).toBe(false);
+  expect(lexists(onB.checkout.path)).toBe(false);
 
   const before = startKited();
   kiteds.push(before);
-  const kept = await registerCheckout(before, newRepo(before.root, 'kept', { 'c.txt': 'C\n' }));
+  const kept = await addProject(before, { path: newDir(before.root, 'kept', { 'c.txt': 'C\n' }) });
+  const keptCheckout = before.daemon.kite.store.checkouts(kept.id)[0]!;
   await before.halt();
   for (const name of ['account.db', 'account.db-wal', 'account.db-shm']) rmSync(join(before.home, name), { force: true });
   const c = startKited(undefined, false, { root: before.root });
   kiteds.splice(kiteds.indexOf(before), 1, c);
-  expect(c.daemon.kite.registry.get(kept.project.id)).toBeUndefined();
+  expect(c.daemon.kite.registry.get(kept.id)).toBeUndefined();
   await c.daemon.kite.syncProjects();
-  expect(c.daemon.kite.store.checkouts()).toEqual([expect.objectContaining({ id: kept.checkout.id, projectId: kept.project.id })]);
+  expect(c.daemon.kite.store.checkouts()).toEqual([expect.objectContaining({ id: keptCheckout.id, projectId: kept.id })]);
+  expect(lexists(keptCheckout.path)).toBe(true);
 }, 1000);
 
 // ---- 资源库与项目约束 ----
@@ -214,7 +220,7 @@ test('A 建、改的角色同步到 B 后是同一版本，B 用同步前的版�
   expect(listed.body).toContainEqual(expect.objectContaining({ id: pack.id, revision: installed.body.revision }));
   expect(b.daemon.kite.catalog.installed(pack.id)).toBe(false);
 
-  const workspace = await registerCheckout(b, newRepo(b.root, 'project', { 'base.txt': '原始\n' }));
+  const workspace = await folderWorkspace(b, newDir(b.root, 'project', { 'base.txt': '原始\n' }));
   const opened = await b.call('POST', `/workspaces/${workspace.workspace.id}/windows`, {
     id: crypto.randomUUID(), content: { kind: 'create', definitionId: pack.id },
   });
@@ -282,15 +288,13 @@ test('A 恢复内置角色默认、把模板原样改回默认后账号级数据
 }, 1000);
 
 // 真实 bug：首次同步时本机还没有此项目，之后登记已有项目不会再收到约束变更，因而留下无限制缓存。
-// 约束随账号级数据同步：B 先同步到 A 登记的项目和收紧的约束，之后才登记同一远程的检出，登记完开的代理就要受约束。
-test('B 先同步到别的工作机已收紧约束的项目、再登记它的检出时，开的代理已禁用 shell', async () => {
+// 约束随账号级数据同步：B 先同步到 A 登记的项目和收紧的约束，之后才在 B 上建工作区（clone 出检出、项目进本机库），开的代理就要受约束。
+test('B 先同步到别的工作机已收紧约束的项目、再为它建工作区时，开的代理已禁用 shell', async () => {
   const a = startKited();
   const b = startKited();
   kiteds.push(a, b);
   await connect(a, b);
-  const url = `https://example.test/library/${crypto.randomUUID()}.git`;
-  const registered = await registerCheckout(a, newRepo(a.root, 'project', { 'base.txt': 'A\n' }, url));
-  const projectId = registered.project.id;
+  const projectId = (await addProject(a, { remote: remoteUrl('library') })).id;
   const current = await a.call('GET', `/project-registry/${projectId}/constraints`);
   expect(current.status).toBe(200);
   const saved = await a.call('PUT', `/project-registry/${projectId}/constraints`, {
@@ -300,7 +304,7 @@ test('B 先同步到别的工作机已收紧约束的项目、再登记它的检
   await synced(b, () => b.daemon.kite.registry.get(projectId) && b.daemon.kite.registry.constraints(projectId).revision === saved.body.revision,
     'B 同步到项目与收紧的约束');
 
-  const other = await registerCheckout(b, newRepo(b.root, 'project', { 'base.txt': 'B\n' }, url));
+  const other = await openWorkspace(b, projectId);
   expect(other.project.id).toBe(projectId);
   expect(b.daemon.kite.store.projectConstraints(projectId)?.tools).toEqual({ mode: 'deny', tools: ['shell'] });
   const id = await openAgent(b.call, other.workspace.id);
@@ -314,7 +318,7 @@ test('项目约束禁用 shell 后在跑的回合里已发出的 shell 调用不
   const model = new ManualModel();
   const k = startKited(() => model);
   kiteds.push(k);
-  const workspace = await registerCheckout(k, newRepo(k.root, 'project', { 'base.txt': '原始\n' }));
+  const workspace = await folderWorkspace(k, newDir(k.root, 'project', { 'base.txt': '原始\n' }));
   const projectId = workspace.project.id;
   const workspaceId = workspace.workspace.id;
   const constrain = async (tools: string[]) => {

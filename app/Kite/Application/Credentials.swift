@@ -56,10 +56,6 @@ struct SecretsSection: View {
             && validSecretValue(value)
     }
 
-    private func validSecretValue(_ value: String) -> Bool {
-        !value.isEmpty && value.utf16.count <= 65_536 && !value.contains("\0")
-    }
-
     var body: some View {
         Section {
             Picker("可用范围", selection: $projectID) {
@@ -141,16 +137,7 @@ struct SecretsSection: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.data]) { result in
             do {
                 let url = try result.get()
-                let scoped = url.startAccessingSecurityScopedResource()
-                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) <= 262_144 else {
-                    throw KitedError(message: "密钥文件过大", status: 400)
-                }
-                let text = try String(contentsOf: url, encoding: .utf8)
-                guard validSecretValue(text) else {
-                    throw KitedError(message: "请选择不超过 65536 个字符的 UTF-8 密钥文件", status: 400)
-                }
-                value = text
+                value = try readSecretText(url)
                 fileName = url.lastPathComponent
                 error = nil
             } catch { self.error = error.localizedDescription }
@@ -356,4 +343,21 @@ struct KeysSection<Provider: KeyProvider>: View {
     }
 
     private func load() async throws { entries = try await model.credentials(type: Provider.type) }
+}
+
+/// 密钥内容与工作机的规则一致：1–65536 个 UTF-16 单元的文本，不含 NUL。
+func validSecretValue(_ value: String) -> Bool {
+    !value.isEmpty && value.utf16.count <= 65_536 && !value.contains("\0")
+}
+
+/// 从这台设备选的文件读出密钥内容（如 SSH 私钥、.env），不合规则时报错。
+func readSecretText(_ url: URL) throws -> String {
+    let scoped = url.startAccessingSecurityScopedResource()
+    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+    guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) <= 262_144 else {
+        throw KitedError(message: "密钥文件过大", status: 400)
+    }
+    let text = try String(contentsOf: url, encoding: .utf8)
+    guard validSecretValue(text) else { throw KitedError(message: "请选择不超过 65536 个字符的 UTF-8 文本文件", status: 400) }
+    return text
 }

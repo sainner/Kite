@@ -16,13 +16,10 @@ export const manifestSchema = z.object({
   /** 交出执行权的工作机。 */
   machine: z.string().min(1),
   projectId: z.string().min(1),
-  kind: z.enum(['root', 'worktree']),
   name: z.string(),
-  branch: z.string().nullable(),
-  base: z.string().nullable(),
+  branch: z.string().min(1),
+  base: z.string().min(1),
   cwd: z.string().min(1),
-  /** 根工作区交接时检出的 HEAD，目标检出须能快进到它。 */
-  head: z.string().nullable(),
   threads: z.array(z.object({ instanceId: z.string().min(1), runtime: z.enum(['claude', 'harness']), nativeId: z.string().min(1),
     /** 已交接给模型的最后一条通知的序号。 */
     cursor: z.number().int().nonnegative() }).strict()),

@@ -30,7 +30,6 @@ export const contextLayers = {
     variables: [
       { name: 'environment.cwd', title: '工作目录', description: '代理工作目录的真实路径；工作区流转到别的工作机后可能变化。' },
       { name: 'workspace.name', title: '工作区名称', description: '工作区的名称。' },
-      { name: 'workspace.kind', title: '工作区类型', description: '直接在项目文件夹里工作是 root，Kite 创建的独立工作树是 worktree。' },
       { name: 'workspace.branch', title: '当前分支', description: '工作目录当前所在的分支；分离 HEAD 或不在 Git 仓库里时为空，切换分支后变化。' },
     ],
   },
@@ -60,6 +59,16 @@ export const contextScenes = {
     variables: [
       { name: 'title.current', title: '当前标题', description: '会话现在的标题，写成带引号的 JSON 字符串；还没有标题时是 ""。' },
       { name: 'title.messages', title: '近期对话正文', description: '近三天里最多 20 轮的请求和回复末尾，代码块略去，JSON 格式。' },
+    ],
+  },
+  'workspace.pull_request': {
+    title: '起草 PR',
+    input: true,
+    // 集成是工作区的操作，没有某个代理。
+    layers: ['environment', 'project', 'workspace'],
+    variables: [
+      { name: 'pull_request.commits', title: '提交说明', description: '工作区分支相对远程主线的提交说明，每条以「- 」开头，合并提交略去；最多 6000 字。' },
+      { name: 'pull_request.files', title: '改动文件', description: '相对远程主线改动的文件与增减行数（git diff --stat）；最多 6000 字。' },
     ],
   },
   'thread.compact': {

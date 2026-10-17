@@ -12,9 +12,9 @@ import { Runner } from '../../src/claude/runner.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { ThreadContext } from '../../src/model.ts';
 import type { DisplayBlock, DisplayEnvelope, History } from '../../src/transcript/protocol.ts';
-import { api, claudeModel, type Kited, mark, openAgent, registerCheckout, startKited, waitIdle } from '../harness.ts';
+import { api, claudeModel, folderWorkspace, type Kited, mark, openAgent, startKited, waitIdle } from '../harness.ts';
 import { deferred, Seen } from '../harness-loop.ts';
-import { ENV, newRepo, transcript } from '../util.ts';
+import { ENV, newDir, transcript } from '../util.ts';
 
 setDefaultTimeout(3_000);
 let k: Kited | undefined;
@@ -55,8 +55,7 @@ test('Claude 中段压缩保留前缀思考与后段正文工具，撤销恢复�
   const query = spyOn(Runner.prototype, 'contextUsage');
   restoreQuery = () => query.mockRestore();
   query.mockResolvedValueOnce(undefined);
-  const repo = newRepo(kk.root, 'project', { 'a.txt': '压缩测试文件第一行\n压缩测试文件第二行\n' });
-  const workspace = await registerCheckout(kk, repo);
+  const workspace = await folderWorkspace(kk, newDir(kk.root, 'project', { 'a.txt': '压缩测试文件第一行\n压缩测试文件第二行\n' }));
   const id = await openAgent(kk.call, workspace.workspace.id, claudeModel);
   const updates = new Seen<DisplayEnvelope>();
   kk.daemon.kite.events.subscribe((event) => 'threadId' in event && event.threadId === id, (event) => updates.add(event));

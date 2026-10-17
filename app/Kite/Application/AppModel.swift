@@ -120,8 +120,7 @@ final class AppModel {
     func closeSettings() {
         sidebarSection = sectionBeforeSettings
     }
-    /// 侧栏菜单发起的现场推送、归档与强制接管确认，由 WorkspaceGitPresentation 呈现。
-    var scenePush: WorkArea?
+    /// 侧栏菜单发起的归档与强制接管确认，由 WorkspaceGitPresentation 呈现。
     var archiveRequest: WorkArea?
     var takeoverRequest: TakeoverRequest?
     /// 本机新建、工作机还没列出来的工作区，见 create。
@@ -242,19 +241,24 @@ final class AppModel {
         draftWorkspace.draftThread.connected = false
     }
 
+    /// 新建中的工作区在工作机还没有检出时带着空 ID 的占位检出，不算。
     var checkouts: [RemoteCheckout] {
         var seen = Set<String>()
-        return workspaces.compactMap(\.remote?.checkout).filter { seen.insert($0.id).inserted }
+        return workspaces.compactMap(\.remote?.checkout).filter { !$0.id.isEmpty && seen.insert($0.id).inserted }
     }
     var knownProjects: [RemoteProject] {
         var seen = Set<String>()
-        return (account.catalogs.flatMap(\.snapshot.projects) + workspaces.compactMap(\.remote?.project))
+        return (account.registeredProjects.map(\.project) + account.catalogs.flatMap(\.snapshot.projects) + workspaces.compactMap(\.remote?.project))
             .filter { seen.insert($0.id).inserted }
     }
     var availableWorkers: [WorkerConnection] { connections.values.filter(\.connected).sorted { $0.machine.name < $1.machine.name } }
 
-    func projectLabel(_ project: RemoteProject) -> String {
-        knownProjects.filter { $0.name == project.name }.count > 1 ? "\(project.name)（\(project.id.prefix(8))）" : project.name
+    func projectLabel(_ project: RemoteProject) -> String { projectLabels()(project) }
+
+    /// 一次算好各项目的显示名，同名的几个后面带 ID 前 8 位；列表里逐个取名时用它，不必每个都重算项目目录。
+    func projectLabels() -> (RemoteProject) -> String {
+        let counts = Dictionary(knownProjects.map { ($0.name, 1) }, uniquingKeysWith: +)
+        return { counts[$0.name, default: 0] > 1 ? "\($0.name)（\($0.id.prefix(8))）" : $0.name }
     }
 
     /// 账号的设备列表决定设备集合，目录摘要从一台连着的工作机读；各机事件流、错误与游标独立存续。
@@ -512,34 +516,11 @@ final class AppModel {
         if workspace(selected) == nil { selected = workspaces.first?.id ?? "" }
     }
 
-    /// 项目由工作机按目录的远程登记；没有远程的目录由工作机建托管远程。
-    func registerCheckout(path: String, machineID: String) async throws -> String {
-        struct Registration: Encodable { let path: String }
-        return try await addCheckout(Registration(path: path), machineID: machineID, timeout: 120)
-    }
-
-    /// 在工作机上 clone 远程并登记；path 为空时放在工作机的 ~/code/域名/owner/repo。
-    /// 克隆到工作机的默认仓库位置。
-    func cloneCheckout(remote: String, machineID: String) async throws -> String {
-        struct Clone: Encodable { let remote: String }
-        return try await addCheckout(Clone(remote: remote.trimmingCharacters(in: .whitespaces)), machineID: machineID, timeout: 1800)
-    }
-
-    private func addCheckout(_ body: any Encodable, machineID: String, timeout: TimeInterval) async throws -> String {
-        guard let connection = connections[machineID], connection.connected else { throw KitedError(message: "工作机未连接") }
-        let client = connection.client
-        let result = try await client.request("/checkouts", method: "POST", body: body, timeout: timeout, as: RemoteWorkspace.self)
-        try await refresh(client)
-        guard accepts(client) else { throw KitedError(message: "工作机已切换") }
-        return result.checkout.id
-    }
-
     /// 新建工作区不等工作机：工作区、第一个代理的窗口和第一条消息的 ID 都由本机定，本机先按它们建好、选中（见 WorkArea.init(creating:)），
     /// 弹窗当场关掉；工作机建好后目录接上同一个工作区对象，第一个代理照草稿发出第一条消息的路子接上。
-    /// 建不成就收回，话退回新工作区的草稿，原因报在那里。
-    func create(checkout: String, prompt: String) throws {
-        guard let base = workspaces.first(where: { $0.remote?.checkout.id == checkout })?.remote,
-              let connection = connections[base.machine.id], connection.connected else { throw KitedError(message: "检出所属工作机未连接") }
+    /// 工作机上还没有这个项目的检出时由它先 clone。建不成就收回，话退回新工作区的草稿，原因报在那里。
+    func create(project: RemoteProject, machineID: String, prompt: String) throws {
+        guard let connection = connections[machineID], connection.connected else { throw KitedError(message: "所选工作机未连接") }
         let client = connection.client
         let draft = draftWorkspace.draftThread
         let role = draft.role
@@ -548,9 +529,12 @@ final class AppModel {
         }
         let id = UUID().uuidString.lowercased(), window = UUID().uuidString.lowercased()
         let message = Message(typed: prompt.trimmingCharacters(in: .whitespacesAndNewlines))
-        let info = WorkspaceInfo(id: id, epoch: 1, checkoutId: checkout, name: Self.title(of: message.typed), cwd: "", kind: .worktree,
+        // 工作机上还没有检出时先占个位，目录接上后换成工作机给的。
+        let checkout = checkouts.first { $0.projectId == project.id && $0.machineId == machineID }
+            ?? RemoteCheckout(id: "", projectId: project.id, machineId: machineID, path: "", remote: project.remote, createdAt: Self.now)
+        let info = WorkspaceInfo(id: id, epoch: 1, checkoutId: checkout.id, name: Self.title(of: message.typed), cwd: "",
                                  branch: "kite/\(id)", base: nil, status: .preparing, createdAt: Self.now)
-        let area = WorkArea(creating: RemoteWorkspace(machine: base.machine, project: base.project, checkout: base.checkout, workspace: info,
+        let area = WorkArea(creating: RemoteWorkspace(machine: connection.machine, project: project, checkout: checkout, workspace: info,
                                                      threads: [], instances: [], windows: []),
                             window: window, first: message)
         area.draftThread.role = role
@@ -566,8 +550,8 @@ final class AppModel {
             }
             do {
                 _ = try await client.request("/workspaces", method: "POST",
-                    body: CreateThreadRequest(prompt: message.typed, checkout: checkout, role: role?.selection, windowId: window,
-                                              messageId: message.id, id: id), as: RemoteWorkspace.self)
+                    body: CreateThreadRequest(prompt: message.typed, project: project.id, role: role?.selection, windowId: window,
+                                              messageId: message.id, id: id), timeout: 1800, as: RemoteWorkspace.self)
             } catch {
                 // 目录已经接上的（请求其实到了）留着
                 guard area.pluginClient == nil else { return }

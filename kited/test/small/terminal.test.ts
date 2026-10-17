@@ -16,9 +16,9 @@ import type { PluginInstance, WorkspaceModel } from '../../src/model.ts';
 import type { Network, NetworkStatus } from '../../src/network.ts';
 import { terminalState, type TerminalState } from '../../src/terminal/state.ts';
 import { terminalDefinitionId } from '../../src/terminal/terminals.ts';
-import { after, machine, mark, registerCheckout, startKited, waitIdle, type Kited } from '../harness.ts';
+import { after, folderWorkspace, machine, mark, startKited, waitIdle, type Kited } from '../harness.ts';
 import { item, ManualModel, Seen } from '../harness-loop.ts';
-import { ENV, newRepo, until, useTemp } from '../util.ts';
+import { ENV, newDir, until, useTemp } from '../util.ts';
 
 const terminalShell = ['/bin/sh'];
 const WAIT_MS = 2_000;
@@ -88,8 +88,8 @@ async function start(root?: string): Promise<{ k: Kited; machineId: string }> {
 }
 
 async function workspaceOf(k: Kited): Promise<string> {
-  const repo = newRepo(k.root, 'project', { 'README.md': '终端\n' }, null);
-  return (await registerCheckout(k, repo)).workspace.id;
+  const repo = newDir(k.root, 'project', { 'README.md': '终端\n' });
+  return (await folderWorkspace(k, repo)).workspace.id;
 }
 
 async function openTerminal(k: Kited, workspaceId: string): Promise<{ windowId: string; instanceId: string }> {
@@ -362,7 +362,7 @@ test('终端从进程树找出监听端口并认出 HTTP，本机端口整组转
     expect(forwards.values).toEqual([[]]);
     const ownPort = Number(new URL(k.url).port);
     const machineId = (await machine(k.url)).id;
-    const workspaceId = (await registerCheckout(k, newRepo(k.root, 'project', { 'README.md': '网页\n' }, null))).workspace.id;
+    const workspaceId = (await folderWorkspace(k, newDir(k.root, 'project', { 'README.md': '网页\n' }))).workspace.id;
     const raw = join(k.root, 'raw.js');
     const http = join(k.root, 'http.js');
     writeFileSync(raw, RAW_SCRIPT);
@@ -660,7 +660,7 @@ test('代理的 shell 运行中用户发来消息：命令转到没有窗口、o
   const model = new ManualModel();
   const k = startKited(() => model);
   kited = k;
-  const registered = await registerCheckout(k, newRepo(k.root, 'project', { 'a.txt': 'a\n' }));
+  const registered = await folderWorkspace(k, newDir(k.root, 'project', { 'a.txt': 'a\n' }));
   const workspaceId = registered.workspace.id;
   const cwd = registered.workspace.cwd;
   const started = await k.call('POST', `/workspaces/${workspaceId}/operations/agent.start`, { operationId: 'agent' });

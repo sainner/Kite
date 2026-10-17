@@ -2,7 +2,7 @@ import Foundation
 
 /// App 与工作机之间的协议号，与 kited/src/version.ts 的 PROTOCOL 一起改；不一致的工作机锁定为待更新（docs/App.md「版本」）。
 enum KiteProtocol {
-    static let version = 1
+    static let version = 2
 }
 
 /// 工作机正在运行的版本（`/machine` 的 version）：build 标识一份运行文件，源码运行时为 dev。
@@ -19,10 +19,6 @@ struct RemoteMachine: Codable, Identifiable, Equatable {
     let name: String
     let createdAt: Int
     var version: MachineVersion?
-}
-
-enum RemoteWorkspaceKind: String, Codable {
-    case root, worktree
 }
 
 /// handingOff：正在交给另一台工作机，暂不接受新的执行；transferred：执行权已流转走，这一份是冻结的旧记录。
@@ -56,7 +52,7 @@ struct RemoteProject: Codable, Identifiable, Equatable {
     let createdAt: Int
 }
 
-/// 工作机上的项目目录；同一检出可拥有根工作区和独立工作区。
+/// 项目在一台工作机上的检出：Kite 数据目录里的裸仓库，这台机器上该项目的工作区都从它开出。
 struct RemoteCheckout: Codable, Identifiable {
     let id: String
     let projectId: String
@@ -85,11 +81,23 @@ struct WorkspaceInfo: Codable, Identifiable {
     let checkoutId: String
     let name: String
     let cwd: String
-    let kind: RemoteWorkspaceKind
     let branch: String?
     let base: String?
     let status: RemoteWorkspaceStatus
     let createdAt: Int
+    /// 主线比工作区分支多出的提交数，按工作机最近一次拉取计算；还没算过、或较早的目录摘要里没有。
+    var behind: Int? = nil
+    /// 提交 PR 的工作区最近一次集成推到的分支与 PR。
+    var pullRequest: WorkspacePullRequest? = nil
+}
+
+/// 提交 PR 的工作区的 PR：url 是 PR 页面，不能自动开 PR 的平台是去开 PR 的网页、没有 number。
+struct WorkspacePullRequest: Codable, Equatable {
+    let branch: String
+    let url: String
+    var number: Int? = nil
+    /// open、merged 或 closed，随工作机的项目同步更新。
+    let state: String
 }
 
 /// 会话只持有 agent 实例的专有字段。
@@ -106,7 +114,7 @@ struct RemoteThread: Decodable {
 struct ThreadActivity: Decodable, Equatable {
     let phase: String
     let waitingForResume: Bool
-    /// 回合卡在审批（approval）或提问（question）上等人回应。
+    /// 回合卡在审批（approval）、提问（question）或密钥请求（secret）上等人回应。
     var waiting: String? = nil
     var outcome: String? = nil
     var error: Bool? = nil

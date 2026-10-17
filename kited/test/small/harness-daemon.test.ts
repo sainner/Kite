@@ -7,10 +7,10 @@ import { FileJournal, readJournal } from '../../src/harness/journal.ts';
 import type { Json, ModelItem, ModelRequest } from '../../src/harness/types.ts';
 import type { History } from '../../src/transcript/protocol.ts';
 import {
-  after, call, createWorkspace, type Kited, listSnapshots, machine, mark, openAgent, registerCheckout, startKited, waitIdle,
+  addProject, after, call, createWorkspace, folderWorkspace, type Kited, listSnapshots, machine, mark, openAgent, startKited, waitIdle,
 } from '../harness.ts';
 import { input, item, ManualModel, Seen } from '../harness-loop.ts';
-import { commitAll, git, gitOk, makeTemp, newRepo, read, writeFiles } from '../util.ts';
+import { commitMainline, git, gitOk, makeTemp, newDir, read, writeFiles } from '../util.ts';
 
 const roots: string[] = [];
 let kited: Kited | undefined;
@@ -28,14 +28,16 @@ function calledItem(id: string, name: string, args: Json): ModelItem {
 }
 
 // HTTP 线程、模型流、受管 patch/shell、git 快照与采纳跨模块交接；第二请求前必须已有完整工具结果。
+// 采纳合进的是 Kite 检出（裸仓库）的主线，导入来源的文件夹不动。
 test('默认 harness 线程的真实工具只改工作树，结果和快照先于下一请求且采纳归档保留快照', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
-  // 没有远程的项目：合回只到本机主线。给了示例远程的话，每次合回都先拉一次连不上的远程，白等一百多毫秒。
-  const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' }, null);
-  const project = await registerCheckout(kk, repo);
-  const session = await createWorkspace(kk, project.checkout.id, '建立两个文件', 'harness');
+  // 没有远程的项目：合回只到本机主线。
+  const repo = newDir(kk.root, 'project', { 'base.txt': '原始\n' });
+  const project = await addProject(kk, { path: repo });
+  const session = await createWorkspace(kk, project.id, '建立两个文件', 'harness');
+  const checkout = session.checkout.path;
 
   const first = await model.call(1);
   expect(first.request.cwd).toBe(session.workspace.cwd);
@@ -62,20 +64,22 @@ test('默认 harness 线程的真实工具只改工作树，结果和快照先�
   const snapshots = await listSnapshots(kk, session.workspace.id);
   const afterTools = snapshots.find((value) => value.toolUseIds.includes('patch-file') && value.toolUseIds.includes('shell-file'));
   expect(afterTools).toBeDefined();
-  expect(git(repo, 'show', `${afterTools!.commit}:patch.txt`)).toBe('来自 patch');
-  expect(git(repo, 'show', `${afterTools!.commit}:shell.txt`)).toBe('来自 shell');
+  expect(git(checkout, 'show', `${afterTools!.commit}:patch.txt`)).toBe('来自 patch');
+  expect(git(checkout, 'show', `${afterTools!.commit}:shell.txt`)).toBe('来自 shell');
 
   second.response.complete();
   await kk.waitEvent((event) => event.type === 'idle' && event.threadId === session.id);
   const adopted = await kk.call('POST', `/workspaces/${session.workspace.id}/adopt`);
   expect(adopted.status).toBe(200);
-  expect(adopted.body.status).toBe('adopted');
-  expect(read(join(repo, 'patch.txt'))).toBe('来自 patch\n');
-  expect(read(join(repo, 'shell.txt'))).toBe('来自 shell\n');
+  expect(adopted.body).toMatchObject({ status: 'adopted', push: { status: 'local' } });
+  expect(git(checkout, 'rev-parse', 'HEAD')).toBe(adopted.body.commit);
+  expect(git(checkout, 'show', 'HEAD:patch.txt')).toBe('来自 patch');
+  expect(git(checkout, 'show', 'HEAD:shell.txt')).toBe('来自 shell');
+  expect(existsSync(join(repo, 'patch.txt'))).toBe(false);
   const archived = await kk.call('POST', `/workspaces/${session.workspace.id}/archive`, { force: true });
   expect(archived.status).toBe(200);
   expect(existsSync(session.workspace.cwd)).toBe(false);
-  expect(gitOk(repo, 'rev-parse', '--verify', '--quiet', `refs/kite/snapshots/${session.workspace.id}`)).toBe(true);
+  expect(gitOk(checkout, 'rev-parse', '--verify', '--quiet', `refs/kite/snapshots/${session.workspace.id}`)).toBe(true);
   expect((await listSnapshots(kk, session.workspace.id)).map((value) => value.commit)).toContain(afterTools!.commit);
 }, 1000);
 
@@ -92,9 +96,8 @@ test('同一工作区 A 的请求挂着时 B 能发消息并跑完改文件的�
   };
   kited = startKited((thread) => modelOf(thread.id));
   const kk = kited;
-  const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' });
-  const project = await registerCheckout(kk, repo);
-  const a = await createWorkspace(kk, project.checkout.id, 'A 的任务', 'harness');
+  const project = await addProject(kk, { path: newDir(kk.root, 'project', { 'base.txt': '原始\n' }) });
+  const a = await createWorkspace(kk, project.id, 'A 的任务', 'harness');
   const workspaceId = a.workspace.id;
   const cwd = a.workspace.cwd;
   const aFirst = await modelOf(a.id).call(1);
@@ -141,8 +144,8 @@ test('同一工作区 A 的请求挂着时 B 能发消息并跑完改文件的�
   expect(byTool('b-patch')).toEqual(bSnapshot);
   // 新的在前：A 这一批接在 B 那一批后面，内容是整个工作区，含 B 先写的文件。
   expect(snapshots.indexOf(byTool('a-patch')!)).toBeLessThan(snapshots.indexOf(byTool('b-patch')!));
-  expect(git(repo, 'show', `${byTool('a-patch')!.commit}:b.txt`)).toBe('B 写的');
-  expect(gitOk(repo, 'cat-file', '-e', `${bSnapshot!.commit}:a.txt`)).toBe(false);
+  expect(git(a.checkout.path, 'show', `${byTool('a-patch')!.commit}:b.txt`)).toBe('B 写的');
+  expect(gitOk(a.checkout.path, 'cat-file', '-e', `${bSnapshot!.commit}:a.txt`)).toBe(false);
 }, 1000);
 
 // HTTP 采纳、git 冲突状态、自研 harness 输入来源、同一工作区线程之间的启动约束及回合结束后的自动重试必须连起来验证。
@@ -160,10 +163,10 @@ test('采纳冲突转交一个线程处理：回合期间同一工作区的其�
   };
   kited = startKited((thread) => modelOf(thread.id));
   const kk = kited;
-  // 没有远程的项目：合回只到本机主线。给了示例远程的话，每次合回都先拉一次连不上的远程，白等一百多毫秒。
-  const repo = newRepo(kk.root, 'proj', { 'c.txt': 'base\n' }, null);
-  const project = await registerCheckout(kk, repo);
-  const thread = await createWorkspace(kk, project.checkout.id, '改一下 c.txt', 'harness');
+  // 没有远程的项目：合回只到本机主线。
+  const project = await addProject(kk, { path: newDir(kk.root, 'proj', { 'c.txt': 'base\n' }) });
+  const thread = await createWorkspace(kk, project.id, '改一下 c.txt', 'harness');
+  const checkout = thread.checkout.path;
   const workspaceId = thread.workspace.id;
   (await modelOf(thread.id).call(1)).response.complete();
   await waitIdle(kk, thread.id);
@@ -173,14 +176,13 @@ test('采纳冲突转交一个线程处理：回合期间同一工作区的其�
   (await modelOf(opened.body.id).call(1)).response.complete();
   await waitIdle(kk, opened.body.id);
   writeFiles(thread.workspace.cwd, { 'c.txt': 'session\n' });
-  writeFiles(repo, { 'c.txt': 'main\n' });
-  const mainCommit = commitAll(repo, '主线改了 c');
+  const mainCommit = commitMainline(checkout, { 'c.txt': 'main\n' }, '主线改了 c');
 
   const since = mark(kk);
   const conflict = await kk.call('POST', `/workspaces/${workspaceId}/adopt`);
   expect(conflict.status).toBe(200);
   expect(conflict.body).toMatchObject({ status: 'conflict', files: ['c.txt'] });
-  expect(git(repo, 'rev-parse', 'HEAD')).toBe(mainCommit);
+  expect(git(checkout, 'rev-parse', 'HEAD')).toBe(mainCommit);
 
   // 冲突转交给其中一个线程，另一个在旁边。
   const notice = await Promise.race([...prompts.keys()].map((id) => modelOf(id).call(2).then((call) => ({ id, call }))));
@@ -210,10 +212,10 @@ test('采纳冲突转交一个线程处理：回合期间同一工作区的其�
   const adopted = await kk.waitEvent((event) => event.type === 'workspace.adopt' && event.workspaceId === workspaceId
     && event.result.status === 'adopted' && after(kk, since)(event));
   expect(adopted.type === 'workspace.adopt' && adopted.result.status === 'adopted' && adopted.result.commit)
-    .toBe(git(repo, 'rev-parse', 'HEAD'));
-  expect(gitOk(repo, 'merge-base', '--is-ancestor', mainCommit, 'HEAD')).toBe(true);
-  expect(read(join(repo, 'c.txt'))).toBe('session\n');
-  expect(git(repo, 'status', '--porcelain')).toBe('');
+    .toBe(git(checkout, 'rev-parse', 'HEAD'));
+  expect(gitOk(checkout, 'merge-base', '--is-ancestor', mainCommit, 'HEAD')).toBe(true);
+  expect(git(checkout, 'show', 'HEAD:c.txt')).toBe('session');
+  expect(git(thread.workspace.cwd, 'status', '--porcelain')).toBe('');
   await waitIdle(kk, resolver, freed);
 
   const settled = mark(kk);
@@ -228,9 +230,8 @@ test('有未采纳改动时不带 force 归档直接拒绝，正在工作的线�
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
-  const repo = newRepo(kk.root, 'proj', { 'a.txt': 'base\n' });
-  const project = await registerCheckout(kk, repo);
-  const thread = await createWorkspace(kk, project.checkout.id, '改一下 a.txt', 'harness');
+  const project = await addProject(kk, { path: newDir(kk.root, 'proj', { 'a.txt': 'base\n' }) });
+  const thread = await createWorkspace(kk, project.id, '改一下 a.txt', 'harness');
   const pending = await model.call(1);
   writeFiles(thread.workspace.cwd, { 'a.txt': 'session\n' });
 
@@ -255,17 +256,13 @@ test('同一 home 重启后用原 nativeId 续接旧 opaque 历史且不重执�
   const root = makeTemp();
   roots.push(root);
   const home = join(root, 'kite');
-  const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
+  const repo = newDir(root, 'project', { 'base.txt': '原始\n' });
   const firstModel = new ManualModel();
   let daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => firstModel });
   restarted = daemon;
   let events = new Seen<Envelope>();
   daemon.kite.bus.subscribe(undefined, (event) => events.add(event));
-  const project = await call(daemon.url, 'POST', '/checkouts', { path: repo });
-  expect(project.status).toBe(200);
-  const created = await call(daemon.url, 'POST', '/workspaces', { checkout: project.body.checkout.id, prompt: '写一次标记' });
-  expect(created.status).toBe(200);
-  const session = (await call(daemon.url, 'GET', `/threads/${created.body.threads[0].instanceId}`)).body;
+  const session = await createWorkspace(daemon, (await addProject(daemon, { path: repo })).id, '写一次标记', 'harness');
   const first = await firstModel.call(1);
   const oldCall = calledItem('write-once', 'shell', { description: '写入一次性标记', command: "printf 'once\\n' >> marker.txt" });
   await first.response.emit({ type: 'item', item: oldCall });
@@ -304,15 +301,11 @@ test('挂起请求关闭后直接归档不会执行排队消息，工作树仍�
   const root = makeTemp();
   roots.push(root);
   const home = join(root, 'kite');
-  const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
+  const repo = newDir(root, 'project', { 'base.txt': '原始\n' });
   const firstModel = new ManualModel();
   let daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => firstModel });
   restarted = daemon;
-  const project = await call(daemon.url, 'POST', '/checkouts', { path: repo });
-  expect(project.status).toBe(200);
-  const created = await call(daemon.url, 'POST', '/workspaces', { checkout: project.body.checkout.id, prompt: '首条挂起' });
-  expect(created.status).toBe(200);
-  const session = (await call(daemon.url, 'GET', `/threads/${created.body.threads[0].instanceId}`)).body;
+  const session = await createWorkspace(daemon, (await addProject(daemon, { path: repo })).id, '首条挂起', 'harness');
   const pending = await firstModel.call(1);
   const queued = await call(daemon.url, 'POST', `/threads/${session.id}/messages`, { text: '归档前排队', id: 'queued-before-archive' });
   expect(queued.status).toBe(200);
@@ -362,7 +355,7 @@ test('自研后端崩溃后的恢复阻塞只由 App 带确认的发送解除，
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
-  const project = await registerCheckout(kk, newRepo(kk.root, 'project', { 'base.txt': '原始\n' }));
+  const project = await folderWorkspace(kk, newDir(kk.root, 'project', { 'base.txt': '原始\n' }));
   const id = await openAgent(kk.call, project.workspace.id);
   expect((await kk.call('POST', `/threads/${id}/messages`, { id: 'first', text: '先正常对话一轮' })).status).toBe(200);
   await crashMidTool(kk, id, model);
@@ -414,9 +407,9 @@ test('工作区的线程崩溃后恢复阻塞时合回被拒，带确认合回�
   kited = startKited(() => model);
   const kk = kited;
   // 没有远程的项目：合回只到本机主线，不去推送。
-  const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' }, null);
-  const project = await registerCheckout(kk, repo);
-  const session = await createWorkspace(kk, project.checkout.id, '先正常对话一轮', 'harness');
+  const project = await addProject(kk, { path: newDir(kk.root, 'project', { 'base.txt': '原始\n' }) });
+  const session = await createWorkspace(kk, project.id, '先正常对话一轮', 'harness');
+  const checkout = session.checkout.path;
   await crashMidTool(kk, session.id, model);
   // 工作区是异步准备的，等首轮请求发出（crashMidTool 里）后工作树才在，这时再放要合回的改动。
   writeFiles(session.workspace.cwd, { 'w.txt': '工作区\n' });
@@ -429,11 +422,11 @@ test('工作区的线程崩溃后恢复阻塞时合回被拒，带确认合回�
     .filter((record) => record.type === 'recovery.confirmed').length;
   expect(await call(url, 'POST', adopt)).toEqual({ status: 409, body: { error: '工作区有线程正在工作或等待恢复确认' } });
   expect(confirmations()).toBe(0);
-  expect(existsSync(join(repo, 'w.txt'))).toBe(false);
+  expect(gitOk(checkout, 'cat-file', '-e', 'HEAD:w.txt')).toBe(false);
 
   const adopted = await call(url, 'POST', adopt, { confirmRecovery: true });
   expect(adopted).toMatchObject({ status: 200, body: { status: 'adopted', push: { status: 'local' } } });
-  expect(read(join(repo, 'w.txt'))).toBe('工作区\n');
+  expect(git(checkout, 'show', 'HEAD:w.txt')).toBe('工作区');
   expect(confirmations()).toBe(1);
   const state = ((await call(url, 'GET', `/threads/${session.id}/history`)).body as History).state;
   expect(state.recovery).toBeUndefined();

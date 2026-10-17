@@ -21,9 +21,11 @@ struct ProjectSettingsPage: View {
     @State private var target = ""
     @State private var migrating = false
     @State private var savingHandover = false
+    @State private var savingIntegration = false
     @State private var error: String?
 
     private var checkouts: [RemoteCheckout] { model.checkouts.filter { $0.projectId == project.id } }
+    private var remote: String? { accountProject?.remote ?? project.remote }
 
     var body: some View {
         SectionPage(header: PaneHeader(title: model.projectLabel(project), subtitle: "项目配置")) {
@@ -34,7 +36,7 @@ struct ProjectSettingsPage: View {
                 }
                 Section("远程仓库") {
                     LabeledContent("名称", value: project.name)
-                    if let remote = accountProject?.remote ?? project.remote {
+                    if let remote {
                         LabeledContent("地址") { Text(remote).textSelection(.enabled) }
                     } else {
                         LabeledContent("地址", value: "没有远程，各工作机上的检出互相同步")
@@ -43,6 +45,17 @@ struct ProjectSettingsPage: View {
                         Button(migrating ? "正在推送…" : "设为远程") { migrate() }
                             .disabled(migrating || target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
+                }
+                Section {
+                    Picker("集成方式", selection: Binding(get: { accountProject?.integration ?? "merge" }, set: { setIntegration($0) })) {
+                        Text("直接合入").tag("merge")
+                        if remote != nil { Text("提交 PR").tag("pullRequest") }
+                    }
+                    .disabled(accountProject == nil || savingIntegration || remote == nil)
+                } header: {
+                    Text("集成")
+                } footer: {
+                    Text(integrationNote)
                 }
                 Section {
                     Toggle("工作机睡眠或关机前自动换机", isOn: Binding(get: { accountProject?.autoHandover == true }, set: { setHandover(enabled: $0) }))
@@ -60,22 +73,19 @@ struct ProjectSettingsPage: View {
                     Text("打开后，工作机将要睡眠、登出、重启或关机时，把这个项目里正在工作的工作区换到另一台在线、已登录模型、满足所需环境的工作机，被打断的回合在那边接着做；有几台时优先不带电池的。空闲的工作区不动。")
                 }
                 ProjectConstraintsSection(projectID: project.id)
-                Section("检出") {
+                Section {
                     ForEach(checkouts) { checkout in
                         VStack(alignment: .leading, spacing: 6) {
                             Text(machineName(checkout)).font(Theme.body)
                             Text(checkout.path).font(Theme.caption).foregroundStyle(.secondary)
                                 .textSelection(.enabled)
-                            HStack {
-                                if let root = model.workspaces.first(where: {
-                                    $0.remote?.checkout.id == checkout.id && $0.remote?.workspace.kind == .root
-                                }) {
-                                    Button("打开现场") { model.selectWorkspace(root.id) }
-                                }
-                                Button("创建工作区") { model.newWorkspace = .checkout(checkout.id) }
-                            }
                         }
                     }
+                    Button("创建工作区") { model.newWorkspace = .inProject(project.id) }
+                } header: {
+                    Text("检出")
+                } footer: {
+                    Text("检出是 Kite 在各台工作机数据目录里的仓库，工作区都从它开出；在一台还没有检出的工作机上建工作区时自动 clone。你自己的文件夹 Kite 不碰。")
                 }
                 if let error { Text(error).foregroundStyle(Theme.danger) }
             }
@@ -85,6 +95,25 @@ struct ProjectSettingsPage: View {
                 catch is CancellationError { }
                 catch { self.error = error.localizedDescription }
             }
+        }
+    }
+
+    private var integrationNote: String {
+        guard remote != nil else { return "没有远程的项目只能直接合入：合进本机的主线，其他工作机同步时快进过来。" }
+        let base = accountProject?.integration == "pullRequest"
+            ? "集成时把工作区分支推到远程并开 PR（自动开 PR 只支持 GitHub，其他平台给出去网页上开 PR 的链接）。"
+            : "集成时把工作区的改动合进主线，再推送到远程。"
+        return accountProject?.integrationReason.map { "\(base)按仓库情况自动选择：\($0)。" } ?? base
+    }
+
+    private func setIntegration(_ value: String) {
+        guard value != (accountProject?.integration ?? "merge") else { return }
+        savingIntegration = true
+        error = nil
+        Task {
+            defer { savingIntegration = false }
+            do { accountProject = try await model.setProjectIntegration(project.id, integration: value) }
+            catch { self.error = error.localizedDescription }
         }
     }
 

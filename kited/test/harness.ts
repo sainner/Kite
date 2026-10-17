@@ -3,6 +3,8 @@
  * 账号级数据（项目登记、凭据、资源库）在工作机之间同步：几台 kited 要互相看到时用 connect 让它们互为组网对端，
  * 要等的数据用 synced 等。没有远程的项目以各工作机的检出互为远程，别的工作机按目录摘要找到有检出的那台，见 registerBeforeStart。
  * 需要有远程的项目时用 fake-git.ts 的 Git 平台替身。
+ * 所有工作都在工作区里做：按文件夹添加项目并建好一个打开的工作区用 folderWorkspace，检出是 Kite 数据目录里的裸仓库，
+ * 测试的文件夹只是导入来源，Kite 不改它。
  * 另有 spawnKited：按路径起 kited 子进程，供进程被杀和启动时环境隔离的测试使用。
  */
 import { rmSync } from 'node:fs';
@@ -12,6 +14,7 @@ import type { Envelope } from '../src/events.ts';
 import type { AgentDefinition } from '../src/agents/definition.ts';
 import type { Model } from '../src/harness/types.ts';
 import type { Candidate } from '../src/account-data/directory.ts';
+import type { Integration, RegisteredProject } from '../src/account-data/registry.ts';
 import type { Machine, Thread, ThreadContext, WorkspaceModel } from '../src/model.ts';
 import type { Role } from '../src/roles.ts';
 import type { RuntimeOptions } from '../src/runtime.ts';
@@ -118,20 +121,16 @@ export function startKited(
 }
 
 /**
- * 在 root（之后交给 startKited 的 root 选项）的数据目录上先登记这些本机文件夹，再停掉，返回各自的根工作区聚合。
- * 工作机的目录摘要（有哪些检出）启动时写一次，之后检出的变化要合并 1 秒才写；别的工作机按这份摘要找有检出的工作机
+ * 在 root（之后交给 startKited 的 root 选项）的数据目录上先添加这些本机文件夹为项目（没有 origin 的导入成检出），再停掉，
+ * 返回登记表里的项目。工作机的目录摘要（有哪些检出）启动时写一次，之后检出的变化要合并 1 秒才写；别的工作机按这份摘要找有检出的工作机
  * （没有远程的项目从那里 clone 和拉取），先登记再起，测试就不用等这 1 秒。起来以后还要改检出或工作区的，改用 catalogDelayMs: 0。
  */
-export async function registerBeforeStart(root: string, paths: string[]): Promise<WorkspaceModel[]> {
+export async function registerBeforeStart(root: string, paths: string[]): Promise<RegisteredProject[]> {
   const daemon = startDaemon({ home: join(root, 'kite'), port: 0, lightTasks: false });
   try {
-    const models: WorkspaceModel[] = [];
-    for (const path of paths) {
-      const r = await call(daemon.url, 'POST', '/checkouts', { path });
-      if (r.status !== 200) throw new Error(`登记 ${path} 失败：${r.status} ${JSON.stringify(r.body)}`);
-      models.push(r.body as WorkspaceModel);
-    }
-    return models;
+    const projects: RegisteredProject[] = [];
+    for (const path of paths) projects.push(await addProject(daemon, { path }));
+    return projects;
   } finally { await daemon.stop(); }
 }
 
@@ -176,10 +175,52 @@ export function chatgptLogin(home: string): void {
 
 // ---- 接口的常用组合 ----
 
-export async function registerCheckout(k: Kited, path: string): Promise<WorkspaceModel> {
-  const r = await k.call('POST', '/checkouts', { path });
-  if (r.status !== 200) throw new Error(`登记 ${path} 失败：${r.status} ${JSON.stringify(r.body)}`);
-  return r.body as WorkspaceModel;
+/** 一台能发请求的 kited：startKited 得到的 Kited，或测试自己 startDaemon 起的 Daemon。 */
+export type Target = Kited | Daemon;
+const kiteOf = (t: Target) => 'daemon' in t ? t.daemon.kite : t.kite;
+const requestOf = (t: Target): Request => 'daemon' in t ? t.call : (method, path, body) => call(t.url, method, path, body);
+
+/**
+ * 添加项目（POST /project-registry），返回登记表里的项目。path 是这台工作机上的文件夹：有 origin 的按远程登记（要访问得到，
+ * 示例远程不行），没有的导入成没有远程的项目、在数据目录里建检出；remote 只登记，建工作区时才 clone。
+ */
+export async function addProject(t: Target, source: { path: string } | { remote: string },
+  options: { integration?: Integration; envFiles?: Array<{ path: string; value?: string }> } = {}): Promise<RegisteredProject> {
+  const r = await requestOf(t)('POST', '/project-registry', { ...source, ...options });
+  if (r.status !== 200) throw new Error(`添加项目 ${JSON.stringify(source)} 失败：${r.status} ${JSON.stringify(r.body)}`);
+  return r.body as RegisteredProject;
+}
+
+/** 等工作区准备完（open）；准备失败（failed）时抛错。已经准备完的立即返回。 */
+export async function workspaceOpened(t: Target, workspaceId: string, timeoutMs = 3_000): Promise<WorkspaceModel> {
+  const kite = kiteOf(t);
+  await new Promise<void>((resolve, reject) => {
+    const settle = (status: string | undefined) => {
+      if (status === 'open') { done(); resolve(); }
+      else if (status === 'failed') { done(); reject(new Error(`工作区 ${workspaceId} 准备失败`)); }
+    };
+    const timer = setTimeout(() => { done(); reject(new Error(`等工作区 ${workspaceId} 准备完超时`)); }, timeoutMs);
+    const unsubscribe = kite.bus.subscribe(undefined, (e) => { if (e.type === 'workspace.changed' && e.workspaceId === workspaceId) settle(e.status); });
+    const done = () => { clearTimeout(timer); unsubscribe(); };
+    settle(kite.store.workspace(workspaceId)?.status);
+  });
+  return kite.workspace(workspaceId);
+}
+
+/**
+ * 为项目建一个不带线程的工作区（默认角色，先写一份 ChatGPT 登录让环境检查通过），等它准备完，返回打开后的聚合。
+ * 本机没有检出时 kited 先 clone。
+ */
+export async function openWorkspace(t: Target, projectId: string, name = ''): Promise<WorkspaceModel> {
+  chatgptLogin(kiteOf(t).home);
+  const r = await requestOf(t)('POST', '/workspaces', { project: projectId, name });
+  if (r.status !== 200) throw new Error(`建工作区失败：${r.status} ${JSON.stringify(r.body)}`);
+  return workspaceOpened(t, (r.body as WorkspaceModel).workspace.id);
+}
+
+/** 按文件夹添加项目并建好一个已打开的空工作区，给只需要一个工作区来开代理、写文件、跑工具的测试用。 */
+export async function folderWorkspace(t: Target, path: string): Promise<WorkspaceModel> {
+  return openWorkspace(t, (await addProject(t, { path })).id);
 }
 
 /** 原内置 Claude 定义的默认模型；后端由模型推出，传这个模型就得到 Claude 线程。 */
@@ -218,16 +259,29 @@ export async function openAgent(request: Request, workspaceId: string, model?: A
   return id;
 }
 
-/** 新建工作区及首线程；返回线程控制和运行时所需的完整上下文。建工作区只能选角色，Claude 首线程用 claudeRole。 */
+/**
+ * 为项目新建工作区及首线程，不等准备完；返回线程控制和运行时所需的完整上下文。建工作区只能选角色，Claude 首线程用 claudeRole。
+ * 建之前 kited 检查所选角色默认模型的厂商在本机登录：自研后端写一份 ChatGPT 登录；Claude 只在这次请求期间设 CLAUDE_CODE_OAUTH_TOKEN
+ * （kited 在请求里读它判断已登录；Claude Code 要等工作区准备完才起，那时已经换回原来的环境）。
+ */
 export async function createWorkspace(
-  k: Kited, checkout: string, prompt: string, runtime: Thread['runtime'] = 'claude',
+  t: Target, projectId: string, prompt: string, runtime: Thread['runtime'] = 'claude',
 ): Promise<ThreadContext> {
-  const role = runtime === 'claude' ? await claudeRole(k.call) : undefined;
-  const r = await k.call('POST', '/workspaces', { checkout, prompt, ...(role ? { role } : {}) });
+  const request = requestOf(t);
+  const role = runtime === 'claude' ? await claudeRole(request) : undefined;
+  if (!role) chatgptLogin(kiteOf(t).home);
+  const token = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  if (role) process.env.CLAUDE_CODE_OAUTH_TOKEN = 'test-claude-login';
+  let r: { status: number; body: any };
+  try { r = await request('POST', '/workspaces', { project: projectId, prompt, ...(role ? { role } : {}) }); }
+  finally {
+    if (token === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    else process.env.CLAUDE_CODE_OAUTH_TOKEN = token;
+  }
   if (r.status !== 200) throw new Error(`建工作区失败：${r.status} ${JSON.stringify(r.body)}`);
   const thread = (r.body as WorkspaceModel).threads[0];
   if (!thread) throw new Error('建工作区后没有首线程');
-  const view = await k.call('GET', `/threads/${thread.instanceId}`);
+  const view = await request('GET', `/threads/${thread.instanceId}`);
   if (view.status !== 200) throw new Error(`取线程 ${thread.instanceId} 失败：${view.status} ${JSON.stringify(view.body)}`);
   return view.body as ThreadContext;
 }

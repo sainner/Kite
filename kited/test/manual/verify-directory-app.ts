@@ -7,8 +7,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Candidate } from '../../src/account-data/directory.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
+import type { RegisteredProject } from '../../src/account-data/registry.ts';
 import type { Machine, WorkspaceModel } from '../../src/model.ts';
-import { newRepo } from '../util.ts';
+import { newRepo, writeFiles } from '../util.ts';
 
 async function call(url: string, method: string, path: string, body?: unknown, machineId?: string) {
   const headers: Record<string, string> = {};
@@ -27,6 +28,35 @@ async function machine(url: string): Promise<Machine> {
   const response = await call(url, 'GET', '/machine');
   if (response.status !== 200) throw new Error('读取工作机身份失败');
   return response.body as Machine;
+}
+
+/** 建工作区前 kited 按默认角色的模型检查厂商已登录：写一份一小时后过期的 ChatGPT 订阅登录（同 test/harness.ts 的 chatgptLogin）。 */
+function chatgptLogin(home: string): void {
+  const encoded = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const accessToken = `${encoded({ alg: 'RS256', typ: 'JWT' })}.${encoded({ exp: Math.floor(Date.now() / 1000) + 3600 })}.${encoded('仅验收')}`;
+  writeFiles(home, { 'auth/chatgpt/auth.json': JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: accessToken, account_id: 'verification-account' } }) });
+}
+
+/** 为项目建工作区（本机没有检出时 kited 先 clone），等它准备完（open），返回打开后的完整聚合。 */
+async function openWorkspace(daemon: Daemon, machineId: string, projectId: string): Promise<WorkspaceModel> {
+  const created = await call(daemon.url, 'POST', '/workspaces', { project: projectId }, machineId);
+  if (created.status !== 200) throw new Error(`建工作区失败：${created.status} ${JSON.stringify(created.body)}`);
+  const id = (created.body as WorkspaceModel).workspace.id;
+  await new Promise<void>((resolve, reject) => {
+    const settle = (status: string | undefined) => {
+      if (status === 'open') { done(); resolve(); }
+      else if (status === 'failed') { done(); reject(new Error(`工作区 ${id} 准备失败`)); }
+    };
+    const timer = setTimeout(() => { done(); reject(new Error(`等工作区 ${id} 准备完超时`)); }, 10_000);
+    const unsubscribe = daemon.kite.bus.subscribe(undefined, (event) => {
+      if (event.type === 'workspace.changed' && event.workspaceId === id) settle(event.status);
+    });
+    const done = () => { clearTimeout(timer); unsubscribe(); };
+    settle(daemon.kite.store.workspace(id)?.status);
+  });
+  const opened = await call(daemon.url, 'GET', `/workspaces/${id}`, undefined, machineId);
+  if (opened.status !== 200) throw new Error(`读取工作区 ${id} 失败：${opened.status}`);
+  return opened.body as WorkspaceModel;
 }
 
 function latch() {
@@ -52,11 +82,14 @@ async function main() {
   let holdB = false;
   let completed = false;
   let control: Bun.Server<undefined> | undefined;
-  // 两台工作机互为组网对端：项目登记与目录摘要随账号级数据同步，B 从 A 的检出 clone 没有远程的项目，得到同一项目。
+  // 两台工作机互为组网对端：项目登记与目录摘要随账号级数据同步，B 为没有远程的项目建工作区时从 A 的检出 clone，得到同一项目。
   try {
     const peers: Candidate[][] = [[], []];
     for (const [index, name] of ['a', 'b'].entries()) {
-      daemons.push(startDaemon({ home: join(root, `kite-${name}`), port: 0, lightTasks: false,
+      const home = join(root, `kite-${name}`);
+      chatgptLogin(home);
+      // catalogDelayMs: 0 让检出变化立即写进目录摘要，B 不必等 1 秒的合批才知道从哪台 clone。
+      daemons.push(startDaemon({ home, port: 0, lightTasks: false, catalogDelayMs: 0,
         model: () => ({ async *stream() { yield { type: 'completed', responseId: 'directory-verification' }; } }),
         directory: { candidates: () => peers[index]! } }));
     }
@@ -65,12 +98,13 @@ async function main() {
     peers[1]!.push({ address: a.url, online: true });
     await Promise.all([a.kite.directory.refresh(), b.kite.directory.refresh()]);
     const [machineA, machineB] = await Promise.all([machine(a.url), machine(b.url)]);
-    const first = await call(a.url, 'POST', '/checkouts', { path: newRepo(root, 'repo-a', { 'base.txt': 'A\n' }, null) }, machineA.id);
-    if (first.status !== 200) throw new Error('登记 A 检出失败');
-    const shared = first.body as WorkspaceModel;
-    // A 的目录摘要在检出变化后合并约 1 秒才写，B 从摘要里看到这份检出才知道从哪台 clone。
-    const ready = () => !!b.kite.registry.get(shared.project.id) && b.kite.directory.entries()
-      .some((entry) => entry.id === machineA.id && entry.snapshot?.checkouts.some((checkout) => checkout.projectId === shared.project.id));
+    const added = await call(a.url, 'POST', '/project-registry', { path: newRepo(root, 'repo-a', { 'base.txt': 'A\n' }, null) }, machineA.id);
+    if (added.status !== 200) throw new Error(`在 A 添加项目失败：${added.status} ${JSON.stringify(added.body)}`);
+    const projectId = (added.body as RegisteredProject).id;
+    const shared = await openWorkspace(a, machineA.id, projectId);
+    // B 要同步到项目登记，并从 A 的目录摘要里看到这份检出，才知道从哪台 clone。
+    const ready = () => !!b.kite.registry.get(projectId) && b.kite.directory.entries()
+      .some((entry) => entry.id === machineA.id && entry.snapshot?.checkouts.some((checkout) => checkout.projectId === projectId));
     await new Promise<void>((resolve, reject) => {
       if (ready()) return resolve();
       const timer = setTimeout(() => { unsubscribe(); reject(new Error('B 没有同步到项目登记和 A 的检出')); }, 10_000);
@@ -81,9 +115,7 @@ async function main() {
         resolve();
       });
     });
-    const second = await call(b.url, 'POST', '/checkouts', { project: shared.project.id, path: join(root, 'repo-b') }, machineB.id);
-    if (second.status !== 200) throw new Error('登记 B 的同身份项目失败');
-    const other = second.body as WorkspaceModel;
+    const other = await openWorkspace(b, machineB.id, projectId);
     const opened = await call(a.url, 'POST', `/workspaces/${shared.workspace.id}/windows`, {
       id: crypto.randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },
     }, machineA.id);

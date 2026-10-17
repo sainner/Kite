@@ -22,9 +22,16 @@ try {
   const path = join(root, '待办插件预览');
   mkdirSync(path);
   writeFileSync(join(path, 'README.md'), '# 待办插件预览\n\n此目录只用于本地功能演示，退出演示服务后清理。\n');
+  // 建工作区要求这台工作机登录了所选模型的厂商；演示不调用模型，写一份一小时后过期的占位登录。
+  const encoded = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const token = `${encoded({ alg: 'none' })}.${encoded({ exp: Math.floor(Date.now() / 1000) + 3600 })}.${encoded('仅演示')}`;
+  mkdirSync(join(root, 'data', 'auth', 'chatgpt'), { recursive: true });
+  writeFileSync(join(root, 'data', 'auth', 'chatgpt', 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: token, account_id: 'preview' } }));
   daemon = startDaemon({ home: join(root, 'data'), port: 5483 });
   daemon.kite.catalog.install(await buildTodoPackage());
-  const { workspace } = await daemon.kite.registerCheckout({ path });
+  const project = await daemon.kite.addProject({ path });
+  const { workspace } = await daemon.kite.createWorkspace(project.id, '待办插件预览');
+  while (daemon.kite.workspace(workspace.id).workspace.status === 'preparing') await Bun.sleep(50);
   const window = await daemon.kite.openWindow(workspace.id, { id: crypto.randomUUID(), content: { kind: 'create', definitionId: 'custom.todo.v1' } });
   for (const title of ['试着添加和完成待办', '关闭窗口，再从侧栏打开同一实例']) {
     await daemon.kite.operations.invoke({ kind: 'ui' }, workspace.id, 'plugin.call', {

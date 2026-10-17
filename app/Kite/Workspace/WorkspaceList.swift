@@ -21,6 +21,8 @@ struct WorkspaceRow<Interaction: View>: View {
                     let status = model.deviceStatus(model.connection(for: workspace))
                     if !status.ready {
                         Text(status.title).font(Theme.caption).foregroundStyle(.secondary)
+                    } else if let note = gitNote {
+                        Text(note.title).font(Theme.caption).foregroundStyle(.secondary).help(note.help)
                     }
                     Spacer(minLength: 0)
                     if detached { TablerIcon(.tablerAppWindow).font(Theme.caption) }
@@ -46,7 +48,7 @@ struct WorkspaceRow<Interaction: View>: View {
                         .accessibilityLabel("版本操作")
                         Menu {
                             Button("创建工作区…") {
-                                if let checkout = workspace.remote?.checkout { model.newWorkspace = .checkout(checkout.id) }
+                                if let project = workspace.remote?.project { model.newWorkspace = .inProject(project.id) }
                             }
                             Divider()
                             WorkspaceGitActions(workspace: workspace)
@@ -61,7 +63,7 @@ struct WorkspaceRow<Interaction: View>: View {
                         Button { model.archiveRequest = workspace } label: {
                             TablerIcon(.tablerArchive, size: 14)
                         }
-                        .disabled(workspace.remote?.workspace.kind != .worktree || !model.isConnected(workspace))
+                        .disabled(workspace.remote == nil || !model.isConnected(workspace) || model.lineArea?.id == workspace.id)
                         .help("归档工作区")
                         .accessibilityLabel("归档工作区")
                         Menu {
@@ -84,20 +86,27 @@ struct WorkspaceRow<Interaction: View>: View {
         }
         .help(workspace.remote.map { "\($0.machine.name) · \($0.workspace.cwd)" } ?? workspace.title)
     }
+
+    /// 行尾的版本提示：PR 合并了提示归档，主线有新提交时提示落后几个。
+    private var gitNote: (title: String, help: String)? {
+        guard let info = workspace.remote?.workspace else { return nil }
+        if info.pullRequest?.state == "merged" { return ("PR 已合并", "PR 已经合并，可以归档这个工作区") }
+        if let behind = info.behind, behind > 0 { return ("落后 \(behind)", "主线有 \(behind) 个新提交，右键选同步主线") }
+        return nil
+    }
 }
 
-/// 项目内保留检出归属，根工作区和独立工作区都可直接进入。
+/// 项目内按所在的工作机分组（每台一个检出）；还没有工作区的项目也列出，没有分组。
 struct WorkspaceGroup: Identifiable {
     struct Checkout: Identifiable {
         let id: String
-        var root: WorkArea?
         var workspaces: [WorkArea]
     }
     let id: String
     let title: String?
     var checkouts: [Checkout]
 
-    var workspaces: [WorkArea] { checkouts.flatMap { [$0.root].compactMap { $0 } + $0.workspaces } }
+    var workspaces: [WorkArea] { checkouts.flatMap(\.workspaces) }
 }
 
 extension AppModel {
@@ -105,19 +114,25 @@ extension AppModel {
     var workspaceGroups: [WorkspaceGroup] {
         var groups: [WorkspaceGroup] = []
         let line = lineArea?.id
+        let label = projectLabels()
         for area in workspaces {
             // Line 的工作区从侧栏顶部的标志进，不列在项目一栏里
             guard let remote = area.remote, area.id != line else { continue }
             if !groups.contains(where: { $0.id == remote.project.id }) {
-                groups.append(.init(id: remote.project.id, title: projectLabel(remote.project), checkouts: []))
+                groups.append(.init(id: remote.project.id, title: label(remote.project), checkouts: []))
             }
             let group = groups.firstIndex { $0.id == remote.project.id }!
-            if let checkout = groups[group].checkouts.firstIndex(where: { $0.id == remote.checkout.id }) {
-                if remote.workspace.kind == .root { groups[group].checkouts[checkout].root = area }
-                else { groups[group].checkouts[checkout].workspaces.append(area) }
+            // 每台工作机上一个项目只有一个检出，按工作机归组（新建中的还没有检出）
+            if let checkout = groups[group].checkouts.firstIndex(where: { $0.id == remote.machine.id }) {
+                groups[group].checkouts[checkout].workspaces.append(area)
             } else {
-                groups[group].checkouts.append(.init(id: remote.checkout.id, root: remote.workspace.kind == .root ? area : nil, workspaces: remote.workspace.kind == .root ? [] : [area]))
+                groups[group].checkouts.append(.init(id: remote.machine.id, workspaces: [area]))
             }
+        }
+        // 登记了还没有工作区的项目排在后面
+        let lineProject = lineArea?.remote?.project.id
+        for project in account.registeredProjects where project.id != lineProject && !groups.contains(where: { $0.id == project.id }) {
+            groups.append(.init(id: project.id, title: label(project.project), checkouts: []))
         }
         return groups
     }
@@ -147,7 +162,6 @@ private struct WorkspaceProjectSection<Row: View>: View {
     var onSelect: () -> Void = {}
     @ViewBuilder let row: (WorkArea) -> Row
     @Environment(AppModel.self) private var model
-    @Environment(\.openWindow) private var openWindow
     @Environment(\.sidebarMetrics) private var metrics
     @Environment(\.toast) private var toast
     @State private var isExpanded = true
@@ -186,34 +200,23 @@ private struct WorkspaceProjectSection<Row: View>: View {
                 .help("项目配置")
                 .accessibilityLabel("\(group.title ?? "项目")的配置")
                 Button {
-                    if checkouts.count == 1, let root = checkouts.first?.root {
-                        selectRoot(root)
-                    } else {
-                        isExpanded.toggle()
-                    }
+                    if checkouts.isEmpty { model.newWorkspace = .inProject(group.id) } else { isExpanded.toggle() }
                 } label: {
                     SidebarListLabel(title: group.title ?? "项目", selected: selected)
                         .padding(.leading, 8)
                 }
                 .buttonStyle(SidebarButtonStyle(foreground: foreground))
-                .help(checkouts.count == 1 ? "打开现场" : (isExpanded ? "收起项目" : "展开项目"))
+                .help(checkouts.isEmpty ? "还没有工作区，创建一个" : (isExpanded ? "收起项目" : "展开项目"))
                 .contextMenu {
-                    if checkouts.count == 1, let root = checkouts.first?.root {
-                        WorkspaceGitActions(workspace: root)
-                        Divider()
-                    }
+                    Button("创建工作区…") { model.newWorkspace = .inProject(group.id) }
+                    Divider()
                     // Line 所在的项目不能删，Line 在别的工作机上时接请求的那台查不到，这里也拦着
                     MenuButton("删除项目…", role: .destructive) { confirmingDeletion = true }
                         .disabled(model.availableWorkers.isEmpty || model.lineArea?.remote?.project.id == group.id)
                 }
                 .accessibilityAddTraits(selected ? .isSelected : [])
                 Button {
-                    if let checkout = group.checkouts.first(where: { checkout in
-                        (checkout.root.map { model.isConnected($0) } ?? false)
-                            || checkout.workspaces.contains(where: { model.isConnected($0) })
-                    }) ?? group.checkouts.first {
-                        model.newWorkspace = .checkout(checkout.id)
-                    }
+                    model.newWorkspace = .inProject(group.id)
                 } label: {
                     TablerIcon(.tablerPlus)
                 }
@@ -229,19 +232,16 @@ private struct WorkspaceProjectSection<Row: View>: View {
                     ForEach(checkouts) { checkout in
                         let workspaces = checkout.workspaces
                         let selectedIndex = workspaces.firstIndex { $0.id == current }
-                        let checkoutSelected = selectedIndex != nil || (current != nil && checkout.root?.id == current)
+                        let checkoutSelected = selectedIndex != nil
                         SidebarStickySection(enabled: checkoutSelected && checkouts.count > 1,
                                              topInset: metrics.rowHeight,
                                              headerHeight: checkouts.count > 1 ? metrics.subheaderHeight : 0) {
                             if checkouts.count > 1 {
-                                SidebarSubheader(title: (checkout.root ?? workspaces.first)?.remote?.machine.name ?? "工作机",
-                                                 selected: checkoutSelected, help: "打开现场",
-                                                 open: checkout.root.map { root in { selectRoot(root) } },
-                                                 add: SidebarSubheaderAdd(help: "创建工作区", label: "在此检出中创建工作区") {
-                                                     model.newWorkspace = .checkout(checkout.id)
-                                                 }) {
-                                    if let root = checkout.root { WorkspaceGitActions(workspace: root) }
-                                }
+                                SidebarSubheader(title: workspaces.first?.remote?.machine.name ?? "工作机",
+                                                 selected: checkoutSelected, help: "工作机", open: nil,
+                                                 add: SidebarSubheaderAdd(help: "创建工作区", label: "在这个项目中创建工作区") {
+                                                     model.newWorkspace = .inProject(group.id)
+                                                 })
                             }
                         } content: {
                             SidebarTreeRows(items: workspaces, selectedIndex: selectedIndex,
@@ -258,8 +258,18 @@ private struct WorkspaceProjectSection<Row: View>: View {
             Button("删除", role: .destructive) { delete() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("「\(group.title ?? "项目")」会从各台工作机上移除：停止其中的线程，删除工作区、对话和项目专用的密钥。检出目录里的文件不动，工作区里没合回主线的改动存成快照留在检出的 Git 里。")
+            Text(deletionMessage)
         }
+    }
+
+    /// 删除会丢掉 Kite 检出里没集成的改动：列出还没归档的工作区；没有远程的项目，各工作机的检出就是全部副本。
+    private var deletionMessage: String {
+        let open = group.workspaces.map(\.title)
+        let remote = model.knownProjects.first { $0.id == group.id }?.remote
+        var lines = ["「\(group.title ?? "项目")」会从各台工作机上移除：停止其中的线程，删除工作区、对话、项目专用的密钥和 Kite 的检出。你自己的文件夹不受影响。"]
+        if !open.isEmpty { lines.append("这些工作区里没集成的改动会一起丢失：\(open.joined(separator: "、"))。") }
+        if remote == nil { lines.append("这个项目没有远程，各工作机的检出就是它的全部副本，删除后只剩导入时的原文件夹。") }
+        return lines.joined(separator: "\n\n")
     }
 
     /// 删除成功后项目从列表里消失，提示由外层的 toast 显示。
@@ -271,12 +281,4 @@ private struct WorkspaceProjectSection<Row: View>: View {
         }
     }
 
-    private func selectRoot(_ root: WorkArea) {
-        if model.detached.contains(root.id) {
-            openWindow(id: "workspace", value: root.id)
-        } else {
-            model.selectWorkspace(root.id)
-        }
-        onSelect()
-    }
 }

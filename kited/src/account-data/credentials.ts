@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { KiteError } from '../errors.ts';
 import type { GitCredential } from '../git-credential.ts';
-import { secretName, secretReference, secretValue, type ResolvedSecret, type SecretMetadata } from '../secrets.ts';
+import { secretName, secretPath, secretReference, secretValue, type ResolvedSecret, type SecretMetadata } from '../secrets.ts';
 import type { SpeechProvider } from '../voice/models.ts';
 import type { AccountData } from './store.ts';
 
@@ -30,7 +30,7 @@ export type CredentialType = z.infer<typeof credentialType>;
 const fields: Record<CredentialType, { name: z.ZodType<string>; meta: z.ZodType<Record<string, unknown>>; secret: z.ZodType<Record<string, string | undefined>> }> = {
   secret: {
     name: secretName,
-    meta: z.object({ kind: secretValue.shape.kind }).strict(),
+    meta: z.object({ kind: secretValue.shape.kind, path: secretPath.optional() }).strict(),
     secret: z.object({ value: secretValue.shape.value }).strict(),
   },
   git: {
@@ -85,6 +85,7 @@ export class Credentials {
     }
     const input = this.input(body.type, { ...body, secret: body.secret ?? null });
     if (this.find(body.type, body.projectId ?? null, input.name)) throw new KiteError('同名凭据已存在', 409);
+    this.assertPath(input.meta, body.projectId ?? null);
     const now = Date.now();
     return this.save(crypto.randomUUID(), { type: body.type, projectId: body.projectId ?? null, name: input.name, meta: input.meta,
       createdAt: now, updatedAt: now, secret: input.secret });
@@ -105,6 +106,7 @@ export class Credentials {
     }
     const other = this.find(existing.type, existing.projectId, input.name);
     if (other && other.id !== id) throw new KiteError('同名凭据已存在', 409);
+    this.assertPath(input.meta, existing.projectId, id);
     const secret = input.secret ?? await this.secret(id);
     return this.save(id, { ...existing, name: input.name, meta: input.meta, updatedAt: Date.now(), secret });
   }
@@ -119,9 +121,55 @@ export class Credentials {
   /** 执行能用的共享密钥：账号共享的，加上当前项目专用的。 */
   available(projectId?: string): Array<SecretMetadata & { reference: string }> {
     const scoped = (scope: string | null) => this.list('secret', scope)
-      .map(({ name, meta, updatedAt }) => ({ name, kind: meta.kind as SecretMetadata['kind'], updatedAt, projectId: scope,
-        reference: `{${scope ? 'project' : 'account'}.${name}}` }));
+      .map(({ name, meta, updatedAt }) => ({ name, kind: meta.kind as SecretMetadata['kind'], ...(meta.path ? { path: meta.path as string } : {}),
+        updatedAt, projectId: scope, reference: `{${scope ? 'project' : 'account'}.${name}}` }));
     return [...scoped(null), ...(projectId ? scoped(projectId) : [])];
+  }
+
+  /** 设了路径的项目密钥，按凭据 ID：宿主据此知道哪些文件要写进哪个项目的工作区。 */
+  secretPaths(): Map<string, { projectId: string; path: string }> {
+    return new Map(this.entries().flatMap((entry) => entry.type === 'secret' && entry.projectId && typeof entry.meta.path === 'string'
+      ? [[entry.id, { projectId: entry.projectId, path: entry.meta.path }] as const] : []));
+  }
+
+  /** 项目设了路径的文件密钥与内容，写进工作区用。 */
+  async pathSecrets(projectId: string): Promise<Array<{ path: string; value: string }>> {
+    const files = this.list('secret', projectId).filter((entry) => typeof entry.meta.path === 'string');
+    return (await Promise.all(files.map(async (entry) => {
+      const value = (await this.secret(entry.id))?.value;
+      return value ? [{ path: entry.meta.path as string, value }] : [];
+    }))).flat();
+  }
+
+  /** 同名的密钥是否已存在。 */
+  hasSecret(projectId: string | null, name: string): boolean { return !!this.find('secret', projectId, name); }
+
+  /** 存一条密钥：同范围同名的已有就替换内容（类型不变），没有就新建。 */
+  async saveSecret(projectId: string | null, name: string, kind: 'text' | 'file', value: string): Promise<Credential> {
+    const found = this.find('secret', projectId, name);
+    if (found) return this.update(found.id, { secret: { value } });
+    return this.create({ type: 'secret', name, ...(projectId ? { projectId } : {}), meta: { kind }, secret: { value } });
+  }
+
+  /** 项目里设在 path 的文件密钥的内容；没有时为 undefined。 */
+  async fileSecret(projectId: string, path: string): Promise<string | undefined> {
+    const found = this.list('secret', projectId).find((entry) => entry.meta.path === path);
+    return found && ((await this.secret(found.id))?.value ?? '');
+  }
+
+  /** 存一条设了路径的项目密钥：项目里已有设在这个路径的就换内容，没有就新建，名称按路径起。 */
+  async saveFileSecret(projectId: string, path: string, value: string): Promise<Credential> {
+    const found = this.list('secret', projectId).find((entry) => entry.meta.path === path);
+    if (found) return this.update(found.id, { secret: { value } });
+    return this.create({ type: 'secret', name: this.nameFor(projectId, path), projectId, meta: { kind: 'file', path }, secret: { value } });
+  }
+
+  /** 按路径起的密钥名：.env → env，apps/web/.env.local → apps-web-env-local；重名时加数字。 */
+  private nameFor(projectId: string, path: string): string {
+    const base = (path.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^[^A-Za-z]+|-+$/g, '') || 'env').slice(0, 56);
+    let name = base;
+    for (let n = 2; this.find('secret', projectId, name); n++) name = `${base}-${n}`;
+    return name;
   }
 
   async resolve(references: string[], projectId?: string): Promise<ResolvedSecret[]> {
@@ -181,6 +229,14 @@ export class Credentials {
   private async secret(id: string): Promise<Record<string, string | undefined> | undefined> {
     const found = this.data.get('credential', id);
     return found && (await this.data.unseal('credential', found.body)).secret as Record<string, string | undefined> | undefined;
+  }
+
+  /** 路径只用于项目专用的文件密钥，同一项目里不能重复。 */
+  private assertPath(meta: Record<string, unknown>, projectId: string | null, self?: string): void {
+    if (meta.path === undefined) return;
+    if (!projectId || meta.kind !== 'file') throw new KiteError('只有项目专用的文件密钥可以设路径', 400);
+    const clash = this.list('secret', projectId).find((entry) => entry.meta.path === meta.path && entry.id !== self);
+    if (clash) throw new KiteError(`项目里已有设在 ${meta.path as string} 的密钥：${clash.name}`, 409);
   }
 
   private assertProject(id: string): void {

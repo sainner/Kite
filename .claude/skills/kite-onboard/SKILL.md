@@ -5,7 +5,7 @@ description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录�
 
 # Kite 项目规范
 
-本 skill 检查准备接入 Kite 的本地文件夹。Kite 的项目以远程仓库为身份，文件夹登记为工作机上的检出：已有仓库沿用，无远程时由 Kite 建托管远程；普通文件夹先初始化 Git、写入 .gitignore 与 .gitattributes 并提交初始版本。身份与登记契约见 [项目与远程仓库](../../../docs/项目与远程仓库.md)。
+本 skill 检查准备接入 Kite 的本地文件夹。Kite 的项目以远程仓库为身份；添加文件夹时 Kite 只读它，不往里写：有 origin 的按远程登记，没有的导入到 Kite 自己的仓库，普通文件夹按 .gitignore 与 .gitattributes 模板提交初始版本，模板只进 Kite 的仓库。之后的工作都在 Kite 建的工作区里做。身份与添加项目的契约见 [项目与远程仓库](../../../docs/项目与远程仓库.md)。
 
 体检和补齐的原则：缺什么补什么，已有的不动；要改用户已有的文件，先说明要改什么、为什么，得到同意再改。
 
@@ -14,17 +14,15 @@ description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录�
 ```
 论文项目/
 ├── .git/                  版本库，访达默认看不到
-│                          放在 iCloud、Dropbox 等同步目录里的项目，这里是一个一行字的指针文件，
-│                          仓库本体放到同步目录之外（git init --separate-git-dir）
-├── .gitignore             Kite 初始化时写入 templates/gitignore；已有仓库不改
+├── .gitignore             Kite 导入普通文件夹时按 templates/gitignore 提交；已有仓库不改。.env 这类环境变量文件要被它忽略
+├── .env                   被忽略的环境变量文件不进 git：添加项目时存成项目密钥并设好路径，Kite 建工作树时写进去
 ├── .gitattributes         Kite 初始化时写入 templates/gitattributes：记忆索引按行合并，各工作区同时追加不冲突
 ├── AGENTS.md              给 agent 的项目说明，唯一的指令源；按 templates/AGENTS.md 写
 ├── .claude/
 │   ├── agents/
 │   │   └── test-writer.md 代码项目提供。写测试的子 agent，测试规则都在这里；按 templates/test-writer.md 写
 │   ├── rules/             只在碰到特定路径时适用的约定
-│   └── settings.json      上游设置，如 worktree.symlinkDirectories（建工作树时要软链接的目录）
-├── .worktreeinclude       建工作树时要复制过去的被忽略文件，如 .env
+│   └── settings.json      上游设置
 ├── .kite/
 │   ├── memory/            项目共享记忆，MEMORY.md 做索引，正文按需读取；
 │                          在 Kite 之外直接用 Claude Code 时，另核对 autoMemoryDirectory
@@ -43,8 +41,8 @@ description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录�
 
 按顺序检查，每一步只补缺的：
 
-1. **git 仓库**：不是仓库就停下，提示用户在 Kite 里登记这个文件夹，由 kited 初始化。
-2. **.gitignore**：Kite 初始化的仓库应当是 templates/gitignore 的内容；已有的仓库用它自己的，不改。
+1. **git 仓库**：不是仓库就停下，提示用户在 Kite 里添加这个文件夹，由 Kite 导入到自己的仓库，之后在 Kite 的工作区里继续。
+2. **.gitignore**：Kite 导入的仓库应当是 templates/gitignore 的内容；已有的仓库用它自己的，不改，只检查 .env 这类环境变量文件有没有被忽略。
 3. **.gitattributes**：没有就按 templates/gitattributes 写。已有的缺记忆索引那一行，说明并得到同意后追加，其余规则不动。
 4. **大文件**：列出项目里按 templates/gitignore 属于大文件类型、却被 git 跟踪的文件，建议挪进资源库，不自动挪。
 5. **AGENTS.md**：没有就按 templates/AGENTS.md 写，尖括号处向用户问清楚或从项目里读出来再填。已有的不重写，只检查代码项目有没有「测试」一节。

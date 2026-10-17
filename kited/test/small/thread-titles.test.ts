@@ -8,9 +8,9 @@ import type { ContextDefinition } from '../../src/harness/context/types.ts';
 import type { ModelItem, ModelRequest } from '../../src/harness/types.ts';
 import type { ThreadTitle } from '../../src/store.ts';
 import { titleTemplate } from '../../src/thread-titles.ts';
-import { after, call, createWorkspace, type Kited, mark, registerCheckout, sendThreadMessage, startKited } from '../harness.ts';
+import { addProject, after, call, createWorkspace, type Kited, mark, sendThreadMessage, startKited } from '../harness.ts';
 import { diskRecords, ManualModel, Seen } from '../harness-loop.ts';
-import { newRepo } from '../util.ts';
+import { newDir } from '../util.ts';
 
 let kited: Kited | undefined;
 let restarted: Daemon | undefined;
@@ -28,10 +28,9 @@ const textItem = (id: string, text: string): ModelItem => ({
 async function automaticThread(main: ManualModel, titles: ManualModel,
   prepare?: (k: Kited) => Promise<void>, results?: Seen<{ error?: string }>) {
   kited = startKited(() => main, { model: () => titles, onResult: (result) => results?.add(result) });
-  const repo = newRepo(kited.root, 'project', { 'base.txt': '原始\n' });
-  const project = await registerCheckout(kited, repo);
+  const project = await addProject(kited, { path: newDir(kited.root, 'project', { 'base.txt': '原始\n' }) });
   await prepare?.(kited);
-  const thread = await createWorkspace(kited, project.checkout.id, '修复工作区标题同步', 'harness');
+  const thread = await createWorkspace(kited, project.id, '修复工作区标题同步', 'harness');
   return { k: kited, thread };
 }
 

@@ -5,7 +5,7 @@
  */
 import { basename, dirname } from 'node:path';
 import { gitConfigEnv } from '../git-credential.ts';
-import { git, gitTry, isAncestor, isDirty, revParse } from './git.ts';
+import { git, gitTry, isAncestor, revParse } from './git.ts';
 import type { Peer } from '../peer-fetch.ts';
 import { currentBranch, fetchRef, gitFailure, type RemoteAccess } from './remote.ts';
 
@@ -25,17 +25,17 @@ function peerAccess(peer: Peer, projectId: string, route: PeerRoute): RemoteAcce
       ...(route.proxy ? [['http.proxy', route.proxy] as [string, string]] : [])]) };
 }
 
-/** 从对端的检出 clone；origin 不留，没有远程的项目各检出平等。 */
+/** 从对端的检出 clone 成裸仓库；origin 不留，没有远程的项目各检出平等。 */
 export async function clonePeer(peer: Peer, projectId: string, dest: string, route: PeerRoute): Promise<void> {
   const access = peerAccess(peer, projectId, route);
-  const r = await gitTry('/', ['clone', '-q', '--', access.url, dest], { env: access.env });
+  const r = await gitTry('/', ['clone', '-q', '--bare', '--', access.url, dest], { env: access.env });
   if (r.code !== 0) throw gitFailure(`从 ${peer.id} clone`, r.stderr);
   await git(dest, ['remote', 'remove', 'origin']);
 }
 
 /**
- * 从对端拉取全部分支到 refs/kite/peers/<机器>/，再把本机主线快进到对端同名分支：只在现场干净、本机落后时快进。
- * 返回 diverged 表示两边都有新提交，要用户集成。
+ * 从对端拉取全部分支到 refs/kite/peers/<机器>/，本机主线落后就快进到对端同名分支。
+ * 返回 diverged 表示两边都有新提交，要用户在工作区里集成。
  */
 export async function syncPeer(cwd: string, peer: Peer, projectId: string, route: PeerRoute): Promise<'current' | 'forwarded' | 'diverged' | 'absent'> {
   const prefix = peersRef(peer.id);
@@ -45,10 +45,10 @@ export async function syncPeer(cwd: string, peer: Peer, projectId: string, route
   const branch = await currentBranch(cwd);
   const theirs = branch && await revParse(cwd, `${prefix}${branch}`);
   if (!branch || !theirs) return 'absent';
-  if (await isAncestor(cwd, theirs, 'HEAD')) return 'current';
-  if (!(await isAncestor(cwd, 'HEAD', theirs))) return 'diverged';
-  if (await isDirty(cwd)) return 'current';
-  await git(cwd, ['merge', '-q', '--ff-only', theirs]);
+  const ours = await revParse(cwd, `refs/heads/${branch}`);
+  if (ours && await isAncestor(cwd, theirs, ours)) return 'current';
+  if (ours && !(await isAncestor(cwd, ours, theirs))) return 'diverged';
+  await git(cwd, ['update-ref', `refs/heads/${branch}`, theirs, ours ?? '']);
   return 'forwarded';
 }
 
@@ -63,8 +63,6 @@ export async function serveCheckout(request: Request, checkout: string, rest: st
   const url = new URL(request.url);
   const service = rest === '/info/refs' ? url.searchParams.get('service') : rest.slice(1);
   if (service !== 'git-upload-pack') return new Response('只提供拉取', { status: 403 });
-  // 检出可能用独立的 Git 目录（放在同步目录里的项目），按真正的 Git 目录交给 http-backend。
-  const gitDir = await git(checkout, ['rev-parse', '--absolute-git-dir']);
   const header = (name: string, variable: string): Record<string, string> => {
     const value = request.headers.get(name);
     return value ? { [variable]: value } : {};
@@ -72,8 +70,9 @@ export async function serveCheckout(request: Request, checkout: string, rest: st
   const p = Bun.spawn(['git', 'http-backend'], {
     env: {
       PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '',
-      GIT_PROJECT_ROOT: dirname(gitDir), GIT_HTTP_EXPORT_ALL: '1',
-      PATH_INFO: `/${basename(gitDir)}${rest}`, REQUEST_METHOD: request.method, QUERY_STRING: url.search.slice(1),
+      // 检出是裸仓库，路径就是 Git 目录。
+      GIT_PROJECT_ROOT: dirname(checkout), GIT_HTTP_EXPORT_ALL: '1',
+      PATH_INFO: `/${basename(checkout)}${rest}`, REQUEST_METHOD: request.method, QUERY_STRING: url.search.slice(1),
       ...header('content-type', 'CONTENT_TYPE'), ...header('content-length', 'CONTENT_LENGTH'),
       ...header('content-encoding', 'HTTP_CONTENT_ENCODING'), ...header('git-protocol', 'GIT_PROTOCOL'),
     },

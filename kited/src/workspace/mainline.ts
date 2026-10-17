@@ -1,22 +1,54 @@
 /**
- * 主线：主文件夹当前检出的分支。这里是会话工作树和主线之间的 git 操作，不涉及 agent。
- * 合回主线的顺序：先在会话工作树里提交全部改动，再把本地主线和远程主线依次合进会话分支，最后主文件夹快进到会话分支。
- * 冲突因此只会出现在会话工作树里，主文件夹永远不会处于冲突状态。
+ * 主线：检出（裸仓库）HEAD 指向的分支。这里是工作树和主线之间的 git 操作，不涉及 agent。
+ * 集成与同步都先在工作树里提交全部改动，再把主线（本机的和刚拉取的远程主线）合进工作区分支；冲突因此只出现在工作树里。
+ * 直接合入随后把本机主线快进到工作区分支，提交 PR 则推送工作区分支，见 docs/项目与远程仓库.md「工作区与集成」。
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KiteError } from '../errors.ts';
-import { commitAll, commitIdentity, gitTry, isAncestor, isDirty, revParse, unmergedPaths } from './git.ts';
+import { commitAll, commitIdentity, commitOnto, git, gitTry, isAncestor, isDirty, revParse, unmergedPaths } from './git.ts';
+import { currentBranch, fetchBranch, tracking, type RemoteAccess } from './remote.ts';
 import type { Checkout } from '../model.ts';
 
-/** 主线当前的 commit。现场由用户自己控制，没提交的改动不进入主线，也不由 Kite 代为提交。 */
-export async function mainline(p: Pick<Checkout, 'path'>): Promise<string> {
-  const head = await revParse(p.path, 'HEAD');
-  if (!head) throw new KiteError(`主文件夹没有可用的提交：${p.path}`, 409);
-  return head;
+/** 主线分支名。 */
+export async function mainBranch(p: Pick<Checkout, 'path'>): Promise<string> {
+  const branch = await currentBranch(p.path);
+  if (!branch) throw new KiteError(`检出的 HEAD 不在任何分支上：${p.path}`, 409);
+  return branch;
 }
 
-export type MergeBack =
+/** 主线当前的 commit。远程还是空仓库时主线没有提交，先补一个空的初始提交，工作区从它开出，集成时一并推上去。 */
+export async function mainline(p: Pick<Checkout, 'path'>): Promise<string> {
+  const branch = await mainBranch(p);
+  return await revParse(p.path, `refs/heads/${branch}`) ?? commitOnto(p.path, branch, await git(p.path, ['mktree'], { input: '' }), 'Kite：初始版本');
+}
+
+/**
+ * 拉取远程主线到 origin 的跟踪引用，本机主线落后就快进；本机有没推上去的提交（上次推送失败）时不动，集成时一并合并。
+ * 返回远程主线的跟踪引用名，远程还没有这个分支时为 null。
+ */
+export async function fetchMainline(p: Pick<Checkout, 'path'>, access: RemoteAccess): Promise<string | null> {
+  const branch = await mainBranch(p);
+  const upstream = await fetchBranch(p.path, branch, access);
+  if (!upstream) return null;
+  const local = await revParse(p.path, `refs/heads/${branch}`);
+  if (!local || await isAncestor(p.path, local, upstream)) await git(p.path, ['update-ref', `refs/heads/${branch}`, upstream, local ?? '']);
+  return tracking(branch);
+}
+
+/** 远程主线的跟踪引用，按最近一次拉取；没有远程或还没拉取过时为 null。 */
+export async function upstreamOf(p: Pick<Checkout, 'path'>, branch?: string): Promise<string | null> {
+  const ref = tracking(branch ?? await mainBranch(p));
+  return await revParse(p.path, ref) ? ref : null;
+}
+
+/** 主线的几个引用：本机主线，以及拉取过时的远程主线；同步与落后计数都对着它们。 */
+export async function mainRefs(p: Pick<Checkout, 'path'>): Promise<string[]> {
+  const branch = await mainBranch(p);
+  return [`refs/heads/${branch}`, await upstreamOf(p, branch)].filter((ref): ref is string => !!ref);
+}
+
+export type Integration =
   | { status: 'merged'; commit: string }
   | { status: 'conflict'; files: string[] };
 
@@ -29,12 +61,12 @@ function markedPaths(worktree: string, files: string[]): string[] {
 }
 
 /**
- * 把会话工作树的全部改动合回主线。message 用作会话里未提交改动的提交说明；upstream 是刚拉取的远程主线。
+ * 提交工作树的全部改动（message 是提交说明），再把 mains 里的主线依次合进工作区分支。
  * agent 在沙箱里不能写 Git 元数据，冲突只能改文件解决；stageResolved 表示解决冲突的回合已正常结束，
  * 由宿主把已去掉冲突标记的文件标为解决并提交。无标记的冲突（删改、二进制）只有这时才按当前文件采纳。
  */
-export async function mergeBack(p: Pick<Checkout, 'path'>, worktree: string, message: string,
-  options: { stageResolved?: boolean; upstream?: string | null } = {}): Promise<MergeBack> {
+export async function mergeMainline(worktree: string, message: string, mains: Array<string | null>,
+  options: { stageResolved?: boolean } = {}): Promise<Integration> {
   const merging = await revParse(worktree, 'MERGE_HEAD');
   if (merging) {
     const files = await unmergedPaths(worktree);
@@ -42,25 +74,38 @@ export async function mergeBack(p: Pick<Checkout, 'path'>, worktree: string, mes
     if (unresolved.length) return { status: 'conflict', files: unresolved };
   }
   if (merging || (await isDirty(worktree))) await commitAll(worktree, merging ? ['--no-edit'] : ['-m', message]);
-  for (const main of [await mainline(p), options.upstream]) {
+  for (const main of mains) {
     if (!main || (await isAncestor(worktree, main, 'HEAD'))) continue;
     const r = await gitTry(worktree, ['merge', '-q', '--no-edit', main], { env: await commitIdentity(worktree) });
     if (r.code !== 0) {
       const files = await unmergedPaths(worktree);
-      if (!files.length) throw new KiteError(`把主线合进会话分支失败：${r.stderr.trim()}`, 409);
+      if (!files.length) throw new KiteError(`把主线合进工作区分支失败：${r.stderr.trim()}`, 409);
       return { status: 'conflict', files };
     }
   }
-  const head = (await revParse(worktree, 'HEAD'))!;
-  const ff = await gitTry(p.path, ['merge', '-q', '--ff-only', head]);
-  if (ff.code !== 0) throw new KiteError(`主文件夹没法快进到会话的版本：${ff.stderr.trim()}`, 409);
-  return { status: 'merged', commit: head };
+  return { status: 'merged', commit: (await revParse(worktree, 'HEAD'))! };
 }
 
-/** 会话工作树里有没有还没合回主线的东西：未提交的改动，或主线还没包含的提交。 */
-export async function hasUnmerged(main: string, worktree: string): Promise<boolean> {
+/** 直接合入：本机主线快进到已合好主线的工作区提交。 */
+export async function advanceMainline(p: Pick<Checkout, 'path'>, commit: string): Promise<void> {
+  const branch = await mainBranch(p);
+  const tip = await revParse(p.path, `refs/heads/${branch}`);
+  if (tip && !(await isAncestor(p.path, tip, commit))) throw new KiteError('主线刚有新的提交，请重试', 409);
+  await git(p.path, ['update-ref', `refs/heads/${branch}`, commit, tip ?? '']);
+}
+
+/** 主线（mainRefs）比工作区分支多出的提交数；工作树不在时为 null。同一检出的几个工作区一起算时由调用方先取好 mains。 */
+export async function behindCount(p: Pick<Checkout, 'path'>, worktree: string, mains?: string[]): Promise<number | null> {
+  if (!existsSync(worktree)) return null;
+  const r = await gitTry(worktree, ['rev-list', '--count', ...(mains ?? await mainRefs(p)), '^HEAD']);
+  return r.code === 0 ? Number(r.stdout.trim()) : null;
+}
+
+/** 工作树里有没有还没合进主线的东西：未提交的改动，或主线还没包含的提交。 */
+export async function hasUnmerged(p: Pick<Checkout, 'path'>, worktree: string): Promise<boolean> {
   if (!existsSync(worktree)) return false;
   if (await isDirty(worktree)) return true;
-  const [head, tip] = await Promise.all([revParse(worktree, 'HEAD'), revParse(main, 'HEAD')]);
-  return !head || !tip || !(await isAncestor(main, head, tip));
+  const head = await revParse(worktree, 'HEAD');
+  const tip = await revParse(p.path, `refs/heads/${await mainBranch(p)}`);
+  return !head || !tip || !(await isAncestor(p.path, head, tip));
 }

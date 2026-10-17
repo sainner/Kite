@@ -11,8 +11,14 @@ import { httpsRemote, normalizeRemote, remoteName } from '../remote-url.ts';
 import { revisionOf, type AccountData } from './store.ts';
 import { parseProjectExecution, stricterExecution, type ProjectExecution } from '../execution/grants.ts';
 
+/** 集成方式：直接合入主线并推送，或推分支提交 PR，见 docs/项目与远程仓库.md「工作区与集成」。 */
+export const INTEGRATIONS = ['merge', 'pullRequest'] as const;
+export type Integration = (typeof INTEGRATIONS)[number];
+/** 按仓库情况选出的集成方式与理由。 */
+export interface IntegrationChoice { integration: Integration; integrationReason?: string }
+
 /** remote 是归一化的远程地址，url 是 HTTPS 写法的访问地址；没有远程的项目两者都为 null。 */
-export interface RegisteredProject {
+export interface RegisteredProject extends IntegrationChoice {
   id: string;
   name: string;
   remote: string | null;
@@ -40,15 +46,19 @@ const appearance = z.object({
   color: z.enum(['primary', 'accent', 'green', 'purple', 'orange', 'pink']).optional(),
 }).strict().refine((value) => value.icon !== undefined || value.color !== undefined);
 const settings = z.object({
+  integration: z.enum(INTEGRATIONS).optional(),
   autoHandover: z.boolean().optional(),
   handoverNeeds: z.array(z.enum(HANDOVER_NEEDS)).transform((needs) => [...new Set(needs)]).optional(),
-}).strict().refine((value) => value.autoHandover !== undefined || value.handoverNeeds !== undefined);
+}).strict().refine((value) => value.integration !== undefined || value.autoHandover !== undefined || value.handoverNeeds !== undefined);
 const constraintsWrite = z.object({
   tools: z.object({ mode: z.enum(['allow', 'deny']), tools: z.array(z.string().trim().min(1).max(64)).max(64) }).strict(),
   execution: z.unknown().optional(),
   expectedRevision: z.string().min(1),
 }).strict();
 const defaultConstraints: Omit<ProjectConstraints, 'revision'> = { tools: { mode: 'deny', tools: [] } };
+/** 集成方式出现之前登记的项目按直接合入。 */
+const registered = (id: string, body: Omit<RegisteredProject, 'id' | 'integration'> & Partial<IntegrationChoice>): RegisteredProject =>
+  ({ id, integration: 'merge', ...body });
 type ToolRule = ProjectConstraints['tools'];
 
 /** 两份工具规则里更严的组合：都是黑名单取并集，都是白名单取交集，一白一黑时白名单去掉黑名单里的。 */
@@ -62,7 +72,7 @@ export class ProjectRegistry {
   constructor(private data: AccountData) {}
 
   list(): RegisteredProject[] {
-    return this.data.list('project').flatMap(({ id, body }) => 'mergedInto' in body ? [] : [{ id, ...(body as Omit<RegisteredProject, 'id'>) }])
+    return this.data.list('project').flatMap(({ id, body }) => 'mergedInto' in body ? [] : [registered(id, body as Omit<RegisteredProject, 'id'>)])
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   }
 
@@ -75,7 +85,7 @@ export class ProjectRegistry {
 
   get(id: string): RegisteredProject | undefined {
     const body = this.data.get('project', id)?.body as Stored | undefined;
-    return body && !('mergedInto' in body) ? { id, ...body } : undefined;
+    return body && !('mergedInto' in body) ? registered(id, body) : undefined;
   }
 
   /** 项目并入了别的项目时给出最终保留的那个；本来就在登记表里的给它自己。 */
@@ -111,19 +121,20 @@ export class ProjectRegistry {
     return this.list().find((project) => project.remote === remote);
   }
 
-  /** 按远程登记，同一远程总是得到同一个项目。 */
-  register(raw: string): RegisteredProject {
+  /** 按远程登记，同一远程总是得到同一个项目；已登记的原样返回，不改它的设置。choice 是新登记时的集成方式。 */
+  register(raw: string, choice: IntegrationChoice = { integration: 'merge' }): RegisteredProject {
     const remote = normalizeRemote(raw);
     if (!remote) throw new KiteError('远程地址格式无法识别');
     const existing = this.byRemote(remote);
     if (existing) return existing;
-    this.save({ id: crypto.randomUUID(), name: remoteName(raw), remote, url: httpsRemote(raw), createdAt: Date.now(), icon: 'folder', color: 'primary' });
+    this.save({ id: crypto.randomUUID(), name: remoteName(raw), remote, url: httpsRemote(raw), createdAt: Date.now(), icon: 'folder', color: 'primary',
+      ...choice });
     return this.byRemote(remote)!;
   }
 
-  /** 登记没有远程的项目。 */
-  createLocal(name: string): RegisteredProject {
-    const project: RegisteredProject = { id: crypto.randomUUID(), name, remote: null, url: null, createdAt: Date.now(), icon: 'folder', color: 'primary' };
+  /** 登记没有远程的项目，只能直接合入。id 由调用方先定时，检出可以按它先建好。 */
+  createLocal(name: string, id: string = crypto.randomUUID()): RegisteredProject {
+    const project: RegisteredProject = { id, name, remote: null, url: null, createdAt: Date.now(), icon: 'folder', color: 'primary', integration: 'merge' };
     this.save(project);
     return project;
   }
@@ -137,18 +148,27 @@ export class ProjectRegistry {
     return remote;
   }
 
-  /** 没有远程的项目设了远程：改地址，项目 ID 不变。调用方已把内容推到这个远程。 */
-  setRemote(id: string, raw: string): RegisteredProject {
+  /** 没有远程的项目设了远程：改地址，项目 ID 不变，集成方式按 choice 重选。调用方已把内容推到这个远程。 */
+  setRemote(id: string, raw: string, choice: IntegrationChoice): RegisteredProject {
     const remote = this.checkRemote(id, raw);
-    const next = { ...this.require(id), remote, url: httpsRemote(raw) };
+    const { integrationReason: _, ...project } = this.require(id);
+    const next = { ...project, remote, url: httpsRemote(raw), ...choice };
     this.save(next);
     return next;
   }
 
   setAppearance(id: string, raw: unknown): RegisteredProject { return this.change(id, appearance, raw, '项目外观要写 icon 或 color'); }
 
+  /** 手动设集成方式后不再带自动选择的理由；没有远程的项目只能直接合入。 */
   setSettings(id: string, raw: unknown): RegisteredProject {
-    return this.change(id, settings, raw, `项目设置要写 autoHandover 或 handoverNeeds（${HANDOVER_NEEDS.join('、')}）`);
+    const parsed = settings.safeParse(raw);
+    if (!parsed.success) throw new KiteError(`项目设置要写 integration（${INTEGRATIONS.join('、')}）、autoHandover 或 handoverNeeds（${HANDOVER_NEEDS.join('、')}）`);
+    const project = this.require(id);
+    if (parsed.data.integration === 'pullRequest' && !project.remote) throw new KiteError('没有远程的项目只能直接合入');
+    const next: RegisteredProject = { ...project, ...parsed.data };
+    if (parsed.data.integration !== undefined) delete next.integrationReason;
+    this.save(next);
+    return next;
   }
 
   private change<T extends object>(id: string, schema: z.ZodType<T>, raw: unknown, message: string): RegisteredProject {

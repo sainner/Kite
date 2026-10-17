@@ -20,6 +20,7 @@
 - [状态放标题栏](feedback-pane-status-placement.md) — 窗口状态归信息区或副行；弹窗副行只放简短说明，状态写正文
 - [测试要克制](test-restraint.md) — 测试准入主来源、事件断言与 PDF 验证要求
 - [设计讨论先给意见](feedback-design-discussion.md) — 用户的总结是征求意见，落文档前先问
+- [讲方案说大白话](feedback-plain-explanations.md) — 先讲现状、解释工程术语、一次问一件事，流程选择给自动默认值
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行与数据流判断，不能只看引用
 - [什么要保存](feedback-save-scope.md) — 只有提示词这类文稿改完要保存，其他修改即时生效；新角色在上下文窗口一次建好
 - [旧数据出错就删](feedback-stale-data.md) — 旧格式的本机数据读不了时删数据，不改代码兼容；删前确认并征得同意
@@ -38,4 +39,5 @@
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据
 - [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit 一起做、CloudKit、登出重启关机预告待真机实测、kite-net 重启后丢用户
 - [上架前的版本做法](todo-store-release.md) — kited 兼容在用的旧版 App、先 App 后 kited、公共下载点、Mac App 签名后自更新
+- [工作区模型改造](todo-workspace-model.md) — 已实现、协议号 2；部署前清各工作机旧 kite.db（先征得同意）、真机验收、Line 不提交现场待确认
 - [本机先行的收尾](todo-local-first-actions.md) — 各路径已改为本机先行、待手测；失败时的收回方式；进入工作区卡顿待量（Mac、iPhone）

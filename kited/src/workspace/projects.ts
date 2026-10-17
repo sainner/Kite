@@ -1,169 +1,155 @@
 /**
- * 登记项目在本机的检出。项目 ID 由项目登记表（account-data/registry.ts）分配。
- * 已有 origin 的仓库按 origin 登记，同一远程总是同一个项目；普通文件夹或没有 origin 的仓库登记成没有远程的项目，
- * 普通文件夹由 Kite 补齐 git 与初始版本。没有远程的项目在别的工作机上从这台的检出 clone（peer-git.ts）。
- * 现场的提交始终归用户，Kite 不代为提交。放在 iCloud、Dropbox 这类同步目录里的，仓库本体放到 Kite 目录，文件夹里只留 .git 指针文件。
+ * 项目在本机的检出：Kite 数据目录里的裸仓库（paths.ts 的 checkoutPath），用户自己的文件夹 Kite 不碰。
+ * 有远程的项目在这台工作机第一次建工作区时从远程 clone；没有远程的项目从别的工作机的检出 clone（peer-git.ts），
+ * 或在添加项目时从本机文件夹导入：只读文件夹，取它的分支与工作目录里的内容，不往里写任何东西。见 docs/项目与远程仓库.md。
  */
-import { existsSync, mkdirSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { basename, dirname, join, isAbsolute } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { KiteError } from '../errors.ts';
-import { commitAll, git, gitTry, revParse } from './git.ts';
-import { defaultCheckoutPath, defaultClonePath, within } from '../paths.ts';
-import { normalizeRemote } from '../remote-url.ts';
-import { clone, originURL } from './remote.ts';
+import { commitOnto, git, gitTry, revParse } from './git.ts';
+import { WorkspaceFiles } from './files.ts';
+import { currentBranch, originURL } from './remote.ts';
 import type { Peer } from '../peer-fetch.ts';
 import { clonePeer, type PeerRoute } from './peer-git.ts';
-import type { GitCredentials } from '../git-credential.ts';
-import type { ProjectRegistry, RegisteredProject } from '../account-data/registry.ts';
-import type { Store } from '../store.ts';
-import type { Project, Checkout, Workspace, WorkspaceModel } from '../model.ts';
-import { randomUUID } from 'node:crypto';
-// 模板只有一份，在项目规范（kite-onboard skill）里。文本 import：模板一改，依赖图就会选中登记相关的测试
+import type { RegisteredProject } from '../account-data/registry.ts';
+import type { Project } from '../model.ts';
+// 模板只有一份，在项目规范（kite-onboard skill）里。文本 import：模板一改，依赖图就会选中导入相关的测试
 import GITIGNORE_TEMPLATE from '../../../.claude/skills/kite-onboard/templates/gitignore' with { type: 'text' };
 import GITATTRIBUTES_TEMPLATE from '../../../.claude/skills/kite-onboard/templates/gitattributes' with { type: 'text' };
 
-/** 同步目录。iCloud「桌面与文稿」的判断方式未核实。 */
-function isSynced(path: string): boolean {
-  const h = homedir();
-  const roots = [join(h, 'Library', 'Mobile Documents'), join(h, 'Library', 'CloudStorage'), join(h, 'Dropbox')];
-  for (const d of ['Desktop', 'Documents']) {
-    if (existsSync(join(h, 'Library', 'Mobile Documents', 'com~apple~CloudDocs', d))) roots.push(join(h, d));
-  }
-  return roots.some((r) => within(path, r));
-}
-
-function realDirectory(rawPath: string): string {
-  if (!isAbsolute(rawPath)) throw new KiteError('路径要写绝对路径');
-  let path: string;
-  try { path = realpathSync(rawPath); } catch { throw new KiteError(`找不到文件夹：${rawPath}`, 404); }
-  if (!statSync(path).isDirectory()) throw new KiteError(`不是文件夹：${path}`);
-  return path;
-}
-
-/** 新检出不能和已登记的检出、正在 clone 的目录或 Kite 自己的目录重叠；重叠时给出原因。 */
-function overlap(store: Store, home: string, path: string, cloning: Iterable<string> = []): KiteError | undefined {
-  const checkout = store.checkouts().find((p) => within(path, p.path) || within(p.path, path));
-  if (checkout) return new KiteError(`和已登记的检出 ${checkout.id}（${checkout.path}）重叠`, 409);
-  for (const p of cloning) if (within(path, p) || within(p, path)) return new KiteError(`和正在 clone 的 ${p} 重叠`, 409);
-  if (within(path, home) || within(home, path)) return new KiteError('不能登记 Kite 自己的目录');
-  return undefined;
-}
-
-function assertFree(store: Store, home: string, path: string, cloning: Iterable<string> = []): void {
-  const error = overlap(store, home, path, cloning);
-  if (error) throw error;
-}
-
-/** 位置上已有内容：是文件，或者是非空的文件夹。 */
-const occupied = (path: string) => existsSync(path) && (!statSync(path).isDirectory() || readdirSync(path).length > 0);
-
 export const projectOf = (r: RegisteredProject): Project => ({ id: r.id, name: r.name, remote: r.remote, createdAt: r.createdAt });
 
-/** 登记项目与访问远程要用的：项目登记表、Git 凭据，以及没有远程的项目可以从哪几台工作机拉取。 */
-export interface ProjectAccess {
-  registry: ProjectRegistry;
-  git: GitCredentials;
-  peers(projectId: string): { route: PeerRoute; peers: Peer[] };
+/** 添加项目时选的本机文件夹：repository 表示是仓库根，origin 是它的 origin 地址（没有时为 null）。 */
+export interface Folder { path: string; repository: boolean; origin: string | null }
+
+/** 读文件夹：要写绝对路径、存在、是文件夹；在仓库里时必须是仓库根。 */
+export async function inspectFolder(rawPath: string): Promise<Folder> {
+  if (!isAbsolute(rawPath)) throw new KiteError('路径要写绝对路径');
+  let path: string;
+  try { path = realpathSync(rawPath); } catch { throw new KiteError(`找不到文件夹：${rawPath}`); }
+  if (!statSync(path).isDirectory()) throw new KiteError(`不是文件夹：${path}`);
+  const top = await gitTry(path, ['rev-parse', '--show-toplevel']);
+  if (top.code !== 0) return { path, repository: false, origin: null };
+  const root = realpathSync(top.stdout.trim());
+  if (root !== path) throw new KiteError(`这个文件夹在仓库 ${root} 里面，请选仓库根目录`);
+  return { path, repository: true, origin: await originURL(path) };
 }
 
-/** cloned 是刚 clone 出这个目录时登记得到的项目，不再重复登记与探测远程。 */
-export async function register(store: Store, home: string, projects: ProjectAccess, rawPath: string,
-  options: { cloned?: RegisteredProject; cloning?: Iterable<string> } = {}): Promise<WorkspaceModel> {
-  const path = realDirectory(rawPath);
-  const same = store.checkouts().find((p) => p.path === path);
-  if (same) return store.rootWorkspaceModel(same.id)!;
-  assertFree(store, home, path, options.cloning);
+/** 不是仓库的文件夹借一个临时裸仓库按忽略规则列文件：模板放进它的 info/exclude，文件夹里已有 .gitignore 时以文件夹的为准。 */
+async function withScratchRepository<T>(folder: string, action: (gitDir: string) => Promise<T>): Promise<T> {
+  const scratch = mkdtempSync(join(tmpdir(), 'kite-import-'));
+  try {
+    await git('/', ['init', '-q', '--bare', scratch]);
+    if (!existsSync(join(folder, '.gitignore'))) writeFileSync(join(scratch, 'info', 'exclude'), GITIGNORE_TEMPLATE);
+    return await action(scratch);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+}
 
-  const checkoutId = randomUUID();
-  const top = await gitTry(path, ['rev-parse', '--show-toplevel']);
-  let origin: string | null = null;
-  if (top.code === 0) {
-    const root = realpathSync(top.stdout.trim());
-    if (root !== path) throw new KiteError(`这个文件夹在仓库 ${root} 里面，请登记仓库根目录`);
-    if (!(await revParse(path, 'HEAD'))) throw new KiteError('仓库还没有任何提交，先提交一次再登记');
-    origin = await originURL(path);
-  } else {
-    // 同一项目可以有多个检出，独立 Git 目录按检出 ID 命名。
-    await initFolder(path, home, checkoutId);
+const split = (text: string) => text.split('\0').filter(Boolean);
+
+/**
+ * 文件夹里被忽略的环境变量文件（任意层级的 .env、.env.*）的相对路径，依赖目录里的不算。
+ * 不是仓库的文件夹按 Kite 的忽略模板判断。--directory 让 git 不进被忽略的目录（node_modules 这类），只列出目录名，再滤掉。
+ */
+export async function findEnvFiles(folder: Folder): Promise<string[]> {
+  const args = ['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--directory', '--', ':(glob)**/.env', ':(glob)**/.env.*'];
+  const listed = folder.repository ? split(await git(folder.path, args))
+    : await withScratchRepository(folder.path, async (gitDir) => split(await git(folder.path, [`--git-dir=${gitDir}`, `--work-tree=${folder.path}`, ...args])));
+  return listed.filter((path) => !path.endsWith('/') && !path.split('/').includes('node_modules')).sort();
+}
+
+/** 环境变量文件的内容，供存成项目密钥：按文件夹的边界读（不跟着链接或 .. 出去），不是文本时报错。 */
+export const readEnvFile = (folder: Folder, path: string): string => new WorkspaceFiles(folder.path).text(path);
+
+/**
+ * 用 repo 的对象库在临时索引里写出一棵树：给了 folder 时按它的工作目录（从 base 的树开始，加上没被忽略的全部文件，含未跟踪的），
+ * 再放进 extra 里的文件（相对路径 → 内容）。索引用完即删，文件夹本身不写任何东西。
+ */
+async function writeTree(repo: string, options: { folder?: string; base?: string | null; extra?: Record<string, string> }): Promise<string> {
+  const scratch = mkdtempSync(join(tmpdir(), 'kite-index-'));
+  try {
+    const env = { GIT_INDEX_FILE: join(scratch, 'index') };
+    const cwd = options.folder ?? repo;
+    const at = options.folder ? [`--git-dir=${repo}`, `--work-tree=${options.folder}`] : [];
+    if (options.base) await git(cwd, [...at, 'read-tree', options.base], { env });
+    if (options.folder) await git(cwd, [...at, 'add', '-A'], { env });
+    for (const [name, content] of Object.entries(options.extra ?? {})) {
+      const blob = await git(cwd, [...at, 'hash-object', '-w', '--stdin'], { input: content });
+      await git(cwd, [...at, 'update-index', '--add', '--cacheinfo', `100644,${blob},${name}`], { env });
+    }
+    return await git(cwd, [...at, 'write-tree'], { env });
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+}
+
+/** 建检出 dest（裸仓库）：build 往里写内容，失败时不留下 dest；最后把新的松散对象打包，否则对象库会膨胀。 */
+async function buildRepository(dest: string, build: () => Promise<void>): Promise<void> {
+  if (existsSync(dest)) throw new KiteError(`检出位置已有内容：${dest}`, 409);
+  mkdirSync(dirname(dest), { recursive: true });
+  try {
+    await build();
+    await git(dest, ['repack', '-dq']);
+  } catch (error) {
+    rmSync(dest, { recursive: true, force: true });
+    throw error;
   }
-  let registered: RegisteredProject;
-  if (options.cloned) registered = options.cloned;
-  else if (origin) {
-    if (!normalizeRemote(origin)) throw new KiteError(`无法识别 origin 的地址：${origin}，请使用 GitHub、GitLab 等平台的仓库地址`);
-    registered = projects.registry.register(origin);
-  } else registered = projects.registry.createLocal(basename(path).trim() || '未命名项目');
-
-  const project = projectOf(registered);
-  // 首次登记先取得已有的约束；已有项目的缓存由资源库同步持续更新。
-  const constraints = store.projectConstraints(project.id) ?? projects.registry.constraints(project.id);
-  const checkout: Checkout = { id: checkoutId, projectId: project.id, machineId: store.machine.id, path,
-    remote: project.remote, createdAt: Date.now() };
-  const workspace: Workspace = { id: randomUUID(), epoch: 1, checkoutId: checkout.id, name: basename(path), cwd: path,
-    kind: 'root', branch: null, base: null, status: 'open', createdAt: checkout.createdAt };
-  store.transaction(() => {
-    store.register(project, checkout, workspace);
-    store.saveProjectConstraints(project.id, constraints);
-  });
-  return store.workspaceModel(workspace.id)!;
 }
 
 /**
- * clone 的目标位置：有远程的默认 ~/code/<域名>/<owner>/<repo>，没有远程的默认 ~/code/<项目名>。目标可以不存在或为空，
- * 其他情况拒绝，避免覆盖用户文件。只做本地检查，在登记锁内调用；clone 本身较慢，由调用方放在锁外。
+ * 把没有远程的文件夹导入成检出 dest（裸仓库）。已有仓库的取全部分支，工作目录里未提交的改动另作一个提交放在主线上，
+ * 仓库自己的 info/exclude 一并带上；不是仓库的按忽略模板把文件提交进去，模板只进检出，不写进文件夹。
  */
-export function cloneTarget(store: Store, home: string, source: { remote: string } | { id: string; name: string }, rawPath: string | undefined,
-  cloning: Iterable<string>): string {
-  let dest = rawPath;
-  if ('remote' in source) {
-    const normalized = normalizeRemote(source.remote);
-    if (!normalized) throw new KiteError('远程地址格式无法识别');
-    dest ??= defaultClonePath(normalized);
-  } else if (!dest) {
-    // 没有远程的项目按名字放，同名的几个会抢同一个位置：已被占用时名字后加项目 ID 的前 8 位。
-    const plain = defaultCheckoutPath({ remote: null, name: source.name });
-    dest = occupied(plain) || overlap(store, home, plain, cloning) ? `${plain}-${source.id.slice(0, 8)}` : plain;
-  }
-  if (!isAbsolute(dest)) throw new KiteError('路径要写绝对路径');
-  if (occupied(dest)) throw new KiteError(`目标位置已有内容：${dest}`, 409);
-  mkdirSync(dirname(dest), { recursive: true });
-  const real = existsSync(dest) ? realpathSync(dest) : join(realpathSync(dirname(dest)), basename(dest));
-  assertFree(store, home, real, cloning);
-  return real;
+export function importFolder(folder: Folder, dest: string): Promise<void> {
+  return buildRepository(dest, async () => {
+    if (!folder.repository) {
+      await git('/', ['init', '-q', '--bare', '-b', 'main', dest]);
+      mkdirSync(join(dest, 'info'), { recursive: true });
+      const templates = Object.fromEntries(([['.gitignore', GITIGNORE_TEMPLATE], ['.gitattributes', GITATTRIBUTES_TEMPLATE]] as const)
+        .filter(([name]) => !existsSync(join(folder.path, name))));
+      if (templates['.gitignore']) writeFileSync(join(dest, 'info', 'exclude'), GITIGNORE_TEMPLATE);
+      const tree = await writeTree(dest, { folder: folder.path, extra: templates });
+      // 模板已提交成 .gitignore，之后的工作树按它忽略。
+      writeFileSync(join(dest, 'info', 'exclude'), '');
+      await commitOnto(dest, 'main', tree, 'Kite：初始版本');
+      return;
+    }
+    const branch = await currentBranch(folder.path);
+    if (!branch) throw new KiteError('文件夹的仓库不在任何分支上，先切回主线分支再添加', 409);
+    const head = await revParse(folder.path, 'HEAD');
+    if (head) {
+      const r = await gitTry('/', ['clone', '-q', '--bare', '--no-hardlinks', '--', folder.path, dest]);
+      if (r.code !== 0) throw new KiteError(`导入仓库失败：${r.stderr.trim()}`, 409);
+      await git(dest, ['remote', 'remove', 'origin']);
+    } else await git('/', ['init', '-q', '--bare', '-b', branch, dest]);
+    await git(dest, ['symbolic-ref', 'HEAD', `refs/heads/${branch}`]);
+    mkdirSync(join(dest, 'info'), { recursive: true });
+    const exclude = join(await git(folder.path, ['rev-parse', '--path-format=absolute', '--git-common-dir']), 'info', 'exclude');
+    if (existsSync(exclude)) writeFileSync(join(dest, 'info', 'exclude'), readFileSync(exclude));
+    const tree = await writeTree(dest, { folder: folder.path, base: head });
+    if (!head || tree !== await git(dest, ['rev-parse', `${head}^{tree}`])) {
+      await commitOnto(dest, branch, tree, head ? 'Kite：导入时工作目录里未提交的改动' : 'Kite：初始版本', head);
+    }
+  });
 }
 
-/** 先登记再 clone：远程地址无效时不留下半成品目录。返回的项目交给 register。 */
-export async function cloneRemote(projects: ProjectAccess, remote: string, dest: string): Promise<RegisteredProject> {
-  const registered = projects.registry.register(remote);
-  await clone(remote, dest, projects.git);
-  return registered;
+/** 新建只有一个初始版本的检出 dest（裸仓库，主线 main），files 是初始版本里的文件（相对路径 → 内容）。 */
+export function createRepository(dest: string, files: Record<string, string>): Promise<void> {
+  return buildRepository(dest, async () => {
+    await git('/', ['init', '-q', '--bare', '-b', 'main', dest]);
+    await commitOnto(dest, 'main', await writeTree(dest, { extra: files }), 'Kite：初始版本');
+  });
 }
 
-/** 没有远程的项目从别的工作机的检出 clone，依次试在线的几台。返回的项目交给 register。 */
-export async function clonePeerProject(projects: ProjectAccess, projectId: string, dest: string): Promise<RegisteredProject> {
-  const project = projects.registry.require(projectId);
-  if (project.remote) throw new KiteError('这个项目有远程，从远程 clone', 409);
-  const { route, peers } = projects.peers(projectId);
+/** 文件夹的显示名：没有远程的项目用它作项目名。 */
+export const folderName = (folder: Folder) => basename(folder.path).trim() || '未命名项目';
+
+/** 没有远程的项目从别的工作机的检出 clone，依次试在线的几台。 */
+export async function clonePeers(peers: Peer[], route: PeerRoute, projectId: string, dest: string): Promise<void> {
   if (!peers.length) throw new KiteError('这个项目没有远程，有它检出的工作机都不在线', 409);
   let failure: unknown;
   for (const peer of peers) {
-    try { await clonePeer(peer, projectId, dest, route); return project; }
-    catch (error) { failure = error; }
+    try { await clonePeer(peer, projectId, dest, route); return; }
+    catch (error) { failure = error; rmSync(dest, { recursive: true, force: true }); }
   }
   throw failure;
-}
-
-async function initFolder(path: string, home: string, id: string): Promise<void> {
-  const synced = isSynced(path);
-  const repos = join(home, 'repos');
-  if (synced) mkdirSync(repos, { recursive: true });
-  const separate = synced ? [`--separate-git-dir=${join(repos, `${id}.git`)}`] : [];
-  await git(path, ['init', '-q', '-b', 'main', ...separate, path]);
-  for (const [name, template] of [['.gitignore', GITIGNORE_TEMPLATE], ['.gitattributes', GITATTRIBUTES_TEMPLATE]] as const) {
-    const file = join(path, name);
-    if (!existsSync(file)) writeFileSync(file, template);
-  }
-  await commitAll(path, ['--allow-empty', '-m', 'Kite：初始版本']);
-  // 首次提交时每个文件一个松散对象，立刻打包，否则对象库会膨胀
-  await git(path, ['repack', '-adq']);
 }

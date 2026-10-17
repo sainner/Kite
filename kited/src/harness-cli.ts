@@ -90,7 +90,7 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
   };
   const settings = { model: { model: modelName, reasoning }, contextWindow: CHATGPT_CONTEXT_WINDOW, maxRequestsPerTurn: maxRequests };
   // 独立终端直接在指定目录工作，没有 Kite 的工作机、项目与实例，只提供目录本身取得到的变量。
-  const variables = { 'environment.date': today, ...directoryVariables(cwd), 'workspace.kind': () => ({ text: 'root' }) };
+  const variables = { 'environment.date': today, ...directoryVariables(cwd) };
   const host = await openThreadHost({
     cwd, threadDir: directory, env: { ...process.env }, onEvent: render, settings,
     policy: await harnessPolicy({ cwd, env: process.env, home, authFile: resolve(values.auth ?? defaultAuthFile()) }),

@@ -44,7 +44,7 @@ export const lineMonitorContextDefinition: ContextDefinition = {
 };
 
 const id = z.string().min(1);
-const itemKinds = ['approval', 'question', 'turn', 'failed', 'recovery', 'preparation', 'unreachable'] as const;
+const itemKinds = ['approval', 'question', 'secret', 'turn', 'failed', 'recovery', 'preparation', 'unreachable'] as const;
 export type InboxKind = (typeof itemKinds)[number];
 const itemSchema = z.object({
   /** waiting:<等待>、turn:<线程>、failed:<线程>、recovery:<线程>、preparation:<工作区>、machine:<工作机>。 */
@@ -53,7 +53,7 @@ const itemSchema = z.object({
   machine: z.object({ id, name: z.string() }).strict(),
   workspace: z.object({ id, name: z.string(), project: z.object({ id, name: z.string() }).strict() }).strict().optional(),
   thread: z.object({ id, title: z.string() }).strict().optional(),
-  /** 审批与提问：原线程等待的那个对象，回应写回原线程所在工作机。 */
+  /** 审批、提问与密钥请求：原线程等待的那个对象，回应写回原线程所在工作机。 */
   waiting: z.custom<Waiting>((value) => typeof value === 'object' && value !== null).optional(),
   /** 一句话说明：提问摘要、审批目标、失败原因等。 */
   text: z.string(),
@@ -132,13 +132,13 @@ const DIGEST_MS = 10 * 60_000;
 /** 离开这么久、回来时收件箱有离开期间进来的事项，才唤醒 Line 写简报。 */
 const BRIEFING_AWAY_MS = 30 * 60_000;
 /** 按时段托管时攒一会儿再唤醒 Line，把一串事项合成一次。 */
-const PERIOD_BATCH_MS: Partial<Record<InboxKind, number>> = { approval: 15_000, question: 15_000, failed: 15_000, turn: 60_000 };
+const PERIOD_BATCH_MS: Partial<Record<InboxKind, number>> = { approval: 15_000, question: 15_000, secret: 15_000, failed: 15_000, turn: 60_000 };
 /** 每天自动唤醒 Line 的次数上限；用户点的代处理不受限。 */
 export const DAILY_WAKES = 40;
 const RECORDS_KEEP = 200;
 const RELAYS_KEEP = 200;
 /** 没人关注时一进收件箱就单条通知的事项；回合结束走摘要。 */
-const IMMEDIATE = new Set<InboxKind>(['approval', 'question', 'failed', 'recovery', 'preparation', 'unreachable']);
+const IMMEDIATE = new Set<InboxKind>(['approval', 'question', 'secret', 'failed', 'recovery', 'preparation', 'unreachable']);
 
 const clip = (text: string, limit: number) => {
   const flat = text.replace(/\s+/g, ' ').trim();
@@ -146,7 +146,7 @@ const clip = (text: string, limit: number) => {
 };
 const day = (now: number) => new Date(now).toDateString();
 
-/** Line 能代处理的事项：别人线程上的审批、提问、回合结束与失败。 */
+/** Line 能代处理的事项：别人线程上的审批、提问、回合结束与失败。密钥请求只能由用户填写。 */
 export const delegable = (item: InboxItem) => !item.own && ['approval', 'question', 'turn', 'failed'].includes(item.kind);
 
 export function where(item: Pick<InboxItem, 'machine' | 'workspace' | 'thread'>): string {
@@ -156,12 +156,14 @@ export function where(item: Pick<InboxItem, 'machine' | 'workspace' | 'thread'>)
 }
 
 const kindLabel: Record<InboxKind, string> = {
-  approval: '等你批准', question: '等你回答', turn: '回合结束', failed: '失败', recovery: '等待恢复确认', preparation: '准备失败',
+  approval: '等你批准', question: '等你回答', secret: '等你填密钥', turn: '回合结束', failed: '失败', recovery: '等待恢复确认', preparation: '准备失败',
   unreachable: '连不上',
 };
 
 function waitingText(waiting: Waiting): string {
-  return waiting.kind === 'question' ? clip(waiting.questions.map((q) => q.question).join(' / '), 300) : clip(waiting.target, 300);
+  if (waiting.kind === 'question') return clip(waiting.questions.map((q) => q.question).join(' / '), 300);
+  if (waiting.kind === 'secret') return clip(`${waiting.file ? `${waiting.file} 里的 ${waiting.key}` : waiting.name}：${waiting.reason}`, 300);
+  return clip(waiting.target, 300);
 }
 
 /** 给 Line 的事项详情：审批与提问带上完整内容，Line 据此用 line_handle 回应。 */

@@ -5,6 +5,7 @@ import SwiftUI
 /// 收起、或者是审批时输入框照常发消息，发出去就跳过这一项（见 ThreadControlsModel.skipping）。
 /// Line 的收件箱里同一个对象也用它回应，写回原线程所在的工作机；那里没有输入区，卡片自己带「其他」和按钮。
 /// 提问一题一题答，单选、多选都能写「其他」；审批三个决定，必问的没有「允许并记住」，次级的拒绝、允许并记住带灰底。
+/// 密钥请求由用户填值（代理给了值时预先填好），独立的密钥可以改存为账号共享；只能由用户填，不给交给 Line。
 /// 标题行和按钮行一样高，chip（多题时里面带题号点）竖直居中、离左边和上边一样远；点标题行收起到只剩这一行。
 /// 内容左右和输入框的字对齐（ComposerLayout）；inset 为假时都不留（收件箱里按列表的边距）。
 struct WaitingResponseCard: View {
@@ -44,13 +45,17 @@ struct WaitingResponseCard: View {
                 .padding(.trailing, inset ? Metrics.controlButtonInset : 0)
             if !state.collapsed {
                 VStack(alignment: .leading, spacing: 6) {
-                    if let asking { question(asking) } else { approval.padding(.horizontal, inset ? ComposerLayout.fieldInset : 0) }
+                    if let asking { question(asking) }
+                    else if waiting.isSecret { secret }
+                    else { approval.padding(.horizontal, inset ? ComposerLayout.fieldInset : 0) }
                     if let failure = state.failure {
                         Text(failure).font(Theme.secondary).foregroundStyle(Theme.danger).fixedSize(horizontal: false, vertical: true)
                             .padding(.horizontal, inset ? ComposerLayout.fieldInset : 0)
                     }
                     if let asking {
                         if answers == nil { standalone(asking) }
+                    } else if waiting.isSecret {
+                        secretActions
                     } else {
                         approvalActions
                     }
@@ -73,7 +78,7 @@ struct WaitingResponseCard: View {
             Button(action: toggleCollapsed) {
                 HStack {
                     HStack(spacing: 4) {
-                        Text(waiting.isQuestion ? "等你回答" : "等你批准").font(Theme.status.weight(.semibold))
+                        Text(chipTitle).font(Theme.status.weight(.semibold))
                         if questions.count > 1 {
                             HStack(spacing: 3) {
                                 ForEach(questions.indices, id: \.self) { index in
@@ -94,9 +99,9 @@ struct WaitingResponseCard: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.pointingPlain)
-            .accessibilityLabel(waiting.isQuestion ? "等你回答" : "等你批准")
+            .accessibilityLabel(chipTitle)
             .accessibilityValue(state.collapsed ? "已收起" : "已展开")
-            if let delegate, !state.collapsed {
+            if let delegate, !state.collapsed, !waiting.isSecret {
                 Button { state.run { try await delegate() } } label: { Image(systemName: "arrowshape.turn.up.right") }
                     .buttonStyle(PaneButtonStyle())
                     .accessibilityLabel("交给 Line")
@@ -110,6 +115,8 @@ struct WaitingResponseCard: View {
             .help(state.collapsed ? "展开" : "收起")
         }
     }
+
+    private var chipTitle: String { RemoteWaiting.title(of: waiting.kind) }
 
     /// 灰底的圆角：线程里和玻璃同心（ComposerLayout.fieldFillRadius），收件箱里按列表的。
     private var fillRadius: CGFloat { inset ? ComposerLayout.fieldFillRadius : 10 }
@@ -227,6 +234,71 @@ struct WaitingResponseCard: View {
         .padding(.horizontal, inset ? Metrics.controlButtonInset : 0)
     }
 
+    // MARK: - 密钥请求
+
+    /// 要的是哪一项、用途、同名的已存在时提示替换；值填在灰底的框里，代理给了值时显示出来，没给时按密码遮住。
+    private var secret: some View {
+        @Bindable var state = state
+        return VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(waiting.secretTitle).font(Theme.body.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                if let reason = waiting.reason {
+                    Text(reason).font(Theme.secondary).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Text(secretNote).font(Theme.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, inset ? ComposerLayout.fieldInset : 0)
+            Group {
+                if waiting.value != nil || waiting.secretKind == "file" {
+                    TextField("值", text: $state.secretValue, axis: .vertical).lineLimit(1...6)
+                } else {
+                    SecureField("值", text: $state.secretValue)
+                }
+            }
+            .textFieldStyle(.plain)
+            .font(Theme.code)
+            .autocorrectionDisabled()
+            .padding(.horizontal, ComposerLayout.fieldInset - Metrics.controlInset)
+            .padding(.vertical, ComposerLayout.fieldPadding)
+            .background(ComposerLayout.fieldFill, in: RoundedRectangle(cornerRadius: fillRadius, style: .continuous))
+            .padding(.horizontal, inset ? Metrics.controlInset : 0)
+            .onSubmit(saveSecret)
+            if waiting.file == nil {
+                Picker("存为", selection: $state.secretScope) {
+                    Text("项目专用").tag("project")
+                    Text("账号共享").tag("account")
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
+                .padding(.horizontal, inset ? ComposerLayout.fieldInset : 0)
+            }
+        }
+    }
+
+    private var secretNote: String {
+        let target = waiting.file != nil ? "存进项目密钥后，宿主把这个文件重写进项目的所有工作区。" : "存进凭据，代理在命令里按引用使用，看不到值。"
+        return (waiting.exists == true ? "已经有了，保存会替换原来的值。" : "") + target
+    }
+
+    /// 一行靠右：灰底的拒绝，主题色的保存。
+    private var secretActions: some View {
+        HStack(spacing: ThreadControlsModel.actionGap) {
+            Spacer(minLength: 0)
+            Button("拒绝") { send(.decision("deny")) }
+                .buttonStyle(PaneButtonStyle(text: true, foreground: Theme.danger, secondary: true))
+            Button("保存") { saveSecret() }
+                .buttonStyle(PaneButtonStyle(text: true, fill: .accentColor))
+                .disabled(!validSecretValue(state.secretValue))
+        }
+        .padding(.horizontal, inset ? Metrics.controlButtonInset : 0)
+    }
+
+    private func saveSecret() {
+        let state = state
+        guard validSecretValue(state.secretValue) else { return }
+        send(.secret(.init(value: state.secretValue, scope: waiting.file == nil ? state.secretScope : "project")))
+    }
+
     private func send(_ reply: WaitingReply) {
         let respond = respond
         state.run { try await respond(reply) }
@@ -242,6 +314,9 @@ struct WaitingResponseCard: View {
     private(set) var selected: [Int: [String]] = [:]
     private(set) var other: [Int: String] = [:]
     var collapsed = false
+    /// 密钥请求填的值与范围；值只在这台设备的内存里，发给工作机后存进凭据。
+    var secretValue = ""
+    var secretScope = "project"
     private(set) var busy = false
     private(set) var failure: String?
 
@@ -256,6 +331,8 @@ struct WaitingResponseCard: View {
         selected = [:]
         other = [:]
         collapsed = false
+        secretValue = waiting.value ?? ""
+        secretScope = "project"
         busy = false
         failure = nil
     }

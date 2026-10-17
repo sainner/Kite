@@ -19,14 +19,13 @@ export interface ThreadTitle {
   through: string | null;
 }
 
-const workspacesTable = (name: string) => `create table if not exists ${name} (
+const WORKSPACES = `create table if not exists workspaces (
   id text primary key, checkout_id text not null references checkouts(id), name text not null, cwd text not null,
-  kind text not null check (kind in ('root', 'worktree')), branch text, base text,
+  branch text not null, base text not null,
   status text not null check (status in ('preparing', 'open', 'failed', 'archived', 'handing_off', 'transferred')), created_at integer not null,
-  epoch integer not null default 1 check (epoch >= 1),
-  check ((kind = 'root' and branch is null and base is null) or (kind = 'worktree' and branch is not null and base is not null))
+  epoch integer not null default 1 check (epoch >= 1), behind integer, pull_request text
 );`;
-const WORKSPACES = workspacesTable('workspaces');
+
 // 没有远程的项目 remote 为空，各工作机上的检出互为远程。
 const projectsTable = (name: string) => `create table if not exists ${name} (
   id text primary key, name text not null, remote text, created_at integer not null
@@ -43,8 +42,6 @@ create table if not exists machine (
 ${projectsTable('projects')}
 ${checkoutsTable('checkouts')}
 ${WORKSPACES}
--- 根工作区流转走后本地记录冻结，检出另建一个可用的根工作区，目录相同。
-create unique index if not exists root_workspace on workspaces(checkout_id) where kind = 'root' and status != 'transferred';
 create unique index if not exists workspace_cwd on workspaces(cwd) where status != 'transferred';
 create table if not exists plugin_instances (
   id text primary key, workspace_id text not null references workspaces(id), definition_id text not null, title text not null,
@@ -108,8 +105,8 @@ const checkoutOf = (r: any): Checkout => ({
   id: r.id, projectId: r.project_id, machineId: r.machine_id, path: r.path, remote: r.remote, createdAt: r.created_at,
 });
 const workspaceOf = (r: any): Workspace => ({
-  id: r.id, epoch: r.epoch, checkoutId: r.checkout_id, name: r.name, cwd: r.cwd, kind: r.kind, branch: r.branch, base: r.base,
-  status: r.status, createdAt: r.created_at,
+  id: r.id, epoch: r.epoch, checkoutId: r.checkout_id, name: r.name, cwd: r.cwd, branch: r.branch, base: r.base,
+  status: r.status, createdAt: r.created_at, behind: r.behind, pullRequest: r.pull_request ? JSON.parse(r.pull_request) : null,
 });
 const threadOf = (r: any): Thread => ({ instanceId: r.instance_id, runtime: r.runtime, nativeId: r.native_id });
 const instanceOf = (r: any): PluginInstance => ({
@@ -134,10 +131,10 @@ export class Store implements UsageStore {
   constructor(path: string) {
     this.db = new Database(path, { create: true, strict: true });
     this.db.exec('pragma journal_mode = wal; pragma foreign_keys = on;');
+    this.dropRootWorkspaces();
     this.dropLocalProjects();
     this.dropUnpricedUsage();
     this.dropBareContextTemplates();
-    this.rebuildWorkspaces();
     this.relaxRemotes();
     this.db.exec(SCHEMA);
     this.mergeAgentDefinitions();
@@ -151,6 +148,18 @@ export class Store implements UsageStore {
       this.db.query('insert into machine values (1, ?, ?, ?)').run(machine.id, machine.name, machine.createdAt);
       return machine;
     })();
+  }
+
+  /**
+   * 去掉根工作区之前的库：工作区有 kind 列，检出是用户的文件夹。在研期间不迁移：还没有检出就重建工作区表，否则请用户清掉旧数据。
+   */
+  private dropRootWorkspaces(): void {
+    const columns = this.db.query("select name from pragma_table_info('workspaces')").all() as Array<{ name: string }>;
+    if (!columns.some((c) => c.name === 'kind')) return;
+    if (this.db.query('select 1 from checkouts limit 1').get()) {
+      throw new Error('数据库是去掉根工作区之前的格式，检出还是用户的文件夹：请先删除 KITE_HOME 下 kite.db 里的检出与工作区记录，再重新添加项目');
+    }
+    this.db.exec('drop table workspaces');
   }
 
   /**
@@ -203,19 +212,6 @@ export class Store implements UsageStore {
         if (this.db.query('pragma foreign_key_check').all().length) throw new Error(`${what}后外键不一致`);
       })();
     } finally { this.db.exec('pragma foreign_keys = on'); }
-  }
-
-  /**
-   * 工作区加上 epoch 与 transferred 之前的表：状态的 check 约束只能随表重建，照 SQLite 改表的步骤换成新表，
-   * 其他表对 workspaces 的外键按名字引用，不受影响。
-   */
-  private rebuildWorkspaces(): void {
-    const columns = this.db.query("select name from pragma_table_info('workspaces')").all() as Array<{ name: string }>;
-    if (!columns.length || columns.some((c) => c.name === 'epoch')) return;
-    this.rebuild('重建工作区表', `${workspacesTable('workspaces_next')}
-      insert into workspaces_next (id, checkout_id, name, cwd, kind, branch, base, status, created_at)
-        select id, checkout_id, name, cwd, kind, branch, base, status, created_at from workspaces;
-      drop table workspaces; alter table workspaces_next rename to workspaces;`);
   }
 
   /**
@@ -357,13 +353,12 @@ export class Store implements UsageStore {
     const r = this.db.query('select * from projects where id = ?').get(id);
     return r ? projectOf(r) : null;
   }
-  /** 已有项目可添加检出；新项目、检出与根工作区在同一事务中建立。项目名称与远程以登记表为准。 */
-  register(project: Project, checkout: Checkout, root: Workspace): void {
+  /** 项目在本机的检出，连同本机的项目记录一起建立。项目名称与远程以登记表为准。 */
+  addCheckout(project: Project, checkout: Checkout): void {
     this.db.transaction(() => {
       this.saveProject(project);
       this.db.query('insert into checkouts values (?, ?, ?, ?, ?, ?)')
         .run(checkout.id, checkout.projectId, checkout.machineId, checkout.path, checkout.remote, checkout.createdAt);
-      this.addWorkspace(root);
     })();
   }
   saveProject(project: Project): void {
@@ -409,25 +404,28 @@ export class Store implements UsageStore {
     const r = this.db.query('select * from workspaces where id = ?').get(id);
     return r ? workspaceOf(r) : null;
   }
-  rootWorkspaceModel(checkoutId: string): WorkspaceModel | null {
-    const r = this.db.query("select * from workspaces where checkout_id = ? and kind = 'root' and status != 'transferred'").get(checkoutId);
-    return r ? this.modelOf(workspaceOf(r)) : null;
-  }
   addWorkspace(w: Workspace, firstAgent?: { agent: AgentInstance; window: WorkspaceWindow }): void {
     this.db.transaction(() => {
-      this.db.query(`insert into workspaces (id, checkout_id, name, cwd, kind, branch, base, status, created_at, epoch)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(w.id, w.checkoutId, w.name, w.cwd, w.kind, w.branch, w.base, w.status, w.createdAt, w.epoch);
+      this.db.query(`insert into workspaces (id, checkout_id, name, cwd, branch, base, status, created_at, epoch, behind, pull_request)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(w.id, w.checkoutId, w.name, w.cwd, w.branch, w.base, w.status, w.createdAt, w.epoch, w.behind,
+          w.pullRequest ? JSON.stringify(w.pullRequest) : null);
       if (firstAgent) this.addAgent(firstAgent.agent, firstAgent.window);
     })();
   }
-  /** 执行权流转走：本地记录改为 transferred；根工作区同时给检出另建一个可用的根工作区。receiver 是交给的那台（没有远程的项目）。 */
-  freezeWorkspace(id: string, replacementRoot?: Workspace, receiver?: { epoch: number; machine: string }): void {
+  /** 执行权流转走：本地记录改为 transferred。receiver 是交给的那台（没有远程的项目）。 */
+  freezeWorkspace(id: string, receiver?: { epoch: number; machine: string }): void {
     this.db.transaction(() => {
       this.setWorkspaceStatus(id, 'transferred');
-      if (replacementRoot) this.addWorkspace(replacementRoot);
       if (receiver) this.db.query('insert or replace into workspace_receivers values (?, ?, ?)').run(id, receiver.epoch, receiver.machine);
     })();
+  }
+  /** 主线比工作区分支多出的提交数；没变时返回 false。 */
+  setWorkspaceBehind(id: string, behind: number | null): boolean {
+    return this.db.query('update workspaces set behind = ? where id = ? and behind is not ?').run(behind, id, behind).changes > 0;
+  }
+  setWorkspacePullRequest(id: string, pullRequest: Workspace['pullRequest']): void {
+    this.db.query('update workspaces set pull_request = ? where id = ?').run(pullRequest ? JSON.stringify(pullRequest) : null, id);
   }
   /** 工作区在这一 epoch 交给了哪台；没有记录时为 undefined。 */
   workspaceReceiver(id: string, epoch: number): string | undefined {

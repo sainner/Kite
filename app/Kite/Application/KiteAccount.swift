@@ -33,6 +33,8 @@ private struct Identity: Codable {
     private(set) var devices: [AccountDevice] = []
     private(set) var catalogs: [HostedCatalog] = []
     private(set) var projectAppearances: [String: ProjectAppearance] = [:]
+    /// 项目登记表，从连着的工作机读到的最近一份；只在内存里，还没有工作区的项目靠它列出。
+    private(set) var registeredProjects: [AccountProject] = []
     private(set) var appearanceRevision = 0
     /// 正在登录时要在浏览器里打开的地址；界面据此打开登录页。
     private(set) var loginURL: URL?
@@ -161,7 +163,7 @@ private struct Identity: Codable {
         // 换了 Tailscale 用户就是换了一套设备，旧的导航缓存不能留。
         if let previous = identity.user, previous.id != user.id {
             AccountDirectory.clear(previous.id)
-            devices = []; catalogs = []; projectAppearances = [:]; appearanceRevision += 1
+            devices = []; catalogs = []; projectAppearances = [:]; registeredProjects = []; appearanceRevision += 1
         }
         identity = Identity(role: role, user: user, deviceID: deviceID)
         try saveIdentity()
@@ -253,6 +255,7 @@ private struct Identity: Codable {
         if (try? encoder.encode(catalogs)) != (try? encoder.encode(self.catalogs)) { self.catalogs = catalogs }
         // 目录里的工作机也是设备，组网列表还没读到的先按目录补上。
         for catalog in catalogs where !devices.contains(where: { $0.id == catalog.device.id }) { devices.append(catalog.device) }
+        if projects != registeredProjects { registeredProjects = projects }
         let appearances = Dictionary(projects.map { ($0.id, $0.appearance) }, uniquingKeysWith: { first, _ in first })
         if revision == appearanceRevision, appearances != projectAppearances { projectAppearances = appearances }
         try saveDirectory()
@@ -261,8 +264,15 @@ private struct Identity: Codable {
     /// 工作机保存了外观后，本机立即换上，不等下一次读目录。
     func applyAppearance(_ project: AccountProject) throws {
         projectAppearances[project.id] = project.appearance
+        applyProject(project)
         appearanceRevision += 1
         try saveDirectory()
+    }
+
+    /// 工作机改了一个项目（设置、远程、外观）后，本机立即换上这一项。
+    func applyProject(_ project: AccountProject) {
+        if let index = registeredProjects.firstIndex(where: { $0.id == project.id }) { registeredProjects[index] = project }
+        else { registeredProjects.append(project) }
     }
 
     /// 本机到各对端的连接方式，按组网 IPv4 索引。作为工作机的 Mac 与 kited 共用节点，从 kited 读取。
@@ -303,7 +313,7 @@ private struct Identity: Codable {
     }
     private func clear() {
         if let user { AccountDirectory.clear(user.id) }
-        identity = Identity(); devices = []; catalogs = []; projectAppearances = [:]; appearanceRevision += 1; probes = [:]
+        identity = Identity(); devices = []; catalogs = []; projectAppearances = [:]; registeredProjects = []; appearanceRevision += 1; probes = [:]
         UserDefaults.standard.removeObject(forKey: Self.identityKey)
     }
 

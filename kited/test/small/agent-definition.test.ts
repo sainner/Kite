@@ -9,10 +9,10 @@ import { restoreContext } from '../../src/harness/context/assembler.ts';
 import type { Json, ModelItem, ThreadNotification } from '../../src/harness/types.ts';
 import type { ThreadContext, WorkspaceModel } from '../../src/model.ts';
 import type { DisplayEnvelope, History } from '../../src/transcript/protocol.ts';
-import { api, call, openAgent, registerCheckout, startKited, type Kited } from '../harness.ts';
+import { api, call, folderWorkspace, openAgent, startKited, type Kited } from '../harness.ts';
 import { diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
 import { editNotificationTemplate } from '../notification-templates.ts';
-import { makeTemp, newRepo, read } from '../util.ts';
+import { makeTemp, newDir, read } from '../util.ts';
 
 let kited: Kited | undefined;
 afterEach(async () => { await kited?.stop(); kited = undefined; });
@@ -49,8 +49,7 @@ test('运行中换配置不打断旧工具，下一请求再采用新配置', as
   const newModel = new ManualModel();
   kited = startKited((thread) => (thread.config.agent as AgentDefinition).model.model === 'test-new-model' ? newModel : oldModel);
   const kk = kited;
-  const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' });
-  const registered = await registerCheckout(kk, repo);
+  const registered = await folderWorkspace(kk, newDir(kk.root, 'project', { 'base.txt': '原始\n' }));
   const workspaceId = registered.workspace.id;
   const threadId = await openAgent(kk.call, workspaceId);
   const initial = await kk.call('GET', `/instances/${threadId}/agent-config`);
@@ -124,7 +123,7 @@ test('按草稿选择创建代理时显式模型压过角色默认值和 KITE_MO
       return model;
     });
     const kk = kited;
-    const registered = await registerCheckout(kk, newRepo(kk.root, 'project', { 'base.txt': '原始\n' }));
+    const registered = await folderWorkspace(kk, newDir(kk.root, 'project', { 'base.txt': '原始\n' }));
     const workspaceId = registered.workspace.id;
     const aggregate = async () => {
       const response = await kk.call('GET', `/workspaces/${workspaceId}`);
@@ -167,7 +166,7 @@ test('按草稿选择创建代理时显式模型压过角色默认值和 KITE_MO
 test('原样保存保留配置快照，通知跨重启保留且按请求边界采用新模板', async () => {
   const root = makeTemp();
   const home = join(root, 'kite');
-  const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
+  const repo = newDir(root, 'project', { 'base.txt': '原始\n' });
   const firstModel = new ManualModel();
   let daemon: Daemon | undefined;
   try {
@@ -175,9 +174,7 @@ test('原样保存保留配置快照，通知跨重启保留且按请求边界�
     const apiCall = (method: string, path: string, body?: unknown) => call(daemon!.url, method, path, body);
     const firstEvents = new Seen<Envelope>();
     daemon.kite.bus.subscribe(undefined, (event) => firstEvents.add(event));
-    const checkout = await call(daemon.url, 'POST', '/checkouts', { path: repo });
-    expect(checkout.status).toBe(200);
-    const workspaceId = checkout.body.workspace.id as string;
+    const workspaceId = (await folderWorkspace(daemon, repo)).workspace.id;
     const codingId = await openAgent(apiCall, workspaceId);
     expect((await call(daemon.url, 'POST', `/threads/${codingId}/messages`, { id: randomUUID(), text: '先建立历史' })).status).toBe(200);
     const first = await firstModel.call(1);
@@ -325,7 +322,7 @@ test('空会话打开后端后按模型换后端，只改思考强度不换后�
   const k = startKited(() => model);
   let reopened: Daemon | undefined;
   try {
-    const workspace = await registerCheckout(k, newRepo(k.root, 'project', { 'base.txt': '原始\n' }));
+    const workspace = await folderWorkspace(k, newDir(k.root, 'project', { 'base.txt': '原始\n' }));
     const workspaceId = workspace.workspace.id;
     const id = await openAgent(k.call, workspaceId);
     const configPath = `/instances/${id}/agent-config`;

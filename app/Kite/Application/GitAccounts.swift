@@ -7,12 +7,43 @@ struct AccountProject: Decodable, Identifiable, Equatable {
     let remote: String?
     let icon: String?
     let color: String?
+    /// 集成方式：merge（直接合入）或 pullRequest（提交 PR）；integrationReason 是按仓库情况自动选择时的理由。
+    var integration: String? = nil
+    var integrationReason: String? = nil
     /// 工作机睡眠、登出、重启或关机前，把这个项目里正在工作的工作区换到别的工作机。
     let autoHandover: Bool?
     /// 自动换机的目标须满足的环境，取值见 HandoverNeed。
     let handoverNeeds: [String]?
 
     var appearance: ProjectAppearance { ProjectAppearance(icon: icon ?? "folder", color: color ?? "primary") }
+    var proposes: Bool { integration == "pullRequest" }
+    /// 侧栏和新建工作区用的项目身份。
+    var project: RemoteProject { RemoteProject(id: id, name: name, remote: remote, createdAt: 0) }
+}
+
+/// 添加项目的来源：远程地址，或某台工作机上的文件夹。
+struct ProjectSource: Encodable, Equatable {
+    var remote: String? = nil
+    var path: String? = nil
+}
+
+/// 添加项目前的检查结果（kited 的 POST /project-registry/check）。
+struct ProjectCheck: Decodable, Equatable {
+    /// 归一化的远程地址；没有远程的文件夹为空。
+    let remote: String?
+    let integration: String
+    let integrationReason: String?
+    /// 文件夹里被忽略的环境变量文件，远程为空。
+    let envFiles: [String]
+    /// 同一远程已登记的项目。
+    let existing: AccountProject?
+}
+
+/// 要存成项目密钥的环境变量文件：path 是在工作区里的路径；value 为空时由文件夹所在的工作机读，内容不经过 App。
+struct ProjectEnvFile: Encodable, Equatable, Identifiable {
+    let path: String
+    var value: String? = nil
+    var id: String { path }
 }
 
 struct GitHubDevice: Decodable, Equatable {

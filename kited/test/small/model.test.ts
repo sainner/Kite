@@ -7,15 +7,18 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
-import type { Envelope } from '../../src/events.ts';
-import { after, call, connect, machine, mark, registerCheckout, startKited, synced, type Kited } from '../harness.ts';
-import { ManualModel, Seen } from '../harness-loop.ts';
+import { type FakeGit, startFakeGit } from '../fake-git.ts';
+import {
+  addProject, after, call, chatgptLogin, connect, createWorkspace, folderWorkspace, machine, mark, openWorkspace, startKited, synced, type Kited,
+} from '../harness.ts';
+import { ManualModel } from '../harness-loop.ts';
 import { connectSse } from '../sse.ts';
-import { git, makeTemp, newRepo } from '../util.ts';
+import { makeTemp, newDir } from '../util.ts';
 
 let kited: Kited | undefined;
 let otherKited: Kited | undefined;
 let restarted: Daemon | undefined;
+let remotes: FakeGit | undefined;
 const roots: string[] = [];
 afterEach(async () => {
   await restarted?.stop();
@@ -24,6 +27,8 @@ afterEach(async () => {
   kited = undefined;
   await otherKited?.stop();
   otherKited = undefined;
+  remotes?.stop();
+  remotes = undefined;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -40,35 +45,26 @@ function connectWorkspace(url: string, machineId: string, workspaceId: string) {
 
 /*
  * 项目登记、异步工作树准备、模型启动、HTTP 聚合与 SQLite 线程关系要一起成立：
- * root 无线程，首线程在工作树 cwd 运行；首线程还在工作时第二线程就能启动并共享 cwd，归档首线程保留工作树。
+ * 首线程在工作树 cwd 运行；首线程还在工作时第二线程就能启动并共享 cwd，归档首线程保留工作树。
  */
-test('登记检出后首线程工作时即可并行创建同工作区线程，暂停后 resume 续接，归档首线程保留第二线程', async () => {
+test('添加项目后首线程工作时即可并行创建同工作区线程，暂停后 resume 续接，归档首线程保留第二线程', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
-  // 没有远程的项目：合回只到本机主线。给了示例远程的话，每次合回都先拉一次连不上的远程，白等一百多毫秒。
-  const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' }, null);
-  const root = await registerCheckout(kk, repo);
-  const rootForAssertion = structuredClone(root);
+  // 没有远程的项目：合回只到本机主线。
+  const project = await addProject(kk, { path: newDir(kk.root, 'project', { 'base.txt': '原始\n' }) });
   const localMachine = await machine(kk.url);
-  expect(rootForAssertion.machine).toEqual(localMachine);
-  expect(rootForAssertion.checkout.machineId).toBe(localMachine.id);
-  expect(rootForAssertion.workspace).toMatchObject({ kind: 'root', checkoutId: root.checkout.id, cwd: repo });
-  expect(rootForAssertion.checkout.projectId).toBe(root.project.id);
-  expect(rootForAssertion.instances).toEqual([]);
-  expect(rootForAssertion.threads).toEqual([]);
-  const created = await kk.call('POST', '/workspaces', {
-    checkout: root.checkout.id, name: '首个工作区', prompt: '首线程',
-  });
+  chatgptLogin(kk.home);
+  const created = await kk.call('POST', '/workspaces', { project: project.id, name: '首个工作区', prompt: '首线程' });
   expect(created.status).toBe(200);
   const workspace = structuredClone(created.body);
   const firstThread = workspace.threads[0];
   const firstThreadId = firstThread.instanceId;
   expect(structuredClone(workspace)).toMatchObject({
     machine: localMachine,
-    project: { id: root.project.id },
-    checkout: { id: root.checkout.id, projectId: root.project.id },
-    workspace: { kind: 'worktree', checkoutId: root.checkout.id, name: '首个工作区' },
+    project: { id: project.id },
+    checkout: { projectId: project.id, machineId: localMachine.id },
+    workspace: { checkoutId: workspace.checkout.id, name: '首个工作区' },
   });
   const firstInstance = workspace.instances.find((instance: any) => instance.id === firstThreadId);
   expect(firstInstance).toMatchObject({
@@ -88,8 +84,8 @@ test('登记检出后首线程工作时即可并行创建同工作区线程，�
     title: '首线程',
     status: 'open',
     workspaceId: workspace.workspace.id,
-    project: { id: root.project.id },
-    checkout: { id: root.checkout.id },
+    project: { id: project.id },
+    checkout: { id: workspace.checkout.id },
     workspace: { id: workspace.workspace.id, cwd: workspace.workspace.cwd },
   });
   const first = await model.call(1);
@@ -178,32 +174,20 @@ test('登记检出后首线程工作时即可并行创建同工作区线程，�
 
 /*
  * 依赖 SQLite 外键重建和 git worktree 清理的配合：重启后仍须按 project→checkout→workspace→thread
- * 找到同一聚合；归档工作区才是删除其工作树的操作。同一项目的第二个检出是同一远程的另一份 clone。
+ * 找到同一聚合；归档工作区才是删除其工作树的操作。
  */
 test('重启后保留项目到线程的 SQLite 关系，归档工作区删除工作树', async () => {
   const root = makeTemp('model-');
   roots.push(root);
   const home = join(root, 'kite');
-  const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
-  const secondRepo = join(root, 'second-project-dir');
-  git(root, 'clone', '-q', repo, secondRepo);
-  git(secondRepo, 'remote', 'set-url', 'origin', git(repo, 'remote', 'get-url', 'origin'));
+  const repo = newDir(root, 'project', { 'base.txt': '原始\n' });
   const model = new ManualModel();
   restarted = startDaemon({ home, port: 0, lightTasks: false, model: () => model });
 
-  const project = await call(restarted.url, 'POST', '/checkouts', { path: repo });
-  expect(project.status).toBe(200);
-  const secondCheckout = await call(restarted.url, 'POST', '/checkouts', { path: secondRepo });
-  expect(secondCheckout.status).toBe(200);
-  expect(secondCheckout.body.checkout.id).not.toBe(project.body.checkout.id);
-  expect(secondCheckout.body.workspace.id).not.toBe(project.body.workspace.id);
   const firstMachine = await machine(restarted.url);
-  const created = await call(restarted.url, 'POST', '/workspaces', {
-    checkout: project.body.checkout.id, prompt: '可恢复线程',
-  });
-  expect(created.status).toBe(200);
-  const workspace = created.body;
-  const thread = workspace.threads[0];
+  const context = await createWorkspace(restarted, (await addProject(restarted, { path: repo })).id, '可恢复线程', 'harness');
+  const workspace = { workspace: context.workspace };
+  const thread = { instanceId: context.id };
   const first = await model.call(1);
   first.response.complete();
   await restarted.stop();
@@ -216,9 +200,9 @@ test('重启后保留项目到线程的 SQLite 关系，归档工作区删除工
   const restored = listed.body.find((view: any) => view.workspace.id === workspace.workspace.id);
   expect(restored).toMatchObject({
     machine: firstMachine,
-    project: { id: project.body.project.id },
-    checkout: { id: project.body.checkout.id, projectId: project.body.project.id, machineId: firstMachine.id },
-    workspace: { id: workspace.workspace.id, checkoutId: project.body.checkout.id, cwd: workspace.workspace.cwd },
+    project: { id: context.project.id },
+    checkout: { id: context.checkout.id, projectId: context.project.id, machineId: firstMachine.id },
+    workspace: { id: workspace.workspace.id, checkoutId: context.checkout.id, cwd: workspace.workspace.cwd },
     threads: [{ instanceId: thread.instanceId, runtime: 'harness', nativeId: expect.any(String) }],
     instances: [expect.objectContaining({
       id: thread.instanceId,
@@ -228,19 +212,11 @@ test('重启后保留项目到线程的 SQLite 关系，归档工作区删除工
       presentation: 'window',
     })],
   });
-  const secondRoot = listed.body.find((view: any) => view.workspace.id === secondCheckout.body.workspace.id);
-  expect(secondRoot).toMatchObject({
-    project: { id: project.body.project.id },
-    checkout: { id: secondCheckout.body.checkout.id },
-    workspace: { kind: 'root', cwd: secondRepo },
-  });
-  const checkouts = await call(restarted.url, 'GET', `/checkouts?project=${project.body.project.id}`);
+  const checkouts = await call(restarted.url, 'GET', `/checkouts?project=${context.project.id}`);
   expect(checkouts.status).toBe(200);
-  expect(checkouts.body.map((checkout: any) => checkout.id).sort()).toEqual([
-    project.body.checkout.id, secondCheckout.body.checkout.id,
-  ].sort());
+  expect(checkouts.body.map((checkout: any) => checkout.id)).toEqual([context.checkout.id]);
   const projects = await call(restarted.url, 'GET', '/projects');
-  expect(projects.body).toEqual([project.body.project]);
+  expect(projects.body).toEqual([context.project]);
   expect(existsSync(workspace.workspace.cwd)).toBe(true);
 
   const archived = await call(restarted.url, 'POST', `/workspaces/${workspace.workspace.id}/archive`, { force: true });
@@ -255,61 +231,48 @@ test('重启后保留项目到线程的 SQLite 关系，归档工作区删除工
 });
 
 /*
- * 两份 SQLite 数据库经同步的项目登记表决定身份：两台机器上 origin 指向同一远程（SSH 与 HTTPS 写法）的检出
- * 自动归入同一项目，不再手动关联；错误目标的写请求必须在登记前拒绝。并发请求还要经过同一登记队列、
- * 本机登记表和 SQLite/Git 操作，其中一次失败不能影响排在后面的重复登记。
+ * 两份 SQLite 数据库经同步的项目登记表决定身份：一台登记过的远程，另一台同步到之后再登记，得到同一项目而不另建；
+ * 错误目标的写请求必须在登记前拒绝。并发请求还要经过同一登记队列与本机登记表，其中一次失败不能影响排在后面的重复登记，
+ * 同一远程只登记一次。登记远程要先确认访问得到，远程用 Git 平台替身。
  */
-test('两台工作机登记同一远程的检出自动得到同一项目 ID，并发登记遇到失败后仍幂等', async () => {
+test('两台工作机登记同一远程得到同一项目 ID，并发登记遇到失败后仍幂等', async () => {
   kited = startKited();
   otherKited = startKited();
   const left = kited;
   const right = otherKited;
   await connect(left, right);
-  // 按 origin 登记不访问远程，地址只需能归一化。
-  const leftRepo = newRepo(left.root, 'project', { 'base.txt': '左\n' }, 'https://example.test/Owner/Project.git');
-  const rightRepo = newRepo(right.root, 'checkout', { 'base.txt': '右\n' }, 'git@example.test:owner/project.git');
-  const rightSecond = newRepo(right.root, 'second', { 'base.txt': '右二\n' }, 'https://example.test/owner/second.git');
+  remotes = startFakeGit();
+  const shared = remotes.create('project').url;
+  const other = remotes.create('second').url;
   const leftMachine = await machine(left.url);
   const rightMachine = await machine(right.url);
   expect(leftMachine.id).not.toBe(rightMachine.id);
 
-  const badRequest = (headers: Record<string, string>) => fetch(`${right.url}/checkouts`, {
+  const badRequest = (headers: Record<string, string>) => fetch(`${right.url}/project-registry`, {
     method: 'POST', headers: { 'content-type': 'application/json', ...headers },
-    body: JSON.stringify({ path: rightRepo }),
+    body: JSON.stringify({ remote: shared }),
   });
   expect((await badRequest({})).status).toBe(400);
   expect((await badRequest({ 'X-Kite-Machine': leftMachine.id })).status).toBe(409);
-  expect((await right.call('GET', '/projects')).body).toEqual([]);
+  expect(right.daemon.kite.registry.list()).toEqual([]);
 
-  const leftProject = await registerCheckout(left, leftRepo);
-  await synced(right, () => right.daemon.kite.registry.get(leftProject.project.id), '右边同步到左边登记的项目');
-  const rightProject = await registerCheckout(right, rightRepo);
-  expect(rightProject.project).toEqual(leftProject.project);
-  expect(leftProject.project.remote).toBe('example.test/owner/project');
-  expect(leftProject.checkout.remote).toBe(leftProject.project.remote);
-  expect(rightProject.checkout.remote).toBe(leftProject.project.remote);
-  expect(leftProject.checkout.machineId).toBe(leftMachine.id);
-  expect(rightProject.checkout.machineId).toBe(rightMachine.id);
-  expect(git(rightRepo, 'remote', 'get-url', 'origin')).toBe('git@example.test:owner/project.git');
+  const leftProject = await addProject(left, { remote: shared });
+  expect(leftProject.remote).toBe(`${new URL(shared).host}/project`);
+  await synced(right, () => right.daemon.kite.registry.get(leftProject.id), '右边同步到左边登记的项目');
+  expect(await addProject(right, { remote: shared })).toEqual(leftProject);
 
   const [firstRegistration, failedRegistration, repeatedRegistration] = await Promise.all([
-    right.call('POST', '/checkouts', { path: rightSecond }),
-    right.call('POST', '/checkouts', { path: join(right.root, 'missing-checkout') }),
-    right.call('POST', '/checkouts', { path: rightSecond }),
+    right.call('POST', '/project-registry', { remote: other }),
+    right.call('POST', '/project-registry', { path: join(right.root, 'missing-checkout') }),
+    right.call('POST', '/project-registry', { remote: other }),
   ]);
   expect(firstRegistration.status).toBe(200);
   expect(failedRegistration.status).toBeGreaterThanOrEqual(400);
   expect(failedRegistration.status).toBeLessThan(500);
   expect(repeatedRegistration.status).toBe(200);
-  const second = firstRegistration.body;
-  expect(second.project.id).not.toBe(leftProject.project.id);
-  expect(repeatedRegistration.body.checkout.id).toBe(second.checkout.id);
-  expect(repeatedRegistration.body.workspace.id).toBe(second.workspace.id);
-
-  const filtered = await right.call('GET', `/checkouts?project=${leftProject.project.id}`);
-  expect(filtered.body.map((checkout: any) => checkout.id)).toEqual([rightProject.checkout.id]);
-  expect((await right.call('GET', '/checkouts')).body).toHaveLength(2);
-  expect(right.daemon.kite.registry.list()).toHaveLength(2);
+  expect(firstRegistration.body.id).not.toBe(leftProject.id);
+  expect(repeatedRegistration.body.id).toBe(firstRegistration.body.id);
+  expect(right.daemon.kite.registry.list().map((project) => project.id).sort()).toEqual([leftProject.id, firstRegistration.body.id].sort());
 });
 
 /*
@@ -320,22 +283,14 @@ test('插件窗口命令去重，重连保留打开目标且回收后的关窗�
   const root = makeTemp('window-model-');
   roots.push(root);
   const home = join(root, 'kite');
-  const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
+  const repo = newDir(root, 'project', { 'base.txt': '原始\n' });
   restarted = startDaemon({ home, port: 0, lightTasks: false });
   const daemon = restarted;
-  const internal = new Seen<Envelope>();
-  const unsubscribe = daemon.kite.bus.subscribe(undefined, (event) => internal.add(event));
   let firstClient: Awaited<ReturnType<typeof connectWorkspace>> | undefined;
   let reconnected: Awaited<ReturnType<typeof connectWorkspace>> | undefined;
   try {
     const machineId = (await machine(daemon.url)).id;
-    const rootModel = await call(daemon.url, 'POST', '/checkouts', { path: repo }, machineId);
-    expect(rootModel.status).toBe(200);
-    const created = await call(daemon.url, 'POST', '/workspaces', { checkout: rootModel.body.checkout.id }, machineId);
-    expect(created.status).toBe(200);
-    const workspace = created.body;
-    await internal.wait((event) => event.type === 'workspace.changed'
-      && event.workspaceId === workspace.workspace.id && event.status === 'open');
+    const workspace = await folderWorkspace(daemon, repo);
 
     firstClient = await connectWorkspace(daemon.url, machineId, workspace.workspace.id);
     await firstClient.events.wait((event) => event.type === 'workspace.model' && event.workspaceId === workspace.workspace.id);
@@ -387,16 +342,11 @@ test('插件窗口命令去重，重连保留打开目标且回收后的关窗�
       id: randomUUID(), content: { kind: 'open', instanceId: target.instanceId, viewId: 'secondary' },
     }, machineId);
     expect(undeclaredView.status).toBe(400);
-    const otherWorkspace = await call(daemon.url, 'POST', '/workspaces', {
-      checkout: rootModel.body.checkout.id,
-    }, machineId);
-    expect(otherWorkspace.status).toBe(200);
-    await internal.wait((event) => event.type === 'workspace.changed'
-      && event.workspaceId === otherWorkspace.body.workspace.id && event.status === 'open');
-    expect((await call(daemon.url, 'POST', `/workspaces/${otherWorkspace.body.workspace.id}/windows`, {
+    const otherWorkspace = await openWorkspace(daemon, workspace.project.id);
+    expect((await call(daemon.url, 'POST', `/workspaces/${otherWorkspace.workspace.id}/windows`, {
       id: randomUUID(), content: { kind: 'open', instanceId: target.instanceId, viewId: target.viewId },
     }, machineId)).status).toBe(404);
-    expect((await call(daemon.url, 'DELETE', `/workspaces/${otherWorkspace.body.workspace.id}/windows/${mainWindow.id}`, undefined, machineId)).status).toBe(404);
+    expect((await call(daemon.url, 'DELETE', `/workspaces/${otherWorkspace.workspace.id}/windows/${mainWindow.id}`, undefined, machineId)).status).toBe(404);
 
     await firstClient.close();
     firstClient = undefined;
@@ -455,7 +405,6 @@ test('插件窗口命令去重，重连保留打开目标且回收后的关窗�
     }, machineId)).status).toBe(409);
   } finally {
     const closed = await Promise.allSettled([firstClient?.close(), reconnected?.close()]);
-    unsubscribe();
     for (const result of closed) if (result.status === 'rejected') throw result.reason;
   }
 }, 1000);
@@ -468,13 +417,7 @@ test('运行中的线程关闭窗口后继续执行，重新打开目标且归�
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
-  const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' });
-  const root = await registerCheckout(kk, repo);
-  const created = await kk.call('POST', '/workspaces', { checkout: root.checkout.id });
-  expect(created.status).toBe(200);
-  const workspace = created.body;
-  await kk.waitEvent((event) => event.type === 'workspace.changed'
-    && event.workspaceId === workspace.workspace.id && event.status === 'open');
+  const workspace = await folderWorkspace(kk, newDir(kk.root, 'project', { 'base.txt': '原始\n' }));
 
   const opened = await kk.call('POST', `/workspaces/${workspace.workspace.id}/windows`, {
     id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent' },

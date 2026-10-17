@@ -1,7 +1,7 @@
 /** Agent 的初始执行授权；宿主内部数据始终排除在模型文件和命令工具之外。 */
 import { join } from 'node:path';
 import { gitTry } from '../workspace/git.ts';
-import { hostPrivatePaths, workspacePolicy } from './sandbox.ts';
+import { hostPrivatePaths, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
 
 export async function harnessPolicy(options: {
   cwd: string;
@@ -19,4 +19,11 @@ export async function harnessPolicy(options: {
   // Git 元数据只读；快照与采纳继续由可信宿主执行。
   return { ...policy, denyRead: protectedPaths,
     denyWrite: [...protectedPaths, join(options.cwd, '.git'), ...(metadata.code === 0 ? [metadata.stdout.trim()] : [])] };
+}
+
+/** 宿主写进工作区的密钥文件（paths 是工作区里的相对路径）对代理只读：沙箱不许写，patch 拒绝并提示改用密钥请求。 */
+export function protectSecretFiles(policy: ExecutionPolicy, cwd: string, paths: string[]): ExecutionPolicy {
+  if (!paths.length) return policy;
+  const files = paths.map((path) => join(cwd, path));
+  return { ...policy, denyWrite: [...policy.denyWrite ?? [], ...files], secretFiles: files };
 }

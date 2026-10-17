@@ -8,9 +8,9 @@ import { WorkspaceFiles, readFileArgs } from '../workspace/files.ts';
 import { PDF_PAGE_SPAN, PdfReader, fileKind, readImage } from '../workspace/documents.ts';
 import { FileDiffStore, type FileDiff } from '../workspace/file-diffs.ts';
 import { runCommand, type BackgroundCommand, type CommandOptions } from './command.ts';
-import { assertFileAccess, commandEnvironment, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
+import { assertFileAccess, canonicalPath, commandEnvironment, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
 import type { Json, JsonObject, Tool, ToolResult } from '../harness/types.ts';
-import { secretBindings, secretValue, type SecretProvider, type SecretValue } from '../secrets.ts';
+import { secretBindings, secretRequest, secretValue, type SecretProvider, type SecretValue } from '../secrets.ts';
 
 export const patchArgs = z.object({ operations: z.array(z.discriminatedUnion('type', [
   z.object({ type: z.literal('create_file'), path: z.string().min(1), diff: z.string() }).strict(),
@@ -122,6 +122,10 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       const plan = operations.map((operation) => {
         const { path, type } = operation;
         const target = files.resolve(path);
+        const real = granted.secretFiles?.length ? canonicalPath(target) : undefined;
+        if (real && granted.secretFiles!.some((file) => canonicalPath(file) === real)) {
+          throw new Error(`${path} 由宿主按项目密钥写入，不能直接修改；要加或改其中一项，用 credentials 的 request`);
+        }
         assertFileAccess(target, 'write', granted);
         if (type !== 'create_file') assertFileAccess(target, 'read', granted);
         const present = existsSync(target);
@@ -217,11 +221,20 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
               adopt: (adopted) => background.adopt(adopted, { description, command, turnId: context.turnId, callId: context.callId }) } });
         } finally { unsubscribe?.(); }
       }),
-    make('credentials', '列出本账号共享和当前项目的可用密钥引用及类型，不返回密钥内容。仅在 shell 的 secrets 参数里使用这些引用，项目身份由宿主固定。', z.object({}).strict(), async (_, { signal }) => {
+    make('credentials', [
+      '不带参数时列出本账号共享和当前项目的可用密钥：引用、类型，以及宿主写进工作区的文件路径，不返回密钥内容。引用只在 shell 的 secrets 参数里使用，项目身份由宿主固定。',
+      '缺密钥时用 request 向用户要，回合停下等用户在卡片里填好再接着走：要一条独立的密钥写 {name, reason, kind?}，存好后按结果里的引用使用；',
+      '要环境变量文件（如 .env）里的一项写 {file, key, reason}，存好后宿主把文件重写进项目的所有工作区。这些文件不能直接改，要加或改其中一项也用 request。',
+      '你自己就能给出的值（端口号、生成的随机串）写在 value 里让用户确认；真正的密钥不要编，留空由用户填写。结果不含用户填的值。',
+    ].join(''), z.object({ request: secretRequest.optional() }).strict(), async ({ request }, { signal }) => {
+      if (request) {
+        if (!options.secrets?.request) throw new Error('当前宿主未连接凭据服务');
+        return { status: 'success', output: await options.secrets.request(request, signal) };
+      }
       if (!options.secrets?.list) throw new Error('当前宿主未连接凭据服务');
       const entries = await options.secrets.list(signal);
       // 即使服务误带额外字段，也不能将明文作为工具结果返回。
-      return { status: 'success', output: JSON.stringify(entries.map(({ reference, kind }) => ({ reference, kind }))) };
-    }, true),
+      return { status: 'success', output: JSON.stringify(entries.map(({ reference, kind, path }) => ({ reference, kind, ...(path ? { path } : {}) }))) };
+    }),
   ];
 }

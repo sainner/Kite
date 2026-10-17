@@ -3,19 +3,17 @@ import { randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
-import type { Envelope } from '../../src/events.ts';
 import { localTools } from '../../src/execution/local-tools.ts';
 import type { Json, ToolResult } from '../../src/harness/types.ts';
 import { WorkspaceFiles } from '../../src/workspace/files.ts';
-import { call, machine, registerCheckout, startKited, type Kited } from '../harness.ts';
-import { Seen } from '../harness-loop.ts';
+import { call, folderWorkspace, machine, openWorkspace, startKited, type Kited } from '../harness.ts';
 import { ENV, makeTemp, newDir, newRepo, writeFiles } from '../util.ts';
 
 const operationPath = (workspaceId: string, name: string) => `/workspaces/${workspaceId}/operations/${name}`;
 
 async function workspace(k: Kited, repo: string) {
-  const registered = await registerCheckout(k, repo);
-  return { id: registered.workspace.id, cwd: registered.workspace.cwd };
+  const { workspace } = await folderWorkspace(k, repo);
+  return { id: workspace.id, cwd: workspace.cwd };
 }
 
 async function openFiles(k: Kited, workspaceId: string) {
@@ -50,8 +48,7 @@ async function readTool(cwd: string, logDir: string, path: string): Promise<Tool
 test('文件插件、按字节读取与模型 read 读取同一工作区文件，并拒绝真实符号链接与上级目录逃逸', async () => {
   const k = startKited();
   try {
-    const repo = newRepo(k.root, 'project', { 'base.txt': '原始\n' });
-    const { id, cwd } = await workspace(k, repo);
+    const { id, cwd } = await workspace(k, newRepo(k.root, 'project', { 'base.txt': '原始\n' }, null));
     const notes = join(cwd, 'notes');
     mkdirSync(notes);
     writeFileSync(join(notes, 'one.txt'), '甲\n乙\n丙\n');
@@ -110,8 +107,7 @@ test('文件插件、按字节读取与模型 read 读取同一工作区文件�
 test('按字节读取返回原始字节与版本头，HEAD 只回头，同一 ETag 回 304、内容改了换 ETag，单段 Range 回 206、起点越界回 416', async () => {
   const k = startKited();
   try {
-    const repo = newRepo(k.root, 'project', { 'base.txt': '原始\n' });
-    const { id, cwd } = await workspace(k, repo);
+    const { id, cwd } = await workspace(k, newRepo(k.root, 'project', { 'base.txt': '原始\n' }, null));
     const path = '截图 目录/首页 1.png';
     const original = Buffer.from(Array.from({ length: 1000 }, (_, i) => (i * 7 + 3) % 256));
     mkdirSync(join(cwd, '截图 目录'));
@@ -169,15 +165,12 @@ test('按字节读取返回原始字节与版本头，HEAD 只回头，同一 ET
 test('文件选择跨服务重启保留，回收后新实例读取历史 diff 且重试不重复写入', async () => {
   const root = makeTemp('files-plugin-');
   const home = join(root, 'kite');
-  const repo = newRepo(root, 'project', { 'docs/one.txt': '可读内容\n' });
+  const repo = newRepo(root, 'project', { 'docs/one.txt': '可读内容\n' }, null);
   let daemon: Daemon | undefined;
   try {
     daemon = startDaemon({ home, port: 0, lightTasks: false });
-    const events = new Seen<Envelope>();
-    daemon.kite.bus.subscribe(undefined, (event) => events.add(event));
-    const checkout = await call(daemon.url, 'POST', '/checkouts', { path: repo });
-    expect(checkout.status).toBe(200);
-    const workspaceId = checkout.body.workspace.id as string;
+    const first = await folderWorkspace(daemon, repo);
+    const workspaceId = first.workspace.id;
     const targetWindow = await call(daemon.url, 'POST', `/workspaces/${workspaceId}/windows`, {
       id: randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },
     });
@@ -188,10 +181,7 @@ test('文件选择跨服务重启保留，回收后新实例读取历史 diff �
     });
     expect(sourceWindow.status).toBe(200);
     const sourceId = sourceWindow.body.target.instanceId as string;
-    const otherWorkspace = await call(daemon.url, 'POST', '/workspaces', { checkout: checkout.body.checkout.id });
-    expect(otherWorkspace.status).toBe(200);
-    const otherWorkspaceId = otherWorkspace.body.workspace.id as string;
-    await events.wait((event) => event.type === 'workspace.changed' && event.workspaceId === otherWorkspaceId && event.status === 'open');
+    const otherWorkspaceId = (await openWorkspace(daemon, first.project.id)).workspace.id;
     const filePath = 'docs/one.txt';
 
     const initial = await call(daemon.url, 'POST', operationPath(workspaceId, 'files.state'), { instanceId: targetId });
@@ -220,7 +210,7 @@ test('文件选择跨服务重启保留，回收后新实例读取历史 diff �
       instanceId: targetId, path: filePath,
     })).rejects.toMatchObject({ outcome: 'denied' });
 
-    const cwd = checkout.body.workspace.cwd as string;
+    const cwd = first.workspace.cwd;
     const patch = localTools({ cwd, logDir: join(root, 'logs'), diffDir: join(home, 'diffs', workspaceId), env: ENV() })
       .find((tool) => tool.name === 'patch');
     if (!patch) throw new Error('缺少 patch 工具');
@@ -329,7 +319,7 @@ test('Git 工作区按名字搜索不分大小写，未跟踪的文件和推出�
       'docs/Guide/intro.md': '介绍\n',
       'docs/Guide/removed-gone.md': '会被删掉\n',
       'stale-gone/tracked-gone.txt': '整个目录会被删掉\n',
-    });
+    }, null);
     const { id, cwd } = await workspace(k, repo);
     writeFiles(cwd, {
       'Untracked 笔记/草稿 untracked.md': '未跟踪\n',

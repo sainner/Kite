@@ -6,9 +6,9 @@ import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
 import type { AgentDefinition } from '../../src/agents/definition.ts';
 import type { ContextItem, ModelItem } from '../../src/harness/types.ts';
 import type { History } from '../../src/transcript/protocol.ts';
-import { after, api, type Kited, mark, openAgent, registerCheckout, startKited } from '../harness.ts';
+import { after, api, folderWorkspace, type Kited, mark, openAgent, startKited } from '../harness.ts';
 import { item, ManualModel } from '../harness-loop.ts';
-import { newRepo, transcript } from '../util.ts';
+import { newDir, transcript } from '../util.ts';
 
 setDefaultTimeout(3_000);
 let kited: Kited | undefined;
@@ -32,7 +32,7 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
   const model = new ManualModel();
   kited = startKited(() => model);
   const k = kited;
-  const workspace = await registerCheckout(k, newRepo(k.root, 'project', { 'base.txt': '基线文件正文\n' }));
+  const workspace = await folderWorkspace(k, newDir(k.root, 'project', { 'base.txt': '基线文件正文\n' }));
   const id = await openAgent(k.call, workspace.workspace.id);
   const nativeId = (await k.call('GET', `/threads/${id}`)).body.nativeId as string;
   const firstThinking = { type: 'thinking' as const, thinking: '先读取基线，再检查交接。', signature: 'handoff-first-thinking' };

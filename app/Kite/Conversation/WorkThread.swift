@@ -89,7 +89,7 @@ final class WorkThread: Identifiable {
 
     /// 回合的状态文字，标题栏圆环与停靠栏共用：先看是否在跑，再看上一轮结果，等待继续优先级最低。
     static func turnStatus(phase: String?, outcome: String?, waitingForResume: Bool, unseen: Bool = false, waiting: String? = nil) -> String {
-        if let waiting { return waiting == "question" ? "等你回答" : "等你批准" }
+        if let waiting { return RemoteWaiting.title(of: waiting) }
         return switch phase {
         case "running": "运行中"
         case "stopping": "正在停止"

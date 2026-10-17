@@ -1,15 +1,12 @@
 /**
- * 会话工作树：放在项目文件夹外，由 Kite 管理。建好之后按上游 Claude Code 的格式带上被忽略的必需文件
- * （设置里的 worktree.symlinkDirectories 软链接，.worktreeinclude 复制），再跑项目的初始化脚本 .kite/setup。
- * 软链接和复制的规则照 Claude Code 2.1.280 自己建工作树时的做法：只处理相对路径，不跟随、不复制链接，
- * 目标经已提交的链接逃出工作树就跳过；.worktreeinclude 只复制同时被 .gitignore 忽略的文件。
+ * 工作区的工作树：放在 Kite 数据目录里，从检出（裸仓库）开出。建好之后由调用方写入设了路径的项目密钥，再跑项目的初始化脚本 .kite/setup。
+ * 检出里没有可以带入的忽略文件，所以不处理 worktree.symlinkDirectories 与 .worktreeinclude。
  */
-import { resolveSettings } from '@anthropic-ai/claude-agent-sdk';
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, realpathSync, symlinkSync, writeSync } from 'node:fs';
-import { constants, copyFile, mkdir } from 'node:fs/promises';
-import { dirname, isAbsolute, join } from 'node:path';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { KiteError } from '../errors.ts';
 import { git, gitTry } from './git.ts';
-import { within } from '../paths.ts';
+import { WorkspaceFiles } from './files.ts';
 import { runScript } from '../script.ts';
 import { commandEnvironment, prepareSandbox } from '../execution/sandbox.ts';
 import { harnessPolicy } from '../execution/policy.ts';
@@ -18,80 +15,78 @@ import { forgetWorktree } from './snapshots.ts';
 const SETUP_TIMEOUT_MS = 15 * 60_000;
 
 /** base 为 null 时检出已有的分支（流转来的工作区），否则从 base 新建分支。 */
-export async function addWorktree(main: string, worktree: string, branch: string, base: string | null): Promise<void> {
+export async function addWorktree(checkout: string, worktree: string, branch: string, base: string | null): Promise<void> {
   // 同一路径可能刚删过旧工作树（流转回原机），快照的路径缓存要按新建的 git 目录重查。
   forgetWorktree(worktree);
   mkdirSync(dirname(worktree), { recursive: true });
-  await git(main, ['worktree', 'add', '-q', ...(base === null ? [worktree, branch] : ['-b', branch, worktree, base])]);
-  // escapes 按真实路径判断目标有没有经链接逃出工作树
-  const real = realpathSync(worktree);
-  await linkDirectories(main, real);
-  await copyIncludes(main, real);
+  await git(checkout, ['worktree', 'add', '-q', ...(base === null ? [worktree, branch] : ['-b', branch, worktree, base])]);
 }
 
-/** 目标路径的父目录经链接落到了工作树外面。 */
-function escapes(dest: string, worktreeReal: string): boolean {
-  let dir = dirname(dest);
-  while (!existsSync(dir)) dir = dirname(dir);
-  return !within(realpathSync(dir), worktreeReal);
-}
+const EXCLUDED = /# Kite：项目密钥写进工作区的文件，不进 Git\n([\s\S]*?)# Kite：以上\n?/;
 
-async function linkDirectories(main: string, real: string): Promise<void> {
-  // 宿主仅借用项目的工作树约定；与 Claude 会话禁用配置加载的选择独立。
-  const { effective } = await resolveSettings({ cwd: main, settingSources: ['project', 'local'] });
-  for (const d of effective.worktree?.symlinkDirectories ?? []) {
-    if (isAbsolute(d) || d.split(/[/\\]/).some((s) => /^\.\.[ .]*$/.test(s))) continue;
-    const src = join(main, d);
-    const dest = join(real, d);
-    if (!existsSync(src) || existsSync(dest) || escapes(dest, real)) continue;
-    mkdirSync(dirname(dest), { recursive: true });
-    symlinkSync(src, dest);
+/**
+ * 设了路径的项目密钥记进检出（Kite 自己的仓库）的 info/exclude：本机这个项目的工作树都忽略它们，快照、集成与同步的提交
+ * 不会带上，项目的 .gitignore 之后怎么改都一样。项目跟踪的文件不受 exclude 影响，由 writeSecretFiles 的检查拦下。
+ * 返回原来记着、这次没有的路径：密钥删了或换了路径，这些文件要从工作树里删掉。
+ */
+export function excludeSecretFiles(checkout: string, paths: string[]): string[] {
+  const file = join(checkout, 'info', 'exclude');
+  const current = existsSync(file) ? readFileSync(file, 'utf8') : '';
+  const before = (EXCLUDED.exec(current)?.[1] ?? '').split('\n').filter(Boolean).map((line) => line.slice(1).replace(/\\(.)/g, '$1'));
+  let kept = current.replace(EXCLUDED, '');
+  if (kept && !kept.endsWith('\n')) kept += '\n';
+  // 从仓库根起的确切路径，通配符转义
+  const block = paths.map((path) => `/${path.replace(/[*?[\\]/g, (c) => `\\${c}`)}`).join('\n');
+  const next = paths.length ? `${kept}# Kite：项目密钥写进工作区的文件，不进 Git\n${block}\n# Kite：以上\n` : kept;
+  if (next !== current) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, next);
   }
-}
-
-async function copyIncludes(main: string, real: string): Promise<void> {
-  const patterns = join(main, '.worktreeinclude');
-  if (!existsSync(patterns)) return;
-  const split = (s: string) => s.split('\0').filter(Boolean);
-  // 主文件夹里匹配 .worktreeinclude 的未跟踪文件，再留下被仓库自己的规则忽略的那些
-  const matched = split(await git(main, ['ls-files', '-z', '--others', '--ignored', `--exclude-from=${patterns}`]));
-  if (matched.length === 0) return;
-  const ignored = split((await gitTry(main, ['check-ignore', '-z', '--stdin'], { input: matched.join('\0') + '\0' })).stdout);
-  // 同一个目录只判断、只建一次；复制用异步的，文件多时不卡住 kited 的事件循环
-  const dirs = new Map<string, boolean>();
-  for (const f of ignored) {
-    const src = join(main, f);
-    const dest = join(real, f);
-    const dir = dirname(dest);
-    if (lstatSync(src).isSymbolicLink()) continue;
-    let ok = dirs.get(dir);
-    if (ok === undefined) {
-      ok = !escapes(dest, real);
-      if (ok) await mkdir(dir, { recursive: true });
-      dirs.set(dir, ok);
-    }
-    // APFS 上是克隆，不额外占空间
-    if (ok) await copyFile(src, dest, constants.COPYFILE_FICLONE);
-  }
+  return before.filter((path) => !paths.includes(path));
 }
 
 /**
- * 跑工作树里的 .kite/setup，没有这个文件返回 null。只看退出码；主文件夹位置经 KITE_MAIN_DIR 告诉脚本，
- * 脚本不需要自己判断身份，也不写状态文件。输出写进 logPath，另外留下最后 4000 个字符给事件用。
- * 与模型的 shell 共用沙箱：工作树可写、主文件夹与工具链可读，宿主数据受保护，Git 元数据只读；
- * 环境只带开发工具的基础设置与 KITE_MAIN_DIR。网络在项目级网络授权落地前放行。
+ * 把设了路径的项目密钥写进工作树，权限 0600。先用 git check-ignore 确认路径都被忽略（检出的 info/exclude 已记下它们，
+ * 没被忽略就是项目跟踪的文件），免得快照把它提交进 Git；有这样的或路径经链接逃出工作树的，一个都不写并报错。
  */
-export async function runSetup(main: string, worktree: string, logPath: string, home: string, signal?: AbortSignal): Promise<{ exit: number; tail: string } | null> {
+export async function writeSecretFiles(worktree: string, files: Array<{ path: string; value: string }>): Promise<void> {
+  if (!files.length || !existsSync(worktree)) return;
+  const tree = new WorkspaceFiles(worktree);
+  const r = await gitTry(tree.root, ['check-ignore', '-z', '--stdin'], { input: files.map((file) => file.path).join('\0') + '\0' });
+  const ignored = new Set(r.stdout.split('\0').filter(Boolean));
+  const exposed = files.filter((file) => !ignored.has(file.path)).map((file) => file.path);
+  if (exposed.length) throw new KiteError(`这些路径上是项目跟踪的文件，密钥不能写进工作区：${exposed.join('、')}。先把它们从 Git 里移除并忽略`, 409);
+  const targets = files.map((file) => ({ target: tree.resolve(file.path), value: file.value }));
+  for (const { target, value } of targets) {
+    mkdirSync(dirname(target), { recursive: true });
+    // 新建文件，不跟着已有的链接写到别处，权限也按新文件的给。
+    rmSync(target, { force: true });
+    writeFileSync(target, value, { mode: 0o600 });
+  }
+}
+
+/** 删掉工作树里不再由密钥提供的文件（密钥删了或改了路径）。 */
+export function removeSecretFile(worktree: string, path: string): void {
+  if (!existsSync(worktree)) return;
+  try { rmSync(new WorkspaceFiles(worktree).resolve(path), { force: true }); }
+  catch { /* 路径经链接指到了工作树外面：不删 */ }
+}
+
+/**
+ * 跑工作树里的 .kite/setup，没有这个文件返回 null。只看退出码，脚本不写状态文件。输出写进 logPath，另外留下最后 4000 个字符给事件用。
+ * 与模型的 shell 共用沙箱：工作树可写、工具链可读，宿主数据受保护，Git 元数据（含检出）只读；
+ * 环境只带开发工具的基础设置。网络在项目级网络授权落地前放行。
+ */
+export async function runSetup(checkout: string, worktree: string, logPath: string, home: string, signal?: AbortSignal): Promise<{ exit: number; tail: string } | null> {
   const script = join(worktree, '.kite', 'setup');
   if (!existsSync(script)) return null;
   mkdirSync(dirname(logPath), { recursive: true });
-  const env = { ...commandEnvironment(process.env), KITE_MAIN_DIR: main };
-  const policy = await harnessPolicy({ cwd: worktree, env, home, repository: main });
+  const env = commandEnvironment(process.env);
+  const policy = await harnessPolicy({ cwd: worktree, env, home, repository: checkout });
   const fd = openSync(logPath, 'w');
   let sandbox: ReturnType<typeof prepareSandbox> | undefined;
   try {
-    sandbox = prepareSandbox(`exec '${script.replaceAll("'", "'\\''")}'`, { cwd: worktree, env, network: 'open',
-      policy: { ...policy, read: [...policy.read, main] } });
+    sandbox = prepareSandbox(`exec '${script.replaceAll("'", "'\\''")}'`, { cwd: worktree, env, network: 'open', policy });
     const r = await runScript(sandbox.executable, {
       args: sandbox.args, cwd: worktree, env: sandbox.env, timeoutMs: SETUP_TIMEOUT_MS, keep: 4000, signal,
       onOutput: (text) => writeSync(fd, text),
@@ -107,11 +102,11 @@ export async function runSetup(main: string, worktree: string, logPath: string, 
   }
 }
 
-/** 删掉工作树和会话分支。快照引用 refs/kite/snapshots/<会话> 不动。 */
-export async function removeWorktree(main: string, worktree: string, branch: string): Promise<void> {
+/** 删掉工作树和工作区分支。快照引用 refs/kite/snapshots/<工作区> 不动。 */
+export async function removeWorktree(checkout: string, worktree: string, branch: string): Promise<void> {
   forgetWorktree(worktree);
-  if ((await gitTry(main, ['worktree', 'remove', '--force', '--force', worktree])).code !== 0) {
-    await git(main, ['worktree', 'prune']);
+  if ((await gitTry(checkout, ['worktree', 'remove', '--force', '--force', worktree])).code !== 0) {
+    await git(checkout, ['worktree', 'prune']);
   }
-  await gitTry(main, ['branch', '-D', branch]);
+  await gitTry(checkout, ['branch', '-D', branch]);
 }

@@ -2,6 +2,7 @@
 import { join } from 'node:path';
 import type { AccountMachine } from './account-data/directory.ts';
 import type { Credentials } from './account-data/credentials.ts';
+import type { SecretRequest } from './secrets.ts';
 import type { Candidate } from './account-data/directory.ts';
 import { KiteError } from './errors.ts';
 import type { RuntimeEvent } from './events.ts';
@@ -14,7 +15,7 @@ import type { ShellBackground, ShellOutside } from './execution/local-tools.ts';
 import { readSubscriptionCredentials } from './harness/auth.ts';
 import { CHATGPT_CONTEXT_WINDOW, ChatGPTModel } from './harness/chatgpt.ts';
 import { openThreadHost } from './harness/thread-host.ts';
-import { harnessPolicy } from './execution/policy.ts';
+import { harnessPolicy, protectSecretFiles } from './execution/policy.ts';
 import { applyExecutionGrants, effectiveExecution, executionRevision, instanceExecutionChanges, type ProjectExecution } from './execution/grants.ts';
 import { projectContext } from './harness/context/project.ts';
 import { threadVariables } from './context-variables.ts';
@@ -104,6 +105,10 @@ export interface RuntimeHost {
   background?: ShellBackground;
   /** 命令能不能出沙箱：生效的沙箱外命令直接放行，其余按审批模式申请。 */
   outside?: ShellOutside;
+  /** 宿主按项目密钥写进工作区的文件（相对路径），对代理只读；每次调用工具时读取。 */
+  secretFiles(): string[];
+  /** credentials 的请求动作：向用户要密钥，存好后返回交给模型的说明。 */
+  requestSecret(request: SecretRequest, signal: AbortSignal): Promise<string>;
 }
 
 const constraintAllows = (rule: ProjectToolRule | undefined, name: string) => !rule || ruleAllows(rule, name);
@@ -125,11 +130,13 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   const { id, nativeId, title, runtime, project: { id: projectId }, workspace: { cwd, id: workspaceId } } = s;
   if (runtime !== 'claude' && runtime !== 'harness') throw new KiteError(`不支持的会话后端：${runtime}`, 409);
   const basePolicy = await harnessPolicy({ cwd, env: process.env, home, repository: host.repository });
-  const policy = () => applyExecutionGrants(basePolicy, cwd, effectiveExecution(instanceExecutionChanges(host.current()), host.executionConstraint()));
+  const policy = () => protectSecretFiles(applyExecutionGrants(basePolicy, cwd,
+    effectiveExecution(instanceExecutionChanges(host.current()), host.executionConstraint())), cwd, host.secretFiles());
   const credentials = host.credentials;
   const secrets = credentials ? {
     list: async () => credentials.available(projectId),
     resolve: (references: string[]) => credentials.resolve(references, projectId),
+    request: (request: SecretRequest, signal: AbortSignal) => host.requestSecret(request, signal),
   } : undefined;
   const diffDir = join(home, 'diffs', workspaceId);
   if (runtime === 'claude') {

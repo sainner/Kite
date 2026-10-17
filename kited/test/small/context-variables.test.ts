@@ -4,24 +4,24 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { VariablePreview } from '../../src/context-variables.ts';
 import { documentVariables } from '../../src/harness/context/project.ts';
-import { registerCheckout, startKited, type Kited } from '../harness.ts';
+import { folderWorkspace, startKited, type Kited } from '../harness.ts';
 import { newRepo, read } from '../util.ts';
 
 const sha256 = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
 
-/** 登记一个仓库，返回检出 ID 和它在这台工作机上的文件夹。 */
-async function checkoutOf(k: Kited, files: Record<string, string>) {
-  const { checkout } = await registerCheckout(k, newRepo(k.root, 'project', files));
-  return { id: checkout.id, dir: checkout.path };
+/** 按一个仓库添加项目并建好工作区，返回工作区 ID 和它的工作树。 */
+async function workspaceOf(k: Kited, files: Record<string, string>) {
+  const { workspace } = await folderWorkspace(k, newRepo(k.root, 'project', files, null));
+  return { id: workspace.id, dir: workspace.cwd };
 }
 
-// 几部分的配合：带点的变量名经 HTTP 路由到检出，再落到真实文件系统（记忆索引在 .kite/memory/ 下，新建要连目录一起建），
+// 几部分的配合：带点的变量名经 HTTP 路由到工作区，再落到它工作树的真实文件系统（记忆索引在 .kite/memory/ 下，新建要连目录一起建），
 // 写回的内容要在下一次取值里体现，返回的摘要要对得上磁盘上的字节；文件在别处改过或新建时已存在，真实请求要回 409 且不覆盖。
-test('记忆索引从编辑器按检出新建后，再取值带上这份文件和磁盘字节的摘要；重复新建或带过期摘要写回返回 409，磁盘保持别处的改动', async () => {
+test('记忆索引从编辑器按工作区新建后，再取值带上这份文件和磁盘字节的摘要；重复新建或带过期摘要写回返回 409，磁盘保持别处的改动', async () => {
   const k = startKited();
   try {
-    const { id, dir } = await checkoutOf(k, { 'base.txt': '原始\n' });
-    const variable = `/checkouts/${id}/context-variables/project.memory`;
+    const { id, dir } = await workspaceOf(k, { 'base.txt': '原始\n' });
+    const variable = `/workspaces/${id}/context-variables/project.memory`;
     const location = join(dir, documentVariables['project.memory']);
 
     const empty = await k.call('GET', variable);
@@ -63,18 +63,18 @@ test('记忆索引从编辑器按检出新建后，再取值带上这份文件�
   }
 });
 
-// 写接口能写磁盘，路径限制是安全边界：只有从仓库根到检出文件夹逐级的 AGENTS.md 能写。
+// 写接口能写磁盘，路径限制是安全边界：只有从仓库根到工作树逐级的 AGENTS.md 能写。
 // 每个越界请求都让文件名对、摘要对（或文件不存在而按新建），只有位置不对，确认挡下它的是路径而不是摘要；
-// `<检出文件夹>/../AGENTS.md` 挡住只按前缀或文件名比对、没把 .. 归一化的判断。
-// 取值的范围也是边界：按工作机只能取环境层，项目规则要按检出取，否则 400。
-test('项目规则只能按检出写回逐级查找的 AGENTS.md：仓库外、借 .. 跳出、更深的子目录、别的变量或别的文件一律 400 且磁盘不变；按工作机取项目规则 400', async () => {
+// `<工作树>/../AGENTS.md` 挡住只按前缀或文件名比对、没把 .. 归一化的判断。
+// 取值的范围也是边界：按工作机只能取环境层，项目规则要按工作区取，否则 400。
+test('项目规则只能按工作区写回逐级查找的 AGENTS.md：仓库外、借 .. 跳出、更深的子目录、别的变量或别的文件一律 400 且磁盘不变；按工作机取项目规则 400', async () => {
   const k = startKited();
   try {
-    const { id, dir } = await checkoutOf(k, { 'base.txt': '原始\n', 'pkg/a.txt': '子目录\n' });
+    const { id, dir } = await workspaceOf(k, { 'base.txt': '原始\n', 'pkg/a.txt': '子目录\n' });
     const write = (path: string, expectedSha256: string | null) =>
-      k.call('PUT', `/checkouts/${id}/context-variables/project.rules/file`, { path, content: '被写入\n', expectedSha256 });
+      k.call('PUT', `/workspaces/${id}/context-variables/project.rules/file`, { path, content: '被写入\n', expectedSha256 });
 
-    const outside = join(k.root, documentVariables['project.rules']);
+    const outside = join(dir, '..', documentVariables['project.rules']);
     writeFileSync(outside, '仓库外的规则\n');
     const existing = [outside, join(dir, 'base.txt')];
     const before = existing.map(read);
@@ -98,10 +98,10 @@ test('项目规则只能按检出写回逐级查找的 AGENTS.md：仓库外、�
     expect((await write(allowed, null)).status).toBe(200);
     expect(read(allowed)).toBe('被写入\n');
 
-    // 按工作机取：环境层取得到，项目层取不到；同一个变量按检出取得到刚写的内容
+    // 按工作机取：环境层取得到，项目层取不到；同一个变量按工作区取得到刚写的内容
     expect((await k.call('GET', '/context-variables/machine.name')).status).toBe(200);
     expect((await k.call('GET', '/context-variables/project.rules')).status).toBe(400);
-    expect((await k.call('GET', `/checkouts/${id}/context-variables/project.rules`)).body.files)
+    expect((await k.call('GET', `/workspaces/${id}/context-variables/project.rules`)).body.files)
       .toEqual([{ path: allowed, content: '被写入\n', sha256: sha256(allowed) }]);
   } finally {
     await k.stop();

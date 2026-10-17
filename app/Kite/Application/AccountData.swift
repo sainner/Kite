@@ -39,12 +39,47 @@ extension AppModel {
         try await dataWorker().request("/project-registry", as: [AccountProject].self)
     }
 
-    /// 给没有远程的项目设远程：一台有检出的工作机把全部分支和标签推上去，再写进登记表，各检出随后改用它。大仓库要推很久。
-    func setProjectRemote(_ projectID: String, remote: String) async throws -> AccountProject {
-        try await checkoutWorker(projectID).request("/project-registry/\(projectID)/remote", method: "PUT", body: ["remote": remote], timeout: 600, as: AccountProject.self)
+    /// 添加项目前的检查：远程能不能访问、集成方式的默认值，文件夹另列出被忽略的环境变量文件。
+    /// 文件夹问它所在的工作机，远程问哪台都行。
+    func checkProject(_ source: ProjectSource, machineID: String?) async throws -> ProjectCheck {
+        try await projectWorker(source, machineID: machineID).request("/project-registry/check", method: "POST", body: source, timeout: 120, as: ProjectCheck.self)
     }
 
-    /// 删除项目：登记、约束与项目专用的密钥一起删，各工作机随后移除本机的检出，检出目录留在磁盘上。
+    /// 添加项目：远程只登记不 clone，没有远程的文件夹由它所在的工作机导入；环境变量文件一起存成项目密钥。
+    func addProject(_ source: ProjectSource, machineID: String?, integration: String?, envFiles: [ProjectEnvFile]) async throws -> AccountProject {
+        struct Addition: Encodable {
+            let remote: String?; let path: String?; let integration: String?; let envFiles: [ProjectEnvFile]?
+        }
+        let body = Addition(remote: source.remote, path: source.path, integration: integration, envFiles: envFiles.isEmpty ? nil : envFiles)
+        let project = try await updateProject(projectWorker(source, machineID: machineID), "/project-registry", method: "POST", body: body, timeout: 1800)
+        _ = await refreshDirectory()
+        return project
+    }
+
+    /// 改了登记表里的一个项目（添加、设置、远程）：本机立即换上工作机返回的这一项。
+    private func updateProject(_ client: KitedClient, _ path: String, method: String, body: some Encodable, timeout: TimeInterval = 30) async throws -> AccountProject {
+        let project = try await client.request(path, method: method, body: body, timeout: timeout, as: AccountProject.self)
+        account.applyProject(project)
+        return project
+    }
+
+    private func projectWorker(_ source: ProjectSource, machineID: String?) throws -> KitedClient {
+        guard source.path != nil else { return try dataWorker() }
+        guard let machineID, let connection = connections[machineID], connection.connected else { throw KitedError(message: "文件夹所在的工作机未连接") }
+        return connection.client
+    }
+
+    /// 改集成方式：直接合入（merge）或提交 PR（pullRequest）。
+    func setProjectIntegration(_ projectID: String, integration: String) async throws -> AccountProject {
+        try await updateProject(dataWorker(), "/project-registry/\(projectID)/settings", method: "PUT", body: ["integration": integration])
+    }
+
+    /// 给没有远程的项目设远程：一台有检出的工作机把全部分支和标签推上去，再写进登记表，各检出随后改用它。大仓库要推很久。
+    func setProjectRemote(_ projectID: String, remote: String) async throws -> AccountProject {
+        try await updateProject(checkoutWorker(projectID), "/project-registry/\(projectID)/remote", method: "PUT", body: ["remote": remote], timeout: 600)
+    }
+
+    /// 删除项目：登记、约束与项目专用的密钥一起删，各工作机随后移除本机的工作区和 Kite 的检出；用户自己的文件夹不动。
     /// 接请求的工作机先停下本机这个项目的线程，可能要一会儿。
     func deleteProject(_ projectID: String) async throws {
         let client = try dataWorker()
@@ -57,8 +92,8 @@ extension AppModel {
     /// 只改给了的那一项。
     func setProjectHandover(_ projectID: String, enabled: Bool? = nil, needs: [String]? = nil) async throws -> AccountProject {
         struct Settings: Encodable { let autoHandover: Bool?; let handoverNeeds: [String]? }
-        return try await dataWorker().request("/project-registry/\(projectID)/settings", method: "PUT",
-                                              body: Settings(autoHandover: enabled, handoverNeeds: needs), as: AccountProject.self)
+        return try await updateProject(dataWorker(), "/project-registry/\(projectID)/settings", method: "PUT",
+                                       body: Settings(autoHandover: enabled, handoverNeeds: needs))
     }
 
     func setProjectAppearance(_ values: [String: String], projectID: String) async throws {

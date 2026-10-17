@@ -1,11 +1,9 @@
 /**
  * Line（docs/Line与工作区流转.md「Line」）：两台本进程 kited，A 启用 Line，B 上有工作线程。
- * 跨机调用经 startKited 的 peers.directory 直达 B 的监听地址。Line 的项目是没有远程的项目，回合结束只在本机提交现场。
- * 每个测试换一个 HOME：Line 的项目固定在 ~/code/kite-line，同一进程里前一个测试删掉再建的同路径仓库会碰上
- * 快照模块按路径记住的私有索引目录（src/workspace/snapshots.ts 的 indexes），回合收尾失败。
+ * 跨机调用经 startKited 的 peers.directory 直达 B 的监听地址。Line 的项目是没有远程的项目，建在 A 的数据目录里，Line 在它的一个普通工作区里。
  */
 import { afterEach, expect, jest, spyOn, test } from 'bun:test';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AccountMachine } from '../../src/account-data/directory.ts';
 import type { Envelope } from '../../src/events.ts';
@@ -13,15 +11,12 @@ import type { Input, Json, ModelItem, ModelRequest, ToolResult } from '../../src
 import { type Delegation, type InboxItem, type InboxRecord, monitorState } from '../../src/line/monitor.ts';
 import type { WorkspaceModel } from '../../src/model.ts';
 import type { DisplayState } from '../../src/transcript/protocol.ts';
-import { after, type Kited, mark, registerCheckout, startKited, waitIdle } from '../harness.ts';
+import { after, chatgptLogin, folderWorkspace, type Kited, mark, startKited, waitIdle, workspaceOpened } from '../harness.ts';
 import { deferred, diskRecords, item, ManualModel } from '../harness-loop.ts';
 import { connectSse } from '../sse.ts';
-import { gitOk, makeTemp, newDir, newRepo, until, writeFiles } from '../util.ts';
+import { newDir, until } from '../util.ts';
 
 const kiteds: Kited[] = [];
-const dirs: string[] = [];
-/** 测试前的 HOME，测试结束时换回。 */
-const homes: string[] = [];
 /** 停住的账号目录读取；测试失败时也先放行，否则停 kited 时会一直等 monitor 这一轮。 */
 const holds: Array<() => void> = [];
 /** 打开着的事件流；先关掉再停 kited，免得留下打开的 HTTP 连接。 */
@@ -30,9 +25,6 @@ afterEach(async () => {
   for (const release of holds.splice(0)) release();
   for (const stream of streams.splice(0)) await stream.close().catch(() => {});
   for (const k of kiteds.splice(0)) await k.stop();
-  const home = homes.pop();
-  if (home) process.env.HOME = home;
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 const calledItem = (id: string, name: string, args: Json): ModelItem => ({ ...item(id, name), call: { id, name, arguments: args } });
@@ -43,12 +35,8 @@ const resultOf = (request: ModelRequest, callId: string): ToolResult | undefined
   return found?.type === 'tool_result' ? found.result : undefined;
 };
 
-/** A 启用 Line，B 的根工作区里有一个工作代理（还没发消息）。directory 是 A 读到的账号目录，测试可以往里加工作机。 */
+/** A 启用 Line（等它的工作区准备好），B 的一个工作区里有一个工作代理（还没发消息）。directory 是 A 读到的账号目录，测试可以往里加工作机。 */
 async function lineSetup() {
-  const root = makeTemp('line-');
-  dirs.push(root);
-  homes.push(process.env.HOME!);
-  process.env.HOME = newDir(root, 'home');
   const models = new Map<string, ManualModel>();
   const modelOf = (threadId: string) => {
     let model = models.get(threadId);
@@ -76,12 +64,14 @@ async function lineSetup() {
   const machineB = b.daemon.kite.store.machine.id;
   directory.push({ id: machineB, name: '工作机 B', online: true, address: b.url });
 
+  // Line 的角色用自研后端，建它的工作区前要在这台工作机登录 ChatGPT。
+  chatgptLogin(a.home);
   const enabled = await a.call('POST', '/line');
   expect(enabled.status).toBe(200);
-  const lineWorkspace = enabled.body as WorkspaceModel;
-  const lineId = lineWorkspace.threads[0]!.instanceId;
+  const lineId = (enabled.body as WorkspaceModel).threads[0]!.instanceId;
+  const lineWorkspace = await workspaceOpened(a, (enabled.body as WorkspaceModel).workspace.id);
 
-  const registered = await registerCheckout(b, newRepo(b.root, 'work', { 'a.txt': 'a\n' }));
+  const registered = await folderWorkspace(b, newDir(b.root, 'work', { 'a.txt': 'a\n' }));
   const started = await b.call('POST', `/workspaces/${registered.workspace.id}/operations/agent.start`, { operationId: 'worker' });
   expect(started.status).toBe(200);
   const workId = started.body.instanceId as string;
@@ -247,10 +237,10 @@ test('Line 停止线程须经用户逐次批准：等待挂在 Line 的线程上
 /*
  * 几个部分的配合：A 的 monitor 跨机读 B 的汇总，把 B 上的提问放进收件箱而不唤醒 Line；用户点代处理才投一条 Kite 来源的输入；
  * Line 的 line_handle 经跨机调用（带 X-Kite-Source）写回 B 上那个等待，B 的工具结果写明由 Line 代答及理由；了结后事项
- * 移出收件箱，没有设备关注时用户算离开，这一项记进离开期间的记录；Line 回合结束后宿主在本机提交现场（没有远程，不推送）。
+ * 移出收件箱，没有设备关注时用户算离开，这一项记进离开期间的记录。
  * 工作线程能用 question，line_* 只声明给 Line 角色的实例；Line 的角色工具与默认的操作授权合起来，它能用 monitor_*。
  */
-test('B 上的提问进 Line 收件箱而不唤醒 Line，用户点代处理才唤醒；Line 用 line_handle 答复后 B 的线程拿到 Line 代答的结果，事项移出收件箱进处理记录，Line 的现场提交到本机', async () => {
+test('B 上的提问进 Line 收件箱而不唤醒 Line，用户点代处理才唤醒；Line 用 line_handle 答复后 B 的线程拿到 Line 代答的结果，事项移出收件箱进处理记录', async () => {
   const s = await lineSetup();
   const work = s.modelOf(s.workId);
   const line = s.modelOf(s.lineId);
@@ -291,11 +281,9 @@ test('B 上的提问进 Line 收件箱而不唤醒 Line，用户点代处理才�
   // 没有设备关注，用户算离开：Line 了结的事项进离开期间的记录，带决定与理由。
   expect(settled.records.map((record) => [record.item.id, record.outcome, record.decision, record.reason])).toEqual([[itemId, 'handled', 'answered', reason]]);
 
-  writeFiles(s.lineWorkspace.workspace.cwd, { '.kite/memory/notes.md': 'Line 记下的事\n' });
   const since = mark(s.a);
   handled.response.complete();
   await waitIdle(s.a, s.lineId, since);
-  await until(() => gitOk(s.lineWorkspace.checkout.path, 'cat-file', '-e', 'HEAD:.kite/memory/notes.md'), 'Line 的现场提交到本机', 900);
   // 了结的事项不再回到收件箱，也不再唤醒 Line。
   await s.a.daemon.kite.monitor.check();
   expect((await inboxOf(s.a)).items).toEqual([]);

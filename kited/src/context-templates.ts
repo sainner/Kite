@@ -20,7 +20,7 @@ const editableScenes: Partial<Record<ContextScene, 'notification' | 'compaction'
   'thread.execution_permissions_changed': 'notification', 'thread.plugin_tools_changed': 'notification',
   'thread.file_changes': 'notification', 'line.monitor': 'notification', 'monitor.events': 'notification', 'terminal.exit': 'notification',
   'thread.compact': 'compaction',
-  'thread.title': 'generation', 'template.emblem': 'generation', 'thread.voice': 'generation',
+  'thread.title': 'generation', 'template.emblem': 'generation', 'thread.voice': 'generation', 'workspace.pull_request': 'generation',
 };
 
 /**

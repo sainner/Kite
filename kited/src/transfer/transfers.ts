@@ -13,8 +13,8 @@ import type { GitCredentials } from '../git-credential.ts';
 import { holds, type AgentInstance, type Checkout, type Workspace, type WorkspaceModel, type WorkspaceStatus } from '../model.ts';
 import type { Store } from '../store.ts';
 import { runtimeLogin, type Environment } from '../environment.ts';
-import { git, gitTry, isAncestor, isDirty, revParse } from '../workspace/git.ts';
-import { currentBranch, fetchBranch, originAccess, type RemoteAccess } from '../workspace/remote.ts';
+import { git, gitTry, revParse } from '../workspace/git.ts';
+import { originAccess, type RemoteAccess } from '../workspace/remote.ts';
 import { readLease, remoteLeases, writeLease, type Lease } from '../workspace/lease.ts';
 import { addWorktree, removeWorktree, runSetup } from '../workspace/worktrees.ts';
 import { forgetWorktree, snapshotRef } from '../workspace/snapshots.ts';
@@ -33,8 +33,6 @@ export interface TransferHost {
   elsewhere(workspaceId: string): Array<{ machine: string; epoch: number; status: WorkspaceStatus }>;
   /** 调另一台工作机的接口，非 2xx 抛错。 */
   call(machine: string, method: string, path: string, body?: unknown): Promise<unknown>;
-  /** 没有远程的项目：从另一台工作机的检出拉主线，能快进就快进。 */
-  syncFrom(checkout: Checkout, machine: string): Promise<'current' | 'forwarded' | 'diverged' | 'absent'>;
   /** 工作区控制锁：与线程控制、快照、采纳互斥。 */
   control<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
   workspace(id: string): WorkspaceModel;
@@ -46,20 +44,20 @@ export interface TransferHost {
   snapshot(workspace: Workspace, label: string): Promise<void>;
   setStatus(workspaceId: string, status: WorkspaceStatus): void;
   changed(workspaceId: string): void;
-  /** 工作区记录已从本机删除（还原失败清理，或根工作区被流转来的替换）。 */
+  /** 工作区记录已从本机删除（还原失败清理）。 */
   removed(workspaceId: string): void;
   /** 这些线程的会话记录换了：按旧记录读出的显示历史作废。 */
   recordsReplaced(threadIds: string[]): void;
   environment(projectId: string): Promise<Environment>;
-  /** 本机该项目的检出；没有时 clone 到默认位置并登记。 */
+  /** 本机该项目的检出；没有时 clone 到数据目录并登记。 */
   ensureCheckout(projectId: string): Promise<Checkout>;
+  /** 把项目设了路径的密钥写进工作树，在 setup 之前。 */
+  writeSecrets(projectId: string, cwd: string): Promise<void>;
   /**
    * 执行权已在别的机器：冻结本地记录。handingOff 给出时只冻结仍以这一 epoch 交接中的工作区，并记下交给的那台；
    * 已撤回、或已交给别的那台时 409。状态在冻结的锁里核对，与撤回交接互斥。
    */
   freeze(workspaceId: string, handingOff?: { epoch: number; to: string }): Promise<void>;
-  /** 交接检查现场之前的准备：Line 的根工作区先由宿主提交现场。 */
-  beforeHandover(workspaceId: string): Promise<void>;
 }
 
 /** 执行权还是本机这一代的。 */
@@ -81,7 +79,6 @@ export class WorkspaceTransfers {
   /**
    * 交出工作区：所有线程空闲、没有恢复阻塞与结果未知的操作才行，不满足就拒绝。进入可交接状态后本地拒绝新的执行，
    * 停下执行进程，保存最后的快照；有远程的项目同时把 lease 置为 handing_off。中途失败停在可交接状态，可以重试或撤回。
-   * 根工作区的现场须已提交（有远程的还须已推送），目标检出快进到同一提交。
    */
   handover(id: string): Promise<{ epoch: number }> {
     return this.host.control(id, async () => {
@@ -93,18 +90,7 @@ export class WorkspaceTransfers {
         if (state.busy || state.phase !== 'idle' || state.recovery) throw new KiteError('有线程正在工作或等待恢复确认，空闲后再交接', 409);
       }
       if (this.host.store.unfinishedOperations(id)) throw new KiteError('工作区有结果尚未确认的操作，先核查再交接', 409);
-      await this.host.beforeHandover(id);
       const access = project.remote ? await originAccess(checkout.path, this.host.git) : undefined;
-      if (w.kind === 'root') {
-        if (await isDirty(checkout.path)) throw new KiteError('根工作区现场有未提交的改动，先提交再交接', 409);
-        const branch = await currentBranch(checkout.path);
-        if (!branch) throw new KiteError('检出现场不在任何分支上，先切回主线分支', 409);
-        if (access) {
-          const head = await git(checkout.path, ['rev-parse', 'HEAD']);
-          const upstream = await fetchBranch(checkout.path, branch, access);
-          if (!upstream || !(await isAncestor(checkout.path, head, upstream))) throw new KiteError('根工作区现场还没推送到远程，先推送再交接', 409);
-        }
-      }
       if (access) {
         // lease 的推送同时探测平台是否接受自定义 ref：被拒时在这里明确报错，不改走别的路径。
         const current = await this.lease(checkout, id, access);
@@ -255,52 +241,24 @@ export class WorkspaceTransfers {
     const epoch = Math.max(manifest.epoch, current?.lease.epoch ?? 0) + 1;
     const backup = join(this.host.home, 'transfers', randomUUID());
     const cleanup: Array<() => Promise<unknown> | unknown> = [];
-    let replacedRoot: Workspace | undefined;
     let storeTouched = false;
     try {
-      let cwd: string;
-      if (manifest.kind === 'worktree') {
-        const branch = await revParse(checkout.path, replicaRef(workspaceId, 'branch'));
-        if (!branch) throw new KiteError('副本里没有这个工作区的分支，本机检出没取到', 409);
-        cwd = worktreePath(this.host.home, projectId, workspaceId);
-        if (existsSync(cwd)) throw new KiteError('本机还留着这个工作区的旧工作树，先归档本机的旧记录', 409);
-        await git(checkout.path, ['update-ref', `refs/heads/${manifest.branch}`, branch]);
-        cleanup.push(() => removeWorktree(checkout.path, cwd, manifest.branch!));
-        await addWorktree(checkout.path, cwd, manifest.branch!, null);
-        // 最后一个快照的树就是交接时的工作树，含未提交的改动。
-        if (snapshots) await git(cwd, ['restore', `--source=${snapshots}`, '--worktree', '--', ':/']);
-      } else {
-        cwd = checkout.path;
-        const root = this.host.store.rootWorkspaceModel(checkout.id);
-        if (root && root.instances.length) throw new KiteError('目标检出的根工作区已有实例，不能承接流转来的根工作区', 409);
-        if (await isDirty(cwd)) throw new KiteError('目标检出的现场有未提交的改动', 409);
-        const branch = await currentBranch(cwd);
-        if (!branch) throw new KiteError('目标检出不在任何分支上', 409);
-        if (access) await fetchBranch(cwd, branch, access);
-        else if (!options.force) await this.host.syncFrom(checkout, manifest.machine);
-        if (manifest.head && (await revParse(cwd, manifest.head))) {
-          if (!(await isAncestor(cwd, 'HEAD', manifest.head))) throw new KiteError('目标检出与源工作机的现场分叉了，不能快进', 409);
-          await git(cwd, ['merge', '-q', '--ff-only', manifest.head]);
-          // 强制接管时源机可能留着没提交的改动：最后一个快照以这个主线为底时，它的树就是源机当时的现场，照搬过来。
-          // 目标检出接管前是干净的，失败时改过的文件恢复、新加的删掉，回到接管前。
-          if (options.force && snapshots && await isAncestor(cwd, manifest.head, snapshots)) {
-            const added = (await git(cwd, ['diff', '--name-only', '-z', '--no-renames', '--diff-filter=A', 'HEAD', snapshots])).split('\0').filter(Boolean);
-            cleanup.push(async () => {
-              await git(cwd, ['restore', '--source=HEAD', '--worktree', '--', ':/']);
-              for (const path of added) rmSync(join(cwd, path), { force: true });
-            });
-            await git(cwd, ['restore', `--source=${snapshots}`, '--worktree', '--', ':/']);
-          }
-        } else if (!options.force) throw new KiteError('目标检出没取到源工作机的现场', 409);
-        replacedRoot = root?.workspace;
-      }
+      const branch = await revParse(checkout.path, replicaRef(workspaceId, 'branch'));
+      if (!branch) throw new KiteError('副本里没有这个工作区的分支，本机检出没取到', 409);
+      const cwd = worktreePath(this.host.home, projectId, workspaceId);
+      if (existsSync(cwd)) throw new KiteError('本机还留着这个工作区的旧工作树，先归档本机的旧记录', 409);
+      await git(checkout.path, ['update-ref', `refs/heads/${manifest.branch}`, branch]);
+      cleanup.push(() => removeWorktree(checkout.path, cwd, manifest.branch));
+      await addWorktree(checkout.path, cwd, manifest.branch, null);
+      // 最后一个快照的树就是交接时的工作树，含未提交的改动。
+      if (snapshots) await git(cwd, ['restore', `--source=${snapshots}`, '--worktree', '--', ':/']);
       const previousSnapshots = await revParse(checkout.path, snapshotRef(workspaceId));
       if (snapshots) {
         await git(checkout.path, ['update-ref', snapshotRef(workspaceId), snapshots]);
         cleanup.push(() => previousSnapshots ? git(checkout.path, ['update-ref', snapshotRef(workspaceId), previousSnapshots])
           : gitTry(checkout.path, ['update-ref', '-d', snapshotRef(workspaceId)]));
       }
-      // 快照链换成了副本里的，根工作区的目录没变，按路径记的快照缓存要重查。
+      // 快照链换成了副本里的，按路径记的快照缓存要重查。
       forgetWorktree(cwd);
       // 会被覆盖的会话文件先挪开；还原时这些路径上只可能是这次新装的或挪开的旧文件，一并删掉再把旧的挪回。
       const paths = recordPaths(manifest, this.host.home, cwd);
@@ -318,10 +276,8 @@ export class WorkspaceTransfers {
       installRecords(dir, manifest, this.host.home, cwd);
       const cursors = new Map(manifest.threads.map((t) => [t.instanceId, t.cursor]));
       const previousRows = existing && this.host.store.exportWorkspaceRows(workspaceId);
-      const rootRows = replacedRoot && this.host.store.exportWorkspaceRows(replacedRoot.id);
       this.host.store.transaction(() => {
         if (existing) this.host.store.deleteWorkspaceRows(workspaceId);
-        if (replacedRoot) this.host.store.deleteWorkspaceRows(replacedRoot.id);
         this.host.store.importWorkspaceRows(rows, { checkout_id: checkout.id, cwd, status: 'preparing', epoch: manifest.epoch }, cursors);
       });
       storeTouched = true;
@@ -331,14 +287,12 @@ export class WorkspaceTransfers {
       cleanup.push(() => this.host.store.transaction(() => {
         this.host.store.deleteWorkspaceRows(workspaceId);
         if (previousRows) this.host.store.restoreWorkspaceRows(previousRows);
-        if (rootRows) this.host.store.restoreWorkspaceRows(rootRows);
       }), () => this.host.recordsReplaced(threadIds));
       this.host.changed(workspaceId);
       const model = this.host.workspace(workspaceId);
-      if (manifest.kind === 'worktree') {
-        const setup = await runSetup(checkout.path, cwd, setupLogPath(this.host.home, workspaceId), this.host.home);
-        if (setup && setup.exit !== 0) throw new KiteError(`初始化脚本退出码 ${setup.exit}`, 409);
-      }
+      await this.host.writeSecrets(projectId, cwd);
+      const setup = await runSetup(checkout.path, cwd, setupLogPath(this.host.home, workspaceId), this.host.home);
+      if (setup && setup.exit !== 0) throw new KiteError(`初始化脚本退出码 ${setup.exit}`, 409);
       await this.host.snapshot(model.workspace, options.force ? '强制接管到这台工作机' : '流转到这台工作机');
       if (access) {
         const taken = await writeLease(checkout.path, workspaceId, { machine: this.machine, epoch, state: 'active' }, current?.commit ?? null, access);
@@ -353,7 +307,6 @@ export class WorkspaceTransfers {
       rmSync(backup, { recursive: true, force: true });
       this.host.store.setWorkspaceEpoch(workspaceId, epoch);
       this.host.setStatus(workspaceId, 'open');
-      if (replacedRoot) this.host.removed(replacedRoot.id);
       return this.host.workspace(workspaceId);
     } catch (error) {
       let restored = true;
@@ -365,7 +318,6 @@ export class WorkspaceTransfers {
       if (storeTouched) {
         if (this.host.store.workspace(workspaceId)) this.host.changed(workspaceId);
         else this.host.removed(workspaceId);
-        if (replacedRoot) this.host.changed(replacedRoot.id);
       }
       // 清理全部成功时本机回到还原前、执行权未动，结果是确定的失败；否则留给收据记成结果未知，先核查再重试。
       if (restored && !(error instanceof KiteError)) throw new KiteError(`还原失败，本机已回到还原前：${(error as Error).message}`, 409);

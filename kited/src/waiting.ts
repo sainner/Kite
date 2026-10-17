@@ -1,5 +1,6 @@
 /**
- * 回合中途等人回应（docs/工具审批与提问.md）：代理用 question 工具提问，或宿主在越界请求与必问动作执行前请用户批准。
+ * 回合中途等人回应（docs/工具审批与提问.md）：代理用 question 工具提问，或宿主在越界请求与必问动作执行前请用户批准，
+ * 或代理用 credentials 的请求动作向用户要密钥。
  * 等待对象挂在这次工具调用上，只存在内存里，回应作为调用结果交回模型，回合接着往下走。停止时按未回答、未批准处理；
  * 服务重启时随调用一起作废，由恢复约定把调用记为结果未知，之后的回应因对不上当前等待而被拒绝。
  */
@@ -7,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { KiteError } from './errors.ts';
 import type { InputVia, JsonObject, Tool, ToolResult } from './harness/types.ts';
+import { secretValue } from './secrets.ts';
 
 const option = z.object({
   label: z.string().trim().min(1).max(100),
@@ -31,6 +33,12 @@ const answersRequest = z.object({
   reason,
 }).strict();
 const decisionRequest = z.object({ decision: z.enum(['once', 'remember', 'deny']), reason }).strict();
+/** 对密钥请求的回应：用户填好的值与范围（默认项目专用），或拒绝。 */
+const secretResponse = z.union([
+  z.object({ secret: z.object({ value: secretValue.shape.value, scope: z.enum(['project', 'account']).optional() }).strict() }).strict(),
+  z.object({ decision: z.literal('deny'), reason }).strict(),
+]);
+export type SecretResponse = { value: string; scope: 'project' | 'account' } | { denied: true; reason?: string };
 
 /** 审批：tool 与 target 说明要做什么，reason 说明为什么要问；必问的动作每次都问，不接受「允许并记住」。 */
 export interface ApprovalRequest {
@@ -39,7 +47,14 @@ export interface ApprovalRequest {
   outside?: boolean;
 }
 export type ApprovalDecision = 'once' | 'remember' | 'deny';
-type WaitingRequest = { kind: 'question'; questions: Question[] } | ({ kind: 'approval' } & ApprovalRequest);
+/**
+ * 密钥请求：一条独立的密钥（name，带类型 secretKind），或环境变量文件 file 里的变量 key。value 是代理自己给的值，
+ * exists 表示默认目标（项目专用的同名密钥，或文件里的这个变量）已经存在，保存是替换。
+ */
+export interface SecretWaiting {
+  reason: string; name?: string; secretKind?: 'text' | 'file'; file?: string; key?: string; value?: string; exists: boolean;
+}
+type WaitingRequest = { kind: 'question'; questions: Question[] } | ({ kind: 'approval' } & ApprovalRequest) | ({ kind: 'secret' } & SecretWaiting);
 export type Waiting = { id: string; since: number } & WaitingRequest;
 
 const description = [
@@ -90,6 +105,11 @@ export class Waits {
     return await this.wait(threadId, { kind: 'approval', ...request }, signal) as ApprovalDecision | undefined;
   }
 
+  /** 向用户要密钥；会话停止时返回 undefined，用户没回应直接发了新消息时返回 skipped。 */
+  async secret(threadId: string, request: SecretWaiting, signal: AbortSignal): Promise<SecretResponse | typeof skipped | undefined> {
+    return await this.wait(threadId, { kind: 'secret', ...request }, signal) as SecretResponse | typeof skipped | undefined;
+  }
+
   private wait(threadId: string, request: WaitingRequest, signal: AbortSignal): Promise<unknown> {
     if (this.waits.has(threadId)) throw new KiteError('这个线程已有一项在等用户回应');
     const waiting: Waiting = { id: randomUUID(), since: Date.now(), ...request };
@@ -116,6 +136,10 @@ export class Waits {
     const entry = this.waits.get(threadId);
     if (entry?.waiting.id !== id) throw new WaitingConflict(entry?.waiting ?? null);
     if (entry.waiting.kind === 'approval') return entry.settle(decisionOf(value, entry.waiting.mustAsk));
+    if (entry.waiting.kind === 'secret') {
+      if (via) throw new KiteError('密钥请求只能由用户填写，不能交给 Line', 403);
+      return entry.settle(secretOf(value, entry.waiting));
+    }
     const answers = answersOf(entry.waiting.questions, value);
     const why = (value as { reason?: string }).reason;
     entry.settle({ answers, ...(via ? { answeredBy: 'Line', ...(why ? { reason: why } : {}) } : {}) });
@@ -132,8 +156,17 @@ export class Waits {
   }
 }
 
-/** 提问被跳过时交回的结果，见 Waits.skip。 */
-const skipped = Symbol('skipped');
+/** 提问或密钥请求被跳过时交回的结果，见 Waits.skip。 */
+export const skipped = Symbol('skipped');
+
+function secretOf(value: unknown, waiting: SecretWaiting): SecretResponse {
+  const parsed = secretResponse.safeParse(value);
+  if (!parsed.success) throw new KiteError(`回应无效：${issues(parsed.error)}`);
+  if ('decision' in parsed.data) return { denied: true, ...(parsed.data.reason ? { reason: parsed.data.reason } : {}) };
+  const scope = parsed.data.secret.scope ?? 'project';
+  if (scope === 'account' && waiting.file) throw new KiteError('环境变量文件里的一项只能存为项目专用');
+  return { value: parsed.data.secret.value, scope };
+}
 
 /** 提问的结果交给模型：每个问题带上原文，以及选中的标签或「其他」原文。 */
 function answersOf(questions: Question[], value: unknown) {

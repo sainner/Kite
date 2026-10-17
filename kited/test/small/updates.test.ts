@@ -9,9 +9,9 @@ import { join } from 'node:path';
 import type { UpdateState, UpdateStatus } from '../../src/update/updates.ts';
 import { buildOf, listFiles, unlisted } from '../../src/update/files.ts';
 import { PROTOCOL, type RuntimeManifest } from '../../src/version.ts';
-import { connect, type Kited, openAgent, registerCheckout, startKited } from '../harness.ts';
+import { connect, folderWorkspace, type Kited, openAgent, startKited } from '../harness.ts';
 import { ManualModel } from '../harness-loop.ts';
-import { makeTemp, newRepo, until, writeFiles } from '../util.ts';
+import { makeTemp, newDir, until, writeFiles } from '../util.ts';
 
 const kiteds: Kited[] = [];
 const proxies: Array<{ stop(): void }> = [];
@@ -152,7 +152,7 @@ async function readyWhileBusy() {
   const kB = startKited(() => model, false, { root: rootB, install: { root: b.root, runtime: b.runtime, apply: (staged) => { applied.push(staged); } } });
   kiteds.push(kB);
 
-  const checkout = await registerCheckout(kB, newRepo(kB.root, 'project', { 'base.txt': '原始\n' }, null));
+  const checkout = await folderWorkspace(kB, newDir(kB.root, 'project', { 'base.txt': '原始\n' }));
   const id = await openAgent(kB.call, checkout.workspace.id);
   expect((await kB.call('POST', `/threads/${id}/messages`, { text: '干活' })).status).toBe(200);
   const turn = await model.call(1);

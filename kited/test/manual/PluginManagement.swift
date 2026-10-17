@@ -123,37 +123,41 @@ private struct PluginManagementContract {
             return data
         }
 
+        // 实例在项目基础上的增减：默认项目没有基础许可，草稿里的整份许可都存成 add。
         var draft = ExecutionGrantDraft(snapshot: snapshot)
         draft.workspace = .read
-        draft.readPaths = "\n  \(fixture.readPath)/ \n\n\(fixture.readPath)\n"
-        draft.writePaths = "  \(fixture.writePath)\n\n\(fixture.writePath)/  \n"
-        draft.networkDomains = "\n API.Example.COM \n\nexample.org:443\napi.example.com\n"
+        draft.scope.read = [fixture.readPath]
+        draft.scope.write = [fixture.writePath]
+        draft.scope.network = ["api.example.com", "example.org:443"]
         let original = draft.request
         let accepted = try decoder.decode(InstanceExecutionGrants.self,
             from: await exchange("PUT", body: original))
         try require(accepted.grants.workspace == .read
-                    && accepted.grants.read == [fixture.readPath]
-                    && accepted.grants.write == [fixture.writePath]
-                    && accepted.grants.network == ["api.example.com", "example.org:443"],
-                    "Swift 草稿经严格 PUT 后没有保存规范化目录和域名")
+                    && accepted.grants.add.read == [fixture.readPath]
+                    && accepted.grants.add.write == [fixture.writePath]
+                    && accepted.grants.add.network == ["api.example.com", "example.org:443"]
+                    && accepted.grants.remove == ExecutionScope(),
+                    "Swift 草稿经严格 PUT 后没有按增减保存目录和域名")
 
         var concurrent = ExecutionGrantDraft(snapshot: accepted)
-        concurrent.networkDomains = "new.example.net"
+        try require(concurrent.workspace == draft.workspace && concurrent.scope == draft.scope,
+                    "保存后的快照还原出的草稿与提交的不同")
+        concurrent.scope.network = ["new.example.net"]
         let changed = try decoder.decode(InstanceExecutionGrants.self,
             from: await exchange("PUT", body: concurrent.request))
-        try require(changed.revision != accepted.revision && changed.grants.network == ["new.example.net"],
+        try require(changed.revision != accepted.revision && changed.grants.add.network == ["new.example.net"],
                     "并发保存没有产生新 revision 和域名")
         _ = try await exchange("PUT", body: draft.request, status: 409)
         try require(draft.request.expectedRevision == original.expectedRevision
                     && draft.request.grants == original.grants
-                    && draft.readPaths == "\n  \(fixture.readPath)/ \n\n\(fixture.readPath)\n"
-                    && draft.writePaths == "  \(fixture.writePath)\n\n\(fixture.writePath)/  \n"
-                    && draft.networkDomains == "\n API.Example.COM \n\nexample.org:443\napi.example.com\n",
+                    && draft.scope.read == [fixture.readPath]
+                    && draft.scope.write == [fixture.writePath]
+                    && draft.scope.network == ["api.example.com", "example.org:443"],
                     "冲突后 Swift 草稿内容或原始 revision 被覆盖")
         let afterConflict = try decoder.decode(InstanceExecutionGrants.self, from: await exchange("GET"))
         try require(afterConflict.revision == changed.revision && afterConflict.grants == changed.grants,
                     "旧草稿冲突覆盖了已保存执行授权")
         try JSONEncoder().encode(draft.request).write(to: URL(fileURLWithPath: arguments[4]))
-        print("Swift 执行授权保存规范化目录与域名，冲突保留草稿和服务端新版本")
+        print("Swift 执行授权按项目上的增减保存目录与域名，冲突保留草稿和服务端新版本")
     }
 }

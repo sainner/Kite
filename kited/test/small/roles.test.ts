@@ -8,9 +8,9 @@ import type { Envelope } from '../../src/events.ts';
 import type { OperationGrant } from '../../src/operations/contract.ts';
 import type { Role } from '../../src/roles.ts';
 import type { EmblemStatus } from '../../src/template-emblems.ts';
-import { call, openAgent, registerCheckout, startKited } from '../harness.ts';
+import { addProject, call, chatgptLogin, folderWorkspace, openAgent, startKited } from '../harness.ts';
 import { diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
-import { makeTemp, newRepo } from '../util.ts';
+import { makeTemp, newDir } from '../util.ts';
 
 interface Entry extends EmblemStatus { role: Role; revision: string }
 
@@ -82,11 +82,10 @@ test('角色保存处理重试与冲突，重启后按所选版本创建的首�
     expect(entries(reopened.body).filter((entry) => entry.role.id === first.id)).toEqual([updated.body]);
     expect(await call(daemon.url, 'POST', '/roles', { role: next })).toEqual(updated);
 
-    const repo = newRepo(root, 'project', { 'base.txt': '原始内容\n' });
-    const checkout = await call(daemon.url, 'POST', '/checkouts', { path: repo });
-    expect(checkout.status).toBe(200);
+    const project = await addProject(daemon, { path: newDir(root, 'project', { 'base.txt': '原始内容\n' }) });
+    chatgptLogin(home);
     const workspace = await call(daemon.url, 'POST', '/workspaces', {
-      checkout: checkout.body.checkout.id, prompt: '使用重启前的角色',
+      project: project.id, prompt: '使用重启前的角色',
       role: { id: next.id, revision: updated.body.revision },
     });
     expect(workspace.status).toBe(200);
@@ -109,8 +108,7 @@ test('改角色不影响已有代理，改选到同样允许协作工具的角�
   const model = new ManualModel();
   const k = startKited(() => model);
   try {
-    const repo = newRepo(k.root, 'project', { 'base.txt': '原始内容\n' });
-    const registered = await registerCheckout(k, repo);
+    const registered = await folderWorkspace(k, newDir(k.root, 'project', { 'base.txt': '原始内容\n' }));
     const workspaceId = registered.workspace.id;
     const universe = (await k.call('GET', '/roles')).body.tools as string[];
     const id = await openAgent(k.call, workspaceId);
@@ -213,7 +211,7 @@ test('只读审查角色建的代理只有 read，模型强发 patch 与 shell �
   const model = new ManualModel();
   const k = startKited(() => model);
   try {
-    const registered = await registerCheckout(k, newRepo(k.root, 'project', { 'base.txt': '原始内容\n' }));
+    const registered = await folderWorkspace(k, newDir(k.root, 'project', { 'base.txt': '原始内容\n' }));
     const workspaceId = registered.workspace.id;
     const catalog = await k.call('GET', '/roles');
     expect(catalog.status).toBe(200);
@@ -299,7 +297,7 @@ test('只读审查角色建的代理只有 read，模型强发 patch 与 shell �
 test('只读审查的空代理改选为工作后拿到协作授权，再改选同样能协作的角色不补回用户撤回的，改回只读审查只去掉协作授权', async () => {
   const k = startKited(() => new ManualModel());
   try {
-    const registered = await registerCheckout(k, newRepo(k.root, 'project', { 'base.txt': '原始内容\n' }));
+    const registered = await folderWorkspace(k, newDir(k.root, 'project', { 'base.txt': '原始内容\n' }));
     const workspaceId = registered.workspace.id;
     const catalog = (await k.call('GET', '/roles')).body;
     const work = findRole(catalog, 'kite.work');
@@ -368,9 +366,8 @@ test('发出第一条消息后改选角色返回 409，回合进行中与重启�
     const request = (method: string, path: string, body?: unknown) => call(daemon!.url, method, path, body);
     const events = new Seen<Envelope>();
     daemon.kite.bus.subscribe(undefined, (event) => events.add(event));
-    const checkout = await request('POST', '/checkouts', { path: newRepo(root, 'project', { 'base.txt': '原始内容\n' }) });
-    expect(checkout.status).toBe(200);
-    const id = await openAgent(request, checkout.body.workspace.id);
+    const registered = await folderWorkspace(daemon, newDir(root, 'project', { 'base.txt': '原始内容\n' }));
+    const id = await openAgent(request, registered.workspace.id);
     // 改选成只读审查本会去掉协作授权，授权不变才说明拒绝发生在调整之前。
     const review = findRole((await request('GET', '/roles')).body, 'kite.review');
     const configPath = `/instances/${id}/agent-config`;

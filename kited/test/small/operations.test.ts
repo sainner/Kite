@@ -6,9 +6,9 @@ import { OperationError } from '../../src/errors.ts';
 import type { Json, ModelItem } from '../../src/harness/types.ts';
 import { OperationReceipts } from '../../src/operations/receipts.ts';
 import { Store } from '../../src/store.ts';
-import { call, registerCheckout, startKited, type Kited } from '../harness.ts';
+import { call, folderWorkspace, startKited, type Kited } from '../harness.ts';
 import { deferred, diskRecords, item, ManualModel } from '../harness-loop.ts';
-import { makeTemp, newRepo } from '../util.ts';
+import { makeTemp, newDir } from '../util.ts';
 
 let kited: Kited | undefined;
 afterEach(async () => { await kited?.stop(); kited = undefined; });
@@ -16,9 +16,8 @@ afterEach(async () => { await kited?.stop(); kited = undefined; });
 const operationPath = (workspaceId: string, name: string) => `/workspaces/${workspaceId}/operations/${name}`;
 
 async function emptyWorkspace(k: Kited, name: string) {
-  const repo = newRepo(k.root, name, { 'base.txt': '原始\n' });
-  const registered = await registerCheckout(k, repo);
-  return { workspaceId: registered.workspace.id, repo };
+  const registered = await folderWorkspace(k, newDir(k.root, name, { 'base.txt': '原始\n' }));
+  return { workspaceId: registered.workspace.id };
 }
 
 function calledItem(id: string, name: string, args: Json): ModelItem {
@@ -123,14 +122,12 @@ test('并发收据共享一次执行，重开保留结果与错误，落盘失�
 test('agent.start 跨重启重试复用实例与窗口，后台实例不建窗口且 list 只读', async () => {
   const root = makeTemp();
   const home = join(root, 'kite');
-  const repo = newRepo(root, 'project', { 'base.txt': '原始\n' });
+  const repo = newDir(root, 'project', { 'base.txt': '原始\n' });
   const model = new ManualModel();
   let daemon: Daemon | undefined;
   try {
     daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => model });
-    const checkout = await call(daemon.url, 'POST', '/checkouts', { path: repo });
-    expect(checkout.status).toBe(200);
-    const workspaceId = checkout.body.workspace.id as string;
+    const workspaceId = (await folderWorkspace(daemon, repo)).workspace.id;
 
     const windowRequest = { operationId: 'create-window', title: '编码线程', presentation: 'window' };
     const backgroundRequest = { operationId: 'create-background', role: 'kite.review', presentation: 'background' };

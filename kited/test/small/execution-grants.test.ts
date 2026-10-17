@@ -20,10 +20,10 @@ import { harnessPolicy } from '../../src/execution/policy.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
 import type { Waiting } from '../../src/waiting.ts';
-import { after, mark, registerCheckout, startKited, waitIdle, type Kited } from '../harness.ts';
+import { after, folderWorkspace, mark, startKited, waitIdle, type Kited } from '../harness.ts';
 import { diskRecords, item, ManualModel } from '../harness-loop.ts';
 import { editNotificationTemplate } from '../notification-templates.ts';
-import { ENV, newRepo, until, useTemp } from '../util.ts';
+import { ENV, newDir, until, useTemp } from '../util.ts';
 
 let kited: Kited | undefined;
 afterEach(async () => { await kited?.stop(); kited = undefined; });
@@ -35,8 +35,7 @@ const changes = (workspace: 'read' | 'write', add: Partial<ExecutionScope> = {})
 const effective = (workspace: 'read' | 'write', add: Partial<ExecutionScope> = {}): ExecutionGrants => ({ workspace, ...scope(add) });
 
 async function codingInstance(k: Kited) {
-  const repo = newRepo(k.root, 'project', { 'base.txt': '原始内容\n' });
-  const registered = await registerCheckout(k, repo);
+  const registered = await folderWorkspace(k, newDir(k.root, 'project', { 'base.txt': '原始内容\n' }));
   const opened = await k.call('POST', `/workspaces/${registered.workspace.id}/windows`, {
     id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent' },
   });
@@ -478,7 +477,7 @@ const resultOf = (request: ModelRequest, callId: string): ToolResult => {
 test('项目允许的沙箱外命令直接出沙箱；实例全放行而项目上限越界询问时申请出沙箱挂出审批，允许并记住后在沙箱外执行并记进实例授权，同一条再跑不再问；项目禁止的申请直接拒绝不挂等待', async () => {
   const model = new ManualModel();
   const k = kited = startKited(() => model);
-  const registered = await registerCheckout(k, newRepo(k.root, 'project', { 'a.txt': 'a\n' }));
+  const registered = await folderWorkspace(k, newDir(k.root, 'project', { 'a.txt': 'a\n' }));
   const projectId = registered.project.id;
   const outside = join(k.root, 'outside');
   mkdirSync(outside);

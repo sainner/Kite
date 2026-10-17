@@ -1,41 +1,35 @@
 /**
  * 工作区执行权与接管（docs/Line与工作区流转.md「工作区的稳定身份与执行权」「目标还原」「强制接管」），分两段：
  * 一、没有远程的项目在几台 kited 之间的接管：几台本进程 kited 互为组网对端（harness 的 connect），项目登记与目录摘要随账号级数据
- *    同步；各机检出互为远程，副本由跟进方的 kite.replicas.sync() 立即跟一轮。目标机的检出都显式建在它自己的临时根目录下，
- *    不 clone 到共用 HOME 的 ~/code。基本的交接、还原与强制接管在 transfer.test.ts，这里是 review 复现过的几处缺陷的回归，
- *    以及工作机睡眠前的自动换机（「工作区流转」的睡眠前换机；kite-net 的系统睡眠预告在测试里起不来，直接调 kite.leaving，
- *    目标机没有检出时 clone 到 HOME 下的 ~/code/<项目名>，测试结束时删掉）。
+ *    同步；各机检出互为远程，副本由跟进方的 kite.replicas.sync() 立即跟一轮；目标机没有检出时还原从源机 clone 到自己的数据目录。
+ *    基本的交接、还原与强制接管在 transfer.test.ts，这里是 review 复现过的几处缺陷的回归，
+ *    以及工作机睡眠前的自动换机（「工作区流转」的睡眠前换机；kite-net 的系统睡眠预告在测试里起不来，直接调 kite.leaving）。
  *    一次接管要起几十个 git 进程，单个在 0.5 到 0.9 秒，守小测试 1 秒的预算：不跑 .kite/setup（沙箱里起一次约 0.3 秒），
  *    两台同时来接时两次还原并行。
- * 二、远程 lease 的比较后更新、联网核对后的冻结，以及工作区表加上 epoch 与 transferred 的旧库迁移。
+ * 二、远程 lease 的比较后更新与联网核对后的冻结。
  */
-import { Database } from 'bun:sqlite';
 import { afterEach, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Input, ModelRequest } from '../../src/harness/types.ts';
-import type { Checkout, Workspace, WorkspaceModel } from '../../src/model.ts';
-import { Store } from '../../src/store.ts';
+import type { WorkspaceModel } from '../../src/model.ts';
 import type { History } from '../../src/transcript/protocol.ts';
 import { readLease, remoteLeases, writeLease } from '../../src/workspace/lease.ts';
 import { type FakeGit, startFakeGit } from '../fake-git.ts';
 import {
-  after, chatgptLogin, connect, createWorkspace, type Kited, listSnapshots, mark, registerCheckout, startKited, synced,
+  addProject, after, chatgptLogin, connect, createWorkspace, type Kited, listSnapshots, mark, openWorkspace, startKited, synced,
 } from '../harness.ts';
 import { deferred, ManualModel } from '../harness-loop.ts';
 import { git, gitOk, newDir, newRepo, read, useTemp, writeFiles } from '../util.ts';
 
 const kiteds: Kited[] = [];
 const servers: Array<{ stop(force?: boolean): unknown }> = [];
-const dirs: string[] = [];
 /** lease 一段：单台 kited 与 Git 平台替身。 */
 let kited: Kited | undefined;
 let remotes: FakeGit | undefined;
 afterEach(async () => {
   for (const k of kiteds.splice(0)) await k.stop();
   for (const server of servers.splice(0)) void server.stop(true);
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   await kited?.stop();
   kited = undefined;
   remotes?.stop();
@@ -50,31 +44,14 @@ function machine(model: ManualModel): Kited {
   return k;
 }
 
-/**
- * A 上登记一个没有远程的项目，等 others 同步到这条登记和 A 有检出的目录摘要，再在 others 各自的根目录下从 A 的检出 clone 一份。
- * withCheckout 为 false 的不 clone。
- */
-async function project(a: Kited, files: Record<string, string>, others: Kited[], withCheckout = true) {
-  const name = `takeover-${crypto.randomUUID().slice(0, 8)}`;
-  const repo = newRepo(a.root, name, files, null);
-  const registered = await registerCheckout(a, repo);
-  const projectId = registered.project.id;
+/** A 上添加一个没有远程的项目（导入成 A 的检出），等 others 同步到这条登记和 A 有检出的目录摘要。 */
+async function project(a: Kited, files: Record<string, string>, others: Kited[]) {
+  const projectId = (await addProject(a, { path: newRepo(a.root, 'project', files, null) })).id;
   const machineA = a.daemon.kite.store.machine.id;
-  const checkouts = new Map<Kited, Checkout>();
-  await Promise.all(others.map(async (k) => {
-    await synced(k, () => k.daemon.kite.registry.get(projectId) && k.daemon.kite.directory.entries()
-      .some((entry) => entry.id === machineA && entry.snapshot?.checkouts.some((checkout) => checkout.projectId === projectId)),
-    '同步到 A 登记的项目与检出');
-    if (withCheckout) checkouts.set(k, await clone(k, projectId, name));
-  }));
-  return { repo, name, registered, projectId, checkouts };
-}
-
-/** 在 k 的根目录下从有检出的工作机 clone 这个没有远程的项目。 */
-async function clone(k: Kited, projectId: string, name: string): Promise<Checkout> {
-  const cloned = await k.call('POST', '/checkouts', { project: projectId, path: join(k.root, name) });
-  if (cloned.status !== 200) throw new Error(`clone 失败：${cloned.status} ${JSON.stringify(cloned.body)}`);
-  return (cloned.body as WorkspaceModel).checkout;
+  await Promise.all(others.map((k) => synced(k, () => k.daemon.kite.registry.get(projectId) && k.daemon.kite.directory.entries()
+    .some((entry) => entry.id === machineA && entry.snapshot?.checkouts.some((checkout) => checkout.projectId === projectId)),
+  '同步到 A 登记的项目与检出')));
+  return projectId;
 }
 
 /** k 上的线程跑完一个回合：发消息，模型第 number 次调用期间往 cwd 写 files，结束后等这个工作区存好快照、线程回到空闲。 */
@@ -136,11 +113,10 @@ function holdingProxy(target: string) {
 /*
  * 两台目标机同时接同一次交接的时序，与源机冻结的配合。真实 bug（旧实现）：没有远程的项目交出时源机只核对 epoch，
  * 已交出的再收到通知照样成功，B、C 都拿着 A 交接中的副本来接时两边都返回 200，同一工作区在两台上同时以 epoch 2 开放。
- * 要两台都过了「源机仍在交接中」的核对才看得出：B、C 经一个代理访问 A，同时来接；代理扣住两边的交出通知
- * （这时两边都已核对、导入、存好快照），先放 C 的过去，C 接管后再放 B 的。只认一台与工作区种类无关，交的是 A 检出的根工作区，
- * 不用先建工作树、跑回合；B 回滚后本机检出原来的根工作区还在。
+ * 要两台都过了「源机仍在交接中」的核对才看得出：B、C 经一个代理访问 A（检出的 clone 也经它），同时来接；代理扣住两边的交出通知
+ * （这时两边都已核对、导入、存好快照），先放 C 的过去，C 接管后再放 B 的。交的是 A 上一个空的工作区，不用先跑回合。
  */
-test('没有远程的项目交给两台：B、C 都过了核对，先通知到的 C 以 epoch 2 接管根工作区，B 通知被拒、回滚后本机不留这个工作区，A 冻结；A 只认 C 重发的交出通知', async () => {
+test('没有远程的项目交给两台：B、C 都过了核对，先通知到的 C 以 epoch 2 接管工作区，B 通知被拒、回滚后本机不留这个工作区，A 冻结；A 只认 C 重发的交出通知', async () => {
   const models = { a: new ManualModel(), b: new ManualModel(), c: new ManualModel() };
   const a = machine(models.a);
   const b = machine(models.b);
@@ -153,8 +129,8 @@ test('没有远程的项目交给两台：B、C 都过了核对，先通知到�
   const machineA = a.daemon.kite.store.machine.id;
   const machineB = b.daemon.kite.store.machine.id;
   const machineC = c.daemon.kite.store.machine.id;
-  const { registered, projectId, checkouts } = await project(a, { 'a.txt': '一\n' }, [b, c]);
-  const workspaceId = registered.workspace.id;
+  const projectId = await project(a, { 'a.txt': '一\n' }, [b, c]);
+  const workspaceId = (await openWorkspace(a, projectId)).workspace.id;
   expect((await a.call('POST', `/workspaces/${workspaceId}/handover`, {})).status).toBe(200);
 
   const late = restore(b, { project: projectId, workspaceId, from: machineA });
@@ -164,12 +140,11 @@ test('没有远程的项目交给两台：B、C 都过了核对，先通知到�
   proxy.release(machineC);
   const taken = await early;
   expect(taken.status).toBe(200);
-  expect((taken.body as WorkspaceModel).workspace).toMatchObject({ id: workspaceId, kind: 'root', epoch: 2, status: 'open', cwd: checkouts.get(c)!.path });
+  expect((taken.body as WorkspaceModel).workspace).toMatchObject({ id: workspaceId, epoch: 2, status: 'open' });
   proxy.release(machineB);
   const refused = await late;
   expect(refused.status).toBe(409);
   expect(b.daemon.kite.store.workspace(workspaceId)).toBeNull();
-  expect(b.daemon.kite.store.rootWorkspaceModel(checkouts.get(b)!.id)?.workspace).toMatchObject({ status: 'open', epoch: 1 });
   expect(c.daemon.kite.store.workspace(workspaceId)).toMatchObject({ epoch: 2, status: 'open' });
   expect(await statusOf(a, workspaceId)).toBe('transferred');
 
@@ -180,50 +155,18 @@ test('没有远程的项目交给两台：B、C 都过了核对，先通知到�
 }, 5_000);
 
 /*
- * git 的实际效果与副本跟进的配合：根工作区的快照链经副本跟进取到 B 的检出，强制接管时用最后一个快照的树还原源机没提交的现场。
- * 真实 bug（旧实现）：强制接管根工作区只把 B 的检出快进到源机的 HEAD，不看快照，返回成功但 A 回合里改的文件回到原样、新加的文件不在。
- */
-test('强制接管根工作区：A 回合里改了已有文件、新加了文件没提交，A 停掉后 B 用副本接管，检出里改动和新文件都在、HEAD 不变', async () => {
-  const models = { a: new ManualModel(), b: new ManualModel() };
-  const a = machine(models.a);
-  const b = machine(models.b);
-  await connect(a, b);
-  const { repo, registered, projectId, checkouts } = await project(a, { 'a.txt': '一\n' }, [b]);
-  const target = checkouts.get(b)!;
-  const head = git(target.path, 'rev-parse', 'HEAD');
-  expect(git(repo, 'rev-parse', 'HEAD')).toBe(head);
-
-  const root = registered.workspace;
-  const started = await a.call('POST', `/workspaces/${root.id}/operations/agent.start`, { operationId: 'worker' });
-  expect(started.status).toBe(200);
-  const threadId = started.body.instanceId as string;
-  await turnWriting(a, models.a, root, threadId, 1, '在根工作区的回合', { 'a.txt': '二\n', 'new.txt': '新增未跟踪\n' });
-  await b.daemon.kite.replicas.sync();
-  expect(b.daemon.kite.replicas.store.state(root.id)?.complete).toBe(true);
-  await a.halt();
-
-  const taken = await restore(b, { project: projectId, workspaceId: root.id, force: true });
-  expect(taken.status).toBe(200);
-  expect((taken.body as WorkspaceModel).workspace).toMatchObject({ id: root.id, kind: 'root', epoch: 2, status: 'open', cwd: target.path });
-  expect(read(join(target.path, 'a.txt'))).toBe('二\n');
-  expect(read(join(target.path, 'new.txt'))).toBe('新增未跟踪\n');
-  expect(git(target.path, 'rev-parse', 'HEAD')).toBe(head);
-  expect(git(target.path, 'status', '--porcelain').split('\n').sort()).toEqual([' M a.txt', '?? new.txt']);
-}, 5_000);
-
-/*
- * 副本跟进与之后才建的检出的配合：副本的文件跟完时 B 还没有检出，快照链与工作区分支没处放；B 后来 clone 了检出，
+ * 副本跟进与之后才建的检出的配合：副本的文件跟完时 B 还没有检出，快照链与工作区分支没处放；B 后来在本机建工作区、clone 出检出，
  * 下一轮跟进时 A 上的工作区没变（摘要相同），也要补取这些引用。
  * 真实 bug（旧实现）：摘要没变就不再拉，B 始终没有工作区分支，A 丢失后强制接管 409「副本里没有这个工作区的分支」。
  */
-test('副本跟完后 B 才 clone 检出：下一轮跟进补取工作区分支与快照链，A 停掉后 B 能强制接管独立工作区、有 A 回合里的改动', async () => {
+test('副本跟完后 B 才建检出：下一轮跟进补取工作区分支与快照链，A 停掉后 B 能强制接管工作区、有 A 回合里的改动', async () => {
   const models = { a: new ManualModel(), b: new ManualModel() };
   const a = machine(models.a);
   const b = machine(models.b);
   await connect(a, b);
-  const { name, registered, projectId } = await project(a, { 'a.txt': '一\n' }, [b], false);
+  const projectId = await project(a, { 'a.txt': '一\n' }, [b]);
 
-  const thread = await createWorkspace(a, registered.checkout.id, '第一回合', 'harness');
+  const thread = await createWorkspace(a, projectId, '第一回合', 'harness');
   const workspaceId = thread.workspace.id;
   await turnWriting(a, models.a, thread.workspace, thread.id, 1, undefined, { 'work.txt': 'A 回合里写的\n' });
   const replicas = b.daemon.kite.replicas;
@@ -231,14 +174,14 @@ test('副本跟完后 B 才 clone 检出：下一轮跟进补取工作区分支�
   expect(replicas.store.state(workspaceId)?.complete).toBe(true);
   expect(b.daemon.kite.store.checkouts(projectId)).toEqual([]);
 
-  await clone(b, projectId, name);
+  await openWorkspace(b, projectId);
   await replicas.sync();
   await a.halt();
 
   const taken = await restore(b, { project: projectId, workspaceId, force: true });
   expect(taken.status).toBe(200);
   const onB = (taken.body as WorkspaceModel).workspace;
-  expect(onB).toMatchObject({ id: workspaceId, kind: 'worktree', epoch: 2, status: 'open' });
+  expect(onB).toMatchObject({ id: workspaceId, epoch: 2, status: 'open' });
   expect(read(join(onB.cwd, 'work.txt'))).toBe('A 回合里写的\n');
 }, 5_000);
 
@@ -259,17 +202,10 @@ test('睡眠前自动换机：打开自动换机的项目里正在工作的工�
     return k;
   }) as [Kited, Kited];
   await connect(a, b);
-  const name = `leaving-${crypto.randomUUID().slice(0, 8)}`;
-  // B 没有检出，还原时 clone 到 HOME 下的 ~/code/<项目名>。
-  dirs.push(join(process.env.HOME!, 'code', name));
-  const registered = await registerCheckout(a, newRepo(a.root, name, { 'a.txt': '一\n' }, null));
-  const projectId = registered.project.id;
-  const machineA = a.daemon.kite.store.machine.id;
-  await synced(b, () => b.daemon.kite.registry.get(projectId) && b.daemon.kite.directory.entries()
-    .some((entry) => entry.id === machineA && entry.snapshot?.checkouts.some((checkout) => checkout.projectId === projectId)),
-  'B 同步到 A 登记的项目与检出');
+  // B 没有检出，还原时从 A clone 到自己的数据目录。
+  const projectId = await project(a, { 'a.txt': '一\n' }, [b]);
   expect((await a.call('PUT', `/project-registry/${projectId}/settings`, { autoHandover: true })).status).toBe(200);
-  const thread = await createWorkspace(a, registered.checkout.id, '第一回合', 'harness');
+  const thread = await createWorkspace(a, projectId, '第一回合', 'harness');
   const workspaceId = thread.workspace.id;
   const working = await models.a.call(1);
   const queued: Input = { id: 'queued-input', text: '排队等着的输入', source: 'human' };
@@ -351,122 +287,39 @@ test('lease 比较后更新：同时创建只有一方成功，拿过期的值�
 
 /*
  * 几个部分的配合：项目远程上的 lease（ls-remote 与经 http-backend 取回）、线程停止、快照、插件关闭与工作区登记。
- * 别的机器以更高 epoch 接管后，本机核对要停下运行中的线程、把本机多出的改动存成快照、冻结记录；
- * 根工作区冻结后同一检出目录要另有一个可用的根工作区。独立工作区走同一条冻结路径，只少了另建根工作区。
+ * 别的机器以更高 epoch 接管后，本机核对要停下运行中的线程、把本机多出的改动存成快照、冻结记录。
  */
-test('别的机器以更高 epoch 接管根工作区后核对执行权：运行中的线程停下、发送 409、本机改动存成快照，检出另得一个 open 的根工作区', async () => {
+test('别的机器以更高 epoch 接管工作区后核对执行权：运行中的线程停下、发送 409、本机改动存成快照', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
   remotes = startFakeGit();
   const remote = remotes.create('project');
-  const repo = newRepo(kk.root, 'project', { 'base.txt': '原始\n' }, remote.url);
-  const registered = await registerCheckout(kk, repo);
-  const root = registered.workspace;
-  const started = await kk.call('POST', `/workspaces/${root.id}/operations/agent.start`, { operationId: 'worker' });
+  git(newRepo(kk.root, 'project', { 'base.txt': '原始\n' }, remote.url), 'push', '-q', remote.bare, 'main');
+  const { workspace, checkout } = await openWorkspace(kk, (await addProject(kk, { remote: remote.url })).id);
+  const started = await kk.call('POST', `/workspaces/${workspace.id}/operations/agent.start`, { operationId: 'worker' });
   expect(started.status).toBe(200);
   const threadId = started.body.instanceId as string;
   expect((await kk.call('POST', `/threads/${threadId}/messages`, { id: 'kickoff', text: '保持运行' })).status).toBe(200);
   const running = await model.call(1);
-  writeFiles(repo, { 'local.txt': '只在本机\n' });
+  writeFiles(workspace.cwd, { 'local.txt': '只在本机\n' });
 
   // 另一台工作机接管：直接推到远程的裸仓库。
   const other = emptyRepo(kk.root, 'other-machine');
   const access = { url: remote.bare, env: {} };
-  const written = await writeLease(other, root.id, { machine: 'other-machine', epoch: 2, state: 'active' }, null, access);
+  const written = await writeLease(other, workspace.id, { machine: 'other-machine', epoch: 2, state: 'active' }, null, access);
   expect(written.status).toBe('written');
   // 启动时的那一轮核对若还没结束，第一次调用会并入它；第二次保证有一轮在 lease 写好之后开始。
   await kk.daemon.kite.syncLeases();
   await kk.daemon.kite.syncLeases();
 
-  expect(((await kk.call('GET', `/workspaces/${root.id}`)).body as WorkspaceModel).workspace.status).toBe('transferred');
+  expect(((await kk.call('GET', `/workspaces/${workspace.id}`)).body as WorkspaceModel).workspace.status).toBe('transferred');
   expect(running.signal.aborted).toBe(true);
   const sent = await kk.call('POST', `/threads/${threadId}/messages`, { id: 'after-transfer', text: '继续' });
   expect(sent.status).toBe(409);
   expect(model.calls.values).toHaveLength(1);
 
-  const snapshots = await listSnapshots(kk, root.id);
-  expect(snapshots.some((snapshot) => gitOk(repo, 'cat-file', '-e', `${snapshot.commit}:local.txt`)
-    && git(repo, 'show', `${snapshot.commit}:local.txt`) === '只在本机')).toBe(true);
-
-  const listed = (await kk.call('GET', '/workspaces')).body as WorkspaceModel[];
-  const roots = listed.filter((entry) => entry.checkout.id === registered.checkout.id && entry.workspace.kind === 'root'
-    && entry.workspace.status === 'open');
-  expect(roots).toHaveLength(1);
-  expect(roots[0]!.workspace.id).not.toBe(root.id);
-  expect(roots[0]!.workspace.cwd).toBe(root.cwd);
+  const snapshots = await listSnapshots(kk, workspace.id);
+  expect(snapshots.some((snapshot) => gitOk(checkout.path, 'cat-file', '-e', `${snapshot.commit}:local.txt`)
+    && git(checkout.path, 'show', `${snapshot.commit}:local.txt`) === '只在本机')).toBe(true);
 }, 1000);
-
-/*
- * 依赖 SQLite 的改表行为：状态的 check 约束只能随表重建。旧表有引用它的实例、窗口和窗口请求，
- * 重建后外键要仍然成立，旧的唯一索引（根工作区、cwd）要换成允许冻结记录与新根工作区并存的新索引。
- */
-test('旧库的工作区表迁移后数据与外键保留、epoch 为 1，可以冻结根工作区并为同一目录另建根工作区', () => {
-  const root = temp('store-migration-');
-  const path = join(root, 'kite.db');
-  const old = new Database(path, { create: true, strict: true });
-  old.exec(`
-create table machine (
-  slot integer primary key check (slot = 1), id text not null unique, name text not null, created_at integer not null
-);
-create table projects (id text primary key, name text not null, remote text not null, created_at integer not null);
-create table checkouts (
-  id text primary key, project_id text not null references projects(id), machine_id text not null references machine(id),
-  path text not null, remote text not null, created_at integer not null,
-  unique(machine_id, path)
-);
-create table workspaces (
-  id text primary key, checkout_id text not null references checkouts(id), name text not null, cwd text not null unique,
-  kind text not null check (kind in ('root', 'worktree')), branch text, base text,
-  status text not null check (status in ('preparing', 'open', 'failed', 'archived')), created_at integer not null,
-  check ((kind = 'root' and branch is null and base is null) or (kind = 'worktree' and branch is not null and base is not null))
-);
-create unique index root_workspace on workspaces(checkout_id) where kind = 'root';
-create table plugin_instances (
-  id text primary key, workspace_id text not null references workspaces(id), definition_id text not null, title text not null,
-  config text not null, state text not null, presentation text not null check (presentation in ('window', 'inline', 'background')),
-  status text not null check (status in ('open', 'archived')), created_at integer not null, origin text
-);
-create table workspace_windows (
-  id text primary key, workspace_id text not null references workspaces(id),
-  instance_id text not null, view_id text not null,
-  state text not null check (state in ('open', 'closed')), created_at integer not null
-);
-create table window_requests (
-  id text primary key, workspace_id text not null references workspaces(id),
-  window_id text not null references workspace_windows(id), content text not null
-);
-insert into machine values (1, 'machine-1', '旧工作机', 1);
-insert into projects values ('project-1', 'demo', 'example.test/demo', 1);
-insert into checkouts values ('checkout-1', 'project-1', 'machine-1', '/work/demo', 'example.test/demo', 1);
-insert into workspaces values ('root-1', 'checkout-1', '', '/work/demo', 'root', null, null, 'open', 1);
-insert into workspaces values ('tree-1', 'checkout-1', '功能', '/kite/worktrees/tree-1', 'worktree', 'kite/tree-1', 'abc', 'open', 2);
-insert into plugin_instances values ('instance-1', 'tree-1', 'kite.todo', '待办', '{}', '{}', 'window', 'open', 3, null);
-insert into workspace_windows values ('window-1', 'tree-1', 'instance-1', 'main', 'open', 4);
-insert into window_requests values ('request-1', 'tree-1', 'window-1', '{}');
-`);
-  old.close();
-
-  let store = new Store(path);
-  try {
-    expect(store.machine.id).toBe('machine-1');
-    expect(store.workspaces().map((w) => [w.id, w.epoch, w.status]).sort())
-      .toEqual([['root-1', 1, 'open'], ['tree-1', 1, 'open']]);
-    expect(store.instances('tree-1').map((instance) => instance.id)).toEqual(['instance-1']);
-    expect(store.windows('tree-1').map((window) => window.id)).toEqual(['window-1']);
-    expect(store.windowRequest('request-1')).toMatchObject({ workspaceId: 'tree-1', windowId: 'window-1' });
-
-    const replacement: Workspace = { id: 'root-2', epoch: 1, checkoutId: 'checkout-1', name: '', cwd: '/work/demo', kind: 'root',
-      branch: null, base: null, status: 'open', createdAt: 5 };
-    store.freezeWorkspace('root-1', replacement);
-    store.freezeWorkspace('tree-1');
-    store.close();
-    store = new Store(path);
-    expect(store.workspaces().map((w) => [w.id, w.status]).sort())
-      .toEqual([['root-1', 'transferred'], ['root-2', 'open'], ['tree-1', 'transferred']]);
-    expect(store.rootWorkspaceModel('checkout-1')?.workspace.id).toBe('root-2');
-    expect(store.instances('tree-1').map((instance) => instance.id)).toEqual(['instance-1']);
-  } finally { store.close(); }
-  const check = new Database(path);
-  try { expect(check.query('pragma foreign_key_check').all()).toEqual([]); } finally { check.close(); }
-});

@@ -9,9 +9,9 @@ import { join } from 'node:path';
 import type { Input, Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
 import { MONITOR_DAILY_WAKES, type MonitorEvent, monitorRuntimeState } from '../../src/monitor/monitors.ts';
 import type { PluginInstance } from '../../src/model.ts';
-import { type Kited, mark, registerCheckout, startKited, waitIdle } from '../harness.ts';
+import { folderWorkspace, type Kited, mark, startKited, waitIdle } from '../harness.ts';
 import { diskRecords, item, ManualModel } from '../harness-loop.ts';
-import { newRepo, until } from '../util.ts';
+import { newDir, until } from '../util.ts';
 
 let kited: Kited | undefined;
 afterEach(async () => {
@@ -47,7 +47,7 @@ async function agentSetup() {
   const model = new ManualModel();
   const k = startKited(() => model, false, { monitorWakeDelayMs: 50 });
   kited = k;
-  const registered = await registerCheckout(k, newRepo(k.root, 'project', { 'a.txt': 'a\n' }));
+  const registered = await folderWorkspace(k, newDir(k.root, 'project', { 'a.txt': 'a\n' }));
   const workspaceId = registered.workspace.id;
   const started = await k.call('POST', `/workspaces/${workspaceId}/operations/agent.start`, { operationId: 'agent' });
   expect(started.status).toBe(200);

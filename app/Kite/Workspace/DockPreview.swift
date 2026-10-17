@@ -306,7 +306,7 @@ struct DockPreviewBuilder {
     func build() -> DockPreviewScene {
         let project = RemoteProject(id: "dock-preview", name: "停靠栏预览", remote: "preview/dock", createdAt: 0)
         let checkout = RemoteCheckout(id: "dock-preview", projectId: project.id, machineId: machine.id, path: "/", remote: project.remote, createdAt: 0)
-        let info = WorkspaceInfo(id: workspace, epoch: 1, checkoutId: checkout.id, name: title, cwd: "/", kind: .root, branch: nil, base: nil,
+        let info = WorkspaceInfo(id: workspace, epoch: 1, checkoutId: checkout.id, name: title, cwd: "/", branch: nil, base: nil,
                                  status: .open, createdAt: 0)
         let area = WorkArea(remote: RemoteWorkspace(machine: machine, project: project, checkout: checkout, workspace: info,
                                                     threads: [], instances: instances, windows: windows),

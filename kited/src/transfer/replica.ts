@@ -1,6 +1,6 @@
 /**
  * 工作区副本：执行设备上工作区的执行数据——数据库行、各线程的会话目录（journal、控制状态、命令日志）、Claude 原生记录与历史差异——
- * 由其他工作机持续拉取，按文件增量续传；快照链、工作区分支与根工作区的主线经组网从执行设备的检出拉（workspace/peer-git.ts）。
+ * 由其他工作机持续拉取，按文件增量续传；快照链与工作区分支经组网从执行设备的检出拉（workspace/peer-git.ts）。
  * 交接时目标只要把副本补到末尾，执行权一递就能接着做；执行设备失联时，用户可以让别的工作机用手上的副本强制接管。
  * 副本只是跟进，权威在执行设备，epoch 低的不覆盖高的。副本在本机的布局与流转记录（records.ts）相同，还原沿用同一套安装。
  * 见 docs/分布式架构.md「数据的归属与同步」。
@@ -142,15 +142,15 @@ function journalCursor(path: string): number {
   return cursor;
 }
 
-/** 执行设备一侧：副本的清单，装到目标机时用。head 是根工作区此刻的主线。 */
-export function replicaManifest(options: { home: string; machine: string; projectId: string; workspace: Workspace; head: string | null;
+/** 执行设备一侧：副本的清单，装到目标机时用。 */
+export function replicaManifest(options: { home: string; machine: string; projectId: string; workspace: Workspace;
   threads: AgentInstance[] }): RecordsManifest {
   const { home, workspace } = options;
   return {
     version: 1, workspaceId: workspace.id, epoch: workspace.epoch, machine: options.machine, projectId: options.projectId,
-    kind: workspace.kind, name: workspace.name, branch: workspace.branch, base: workspace.base,
+    name: workspace.name, branch: workspace.branch, base: workspace.base,
     // Claude 原生记录里的 cwd 是进程的真实路径。
-    cwd: existsSync(workspace.cwd) ? realpathSync(workspace.cwd) : workspace.cwd, head: options.head,
+    cwd: existsSync(workspace.cwd) ? realpathSync(workspace.cwd) : workspace.cwd,
     threads: options.threads.map((thread) => {
       const session = join(home, 'sessions', thread.id);
       return { instanceId: thread.id, runtime: thread.runtime, nativeId: thread.nativeId,

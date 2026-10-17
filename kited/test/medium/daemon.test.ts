@@ -9,7 +9,7 @@ import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { History } from '../../src/transcript/protocol.ts';
 import type { Logged } from '../fake-api.ts';
 import {
-  api, call, createWorkspace, type Kited, listSnapshots, mark, registerCheckout, sendThreadMessage, startKited, waitIdle,
+  addProject, api, call, createWorkspace, type Kited, listSnapshots, mark, sendThreadMessage, startKited, waitIdle,
 } from '../harness.ts';
 import { commitAll, ENV, git, newRepo, read, transcript, until, useTemp, writeFiles } from '../util.ts';
 
@@ -77,13 +77,13 @@ test('Claude 常驻进程在 MCP 读取错误后继续工作，换模型后 resu
     '.mcp.json': JSON.stringify({ mcpServers: {
       projectProbe: { command: '/bin/sh', args: ['-c', 'printf started > "$1"', 'sh', mcpStarted] },
     } }),
-  });
+  }, null);
   const outside = temp();
   const externalSecret = token('外部机密');
   writeFiles(outside, { 'secret.txt': externalSecret });
   symlinkSync(outside, join(repo, 'escape'));
   commitAll(repo, '准备读取边界');
-  const p = await registerCheckout(kk, repo);
+  const p = await addProject(kk, { path: repo });
   /** 读取结果只含选中的那一行，行号在前。 */
   const onlyLine = (result: any, line: number, content: string) => {
     expect(resultText(result)).toMatch(new RegExp(`(?:^|\\n)\\s*${line}[^\\n]*${content}`));
@@ -100,7 +100,7 @@ test('Claude 常驻进程在 MCP 读取错误后继续工作，换模型后 resu
   const refusedArgs = [{ path: join(outside, 'secret.txt') }, { path: 'escape/secret.txt' }];
   const secondArgs = { path: 'a.txt', offset: 3, limit: 1 };
   const thirdArgs = { path: 'a.txt', offset: 4, limit: 1 };
-  const s = await createWorkspace(kk, p.checkout.id, `第一条 ${a}\nREAD ${JSON.stringify([firstArgs, ...refusedArgs])}`);
+  const s = await createWorkspace(kk, p.id, `第一条 ${a}\nREAD ${JSON.stringify([firstArgs, ...refusedArgs])}`);
   const req1 = await api.waitRequest((l) => l.main && l.lastUserText.includes(a));
   clean(req1);
   expect(req1.toolUseIds).toHaveLength(3);
@@ -218,8 +218,8 @@ test('Claude 常驻进程在 MCP 读取错误后继续工作，换模型后 resu
 test('patch 的结果和快照先于下一模型请求，局部失败及服务重开后仍可查看各次原始 diff；空闲时停服务结束常驻进程，上一回合仍记为完成', async () => {
   k = startKited();
   const kk = k;
-  const repo = newRepo(kk.root, 'proj', { 'original.txt': '修改前\n' });
-  const p = await registerCheckout(kk, repo);
+  const repo = newRepo(kk.root, 'proj', { 'original.txt': '修改前\n' }, null);
+  const p = await addProject(kk, { path: repo });
   const marker = token('修改文件');
   const hold = token('补丁后');
   const args = { operations: [
@@ -232,7 +232,7 @@ test('patch 的结果和快照先于下一模型请求，局部失败及服务�
     snapshotsAtRequest = kk.events.flatMap((event) => event.type === 'workspace.snapshot' ? [event.commit] : []);
     return true;
   });
-  const thread = await createWorkspace(kk, p.checkout.id, `${marker}\nPATCH ${JSON.stringify(args)}\nHOLD_RESULT ${hold}`);
+  const thread = await createWorkspace(kk, p.id, `${marker}\nPATCH ${JSON.stringify(args)}\nHOLD_RESULT ${hold}`);
   const initial = await api.waitRequest((entry) => entry.main && entry.lastUserText.includes(marker));
   expect(initial.toolUseIds).toHaveLength(1);
   const patchId = initial.toolUseIds[0]!;
@@ -250,8 +250,8 @@ test('patch 的结果和快照先于下一模型请求，局部失败及服务�
   const snapshot = (await listSnapshots(kk, thread.workspace.id)).find((value) => value.toolUseIds.includes(patchId));
   expect(snapshot).toBeDefined();
   expect(snapshotsAtRequest).toContain(snapshot!.commit);
-  expect(git(repo, 'show', `${snapshot!.commit}:original.txt`)).toBe('修改后');
-  expect(git(repo, 'show', `${snapshot!.commit}:created.txt`)).toBe('新建正文');
+  expect(git(thread.checkout.path, 'show', `${snapshot!.commit}:original.txt`)).toBe('修改后');
+  expect(git(thread.checkout.path, 'show', `${snapshot!.commit}:created.txt`)).toBe('新建正文');
   const live = await history(kk, thread.id);
   const liveResult = live.records.flatMap((record) => record.block.type === 'tool_result' && record.block.call === patchId ? [record.block] : [])[0];
   expect(liveResult).toEqual({ type: 'tool_result', call: patchId, output: payload.output, status: 'success', diff: payload.diff });
@@ -349,11 +349,11 @@ test('Claude shell 保持工作区沙箱并流式输出，停止会等待命令�
     'writeFileSync("shell-ready.json", JSON.stringify(report));',
     `console.log(${JSON.stringify(marker)});`,
     'await child.exited;',
-  ].join('\n') });
-  const p = await registerCheckout(kk, repo);
+  ].join('\n') }, null);
+  const p = await addProject(kk, { path: repo });
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
   const args = { description: '验证 Claude 命令沙箱及取消', command: `exec ${quote(process.execPath)} probe.ts` };
-  const thread = await createWorkspace(kk, p.checkout.id, `SHELL ${JSON.stringify(args)}`);
+  const thread = await createWorkspace(kk, p.id, `SHELL ${JSON.stringify(args)}`);
   const request = await api.waitRequest((entry) => entry.main && entry.lastUserText.includes(args.description));
   expect(request.toolUseIds).toHaveLength(1);
   const callId = request.toolUseIds[0]!;

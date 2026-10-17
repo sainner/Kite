@@ -13,9 +13,9 @@ import { importClaude, syncToClaude } from '../../src/handoff/handoff.ts';
 import type { ContextItem, JournalEvent, JournalRecord } from '../../src/harness/types.ts';
 import type { ThreadContext } from '../../src/model.ts';
 import type { DisplayEnvelope, History } from '../../src/transcript/protocol.ts';
-import { api, call, claudeModel, type Kited, openAgent, registerCheckout, startKited } from '../harness.ts';
+import { api, call, claudeModel, type Kited, openAgent, folderWorkspace, startKited } from '../harness.ts';
 import { ManualModel, Seen } from '../harness-loop.ts';
-import { newDir, newRepo, useTemp } from '../util.ts';
+import { newDir, useTemp } from '../util.ts';
 import { writeClaudeHistory } from '../claude-history.ts';
 
 let kited: Kited | undefined;
@@ -28,8 +28,7 @@ afterEach(async () => {
 
 async function emptyThread() {
   kited = startKited();
-  const repo = newRepo(kited.root, 'project', { 'base.txt': '原始\n' });
-  const workspace = await registerCheckout(kited, repo);
+  const workspace = await folderWorkspace(kited, newDir(kited.root, 'project', { 'base.txt': '原始\n' }));
   const id = await openAgent(kited.call, workspace.workspace.id, claudeModel);
   const thread = (await kited.call('GET', `/threads/${id}`)).body as ThreadContext;
   await kited.daemon.stop();

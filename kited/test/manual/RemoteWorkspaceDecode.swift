@@ -3,7 +3,7 @@ import Foundation
 @main
 struct RemoteWorkspaceDecode {
     @MainActor static func main() throws {
-        guard CommandLine.arguments.count == 9 else {
+        guard CommandLine.arguments.count == 12 else {
             throw DecodeError.usage
         }
         let url = URL(fileURLWithPath: CommandLine.arguments[1])
@@ -25,6 +25,12 @@ struct RemoteWorkspaceDecode {
             from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[7])))
         let files = try JSONDecoder().decode(FileFixture.self,
             from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[8])))
+        let registry = try JSONDecoder().decode(RegistryFixture.self,
+            from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[9])))
+        let secretState = try JSONDecoder().decode(SecretStateFixture.self,
+            from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[10])))
+        let directory = try JSONDecoder().decode(MachinesFixture.self,
+            from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[11])))
         guard localProjects.count == 1,
               remoteProjects.count == 2,
               remoteProjects.contains(where: { $0.id == localProjects[0].id }),
@@ -32,23 +38,42 @@ struct RemoteWorkspaceDecode {
             throw DecodeError.invalidProjects
         }
         print("已解码跨工作机共享项目身份及同名独立项目")
-        guard let root = workspaces.first(where: { $0.workspace.kind == .root }),
-              let worktree = workspaces.first(where: { $0.workspace.kind == .worktree }) else {
-            throw DecodeError.missingWorkspaceKind
+        try verifyRegistry(registry, local: localProjects[0], remote: remoteProjects)
+        try verifyDirectory(directory, machine: machine)
+        guard let worktree = workspaces.first(where: { $0.workspace.name == "主工作区" }),
+              let secret = workspaces.first(where: { $0.workspace.name == "密钥工作区" }) else {
+            throw DecodeError.missingWorkspace
         }
-        guard root.threads.isEmpty,
-              root.instances.isEmpty,
-              root.machine.id == machine.id,
+        // 没有根工作区：同一项目、同一检出上的几个工作区各有自己的分支和工作树。
+        // behind 断言具体值：新建时先拉取主线，主线之后没有新提交，为 0；键名对不上时 Swift 只会静默得到 nil。
+        guard workspaces.count == 2,
               worktree.machine.id == machine.id,
-              root.checkout.machineId == machine.id,
+              secret.machine.id == machine.id,
               worktree.checkout.machineId == machine.id,
-              worktree.project.id == root.project.id,
-              worktree.checkout.id == root.checkout.id,
+              secret.checkout.machineId == machine.id,
+              secret.project.id == worktree.project.id,
+              secret.checkout.id == worktree.checkout.id,
+              worktree.workspace.checkoutId == worktree.checkout.id,
+              secret.workspace.checkoutId == secret.checkout.id,
+              secret.id != worktree.id,
+              secret.workspace.cwd != worktree.workspace.cwd,
+              let worktreeBranch = worktree.workspace.branch, let secretBranch = secret.workspace.branch,
+              !worktreeBranch.isEmpty, worktreeBranch != secretBranch,
+              worktree.workspace.base?.isEmpty == false,
+              secret.workspace.base?.isEmpty == false,
+              worktree.workspace.status == .open,
+              secret.workspace.status == .open,
+              worktree.workspace.behind == 0,
+              secret.workspace.behind == 0,
+              worktree.workspace.pullRequest == nil,
+              secret.workspace.pullRequest == nil,
               worktree.threads.count >= 2,
               Set(worktree.threads.map(\.instanceId)).count == worktree.threads.count,
               worktree.threads.allSatisfy({ $0.runtime == .harness && !$0.nativeId.isEmpty }) else {
             throw DecodeError.invalidRelationships
         }
+        print("已解码同一项目的两个工作区：各自的分支、开出时的主线提交、behind 与 pullRequest")
+        try verifySecret(secretState, workspace: secret)
         let threadInstanceIDs = Set(worktree.threads.map(\.instanceId))
         let agentInstances = worktree.instances.filter { $0.definitionId == "kite.agent" }
         guard Set(agentInstances.map(\.id)) == threadInstanceIDs,
@@ -91,6 +116,75 @@ struct RemoteWorkspaceDecode {
         print("已解码 \(workspaces.count) 个工作区聚合")
     }
 
+    /// 添加项目前的检查、添加的结果与登记表：没有远程的文件夹只能直接合入，外观为默认值，登记表与项目身份是同一组项目。
+    private static func verifyRegistry(_ fixture: RegistryFixture, local: RemoteProject, remote: [RemoteProject]) throws {
+        let check = fixture.check
+        guard check.remote == nil,
+              check.integration == "merge",
+              check.envFiles == [".env"],
+              check.existing == nil,
+              fixture.added.id == local.id,
+              fixture.added.name == local.name,
+              fixture.added.remote == nil,
+              fixture.added.integration == "merge",
+              !fixture.added.proposes,
+              fixture.added.appearance == ProjectAppearance(),
+              fixture.separate.id != fixture.added.id,
+              fixture.separate.name == fixture.added.name,
+              Set(fixture.registry.map(\.id)) == Set(remote.map(\.id)),
+              Set(fixture.registry.map(\.id)) == [fixture.added.id, fixture.separate.id],
+              fixture.registry.allSatisfy({ $0.remote == nil && $0.integration == "merge" && $0.appearance == ProjectAppearance() }) else {
+            throw DecodeError.invalidRegistry
+        }
+        print("已解码添加项目前的检查、登记表里的项目与集成方式")
+    }
+
+    /// 工作机目录：本机在前，第二台最近一次的目录摘要能还原出它为同一项目建的工作区（离线目录没有窗口与会话内容）。
+    private static func verifyDirectory(_ fixture: MachinesFixture, machine: RemoteMachine) throws {
+        guard fixture.machines.first?.id == machine.id,
+              let other = fixture.machines.first(where: { $0.id == fixture.otherMachine }),
+              let snapshot = other.snapshot,
+              snapshot.machine.id == fixture.otherMachine,
+              let summary = snapshot.summaries.first(where: { $0.id == fixture.sharedWorkspace }),
+              summary.project.id == fixture.project,
+              summary.checkout.machineId == fixture.otherMachine,
+              summary.workspace.status == .open,
+              summary.workspace.branch?.isEmpty == false,
+              summary.workspace.base?.isEmpty == false,
+              summary.threads.isEmpty, summary.windows.isEmpty else {
+            throw DecodeError.invalidDirectory
+        }
+        print("已解码工作机目录里另一台工作机的目录摘要")
+    }
+
+    /// 密钥请求：线程流首帧的状态带 kind 为 secret 的等待，工作区聚合里线程的活动摘要也停在 secret。
+    private static func verifySecret(_ fixture: SecretStateFixture, workspace: RemoteWorkspace) throws {
+        guard workspace.threads.count == 1,
+              let thread = workspace.threads.first,
+              thread.instanceId == fixture.threadId,
+              thread.runtime == .harness,
+              thread.activity?.waiting == "secret",
+              workspace.instances.contains(where: { $0.id == thread.instanceId && $0.definitionId == "kite.agent" && $0.status == .open }),
+              fixture.state.phase == "running",
+              let waiting = fixture.state.waiting,
+              waiting.isSecret,
+              !waiting.isQuestion,
+              !waiting.id.isEmpty,
+              waiting.since > 0,
+              waiting.name == "STRIPE_KEY",
+              waiting.secretKind == "file",
+              waiting.reason == "调支付接口",
+              waiting.value == "sk_test_prefilled",
+              waiting.exists == false,
+              waiting.file == nil,
+              waiting.key == nil,
+              waiting.questions == nil,
+              waiting.tool == nil else {
+            throw DecodeError.invalidSecret
+        }
+        print("已解码密钥请求的等待与线程活动摘要")
+    }
+
     private static func verifyFiles(_ files: FileFixture, instance: RemotePluginInstance) throws {
         guard files.directory.entries.contains(where: {
                   $0.name == "base.txt" && $0.path == "base.txt" && $0.kind == "file"
@@ -121,7 +215,7 @@ struct RemoteWorkspaceDecode {
               cursors.archived.count == 3,
               after.covers(before), !before.covers(after), !after.covers(other),
               archived.contains(where: { workspace in
-                  guard workspace.workspace.kind == .worktree, workspace.threads.count == 2 else { return false }
+                  guard workspace.workspace.status == .archived, workspace.threads.count == 2 else { return false }
                   let ids = Set(workspace.threads.map(\.instanceId))
                   let agents = workspace.instances.filter { $0.definitionId == "kite.agent" }
                   return Set(agents.map(\.id)) == ids && workspace.instances.allSatisfy({ $0.status == .archived })
@@ -174,6 +268,25 @@ private struct CatalogCursorFixture: Decodable {
     let archived: [String]
 }
 
+private struct RegistryFixture: Decodable {
+    let check: ProjectCheck
+    let added: AccountProject
+    let separate: AccountProject
+    let registry: [AccountProject]
+}
+
+private struct MachinesFixture: Decodable {
+    let machines: [DirectoryMachine]
+    let otherMachine: String
+    let sharedWorkspace: String
+    let project: String
+}
+
+private struct SecretStateFixture: Decodable {
+    let threadId: String
+    let state: RemoteState
+}
+
 private struct FileFixture: Decodable {
     let directory: FileDirectory
     let page: FilePage
@@ -184,10 +297,13 @@ private struct FileFixture: Decodable {
 
 private enum DecodeError: Error {
     case usage
-    case missingWorkspaceKind
+    case missingWorkspace
     case invalidRelationships
     case invalidProjects
     case invalidCatalog
     case invalidFiles
+    case invalidRegistry
+    case invalidSecret
+    case invalidDirectory
     case protocolMismatch
 }

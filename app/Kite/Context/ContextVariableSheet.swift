@@ -76,14 +76,8 @@ extension AppModel {
         case .environment:
             return availableWorkers.map { ContextVariableSource(id: $0.machine.id, machine: $0.machine.id, path: "/context-variables",
                                                                 section: nil, title: $0.machine.name) }
-        case .project:
-            // 同一项目在几台工作机上都有检出时，按先排到的（当前工作机优先）
-            var seen = Set<String>()
-            return areas.filter { seen.insert($0.remote.project.id).inserted }.map { _, remote in
-                ContextVariableSource(id: remote.project.id, machine: remote.machine.id, path: "/checkouts/\(remote.checkout.id)/context-variables",
-                                      section: nil, title: projectLabel(remote.project))
-            }
-        case .workspace:
+        case .project, .workspace:
+            // 项目规则与记忆索引从工作区根目录逐级找，项目层也按工作区取值、写回它的工作树
             return areas.map { _, remote in
                 ContextVariableSource(id: remote.id, machine: remote.machine.id, path: "/workspaces/\(remote.id)/context-variables",
                                       section: projectLabel(remote.project), title: onMachine(remote, remote.workspace.name))
@@ -104,8 +98,7 @@ extension AppModel {
         let sources = listed ?? contextVariableSources(layer)
         let here: String? = switch layer {
         case .environment: activeConnection?.machine.id
-        case .project: current?.remote?.project.id
-        case .workspace: current?.remote?.id
+        case .project, .workspace: current?.remote?.id
         case .agent: current.flatMap { area in area.layout.focused.flatMap(area.thread(in:))?.id }
         }
         return [contextVariableChoices[layer.rawValue], here].lazy.compactMap { id in id.flatMap { id in sources.first { $0.id == id } } }.first

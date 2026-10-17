@@ -4,10 +4,10 @@ import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { WorkspaceModel } from '../../src/model.ts';
 import type { ThreadActivity } from '../../src/transcript/protocol.ts';
-import { call, createWorkspace, machine, registerCheckout, startKited, type Kited } from '../harness.ts';
+import { addProject, call, chatgptLogin, createWorkspace, folderWorkspace, machine, startKited, type Kited } from '../harness.ts';
 import { item, ManualModel } from '../harness-loop.ts';
 import { connectSse } from '../sse.ts';
-import { commitAll, makeTemp, newRepo } from '../util.ts';
+import { commitAll, makeTemp, newDir, newRepo } from '../util.ts';
 
 type RecordView = { id: string; at: number; block: { type: string; [key: string]: unknown }; parent?: string;
   generation?: 'streaming' | 'complete' | 'interrupted' };
@@ -26,7 +26,7 @@ type WireEvent = {
   type: string;
   threadId?: string;
   workspaceId?: string;
-  checkoutId?: string;
+  projectId?: string;
   status?: string;
   workspaces?: unknown[];
   cursor: string;
@@ -60,21 +60,20 @@ async function connect(url: string, threadId?: string) {
   return stream;
 }
 
-// HTTP 快照、异步工作区事件与 SSE 目录过滤交错；第二次检出登记作流内屏障，确认正文未漏入目录。
+// HTTP 快照、异步工作区事件与 SSE 目录过滤交错；第二个项目导入检出（checkout.changed）作流内屏障，确认正文未漏入目录。
 test('目录 SSE 快照和列表响应头同序，后续变化需要更新列表', async () => {
   kited = startKited();
   const kk = kited;
-  const firstRepo = newRepo(kk.root, 'first', { 'base.txt': '一\n', '.kite/setup': '#!/bin/sh\necho 已准备\n' });
+  const firstRepo = newRepo(kk.root, 'first', { 'base.txt': '一\n', '.kite/setup': '#!/bin/sh\necho 已准备\n' }, null);
   chmodSync(join(firstRepo, '.kite/setup'), 0o755);
   commitAll(firstRepo, '加准备脚本');
-  const first = await registerCheckout(kk, firstRepo);
+  const first = await addProject(kk, { path: firstRepo });
   const stream = await connect(kk.url);
   const baseline = await stream.events.wait((event) => event.type === 'catalog.snapshot');
-  expect(baseline.workspaces).toContainEqual(expect.objectContaining({
-    checkout: expect.objectContaining({ id: first.checkout.id }),
-  }));
+  expect(baseline.workspaces).toEqual([]);
 
-  const created = await kk.call('POST', '/workspaces', { checkout: first.checkout.id });
+  chatgptLogin(kk.home);
+  const created = await kk.call('POST', '/workspaces', { project: first.id });
   expect(created.status).toBe(200);
   const workspaceId = created.body.workspace.id as string;
   await kk.waitEvent((event) => event.type === 'workspace.changed' && event.workspaceId === workspaceId && event.status === 'open');
@@ -101,13 +100,11 @@ test('目录 SSE 快照和列表响应头同序，后续变化需要更新列表
   expect(opened.cursor.split(':')[0]).toBe(before.cursor.split(':')[0]);
   expect(Number(opened.cursor.split(':')[1])).toBeLessThanOrEqual(Number(before.cursor.split(':')[1]));
 
-  const secondRepo = newRepo(kk.root, 'second', { 'base.txt': '二\n' });
-  const second = await registerCheckout(kk, secondRepo);
-  const later = await stream.events.wait((event) => event.type === 'checkout.changed' && event.checkoutId === second.checkout.id);
+  const second = await addProject(kk, { path: newDir(kk.root, 'second', { 'base.txt': '二\n' }) });
+  const later = await stream.events.wait((event) => event.type === 'checkout.changed' && event.projectId === second.id);
   expect(later.cursor.split(':')[0]).toBe(before.cursor.split(':')[0]);
   expect(Number(later.cursor.split(':')[1])).toBeGreaterThan(Number(before.cursor.split(':')[1]));
   const after = await readCatalog();
-  expect(after.models.some((entry) => entry.workspace.id === second.workspace.id)).toBe(true);
   expect(Number(later.cursor.split(':')[1])).toBeLessThanOrEqual(Number(after.cursor.split(':')[1]));
   await stream.close();
 }, 1000);
@@ -121,7 +118,7 @@ test('后台代理跑完一回合，目录流先后收到运行中和带收尾�
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
-  const registered = await registerCheckout(kk, newRepo(kk.root, 'project', { 'base.txt': '初始\n' }));
+  const registered = await folderWorkspace(kk, newDir(kk.root, 'project', { 'base.txt': '初始\n' }));
   const workspaceId = registered.workspace.id;
   const operationPath = (name: string) => `/workspaces/${workspaceId}/operations/${name}`;
   const created = await kk.call('POST', operationPath('agent.start'), {
@@ -188,9 +185,8 @@ test('SSE 重连保留流式分段、排队输入及交错工具结果所属的�
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
-  const repo = newRepo(kk.root, 'project', { 'base.txt': '初始\n' });
-  const project = await registerCheckout(kk, repo);
-  const thread = await createWorkspace(kk, project.checkout.id, '开始', 'harness');
+  const project = await addProject(kk, { path: newDir(kk.root, 'project', { 'base.txt': '初始\n' }) });
+  const thread = await createWorkspace(kk, project.id, '开始', 'harness');
   const id = thread.id;
   const first = await model.call(1);
   const stream = await connect(kk.url, id);
@@ -411,14 +407,10 @@ test('重启后只读历史保持记录 id 和排队输入，重复发送及取�
   const root = makeTemp('transcript-');
   roots.push(root);
   const home = join(root, 'kite');
-  const repo = newRepo(root, 'project', { 'base.txt': '初始\n' });
+  const repo = newDir(root, 'project', { 'base.txt': '初始\n' });
   const firstModel = new ManualModel();
   daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => firstModel });
-  const project = await call(daemon.url, 'POST', '/checkouts', { path: repo });
-  expect(project.status).toBe(200);
-  const created = await call(daemon.url, 'POST', '/workspaces', { checkout: project.body.checkout.id, prompt: '保持挂起' });
-  expect(created.status).toBe(200);
-  const id = created.body.threads[0].instanceId as string;
+  const { id } = await createWorkspace(daemon, (await addProject(daemon, { path: repo })).id, '保持挂起', 'harness');
   const active = await firstModel.call(1);
   const queued = await call(daemon.url, 'POST', `/threads/${id}/messages`, { id: 'queued-after-restart', text: '恢复后继续' });
   expect(queued.status).toBe(200);

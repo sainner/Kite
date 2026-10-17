@@ -9,9 +9,9 @@ import type { Envelope } from '../../src/events.ts';
 import type { Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
 import type { DisplayState } from '../../src/transcript/protocol.ts';
 import type { Question } from '../../src/waiting.ts';
-import { after, createWorkspace, type Kited, mark, registerCheckout, startKited, waitIdle } from '../harness.ts';
+import { addProject, after, createWorkspace, type Kited, mark, startKited, waitIdle } from '../harness.ts';
 import { item, ManualModel } from '../harness-loop.ts';
-import { newRepo } from '../util.ts';
+import { newDir } from '../util.ts';
 
 let kited: Kited | undefined;
 afterEach(async () => {
@@ -41,8 +41,8 @@ const questions: Question[] = [
 async function ask() {
   const model = new ManualModel();
   const k = kited = startKited(() => model);
-  const registered = await registerCheckout(k, newRepo(k.root, 'project', { 'a.txt': 'a\n' }));
-  const thread = await createWorkspace(k, registered.checkout.id, '先问清楚再做', 'harness');
+  const registered = await addProject(k, { path: newDir(k.root, 'project', { 'a.txt': 'a\n' }) });
+  const thread = await createWorkspace(k, registered.id, '先问清楚再做', 'harness');
   const first = await model.call(1);
   expect(first.request.allowedTools).toContain('question');
   const since = mark(k);
@@ -163,8 +163,8 @@ test('提问挂起时用户不回答、直接发带 skipWaiting 的消息：等�
 test('审批模式改成越界询问后，shell 连名单外主机时线程挂出审批等待、命令挂着；允许并记住后命令放行、执行授权多了这台主机，再连不再问', async () => {
   const model = new ManualModel();
   const k = kited = startKited(() => model);
-  const registered = await registerCheckout(k, newRepo(k.root, 'project', { 'a.txt': 'a\n' }));
-  const thread = await createWorkspace(k, registered.checkout.id, '连一下外部服务', 'harness');
+  const registered = await addProject(k, { path: newDir(k.root, 'project', { 'a.txt': 'a\n' }) });
+  const thread = await createWorkspace(k, registered.id, '连一下外部服务', 'harness');
   const target = 'kite-approval.invalid:8080';
   const curl = (id: string) => calledItem(id, 'shell', {
     description: '连名单外主机',
