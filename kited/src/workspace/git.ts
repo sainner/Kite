@@ -33,6 +33,16 @@ export async function isAncestor(cwd: string, a: string, b: string): Promise<boo
   return (await gitTry(cwd, ['merge-base', '--is-ancestor', a, b])).code === 0;
 }
 
+/** 分支快进到 target：已包含 target 时不动（current），两边各有新提交时不动（diverged）。按读到的旧值比较并交换。 */
+export async function fastForward(cwd: string, branch: string, target: string): Promise<'current' | 'forwarded' | 'diverged'> {
+  const ref = `refs/heads/${branch}`;
+  const ours = await revParse(cwd, ref);
+  if (ours && await isAncestor(cwd, target, ours)) return 'current';
+  if (ours && !(await isAncestor(cwd, ours, target))) return 'diverged';
+  await git(cwd, ['update-ref', ref, target, ours ?? '']);
+  return 'forwarded';
+}
+
 export const KITE_IDENTITY = {
   GIT_AUTHOR_NAME: 'Kite', GIT_AUTHOR_EMAIL: 'kite@localhost',
   GIT_COMMITTER_NAME: 'Kite', GIT_COMMITTER_EMAIL: 'kite@localhost',

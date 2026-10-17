@@ -214,14 +214,13 @@ struct SidebarListLabel: View {
 
 /// 一级行下再分一层的小标题：圆点加名称，所在组有选中项时突出；加号像其他行尾操作一样跟随选中与悬停，触屏上不显示。
 /// 项目一栏里项目下的检出与资源库里代理上下文的分类共用。
-struct SidebarSubheader<Menu: View>: View {
+struct SidebarSubheader: View {
     let title: String
     let selected: Bool
     let help: String
     /// 为 nil 时标题不可点。
     let open: (() -> Void)?
     var add: SidebarSubheaderAdd?
-    @ViewBuilder var menu: Menu
     @Environment(\.sidebarProjectTint) private var tint
     @Environment(\.sidebarHighlight) private var highlight
     @Environment(\.sidebarMetrics) private var metrics
@@ -229,7 +228,7 @@ struct SidebarSubheader<Menu: View>: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if Menu.self == EmptyView.self { label } else { label.contextMenu { menu } }
+            label
             if let add, !InputMode.current.isTouch {
                 Button(action: add.action) {
                     TablerIcon(.tablerPlus)
@@ -266,12 +265,6 @@ struct SidebarSubheader<Menu: View>: View {
         .buttonStyle(SidebarButtonStyle(foreground: selected ? highlight : tint))
         .disabled(open == nil)
         .help(help)
-    }
-}
-
-extension SidebarSubheader where Menu == EmptyView {
-    init(title: String, selected: Bool, help: String, open: (() -> Void)?, add: SidebarSubheaderAdd? = nil) {
-        self.init(title: title, selected: selected, help: help, open: open, add: add) { EmptyView() }
     }
 }
 

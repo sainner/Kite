@@ -8,7 +8,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from '
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { KiteError } from '../errors.ts';
-import { setupLogPath, worktreePath } from '../paths.ts';
+import { worktreePath } from '../paths.ts';
 import type { GitCredentials } from '../git-credential.ts';
 import { holds, type AgentInstance, type Checkout, type Workspace, type WorkspaceModel, type WorkspaceStatus } from '../model.ts';
 import type { Store } from '../store.ts';
@@ -16,7 +16,7 @@ import { runtimeLogin, type Environment } from '../environment.ts';
 import { git, gitTry, revParse } from '../workspace/git.ts';
 import { originAccess, type RemoteAccess } from '../workspace/remote.ts';
 import { readLease, remoteLeases, writeLease, type Lease } from '../workspace/lease.ts';
-import { addWorktree, removeWorktree, runSetup } from '../workspace/worktrees.ts';
+import { addWorktree, removeWorktree } from '../workspace/worktrees.ts';
 import { forgetWorktree, snapshotRef } from '../workspace/snapshots.ts';
 import { installRecords, readRecords, recordPaths } from './records.ts';
 import { replicaRef, type Replicas } from './replica.ts';
@@ -51,8 +51,8 @@ export interface TransferHost {
   environment(projectId: string): Promise<Environment>;
   /** 本机该项目的检出；没有时 clone 到数据目录并登记。 */
   ensureCheckout(projectId: string): Promise<Checkout>;
-  /** 把项目设了路径的密钥写进工作树，在 setup 之前。 */
-  writeSecrets(projectId: string, cwd: string): Promise<void>;
+  /** 工作树建好、开放之前：写入项目设了路径的密钥，再跑 setup；没有 setup 时为 null。 */
+  setUpWorktree(workspaceId: string, checkout: Checkout, cwd: string): Promise<{ exit: number } | null>;
   /**
    * 执行权已在别的机器：冻结本地记录。handingOff 给出时只冻结仍以这一 epoch 交接中的工作区，并记下交给的那台；
    * 已撤回、或已交给别的那台时 409。状态在冻结的锁里核对，与撤回交接互斥。
@@ -290,8 +290,7 @@ export class WorkspaceTransfers {
       }), () => this.host.recordsReplaced(threadIds));
       this.host.changed(workspaceId);
       const model = this.host.workspace(workspaceId);
-      await this.host.writeSecrets(projectId, cwd);
-      const setup = await runSetup(checkout.path, cwd, setupLogPath(this.host.home, workspaceId), this.host.home);
+      const setup = await this.host.setUpWorktree(workspaceId, checkout, cwd);
       if (setup && setup.exit !== 0) throw new KiteError(`初始化脚本退出码 ${setup.exit}`, 409);
       await this.host.snapshot(model.workspace, options.force ? '强制接管到这台工作机' : '流转到这台工作机');
       if (access) {

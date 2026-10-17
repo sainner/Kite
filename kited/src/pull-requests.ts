@@ -26,14 +26,15 @@ export const pullRequestTemplate: ContextDefinition = {
 
 const clip = (text: string) => text.length > 6000 ? `${text.slice(0, 6000)}\n…` : text;
 
-/** base 是 PR 的目标（远程主线的引用）；worktree 的 HEAD 已合好主线。 */
-export async function draftPullRequest(options: { tasks?: LightTasks; templates: ContextTemplates; worktree: string; base: string;
+/** base 是 PR 的目标（远程主线的引用）；工作树的 HEAD 已合好主线。 */
+export async function draftPullRequest(options: { tasks?: LightTasks; templates: ContextTemplates; base: string;
   model: { machine: Machine; project: Project; workspace: Workspace } }): Promise<{ title: string; body: string }> {
   const fallback = { title: options.model.workspace.name, body: '' };
   if (!options.tasks) return fallback;
+  const worktree = options.model.workspace.cwd;
   try {
-    const [commits, files] = await Promise.all([git(options.worktree, ['log', '--no-merges', '--format=- %s%n%b', `${options.base}..HEAD`]),
-      git(options.worktree, ['diff', '--stat=120', `${options.base}...HEAD`])]);
+    const [commits, files] = await Promise.all([git(worktree, ['log', '--no-merges', '--format=- %s%n%b', `${options.base}..HEAD`]),
+      git(worktree, ['diff', '--stat=120', `${options.base}...HEAD`])]);
     const template = options.templates.get(pullRequestTemplate.id, 'workspace.pull_request');
     const { instructions, input } = assembleContext(bindContext(template.definition, {
       ...workspaceVariables(options.model),

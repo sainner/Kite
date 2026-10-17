@@ -100,7 +100,7 @@ struct ProjectSettingsPage: View {
 
     private var integrationNote: String {
         guard remote != nil else { return "没有远程的项目只能直接合入：合进本机的主线，其他工作机同步时快进过来。" }
-        let base = accountProject?.integration == "pullRequest"
+        let base = accountProject?.proposes == true
             ? "集成时把工作区分支推到远程并开 PR（自动开 PR 只支持 GitHub，其他平台给出去网页上开 PR 的链接）。"
             : "集成时把工作区的改动合进主线，再推送到远程。"
         return accountProject?.integrationReason.map { "\(base)按仓库情况自动选择：\($0)。" } ?? base
@@ -108,13 +108,7 @@ struct ProjectSettingsPage: View {
 
     private func setIntegration(_ value: String) {
         guard value != (accountProject?.integration ?? "merge") else { return }
-        savingIntegration = true
-        error = nil
-        Task {
-            defer { savingIntegration = false }
-            do { accountProject = try await model.setProjectIntegration(project.id, integration: value) }
-            catch { self.error = error.localizedDescription }
-        }
+        save($savingIntegration) { try await model.setProjectSettings(project.id, integration: value) }
     }
 
     private func machineName(_ checkout: RemoteCheckout) -> String {
@@ -127,24 +121,25 @@ struct ProjectSettingsPage: View {
     }
 
     private func setHandover(enabled: Bool? = nil, needs: [String]? = nil) {
-        savingHandover = true
-        error = nil
-        Task {
-            defer { savingHandover = false }
-            do { accountProject = try await model.setProjectHandover(project.id, enabled: enabled, needs: needs) }
-            catch { self.error = error.localizedDescription }
-        }
+        save($savingHandover) { try await model.setProjectSettings(project.id, autoHandover: enabled, handoverNeeds: needs) }
     }
 
     private func migrate() {
-        migrating = true
+        save($migrating) {
+            let updated = try await model.setProjectRemote(project.id, remote: target.trimmingCharacters(in: .whitespacesAndNewlines))
+            target = ""
+            return updated
+        }
+    }
+
+    /// 改一项设置：进行中 saving 为 true，改好的登记换掉 accountProject，出错写在页底。
+    private func save(_ saving: Binding<Bool>, _ change: @escaping @MainActor () async throws -> AccountProject) {
+        saving.wrappedValue = true
         error = nil
         Task {
-            defer { migrating = false }
-            do {
-                accountProject = try await model.setProjectRemote(project.id, remote: target.trimmingCharacters(in: .whitespacesAndNewlines))
-                target = ""
-            } catch { self.error = error.localizedDescription }
+            defer { saving.wrappedValue = false }
+            do { accountProject = try await change() }
+            catch { self.error = error.localizedDescription }
         }
     }
 }

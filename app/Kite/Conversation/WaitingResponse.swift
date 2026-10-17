@@ -168,13 +168,7 @@ struct WaitingResponseCard: View {
     private func standalone(_ question: RemoteWaiting.Question) -> some View {
         @Bindable var state = state
         return VStack(alignment: .leading, spacing: ComposerLayout.rowSpacing) {
-            TextField("其他", text: $state.currentOther, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(Theme.body)
-                .lineLimit(1...4)
-                .padding(.horizontal, ComposerLayout.fieldInset - Metrics.controlInset)
-                .padding(.vertical, ComposerLayout.fieldPadding)
-                .background(ComposerLayout.fieldFill, in: RoundedRectangle(cornerRadius: fillRadius, style: .continuous))
+            cardField(TextField("其他", text: $state.currentOther, axis: .vertical).font(Theme.body).lineLimit(1...4))
                 .onSubmit { state.advance(submit: submitAnswers) }
             HStack(spacing: 0) {
                 if questions.count > 1 { QuestionStepButtons(answers: state) }
@@ -185,6 +179,15 @@ struct WaitingResponseCard: View {
                     .accessibilityLabel("发送").help("发送")
             }
         }
+    }
+
+    /// 卡片里的输入框：灰底圆角，文字与选项行的文字对齐。
+    private func cardField(_ field: some View) -> some View {
+        field
+            .textFieldStyle(.plain)
+            .padding(.horizontal, ComposerLayout.fieldInset - Metrics.controlInset)
+            .padding(.vertical, ComposerLayout.fieldPadding)
+            .background(ComposerLayout.fieldFill, in: RoundedRectangle(cornerRadius: fillRadius, style: .continuous))
     }
 
     private func submitAnswers() {
@@ -212,6 +215,11 @@ struct WaitingResponseCard: View {
         }
     }
 
+    private var denyButton: some View {
+        Button("拒绝") { send(.decision("deny")) }
+            .buttonStyle(PaneButtonStyle(text: true, foreground: Theme.danger, secondary: true))
+    }
+
     private var approvalTitle: String {
         if waiting.outside == true { return "运行命令（不在沙箱里）" }
         let target = waiting.target ?? ""
@@ -222,8 +230,7 @@ struct WaitingResponseCard: View {
     private var approvalActions: some View {
         HStack(spacing: ThreadControlsModel.actionGap) {
             Spacer(minLength: 0)
-            Button("拒绝") { send(.decision("deny")) }
-                .buttonStyle(PaneButtonStyle(text: true, foreground: Theme.danger, secondary: true))
+            denyButton
             if waiting.mustAsk != true {
                 Button("允许并记住") { send(.decision("remember")) }
                     .buttonStyle(PaneButtonStyle(text: true, foreground: .primary, secondary: true))
@@ -248,19 +255,15 @@ struct WaitingResponseCard: View {
                 Text(secretNote).font(Theme.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, inset ? ComposerLayout.fieldInset : 0)
-            Group {
+            cardField(Group {
                 if waiting.value != nil || waiting.secretKind == "file" {
                     TextField("值", text: $state.secretValue, axis: .vertical).lineLimit(1...6)
                 } else {
                     SecureField("值", text: $state.secretValue)
                 }
             }
-            .textFieldStyle(.plain)
             .font(Theme.code)
-            .autocorrectionDisabled()
-            .padding(.horizontal, ComposerLayout.fieldInset - Metrics.controlInset)
-            .padding(.vertical, ComposerLayout.fieldPadding)
-            .background(ComposerLayout.fieldFill, in: RoundedRectangle(cornerRadius: fillRadius, style: .continuous))
+            .autocorrectionDisabled())
             .padding(.horizontal, inset ? Metrics.controlInset : 0)
             .onSubmit(saveSecret)
             if waiting.file == nil {
@@ -284,8 +287,7 @@ struct WaitingResponseCard: View {
     private var secretActions: some View {
         HStack(spacing: ThreadControlsModel.actionGap) {
             Spacer(minLength: 0)
-            Button("拒绝") { send(.decision("deny")) }
-                .buttonStyle(PaneButtonStyle(text: true, foreground: Theme.danger, secondary: true))
+            denyButton
             Button("保存") { saveSecret() }
                 .buttonStyle(PaneButtonStyle(text: true, fill: .accentColor))
                 .disabled(!validSecretValue(state.secretValue))

@@ -11,7 +11,7 @@ struct RemoteAdoptResult: Decodable {
     let number: Int?
 
     var summary: String {
-        if status == "conflict" { return "合并有冲突，已交给工作区里的 agent 处理：\((files ?? []).joined(separator: "、"))" }
+        if status == "conflict" { return conflictSummary(files) }
         if status == "proposed" {
             return number.map { "已推到分支 \(branch ?? "")，PR #\($0) 已更新" } ?? "已推到分支 \(branch ?? "")，去网页上开 PR"
         }
@@ -21,6 +21,11 @@ struct RemoteAdoptResult: Decodable {
     }
 }
 
+/// 集成或同步把主线合进工作区分支时冲突了。
+private func conflictSummary(_ files: [String]?) -> String {
+    "合并有冲突，已交给工作区里的 agent 处理：\((files ?? []).joined(separator: "、"))"
+}
+
 /// 同步结果：把主线的新改动合进工作区分支，不推送。
 struct RemoteSyncResult: Decodable {
     let status: String
@@ -28,12 +33,14 @@ struct RemoteSyncResult: Decodable {
 
     var summary: String {
         switch status {
-        case "conflict": "合并有冲突，已交给工作区里的 agent 处理：\((files ?? []).joined(separator: "、"))"
+        case "conflict": conflictSummary(files)
         case "current": "已是最新"
         default: "已把主线的新改动合进工作区"
         }
     }
 }
+
+private struct ConfirmRecovery: Encodable { let confirmRecovery = true }
 
 extension AppModel {
     /// 项目登记表里的集成方式：提交 PR 为 true，直接合入为 false；登记表还没读到时为 nil。
@@ -43,21 +50,16 @@ extension AppModel {
         return account.registeredProjects.first { $0.id == project.id }?.proposes
     }
 
-    /// 用户手动集成、同步、流转，连带确认工作区里待恢复的线程，见 kited 的 confirmWorkspaceRecovery。
-    func adopt(_ area: WorkArea) async throws -> RemoteAdoptResult {
-        guard let remote = area.remote else { throw KitedError(message: "工作区尚未创建") }
-        struct Adopt: Encodable { let confirmRecovery = true }
-        let client = try activeClient(in: area)
-        let result = try await client.request("/workspaces/\(remote.workspace.id)/adopt", method: "POST", body: Adopt(), timeout: 600, as: RemoteAdoptResult.self)
-        try await refresh(client)
-        return result
-    }
+    func adopt(_ area: WorkArea) async throws -> RemoteAdoptResult { try await mergeMainline(area, "adopt") }
 
-    func syncMainline(_ area: WorkArea) async throws -> RemoteSyncResult {
+    func syncMainline(_ area: WorkArea) async throws -> RemoteSyncResult { try await mergeMainline(area, "sync") }
+
+    /// 用户手动集成（adopt）、同步（sync）、流转，连带确认工作区里待恢复的线程，见 kited 的 confirmWorkspaceRecovery。
+    private func mergeMainline<Result: Decodable>(_ area: WorkArea, _ action: String) async throws -> Result {
         guard let remote = area.remote else { throw KitedError(message: "工作区尚未创建") }
-        struct Sync: Encodable { let confirmRecovery = true }
         let client = try activeClient(in: area)
-        let result = try await client.request("/workspaces/\(remote.workspace.id)/sync", method: "POST", body: Sync(), timeout: 600, as: RemoteSyncResult.self)
+        let result = try await client.request("/workspaces/\(remote.workspace.id)/\(action)", method: "POST", body: ConfirmRecovery(),
+                                              timeout: 600, as: Result.self)
         try await refresh(client)
         return result
     }
@@ -141,18 +143,15 @@ struct WorkspaceGitActions: View {
         return "同步主线（落后 \(behind) 个提交）"
     }
 
-    private func integrate() {
-        let toast = toast
-        Task {
-            do { toast?.show(try await model.adopt(workspace).summary) }
-            catch { toast?.show(error.localizedDescription, systemImage: "exclamationmark.triangle") }
-        }
-    }
+    private func integrate() { run { try await model.adopt(workspace).summary } }
 
-    private func sync() {
+    private func sync() { run { try await model.syncMainline(workspace).summary } }
+
+    /// 跑完把结果的说明或错误显示成提示。
+    private func run(_ action: @escaping @MainActor () async throws -> String) {
         let toast = toast
         Task {
-            do { toast?.show(try await model.syncMainline(workspace).summary) }
+            do { toast?.show(try await action()) }
             catch { toast?.show(error.localizedDescription, systemImage: "exclamationmark.triangle") }
         }
     }

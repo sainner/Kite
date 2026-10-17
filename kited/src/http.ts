@@ -189,6 +189,13 @@ export function serve(kite: Kite, listen: Listen) {
     if (listen.remote && !(await kite.directory.verify(req.headers.get('X-Kite-Peer') ?? ''))) throw new KiteError('只有工作机能同步账号数据', 403);
     return fn(req);
   });
+  /** 集成、同步这类工作区上的 Git 操作：请求体可以带 confirmRecovery，先确认恢复再做。 */
+  const recoverable = (invalid: string, run: (id: string) => Promise<unknown>) => long(bound(async (req: Request & { params: { id: string } }) => {
+    const parsed = z.object({ confirmRecovery: z.literal(true).optional() }).strict().safeParse(await optionalBody(req));
+    if (!parsed.success) throw new KiteError(invalid);
+    if (parsed.data.confirmRecovery) await kite.confirmWorkspaceRecovery(req.params.id);
+    return run(req.params.id);
+  }));
   /** 语音输入升级成 WebSocket，检查同 bound；thread 是正在输入的会话，新会话不带。 */
   const voice = (req: Request, server: Server<SocketData>) => {
     try {
@@ -603,19 +610,8 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/restore': {
         POST: bound(async (req) => kite.restore(req.params.id, str((await body(req)).commit, 'commit'))),
       },
-      '/workspaces/:id/adopt': { POST: long(bound(async (req) => {
-        const data = await optionalBody(req);
-        const parsed = z.object({ confirmRecovery: z.literal(true).optional() }).strict().safeParse(data);
-        if (!parsed.success) throw new KiteError('集成请求无效');
-        if (parsed.data.confirmRecovery) await kite.confirmWorkspaceRecovery(req.params.id);
-        return kite.adopt(req.params.id);
-      })) },
-      '/workspaces/:id/sync': { POST: long(bound(async (req) => {
-        const parsed = z.object({ confirmRecovery: z.literal(true).optional() }).strict().safeParse(await optionalBody(req));
-        if (!parsed.success) throw new KiteError('同步请求无效');
-        if (parsed.data.confirmRecovery) await kite.confirmWorkspaceRecovery(req.params.id);
-        return kite.syncWorkspace(req.params.id);
-      })) },
+      '/workspaces/:id/adopt': { POST: recoverable('集成请求无效', (id) => kite.adopt(id)) },
+      '/workspaces/:id/sync': { POST: recoverable('同步请求无效', (id) => kite.syncWorkspace(id)) },
       '/instances/:id/archive': { POST: bound((req) => kite.archiveInstance(req.params.id)) },
       '/workspaces/:id/archive': { POST: bound(async (req) => kite.archiveWorkspace(req.params.id, (await body(req)).force === true)) },
       '/events': { GET: bound((req) => events(kite, eventScope(req.url), new URL(req.url).searchParams.get('device') ?? undefined)) },

@@ -166,7 +166,8 @@ private struct WorkspaceProjectSection<Row: View>: View {
     @Environment(\.toast) private var toast
     @State private var isExpanded = true
     @State private var hoveringIcon = false
-    @State private var confirmingDeletion = false
+    /// 确认删除时的说明，点「删除项目…」时才算。
+    @State private var deletion: String?
 
     private var theme: ProjectTheme {
         ProjectTheme(rawValue: model.account.projectAppearances[group.id]?.color ?? "primary") ?? .primary
@@ -211,7 +212,7 @@ private struct WorkspaceProjectSection<Row: View>: View {
                     Button("创建工作区…") { model.newWorkspace = .inProject(group.id) }
                     Divider()
                     // Line 所在的项目不能删，Line 在别的工作机上时接请求的那台查不到，这里也拦着
-                    MenuButton("删除项目…", role: .destructive) { confirmingDeletion = true }
+                    MenuButton("删除项目…", role: .destructive) { deletion = deletionMessage }
                         .disabled(model.availableWorkers.isEmpty || model.lineArea?.remote?.project.id == group.id)
                 }
                 .accessibilityAddTraits(selected ? .isSelected : [])
@@ -254,11 +255,11 @@ private struct WorkspaceProjectSection<Row: View>: View {
         }
         .environment(\.sidebarProjectTint, tint)
         .environment(\.sidebarHighlight, highlight)
-        .alert("删除项目", isPresented: $confirmingDeletion) {
+        .alert("删除项目", isPresented: Binding { deletion != nil } set: { if !$0 { deletion = nil } }, presenting: deletion) { _ in
             Button("删除", role: .destructive) { delete() }
             Button("取消", role: .cancel) {}
-        } message: {
-            Text(deletionMessage)
+        } message: { message in
+            Text(message)
         }
     }
 

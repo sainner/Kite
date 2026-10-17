@@ -12,8 +12,9 @@ import type { Peer } from '../peer-fetch.ts';
 import { gitHubRepo, type GitHubBinding } from '../account-data/github.ts';
 import type { Integration, IntegrationChoice, ProjectRegistry, RegisteredProject } from '../account-data/registry.ts';
 import { git } from './git.ts';
-import { fetchMainline, upstreamOf } from './mainline.ts';
-import { clonePeers, createRepository, findEnvFiles, folderName, importFolder, inspectFolder, projectOf, readEnvFile } from './projects.ts';
+import { checkEnvFiles } from '../secrets.ts';
+import { fetchMainline, mainRefs } from './mainline.ts';
+import { clonePeers, createRepository, findEnvFiles, folderName, importFolder, inspectFolder, projectOf, readEnvFile, type Folder } from './projects.ts';
 import { clone, originAccess, originSpelling, originURL, pushAll, remoteAccess, remoteHead, type RemoteAccess } from './remote.ts';
 import { syncPeer, type PeerRoute } from './peer-git.ts';
 
@@ -37,8 +38,6 @@ export interface ProjectAccess {
   git: GitCredentials;
   github: GitHubBinding;
   peers(projectId: string): { route: PeerRoute; peers: Peer[] };
-  /** 检查要存的环境变量文件，不合格时报错；在登记之前调用。 */
-  checkEnvFiles(files: Array<{ path: string; value: string }>): void;
   /** 把环境变量文件存成设了路径的项目密钥：项目里已有设在这个路径的就换内容，没有就新建。 */
   saveEnvFiles(projectId: string, files: Array<{ path: string; value: string }>): Promise<void>;
   /** 添加中途失败：从登记表删掉这个项目，连同已经存下的项目密钥。 */
@@ -64,12 +63,18 @@ export class CheckoutManagement {
     return folder;
   }
 
-  /** 添加项目前的检查，不写任何东西：确认远程能访问并给出集成方式的默认值，文件夹另列出被忽略的环境变量文件。 */
-  async check(source: ProjectSource): Promise<ProjectCheck> {
+  /** 来源的远程：文件夹看它的 origin。raw 是原来的写法，remote 是归一化的地址，没有远程时都为 null。 */
+  private async source(source: ProjectSource): Promise<{ folder: Folder | undefined; raw: string | null; remote: string | null }> {
     const folder = 'path' in source ? await this.folder(source.path) : undefined;
     const raw = folder ? folder.origin : (source as { remote: string }).remote;
     const remote = raw ? normalizeRemote(raw) : null;
     if (raw && !remote) throw new KiteError(folder ? `无法识别 origin 的地址：${raw}，请使用 GitHub、GitLab 等平台的仓库地址` : '远程地址格式无法识别');
+    return { folder, raw, remote };
+  }
+
+  /** 添加项目前的检查，不写任何东西：确认远程能访问并给出集成方式的默认值，文件夹另列出被忽略的环境变量文件。 */
+  async check(source: ProjectSource): Promise<ProjectCheck> {
+    const { folder, raw, remote } = await this.source(source);
     // 本机扫文件夹与访问远程互不依赖，一起做。
     const [envFiles, head] = await Promise.all([folder ? findEnvFiles(folder) : [], raw ? remoteHead(raw, this.projects.git) : null]);
     if (!raw || !remote) return { remote: null, integration: 'merge', envFiles };
@@ -82,15 +87,14 @@ export class CheckoutManagement {
    * 环境变量文件存成设了路径的项目密钥。全部成功才登记；同一远程已登记时返回原项目，不改它的设置，环境变量文件存进它的项目密钥。
    */
   async add(source: ProjectSource, options: { integration?: Integration; envFiles?: EnvFile[] } = {}): Promise<RegisteredProject> {
-    const folder = 'path' in source ? await this.folder(source.path) : undefined;
+    const { folder, raw, remote } = await this.source(source);
     const files = (options.envFiles ?? []).map(({ path, value }) => {
       if (value !== undefined) return { path, value };
       if (!folder) throw new KiteError('添加远程项目时环境变量文件要带内容');
       return { path, value: readEnvFile(folder, path) };
     });
-    this.projects.checkEnvFiles(files);
-    const raw = folder ? folder.origin : (source as { remote: string }).remote;
-    if (raw) return this.addRemote(raw, options.integration, files);
+    checkEnvFiles(files);
+    if (raw && remote) return this.addRemote(raw, remote, options.integration, files);
     if (options.integration === 'pullRequest') throw new KiteError('没有远程的项目只能直接合入');
     return this.addLocal(folderName(folder!), (dest) => importFolder(folder!, dest), files);
   }
@@ -118,9 +122,7 @@ export class CheckoutManagement {
     }
   }
 
-  private async addRemote(raw: string, integration: Integration | undefined, files: Array<{ path: string; value: string }>): Promise<RegisteredProject> {
-    const remote = normalizeRemote(raw);
-    if (!remote) throw new KiteError('远程地址格式无法识别');
+  private async addRemote(raw: string, remote: string, integration: Integration | undefined, files: Array<{ path: string; value: string }>): Promise<RegisteredProject> {
     const known = this.projects.registry.byRemote(remote);
     if (known) {
       await this.projects.saveEnvFiles(known.id, files);
@@ -170,14 +172,13 @@ export class CheckoutManagement {
 
   /**
    * 按项目登记表更新本机项目：并入了别的项目的，把本机检出改挂过去；名称或远程变了的跟上，设了远程后把各检出的 origin 改到新地址。
-   * fetch 时再拉取各检出的主线（见 refresh）。返回有没有项目并入别的项目。
+   * 给了 refreshed 时再拉取各检出的主线（见 refresh），每个检出拉完就把主线引用交给它，不等别的检出。返回有没有项目并入别的项目。
    */
-  async syncProjects(fetch = true): Promise<boolean> {
+  async syncProjects(refreshed?: (checkout: Checkout, mains: string[]) => Promise<void>): Promise<boolean> {
     const { registry } = this.projects;
     let merged = false;
     // 拉取要访问网络，放到登记锁外做，网络慢时不挡住本机登记。
-    const local: Checkout[] = [];
-    const remote: Checkout[] = [];
+    const checkouts: Checkout[] = [];
     await this.serial('register', async () => {
       for (let project of this.store.projects()) {
         const id = registry.canonical(project.id);
@@ -194,9 +195,8 @@ export class CheckoutManagement {
         }
         for (const checkout of this.store.checkouts(project.id)) {
           if (!existsSync(checkout.path)) continue;
-          if (!latest.remote) { local.push(checkout); continue; }
-          remote.push(checkout);
-          if (checkout.remote === latest.remote) continue;
+          checkouts.push(checkout);
+          if (!latest.remote || checkout.remote === latest.remote) continue;
           try {
             const origin = await originURL(checkout.path);
             if (!origin) await git(checkout.path, ['remote', 'add', 'origin', latest.url!]);
@@ -210,38 +210,37 @@ export class CheckoutManagement {
         }
       }
     });
-    if (fetch) await Promise.all([...local, ...remote].map((checkout) => this.serial(`checkout:${checkout.id}`, async () => {
-      const { offline } = await this.refresh(checkout);
-      if (offline) console.warn(`[项目同步] ${offline}`);
-    })));
+    if (refreshed) await Promise.all(checkouts.map(async (checkout) => {
+      try {
+        const { mains, offline } = await this.serial(`checkout:${checkout.id}`, () => this.refresh(checkout));
+        if (offline) console.warn(`[项目同步] ${offline}`);
+        await refreshed(checkout, mains);
+      } catch (error) { console.warn(`[项目同步] ${checkout.path}：${(error as Error).message}`); }
+    }));
     return merged;
   }
 
   /**
    * 拉取最新的主线，调用方持有检出的串行锁：有远程的从远程拉，本机主线落后就快进；没有远程的从有它检出的其他工作机拉，同样只做快进，
-   * 两边都有新提交时留给用户集成。拉不到时照用本机主线。返回远程主线的跟踪引用（按最近一次拉取），拉取成功时另带访问方式，失败时带原因。
+   * 两边都有新提交时留给用户集成。拉不到时照用本机主线。返回主线的引用（见 mainRefs），拉取成功时另带访问方式，失败时带原因。
    */
-  async refresh(checkout: Checkout): Promise<{ upstream: string | null; access?: RemoteAccess; offline?: string }> {
+  async refresh(checkout: Checkout): Promise<{ mains: string[]; access?: RemoteAccess; offline?: string }> {
     if (!this.store.project(checkout.projectId)?.remote) {
-      await this.syncPeers(checkout, true);
-      return { upstream: null };
+      await this.syncPeers(checkout);
+      return { mains: await mainRefs(checkout) };
     }
     try {
       const access = await originAccess(checkout.path, this.projects.git);
-      return { upstream: await fetchMainline(checkout, access), access };
-    } catch (error) { return { upstream: await upstreamOf(checkout).catch(() => null), offline: (error as Error).message }; }
+      return { mains: await fetchMainline(checkout, access), access };
+    } catch (error) { return { mains: await mainRefs(checkout).catch(() => []), offline: (error as Error).message }; }
   }
 
-  /**
-   * 没有远程的项目：从有它检出的其他工作机拉取，能快进就快进本机主线。连不上的跳过，下一轮再试。
-   * 调用方已持有这个检出的串行锁时传 locked（例如采纳），否则在锁里做。
-   */
-  async syncPeers(checkout: Checkout, locked = false): Promise<void> {
+  /** 没有远程的项目：从有它检出的其他工作机拉取，能快进就快进本机主线，调用方持有检出的串行锁。连不上的跳过，下一轮再试。 */
+  private async syncPeers(checkout: Checkout): Promise<void> {
     const { route, peers } = this.projects.peers(checkout.projectId);
     for (const peer of peers) {
       try {
-        const sync = () => syncPeer(checkout.path, peer, checkout.projectId, route);
-        const result = await (locked ? sync() : this.serial(`checkout:${checkout.id}`, sync));
+        const result = await syncPeer(checkout.path, peer, checkout.projectId, route);
         if (result === 'forwarded') this.bus.emit({ type: 'checkout.changed', projectId: checkout.projectId, checkoutId: checkout.id });
         if (result === 'diverged') console.warn(`[项目同步] ${checkout.path} 与 ${peer.id} 的主线分叉了，要在工作区里集成`);
       } catch (error) { console.warn(`[项目同步] ${(error as Error).message}`); }

@@ -161,21 +161,21 @@ export class ProjectRegistry {
 
   /** 手动设集成方式后不再带自动选择的理由；没有远程的项目只能直接合入。 */
   setSettings(id: string, raw: unknown): RegisteredProject {
-    const parsed = settings.safeParse(raw);
-    if (!parsed.success) throw new KiteError(`项目设置要写 integration（${INTEGRATIONS.join('、')}）、autoHandover 或 handoverNeeds（${HANDOVER_NEEDS.join('、')}）`);
-    const project = this.require(id);
-    if (parsed.data.integration === 'pullRequest' && !project.remote) throw new KiteError('没有远程的项目只能直接合入');
-    const next: RegisteredProject = { ...project, ...parsed.data };
-    if (parsed.data.integration !== undefined) delete next.integrationReason;
-    this.save(next);
-    return next;
+    return this.change(id, settings, raw, `项目设置要写 integration（${INTEGRATIONS.join('、')}）、autoHandover 或 handoverNeeds（${HANDOVER_NEEDS.join('、')}）`,
+      (next, data) => {
+        if (data.integration === 'pullRequest' && !next.remote) throw new KiteError('没有远程的项目只能直接合入');
+        if (data.integration !== undefined) delete next.integrationReason;
+      });
   }
 
-  private change<T extends object>(id: string, schema: z.ZodType<T>, raw: unknown, message: string): RegisteredProject {
+  /** 合并 raw 里的改动后保存；adjust 可以再校验或调整合并结果。 */
+  private change<T extends object>(id: string, schema: z.ZodType<T>, raw: unknown, message: string,
+    adjust?: (next: RegisteredProject, data: T) => void): RegisteredProject {
     const project = this.require(id);
     const parsed = schema.safeParse(raw);
     if (!parsed.success) throw new KiteError(message);
-    const next = { ...project, ...parsed.data };
+    const next: RegisteredProject = { ...project, ...parsed.data };
+    adjust?.(next, parsed.data);
     this.save(next);
     return next;
   }

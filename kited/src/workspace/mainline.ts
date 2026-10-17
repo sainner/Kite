@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KiteError } from '../errors.ts';
-import { commitAll, commitIdentity, commitOnto, git, gitTry, isAncestor, isDirty, revParse, unmergedPaths } from './git.ts';
+import { commitAll, commitIdentity, commitOnto, fastForward, git, gitTry, isAncestor, isDirty, revParse, unmergedPaths } from './git.ts';
 import { currentBranch, fetchBranch, tracking, type RemoteAccess } from './remote.ts';
 import type { Checkout } from '../model.ts';
 
@@ -25,27 +25,24 @@ export async function mainline(p: Pick<Checkout, 'path'>): Promise<string> {
 
 /**
  * 拉取远程主线到 origin 的跟踪引用，本机主线落后就快进；本机有没推上去的提交（上次推送失败）时不动，集成时一并合并。
- * 返回远程主线的跟踪引用名，远程还没有这个分支时为 null。
+ * 返回拉取后的主线引用（同 mainRefs），远程还没有这个分支时只有本机主线。
  */
-export async function fetchMainline(p: Pick<Checkout, 'path'>, access: RemoteAccess): Promise<string | null> {
+export async function fetchMainline(p: Pick<Checkout, 'path'>, access: RemoteAccess): Promise<string[]> {
   const branch = await mainBranch(p);
   const upstream = await fetchBranch(p.path, branch, access);
-  if (!upstream) return null;
-  const local = await revParse(p.path, `refs/heads/${branch}`);
-  if (!local || await isAncestor(p.path, local, upstream)) await git(p.path, ['update-ref', `refs/heads/${branch}`, upstream, local ?? '']);
-  return tracking(branch);
+  if (!upstream) return [`refs/heads/${branch}`];
+  await fastForward(p.path, branch, upstream);
+  return [`refs/heads/${branch}`, tracking(branch)];
 }
 
-/** 远程主线的跟踪引用，按最近一次拉取；没有远程或还没拉取过时为 null。 */
-export async function upstreamOf(p: Pick<Checkout, 'path'>, branch?: string): Promise<string | null> {
-  const ref = tracking(branch ?? await mainBranch(p));
-  return await revParse(p.path, ref) ? ref : null;
-}
-
-/** 主线的几个引用：本机主线，以及拉取过时的远程主线；同步与落后计数都对着它们。 */
+/**
+ * 主线的几个引用：本机主线，以及拉取过时的远程主线（按最近一次拉取）；集成、同步与落后计数都对着它们。
+ * 用引用名而不是提交号，合并提交的说明里写的是分支。
+ */
 export async function mainRefs(p: Pick<Checkout, 'path'>): Promise<string[]> {
   const branch = await mainBranch(p);
-  return [`refs/heads/${branch}`, await upstreamOf(p, branch)].filter((ref): ref is string => !!ref);
+  const upstream = tracking(branch);
+  return [`refs/heads/${branch}`, ...(await revParse(p.path, upstream) ? [upstream] : [])];
 }
 
 export type Integration =
@@ -88,16 +85,13 @@ export async function mergeMainline(worktree: string, message: string, mains: Ar
 
 /** 直接合入：本机主线快进到已合好主线的工作区提交。 */
 export async function advanceMainline(p: Pick<Checkout, 'path'>, commit: string): Promise<void> {
-  const branch = await mainBranch(p);
-  const tip = await revParse(p.path, `refs/heads/${branch}`);
-  if (tip && !(await isAncestor(p.path, tip, commit))) throw new KiteError('主线刚有新的提交，请重试', 409);
-  await git(p.path, ['update-ref', `refs/heads/${branch}`, commit, tip ?? '']);
+  if (await fastForward(p.path, await mainBranch(p), commit) === 'diverged') throw new KiteError('主线刚有新的提交，请重试', 409);
 }
 
-/** 主线（mainRefs）比工作区分支多出的提交数；工作树不在时为 null。同一检出的几个工作区一起算时由调用方先取好 mains。 */
-export async function behindCount(p: Pick<Checkout, 'path'>, worktree: string, mains?: string[]): Promise<number | null> {
-  if (!existsSync(worktree)) return null;
-  const r = await gitTry(worktree, ['rev-list', '--count', ...(mains ?? await mainRefs(p)), '^HEAD']);
+/** 主线（mains，见 mainRefs）比工作区分支多出的提交数；工作树不在或不知道主线时为 null。 */
+export async function behindCount(worktree: string, mains: string[]): Promise<number | null> {
+  if (!mains.length || !existsSync(worktree)) return null;
+  const r = await gitTry(worktree, ['rev-list', '--count', ...mains, '^HEAD']);
   return r.code === 0 ? Number(r.stdout.trim()) : null;
 }
 

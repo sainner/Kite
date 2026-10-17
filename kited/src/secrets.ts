@@ -1,5 +1,6 @@
 /** 模型只传引用，作用域由宿主绑定；明文只在工作机的账号级数据与执行宿主之间流转。 */
 import { z } from 'zod';
+import { KiteError } from './errors.ts';
 
 export const secretName = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/);
 export const secretReference = z.string().regex(/^\{(account|project)\.[a-zA-Z][a-zA-Z0-9_-]{0,63}\}$/);
@@ -11,6 +12,16 @@ export type SecretValue = z.infer<typeof secretValue>;
 /** 项目专用的文件密钥在工作区里的路径：相对路径，不含 . 与 ..，不在 .git 里。 */
 export const secretPath = z.string().min(1).max(512).refine((path) => !path.startsWith('/') && !/[\\\0\n\r]/.test(path)
   && path.split('/').every((part) => part && part !== '.' && part !== '..' && part !== '.git'), '路径要写工作区里的相对路径，不含 . 与 ..，不在 .git 里');
+/** 要存成项目密钥的环境变量文件：路径与内容合规，路径不重复；在登记项目之前检查。 */
+export function checkEnvFiles(files: Array<{ path: string; value: string }>): void {
+  const paths = new Set<string>();
+  for (const { path, value } of files) {
+    if (!secretPath.safeParse(path).success) throw new KiteError(`环境变量文件的路径无效：${path}`);
+    if (!secretValue.shape.value.safeParse(value).success) throw new KiteError(`环境变量文件 ${path} 是空的、太大（超过 65536 字）或不是文本`);
+    if (paths.has(path)) throw new KiteError(`环境变量文件重复：${path}`);
+    paths.add(path);
+  }
+}
 export interface SecretMetadata { name: string; kind: SecretValue['kind']; path?: string; projectId: string | null; updatedAt: number }
 export interface ResolvedSecret extends SecretValue { reference: string }
 

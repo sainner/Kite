@@ -1,6 +1,7 @@
 /** Agent 的初始执行授权；宿主内部数据始终排除在模型文件和命令工具之外。 */
 import { join } from 'node:path';
 import { gitTry } from '../workspace/git.ts';
+import { applyExecutionGrants, effectiveExecution, type ExecutionChanges, type ProjectExecution } from './grants.ts';
 import { hostPrivatePaths, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
 
 export async function harnessPolicy(options: {
@@ -21,9 +22,14 @@ export async function harnessPolicy(options: {
     denyWrite: [...protectedPaths, join(options.cwd, '.git'), ...(metadata.code === 0 ? [metadata.stdout.trim()] : [])] };
 }
 
-/** 宿主写进工作区的密钥文件（paths 是工作区里的相对路径）对代理只读：沙箱不许写，patch 拒绝并提示改用密钥请求。 */
-export function protectSecretFiles(policy: ExecutionPolicy, cwd: string, paths: string[]): ExecutionPolicy {
-  if (!paths.length) return policy;
-  const files = paths.map((path) => join(cwd, path));
+/**
+ * 代理的执行策略：基础策略（harnessPolicy）加上实例与项目合成的执行授权。宿主写进工作区的密钥文件（secretFiles 是工作区里的相对路径）
+ * 对代理只读：沙箱不许写，patch 拒绝并提示改用密钥请求。
+ */
+export function agentPolicy(base: ExecutionPolicy, cwd: string, changes: ExecutionChanges, project: ProjectExecution | undefined,
+  secretFiles: string[]): ExecutionPolicy {
+  const policy = applyExecutionGrants(base, cwd, effectiveExecution(changes, project));
+  if (!secretFiles.length) return policy;
+  const files = secretFiles.map((path) => join(cwd, path));
   return { ...policy, denyWrite: [...policy.denyWrite ?? [], ...files], secretFiles: files };
 }

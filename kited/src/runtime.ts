@@ -15,8 +15,8 @@ import type { ShellBackground, ShellOutside } from './execution/local-tools.ts';
 import { readSubscriptionCredentials } from './harness/auth.ts';
 import { CHATGPT_CONTEXT_WINDOW, ChatGPTModel } from './harness/chatgpt.ts';
 import { openThreadHost } from './harness/thread-host.ts';
-import { harnessPolicy, protectSecretFiles } from './execution/policy.ts';
-import { applyExecutionGrants, effectiveExecution, executionRevision, instanceExecutionChanges, type ProjectExecution } from './execution/grants.ts';
+import { agentPolicy, harnessPolicy } from './execution/policy.ts';
+import { effectiveExecution, executionRevision, instanceExecutionChanges, type ProjectExecution } from './execution/grants.ts';
 import { projectContext } from './harness/context/project.ts';
 import { threadVariables } from './context-variables.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
@@ -130,8 +130,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   const { id, nativeId, title, runtime, project: { id: projectId }, workspace: { cwd, id: workspaceId } } = s;
   if (runtime !== 'claude' && runtime !== 'harness') throw new KiteError(`不支持的会话后端：${runtime}`, 409);
   const basePolicy = await harnessPolicy({ cwd, env: process.env, home, repository: host.repository });
-  const policy = () => protectSecretFiles(applyExecutionGrants(basePolicy, cwd,
-    effectiveExecution(instanceExecutionChanges(host.current()), host.executionConstraint())), cwd, host.secretFiles());
+  const policy = () => agentPolicy(basePolicy, cwd, instanceExecutionChanges(host.current()), host.executionConstraint(), host.secretFiles());
   const credentials = host.credentials;
   const secrets = credentials ? {
     list: async () => credentials.available(projectId),

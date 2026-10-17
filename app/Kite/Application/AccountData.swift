@@ -69,9 +69,12 @@ extension AppModel {
         return connection.client
     }
 
-    /// 改集成方式：直接合入（merge）或提交 PR（pullRequest）。
-    func setProjectIntegration(_ projectID: String, integration: String) async throws -> AccountProject {
-        try await updateProject(dataWorker(), "/project-registry/\(projectID)/settings", method: "PUT", body: ["integration": integration])
+    /// 改项目设置，只改给了的那几项：集成方式是直接合入（merge）或提交 PR（pullRequest），另有自动换机与换机的环境需求。
+    func setProjectSettings(_ projectID: String, integration: String? = nil, autoHandover: Bool? = nil,
+                            handoverNeeds: [String]? = nil) async throws -> AccountProject {
+        struct Settings: Encodable { let integration: String?; let autoHandover: Bool?; let handoverNeeds: [String]? }
+        return try await updateProject(dataWorker(), "/project-registry/\(projectID)/settings", method: "PUT",
+                                       body: Settings(integration: integration, autoHandover: autoHandover, handoverNeeds: handoverNeeds))
     }
 
     /// 给没有远程的项目设远程：一台有检出的工作机把全部分支和标签推上去，再写进登记表，各检出随后改用它。大仓库要推很久。
@@ -87,13 +90,6 @@ extension AppModel {
         if selectedProjectID == projectID { selectedProjectID = nil }
         try await refresh(client)
         _ = await refreshDirectory()
-    }
-
-    /// 只改给了的那一项。
-    func setProjectHandover(_ projectID: String, enabled: Bool? = nil, needs: [String]? = nil) async throws -> AccountProject {
-        struct Settings: Encodable { let autoHandover: Bool?; let handoverNeeds: [String]? }
-        return try await updateProject(dataWorker(), "/project-registry/\(projectID)/settings", method: "PUT",
-                                       body: Settings(autoHandover: enabled, handoverNeeds: needs))
     }
 
     func setProjectAppearance(_ values: [String: String], projectID: String) async throws {

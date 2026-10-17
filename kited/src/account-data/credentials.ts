@@ -153,13 +153,13 @@ export class Credentials {
 
   /** 项目里设在 path 的文件密钥的内容；没有时为 undefined。 */
   async fileSecret(projectId: string, path: string): Promise<string | undefined> {
-    const found = this.list('secret', projectId).find((entry) => entry.meta.path === path);
+    const found = this.byPath(projectId, path);
     return found && ((await this.secret(found.id))?.value ?? '');
   }
 
   /** 存一条设了路径的项目密钥：项目里已有设在这个路径的就换内容，没有就新建，名称按路径起。 */
   async saveFileSecret(projectId: string, path: string, value: string): Promise<Credential> {
-    const found = this.list('secret', projectId).find((entry) => entry.meta.path === path);
+    const found = this.byPath(projectId, path);
     if (found) return this.update(found.id, { secret: { value } });
     return this.create({ type: 'secret', name: this.nameFor(projectId, path), projectId, meta: { kind: 'file', path }, secret: { value } });
   }
@@ -231,11 +231,16 @@ export class Credentials {
     return found && (await this.data.unseal('credential', found.body)).secret as Record<string, string | undefined> | undefined;
   }
 
+  /** 项目里设在 path 的文件密钥；except 是不算在内的那一条。 */
+  private byPath(projectId: string, path: unknown, except?: string): Credential | undefined {
+    return this.list('secret', projectId).find((entry) => entry.meta.path === path && entry.id !== except);
+  }
+
   /** 路径只用于项目专用的文件密钥，同一项目里不能重复。 */
   private assertPath(meta: Record<string, unknown>, projectId: string | null, self?: string): void {
     if (meta.path === undefined) return;
     if (!projectId || meta.kind !== 'file') throw new KiteError('只有项目专用的文件密钥可以设路径', 400);
-    const clash = this.list('secret', projectId).find((entry) => entry.meta.path === meta.path && entry.id !== self);
+    const clash = this.byPath(projectId, meta.path, self);
     if (clash) throw new KiteError(`项目里已有设在 ${meta.path as string} 的密钥：${clash.name}`, 409);
   }
 

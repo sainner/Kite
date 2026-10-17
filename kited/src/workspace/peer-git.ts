@@ -5,7 +5,7 @@
  */
 import { basename, dirname } from 'node:path';
 import { gitConfigEnv } from '../git-credential.ts';
-import { git, gitTry, isAncestor, revParse } from './git.ts';
+import { fastForward, git, gitTry, revParse } from './git.ts';
 import type { Peer } from '../peer-fetch.ts';
 import { currentBranch, fetchRef, gitFailure, type RemoteAccess } from './remote.ts';
 
@@ -45,11 +45,7 @@ export async function syncPeer(cwd: string, peer: Peer, projectId: string, route
   const branch = await currentBranch(cwd);
   const theirs = branch && await revParse(cwd, `${prefix}${branch}`);
   if (!branch || !theirs) return 'absent';
-  const ours = await revParse(cwd, `refs/heads/${branch}`);
-  if (ours && await isAncestor(cwd, theirs, ours)) return 'current';
-  if (ours && !(await isAncestor(cwd, ours, theirs))) return 'diverged';
-  await git(cwd, ['update-ref', `refs/heads/${branch}`, theirs, ours ?? '']);
-  return 'forwarded';
+  return fastForward(cwd, branch, theirs);
 }
 
 /** 从对端的检出取几条 ref（refspec 写法），对端没有的跳过；一次取几条时缺一条整次失败，所以逐条取。 */
