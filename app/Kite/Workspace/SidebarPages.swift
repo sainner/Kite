@@ -109,8 +109,7 @@ private struct AgentContextSection: View {
                                         .frame(maxWidth: .infinity, minHeight: metrics.workspaceRowHeight)
                                         .contentShape(Rectangle())
                                     }
-                                    .buttonStyle(.plain)
-                                    .clickPointer()
+                                    .buttonStyle(.pointingPlain)
                                 }
                             }
                         }
@@ -273,8 +272,7 @@ private struct DeviceSidebar: View {
                         .frame(maxWidth: .infinity, minHeight: metrics.workspaceRowHeight)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .clickPointer()
+                    .buttonStyle(.pointingPlain)
                     if page == .accounts {
                         refreshAccounts(connection, foreground: selected ? .accentColor : .primary)
                             .modifier(SidebarRevealedControl(pinned: connection.readingModelAccounts))

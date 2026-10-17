@@ -268,7 +268,7 @@ struct KeySheet<Provider: KeyProvider>: View {
                 } label: {
                     Text(provider.title)
                 }
-                .menuStyle(.button).buttonStyle(CardSelectStyle()).menuIndicator(.hidden).clickPointer()
+                .menuStyle(.button).buttonStyle(CardSelectStyle()).menuIndicator(.hidden)
             }
             CardField(label: "名称", focused: focus == .name, note: "用来区分同一供应商的多把 Key，留空时使用供应商名。") {
                 TextField(provider.title, text: $name)

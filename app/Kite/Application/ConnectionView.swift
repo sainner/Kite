@@ -163,7 +163,7 @@ struct NewWorkspace: View {
             } label: {
                 selection(model.availableWorkers.first { $0.id == machineID }?.machine.name, placeholder: "选择工作机")
             }
-            .menuStyle(.button).buttonStyle(CardSelectStyle()).menuIndicator(.hidden).clickPointer()
+            .menuStyle(.button).buttonStyle(CardSelectStyle()).menuIndicator(.hidden)
         }
         // 来源切换做成地址框左侧的图标，和地址同一行
         switch source {
@@ -210,7 +210,7 @@ struct NewWorkspace: View {
             } label: {
                 selection(model.checkouts.first { $0.id == checkoutID }.map(checkoutTitle), placeholder: "选择工作目录")
             }
-            .menuStyle(.button).buttonStyle(CardSelectStyle()).menuIndicator(.hidden).clickPointer()
+            .menuStyle(.button).buttonStyle(CardSelectStyle()).menuIndicator(.hidden)
         }
         CardField(label: "要做什么", focused: focus == .prompt) {
             TextField("说说要做什么", text: $prompt, axis: .vertical).lineLimit(3...8)

@@ -1,6 +1,6 @@
 /**
  * Kite 仓库的检查命令，由 .kite/check 调用，契约见 kite-onboard skill（.claude/skills/kite-onboard/SKILL.md）。
- * 先同时做类型检查和 lint（App 有改动时加上 App 的编译，App 或工作机有改动时加上解码合同），再跑受影响的测试（--all 跑全量），最后按测试规则的预算核对耗时。
+ * 先同时做类型检查和 lint（App 有改动时加上 App 的编译和按钮光标的检查，App 或工作机有改动时加上解码合同），再跑受影响的测试（--all 跑全量），最后按测试规则的预算核对耗时。
  * 受影响的测试从 KITE_BASE 起算改动，没有这个变量就看还没提交的改动；依赖或配置变了跑全量。
  * 输出只报结论、失败项和超预算项。完整日志写进 KITE_LOG_DIR（Kite 的 check 工具给的目录）；手动跑时没有这个变量，
  * 每次建一个新的临时目录，通过就删掉，没通过就留着并给出路径。
@@ -111,8 +111,27 @@ if (app && app.code !== 0) {
 for (const contract of contracts) {
   if (contract.code !== 0) early.push(`App 解码合同 ${contract.name} 没通过：`, ...tail(contract.out));
 }
+// 按钮的手形光标：调用处给按钮指定样式会盖掉 appAppearance 里默认带手形的样式，见 app/Kite/UI/ControlPointer.swift。
+// 系统样式要用 pointing 版本；自定义样式到同一缩进的右括号为止，要有 clickPointer，或交给另一个样式的 makeBody
+if (buildApp) {
+  const found: string[] = [];
+  for (const path of new Bun.Glob('Kite/**/*.swift').scanSync({ cwd: APP })) {
+    const lines = readFileSync(join(APP, path), 'utf8').split('\n');
+    lines.forEach((line, i) => {
+      const system = /\.buttonStyle\(\.(plain|glass|glassProminent|borderless|bordered|borderedProminent|automatic|link)\)/.exec(line);
+      if (system) found.push(`app/${path}:${i + 1} .${system[1]} 没有手形，改用 .pointing 开头的版本`);
+      const style = /^(\s*)(?:\w+\s+)*struct (\w+)(?:<[^>]*>)?\s*:\s*(?:PrimitiveButtonStyle|ButtonStyle|ToggleStyle)\b/.exec(line);
+      if (!style) return;
+      const end = lines.findIndex((l, j) => j > i && l === `${style[1]}}`);
+      if (!/clickPointer\(\)|\.makeBody\(configuration:/.test(lines.slice(i, end < 0 ? undefined : end).join('\n'))) {
+        found.push(`app/${path}:${i + 1} ${style[2]} 没有手形，在 makeBody 里加 clickPointer()`);
+      }
+    });
+  }
+  if (found.length) early.push(`按钮光标没通过，${found.length} 处：`, ...head(found));
+}
 if (early.length) fail(early);
-const stages = ['类型检查', 'lint', ...(app ? ['App 编译'] : []), ...(contracts.length ? ['解码合同'] : [])].join('、');
+const stages = ['类型检查', 'lint', ...(app ? ['App 编译', '按钮光标'] : []), ...(contracts.length ? ['解码合同'] : [])].join('、');
 const passed = `${stages}${/[a-z]$/i.test(stages) ? ' ' : ''}通过`;
 
 // 3. 两层同时跑：小测试按文件分给两个独立进程，中测试在另一个进程内串行。

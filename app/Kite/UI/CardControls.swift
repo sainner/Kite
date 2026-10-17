@@ -169,6 +169,7 @@ private struct CardToggleStyle: ToggleStyle {
                 }
                 Toggle("", isOn: configuration.$isOn).labelsHidden().toggleStyle(.switch)
                     .controlSize(InputMode.current.toggleControlSize)
+                    .clickPointer()
             }
         }
     }
@@ -189,7 +190,7 @@ private struct CardDisclosureStyle: DisclosureGroupStyle {
                 .frame(minHeight: CardMetrics.fieldHeight - 12)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pointingPlain)
             if configuration.isExpanded {
                 Group(subviews: configuration.content) { rows in
                     ForEach(rows) { row in
@@ -219,6 +220,7 @@ private struct CardRowButtonStyle: ButtonStyle {
                 .frame(maxWidth: .infinity, minHeight: CardMetrics.fieldHeight - 12, alignment: .leading)
                 .contentShape(Rectangle())
                 .opacity(enabled ? (configuration.isPressed ? 0.6 : 1) : 0.4)
+                .clickPointer()
         }
     }
 }
@@ -278,6 +280,7 @@ struct CardSelectStyle: ButtonStyle {
         .frame(minHeight: CardMetrics.fieldHeight)
         .contentShape(Rectangle())
         .opacity(configuration.isPressed ? 0.6 : 1)
+        .clickPointer()
     }
 }
 

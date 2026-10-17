@@ -216,7 +216,7 @@ struct CompactTabBar: View {
                             .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
                             .background { if current { DockSelection(cornerRadius: Metrics.dockRadius) } }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pointingPlain)
                     .accessibilityLabel("展开\(appearance.name)窗口")
                 }
             }

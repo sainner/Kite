@@ -99,7 +99,7 @@ struct Onboarding: View {
             .overlay(alignment: .topTrailing) {
                 if previewing {
                     Button("重新开始", systemImage: "arrow.counterclockwise", action: restartPreview)
-                        .buttonStyle(.glass)
+                        .buttonStyle(.pointingGlass)
                         .padding(Metrics.padding * 2)
                 }
             }

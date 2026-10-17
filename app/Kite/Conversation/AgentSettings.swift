@@ -216,7 +216,7 @@ struct ToolModePicker: View {
                 Text("默认可用").tag("deny")
                 Text("默认不可用").tag("allow")
             }
-            .labelsHidden().pickerStyle(.segmented).fixedSize()
+            .labelsHidden().pickerStyle(.segmented).fixedSize().clickPointer()
         }
     }
 }
@@ -239,13 +239,13 @@ struct AgentModelFields: View {
                     }
                 }
             }
-            .labelsHidden().fixedSize()
+            .labelsHidden().fixedSize().clickPointer()
         }
         // 目录还没读到时照常显示，只是不能选
         if models.isEmpty || models.contains(where: { !$0.reasoning.isEmpty }) {
             LabeledContent("思考强度") {
                 ReasoningPicker(reasoning: $configuration.reasoning, levels: levels)
-                    .labelsHidden().fixedSize()
+                    .labelsHidden().fixedSize().clickPointer()
                     .disabled(levels.isEmpty)
             }
         }

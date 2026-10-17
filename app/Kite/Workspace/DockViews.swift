@@ -701,7 +701,7 @@ struct CompactDockBar: View {
             DockEntryFace(subject: .pane(pane))
                 .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointingPlain)
         .accessibilityLabel(area.dockLabel(.pane(pane)))
         .contextMenuOutline(DockOutline.face(agent: agent))
         .contextMenu { DockEntryMenu(entry: .pane(pane)) }

@@ -164,8 +164,7 @@ struct SidebarUserBar: View {
                                 Text(error)
                             }
                         }
-                        .buttonStyle(.plain)
-                        .clickPointer()
+                        .buttonStyle(.pointingPlain)
                         .help(error)
                         .accessibilityLabel(error)
                         .accessibilityHint("打开 Kite 账号设置")
@@ -177,8 +176,7 @@ struct SidebarUserBar: View {
                                 Text(notice.title)
                             }
                         }
-                        .buttonStyle(.plain)
-                        .clickPointer()
+                        .buttonStyle(.pointingPlain)
                         .help(notice.title)
                         .accessibilityLabel(notice.title)
                         .accessibilityHint("打开工作机的版本页")
@@ -371,7 +369,7 @@ private struct LineEntry: View {
             .background(selected ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pointingPlain)
         .padding(.leading, -6)
         .help(model.lineArea == nil ? "启用个人 agent Line" : "Line 的工作区：收件箱与 Line 的对话")
         // Line 的工作区不列在项目一栏，流转与强制接管从这里的菜单进。

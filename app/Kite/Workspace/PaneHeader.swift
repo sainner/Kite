@@ -138,8 +138,7 @@ struct PaneHeaderStatus: View {
                 }
                 .contentShape(.circle)
             }
-            .buttonStyle(.plain)
-            .clickPointer()
+            .buttonStyle(.pointingPlain)
             .accessibilityHint("打开侧边栏")
             .reportsHeaderInteraction()
             .modifier(PaneStatusTextPopover(text: statusText, presented: $showsStatusText))

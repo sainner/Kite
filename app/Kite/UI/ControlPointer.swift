@@ -105,7 +105,8 @@ private struct ReferencePointer: ViewModifier {
 }
 #endif
 
-/// 沿用系统按钮的外观和按压行为，只统一光标反馈。
+/// 沿用系统按钮的外观和按压行为，只统一光标反馈。调用处给按钮指定样式会盖掉 appAppearance 里默认带手形的样式，
+/// 所以系统样式一律用这里的 pointing 版本，自定义样式在 makeBody 里加 clickPointer；.kite/check 会查。
 struct PointerButtonStyle<Base: PrimitiveButtonStyle>: PrimitiveButtonStyle {
     let base: Base
 
@@ -120,4 +121,16 @@ extension PrimitiveButtonStyle where Self == PointerButtonStyle<PlainButtonStyle
 
 extension PrimitiveButtonStyle where Self == PointerButtonStyle<DefaultButtonStyle> {
     static var pointingAutomatic: Self { Self(base: DefaultButtonStyle()) }
+}
+
+extension PrimitiveButtonStyle where Self == PointerButtonStyle<BorderlessButtonStyle> {
+    static var pointingBorderless: Self { Self(base: BorderlessButtonStyle()) }
+}
+
+extension PrimitiveButtonStyle where Self == PointerButtonStyle<GlassButtonStyle> {
+    static var pointingGlass: Self { Self(base: GlassButtonStyle()) }
+}
+
+extension PrimitiveButtonStyle where Self == PointerButtonStyle<GlassProminentButtonStyle> {
+    static var pointingGlassProminent: Self { Self(base: GlassProminentButtonStyle()) }
 }

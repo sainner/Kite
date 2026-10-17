@@ -584,7 +584,7 @@ private struct EmblemChoiceStyle: ButtonStyle {
         @Environment(\.isEnabled) private var enabled
 
         var body: some View {
-            configuration.label.opacity(enabled ? (configuration.isPressed ? 0.6 : 1) : 0.4)
+            configuration.label.opacity(enabled ? (configuration.isPressed ? 0.6 : 1) : 0.4).clickPointer()
         }
     }
 }

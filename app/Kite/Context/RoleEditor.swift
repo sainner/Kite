@@ -28,13 +28,13 @@ struct RoleSettingsForm: View {
                     Text("读写").tag(WorkspaceAccess.write)
                     Text("只读").tag(WorkspaceAccess.read)
                 }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
             }
             LabeledContent("默认审批模式") {
                 Picker("默认审批模式", selection: Binding(get: { role.approval ?? .allowlist }, set: { role.approval = $0 == .allowlist ? nil : $0 })) {
                     ForEach(ApprovalMode.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
             }
         }
         scopeField("额外只读路径", "每行一个，例如 ~/.cargo", .read, field: .read)

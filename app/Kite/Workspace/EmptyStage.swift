@@ -134,9 +134,9 @@ struct EmptyStage: View {
                 ForEach(actions) { action in
                     let button = Button(action.title, action: action.action).disabled(!action.enabled)
                     if action.prominent {
-                        button.buttonStyle(.glassProminent)
+                        button.buttonStyle(.pointingGlassProminent)
                     } else {
-                        button.buttonStyle(.glass)
+                        button.buttonStyle(.pointingGlass)
                     }
                 }
             }

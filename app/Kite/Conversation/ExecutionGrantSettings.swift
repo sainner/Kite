@@ -52,7 +52,7 @@ struct ExecutionGrantSettings: View {
                             Picker("审批模式", selection: Binding(get: { approval.mode }, set: { mode in perform { try await setApproval(mode) } })) {
                                 ForEach(ApprovalMode.allCases, id: \.self) { Text($0.title).tag($0) }
                             }
-                            .pickerStyle(.segmented).labelsHidden().fixedSize()
+                            .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
                         }
                     }
                 }
@@ -67,7 +67,7 @@ struct ExecutionGrantSettings: View {
                                 Text("只读").tag(WorkspaceAccess.read)
                                 Text("读写").tag(WorkspaceAccess.write)
                             }
-                            .pickerStyle(.segmented).labelsHidden().fixedSize()
+                            .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
                             .disabled(draft.project.workspace == .read)
                         }
                     }

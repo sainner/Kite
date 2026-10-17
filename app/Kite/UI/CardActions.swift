@@ -102,7 +102,7 @@ struct CardActions: View {
                     Button { Task { dismissKeyboard() } } label: {
                         Image(systemName: KeyboardDismissButton.icon).accessibilityLabel("收起键盘")
                     }
-                    .buttonStyle(.glass)
+                    .buttonStyle(.pointingGlass)
                     .buttonBorderShape(.circle)
                     .glassEffectID("keyboard", in: glass)
                 }
@@ -111,7 +111,7 @@ struct CardActions: View {
                     Button(action: retry) {
                         Image(systemName: "arrow.clockwise").accessibilityLabel("重试")
                     }
-                    .buttonStyle(.glass)
+                    .buttonStyle(.pointingGlass)
                     .buttonBorderShape(.circle)
                     .help("重试")
                     .glassEffectID("retry", in: glass)
@@ -167,7 +167,7 @@ struct CardActions: View {
         .disabled(state == .idle && !enabled)
         .allowsHitTesting(state != .working && (state != .succeeded || succeededAction != nil))
         .tint(state.error != nil ? Theme.danger : nil)
-        .buttonStyle(.glassProminent)
+        .buttonStyle(.pointingGlassProminent)
     }
 
     private func copy(_ message: String) {

@@ -93,8 +93,7 @@ struct WaitingResponseCard: View {
                 .frame(height: Metrics.paneButton)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .clickPointer()
+            .buttonStyle(.pointingPlain)
             .accessibilityLabel(waiting.isQuestion ? "等你回答" : "等你批准")
             .accessibilityValue(state.collapsed ? "已收起" : "已展开")
             if let delegate, !state.collapsed {
@@ -154,8 +153,7 @@ struct WaitingResponseCard: View {
             .background(chosen ? Color.accentColor.opacity(0.12) : ComposerLayout.fieldFill, in: RoundedRectangle(cornerRadius: fillRadius, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: fillRadius, style: .continuous))
         }
-        .buttonStyle(.plain)
-        .clickPointer()
+        .buttonStyle(.pointingPlain)
         .accessibilityAddTraits(chosen ? .isSelected : [])
     }
 

@@ -104,7 +104,7 @@ struct KiteAccountSection: View {
             // 登录失效（节点要求重新登录）时就地重新登录，登录页由 AppRoot 弹出。
             if model.account.error != nil, let role = model.account.role {
                 Button("重新登录 Tailscale") { run { try await model.account.join(role: role) } }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.pointingBorderless)
             }
             Button("退出登录", role: .destructive) {
                 run {
@@ -113,7 +113,7 @@ struct KiteAccountSection: View {
                     model.sidebarSection = .workspaces
                 }
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.pointingBorderless)
             .foregroundStyle(Theme.danger)
             .disabled(!model.account.signedIn)
             if let error { Text(error).foregroundStyle(Theme.danger) }
