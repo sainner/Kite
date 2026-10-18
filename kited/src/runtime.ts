@@ -12,8 +12,7 @@ import { assembleContext, restoreContext } from './harness/context/assembler.ts'
 import { contextUpdateContext } from './harness/context/notifications.ts';
 import type { PluginInstance, ThreadContext } from './model.ts';
 import type { ShellBackground, ShellOutside } from './execution/local-tools.ts';
-import { readSubscriptionCredentials } from './harness/auth.ts';
-import { CHATGPT_CONTEXT_WINDOW, ChatGPTModel } from './harness/chatgpt.ts';
+import { harnessModel } from './harness/adapters.ts';
 import { openThreadHost } from './harness/thread-host.ts';
 import { agentPolicy, harnessPolicy } from './execution/policy.ts';
 import { effectiveExecution, executionRevision, instanceExecutionChanges, type ProjectExecution } from './execution/grants.ts';
@@ -171,10 +170,10 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       // 声明顺序取代理插件的工具目录，与实例配置一致。
       const available = [...tools, ...operations.tools];
       const declared = agentTools.flatMap((name) => available.find((tool) => tool.name === name) ?? []);
+      const { model, contextWindow } = harnessModel(agent.model, { threadId: current.nativeId, chatgptAuth: join(home, 'auth', 'chatgpt', 'auth.json'),
+        ...(credentials ? { apiKeys: () => credentials.apiKeys() } : {}), ...(host.chatgptLimits ? { observeLimits: host.chatgptLimits } : {}) });
       return {
-        model: options.model?.(current) ?? new ChatGPTModel({ ...agent.model, threadId: current.nativeId,
-          credentials: () => readSubscriptionCredentials(join(home, 'auth', 'chatgpt', 'auth.json')),
-          observeLimits: host.chatgptLimits }),
+        model: options.model?.(current) ?? model,
         tools: [...declared.filter((tool) => permitted(tool.name)), ...plugins],
         // 请求发出后项目约束收紧时，这次请求里的调用也在执行前拦下。
         blocked: (name) => (agentTools as readonly string[]).includes(name) && !constraintAllows(host.toolConstraint(), name) ? `项目约束已禁用 ${name}` : undefined,
@@ -182,7 +181,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         instructions: projectContext(agent.context, variables), variables,
         contextUpdateTemplate: host.contextUpdateTemplate(),
         compactionTemplates: host.compactionTemplates(),
-        settings: { model: agent.model, contextWindow: CHATGPT_CONTEXT_WINDOW, maxRequestsPerTurn: agent.maxRequestsPerTurn,
+        settings: { model: agent.model, contextWindow, maxRequestsPerTurn: agent.maxRequestsPerTurn,
           execution: { grants: execution, revision: executionRevision(execution) },
           agent: { definitionId: current.definitionId, revision: agentRevision(agent) },
           pluginTools: selection.sources },

@@ -5,13 +5,13 @@ import { homedir } from 'node:os';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 import { parseArgs } from 'node:util';
+import { deepseekKey, harnessModel } from './harness/adapters.ts';
 import { defaultAuthFile, readSubscriptionCredentials } from './harness/auth.ts';
-import { CHATGPT_CONTEXT_WINDOW, ChatGPTModel } from './harness/chatgpt.ts';
 import { openThreadHost, readThreadMetadata } from './harness/thread-host.ts';
 import { harnessPolicy } from './execution/policy.ts';
 import { defaultContextDefinition, directoryVariables, projectContext, today } from './harness/context/project.ts';
 import type { HarnessEvent } from './harness/types.ts';
-import { defaultAgentModel } from './agents/models.ts';
+import { defaultAgentModel, vendorOfModel } from './agents/models.ts';
 
 const USAGE = `用法：
   bun run harness --cwd <目录>                     开始对话
@@ -21,7 +21,8 @@ const USAGE = `用法：
 选项：
   --model <名称>         默认 ${defaultAgentModel}，可用 KITE_MODEL 设置
   --reasoning <强度>     默认 medium
-  --auth <文件>         ChatGPT 登录凭据，默认 $KITE_HOME/auth/chatgpt/auth.json（KITE_HOME 默认 ~/.kite）
+  --auth <文件>         ChatGPT 登录凭据，默认 $KITE_HOME/auth/chatgpt/auth.json（KITE_HOME 默认 ~/.kite）；
+                         DeepSeek 型号改读 DEEPSEEK_API_KEY
   --max-requests <次数>  每回合请求预算，默认 50
 
 对话命令：/status /stop /resume /recover /exit
@@ -47,10 +48,10 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
   const maxRequests = Number(values['max-requests'] ?? saved?.settings?.maxRequestsPerTurn ?? 50);
   if (!Number.isSafeInteger(maxRequests) || maxRequests < 1) throw new Error('--max-requests 必须为正整数');
   // 启动时尽早发现登录问题，每次请求仍重新读取，以跟上独立认证目录的更新。
-  await readSubscriptionCredentials(values.auth);
-  const model = new ChatGPTModel({ model: modelName, reasoning, threadId: basename(directory),
-    credentials: () => readSubscriptionCredentials(values.auth),
-  });
+  if (vendorOfModel(modelName).id !== 'deepseek') await readSubscriptionCredentials(values.auth);
+  else if (!await deepseekKey()) throw new Error('DeepSeek 型号需要设置 DEEPSEEK_API_KEY');
+  const { model, contextWindow } = harnessModel({ model: modelName, reasoning },
+    { threadId: basename(directory), ...(values.auth ? { chatgptAuth: values.auth } : {}) });
   let rl: Interface | undefined;
   let textOpen = false;
   let lastWasBusy = false;
@@ -70,7 +71,7 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
       if (record.type === 'model.item' && record.item.call) {
         line(`\n· ${record.item.call.name} ${JSON.stringify(record.item.call.arguments).slice(0, 200)}`);
       }
-      if (record.type === 'model.item' && !record.item.call && streamedRequestId !== record.requestId) {
+      if (record.type === 'model.item' && record.item.raw.type === 'message' && streamedRequestId !== record.requestId) {
         const content = record.item.raw.content;
         if (Array.isArray(content)) {
           for (const part of content) if (part && typeof part === 'object' && !Array.isArray(part) && typeof part.text === 'string') line(part.text);
@@ -88,7 +89,7 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
       lastWasBusy = event.state.busy;
     }
   };
-  const settings = { model: { model: modelName, reasoning }, contextWindow: CHATGPT_CONTEXT_WINDOW, maxRequestsPerTurn: maxRequests };
+  const settings = { model: { model: modelName, reasoning }, contextWindow, maxRequestsPerTurn: maxRequests };
   // 独立终端直接在指定目录工作，没有 Kite 的工作机、项目与实例，只提供目录本身取得到的变量。
   const variables = { 'environment.date': today, ...directoryVariables(cwd) };
   const host = await openThreadHost({

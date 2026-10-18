@@ -8,6 +8,7 @@
 import { createHash } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { instanceAgent } from '../agents/definition.ts';
 import { readClaudeControl } from '../claude/control.ts';
 import { claudeRecordPath } from '../handoff/claude-records.ts';
 import { readJournal } from '../harness/journal.ts';
@@ -153,7 +154,7 @@ export function replicaManifest(options: { home: string; machine: string; projec
     cwd: existsSync(workspace.cwd) ? realpathSync(workspace.cwd) : workspace.cwd,
     threads: options.threads.map((thread) => {
       const session = join(home, 'sessions', thread.id);
-      return { instanceId: thread.id, runtime: thread.runtime, nativeId: thread.nativeId,
+      return { instanceId: thread.id, nativeId: thread.nativeId, model: instanceAgent(thread).model.model,
         cursor: thread.runtime === 'claude' ? readClaudeControl(session).through : journalCursor(join(session, 'journal.jsonl')) };
     }),
     at: Date.now(),

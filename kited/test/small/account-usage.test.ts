@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { appendFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { localDate, scanChatgptUsage, scanClaudeUsage, type AccountUsage, type HourlyUsage } from '../../src/account-usage.ts';
+import { localDate, scanClaudeUsage, scanHarnessUsage, type AccountUsage, type HourlyUsage } from '../../src/account-usage.ts';
 import { readModelAccounts, type AccountReadOptions } from '../../src/model-accounts.ts';
 import { Store } from '../../src/store.ts';
 import { useTemp, writeFiles } from '../util.ts';
@@ -224,7 +224,7 @@ test('扫描 ChatGPT 本机记录时重发与恢复会话复制的事件只计�
       tokenCount(at(1, 16, 1), 4, 2034, { input: 2000, cached: 1500, output: 34 }),
     ),
   });
-  const usage = await scanChatgptUsage(kite, codex);
+  const usage = (await scanHarnessUsage(kite, codex)).get('chatgpt')!;
   // 每百万 token 的美元。gpt-6.1-sol：输入 2、缓存读 0.1、缓存写 2.5、输出 10；gpt-6-astra：输入 10、缓存读 1、缓存写 12.5、输出 50。
   // 12 时（微美元）：req_a（sol）81×2 + 4000×0.1 + 1000×2.5 + 13×10 = 3192；req_b（astra）100×10 + 20×50 = 2000；
   //   req_c（切回 sol）100×2 + 200×0.1 + 10×10 = 320。

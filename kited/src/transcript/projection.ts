@@ -240,7 +240,8 @@ export class TranscriptProjection {
             batch: row.requestId, stage: 'queued' } });
         else {
           const thinking = item.raw.type === 'reasoning';
-          const text = textParts(thinking ? item.raw.summary : item.raw.content, '\n\n');
+          // OpenAI 的推理只有摘要，DeepSeek 的推理是明文 content。
+          const text = thinking ? textParts(item.raw.summary, '\n\n') || textParts(item.raw.content, '\n\n') : textParts(item.raw.content, '\n\n');
           const id = `${row.requestId}:${item.id}`;
           if (text || this.records.has(id)) this.put({ id, at: this.records.get(id)?.at ?? row.at,
             generation: item.raw.status === 'incomplete' ? 'interrupted' : 'complete', block: { type: thinking ? 'thinking' : 'text', text } });

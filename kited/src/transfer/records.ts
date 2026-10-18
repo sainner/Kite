@@ -20,7 +20,9 @@ export const manifestSchema = z.object({
   branch: z.string().min(1),
   base: z.string().min(1),
   cwd: z.string().min(1),
-  threads: z.array(z.object({ instanceId: z.string().min(1), runtime: z.enum(['claude', 'harness']), nativeId: z.string().min(1),
+  threads: z.array(z.object({ instanceId: z.string().min(1), nativeId: z.string().min(1),
+    /** 代理所用的模型；接管方按它的厂商核对登录。 */
+    model: z.string().min(1),
     /** 已交接给模型的最后一条通知的序号。 */
     cursor: z.number().int().nonnegative() }).strict()),
   at: z.number().int(),

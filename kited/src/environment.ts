@@ -8,7 +8,10 @@ import { existsSync, readdirSync, readFileSync, rmSync, statfsSync } from 'node:
 import { arch, release, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import type { ApiKey } from './account-data/credentials.ts';
+import { vendorOfModel, type ModelVendor } from './agents/models.ts';
 import { readSubscriptionCredentials } from './harness/auth.ts';
+import { deepseekKey } from './harness/adapters.ts';
 import { userHome } from './paths.ts';
 import { readClaudeLogin } from './model-accounts.ts';
 import type { Checkout, Machine } from './model.ts';
@@ -23,8 +26,8 @@ export type HandoverNeed = typeof HANDOVER_NEEDS[number];
 export interface Environment {
   machine: Pick<Machine, 'id' | 'name'>;
   platform: { os: NodeJS.Platform; version: string; arch: string };
-  /** 两家订阅在这台工作机上的登录；ready 只表示凭据在且未过期，不保证额度可用。 */
-  logins: { chatgpt: LoginStatus; claude: LoginStatus };
+  /** 两家订阅在这台工作机上的登录与 DeepSeek 的 API Key；ready 只表示凭据在且未过期，不保证额度或余额可用。 */
+  logins: Record<ModelVendor['login'], LoginStatus>;
   /** 剩余空间（字节）：worktrees 是 Kite 放工作树的卷，checkout 是已有检出或将要 clone 到的卷。 */
   disk: { worktrees: number; checkout: number };
   /** 这台工作机上该项目已有的检出；没有时建工作区会先 clone 到数据目录。 */
@@ -38,8 +41,8 @@ export interface Environment {
 /** 低于这个剩余空间不建工作区。 */
 export const MIN_FREE_BYTES = 1024 ** 3;
 
-/** 某个会话后端在这台工作机上要的订阅登录。 */
-export const runtimeLogin = (environment: Environment, runtime: string): LoginStatus => environment.logins[runtime === 'claude' ? 'claude' : 'chatgpt'];
+/** 某个模型在这台工作机上要的登录，按厂商定。 */
+export const modelLogin = (environment: Environment, model: string): LoginStatus => environment.logins[vendorOfModel(model).login];
 /** 工作树与检出所在的卷都还够用。 */
 export const diskEnough = (environment: Environment): boolean => Math.min(environment.disk.worktrees, environment.disk.checkout) >= MIN_FREE_BYTES;
 
@@ -119,14 +122,21 @@ async function claudeLogin(): Promise<LoginStatus> {
   } catch (error) { return { status: 'invalid', message: (error as Error).message }; }
 }
 
-/** checkout 是本机已有的检出，检出都在数据目录的 repos 下。needs 是要查的换机环境需求。 */
-export async function readEnvironment(home: string, machine: Machine, checkout: Checkout | undefined, needs: HandoverNeed[] = []): Promise<Environment> {
-  const [version, chatgpt, claude, onBattery, met] = await Promise.all([systemVersion(), chatgptLogin(home), claudeLogin(), hasBattery(),
-    Promise.all(needs.map((need) => needChecks[need]()))]);
+async function deepseekLogin(apiKeys: () => Promise<ApiKey[]>): Promise<LoginStatus> {
+  try {
+    return await deepseekKey(apiKeys) ? { status: 'ready' } : { status: 'missing', message: 'Kite 账号的凭据里没有 DeepSeek 的 API Key' };
+  } catch (error) { return { status: 'invalid', message: `读不到 DeepSeek 的 API Key：${(error as Error).message}` }; }
+}
+
+/** checkout 是本机已有的检出，检出都在数据目录的 repos 下。needs 是要查的换机环境需求；apiKeys 是账号里的 API 凭据。 */
+export async function readEnvironment(home: string, machine: Machine, checkout: Checkout | undefined, needs: HandoverNeed[],
+  apiKeys: () => Promise<ApiKey[]>): Promise<Environment> {
+  const [version, chatgpt, claude, deepseek, onBattery, met] = await Promise.all([systemVersion(), chatgptLogin(home), claudeLogin(),
+    deepseekLogin(apiKeys), hasBattery(), Promise.all(needs.map((need) => needChecks[need]()))]);
   return {
     machine: { id: machine.id, name: machine.name },
     platform: { os: process.platform, version, arch: arch() },
-    logins: { chatgpt, claude },
+    logins: { chatgpt, claude, deepseek },
     disk: { worktrees: freeBytes(join(home, 'worktrees')), checkout: freeBytes(join(home, 'repos')) },
     checkout: checkout ? { id: checkout.id, path: checkout.path } : null,
     battery: onBattery,

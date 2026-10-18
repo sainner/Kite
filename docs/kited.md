@@ -1,6 +1,6 @@
 # 工作机：使用与服务契约
 
-kited 在工作机上管理项目、工作区、会话和插件。本文面向使用服务和调用 HTTP 的人，说明运行入口、工作区操作及服务边界。对象职责见 [产品架构](产品架构.md)，工程入口见 [kited README](../kited/README.md)。新会话默认使用自研 harness 和 ChatGPT 订阅，也可选择 Claude。
+kited 在工作机上管理项目、工作区、会话和插件。本文面向使用服务和调用 HTTP 的人，说明运行入口、工作区操作及服务边界。对象职责见 [产品架构](产品架构.md)，工程入口见 [kited README](../kited/README.md)。新会话默认使用自研 harness 和 ChatGPT 订阅，也可选择 DeepSeek 或 Claude。
 
 ## 终端试用
 
@@ -28,7 +28,7 @@ CODEX_HOME="${KITE_HOME:-$HOME/.kite}/auth/chatgpt" codex -c 'cli_auth_credentia
 
 harness 每次请求只读加载凭据，模型循环和工具执行不启动 Codex 或 Claude Code。自动刷新、系统钥匙串支持仍未接入；凭据过期或返回 401 时，在同一认证目录重新执行设备登录。无需 Platform API key。
 
-可选型号见 [模型目录](../shared/agent-models.json)。用 `--model`、`--reasoning` 指定模型与推理强度，模型名也可通过 `KITE_MODEL` 设置。一次任务跑完就退出：
+可选型号见 [模型目录](../shared/agent-models.json)。用 `--model`、`--reasoning` 指定模型与推理强度，模型名也可通过 `KITE_MODEL` 设置。DeepSeek 型号（如 `--model deepseek-flash`）改读环境变量 `DEEPSEEK_API_KEY`，不需要 ChatGPT 登录。一次任务跑完就退出：
 
 ```bash
 bun run harness --cwd /你的项目目录 --prompt "读取项目说明，概括目录结构"
@@ -63,7 +63,9 @@ bun run harness --resume <会话id>
 
 自研 harness 与 Claude 各自负责完整 agent 循环，Kite 宿主负责工作区、共享工具、授权、快照与显示协议。执行进程关闭后会话仍可继续，两种后端保留各自的原生恢复记录。
 
-后端由模型的厂商决定：Claude 模型经 Claude Code 订阅运行，其他厂商的模型由自研 harness 运行，调用方不单独指定后端。代理可通过 `/instances/:id/agent-config` 换用另一厂商的模型，后端随之更换，保留实例、窗口和其他配置；只改思考强度等、模型不变时后端不变。能力目录列出可选模型。`state.capabilities.switchRuntime` 表示当前能否切换后端：须空闲、没有排队或交接未确认的输入，有恢复阻塞时切换连带确认恢复，否则返回 409。
+后端由模型的厂商决定：Claude 模型经 Claude Code 订阅运行，其他厂商的模型由自研 harness 运行，调用方不单独指定后端。代理可通过 `/instances/:id/agent-config` 换用另一厂商的模型；新厂商属于另一后端时后端随之更换，保留实例、窗口和其他配置；同一后端内换模型或只改思考强度时后端不变，在下一次模型请求生效。能力目录列出可选模型。`state.capabilities.switchRuntime` 表示当前能否切换后端：须空闲、没有排队或交接未确认的输入，有恢复阻塞时切换连带确认恢复，否则返回 409。
+
+自研 harness 接 OpenAI 与 DeepSeek。OpenAI 型号用前文独立授权的 ChatGPT 订阅。DeepSeek 没有订阅，用 Kite 账号凭据里的 DeepSeek API Key（有几把时取凭据列表里的第一把），账号里没有时用 kited 环境的 `DEEPSEEK_API_KEY`，按量计费；请求走 DeepSeek 的 [Responses 兼容接口](https://api-docs.deepseek.com/zh-cn/guides/responses_api)，按 1M 的上下文窗口自动压缩。`deepseek-v4-pro` 不收图片，工具结果里的图片换成一句说明。两家之间换模型时，助手文字与工具调用照常交给新厂商，推理只交还给产生它的厂商。
 
 切换在回合边界交接上下文，两种后端各保留原生记录。人发消息、Kite 通知、助手文字、工具调用与结果及图片随当前有效上下文交接；压缩或撤销后的结果同样生效。推理内容不跨厂商传递；普通切换只追加历史，保留原后端的推理。Claude 历史经压缩或撤销重组时，只保留未改动前缀中仍有效的 thinking，已退出当前上下文的块不因撤销而恢复。原始记录仍供查看，显示记录不作为原生恢复数据。提示缓存是否复用取决于请求前缀与服务端缓存状态。重复切换不重复导入，翻译失败时不切换。
 
@@ -119,7 +121,7 @@ Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新�
 |---|---|---|---|---|---|
 | `secret` 共享密钥 | 引用名 | `{kind, path?}`，`kind` 为 `text` 或 `file`；`path` 只用于项目专用的 `file` | `{value}` | 账号共享或项目专用 | 执行命令时按 `{account.名称}`、`{project.名称}` 引用；设了 `path` 的由宿主写进工作区 |
 | `git` Git 凭据 | 主机名，如 `gitlab.com` | `{username}`，默认 `oauth2` | `{token}` | 账号共享 | 访问对应平台的远程时使用 |
-| `api` 模型 API | 用户起的名称 | `{provider, hint, admin}` | `{key?, adminKey?}` | 账号共享 | 查询额度或调用 token 计数接口时使用 |
+| `api` 模型 API | 用户起的名称 | `{provider, hint, admin}` | `{key?, adminKey?}` | 账号共享 | 查询额度或调用 token 计数接口时使用；DeepSeek 的 Key 也用于 DeepSeek 型号的会话 |
 | `speech` 语音识别 | 用户起的名称 | `{provider, hint}`，`provider` 目前只有 `dashscope`（千问，北京地域） | `{key}` | 账号共享 | 识别语音输入时使用 |
 
 类型、范围与名称的组合唯一；两台工作机没同步上时各建了同名的一条，取用时用最近改过的那条。同一供应商可以保存多把 API Key，各自作为一个 API 账号查询。命令中无法引用 Git 凭据、API Key 或语音识别 Key。订阅登录不是凭据，仍由各工作机自行完成，见 [模型账号与额度](#模型账号与额度)。
@@ -156,7 +158,7 @@ bun src/main.ts
 
 项目 ID 由项目登记表分配，规格见 [项目与远程仓库](项目与远程仓库.md)。有远程的项目以远程为身份，同一远程自动归入同一项目；没有远程的项目以 ID 为身份，各工作机上的检出互为远程。检出是 Kite 数据目录里的裸仓库，每台工作机上一个项目最多一份，这台机器上该项目的工作区都从它开出。工作区、线程与执行记录由执行它的工作机写，其他工作机持有副本，见 [工作区流转](Line与工作区流转.md#工作区流转)；账号级数据见上文。
 
-默认 harness 使用前文独立授权的 ChatGPT 凭据。只有 `claude` 会话需要 Claude 登录，开放范围见下文附加功能清单。Claude 会话不自动读取用户、项目或本地设置，OAuth 与钥匙串认证保留。
+默认 harness 使用前文独立授权的 ChatGPT 凭据，DeepSeek 型号使用账号里的 API Key。只有 `claude` 会话需要 Claude 登录，开放范围见下文附加功能清单。Claude 会话不自动读取用户、项目或本地设置，OAuth 与钥匙串认证保留。
 
 命令行是薄客户端：
 
@@ -209,7 +211,7 @@ bun src/cli.ts net up              # 开启已登录设备的组网
 
 `.kite/setup` 与模型的 shell 共用操作系统沙箱：工作树可写，必要工具链可读，宿主凭据、数据库与会话记录受保护，Git 元数据（含检出）只读。环境只带开发工具的基础设置（与 shell 相同），不继承 kited 进程的完整环境。网络在项目级网络授权落地前放行，回环与本机地址仍不可达。完整输出只写工作区的 `setup.log`，事件只带退出码和输出末尾。setup 不领取凭据，需要落成文件的密钥已在它之前写进工作树。
 
-按项目创建前的环境检查读 `GET /environment?project=`，只读本机：平台与系统版本、ChatGPT 与 Claude 订阅在这台工作机的登录（凭据在且未过期为 `ready`，不代表额度可用）、放工作树与检出的卷的剩余空间，以及有没有检出；还有这台工作机带不带电池，和 `needs` 里问到的换机环境需求各自是否满足（`xcode` 看选中的开发者目录是不是完整的 Xcode，`iosDevice` 看 devicectl 列出的已配对 iPhone、iPad 此刻有没有连接方式）。按项目创建时，所选角色默认模型的厂商未登录或任一卷剩余不足 1 GB 返回 409。
+按项目创建前的环境检查读 `GET /environment?project=`，只读本机：平台与系统版本、ChatGPT 与 Claude 订阅在这台工作机的登录与能否取到 DeepSeek 的 API Key（`logins` 的 `chatgpt`、`claude`、`deepseek`；凭据在且未过期为 `ready`，不代表额度或余额可用）、放工作树与检出的卷的剩余空间，以及有没有检出；还有这台工作机带不带电池，和 `needs` 里问到的换机环境需求各自是否满足（`xcode` 看选中的开发者目录是不是完整的 Xcode，`iosDevice` 看 devicectl 列出的已配对 iPhone、iPad 此刻有没有连接方式）。按项目创建时，所选角色默认模型的厂商未登录或任一卷剩余不足 1 GB 返回 409；自动换机挑目标与接管工作区时同样按各代理所用模型的厂商核对。
 
 采纳先拉取远程主线，把本地主线和远程主线依次合进工作区分支。直接合入时检出的主线快进后推送；推送被拒时重新拉取、合并再推，最多三次。拉取或推送失败不撤销本地主线，结果中的 `push` 报告失败原因，下次采纳时一并推上去。提交 PR 时不动本地主线，把工作区分支推到远程同名分支，没有 PR 时开一个；工作区记下 PR 的编号、地址与状态（`open`、`merged`、`closed`），状态随项目同步查询。采纳冲突交给工作区中的一个打开线程处理，处理期间同一工作区的其他线程不能开始工作。agent 仅编辑文件，Git 合并由宿主完成；解决回合正常完成后自动重试一次，仍有冲突则报告，等待用户手动重试。集成方式的选择与默认值见 [工作区与集成](项目与远程仓库.md#工作区与集成)。
 
@@ -266,7 +268,7 @@ App 的订阅登录由所选工作机执行原生登录工具，凭据不经过 
 这些接口沿用工作机身份与同账号组网鉴权。弹窗关闭时取消登录，超时十分钟或服务正常关闭时也结束等待。自动续期仍未接入。
 
 
-API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 Key 一个账号，`id` 为 `api:<凭据ID>`，`identity` 为用户起的名称；每次查询前重新读取；读取失败时无法得知有哪些账号，改为返回一条 `id` 为 `account-api`、状态为 `unavailable` 的账号说明原因。kited 进程环境中的 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`DEEPSEEK_API_KEY` 与组织管理凭据 `OPENAI_ADMIN_KEY`、`ANTHROPIC_ADMIN_KEY` 另作为本机账号查询，`id` 为 `<供应商>-api`，未设置时不列出。查询 OpenAI、Anthropic 的组织费用需要管理 Key。账号读取不代表该 API 已被配置为会话的模型后端。
+API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 Key 一个账号，`id` 为 `api:<凭据ID>`，`identity` 为用户起的名称；每次查询前重新读取；读取失败时无法得知有哪些账号，改为返回一条 `id` 为 `account-api`、状态为 `unavailable` 的账号说明原因。kited 进程环境中的 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`DEEPSEEK_API_KEY` 与组织管理凭据 `OPENAI_ADMIN_KEY`、`ANTHROPIC_ADMIN_KEY` 另作为本机账号查询，`id` 为 `<供应商>-api`，未设置时不列出。查询 OpenAI、Anthropic 的组织费用需要管理 Key。OpenAI、Anthropic 的 API Key 只用于额度查询与 token 计数，不作会话的模型凭据；DeepSeek 的 Key 同时是 DeepSeek 型号的模型凭据，见 [会话后端与宿主边界](#会话后端与宿主边界)。
 
 额度不由客户端轮询，打开账号页也不查询。kited 在内存中保留本机最新的账号快照：首个客户端订阅目录事件流时，若还没有查询过就查询一次上游；之后只在显式刷新时查询。会话响应带回的额度按观测时间覆盖对应周期；查询结果到达之前，快照只含会话观测到的订阅账号及其周期：Claude 取 SDK `rate_limit_event` 中的 5 小时与每周周期，ChatGPT 取订阅响应头中的主要、次要周期与 credits。按模型分开的周额度、ChatGPT 附加额度和 API 费用/余额没有会话来源，保留上次查询结果。刷新时某个账号暂时查询失败（限流、超时、服务错误等，状态为 `unavailable`），该账号沿用上次查询结果与会话观测，只更新状态与提示；未登录或需要重新授权时不沿用。快照变化时在目录事件流推送 `model-accounts.changed`（`modelAccounts` 字段），目录首帧 `catalog.snapshot` 也带当前快照，缓存为空时为 `null`。
 
@@ -274,7 +276,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 
 - `quotas` 中的 `label` 是周期名称，`remainingPercent` 是周期剩余百分比，`windowMinutes` 是窗口长度，`resetsAt` 是 Unix 秒。窗口缺失表示未知，不能当成零或无限；只限某个模型或功能的额度分开返回，并以 `model` 标明范围，缺省表示整个账号共用。
 - 订阅的 `plan` 是小写档位名。Claude 取 profile 接口中组织的当前订阅（如 `max 20x`），登录凭据缓存的 `subscriptionType` 升级后不更新，只在 profile 不可用时使用。
-- `usage` 是该账号在这台工作机上的 token 用量，不读供应商的用量统计：`days` 为最近 53 周里有用量的日期（`date` 为 `YYYY-MM-DD`，升序）、当天 `tokens` 与 `hours`（本地时间 0–23 时每小时的 token）、按价格表折算的 `cost` 与 `costHours`（美元）、`unpriced`（价格表里没有对应模型、未计入金额的 token），`lifetimeTokens` 与 `lifetimeCost` 为 kited 保存的全部日子之和。价格表在 `kited/src/token-prices.ts`，取 Claude 与 OpenAI 官方 API 价格页的标准档，按每次请求的模型与输入、缓存读写、输出分别计价；订阅本身不按 token 计费，金额只是同样用量走 API 的折算。统计来源为本机 Claude Code 会话（含 Kite 的 Claude 会话）、Kite 自研 harness 与 Codex CLI 会话；本地原始记录清理后已保存的历史仍保留。价格表变化时，仍有原始记录的用量可以重新折算。API 账号在本机没有会话记录，不返回 `usage`。
+- `usage` 是该账号在这台工作机上的 token 用量，不读供应商的用量统计：`days` 为最近 53 周里有用量的日期（`date` 为 `YYYY-MM-DD`，升序）、当天 `tokens` 与 `hours`（本地时间 0–23 时每小时的 token）、按价格表折算的 `cost` 与 `costHours`（美元）、`unpriced`（价格表里没有对应模型、未计入金额的 token），`lifetimeTokens` 与 `lifetimeCost` 为 kited 保存的全部日子之和。价格表在 `kited/src/token-prices.ts`，取 Claude、OpenAI 与 DeepSeek 官方 API 价格页的标准档，按每次请求的模型与输入、缓存读写、输出分别计价；DeepSeek 按请求时间分高峰与空闲两档（北京时间周一至周五 9–12 时、14–18 时为高峰，法定节假日按国务院公布的放假安排算空闲，还没公布的年份只按星期算）；订阅本身不按 token 计费，金额只是同样用量走 API 的折算。统计来源为本机 Claude Code 会话（含 Kite 的 Claude 会话）、Kite 自研 harness 与 Codex CLI 会话，harness 的请求按模型分到 ChatGPT 或 DeepSeek；本地原始记录清理后已保存的历史仍保留。价格表变化时，仍有原始记录的用量可以重新折算。API 账号中只有这台工作机的第一个 DeepSeek 账号（与会话取 Key 的顺序相同）返回 `usage`，含本机 DeepSeek 型号的全部请求，会话记录不区分用的是哪把 Key；其他 API 账号不返回 `usage`。
 - ChatGPT 的 `credits` 使用供应商的额度单位；`unlimited` 仅在上游明确返回时成立，未返回金额时省略 `value`。
 - Claude 的 `extraUsage` 是额外用量（超出套餐额度后按金额计费）：`enabled` 表示是否开启，`used`、`limit`、`balance` 是按币种小数位换算后的金额，`currency` 为币种；上游没给的项省略。
 - API 的 `cost` 是 UTC 当月到查询时刻的**组织费用**（`value`、`currency`、`from`、`to`），取完所有分页才返回；不是余额，也不是单个 API Key 的费用。普通调用 Key 没有组织费用权限时明确提示，不能推算余额。来源见 [OpenAI Costs](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs) 与 [Anthropic Usage and Cost](https://platform.claude.com/docs/en/manage-claude/usage-cost-api)。
@@ -292,7 +294,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET/POST | `/update/:build/:payload`、`/update/:build/:payload/files` | 仅工作机：从正在运行这一版的工作机取文件。`payload` 为 `runtime`（运行目录）或 `app`（装上服务的 Mac App 中运行目录以外的部分），GET 返回清单 `{files}`，每项为 `{path, sha256, size, executable}` 或符号链接 `{path, link}`。POST `{paths}` 返回这些文件的 tar 流，只给清单里有的路径。没在运行这一版或没有这份内容 404 |
 | GET | `/model-accounts` | 读取本机模型账号、订阅额度与 API 费用/余额的当前快照，详见 [模型账号与额度](#模型账号与额度) |
 | POST | `/model-accounts/refresh` | 立即查询上游并推送新快照 |
-| GET | `/token-prices` | 读取用量折算金额用的价格表，只列 Kite 模型目录里的模型（计价本身覆盖更多型号）：`checked`（核对日期）与 `models`，每项是 `model`（目录里的显示名）、`provider`，以及每百万 token 的美元单价 `input`、`cacheRead`、`output`，价格页列出时带 `cacheWrite`、`cacheWrite1h`（Claude 的 1 小时缓存写入）与长提示档 `long`（`above`、`rates`） |
+| GET | `/token-prices` | 读取用量折算金额用的价格表，只列 Kite 模型目录里的模型（计价本身覆盖更多型号）：`checked`（核对日期）与 `models`，每项是 `model`（目录里的显示名）、`provider`，以及每百万 token 的美元单价 `input`、`cacheRead`、`output`，价格页列出时带 `cacheWrite`、`cacheWrite1h`（Claude 的 1 小时缓存写入）与长提示档 `long`（`above`、`rates`）；分时计价的 DeepSeek 单价是高峰价，另带空闲价 `offPeak` |
 | POST | `/network/logout` | 仅本机：退出 Tailscale 登录。节点在线时先在 Tailscale 上注销，不在线时只删本机状态（设备要到 Tailscale 管理页删）；组网开着时重起节点，状态里给出新的登录地址 |
 | GET | `/machines` | 工作机目录：本机在前，每项 `{id, name, online, address?, updatedAt?, snapshot?}`，`snapshot` 是那台工作机最近一次的目录摘要，见 [账号级数据](#账号级数据) |
 | GET | `/project-registry` | 项目登记表 `[{id, name, remote, url, createdAt, icon, color, integration, integrationReason?, autoHandover?, handoverNeeds?}]`；`remote` 为归一化地址，`url` 为 HTTPS 访问地址，没有远程的项目两者为 null；`integration` 为 `merge`（直接合入）或 `pullRequest`（提交 PR），`integrationReason` 是自动选择时的理由 |
@@ -347,7 +349,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/context-templates/:id/reset` | 以 `{expectedRevision}` 把模板恢复默认，等同于保存默认内容 |
 | GET | `/context-variables/:name`、`/workspaces/:id/…`、`/instances/:id/…` | 按工作机、工作区或代理取一个公共变量现在的值（项目层按工作区取），范围取不到变量所在的层时 400；项目规则与记忆索引另带逐级找到的文件，见 [上下文模板](harness-上下文组装.md#模板归属与生效) |
 | PUT | `/workspaces/:id/context-variables/:name/file` | 以 `{path, content, expectedSha256}` 把项目规则或记忆索引的一份文件写回这个工作区的工作树；越出查找位置 400，文件已在别处修改 409 |
-| POST | `/token-counts` | 以 `{texts, model?, scene?}` 逐段计数，返回 `{model, results}`；没给模型时按场景推出。账号里有对应厂商的 API Key 时用官方计数接口（`method: api`），否则 OpenAI 按 o200k 估算、Claude 不给数；`exact` 标明是否准确 |
+| POST | `/token-counts` | 以 `{texts, model?, scene?}` 逐段计数，返回 `{model, results}`；没给模型时按场景推出。账号里有对应厂商的 API Key 时用官方计数接口（`method: api`），否则 OpenAI 按 o200k 估算、Claude 不给数；DeepSeek 没有计数接口，按 o200k 估算；`exact` 标明是否准确 |
 | GET / PUT | `/threads/:id/title` | 读取标题与生成进度；以 expectedRevision 手动改名或恢复自动标题 |
 | POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不阻塞主会话控制 |
 | GET / PUT | `/instances/:id/execution-grants` | 读取或修改执行授权；须停止，「允许并记住」追加网络许可例外 |

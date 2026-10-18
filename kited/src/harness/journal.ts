@@ -13,7 +13,7 @@ const raw = z.record(z.string(), z.json());
 const input = z.object({ id, text: z.string(), source: z.enum(['human', 'kite']),
   via: z.object({ kind: z.literal('line'), machine: id, instance: id }).optional() });
 const call = z.object({ id, name: id, arguments: z.json() });
-const item = z.object({ id, raw, format: z.literal('anthropic').optional(), call: call.optional() });
+const item = z.object({ id, raw, format: z.enum(['anthropic', 'deepseek']).optional(), call: call.optional() });
 const result = z.object({ status: z.enum(['success', 'error', 'not_executed', 'unknown']), output: z.string(), diff: diffReferenceSchema.optional(),
   images: z.array(z.object({ mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp']), data: z.string().min(1) })).optional() });
 const outcome = z.discriminatedUnion('kind', [
@@ -163,8 +163,10 @@ export class FileJournal implements Journal {
 
   append(data: JournalEvent): JournalRecord {
     if (this.closed || this.failed) throw new Error('会话记录已关闭或发生写入故障，必须重新打开');
+    // 按校验的输入类型声明：类型允许而校验不认的取值（例如新加的条目格式）编译时就报错，不等到写入才失败。
+    const candidate: z.input<typeof record> = { ...data, version: 1, seq: this.rows.length + 1, at: Date.now() };
     // 先编码再校验，内存副本与实际落盘内容保持一致，调用方不能修改已接收的数据。
-    const row = record.parse(JSON.parse(JSON.stringify({ ...data, version: 1, seq: this.rows.length + 1, at: Date.now() })));
+    const row = record.parse(JSON.parse(JSON.stringify(candidate)));
     try {
       writeAll(this.fd, Buffer.from(`${JSON.stringify(row)}\n`));
     } catch (error) {

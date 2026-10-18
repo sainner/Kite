@@ -81,8 +81,7 @@ import { type ApprovalRequest, skipped, type Waiting, Waits } from './waiting.ts
 import { hasEnvKey, setEnvLine, type SecretRequest } from './secrets.ts';
 import type { Integration } from './account-data/registry.ts';
 import { WorkspaceTransfers } from './transfer/transfers.ts';
-import { diskEnough, readEnvironment, runtimeLogin, type Environment, type HandoverNeed } from './environment.ts';
-import { runtimeOfModel } from './agents/models.ts';
+import { diskEnough, modelLogin, readEnvironment, type Environment, type HandoverNeed } from './environment.ts';
 
 export interface ThreadView extends ThreadContext { runner: Runtime['state']; busy: boolean }
 
@@ -624,13 +623,13 @@ export class Kite {
       if (!line && this.registry.get(projectId)?.autoHandover !== true) return [];
       const threads = this.store.threads(w.id).filter((t) => t.status !== 'archived');
       const busy = threads.filter((t) => this.runners.get(t.id)?.busy);
-      return line || busy.length ? [{ workspace: w, projectId, busy, runtimes: new Set<string>(threads.map((t) => t.runtime)) }] : [];
+      return line || busy.length ? [{ workspace: w, projectId, busy, models: new Set(threads.map((t) => instanceAgent(t).model.model)) }] : [];
     });
     await Promise.all(plans.map((plan) => this.leave(plan, deadline)));
   }
-  private async leave(plan: { workspace: Workspace; projectId: string; busy: AgentInstance[]; runtimes: Set<string> }, deadline: number): Promise<void> {
+  private async leave(plan: { workspace: Workspace; projectId: string; busy: AgentInstance[]; models: Set<string> }, deadline: number): Promise<void> {
     const { workspace: w, projectId } = plan;
-    const target = await this.handoverTarget(projectId, plan.runtimes, deadline);
+    const target = await this.handoverTarget(projectId, plan.models, deadline);
     if (!target) { console.warn(`[换机] 工作区 ${w.name} 没有合适的工作机可交，留在本机`); return; }
     const resumes: Array<{ threadId: string; inputs: Input[] }> = [];
     for (const t of plan.busy) {
@@ -651,7 +650,7 @@ export class Kite {
    * 合适的目标：在线、工作区所用的模型厂商已登录、满足项目声明的环境、磁盘够用。各台一起问，连不上或读不到的跳过；
    * 几台都合适时优先不带电池的，再优先已有这个项目检出的。
    */
-  private async handoverTarget(projectId: string, runtimes: Set<string>, deadline: number): Promise<string | undefined> {
+  private async handoverTarget(projectId: string, models: Set<string>, deadline: number): Promise<string | undefined> {
     const needs: HandoverNeed[] = this.registry.get(projectId)?.handoverNeeds ?? [];
     const holders = this.directory.holders(projectId);
     const timeoutMs = Math.min(5_000, deadline - Date.now() - 2_000);
@@ -660,7 +659,7 @@ export class Kite {
     const fits = await Promise.all(this.directory.online().map(async (machine) => {
       try {
         const environment = await this.peers.call<Environment>(machine.id, 'GET', query, { timeoutMs });
-        const fit = [...runtimes].every((runtime) => runtimeLogin(environment, runtime).status === 'ready') && diskEnough(environment)
+        const fit = [...models].every((model) => modelLogin(environment, model).status === 'ready') && diskEnough(environment)
           && needs.every((need) => environment.needs?.[need] === true);
         return fit ? [{ id: machine.id, battery: environment.battery === true, holder: holders.has(machine.id) }] : [];
       } catch { return []; }
@@ -853,7 +852,7 @@ export class Kite {
   async environment(projectId: string, needs: HandoverNeed[] = []): Promise<Environment> {
     const checkout = this.store.checkouts(projectId)[0];
     if (!checkout) this.registry.require(projectId);
-    return readEnvironment(this.home, this.store.machine, checkout, needs);
+    return readEnvironment(this.home, this.store.machine, checkout, needs, () => this.credentials.apiKeys());
   }
 
   /**
@@ -890,7 +889,7 @@ export class Kite {
   /** 建工作区前的环境检查：所选角色默认模型的厂商在这台工作机已登录，磁盘够用；不满足就不建。 */
   private assertCanRun(environment: Environment, role?: RoleSelection): void {
     const model = this.roles.get(role?.id ?? defaultRoleId, role?.revision).role.model.model;
-    const login = runtimeLogin(environment, runtimeOfModel(model));
+    const login = modelLogin(environment, model);
     if (login.status !== 'ready') throw new KiteError(`这台工作机不能运行所选模型：${login.message}`, 409);
     if (!diskEnough(environment)) throw new KiteError('这台工作机的磁盘剩余空间不足 1 GB', 409);
   }
@@ -1712,7 +1711,7 @@ export class Kite {
   private async createLine(): Promise<WorkspaceModel> {
     const role = { id: lineRoleId, revision: this.roles.get(lineRoleId).revision };
     // 先查环境再建项目，跑不了 Line 的工作机上不留下空的 Line 项目。
-    this.assertCanRun(await readEnvironment(this.home, this.store.machine, undefined), role);
+    this.assertCanRun(await readEnvironment(this.home, this.store.machine, undefined, [], () => this.credentials.apiKeys()), role);
     const project = await this.projectOperation(() => this.checkoutManagement.create('Line',
       { 'AGENTS.md': LINE_AGENTS, '.kite/memory/MEMORY.md': '' }));
     let model: WorkspaceModel;

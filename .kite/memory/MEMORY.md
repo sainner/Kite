@@ -1,7 +1,7 @@
 ## 当前取舍与资料入口
 
 - [分布式架构](decentralized-direction.md) — 不再自营服务器：Tailscale 身份、见证方可替换、设备间同步；实施顺序，第 1 步已做；设计待评审
-- [自研 harness 与订阅授权](harness-direction.md) — 独立宿主、每台工作机授权和辅助模型的选型理由
+- [自研 harness 与订阅授权](harness-direction.md) — 独立宿主、每台工作机授权和辅助模型的选型理由；DeepSeek 用账号 API Key
 - [PDF 读取方案](pdf-read-direction.md) — Vision 与无备用解析器的明确取舍
 - [视觉参考与范围](visual-style-direction.md) — 色板、角色点阵、项目色和字体范围
 - [界面事件诊断](ui-hit-testing-debugging.md) — 合成输入与命中证据的限制，光标探针，simctl 两次内核崩溃后不再用，现场采集别挂调试器，真机崩溃报告的取法
@@ -37,6 +37,8 @@
 - [开发工作流](todo-development-workflow.md) — 检查、宿主 Git、会话回退与分叉的待评估能力
 - [远程连接与托管运维](todo-remote-connections.md) — iPhone 局域网周期断连已修与验证范围、取证做法；托管容量备份、凭据重绑和多机关系
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
+- [DeepSeek 待实测](todo-deepseek-validation.md) — 纯文字已跑通；工具回合推理交回、跨厂商推理占位、图片待验
+- [节假日表](todo-holiday-calendar.md) — DeepSeek 峰谷计价的法定节假日表每年补次年安排，现只有 2026
 - [终端插件收尾](todo-terminal-plugin.md) — 已实现待手测；旁观设备的尺寸、跨 kited 重启、后台命令的输入
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据；真发送开头掉帧
 - [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit 一起做、CloudKit、登出重启关机预告待真机实测、kite-net 重启后丢用户

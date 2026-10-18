@@ -7,6 +7,7 @@ import { readdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { z } from 'zod';
+import { vendorOfModel, type ModelVendor } from './agents/models.ts';
 import { requestCost, type RequestTokens } from './token-prices.ts';
 
 export interface UsageDay {
@@ -120,9 +121,10 @@ export async function scanClaudeUsage(directory: string): Promise<HourlyUsage> {
       const written = tokens.cache_creation_input_tokens ?? 0, read = tokens.cache_read_input_tokens ?? 0;
       // 缓存写入分 5 分钟和 1 小时两种，单价不同；没有细分时按 5 分钟计。
       const written1h = tokens.cache_creation?.ephemeral_1h_input_tokens ?? 0;
-      addTokens(usage, new Date(timestamp), tokens.input_tokens + tokens.output_tokens + written + read,
+      const time = new Date(timestamp);
+      addTokens(usage, time, tokens.input_tokens + tokens.output_tokens + written + read,
         requestCost(message.model, { input: tokens.input_tokens, cacheRead: read, cacheWrite: Math.max(0, written - written1h),
-          cacheWrite1h: written1h, output: tokens.output_tokens, fast: tokens.speed === 'fast' }));
+          cacheWrite1h: written1h, output: tokens.output_tokens, fast: tokens.speed === 'fast' }, time));
     }
   }
   return usage;
@@ -148,11 +150,13 @@ const codexRecord = z.union([
 ]);
 
 /**
- * 扫这台机器上用 ChatGPT 订阅的会话记录，按本地时间的小时汇总 token：Kite 自研 harness 的线程日志（只接 ChatGPT），
- * 以及 Codex CLI 的会话记录。Codex 在累计用量不变时也会重发用量事件，累计值变了才计；恢复会话时复制过来的旧事件按时间与累计值去重。
+ * 扫这台机器上 Kite 自研 harness 的线程日志与 Codex CLI 的会话记录，按本地时间的小时汇总 token，按运行模型要的登录分开：
+ * chatgpt 是 ChatGPT 订阅（harness 的 OpenAI 型号与 Codex），deepseek 是 DeepSeek 的 API Key。
+ * Codex 在累计用量不变时也会重发用量事件，累计值变了才计；恢复会话时复制过来的旧事件按时间与累计值去重。
  */
-export async function scanChatgptUsage(kiteHome: string, codexDirectory: string): Promise<HourlyUsage> {
-  const usage: HourlyUsage = new Map();
+export async function scanHarnessUsage(kiteHome: string, codexDirectory: string): Promise<Map<ModelVendor['login'], HourlyUsage>> {
+  const logins = new Map<ModelVendor['login'], HourlyUsage>();
+  const usage = (login: ModelVendor['login']) => logins.get(login) ?? logins.set(login, new Map()).get(login)!;
   const seen = new Set<string>();
   for (const file of await filesUnder(join(kiteHome, 'sessions'), (file) => basename(file) === 'journal.jsonl')) {
     const configurations = new Map<string, string>(), requests = new Map<string, string>();
@@ -166,10 +170,12 @@ export async function scanChatgptUsage(kiteHome: string, codexDirectory: string)
         if (model) requests.set(record.requestId, model);
       } else if (!seen.has(record.requestId)) {
         seen.add(record.requestId);
-        const tokens = record.usage, details = tokens.input_tokens_details;
-        addTokens(usage, new Date(record.at), tokens.total_tokens ?? tokens.input_tokens + tokens.output_tokens,
-          requestCost(requests.get(record.requestId), openaiTokens(tokens.input_tokens, details?.cached_tokens ?? 0,
-            details?.cache_write_tokens ?? 0, tokens.output_tokens)));
+        const model = requests.get(record.requestId);
+        const tokens = record.usage, details = tokens.input_tokens_details, time = new Date(record.at);
+        // 读不到请求配置的按 ChatGPT 计，金额记为未计价。
+        addTokens(usage(model ? vendorOfModel(model).login : 'chatgpt'), time, tokens.total_tokens ?? tokens.input_tokens + tokens.output_tokens,
+          requestCost(model, openaiTokens(tokens.input_tokens, details?.cached_tokens ?? 0,
+            details?.cache_write_tokens ?? 0, tokens.output_tokens), time));
       }
     }
   }
@@ -186,11 +192,11 @@ export async function scanChatgptUsage(kiteHome: string, codexDirectory: string)
         if (info.total_token_usage.total_tokens === total || seen.has(key)) continue;
         total = info.total_token_usage.total_tokens;
         seen.add(key);
-        const last = info.last_token_usage;
-        addTokens(usage, new Date(timestamp), last.total_tokens, requestCost(model, openaiTokens(last.input_tokens,
-          last.cached_input_tokens ?? 0, last.cache_write_input_tokens ?? 0, last.output_tokens)));
+        const last = info.last_token_usage, time = new Date(timestamp);
+        addTokens(usage('chatgpt'), time, last.total_tokens, requestCost(model, openaiTokens(last.input_tokens,
+          last.cached_input_tokens ?? 0, last.cache_write_input_tokens ?? 0, last.output_tokens), time));
       }
     }
   }
-  return usage;
+  return logins;
 }

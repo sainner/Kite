@@ -188,7 +188,7 @@ struct TokenPriceSection: View {
     var body: some View {
         let connection = model.availableWorkers.first
         CardSection("计价表", info: table.map {
-            "美元 / 百万 token，取自 Claude 与 OpenAI 官方 API 价格页的标准档，\($0.checked) 核对。Claude 的「缓存写入」是 5 分钟缓存。"
+            "美元 / 百万 token，取自 Claude、OpenAI 与 DeepSeek 官方 API 价格页的标准档，\($0.checked) 核对。Claude 的「缓存写入」是 5 分钟缓存。DeepSeek 北京时间工作日 9–12 时、14–18 时为高峰，其余时段与法定节假日按空闲价。"
         }) {
             if let table {
                 ScrollView(.horizontal) { grid(table).padding(.vertical, 10) }
@@ -228,6 +228,9 @@ struct TokenPriceSection: View {
                     if let long = price.long {
                         // 长提示档写成「haiku-5.5 (>100k)」。
                         row("\(price.model) (>\(Int(long.above / 1000))k)", rates: long.rates, tint: .secondary)
+                    }
+                    if let offPeak = price.offPeak {
+                        row("\(price.model) (空闲)", rates: offPeak, tint: .secondary)
                     }
                 }
             }

@@ -18,6 +18,7 @@ import { claudeToolName, claudeToolResult, claudeToolResultContent, structuredCl
 import { restoreContext } from '../harness/context/assembler.ts';
 import { readJournal } from '../harness/journal.ts';
 import { outcomeFeedback, recoveryFeedback, replayUnits } from '../harness/history.ts';
+import { messageTexts } from '../harness/responses.ts';
 import { appendThreadJournal } from '../harness/thread-host.ts';
 import type { ContextItem, Input, Json, JsonObject, JournalRecord, ModelItem, ToolResult } from '../harness/types.ts';
 import type { RuntimeKind, ThreadContext } from '../model.ts';
@@ -189,11 +190,7 @@ function claudeBlocks(item: ModelItem, calls: Map<string, { id: string; name: st
     const input = item.call.arguments;
     return [{ type: 'tool_use', id, name, input: input && typeof input === 'object' && !Array.isArray(input) ? input : { value: input } }];
   }
-  if (raw.type === 'message') return (Array.isArray(raw.content) ? raw.content.map(object) : []).flatMap((part): JsonObject[] => {
-    const value = part.type === 'output_text' ? part.text : part.type === 'refusal' ? part.refusal : undefined;
-    if (typeof value !== 'string') throw new Error(`不能翻译 harness 消息内容 ${String(part.type)}`);
-    return value ? [{ type: 'text', text: value }] : [];
-  });
+  if (raw.type === 'message') return messageTexts(raw).map((text) => ({ type: 'text', text }));
   if (raw.type !== 'reasoning') throw new Error(`不能翻译 harness 输出 ${String(raw.type)}`);
   return [];
 }

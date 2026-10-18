@@ -25,8 +25,11 @@ export interface ModelItem {
   id: string;
   /** 原生完整条目，包括 reasoning 等不用于界面显示的字段。 */
   raw: JsonObject;
-  /** raw 的协议；缺省为当前模型适配器自己的格式，跨后端导入的条目原样保留来源格式，由适配器转换。 */
-  format?: 'anthropic';
+  /**
+   * raw 的来源格式；缺省为 OpenAI Responses 条目。deepseek 也是 Responses 条目，推理是明文、不带加密内容；anthropic 是从 Claude 段导入的原生块。
+   * 交给别的厂商时由适配器转换。
+   */
+  format?: 'anthropic' | 'deepseek';
   call?: ToolCall;
 }
 

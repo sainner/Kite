@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { ApiKey } from './account-data/credentials.ts';
 import { parseSubscriptionCredentials } from './harness/auth.ts';
-import { localUsage, scanChatgptUsage, scanClaudeUsage, type AccountUsage, type HourlyUsage, type UsageStore } from './account-usage.ts';
+import { localUsage, scanClaudeUsage, scanHarnessUsage, type AccountUsage, type HourlyUsage, type UsageStore } from './account-usage.ts';
 
 export interface AccountQuota {
   id: string;
@@ -258,13 +258,13 @@ export async function readModelAccounts(home: string, options: AccountReadOption
   const store = options.usage;
   // 扫本机会话记录并入 kited 保存的按小时汇总，历史不随本地记录清理而丢失；扫描失败时沿用已存的。
   // 扫描与上游查询并行，用量不受额度查询成败影响。
-  const merge = async (id: string, scan: () => Promise<HourlyUsage>) => {
-    try { store!.mergeUsageHours(id, await scan()); }
-    catch (error) { console.error(`[用量] 读取 ${id} 的本机会话记录失败`, error); }
+  const merge = async (source: string, scan: () => Promise<Map<string, HourlyUsage>>) => {
+    try { for (const [id, usage] of await scan()) store!.mergeUsageHours(id, usage); }
+    catch (error) { console.error(`[用量] 读取 ${source} 的本机会话记录失败`, error); }
   };
   const scans = store && Promise.all([
-    merge('chatgpt', () => scanChatgptUsage(home, options.codexDirectory ?? codexDirectory())),
-    merge('claude', () => scanClaudeUsage(options.claudeDirectory ?? claudeDirectory())),
+    merge('harness 与 Codex', () => scanHarnessUsage(home, options.codexDirectory ?? codexDirectory())),
+    merge('Claude', async () => new Map([['claude', await scanClaudeUsage(options.claudeDirectory ?? claudeDirectory())]])),
   ]);
   const accounts = await Promise.all([
     read('chatgpt', 'ChatGPT', 'subscription', async (account) => {
@@ -343,6 +343,9 @@ export async function readModelAccounts(home: string, options: AccountReadOption
   if (store) {
     await scans;
     for (const account of accounts) if (account.kind === 'subscription') account.usage = localUsage(store.usageDays(account.id));
+    // DeepSeek 会话的用量挂在这台工作机的第一个 DeepSeek 账号上，与会话取 Key 的顺序相同；记录里没有用的是哪把，App 的总计按各账号相加。
+    const deepseek = accounts.find((account) => account.id === apiSources.find((source) => source.provider === 'deepseek')?.id);
+    if (deepseek) deepseek.usage = localUsage(store.usageDays('deepseek'));
   }
   return { checkedAt, accounts };
 }

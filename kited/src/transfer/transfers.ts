@@ -12,7 +12,7 @@ import { worktreePath } from '../paths.ts';
 import type { GitCredentials } from '../git-credential.ts';
 import { holds, type AgentInstance, type Checkout, type Workspace, type WorkspaceModel, type WorkspaceStatus } from '../model.ts';
 import type { Store } from '../store.ts';
-import { runtimeLogin, type Environment } from '../environment.ts';
+import { modelLogin, type Environment } from '../environment.ts';
 import { git, gitTry, revParse } from '../workspace/git.ts';
 import { originAccess, type RemoteAccess } from '../workspace/remote.ts';
 import { readLease, remoteLeases, writeLease, type Lease } from '../workspace/lease.ts';
@@ -233,8 +233,8 @@ export class WorkspaceTransfers {
         throw new KiteError('源工作机不在可交接状态，可能已撤回交接或已被接管', 409);
       }
     }
-    for (const runtime of new Set(manifest.threads.map((t) => t.runtime))) {
-      const login = runtimeLogin(environment, runtime);
+    for (const model of new Set(manifest.threads.map((t) => t.model))) {
+      const login = modelLogin(environment, model);
       if (login.status !== 'ready') throw new KiteError(`这台工作机不能继续这个工作区的会话：${login.message}`, 409);
     }
     const snapshots = await revParse(checkout.path, replicaRef(workspaceId, 'snapshots'));

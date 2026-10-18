@@ -1,11 +1,11 @@
 /**
  * 上下文编辑器的 token 计数。有对应厂商的 API Key 时调官方计数接口取准确值（两家都免费，只限频率）；
  * 没有 Key 或接口失败时，OpenAI 按公开的 o200k 分词在本机估算（GPT-5 系列与它一致），Claude 没有公开分词器，只能不给。
- * Claude 订阅登录只能在 Claude Code 里用，不拿来计数。
+ * DeepSeek 没有计数接口，也按 o200k 估算。Claude 订阅登录只能在 Claude Code 里用，不拿来计数。
  */
 import { createHash } from 'node:crypto';
 import type { ApiKey } from './account-data/credentials.ts';
-import { agentModels } from './agents/models.ts';
+import { agentModels, vendorOfModel } from './agents/models.ts';
 
 export type TokenCountMethod = 'api' | 'o200k' | 'none';
 
@@ -44,13 +44,13 @@ export class TokenCounter {
   constructor(private options: TokenCountOptions) {}
 
   async count(texts: string[], model: string): Promise<TokenCountResult[]> {
+    const vendor = vendorOfModel(model).id;
     const claude = agentModels.claude.find((entry) => entry.id === model);
-    const vendor: Vendor = claude ? 'anthropic' : 'openai';
     const apiModel = claude ? `claude-${claude.name.replaceAll('.', '-')}` : model;
-    const key = await this.key(vendor);
+    const key = vendor === 'deepseek' ? undefined : await this.key(vendor);
     return Promise.all(texts.map(async (text): Promise<TokenCountResult> => {
-      if (!text) return { tokens: 0, method: key ? 'api' : vendor === 'openai' ? 'o200k' : 'none', exact: true };
-      if (key && (this.cooldown.get(vendor) ?? 0) <= Date.now()) {
+      if (!text) return { tokens: 0, method: key ? 'api' : vendor === 'anthropic' ? 'none' : 'o200k', exact: true };
+      if (key && vendor !== 'deepseek' && (this.cooldown.get(vendor) ?? 0) <= Date.now()) {
         try {
           return { tokens: await this.official(vendor, apiModel, key, text), method: 'api', exact: true };
         } catch (error) {

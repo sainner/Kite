@@ -1,6 +1,7 @@
 /**
  * 用量折算金额的价格表：各模型每百万 token 的美元单价，取官方 API 价格页的标准档，2026-10-10 核对：
- * https://platform.claude.com/docs/en/about-claude/pricing 、https://developers.openai.com/api/docs/pricing 。
+ * https://platform.claude.com/docs/en/about-claude/pricing 、https://developers.openai.com/api/docs/pricing ；
+ * DeepSeek 2026-10-18 核对 https://api-docs.deepseek.com/quick_start/pricing ，分高峰与空闲两档，见 deepseekPeak。
  * 订阅账号不按 token 计费，折算的是同样用量走 API 要花多少。表里没有的模型不计价，例如 Codex 的 codex-auto-review。
  * OpenAI 的长上下文档（输入超过 272K）只有价格页旗舰表列出的几个型号有，其他型号按短上下文计。
  */
@@ -23,8 +24,8 @@ export interface RequestTokens {
 
 /** 每百万 token 的美元单价。价格页上没有缓存写入价的模型不会产生缓存写入，计价时按输入价兜底；只有 Claude 分 1 小时写入。 */
 interface Rates { input: number; cacheRead: number; cacheWrite?: number; cacheWrite1h?: number; output: number }
-/** 提示超过 long.above 个 token 的请求整次按 long.rates 计价；提示含缓存读写。 */
-type ModelPrice = Rates & { long?: { above: number; rates: Rates } };
+/** 提示超过 long.above 个 token 的请求整次按 long.rates 计价；提示含缓存读写。分时计价的模型本身是高峰价，空闲时段按 offPeak。 */
+type ModelPrice = Rates & { long?: { above: number; rates: Rates }; offPeak?: Rates };
 
 /** 价格表核对的日期，随表一起给 App 展示。 */
 export const pricesChecked = '2026-10-10';
@@ -34,6 +35,9 @@ const claude = (input: number, output: number, read = 0.1): Rates =>
   ({ input, output, cacheRead: input * read, cacheWrite: input * 1.25, cacheWrite1h: input * 2 });
 const openai = (input: number, cacheRead: number, output: number, cacheWrite?: number): Rates =>
   ({ input, output, cacheRead, ...(cacheWrite === undefined ? {} : { cacheWrite }) });
+/** DeepSeek 的空闲价是高峰价的一半；没有缓存写入费。 */
+const deepseek = (input: number, cacheRead: number, output: number): ModelPrice =>
+  ({ ...openai(input, cacheRead, output), offPeak: openai(input / 2, cacheRead / 2, output / 2) });
 
 const prices: Record<string, ModelPrice> = {
   'claude-fable-5-1': claude(10, 50, 0.025),
@@ -73,18 +77,40 @@ const prices: Record<string, ModelPrice> = {
   'gpt-5-codex': openai(1.25, 0.125, 10),
   'gpt-5-mini': openai(0.25, 0.025, 2),
   'gpt-5-nano': openai(0.05, 0.005, 0.4),
+  'deepseek-flash': deepseek(0.3, 0.006, 1.2),
+  'deepseek-v4-pro': deepseek(1.32, 0.044, 3.96),
 };
+
+/**
+ * 中国法定节假日，按国务院办公厅每年公布的放假安排，含调休放假的日子；调休上班的周末不算工作日（DeepSeek 只认周一至周五）。
+ * 次年的安排通常在 11、12 月公布，公布后补上；没收进来的年份只按星期算，补上后仍在本地的记录重扫时按新表重算。
+ */
+const chineseHolidays: [from: string, to: string][] = [
+  // 国办发明电〔2025〕7 号
+  ['2026-01-01', '2026-01-03'], ['2026-02-15', '2026-02-23'], ['2026-04-04', '2026-04-06'], ['2026-05-01', '2026-05-05'],
+  ['2026-06-19', '2026-06-21'], ['2026-09-25', '2026-09-27'], ['2026-10-01', '2026-10-07'],
+];
+
+/** DeepSeek 的高峰时段：北京时间周一至周五（不含法定节假日）9:00–12:00、14:00–18:00，其余都是空闲时段。 */
+export function deepseekPeak(time: Date): boolean {
+  const beijing = new Date(time.getTime() + 8 * 3_600_000);
+  const day = beijing.getUTCDay(), hour = beijing.getUTCHours();
+  if (day === 0 || day === 6 || !((hour >= 9 && hour < 12) || (hour >= 14 && hour < 18))) return false;
+  const date = beijing.toISOString().slice(0, 10);
+  return !chineseHolidays.some(([from, to]) => date >= from && date <= to);
+}
 
 /** 带日期的快照与上下文后缀按基础型号计。 */
 const priceOf = (model: string): ModelPrice | undefined => prices[model.replace(/\[[^\]]*\]$/, '').replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, '')];
 
-/** 一次请求按 API 价格折算的美元；没有模型或表里没有时为 undefined。 */
-export function requestCost(model: string | undefined, tokens: RequestTokens): number | undefined {
+/** 一次请求按 API 价格折算的美元，at 是请求的时间；没有模型或表里没有时为 undefined。 */
+export function requestCost(model: string | undefined, tokens: RequestTokens, at: Date): number | undefined {
   const price = model ? priceOf(model) : undefined;
   if (!price) return undefined;
   const write1h = tokens.cacheWrite1h ?? 0;
   const prompt = tokens.input + tokens.cacheRead + tokens.cacheWrite + write1h;
-  const rates = price.long && prompt > price.long.above ? price.long.rates : price;
+  const rates = price.long && prompt > price.long.above ? price.long.rates
+    : price.offPeak && !deepseekPeak(at) ? price.offPeak : price;
   const cacheWrite = rates.cacheWrite ?? rates.input;
   const cost = tokens.input * rates.input + tokens.cacheRead * rates.cacheRead + tokens.cacheWrite * cacheWrite
     + write1h * (rates.cacheWrite1h ?? cacheWrite) + tokens.output * rates.output;
@@ -99,6 +125,7 @@ export function tokenPrices() {
   const entries = [
     ...agentModels.claude.map((model) => ({ model, provider: 'Anthropic', price: priceOf(`claude-${model.name.replaceAll('.', '-')}`) })),
     ...agentModels.models.map((model) => ({ model, provider: 'OpenAI', price: priceOf(model.id) })),
+    ...agentModels.deepseek.map((model) => ({ model, provider: 'DeepSeek', price: priceOf(model.id) })),
   ];
   return { checked: pricesChecked,
     models: entries.flatMap(({ model, provider, price }) => price ? [{ model: model.name, provider, ...price }] : []) };

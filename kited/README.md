@@ -1,6 +1,6 @@
 # kited
 
-Kite 的工作机服务，管理项目、检出、工作区、插件实例和线程。新会话默认由自研 harness 执行，模型使用 ChatGPT 订阅；Claude Code 通过独立适配层接入。
+Kite 的工作机服务，管理项目、检出、工作区、插件实例和线程。新会话默认由自研 harness 执行，模型使用 ChatGPT 订阅，也可用 DeepSeek 的 API Key；Claude Code 通过独立适配层接入。
 
 完整使用说明、生命周期、接口和当前边界见 [工作机：使用与服务契约](../docs/kited.md)。
 

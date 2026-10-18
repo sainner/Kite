@@ -1,7 +1,7 @@
 /** 角色：代理的提示词、工具约束、默认模型与预算。创建代理时拷贝进实例配置，之后修改角色不影响已有代理。 */
 import { z } from 'zod';
 import { agentDefinitionSchema, bindAgentDefinition, chooseAgentModel, claudeReasoning, type AgentDefinition } from './agents/definition.ts';
-import { agentModels, defaultAgentModel, runtimeOfModel } from './agents/models.ts';
+import { defaultAgentModel, modelVendors, runtimeOfModel } from './agents/models.ts';
 import { allTools, missingRequired, permittedTools, toolRuleSchema, type ToolRule } from './agents/tool-policy.ts';
 import { revisionOf } from './account-data/store.ts';
 import { KiteError } from './errors.ts';
@@ -245,7 +245,7 @@ export class Roles {
     if (unknown.length) throw new KiteError(`角色引用了不存在的工具：${unknown.join('、')}`);
     const excluded = missingRequired(role.tools.required, permittedTools(universe, [role.tools]));
     if (excluded.length) throw new KiteError(`必需工具被角色自己的规则排除了：${excluded.join('、')}`);
-    if (![...agentModels.models, ...agentModels.claude].some((model) => model.id === role.model.model)) throw new KiteError('角色的默认模型不在模型目录中');
+    if (!modelVendors.some((vendor) => vendor.models.some((model) => model.id === role.model.model))) throw new KiteError('角色的默认模型不在模型目录中');
     if (runtimeOfModel(role.model.model) === 'claude' && !claudeReasoning.includes(role.model.reasoning)) throw new KiteError('Claude 思考强度无效');
     return { ...role, context: { ...role.context, id: role.id, title: role.title } };
   }

@@ -100,9 +100,11 @@ nonisolated struct TokenPriceTable: Decodable {
         let provider: String
         let rates: Rates
         let long: Long?
+        /// 分时计价的模型（DeepSeek）：rates 是高峰价，空闲时段按它。
+        let offPeak: Rates?
         var id: String { model }
 
-        private enum CodingKeys: String, CodingKey { case model, provider, long }
+        private enum CodingKeys: String, CodingKey { case model, provider, long, offPeak }
 
         /// 单价和型号写在同一层。
         init(from decoder: any Decoder) throws {
@@ -110,6 +112,7 @@ nonisolated struct TokenPriceTable: Decodable {
             model = try container.decode(String.self, forKey: .model)
             provider = try container.decode(String.self, forKey: .provider)
             long = try container.decodeIfPresent(Long.self, forKey: .long)
+            offPeak = try container.decodeIfPresent(Rates.self, forKey: .offPeak)
             rates = try Rates(from: decoder)
         }
     }
