@@ -11,15 +11,15 @@ enum Appearance: String, CaseIterable {
         }
     }
 
-    var colorScheme: ColorScheme? {
+    #if os(macOS)
+    var appKitAppearance: NSAppearance? {
         switch self {
         case .system: nil
-        case .light: .light
-        case .dark: .dark
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
         }
     }
-
-    #if os(iOS)
+    #else
     var interfaceStyle: UIUserInterfaceStyle {
         switch self {
         case .system: .unspecified
@@ -55,6 +55,8 @@ struct KeepAwakeToggle: View {
 }
 #endif
 
+/// 颜色偏好不用 preferredColorScheme：从浅色改回跟随系统（nil）时它不撤掉之前设下的，系统变深色 App 仍停在浅色。
+/// Mac 设在 NSApp.appearance 上，各个窗口、弹出的页面和菜单都从它继承。
 private struct AppAppearance: ViewModifier {
     @AppStorage("KiteAppearance") private var appearance: Appearance = .system
     #if os(iOS)
@@ -66,7 +68,7 @@ private struct AppAppearance: ViewModifier {
             #if os(iOS)
             .background(WindowInterfaceStyle(style: appearance.interfaceStyle))
             #else
-            .preferredColorScheme(appearance.colorScheme)
+            .onChange(of: appearance, initial: true) { NSApp.appearance = appearance.appKitAppearance }
             #endif
             .buttonStyle(.pointingAutomatic)
             #if os(iOS)
@@ -81,7 +83,6 @@ extension View {
 
 #if os(iOS)
 /// iOS 上颜色偏好设在所在窗口的 overrideUserInterfaceStyle 上，UIKit 往下传给窗口里的原生视图、各个托管视图和弹出的页面。
-/// 不用 preferredColorScheme：从浅色改回跟随系统（nil）时它不撤掉之前设下的，系统变深色 App 仍停在浅色。
 private struct WindowInterfaceStyle: UIViewRepresentable {
     let style: UIUserInterfaceStyle
 
