@@ -9,8 +9,6 @@ import UIKit
 final class ControlsBarView: UIView {
     private let glass: UIVisualEffectView
     private let field = ComposerField.make()
-    /// 作答时输入框的灰底，见 ComposerLayout.fieldFill。
-    private let fieldFill = UIView()
     private let fadingView = FadingSnapshotView()
     private let effort = EffortHost(rootView: AnyView(EmptyView()))
     private let attach = PaneButtonView()
@@ -19,11 +17,9 @@ final class ControlsBarView: UIView {
     /// 提问作答时按钮行左边的上一题、下一题，占思考强度的位置（见 ThreadControlsModel.answering）。
     private let previousButton = PaneButtonView()
     private let nextButton = PaneButtonView()
-    /// 审批时按钮行左边的拒绝、允许并记住，也占思考强度的位置（见 ThreadControlsModel.approving）；换了一项审批按它的决定重建。
+    /// 审批、密钥请求时按钮行左边的拒绝和次级的决定，也占思考强度的位置（见 ThreadControlsModel.deciding）；换了一项按它的决定重建。
     private var decisionButtons: [PaneButtonView] = []
-    private var decisions: [ApprovalDecision] = []
-    /// 输入框带着灰底（作答或审批时）。
-    private var fieldFilled = false
+    private var decisions: [WaitingDecision] = []
     private var buttonFont = UIFont.preferredFont(forTextStyle: .body)
     /// 等你回应时摆在输入框上面的卡片（WaitingResponseCard），和输入框共用这张玻璃。按自己的高摆，
     /// 过渡途中玻璃比它矮，超出顶边的由 responseClip 裁掉。
@@ -75,11 +71,6 @@ final class ControlsBarView: UIView {
         glass.cornerConfiguration = .corners(radius: .fixed(Metrics.controlRadius))
         addSubview(glass)
         let content = glass.contentView
-        fieldFill.backgroundColor = UIColor(ComposerLayout.fieldFill)
-        fieldFill.layer.cornerCurve = .continuous
-        fieldFill.isUserInteractionEnabled = false
-        fieldFill.alpha = 0
-        content.addSubview(fieldFill)
         content.addSubview(field)
         content.addSubview(fadingView)
         content.addSubview(effort.view)
@@ -105,6 +96,8 @@ final class ControlsBarView: UIView {
         nextButton.label = .symbol("arrow.right")
         nextButton.title = "下一题"
         nextButton.action = { [weak self] in self?.controls?.answering?.forward() }
+        // 和审批、密钥请求的次级决定一样带灰底
+        for button in [previousButton, nextButton] { button.secondary = true }
         voice.action = { [weak self] in self?.toggleVoice() }
         primary.action = { [weak self] in
             guard let self, enabled else { return }
@@ -195,15 +188,6 @@ final class ControlsBarView: UIView {
             answeringShown = answering
             endTyping()
         }
-        if controls.responding != fieldFilled {
-            fieldFilled = controls.responding
-            let alpha: CGFloat = fieldFilled ? 1 : 0
-            if window == nil { fieldFill.alpha = alpha } else {
-                UIView.animate(withDuration: ComposerMotion.duration, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
-                    self.fieldFill.alpha = alpha
-                }
-            }
-        }
         showWaiting(thread.waiting, controls: controls)
         let fading = controls.state.fading
         applyPose(fading: fading)
@@ -213,9 +197,9 @@ final class ControlsBarView: UIView {
         if let error = controls.state.voiceError { present("无法开始语音输入", error) { controls.state.voiceError = nil } }
     }
 
-    /// 审批展开时按钮行左边的决定：换了一项审批（决定不同）才重建，回应途中都按不了。
+    /// 审批、密钥请求展开时按钮行左边的决定：换了一项（决定不同）才重建；回应途中都按不了，要存密钥的没填好值时按不了。
     private func showDecisions(_ controls: ThreadControlsModel) {
-        let decisions = controls.approving.map(ApprovalDecision.others(for:)) ?? []
+        let decisions = controls.deciding.map(WaitingDecision.others(for:)) ?? []
         if decisions != self.decisions {
             self.decisions = decisions
             for button in decisionButtons { button.removeFromSuperview() }
@@ -224,6 +208,7 @@ final class ControlsBarView: UIView {
                 button.label = .text(decision.title)
                 button.title = decision.title
                 button.fill = decision.fill
+                button.secondary = decision.secondary
                 button.foreground = decision.foreground
                 button.setFont(buttonFont)
                 button.environment = environment
@@ -232,7 +217,7 @@ final class ControlsBarView: UIView {
                 return button
             }
         }
-        for button in decisionButtons { button.isEnabled = enabled && !controls.thread.answers.busy }
+        for (button, decision) in zip(decisionButtons, decisions) { button.isEnabled = enabled && controls.canDecide(decision) }
     }
 
     /// 出现审批或提问时卡片从输入区上方长出来，回应后收回去；过渡见 ComposerMotion，高由 contentChanged 报给外面。
@@ -379,10 +364,10 @@ final class ControlsBarView: UIView {
         return ComposerLayout.plan(width: width, field: fieldHeight, effort: leftSize)
     }
 
-    /// 按钮行左边那一格：平常是思考强度；作答时多题是上一题、下一题，一题时空着；审批时是审批的决定。
+    /// 按钮行左边那一格：平常是思考强度；作答时多题是上一题、下一题，一题时空着；审批、密钥请求时是它们的决定。
     private var leftSize: CGSize {
         guard let controls, controls.responding else { return currentEffortSize }
-        if controls.approving != nil { return ComposerLayout.decisionRow(decisionButtons.map(\.width)).size }
+        if controls.deciding != nil { return ComposerLayout.decisionRow(decisionButtons.map(\.width)).size }
         return !controls.questionSteps ? .zero : CGSize(width: 2 * Metrics.paneButton, height: Metrics.paneButton)
     }
 
@@ -418,8 +403,6 @@ final class ControlsBarView: UIView {
         // 有卡片时输入区贴着底边
         let dy = pose.card > 0 ? bounds.height - plan.height : 0
 
-        place(fieldFill, ComposerLayout.fieldFillFrame(width: width, plan: plan).offsetBy(dx: 0, dy: dy))
-        if fieldFill.layer.cornerRadius != ComposerLayout.fieldFillRadius { fieldFill.layer.cornerRadius = ComposerLayout.fieldFillRadius }
         let fieldWidth = max(width - 2 * ComposerLayout.fieldInset, 0)
         let top = ComposerLayout.fieldTop + dy
         place(field, CGRect(x: ComposerLayout.fieldInset, y: top, width: fieldWidth, height: field.height(width: fieldWidth, text: field.text)))

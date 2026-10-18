@@ -4,7 +4,7 @@ import type { DomainEvent, Stamped } from '../events.ts';
 import type { CheckResult } from '../check.ts';
 import type { Input, Json, Phase, Outcome, Recovery } from '../harness/types.ts';
 import type { WorkspaceStatus } from '../model.ts';
-import type { Waiting } from '../waiting.ts';
+import type { Ask, Waiting } from '../waiting.ts';
 
 export type DisplayBlock =
   | { type: 'human'; id: string; text: string; midTurn: boolean }
@@ -26,8 +26,10 @@ export interface DisplayState {
   /** 正在生成压缩摘要。 */
   compacting?: boolean;
   waitingForResume: boolean;
-  /** 回合卡在一个提问上等人回应；phase 仍为 running。 */
+  /** 回合卡在一项审批上等人批准；phase 仍为 running。 */
   waiting?: Waiting;
+  /** 没回应的提问与密钥请求，按发出的先后；不阻塞回合。 */
+  asks?: Ask[];
   lastOutcome?: Outcome;
   recovery?: Recovery;
   status: WorkspaceStatus;
@@ -59,7 +61,7 @@ export type ThreadDisplayEvent =
 export interface ThreadActivity {
   phase: Phase;
   waitingForResume: boolean;
-  /** 回合卡在审批或提问上等人回应。 */
+  /** 在等人回应的：回合卡着的审批；没有时，空闲的线程最早一项没回应的请求。 */
   waiting?: Waiting['kind'];
   outcome?: Outcome['kind'];
   error?: true;

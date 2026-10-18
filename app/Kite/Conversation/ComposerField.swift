@@ -8,7 +8,7 @@ import AppKit
 /// SwiftUI 把它摆得比自己的布局宽 4、往左挪 2，抵掉字段编辑器两边各 2 的行内边距，字和布局的左边对齐；外面照这样摆，见 fieldInset。
 /// 键位和现版一样：回车（含 Shift+回车、小键盘 Enter）发送，Option+回车换行，Control+回车插行分隔符（后两个是系统键位）；
 /// 组字中的回车由输入法确认组字，不发送。外面改草稿时（发送后清空、语音写入）编辑中的字整段换掉、插入点到末尾，同现版。
-final class ComposerField: NSTextField, NativeCursor {
+final class ComposerField: NSTextField {
     /// 回车发送。
     var submit: (() -> Void)?
     /// 字变了（含组字中的字），交给草稿。
@@ -58,9 +58,6 @@ final class ComposerField: NSTextField, NativeCursor {
     }
 
     override var mouseDownCanMoveWindow: Bool { false }
-
-    /// 文字光标：在输入区的玻璃里光标区域不起作用，见 NativeCursor。
-    var nativeCursor: NSCursor? { isEnabled ? .iBeam : nil }
 
     override var font: NSFont? {
         didSet {

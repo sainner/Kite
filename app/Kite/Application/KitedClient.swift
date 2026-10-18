@@ -17,16 +17,18 @@ nonisolated struct RemoteState: Decodable, Equatable, Sendable {
     var waitingForResume = false
     var lastOutcome: Outcome?
     var recovery: Recovery?
-    /// 回合卡在审批、提问或密钥请求上等人回应；phase 仍是 running。
+    /// 回合卡在审批上等人批准；phase 仍是 running。
     var waiting: RemoteWaiting?
+    /// 没回应的提问与密钥请求，按发出的先后；不阻塞回合。
+    var asks: [RemoteWaiting]?
     var context: ContextUsage?
     let status: String
     let error: String?
     let capabilities: Capabilities
 }
 
-/// 回合中途等人回应的对象（docs/工具审批与提问.md）：提问带问题与选项，审批带工具、目标与原因，必问的不能「允许并记住」；
-/// 密钥请求带名称（或环境变量文件与变量名）、用途、代理给的值，以及同名的是否已存在。
+/// 等人回应的对象（docs/工具审批与提问.md）：卡着回合的审批带工具、目标与原因，必问的不能「允许并记住」；不阻塞的提问带问题与选项；
+/// 密钥请求带一次要的几项，每项是名称（或环境变量文件与变量名）、用途、代理给的值，以及同名的是否已存在。
 nonisolated struct RemoteWaiting: Decodable, Equatable, Sendable {
     nonisolated struct Option: Decodable, Equatable, Sendable {
         let label: String
@@ -37,7 +39,7 @@ nonisolated struct RemoteWaiting: Decodable, Equatable, Sendable {
         let options: [Option]
         let multiSelect: Bool
     }
-    let id: String
+    var id: String
     /// question、approval 或 secret。
     let kind: String
     let since: Double
@@ -48,44 +50,52 @@ nonisolated struct RemoteWaiting: Decodable, Equatable, Sendable {
     var mustAsk: Bool?
     /// 代理申请在沙箱外运行命令：target 是命令原文，reason 是代理写的用途。
     var outside: Bool?
-    /// 密钥请求：一条独立的密钥（name，类型 secretKind 为 text 或 file），或环境变量文件 file 里的变量 key。
-    var name: String?
-    var secretKind: String?
-    var file: String?
-    var key: String?
-    /// 代理自己给的值，卡片预先填好。
-    var value: String?
-    /// 默认目标已经存在，保存是替换。
-    var exists: Bool?
+    /// 密钥请求一次要的几项，用户在同一张卡片里填，填了几项存几项。
+    var secrets: [Secret]?
 
     var isQuestion: Bool { kind == "question" }
     var isSecret: Bool { kind == "secret" }
+    /// 密钥请求里有独立的密钥（能存为账号共享；环境变量文件里的项只能项目专用）。
+    var hasStandaloneSecret: Bool { secrets?.contains { $0.file == nil } == true }
 
     /// 等的是什么：标题栏圆环、停靠栏与回应卡片共用。
     static func title(of kind: String) -> String {
         switch kind {
-        case "question": "等你回答"
-        case "secret": "等你填密钥"
-        default: "等你批准"
+        case "question": "等待回答"
+        case "secret": "等待密钥"
+        default: "等待批准"
         }
     }
 
-    /// 密钥请求要的那一项：环境变量文件里的变量，或一条独立的密钥。
-    var secretTitle: String {
-        if let file, let key { return "\(file) 里的 \(key)" }
-        return name ?? "密钥"
+    /// 密钥请求里的一项：一条独立的密钥（name，类型 secretKind 为 text 或 file），或环境变量文件 file 里的变量 key。
+    nonisolated struct Secret: Decodable, Equatable, Sendable {
+        let reason: String
+        var name: String?
+        var secretKind: String?
+        var file: String?
+        var key: String?
+        /// 代理自己给的值，卡片预先填好。
+        var value: String?
+        /// 默认目标已经存在，保存是替换。
+        var exists: Bool?
+
+        /// 要的那一项：环境变量文件里的变量，或一条独立的密钥。
+        var title: String {
+            if let file, let key { return "\(file) 里的 \(key)" }
+            return name ?? "密钥"
+        }
     }
 }
 
 /// 回应等你的那一项：提问按问题顺序给出选中的选项或「其他」，审批给出 once、remember 或 deny，
-/// 密钥请求给出填的值与范围（project 或 account），拒绝同样是 decision 的 deny。
+/// 密钥请求按顺序逐项给出填的值（没填的为 null）与范围（project 或 account），拒绝同样是 decision 的 deny。
 nonisolated enum WaitingReply: Encodable, Sendable {
     nonisolated struct Answer: Encodable, Sendable {
         var selected: [String]?
         var other: String?
     }
     nonisolated struct Secret: Encodable, Sendable {
-        let value: String
+        let values: [String?]
         let scope: String
     }
     case answers([Answer])

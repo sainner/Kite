@@ -17,6 +17,7 @@ import type { AgentInstance, PluginInstance } from '../model.ts';
 import type { Store } from '../store.ts';
 import type { Waiting } from '../waiting.ts';
 import { KiteError } from '../errors.ts';
+import { secretLabel } from '../secrets.ts';
 import type { Peers } from './peers.ts';
 
 const section = (id: string, title: string, variable: string, lead: string) => ({
@@ -156,13 +157,13 @@ export function where(item: Pick<InboxItem, 'machine' | 'workspace' | 'thread'>)
 }
 
 const kindLabel: Record<InboxKind, string> = {
-  approval: '等你批准', question: '等你回答', secret: '等你填密钥', turn: '回合结束', failed: '失败', recovery: '等待恢复确认', preparation: '准备失败',
+  approval: '等待批准', question: '等待回答', secret: '等待密钥', turn: '回合结束', failed: '失败', recovery: '等待恢复确认', preparation: '准备失败',
   unreachable: '连不上',
 };
 
 function waitingText(waiting: Waiting): string {
   if (waiting.kind === 'question') return clip(waiting.questions.map((q) => q.question).join(' / '), 300);
-  if (waiting.kind === 'secret') return clip(`${waiting.file ? `${waiting.file} 里的 ${waiting.key}` : waiting.name}：${waiting.reason}`, 300);
+  if (waiting.kind === 'secret') return clip(waiting.secrets.map((s) => `${secretLabel(s)}：${s.reason}`).join('；'), 300);
   return clip(waiting.target, 300);
 }
 
@@ -258,18 +259,21 @@ export function route(state: MonitorState, input: RouteInput): LineNotification[
         const base = { machine, workspace: space, thread: { id: thread.id, title: thread.title }, ...(own ? { own: true as const } : {}) };
         if (own && !thread.busy) lineSettled = thread.settledAt;
         if (thread.busy) restarted.add(thread.id);
-        const waiting = thread.waiting;
-        if (waiting) put({ ...base, id: `waiting:${waiting.id}`, kind: waiting.kind, waiting, text: waitingText(waiting), at: waiting.since });
+        // 卡着回合的审批与没回应的提问、密钥请求，每项一个事项
+        for (const waiting of [...(thread.waiting ? [thread.waiting] : []), ...(thread.asks ?? [])]) {
+          put({ ...base, id: `waiting:${waiting.id}`, kind: waiting.kind, waiting, text: waitingText(waiting), at: waiting.since });
+        }
         if (thread.recovery) put({ ...base, id: `recovery:${thread.id}`, kind: 'recovery', text: clip(thread.recovery, 300), at: now });
         // Line 发起的工作失败交给 Line；超出预算时已经进了收件箱的照常保留到状态解除。
         else if (thread.lastOutcome === 'failed' && thread.waitingForResume && (!thread.byLine || state.items[`failed:${thread.id}`])) {
           put({ ...base, id: `failed:${thread.id}`, kind: 'failed', text: clip(thread.failure ?? '上一回合失败，等待继续', 300), at: thread.settledAt ?? now });
         }
-        // 回合结束：Line 发起的交给 Line，别人的只收离开期间正常结束的；用户或 Line 停下的不算。
+        // 回合结束：Line 发起的交给 Line，别人的只收离开期间正常结束的；用户或 Line 停下的不算。还有没回应的提问、密钥请求时
+        // 线程是在等你回应，上面已经各有一项，不再另算回合结束（之后的回应会开新的回合）。
         const key = `${machineId}:${thread.id}`;
         const settled = thread.settledAt;
         if (settled === undefined) continue;
-        if (!thread.busy && settled > (state.seen[key] ?? 0) && !own && thread.lastOutcome !== 'interrupted') {
+        if (!thread.busy && settled > (state.seen[key] ?? 0) && !own && thread.lastOutcome !== 'interrupted' && !thread.asks?.length) {
           const item: InboxItem = { ...base, id: `turn:${thread.id}`, kind: 'turn', text: thread.lastOutcome === 'failed' ? '回合失败' : '回合结束', at: settled, addedAt: now };
           if (thread.byLine) {
             state.queue.push({ kind: 'result', at: now, text: `${where(item)} ${thread.lastOutcome === 'failed' ? `失败：${clip(thread.failure ?? '', 300)}` : '回合结束'}`,

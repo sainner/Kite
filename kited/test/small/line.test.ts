@@ -83,7 +83,7 @@ async function send(k: Kited, threadId: string, id: string, text: string) {
   expect(sent.status).toBe(200);
 }
 
-/** 模型在第 number 次请求里调一个会挂起的工具（question 或必问动作），等 threadId 上挂出等待。 */
+/** 模型在第 number 次请求里调一个会挂起的工具（必问动作），等 threadId 上挂出审批。 */
 async function hang(k: Kited, model: ManualModel, threadId: string, number: number, callId: string, name: string, args: Json) {
   const call = await model.call(number);
   const since = mark(k);
@@ -93,17 +93,29 @@ async function hang(k: Kited, model: ManualModel, threadId: string, number: numb
   return { call, waiting: (event as Extract<Envelope, { type: 'waiting' }>).waiting! };
 }
 
-/** 工作线程在第 number 次请求里提一个单选问题，回合挂在这次调用上。 */
-const ask = (k: Kited, model: ManualModel, threadId: string, number: number, text: string) =>
-  hang(k, model, threadId, number, `ask-${number}`, 'question', { questions: [{ question: text, multiSelect: false, options: [
+/** 工作线程在第 number 次请求里提一个单选问题：工具立即返回，放行第 number + 1 次请求后回合结束、线程空闲，提问留在 asks 里。 */
+async function ask(k: Kited, model: ManualModel, threadId: string, number: number, text: string) {
+  const call = await model.call(number);
+  const since = mark(k);
+  await call.response.emit({ type: 'item', item: calledItem(`ask-${number}`, 'question', { questions: [{ question: text, multiSelect: false, options: [
     { label: '甲', description: '选甲' }, { label: '乙', description: '选乙' },
-  ] }] });
+  ] }] }) });
+  call.response.complete();
+  const event = await k.waitEvent((e) => e.type === 'asks' && e.threadId === threadId && e.asks.length > 0 && after(k, since)(e));
+  const asked = (event as Extract<Envelope, { type: 'asks' }>).asks.at(-1)!;
+  const idle = mark(k);
+  (await model.call(number + 1)).response.complete();
+  await waitIdle(k, threadId, idle);
+  return { call, ask: asked };
+}
 
-async function waitingOf(k: Kited, threadId: string) {
+async function stateOf(k: Kited, threadId: string) {
   const r = await k.call('GET', `/threads/${threadId}/state`);
   expect(r.status).toBe(200);
-  return (r.body as DisplayState).waiting;
+  return r.body as DisplayState;
 }
+const waitingOf = async (k: Kited, threadId: string) => (await stateOf(k, threadId)).waiting;
+const asksOf = async (k: Kited, threadId: string) => (await stateOf(k, threadId)).asks ?? [];
 
 /** Line 的收件箱：Line 工作区里的 monitor 实例。 */
 function inboxInstance(k: Kited) {
@@ -235,12 +247,13 @@ test('Line 停止线程须经用户逐次批准：等待挂在 Line 的线程上
 }, 1000);
 
 /*
- * 几个部分的配合：A 的 monitor 跨机读 B 的汇总，把 B 上的提问放进收件箱而不唤醒 Line；用户点代处理才投一条 Kite 来源的输入；
- * Line 的 line_handle 经跨机调用（带 X-Kite-Source）写回 B 上那个等待，B 的工具结果写明由 Line 代答及理由；了结后事项
- * 移出收件箱，没有设备关注时用户算离开，这一项记进离开期间的记录。
+ * 几个部分的配合：A 的 monitor 跨机读 B 的汇总，把 B 上没回应的提问（提问不阻塞，B 已结束回合）放进收件箱而不唤醒 Line；
+ * 用户点代处理才投一条 Kite 来源的输入；Line 的 line_handle 经跨机调用（带 X-Kite-Source）回应 B 上那项提问，B 撤下提问，
+ * 空闲的线程开始新回合，收到一条来源为 kite 的输入，写明由 Line 代答及理由；了结后事项移出收件箱，没有设备关注时用户算离开，
+ * 这一项记进离开期间的记录。
  * 工作线程能用 question，line_* 只声明给 Line 角色的实例；Line 的角色工具与默认的操作授权合起来，它能用 monitor_*。
  */
-test('B 上的提问进 Line 收件箱而不唤醒 Line，用户点代处理才唤醒；Line 用 line_handle 答复后 B 的线程拿到 Line 代答的结果，事项移出收件箱进处理记录', async () => {
+test('B 上的提问进 Line 收件箱而不唤醒 Line，用户点代处理才唤醒；Line 用 line_handle 答复后 B 撤下提问、线程收到 Line 代答的输入，事项移出收件箱进处理记录', async () => {
   const s = await lineSetup();
   const work = s.modelOf(s.workId);
   const line = s.modelOf(s.lineId);
@@ -249,13 +262,13 @@ test('B 上的提问进 Line 收件箱而不唤醒 Line，用户点代处理才�
   const asked = await ask(s.b, work, s.workId, 1, '第一个问题');
   expect(asked.call.request.allowedTools).toContain('question');
   expect((asked.call.request.allowedTools ?? []).filter((tool) => tool.startsWith('line_'))).toEqual([]);
-  const itemId = `waiting:${asked.waiting.id}`;
+  const itemId = `waiting:${asked.ask.id}`;
   await s.a.daemon.kite.monitor.check();
   const inbox = await inboxOf(s.a);
   expect(inbox.items.map((entry) => [entry.id, entry.kind, entry.machine.id, entry.thread?.id, entry.delegated])).toEqual([
     [itemId, 'question', s.machineB, s.workId, undefined],
   ]);
-  expect(inbox.items[0]!.waiting).toEqual(asked.waiting);
+  expect(inbox.items[0]!.waiting).toEqual(asked.ask);
   expect(line.calls.values).toHaveLength(0);
   expect(wakesOf(s.a, s.lineId)).toEqual([]);
 
@@ -269,11 +282,13 @@ test('B 上的提问进 Line 收件箱而不唤醒 Line，用户点代处理才�
   await woke.response.emit({ type: 'item', item: calledItem('handle-1', 'line_handle', { item: itemId, answers: [{ selected: ['乙'] }], reason }) });
   woke.response.complete();
 
-  const resumed = await work.call(2);
-  const answered = resultOf(resumed.request, 'ask-1');
-  expect(answered?.status).toBe('success');
-  const output = JSON.parse(answered!.output) as { answers: Array<{ selected?: string[] }>; answeredBy?: string; reason?: string };
-  expect([output.answers.map((answer) => answer.selected), output.answeredBy, output.reason]).toEqual([[['乙']], 'Line', reason]);
+  const resumed = await work.call(3);
+  const answered = inputs(resumed.request).at(-1)!;
+  expect(answered.source).toBe('kite');
+  expect(answered.text.split('\n')).toEqual([
+    `Line 替用户回答了你的提问（请求 ${asked.ask.id}）：`, '- 第一个问题', '  回答：「乙」', `Line 的理由：${reason}`,
+  ]);
+  expect(await asksOf(s.b, s.workId)).toEqual([]);
   const handled = await line.call(2);
   expect(resultOf(handled.request, 'handle-1')?.status).toBe('success');
   const settled = await inboxOf(s.a);
@@ -307,7 +322,7 @@ test('代处理遇上 Line 工作区开始交接时不投递也不丢，撤回�
 
   await send(s.b, s.workId, 'kickoff', '开始');
   const asked = await ask(s.b, work, s.workId, 1, '用哪个方案');
-  const itemId = `waiting:${asked.waiting.id}`;
+  const itemId = `waiting:${asked.ask.id}`;
   await check();
 
   // 这一轮读账号目录时停住，此时 Line 的工作区开始交接：交接把工作区置为 handing_off，本地拒绝新的执行。
@@ -344,9 +359,9 @@ test('代处理遇上 Line 工作区开始交接时不投递也不丢，撤回�
   expect(wakesOf(s.a, s.lineId)).toEqual(wakes);
 
   // 用户在 B 上直接回答，下一轮读到等待已解除，事项移出，也不算 Line 处理过。
-  const answered = await s.b.call('POST', `/threads/${s.workId}/waiting/${asked.waiting.id}`, { answers: [{ selected: ['甲'] }] });
+  const answered = await s.b.call('POST', `/threads/${s.workId}/waiting/${asked.ask.id}`, { answers: [{ selected: ['甲'] }] });
   expect(answered.status).toBe(200);
-  await work.call(2);
+  await work.call(3);
   await check();
   // 离开期间在别处回应的事项记为自己解除；宿主把它交回用户不算 Line 的处理，不另记。
   const final = await inboxOf(s.a);
@@ -384,7 +399,7 @@ test('事件流连着且声明关注才算在关注：在关注时提问进收�
   const q1 = await ask(s.b, work, s.workId, 2, '先问一句');
   let at = mark(s.a);
   await check();
-  expect(await ids()).toEqual([`waiting:${q1.waiting.id}`]);
+  expect(await ids()).toEqual([`waiting:${q1.ask.id}`]);
   expect(notified(at)).toEqual([]);
   await stream.events.wait((e) => e.type === 'line.inbox');
 
@@ -393,16 +408,16 @@ test('事件流连着且声明关注才算在关注：在关注时提问进收�
   const away = await attentionOf(s.a);
   expect(away.focusedDevices).toEqual([]);
   expect(typeof away.awaySince).toBe('number');
-  expect((await s.b.call('POST', `/threads/${s.workId}/waiting/${q1.waiting.id}`, { answers: [{ selected: ['甲'] }] })).status).toBe(200);
+  expect((await s.b.call('POST', `/threads/${s.workId}/waiting/${q1.ask.id}`, { answers: [{ selected: ['甲'] }] })).status).toBe(200);
   since = mark(s.b);
-  (await work.call(3)).response.complete();
+  (await work.call(4)).response.complete();
   await waitIdle(s.b, s.workId, since);
   at = mark(s.a);
   await check();
   expect(await ids()).toEqual([`turn:${s.workId}`]);
   expect(notified(at)).toEqual([]);
   // 离开期间在 B 上回应的提问记进这一段；回合结束留在等你的那一段，点「知道了」才移出。
-  const q1Record = [`waiting:${q1.waiting.id}`, 'resolved'];
+  const q1Record = [`waiting:${q1.ask.id}`, 'resolved'];
   const leaving = await inboxOf(s.a);
   expect(leaving.period).toEqual({ since: away.awaySince! });
   expect(leaving.records.map((record) => [record.item.id, record.outcome])).toEqual([q1Record]);
@@ -411,10 +426,10 @@ test('事件流连着且声明关注才算在关注：在关注时提问进收�
 
   // 离开期间的新提问立即推一条通知到目录事件流。
   await send(s.b, s.workId, 'third', '第三件事');
-  const q2 = await ask(s.b, work, s.workId, 4, '再问一句');
+  const q2 = await ask(s.b, work, s.workId, 5, '再问一句');
   at = mark(s.a);
   await check();
-  const q2Item = `waiting:${q2.waiting.id}`;
+  const q2Item = `waiting:${q2.ask.id}`;
   expect(await ids()).toEqual([q2Item]);
   expect(notified(at).map((note) => note.item)).toEqual([q2Item]);
   const pushed = await stream.events.wait((e) => e.type === 'line.notification');
@@ -445,38 +460,44 @@ test('事件流连着且声明关注才算在关注：在关注时提问进收�
 }, 1000);
 
 /*
- * 几个部分的配合：line_relay 从 Line 线程里取用户的原话，经跨机调用写到 B：B 在等提问时作为每个问题的「其他」回答，
- * 没有等待时经 POST /threads/:id/messages {relay: true} 成为来源为人、带 via 的输入。转达记在 monitor 状态里，
- * 同一来源消息与目标的重试只去重：已答过提问的那句不会在 B 不再等待后变成一条消息，发过的消息也不会再发一遍。
+ * 几个部分的配合：line_relay 从 Line 线程里取用户的原话，经跨机调用写到 B：B 有没回答的提问时作为它每个问题的「其他」回答，
+ * B 撤下提问，空闲的线程开始新回合、收到 Line 代答的输入；没有提问时（只剩一项密钥请求也一样，Line 不能回应密钥请求）
+ * 经 POST /threads/:id/messages {relay: true} 成为来源为人、带 via 的输入，密钥请求留着。转达记在 monitor 状态里，
+ * 同一来源消息与目标的重试只去重：已答过提问的那句不会在 B 不再有提问后变成一条消息，发过的消息也不会再发一遍。
  */
-test('line_relay 照原文转达用户的话：B 在等提问时作为「其他」回答，没有等待时成为来源为人、经 Line 的输入；同一句重试只去重', async () => {
+test('line_relay 照原文转达用户的话：B 有没回答的提问时作为「其他」回答、B 收到 Line 代答的输入，没有提问时（只有密钥请求也一样）成为来源为人、经 Line 的输入；同一句重试只去重', async () => {
   const s = await lineSetup();
   const work = s.modelOf(s.workId);
   const line = s.modelOf(s.lineId);
   const relay = { machine: s.machineB, threadId: s.workId };
 
   await send(s.b, s.workId, 'kickoff', '开始');
-  await ask(s.b, work, s.workId, 1, '用哪个方案');
+  const asked = await ask(s.b, work, s.workId, 1, '用哪个方案');
   const first = '两个都不要，用第三种：先写测试再改';
   await send(s.a, s.lineId, 'user-1', first);
   const l1 = await line.call(1);
   await l1.response.emit({ type: 'item', item: calledItem('relay-1', 'line_relay', relay) });
   l1.response.complete();
-  const resumed = await work.call(2);
-  const answered = resultOf(resumed.request, 'ask-1');
-  expect(answered?.status).toBe('success');
-  expect((JSON.parse(answered!.output) as { answers: Array<{ selected?: string[]; other?: string }> }).answers
-    .map((answer) => [answer.selected ?? [], answer.other])).toEqual([[[], first]]);
+  const resumed = await work.call(3);
+  const answered = inputs(resumed.request).at(-1)!;
+  expect(answered.source).toBe('kite');
+  expect(answered.text.split('\n')).toEqual([`Line 替用户回答了你的提问（请求 ${asked.ask.id}）：`, '- 用哪个方案', `  回答：其他：${first}`]);
   const l2 = await line.call(2);
   expect(resultOf(l2.request, 'relay-1')?.status).toBe('success');
   let since = mark(s.a);
   l2.response.complete();
   await waitIdle(s.a, s.lineId, since);
-  since = mark(s.b);
-  resumed.response.complete();
-  await waitIdle(s.b, s.workId, since);
 
-  // B 不再等待：第二句发成一条消息；这一句按 ID 重试、第一句重试，都只去重。
+  // B 的这一回合要一项密钥就结束：只剩密钥请求，没有提问。
+  since = mark(s.b);
+  await resumed.response.emit({ type: 'item', item: calledItem('token', 'credentials', { request: [{ name: 'API_TOKEN', reason: '调接口' }] }) });
+  resumed.response.complete();
+  await s.b.waitEvent((e) => e.type === 'asks' && e.threadId === s.workId && e.asks.length > 0 && after(s.b, since)(e));
+  (await work.call(4)).response.complete();
+  await waitIdle(s.b, s.workId, since);
+  expect((await asksOf(s.b, s.workId)).map((entry) => entry.kind)).toEqual(['secret']);
+
+  // B 没有提问：第二句发成一条消息；这一句按 ID 重试、第一句重试，都只去重。
   const second = '再补一个空输入的用例';
   await send(s.a, s.lineId, 'user-2', second);
   const l3 = await line.call(3);
@@ -488,8 +509,9 @@ test('line_relay 照原文转达用户的话：B 在等提问时作为「其他�
   expect(['relay-2', 'relay-2-again', 'relay-1-again'].map((id) => resultOf(l4.request, id)?.status)).toEqual(['success', 'success', 'success']);
   const relayed = received(s.b, s.workId).filter((input) => input.text === first || input.text === second);
   expect(relayed).toEqual([{ id: expect.any(String), text: second, source: 'human', via: { kind: 'line', machine: s.machineA, instance: s.lineId } }]);
-  const next = await work.call(3);
+  const next = await work.call(5);
   expect(inputs(next.request).at(-1)?.text).toBe(second);
+  expect((await asksOf(s.b, s.workId)).map((entry) => entry.kind)).toEqual(['secret']);
 }, 1000);
 
 /*

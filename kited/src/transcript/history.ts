@@ -146,6 +146,7 @@ export class TranscriptHistory {
       const current = this.store.threadContext(t.id);
       if (!current) throw new KiteError(`没有这个线程：${t.id}`, 404);
       projection.lifecycle(current.workspace.status, current.status);
+      projection.setAsks(this.store.asks(t.id));
       projection.finishReplay();
       // 读的途中记录被换掉（forget）的，读出来的只交给这次的调用方，不留作缓存
       if (this.loadingTranscripts.get(t.id) !== promise) return projection;
@@ -173,7 +174,8 @@ export class TranscriptHistory {
   private observe(id: string, state: DisplayState, at?: number): void {
     const previous = this.activities.get(id);
     const next: ThreadActivity = { phase: state.phase, waitingForResume: state.waitingForResume,
-      ...(state.waiting ? { waiting: state.waiting.kind } : {}),
+      // 没回应的请求不阻塞回合，代理停下以后才算在等
+      ...(state.waiting ? { waiting: state.waiting.kind } : state.phase === 'idle' && state.asks?.[0] ? { waiting: state.asks[0].kind } : {}),
       ...(state.lastOutcome ? { outcome: state.lastOutcome.kind } : {}), ...(state.error ? { error: true as const } : {}) };
     if (previous && previous.phase === next.phase && previous.waitingForResume === next.waitingForResume && previous.waiting === next.waiting
       && previous.outcome === next.outcome && previous.error === next.error) return;

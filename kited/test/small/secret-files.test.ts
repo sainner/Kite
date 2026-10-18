@@ -10,10 +10,11 @@ import { join } from 'node:path';
 import type { Credential } from '../../src/account-data/credentials.ts';
 import type { RegisteredProject } from '../../src/account-data/registry.ts';
 import type { Envelope } from '../../src/events.ts';
-import type { Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
+import type { Input, Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
 import type { Workspace, WorkspaceModel } from '../../src/model.ts';
 import { checkoutPath } from '../../src/paths.ts';
-import type { Waiting } from '../../src/waiting.ts';
+import type { DisplayState } from '../../src/transcript/protocol.ts';
+import type { Ask } from '../../src/waiting.ts';
 import { chatgptLogin, type Kited, machine, startKited } from '../harness.ts';
 import { item, ManualModel } from '../harness-loop.ts';
 import { commitAll, git, newRepo, read, until, writeFiles } from '../util.ts';
@@ -61,8 +62,19 @@ const resultOf = (request: ModelRequest, callId: string): ToolResult | undefined
   const found = request.history.find((entry) => entry.type === 'tool_result' && entry.callId === callId);
   return found?.type === 'tool_result' ? found.result : undefined;
 };
-const secretWaiting = (k: Kited, threadId: string, since: number) => k.waitEvent((e) => e.type === 'waiting' && e.threadId === threadId
-  && e.waiting?.kind === 'secret' && after(k, since)(e)).then((e) => (e as Extract<Envelope, { type: 'waiting' }>).waiting!);
+const inputs = (request: ModelRequest): Input[] => request.history.flatMap((entry) => entry.type === 'input' ? [entry.input] : []);
+/** 请求里宿主交来的、写着这个请求 ID 的那一条输入（只能有一条）。 */
+const kiteInput = (request: ModelRequest, askId: string): string => {
+  const found = inputs(request).filter((input) => input.source === 'kite' && input.text.includes(askId));
+  expect(found).toHaveLength(1);
+  return found[0]!.text;
+};
+/** 等 since 之后线程的 asks 里出现第一项是 first（密钥名或变量名）的密钥请求。 */
+async function secretAsk(k: Kited, threadId: string, since: number, first: string): Promise<Ask> {
+  const match = (ask: Ask) => ask.kind === 'secret' && (ask.secrets[0]?.name ?? ask.secrets[0]?.key) === first;
+  const event = await k.waitEvent((e) => e.type === 'asks' && e.threadId === threadId && e.asks.some(match) && after(k, since)(e));
+  return (event as Extract<Envelope, { type: 'asks' }>).asks.find(match)!;
+}
 const waitIdle = (k: Kited, threadId: string, since: number) => k.waitEvent((e) => e.type === 'idle' && e.threadId === threadId && after(k, since)(e));
 
 /*
@@ -217,72 +229,117 @@ test('代理改不了宿主写进工作区的 .env：patch 报错并提示用 cr
 }, 1000);
 
 /*
- * 几个部分的配合：credentials 的请求动作在线程上挂出密钥等待，回合停在这次调用上；用户的回应存进凭据，
- * 宿主按 dotenv 的写法替换文件里那一行（其他行保留）并重写进工作区，工具结果不带用户填的值。
- * Line 代处理（带 X-Kite-Source）不能回应密钥请求。独立的密钥按用户选的范围存成账号共享。
- * 不回应、直接发带 skipWaiting 的消息时，这次调用按未提供交回，不存任何密钥。
+ * 几个部分的配合：credentials 的请求动作一次要几项，工具把请求存进库就返回请求 ID，线程状态的 asks 里挂出一个密钥请求
+ * （逐项带文件与变量名或密钥名），回合照常往下走。用户按请求顺序逐项回应、没填的为 null：宿主先存进凭据，填了几项存几项，
+ * 同一个 .env 里填了的几项一起写进文件（逐项各写一次时后写的会盖掉先写的），按 dotenv 的写法替换那几行（没填的行与其他行保留）
+ * 并重写进工作区，没填的独立密钥不存；再把逐项写明存好与没填、不带用户填的值的结果作为来源为 kite 的输入交给线程
+ * （空闲的开始新回合，在跑的在下一次请求里纳入）。Line 代处理（带 X-Kite-Source）不能回应密钥请求。独立的密钥按用户选的范围存成账号共享。
+ * 用户发消息不撤下请求，之后拒绝时线程收到拒绝说明、什么也不存。审批模式为全放行且每项都带值时不问用户，直接存好并在工具结果里逐项说明。
  */
-test('密钥请求：挂出带文件与变量名的等待，Line 回应得 403，用户填写后 .env 里那一行换成新值、结果不带值；独立密钥可存成账号共享；不回应直接发消息按未提供交回', async () => {
+test('密钥请求不等回应：一次要几项时立即返回请求 ID、asks 里挂出逐项的请求，Line 回应得 403；用户只填一部分时只存填了的，同一 .env 里填的几行一起换成新值、没填的行和独立密钥不动，线程收到逐项写明存好与没填且不带值的输入；独立密钥可存成账号共享；发消息后请求仍在，拒绝时线程收到拒绝说明、什么也不存；全放行且每项带值时直接存好', async () => {
   const model = new ManualModel();
   const k = start(model);
-  const folder = newRepo(k.root, 'shop', { '.gitignore': '.env\n', 'a.txt': 'a\n', '.env': 'NAME=demo\nPORT=3000\n# 注释\n' }, null);
+  const folder = newRepo(k.root, 'shop', { '.gitignore': '.env\n', 'a.txt': 'a\n', '.env': 'NAME=demo\nPORT=3000\nMODE=dev\n# 注释\n' }, null);
   const project = await addProject(k, { path: folder, envFiles: [{ path: '.env' }] });
   const { workspace, thread } = await openWorkspace(k, project.id, '换个端口');
   const id = thread!;
-  const respond = (waiting: Waiting, body: unknown, headers: Record<string, string> = {}) => machine(k.url).then((m) => fetch(`${k.url}/threads/${id}/waiting/${waiting.id}`, {
+  const respond = (ask: Ask, body: unknown, headers: Record<string, string> = {}) => machine(k.url).then((m) => fetch(`${k.url}/threads/${id}/waiting/${ask.id}`, {
     method: 'POST', headers: { 'content-type': 'application/json', 'X-Kite-Machine': m.id, ...headers }, body: JSON.stringify(body),
   }));
+  const secretNames = async () => [
+    ...((await k.call('GET', '/credentials?type=secret')).body as Credential[]),
+    ...((await k.call('GET', `/credentials?type=secret&projectId=${project.id}`)).body as Credential[]),
+  ].map((c) => c.name);
+  const asksNow = async () => ((await k.call('GET', `/threads/${id}/state`)).body as DisplayState).asks ?? [];
 
   const first = await model.call(1);
   expect(first.request.allowedTools).toContain('credentials');
   let since = mark(k);
-  await first.response.emit({ type: 'item', item: calledItem('port', 'credentials', {
-    request: { file: '.env', key: 'PORT', reason: '开发服务器换个端口', value: '3001' },
-  }) });
+  await first.response.emit({ type: 'item', item: calledItem('setup', 'credentials', { request: [
+    { file: '.env', key: 'PORT', reason: '开发服务器换个端口', value: '3001' },
+    { file: '.env', key: 'NAME', reason: '换个应用名' },
+    { file: '.env', key: 'MODE', reason: '切到预发环境' },
+    { name: 'SENTRY_DSN', reason: '上报错误' },
+  ] }) });
   first.response.complete();
-  const port = await secretWaiting(k, id, since);
-  expect(port).toMatchObject({ kind: 'secret', file: '.env', key: 'PORT', value: '3001', exists: true });
+  const asked = await secretAsk(k, id, since, 'PORT');
+  expect(asked).toMatchObject({ kind: 'secret', secrets: [
+    { file: '.env', key: 'PORT', reason: '开发服务器换个端口', value: '3001', exists: true },
+    { file: '.env', key: 'NAME', reason: '换个应用名', exists: true },
+    { file: '.env', key: 'MODE', reason: '切到预发环境', exists: true },
+    { name: 'SENTRY_DSN', reason: '上报错误', exists: false },
+  ] });
+  const second = await model.call(2);
+  expect(resultOf(second.request, 'setup')?.output).toContain(`已向用户要 4 项密钥，请求 ID 是 ${asked.id}`);
+  since = mark(k);
+  second.response.complete();
+  await waitIdle(k, id, since);
+  expect(await asksNow()).toEqual([asked]);
 
-  const byLine = await respond(port, { secret: { value: '9999' } },
+  const byLine = await respond(asked, { secret: { values: ['9999', null, null, null] } },
     { 'X-Kite-Source': JSON.stringify({ kind: 'line', machine: 'line-machine', instance: 'line-instance' }) });
   expect(byLine.status).toBe(403);
-  expect((await respond(port, { secret: { value: '3002' } })).status).toBe(200);
-  const second = await model.call(2);
-  const portResult = resultOf(second.request, 'port');
-  expect(portResult?.status).toBe('success');
-  expect(portResult?.output).not.toContain('3002');
-  await until(() => read(join(workspace.cwd, '.env')) === 'NAME=demo\nPORT=3002\n# 注释\n', '.env 里 PORT 换成用户填的值', 800);
-
-  since = mark(k);
-  await second.response.emit({ type: 'item', item: calledItem('stripe', 'credentials', { request: { name: 'STRIPE_KEY', reason: '调支付接口' } }) });
-  second.response.complete();
-  const stripe = await secretWaiting(k, id, since);
-  expect(stripe).toMatchObject({ kind: 'secret', name: 'STRIPE_KEY', exists: false });
-  expect((await respond(stripe, { secret: { value: 'sk_test_7f3a', scope: 'account' } })).status).toBe(200);
+  expect((await respond(asked, { secret: { values: ['3002', null, 'staging', null] } })).status).toBe(200);
   const third = await model.call(3);
-  expect(resultOf(third.request, 'stripe')?.status).toBe('success');
-  expect(resultOf(third.request, 'stripe')?.output).not.toContain('sk_test_7f3a');
+  const setup = kiteInput(third.request, asked.id);
+  expect(setup).not.toContain('3002');
+  expect(setup).not.toContain('staging');
+  const [summary, ...lines] = setup.split('\n');
+  expect(summary).toBe(`用户回应了你的密钥请求（请求 ${asked.id}），存好 2 项，2 项用户没有填：`);
+  expect(lines).toEqual([
+    expect.stringMatching(/^- \.env 里的 PORT：已存好/),
+    expect.stringMatching(/^- \.env 里的 NAME：用户没有填，没有存/),
+    expect.stringMatching(/^- \.env 里的 MODE：已存好/),
+    expect.stringMatching(/^- SENTRY_DSN：用户没有填，没有存/),
+  ]);
+  await until(() => read(join(workspace.cwd, '.env')) === 'NAME=demo\nPORT=3002\nMODE=staging\n# 注释\n', '.env 里 PORT 与 MODE 都换成用户填的值、NAME 不动', 800);
+  expect(await secretNames()).not.toContain('SENTRY_DSN');
+  expect(await asksNow()).toEqual([]);
+
+  // 线程在跑时回应：结果在同一回合的下一次请求里纳入。
+  since = mark(k);
+  await third.response.emit({ type: 'item', item: calledItem('stripe', 'credentials', { request: [{ name: 'STRIPE_KEY', reason: '调支付接口' }] }) });
+  third.response.complete();
+  const stripe = await secretAsk(k, id, since, 'STRIPE_KEY');
+  expect(stripe).toMatchObject({ kind: 'secret', secrets: [{ name: 'STRIPE_KEY', exists: false }] });
+  const fourth = await model.call(4);
+  expect((await respond(stripe, { secret: { values: ['sk_test_7f3a'], scope: 'account' } })).status).toBe(200);
   const shared = (await k.call('GET', '/credentials?type=secret')).body as Credential[];
   expect(shared).toContainEqual(expect.objectContaining({ name: 'STRIPE_KEY', projectId: null }));
 
   since = mark(k);
-  await third.response.emit({ type: 'item', item: calledItem('webhook', 'credentials', { request: { name: 'WEBHOOK_SECRET', reason: '验签' } }) });
-  third.response.complete();
-  const webhook = await secretWaiting(k, id, since);
+  await fourth.response.emit({ type: 'item', item: calledItem('webhook', 'credentials', { request: [{ name: 'WEBHOOK_SECRET', reason: '验签' }] }) });
+  fourth.response.complete();
+  const webhook = await secretAsk(k, id, since, 'WEBHOOK_SECRET');
+  const fifth = await model.call(5);
+  const stored = kiteInput(fifth.request, stripe.id);
+  expect(stored.startsWith(`用户回应了你的密钥请求（请求 ${stripe.id}），存好 1 项`)).toBe(true);
+  expect(stored).not.toContain('sk_test_7f3a');
+  expect(k.events.filter((e) => e.type === 'idle' && e.threadId === id && after(k, since)(e))).toEqual([]);
+
   const text = '先不配 webhook，接着做别的';
   expect((await k.call('POST', `/threads/${id}/messages`, { id: 'skip', text, skipWaiting: webhook.id })).status).toBe(200);
-  const fourth = await model.call(4);
-  const skipped = resultOf(fourth.request, 'webhook');
-  expect(skipped).toBeDefined();
-  expect(skipped?.status).not.toBe('unknown');
-  const message = fourth.request.history.findIndex((entry) => entry.type === 'input' && entry.input.id === 'skip');
-  expect(message).toBeGreaterThan(fourth.request.history.findIndex((entry) => entry.type === 'tool_result' && entry.callId === 'webhook'));
-  const secrets = [
-    ...((await k.call('GET', '/credentials?type=secret')).body as Credential[]),
-    ...((await k.call('GET', `/credentials?type=secret&projectId=${project.id}`)).body as Credential[]),
-  ];
-  expect(secrets.map((c) => c.name)).not.toContain('WEBHOOK_SECRET');
+  expect(await asksNow()).toEqual([webhook]);
+  expect((await respond(webhook, { decision: 'deny' })).status).toBe(200);
+  expect(await asksNow()).toEqual([]);
+
+  // 全放行且每项都带值：不挂请求，直接存好。
+  expect((await k.call('PUT', `/instances/${id}/approval-mode`, { mode: 'allow_all' })).body).toMatchObject({ mode: 'allow_all', effective: 'allow_all' });
   since = mark(k);
-  fourth.response.complete();
+  await fifth.response.emit({ type: 'item', item: calledItem('direct', 'credentials', { request: [{ name: 'DEPLOY_HOOK', reason: '部署通知', value: 'hook-v1' }] }) });
+  fifth.response.complete();
+  const sixth = await model.call(6);
+  expect(inputs(sixth.request).find((input) => input.id === 'skip')).toEqual({ id: 'skip', text, source: 'human' });
+  expect(kiteInput(sixth.request, webhook.id)).toBe(`用户拒绝提供你请求的密钥（请求 ${webhook.id}）：WEBHOOK_SECRET`);
+  const direct = resultOf(sixth.request, 'direct');
+  expect(direct?.status).toBe('success');
+  expect(direct?.output.startsWith('存好 1 项')).toBe(true);
+  expect(direct?.output).not.toContain('hook-v1');
+  expect(k.events.filter((e) => e.type === 'asks' && e.threadId === id && after(k, since)(e))).toEqual([]);
+  const names = await secretNames();
+  expect(names).toContain('DEPLOY_HOOK');
+  expect(names).not.toContain('WEBHOOK_SECRET');
+  since = mark(k);
+  sixth.response.complete();
   await waitIdle(k, id, since);
 }, 1000);

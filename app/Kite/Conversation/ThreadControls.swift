@@ -66,7 +66,7 @@ struct ThreadControls: View {
     private func composer(_ controls: ThreadControlsModel, fading: FadingText?) -> some View {
         @Bindable var thread = thread
         @Bindable var answers = thread.answers
-        let answering = controls.answering != nil, responding = controls.responding
+        let answering = controls.answering != nil
         return VStack(spacing: 2) {
             TextField(controls.placeholder, text: answering ? $answers.currentOther : $thread.draft, axis: .vertical)
                 .textFieldStyle(.plain)
@@ -81,25 +81,18 @@ struct ThreadControls: View {
                 .overlay { FadingSnapshot(fading: fading) }
                 .padding(.horizontal, Metrics.controlInset + 8)
                 .padding(.vertical, 6)
-                // 作答、审批时的灰底，见 ComposerLayout.fieldFill
-                .background {
-                    RoundedRectangle(cornerRadius: ComposerLayout.fieldFillRadius, style: .continuous).fill(ComposerLayout.fieldFill)
-                        .padding(.horizontal, Metrics.controlInset)
-                        .opacity(responding ? 1 : 0)
-                        .animation(ComposerMotion.animation, value: responding)
-                }
             HStack(spacing: Metrics.paneButtonGap) {
-                // 作答时思考强度的位置是上一题、下一题（多题时），一题时空着；审批时是拒绝、允许并记住（允许在主按钮上）
+                // 作答时思考强度的位置是上一题、下一题（多题时），一题时空着；审批、密钥请求时是拒绝和次级的决定（主决定在主按钮上）
                 if answering {
                     if controls.questionSteps, let answers = controls.answering { QuestionStepButtons(answers: answers) }
-                } else if let waiting = controls.approving {
+                } else if let waiting = controls.deciding {
                     HStack(spacing: ThreadControlsModel.actionGap) {
-                        ForEach(ApprovalDecision.others(for: waiting), id: \.reply) { decision in
+                        ForEach(WaitingDecision.others(for: waiting), id: \.reply) { decision in
                             Button(decision.title) { controls.decide(decision) }
                                 .buttonStyle(decision.style)
+                                .disabled(!controls.canDecide(decision))
                         }
                     }
-                    .disabled(thread.answers.busy)
                     .fixedSize()
                 } else {
                     ThreadEffortControl(controls: controls).fixedSize().layoutPriority(1)

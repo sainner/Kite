@@ -17,7 +17,7 @@ import { localTools } from '../../src/execution/local-tools.ts';
 import { requestSnapshot } from '../../src/harness/request-config.ts';
 import type { JournalEvent, JournalRecord, ModelItem, ToolResult } from '../../src/harness/types.ts';
 import type { ThreadContext } from '../../src/model.ts';
-import type { Waiting } from '../../src/waiting.ts';
+import type { Ask, Waiting } from '../../src/waiting.ts';
 import { command } from './command.ts';
 
 // patch 的磁盘副作用与 journal 的 schema 解析交接后，投影和 Swift 仍须保留可回看的 diff 引用。
@@ -278,23 +278,25 @@ if (correctedRecord?.block.type !== 'tool_use' || correctedRecord.generation !==
   throw new Error('损坏草稿未被完整模型条目按原调用校正');
 }
 
-// 宿主的 waiting 事件经投影进入 thread.state，Swift 按 RemoteWaiting 分别解出提问和审批；解除后不残留。
-const asked: Waiting = { id: 'fixture-question', since: 3_000, kind: 'question', questions: [{
+// 宿主的 asks 事件（没回应的提问，不阻塞）与 waiting 事件（卡着回合的审批）经投影进入 thread.state 的 asks 与 waiting，
+// Swift 都按 RemoteWaiting 解出；两者可以同时存在，审批解除、提问撤下后都不残留。
+const asked: Ask = { id: 'fixture-question', since: 3_000, kind: 'question', questions: [{
   question: '用哪种做法？', multiSelect: true,
   options: [{ label: '甲（推荐）', description: '改动小' }, { label: '乙', description: '更彻底' }],
 }] };
 const approval: Waiting = { id: 'fixture-approval', since: 3_001, kind: 'approval',
   tool: 'shell', target: 'rm -rf ../build', reason: '删除工作区外的目录', mustAsk: true };
-projection.accept({ type: 'waiting', threadId: thread.id, at: 3_000, waiting: asked });
+projection.accept({ type: 'asks', threadId: thread.id, at: 3_000, asks: [asked] });
 const asking = projection.snapshot().state;
-projection.accept({ type: 'waiting', threadId: thread.id, at: 3_001 });
-projection.accept({ type: 'waiting', threadId: thread.id, at: 3_002, waiting: approval });
+projection.accept({ type: 'waiting', threadId: thread.id, at: 3_001, waiting: approval });
 const approving = projection.snapshot().state;
-projection.accept({ type: 'waiting', threadId: thread.id, at: 3_003 });
+projection.accept({ type: 'waiting', threadId: thread.id, at: 3_002 });
+projection.accept({ type: 'asks', threadId: thread.id, at: 3_003, asks: [] });
 const answered = projection.snapshot().state;
-if (!isDeepStrictEqual(asking.waiting, asked) || !isDeepStrictEqual(approving.waiting, approval)
-  || answered.waiting !== undefined) {
-  throw new Error(`waiting 事件未原样进入显示状态或解除后残留：${JSON.stringify([asking.waiting, approving.waiting, answered.waiting])}`);
+if (!isDeepStrictEqual(asking.asks, [asked]) || asking.waiting !== undefined
+  || !isDeepStrictEqual(approving.waiting, approval) || !isDeepStrictEqual(approving.asks, [asked])
+  || answered.waiting !== undefined || (answered.asks ?? []).length !== 0) {
+  throw new Error(`asks 与 waiting 事件未原样进入显示状态或解除后残留：${JSON.stringify([asking, approving, answered].map((state) => [state.asks, state.waiting]))}`);
 }
 
 const root = mkdtempSync(join(tmpdir(), 'transcript-swift-contract-'));
@@ -355,20 +357,22 @@ struct TranscriptContract {
         require(states[1].context?.requestId == states[0].context?.requestId,
             "运行中不应把上次测量改属新请求")
         require(states[2].context == nil, "无效用量未解码为空")
-        guard let asking = states[3].waiting, let approving = states[4].waiting else {
-            fatalError("thread.state 的 waiting 未解码")
+        guard let asking = states[3].asks?.first, let approving = states[4].waiting else {
+            fatalError("thread.state 的 asks 或 waiting 未解码")
         }
+        require(states[3].asks?.count == 1 && states[3].waiting == nil, "没回应的提问不该解成卡着回合的 waiting")
         let question = asking.questions?.first
         require(asking.isQuestion && asking.id == "fixture-question" && asking.since == 3000
             && asking.questions?.count == 1 && question?.question == "用哪种做法？" && question?.multiSelect == true
             && question?.options.map { $0.label } == ["甲（推荐）", "乙"] && question?.options[1].description == "更彻底"
             && asking.tool == nil && asking.mustAsk == nil,
             "提问的问题、选项或多选未解码")
+        require(states[4].asks?.map { $0.id } == ["fixture-question"], "审批出现时没回应的提问未一并解码")
         require(!approving.isQuestion && approving.id == "fixture-approval" && approving.questions == nil
             && approving.tool == "shell" && approving.target == "rm -rf ../build"
             && approving.reason == "删除工作区外的目录" && approving.mustAsk == true,
             "审批的工具、目标、原因或必问未解码")
-        require(states[5].waiting == nil, "等待解除后仍解出 waiting")
+        require(states[5].waiting == nil && (states[5].asks ?? []).isEmpty, "审批解除、提问撤下后仍解出 waiting 或 asks")
 
         let stream = try JSONDecoder().decode(StreamFixture.self,
             from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[3])))

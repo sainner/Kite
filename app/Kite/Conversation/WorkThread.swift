@@ -13,7 +13,6 @@ final class WorkThread: Identifiable {
     }
     /// 从 transcript 摘出的几项，只在变了时写：窗口、标题栏和控制区只读这些，不跟着收发消息和每一次流式刷新重算。
     private(set) var hasTranscript = false
-    private(set) var transcriptRunning = false
     private(set) var transcriptRoot = ""
     var draft = ""
     /// 草稿里选好的角色；已有代理的角色记在实例配置里。
@@ -23,7 +22,7 @@ final class WorkThread: Identifiable {
     var agentOptions: AgentOptions?
     var configuringTemplate = false
     var state: RemoteState? {
-        didSet { if let waiting = state?.waiting { answers.adopt(waiting) } }
+        didSet { if let waiting { answers.adopt(waiting) } }
     }
     /// 在等的那一项的作答，回应卡片和输入区共用，见 WaitingAnswers。
     let answers = WaitingAnswers()
@@ -68,8 +67,10 @@ final class WorkThread: Identifiable {
     var canCancel: Bool { stopRequest == nil && connected && state?.capabilities.cancel == true }
     var canCompact: Bool { !isDraft && connected && state?.capabilities.compact == true }
     var canRegenerateTitle: Bool { !isDraft && connected && state?.status == "open" && !regeneratingTitle }
-    /// 圆环的阶段：卡在审批或提问上时是 waiting，圆环换警示黄、明暗起伏。
-    var statusPhase: String { stopping ? "stopping" : waiting != nil ? "waiting" : state?.phase ?? "idle" }
+    /// 圆环的阶段：在等人回应时是 waiting，圆环换警示黄、明暗起伏。
+    var statusPhase: String { stopping ? "stopping" : awaiting != nil ? "waiting" : state?.phase ?? "idle" }
+    /// 在等人回应的是哪一类：卡着回合的审批；没回应的提问、密钥请求不阻塞，代理停下以后才算在等（同工作机的活动摘要）。
+    var awaiting: String? { state?.waiting?.kind ?? (state?.phase == "idle" ? state?.asks?.first?.kind : nil) }
     /// 会话自身的错误：本地操作失败，或工作机报回的错误（含恢复阻塞与上一轮失败的说明）。
     /// 作为窗口信息区的提示盖住圆环，圆环的说明里不再重复。
     var problem: String? { error ?? state?.error ?? (state?.status == "failed" ? "工作区准备失败" : nil) }
@@ -86,7 +87,7 @@ final class WorkThread: Identifiable {
         default: break
         }
         return Self.turnStatus(phase: state?.phase, outcome: state?.lastOutcome?.kind, waitingForResume: state?.waitingForResume == true,
-                               waiting: state?.waiting?.kind)
+                               waiting: awaiting)
     }
 
     /// 回合的状态文字，标题栏圆环与停靠栏共用：先看是否在跑，再看上一轮结果，等待继续优先级最低。
@@ -130,7 +131,6 @@ final class WorkThread: Identifiable {
     private func summarizeTranscript() {
         let has = !transcript.items.isEmpty || !transcript.pending.isEmpty
         if hasTranscript != has { hasTranscript = has }
-        if transcriptRunning != transcript.running { transcriptRunning = transcript.running }
         if transcriptRoot != transcript.root { transcriptRoot = transcript.root }
     }
 
@@ -417,19 +417,53 @@ final class WorkThread: Identifiable {
         }
     }
 
-    /// 不回应 waiting、直接发 message：工作机先把消息排进输入，再按跳过交回这一项（提问记为跳过，审批记为拒绝）。在 send 之前调。
+    /// 不回应审批、直接发 message：工作机先把消息排进输入，再按拒绝交回这次审批。在 send 之前调。
     func skip(_ waiting: RemoteWaiting, sending message: Message) {
         skips[message.id] = waiting.id
     }
 
-    /// 线程在等的提问或审批。断线重连时照旧显示最后知道的那一项，卡片和答了一半的选择都不丢，重连后的历史再定它还在不在；
-    /// 连着工作机时才能回应，见 respond。
-    var waiting: RemoteWaiting? { state?.waiting }
+    /// 回应卡片上的那一项：卡着回合的审批优先，否则是最早几项连着的同类请求合成的一项（提问逐题排下去，密钥逐项排下去），
+    /// id 是各项的 id 用 | 连起来，回应时按项拆开，见 respond。断线重连时照旧显示最后知道的，卡片和答了一半的都不丢，
+    /// 重连后的历史再定它还在不在；连着工作机时才能回应。
+    var waiting: RemoteWaiting? {
+        if let approval = state?.waiting { return approval }
+        guard let asks = state?.asks, let first = asks.first else { return nil }
+        let run = asks.prefix { $0.kind == first.kind }
+        guard run.count > 1 else { return first }
+        var merged = first
+        merged.id = run.map(\.id).joined(separator: Self.mergedSeparator)
+        merged.questions = first.isQuestion ? run.flatMap { $0.questions ?? [] } : nil
+        merged.secrets = first.isSecret ? run.flatMap { $0.secrets ?? [] } : nil
+        return merged
+    }
 
-    /// 回应等你的那一项；回应后等待由会话事件撤下。已回应或已作废时工作机返回 409，等待同样随事件更新。
+    private static let mergedSeparator = "|"
+
+    /// 回应等你的那一项；回应后由会话事件撤下。合成的一项按各请求的题数、项数拆开逐个提交，已回应或已收回的那一项工作机返回 409，
+    /// 请求同样随事件更新。
     func respond(_ waiting: RemoteWaiting, _ reply: WaitingReply) async throws {
         guard let client, connected else { throw KitedError(message: "工作机未连接，连上后再提交") }
-        let _: JSON = try await client.request("/threads/\(id)/waiting/\(waiting.id.pathComponent)", method: "POST", body: reply, as: JSON.self)
+        let ids = waiting.id.components(separatedBy: Self.mergedSeparator)
+        guard ids.count > 1 else {
+            let _: JSON = try await client.request("/threads/\(id)/waiting/\(waiting.id.pathComponent)", method: "POST", body: reply, as: JSON.self)
+            return
+        }
+        // 合成以后有一项被收回或回应了，题数、项数对不上，等卡片按新的请求换过再提交
+        let asks = ids.compactMap { id in state?.asks?.first { $0.id == id } }
+        guard asks.count == ids.count else { throw KitedError(message: "请求有变化，确认卡片上的内容后再提交") }
+        var offset = 0
+        for ask in asks {
+            let count = ask.questions?.count ?? ask.secrets?.count ?? 0
+            let part: WaitingReply = switch reply {
+            case .answers(let answers): .answers(Array(answers[offset..<min(offset + count, answers.count)]))
+            // 账号共享只对独立的密钥；全是环境变量文件里的项的请求只能项目专用
+            case .secret(let secret): .secret(.init(values: Array(secret.values[offset..<min(offset + count, secret.values.count)]),
+                                                    scope: ask.hasStandaloneSecret ? secret.scope : "project"))
+            case .decision: reply
+            }
+            offset += count
+            let _: JSON = try await client.request("/threads/\(id)/waiting/\(ask.id.pathComponent)", method: "POST", body: part, as: JSON.self)
+        }
     }
 
     func resume() {

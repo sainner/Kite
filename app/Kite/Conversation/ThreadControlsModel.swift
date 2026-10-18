@@ -33,11 +33,12 @@ struct ThreadControlsModel {
     /// 附件、语音与固定主按钮之间的间距。
     static let actionGap: CGFloat = 4
 
+    /// 写明发出去会怎样：作答时写的是当前这题的「其他」；恢复阻塞时发送即确认已核查、接着做；审批时发出去就拒绝。
     var placeholder: String {
-        if answering != nil { return "其他" }
-        if thread.state?.recovery != nil { return "核查上次执行后，再继续或回复" }
-        if let waiting = skipping { return waiting.isQuestion ? "跳过问题" : waiting.isSecret ? "不提供密钥" : "跳过审批" }
-        return thread.transcriptRunning ? "插话，agent 做完手上这一步就会看到" : "回复"
+        if answering != nil { return "填写其他回答" }
+        if thread.state?.recovery != nil { return "发送消息并继续" }
+        if skipping != nil { return "发送消息并拒绝" }
+        return "发送消息"
     }
 
     // MARK: - 回应卡片
@@ -49,28 +50,34 @@ struct ThreadControlsModel {
         return answers
     }
 
-    /// 审批的卡片展开着：按钮行左边是拒绝、允许并记住（ApprovalDecision.others），主按钮在输入框空着时是允许一次（见 primaryAction），
-    /// 输入框照常发消息，发出去就拒绝（见 skipping）。
-    var approving: RemoteWaiting? {
+    /// 审批或密钥请求的卡片展开着：按钮行左边是拒绝和次级的决定（WaitingDecision.others），主按钮在输入框空着时是主决定（见 primaryAction），
+    /// 输入框照常发消息：审批时发出去就拒绝（见 skipping），密钥请求不阻塞，照常只发消息。密钥的值填在卡片里。
+    var deciding: RemoteWaiting? {
         let answers = thread.answers
-        guard let waiting = thread.waiting, !waiting.isQuestion, !waiting.isSecret, answers.waiting?.id == waiting.id, !answers.collapsed else { return nil }
+        guard let waiting = thread.waiting, !waiting.isQuestion, answers.waiting?.id == waiting.id, !answers.collapsed else { return nil }
         return waiting
     }
 
-    /// 回应卡片展开着（作答或审批）：输入框带灰底，按钮行左边不放思考强度。
-    var responding: Bool { answering != nil || approving != nil }
+    /// 回应卡片展开着（作答、审批或密钥请求）：按钮行左边不放思考强度。
+    var responding: Bool { answering != nil || deciding != nil }
 
-    /// 按了按钮行上审批的决定或允许；回应途中不再接，失败的说明写在卡片上。
-    func decide(_ decision: ApprovalDecision) {
-        let answers = thread.answers
-        guard let waiting = approving, !answers.busy else { return }
-        let thread = thread
-        answers.run { try await thread.respond(waiting, .decision(decision.reply)) }
+    /// 这个决定现在能不能按：回应途中不能，密钥请求要存的还得先填好合规的值。
+    func canDecide(_ decision: WaitingDecision) -> Bool {
+        !thread.answers.busy && decision.response(thread.answers) != nil
     }
 
-    /// 输入框发的消息会跳过的那一项：收起着的提问，或审批（审批的决定在按钮行和主按钮上，见 approving）。见 WorkThread.skip。
+    /// 按了按钮行上的决定或主按钮；回应途中不再接，失败的说明写在卡片上。
+    func decide(_ decision: WaitingDecision) {
+        let answers = thread.answers
+        guard let waiting = deciding, !answers.busy, let reply = decision.response(answers) else { return }
+        let thread = thread
+        answers.run { try await thread.respond(waiting, reply) }
+    }
+
+    /// 输入框发的消息会拒绝的审批（审批卡着回合，决定在按钮行和主按钮上，见 deciding）。提问与密钥请求不阻塞，发消息不动它们。
+    /// 见 WorkThread.skip。
     var skipping: RemoteWaiting? {
-        guard let waiting = thread.waiting, !waiting.isQuestion || thread.answers.collapsed else { return nil }
+        guard let waiting = thread.state?.waiting, waiting.kind == "approval" else { return nil }
         return waiting
     }
 
@@ -101,15 +108,15 @@ struct ThreadControlsModel {
     var delegate: (() async throws -> Void)? { model.lineDelegate(thread) }
     var listening: Bool { model.voice.owner == voiceOwner }
     var blank: Bool { thread.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    /// approve 是审批展开、输入框空着时的「允许一次」（必问的「批准这一次」），主题色实心圆里一个对勾。
+    /// decide 是审批或密钥请求展开、输入框空着时的主决定（允许一次、存为项目专用等，见 WaitingDecision.primary），主题色实心圆里一个对勾。
     enum PrimaryAction: Equatable {
         case send, stop, resume
-        case approve(ApprovalDecision)
+        case decide(WaitingDecision)
 
         var symbol: String {
             switch self {
             case .send: "arrow.up"
-            case .approve: "checkmark"
+            case .decide: "checkmark"
             case .stop: "stop.fill"
             case .resume: "play.fill"
             }
@@ -120,17 +127,17 @@ struct ThreadControlsModel {
             case .send: "发送"
             case .stop: "停止"
             case .resume: "继续"
-            case .approve(let decision): decision.title
+            case .decide(let decision): decision.title
             }
         }
     }
 
-    /// 草稿优先；审批展开时没写字是允许，写了字照常发送（发出去就拒绝，同提问的「其他」）；
+    /// 草稿优先；审批、密钥请求展开时没写字是主决定，写了字照常发送（发出去就拒绝，同提问的「其他」）；
     /// 暂停着能继续时继续优先于停止（排着的消息逐条可撤回），停止没确认时先重试停止；空闲时仍保留发送键，由可用状态把它置灰。
     var primaryAction: PrimaryAction {
         if let answers = answering { return answers.complete ? .send : .stop }
         if !blank { return .send }
-        if let waiting = approving { return .approve(.once(for: waiting)) }
+        if let waiting = deciding { return .decide(.primary(for: waiting)) }
         if thread.hasUnconfirmedStop { return .stop }
         if thread.state?.capabilities.resume == true { return .resume }
         if thread.showStop { return .stop }
@@ -142,7 +149,7 @@ struct ThreadControlsModel {
         case .send: answering.map { $0.complete && !$0.busy } ?? canSubmit
         case .stop: thread.canStop
         case .resume: thread.canResume
-        case .approve: !thread.answers.busy
+        case .decide(let decision): canDecide(decision)
         }
     }
 
@@ -156,7 +163,7 @@ struct ThreadControlsModel {
         case .send: if answering != nil { submitAnswers() } else { submit() }
         case .stop: stop()
         case .resume: resume()
-        case .approve(let decision): decide(decision)
+        case .decide(let decision): decide(decision)
         }
     }
 
@@ -337,14 +344,9 @@ enum ComposerLayout {
     static let rowSpacing: CGFloat = 2
     /// 输入框的顶边。
     static let fieldTop = Metrics.controlInset + fieldPadding
-    /// 作答时输入框和回应卡片选项的灰底：左右离玻璃边 controlInset，上下包住输入框的 fieldPadding，圆角和玻璃同心。
+    /// 回应卡片里选项和输入框的灰底：左右离玻璃边 controlInset，圆角和玻璃同心。下面输入区的输入框不带底。
     static let fieldFill = Color.gray.opacity(0.12)
     static var fieldFillRadius: CGFloat { Metrics.controlRadius - Metrics.controlInset }
-
-    /// 输入框灰底的框（输入框那一边的坐标，顶边往下量）。
-    static func fieldFillFrame(width: CGFloat, plan: Plan) -> CGRect {
-        CGRect(x: Metrics.controlInset, y: Metrics.controlInset, width: max(width - 2 * Metrics.controlInset, 0), height: plan.field + 2 * fieldPadding)
-    }
 
     struct Plan {
         var height: CGFloat

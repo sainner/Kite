@@ -135,7 +135,7 @@ export function lineTools(options: LineToolOptions): Tool[] {
       return { item: item.id, result: '已清掉' };
     }),
     tool('line_relay', [
-      '把用户在你线程里说的话照原文转达给另一个线程：线程在等提问时作为「其他」的回答，否则作为一条用户消息（经你转达）。',
+      '把用户在你线程里说的话照原文转达给另一个线程：线程有没回答的提问时作为最早那个提问的「其他」回答，否则作为一条用户消息（经你转达）。',
       'from 是用户那条消息的输入 ID，省略时取用户最近的一条。不要改写用户原文，你自己的补充说明另用 line_control send。线程在等审批时不能转达。',
     ].join(''), relayArgs, async (args, context) => {
       allowed('reply');
@@ -146,10 +146,10 @@ export function lineTools(options: LineToolOptions): Tool[] {
       if (done) return { relayed: done, duplicate: true };
       const state = await peers.call<DisplayState>(args.machine, 'GET', `/threads/${args.threadId}/state`, { signal: context.signal });
       if (state.waiting?.kind === 'approval') throw new KiteError('这个线程在等审批，用户的话不能当作批准；请用户在收件箱里回应，或把这一项交给你代处理');
-      if (state.waiting?.kind === 'secret') throw new KiteError('这个线程在等用户填密钥，只能由用户在卡片里填写');
-      if (state.waiting?.kind === 'question') {
-        await peers.call(args.machine, 'POST', `/threads/${args.threadId}/waiting/${state.waiting.id}`, {
-          body: { answers: state.waiting.questions.map(() => ({ other: message.text })) }, via, signal: context.signal });
+      const question = state.asks?.find((ask) => ask.kind === 'question');
+      if (question?.kind === 'question') {
+        await peers.call(args.machine, 'POST', `/threads/${args.threadId}/waiting/${question.id}`, {
+          body: { answers: question.questions.map(() => ({ other: message.text })) }, via, signal: context.signal });
         monitor.markRelayed(key, 'answered');
         return { relayed: 'answered' };
       }

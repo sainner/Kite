@@ -327,7 +327,7 @@ extension PerfProbe {
         }
     }
 
-    /// 最左边一个已建好代理（不是草稿：草稿发送会真的建代理）、没在等回应（等着时发出去是跳过审批或提问，不是平常的发送）的会话的输入框。
+    /// 最左边一个已建好代理（不是草稿：草稿发送会真的建代理）、没有回应卡片（等着审批时发出去是拒绝，提问展开时输入框写的是「其他」，都不是平常的发送）的会话的输入框。
     private static func composer() -> (ComposerField, WorkThread)? {
         let fields = views(ComposerField.self).filter { !$0.isHiddenOrHasHiddenAncestor }.sorted(by: leftToRight)
         for field in fields {

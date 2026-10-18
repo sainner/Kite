@@ -166,8 +166,16 @@ final class PaneButtonView: HighlightButton {
     var fill: Color? {
         didSet {
             guard fill != oldValue else { return }
-            highlightsOverContent = fill != nil
+            highlightsOverContent = fill != nil || secondary
             labelChanged()
+        }
+    }
+    /// 次级按钮：半透明灰底，字仍按 foreground、不加粗，同 PaneButtonStyle 的 secondary（审批、密钥请求的拒绝和次级的决定）。
+    var secondary = false {
+        didSet {
+            guard secondary != oldValue else { return }
+            highlightsOverContent = fill != nil || secondary
+            applyColors()
         }
     }
     /// 内容色，实心按钮不用（白色）。
@@ -263,7 +271,8 @@ final class PaneButtonView: HighlightButton {
         text.textColor = content
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        fillLayer.backgroundColor = fill.map { resolved($0, traits: traitCollection, in: environment).cgColor }
+        fillLayer.backgroundColor = (fill ?? (secondary ? PaneButtonStyle.secondaryFill : nil))
+            .map { resolved($0, traits: traitCollection, in: environment).cgColor }
         CATransaction.commit()
     }
 

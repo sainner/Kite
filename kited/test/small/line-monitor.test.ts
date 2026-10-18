@@ -1,13 +1,14 @@
 /**
  * Line 的 monitor 路由中与时间有关的状态流转（docs/Line与工作区流转.md「Line 的收件箱、代处理与托管」「monitor 的事件路由」）：
  * 直接调 route、collect、attend 这几个纯函数，传入时刻，不真的等。一轮 monitor 就是先 route 再 collect。
- * 汇总的形状照 B 上真实的 GET /summary：在等提问的线程 phase 为 running、busy 为真并带 waiting；结束回合后 phase 为 idle、带 settledAt。
+ * 汇总的形状照 B 上真实的 GET /summary：提问不阻塞，提了问就结束回合的线程 phase 为 idle、带 settledAt，没回应的提问在 asks 里；
+ * Line 发起、还在跑的线程 phase 为 running、busy 为真。
  */
 import { expect, test } from 'bun:test';
 import type { AccountMachine } from '../../src/account-data/directory.ts';
 import type { MachineSummary } from '../../src/kite.ts';
 import { attend, collect, DAILY_WAKES, monitorState, type MonitorState, route } from '../../src/line/monitor.ts';
-import type { Waiting } from '../../src/waiting.ts';
+import type { Ask } from '../../src/waiting.ts';
 
 type ThreadSummary = MachineSummary['workspaces'][number]['threads'][number];
 
@@ -19,13 +20,14 @@ const t0 = new Date(2026, 9, 15, 9, 0, 0).getTime();
 
 const machineB: AccountMachine = { id: 'machine-b', name: '工作机 B', online: true, address: 'http://machine-b.invalid' };
 
-const question = (id: string, since: number): Waiting => ({ id, since, kind: 'question', questions: [{
+const question = (id: string, since: number): Ask => ({ id, since, kind: 'question', questions: [{
   question: `问题 ${id}`, multiSelect: false,
   options: [{ label: '甲', description: '选甲' }, { label: '乙', description: '选乙' }],
 }] });
-/** 别人发起、正卡在一个提问上的线程。 */
-const asking = (thread: string, waiting: string, since: number): ThreadSummary => ({
-  id: thread, title: `线程 ${thread}`, role: 'kite.work', phase: 'running', busy: true, waitingForResume: false, waiting: question(waiting, since),
+/** 别人发起、提了一个问题就结束回合的线程：提问不阻塞，回合在提问的那一刻收尾，没回应的提问留在 asks 里。 */
+const asking = (thread: string, ask: string, since: number): ThreadSummary => ({
+  id: thread, title: `线程 ${thread}`, role: 'kite.work', phase: 'idle', busy: false, waitingForResume: false,
+  lastOutcome: 'completed', settledAt: since, asks: [question(ask, since)],
 });
 /** Line 发起的工作：还在跑，或已结束回合。 */
 const lineWork = (thread: string, settledAt?: number): ThreadSummary => settledAt === undefined

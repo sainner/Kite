@@ -158,7 +158,8 @@ struct RemoteWorkspaceDecode {
         print("已解码工作机目录里另一台工作机的目录摘要")
     }
 
-    /// 密钥请求：线程流首帧的状态带 kind 为 secret 的等待，工作区聚合里线程的活动摘要也停在 secret。
+    /// 密钥请求：不阻塞，线程要了密钥就结束回合；线程流首帧的状态里没有卡着的审批（waiting），asks 里有一项 kind 为 secret 的请求
+    /// （要的几项逐项在 secrets 里），工作区聚合里空闲线程的活动摘要停在 secret。
     private static func verifySecret(_ fixture: SecretStateFixture, workspace: RemoteWorkspace) throws {
         guard workspace.threads.count == 1,
               let thread = workspace.threads.first,
@@ -166,24 +167,30 @@ struct RemoteWorkspaceDecode {
               thread.runtime == .harness,
               thread.activity?.waiting == "secret",
               workspace.instances.contains(where: { $0.id == thread.instanceId && $0.definitionId == "kite.agent" && $0.status == .open }),
-              fixture.state.phase == "running",
-              let waiting = fixture.state.waiting,
+              fixture.state.phase == "idle",
+              fixture.state.waiting == nil,
+              let asks = fixture.state.asks,
+              asks.count == 1,
+              let waiting = asks.first,
               waiting.isSecret,
               !waiting.isQuestion,
               !waiting.id.isEmpty,
               waiting.since > 0,
-              waiting.name == "STRIPE_KEY",
-              waiting.secretKind == "file",
-              waiting.reason == "调支付接口",
-              waiting.value == "sk_test_prefilled",
-              waiting.exists == false,
-              waiting.file == nil,
-              waiting.key == nil,
+              let secrets = waiting.secrets,
+              secrets.count == 1,
+              let secret = secrets.first,
+              secret.name == "STRIPE_KEY",
+              secret.secretKind == "file",
+              secret.reason == "调支付接口",
+              secret.value == "sk_test_prefilled",
+              secret.exists == false,
+              secret.file == nil,
+              secret.key == nil,
               waiting.questions == nil,
               waiting.tool == nil else {
             throw DecodeError.invalidSecret
         }
-        print("已解码密钥请求的等待与线程活动摘要")
+        print("已解码没回应的密钥请求与线程活动摘要")
     }
 
     private static func verifyFiles(_ files: FileFixture, instance: RemotePluginInstance) throws {

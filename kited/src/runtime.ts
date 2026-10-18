@@ -106,8 +106,9 @@ export interface RuntimeHost {
   outside?: ShellOutside;
   /** 宿主按项目密钥写进工作区的文件（相对路径），对代理只读；每次调用工具时读取。 */
   secretFiles(): string[];
-  /** credentials 的请求动作：向用户要密钥，存好后返回交给模型的说明。 */
+  /** credentials 的请求动作：向用户要密钥，发出请求后返回交给模型的说明；收回见 withdrawSecret。 */
   requestSecret(request: SecretRequest, signal: AbortSignal): Promise<string>;
+  withdrawSecret(id: string): string;
 }
 
 const constraintAllows = (rule: ProjectToolRule | undefined, name: string) => !rule || ruleAllows(rule, name);
@@ -135,6 +136,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
     list: async () => credentials.available(projectId),
     resolve: (references: string[]) => credentials.resolve(references, projectId),
     request: (request: SecretRequest, signal: AbortSignal) => host.requestSecret(request, signal),
+    withdraw: (id: string) => host.withdrawSecret(id),
   } : undefined;
   const diffDir = join(home, 'diffs', workspaceId);
   if (runtime === 'claude') {

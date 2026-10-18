@@ -77,8 +77,8 @@ import { agentModelCatalog } from './agents/capabilities.ts';
 import { TokenCounter } from './token-counts.ts';
 import { VoiceSessions, voiceTemplate } from './voice/sessions.ts';
 import { Terminals, terminalExitContextDefinition } from './terminal/terminals.ts';
-import { type ApprovalRequest, skipped, type Waiting, Waits } from './waiting.ts';
-import { hasEnvKey, setEnvLine, type SecretRequest } from './secrets.ts';
+import { type ApprovalRequest, type Ask, Asks, questionResponseOf, questionResultText, secretDeniedText, secretResponseOf, type SecretWaitingItem, type Waiting, WaitingConflict, Waits } from './waiting.ts';
+import { hasEnvKey, secretLabel, setEnvLine, type SecretRequest } from './secrets.ts';
 import type { Integration } from './account-data/registry.ts';
 import { WorkspaceTransfers } from './transfer/transfers.ts';
 import { diskEnough, modelLogin, readEnvironment, type Environment, type HandoverNeed } from './environment.ts';
@@ -90,7 +90,7 @@ export interface MachineSummary {
   workspaces: Array<{
     id: string; epoch: number; status: WorkspaceStatus; name: string; project: { id: string; name: string };
     threads: Array<{ id: string; title: string; role: string | null; phase: string; busy: boolean; waitingForResume: boolean;
-      lastOutcome?: string; failure?: string; recovery?: string; waiting?: Waiting;
+      lastOutcome?: string; failure?: string; recovery?: string; waiting?: Waiting; asks?: Ask[];
       /** 这台工作机实时看到的最近一次回合结束时间；重启后要等下一次回合结束才有。 */
       settledAt?: number;
       /** 最近一条输入是 Line 自己的说明：这一回合是 Line 发起的工作，结果交给 Line。 */
@@ -179,6 +179,9 @@ export class Kite {
   readonly tokenCounts: TokenCounter;
   readonly voice: VoiceSessions;
   readonly waits: Waits;
+  readonly asks: Asks;
+  /** 正在处理回应的请求（存密钥途中），同一项的第二次回应按对不上拒绝。 */
+  private answering = new Set<string>();
   readonly transfers: WorkspaceTransfers;
   /** Line 调用同账号的工作机。 */
   readonly peers: Peers;
@@ -286,6 +289,7 @@ export class Kite {
     this.receipts = new OperationReceipts(store);
     this.operations = new InstanceOperations(this);
     this.waits = new Waits((threadId, waiting) => bus.emit({ type: 'waiting', threadId, ...(waiting ? { waiting } : {}) }));
+    this.asks = new Asks(store, (threadId, asks) => bus.emit({ type: 'asks', threadId, asks }));
     this.plugins = new PluginHost(this);
     this.peers = new Peers({ self: () => ({ id: store.machine.id, name: store.machine.name, url: this.serving?.url }),
       machines: options.peers?.directory ?? (async () => this.directory.list()),
@@ -299,7 +303,7 @@ export class Kite {
       changed: () => bus.emit({ type: 'line.inbox' }) });
     this.attention = new Attention((devices) => this.monitor.attention(devices.length > 0));
     // 本机的等待与回合变化很快读一轮，远程工作机靠定时读取。
-    bus.subscribe((event) => event.type === 'waiting' || event.type === 'idle', () => this.monitor.nudge());
+    bus.subscribe((event) => event.type === 'waiting' || event.type === 'asks' || event.type === 'idle', () => this.monitor.nudge());
     this.monitors = new Monitors({ store, home, env: commandEnvironment(process.env),
       policy: async (target) => {
         const { workspace, checkout } = this.workspace(target.workspaceId);
@@ -783,6 +787,7 @@ export class Kite {
             waitingForResume: state.waitingForResume, ...(state.lastOutcome ? { lastOutcome: state.lastOutcome.kind } : {}),
             ...(state.lastOutcome?.kind === 'failed' ? { failure: state.lastOutcome.message } : {}),
             ...(state.recovery ? { recovery: state.recovery.message } : {}), ...(state.waiting ? { waiting: state.waiting } : {}),
+            ...(state.asks?.length ? { asks: state.asks } : {}),
             ...(settledAt !== undefined ? { settledAt } : {}), ...(this.lineWork.has(instance.id) ? { byLine: true as const } : {}) };
         })),
       };
@@ -943,28 +948,79 @@ export class Kite {
     }));
   }
 
-  /** credentials 的请求动作：按审批模式直接保存或在线程上等用户填写，存好后交给模型的说明不含用户填的值。 */
-  private async requestSecret(threadId: string, request: SecretRequest, signal: AbortSignal): Promise<string> {
+  /**
+   * credentials 的请求动作：每一项都给了值且审批模式为全放行时直接存好，否则发出请求、立即返回，用户回应后由 respondWaiting 交给代理。
+   * 交给模型的说明不含用户填的值。
+   */
+  private async requestSecret(threadId: string, request: SecretRequest): Promise<string> {
     const { project, workspace } = this.context(threadId);
-    if ('file' in request && (await gitTry(workspace.cwd, ['ls-files', '--error-unmatch', '--', request.file])).code === 0) {
-      throw new Error(`${request.file} 是项目跟踪的文件，宿主不会把密钥写进去；先把它从 Git 里移除并忽略，再请求`);
+    const files = [...new Set(request.flatMap((item) => 'file' in item ? [item.file] : []))];
+    for (const file of files) {
+      if ((await gitTry(workspace.cwd, ['ls-files', '--error-unmatch', '--', file])).code === 0) {
+        throw new Error(`${file} 是项目跟踪的文件，宿主不会把密钥写进去；先把它从 Git 里移除并忽略，再请求`);
+      }
     }
-    const file = 'file' in request ? await this.credentials.fileSecret(project.id, request.file) : undefined;
-    const exists = 'file' in request ? hasEnvKey(file ?? '', request.key) : this.credentials.hasSecret(project.id, request.name);
-    const auto = request.value !== undefined && this.configuration.approvalMode(threadId).effective === 'allow_all';
-    const response = auto ? { value: request.value!, scope: 'project' as const }
-      : await this.waits.secret(threadId, { reason: request.reason, exists, ...('file' in request ? { file: request.file, key: request.key }
-        : { name: request.name, secretKind: request.kind ?? 'text' }), ...(request.value !== undefined ? { value: request.value } : {}) }, signal);
-    if (response === undefined) return '会话已停止，用户没有提供密钥。';
-    if (response === skipped) return '用户没有提供密钥，直接发了一条新消息，见随后的输入。';
-    if ('denied' in response) return `用户拒绝提供这个密钥${response.reason ? `：${response.reason}` : '。'}`;
-    if ('file' in request) {
-      await this.credentials.saveFileSecret(project.id, request.file, setEnvLine(file ?? '', request.key, response.value));
-      return `已存好 ${request.file} 里的 ${request.key}，宿主正把这个文件重写进项目的所有工作区。`;
+    const contents = new Map(await Promise.all(files.map(async (file) => [file, await this.credentials.fileSecret(project.id, file) ?? ''] as const)));
+    const secrets: SecretWaitingItem[] = request.map((item) => ({ reason: item.reason,
+      exists: 'file' in item ? hasEnvKey(contents.get(item.file)!, item.key) : this.credentials.hasSecret(project.id, item.name),
+      ...('file' in item ? { file: item.file, key: item.key } : { name: item.name, secretKind: item.kind ?? 'text' }),
+      ...(item.value !== undefined ? { value: item.value } : {}) }));
+    if (request.every((item) => item.value !== undefined) && this.configuration.approvalMode(threadId).effective === 'allow_all') {
+      return this.saveSecrets(project.id, secrets, { values: request.map((item) => item.value!), scope: 'project' });
     }
-    const scope = response.scope === 'account' ? null : project.id;
-    await this.credentials.saveSecret(scope, request.name, request.kind ?? 'text', response.value);
-    return `已存好，引用是 {${scope ? 'project' : 'account'}.${request.name}}，在 shell 的 secrets 参数里使用。`;
+    const ask = this.asks.add(threadId, { kind: 'secret', secrets });
+    return `已向用户要 ${secrets.length} 项密钥，请求 ID 是 ${ask.id}。用户填好或拒绝后，结果会作为一条新的输入发给你；用到这些密钥的步骤先放着，先做别的，没有就结束回合。`;
+  }
+
+  /** 存下用户填了的几项，返回逐项的说明：存好的给出引用或文件与变量名，没填的如实写明，不含填的值。 */
+  private async saveSecrets(projectId: string, secrets: SecretWaitingItem[], response: { values: Array<string | null>; scope: 'project' | 'account' }): Promise<string> {
+    const scope = response.scope === 'account' ? null : projectId;
+    const lines: string[] = [];
+    const written = new Map<string, string>();
+    for (const [index, item] of secrets.entries()) {
+      const value = response.values[index];
+      if (value == null) { lines.push(`- ${secretLabel(item)}：用户没有填，没有存`); continue; }
+      if (item.file && item.key) {
+        // 等用户的时候文件可能被改过，按存之前的最新内容替换这一行
+        const content = written.get(item.file) ?? await this.credentials.fileSecret(projectId, item.file) ?? '';
+        written.set(item.file, setEnvLine(content, item.key, value));
+        lines.push(`- ${secretLabel(item)}：已存好，宿主正把这个文件重写进项目的所有工作区`);
+      } else {
+        // 环境变量文件里的项总是项目专用，账号共享只对独立的密钥
+        await this.credentials.saveSecret(scope, item.name!, item.secretKind ?? 'text', value);
+        lines.push(`- ${secretLabel(item)}：已存好，引用是 {${scope ? 'project' : 'account'}.${item.name}}，在 shell 的 secrets 参数里使用`);
+      }
+    }
+    for (const [file, content] of written) await this.credentials.saveFileSecret(projectId, file, content);
+    const missing = response.values.filter((value) => value == null).length;
+    return [`存好 ${secrets.length - missing} 项${missing ? `，${missing} 项用户没有填` : ''}：`, ...lines].join('\n');
+  }
+
+  /**
+   * 回应线程在等的一项：阻塞的审批交回那次调用；提问与密钥请求由宿主处理（存密钥），把结果作为一条输入交给代理，交上了才撤下请求。
+   * 代理在跑就在下一次请求时纳入，空闲的就此开始新的回合；交不上（会话正在停止、在等确认恢复）时请求留着，报错给回应的一方，
+   * 再回应一次即可（密钥已存的再存一遍是替换）。via 是代用户处理的 Line：提问写明由 Line 代答，密钥请求不接受。
+   */
+  async respondWaiting(threadId: string, id: string, value: unknown, via?: InputVia): Promise<void> {
+    if (this.waits.current(threadId)?.id === id) return this.waits.respond(threadId, id, value);
+    const ask = this.asks.get(threadId, id);
+    if (!ask || this.answering.has(id)) throw new WaitingConflict(this.waits.current(threadId) ?? null);
+    if (ask.kind === 'secret' && via) throw new KiteError('密钥请求只能由用户填写，不能交给 Line', 403);
+    this.answering.add(id);
+    try {
+      let text: string;
+      if (ask.kind === 'question') {
+        text = questionResultText(ask, questionResponseOf(ask, value), via);
+      } else {
+        const response = secretResponseOf(ask, value);
+        text = 'denied' in response ? secretDeniedText(ask, response.reason)
+          : `用户回应了你的密钥请求（请求 ${ask.id}），${await this.saveSecrets(this.context(threadId).project.id, ask.secrets, response)}`;
+      }
+      await this.send(threadId, text, randomUUID(), 'kite').catch((error: Error) => {
+        throw error instanceof KiteError ? error : new KiteError(`结果没能交给代理：${error.message}`, 409);
+      });
+      this.asks.remove(threadId, id);
+    } finally { this.answering.delete(id); }
   }
 
   /** 准备失败的工作区重跑准备：工作树还在就重写项目密钥、重跑 setup；不自动重跑。 */
@@ -1184,7 +1240,7 @@ export class Kite {
     }
     const text = texts.join('\n\n');
     return { threadId: id, phase: state.phase, busy: state.busy, ...(state.lastOutcome ? { lastOutcome: state.lastOutcome } : {}),
-      ...(state.waiting ? { waiting: state.waiting } : {}),
+      ...(state.waiting ? { waiting: state.waiting } : {}), ...(state.asks?.length ? { asks: state.asks } : {}),
       ...(text ? { reply: { text: text.length > 20_000 ? `…${text.slice(-20_000)}` : text, at } } : {}) };
   }
   /** Line 线程里用户的一条消息：给了输入 ID 就取那条，否则取最近的一条；不是用户的消息时没有。 */
@@ -1254,7 +1310,7 @@ export class Kite {
       current: () => this.context(id),
       notifications: (after) => this.store.instanceNotifications(id, after),
       // Line 的管理工具只声明给 Line 角色的实例，免得每个代理的请求都带着它们的说明。
-      operations: { tools: [...this.operations.tools(id), this.waits.question(id),
+      operations: { tools: [...this.operations.tools(id), this.asks.question(id),
         ...(instanceRole(t)?.id === lineRoleId ? lineTools({ store: this.store, peers: this.peers, machine: this.store.machine.id, instanceId: id,
           monitor: this.monitor, message: (inputId) => this.userMessage(id, inputId),
           approve: (request, signal) => this.waits.approve(id, request, signal) }) : [])],
@@ -1266,7 +1322,8 @@ export class Kite {
       }),
       compactionFiles: ({ from, to }) => changesBetween(workspace.cwd, workspaceId, from, to),
       secretFiles: () => this.secretFiles(t.project.id),
-      requestSecret: (request, signal) => this.requestSecret(id, request, signal),
+      requestSecret: (request) => this.requestSecret(id, request),
+      withdrawSecret: (ask) => this.asks.withdraw(id, ask, 'secret'),
       toolConstraint: () => this.store.projectConstraints(t.project.id)?.tools,
       executionConstraint: () => this.store.projectConstraints(t.project.id)?.execution,
       askNetwork: ({ host, port }, signal) => {
@@ -1618,6 +1675,7 @@ export class Kite {
       if (current.status === 'archived') return;
       await this.stopThread(current);
       await this.terminals.stopOwned(id, '启动它的代理已归档');
+      this.asks.clear(id);
       this.store.archiveInstance(id);
       this.threadChanged({ ...current, status: 'archived' });
     });

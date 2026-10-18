@@ -300,7 +300,7 @@ private struct InboxItemView: View {
         case "unreachable": "工作机「\(item.machine.name)」连不上"
         default: item.waiting.map { waiting in
             if waiting.isQuestion { return waiting.questions?.first?.question ?? "" }
-            if waiting.isSecret { return waiting.secretTitle }
+            if waiting.isSecret { return (waiting.secrets ?? []).map(\.title).joined(separator: "、") }
             return waiting.target ?? ""
         } ?? item.text
         }
@@ -310,7 +310,8 @@ private struct InboxItemView: View {
         switch item.kind {
         case "turn", "unreachable": ""
         case "approval", "question": item.delegated?.by == "timeout" ? "等了一阵没处理，按超时托管交给了 Line；你仍可以直接回应" : ""
-        case "secret": item.waiting?.reason ?? ""
+        // 要几项时用途各写在卡片里
+        case "secret": item.waiting?.secrets.flatMap { $0.count == 1 ? $0.first?.reason : nil } ?? ""
         default: item.text
         }
     }

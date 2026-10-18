@@ -1,14 +1,15 @@
 /**
- * 等你回应（docs/工具审批与提问.md）：自研后端线程调 question 挂起，或 shell 连名单外主机时停下来问，
- * 回合停在工具调用上，用户经 HTTP 回应或停止会话。模型用 ManualModel，不起 Claude Code；命令在真实沙箱里跑。
+ * 等人回应（docs/工具审批与提问.md）：自研后端线程用 question 提问不阻塞，工具立即返回请求 ID，请求存进库、挂在线程状态的 asks 里，
+ * 用户经 HTTP 回应后结果作为一条来源为 kite 的输入交给线程；shell 连名单外主机时停下来问是审批，回合停在工具调用上。
+ * 模型用 ManualModel，不起 Claude Code；命令在真实沙箱里跑。
  */
 import { afterEach, expect, test } from 'bun:test';
 // 询问模式的沙箱宿主按路径起子进程，不在 import 链上；按文本引入，宿主改动时 .kite/check 才会选中这里。
 import '../../src/execution/sandbox-callback-host.ts' with { type: 'text' };
 import type { Envelope } from '../../src/events.ts';
-import type { Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
+import type { Input, Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
 import type { DisplayState } from '../../src/transcript/protocol.ts';
-import type { Question } from '../../src/waiting.ts';
+import type { Ask, Question } from '../../src/waiting.ts';
 import { addProject, after, createWorkspace, type Kited, mark, startKited, waitIdle } from '../harness.ts';
 import { item, ManualModel } from '../harness-loop.ts';
 import { newDir } from '../util.ts';
@@ -24,6 +25,7 @@ const resultOf = (request: ModelRequest, callId: string): ToolResult | undefined
   const found = request.history.find((entry) => entry.type === 'tool_result' && entry.callId === callId);
   return found?.type === 'tool_result' ? found.result : undefined;
 };
+const inputs = (request: ModelRequest): Input[] => request.history.flatMap((entry) => entry.type === 'input' ? [entry.input] : []);
 
 const questions: Question[] = [
   { question: '用哪个存储方案？', multiSelect: false, options: [
@@ -37,9 +39,11 @@ const questions: Question[] = [
   ] },
 ];
 
-/** 建一个自研后端线程，模型在第一次请求里调 question；返回线程 ID、挂起的等待和那次请求。 */
-async function ask() {
-  const model = new ManualModel();
+/**
+ * 建一个自研后端线程，模型在第一次请求里调 question；等状态里挂出这项提问，再取同一回合的第二次请求（还没放行，线程在跑）。
+ * 工具不等回答：第二次请求里这次调用已有成功结果，写明请求 ID。
+ */
+async function ask(model = new ManualModel()) {
   const k = kited = startKited(() => model);
   const registered = await addProject(k, { path: newDir(k.root, 'project', { 'a.txt': 'a\n' }) });
   const thread = await createWorkspace(k, registered.id, '先问清楚再做', 'harness');
@@ -48,9 +52,15 @@ async function ask() {
   const since = mark(k);
   await first.response.emit({ type: 'item', item: calledItem('ask', 'question', { questions } as unknown as Json) });
   first.response.complete();
-  const event = await k.waitEvent((e) => e.type === 'waiting' && e.threadId === thread.id && !!e.waiting && after(k, since)(e));
-  const waiting = (event as Extract<Envelope, { type: 'waiting' }>).waiting!;
-  return { k, model, threadId: thread.id, waiting };
+  const event = await k.waitEvent((e) => e.type === 'asks' && e.threadId === thread.id && e.asks.length > 0 && after(k, since)(e));
+  const asks = (event as Extract<Envelope, { type: 'asks' }>).asks;
+  expect(asks).toHaveLength(1);
+  const asked = asks[0]!;
+  const second = await model.call(2);
+  const result = resultOf(second.request, 'ask');
+  expect(result?.status).toBe('success');
+  expect(result?.output).toContain(`已向用户提问，请求 ID 是 ${asked.id}`);
+  return { k, model, threadId: thread.id, asked, second };
 }
 
 const state = async (k: Kited, threadId: string) => {
@@ -58,99 +68,113 @@ const state = async (k: Kited, threadId: string) => {
   expect(r.status).toBe(200);
   return r.body as DisplayState;
 };
+const respond = (k: Kited, threadId: string, ask: Ask, body: unknown) => k.call('POST', `/threads/${threadId}/waiting/${ask.id}`, body);
 
 /*
- * 几个部分的配合：question 工具的 promise 挂在回合里，HTTP 回应把它放行，显示投影的状态随等待出现和消失，
- * 回答作为这次调用的结果出现在模型下一次请求的历史里；回应过的等待不能再回应。
+ * 几个部分的配合：question 工具把请求存进库就返回，回合照常往下走、结束；提问留在显示投影的 asks 里（waiting 只放审批），
+ * kited 重启后从库里读回来照常能回应。回应在线程空闲时开始新回合，回答按问题顺序写成一条来源为 kite 的输入出现在模型请求里，
+ * 交上之后请求撤下；回应过的请求不能再回应。
  */
-test('线程提问时回合停在 running 并在状态里挂出等待，回应后回答按问题顺序作为调用结果交回模型、等待消失，再回应同一个等待得 409', async () => {
-  const { k, model, threadId, waiting } = await ask();
-  expect(waiting.kind === 'question' && waiting.questions).toEqual(questions);
-  const before = await state(k, threadId);
-  expect(before.phase).toBe('running');
-  expect(before.busy).toBe(true);
-  expect(before.waiting).toEqual(waiting);
-  expect(model.calls.values).toHaveLength(1);
+test('question 不等回答：工具立即返回请求 ID，提问挂在状态的 asks 里而不是 waiting，回合照常结束，kited 重启后提问还在；空闲时回应开始新回合，回答作为来源为 kite 的输入交给模型，提问撤下，再回应得 409', async () => {
+  const model = new ManualModel();
+  const { k, threadId, asked, second } = await ask(model);
+  expect(asked.kind === 'question' && asked.questions).toEqual(questions);
+  expect(asked.since).toBeGreaterThan(0);
+  const running = await state(k, threadId);
+  expect(running.phase).toBe('running');
+  expect(running.waiting).toBeUndefined();
+  expect(running.asks).toEqual([asked]);
+  let since = mark(k);
+  second.response.complete();
+  await waitIdle(k, threadId, since);
+  expect(model.calls.values).toHaveLength(2);
+
+  await k.halt();
+  const restarted = kited = startKited(() => model, false, { root: k.root });
+  const idle = await state(restarted, threadId);
+  expect(idle.phase).toBe('idle');
+  expect(idle.waiting).toBeUndefined();
+  expect(idle.asks).toEqual([asked]);
 
   const answers = { answers: [{ other: '先用内存，以后再说' }, { selected: ['macOS', 'iOS'] }] };
-  const responded = await k.call('POST', `/threads/${threadId}/waiting/${waiting.id}`, answers);
-  expect(responded).toEqual({ status: 200, body: { ok: true } });
-  const second = await model.call(2);
-  const result = resultOf(second.request, 'ask');
-  expect(result?.status).toBe('success');
-  expect(JSON.parse(result!.output)).toEqual({ answers: [
-    { question: '用哪个存储方案？', other: '先用内存，以后再说' },
-    { question: '先支持哪些平台？', selected: ['macOS', 'iOS'] },
-  ] });
-  const resumed = await state(k, threadId);
-  expect(resumed.phase).toBe('running');
-  expect(resumed.waiting).toBeUndefined();
+  expect(await respond(restarted, threadId, asked, answers)).toEqual({ status: 200, body: { ok: true } });
+  expect((await state(restarted, threadId)).asks ?? []).toEqual([]);
+  const third = await model.call(3);
+  const answer = inputs(third.request).at(-1);
+  expect(answer?.source).toBe('kite');
+  expect(answer?.text.split('\n')).toEqual([
+    `用户回答了你的提问（请求 ${asked.id}）：`,
+    '- 用哪个存储方案？', '  回答：其他：先用内存，以后再说',
+    '- 先支持哪些平台？', '  回答：「macOS」；「iOS」',
+  ]);
 
-  const again = await k.call('POST', `/threads/${threadId}/waiting/${waiting.id}`, answers);
+  const again = await respond(restarted, threadId, asked, answers);
   expect(again.status).toBe(409);
   expect(again.body.waiting).toBeNull();
-  const since = mark(k);
-  second.response.complete();
+  since = mark(restarted);
+  third.response.complete();
+  await waitIdle(restarted, threadId, since);
+}, 1000);
+
+/*
+ * 几个部分的配合：停止会话只停回合，不撤下没回应的提问。之后线程在跑时回应，结果排进 runner 的待处理输入，
+ * 在同一回合的下一次模型请求里纳入，不另起回合；代理收回已回应过的请求，工具说明它可能已经回应或收回。
+ */
+test('提问后停止会话：停止能完成、线程回到 idle，提问仍在 asks 里；新回合在跑时用户不回答，这条说明在同一回合的下一次请求里交给模型并列出各题，提问撤下，代理再收回它得到可能已回应或收回的说明', async () => {
+  const { k, model, threadId, asked } = await ask();
+  let since = mark(k);
+  expect((await k.call('POST', `/threads/${threadId}/interrupt`, { id: 'stop' })).status).toBe(200);
+  await waitIdle(k, threadId, since);
+  const stopped = await state(k, threadId);
+  expect(stopped.phase).toBe('idle');
+  expect(stopped.waiting).toBeUndefined();
+  expect(stopped.asks).toEqual([asked]);
+
+  expect((await k.call('POST', `/threads/${threadId}/messages`, { id: 'next', text: '先做别的' })).status).toBe(200);
+  const third = await model.call(3);
+  since = mark(k);
+  expect(await respond(k, threadId, asked, { decision: 'deny' })).toEqual({ status: 200, body: { ok: true } });
+  expect((await state(k, threadId)).asks ?? []).toEqual([]);
+  await third.response.emit({ type: 'item', item: calledItem('late', 'question', { withdraw: asked.id }) });
+  third.response.complete();
+  const fourth = await model.call(4);
+  expect(k.events.filter((e) => e.type === 'idle' && e.threadId === threadId && after(k, since)(e))).toEqual([]);
+  const denied = inputs(fourth.request).filter((input) => input.source === 'kite' && input.text.includes(asked.id));
+  expect(denied.map((input) => input.text.split('\n'))).toEqual([
+    [`用户没有回答你的提问（请求 ${asked.id}），关掉了：`, '- 用哪个存储方案？', '- 先支持哪些平台？'],
+  ]);
+  expect(resultOf(fourth.request, 'late')?.output).toContain('已经回应或收回');
+  since = mark(k);
+  fourth.response.complete();
   await waitIdle(k, threadId, since);
 }, 1000);
 
 /*
- * 几个部分的配合：停止要等挂着的工具收尾，等待须在这之前作废并让工具按未回答返回；
- * 停止完成后线程回到 idle、等待从状态里消失，下一回合的历史里这次调用是 error。
+ * 几个部分的配合：用户发消息（带 skipWaiting 也一样）只是一条新输入，不撤下没回应的提问；代理读到消息后用 withdraw 收回，
+ * 提问从库与状态里撤下，之后回应得 409。
  */
-test('提问挂起时停止会话：停止能完成、线程回到 idle 且等待消失，这次调用按未回答记为 error，之后回应原等待得 409', async () => {
-  const { k, model, threadId, waiting } = await ask();
-  const since = mark(k);
-  const stopped = await k.call('POST', `/threads/${threadId}/interrupt`, { id: 'stop' });
-  expect(stopped.status).toBe(200);
-  await waitIdle(k, threadId, since);
-  const idle = await state(k, threadId);
-  expect(idle.phase).toBe('idle');
-  expect(idle.waiting).toBeUndefined();
+test('提问留着时用户直接发带 skipWaiting 的消息不撤下提问，消息照常进下一次请求；代理用 withdraw 收回后提问撤下，回应收回的提问得 409', async () => {
+  const { k, model, threadId, asked, second } = await ask();
+  const text = '先不选了，存储用 SQLite，平台只做 macOS';
+  expect((await k.call('POST', `/threads/${threadId}/messages`, { id: 'skip', text, skipWaiting: asked.id })).status).toBe(200);
+  expect((await state(k, threadId)).asks).toEqual([asked]);
 
-  const late = await k.call('POST', `/threads/${threadId}/waiting/${waiting.id}`, { answers: [{ selected: ['SQLite（推荐）'] }, { selected: ['Linux'] }] });
+  let since = mark(k);
+  await second.response.emit({ type: 'item', item: calledItem('withdraw', 'question', { withdraw: asked.id }) });
+  second.response.complete();
+  const third = await model.call(3);
+  expect(inputs(third.request).find((input) => input.id === 'skip')).toEqual({ id: 'skip', text, source: 'human' });
+  const withdrawn = resultOf(third.request, 'withdraw');
+  expect([withdrawn?.status, withdrawn?.output]).toEqual(['success', '已收回。']);
+  await k.waitEvent((e) => e.type === 'asks' && e.threadId === threadId && e.asks.length === 0 && after(k, since)(e));
+  expect((await state(k, threadId)).asks ?? []).toEqual([]);
+  const late = await respond(k, threadId, asked, { answers: [{ selected: ['SQLite（推荐）'] }, { selected: ['macOS'] }] });
   expect(late.status).toBe(409);
   expect(late.body.waiting).toBeNull();
 
-  const sent = await k.call('POST', `/threads/${threadId}/messages`, { id: 'next', text: '接着做' });
-  expect(sent.status).toBe(200);
-  const next = await model.call(2);
-  expect(resultOf(next.request, 'ask')?.status).toBe('error');
-  const nextSince = mark(k);
-  next.response.complete();
-  await waitIdle(k, threadId, nextSince);
-}, 1000);
-
-/*
- * 几个部分的配合：带 skipWaiting 的消息先经 agent.send 排进 runner 的待处理输入，再由 Waits.skip 放行挂着的 question 工具；
- * 工具返回后 runner 发下一次请求时要同时带上跳过的结果和这条消息，不能先发一次只带工具结果的请求。
- * 工具返回到下一次请求之间 runner 还要做工具后的收尾（afterTools），这段空当足够让晚到的消息也赶上，
- * 光看请求内容分不出先后；所以同时按 runner 的记录核对：消息的 input.received 在这次调用的 tool.finished 之前。
- */
-test('提问挂起时用户不回答、直接发带 skipWaiting 的消息：等待撤下，模型下一次请求里这次调用是跳过说明、紧跟着这条人发的消息，中间没有只带工具结果的请求', async () => {
-  const { k, model, threadId, waiting } = await ask();
-  const since = mark(k);
-  const text = '先不选了，存储用 SQLite，平台只做 macOS';
-  const sent = await k.call('POST', `/threads/${threadId}/messages`, { id: 'skip', text, skipWaiting: waiting.id });
-  expect(sent.status).toBe(200);
-  await k.waitEvent((e) => e.type === 'waiting' && e.threadId === threadId && !e.waiting && after(k, since)(e));
-
-  const second = await model.call(2);
-  const records = k.events.flatMap((e) => e.type === 'harness' && e.threadId === threadId && e.event.type === 'record' ? [e.event.record] : []);
-  const received = records.findIndex((record) => record.type === 'input.received' && record.input.id === 'skip');
-  expect(received).toBeGreaterThanOrEqual(0);
-  expect(received).toBeLessThan(records.findIndex((record) => record.type === 'tool.finished' && record.callId === 'ask'));
-  const result = resultOf(second.request, 'ask');
-  expect(result?.status).toBe('success');
-  expect(result?.output).toBe('用户没有回答，跳过了这些问题，直接发了一条新消息，见随后的输入。');
-  const message = second.request.history.findIndex((entry) => entry.type === 'input' && entry.input.id === 'skip');
-  expect(second.request.history[message]).toEqual({ type: 'input', input: { id: 'skip', text, source: 'human' } });
-  expect(message).toBeGreaterThan(second.request.history.findIndex((entry) => entry.type === 'tool_result' && entry.callId === 'ask'));
-  expect((await state(k, threadId)).waiting).toBeUndefined();
-
-  const idle = mark(k);
-  second.response.complete();
-  await waitIdle(k, threadId, idle);
+  since = mark(k);
+  third.response.complete();
+  await waitIdle(k, threadId, since);
 }, 1000);
 
 /*

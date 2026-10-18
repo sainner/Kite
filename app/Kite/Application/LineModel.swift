@@ -40,7 +40,10 @@ extension AppModel {
         return { [weak self, weak thread] in
             guard let self, let waiting = thread?.waiting else { return }
             do {
-                try await lineInboxOperation("monitor.delegate", ["item": .string("waiting:\(waiting.id)")])
+                // 卡片上合成的几项请求逐项交出，见 WorkThread.waiting
+                for id in waiting.id.components(separatedBy: "|") {
+                    try await lineInboxOperation("monitor.delegate", ["item": .string("waiting:\(id)")])
+                }
             } catch let error as KitedError where error.status == 404 {
                 throw KitedError(message: "Line 还没看到这一项，稍后再试", status: 404)
             }

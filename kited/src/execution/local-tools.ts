@@ -223,13 +223,16 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       }),
     make('credentials', [
       '不带参数时列出本账号共享和当前项目的可用密钥：引用、类型，以及宿主写进工作区的文件路径，不返回密钥内容。引用只在 shell 的 secrets 参数里使用，项目身份由宿主固定。',
-      '缺密钥时用 request 向用户要，回合停下等用户在卡片里填好再接着走：要一条独立的密钥写 {name, reason, kind?}，存好后按结果里的引用使用；',
-      '要环境变量文件（如 .env）里的一项写 {file, key, reason}，存好后宿主把文件重写进项目的所有工作区。这些文件不能直接改，要加或改其中一项也用 request。',
-      '你自己就能给出的值（端口号、生成的随机串）写在 value 里让用户确认；真正的密钥不要编，留空由用户填写。结果不含用户填的值。',
-    ].join(''), z.object({ request: secretRequest.optional() }).strict(), async ({ request }, { signal }) => {
-      if (request) {
-        if (!options.secrets?.request) throw new Error('当前宿主未连接凭据服务');
-        return { status: 'success', output: await options.secrets.request(request, signal) };
+      '缺密钥时用 request 向用户要。request 是要的各项组成的数组，一次最多 10 项，同时缺几个就一起要，用户在同一张卡片里填：',
+      '一条独立的密钥写 {name, reason, kind?}，存好后按引用使用；环境变量文件（如 .env）里的一项写 {file, key, reason}，存好后宿主把文件重写进项目的所有工作区。',
+      '这些文件不能直接改，要加或改其中一项也用 request。你自己就能给出的值（端口号、生成的随机串）写在 value 里让用户确认；真正的密钥不要编，留空由用户填写。',
+      '请求不等用户填，立即返回请求 ID；用户填好或拒绝后，结果会作为一条新的输入发给你，逐项说明存好的（引用，或文件与变量名）和没填的，不含用户填的值。',
+      '用到这些密钥的步骤先放着，先做别的，没有就结束回合；不再需要时用 {withdraw: 请求 ID} 收回。',
+    ].join(''), z.object({ request: secretRequest.optional(), withdraw: z.string().min(1).optional().describe('要收回的密钥请求的请求 ID') }).strict()
+      .refine((args) => !(args.request && args.withdraw), 'request 与 withdraw 只写一个'), async ({ request, withdraw }, { signal }) => {
+      if (request || withdraw !== undefined) {
+        if (!options.secrets?.request || !options.secrets.withdraw) throw new Error('当前宿主未连接凭据服务');
+        return { status: 'success', output: request ? await options.secrets.request(request, signal) : options.secrets.withdraw(withdraw!) };
       }
       if (!options.secrets?.list) throw new Error('当前宿主未连接凭据服务');
       const entries = await options.secrets.list(signal);

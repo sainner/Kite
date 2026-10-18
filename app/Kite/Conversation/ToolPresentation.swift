@@ -219,7 +219,7 @@ extension ToolUse {
         case .command:
             return input["description"]?.string ?? firstLine(input["command"]?.string)
         case .question:
-            return questionTexts.joined(separator: " · ")
+            return input["withdraw"] != nil ? "收回提问" : questionTexts.joined(separator: " · ")
         case .agentStart:
             return input["title"]?.string ?? firstLine(input["prompt"]?.string)
         case .monitorStart:

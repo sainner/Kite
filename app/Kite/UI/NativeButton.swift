@@ -195,22 +195,33 @@ class HighlightButton: NativeButton {
 /// 原生视图在指针下要的光标，和它的光标区域（addCursorRect）一致。托管在 SwiftUI 里时（输入区玻璃里的输入框、按钮），
 /// AppKit 把 cursorUpdate 交给托管视图里面 SwiftUI 自己的视图，往外传到窗口设回箭头，原生视图的光标区域和 cursorUpdate 都轮不到
 /// （2026-10-16 记录到）。托管它们的视图在 cursorUpdate 里按 nativeCursorUnderPointer 设，见 ThreadIsland。
+/// 能编辑的文字控件不用声明，见 ownCursor。
 @MainActor protocol NativeCursor: NSView {
     /// 指针在这个视图上时的光标；nil 交给外层。
     var nativeCursor: NSCursor? { get }
 }
 
 extension NSView {
-    /// 指针下、在这个视图里面的原生视图要的光标：从指针下最里面的视图往外，到这个视图为止，第一个给出光标的 NativeCursor。
+    /// 指针下、在这个视图里面的原生视图要的光标：从指针下最里面的视图往外，到这个视图为止，第一个给出光标的。
     func nativeCursorUnderPointer() -> NSCursor? {
         guard let window, let root = window.contentView?.superview else { return nil }
         var view = root.hitTest(window.mouseLocationOutsideOfEventStream)
         var cursor: NSCursor?
         while let current = view {
             if current === self { return cursor }
-            if cursor == nil { cursor = (current as? NativeCursor)?.nativeCursor }
+            if cursor == nil { cursor = current.ownCursor }
             view = current.superview
         }
+        return nil
+    }
+
+    /// 视图自己在指针下要的光标：NativeCursor 声明的；能编辑的文字控件一律文字光标，不用逐个声明——输入区的输入框、
+    /// 回应卡片里 SwiftUI 输入框底下的 NSTextField、点进去以后接手的字段编辑器都算。原来只认声明过的，卡片里的输入框
+    /// 没声明，点进去就成了箭头（2026-10-18）；每加一种控件都要记得声明，所以光标反复丢。
+    private var ownCursor: NSCursor? {
+        if let native = self as? NativeCursor { return native.nativeCursor }
+        if let field = self as? NSTextField { return field.isEnabled && field.isEditable ? .iBeam : nil }
+        if let text = self as? NSTextView { return text.isEditable ? .iBeam : nil }
         return nil
     }
 }

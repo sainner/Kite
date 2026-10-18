@@ -367,7 +367,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/threads/:id/interrupt` | 停止会话，返回尚未纳入请求的队列；请求 `{id, inputs?, confirmRecovery?}`，响应 `{returned}`；`confirmRecovery: true` 先确认恢复再停止 |
 | POST | `/threads/:id/resume` | 继续暂停的线程；可带 operationId 以安全重试，`confirmRecovery: true` 先确认恢复再继续 |
 | POST | `/threads/:id/recover` | 只确认恢复，不自动执行；`kite` 命令行使用 |
-| POST | `/threads/:id/waiting/:waiting` | 回应线程在等的提问 `{answers}`、审批 `{decision}` 或密钥请求 `{secret: {value, scope?}}`，可带 `reason`；密钥请求不接受 `X-Kite-Source`，填的值只存进凭据；带 `X-Kite-Source` 时是 Line 代处理，提问的结果写明由 Line 代答及理由。已回应或已作废返回 409 与当前的 `waiting`。约定见 [工具审批与提问](工具审批与提问.md) |
+| POST | `/threads/:id/waiting/:waiting` | 回应线程在等的审批 `{decision}`，或没回应的提问 `{answers}`、密钥请求 `{secret: {values, scope?}}`（按请求的顺序逐项给值，没填的为 `null`），提问与密钥请求也可以 `{decision: "deny"}`；请求处理后结果作为一条输入交给代理，可带 `reason`；密钥请求不接受 `X-Kite-Source`，填的值只存进凭据；带 `X-Kite-Source` 时是 Line 代处理，提问的结果写明由 Line 代答及理由。已回应、作废或收回返回 409 与当前的 `waiting`。约定见 [工具审批与提问](工具审批与提问.md) |
 | POST | `/threads/:id/compactions` | 手动压缩上下文 `{id, from, through}`，起止为输入 id；校验通过即返回，结果经显示事件送达 |
 | DELETE | `/threads/:id/compactions/:compaction` | 撤销最外层的一次压缩 |
 | POST | `/instances/:id/archive` | 归档独立存续的实例（agent 或 Bun 插件），保留所属工作区 |

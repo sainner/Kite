@@ -92,8 +92,6 @@ private struct ControlsBarHost: NSViewRepresentable {
 /// 思考强度的托管视图、输入框更新时不让外面的 SwiftUI 重量这一块（见 RepresentedRoot），高变了由 contentChanged 报。
 final class ControlsBarView: RepresentedRoot {
     private let field = ComposerField()
-    /// 作答时输入框的灰底，见 ComposerLayout.fieldFill；点击和光标都交给上面的输入框。
-    private let fieldFill = PassThroughView()
     private let fadingView = FadingSnapshotView()
     private let effort = EffortIsland(rootView: AnyView(EmptyView()))
     private let attach = PaneButtonView()
@@ -102,11 +100,9 @@ final class ControlsBarView: RepresentedRoot {
     /// 提问作答时按钮行左边的上一题、下一题，占思考强度的位置（见 ThreadControlsModel.answering）。
     private let previousButton = PaneButtonView()
     private let nextButton = PaneButtonView()
-    /// 审批时按钮行左边的拒绝、允许并记住，也占思考强度的位置（见 ThreadControlsModel.approving）；换了一项审批按它的决定重建。
+    /// 审批、密钥请求时按钮行左边的拒绝和次级的决定，也占思考强度的位置（见 ThreadControlsModel.deciding）；换了一项按它的决定重建。
     private var decisionButtons: [PaneButtonView] = []
-    private var decisions: [ApprovalDecision] = []
-    /// 输入框带着灰底（作答或审批时）。
-    private var fieldFilled = false
+    private var decisions: [WaitingDecision] = []
     private var buttonFont = NSFont.systemFont(ofSize: NSFont.systemFontSize)
     /// 等你回应时摆在输入框上面的卡片（WaitingResponseCard），和输入框共用这张玻璃。按自己的高摆，
     /// 过渡途中玻璃比它矮，超出顶边的由 responseClip 裁掉。
@@ -146,11 +142,6 @@ final class ControlsBarView: RepresentedRoot {
 
     init() {
         super.init(frame: .zero)
-        fieldFill.wantsLayer = true
-        fieldFill.layer?.backgroundColor = NSColor(ComposerLayout.fieldFill).cgColor
-        fieldFill.layer?.cornerCurve = .continuous
-        fieldFill.alphaValue = 0
-        addSubview(fieldFill)
         addSubview(field)
         addSubview(fadingView)
         addSubview(effort)
@@ -172,6 +163,8 @@ final class ControlsBarView: RepresentedRoot {
         nextButton.label = .symbol("arrow.right")
         nextButton.title = "下一题"
         nextButton.action = { [weak self] in self?.controls?.answering?.forward() }
+        // 和审批、密钥请求的次级决定一样带灰底
+        for button in [previousButton, nextButton] { button.secondary = true }
         voice.action = { [weak self] in self?.controls?.toggleVoice() }
         primary.action = { [weak self] in
             guard let self, enabled else { return }
@@ -249,25 +242,15 @@ final class ControlsBarView: RepresentedRoot {
             answeringShown = answering
             if field.currentEditor() != nil { window?.makeFirstResponder(nil) }
         }
-        if controls.responding != fieldFilled {
-            fieldFilled = controls.responding
-            let alpha: CGFloat = fieldFilled ? 1 : 0
-            if window == nil { fieldFill.alphaValue = alpha } else {
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = ComposerMotion.duration
-                    fieldFill.animator().alphaValue = alpha
-                }
-            }
-        }
         showWaiting(thread.waiting, controls: controls)
         let fading = controls.state.fading
         applyPose(fading: fading)
         if fading == nil { shownFading = nil }
     }
 
-    /// 审批展开时按钮行左边的决定：换了一项审批（决定不同）才重建，回应途中都按不了。
+    /// 审批、密钥请求展开时按钮行左边的决定：换了一项（决定不同）才重建；回应途中都按不了，要存密钥的没填好值时按不了。
     private func showDecisions(_ controls: ThreadControlsModel) {
-        let decisions = controls.approving.map(ApprovalDecision.others(for:)) ?? []
+        let decisions = controls.deciding.map(WaitingDecision.others(for:)) ?? []
         if decisions != self.decisions {
             self.decisions = decisions
             for button in decisionButtons { button.removeFromSuperview() }
@@ -276,6 +259,7 @@ final class ControlsBarView: RepresentedRoot {
                 button.label = .text(decision.title)
                 button.title = decision.title
                 button.fill = decision.fill
+                button.secondary = decision.secondary
                 button.foreground = decision.foreground
                 button.setFont(buttonFont)
                 if let environment { button.environment = environment }
@@ -284,7 +268,7 @@ final class ControlsBarView: RepresentedRoot {
                 return button
             }
         }
-        for button in decisionButtons { button.isEnabled = enabled && !controls.thread.answers.busy }
+        for (button, decision) in zip(decisionButtons, decisions) { button.isEnabled = enabled && controls.canDecide(decision) }
     }
 
     /// 出现审批或提问时卡片从输入区上方长出来，回应后收回去；过渡见 ComposerMotion，高由 contentChanged 报给外框。
@@ -413,10 +397,10 @@ final class ControlsBarView: RepresentedRoot {
         return ComposerLayout.plan(width: width, field: fieldHeight, effort: leftSize)
     }
 
-    /// 按钮行左边那一格：平常是思考强度；作答时多题是上一题、下一题，一题时空着；审批时是审批的决定。
+    /// 按钮行左边那一格：平常是思考强度；作答时多题是上一题、下一题，一题时空着；审批、密钥请求时是它们的决定。
     private var leftSize: CGSize {
         guard let controls, controls.responding else { return currentEffortSize }
-        if controls.approving != nil { return ComposerLayout.decisionRow(decisionButtons.map(\.width)).size }
+        if controls.deciding != nil { return ComposerLayout.decisionRow(decisionButtons.map(\.width)).size }
         return !controls.questionSteps ? .zero : CGSize(width: 2 * Metrics.paneButton, height: Metrics.paneButton)
     }
 
@@ -452,8 +436,6 @@ final class ControlsBarView: RepresentedRoot {
         // 有卡片时输入区贴着底边
         let dy = pose.card > 0 ? bounds.height - plan.height : 0
 
-        place(fieldFill, ComposerLayout.fieldFillFrame(width: width, plan: plan).offsetBy(dx: 0, dy: dy))
-        if fieldFill.layer?.cornerRadius != ComposerLayout.fieldFillRadius { fieldFill.layer?.cornerRadius = ComposerLayout.fieldFillRadius }
         let fieldWidth = max(width - 2 * ComposerLayout.fieldInset, 0)
         let top = ComposerLayout.fieldTop + dy
         place(field, CGRect(x: ComposerLayout.fieldInset - ComposerField.fieldInset, y: top, width: fieldWidth + 2 * ComposerField.fieldInset,
@@ -531,9 +513,10 @@ private final class ResponseClip: NSView, NativeCursor {
 
     var nativeCursor: NSCursor? { hovered > 0 ? .pointingHand : nil }
 
+    /// 离开控件时按指针下面的设：移到卡片里的输入框上是文字光标（见 nativeCursorUnderPointer），不一律设回箭头。
     func hover(_ entered: Bool) {
         hovered = max(hovered + (entered ? 1 : -1), 0)
-        (nativeCursor ?? .arrow).set()
+        (nativeCursor ?? nativeCursorUnderPointer() ?? .arrow).set()
     }
 
     func resetHover() { hovered = 0 }

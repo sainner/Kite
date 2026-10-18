@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import type { AgentInstance, Checkout, Machine, PluginInstance, Project, Thread, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
 import type { ThreadNotification } from './harness/types.ts';
+import type { Ask } from './waiting.ts';
 import { defaultContextDefinition } from './harness/context/project.ts';
 import type { Template } from './context-templates.ts';
 import type { HourlyUsage, UsageDay, UsageStore } from './account-usage.ts';
@@ -75,6 +76,10 @@ create table if not exists instance_notifications (
   instance_id text not null references plugin_instances(id), notification text not null
 );
 create index if not exists instance_notification_order on instance_notifications(instance_id, seq);
+-- 线程等用户回应的提问与密钥请求：不阻塞回合，回应、收回或线程归档时删掉。
+create table if not exists thread_asks (
+  id text primary key, instance_id text not null references plugin_instances(id), ask text not null, created_at integer not null
+);
 create table if not exists operation_receipts (
   caller text not null, id text not null, request text not null, result text,
   primary key(caller, id)
@@ -123,7 +128,7 @@ const windowOf = (r: any): WorkspaceWindow => ({
 });
 /** 随工作区流转的表，按外键依赖的先后排列。 */
 const workspaceTables = ['workspaces', 'plugin_instances', 'threads', 'thread_titles', 'workspace_windows', 'window_requests',
-  'instance_notifications', 'operation_receipts'] as const;
+  'instance_notifications', 'thread_asks', 'operation_receipts'] as const;
 export type WorkspaceRows = Record<(typeof workspaceTables)[number], Array<Record<string, unknown>>>;
 
 export class Store implements UsageStore {
@@ -539,6 +544,21 @@ export class Store implements UsageStore {
         .run(notification.id, id, JSON.stringify(notification));
     })();
   }
+  /** 线程没回应的提问与密钥请求，按发出的先后。 */
+  asks(instanceId: string): Ask[] {
+    return (this.db.query('select ask from thread_asks where instance_id = ? order by created_at, rowid').all(instanceId) as Array<{ ask: string }>)
+      .map((row) => JSON.parse(row.ask) as Ask);
+  }
+  addAsk(instanceId: string, ask: Ask): void {
+    this.db.query('insert into thread_asks (id, instance_id, ask, created_at) values (?, ?, ?, ?)').run(ask.id, instanceId, JSON.stringify(ask), ask.since);
+  }
+  /** 撤下一项请求；已经不在时返回 false。 */
+  removeAsk(instanceId: string, id: string): boolean {
+    return this.db.query('delete from thread_asks where instance_id = ? and id = ?').run(instanceId, id).changes > 0;
+  }
+  clearAsks(instanceId: string): boolean {
+    return this.db.query('delete from thread_asks where instance_id = ?').run(instanceId).changes > 0;
+  }
   instanceNotifications(id: string, after: number): ThreadNotification[] {
     return this.db.query('select seq, notification from instance_notifications where instance_id = ? and seq > ? order by seq')
       .all(id, after).map((row: any) => ({ ...JSON.parse(row.notification), sequence: row.seq }));
@@ -554,7 +574,7 @@ export class Store implements UsageStore {
     this.db.query('update operation_receipts set result = ? where caller = ? and id = ?').run(JSON.stringify(result), caller, id);
   }
   /**
-   * 工作区流转的原始行：工作区及其实例、线程、标题、窗口、窗口请求、通知与操作收据。
+   * 工作区流转的原始行：工作区及其实例、线程、标题、窗口、窗口请求、通知、没回应的请求与操作收据。
    * 操作收据按请求里的工作区或调用方实例归属。
    */
   exportWorkspaceRows(id: string): WorkspaceRows {
@@ -568,6 +588,7 @@ export class Store implements UsageStore {
       workspace_windows: all('select * from workspace_windows where workspace_id = ?', id),
       window_requests: all('select * from window_requests where workspace_id = ?', id),
       instance_notifications: all(`select * from instance_notifications where instance_id in (${instances}) order by seq`, id),
+      thread_asks: all(`select * from thread_asks where instance_id in (${instances}) order by created_at, rowid`, id),
       operation_receipts: all(`select * from operation_receipts where json_extract(request, '$.workspaceId') = ?
         or caller in (select 'model:' || id from plugin_instances where workspace_id = ? union select 'plugin:' || id from plugin_instances where workspace_id = ?)`, id, id, id),
     };
@@ -617,6 +638,7 @@ export class Store implements UsageStore {
     const instances = `select id from plugin_instances where workspace_id = ?`;
     this.transaction(() => {
       this.db.query(`delete from instance_notifications where instance_id in (${instances})`).run(id);
+      this.db.query(`delete from thread_asks where instance_id in (${instances})`).run(id);
       this.db.query(`delete from thread_titles where instance_id in (${instances})`).run(id);
       this.db.query(`delete from threads where instance_id in (${instances})`).run(id);
       this.db.query('delete from window_requests where workspace_id = ?').run(id);
@@ -674,6 +696,7 @@ export class Store implements UsageStore {
   /** 关闭窗口及请求收据保留原目标 ID；业务实例、配置和状态不再保留。 */
   deleteInstance(id: string): void {
     this.db.query('delete from instance_notifications where instance_id = ?').run(id);
+    this.db.query('delete from thread_asks where instance_id = ?').run(id);
     this.db.query('delete from plugin_instances where id = ?').run(id);
   }
   /** 执行上下文只需要父级关系，不读取同级线程和插件窗口。 */

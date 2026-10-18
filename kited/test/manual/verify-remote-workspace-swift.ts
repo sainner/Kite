@@ -114,7 +114,10 @@ function chatgptLogin(home: string): void {
   writeFiles(home, { 'auth/chatgpt/auth.json': JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: accessToken, account_id: 'contract-account' } }) });
 }
 
-/** 发这条首条消息的线程第一次请求就用 credentials 的请求动作要一个密钥，回合停在这次调用上等用户填写；其余线程直接完成。 */
+/**
+ * 发这条首条消息的线程第一次请求就用 credentials 的请求动作要一个密钥：请求不阻塞，工具立即返回请求 ID，下一次请求见到这个结果就结束回合，
+ * 线程空闲、请求留在 asks 里等用户填写；其余线程直接完成。
+ */
 const SECRET_PROMPT = '要一个密钥';
 const SECRET_CALL = 'secret-request';
 const model: Model = {
@@ -123,7 +126,7 @@ const model: Model = {
     const answered = request.history.some((entry) => entry.type === 'tool_result' && entry.callId === SECRET_CALL);
     if (asked && !answered) {
       yield { type: 'item', item: { id: SECRET_CALL, raw: { type: 'function_call' }, call: { id: SECRET_CALL, name: 'credentials',
-        arguments: { request: { name: 'STRIPE_KEY', reason: '调支付接口', kind: 'file', value: 'sk_test_prefilled' } } } } };
+        arguments: { request: [{ name: 'STRIPE_KEY', reason: '调支付接口', kind: 'file', value: 'sk_test_prefilled' }] } } } };
     }
     yield { type: 'completed', responseId: 'fixture' };
   },
@@ -215,15 +218,16 @@ async function main() {
     if (secondThread.body.workspace.cwd !== workspace.body.workspace.cwd) throw new Error('第二线程没有继承工作区 cwd');
     await local.wait((event) => event.type === 'idle' && event.threadId === secondThread.body.id, '第二线程回合结束');
 
-    // 同一项目的另一个工作区：首线程停在密钥请求上，工作区聚合与线程状态都带着这个等待。
+    // 同一项目的另一个工作区：首线程要了一个密钥就结束回合，工作区聚合与线程状态都带着这项没回应的请求。
     const secretWorkspace = await call<WorkspaceModel>(daemon.url, 'POST', '/workspaces', {
       project: projectId, prompt: SECRET_PROMPT,
     }, machine.body.id);
     if (secretWorkspace.status !== 200) throw new Error(`创建密钥工作区失败：${secretWorkspace.status} ${JSON.stringify(secretWorkspace.body)}`);
     const secretThread = secretWorkspace.body.threads[0];
     if (!secretThread) throw new Error('密钥工作区没有首线程');
-    await local.wait((event) => event.type === 'waiting' && event.threadId === secretThread.instanceId
-      && event.waiting?.kind === 'secret', '首线程挂出密钥请求');
+    await local.wait((event) => event.type === 'asks' && event.threadId === secretThread.instanceId
+      && event.asks.some((ask) => ask.kind === 'secret'), '首线程发出密钥请求');
+    await local.wait((event) => event.type === 'idle' && event.threadId === secretThread.instanceId, '密钥线程回合结束');
     const threadStream = await openEvents(daemon.url, machine.body.id, `?thread=${secretThread.instanceId}`);
     const history = await threadStream.next().finally(() => threadStream.close());
     if (history.type !== 'thread.history') throw new Error(`线程流未先返回历史快照：${history.type}`);
