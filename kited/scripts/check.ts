@@ -79,11 +79,9 @@ const [tsc, lint, app, ...contracts] = await Promise.all([
   buildApp ? (async () => {
     const web = await run(['bun', 'scripts/build-plugin-web.ts']);
     if (web.code !== 0) return { ...web, stage: '插件宿主页构建' };
-    // 内嵌组网库不入库，首次编译前构建一次，需要 Go，约几分钟。
-    if (!existsSync(join(APP, 'Vendor/TailscaleKit.xcframework'))) {
-      const kit = await run([join(APP, 'scripts/build-tailscalekit.sh')]);
-      if (kit.code !== 0) return { ...kit, stage: 'TailscaleKit 构建' };
-    }
+    // 内嵌组网库不入库，没有或版本变了时构建，需要 Go，约几分钟；没变时脚本直接退出。
+    const kit = await run([join(APP, 'scripts/build-tailscalekit.sh')]);
+    if (kit.code !== 0) return { ...kit, stage: 'TailscaleKit 构建' };
     return { ...await run(['xcodebuild', '-project', 'Kite.xcodeproj', '-scheme', 'Kite',
       '-destination', 'generic/platform=macOS', '-destination', 'generic/platform=iOS Simulator',
       'build', '-quiet', 'COMPILER_INDEX_STORE_ENABLE=NO'], APP), stage: 'App 编译' };

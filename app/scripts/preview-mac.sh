@@ -7,7 +7,7 @@
 set -euo pipefail
 APP="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$APP"
-[[ -d Vendor/TailscaleKit.xcframework ]] || scripts/build-tailscalekit.sh
+scripts/build-tailscalekit.sh
 # 与 .kite/check 用同一组参数，共享增量编译缓存。
 ARGS=(-project Kite.xcodeproj -scheme Kite -configuration Debug -destination 'generic/platform=macOS' COMPILER_INDEX_STORE_ENABLE=NO)
 xcodebuild "${ARGS[@]}" build -quiet

@@ -35,7 +35,7 @@
 - [事件来源](todo-event-sources.md) — 文件/插件观察的路由与合并；主动触发已定为通用 monitor
 - [执行边界](todo-execution-boundaries.md) — Linux（含沙箱外命令、监听端口）、资源限制、项目收紧是否停旧命令
 - [开发工作流](todo-development-workflow.md) — 检查、宿主 Git、会话回退与分叉的待评估能力
-- [远程连接与托管运维](todo-remote-connections.md) — iPhone 重连、托管容量备份、凭据重绑和多机关系
+- [远程连接与托管运维](todo-remote-connections.md) — iPhone 局域网周期断连已修与验证范围、取证做法；托管容量备份、凭据重绑和多机关系
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
 - [终端插件收尾](todo-terminal-plugin.md) — 已实现待手测；旁观设备的尺寸、跨 kited 重启、后台命令的输入
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据；真发送开头掉帧

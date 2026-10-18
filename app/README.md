@@ -43,7 +43,7 @@ cd ..
 xcodebuild -project app/Kite.xcodeproj -scheme Kite -destination 'generic/platform=macOS' -destination 'generic/platform=iOS Simulator' build -quiet
 ```
 
-App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `app/scripts/build-tailscalekit.sh` 从固定版本的 libtailscale 构建，需要 Go；`.kite/check` 和打包在缺少时自动构建。Mac 端只编 arm64。
+App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `app/scripts/build-tailscalekit.sh` 从固定版本的 libtailscale 加上 Kite 的一个源文件构建（iOS 上取消 wireguard-go 的缓冲池上限，原因见文件注释），需要 Go；`.kite/check`、打包和 Mac 预览每次都跑这个脚本，版本或源文件变了才重建。Mac 端只编 arm64。
 
 生成的 `PluginHost.html` 随仓库提交，直接打开 Xcode 也能取得该资源。修改宿主页应编辑 `kited/web/plugin-host.ts` 后重新构建。
 

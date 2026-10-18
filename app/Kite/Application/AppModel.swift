@@ -294,7 +294,7 @@ final class AppModel {
             guard !Task.isCancelled, account.ready, connectionRun == run else { return }
             mergeDirectory()
             startConnections()
-            let unknown = account.workers.filter { device in !connections.values.contains { $0.deviceID == device.id } }
+            let unknown = account.workers.filter { device in device.online && !connections.values.contains { $0.deviceID == device.id } }
             await withTaskGroup(of: Void.self) { group in
                 for device in unknown {
                     group.addTask { await self.discover(device) }
@@ -387,6 +387,16 @@ final class AppModel {
         // 刚开始或从正常连接断开后立即重试一次，之后再按间隔重试。
         var immediate = true
         while !Task.isCancelled && accepts(client) {
+            // 组网确知离线的工作机不去连：连不上只是白等超时，发给它的包还会在组网库里排队等握手。
+            // 设备列表随 run 的每一轮刷新，这里隔两秒看一次，上线后接着连。
+            if account.devices.first(where: { $0.id == connection.deviceID })?.online == false {
+                connection.connected = false
+                connection.outdated = nil
+                connection.error = "上线后自动连接"
+                for area in workspaces where area.remote.machine.id == connection.id { area.draftThread.connected = false }
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                continue
+            }
             let generation = connection.catalog.reset()
             do {
                 // 先核对版本：协议号与 App 不同就不连，锁定为待更新；工作机可能正在自动更新，隔一阵再看。

@@ -57,7 +57,7 @@ async function main(): Promise<void> {
     if (!serviceOnly) {
       console.log('构建 Mac Release App…');
       await Bun.write(join(root, 'app/Kite/Resources/Generated/PluginHost.html'), await buildPluginHost());
-      if (!existsSync(join(root, 'app/Vendor/TailscaleKit.xcframework'))) await run([join(root, 'app/scripts/build-tailscalekit.sh')]);
+      await run([join(root, 'app/scripts/build-tailscalekit.sh')]);
       const derived = join(build, 'macos-derived');
       await run(['xcodebuild', '-project', join(root, 'app/Kite.xcodeproj'), '-scheme', 'Kite',
         '-configuration', 'Release', '-destination', 'generic/platform=macOS', '-derivedDataPath', derived,
