@@ -1,10 +1,11 @@
 /**
  * 终端插件 kite.terminal，分三段：
- * 一、PTY 会话、设备接入的画面镜像与尺寸归属、实例随进程的回收、一个实例一个窗口的视图切换，以及跨两次 kited 启动的恢复；
+ * 一、PTY 会话、设备接入的画面镜像与尺寸归属、实例随进程的回收、一个实例一个窗口的视图切换、带命令新建（命令像粘贴那样打进 shell），
+ *    以及跨两次 kited 启动的恢复；
  * 二、运行中的网页：终端从自己的进程树探测监听端口并试 HTTP，写进实例状态；本机全部终端的端口整组交给组网转发；
  *    terminal.select 选网页视图打开的端口；terminal.stop 停下带后台任务的终端；
  * 三、代理的长命令转到后台终端：shell 到时限、用户插话或要求时不停进程，交给接管方接着跑。
- * shell 一律换成 /bin/sh（terminalShell），不起用户的登录 shell。
+ * shell 换成 /bin/sh（terminalShell），不起用户的登录 shell；带命令新建的两个用例另换成先输出一行、停一下再起交互 shell 的 sh 和 zsh（zsh 不读配置）。
  */
 import { afterEach, expect, test } from 'bun:test';
 import { closeSync, existsSync, openSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
@@ -82,8 +83,8 @@ class Device {
   close() { this.ws.close(); }
 }
 
-async function start(root?: string): Promise<{ k: Kited; machineId: string }> {
-  const k = startKited(undefined, false, root === undefined ? { terminalShell } : { root, terminalShell });
+async function start(root?: string, shell = terminalShell): Promise<{ k: Kited; machineId: string }> {
+  const k = startKited(undefined, false, root === undefined ? { terminalShell: shell } : { root, terminalShell: shell });
   return { k, machineId: (await machine(k.url)).id };
 }
 
@@ -92,14 +93,14 @@ async function workspaceOf(k: Kited): Promise<string> {
   return (await folderWorkspace(k, repo)).workspace.id;
 }
 
-async function openTerminal(k: Kited, workspaceId: string): Promise<{ windowId: string; instanceId: string }> {
+/** 新建终端并开窗口，带 command 时 shell 起好后把它打进去。request 是发出的请求，原样再发一次就是重试。 */
+async function openTerminal(k: Kited, workspaceId: string, command?: string): Promise<{ windowId: string; instanceId: string; request: object }> {
   const windowId = crypto.randomUUID();
-  const opened = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
-    id: windowId, content: { kind: 'create', definitionId: terminalDefinitionId },
-  });
+  const request = { id: windowId, content: { kind: 'create', definitionId: terminalDefinitionId, command } };
+  const opened = await k.call('POST', `/workspaces/${workspaceId}/windows`, request);
   expect(opened.status).toBe(200);
   expect(opened.body).toMatchObject({ id: windowId, target: { viewId: 'terminal' } });
-  return { windowId, instanceId: opened.body.target.instanceId as string };
+  return { windowId, instanceId: opened.body.target.instanceId as string, request };
 }
 
 async function closeWindow(k: Kited, workspaceId: string, windowId: string): Promise<void> {
@@ -266,6 +267,98 @@ test('已有窗口的终端打开 web 视图时不另开窗口，原窗口换到
     expect(retried.body).toMatchObject({ id: windowId, target: { instanceId, viewId: 'terminal' } });
     expect(await windowsOf()).toEqual([expect.objectContaining({ id: windowId, target: { instanceId, viewId: 'terminal' }, state: 'open' })]);
   } finally {
+    await k.stop();
+  }
+}, 5_000);
+
+/** 设备接入后看到的全部画面：接入时 snapshot 里的，加上之后的输出。shown 等画面里出现 text，times 数 text 出现了几次。 */
+async function screenOf(device: Device) {
+  const { data } = await device.snapshot();
+  const screen = () => `${data as string}${device.output}`;
+  return {
+    screen,
+    shown: (text: string) => device.wait(() => screen().includes(text), `画面里出现 ${JSON.stringify(text)}`),
+    times: (text: string) => screen().split(text).length - 1,
+  };
+}
+
+/*
+ * 运行时：shell 在 PTY 上接管终端之前，tty 还在规范模式、开着回显，这时打进去的命令先被 tty 回显一遍，shell 读到后又显示一遍。
+ * 登录 shell 起来时常先输出几行、停一下才出提示符，这里用先打一行、停 50 毫秒再 exec 交互式 sh 的启动命令模拟（停的时间短于 kited 等输出停下的那段）；
+ * 实测在停的期间打进去，第二行以后的命令都显示两遍。sh 是 bash 3.2，没开括号粘贴，命令的换行换成回车逐行打进去。
+ * 这些要起真 shell 才看得出：命令在画面里只出现一次、每一行都执行了、跑完 shell 还在。
+ * 配合：带命令新建经窗口请求的回执去重，同一请求重试返回原窗口，不另建实例。
+ */
+test('带命令新建终端：等 shell 起来才把多行命令逐行打进去，每行执行一次、命令在画面里只显示一遍，跑完 shell 还在；同一请求重试返回原窗口、不另建实例', async () => {
+  const { k, machineId } = await start(undefined, ['/bin/sh', '-c', 'echo 正在启动; sleep 0.05; exec /bin/sh']);
+  let device: Device | undefined;
+  try {
+    const workspaceId = await workspaceOf(k);
+    const { windowId, instanceId, request } = await openTerminal(k, workspaceId, '# 先打个招呼\necho one-$((1+1))\n\necho two-$((2+3))');
+
+    device = new Device(k.url, machineId, instanceId);
+    const { shown, times } = await screenOf(device);
+    await shown('two-5');
+
+    const retried = await k.call('POST', `/workspaces/${workspaceId}/windows`, request);
+    expect(retried.status).toBe(200);
+    expect(retried.body).toMatchObject({ id: windowId, target: { instanceId, viewId: 'terminal' } });
+    const model = await aggregate(k, workspaceId);
+    expect(model.instances.filter((i) => i.definitionId === terminalDefinitionId).map((i) => i.id)).toEqual([instanceId]);
+    expect(model.windows.filter((w) => w.state === 'open').map((w) => w.id)).toEqual([windowId]);
+
+    // 跑完 shell 还在：自己再打一行能执行；等到它的输出时，前面命令的回显早已到齐
+    device.type('echo again-$((3*3))\n');
+    await shown('again-9');
+    expect(times('echo one-$((1+1))')).toBe(1);
+    expect(times('echo two-$((2+3))')).toBe(1);
+    expect(times('one-2')).toBe(1);
+    expect(times('two-5')).toBe(1);
+  } finally {
+    device?.close();
+    await k.stop();
+  }
+}, 5_000);
+
+/*
+ * 上游行为（zsh 5.9）：zle 开着括号粘贴（输出 \x1b[?2004h），粘贴进来的制表符、换行都原样进编辑缓冲区，回车后整段一起执行；
+ * 不包括号逐字打进去时，换行逐行执行（出 for> 这类续行提示符），跟在字后面的制表符触发补全：实测补全没找到就响铃、吞掉制表符，
+ * printf 的格式里少了那个制表符（行首的制表符补全时照样插进去，看不出区别，所以要放在字后面）。
+ * 括号粘贴要等 zle 接管终端才打开。真实的 zsh 配置常先输出一段、再静默加载插件超过 200 毫秒，只看启动输出停下就会赶在这个空当里打进去，
+ * 那时只能不包括号裸打；这里用先打一行、停 0.4 秒再 exec 交互式 zsh 的启动命令模拟，argv[0] 仍是 zsh，kited 要等到括号粘贴打开。
+ * 临时验证过：同样的启动命令把 argv[0] 换成 /bin/sh（kited 只等输出停下），结果出现 for> 续行提示符、补全响铃，制表符被吞掉。
+ * 交互式 zsh 默认不认 # 注释，整行当命令报 command not found: #；kited 给默认的 zsh 登录 shell 加了 -o interactivecomments，
+ * 这里同样加上，-f 不读配置。这些只有起真 zsh 才知道。
+ */
+const zsh = '/bin/zsh';
+test.skipIf(!existsSync(zsh))('zsh 先输出一段、停顿超过 200 毫秒才进入行编辑时，带命令新建等到括号粘贴打开才打进去：# 注释行不报错，制表符缩进、行内带制表符的多行循环整段执行，没有触发补全', async () => {
+  const { k, machineId } = await start(undefined, [zsh, '-f', '-c', `echo loading; sleep 0.4; exec ${zsh} -f -o interactivecomments -i`]);
+  let device: Device | undefined;
+  try {
+    const workspaceId = await workspaceOf(k);
+    const command = [
+      '# 只留奇数，两列之间是制表符',
+      'for n in 1 2 3; do',
+      '\tif [ $((n % 2)) -eq 1 ]; then',
+      "\t\tprintf 'odd-%s\t%s\\n' $n $((n * 10))",
+      '\tfi',
+      'done',
+      'echo after-$((6 * 7))',
+    ].join('\n');
+    const { instanceId } = await openTerminal(k, workspaceId, command);
+
+    device = new Device(k.url, machineId, instanceId);
+    const { screen, shown } = await screenOf(device);
+    await shown('after-42');
+    const text = screen();
+    expect(text).toContain('odd-1\t10');
+    expect(text).toContain('odd-3\t30');
+    expect(text).not.toContain('odd-2');
+    expect(text).not.toContain('\x07');
+    expect(text).not.toContain('for> ');
+    expect(text).not.toContain('command not found');
+  } finally {
+    device?.close();
     await k.stop();
   }
 }, 5_000);

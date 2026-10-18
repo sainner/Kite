@@ -53,7 +53,7 @@ struct PaneHeaderButtonGroup<Content: View>: View {
     }
 }
 
-/// 窗口标题栏的右组：前面可以有一块菜单，后面几组图标按钮（每组一块玻璃）。窗口只交数据，由 PaneWindow 统一画，
+/// 窗口标题栏的右组：前面可以有一块菜单和视图切换器，后面几组图标按钮（每组一块玻璃）。窗口只交数据，由 PaneWindow 统一画，
 /// 原生会话窗口交给紧凑布局外壳的也是它：所有窗口的右组是同一种视图，iPhone 紧凑布局里几个窗口共用一条标题栏，
 /// 换窗口时各组、各按钮按位置原地更新，玻璃形变、图标替换走系统自带的过渡。各窗口各写一套时右组的视图类型不同，
 /// 只能整块换掉，过渡是硬切或淡入淡出（2026-10-14 iPhone，角色上下文和签名之间；见 CompactPaneHeaderBar 的右组）。
@@ -61,10 +61,13 @@ struct PaneHeaderActions: View {
     var groups: [[PaneHeaderAction]] = []
     /// 菜单：会话的模型与更多操作、角色初始配置的默认模型与思考强度、辅助生成模板的模型。放在各组前面。
     var menus: AnyView?
+    /// 实例有几个视图时由 PaneWindow 加上，放在菜单后面、各组前面。
+    var switcher: PaneViewSwitcher?
     @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         if let menus { menus }
+        if let switcher { PaneViewSwitcherGroup(switcher: switcher) }
         ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
             PaneHeaderButtonGroup(selected: !group.isEmpty && group.allSatisfy(highlighted)) {
                 ForEach(Array(group.enumerated()), id: \.offset) { _, action in
@@ -99,6 +102,48 @@ struct PaneHeaderAction {
     let action: () -> Void
 }
 
+/// 实例几个视图之间的切换器：一块玻璃里并排各视图的图标，当前的垫一块半透明的主题色小胶囊、图标用主题色的实心版，换视图时小胶囊滑过去。
+struct PaneViewSwitcher {
+    struct Item {
+        let id: String
+        let title: String
+        let systemImage: String
+    }
+    let items: [Item]
+    let current: String
+    let select: (String) -> Void
+}
+
+private struct PaneViewSwitcherGroup: View {
+    let switcher: PaneViewSwitcher
+    @Namespace private var thumb
+
+    var body: some View {
+        PaneHeaderButtonGroup {
+            ForEach(switcher.items, id: \.id) { item in
+                let current = item.id == switcher.current
+                Button { if !current { switcher.select(item.id) } } label: {
+                    PaneHeaderButtonLabel(item.title, systemImage: item.systemImage)
+                        .symbolVariant(current ? .fill : .none)
+                        .foregroundStyle(current ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.primary))
+                        .background {
+                            // 和悬停的高亮同一块地方
+                            if current {
+                                Capsule().fill(Color.accentColor.opacity(0.15))
+                                    .padding(.vertical, PaneHeaderHover.inset)
+                                    .padding(.horizontal, PaneHeaderHover.horizontalInset)
+                                    .matchedGeometryEffect(id: "thumb", in: thumb)
+                            }
+                        }
+                }
+                .help(current ? "正在显示\(item.title)" : "显示\(item.title)")
+                .accessibilityAddTraits(current ? .isSelected : [])
+            }
+        }
+        .animation(.smooth(duration: 0.25), value: switcher.current)
+    }
+}
+
 private struct PaneHeaderActionButton: View {
     let action: PaneHeaderAction
 
@@ -120,6 +165,12 @@ private struct PaneHeaderActionButton: View {
     }
 }
 
+/// 标题栏按钮悬停高亮的内缩，见 Metrics.paneHeaderHighlightInset；视图切换器的小胶囊画在同一块地方。
+private enum PaneHeaderHover {
+    static var inset: CGFloat { Metrics.paneHeaderHighlightInset }
+    static var horizontalInset: CGFloat { Metrics.paneHeaderHighlightSideInset }
+}
+
 /// 原生菜单展开时沿用按钮的按下状态，背景随菜单收起自动清除。
 /// 按钮只带半个间距，反馈向两侧多出一点，图标入口的反馈仍是圆形。
 /// 触屏上按压反馈由可交互的玻璃负责，不再叠灰色背景。禁用时内容变暗，与 PaneButtonStyle 相同。
@@ -132,7 +183,8 @@ private struct PaneHeaderButtonStyle: ButtonStyle {
                 configuration.label
             } else {
                 configuration.label
-                    .modifier(PaneButtonHover(inset: 4, horizontalInset: -1, isPressed: configuration.isPressed))
+                    .modifier(PaneButtonHover(inset: PaneHeaderHover.inset, horizontalInset: PaneHeaderHover.horizontalInset,
+                                              isPressed: configuration.isPressed))
                     .clickPointer()
             }
         }

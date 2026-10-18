@@ -1,7 +1,8 @@
 /**
  * 终端插件 kite.terminal：一个实例一个进程，进程归工作机。实例的 lifetime 是 process：进程运行中独立存续，
  * 关掉窗口照跑，在停靠栏是没有窗口的小头像；进程结束后没有窗口就回收，有窗口的留到关掉窗口；随 kited 重启结束的连窗口一起回收。
- * 进程有两种：用户开的终端是用户的登录 shell，跑在 PTY 里，不加沙箱，相当于登录到这台工作机，起始目录是工作区目录；
+ * 进程有两种：用户开的终端是用户的登录 shell，跑在 PTY 里，不加沙箱，相当于登录到这台工作机，起始目录是工作区目录，
+ * 新建时可以带一条命令（对话里代码块的「在终端中执行」），shell 起好后像粘贴那样打进去执行；
  * 代理的 shell 命令超时、用户插话或模型要求时转到后台，由这里接管，仍在代理的沙箱里、只有输出没有输入，结束时通知那个代理。
  * 无头终端（@xterm/headless）跟着输出维护一份画面，设备接入时先发当前画面再推后续输出；PTY 的尺寸跟最近输入的那台设备。
  * 进程归 kited：kited 退出时终端随之结束，重启后不再拉起，只把上次留下的进程组停掉。
@@ -14,7 +15,7 @@ import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, re
 import { randomUUID } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { connect } from 'node:net';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ServerWebSocket } from 'bun';
 import { Terminal as Mirror } from '@xterm/headless';
@@ -100,6 +101,11 @@ const TAIL_CHARS = 3000;
 const READ_WINDOW = 4 * 1024 * 1024;
 const NOTIFY_RETRY_MS = 30_000;
 const PORT_SCAN_MS = 2000;
+/** 带命令新建时等 shell 起好：不开括号粘贴的 shell 以启动输出停下这么久为准；最多等 READY_MS。 */
+const SETTLE_MS = 200;
+const READY_MS = 10_000;
+/** 行编辑器开始读输入时打开括号粘贴的 shell：等到它打开才算起好，只看输出停下会赶在插件加载的空当里打进去。 */
+const BRACKETED_SHELLS = new Set(['zsh', 'fish']);
 /** 一个端口开头连着试这么多次 HTTP；还不像网页的之后每隔 HTTP_RETRY_SCANS 次扫描（约半分钟）再试，不一直去敲数据库这类服务。 */
 const HTTP_PROBES = 5;
 const HTTP_RETRY_SCANS = 15;
@@ -131,6 +137,8 @@ class Session {
   notify = true;
   /** 最近的输出，结束通知里用。 */
   recent = '';
+  /** 最近一次输出的时间，带命令新建时据此等 shell 起好。 */
+  outputAt = 0;
   /** 进程树正在监听的端口 → 能不能用 HTTP 打开。 */
   ports = new Map<number, boolean>();
   /** 每个端口扫描过几次，用来定 HTTP 探测的间隔。 */
@@ -146,24 +154,31 @@ class Session {
   get finished(): Promise<void> { return this.done.promise; }
 
   output(data: Uint8Array): void {
+    this.outputAt = Date.now();
     this.mirror.write(data);
     for (const socket of this.sockets) socket.send(data);
     for (const pending of this.attaching.values()) pending.push(data);
   }
 
-  /** 无头终端处理完此刻之前的输出后序列化：之后到的输出排在后面，正好接着画面发。 */
+  /**
+   * 无头终端处理完此刻之前的输出后马上读：在写入回调里同步读，等 Promise 回来时无头终端可能已经接着处理了之后的输出。
+   * 之后到的输出排在后面，所以画面正好接着发。
+   */
+  private flushed<T>(read: () => T): Promise<T> {
+    return new Promise((resolve) => this.mirror.write(new Uint8Array(0), () => resolve(read())));
+  }
   screen(): Promise<string> {
-    return new Promise((resolve) => this.mirror.write(new Uint8Array(0), () => resolve(this.serializer.serialize())));
+    return this.flushed(() => this.serializer.serialize());
   }
   /** 画面和回滚里的文字，一行一项。 */
   lines(): Promise<string[]> {
-    return new Promise((resolve) => this.mirror.write(new Uint8Array(0), () => {
+    return this.flushed(() => {
       const buffer = this.mirror.buffer.active;
       const lines: string[] = [];
       for (let y = 0; y < buffer.length; y++) lines.push(buffer.getLine(y)?.translateToString(true) ?? '');
       while (lines.length && !lines.at(-1)) lines.pop();
-      resolve(lines);
-    }));
+      return lines;
+    });
   }
 
   attach(socket: Socket): void {
@@ -188,6 +203,20 @@ class Session {
     if (this.owner !== socket) return;
     this.owner = [...this.sockets].at(-1);
     if (this.owner?.data.size) this.resize(this.owner.data.size);
+  }
+  /**
+   * 带命令新建：等 shell 起好再像终端粘贴那样打进去，shell 接管终端之前打进去的字会被回显两遍。会开括号粘贴的 shell 等它打开，
+   * 别的等启动输出停下；打的时候开着括号粘贴就整段包起来，制表符、换行不触发补全和执行，最后回车一次。
+   */
+  async type(text: string, bracketedShell: boolean): Promise<void> {
+    const deadline = Date.now() + READY_MS;
+    const ready = () => this.mirror.modes.bracketedPasteMode || (!bracketedShell && this.outputAt > 0 && Date.now() - this.outputAt >= SETTLE_MS);
+    while (!this.ended && Date.now() < deadline && !ready()) await delay(50);
+    const body = text.replace(/\r?\n/g, '\r');
+    await this.flushed(() => {
+      if (this.ended) return;
+      this.child?.write?.(new TextEncoder().encode(this.mirror.modes.bracketedPasteMode ? `\x1b[200~${body}\x1b[201~\r` : `${body}\r`));
+    });
   }
   input(socket: Socket, data: Uint8Array): void {
     if (this.ended || !this.child?.write) return;
@@ -217,6 +246,12 @@ class Session {
     for (const socket of this.sockets) socket.send(message);
     this.done.resolve();
   }
+}
+
+/** 用户的登录 shell。zsh 交互时默认把 # 开头的行当命令，代码块常带注释，打开 interactivecomments（bash 默认就开着）。 */
+function loginShell(): string[] {
+  const shell = userInfo().shell || '/bin/zsh';
+  return basename(shell) === 'zsh' ? [shell, '-l', '-o', 'interactivecomments'] : [shell, '-l'];
 }
 
 /** 命令输出是管道里的文字：单独的换行在终端里补成回车换行。 */
@@ -250,13 +285,13 @@ export class Terminals {
     writeFileSync(this.marker(id), JSON.stringify({ pid }), { mode: 0o600 });
   }
 
-  /** 新实例刚入库就起 shell；起不来记为结束，窗口里看得到原因。 */
-  start(instance: PluginInstance): void {
+  /** 新实例刚入库就起 shell；起不来记为结束，窗口里看得到原因。带命令的等 shell 起好再打进去。 */
+  start(instance: PluginInstance, command?: string): void {
     if (this.closed) throw new KiteError('kited 正在关闭', 503);
     const workspace = this.host.store.workspace(instance.workspaceId);
     if (!workspace || workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
     const session = new Session();
-    const shell = this.host.shell ?? [userInfo().shell || '/bin/zsh', '-l'];
+    const shell = this.host.shell ?? loginShell();
     const env = { ...commandEnvironment(this.host.env), SHELL: shell[0], TERM: 'xterm-256color', COLORTERM: 'truecolor',
       TERM_PROGRAM: 'Kite', LANG: this.host.env.LANG ?? 'en_US.UTF-8' };
     const eof = Promise.withResolvers<void>();
@@ -285,6 +320,7 @@ export class Terminals {
     this.save(instance.id, { phase: 'running' });
     void this.exited(instance.id, session);
     this.watchPorts();
+    if (command) void session.type(command, BRACKETED_SHELLS.has(basename(shell[0]!)));
   }
 
   /**

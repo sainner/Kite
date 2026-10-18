@@ -322,7 +322,7 @@ final class CardButton: HighlightButton {
 
 // MARK: - 代码块
 
-/// 代码块，照 CodeBlock：标题是语言（没写是 text），shell 类的多一个「在终端中执行」（还没接，停用）；
+/// 代码块，照 CodeBlock：标题是语言（没写是 text），shell 类的多一个「在终端中执行」（不在工作区窗口里时停用）；
 /// 代码等宽、按语言着色，太宽横着滚，太长先只显示开头 14 行（只多出几行的不折），底下「显示全部 N 行」。
 /// 人发的消息里的代码不折、底色是气泡里的不透明蓝、圆角和气泡同心、字是系统文字色。
 final class CodeCardView: BlockCardView {
@@ -345,8 +345,11 @@ final class CodeCardView: BlockCardView {
         surface.addSubview(scroller)
         surface.addSubview(foldButton)
         terminal.configure(asset: "CodeTerminal", label: "在终端中执行")
-        terminal.toolTip = "在终端中执行（尚未接入）"
-        terminal.isEnabled = false
+        terminal.toolTip = "在终端中执行"
+        terminal.action = { [weak self] in
+            guard let self else { return }
+            environment?.runInTerminal?.run(code)
+        }
         foldButton.action = { [weak self] in self?.expand() }
         copyButton.action = { [weak self] in
             guard let self else { return }
@@ -384,6 +387,7 @@ final class CodeCardView: BlockCardView {
         configure(label: languageLabel, copyLabel: "复制代码", background: user ? Theme.userCodeBackground : Theme.codeBackground,
                   radius: user ? Metrics.nestedRadius(inset: Metrics.bubblePadding.height) : Metrics.contentRadius,
                   actions: isShell ? [terminal] : [])
+        terminal.isEnabled = environment.runInTerminal != nil
         let secondary = Theme.secondary.resolve(in: EnvironmentValues().fontResolutionContext).ctFont as NSFont
         foldButton.style(font: secondary, color: .secondaryLabelColor)
         speech = TranscriptSpeech.code(language: languageLabel)

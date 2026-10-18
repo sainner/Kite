@@ -30,6 +30,7 @@ struct EmbeddedEnvironment {
     var referenceScope: ReferenceScope
     var toast: ToastCenter?
     var openURL: OpenURLAction
+    var runInTerminal: RunInTerminalAction?
     #if os(iOS)
     var longPress: (@MainActor () -> Void)?
     #endif
@@ -39,6 +40,7 @@ struct EmbeddedEnvironment {
         referenceScope = values.referenceScope
         toast = values.toast
         openURL = values.openURL
+        runInTerminal = values.runInTerminal
         #if os(iOS)
         longPress = values.blockCardLongPress
         #endif
@@ -474,6 +476,7 @@ private struct EmbeddedEnvironmentModifier: ViewModifier {
                 .environment(\.referenceScope, environment.referenceScope)
                 .environment(\.toast, environment.toast)
                 .environment(\.openURL, environment.openURL)
+                .environment(\.runInTerminal, environment.runInTerminal)
                 #if os(iOS)
                 .environment(\.blockCardLongPress, environment.longPress)
                 #endif

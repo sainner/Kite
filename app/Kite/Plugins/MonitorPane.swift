@@ -62,7 +62,7 @@ private struct MonitorTimelinePane: View {
 
     var body: some View {
         PaneWindow(header: header, notice: failure.map(PaneNotice.failure), actions: PaneHeaderActions(groups: [[
-            PaneHeaderAction(title: "停止监视", systemImage: "stop.circle", help: "停掉这个 monitor，时间线保留") { stop() },
+            PaneHeaderAction(title: "停止监视", systemImage: "stop.circle", help: "停掉这个 monitor，时间线保留", tint: Theme.danger) { stop() },
         ]])) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {

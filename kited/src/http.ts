@@ -544,7 +544,7 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/windows': { POST: bound(async (req) => {
         const identity = z.string().trim().min(1);
         const parsed = z.object({ id: z.uuid(), content: z.discriminatedUnion('kind', [
-          z.object({ kind: z.literal('create'), definitionId: identity, instanceId: z.uuid().optional() }).strict(),
+          z.object({ kind: z.literal('create'), definitionId: identity, instanceId: z.uuid().optional(), title: identity.optional(), command: identity.optional() }).strict(),
           z.object({ kind: z.literal('open'), instanceId: identity, viewId: identity }).strict(),
         ]) }).strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('窗口请求无效');

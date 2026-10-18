@@ -475,6 +475,7 @@ struct CodeBlock: View {
     /// 代码区最高多高，再长在里面竖着滚；nil 不限。
     var maxHeight: CGFloat?
     @Environment(\.toast) private var toast
+    @Environment(\.runInTerminal) private var runInTerminal
 
     private var languageLabel: String {
         language?.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? "text"
@@ -489,11 +490,11 @@ struct CodeBlock: View {
             copyToPasteboard(text, toast: toast)
         } actions: { _ in
             if terminal && isShell {
-                Button {} label: {
+                Button { runInTerminal?.run(text) } label: {
                     BlockCardIcon("CodeTerminal")
                 }
-                .disabled(true)
-                .help("在终端中执行（尚未接入）")
+                .disabled(runInTerminal == nil)
+                .help("在终端中执行")
                 .accessibilityLabel("在终端中执行")
             }
         } content: {

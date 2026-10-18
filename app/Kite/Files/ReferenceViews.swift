@@ -213,7 +213,22 @@ struct ReferenceLabel: View {
 
 }
 
-/// 宿主处理链接，消息与 JSON 组件不持有窗口或文件服务。
+extension EnvironmentValues {
+    /// 代码块的「在终端中执行」，工作区窗口里由 ReferenceNavigation 给；没有时按钮停用。
+    @Entry var runInTerminal: RunInTerminalAction?
+}
+
+/// 按对象身份比较：ReferenceNavigation 重算时环境值不变，读它的代码块不跟着重绘。
+struct RunInTerminalAction: Equatable {
+    let model: AppModel
+    let area: WorkArea
+
+    @MainActor func run(_ command: String) { model.runInTerminal(command, in: area) }
+
+    static func == (a: Self, b: Self) -> Bool { a.model === b.model && a.area === b.area }
+}
+
+/// 宿主处理链接和代码块的「在终端中执行」，消息与 JSON 组件不持有窗口、文件或终端服务。
 struct ReferenceNavigation: ViewModifier {
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
@@ -222,6 +237,7 @@ struct ReferenceNavigation: ViewModifier {
     func body(content: Content) -> some View {
         let scope = ReferenceScope(machineID: area.remote.machine.id, workspaceID: area.id)
         content.environment(\.referenceScope, scope)
+            .environment(\.runInTerminal, RunInTerminalAction(model: model, area: area))
             .environment(\.openURL, OpenURLAction { url in
                 if let port = LocalPort.port(of: url) {
                     Task {

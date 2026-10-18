@@ -382,7 +382,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/events?thread=<id>` | 线程 SSE：首帧 `thread.history`，随后线程显示与状态事件 |
 | GET | `/voice?thread=<id>` | 语音输入的 WebSocket，见 [语音识别](#语音识别)；`thread` 是正在输入的会话，新会话不带。App 推 16 kHz 单声道 s16le 的 PCM 二进制帧，说完发 `{"type":"finish"}`；工作机推 `{"type":"partial","text"}`（到目前为止的全文），最后推 `{"type":"final","text"}` 或 `{"type":"error","message"}` 后关闭。连上之后的错误（如没有凭据）都以 `error` 消息给出 |
 
-窗口创建请求为 `{id, content: {kind: "create", definitionId, instanceId?}}`，`instanceId` 是客户端生成的 UUID，用作新实例的 ID，已用过返回 409，省略时由 kited 生成；打开已有视图为 `{id, content: {kind: "open", instanceId, viewId}}`。`id` 使用 UUID。内置代理（`kite.agent`）提供 `conversation`，文件提供 `files`，终端提供 `terminal` 与 `web`；文件视图包含预览。新建的空 agent 不调用模型；目标实例须属于当前工作区且处于可用状态，视图须由定义声明。
+窗口创建请求为 `{id, content: {kind: "create", definitionId, instanceId?, title?, command?}}`，`instanceId` 是客户端生成的 UUID，用作新实例的 ID，已用过返回 409，省略时由 kited 生成；`title` 是新实例的名字，省略时按插件名编号；`command` 只用于终端，见 [实例操作 · 终端](实例操作.md#终端)；打开已有视图为 `{id, content: {kind: "open", instanceId, viewId}}`。`id` 使用 UUID。内置代理（`kite.agent`）提供 `conversation`，文件提供 `files`，终端提供 `terminal` 与 `web`；文件视图包含预览。新建的空 agent 不调用模型；目标实例须属于当前工作区且处于可用状态，视图须由定义声明。
 
 窗口响应包含 `{id, workspaceId, target: {instanceId, viewId}, state, createdAt}`。新建的窗口以请求 `id` 作窗口 ID，App 据此在工作机确认前先按这个 ID（和 `instanceId`）打开窗口；实例已有窗口时不另开，那个窗口换到请求的视图后返回。同一请求 ID 重试返回同一个窗口、不再切换视图，内容改变或窗口已关闭时拒绝，迟到重试不会复活窗口。实例回收与跨端布局的完整规则见 [Agent 与插件契约](Agent与插件契约.md#34-workspacewindow实例的呈现)。
 

@@ -2,7 +2,7 @@ import SwiftUI
 @preconcurrency import SwiftTerm
 
 /// 终端窗口：工作机上一个 PTY 会话，关掉窗口进程照跑。输出与网页是它的两个视图，在同一个窗口里切换（切换按钮由窗口统一加，
-/// 见 PaneWindow 的 viewActions）；各自第一次显示时才接上，之后切走只是藏起来、不再绘制：输出的连接不断，网页里的跳转、滚动不丢。
+/// 见 PaneWindow 的 viewSwitcher）；各自第一次显示时才接上，之后切走只是藏起来、不再绘制：输出的连接不断，网页里的跳转、滚动不丢。
 /// 网页是进程树里监听的端口上的页面，所选端口各设备共用，页面里的跳转、滚动与登录状态按设备各自保存（PortPreview 的 store 按实例分开）。
 /// 进程状态、端口写在副标题，失败在信息区。
 struct TerminalPane: View {

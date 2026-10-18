@@ -91,17 +91,16 @@ private struct WorkspacePaneBody: View {
             }
         }
         .environment(\.paneInstance, opening ? nil : instance)
-        .environment(\.paneViewActions, opening ? [] : viewActions(instance, showing: target?.viewId))
+        .environment(\.paneViewSwitcher, opening ? nil : viewSwitcher(instance, showing: target?.viewId))
         .modifier(ReferenceNavigation())
     }
 
-    /// 实例有几个视图时，切到其他视图的按钮：一个视图一个，窗口原地换过去（见 AppModel.openWindow）。
-    private func viewActions(_ instance: RemotePluginInstance?, showing current: String?) -> [PaneHeaderAction] {
-        guard let instance, let views = area.definition(of: instance)?.views, views.count > 1 else { return [] }
-        return views.filter { $0.id != current }.map { view in
-            PaneHeaderAction(title: view.title, systemImage: WindowAppearance.renderer(view.renderer).icon, help: "显示\(view.title)") {
-                model.openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area)
-            }
+    /// 实例有几个视图时的切换器：点另一个视图，窗口原地换过去（见 AppModel.openWindow）。
+    private func viewSwitcher(_ instance: RemotePluginInstance?, showing current: String?) -> PaneViewSwitcher? {
+        guard let instance, let current, let views = area.definition(of: instance)?.views, views.count > 1 else { return nil }
+        let items = views.map { PaneViewSwitcher.Item(id: $0.id, title: $0.title, systemImage: WindowAppearance.renderer($0.renderer).icon) }
+        return PaneViewSwitcher(items: items, current: current) { view in
+            model.openWindow(.open(.init(instanceId: instance.id, viewId: view)), in: area)
         }
     }
 }
@@ -135,6 +134,6 @@ private struct PlaceholderPane: View {
 extension EnvironmentValues {
     /// 供当前窗口标题栏进入实例设置；空白工作区没有实例。
     @Entry var paneInstance: RemotePluginInstance?
-    /// 切到实例其他视图的按钮，PaneWindow 放在标题栏右组最前面；只有一个视图时为空。
-    @Entry var paneViewActions: [PaneHeaderAction] = []
+    /// 实例几个视图之间的切换器，PaneWindow 放在标题栏右组；只有一个视图时没有。
+    @Entry var paneViewSwitcher: PaneViewSwitcher?
 }

@@ -649,10 +649,10 @@ final class AppModel {
             } else {
                 local = target
             }
-        case .create(let definitionId, let instanceId):
+        case .create(let definitionId, let instanceId, let title, _):
             if let definition = area.definitions.first(where: { $0.id == definitionId }) {
                 area.createLocally(RemotePluginInstance(id: instanceId, workspaceId: area.id, definitionId: definitionId,
-                                                        title: area.newInstanceTitle(definition), status: .open, presentation: .window,
+                                                        title: title ?? area.newInstanceTitle(definition), status: .open, presentation: .window,
                                                         createdAt: Self.now))
                 created = instanceId
                 local = WindowTarget(instanceId: instanceId, viewId: definition.defaultView)
@@ -703,6 +703,14 @@ final class AppModel {
         let client = try activeClient(in: area)
         _ = try await client.request("/workspaces/\(area.id)/operations/terminal.stop", method: "POST",
                                      body: Stop(operationId: UUID().uuidString, instanceId: instance), as: Stopped.self)
+    }
+
+    /// 代码块的「在终端中执行」：新开一个以命令第一行为名的终端，工作机等 shell 起好后把命令打进去执行。
+    func runInTerminal(_ command: String, in area: WorkArea) {
+        let command = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty else { return }
+        let title = String(firstLine(command).trimmingCharacters(in: .whitespaces).prefix(60))
+        openWindow(.create("kite.terminal", instance: UUID().uuidString.lowercased(), title: title, command: command), in: area)
     }
 
     /// 菜单里的停止终端：不等结果，失败报在窗口提示里。

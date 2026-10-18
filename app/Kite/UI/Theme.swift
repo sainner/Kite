@@ -149,12 +149,17 @@ enum Metrics {
     /// 独立玻璃入口通过系统 controlSize 决定。
     static var paneButton: CGFloat { InputMode.current.button }
     static var paneHeaderButton: CGFloat { InputMode.current.headerButton }
-    /// 标题栏按钮组两端的留白：图标在按钮高度里的空白，减去按钮自带的半个间距。
+    /// 标题栏按钮的悬停高亮（视图切换器的小胶囊同样）是圆：上下各缩进这么多，圆到玻璃两端也隔这么多。
+    static let paneHeaderHighlightInset: CGFloat = 4
+    static var paneHeaderHighlight: CGFloat { paneHeaderButton - 2 * paneHeaderHighlightInset }
+    /// 组里每个图标按钮宽：就是高亮圆的直径，相邻两个圆挨着；触屏上不小于输入区按钮的宽度，多出来的留在两个圆之间。
+    static var paneHeaderIconWidth: CGFloat { max(paneHeaderHighlight, paneButton) }
+    /// 高亮圆在图标按钮里左右各缩进多少。
+    static var paneHeaderHighlightSideInset: CGFloat { (paneHeaderIconWidth - paneHeaderHighlight) / 2 }
+    /// 标题栏按钮组两端的留白：图标在按钮高度里的空白，减去按钮自带的半个间距；加上高亮的左右缩进，圆到玻璃两端和上下一样。
     static var paneHeaderGroupInset: CGFloat { (paneHeaderButton - InputMode.current.labelExtent - paneHeaderButtonGap) / 2 }
-    /// 触屏组内每个图标入口至少留出完整按钮宽度，避免只增加高度后仍挤在一起。
-    static var paneHeaderButtonGap: CGFloat {
-        InputMode.current.isTouch ? max(paneButtonGap, paneButton - InputMode.current.labelExtent) : paneButtonGap
-    }
+    /// 图标左右各留一半，凑成 paneHeaderIconWidth。
+    static var paneHeaderButtonGap: CGFloat { paneHeaderIconWidth - InputMode.current.labelExtent }
     static let paneButtonGap: CGFloat = 10
     /// 标题栏文字前的标志（模型按钮的厂商）比图标小一号，宽的标志与大写字母差不多高，和文字隔半个按钮间距。
     static var paneHeaderLogo: CGFloat { InputMode.current.labelExtent - 2 }

@@ -17,7 +17,7 @@ struct ActionItem {
 }
 
 /// Mac 原生对话的操作栏，照 ActionBar 和 PaneHeaderButtonGroup：一排只有图标的按钮包在一块可交互的玻璃胶囊里，
-/// 按钮 16 pt 见方的图标左右各留半个按钮间距（共 26 宽、36 高），两端再留 paneHeaderGroupInset；悬停垫灰圆（上下缩 4、左右外扩 1），
+/// 按钮 16 pt 见方的图标左右各留半个按钮间距（共 28 宽、36 高），两端再留 paneHeaderGroupInset；悬停垫灰圆（上下缩 4、左右不缩，相邻两圆挨着），
 /// 按下深一点，停用淡到 0.45，危险操作是红色。
 /// 出现时整条从贴着这一行、靠 side 那边的角等比放大（0.3 起，弹簧 0.35 秒、回弹 0.3），边放大边淡显；收起时缩回那个角（snappy 0.2 秒），
 /// 边缩边淡出。和 ActionBar 一样只改整体的缩放，不改尺寸，玻璃和按钮当一整层放大，里面不重排。
@@ -124,7 +124,7 @@ final class ActionBarView: NSView {
 }
 
 /// 操作栏上的一个按钮，照 PaneHeaderButtonStyle 和 PaneHeaderButtonLabel：图标按正文字号、放在 16 pt 见方的格子正中，
-/// 悬停、按下垫灰圆（上下缩 4、左右外扩 1），停用整体淡到 0.45，按下不变淡。
+/// 悬停、按下垫灰圆（见 Metrics.paneHeaderHighlightInset），停用整体淡到 0.45，按下不变淡。
 final class ActionBarButton: HighlightButton {
     private let image = NSImageView()
     private(set) var title = ""
@@ -132,7 +132,7 @@ final class ActionBarButton: HighlightButton {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        inset = CGSize(width: -1, height: 4)
+        inset = CGSize(width: Metrics.paneHeaderHighlightSideInset, height: Metrics.paneHeaderHighlightInset)
         pressedOpacity = 1
         image.imageScaling = .scaleNone
         image.hideFromAccessibility()

@@ -67,13 +67,14 @@ export class InstanceLifecycle {
       if (content.kind === 'create') {
         const definition = this.kite.catalog.get(content.definitionId);
         if (definition.id === monitorDefinitionId) throw new KiteError('monitor 由代理用 monitor_start 开启，或随 Line 创建');
+        if (content.command !== undefined && definition.id !== terminalDefinitionId) throw new KiteError('只有终端能带命令新建');
         const titles = new Set(model.instances.filter((p) => p.definitionId === definition.id).map((p) => p.title));
         let number = 1;
         while (titles.has(`${definition.title} ${number}`)) number++;
         if (content.instanceId && (this.kite.store.instance(content.instanceId) || this.kite.store.hasInstanceWindows(content.instanceId))) {
           throw new KiteError('实例 ID 已使用', 409);
         }
-        created = { ...this.newInstance(workspaceId, definition.id, definition.agent ? '新代理' : `${definition.title} ${number}`),
+        created = { ...this.newInstance(workspaceId, definition.id, content.title ?? (definition.agent ? '新代理' : `${definition.title} ${number}`)),
           ...(content.instanceId ? { id: content.instanceId } : {}) };
         if (definition.agent) thread = { instanceId: created.id, runtime: instanceAgent(created).runtime, nativeId: randomUUID() };
         window = this.newWindow(created, request.id);
@@ -87,7 +88,7 @@ export class InstanceLifecycle {
         window = existing ? { ...existing, target: { instanceId: instance.id, viewId: content.viewId } } : this.newWindow(instance, request.id, content.viewId);
       }
       this.kite.store.openWindow(window, { id: request.id, content: key }, created, thread);
-      if (created?.definitionId === terminalDefinitionId) this.kite.terminals.start(created);
+      if (created?.definitionId === terminalDefinitionId) this.kite.terminals.start(created, content.kind === 'create' ? content.command : undefined);
       this.control.changed(workspaceId);
       return window;
     });
