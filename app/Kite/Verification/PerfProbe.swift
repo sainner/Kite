@@ -453,7 +453,7 @@ import UIKit
     private static func reopen(_ session: Session) async throws {
         let model = session.model, area = session.area, layout = area.layout
         func window(_ instance: RemotePluginInstance) -> Pane? {
-            area.windows.first { $0.target.instanceId == instance.id }.map { Pane($0.id) }
+            area.window(of: instance.id).map { Pane($0.id) }
         }
         guard let instance = area.instances.first(where: { instance in
             instance.status == .open && area.isAgent(instance) && window(instance) == nil && area.definition(of: instance)?.views.isEmpty == false

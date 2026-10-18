@@ -103,7 +103,7 @@ struct DockEntryFace: View {
 
     private func look(_ instance: RemotePluginInstance) -> DockFace.Look {
         if area.isAgent(instance) { return .agent(instance: instance.id, design: model.emblem(for: instance.id, in: area)) }
-        return .tool(.renderer(area.definition(of: instance)?.views.first?.renderer ?? ""))
+        return .tool(area.appearance(of: instance))
     }
 }
 

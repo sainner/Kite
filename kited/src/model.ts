@@ -92,7 +92,7 @@ export interface WindowTarget {
   viewId: string;
 }
 
-/** 共享窗口集合由工作机保存；分栏、停靠和焦点不进入这个对象。 */
+/** 共享窗口集合由工作机保存，一个实例最多一个打开的窗口，target.viewId 是它当前的视图；分栏、停靠和焦点不进入这个对象。 */
 export interface WorkspaceWindow {
   id: string;
   workspaceId: string;

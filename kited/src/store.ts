@@ -63,7 +63,8 @@ create table if not exists workspace_windows (
   instance_id text not null, view_id text not null,
   state text not null check (state in ('open', 'closed')), created_at integer not null
 );
-create unique index if not exists plugin_view_window on workspace_windows(instance_id, view_id) where state = 'open';
+-- 一个实例只对应一个打开的窗口，窗口在实例的几个视图之间切换。
+create unique index if not exists instance_window on workspace_windows(instance_id) where state = 'open';
 create table if not exists window_requests (
   id text primary key, workspace_id text not null references workspaces(id),
   window_id text not null references workspace_windows(id), content text not null
@@ -136,6 +137,7 @@ export class Store implements UsageStore {
     this.dropUnpricedUsage();
     this.dropBareContextTemplates();
     this.relaxRemotes();
+    this.oneWindowPerInstance();
     this.db.exec(SCHEMA);
     this.mergeAgentDefinitions();
     this.splitProjectDocuments();
@@ -201,6 +203,17 @@ export class Store implements UsageStore {
       ${checkoutsTable('checkouts_next')}
       insert into checkouts_next select id, project_id, machine_id, path, remote, created_at from checkouts;
       drop table checkouts; alter table checkouts_next rename to checkouts;`);
+  }
+
+  /**
+   * 一个实例只对应一个窗口之前，同一实例的几个视图各开各的窗口。在研期间不迁移：每个实例只留最早打开的那个窗口，换掉按视图的唯一索引。
+   */
+  private oneWindowPerInstance(): void {
+    if (!this.db.query("select 1 from sqlite_master where type = 'index' and name = 'plugin_view_window'").get()) return;
+    this.db.exec(`drop index plugin_view_window;
+      update workspace_windows set state = 'closed' where state = 'open' and exists (select 1 from workspace_windows earlier
+        where earlier.instance_id = workspace_windows.instance_id and earlier.state = 'open'
+          and (earlier.created_at, earlier.id) < (workspace_windows.created_at, workspace_windows.id));`);
   }
 
   /** 照 SQLite 改表的步骤换表：关外键，在事务里执行，核对外键再打开。 */
@@ -636,12 +649,13 @@ export class Store implements UsageStore {
     this.db.query('insert into workspace_windows values (?, ?, ?, ?, ?, ?)')
       .run(w.id, w.workspaceId, w.target.instanceId, w.target.viewId, w.state, w.createdAt);
   }
-  /** 即使打开的是已有窗口，也保存操作收据；迟到重试不能复活已关闭的窗口。 */
+  /** 即使打开的是已有窗口，也保存操作收据，已有窗口换到 w 的视图；迟到重试不能复活已关闭的窗口。 */
   openWindow(w: WorkspaceWindow, request: { id: string; content: string }, instance?: PluginInstance, thread?: Thread): void {
     this.db.transaction(() => {
       if (instance) this.addInstance(instance);
       if (thread) this.addThread(thread);
-      if (!this.window(w.id)) this.addWindow(w);
+      if (this.window(w.id)) this.db.query('update workspace_windows set view_id = ? where id = ?').run(w.target.viewId, w.id);
+      else this.addWindow(w);
       this.db.query('insert into window_requests values (?, ?, ?, ?)').run(request.id, w.workspaceId, w.id, request.content);
     })();
   }

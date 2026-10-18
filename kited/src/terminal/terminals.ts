@@ -1,6 +1,6 @@
 /**
  * 终端插件 kite.terminal：一个实例一个进程，进程归工作机。实例的 lifetime 是 process：进程运行中独立存续，
- * 关掉窗口照跑，在停靠栏是没有窗口的小头像；进程结束后没有窗口就回收，有窗口的留到关掉最后一个窗口。
+ * 关掉窗口照跑，在停靠栏是没有窗口的小头像；进程结束后没有窗口就回收，有窗口的留到关掉窗口；随 kited 重启结束的连窗口一起回收。
  * 进程有两种：用户开的终端是用户的登录 shell，跑在 PTY 里，不加沙箱，相当于登录到这台工作机，起始目录是工作区目录；
  * 代理的 shell 命令超时、用户插话或模型要求时转到后台，由这里接管，仍在代理的沙箱里、只有输出没有输入，结束时通知那个代理。
  * 无头终端（@xterm/headless）跟着输出维护一份画面，设备接入时先发当前画面再推后续输出；PTY 的尺寸跟最近输入的那台设备。
@@ -231,7 +231,7 @@ export class Terminals {
 
   constructor(private host: TerminalsHost) {}
 
-  /** 进程是否还在跑；process 实例据此决定关掉最后一个窗口时回不回收。 */
+  /** 进程是否还在跑；process 实例据此决定关掉窗口时回不回收。 */
   running(id: string): boolean {
     const session = this.sessions.get(id);
     return !!session && !session.ended;
@@ -333,7 +333,8 @@ export class Terminals {
     this.forwardAll();
     const instance = this.host.store.instance(id);
     if (!instance) { this.sessions.delete(id); return; }
-    this.save(id, state);
+    // 工作机关闭时停下的不记结束：下次启动按还在运行认出是被重启结束的，连窗口一起回收（见 recover）
+    if (!this.closed) this.save(id, state);
     if (session.notify && instance.origin && terminalConfig(instance)) {
       // 模板或变量出错时通知发不出，回收照常进行。
       try { this.notify(instance, state, session.recent); }
@@ -485,18 +486,23 @@ export class Terminals {
   }
 
   /**
-   * 启动时核对：上次还在跑的终端已经随 kited 结束，留下的进程组停掉，记为结束。终端这时都不在运行，没有窗口的一律回收，
-   * 包括正常关闭时停下、来不及回收的。调用时控制队列里还没有别的工作，直接回收。
+   * 启动时核对：上次还在跑的终端已经随 kited 结束（正常关闭时停下的也按还在跑记着，见 exited），留下的进程组停掉，
+   * 连窗口一起回收，进程没了，窗口留着也接不回来。之前就自己结束了的照旧：没有窗口的回收，有窗口的留着看最后的画面。
+   * 调用时控制队列里还没有别的工作，直接回收。
    */
   recover(): void {
     for (const workspace of this.host.store.workspaces()) {
+      const windows = this.host.store.windows(workspace.id);
       for (const instance of this.host.store.instances(workspace.id)) {
         if (instance.definitionId !== terminalDefinitionId) continue;
-        if (terminalState(instance)?.phase !== 'exited') {
-          this.killLeftover(instance.id);
-          this.save(instance.id, { phase: 'exited', exitCode: null, reason: '工作机重启，终端已结束', endedAt: Date.now() });
-        }
-        if (!this.host.store.windows(workspace.id).some((w) => w.target.instanceId === instance.id)) this.host.collect(instance);
+        const killed = terminalState(instance)?.phase !== 'exited';
+        if (killed) this.killLeftover(instance.id);
+        const window = windows.find((w) => w.target.instanceId === instance.id);
+        if (window && !killed) continue;
+        this.host.store.transaction(() => {
+          if (window) this.host.store.closeWindow(window.id);
+          this.host.collect(instance);
+        });
       }
     }
   }

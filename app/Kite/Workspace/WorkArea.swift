@@ -37,6 +37,8 @@ final class WorkArea: Identifiable {
     private(set) var openingInstances: [RemotePluginInstance] = []
     /// 本机关掉、工作机还没关的窗口：点下去就飞回停靠栏，工作机的列表还有它也不放回来，关不掉再放回来（见 AppModel.closeWindow）。
     private(set) var closingWindows: Set<String> = []
+    /// 本机换了视图、工作机还没确认的窗口：窗口 ID 到视图和那次请求，当场按它显示；请求有了结果就去掉，以工作机的列表为准（见 AppModel.sendWindowRequest）。
+    @ObservationIgnored private var switchingViews: [String: (view: String, request: String)] = [:]
     /// 本机归档、工作机还没归档的实例：当场按已归档排，它的窗口一起收掉；归档不成再放回来（见 AppModel.archiveInstance）。
     private(set) var archivingInstances: Set<String> = []
     /// 在路上的关窗口请求。之后打开窗口的请求等它们回来再发：工作机先收到打开的话，会把还没关的那个窗口交回来。
@@ -146,7 +148,7 @@ final class WorkArea: Identifiable {
         return (definition.views.first { $0.id == definition.defaultView } ?? definition.views.first)?.id
     }
 
-    /// 关掉最后一个窗口后实例还在：独立存续的，或者进程还在跑的终端。
+    /// 关掉窗口后实例还在：独立存续的，或者进程还在跑的终端。
     func survivesWindowClose(_ instance: RemotePluginInstance) -> Bool {
         switch definition(of: instance)?.lifetime {
         case .persistent: true
@@ -168,14 +170,18 @@ final class WorkArea: Identifiable {
         return definition(of: instance)?.views.first { $0.id == target.viewId }
     }
 
+    /// 插件实例的外观：一个实例一个窗口，窗口和它在停靠栏的小头像同一个样子，不随视图换。
+    func appearance(of instance: RemotePluginInstance) -> WindowAppearance {
+        definition(of: instance).map(WindowAppearance.definition) ?? .renderer("")
+    }
+
     func appearance(of pane: Pane) -> WindowAppearance {
         if pane.id == chooserWindow { return .init(name: "新建窗口", icon: "plus") }
         if let thread = thread(in: pane) { return .init(name: thread.title, icon: WindowAppearance.agentIcon, tint: thread.tint, isAgent: true) }
         if let target = windows.first(where: { $0.id == pane.id })?.target,
            let instance = instances.first(where: { $0.id == target.instanceId }) {
-            let view = view(in: pane)
-            var result = WindowAppearance.renderer(view?.renderer ?? "")
-            result.name = instance.title + (target.viewId == definition(of: instance)?.defaultView ? "" : " · " + (view?.title ?? target.viewId))
+            var result = appearance(of: instance)
+            result.name = instance.title
             return result
         }
         return .init(name: "窗口", icon: "rectangle")
@@ -233,8 +239,9 @@ final class WorkArea: Identifiable {
 
     private var seenKey: String { "KiteSeenTurns.\(remote.machine.id).\(remote.id)" }
 
-    func activateWindow(for target: WindowTarget) {
-        if let window = windows.first(where: { $0.target == target }) { layout.activate(Pane(window.id)) }
+    /// 实例的窗口，一个实例最多一个。
+    func window(of instance: String) -> RemoteWorkspaceWindow? {
+        windows.first { $0.target.instanceId == instance }
     }
 
     /// 实例集合是工作机上的实例，本机正归档的按已归档算，加上本机正建的；窗口集合是工作机上打开的窗口，
@@ -252,7 +259,8 @@ final class WorkArea: Identifiable {
         let open = remote.windows.filter { $0.state == .open && $0.id != draftWindow }
         let stillOpen = closingWindows.intersection(open.map(\.id))
         if stillOpen != closingWindows { closingWindows = stillOpen }
-        windows = open.filter { !closingWindows.contains($0.id) && !archivingInstances.contains($0.target.instanceId) } + openingWindows
+        windows = open.filter { !closingWindows.contains($0.id) && !archivingInstances.contains($0.target.instanceId) }
+            .map { window in switchingViews[window.id].map { window.showing($0.view) } ?? window } + openingWindows
             + (chooserWindow.map { [Self.chooserWindow($0, workspace: id)] } ?? [])
             + (draftWindow.map { [Self.draftWindow($0, workspace: id, thread: draftThread)] } ?? [])
         layout.reconcile(windows.map { Pane($0.id) })
@@ -285,6 +293,19 @@ final class WorkArea: Identifiable {
     }
 
     func isOpening(_ pane: Pane) -> Bool { openingWindows.contains { $0.id == pane.id } }
+
+    /// 先在本机给窗口换视图，见 switchingViews。
+    func switchLocally(_ window: String, to view: String, request: String) {
+        switchingViews[window] = (view, request)
+        rebuildWindows()
+    }
+
+    /// 这次换视图的请求有了结果：之后按工作机的列表显示；后来又换了一次的，等后来那次。
+    func settleSwitch(_ window: String, request: String) {
+        guard switchingViews[window]?.request == request else { return }
+        switchingViews[window] = nil
+        rebuildWindows()
+    }
 
     /// 先在本机建实例，见 openingInstances。
     func createLocally(_ instance: RemotePluginInstance) {
@@ -454,14 +475,14 @@ struct WindowAppearance {
     /// 还没建出实例时按定义取，同建好后的窗口：代理是对话，其余按默认视图。
     static func definition(_ definition: RemotePluginDefinition) -> Self {
         if definition.agent != nil { return .init(name: definition.title, icon: agentIcon, isAgent: true) }
-        return renderer(definition.views.first { $0.id == definition.defaultView }?.renderer ?? "")
+        return renderer(definition.defaultRenderer ?? "")
     }
 
     static func renderer(_ id: String) -> Self {
         switch id {
         case "files": .init(name: "文件", icon: "folder")
         case "terminal": .init(name: "终端", icon: "terminal")
-        case "preview": .init(name: "预览", icon: "eye")
+        case "preview": .init(name: "网页", icon: "globe")
         case "monitor": .init(name: "监视", icon: "tray")
         default: .init(name: "插件", icon: "puzzlepiece.extension")
         }

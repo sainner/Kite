@@ -46,6 +46,16 @@ final class TerminalSession {
         return view
     }
 
+    /// 窗口切到别的视图时交出键盘焦点，藏起来的终端不再收按键。
+    func resignFocus() {
+        guard let view else { return }
+        #if os(macOS)
+        if view.window?.firstResponder === view { view.window?.makeFirstResponder(nil) }
+        #else
+        if view.isFirstResponder { view.resignFirstResponder() }
+        #endif
+    }
+
     /// 前景色跟着浅色、深色外观换；底色透明，露出窗口本身的底。SwiftTerm 每次设色都整屏重画，外观没变就不设。
     func applyColors(dark: Bool) {
         guard let view, dark != appliedDark else { return }

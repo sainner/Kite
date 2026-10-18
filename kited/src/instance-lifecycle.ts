@@ -45,7 +45,7 @@ export class InstanceLifecycle {
     return { id, workspaceId: instance.workspaceId, target: { instanceId: instance.id, viewId }, state: 'open', createdAt: Date.now() };
   }
 
-  /** 新实例和首窗口原子登记；空会话不启动模型。 */
+  /** 新实例和首窗口原子登记，打开已有实例的视图时它的窗口换过去；空会话不启动模型。 */
   openWindow(workspaceId: string, request: OpenWindowRequest): Promise<WorkspaceWindow> {
     return this.control.run(workspaceId, async () => {
       const model = this.kite.workspace(workspaceId);
@@ -82,11 +82,10 @@ export class InstanceLifecycle {
         if (!instance || instance.workspaceId !== workspaceId) throw new KiteError('工作区内没有这个实例', 404);
         if (instance.status !== 'open') throw new KiteError('实例已经归档', 409);
         if (!this.kite.catalog.get(instance.definitionId).views.some((view) => view.id === content.viewId)) throw new KiteError('插件未声明这个视图');
-        window = this.newWindow(instance, request.id, content.viewId);
+        // 实例已有窗口时不另开：那个窗口换到请求的视图
+        const existing = model.windows.find((w) => w.target.instanceId === instance.id);
+        window = existing ? { ...existing, target: { instanceId: instance.id, viewId: content.viewId } } : this.newWindow(instance, request.id, content.viewId);
       }
-      const { target } = window;
-      const existing = model.windows.find((w) => w.target.instanceId === target.instanceId && w.target.viewId === target.viewId);
-      window = existing ?? window;
       this.kite.store.openWindow(window, { id: request.id, content: key }, created, thread);
       if (created?.definitionId === terminalDefinitionId) this.kite.terminals.start(created);
       this.control.changed(workspaceId);
@@ -115,7 +114,7 @@ export class InstanceLifecycle {
     });
   }
 
-  /** 随窗口回收的实例关掉最后一个窗口时回收；process 实例的进程还在跑就留着，成为没有窗口的后台进程。 */
+  /** 随窗口回收的实例关掉窗口时回收；process 实例的进程还在跑就留着，成为没有窗口的后台进程。 */
   closeWindow(workspaceId: string, id: string): Promise<void> {
     return this.control.run(workspaceId, async () => {
       if (this.kite.workspace(workspaceId).workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
@@ -124,8 +123,7 @@ export class InstanceLifecycle {
       if (window.state === 'closed') return;
       const instance = this.kite.store.instance(window.target.instanceId)!;
       const { lifetime } = this.kite.catalog.get(instance.definitionId);
-      const collect = !this.kite.store.windows(workspaceId).some((other) => other.id !== id && other.target.instanceId === instance.id)
-        && (lifetime === 'window' || (lifetime === 'process' && !this.kite.terminals.running(instance.id)));
+      const collect = lifetime === 'window' || (lifetime === 'process' && !this.kite.terminals.running(instance.id));
       if (collect) {
         const release = await this.kite.plugins.closeInstance(instance.id);
         try {

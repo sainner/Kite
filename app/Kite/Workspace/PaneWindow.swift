@@ -29,6 +29,7 @@ struct PaneWindow<Content: View, Controls: View>: View {
     @Environment(\.openSidebar) private var openSidebar
     @Environment(\.dotCarrier) private var carrier
     @Environment(\.paneConnectionNotice) private var connectionNotice
+    @Environment(\.paneViewActions) private var viewActions
     /// 量好的范围写进这个盒子交给内容：只有读它的视图（铺满窗口的签名）随它重算，窗口本身不跟着重算。
     @State private var frame = PaneWindowFrame()
 
@@ -62,7 +63,7 @@ struct PaneWindow<Content: View, Controls: View>: View {
                 if let sharedHeaderHeight, headerPane != nil {
                     Color.clear.frame(height: sharedHeaderHeight).allowsHitTesting(false)
                 } else {
-                    PaneHeaderBar(header: header, status: statusArea, actions: actions, openSidebar: sidebarAction)
+                    PaneHeaderBar(header: header, status: statusArea, actions: shownActions, openSidebar: sidebarAction)
                         .modifier(PaneHeaderPlacement(endTyping: { typing = false }))
                 }
             }
@@ -70,7 +71,7 @@ struct PaneWindow<Content: View, Controls: View>: View {
                 Group {
                     let shown = controls($typing)
                     CompactPaneHeaderReport(header: header, status: hasStatus ? AnyView(statusArea) : nil,
-                                            actions: AnyView(actions),
+                                            actions: AnyView(shownActions),
                                             controls: AnyView(PaneControlsBar(controls: shown, typing: typing)),
                                             hasControls: Self.hasControls(shown),
                                             openSidebar: sidebarAction, endTyping: { typing = false })
@@ -95,6 +96,14 @@ struct PaneWindow<Content: View, Controls: View>: View {
             }
         }
         .environment(\.paneNotice, shown)
+    }
+
+    /// 右组：实例有几个视图时，最前面一组是切到其他视图（见 paneViewActions），后面是窗口给的。
+    private var shownActions: PaneHeaderActions {
+        guard !viewActions.isEmpty else { return actions }
+        var shown = actions
+        shown.groups.insert(viewActions, at: 0)
+        return shown
     }
 
     private var hasStatus: Bool { status != nil || connectionNotice != nil || notice != nil }

@@ -2,7 +2,7 @@ import Foundation
 
 /// App 与工作机之间的协议号，与 kited/src/version.ts 的 PROTOCOL 一起改；不一致的工作机锁定为待更新（docs/App.md「版本」）。
 enum KiteProtocol {
-    static let version = 2
+    static let version = 3
 }
 
 /// 工作机正在运行的版本（`/machine` 的 version）：build 标识一份运行文件，源码运行时为 dev。
@@ -224,10 +224,13 @@ struct RemotePluginDefinition: Decodable, Identifiable {
     let agent: Agent?
     var runtime: String? = nil
     var operations: [String] = []
+
+    /// 默认视图的渲染方式：这类实例的窗口由哪种正文显示、什么外观，不随窗口当前的视图换。
+    var defaultRenderer: String? { views.first { $0.id == defaultView }?.renderer }
 }
 
 /// 所有窗口统一引用实例和已声明的视图。
-struct WindowTarget: Codable, Equatable {
+struct WindowTarget: Codable {
     let instanceId: String
     let viewId: String
 }
@@ -238,6 +241,12 @@ struct RemoteWorkspaceWindow: Decodable, Identifiable {
     let target: WindowTarget
     let state: RemoteWindowState
     let createdAt: Int
+
+    /// 同一个窗口换到实例的另一个视图。
+    func showing(_ viewId: String) -> RemoteWorkspaceWindow {
+        RemoteWorkspaceWindow(id: id, workspaceId: workspaceId, target: WindowTarget(instanceId: target.instanceId, viewId: viewId),
+                              state: state, createdAt: createdAt)
+    }
 }
 
 struct OpenWindowRequest: Encodable {

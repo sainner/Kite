@@ -12,7 +12,7 @@ nonisolated enum PluginLifetime: String, Decodable, Sendable {
     }
     var explanation: String {
         switch self {
-        case .window: "关闭最后一个窗口时，结束运行并回收实例和状态。"
+        case .window: "关闭窗口时，结束运行并回收实例和状态。"
         case .persistent: "关闭窗口后保留实例和数据，可在侧栏重新打开；不再需要时归档。"
         case .process: "进程运行时关闭窗口照常运行，留在停靠栏；进程结束后没有窗口就回收。"
         }

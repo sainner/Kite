@@ -1,6 +1,6 @@
 /**
  * 终端插件 kite.terminal，分三段：
- * 一、PTY 会话、设备接入的画面镜像与尺寸归属、实例随进程的回收，以及跨两次 kited 启动的恢复；
+ * 一、PTY 会话、设备接入的画面镜像与尺寸归属、实例随进程的回收、一个实例一个窗口的视图切换，以及跨两次 kited 启动的恢复；
  * 二、运行中的网页：终端从自己的进程树探测监听端口并试 HTTP，写进实例状态；本机全部终端的端口整组交给组网转发；
  *    terminal.select 选网页视图打开的端口；terminal.stop 停下带后台任务的终端；
  * 三、代理的长命令转到后台终端：shell 到时限、用户插话或要求时不停进程，交给接管方接着跑。
@@ -239,8 +239,40 @@ test('运行中关掉最后一个窗口实例照跑，之后进程退出就回�
   }
 }, 5_000);
 
-// 配合：跨两次 kited 启动。关闭时停掉终端并存下最后画面；重启时按有没有窗口分别回收或记为 exited，接入拿到存下的画面。
-test('kited 正常关闭再启动后，没有窗口的终端被回收，有窗口的记为 exited，接入看到关闭前的画面', async () => {
+// 配合：打开视图的请求经 HTTP 进工作区控制队列，按实例找已有的窗口（实例上的部分唯一索引）换视图，请求 id 记进收据；
+// 重试按收据认出是同一个请求，返回那个窗口而不再换视图。以前同一实例按视图各开一个窗口。
+test('已有窗口的终端打开 web 视图时不另开窗口，原窗口换到 web；同一请求 id 在切回 terminal 后重试，返回原窗口且不再切换', async () => {
+  const { k } = await start();
+  try {
+    const workspaceId = await workspaceOf(k);
+    const { windowId, instanceId } = await openTerminal(k, workspaceId);
+    const open = (id: string, viewId: string) => k.call('POST', `/workspaces/${workspaceId}/windows`, {
+      id, content: { kind: 'open', instanceId, viewId },
+    });
+    const windowsOf = async () => (await aggregate(k, workspaceId)).windows.filter((w) => w.target.instanceId === instanceId);
+
+    const webRequest = crypto.randomUUID();
+    const web = await open(webRequest, 'web');
+    expect(web.status).toBe(200);
+    expect(web.body).toMatchObject({ id: windowId, target: { instanceId, viewId: 'web' }, state: 'open' });
+    expect(await windowsOf()).toEqual([expect.objectContaining({ id: windowId, target: { instanceId, viewId: 'web' }, state: 'open' })]);
+
+    const back = await open(crypto.randomUUID(), 'terminal');
+    expect(back.status).toBe(200);
+    expect(back.body).toMatchObject({ id: windowId, target: { instanceId, viewId: 'terminal' } });
+
+    const retried = await open(webRequest, 'web');
+    expect(retried.status).toBe(200);
+    expect(retried.body).toMatchObject({ id: windowId, target: { instanceId, viewId: 'terminal' } });
+    expect(await windowsOf()).toEqual([expect.objectContaining({ id: windowId, target: { instanceId, viewId: 'terminal' }, state: 'open' })]);
+  } finally {
+    await k.stop();
+  }
+}, 5_000);
+
+// 配合：跨两次 kited 启动。关闭时停掉还在跑的终端，但不把它记为结束；重启时按结束状态认出哪些是随 kited 结束的，
+// 不论有没有窗口都连窗口一起回收、删掉会话目录。关闭前已经自己退出的终端早已记为 exited，有窗口就留着，接入拿到存下的画面。
+test('kited 正常关闭再启动后，关闭时还在跑的终端不论有没有窗口都连窗口一起回收、会话目录删掉；之前已自己退出、开着窗口的留着，接入看到最后的画面', async () => {
   const first = await start();
   let second: Awaited<ReturnType<typeof start>> | undefined;
   const devices: Device[] = [];
@@ -258,18 +290,36 @@ test('kited 正常关闭再启动后，没有窗口的终端被回收，有窗�
     await closeWindow(first.k, workspaceId, background.windowId);
     expect(stateIn(await aggregate(first.k, workspaceId), background.instanceId)).toMatchObject({ phase: 'running' });
 
+    const ended = await openTerminal(first.k, workspaceId);
+    const c = new Device(first.k.url, first.machineId, ended.instanceId);
+    devices.push(c);
+    await c.snapshot();
+    c.type('echo last$((3+4)); exit 6\n');
+    await c.waitControl((control) => control.type === 'exit', '进程结束');
+    c.close();
+    await workspaceUntil(first.k, workspaceId, (model) => stateIn(model, ended.instanceId)?.phase === 'exited',
+      '开着窗口自己退出的终端记为 exited');
+
     await first.k.halt();
+    const windowedDir = join(first.k.home, 'sessions', windowed.instanceId);
+    expect(existsSync(windowedDir)).toBe(true);
     second = await start(first.k.root);
     const { k } = second;
-    const restored = await workspaceUntil(k, workspaceId, (model) => !instanceIn(model, background.instanceId) && model,
-      '没有窗口的终端在重启后回收');
-    expect(stateIn(restored, windowed.instanceId)).toMatchObject({ phase: 'exited', reason: '工作机已关闭，终端已结束' });
+    const restored = await workspaceUntil(k, workspaceId,
+      (model) => !instanceIn(model, background.instanceId) && !instanceIn(model, windowed.instanceId) && model,
+      '关闭时还在跑的终端在重启后回收');
+    const windowsOf = (instanceId: string) => restored.windows.filter((w) => w.target.instanceId === instanceId);
+    expect(windowsOf(windowed.instanceId)).toEqual([]);
+    expect(windowsOf(background.instanceId)).toEqual([]);
+    expect(existsSync(windowedDir)).toBe(false);
 
-    const b = new Device(k.url, second.machineId, windowed.instanceId);
+    expect(stateIn(restored, ended.instanceId)).toMatchObject({ phase: 'exited', exitCode: 6 });
+    expect(windowsOf(ended.instanceId)).toEqual([expect.objectContaining({ id: ended.windowId, state: 'open' })]);
+    const b = new Device(k.url, second.machineId, ended.instanceId);
     devices.push(b);
     const snapshot = await b.snapshot();
-    expect(snapshot).toMatchObject({ phase: 'exited', reason: '工作机已关闭，终端已结束' });
-    expect(snapshot.data).toContain('before5');
+    expect(snapshot).toMatchObject({ phase: 'exited', exitCode: 6 });
+    expect(snapshot.data).toContain('last7');
   } finally {
     for (const device of devices) device.close();
     await second?.k.halt();

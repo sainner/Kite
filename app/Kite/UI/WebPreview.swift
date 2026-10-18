@@ -35,12 +35,14 @@ struct WebPreview: View {
     let source: WebSource
     /// 加载失败时报给所在窗口的信息区，成功后报 nil。
     var report: (String?) -> Void = { _ in }
+    /// 藏起来时页面留着、网页视图摘下：不在窗口里的页面由 WebKit 节流，再显示时接着原来的页面。
+    var visible = true
     @State private var page: WebPage?
     @Environment(\.openURL) private var openURL
 
     var body: some View {
         Group {
-            if let page { WebView(page) } else { Color.clear }
+            if let page, visible { WebView(page) } else { Color.clear }
         }
         .task(id: source) {
             let page = makePage()
@@ -135,11 +137,13 @@ struct PortPreview: View {
     let port: Int
     let store: UUID
     var report: (String?) -> Void = { _ in }
+    /// 见 WebPreview.visible。
+    var visible = true
     @State private var url: URL?
 
     var body: some View {
         Group {
-            if let url { WebPreview(source: .address(url, store: store), report: report) } else { Color.clear }
+            if let url { WebPreview(source: .address(url, store: store), report: report, visible: visible) } else { Color.clear }
         }
         .task(id: "\(client.identity) \(port)") {
             url = nil

@@ -614,9 +614,11 @@ final class AppModel {
         }
     }
 
+    /// 实例已有窗口时不另开：已经是要的视图，或者本机先开、工作机还没建好（等建好再换），只调到前面；否则原地换过去（见 sendWindowRequest）。
     func openWindow(_ content: OpenWindowRequest.Content, in area: WorkArea) {
-        if case .open(let target) = content, area.windows.contains(where: { $0.target == target }) {
-            area.activateWindow(for: target)
+        if case .open(let target) = content, let window = area.window(of: target.instanceId),
+           window.target.viewId == target.viewId || area.isOpening(Pane(window.id)) {
+            area.layout.activate(Pane(window.id))
             return
         }
         send(OpenWindowRequest(id: UUID().uuidString.lowercased(), content: content), in: area)
@@ -630,15 +632,23 @@ final class AppModel {
 
     /// 开窗口不等工作机：工作机用请求 ID 作新窗口的 ID、用请求里的实例 ID 建新实例（见 kited 的 openWindow），本机先按这两个 ID
     /// 建好、放上台面（见 WorkArea.openingWindows、openingInstances），工作机建好后由它的列表接上，卡片不换；建不成再收回。
+    /// 实例已有窗口时工作机不另开，把那个窗口换到请求的视图：本机也先换（见 WorkArea.switchingViews），有了结果以工作机的列表为准。
     /// 几个请求可以同时在路上。返回工作机确认的窗口。
     private func sendWindowRequest(_ request: OpenWindowRequest, in area: WorkArea) -> Task<RemoteWorkspaceWindow, Error> {
         area.windowError = nil
         area.failedWindowRequests.removeAll { $0.id == request.id }
         var local: WindowTarget?
         var created: String?
+        var switching: String?
         switch request.content {
         case .open(let target):
-            local = target
+            if let window = area.window(of: target.instanceId) {
+                switching = window.id
+                area.switchLocally(window.id, to: target.viewId, request: request.id)
+                area.layout.activate(Pane(window.id))
+            } else {
+                local = target
+            }
         case .create(let definitionId, let instanceId):
             if let definition = area.definitions.first(where: { $0.id == definitionId }) {
                 area.createLocally(RemotePluginInstance(id: instanceId, workspaceId: area.id, definitionId: definitionId,
@@ -660,11 +670,13 @@ final class AppModel {
             } catch {
                 area.settleOpening(request.id, rejected: Self.rejected(error))
                 if let created { area.settleInstance(created) }
+                if let switching { area.settleSwitch(switching, request: request.id) }
                 if !Self.rejected(error) { area.failedWindowRequests.append(request) }
                 throw error
             }
             do { try await refresh(client) } catch { area.windowError = error.localizedDescription }
-            if accepts(client), local == nil || window.id != request.id {
+            if let switching { area.settleSwitch(switching, request: request.id) }
+            if accepts(client), switching == nil, local == nil || window.id != request.id {
                 // 本机没先开，或工作机交回了这个实例原有的窗口：本机先开的那个换成它
                 area.settleOpening(request.id)
                 area.layout.activate(Pane(window.id))
@@ -735,7 +747,7 @@ final class AppModel {
         }
         let target = WindowTarget(instanceId: instanceID, viewId: "files")
         var opening: Task<RemoteWorkspaceWindow, Error>?
-        if area.windows.contains(where: { $0.target == target }) { area.activateWindow(for: target) }
+        if let window = area.window(of: instanceID) { area.layout.activate(Pane(window.id)) }
         else { opening = sendWindowRequest(OpenWindowRequest(id: UUID().uuidString.lowercased(), content: .open(target)), in: area) }
         try await browser.navigate(reference)
         _ = try await opening?.value

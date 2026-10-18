@@ -33,6 +33,7 @@ private struct WorkspacePaneBody: View {
     let pane: Pane
     let retainForExit: Bool
     @State private var retained = PaneExitContent()
+    @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @Environment(\.nativeThreadWindow) private var nativeThreadWindow
 
@@ -55,10 +56,12 @@ private struct WorkspacePaneBody: View {
     }
 
     @ViewBuilder private var content: some View {
-        let renderer = area.view(in: pane)?.renderer
         let target = area.windows.first(where: { $0.id == pane.id })?.target
+        let instance = area.instance(of: pane)
+        // 按实例的定义分派，不按窗口当前的视图：窗口在实例的几个视图之间切换，正文由同一个视图接着显示（见 TerminalPane）
+        let renderer = instance.flatMap(area.definition(of:))?.defaultRenderer
         // 本机先建、工作机还没建好的实例：正文要读工作机上的实例，先只有标题栏
-        let opening = target.map { area.isOpening(instance: $0.instanceId) } ?? false
+        let opening = instance.map { area.isOpening(instance: $0.id) } ?? false
         Group {
             if opening {
                 PlaceholderPane(appearance: area.appearance(of: pane), kind: WindowAppearance.renderer(renderer ?? "").name, filled: false)
@@ -74,27 +77,32 @@ private struct WorkspacePaneBody: View {
                 #endif
             } else if let browser = area.files(in: pane), renderer == "files" {
                 FilePane(browser: browser).id(pane.id)
-            } else if renderer == "monitor", let target = area.windows.first(where: { $0.id == pane.id })?.target,
-                      let instance = area.instances.first(where: { $0.id == target.instanceId }) {
+            } else if renderer == "monitor", let instance {
                 MonitorPane(instance: instance).id(pane.id)
-            } else if renderer == "terminal", let target, let client = area.pluginClient,
-                      let instance = area.instances.first(where: { $0.id == target.instanceId }) {
-                TerminalPane(instance: instance, client: client, connection: area.pluginConnection).id(pane.id)
-            } else if renderer == "preview", let target, let client = area.pluginClient,
-                      let instance = area.instances.first(where: { $0.id == target.instanceId }) {
-                TerminalWebPane(instance: instance, client: client).id(pane.id)
-            } else if renderer == "web", let target = area.windows.first(where: { $0.id == pane.id })?.target,
-                      let instance = area.instances.first(where: { $0.id == target.instanceId }),
-                      let client = area.pluginClient {
+            } else if renderer == "terminal", let target, let instance, let client = area.pluginClient {
+                TerminalPane(instance: instance, client: client, connection: area.pluginConnection, view: target.viewId).id(pane.id)
+            } else if renderer == "web", let target, let instance, let client = area.pluginClient {
+                // 换了视图是另一份插件页面，重新加载
                 PluginPane(target: target, title: area.appearance(of: pane).name, client: client,
                            state: instance.state?.plugin, connection: area.pluginConnection)
-                    .id(pane.id)
+                    .id("\(pane.id) \(target.viewId)")
             } else {
                 PlaceholderPane(appearance: area.appearance(of: pane), kind: WindowAppearance.renderer(renderer ?? "").name)
             }
         }
-        .environment(\.paneInstance, opening ? nil : target.flatMap { target in area.instances.first { $0.id == target.instanceId } })
+        .environment(\.paneInstance, opening ? nil : instance)
+        .environment(\.paneViewActions, opening ? [] : viewActions(instance, showing: target?.viewId))
         .modifier(ReferenceNavigation())
+    }
+
+    /// 实例有几个视图时，切到其他视图的按钮：一个视图一个，窗口原地换过去（见 AppModel.openWindow）。
+    private func viewActions(_ instance: RemotePluginInstance?, showing current: String?) -> [PaneHeaderAction] {
+        guard let instance, let views = area.definition(of: instance)?.views, views.count > 1 else { return [] }
+        return views.filter { $0.id != current }.map { view in
+            PaneHeaderAction(title: view.title, systemImage: WindowAppearance.renderer(view.renderer).icon, help: "显示\(view.title)") {
+                model.openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area)
+            }
+        }
     }
 }
 
@@ -127,4 +135,6 @@ private struct PlaceholderPane: View {
 extension EnvironmentValues {
     /// 供当前窗口标题栏进入实例设置；空白工作区没有实例。
     @Entry var paneInstance: RemotePluginInstance?
+    /// 切到实例其他视图的按钮，PaneWindow 放在标题栏右组最前面；只有一个视图时为空。
+    @Entry var paneViewActions: [PaneHeaderAction] = []
 }

@@ -12,7 +12,7 @@ export interface PluginDefinition {
   title: string;
   /** 一句话的用途，创建实例时显示；只有内置定义有。 */
   description?: string;
-  /** window 随最后一个窗口回收；persistent 独立存续，不用时归档；process 进程运行中独立存续，结束后没有窗口就回收。 */
+  /** window 随窗口回收；persistent 独立存续，不用时归档；process 进程运行中独立存续，结束后没有窗口就回收。 */
   lifetime: 'window' | 'persistent' | 'process';
   views: { id: string; title: string; renderer: string; resourceUri?: string }[];
   defaultView: string;
