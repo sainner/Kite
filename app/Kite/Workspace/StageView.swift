@@ -23,7 +23,7 @@ struct StageHost: View {
 
     var body: some View {
         // 拖侧栏改宽时往左多排被侧栏盖住的那一段，台面视图不跟着每步改尺寸，见 MainWindow.stageInset
-        StageOverflow(inset: leadingInset) {
+        StageOverflow(inset: leadingInset, trailing: StageView.trailingOverflow) {
             StageRepresentable(group: group, model: model, reports: reports, openSidebar: openSidebar, leadingInset: leadingInset,
                                appearance: StageAppearance(colorScheme: colorScheme, activeState: activeState, reduceMotion: reduceMotion,
                                                            displayScale: displayScale, isEnabled: isEnabled,
@@ -42,9 +42,10 @@ extension EnvironmentValues {
     @Entry var stageLeadingInset: CGFloat = 0
 }
 
-/// 按给的地方再往左多排 inset：宽是格子宽加 inset，右边对齐格子；量尺寸照里面的内容。inset 为 0 时和直接放一样。
+/// 按给的地方再往左多排 inset、往右多排 trailing；量尺寸照里面的内容。两者为 0 时和直接放一样。
 private struct StageOverflow: Layout {
     var inset: CGFloat
+    var trailing: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         subviews.first?.sizeThatFits(proposal) ?? proposal.replacingUnspecifiedDimensions()
@@ -53,7 +54,7 @@ private struct StageOverflow: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         for subview in subviews {
             subview.place(at: CGPoint(x: bounds.minX - inset, y: bounds.minY), anchor: .topLeading,
-                          proposal: ProposedViewSize(width: bounds.width + inset, height: bounds.height))
+                          proposal: ProposedViewSize(width: bounds.width + inset + trailing, height: bounds.height))
         }
     }
 }
@@ -124,9 +125,17 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     private var leadingInset: CGFloat = 0
     /// 拖侧栏改宽时收着的窗口按哪个大小排正文，见 arrange。
     private var frozenFallback: CGSize?
+    /// 台面视图比台面往右多排的一段：停靠栏贴着台面右边，展开的面板、头像的脉冲比停靠栏宽，伸出去的部分画在这里，
+    /// 不然托管视图到边就裁掉。宽同窗口右边留的边，不接点击（见 hitTest）。
+    static var trailingOverflow: CGFloat { Metrics.padding }
     /// 看得见的台面，台面自己的坐标：排布、停靠栏、命中都按它。
     private var stageRect: CGRect {
-        CGRect(x: leadingInset, y: 0, width: max(bounds.width - leadingInset, 0), height: bounds.height)
+        CGRect(x: leadingInset, y: 0, width: max(bounds.width - leadingInset - Self.trailingOverflow, 0), height: bounds.height)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard convert(point, from: superview).x <= stageRect.maxX else { return nil }
+        return super.hitTest(point)
     }
     /// 台面左上角在窗口里的位置（左上角起、往下为正，同 SwiftUI 的 .global）。拖动报的窗口坐标按它换回台面坐标。
     private(set) var origin = CGPoint.zero
@@ -561,7 +570,10 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         for area in trackingAreas where area.owner === self { removeTrackingArea(area) }
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self,
+        // 右边多排的一段是窗口留的边，照常能拖窗口
+        var movable = bounds
+        movable.size.width = max(bounds.width - Self.trailingOverflow, 0)
+        addTrackingArea(NSTrackingArea(rect: movable, options: [.mouseEnteredAndExited, .activeAlways], owner: self,
                                        userInfo: ["movable": true]))
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
                                        owner: self))

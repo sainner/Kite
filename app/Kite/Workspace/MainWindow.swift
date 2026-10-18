@@ -57,6 +57,8 @@ struct MainWindow: View {
                         .padding(.top, Metrics.padding)
                 }
             }
+            // 右边留的边算在内容区里：PaneFade 的蒙版按内容区裁，台面往右伸进这条边画停靠栏的面板和脉冲（见 StageView.trailingOverflow）
+            .padding(.trailing, Metrics.padding)
             // 切换栏目在动画里进行，换页不用默认的 opacity 转场，见 PaneFade
             .transition(.paneFade)
             // 侧栏收起后，展开按钮移到内容区第一个窗口的标题栏
@@ -67,7 +69,7 @@ struct MainWindow: View {
             #endif
         }
         .padding(.leading, Metrics.sidebarInset)
-        .padding([.trailing, .bottom], Metrics.padding)
+        .padding(.bottom, Metrics.padding)
     }
 
     /// 拖侧栏改宽时，原生台面按侧栏最窄时的宽度排、往左伸进侧栏底下，被盖住的这一段由台面让出（见 StageHost、StageView.stageRect）：

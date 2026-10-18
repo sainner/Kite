@@ -127,6 +127,7 @@ struct DockFace: View {
     /// 代理头像的描边由自己画。为 false 时交给外面的容器，颜色经 DockRingColor 报上去：最小化的窗口卡片把它画在外框上，见 CardView。
     var ring = true
     @Environment(\.self) private var environment
+    @Environment(\.dockArrowScale) private var arrowScale
 
     static let ringWidth: CGFloat = 1.5
 
@@ -140,7 +141,7 @@ struct DockFace: View {
                     if let arrow {
                         AgentAvatar(design: design, instance: instance)
                             .blur(radius: 3).opacity(0.55).clipShape(Circle())
-                        Image(systemName: arrow).font(Theme.title).foregroundStyle(base)
+                        Image(systemName: arrow).font(Theme.title).foregroundStyle(base).scaleEffect(arrowScale)
                     } else {
                         AgentAvatar(design: design, instance: instance, animating: running, tint: tint)
                             .padding(1)
@@ -159,7 +160,7 @@ struct DockFace: View {
                         ZStack {
                             Image(systemName: appearance.icon)
                                 .blur(radius: arrow == nil ? 0 : 3).opacity(arrow == nil ? 1 : 0.55)
-                            if let arrow { Image(systemName: arrow) }
+                            if let arrow { Image(systemName: arrow).scaleEffect(arrowScale) }
                         }
                         .font(Theme.title)
                         .foregroundStyle(Theme.ink)

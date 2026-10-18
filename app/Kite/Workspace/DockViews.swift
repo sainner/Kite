@@ -302,18 +302,36 @@ struct DockEntryMenu: View {
 }
 
 /// 展开的「更多」或家族格：原地拉长，里面的图标放大排开；里面再展开的家族嵌在描边里。
+/// 收着时（见 dockPanelFolded）和格子一个样：家族的头像叠回格子里的位置、缩回格子里的大小，「更多」里的收进省略号。
+/// 进出由 .dockUnfold 在两种样子之间过渡，每个头像都是同一个视图，从叠着的地方挪到排开的地方。
 /// 宽屏竖排，紧凑布局横排；横排和底栏一样倒着排，第一项在右端。
 struct DockPanel: View {
     let entry: DockEntry
     let depth: Int
     let axis: Axis
+    /// 收着时那一格的宽：宽屏小头像里的格子比一格窄。
+    var cellWidth = Metrics.dragBubble
     /// 点了父代理的窗口：宽屏放上台面，紧凑布局切过去。
     var showPane: (Pane) -> Void
 
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
+    @Environment(\.dockPanelFolded) private var folded
 
     static var padding: CGFloat { Metrics.dragBubble * 5 / 36 }
+
+    /// 收着时的大小，和格子画出来的一样：家族是胶囊（小头像里的比格子短，贴着父代理那头），「更多」是一个圆。
+    static func foldedSize(_ entry: DockEntry, width: CGFloat, axis: Axis) -> CGSize {
+        guard case .family(let family) = entry else { return CGSize(width: width, height: width) }
+        let length = DockFamilyFace.length(family, width: width)
+        return axis == .vertical ? CGSize(width: width, height: length) : CGSize(width: length, height: width)
+    }
+
+    /// 一项在面板里沿排列方向的长和垂直方向的宽：没展开的按格子，展开了的按它自己的面板。
+    private static func box(_ member: DockEntry, path: ArraySlice<String>) -> (along: CGFloat, across: CGFloat) {
+        if member.expands, path.first == member.id { return (extent(member, path: path.dropFirst()), breadth(member, path: path.dropFirst())) }
+        return (DockGeometry.cellSize(member).height, Metrics.dragBubble)
+    }
 
     /// 沿排列方向的长度，宽屏据此摆放面板。
     static func extent(_ entry: DockEntry, path: ArraySlice<String>) -> CGFloat {
@@ -334,29 +352,93 @@ struct DockPanel: View {
 
     var body: some View {
         let path = area.dockExpansion.dropFirst(depth + 1)
-        let layout = axis == .vertical ? AnyLayout(VStackLayout(spacing: Metrics.gap)) : AnyLayout(HStackLayout(spacing: Metrics.gap))
         let members = Array(entry.members.enumerated())
-        layout {
-            ForEach(axis == .horizontal ? Array(members.reversed()) : members, id: \.element.id) { index, member in
+        let (size, slots) = folded ? foldedSlots(path: path) : openSlots(path: path)
+        // 竖排贴上端、横排贴右端，同格子里的家族胶囊；垂直方向始终居中，外层面板变宽时里面的不跟着偏
+        let alignment: Alignment = axis == .vertical ? .top : .trailing, anchor: UnitPoint = axis == .vertical ? .top : .trailing
+        ZStack(alignment: alignment) {
+            ForEach(members, id: \.element.id) { index, member in
+                let slot = slots[index]
+                // 叠着时前面的压在后面的上面，同 DockFamilyFace
+                let layer = Double(-index)
                 Group {
                     if member.expands, path.first == member.id {
+                        // 盖在换下来的格子上面，从格子的样子拉长出来
                         DockPanel(entry: member, depth: depth + 1, axis: axis, showPane: showPane)
+                            .transition(.dockUnfold)
+                            .zIndex(layer + 0.5)
                     } else if index == 0, case .family(let family) = entry {
-                        parentRow(family)
+                        parentRow(family).zIndex(layer)
                     } else {
-                        DockPanelItem(entry: member, depth: depth + 1)
+                        DockPanelItem(entry: member, depth: depth + 1).zIndex(layer)
                     }
                 }
+                // 展开中的面板从这一项原来的格子长出来
+                .frame(width: slot.box.width, height: slot.box.height, alignment: alignment)
+                .environment(\.dockArrowScale, 1 / slot.scale)
+                .scaleEffect(slot.scale, anchor: anchor)
+                .opacity(slot.opacity)
+                .offset(axis == .vertical ? CGSize(width: 0, height: slot.along) : CGSize(width: -slot.along, height: 0))
                 // 里面又展开了一层时，这一层其余的模糊淡出
                 .modifier(DockDimmed(dimmed: path.first.map { $0 != member.id } ?? false))
             }
         }
+        .frame(width: size.width, height: size.height, alignment: alignment)
         .environment(\.dockAxis, axis)
-        .padding(Self.padding)
         .background {
             Capsule(style: .continuous).fill(Theme.background)
                 .overlay { Capsule(style: .continuous).strokeBorder(Color.secondary.opacity(0.5), lineWidth: 1) }
         }
+        .overlay {
+            // 「更多」收着时是省略号那一格，展开时淡掉
+            if case .more(let entries) = entry {
+                DockMoreFace(entries: entries)
+                    .frame(width: cellWidth, height: cellWidth)
+                    .opacity(folded ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// 一项摆在哪：box 是它不缩放时占的方框，along 是缩放后离面板开头（竖排上端、横排右端）多远，垂直方向居中。
+    private struct Slot {
+        var box: CGSize
+        var along: CGFloat
+        var scale: CGFloat = 1
+        var opacity: Double = 1
+    }
+
+    private func measure(_ member: DockEntry, path: ArraySlice<String>) -> (along: CGFloat, across: CGFloat, size: CGSize) {
+        let box = Self.box(member, path: path)
+        return (box.along, box.across, axis == .vertical ? CGSize(width: box.across, height: box.along) : CGSize(width: box.along, height: box.across))
+    }
+
+    /// 排开：沿排列方向依次排，两头留 padding。
+    private func openSlots(path: ArraySlice<String>) -> (CGSize, [Slot]) {
+        let extent = Self.extent(entry, path: path), breadth = Self.breadth(entry, path: path)
+        var along = Self.padding
+        let slots = entry.members.map { member in
+            let box = measure(member, path: path)
+            defer { along += box.along + Metrics.gap }
+            return Slot(box: box.size, along: along)
+        }
+        return (axis == .vertical ? CGSize(width: breadth, height: extent) : CGSize(width: extent, height: breadth), slots)
+    }
+
+    /// 叠着：家族的各项缩回格子里头像的大小，叠在 DockFamilyFace 的位置，露不出来的藏在最后一个后面；
+    /// 「更多」里的缩进省略号里。
+    private func foldedSlots(path: ArraySlice<String>) -> (CGSize, [Slot]) {
+        let width = cellWidth, inset = DockFamilyFace.inset(width), face = width - 2 * inset
+        let slots = entry.members.enumerated().map { index, member in
+            let box = measure(member, path: path)
+            guard case .family = entry else {
+                let scale = width / 2 / box.across
+                return Slot(box: box.size, along: (width - box.along * scale) / 2, scale: scale, opacity: 0)
+            }
+            return Slot(box: box.size, along: inset + CGFloat(min(index, DockFamilyFace.shownChildren)) * width / 3,
+                        scale: face / box.across, opacity: index > DockFamilyFace.shownChildren ? 0 : 1)
+        }
+        return (Self.foldedSize(entry, width: width, axis: axis), slots)
     }
 
     private func parentRow(_ family: DockFamily) -> some View {
@@ -411,6 +493,26 @@ extension EnvironmentValues {
     @Entry var dockAxis: Axis = .vertical
     /// 紧凑布局的底栏里正显示的窗口，它的头像换成向上的箭头。
     @Entry var dockCurrentPane: Pane?
+    /// 展开面板收着、和格子一个样，见 DockPanel、.dockUnfold。
+    @Entry var dockPanelFolded = false
+    /// 头像上的箭头另乘的缩放：面板收着时头像整个缩成格子里的大小，箭头照格子里的字号，乘回去，见 DockFace。
+    @Entry var dockArrowScale: CGFloat = 1
+}
+
+extension AnyTransition {
+    /// 展开面板进出：从格子的样子拉长、排开，收起时原路叠回去。只改 dockPanelFolded，位置和大小由面板自己按它算。
+    static var dockUnfold: AnyTransition {
+        .modifier(active: DockFold(folded: true), identity: DockFold(folded: false))
+    }
+}
+
+private struct DockFold: ViewModifier {
+    let folded: Bool
+
+    func body(content: Content) -> some View {
+        // 不收着时照外层的：外层面板收起时，里面展开着的一起叠回去
+        content.transformEnvironment(\.dockPanelFolded) { if folded { $0 = true } }
+    }
 }
 
 /// 停靠栏和内容区共用的坐标系名字。
@@ -657,8 +759,10 @@ struct CompactDockBar: View {
         // 包一层容器：进出底栏的过渡只管整格，不落到里面展开、收起的切换上
         return ZStack {
             if entry.expands, expanded {
+                // 盖在换下来的格子上面，从格子的样子拉长出来
                 DockPanel(entry: entry, depth: 0, axis: .horizontal, showPane: show)
-                    .transition(.scale(scale: 0.7, anchor: .trailing).combined(with: .opacity))
+                    .transition(.dockUnfold)
+                    .zIndex(1)
             } else if case .pane(let pane) = entry {
                 paneButton(pane)
             } else {

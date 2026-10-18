@@ -34,9 +34,9 @@ struct DockRail: View {
                 if !isPane(cell.entry) {
                     DockCellButton(entry: cell.entry, depth: 0, hoverFrame: cell.frame)
                         .placed(cell.frame)
-                        .opacity(cell.entry.leadInstance.map { hiddenInstances.contains($0.id) } == true ? 0 : 1)
-                        .modifier(DockDimmed(dimmed: dimmed))
-                        .transition(.scale(scale: 0.6).combined(with: .opacity))
+                        .opacity(hidden(cell.entry) ? 0 : 1)
+                        .modifier(DockDimmed(dimmed: dimmed && !unfolded(cell.entry)))
+                        .transition(.scale(0.6, placedIn: cell.frame).combined(with: .opacity))
                 }
             }
             ForEach(geometry.minis, id: \.entry.id) { mini in
@@ -44,9 +44,9 @@ struct DockRail: View {
                 let hover = CGRect(x: geometry.add.minX, y: mini.frame.minY, width: mini.frame.maxX - geometry.add.minX, height: mini.frame.height)
                 DockCellButton(entry: mini.entry, depth: 0, mini: true, hoverFrame: hover)
                     .placed(mini.frame)
-                    .opacity(mini.entry.leadInstance.map { hiddenInstances.contains($0.id) } == true ? 0 : 1)
-                    .modifier(DockDimmed(dimmed: dimmed))
-                    .transition(.scale(scale: 0.6).combined(with: .opacity))
+                    .opacity(hidden(mini.entry) ? 0 : 1)
+                    .modifier(DockDimmed(dimmed: dimmed && !unfolded(mini.entry)))
+                    .transition(.scale(0.6, placedIn: mini.frame).combined(with: .opacity))
             }
             if let divider = geometry.divider {
                 DockDivider(x: geometry.add.midX, y: divider)
@@ -67,6 +67,13 @@ struct DockRail: View {
 
     private func isPane(_ entry: DockEntry) -> Bool {
         if case .pane = entry { true } else { false }
+    }
+
+    /// 展开着的那一格：面板盖在上面接着画它，格子自己不露。
+    private func unfolded(_ entry: DockEntry) -> Bool { area.dockExpansion.first == entry.id }
+
+    private func hidden(_ entry: DockEntry) -> Bool {
+        unfolded(entry) || entry.leadInstance.map { hiddenInstances.contains($0.id) } == true
     }
 }
 
@@ -96,7 +103,9 @@ struct DockOverlay: View {
         let expanded = !area.dockExpansion.isEmpty
         ZStack(alignment: .topLeading) {
             ForEach(geometry.cells, id: \.entry.id) { cell in
+                // 展开的那一格由面板接着画，见 DockRail
                 pulse(cell.entry, frame: cell.frame)
+                    .opacity(area.dockExpansion.first == cell.entry.id ? 0 : 1)
                     .modifier(DockDimmed(dimmed: expanded))
                     .allowsHitTesting(false)
             }
@@ -139,20 +148,38 @@ struct DockOverlay: View {
     }
 
     /// 展开的面板从格子原地拉长：先往下，放不下再往上，最高到停靠栏全高，再多就在里面滚动。小头像展开的面板也居中在停靠栏上。
+    /// 收着时正好盖住格子，格子里叠着的头像由面板里的同一批头像接着排开（见 DockPanel）。
     private func panel(_ entry: DockEntry, from cell: CGRect) -> some View {
         let path = area.dockExpansion.dropFirst()
         let extent = DockPanel.extent(entry, path: path), breadth = DockPanel.breadth(entry, path: path)
         let height = min(extent, regions.dock.height)
         let top = max(min(cell.minY - DockPanel.padding, regions.dock.maxY - height), regions.dock.minY)
         let frame = CGRect(x: regions.dock.midX - breadth / 2, y: top, width: breadth, height: height)
-        let anchor = UnitPoint(x: (cell.midX - frame.minX) / frame.width, y: (cell.midY - frame.minY) / frame.height)
         return ScrollView(.vertical, showsIndicators: false) {
-            DockPanel(entry: entry, depth: 0, axis: .vertical, showPane: showPane)
+            DockUnfolding(entry: entry, cell: cell, frame: frame, showPane: showPane)
+                .frame(width: breadth, height: extent, alignment: .topLeading)
         }
         .scrollDisabled(extent <= height)
         .scrollClipDisabled(extent <= height)
         .placed(frame)
-        .transition(.scale(scale: 0.7, anchor: anchor).combined(with: .opacity))
+        .id(entry.id)
+        .transition(.dockUnfold)
+    }
+}
+
+/// 展开的面板在滚动区里的位置：收着时缩回格子、挪到格子上。滚动区和它的内容在过渡中大小不变，只有面板在动：
+/// Mac 的滚动区由 AppKit 承担，跟着动画改大小时内容会被裁掉右边，收起时先掉到下面再回来。
+private struct DockUnfolding: View {
+    let entry: DockEntry
+    let cell: CGRect
+    /// 滚动区在台面上的位置。
+    let frame: CGRect
+    var showPane: (Pane) -> Void
+    @Environment(\.dockPanelFolded) private var folded
+
+    var body: some View {
+        DockPanel(entry: entry, depth: 0, axis: .vertical, cellWidth: cell.width, showPane: showPane)
+            .offset(folded ? CGSize(width: cell.minX - frame.minX, height: cell.minY - frame.minY) : .zero)
     }
 }
 
@@ -222,6 +249,26 @@ extension View {
     /// 按 rect 定大小和位置，坐标是所在容器的。
     func placed(_ rect: CGRect) -> some View {
         frame(width: rect.width, height: rect.height).position(x: rect.midX, y: rect.midY)
+    }
+}
+
+extension AnyTransition {
+    /// placed(rect) 摆的视图进出时以 rect 的中心缩放。placed 的视图铺满整个容器，.scale 的 anchor 按容器算，
+    /// 不是按 rect：锚在中心就成了容器中心，格子会从台面中间斜着飞过来。所以以容器原点为锚缩放，再挪回 rect 的中心。
+    static func scale(_ scale: CGFloat, placedIn rect: CGRect) -> AnyTransition {
+        let point = CGPoint(x: rect.midX, y: rect.midY)
+        return .modifier(active: PlacedScale(scale: scale, point: point), identity: PlacedScale(scale: 1, point: point))
+    }
+}
+
+private struct PlacedScale: ViewModifier {
+    let scale: CGFloat
+    let point: CGPoint
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(scale, anchor: .topLeading)
+            .offset(x: (1 - scale) * point.x, y: (1 - scale) * point.y)
     }
 }
 

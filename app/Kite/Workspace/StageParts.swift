@@ -96,6 +96,7 @@ struct StageDockRail: View {
                 .frame(width: geometry.bounds.maxX, height: geometry.bounds.maxY, alignment: .topLeading)
                 .coordinateSpace(.named(DockSpace.name))
                 .environment(\.dockCardsDrawPanes, true)
+                .modifier(StageIslandFill())
         }
     }
 }
@@ -119,6 +120,7 @@ struct StageDockOverlay: View {
             .frame(width: bounds.maxX, height: bounds.maxY, alignment: .topLeading)
             .coordinateSpace(.named(DockSpace.name))
             .environment(\.dockCardsDrawPanes, true)
+            .modifier(StageIslandFill())
         }
     }
 }
@@ -136,6 +138,14 @@ struct StageWindowless: View {
             // 隔一拍交出去：托管视图可能在台面这次排版当中更新
             .onPreferenceChange(WindowDotsActive.self) { uses in Task { @MainActor in reports.update(uses: uses) } }
             .onPreferenceChange(DotSlots.self) { slots in Task { @MainActor in reports.update(slots: slots) } }
+            .modifier(StageIslandFill())
+    }
+}
+
+/// 台面的托管视图比台面宽（右边多排一段，见 StageView.trailingOverflow），里面按台面大小排的内容贴左上角，不被摆到正中。
+private struct StageIslandFill: ViewModifier {
+    func body(content: Content) -> some View {
+        content.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
