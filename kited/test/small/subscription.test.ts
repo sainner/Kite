@@ -197,7 +197,9 @@ test('订阅接口的工具搜索往返：声明为客户端执行的 tool_searc
     { name: 'plugin_a_state', description: '插件 A 的计数器', parameters: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
     { name: 'plugin_a_note', description: '插件 A 的便签', parameters: { type: 'object', properties: { text: { type: 'string' } } } },
   ];
-  const search = searchTool(loadable.map((definition) => ({ instanceId: 'plugin-a', definition })));
+  const search = searchTool(loadable.map((definition) => ({
+    ...definition, deferred: { group: 'plugin-a' }, validate() {}, async execute() { return { status: 'success' as const, output: '' }; },
+  })));
   const { runner, journal } = h.runner(root, {
     prepareRequest: () => ({
       model, tools: [search],

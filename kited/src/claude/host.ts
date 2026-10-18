@@ -51,9 +51,8 @@ export function openClaudeHost(options: {
   background?: ShellBackground;
   /** 沙箱外运行的判断与申请，见 ShellOutside。 */
   outside?: ShellOutside;
-  /** deferred 是经 ToolSearch 按需加载的工具（插件工具）。 */
   prepare(afterNotification: number): { agent: AgentDefinition; instructions: string; contextUpdate: string; tools: Tool[]; allowed: Set<string>;
-    deferred: ReadonlySet<string>; notificationText: string; through: number };
+    notificationText: string; through: number };
   events: RuntimeEvents;
   /** 压缩所需的模板与净文件变化；不提供时不开放压缩。 */
   compaction?: {
@@ -210,7 +209,7 @@ export function openClaudeHost(options: {
         configuration: { model: prepared.agent.model.model, effort,
           systemPrompt: { type: 'custom', snapshot: false, prompt: data.initialContext ?? prepared.instructions } },
         // 与主会话相同的工具声明才能命中同一前缀缓存；摘要不放行调用。
-        mcpServers: { kite: claudeToolServer({ tools: available, deferred: prepared.deferred, allowed: () => false,
+        mcpServers: { kite: claudeToolServer({ tools: available, allowed: () => false,
           context: () => { throw new Error('压缩摘要不能调用工具'); }, finished: () => {} }) } });
       const errors: string[] = [];
       await withThreadJournal(options.directory, async (journal) => {
@@ -293,7 +292,7 @@ export function openClaudeHost(options: {
     const runner: Runner = new Runner({ cwd: options.cwd, nativeId: options.nativeId, title: options.title, resident: true,
       configuration: () => ({ model: prepared.agent.model.model, effort: prepared.agent.model.reasoning === 'default' ? undefined : prepared.agent.model.reasoning as Options['effort'],
         maxTurns: prepared.agent.maxRequestsPerTurn, systemPrompt: { type: 'custom', snapshot: false, prompt: data.initialContext! } }),
-      mcpServers: () => ({ kite: claudeToolServer({ tools: available, deferred: prepared.deferred,
+      mcpServers: () => ({ kite: claudeToolServer({ tools: available,
         allowed: (name) => options.prepare(data.through).allowed.has(name),
         context: (callId) => {
           if (controller.signal.aborted) throw new Error('本次执行已停止');

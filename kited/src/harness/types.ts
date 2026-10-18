@@ -4,18 +4,16 @@ import type { ContextDefinition, ContextSnapshot, ContextSource, ContextValues }
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type JsonObject = { [key: string]: Json };
 
-/** 来源由宿主按调用身份填写，只用于显示、去重、回报和交给模型时的包装，不改变权限；校验与包装见 input.ts。 */
-export interface Input {
-  id: string;
-  text: string;
-  source: 'human' | 'kite' | 'agent';
-  /** 经 Line 照原文转达的用户原话。 */
-  via?: InputVia;
-  /** 代理来信的发信方，source 为 agent 时必有；名称在收下时固定。 */
-  from?: InputSender;
-  /** Kite 转交的用户回应（用户自己回答的提问、密钥请求的结果）：是用户在界面上做的，交给模型时不加「不是用户说的话」。 */
-  response?: true;
-}
+/**
+ * 输入的来源，由宿主按调用身份填写，只用于显示、去重、回报和交给模型时的包装，不改变权限；校验与包装见 input.ts。
+ * 人发的可带 via：经 Line 照原文转达的用户原话。Kite 发的可带 response：Kite 转交的用户回应（用户自己回答的提问、密钥请求的结果），
+ * 是用户在界面上做的，交给模型时不加「不是用户说的话」。代理来信必带发信方 from，名称在收下时固定。
+ */
+export type InputOrigin =
+  | { source: 'human'; via?: InputVia }
+  | { source: 'kite'; response?: true }
+  | { source: 'agent'; from: InputSender };
+export type Input = { id: string; text: string } & InputOrigin;
 
 export interface InputVia { kind: 'line'; machine: string; instance: string }
 /** Line 自己的话以它的经由为发信方。 */
@@ -94,10 +92,8 @@ export interface RequestSnapshot {
 export interface HarnessRequest {
   model: Model;
   tools: Tool[];
-  /** 声明目录在首次请求固定；tools 是本次实际可执行的子集。 */
+  /** 声明目录在首次请求固定；tools 是本次实际可执行的子集，其中按需加载的在当前上下文里加载过且定义未变才执行。 */
   toolDefinitions?: ToolDefinition[];
-  /** 不进声明、经 tool_search 加载后才能调用的工具（插件工具）；当前上下文里加载过且定义未变的才执行。 */
-  deferred?: Tool[];
   /** 每次调用启动前再查一次；返回原因时不执行，结果为 not_executed。请求发出后才收紧的限制靠它拦下。 */
   blocked?(name: string): string | undefined;
   instructions: string | ContextSource;
@@ -145,6 +141,8 @@ export interface Model {
 export interface Tool extends ToolDefinition {
   /** 默认排他；只有宿主明确声明的工具才允许并发。 */
   parallel?: boolean;
+  /** 不常驻、按需加载的工具（插件工具）：不进声明，自研 harness 经 tool_search 按 group（插件实例 ID）加载，Claude 经 ToolSearch 搜到。 */
+  deferred?: { group: string };
   validate(arguments_: Json): void;
   /** 返回/抛错之前，必须确认该调用的受管执行已停止。无法确认时返回 unknown。 */
   execute(arguments_: Json, context: { cwd: string; signal: AbortSignal; callId?: string; turnId?: string; output?: (text: string, limit: number) => void }): Promise<ToolResult>;

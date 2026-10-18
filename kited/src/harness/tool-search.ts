@@ -10,14 +10,11 @@ export const TOOL_SEARCH = 'tool_search';
 
 const input = z.object({ instances: z.array(z.string().min(1)).min(1).max(20) }).strict();
 
-/** 可以加载的插件工具：所属实例与交给模型的定义。 */
-export interface SearchableTool { instanceId: string; definition: ToolDefinition }
-
 /** 加载结果的说明；Claude 的 ToolSearch 结果显示时也用它，两个后端写法一致。 */
 export const loadedText = (names: string[]) => `已加载 ${names.length} 个工具：${names.join('、')}`;
 
-/** 每次请求按当前授权新建；说明与参数固定，和首次请求登记的声明一致。 */
-export function searchTool(searchable: SearchableTool[]): Tool {
+/** 每次请求按当前授权新建，tools 是此刻获准、按需加载的工具；说明与参数固定，和首次请求登记的声明一致。 */
+export function searchTool(tools: Tool[]): Tool {
   return {
     name: TOOL_SEARCH,
     description: '加载插件实例的工具。基础上下文里「插件工具」列出了可以加载的实例与工具名；按实例 ID 加载后，这些工具之后直接按名字调用，不用再加载。',
@@ -25,11 +22,11 @@ export function searchTool(searchable: SearchableTool[]): Tool {
     validate(value) { input.parse(value); },
     async execute(value) {
       const ids = [...new Set(input.parse(value).instances)];
-      const tools = searchable.filter((tool) => ids.includes(tool.instanceId)).map((tool) => tool.definition);
-      const missing = ids.filter((id) => !searchable.some((tool) => tool.instanceId === id));
+      const found = tools.filter((tool) => ids.includes(tool.deferred!.group)).map(({ name, description, parameters }) => ({ name, description, parameters }));
+      const missing = ids.filter((id) => !tools.some((tool) => tool.deferred!.group === id));
       const note = missing.length ? `；${missing.join('、')} 不是已授权的插件实例` : '';
-      if (!tools.length) return { status: 'error', output: `没有加载到工具${note}`, tools: [] };
-      return { status: 'success', output: `${loadedText(tools.map((tool) => tool.name))}${note}`, tools };
+      if (!found.length) return { status: 'error', output: `没有加载到工具${note}`, tools: [] };
+      return { status: 'success', output: `${loadedText(found.map((tool) => tool.name))}${note}`, tools: found };
     },
   };
 }

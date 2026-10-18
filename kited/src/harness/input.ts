@@ -6,20 +6,17 @@ import { z } from 'zod';
 import type { Input, InputSender } from './types.ts';
 
 const id = z.string().min(1);
+const text = z.string().refine((value) => !!value.trim(), '内容不能为空');
 export const inputVia = z.object({ kind: z.literal('line'), machine: id, instance: id }).strict();
 export const inputSender = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('agent'), instance: id, title: z.string() }).strict(), inputVia,
 ]);
-export const inputSchema = z.object({
-  id, text: z.string(), source: z.enum(['human', 'kite', 'agent']), via: inputVia.optional(), from: inputSender.optional(),
-  response: z.literal(true).optional(),
-}).strict();
-
-/** 代理来信必须带发信方，别的来源不能带；转交的用户回应只属于 Kite 来源。 */
-export function validInput(input: Input): boolean {
-  return !!input.id && !!input.text.trim() && inputSchema.shape.source.safeParse(input.source).success
-    && (input.source === 'agent') === !!input.from && (!input.response || input.source === 'kite');
-}
+/** 每种来源只带自己的字段，正文不能为空；收下输入、读回记录和接口参数都用它校验。 */
+export const inputSchema: z.ZodType<Input> = z.discriminatedUnion('source', [
+  z.object({ id, text, source: z.literal('human'), via: inputVia.optional() }).strict(),
+  z.object({ id, text, source: z.literal('kite'), response: z.literal(true).optional() }).strict(),
+  z.object({ id, text, source: z.literal('agent'), from: inputSender }).strict(),
+]);
 
 export const senderName = (from: InputSender) => from.kind === 'line' ? 'Line' : from.title;
 
@@ -29,21 +26,11 @@ const CLOSE = '</agent-message>';
 
 /** 交给模型的正文：代理来信标明发信方，Kite 自动发的写明不是用户说的话；转交的用户回应与人发的原样。 */
 export function modelText(input: Input): string {
-  if (input.source === 'agent' && input.from) {
+  if (input.source === 'agent') {
     // 名称里的引号、尖括号与换行会破坏包装；正文里的结束标记转义，免得冒充包装之外的内容。
     const name = senderName(input.from).replace(/["<>\r\n]/g, ' ').trim() || '代理';
     return `${OPEN}${name}">\n${input.text.replaceAll(CLOSE, '<\\/agent-message>')}\n${CLOSE}`;
   }
   if (input.source === 'kite' && !input.response) return `${KITE_NOTICE}\n${input.text}`;
   return input.text;
-}
-
-/** 只有模型正文、没有 Kite 原始输入的记录（Claude 原生行）按包装还原出原文与发信方名称。 */
-export function unwrapModelText(text: string): { text: string; sender?: string } {
-  if (text.startsWith(`${KITE_NOTICE}\n`)) return { text: text.slice(KITE_NOTICE.length + 1) };
-  const end = text.indexOf('">\n');
-  if (text.startsWith(OPEN) && end > 0 && text.endsWith(`\n${CLOSE}`)) {
-    return { sender: text.slice(OPEN.length, end), text: text.slice(end + 3, -CLOSE.length - 1).replaceAll('<\\/agent-message>', CLOSE) };
-  }
-  return { text };
 }

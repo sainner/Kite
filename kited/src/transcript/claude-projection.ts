@@ -4,7 +4,6 @@ import { claudeToolResult, object, structuredClaudeTool } from '../claude/tools.
 import { claudeInputTokens } from '../claude/usage.ts';
 import type { DisplayBlock, DisplayDelta, DisplayRecord, DisplayState, PendingInput } from './protocol.ts';
 import { inputBlock } from './protocol.ts';
-import { unwrapModelText } from '../harness/input.ts';
 
 interface ClaudeProjectionTarget {
   records: ReadonlyMap<string, DisplayRecord>;
@@ -102,10 +101,9 @@ export class ClaudeProjection {
           if (entry?.status === 'cancelled') return;
           const inputId = entry?.input.id ?? row.uuid;
           // user 是传输角色，原生中断及 hook 反馈也使用它；只有明确的人类来源才显示成人发消息。
-          // 没有 Kite 原始输入的行只有交给模型的正文，去掉包装再显示。
           put(`input:${inputId}`, entry ? inputBlock(entry.input, entry.midTurn)
             : object(row.origin).kind === 'human' ? { type: 'human', id: inputId, text: block.text, midTurn: false }
-            : { type: 'kite', ...unwrapModelText(block.text) });
+            : { type: 'kite', text: block.text });
         } else put(id, { type: 'text', text: block.text });
       } else if (block.type === 'thinking' && typeof block.thinking === 'string') put(id, { type: 'thinking', text: block.thinking });
       else if (block.type === 'tool_use') {

@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { ToolBatch } from './tools.ts';
 import { HarnessHistory, type ContextUnit } from './history.ts';
-import { validInput } from './input.ts';
+import { inputSchema } from './input.ts';
 import { loadedDefinitions, sameDefinition, TOOL_SEARCH } from './tool-search.ts';
 import { assembleContext, literalContext, restoreContext } from './context/assembler.ts';
 import { contextUpdateContext } from './context/notifications.ts';
@@ -68,7 +68,7 @@ export class HarnessRunner implements ThreadRunner {
 
   async send(input: Input): Promise<boolean> {
     this.assertOpen();
-    if (!validInput(input)) throw new Error('输入 id、正文和来源必须有效');
+    if (!inputSchema.safeParse(input).success) throw new Error('输入 id、正文和来源必须有效');
     const previous = this.history.inputs.get(input.id);
     if (previous) {
       if (previous.text !== input.text || previous.source !== input.source) throw new Error(`输入 id 冲突：${input.id}`);
@@ -98,7 +98,7 @@ export class HarnessRunner implements ThreadRunner {
     if (this.stopping) throw new Error('会话正在停止，请重试原停止请求');
     const returned = new Map([...this.history.pending].map((id) => [id, this.history.inputs.get(id)!]));
     for (const input of request.inputs ?? []) {
-      if (!validInput(input)) throw new Error('待核定输入无效');
+      if (!inputSchema.safeParse(input).success) throw new Error('待核定输入无效');
       const known = this.history.inputs.get(input.id) ?? returned.get(input.id);
       if (known && (known.text !== input.text || known.source !== input.source)) throw new Error(`输入 id 冲突：${input.id}`);
       if (!known) returned.set(input.id, input);
@@ -396,21 +396,22 @@ export class HarnessRunner implements ThreadRunner {
       tools.set(tool.name, tool);
     }
     const definitions = this.history.toolDefinitions ?? prepared.toolDefinitions
-      ?? prepared.tools.map(({ name, description, parameters }) => ({ name, description, parameters }));
+      ?? prepared.tools.filter((tool) => !tool.deferred).map(({ name, description, parameters }) => ({ name, description, parameters }));
     const declarations = new Map<string, ToolDefinition>();
     for (const definition of definitions) if (!declarations.has(definition.name)) declarations.set(definition.name, definition);
+    // 按需加载的要在当前上下文里加载过；定义变了的调用时拒绝，让模型重新加载。
+    const loaded = prepared.tools.some((tool) => tool.deferred) ? loadedDefinitions(this.history.itemsView()) : new Map<string, ToolDefinition>();
     for (const tool of tools.values()) {
+      if (tool.deferred) {
+        const definition = loaded.get(tool.name);
+        if (!definition) tools.delete(tool.name);
+        else if (!sameDefinition(definition, tool)) tools.set(tool.name, staleTool(tool));
+        continue;
+      }
       const declared = declarations.get(tool.name);
       if (!declared || !sameDefinition(declared, tool)) {
         throw new Error(`工具 ${tool.name} 未声明或定义已变化，请新建会话使用新的工具定义`);
       }
-    }
-    // 插件工具要在当前上下文里加载过；定义变了的调用时拒绝，让模型重新加载。
-    const loaded = prepared.deferred?.length ? loadedDefinitions(this.history.itemsView()) : new Map<string, ToolDefinition>();
-    for (const tool of prepared.deferred ?? []) {
-      if (tools.has(tool.name)) throw new Error(`工具名重复：${tool.name}`);
-      const definition = loaded.get(tool.name);
-      if (definition) tools.set(tool.name, sameDefinition(definition, tool) ? tool : staleTool(tool));
     }
     return { context, tools, configuration: requestSnapshot({ ...prepared.settings, allowedTools: [...tools.keys()] }, definitions) };
   }

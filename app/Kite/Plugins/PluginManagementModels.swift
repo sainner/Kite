@@ -35,23 +35,32 @@ nonisolated struct OperationGrant: Codable, Equatable, Sendable {
 nonisolated struct InstanceGrants: Codable, Equatable, Sendable {
     let revision: String
     var grants: [OperationGrant]
-    /// 代理的协作范围（descendants 仅后代、workspace 同工作区）；插件没有。
-    var scope: String?
 }
 
 struct GrantUpdate: Encodable {
     let expectedRevision: String
     let grants: [OperationGrant]
-    let scope: String?
 }
 
 struct PluginGrantDraft {
     let revision: String
     var grants: [OperationGrant]
-    var scope: String?
 
-    init(snapshot: InstanceGrants) { revision = snapshot.revision; grants = snapshot.grants; scope = snapshot.scope }
-    var request: GrantUpdate { GrantUpdate(expectedRevision: revision, grants: grants, scope: scope) }
+    init(snapshot: InstanceGrants) { revision = snapshot.revision; grants = snapshot.grants }
+    var request: GrantUpdate { GrantUpdate(expectedRevision: revision, grants: grants) }
+
+    private static let scopes: Set<String> = ["descendants", "workspace"]
+
+    /// 协作范围：对其他代理、monitor 与终端的授权共用的目标（descendants 仅后代、workspace 同工作区），改它就改这几项；没有这类授权时为 nil。
+    var scope: String? {
+        get { grants.lazy.compactMap(\.targets?.kind).first { Self.scopes.contains($0) } }
+        set {
+            guard let newValue else { return }
+            for index in grants.indices where grants[index].targets.map({ Self.scopes.contains($0.kind) }) == true {
+                grants[index].targets = .init(kind: newValue)
+            }
+        }
+    }
 
     func includesTool(instanceID: String, name: String) -> Bool {
         grants.contains { $0.operation == "plugin.call" && $0.instanceId == instanceID && ($0.tools?.contains(name) ?? false) }

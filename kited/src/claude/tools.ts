@@ -58,14 +58,12 @@ export function claudeToolResultContent(name: string, result: ToolResult): { con
 
 export function claudeToolServer(options: {
   tools: Tool[];
-  /** 不常驻、经 ToolSearch 按需加载的工具（插件工具）。 */
-  deferred: ReadonlySet<string>;
   context(callId: string): Parameters<Tool['execute']>[1];
   allowed(name: string): boolean;
   finished(callId: string, result: ToolResult): void;
 }) {
   // 提问与审批等用户回应不设时限；上游对单次调用有硬时限，这里取它允许的最大值（约 24.8 天）。
-  // 服务整体设常驻会盖过单个工具，所以逐个设：插件工具以外的都常驻。
+  // 服务整体设常驻会盖过单个工具，所以逐个设：按需加载的以外都常驻。
   return { ...createSdkMcpServer({ name: 'kite', tools: options.tools.map((entry) => {
     const schema = z.fromJSONSchema(entry.parameters);
     if (!(schema instanceof z.ZodObject)) throw new Error(`工具 ${entry.name} 的参数须为对象`);
@@ -93,6 +91,6 @@ export function claudeToolServer(options: {
         ...(images ?? []).map((image) => ({ type: 'image' as const, data: image.data, mimeType: image.mediaType }))],
         ...(structured ? { structuredContent: { ...rest } } : {}), ...(result.status === 'success' ? {} : { isError: true }) };
     }, { annotations: { readOnlyHint: entry.parallel === true, destructiveHint: entry.parallel !== true, openWorldHint: true },
-      alwaysLoad: !options.deferred.has(entry.name) });
+      alwaysLoad: !entry.deferred });
   }) }), timeout: 2_147_483_647 };
 }

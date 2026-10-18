@@ -152,7 +152,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         const variables = threadVariables(current, host.toolConstraint(), host.executionConstraint());
         const instructions = assembleContext(projectContext(agent.context, variables)).instructions;
         return { agent, instructions, contextUpdate: assembleContext(contextUpdateContext(instructions, variables, host.contextUpdateTemplate())).instructions,
-          tools: [...operations.tools, ...plugins], allowed, deferred: new Set(plugins.map((tool) => tool.name)),
+          tools: [...operations.tools, ...plugins], allowed,
           notificationText: updates.map((notification) => restoreContext(notification.context).instructions).join('\n\n'),
           through: updates.at(-1)?.sequence ?? afterNotification };
       }, events: on,
@@ -177,11 +177,10 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       const { model, contextWindow } = harnessModel(agent.model, { threadId: current.nativeId, chatgptAuth: join(home, 'auth', 'chatgpt', 'auth.json'),
         ...(credentials ? { apiKeys: () => credentials.apiKeys() } : {}), ...(host.chatgptLimits ? { observeLimits: host.chatgptLimits } : {}) });
       // 插件工具不进声明，经 tool_search 按实例加载；搜得到的是此刻获准的。
-      const search = searchTool(plugins.map((tool) => ({ instanceId: selection.sources.find((source) => source.modelName === tool.name)!.instanceId,
-        definition: { name: tool.name, description: tool.description, parameters: tool.parameters } })));
+      const search = searchTool(plugins);
       return {
         model: options.model?.(current) ?? model,
-        tools: [...declared.filter((tool) => permitted(tool.name)), search], deferred: plugins,
+        tools: [...declared.filter((tool) => permitted(tool.name)), search, ...plugins],
         // 请求发出后项目约束收紧时，这次请求里的调用也在执行前拦下。
         blocked: (name) => (agentTools as readonly string[]).includes(name) && !constraintAllows(host.toolConstraint(), name) ? `项目约束已禁用 ${name}` : undefined,
         toolDefinitions: [...declared, search].map(({ name, description, parameters }) => ({ name, description, parameters })),

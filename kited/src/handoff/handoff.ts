@@ -15,7 +15,7 @@ import { engineAttachmentTypes } from '../claude/context-filter/hooks/register.t
 import { acquireClaudeLock } from '../claude/host.ts';
 import { readClaudeControl, saveClaudeControl, type ClaudeControl } from '../claude/control.ts';
 import { CLAUDE_TOOL_SEARCH, claudeToolResult, claudeToolResultContent, structuredClaudeTool } from '../claude/tools.ts';
-import { modelText, unwrapModelText } from '../harness/input.ts';
+import { modelText } from '../harness/input.ts';
 import { TOOL_SEARCH } from '../harness/tool-search.ts';
 import { restoreContext } from '../harness/context/assembler.ts';
 import { readJournal } from '../harness/journal.ts';
@@ -116,9 +116,9 @@ export function claudeToHarness(entries: ClaudeEntry[], control: ClaudeControl, 
   const tail = own.slice(start);
   const groups: Array<{ items: ContextItem[]; through: string }> = [];
   const inputs = new Map(control.inputs.map((entry) => [entry.sdkId, entry.input]));
-  // 没有 Kite 原始输入的原生行只有模型正文，去掉包装后按 Kite 来源导入，免得再包一层。
-  const input = (sdkId: string, text: string, human: boolean): Input => inputs.get(sdkId)
-    ?? { id: sdkId, text: human ? text : unwrapModelText(text).text, source: human ? 'human' : 'kite' };
+  // Kite 发出的输入，原生行的 uuid（回合中途是排队附件的 source_uuid）就是发送时的 sdkId；
+  // 对不上的是上游自己以 user 角色送达模型的内容（中断说明等），没有包装，按 Kite 来源保留。
+  const input = (sdkId: string, text: string, human: boolean): Input => inputs.get(sdkId) ?? { id: sdkId, text, source: human ? 'human' : 'kite' };
   const calls = new Map<string, string>();
   const translate = (entry: ClaudeEntry): ContextItem[] => {
     const items: ContextItem[] = [];
@@ -180,6 +180,15 @@ export function claudeToHarness(entries: ClaudeEntry[], control: ClaudeControl, 
 type ClaudeTarget = { nativeId: string; cwd: string; model: string; parent: string | null;
   /** Claude 会话现有条目；重组时来自 Claude 的段按它原样拷贝。 */
   native?: ClaudeEntry[] };
+
+/** 输入在 Claude 会话里的原生条目：回合开头是 user 消息，回合中途（跟在工具结果之后）是排队的命令附件；正文按来源包装。 */
+function claudeInput(input: Input, midTurn: boolean): { type: string; [key: string]: unknown } {
+  const origin = input.source === 'human' ? { origin: { kind: 'human' } } : {};
+  return midTurn
+    ? { type: 'attachment', attachment: { type: 'queued_command', prompt: modelText(input), source_uuid: randomUUID(), commandMode: 'prompt',
+      ...origin, humanTurn: input.source === 'human' } }
+    : { type: 'user', message: { role: 'user', content: modelText(input) }, ...origin };
+}
 
 /** 一个模型条目对应的 Claude 内容块；工具调用 ID 规范化后登记，供结果找回调用与工具名。 */
 function claudeBlocks(item: ModelItem, calls: Map<string, { id: string; name: string }>): JsonObject[] {
@@ -320,14 +329,8 @@ function rebaseToClaude(records: readonly JournalRecord[], options: ClaudeTarget
       case 'input': {
         close();
         const { input } = item;
-        const origin = input.source === 'human' ? { origin: { kind: 'human' } } : {};
-        if (afterResult) {
-          add({ type: 'attachment', attachment: { type: 'queued_command', prompt: modelText(input), source_uuid: randomUUID(), commandMode: 'prompt',
-            ...origin, humanTurn: input.source === 'human' } });
-        } else {
-          add({ type: 'user', message: { role: 'user', content: modelText(input) }, ...origin });
-          release();
-        }
+        add(claudeInput(input, afterResult));
+        if (!afterResult) release();
         if (input.source === 'human') lastPrompt = input.text;
         break;
       }
@@ -417,7 +420,7 @@ export function harnessToClaude(records: readonly JournalRecord[], after: number
           for (const id of row.inputIds) {
             const input = inputs.get(id)!;
             inputIds.push(id);
-            add({ type: 'user', message: { role: 'user', content: modelText(input) }, ...(input.source === 'human' ? { origin: { kind: 'human' } } : {}) });
+            add(claudeInput(input, false));
           }
           for (const note of notes) notice('UserPromptSubmit', note);
         } else {
@@ -425,8 +428,7 @@ export function harnessToClaude(records: readonly JournalRecord[], after: number
           for (const id of row.inputIds) {
             const input = inputs.get(id)!;
             inputIds.push(id);
-            add({ type: 'attachment', attachment: { type: 'queued_command', prompt: modelText(input), source_uuid: randomUUID(), commandMode: 'prompt',
-              ...(input.source === 'human' ? { origin: { kind: 'human' } } : {}), humanTurn: input.source === 'human' } });
+            add(claudeInput(input, true));
           }
         }
         request = { id: row.requestId, blocks: [], results: new Map() };

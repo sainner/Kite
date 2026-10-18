@@ -6,6 +6,7 @@ import { OperationError } from '../../src/errors.ts';
 import type { Envelope } from '../../src/events.ts';
 import { responsesInput } from '../../src/harness/responses.ts';
 import type { Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
+import type { OperationGrant } from '../../src/operations/contract.ts';
 import { OperationReceipts } from '../../src/operations/receipts.ts';
 import { Store } from '../../src/store.ts';
 import { after, call, folderWorkspace, mark, startKited, waitIdle, type Kited } from '../harness.ts';
@@ -477,7 +478,7 @@ const failedOutcome = (result: ToolResult | undefined) => {
 };
 
 /*
- * 几个部分的配合：协作范围存在实例配置里，经 operation-grants 改成同工作区后，下一回合的 agent_stop 才能对准非后代；
+ * 几个部分的配合：协作范围是授权的目标，经 operation-grants 把 agent.stop 等几项的目标改成同工作区后，下一回合的 agent_stop 才能对准非后代；
  * 超出后代范围的停止在操作入口里经 Waits.approve 挂在调用方线程上，线程状态里出现这项审批，
  * 用户经 POST /threads/:id/waiting/:id 回应后工具调用才失败或继续，对方的回合随之照跑或真的被停下。
  */
@@ -523,12 +524,13 @@ test('同工作区范围的代理停非后代的代理要逐次等用户批准�
   refused.response.complete();
   await waitIdle(kk, aId, since);
 
+  // 改成同工作区：把目标是仅后代的那几项授权的目标都改成同工作区。
   const grantsPath = `/instances/${aId}/operation-grants`;
   const grants = await kk.call('GET', grantsPath);
-  expect(grants.body.scope).toBe('descendants');
-  expect((await kk.call('PUT', grantsPath, {
-    expectedRevision: grants.body.revision, grants: grants.body.grants, scope: 'workspace',
-  })).status).toBe(200);
+  const widened = (grants.body.grants as OperationGrant[]).map((grant) =>
+    'targets' in grant && grant.targets.kind === 'descendants' ? { ...grant, targets: { kind: 'workspace' } } : grant);
+  expect(widened).toContainEqual({ operation: 'agent.stop', targets: { kind: 'workspace' } });
+  expect((await kk.call('PUT', grantsPath, { expectedRevision: grants.body.revision, grants: widened })).status).toBe(200);
 
   // 同工作区：每次停止都先问；拒绝时这次工具调用失败，B 照跑。
   expect((await kk.call('POST', `/threads/${aId}/messages`, { text: '还是停掉 B' })).status).toBe(200);

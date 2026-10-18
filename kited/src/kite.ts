@@ -1,5 +1,5 @@
 /** 工作区负责文件、快照和采纳；线程负责模型执行及独立的对话记录。 */
-import type { CompactionRequest, Input, InputVia, StopRequest } from './harness/types.ts';
+import type { CompactionRequest, Input, InputOrigin, InputVia, StopRequest } from './harness/types.ts';
 import { AgentReports, agentReportContextDefinition } from './agent-reports.ts';
 import { randomUUID } from 'node:crypto';
 import { existsSync, rmSync } from 'node:fs';
@@ -51,7 +51,7 @@ import { commandEnvironment } from './execution/sandbox.ts';
 import { monitorConfig, monitorDefinitionId, monitorEventsContextDefinition, Monitors } from './monitor/monitors.ts';
 import { InstanceOperations } from './operations/operations.ts';
 import { OperationReceipts } from './operations/receipts.ts';
-import { lineGrant, type CollaborationScope, type OperationGrant, type OperationInput } from './operations/contract.ts';
+import { lineGrant, type OperationGrant, type OperationInput } from './operations/contract.ts';
 import { Peers } from './line/peers.ts';
 import { LineMonitor, lineMonitorContextDefinition } from './line/monitor.ts';
 import { lineTools } from './line/tools.ts';
@@ -1100,7 +1100,7 @@ export class Kite {
   /** 操作层只登记实例；有首条消息时才打开执行资源，窗口由 presentation 决定。 */
   /** sender 是首条消息的来源，与 agent.send 的规则相同，由操作层按调用方给出。 */
   startAgent(workspaceId: string, input: OperationInput<'agent.start'>, origin?: PluginInstance['origin'],
-    sender: Omit<Input, 'id' | 'text'> = { source: 'human' }, check: () => void = () => {}): Promise<{ instanceId: string; windowId?: string }> {
+    sender: InputOrigin = { source: 'human' }, check: () => void = () => {}): Promise<{ instanceId: string; windowId?: string }> {
     return this.control(workspaceId, async () => {
       check();
       const { workspace } = this.workspace(workspaceId);
@@ -1165,8 +1165,8 @@ export class Kite {
     });
   }
 
-  configureOperationGrants(id: string, expectedRevision: string, value: unknown, scope?: CollaborationScope) {
-    return this.configuration.configureOperationGrants(id, expectedRevision, value, scope);
+  configureOperationGrants(id: string, expectedRevision: string, value: unknown) {
+    return this.configuration.configureOperationGrants(id, expectedRevision, value);
   }
   executionGrants(id: string) { return this.configuration.executionGrants(id); }
   approvalMode(id: string) { return this.configuration.approvalMode(id); }
@@ -1407,8 +1407,8 @@ export class Kite {
       if (r?.busy || r?.recovery) throw new KiteError('工作区有线程正在工作或等待恢复确认', 409);
     }
   }
-  /** origin 是来源与发信方，由调用方按调用身份给出，见 Input。 */
-  send(id: string, text: string, inputId: string = randomUUID(), origin: Omit<Input, 'id' | 'text'> = { source: 'human' },
+  /** origin 是来源与发信方，由调用方按调用身份给出，见 InputOrigin。 */
+  send(id: string, text: string, inputId: string = randomUUID(), origin: InputOrigin = { source: 'human' },
     check: () => void = () => {}): Promise<{ id: string }> {
     if (!text.trim()) throw new KiteError('消息不能为空');
     if (!inputId) throw new KiteError('消息 id 不能为空');
@@ -1432,7 +1432,7 @@ export class Kite {
     if (!accepted) { undo(); return; }
     if (input.source === 'human') for (const listener of [...this.interjections.get(thread.id) ?? []]) listener();
     // Line 自己的说明让这一回合成为 Line 的工作；用户的消息（含经 Line 转达的原文）收回给用户。
-    if (input.from?.kind === 'line') this.lineWork.add(thread.id);
+    if (input.source === 'agent' && input.from.kind === 'line') this.lineWork.add(thread.id);
     else if (input.source === 'human') this.lineWork.delete(thread.id);
     // 还没有标题记录（没起过名、没手动改过）时，用第一条消息作标题
     if (this.store.threadTitle(thread.id)?.revision === 'initial') {

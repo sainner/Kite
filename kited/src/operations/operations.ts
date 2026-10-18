@@ -6,15 +6,14 @@ import { FileDiffStore } from '../workspace/file-diffs.ts';
 import { KiteError, OperationError, operationError } from '../errors.ts';
 import type { Kite } from '../kite.ts';
 import type { PluginInstance } from '../model.ts';
-import { grantTools, operationContracts, operationGrantsSchema, scopedOperations, type CollaborationScope, type OperationCaller, type OperationGrant, type OperationInput,
+import { grantTools, operationContracts, operationGrantsSchema, scopedOperations, type GrantTargets, type OperationCaller, type OperationGrant, type OperationInput,
   type OperationName } from './contract.ts';
 import { effectiveExecution, instanceExecutionChanges } from '../execution/grants.ts';
 import { terminalDefinitionId } from '../terminal/terminals.ts';
-import type { Input, JsonObject, Tool, ToolResult } from '../harness/types.ts';
+import type { InputOrigin, JsonObject, Tool, ToolResult } from '../harness/types.ts';
 import { WorkspaceFiles, fileSelection } from '../workspace/files.ts';
 import { assertFileAccess, hostPrivatePaths } from '../execution/sandbox.ts';
 import { instanceAgent } from '../agents/definition.ts';
-import { effectiveTools } from '../context-variables.ts';
 import { defaultRoleId, instanceRole } from '../roles.ts';
 import { pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding, type PluginToolSource } from '../plugins/tools.ts';
 
@@ -28,11 +27,8 @@ export interface OperationToolSelection {
 }
 
 const revision = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-/** 超出后代范围时要用户批准的操作：范围内的写操作。 */
-const confirmed = (name: OperationName) => scopedOperations.has(name) && operationContracts[name].effect === 'write';
-
-export const collaborationScope = (instance: Pick<PluginInstance, 'config'>): CollaborationScope =>
-  instance.config.scope === 'workspace' ? 'workspace' : 'descendants';
+/** 超出后代范围时要用户批准的操作：协作范围里的写操作。 */
+const confirmed = (name: OperationName) => (scopedOperations as readonly string[]).includes(name) && operationContracts[name].effect === 'write';
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value);
   if (!result.success) throw new OperationError(`操作参数无效：${result.error.issues.map((issue) => issue.message).join('；')}`, 'denied', 400);
@@ -47,20 +43,14 @@ export class InstanceOperations {
   private closing = false;
   constructor(private kite: OperationServices) {}
 
-  /** 代理另有协作范围。 */
-  grants(id: string): { grants: OperationGrant[]; scope?: CollaborationScope; revision: string } {
+  grants(id: string): { grants: OperationGrant[]; revision: string } {
     const instance = this.kite.store.instance(id);
     if (!instance) throw new KiteError('没有这个实例', 404);
     const grants = parse(operationGrantsSchema, instance.config.grants ?? []);
-    if (!this.agent(instance)) return { grants, revision: revision(grants) };
-    const scope = collaborationScope(instance);
-    return { grants, scope, revision: revision({ grants, scope }) };
+    return { grants, revision: revision(grants) };
   }
   validateGrants(instance: PluginInstance, value: unknown): OperationGrant[] {
     const grants = parse(operationGrantsSchema, value);
-    if (this.agent(instance) && grants.some((grant) => scopedOperations.has(grant.operation))) {
-      throw new KiteError('代理对代理、monitor 与终端的操作按协作范围授权，不逐个授予');
-    }
     for (const grant of grants) {
       if (grant.operation === 'plugin.call') {
         const target = this.kite.store.instance(grant.instanceId);
@@ -109,22 +99,14 @@ export class InstanceOperations {
     }
     if (target?.id === source.id && name.startsWith('agent.')) throw new OperationError('实例不能通过协作操作控制自己', 'denied', 403);
     if (name === 'agent.stop' && args.inputs !== undefined) throw new OperationError('只有界面可以核定未确认的用户输入', 'denied', 403);
-    if (scopedOperations.has(name) && this.agent(source)) {
-      // 范围只管能对准谁；用不用得了这个工具仍看角色与项目的工具规则，和声明给模型的一致。
-      if (!effectiveTools(instanceAgent(source), this.kite.store.workspaceConstraints(workspaceId)?.tools).includes(operationContracts[name].tool!)) {
-        throw new OperationError('调用方的角色或项目不允许这个工具', 'denied', 403);
-      }
-      if (target && !this.inScope(source, target)) throw new OperationError('目标不在调用方的协作范围内', 'denied', 403);
-      return;
-    }
     const grants = this.grants(source.id).grants;
     const granted = name === 'plugin.call'
       ? pluginToolGranted({ instanceId: target!.id, toolName: args.tool as string }, grants)
       : grants.some((grant) => {
         if (grant.operation !== name) return false;
         if ('roleIds' in grant) return grant.roleIds.includes((args.role as string | undefined) ?? defaultRoleId);
-        if ('targets' in grant) return target !== undefined && (grant.targets.kind === 'created'
-          ? target.origin?.instanceId === source.id : grant.targets.instanceIds.includes(target.id));
+        // list 没有目标，范围决定列出哪些，见 listing。
+        if ('targets' in grant) return !target || this.reaches(source, target, grant.targets);
         return true;
       });
     if (!granted) throw new OperationError('调用方未获准对该目标执行此操作', 'denied', 403);
@@ -134,7 +116,7 @@ export class InstanceOperations {
    * 发消息（含建代理时的首条消息）的来源：界面上用户发的是人；另一台工作机的 Line 照原文转达用户的话仍是人，带经由，它自己的说明是代理来信；
    * 模型调用是代理来信，插件发的按 Kite 来源。
    */
-  private origin(caller: OperationCaller): Omit<Input, 'id' | 'text'> {
+  private origin(caller: OperationCaller): InputOrigin {
     if (caller.kind === 'ui') {
       if (!caller.via) return { source: 'human' };
       return caller.relayed ? { source: 'human', via: caller.via } : { source: 'agent', from: caller.via };
@@ -155,20 +137,26 @@ export class InstanceOperations {
     return false;
   }
 
-  private inScope(source: PluginInstance, target: PluginInstance): boolean {
-    return collaborationScope(source) === 'workspace' || this.descendant(source, target);
+  private reaches(source: PluginInstance, target: PluginInstance, targets: GrantTargets): boolean {
+    switch (targets.kind) {
+      case 'created': return target.origin?.instanceId === source.id;
+      case 'instances': return targets.instanceIds.includes(target.id);
+      case 'descendants': return this.descendant(source, target);
+      case 'workspace': return true;
+    }
   }
 
   /**
    * 一次 list 的筛选与每项共有的字段，调用方与开着的窗口只查一次。
-   * 列出调用方够得着的实例：界面看全部，插件按授权列表，代理按协作范围。
+   * 列出调用方够得着的实例：界面看全部，代理与插件按这项 list 授权的范围。
    */
-  private listing(caller: OperationCaller, workspaceId: string) {
+  private listing(caller: OperationCaller, workspaceId: string, name: 'agent.list' | 'monitor.list' | 'terminal.list') {
     const source = caller.kind === 'ui' ? undefined : this.kite.store.instance(caller.instanceId)!;
-    const scoped = source && this.agent(source) ? source : undefined;
+    const grant = source && this.grants(source.id).grants.find((grant) => grant.operation === name);
+    const range = grant && 'targets' in grant ? grant.targets : undefined;
     const windows = new Set(this.kite.store.windows(workspaceId).filter((window) => window.state === 'open').map((window) => window.target.instanceId));
     return {
-      visible: (target: PluginInstance) => !scoped || this.inScope(scoped, target),
+      visible: (target: PluginInstance) => !source || !!range && this.reaches(source, target, range),
       item: (instance: PluginInstance) => ({ instanceId: instance.id, title: instance.title, createdBy: instance.origin?.instanceId ?? null,
         createdAt: instance.createdAt, window: windows.has(instance.id),
         operations: this.kite.catalog.get(instance.definitionId).operations.filter((operation) => {
@@ -242,7 +230,7 @@ export class InstanceOperations {
         }, this.origin(caller), check);
       }
       case 'agent.list': {
-        const listing = this.listing(caller, workspaceId);
+        const listing = this.listing(caller, workspaceId, name);
         const reachable = this.kite.store.threads(workspaceId).filter(listing.visible);
         const agents = await Promise.all(reachable.map(async (instance) => {
           const state = await this.kite.threadState(instance.id);
@@ -326,14 +314,14 @@ export class InstanceOperations {
         return { ok: true };
       }
       case 'monitor.list': {
-        const listing = this.listing(caller, workspaceId);
+        const listing = this.listing(caller, workspaceId, name);
         return { monitors: this.kite.monitors.list(workspaceId).flatMap((summary) => {
           const instance = this.kite.store.instance(summary.instanceId)!;
           return listing.visible(instance) ? [{ ...summary, ...listing.item(instance) }] : [];
         }) };
       }
       case 'terminal.list': {
-        const listing = this.listing(caller, workspaceId);
+        const listing = this.listing(caller, workspaceId, name);
         return { terminals: this.kite.store.instances(workspaceId)
           .filter((instance) => instance.definitionId === terminalDefinitionId && instance.status === 'open' && listing.visible(instance))
           .map((instance) => ({ ...this.kite.terminals.describe(instance), ...listing.item(instance) })) };
@@ -395,15 +383,13 @@ export class InstanceOperations {
   prepareTools(instance: PluginInstance): OperationToolSelection {
     const grants = parse(operationGrantsSchema, instance.config.grants ?? []);
     const bindings = pluginToolBindings(instance);
-    // 代理对其他实例的操作按协作范围授权，这些工具都给，能对准谁在调用时核对。
-    const scoped = this.agent(instance) ? [...scopedOperations].map((name) => operationContracts[name as OperationName].tool!) : [];
-    const allowed = new Set([...grants.flatMap(grantTools), ...scoped, ...bindings.map((binding) => binding.modelName)]);
+    const allowed = new Set([...grants.flatMap(grantTools), ...bindings.map((binding) => binding.modelName)]);
     return { plugins: this.pluginTools(instance.id, instance.workspaceId, bindings), allowed, sources: bindings.map(pluginToolSource) };
   }
 
   private pluginTools(instanceId: string, workspaceId: string, bindings: PluginToolBinding[]): Tool[] {
     return bindings.map(({ modelName, description, parameters, instanceId: targetId, toolName }) => ({
-      name: modelName, description, parameters,
+      name: modelName, description, parameters, deferred: { group: targetId },
       validate(value) { parse(pluginArguments, value); },
       execute: (value, context) => this.invokeModel(instanceId, workspaceId, 'plugin.call', {
         instanceId: targetId, tool: toolName, arguments: value,

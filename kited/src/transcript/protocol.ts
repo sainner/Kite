@@ -21,10 +21,10 @@ export type DisplayBlock =
 /** 输入在记录里的样子：人发的照原文；别的是 kite 块，代理来信带发信方名称，正文是原文。 */
 export const inputBlock = (input: Input, midTurn: boolean): DisplayBlock => input.source === 'human'
   ? { type: 'human', id: input.id, text: input.text, midTurn }
-  : { type: 'kite', text: input.text, ...(input.from ? { sender: senderName(input.from) } : {}) };
+  : { type: 'kite', text: input.text, ...(input.source === 'agent' ? { sender: senderName(input.from) } : {}) };
 export interface DisplayRecord { id: string; at: number; parent?: string; generation?: 'streaming' | 'complete' | 'interrupted'; block: DisplayBlock }
 export interface DisplayDelta { id: string; field: 'text' | 'arguments' | 'output'; text: string; part?: number; replace?: boolean; limit?: number; input?: Json }
-export interface PendingInput extends Input { midTurn: boolean }
+export type PendingInput = Input & { midTurn: boolean };
 export interface DisplayState {
   phase: Phase;
   busy: boolean;

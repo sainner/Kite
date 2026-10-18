@@ -14,7 +14,7 @@ import {
 } from './harness/context/notifications.ts';
 import type { Kite } from './kite.ts';
 import type { AgentInstance, PluginInstance, ThreadContext } from './model.ts';
-import { roleOperationGrants, type CollaborationScope, type OperationGrant } from './operations/contract.ts';
+import { roleOperationGrants, type OperationGrant } from './operations/contract.ts';
 import { agentToolCatalog } from './plugins/definitions.ts';
 import { pluginToolBindings, pluginToolGranted, type PluginToolBinding } from './plugins/tools.ts';
 import { effectiveTools, threadVariables } from './context-variables.ts';
@@ -36,11 +36,9 @@ export class InstanceConfiguration {
 
   constructor(private kite: ConfigurationServices, private control: ConfigurationControl) {}
 
-  /** scope 是代理的协作范围，省略时不变；不是代理的实例没有。 */
-  async configureOperationGrants(id: string, expectedRevision: string, value: unknown, scope?: CollaborationScope) {
+  async configureOperationGrants(id: string, expectedRevision: string, value: unknown) {
     const instance = this.kite.store.instance(id);
     if (!instance) throw new KiteError('没有这个实例', 404);
-    if (scope && !this.kite.catalog.get(instance.definitionId).agent) throw new KiteError('只有代理有协作范围');
     if (instance.status !== 'open' || this.kite.workspace(instance.workspaceId).workspace.status !== 'open') throw new KiteError('实例或工作区尚未打开', 409);
     if (this.kite.operations.grants(id).revision !== expectedRevision) throw new KiteError('授权已变化，请重新读取后修改', 409);
     const grants = this.kite.operations.validateGrants(instance, value);
@@ -57,19 +55,19 @@ export class InstanceConfiguration {
       const { revision } = this.kite.operations.grants(id);
       if (revision !== expectedRevision) throw new KiteError('授权已变化，请重新读取后修改', 409);
       this.kite.operations.validateGrants(current, grants);
-      this.saveOperationGrants(current, grants, selected, scope);
+      this.saveOperationGrants(current, grants, selected);
       this.control.changed(current.workspaceId);
       return this.kite.operations.grants(id);
     });
   }
 
-  private saveOperationGrants(instance: PluginInstance, grants: OperationGrant[], selected: PluginToolBinding[], scope?: CollaborationScope): void {
+  private saveOperationGrants(instance: PluginInstance, grants: OperationGrant[], selected: PluginToolBinding[]): void {
     const previous = pluginToolBindings(instance);
     const isAgent = !!this.kite.catalog.get(instance.definitionId).agent;
     // 会话中途新授权的插件工具：自研 harness 经 tool_search 加载，Claude 在下次启动进程后经 ToolSearch 加载，都不用新建会话。
     const names = (bindings: PluginToolBinding[]) => JSON.stringify(bindings.map((binding) => binding.modelName));
     const changed = names(previous) !== names(selected);
-    const config = { ...instance.config, grants, pluginTools: selected, ...(scope ? { scope } : {}) };
+    const config = { ...instance.config, grants, pluginTools: selected };
     this.kite.store.setInstanceConfig(instance.id, config, isAgent && changed ? {
       id: randomUUID(), kind: 'plugin.tools.changed', source: 'host', authority: 'instruction',
       context: assembleContext(pluginToolsContext(this.variables({ ...this.control.context(instance.id), config }),
@@ -86,7 +84,7 @@ export class InstanceConfiguration {
         if (grant.operation === 'plugin.call' && grant.instanceId === target.id) return [];
         if ('targets' in grant && grant.targets.kind === 'instances') {
           const instanceIds = grant.targets.instanceIds.filter((id) => id !== target.id);
-          return instanceIds.length ? [{ ...grant, targets: { kind: 'instances', instanceIds } }] : [];
+          return instanceIds.length ? [{ ...grant, targets: { kind: 'instances', instanceIds } } as OperationGrant] : [];
         }
         return [grant];
       });

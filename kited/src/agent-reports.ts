@@ -52,7 +52,7 @@ export class AgentReports {
   received(threadId: string, input: Input): () => void {
     const before = this.delegators.get(threadId);
     if (input.source === 'human') this.delegators.delete(threadId);
-    else if (input.from?.kind === 'agent') this.delegators.set(threadId, new Set([...before ?? [], input.from.instance]));
+    else if (input.source === 'agent' && input.from.kind === 'agent') this.delegators.set(threadId, new Set([...before ?? [], input.from.instance]));
     else return () => {};
     return () => { if (before) this.delegators.set(threadId, before); else this.delegators.delete(threadId); };
   }

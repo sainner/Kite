@@ -19,7 +19,6 @@ export const lineToolActions: Record<(typeof lineToolNames)[number], readonly Li
 
 const id = z.string().min(1);
 const text = z.string().refine((value) => !!value.trim(), '内容不能为空');
-const input = inputSchema.extend({ text });
 const target = z.object({ operationId: id, instanceId: id }).strict();
 const ok = z.object({ ok: z.literal(true) }).strict();
 const fileEntry = z.object({ name: id, path: id, kind: z.enum(['file', 'directory', 'symlink', 'other']) }).strict();
@@ -34,13 +33,11 @@ const summary = z.object({
 }).strict();
 
 /**
- * 代理对代理、monitor 与终端的操作按协作范围授权，不逐个实例点名，见 docs/实例操作.md「代理的协作范围」。
- * 仅后代：按创建来源逐层往下算；同工作区：所属工作区的全部。插件作为调用方仍按授权列表。
+ * 对其他代理、monitor 与终端的操作；代理按协作范围授予，这几项的授权共用一个目标范围（descendants 或 workspace），
+ * 见 docs/实例操作.md「代理的协作范围」。
  */
-export const collaborationScopes = ['descendants', 'workspace'] as const;
-export type CollaborationScope = (typeof collaborationScopes)[number];
-export const scopedOperations = new Set<string>(['agent.list', 'agent.send', 'agent.resume', 'agent.stop',
-  'monitor.list', 'monitor.stop', 'terminal.list', 'terminal.read', 'terminal.stop']);
+export const scopedOperations = ['agent.list', 'agent.send', 'agent.resume', 'agent.stop',
+  'monitor.list', 'monitor.stop', 'terminal.list', 'terminal.read', 'terminal.stop'] as const;
 
 export const operationContracts = {
   'plugin.call': {
@@ -72,7 +69,7 @@ export const operationContracts = {
   'agent.stop': {
     title: '停止执行', description: '停止获准的 agent 实例，等待受管执行停止并返回未消费的输入。',
     tool: 'agent_stop', effect: 'write', retry: 'stop',
-    input: target.extend({ inputs: z.array(input).optional() }).strict(), output: z.object({ returned: z.array(input) }).strict(),
+    input: target.extend({ inputs: z.array(inputSchema).optional() }).strict(), output: z.object({ returned: z.array(inputSchema) }).strict(),
   },
   'files.list': {
     title: '浏览目录', description: '读取文件实例所属工作区内的一层目录，按目录优先、名称排序并分页。',
@@ -177,18 +174,24 @@ export type OperationCaller = { kind: 'ui'; via?: z.infer<typeof inputVia>; rela
   kind: 'model' | 'plugin'; instanceId: string; turnId?: string; callId?: string;
 };
 
+/**
+ * 授权的目标：created 是调用方直接创建的，instances 是显式列出的；descendants（仅后代）按创建来源逐层往下算，
+ * workspace（同工作区）是所属工作区的全部。list 只取后两种，决定列出哪些。
+ */
+const range = z.discriminatedUnion('kind', [z.object({ kind: z.literal('descendants') }).strict(), z.object({ kind: z.literal('workspace') }).strict()]);
 const targets = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('created') }).strict(),
   z.object({ kind: z.literal('instances'), instanceIds: z.array(id) }).strict(),
+  ...range.options,
 ]);
+export type GrantTargets = z.infer<typeof targets>;
+export type GrantRange = z.infer<typeof range>;
 export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('plugin.call'), instanceId: id, tools: z.array(id).min(1) }).strict(),
   z.object({ operation: z.literal('agent.start'), roleIds: z.array(id) }).strict(),
-  z.object({ operation: z.literal('agent.list') }).strict(),
+  ...(['agent.list', 'monitor.list', 'terminal.list'] as const).map((operation) => z.object({ operation: z.literal(operation), targets: range }).strict()),
   ...(['agent.send', 'agent.resume', 'agent.stop', 'monitor.stop', 'terminal.read', 'terminal.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
   z.object({ operation: z.literal('monitor.start') }).strict(),
-  z.object({ operation: z.literal('monitor.list') }).strict(),
-  z.object({ operation: z.literal('terminal.list') }).strict(),
   ...(['files.list', 'files.search', 'files.read', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
     targets: z.object({ kind: z.literal('instances'), instanceIds: z.array(id) }).strict() }).strict()),
   /** Line 的管理动作，目标范围是工作机目录里的全部工作区；actions 是用户允许的白名单。 */
@@ -203,17 +206,23 @@ export function grantTools(grant: OperationGrant): string[] {
   return tool ? [tool] : [];
 }
 
-/** 仅宿主登记的代理获得默认授权，可按内置角色创建代理；对其他实例的操作按协作范围，默认仅后代。自定义 manifest 不能自行授予。 */
+/** 仅宿主登记的代理获得默认授权：可按内置角色创建代理、开 monitor，协作范围默认仅后代。自定义 manifest 不能自行授予。 */
 export function defaultOperationGrants(definitionId: string): OperationGrant[] {
-  return definitionId === 'kite.agent' ? [{ operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] }, { operation: 'monitor.start' }] : [];
+  if (definitionId !== 'kite.agent') return [];
+  return [{ operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] }, { operation: 'monitor.start' },
+    ...scopedOperations.map((operation) => ({ operation, targets: { kind: 'descendants' } }) as OperationGrant)];
 }
+
+/** 授权里的协作范围：目标是仅后代或同工作区的那几项共用的范围，没有这类授权时为 undefined。 */
+export const grantRange = (grants: OperationGrant[]): GrantRange | undefined => grants.flatMap((grant) =>
+  'targets' in grant && (grant.targets.kind === 'descendants' || grant.targets.kind === 'workspace') ? [grant.targets] : [])[0];
 
 /** Line 实例启用时得到的管理授权；其他代理即使角色放开了 Line 的工具，也要用户另行授予。 */
 export const lineGrant: OperationGrant = { operation: 'line', actions: [...lineActions] };
 
 /**
  * 协作操作的授权只给角色允许使用对应工具的代理，例如只读审查不带。创建和改选角色都按此调整：
- * 去掉新角色用不了的；旧角色用不了、新角色能用的补上默认授权。两个角色都能用的保持原样，用户撤回的不会被补回。
+ * 去掉新角色用不了的；旧角色用不了、新角色能用的补上默认授权，协作范围沿用原有的。两个角色都能用的保持原样，用户撤回的不会被补回。
  * 插件与文件授权不经模型工具，不受影响。
  */
 export function roleOperationGrants(definitionId: string, grants: OperationGrant[], before: readonly string[], after: readonly string[]): OperationGrant[] {
@@ -222,8 +231,9 @@ export function roleOperationGrants(definitionId: string, grants: OperationGrant
     return grant.operation !== 'line' && !granted.length || granted.some((tool) => tools.includes(tool));
   };
   const kept = grants.filter((grant) => usable(grant, after));
+  const scope = grantRange(grants);
   return [...kept, ...defaultOperationGrants(definitionId).filter((grant) => usable(grant, after) && !usable(grant, before)
-    && !kept.some((other) => other.operation === grant.operation))];
+    && !kept.some((other) => other.operation === grant.operation)).map((grant) => scope && 'targets' in grant ? { ...grant, targets: scope } as OperationGrant : grant)];
 }
 
 export const operationToolNames = ['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop', 'monitor_start', 'monitor_list', 'monitor_stop',

@@ -27,7 +27,7 @@ struct InstanceSettings: View {
     private var definition: RemotePluginDefinition? { area.definition(of: instance) }
     private var caller: String { definition?.agent == nil ? "plugin" : "model" }
     private var editable: Bool { definition?.runtime == "bun" || definition?.agent != nil }
-    private var changed: Bool { draft?.grants != saved?.grants || draft?.scope != saved?.scope }
+    private var changed: Bool { draft?.grants != saved?.grants }
     private var working: Bool { progress.working }
     private var available: Bool {
         model.isConnected(area) && area.instances.contains { $0.id == instance.id && $0.status == .open }
@@ -133,7 +133,7 @@ struct InstanceSettings: View {
 
     @ViewBuilder private var workspaceGrants: some View {
         CardSection("工作区") {
-            if let scope = draft?.scope {
+            if caller == "model", let scope = draft?.scope {
                 LabeledContent("协作范围") {
                     Picker("协作范围", selection: Binding(get: { scope }, set: { value in draft?.scope = value })) {
                         Text("仅后代").tag("descendants")
@@ -143,7 +143,7 @@ struct InstanceSettings: View {
                 }
             }
             if caller == "plugin", operations.contains(where: { $0.name == "agent.list" && $0.callers.contains(caller) }) {
-                let grant = OperationGrant(operation: "agent.list")
+                let grant = OperationGrant(operation: "agent.list", targets: .init(kind: "workspace"))
                 Toggle("查询代理", isOn: selection({ $0.grants.contains(grant) }, { $0.set(grant, enabled: $1) }))
             }
             DisclosureGroup("按角色创建代理") {
