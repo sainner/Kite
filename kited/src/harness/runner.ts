@@ -2,6 +2,8 @@
 import { randomUUID } from 'node:crypto';
 import { ToolBatch } from './tools.ts';
 import { HarnessHistory, type ContextUnit } from './history.ts';
+import { validInput } from './input.ts';
+import { loadedDefinitions, sameDefinition, TOOL_SEARCH } from './tool-search.ts';
 import { assembleContext, literalContext, restoreContext } from './context/assembler.ts';
 import { contextUpdateContext } from './context/notifications.ts';
 import { notificationSchema, requestSnapshot } from './request-config.ts';
@@ -25,6 +27,10 @@ interface Turn {
 }
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+/** 加载之后插件升级、定义变了：不按旧参数执行，让模型重新加载。 */
+const staleTool = (tool: Tool): Tool => ({ ...tool, validate() {},
+  async execute() { return { status: 'error', output: `工具 ${tool.name} 的定义已变化，请先用 ${TOOL_SEARCH} 重新加载再调用` }; } });
 
 export class HarnessRunner implements ThreadRunner {
   private readonly history: HarnessHistory;
@@ -60,18 +66,19 @@ export class HarnessRunner implements ThreadRunner {
 
   get lifecycle(): 'open' | 'closing' | 'closed' { return this.closed ? 'closed' : this.closing ? 'closing' : 'open'; }
 
-  async send(input: Input): Promise<void> {
+  async send(input: Input): Promise<boolean> {
     this.assertOpen();
-    if (!input.id || !input.text.trim() || !['human', 'kite'].includes(input.source)) throw new Error('输入 id、正文和来源必须有效');
+    if (!validInput(input)) throw new Error('输入 id、正文和来源必须有效');
     const previous = this.history.inputs.get(input.id);
     if (previous) {
       if (previous.text !== input.text || previous.source !== input.source) throw new Error(`输入 id 冲突：${input.id}`);
-      return;
+      return false;
     }
     if (this.stopping) throw new Error('会话正在停止，请稍后发送');
     if (this.history.recovery) throw new Error('会话需要先确认恢复');
     this.record({ type: 'input.received', input });
     this.kick();
+    return true;
   }
 
   async cancel(inputId: string): Promise<void> {
@@ -91,7 +98,7 @@ export class HarnessRunner implements ThreadRunner {
     if (this.stopping) throw new Error('会话正在停止，请重试原停止请求');
     const returned = new Map([...this.history.pending].map((id) => [id, this.history.inputs.get(id)!]));
     for (const input of request.inputs ?? []) {
-      if (!input.id || !input.text.trim() || !['human', 'kite'].includes(input.source)) throw new Error('待核定输入无效');
+      if (!validInput(input)) throw new Error('待核定输入无效');
       const known = this.history.inputs.get(input.id) ?? returned.get(input.id);
       if (known && (known.text !== input.text || known.source !== input.source)) throw new Error(`输入 id 冲突：${input.id}`);
       if (!known) returned.set(input.id, input);
@@ -394,9 +401,16 @@ export class HarnessRunner implements ThreadRunner {
     for (const definition of definitions) if (!declarations.has(definition.name)) declarations.set(definition.name, definition);
     for (const tool of tools.values()) {
       const declared = declarations.get(tool.name);
-      if (!declared || JSON.stringify(declared.parameters) !== JSON.stringify(tool.parameters) || declared.description !== tool.description) {
+      if (!declared || !sameDefinition(declared, tool)) {
         throw new Error(`工具 ${tool.name} 未声明或定义已变化，请新建会话使用新的工具定义`);
       }
+    }
+    // 插件工具要在当前上下文里加载过；定义变了的调用时拒绝，让模型重新加载。
+    const loaded = prepared.deferred?.length ? loadedDefinitions(this.history.itemsView()) : new Map<string, ToolDefinition>();
+    for (const tool of prepared.deferred ?? []) {
+      if (tools.has(tool.name)) throw new Error(`工具名重复：${tool.name}`);
+      const definition = loaded.get(tool.name);
+      if (definition) tools.set(tool.name, sameDefinition(definition, tool) ? tool : staleTool(tool));
     }
     return { context, tools, configuration: requestSnapshot({ ...prepared.settings, allowedTools: [...tools.keys()] }, definitions) };
   }

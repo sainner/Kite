@@ -1,6 +1,7 @@
 /** 会话与能力查询共用同一份精简 Claude 配置。 */
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { join } from 'node:path';
+import { CLAUDE_BUILTIN_TOOLS } from './tools.ts';
 
 export function claudeOptions(cwd: string): Options {
   return {
@@ -34,11 +35,17 @@ export function claudeOptions(cwd: string): Options {
       // 也关闭 SDK 首条消息的自动命名请求；会话标题统一由 Kite 生成。
       CLAUDE_CODE_DISABLE_TERMINAL_TITLE: '1',
       CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
-      ENABLE_TOOL_SEARCH: 'false',
+      // 插件工具经 ToolSearch 按需加载；不是官方地址（如测试的假端点）时不显式打开就不启用。实测见 spikes/tool-search/claude.ts。
+      ENABLE_TOOL_SEARCH: 'true',
+      // 进程内 MCP 工具用裸名：模型看到的是 read 而不是 mcp__kite__read，与自研 harness 同名，交接不用改名。
+      // 上游没写进文档，2.1.280 的代码里仍在（只对 sdk 类型的服务生效）；升级时须核对工具名。
+      CLAUDE_AGENT_SDK_MCP_NO_PREFIX: '1',
+      // 打开 ToolSearch 后，流式输入的会话启动时只等整体常驻的 MCP 服务；kite 服务只有部分工具常驻，设了才等它连上再发首个请求。
+      CLAUDE_CODE_MCP_STARTUP_WAIT_MS: '5000',
       DISABLE_COMPACT: '1',
     },
-    // 内置工具与 skills 保持关闭；MCP 只接受宿主显式注入的能力。
-    tools: [],
+    // 内置工具只留按需加载插件工具的 ToolSearch（tools: [] 会连它一起关掉）；skills 关闭；MCP 只接受宿主显式注入的能力。
+    tools: CLAUDE_BUILTIN_TOOLS,
     includePartialMessages: true,
     skills: [],
     strictMcpConfig: true,

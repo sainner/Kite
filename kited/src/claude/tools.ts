@@ -2,13 +2,15 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { diffReferenceSchema } from '../workspace/file-diffs.ts';
+import { loadedText } from '../harness/tool-search.ts';
 import type { Json, Tool, ToolImage, ToolResult } from '../harness/types.ts';
 
-export const CLAUDE_READ_TOOL = 'mcp__kite__read';
-export const CLAUDE_PATCH_TOOL = 'mcp__kite__patch';
-export const claudeToolName = (name: string): string => name.startsWith('mcp__kite__') ? name.slice('mcp__kite__'.length) : name;
+/** Claude Code 内置的按需加载工具，结果是加载到的工具引用。 */
+export const CLAUDE_TOOL_SEARCH = 'ToolSearch';
+/** 开放的 Claude Code 内置工具；其余都是 Kite 工具，用裸名。 */
+export const CLAUDE_BUILTIN_TOOLS = [CLAUDE_TOOL_SEARCH];
 /** read 只回正文；其余 Kite 工具连同状态与 diff 一起结构化返回。 */
-export const structuredClaudeTool = (name: string): boolean => name.startsWith('mcp__kite__') && name !== CLAUDE_READ_TOOL;
+export const structuredClaudeTool = (name: string): boolean => name !== 'read' && !CLAUDE_BUILTIN_TOOLS.includes(name);
 
 /** 原生条目里的对象字段；不是对象时按空对象读。 */
 export const object = (value: unknown): Record<string, any> => value && typeof value === 'object' ? value as Record<string, any> : {};
@@ -18,6 +20,9 @@ const imageTypes = new Set<string>(['image/png', 'image/jpeg', 'image/webp']);
 export function claudeToolResult(block: Record<string, any>, structured: boolean): ToolResult {
   const parts = typeof block.content === 'string' ? [{ type: 'text', text: block.content }] : Array.isArray(block.content) ? block.content.map(object) : [];
   let output = parts.filter((part) => typeof part.text === 'string').map((part) => part.text as string).join('');
+  // ToolSearch 的结果只有工具引用，没有正文。
+  const loaded = parts.filter((part) => part.type === 'tool_reference' && typeof part.tool_name === 'string').map((part) => part.tool_name as string);
+  if (loaded.length) output = loadedText(loaded);
   const images: ToolImage[] = parts.filter((part) => part.type === 'image').map((part) => {
     const source = object(part.source);
     if (source.type !== 'base64' || !imageTypes.has(source.media_type) || typeof source.data !== 'string') throw new Error('不支持的 Claude 工具结果图片');
@@ -53,12 +58,15 @@ export function claudeToolResultContent(name: string, result: ToolResult): { con
 
 export function claudeToolServer(options: {
   tools: Tool[];
+  /** 不常驻、经 ToolSearch 按需加载的工具（插件工具）。 */
+  deferred: ReadonlySet<string>;
   context(callId: string): Parameters<Tool['execute']>[1];
   allowed(name: string): boolean;
   finished(callId: string, result: ToolResult): void;
 }) {
   // 提问与审批等用户回应不设时限；上游对单次调用有硬时限，这里取它允许的最大值（约 24.8 天）。
-  return { ...createSdkMcpServer({ name: 'kite', alwaysLoad: true, tools: options.tools.map((entry) => {
+  // 服务整体设常驻会盖过单个工具，所以逐个设：插件工具以外的都常驻。
+  return { ...createSdkMcpServer({ name: 'kite', tools: options.tools.map((entry) => {
     const schema = z.fromJSONSchema(entry.parameters);
     if (!(schema instanceof z.ZodObject)) throw new Error(`工具 ${entry.name} 的参数须为对象`);
     return tool(entry.name, entry.description, schema.shape, async (args, extra) => {
@@ -78,12 +86,13 @@ export function claudeToolServer(options: {
         result = { status: 'error', output: error instanceof Error ? error.message : String(error) };
       }
       if (callId) options.finished(callId, result);
-      const structured = structuredClaudeTool(`mcp__kite__${entry.name}`);
+      const structured = structuredClaudeTool(entry.name);
       // 上游 isError 分支只转发 content；两种分支都保留结构化执行结果。
       const { images, ...rest } = result;
       return { content: [{ type: 'text' as const, text: structured ? JSON.stringify(rest) : result.output },
         ...(images ?? []).map((image) => ({ type: 'image' as const, data: image.data, mimeType: image.mediaType }))],
         ...(structured ? { structuredContent: { ...rest } } : {}), ...(result.status === 'success' ? {} : { isError: true }) };
-    }, { annotations: { readOnlyHint: entry.parallel === true, destructiveHint: entry.parallel !== true, openWorldHint: true } });
+    }, { annotations: { readOnlyHint: entry.parallel === true, destructiveHint: entry.parallel !== true, openWorldHint: true },
+      alwaysLoad: !options.deferred.has(entry.name) });
   }) }), timeout: 2_147_483_647 };
 }

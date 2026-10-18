@@ -30,9 +30,10 @@ export const notificationSchema: z.ZodType<ThreadNotification> = z.object({
     ctx.addIssue({ code: 'custom', message: `通知上下文无法还原：${String(error)}` });
   }
 });
+export const toolDefinitionSchema = z.object({ name, description: z.string(), parameters: z.record(z.string(), z.json()) }).strict();
 const configurationSchema = z.object({
   settings: requestSettingsSchema,
-  tools: z.array(z.object({ name, description: z.string(), parameters: z.record(z.string(), z.json()) }).strict()),
+  tools: z.array(toolDefinitionSchema),
 }).strict();
 const hash = (configuration: z.infer<typeof configurationSchema>) =>
   createHash('sha256').update(JSON.stringify(configuration)).digest('hex');

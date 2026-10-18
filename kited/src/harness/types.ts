@@ -4,15 +4,22 @@ import type { ContextDefinition, ContextSnapshot, ContextSource, ContextValues }
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type JsonObject = { [key: string]: Json };
 
+/** 来源由宿主按调用身份填写，只用于显示、去重、回报和交给模型时的包装，不改变权限；校验与包装见 input.ts。 */
 export interface Input {
   id: string;
   text: string;
-  source: 'human' | 'kite';
-  /** 经 Line 转达：human 是转达的用户原文，kite 是 Line 自己的说明。只用于显示与去重，不改变权限。 */
+  source: 'human' | 'kite' | 'agent';
+  /** 经 Line 照原文转达的用户原话。 */
   via?: InputVia;
+  /** 代理来信的发信方，source 为 agent 时必有；名称在收下时固定。 */
+  from?: InputSender;
+  /** Kite 转交的用户回应（用户自己回答的提问、密钥请求的结果）：是用户在界面上做的，交给模型时不加「不是用户说的话」。 */
+  response?: true;
 }
 
 export interface InputVia { kind: 'line'; machine: string; instance: string }
+/** Line 自己的话以它的经由为发信方。 */
+export type InputSender = { kind: 'agent'; instance: string; title: string } | InputVia;
 
 export interface ToolCall {
   id: string;
@@ -39,6 +46,8 @@ export interface ToolResult {
   output: string;
   /** 附给模型查看的图片，随记录持久保存，适配器按各自协议转换。 */
   images?: ToolImage[];
+  /** tool_search 加载的工具定义，适配器把结果作为 tool_search_output 交回；见 tool-search.ts。 */
+  tools?: ToolDefinition[];
 }
 
 export interface ToolImage {
@@ -87,6 +96,8 @@ export interface HarnessRequest {
   tools: Tool[];
   /** 声明目录在首次请求固定；tools 是本次实际可执行的子集。 */
   toolDefinitions?: ToolDefinition[];
+  /** 不进声明、经 tool_search 加载后才能调用的工具（插件工具）；当前上下文里加载过且定义未变的才执行。 */
+  deferred?: Tool[];
   /** 每次调用启动前再查一次；返回原因时不执行，结果为 not_executed。请求发出后才收紧的限制靠它拦下。 */
   blocked?(name: string): string | undefined;
   instructions: string | ContextSource;
@@ -229,7 +240,8 @@ export type CompactionRequest = { id: string } & ({ from: string; through: strin
 export interface ThreadRunner {
   readonly state: ThreadState;
   readonly lifecycle: 'open' | 'closing' | 'closed';
-  send(input: Input): Promise<void>;
+  /** 收下返回 true；同一 ID 已收下过（重试）时不再处理，返回 false。 */
+  send(input: Input): Promise<boolean>;
   cancel(inputId: string): Promise<void>;
   interrupt(request?: StopRequest): Promise<Input[]>;
   /** 显式继续错误或恢复后的会话；可以在没有新输入时继续已有上下文。 */

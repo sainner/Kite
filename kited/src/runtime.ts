@@ -23,18 +23,19 @@ import { agentRevision, instanceAgent } from './agents/definition.ts';
 import { agentTools } from './plugins/definitions.ts';
 import type { OperationToolSelection } from './operations/operations.ts';
 import { lineToolNames, operationToolNames } from './operations/contract.ts';
-import type { CompactionRequest, Input, Model, Phase, Recovery, StopRequest, ThreadNotification, Tool } from './harness/types.ts';
+import type { CompactionRequest, Input, Model, Outcome, Phase, Recovery, StopRequest, ThreadNotification, Tool } from './harness/types.ts';
 import type { UpdatesOptions } from './update/updates.ts';
 import type { LightTaskOptions } from './light-tasks.ts';
 import type { ProjectToolRule } from './roles.ts';
 import { ruleAllows } from './agents/tool-policy.ts';
+import { searchTool } from './harness/tool-search.ts';
 import type { NetworkAsk } from './execution/command.ts';
 
 export interface Runtime {
   readonly state: RunnerState | Phase;
   readonly busy: boolean;
   readonly recovery?: Recovery;
-  send(input: Input): Promise<void>;
+  send(input: Input): Promise<boolean>;
   interrupt(request?: StopRequest): Promise<Input[]>;
   shutdown(): Promise<void>;
   resume?(): Promise<void>;
@@ -73,7 +74,8 @@ export interface RuntimeEvents {
   emit(event: RuntimeEvent): void;
   label(text: string): void;
   snapshot(callIds: string[]): Promise<void>;
-  idle(completed: boolean): void;
+  /** 回合收尾、线程转为空闲时调用一次，带这一回合的结果。 */
+  idle(outcome: Outcome | undefined): void;
 }
 
 export interface RuntimeHost {
@@ -121,8 +123,7 @@ function selectTools(current: ThreadContext, operations: RuntimeHost['operations
   const configured = new Set<string>(agent.tools);
   const permitted = (name: string) => configured.has(name) && constraintAllows(constraint, name)
     && (!operationNames.has(name) || selection.allowed.has(name));
-  const plugins = selection.plugins.filter((tool) => selection.allowed.has(tool.name));
-  return { agent, selection, permitted, plugins };
+  return { agent, selection, permitted, plugins: selection.plugins };
 }
 
 export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<Runtime> {
@@ -151,7 +152,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         const variables = threadVariables(current, host.toolConstraint(), host.executionConstraint());
         const instructions = assembleContext(projectContext(agent.context, variables)).instructions;
         return { agent, instructions, contextUpdate: assembleContext(contextUpdateContext(instructions, variables, host.contextUpdateTemplate())).instructions,
-          tools: [...operations.tools, ...plugins], allowed,
+          tools: [...operations.tools, ...plugins], allowed, deferred: new Set(plugins.map((tool) => tool.name)),
           notificationText: updates.map((notification) => restoreContext(notification.context).instructions).join('\n\n'),
           through: updates.at(-1)?.sequence ?? afterNotification };
       }, events: on,
@@ -160,6 +161,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
     });
   }
   const inputs = new Map<string, string>();
+  let busy = false;
   const thread = await openThreadHost({
     cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, startPaused: true, policy, secrets, askNetwork: host.askNetwork,
     ...(host.background ? { background: host.background } : {}),
@@ -174,12 +176,15 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       const declared = agentTools.flatMap((name) => available.find((tool) => tool.name === name) ?? []);
       const { model, contextWindow } = harnessModel(agent.model, { threadId: current.nativeId, chatgptAuth: join(home, 'auth', 'chatgpt', 'auth.json'),
         ...(credentials ? { apiKeys: () => credentials.apiKeys() } : {}), ...(host.chatgptLimits ? { observeLimits: host.chatgptLimits } : {}) });
+      // 插件工具不进声明，经 tool_search 按实例加载；搜得到的是此刻获准的。
+      const search = searchTool(plugins.map((tool) => ({ instanceId: selection.sources.find((source) => source.modelName === tool.name)!.instanceId,
+        definition: { name: tool.name, description: tool.description, parameters: tool.parameters } })));
       return {
         model: options.model?.(current) ?? model,
-        tools: [...declared.filter((tool) => permitted(tool.name)), ...plugins],
+        tools: [...declared.filter((tool) => permitted(tool.name)), search], deferred: plugins,
         // 请求发出后项目约束收紧时，这次请求里的调用也在执行前拦下。
         blocked: (name) => (agentTools as readonly string[]).includes(name) && !constraintAllows(host.toolConstraint(), name) ? `项目约束已禁用 ${name}` : undefined,
-        toolDefinitions: [...declared, ...selection.plugins].map(({ name, description, parameters }) => ({ name, description, parameters })),
+        toolDefinitions: [...declared, search].map(({ name, description, parameters }) => ({ name, description, parameters })),
         instructions: projectContext(agent.context, variables), variables,
         contextUpdateTemplate: host.contextUpdateTemplate(),
         compactionTemplates: host.compactionTemplates(),
@@ -206,7 +211,13 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         }
       }
       on.emit({ type: 'harness', event });
-      if (event.type === 'state' && event.state.phase === 'idle') on.idle(event.state.lastOutcome?.kind === 'completed');
+      // 空闲中的状态变化（撤回排队输入等）不算回合收尾。
+      if (event.type === 'state') {
+        const was = busy;
+        // 手动压缩也把阶段置为运行，但不是回合；回合中途的自动压缩照旧算在回合里。
+        busy = event.state.phase !== 'idle' && !(event.state.compacting && !event.state.busy);
+        if (was && !busy) on.idle(event.state.lastOutcome);
+      }
     },
   });
   return {

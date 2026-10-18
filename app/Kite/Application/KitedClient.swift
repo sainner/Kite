@@ -172,6 +172,8 @@ struct RemoteRecord: Decodable, Identifiable {
         var through: String?
         var automatic: Bool?
         var reverted: Bool?
+        /// kite 块：代理来信的发信方名称。
+        var sender: String?
     }
     let id: String
     let parent: String?
@@ -184,7 +186,7 @@ struct RemoteRecord: Decodable, Identifiable {
         case "human":
             guard let messageID = block.id, let text = block.text else { return nil }
             content = .human(Message(id: messageID, text: text, midTurn: block.midTurn ?? false))
-        case "kite": content = .kite(block.text ?? "")
+        case "kite": content = .kite(block.text ?? "", sender: block.sender)
         case "text": content = .text(block.text ?? "")
         case "thinking": content = .thinking(block.text ?? "")
         case "compacted":

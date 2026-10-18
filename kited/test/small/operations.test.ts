@@ -3,10 +3,12 @@ import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import { OperationError } from '../../src/errors.ts';
-import type { Json, ModelItem } from '../../src/harness/types.ts';
+import type { Envelope } from '../../src/events.ts';
+import { responsesInput } from '../../src/harness/responses.ts';
+import type { Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
 import { OperationReceipts } from '../../src/operations/receipts.ts';
 import { Store } from '../../src/store.ts';
-import { call, folderWorkspace, startKited, type Kited } from '../harness.ts';
+import { after, call, folderWorkspace, mark, startKited, waitIdle, type Kited } from '../harness.ts';
 import { deferred, diskRecords, item, ManualModel } from '../harness-loop.ts';
 import { makeTemp, newDir } from '../util.ts';
 
@@ -181,7 +183,7 @@ test('agent.start 跨重启重试复用实例与窗口，后台实例不建窗�
 }, 1000);
 
 // 模型工具到宿主身份、实例来源、授权快照与执行时重验跨模块交接；撤权后旧请求也不能再调用。
-test('模型创建记录来源并受工作区与目标授权约束，撤权即时拒绝且下一请求移除工具', async () => {
+test('模型创建记录来源，协作操作受工作区、角色工具与协作范围约束', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
@@ -223,20 +225,7 @@ test('模型创建记录来源并受工作区与目标授权约束，撤权即�
   await expect(kk.daemon.kite.operations.invoke(modelCaller, workspaceId, 'agent.send', {
     operationId: 'send-unrelated', instanceId: unrelatedId, text: '不应发送',
   })).rejects.toMatchObject({ outcome: 'denied' });
-  const grants = await kk.call('GET', `/instances/${parentId}/operation-grants`);
-  expect(grants.status).toBe(200);
-  expect((await kk.call('PUT', `/instances/${parentId}/operation-grants`, {
-    expectedRevision: grants.body.revision, grants: [],
-  })).status).toBe(200);
-  expect(second.request.allowedTools).toContain('agent_list');
-  await second.response.emit({ type: 'item', item: calledItem('after-revoke', 'agent_list', {}) });
   second.response.complete();
-  const third = await model.call(3);
-  expect(third.request.allowedTools).not.toContain('agent_list');
-  const denied = third.request.history.find((entry) => entry.type === 'tool_result' && entry.callId === 'after-revoke');
-  if (denied?.type !== 'tool_result') throw new Error('撤权后的调用没有结果');
-  expect(denied.result.status).not.toBe('success');
-  third.response.complete();
   await kk.waitEvent((event) => event.type === 'idle' && event.threadId === parentId);
 }, 1000);
 
@@ -295,4 +284,273 @@ test('新旧发送停止入口共用收据并退回草稿，resume 重试不会�
   expect(retry.status).toBe(200);
   expect(retry.body).toEqual(resumed.body);
   expect(model.calls.values).toHaveLength(3);
+}, 1000);
+
+const textItem = (id: string, text: string): ModelItem => ({
+  id, raw: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] },
+});
+const resultOf = (request: ModelRequest, callId: string): ToolResult | undefined => {
+  const found = request.history.find((entry) => entry.type === 'tool_result' && entry.callId === callId);
+  return found?.type === 'tool_result' ? found.result : undefined;
+};
+const inputsOf = (request: ModelRequest) => request.history.flatMap((entry) => entry.type === 'input' ? [entry.input] : []);
+/** 按 Responses 格式交给模型的用户侧正文，即模型实际读到的文字。 */
+const userTexts = (request: ModelRequest): string[] => responsesInput(request.history).flatMap((message) =>
+  message.role === 'user' ? (message.content as Array<{ type: string; text?: string }>).flatMap((part) => part.text ?? []) : []);
+/** 宿主投给线程的东西：Kite 来源的输入与通知。代理自己的工具结果、调用参数里也会出现子代理的 ID，不算。 */
+const hostDeliveries = (request: ModelRequest): string[] => request.history.flatMap((entry) =>
+  entry.type === 'input' && entry.input.source === 'kite' ? [entry.input.text] : entry.type === 'notification' ? [entry.text] : []);
+
+/** 每个线程一个手动模型，kited 与测试都按实例 ID 取同一个，先取的先建。 */
+function threadModels() {
+  const models = new Map<string, ManualModel>();
+  const of = (id: string) => {
+    let model = models.get(id);
+    if (!model) models.set(id, model = new ManualModel());
+    return model;
+  };
+  return { of, factory: (thread: { id: string }) => of(thread.id) };
+}
+
+async function childOf(k: Kited, workspaceId: string, callId: string): Promise<{ id: string }> {
+  const aggregate = await k.call('GET', '/workspaces');
+  const workspace = aggregate.body.find((entry: { workspace: { id: string } }) => entry.workspace.id === workspaceId);
+  const child = workspace.instances.find((instance: { origin?: { callId: string } }) => instance.origin?.callId === callId);
+  if (!child) throw new Error(`调用 ${callId} 没有建出子代理`);
+  return child;
+}
+
+/*
+ * 几个部分的配合：agent_start 带 prompt 时子代理以代理来信立即开工；子代理回合收尾时运行时的 idle 回调触发回报，
+ * 回报经 kite.reply 读子代理的显示投影取最后的回复，作为 Kite 来源的输入投给已经空闲的交代方，让它开始新回合。
+ * 交给模型（Responses 格式）时回报开头写明是 Kite 自动发的，子代理收到的 prompt 包在交代方标题的代理来信里。
+ * 提问不阻塞（docs/实例操作.md「子代理回报」：卡在等用户回应不算结束）：子代理发出 question 后回合照常结束，
+ * 这时还有没回应的提问，不回报、交代方留着；用户回应后结果作为来源为 kite 的输入开始新回合，这一回合完成才回报。
+ * 不阻塞的提问、回应投递与回报三处配合，才知道交代方是在哪一回合收到回报的。
+ */
+test('子代理带 prompt 开工，提问没回应时回合结束不回报；用户回应后那一回合完成，回报投给已空闲的交代方并开始新回合，只这一次，正文含子代理实例 ID 与回应后的最后回复且标明由 Kite 发出', async () => {
+  const models = threadModels();
+  kited = startKited(models.factory);
+  const kk = kited;
+  const { workspaceId } = await emptyWorkspace(kk, 'main');
+  const parent = await kk.call('POST', operationPath(workspaceId, 'agent.start'), {
+    operationId: 'parent-agent', title: '统筹', prompt: '拆给子代理做',
+  });
+  expect(parent.status).toBe(200);
+  const parentId = parent.body.instanceId as string;
+  const a = models.of(parentId);
+  const a1 = await a.call(1);
+  await a1.response.emit({ type: 'item', item: calledItem('start-child', 'agent_start', { title: '数行数', prompt: '数一下 base.txt 有几行' }) });
+  a1.response.complete();
+  const a2 = await a.call(2);
+  const child = await childOf(kk, workspaceId, 'start-child');
+  const b = models.of(child.id);
+  const b1 = await b.call(1);
+  expect(inputsOf(b1.request)).toEqual([expect.objectContaining({
+    text: '数一下 base.txt 有几行', source: 'agent', from: { kind: 'agent', instance: parentId, title: '统筹' },
+  })]);
+  expect(userTexts(b1.request)).toContainEqual(expect.stringContaining('<agent-message from="统筹">'));
+  let since = mark(kk);
+  await a2.response.emit({ type: 'item', item: textItem('parent-waits', '等它做完') });
+  a2.response.complete();
+  await waitIdle(kk, parentId, since);
+
+  // 子代理先问用户：工具立即返回，回合接着结束，提问还挂着。这时回报的话，交代方会拿着「先问问」开始新回合。
+  since = mark(kk);
+  await b1.response.emit({ type: 'item', item: calledItem('child-ask', 'question', { questions: [
+    { question: '空行算不算？', multiSelect: false, options: [{ label: '算', description: '按 wc -l' }, { label: '不算', description: '只数有字的行' }] },
+  ] }) });
+  b1.response.complete();
+  const asked = await kk.waitEvent((event) => event.type === 'asks' && event.threadId === child.id && event.asks.length > 0 && after(kk, since)(event));
+  const ask = (asked as Extract<Envelope, { type: 'asks' }>).asks[0]!;
+  const b2 = await b.call(2);
+  expect(resultOf(b2.request, 'child-ask')?.status).toBe('success');
+  await b2.response.emit({ type: 'item', item: textItem('child-asks', '先问问用户空行算不算') });
+  b2.response.complete();
+  await waitIdle(kk, child.id, since);
+
+  // 用户回应：回答作为 kite 来源的输入开始子代理的新回合，这一回合完成后才回报。
+  expect((await kk.call('POST', `/threads/${child.id}/waiting/${ask.id}`, { answers: [{ selected: ['算'] }] })).status).toBe(200);
+  const b3 = await b.call(3);
+  expect(inputsOf(b3.request).at(-1)).toMatchObject({ source: 'kite' });
+  const reply = '一共 1 行，写的是原始。';
+  await b3.response.emit({ type: 'item', item: textItem('child-reply', reply) });
+  b3.response.complete();
+  const a3 = await a.call(3);
+  expect(a3.request.turnId).not.toBe(a1.request.turnId);
+  const reports = hostDeliveries(a3.request);
+  expect(reports).toHaveLength(1);
+  expect(reports[0]).toContain(child.id);
+  expect(reports[0]).toContain('数行数');
+  expect(reports[0]).toContain(reply);
+  expect(reports[0]).not.toContain('先问问用户');
+  const seen = userTexts(a3.request).filter((text) => text.includes(child.id));
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toMatch(/^【?这条消息由 Kite 自动发出，不是用户说的话/);
+  since = mark(kk);
+  a3.response.complete();
+  await waitIdle(kk, parentId, since);
+}, 1000);
+
+/*
+ * 几个部分的配合：停止操作要在子代理回合收尾之前登记停止者，收尾时的 idle 回调据此不回报给停下它的交代方；
+ * 用户经 HTTP 发的消息与代理来信都要经 sendInput 登记，用户在交代的回合里发了消息，这一回合就归用户。
+ * 两种都不回报，没有回报只能由之后一次照常的回报作界：交代方的历史从头到尾只收到这一条。
+ * 真实出过的 bug：交代方对已经空闲的子代理 agent_stop（什么都没停），停止者照样记下、没有回合收尾来消掉它，
+ * 落到之后再交代的那一回合上，被当成交代方自己停下的，回合完成后不回报。
+ */
+test('交代方自己 agent_stop 停下的回合与用户发过消息的回合都不回报；对已空闲的子代理 agent_stop 之后再交代，回合完成照常回报一次', async () => {
+  const models = threadModels();
+  kited = startKited(models.factory);
+  const kk = kited;
+  const { workspaceId } = await emptyWorkspace(kk, 'main');
+  const parent = await kk.call('POST', operationPath(workspaceId, 'agent.start'), {
+    operationId: 'parent-agent', title: '统筹', prompt: '开个子代理再停掉',
+  });
+  expect(parent.status).toBe(200);
+  const parentId = parent.body.instanceId as string;
+  const a = models.of(parentId);
+  /** 交代方这一请求调一次工具，下一请求拿到结果后结束回合；返回那次工具结果。 */
+  const delegate = async (number: number, callId: string, name: string, args: Json) => {
+    const request = await a.call(number);
+    await request.response.emit({ type: 'item', item: calledItem(callId, name, args) });
+    request.response.complete();
+    const next = await a.call(number + 1);
+    const since = mark(kk);
+    next.response.complete();
+    await waitIdle(kk, parentId, since);
+    return next.request.history.find((entry) => entry.type === 'tool_result' && entry.callId === callId);
+  };
+
+  // 交代方自己停下子代理：停下的回合不回报给它。
+  const a1 = await a.call(1);
+  await a1.response.emit({ type: 'item', item: calledItem('start-child', 'agent_start', { title: '慢活', prompt: '慢慢做' }) });
+  a1.response.complete();
+  await a.call(2);
+  const child = await childOf(kk, workspaceId, 'start-child');
+  const b = models.of(child.id);
+  const b1 = await b.call(1);
+  const stopped = await delegate(2, 'stop-child', 'agent_stop', { instanceId: child.id });
+  expect(stopped).toMatchObject({ type: 'tool_result', result: { status: 'success' } });
+  expect(b1.signal.aborted).toBe(true);
+
+  // 交代之后用户也给子代理发了消息：这一回合归用户，不回报。
+  expect((await kk.call('POST', `/threads/${parentId}/messages`, { text: '让它接着做' })).status).toBe(200);
+  const sent = await delegate(4, 'send-child', 'agent_send', { instanceId: child.id, text: '接着做' });
+  expect(sent).toMatchObject({ type: 'tool_result', result: { status: 'success' } });
+  const b2 = await b.call(2);
+  expect((await kk.call('POST', `/threads/${child.id}/messages`, { text: '这个我自己盯着' })).status).toBe(200);
+  await b2.response.emit({ type: 'item', item: textItem('child-ack', '收到') });
+  b2.response.complete();
+  const b3 = await b.call(3);
+  expect(inputsOf(b3.request)).toContainEqual(expect.objectContaining({ text: '这个我自己盯着', source: 'human' }));
+  let since = mark(kk);
+  await b3.response.emit({ type: 'item', item: textItem('child-for-user', '按你说的改好了') });
+  b3.response.complete();
+  await waitIdle(kk, child.id, since);
+
+  // 子代理已经空闲时交代方停它：什么都没停，子代理不起新请求。
+  expect((await kk.call('POST', `/threads/${parentId}/messages`, { text: '先停掉它' })).status).toBe(200);
+  expect(await delegate(6, 'stop-idle', 'agent_stop', { instanceId: child.id })).toMatchObject({ type: 'tool_result' });
+
+  // 作界：再交代一次，回合完成后照常回报（不被上一步当成交代方自己停下的），且交代方历史里只有这一条回报。
+  expect((await kk.call('POST', `/threads/${parentId}/messages`, { text: '再交代一次' })).status).toBe(200);
+  await delegate(8, 'send-again', 'agent_send', { instanceId: child.id, text: '最后再做一次' });
+  const b4 = await b.call(4);
+  expect(b.calls.values).toHaveLength(4);
+  await b4.response.emit({ type: 'item', item: textItem('child-final', '最后一次做完了') });
+  b4.response.complete();
+  const a10 = await a.call(10);
+  const reports = hostDeliveries(a10.request).filter((text) => text.includes(child.id));
+  expect(reports).toHaveLength(1);
+  expect(reports[0]).toContain('最后一次做完了');
+  expect(reports[0]).not.toContain('按你说的改好了');
+  since = mark(kk);
+  a10.response.complete();
+  await waitIdle(kk, parentId, since);
+}, 1000);
+
+/** 操作工具失败时输出 {error, outcome}，取其中的 outcome。 */
+const failedOutcome = (result: ToolResult | undefined) => {
+  if (result?.status !== 'error') throw new Error(`工具应失败：${JSON.stringify(result)}`);
+  return (JSON.parse(result.output) as { outcome: string }).outcome;
+};
+
+/*
+ * 几个部分的配合：协作范围存在实例配置里，经 operation-grants 改成同工作区后，下一回合的 agent_stop 才能对准非后代；
+ * 超出后代范围的停止在操作入口里经 Waits.approve 挂在调用方线程上，线程状态里出现这项审批，
+ * 用户经 POST /threads/:id/waiting/:id 回应后工具调用才失败或继续，对方的回合随之照跑或真的被停下。
+ */
+test('同工作区范围的代理停非后代的代理要逐次等用户批准：拒绝时工具失败且对方照跑，批准后对方停下；仅后代范围下直接拒绝、不问', async () => {
+  const models = threadModels();
+  kited = startKited(models.factory);
+  const kk = kited;
+  const { workspaceId } = await emptyWorkspace(kk, 'main');
+  const start = async (operationId: string) => {
+    const started = await kk.call('POST', operationPath(workspaceId, 'agent.start'), { operationId });
+    expect(started.status).toBe(200);
+    return started.body.instanceId as string;
+  };
+  const aId = await start('agent-a');
+  const bId = await start('agent-b');
+  const a = models.of(aId);
+  expect((await kk.call('POST', `/threads/${bId}/messages`, { text: '一直跑' })).status).toBe(200);
+  const running = await models.of(bId).call(1);
+
+  const isApproval = (since: number) => (e: Envelope) => e.type === 'waiting' && e.threadId === aId && !!e.waiting && after(kk, since)(e);
+  const approval = async (since: number) => {
+    const waiting = (await kk.waitEvent(isApproval(since)) as Extract<Envelope, { type: 'waiting' }>).waiting!;
+    if (waiting.kind !== 'approval') throw new Error(`应是审批：${JSON.stringify(waiting)}`);
+    return waiting;
+  };
+  const waitingOf = async () => (await kk.call('GET', `/threads/${aId}/state`)).body.waiting;
+  const respond = (id: string, decision: string) => kk.call('POST', `/threads/${aId}/waiting/${id}`, { decision });
+  const stopB = async (request: Awaited<ReturnType<ManualModel['call']>>, callId: string) => {
+    const since = mark(kk);
+    await request.response.emit({ type: 'item', item: calledItem(callId, 'agent_stop', { instanceId: bId }) });
+    request.response.complete();
+    return since;
+  };
+
+  // 仅后代（默认）：B 不是 A 建的，直接拒绝，不挂审批。
+  expect((await kk.call('POST', `/threads/${aId}/messages`, { text: '停掉 B' })).status).toBe(200);
+  let since = await stopB(await a.call(1), 'stop-out-of-scope');
+  const refused = await a.call(2);
+  expect(failedOutcome(resultOf(refused.request, 'stop-out-of-scope'))).toBe('denied');
+  expect(kk.events.filter(isApproval(since))).toEqual([]);
+  expect(running.signal.aborted).toBe(false);
+  since = mark(kk);
+  refused.response.complete();
+  await waitIdle(kk, aId, since);
+
+  const grantsPath = `/instances/${aId}/operation-grants`;
+  const grants = await kk.call('GET', grantsPath);
+  expect(grants.body.scope).toBe('descendants');
+  expect((await kk.call('PUT', grantsPath, {
+    expectedRevision: grants.body.revision, grants: grants.body.grants, scope: 'workspace',
+  })).status).toBe(200);
+
+  // 同工作区：每次停止都先问；拒绝时这次工具调用失败，B 照跑。
+  expect((await kk.call('POST', `/threads/${aId}/messages`, { text: '还是停掉 B' })).status).toBe(200);
+  const first = await approval(await stopB(await a.call(3), 'stop-denied'));
+  expect(first.mustAsk).toBe(true);
+  expect(await waitingOf()).toEqual(first);
+  expect(running.signal.aborted).toBe(false);
+  expect(await respond(first.id, 'deny')).toEqual({ status: 200, body: { ok: true } });
+  const denied = await a.call(4);
+  expect(failedOutcome(resultOf(denied.request, 'stop-denied'))).toBe('denied');
+  expect(await waitingOf()).toBeUndefined();
+  expect(running.signal.aborted).toBe(false);
+
+  // 再调一次，批准这一次后 B 停下。
+  const second = await approval(await stopB(denied, 'stop-approved'));
+  expect(second.id).not.toBe(first.id);
+  expect(running.signal.aborted).toBe(false);
+  expect(await respond(second.id, 'once')).toEqual({ status: 200, body: { ok: true } });
+  const approved = await a.call(5);
+  expect(resultOf(approved.request, 'stop-approved')?.status).toBe('success');
+  expect(running.signal.aborted).toBe(true);
+  since = mark(kk);
+  approved.response.complete();
+  await waitIdle(kk, aId, since);
 }, 1000);

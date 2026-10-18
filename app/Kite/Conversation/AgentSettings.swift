@@ -34,7 +34,7 @@ struct AgentSettings: View {
             Group {
                 if draft != nil, let capabilities {
                     CardSection("模型", note: capabilities.explanation
-                        + (capabilities.toolCatalogBoundary == "idle" ? "新增插件工具在下次执行时加入。" : "首次请求后工具目录固定；新增插件工具需要新代理。")) {
+                        + (capabilities.toolCatalogBoundary == "idle" ? "新增插件工具在下次执行时加入。" : "首次请求后内置工具目录固定，增减要新代理；新授权的插件工具会话中途就能加载。")) {
                         AgentModelFields(configuration: Binding(get: { draft!.model }, set: { draft?.model = $0 }),
                                          vendors: capabilities.vendors, models: capabilities.models)
                     }

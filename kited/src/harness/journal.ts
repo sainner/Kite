@@ -1,21 +1,22 @@
 /** 单写者 JSONL。同步落盘让输入交接与副作用放行处于同一个短同步段。 */
-import { closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, readSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { diffReferenceSchema } from '../workspace/file-diffs.ts';
 import { contextSnapshotSchema } from './context/assembler.ts';
-import { notificationSchema, requestSnapshotSchema } from './request-config.ts';
+import { inputSchema } from './input.ts';
+import { notificationSchema, requestSnapshotSchema, toolDefinitionSchema } from './request-config.ts';
 import type { Journal, JournalEvent, JournalRecord } from './types.ts';
 
 const id = z.string().min(1);
 const raw = z.record(z.string(), z.json());
-const input = z.object({ id, text: z.string(), source: z.enum(['human', 'kite']),
-  via: z.object({ kind: z.literal('line'), machine: id, instance: id }).optional() });
+const input = inputSchema;
 const call = z.object({ id, name: id, arguments: z.json() });
 const item = z.object({ id, raw, format: z.enum(['anthropic', 'deepseek']).optional(), call: call.optional() });
 const result = z.object({ status: z.enum(['success', 'error', 'not_executed', 'unknown']), output: z.string(), diff: diffReferenceSchema.optional(),
-  images: z.array(z.object({ mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp']), data: z.string().min(1) })).optional() });
+  images: z.array(z.object({ mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp']), data: z.string().min(1) })).optional(),
+  tools: z.array(toolDefinitionSchema).optional() });
 const outcome = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }), z.object({ kind: z.literal('interrupted') }),
   z.object({ kind: z.literal('failed'), message: z.string() }),
@@ -81,53 +82,6 @@ function parseCompleteRecords(bytes: Buffer): { rows: JournalRecord[]; end: numb
 /** 历史读取不取得写锁、不修复尾行，也不启动会话；只接受已完整落盘的记录。 */
 export function readJournal(path: string): JournalRecord[] {
   return existsSync(path) ? parseCompleteRecords(readFileSync(path)).rows : [];
-}
-
-/** 只索引首次请求配置；完整日志的校验与尾行恢复仍由 FileJournal 负责。 */
-export class JournalIndex {
-  private entries = new Map<string, { version: string; configurationId: string | undefined }>();
-
-  firstConfiguration(path: string): string | undefined {
-    let fd: number;
-    try { fd = openSync(path, 'r'); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      this.entries.delete(path);
-      return undefined;
-    }
-    try {
-      const stat = fstatSync(fd, { bigint: true });
-      const version = [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
-      const cached = this.entries.get(path);
-      if (cached?.version === version) return cached.configurationId;
-      const configurationId = this.scan(fd, Number(stat.size));
-      this.entries.set(path, { version, configurationId });
-      return configurationId;
-    } finally { closeSync(fd); }
-  }
-
-  private scan(fd: number, size: number): string | undefined {
-    const block = Buffer.allocUnsafe(64 * 1024);
-    let parts: Buffer[] = [];
-    let seq = 1;
-    let offset = 0;
-    while (offset < size) {
-      const count = readSync(fd, block, 0, Math.min(block.length, size - offset), offset);
-      if (count === 0) break;
-      offset += count;
-      const bytes = block.subarray(0, count);
-      let start = 0;
-      for (let end = bytes.indexOf(10); end !== -1; end = bytes.indexOf(10, start)) {
-        const line = bytes.subarray(start, end);
-        const row = parseRecord((parts.length ? Buffer.concat([...parts, line]) : line).toString('utf8'), seq++);
-        if (row.type === 'request.configured') return row.snapshot.id;
-        parts = [];
-        start = end + 1;
-      }
-      // 跨块行保留原始字节，UTF-8 字符也可能跨块；未换行的尾部不解析。
-      if (start < count) parts.push(Buffer.from(bytes.subarray(start)));
-    }
-    return undefined;
-  }
 }
 
 export class FileJournal implements Journal {

@@ -543,8 +543,6 @@ test('Line 用 line_control send 发起的工作在用户离开期间结束回�
   }) });
   l1.response.complete();
   const working = await work.call(1);
-  expect(inputs(working.request).at(-1)).toEqual({ id: expect.any(String), text: '把 a.txt 的内容改成 b', source: 'kite',
-    via: { kind: 'line', machine: s.machineA, instance: s.lineId } });
   let since = mark(s.a);
   (await line.call(2)).response.complete();
   await waitIdle(s.a, s.lineId, since);

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 
 /** App 依赖的接口或事件格式有不兼容的改动时加 1，与 App 的 KiteProtocol.version 一起改。 */
-export const PROTOCOL = 4;
+export const PROTOCOL = 5;
 
 export interface Version { build: string; protocol: number; builtAt?: string; commit?: string }
 

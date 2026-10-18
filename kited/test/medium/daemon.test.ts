@@ -1,13 +1,14 @@
 /** 经 HTTP 驱动真实 Claude Code，验证 Kite 文件工具的 MCP 桥接与原生恢复。 */
 import { afterEach, expect, setDefaultTimeout, spyOn, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { existsSync, symlinkSync } from 'node:fs';
+import { existsSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Runner } from '../../src/claude/runner.ts';
 import { defaultAgentModel } from '../../src/agents/models.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { History } from '../../src/transcript/protocol.ts';
 import type { Logged } from '../fake-api.ts';
+import { bunPluginSource } from '../fixtures/bun-plugin-source.ts';
 import {
   addProject, api, call, createWorkspace, type Kited, listSnapshots, mark, sendThreadMessage, startKited, waitIdle,
 } from '../harness.ts';
@@ -26,13 +27,9 @@ afterEach(async () => {
 const temp = useTemp();
 
 const token = (name: string) => `${name}-${randomUUID().slice(0, 8)}`;
-const readTool = 'mcp__kite__read';
-const patchTool = 'mcp__kite__patch';
-const shellTool = 'mcp__kite__shell';
-const expectedTools = [readTool, patchTool, shellTool, 'mcp__kite__credentials', 'mcp__kite__question',
-  ...['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop', 'monitor_start', 'monitor_list', 'monitor_stop',
-    'terminal_read', 'terminal_stop']
-    .map((name) => `mcp__kite__${name}`)].sort();
+/** Kite 自己的工具，Claude 里用裸名（不带 MCP 前缀），全部常驻。 */
+const expectedTools = ['read', 'patch', 'shell', 'credentials', 'question', 'agent_start', 'agent_list', 'agent_send', 'agent_resume',
+  'agent_stop', 'monitor_start', 'monitor_list', 'monitor_stop', 'terminal_list', 'terminal_read', 'terminal_stop'].sort();
 const tools = (request: Logged): string[] => (request.body.tools ?? []).map((tool: { name: string }) => tool.name);
 const resultFor = (request: Logged, id: string) => request.body.messages
   .flatMap((message: any) => Array.isArray(message.content) ? message.content : [])
@@ -40,6 +37,16 @@ const resultFor = (request: Logged, id: string) => request.body.messages
 const resultText = (result: any): string => typeof result.content === 'string' ? result.content
   : result.content.filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n');
 const resultValue = (result: any) => ({ call: result.tool_use_id, content: result.content, error: !!result.is_error });
+
+/** 在 dir 里把 Bun 插件夹具打成单文件（同 test/small/bun-plugin.test.ts），插件宿主只收打好的字节串。 */
+async function pluginBundle(dir: string): Promise<string> {
+  const entry = join(dir, 'plugin.ts');
+  symlinkSync(join(import.meta.dir, '..', '..', 'node_modules'), join(dir, 'node_modules'));
+  writeFileSync(entry, bunPluginSource);
+  const built = await Bun.build({ entrypoints: [entry], target: 'bun', format: 'esm', minify: true });
+  if (!built.success || built.outputs.length !== 1) throw new Error(`插件夹具打包失败：${built.logs.join('\n')}`);
+  return built.outputs[0]!.text();
+}
 
 async function readResult(id: string) {
   const request = await api.waitRequest((entry) => entry.main && !!resultFor(entry, id));
@@ -64,10 +71,16 @@ async function history(kited: Kited, threadId: string): Promise<History> {
  * 进程常驻：回合之间进程不退出，下一回合写进同一进程的输入流；换模型后旧进程退出，用 resume 起新进程。
  * 流式输入下 CLI 每个回合都报一次 system/init（2.1.280 实测），不能用 init 的次数判断是否换了进程，改看进程号。
  * MCP 处理器抛错要转成 tool_result.is_error，经原生会话记录投影成失败结果；错误后仍可恢复读取。
+ * 插件工具按需加载全靠 Claude Code（2.1.280 实测）：ENABLE_TOOL_SEARCH 在非官方地址上要显式打开；tools: ['ToolSearch'] 留下 ToolSearch
+ * （tools: [] 会连它一起关掉）；kite 服务不整体常驻，逐个工具的 alwaysLoad 生效，没设的插件工具不进声明（CLI 另放一个 defer_loading 的占位）；
+ * 流式输入下 CLI 启动只等整体常驻的 MCP 服务，CLAUDE_CODE_MCP_STARTUP_WAIT_MS 让它等 kite 服务连上，新进程的首个请求才有 Kite 的工具；
+ * ToolSearch 搜到后 CLI 自己生成 tool_reference 结果、下一次请求起声明插件工具，之后才能调用。升级 CLI 就可能变。
+ * 没有按需加载的工具时请求里不声明 ToolSearch，init.tools 里仍有它。
  */
-test('Claude 常驻进程在 MCP 读取错误后继续工作，换模型后 resume 保留历史与 Kite 工具边界，fable 附件不妨碍切换后端', async () => {
+test('Claude 常驻进程在 MCP 读取错误后继续工作，换模型后 resume 保留历史与 Kite 工具边界，授权的插件工具不常驻、经 ToolSearch 搜到后调用成功，fable 附件不妨碍切换后端', async () => {
   k = startKited();
   const kk = k;
+  const bundle = pluginBundle(temp());
   const mcpStarted = join(kk.root, 'mcp-started');
   const skill = token('project-skill');
   const repo = newRepo(kk.root, 'proj', {
@@ -89,8 +102,10 @@ test('Claude 常驻进程在 MCP 读取错误后继续工作，换模型后 resu
     expect(resultText(result)).toMatch(new RegExp(`(?:^|\\n)\\s*${line}[^\\n]*${content}`));
     expect(resultText(result).match(/首行未选中|第二行读取成功|第三行续接成功|第四行重启后读取成功/g)).toEqual([content]);
   };
-  const clean = (request: Logged) => {
-    expect(tools(request).sort()).toEqual(expectedTools);
+  /** 常驻声明的工具恰好是 Kite 自己的（有按需加载的工具时另有 ToolSearch）；CLI 另声明的 defer_loading 占位不算。 */
+  const clean = (request: Logged, extra: string[] = []) => {
+    const declared = request.body.tools as Array<{ name: string; defer_loading?: boolean }>;
+    expect(declared.filter((tool) => !tool.defer_loading).map((tool) => tool.name).sort()).toEqual([...expectedTools, ...extra].sort());
     expect(JSON.stringify(request.body)).not.toContain(skill);
     expect(JSON.stringify(request.body)).not.toContain('这是一条项目技能指令。');
   };
@@ -146,6 +161,22 @@ test('Claude 常驻进程在 MCP 读取错误后继续工作，换模型后 resu
   const query = spyOn(Runner.prototype, 'contextUsage').mockResolvedValueOnce(undefined);
   restoreQuery = () => query.mockRestore();
 
+  // 给代理授权一个插件实例的工具：换模型后重起的进程里它不常驻，要经 ToolSearch 搜到才能调用。
+  expect((await kk.call('POST', '/plugin-definitions', {
+    id: 'custom.test', title: '测试', bundle: await bundle, lifetime: 'persistent',
+  })).status).toBe(200);
+  const pluginId = randomUUID();
+  expect((await kk.call('POST', `/workspaces/${s.workspace.id}/plugin-instances`, {
+    id: pluginId, definitionId: 'custom.test', title: '计数器',
+  })).status).toBe(200);
+  const grants = await kk.call('GET', `/instances/${s.id}/operation-grants`);
+  expect((await kk.call('PUT', `/instances/${s.id}/operation-grants`, {
+    expectedRevision: grants.body.revision,
+    grants: [...grants.body.grants, { operation: 'plugin.call', instanceId: pluginId, tools: ['state'] }],
+  })).status).toBe(200);
+  const bindings = (await kk.call('GET', `/threads/${s.id}`)).body.config.pluginTools as Array<{ instanceId: string; modelName: string }>;
+  const pluginTool = bindings.find((binding) => binding.instanceId === pluginId)!.modelName;
+
   // 第三回合：换模型后旧进程退出，resume 起的新进程接着同一原生会话。
   const config = await kk.call('GET', `/instances/${s.id}/agent-config`);
   const agent = config.body.instance.config.agent;
@@ -164,7 +195,9 @@ test('Claude 常驻进程在 MCP 读取错误后继续工作，换模型后 resu
   const resumedMessages = JSON.stringify(req3.body.messages);
   expect(resumedMessages).toContain(a);
   expect(resumedMessages).toContain(b);
-  clean(req3);
+  // 新进程的首个请求：Kite 的工具都已声明（启动时等 kite 服务连上），插件工具不在声明里。
+  clean(req3, ['ToolSearch']);
+  expect(tools(req3)).not.toContain(pluginTool);
   expect(resultValue(resultFor(req3, firstId))).toEqual(resultValue(firstResult));
   expect(resultValue(resultFor(req3, secondId))).toEqual(resultValue(secondResult));
   expect(req3.toolUseIds).toHaveLength(1);
@@ -189,14 +222,35 @@ test('Claude 常驻进程在 MCP 读取错误后继续工作，换模型后 resu
   ]);
   expect(resumed.records).toEqual(expect.arrayContaining([firstResult, secondResult, thirdResult].map((result) =>
     expect.objectContaining({ block: expect.objectContaining({ type: 'tool_result', call: result.tool_use_id, status: 'success', output: resultText(result) }) }))));
-  const inits = kk.events.flatMap((e) => e.type === 'sdk' && e.threadId === s.id && e.message.type === 'system' && e.message.subtype === 'init' ? [e.message] : []);
-  expect(kk.events.slice(n).some((e) => e.type === 'sdk' && e.threadId === s.id && e.message.type === 'system' && e.message.subtype === 'init')).toBe(true);
-  for (const init of inits) {
+  const inits = kk.events.flatMap((e, index) => e.type === 'sdk' && e.threadId === s.id && e.message.type === 'system'
+    && e.message.subtype === 'init' ? [{ init: e.message, granted: index >= n }] : []);
+  expect(inits.some(({ granted }) => granted)).toBe(true);
+  for (const { init, granted } of inits) {
     expect(init.session_id).toBe(s.nativeId);
-    expect([...init.tools].sort()).toEqual(expectedTools);
+    // init 列出全部工具，按需加载的插件工具也在内。
+    expect([...init.tools].sort()).toEqual([...expectedTools, 'ToolSearch', ...(granted ? [pluginTool] : [])].sort());
     expect(init.mcp_servers).toEqual([expect.objectContaining({ name: 'kite', status: 'connected' })]);
   }
   expect(existsSync(mcpStarted)).toBe(false);
+
+  // 第四回合（同一进程）：模型先调 ToolSearch 搜到插件工具，再调用它，插件真的执行，结果交回模型。
+  const o = mark(kk);
+  const d = token('按需加载');
+  await sendThreadMessage(kk, s.id, [`第四条 ${d}`, `CALL ToolSearch ${JSON.stringify({ query: `select:${pluginTool}` })}`,
+    `CALL ${pluginTool} ${JSON.stringify({ action: 'increment' })}`].join('\n'));
+  const req4 = await api.waitRequest((l) => l.main && l.lastUserText.includes(d));
+  expect(tools(req4)).not.toContain(pluginTool);
+  expect(req4.toolUseIds).toHaveLength(1);
+  const searchId = req4.toolUseIds[0]!;
+  // 搜索结果由 CLI 生成，是指向插件工具的 tool_reference；从这次请求起声明里才有插件工具。
+  const loaded = await api.waitRequest((l) => l.main && !!resultFor(l, searchId));
+  expect(resultFor(loaded, searchId)).toMatchObject({ content: [{ type: 'tool_reference', tool_name: pluginTool }] });
+  expect(tools(loaded)).toContain(pluginTool);
+  expect(loaded.toolUseIds).toHaveLength(1);
+  const pluginResult = await readResult(loaded.toolUseIds[0]!);
+  expect(pluginResult.is_error).toBeFalsy();
+  expect(JSON.parse(JSON.parse(resultText(pluginResult)).output)).toMatchObject({ structuredContent: { value: { count: 1 } } });
+  await waitIdle(kk, s.id, o);
 
   // 真实出过的 bug：fable 调用工具后，CLI 2.1.280 在会话记录里写入 batching_reminder_sent 附件（不发给模型），
   // Claude 内容翻译不认识它，切换后端和压缩都返回 409。

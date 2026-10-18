@@ -14,6 +14,7 @@ import { localTools, type ShellBackground, type ShellOutside } from '../executio
 import { commandEnvironment, type ExecutionPolicy } from '../execution/sandbox.ts';
 import { processGroupAlive, type NetworkAsk } from '../execution/command.ts';
 import type { CompactionRequest, Input, Outcome, Phase, StopRequest, Tool } from '../harness/types.ts';
+import { modelText } from '../harness/input.ts';
 import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
 import { HarnessRunner } from '../harness/runner.ts';
 import { withThreadJournal } from '../harness/thread-host.ts';
@@ -50,7 +51,9 @@ export function openClaudeHost(options: {
   background?: ShellBackground;
   /** 沙箱外运行的判断与申请，见 ShellOutside。 */
   outside?: ShellOutside;
-  prepare(afterNotification: number): { agent: AgentDefinition; instructions: string; contextUpdate: string; tools: Tool[]; allowed: Set<string>; notificationText: string; through: number };
+  /** deferred 是经 ToolSearch 按需加载的工具（插件工具）。 */
+  prepare(afterNotification: number): { agent: AgentDefinition; instructions: string; contextUpdate: string; tools: Tool[]; allowed: Set<string>;
+    deferred: ReadonlySet<string>; notificationText: string; through: number };
   events: RuntimeEvents;
   /** 压缩所需的模板与净文件变化；不提供时不开放压缩。 */
   compaction?: {
@@ -143,7 +146,7 @@ export function openClaudeHost(options: {
     save();
     options.events.emit({ type: 'runner', state: 'closed', ...(error ? { error } : {}) });
     if (!wasStopping && !closing && !data.paused && data.inputs.some((entry) => entry.status === 'queued')) pump();
-    else options.events.idle(data.outcome.kind === 'completed');
+    else options.events.idle(data.outcome);
   };
   /** 常驻进程上的回合正常收口：进程留着，结果与队列照常处理。 */
   const completeTurn = async (running: Runner) => {
@@ -174,7 +177,7 @@ export function openClaudeHost(options: {
       void compaction({ compact: { id: randomUUID(), automatic: true } }).catch(() => {});
     }
     if (!closing && !data.paused && data.inputs.some((entry) => entry.status === 'queued')) pump();
-    else options.events.idle(data.outcome.kind === 'completed');
+    else options.events.idle(data.outcome);
   };
   /**
    * Claude 线程的压缩与撤销：停下空闲的常驻进程，把 Claude 内容导入 journal，在 journal 上按 harness 的规则压缩或撤销，
@@ -207,7 +210,7 @@ export function openClaudeHost(options: {
         configuration: { model: prepared.agent.model.model, effort,
           systemPrompt: { type: 'custom', snapshot: false, prompt: data.initialContext ?? prepared.instructions } },
         // 与主会话相同的工具声明才能命中同一前缀缓存；摘要不放行调用。
-        mcpServers: { kite: claudeToolServer({ tools: available, allowed: () => false,
+        mcpServers: { kite: claudeToolServer({ tools: available, deferred: prepared.deferred, allowed: () => false,
           context: () => { throw new Error('压缩摘要不能调用工具'); }, finished: () => {} }) } });
       const errors: string[] = [];
       await withThreadJournal(options.directory, async (journal) => {
@@ -290,7 +293,7 @@ export function openClaudeHost(options: {
     const runner: Runner = new Runner({ cwd: options.cwd, nativeId: options.nativeId, title: options.title, resident: true,
       configuration: () => ({ model: prepared.agent.model.model, effort: prepared.agent.model.reasoning === 'default' ? undefined : prepared.agent.model.reasoning as Options['effort'],
         maxTurns: prepared.agent.maxRequestsPerTurn, systemPrompt: { type: 'custom', snapshot: false, prompt: data.initialContext! } }),
-      mcpServers: () => ({ kite: claudeToolServer({ tools: available,
+      mcpServers: () => ({ kite: claudeToolServer({ tools: available, deferred: prepared.deferred,
         allowed: (name) => options.prepare(data.through).allowed.has(name),
         context: (callId) => {
           if (controller.signal.aborted) throw new Error('本次执行已停止');
@@ -359,7 +362,7 @@ export function openClaudeHost(options: {
   const submitQueued = (running: Runner) => {
     for (const entry of data.inputs.filter((item) => item.status === 'queued')) {
       entry.status = 'submitted'; save();
-      running.send({ id: entry.sdkId, text: entry.input.text, human: entry.input.source === 'human' });
+      running.send({ id: entry.sdkId, text: modelText(entry.input), human: entry.input.source === 'human' });
     }
   };
   publish();
@@ -368,8 +371,8 @@ export function openClaudeHost(options: {
     async send(input) {
       requireStorage();
       const existing = data.inputs.find((entry) => entry.input.id === input.id);
-      if (existing) { if (!sameInput(existing.input, input)) throw new KiteError('消息 ID 已用于其他内容', 409); return; }
-      if (data.importedInputs.includes(input.id)) return;
+      if (existing) { if (!sameInput(existing.input, input)) throw new KiteError('消息 ID 已用于其他内容', 409); return false; }
+      if (data.importedInputs.includes(input.id)) return false;
       if (closing || phase === 'stopping' || data.recovery) throw new KiteError('请先完成停止或恢复确认', 409);
       // 用户发新消息即继续：交接结果未知的输入先按原顺序重发。Kite 自动送来的（事件、通知、协作消息）不替用户做这个决定。
       if (input.source !== 'human' && data.inputs.some((entry) => entry.status === 'unconfirmed')) {
@@ -378,6 +381,7 @@ export function openClaudeHost(options: {
       for (const entry of data.inputs) if (entry.status === 'unconfirmed') entry.status = 'queued';
       data.inputs.push({ input, sdkId: randomUUID(), at: Date.now(), status: 'queued', delivered: false, midTurn: phase === 'running' });
       data.paused = false; save(); pump();
+      return true;
     },
     async cancel(id) {
       requireStorage();

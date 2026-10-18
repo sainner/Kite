@@ -1,5 +1,6 @@
 /** 实例操作的公开声明；宿主与模型工具共用 schema，调用身份不属于参数。 */
 import { z } from 'zod';
+import { inputSchema, type inputVia } from '../harness/input.ts';
 import { diffID, fileDiffSchema } from '../workspace/file-diffs.ts';
 import { fileSelectionSchema, readFileArgs } from '../workspace/files.ts';
 import { stateSchema as terminalStateSchema } from '../terminal/state.ts';
@@ -18,16 +19,28 @@ export const lineToolActions: Record<(typeof lineToolNames)[number], readonly Li
 
 const id = z.string().min(1);
 const text = z.string().refine((value) => !!value.trim(), '内容不能为空');
-export const inputVia = z.object({ kind: z.literal('line'), machine: id, instance: id }).strict();
-const input = z.object({ id, text, source: z.enum(['human', 'kite']), via: inputVia.optional() }).strict();
+const input = inputSchema.extend({ text });
 const target = z.object({ operationId: id, instanceId: id }).strict();
 const ok = z.object({ ok: z.literal(true) }).strict();
 const fileEntry = z.object({ name: id, path: id, kind: z.enum(['file', 'directory', 'symlink', 'other']) }).strict();
+/** 三种 list 共有的字段：谁建的（没有时是用户在界面上开的）、什么时候、有没有窗口、调用方获准的操作。 */
+const listed = { instanceId: id, title: z.string(), createdBy: id.nullable(), createdAt: z.number(), window: z.boolean(), operations: z.array(id) };
 const summary = z.object({
-  instanceId: id, definitionId: id, title: z.string(), role: z.object({ id, title: z.string() }).strict().nullable(), presentation: z.enum(['window', 'inline', 'background']),
+  ...listed, definitionId: id, role: z.object({ id, title: z.string() }).strict().nullable(), presentation: z.enum(['window', 'inline', 'background']),
   status: z.enum(['open', 'archived']), phase: z.enum(['idle', 'running', 'stopping', 'finishing']),
-  busy: z.boolean(), waitingForResume: z.boolean(), recovery: z.string().nullable(), operations: z.array(id),
+  busy: z.boolean(), waitingForResume: z.boolean(), recovery: z.string().nullable(),
+  /** 一行状态：空闲、运行中、等用户批准、等确认恢复或上一回合失败。 */
+  state: z.string(),
 }).strict();
+
+/**
+ * 代理对代理、monitor 与终端的操作按协作范围授权，不逐个实例点名，见 docs/实例操作.md「代理的协作范围」。
+ * 仅后代：按创建来源逐层往下算；同工作区：所属工作区的全部。插件作为调用方仍按授权列表。
+ */
+export const collaborationScopes = ['descendants', 'workspace'] as const;
+export type CollaborationScope = (typeof collaborationScopes)[number];
+export const scopedOperations = new Set<string>(['agent.list', 'agent.send', 'agent.resume', 'agent.stop',
+  'monitor.list', 'monitor.stop', 'terminal.list', 'terminal.read', 'terminal.stop']);
 
 export const operationContracts = {
   'plugin.call': {
@@ -36,19 +49,19 @@ export const operationContracts = {
     input: target.extend({ tool: id, arguments: z.record(z.string(), z.unknown()) }).strict(), output: z.unknown(),
   },
   'agent.start': {
-    title: '创建 agent', description: '在当前工作区按角色创建 agent 实例。role 是角色 ID，省略时用默认角色 kite.work（工作）；内置的还有 kite.review（只读审查）。省略 prompt 只创建空会话；共享工作区已有线程运行时不能启动另一线程。默认不打开窗口，由用户从创建它的 agent 处查看；只在用户要求在界面上看着它时传 presentation: window。',
+    title: '创建 agent', description: '在当前工作区按角色创建 agent 实例。role 是角色 ID，省略时用默认角色 kite.work（工作）；内置的还有 kite.review（只读审查）。省略 prompt 只创建空会话；同一工作区的代理可以同时工作，带 prompt 的回合结束时把结果回报给你。默认不打开窗口，由用户从创建它的 agent 处查看；只在用户要求在界面上看着它时传 presentation: window。',
     tool: 'agent_start', effect: 'create', retry: 'receipt',
     input: z.object({ operationId: id, role: id.optional(), title: text.optional(), prompt: text.optional(),
       presentation: z.enum(['window', 'inline', 'background']).default('background') }).strict(),
     output: z.object({ instanceId: id, windowId: id.optional() }).strict(),
   },
   'agent.list': {
-    title: '查询 agent', description: '查询当前工作区的 agent 实例、执行状态及获准操作；不会唤醒会话。',
+    title: '查询 agent', description: '查询你协作范围内的 agent 实例：谁建的、一行状态及你获准的操作；不会唤醒会话。',
     tool: 'agent_list', effect: 'read', retry: 'read',
     input: z.object({}).strict(), output: z.object({ agents: z.array(summary) }).strict(),
   },
   'agent.send': {
-    title: '发送消息', description: '向获准的 agent 实例发送消息。消息落盘后返回；同一工作区的线程可以同时执行。',
+    title: '发送消息', description: '向获准的 agent 实例发送消息，对方看到的消息标明是你发的。消息落盘后返回；同一工作区的线程可以同时执行，对方这一回合结束时把结果回报给你。',
     tool: 'agent_send', effect: 'write', retry: 'input',
     input: target.extend({ text }).strict(), output: z.object({ id }).strict(),
   },
@@ -99,6 +112,11 @@ export const operationContracts = {
     output: terminalStateSchema.extend({ instanceId: id, title: z.string(), command: z.string().optional(),
       text: z.string(), offset: z.number().int(), totalLines: z.number().int(), nextOffset: z.number().int().nullable() }).strict(),
   },
+  'terminal.list': {
+    title: '列出终端', description: '列出你协作范围内的终端：转到后台的命令与用户开的交互终端，带标题、谁建的、在运行还是已退出（退出码或原因）。读输出用 terminal_read。',
+    tool: 'terminal_list', effect: 'read', retry: 'read', input: z.object({}).strict(),
+    output: z.object({ terminals: z.array(terminalStateSchema.extend({ ...listed, command: z.string().optional() }).strict()) }).strict(),
+  },
   'terminal.stop': {
     title: '停止终端', description: '停下后台终端里的进程：先挂断，等不到退出再停整个进程组；等到进程结束才返回。你自己停下的不再发结束通知。',
     tool: 'terminal_stop', effect: 'write', retry: 'receipt', input: target, output: ok,
@@ -122,7 +140,7 @@ export const operationContracts = {
     output: z.object({ instanceId: id }).strict(),
   },
   'monitor.list': {
-    title: '查看监视', description: '列出当前工作区里开着的 monitor：标题、来源与是否已结束、今天唤醒的次数。',
+    title: '查看监视', description: '列出你协作范围内开着的 monitor：标题、谁开的、来源与是否已结束、今天唤醒的次数。',
     tool: 'monitor_list', effect: 'read', retry: 'read', input: z.object({}).strict(), output: z.object({ monitors: z.array(z.unknown()) }).strict(),
   },
   'monitor.stop': {
@@ -170,6 +188,7 @@ export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
   ...(['agent.send', 'agent.resume', 'agent.stop', 'monitor.stop', 'terminal.read', 'terminal.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
   z.object({ operation: z.literal('monitor.start') }).strict(),
   z.object({ operation: z.literal('monitor.list') }).strict(),
+  z.object({ operation: z.literal('terminal.list') }).strict(),
   ...(['files.list', 'files.search', 'files.read', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
     targets: z.object({ kind: z.literal('instances'), instanceIds: z.array(id) }).strict() }).strict()),
   /** Line 的管理动作，目标范围是工作机目录里的全部工作区；actions 是用户允许的白名单。 */
@@ -184,16 +203,9 @@ export function grantTools(grant: OperationGrant): string[] {
   return tool ? [tool] : [];
 }
 
-/** 仅宿主登记的代理获得默认授权，可按内置角色创建代理；自定义 manifest 不能自行授予。 */
+/** 仅宿主登记的代理获得默认授权，可按内置角色创建代理；对其他实例的操作按协作范围，默认仅后代。自定义 manifest 不能自行授予。 */
 export function defaultOperationGrants(definitionId: string): OperationGrant[] {
-  return definitionId === 'kite.agent' ? [
-    { operation: 'agent.list' }, { operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] },
-    { operation: 'agent.send', targets: { kind: 'created' } },
-    { operation: 'agent.resume', targets: { kind: 'created' } },
-    { operation: 'agent.stop', targets: { kind: 'created' } },
-    { operation: 'monitor.start' }, { operation: 'monitor.list' }, { operation: 'monitor.stop', targets: { kind: 'created' } },
-    { operation: 'terminal.read', targets: { kind: 'created' } }, { operation: 'terminal.stop', targets: { kind: 'created' } },
-  ] : [];
+  return definitionId === 'kite.agent' ? [{ operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] }, { operation: 'monitor.start' }] : [];
 }
 
 /** Line 实例启用时得到的管理授权；其他代理即使角色放开了 Line 的工具，也要用户另行授予。 */
@@ -215,7 +227,7 @@ export function roleOperationGrants(definitionId: string, grants: OperationGrant
 }
 
 export const operationToolNames = ['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop', 'monitor_start', 'monitor_list', 'monitor_stop',
-  'terminal_read', 'terminal_stop'] as const;
+  'terminal_list', 'terminal_read', 'terminal_stop'] as const;
 const failure = z.object({ error: z.string(), outcome: z.enum(['denied', 'failed', 'cancelled', 'unknown']) }).strict();
 
 export function operationCatalog() {

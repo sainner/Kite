@@ -87,7 +87,7 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
   expect(count(sent, '自研后端读完了基线')).toBe(1);
   const messages = claudeFirst.body.messages as Array<{ role: string; content: any }>;
   const blocks = messages.flatMap((message) => Array.isArray(message.content) ? message.content : []);
-  expect(blocks).toContainEqual(expect.objectContaining({ type: 'tool_use', id: 'harness-read', name: 'mcp__kite__read', input: { path: 'base.txt' } }));
+  expect(blocks).toContainEqual(expect.objectContaining({ type: 'tool_use', id: 'harness-read', name: 'read', input: { path: 'base.txt' } }));
   const harnessResult = blocks.find((block) => block.type === 'tool_result' && block.tool_use_id === 'harness-read');
   expect(JSON.stringify(harnessResult)).toContain('基线文件正文');
   await idle(since);

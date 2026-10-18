@@ -2,12 +2,13 @@
 import SwiftUI
 import UIKit
 
-/// Kite 发给 agent 的消息：细边框圆角框，里面上面一行「Kite 发给 agent」带图标（小字），下面是正文，都是次要色；
+/// 不是人发的消息：细边框圆角框，里面上面一行「Kite 发给 agent」（代理来信写发信方）带图标（小字），下面是正文，都是次要色；
 /// 长按正文弹出拷贝、共享，同 Text 的 textSelection。
 final class PhoneKiteRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var box: PhoneKiteRowView?
     private let menu = PhoneCopyMenu()
     private var text = ""
+    private var sender: String?
     private var fonts = (secondary: UIFont.preferredFont(forTextStyle: .subheadline), body: UIFont.preferredFont(forTextStyle: .body))
     private var rule: CGColor?
     /// 上次摆的尺寸：变了才重新摆，内容变了由 show 标。
@@ -26,8 +27,9 @@ final class PhoneKiteRowSlot: TranscriptRowSlot, PhoneRowSlot {
 
     override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
         super.update(row, context: context)
-        guard case .item(let item) = row.content, case .kite(let text) = item.kind else { return }
+        guard case .item(let item) = row.content, case .kite(let text, let sender) = item.kind else { return }
         self.text = text
+        self.sender = sender
         let environment = context.environment
         fonts = (Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as UIFont,
                  Theme.body.resolve(in: environment.fontResolutionContext).ctFont as UIFont)
@@ -38,10 +40,10 @@ final class PhoneKiteRowSlot: TranscriptRowSlot, PhoneRowSlot {
 
     private func show() {
         guard let box else { return }
-        box.title.set(TranscriptSpeech.kite, systemImage: "arrow.triangle.merge", font: fonts.secondary, color: .secondaryLabel)
+        box.title.set(TranscriptSpeech.kite(from: sender), systemImage: "arrow.triangle.merge", font: fonts.secondary, color: .secondaryLabel)
         box.body.set(text, font: fonts.body, color: .secondaryLabel)
         box.border.strokeColor = rule
-        box.accessibilityLabel = TranscriptSpeech.kite
+        box.accessibilityLabel = TranscriptSpeech.kite(from: sender)
         box.accessibilityValue = text
         box.setNeedsLayout()
     }

@@ -7,7 +7,9 @@
  * STREAM_RESULT <标记> 在工具后的回复做同样的分段，供插话与工具结果交接时观察增量。
  * READ <JSON 对象或数组> 调一次或一批 Kite read，下一次请求回显工具结果，不调用其他工具。
  * PATCH、SHELL <JSON 对象或数组> 同样调用 Kite patch、shell；HOLD_RESULT <标记> 把工具后的请求挂起，供测试核对快照时序。
- * AGENT_START 等 AGENT_* 命令调用对应 Kite 操作工具，使用同一参数和回显协议。
+ * AGENT_START 等 AGENT_* 命令调用对应 Kite 操作工具，使用同一参数和回显协议。工具名用裸名（read、agent_start），Claude 里不带 MCP 前缀。
+ * CALL <工具名> <JSON 对象或数组> 按名字调任意工具（如 ToolSearch、插件工具），每行一步：首个请求发第一步，
+ * 之后每次带工具结果的请求发下一步，步数用完后照常回显工具结果。
  * USAGE <JSON 对象> 把对象并入这次回复 message_start 的 usage，供测试报出指定的输入用量（如缓存读写的 token 数）。
  * 正文不由测试决定的请求（如压缩摘要指令）用 holdNext 按条件挂起。
  * 非流式的辅助请求一律回一句短文本。工具集合可以为空，不能用它判断是不是主循环。
@@ -64,6 +66,19 @@ function lastUser(body: any, skipResults = false): { text: string; results: any[
       results: blocks.filter((b) => b.type === 'tool_result') };
   }
   return { text: '', results: [] };
+}
+
+/** 最后一条不带工具结果的用户消息之后，模型已经发过几轮工具调用。 */
+function stepsDone(body: any): number {
+  const msgs = body.messages ?? [];
+  let done = 0;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    const blocks: any[] = Array.isArray(m.content) ? m.content : [];
+    if (m.role === 'user' && !blocks.some((b) => b.type === 'tool_result')) break;
+    if (m.role === 'assistant' && blocks.some((b) => b.type === 'tool_use')) done++;
+  }
+  return done;
 }
 
 let seq = 0;
@@ -139,14 +154,19 @@ export function startFakeApi(): FakeApi {
       const model = body.model ?? 'claude-fake';
       let content: Reply[] = [{ type: 'text', text: main ? `echo: ${text.slice(-60)}` : 'ok' }];
       const call = main && /^(READ|PATCH|SHELL|AGENT_START|AGENT_LIST|AGENT_SEND|AGENT_RESUME|AGENT_STOP) (.+)$/m.exec(text);
-      if (results.length) {
+      const steps = main ? [...(results.length ? lastUser(body, true).text : text).matchAll(/^CALL (\S+) (.+)$/gm)] : [];
+      const step = steps[stepsDone(body)];
+      const calls = (name: string, json: string): Reply[] => {
+        const args = JSON.parse(json);
+        return (Array.isArray(args) ? args : [args]).map((input) => ({ type: 'tool_use', id: `toolu_fake_${++seq}`, name, input }));
+      };
+      if (step) {
+        content = calls(step[1]!, step[2]!);
+      } else if (results.length) {
         content = [{ type: 'text', text: results.map((result) => typeof result.content === 'string'
           ? result.content : result.content.filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n')).join('\n') }];
       } else if (call) {
-        const args = JSON.parse(call[2]!);
-        content = (Array.isArray(args) ? args : [args]).map((input) => ({
-          type: 'tool_use', id: `toolu_fake_${++seq}`, name: `mcp__kite__${call[1]!.toLowerCase()}`, input,
-        }));
+        content = calls(call[1]!.toLowerCase(), call[2]!);
       }
       const toolUseIds = content.flatMap((block) => block.type === 'tool_use' ? [block.id] : []);
       const stop = toolUseIds.length ? 'tool_use' : 'end_turn';

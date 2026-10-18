@@ -1,4 +1,4 @@
-/** 共用的模型能力清单；maxContextWindow 是最大能力，不代表某次运行采用的窗口；images 为 false 的型号不收图片。 */
+/** 共用的模型能力清单；maxContextWindow 是最大能力，不代表某次运行采用的窗口。 */
 import catalog from '../../../shared/agent-models.json';
 import type { RuntimeKind } from '../model.ts';
 

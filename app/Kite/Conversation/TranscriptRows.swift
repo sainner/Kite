@@ -69,7 +69,7 @@ private extension Item.Kind {
     func shape(into hasher: inout Hasher) {
         switch self {
         case .human(let message): message.shape(into: &hasher)
-        case .kite(let text): hasher.combine(1); hasher.combine(text.utf8.count)
+        case .kite(let text, let sender): hasher.combine(1); hasher.combine(text.utf8.count); hasher.combine(sender)
         case .text(let text): hasher.combine(3); hasher.combine(text.utf8.count)
         case .thinking(let text): hasher.combine(4); hasher.combine(text.utf8.count)
         case .work(let work):

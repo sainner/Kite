@@ -6,6 +6,7 @@ import type { AgentDefinition } from '../../src/agents/definition.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import { restoreContext } from '../../src/harness/context/assembler.ts';
+import { TOOL_SEARCH } from '../../src/harness/tool-search.ts';
 import type { Json, ModelItem, ThreadNotification } from '../../src/harness/types.ts';
 import type { ThreadContext, WorkspaceModel } from '../../src/model.ts';
 import type { DisplayEnvelope, History } from '../../src/transcript/protocol.ts';
@@ -80,7 +81,7 @@ test('运行中换配置不打断旧工具，下一请求再采用新配置', as
   expect(read(join(thread.body.workspace.cwd, 'from-old-request.txt'))).toBe('旧请求仍可写入\n');
   expect(second.request.instructions).toBe(first.request.instructions);
   expect(second.request.tools.map((value) => value.name)).toEqual(first.request.tools.map((value) => value.name));
-  expect(second.request.allowedTools).toEqual(['read']);
+  expect(second.request.allowedTools).toEqual(['read', TOOL_SEARCH]);
   expect(second.request.history.slice(0, first.request.history.length)).toEqual(first.request.history);
   expect(second.request.history).toContainEqual(expect.objectContaining({
     type: 'tool_result', callId: 'old-patch', result: expect.objectContaining({ status: 'success' }),
@@ -104,7 +105,7 @@ test('运行中换配置不打断旧工具，下一请求再采用新配置', as
   expect(starts.map((record) => record.configurationId)).toEqual(configurations.map((record) => record.snapshot.id));
   expect(configurations[0]!.snapshot.settings.allowedTools).toEqual(first.request.allowedTools);
   expect(configurations[1]!.snapshot.settings).toMatchObject({
-    model: { model: 'test-new-model', reasoning: 'high' }, maxRequestsPerTurn: 2, allowedTools: ['read'],
+    model: { model: 'test-new-model', reasoning: 'high' }, maxRequestsPerTurn: 2, allowedTools: ['read', TOOL_SEARCH],
   });
   second.response.complete();
   await kk.waitEvent((event) => event.type === 'idle' && event.threadId === threadId);

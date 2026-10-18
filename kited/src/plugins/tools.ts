@@ -4,7 +4,6 @@ import type { Tool as McpTool } from '@modelcontextprotocol/client';
 import { z } from 'zod';
 import type { PluginInstance } from '../model.ts';
 import type { OperationGrant } from '../operations/contract.ts';
-import { KiteError } from '../errors.ts';
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 export const pluginToolSourceSchema = z.object({
@@ -40,11 +39,3 @@ export function pluginToolGranted(binding: Pick<PluginToolBinding, 'instanceId' 
   return grants.some((grant) => grant.operation === 'plugin.call' && grant.instanceId === binding.instanceId && grant.tools.includes(binding.toolName));
 }
 
-/** 旧声明保留在目录里；撤回授权只改变请求允许的工具子集。 */
-export function mergePluginTools(previous: PluginToolBinding[], selected: PluginToolBinding[], frozen: boolean): PluginToolBinding[] {
-  if (!frozen) return selected;
-  if (selected.some((binding) => !previous.some((old) => old.modelName === binding.modelName))) {
-    throw new KiteError('会话已经固定工具声明；添加或更换插件工具请创建新会话', 409);
-  }
-  return previous;
-}

@@ -44,8 +44,8 @@ struct Compaction {
 enum Block {
     /// 人发的消息。
     case human(Message)
-    /// Kite 发给 agent 的消息，比如合并冲突的说明。
-    case kite(String)
+    /// 不是人发的消息：Kite 发给 agent 的（比如合并冲突的说明），或别的代理发来的，sender 是发信方名称。
+    case kite(String, sender: String?)
     case text(String)
     case thinking(String)
     case toolUse(ToolUse)
@@ -199,7 +199,7 @@ struct Item: Identifiable {
 
     enum Kind {
         case human(Message)
-        case kite(String)
+        case kite(String, sender: String?)
         case text(String)
         case thinking(String)
         case work(Work)
@@ -285,7 +285,7 @@ extension Transcript {
             let before = list.count
             switch record.block {
             case .human(let message): append(.human(message))
-            case .kite(let text): append(.kite(text))
+            case .kite(let text, let sender): append(.kite(text, sender: sender))
             case .text(let text):
                 // 开了头没写出字的草稿
                 if text.isEmpty { continue }

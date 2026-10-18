@@ -565,6 +565,13 @@ export class Terminals {
     if (state) this.save(id, change(state));
   }
 
+  /** list 里的一项：标题、命令（转到后台的才有）与进程状态，不读输出。 */
+  describe(instance: PluginInstance) {
+    const config = terminalConfig(instance);
+    return { instanceId: instance.id, title: instance.title, ...(config ? { command: config.command } : {}),
+      ...(terminalState(instance) ?? { phase: 'exited' as const }) };
+  }
+
   /**
    * terminal.read：按行读输出。转到后台的命令读完整日志，shell 读画面和回滚里的文字；
    * 不给 offset 时读最后 limit 行。
@@ -581,9 +588,7 @@ export class Terminals {
     const total = lines.length;
     const start = offset ?? Math.max(1, total - limit + 1);
     const end = Math.min(start - 1 + limit, total);
-    return { instanceId: id, title: instance.title, ...(config ? { command: config.command } : {}),
-      ...(terminalState(instance) ?? { phase: 'exited' as const }),
-      text: lines.slice(start - 1, end).join('\n'), offset: start, totalLines: total, nextOffset: end < total ? end + 1 : null };
+    return { ...this.describe(instance), text: lines.slice(start - 1, end).join('\n'), offset: start, totalLines: total, nextOffset: end < total ? end + 1 : null };
   }
 
   /** WebSocket 升级前核对：实例存在、是终端、所在工作区打开着。 */

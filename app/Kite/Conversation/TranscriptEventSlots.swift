@@ -2,7 +2,7 @@
 import AppKit
 import SwiftUI
 
-/// Kite 发给 agent 的消息：圆角描边的框，里面上面一行「Kite 发给 agent」带图标，下面正文（能选），都是次要色。
+/// 不是人发的消息：圆角描边的框，里面上面一行「Kite 发给 agent」（代理来信写发信方）带图标，下面正文（能选），都是次要色。
 final class KiteRowSlot: TranscriptRowSlot {
     private let container = KiteRowView()
 
@@ -11,8 +11,8 @@ final class KiteRowSlot: TranscriptRowSlot {
 
     override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
         super.update(row, context: context)
-        guard case .item(let item) = row.content, case .kite(let text) = item.kind else { return }
-        container.show(text, environment: context.environment)
+        guard case .item(let item) = row.content, case .kite(let text, let sender) = item.kind else { return }
+        container.show(text, sender: sender, environment: context.environment)
     }
 
     override func height(width: CGFloat) -> CGFloat {
@@ -43,16 +43,17 @@ final class KiteRowView: NSView {
         layer?.addSublayer(border)
         addSubview(header)
         addSubview(text)
-        // 标签只是说明，读屏时由正文读出来（见 SymbolLineView）
-        text.setAccessibilityLabel(TranscriptSpeech.kite)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func show(_ string: String, environment: EnvironmentValues) {
+    func show(_ string: String, sender: String?, environment: EnvironmentValues) {
         let context = environment.fontResolutionContext
         let secondary = NSColor.secondaryLabelColor
-        header.show(TranscriptSpeech.kite, symbol: "arrow.triangle.merge",
+        let title = TranscriptSpeech.kite(from: sender)
+        // 标签只是说明，读屏时由正文读出来（见 SymbolLineView）
+        text.setAccessibilityLabel(title)
+        header.show(title, symbol: "arrow.triangle.merge",
                     font: Theme.secondary.resolve(in: context).ctFont as NSFont, color: secondary)
         text.showPlain(string, font: Theme.body.resolve(in: context).ctFont as NSFont, color: secondary)
         border.strokeColor = Theme.rule.resolve(in: environment).cgColor

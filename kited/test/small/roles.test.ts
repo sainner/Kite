@@ -5,6 +5,7 @@ import type { AgentDefinition } from '../../src/agents/definition.ts';
 import { defaultAgentModel } from '../../src/agents/models.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
+import { TOOL_SEARCH } from '../../src/harness/tool-search.ts';
 import type { OperationGrant } from '../../src/operations/contract.ts';
 import type { Role } from '../../src/roles.ts';
 import type { EmblemStatus } from '../../src/template-emblems.ts';
@@ -34,14 +35,9 @@ const findRole = (body: { roles: Entry[] }, id: string) => {
   return found;
 };
 
-/** 代理的默认协作授权，对应模型工具 agent_*、monitor_* 与 terminal_*。 */
+/** 代理的默认协作授权，对应模型工具 agent_start 与 monitor_start；对其他实例的操作按协作范围，不在授权列表里。 */
 const collaboration: OperationGrant[] = [
-  { operation: 'agent.list' }, { operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] },
-  { operation: 'agent.send', targets: { kind: 'created' } },
-  { operation: 'agent.resume', targets: { kind: 'created' } },
-  { operation: 'agent.stop', targets: { kind: 'created' } },
-  { operation: 'monitor.start' }, { operation: 'monitor.list' }, { operation: 'monitor.stop', targets: { kind: 'created' } },
-  { operation: 'terminal.read', targets: { kind: 'created' } }, { operation: 'terminal.stop', targets: { kind: 'created' } },
+  { operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] }, { operation: 'monitor.start' },
 ];
 /** 授权按操作名排序后比较；顺序不是约定。 */
 const byOperation = (grants: OperationGrant[]) => [...grants].sort((a, b) => a.operation.localeCompare(b.operation));
@@ -132,7 +128,7 @@ test('改角色不影响已有代理，改选到同样允许协作工具的角�
     expect(grants.status).toBe(200);
     const initialOperations = await k.call('GET', operationsPath);
     const operations = await k.call('PUT', operationsPath, {
-      expectedRevision: initialOperations.body.revision, grants: [{ operation: 'agent.list' }],
+      expectedRevision: initialOperations.body.revision, grants: [{ operation: 'monitor.start' }],
     });
     expect(operations.status).toBe(200);
     const granted = await k.call('GET', configPath);
@@ -234,7 +230,7 @@ test('只读审查角色建的代理只有 read，模型强发 patch 与 shell �
     expect(created.status).toBe(200);
     const id = created.body.instanceId as string;
     const first = await model.call(1);
-    expect(first.request.allowedTools).toEqual(['read']);
+    expect(first.request.allowedTools).toEqual(['read', TOOL_SEARCH]);
     void first.response.emit({ type: 'item', item: {
       ...item('review-patch', 'patch'), call: { id: 'review-patch', name: 'patch', arguments: {
         operations: [{ type: 'create_file', path: 'forbidden-patch.txt', diff: '+不应出现\n+' }],
@@ -283,7 +279,7 @@ test('只读审查角色建的代理只有 read，模型强发 patch 与 shell �
     });
     expect(withShell.status).toBe(200);
     const second = await model.call(2);
-    expect(second.request.allowedTools).toEqual(['read', 'shell']);
+    expect(second.request.allowedTools).toEqual(['read', 'shell', TOOL_SEARCH]);
     second.response.complete();
     await k.waitEvent((event) => event.type === 'idle' && event.threadId === withShell.body.instanceId);
   } finally {
@@ -340,8 +336,8 @@ test('只读审查的空代理改选为工作后拿到协作授权，再改选�
     const granted = await grants();
     expect(byOperation(granted.body.grants)).toEqual(byOperation([filesGrant, ...collaboration]));
 
-    // 用户在工作角色下撤回停止，把创建收窄到只读审查。
-    const narrowed = byOperation([filesGrant, ...collaboration.filter((grant) => grant.operation !== 'agent.stop')
+    // 用户在工作角色下撤回开 monitor，把创建收窄到只读审查。
+    const narrowed = byOperation([filesGrant, ...collaboration.filter((grant) => grant.operation !== 'monitor.start')
       .map((grant) => grant.operation === 'agent.start' ? { ...grant, roleIds: ['kite.review'] } : grant)]);
     expect((await k.call('PUT', operationsPath, { expectedRevision: granted.body.revision, grants: narrowed })).status).toBe(200);
     await choose('test.no-shell', noShell.body.revision);

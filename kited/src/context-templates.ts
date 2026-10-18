@@ -19,6 +19,7 @@ const editableScenes: Partial<Record<ContextScene, 'notification' | 'compaction'
   'thread.configuration_changed': 'notification', 'thread.context_updated': 'notification',
   'thread.execution_permissions_changed': 'notification', 'thread.plugin_tools_changed': 'notification',
   'thread.file_changes': 'notification', 'line.monitor': 'notification', 'monitor.events': 'notification', 'terminal.exit': 'notification',
+  'agent.report': 'notification',
   'thread.compact': 'compaction',
   'thread.title': 'generation', 'workspace.naming': 'generation', 'template.emblem': 'generation', 'thread.voice': 'generation',
   'workspace.pull_request': 'generation',

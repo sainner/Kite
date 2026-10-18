@@ -78,7 +78,6 @@ const prices: Record<string, ModelPrice> = {
   'gpt-5-mini': openai(0.25, 0.025, 2),
   'gpt-5-nano': openai(0.05, 0.005, 0.4),
   'deepseek-flash': deepseek(0.3, 0.006, 1.2),
-  'deepseek-v4-pro': deepseek(1.32, 0.044, 3.96),
 };
 
 /**

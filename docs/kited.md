@@ -65,7 +65,7 @@ bun run harness --resume <会话id>
 
 后端由模型的厂商决定：Claude 模型经 Claude Code 订阅运行，其他厂商的模型由自研 harness 运行，调用方不单独指定后端。代理可通过 `/instances/:id/agent-config` 换用另一厂商的模型；新厂商属于另一后端时后端随之更换，保留实例、窗口和其他配置；同一后端内换模型或只改思考强度时后端不变，在下一次模型请求生效。能力目录列出可选模型。`state.capabilities.switchRuntime` 表示当前能否切换后端：须空闲、没有排队或交接未确认的输入，有恢复阻塞时切换连带确认恢复，否则返回 409。
 
-自研 harness 接 OpenAI 与 DeepSeek。OpenAI 型号用前文独立授权的 ChatGPT 订阅。DeepSeek 没有订阅，用 Kite 账号凭据里的 DeepSeek API Key（有几把时取凭据列表里的第一把），账号里没有时用 kited 环境的 `DEEPSEEK_API_KEY`，按量计费；请求走 DeepSeek 的 [Responses 兼容接口](https://api-docs.deepseek.com/zh-cn/guides/responses_api)，按 1M 的上下文窗口自动压缩。`deepseek-v4-pro` 不收图片，工具结果里的图片换成一句说明。两家之间换模型时，助手文字与工具调用照常交给新厂商，推理只交还给产生它的厂商。
+自研 harness 接 OpenAI 与 DeepSeek。OpenAI 型号用前文独立授权的 ChatGPT 订阅。DeepSeek 没有订阅，用 Kite 账号凭据里的 DeepSeek API Key（有几把时取凭据列表里的第一把），账号里没有时用 kited 环境的 `DEEPSEEK_API_KEY`，按量计费；请求走 DeepSeek 的 [Responses 兼容接口](https://api-docs.deepseek.com/zh-cn/guides/responses_api)，按 1M 的上下文窗口自动压缩。两家之间换模型时，助手文字与工具调用照常交给新厂商，推理只交还给产生它的厂商。
 
 切换在回合边界交接上下文，两种后端各保留原生记录。人发消息、Kite 通知、助手文字、工具调用与结果及图片随当前有效上下文交接；压缩或撤销后的结果同样生效。推理内容不跨厂商传递；普通切换只追加历史，保留原后端的推理。Claude 历史经压缩或撤销重组时，只保留未改动前缀中仍有效的 thinking，已退出当前上下文的块不因撤销而恢复。原始记录仍供查看，显示记录不作为原生恢复数据。提示缓存是否复用取决于请求前缀与服务端缓存状态。重复切换不重复导入，翻译失败时不切换。
 
@@ -219,9 +219,9 @@ bun src/cli.ts net up              # 开启已登录设备的组网
 
 ## Claude 会话的上下文
 
-Claude 负责模型循环与原生对话恢复；Kite 负责工具、项目上下文、授权、工作区与快照。Claude 从空工具集接入，只开放实例配置与授权允许的 Kite 工具，以及显式授权的插件工具，不自动加载用户或项目中的 MCP、skills 和设置。
+Claude 负责模型循环与原生对话恢复；Kite 负责工具、项目上下文、授权、工作区与快照。Claude 的内置工具只留按需加载插件工具的 ToolSearch（见 [Bun 插件](Bun插件.md#模型工具与插件间调用)），此外只开放实例配置与授权允许的 Kite 工具，以及显式授权的插件工具，不自动加载用户或项目中的 MCP、skills 和设置。
 
-Claude 使用统一的 `kite.agent` 定义，工具由角色、实例选择、项目约束及授权共同决定。基础工具共用 [工具契约](harness-主循环.md#工具执行约定)，协作与授权共用 [实例操作](实例操作.md)，显示名称使用 Kite 短名称。工具执行完成并保存快照后才能继续模型请求。
+Claude 使用统一的 `kite.agent` 定义，工具由角色、实例选择、项目约束及授权共同决定。基础工具共用 [工具契约](harness-主循环.md#工具执行约定)，协作与授权共用 [实例操作](实例操作.md)，工具名与自研 harness 相同，不带 MCP 前缀。工具执行完成并保存快照后才能继续模型请求。
 
 模型、工具、基础上下文与请求预算绑定到实例；`KITE_CLAUDE_MODEL` 可覆盖创建时的模型。配置和执行授权须在空闲时修改，恢复阻塞期间也可以改；可选型号与思考档位通过能力接口获取。项目规则与记忆索引仅由 Kite 的模板提供，Claude 不自行扫描。具体生效时机见 [线程通知投递](线程通知投递.md#claude-的交接边界)。
 
@@ -354,7 +354,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不阻塞主会话控制 |
 | GET / PUT | `/instances/:id/execution-grants` | 读取或修改执行授权；须停止，「允许并记住」追加网络许可例外 |
 | GET / PUT | `/instances/:id/approval-mode` | 读取或设置审批模式 `{mode}`：`allowlist`、`ask` 或 `allow_all`，运行中也可改，下一次越界请求生效；读取另给按项目上限收紧后实际用的 `effective` 与上限 `max`。新建代理时依次取创建请求的 `approval`、角色的默认与 `/roles` 的 `defaultApproval`，写进实例配置的 `approval`，随工作区的 instances 下发 |
-| GET / PUT | `/instances/:id/operation-grants` | 读取实例的协作授权及 revision；以 expectedRevision 和 grants 更新 |
+| GET / PUT | `/instances/:id/operation-grants` | 读取实例的协作授权、代理的协作范围（scope）及 revision；以 expectedRevision、grants 与可选的 scope 更新 |
 | POST | `/workspaces/:id/windows` | 创建实例及默认窗口，或打开已有实例的视图（实例已有窗口时换到这个视图）；请求使用稳定 id |
 | DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口，按插件生命周期回收实例或保留 |
 | POST | `/workspaces/:id/threads` | 在已有工作区创建代理并打开窗口 `{prompt, role?, model?, tools?, maxRequestsPerTurn?, approval?, windowId?, messageId?}`；`windowId` 是客户端生成的 UUID，用作新窗口的 ID，已用过返回 409，省略时由 kited 生成；`messageId` 是客户端生成的 UUID，用作第一条消息的 ID，省略时由 kited 生成；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具；`approval` 为审批模式 |

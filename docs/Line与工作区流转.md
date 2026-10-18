@@ -125,7 +125,7 @@ Line 不能处理它自己发起的请求（例如它要停止、流转别人的
 - 按时段托管：例如「接下来 2 小时由 Line 处理」，时段内新进收件箱的事项都交给 Line，到点自动结束。
 - 超时托管：审批与提问先等用户，超过设定时间（例如 15 分钟）用户还没处理，再交给 Line。
 
-**用户经 Line 答复。** 用户可以直接在收件箱里回应，也可以在 Line 的线程里说。后者由 Line 指定用户的那条消息，宿主照原文转达：转给等待中的提问时作为「其他」的回答，转给线程时作为一条来源为人、经 Line 转达的输入。Line 不改写用户原文，它自己的补充说明另发一条 Kite 来源的输入。
+**用户经 Line 答复。** 用户可以直接在收件箱里回应，也可以在 Line 的线程里说。后者由 Line 指定用户的那条消息，宿主照原文转达：转给等待中的提问时作为「其他」的回答，转给线程时作为一条来源为人、经 Line 转达的输入。Line 不改写用户原文，它自己的补充说明另发一条代理来源、发信方为 Line 的输入（见 [输入来源](harness-主循环.md#输入来源)）。
 
 一句「收到」不收尾任何东西：集成、推送、归档仍是各自的显式操作，由用户或经批准的 Line 触发。
 
@@ -148,10 +148,10 @@ Line 不能处理它自己发起的请求（例如它要停止、流转别人的
 | `line_status` | `status` | `{machine?, threadId?}`：读各工作机的 `GET /summary` 与收件箱，含未归档的工作区、线程执行状态、等你回应的对象与最近一次回合结束的时间；带 `threadId` 时返回那个线程最后一回合的回复。离线或连不上的标明原因 |
 | `line_handle` | `reply` | `{item, decision?, answers?, reason}`：处理收件箱里交给 Line 的一项（代处理或托管中）。宿主核对这一项确实已委托给 Line、不是 Line 自己发起的请求；审批只能批准这一次或拒绝 |
 | `line_relay` | `reply` | `{machine, threadId, from}`：`from` 是用户在 Line 线程里那条消息的输入 ID，宿主照原文转达给等待中的提问或线程，输入 ID 由两者决定，重试只去重 |
-| `line_control` | `send`、`resume`、`stop`、`archive` | send 是 Line 自己的说明，来源为 Kite、经 Line；stop 与 archive 必问 |
+| `line_control` | `send`、`resume`、`stop`、`archive` | send 是 Line 自己的说明，来源为代理、发信方为 Line；stop 与 archive 必问 |
 | `line_workspace` | `create`、`transfer` | create 用目标机的按项目创建；transfer 依次调用源机交接、目标机还原、源机核对执行权；都必问 |
 
-授权的白名单是协作授权里的 `{operation: "line", actions}`，启用 Line 时全部打开。跨机调用经账号目录（工作机凭据可读）找到组网地址，经 kite-net 的本机 HTTP 代理入口过去，请求头 `X-Kite-Source` 声明 `{kind: "line", machine, instance}`；目标把它记在输入上（`via`），用于显示与防循环，不参与授权。必问动作执行前在 Line 的线程上等用户批准。Line 约时刻醒来（包括用户设定的每日巡视）用通用的 `monitor_start` 定时来源，到点直接唤醒 Line，不经收件箱。模型看不到输入 ID，`line_relay` 的 `from` 省略时取用户在 Line 线程里最近的一条消息；`line_status` 带 `threadId` 时读目标机的 `GET /threads/:id/reply`。
+授权的白名单是协作授权里的 `{operation: "line", actions}`，启用 Line 时全部打开。跨机调用经账号目录（工作机凭据可读）找到组网地址，经 kite-net 的本机 HTTP 代理入口过去，请求头 `X-Kite-Source` 声明 `{kind: "line", machine, instance}`；目标把它记在输入上（转达的用户原话记为 `via`，Line 自己的说明记为发信方），用于显示与防循环，不参与授权。必问动作执行前在 Line 的线程上等用户批准。Line 约时刻醒来（包括用户设定的每日巡视）用通用的 `monitor_start` 定时来源，到点直接唤醒 Line，不经收件箱。模型看不到输入 ID，`line_relay` 的 `from` 省略时取用户在 Line 线程里最近的一条消息；`line_status` 带 `threadId` 时读目标机的 `GET /threads/:id/reply`。
 
 ## monitor 的事件路由
 

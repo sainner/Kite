@@ -10,6 +10,7 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { ContextDefinition } from '../../src/harness/context/types.ts';
+import { TOOL_SEARCH } from '../../src/harness/tool-search.ts';
 import type { Json, ModelItem } from '../../src/harness/types.ts';
 import type { Project, WorkspaceModel } from '../../src/model.ts';
 import type { Role } from '../../src/roles.ts';
@@ -359,7 +360,7 @@ test('项目约束禁用 shell 后在跑的回合里已发出的 shell 调用不
   expect(result.result.status).toBe('not_executed');
   expect(existsSync(join(workspace.workspace.cwd, 'blocked-shell.txt'))).toBe(false);
   expect(second.request.allowedTools).not.toContain('shell');
-  expect(second.request.allowedTools).toEqual(tools.filter((name) => name !== 'shell'));
+  expect(second.request.allowedTools).toEqual([...tools.filter((name) => name !== 'shell'), TOOL_SEARCH]);
   const delivered = second.request.history.filter((entry) => entry.type === 'notification'
     && entry.notification.kind === 'agent.configuration.changed');
   expect(delivered).toHaveLength(1);
@@ -374,7 +375,7 @@ test('项目约束禁用 shell 后在跑的回合里已发出的 shell 调用不
   const since = mark(k);
   expect((await k.call('POST', `/threads/${id}/messages`, { id: 'again', text: '再跑一次' })).status).toBe(200);
   const third = await model.call(3);
-  expect(third.request.allowedTools).toEqual(tools);
+  expect(third.request.allowedTools).toEqual([...tools, TOOL_SEARCH]);
   third.response.complete();
   await k.waitEvent((event) => event.type === 'idle' && event.threadId === id && after(k, since)(event));
 }, 1000);

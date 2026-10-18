@@ -540,8 +540,7 @@ export class Store implements UsageStore {
   setInstanceConfig(id: string, config: PluginInstance['config'], notification?: Omit<ThreadNotification, 'sequence'>): void {
     this.db.transaction(() => {
       this.db.query('update plugin_instances set config = ? where id = ?').run(JSON.stringify(config), id);
-      if (notification) this.db.query('insert into instance_notifications (id, instance_id, notification) values (?, ?, ?)')
-        .run(notification.id, id, JSON.stringify(notification));
+      if (notification) this.addInstanceNotification(id, notification);
     })();
   }
   /** 线程没回应的提问与密钥请求，按发出的先后。 */
@@ -558,6 +557,11 @@ export class Store implements UsageStore {
   }
   clearAsks(instanceId: string): boolean {
     return this.db.query('delete from thread_asks where instance_id = ?').run(instanceId).changes > 0;
+  }
+  /** 不随配置变化的通知（如超过唤醒预算的子代理回报）；下一次自然请求时纳入。 */
+  addInstanceNotification(id: string, notification: Omit<ThreadNotification, 'sequence'>): void {
+    this.db.query('insert into instance_notifications (id, instance_id, notification) values (?, ?, ?)')
+      .run(notification.id, id, JSON.stringify(notification));
   }
   instanceNotifications(id: string, after: number): ThreadNotification[] {
     return this.db.query('select seq, notification from instance_notifications where instance_id = ? and seq > ? order by seq')

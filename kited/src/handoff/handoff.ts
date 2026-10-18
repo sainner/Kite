@@ -14,7 +14,9 @@ import { isDeepStrictEqual } from 'node:util';
 import { engineAttachmentTypes } from '../claude/context-filter/hooks/register.ts';
 import { acquireClaudeLock } from '../claude/host.ts';
 import { readClaudeControl, saveClaudeControl, type ClaudeControl } from '../claude/control.ts';
-import { claudeToolName, claudeToolResult, claudeToolResultContent, structuredClaudeTool } from '../claude/tools.ts';
+import { CLAUDE_TOOL_SEARCH, claudeToolResult, claudeToolResultContent, structuredClaudeTool } from '../claude/tools.ts';
+import { modelText, unwrapModelText } from '../harness/input.ts';
+import { TOOL_SEARCH } from '../harness/tool-search.ts';
 import { restoreContext } from '../harness/context/assembler.ts';
 import { readJournal } from '../harness/journal.ts';
 import { outcomeFeedback, recoveryFeedback, replayUnits } from '../harness/history.ts';
@@ -114,7 +116,9 @@ export function claudeToHarness(entries: ClaudeEntry[], control: ClaudeControl, 
   const tail = own.slice(start);
   const groups: Array<{ items: ContextItem[]; through: string }> = [];
   const inputs = new Map(control.inputs.map((entry) => [entry.sdkId, entry.input]));
-  const input = (sdkId: string, text: string, human: boolean): Input => inputs.get(sdkId) ?? { id: sdkId, text, source: human ? 'human' : 'kite' };
+  // 没有 Kite 原始输入的原生行只有模型正文，去掉包装后按 Kite 来源导入，免得再包一层。
+  const input = (sdkId: string, text: string, human: boolean): Input => inputs.get(sdkId)
+    ?? { id: sdkId, text: human ? text : unwrapModelText(text).text, source: human ? 'human' : 'kite' };
   const calls = new Map<string, string>();
   const translate = (entry: ClaudeEntry): ContextItem[] => {
     const items: ContextItem[] = [];
@@ -126,6 +130,7 @@ export function claudeToHarness(entries: ClaudeEntry[], control: ClaudeControl, 
         if (block.type === 'tool_result') {
           const name = calls.get(block.tool_use_id);
           if (!name) throw new Error('Claude 工具结果找不到对应的调用');
+          if (name === CLAUDE_TOOL_SEARCH) continue;
           items.push({ type: 'tool_result', callId: block.tool_use_id, result: claudeToolResult(block, structuredClaudeTool(name)) });
         } else if (block.type === 'text') texts.push(block.text);
         else throw new Error(`不能翻译 Claude 用户消息中的 ${String(block.type)} 内容`);
@@ -141,7 +146,9 @@ export function claudeToHarness(entries: ClaudeEntry[], control: ClaudeControl, 
         const id = `${entry.uuid}:${index}`;
         if (block.type === 'tool_use') {
           calls.set(block.id, block.name);
-          items.push({ type: 'output', item: { id, raw, format: 'anthropic', call: { id: block.id, name: claudeToolName(block.name), arguments: block.input as Json } } });
+          // ToolSearch 是 Claude 自己的按需加载，自研 harness 另用 tool_search 加载；调用与结果都不带过去。
+          if (block.name === CLAUDE_TOOL_SEARCH) return;
+          items.push({ type: 'output', item: { id, raw, format: 'anthropic', call: { id: block.id, name: block.name, arguments: block.input as Json } } });
         } else if (['text', 'thinking', 'redacted_thinking'].includes(block.type)) items.push({ type: 'output', item: { id, raw, format: 'anthropic' } });
         else throw new Error(`不能翻译 Claude 输出中的 ${String(block.type)} 内容`);
       });
@@ -181,11 +188,13 @@ function claudeBlocks(item: ModelItem, calls: Map<string, { id: string; name: st
     return [structuredClone(item.raw)];
   }
   const raw = item.raw;
+  // tool_search 只在自研 harness 里有，Claude 用自己的 ToolSearch 重新加载插件工具；调用与结果都不带过去，这里只登记以便认出结果。
+  if (item.call?.name === TOOL_SEARCH) { calls.set(item.call.id, { id: item.call.id, name: TOOL_SEARCH }); return []; }
   if (item.call) {
     // Anthropic 的工具调用 ID 只允许字母、数字、下划线和连字符。
     const id = item.call.id.replace(/[^a-zA-Z0-9_-]/g, '_');
     if ([...calls.entries()].some(([original, call]) => call.id === id && original !== item.call!.id)) throw new Error('工具调用 ID 规范化后重复');
-    const name = `mcp__kite__${item.call.name}`;
+    const { name } = item.call;
     calls.set(item.call.id, { id, name });
     const input = item.call.arguments;
     return [{ type: 'tool_use', id, name, input: input && typeof input === 'object' && !Array.isArray(input) ? input : { value: input } }];
@@ -300,6 +309,7 @@ function rebaseToClaude(records: readonly JournalRecord[], options: ClaudeTarget
       case 'tool_result': {
         close();
         const call = calls.get(item.callId);
+        if (call?.name === TOOL_SEARCH) break;
         const owner = call && owners.get(call.id);
         if (!call || !owner) throw new Error('harness 历史中的工具结果找不到对应的调用');
         add({ type: 'user', message: { role: 'user', content: [{ tool_use_id: call.id, type: 'tool_result', ...claudeToolResultContent(call.name, item.result) }] },
@@ -312,10 +322,10 @@ function rebaseToClaude(records: readonly JournalRecord[], options: ClaudeTarget
         const { input } = item;
         const origin = input.source === 'human' ? { origin: { kind: 'human' } } : {};
         if (afterResult) {
-          add({ type: 'attachment', attachment: { type: 'queued_command', prompt: input.text, source_uuid: randomUUID(), commandMode: 'prompt',
+          add({ type: 'attachment', attachment: { type: 'queued_command', prompt: modelText(input), source_uuid: randomUUID(), commandMode: 'prompt',
             ...origin, humanTurn: input.source === 'human' } });
         } else {
-          add({ type: 'user', message: { role: 'user', content: input.text }, ...origin });
+          add({ type: 'user', message: { role: 'user', content: modelText(input) }, ...origin });
           release();
         }
         if (input.source === 'human') lastPrompt = input.text;
@@ -407,7 +417,7 @@ export function harnessToClaude(records: readonly JournalRecord[], after: number
           for (const id of row.inputIds) {
             const input = inputs.get(id)!;
             inputIds.push(id);
-            add({ type: 'user', message: { role: 'user', content: input.text }, ...(input.source === 'human' ? { origin: { kind: 'human' } } : {}) });
+            add({ type: 'user', message: { role: 'user', content: modelText(input) }, ...(input.source === 'human' ? { origin: { kind: 'human' } } : {}) });
           }
           for (const note of notes) notice('UserPromptSubmit', note);
         } else {
@@ -415,7 +425,7 @@ export function harnessToClaude(records: readonly JournalRecord[], after: number
           for (const id of row.inputIds) {
             const input = inputs.get(id)!;
             inputIds.push(id);
-            add({ type: 'attachment', attachment: { type: 'queued_command', prompt: input.text, source_uuid: randomUUID(), commandMode: 'prompt',
+            add({ type: 'attachment', attachment: { type: 'queued_command', prompt: modelText(input), source_uuid: randomUUID(), commandMode: 'prompt',
               ...(input.source === 'human' ? { origin: { kind: 'human' } } : {}), humanTurn: input.source === 'human' } });
           }
         }

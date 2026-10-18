@@ -11,8 +11,7 @@ import {
 import { contextLayers, isPublicVariable, type ContextLayer, type LayerVariable, type PublicVariable } from './harness/context/scenes.ts';
 import type { ContextBinding, ContextValues } from './harness/context/types.ts';
 import type { Machine, Project, ThreadContext, Workspace } from './model.ts';
-import { operationGrantsSchema } from './operations/contract.ts';
-import { pluginToolBindings, pluginToolGranted, pluginToolSource } from './plugins/tools.ts';
+import { pluginToolBindings } from './plugins/tools.ts';
 import type { ProjectToolRule } from './roles.ts';
 import type { Store } from './store.ts';
 
@@ -65,10 +64,9 @@ export function threadVariables(thread: ThreadContext, constraint: ProjectToolRu
     'agent.tools': text(() => effectiveTools(agent(), constraint).join('、') || '无'),
     'agent.max_requests_per_turn': text(() => String(agent().maxRequestsPerTurn)),
     'execution.grants': text(() => JSON.stringify(effectiveExecution(instanceExecutionChanges(thread), execution).grants)),
-    'plugin.tools': text(() => {
-      const grants = operationGrantsSchema.parse(thread.config.grants ?? []);
-      return JSON.stringify(pluginToolBindings(thread).filter((binding) => pluginToolGranted(binding, grants)).map(pluginToolSource));
-    }),
+    // 按实例列出获准的插件工具：自研 harness 按实例 ID 用 tool_search 加载，Claude 按名字用 ToolSearch 搜；name 是调用用的名字。
+    'plugin.tools': text(() => JSON.stringify([...Map.groupBy(pluginToolBindings(thread), (binding) => binding.instanceId)]
+      .map(([instanceId, bindings]) => ({ instanceId, tools: bindings.map((binding) => ({ name: binding.modelName, tool: binding.toolName })) })))),
   } satisfies Record<PublicVariable, () => ContextBinding>;
 }
 

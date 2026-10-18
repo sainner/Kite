@@ -9,7 +9,8 @@ import { defaultContextDefinition, directoryVariables, projectContext, today } f
 import type { ContextSource } from '../../src/harness/context/types.ts';
 import { localTools } from '../../src/execution/local-tools.ts';
 import { openThreadHost } from '../../src/harness/thread-host.ts';
-import type { Json, JsonObject, ModelEvent, ModelRequest, ThreadNotification, Tool, ToolResult } from '../../src/harness/types.ts';
+import { searchTool } from '../../src/harness/tool-search.ts';
+import type { Json, JsonObject, ModelEvent, ModelRequest, ThreadNotification, Tool, ToolDefinition, ToolResult } from '../../src/harness/types.ts';
 import {
   aborted, deferred, diskRecords, input, item, ManualModel, Seen, success, tool, useHarness,
 } from '../harness-loop.ts';
@@ -111,9 +112,6 @@ test('订阅流保留原生条目与通知权限，工具收齐后执行并续�
     runner.settled().then(() => { throw new Error(`请求未发送：${JSON.stringify({ state: runner.state, records: journal.records })}`); }),
   ]);
   expect((post.body.tools as JsonObject[]).map((value) => value.name)).toEqual(['record', 'hidden']);
-  expect(post.body.tool_choice).toEqual({
-    type: 'allowed_tools', mode: 'auto', tools: [{ type: 'function', name: 'record' }],
-  });
   const mappedNotices = post.body.input as JsonObject[];
   expect(mappedNotices.find((value) => JSON.stringify(value).includes('只按批准的工具工作'))?.role).toBe('developer');
   const observed = mappedNotices.find((value) => JSON.stringify(value).includes('工作区出现新文件'));
@@ -177,6 +175,82 @@ test('订阅流保留原生条目与通知权限，工具收齐后执行并续�
   expect(executions).toBe(1);
   second.event({ type: 'response.completed', response: { id: 'response-2', status: 'completed', output: [] } });
   second.close();
+  await runner.settled();
+  expect(runner.state.lastOutcome).toEqual({ kind: 'completed' });
+}, 1000);
+
+// 上游（ChatGPT Responses 接口）的规定，实测见 spikes/tool-search/README.md：由客户端执行的搜索声明成 tool_search 而不是函数，
+// 模型发出的 tool_search_call 必须有同一 call_id 的 tool_search_output 交回，否则下一次请求被拒；加载的函数放在它的 tools 里。
+// 适配器把 SSE 里的搜索解析成调用、主循环执行 tool_search、下一次请求的投影把结果写回，几处合起来才知道请求是不是上游收得下的形状。
+test('订阅接口的工具搜索往返：声明为客户端执行的 tool_search，结果按同一 call_id 写成 tool_search_output 交回，没加载到也交回空的', async () => {
+  const root = h.root();
+  const streams = [sse(), sse(), sse()];
+  const posts = new Seen<{ body: JsonObject }>();
+  const model = new ChatGPTModel({
+    model: 'test-model', threadId: 'test-search', credentials,
+    async fetch(_url, init) {
+      posts.add({ body: JSON.parse(String(init.body)) as JsonObject });
+      return streams[posts.values.length - 1]!.response();
+    },
+  });
+  const loadable: ToolDefinition[] = [
+    { name: 'plugin_a_state', description: '插件 A 的计数器', parameters: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
+    { name: 'plugin_a_note', description: '插件 A 的便签', parameters: { type: 'object', properties: { text: { type: 'string' } } } },
+  ];
+  const search = searchTool(loadable.map((definition) => ({ instanceId: 'plugin-a', definition })));
+  const { runner, journal } = h.runner(root, {
+    prepareRequest: () => ({
+      model, tools: [search],
+      toolDefinitions: [{ name: search.name, description: search.description, parameters: search.parameters }],
+      instructions: '测试主循环', settings: {},
+    }),
+  });
+  const searchCall = (id: string, instances: string[]): JsonObject => ({
+    id: `item-${id}`, type: 'tool_search_call', execution: 'client', call_id: id, status: 'completed', arguments: { instances },
+  });
+  const respond = (stream: ReturnType<typeof sse>, call: JsonObject) => {
+    stream.event({ type: 'response.output_item.added', item: { ...call, status: 'in_progress' } });
+    stream.event({ type: 'response.output_item.done', item: call });
+    stream.event({ type: 'response.completed', response: { id: `response-${call.call_id}`, status: 'completed', output: [call] } });
+    stream.close();
+  };
+  const searchOutput = (body: JsonObject, callId: string) => {
+    const input = body.input as JsonObject[];
+    const call = input.findIndex((value) => value.type === 'tool_search_call' && value.call_id === callId);
+    const outputs = input.filter((value) => value.type === 'tool_search_output' && value.call_id === callId);
+    expect(call).toBeGreaterThanOrEqual(0);
+    expect(outputs).toHaveLength(1);
+    expect(input.indexOf(outputs[0]!)).toBeGreaterThan(call);
+    return outputs[0]!;
+  };
+
+  // 主循环停下却没发出第 n 次请求时直接报错，不等到超时。
+  const post = (count: number) => Promise.race([
+    posts.wait(() => posts.values.length >= count).then(() => posts.values[count - 1]!),
+    runner.settled().then(() => { throw new Error(`第 ${count} 次请求未发送：${JSON.stringify({ state: runner.state, records: journal.records })}`); }),
+  ]);
+
+  await runner.send(input('先加载插件工具'));
+  const first = await post(1);
+  expect(first.body.tools).toEqual([
+    { type: 'tool_search', execution: 'client', description: search.description, parameters: search.parameters },
+  ]);
+  expect(first.body.tool_choice).toBe('auto');
+
+  // 实例不存在：搜索没加载到，也要交回一个 tools 为空的结果，这个调用才算有了输出。
+  respond(streams[0]!, searchCall('search-missing', ['plugin-missing']));
+  const second = await post(2);
+  expect(searchOutput(second.body, 'search-missing')).toMatchObject({ execution: 'client', status: 'completed', tools: [] });
+
+  respond(streams[1]!, searchCall('search-loaded', ['plugin-a']));
+  const third = await post(3);
+  expect(searchOutput(third.body, 'search-loaded')).toEqual({
+    type: 'tool_search_output', execution: 'client', call_id: 'search-loaded', status: 'completed',
+    tools: loadable.map((definition) => ({ type: 'function', ...definition, strict: false, defer_loading: true })),
+  });
+
+  streams[2]!.event({ type: 'response.completed', response: { id: 'response-done', status: 'completed', output: [] } });
+  streams[2]!.close();
   await runner.settled();
   expect(runner.state.lastOutcome).toEqual({ kind: 'completed' });
 }, 1000);

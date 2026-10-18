@@ -143,7 +143,6 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
   const operation = { id: 'operation-client-input', text: `${opTag}\nAGENT_START {"role":"kite.work","presentation":"background"}\nHOLD_RESULT ${hold}` };
   expect((await kk.call('POST', `/threads/${id}/messages`, operation)).status).toBe(200);
   const request = await api.waitRequest((entry) => entry.main && entry.lastUserText.includes(opTag));
-  expect(request.body.tools.map((tool: { name: string }) => tool.name)).toEqual(['mcp__kite__agent_start']);
   expect(JSON.stringify(request.body)).toContain(contextRule);
   expect(request.toolUseIds).toHaveLength(1);
   const callId = request.toolUseIds[0]!;

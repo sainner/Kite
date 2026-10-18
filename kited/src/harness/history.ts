@@ -310,7 +310,12 @@ export class HarnessHistory {
 
   /** 实际进入请求的历史；可只取 seq 位于 [from, until) 的段，被压缩的段换成替代内容。 */
   items(until?: number, from?: number): ContextItem[] {
-    return structuredClone(this.units(until, from).flatMap((unit) => unit.items));
+    return structuredClone(this.itemsView(until, from));
+  }
+
+  /** 同 items，但不拷贝：只供只读遍历，不能改动。 */
+  itemsView(until?: number, from?: number): ContextItem[] {
+    return this.units(until, from).flatMap((unit) => unit.items);
   }
 
   private units(until?: number, from?: number): ContextUnit[] {

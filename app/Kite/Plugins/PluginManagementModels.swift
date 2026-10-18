@@ -35,19 +35,23 @@ nonisolated struct OperationGrant: Codable, Equatable, Sendable {
 nonisolated struct InstanceGrants: Codable, Equatable, Sendable {
     let revision: String
     var grants: [OperationGrant]
+    /// 代理的协作范围（descendants 仅后代、workspace 同工作区）；插件没有。
+    var scope: String?
 }
 
 struct GrantUpdate: Encodable {
     let expectedRevision: String
     let grants: [OperationGrant]
+    let scope: String?
 }
 
 struct PluginGrantDraft {
     let revision: String
     var grants: [OperationGrant]
+    var scope: String?
 
-    init(snapshot: InstanceGrants) { revision = snapshot.revision; grants = snapshot.grants }
-    var request: GrantUpdate { GrantUpdate(expectedRevision: revision, grants: grants) }
+    init(snapshot: InstanceGrants) { revision = snapshot.revision; grants = snapshot.grants; scope = snapshot.scope }
+    var request: GrantUpdate { GrantUpdate(expectedRevision: revision, grants: grants, scope: scope) }
 
     func includesTool(instanceID: String, name: String) -> Bool {
         grants.contains { $0.operation == "plugin.call" && $0.instanceId == instanceID && ($0.tools?.contains(name) ?? false) }

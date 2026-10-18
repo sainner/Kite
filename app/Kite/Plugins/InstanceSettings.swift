@@ -27,7 +27,7 @@ struct InstanceSettings: View {
     private var definition: RemotePluginDefinition? { area.definition(of: instance) }
     private var caller: String { definition?.agent == nil ? "plugin" : "model" }
     private var editable: Bool { definition?.runtime == "bun" || definition?.agent != nil }
-    private var changed: Bool { draft?.grants != saved?.grants }
+    private var changed: Bool { draft?.grants != saved?.grants || draft?.scope != saved?.scope }
     private var working: Bool { progress.working }
     private var available: Bool {
         model.isConnected(area) && area.instances.contains { $0.id == instance.id && $0.status == .open }
@@ -92,13 +92,14 @@ struct InstanceSettings: View {
                 }
                 if editable, draft != nil {
                     CardSection("协作授权", note: (definition?.agent != nil
-                        ? "这个代理的协作工具能对准工作区里的哪些代理、monitor、后台终端和插件，能做什么；默认只能管它自己建的。新授权的插件工具何时生效见代理配置。"
+                        ? "协作范围决定这个代理能对准哪些代理、monitor 和终端：仅后代是它建的以及再往下建的，同工作区是工作区里的全部；超出后代范围时，停下别人的、经权限比它大的代理做事都要先经你批准。插件工具在下面逐项授予，新授权的何时生效见代理配置。"
                         : "这个插件能经宿主调用工作区里的哪些实例和操作；默认都没有。")
                         + "修改后保存，撤回对后续调用立即生效。")
                     workspaceGrants
                     ForEach(targets) { target in
                         if area.definition(of: target)?.runtime == "bun" { pluginGrants(target) }
-                        else { instanceGrants(target) }
+                        // 代理对其他实例的操作按协作范围，不逐个授权。
+                        else if caller == "plugin" { instanceGrants(target) }
                     }
                 }
             }
@@ -132,7 +133,16 @@ struct InstanceSettings: View {
 
     @ViewBuilder private var workspaceGrants: some View {
         CardSection("工作区") {
-            if operations.contains(where: { $0.name == "agent.list" && $0.callers.contains(caller) }) {
+            if let scope = draft?.scope {
+                LabeledContent("协作范围") {
+                    Picker("协作范围", selection: Binding(get: { scope }, set: { value in draft?.scope = value })) {
+                        Text("仅后代").tag("descendants")
+                        Text("同工作区").tag("workspace")
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
+                }
+            }
+            if caller == "plugin", operations.contains(where: { $0.name == "agent.list" && $0.callers.contains(caller) }) {
                 let grant = OperationGrant(operation: "agent.list")
                 Toggle("查询代理", isOn: selection({ $0.grants.contains(grant) }, { $0.set(grant, enabled: $1) }))
             }
@@ -141,10 +151,12 @@ struct InstanceSettings: View {
                     Toggle(role.role.title, isOn: selection({ $0.includesRole(role.id) }, { $0.setRole(role.id, enabled: $1) }))
                 }
             }
-            DisclosureGroup("自己创建的代理") {
-                ForEach(operations.filter { ["agent.send", "agent.resume", "agent.stop"].contains($0.name) }) { operation in
-                    let grant = OperationGrant(operation: operation.name, targets: .init(kind: "created"))
-                    Toggle(operation.title, isOn: selection({ $0.grants.contains(grant) }, { $0.set(grant, enabled: $1) }))
+            if caller == "plugin" {
+                DisclosureGroup("自己创建的代理") {
+                    ForEach(operations.filter { ["agent.send", "agent.resume", "agent.stop"].contains($0.name) }) { operation in
+                        let grant = OperationGrant(operation: operation.name, targets: .init(kind: "created"))
+                        Toggle(operation.title, isOn: selection({ $0.grants.contains(grant) }, { $0.set(grant, enabled: $1) }))
+                    }
                 }
             }
         }.disabled(!available)

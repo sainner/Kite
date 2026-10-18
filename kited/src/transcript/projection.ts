@@ -8,6 +8,7 @@ import type { ClaudeState } from '../claude/control.ts';
 import { ToolInputPreview } from './tool-input-preview.ts';
 import type { TranscriptFeed } from './feed.ts';
 import type { DisplayBlock, DisplayRecord, DisplayDelta, PendingInput, DisplayState, History, ThreadDisplayEvent } from './protocol.ts';
+import { inputBlock } from './protocol.ts';
 import type { Ask, Waiting } from '../waiting.ts';
 
 const textParts = (value: unknown, separator = ''): string => Array.isArray(value)
@@ -233,9 +234,7 @@ export class TranscriptProjection {
         row.inputIds.forEach((id, index) => {
           const input = this.pending.get(id);
           if (!input) return;
-          put(`input:${id}`, input.source === 'human'
-            ? { type: 'human', id, text: input.text, midTurn: midTurn || index > 0 }
-            : { type: 'kite', text: input.text });
+          put(`input:${id}`, inputBlock(input, midTurn || index > 0));
           this.pending.delete(id);
         });
         this.emitPending();

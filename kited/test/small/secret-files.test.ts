@@ -282,8 +282,10 @@ test('密钥请求不等回应：一次要几项时立即返回请求 ID、asks 
   expect((await respond(asked, { secret: { values: ['3002', null, 'staging', null] } })).status).toBe(200);
   const third = await model.call(3);
   const setup = kiteInput(third.request, asked.id);
-  expect(setup).not.toContain('3002');
-  expect(setup).not.toContain('staging');
+  // 正文里的请求 ID 是随机 UUID，可能恰好含 3002（出过一次：…-5dfdc75e3002），去掉它再查不带用户填的值。
+  const withoutAskId = setup.replaceAll(asked.id, '');
+  expect(withoutAskId).not.toContain('3002');
+  expect(withoutAskId).not.toContain('staging');
   const [summary, ...lines] = setup.split('\n');
   expect(summary).toBe(`用户回应了你的密钥请求（请求 ${asked.id}），存好 2 项，2 项用户没有填：`);
   expect(lines).toEqual([

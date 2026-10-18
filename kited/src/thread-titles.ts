@@ -5,6 +5,7 @@ import type { ContextDefinition } from './harness/context/types.ts';
 import type { AgentInstance } from './model.ts';
 import type { Store } from './store.ts';
 import type { DisplayRecord, History } from './transcript/protocol.ts';
+import { inputBlock } from './transcript/protocol.ts';
 import type { LightTasks } from './light-tasks.ts';
 import type { ContextTemplates } from './context-templates.ts';
 import { KiteError } from './errors.ts';
@@ -36,8 +37,7 @@ function material(history: History, now: number): { input: string; through: stri
     const known = new Set(records.map((record) => record.id));
     records = [...records, ...history.pending
       .filter((input) => !known.has(`input:${input.id}`)).map((input): DisplayRecord => ({
-        id: `input:${input.id}`, at: now, block: input.source === 'human'
-          ? { type: 'human', id: input.id, text: input.text, midTurn: input.midTurn } : { type: 'kite', text: input.text },
+        id: `input:${input.id}`, at: now, block: inputBlock(input, input.midTurn),
       }))];
   }
   const cutoff = now - 3 * DAY;

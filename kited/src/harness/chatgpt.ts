@@ -1,5 +1,5 @@
 /** ChatGPT 订阅 Responses 传输。循环与工具执行仍由 HarnessRunner 管理。 */
-import { responseEvents, responsesInput } from './responses.ts';
+import { responseEvents, responsesInput, responsesToolChoice, responsesTools } from './responses.ts';
 import type { SubscriptionModelOptions } from './subscription-types.ts';
 import type { Model, ModelEvent, ModelRequest } from './types.ts';
 
@@ -14,7 +14,7 @@ export class ChatGPTModel implements Model {
     signal.throwIfAborted();
     const auth = await this.options.credentials(signal);
     signal.throwIfAborted();
-    const input = responsesInput(request.history);
+    const input = responsesInput(request.history, { functions: { strict: false } });
     const response = await (this.options.fetch ?? fetch)(ENDPOINT, {
       method: 'POST', signal, redirect: 'error',
       headers: {
@@ -25,10 +25,8 @@ export class ChatGPTModel implements Model {
       },
       body: JSON.stringify({
         model: this.options.model, instructions: request.instructions, input,
-        tools: request.tools.map((tool) => ({ type: 'function', ...tool, strict: false })),
-        tool_choice: request.allowedTools === undefined || request.allowedTools.length === request.tools.length ? 'auto'
-          : request.allowedTools.length === 0 ? 'none' : { type: 'allowed_tools', mode: 'auto',
-            tools: request.allowedTools.map((name) => ({ type: 'function', name })) },
+        tools: responsesTools(request.tools, { strict: false }),
+        tool_choice: responsesToolChoice(request),
         parallel_tool_calls: true, store: false, stream: true,
         include: ['reasoning.encrypted_content'],
         reasoning: { effort: this.options.reasoning ?? 'medium', summary: 'concise' },

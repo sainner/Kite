@@ -48,7 +48,7 @@ export class ToolBatch {
       return;
     }
     try {
-      if (!tool) throw new Error(`未知工具：${call.name}`);
+      if (!tool) throw new Error(`工具 ${call.name} 现在不可用：插件工具要先用 tool_search 加载；已关掉或撤权的不要再调用`);
       tool.validate(call.arguments);
     } catch (error) {
       o.finished(call, { status: 'error', output: String(error) });

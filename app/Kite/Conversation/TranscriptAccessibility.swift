@@ -12,7 +12,8 @@ enum TranscriptSpeech {
     /// 折起来的长消息下面的按钮，和看到的字一样。
     static func fold(expanded: Bool) -> String { expanded ? "收起" : "展开全文" }
 
-    static let kite = "Kite 发给 agent"
+    /// 不是人发的消息的标题：别的代理发来的写发信方，Kite 自己发的写 Kite。
+    static func kite(from sender: String?) -> String { "\(sender ?? "Kite") 发给 agent" }
 
     /// 压缩分界：不管展开没有都读这一句，展开收起由状态读出。
     static func compaction(_ compaction: Compaction) -> String {
@@ -73,7 +74,7 @@ enum TranscriptSpeech {
             switch item.kind {
             case .human(let message): return self.message(queued: false) + "，" + message.typed
             case .text(let text): return text
-            case .kite(let text): return kite + "，" + text
+            case .kite(let text, let sender): return kite(from: sender) + "，" + text
             case .thinking(let text): return thinking(text)
             case .work(let work): return self.work(work)
             case .compacted(let compaction, _): return self.compaction(compaction)

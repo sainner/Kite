@@ -6,15 +6,19 @@ import { FileDiffStore } from '../workspace/file-diffs.ts';
 import { KiteError, OperationError, operationError } from '../errors.ts';
 import type { Kite } from '../kite.ts';
 import type { PluginInstance } from '../model.ts';
-import { grantTools, operationContracts, operationGrantsSchema, type OperationCaller, type OperationGrant, type OperationInput, type OperationName } from './contract.ts';
-import type { JsonObject, Tool, ToolResult } from '../harness/types.ts';
+import { grantTools, operationContracts, operationGrantsSchema, scopedOperations, type CollaborationScope, type OperationCaller, type OperationGrant, type OperationInput,
+  type OperationName } from './contract.ts';
+import { effectiveExecution, instanceExecutionChanges } from '../execution/grants.ts';
+import { terminalDefinitionId } from '../terminal/terminals.ts';
+import type { Input, JsonObject, Tool, ToolResult } from '../harness/types.ts';
 import { WorkspaceFiles, fileSelection } from '../workspace/files.ts';
 import { assertFileAccess, hostPrivatePaths } from '../execution/sandbox.ts';
 import { instanceAgent } from '../agents/definition.ts';
+import { effectiveTools } from '../context-variables.ts';
 import { defaultRoleId, instanceRole } from '../roles.ts';
 import { pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding, type PluginToolSource } from '../plugins/tools.ts';
 
-type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'interrupt' | 'resume' | 'selectFile'
+type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'reports' | 'waits' | 'interrupt' | 'resume' | 'selectFile'
   | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox' | 'terminals'>;
 
 export interface OperationToolSelection {
@@ -23,7 +27,12 @@ export interface OperationToolSelection {
   sources: PluginToolSource[];
 }
 
-const revision = (grants: OperationGrant[]) => createHash('sha256').update(JSON.stringify(grants)).digest('hex');
+const revision = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+/** 超出后代范围时要用户批准的操作：范围内的写操作。 */
+const confirmed = (name: OperationName) => scopedOperations.has(name) && operationContracts[name].effect === 'write';
+
+export const collaborationScope = (instance: Pick<PluginInstance, 'config'>): CollaborationScope =>
+  instance.config.scope === 'workspace' ? 'workspace' : 'descendants';
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value);
   if (!result.success) throw new OperationError(`操作参数无效：${result.error.issues.map((issue) => issue.message).join('；')}`, 'denied', 400);
@@ -38,14 +47,20 @@ export class InstanceOperations {
   private closing = false;
   constructor(private kite: OperationServices) {}
 
-  grants(id: string) {
+  /** 代理另有协作范围。 */
+  grants(id: string): { grants: OperationGrant[]; scope?: CollaborationScope; revision: string } {
     const instance = this.kite.store.instance(id);
     if (!instance) throw new KiteError('没有这个实例', 404);
     const grants = parse(operationGrantsSchema, instance.config.grants ?? []);
-    return { grants, revision: revision(grants) };
+    if (!this.agent(instance)) return { grants, revision: revision(grants) };
+    const scope = collaborationScope(instance);
+    return { grants, scope, revision: revision({ grants, scope }) };
   }
   validateGrants(instance: PluginInstance, value: unknown): OperationGrant[] {
     const grants = parse(operationGrantsSchema, value);
+    if (this.agent(instance) && grants.some((grant) => scopedOperations.has(grant.operation))) {
+      throw new KiteError('代理对代理、monitor 与终端的操作按协作范围授权，不逐个授予');
+    }
     for (const grant of grants) {
       if (grant.operation === 'plugin.call') {
         const target = this.kite.store.instance(grant.instanceId);
@@ -94,6 +109,14 @@ export class InstanceOperations {
     }
     if (target?.id === source.id && name.startsWith('agent.')) throw new OperationError('实例不能通过协作操作控制自己', 'denied', 403);
     if (name === 'agent.stop' && args.inputs !== undefined) throw new OperationError('只有界面可以核定未确认的用户输入', 'denied', 403);
+    if (scopedOperations.has(name) && this.agent(source)) {
+      // 范围只管能对准谁；用不用得了这个工具仍看角色与项目的工具规则，和声明给模型的一致。
+      if (!effectiveTools(instanceAgent(source), this.kite.store.workspaceConstraints(workspaceId)?.tools).includes(operationContracts[name].tool!)) {
+        throw new OperationError('调用方的角色或项目不允许这个工具', 'denied', 403);
+      }
+      if (target && !this.inScope(source, target)) throw new OperationError('目标不在调用方的协作范围内', 'denied', 403);
+      return;
+    }
     const grants = this.grants(source.id).grants;
     const granted = name === 'plugin.call'
       ? pluginToolGranted({ instanceId: target!.id, toolName: args.tool as string }, grants)
@@ -107,6 +130,80 @@ export class InstanceOperations {
     if (!granted) throw new OperationError('调用方未获准对该目标执行此操作', 'denied', 403);
   }
 
+  /**
+   * 发消息（含建代理时的首条消息）的来源：界面上用户发的是人；另一台工作机的 Line 照原文转达用户的话仍是人，带经由，它自己的说明是代理来信；
+   * 模型调用是代理来信，插件发的按 Kite 来源。
+   */
+  private origin(caller: OperationCaller): Omit<Input, 'id' | 'text'> {
+    if (caller.kind === 'ui') {
+      if (!caller.via) return { source: 'human' };
+      return caller.relayed ? { source: 'human', via: caller.via } : { source: 'agent', from: caller.via };
+    }
+    const source = this.kite.store.instance(caller.instanceId);
+    return source && this.agent(source) ? { source: 'agent', from: { kind: 'agent', instance: source.id, title: source.title } } : { source: 'kite' };
+  }
+
+  private agent(instance: PluginInstance): boolean { return !!this.kite.catalog.get(instance.definitionId).agent; }
+
+  /** 目标沿创建来源往上能走到调用方，就是它的后代。 */
+  private descendant(source: PluginInstance, target: PluginInstance): boolean {
+    const seen = new Set<string>();
+    for (let id = target.origin?.instanceId; id && !seen.has(id); id = this.kite.store.instance(id)?.origin?.instanceId) {
+      if (id === source.id) return true;
+      seen.add(id);
+    }
+    return false;
+  }
+
+  private inScope(source: PluginInstance, target: PluginInstance): boolean {
+    return collaborationScope(source) === 'workspace' || this.descendant(source, target);
+  }
+
+  /**
+   * 一次 list 的筛选与每项共有的字段，调用方与开着的窗口只查一次。
+   * 列出调用方够得着的实例：界面看全部，插件按授权列表，代理按协作范围。
+   */
+  private listing(caller: OperationCaller, workspaceId: string) {
+    const source = caller.kind === 'ui' ? undefined : this.kite.store.instance(caller.instanceId)!;
+    const scoped = source && this.agent(source) ? source : undefined;
+    const windows = new Set(this.kite.store.windows(workspaceId).filter((window) => window.state === 'open').map((window) => window.target.instanceId));
+    return {
+      visible: (target: PluginInstance) => !scoped || this.inScope(scoped, target),
+      item: (instance: PluginInstance) => ({ instanceId: instance.id, title: instance.title, createdBy: instance.origin?.instanceId ?? null,
+        createdAt: instance.createdAt, window: windows.has(instance.id),
+        operations: this.kite.catalog.get(instance.definitionId).operations.filter((operation) => {
+          try { this.authorize(caller, workspaceId, operation, { instanceId: instance.id }); return true; } catch { return false; }
+        }) }),
+    };
+  }
+
+  /**
+   * 超出后代范围的协作先在调用方线程上等用户批准：停下一律要；发消息、让它接着做，在对方的执行授权有调用方没有的项时要。
+   * 界面上的操作是用户自己做的，不再问。
+   */
+  private async confirm(caller: OperationCaller, name: OperationName, args: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+    if (caller.kind !== 'model' || !confirmed(name) || typeof args.instanceId !== 'string') return;
+    const source = this.kite.store.instance(caller.instanceId)!;
+    const target = this.kite.store.instance(args.instanceId)!;
+    if (this.descendant(source, target)) return;
+    const stop = name.endsWith('.stop');
+    if (!stop && !this.exceeds(target, source)) return;
+    const decision = await this.kite.waits.approve(source.id, {
+      tool: operationContracts[name].tool!, target: `${target.title}（${target.id}）`, mustAsk: true,
+      reason: stop ? '要停下的不是这个代理自己交代出去的，须经你批准' : '对方的执行授权比这个代理大，经它做事须经你批准',
+    }, signal ?? new AbortController().signal);
+    if (decision !== 'once' && decision !== 'remember') throw new OperationError('用户没有批准这次操作', 'denied', 403);
+  }
+
+  /** 对方的执行授权有调用方没有的项：工作区写入、额外读写路径、网络主机或沙箱外命令。 */
+  private exceeds(target: PluginInstance, source: PluginInstance): boolean {
+    const project = this.kite.store.workspaceConstraints(source.workspaceId)?.execution;
+    const [theirs, mine] = [target, source].map((instance) => effectiveExecution(instanceExecutionChanges(instance), project).grants);
+    const beyond = (items: string[], have: string[]) => items.some((item) => !have.includes(item));
+    return (theirs!.workspace === 'write' && mine!.workspace === 'read') || beyond(theirs!.read, mine!.read) || beyond(theirs!.write, mine!.write)
+      || beyond(theirs!.network, mine!.network) || beyond(theirs!.unsandboxed, mine!.unsandboxed);
+  }
+
   private async dispatch(caller: OperationCaller, workspaceId: string, rawName: string, raw: unknown, signal?: AbortSignal): Promise<unknown> {
     if (!Object.hasOwn(operationContracts, rawName)) throw new OperationError('没有这个操作', 'denied', 404);
     const name = rawName as OperationName;
@@ -117,7 +214,10 @@ export class InstanceOperations {
       this.authorize(caller, workspaceId, name, args);
     };
     check();
-    const run = async () => contract.output.parse(await this.perform(caller, workspaceId, name, args, check, signal));
+    const run = async () => {
+      await this.confirm(caller, name, args, signal);
+      return contract.output.parse(await this.perform(caller, workspaceId, name, args, check, signal));
+    };
     // 消息和停止已有 journal 收据，直接复用，避免另记一份停止结果。
     if (contract.retry !== 'receipt') return run();
     return contract.output.parse(await this.kite.receipts.run({
@@ -139,34 +239,38 @@ export class InstanceOperations {
         const input = args as OperationInput<'agent.start'>;
         return this.kite.startAgent(workspaceId, input, caller.kind === 'ui' ? undefined : {
           instanceId: caller.instanceId, operationId: input.operationId, turnId: caller.turnId, callId: caller.callId,
-        }, check);
+        }, this.origin(caller), check);
       }
       case 'agent.list': {
-        const agents = await Promise.all(this.kite.store.threads(workspaceId).map(async (instance) => {
+        const listing = this.listing(caller, workspaceId);
+        const reachable = this.kite.store.threads(workspaceId).filter(listing.visible);
+        const agents = await Promise.all(reachable.map(async (instance) => {
           const state = await this.kite.threadState(instance.id);
-          const operations = this.kite.catalog.get(instance.definitionId).operations.filter((operation) => {
-            try { this.authorize(caller, workspaceId, operation, { instanceId: instance.id }); return true; } catch { return false; }
-          });
           const role = instanceRole(instance);
-          return { instanceId: instance.id, definitionId: instance.definitionId, title: instance.title,
+          return { ...listing.item(instance), definitionId: instance.definitionId,
             role: role ? { id: role.id, title: instanceAgent(instance).context.title } : null,
             presentation: instance.presentation, status: instance.status, phase: state.phase, busy: state.busy,
-            waitingForResume: state.waitingForResume, recovery: state.recovery?.message ?? null, operations };
+            waitingForResume: state.waitingForResume, recovery: state.recovery?.message ?? null,
+            state: state.recovery ? `等确认恢复：${state.recovery.message}` : state.waiting ? '等用户批准'
+              : state.phase === 'stopping' ? '正在停止' : state.busy ? '运行中'
+              : state.lastOutcome?.kind === 'failed' ? `空闲，上一回合失败：${state.lastOutcome.message}` : '空闲' };
         }));
         check();
         return { agents };
       }
       case 'agent.send': {
         const input = args as OperationInput<'agent.send'>;
-        // Line 自己的说明是 Kite 来源，经 Line 转达的用户原文仍是人。
-        return this.kite.send(input.instanceId, input.text, inputId(caller, input.operationId),
-          caller.kind === 'ui' && (!caller.via || caller.relayed) ? 'human' : 'kite', check, caller.kind === 'ui' ? caller.via : undefined);
+        return this.kite.send(input.instanceId, input.text, inputId(caller, input.operationId), this.origin(caller), check);
       }
       case 'agent.resume':
         await this.kite.resume(args.instanceId as string, check);
         return { ok: true };
       case 'agent.stop': {
         const input = args as OperationInput<'agent.stop'>;
+        // 只有正在跑的回合会因这次停止收尾；空闲时记下的停止方会落到之后无关的回合上。
+        if ((await this.kite.threadState(input.instanceId)).busy) {
+          this.kite.reports.stopping(input.instanceId, caller.kind === 'ui' ? { kind: caller.via ? 'line' : 'user' } : { kind: 'agent', instance: caller.instanceId });
+        }
         return this.kite.interrupt(input.instanceId, { id: inputId(caller, input.operationId), inputs: input.inputs }, check);
       }
       case 'files.diff': return new FileDiffStore(join(this.kite.home, 'diffs', workspaceId)).read(args.diffId as string);
@@ -221,7 +325,19 @@ export class InstanceOperations {
         await this.kite.terminals.stop(target.id, caller.kind === 'ui' ? '已在界面上停止' : owner ? '代理自己停下了这个命令' : '另一个代理停下了这个终端', owner);
         return { ok: true };
       }
-      case 'monitor.list': return { monitors: this.kite.monitors.list(workspaceId) };
+      case 'monitor.list': {
+        const listing = this.listing(caller, workspaceId);
+        return { monitors: this.kite.monitors.list(workspaceId).flatMap((summary) => {
+          const instance = this.kite.store.instance(summary.instanceId)!;
+          return listing.visible(instance) ? [{ ...summary, ...listing.item(instance) }] : [];
+        }) };
+      }
+      case 'terminal.list': {
+        const listing = this.listing(caller, workspaceId);
+        return { terminals: this.kite.store.instances(workspaceId)
+          .filter((instance) => instance.definitionId === terminalDefinitionId && instance.status === 'open' && listing.visible(instance))
+          .map((instance) => ({ ...this.kite.terminals.describe(instance), ...listing.item(instance) })) };
+      }
       case 'monitor.stop':
         check();
         await this.kite.archiveInstance(args.instanceId as string);
@@ -279,7 +395,9 @@ export class InstanceOperations {
   prepareTools(instance: PluginInstance): OperationToolSelection {
     const grants = parse(operationGrantsSchema, instance.config.grants ?? []);
     const bindings = pluginToolBindings(instance);
-    const allowed = new Set([...grants.flatMap(grantTools), ...bindings.filter((binding) => pluginToolGranted(binding, grants)).map((binding) => binding.modelName)]);
+    // 代理对其他实例的操作按协作范围授权，这些工具都给，能对准谁在调用时核对。
+    const scoped = this.agent(instance) ? [...scopedOperations].map((name) => operationContracts[name as OperationName].tool!) : [];
+    const allowed = new Set([...grants.flatMap(grantTools), ...scoped, ...bindings.map((binding) => binding.modelName)]);
     return { plugins: this.pluginTools(instance.id, instance.workspaceId, bindings), allowed, sources: bindings.map(pluginToolSource) };
   }
 

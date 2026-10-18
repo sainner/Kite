@@ -75,7 +75,7 @@ function projected() {
 }
 
 /** 一轮完整对话：发输入、模型回一段文字、回合收尾。 */
-async function round(runner: { send: (value: ReturnType<typeof input>) => Promise<void>; settled(): Promise<void> },
+async function round(runner: { send: (value: ReturnType<typeof input>) => Promise<unknown>; settled(): Promise<void> },
   model: ManualModel, number: number, id: string, usage?: JsonObject) {
   await runner.send(input(id));
   const call = await model.call(number);

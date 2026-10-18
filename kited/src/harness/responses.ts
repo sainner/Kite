@@ -3,6 +3,8 @@
  * ChatGPT 订阅与 DeepSeek 的兼容接口共用；端点、认证与请求参数由各自的适配器决定。
  */
 import { z } from 'zod';
+import { modelText } from './input.ts';
+import { TOOL_SEARCH } from './tool-search.ts';
 import type { ContextItem, JsonObject, ModelEvent, ModelItem, ModelRequest } from './types.ts';
 
 const object = z.record(z.string(), z.json());
@@ -73,6 +75,12 @@ function outputItem(raw: JsonObject, fallbackId: string, format: ModelItem['form
     if (!args.success) throw new Error('模型返回的工具参数格式无效');
     return { ...item, call: { id: callId, name: text(raw.name, '工具名'), arguments: args.data } };
   }
+  // tool_search 由 Kite 执行，参数是对象而不是 JSON 字符串；服务端执行的搜索没有声明，不会出现。
+  if (raw.type === 'tool_search_call' && raw.execution === 'client') {
+    const args = z.json().safeParse(raw.arguments);
+    if (!args.success) throw new Error('模型返回的搜索参数格式无效');
+    return { ...item, call: { id: text(raw.call_id, 'call_id'), name: TOOL_SEARCH, arguments: args.data } };
+  }
   if (typeof raw.type === 'string' && (raw.type.endsWith('_call') || raw.type === 'tool_search_call')) {
     throw new Error(`当前模型适配器不支持输出调用类型 ${raw.type}`);
   }
@@ -96,6 +104,7 @@ export function messageTexts(raw: JsonObject): string[] {
  * 只带摘要的 reasoning 条目会被订阅端点静默丢弃（2026-10-08 实测），OpenAI 的推理是加密的，DeepSeek 的推理是明文。
  */
 export function portableItem(item: ModelItem): JsonObject | [] {
+  if (item.call?.name === TOOL_SEARCH) return { type: 'tool_search_call', execution: 'client', call_id: item.call.id, status: 'completed', arguments: item.call.arguments };
   if (item.call) return { type: 'function_call', call_id: item.call.id, name: item.call.name, arguments: JSON.stringify(item.call.arguments) };
   const raw = item.raw;
   if (item.format === 'anthropic') {
@@ -112,20 +121,26 @@ export function portableItem(item: ModelItem): JsonObject | [] {
 }
 
 /**
- * 历史转成 input。format 是这个适配器自己产出的条目格式，这些条目原样交回，别家的经 portableItem 转换；
- * images 为 false 时工具结果里的图片换成一句说明，不收图片的型号会拒绝整次请求。
+ * 历史转成 input。format 是这个适配器自己产出的条目格式，这些条目原样交回，别家的经 portableItem 转换。
  */
-export function responsesInput(history: ContextItem[], { format, images = true }: { format?: ModelItem['format']; images?: boolean } = {}): JsonObject[] {
+export function responsesInput(history: ContextItem[], { format, functions = {} }: {
+  format?: ModelItem['format'];
+  /** 经搜索加载的函数与声明的函数一样带上的字段（如 ChatGPT 的 strict: false）。 */
+  functions?: JsonObject;
+} = {}): JsonObject[] {
+  const searches = new Set<string>();
   return history.flatMap<JsonObject>((entry): JsonObject | [] => {
     switch (entry.type) {
-      case 'input': return { role: 'user', content: [{ type: 'input_text', text: entry.input.text }] };
-      case 'output': return entry.item.format === format ? entry.item.raw : portableItem(entry.item);
+      case 'input': return { role: 'user', content: [{ type: 'input_text', text: modelText(entry.input) }] };
+      case 'output':
+        if (entry.item.call?.name === TOOL_SEARCH) searches.add(entry.item.call.id);
+        return entry.item.format === format ? entry.item.raw : portableItem(entry.item);
       case 'tool_result': {
+        // 搜索的结果只能是 tool_search_output；没加载到也要交回一个空的，调用才算有了结果。
+        if (searches.has(entry.callId)) return { type: 'tool_search_output', execution: 'client', call_id: entry.callId, status: 'completed',
+          tools: (entry.result.tools ?? []).map((tool) => ({ type: 'function', ...tool, ...functions, defer_loading: true })) };
         const { status, output, images: attached } = entry.result;
         const text = status === 'success' ? output : `[${status}] ${output}`;
-        if (attached?.length && !images) {
-          return { type: 'function_call_output', call_id: entry.callId, output: `${text}\n\n（附带的 ${attached.length} 张图片没有发送：当前型号不能查看图片）` };
-        }
         return { type: 'function_call_output', call_id: entry.callId, output: attached?.length
           ? [{ type: 'input_text', text }, ...attached.map((image) => ({
             type: 'input_image', image_url: `data:${image.mediaType};base64,${image.data}`, detail: 'high' }))]
@@ -138,6 +153,19 @@ export function responsesInput(history: ContextItem[], { format, images = true }
       };
     }
   });
+}
+
+/**
+ * 声明照旧、前缀不变，不用 allowed_tools：它列不进 tool_search，用了这次就不能加载插件工具；关掉的工具在调用时拒绝。
+ * 有工具却一个都不放行时（压缩摘要）禁止调用；没有工具的请求（轻量任务）照常 auto。
+ */
+export const responsesToolChoice = (request: ModelRequest) => request.tools.length && request.allowedTools?.length === 0 ? 'none' : 'auto';
+
+/** 工具声明：tool_search 声明成由 Kite 执行的搜索，其余是函数。 */
+export function responsesTools(tools: ModelRequest['tools'], extra: JsonObject = {}): JsonObject[] {
+  return tools.map((tool): JsonObject => tool.name === TOOL_SEARCH
+    ? { type: 'tool_search', execution: 'client', description: tool.description, parameters: tool.parameters }
+    : { type: 'function', ...tool, ...extra });
 }
 
 /** 解析一次请求的 SSE 正文；format 标在产出的条目上，缺省为 OpenAI 自己的条目。 */

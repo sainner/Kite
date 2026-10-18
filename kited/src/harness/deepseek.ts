@@ -2,9 +2,9 @@
  * DeepSeek 的 Responses 兼容接口，用 API Key 按量计费；循环与工具执行仍由 HarnessRunner 管理。
  * 接口与 OpenAI 的差别见 https://api-docs.deepseek.com/zh-cn/guides/responses_api ：无状态，没有 include、prompt_cache_key，
  * tool_choice 没有 allowed_tools，推理以明文 reasoning_text 给出、交回时并进相邻的助手消息，上下文缓存自动按前缀命中。
+ * 文档没列由客户端执行的 tool_search，deepseek-flash 实测可用，defer_loading 与 additional_tools 被忽略，见 spikes/tool-search。
  */
-import { agentModels } from '../agents/models.ts';
-import { responseEvents, responsesInput } from './responses.ts';
+import { responseEvents, responsesInput, responsesToolChoice, responsesTools } from './responses.ts';
 import type { JsonObject, Model, ModelEvent, ModelRequest } from './types.ts';
 
 const ENDPOINT = 'https://api.deepseek.com/responses';
@@ -20,7 +20,7 @@ export interface DeepSeekModelOptions {
   fetch?: (url: string, init: RequestInit) => Promise<Response>;
 }
 
-const assistantSide = (item: JsonObject) => item.type === 'reasoning' || item.type === 'function_call'
+const assistantSide = (item: JsonObject) => item.type === 'reasoning' || item.type === 'function_call' || item.type === 'tool_search_call'
   || (item.type === 'message' && item.role === 'assistant');
 
 /**
@@ -60,18 +60,14 @@ export class DeepSeekModel implements Model {
     const key = await this.options.key();
     if (!key) throw new Error('没有 DeepSeek 的 API Key：在 Kite 账号的凭据里添加，或给 kited 设置 DEEPSEEK_API_KEY');
     signal.throwIfAborted();
-    // DeepSeek 自己的条目原样交回，推理随之交回；目录里标了不收图片的型号，图片换成说明。
-    const images = agentModels.deepseek.find((entry) => entry.id === this.options.model)?.images !== false;
-    const input = withReasoning(responsesInput(request.history, { format: 'deepseek', images }));
-    // 只声明这次能用的工具；一个都不能用时（压缩摘要）声明照旧、禁止调用，与之前的请求同前缀。
-    const allowed = request.allowedTools && new Set(request.allowedTools);
-    const tools = allowed?.size ? request.tools.filter((tool) => allowed.has(tool.name)) : request.tools;
+    // DeepSeek 自己的条目原样交回，推理随之交回。
+    const input = withReasoning(responsesInput(request.history, { format: 'deepseek' }));
     const response = await (this.options.fetch ?? fetch)(ENDPOINT, {
       method: 'POST', signal, redirect: 'error',
       headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'text/event-stream', 'user-agent': 'kite-harness/0.1' },
       body: JSON.stringify({
         model: this.options.model, instructions: request.instructions, input,
-        ...(tools.length ? { tools: tools.map((tool) => ({ type: 'function', ...tool })), tool_choice: allowed?.size === 0 ? 'none' : 'auto' } : {}),
+        ...(request.tools.length ? { tools: responsesTools(request.tools), tool_choice: responsesToolChoice(request) } : {}),
         // 上游把 medium、xhigh 归到 high。
         reasoning: { effort: this.options.reasoning ?? 'medium' }, stream: true,
       }),

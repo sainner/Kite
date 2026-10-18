@@ -1,8 +1,10 @@
 /** Claude 原生消息、输入身份与分块序号的显示转换；记录与增量由公共投影保存。 */
 import type { ClaudeState } from '../claude/control.ts';
-import { claudeToolName, claudeToolResult, object, structuredClaudeTool } from '../claude/tools.ts';
+import { claudeToolResult, object, structuredClaudeTool } from '../claude/tools.ts';
 import { claudeInputTokens } from '../claude/usage.ts';
 import type { DisplayBlock, DisplayDelta, DisplayRecord, DisplayState, PendingInput } from './protocol.ts';
+import { inputBlock } from './protocol.ts';
+import { unwrapModelText } from '../harness/input.ts';
 
 interface ClaudeProjectionTarget {
   records: ReadonlyMap<string, DisplayRecord>;
@@ -36,8 +38,7 @@ export class ClaudeProjection {
       this.inputs.set(entry.sdkId, entry);
       if (['queued', 'submitted', 'unconfirmed'].includes(entry.status) || (entry.status === 'active' && !entry.delivered)) pending.set(entry.input.id, { ...entry.input, midTurn: entry.midTurn });
       if (!this.target.replaying() && entry.delivered && !this.target.records.has(`input:${entry.input.id}`)) {
-        this.target.put({ id: `input:${entry.input.id}`, at: entry.at, block: entry.input.source === 'human'
-          ? { type: 'human', id: entry.input.id, text: entry.input.text, midTurn: entry.midTurn } : { type: 'kite', text: entry.input.text } });
+        this.target.put({ id: `input:${entry.input.id}`, at: entry.at, block: inputBlock(entry.input, entry.midTurn) });
       }
     }
   }
@@ -46,8 +47,7 @@ export class ClaudeProjection {
     // 宿主已确认收下、但 CLI 尚未来得及写入原生历史的输入仍然可见，不自动重放。
     for (const entry of this.inputs.values()) {
       if (!entry.delivered || entry.status === 'cancelled' || this.target.records.has(`input:${entry.input.id}`)) continue;
-      this.target.put({ id: `input:${entry.input.id}`, at: entry.at, block: entry.input.source === 'human'
-        ? { type: 'human', id: entry.input.id, text: entry.input.text, midTurn: entry.midTurn } : { type: 'kite', text: entry.input.text } });
+      this.target.put({ id: `input:${entry.input.id}`, at: entry.at, block: inputBlock(entry.input, entry.midTurn) });
     }
   }
 
@@ -67,7 +67,7 @@ export class ClaudeProjection {
         const key = block.type === 'tool_use' ? `call:${block.id}` : id;
         this.target.streamIds.set(id, key);
         if (block.type === 'tool_use') this.target.put({ id: key, at, generation: 'streaming', block: {
-          type: 'tool_use', id: block.id, name: claudeToolName(block.name), input: null, arguments: '', stage: 'generating', batch: this.messageId } });
+          type: 'tool_use', id: block.id, name: block.name, input: null, arguments: '', stage: 'generating', batch: this.messageId } });
         else if (block.type === 'text' || block.type === 'thinking') this.target.put({ id: key, at, generation: 'streaming',
           block: { type: block.type, text: block.text ?? block.thinking ?? '' } });
       } else if (event.type === 'content_block_delta') {
@@ -101,15 +101,16 @@ export class ClaudeProjection {
           const entry = this.inputs.get(row.uuid);
           if (entry?.status === 'cancelled') return;
           const inputId = entry?.input.id ?? row.uuid;
-          const text = entry?.input.text ?? block.text;
           // user 是传输角色，原生中断及 hook 反馈也使用它；只有明确的人类来源才显示成人发消息。
-          const human = entry ? entry.input.source === 'human' : object(row.origin).kind === 'human';
-          put(`input:${inputId}`, human ? { type: 'human', id: inputId, text, midTurn: entry?.midTurn ?? false } : { type: 'kite', text });
+          // 没有 Kite 原始输入的行只有交给模型的正文，去掉包装再显示。
+          put(`input:${inputId}`, entry ? inputBlock(entry.input, entry.midTurn)
+            : object(row.origin).kind === 'human' ? { type: 'human', id: inputId, text: block.text, midTurn: false }
+            : { type: 'kite', ...unwrapModelText(block.text) });
         } else put(id, { type: 'text', text: block.text });
       } else if (block.type === 'thinking' && typeof block.thinking === 'string') put(id, { type: 'thinking', text: block.thinking });
       else if (block.type === 'tool_use') {
-        const name = claudeToolName(block.name);
-        if (structuredClaudeTool(block.name)) this.structuredCalls.add(block.id);
+        const { name } = block;
+        if (structuredClaudeTool(name)) this.structuredCalls.add(block.id);
         const previous = this.target.records.get(`call:${block.id}`)?.block;
         put(`call:${block.id}`, { ...(previous?.type === 'tool_use' ? previous : {}), type: 'tool_use', id: block.id,
           name, input: block.input, arguments: JSON.stringify(block.input), batch: message.id,

@@ -13,7 +13,6 @@
     { "id": "gpt-6-luna", "tier": "luna", "name": "luna-6", "maxContextWindow": 872000 }
   ],
   "deepseek": [
-    { "id": "deepseek-v4-pro", "tier": "pro", "name": "pro-4", "maxContextWindow": 1000000, "images": false },
     { "id": "deepseek-flash", "tier": "flash", "name": "flash-4.1", "maxContextWindow": 1000000 }
   ]
 }

@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, watch, writeF
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
+import { TOOL_SEARCH } from '../../src/harness/tool-search.ts';
 import type { Json, ModelItem } from '../../src/harness/types.ts';
 import { call, folderWorkspace, startKited, type Kited } from '../harness.ts';
 import { deferred, diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
@@ -227,7 +228,7 @@ test('Bun 插件及其后代被沙箱隔离，工作区回调随授权即时变�
     });
     await discoveryStarted.promise;
     const winner = await k.call('PUT', callerGrantsPath, {
-      expectedRevision: callerGrants.body.revision, grants: [{ operation: 'agent.list' }],
+      expectedRevision: callerGrants.body.revision, grants: [{ operation: 'monitor.start' }],
     });
     expect(winner.status).toBe(200);
     expect(winner.body.revision).not.toBe(callerGrants.body.revision);
@@ -314,29 +315,37 @@ test('模型按实例授权调用同名 Bun 工具，原始参数 schema 拦住�
     expect((await k.call('POST', `/threads/${agentId}/messages`, {
       id: randomUUID(), text: '两个计数器各加一次',
     })).status).toBe(200);
+    // 插件工具经 tool_search 按实例加载：加载结果带两个实例各自的 state 定义，下一次请求才放行它们。
     const first = await model.call(1);
-    for (const binding of bindings) {
-      expect(first.request.tools.find((value) => value.name === binding.modelName)).toEqual({
-        name: binding.modelName, description: binding.description, parameters: stateSchema,
-      });
-      expect(first.request.allowedTools).toContain(binding.modelName);
-    }
-    expect(first.request.tools.some((value) => value.name.includes('app-only'))).toBe(false);
-    const [one, two] = bindings;
-    await first.response.emit({ type: 'item', item: modelItem('first', one!.modelName, { action: 'increment' }) });
-    await first.response.emit({ type: 'item', item: modelItem('second', two!.modelName, { action: 'increment' }) });
-    await first.response.emit({ type: 'item', item: modelItem('invalid', one!.modelName, { action: 42 }) });
+    await first.response.emit({ type: 'item', item: modelItem('search', TOOL_SEARCH, { instances: [firstId, secondId] }) });
     first.response.complete();
     const second = await model.call(2);
+    const loaded = modelResult(second.request.history, 'search');
+    expect(loaded.status).toBe('success');
+    expect(loaded.tools).toHaveLength(bindings.length);
+    for (const binding of bindings) {
+      expect(loaded.tools).toContainEqual({
+        name: binding.modelName, description: binding.description, parameters: stateSchema,
+      });
+    }
+    // 加载新放行的只有这两个 state，app-only 不进模型可用的工具。
+    expect(second.request.allowedTools!.filter((name) => !first.request.allowedTools!.includes(name)).sort())
+      .toEqual(bindings.map((value) => value.modelName).sort());
+    const [one, two] = bindings;
+    await second.response.emit({ type: 'item', item: modelItem('first', one!.modelName, { action: 'increment' }) });
+    await second.response.emit({ type: 'item', item: modelItem('second', two!.modelName, { action: 'increment' }) });
+    await second.response.emit({ type: 'item', item: modelItem('invalid', one!.modelName, { action: 42 }) });
+    second.response.complete();
+    const third = await model.call(3);
     for (const id of ['first', 'second']) {
-      const result = modelResult(second.request.history, id);
+      const result = modelResult(third.request.history, id);
       expect(result.status).toBe('success');
       expect(JSON.parse(result.output).structuredContent.value.count).toBe(1);
     }
-    expect(modelResult(second.request.history, 'invalid').status).toBe('error');
+    expect(modelResult(third.request.history, 'invalid').status).toBe('error');
     expect(output(await tool(k, firstId, 'state', 'verify-first', { action: 'read' })).value.count).toBe(1);
     expect(output(await tool(k, secondId, 'state', 'verify-second', { action: 'read' })).value.count).toBe(1);
-    second.response.complete();
+    third.response.complete();
     await k.waitEvent((event) => event.type === 'idle' && event.threadId === agentId);
   } finally {
     await k.stop();
@@ -390,33 +399,36 @@ test('撤权拒绝旧模型调用，工具通知按生成时模板冻结且目�
       id: randomUUID(), text: '准备调用插件',
     })).status).toBe(200);
     const first = await model.call(1);
-    expect(first.request.allowedTools).toContain(pin.modelName);
     expect(first.request.history.some((entry) => entry.type === 'notification'
       && entry.text.includes('插件通知旧模板') && entry.text.includes(pin.modelName) && entry.text.includes(targetId))).toBe(true);
+    await first.response.emit({ type: 'item', item: modelItem('search', TOOL_SEARCH, { instances: [targetId] }) });
+    first.response.complete();
+    const second = await model.call(2);
+    expect(second.request.allowedTools).toContain(pin.modelName);
     const revoked = await apiCall('PUT', `/instances/${agentId}/operation-grants`, {
       expectedRevision: granted.body.revision, grants: [],
     });
     expect(revoked.status).toBe(200);
-    expect(model.calls.values).toHaveLength(1);
-    expect(first.signal.aborted).toBe(false);
+    expect(model.calls.values).toHaveLength(2);
+    expect(second.signal.aborted).toBe(false);
     const pending = structuredClone(daemon.kite.store.instanceNotifications(agentId, 0));
     expect(pending.at(-1)!.context.definition).toEqual(oldToolsTemplate.definition);
     await editNotificationTemplate(apiCall, 'kite.plugin-tools', '插件通知新模板', 'plugin.tools');
     expect(daemon.kite.store.instanceNotifications(agentId, 0)).toEqual(pending);
     expect((await apiCall('GET', `/instances/${agentId}/operation-grants`)).body).toEqual(revoked.body);
-    expect(model.calls.values).toHaveLength(1);
-    await first.response.emit({ type: 'item', item: modelItem('stale-call', pin.modelName, { action: 'increment' }) });
-    first.response.complete();
-    const second = await model.call(2);
-    const denied = modelResult(second.request.history, 'stale-call');
+    expect(model.calls.values).toHaveLength(2);
+    await second.response.emit({ type: 'item', item: modelItem('stale-call', pin.modelName, { action: 'increment' }) });
+    second.response.complete();
+    const third = await model.call(3);
+    const denied = modelResult(third.request.history, 'stale-call');
     expect(denied.status).toBe('error');
     expect(JSON.parse(denied.output)).toMatchObject({ outcome: 'denied' });
-    expect(second.request.tools.map((value) => value.name)).toEqual(first.request.tools.map((value) => value.name));
-    expect(second.request.allowedTools).not.toContain(pin.modelName);
-    expect(second.request.history).toContainEqual(expect.objectContaining({
+    expect(third.request.tools.map((value) => value.name)).toEqual(first.request.tools.map((value) => value.name));
+    expect(third.request.allowedTools).not.toContain(pin.modelName);
+    expect(third.request.history).toContainEqual(expect.objectContaining({
       type: 'notification', notification: expect.objectContaining({ kind: 'plugin.tools.changed' }),
     }));
-    const previousToolsUpdates = second.request.history.filter((entry) => entry.type === 'notification')
+    const previousToolsUpdates = third.request.history.filter((entry) => entry.type === 'notification')
       .filter((entry) => entry.notification.kind === 'plugin.tools.changed');
     for (const update of previousToolsUpdates) {
       expect(update.text).toContain('插件通知旧模板');
@@ -425,54 +437,49 @@ test('撤权拒绝旧模型调用，工具通知按生成时模板冻结且目�
     expect((await apiCall('POST', `/instances/${targetId}/plugin/tools/state`, {
       operationId: 'read-after-revoke', arguments: { action: 'read' },
     })).body.structuredContent.value.count ?? 0).toBe(0);
-    second.response.complete();
+    third.response.complete();
     await events.wait((event) => event.type === 'idle' && event.threadId === agentId);
 
-    const unknown = await apiCall('PUT', `/instances/${agentId}/operation-grants`, {
-      expectedRevision: revoked.body.revision,
-      grants: [{ operation: 'plugin.call', instanceId: targetId, tools: ['read-file'] }],
-    });
-    expect(unknown.status).toBe(409);
-    expect((await apiCall('GET', `/instances/${agentId}/operation-grants`)).body).toEqual(revoked.body);
     const restored = await apiCall('PUT', `/instances/${agentId}/operation-grants`, {
       expectedRevision: revoked.body.revision,
       grants: [{ operation: 'plugin.call', instanceId: targetId, tools: ['state'] }],
     });
     expect(restored.status).toBe(200);
-    expect(model.calls.values).toHaveLength(2);
-    const beforeThird = events.values.length;
+    expect(model.calls.values).toHaveLength(3);
+    const beforeFourth = events.values.length;
     expect((await apiCall('POST', `/threads/${agentId}/messages`, {
       id: randomUUID(), text: '恢复后继续',
     })).status).toBe(200);
-    const third = await model.call(3);
-    expect(third.request.tools.map((value) => value.name)).toEqual(first.request.tools.map((value) => value.name));
-    expect(third.request.allowedTools).toContain(pin.modelName);
-    const toolsUpdates = third.request.history.filter((entry) => entry.type === 'notification')
+    // 重新授权后定义未变，历史里加载过的工具不用再搜就放行。
+    const fourth = await model.call(4);
+    expect(fourth.request.tools.map((value) => value.name)).toEqual(first.request.tools.map((value) => value.name));
+    expect(fourth.request.allowedTools).toContain(pin.modelName);
+    const toolsUpdates = fourth.request.history.filter((entry) => entry.type === 'notification')
       .filter((entry) => entry.notification.kind === 'plugin.tools.changed');
     expect(toolsUpdates.slice(0, previousToolsUpdates.length)).toEqual(previousToolsUpdates);
     expect(toolsUpdates.at(-1)!.text).toContain('插件通知新模板');
     expect(toolsUpdates.at(-1)!.text).toContain(pin.modelName);
-    await third.response.emit({ type: 'item', item: modelItem('shared-receipt', pin.modelName, { action: 'increment' }) });
-    third.response.complete();
-    const fourth = await model.call(4);
-    expect(modelResult(fourth.request.history, 'shared-receipt').status).toBe('success');
-    expect(JSON.parse(modelResult(fourth.request.history, 'shared-receipt').output).structuredContent.value.count).toBe(1);
-    const sharedOperationId = `${third.request.turnId}:shared-receipt`;
+    await fourth.response.emit({ type: 'item', item: modelItem('shared-receipt', pin.modelName, { action: 'increment' }) });
+    fourth.response.complete();
+    const fifth = await model.call(5);
+    expect(modelResult(fifth.request.history, 'shared-receipt').status).toBe('success');
+    expect(JSON.parse(modelResult(fifth.request.history, 'shared-receipt').output).structuredContent.value.count).toBe(1);
+    const sharedOperationId = `${fourth.request.turnId}:shared-receipt`;
     const uiCall = {
       operationId: sharedOperationId, arguments: { action: 'increment' },
     };
     const uiResult = await apiCall('POST', `/instances/${targetId}/plugin/tools/state`, uiCall);
     expect(uiResult.status).toBe(200);
     expect(uiResult.body.structuredContent.value.count).toBe(2);
-    fourth.response.complete();
+    fifth.response.complete();
     await events.wait((event) => event.type === 'idle' && event.threadId === agentId
-      && events.values.indexOf(event) >= beforeThird);
+      && events.values.indexOf(event) >= beforeFourth);
 
     const journalPath = join(home, 'sessions', agentId, 'journal.jsonl');
     const configured = diskRecords(journalPath).filter((record) => record.type === 'request.configured');
     expect(configured[0]).toMatchObject({ snapshot: { settings: { pluginTools: [projection] } } });
     await editNotificationTemplate(apiCall, 'kite.plugin-tools', '插件通知未来模板', 'plugin.tools');
-    expect(model.calls.values).toHaveLength(4);
+    expect(model.calls.values).toHaveLength(5);
     await daemon.stop();
     daemon = undefined;
 
@@ -481,7 +488,7 @@ test('撤权拒绝旧模型调用，工具通知按生成时模板冻结且目�
     const persisted = await apiCall('GET', `/threads/${agentId}`);
     expect(persisted.body.config.pluginTools).toEqual(thread.body.config.pluginTools);
     const retriedModelCall = await daemon.kite.operations.invoke({
-      kind: 'model', instanceId: agentId, turnId: third.request.turnId, callId: 'shared-receipt',
+      kind: 'model', instanceId: agentId, turnId: fourth.request.turnId, callId: 'shared-receipt',
     }, workspaceId, 'plugin.call', {
       instanceId: targetId, tool: 'state',
       operationId: sharedOperationId, arguments: { action: 'increment' },
@@ -499,8 +506,12 @@ test('撤权拒绝旧模型调用，工具通知按生成时模板冻结且目�
     expect(afterRestart.request.allowedTools).toContain(pin.modelName);
     expect(afterRestart.request.history.filter((entry) => entry.type === 'notification'
       && entry.notification.kind === 'plugin.tools.changed')).toEqual(toolsUpdates);
-    const latest = diskRecords(journalPath).filter((record) => record.type === 'request.configured').at(-1);
-    expect(latest).toMatchObject({ snapshot: { settings: { pluginTools: [projection] } } });
+    // 配置记录按内容去重，取重启后这次请求实际用的那份。
+    const records = diskRecords(journalPath);
+    const started = records.find((record) => record.type === 'request.started' && record.requestId === afterRestart.request.id);
+    if (started?.type !== 'request.started') throw new Error('重启后的请求没有开始记录');
+    expect(records.find((record) => record.type === 'request.configured' && record.snapshot.id === started.configurationId))
+      .toMatchObject({ snapshot: { settings: { pluginTools: [projection] } } });
     afterRestart.response.complete();
   } finally {
     await daemon?.stop();

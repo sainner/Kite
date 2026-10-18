@@ -5,7 +5,8 @@ import { inScope } from './transcript/feed.ts';
 import { z } from 'zod';
 import type { Server, ServerWebSocket } from 'bun';
 import type { Kite } from './kite.ts';
-import { inputVia, operationCatalog } from './operations/contract.ts';
+import { collaborationScopes, operationCatalog } from './operations/contract.ts';
+import { inputSchema, inputVia } from './harness/input.ts';
 import type { InputVia } from './harness/types.ts';
 import { roleSelection } from './roles.ts';
 import { agentDefinitionSchema } from './agents/definition.ts';
@@ -407,8 +408,7 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/restore': { POST: long(bound(async (req) => {
         const parsed = z.object({ project: z.string().min(1).optional(), workspaceId: z.string().min(1), operationId: z.string().min(1),
           from: z.string().min(1).optional(), force: z.boolean().optional(),
-          continue: z.array(z.object({ threadId: z.string().min(1), inputs: z.array(z.object({ id: z.string().min(1), text: z.string(),
-            source: z.enum(['human', 'kite']), via: inputVia.optional() }).strict()) }).strict()).optional() }).strict().safeParse(await body(req));
+          continue: z.array(z.object({ threadId: z.string().min(1), inputs: z.array(inputSchema) }).strict()).optional() }).strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('还原请求要写 workspaceId 与 operationId，可带 project、from（交出它的工作机）或 force（强制接管）');
         const { project, workspaceId, operationId, from, force } = parsed.data;
         return kite.receipts.run({ actor: 'ui', id: operationId, request: JSON.stringify({ name: 'workspace.restore', workspaceId, project, from, force }),
@@ -512,9 +512,10 @@ export function serve(kite: Kite, listen: Listen) {
       '/instances/:id/operation-grants': {
         GET: bound((req) => kite.operations.grants(req.params.id)),
         PUT: bound(async (req) => {
-          const parsed = z.object({ expectedRevision: z.string().min(1), grants: z.unknown() }).strict().safeParse(await body(req));
+          const parsed = z.object({ expectedRevision: z.string().min(1), grants: z.unknown(), scope: z.enum(collaborationScopes).optional() })
+            .strict().safeParse(await body(req));
           if (!parsed.success) throw new KiteError('授权修改请求无效');
-          return kite.configureOperationGrants(req.params.id, parsed.data.expectedRevision, parsed.data.grants);
+          return kite.configureOperationGrants(req.params.id, parsed.data.expectedRevision, parsed.data.grants, parsed.data.scope);
         }),
       },
       '/instances/:id/execution-grants': {
@@ -583,7 +584,7 @@ export function serve(kite: Kite, listen: Listen) {
       '/threads/:id/interrupt': { POST: bound(async (req) => {
         const data = await optionalBody(req, { id: crypto.randomUUID() });
         const parsed = z.object({ id: z.string().min(1), inputs: z.array(z.object({
-          id: z.string().min(1), text: z.string().min(1), source: z.enum(['human', 'kite']),
+          id: z.string().min(1), text: z.string().min(1), source: inputSchema.shape.source,
         })).optional(), confirmRecovery: z.literal(true).optional() }).safeParse(data);
         if (!parsed.success) throw new KiteError('停止请求无效');
         // 停止没确认就出了异常时，Claude 要先确认恢复才能交回这次停止的收据。

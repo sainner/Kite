@@ -1,5 +1,6 @@
 /** 工作区负责文件、快照和采纳；线程负责模型执行及独立的对话记录。 */
 import type { CompactionRequest, Input, InputVia, StopRequest } from './harness/types.ts';
+import { AgentReports, agentReportContextDefinition } from './agent-reports.ts';
 import { randomUUID } from 'node:crypto';
 import { existsSync, rmSync } from 'node:fs';
 import { FileDiffStore } from './workspace/file-diffs.ts';
@@ -50,7 +51,7 @@ import { commandEnvironment } from './execution/sandbox.ts';
 import { monitorConfig, monitorDefinitionId, monitorEventsContextDefinition, Monitors } from './monitor/monitors.ts';
 import { InstanceOperations } from './operations/operations.ts';
 import { OperationReceipts } from './operations/receipts.ts';
-import { lineGrant, type OperationGrant, type OperationInput } from './operations/contract.ts';
+import { lineGrant, type CollaborationScope, type OperationGrant, type OperationInput } from './operations/contract.ts';
 import { Peers } from './line/peers.ts';
 import { LineMonitor, lineMonitorContextDefinition } from './line/monitor.ts';
 import { lineTools } from './line/tools.ts';
@@ -187,6 +188,7 @@ export class Kite {
   readonly peers: Peers;
   /** Line 的 monitor；daemon 服务起来后启动。 */
   readonly monitor: LineMonitor;
+  readonly reports: AgentReports;
   /** 正在关注 Kite 的设备；Line 所在的工作机据此决定通知与收件箱。 */
   readonly attention: Attention;
   /** 代理用 monitor_start 开的 monitor；Line 的那个由 monitor（LineMonitor）负责。 */
@@ -283,6 +285,7 @@ export class Kite {
       titleTemplate, workspaceNameTemplate, compactTemplate, emblemTemplate, pullRequestTemplate,
       agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
       pluginToolsContextDefinition, voiceTemplate, lineMonitorContextDefinition, monitorEventsContextDefinition, terminalExitContextDefinition,
+      agentReportContextDefinition,
     ]);
     this.library = new LibrarySync({ data: this.accountData, registry: this.registry, store, roles: this.roles, templates: this.contextTemplates,
       catalog: this.catalog, changed: (changes) => this.libraryChanged(changes) });
@@ -294,8 +297,18 @@ export class Kite {
     this.peers = new Peers({ self: () => ({ id: store.machine.id, name: store.machine.name, url: this.serving?.url }),
       machines: options.peers?.directory ?? (async () => this.directory.list()),
       fetch: (address, path, init) => this.peerFetch(address, path, init) });
+    this.reports = new AgentReports({
+      template: () => this.contextTemplates.get(agentReportContextDefinition.id, 'agent.report').definition,
+      variables: (threadId) => storedThreadVariables(store, threadId),
+      open: (instanceId) => store.instance(instanceId)?.status === 'open',
+      title: (instanceId) => store.instance(instanceId)?.title ?? instanceId,
+      reply: async (threadId) => (await this.reply(threadId)).reply?.text,
+      asking: (threadId) => store.asks(threadId).length > 0,
+      deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, { source: 'kite' }),
+      notify: (threadId, notification) => store.addInstanceNotification(threadId, notification),
+    });
     this.monitor = new LineMonitor({ store, peers: this.peers,
-      line: () => this.lineInstance(), inbox: () => this.lineInbox(true), deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, 'kite'),
+      line: () => this.lineInstance(), inbox: () => this.lineInbox(true), deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, { source: 'kite' }),
       template: () => this.contextTemplates.get(lineMonitorContextDefinition.id, 'line.monitor').definition,
       variables: (threadId) => storedThreadVariables(store, threadId),
       focused: () => this.attention.devices().length > 0,
@@ -310,7 +323,7 @@ export class Kite {
         return agentPolicy(await harnessPolicy({ cwd: workspace.cwd, env: process.env, home, repository: checkout.path }), workspace.cwd,
           instanceExecutionChanges(target), store.workspaceConstraints(target.workspaceId)?.execution, this.secretFiles(checkout.projectId));
       },
-      deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, 'kite'),
+      deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, { source: 'kite' }),
       template: () => this.contextTemplates.get(monitorEventsContextDefinition.id, 'monitor.events').definition,
       variables: (threadId) => storedThreadVariables(store, threadId),
       run: (workspaceId, action) => this.control(workspaceId, action),
@@ -362,7 +375,7 @@ export class Kite {
       run: (workspaceId, action) => this.control(workspaceId, action),
       changed: (workspaceId) => this.changed(workspaceId),
       collect: (instance) => this.instances.collect(instance),
-      deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, 'kite'),
+      deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, { source: 'kite' }),
       template: () => this.contextTemplates.get(terminalExitContextDefinition.id, 'terminal.exit').definition,
       variables: (threadId) => storedThreadVariables(store, threadId),
       forward: (ports) => this.serving?.network?.forward(ports),
@@ -584,9 +597,9 @@ export class Kite {
   }
   private async continueThread({ threadId, inputs }: { threadId: string; inputs: Input[] }): Promise<void> {
     try {
-      await this.send(threadId, CONTINUE_AFTER_MOVE, randomUUID(), 'kite');
-      // 收回的输入已记在线程里（收到后又被打断收回），原 id 会被当成重复；正文、来源与经由照旧，换新 id 重发。
-      for (const input of inputs) await this.send(threadId, input.text, randomUUID(), input.source, () => {}, input.via);
+      await this.send(threadId, CONTINUE_AFTER_MOVE, randomUUID(), { source: 'kite' });
+      // 收回的输入已记在线程里（收到后又被打断收回），原 id 会被当成重复；正文与来源照旧，换新 id 重发。
+      for (const { id: _, text, ...origin } of inputs) await this.send(threadId, text, randomUUID(), origin);
     } catch (error) { console.error(`[换机] 线程 ${threadId} 没能接着做：${(error as Error).message}`); }
   }
 
@@ -1016,7 +1029,8 @@ export class Kite {
         text = 'denied' in response ? secretDeniedText(ask, response.reason)
           : `用户回应了你的密钥请求（请求 ${ask.id}），${await this.saveSecrets(this.context(threadId).project.id, ask.secrets, response)}`;
       }
-      await this.send(threadId, text, randomUUID(), 'kite').catch((error: Error) => {
+      // 用户自己回答的是用户在界面上做的，交给模型时不说成「不是用户说的话」；Line 代答的照常说明。
+      await this.send(threadId, text, randomUUID(), { source: 'kite', ...(via ? {} : { response: true as const }) }).catch((error: Error) => {
         throw error instanceof KiteError ? error : new KiteError(`结果没能交给代理：${error.message}`, 409);
       });
       this.asks.remove(threadId, id);
@@ -1056,7 +1070,7 @@ export class Kite {
         this.setWorkspaceStatus(id, 'open');
         if (first) {
           await this.sendInput(this.context(first.thread.id), { id: first.messageId ?? randomUUID(), text: first.prompt,
-            ...(first.via ? { source: 'kite' as const, via: first.via } : { source: 'human' as const }) }, () => controller.signal.throwIfAborted());
+            ...(first.via ? { source: 'agent' as const, from: first.via } : { source: 'human' as const }) }, () => controller.signal.throwIfAborted());
         }
       } catch (e) {
         this.bus.emit({ type: 'workspace.error', workspaceId: id, originThreadId: t?.id, message: (e as Error).message });
@@ -1084,7 +1098,9 @@ export class Kite {
   }
 
   /** 操作层只登记实例；有首条消息时才打开执行资源，窗口由 presentation 决定。 */
-  startAgent(workspaceId: string, input: OperationInput<'agent.start'>, origin?: PluginInstance['origin'], check: () => void = () => {}): Promise<{ instanceId: string; windowId?: string }> {
+  /** sender 是首条消息的来源，与 agent.send 的规则相同，由操作层按调用方给出。 */
+  startAgent(workspaceId: string, input: OperationInput<'agent.start'>, origin?: PluginInstance['origin'],
+    sender: Omit<Input, 'id' | 'text'> = { source: 'human' }, check: () => void = () => {}): Promise<{ instanceId: string; windowId?: string }> {
     return this.control(workspaceId, async () => {
       check();
       const { workspace } = this.workspace(workspaceId);
@@ -1111,9 +1127,9 @@ export class Kite {
       this.threadChanged(agent);
       if (input.title !== undefined) this.workspaceNames.follow(agent.id);
       this.changed(workspaceId);
-      if (input.prompt !== undefined) await this.sendInput(this.context(agent.id), {
-        id: input.operationId, text: input.prompt, source: origin ? 'kite' : 'human',
-      });
+      if (input.prompt !== undefined) {
+        await this.sendInput(this.context(agent.id), { id: input.operationId, text: input.prompt, ...sender });
+      }
       return { instanceId: instance.id, ...(window ? { windowId: window.id } : {}) };
     });
   }
@@ -1149,8 +1165,8 @@ export class Kite {
     });
   }
 
-  configureOperationGrants(id: string, expectedRevision: string, value: unknown) {
-    return this.configuration.configureOperationGrants(id, expectedRevision, value);
+  configureOperationGrants(id: string, expectedRevision: string, value: unknown, scope?: CollaborationScope) {
+    return this.configuration.configureOperationGrants(id, expectedRevision, value, scope);
   }
   executionGrants(id: string) { return this.configuration.executionGrants(id); }
   approvalMode(id: string) { return this.configuration.approvalMode(id); }
@@ -1297,8 +1313,10 @@ export class Kite {
         },
         label: (text) => this.turnLabels.set(id, firstLine(text)),
         snapshot: (ids) => this.snapshot(workspace, ids, this.turnLabels.get(id) ?? title, id),
-        idle: (completed) => {
+        idle: (outcome) => {
+          const completed = outcome?.kind === 'completed';
           this.bus.emit({ type: 'idle', threadId: id, completed });
+          this.reports.settled(id, outcome).catch((error) => console.error(`[回报] ${id} 的回合收尾没能处理：${(error as Error).message}`));
           const resolving = this.resolving.get(workspaceId);
           if (completed && !this.stopping && resolving?.threadId === id) {
             const next = resolving.action === 'adopt' ? this.adopt(workspaceId, id, true) : this.syncWorkspace(workspaceId, id, true);
@@ -1389,14 +1407,15 @@ export class Kite {
       if (r?.busy || r?.recovery) throw new KiteError('工作区有线程正在工作或等待恢复确认', 409);
     }
   }
-  send(id: string, text: string, inputId: string = randomUUID(), source: Input['source'] = 'human', check: () => void = () => {},
-    via?: Input['via']): Promise<{ id: string }> {
+  /** origin 是来源与发信方，由调用方按调用身份给出，见 Input。 */
+  send(id: string, text: string, inputId: string = randomUUID(), origin: Omit<Input, 'id' | 'text'> = { source: 'human' },
+    check: () => void = () => {}): Promise<{ id: string }> {
     if (!text.trim()) throw new KiteError('消息不能为空');
     if (!inputId) throw new KiteError('消息 id 不能为空');
     return this.controlThread(id, async () => {
       check();
       const t = this.openThread(id);
-      await this.sendInput(t, { id: inputId, text, source, ...(via ? { via } : {}) }, check);
+      await this.sendInput(t, { id: inputId, text, ...origin }, check);
       return { id: inputId };
     });
   }
@@ -1404,10 +1423,16 @@ export class Kite {
     this.assertNotResolving(thread.workspaceId, thread.id);
     const runner = await this.runner(thread);
     check();
-    await runner.send(input);
+    // 先登记交代方再交给线程：回合可能在 send 返回之前就收尾。
+    const undo = this.reports.received(thread.id, input);
+    let accepted: boolean;
+    try { accepted = await runner.send(input); }
+    catch (error) { undo(); throw error; }
+    // 同一 ID 重发（操作重试）不是新的交代，收下时该做的第一次已经做过。
+    if (!accepted) { undo(); return; }
     if (input.source === 'human') for (const listener of [...this.interjections.get(thread.id) ?? []]) listener();
     // Line 自己的说明让这一回合成为 Line 的工作；用户的消息（含经 Line 转达的原文）收回给用户。
-    if (input.via && input.source === 'kite') this.lineWork.add(thread.id);
+    if (input.from?.kind === 'line') this.lineWork.add(thread.id);
     else if (input.source === 'human') this.lineWork.delete(thread.id);
     // 还没有标题记录（没起过名、没手动改过）时，用第一条消息作标题
     if (this.store.threadTitle(thread.id)?.revision === 'initial') {

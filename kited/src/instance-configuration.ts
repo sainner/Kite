@@ -1,6 +1,5 @@
 /** 实例配置、执行授权和操作授权的版本校验与通知；控制队列及运行时生命周期由 Kite 提供。 */
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
 import { z } from 'zod';
 import { agentCapabilities, agentModelCatalog, configurationBoundary } from './agents/capabilities.ts';
 import { agentRevision, chooseAgentModel, claudeReasoning, instanceAgent, parseAgentDefinition, type AgentDefinition } from './agents/definition.ts';
@@ -13,12 +12,11 @@ import {
   agentConfigurationContext, agentConfigurationContextDefinition,
   executionPermissionsContext, executionPermissionsContextDefinition, pluginToolsContext, pluginToolsContextDefinition,
 } from './harness/context/notifications.ts';
-import { JournalIndex } from './harness/journal.ts';
 import type { Kite } from './kite.ts';
 import type { AgentInstance, PluginInstance, ThreadContext } from './model.ts';
-import { roleOperationGrants, type OperationGrant } from './operations/contract.ts';
+import { roleOperationGrants, type CollaborationScope, type OperationGrant } from './operations/contract.ts';
 import { agentToolCatalog } from './plugins/definitions.ts';
-import { mergePluginTools, pluginToolBindings, pluginToolGranted, type PluginToolBinding } from './plugins/tools.ts';
+import { pluginToolBindings, pluginToolGranted, type PluginToolBinding } from './plugins/tools.ts';
 import { effectiveTools, threadVariables } from './context-variables.ts';
 import { checkTools, instanceRole, roleAgent, toolLimits, type ProjectToolRule, type RoleBinding, type RoleSelection } from './roles.ts';
 import type { Runtime } from './runtime.ts';
@@ -35,18 +33,18 @@ interface ConfigurationControl {
 }
 
 export class InstanceConfiguration {
-  private journalIndex = new JournalIndex();
 
   constructor(private kite: ConfigurationServices, private control: ConfigurationControl) {}
 
-  async configureOperationGrants(id: string, expectedRevision: string, value: unknown) {
+  /** scope 是代理的协作范围，省略时不变；不是代理的实例没有。 */
+  async configureOperationGrants(id: string, expectedRevision: string, value: unknown, scope?: CollaborationScope) {
     const instance = this.kite.store.instance(id);
     if (!instance) throw new KiteError('没有这个实例', 404);
+    if (scope && !this.kite.catalog.get(instance.definitionId).agent) throw new KiteError('只有代理有协作范围');
     if (instance.status !== 'open' || this.kite.workspace(instance.workspaceId).workspace.status !== 'open') throw new KiteError('实例或工作区尚未打开', 409);
-    const { revision, grants: oldGrants } = this.kite.operations.grants(id);
-    if (revision !== expectedRevision) throw new KiteError('授权已变化，请重新读取后修改', 409);
+    if (this.kite.operations.grants(id).revision !== expectedRevision) throw new KiteError('授权已变化，请重新读取后修改', 409);
     const grants = this.kite.operations.validateGrants(instance, value);
-    const retained = pluginToolBindings(instance).filter((binding) => pluginToolGranted(binding, oldGrants) && pluginToolGranted(binding, grants));
+    const retained = pluginToolBindings(instance).filter((binding) => pluginToolGranted(binding, grants));
     const reuseBindings = grants.every((grant) => grant.operation !== 'plugin.call'
       || grant.tools.every((name) => retained.some((binding) => binding.instanceId === grant.instanceId && binding.toolName === name)));
     // MCP 发现可能回调工作区能力；不能占着工作区控制队列等待插件。
@@ -59,23 +57,19 @@ export class InstanceConfiguration {
       const { revision } = this.kite.operations.grants(id);
       if (revision !== expectedRevision) throw new KiteError('授权已变化，请重新读取后修改', 409);
       this.kite.operations.validateGrants(current, grants);
-      this.saveOperationGrants(current, grants, selected);
+      this.saveOperationGrants(current, grants, selected, scope);
       this.control.changed(current.workspaceId);
       return this.kite.operations.grants(id);
     });
   }
 
-  private saveOperationGrants(instance: PluginInstance, grants: OperationGrant[], selected: PluginToolBinding[]): void {
+  private saveOperationGrants(instance: PluginInstance, grants: OperationGrant[], selected: PluginToolBinding[], scope?: CollaborationScope): void {
     const previous = pluginToolBindings(instance);
     const isAgent = !!this.kite.catalog.get(instance.definitionId).agent;
-    const frozen = isAgent && (previous.length > 0 || selected.length > 0)
-      && this.journalIndex.firstConfiguration(join(this.kite.home, 'sessions', instance.id, 'journal.jsonl')) !== undefined;
-    const pluginTools = mergePluginTools(previous, selected, frozen);
-    const allowed = pluginTools.filter((binding) => pluginToolGranted(binding, grants)).map((binding) => binding.modelName);
-    const currentGrants = this.kite.operations.grants(instance.id).grants;
-    const before = previous.filter((binding) => pluginToolGranted(binding, currentGrants)).map((binding) => binding.modelName);
-    const changed = JSON.stringify(before) !== JSON.stringify(allowed);
-    const config = { ...instance.config, grants, pluginTools };
+    // 会话中途新授权的插件工具：自研 harness 经 tool_search 加载，Claude 在下次启动进程后经 ToolSearch 加载，都不用新建会话。
+    const names = (bindings: PluginToolBinding[]) => JSON.stringify(bindings.map((binding) => binding.modelName));
+    const changed = names(previous) !== names(selected);
+    const config = { ...instance.config, grants, pluginTools: selected, ...(scope ? { scope } : {}) };
     this.kite.store.setInstanceConfig(instance.id, config, isAgent && changed ? {
       id: randomUUID(), kind: 'plugin.tools.changed', source: 'host', authority: 'instruction',
       context: assembleContext(pluginToolsContext(this.variables({ ...this.control.context(instance.id), config }),
@@ -83,7 +77,7 @@ export class InstanceConfiguration {
     } : undefined);
   }
 
-  /** 由实例回收在工作区锁和删除事务内调用；已固定的模型工具声明沿用撤权规则，避免改写历史前缀。 */
+  /** 由实例回收在工作区锁和删除事务内调用。 */
   revokeInstanceGrants(target: PluginInstance): void {
     for (const instance of this.kite.store.instances(target.workspaceId)) {
       if (instance.id === target.id) continue;

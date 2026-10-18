@@ -89,7 +89,8 @@ export function compactionItems(options: {
   if (options.automatic) {
     let budget = RETAINED_HUMAN_TOKENS;
     for (const item of range.toReversed()) {
-      if (item.type !== 'input' || item.input.source !== 'human') continue;
+      // 代理来信对子代理来说就是任务本身，和人发的消息一样保留原文。
+      if (item.type !== 'input' || item.input.source === 'kite') continue;
       const tokens = roughTokens(item.input.text);
       if (tokens > budget) {
         // 最新一条超出时截断保留；更早的消息只进摘要。

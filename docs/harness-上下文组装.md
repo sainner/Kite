@@ -64,6 +64,7 @@
 | `thread.plugin_tools_changed` | 全部 | 无 | 插件工具授权变化 |
 | `line.monitor` | 全部 | `monitor.delegated`、`monitor.results`、`monitor.briefing` | 唤醒 Line：交给它的事项、它发起的工作的结果与回来时的简报 |
 | `monitor.events` | 全部 | `monitor.title`、`monitor.id`、`monitor.events` | 代理开的 monitor 投来的新事件 |
+| `agent.report` | 全部 | `report.title`、`report.id`、`report.result`、`report.reply` | 交代给子代理的回合结束了：子代理的标题与实例 ID、结果、最后回复的末尾 |
 | `template.emblem` | 环境 | `template.title`、`template.content` | 按角色名称与提示词设计点阵签名 |
 | `workspace.pull_request` | 环境、项目、工作区 | `pull_request.commits`、`pull_request.files` | 提交 PR 时按工作区相对远程主线的提交说明与改动文件起草标题和说明 |
 | `workspace.naming` | 环境、项目、工作区 | `naming.current`、`naming.agents` | 有几个用户开的代理时按它们的标题起工作区名称；当前名称与各标题均为 JSON |
