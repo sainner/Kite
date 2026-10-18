@@ -20,7 +20,9 @@ struct ThreadPane: View {
         return PaneWindow(header: pane.header(thread: thread, model: model, area: area, initial: initial), usesDots: true,
                           notice: model.threadNotice(thread, in: area), status: AnyView(ThreadStatusRing().environment(thread)),
                           actions: PaneHeaderActions(menus: AnyView(ThreadHeaderActions().environment(thread)))) {
-            if initial {
+            if let raw = thread.raw {
+                RawTranscriptView(raw: raw)
+            } else if initial {
                 NewThreadStage(slot: pane.patternSlot)
             } else if !empty {
                 scrollingTranscript

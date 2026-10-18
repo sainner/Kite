@@ -172,10 +172,11 @@ extension AppModel {
         thread.roleError != nil && roles(in: area) == nil && isConnected(area)
     }
 
-    /// 会话窗口信息区里会话自己的提示：会话出的问题优先；还没有消息时再看角色读取、套用失败和所选角色的签名正在生成。
+    /// 会话窗口信息区里会话自己的提示：会话出的问题优先，其次是原始记录读不到；还没有消息时再看角色读取、套用失败和所选角色的签名正在生成。
     /// 所属工作机的连接提示更优先，由各处放在前面。
     func threadNotice(_ thread: WorkThread, in area: WorkArea) -> PaneNotice? {
         if let problem = thread.problem { return .failure(problem) }
+        if let error = thread.raw?.error { return .failure(error) }
         guard thread.isInitial else { return nil }
         if let error = thread.roleError { return .failure(error) }
         guard newThreadRole(for: thread, in: area)?.emblemState == "generating" else { return nil }

@@ -37,6 +37,8 @@ final class WorkThread: Identifiable {
     private(set) var regeneratingTitle = false
     /// 选好的压缩起点（一条人发消息的 id），等在这条或之后的消息上选终点。
     var compactionStart: String?
+    /// 调试模式：不为空时窗口的对话区换成原始记录，见 RawTranscript。
+    var raw: RawTranscript?
     private(set) var client: KitedClient?
     // 未识别的块保留位置，后续同 id 的记录替换仍沿用服务端顺序。
     private var remoteRecords: [RemoteRecord] = []
@@ -171,6 +173,7 @@ final class WorkThread: Identifiable {
 
     func apply(_ event: RemoteEvent) throws {
         guard event.threadId == id else { return }
+        raw?.poke()
         if event.type != "thread.record.delta" { flushStreaming() }
         var recordsChanged = false
         switch event.type {

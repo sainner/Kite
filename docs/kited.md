@@ -357,6 +357,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/threads/:id` | 线程和上下文，附带 `runner`、`busy` |
 | GET | `/threads/:id/state` | 只读执行与恢复状态，不启动模型 |
 | GET | `/threads/:id/history` | v1 显示历史、pending、state 和 cursor，只读 |
+| GET | `/threads/:id/raw` | 调试查看原生记录，只读：harness 的 journal 与 Claude 的会话文件逐条原样给出，两份各按文件顺序、按时间交错。`?journal=&claude=` 是上次读到的条数，省略为 0；返回 `{journal, claude, reset, entries}`，每条 `{source, index, at, label, text}`，`text` 是缩进好的原文，图片的 base64 换成占位；起点超出现有条数（记录被整份换掉）时 `reset` 为 true、从头给。格式随后端与 CLI 版本变，不是稳定契约 |
 | POST | `/threads/:id/messages` | 发消息 `{text, id?, relay?, confirmRecovery?}`，返回 `{id}`；`confirmRecovery: true` 先确认恢复再发送，只用于 App 里用户的发送，带 `X-Kite-Source` 时拒绝；harness 落盘后确认，同 id 和内容去重。带 `X-Kite-Source` 时是 Line 的说明（来源 kite），再带 `relay: true` 是 Line 照原文转达的用户的话（来源仍是人） |
 | POST | `/threads/:id/messages/:message/cancel` | 按后端能力撤回尚未交接的输入 |
 | POST | `/threads/:id/interrupt` | 停止会话，返回尚未纳入请求的队列；请求 `{id, inputs?, confirmRecovery?}`，响应 `{returned}`；`confirmRecovery: true` 先确认恢复再停止 |

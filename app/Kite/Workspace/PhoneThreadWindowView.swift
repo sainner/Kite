@@ -257,6 +257,8 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         var initial: Bool
         var empty: Bool
         var listening: Bool
+        /// 调试模式：原始记录盖在对话上（见 PhoneTranscriptSurface），对话列表藏起来。
+        var raw: Bool
         var headerHeight: CGFloat
         /// 给窗口按钮让出的宽（随卡片的悬停、宽度变）。
         var controlsInset: CGFloat
@@ -277,8 +279,8 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
             return
         }
         let state = tracking.track({
-            State(initial: thread.isInitial, empty: !thread.hasTranscript, listening: pane.listening(model), headerHeight: headerHeight,
-                  controlsInset: header.inset)
+            State(initial: thread.isInitial, empty: !thread.hasTranscript, listening: pane.listening(model), raw: thread.raw != nil,
+                  headerHeight: headerHeight, controlsInset: header.inset)
         }) { [weak self] in self?.invalidate() }
         let width = bounds.width, height = bounds.height
 
@@ -302,7 +304,8 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
     /// 紧凑布局：对话铺满，上下让出外壳给的距离；标题栏后面的渐变、滚动软边从窗口顶边铺到标题栏底边。
     private func layoutCompact() {
         let state = tracking.track({
-            State(initial: thread.isInitial, empty: !thread.hasTranscript, listening: pane.listening(model), headerHeight: 0, controlsInset: 0)
+            State(initial: thread.isInitial, empty: !thread.hasTranscript, listening: pane.listening(model), raw: thread.raw != nil,
+                  headerHeight: 0, controlsInset: 0)
         }) { [weak self] in self?.invalidate() }
         let insets = compactInsets
         if metrics.controlsHeight != insets.bottom { metrics.controlsHeight = insets.bottom }
@@ -318,10 +321,10 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         if metrics.header != placement { metrics.header = placement }
         let window = CGRect(origin: .zero, size: bounds.size)
         if windowFrame.rect != window { windowFrame.rect = window }
-        let backdropShown = state.initial || (state.listening && !state.empty)
+        let backdropShown = (state.initial && !state.raw) || (state.listening && !state.empty)
         backdrop.isHidden = !backdropShown
         if backdropShown { place(backdrop, bounds) }
-        list.isHidden = state.empty
+        list.isHidden = state.empty || state.raw
         if insets != self.insets {
             self.insets = insets
             list.setInsets(insets)
@@ -377,11 +380,11 @@ private struct PhoneTranscriptSurface: View {
     let list: PhoneTranscriptView
     let metrics: ThreadWindowMetrics
     let compact: Bool
+    @Environment(WorkThread.self) private var thread
 
     var body: some View {
         if compact {
-            PhoneTranscriptSlot(list: list)
-                .ignoresSafeArea()
+            transcript
                 .safeAreaBar(edge: .top, spacing: 0) {
                     // 全透明的一条 SwiftUI 不当软边的元素（软边就只剩滚动视图自己那条，高度不随标题栏），垫一层看不出来的底
                     Color.black.opacity(0.001).frame(height: max(metrics.header.size.height - Metrics.paneMargin, 0)).allowsHitTesting(false)
@@ -389,8 +392,7 @@ private struct PhoneTranscriptSurface: View {
                 .scrollEdgeEffectStyle(.soft, for: .top)
                 .scrollEdgeEffectHidden(true, for: .bottom)
         } else {
-            PhoneTranscriptSlot(list: list)
-                .ignoresSafeArea()
+            transcript
                 .safeAreaBar(edge: .top, spacing: 0) {
                     // 标题栏后面的渐变是原生的（TopFadeView），这一条只撑起滚动软边：全透明的一条 SwiftUI 不当软边的元素，垫一层看不出来的底
                     Color.black.opacity(0.001).frame(height: metrics.header.size.height)
@@ -400,6 +402,18 @@ private struct PhoneTranscriptSurface: View {
                 .scrollEdgeEffectStyle(.soft, for: .top)
                 .scrollEdgeEffectHidden(true, for: .bottom)
         }
+    }
+
+    /// 调试模式的原始记录盖在对话上，同样铺满、让出标题栏和输入区，从它们后面滚过。
+    private var transcript: some View {
+        ZStack {
+            PhoneTranscriptSlot(list: list)
+            if let raw = thread.raw {
+                RawTranscriptView(raw: raw, insets: EdgeInsets(top: metrics.header.size.height, leading: 0,
+                                                               bottom: metrics.controlsHeight, trailing: 0))
+            }
+        }
+        .ignoresSafeArea()
     }
 }
 

@@ -553,6 +553,15 @@ export function serve(kite: Kite, listen: Listen) {
       }) },
       '/workspaces/:id/windows/:window': { DELETE: bound((req) => kite.closeWindow(req.params.id, req.params.window)) },
       '/threads/:id/history': { GET: bound((req) => kite.history(req.params.id)) },
+      '/threads/:id/raw': { GET: bound((req) => {
+        const query = new URL(req.url).searchParams;
+        const count = (name: string): number => {
+          const value = Number(query.get(name) ?? 0);
+          if (!Number.isSafeInteger(value) || value < 0) throw new KiteError(`${name} 须为非负整数`);
+          return value;
+        };
+        return kite.rawTranscript(req.params.id, { journal: count('journal'), claude: count('claude') });
+      }) },
       '/threads/:id/messages': {
         POST: bound(async (req) => {
           const b = await body(req);

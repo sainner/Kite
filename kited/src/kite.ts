@@ -62,6 +62,8 @@ import { WorkspaceFiles, fileSelection } from './workspace/files.ts';
 import { TranscriptFeed } from './transcript/feed.ts';
 import { TranscriptHistory } from './transcript/history.ts';
 import type { DisplayState, History, ThreadActivity } from './transcript/protocol.ts';
+import { readRaw, type RawPage } from './transcript/raw.ts';
+import { claudeRecordPath } from './handoff/claude-records.ts';
 import { LightTasks } from './light-tasks.ts';
 import { ThreadTitles, titleTemplate } from './thread-titles.ts';
 import { draftPullRequest, pullRequestTemplate } from './pull-requests.ts';
@@ -1154,6 +1156,11 @@ export class Kite {
   async history(id: string): Promise<History> { return (await this.transcripts.load(this.context(id))).snapshot(); }
   async threadState(id: string): Promise<DisplayState> { return (await this.transcripts.load(this.context(id))).state(); }
   historyNow(id: string): History { return this.transcripts.snapshot(id); }
+  /** 线程的原生记录，调试查看用；from 是上次读到的各文件条数。 */
+  rawTranscript(id: string, from: { journal: number; claude: number }): RawPage {
+    const t = this.context(id);
+    return readRaw(join(this.home, 'sessions', id), claudeRecordPath(t.workspace.cwd, t.nativeId), from);
+  }
   /** 线程最后一回合的回复：最后一条输入之后的正文，供 Line 读取；太长时保留结尾。 */
   async reply(id: string) {
     const state = await this.threadState(id);

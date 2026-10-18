@@ -4,7 +4,8 @@ import SwiftUI
 
 /// Mac 宽屏会话窗口的外框（窄窗口是 SwiftUI 的 ThreadPane）。拖缝改宽时它每步跟着改尺寸，
 /// 原生的对话列表直接挂在这里（不再经过 MacTranscript 和窗口的 SwiftUI 根），标题栏和输入区各是一个托管视图，只按宽度重摆；
-/// 空会话的签名、录音时底部那一带是铺满窗口的托管视图，只在有它们时才在。层次从下到上：签名或那一带、对话、输入区、标题栏。
+/// 空会话的签名、录音时底部那一带是铺满窗口的托管视图，只在有它们时才在；调试模式的原始记录是夹在标题栏和输入区之间的托管视图，开着时代替对话。
+/// 层次从下到上：签名或那一带、对话、原始记录、输入区、标题栏。
 /// 标题栏的托管视图里照样用 safeAreaBar，SwiftUI 照旧给它建滚动软边的容器，对话列表登记它（见 registerPanePockets）。
 /// 这个托管视图从窗口原点铺起，标题栏按正文在窗口里的位置摆进去（同 HostedContentContainer）：软边按窗口坐标比对浮在上面的控件，
 /// 托管视图的原点不在窗口左上角时对不上，软边当作上面没有东西，不再模糊（2026-10-13 对照时看到字直接透出标题栏）。
@@ -23,6 +24,7 @@ final class ThreadWindowView: NSView {
 
     private let backdrop = ThreadIsland()
     private let list = TranscriptListView()
+    private let raw = ThreadIsland()
     private let controls = ThreadIsland()
     private let headerIsland = ThreadIsland()
     private let controlsLink = ControlsBarLink()
@@ -59,9 +61,10 @@ final class ThreadWindowView: NSView {
         super.init(frame: .zero)
         pane.scroll.list = list
         list.pocketScope = headerIsland
-        for view in [backdrop, list, controls, headerIsland] as [NSView] { addSubview(view) }
+        for view in [backdrop, list, raw, controls, headerIsland] as [NSView] { addSubview(view) }
         backdrop.isHidden = true
         list.isHidden = true
+        raw.isHidden = true
         headerIsland.hitRegion = { [weak self] in self.map { CGRect(x: 0, y: 0, width: $0.bounds.width, height: $0.headerHeight) } }
         headerIsland.hitSpace = self
         controls.hitRegion = { [weak self] in self?.glass }
@@ -88,6 +91,7 @@ final class ThreadWindowView: NSView {
         }.modifier(roots).modifier(ThreadHeaderPlacement(metrics: metrics)))
         controls.rootView = rooted(ThreadControlsRoot(pane: pane, link: controlsLink).modifier(roots))
         backdrop.rootView = rooted(ThreadBackdropRoot(pane: pane, metrics: metrics, windowFrame: windowFrame, reports: reports).modifier(roots))
+        raw.rootView = rooted(ThreadRawRoot().modifier(roots))
     }
 
     private func rooted(_ view: some View) -> AnyView {
@@ -100,7 +104,7 @@ final class ThreadWindowView: NSView {
         tracking.cancel()
         rowsTracking.cancel()
         controlsLink.changed = nil
-        for island in [headerIsland, controls, backdrop] {
+        for island in [headerIsland, controls, backdrop, raw] {
             island.hitRegion = nil
             island.rootView = AnyView(EmptyView())
         }
@@ -129,6 +133,7 @@ final class ThreadWindowView: NSView {
         var initial: Bool
         var empty: Bool
         var listening: Bool
+        var raw: Bool
         var headerHeight: CGFloat
     }
 
@@ -142,7 +147,8 @@ final class ThreadWindowView: NSView {
         laying = true
         defer { laying = false }
         let state = tracking.track({
-            State(initial: thread.isInitial, empty: !thread.hasTranscript, listening: pane.listening(model), headerHeight: headerHeight)
+            State(initial: thread.isInitial, empty: !thread.hasTranscript, listening: pane.listening(model), raw: thread.raw != nil,
+                  headerHeight: headerHeight)
         }) { [weak self] in self?.invalidate() }
         let width = bounds.width, height = bounds.height
 
@@ -164,11 +170,15 @@ final class ThreadWindowView: NSView {
         if windowFrame.rect != window { windowFrame.rect = window }
 
         // 空会话的签名、录音时底部那一带：有它们时才铺满窗口
-        let backdropShown = state.initial || (state.listening && !state.empty)
+        let backdropShown = (state.initial && !state.raw) || (state.listening && !state.empty)
         backdrop.isHidden = !backdropShown
         if backdropShown { place(backdrop, bounds) }
 
-        list.isHidden = state.empty
+        // 原始记录不从标题栏、输入区后面滚过：它在另一个托管视图里，标题栏的滚动软边管不到它
+        raw.isHidden = !state.raw
+        if state.raw { place(raw, CGRect(x: 0, y: state.headerHeight, width: width, height: max(height - state.headerHeight - barHeight, 0))) }
+
+        list.isHidden = state.empty || state.raw
         place(list, bounds)
         // 标题栏的托管视图排在列表后面，列表头几次排版时它还没建好软边的那一条；标题栏报上高以后这里再排，让列表接着登记
         if !list.pocketsRegistered { list.needsLayout = true }
@@ -200,9 +210,9 @@ final class ThreadWindowView: NSView {
 
     // MARK: - 读屏
 
-    /// 读屏顺序按看的顺序：标题栏、（空会话的说明）、对话、输入区；子视图的叠放是反过来的。
+    /// 读屏顺序按看的顺序：标题栏、（空会话的说明）、对话或原始记录、输入区；子视图的叠放是反过来的。
     override func accessibilityChildren() -> [Any]? {
-        [headerIsland, backdrop, list, controls].filter { !$0.isHidden }
+        [headerIsland, backdrop, list, raw, controls].filter { !$0.isHidden }
     }
 
     // MARK: - 指针
@@ -261,6 +271,15 @@ final class ThreadIsland: NSHostingView<AnyView> {
             guard NSBezierPath(roundedRect: region, xRadius: hitRadius, yRadius: hitRadius).contains(local) else { return nil }
         }
         return super.hitTest(point)
+    }
+}
+
+/// 调试模式的原始记录，见 RawTranscript。
+private struct ThreadRawRoot: View {
+    @Environment(WorkThread.self) private var thread
+
+    var body: some View {
+        if let raw = thread.raw { RawTranscriptView(raw: raw) }
     }
 }
 
