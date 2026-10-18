@@ -49,7 +49,26 @@ struct ThreadControlsModel {
         return answers
     }
 
-    /// 输入框发的消息会跳过的那一项：收起着的提问，或审批（审批的决定在卡片的按钮上）。见 WorkThread.skip。
+    /// 审批的卡片展开着：按钮行左边是拒绝、允许并记住（ApprovalDecision.others），主按钮在输入框空着时是允许一次（见 primaryAction），
+    /// 输入框照常发消息，发出去就拒绝（见 skipping）。
+    var approving: RemoteWaiting? {
+        let answers = thread.answers
+        guard let waiting = thread.waiting, !waiting.isQuestion, !waiting.isSecret, answers.waiting?.id == waiting.id, !answers.collapsed else { return nil }
+        return waiting
+    }
+
+    /// 回应卡片展开着（作答或审批）：输入框带灰底，按钮行左边不放思考强度。
+    var responding: Bool { answering != nil || approving != nil }
+
+    /// 按了按钮行上审批的决定或允许；回应途中不再接，失败的说明写在卡片上。
+    func decide(_ decision: ApprovalDecision) {
+        let answers = thread.answers
+        guard let waiting = approving, !answers.busy else { return }
+        let thread = thread
+        answers.run { try await thread.respond(waiting, .decision(decision.reply)) }
+    }
+
+    /// 输入框发的消息会跳过的那一项：收起着的提问，或审批（审批的决定在按钮行和主按钮上，见 approving）。见 WorkThread.skip。
     var skipping: RemoteWaiting? {
         guard let waiting = thread.waiting, !waiting.isQuestion || thread.answers.collapsed else { return nil }
         return waiting
@@ -82,12 +101,15 @@ struct ThreadControlsModel {
     var delegate: (() async throws -> Void)? { model.lineDelegate(thread) }
     var listening: Bool { model.voice.owner == voiceOwner }
     var blank: Bool { thread.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    enum PrimaryAction {
+    /// approve 是审批展开、输入框空着时的「允许一次」（必问的「批准这一次」），主题色实心圆里一个对勾。
+    enum PrimaryAction: Equatable {
         case send, stop, resume
+        case approve(ApprovalDecision)
 
         var symbol: String {
             switch self {
             case .send: "arrow.up"
+            case .approve: "checkmark"
             case .stop: "stop.fill"
             case .resume: "play.fill"
             }
@@ -98,15 +120,17 @@ struct ThreadControlsModel {
             case .send: "发送"
             case .stop: "停止"
             case .resume: "继续"
+            case .approve(let decision): decision.title
             }
         }
     }
 
-    /// 草稿优先；暂停着能继续时继续优先于停止（排着的消息逐条可撤回），停止没确认时先重试停止；
-    /// 空闲时仍保留发送键，由可用状态把它置灰。
+    /// 草稿优先；审批展开时没写字是允许，写了字照常发送（发出去就拒绝，同提问的「其他」）；
+    /// 暂停着能继续时继续优先于停止（排着的消息逐条可撤回），停止没确认时先重试停止；空闲时仍保留发送键，由可用状态把它置灰。
     var primaryAction: PrimaryAction {
         if let answers = answering { return answers.complete ? .send : .stop }
         if !blank { return .send }
+        if let waiting = approving { return .approve(.once(for: waiting)) }
         if thread.hasUnconfirmedStop { return .stop }
         if thread.state?.capabilities.resume == true { return .resume }
         if thread.showStop { return .stop }
@@ -118,6 +142,7 @@ struct ThreadControlsModel {
         case .send: answering.map { $0.complete && !$0.busy } ?? canSubmit
         case .stop: thread.canStop
         case .resume: thread.canResume
+        case .approve: !thread.answers.busy
         }
     }
 
@@ -131,6 +156,7 @@ struct ThreadControlsModel {
         case .send: if answering != nil { submitAnswers() } else { submit() }
         case .stop: stop()
         case .resume: resume()
+        case .approve(let decision): decide(decision)
         }
     }
 
@@ -334,6 +360,17 @@ enum ComposerLayout {
         let row = max(effort.height, Metrics.paneButton)
         let height = Metrics.controlInset + 2 * fieldPadding + field + rowSpacing + row + Metrics.controlButtonInset
         return Plan(height: height, field: field, effort: effort, hidesActions: hidesActions)
+    }
+
+    /// 审批的决定在按钮行左边一个挨一个，之间 actionGap（同收件箱卡片里的那一行）：各个按钮离这一组左边多远，和整组多大。
+    static func decisionRow(_ widths: [CGFloat]) -> (offsets: [CGFloat], size: CGSize) {
+        var x: CGFloat = 0
+        var offsets: [CGFloat] = []
+        for width in widths {
+            offsets.append(x)
+            x += width + ThreadControlsModel.actionGap
+        }
+        return (offsets, widths.isEmpty ? .zero : CGSize(width: x - ThreadControlsModel.actionGap, height: Metrics.paneButton))
     }
 
     /// 按钮行：思考强度靠左，附件、语音、主按钮靠右，都在这一行里竖直居中。

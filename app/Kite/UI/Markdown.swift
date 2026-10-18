@@ -470,6 +470,10 @@ struct CodeBlock: View {
     var maxLines: Int? = 14
     var background: Color = Theme.codeBackground
     var radius: CGFloat = Metrics.contentRadius
+    /// shell 代码的标题栏放「在终端中执行」；审批卡片里的命令不放。
+    var terminal = true
+    /// 代码区最高多高，再长在里面竖着滚；nil 不限。
+    var maxHeight: CGFloat?
     @Environment(\.toast) private var toast
 
     private var languageLabel: String {
@@ -484,7 +488,7 @@ struct CodeBlock: View {
         BlockCard(label: languageLabel, copyLabel: "复制代码", background: background, radius: radius) {
             copyToPasteboard(text, toast: toast)
         } actions: { _ in
-            if isShell {
+            if terminal && isShell {
                 Button {} label: {
                     BlockCardIcon("CodeTerminal")
                 }
@@ -493,7 +497,7 @@ struct CodeBlock: View {
                 .accessibilityLabel("在终端中执行")
             }
         } content: {
-            CodeBlockContent(text: text, language: language, maxLines: maxLines).equatable()
+            CodeBlockContent(text: text, language: language, maxLines: maxLines, maxHeight: maxHeight).equatable()
         }
     }
 }
@@ -503,10 +507,11 @@ private struct CodeBlockContent: View, Equatable {
     let text: String
     let language: String?
     let maxLines: Int?
+    let maxHeight: CGFloat?
 
     var body: some View {
         Folded(lines: splitLines(text), limit: maxLines) { shown in
-            ScrollView(.horizontal, showsIndicators: false) {
+            let lines = ScrollView(.horizontal, showsIndicators: false) {
                 HighlightedCode(text: shown.joined(separator: "\n"), language: language)
                     .font(Theme.code)
                     .textSelection(.enabled)
@@ -514,7 +519,27 @@ private struct CodeBlockContent: View, Equatable {
                     .padding(10)
             }
             .hintsScrollOverflow(.horizontal)
+            if let maxHeight {
+                HeightLimit(limit: maxHeight) { ScrollView { lines } }
+            } else {
+                lines
+            }
         }
+    }
+}
+
+/// 只摆一个子视图：按给的宽量它不限高时多高，最高 limit，子视图就摆这么高（里面是滚动视图时超出的在里面滚）。
+struct HeightLimit: Layout {
+    var limit: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let size = child.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: proposal.width ?? size.width, height: min(size.height, limit))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(bounds.size))
     }
 }
 

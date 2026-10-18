@@ -102,6 +102,12 @@ final class ControlsBarView: RepresentedRoot {
     /// 提问作答时按钮行左边的上一题、下一题，占思考强度的位置（见 ThreadControlsModel.answering）。
     private let previousButton = PaneButtonView()
     private let nextButton = PaneButtonView()
+    /// 审批时按钮行左边的拒绝、允许并记住，也占思考强度的位置（见 ThreadControlsModel.approving）；换了一项审批按它的决定重建。
+    private var decisionButtons: [PaneButtonView] = []
+    private var decisions: [ApprovalDecision] = []
+    /// 输入框带着灰底（作答或审批时）。
+    private var fieldFilled = false
+    private var buttonFont = NSFont.systemFont(ofSize: NSFont.systemFontSize)
     /// 等你回应时摆在输入框上面的卡片（WaitingResponseCard），和输入框共用这张玻璃。按自己的高摆，
     /// 过渡途中玻璃比它矮，超出顶边的由 responseClip 裁掉。
     private let response = NSHostingController(rootView: AnyView(EmptyView()))
@@ -187,10 +193,11 @@ final class ControlsBarView: RepresentedRoot {
         self.environment = environment
         let body = Theme.body.resolve(in: environment.fontResolutionContext).ctFont as NSFont
         if field.font != body { field.font = body }
-        for button in [attach, voice, primary, previousButton, nextButton] { button.setFont(body) }
+        buttonFont = body
+        for button in [attach, voice, primary, previousButton, nextButton] + decisionButtons { button.setFont(body) }
         if buttonsEnvironment != environment.colorScheme {
             buttonsEnvironment = environment.colorScheme
-            for button in [attach, voice, primary, previousButton, nextButton] { button.environment = environment }
+            for button in [attach, voice, primary, previousButton, nextButton] + decisionButtons { button.environment = environment }
         }
         let key = EffortKey(controls: controls, enabled: enabled, colorScheme: environment.colorScheme)
         if key != effortKey {
@@ -236,11 +243,15 @@ final class ControlsBarView: RepresentedRoot {
         primary.isEnabled = enabled && controls.canPerformPrimaryAction
         previousButton.isEnabled = enabled && controls.answering?.canGoBack == true
         nextButton.isEnabled = enabled && controls.answering?.canGoForward == true
+        showDecisions(controls)
         let answering = controls.answering?.waiting?.id
         if answering != answeringShown {
             answeringShown = answering
             if field.currentEditor() != nil { window?.makeFirstResponder(nil) }
-            let alpha: CGFloat = answering == nil ? 0 : 1
+        }
+        if controls.responding != fieldFilled {
+            fieldFilled = controls.responding
+            let alpha: CGFloat = fieldFilled ? 1 : 0
             if window == nil { fieldFill.alphaValue = alpha } else {
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = ComposerMotion.duration
@@ -252,6 +263,29 @@ final class ControlsBarView: RepresentedRoot {
         let fading = controls.state.fading
         applyPose(fading: fading)
         if fading == nil { shownFading = nil }
+    }
+
+    /// 审批展开时按钮行左边的决定：换了一项审批（决定不同）才重建，回应途中都按不了。
+    private func showDecisions(_ controls: ThreadControlsModel) {
+        let decisions = controls.approving.map(ApprovalDecision.others(for:)) ?? []
+        if decisions != self.decisions {
+            self.decisions = decisions
+            for button in decisionButtons { button.removeFromSuperview() }
+            decisionButtons = decisions.map { decision in
+                let button = PaneButtonView()
+                button.label = .text(decision.title)
+                button.title = decision.title
+                button.fill = decision.fill
+                button.secondary = decision.secondary
+                button.foreground = decision.foreground
+                button.setFont(buttonFont)
+                if let environment { button.environment = environment }
+                button.action = { [weak self] in self?.controls?.decide(decision) }
+                addSubview(button, positioned: .below, relativeTo: responseClip)
+                return button
+            }
+        }
+        for button in decisionButtons { button.isEnabled = enabled && !controls.thread.answers.busy }
     }
 
     /// 出现审批或提问时卡片从输入区上方长出来，回应后收回去；过渡见 ComposerMotion，高由 contentChanged 报给外框。
@@ -380,9 +414,10 @@ final class ControlsBarView: RepresentedRoot {
         return ComposerLayout.plan(width: width, field: fieldHeight, effort: leftSize)
     }
 
-    /// 按钮行左边那一格：平常是思考强度；作答时多题是上一题、下一题，一题时空着。
+    /// 按钮行左边那一格：平常是思考强度；作答时多题是上一题、下一题，一题时空着；审批时是审批的决定。
     private var leftSize: CGSize {
-        guard let controls, controls.answering != nil else { return currentEffortSize }
+        guard let controls, controls.responding else { return currentEffortSize }
+        if controls.approving != nil { return ComposerLayout.decisionRow(decisionButtons.map(\.width)).size }
         return !controls.questionSteps ? .zero : CGSize(width: 2 * Metrics.paneButton, height: Metrics.paneButton)
     }
 
@@ -428,14 +463,18 @@ final class ControlsBarView: RepresentedRoot {
 
         let row = ComposerLayout.row(width: width, plan: plan)
         let left = row.effort.offsetBy(dx: 0, dy: dy)
-        let answering = controls?.answering != nil, navigating = controls?.questionSteps == true
-        if effort.isHidden != answering { effort.isHidden = answering }
-        if !answering { place(effort, left) }
+        let responding = controls?.responding == true, navigating = controls?.questionSteps == true
+        if effort.isHidden != responding { effort.isHidden = responding }
+        if !responding { place(effort, left) }
         for button in [previousButton, nextButton] where button.isHidden != !navigating { button.isHidden = !navigating }
         if navigating {
             let size = Metrics.paneButton
             place(previousButton, CGRect(x: left.minX, y: left.minY, width: size, height: size))
             place(nextButton, CGRect(x: left.minX + size, y: left.minY, width: size, height: size))
+        }
+        let decisionRow = ComposerLayout.decisionRow(decisionButtons.map(\.width))
+        for (button, x) in zip(decisionButtons, decisionRow.offsets) {
+            place(button, CGRect(x: left.minX + x, y: left.minY, width: button.width, height: Metrics.paneButton))
         }
         // 复用本次排版的宽度比较，只在跨过阈值时改变可见性；控件保留，effort 的手势不中断。
         for button in [attach, voice, primary] where button.isHidden != plan.hidesActions {

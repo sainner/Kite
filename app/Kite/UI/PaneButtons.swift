@@ -175,8 +175,10 @@ struct PaneButtonStyle: ButtonStyle {
     var fill: Color?
     var foreground: Color = .secondary
     var size: CGFloat?
-    /// 次级按钮：半透明灰底，字仍按 foreground，和不带底的图标按钮区分开（回应卡片里的拒绝、允许并记住）。
+    /// 次级按钮：半透明灰底，字仍按 foreground，和不带底的图标按钮区分开（审批的拒绝、允许并记住）。
     var secondary = false
+    /// 次级按钮的灰底，原生的 PaneButtonView 同。
+    static let secondaryFill = Color.gray.opacity(0.16)
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.fontResolutionContext) private var fontContext
 
@@ -190,7 +192,7 @@ struct PaneButtonStyle: ButtonStyle {
             .padding(.horizontal, text ? Metrics.paneToolbarInset : 0)
             .frame(width: text ? nil : size, height: size)
             .frame(minWidth: size)
-            .modifier(PaneButtonHover(inset: 2, fill: secondary ? Color.gray.opacity(0.16) : fill, isPressed: configuration.isPressed))
+            .modifier(PaneButtonHover(inset: 2, fill: secondary ? Self.secondaryFill : fill, isPressed: configuration.isPressed))
             .opacity(!isEnabled ? 0.45 : configuration.isPressed ? 0.7 : 1)
             .clickPointer()
     }

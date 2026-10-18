@@ -45,8 +45,17 @@ enum TranscriptSpeech {
     static func patchLines(_ value: String) -> String { "补丁行数 \(value)" }
     static func duration(_ value: String) -> String { "运行时间 \(value)" }
 
+    /// 思考只占一行：ChatGPT 的推理摘要每段以 `**小标题**` 开头，后面几段接着往下写，取最后一段的小标题（还在生成的没有收尾的星号）；
+    /// 没有小标题的换行当空格。加粗的星号都不显示。
     static func thinking(_ text: String) -> String {
-        text.isEmpty ? "思考中" : text.replacingOccurrences(of: "\n", with: " ")
+        let lines = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let heading = lines.last { line in
+            guard line.hasPrefix("**") else { return false }
+            let rest = line.dropFirst(2)
+            return !(rest.hasSuffix("**") ? rest.dropLast(2) : rest).contains("**")
+        }
+        let shown = (heading ?? lines.joined(separator: " ")).replacingOccurrences(of: "**", with: "")
+        return shown.isEmpty ? "思考中" : shown
     }
 
     /// 消息上面的附件。
