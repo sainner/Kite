@@ -10,6 +10,7 @@ metadata:
 
 - 卡顿先量再改：用 `CADisplayLink` 记下动作后一两秒的帧间隔，每做一次换一种组合对照，一次只用一种组合。手感只能说明卡不卡，说明不了卡在哪。
 - 拖缝、侧栏改宽、缩小恢复、静息占用、打字发送这些固定场景，用 `kited/test/manual/measure-perf.ts` 重跑（用法见同目录 README 的「性能测量」，基线在 [[todo-window-motion-remaining]]）。比新旧代码用它的交替跑（`--base` 另一个检出、`--variant` 启动参数），不和旧结果文件硬比：单次测量受指针位置和其他会话活动影响，同一份代码中位丢帧会在 2 和 11 之间跳（2026-10-11），至少跑 3 次看中位。
+- 发送相关的卡顿用真发送量（`send` 场景加 `-perfSendLive 1`，只在测试会话上），假发送只排进本地、不经工作机的确认和状态事件。2026-10-18 用户报偶发卡顿、气泡停在半透明，假发送一次都没复现；真发送 6 次里 2 次滑动抢在新消息排进来之前起步（原来按行的版本判断，工作机事件也会换行）。偶发的先加探针记日志（`Logger` 带 `privacy: .public`，`/usr/bin/log show` 取），多发几轮看出现几次，不靠截图。
 - iPhone 的卡顿要在真机上量，Mac 上的结论不能外推。2026-10-11 同一个发送卡顿：Mac 上是控制区的逐帧动画；iPhone 上是对话里 `UITextView` 反复量尺寸，每次卡 200–500ms。真实触摸（交互玻璃）的开销，Mac 上的自动发送也测不到。
 - 真机 Time Profiler：`xcrun xctrace record --template 'Time Profiler' --device <ID> --launch -- com.sainner.kite`。`--attach` 按进程名或进程号都找不到进程（2026-10-11，Xcode 27.2）。
   - 导出 `time-profile` 表后，调用栈在 `tagged-backtrace` 元素里。

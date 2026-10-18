@@ -38,7 +38,7 @@
 - [远程连接与托管运维](todo-remote-connections.md) — iPhone 重连、托管容量备份、凭据重绑和多机关系
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
 - [终端插件收尾](todo-terminal-plugin.md) — 已实现待手测；旁观设备的尺寸、跨 kited 重启、后台命令的输入
-- [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据
+- [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据；真发送开头掉帧
 - [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit 一起做、CloudKit、登出重启关机预告待真机实测、kite-net 重启后丢用户
 - [上架前的版本做法](todo-store-release.md) — kited 兼容在用的旧版 App、先 App 后 kited、公共下载点、Mac App 签名后自更新
 - [工作区模型改造](todo-workspace-model.md) — 已实现、协议号 2；部署前清各工作机旧 kite.db（先征得同意）、真机验收、Line 不提交现场待确认

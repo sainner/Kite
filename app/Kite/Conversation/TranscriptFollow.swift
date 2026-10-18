@@ -20,8 +20,11 @@ import SwiftUI
     private(set) var userScrolling = false
     /// 发送后滑到最底下的那一下。
     var glide: Glide?
-    /// 发出去、等新消息排好再滑的那一下：发的时候行的版本、和滑同一个动画的 alongside、已经等了几拍。
-    private(set) var pendingGlide: (version: Int, alongside: () -> Void, attempts: Int)?
+    /// 发出去、等新消息排好再滑的那一下：发的时候排进来过几条新消息（TranscriptArrangement.arrivals）、和滑同一个动画的 alongside、
+    /// 什么时候发的（systemUptime）。
+    private(set) var pendingGlide: (arrivals: Int, alongside: () -> Void, since: TimeInterval)?
+    /// 新消息迟迟不排进来时最多等多久，过了照样滑。
+    static let arrivalWait: TimeInterval = 0.25
     /// 留白跟上变矮的可见区时请平台重排。
     var relayout: (() -> Void)?
 
@@ -82,32 +85,30 @@ import SwiftUI
 
     // MARK: - 发送
 
-    /// 发一条消息：append 把它加进对话，返回它会不会开启新的一轮（开启的重新留白）；version 是加进去以后行的版本，
+    /// 发一条消息：append 把它加进对话，返回它会不会开启新的一轮（开启的重新留白）；arrivals 是加进去时排进来过几条新消息，
     /// 等它变了（新消息排好了）再滑，见 glideStart。
-    func send(_ append: () -> Bool, version: () -> Int, alongside: @escaping () -> Void) {
+    func send(_ append: () -> Bool, arrivals: () -> Int, alongside: @escaping () -> Void) {
         following = true
         glide = nil
         let startsTurn = append()
         if startsTurn { trim = 0 }
-        pendingGlide = (version(), alongside, 0)
+        pendingGlide = (arrivals(), alongside, ProcessInfo.processInfo.systemUptime)
     }
 
     enum GlideStart {
         /// 没有要滑的，或者正在滑。
         case none
-        /// 新消息还没交过来，下一拍再看。
+        /// 新消息还没排进来，过一会儿再看。
         case wait
         /// 开始滑，alongside 和滑同一个动画。
         case start(alongside: () -> Void)
     }
 
-    /// 新消息到了（行的版本变了）就开始滑；还没到时下一拍再看，最多等 5 拍。
-    func glideStart(version: Int) -> GlideStart {
+    /// 新消息排进来了就开始滑；还没到时过一会儿再看，最多等 arrivalWait。不按行有没有换过看：上一轮的回复还在长、
+    /// 标题换了这些也换行，滑就抢在新消息前头起步，等它排进来，目标一下远了一截、气泡也没跟着浮（2026-10-18 实发测到）。
+    func glideStart(arrivals: Int) -> GlideStart {
         guard let pending = pendingGlide, glide == nil else { return .none }
-        if pending.version == version && pending.attempts < 5 {
-            pendingGlide = (pending.version, pending.alongside, pending.attempts + 1)
-            return .wait
-        }
+        if pending.arrivals == arrivals && ProcessInfo.processInfo.systemUptime - pending.since < Self.arrivalWait { return .wait }
         pendingGlide = nil
         return .start(alongside: pending.alongside)
     }

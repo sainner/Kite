@@ -139,7 +139,7 @@ final class TranscriptListView: NSScrollView {
         placeActions()
         if layout.waiting { measureLater() }
         // 发出去的新消息排好了就开始滑
-        if let pending = follow.pendingGlide, pending.version != arrangement.version, follow.glide == nil { startGlideIfReady() }
+        if let pending = follow.pendingGlide, pending.arrivals != arrangement.arrivals, follow.glide == nil { startGlideIfReady() }
     }
 
     private func awaitResizeEnd() {
@@ -352,34 +352,41 @@ final class TranscriptListView: NSScrollView {
 
     /// 发一条消息：append 把它加进对话，返回它会不会开启新的一轮；等新消息排好后滑到最底下，alongside 和滑同一个动画。
     func send(_ append: () -> Bool, alongside: @escaping () -> Void) {
-        follow.send(append, version: { arrangement.version }, alongside: alongside)
+        follow.send(append, arrivals: { arrangement.arrivals }, alongside: alongside)
         DispatchQueue.main.async { [weak self] in self?.startGlideIfReady() }
     }
 
-    /// 新消息到了就开始滑；SwiftUI 还没把新消息交过来时下一拍再看，最多等几拍。
+    /// 新消息排进来了就开始滑（排列时也看，见 layoutRows）；还没到时下一帧再看，最多等 TranscriptFollow.arrivalWait。
     private func startGlideIfReady() {
-        switch follow.glideStart(version: arrangement.version) {
+        switch follow.glideStart(arrivals: arrangement.arrivals) {
         case .none:
             return
         case .wait:
-            DispatchQueue.main.async { [weak self] in self?.startGlideIfReady() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { [weak self] in self?.startGlideIfReady() }
         case .start(let alongside):
             // 先把这一下记上再排版：排版看到程序在滚就不动滚动位置，从眼下的位置起滑
             let glide = Glide(from: visibleArea.minY)
             follow.glide = glide
-            glide.rising = arrangement.slots.filter { $0.rise > 0 }.map(\.id)
             layoutSubtreeIfNeeded()
             withAnimation(.spring(.glide)) { alongside() }
-            glide.start(in: self) { [weak self] progress in self?.glideStep(progress) ?? false }
+            glide.start(in: self) { [weak self, weak glide] progress in
+                guard let self, let glide else { return false }
+                return glideStep(glide, progress)
+            }
         }
     }
 
     /// 滑的一帧：progress 是弹簧走到哪了；走完了返回 false。目标是这一帧的最底下，回复在长时跟着长。
-    private func glideStep(_ progress: Double?) -> Bool {
-        guard let glide = follow.glide else { return false }
-        let target = max(document.frame.height - visibleArea.height, 0)
+    private func glideStep(_ glide: Glide, _ progress: Double?) -> Bool {
+        let active = follow.glide === glide
         // 刚发出去的消息跟着这一下浮上来、淡显
-        for id in glide.rising { arrangement.byID[id]?.rise = 1 - CGFloat(progress ?? 1) }
+        arrangement.rise(glide, to: 1 - CGFloat(progress ?? 1), adopting: active)
+        // 人滚了一下、或者又发了一条，滑被接过去了：滚动交出去，气泡照样浮完
+        guard active else {
+            realize(viewport)
+            return progress != nil
+        }
+        let target = max(document.frame.height - visibleArea.height, 0)
         guard let progress else {
             follow.glideEnded()
             adjusting = true

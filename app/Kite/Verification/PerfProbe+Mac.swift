@@ -274,19 +274,24 @@ extension PerfProbe {
         session.record(segment)
     }
 
-    /// 打字：在最左边一个已建好代理的会话里，每 100ms 打一个字，每轮 -perfKeys 个（默认 20），-perfRounds 轮（默认 3）；
+    /// 打字：在最左边一个已建好代理、没在等回应的会话里，每 100ms 打一个字，每轮 -perfKeys 个（默认 20），-perfRounds 轮（默认 3）；
     /// 每个键记之后 4 帧。send 时每轮打完再发出去，记发送后 1.5 秒；消息只排进本地（hold），每轮后撤掉。
+    /// -perfSendLive 1 时真的发给工作机（只在测试用的会话里用，回复留在对话里）：每轮先等上一轮回复完，发送后另记 4 秒（send-live），
+    /// 工作机确认、开始回复都在里面。
     private static func typing(_ session: Session, send: Bool) async throws {
-        guard let window, let field = composer() else { throw Failure("没有已建好代理的会话输入框") }
-        holdsSends = send
+        guard let window, let (field, thread) = composer() else { throw Failure("没有已建好代理的会话输入框") }
+        let live = send && number("perfSendLive") == 1
+        holdsSends = send && !live
         session.onFinish {
             holdsSends = false
             releaseHeld()
         }
         let keys = number("perfKeys").map(Int.init) ?? 20
-        let letters = Array("abcdefghijklmnopqrstuvwxyz")
+        // 真发时打一句让代理只回两个字的话，不打乱码：乱码代理会去查是什么
+        let letters = live ? Array("这是发送测量：只回复收到两字，别调用工具") : Array("abcdefghijklmnopqrstuvwxyz")
         try await ready(session)
         for round in 0..<rounds(3) {
+            if live { try await untilIdle(thread) }
             window.makeFirstResponder(field)
             try await Task.sleep(for: .seconds(0.6))
             guard let editor = window.firstResponder as? NSTextView else { throw Failure("输入框没接到焦点") }
@@ -296,7 +301,7 @@ extension PerfProbe {
             try await measuring {
                 for index in 0..<keys {
                     let mark = Mark.now
-                    editor.insertText(String(letters[index % letters.count]) + (index % 5 == 4 ? " " : ""),
+                    editor.insertText(String(letters[index % letters.count]) + (index % 5 == 4 && !live ? " " : ""),
                                       replacementRange: NSRange(location: NSNotFound, length: 0))
                     try await Task.sleep(for: .milliseconds(100))
                     session.record(Segment(name: "key", index: round * keys + index, start: mark, ticks: recorder.after(mark, frames: 4)))
@@ -305,14 +310,15 @@ extension PerfProbe {
                 if send {
                     let mark = Mark.now
                     field.submit?()
-                    try await Task.sleep(for: .seconds(1.6))
+                    try await Task.sleep(for: .seconds(live ? 4.1 : 1.6))
                     session.record(Segment(name: "send", index: round, start: mark, ticks: recorder.after(mark, seconds: 1.5)))
+                    if live { session.record(Segment(name: "send-live", index: round, start: mark, ticks: recorder.after(mark, seconds: 4))) }
                 }
             }
             await recorder.stop()
             if round == 0 { await capture(send ? "sent" : "typed") }
             if send {
-                releaseHeld()
+                if !live { releaseHeld() }
             } else {
                 editor.selectAll(nil)
                 editor.delete(nil)
@@ -321,15 +327,25 @@ extension PerfProbe {
         }
     }
 
-    /// 最左边一个已建好代理（不是草稿：草稿发送会真的建代理）的会话的输入框。
-    private static func composer() -> ComposerField? {
+    /// 最左边一个已建好代理（不是草稿：草稿发送会真的建代理）、没在等回应（等着时发出去是跳过审批或提问，不是平常的发送）的会话的输入框。
+    private static func composer() -> (ComposerField, WorkThread)? {
         let fields = views(ComposerField.self).filter { !$0.isHiddenOrHasHiddenAncestor }.sorted(by: leftToRight)
         for field in fields {
             var host: NSView? = field
             while let view = host, !(view is ThreadWindowView) { host = view.superview }
-            if let thread = (host as? ThreadWindowView)?.thread, !thread.isDraft { return field }
+            if let thread = (host as? ThreadWindowView)?.thread, !thread.isDraft, thread.waiting == nil { return (field, thread) }
         }
         return nil
+    }
+
+    /// 等会话回复完、能发：最多 2 分钟。
+    private static func untilIdle(_ thread: WorkThread) async throws {
+        let deadline = Date.now.addingTimeInterval(120)
+        while thread.transcript.running || !thread.transcript.pending.isEmpty || thread.waiting != nil || !thread.canSend {
+            guard Date.now < deadline else { throw Failure("会话 2 分钟没回复完") }
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        try await Task.sleep(for: .seconds(1))
     }
 
     // MARK: - 截图

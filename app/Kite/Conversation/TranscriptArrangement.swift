@@ -63,8 +63,8 @@ enum TranscriptPlacement: Equatable {
     private var shapes: [RowID: Int] = [:]
     /// 环境里会让行重画的几项：外观变了所有行都换一遍。
     private var appearanceKey: AppearanceKey?
-    /// 每次换行加一，发送时用它看新消息到了没有。
-    private(set) var version = 0
+    /// 刚发出去的消息建成行（先在下面藏着）的次数，发送时用它看新消息排进来没有。
+    private(set) var arrivals = 0
     /// 正在展开、收起的行：从哪个高起、弹簧走到哪了。
     private(set) var heightAnimations: [RowID: HeightAnimation] = [:]
     /// 空闲时补量屏幕外的行。
@@ -106,6 +106,7 @@ enum TranscriptPlacement: Equatable {
                 // 刚发出去的消息先在下面藏着，跟着滑到底的那一下浮上来，见各端列表的 startGlideIfReady
                 if case .message(let message, _) = row.content, context.environment.arrivingMessages.contains(message.id) {
                     slot.rise = 1
+                    arrivals += 1
                 }
             }
             shapes[row.id] = shape
@@ -118,7 +119,6 @@ enum TranscriptPlacement: Equatable {
         }
         slots = next
         byID = nextByID
-        version += 1
         return removed
     }
 
@@ -248,6 +248,19 @@ enum TranscriptPlacement: Equatable {
         let known = slots.compactMap { $0.measured.map(\.height) }
         guard !known.isEmpty else { return 60 }
         return known.reduce(0, +) / CGFloat(known.count)
+    }
+
+    // MARK: - 发送
+
+    /// 发送后那一下滑的一帧，刚发出去的消息浮到 value（1 在下面，0 到位），只往上浮。adopting：这一下还是眼下的滑，
+    /// 把还在下面的行都收进来（新消息晚一步才排进来的、上一下被接走没浮完的）；被接走以后只把收过的浮完，不停在半路。
+    func rise(_ glide: Glide, to value: CGFloat, adopting: Bool) {
+        if adopting {
+            for slot in slots where slot.rise > 0 && !glide.rising.contains(slot.id) { glide.rising.append(slot.id) }
+        }
+        for id in glide.rising {
+            if let slot = byID[id], slot.rise > value { slot.rise = value }
+        }
     }
 
     // MARK: - 操作栏
