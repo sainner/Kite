@@ -699,21 +699,30 @@ final class AppModel {
 
     /// 引用只选择资源；窗口身份仍按现有实例与视图复用。窗口先在本机打开（见 sendWindowRequest），再选文件；
     /// 还没有文件实例的，等工作机建好实例才能选。
+    /// 窗口不在台面上时目录先收起、不带动画，窗口打开出来就是文件：等选好文件再收（见 navigate），目录会在窗口展开时划走。
     func openFileReference(_ reference: FileReference, in area: WorkArea) async throws {
         let browsing = area.windows.first { area.files[$0.target.instanceId] != nil }?.target.instanceId
             ?? area.instances.first { $0.status == .open && area.files[$0.id] != nil }?.id
         guard let instanceID = browsing else {
-            let request = OpenWindowRequest(id: UUID().uuidString.lowercased(), content: .create("kite.files", instance: UUID().uuidString.lowercased()))
+            let instanceID = UUID().uuidString.lowercased()
+            area.referencedFiles.insert(instanceID)
+            defer { area.referencedFiles.remove(instanceID) }
+            let request = OpenWindowRequest(id: UUID().uuidString.lowercased(), content: .create("kite.files", instance: instanceID))
             let window = try await sendWindowRequest(request, in: area).value
             guard let browser = area.files[window.target.instanceId] else { throw KitedError(message: "文件窗口尚未就绪") }
             try await browser.navigate(reference)
             return
         }
+        guard let browser = area.files[instanceID] else { throw KitedError(message: "文件窗口尚未就绪") }
+        if !area.isVisible(instance: instanceID) {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { browser.showDirectory = false }
+        }
         let target = WindowTarget(instanceId: instanceID, viewId: "files")
         var opening: Task<RemoteWorkspaceWindow, Error>?
         if area.windows.contains(where: { $0.target == target }) { area.activateWindow(for: target) }
         else { opening = sendWindowRequest(OpenWindowRequest(id: UUID().uuidString.lowercased(), content: .open(target)), in: area) }
-        guard let browser = area.files[instanceID] else { throw KitedError(message: "文件窗口尚未就绪") }
         try await browser.navigate(reference)
         _ = try await opening?.value
     }

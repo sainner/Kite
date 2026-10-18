@@ -72,7 +72,10 @@ struct QuickLookPreview: NSViewRepresentable {
         if (view.previewItem as? NSURL) as URL? != url { view.previewItem = url as NSURL }
     }
 
-    static func dismantleNSView(_ view: QLPreviewView, coordinator: ()) { view.close() }
+    /// 移出窗口时系统已经停掉预览，这时再 close 会触发 QuickLook 的断言而闪退；关窗口时宿主视图常在离开窗口后才拆。
+    static func dismantleNSView(_ view: QLPreviewView, coordinator: ()) {
+        if view.window != nil { view.close() }
+    }
 }
 #else
 extension PDFPreview: UIViewRepresentable {

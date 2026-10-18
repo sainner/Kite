@@ -54,6 +54,8 @@ final class WorkArea: Identifiable {
     /// 本机看过的回合收尾时间，按实例 ID；收尾时间比它新、窗口又不在本机台面上的，停靠栏标「完成待查看」。不跨设备同步。
     private(set) var seenTurns: [String: Double] = [:]
     @ObservationIgnored private var visibleInstances: Set<String> = []
+    /// 为打开引用新建、工作机还没建好的文件实例：浏览器建出来就收着目录，见 AppModel.openFileReference。
+    @ObservationIgnored var referencedFiles: Set<String> = []
     /// 停靠栏里展开的「更多」或家族格，外层在前；只在本机，不保存。
     var dockExpansion: [String] = []
     /// 指针停在停靠栏哪一格上，Mac 据此在左侧浮出名字与状态。
@@ -114,7 +116,8 @@ final class WorkArea: Identifiable {
     func updateFiles(client: KitedClient? = nil) {
         let confirmed = instances.filter { $0.definitionId == "kite.files" && $0.status == .open && !isOpening(instance: $0.id) }
         files = Dictionary(uniqueKeysWithValues: confirmed.map { instance in
-            let browser = files[instance.id] ?? FileBrowser(instanceID: instance.id, workspaceID: id, client: client)
+            let browser = files[instance.id] ?? FileBrowser(instanceID: instance.id, workspaceID: id, client: client,
+                                                            showDirectory: !referencedFiles.contains(instance.id))
             browser.update(instance, client: client)
             return (instance.id, browser)
         })
@@ -209,6 +212,8 @@ final class WorkArea: Identifiable {
         visibleInstances = ids
         markSeen()
     }
+
+    func isVisible(instance id: String) -> Bool { visibleInstances.contains(id) }
 
     /// 回合收尾时窗口在台面上，或之后打开了窗口，都算看过。
     func unseen(_ id: String) -> Bool {

@@ -75,10 +75,11 @@ final class FileBrowser {
     var directoryError: String?
     var textError: String?
 
-    init(instanceID: String, workspaceID: String, client: KitedClient?) {
+    init(instanceID: String, workspaceID: String, client: KitedClient?, showDirectory: Bool = true) {
         self.instanceID = instanceID
         self.workspaceID = workspaceID
         self.client = client
+        self.showDirectory = showDirectory
     }
 
     func update(_ instance: RemotePluginInstance, client: KitedClient?) {
