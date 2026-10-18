@@ -334,9 +334,10 @@ final class TranscriptListView: NSScrollView {
         return true
     }
 
-    /// 落点在列表里一个竖向滚不动的滚动视图上。
+    /// 落点在列表里一个竖向滚不动的滚动视图上。盖在列表上面的（输入区上等你回应的卡片）不算，它们的滚动视图自己滚。
     private func overInnerScroller(_ event: NSEvent) -> Bool {
-        guard let root = window?.contentView?.superview, var view = root.hitTest(event.locationInWindow) else { return false }
+        guard let root = window?.contentView?.superview, var view = root.hitTest(event.locationInWindow),
+              view.isDescendant(of: self) else { return false }
         while view !== self {
             if let scroll = view as? NSScrollView {
                 return (scroll.documentView?.frame.height ?? 0) <= scroll.contentView.bounds.height + 1

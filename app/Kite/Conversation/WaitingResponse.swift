@@ -221,7 +221,7 @@ struct WaitingResponseCard: View {
 
     private var denyButton: some View {
         Button("拒绝") { send(.decision("deny")) }
-            .buttonStyle(PaneButtonStyle(text: true, foreground: Theme.danger, secondary: true))
+            .buttonStyle(PaneButtonStyle(text: true, foreground: Theme.danger))
     }
 
     private var approvalTitle: String {
@@ -284,7 +284,7 @@ struct WaitingResponseCard: View {
         return (waiting.exists == true ? "已经有了，保存会替换原来的值。" : "") + target
     }
 
-    /// 一行靠右：灰底的拒绝，主题色的保存。
+    /// 一行靠右：红字的拒绝，主题色的保存。
     private var secretActions: some View {
         HStack(spacing: ThreadControlsModel.actionGap) {
             Spacer(minLength: 0)
@@ -407,7 +407,7 @@ struct WaitingResponseCard: View {
     }
 }
 
-/// 审批的决定：灰底的拒绝（红字）、允许并记住（必问的没有），主题色的允许一次（必问的叫「批准这一次」）。
+/// 审批的决定：不带底的拒绝（红字）、允许并记住（必问的没有），主题色的允许一次（必问的叫「批准这一次」）。
 /// 线程里拒绝、允许并记住摆在输入区按钮行的左边（ThreadControlsModel.approving），允许一次是主按钮；收件箱里三个都摆在卡片底下。
 struct ApprovalDecision: Equatable {
     let reply: String
@@ -427,9 +427,8 @@ struct ApprovalDecision: Equatable {
     }
 
     var fill: Color? { reply == "once" ? .accentColor : nil }
-    var secondary: Bool { fill == nil }
     var foreground: Color { reply == "deny" ? Theme.danger : .primary }
-    var style: PaneButtonStyle { PaneButtonStyle(text: true, fill: fill, foreground: foreground, secondary: secondary) }
+    var style: PaneButtonStyle { PaneButtonStyle(text: true, fill: fill, foreground: foreground) }
 }
 
 /// 多题作答时的上一题、下一题：收件箱里的卡片和 SwiftUI 输入区共用。

@@ -511,18 +511,22 @@ private struct CodeBlockContent: View, Equatable {
 
     var body: some View {
         Folded(lines: splitLines(text), limit: maxLines) { shown in
-            let lines = ScrollView(.horizontal, showsIndicators: false) {
-                HighlightedCode(text: shown.joined(separator: "\n"), language: language)
-                    .font(Theme.code)
-                    .textSelection(.enabled)
-                    .fixedSize()
-                    .padding(10)
-            }
-            .hintsScrollOverflow(.horizontal)
+            let code = HighlightedCode(text: shown.joined(separator: "\n"), language: language)
+                .font(Theme.code)
+                .textSelection(.enabled)
+                .fixedSize()
+                .padding(10)
             if let maxHeight {
-                HeightLimit(limit: maxHeight) { ScrollView { lines } }
+                // 横竖用同一个滚动视图：竖向的里面再套横向的，Mac 上横向的那个接下竖向的滑动、不往外传，外面的滚不动
+                HeightLimit(limit: maxHeight) {
+                    ScrollView([.horizontal, .vertical]) { code }
+                        .scrollIndicators(.hidden, axes: .horizontal)
+                        .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+                        .hintsScrollOverflow(.horizontal)
+                }
             } else {
-                lines
+                ScrollView(.horizontal, showsIndicators: false) { code }
+                    .hintsScrollOverflow(.horizontal)
             }
         }
     }

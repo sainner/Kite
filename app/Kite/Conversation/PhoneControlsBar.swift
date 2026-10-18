@@ -224,7 +224,6 @@ final class ControlsBarView: UIView {
                 button.label = .text(decision.title)
                 button.title = decision.title
                 button.fill = decision.fill
-                button.secondary = decision.secondary
                 button.foreground = decision.foreground
                 button.setFont(buttonFont)
                 button.environment = environment
