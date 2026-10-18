@@ -483,7 +483,7 @@ struct NewWindowChooser: View {
 extension WorkArea {
     /// 工作区在线且未归档时才能加窗口；别的窗口请求还在路上不妨碍。
     func canAddWindows(connected: Bool) -> Bool {
-        connected && remote?.workspace.status == .open
+        connected && remote.workspace.status == .open
     }
 }
 

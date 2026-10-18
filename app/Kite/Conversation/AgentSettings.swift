@@ -18,7 +18,7 @@ struct AgentSettings: View {
 
     private var changed: Bool { draft != saved?.instance.config.agent }
     private var available: Bool {
-        model.isConnected(area) && area.remote?.workspace.status == .open
+        model.isConnected(area) && area.remote.workspace.status == .open
             && area.instances.contains { $0.id == instance.id && $0.status == .open }
     }
     private var working: Bool { phase.working }
@@ -64,7 +64,7 @@ struct AgentSettings: View {
 
     private func boundClient() throws -> KitedClient {
         let current = try model.activeClient(in: area)
-        guard available, current.machineID == area.remote?.machine.id, client == nil || client == current else {
+        guard available, current.machineID == area.remote.machine.id, client == nil || client == current else {
             throw KitedError(message: "工作机或实例已变化，请重新打开代理配置")
         }
         return current
@@ -98,8 +98,8 @@ extension AppModel {
         let revision = self.revision(for: area)
         let client = try activeClient(in: area)
         func requireCurrent() throws {
-            guard self.revision(for: area) == revision, isConnected(area), client == (try activeClient(in: area)), client.machineID == area.remote?.machine.id,
-                  area.remote?.workspace.status == .open, area.instances.contains(where: { $0.id == id && $0.status == .open }) else {
+            guard self.revision(for: area) == revision, isConnected(area), client == (try activeClient(in: area)), client.machineID == area.remote.machine.id,
+                  area.remote.workspace.status == .open, area.instances.contains(where: { $0.id == id && $0.status == .open }) else {
                 throw KitedError(message: "工作机或实例已变化，请重新修改配置")
             }
         }

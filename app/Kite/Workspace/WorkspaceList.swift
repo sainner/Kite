@@ -51,7 +51,7 @@ struct WorkspaceRow<Interaction: View>: View {
                         .accessibilityLabel("版本操作")
                         Menu {
                             Button("创建工作区") {
-                                if let project = workspace.remote?.project { model.createWorkspace(in: project.id, toast: toast); onSelect() }
+                                model.createWorkspace(in: workspace.remote.project.id, toast: toast); onSelect()
                             }
                             Divider()
                             WorkspaceGitActions(workspace: workspace)
@@ -66,7 +66,7 @@ struct WorkspaceRow<Interaction: View>: View {
                         Button { model.archiveRequest = workspace } label: {
                             TablerIcon(.tablerArchive, size: 14)
                         }
-                        .disabled(workspace.remote == nil || !model.isConnected(workspace) || model.lineArea?.id == workspace.id)
+                        .disabled(!model.isConnected(workspace) || model.lineArea?.id == workspace.id)
                         .help("归档工作区")
                         .accessibilityLabel("归档工作区")
                         Menu {
@@ -87,12 +87,12 @@ struct WorkspaceRow<Interaction: View>: View {
                 .modifier(SidebarRevealedControl())
             }
         }
-        .help(workspace.remote.map { "\($0.machine.name) · \($0.workspace.cwd)" } ?? workspace.title)
+        .help("\(workspace.remote.machine.name) · \(workspace.remote.workspace.cwd)")
     }
 
     /// 行尾的版本提示：PR 合并了提示归档，主线有新提交时提示落后几个。
     private var gitNote: (title: String, help: String)? {
-        guard let info = workspace.remote?.workspace else { return nil }
+        let info = workspace.remote.workspace
         if info.pullRequest?.state == "merged" { return ("PR 已合并", "PR 已经合并，可以归档这个工作区") }
         if let behind = info.behind, behind > 0 { return ("落后 \(behind)", "主线有 \(behind) 个新提交，右键选同步主线") }
         return nil
@@ -113,14 +113,15 @@ struct WorkspaceGroup: Identifiable {
 }
 
 extension AppModel {
-    /// 沿用工作区列表的顺序，项目和检出排在其中第一个工作区出现的位置。草稿不是工作区，不列出。
+    /// 沿用工作区列表的顺序，项目和检出排在其中第一个工作区出现的位置。
     var workspaceGroups: [WorkspaceGroup] {
         var groups: [WorkspaceGroup] = []
         let line = lineArea?.id
         let label = projectLabels()
         for area in workspaces {
             // Line 的工作区从侧栏顶部的标志进，不列在项目一栏里
-            guard let remote = area.remote, area.id != line else { continue }
+            guard area.id != line else { continue }
+            let remote = area.remote
             if !groups.contains(where: { $0.id == remote.project.id }) {
                 groups.append(.init(id: remote.project.id, title: label(remote.project), checkouts: []))
             }
@@ -133,7 +134,7 @@ extension AppModel {
             }
         }
         // 登记了还没有工作区的项目排在后面
-        let lineProject = lineArea?.remote?.project.id
+        let lineProject = lineArea?.remote.project.id
         for project in account.registeredProjects where project.id != lineProject && !groups.contains(where: { $0.id == project.id }) {
             groups.append(.init(id: project.id, title: label(project.project), checkouts: []))
         }
@@ -197,7 +198,7 @@ private struct WorkspaceProjectSection<Row: View>: View {
                     Divider()
                     // Line 所在的项目不能删，Line 在别的工作机上时接请求的那台查不到，这里也拦着
                     MenuButton("删除项目…", role: .destructive) { deletion = deletionMessage }
-                        .disabled(model.availableWorkers.isEmpty || model.lineArea?.remote?.project.id == group.id)
+                        .disabled(model.availableWorkers.isEmpty || model.lineArea?.remote.project.id == group.id)
                 }
                 .accessibilityAddTraits(selected ? .isSelected : [])
                 Button {
@@ -222,7 +223,7 @@ private struct WorkspaceProjectSection<Row: View>: View {
                                              topInset: metrics.rowHeight,
                                              headerHeight: checkouts.count > 1 ? metrics.subheaderHeight : 0) {
                             if checkouts.count > 1 {
-                                SidebarSubheader(title: workspaces.first?.remote?.machine.name ?? "工作机",
+                                SidebarSubheader(title: workspaces.first?.remote.machine.name ?? "工作机",
                                                  selected: checkoutSelected, help: "工作机", open: nil,
                                                  add: SidebarSubheaderAdd(help: "在这台工作机上创建工作区", label: "在这台工作机上创建工作区") {
                                                      create(on: checkout.id)

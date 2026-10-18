@@ -220,7 +220,7 @@ struct ReferenceNavigation: ViewModifier {
     @State private var error: String?
 
     func body(content: Content) -> some View {
-        let scope = ReferenceScope(machineID: area.remote?.machine.id ?? "", workspaceID: area.id)
+        let scope = ReferenceScope(machineID: area.remote.machine.id, workspaceID: area.id)
         content.environment(\.referenceScope, scope)
             .environment(\.openURL, OpenURLAction { url in
                 if let port = LocalPort.port(of: url) {

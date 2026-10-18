@@ -113,7 +113,7 @@ struct ProjectSettingsPage: View {
     }
 
     private func machineName(_ checkout: RemoteCheckout) -> String {
-        model.workspaces.first { $0.remote?.checkout.id == checkout.id }?.remote?.machine.name ?? "工作机"
+        model.workspaces.first { $0.remote.checkout.id == checkout.id }?.remote.machine.name ?? "工作机"
     }
 
     private func setNeed(_ need: HandoverNeed, _ on: Bool) {

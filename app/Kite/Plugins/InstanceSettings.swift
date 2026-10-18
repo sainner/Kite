@@ -35,7 +35,7 @@ struct InstanceSettings: View {
     private var targets: [RemotePluginInstance] { area.instances.filter { $0.status == .open } }
 
     private var thread: WorkThread? {
-        guard area.remote?.threads.contains(where: { $0.instanceId == instance.id }) == true else { return nil }
+        guard area.remote.threads.contains(where: { $0.instanceId == instance.id }) else { return nil }
         return area.threads.first { $0.id == instance.id }
     }
 
@@ -197,7 +197,7 @@ struct InstanceSettings: View {
 
     private func boundClient() throws -> KitedClient {
         let current = try model.activeClient(in: area)
-        guard available, current.machineID == area.remote?.machine.id, client == nil || client == current else {
+        guard available, current.machineID == area.remote.machine.id, client == nil || client == current else {
             throw KitedError(message: "工作机或实例已变化，请重新打开实例设置")
         }
         return current

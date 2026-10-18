@@ -4,7 +4,7 @@ import SwiftUI
 @Observable
 final class WorkArea: Identifiable {
     let id: String
-    var remote: RemoteWorkspace?
+    var remote: RemoteWorkspace
     var threads: [WorkThread] = []
     var windows: [RemoteWorkspaceWindow] = []
     var instances: [RemotePluginInstance] = []
@@ -59,7 +59,7 @@ final class WorkArea: Identifiable {
     /// 指针停在停靠栏哪一格上，Mac 据此在左侧浮出名字与状态。
     var dockHover: DockHover?
     var tint: Color { Palette.breeze }
-    var title: String { remote?.workspace.name ?? "新工作区" }
+    var title: String { remote.workspace.name }
     var header: PaneHeader { PaneHeader(title: title, subtitle: "工作区") }
 
     init(remote: RemoteWorkspace, client: KitedClient? = nil, definitions: [RemotePluginDefinition] = [], connection: UUID = UUID(), cursor: EventCursor? = nil) {
@@ -74,7 +74,7 @@ final class WorkArea: Identifiable {
         layout = WindowLayout(panes: openWindows.map { Pane($0.id) },
                               storageKey: "KiteWindowLayout.\(remote.machine.id).\(remote.id)",
                               reconcileOnLoad: client != nil)
-        seenTurns = UserDefaults.standard.dictionary(forKey: seenKey(remote)) as? [String: Double] ?? [:]
+        seenTurns = UserDefaults.standard.dictionary(forKey: seenKey) as? [String: Double] ?? [:]
         if let client { update(remote, client: client, connection: connection, cursor: cursor) }
     }
 
@@ -217,17 +217,16 @@ final class WorkArea: Identifiable {
     }
 
     private func markSeen() {
-        guard let remote else { return }
         var next = seenTurns.filter { id, _ in instances.contains { $0.id == id && $0.status == .open } }
         for id in visibleInstances {
             if let settled = activities[id]?.settledAt, settled > next[id] ?? 0 { next[id] = settled }
         }
         guard next != seenTurns else { return }
         seenTurns = next
-        UserDefaults.standard.set(next, forKey: seenKey(remote))
+        UserDefaults.standard.set(next, forKey: seenKey)
     }
 
-    private func seenKey(_ remote: RemoteWorkspace) -> String { "KiteSeenTurns.\(remote.machine.id).\(remote.id)" }
+    private var seenKey: String { "KiteSeenTurns.\(remote.machine.id).\(remote.id)" }
 
     func activateWindow(for target: WindowTarget) {
         if let window = windows.first(where: { $0.target == target }) { layout.activate(Pane(window.id)) }
@@ -236,7 +235,6 @@ final class WorkArea: Identifiable {
     /// 实例集合是工作机上的实例，本机正归档的按已归档算，加上本机正建的；窗口集合是工作机上打开的窗口，
     /// 减去本机正关的和正归档的实例的，加上本机正开的和草稿。
     private func rebuildWindows() {
-        guard let remote else { return }
         // 工作机列出了本机正开的窗口、正建的实例（开着或已经关了），就以它为准
         let listed = Set(remote.windows.map(\.id))
         if openingWindows.contains(where: { listed.contains($0.id) }) { openingWindows.removeAll { listed.contains($0.id) } }
@@ -349,7 +347,7 @@ final class WorkArea: Identifiable {
                               target: WindowTarget(instanceId: thread.id, viewId: "conversation"), state: .open, createdAt: 0)
     }
 
-    private func makeDraftThread(_ remote: RemoteWorkspace) -> WorkThread {
+    private func makeDraftThread() -> WorkThread {
         let thread = WorkThread(workspace: remote.workspace.cwd, project: remote.project.name)
         thread.draftChoice = DraftAgentChoice()
         thread.connected = remote.workspace.status == .open
@@ -359,9 +357,8 @@ final class WorkArea: Identifiable {
     /// 添加代理时先打开本机草稿；已有草稿时沿用其中的选择。
     /// 每次新开一个草稿对象：关掉的草稿淡出时仍显示原来的模型与输入，不闪成「模型」和空输入框。
     func openDraft() {
-        guard let remote else { return }
         if draftWindow == nil {
-            draftThread = makeDraftThread(remote)
+            draftThread = makeDraftThread()
             draftWindow = Self.newWindowID()
             rebuildWindows()
         }
@@ -377,7 +374,6 @@ final class WorkArea: Identifiable {
 
     /// 点添加：当场打开新建窗口，已经开着一个就调到前面，见 chooserWindow。
     func openChooser() {
-        guard remote != nil else { return }
         if chooserWindow == nil {
             handedOff = [:]
             chooserWindow = Self.newWindowID()
@@ -396,13 +392,13 @@ final class WorkArea: Identifiable {
 
     /// 新建窗口里选了代理：原地变成新代理的草稿。已经有草稿窗口的，关掉新建窗口、调出那个草稿：一份草稿不同时摆在两个窗口里。
     func chooseAgent() {
-        guard let remote, let chooser = chooserWindow else { return }
+        guard let chooser = chooserWindow else { return }
         guard draftWindow == nil else {
             closeChooser()
             openDraft()
             return
         }
-        draftThread = makeDraftThread(remote)
+        draftThread = makeDraftThread()
         chooserWindow = nil
         draftWindow = chooser
         fadingIn.insert(chooser)

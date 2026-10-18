@@ -490,7 +490,7 @@ import UIKit
     private static func enter(_ session: Session) async throws {
         let model = session.model, area = session.area
         let other = string("perfEnter").flatMap(model.workspace) ?? model.workspaces.first {
-            $0 !== area && !model.detached.contains($0.id) && $0.remote?.machine.id == area.remote?.machine.id
+            $0 !== area && !model.detached.contains($0.id) && $0.remote.machine.id == area.remote.machine.id
                 && $0.pluginClient != nil && !($0.layout.shown?.panes.isEmpty ?? true)
         }
         guard let other, other !== area else { throw Failure("没有可以切过去的另一个工作区") }

@@ -37,10 +37,8 @@ struct DetachedWorkspace: View {
     private func title(_ workspace: WorkArea) -> some View {
         HStack(spacing: 4) {
             Text(workspace.title)
-            if let project = workspace.remote?.project.name {
-                Text("/").foregroundStyle(.tertiary)
-                Text(project).fontWeight(.regular).foregroundStyle(.secondary)
-            }
+            Text("/").foregroundStyle(.tertiary)
+            Text(workspace.remote.project.name).fontWeight(.regular).foregroundStyle(.secondary)
         }
         .font(Theme.title.weight(.semibold))
         .lineLimit(1)

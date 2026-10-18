@@ -36,7 +36,7 @@ struct FilePane: View {
     private var fileVisible: Bool { browser.displayingFile && (!browser.showDirectory || wide) }
 
     private var rootName: String {
-        let cwd = area.remote.map { ($0.workspace.cwd as NSString).lastPathComponent } ?? ""
+        let cwd = (area.remote.workspace.cwd as NSString).lastPathComponent
         return cwd.isEmpty ? "工作区" : cwd
     }
 
@@ -281,7 +281,7 @@ struct FilePane: View {
     /// 认不出的格式用默认 App 打开：工作机就是本机时开工作区里的原文件，其他设备开下载好的副本。
     private var defaultAppURL: URL? {
         guard fileVisible, browser.format == .other, let path = browser.selection.path else { return nil }
-        if browser.isLocal, let cwd = area.remote?.workspace.cwd { return URL(filePath: cwd).appending(path: path) }
+        if browser.isLocal { return URL(filePath: area.remote.workspace.cwd).appending(path: path) }
         return browser.content?.url
     }
 

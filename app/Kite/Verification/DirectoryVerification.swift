@@ -79,7 +79,7 @@ enum DirectoryVerification {
         guard let areaA = model.workspace(fixture.workspaceA), let areaB = model.workspace(fixture.workspaceB) else {
             throw Failure(message: "实时目录丢失了工作区")
         }
-        try require(areaA.remote?.project.id == fixture.projectID && areaB.remote?.project.id == fixture.projectID,
+        try require(areaA.remote.project.id == fixture.projectID && areaB.remote.project.id == fixture.projectID,
                     "两台真实工作机返回的共享项目身份不同")
 
         model.selected = areaB.id

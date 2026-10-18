@@ -16,7 +16,7 @@ extension AppModel {
     }
 
     private func hostsLine(_ area: WorkArea) -> Bool {
-        area.remote?.workspace.status == .open && lineThread(in: area) != nil
+        area.remote.workspace.status == .open && lineThread(in: area) != nil
     }
 
     /// Line 的线程（实例 ID）。

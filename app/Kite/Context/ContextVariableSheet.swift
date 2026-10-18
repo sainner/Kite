@@ -60,10 +60,9 @@ struct ContextVariableSource: Identifiable {
 
 extension AppModel {
     /// 连着的工作机上的工作区，先放当前工作机的。
-    private var contextVariableAreas: [(area: WorkArea, remote: RemoteWorkspace)] {
+    private var contextVariableAreas: [WorkArea] {
         let active = activeConnection?.machine.id
-        let areas = workspaces.compactMap { area in area.remote.map { (area: area, remote: $0) } }
-            .filter { connections[$0.remote.machine.id]?.connected == true }
+        let areas = workspaces.filter { connections[$0.remote.machine.id]?.connected == true }
         return areas.filter { $0.remote.machine.id == active } + areas.filter { $0.remote.machine.id != active }
     }
 
@@ -78,13 +77,14 @@ extension AppModel {
                                                                 section: nil, title: $0.machine.name) }
         case .project, .workspace:
             // 项目规则与记忆索引从工作区根目录逐级找，项目层也按工作区取值、写回它的工作树
-            return areas.map { _, remote in
+            return areas.map(\.remote).map { remote in
                 ContextVariableSource(id: remote.id, machine: remote.machine.id, path: "/workspaces/\(remote.id)/context-variables",
                                       section: projectLabel(remote.project), title: onMachine(remote, remote.workspace.name))
             }
         case .agent:
-            return areas.flatMap { area, remote in
-                area.threads.map { thread in
+            return areas.flatMap { area in
+                let remote = area.remote
+                return area.threads.map { thread in
                     ContextVariableSource(id: thread.id, machine: remote.machine.id, path: "/instances/\(thread.id)/context-variables",
                                           section: onMachine(remote, "\(projectLabel(remote.project)) · \(remote.workspace.name)"), title: thread.title)
                 }
@@ -98,7 +98,7 @@ extension AppModel {
         let sources = listed ?? contextVariableSources(layer)
         let here: String? = switch layer {
         case .environment: activeConnection?.machine.id
-        case .project, .workspace: current?.remote?.id
+        case .project, .workspace: current?.remote.id
         case .agent: current.flatMap { area in area.layout.focused.flatMap(area.thread(in:))?.id }
         }
         return [contextVariableChoices[layer.rawValue], here].lazy.compactMap { id in id.flatMap { id in sources.first { $0.id == id } } }.first

@@ -34,7 +34,7 @@ final class AppModel {
     private var connectionRun: UUID?
     private let emptyConnection = UUID()
     var activeConnection: WorkerConnection? {
-        if let id = current?.remote?.machine.id { return connections[id] }
+        if let id = current?.remote.machine.id { return connections[id] }
         return connections.values.sorted { $0.machine.id < $1.machine.id }.first(where: { $0.connected })
     }
     var machine: RemoteMachine? { activeConnection?.machine }
@@ -136,7 +136,7 @@ final class AppModel {
 
     func connection(for area: WorkArea? = nil) -> WorkerConnection? {
         guard let area else { return activeConnection }
-        return area.remote.flatMap { connections[$0.machine.id] }
+        return connections[area.remote.machine.id]
     }
 
     func revision(for area: WorkArea) -> UUID { connection(for: area)?.catalog.generation ?? emptyConnection }
@@ -161,7 +161,7 @@ final class AppModel {
         try Task.checkCancellation()
         guard accepts(client), revision == connection.catalog.generation, connection.definitionsRequest == request else { return }
         connection.definitions = values
-        for area in workspaces where area.remote?.machine.id == id { area.definitions = values }
+        for area in workspaces where area.remote.machine.id == id { area.definitions = values }
     }
 
     /// 新建窗口里选好了插件，这个窗口原地变成它（见 WorkArea.chooserWindow）：代理变成新代理的草稿；带视图的插件按这个窗口的 ID
@@ -191,7 +191,7 @@ final class AppModel {
             let client: KitedClient
             do {
                 client = try activeClient(in: area)
-                guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
+                guard area.remote.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
                 let _: RemotePluginInstance = try await client.request("/workspaces/\(area.id)/plugin-instances", method: "POST", body: request, as: RemotePluginInstance.self)
             } catch {
                 area.settleInstance(request.id)
@@ -246,11 +246,11 @@ final class AppModel {
     /// 新建中的工作区在工作机还没有检出时带着空 ID 的占位检出，不算。
     var checkouts: [RemoteCheckout] {
         var seen = Set<String>()
-        return workspaces.compactMap(\.remote?.checkout).filter { !$0.id.isEmpty && seen.insert($0.id).inserted }
+        return workspaces.map(\.remote.checkout).filter { !$0.id.isEmpty && seen.insert($0.id).inserted }
     }
     var knownProjects: [RemoteProject] {
         var seen = Set<String>()
-        return (account.registeredProjects.map(\.project) + account.catalogs.flatMap(\.snapshot.projects) + workspaces.compactMap(\.remote?.project))
+        return (account.registeredProjects.map(\.project) + account.catalogs.flatMap(\.snapshot.projects) + workspaces.map(\.remote.project))
             .filter { seen.insert($0.id).inserted }
     }
     var availableWorkers: [WorkerConnection] { connections.values.filter(\.connected).sorted { $0.machine.name < $1.machine.name } }
@@ -259,7 +259,7 @@ final class AppModel {
     /// 再次是任一台连着的；同一档里已有这个项目检出的优先，省得再 clone。
     func preferredWorker(for projectID: String? = nil) -> WorkerConnection? {
         let holders = Set(checkouts.filter { $0.projectId == projectID }.map(\.machineId))
-        let busy = Set(workspaces.filter { $0.activities.keys.contains(where: $0.isRunning) }.compactMap(\.remote?.machine.id))
+        let busy = Set(workspaces.filter { $0.activities.keys.contains(where: $0.isRunning) }.map(\.remote.machine.id))
         func rank(_ connection: WorkerConnection) -> (Int, Int) {
             let id = connection.machine.id
             return (connection.client.isLocal ? 0 : busy.contains(id) ? 2 : 1, holders.contains(id) ? 0 : 1)
@@ -341,7 +341,7 @@ final class AppModel {
             connection.task?.cancel()
             connection.catalog.reset()
             connections.removeValue(forKey: id)
-            workspaces.removeAll { $0.remote?.machine.id == id }
+            workspaces.removeAll { $0.remote.machine.id == id }
         }
         for entry in account.catalogs {
             let snapshot = entry.snapshot
@@ -355,7 +355,7 @@ final class AppModel {
             connections[entry.machineId] = connection
             connection.updatedAt = entry.updatedAt
             if !connection.hasLiveCatalog {
-                let previous = Dictionary(uniqueKeysWithValues: workspaces.filter { $0.remote?.machine.id == entry.machineId }.map { ($0.id, $0) })
+                let previous = Dictionary(uniqueKeysWithValues: workspaces.filter { $0.remote.machine.id == entry.machineId }.map { ($0.id, $0) })
                 let summaries = snapshot.summaries.filter { $0.workspace.status != .archived }
                 let areas = summaries.map { remote -> WorkArea in
                     let area = previous[remote.id] ?? WorkArea(remote: remote)
@@ -376,7 +376,7 @@ final class AppModel {
             connection.templatesRequest?.task.cancel(); connection.templatesRequest = nil
             connection.rolesRequest?.task.cancel(); connection.rolesRequest = nil
             connection.catalog.reset(); connection.connected = false
-            for area in workspaces where area.remote?.machine.id == connection.id { area.draftThread.connected = false }
+            for area in workspaces where area.remote.machine.id == connection.id { area.draftThread.connected = false }
         }
     }
 
@@ -395,7 +395,7 @@ final class AppModel {
                 if connection.outdated != nil {
                     connection.connected = false
                     connection.error = nil
-                    for area in workspaces where area.remote?.machine.id == connection.id { area.draftThread.connected = false }
+                    for area in workspaces where area.remote.machine.id == connection.id { area.draftThread.connected = false }
                     // 本机 kited 换了新版而 App 还旧时，它备好的新 App 就在更新状态里。
                     await refreshLocalUpdate(connection)
                     try await Task.sleep(for: .seconds(30))
@@ -415,7 +415,7 @@ final class AppModel {
                 connection.outdated = nil
                 connection.error = error.localizedDescription
                 TimingTrace.mark("工作机 \(connection.machine.name) 连接失败：\(error.localizedDescription)")
-                for area in workspaces where area.remote?.machine.id == connection.id { area.draftThread.connected = false }
+                for area in workspaces where area.remote.machine.id == connection.id { area.draftThread.connected = false }
             }
             if immediate { immediate = false; continue }
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
@@ -461,7 +461,7 @@ final class AppModel {
                 // 摘要直接带着新值，不重新读取目录。
                 if let workspaceId = event.workspaceId, let threadId = event.threadId, let activity = event.activity,
                    let cursor = event.cursor.flatMap(EventCursor.init),
-                   let area = self.workspaces.first(where: { $0.id == workspaceId && $0.remote?.machine.id == connection.id }) {
+                   let area = self.workspaces.first(where: { $0.id == workspaceId && $0.remote.machine.id == connection.id }) {
                     area.updateActivity(threadId, activity, cursor: cursor)
                 }
                 return
@@ -496,7 +496,7 @@ final class AppModel {
         guard let id = client.machineID, let connection = connections[id], accepts(client) else { return }
         guard remote.allSatisfy({ $0.machine.id == id && $0.checkout.machineId == id }) else { throw KitedError(message: "工作区所属机器不匹配") }
         try connection.catalog.apply(cursor, generation: generation) {
-            let previous = Dictionary(uniqueKeysWithValues: workspaces.filter { $0.remote?.machine.id == id }.map { ($0.id, $0) })
+            let previous = Dictionary(uniqueKeysWithValues: workspaces.filter { $0.remote.machine.id == id }.map { ($0.id, $0) })
             let areas = remote.filter { $0.workspace.status != .archived }.reversed().map { value in
                 if let area = previous[value.id] {
                     area.definitions = connection.definitions
@@ -515,15 +515,15 @@ final class AppModel {
     private func replaceWorkspaces(_ areas: [WorkArea], on machine: String) {
         // 本机正新建、工作机还没列出来的留着，见 create
         let listed = Set(areas.map(\.id))
-        let creating = creatingWorkspaces.values.filter { $0.remote?.machine.id == machine && !listed.contains($0.id) }
+        let creating = creatingWorkspaces.values.filter { $0.remote.machine.id == machine && !listed.contains($0.id) }
         // 工作区流转后同一 ID 出现在几台工作机上：epoch 最高、未冻结的是当前宿主，冻结的旧记录不另列。
-        let merged = workspaces.filter { $0.remote?.machine.id != machine } + areas + creating
-        let rank = { (area: WorkArea) in (area.remote?.workspace.status == .transferred ? 0 : 1, area.remote?.workspace.epoch ?? 1) }
+        let merged = workspaces.filter { $0.remote.machine.id != machine } + areas + creating
+        let rank = { (area: WorkArea) in (area.remote.workspace.status == .transferred ? 0 : 1, area.remote.workspace.epoch ?? 1) }
         var hosts: [String: WorkArea] = [:]
         for area in merged where hosts[area.id].map({ rank(area) > rank($0) }) ?? true { hosts[area.id] = area }
         workspaces = merged.filter { hosts[$0.id] === $0 }
         workspaces.sort {
-            let left = $0.remote?.workspace.createdAt ?? 0, right = $1.remote?.workspace.createdAt ?? 0
+            let left = $0.remote.workspace.createdAt, right = $1.remote.workspace.createdAt
             return left == right ? $0.id < $1.id : left > right
         }
         detached.formIntersection(Set(workspaces.map(\.id)))
@@ -569,7 +569,7 @@ final class AppModel {
 
     func startThread(in area: WorkArea, message: Message, window: String) async throws {
         let client = try activeClient(in: area)
-        guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
+        guard area.remote.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
         let draft = area.draftThread
         let choice = draft.draftChoice
         _ = try await client.request("/workspaces/\(area.id)/threads", method: "POST",
@@ -585,7 +585,7 @@ final class AppModel {
     /// 报在归档失败的提示里。归档保留会话与数据，工作机停止执行并关闭它的全部窗口。
     func archiveInstance(_ instance: RemotePluginInstance, in area: WorkArea) throws {
         let client = try activeClient(in: area)
-        guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
+        guard area.remote.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
         area.archiveError = nil
         area.archiveLocally(instance.id)
         Task {
@@ -641,7 +641,7 @@ final class AppModel {
             do {
                 for close in closing { await close.value }
                 client = try activeClient(in: area)
-                guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
+                guard area.remote.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
                 window = try await client.request("/workspaces/\(area.id)/windows", method: "POST", body: request, as: RemoteWorkspaceWindow.self)
             } catch {
                 area.settleOpening(request.id, rejected: Self.rejected(error))
@@ -731,7 +731,7 @@ final class AppModel {
             let client: KitedClient
             do {
                 client = try activeClient(in: area)
-                guard area.remote?.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
+                guard area.remote.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
                 struct Closed: Decodable { let ok: Bool }
                 _ = try await client.request("/workspaces/\(area.id)/windows/\(pane.id)", method: "DELETE", as: Closed.self)
             } catch {

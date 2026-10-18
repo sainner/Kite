@@ -193,7 +193,7 @@ extension AppModel {
             let client = try activeClient(in: area)
             @MainActor func requireCurrent() throws {
                 guard revision(for: area) == connection, client == (try activeClient(in: area)),
-                      area.remote?.machine.id == client.machineID,
+                      area.remote.machine.id == client.machineID,
                       area.instances.contains(where: { $0.id == instance.id && $0.status == .open }) else {
                     throw KitedError(message: "工作机或代理已变化，请重新选择角色")
                 }

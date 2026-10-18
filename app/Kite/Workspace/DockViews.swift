@@ -431,7 +431,7 @@ struct DockDimmed: ViewModifier {
 }
 
 /// 加号：宽屏是圆、右上角与窗口右上角同心；紧凑布局的底栏边上没有窗口角，是正圆。
-/// 点开是新建窗口（见 WorkArea.openChooser）；草稿工作区还没有工作机上的实例，直接新建工作区。
+/// 点开是新建窗口（见 WorkArea.openChooser）。
 struct AddWindowButton: View {
     var concentric = true
     @Environment(AppModel.self) private var model

@@ -20,7 +20,7 @@ struct ExecutionGrantSettings: View {
     private var changed: Bool { draft != saved.map(ExecutionGrantDraft.init(snapshot:)) }
     private var working: Bool { phase.working }
     private var available: Bool {
-        model.isConnected(area) && area.remote?.workspace.status == .open
+        model.isConnected(area) && area.remote.workspace.status == .open
             && area.instances.contains { $0.id == instance.id && $0.status == .open }
     }
     private var canSave: Bool {
@@ -59,9 +59,7 @@ struct ExecutionGrantSettings: View {
                 if let draft {
                     CardSection("工作区", note: draft.project.workspace == .read ? "项目定为只读，这里改不了。"
                                 : "系统工具链保留基础读取权限；宿主数据和 Git 元数据仍受保护。") {
-                        if let path = area.remote?.workspace.cwd {
-                            Text(path).font(Theme.code).foregroundStyle(.secondary).textSelection(.enabled)
-                        }
+                        Text(area.remote.workspace.cwd).font(Theme.code).foregroundStyle(.secondary).textSelection(.enabled)
                         LabeledContent("访问权限") {
                             Picker("访问权限", selection: field(\.workspace, fallback: .read)) {
                                 Text("只读").tag(WorkspaceAccess.read)
@@ -157,7 +155,7 @@ struct ExecutionGrantSettings: View {
 
     private func boundClient() throws -> KitedClient {
         let current = try model.activeClient(in: area)
-        guard available, current.machineID == area.remote?.machine.id, client == nil || client == current else {
+        guard available, current.machineID == area.remote.machine.id, client == nil || client == current else {
             throw KitedError(message: "工作机或实例已变化，请重新打开实例设置")
         }
         return current

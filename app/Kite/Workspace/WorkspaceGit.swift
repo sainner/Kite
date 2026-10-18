@@ -45,7 +45,7 @@ private struct ConfirmRecovery: Encodable { let confirmRecovery = true }
 extension AppModel {
     /// 项目登记表里的集成方式：提交 PR 为 true，直接合入为 false；登记表还没读到时为 nil。
     func proposes(_ area: WorkArea) -> Bool? {
-        guard let project = area.remote?.project else { return nil }
+        let project = area.remote.project
         if project.remote == nil { return false }
         return account.registeredProjects.first { $0.id == project.id }?.proposes
     }
@@ -56,28 +56,25 @@ extension AppModel {
 
     /// 用户手动集成（adopt）、同步（sync）、流转，连带确认工作区里待恢复的线程，见 kited 的 confirmWorkspaceRecovery。
     private func mergeMainline<Result: Decodable>(_ area: WorkArea, _ action: String) async throws -> Result {
-        guard let remote = area.remote else { throw KitedError(message: "工作区尚未创建") }
         let client = try activeClient(in: area)
-        let result = try await client.request("/workspaces/\(remote.workspace.id)/\(action)", method: "POST", body: ConfirmRecovery(),
+        let result = try await client.request("/workspaces/\(area.remote.workspace.id)/\(action)", method: "POST", body: ConfirmRecovery(),
                                               timeout: 600, as: Result.self)
         try await refresh(client)
         return result
     }
 
     func archive(_ area: WorkArea, force: Bool) async throws {
-        guard let remote = area.remote else { return }
         struct Archive: Encodable { let force: Bool }
         let client = try activeClient(in: area)
-        let _: JSON = try await client.request("/workspaces/\(remote.workspace.id)/archive", method: "POST", body: Archive(force: force), timeout: 120, as: JSON.self)
+        let _: JSON = try await client.request("/workspaces/\(area.remote.workspace.id)/archive", method: "POST", body: Archive(force: force), timeout: 120, as: JSON.self)
         try await refresh(client)
     }
 
     /// 交给工作区所在的工作机办：它交出工作区、让目标还原，没成就撤回，见 kited 的 /workspaces/:id/transfer。
     func transfer(_ area: WorkArea, to target: WorkerConnection) async throws {
-        guard let remote = area.remote else { throw KitedError(message: "工作区尚未创建") }
         struct Transfer: Encodable { let to: String; let operationId: String; let confirmRecovery = true }
         let client = try activeClient(in: area)
-        let _: JSON = try await client.request("/workspaces/\(remote.workspace.id)/transfer", method: "POST",
+        let _: JSON = try await client.request("/workspaces/\(area.remote.workspace.id)/transfer", method: "POST",
                                                body: Transfer(to: target.machine.id, operationId: UUID().uuidString.lowercased()),
                                                timeout: 1800, as: JSON.self)
         try? await refresh(target.client)
@@ -86,11 +83,10 @@ extension AppModel {
 
     /// 所在工作机已丢失：用 target 手上的副本强制接管，副本没跟上的部分会丢。
     func takeOver(_ area: WorkArea, on target: WorkerConnection) async throws {
-        guard let remote = area.remote else { throw KitedError(message: "工作区尚未创建") }
         guard target.connected else { throw KitedError(message: "\(target.machine.name) 未连接") }
         struct Restore: Encodable { let workspaceId: String; let operationId: String; let force: Bool }
         let _: JSON = try await target.client.request("/workspaces/restore", method: "POST",
-                                                      body: Restore(workspaceId: remote.workspace.id, operationId: UUID().uuidString.lowercased(), force: true),
+                                                      body: Restore(workspaceId: area.remote.workspace.id, operationId: UUID().uuidString.lowercased(), force: true),
                                                       timeout: 1800, as: JSON.self)
         try? await refresh(target.client)
     }
@@ -107,9 +103,9 @@ struct WorkspaceGitActions: View {
     var body: some View {
         if showsWorkspaceMenu {
             Button(integrateTitle) { integrate() }
-                .disabled(workspace.remote == nil || !model.isConnected(workspace))
+                .disabled(!model.isConnected(workspace))
             Button(syncTitle) { sync() }
-                .disabled(workspace.remote == nil || !model.isConnected(workspace))
+                .disabled(!model.isConnected(workspace))
             MenuButton("丢弃改动", role: .destructive) { }
                 .disabled(true)
                 .help("尚未接通")
@@ -117,10 +113,10 @@ struct WorkspaceGitActions: View {
             MenuButton("删除工作区", role: .destructive) { }
                 .disabled(true)
                 .help("尚未接通")
-        } else if let remote = workspace.remote {
+        } else {
             Button(syncTitle) { sync() }
             Button(integrateTitle) { integrate() }
-            if let pull = remote.workspace.pullRequest, let url = URL(string: pull.url) {
+            if let pull = workspace.remote.workspace.pullRequest, let url = URL(string: pull.url) {
                 Button(pull.number.map { "打开 PR #\($0)" } ?? "去网页上开 PR") { openURL(url) }
             }
             // Line 的工作区随 Line 存在，不能归档
@@ -139,7 +135,7 @@ struct WorkspaceGitActions: View {
     }
 
     private var syncTitle: String {
-        guard let behind = workspace.remote?.workspace.behind, behind > 0 else { return "同步主线" }
+        guard let behind = workspace.remote.workspace.behind, behind > 0 else { return "同步主线" }
         return "同步主线（落后 \(behind) 个提交）"
     }
 
@@ -172,24 +168,23 @@ struct WorkspaceTransferMenu: View {
     @Environment(\.toast) private var toast
 
     var body: some View {
-        if let remote = workspace.remote {
-            let targets = model.availableWorkers.filter { $0.machine.id != remote.machine.id }
-            let status = model.deviceStatus(model.connection(for: workspace))
-            if status.ready || status.waiting {
-                Menu("流转到") {
-                    ForEach(targets) { target in
-                        Button(target.machine.name) { transfer(to: target) }
-                    }
+        let remote = workspace.remote
+        let targets = model.availableWorkers.filter { $0.machine.id != remote.machine.id }
+        let status = model.deviceStatus(model.connection(for: workspace))
+        if status.ready || status.waiting {
+            Menu("流转到") {
+                ForEach(targets) { target in
+                    Button(target.machine.name) { transfer(to: target) }
                 }
-                .disabled(!status.ready || targets.isEmpty || remote.workspace.status != .open)
-            } else {
-                Menu("强制接管到") {
-                    ForEach(targets) { target in
-                        Button(target.machine.name) { model.takeoverRequest = TakeoverRequest(area: workspace, target: target) }
-                    }
-                }
-                .disabled(targets.isEmpty)
             }
+            .disabled(!status.ready || targets.isEmpty || remote.workspace.status != .open)
+        } else {
+            Menu("强制接管到") {
+                ForEach(targets) { target in
+                    Button(target.machine.name) { model.takeoverRequest = TakeoverRequest(area: workspace, target: target) }
+                }
+            }
+            .disabled(targets.isEmpty)
         }
     }
 
@@ -218,7 +213,7 @@ struct WorkspaceGitPresentation: ViewModifier {
                 Button("丢弃未集成的改动并归档", role: .destructive) { archive(area, force: true) }
                 Button("取消", role: .cancel) {}
             } message: { area in
-                Text(area.remote?.workspace.pullRequest?.state == "merged"
+                Text(area.remote.workspace.pullRequest?.state == "merged"
                      ? "「\(area.title)」的 PR 已经合并。归档会停止其中的线程并回收工作树。"
                      : "归档「\(area.title)」会停止其中的线程并回收工作树。还没集成的改动只有选择丢弃时才会删除。")
             }
@@ -227,7 +222,7 @@ struct WorkspaceGitPresentation: ViewModifier {
                 Button("强制接管", role: .destructive) { takeOver(request) }
                 Button("取消", role: .cancel) {}
             } message: { request in
-                Text("确认「\(request.area.remote?.machine.name ?? "原来的工作机")」已经丢失，用「\(request.target.machine.name)」手上的副本接管「\(request.area.title)」。副本没跟上的部分会丢失；原来的工作机回来后，它那份记录会冻结，多出的改动存成快照留给你合并。")
+                Text("确认「\(request.area.remote.machine.name)」已经丢失，用「\(request.target.machine.name)」手上的副本接管「\(request.area.title)」。副本没跟上的部分会丢失；原来的工作机回来后，它那份记录会冻结，多出的改动存成快照留给你合并。")
             }
     }
 
