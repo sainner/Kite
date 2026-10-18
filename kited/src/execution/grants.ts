@@ -45,6 +45,8 @@ export type ExecutionChanges = z.infer<typeof executionChangesSchema>;
  */
 export const approvalModes = ['allowlist', 'ask', 'allow_all'] as const;
 export type ApprovalMode = (typeof approvalModes)[number];
+/** 草稿和角色都没给时新建代理用的审批模式。只在这里定义：建代理时写进实例配置，App 从角色目录的 defaultApproval 读。 */
+export const defaultApprovalMode: ApprovalMode = 'ask';
 
 /** 项目：基础许可与硬边界。workspace 为 read 时本项目一律只读；approval 是审批模式的上限。 */
 export const projectExecutionSchema = z.object({
@@ -91,9 +93,9 @@ export function bindRoleExecution(changes: ExecutionChanges): ExecutionChanges {
 }
 
 export const instanceExecutionChanges = (instance: Pick<PluginInstance, 'config'>): ExecutionChanges => parseExecutionChanges(instance.config.execution);
-/** 实例和角色都没设时越界询问。 */
+/** 建代理时已写进实例配置；没写的（这样做之前建的）按默认。 */
 export const instanceApprovalMode = (instance: Pick<PluginInstance, 'config'>): ApprovalMode =>
-  z.enum(approvalModes).default('ask').parse(instance.config.approval);
+  z.enum(approvalModes).default(defaultApprovalMode).parse(instance.config.approval);
 /** 实例的选择与项目上限取较严的。 */
 export const effectiveApprovalMode = (mode: ApprovalMode, project: ProjectExecution | undefined): ApprovalMode =>
   approvalModes[Math.min(approvalModes.indexOf(mode), approvalModes.indexOf(project?.approval ?? 'allow_all'))]!;

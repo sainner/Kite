@@ -75,7 +75,7 @@ nonisolated struct InstanceAgentConfig: Decodable, Sendable {
     var agent: AgentConfiguration?
     var role: Role?
     var monitor: Monitor?
-    /// 审批模式；没设过时是仅白名单。
+    /// 审批模式：工作机建代理时写入解析好的（草稿、角色、工作机的默认依次取）；monitor 等不是代理的实例没有。
     var approval: ApprovalMode?
 }
 

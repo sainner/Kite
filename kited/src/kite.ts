@@ -44,7 +44,7 @@ import {
   agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
   pluginToolsContextDefinition,
 } from './harness/context/notifications.ts';
-import { effectiveExecution, instanceExecutionChanges, unsandboxedVerdict } from './execution/grants.ts';
+import { defaultApprovalMode, effectiveExecution, instanceExecutionChanges, unsandboxedVerdict } from './execution/grants.ts';
 import { agentPolicy, harnessPolicy } from './execution/policy.ts';
 import { commandEnvironment } from './execution/sandbox.ts';
 import { monitorConfig, monitorDefinitionId, monitorEventsContextDefinition, Monitors } from './monitor/monitors.ts';
@@ -402,10 +402,13 @@ export class Kite {
   resetContextTemplate(id: string, expectedRevision: string) {
     return this.updateContextTemplate(id, expectedRevision, this.contextTemplates.builtin(id));
   }
-  /** 角色列表带上点阵签名状态，以及角色编辑器要用的代理插件全部工具（连同界面名称与分组）、提示词变量和模型目录。 */
+  /**
+   * 角色列表带上点阵签名状态，以及角色编辑器要用的代理插件全部工具（连同界面名称与分组）、提示词变量和模型目录；
+   * defaultApproval 是角色没给审批模式时新建代理用的，App 的角色编辑器与新代理草稿据此显示。
+   */
   roleCatalog() {
     return { roles: this.roles.list().map((role) => this.emblems.decorate(role)), tools: agentTools, toolCatalog: agentToolCatalog,
-      variables: this.contextTemplates.sceneVariables('thread.create'), ...agentModelCatalog() };
+      variables: this.contextTemplates.sceneVariables('thread.create'), ...agentModelCatalog(), defaultApproval: defaultApprovalMode };
   }
   async createRole(value: unknown) {
     const role = this.roles.validateNew(value);

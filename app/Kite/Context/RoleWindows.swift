@@ -343,10 +343,21 @@ extension View {
 }
 
 private extension RoleDefinition {
-    /// 表单交回的是整份改后的角色：只把这一下改了的（换规则方向、开关哪几个工具、是否必需、每回合上限）落到排队写入时
-    /// 工作机上最新的角色上。整份覆盖会把排在前面、没存上已撤掉的改动和别的设备的改动一起写回去。
+    /// 表单交回的是整份改后的角色：只把这一下改了的（换规则方向、开关哪几个工具、是否必需、每回合上限、执行授权的各项、
+    /// 默认审批模式）落到排队写入时工作机上最新的角色上。整份覆盖会把排在前面、没存上已撤掉的改动和别的设备的改动一起写回去。
     mutating func adopt(_ after: RoleDefinition, since before: RoleDefinition, in universe: [String]) {
         if after.maxRequestsPerTurn != before.maxRequestsPerTurn { maxRequestsPerTurn = after.maxRequestsPerTurn }
+        if after.approval != before.approval { approval = after.approval }
+        if after.execution != before.execution {
+            let (old, new) = (before.execution ?? ExecutionChanges(), after.execution ?? ExecutionChanges())
+            var value = execution ?? ExecutionChanges()
+            if new.workspace != old.workspace { value.workspace = new.workspace }
+            for key in ExecutionScope.Key.allCases {
+                if new.add[key] != old.add[key] { value.add[key] = new.add[key] }
+                if new.remove[key] != old.remove[key] { value.remove[key] = new.remove[key] }
+            }
+            execution = value == ExecutionChanges() ? nil : value
+        }
         if after.tools.mode != before.tools.mode { tools.setMode(after.tools.mode, in: universe) }
         var seen = Set<String>()
         for name in universe + before.tools.tools + after.tools.tools where seen.insert(name).inserted {

@@ -251,7 +251,7 @@ export class InstanceConfiguration {
       { execution: bound.execution, approval: bound.approval });
   }
   private updateAgentConfiguration(id: string, expectedRevision: string, value: unknown, role?: RoleBinding,
-    defaults?: { execution?: ExecutionChanges; approval?: ApprovalMode }) {
+    defaults?: { execution?: ExecutionChanges; approval: ApprovalMode }) {
     return this.control.run(this.control.context(id).workspaceId, async () => {
       this.control.openThread(id);
       const snapshot = this.agentConfig(id);
@@ -279,12 +279,12 @@ export class InstanceConfiguration {
       const notification = this.configurationNotice(`instance:${id}`, this.control.context(id), agent, this.projectRule(instance.workspaceId));
       const save = () => this.kite.store.transaction(() => {
         if (runtimeChanged) this.kite.store.setThreadRuntime(id, agent.runtime);
-        // 换角色时执行授权与审批模式重置为新角色的，没给的回到默认。
+        // 换角色时执行授权与审批模式重置为新角色的：角色没给执行授权就不增不减，审批模式已按角色与默认解析好。
         const { approval: _approval, execution: _execution, ...config } = instance.config;
         this.kite.store.setInstanceConfig(id, { ...(role ? config : instance.config), agent,
           ...(role ? { role, grants: roleOperationGrants(instance.definitionId, this.kite.operations.grants(id).grants,
             toolLimits(instanceRole(instance)?.tools).allowed, toolLimits(role.tools).allowed),
-          ...(defaults?.execution ? { execution: defaults.execution } : {}), ...(defaults?.approval ? { approval: defaults.approval } : {}) } : {}) },
+          ...(defaults?.execution ? { execution: defaults.execution } : {}), ...(defaults ? { approval: defaults.approval } : {}) } : {}) },
           nextRevision === revision ? undefined : notification);
       });
       if (runtimeChanged) await this.control.switchRuntime(id, agent, save);

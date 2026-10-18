@@ -11,7 +11,7 @@ import type { ContextDefinition } from './harness/context/types.ts';
 import type { PluginInstance } from './model.ts';
 import { agentTools } from './plugins/definitions.ts';
 import { lineToolNames } from './operations/contract.ts';
-import { approvalModes, bindRoleExecution, executionChangesSchema, type ApprovalMode } from './execution/grants.ts';
+import { approvalModes, bindRoleExecution, defaultApprovalMode, executionChangesSchema, type ApprovalMode } from './execution/grants.ts';
 import type { Store } from './store.ts';
 
 export const roleSchema = z.object({
@@ -23,7 +23,7 @@ export const roleSchema = z.object({
   tools: toolRuleSchema,
   /** 执行授权在项目基础上的增减，新建代理时拷进实例。 */
   execution: executionChangesSchema.optional(),
-  /** 新建代理的默认审批模式，项目上限仍然适用。 */
+  /** 新建代理的默认审批模式，项目上限仍然适用；不设时跟随工作机的默认。 */
   approval: z.enum(approvalModes).optional(),
   model: agentDefinitionSchema.shape.model,
   maxRequestsPerTurn: z.number().int().positive(),
@@ -85,9 +85,9 @@ export function roleAgent({ role, revision }: RoleSnapshot, choice: RoleChoice =
   const agent = chooseAgentModel(bindAgentDefinition({ runtime: runtimeOfModel(role.model.model), model: role.model, tools,
     context: role.context, maxRequestsPerTurn: choice.maxRequestsPerTurn ?? role.maxRequestsPerTurn }), choice.model);
   const binding: RoleBinding = { id: role.id, revision, tools: role.tools };
-  // 草稿里选的审批模式优先于角色的默认。
-  const approval = choice.approval ?? role.approval;
-  return { agent, role: binding, ...(role.execution ? { execution: bindRoleExecution(role.execution) } : {}), ...(approval ? { approval } : {}) };
+  // 审批模式依次取草稿的选择、角色的默认、工作机的默认，解析好写进实例，App 照实例配置显示。
+  const approval = choice.approval ?? role.approval ?? defaultApprovalMode;
+  return { agent, role: binding, ...(role.execution ? { execution: bindRoleExecution(role.execution) } : {}), approval };
 }
 const defaultModel = { model: defaultAgentModel, reasoning: 'medium' };
 const reviewTools: ToolRule = { mode: 'allow', tools: ['read'], required: ['read'] };

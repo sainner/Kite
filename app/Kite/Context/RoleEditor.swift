@@ -30,9 +30,11 @@ struct RoleSettingsForm: View {
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
             }
+            // 没设时显示工作机的默认；选回默认就不设，跟随工作机，不把此刻的默认存进角色。
             LabeledContent("默认审批模式") {
-                Picker("默认审批模式", selection: Binding(get: { role.approval ?? .standard }, set: { role.approval = $0 == .standard ? nil : $0 })) {
-                    ForEach(ApprovalMode.allCases, id: \.self) { Text($0.title).tag($0) }
+                Picker("默认审批模式", selection: Binding(get: { role.approval ?? catalog?.defaultApproval },
+                                                     set: { role.approval = $0 == catalog?.defaultApproval ? nil : $0 })) {
+                    ForEach(ApprovalMode.allCases, id: \.self) { Text($0.title).tag(Optional($0)) }
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
             }

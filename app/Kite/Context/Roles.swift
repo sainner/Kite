@@ -9,7 +9,7 @@ nonisolated struct RoleDefinition: Codable, Equatable, Identifiable, Sendable {
     var tools: ToolRule
     /// 在项目基础上的增减，新建代理时拷进代理；没给时按项目的。
     var execution: ExecutionChanges?
-    /// 新建代理的默认审批模式；没给时是仅白名单。
+    /// 新建代理的默认审批模式；没给时跟随工作机的默认（RoleCatalog.defaultApproval）。
     var approval: ApprovalMode?
     var model: AgentModelConfiguration
     var maxRequestsPerTurn: Int
@@ -54,6 +54,8 @@ nonisolated struct RoleCatalog: Decodable, Sendable {
     let variables: [ContextScene.Variable]
     let vendors: [AgentCapabilities.Vendor]
     let models: [AgentCapabilities.Model]
+    /// 角色没给审批模式时新建代理用的，由工作机定；旧版工作机不给。
+    let defaultApproval: ApprovalMode?
 
     /// 默认角色；工作机没有它时取第一个。
     var defaultRole: AgentRole? { roles.first { $0.id == "kite.work" } ?? roles.first }

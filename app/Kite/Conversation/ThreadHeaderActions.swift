@@ -35,13 +35,14 @@ struct ThreadHeaderActions: View {
             && thread.agentCapabilities?.canEdit(thread.state) == true
     }
     private var canOpenModels: Bool { (instance != nil || choice != nil) && model.isConnected(area) }
-    /// 审批模式：已有代理是工作机上实例的；草稿是本机选择，没选是角色的默认。
-    private var storedApproval: ApprovalMode {
+    /// 审批模式：已有代理是工作机写在实例配置里的；草稿是本机选择，没选是角色的默认，角色也没给是工作机的默认。
+    /// 都取不到（角色目录还没读到，或旧版工作机）时为空，菜单里不勾选。
+    private var storedApproval: ApprovalMode? {
         guard let instance else { return thread.draftChoice?.approval ?? roleApproval }
-        return area.instances.first { $0.id == instance.id }?.config?.approval ?? .standard
+        return area.instances.first { $0.id == instance.id }?.config?.approval
     }
-    private var roleApproval: ApprovalMode { role?.role.approval ?? .standard }
-    private var approval: ApprovalMode { pendingApproval ?? storedApproval }
+    private var roleApproval: ApprovalMode? { role?.role.approval ?? model.roles(in: area)?.defaultApproval }
+    private var approval: ApprovalMode? { pendingApproval ?? storedApproval }
     /// 换到另一厂商的模型就是换后端，运行中或有排队消息时不能换；待恢复时换后端连带确认恢复。
     private var canChangeVendor: Bool {
         if choice != nil { return canOpenModels }
@@ -123,7 +124,7 @@ struct ThreadHeaderActions: View {
         }
         // 审批模式紧跟配置
         if instance != nil || choice != nil {
-            general.insert(.choice("审批模式", symbol: approval.symbol, enabled: model.isConnected(area) && pendingApproval == nil,
+            general.insert(.choice("审批模式", symbol: approval?.symbol ?? "shield", enabled: model.isConnected(area) && pendingApproval == nil,
                                    options: ApprovalMode.allCases.map { mode in .init(title: mode.title, selected: mode == approval) { chooseApproval(mode) } }),
                            at: min(1, general.count))
         }
