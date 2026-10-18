@@ -6,7 +6,7 @@ import SwiftUI
 /// （扫过时笔画变成彩色方块，离开后恢复；算法同 KitePixels.metal 里 iOS 用的着色器）。里面的字、图标照常放在 content 里，链接照常能点。
 /// 扫掠每秒最多 60 帧（现版 30 帧）：内容画成一张图记下来、每一格方块的颜色一起算好（字、宽度、外观变了才重画，
 /// 拖缝改宽时只有被截短的字才要重画）；每一帧只算扫到的那一截，放进一个只有这一截宽的图层，原来的内容用遮罩挖掉这一截，其余照常画。
-/// 窗口不在屏上（PanePresence）、在过渡中、被挡住、这一行滚出可见区时不算。呼吸交给 Core Animation，按参考时刻对齐，
+/// 窗口不在屏上（PanePresence）、在过渡中（含拖缝）、被挡住、这一行滚出可见区时不算，只显示字，停下再接着扫。呼吸交给 Core Animation，按参考时刻对齐，
 /// 和别处的呼吸同一拍。开了「减弱动态效果」都不动。
 final class ToolActivityView: NSView {
     enum Mode: Equatable { case none, breathing, sweeping }
@@ -54,7 +54,8 @@ final class ToolActivityView: NSView {
 
     override func layout() {
         super.layout()
-        if content.frame != bounds {
+        let resized = content.frame != bounds
+        if resized {
             content.frame = bounds
             source = nil
         }
@@ -62,6 +63,8 @@ final class ToolActivityView: NSView {
         CATransaction.setDisableActions(true)
         hole.frame = content.bounds
         CATransaction.commit()
+        // 扫到的那一截和遮罩还是按原来的宽摆的：截短的长行跟着窗口变宽时，多出来的尾巴落在遮罩外面被挖掉，这一帧就按新的宽重摆
+        if resized, link != nil, !effect.isHidden { advance() }
     }
 
     override func viewDidMoveToWindow() {
@@ -90,14 +93,8 @@ final class ToolActivityView: NSView {
             link.invalidate()
             self.link = nil
         }
-        if mode != .sweeping {
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            effect.isHidden = true
-            content.layer?.mask = nil
-            CATransaction.commit()
-            source = nil
-        }
+        if !sweeping { hideBand() }
+        if mode != .sweeping { source = nil }
         let breathing = mode == .breathing && window != nil && !reduceMotion
         if breathing, layer?.animation(forKey: "breath") == nil {
             layer?.add(Self.breath(), forKey: "breath")
@@ -124,36 +121,42 @@ final class ToolActivityView: NSView {
         return animation
     }
 
-    @objc private func tick(_ link: CADisplayLink) {
-        // 屏幕外（窗口被挡住、行滚出可见区）、窗口在过渡中不算
+    @objc private func tick(_ link: CADisplayLink) { advance() }
+
+    /// 摆出眼下这一刻。屏幕外（窗口被挡住、行滚出可见区）、窗口在过渡中不算，只显示字：停住的那一截对不上过渡中变了宽的字。
+    private func advance() {
         guard bounds.width > 0, bounds.height > 0, let window, window.occlusionState.contains(.visible), !visibleRect.isEmpty,
-              !WindowLayout.anyTransitioning else { return }
+              !WindowLayout.anyTransitioning else { return hideBand() }
         // 先在 Double 里收敛到一周期：2 秒一周，前 88% 走完，余下停在终点（扫掠已离开字）
         let phase = Date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2) / 2
         show(travel: CGFloat(UnitCurve.easeInOut.value(at: min(phase / 0.88, 1))))
     }
 
+    /// 收起扫到的那一截，内容照常画。
+    private func hideBand() {
+        guard !effect.isHidden || content.layer?.mask != nil else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        effect.isHidden = true
+        content.layer?.mask = nil
+        CATransaction.commit()
+    }
+
     /// 摆出 travel 那一刻：扫到的那一截换成算好的图，原来的内容挖掉这一截。
     private func show(travel: CGFloat) {
         if source == nil || source?.size != bounds.size { source = capture() }
-        guard let source, let content = content.layer else { return }
-        let band = render(travel: travel)
+        guard let source, let content = content.layer, let band = render(travel: travel) else { return hideBand() }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        if let band {
-            effect.frame = band.frame
-            effect.contents = band.image
-            effect.contentsScale = source.scale
-            effect.isHidden = false
-            let path = CGMutablePath()
-            path.addRect(CGRect(x: 0, y: 0, width: band.frame.minX, height: bounds.height))
-            path.addRect(CGRect(x: band.frame.maxX, y: 0, width: max(bounds.width - band.frame.maxX, 0), height: bounds.height))
-            hole.path = path
-            if content.mask !== hole { content.mask = hole }
-        } else {
-            effect.isHidden = true
-            content.mask = nil
-        }
+        effect.frame = band.frame
+        effect.contents = band.image
+        effect.contentsScale = source.scale
+        effect.isHidden = false
+        let path = CGMutablePath()
+        path.addRect(CGRect(x: 0, y: 0, width: band.frame.minX, height: bounds.height))
+        path.addRect(CGRect(x: band.frame.maxX, y: 0, width: max(bounds.width - band.frame.maxX, 0), height: bounds.height))
+        hole.path = path
+        if content.mask !== hole { content.mask = hole }
         CATransaction.commit()
     }
 
