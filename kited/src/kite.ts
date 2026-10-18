@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, rmSync } from 'node:fs';
 import { FileDiffStore } from './workspace/file-diffs.ts';
 import { join, relative } from 'node:path';
-import { KiteError } from './errors.ts';
+import { GitLoginRequired, KiteError } from './errors.ts';
 import { type AdoptResult, Bus, type PushOutcome, type SyncResult } from './events.ts';
 import { advanceMainline, behindCount, fetchMainline, hasUnmerged, mainline, mainRefs, mergeMainline, type Mainline } from './workspace/mainline.ts';
 import { CheckoutManagement, type EnvFile, type ProjectSource } from './workspace/checkout-management.ts';
@@ -1472,8 +1472,9 @@ export class Kite {
     });
   }
   /**
-   * 直接合入：把本机主线与远程主线合进工作区分支，本机主线快进后推送。拿不到远程时照常合进本机主线，结果里报告推送失败；
-   * 推送被拒说明远程刚有新提交，重新拉取、合并后再推，冲突同样留在工作区。没有远程的项目合进本机主线就结束，其他工作机同步时快进过来。
+   * 直接合入：把本机主线与远程主线合进工作区分支，本机主线快进后推送。拿不到远程时照常合进本机主线，结果里报告推送失败，
+   * 远程要求登录时另带主机；推送被拒说明远程刚有新提交，重新拉取、合并后再推，冲突同样留在工作区。
+   * 没有远程的项目合进本机主线就结束，其他工作机同步时快进过来。
    */
   private async mergeIntoMainline(w: Workspace, checkout: Checkout, afterResolution: boolean): Promise<AdoptResult> {
     let { main, access, offline } = await this.checkoutManagement.refresh(checkout);
@@ -1483,17 +1484,18 @@ export class Kite {
       if (r.status === 'conflict') return r;
       await advanceMainline(checkout, main.branch, r.commit);
       const adopted = (push: PushOutcome): AdoptResult => ({ status: 'adopted', commit: r.commit, push });
-      const failed = (message: string) => adopted({ status: 'failed', message });
+      const failed = (error: Error) => adopted({ status: 'failed', message: error.message,
+        ...(error instanceof GitLoginRequired ? { gitLogin: error.host } : {}) });
       if (local) return adopted({ status: 'local' });
-      if (!access) return failed(offline ?? '无法访问远程');
+      if (!access) return failed(offline ?? new KiteError('无法访问远程'));
       let pushed: Awaited<ReturnType<typeof pushBranch>>;
       try { pushed = await pushBranch(checkout.path, main.branch, access); }
-      catch (error) { return failed((error as Error).message); }
+      catch (error) { return failed(error as Error); }
       if (pushed === 'pushed') return adopted({ status: 'pushed' });
-      if (pushed === 'protected') return failed('主线受保护，不能直接推送；在项目设置里把集成方式改为提交 PR');
-      if (attempt === PUSH_ATTEMPTS) return failed('远程持续有新的提交，推送多次被拒，请稍后再集成');
+      if (pushed === 'protected') return failed(new KiteError('主线受保护，不能直接推送；在项目设置里把集成方式改为提交 PR'));
+      if (attempt === PUSH_ATTEMPTS) return failed(new KiteError('远程持续有新的提交，推送多次被拒，请稍后再集成'));
       try { main = await fetchMainline(checkout, main.branch, access); }
-      catch (error) { return failed((error as Error).message); }
+      catch (error) { return failed(error as Error); }
     }
   }
   /**
@@ -1503,7 +1505,8 @@ export class Kite {
   private async pushProposal(model: WorkspaceModel, afterResolution: boolean): Promise<Proposal | { status: 'conflict'; files: string[] }> {
     const { workspace: w, checkout, project } = model;
     const { main, access, offline } = await this.checkoutManagement.refresh(checkout);
-    if (!access) throw new KiteError(`无法访问远程：${offline ?? '没有 origin'}`, 409);
+    // 拉不到远程就提交不了：照原样报出，远程要求登录时是 GitLoginRequired，错误体带上主机。
+    if (!access) throw offline instanceof KiteError ? offline : new KiteError(`无法访问远程：${offline?.message ?? '没有 origin'}`, 409);
     const base = main.branch;
     let branch = w.pullRequest?.branch;
     if (!branch) {
@@ -1555,7 +1558,7 @@ export class Kite {
   }
   /**
    * 同步：拉取主线，合进工作区分支，不推送；要求线程全部空闲，冲突交给其中的线程，合完保存快照。
-   * afterResolution 同 adopt。
+   * 拉不到远程时照用本机主线和上次拉取的远程主线；远程要求登录不算拉不到，报出来让用户绑定令牌后再同步。afterResolution 同 adopt。
    */
   syncWorkspace(id: string, originThreadId?: string, afterResolution = false): Promise<SyncResult> {
     return this.control(id, async () => {
@@ -1564,7 +1567,8 @@ export class Kite {
       if (w.status !== 'open') throw new KiteError('只能同步已打开的工作区', 409);
       await this.assertIdle(id);
       const result = await this.serial(`checkout:${checkout.id}`, async (): Promise<SyncResult> => {
-        const { main } = await this.checkoutManagement.refresh(checkout);
+        const { main, offline } = await this.checkoutManagement.refresh(checkout);
+        if (offline instanceof GitLoginRequired) throw offline;
         if (!(await revParse(w.cwd, 'MERGE_HEAD')) && (await behindCount(w.cwd, main)) === 0) return { status: 'current' };
         const r = await mergeMainline(w.cwd, w.name, mainRefs(main), { stageResolved: afterResolution });
         return r.status === 'conflict' ? r : { status: 'synced', commit: r.commit };

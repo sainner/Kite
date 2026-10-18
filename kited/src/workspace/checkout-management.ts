@@ -214,7 +214,7 @@ export class CheckoutManagement {
     if (refreshed) await Promise.all(checkouts.map(async (checkout) => {
       try {
         const { main, offline } = await this.serial(`checkout:${checkout.id}`, () => this.refresh(checkout));
-        if (offline) console.warn(`[项目同步] ${offline}`);
+        if (offline) console.warn(`[项目同步] ${offline.message}`);
         await refreshed(checkout, main);
       } catch (error) { console.warn(`[项目同步] ${checkout.path}：${(error as Error).message}`); }
     }));
@@ -223,9 +223,10 @@ export class CheckoutManagement {
 
   /**
    * 拉取最新的主线，调用方持有检出的串行锁：有远程的从远程拉，本机主线落后就快进；没有远程的从有它检出的其他工作机拉，同样只做快进，
-   * 两边都有新提交时留给用户集成。拉不到时照用本机主线和上次拉取的远程主线。返回主线（见 Mainline），拉取成功时另带访问方式，失败时带原因。
+   * 两边都有新提交时留给用户集成。拉不到时照用本机主线和上次拉取的远程主线。返回主线（见 Mainline），拉取成功时另带访问方式，
+   * 失败时带原来的错误：远程要求登录时是 GitLoginRequired，调用方据此决定照常用本机主线还是报出来让用户绑定令牌。
    */
-  async refresh(checkout: Checkout): Promise<{ main: Mainline; access?: RemoteAccess; offline?: string }> {
+  async refresh(checkout: Checkout): Promise<{ main: Mainline; access?: RemoteAccess; offline?: Error }> {
     if (!this.store.project(checkout.projectId)?.remote) {
       await this.syncPeers(checkout);
       return { main: localMainline(await mainBranch(checkout)) };
@@ -234,7 +235,7 @@ export class CheckoutManagement {
     try {
       const access = await originAccess(checkout.path, this.projects.git);
       return { main: await fetchMainline(checkout, branch, access), access };
-    } catch (error) { return { main: await lastFetchedMainline(checkout, branch), offline: (error as Error).message }; }
+    } catch (error) { return { main: await lastFetchedMainline(checkout, branch), offline: error as Error }; }
   }
 
   /** 没有远程的项目：从有它检出的其他工作机拉取，能快进就快进本机主线，调用方持有检出的串行锁。连不上的跳过，下一轮再试。 */

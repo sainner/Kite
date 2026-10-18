@@ -277,8 +277,11 @@ enum KitedEventScope {
 struct KitedError: LocalizedError {
     let message: String
     var status: Int? = nil
-    /// 访问的 Git 平台要求登录（或拒绝了令牌）：它的主机，界面据此让用户就地绑定访问令牌。
+    /// 访问的 Git 平台要求登录（或拒绝了令牌）：它的主机，界面据此让用户就地绑定访问令牌，见 GitLogin。
     var gitLogin: String? = nil
+    /// 出错的那台工作机：请求发给的那台；它转交另一台工作机时出的登录问题（错误体的 gitLoginMachine）是那一台。
+    /// 令牌写到这里，重试时马上能用。
+    var machineID: String? = nil
     var errorDescription: String? { message }
 }
 
@@ -438,9 +441,10 @@ struct KitedClient: Equatable {
     private func validate(_ response: URLResponse, data: Data? = nil) throws {
         guard let http = response as? HTTPURLResponse else { throw KitedError(message: "服务响应无效") }
         guard (200..<300).contains(http.statusCode) else {
-            struct Body: Decodable { let error: String?; let gitLogin: String? }
+            struct Body: Decodable { let error: String?; let gitLogin: String?; let gitLoginMachine: String? }
             let body = data.flatMap { try? JSONDecoder().decode(Body.self, from: $0) }
-            throw KitedError(message: body?.error ?? "服务返回 \(http.statusCode)", status: http.statusCode, gitLogin: body?.gitLogin)
+            throw KitedError(message: body?.error ?? "服务返回 \(http.statusCode)", status: http.statusCode, gitLogin: body?.gitLogin,
+                             machineID: body?.gitLoginMachine ?? machineID)
         }
     }
 }

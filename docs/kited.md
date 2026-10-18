@@ -294,11 +294,11 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/network/logout` | 仅本机：退出 Tailscale 登录。节点在线时先在 Tailscale 上注销，不在线时只删本机状态（设备要到 Tailscale 管理页删）；组网开着时重起节点，状态里给出新的登录地址 |
 | GET | `/machines` | 工作机目录：本机在前，每项 `{id, name, online, address?, updatedAt?, snapshot?}`，`snapshot` 是那台工作机最近一次的目录摘要，见 [账号级数据](#账号级数据) |
 | GET | `/project-registry` | 项目登记表 `[{id, name, remote, url, createdAt, icon, color, integration, integrationReason?, autoHandover?, handoverNeeds?}]`；`remote` 为归一化地址，`url` 为 HTTPS 访问地址，没有远程的项目两者为 null；`integration` 为 `merge`（直接合入）或 `pullRequest`（提交 PR），`integrationReason` 是自动选择时的理由 |
-| POST | `/project-registry/check` | 添加项目前的检查，不写任何东西：`{remote}` 或 `{path}`（这台工作机上的文件夹）。返回 `{remote, integration, integrationReason?, envFiles, existing?}`：`remote` 是归一化地址，没有远程的文件夹为 null；`integration` 是按仓库情况给的默认值；`envFiles` 是文件夹里被忽略的 `.env`、`.env.*` 的相对路径，远程为空；`existing` 是已登记的同一项目。远程访问不了 409，其中远程要账号或拒绝了访问令牌时错误体另带 `gitLogin`（主机），App 据此让用户就地绑定令牌；文件夹不存在 400 |
-| POST | `/project-registry` | 添加项目 `{remote}` 或 `{path}`，另带 `{integration?, envFiles?}`：`envFiles` 每项为 `{path}`（从文件夹读）、`{path, from}`（这台工作机上的绝对路径）或 `{path, value}`（从操作的设备上选的文件）。远程与有 origin 的文件夹先确认能访问，再写进登记表，不 clone；没有远程的文件夹在这台工作机上导入成检出，原文件夹不动。环境变量文件存成设了路径的项目密钥。全部成功才登记，返回项目；同一远程已登记时返回原项目，不改它的设置，带上的环境变量文件存进它的项目密钥（已有设在同一路径的换内容）。不能添加 Kite 的数据目录或包含它的文件夹。远程要账号时同检查，错误体带 `gitLogin` |
+| POST | `/project-registry/check` | 添加项目前的检查，不写任何东西：`{remote}` 或 `{path}`（这台工作机上的文件夹）。返回 `{remote, integration, integrationReason?, envFiles, existing?}`：`remote` 是归一化地址，没有远程的文件夹为 null；`integration` 是按仓库情况给的默认值；`envFiles` 是文件夹里被忽略的 `.env`、`.env.*` 的相对路径，远程为空；`existing` 是已登记的同一项目。远程访问不了 409，远程要账号或拒绝了访问令牌时错误体带 `gitLogin`（见 [远程要求登录](#远程要求登录)）；文件夹不存在 400 |
+| POST | `/project-registry` | 添加项目 `{remote}` 或 `{path}`，另带 `{integration?, envFiles?}`：`envFiles` 每项为 `{path}`（从文件夹读）、`{path, from}`（这台工作机上的绝对路径）或 `{path, value}`（从操作的设备上选的文件）。远程与有 origin 的文件夹先确认能访问，再写进登记表，不 clone；没有远程的文件夹在这台工作机上导入成检出，原文件夹不动。环境变量文件存成设了路径的项目密钥。全部成功才登记，返回项目；同一远程已登记时返回原项目，不改它的设置，带上的环境变量文件存进它的项目密钥（已有设在同一路径的换内容）。不能添加 Kite 的数据目录或包含它的文件夹。远程要账号时同检查 |
 | GET | `/host-files?path=&offset=&limit=` | 列这台工作机上的一个目录，添加项目时选文件夹和环境变量文件用，只列名字不读内容。`path` 是绝对路径或 `~/` 开头，不给时列主目录；`limit` 默认 200、最多 1000。返回 `{path, entries, total, nextOffset}`，`entries` 每项 `{name, path, kind}`，路径都是绝对的，`kind` 为 `directory`、`file`、`symlink`（目标读不到）或 `other`，目录在前。不存在 404，没有权限 403 |
 | DELETE | `/project-registry/:id` | 删除项目，语义见 [删除项目](项目与远程仓库.md#删除项目)：登记、约束与项目专用的密钥一起删，这台先移除本机的检出再返回，其他工作机同步到删除后各自移除。未登记的项目 404，Line 所在的项目 409 |
-| PUT | `/project-registry/:id/remote` | 给没有远程的项目设远程 `{remote}`：在这台有检出的工作机上把全部分支和标签推到远程，加上 origin，写进登记表；其他工作机的检出随项目同步加上 origin。推送被拒或这台没有检出 409 |
+| PUT | `/project-registry/:id/remote` | 给没有远程的项目设远程 `{remote}`：在这台有检出的工作机上把全部分支和标签推到远程，加上 origin，写进登记表；其他工作机的检出随项目同步加上 origin。推送被拒或这台没有检出 409，远程要账号时错误体带 `gitLogin` |
 | PUT | `/project-registry/:id/settings` | `{integration?, autoHandover?, handoverNeeds?}`，至少一项：`integration` 是集成方式，没有远程的项目只能是 `merge`，手动设置后清掉 `integrationReason`；`autoHandover` 是工作机睡眠、登出、重启或关机前，把这个项目里正在工作的工作区换到别的工作机；`handoverNeeds` 是换机目标须满足的环境，取值 `xcode`（完整的 Xcode）、`iosDevice`（连着的 iPhone 或 iPad） |
 | PUT | `/project-registry/:id/appearance` | `{icon?, color?}` 至少一项，未提供项不变；`icon` 为内置图标名（1–100 个 ASCII 字母、数字或句点，默认 `folder`），`color` 为 `primary`（默认）、`accent`、`green`、`purple`、`orange` 或 `pink`；返回完整项目，未登记的项目 404 |
 | GET/PUT | `/project-registry/:id/constraints` | 项目约束 `{tools: {mode, tools}, revision}`，没设置过时为不限制的黑名单；PUT `{expectedRevision, tools}`，`mode` 为 `allow` 或 `deny`，最多 64 个工具名，版本不符 409 |
@@ -316,10 +316,10 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/network/channel/key` | 仅本机：通道公钥 `{publicKey}`，没有私钥时先生成；kite-net 读钥匙串可能要等用户允许 |
 | GET | `/projects` | 列出本机已登记的项目身份 |
 | GET | `/checkouts` | 列出本机检出（`?project=`） |
-| GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{project, name?, prompt?, role?, id?, windowId?, messageId?}`（先检查环境，没有检出时先 clone），`role` 为 `{id, revision}`，准备过程看事件；`id`、`windowId`、`messageId` 是客户端生成的 UUID，分别用作工作区、首个代理窗口和第一条消息的 ID，工作区或窗口 ID 已用过返回 409，省略时由 kited 生成 |
+| GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本；创建 `{project, name?, prompt?, role?, id?, windowId?, messageId?}`（先检查环境，没有检出时先 clone，clone 时远程要账号的错误体带 `gitLogin`），`role` 为 `{id, revision}`，准备过程看事件；`id`、`windowId`、`messageId` 是客户端生成的 UUID，分别用作工作区、首个代理窗口和第一条消息的 ID，工作区或窗口 ID 已用过返回 409，省略时由 kited 生成 |
 | GET | `/environment?project=&needs=` | 这台工作机为该项目建工作区前的环境，只读；`needs` 是逗号分隔的换机环境需求，见 [工作区与线程的生命周期](#工作区与线程的生命周期) |
 | POST | `/workspaces/:id/setup` | 准备失败的工作区重跑准备，设了路径的项目密钥重新写入；工作树没建成时重建 |
-| POST | `/workspaces/:id/transfer` | 在持有工作区的工作机上调用，把它流转到 `{to, operationId, confirmRecovery?}`：`confirmRecovery: true` 先确认工作区里待恢复的线程（App 手动流转用），本机交出，目标补齐副本后还原并接管，返回 `{workspaceId, machine, epoch}`，返回时本机记录已冻结；目标没接成时撤回交接、工作区重新开放并返回错误 |
+| POST | `/workspaces/:id/transfer` | 在持有工作区的工作机上调用，把它流转到 `{to, operationId, confirmRecovery?}`：`confirmRecovery: true` 先确认工作区里待恢复的线程（App 手动流转用），本机交出，目标补齐副本后还原并接管，返回 `{workspaceId, machine, epoch}`，返回时本机记录已冻结；目标没接成时撤回交接、工作区重新开放并返回错误。本机或目标访问远程时要账号的，错误体带 `gitLogin`，出在目标上的另带 `gitLoginMachine` |
 | POST | `/workspaces/:id/handover` | 交出工作区：停下线程、保存最后的快照，进入可交接状态，返回 `{epoch}`；`/handover/cancel` 撤回，`/lease/check` 立即核对执行权。约定见 [工作区流转](Line与工作区流转.md#工作区流转) |
 | POST | `/workspaces/:id/handover/complete` | 仅工作机：没有远程的项目，目标装好后通知源机交出 `{epoch, machine}`（machine 是目标自己），源机冻结本地记录并记下目标；源机已撤回、epoch 不符或这次交接已交给别的工作机时 409，已交给同一台的再通知照样成功 |
 | POST | `/workspaces/restore` | 在本机还原并接管流转来的工作区 `{project?, workspaceId, operationId, from?, force?, continue?}`（没给 `project` 时从本机副本里取）：`from` 是交出它的工作机，先把副本补到它的末尾；`force` 是用户确认源机已丢失后用本机副本强制接管；`continue` 是源机有预告地离开时打断的线程与收回的排队输入，接管后接着做 |
@@ -369,8 +369,8 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/instances/:id/archive` | 归档独立存续的实例（agent 或 Bun 插件），保留所属工作区 |
 | GET | `/workspaces/:id/snapshots` | 工作区快照，新的在前 |
 | POST | `/workspaces/:id/restore` | 恢复文件到快照 `{commit}` |
-| POST | `/workspaces/:id/adopt` | 按项目的集成方式集成，可带 `{confirmRecovery: true}` 先确认工作区里待恢复的线程（App 手动合回用）。直接合入返回 `{status: "adopted", commit, push}`，`push` 为 `{status: "pushed"}` 或 `{status: "failed", message}`；提交 PR 返回 `{status: "proposed", branch, url, number?}`，`url` 是 PR 页面，不能自动开 PR 的平台是去开 PR 的网页、没有 `number`；有冲突时返回 `{status: "conflict", files}` |
-| POST | `/workspaces/:id/sync` | 同步：拉取主线合进工作区分支，可带 `{confirmRecovery: true}`；返回 `{status: "synced", commit}`、`{status: "current"}`（已是最新）或 `{status: "conflict", files}`；线程没有全部空闲 409 |
+| POST | `/workspaces/:id/adopt` | 按项目的集成方式集成，可带 `{confirmRecovery: true}` 先确认工作区里待恢复的线程（App 手动合回用）。直接合入返回 `{status: "adopted", commit, push}`，`push` 为 `{status: "pushed"}`、`{status: "local"}`（没有远程）或 `{status: "failed", message, gitLogin?}`，远程要账号时带 `gitLogin`（主机）；提交 PR 返回 `{status: "proposed", branch, url, number?}`，`url` 是 PR 页面，不能自动开 PR 的平台是去开 PR 的网页、没有 `number`；有冲突时返回 `{status: "conflict", files}`；提交 PR 时拉取或推送不了 409，远程要账号时错误体带 `gitLogin` |
+| POST | `/workspaces/:id/sync` | 同步：拉取主线合进工作区分支，可带 `{confirmRecovery: true}`；返回 `{status: "synced", commit}`、`{status: "current"}`（已是最新）或 `{status: "conflict", files}`；线程没有全部空闲 409。拉不到远程时照用本机主线与上次拉取的远程主线，远程要账号时不同步，409 且错误体带 `gitLogin` |
 | POST | `/workspaces/:id/archive` | 归档工作区 `{force?}`；Line 所在的工作区 409 |
 | GET | `/events` | 目录 SSE：首帧 `catalog.snapshot`，随后检出、工作区和线程概要变更 |
 | GET | `/events?workspace=<id>` | 工作区 SSE：首帧 `workspace.model`，随后工作区操作与所属线程概要 |
@@ -396,6 +396,10 @@ kited 在启动、登记表变化时和每 5 分钟对照一次项目登记表�
 连接时先读 `GET /machine`。其余接口（包括 SSE）必须带 `X-Kite-Machine: <id>`：缺失返回 400，和服务身份不符返回 409，并在执行请求前拒绝。这个检查用于防止地址复用时操作错机器，不承担认证。本机监听的接口只接受 `Host` 为 `127.0.0.1` 或 `localhost` 的请求，其他主机名返回 403，用于阻止网页借 DNS 重绑定访问本机服务；远程监听只接受已核验身份的组网代理，见[远程连接](#远程连接)。App 会保存身份，重连时继续使用原 ID；CLI 在一次命令内固定目标 ID。
 
 工作区聚合和线程上下文包含 `machine`，检出包含 `machineId`。SSE 按目录、工作区和线程分别订阅，每次重连从完整快照恢复；事件、游标与流式内容统一见 [会话显示协议](会话显示协议.md)。
+
+### 远程要求登录
+
+HTTPS 远程要账号或拒绝了访问令牌时，访问远程的接口（添加项目及其检查、建工作区时 clone、提交 PR、同步、设远程、流转与接管）返回 409，错误体除 `error` 外带 `gitLogin`（主机，可能带端口）。请求经这台工作机转给另一台、在另一台上出的（流转时目标的还原），另带 `gitLoginMachine`，是那一台的 ID；没有时就是接请求的这台。App 据此让用户就地绑定这个主机的 Git 凭据，写到 `gitLoginMachine` 或接请求的那台，免得等同步，再重试刚才的请求。直接合入在合进本机主线之后才推送，推送要账号时请求本身成功，在结果的 `push` 里带 `gitLogin`，重新集成即推上去。
 
 ## 验证入口
 

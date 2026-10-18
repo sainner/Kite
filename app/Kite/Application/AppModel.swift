@@ -127,6 +127,8 @@ final class AppModel {
     /// 侧栏菜单发起的归档与强制接管确认，由 WorkspaceGitPresentation 呈现。
     var archiveRequest: WorkArea?
     var takeoverRequest: TakeoverRequest?
+    /// 菜单和页面发起的操作遇到远程要求登录，等用户就地登录，由 WorkspaceGitPresentation 呈现，见 offerGitLogin。
+    var gitLogin: GitLogin?
     /// 本机新建、工作机还没列出来的工作区，见 createWorkspace。
     @ObservationIgnored private var creatingWorkspaces: [String: WorkArea] = [:]
 
@@ -532,7 +534,7 @@ final class AppModel {
 
     /// 新建工作区不弹表单、不等工作机：工作区 ID 由本机定，本机先按它建好、选中，开一个新代理的草稿窗口，第一条消息在那里写，工作区随它起名；
     /// 工作机建好后目录接上同一个工作区对象。工作机上还没有这个项目的检出时由它先 clone。没指定工作机时用 preferredWorker。
-    /// 建不成就收回、回到原来的选中，原因用 toast 报。
+    /// 建不成就收回、回到原来的选中，原因用 toast 报；clone 时远程要求登录的，请用户就地登录，绑好令牌后在同一台工作机上再建。
     func createWorkspace(in projectID: String, on machineID: String? = nil, toast: ToastCenter?) {
         let fail = { (message: String) -> Void in toast?.show(message, systemImage: "exclamationmark.triangle") }
         guard let project = knownProjects.first(where: { $0.id == projectID }) else { return fail("项目已不存在") }
@@ -561,6 +563,8 @@ final class AppModel {
                 guard area.pluginClient == nil else { return }
                 workspaces.removeAll { $0 === area }
                 if selected == id { (selected, selectedProjectID) = before }
+                let machine = connection.machine.id
+                if offerGitLogin(error, retry: { self.createWorkspace(in: projectID, on: machine, toast: toast) }) { return }
                 return fail(error.localizedDescription)
             }
             try? await refresh(connection.client)

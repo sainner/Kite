@@ -49,7 +49,8 @@ export type DomainEvent =
 export type KiteEvent = ThreadEvent | DomainEvent;
 /** 直接合入在本地完成后推送到远程；推送失败不撤销本地主线，下次集成时一并推上去。 */
 /** local：项目没有远程，只合回本机主线，其他工作机同步时快进过来。 */
-export type PushOutcome = { status: 'pushed' } | { status: 'local' } | { status: 'failed'; message: string };
+/** failed 的 gitLogin：远程要求登录或拒绝了令牌时的主机，App 据此就地绑定令牌后再集成一次。 */
+export type PushOutcome = { status: 'pushed' } | { status: 'local' } | { status: 'failed'; message: string; gitLogin?: string };
 export type AdoptResult =
   | { status: 'adopted'; commit: string; push: PushOutcome }
   /** 提交 PR：工作区分支推到了远程的 branch；url 是 PR 页面，不能自动开 PR 的平台是去开 PR 的网页，没有 number。 */

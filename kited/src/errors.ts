@@ -5,17 +5,22 @@ export class KiteError extends Error {
   details(): Record<string, unknown> { return {}; }
 }
 
-/** HTTPS 远程要账号或拒绝了访问令牌：错误体带上 gitLogin（主机），App 据此让用户就地绑定令牌再重试。 */
+/**
+ * HTTPS 远程要账号或拒绝了访问令牌：错误体带上 gitLogin（主机），App 据此让用户就地绑定令牌，写到出错的那台工作机后重试。
+ * 经另一台工作机转交时（见 PeerError）另带 gitLoginMachine，是真正访问远程、令牌该写到的那台。
+ */
 export class GitLoginRequired extends KiteError {
   constructor(message: string, readonly host: string) { super(message, 409); }
   override details() { return { gitLogin: this.host }; }
 }
 
+/** extra 是原来的错误给 App 分情况处理的字段（如 gitLogin），经操作收据转成操作错误时保留。 */
 export class OperationError extends KiteError {
-  constructor(message: string, readonly outcome: 'denied' | 'failed' | 'cancelled' | 'unknown', status = 409) { super(message, status); }
-  override details() { return { outcome: this.outcome }; }
+  constructor(message: string, readonly outcome: 'denied' | 'failed' | 'cancelled' | 'unknown', status = 409,
+    private readonly extra: Record<string, unknown> = {}) { super(message, status); }
+  override details() { return { ...this.extra, outcome: this.outcome }; }
 }
 
 export const operationError = (error: unknown): OperationError => error instanceof OperationError ? error : error instanceof KiteError
-  ? new OperationError(error.message, 'failed', error.status)
+  ? new OperationError(error.message, 'failed', error.status, error.details())
   : new OperationError(`操作结果尚未确认：${String(error)}`, 'unknown');

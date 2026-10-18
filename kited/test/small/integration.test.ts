@@ -1,7 +1,8 @@
 /**
  * 工作区的集成与同步（docs/项目与远程仓库.md「工作区与集成」，docs/kited.md「工作区与线程的生命周期」与接口表）：
  * 检出是数据目录里的裸仓库，工作区从它开出工作树；直接合入把工作区合进主线再推送，提交 PR 把工作区分支推到远程同名分支，
- * 同步把主线合进工作区分支、不推送。kited 用真实 git fetch/merge/push 经 git http-backend 访问 Git 平台替身（fake-git.ts）。
+ * 同步把主线合进工作区分支、不推送；拉不到远程主线时分远程要登录与暂时不可用两种情况。
+ * kited 用真实 git fetch/merge/push 经 git http-backend 访问 Git 平台替身（fake-git.ts）。
  * 替身在本进程里服务，测试直接动远程时用裸仓库路径（util 的 git 是同步调用，经 http 会互相等住）。
  */
 import { afterEach, expect, test } from 'bun:test';
@@ -14,7 +15,7 @@ import { checkoutPath } from '../../src/paths.ts';
 import { type FakeGit, startFakeGit } from '../fake-git.ts';
 import { chatgptLogin, type Kited, startKited } from '../harness.ts';
 import { ManualModel } from '../harness-loop.ts';
-import { ENV, git, gitOk, makeTemp, newRepo, read, writeFiles } from '../util.ts';
+import { commitMainline, ENV, git, gitOk, lexists, makeTemp, newRepo, read, writeFiles } from '../util.ts';
 
 let kited: Kited | undefined;
 let remotes: FakeGit | undefined;
@@ -199,4 +200,67 @@ test('同步冲突交给工作区里的线程：线程去掉冲突标记、回�
   expect(read(join(workspace.cwd, 'c.txt'))).toBe('resolved\n');
   expect(git(checkout, 'rev-parse', 'refs/heads/main')).toBe(main);
   await k.waitEvent((e) => e.type === 'idle' && e.threadId === id && after(k, since)(e));
+}, 1000);
+
+/*
+ * 代码之外的东西：集成与同步先用 git fetch（LC_ALL=C）拉远程主线，远程回 401、本机没有可用凭据时 git fetch 的实际 stderr
+ * 要被认成「远程要登录」，并取出带端口的主机（ls-remote 的输出见 projects.test.ts，这里是另一条 git 命令）。
+ * 几个部分的配合：这个识别结果经刷新主线、同步或合进主线、HTTP 回应几层交到 App 手里。同步要先拿到远程主线，拉不到就不做：
+ * 409 带上主机，本机主线上别的工作区刚合进来的改动也不合进工作区；直接合入不因拉不到而停，照常合进本机检出的主线，
+ * 推送记为失败并带上主机。别的工作区的合入用 commitMainline 直接加在检出的主线上，省一次建工作区。
+ */
+test('远程要登录时：同步 409 带上含端口的主机、工作区不动；直接合入照常合进本机主线，推送失败并带上这个主机', async () => {
+  const k = start();
+  const { url, bare, initial } = seededRemote('private', { 'a.txt': 'a\n' });
+  const host = new URL(url).host;
+  const project = await addProject(k, { remote: url });
+  const checkout = checkoutPath(k.home, project.id);
+  const { workspace } = await openWorkspace(k, project.id);
+  const head = git(workspace.cwd, 'rev-parse', 'HEAD');
+  const others = commitMainline(checkout, { 'others.txt': '别的工作区\n' }, '别的工作区刚合进来的改动');
+
+  remotes!.beforeFetch = () => new Response('需要登录', { status: 401, headers: { 'WWW-Authenticate': 'Basic realm="x"' } });
+  const sync = await k.call('POST', `/workspaces/${workspace.id}/sync`);
+  expect(sync.status).toBe(409);
+  expect(sync.body).toMatchObject({ error: expect.any(String), gitLogin: host });
+  expect(git(workspace.cwd, 'rev-parse', 'HEAD')).toBe(head);
+  expect(lexists(join(workspace.cwd, 'others.txt'))).toBe(false);
+
+  writeFiles(workspace.cwd, { 'mine.txt': '我的\n' });
+  const adopted = await post(k, `/workspaces/${workspace.id}/adopt`);
+  expect(adopted).toMatchObject({ status: 'adopted', push: { status: 'failed', message: expect.any(String), gitLogin: host } });
+  expect(git(checkout, 'rev-parse', 'refs/heads/main')).toBe(adopted.commit);
+  expect(gitOk(checkout, 'merge-base', '--is-ancestor', others, adopted.commit)).toBe(true);
+  expect(git(checkout, 'show', 'refs/heads/main:mine.txt')).toBe('我的');
+  expect(git(bare, 'rev-parse', 'refs/heads/main')).toBe(initial);
+}, 1000);
+
+/*
+ * 代码之外的东西：远程暂时不可用（服务回 503）时 git fetch 的 stderr 不能被误认成要登录。
+ * 几个部分的配合：拉不到远程主线时同步不报错，照用本机主线，别的工作区刚合进本机主线、还没推上去的改动照常合进这个工作区，
+ * 它自己的改动保留；直接合入仍合进本机主线、推送失败且不带主机。别的工作区的合入用 commitMainline 模拟，同上。
+ */
+test('远程暂时不可用时：同步照用本机主线，合进别的工作区刚合入的改动；直接合入合进本机主线、推送失败且不要求登录', async () => {
+  const k = start();
+  const { url, bare, initial } = seededRemote('flaky', { 'a.txt': 'a\n' });
+  const project = await addProject(k, { remote: url });
+  const checkout = checkoutPath(k.home, project.id);
+  const { workspace } = await openWorkspace(k, project.id);
+  writeFiles(workspace.cwd, { 'mine.txt': '我的\n' });
+  const others = commitMainline(checkout, { 'others.txt': '别的工作区\n' }, '别的工作区刚合进来、还没推上去的改动');
+
+  remotes!.beforeFetch = () => new Response('暂时不可用', { status: 503 });
+  const synced = await post(k, `/workspaces/${workspace.id}/sync`);
+  expect(synced).toMatchObject({ status: 'synced' });
+  expect(git(workspace.cwd, 'rev-parse', 'HEAD')).toBe(synced.commit);
+  expect(gitOk(workspace.cwd, 'merge-base', '--is-ancestor', others, 'HEAD')).toBe(true);
+  expect(read(join(workspace.cwd, 'others.txt'))).toBe('别的工作区\n');
+  expect(read(join(workspace.cwd, 'mine.txt'))).toBe('我的\n');
+
+  const adopted = await post(k, `/workspaces/${workspace.id}/adopt`);
+  expect(adopted).toMatchObject({ status: 'adopted', push: { status: 'failed', message: expect.any(String) } });
+  expect(adopted.push.gitLogin).toBeUndefined();
+  expect(git(checkout, 'rev-parse', 'refs/heads/main')).toBe(adopted.commit);
+  expect(git(checkout, 'show', 'refs/heads/main:mine.txt')).toBe('我的');
+  expect(git(bare, 'rev-parse', 'refs/heads/main')).toBe(initial);
 }, 1000);

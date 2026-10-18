@@ -154,9 +154,51 @@ extension AppModel {
             try await createCredential(type: "git", name: host, meta: meta, secret: ["token": token], via: client)
         }
     }
+
+    /// 菜单和页面发起的操作（没有自己的底部按钮）失败时：远程要求登录就记下来，由 WorkspaceGitPresentation 请用户就地登录、
+    /// 绑好令牌后调 retry，返回 true；其他错误返回 false，由调用方照常报。卡片底部按钮的操作见 CardPhase.run。
+    @discardableResult
+    func offerGitLogin(_ error: any Error, retry: @escaping () -> Void) -> Bool {
+        guard let login = GitLogin(error, retry: retry) else { return false }
+        gitLogin = login
+        return true
+    }
+
+    /// 菜单发起、用提示报结果的操作：成功时显示 action 给的结果说明，远程要求登录时请用户就地登录、绑好令牌后再跑一次，其他错误显示成提示。
+    func perform(toast: ToastCenter?, _ action: @escaping @MainActor () async throws -> String) {
+        Task {
+            do { toast?.show(try await action()) }
+            catch {
+                if !offerGitLogin(error, retry: { self.perform(toast: toast, action) }) {
+                    toast?.show(error.localizedDescription, systemImage: "exclamationmark.triangle")
+                }
+            }
+        }
+    }
 }
 
-/// 用访问令牌绑定一个 Git 平台，存好后由调用方接着做。访问远程时平台要求登录就地绑定它（给了 host）；
+/// 访问远程时平台要求登录或拒绝了访问令牌（kited 错误体带 gitLogin）：登录哪个平台、令牌写到哪台工作机、绑好后重跑什么。
+/// 卡片的底部按钮（CardActions）换成「登录 host」；菜单和页面发起的操作由 WorkspaceGitPresentation 询问。都用 GitLoginSheet 绑定。
+struct GitLogin: Identifiable {
+    let id = UUID()
+    let host: String
+    /// 出错的那台工作机，见 KitedError.machineID。
+    let machineID: String?
+    /// 出错时工作机给的说明。
+    let message: String
+    let retry: () -> Void
+
+    /// 远程要求登录的错误才有，其他错误为 nil。
+    init?(_ error: any Error, retry: @escaping () -> Void) {
+        guard let error = error as? KitedError, let host = error.gitLogin else { return nil }
+        self.host = host
+        machineID = error.machineID
+        message = error.message
+        self.retry = retry
+    }
+}
+
+/// 用访问令牌绑定一个 Git 平台，存好后由调用方接着做。访问远程时平台要求登录就地绑定它（给了 host，见 GitLogin）；
 /// 凭据页绑定 GitHub 以外的平台时由用户填域名，换令牌时给 host。
 struct GitLoginSheet: View {
     let host: String?
@@ -211,4 +253,11 @@ struct GitLoginSheet: View {
     }
 
     private enum Field { case host, username, token }
+}
+
+extension GitLoginSheet {
+    /// 远程要求登录时就地绑定：令牌写到出错的那台工作机，绑好后重跑被挡住的那一步。
+    init(_ login: GitLogin) {
+        self.init(host: login.host, machineID: login.machineID, bound: login.retry)
+    }
 }

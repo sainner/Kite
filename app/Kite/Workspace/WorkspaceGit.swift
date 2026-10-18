@@ -2,7 +2,8 @@ import SwiftUI
 
 /// 集成结果：直接合入时合进主线后推送，推送失败不撤销本地主线，下次集成时一并推上去；提交 PR 时推到 PR 分支。
 struct RemoteAdoptResult: Decodable {
-    struct Push: Decodable { let status: String; let message: String? }
+    /// 推送失败时 gitLogin 是要求登录的远程主机。
+    struct Push: Decodable { let status: String; let message: String?; let gitLogin: String? }
     let status: String
     let files: [String]?
     let push: Push?
@@ -50,13 +51,18 @@ extension AppModel {
         return account.registeredProjects.first { $0.id == project.id }?.proposes
     }
 
-    func adopt(_ area: WorkArea) async throws -> RemoteAdoptResult { try await mergeMainline(area, "adopt") }
+    /// 合进了主线、推送时远程要求登录：当成要登录的失败报出（见 GitLogin），绑好令牌后再集成一次就推上去。
+    func adopt(_ area: WorkArea) async throws -> RemoteAdoptResult {
+        let client = try activeClient(in: area)
+        let result: RemoteAdoptResult = try await mergeMainline(area, "adopt", via: client)
+        if let host = result.push?.gitLogin { throw KitedError(message: result.summary, gitLogin: host, machineID: client.machineID) }
+        return result
+    }
 
-    func syncMainline(_ area: WorkArea) async throws -> RemoteSyncResult { try await mergeMainline(area, "sync") }
+    func syncMainline(_ area: WorkArea) async throws -> RemoteSyncResult { try await mergeMainline(area, "sync", via: activeClient(in: area)) }
 
     /// 用户手动集成（adopt）、同步（sync）、流转，连带确认工作区里待恢复的线程，见 kited 的 confirmWorkspaceRecovery。
-    private func mergeMainline<Result: Decodable>(_ area: WorkArea, _ action: String) async throws -> Result {
-        let client = try activeClient(in: area)
+    private func mergeMainline<Result: Decodable>(_ area: WorkArea, _ action: String, via client: KitedClient) async throws -> Result {
         let result = try await client.request("/workspaces/\(area.remote.workspace.id)/\(action)", method: "POST", body: ConfirmRecovery(),
                                               timeout: 600, as: Result.self)
         try await refresh(client)
@@ -139,18 +145,9 @@ struct WorkspaceGitActions: View {
         return "同步主线（落后 \(behind) 个提交）"
     }
 
-    private func integrate() { run { try await model.adopt(workspace).summary } }
+    private func integrate() { model.perform(toast: toast) { [model, workspace] in try await model.adopt(workspace).summary } }
 
-    private func sync() { run { try await model.syncMainline(workspace).summary } }
-
-    /// 跑完把结果的说明或错误显示成提示。
-    private func run(_ action: @escaping @MainActor () async throws -> String) {
-        let toast = toast
-        Task {
-            do { toast?.show(try await action()) }
-            catch { toast?.show(error.localizedDescription, systemImage: "exclamationmark.triangle") }
-        }
-    }
+    private func sync() { model.perform(toast: toast) { [model, workspace] in try await model.syncMainline(workspace).summary } }
 }
 
 /// 强制接管：所在工作机连不上时，由用户确认它已丢失，用 target 手上的副本接管。
@@ -191,18 +188,20 @@ struct WorkspaceTransferMenu: View {
     private func transfer(to target: WorkerConnection) {
         let toast = toast
         let title = workspace.title
-        toast?.show("正在把「\(title)」流转到 \(target.machine.name)…")
-        Task {
-            do { try await model.transfer(workspace, to: target); toast?.show("「\(title)」已流转到 \(target.machine.name)") }
-            catch { toast?.show(error.localizedDescription, systemImage: "exclamationmark.triangle") }
+        model.perform(toast: toast) { [model, workspace] in
+            toast?.show("正在把「\(title)」流转到 \(target.machine.name)…")
+            try await model.transfer(workspace, to: target)
+            return "「\(title)」已流转到 \(target.machine.name)"
         }
     }
 }
 
-/// 挂在主窗口与 iPhone 根部，承接侧栏菜单发起的归档与强制接管确认。
+/// 挂在主窗口与 iPhone 根部，承接侧栏菜单发起的归档与强制接管确认，以及菜单和页面发起的操作遇到远程要求登录时的就地登录
+/// （AppModel.gitLogin）：先说明原因、问要不要「登录 host」，绑好令牌后重跑那次操作。
 struct WorkspaceGitPresentation: ViewModifier {
     @Environment(AppModel.self) private var model
     @Environment(\.toast) private var toast
+    @State private var loggingIn: GitLogin?
 
     func body(content: Content) -> some View {
         @Bindable var model = model
@@ -224,13 +223,20 @@ struct WorkspaceGitPresentation: ViewModifier {
             } message: { request in
                 Text("确认「\(request.area.remote.machine.name)」已经丢失，用「\(request.target.machine.name)」手上的副本接管「\(request.area.title)」。副本没跟上的部分会丢失；原来的工作机回来后，它那份记录会冻结，多出的改动存成快照留给你合并。")
             }
+            .alert("远程要求登录", isPresented: Binding { model.gitLogin != nil } set: { if !$0 { model.gitLogin = nil } },
+                   presenting: model.gitLogin) { login in
+                Button("登录 \(login.host)") { loggingIn = login }
+                Button("取消", role: .cancel) {}
+            } message: { login in
+                Text(login.message)
+            }
+            .sheet(item: $loggingIn) { GitLoginSheet($0).environment(model).toastHost().appAppearance() }
     }
 
     private func takeOver(_ request: TakeoverRequest) {
-        let toast = toast
-        Task {
-            do { try await model.takeOver(request.area, on: request.target); toast?.show("已在 \(request.target.machine.name) 上接管「\(request.area.title)」") }
-            catch { toast?.show(error.localizedDescription, systemImage: "exclamationmark.triangle") }
+        model.perform(toast: toast) { [model] in
+            try await model.takeOver(request.area, on: request.target)
+            return "已在 \(request.target.machine.name) 上接管「\(request.area.title)」"
         }
     }
 

@@ -17,7 +17,14 @@ export interface PeerOptions {
 }
 
 export class PeerError extends KiteError {
-  constructor(message: string, status: number, readonly body: Record<string, unknown> = {}) { super(message, status); }
+  constructor(message: string, status: number, readonly body: Record<string, unknown> = {}, readonly machine?: string) { super(message, status); }
+  /** 对端访问远程时要求登录：照样转交 gitLogin，并写明令牌该写到的那台（对端自己，或对端再转交时写明的那台）。 */
+  override details(): Record<string, unknown> {
+    const host = this.body.gitLogin;
+    if (typeof host !== 'string') return {};
+    const machine = typeof this.body.gitLoginMachine === 'string' ? this.body.gitLoginMachine : this.machine;
+    return { gitLogin: host, ...(machine ? { gitLoginMachine: machine } : {}) };
+  }
 }
 
 export class Peers {
@@ -66,7 +73,7 @@ export class Peers {
       throw new KiteError(`连不上工作机 ${machineId}：${(error as Error).message}`, 502);
     }
     const data = await response.json().catch(() => ({})) as Record<string, unknown>;
-    if (!response.ok) throw new PeerError(typeof data.error === 'string' ? data.error : `工作机返回 ${response.status}`, response.status, data);
+    if (!response.ok) throw new PeerError(typeof data.error === 'string' ? data.error : `工作机返回 ${response.status}`, response.status, data, machineId);
     return data as T;
   }
 }

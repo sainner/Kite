@@ -133,14 +133,17 @@ struct ProjectSettingsPage: View {
         }
     }
 
-    /// 改一项设置：进行中 saving 为 true，改好的登记换掉 accountProject，出错写在页底。
+    /// 改一项设置：进行中 saving 为 true，改好的登记换掉 accountProject，出错写在页底；
+    /// 设远程推送时远程要求登录的，请用户就地登录，绑好令牌后再改一次。
     private func save(_ saving: Binding<Bool>, _ change: @escaping @MainActor () async throws -> AccountProject) {
         saving.wrappedValue = true
         error = nil
         Task {
             defer { saving.wrappedValue = false }
             do { accountProject = try await change() }
-            catch { self.error = error.localizedDescription }
+            catch {
+                if !model.offerGitLogin(error, retry: { save(saving, change) }) { self.error = error.localizedDescription }
+            }
         }
     }
 }

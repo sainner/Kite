@@ -121,9 +121,6 @@ private struct AddProject: View {
     @State private var picked: [PickedFile] = []
     @State private var importing = false
     @State private var browsing: HostFilePicker.Request?
-    /// 远程要求登录：底部按钮换成登录这个平台，绑好令牌后重试被挡住的那一步。
-    @State private var gitLogin: GitLogin?
-    @State private var loggingIn = false
     @State private var integration = "merge"
     @State private var step = 1
     @State private var phase = CardPhase.idle
@@ -179,19 +176,9 @@ private struct AddProject: View {
         // 文件夹换了工作机：在别的工作机上选的文件这次带不上
         .onChange(of: machineID) { dropForeignFiles() }
         .onChange(of: source) { dropForeignFiles() }
-        // 失败原因显示在底部按钮里，改了来源就收起
+        // 失败原因和远程要求的登录显示在底部按钮里，改了来源就收起
         .onChange(of: current) {
-            if phase.error != nil { phase = .idle }
-            gitLogin = nil
-        }
-        .sheet(isPresented: $loggingIn) {
-            if let gitLogin {
-                // 存到马上要重试的那台：文件夹所在的工作机；远程项目的检查任一台都行
-                GitLoginSheet(host: gitLogin.host, machineID: source == .folder ? machineID : nil) {
-                    self.gitLogin = nil
-                    attempt(gitLogin.retry)
-                }
-            }
+            if phase.error != nil || phase.gitLogin != nil { phase = .idle }
         }
         .task(id: source) {
             guard source == .remote, repositories == nil else { return }
@@ -309,23 +296,16 @@ private struct AddProject: View {
         return result
     }
 
+    /// 检查和添加都经 $phase.run：远程要求登录时底部按钮换成登录这个平台，令牌写到检查或添加的那台工作机，绑好后重跑这一步。
     private func inspect() {
         guard sourceReady, check == nil else { return }
-        attempt { _ = try await runCheck() }
-    }
-
-    /// 跑一次请求；远程要求登录时不算失败，记下来让底部按钮换成登录，绑好令牌后重跑。
-    private func attempt(_ action: @escaping () async throws -> Void) {
-        $phase.run {
-            do { try await action() }
-            catch let error as KitedError where error.gitLogin != nil { gitLogin = GitLogin(host: error.gitLogin!, retry: action) }
-        }
+        $phase.run { _ = try await runCheck() }
     }
 
     /// 下一步：先检查（远程要确认能访问），已登记的直接收下；没有远程的跳过第二步直接添加。
     private func next() {
         guard sourceReady, filesValid, !phase.working else { return }
-        attempt {
+        $phase.run {
             if check == nil {
                 guard let result = try await runCheck() else { return }
                 // 文件夹里找到了环境变量文件：先停在这一步，让用户看一眼默认选上的
@@ -350,7 +330,7 @@ private struct AddProject: View {
 
     private var integrationStep: some View {
         CardSheet(title: "集成方式", subtitle: "工作区的改动怎样进入主线，之后可以在项目配置里改", back: true,
-                  close: { phase = .idle; gitLogin = nil; step = 1 }) {
+                  close: { phase = .idle; step = 1 }) {
             VStack(spacing: 8) {
                 CardChoice(title: "直接合入", detail: "把工作区的改动合进主线，再推送到远程。适合只有自己用的仓库。",
                            symbol: .gitMerge, selected: integration == "merge") { integration = "merge" }
@@ -359,15 +339,13 @@ private struct AddProject: View {
             }
             if let reason = check?.integrationReason { CardNote("已按仓库情况预选：\(reason)。") }
         } footer: {
-            footer("添加") { attempt { try await add() } }
+            footer("添加") { $phase.run { try await add() } }
         }
     }
 
-    /// 两步共用的底部按钮：远程要求登录时换成登录这个平台。
+    /// 两步共用的底部按钮：远程要求登录时由 CardActions 换成登录这个平台。
     private func footer(_ title: String, enabled: Bool = true, action: @escaping () -> Void) -> some View {
-        CardActions(primary: gitLogin.map { "登录 \($0.host)" } ?? title, enabled: gitLogin != nil || enabled, phase: $phase) {
-            if gitLogin != nil { loggingIn = true } else { action() }
-        }
+        CardActions(primary: title, enabled: enabled, phase: $phase, action: action)
     }
 
     /// 环境变量文件在工作区里的路径还没被占用就用它，否则留空让用户填。
@@ -411,11 +389,6 @@ private struct AddProject: View {
     private enum Field { case path, remote }
 
     private enum Source { case folder, remote }
-
-    private struct GitLogin {
-        let host: String
-        let retry: () async throws -> Void
-    }
 }
 
 /// 卡片里下拉选择的当前值，没选时显示灰色的提示。

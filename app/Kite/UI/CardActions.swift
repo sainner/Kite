@@ -32,22 +32,26 @@ enum CardPhase: Equatable {
     case idle, working, succeeded
     /// 失败的原因，和重试要做的事。
     case failed(String, retry: () -> Void)
+    /// 访问的远程要求登录：主按钮换成登录这个平台，绑好令牌后重跑，见 GitLogin。
+    case needsLogin(GitLogin)
 
     var working: Bool { self == .working }
     var error: String? { if case .failed(let message, _) = self { message } else { nil } }
+    var gitLogin: GitLogin? { if case .needsLogin(let login) = self { login } else { nil } }
 
     static func == (a: Self, b: Self) -> Bool {
         switch (a, b) {
         case (.idle, .idle), (.working, .working), (.succeeded, .succeeded): true
         case let (.failed(x, _), .failed(y, _)): x == y
+        case let (.needsLogin(x), .needsLogin(y)): x.id == y.id
         default: false
         }
     }
 }
 
 extension Binding where Value == CardPhase {
-    /// 跑一次请求：期间是加载态，失败记下原因、重试再跑同一件事。succeeds 为真时成功后停在成功态（保存后弹窗不关的），
-    /// 否则回到平常（读取这类，或成功后弹窗直接关掉的）。
+    /// 跑一次请求：期间是加载态，失败记下原因、重试再跑同一件事；远程要求登录时不算失败，停在登录上，绑好令牌后再跑。
+    /// succeeds 为真时成功后停在成功态（保存后弹窗不关的），否则回到平常（读取这类，或成功后弹窗直接关掉的）。
     func run(succeeds: Bool = false, _ action: @escaping () async throws -> Void) {
         guard !wrappedValue.working else { return }
         wrappedValue = .working
@@ -56,7 +60,8 @@ extension Binding where Value == CardPhase {
                 try await action()
                 wrappedValue = succeeds ? .succeeded : .idle
             } catch {
-                wrappedValue = .failed(error.localizedDescription) { run(succeeds: succeeds, action) }
+                let retry = { run(succeeds: succeeds, action) }
+                wrappedValue = GitLogin(error, retry: retry).map { .needsLogin($0) } ?? .failed(error.localizedDescription, retry: retry)
             }
         }
     }
@@ -64,7 +69,8 @@ extension Binding where Value == CardPhase {
 
 /// 卡片底部的按钮：主按钮占满剩下的宽度。iPhone 键盘升起时最左边多一个收起键盘。
 /// 给了 phase 时主按钮跟着进度变：加载中转圈；成功打勾，直到再次能提交（又改了内容）才变回来；
-/// 失败变成错误色，按钮里一行写原因，点它把完整原因复制到剪贴板，左边冒出圆形的重试。几个状态之间的形变交给玻璃效果的容器。
+/// 失败变成错误色，按钮里一行写原因，点它把完整原因复制到剪贴板，左边冒出圆形的重试。
+/// 远程要求登录时换成「登录 host」，点它就地绑定访问令牌，绑好后重跑刚才那一步。几个状态之间的形变交给玻璃效果的容器。
 struct CardActions: View {
     let primary: String
     /// 主按钮文字前面的图标。
@@ -78,6 +84,8 @@ struct CardActions: View {
     @Namespace private var glass
     /// 刚复制了报错，按钮里短暂换成已复制。
     @State private var copied = false
+    /// 正在就地登录要求登录的远程。
+    @State private var loggingIn: GitLogin?
 
     init(primary: String, icon: Image? = nil, enabled: Bool = true,
          phase: Binding<CardPhase>, succeeded: String = "已保存", working: String? = nil,
@@ -126,11 +134,13 @@ struct CardActions: View {
         .onChange(of: enabled) { _, enabled in
             if enabled, phase.wrappedValue == .succeeded { phase.wrappedValue = .idle }
         }
+        .sheet(item: $loggingIn) { GitLoginSheet($0) }
     }
 
     private func main(_ state: CardPhase) -> some View {
         Button {
             if let message = state.error { copy(message) }
+            else if let login = state.gitLogin { loggingIn = login }
             else if state == .succeeded { succeededAction?() }
             else { action() }
         } label: {
@@ -149,6 +159,8 @@ struct CardActions: View {
                     .transition(.blurReplace)
                 case .succeeded:
                     Label(succeeded, systemImage: "checkmark").transition(.blurReplace)
+                case .needsLogin(let login):
+                    Text("登录 \(login.host)").transition(.blurReplace)
                 case .failed(let message, _):
                     Label {
                         Text(copied ? "已复制报错" : message).lineLimit(1).truncationMode(.tail)
