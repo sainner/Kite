@@ -100,6 +100,12 @@ export interface MachineSummary {
 }
 const firstLine = (text: string) => text.trim().split('\n')[0]!.trim() || '（空消息）';
 const titleOf = (prompt: string) => firstLine(prompt).slice(0, 80);
+/** 手动起的标题与名称：去掉首尾空白后须为 1～80 字符的单行文本。 */
+function singleLine(text: string, what: string): string {
+  const value = text.trim();
+  if (!value || value.length > 80 || /[\r\n]/.test(value)) throw new KiteError(`${what}须为 1～80 字符的单行文本`);
+  return value;
+}
 /** 不带首条消息建的空工作区先叫这个，之后跟着代理的标题起名，见 WorkspaceNames。 */
 const UNNAMED_WORKSPACE = '新工作区';
 
@@ -870,7 +876,7 @@ export class Kite {
     });
     this.assertRunning();
     const id = ids.id ?? randomUUID();
-    const w: Workspace = { id, epoch: 1, checkoutId: c.id, name: prompt ? titleOf(prompt) : UNNAMED_WORKSPACE,
+    const w: Workspace = { id, epoch: 1, checkoutId: c.id, name: prompt ? titleOf(prompt) : UNNAMED_WORKSPACE, nameMode: 'auto',
       cwd: worktreePath(this.home, c.projectId, id), branch: `kite/${id}`, base, status: 'preparing', createdAt: Date.now(),
       behind: 0, pullRequest: null };
     const t = prompt === undefined ? undefined : this.newThread(id, prompt, { role }, c.projectId);
@@ -1148,8 +1154,7 @@ export class Kite {
     return this.controlThread(id, async () => {
       const thread = this.openThread(id);
       const current = this.store.threadTitle(id)!;
-      const title = input.mode === 'manual' ? input.title.trim() : current.title;
-      if (!title || title.length > 80 || /[\r\n]/.test(title)) throw new KiteError('标题须为 1～80 字符的单行文本');
+      const title = singleLine(input.mode === 'manual' ? input.title : current.title, '标题');
       if (!this.store.saveThreadTitle(id, expectedRevision, { title, mode: input.mode, generatedAt: null, through: null })) {
         throw new KiteError('标题已变化，请刷新后重试', 409);
       }
@@ -1617,6 +1622,14 @@ export class Kite {
       this.store.archiveInstance(id);
       this.threadChanged({ ...current, status: 'archived' });
     });
+  }
+  /** 手动起的名不再跟着代理的标题改；切回自动时当场按代理的标题重起，见 WorkspaceNames。 */
+  nameWorkspace(id: string, input: { mode: 'auto' } | { mode: 'manual'; name: string }): WorkspaceModel {
+    const { workspace: w } = this.workspace(id);
+    if (!['preparing', 'open', 'failed'].includes(w.status)) throw new KiteError('工作区已归档或交给了别的工作机，不能改名', 409);
+    if (input.mode === 'auto') this.workspaceNames.restore(id);
+    else this.workspaceNames.manual(id, singleLine(input.name, '名称'));
+    return this.workspace(id);
   }
   archiveWorkspace(id: string, force = false): Promise<void> {
     this.workspace(id);

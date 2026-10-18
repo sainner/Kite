@@ -20,7 +20,8 @@ export interface ThreadTitle {
 }
 
 const WORKSPACES = `create table if not exists workspaces (
-  id text primary key, checkout_id text not null references checkouts(id), name text not null, cwd text not null,
+  id text primary key, checkout_id text not null references checkouts(id), name text not null,
+  name_mode text not null default 'auto' check (name_mode in ('auto', 'manual')), cwd text not null,
   branch text not null, base text not null,
   status text not null check (status in ('preparing', 'open', 'failed', 'archived', 'handing_off', 'transferred')), created_at integer not null,
   epoch integer not null default 1 check (epoch >= 1), behind integer, pull_request text
@@ -106,7 +107,7 @@ const checkoutOf = (r: any): Checkout => ({
   id: r.id, projectId: r.project_id, machineId: r.machine_id, path: r.path, remote: r.remote, createdAt: r.created_at,
 });
 const workspaceOf = (r: any): Workspace => ({
-  id: r.id, epoch: r.epoch, checkoutId: r.checkout_id, name: r.name, cwd: r.cwd, branch: r.branch, base: r.base,
+  id: r.id, epoch: r.epoch, checkoutId: r.checkout_id, name: r.name, nameMode: r.name_mode, cwd: r.cwd, branch: r.branch, base: r.base,
   status: r.status, createdAt: r.created_at, behind: r.behind, pullRequest: r.pull_request ? JSON.parse(r.pull_request) : null,
 });
 const threadOf = (r: any): Thread => ({ instanceId: r.instance_id, runtime: r.runtime, nativeId: r.native_id });
@@ -139,6 +140,7 @@ export class Store implements UsageStore {
     this.relaxRemotes();
     this.oneWindowPerInstance();
     this.db.exec(SCHEMA);
+    this.addWorkspaceNameMode();
     this.mergeAgentDefinitions();
     this.splitProjectDocuments();
     // 同一个数据库只属于一台工作机服务。端口、地址和主机名变化都不重建身份。
@@ -214,6 +216,13 @@ export class Store implements UsageStore {
       update workspace_windows set state = 'closed' where state = 'open' and exists (select 1 from workspace_windows earlier
         where earlier.instance_id = workspace_windows.instance_id and earlier.state = 'open'
           and (earlier.created_at, earlier.id) < (workspace_windows.created_at, workspace_windows.id));`);
+  }
+
+  /** 工作区能手动命名之前没有 name_mode 列：补上，已有的工作区都按自动命名。 */
+  private addWorkspaceNameMode(): void {
+    const columns = this.db.query("select name from pragma_table_info('workspaces')").all() as Array<{ name: string }>;
+    if (columns.some((c) => c.name === 'name_mode')) return;
+    this.db.exec("alter table workspaces add column name_mode text not null default 'auto' check (name_mode in ('auto', 'manual'))");
   }
 
   /** 照 SQLite 改表的步骤换表：关外键，在事务里执行，核对外键再打开。 */
@@ -419,9 +428,9 @@ export class Store implements UsageStore {
   }
   addWorkspace(w: Workspace, firstAgent?: { agent: AgentInstance; window: WorkspaceWindow }): void {
     this.db.transaction(() => {
-      this.db.query(`insert into workspaces (id, checkout_id, name, cwd, branch, base, status, created_at, epoch, behind, pull_request)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(w.id, w.checkoutId, w.name, w.cwd, w.branch, w.base, w.status, w.createdAt, w.epoch, w.behind,
+      this.db.query(`insert into workspaces (id, checkout_id, name, name_mode, cwd, branch, base, status, created_at, epoch, behind, pull_request)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(w.id, w.checkoutId, w.name, w.nameMode, w.cwd, w.branch, w.base, w.status, w.createdAt, w.epoch, w.behind,
           w.pullRequest ? JSON.stringify(w.pullRequest) : null);
       if (firstAgent) this.addAgent(firstAgent.agent, firstAgent.window);
     })();
@@ -450,8 +459,8 @@ export class Store implements UsageStore {
   setWorkspaceStatus(id: string, status: WorkspaceStatus): void {
     this.db.query('update workspaces set status = ? where id = ?').run(status, id);
   }
-  renameWorkspace(id: string, name: string): void {
-    this.db.query('update workspaces set name = ? where id = ?').run(name, id);
+  renameWorkspace(id: string, name: string, mode: Workspace['nameMode']): void {
+    this.db.query('update workspaces set name = ?, name_mode = ? where id = ?').run(name, mode, id);
   }
   threads(workspaceId?: string): AgentInstance[] {
     return this.db.query(`select i.*, t.* from threads t join plugin_instances i on i.id = t.instance_id

@@ -823,6 +823,7 @@ private struct ContextNameField: View {
         TextField(placeholder, text: $text)
             .textFieldStyle(.plain)
             .focused($focused)
+            .endsEditingOnOutsideTap(focused)
             .onAppear {
                 text = title
                 if autofocus { focused = true }

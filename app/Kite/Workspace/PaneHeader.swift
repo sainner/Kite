@@ -319,23 +319,16 @@ private struct PaneStatusTextPopover: ViewModifier {
 struct PaneHeaderTitle: View {
     let header: PaneHeader
     @State private var editing = false
-    @State private var draft = ""
-    @FocusState private var focused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: Metrics.titleRefreshGap) {
                 if editing, let edit = header.titleEdit {
-                    TextField(edit.label, text: $draft)
-                        .textFieldStyle(.plain)
-                        .focused($focused)
-                        .onSubmit { commit(edit) }
-                        #if os(macOS)
-                        .onExitCommand { editing = false }
-                        #endif
-                        .onChange(of: focused) { _, focused in if !focused { commit(edit) } }
-                        .onAppear { focused = true }
-                        .reportsHeaderInteraction()
+                    InlineNameField(label: edit.label, original: header.title) { title in
+                        editing = false
+                        if let title { edit.commit(title) }
+                    }
+                    .reportsHeaderInteraction()
                 } else {
                     Text(header.title)
                         .id(header.title)
@@ -357,7 +350,6 @@ struct PaneHeaderTitle: View {
                 }
                 if let edit = header.titleEdit, !editing {
                     Button {
-                        draft = header.title
                         editing = true
                     } label: {
                         Image(systemName: "pencil").imageScale(.small)
@@ -407,16 +399,6 @@ private struct FullTextReveal: ViewModifier {
             .contentShape(Rectangle())
             .help(text)
             .modifier(PaneStatusTextPopover(text: text, presented: $presented))
-    }
-}
-
-extension PaneHeaderTitle {
-    /// 回车与失焦都会走到这里，只提交一次。
-    private func commit(_ edit: PaneHeader.TitleEdit) {
-        guard editing else { return }
-        editing = false
-        let title = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !title.isEmpty, title != header.title { edit.commit(title) }
     }
 }
 

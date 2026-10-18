@@ -123,3 +123,82 @@ test('有两个顶级代理时，后开代理的首行不改工作区名，它�
     expect(titles.calls.values).toHaveLength(2);
   } finally { unsubscribe(); }
 }, 1000);
+
+/** 两个顶级代理，第二个的标题生成出来后，按两个代理的标题重起工作区名的辅助请求正挂着（材料里的当前名称是第一个代理的标题）。 */
+async function namingInFlight() {
+  const main = new ManualModel();
+  const titles = new ManualModel();
+  const naming = new ManualModel();
+  k = startKited(() => main, { model: (task) => task.purpose === workspaceNameTemplate.scene ? naming : titles });
+  const kk = k;
+  const project = await addProject(kk, { path: newDir(kk.root, 'project', { 'base.txt': '原始\n' }) });
+  const id = (await openWorkspace(kk, project.id)).workspace.id;
+  const name = async () => (await kk.call('GET', `/workspaces/${id}`)).body.workspace.name as string;
+  const first = await kk.call('POST', `/workspaces/${id}/threads`, { prompt: '登录后点返回会跳到首页' });
+  const firstTitle = '修复登录页返回跳转';
+  await answer(await titles.call(1), firstTitle);
+  // 等唯一的代理的标题跟到工作区名上再开第二个，免得这次跟随落在有两个代理之后、变成一次重起。
+  await until(async () => (await name()) === firstTitle, '唯一的顶级代理有了生成的标题后工作区跟着改名', 800);
+  const second = await kk.call('POST', `/workspaces/${id}/threads`, { prompt: '注册后点返回也跳到首页' });
+  await answer(await titles.call(2), '修复注册页返回跳转');
+  const pending = await naming.call(1);
+  expect(inputText(pending.request)).toContain(`当前名称：${JSON.stringify(firstTitle)}`);
+  return { kk, id, titles, naming, pending, name, threads: [first.body.id as string, second.body.id as string] };
+}
+
+/*
+ * 几个部分的配合：手动命名写库（name_mode）后，WorkspaceNames 的跟随与在途生成的回调都要认这个模式。手动命名时工作区命名的辅助请求
+ * 正在路上，返回后不能覆盖手动名；之后代理标题经 ThreadTitles 重新生成、通知宿主跟随时也不重起。切回自动兼作同步点：这时只该有一次
+ * 为切回发出、不带原名（naming.current 为 ""）的命名请求；手动期间误排的重起会抢在它前面，带着原名。
+ */
+test('手动命名时在途的工作区命名结果不覆盖手动名，之后代理标题重新生成也不改名；切回自动时请辅助模型不带原名重起', async () => {
+  const { kk, id, titles, naming, pending, name, threads } = await namingInFlight();
+  const manual = '返回跳转问题合集';
+  const named = await kk.call('PUT', `/workspaces/${id}/name`, { mode: 'manual', name: manual });
+  expect(named.status).toBe(200);
+  expect((named.body as WorkspaceModel).workspace).toMatchObject({ name: manual, nameMode: 'manual' });
+  await answer(pending, '修复登录与注册页的返回跳转');
+
+  // 显式重生等这次生成完才返回；轻任务串行，它排在上面那次命名之后，返回时那次命名的结果已经处理过。
+  const { revision } = (await kk.call('GET', `/threads/${threads[0]}/title`)).body as { revision: string };
+  const regenerating = kk.call('POST', `/threads/${threads[0]}/title/regenerate`, { expectedRevision: revision });
+  const regenerated = '修复登录页返回后落到首页';
+  await answer(await titles.call(3), regenerated);
+  const snapshot = await regenerating;
+  expect(snapshot.status).toBe(200);
+  expect(snapshot.body.title).toBe(regenerated);
+  expect(await name()).toBe(manual);
+  expect(naming.calls.values).toHaveLength(1);
+
+  const restored = await kk.call('PUT', `/workspaces/${id}/name`, { mode: 'auto' });
+  expect(restored.status).toBe(200);
+  expect((restored.body as WorkspaceModel).workspace.nameMode).toBe('auto');
+  const fresh = await naming.call(2);
+  const material = inputText(fresh.request);
+  expect(material).toContain(`当前名称：${JSON.stringify('')}`);
+  expect(material).not.toContain(manual);
+  expect(material).toContain(JSON.stringify(regenerated));
+  expect(await name()).toBe(manual);
+}, 1000);
+
+/*
+ * 并发合并：同一工作区同时只生成一次，期间的请求合并成下一轮。在途的命名还没返回时手动命名又切回自动，切回的重起合并进下一轮：
+ * 在途的结果是按手动命名前的名字起的，返回后不覆盖；合并的那一轮不带原名，它的结果写库。
+ */
+test('工作区命名在途时手动命名又切回自动，旧结果返回后不覆盖，合并的下一轮不带原名重起并改名', async () => {
+  const { kk, id, naming, pending, name } = await namingInFlight();
+  const manual = '返回跳转问题合集';
+  expect((await kk.call('PUT', `/workspaces/${id}/name`, { mode: 'manual', name: manual })).status).toBe(200);
+  expect((await kk.call('PUT', `/workspaces/${id}/name`, { mode: 'auto' })).status).toBe(200);
+  await answer(pending, '修复登录与注册页的返回跳转');
+  const next = await naming.call(2);
+  expect(await name()).toBe(manual);
+  const material = inputText(next.request);
+  expect(material).toContain(`当前名称：${JSON.stringify('')}`);
+  expect(material).not.toContain(manual);
+  const renamed = '登录与注册页的返回跳转';
+  await answer(next, renamed);
+  await until(async () => (await name()) === renamed, '合并的那一轮重起的名字写库', 800);
+  expect((await kk.call('GET', `/workspaces/${id}`)).body.workspace.nameMode).toBe('auto');
+  expect(naming.calls.values).toHaveLength(2);
+}, 1000);

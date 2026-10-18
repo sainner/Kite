@@ -8,6 +8,8 @@ import SwiftUI
 struct WorkspaceDragSource: NSViewRepresentable {
     let tint: Color
     var onClick: () -> Void
+    /// 双击的第二下；第一下照常算点击。
+    var onDoubleClick: () -> Void
     /// 松手的位置，AppKit 的屏幕坐标，左下角是原点。
     var onDetach: (CGPoint) -> Void
 
@@ -22,12 +24,14 @@ struct WorkspaceDragSource: NSViewRepresentable {
     func updateNSView(_ view: SourceView, context: Context) {
         view.tint = NSColor(tint)
         view.onClick = onClick
+        view.onDoubleClick = onDoubleClick
         view.onDetach = onDetach
     }
 
     final class SourceView: PressDragView, NSDraggingSource {
         var tint = NSColor(Palette.breeze)
         var onClick: (() -> Void)?
+        var onDoubleClick: (() -> Void)?
         var onDetach: ((CGPoint) -> Void)?
 
         override func resetCursorRects() {
@@ -61,7 +65,7 @@ struct WorkspaceDragSource: NSViewRepresentable {
         }
 
         override func mouseUp(with event: NSEvent) {
-            if pressedAt != nil { onClick?() }
+            if pressedAt != nil { event.clickCount == 2 ? onDoubleClick?() : onClick?() }
             super.mouseUp(with: event)
         }
 

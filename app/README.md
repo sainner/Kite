@@ -78,4 +78,4 @@ xcrun devicectl device copy from --device <设备 ID> --domain-type appDataConta
 
 逐帧变化的量只在叶子视图读，排版用的量不随动画进度变。窗口内容按停着的样子排一次，运动交给合成层变换：原生台面和 iOS 的紧凑外壳整段交给 Core Animation，Mac 窄窗口的 SwiftUI 外壳（`CompactWindow`）只在渲染时做几何效果；读 `.frame(in: .global)` 或 `Text.LayoutKey` 的视图在几何效果移动容器时每帧重算。
 
-动作的那一轮只改本机状态、把动画交出去，等工作机、读历史、建看不见的窗口都排在后面（规矩见 [App 设计原则](../docs/App.md#跨端呈现与生命周期)）。开窗口、关窗口、新建实例、归档先在本机生效（`WorkArea` 的 `openingWindows`、`closingWindows`、`openingInstances`、`archivingInstances`），新建工作区先建本机的工作区对象（`AppModel.createWorkspace`），会话等窗口停下再订阅历史（`ThreadPaneSupport`），宽屏台面上收在停靠栏里的卡片空闲时才建正文（`CardView`、`PhoneCardView` 的 `bodyDeferred`），iPhone 一行窗口先建当前的、其余预热（`PaneRow.warmUp`）。
+动作的那一轮只改本机状态、把动画交出去，等工作机、读历史、建看不见的窗口都排在后面（规矩见 [App 设计原则](../docs/App.md#跨端呈现与生命周期)）。开窗口、关窗口、新建实例、归档、工作区改名先在本机生效（`WorkArea` 的 `openingWindows`、`closingWindows`、`openingInstances`、`archivingInstances`、`pendingName`），新建工作区先建本机的工作区对象（`AppModel.createWorkspace`），会话等窗口停下再订阅历史（`ThreadPaneSupport`），宽屏台面上收在停靠栏里的卡片空闲时才建正文（`CardView`、`PhoneCardView` 的 `bodyDeferred`），iPhone 一行窗口先建当前的、其余预热（`PaneRow.warmUp`）。

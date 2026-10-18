@@ -60,8 +60,8 @@ struct WorkspaceSidebar: View {
                 switch model.sidebarSection {
                 case .workspaces:
                     WorkspaceList { workspace in
-                        WorkspaceRow(workspace: workspace, current: current == workspace.id, detached: model.detached.contains(workspace.id)) {
-                            source(workspace)
+                        WorkspaceRow(workspace: workspace, current: current == workspace.id, detached: model.detached.contains(workspace.id)) { rename in
+                            source(workspace, rename: rename)
                         }
                     }
                 case .drive, .extensions, .settings:
@@ -177,7 +177,8 @@ struct WorkspaceSidebar: View {
         .help(title)
     }
 
-    private func source(_ workspace: WorkArea) -> some View {
+    /// rename 是双击进入改名，收起时那一列圆点不给。
+    private func source(_ workspace: WorkArea, rename: (() -> Void)? = nil) -> some View {
         #if os(macOS)
         WorkspaceDragSource(tint: workspace.tint) {
             // 已经分离的，点一下把它的窗口提到前面
@@ -186,6 +187,8 @@ struct WorkspaceSidebar: View {
             } else {
                 model.selectWorkspace(workspace.id)
             }
+        } onDoubleClick: {
+            rename?()
         } onDetach: { point in
             guard !model.detached.contains(workspace.id) else { return }
             // 独立窗口里的卡片和主窗口内容区一样大；窗口左上角放在指针左上方，指针落在标题那一条上。AppKit 的屏幕坐标 y 朝上
@@ -194,8 +197,10 @@ struct WorkspaceSidebar: View {
             openWindow(id: "workspace", value: workspace.id)
         }
         #else
+        // 双击不让单击等它：第一下照常选中，第二下改名
         Color.clear.contentShape(Rectangle())
             .onTapGesture { model.selectWorkspace(workspace.id) }
+            .simultaneousGesture(TapGesture(count: 2).onEnded { rename?() }, isEnabled: rename != nil)
         #endif
     }
 }

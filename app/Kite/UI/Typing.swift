@@ -1,3 +1,6 @@
+#if os(macOS)
+import AppKit
+#endif
 import SwiftUI
 
 extension View {
@@ -5,6 +8,12 @@ extension View {
     /// 点到区域里标了 typingTarget 的输入框不算。
     func endsTyping(_ typing: Bool, end: @escaping () -> Void) -> some View {
         modifier(EndsTyping(typing: typing, end: end))
+    }
+
+    /// 原地编辑的输入框（改名这类，见 InlineNameField）：按到它外面的任何地方就交出焦点，提交还是收起由它自己的失焦处理决定。
+    /// AppKit 和 UIKit 按到不接焦点的地方（空白、列表行）都不会让输入框失焦。加在 TextField 上，editing 是它自己有没有焦点。
+    func endsEditingOnOutsideTap(_ editing: Bool) -> some View {
+        background(OutsideTapEndsEditing(active: editing))
     }
 
     /// 没有底栏的页面（单页表单、侧栏搜索）在 iPhone 键盘上方放收起键盘；有底栏的窗口和弹窗由底栏给，见 KeyboardDismissButton。
@@ -218,3 +227,91 @@ private struct EndsTyping: ViewModifier {
         #endif
     }
 }
+
+/// 垫在输入框后面量它的范围；有焦点时盯着整个 App 的按下，按在范围外就让输入框交出焦点。按下照常往下分发，点到的东西照常响应。
+#if os(macOS)
+private struct OutsideTapEndsEditing: NSViewRepresentable {
+    let active: Bool
+
+    func makeNSView(context: Context) -> Anchor { Anchor() }
+
+    func updateNSView(_ view: Anchor, context: Context) { view.active = active }
+
+    final class Anchor: NSView {
+        var active = false { didSet { if active != oldValue { watch() } } }
+        private var monitor: Any?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            watch()
+        }
+
+        private func watch() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            guard active, window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+                self?.end(unless: event)
+                return event
+            }
+        }
+
+        private func end(unless event: NSEvent) {
+            guard let window else { return }
+            let frame = convert(bounds, to: nil)
+            if event.window === window, frame.contains(event.locationInWindow) { return }
+            // 只收自己的：焦点已经换到别的输入框的不动
+            guard let editor = window.firstResponder as? NSTextView, editor.isFieldEditor,
+                  let field = editor.delegate as? NSView, field.convert(field.bounds, to: nil).intersects(frame) else { return }
+            window.makeFirstResponder(nil)
+        }
+    }
+}
+#else
+private struct OutsideTapEndsEditing: UIViewRepresentable {
+    let active: Bool
+
+    func makeUIView(context: Context) -> Anchor { Anchor() }
+
+    func updateUIView(_ view: Anchor, context: Context) { view.active = active }
+
+    final class Anchor: UIView, UIGestureRecognizerDelegate {
+        var active = false { didSet { if active != oldValue { watch() } } }
+        private var tap: UITapGestureRecognizer?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            watch()
+        }
+
+        /// 点按挂在窗口上，不拦触摸、和别的手势同时认，滑动不算。
+        private func watch() {
+            if let tap { tap.view?.removeGestureRecognizer(tap) }
+            tap = nil
+            guard active, let window else { return }
+            let tap = UITapGestureRecognizer(target: self, action: #selector(tapped))
+            tap.cancelsTouchesInView = false
+            tap.delegate = self
+            window.addGestureRecognizer(tap)
+            self.tap = tap
+        }
+
+        @objc private func tapped(_ tap: UITapGestureRecognizer) {
+            guard let window, !convert(bounds, to: window).contains(tap.location(in: window)) else { return }
+            dismissKeyboard()
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+    }
+}
+#endif

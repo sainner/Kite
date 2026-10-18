@@ -51,6 +51,8 @@ export interface Workspace {
   epoch: number;
   checkoutId: string;
   name: string;
+  /** 名称跟着代理的标题自动起（auto），还是用户起的（manual），见 WorkspaceNames。 */
+  nameMode: 'auto' | 'manual';
   cwd: string;
   /** 工作树的本地分支与开出时的主线提交。 */
   branch: string;

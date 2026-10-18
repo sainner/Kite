@@ -63,7 +63,9 @@ final class WorkArea: Identifiable {
     /// 指针停在停靠栏哪一格上，Mac 据此在左侧浮出名字与状态。
     var dockHover: DockHover?
     var tint: Color { Palette.breeze }
-    var title: String { remote.workspace.name }
+    /// 本机改的名、工作机还没列出来：当场按它显示，工作机的列表跟上就去掉，改不成按那次请求收回（见 AppModel.nameWorkspace）。
+    private(set) var pendingName: (name: String, request: UUID)?
+    var title: String { pendingName?.name ?? remote.workspace.name }
     var header: PaneHeader { PaneHeader(title: title, subtitle: "工作区") }
 
     init(remote: RemoteWorkspace, client: KitedClient? = nil, definitions: [RemotePluginDefinition] = [], connection: UUID = UUID(), cursor: EventCursor? = nil) {
@@ -84,6 +86,7 @@ final class WorkArea: Identifiable {
 
     func update(_ remote: RemoteWorkspace, client: KitedClient, connection: UUID, cursor: EventCursor? = nil) {
         self.remote = remote
+        if pendingName?.name == remote.workspace.name { pendingName = nil }
         updateActivities(remote.threads, cursor: cursor)
         pluginClient = client
         pluginConnection = connection
@@ -305,6 +308,18 @@ final class WorkArea: Identifiable {
         guard switchingViews[window]?.request == request else { return }
         switchingViews[window] = nil
         rebuildWindows()
+    }
+
+    /// 先在本机改名，见 pendingName。
+    func renameLocally(_ name: String) -> UUID {
+        let request = UUID()
+        pendingName = (name, request)
+        return request
+    }
+
+    /// 改名没成：退回工作机上的名字；后来又改了一次的，等后来那次。
+    func settleRename(_ request: UUID) {
+        if pendingName?.request == request { pendingName = nil }
     }
 
     /// 先在本机建实例，见 openingInstances。

@@ -625,6 +625,14 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/adopt': { POST: recoverable('集成请求无效', (id) => kite.adopt(id)) },
       '/workspaces/:id/sync': { POST: recoverable('同步请求无效', (id) => kite.syncWorkspace(id)) },
       '/instances/:id/archive': { POST: bound((req) => kite.archiveInstance(req.params.id)) },
+      '/workspaces/:id/name': { PUT: bound(async (req) => {
+        const parsed = z.discriminatedUnion('mode', [
+          z.object({ mode: z.literal('auto') }).strict(),
+          z.object({ mode: z.literal('manual'), name: z.string() }).strict(),
+        ]).safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('工作区名称设置无效');
+        return kite.nameWorkspace(req.params.id, parsed.data);
+      }) },
       '/workspaces/:id/archive': { POST: bound(async (req) => kite.archiveWorkspace(req.params.id, (await body(req)).force === true)) },
       '/events': { GET: bound((req) => events(kite, eventScope(req.url), new URL(req.url).searchParams.get('device') ?? undefined)) },
       '/voice': { GET: voice },

@@ -1,26 +1,34 @@
 import SwiftUI
 
-/// 点击与拖动只覆盖文字区，右侧操作保留独立的命中范围。
+/// 点击与拖动只覆盖文字区，右侧操作保留独立的命中范围。改名时名字原地换成输入框，交互区拿到进入改名的闭包（双击用）。
 struct WorkspaceRow<Interaction: View>: View {
     let workspace: WorkArea
     let current: Bool
     var detached = false
     /// 从这一行建了工作区之后；紧凑布局用它收起侧栏。
     var onSelect: () -> Void = {}
-    @ViewBuilder var interaction: () -> Interaction
+    @ViewBuilder var interaction: (_ rename: @escaping () -> Void) -> Interaction
 
     @Environment(AppModel.self) private var model
     @Environment(\.sidebarProjectTint) private var tint
     @Environment(\.sidebarHighlight) private var highlight
     @Environment(\.sidebarMetrics) private var metrics
     @Environment(\.toast) private var toast
+    @State private var renaming = false
 
     var body: some View {
         SidebarTreeRow(selected: current) {
             HStack(spacing: 0) {
                 HStack(spacing: 6) {
-                    Text(workspace.title)
-                        .lineLimit(1).truncationMode(.middle)
+                    if renaming {
+                        InlineNameField(label: "工作区名称", original: workspace.title) { name in
+                            renaming = false
+                            if let name { model.nameWorkspace(workspace, to: name, toast: toast) }
+                        }
+                    } else {
+                        Text(workspace.title)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
                     let status = model.deviceStatus(model.connection(for: workspace))
                     if !status.ready {
                         Text(status.title).font(Theme.caption).foregroundStyle(.secondary)
@@ -32,8 +40,10 @@ struct WorkspaceRow<Interaction: View>: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: metrics.workspaceRowHeight)
                 .contentShape(Rectangle())
-                .overlay { interaction() }
+                .overlay { if !renaming { interaction(beginRenaming) } }
                 .contextMenu {
+                    WorkspaceNameActions(workspace: workspace, rename: beginRenaming)
+                    Divider()
                     WorkspaceGitActions(workspace: workspace, showsWorkspaceMenu: !InputMode.current.isTouch)
                     if !InputMode.current.isTouch {
                         Divider()
@@ -54,6 +64,8 @@ struct WorkspaceRow<Interaction: View>: View {
                                 model.createWorkspace(in: workspace.remote.project.id, toast: toast); onSelect()
                             }
                             Divider()
+                            WorkspaceNameActions(workspace: workspace, rename: beginRenaming)
+                            Divider()
                             WorkspaceGitActions(workspace: workspace)
                             Divider()
                             WorkspaceTransferMenu(workspace: workspace)
@@ -70,6 +82,8 @@ struct WorkspaceRow<Interaction: View>: View {
                         .help("归档工作区")
                         .accessibilityLabel("归档工作区")
                         Menu {
+                            WorkspaceNameActions(workspace: workspace, rename: beginRenaming)
+                            Divider()
                             WorkspaceGitActions(workspace: workspace, showsWorkspaceMenu: true)
                             Divider()
                             WorkspaceTransferMenu(workspace: workspace)
@@ -90,12 +104,59 @@ struct WorkspaceRow<Interaction: View>: View {
         .help("\(workspace.remote.machine.name) · \(workspace.remote.workspace.cwd)")
     }
 
+    /// 工作机连着才进改名，免得改完才说连不上。
+    private func beginRenaming() {
+        if model.isConnected(workspace) { renaming = true }
+    }
+
     /// 行尾的版本提示：PR 合并了提示归档，主线有新提交时提示落后几个。
     private var gitNote: (title: String, help: String)? {
         let info = workspace.remote.workspace
         if info.pullRequest?.state == "merged" { return ("PR 已合并", "PR 已经合并，可以归档这个工作区") }
         if let behind = info.behind, behind > 0 { return ("落后 \(behind)", "主线有 \(behind) 个新提交，右键选同步主线") }
         return nil
+    }
+}
+
+/// 工作区名称的菜单项。「自动重命名」当场按代理的标题重起，并恢复之后的自动命名。
+/// 指针设备双击名字改名；触屏另给「重命名」，iPhone 侧栏轻点就切过去收起，双击不了。
+private struct WorkspaceNameActions: View {
+    let workspace: WorkArea
+    let rename: () -> Void
+    @Environment(AppModel.self) private var model
+    @Environment(\.toast) private var toast
+
+    var body: some View {
+        if InputMode.current.isTouch {
+            Button("重命名", action: rename)
+                .disabled(!model.isConnected(workspace))
+        }
+        Button("自动重命名") { model.nameWorkspace(workspace, to: nil, toast: toast) }
+            .disabled(!model.isConnected(workspace))
+    }
+}
+
+/// 工作区的手动命名与切回自动，见 kited 的 PUT /workspaces/:id/name。
+private struct WorkspaceNaming: Encodable {
+    let mode: String
+    var name: String?
+}
+
+extension AppModel {
+    /// 手动命名（之后工作机不再自动改名），name 为 nil 时切回自动并当场重起。新名字随工作区的变化推过来；
+    /// 手动的先在本机按新名显示，改不成就退回并提示。
+    func nameWorkspace(_ area: WorkArea, to name: String?, toast: ToastCenter?) {
+        let request = name.map(area.renameLocally)
+        Task {
+            do {
+                let client = try activeClient(in: area)
+                let _: JSON = try await client.request("/workspaces/\(area.remote.workspace.id)/name", method: "PUT",
+                                                       body: WorkspaceNaming(mode: name == nil ? "auto" : "manual", name: name), as: JSON.self)
+            } catch {
+                if let request { area.settleRename(request) }
+                toast?.show(error.localizedDescription, systemImage: "exclamationmark.triangle")
+            }
+        }
     }
 }
 
