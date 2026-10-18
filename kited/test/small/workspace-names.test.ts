@@ -5,19 +5,11 @@
 import { afterEach, expect, test } from 'bun:test';
 import type { WorkspaceModel } from '../../src/model.ts';
 import { addProject, chatgptLogin, type Kited, mark, startKited, waitIdle, workspaceOpened } from '../harness.ts';
-import { deferred, ManualModel } from '../harness-loop.ts';
-import { newDir } from '../util.ts';
+import { ManualModel } from '../harness-loop.ts';
+import { newDir, until } from '../util.ts';
 
 let k: Kited | undefined;
 afterEach(async () => { await k?.stop(); k = undefined; });
-
-/** 等 promise 完成，超过 ms 毫秒按 what 报错。 */
-async function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`等待超时：${what}`)), ms); })]);
-  } finally { clearTimeout(timer); }
-}
 
 /*
  * 几个部分的配合：空工作区异步准备完才能起代理；App 起第一个代理走 POST /workspaces/:id/threads，首条消息经起线程、受理输入
@@ -39,10 +31,10 @@ test('App 建的空工作区先叫「新工作区」，起第一个代理时以�
 
   const title = '修复登录页跳转回首页的问题';
   // 事件是同步发出的：发出那一刻读工作区聚合，读到新名字说明客户端收到这个事件去重读时一定看得到。
-  const shown = deferred();
+  let shown = false;
   const unsubscribe = kk.daemon.kite.bus.subscribe(undefined, (e) => {
     if ((e.type !== 'workspace.changed' && e.type !== 'thread.changed') || e.workspaceId !== id) return;
-    try { if (kk.daemon.kite.workspace(id).workspace.name === title) shown.resolve(); }
+    try { if (kk.daemon.kite.workspace(id).workspace.name === title) shown = true; }
     catch { /* 读不到聚合时不算，也不能打断 kited 的事件分发 */ }
   });
   try {
@@ -51,7 +43,7 @@ test('App 建的空工作区先叫「新工作区」，起第一个代理时以�
     expect(opened.status).toBe(200);
     const threadId = opened.body.id as string;
     const first = await model.call(1);
-    await within(shown.promise, 1_000, '改名后让客户端重读目录的事件');
+    await until(() => shown, '改名后让客户端重读目录的事件', 1_000);
     expect((await kk.call('GET', `/workspaces/${id}`)).body.workspace.name).toBe(title);
     const listed = await kk.call('GET', `/workspaces?project=${project.id}`);
     expect((listed.body as WorkspaceModel[]).find((model) => model.workspace.id === id)?.workspace.name).toBe(title);
