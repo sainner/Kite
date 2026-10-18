@@ -173,4 +173,66 @@ private struct WindowDragBlocker: NSViewRepresentable {
         }
     }
 }
+
+extension View {
+    /// 铺在底下的拖窗口区：上面没有东西挡着的地方按住拖动窗口，双击按系统设置缩放（同标题栏）。上面的控件照常接自己的点击。
+    /// 不用 WindowDragGesture：它和 SwiftUI 的空白处拖窗口都不管双击；SwiftUI 的双击手势挂在外层，双击里面的按钮也会触发。
+    func windowDragArea() -> some View {
+        background(WindowDragSurface())
+    }
+}
+
+private struct WindowDragSurface: NSViewRepresentable {
+    func makeNSView(context: Context) -> SurfaceView {
+        SurfaceView()
+    }
+
+    func updateNSView(_ view: SurfaceView, context: Context) {}
+
+    final class SurfaceView: NSView {
+        private var pressed: NSEvent?
+        private var doubleClickMonitor: Any?
+
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            pressed = event
+        }
+
+        // 挪了才拖，同 WindowDragGesture；交给窗口服务器拖，贴边分屏、拖到别的桌面照常可用
+        override func mouseDragged(with event: NSEvent) {
+            guard let pressed else { return }
+            self.pressed = nil
+            window?.performDrag(with: pressed)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            pressed = nil
+        }
+
+        /// 双击在分发给窗口之前看：顶上被系统当作标题栏的那一条，系统自己的双击识别会吞掉这两下（标题栏透明时它什么也不做），这里收不到。
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let doubleClickMonitor { NSEvent.removeMonitor(doubleClickMonitor) }
+            doubleClickMonitor = nil
+            guard window != nil else { return }
+            doubleClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+                guard let self, event.clickCount == 2, let window, event.window === window, !window.styleMask.contains(.fullScreen),
+                      window.contentView?.superview?.hitTest(event.locationInWindow) === self
+                else { return event }
+                Self.performDoubleClickAction(window)
+                return nil
+            }
+        }
+
+        /// 照系统设置里「连按窗口标题栏以」做。「填充」没有公开的接口，按缩放做：窗口没设最大尺寸，缩放就是铺满屏幕可用的区域，再双击还原。
+        private static func performDoubleClickAction(_ window: NSWindow) {
+            switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+            case "Minimize": window.miniaturize(nil)
+            case "None": break
+            default: window.zoom(nil)
+            }
+        }
+    }
+}
 #endif

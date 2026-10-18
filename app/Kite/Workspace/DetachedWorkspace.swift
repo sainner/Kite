@@ -2,7 +2,7 @@
 import AppKit
 import SwiftUI
 
-/// 从侧边栏分离出来的工作区：没有侧边栏，顶上一条单行显示工作区名与项目，红绿灯在它左边，拖这一条移动窗口。
+/// 从侧边栏分离出来的工作区：没有侧边栏，顶上一条单行显示工作区名与项目，红绿灯在它左边，拖这一条移动窗口、双击缩放。
 /// 卡片从这一条下面开始，不会伸进系统当作标题栏的区域。关掉窗口，工作区回到主窗口。
 struct DetachedWorkspace: View {
     let id: String
@@ -21,6 +21,7 @@ struct DetachedWorkspace: View {
                     .padding([.horizontal, .bottom], Metrics.padding)
             }
             .frame(minWidth: minimum.width, minHeight: minimum.height)
+            .windowDragArea()
             .appDotBackground()
             .ignoresSafeArea()
             .dockHoverHost()
@@ -42,6 +43,8 @@ struct DetachedWorkspace: View {
         }
         .font(Theme.title.weight(.semibold))
         .lineLimit(1)
+        // 字上也算这一条：点击落到底下的拖窗口区
+        .allowsHitTesting(false)
     }
 
     /// 卡片区域是 content 大小时窗口有多大：四周的边距，顶上换成标题那一条。

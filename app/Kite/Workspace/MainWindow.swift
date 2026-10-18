@@ -10,6 +10,8 @@ struct MainWindow: View {
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // 空白处按住拖窗口、双击缩放
+            .windowDragArea()
             .appDotBackground()
             #if os(macOS)
             .ignoresSafeArea()

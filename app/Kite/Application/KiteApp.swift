@@ -56,7 +56,8 @@ struct KiteApp: App {
 
 #if os(macOS)
 private extension Scene {
-    /// 去掉标题栏，底色铺满整个窗口；拖侧边栏这些空白处移动窗口，卡片上不行（见 disablesWindowDragging）。
+    /// 去掉标题栏，底色铺满整个窗口。空白处按住拖窗口、双击缩放（见 windowDragArea），卡片上不行（见 disablesWindowDragging）；
+    /// 没有手势的字、图上也能拖。
     func kiteWindowStyle() -> some Scene {
         windowStyle(.hiddenTitleBar).windowBackgroundDragBehavior(.enabled)
     }

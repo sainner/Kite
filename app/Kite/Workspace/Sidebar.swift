@@ -74,15 +74,10 @@ struct WorkspaceSidebar: View {
     }
 
     /// 顶部标志栏与卡片标题栏同高同位：卡片在内容区顶边留白之下再留卡片边距。避开上方的红绿灯按钮。
+    /// Mac 上整条连同上方留白都能拖窗口、双击缩放：留白落在主窗口底下的拖窗口区上，栏里的空白处见 SidebarLogoBar。
     private var logoBar: some View {
         SidebarLogoBar { sidebarToggle }
         .padding(.top, Metrics.padding + Metrics.paneMargin)
-        #if os(macOS)
-        // 整条连同上方留白都可以拖动窗口，按钮仍接自己的点击
-        .contentShape(Rectangle())
-        .gesture(WindowDragGesture())
-        .allowsWindowActivationEvents(true)
-        #endif
     }
 
     /// 收起时侧栏按钮移到第一个窗口的标题栏，见 PaneHeaderBar。列出当前一栏的图标：工作区按项目分组，组间隔一道短线；底部是设置按钮。

@@ -321,7 +321,9 @@ struct SidebarLogoBar<Buttons: View>: View {
             }
             .padding(.leading, metrics.itemInset - 2)
             .frame(height: Metrics.paneHeaderButton)
-            // 整栏都算：指针进来就写，空白处也一样；Mac 上外层已经铺了拖窗口的命中区，这里不挡拖动
+            // Mac 上空白处按住拖窗口、双击缩放；放在悬停的命中区里面，不然被它挡住
+            .windowDragArea()
+            // 整栏都算：指针进来就写，空白处也一样
             .contentShape(Rectangle())
             .onHover { inside in
                 withAnimation(.easeOut(duration: 0.15)) { hovering = inside }
