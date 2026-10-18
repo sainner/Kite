@@ -142,6 +142,9 @@ final class ControlsBarView: RepresentedRoot {
 
     init() {
         super.init(frame: .zero)
+        #if DEBUG
+        CursorProbe.install()
+        #endif
         addSubview(field)
         addSubview(fadingView)
         addSubview(effort)
