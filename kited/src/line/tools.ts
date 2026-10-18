@@ -23,7 +23,7 @@ const handleArgs = z.object({ item: id, decision: z.enum(['once', 'deny', 'done'
 const relayArgs = z.object({ machine: id, threadId: id, from: id.optional() }).strict();
 const controlArgs = z.object({ action: z.enum(['send', 'resume', 'stop', 'archive']), machine: id, threadId: id.optional(), workspaceId: id.optional(),
   text: z.string().trim().min(1).max(20_000).optional() }).strict();
-const workspaceArgs = z.object({ action: z.enum(['create', 'transfer']), machine: id.optional(), project: id.optional(), name: z.string().max(200).optional(),
+const workspaceArgs = z.object({ action: z.enum(['create', 'transfer']), machine: id.optional(), project: id.optional(),
   prompt: z.string().trim().min(1).max(20_000).optional(), workspaceId: id.optional(), from: id.optional(), to: id.optional(),
   force: z.boolean().optional() }).strict();
 
@@ -182,7 +182,7 @@ export function lineTools(options: LineToolOptions): Tool[] {
       }
     }),
     tool('line_workspace', [
-      'create：在 machine 上为 project 建独立工作区，可带 name 与第一条消息 prompt；那台工作机没有检出时会先 clone。',
+      'create：在 machine 上为 project 建独立工作区，可带第一条消息 prompt，工作区跟着代理的标题起名；那台工作机没有检出时会先 clone。',
       'transfer：把 workspaceId 从 from 工作机流转到 to 工作机，源工作区须所有线程空闲，两台都要在线。',
       'from 已经丢失（用户确认过）时传 force：to 用手上的副本强制接管，不联系 from，副本落后的部分会丢；from 回来后自己冻结旧记录。',
       '两者执行前都会等用户批准，用户拒绝时不执行。',
@@ -191,8 +191,8 @@ export function lineTools(options: LineToolOptions): Tool[] {
       if (args.action === 'create') {
         if (!args.machine || !args.project) throw new KiteError('create 需要 machine 与 project');
         await mustAsk('line_workspace', `在工作机 ${args.machine} 上为项目 ${args.project} 创建工作区`, context);
-        const model = await peers.call(args.machine, 'POST', '/workspaces', { body: { project: args.project, ...(args.name ? { name: args.name } : {}),
-          ...(args.prompt ? { prompt: args.prompt } : {}) }, via, signal: context.signal, timeoutMs: 30 * 60_000 });
+        const model = await peers.call(args.machine, 'POST', '/workspaces', { body: { project: args.project, ...(args.prompt ? { prompt: args.prompt } : {}) },
+          via, signal: context.signal, timeoutMs: 30 * 60_000 });
         return { workspaceId: model.workspace.id, status: model.workspace.status, cwd: model.workspace.cwd };
       }
       if (!args.workspaceId || !args.from || !args.to || args.from === args.to) throw new KiteError('transfer 需要 workspaceId 与不同的 from、to');

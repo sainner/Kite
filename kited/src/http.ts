@@ -352,13 +352,12 @@ export function serve(kite: Kite, listen: Listen) {
         // 本机没有检出时先 clone，请求不受空闲超时限制。
         POST: long(bound(async (req) => {
           const b = await body(req);
-          const name = b.name === undefined ? '' : str(b.name, 'name');
           const prompt = b.prompt === undefined ? undefined : str(b.prompt, 'prompt');
           const ids = z.object({ id: z.uuid().optional(), windowId: z.uuid().optional(), messageId: z.uuid().optional() })
             .safeParse({ id: b.id, windowId: b.windowId, messageId: b.messageId });
           if (!ids.success) throw new KiteError('工作区创建参数无效');
           const via = sourceOf(req);
-          return kite.createWorkspace(str(b.project, 'project'), name, prompt, roleSelection(b.role), via, ids.data);
+          return kite.createWorkspace(str(b.project, 'project'), prompt, roleSelection(b.role), via, ids.data);
         })),
       },
       '/summary': { GET: bound(() => kite.summary()) },

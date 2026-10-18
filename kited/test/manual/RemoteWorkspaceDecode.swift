@@ -40,8 +40,9 @@ struct RemoteWorkspaceDecode {
         print("已解码跨工作机共享项目身份及同名独立项目")
         try verifyRegistry(registry, local: localProjects[0], remote: remoteProjects)
         try verifyDirectory(directory, machine: machine)
-        guard let worktree = workspaces.first(where: { $0.workspace.name == "主工作区" }),
-              let secret = workspaces.first(where: { $0.workspace.name == "密钥工作区" }) else {
+        // 两个工作区按身份认：停在密钥请求上的线程所在的是密钥工作区，另一个是两线程的工作区。
+        guard let secret = workspaces.first(where: { $0.threads.contains(where: { $0.instanceId == secretState.threadId }) }),
+              let worktree = workspaces.first(where: { $0.id != secret.id }) else {
             throw DecodeError.missingWorkspace
         }
         // 没有根工作区：同一项目、同一检出上的几个工作区各有自己的分支和工作树。

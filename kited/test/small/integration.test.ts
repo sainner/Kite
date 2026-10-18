@@ -64,8 +64,8 @@ async function addProject(k: Kited, body: Record<string, unknown>): Promise<Regi
   return r.body as RegisteredProject;
 }
 
-/** 建工作区（可带名称与首条消息），等它准备好；返回工作区与首个线程。 */
-async function openWorkspace(k: Kited, project: string, extra: { name?: string; prompt?: string } = {}): Promise<{ workspace: Workspace; thread?: string }> {
+/** 建工作区（可带首条消息），等它准备好；返回工作区与首个线程。 */
+async function openWorkspace(k: Kited, project: string, extra: { prompt?: string } = {}): Promise<{ workspace: Workspace; thread?: string }> {
   const created = await k.call('POST', '/workspaces', { project, ...extra });
   if (created.status !== 200) throw new Error(`建工作区失败：${created.status} ${JSON.stringify(created.body)}`);
   const model = created.body as WorkspaceModel;
@@ -132,24 +132,23 @@ test('工作区开出后远程主线有了新提交：项目同步后工作区�
 }, 1000);
 
 /*
- * 经真实 git push 与 http-backend：提交 PR 把工作区分支推到远程按工作区名生成的分支，不动远程主线和本机检出的主线；
+ * 经真实 git push 与 http-backend：提交 PR 把工作区分支推到远程另开的分支，不动远程主线和本机检出的主线；
  * 不是 GitHub 的平台不自动开 PR，给去开 PR 的网页、没有编号；工作区记下这个 PR。
  */
-test('提交 PR：工作区的改动推到远程 kite/<工作区名> 分支，远程主线与本机检出的主线不动，结果是去开 PR 的网页', async () => {
+test('提交 PR：工作区的改动推到远程另开的分支，远程主线与本机检出的主线不动，结果是去开 PR 的网页', async () => {
   const k = start();
   const { url, bare, initial } = seededRemote('web', { 'login.txt': 'v0\n' });
   const project = await addProject(k, { remote: url });
   const changed = await k.call('PUT', `/project-registry/${project.id}/settings`, { integration: 'pullRequest' });
   expect(changed.status).toBe(200);
   expect(changed.body.integration).toBe('pullRequest');
-  const { workspace } = await openWorkspace(k, project.id, { name: 'fix login page' });
+  const { workspace } = await openWorkspace(k, project.id);
   const checkout = checkoutPath(k.home, project.id);
   const localMain = git(checkout, 'rev-parse', 'refs/heads/main');
 
   writeFiles(workspace.cwd, { 'login.txt': 'v1\n' });
   const proposed = await post(k, `/workspaces/${workspace.id}/adopt`);
   expect(proposed.status).toBe('proposed');
-  expect(proposed.branch).toBe('kite/fix-login-page');
   expect(proposed.number).toBeUndefined();
   expect(proposed.url).toContain('/compare/');
   expect(proposed.url).toContain(proposed.branch);

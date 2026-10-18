@@ -1,4 +1,4 @@
-/** 工作机共享的可编辑上下文：事件通知、上下文压缩与辅助生成（标题、签名）的模板，在生成时读取并固定快照。代理的提示词属于角色，见 roles.ts。 */
+/** 工作机共享的可编辑上下文：事件通知、上下文压缩与辅助生成（标题、工作区名称、签名）的模板，在生成时读取并固定快照。代理的提示词属于角色，见 roles.ts。 */
 import { z } from 'zod';
 import { revisionOf } from './account-data/store.ts';
 import { agentModelCatalog } from './agents/capabilities.ts';
@@ -20,7 +20,8 @@ const editableScenes: Partial<Record<ContextScene, 'notification' | 'compaction'
   'thread.execution_permissions_changed': 'notification', 'thread.plugin_tools_changed': 'notification',
   'thread.file_changes': 'notification', 'line.monitor': 'notification', 'monitor.events': 'notification', 'terminal.exit': 'notification',
   'thread.compact': 'compaction',
-  'thread.title': 'generation', 'template.emblem': 'generation', 'thread.voice': 'generation', 'workspace.pull_request': 'generation',
+  'thread.title': 'generation', 'workspace.naming': 'generation', 'template.emblem': 'generation', 'thread.voice': 'generation',
+  'workspace.pull_request': 'generation',
 };
 
 /**

@@ -30,7 +30,7 @@ try {
   daemon = startDaemon({ home: join(root, 'data'), port: 5483 });
   daemon.kite.catalog.install(await buildTodoPackage());
   const project = await daemon.kite.addProject({ path });
-  const { workspace } = await daemon.kite.createWorkspace(project.id, '待办插件预览');
+  const { workspace } = await daemon.kite.createWorkspace(project.id);
   while (daemon.kite.workspace(workspace.id).workspace.status === 'preparing') await Bun.sleep(50);
   const window = await daemon.kite.openWindow(workspace.id, { id: crypto.randomUUID(), content: { kind: 'create', definitionId: 'custom.todo.v1' } });
   for (const title of ['试着添加和完成待办', '关闭窗口，再从侧栏打开同一实例']) {

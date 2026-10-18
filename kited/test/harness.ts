@@ -211,9 +211,9 @@ export async function workspaceOpened(t: Target, workspaceId: string, timeoutMs 
  * 为项目建一个不带线程的工作区（默认角色，先写一份 ChatGPT 登录让环境检查通过），等它准备完，返回打开后的聚合。
  * 本机没有检出时 kited 先 clone。
  */
-export async function openWorkspace(t: Target, projectId: string, name = ''): Promise<WorkspaceModel> {
+export async function openWorkspace(t: Target, projectId: string): Promise<WorkspaceModel> {
   chatgptLogin(kiteOf(t).home);
-  const r = await requestOf(t)('POST', '/workspaces', { project: projectId, name });
+  const r = await requestOf(t)('POST', '/workspaces', { project: projectId });
   if (r.status !== 200) throw new Error(`建工作区失败：${r.status} ${JSON.stringify(r.body)}`);
   return workspaceOpened(t, (r.body as WorkspaceModel).workspace.id);
 }

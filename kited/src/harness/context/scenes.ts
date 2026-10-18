@@ -71,6 +71,16 @@ export const contextScenes = {
       { name: 'pull_request.files', title: '改动文件', description: '相对远程主线改动的文件与增减行数（git diff --stat）；最多 6000 字。' },
     ],
   },
+  'workspace.naming': {
+    title: '生成工作区名称',
+    input: true,
+    // 名字概括的是几个代理，不属于其中某一个。
+    layers: ['environment', 'project', 'workspace'],
+    variables: [
+      { name: 'naming.current', title: '当前名称', description: '工作区现在的名称，写成带引号的 JSON 字符串。' },
+      { name: 'naming.agents', title: '各代理的标题', description: '工作区里用户开的各个代理（不含别的代理起的子代理）现在的标题，按创建先后排，JSON 字符串数组。' },
+    ],
+  },
   'thread.compact': {
     title: '压缩上下文',
     input: true,

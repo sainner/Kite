@@ -66,6 +66,7 @@ import { readRaw, type RawPage } from './transcript/raw.ts';
 import { claudeRecordPath } from './handoff/claude-records.ts';
 import { LightTasks } from './light-tasks.ts';
 import { ThreadTitles, titleTemplate } from './thread-titles.ts';
+import { WorkspaceNames, workspaceNameTemplate } from './workspace-names.ts';
 import { draftPullRequest, pullRequestTemplate } from './pull-requests.ts';
 import { emblemTemplate, TemplateEmblems } from './template-emblems.ts';
 import { ChatGPTModel } from './harness/chatgpt.ts';
@@ -99,7 +100,7 @@ export interface MachineSummary {
 }
 const firstLine = (text: string) => text.trim().split('\n')[0]!.trim() || '（空消息）';
 const titleOf = (prompt: string) => firstLine(prompt).slice(0, 80);
-/** 没带名字和首条消息建的空工作区先叫这个，第一条用户消息到了再以它起名，见 Kite.sendInput。 */
+/** 不带首条消息建的空工作区先叫这个，之后跟着代理的标题起名，见 WorkspaceNames。 */
 const UNNAMED_WORKSPACE = '新工作区';
 
 /** 新建工作区时 App 定的几个 ID，见 Kite.createWorkspace。 */
@@ -168,6 +169,7 @@ export class Kite {
   readonly plugins: PluginHost;
   readonly lightTasks?: LightTasks;
   readonly titles?: ThreadTitles;
+  readonly workspaceNames: WorkspaceNames;
   readonly emblems: TemplateEmblems;
   readonly tokenCounts: TokenCounter;
   readonly voice: VoiceSessions;
@@ -270,7 +272,7 @@ export class Kite {
     this.catalog = new PluginCatalog(join(home, 'plugins'));
     this.roles = new Roles(store);
     this.contextTemplates = new ContextTemplates(store, [
-      titleTemplate, compactTemplate, emblemTemplate, pullRequestTemplate,
+      titleTemplate, workspaceNameTemplate, compactTemplate, emblemTemplate, pullRequestTemplate,
       agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
       pluginToolsContextDefinition, voiceTemplate, lineMonitorContextDefinition, monitorEventsContextDefinition, terminalExitContextDefinition,
     ]);
@@ -380,8 +382,10 @@ export class Kite {
       });
       this.titles = new ThreadTitles(store, this.lightTasks, this.contextTemplates, {
         history: (id) => this.history(id), changed: (thread) => this.threadChanged(thread),
+        renamed: (id) => this.workspaceNames.follow(id),
       });
     }
+    this.workspaceNames = new WorkspaceNames(store, this.lightTasks, this.contextTemplates, (id) => this.changed(id));
     this.emblems = new TemplateEmblems(store, this.roles, this.contextTemplates, this.lightTasks,
       () => bus.emit({ type: 'roles.changed' }), (id, emblem) => this.library.write('emblem', id, emblem));
     for (const w of store.workspaces()) if (w.status === 'preparing') store.setWorkspaceStatus(w.id, 'failed');
@@ -851,7 +855,7 @@ export class Kite {
    * 可以先建空工作区；带首条消息时，准备完成才启动首个线程。via 是经 Line 创建：首条消息是 Line 的说明。
    * ids 由 App 生成：App 先按工作区、首个代理窗口和首条消息的 ID 在本机建好，目录和线程事件到了认得出是同一个。
    */
-  async createWorkspace(projectId: string, name: string, prompt?: string, role?: RoleSelection, via?: InputVia,
+  async createWorkspace(projectId: string, prompt?: string, role?: RoleSelection, via?: InputVia,
     ids: NewWorkspaceIds = {}): Promise<WorkspaceModel> {
     this.assertRunning();
     if (prompt !== undefined && !prompt.trim()) throw new KiteError('第一条消息不能为空');
@@ -866,7 +870,7 @@ export class Kite {
     });
     this.assertRunning();
     const id = ids.id ?? randomUUID();
-    const w: Workspace = { id, epoch: 1, checkoutId: c.id, name: name.trim() || (prompt ? titleOf(prompt) : UNNAMED_WORKSPACE),
+    const w: Workspace = { id, epoch: 1, checkoutId: c.id, name: prompt ? titleOf(prompt) : UNNAMED_WORKSPACE,
       cwd: worktreePath(this.home, c.projectId, id), branch: `kite/${id}`, base, status: 'preparing', createdAt: Date.now(),
       behind: 0, pullRequest: null };
     const t = prompt === undefined ? undefined : this.newThread(id, prompt, { role }, c.projectId);
@@ -1044,6 +1048,7 @@ export class Kite {
         title: instance.title, mode: 'manual', generatedAt: null, through: null,
       });
       this.threadChanged(agent);
+      if (input.title !== undefined) this.workspaceNames.follow(agent.id);
       this.changed(workspaceId);
       if (input.prompt !== undefined) await this.sendInput(this.context(agent.id), {
         id: input.operationId, text: input.prompt, source: origin ? 'kite' : 'human',
@@ -1149,6 +1154,7 @@ export class Kite {
         throw new KiteError('标题已变化，请刷新后重试', 409);
       }
       this.threadChanged(thread);
+      if (title !== current.title) this.workspaceNames.follow(id);
       if (input.mode === 'auto') void this.titles?.refresh(id);
       return this.store.threadTitle(id)!;
     });
@@ -1346,11 +1352,7 @@ export class Kite {
     if (this.store.threadTitle(thread.id)?.revision === 'initial') {
       this.store.renameInstance(thread.id, titleOf(input.text));
       this.threadChanged(thread);
-    }
-    // 空工作区同样用第一条用户消息起名
-    if (input.source === 'human' && this.store.workspace(thread.workspaceId)?.name === UNNAMED_WORKSPACE) {
-      this.store.renameWorkspace(thread.workspaceId, titleOf(input.text));
-      this.changed(thread.workspaceId);
+      this.workspaceNames.follow(thread.id, true);
     }
     // 输入受理后即与主会话并行，标题材料包含尚未交给主模型的排队消息。
     void this.titles?.refresh(thread.id);
@@ -1701,7 +1703,7 @@ export class Kite {
     const project = await this.projectOperation(() => this.checkoutManagement.create('Line',
       { 'AGENTS.md': LINE_AGENTS, '.kite/memory/MEMORY.md': '' }));
     let model: WorkspaceModel;
-    try { model = await this.createWorkspace(project.id, 'Line', undefined, role); }
+    try { model = await this.createWorkspace(project.id, undefined, role); }
     catch (error) {
       this.forgetProject(project.id);
       await this.projectOperation(() => this.removeLocalProject(project.id)).catch(() => {});
@@ -1714,6 +1716,8 @@ export class Kite {
       this.addLineInbox(agent);
       this.store.saveThreadTitle(agent.id, 'initial', { title: 'Line', mode: 'manual', generatedAt: null, through: null });
       this.threadChanged(agent);
+      // 工作区跟着 Line 的标题叫「Line」
+      this.workspaceNames.follow(agent.id);
       this.changed(model.workspace.id);
       return this.workspace(model.workspace.id);
     });
@@ -1749,7 +1753,7 @@ export class Kite {
     clearTimeout(this.projectSync);
     this.directory.close();
     this.library.close();
-    await Promise.all([this.titles?.close(), this.emblems.close(), this.lightTasks?.close(), this.subscriptionLogins.close(), this.replication.close(), this.replicas.close(), this.updates.close()]);
+    await Promise.all([this.titles?.close(), this.workspaceNames.close(), this.emblems.close(), this.lightTasks?.close(), this.subscriptionLogins.close(), this.replication.close(), this.replicas.close(), this.updates.close()]);
     await this.monitor.stop();
     await this.monitors.close();
     await this.terminals.close();

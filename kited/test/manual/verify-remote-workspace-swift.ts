@@ -201,7 +201,7 @@ async function main() {
     '第一台工作机同步到第二台的目录摘要');
 
     const workspace = await call<WorkspaceModel>(daemon.url, 'POST', '/workspaces', {
-      project: projectId, name: '主工作区', prompt: '首线程',
+      project: projectId, prompt: '首线程',
     }, machine.body.id);
     if (workspace.status !== 200) throw new Error(`创建工作区失败：${workspace.status} ${JSON.stringify(workspace.body)}`);
     const firstThread = workspace.body.threads[0];
@@ -217,7 +217,7 @@ async function main() {
 
     // 同一项目的另一个工作区：首线程停在密钥请求上，工作区聚合与线程状态都带着这个等待。
     const secretWorkspace = await call<WorkspaceModel>(daemon.url, 'POST', '/workspaces', {
-      project: projectId, name: '密钥工作区', prompt: SECRET_PROMPT,
+      project: projectId, prompt: SECRET_PROMPT,
     }, machine.body.id);
     if (secretWorkspace.status !== 200) throw new Error(`创建密钥工作区失败：${secretWorkspace.status} ${JSON.stringify(secretWorkspace.body)}`);
     const secretThread = secretWorkspace.body.threads[0];

@@ -55,7 +55,7 @@ test('添加项目后首线程工作时即可并行创建同工作区线程，�
   const project = await addProject(kk, { path: newDir(kk.root, 'project', { 'base.txt': '原始\n' }) });
   const localMachine = await machine(kk.url);
   chatgptLogin(kk.home);
-  const created = await kk.call('POST', '/workspaces', { project: project.id, name: '首个工作区', prompt: '首线程' });
+  const created = await kk.call('POST', '/workspaces', { project: project.id, prompt: '首线程' });
   expect(created.status).toBe(200);
   const workspace = structuredClone(created.body);
   const firstThread = workspace.threads[0];
@@ -64,7 +64,7 @@ test('添加项目后首线程工作时即可并行创建同工作区线程，�
     machine: localMachine,
     project: { id: project.id },
     checkout: { projectId: project.id, machineId: localMachine.id },
-    workspace: { checkoutId: workspace.checkout.id, name: '首个工作区' },
+    workspace: { checkoutId: workspace.checkout.id },
   });
   const firstInstance = workspace.instances.find((instance: any) => instance.id === firstThreadId);
   expect(firstInstance).toMatchObject({
