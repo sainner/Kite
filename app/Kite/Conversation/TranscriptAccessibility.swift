@@ -13,8 +13,6 @@ enum TranscriptSpeech {
     static func fold(expanded: Bool) -> String { expanded ? "收起" : "展开全文" }
 
     static let kite = "Kite 发给 agent"
-    static let notification = "通知"
-    static let interrupted = "已打断"
 
     /// 压缩分界：不管展开没有都读这一句，展开收起由状态读出。
     static func compaction(_ compaction: Compaction) -> String {
@@ -76,8 +74,6 @@ enum TranscriptSpeech {
             case .human(let message): return self.message(queued: false) + "，" + message.typed
             case .text(let text): return text
             case .kite(let text): return kite + "，" + text
-            case .notification(let text): return notification + "，" + text
-            case .interrupted: return interrupted
             case .thinking(let text): return thinking(text)
             case .work(let work): return self.work(work)
             case .compacted(let compaction, _): return self.compaction(compaction)

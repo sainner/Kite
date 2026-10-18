@@ -2,76 +2,6 @@
 import SwiftUI
 import UIKit
 
-/// 会话里发生的事，不是谁说的话：后台任务结束的通知（铃铛）、打断（举手）。回合失败是会话的状态，在标题栏的信息区，不进对话。
-/// 一行次要色小字带图标，长了折行；长按弹出拷贝、共享，同 Text 的 textSelection。
-final class PhoneEventRowSlot: TranscriptRowSlot, PhoneRowSlot {
-    private var label: PhoneIconLabel?
-    private let menu = PhoneCopyMenu()
-    private var content: (text: String, icon: String, speech: String?) = ("", "bell", nil)
-    private var font = UIFont.preferredFont(forTextStyle: .subheadline)
-    /// 上次摆的尺寸：变了才重新摆，字变了由 set 自己标。
-    private var laidSize: CGSize?
-
-    override var hasView: Bool { label != nil }
-
-    override var view: UIView {
-        if let label { return label }
-        let label = PhoneIconLabel(lines: 0)
-        label.title.defersRewrap = true
-        label.isAccessibilityElement = true
-        label.accessibilityTraits = .staticText
-        label.addInteraction(UIContextMenuInteraction(delegate: menu))
-        self.label = label
-        show()
-        return label
-    }
-
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
-        super.update(row, context: context)
-        guard case .item(let item) = row.content else { return }
-        switch item.kind {
-        case .notification(let text): content = (text, "bell", TranscriptSpeech.notification)
-        case .interrupted: content = (TranscriptSpeech.interrupted, "hand.raised", nil)
-        default: return
-        }
-        font = Theme.secondary.resolve(in: context.environment.fontResolutionContext).ctFont as UIFont
-        let text = content.text
-        menu.text = { text }
-        show()
-    }
-
-    private func show() {
-        guard let label else { return }
-        label.set(content.text, systemImage: content.icon, font: font, color: .secondaryLabel)
-        // 读屏先读是什么（通知），再读字；打断只读「已打断」
-        label.accessibilityLabel = content.speech ?? content.text
-        label.accessibilityValue = content.speech == nil ? nil : content.text
-    }
-
-    override func height(width: CGFloat) -> CGFloat {
-        if let measured, measured.width == width { return measured.height }
-        let label = view as! PhoneIconLabel
-        let height = label.height(width: width)
-        // 拖缝中先不重新断行的（见 PhoneTextLine.wrapWidth），停下后按精确的重量
-        provisional = label.title.keptWidth != nil
-        measured = (width, height)
-        return height
-    }
-
-    override func layoutView(in frame: CGRect) {
-        guard let label, laidSize != frame.size else { return }
-        laidSize = frame.size
-        label.setNeedsLayout()
-    }
-
-    func didPlace() {}
-
-    func releaseView() {
-        label = nil
-        laidSize = nil
-    }
-}
-
 /// Kite 发给 agent 的消息：细边框圆角框，里面上面一行「Kite 发给 agent」带图标（小字），下面是正文，都是次要色；
 /// 长按正文弹出拷贝、共享，同 Text 的 textSelection。
 final class PhoneKiteRowSlot: TranscriptRowSlot, PhoneRowSlot {
@@ -140,7 +70,7 @@ final class PhoneKiteRowSlot: TranscriptRowSlot, PhoneRowSlot {
 
 /// Kite 发来的消息的框：padding 12，标题行和正文之间 6，描边 Theme.rule、圆角 contentRadius（连续圆角，描边画在里面）。
 final class PhoneKiteRowView: UIView {
-    let title = PhoneIconLabel(lines: 1)
+    let title = PhoneIconLabel()
     let body = PhoneTextLine()
     let border = CAShapeLayer()
     private static let padding: CGFloat = 12

@@ -32,7 +32,7 @@ struct TranscriptRow: Identifiable {
                 return
             }
             // 人发的消息和前后的内容之间多空一样多，连着的几条消息之间不加；它开启的新一轮不再另加，上下才一样。
-            // Kite 发来的、后台任务通知开启的新一轮，和上一轮之间多空一点
+            // Kite 发来的消息开启的新一轮，和上一轮之间多空一点
             let gap = if last.isMessage != content.isMessage { Metrics.messageGap }
                 else if startsTurn && !content.isMessage { Metrics.turnGap }
                 else { CGFloat(0) }
@@ -70,7 +70,6 @@ private extension Item.Kind {
         switch self {
         case .human(let message): message.shape(into: &hasher)
         case .kite(let text): hasher.combine(1); hasher.combine(text.utf8.count)
-        case .notification(let text): hasher.combine(2); hasher.combine(text.utf8.count)
         case .text(let text): hasher.combine(3); hasher.combine(text.utf8.count)
         case .thinking(let text): hasher.combine(4); hasher.combine(text.utf8.count)
         case .work(let work):
@@ -89,7 +88,6 @@ private extension Item.Kind {
                     child.kind.shape(into: &hasher)
                 }
             }
-        case .interrupted: hasher.combine(6)
         case .compacted(let compaction, let children):
             hasher.combine(7)
             hasher.combine(compaction.summary.utf8.count)
@@ -111,7 +109,7 @@ private extension Item {
     var startsTurn: Bool {
         switch kind {
         case .human(let message): !message.midTurn
-        case .kite, .notification: true
+        case .kite: true
         default: false
         }
     }

@@ -28,7 +28,6 @@ extension PhoneRowSlot {
     case .thinking: PhoneThinkingRowSlot(row: row)
     case .kite: PhoneKiteRowSlot(row: row)
     case .compaction: PhoneCompactedRowSlot(row: row)
-    case .event: PhoneEventRowSlot(row: row)
     }
 }
 
@@ -41,7 +40,6 @@ extension PhoneRowSlot {
     case .thinking: slot is PhoneThinkingRowSlot
     case .kite: slot is PhoneKiteRowSlot
     case .compaction: slot is PhoneCompactedRowSlot
-    case .event: slot is PhoneEventRowSlot
     }
 }
 

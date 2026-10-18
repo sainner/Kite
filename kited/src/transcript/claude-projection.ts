@@ -8,7 +8,6 @@ interface ClaudeProjectionTarget {
   records: ReadonlyMap<string, DisplayRecord>;
   streamIds: Map<string, string>;
   replaying(): boolean;
-  stopping(): boolean;
   put(record: DisplayRecord): void;
   delta(delta: DisplayDelta): void;
   endDrafts(): void;
@@ -126,11 +125,8 @@ export class ClaudeProjection {
       }
     });
     if (row.type === 'system' && row.subtype === 'compact_boundary') put(`${row.uuid}:0`, { type: 'compacted', text: '' });
-    if (row.type === 'result') {
-      this.target.endDrafts();
-      // 失败说明由宿主的 lastOutcome 进状态，不进记录。
-      if (this.target.stopping() && ['aborted_tools', 'aborted_streaming'].includes(row.terminal_reason)) put(`${row.uuid}:0`, { type: 'interrupted' });
-    }
+    // 失败与打断由宿主的 lastOutcome 进状态，不进记录。
+    if (row.type === 'result') this.target.endDrafts();
   }
 
   private updateContext(requestId: string, usage: Record<string, any>, at: number): void {

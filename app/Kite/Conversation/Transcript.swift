@@ -46,14 +46,10 @@ enum Block {
     case human(Message)
     /// Kite 发给 agent 的消息，比如合并冲突的说明。
     case kite(String)
-    /// 后台任务结束的通知，它开启新的一轮。
-    case notification(String)
     case text(String)
     case thinking(String)
     case toolUse(ToolUse)
     case toolResult(ToolResult)
-    /// 人打断了回合。
-    case interrupted
     /// 一段对话压缩成了这份摘要。
     case compacted(Compaction)
 }
@@ -204,11 +200,9 @@ struct Item: Identifiable {
     enum Kind {
         case human(Message)
         case kite(String)
-        case notification(String)
         case text(String)
         case thinking(String)
         case work(Work)
-        case interrupted
         /// 压缩的摘要；children 是被收起的原文。
         case compacted(Compaction, children: [Item])
     }
@@ -292,12 +286,10 @@ extension Transcript {
             switch record.block {
             case .human(let message): append(.human(message))
             case .kite(let text): append(.kite(text))
-            case .notification(let text): append(.notification(text))
             case .text(let text):
                 // 开了头没写出字的草稿
                 if text.isEmpty { continue }
                 append(.text(text))
-            case .interrupted: append(.interrupted)
             case .compacted(let compaction):
                 if let id = compaction.id, folds.contains(id) { continue }
                 append(.compacted(compaction, children: []))

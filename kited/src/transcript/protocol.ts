@@ -15,8 +15,7 @@ export type DisplayBlock =
   | { type: 'tool_use'; id: string; name: string; input: Json; batch?: string; arguments?: string;
       stage?: 'generating' | 'queued' | 'running' | 'finished' | 'not_executed' | 'unfinished';
       output?: string; outputTruncated?: boolean; outputLimit?: number; startedAt?: number; finishedAt?: number }
-  | { type: 'tool_result'; call: string; output: string; diff?: DiffReference; status: 'success' | 'error' | 'not_executed' | 'unknown' }
-  | { type: 'interrupted' };
+  | { type: 'tool_result'; call: string; output: string; diff?: DiffReference; status: 'success' | 'error' | 'not_executed' | 'unknown' };
 export interface DisplayRecord { id: string; at: number; parent?: string; generation?: 'streaming' | 'complete' | 'interrupted'; block: DisplayBlock }
 export interface DisplayDelta { id: string; field: 'text' | 'arguments' | 'output'; text: string; part?: number; replace?: boolean; limit?: number; input?: Json }
 export interface PendingInput extends Input { midTurn: boolean }

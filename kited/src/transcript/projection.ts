@@ -52,7 +52,7 @@ export class TranscriptProjection {
     this.threadStatus = thread.status;
     this.claudeProjection = new ClaudeProjection({
       records: this.records, streamIds: this.streamIds,
-      replaying: () => this.replaying, stopping: () => this.phase === 'stopping',
+      replaying: () => this.replaying,
       put: (record) => this.put(record), delta: (delta) => this.delta(delta), endDrafts: () => this.endDrafts(),
       context: (context) => {
         this.contextRuntime = 'claude';
@@ -287,10 +287,8 @@ export class TranscriptProjection {
         this.lastOutcome = row.outcome;
         this.waitingForResume = row.outcome.kind === 'failed';
         if (row.recovery) this.recovery = row.recovery;
-        this.error = undefined;
-        if (row.outcome.kind === 'interrupted') put(`journal:${row.seq}`, { type: 'interrupted' });
-        // 失败说明只在状态里，客户端显示在窗口标题栏，不进记录。
-        if ('message' in row.outcome) this.error = row.outcome.message;
+        // 失败说明与打断只在状态里，客户端显示在窗口标题栏，不进记录。
+        this.error = 'message' in row.outcome ? row.outcome.message : undefined;
         break;
       case 'recovery.confirmed':
         this.phase = 'idle'; this.busy = false; this.waitingForResume = true;

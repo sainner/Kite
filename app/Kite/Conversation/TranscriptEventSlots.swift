@@ -2,37 +2,6 @@
 import AppKit
 import SwiftUI
 
-/// 会话里发生的事，不是谁说的话：图标连着一段次要字号的字，后台任务的通知、打断。字能选，复制给原文。
-/// 回合失败是会话的状态，在标题栏的信息区，不进对话。
-final class EventRowSlot: TranscriptRowSlot {
-    private let container = SymbolTextView()
-
-    override var hasView: Bool { true }
-    override var view: NSView { container }
-
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
-        super.update(row, context: context)
-        guard case .item(let item) = row.content else { return }
-        let font = Theme.secondary.resolve(in: context.environment.fontResolutionContext).ctFont as NSFont
-        let secondary = NSColor.secondaryLabelColor
-        switch item.kind {
-        case .notification(let text):
-            container.show(text, symbol: "bell", font: font, color: secondary, label: TranscriptSpeech.notification)
-        case .interrupted:
-            container.show(TranscriptSpeech.interrupted, symbol: "hand.raised", font: font, color: secondary, label: nil)
-        default:
-            break
-        }
-    }
-
-    override func height(width: CGFloat) -> CGFloat {
-        if let measured, measured.width == width { return measured.height }
-        let height = container.height(width: width)
-        measured = (width, height)
-        return height
-    }
-}
-
 /// Kite 发给 agent 的消息：圆角描边的框，里面上面一行「Kite 发给 agent」带图标，下面正文（能选），都是次要色。
 final class KiteRowSlot: TranscriptRowSlot {
     private let container = KiteRowView()
@@ -146,46 +115,6 @@ final class SymbolLineView: NSView {
         let metrics = SymbolLabelMetrics(font: font, image: icon.image)
         icon.frame = metrics.iconFrame(lineTop: 0)
         label.frame = CGRect(x: metrics.textX, y: 0, width: max(bounds.width - metrics.textX, 0), height: bounds.height)
-    }
-}
-
-/// 同上，但字能选、能折行，事件那一行用：图标对着第一行。
-final class SymbolTextView: NSView {
-    private let icon = NSImageView()
-    let text = ProseTextView.makeReadOnly()
-    private var font = NSFont.systemFont(ofSize: 11)
-
-    override var isFlipped: Bool { true }
-
-    init() {
-        super.init(frame: .zero)
-        addSubview(icon)
-        addSubview(text)
-        icon.hideFromAccessibility()
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    /// label：读屏时正文前面读的说明，正文本身就说清楚了的给 nil。
-    func show(_ string: String, symbol: String, font: NSFont, color: NSColor, label: String?) {
-        self.font = font
-        icon.image = SymbolLabelMetrics.image(symbol, font: font)
-        icon.contentTintColor = color
-        text.showPlain(string, font: font, color: color)
-        text.setAccessibilityLabel(label)
-        needsLayout = true
-    }
-
-    func height(width: CGFloat) -> CGFloat {
-        let metrics = SymbolLabelMetrics(font: font, image: icon.image)
-        return text.measure(lineWidth: max(width - metrics.textX, 0))
-    }
-
-    override func layout() {
-        super.layout()
-        let metrics = SymbolLabelMetrics(font: font, image: icon.image)
-        icon.frame = metrics.iconFrame(lineTop: 0)
-        text.frame = CGRect(x: metrics.textX, y: 0, width: max(bounds.width - metrics.textX, 0), height: bounds.height)
     }
 }
 

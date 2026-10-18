@@ -191,7 +191,6 @@ struct RemoteRecord: Decodable, Identifiable {
             // 撤销后范围照原样显示，摘要不再出现。
             if block.reverted == true { return nil }
             content = .compacted(Compaction(id: block.id, summary: block.text ?? "", automatic: block.automatic ?? false))
-        case "interrupted": content = .interrupted
         case "tool_use":
             guard let call = block.id, let name = block.name else { return nil }
             content = .toolUse(ToolUse(id: call, name: name, input: block.input ?? .null, batch: block.batch,

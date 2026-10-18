@@ -11,7 +11,6 @@ import SwiftUI
     case .thinking: ThinkingRowSlot(row: row)
     case .kite: KiteRowSlot(row: row)
     case .compaction: CompactionRowSlot(row: row)
-    case .event: EventRowSlot(row: row)
     }
 }
 
@@ -24,7 +23,6 @@ import SwiftUI
     case .thinking: slot is ThinkingRowSlot
     case .kite: slot is KiteRowSlot
     case .compaction: slot is CompactionRowSlot
-    case .event: slot is EventRowSlot
     }
 }
 
