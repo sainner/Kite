@@ -177,18 +177,16 @@ final class PhoneWorkHeader: PhonePlainControl {
     override func layoutSubviews() {
         super.layoutSubviews()
         let spacing: CGFloat = 8
-        let tail = [unfinished].filter { !$0.isHidden }
         let imageSize = chevron.image?.size ?? .zero
-        let tailWidth = tail.reduce(0) { $0 + $1.naturalWidth + spacing } + imageSize.width
-        let summaryWidth = min(summary.naturalWidth, max(bounds.width - tailWidth - spacing, 0))
+        let unfinishedWidth = unfinished.isHidden ? 0 : unfinished.naturalWidth + spacing
+        let summaryWidth = min(summary.naturalWidth, max(bounds.width - unfinishedWidth - imageSize.width - spacing, 0))
         var x: CGFloat = 0
         activity.frame = CGRect(x: x, y: 0, width: summaryWidth, height: bounds.height)
         summary.frame = activity.bounds
         x += summaryWidth + spacing
-        for line in tail {
-            let width = line.naturalWidth
-            line.frame = CGRect(x: x, y: 0, width: width, height: bounds.height)
-            x += width + spacing
+        if !unfinished.isHidden {
+            unfinished.frame = CGRect(x: x, y: 0, width: unfinished.naturalWidth, height: bounds.height)
+            x += unfinishedWidth
         }
         let transform = chevron.transform
         chevron.transform = .identity
@@ -198,7 +196,7 @@ final class PhoneWorkHeader: PhonePlainControl {
     }
 }
 
-/// 生成中、前面不是工具组的思考：一行次要色小字，换行当空格，放不下截掉。
+/// 生成中、前面不是工具组的思考：一行次要色小字，取哪段字见 TranscriptSpeech.thinking，放不下截掉。
 final class PhoneThinkingRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var label: PhoneTextLine?
     private var text = ""
@@ -219,14 +217,14 @@ final class PhoneThinkingRowSlot: TranscriptRowSlot, PhoneRowSlot {
     override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
         super.update(row, context: context)
         guard case .item(let item) = row.content, case .thinking(let text) = item.kind else { return }
-        self.text = text.isEmpty ? "思考中" : text.replacingOccurrences(of: "\n", with: " ")
+        self.text = TranscriptSpeech.thinking(text)
         font = Theme.secondary.resolve(in: context.environment.fontResolutionContext).ctFont as UIFont
         show()
     }
 
     private func show() {
         label?.set(text, font: font, color: .secondaryLabel)
-        label?.accessibilityLabel = TranscriptSpeech.thinking(text)
+        label?.accessibilityLabel = text
     }
 
     override func height(width: CGFloat) -> CGFloat {

@@ -9,7 +9,8 @@ import { hostDirectory } from '../../src/workspace/files.ts';
 import { type Kited, startKited } from '../harness.ts';
 import { writeFiles } from '../util.ts';
 
-type Entry = ReturnType<typeof hostDirectory>['entries'][number];
+type Listing = Awaited<ReturnType<typeof hostDirectory>>;
+type Entry = Listing['entries'][number];
 
 let kited: Kited | undefined;
 afterEach(async () => {
@@ -34,7 +35,7 @@ test('列工作机上的目录：子目录与指向目录的链接归为 directo
 
   const listed = await k.call('GET', `/host-files?path=${encodeURIComponent(dir)}`);
   expect(listed.status).toBe(200);
-  const listing = listed.body as ReturnType<typeof hostDirectory>;
+  const listing = listed.body as Listing;
   expect(listing.path).toBe(dir);
   expect(listing.total).toBe(4);
   expect(listing.entries.map((e) => e.kind)).toEqual(['directory', 'directory', 'file', 'file']);

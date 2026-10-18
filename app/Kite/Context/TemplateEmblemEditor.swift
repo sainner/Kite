@@ -58,7 +58,7 @@ struct RoleEmblemPane: View {
     private var notice: PaneNotice? {
         if let error { return .failure(error) }
         if saved?.emblemState == "failed" { return .failure("签名生成失败：\(saved?.emblemError ?? "未知原因")") }
-        return status.isEmpty ? nil : PaneNotice(text: status, symbol: generating ? "sparkles" : "info.circle", tint: .secondary)
+        return status.isEmpty ? nil : .info(status, symbol: generating ? "sparkles" : "info.circle")
     }
 
     var body: some View {

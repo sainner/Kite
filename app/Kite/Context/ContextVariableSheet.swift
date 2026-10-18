@@ -126,8 +126,7 @@ extension AppModel {
     }
 
     private func contextVariableClient(_ source: ContextVariableSource) throws -> KitedClient {
-        guard let connection = connections[source.machine], connection.connected else { throw KitedError(message: "所属工作机未连接") }
-        return connection.client
+        try connectedClient(source.machine, unavailable: "所属工作机未连接")
     }
 
     func contextVariableValue(_ name: String, from source: ContextVariableSource) async throws -> ContextVariableValue {

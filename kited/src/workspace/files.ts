@@ -1,6 +1,7 @@
 /** 文件插件与 agent 共用工作目录边界和文本读取；不提供操作系统沙箱。 */
 import { createHash } from 'node:crypto';
 import { type Dirent, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import { userHome, within } from '../paths.ts';
@@ -15,6 +16,17 @@ export const fileSelection = (state: Record<string, unknown>): FileSelection => 
 
 /** 不是 Git 仓库时逐层找文件，最多看这么多个，免得大目录拖住服务。 */
 const SEARCH_SCAN_LIMIT = 50_000;
+
+type EntryKind = 'directory' | 'file' | 'symlink' | 'other';
+const kindOf = (entry: { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean }): EntryKind =>
+  entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : entry.isSymbolicLink() ? 'symlink' : 'other';
+
+/** 列目录的一页：目录在前，再按名字排；只给切出来的这一页拼路径。 */
+function page<T extends { name: string; kind: EntryKind }, R>(entries: T[], offset: number, limit: number, entry: (item: T) => R) {
+  entries.sort((a, b) => Number(b.kind === 'directory') - Number(a.kind === 'directory') || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return { entries: entries.slice(offset, offset + limit).map(entry), total: entries.length,
+    nextOffset: offset + limit < entries.length ? offset + limit : null };
+}
 
 export class WorkspaceFiles {
   readonly root: string;
@@ -66,14 +78,9 @@ export class WorkspaceFiles {
 
   list(path = '.', offset = 0, limit = 200) {
     const target = this.resolve(path);
-    const entries = readdirSync(target, { withFileTypes: true })
-      .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    const page = entries.slice(offset, offset + limit).map((entry) => ({
-      name: entry.name, path: relative(this.root, resolve(target, entry.name)),
-      kind: entry.isDirectory() ? 'directory' as const : entry.isFile() ? 'file' as const : entry.isSymbolicLink() ? 'symlink' as const : 'other' as const,
-    }));
-    return { path: relative(this.root, target) || '.', entries: page, total: entries.length,
-      nextOffset: offset + limit < entries.length ? offset + limit : null };
+    const entries = readdirSync(target, { withFileTypes: true }).map((entry) => ({ name: entry.name, kind: kindOf(entry) }));
+    return { path: relative(this.root, target) || '.',
+      ...page(entries, offset, limit, ({ name, kind }) => ({ name, path: relative(this.root, resolve(target, name)), kind })) };
   }
 
   /** 按名字找工作区里的文件和目录：不分大小写，跳过 .git 和 Git 忽略的路径。名字和关键字一样的排最前，其次是开头一样的，再按路径短的在前；最多 limit 条。 */
@@ -105,8 +112,7 @@ export class WorkspaceFiles {
       let stat;
       // 已跟踪但工作区里删掉了的不列
       try { stat = lstatSync(resolve(this.root, path)); } catch { continue; }
-      entries.push({ name: path.slice(path.lastIndexOf('/') + 1), path,
-        kind: stat.isDirectory() ? 'directory' as const : stat.isFile() ? 'file' as const : stat.isSymbolicLink() ? 'symlink' as const : 'other' as const });
+      entries.push({ name: path.slice(path.lastIndexOf('/') + 1), path, kind: kindOf(stat) });
     }
     return { query, entries, truncated: entries.length < ranked.length };
   }
@@ -134,14 +140,16 @@ export class WorkspaceFiles {
 
 /**
  * 这台工作机上的一个目录，添加项目时 App 用来选文件夹和环境变量文件：只列名字，不读内容。
- * 不给路径时列主目录，~/ 开头的按主目录解析；返回的形状同 WorkspaceFiles.list，路径都是绝对的。符号链接按目标归类后再排序，指向目录的也排在前面。
+ * 不给路径时列主目录，~/ 开头的按主目录解析；返回的形状同 WorkspaceFiles.list，路径都是绝对的，limit 最多 1000。
+ * 符号链接按目标归类后再排序，指向目录的也排在前面。
  */
-export function hostDirectory(path: string | null, offset = 0, limit = 200) {
+export async function hostDirectory(path: string | null, offset = 0, limit = 200) {
   const target = !path ? userHome() : path === '~' || path.startsWith('~/') ? join(userHome(), path.slice(1)) : path;
   if (!isAbsolute(target)) throw new KiteError('路径要写绝对路径，或 ~/ 开头');
   const directory = resolve(target);
   let dirents: Dirent[];
-  try { dirents = readdirSync(directory, { withFileTypes: true }); }
+  // 目录可能很大，异步读，不挡住别的请求
+  try { dirents = await readdir(directory, { withFileTypes: true }); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') throw new KiteError(`找不到文件夹：${directory}`, 404);
@@ -149,17 +157,7 @@ export function hostDirectory(path: string | null, offset = 0, limit = 200) {
     if (code === 'EACCES' || code === 'EPERM') throw new KiteError(`没有权限读取：${directory}`, 403);
     throw error;
   }
-  const kind = (entry: Dirent) => {
-    if (entry.isDirectory()) return 'directory' as const;
-    if (entry.isFile()) return 'file' as const;
-    if (!entry.isSymbolicLink()) return 'other' as const;
-    try {
-      const stat = statSync(join(directory, entry.name));
-      return stat.isDirectory() ? 'directory' as const : stat.isFile() ? 'file' as const : 'other' as const;
-    } catch { return 'symlink' as const; }
-  };
-  const entries = dirents.map((entry) => ({ name: entry.name, path: join(directory, entry.name), kind: kind(entry) }))
-    .sort((a, b) => Number(b.kind === 'directory') - Number(a.kind === 'directory') || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  return { path: directory, entries: entries.slice(offset, offset + limit), total: entries.length,
-    nextOffset: offset + limit < entries.length ? offset + limit : null };
+  const entries = await Promise.all(dirents.map(async (entry) => ({ name: entry.name,
+    kind: entry.isSymbolicLink() ? await stat(join(directory, entry.name)).then(kindOf, () => 'symlink' as const) : kindOf(entry) })));
+  return { path: directory, ...page(entries, offset, Math.min(limit, 1000), ({ name, kind }) => ({ name, path: join(directory, name), kind })) };
 }

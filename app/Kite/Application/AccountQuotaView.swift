@@ -98,10 +98,10 @@ struct ModelAccountPane: View {
     private func notice(_ connection: WorkerConnection?, account: ModelAccount?, subscriptionID: String?) -> PaneNotice? {
         if let problem = problem(connection, account: account) { return problem }
         if let pending = pending(connection, subscriptionID: subscriptionID) {
-            return PaneNotice(text: pending, symbol: connection?.readingModelAccounts == true ? "hourglass" : "info.circle", tint: .secondary)
+            return .info(pending, symbol: connection?.readingModelAccounts == true ? "hourglass" : "info.circle")
         }
         if let account, account.status == "unconfigured" {
-            return PaneNotice(text: account.statusTitle, symbol: "person.crop.circle", tint: .secondary)
+            return .info(account.statusTitle, symbol: "person.crop.circle")
         }
         return nil
     }
@@ -116,11 +116,11 @@ struct ModelAccountPane: View {
         }
         guard let account else { return nil }
         if account.showsPreviousData {
-            return PaneNotice(text: "暂时查询不到，显示的是上次数据" + detail, symbol: "clock.arrow.circlepath", tint: .secondary)
+            return .info("暂时查询不到，显示的是上次数据" + detail, symbol: "clock.arrow.circlepath")
         }
         if account.status == "unavailable" { return .failure(account.statusTitle + detail) }
         if account.status == "ready", let message = account.message {
-            return PaneNotice(text: message, symbol: "info.circle", tint: .secondary)
+            return .info(message)
         }
         return nil
     }

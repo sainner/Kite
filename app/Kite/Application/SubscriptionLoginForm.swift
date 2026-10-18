@@ -45,15 +45,7 @@ struct SubscriptionLoginForm: View {
         CardSheet(title: "登录 \(name)", subtitle: "让工作机 \(machine) 使用这个订阅",
                   typing: typing, close: close) {
             if starting {
-                HStack(spacing: 10) {
-                    CardSpinner()
-                    Text("正在启动登录…")
-                }
-                .font(Theme.secondary)
-                .foregroundStyle(Color.accentColor)
-                .frame(maxWidth: .infinity)
-                .padding(12)
-                .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                CardProgress("正在启动登录…")
             } else if state?.finished == true || error != nil {
                 providerIcon
             } else if state?.finished != true, error == nil, authorizationURL != nil {

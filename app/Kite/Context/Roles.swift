@@ -177,7 +177,7 @@ extension AppModel {
         guard thread.isInitial else { return nil }
         if let error = thread.roleError { return .failure(error) }
         guard newThreadRole(for: thread, in: area)?.emblemState == "generating" else { return nil }
-        return PaneNotice(text: "正在为这个角色画点阵签名", symbol: "sparkles", tint: .secondary)
+        return .info("正在为这个角色画点阵签名", symbol: "sparkles")
     }
 
     /// 草稿改选角色时清掉在旧角色上改过的参数；已有代理由工作机换上角色的全部配置。套用期间输入区与角色菜单禁用。

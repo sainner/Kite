@@ -348,6 +348,24 @@ struct CardTile: View {
     }
 }
 
+/// 卡片里等待中的一行：转圈配说明，主题色的底，外形同 CardCallout。
+struct CardProgress: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            CardSpinner()
+            Text(text)
+        }
+        .font(Theme.secondary)
+        .foregroundStyle(Color.accentColor)
+        .frame(maxWidth: .infinity)
+        .padding(12)
+        .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
 /// 卡片里的一条提示，如出错原因。
 struct CardCallout: View {
     let text: String

@@ -160,18 +160,16 @@ final class WorkHeaderView: NativeButton {
         super.layout()
         // HStack(spacing: 8)：汇总放不下时截它，后面几样按自己的宽
         let spacing: CGFloat = 8
-        let tail = [unfinished].filter { !$0.isHidden }
         let imageSize = chevron.image?.size ?? .zero
-        let tailWidth = tail.reduce(0) { $0 + $1.textWidth + spacing } + imageSize.width
-        let summaryWidth = min(summary.textWidth, max(bounds.width - tailWidth - spacing, 0))
+        let unfinishedWidth = unfinished.isHidden ? 0 : unfinished.textWidth + spacing
+        let summaryWidth = min(summary.textWidth, max(bounds.width - unfinishedWidth - imageSize.width - spacing, 0))
         var x: CGFloat = 0
         activity.frame = CGRect(x: x, y: 0, width: summaryWidth, height: bounds.height)
         summary.frame = CGRect(x: 0, y: 0, width: summaryWidth, height: bounds.height)
         x += summaryWidth + spacing
-        for label in tail {
-            let width = label.textWidth
-            label.frame = CGRect(x: x, y: 0, width: width, height: bounds.height)
-            x += width + spacing
+        if !unfinished.isHidden {
+            unfinished.frame = CGRect(x: x, y: 0, width: unfinished.textWidth, height: bounds.height)
+            x += unfinishedWidth
         }
         let rotation = chevron.frameCenterRotation
         chevron.frameCenterRotation = 0
@@ -203,7 +201,7 @@ final class WorkRowView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
-/// 生成中、前面不是工具组的思考：一行次要色小字，换行当空格，放不下截掉。思考条目只在生成期间显示，完整摘要仍保留在记录中。
+/// 生成中、前面不是工具组的思考：一行次要色小字，取哪段字见 TranscriptSpeech.thinking，放不下截掉。思考条目只在生成期间显示，完整摘要仍保留在记录中。
 final class ThinkingRowSlot: TranscriptRowSlot {
     private let label = LineLabel()
 

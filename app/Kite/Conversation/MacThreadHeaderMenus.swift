@@ -33,19 +33,20 @@ struct MacThreadHeaderMenus: View {
             ForEach(commands.indices, id: \.self) { index in
                 Section {
                     ForEach(commands[index]) { command in
-                        if command.options.isEmpty {
-                            MenuButton(command.title, systemImage: command.symbol, role: command.destructive ? .destructive : nil, action: command.action)
-                                .disabled(!command.enabled)
-                        } else {
-                            Menu {
-                                ForEach(command.options) { option in
-                                    Toggle(option.title, isOn: Binding(get: { option.selected }, set: { _ in option.select() }))
+                        Group {
+                            if command.options.isEmpty {
+                                MenuButton(command.title, systemImage: command.symbol, role: command.destructive ? .destructive : nil, action: command.action)
+                            } else {
+                                Menu {
+                                    ForEach(command.options) { option in
+                                        Toggle(option.title, isOn: Binding(get: { option.selected }, set: { _ in option.select() }))
+                                    }
+                                } label: {
+                                    Label(command.title, systemImage: command.symbol)
                                 }
-                            } label: {
-                                Label(command.title, systemImage: command.symbol)
                             }
-                            .disabled(!command.enabled)
                         }
+                        .disabled(!command.enabled)
                     }
                 }
             }

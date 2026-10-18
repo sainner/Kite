@@ -36,9 +36,9 @@ struct TerminalPane: View {
     private var notice: PaneNotice? {
         if let stopError { return .failure(stopError) }
         if case .failed(let message) = session.link, running { return .failure(message) }
-        if let status, !status.running { return PaneNotice(text: status.summary, symbol: "stop.circle", tint: .secondary) }
+        if let status, !status.running { return .info(status.summary, symbol: "stop.circle") }
         return switch session.link {
-        case .waiting, .connecting: PaneNotice(text: "正在连接…", symbol: "hourglass", tint: .secondary)
+        case .waiting, .connecting: .info("正在连接…", symbol: "hourglass")
         case .connected, .failed: nil
         }
     }

@@ -42,22 +42,21 @@ struct FilePane: View {
 
     /// 窗口现在的情况，正文只放目录和文件内容：正在搜索、正在读取、目录或文件是空的、还没选文件。
     private var status: PaneNotice? {
-        func note(_ text: String, _ symbol: String = "info.circle") -> PaneNotice { PaneNotice(text: text, symbol: symbol, tint: .secondary) }
         if searching, searchTarget == .directory, !query.trimmingCharacters(in: .whitespaces).isEmpty {
-            if browser.searchingFiles { return note("正在搜索…", "magnifyingglass") }
+            if browser.searchingFiles { return .info("正在搜索…", symbol: "magnifyingglass") }
             if let results = browser.searchResults {
-                if results.entries.isEmpty { return note("没有名字含「\(results.query)」的文件", "magnifyingglass") }
-                if results.truncated { return note("只列出最相近的 \(results.entries.count) 个", "magnifyingglass") }
+                if results.entries.isEmpty { return .info("没有名字含「\(results.query)」的文件", symbol: "magnifyingglass") }
+                if results.truncated { return .info("只列出最相近的 \(results.entries.count) 个", symbol: "magnifyingglass") }
             }
         }
         if browser.displayingFile {
-            if browser.download != nil { return note("正在下载文件…", "arrow.down.circle") }
-            if browser.loadingText { return note("正在读取文件…", "hourglass") }
-            return browser.diff != nil && browser.diffRows.isEmpty ? note("文件内容为空") : nil
+            if browser.download != nil { return .info("正在下载文件…", symbol: "arrow.down.circle") }
+            if browser.loadingText { return .info("正在读取文件…", symbol: "hourglass") }
+            return browser.diff != nil && browser.diffRows.isEmpty ? .info("文件内容为空") : nil
         }
-        if browser.loadingDirectory { return note("正在读取目录…", "hourglass") }
-        if browser.showDirectory { return browser.root?.entries.isEmpty == true ? note("工作区是空的") : nil }
-        return browser.selection.path == nil ? note("选择文件，或点击消息中的引用") : nil
+        if browser.loadingDirectory { return .info("正在读取目录…", symbol: "hourglass") }
+        if browser.showDirectory { return browser.root?.entries.isEmpty == true ? .info("工作区是空的") : nil }
+        return browser.selection.path == nil ? .info("选择文件，或点击消息中的引用") : nil
     }
 
     /// 信息区：失败优先，其次是窗口现在的情况（见 status），再是指定行定位不到这类关于文件的说明。
@@ -68,7 +67,7 @@ struct FilePane: View {
         guard browser.displayingFile, let message = browser.locationMessage
                 ?? (browser.format == .other ? nil : browser.infoNote)
                 ?? (unversioned ? "超过 10 MiB 的文件不进工作区快照，没有历史版本" : nil) else { return nil }
-        return PaneNotice(text: message, symbol: "info.circle", tint: .secondary)
+        return .info(message)
     }
 
     var body: some View {

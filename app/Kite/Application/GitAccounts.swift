@@ -84,15 +84,7 @@ struct GitHubBindSheet: View {
                 DeviceCodeView(code: device.userCode)
                 CardNote("在 GitHub 页面输入这个验证码，授权后自动完成绑定。")
             } else if phase.working {
-                HStack(spacing: 10) {
-                    CardSpinner()
-                    Text("正在获取验证码…")
-                }
-                .font(Theme.secondary)
-                .foregroundStyle(Color.accentColor)
-                .frame(maxWidth: .infinity)
-                .padding(12)
-                .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                CardProgress("正在获取验证码…")
             }
         } actions: {
             if let device {
@@ -154,11 +146,7 @@ extension AppModel {
     /// 用访问令牌绑定一个 Git 平台，同一主机只有一条 Git 凭据，已绑定就替换；不填用户名时由服务端补上默认的 oauth2。
     /// machineID 指定写到哪台工作机（马上要用它的那台，不等同步），为空时任一台。
     func bindGit(host: String, username: String, token: String, on machineID: String? = nil) async throws {
-        var client: KitedClient?
-        if let machineID {
-            guard let connection = connections[machineID], connection.connected else { throw KitedError(message: "工作机未连接") }
-            client = connection.client
-        }
+        let client = try machineID.map { try connectedClient($0) }
         let meta = username.isEmpty ? [:] : ["username": username]
         if let existing = try await credentials(type: "git", via: client).first(where: { $0.name == host }) {
             try await updateCredential(existing.id, meta: meta, secret: ["token": token], via: client)

@@ -1,5 +1,5 @@
 /** HTTP 接口：本机监听信任回环客户端，远程监听只接受已核验组网身份的内部代理。事件流用 SSE，语音输入和终端用 WebSocket。 */
-import { GitLoginRequired, KiteError, OperationError } from './errors.ts';
+import { KiteError } from './errors.ts';
 import type { EventScope } from './events.ts';
 import { inScope } from './transcript/feed.ts';
 import { z } from 'zod';
@@ -18,7 +18,6 @@ import { tokenPrices } from './token-prices.ts';
 import type { VoiceSocket } from './voice/sessions.ts';
 import { requestedSize, type TerminalSocket } from './terminal/terminals.ts';
 import { approvalModes } from './execution/grants.ts';
-import { WaitingConflict } from './waiting.ts';
 import { hostDirectory, WorkspaceFiles } from './workspace/files.ts';
 import { fileContent } from './workspace/file-content.ts';
 import { HANDOVER_NEEDS } from './environment.ts';
@@ -66,9 +65,7 @@ function handle<R extends Request>(fn: (req: R) => Promise<unknown> | unknown) {
 
 function errorResponse(e: unknown) {
   const status = e instanceof KiteError ? e.status : 500;
-  return Response.json({ error: (e as Error).message, ...(e instanceof OperationError ? { outcome: e.outcome } : {}),
-    ...(e instanceof GitLoginRequired ? { gitLogin: e.host } : {}),
-    ...(e instanceof WaitingConflict ? { waiting: e.waiting } : {}) }, { status });
+  return Response.json({ error: (e as Error).message, ...(e instanceof KiteError ? e.details() : {}) }, { status });
 }
 
 /** 另一台工作机上的 Line 调用时在 X-Kite-Source 声明的来源；只记入输入，不参与授权，可信度等于调用方工作机。 */
@@ -261,7 +258,7 @@ export function serve(kite: Kite, listen: Listen) {
       '/host-files': { GET: bound((req) => {
         const query = new URL(req.url).searchParams;
         const number = (name: string) => { const n = Number(query.get(name) ?? NaN); return Number.isInteger(n) && n >= 0 ? n : undefined; };
-        return hostDirectory(query.get('path'), number('offset'), Math.min(number('limit') ?? 200, 1000));
+        return hostDirectory(query.get('path'), number('offset'), number('limit'));
       }) },
       // 本机要先停下这个项目的线程、回收工作树，请求不受空闲超时限制。
       '/project-registry/:id': { DELETE: long(bound(async (req) => { await kite.deleteProject(req.params.id); return { ok: true }; })) },

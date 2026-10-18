@@ -155,6 +155,9 @@ private struct AddProject: View {
         return paths.allSatisfy { !$0.isEmpty && !$0.hasPrefix("/") && !$0.split(separator: "/").contains("..") } && Set(paths).count == paths.count
     }
 
+    /// 填好的文件夹路径，没填时为空。
+    private var folderPath: String? { current.path.flatMap { $0.isEmpty ? nil : $0 } }
+
     /// 在工作机上选的文件来自哪台；没选过时为空。
     private var fileWorker: String? { picked.lazy.compactMap(\.machine).first }
     /// 能从哪几台工作机选文件：文件夹只能是它所在的那台，远程项目选过一台后只能是那台。
@@ -225,7 +228,7 @@ private struct AddProject: View {
                             .literal().focused($focus, equals: .path).onSubmit(inspect)
                             .cardInput { focus = .path }
                         Button {
-                            browsing = HostFilePicker.Request(machineID: machineID, folders: true, start: current.path.flatMap { $0.isEmpty ? nil : $0 })
+                            browsing = HostFilePicker.Request(machineID: machineID, folders: true, start: folderPath)
                         } label: {
                             PaneButtonLabel("浏览", systemImage: "folder")
                         }
@@ -269,7 +272,7 @@ private struct AddProject: View {
                     Section("工作机") {
                         ForEach(fileWorkers) { connection in
                             Button(connection.machine.name) {
-                                let start = source == .folder && connection.id == machineID ? current.path.flatMap { $0.isEmpty ? nil : $0 } : nil
+                                let start = source == .folder && connection.id == machineID ? folderPath : nil
                                 browsing = HostFilePicker.Request(machineID: connection.id, folders: false, start: start)
                             }
                         }
@@ -278,8 +281,7 @@ private struct AddProject: View {
                 .menuStyle(.button).menuIndicator(.hidden)
             }
         } footer: {
-            CardActions(primary: gitLogin.map { "登录 \($0.host)" } ?? "下一步", enabled: gitLogin != nil || (sourceReady && filesValid),
-                        phase: $phase) { if gitLogin != nil { loggingIn = true } else { next() } }
+            footer("下一步", enabled: sourceReady && filesValid, action: next)
         }
         // 路径填完（回车或离开输入框）就去看一眼，找到的环境变量文件默认选上；打字途中不看，免得把上级目录整个扫一遍
         .onChange(of: focus) { old, new in
@@ -357,9 +359,14 @@ private struct AddProject: View {
             }
             if let reason = check?.integrationReason { CardNote("已按仓库情况预选：\(reason)。") }
         } footer: {
-            CardActions(primary: gitLogin.map { "登录 \($0.host)" } ?? "添加", phase: $phase) {
-                if gitLogin != nil { loggingIn = true } else { attempt { try await add() } }
-            }
+            footer("添加") { attempt { try await add() } }
+        }
+    }
+
+    /// 两步共用的底部按钮：远程要求登录时换成登录这个平台。
+    private func footer(_ title: String, enabled: Bool = true, action: @escaping () -> Void) -> some View {
+        CardActions(primary: gitLogin.map { "登录 \($0.host)" } ?? title, enabled: gitLogin != nil || enabled, phase: $phase) {
+            if gitLogin != nil { loggingIn = true } else { action() }
         }
     }
 

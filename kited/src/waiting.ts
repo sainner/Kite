@@ -69,6 +69,7 @@ const issues = (error: z.ZodError) => error.issues.map((issue) => issue.message)
 /** 回应对不上当前等待（已回应、已作废或从未有过），带上线程当前的等待返回 409。 */
 export class WaitingConflict extends KiteError {
   constructor(readonly waiting: Waiting | null) { super('这个等待已回应或已作废', 409); }
+  override details() { return { waiting: this.waiting }; }
 }
 
 export class Waits {

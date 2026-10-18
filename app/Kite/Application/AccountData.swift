@@ -6,6 +6,12 @@ extension AppModel {
     /// 读写账号级数据用的工作机：作为工作机的这台 Mac 优先，其次是任一台连着的工作机。
     func dataWorker() throws -> KitedClient { try dataConnection().client }
 
+    /// 这台工作机连着时它的 client，没连上时报 unavailable。
+    func connectedClient(_ machineID: String, unavailable: String = "工作机未连接") throws -> KitedClient {
+        guard let connection = connections[machineID], connection.connected else { throw KitedError(message: unavailable) }
+        return connection.client
+    }
+
     private func dataConnection() throws -> WorkerConnection {
         guard let connection = availableWorkers.first(where: { $0.client.isLocal }) ?? availableWorkers.first else {
             throw KitedError(message: "没有连上的工作机。凭据、项目外观与约束存在工作机上，连上一台再试")
@@ -65,17 +71,17 @@ extension AppModel {
 
     /// 文件夹由它所在的工作机检查、添加；从工作机上选了环境变量文件的远程项目由那台添加；其余任一台。
     private func projectWorker(_ source: ProjectSource, machineID: String?) throws -> KitedClient {
-        guard source.path != nil || machineID != nil else { return try dataWorker() }
-        guard let machineID, let connection = connections[machineID], connection.connected else {
-            throw KitedError(message: source.path == nil ? "选了文件的工作机未连接" : "文件夹所在的工作机未连接")
+        let unavailable = source.path == nil ? "选了文件的工作机未连接" : "文件夹所在的工作机未连接"
+        guard let machineID else {
+            if source.path == nil { return try dataWorker() }
+            throw KitedError(message: unavailable)
         }
-        return connection.client
+        return try connectedClient(machineID, unavailable: unavailable)
     }
 
     /// 工作机上的一个目录（kited 的 GET /host-files），添加项目时选文件夹和环境变量文件；path 为空时是主目录。
     func hostDirectory(_ path: String?, offset: Int = 0, on machineID: String) async throws -> FileDirectory {
-        guard let connection = connections[machineID], connection.connected else { throw KitedError(message: "工作机未连接") }
-        return try await connection.client.request("/host-files?offset=\(offset)&limit=500" + (path.map { "&path=\($0.pathComponent)" } ?? ""), as: FileDirectory.self)
+        try await connectedClient(machineID).request("/host-files?offset=\(offset)&limit=500" + (path.map { "&path=\($0.pathComponent)" } ?? ""), as: FileDirectory.self)
     }
 
     /// 改项目设置，只改给了的那几项：集成方式是直接合入（merge）或提交 PR（pullRequest），另有自动换机与换机的环境需求。
@@ -150,10 +156,7 @@ extension AppModel {
     /// 问发起授权的那台工作机；返回 pending、slow_down、expired、denied 或 authorized。
     func pollGitHub(_ device: GitHubDevice) async throws -> String {
         struct Poll: Decodable { let status: String }
-        guard let connection = connections[device.machineID], connection.connected else {
-            throw KitedError(message: "发起授权的工作机断开了，请重新绑定")
-        }
-        return try await connection.client.request("/git/github/device/\(device.flow)", method: "POST", as: Poll.self).status
+        return try await connectedClient(device.machineID, unavailable: "发起授权的工作机断开了，请重新绑定").request("/git/github/device/\(device.flow)", method: "POST", as: Poll.self).status
     }
 
     /// 没有绑定 GitHub 时为空。

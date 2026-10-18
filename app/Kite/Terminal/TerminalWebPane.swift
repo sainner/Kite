@@ -19,10 +19,10 @@ struct TerminalWebPane: View {
     private var notice: PaneNotice? {
         if let error = selectError ?? (port == nil ? nil : failure) { return .failure(error) }
         guard let status, status.running else {
-            return PaneNotice(text: status?.summary ?? "终端已结束", symbol: "stop.circle", tint: .secondary)
+            return .info(status?.summary ?? "终端已结束", symbol: "stop.circle")
         }
         guard port == nil else { return nil }
-        return PaneNotice(text: ports.isEmpty ? "还没有监听的端口" : "没有能用 HTTP 打开的端口", symbol: "info.circle", tint: .secondary)
+        return .info(ports.isEmpty ? "还没有监听的端口" : "没有能用 HTTP 打开的端口")
     }
 
     var body: some View {

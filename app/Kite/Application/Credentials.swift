@@ -42,28 +42,31 @@ private enum CredentialEdit: Identifiable {
         case .replace(let entry): entry.id
         }
     }
+
+    var replacing: AccountCredential? { if case .replace(let entry) = self { entry } else { nil } }
 }
 
 /// 凭据的一个窗口：副行写这类凭据做什么用，右上角添加，正文是一组或几组凭据。没登录、读写失败在信息区；
 /// 一条都没有时窗口开点阵，正文中间是这一类的点阵图案，配一句标题、一句怎么添加：平时文字在图案下面，上下放不下时放右边，
-/// 再放不下只留文字。没登录时右上角换成去登录。
+/// 再放不下只留文字。没登录时右上角换成去登录。登录了才读，换账号、连接变了重读。
 private struct CredentialWindow<Content: View>: View {
     let title: String
     let purpose: String
     let glyph: CredentialGlyph
     /// 一条都没有时图案旁边的标题，和下一行写怎么添加。
     let empty: String
-    let hint: String
+    var hint = "从右上角添加"
     /// 还没读到是 nil。
     let isEmpty: Bool?
     let error: String?
     let actions: PaneHeaderActions
+    let reload: () async -> Void
     @ViewBuilder let content: Content
     @Environment(AppModel.self) private var model
     @Environment(\.self) private var environment
 
     private var notice: PaneNotice? {
-        if !model.account.signedIn { return PaneNotice(text: "登录后管理凭据", symbol: "person.crop.circle", tint: .secondary) }
+        if !model.account.signedIn { return .info("登录后管理凭据", symbol: "person.crop.circle") }
         return error.map(PaneNotice.failure)
     }
 
@@ -98,6 +101,9 @@ private struct CredentialWindow<Content: View>: View {
             }
         } controls: { _ in
             EmptyView()
+        }
+        .task(id: "\(model.account.user?.id ?? ""):\(model.connectionRevision)") {
+            if model.account.signedIn { await reload() }
         }
     }
 
@@ -183,11 +189,7 @@ private struct CredentialRow<Actions: View>: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            if let logo {
-                Image(logo).renderingMode(.template).resizable().scaledToFit()
-                    .frame(width: 20, height: 20)
-                    .accessibilityHidden(true)
-            }
+            if let logo { TablerIcon(logo, size: 20) }
             VStack(alignment: .leading, spacing: 2) {
                 Text(name).lineLimit(1).truncationMode(.middle)
                 detail.font(Theme.caption).foregroundStyle(.secondary)
@@ -243,7 +245,6 @@ private struct SecretsPane: View {
     let title: String
     @Environment(AppModel.self) private var model
     @State private var groups: [SecretGroup]?
-    @State private var projects: [AccountProject] = []
     @State private var load = CredentialLoad()
     @State private var edit: CredentialEdit?
 
@@ -256,11 +257,10 @@ private struct SecretsPane: View {
 
     var body: some View {
         CredentialWindow(title: title, purpose: "agent 执行命令时按引用使用", glyph: .key, empty: "还没有密钥",
-                         hint: "从右上角添加",
                          isEmpty: groups.map(\.isEmpty), error: load.error,
                          actions: PaneHeaderActions(groups: [[PaneHeaderAction(title: "添加密钥", systemImage: "plus", disabled: load.working) {
                              edit = .add
-                         }]])) {
+                         }]]), reload: reload) {
             ForEach(groups ?? []) { group in
                 CardSection(group.title) {
                     ForEach(group.entries) { entry in
@@ -275,9 +275,8 @@ private struct SecretsPane: View {
                 .disabled(load.working)
             }
         }
-        .task(id: "\(model.account.user?.id ?? ""):\(model.connectionRevision)") { await reload() }
         .sheet(item: $edit) { edit in
-            SecretSheet(edit: edit, projects: projects) { Task { await reload() } }
+            SecretSheet(replacing: edit.replacing) { Task { await reload() } }
                 .environment(model).appAppearance()
         }
     }
@@ -287,28 +286,31 @@ private struct SecretsPane: View {
         return Text("\(Text(entry.reference).monospaced()) · \(use)")
     }
 
+    /// 账号共享与各项目的一起读，按项目登记的顺序分组。
     private func reload() async {
-        guard model.account.signedIn else { return }
+        let model = model
+        let projects = model.account.registeredProjects
         await $load.read {
-            let projects = try await model.registeredProjects()
-            var groups: [SecretGroup] = []
-            let shared = try await model.credentials(type: "secret")
-            if !shared.isEmpty { groups.append(SecretGroup(id: "", title: "账号共享", entries: shared)) }
-            let label = model.projectLabels()
-            for project in projects {
-                let entries = try await model.credentials(type: "secret", projectID: project.id)
-                if !entries.isEmpty { groups.append(SecretGroup(id: project.id, title: label(project.project), entries: entries)) }
+            let found = try await withThrowingTaskGroup(of: (String, [AccountCredential]).self) { group in
+                for id in [""] + projects.map(\.id) {
+                    group.addTask { (id, try await model.credentials(type: "secret", projectID: id)) }
+                }
+                var found: [String: [AccountCredential]] = [:]
+                for try await (id, entries) in group { found[id] = entries }
+                return found
             }
-            self.projects = projects
-            self.groups = groups
+            let label = model.projectLabels()
+            groups = ([("", "账号共享")] + projects.map { ($0.id, label($0.project)) }).compactMap { id, title in
+                guard let entries = found[id], !entries.isEmpty else { return nil }
+                return SecretGroup(id: id, title: title, entries: entries)
+            }
         }
     }
 }
 
 /// 添加或替换一条共享密钥。替换只换内容，名称、范围、类型与工作区里的路径不变。
 private struct SecretSheet: View {
-    let edit: CredentialEdit
-    let projects: [AccountProject]
+    let replacing: AccountCredential?
     let saved: () -> Void
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -325,7 +327,6 @@ private struct SecretSheet: View {
 
     private enum Field { case name, path, value }
 
-    private var replacing: AccountCredential? { if case .replace(let entry) = edit { entry } else { nil } }
     private var currentKind: String { replacing?.meta["kind"]?.string ?? kind }
     private var trimmedName: String { name.trimmingCharacters(in: .whitespaces) }
     private var trimmedPath: String { path.trimmingCharacters(in: .whitespaces) }
@@ -333,11 +334,9 @@ private struct SecretSheet: View {
         validSecretValue(value)
             && (replacing != nil || trimmedName.range(of: "^[a-zA-Z][a-zA-Z0-9_-]{0,63}$", options: .regularExpression) != nil)
     }
-    private var scopeTitle: String {
-        projects.first { $0.id == projectID }.map { "\(model.projectLabel($0.project)) · 项目专用" } ?? "账号共享 · 所有项目"
-    }
-
     var body: some View {
+        let projects = model.account.registeredProjects
+        let label = model.projectLabels()
         CardSheet(title: replacing.map { "替换 \($0.name)" } ?? "添加密钥",
                   subtitle: replacing == nil ? "供 agent 执行命令时按引用使用" : "换成新的内容",
                   error: phase.error, typing: focus != nil, close: { dismiss() }) {
@@ -352,11 +351,11 @@ private struct SecretSheet: View {
                         Button("账号共享 · 所有项目") { projectID = "" }
                         Section("项目专用") {
                             ForEach(projects) { project in
-                                Button(model.projectLabel(project.project)) { projectID = project.id }
+                                Button(label(project.project)) { projectID = project.id }
                             }
                         }
                     } label: {
-                        Text(scopeTitle)
+                        Text(projects.first { $0.id == projectID }.map { "\(label($0.project)) · 项目专用" } ?? "账号共享 · 所有项目")
                     }
                     .menuStyle(.button).buttonStyle(CardSelectStyle()).menuIndicator(.hidden)
                 }
@@ -423,23 +422,18 @@ private struct SecretSheet: View {
 
     private func save() {
         guard valid else { return }
-        let value = value
-        if let replacing {
-            // 不带 meta：工作机沿用原来的类型与路径
-            $phase.run {
+        var meta = ["kind": kind]
+        if kind == "file", !projectID.isEmpty, !trimmedPath.isEmpty { meta["path"] = trimmedPath }
+        let value = value, name = trimmedName, scope = projectID, replacing = replacing
+        $phase.run {
+            if let replacing {
+                // 不带 meta：工作机沿用原来的类型与路径
                 try await model.updateCredential(replacing.id, secret: ["value": value])
-                saved()
-                dismiss()
-            }
-        } else {
-            var meta = ["kind": kind]
-            if kind == "file", !projectID.isEmpty, !trimmedPath.isEmpty { meta["path"] = trimmedPath }
-            let name = trimmedName, scope = projectID
-            $phase.run {
+            } else {
                 try await model.createCredential(type: "secret", name: name, projectID: scope, meta: meta, secret: ["value": value])
-                saved()
-                dismiss()
             }
+            saved()
+            dismiss()
         }
     }
 }
@@ -468,8 +462,8 @@ private struct GitAccountsPane: View {
     var body: some View {
         CredentialWindow(title: title, purpose: "克隆与推送时使用", glyph: .branch, empty: "还没有绑定 Git 平台",
                          hint: "从右上角绑定 GitHub 或其他平台",
-                         isEmpty: accounts.map(\.isEmpty), error: load.error, actions: actions) {
-            if let accounts, !accounts.isEmpty {
+                         isEmpty: accounts.map(\.isEmpty), error: load.error, actions: actions, reload: reload) {
+            if let accounts {
                 CardSection {
                     ForEach(accounts) { account in
                         CredentialRow(logo: logo(account.name), name: account.name, detail: Text(account.meta["username"]?.string ?? "")) {
@@ -487,7 +481,6 @@ private struct GitAccountsPane: View {
                 .disabled(load.working)
             }
         }
-        .task(id: "\(model.account.user?.id ?? ""):\(model.connectionRevision)") { await reload() }
         .sheet(item: $sheet) { sheet in
             Group {
                 switch sheet {
@@ -522,7 +515,6 @@ private struct GitAccountsPane: View {
     }
 
     private func reload() async {
-        guard model.account.signedIn else { return }
         await $load.read { accounts = try await model.credentials(type: "git") }
     }
 }
@@ -695,12 +687,11 @@ private struct KeysPane<Provider: KeyProvider>: View {
 
     var body: some View {
         CredentialWindow(title: title, purpose: Provider.purpose, glyph: Provider.glyph, empty: Provider.empty,
-                         hint: "从右上角添加",
                          isEmpty: entries.map(\.isEmpty), error: load.error,
                          actions: PaneHeaderActions(groups: [[PaneHeaderAction(title: Provider.addTitle, systemImage: "plus", disabled: load.working) {
                              edit = .add
-                         }]])) {
-            if let entries, !entries.isEmpty {
+                         }]]), reload: reload) {
+            if let entries {
                 CardSection {
                     ForEach(entries) { entry in
                         CredentialRow(logo: ThreadModelMenu.logo(vendor: entry.meta["provider"]?.string), name: entry.name,
@@ -718,15 +709,9 @@ private struct KeysPane<Provider: KeyProvider>: View {
                 .disabled(load.working)
             }
         }
-        .task(id: "\(model.account.user?.id ?? ""):\(model.connectionRevision)") { await reload() }
         .sheet(item: $edit) { edit in
-            Group {
-                switch edit {
-                case .add: KeySheet<Provider> { Task { await reload() } }
-                case .replace(let entry): KeySheet<Provider>(replacing: entry) { Task { await reload() } }
-                }
-            }
-            .environment(model).appAppearance()
+            KeySheet<Provider>(replacing: edit.replacing) { Task { await reload() } }
+                .environment(model).appAppearance()
         }
     }
 
@@ -737,7 +722,6 @@ private struct KeysPane<Provider: KeyProvider>: View {
     }
 
     private func reload() async {
-        guard model.account.signedIn else { return }
         await $load.read { entries = try await model.credentials(type: Provider.type) }
     }
 }

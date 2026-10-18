@@ -259,7 +259,7 @@ final class AppModel {
     /// 再次是任一台连着的；同一档里已有这个项目检出的优先，省得再 clone。
     func preferredWorker(for projectID: String? = nil) -> WorkerConnection? {
         let holders = Set(checkouts.filter { $0.projectId == projectID }.map(\.machineId))
-        let busy = Set(workspaces.filter { $0.activities.values.contains { $0.phase != "idle" } }.compactMap(\.remote?.machine.id))
+        let busy = Set(workspaces.filter { $0.activities.keys.contains(where: $0.isRunning) }.compactMap(\.remote?.machine.id))
         func rank(_ connection: WorkerConnection) -> (Int, Int) {
             let id = connection.machine.id
             return (connection.client.isLocal ? 0 : busy.contains(id) ? 2 : 1, holders.contains(id) ? 0 : 1)

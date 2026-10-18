@@ -29,7 +29,7 @@ struct PluginPane: View {
     var body: some View {
         PaneWindow(header: PaneHeader(title: title, subtitle: "插件"),
                    notice: loadState.error.map(PaneNotice.failure)
-                       ?? (loadState.loading ? PaneNotice(text: "正在打开插件…", symbol: "hourglass", tint: .secondary) : nil)) {
+                       ?? (loadState.loading ? .info("正在打开插件…", symbol: "hourglass") : nil)) {
             PluginWebView(target: target, client: client, theme: colorScheme == .dark ? "dark" : "light",
                           state: state, connection: connection, report: { [loadState = $loadState] message in
                               loadState.wrappedValue = message.map(LoadState.failed) ?? .ready

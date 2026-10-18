@@ -35,15 +35,11 @@ export async function originAccess(cwd: string, credentials: GitCredentials): Pr
 
 /** 失败时只保留 git 输出的最后几行，凭据不会出现在其中。HTTPS 远程要账号或拒绝了令牌时，换成去哪里绑定的说明。 */
 export function gitFailure(action: string, stderr: string): KiteError {
-  const login = /could not read Username for '(https?:\/\/[^/']+)/.exec(stderr);
+  const login = /(could not read Username|Authentication failed) for '(https?:\/\/[^/']+)/.exec(stderr);
   if (login) {
-    const host = new URL(login[1]!).host;
-    return new GitLoginRequired(`${action}失败：${host} 要求登录，到「资源库 → 凭据」的 Git 账号里用访问令牌绑定它`, host);
-  }
-  const rejected = /Authentication failed for '(https?:\/\/[^/']+)/.exec(stderr);
-  if (rejected) {
-    const host = new URL(rejected[1]!).host;
-    return new GitLoginRequired(`${action}失败：${host} 拒绝了访问令牌，到「资源库 → 凭据」的 Git 账号里重新绑定`, host);
+    const host = new URL(login[2]!).host;
+    const fix = login[1] === 'Authentication failed' ? '拒绝了访问令牌，到「资源库 → 凭据」的 Git 账号里重新绑定' : '要求登录，到「资源库 → 凭据」的 Git 账号里用访问令牌绑定它';
+    return new GitLoginRequired(`${action}失败：${host} ${fix}`, host);
   }
   return new KiteError(`${action}失败：${stderr.trim().split('\n').slice(-3).join('\n') || '未知错误'}`, 409);
 }

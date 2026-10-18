@@ -48,6 +48,11 @@ struct PaneNotice: Equatable {
     static func failure(_ text: String) -> PaneNotice {
         PaneNotice(text: text, symbol: "exclamationmark.triangle.fill", tint: Theme.warning)
     }
+
+    /// 不算出错的情况：正在读取、还没有内容、已经结束这类。
+    static func info(_ text: String, symbol: String = "info.circle") -> PaneNotice {
+        PaneNotice(text: text, symbol: symbol, tint: .secondary)
+    }
 }
 
 /// 没有圆环的窗口出现提示时，信息区只有状态图标，位置和大小与圆环相同。
