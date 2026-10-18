@@ -24,26 +24,33 @@ export async function mainline(p: Pick<Checkout, 'path'>): Promise<string> {
 }
 
 /**
- * 拉取远程主线到 origin 的跟踪引用，本机主线落后就快进；本机有没推上去的提交（上次推送失败）时不动，集成时一并合并。
- * 返回拉取后的主线引用（同 mainRefs），远程还没有这个分支时只有本机主线。
+ * 主线的分支名与引用：local 是本机主线；upstream 是远程主线在 origin 的跟踪引用，有远程且拉取到过这个分支时才有。
+ * 集成、同步与落后计数对着 mainRefs 展开的引用；提交 PR 的目标是 upstream ?? local。
  */
-export async function fetchMainline(p: Pick<Checkout, 'path'>, access: RemoteAccess): Promise<string[]> {
-  const branch = await mainBranch(p);
-  const upstream = await fetchBranch(p.path, branch, access);
-  if (!upstream) return [`refs/heads/${branch}`];
-  await fastForward(p.path, branch, upstream);
-  return [`refs/heads/${branch}`, tracking(branch)];
-}
+export interface Mainline { branch: string; local: string; upstream: string | null }
+
+/** 只有本机主线：没有远程的项目（检出从对端 clone，不留 origin），或远程还没有这个分支。 */
+export const localMainline = (branch: string): Mainline => ({ branch, local: `refs/heads/${branch}`, upstream: null });
 
 /**
- * 主线的几个引用：本机主线，以及拉取过时的远程主线（按最近一次拉取）；集成、同步与落后计数都对着它们。
- * 用引用名而不是提交号，合并提交的说明里写的是分支。
+ * 拉取远程主线到 origin 的跟踪引用，本机主线落后就快进；本机有没推上去的提交（上次推送失败）时不动，集成时一并合并。
+ * 远程还没有这个分支时只有本机主线。
  */
-export async function mainRefs(p: Pick<Checkout, 'path'>): Promise<string[]> {
-  const branch = await mainBranch(p);
-  const upstream = tracking(branch);
-  return [`refs/heads/${branch}`, ...(await revParse(p.path, upstream) ? [upstream] : [])];
+export async function fetchMainline(p: Pick<Checkout, 'path'>, branch: string, access: RemoteAccess): Promise<Mainline> {
+  const upstream = await fetchBranch(p.path, branch, access);
+  if (!upstream) return localMainline(branch);
+  await fastForward(p.path, branch, upstream);
+  return { ...localMainline(branch), upstream: tracking(branch) };
 }
+
+/** 有远程但这次没拉取成功：远程主线按最近一次拉取，从没拉取到过时只有本机主线。 */
+export async function lastFetchedMainline(p: Pick<Checkout, 'path'>, branch: string): Promise<Mainline> {
+  const upstream = tracking(branch);
+  return { ...localMainline(branch), upstream: await revParse(p.path, upstream) ? upstream : null };
+}
+
+/** 合进工作区分支与计算落后用的引用：本机主线，有远程主线时再加上它。用引用名而不是提交号，合并提交的说明里写的是分支。 */
+export const mainRefs = (main: Mainline): string[] => main.upstream ? [main.local, main.upstream] : [main.local];
 
 export type Integration =
   | { status: 'merged'; commit: string }
@@ -83,15 +90,15 @@ export async function mergeMainline(worktree: string, message: string, mains: Ar
   return { status: 'merged', commit: (await revParse(worktree, 'HEAD'))! };
 }
 
-/** 直接合入：本机主线快进到已合好主线的工作区提交。 */
-export async function advanceMainline(p: Pick<Checkout, 'path'>, commit: string): Promise<void> {
-  if (await fastForward(p.path, await mainBranch(p), commit) === 'diverged') throw new KiteError('主线刚有新的提交，请重试', 409);
+/** 直接合入：本机主线（分支 branch）快进到已合好主线的工作区提交。 */
+export async function advanceMainline(p: Pick<Checkout, 'path'>, branch: string, commit: string): Promise<void> {
+  if (await fastForward(p.path, branch, commit) === 'diverged') throw new KiteError('主线刚有新的提交，请重试', 409);
 }
 
-/** 主线（mains，见 mainRefs）比工作区分支多出的提交数；工作树不在或不知道主线时为 null。 */
-export async function behindCount(worktree: string, mains: string[]): Promise<number | null> {
-  if (!mains.length || !existsSync(worktree)) return null;
-  const r = await gitTry(worktree, ['rev-list', '--count', ...mains, '^HEAD']);
+/** 主线（按 mainRefs）比工作区分支多出的提交数；工作树不在时为 null。 */
+export async function behindCount(worktree: string, main: Mainline): Promise<number | null> {
+  if (!existsSync(worktree)) return null;
+  const r = await gitTry(worktree, ['rev-list', '--count', ...mainRefs(main), '^HEAD']);
   return r.code === 0 ? Number(r.stdout.trim()) : null;
 }
 

@@ -37,7 +37,7 @@ test('合进主线保留两边的新提交，主线快进到工作树 HEAD', asy
   const r = await mergeMainline(wt, '会话', MAIN);
   expect(r).toEqual({ status: 'merged', commit: head(wt) });
   if (r.status !== 'merged') return;
-  await advanceMainline(project, r.commit);
+  await advanceMainline(project, 'main', r.commit);
   expect(git(checkout, 'rev-parse', 'main')).toBe(head(wt));
   expect(gitOk(checkout, 'merge-base', '--is-ancestor', mainCommit, 'main')).toBe(true);
   expect([show(checkout, 'a.txt'), show(checkout, 's.txt'), show(checkout, 'b.txt'), show(checkout, 'm.txt')])
@@ -82,7 +82,7 @@ test('合进主线冲突留在工作树，agent 只改文件时由宿主标记�
   const r5 = await mergeMainline(wt, '会话', MAIN, { stageResolved: true });
   expect(r5.status).toBe('merged');
   if (r5.status !== 'merged') return;
-  await advanceMainline(project, r5.commit);
+  await advanceMainline(project, 'main', r5.commit);
   const [mainHead, sessionHead] = git(checkout, 'rev-parse', 'main', 'kite/s').split('\n');
   expect(mainHead).toBe(sessionHead);
   expect(gitOk(checkout, 'merge-base', '--is-ancestor', mainCommit, 'main')).toBe(true);

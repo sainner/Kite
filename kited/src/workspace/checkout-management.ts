@@ -13,7 +13,7 @@ import { gitHubRepo, type GitHubBinding } from '../account-data/github.ts';
 import type { Integration, IntegrationChoice, ProjectRegistry, RegisteredProject } from '../account-data/registry.ts';
 import { git } from './git.ts';
 import { checkEnvFiles } from '../secrets.ts';
-import { fetchMainline, mainRefs } from './mainline.ts';
+import { fetchMainline, lastFetchedMainline, localMainline, mainBranch, type Mainline } from './mainline.ts';
 import { clonePeers, createRepository, findEnvFiles, folderName, importFolder, inspectFolder, projectOf, readEnvFile, readHostFile, type Folder } from './projects.ts';
 import { clone, originAccess, originSpelling, originURL, pushAll, remoteAccess, remoteHead, type RemoteAccess } from './remote.ts';
 import { syncPeer, type PeerRoute } from './peer-git.ts';
@@ -173,9 +173,9 @@ export class CheckoutManagement {
 
   /**
    * 按项目登记表更新本机项目：并入了别的项目的，把本机检出改挂过去；名称或远程变了的跟上，设了远程后把各检出的 origin 改到新地址。
-   * 给了 refreshed 时再拉取各检出的主线（见 refresh），每个检出拉完就把主线引用交给它，不等别的检出。返回有没有项目并入别的项目。
+   * 给了 refreshed 时再拉取各检出的主线（见 refresh），每个检出拉完就把主线交给它，不等别的检出。返回有没有项目并入别的项目。
    */
-  async syncProjects(refreshed?: (checkout: Checkout, mains: string[]) => Promise<void>): Promise<boolean> {
+  async syncProjects(refreshed?: (checkout: Checkout, main: Mainline) => Promise<void>): Promise<boolean> {
     const { registry } = this.projects;
     let merged = false;
     // 拉取要访问网络，放到登记锁外做，网络慢时不挡住本机登记。
@@ -213,9 +213,9 @@ export class CheckoutManagement {
     });
     if (refreshed) await Promise.all(checkouts.map(async (checkout) => {
       try {
-        const { mains, offline } = await this.serial(`checkout:${checkout.id}`, () => this.refresh(checkout));
+        const { main, offline } = await this.serial(`checkout:${checkout.id}`, () => this.refresh(checkout));
         if (offline) console.warn(`[项目同步] ${offline}`);
-        await refreshed(checkout, mains);
+        await refreshed(checkout, main);
       } catch (error) { console.warn(`[项目同步] ${checkout.path}：${(error as Error).message}`); }
     }));
     return merged;
@@ -223,17 +223,18 @@ export class CheckoutManagement {
 
   /**
    * 拉取最新的主线，调用方持有检出的串行锁：有远程的从远程拉，本机主线落后就快进；没有远程的从有它检出的其他工作机拉，同样只做快进，
-   * 两边都有新提交时留给用户集成。拉不到时照用本机主线。返回主线的引用（见 mainRefs），拉取成功时另带访问方式，失败时带原因。
+   * 两边都有新提交时留给用户集成。拉不到时照用本机主线和上次拉取的远程主线。返回主线（见 Mainline），拉取成功时另带访问方式，失败时带原因。
    */
-  async refresh(checkout: Checkout): Promise<{ mains: string[]; access?: RemoteAccess; offline?: string }> {
+  async refresh(checkout: Checkout): Promise<{ main: Mainline; access?: RemoteAccess; offline?: string }> {
     if (!this.store.project(checkout.projectId)?.remote) {
       await this.syncPeers(checkout);
-      return { mains: await mainRefs(checkout) };
+      return { main: localMainline(await mainBranch(checkout)) };
     }
+    const branch = await mainBranch(checkout);
     try {
       const access = await originAccess(checkout.path, this.projects.git);
-      return { mains: await fetchMainline(checkout, access), access };
-    } catch (error) { return { mains: await mainRefs(checkout).catch(() => []), offline: (error as Error).message }; }
+      return { main: await fetchMainline(checkout, branch, access), access };
+    } catch (error) { return { main: await lastFetchedMainline(checkout, branch), offline: (error as Error).message }; }
   }
 
   /** 没有远程的项目：从有它检出的其他工作机拉取，能快进就快进本机主线，调用方持有检出的串行锁。连不上的跳过，下一轮再试。 */

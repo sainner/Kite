@@ -6,7 +6,7 @@ import { FileDiffStore } from './workspace/file-diffs.ts';
 import { join, relative } from 'node:path';
 import { KiteError } from './errors.ts';
 import { type AdoptResult, Bus, type PushOutcome, type SyncResult } from './events.ts';
-import { advanceMainline, behindCount, fetchMainline, hasUnmerged, mainBranch, mainline, mergeMainline } from './workspace/mainline.ts';
+import { advanceMainline, behindCount, fetchMainline, hasUnmerged, mainline, mainRefs, mergeMainline, type Mainline } from './workspace/mainline.ts';
 import { CheckoutManagement, type EnvFile, type ProjectSource } from './workspace/checkout-management.ts';
 import { AccountData } from './account-data/store.ts';
 import { Credentials } from './account-data/credentials.ts';
@@ -459,18 +459,18 @@ export class Kite {
     const fetch = options.fetch ?? true;
     // 并入别的项目后本机的约束缓存挂到保留的项目上，按登记表重对一遍，有变化时通知正在运行的实例。
     return this.projectOperation(async () => {
-      if (await this.checkoutManagement.syncProjects(fetch ? (checkout, mains) => this.refreshWorkspaces(checkout, mains) : undefined)) this.library.refresh();
+      if (await this.checkoutManagement.syncProjects(fetch ? (checkout, main) => this.refreshWorkspaces(checkout, main) : undefined)) this.library.refresh();
       for (const project of this.store.projects()) if (this.registry.deleted(project.id)) await this.removeLocalProject(project.id);
     });
   }
-  /** 检出拉取了主线之后：更新它的工作区落后主线（mains）的提交数，查询提交 PR 的工作区的 PR 状态。 */
-  private async refreshWorkspaces(checkout: Checkout, mains: string[]): Promise<void> {
+  /** 检出拉取了主线之后：更新它的工作区落后主线（main）的提交数，查询提交 PR 的工作区的 PR 状态。 */
+  private async refreshWorkspaces(checkout: Checkout, main: Mainline): Promise<void> {
     const remote = this.store.project(checkout.projectId)?.remote;
     const repo = remote ? gitHubRepo(remote) : undefined;
     const open = this.store.workspaces().filter((w) => w.checkoutId === checkout.id && (w.status === 'open' || w.status === 'failed'));
     await Promise.all(open.map(async (w) => {
       try {
-        let changed = this.store.setWorkspaceBehind(w.id, await behindCount(w.cwd, mains));
+        let changed = this.store.setWorkspaceBehind(w.id, await behindCount(w.cwd, main));
         if (repo && w.pullRequest?.state === 'open' && w.pullRequest.number !== undefined) {
           const state = await this.github.pullRequestState(repo.owner, repo.repo, w.pullRequest.number);
           // 查询期间工作区可能又集成过一次：只在记录还是查的那一份时改状态。
@@ -1476,24 +1476,23 @@ export class Kite {
    * 推送被拒说明远程刚有新提交，重新拉取、合并后再推，冲突同样留在工作区。没有远程的项目合进本机主线就结束，其他工作机同步时快进过来。
    */
   private async mergeIntoMainline(w: Workspace, checkout: Checkout, afterResolution: boolean): Promise<AdoptResult> {
-    let { mains, access, offline } = await this.checkoutManagement.refresh(checkout);
+    let { main, access, offline } = await this.checkoutManagement.refresh(checkout);
     const local = !this.store.project(checkout.projectId)?.remote;
-    const branch = await mainBranch(checkout);
     for (let attempt = 1; ; attempt++) {
-      const r = await mergeMainline(w.cwd, w.name, mains, { stageResolved: afterResolution });
+      const r = await mergeMainline(w.cwd, w.name, mainRefs(main), { stageResolved: afterResolution });
       if (r.status === 'conflict') return r;
-      await advanceMainline(checkout, r.commit);
+      await advanceMainline(checkout, main.branch, r.commit);
       const adopted = (push: PushOutcome): AdoptResult => ({ status: 'adopted', commit: r.commit, push });
       const failed = (message: string) => adopted({ status: 'failed', message });
       if (local) return adopted({ status: 'local' });
       if (!access) return failed(offline ?? '无法访问远程');
       let pushed: Awaited<ReturnType<typeof pushBranch>>;
-      try { pushed = await pushBranch(checkout.path, branch, access); }
+      try { pushed = await pushBranch(checkout.path, main.branch, access); }
       catch (error) { return failed((error as Error).message); }
       if (pushed === 'pushed') return adopted({ status: 'pushed' });
       if (pushed === 'protected') return failed('主线受保护，不能直接推送；在项目设置里把集成方式改为提交 PR');
       if (attempt === PUSH_ATTEMPTS) return failed('远程持续有新的提交，推送多次被拒，请稍后再集成');
-      try { mains = await fetchMainline(checkout, access); }
+      try { main = await fetchMainline(checkout, main.branch, access); }
       catch (error) { return failed((error as Error).message); }
     }
   }
@@ -1503,9 +1502,9 @@ export class Kite {
    */
   private async pushProposal(model: WorkspaceModel, afterResolution: boolean): Promise<Proposal | { status: 'conflict'; files: string[] }> {
     const { workspace: w, checkout, project } = model;
-    const { mains, access, offline } = await this.checkoutManagement.refresh(checkout);
+    const { main, access, offline } = await this.checkoutManagement.refresh(checkout);
     if (!access) throw new KiteError(`无法访问远程：${offline ?? '没有 origin'}`, 409);
-    const base = await mainBranch(checkout);
+    const base = main.branch;
     let branch = w.pullRequest?.branch;
     if (!branch) {
       const taken = new Set([...(await lsRemote(checkout.path, access, 'refs/heads/kite/*', '查看远程分支')).keys()].map((ref) => ref.slice('refs/heads/'.length)));
@@ -1516,7 +1515,7 @@ export class Kite {
     }
     const theirs = w.pullRequest && await fetchBranch(checkout.path, branch, access) ? tracking(branch) : null;
     // 远程主线；远程还没有这个分支时是本机主线
-    const target = mains.at(-1)!;
+    const target = main.upstream ?? main.local;
     const r = await mergeMainline(w.cwd, w.name, [target, theirs], { stageResolved: afterResolution });
     if (r.status === 'conflict') return r;
     const pushed = await pushBranch(checkout.path, w.branch, access, branch);
@@ -1565,9 +1564,9 @@ export class Kite {
       if (w.status !== 'open') throw new KiteError('只能同步已打开的工作区', 409);
       await this.assertIdle(id);
       const result = await this.serial(`checkout:${checkout.id}`, async (): Promise<SyncResult> => {
-        const { mains } = await this.checkoutManagement.refresh(checkout);
-        if (!(await revParse(w.cwd, 'MERGE_HEAD')) && (await behindCount(w.cwd, mains)) === 0) return { status: 'current' };
-        const r = await mergeMainline(w.cwd, w.name, mains, { stageResolved: afterResolution });
+        const { main } = await this.checkoutManagement.refresh(checkout);
+        if (!(await revParse(w.cwd, 'MERGE_HEAD')) && (await behindCount(w.cwd, main)) === 0) return { status: 'current' };
+        const r = await mergeMainline(w.cwd, w.name, mainRefs(main), { stageResolved: afterResolution });
         return r.status === 'conflict' ? r : { status: 'synced', commit: r.commit };
       });
       if (result.status === 'conflict') await this.handConflict(id, 'sync', w, result.files, afterResolution);
