@@ -448,7 +448,7 @@ export function openClaudeHost(options: {
       }
       for (const entry of data.inputs) if (entry.status === 'unconfirmed') entry.status = 'queued';
       if (!data.inputs.some((entry) => entry.status === 'queued') && data.paused) data.inputs.push({
-        input: { id: randomUUID(), text: '继续上次任务。', source: 'kite' }, sdkId: randomUUID(), at: Date.now(), status: 'queued', delivered: false, midTurn: false,
+        input: { id: randomUUID(), text: '继续上次任务。', source: 'kite', notice: { kind: 'resumed', title: '接着上次的任务' } }, sdkId: randomUUID(), at: Date.now(), status: 'queued', delivered: false, midTurn: false,
       });
       data.paused = false; save(); pump();
     },

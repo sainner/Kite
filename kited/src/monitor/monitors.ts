@@ -13,6 +13,7 @@ import { processGroupAlive, runCommand } from '../execution/command.ts';
 import type { ExecutionPolicy } from '../execution/sandbox.ts';
 import { assembleContext, bindContext, sceneValues } from '../harness/context/assembler.ts';
 import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
+import type { InputNotice } from '../harness/types.ts';
 import type { PluginInstance } from '../model.ts';
 import type { Store } from '../store.ts';
 
@@ -106,7 +107,7 @@ export interface MonitorsHost {
   /** 对象代理此刻的执行策略。 */
   policy(target: PluginInstance): Promise<ExecutionPolicy>;
   /** 投给对象代理的 Kite 来源输入；同一 ID 重复送达只去重。 */
-  deliver(threadId: string, text: string, inputId: string): Promise<unknown>;
+  deliver(threadId: string, text: string, inputId: string, notice: InputNotice): Promise<unknown>;
   template(): ContextDefinition;
   /** 对象代理线程的公共变量。 */
   variables(threadId: string): ContextValues;
@@ -382,7 +383,7 @@ export class Monitors {
     });
     if (!pending) return;
     try {
-      await this.host.deliver(config.target, pending.text, pending.id);
+      await this.host.deliver(config.target, pending.text, pending.id, { kind: 'monitor.events', title: `${instance.title} 有新事件` });
       this.mutate(instanceId, (state) => {
         if (state.pending?.id !== pending.id) return;
         state.delivered = Math.max(state.delivered, pending.through);

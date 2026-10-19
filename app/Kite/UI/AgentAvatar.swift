@@ -203,6 +203,53 @@ extension EmblemDesign {
     }
 }
 
+extension AgentAvatar {
+    /// 不动的一帧头像（实例的起始时刻），对话里代理来信、子代理回报那一行用，原生视图直接放进图层：
+    /// 卡片底色的圆、点阵、一圈本色描边，同停靠栏的 DockFace。design 为 nil 时用默认图案；diameter 是点，scale 是屏幕倍数。
+    static func still(design: EmblemDesign?, instance: String, diameter: CGFloat, scale: CGFloat, environment: EnvironmentValues) -> CGImage? {
+        let accent = DotColor(Color.accentColor.resolve(in: environment))
+        let pixels = Int((diameter * scale).rounded(.up))
+        guard pixels > 0, let pattern = (design ?? .fallback).avatarPattern(accent: accent) ?? EmblemDesign.fallback.avatarPattern(accent: accent),
+              let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: pixels, height: pixels, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        // 格子按左上为原点算，位图原点在左下：上下翻过来
+        context.translateBy(x: 0, y: CGFloat(pixels))
+        context.scaleBy(x: scale, y: -scale)
+        let bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
+        let ring: CGFloat = 1
+        context.addEllipse(in: bounds)
+        context.clip()
+        context.setFillColor(Theme.card.resolve(in: environment).cgColor)
+        context.fill(bounds)
+        // 点阵往里留一个描边宽，同 DockFace 的 padding
+        context.saveGState()
+        context.translateBy(x: ring, y: ring)
+        let rest = DotColor(Theme.dotRest.resolve(in: environment))
+        let inner = CGSize(width: diameter - ring * 2, height: diameter - ring * 2)
+        for cell in cells(pattern, rest: rest, at: seed(instance), size: inner) {
+            let color = cell.color
+            context.setFillColor(CGColor(srgbRed: color.red, green: color.green, blue: color.blue, alpha: color.alpha))
+            context.addPath(cell.path.cgPath)
+            context.fillPath()
+        }
+        context.restoreGState()
+        context.setStrokeColor((design ?? .fallback).baseColor(in: environment).resolve(in: environment).cgColor)
+        context.setLineWidth(ring)
+        context.strokeEllipse(in: bounds.insetBy(dx: ring / 2, dy: ring / 2))
+        return context.makeImage()
+    }
+
+    /// 对话里头像的直径：比次要字的字号大一圈，和名字、通知那一句排在一行。
+    static func inlineDiameter(font pointSize: CGFloat) -> CGFloat { (pointSize * 1.6).rounded() }
+
+    /// 对话里某个实例的头像用哪个签名：按工作区里的实例找角色，找不到（别的工作区、Line）用默认图案。
+    static func design(for instance: String, environment: EnvironmentValues) -> EmblemDesign? {
+        guard let model = environment[AppModel.self], let area = environment[WorkArea.self] else { return nil }
+        return model.emblem(for: instance, in: area)
+    }
+}
+
 #if os(macOS)
 /// Mac 上动着的代理头像：按 AgentAvatar.cells 用 Core Graphics 画进图层，显示链接按帧换图（同 TimelineView 最多每秒 24 帧），
 /// 不经 SwiftUI。在 SwiftUI 里逐帧画时，停靠栏整个托管视图每帧都要更新一轮、再提交一次 Metal（2026-10-14 实测，

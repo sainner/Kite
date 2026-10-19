@@ -43,13 +43,14 @@ function material(history: History, now: number): { input: string; through: stri
   const cutoff = now - 3 * DAY;
   const usable = (record: DisplayRecord) => record.at >= cutoff
     && record.generation !== 'streaming' && record.generation !== 'interrupted';
+  // 一轮从一条输入开始：人发的、代理来信，或 Kite 发的（Claude 原生行之类不是输入的 kite 块不算）。
+  const request = ({ id, block }: DisplayRecord) => block.type === 'human' || block.type === 'agent' || (block.type === 'kite' && id.startsWith('input:'));
   let start = records.length;
   let requests = 0;
   // 先定位需要的最后 20 轮，再清理正文；更早的长回复和代码无需处理。
   while (start > 0 && requests < 20) {
     const record = records[--start]!;
-    if (usable(record) && (record.block.type === 'human'
-      || (record.block.type === 'kite' && record.id.startsWith('input:')))) requests++;
+    if (usable(record) && request(record)) requests++;
   }
   if (!requests) return;
   const groups: { request: string; reply: string; through: string }[] = [];
@@ -58,7 +59,7 @@ function material(history: History, now: number): { input: string; through: stri
     const record = records[index]!;
     if (!usable(record)) continue;
     const block = record.block;
-    if (block.type === 'human' || (block.type === 'kite' && record.id.startsWith('input:'))) {
+    if (request(record) && 'text' in block) {
       groups.push({ request: clean(block.text).slice(0, 1_200), reply: '', through: record.id });
     } else if (block.type === 'text' && groups.length) {
       const group = groups.at(-1)!;

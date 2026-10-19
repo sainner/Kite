@@ -20,7 +20,7 @@ import UniformTypeIdentifiers
             case .rule: RuleCardView()
             default: CodeCardView()
             }
-        case .userCode: CodeCardView()
+        case .bubbleCode: CodeCardView()
         }
     }
 
@@ -369,23 +369,23 @@ final class CodeCardView: BlockCardView {
 
     override func update(_ content: EmbeddedBlock, environment: EmbeddedEnvironment, markdown: String?) {
         self.environment = environment
-        let user: Bool
+        let bubble: Bool, user: Bool
         switch content {
         case .markdown(let block):
             guard case .code(let language) = block.kind else { return }
             code = String(block.text.characters)
             self.language = language
             maxLines = 14
-            user = false
-        case .userCode(let text, let language):
+            (bubble, user) = (false, false)
+        case .bubbleCode(let text, let language, let fromUser):
             code = text
             self.language = language
             // 整条消息统一折叠，代码不再单独截断
             maxLines = nil
-            user = true
+            (bubble, user) = (true, fromUser)
         }
         configure(label: languageLabel, copyLabel: "复制代码", background: user ? Theme.userCodeBackground : Theme.codeBackground,
-                  radius: user ? Metrics.nestedRadius(inset: Metrics.bubblePadding.height) : Metrics.contentRadius,
+                  radius: bubble ? Metrics.nestedRadius(inset: Metrics.bubblePadding.height) : Metrics.contentRadius,
                   actions: isShell ? [terminal] : [])
         terminal.isEnabled = environment.runInTerminal != nil
         let secondary = Theme.secondary.resolve(in: EnvironmentValues().fontResolutionContext).ctFont as NSFont

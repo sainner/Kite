@@ -11,6 +11,14 @@ struct TranscriptRow: Identifiable {
         var isMessage: Bool {
             if case .message = self { true } else { false }
         }
+
+        /// 画成气泡的：人发的消息、代理来信。
+        var isBubble: Bool {
+            switch self {
+            case .message: true
+            case .item(let item): if case .agent = item.kind { true } else { false }
+            }
+        }
     }
 
     let id: RowID
@@ -31,10 +39,10 @@ struct TranscriptRow: Identifiable {
                 rows.append(TranscriptRow(id: id, content: content, gap: 0, startsHumanTurn: humanTurn))
                 return
             }
-            // 人发的消息和前后的内容之间多空一样多，连着的几条消息之间不加；它开启的新一轮不再另加，上下才一样。
-            // Kite 发来的消息开启的新一轮，和上一轮之间多空一点
-            let gap = if last.isMessage != content.isMessage { Metrics.messageGap }
-                else if startsTurn && !content.isMessage { Metrics.turnGap }
+            // 气泡（人发的消息、代理来信）和前后的内容之间多空一样多，连着的几个气泡之间不加；它开启的新一轮不再另加，上下才一样。
+            // Kite 发来的通知开启的新一轮，和上一轮之间多空一点
+            let gap = if last.content.isBubble != content.isBubble { Metrics.messageGap }
+                else if startsTurn && !content.isBubble { Metrics.turnGap }
                 else { CGFloat(0) }
             rows.append(TranscriptRow(id: id, content: content, gap: gap, startsHumanTurn: humanTurn))
         }
@@ -69,7 +77,12 @@ private extension Item.Kind {
     func shape(into hasher: inout Hasher) {
         switch self {
         case .human(let message): message.shape(into: &hasher)
-        case .kite(let text, let sender): hasher.combine(1); hasher.combine(text.utf8.count); hasher.combine(sender)
+        case .agent(let message, let sender): hasher.combine(2); message.shape(into: &hasher); hasher.combine(sender)
+        case .kite(let notice):
+            hasher.combine(1)
+            hasher.combine(notice.text.utf8.count)
+            hasher.combine(notice.title)
+            hasher.combine(notice.response)
         case .text(let text): hasher.combine(3); hasher.combine(text.utf8.count)
         case .thinking(let text): hasher.combine(4); hasher.combine(text.utf8.count)
         case .work(let work):
@@ -109,7 +122,7 @@ private extension Item {
     var startsTurn: Bool {
         switch kind {
         case .human(let message): !message.midTurn
-        case .kite: true
+        case .agent, .kite: true
         default: false
         }
     }

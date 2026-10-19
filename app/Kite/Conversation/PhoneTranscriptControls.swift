@@ -159,61 +159,7 @@ final class PhoneTextLine: UIView {
     }
 }
 
-/// 图标带一行字，照 SwiftUI Label 的默认样式：图标按自己的大小，和字之间空 8，两者按字的基线对齐（模拟器里量过）。
-/// 图标是 SF Symbol，跟着字的文本样式。
-final class PhoneIconLabel: UIView {
-    let icon = UIImageView()
-    let title = PhoneTextLine()
-    private var image: UIImage?
-
-    init() {
-        super.init(frame: .zero)
-        addSubview(icon)
-        addSubview(title)
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func set(_ text: String, systemImage: String, font: UIFont, color: UIColor) {
-        image = UIImage(systemName: systemImage, withConfiguration: UIImage.SymbolConfiguration(font: font))
-        icon.image = image
-        icon.tintColor = color
-        title.set(text, font: font, color: color)
-        setNeedsLayout()
-    }
-
-    private static let spacing: CGFloat = 8
-
-    private var iconSize: CGSize { image?.size ?? .zero }
-    /// 图标的基线离图标顶边多远。
-    private var iconBaseline: CGFloat { iconSize.height - (image?.baselineOffsetFromBottom ?? 0) }
-
-    /// 按 width 排出来多高：图标和字按基线对齐以后上下各伸到哪。
-    func height(width: CGFloat) -> CGFloat {
-        let (iconTop, titleTop) = tops
-        let titleHeight = title.height(width: max(width - iconSize.width - Self.spacing, 0))
-        return max(iconTop + iconSize.height, titleTop + titleHeight)
-    }
-
-    /// 图标、字的顶边：基线对齐，高出来的那个顶着 0。
-    private var tops: (icon: CGFloat, title: CGFloat) {
-        let shift = iconBaseline - title.firstBaseline
-        return shift > 0 ? (0, shift) : (-shift, 0)
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        let (iconTop, titleTop) = tops
-        let size = iconSize
-        // 位置对到像素，同 SwiftUI 画的时候
-        icon.frame = PhonePixel.align(CGRect(x: 0, y: iconTop, width: size.width, height: size.height))
-        let x = size.width + Self.spacing
-        let width = max(bounds.width - x, 0)
-        title.frame = PhonePixel.align(CGRect(x: x, y: titleTop, width: width, height: title.height(width: width)))
-    }
-}
-
-/// 长按一段字弹出拷贝、共享，同 SwiftUI Text 的 textSelection(.enabled)：Kite 发来的话用。
+/// 长按一段字弹出拷贝、共享，同 SwiftUI Text 的 textSelection(.enabled)：Kite 通知展开的正文用。
 @MainActor final class PhoneCopyMenu: NSObject, UIContextMenuInteractionDelegate {
     var text: () -> String = { "" }
 

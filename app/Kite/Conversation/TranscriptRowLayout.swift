@@ -68,8 +68,8 @@ import AppKit
     }
 }
 
-/// 人发的一条消息的气泡怎么量、怎么摆，两端原生列表的气泡行共用：靠右、贴着字宽（有代码段时占满），太长的折起来、底下渐隐，
-/// 下面一个展开收起的按钮，附件排在气泡上面。底色、描边、截住正文的那层、按钮和附件的视图各端自己画，按这里给的框摆。
+/// 气泡怎么量、怎么摆，两端原生列表的气泡行共用：人发的靠右、代理来信靠左，贴着字宽（有代码段时占满），太长的折起来、底下渐隐，
+/// 下面一个展开收起的按钮；气泡上面是附件（人发的）或头像和名字（代理来信）。底色、描边、截住正文的那层、按钮和上面那一截的视图各端自己画，按这里给的框摆。
 struct BubbleLayout {
     /// 正文连同上下边距不折时多高，量的时候算出来。
     private(set) var contentHeight: CGFloat = 0
@@ -162,12 +162,12 @@ struct BubbleLayout {
         var faded: CGFloat
     }
 
-    /// 行这会儿的大小（展开收起的动画中和量的高不一样）里怎么摆：气泡靠右、在附件下面；正文按露出来的高截住，
+    /// 行这会儿的大小（展开收起的动画中和量的高不一样）里怎么摆：气泡靠右（leading 时靠左）、在上面那一截（top）下面；正文按露出来的高截住，
     /// 只给到露出来的底边（折着时文本视图不去排、画折下去的那些）。button 是折叠按钮的高，不能折时给 0。
-    func frames(row size: CGSize, attachmentsHeight: CGFloat, button: CGFloat) -> Frames {
+    func frames(row size: CGSize, top: CGFloat, button: CGFloat, leading: Bool = false) -> Frames {
         let padding = Metrics.bubblePadding
         let bubbleWidth = textWidth + padding.width * 2
-        let bubble = CGRect(x: size.width - bubbleWidth, y: attachmentsHeight, width: bubbleWidth, height: max(size.height - attachmentsHeight, 0))
+        let bubble = CGRect(x: leading ? 0 : size.width - bubbleWidth, y: top, width: bubbleWidth, height: max(size.height - top, 0))
         let shown = max(bubble.height - button, 0)
         let textHeight = min(contentHeight - padding.height * 2, shown - padding.height)
         return Frames(bubble: bubble, shown: shown,
@@ -177,15 +177,37 @@ struct BubbleLayout {
                       faded: min(max((contentHeight - shown) / Metrics.messageFoldFade, 0), 1))
     }
 
-    /// 气泡内容在行里占的范围（附件连同气泡，靠右），操作栏和它右边对齐。
-    func anchor(in frame: CGRect, attachmentsWidth: CGFloat) -> CGRect {
-        let width = max(textWidth + Metrics.bubblePadding.width * 2, attachmentsWidth)
-        return CGRect(x: frame.maxX - width, y: frame.minY, width: width, height: frame.height)
+    /// 气泡内容在行里占的范围（上面那一截连同气泡），操作栏和它靠着的那边对齐。
+    func anchor(in frame: CGRect, topWidth: CGFloat, leading: Bool = false) -> CGRect {
+        let width = max(textWidth + Metrics.bubblePadding.width * 2, topWidth)
+        return CGRect(x: leading ? frame.minX : frame.maxX - width, y: frame.minY, width: width, height: frame.height)
     }
+}
+
+extension Notice {
+    /// 那一句前面的图标（SF Symbol），两端一样；子代理回报画子代理的头像（avatarInstance），没有时也用图标。
+    var symbol: String {
+        switch kind {
+        case .report: "person.crop.circle"
+        case .monitor: "tray"
+        case .terminal: "terminal"
+        case .line: "tray.full"
+        case .conflict: "arrow.triangle.merge"
+        case .moved: "arrow.left.arrow.right"
+        case .resumed: "arrow.clockwise"
+        case .question: "questionmark.bubble"
+        case .secret: "key"
+        case nil: "bell"
+        }
+    }
+
+    /// 画头像的实例：子代理回报的那个子代理。
+    var avatarInstance: String? { kind == .report ? instance : nil }
 }
 
 /// 两段话之间 agent 做的事折成的一行怎么量、展开到哪了，两端原生列表的工具行共用：汇总一行，点开下面是步骤，
 /// 展开收起和下面的行一起按 0.25 秒的普通缓出动，箭头跟着转、步骤跟着淡入淡出。汇总行、步骤的视图各端自己建。
+/// Kite 的通知那一行（那一句，点开是正文）也照它量、照它动。
 enum WorkLayout {
     /// 汇总行和步骤之间的间距。
     static let spacing: CGFloat = 6

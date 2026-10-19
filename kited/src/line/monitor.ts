@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { assembleContext, bindContext, sceneValues } from '../harness/context/assembler.ts';
 import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
+import type { InputNotice } from '../harness/types.ts';
 import type { AccountMachine } from '../account-data/directory.ts';
 import type { MachineSummary } from '../kite.ts';
 import type { AgentInstance, PluginInstance } from '../model.ts';
@@ -117,7 +118,7 @@ const stateSchema = z.object({
   relays: z.record(z.string(), z.enum(['answered', 'sent'])).default({}),
   seq: z.number().int().nonnegative().default(0),
   /** 已决定投递、尚未确认送达的输入；重启后用同一 ID 补送。 */
-  pending: z.object({ id: z.string(), text: z.string() }).strict().optional(),
+  pending: z.object({ id: z.string(), text: z.string(), title: z.string().optional() }).strict().optional(),
 });
 export type MonitorState = z.infer<typeof stateSchema>;
 
@@ -357,6 +358,12 @@ function returnToUser(item: InboxItem, note: string, focused: boolean, notes: Li
 
 export interface Collected { delegated: InboxItem[]; results: string[]; briefing?: { since: number; items: InboxItem[] } }
 
+/** 这次唤醒在 Line 窗口里显示的那一句。 */
+function wakeTitle({ delegated, results, briefing }: Collected): string {
+  return [...delegated.length ? [`${delegated.length} 件事交给 Line 处理`] : [], ...results.length ? [`${results.length} 个工作结果`] : [],
+    ...briefing ? ['你回来了，要一段简报'] : []].join('，') || '收件箱有新动静';
+}
+
 /**
  * 取出该投给 Line 的唤醒：用户点的代处理随时投；托管、结果与简报计入每日预算，超了不再唤醒，
  * 事项交回用户的收件箱，Line 的工作结果也进收件箱，简报作罢。
@@ -400,7 +407,7 @@ export interface MonitorHost {
   /** Line 的 monitor 实例（收件箱），状态存在它上面；没有时由宿主补建。 */
   inbox(): PluginInstance | undefined;
   /** 投给 Line 线程的 Kite 来源输入；同一 ID 重复送达只去重。 */
-  deliver(threadId: string, text: string, inputId: string): Promise<unknown>;
+  deliver(threadId: string, text: string, inputId: string, notice: InputNotice): Promise<unknown>;
   template(): ContextDefinition;
   /** Line 线程的公共变量。 */
   variables(threadId: string): ContextValues;
@@ -573,13 +580,13 @@ export class LineMonitor {
       const collected = collect(state, now, focused, notes);
       if (!collected) return;
       state.seq += 1;
-      state.pending = { id: `monitor:${line.id}:${state.seq}`, text: this.render(line.id, collected, now) };
+      state.pending = { id: `monitor:${line.id}:${state.seq}`, text: this.render(line.id, collected, now), title: wakeTitle(collected) };
     });
     for (const note of notes) this.host.notify(note);
     const pending = this.state()?.pending;
     if (pending) {
       // 先落盘再投递：投递失败（如 Line 的工作区正在交接）下一轮用同一 ID 补送。
-      await this.host.deliver(line.id, pending.text, pending.id);
+      await this.host.deliver(line.id, pending.text, pending.id, { kind: 'line.monitor', title: pending.title ?? '收件箱有新动静' });
       this.mutate((state) => { if (state.pending?.id === pending.id) state.pending = undefined; });
     }
     this.arm();

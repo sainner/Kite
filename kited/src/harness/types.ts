@@ -6,14 +6,23 @@ export type JsonObject = { [key: string]: Json };
 
 /**
  * 输入的来源，由宿主按调用身份填写，只用于显示、去重、回报和交给模型时的包装，不改变权限；校验与包装见 input.ts。
- * 人发的可带 via：经 Line 照原文转达的用户原话。Kite 发的可带 response：Kite 转交的用户回应（用户自己回答的提问、密钥请求的结果），
- * 是用户在界面上做的，交给模型时不加「不是用户说的话」。代理来信必带发信方 from，名称在收下时固定。
+ * 人发的可带 via：经 Line 照原文转达的用户原话。Kite 发的可带 notice 说是哪种通知；可带 response：Kite 转交的用户回应
+ * （用户自己回答的提问、密钥请求的结果），是用户在界面上做的，交给模型时不加「不是用户说的话」。代理来信必带发信方 from，名称在收下时固定。
  */
 export type InputOrigin =
   | { source: 'human'; via?: InputVia }
-  | { source: 'kite'; response?: true }
+  | { source: 'kite'; notice?: InputNotice; response?: true }
   | { source: 'agent'; from: InputSender };
 export type Input = { id: string; text: string } & InputOrigin;
+
+/** Kite 自动发的是哪种通知。正文是写给模型的，界面显示 title 这一句、正文收起；只用于显示，不交给模型。 */
+export interface InputNotice {
+  kind: 'agent.report' | 'monitor.events' | 'terminal.exit' | 'line.monitor' | 'conflict' | 'moved' | 'resumed' | 'question' | 'secret';
+  /** 从用户的角度说发生了什么，比如「整理文档 做完了」「你回答了提问」。 */
+  title: string;
+  /** 子代理回报的那个子代理，界面画它的头像。 */
+  instance?: string;
+}
 
 export interface InputVia { kind: 'line'; machine: string; instance: string }
 /** Line 自己的话以它的经由为发信方。 */

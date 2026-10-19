@@ -44,8 +44,10 @@ struct Compaction {
 enum Block {
     /// 人发的消息。
     case human(Message)
-    /// 不是人发的消息：Kite 发给 agent 的（比如合并冲突的说明），或别的代理发来的，sender 是发信方名称。
-    case kite(String, sender: String?)
+    /// 别的代理发来的消息。
+    case agent(Message, sender: Sender)
+    /// Kite 自动发给 agent 的。
+    case kite(Notice)
     case text(String)
     case thinking(String)
     case toolUse(ToolUse)
@@ -54,7 +56,38 @@ enum Block {
     case compacted(Compaction)
 }
 
-/// 人发的一条消息。id 由客户端给出，排队、投递确认和重连历史沿用它。
+/// 代理来信的发信方：名称是发信时的标题，instance 是它的实例 ID（Line 是 Line 的），画头像用。
+struct Sender: Hashable {
+    let name: String
+    let instance: String
+}
+
+/// Kite 自动发给 agent 的一条（子代理回报、monitor 事件、合并冲突等）。正文是写给模型的，界面上显示 title 这一句，点开才看正文。
+struct Notice {
+    enum Kind: String {
+        case report = "agent.report", monitor = "monitor.events", terminal = "terminal.exit", line = "line.monitor"
+        case conflict, moved, resumed, question, secret
+    }
+
+    let text: String
+    /// 没有的（Claude 原生行、工作机没标的）按正文第一行显示。
+    var kind: Kind?
+    var title: String
+    /// 子代理回报的那个子代理，画它的头像。
+    var instance: String?
+    /// Kite 转交的用户回应（回答提问、密钥请求的结果）：是用户自己做的事，靠右。
+    var response = false
+
+    init(text: String, kind: Kind? = nil, title: String? = nil, instance: String? = nil, response: Bool = false) {
+        self.text = text
+        self.kind = kind
+        self.title = title ?? text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
+        self.instance = instance
+        self.response = response
+    }
+}
+
+/// 人发的一条消息。id 由客户端给出，排队、投递确认和重连历史沿用它。代理来信也用它，id 是那条输入的 id。
 struct Message: Identifiable {
     let id: String
     /// 原文。斜杠命令时是命令后面的参数。
@@ -199,7 +232,8 @@ struct Item: Identifiable {
 
     enum Kind {
         case human(Message)
-        case kite(String, sender: String?)
+        case agent(Message, sender: Sender)
+        case kite(Notice)
         case text(String)
         case thinking(String)
         case work(Work)
@@ -285,7 +319,8 @@ extension Transcript {
             let before = list.count
             switch record.block {
             case .human(let message): append(.human(message))
-            case .kite(let text, let sender): append(.kite(text, sender: sender))
+            case .agent(let message, let sender): append(.agent(message, sender: sender))
+            case .kite(let notice): append(.kite(notice))
             case .text(let text):
                 // 开了头没写出字的草稿
                 if text.isEmpty { continue }

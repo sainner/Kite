@@ -16,6 +16,12 @@ enum Theme {
         topLeadingRadius: Metrics.contentRadius, bottomLeadingRadius: Metrics.contentRadius,
         bottomTrailingRadius: Metrics.bubbleTail, topTrailingRadius: Metrics.contentRadius,
         style: .continuous)
+    /// 代理来信的气泡：靠左，墨蓝（深色雾白）的浅底配正常文字色，主题色只给人发的；小圆角在左上，朝着上面的头像和名字。
+    static let agentBubble = Color("AgentBubble")
+    static let agentBubbleShape = UnevenRoundedRectangle(
+        topLeadingRadius: Metrics.bubbleTail, bottomLeadingRadius: Metrics.contentRadius,
+        bottomTrailingRadius: Metrics.contentRadius, topTrailingRadius: Metrics.contentRadius,
+        style: .continuous)
     /// 代码、命令输出的底。
     static let codeBackground = Color("CodeBackground")
     /// 主题色用户气泡内的不透明蓝色代码底，随深浅外观调整。
@@ -245,7 +251,7 @@ enum Metrics {
     /// 对话里人发的消息和前后的内容之间、别的新一轮（Kite 发来的、后台任务通知）和上一轮之间，在平常的间距之外多空多少。
     static let messageGap: CGFloat = 12
     static let turnGap: CGFloat = 12
-    /// 会话里的内容块（消息气泡、代码块、表格、附件、Kite 发的消息）共用的圆角；气泡右下角小一点。
+    /// 会话里的内容块（消息气泡、代码块、表格、附件）共用的圆角；人发的气泡右下角、代理来信的左上角小一点。
     nonisolated static let contentRadius: CGFloat = 18
     nonisolated static let bubbleTail: CGFloat = 6
     /// 嵌在内容块里的块与外框同心：圆角是外框圆角减去两者间距，最小与气泡右下角一样。

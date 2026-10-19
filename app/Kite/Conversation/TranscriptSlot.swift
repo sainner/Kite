@@ -83,7 +83,7 @@ extension TranscriptRowContext {
     var actionAnchor: CGRect { frame }
 }
 
-/// 一行该用哪种实现：agent 的话、人发的消息、工具组、思考、kite 发来的话、压缩分界。
+/// 一行该用哪种实现：agent 的话、气泡（人发的消息、代理来信）、工具组、思考、Kite 的通知、压缩分界。
 /// 判断两端共用，各端的工厂按它建自己的子类（Mac 见 makeTranscriptRowSlot，iOS 见 makePhoneTranscriptRowSlot）。
 enum SlotKind { case prose, bubble, work, thinking, kite, compaction }
 
@@ -94,7 +94,7 @@ func slotKind(_ row: TranscriptRow) -> SlotKind {
         switch item.kind {
         case .text: .prose
         // 人发的消息在 TranscriptRow.rows 里都成了 .message，走不到这里
-        case .human: .bubble
+        case .human, .agent: .bubble
         case .work: .work
         case .thinking: .thinking
         case .kite: .kite

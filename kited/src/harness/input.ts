@@ -3,7 +3,7 @@
  * 原生记录与界面保留原文，只有交给模型（含换后端时转换的历史）才按来源包装。
  */
 import { z } from 'zod';
-import type { Input, InputSender } from './types.ts';
+import type { Input, InputNotice, InputSender } from './types.ts';
 
 const id = z.string().min(1);
 const text = z.string().refine((value) => !!value.trim(), '内容不能为空');
@@ -11,10 +11,14 @@ export const inputVia = z.object({ kind: z.literal('line'), machine: id, instanc
 export const inputSender = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('agent'), instance: id, title: z.string() }).strict(), inputVia,
 ]);
+const inputNotice: z.ZodType<InputNotice> = z.object({
+  kind: z.enum(['agent.report', 'monitor.events', 'terminal.exit', 'line.monitor', 'conflict', 'moved', 'resumed', 'question', 'secret']),
+  title: z.string(), instance: id.optional(),
+}).strict();
 /** 每种来源只带自己的字段，正文不能为空；收下输入、读回记录和接口参数都用它校验。 */
 export const inputSchema: z.ZodType<Input> = z.discriminatedUnion('source', [
   z.object({ id, text, source: z.literal('human'), via: inputVia.optional() }).strict(),
-  z.object({ id, text, source: z.literal('kite'), response: z.literal(true).optional() }).strict(),
+  z.object({ id, text, source: z.literal('kite'), notice: inputNotice.optional(), response: z.literal(true).optional() }).strict(),
   z.object({ id, text, source: z.literal('agent'), from: inputSender }).strict(),
 ]);
 

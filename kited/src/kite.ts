@@ -1,5 +1,5 @@
 /** 工作区负责文件、快照和采纳；线程负责模型执行及独立的对话记录。 */
-import type { CompactionRequest, Input, InputOrigin, InputVia, StopRequest } from './harness/types.ts';
+import type { CompactionRequest, Input, InputNotice, InputOrigin, InputVia, StopRequest } from './harness/types.ts';
 import { AgentReports, agentReportContextDefinition } from './agent-reports.ts';
 import { randomUUID } from 'node:crypto';
 import { existsSync, rmSync } from 'node:fs';
@@ -304,11 +304,11 @@ export class Kite {
       title: (instanceId) => store.instance(instanceId)?.title ?? instanceId,
       reply: async (threadId) => (await this.reply(threadId)).reply?.text,
       asking: (threadId) => store.asks(threadId).length > 0,
-      deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, { source: 'kite' }),
+      deliver: (threadId, text, inputId, notice) => this.send(threadId, text, inputId, { source: 'kite', notice }),
       notify: (threadId, notification) => store.addInstanceNotification(threadId, notification),
     });
     this.monitor = new LineMonitor({ store, peers: this.peers,
-      line: () => this.lineInstance(), inbox: () => this.lineInbox(true), deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, { source: 'kite' }),
+      line: () => this.lineInstance(), inbox: () => this.lineInbox(true), deliver: (threadId, text, inputId, notice) => this.send(threadId, text, inputId, { source: 'kite', notice }),
       template: () => this.contextTemplates.get(lineMonitorContextDefinition.id, 'line.monitor').definition,
       variables: (threadId) => storedThreadVariables(store, threadId),
       focused: () => this.attention.devices().length > 0,
@@ -323,7 +323,7 @@ export class Kite {
         return agentPolicy(await harnessPolicy({ cwd: workspace.cwd, env: process.env, home, repository: checkout.path }), workspace.cwd,
           instanceExecutionChanges(target), store.workspaceConstraints(target.workspaceId)?.execution, this.secretFiles(checkout.projectId));
       },
-      deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, { source: 'kite' }),
+      deliver: (threadId, text, inputId, notice) => this.send(threadId, text, inputId, { source: 'kite', notice }),
       template: () => this.contextTemplates.get(monitorEventsContextDefinition.id, 'monitor.events').definition,
       variables: (threadId) => storedThreadVariables(store, threadId),
       run: (workspaceId, action) => this.control(workspaceId, action),
@@ -375,7 +375,7 @@ export class Kite {
       run: (workspaceId, action) => this.control(workspaceId, action),
       changed: (workspaceId) => this.changed(workspaceId),
       collect: (instance) => this.instances.collect(instance),
-      deliver: (threadId, text, inputId) => this.send(threadId, text, inputId, { source: 'kite' }),
+      deliver: (threadId, text, inputId, notice) => this.send(threadId, text, inputId, { source: 'kite', notice }),
       template: () => this.contextTemplates.get(terminalExitContextDefinition.id, 'terminal.exit').definition,
       variables: (threadId) => storedThreadVariables(store, threadId),
       forward: (ports) => this.serving?.network?.forward(ports),
@@ -597,7 +597,7 @@ export class Kite {
   }
   private async continueThread({ threadId, inputs }: { threadId: string; inputs: Input[] }): Promise<void> {
     try {
-      await this.send(threadId, CONTINUE_AFTER_MOVE, randomUUID(), { source: 'kite' });
+      await this.send(threadId, CONTINUE_AFTER_MOVE, randomUUID(), { source: 'kite', notice: { kind: 'moved', title: '换到了这台工作机，接着刚才的工作' } });
       // 收回的输入已记在线程里（收到后又被打断收回），原 id 会被当成重复；正文与来源照旧，换新 id 重发。
       for (const { id: _, text, ...origin } of inputs) await this.send(threadId, text, randomUUID(), origin);
     } catch (error) { console.error(`[换机] 线程 ${threadId} 没能接着做：${(error as Error).message}`); }
@@ -1022,15 +1022,19 @@ export class Kite {
     this.answering.add(id);
     try {
       let text: string;
+      let notice: InputNotice;
       if (ask.kind === 'question') {
-        text = questionResultText(ask, questionResponseOf(ask, value), via);
+        const response = questionResponseOf(ask, value);
+        text = questionResultText(ask, response, via);
+        notice = { kind: 'question', title: `${via ? 'Line 替你' : '你'}${'denied' in response ? '关掉了提问' : '回答了提问'}` };
       } else {
         const response = secretResponseOf(ask, value);
         text = 'denied' in response ? secretDeniedText(ask, response.reason)
           : `用户回应了你的密钥请求（请求 ${ask.id}），${await this.saveSecrets(this.context(threadId).project.id, ask.secrets, response)}`;
+        notice = { kind: 'secret', title: 'denied' in response ? '你拒绝提供密钥' : '你回应了密钥请求' };
       }
       // 用户自己回答的是用户在界面上做的，交给模型时不说成「不是用户说的话」；Line 代答的照常说明。
-      await this.send(threadId, text, randomUUID(), { source: 'kite', ...(via ? {} : { response: true as const }) }).catch((error: Error) => {
+      await this.send(threadId, text, randomUUID(), { source: 'kite', notice, ...(via ? {} : { response: true as const }) }).catch((error: Error) => {
         throw error instanceof KiteError ? error : new KiteError(`结果没能交给代理：${error.message}`, 409);
       });
       this.asks.remove(threadId, id);
@@ -1641,7 +1645,10 @@ export class Kite {
     const t = this.store.threads(id).findLast((thread) => thread.status === 'open');
     if (afterResolution || !t) return;
     this.resolving.set(id, { threadId: t.id, action });
-    try { await this.sendInput(this.context(t.id), { id: randomUUID(), text: conflictPrompt(action, w.branch, files), source: 'kite' }); }
+    try {
+      await this.sendInput(this.context(t.id), { id: randomUUID(), text: conflictPrompt(action, w.branch, files), source: 'kite',
+        notice: { kind: 'conflict', title: `${action === 'adopt' ? '集成' : '同步'}时 ${files.length} 个文件冲突，交给代理解决` } });
+    }
     catch (error) { this.endResolving(t); throw error; }
   }
   /**

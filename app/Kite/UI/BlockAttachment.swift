@@ -5,10 +5,10 @@ import UIKit
 import AppKit
 #endif
 
-/// 嵌在对话正文里的一块：回复里的代码块、表格、分隔线，用户消息里的代码块。
+/// 嵌在对话正文里的一块：回复里的代码块、表格、分隔线，气泡里的代码块（user：人发的，主题色气泡里的蓝底；代理来信里的是平常的底）。
 enum EmbeddedBlock: Equatable {
     case markdown(MarkdownBlock)
-    case userCode(String, language: String?)
+    case bubbleCode(String, language: String?, user: Bool)
 
     /// 同一种块换内容时复用附件和宿主（流式时代码越来越长），换了种类就另建。
     func sameKind(as other: EmbeddedBlock) -> Bool {
@@ -18,7 +18,7 @@ enum EmbeddedBlock: Equatable {
             case (.code, .code), (.table, .table), (.rule, .rule): true
             default: false
             }
-        case (.userCode, .userCode): true
+        case (.bubbleCode, .bubbleCode): true
         default: false
         }
     }
@@ -457,9 +457,9 @@ struct EmbeddedBlockView: View {
         switch content {
         case .markdown(let block):
             MarkdownBlockView(block: block)
-        case .userCode(let text, let language):
+        case .bubbleCode(let text, let language, let user):
             // 整条消息统一折叠；代码不再单独截断，展开全文后一次看完。
-            CodeBlock(text: text, language: language, maxLines: nil, background: Theme.userCodeBackground,
+            CodeBlock(text: text, language: language, maxLines: nil, background: user ? Theme.userCodeBackground : Theme.codeBackground,
                       radius: Metrics.nestedRadius(inset: Metrics.bubblePadding.height))
                 .foregroundStyle(Color.primary)
         }

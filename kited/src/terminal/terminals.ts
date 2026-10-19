@@ -26,6 +26,7 @@ import { processGroupAlive, type BackgroundCommand } from '../execution/command.
 import { commandEnvironment } from '../execution/sandbox.ts';
 import { assembleContext, bindContext, sceneValues } from '../harness/context/assembler.ts';
 import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
+import type { InputNotice } from '../harness/types.ts';
 import type { PluginInstance } from '../model.ts';
 import type { Store } from '../store.ts';
 import { systemCommand } from '../system-command.ts';
@@ -79,7 +80,7 @@ export interface TerminalsHost {
   /** 回收实例：撤回指向它的授权、删掉实例和会话目录。调用时已在控制队列里，且确认没有窗口。 */
   collect(instance: PluginInstance): void;
   /** 投给代理的 Kite 来源输入；同一 ID 重复送达只去重。 */
-  deliver(threadId: string, text: string, inputId: string): Promise<unknown>;
+  deliver(threadId: string, text: string, inputId: string, notice: InputNotice): Promise<unknown>;
   template(): ContextDefinition;
   /** 代理线程的公共变量。 */
   variables(threadId: string): ContextValues;
@@ -389,7 +390,7 @@ export class Terminals {
     }) })).instructions;
     const send = async (attempt: number): Promise<void> => {
       if (this.closed || this.host.store.instance(target)?.status !== 'open') return;
-      try { await this.host.deliver(target, text, `terminal:${instance.id}:exit`); }
+      try { await this.host.deliver(target, text, `terminal:${instance.id}:exit`, { kind: 'terminal.exit', title: `${instance.title} 结束了：${result}` }); }
       catch (error) {
         console.error(`[终端] 通知 ${target} 失败：${(error as Error).message}`);
         if (attempt < 3) setTimeout(() => { void send(attempt + 1); }, NOTIFY_RETRY_MS).unref();

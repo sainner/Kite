@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import { assembleContext, bindContext, sceneValues } from './harness/context/assembler.ts';
 import type { ContextDefinition, ContextValues } from './harness/context/types.ts';
-import type { Input, Outcome, ThreadNotification } from './harness/types.ts';
+import type { Input, InputNotice, Outcome, ThreadNotification } from './harness/types.ts';
 import { MONITOR_DAILY_WAKES } from './monitor/monitors.ts';
 
 export const agentReportContextDefinition: ContextDefinition = {
@@ -34,7 +34,7 @@ export interface AgentReportHost {
   reply(threadId: string): Promise<string | undefined>;
   /** 线程还有没回应的提问或密钥请求。 */
   asking(threadId: string): boolean;
-  deliver(threadId: string, text: string, inputId: string): Promise<unknown>;
+  deliver(threadId: string, text: string, inputId: string, notice: InputNotice): Promise<unknown>;
   notify(threadId: string, notification: Omit<ThreadNotification, 'sequence'>): void;
 }
 
@@ -71,26 +71,29 @@ export class AgentReports {
     if (outcome.kind === 'interrupted' && !stopper) return;
     const result = outcome.kind === 'completed' ? '完成' : outcome.kind === 'failed' ? `失败：${outcome.message}`
       : stopper!.kind === 'agent' ? `被「${this.host.title(stopper!.instance)}」停下` : stopper!.kind === 'line' ? '被 Line 停下' : '被用户停下';
+    const title = this.host.title(threadId);
+    const notice: InputNotice = { kind: 'agent.report', instance: threadId,
+      title: `${title} ${outcome.kind === 'completed' ? '做完了' : outcome.kind === 'failed' ? '失败了' : '被停下了'}` };
     const reply = (await this.host.reply(threadId))?.trim();
     const values = sceneValues<'agent.report'>({
-      'report.title': this.host.title(threadId), 'report.id': threadId, 'report.result': result,
+      'report.title': title, 'report.id': threadId, 'report.result': result,
       'report.reply': !reply ? '（没有回复）' : reply.length > REPLY_LIMIT ? `…${reply.slice(-REPLY_LIMIT)}` : reply,
     });
     for (const target of delegators) {
       if (stopper?.kind === 'agent' && stopper.instance === target) continue;
       if (!this.host.open(target)) continue;
-      try { await this.report(target, threadId, values); }
+      try { await this.report(target, threadId, values, notice); }
       catch (error) { console.error(`[回报] ${threadId} 的结果没能交给 ${target}：${(error as Error).message}`); }
     }
   }
 
-  private async report(target: string, threadId: string, values: ContextValues): Promise<void> {
+  private async report(target: string, threadId: string, values: ContextValues, notice: InputNotice): Promise<void> {
     const assembled = assembleContext(bindContext(this.host.template(), { ...this.host.variables(target), ...values }));
     const notification = () => this.host.notify(target, {
       id: randomUUID(), kind: 'agent.report', source: `instance:${threadId}`, authority: 'observation', context: assembled.snapshot });
     if (!this.spendWake(target)) return notification();
     // 交代方正在停止、等确认恢复时收不下输入，改成通知，下一次自然请求时纳入。
-    try { await this.host.deliver(target, assembled.instructions, `report:${threadId}:${randomUUID()}`); }
+    try { await this.host.deliver(target, assembled.instructions, `report:${threadId}:${randomUUID()}`, notice); }
     catch { notification(); }
   }
 

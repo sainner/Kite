@@ -12,8 +12,8 @@ enum SelectableText {
     }
     #endif
 
-    /// 拼成气泡里的属性串，文字和代码块之间空 messageSegmentGap。两端的原生气泡（BubbleRowSlot、PhoneBubbleRowSlot）用。
-    static func content(_ message: Message, color: PlatformColor, body: PlatformFont, code: PlatformFont,
+    /// 拼成气泡里的属性串，文字和代码块之间空 messageSegmentGap。两端的原生气泡（BubbleRowSlot、PhoneBubbleRowSlot）用；user 为 false 是代理来信，代码块用平常的底。
+    static func content(_ message: Message, user: Bool = true, color: PlatformColor, body: PlatformFont, code: PlatformFont,
                         attachments: BlockAttachments) -> TextViewContent {
         let typed = message.typed as NSString
         // 正文在 typed 里从哪起：斜杠命令时前面是命令名和一个空格
@@ -48,7 +48,7 @@ enum SelectableText {
                                         pieces: [.init(display: display, source: lines, exact: exact)]))
                 separator = textAttributes
             case .code(let text, let language, let source):
-                separator = attachments.embed(.userCode(text, language: language), paragraph: gap, into: result, embedded: &embedded)
+                separator = attachments.embed(.bubbleCode(text, language: language, user: user), paragraph: gap, into: result, embedded: &embedded)
                 var lines = NSRange(source, in: message.text)
                 lines.location += offset
                 map.blocks.append(.init(display: NSRange(location: start, length: result.length - start), content: start, lines: lines))
