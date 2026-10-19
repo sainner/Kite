@@ -256,7 +256,10 @@ export class Kite {
       async () => (await this.credentials.git('github.com'))?.password);
     this.directory = new Directory({
       data: this.accountData, self: () => store.machine, build: () => this.updates.version.build, address: () => this.serving?.network?.status().address,
-      snapshot: () => ({ machine: store.machine, projects: store.projects(), checkouts: store.checkouts(), workspaces: store.workspaces() }),
+      snapshot: () => {
+        const line = this.lineInstance()?.workspaceId;
+        return { machine: store.machine, projects: store.projects(), checkouts: store.checkouts(), workspaces: store.workspaces(), ...(line ? { line } : {}) };
+      },
       candidates: () => options.directory?.candidates() ?? this.tailnetPeers(),
       fetch: (address, path, init) => this.peerFetch(address, path, init),
       changed: () => { this.replication.sync(); this.updates.evaluate(); },
@@ -268,7 +271,10 @@ export class Kite {
       changed: () => bus.emit({ type: 'update.changed' }) }, options.install);
     // 回合结束、终端退出、工作区准备好或流转完、项目操作结束都会经这几种事件：新版在等空闲时据此马上再看。
     bus.subscribe((event) => ['idle', 'workspace.changed', 'thread.changed', 'checkout.changed'].includes(event.type), () => this.updates.nudge());
-    bus.subscribe((event) => event.type === 'checkout.changed' || event.type === 'workspace.changed', () => this.directory.schedule());
+    // 摘要标着 Line 在哪个工作区，Line 的线程建好或归档时也要重写。
+    const lineThread = (id: string) => { const t = store.instance(id); return !!t && instanceRole(t)?.id === lineRoleId; };
+    bus.subscribe((event) => event.type === 'checkout.changed' || event.type === 'workspace.changed'
+      || event.type === 'thread.changed' && lineThread(event.threadId), () => this.directory.schedule());
     this.accountData.subscribe((changed) => {
       if (!changed.some((entry) => entry.kind === 'project')) return;
       this.registry.reconcile();
@@ -2052,6 +2058,9 @@ export class Kite {
     return this.enablingLine;
   }
   private async createLine(): Promise<WorkspaceModel> {
+    // 别的工作机已有 Line 就不再建第二个。摘要同步有延迟，几乎同时在两台启用仍可能各建一个，要等有见证方才能挡住。
+    const elsewhere = this.directory.entries().find((entry) => entry.id !== this.store.machine.id && entry.snapshot?.line);
+    if (elsewhere) throw new KiteError(`Line 已在工作机「${elsewhere.name}」上，账号下只有一个 Line；要换到这台，从 Line 的菜单把它流转过来`, 409);
     const role = { id: lineRoleId, revision: this.roles.get(lineRoleId).revision };
     // 先查环境再建项目，跑不了 Line 的工作机上不留下空的 Line 项目。
     this.assertCanRun(await readEnvironment(this.home, this.store.machine, undefined, [], () => this.credentials.apiKeys()), role);

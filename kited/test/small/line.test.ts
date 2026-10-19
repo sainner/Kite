@@ -1,17 +1,19 @@
 /**
  * Line（docs/Line与工作区流转.md「Line」）：两台本进程 kited，A 启用 Line，B 上有工作线程。
  * 跨机调用经 startKited 的 peers.directory 直达 B 的监听地址。Line 的项目是没有远程的项目，建在 A 的数据目录里，Line 在它的一个普通工作区里。
+ * 最后一个测试（账号下只有一个 Line）不走 peers.directory，用 harness 的 connect 让两台同步账号级数据，B 按同步来的目录摘要判断。
  */
 import { afterEach, expect, jest, spyOn, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AccountMachine } from '../../src/account-data/directory.ts';
+import type { AccountMachine, DirectoryEntry } from '../../src/account-data/directory.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { Input, Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
 import { type Delegation, type InboxItem, type InboxRecord, monitorState } from '../../src/line/monitor.ts';
 import type { WorkspaceModel } from '../../src/model.ts';
 import type { DisplayState } from '../../src/transcript/protocol.ts';
-import { after, chatgptLogin, folderWorkspace, type Kited, mark, startKited, waitIdle, workspaceOpened } from '../harness.ts';
+import { after, chatgptLogin, connect, folderWorkspace, type Kited, mark, startKited, synced, waitIdle, workspaceOpened } from '../harness.ts';
 import { deferred, diskRecords, item, ManualModel } from '../harness-loop.ts';
 import { connectSse } from '../sse.ts';
 import { newDir, until } from '../util.ts';
@@ -597,4 +599,50 @@ test('Line 用 line_control send 发起的工作在用户离开期间结束回�
   }
   const item = monitorState(s.a.daemon.kite.store.instance(inboxId)!).items[turn];
   expect([item?.delegated?.by, item?.notified]).toEqual(['user', undefined]);
+}, 1000);
+
+/*
+ * 几个部分的配合：A 启用 Line 时先建好工作区、之后才加 Line 线程，A 的目录摘要要在线程加上后重写才带上 line；摘要随账号级数据
+ * 同步到 B，B 的 Directory.entries() 逐字段重建摘要时要把 line 带出来，B 启用 Line 前才能据此拒绝，且不建 Line 项目。
+ * A 归档 Line 线程（thread.changed）后摘要重写、不再带 line。
+ * 真实 bug：启用 Line 只看本机有没有 Line，两台工作机各启用了一次（2026-10-19 Mac mini 17:11、WorkStation 17:13），账号下有了两个 Line。
+ * 这里两台 kited 用 harness 的 connect 互为组网对端同步账号级数据，目录摘要不合批（catalogDelayMs: 0）；两台都登录 ChatGPT，
+ * B 被拒只能是因为 A 已有 Line。同一进程里两台的机器名默认都是主机名，A 改个名才分得出拒绝消息里写的是哪台。
+ */
+test('A 启用 Line 后 B 读到的 A 的目录摘要带着 Line 工作区，B 再启用 Line 被拒（409，写明 Line 在 A 上）且不留下项目和工作区；A 归档 Line 线程后摘要不再带它', async () => {
+  // A 先起一次建好本机库，停下后改机器名，再在同一数据目录上起来。
+  const first = startKited();
+  kiteds.push(first);
+  await first.halt();
+  const db = new Database(join(first.home, 'kite.db'));
+  try { db.query('update machine set name = ?').run('工作机 A'); } finally { db.close(); }
+  const a = startKited(() => new ManualModel(), false, { root: first.root, catalogDelayMs: 0 });
+  kiteds.splice(kiteds.indexOf(first), 1, a);
+  const b = startKited(() => new ManualModel(), false, { catalogDelayMs: 0 });
+  kiteds.push(b);
+  await connect(a, b);
+  chatgptLogin(a.home);
+  chatgptLogin(b.home);
+  const machineA = a.daemon.kite.store.machine.id;
+  const snapshotOfA = () => b.daemon.kite.directory.entries().find((entry) => entry.id === machineA)?.snapshot;
+
+  const enabled = await a.call('POST', '/line');
+  expect(enabled.status).toBe(200);
+  const line = enabled.body as WorkspaceModel;
+  await synced(b, () => snapshotOfA()?.line === line.workspace.id, 'B 读到 A 的目录摘要带着 Line 工作区', 600);
+  const machines = (await b.call('GET', '/machines')).body as DirectoryEntry[];
+  expect(machines.find((entry) => entry.id === machineA)?.snapshot?.line).toBe(line.workspace.id);
+
+  const refused = await b.call('POST', '/line');
+  expect(refused.status).toBe(409);
+  expect(refused.body.error).toContain('工作机 A');
+  expect((await b.call('GET', '/workspaces')).body).toEqual([]);
+  expect(b.daemon.kite.store.projects()).toEqual([]);
+  // 账号级登记表里至多有同步来的 A 的 Line 项目，B 自己没登记项目。
+  expect(b.daemon.kite.registry.list().filter((project) => project.id !== line.project.id)).toEqual([]);
+
+  const archived = await a.call('POST', `/instances/${line.threads[0]!.instanceId}/archive`);
+  expect(archived.status).toBe(200);
+  await synced(b, () => { const snapshot = snapshotOfA(); return snapshot && snapshot.line === undefined; },
+    'A 归档 Line 线程后 B 读到的 A 的目录摘要不再带 Line 工作区', 600);
 }, 1000);

@@ -105,7 +105,8 @@ export class Directory {
     for (const [id, { catalog, at }] of this.catalogs) {
       byId.set(id, { id, name: catalog.machine.name, online: false, ...(catalog.address ? { address: catalog.address } : {}),
         ...(catalog.build ? { build: catalog.build } : {}),
-        updatedAt: at, snapshot: { machine: catalog.machine, projects: catalog.projects, checkouts: catalog.checkouts, workspaces: catalog.workspaces } });
+        updatedAt: at, snapshot: { machine: catalog.machine, projects: catalog.projects, checkouts: catalog.checkouts, workspaces: catalog.workspaces,
+          ...(catalog.line ? { line: catalog.line } : {}) } });
     }
     for (const [probed, { machine, at }] of this.probes) {
       if (!machine) continue;

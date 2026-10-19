@@ -15,8 +15,12 @@ extension AppModel {
         return found
     }
 
+    /// 连着的工作机看实例；只有目录摘要的（没连上、版本不符）看摘要里的标记，否则没连上的工作机上的 Line 认不出来，会再启用一个。
     private func hostsLine(_ area: WorkArea) -> Bool {
-        area.remote.workspace.status == .open && lineThread(in: area) != nil
+        guard area.remote.workspace.status == .open else { return false }
+        let machine = area.remote.machine.id
+        if connections[machine]?.hasLiveCatalog == true { return lineThread(in: area) != nil }
+        return account.catalogs.first { $0.machineId == machine }?.snapshot.line == area.id
     }
 
     /// Line 的线程（实例 ID）。

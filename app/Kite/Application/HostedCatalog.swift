@@ -5,6 +5,8 @@ struct CatalogSnapshot: Codable {
     let projects: [RemoteProject]
     let checkouts: [RemoteCheckout]
     let workspaces: [WorkspaceInfo]
+    /// 那台工作机上承载 Line 的工作区；离线目录看不到实例，靠它认出 Line。
+    let line: String?
 
     /// 离线目录没有窗口与会话内容；连接所属工作机后才装载这些内容。
     var summaries: [RemoteWorkspace] {

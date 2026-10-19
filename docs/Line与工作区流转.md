@@ -135,7 +135,7 @@ Line 不能处理它自己发起的请求（例如它要停止、流转别人的
 
 **常驻工作区。** 首次启用时在所选机器上建一个没有远程的项目和一个工作区来承载 Line：一个 Line 代理实例，加记忆、待办等持久插件实例。Line 的工作区是普通工作区，记忆等文件的改动随快照和工作区分支进入副本，换机器走通用流转，宿主不另外提交；工作机睡眠前总是换到别的在线工作机。Line 所在的工作区不能归档，项目不能删除。
 
-当前实现：在所选工作机上 `POST /line`，建一个没有远程的项目「Line」（检出的初始版本写入说明与空的记忆索引）和一个工作区，承载一个内置角色「Line」（`kite.line`）的代理实例与它的收件箱，代理带上账号范围的 `line` 授权；本机已有 Line 时返回它所在的工作区。待办插件实例尚未随启用创建。Line 由角色识别，不是新的对象类型。
+当前实现：在所选工作机上 `POST /line`，建一个没有远程的项目「Line」（检出的初始版本写入说明与空的记忆索引）和一个工作区，承载一个内置角色「Line」（`kite.line`）的代理实例与它的收件箱，代理带上账号范围的 `line` 授权；本机已有 Line 时返回它所在的工作区，其他工作机的目录摘要标着 Line 时拒绝，要换机器走流转。摘要同步有延迟，几乎同时在两台启用仍可能各建一个，要等有见证方才能挡住。待办插件实例尚未随启用创建。Line 由角色识别，不是新的对象类型。
 
 **记忆以用户为中心。** Line 的记忆是离用户最近的那份：用户的偏好、做决定的习惯、各项目的轻重缓急、以前怎么处理过类似的事项（例如「这类域名一般允许」）。各项目的专业经验留在项目自己的记忆里，Line 不收集。每次代处理的决定与理由也记下来，让 Line 越来越接近用户的判断。Line 角色的提示词与 Line 项目的说明按此修订。
 
@@ -201,9 +201,9 @@ Line 的 monitor 是 Line 工作区里由宿主建的那个 [monitor](Monitor.md
 | `POST /workspaces/restore` | `{project?, workspaceId, operationId, from?, force?, continue?}`（没给 `project` 时从本机副本里取）；把副本补到 `from` 的末尾，还原、setup、转移执行权，返回工作区聚合；`force` 用本机副本强制接管，`continue` 接着做睡眠前被打断的回合；失败清理本地；同一 `operationId` 重试返回原结果（已实现） |
 | 收件箱 | Line 的 monitor 实例上的操作，经 `POST /workspaces/:id/operations/:operation`：`monitor.read` 读 `{items, period, records, delegation}`，`monitor.delegate` 交给 Line 代处理，`monitor.dismiss` 移出回合结束，`monitor.hosting` 设置两种托管 `{until?, timeoutMinutes?}`；回应审批与提问时直接调原线程所在工作机的接口（已实现） |
 | 关注设备 | App 在焦点、前后台与连接变化时告诉 Line 所在的工作机：`PUT /attention {device, focused}`，同时连着带 `device` 的事件流才生效；事件流断开即视为移出。`GET /attention` 读当前的 `focusedDevices` 与离开时刻（kited 侧已实现） |
-| `POST /line` | 在这台工作机启用 Line，返回 Line 所在的工作区聚合（已实现） |
+| `POST /line` | 在这台工作机启用 Line，返回 Line 所在的工作区聚合；其他工作机已有 Line 时 409（已实现） |
 | `GET /summary` | 这台工作机的状态汇总：未归档工作区、线程执行状态、等你回应的对象、最近一次回合结束的时间与是否 Line 发起的工作；Line 与 monitor 读取（已实现） |
-| 目录摘要 | 工作区项增加 `epoch` 与 `transferred`（已实现） |
+| 目录摘要 | 工作区项增加 `epoch` 与 `transferred`；`line` 标出本机承载 Line 的工作区，App 据此认出没连上的工作机上的 Line（已实现） |
 
 ## 验收
 
