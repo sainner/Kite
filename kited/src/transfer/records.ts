@@ -17,6 +17,8 @@ export const manifestSchema = z.object({
   machine: z.string().min(1),
   projectId: z.string().min(1),
   name: z.string(),
+  /** 子工作区的父工作区，强制接管时据此整组接管。 */
+  parentId: z.string().nullable().optional(),
   branch: z.string().min(1),
   base: z.string().min(1),
   cwd: z.string().min(1),
@@ -33,9 +35,14 @@ const mapLines = (text: string, map: (entry: Record<string, unknown>) => unknown
   text.split('\n').filter(Boolean).map((line) => JSON.stringify(map(JSON.parse(line)))).join('\n') + (text.trim() ? '\n' : '');
 
 export function readRecords(dir: string): { manifest: RecordsManifest; rows: WorkspaceRows } {
+  return { manifest: readManifest(dir), rows: JSON.parse(readFileSync(join(dir, 'rows.json'), 'utf8')) };
+}
+
+/** 只读清单，不读数据库行。 */
+export function readManifest(dir: string): RecordsManifest {
   const parsed = manifestSchema.safeParse(JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')));
   if (!parsed.success) throw new Error('流转记录的清单无效，可能来自不同版本的 Kite');
-  return { manifest: parsed.data, rows: JSON.parse(readFileSync(join(dir, 'rows.json'), 'utf8')) };
+  return parsed.data;
 }
 
 /** installRecords 可能写到的本机路径：各线程的会话目录与 Claude 原生记录、工作区的历史差异。cwd 须已存在。 */

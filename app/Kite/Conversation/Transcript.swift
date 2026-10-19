@@ -65,7 +65,7 @@ struct Sender: Hashable {
 /// Kite 自动发给 agent 的一条（子代理回报、monitor 事件、合并冲突等）。正文是写给模型的，界面上显示 title 这一句，点开才看正文。
 struct Notice {
     enum Kind: String {
-        case report = "agent.report", monitor = "monitor.events", terminal = "terminal.exit", line = "line.monitor"
+        case report = "agent.report", workspace = "agent.workspace", monitor = "monitor.events", terminal = "terminal.exit", line = "line.monitor"
         case conflict, moved, resumed, question, secret
     }
 
@@ -73,7 +73,7 @@ struct Notice {
     /// 没有的（Claude 原生行、工作机没标的）按正文第一行显示。
     var kind: Kind?
     var title: String
-    /// 子代理回报的那个子代理，画它的头像。
+    /// 子代理回报的那个子代理，或子工作区的结果里开子工作区时建的那个代理，画它的头像。
     var instance: String?
     /// Kite 转交的用户回应（回答提问、密钥请求的结果）：是用户自己做的事，靠右。
     var response = false

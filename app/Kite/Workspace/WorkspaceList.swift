@@ -15,8 +15,12 @@ struct WorkspaceRow<Interaction: View>: View {
     @Environment(\.sidebarMetrics) private var metrics
     @Environment(\.toast) private var toast
     @State private var renaming = false
+    /// 标题实际的宽度，「+x」按它贴在标题右边。
+    @State private var titleWidth: CGFloat = 0
 
     var body: some View {
+        let indent = CGFloat(model.ancestors(of: workspace).count) * metrics.childIndent
+        let children = childrenToggle
         SidebarTreeRow(selected: current) {
             HStack(spacing: 0) {
                 HStack(spacing: 6) {
@@ -28,6 +32,9 @@ struct WorkspaceRow<Interaction: View>: View {
                     } else {
                         Text(workspace.title)
                             .lineLimit(1).truncationMode(.middle)
+                            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { titleWidth = $0 }
+                        // 给「+x」留出位置；按钮本身放在点击与拖动的交互层上面，见下方的 overlay
+                        if let children { Text(children.title).font(Theme.caption).hidden() }
                     }
                     let status = model.deviceStatus(model.connection(for: workspace))
                     if !status.ready {
@@ -38,9 +45,22 @@ struct WorkspaceRow<Interaction: View>: View {
                     Spacer(minLength: 0)
                     if detached { TablerIcon(.tablerAppWindow).font(Theme.caption) }
                 }
+                .padding(.leading, indent)
                 .frame(maxWidth: .infinity, minHeight: metrics.workspaceRowHeight)
                 .contentShape(Rectangle())
                 .overlay { if !renaming { interaction(beginRenaming) } }
+                .overlay(alignment: .leading) {
+                    if !renaming, let children {
+                        Button { model.toggleChildren(workspace) } label: {
+                            Text(children.title).font(Theme.caption)
+                        }
+                        .buttonStyle(.pointingPlain)
+                        .foregroundStyle(.secondary)
+                        .help(children.help)
+                        .accessibilityLabel(children.help)
+                        .offset(x: indent + titleWidth + 6)
+                    }
+                }
                 .contextMenu {
                     WorkspaceNameActions(workspace: workspace, rename: beginRenaming)
                     Divider()
@@ -75,12 +95,13 @@ struct WorkspaceRow<Interaction: View>: View {
                         .help("更多操作")
                         .accessibilityLabel("更多操作")
                     } else {
+                        let child = workspace.remote.workspace.parentId != nil
                         Button { model.archiveRequest = workspace } label: {
                             TablerIcon(.tablerArchive, size: 14)
                         }
                         .disabled(!model.isConnected(workspace) || model.lineArea?.id == workspace.id)
-                        .help("归档工作区")
-                        .accessibilityLabel("归档工作区")
+                        .help(child ? "放弃子工作区" : "归档工作区")
+                        .accessibilityLabel(child ? "放弃子工作区" : "归档工作区")
                         Menu {
                             WorkspaceNameActions(workspace: workspace, rename: beginRenaming)
                             Divider()
@@ -102,6 +123,14 @@ struct WorkspaceRow<Interaction: View>: View {
             }
         }
         .help("\(workspace.remote.machine.name) · \(workspace.remote.workspace.cwd)")
+    }
+
+    /// 标题右边的子工作区开关：收起时是「+x」，x 连同没展开的下层一起算；展开着时是「−」。
+    private var childrenToggle: (title: String, help: String)? {
+        let hidden = model.hiddenChildren(of: workspace)
+        if hidden > 0 { return ("+\(hidden)", "展开 \(hidden) 个子工作区") }
+        if model.expandedWorkspaces.contains(workspace.id), !model.children(of: workspace).isEmpty { return ("−", "收起子工作区") }
+        return nil
     }
 
     /// 工作机连着才进改名，免得改完才说连不上。
@@ -194,6 +223,11 @@ extension AppModel {
                 groups[group].checkouts.append(.init(id: remote.machine.id, workspaces: [area]))
             }
         }
+        for group in groups.indices {
+            for checkout in groups[group].checkouts.indices {
+                groups[group].checkouts[checkout].workspaces = visibleTree(groups[group].checkouts[checkout].workspaces)
+            }
+        }
         // 登记了还没有工作区的项目排在后面
         let lineProject = lineArea?.remote.project.id
         for project in account.registeredProjects where project.id != lineProject && !groups.contains(where: { $0.id == project.id }) {
@@ -202,6 +236,58 @@ extension AppModel {
         return groups
     }
 
+    /// 一台工作机上的工作区按父子排开：子工作区跟在父工作区后面，父工作区没展开时不列出。父工作区不在这台的当顶层。
+    private func visibleTree(_ areas: [WorkArea]) -> [WorkArea] {
+        let shown = ancestors(of: current).map(\.id)
+        let children = Dictionary(grouping: areas.filter { parent(of: $0) != nil }) { parent(of: $0)!.id }
+        var rows: [WorkArea] = []
+        func add(_ area: WorkArea) {
+            rows.append(area)
+            if expandedWorkspaces.contains(area.id) || shown.contains(area.id) { for child in children[area.id] ?? [] { add(child) } }
+        }
+        for area in areas where parent(of: area) == nil { add(area) }
+        return rows
+    }
+
+    /// 同一台工作机上、还没流转走的父工作区；子工作区随它流转。
+    func parent(of area: WorkArea) -> WorkArea? {
+        guard let id = area.remote.workspace.parentId else { return nil }
+        return workspaces.first { $0.id == id && $0.remote.machine.id == area.remote.machine.id && $0.remote.workspace.status != .transferred }
+    }
+
+    /// 同一台工作机上的各层父工作区，近的在前。
+    func ancestors(of area: WorkArea?) -> [WorkArea] {
+        var all: [WorkArea] = []
+        var next = area.flatMap(parent(of:))
+        while let found = next, !all.contains(where: { $0 === found }) {
+            all.append(found)
+            next = parent(of: found)
+        }
+        return all
+    }
+
+    /// 同一台工作机上直接挂在它下面的子工作区。
+    func children(of area: WorkArea) -> [WorkArea] {
+        workspaces.filter { $0.remote.workspace.parentId == area.id && $0.remote.machine.id == area.remote.machine.id }
+    }
+
+    /// 挂在它下面各层的子工作区。
+    func descendants(of area: WorkArea) -> [WorkArea] {
+        var all = children(of: area)
+        var index = 0
+        while index < all.count { all += children(of: all[index]); index += 1 }
+        return all
+    }
+
+    /// 收起时藏着的子工作区数，没展开的下层也算。展开着：用户点开过，或当前工作区在它下面（选中的总露出来）。
+    func hiddenChildren(of area: WorkArea) -> Int {
+        let expanded = expandedWorkspaces.contains(area.id) || ancestors(of: current).contains { $0 === area }
+        return expanded ? 0 : descendants(of: area).count
+    }
+
+    func toggleChildren(_ area: WorkArea) {
+        if expandedWorkspaces.contains(area.id) { expandedWorkspaces.remove(area.id) } else { expandedWorkspaces.insert(area.id) }
+    }
 }
 
 /// 项目、机器与工作区共享一根树干，文字起点保持一致。

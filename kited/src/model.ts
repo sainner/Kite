@@ -62,6 +62,8 @@ export interface Workspace {
   /** 主线比工作区分支多出的提交数，按最近一次拉取计算；还没算过时为 null。 */
   behind: number | null;
   pullRequest: PullRequest | null;
+  /** 子工作区挂在哪个工作区下，顶层工作区为 null；只能合回它或放弃，随它流转，见 docs/项目与远程仓库.md「子工作区」。 */
+  parentId: string | null;
 }
 
 /** agent 实例的专有记录。主键同时引用插件实例，不另造 agent / thread 身份。 */

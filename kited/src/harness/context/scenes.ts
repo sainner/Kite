@@ -175,6 +175,15 @@ export const contextScenes = {
       { name: 'report.reply', title: '最后回复的末尾', description: '这一回合最后回复的末尾约 3000 个字符；没有回复时写明。' },
     ],
   },
+  'agent.workspace': {
+    title: '子工作区的结果',
+    layers: allLayers,
+    variables: [
+      { name: 'child.workspace', title: '子工作区的名称', description: '用 isolation 开出的子工作区现在的名称。' },
+      { name: 'child.id', title: '子工作区里的代理', description: '开子工作区时建的那个代理的实例 ID，agent_merge 用它。' },
+      { name: 'child.result', title: '结果', description: '接在名称后面的一句话：合回并归档了、没有改动已归档、没能合回（带原因），或没有准备好（带原因）。' },
+    ],
+  },
   'thread.execution_permissions_changed': {
     title: '执行授权变更',
     layers: allLayers,

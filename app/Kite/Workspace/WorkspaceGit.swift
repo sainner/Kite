@@ -41,6 +41,20 @@ struct RemoteSyncResult: Decodable {
     }
 }
 
+/// 子工作区合回父工作区的结果：合进去或没有改动时子工作区已归档，冲突交给了子工作区里的 agent，处理完由工作机接着合。
+struct RemoteMergeResult: Decodable {
+    let status: String
+    let files: [String]?
+
+    var summary: String {
+        switch status {
+        case "conflict": conflictSummary(files)
+        case "unchanged": "子工作区没有改动，已归档"
+        default: "已合回父工作区并归档"
+        }
+    }
+}
+
 private struct ConfirmRecovery: Encodable { let confirmRecovery = true }
 
 extension AppModel {
@@ -61,7 +75,21 @@ extension AppModel {
 
     func syncMainline(_ area: WorkArea) async throws -> RemoteSyncResult { try await mergeMainline(area, "sync", via: activeClient(in: area)) }
 
-    /// 用户手动集成（adopt）、同步（sync）、流转，连带确认工作区里待恢复的线程，见 kited 的 confirmWorkspaceRecovery。
+    /// 子工作区合回父工作区，见 kited 的 /workspaces/:id/merge。
+    func merge(_ area: WorkArea) async throws -> RemoteMergeResult { try await mergeMainline(area, "merge", via: activeClient(in: area)) }
+
+    /// 按项目的集成方式集成；还有子工作区没合回或放弃时不报错，交给用户逐个处理（pendingChildren）。
+    func integrate(_ area: WorkArea, toast: ToastCenter?) {
+        perform(toast: toast) { [self] in
+            do { return try await adopt(area).summary }
+            catch let error as KitedError where !(error.children ?? []).isEmpty {
+                pendingChildren = PendingChildren(area: area, children: error.children ?? [])
+                return nil
+            }
+        }
+    }
+
+    /// 用户手动集成（adopt）、同步（sync）、合回（merge）、流转，连带确认工作区里待恢复的线程，见 kited 的 confirmWorkspaceRecovery。
     private func mergeMainline<Result: Decodable>(_ area: WorkArea, _ action: String, via client: KitedClient) async throws -> Result {
         let result = try await client.request("/workspaces/\(area.remote.workspace.id)/\(action)", method: "POST", body: ConfirmRecovery(),
                                               timeout: 600, as: Result.self)
@@ -87,7 +115,7 @@ extension AppModel {
         try? await refresh(client)
     }
 
-    /// 所在工作机已丢失：用 target 手上的副本强制接管，副本没跟上的部分会丢。
+    /// 所在工作机已丢失：用 target 手上的副本强制接管，副本没跟上的部分会丢。子工作区由 target 跟着一起接管。
     func takeOver(_ area: WorkArea, on target: WorkerConnection) async throws {
         guard target.connected else { throw KitedError(message: "\(target.machine.name) 未连接") }
         struct Restore: Encodable { let workspaceId: String; let operationId: String; let force: Bool }
@@ -98,7 +126,7 @@ extension AppModel {
     }
 }
 
-/// 侧栏工作区行的右键菜单：同步主线、按项目的集成方式集成、打开 PR、归档。
+/// 侧栏工作区行的右键菜单：同步主线、按项目的集成方式集成、打开 PR、归档；子工作区只有合回父工作区与放弃。
 struct WorkspaceGitActions: View {
     let workspace: WorkArea
     var showsWorkspaceMenu = false
@@ -107,7 +135,12 @@ struct WorkspaceGitActions: View {
     @Environment(\.openURL) private var openURL
 
     var body: some View {
-        if showsWorkspaceMenu {
+        if workspace.remote.workspace.parentId != nil {
+            Button("合回父工作区") { merge() }
+                .disabled(!model.isConnected(workspace) || workspace.remote.workspace.status != .open)
+            MenuButton("放弃子工作区…", role: .destructive) { model.archiveRequest = workspace }
+                .disabled(!model.isConnected(workspace))
+        } else if showsWorkspaceMenu {
             Button(integrateTitle) { integrate() }
                 .disabled(!model.isConnected(workspace))
             Button(syncTitle) { sync() }
@@ -145,7 +178,9 @@ struct WorkspaceGitActions: View {
         return "同步主线（落后 \(behind) 个提交）"
     }
 
-    private func integrate() { model.perform(toast: toast) { [model, workspace] in try await model.adopt(workspace).summary } }
+    private func integrate() { model.integrate(workspace, toast: toast) }
+
+    private func merge() { model.perform(toast: toast) { [model, workspace] in try await model.merge(workspace).summary } }
 
     private func sync() { model.perform(toast: toast) { [model, workspace] in try await model.syncMainline(workspace).summary } }
 }
@@ -168,20 +203,24 @@ struct WorkspaceTransferMenu: View {
         let remote = workspace.remote
         let targets = model.availableWorkers.filter { $0.machine.id != remote.machine.id }
         let status = model.deviceStatus(model.connection(for: workspace))
+        // 父工作区也在这台工作机上的子工作区随父工作区流转与接管
+        let follows = model.parent(of: workspace) != nil
         if status.ready || status.waiting {
             Menu("流转到") {
                 ForEach(targets) { target in
                     Button(target.machine.name) { transfer(to: target) }
                 }
             }
-            .disabled(!status.ready || targets.isEmpty || remote.workspace.status != .open)
+            .disabled(!status.ready || targets.isEmpty || remote.workspace.status != .open || follows)
+            .help(follows ? "子工作区随父工作区一起流转" : "")
         } else {
             Menu("强制接管到") {
                 ForEach(targets) { target in
                     Button(target.machine.name) { model.takeoverRequest = TakeoverRequest(area: workspace, target: target) }
                 }
             }
-            .disabled(targets.isEmpty)
+            .disabled(targets.isEmpty || follows)
+            .help(follows ? "子工作区随父工作区一起接管" : "")
         }
     }
 
@@ -206,16 +245,20 @@ struct WorkspaceGitPresentation: ViewModifier {
     func body(content: Content) -> some View {
         @Bindable var model = model
         content
-            .alert("归档工作区", isPresented: Binding { model.archiveRequest != nil } set: { if !$0 { model.archiveRequest = nil } },
+            .alert(model.archiveRequest?.remote.workspace.parentId == nil ? "归档工作区" : "放弃子工作区",
+                   isPresented: Binding { model.archiveRequest != nil } set: { if !$0 { model.archiveRequest = nil } },
                    presenting: model.archiveRequest) { area in
-                Button("归档", role: .destructive) { archive(area, force: false) }
-                Button("丢弃未集成的改动并归档", role: .destructive) { archive(area, force: true) }
+                if area.remote.workspace.parentId == nil {
+                    Button("归档", role: .destructive) { archive(area, force: false) }
+                    Button("丢弃未集成的改动并归档", role: .destructive) { archive(area, force: true) }
+                } else {
+                    Button("放弃", role: .destructive) { archive(area, force: true) }
+                }
                 Button("取消", role: .cancel) {}
             } message: { area in
-                Text(area.remote.workspace.pullRequest?.state == "merged"
-                     ? "「\(area.title)」的 PR 已经合并。归档会停止其中的线程并回收工作树。"
-                     : "归档「\(area.title)」会停止其中的线程并回收工作树。还没集成的改动只有选择丢弃时才会删除。")
+                Text(archiveMessage(area))
             }
+            .sheet(item: $model.pendingChildren) { PendingChildrenSheet(request: $0).environment(model).toastHost().appAppearance() }
             .alert("强制接管工作区", isPresented: Binding { model.takeoverRequest != nil } set: { if !$0 { model.takeoverRequest = nil } },
                    presenting: model.takeoverRequest) { request in
                 Button("强制接管", role: .destructive) { takeOver(request) }
@@ -240,11 +283,118 @@ struct WorkspaceGitPresentation: ViewModifier {
         }
     }
 
+    /// 归档或放弃会停下什么、丢掉什么；下面还挂着子工作区时说明它们一并归档。
+    private func archiveMessage(_ area: WorkArea) -> String {
+        let count = model.descendants(of: area).count
+        let children = count == 0 ? "" : "它下面的 \(count) 个子工作区一并归档。"
+        if area.remote.workspace.parentId != nil { return discardChildMessage(area.title) + children }
+        return (area.remote.workspace.pullRequest?.state == "merged"
+                ? "「\(area.title)」的 PR 已经合并。归档会停止其中的线程并回收工作树。"
+                : "归档「\(area.title)」会停止其中的线程并回收工作树。还没集成的改动只有选择丢弃时才会删除。") + children
+    }
+
     private func archive(_ area: WorkArea, force: Bool) {
         let toast = toast
         Task {
             do { try await model.archive(area, force: force); toast?.show("已归档") }
             catch { toast?.show(error.localizedDescription, systemImage: "exclamationmark.triangle") }
         }
+    }
+}
+
+/// 放弃子工作区的说明，侧栏菜单与集成前的处理表共用。
+private func discardChildMessage(_ title: String) -> String {
+    "放弃「\(title)」会停止其中的线程、回收工作树，改动不合回父工作区；快照留着。"
+}
+
+/// 集成被还没合回的子工作区挡住：用户逐个合回或放弃，处理完再接着集成，或暂不集成，见 docs/项目与远程仓库.md「子工作区」。
+struct PendingChildren: Identifiable {
+    let area: WorkArea
+    let children: [KitedError.Child]
+    var id: String { area.id }
+}
+
+struct PendingChildrenSheet: View {
+    let request: PendingChildren
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.toast) private var toast
+    /// 处理过的子工作区与结果的说明。
+    @State private var handled: [String: String] = [:]
+    @State private var working: String?
+    @State private var discarding: KitedError.Child?
+    @State private var error: String?
+
+    var body: some View {
+        CardSheet(title: "还有子工作区没合回", subtitle: "逐个合回或放弃，处理完再集成", error: error, close: { dismiss() }) {
+            CardSection(note: "「\(request.area.title)」下面这些子工作区的改动还没合回，下层的排在前面，先合回它们。") {
+                ForEach(request.children) { child in
+                    LabeledContent {
+                        if let note = handled[child.id] {
+                            Text(note).foregroundStyle(.secondary)
+                        } else if working == child.id {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            HStack(spacing: 16) {
+                                Button("合回") { merge(child) }
+                                    .foregroundStyle(Color.accentColor)
+                                Button("放弃") { discarding = child }
+                                    .foregroundStyle(Theme.danger)
+                            }
+                            .buttonStyle(.pointingPlain)
+                            .disabled(working != nil || model.workspace(child.id) == nil)
+                        }
+                    } label: {
+                        Text(child.name).lineLimit(1).truncationMode(.middle)
+                    }
+                }
+            }
+        } actions: {
+            CardSheetAction(title: "集成", action: integrate)
+                .disabled(working != nil || handled.count < request.children.count)
+        }
+        .alert("放弃子工作区", isPresented: Binding { discarding != nil } set: { if !$0 { discarding = nil } }, presenting: discarding) { child in
+            Button("放弃", role: .destructive) { discard(child) }
+            Button("取消", role: .cancel) {}
+        } message: { child in
+            Text(discardChildMessage(child.name))
+        }
+    }
+
+    private func merge(_ child: KitedError.Child) {
+        guard let area = model.workspace(child.id) else { return }
+        run(child) {
+            let result = try await model.merge(area)
+            // 有冲突时这一项留着，等子工作区里的 agent 处理完由工作机接着合回
+            if result.status == "conflict" { toast?.show(result.summary); return nil }
+            return result.summary
+        }
+    }
+
+    private func discard(_ child: KitedError.Child) {
+        guard let area = model.workspace(child.id) else { return }
+        run(child) {
+            try await model.archive(area, force: true)
+            return "已放弃"
+        }
+    }
+
+    /// action 返回这一项处理后的说明；返回 nil 时没处理完（合回有冲突），这一项留着。
+    private func run(_ child: KitedError.Child, _ action: @escaping @MainActor () async throws -> String?) {
+        working = child.id
+        error = nil
+        Task {
+            do { if let note = try await action() { handled[child.id] = note } }
+            catch { self.error = error.localizedDescription }
+            // 上层合回或放弃后，它下面的随之归档
+            for other in request.children where handled[other.id] == nil && model.workspace(other.id) == nil { handled[other.id] = "已随上层归档" }
+            working = nil
+        }
+    }
+
+    /// 关掉这一页再集成：集成仍被挡住时会重新列出剩下的。
+    private func integrate() {
+        dismiss()
+        model.integrate(request.area, toast: toast)
     }
 }

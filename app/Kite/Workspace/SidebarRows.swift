@@ -17,6 +17,8 @@ struct SidebarMetrics {
     var textInset: CGFloat { itemInset + 8 + labelExtent }
     /// 树干位置，与一级行的图标列中线对齐。
     var treeInset: CGFloat { itemInset + labelExtent / 2 }
+    /// 子工作区比父工作区多缩进的一层。
+    var childIndent: CGFloat { labelExtent / 2 + 4 }
     /// 小标题连同上方留白的高度。
     var subheaderHeight: CGFloat { 8 + workspaceRowHeight }
     /// 行尾的小按钮（添加、刷新），触屏保留触控尺寸。

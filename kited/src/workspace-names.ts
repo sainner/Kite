@@ -1,5 +1,5 @@
 /**
- * 工作区的名字跟着顶级代理（用户开的代理，不含别的代理起的子代理）的标题走：只有一个时就用它的标题；
+ * 工作区的名字跟着顶级代理（用户开的代理与开子工作区时建的代理，不含工作区里别的代理起的子代理）的标题走：只有一个时就用它的标题；
  * 有几个时，其中一个的标题由模型生成或用户改过之后，请辅助模型按各代理的标题重起，见 docs/kited.md「轻任务与会话标题」。
  * 用户手动起名后不再跟，切回自动时当场重起。
  */
@@ -8,6 +8,7 @@ import { workspaceVariables } from './context-variables.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
 import type { ContextTemplates } from './context-templates.ts';
 import type { LightTasks } from './light-tasks.ts';
+import type { AgentInstance } from './model.ts';
 import type { Store } from './store.ts';
 
 export const workspaceNameTemplate: ContextDefinition = {
@@ -28,9 +29,11 @@ export const workspaceNameTemplate: ContextDefinition = {
   ],
 };
 
-/** 用户开的、没归档的代理，按创建先后。 */
+/** 不是这个工作区里的代理起的：用户开的，或开子工作区时建的那个。 */
+const leads = (store: Store, thread: AgentInstance) => !thread.origin || store.childLead(thread.workspaceId) === thread.id;
+/** 顶级代理，没归档的，按创建先后。 */
 const topLevel = (store: Store, workspaceId: string) =>
-  store.threads(workspaceId).filter((thread) => thread.status === 'open' && !thread.origin);
+  store.threads(workspaceId).filter((thread) => thread.status === 'open' && leads(store, thread));
 
 export class WorkspaceNames {
   private pending = new Map<string, { again: boolean; promise: Promise<void> }>();
@@ -48,7 +51,7 @@ export class WorkspaceNames {
    */
   follow(id: string, initial = false): void {
     const thread = this.store.thread(id);
-    if (!thread || thread.status !== 'open' || thread.origin) return;
+    if (!thread || thread.status !== 'open' || !leads(this.store, thread)) return;
     const workspace = this.store.workspace(thread.workspaceId);
     if (workspace?.status !== 'open' || workspace.nameMode !== 'auto') return;
     if (topLevel(this.store, workspace.id).length === 1) this.rename(workspace.id, workspace.name, thread.title);

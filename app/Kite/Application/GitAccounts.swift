@@ -164,10 +164,11 @@ extension AppModel {
         return true
     }
 
-    /// 菜单发起、用提示报结果的操作：成功时显示 action 给的结果说明，远程要求登录时请用户就地登录、绑好令牌后再跑一次，其他错误显示成提示。
-    func perform(toast: ToastCenter?, _ action: @escaping @MainActor () async throws -> String) {
+    /// 菜单发起、用提示报结果的操作：成功时显示 action 给的结果说明（nil 时不提示），远程要求登录时请用户就地登录、绑好令牌后再跑一次，
+    /// 其他错误显示成提示。
+    func perform(toast: ToastCenter?, _ action: @escaping @MainActor () async throws -> String?) {
         Task {
-            do { toast?.show(try await action()) }
+            do { if let result = try await action() { toast?.show(result) } }
             catch {
                 if !offerGitLogin(error, retry: { self.perform(toast: toast, action) }) {
                     toast?.show(error.localizedDescription, systemImage: "exclamationmark.triangle")

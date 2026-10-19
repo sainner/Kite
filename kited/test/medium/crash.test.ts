@@ -25,7 +25,7 @@ afterEach(async () => {
 });
 const temp = useTemp();
 const expectedTools = ['read', 'patch', 'shell', 'credentials', 'question', 'agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop',
-  'monitor_start', 'monitor_list', 'monitor_stop', 'terminal_list', 'terminal_read', 'terminal_stop'].sort();
+  'agent_merge', 'monitor_start', 'monitor_list', 'monitor_stop', 'terminal_list', 'terminal_read', 'terminal_stop'].sort();
 
 /** pid 的直接子进程。 */
 function children(pid: number): number[] {

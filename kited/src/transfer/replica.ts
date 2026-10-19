@@ -149,7 +149,7 @@ export function replicaManifest(options: { home: string; machine: string; projec
   const { home, workspace } = options;
   return {
     version: 1, workspaceId: workspace.id, epoch: workspace.epoch, machine: options.machine, projectId: options.projectId,
-    name: workspace.name, branch: workspace.branch, base: workspace.base,
+    name: workspace.name, parentId: workspace.parentId, branch: workspace.branch, base: workspace.base,
     // Claude 原生记录里的 cwd 是进程的真实路径。
     cwd: existsSync(workspace.cwd) ? realpathSync(workspace.cwd) : workspace.cwd,
     threads: options.threads.map((thread) => {

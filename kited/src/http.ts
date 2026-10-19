@@ -622,6 +622,7 @@ export function serve(kite: Kite, listen: Listen) {
       },
       '/workspaces/:id/adopt': { POST: recoverable('集成请求无效', (id) => kite.adopt(id)) },
       '/workspaces/:id/sync': { POST: recoverable('同步请求无效', (id) => kite.syncWorkspace(id)) },
+      '/workspaces/:id/merge': { POST: recoverable('合回请求无效', (id) => kite.mergeWorkspace(id)) },
       '/instances/:id/archive': { POST: bound((req) => kite.archiveInstance(req.params.id)) },
       '/workspaces/:id/name': { PUT: bound(async (req) => {
         const parsed = z.discriminatedUnion('mode', [

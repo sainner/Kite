@@ -21,12 +21,23 @@ export const agentReportContextDefinition: ContextDefinition = {
   ],
 };
 
+/** 子工作区的结果：合回完成或失败、没准备好，交给开出它的代理，见 docs/实例操作.md「子工作区」。 */
+export const agentWorkspaceContextDefinition: ContextDefinition = {
+  version: 2, id: 'kite.agent-workspace', title: '子工作区的结果', scene: 'agent.workspace',
+  blocks: [
+    { type: 'paragraph', id: 'result', title: '结果', parts: [
+      { type: 'text', text: '你用 isolation 开出的子工作区「' }, { type: 'variable', name: 'child.workspace' },
+      { type: 'text', text: '」（代理 ' }, { type: 'variable', name: 'child.id' }, { type: 'text', text: '）' }, { type: 'variable', name: 'child.result' },
+    ] },
+  ],
+};
+
 /** 每个代理每天被回报唤醒的次数上限，与 monitor 的唤醒预算相同；超了改成不唤醒的通知。 */
 const DAILY_WAKES = MONITOR_DAILY_WAKES;
 const REPLY_LIMIT = 3000;
 
 export interface AgentReportHost {
-  template(): ContextDefinition;
+  template(scene: 'agent.report' | 'agent.workspace'): ContextDefinition;
   variables(threadId: string): ContextValues;
   /** 实例还开着（没归档）。 */
   open(instanceId: string): boolean;
@@ -82,18 +93,29 @@ export class AgentReports {
     for (const target of delegators) {
       if (stopper?.kind === 'agent' && stopper.instance === target) continue;
       if (!this.host.open(target)) continue;
-      try { await this.report(target, threadId, values, notice); }
+      try { await this.report(target, 'agent.report', `instance:${threadId}`, values, notice); }
       catch (error) { console.error(`[回报] ${threadId} 的结果没能交给 ${target}：${(error as Error).message}`); }
     }
   }
 
-  private async report(target: string, threadId: string, values: ContextValues, notice: InputNotice): Promise<void> {
-    const assembled = assembleContext(bindContext(this.host.template(), { ...this.host.variables(target), ...values }));
+  /**
+   * 子工作区的结果交给开出它的代理；它已归档就不交。title 是给人看的那一句里接在名称后面的话，result 是交给模型的、接在名称后面的一句话。
+   */
+  async workspace(target: string, child: { name: string; agent: string }, title: string, result: string): Promise<void> {
+    if (!this.host.open(target)) return;
+    await this.report(target, 'agent.workspace', `instance:${child.agent}`, sceneValues<'agent.workspace'>({
+      'child.workspace': child.name, 'child.id': child.agent, 'child.result': result,
+    }), { kind: 'agent.workspace', instance: child.agent, title: `子工作区「${child.name}」${title}` });
+  }
+
+  /** kind 是场景，也是通知的种类与输入 ID 的开头。 */
+  private async report(target: string, kind: 'agent.report' | 'agent.workspace', source: string, values: ContextValues, notice: InputNotice): Promise<void> {
+    const assembled = assembleContext(bindContext(this.host.template(kind), { ...this.host.variables(target), ...values }));
     const notification = () => this.host.notify(target, {
-      id: randomUUID(), kind: 'agent.report', source: `instance:${threadId}`, authority: 'observation', context: assembled.snapshot });
+      id: randomUUID(), kind, source, authority: 'observation', context: assembled.snapshot });
     if (!this.spendWake(target)) return notification();
     // 交代方正在停止、等确认恢复时收不下输入，改成通知，下一次自然请求时纳入。
-    try { await this.host.deliver(target, assembled.instructions, `report:${threadId}:${randomUUID()}`, notice); }
+    try { await this.host.deliver(target, assembled.instructions, `${kind}:${source}:${randomUUID()}`, notice); }
     catch { notification(); }
   }
 

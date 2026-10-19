@@ -1,11 +1,11 @@
 /** 工作区负责文件、快照和采纳；线程负责模型执行及独立的对话记录。 */
 import type { CompactionRequest, Input, InputNotice, InputOrigin, InputVia, StopRequest } from './harness/types.ts';
-import { AgentReports, agentReportContextDefinition } from './agent-reports.ts';
+import { AgentReports, agentReportContextDefinition, agentWorkspaceContextDefinition } from './agent-reports.ts';
 import { randomUUID } from 'node:crypto';
 import { existsSync, rmSync } from 'node:fs';
 import { FileDiffStore } from './workspace/file-diffs.ts';
 import { join, relative } from 'node:path';
-import { GitLoginRequired, KiteError } from './errors.ts';
+import { ChildrenPending, GitLoginRequired, KiteError } from './errors.ts';
 import { type AdoptResult, Bus, type PushOutcome, type SyncResult } from './events.ts';
 import { advanceMainline, behindCount, fetchMainline, hasUnmerged, mainline, mainRefs, mergeMainline, type Mainline } from './workspace/mainline.ts';
 import { CheckoutManagement, type EnvFile, type ProjectSource } from './workspace/checkout-management.ts';
@@ -26,6 +26,7 @@ import { gitTry, isDirty, revParse } from './workspace/git.ts';
 import { fetchBranch, lsRemote, pushBranch, tracking } from './workspace/remote.ts';
 import { openRuntime, type Runtime, type RuntimeOptions } from './runtime.ts';
 import { capture, changesBetween, findSnapshot, list, restore, snapshotRef, type Snapshot } from './workspace/snapshots.ts';
+import { childChanged, commitParent, mergeChild, mergeParent } from './workspace/children.ts';
 import { compactTemplate } from './harness/compaction.ts';
 import type { Store } from './store.ts';
 import { holds, type AgentInstance, type Checkout, type Machine, type OpenWindowRequest, type PluginInstance, type Project, type ThreadContext, type Workspace, type WorkspaceModel, type WorkspaceStatus, type WorkspaceWindow } from './model.ts';
@@ -82,6 +83,7 @@ import { type ApprovalRequest, type Ask, Asks, questionResponseOf, questionResul
 import { hasEnvKey, secretLabel, setEnvLine, type SecretRequest } from './secrets.ts';
 import type { Integration } from './account-data/registry.ts';
 import { WorkspaceTransfers } from './transfer/transfers.ts';
+import { readManifest } from './transfer/records.ts';
 import { diskEnough, modelLogin, readEnvironment, type Environment, type HandoverNeed } from './environment.ts';
 
 export interface ThreadView extends ThreadContext { runner: Runtime['state']; busy: boolean }
@@ -116,17 +118,27 @@ const PUSH_ATTEMPTS = 3;
 /** 有预告的离开时被打断、换到另一台工作机后补的说明。 */
 const CONTINUE_AFTER_MOVE = '原来那台工作机将要睡眠或关机，这个工作区换到了这里，刚才的回合被打断了。接着刚才的工作继续。';
 
-/** 冲突交给线程处理的那次工作区操作：集成或同步，回合正常结束后宿主接着做。 */
-type Merging = 'adopt' | 'sync';
+/** 冲突交给线程处理的那次工作区操作：集成、同步或子工作区合回，回合正常结束后宿主接着做。 */
+type Merging = 'adopt' | 'sync' | 'merge';
+/** 子工作区合回的结果：merged 合进了父工作区，unchanged 没有改动，两种都已归档；conflict 冲突交给了子工作区里的线程。 */
+export type MergeResult = { status: 'merged' | 'unchanged' } | { status: 'conflict'; files: string[] };
+/** 合回第二步因父工作区又改了同一处而撤回后，从第一步重来的次数上限。 */
+const MERGE_ATTEMPTS = 3;
+/** initiator 是发起合回的代理；threadId 与 afterResolution 是处理冲突的回合正常结束后宿主接着合；check 是操作层的授权复核。 */
+type MergeOptions = { initiator?: string; threadId?: string; afterResolution?: boolean; check?: () => void };
+/** continue 见 Kite.restoreWorkspace。 */
+type TransferOptions = { operationId?: string; timeoutMs?: number; continue?: Array<{ threadId: string; inputs: Input[] }> };
 /** 提交 PR 时已推上去的分支（分支与提交记在工作区的 pullRequest 上）：base 是 PR 的目标分支，target 是合进来的远程主线引用。 */
 type Proposal = { status: 'pushed'; base: string; target: string };
 
+const mergingTitle: Record<Merging, string> = { adopt: '集成', sync: '同步', merge: '合回' };
+
 function conflictPrompt(action: Merging, branch: string, files: string[]): string {
-  const doing = action === 'adopt' ? '把工作区的改动集成进主线' : '把主线的新改动同步进工作区';
-  return [`Kite 正在${doing}。把主线（本机或远程）合进 ${branch} 时这些文件冲突了：`,
-    ...files.map((f) => `- ${f}`), '',
+  const head = action === 'merge' ? `Kite 正在把这个子工作区合回父工作区。把父工作区的最新状态合进 ${branch} 时这些文件冲突了：`
+    : `Kite 正在${action === 'adopt' ? '把工作区的改动集成进主线' : '把主线的新改动同步进工作区'}。把主线（本机或远程）合进 ${branch} 时这些文件冲突了：`;
+  return [head, ...files.map((f) => `- ${f}`), '',
     '请直接编辑这些文件解决冲突，保留双方意图，并删除全部冲突标记；需要删除的文件直接删除。',
-    `Git 元数据由 Kite 管理，不要运行 git add 或 git commit。本回合正常结束后，Kite 会提交合并并继续${action === 'adopt' ? '集成' : '同步'}。`].join('\n');
+    `Git 元数据由 Kite 管理，不要运行 git add 或 git commit。本回合正常结束后，Kite 会提交合并并继续${mergingTitle[action]}。`].join('\n');
 }
 
 /** 提交 PR 时的远程分支名：按工作区名称取英文字母与数字，取不出来时用工作区 ID 的前 8 位。 */
@@ -212,9 +224,9 @@ export class Kite {
   private turnLabels = new Map<string, string>();
   /**
    * 采纳冲突转交的线程，按工作区。处理回合期间工作区停在合并中途，同一工作区的其他线程不能开始工作；
-   * 回合正常结束后宿主接着采纳，见 docs/工作区并行.md。
+   * 回合正常结束后宿主接着采纳，见 docs/工作区并行.md。initiator 是发起子工作区合回的代理，接着合完把结果交给它。
    */
-  private resolving = new Map<string, { threadId: string; action: Merging }>();
+  private resolving = new Map<string, { threadId: string; action: Merging; initiator?: string }>();
   /** 设了路径的项目密钥（凭据 ID → 项目与路径）：哪些文件要写进哪个项目的工作区，变化时据此删掉旧路径上的文件。 */
   private secretPaths = new Map<string, { projectId: string; path: string }>();
   /** 攒着还没处理的凭据变化，见 secretsChanged。 */
@@ -285,7 +297,7 @@ export class Kite {
       titleTemplate, workspaceNameTemplate, compactTemplate, emblemTemplate, pullRequestTemplate,
       agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
       pluginToolsContextDefinition, voiceTemplate, lineMonitorContextDefinition, monitorEventsContextDefinition, terminalExitContextDefinition,
-      agentReportContextDefinition,
+      agentReportContextDefinition, agentWorkspaceContextDefinition,
     ]);
     this.library = new LibrarySync({ data: this.accountData, registry: this.registry, store, roles: this.roles, templates: this.contextTemplates,
       catalog: this.catalog, changed: (changes) => this.libraryChanged(changes) });
@@ -298,7 +310,8 @@ export class Kite {
       machines: options.peers?.directory ?? (async () => this.directory.list()),
       fetch: (address, path, init) => this.peerFetch(address, path, init) });
     this.reports = new AgentReports({
-      template: () => this.contextTemplates.get(agentReportContextDefinition.id, 'agent.report').definition,
+      template: (scene) => this.contextTemplates.get({ 'agent.report': agentReportContextDefinition, 'agent.workspace': agentWorkspaceContextDefinition }[scene].id,
+        scene).definition,
       variables: (threadId) => storedThreadVariables(store, threadId),
       open: (instanceId) => store.instance(instanceId)?.status === 'open',
       title: (instanceId) => store.instance(instanceId)?.title ?? instanceId,
@@ -593,7 +606,25 @@ export class Kite {
     if (!project) throw new KiteError('这台工作机上没有这个工作区的副本，要写 project', 404);
     const model = await this.transfers.restore(project, workspaceId, options);
     for (const item of options.continue ?? []) await this.continueThread(item);
+    // 强制接管整组接管：本机手上有副本的子工作区跟着接管（正常流转由源机逐个交）。没接成的报给父工作区，不算这次失败。
+    if (options.force) {
+      for (const child of this.replicaChildren(workspaceId)) {
+        await this.restoreWorkspace(project, child.id, { force: true }).catch((error: Error) => this.bus.emit({ type: 'workspace.error', workspaceId,
+          message: `子工作区「${child.name}」没接管过来：${error.message}` }));
+      }
+    }
     return model;
+  }
+  /** 本机手上完整的副本里，挂在这个工作区下面的子工作区。 */
+  private replicaChildren(id: string): Array<{ id: string; name: string }> {
+    const store = this.replicas.store;
+    return store.ids().flatMap((other) => {
+      if (!store.state(other)?.complete) return [];
+      try {
+        const manifest = readManifest(store.dir(other));
+        return manifest.parentId === id ? [{ id: other, name: manifest.name }] : [];
+      } catch { return []; }
+    });
   }
   private async continueThread({ threadId, inputs }: { threadId: string; inputs: Input[] }): Promise<void> {
     try {
@@ -606,25 +637,61 @@ export class Kite {
   /**
    * 把本机持有的工作区流转到 target（App 与 Line 的手动流转、有预告的离开都走这里）：进入可交接状态，目标补齐副本、装好后接过执行权，
    * 本机随即核对、冻结。没成就撤回交接，留在本机；目标其实已接管时撤回会冻结本地记录，照成功算。continue 见 restoreWorkspace。
+   * 子工作区随父工作区整组流转，先交出整组，再从父工作区起逐个交给目标；见 docs/Line与工作区流转.md「工作区流转」。
+   * 父工作区已不在本机的子工作区（整组流转中途没交出去的）可以单独再流转。
    */
-  async transferWorkspace(id: string, target: string, options: { operationId?: string; timeoutMs?: number;
-    continue?: Array<{ threadId: string; inputs: Input[] }> } = {}): Promise<{ workspaceId: string; machine: string; epoch: number }> {
+  async transferWorkspace(id: string, target: string, options: TransferOptions = {}): Promise<{ workspaceId: string; machine: string; epoch: number }> {
     if (target === this.store.machine.id) throw new KiteError('工作区已经在这台工作机上', 409);
-    const { project } = this.workspace(id);
-    const { epoch } = await this.transfers.handover(id);
+    const { workspace: root } = this.workspace(id);
+    if (this.heldParent(root)) throw new KiteError('子工作区随父工作区一起流转，不能单独流转', 409);
+    const group = [root, ...this.store.descendantWorkspaces(id)];
+    let epoch = root.epoch;
+    const handed: Workspace[] = [];
+    for (const member of group) {
+      try {
+        const r = await this.transfers.handover(member.id);
+        if (member === root) epoch = r.epoch;
+        handed.push(member);
+      } catch (error) {
+        for (const done of handed) await this.transfers.cancel(done.id).catch(() => {});
+        throw member === root ? error : new KiteError(`子工作区「${member.name}」：${(error as Error).message}`, 409);
+      }
+    }
+    // 整组共用一个时限，后面的成员只用剩下的时间（有预告的离开要在睡眠或关机前交完）。
+    const until = Date.now() + (options.timeoutMs ?? 30 * 60_000);
+    for (const [index, member] of group.entries()) {
+      try {
+        await this.handTo(member, target, { ...options, timeoutMs: Math.max(1_000, until - Date.now()), operationId: index ? randomUUID() : options.operationId });
+      }
+      catch (error) {
+        for (const rest of group.slice(index + 1)) await this.transfers.cancel(rest.id).catch(() => {});
+        if (!index) throw error;
+        throw new KiteError(`「${root.name}」已经流转，子工作区「${member.name}」没交出去，和后面的一起留在本机：${(error as Error).message}；可以再单独流转它们`, 409);
+      }
+    }
+    return { workspaceId: id, machine: target, epoch: epoch + 1 };
+  }
+  /** 把已交出的一个工作区交给目标；没成就撤回，目标其实已接管时照成功算。 */
+  private async handTo(w: Workspace, target: string, options: TransferOptions): Promise<void> {
+    const { project } = this.workspace(w.id);
+    const resumes = options.continue?.filter((item) => this.store.instance(item.threadId)?.workspaceId === w.id) ?? [];
     try {
       await this.peers.call(target, 'POST', '/workspaces/restore', {
-        body: { project: project.id, workspaceId: id, operationId: options.operationId ?? randomUUID(), from: this.store.machine.id,
-          ...(options.continue?.length ? { continue: options.continue } : {}) },
+        body: { project: project.id, workspaceId: w.id, operationId: options.operationId ?? randomUUID(), from: this.store.machine.id,
+          ...(resumes.length ? { continue: resumes } : {}) },
         timeoutMs: options.timeoutMs ?? 30 * 60_000 });
     } catch (error) {
-      try { if (this.store.workspace(id)?.status === 'handing_off') await this.transfers.cancel(id); }
+      try { if (this.store.workspace(w.id)?.status === 'handing_off') await this.transfers.cancel(w.id); }
       catch { /* 撤回不了的留在可交接状态，可以重试或再撤回。 */ }
-      if (this.store.workspace(id)?.status !== 'transferred') throw error;
+      if (this.store.workspace(w.id)?.status !== 'transferred') throw error;
     }
     // 有远程的项目目标在 lease 上接管，本机下次核对才冻结；这里立即核对，失败不影响已完成的流转。
-    await this.transfers.check(id).catch(() => {});
-    return { workspaceId: id, machine: target, epoch: epoch + 1 };
+    await this.transfers.check(w.id).catch(() => {});
+  }
+  /** 父工作区也在本机（没流转走、没归档）的子工作区，随父工作区流转。 */
+  private heldParent(w: Workspace): boolean {
+    const parent = w.parentId ? this.store.workspace(w.parentId) : null;
+    return !!parent && holds(parent);
   }
 
   /**
@@ -633,12 +700,12 @@ export class Kite {
    * 见 docs/分布式架构.md「执行权」。
    */
   async leaving(deadline: number): Promise<void> {
-    // 先按 Line 与项目设置挑，再看线程；没起过运行器的线程不可能正在工作，不为判断它去载入历史。
-    const plans = this.store.workspaces().filter((w) => w.status === 'open').flatMap((w) => {
+    // 先按 Line 与项目设置挑，再看线程；没起过运行器的线程不可能正在工作，不为判断它去载入历史。子工作区随父工作区整组判断、整组换。
+    const plans = this.store.workspaces().filter((w) => w.status === 'open' && !this.heldParent(w)).flatMap((w) => {
       const projectId = this.store.checkout(w.checkoutId)!.projectId;
       const line = this.isLineWorkspace(w.id);
       if (!line && this.registry.get(projectId)?.autoHandover !== true) return [];
-      const threads = this.store.threads(w.id).filter((t) => t.status !== 'archived');
+      const threads = [w, ...this.store.descendantWorkspaces(w.id)].flatMap((member) => this.store.threads(member.id)).filter((t) => t.status !== 'archived');
       const busy = threads.filter((t) => this.runners.get(t.id)?.busy);
       return line || busy.length ? [{ workspace: w, projectId, busy, models: new Set(threads.map((t) => instanceAgent(t).model.model)) }] : [];
     });
@@ -653,15 +720,19 @@ export class Kite {
       try { resumes.push({ threadId: t.id, inputs: (await this.interrupt(t.id)).returned }); }
       catch (error) { console.warn(`[换机] 打断线程 ${t.id} 失败：${(error as Error).message}`); }
     }
-    this.leavingIds.add(w.id);
+    const group = [w.id, ...this.store.descendantWorkspaces(w.id).map((member) => member.id)];
+    for (const id of group) this.leavingIds.add(id);
     try {
       await this.transferWorkspace(w.id, target, { continue: resumes, timeoutMs: Math.max(1_000, deadline - Date.now()) });
     } catch (error) {
       console.warn(`[换机] 工作区 ${w.name} 没交出去，留在本机：${(error as Error).message}`);
-      if (this.store.workspace(w.id)?.status === 'open') for (const item of resumes) await this.continueThread(item);
+      for (const item of resumes) {
+        const at = this.store.instance(item.threadId)?.workspaceId;
+        if (at && this.store.workspace(at)?.status === 'open') await this.continueThread(item);
+      }
     }
     // 还停在可交接状态的留给醒来时再核对。
-    if (this.store.workspace(w.id)?.status !== 'handing_off') this.leavingIds.delete(w.id);
+    for (const id of group) if (this.store.workspace(id)?.status !== 'handing_off') this.leavingIds.delete(id);
   }
   /**
    * 合适的目标：在线、工作区所用的模型厂商已登录、满足项目声明的环境、磁盘够用。各台一起问，连不上或读不到的跳过；
@@ -893,19 +964,24 @@ export class Kite {
     });
     this.assertRunning();
     const id = ids.id ?? randomUUID();
-    const w: Workspace = { id, epoch: 1, checkoutId: c.id, name: prompt ? titleOf(prompt) : UNNAMED_WORKSPACE, nameMode: 'auto',
-      cwd: worktreePath(this.home, c.projectId, id), branch: `kite/${id}`, base, status: 'preparing', createdAt: Date.now(),
-      behind: 0, pullRequest: null };
+    const w = this.newWorkspace(c, id, prompt ? titleOf(prompt) : UNNAMED_WORKSPACE, base, null);
     const t = prompt === undefined ? undefined : this.newThread(id, prompt, { role }, c.projectId);
     this.store.addWorkspace(w, t ? { agent: t, window: this.instances.newWindow(t, ids.windowId) } : undefined);
-    this.prepare(w, c, t && { thread: t, prompt: prompt!, via, messageId: ids.messageId });
+    this.prepare(w, c, t && { thread: t, input: { id: ids.messageId ?? randomUUID(), text: prompt!,
+      ...(via ? { source: 'agent' as const, from: via } : { source: 'human' as const }) } });
     this.changed(id);
     if (t) this.threadChanged(t);
     return this.workspace(id);
   }
 
+  /** 新工作区的记录：工作树在 Kite 数据目录里，分支是 kite/<ID>，准备好之前是 preparing。 */
+  private newWorkspace(c: Checkout, id: string, name: string, base: string, parentId: string | null): Workspace {
+    return { id, epoch: 1, checkoutId: c.id, name, nameMode: 'auto', cwd: worktreePath(this.home, c.projectId, id), branch: `kite/${id}`, base,
+      status: 'preparing', createdAt: Date.now(), behind: 0, pullRequest: null, parentId };
+  }
+
   /** 建工作区前的环境检查：所选角色默认模型的厂商在这台工作机已登录，磁盘够用；不满足就不建。 */
-  private assertCanRun(environment: Environment, role?: RoleSelection): void {
+  private assertCanRun(environment: Environment, role?: { id: string; revision?: string }): void {
     const model = this.roles.get(role?.id ?? defaultRoleId, role?.revision).role.model.model;
     const login = modelLogin(environment, model);
     if (login.status !== 'ready') throw new KiteError(`这台工作机不能运行所选模型：${login.message}`, 409);
@@ -1055,8 +1131,9 @@ export class Kite {
   /**
    * 建工作树、写入项目密钥、跑 setup、存初始快照后开放；带首条消息的线程在开放后才收到它。失败或被打断时工作区为 failed。
    * 重跑时工作树若没建成，先清掉残留的登记与分支：准备失败的工作区从未开放，分支上没有用户的改动。
+   * opener 是用 isolation 开出这个子工作区的代理：没准备好时告诉它。
    */
-  private prepare(w: Workspace, c: Checkout, first?: { thread: AgentInstance; prompt: string; via?: InputVia; messageId?: string }, retry = false): void {
+  private prepare(w: Workspace, c: Checkout, first?: { thread: AgentInstance; input?: Input; opener?: string }, retry = false): void {
     const { id } = w;
     const t = first?.thread;
     const controller = new AbortController();
@@ -1072,13 +1149,14 @@ export class Kite {
         await this.snapshot(w, [], '工作区开始', t?.id);
         controller.signal.throwIfAborted();
         this.setWorkspaceStatus(id, 'open');
-        if (first) {
-          await this.sendInput(this.context(first.thread.id), { id: first.messageId ?? randomUUID(), text: first.prompt,
-            ...(first.via ? { source: 'agent' as const, from: first.via } : { source: 'human' as const }) }, () => controller.signal.throwIfAborted());
-        }
+        if (first?.input) await this.sendInput(this.context(first.thread.id), first.input, () => controller.signal.throwIfAborted());
       } catch (e) {
         this.bus.emit({ type: 'workspace.error', workspaceId: id, originThreadId: t?.id, message: (e as Error).message });
         this.setWorkspaceStatus(id, 'failed');
+        if (first?.opener && !this.stopping) {
+          void this.reports.workspace(first.opener, { name: this.store.workspace(id)?.name ?? w.name, agent: first.thread.id }, '没有准备好',
+            `没有准备好：${(e as Error).message}。里面的代理没有开始，用户可以在界面上重跑准备或放弃它。`).catch(() => {});
+        }
       }
     }).finally(() => this.preparations.delete(id));
   }
@@ -1104,7 +1182,8 @@ export class Kite {
   /** 操作层只登记实例；有首条消息时才打开执行资源，窗口由 presentation 决定。 */
   /** sender 是首条消息的来源，与 agent.send 的规则相同，由操作层按调用方给出。 */
   startAgent(workspaceId: string, input: OperationInput<'agent.start'>, origin?: PluginInstance['origin'],
-    sender: InputOrigin = { source: 'human' }, check: () => void = () => {}): Promise<{ instanceId: string; windowId?: string }> {
+    sender: InputOrigin = { source: 'human' }, check: () => void = () => {}): Promise<{ instanceId: string; windowId?: string; workspaceId?: string }> {
+    if (input.isolation === 'workspace') return this.startIsolated(workspaceId, input, origin, sender, check);
     return this.control(workspaceId, async () => {
       check();
       const { workspace } = this.workspace(workspaceId);
@@ -1114,28 +1193,70 @@ export class Kite {
         await this.snapshot(workspace, [], '线程开始');
       }
       check();
-      const instance = this.instances.newInstance(workspaceId, agentDefinitionId, input.title ?? (input.prompt ? titleOf(input.prompt) : '新代理'),
-        { role: { id: input.role ?? defaultRoleId } });
-      instance.presentation = input.presentation;
-      instance.origin = origin;
-      const project = this.store.workspaceConstraints(workspaceId)?.execution;
-      if (origin && effectiveExecution(instanceExecutionChanges(this.store.instance(origin.instanceId)!), project).grants.workspace === 'read') {
-        instance.config.execution = { ...instanceExecutionChanges(instance), workspace: 'read' };
-      }
-      const agent: AgentInstance = { ...instance, instanceId: instance.id, runtime: instanceAgent(instance).runtime, nativeId: randomUUID() };
-      const window = instance.presentation === 'window' ? this.instances.newWindow(instance) : undefined;
+      const agent = this.delegatedAgent(workspaceId, workspaceId, input, origin);
+      const window = agent.presentation === 'window' ? this.instances.newWindow(agent) : undefined;
       this.store.addAgent(agent, window);
-      if (input.title !== undefined) this.store.saveThreadTitle(agent.id, 'initial', {
-        title: instance.title, mode: 'manual', generatedAt: null, through: null,
-      });
-      this.threadChanged(agent);
-      if (input.title !== undefined) this.workspaceNames.follow(agent.id);
+      this.titled(agent, input);
       this.changed(workspaceId);
       if (input.prompt !== undefined) {
         await this.sendInput(this.context(agent.id), { id: input.operationId, text: input.prompt, ...sender });
       }
-      return { instanceId: instance.id, ...(window ? { windowId: window.id } : {}) };
+      return { instanceId: agent.id, ...(window ? { windowId: window.id } : {}) };
     });
+  }
+
+  /**
+   * agent_start 的 isolation：在本机从调用方工作区最近的快照开出子工作区，新代理是其中第一个线程，带 prompt 时准备好才收到。
+   * 环境检查与准备同新建工作区，不要用户批准，见 docs/项目与远程仓库.md「子工作区」。
+   */
+  private async startIsolated(parentId: string, input: OperationInput<'agent.start'>, origin: PluginInstance['origin'], sender: InputOrigin,
+    check: () => void): Promise<{ instanceId: string; windowId?: string; workspaceId: string }> {
+    const { checkout: c } = this.workspace(parentId);
+    this.assertCanRun(await this.environment(c.projectId), { id: input.role ?? defaultRoleId });
+    return this.control(parentId, async () => {
+      check();
+      const { workspace: parent } = this.workspace(parentId);
+      if (parent.status !== 'open') throw new KiteError('工作区尚未打开', 409);
+      this.assertNotResolving(parentId);
+      const base = await commitParent(parent);
+      check();
+      const id = randomUUID();
+      const agent = this.delegatedAgent(id, parentId, input, origin, c.projectId);
+      const w = this.newWorkspace(c, id, input.title ?? (input.prompt ? titleOf(input.prompt) : UNNAMED_WORKSPACE), base, parentId);
+      const window = agent.presentation === 'window' ? this.instances.newWindow(agent) : undefined;
+      this.store.addWorkspace(w, { agent, window });
+      this.titled(agent, input);
+      this.prepare(w, c, { thread: agent, opener: origin?.instanceId,
+        ...(input.prompt === undefined ? {} : { input: { id: input.operationId, text: input.prompt, ...sender } }) });
+      this.changed(id);
+      return { instanceId: agent.id, ...(window ? { windowId: window.id } : {}), workspaceId: id };
+    });
+  }
+
+  /**
+   * agent_start 建的代理，放在 workspaceId 里：角色、展示方式与创建来源照参数；调用方只能读工作区时它也只能读。
+   * 执行约束按 constraintsOf 那个工作区的项目取（子工作区这时还没入库，取父工作区的）。
+   */
+  private delegatedAgent(workspaceId: string, constraintsOf: string, input: OperationInput<'agent.start'>, origin: PluginInstance['origin'],
+    projectId?: string): AgentInstance {
+    const instance = this.instances.newInstance(workspaceId, agentDefinitionId, input.title ?? (input.prompt ? titleOf(input.prompt) : '新代理'),
+      { role: { id: input.role ?? defaultRoleId } }, projectId);
+    instance.presentation = input.presentation;
+    instance.origin = origin;
+    const project = this.store.workspaceConstraints(constraintsOf)?.execution;
+    if (origin && effectiveExecution(instanceExecutionChanges(this.store.instance(origin.instanceId)!), project).grants.workspace === 'read') {
+      instance.config.execution = { ...instanceExecutionChanges(instance), workspace: 'read' };
+    }
+    return { ...instance, instanceId: instance.id, runtime: instanceAgent(instance).runtime, nativeId: randomUUID() };
+  }
+
+  /** agent_start 写了标题时记成手动起的，工作区跟着它起名。 */
+  private titled(agent: AgentInstance, input: OperationInput<'agent.start'>): void {
+    if (input.title !== undefined) this.store.saveThreadTitle(agent.id, 'initial', {
+      title: agent.title, mode: 'manual', generatedAt: null, through: null,
+    });
+    this.threadChanged(agent);
+    if (input.title !== undefined) this.workspaceNames.follow(agent.id);
   }
 
   selectFile(input: OperationInput<'files.select'>, check: () => void) {
@@ -1322,10 +1443,17 @@ export class Kite {
           this.bus.emit({ type: 'idle', threadId: id, completed });
           this.reports.settled(id, outcome).catch((error) => console.error(`[回报] ${id} 的回合收尾没能处理：${(error as Error).message}`));
           const resolving = this.resolving.get(workspaceId);
+          if (outcome?.kind === 'failed' && resolving?.threadId === id && resolving.action === 'merge') {
+            this.reportMerge(resolving.initiator, workspaceId, '没能合回',
+              `没能合回：处理冲突的回合失败了（${outcome.message}）。子工作区停在合并中途，让它接着处理，回合正常结束后会接着合回。`);
+          }
           if (completed && !this.stopping && resolving?.threadId === id) {
-            const next = resolving.action === 'adopt' ? this.adopt(workspaceId, id, true) : this.syncWorkspace(workspaceId, id, true);
+            const next = {
+              adopt: () => this.adopt(workspaceId, id, true), sync: () => this.syncWorkspace(workspaceId, id, true),
+              merge: () => this.mergeWorkspace(workspaceId, { threadId: id, afterResolution: true, initiator: resolving.initiator }),
+            }[resolving.action]();
             next.catch((e) => this.bus.emit({ type: 'workspace.error', workspaceId, originThreadId: id,
-              message: `${resolving.action === 'adopt' ? '自动集成' : '自动同步'}失败：${(e as Error).message}` }));
+              message: `自动${mergingTitle[resolving.action]}失败：${(e as Error).message}` }));
           }
         },
       },
@@ -1395,8 +1523,12 @@ export class Kite {
       ? await this.runner(this.context(t.id)) : undefined);
   }
   /** 线程不再处理集成或同步的冲突：停下、归档，或宿主已接着做。 */
-  private endResolving(t: { id: string; workspaceId: string }): void {
-    if (this.resolving.get(t.workspaceId)?.threadId === t.id) this.resolving.delete(t.workspaceId);
+  /** quiet 是宿主自己接着做（或交不出去）；否则是被停下或归档，子工作区合回停在了半路，告诉发起合回的代理。 */
+  private endResolving(t: { id: string; workspaceId: string }, quiet = false): void {
+    const resolving = this.resolving.get(t.workspaceId);
+    if (resolving?.threadId !== t.id) return;
+    this.resolving.delete(t.workspaceId);
+    if (!quiet && resolving.action === 'merge') this.reportMerge(resolving.initiator, t.workspaceId, '没能合回', '没能合回：处理冲突的代理被停下了，合回没有接着做。');
   }
   /** 冲突的处理回合期间，只有处理冲突的那个线程能开始工作。 */
   private assertNotResolving(workspaceId: string, threadId?: string): void {
@@ -1405,11 +1537,16 @@ export class Kite {
   }
   /** 动整个工作区的操作（回退、采纳）要求全员空闲；线程之间的启动、发送与继续默认并行，见 docs/工作区并行.md。 */
   private async assertIdle(workspaceId: string): Promise<void> {
+    if (await this.working(workspaceId)) throw new KiteError('工作区有线程正在工作或等待恢复确认', 409);
+  }
+  /** 工作区有线程正在工作或等待恢复确认。 */
+  private async working(workspaceId: string): Promise<boolean> {
     for (const t of this.store.threads(workspaceId)) {
       if (t.status === 'archived') continue;
       const r = await this.runnerForManagement(t);
-      if (r?.busy || r?.recovery) throw new KiteError('工作区有线程正在工作或等待恢复确认', 409);
+      if (r?.busy || r?.recovery) return true;
     }
+    return false;
   }
   /** origin 是来源与发信方，由调用方按调用身份给出，见 InputOrigin。 */
   send(id: string, text: string, inputId: string = randomUUID(), origin: InputOrigin = { source: 'human' },
@@ -1543,14 +1680,25 @@ export class Kite {
    * 按项目的集成方式集成：直接合入或提交 PR，见 docs/项目与远程仓库.md「工作区与集成」。冲突交给工作区里的一个打开线程。
    * afterResolution：线程处理冲突的回合已正常结束，由宿主提交其结果；这次仍失败不再转交，避免往复。
    */
-  adopt(id: string, originThreadId?: string, afterResolution = false): Promise<AdoptResult> {
+  async adopt(id: string, originThreadId?: string, afterResolution = false): Promise<AdoptResult> {
+    const { workspace: current } = this.workspace(id);
+    if (current.parentId) throw new KiteError('子工作区不能直接集成，只能合回父工作区或放弃', 409);
+    // 先确认能集成再清子工作区，集成不了时不动它们；处理冲突后的自动集成不再清，期间新开的由下面的检查报出来。
+    if (!afterResolution) {
+      if (current.status !== 'open') throw new KiteError('只能集成已打开的工作区', 409);
+      await this.assertIdle(id);
+      await this.clearChildren(id);
+    }
     return this.control(id, async () => {
       // 集成全程持有工作区锁，此时放开不会让其他线程插进来。
-      if (afterResolution && originThreadId) this.endResolving({ id: originThreadId, workspaceId: id });
+      if (afterResolution && originThreadId) this.endResolving({ id: originThreadId, workspaceId: id }, true);
       const model = this.workspace(id);
       const { workspace: w, checkout, project } = model;
       if (w.status !== 'open') throw new KiteError('只能集成已打开的工作区', 409);
       await this.assertIdle(id);
+      // 下层的排在前面：先合回它们，上层才合得回。
+      const pending = this.store.descendantWorkspaces(id).reverse();
+      if (pending.length) throw new ChildrenPending(pending.map((child) => ({ id: child.id, name: child.name })));
       const proposing = !!project.remote && this.registry.get(project.id)?.integration === 'pullRequest';
       const merged = await this.serial(`checkout:${checkout.id}`, (): Promise<AdoptResult | Proposal> => proposing
         ? this.pushProposal(model, afterResolution) : this.mergeIntoMainline(w, checkout, afterResolution));
@@ -1640,16 +1788,32 @@ export class Kite {
     this.changed(id);
     return { status: 'proposed', branch: pull.branch, url: pull.url, ...(pull.number !== undefined ? { number: pull.number } : {}) };
   }
-  /** 把集成或同步的冲突交给工作区里最近的打开线程；手动重试遗留冲突同样转交，处理回合被打断后仍能继续。 */
-  private async handConflict(id: string, action: Merging, w: Workspace, files: string[], afterResolution: boolean): Promise<void> {
+  /**
+   * 集成父工作区之前：没有改动、也没在工作的子工作区（连同它下面的）直接归档。各个子工作区分别加锁，不在父工作区的锁里，
+   * 免得和先拿子工作区锁、再拿父工作区锁的合回互等。剩下的由集成报给用户，见 docs/项目与远程仓库.md「子工作区」。
+   */
+  private async clearChildren(id: string): Promise<void> {
+    for (const child of this.store.childWorkspaces(id)) {
+      const group = [child, ...this.store.descendantWorkspaces(child.id)];
+      // 不带 force：停下线程之后再查一遍改动，查到了就留着，由集成报出来。
+      if ((await Promise.all(group.map((w) => this.settled(w)))).every(Boolean)) await this.archiveWorkspace(child.id).catch(() => {});
+    }
+  }
+  /** 子工作区可以随手清掉：不在准备中，没有线程正在工作（没起过运行器的不可能在工作），也没有改动。 */
+  private async settled(w: Workspace): Promise<boolean> {
+    return w.status !== 'preparing' && !this.store.threads(w.id).some((t) => this.runners.get(t.id)?.busy) && !(await childChanged(w));
+  }
+
+  /** 把集成、同步或合回的冲突交给工作区里最近的打开线程；手动重试遗留冲突同样转交，处理回合被打断后仍能继续。 */
+  private async handConflict(id: string, action: Merging, w: Workspace, files: string[], afterResolution: boolean, initiator?: string): Promise<void> {
     const t = this.store.threads(id).findLast((thread) => thread.status === 'open');
     if (afterResolution || !t) return;
-    this.resolving.set(id, { threadId: t.id, action });
+    this.resolving.set(id, { threadId: t.id, action, ...(initiator ? { initiator } : {}) });
     try {
       await this.sendInput(this.context(t.id), { id: randomUUID(), text: conflictPrompt(action, w.branch, files), source: 'kite',
-        notice: { kind: 'conflict', title: `${action === 'adopt' ? '集成' : '同步'}时 ${files.length} 个文件冲突，交给代理解决` } });
+        notice: { kind: 'conflict', title: `${mergingTitle[action]}时 ${files.length} 个文件冲突，交给代理解决` } });
     }
-    catch (error) { this.endResolving(t); throw error; }
+    catch (error) { this.endResolving(t, true); throw error; }
   }
   /**
    * 同步：拉取主线，合进工作区分支，不推送；要求线程全部空闲，冲突交给其中的线程，合完保存快照。
@@ -1657,8 +1821,9 @@ export class Kite {
    */
   syncWorkspace(id: string, originThreadId?: string, afterResolution = false): Promise<SyncResult> {
     return this.control(id, async () => {
-      if (afterResolution && originThreadId) this.endResolving({ id: originThreadId, workspaceId: id });
+      if (afterResolution && originThreadId) this.endResolving({ id: originThreadId, workspaceId: id }, true);
       const { workspace: w, checkout } = this.workspace(id);
+      if (w.parentId) throw new KiteError('子工作区不和主线同步，合回时会先带上父工作区的最新状态', 409);
       if (w.status !== 'open') throw new KiteError('只能同步已打开的工作区', 409);
       await this.assertIdle(id);
       const result = await this.serial(`checkout:${checkout.id}`, async (): Promise<SyncResult> => {
@@ -1676,6 +1841,71 @@ export class Kite {
       this.bus.emit({ type: 'workspace.sync', workspaceId: id, originThreadId, result });
       return result;
     });
+  }
+  /**
+   * 子工作区合回父工作区，见 docs/项目与远程仓库.md「子工作区」：只要求子工作区的线程空闲，父工作区照常工作。先把父工作区的现状合进子工作区分支，
+   * 冲突交给子工作区里的一个线程，回合正常结束后宿主接着合（afterResolution）；再合进父工作区，这一步冲突就撤回、从头再来。
+   * 合完保存父工作区的快照并归档子工作区，没有改动时直接归档。initiator 是发起合回的代理：冲突交出去以后的结果作为一条输入交给它。
+   * 先拿子工作区的锁再拿父工作区的；归档、集成父工作区时各个子工作区分别加锁，不嵌套在父工作区的锁里，两边不会互等。
+   */
+  async mergeWorkspace(id: string, options: MergeOptions = {}): Promise<MergeResult> {
+    const { workspace: child } = this.workspace(id);
+    if (!child.parentId) throw new KiteError('只有子工作区能合回，顶层工作区用集成', 409);
+    // 准备中的子工作区占着自己的锁跑 setup，先挡在外面，不在锁里等它。
+    if (child.status !== 'open') throw new KiteError('只能合回已打开的子工作区', 409);
+    const parentId = child.parentId;
+    // 冲突交出去以后宿主接着合的结果；当场合完的由操作结果告诉调用方。
+    const report = (title: string, result: string) => { if (options.afterResolution) this.reportMerge(options.initiator, id, title, result); };
+    let result: MergeResult;
+    try { result = await this.control(id, () => this.control(parentId, () => this.mergeHeld(id, parentId, options))); }
+    catch (error) {
+      report('没能合回', `没能合回：${(error as Error).message}。子工作区还在，处理之后可以再用 agent_merge 合回。`);
+      throw error;
+    }
+    if (result.status === 'conflict') {
+      if (!this.resolving.has(id)) report('没能合回', `没能合回：这些文件的冲突没解决完：${result.files.join('、')}。子工作区还在，处理之后可以再用 agent_merge 合回。`);
+      return result;
+    }
+    // 它下面的子工作区没有改动、也没在工作（合回前查过），放开锁之后归档，各层随之归档。
+    for (const rest of this.store.childWorkspaces(id)) await this.archiveWorkspace(rest.id, true).catch(() => {});
+    if (result.status === 'merged') report('合回了', '已合回当前工作区并归档。');
+    else report('没有改动，已归档', '没有改动，已归档。');
+    return result;
+  }
+  /** 合回的结果交给发起合回的代理；界面上发起的没有。title 与 result 见 AgentReports.workspace。 */
+  private reportMerge(initiator: string | undefined, id: string, title: string, result: string): void {
+    if (!initiator) return;
+    void this.reports.workspace(initiator, { name: this.store.workspace(id)?.name ?? id, agent: this.store.childLead(id) ?? id }, title, result).catch(() => {});
+  }
+  private async mergeHeld(id: string, parentId: string, options: MergeOptions): Promise<MergeResult> {
+    options.check?.();
+    if (options.afterResolution && options.threadId) this.endResolving({ id: options.threadId, workspaceId: id }, true);
+    const { workspace: w } = this.workspace(id);
+    const { workspace: parent } = this.workspace(parentId);
+    if (w.status !== 'open') throw new KiteError('只能合回已打开的子工作区', 409);
+    if (parent.status !== 'open') throw new KiteError('父工作区没有打开，等它打开再合回', 409);
+    await this.assertIdle(id);
+    for (const rest of this.store.descendantWorkspaces(id)) {
+      if (!(await this.settled(rest))) throw new KiteError(`它下面的子工作区「${rest.name}」还有没合回的改动或正在工作，先把它合回或放弃`, 409);
+    }
+    if (!(await childChanged(w))) {
+      await this.archiveHeld(id, true);
+      return { status: 'unchanged' };
+    }
+    for (let attempt = 1; ; attempt++) {
+      const resolved = options.afterResolution === true && attempt === 1;
+      const first = await mergeParent(w, parent, resolved);
+      if (first.status === 'conflict') {
+        await this.handConflict(id, 'merge', w, first.files, resolved, options.initiator);
+        return first;
+      }
+      if ((await mergeChild(parent, w.branch)).status === 'merged') break;
+      if (attempt === MERGE_ATTEMPTS) throw new KiteError('父工作区一直在改同一处，没能合回，稍后再试', 409);
+    }
+    await this.snapshot(parent, [], `合回子工作区「${w.name}」`);
+    await this.archiveHeld(id, true);
+    this.changed(parentId);
+    return { status: 'merged' };
   }
   private async stopThread(t: AgentInstance): Promise<void> {
     const r = await this.runnerForManagement(t);
@@ -1720,34 +1950,57 @@ export class Kite {
     else this.workspaceNames.manual(id, singleLine(input.name, '名称'));
     return this.workspace(id);
   }
-  archiveWorkspace(id: string, force = false): Promise<void> {
-    this.workspace(id);
+  /**
+   * 归档工作区，连同下面各层的子工作区，最深的先归档。没带 force 时任何一个有没合回的改动都先拒绝，不打断线程；
+   * 用户放弃子工作区也走这里，带 force。
+   */
+  async archiveWorkspace(id: string, force = false): Promise<void> {
+    const { workspace: self, checkout } = this.workspace(id);
     if (this.isLineWorkspace(id)) throw new KiteError('Line 所在的工作区不能归档', 409);
+    const children = this.store.descendantWorkspaces(id);
+    // 有子工作区时先把整组查一遍，免得归档到一半才被挡住；没有时由 archiveHeld 自己查。
+    if (!force && children.length) {
+      for (const w of [self, ...children]) if (w.status !== 'archived' && await this.unmerged(w, checkout)) throw new KiteError(this.unmergedMessage(w), 409);
+    }
+    for (const child of children.reverse()) {
+      this.preparations.get(child.id)?.abort();
+      await this.control(child.id, () => this.archiveHeld(child.id, force));
+    }
     this.preparations.get(id)?.abort();
-    return this.control(id, async () => {
-      const { workspace: w, checkout } = this.workspace(id);
-      const threads = this.store.threads(id);
-      if (w.status === 'archived') return;
-      // 先检查再停止，拒绝归档时不打断正在工作的线程；停止期间写入的改动再检查一次。
-      const assertMerged = async () => {
-        if (force || !existsSync(w.cwd)) return;
-        // 提交 PR 的工作区以 PR 合并为已采纳：合并之后工作区没有新改动就算集成了。
-        const pull = this.store.workspace(id)!.pullRequest;
-        if (pull?.state === 'merged' && !(await isDirty(w.cwd)) && (await revParse(w.cwd, 'HEAD')) === pull.commit) return;
-        if (await hasUnmerged(checkout, w.cwd)) throw new KiteError('工作区有没集成的改动；确定丢弃就加 force', 409);
-      };
-      await assertMerged();
-      for (const t of threads) if (t.status !== 'archived') await this.stopThread(t);
-      await assertMerged();
-      if (existsSync(w.cwd)) await this.snapshot(w, [], '归档前保存');
-      const releasePlugins = await this.closeExtensions(id);
-      try {
-        await removeWorktree(checkout.path, w.cwd, w.branch);
-        this.store.archiveWorkspace(id);
-      } finally { releasePlugins(); }
-      for (const t of threads) if (t.status !== 'archived') this.threadChanged({ ...t, status: 'archived' });
-      this.changed(id);
-    });
+    return this.control(id, () => this.archiveHeld(id, force));
+  }
+  /** 工作区有没有没合回的改动：子工作区对着开出时的起点，顶层工作区对着主线；提交 PR 的工作区以 PR 合并为已采纳。 */
+  private async unmerged(w: Workspace, checkout: Checkout): Promise<boolean> {
+    if (!existsSync(w.cwd)) return false;
+    if (w.parentId) return childChanged(w);
+    // 提交 PR 的工作区合并之后没有新改动就算集成了。
+    const pull = this.store.workspace(w.id)!.pullRequest;
+    if (pull?.state === 'merged' && !(await isDirty(w.cwd)) && (await revParse(w.cwd, 'HEAD')) === pull.commit) return false;
+    return hasUnmerged(checkout, w.cwd);
+  }
+  private unmergedMessage(w: Workspace): string {
+    return w.parentId ? `子工作区「${w.name}」有没合回的改动；确定丢弃就加 force` : '工作区有没集成的改动；确定丢弃就加 force';
+  }
+  /** 调用方持有工作区锁。 */
+  private async archiveHeld(id: string, force: boolean): Promise<void> {
+    const { workspace: w, checkout } = this.workspace(id);
+    const threads = this.store.threads(id);
+    if (w.status === 'archived') return;
+    // 先检查再停止，拒绝归档时不打断正在工作的线程；停止期间写入的改动再检查一次。
+    const assertMerged = async () => {
+      if (!force && await this.unmerged(w, checkout)) throw new KiteError(this.unmergedMessage(w), 409);
+    };
+    await assertMerged();
+    for (const t of threads) if (t.status !== 'archived') await this.stopThread(t);
+    await assertMerged();
+    if (existsSync(w.cwd)) await this.snapshot(w, [], '归档前保存');
+    const releasePlugins = await this.closeExtensions(id);
+    try {
+      await removeWorktree(checkout.path, w.cwd, w.branch);
+      this.store.archiveWorkspace(id);
+    } finally { releasePlugins(); }
+    for (const t of threads) if (t.status !== 'archived') this.threadChanged({ ...t, status: 'archived' });
+    this.changed(id);
   }
   /** 服务起来后由 daemon 告知本机监听地址与组网，Line 据此调用本机与别的工作机。 */
   listening(serving: { url: string; network?: Network }): void {

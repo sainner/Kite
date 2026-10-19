@@ -127,6 +127,10 @@ final class AppModel {
     /// 侧栏菜单发起的归档与强制接管确认，由 WorkspaceGitPresentation 呈现。
     var archiveRequest: WorkArea?
     var takeoverRequest: TakeoverRequest?
+    /// 集成父工作区时还有子工作区没合回或放弃，等用户逐个处理，由 WorkspaceGitPresentation 呈现。
+    var pendingChildren: PendingChildren?
+    /// 侧栏里展开了子工作区的工作区；默认收起，见 WorkspaceRow 标题右边的「+x」。
+    var expandedWorkspaces: Set<String> = []
     /// 菜单和页面发起的操作遇到远程要求登录，等用户就地登录，由 WorkspaceGitPresentation 呈现，见 offerGitLogin。
     var gitLogin: GitLogin?
     /// 本机新建、工作机还没列出来的工作区，见 createWorkspace。

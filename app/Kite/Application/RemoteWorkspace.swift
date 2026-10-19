@@ -2,7 +2,7 @@ import Foundation
 
 /// App 与工作机之间的协议号，与 kited/src/version.ts 的 PROTOCOL 一起改；不一致的工作机锁定为待更新（docs/App.md「版本」）。
 enum KiteProtocol {
-    static let version = 7
+    static let version = 8
 }
 
 /// 工作机正在运行的版本（`/machine` 的 version）：build 标识一份运行文件，源码运行时为 dev。
@@ -89,6 +89,8 @@ struct WorkspaceInfo: Codable, Identifiable {
     var behind: Int? = nil
     /// 提交 PR 的工作区最近一次集成推到的分支与 PR。
     var pullRequest: WorkspacePullRequest? = nil
+    /// 子工作区挂在哪个工作区下；顶层工作区与较早的目录摘要里没有。只能合回它或放弃，随它流转。
+    var parentId: String? = nil
 }
 
 /// 提交 PR 的工作区的 PR：url 是 PR 页面，不能自动开 PR 的平台是去开 PR 的网页、没有 number。

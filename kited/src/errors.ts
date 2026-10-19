@@ -14,6 +14,14 @@ export class GitLoginRequired extends KiteError {
   override details() { return { gitLogin: this.host }; }
 }
 
+/** 集成父工作区之前还有子工作区没合回或放弃：错误体带上 children（ID 与名称），App 据此让用户逐个合回、放弃或暂不集成。 */
+export class ChildrenPending extends KiteError {
+  constructor(readonly children: Array<{ id: string; name: string }>) {
+    super(`还有子工作区没合回：${children.map((child) => `「${child.name}」`).join('、')}；先合回或放弃，再集成`, 409);
+  }
+  override details() { return { children: this.children }; }
+}
+
 /** extra 是原来的错误给 App 分情况处理的字段（如 gitLogin），经操作收据转成操作错误时保留。 */
 export class OperationError extends KiteError {
   constructor(message: string, readonly outcome: 'denied' | 'failed' | 'cancelled' | 'unknown', status = 409,

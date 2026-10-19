@@ -189,6 +189,7 @@ extension Notice {
     var symbol: String {
         switch kind {
         case .report: "person.crop.circle"
+        case .workspace: "arrow.triangle.merge"
         case .monitor: "tray"
         case .terminal: "terminal"
         case .line: "tray.full"
@@ -201,8 +202,8 @@ extension Notice {
         }
     }
 
-    /// 画头像的实例：子代理回报的那个子代理。
-    var avatarInstance: String? { kind == .report ? instance : nil }
+    /// 画头像的实例：子代理回报的那个子代理，子工作区的结果里开子工作区时建的那个代理。
+    var avatarInstance: String? { kind == .report || kind == .workspace ? instance : nil }
 }
 
 /// 两段话之间 agent 做的事折成的一行怎么量、展开到哪了，两端原生列表的工具行共用：汇总一行，点开下面是步骤，

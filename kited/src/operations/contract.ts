@@ -22,8 +22,12 @@ const text = z.string().refine((value) => !!value.trim(), '内容不能为空');
 const target = z.object({ operationId: id, instanceId: id }).strict();
 const ok = z.object({ ok: z.literal(true) }).strict();
 const fileEntry = z.object({ name: id, path: id, kind: z.enum(['file', 'directory', 'symlink', 'other']) }).strict();
-/** 三种 list 共有的字段：谁建的（没有时是用户在界面上开的）、什么时候、有没有窗口、调用方获准的操作。 */
-const listed = { instanceId: id, title: z.string(), createdBy: id.nullable(), createdAt: z.number(), window: z.boolean(), operations: z.array(id) };
+/**
+ * 三种 list 共有的字段：谁建的（没有时是用户在界面上开的）、什么时候、有没有窗口、调用方获准的操作；
+ * 在子工作区里的另带所在的工作区。
+ */
+const listed = { instanceId: id, title: z.string(), createdBy: id.nullable(), createdAt: z.number(), window: z.boolean(), operations: z.array(id),
+  workspace: z.object({ id, name: z.string() }).strict().optional() };
 const summary = z.object({
   ...listed, definitionId: id, role: z.object({ id, title: z.string() }).strict().nullable(), presentation: z.enum(['window', 'inline', 'background']),
   status: z.enum(['open', 'archived']), phase: z.enum(['idle', 'running', 'stopping', 'finishing']),
@@ -36,7 +40,7 @@ const summary = z.object({
  * 对其他代理、monitor 与终端的操作；代理按协作范围授予，这几项的授权共用一个目标范围（descendants 或 workspace），
  * 见 docs/实例操作.md「代理的协作范围」。
  */
-export const scopedOperations = ['agent.list', 'agent.send', 'agent.resume', 'agent.stop',
+export const scopedOperations = ['agent.list', 'agent.send', 'agent.resume', 'agent.stop', 'agent.merge',
   'monitor.list', 'monitor.stop', 'terminal.list', 'terminal.read', 'terminal.stop'] as const;
 
 export const operationContracts = {
@@ -46,11 +50,14 @@ export const operationContracts = {
     input: target.extend({ tool: id, arguments: z.record(z.string(), z.unknown()) }).strict(), output: z.unknown(),
   },
   'agent.start': {
-    title: '创建 agent', description: '在当前工作区按角色创建 agent 实例。role 是角色 ID，省略时用默认角色 kite.work（工作）；内置的还有 kite.review（只读审查）。省略 prompt 只创建空会话；同一工作区的代理可以同时工作，带 prompt 的回合结束时把结果回报给你。默认不打开窗口，由用户从创建它的 agent 处查看；只在用户要求在界面上看着它时传 presentation: window。',
+    title: '创建 agent', description: [
+      '在当前工作区按角色创建 agent 实例。role 是角色 ID，省略时用默认角色 kite.work（工作）；内置的还有 kite.review（只读审查）。省略 prompt 只创建空会话；同一工作区的代理可以同时工作，带 prompt 的回合结束时把结果回报给你。默认不打开窗口，由用户从创建它的 agent 处查看；只在用户要求在界面上看着它时传 presentation: window。',
+      'isolation: workspace 把它放进一个子工作区：宿主从当前工作区最近的快照开出子工作区（含还没集成的改动），跑完项目的准备脚本后它才开始，构建、测试和改动都与这里隔开，返回 workspaceId。适合要改很多文件、会和别的代理互相干扰的任务；做完用 agent_merge 合回，不要的停着即可，由用户放弃。',
+    ].join(''),
     tool: 'agent_start', effect: 'create', retry: 'receipt',
     input: z.object({ operationId: id, role: id.optional(), title: text.optional(), prompt: text.optional(),
-      presentation: z.enum(['window', 'inline', 'background']).default('background') }).strict(),
-    output: z.object({ instanceId: id, windowId: id.optional() }).strict(),
+      presentation: z.enum(['window', 'inline', 'background']).default('background'), isolation: z.enum(['workspace']).optional() }).strict(),
+    output: z.object({ instanceId: id, windowId: id.optional(), workspaceId: id.optional() }).strict(),
   },
   'agent.list': {
     title: '查询 agent', description: '查询你协作范围内的 agent 实例：谁建的、一行状态及你获准的操作；不会唤醒会话。',
@@ -70,6 +77,14 @@ export const operationContracts = {
     title: '停止执行', description: '停止获准的 agent 实例，等待受管执行停止并返回未消费的输入。',
     tool: 'agent_stop', effect: 'write', retry: 'stop',
     input: target.extend({ inputs: z.array(inputSchema).optional() }).strict(), output: z.object({ returned: z.array(inputSchema) }).strict(),
+  },
+  'agent.merge': {
+    title: '合回子工作区', description: [
+      '把用 isolation: workspace 开出的子工作区合回它的父工作区，instanceId 是开子工作区时建的那个代理。要求子工作区里的代理都空闲，父工作区照常工作。',
+      '合完（merged）或没有改动（unchanged）时子工作区连同其中的代理一起归档；有冲突时（conflict）立即返回，冲突交给子工作区里的代理解决，宿主随后接着合，合好或失败时把结果作为一条新的输入发给你。',
+    ].join(''),
+    tool: 'agent_merge', effect: 'write', retry: 'receipt', input: target,
+    output: z.object({ status: z.enum(['merged', 'unchanged', 'conflict']), files: z.array(id).optional() }).strict(),
   },
   'files.list': {
     title: '浏览目录', description: '读取文件实例所属工作区内的一层目录，按目录优先、名称排序并分页。',
@@ -190,7 +205,7 @@ export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('plugin.call'), instanceId: id, tools: z.array(id).min(1) }).strict(),
   z.object({ operation: z.literal('agent.start'), roleIds: z.array(id) }).strict(),
   ...(['agent.list', 'monitor.list', 'terminal.list'] as const).map((operation) => z.object({ operation: z.literal(operation), targets: range }).strict()),
-  ...(['agent.send', 'agent.resume', 'agent.stop', 'monitor.stop', 'terminal.read', 'terminal.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
+  ...(['agent.send', 'agent.resume', 'agent.stop', 'agent.merge', 'monitor.stop', 'terminal.read', 'terminal.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
   z.object({ operation: z.literal('monitor.start') }).strict(),
   ...(['files.list', 'files.search', 'files.read', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
     targets: z.object({ kind: z.literal('instances'), instanceIds: z.array(id) }).strict() }).strict()),
@@ -236,7 +251,7 @@ export function roleOperationGrants(definitionId: string, grants: OperationGrant
     && !kept.some((other) => other.operation === grant.operation)).map((grant) => scope && 'targets' in grant ? { ...grant, targets: scope } as OperationGrant : grant)];
 }
 
-export const operationToolNames = ['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop', 'monitor_start', 'monitor_list', 'monitor_stop',
+export const operationToolNames = ['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop', 'agent_merge', 'monitor_start', 'monitor_list', 'monitor_stop',
   'terminal_list', 'terminal_read', 'terminal_stop'] as const;
 const failure = z.object({ error: z.string(), outcome: z.enum(['denied', 'failed', 'cancelled', 'unknown']) }).strict();
 

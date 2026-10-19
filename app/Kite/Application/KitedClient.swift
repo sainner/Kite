@@ -311,7 +311,14 @@ struct KitedError: LocalizedError {
     /// 出错的那台工作机：请求发给的那台；它转交另一台工作机时出的登录问题（错误体的 gitLoginMachine）是那一台。
     /// 令牌写到这里，重试时马上能用。
     var machineID: String? = nil
+    /// 集成父工作区时还没合回或放弃的子工作区，见 PendingChildren。
+    var children: [Child]? = nil
     var errorDescription: String? { message }
+
+    struct Child: Decodable, Identifiable, Equatable, Sendable {
+        let id: String
+        let name: String
+    }
 }
 
 extension String {
@@ -470,10 +477,10 @@ struct KitedClient: Equatable {
     private func validate(_ response: URLResponse, data: Data? = nil) throws {
         guard let http = response as? HTTPURLResponse else { throw KitedError(message: "服务响应无效") }
         guard (200..<300).contains(http.statusCode) else {
-            struct Body: Decodable { let error: String?; let gitLogin: String?; let gitLoginMachine: String? }
+            struct Body: Decodable { let error: String?; let gitLogin: String?; let gitLoginMachine: String?; let children: [KitedError.Child]? }
             let body = data.flatMap { try? JSONDecoder().decode(Body.self, from: $0) }
             throw KitedError(message: body?.error ?? "服务返回 \(http.statusCode)", status: http.statusCode, gitLogin: body?.gitLogin,
-                             machineID: body?.gitLoginMachine ?? machineID)
+                             machineID: body?.gitLoginMachine ?? machineID, children: body?.children)
         }
     }
 }

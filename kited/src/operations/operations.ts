@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { FileDiffStore } from '../workspace/file-diffs.ts';
 import { KiteError, OperationError, operationError } from '../errors.ts';
 import type { Kite } from '../kite.ts';
-import type { PluginInstance } from '../model.ts';
+import { holds, type PluginInstance } from '../model.ts';
 import { grantTools, operationContracts, operationGrantsSchema, scopedOperations, type GrantTargets, type OperationCaller, type OperationGrant, type OperationInput,
   type OperationName } from './contract.ts';
 import { effectiveExecution, instanceExecutionChanges } from '../execution/grants.ts';
@@ -17,7 +17,7 @@ import { instanceAgent } from '../agents/definition.ts';
 import { defaultRoleId, instanceRole } from '../roles.ts';
 import { pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding, type PluginToolSource } from '../plugins/tools.ts';
 
-type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'reports' | 'waits' | 'interrupt' | 'resume' | 'selectFile'
+type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'reports' | 'waits' | 'interrupt' | 'resume' | 'mergeWorkspace' | 'selectFile'
   | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox' | 'terminals'>;
 
 export interface OperationToolSelection {
@@ -27,8 +27,9 @@ export interface OperationToolSelection {
 }
 
 const revision = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const scoped = (name: OperationName) => (scopedOperations as readonly string[]).includes(name);
 /** 超出后代范围时要用户批准的操作：协作范围里的写操作。 */
-const confirmed = (name: OperationName) => (scopedOperations as readonly string[]).includes(name) && operationContracts[name].effect === 'write';
+const confirmed = (name: OperationName) => scoped(name) && operationContracts[name].effect === 'write';
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value);
   if (!result.success) throw new OperationError(`操作参数无效：${result.error.issues.map((issue) => issue.message).join('；')}`, 'denied', 400);
@@ -85,9 +86,15 @@ export class InstanceOperations {
     let target: PluginInstance | undefined;
     if (typeof args.instanceId === 'string') {
       target = this.kite.store.instance(args.instanceId) ?? undefined;
-      if (!target || target.workspaceId !== workspaceId) throw new OperationError('工作区内没有这个目标实例', 'denied', 404);
+      // 协作操作还能对准子工作区里的实例，是否够得着再按授权的范围看，见 reaches。
+      if (!target || (target.workspaceId !== workspaceId && !(scoped(name) && this.under(target.workspaceId, workspaceId)))) {
+        throw new OperationError('工作区内没有这个目标实例', 'denied', 404);
+      }
       if (!this.kite.catalog.get(target.definitionId).operations.includes(name)) throw new OperationError('目标实例未声明此操作', 'denied', 403);
       if (target.status !== 'open') throw new OperationError('目标实例已归档', 'denied');
+      if (name === 'agent.merge' && this.kite.store.childLead(target.workspaceId) !== target.id) {
+        throw new OperationError('只有用 isolation: workspace 开子工作区时建的那个代理可以合回；同一工作区的代理停下即可', 'denied', 409);
+      }
     }
     if (caller.kind === 'ui') return;
     const source = this.kite.store.instance(caller.instanceId);
@@ -98,6 +105,9 @@ export class InstanceOperations {
       catch { throw new OperationError('插件不能读取宿主内部数据或工作区外文件', 'denied', 403); }
     }
     if (target?.id === source.id && name.startsWith('agent.')) throw new OperationError('实例不能通过协作操作控制自己', 'denied', 403);
+    if (name === 'agent.merge' && target?.workspaceId === source.workspaceId) {
+      throw new OperationError('合回要由父工作区里的代理发起，子工作区里的代理不能合回自己所在的子工作区', 'denied', 403);
+    }
     if (name === 'agent.stop' && args.inputs !== undefined) throw new OperationError('只有界面可以核定未确认的用户输入', 'denied', 403);
     const grants = this.grants(source.id).grants;
     const granted = name === 'plugin.call'
@@ -137,28 +147,43 @@ export class InstanceOperations {
     return false;
   }
 
+  /** 工作区是 ancestor 下面某一层本机持有的子工作区。 */
+  private under(workspaceId: string, ancestor: string): boolean {
+    for (let w = this.kite.store.workspace(workspaceId); w?.parentId && holds(w); w = this.kite.store.workspace(w.parentId)) {
+      if (w.parentId === ancestor) return true;
+    }
+    return false;
+  }
+
+  /** 子工作区里的只能经后代够到，见 docs/实例操作.md「子工作区」。 */
   private reaches(source: PluginInstance, target: PluginInstance, targets: GrantTargets): boolean {
+    const same = target.workspaceId === source.workspaceId;
     switch (targets.kind) {
       case 'created': return target.origin?.instanceId === source.id;
-      case 'instances': return targets.instanceIds.includes(target.id);
+      case 'instances': return same && targets.instanceIds.includes(target.id);
       case 'descendants': return this.descendant(source, target);
-      case 'workspace': return true;
+      case 'workspace': return same || this.descendant(source, target);
     }
   }
 
   /**
    * 一次 list 的筛选与每项共有的字段，调用方与开着的窗口只查一次。
-   * 列出调用方够得着的实例：界面看全部，代理与插件按这项 list 授权的范围。
+   * 列出调用方够得着的实例：界面看这个工作区的全部，代理与插件按这项 list 授权的范围，含子工作区里的后代；workspaces 是要找的工作区。
    */
   private listing(caller: OperationCaller, workspaceId: string, name: 'agent.list' | 'monitor.list' | 'terminal.list') {
     const source = caller.kind === 'ui' ? undefined : this.kite.store.instance(caller.instanceId)!;
     const grant = source && this.grants(source.id).grants.find((grant) => grant.operation === name);
     const range = grant && 'targets' in grant ? grant.targets : undefined;
-    const windows = new Set(this.kite.store.windows(workspaceId).filter((window) => window.state === 'open').map((window) => window.target.instanceId));
+    const self = this.kite.store.workspace(workspaceId)!;
+    const workspaces = source ? [self, ...this.kite.store.descendantWorkspaces(workspaceId)] : [self];
+    const names = new Map(workspaces.map((w) => [w.id, w.name]));
+    const windows = new Set(workspaces.flatMap((w) => this.kite.store.windows(w.id)).filter((window) => window.state === 'open').map((window) => window.target.instanceId));
     return {
+      workspaces: workspaces.map((w) => w.id),
       visible: (target: PluginInstance) => !source || !!range && this.reaches(source, target, range),
       item: (instance: PluginInstance) => ({ instanceId: instance.id, title: instance.title, createdBy: instance.origin?.instanceId ?? null,
         createdAt: instance.createdAt, window: windows.has(instance.id),
+        ...(instance.workspaceId !== workspaceId ? { workspace: { id: instance.workspaceId, name: names.get(instance.workspaceId) ?? '' } } : {}),
         operations: this.kite.catalog.get(instance.definitionId).operations.filter((operation) => {
           try { this.authorize(caller, workspaceId, operation, { instanceId: instance.id }); return true; } catch { return false; }
         }) }),
@@ -231,7 +256,7 @@ export class InstanceOperations {
       }
       case 'agent.list': {
         const listing = this.listing(caller, workspaceId, name);
-        const reachable = this.kite.store.threads(workspaceId).filter(listing.visible);
+        const reachable = listing.workspaces.flatMap((id) => this.kite.store.threads(id)).filter(listing.visible);
         const agents = await Promise.all(reachable.map(async (instance) => {
           const state = await this.kite.threadState(instance.id);
           const role = instanceRole(instance);
@@ -253,6 +278,9 @@ export class InstanceOperations {
       case 'agent.resume':
         await this.kite.resume(args.instanceId as string, check);
         return { ok: true };
+      case 'agent.merge':
+        return this.kite.mergeWorkspace(this.kite.store.instance(args.instanceId as string)!.workspaceId,
+          { ...(caller.kind === 'ui' ? {} : { initiator: caller.instanceId }), check });
       case 'agent.stop': {
         const input = args as OperationInput<'agent.stop'>;
         // 只有正在跑的回合会因这次停止收尾；空闲时记下的停止方会落到之后无关的回合上。
@@ -315,14 +343,14 @@ export class InstanceOperations {
       }
       case 'monitor.list': {
         const listing = this.listing(caller, workspaceId, name);
-        return { monitors: this.kite.monitors.list(workspaceId).flatMap((summary) => {
+        return { monitors: listing.workspaces.flatMap((id) => this.kite.monitors.list(id)).flatMap((summary) => {
           const instance = this.kite.store.instance(summary.instanceId)!;
           return listing.visible(instance) ? [{ ...summary, ...listing.item(instance) }] : [];
         }) };
       }
       case 'terminal.list': {
         const listing = this.listing(caller, workspaceId, name);
-        return { terminals: this.kite.store.instances(workspaceId)
+        return { terminals: listing.workspaces.flatMap((id) => this.kite.store.instances(id))
           .filter((instance) => instance.definitionId === terminalDefinitionId && instance.status === 'open' && listing.visible(instance))
           .map((instance) => ({ ...this.kite.terminals.describe(instance), ...listing.item(instance) })) };
       }

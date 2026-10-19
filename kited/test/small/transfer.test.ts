@@ -16,7 +16,7 @@ import type { ReplicaEntry, ReplicaPage } from '../../src/transfer/replica.ts';
 import type { History } from '../../src/transcript/protocol.ts';
 import { leaseRef } from '../../src/workspace/lease.ts';
 import { type FakeGit, startFakeGit } from '../fake-git.ts';
-import { addProject, after, chatgptLogin, connect, createWorkspace, type Kited, mark, startKited, synced } from '../harness.ts';
+import { addProject, after, chatgptLogin, connect, createWorkspace, type Kited, mark, openWorkspace, startKited, synced, workspaceOpened } from '../harness.ts';
 import { item, ManualModel } from '../harness-loop.ts';
 import { commitAll, git, newRepo, read, until, writeFiles } from '../util.ts';
 
@@ -205,6 +205,33 @@ test('手动流转：目标没登录模型厂商时还原被拒，A 撤回交接
   expect(await statusOf(a, workspaceId)).toBe('open');
   expect(leaseOf(remote.bare, workspaceId)).toEqual({ machine: machineA, epoch: 1, state: 'active' });
   expect(b.daemon.kite.store.workspace(workspaceId)).toBeNull();
+}, 5_000);
+
+/*
+ * 跨机状态流转：子工作区随父工作区整组流转（docs/Line与工作区流转.md「子工作区」）。手动流转父工作区时，源机连同子工作区一起交接，
+ * 目标从父工作区起逐个还原，子工作区的分支与快照链经对端从 A 的检出取到 B，还原出没提交的改动，仍挂在同一个父工作区下；
+ * 源机核对后两个都冻结。子工作区经 HTTP 的 agent.start 带 isolation 开出，里面的代理是空的，不起模型回合。
+ */
+test('有子工作区的工作区手动流转到 B：B 上父子两个工作区都还原并打开，子工作区仍挂在父工作区下、带着没提交的改动；A 上两个都冻结', async () => {
+  const models = { a: new ManualModel(), b: new ManualModel() };
+  const a = machine(models.a);
+  const b = machine(models.b);
+  await connect(a, b);
+  const machineB = b.daemon.kite.store.machine.id;
+  const projectId = await project(a, { 'a.txt': '一\n' }, [b]);
+  const parentId = (await openWorkspace(a, projectId)).workspace.id;
+  const started = await a.call('POST', `/workspaces/${parentId}/operations/agent.start`, { operationId: 'isolate', isolation: 'workspace' });
+  expect(started.status).toBe(200);
+  const childId = started.body.workspaceId as string;
+  writeFiles((await workspaceOpened(a, childId)).workspace.cwd, { 'child.txt': '子工作区里的改动\n' });
+
+  const moved = await a.call('POST', `/workspaces/${parentId}/transfer`, { to: machineB, operationId: crypto.randomUUID() });
+  expect(moved.status).toBe(200);
+  const onB = [parentId, childId].map((id) => b.daemon.kite.store.workspace(id));
+  expect(onB.map((w) => w?.status)).toEqual(['open', 'open']);
+  expect(onB[1]?.parentId).toBe(parentId);
+  expect(read(join(onB[1]!.cwd, 'child.txt'))).toBe('子工作区里的改动\n');
+  expect([parentId, childId].map((id) => a.daemon.kite.store.workspace(id)?.status)).toEqual(['transferred', 'transferred']);
 }, 5_000);
 
 /**

@@ -25,7 +25,9 @@ const WORKSPACES = `create table if not exists workspaces (
   name_mode text not null default 'auto' check (name_mode in ('auto', 'manual')), cwd text not null,
   branch text not null, base text not null,
   status text not null check (status in ('preparing', 'open', 'failed', 'archived', 'handing_off', 'transferred')), created_at integer not null,
-  epoch integer not null default 1 check (epoch >= 1), behind integer, pull_request text
+  epoch integer not null default 1 check (epoch >= 1), behind integer, pull_request text,
+  -- 子工作区的父工作区。不设外键：整组流转时各工作区的行分别导入，先后不定。
+  parent_id text
 );`;
 
 // 没有远程的项目 remote 为空，各工作机上的检出互为远程。
@@ -114,6 +116,7 @@ const checkoutOf = (r: any): Checkout => ({
 const workspaceOf = (r: any): Workspace => ({
   id: r.id, epoch: r.epoch, checkoutId: r.checkout_id, name: r.name, nameMode: r.name_mode, cwd: r.cwd, branch: r.branch, base: r.base,
   status: r.status, createdAt: r.created_at, behind: r.behind, pullRequest: r.pull_request ? JSON.parse(r.pull_request) : null,
+  parentId: r.parent_id ?? null,
 });
 const threadOf = (r: any): Thread => ({ instanceId: r.instance_id, runtime: r.runtime, nativeId: r.native_id });
 const instanceOf = (r: any): PluginInstance => ({
@@ -146,6 +149,7 @@ export class Store implements UsageStore {
     this.oneWindowPerInstance();
     this.db.exec(SCHEMA);
     this.addWorkspaceNameMode();
+    this.addWorkspaceParent();
     this.mergeAgentDefinitions();
     this.splitProjectDocuments();
     // 同一个数据库只属于一台工作机服务。端口、地址和主机名变化都不重建身份。
@@ -228,6 +232,13 @@ export class Store implements UsageStore {
     const columns = this.db.query("select name from pragma_table_info('workspaces')").all() as Array<{ name: string }>;
     if (columns.some((c) => c.name === 'name_mode')) return;
     this.db.exec("alter table workspaces add column name_mode text not null default 'auto' check (name_mode in ('auto', 'manual'))");
+  }
+
+  /** 有子工作区之前没有 parent_id 列：补上，已有的工作区都是顶层的。索引在列补上之后建。 */
+  private addWorkspaceParent(): void {
+    const columns = this.db.query("select name from pragma_table_info('workspaces')").all() as Array<{ name: string }>;
+    if (!columns.some((c) => c.name === 'parent_id')) this.db.exec('alter table workspaces add column parent_id text');
+    this.db.exec('create index if not exists workspace_parent on workspaces(parent_id)');
   }
 
   /** 照 SQLite 改表的步骤换表：关外键，在事务里执行，核对外键再打开。 */
@@ -431,12 +442,29 @@ export class Store implements UsageStore {
     const r = this.db.query('select * from workspaces where id = ?').get(id);
     return r ? workspaceOf(r) : null;
   }
-  addWorkspace(w: Workspace, firstAgent?: { agent: AgentInstance; window: WorkspaceWindow }): void {
+  /** 本机持有的子工作区（没流转走、没归档），按创建先后。 */
+  childWorkspaces(parentId: string): Workspace[] {
+    return this.db.query("select * from workspaces where parent_id = ? and status not in ('archived', 'transferred') order by created_at, id")
+      .all(parentId).map(workspaceOf);
+  }
+  /** 本机持有的、挂在这个工作区下面各层的子工作区，上层在前。 */
+  descendantWorkspaces(id: string): Workspace[] {
+    const all = this.childWorkspaces(id);
+    for (let index = 0; index < all.length; index++) all.push(...this.childWorkspaces(all[index]!.id));
+    return all;
+  }
+  /** 开子工作区时建的那个代理：创建它的代理在父工作区里。子工作区里后来开的、顶层工作区里的都不是。 */
+  childLead(workspaceId: string): string | undefined {
+    return (this.db.query(`select i.id from plugin_instances i join workspaces w on w.id = i.workspace_id
+      join plugin_instances o on o.id = json_extract(i.origin, '$.instanceId') where i.workspace_id = ? and o.workspace_id = w.parent_id
+      order by i.created_at limit 1`).get(workspaceId) as { id: string } | null)?.id;
+  }
+  addWorkspace(w: Workspace, firstAgent?: { agent: AgentInstance; window?: WorkspaceWindow }): void {
     this.db.transaction(() => {
-      this.db.query(`insert into workspaces (id, checkout_id, name, name_mode, cwd, branch, base, status, created_at, epoch, behind, pull_request)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      this.db.query(`insert into workspaces (id, checkout_id, name, name_mode, cwd, branch, base, status, created_at, epoch, behind, pull_request, parent_id)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(w.id, w.checkoutId, w.name, w.nameMode, w.cwd, w.branch, w.base, w.status, w.createdAt, w.epoch, w.behind,
-          w.pullRequest ? JSON.stringify(w.pullRequest) : null);
+          w.pullRequest ? JSON.stringify(w.pullRequest) : null, w.parentId);
       if (firstAgent) this.addAgent(firstAgent.agent, firstAgent.window);
     })();
   }
