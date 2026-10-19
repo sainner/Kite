@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: 19e18107-9859-4070-a429-82a37c6d6214
-  modified: 2026-10-15T15:55:08.895Z
+  modified: 2026-10-19T06:55:03.723Z
 ---
 
 用户要求界面工作按已确认的目标推进：
@@ -19,6 +19,7 @@ metadata:
 - 调样式、来回改参数时用 `preview-mac.sh` 编 Debug 预览交给用户看，不打 Release 包重装；Release 只在交付确认或用户要装时才装（2026-10-14 用户：「是不是编 debug 版就可以了，不要编完整的包啊」）。界面改动在 `.kite/check` 通过后直接跑 `preview-mac.sh` 打开预览，不先问要不要看（2026-10-18 用户：「下次改完直接构建debug版给我看就行」）。
 - 重装 Mac Release 时安装脚本要求先退出 Kite：用户的 `~/Applications/Kite.app` 开着就自己正常退出（`osascript -e 'quit app "Kite"'`）再装，不停下来等用户退（2026-10-14 用户：「以后你自己退就行」）。只退这一个安装版，不碰各检出的预览（DerivedData 里的 Debug 版）。退出可能要二三十秒，等进程没了再跑打好的 `build/Kite-macOS-arm64/安装.command`。安装脚本装完会自己打开 App，之后不要再按名字或 bundle id 打开、激活 Kite（`open -a Kite`、`tell application "Kite"`）：机器上还有 Codex 工作树和 DerivedData 里的 Kite.app，LaunchServices 可能挑中用已吊销开发证书签名的旧构建，系统按恶意软件拦截并挪进废纸篓，弹窗看着像刚装的 App 出了事（2026-10-16）。确需打开时用 `~/Applications/Kite.app` 的完整路径。
 - 主线检出的 Kite 供其他会话使用，工作树的预览不能把它退掉（2026-10-12 用户）。`preview-mac.sh` 已按检出各开各的预览；绕开脚本自己起 App 时同样只动本检出的进程。
+- 自己开的 Kite 用完就关：探针跑完、换到别的检出开预览、交付前，按启动时间和参数认出本会话开的那几个退掉，开完用 `pgrep -fl MacOS/Kite` 对一下只剩该留的（2026-10-19 用户：「你开了这么多kite为啥不关」，当时 DerivedData 换成链接后脚本认不出旧预览，每跑一次多一个）。
 
 **Why:** 用户重视已经打磨的界面与真实手感，希望视觉方案和实现范围明确，避免接数据、美化和代码整理相互混淆。
 **How to apply:** 构建、预览和安装使用 [App 入口](../../app/README.md#预览和验证)，每个检出只保留自己的一个预览实例。iPhone 窄屏或触控改动需要在已连接真机安装、打开并交用户验收；Mac 构建不能替代。多份 Xcode 并存时先核对有效工具链，并按路径打开用户选定版本。Release 按 [安装说明](../../docs/macOS安装与打包.md) 整体替换，避免合并覆盖破坏资源与签名。事件诊断见 [[ui-hit-testing-debugging]]。

@@ -296,17 +296,19 @@ final class PhoneStageView: UIView, StageDotsReporting {
             let card = cards[pane] ?? makeCard(pane)
             let closing = !layout.panes.contains(pane)
             let rect = plan.tiles.panes[pane]
-            let placed = card.presentation.place(group: group, pane: pane, rect: rect, dockFrame: plan.dockFrame(of: pane),
+            let instance = paneInstances[pane], dockFrame = plan.dockFrame(of: pane, instance: instance)
+            let placed = card.presentation.place(group: group, pane: pane, rect: rect, dockFrame: dockFrame,
                                                  fallbackSize: plan.regions.canvas.size, regions: plan.regions, closing: closing,
-                                                 appearing: appearing && fresh, addButton: plan.dock?.add)
-            let dimmed = plan.expanded && rect == nil && layout.drag?.pane != pane
+                                                 appearing: appearing && fresh, addButton: plan.dock?.add, inFamily: plan.inFamily(instance))
+            // 收进家族格的子代理整张透明，不压暗（压暗的模糊挂在铺满台面的图层上）
+            let dimmed = plan.expanded && rect == nil && layout.drag?.pane != pane && !placed.hidden
             let dragged = layout.drag?.pane == pane
             let hasThread = area?.thread(in: pane) != nil
             let pinned = layout.pinned.contains(pane)
             // 被拖的卡片照常接：跟手拖动是它标题栏上的手势，中途设成不接会把拖动取消
-            let accepts = (!blocksInput || dragged) && !resizing && !closing && !dimmed
+            let accepts = (!blocksInput || dragged) && !resizing && !closing && !dimmed && !placed.hidden
             let arrangement = PhoneCardView.Arrangement(
-                placed: placed, dockFrame: plan.dockFrame(of: pane), closing: closing, family: plan.familyID(of: pane),
+                placed: placed, dockFrame: dockFrame, closing: closing,
                 openSidebar: pane == plan.first ? openSidebar : nil, dimmed: dimmed, acceptsInput: accepts, dotsHidden: resizing || dotsHidden,
                 dragged: dragged, hasThread: hasThread, fixed: layout.isFixed,
                 header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width, hasThread: hasThread,
@@ -462,10 +464,9 @@ final class PhoneStageView: UIView, StageDotsReporting {
         group.layout.cancelDrag()
     }
 
-    /// 点最小化的窗口：恢复；家族格里的父代理先展开家族，展开后再点父代理才放上台面。
-    func activate(_ pane: Pane, family: String?) {
-        if let family { group.workspace?.toggleDock(family, depth: 0) }
-        else { group.layout.restore(pane, in: stageRect) }
+    /// 点最小化的窗口（家族格里的父代理也是）：放上台面。
+    func activate(_ pane: Pane) {
+        group.layout.restore(pane, in: stageRect)
     }
 
     // MARK: - 逐帧

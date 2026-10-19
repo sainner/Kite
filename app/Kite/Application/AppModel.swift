@@ -768,7 +768,10 @@ final class AppModel {
         if pane.id == area.chooserWindow { area.closeChooser(); return }
         guard area.windows.contains(where: { $0.id == pane.id }), !area.isOpening(pane), area.closeRequests[pane.id] == nil else { return }
         area.windowError = nil
+        // 父代理关窗口：子代理收着的窗口一起关，台面上的留着
+        let descendants = area.descendantPanesClosing(with: pane)
         area.closeLocally(pane.id)
+        for child in descendants { closeWindow(child, in: area) }
         area.closeRequests[pane.id] = Task {
             defer { area.closeRequests[pane.id] = nil }
             let client: KitedClient

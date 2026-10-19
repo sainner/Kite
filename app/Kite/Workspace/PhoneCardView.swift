@@ -11,12 +11,11 @@ import UIKit
 /// 正文按停着的样子排一次，飞行中只改外层图层的变换和遮罩（PhoneContentContainer）：会话窗口是原生外框（PhoneThreadWindowView），
 /// 别的窗口是岛；点阵、头像、窗口按钮各是一个岛。标题栏一层按停着的外框摆，飞行中看不见也不接输入。
 final class PhoneCardView: UIView {
-    /// 台面这一轮给这张卡片的：终点、停靠格、在不在退出、家族格、侧栏入口给不给它、是不是被停靠栏展开的面板压暗、接不接输入。
+    /// 台面这一轮给这张卡片的：终点、停靠格、在不在退出、侧栏入口给不给它、是不是被停靠栏展开的面板压暗、接不接输入。
     struct Arrangement {
         let placed: CardPresentation.Placement
         let dockFrame: CGRect?
         let closing: Bool
-        let family: String?
         let openSidebar: (@MainActor () -> Void)?
         let dimmed: Bool
         let acceptsInput: Bool
@@ -711,7 +710,8 @@ final class PhoneCardView: UIView {
 
     private func click() {
         guard let placed, let stage else { return }
-        if placed.minimized { stage.activate(pane, family: arrangement?.family) }
+        // 缩在停靠栏里（家族格里的父代理也是）：放上台面
+        if placed.minimized { stage.activate(pane) }
         else { stage.group.layout.focus(pane) }
     }
 
@@ -760,9 +760,9 @@ final class PhoneCardView: UIView {
         set {}
     }
 
-    /// 缩成停靠形状时整张是一个按钮（点了展开），正文对读屏隐藏；停着时读正文和窗口按钮。
+    /// 缩成停靠形状时整张是一个按钮（点了展开），正文对读屏隐藏；停着时读正文和窗口按钮。收进家族格的子代理窗口整张透明，由家族格读。
     override var isAccessibilityElement: Bool {
-        get { placed?.minimized == true }
+        get { placed?.minimized == true && placed?.hidden == false }
         set {}
     }
 
@@ -800,9 +800,9 @@ final class PhoneCardView: UIView {
     override var accessibilityCustomActions: [UIAccessibilityCustomAction]? {
         get {
             guard let placed, let stage, !closing else { return nil }
-            let pane = pane, family = arrangement?.family
+            let pane = pane
             if placed.minimized {
-                return [UIAccessibilityCustomAction(name: "展开窗口") { [weak stage] _ in stage?.activate(pane, family: family); return true }]
+                return [UIAccessibilityCustomAction(name: "展开窗口") { [weak stage] _ in stage?.activate(pane); return true }]
             }
             return paneWindowActions(group: stage.group, pane: pane, model: stage.model)?.commands.filter(\.enabled).map { command in
                 UIAccessibilityCustomAction(name: command.title) { _ in command.action(); return true }

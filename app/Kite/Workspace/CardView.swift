@@ -11,12 +11,11 @@ import SwiftUI
 /// 别的窗口是托管视图；点阵、头像、窗口按钮各是一个托管视图。标题栏一层按停着的外框摆，飞行中看不见也不接输入：
 /// 跟着外框逐帧变大小的话，拖动区这个 AppKit 视图每帧改尺寸，连带焦点、可见范围、跟踪区域和光标逐帧重算（2026-10-12 Mac 实测）。
 final class CardView: NSView {
-    /// 台面这一轮给这张卡片的：终点、停靠格、在不在退出、家族格、侧栏入口给不给它、是不是被停靠栏展开的面板压暗、接不接输入。
+    /// 台面这一轮给这张卡片的：终点、停靠格、在不在退出、侧栏入口给不给它、是不是被停靠栏展开的面板压暗、接不接输入。
     struct Arrangement {
         let placed: CardPresentation.Placement
         let dockFrame: CGRect?
         let closing: Bool
-        let family: String?
         let openSidebar: (@MainActor () -> Void)?
         let dimmed: Bool
         let acceptsInput: Bool
@@ -123,7 +122,6 @@ final class CardView: NSView {
         iconMover.wantsLayer = true
         iconMover.addSubview(icon)
         headerView.addSubview(buttons)
-        setAccessibilityElement(true)
         setAccessibilityRole(.group)
         threadSlot.attach = { [weak self] thread, pane, environment in self?.attachThread(thread, pane: pane, environment: environment) }
         threadSlot.detach = { [weak self] pane in self?.detachThread(pane) }
@@ -711,7 +709,8 @@ final class CardView: NSView {
 
     private func click() {
         guard let placed, let stage else { return }
-        if placed.minimized { stage.activate(pane, family: arrangement?.family) }
+        // 缩在停靠栏里（家族格里的父代理也是）：放上台面
+        if placed.minimized { stage.activate(pane) }
         else { stage.group.layout.focus(pane) }
     }
 
@@ -742,6 +741,9 @@ final class CardView: NSView {
 
     override func accessibilityLabel() -> String? { placed?.appearance.name }
 
+    /// 收进家族格的子代理窗口整张透明，读屏也跳过，由家族格读。
+    override func isAccessibilityElement() -> Bool { placed?.hidden != true }
+
     override func accessibilityFrame() -> NSRect {
         guard let placed, let window else { return .zero }
         return window.convertToScreen(convert(placed.target.frame, to: nil))
@@ -760,9 +762,9 @@ final class CardView: NSView {
     /// 读屏的动作同窗口按钮收进更多菜单时的那几项（paneWindowActions）；缩在停靠栏里时展开窗口。最小化时正文对读屏隐藏，见 PaneCardBody。
     override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
         guard let placed, let stage, !closing else { return nil }
-        let pane = pane, family = arrangement?.family
+        let pane = pane
         if placed.minimized {
-            return [NSAccessibilityCustomAction(name: "展开窗口") { [weak stage] in stage?.activate(pane, family: family); return true }]
+            return [NSAccessibilityCustomAction(name: "展开窗口") { [weak stage] in stage?.activate(pane); return true }]
         }
         return paneWindowActions(group: stage.group, pane: pane, model: stage.model)?.commands.filter(\.enabled).map { command in
             NSAccessibilityCustomAction(name: command.title) { command.action(); return true }

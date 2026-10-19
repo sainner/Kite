@@ -427,8 +427,8 @@ private struct DockPreviewPanels: View {
 
     private func panels(_ entry: DockEntry, in scene: DockPreviewScene) -> some View {
         HStack(alignment: .top, spacing: 24) {
-            DockPanel(entry: entry, depth: 0, axis: .vertical) { _ in }
-            DockPanel(entry: entry, depth: 0, axis: .horizontal) { _ in }
+            DockGroup(entry: entry, depth: 0, expanded: true, openness: 1)
+            DockGroup(entry: entry, depth: 0, expanded: true, openness: 1).environment(\.dockAxis, .horizontal)
         }
         .environment(scene.area)
     }

@@ -127,7 +127,7 @@ struct DockFace: View {
     /// 代理头像的描边由自己画。为 false 时交给外面的容器，颜色经 DockRingColor 报上去：最小化的窗口卡片把它画在外框上，见 CardView。
     var ring = true
     @Environment(\.self) private var environment
-    @Environment(\.dockArrowScale) private var arrowScale
+    @Environment(\.dockFaceScale) private var faceScale
 
     static let ringWidth: CGFloat = 1.5
 
@@ -136,19 +136,20 @@ struct DockFace: View {
         case .agent(let instance, let design):
             let base = (design ?? .fallback).baseColor(in: environment)
             let ringColor = arrow == nil ? tint ?? base : base
+            // 描边、留边、模糊按画出来的大小，在停靠栏的面板里随头像缩放时不跟着变细，见 dockFaceScale
             Circle().fill(Theme.card)
                 .overlay {
                     if let arrow {
                         AgentAvatar(design: design, instance: instance)
-                            .blur(radius: 3).opacity(0.55).clipShape(Circle())
-                        Image(systemName: arrow).font(Theme.title).foregroundStyle(base).scaleEffect(arrowScale)
+                            .blur(radius: 3 / faceScale).opacity(0.55).clipShape(Circle())
+                        DockArrow(symbol: arrow, faceScale: faceScale).foregroundStyle(base)
                     } else {
                         AgentAvatar(design: design, instance: instance, animating: running, tint: tint)
-                            .padding(1)
+                            .padding(1 / faceScale)
                             .clipShape(Circle())
                     }
                 }
-                .overlay { if ring { Circle().strokeBorder(ringColor, lineWidth: Self.ringWidth) } }
+                .overlay { if ring { Circle().strokeBorder(ringColor, lineWidth: Self.ringWidth / faceScale) } }
                 .preference(key: DockRingColor.self, value: ring ? nil : ringColor)
         case .tool(let appearance):
             // 底色定大小，图标叠在上面：图标按原字号排版，放进小头像会比格子宽，不能让它撑开底色
@@ -159,8 +160,8 @@ struct DockFace: View {
                     .overlay {
                         ZStack {
                             Image(systemName: appearance.icon)
-                                .blur(radius: arrow == nil ? 0 : 3).opacity(arrow == nil ? 1 : 0.55)
-                            if let arrow { Image(systemName: arrow).scaleEffect(arrowScale) }
+                                .blur(radius: arrow == nil ? 0 : 3 / faceScale).opacity(arrow == nil ? 1 : 0.55)
+                            if let arrow { Image(systemName: arrow).scaleEffect(1 / faceScale) }
                         }
                         .font(Theme.title)
                         .foregroundStyle(Theme.ink)
@@ -168,6 +169,21 @@ struct DockFace: View {
                     }
             }
         }
+    }
+}
+
+/// 代理头像上的箭头：照家族格里头像的字号，画出来比它小的（小头像）按比例缩小；faceScale 见 dockFaceScale。
+private struct DockArrow: View {
+    let symbol: String
+    let faceScale: CGFloat
+
+    var body: some View {
+        let reference = Metrics.dragBubble - 2 * DockGroup.inset(Metrics.dragBubble), scale = faceScale
+        Image(systemName: symbol).font(Theme.title)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .visualEffect { content, proxy in
+                content.scaleEffect(min(1, proxy.size.width * scale / reference) / scale)
+            }
     }
 }
 

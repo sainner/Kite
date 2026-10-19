@@ -89,8 +89,9 @@ struct StageDockRail: View {
 
     var body: some View {
         if let area {
-            let dock = StagePlan.dock(layout: layout, area: area, bounds: geometry.bounds).dock
-            DockRail(geometry: dock, hiddenInstances: geometry.retiring)
+            let bounds = geometry.bounds
+            let dock = StagePlan.dock(layout: layout, area: area, bounds: bounds).dock
+            DockRail(geometry: dock, hiddenInstances: geometry.retiring) { pane in StagePlan.show(pane, layout: layout, in: bounds) }
                 .environment(area)
                 .modifier(PausedInTransition(layout: layout))
                 .frame(width: geometry.bounds.maxX, height: geometry.bounds.maxY, alignment: .topLeading)
@@ -111,10 +112,7 @@ struct StageDockOverlay: View {
         if let area {
             let bounds = geometry.bounds
             let (regions, dock) = StagePlan.dock(layout: layout, area: area, bounds: bounds)
-            DockOverlay(geometry: dock, bounds: bounds, regions: regions) { pane in
-                if layout.shown?.panes.contains(pane) == true { layout.focus(pane) }
-                else { layout.restore(pane, in: bounds) }
-            }
+            DockOverlay(geometry: dock, bounds: bounds, regions: regions) { pane in StagePlan.show(pane, layout: layout, in: bounds) }
             .environment(area)
             .modifier(PausedInTransition(layout: layout))
             .frame(width: bounds.maxX, height: bounds.maxY, alignment: .topLeading)

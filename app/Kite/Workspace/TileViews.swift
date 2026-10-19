@@ -20,6 +20,8 @@ struct TilesLayer: View {
 struct DockRail: View {
     let geometry: DockGeometry
     var hiddenInstances: Set<String> = []
+    /// 点了家族格里父代理的头像：同 DockOverlay.showPane。
+    var showPane: (Pane) -> Void = { _ in }
     @Environment(WindowLayout.self) private var workspace
     @Environment(WorkArea.self) private var area
     @Environment(AppModel.self) private var model
@@ -32,7 +34,7 @@ struct DockRail: View {
                 .modifier(DockDimmed(dimmed: dimmed))
             ForEach(geometry.cells, id: \.entry.id) { cell in
                 if !isPane(cell.entry) {
-                    DockCellButton(entry: cell.entry, depth: 0, hoverFrame: cell.frame)
+                    DockCellButton(entry: cell.entry, depth: 0, hoverFrame: cell.frame, drawsParent: drawsParent(cell.entry), showPane: showPane)
                         .placed(cell.frame)
                         .opacity(hidden(cell.entry) ? 0 : 1)
                         .modifier(DockDimmed(dimmed: dimmed && !unfolded(cell.entry)))
@@ -42,7 +44,7 @@ struct DockRail: View {
             ForEach(geometry.minis, id: \.entry.id) { mini in
                 // 悬停标签从停靠栏左边浮出，不盖住左列的小头像
                 let hover = CGRect(x: geometry.add.minX, y: mini.frame.minY, width: mini.frame.maxX - geometry.add.minX, height: mini.frame.height)
-                DockCellButton(entry: mini.entry, depth: 0, mini: true, hoverFrame: hover)
+                DockCellButton(entry: mini.entry, depth: 0, mini: true, hoverFrame: hover, drawsParent: drawsParent(mini.entry), showPane: showPane)
                     .placed(mini.frame)
                     .opacity(hidden(mini.entry) ? 0 : 1)
                     .modifier(DockDimmed(dimmed: dimmed && !unfolded(mini.entry)))
@@ -52,13 +54,14 @@ struct DockRail: View {
                 DockDivider(x: geometry.add.midX, y: divider)
                     .modifier(DockDimmed(dimmed: dimmed))
             }
-            if case .dock = workspace.drag?.spot, let pane = workspace.drag?.pane, let frame = geometry.paneFrame(pane) {
+            if case .dock = workspace.drag?.spot, let pane = workspace.drag?.pane, let frame = dropFrame(pane) {
                 RoundedRectangle(cornerRadius: area.isAgentPane(pane) ? frame.width / 2 : Metrics.dockRadius)
                     .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
                     .placed(frame)
                     .allowsHitTesting(false)
             }
         }
+        .environment(\.dockOnStage, geometry.onStage)
         .animation(WindowMotionKind.preview.animation, value: geometry.allCells.map(\.entry.id))
         .task(id: model.revision(for: area)) {
             try? await model.ensureRoles(in: area)
@@ -69,11 +72,26 @@ struct DockRail: View {
         if case .pane = entry { true } else { false }
     }
 
-    /// 展开着的那一格：面板盖在上面接着画它，格子自己不露。
+    /// 展开着的那一格：上面那一层的同一个家族格接着画它（见 DockOverlay），这一格自己不露。
     private func unfolded(_ entry: DockEntry) -> Bool { area.dockExpansion.first == entry.id }
 
+    /// 展开着的，和关闭途中、卡片还没落下的那一格；家族格照常画，只有父代理的头像先不画（见 drawsParent）。
     private func hidden(_ entry: DockEntry) -> Bool {
-        unfolded(entry) || entry.leadInstance.map { hiddenInstances.contains($0.id) } == true
+        if unfolded(entry) { return true }
+        if case .family = entry { return false }
+        return entry.leadInstance.map { hiddenInstances.contains($0.id) } == true
+    }
+
+    /// 家族格里的父代理：最小化的窗口卡片画在胶囊最上面（脉冲见 DockOverlay），关掉的窗口正飞回来时也先不画。
+    private func drawsParent(_ entry: DockEntry) -> Bool {
+        guard case .family(let family) = entry else { return true }
+        return !(family.pane != nil && !family.onStage) && !hiddenInstances.contains(family.parent.id)
+    }
+
+    /// 拖进停靠栏时放下的位置：子代理落在父代理那一格里自己的头像上。
+    private func dropFrame(_ pane: Pane) -> CGRect? {
+        let instance = area.dockInstanceID(pane)
+        return geometry.grouped.contains(instance) ? geometry.face(of: instance) : geometry.paneFrame(pane)
     }
 }
 
@@ -109,12 +127,15 @@ struct DockOverlay: View {
                     .modifier(DockDimmed(dimmed: expanded))
                     .allowsHitTesting(false)
             }
-            if let root = area.dockExpansion.first, let cell = geometry.allCells.first(where: { $0.entry.id == root }) {
+            if let root = area.dockExpansion.first, geometry.allCells.contains(where: { $0.entry.id == root }) {
                 Color.clear
                     .contentShape(Rectangle())
                     .onTapGesture { area.collapseDock() }
                     .placed(bounds)
-                panel(cell.entry, from: cell.frame)
+            }
+            // 每个能展开的格子一个：收起时面板叠回格子的样子再拿掉，见 DockUnfold
+            ForEach(geometry.allCells.filter { $0.entry.expands }, id: \.entry.id) { cell in
+                DockUnfold(expanded: area.dockExpansion.first == cell.entry.id) { panel(cell.entry, from: cell.frame) }
             }
             if expanded {
                 // Esc 收起
@@ -124,6 +145,7 @@ struct DockOverlay: View {
                     .frame(width: 0, height: 0)
             }
         }
+        .environment(\.dockOnStage, geometry.onStage)
         // 原生台面拖侧栏改宽时 bounds 左边让出一段（见 StageView.stageRect），格子按台面坐标摆，这一层从台面原点铺到右下角
         .frame(width: bounds.maxX, height: bounds.maxY, alignment: .topLeading)
         .dockHoverSource(hoverTip)
@@ -140,20 +162,20 @@ struct DockOverlay: View {
         case .pane(let pane) where workspace.drag?.pane != pane:
             DockPulse(instance: area.dockInstanceID(pane)).placed(frame)
         case .family(let family) where family.pane != nil && !family.onStage && workspace.drag?.pane != family.pane:
-            // 子代理和描边在卡片下面，见 DockCell
+            // 子代理和描边在卡片下面，见 DockRail
             DockPulse(instance: family.parent.id).placed(DockGeometry.parentFrame(in: frame))
         default:
             EmptyView()
         }
     }
 
-    /// 展开的面板从格子原地拉长：先往下，放不下再往上，最高到停靠栏全高，再多就在里面滚动。小头像展开的面板也居中在停靠栏上。
-    /// 收着时正好盖住格子，格子里叠着的头像由面板里的同一批头像接着排开（见 DockPanel）。
+    /// 展开的家族格从格子原地拉长：先往下，放不下再往上，最高到停靠栏全高，再多就在里面滚动。小头像展开后也居中在停靠栏上。
+    /// 收着时和下面那一格一模一样、正好盖住它，展开时同一批头像从叠着的地方排开（见 DockGroup）。
     private func panel(_ entry: DockEntry, from cell: CGRect) -> some View {
         let path = area.dockExpansion.dropFirst()
-        let extent = DockPanel.extent(entry, path: path), breadth = DockPanel.breadth(entry, path: path)
+        let extent = DockGroup.extent(entry, path: path), breadth = DockGroup.breadth(entry, path: path)
         let height = min(extent, regions.dock.height)
-        let top = max(min(cell.minY - DockPanel.padding, regions.dock.maxY - height), regions.dock.minY)
+        let top = max(min(cell.minY - DockGroup.padding, regions.dock.maxY - height), regions.dock.minY)
         let frame = CGRect(x: regions.dock.midX - breadth / 2, y: top, width: breadth, height: height)
         return ScrollView(.vertical, showsIndicators: false) {
             DockUnfolding(entry: entry, cell: cell, frame: frame, showPane: showPane)
@@ -162,12 +184,10 @@ struct DockOverlay: View {
         .scrollDisabled(extent <= height)
         .scrollClipDisabled(extent <= height)
         .placed(frame)
-        .id(entry.id)
-        .transition(.dockUnfold)
     }
 }
 
-/// 展开的面板在滚动区里的位置：收着时缩回格子、挪到格子上。滚动区和它的内容在过渡中大小不变，只有面板在动：
+/// 展开的家族格在滚动区里的位置：收着时挪到格子上。滚动区和它的内容在过渡中大小不变，只有家族格在动：
 /// Mac 的滚动区由 AppKit 承担，跟着动画改大小时内容会被裁掉右边，收起时先掉到下面再回来。
 private struct DockUnfolding: View {
     let entry: DockEntry
@@ -175,11 +195,13 @@ private struct DockUnfolding: View {
     /// 滚动区在台面上的位置。
     let frame: CGRect
     var showPane: (Pane) -> Void
-    @Environment(\.dockPanelFolded) private var folded
+    @Environment(WorkArea.self) private var area
+    @Environment(\.dockPanelOpenness) private var openness
 
     var body: some View {
-        DockPanel(entry: entry, depth: 0, axis: .vertical, cellWidth: cell.width, showPane: showPane)
-            .offset(folded ? CGSize(width: cell.minX - frame.minX, height: cell.minY - frame.minY) : .zero)
+        DockGroup(entry: entry, depth: 0, expanded: area.dockExpansion.first == entry.id, openness: openness,
+                  mini: cell.width < Metrics.dragBubble, showPane: showPane)
+            .offset(CGSize(width: (cell.minX - frame.minX) * (1 - openness), height: (cell.minY - frame.minY) * (1 - openness)))
     }
 }
 

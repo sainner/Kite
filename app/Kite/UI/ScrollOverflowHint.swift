@@ -3,8 +3,9 @@ import SwiftUI
 extension View {
     /// 滚动区还有看不到的内容时提醒：被截掉的那一头渐隐，边的正中有箭头指向它。加在 ScrollView 上，axis 是它滚动的方向。
     /// 遮罩同时把内容截在滚动区里。箭头只是提示，不接点击，点到的仍是下面的内容。
-    func hintsScrollOverflow(_ axis: Axis = .vertical, carets: ScrollOverflowCarets = .apart) -> some View {
-        modifier(ScrollOverflowHint(axis: axis, carets: carets))
+    /// caretsDimmed：箭头跟着压暗（停靠栏展开时其余的模糊淡出，见 DockDimmed）。
+    func hintsScrollOverflow(_ axis: Axis = .vertical, carets: ScrollOverflowCarets = .apart, caretsDimmed: Bool = false) -> some View {
+        modifier(ScrollOverflowHint(axis: axis, carets: carets, dimmed: caretsDimmed))
     }
 }
 
@@ -21,6 +22,7 @@ enum ScrollOverflowCarets {
 private struct ScrollOverflowHint: ViewModifier {
     let axis: Axis
     let carets: ScrollOverflowCarets
+    let dimmed: Bool
     @State private var overflow = Overflow()
 
     /// 前后两头各自还有没有内容被截掉。
@@ -98,6 +100,7 @@ private struct ScrollOverflowHint: ViewModifier {
             .foregroundStyle(.secondary)
             .frame(width: vertical ? nil : Self.caretExtent, height: vertical ? Self.caretExtent : nil)
             .opacity(opacity(before: before))
+            .modifier(DockDimmed(dimmed: dimmed))
             .allowsHitTesting(false)
             .accessibilityHidden(true)
     }

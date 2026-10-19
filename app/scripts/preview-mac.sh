@@ -12,6 +12,8 @@ scripts/build-tailscalekit.sh
 ARGS=(-project Kite.xcodeproj -scheme Kite -configuration Debug -destination 'generic/platform=macOS' COMPILER_INDEX_STORE_ENABLE=NO)
 xcodebuild "${ARGS[@]}" build -quiet
 PRODUCTS=$(xcodebuild "${ARGS[@]}" -showBuildSettings 2>/dev/null | awk -F' = ' '$1 ~ / BUILT_PRODUCTS_DIR$/ { print $2; exit }')
+# DerivedData 的目录可能是指向 .noindex 的链接，进程的路径是解析后的：按真实路径找，不然认不出上次开的，每次都多开一个
+PRODUCTS=$(cd "$PRODUCTS" && pwd -P)
 EXE="^$PRODUCTS/Kite.app/Contents/MacOS/Kite"
 # 按进程号请它正常退出，同 bundle ID 的其他实例收不到
 for _ in $(seq 40); do

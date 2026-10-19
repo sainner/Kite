@@ -79,8 +79,8 @@ final class WindowMotion {
         return (started, duration)
     }
 
-    /// 排布动画在停靠形状和台面形状之间变：缩小进停靠栏、从停靠栏恢复、拖动松手后展开。
-    var changingForm: Bool { settling && source.iconOpacity != target.iconOpacity }
+    /// 排布动画在停靠形状和台面形状之间变：缩小进停靠栏、从停靠栏恢复、拖动松手后展开。收进家族格的子代理没有头像，看正文。
+    var changingForm: Bool { settling && (source.iconOpacity != target.iconOpacity || source.contentOpacity != target.contentOpacity) }
 
     func presentation(at date: Date) -> WindowPose {
         guard duration > 0 else { return target }

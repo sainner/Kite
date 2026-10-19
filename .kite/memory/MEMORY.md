@@ -5,7 +5,7 @@
 - [PDF 读取方案](pdf-read-direction.md) — Vision 与无备用解析器的明确取舍
 - [视觉参考与范围](visual-style-direction.md) — 色板、角色点阵、项目色和字体范围
 - [界面事件诊断](ui-hit-testing-debugging.md) — 合成输入与命中证据的限制，光标探针，simctl 两次内核崩溃后不再用，现场采集别挂调试器，真机崩溃报告的取法
-- [尺寸突变与裁剪怎么查](ui-layout-jump-diagnosis.md) — 让预览自己打开、日志打各段高度或沿视图链打裁剪；zsh 的 log 写全路径；外层蒙版会裁
+- [尺寸突变与裁剪怎么查](ui-layout-jump-diagnosis.md) — 预览自己打开、日志打各段高度或沿视图链打裁剪；zsh 的 log 写全路径；外层蒙版会裁；iPhone 动画在真机逐帧截图
 - [卡顿怎么量](performance-diagnosis.md) — 测量入口与交替对照、帧间隔、真机 Time Profiler、合成滚动、软边诊断、UIKit 透明度坑，Mac 结论不外推到 iPhone
 - [真机量 iPhone、iPad 排版](ios-layout-probe.md) — 不登录：kited 取数据、参数开的探针渲染生产视图、App 里截图、devicectl 取回；不用模拟器
 - [对话正文的文本容器](text-container-direction.md) — 每条回复一个 TextKit 2 文本视图、附件嵌代码块、复制给原文、外观不改，第三步 iPhone 待验收
@@ -17,7 +17,7 @@
 
 ## 协作反馈
 
-- [界面工作与验收](feedback-ui-workflow.md) — 方案、目标定位、连续推进、失灵诊断不靠猜、真机验收和工具链选择；改完直接开 Debug 预览
+- [界面工作与验收](feedback-ui-workflow.md) — 方案、目标定位、连续推进、失灵诊断不靠猜、真机验收和工具链选择；改完直接开 Debug 预览，自己开的 Kite 用完就关
 - [交互连续性](feedback-interaction-quality.md) — 公共控件（报一处按类修全）、对象身份、动效性能；窗口动画不回弹、新建从添加入口展开、点阵收起；改尺寸只动相邻窗口；上一步与固定；触屏长按起拖、标题栏无右键菜单
 - [状态放标题栏](feedback-pane-status-placement.md) — 窗口状态归信息区，副行只放 description；为空画点阵图案配文字；弹窗副行说清做什么、状态写正文
 - [测试要克制](test-restraint.md) — 测试准入主来源、事件断言与 PDF 验证要求
