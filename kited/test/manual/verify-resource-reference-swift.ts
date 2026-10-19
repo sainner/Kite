@@ -104,13 +104,14 @@ private func links(_ source: AttributedString) -> [URL] {
 struct ResourceReferenceContract {
     @MainActor
     static func main() async throws {
-        let scope = ReferenceScope(machineID: "fixture-machine", workspaceID: "fixture-workspace")
+        let scope = ReferenceScope(machineID: "fixture-machine", workspaceID: "fixture-workspace", root: "/fixture/workspace",
+            names: ["README.md", "src", "目录"])
 
         // Foundation 必须把中文、空格及 URL 保留字符编码在目标内，而非转成 fragment/query 或双重转义。
         let original = FileReference(path: "目录/带 空格#%?.ts", diffID: "diff_a81",
             startLine: 10, endLine: 20)
         let url = original.url(in: scope)
-        require(FileReference(url: url) == original && FileReference.scope(of: url) == scope,
+        require(FileReference(url: url) == original && scope.owns(url),
             "内部 URL 往返改变中文或保留字符、diff 定位或工作区归属")
         require(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains(where: { $0.name == "side" }) == false,
             "新的 diff URL 仍携带旧侧或新侧参数")
@@ -137,7 +138,7 @@ struct ResourceReferenceContract {
             startLine: 10, endLine: 20)), "Markdown diff 链接的版本标识或修改后行范围丢失")
         require(files.contains(FileReference(path: "目录/带 空格#%.ts", startLine: 12, endLine: 18)),
             "Markdown 相对目标的百分号未正确解码或被解码两次")
-        require(targets.filter { FileReference(url: $0) != nil }.allSatisfy { FileReference.scope(of: $0) == scope },
+        require(targets.filter { FileReference(url: $0) != nil }.allSatisfy { scope.owns($0) },
             "装饰后的文件引用未绑定消息所属工作区")
         require(targets.contains(URL(string: "https://example.com/docs?q=a%20b#part")!),
             "已有网页 Markdown 链接的查询或锚点被引用识别改写")
@@ -156,9 +157,9 @@ struct ResourceReferenceContract {
             "diff_sample1": (originalText, firstText), "diff_sample2": (firstText, currentText),
         ])
         let browser = FileBrowser(instanceID: "fixture-files", workspaceID: scope.workspaceID, client: client)
-        guard let firstReference = FileReference.parse("README.md:diff_sample1:5"),
-              let secondReference = FileReference.parse("README.md:diff_sample2:5"),
-              let currentReference = FileReference.parse("README.md:1-6") else { fatalError("导航夹具引用无效") }
+        guard let firstReference = FileReference.parse("README.md:diff_sample1:5", in: scope),
+              let secondReference = FileReference.parse("README.md:diff_sample2:5", in: scope),
+              let currentReference = FileReference.parse("README.md:1-6", in: scope) else { fatalError("导航夹具引用无效") }
         try await browser.navigate(firstReference)
         await browser.loadSelection()
         require(browser.selection.path == "README.md" && browser.selection.diffId == "diff_sample1"
@@ -191,7 +192,7 @@ struct ResourceReferenceContract {
         require(secondRow.newLine == 5 && secondRow.oldLine == nil
             && secondRow.text == "文件、预览和 diff 共用一个窗口。", "第二份 diff 定位复用了第一份内容或采用修改前行号")
 
-        guard let overviewReference = FileReference.parse("README.md:diff_sample2") else { fatalError("整份 diff 引用无效") }
+        guard let overviewReference = FileReference.parse("README.md:diff_sample2", in: scope) else { fatalError("整份 diff 引用无效") }
         try await browser.navigate(overviewReference)
         await browser.loadSelection()
         let firstChange = browser.diffRows.first(where: { $0.oldLine == 5 && $0.newLine == nil })

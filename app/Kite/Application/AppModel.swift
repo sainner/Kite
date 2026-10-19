@@ -689,14 +689,16 @@ final class AppModel {
         }
     }
 
-    /// 消息里的 localhost:端口 链接在所属工作区内解析：端口属于本工作区运行中的终端时，选中这个端口、打开那个终端的网页视图，
-    /// 否则报错（docs/成果查看与位置.md「运行中的网页」）。
-    func openLocalPort(_ port: Int, in area: WorkArea) async throws {
+    /// 消息里的 localhost:端口 链接在所属工作区内解析：端口属于本工作区运行中的终端时，选中这个端口、打开那个终端的网页视图
+    /// 并到链接的路径，否则报错（docs/成果查看与位置.md「运行中的网页」）。打开到哪里只在本机，见 WorkArea.webLinks。
+    func openLocalPort(_ target: LocalPort, in area: WorkArea) async throws {
         guard let instance = area.instances.first(where: { instance in
             instance.status == .open && instance.state?.terminal?.running == true
-                && instance.state?.terminal?.ports?.contains(where: { $0.port == port }) == true
-        }) else { throw KitedError(message: "localhost:\(port) 不是这个工作区里运行中的终端在监听的端口") }
-        if instance.state?.terminal?.webPort != port { try await selectTerminalPort(port, of: instance.id, in: area) }
+                && instance.state?.terminal?.ports?.contains(where: { $0.port == target.port }) == true
+        }) else { throw KitedError(message: "localhost:\(target.port) 不是这个工作区里运行中的终端在监听的端口") }
+        // 先记下再选端口：网页视图换到这个端口时直接打开到链接的路径，不先开一次首页
+        area.webLinks[instance.id] = WebLink(target: target)
+        if instance.state?.terminal?.webPort != target.port { try await selectTerminalPort(target.port, of: instance.id, in: area) }
         openWindow(.open(.init(instanceId: instance.id, viewId: "web")), in: area)
     }
 
@@ -738,6 +740,7 @@ final class AppModel {
     /// 引用只选择资源；窗口身份仍按现有实例与视图复用。窗口先在本机打开（见 sendWindowRequest），再选文件；
     /// 还没有文件实例的，等工作机建好实例才能选。
     /// 窗口不在台面上时目录先收起、不带动画，窗口打开出来就是文件：等选好文件再收（见 navigate），目录会在窗口展开时划走。
+    /// 可能是目录的引用不收，读得出目录就展开到它。
     func openFileReference(_ reference: FileReference, in area: WorkArea) async throws {
         let browsing = area.windows.first { area.files[$0.target.instanceId] != nil }?.target.instanceId
             ?? area.instances.first { $0.status == .open && area.files[$0.id] != nil }?.id
@@ -752,7 +755,7 @@ final class AppModel {
             return
         }
         guard let browser = area.files[instanceID] else { throw KitedError(message: "文件窗口尚未就绪") }
-        if !area.isVisible(instance: instanceID) {
+        if !area.isVisible(instance: instanceID), !reference.mayBeDirectory {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) { browser.showDirectory = false }

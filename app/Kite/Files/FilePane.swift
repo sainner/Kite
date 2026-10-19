@@ -19,8 +19,6 @@ struct FilePane: View {
     @State private var pdfMatches = 0
     /// 交给 PDF 预览的关键字：PDFKit 同步搜整份文档，等输入停下再给。
     @State private var pdfQuery: String?
-    /// 从搜索结果展开的目录，目录树滚到它。
-    @State private var revealed: Reveal?
 
     private var header: PaneHeader {
         // 主标题是当前文件的名字，还没选文件时是工作区文件夹的名字
@@ -323,8 +321,10 @@ struct FilePane: View {
                 .font(Theme.secondary).padding(Metrics.padding).frame(maxWidth: .infinity, alignment: .leading)
                 .separateScrollPocket()
             }
-            .onChange(of: revealed) {
-                if let path = revealed?.path { withAnimation { proxy.scrollTo(path, anchor: .center) } }
+            .onChange(of: browser.revealed, initial: true) {
+                guard let path = browser.revealed else { return }
+                withAnimation { proxy.scrollTo(path, anchor: .center) }
+                browser.revealed = nil
             }
         }
     }
@@ -338,7 +338,6 @@ struct FilePane: View {
                 query = ""
                 withAnimation { searching = false }
                 await browser.reveal(entry.path)
-                revealed = Reveal(path: entry.path)
             } else {
                 try? await browser.navigate(FileReference(path: entry.path))
             }
@@ -523,12 +522,6 @@ struct FilePane: View {
         .padding(.vertical, 2)
         .background(focused ? Color.accentColor.opacity(0.18) : color.opacity(row.kind == .same ? 0 : 0.07))
     }
-}
-
-/// 从搜索结果展开的目录；每次展开都是新的一个，同一个目录再点也会滚过去。
-private struct Reveal: Equatable {
-    let path: String
-    let id = UUID()
 }
 
 /// 控制区的排布：前面的组靠左、Trailing 的组靠右排一行；放不下时前面的一行、后面的一行。搜索框展开时（Fills）占满所在一行剩下的宽度。

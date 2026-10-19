@@ -41,6 +41,8 @@ struct TerminalPane: View {
     private var running: Bool { status?.running ?? true }
     private var ports: [TerminalStatus.Port] { pushed?.ports ?? [] }
     private var port: Int? { running ? pushed?.webPort : nil }
+    /// 消息里点的链接，端口对得上才打开到它的路径（见 AppModel.openLocalPort）。
+    private var link: WebLink? { area.webLinks[instance.id].flatMap { $0.target.port == port ? $0 : nil } }
 
     /// 停止放在标题栏右边，红色。用户开的终端也能在里面 Ctrl+C、exit；agent 转到后台的命令没有输入，只能靠它。
     private var headerActions: PaneHeaderActions {
@@ -76,7 +78,7 @@ struct TerminalPane: View {
                         .shown(!showsWeb)
                 }
                 if webKept || showsWeb, let port, let store = UUID(uuidString: instance.id) {
-                    PortPreview(client: client, port: port, store: store, report: { webFailure = $0 }, visible: showsWeb)
+                    PortPreview(client: client, port: port, store: store, link: link, report: { webFailure = $0 }, visible: showsWeb)
                         .id("\(port) \(reload)")
                         .shown(showsWeb)
                 }
@@ -126,8 +128,10 @@ struct TerminalPane: View {
         }
     }
 
+    /// 自己选的端口从首页看起，不再停在之前点的链接上。
     private func select(_ value: Int) {
         selectError = nil
+        area.webLinks[instance.id] = nil
         Task {
             do { try await model.selectTerminalPort(value, of: instance.id, in: area) }
             catch { selectError = error.localizedDescription }

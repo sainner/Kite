@@ -4,6 +4,26 @@ import Foundation
 struct ReferenceScope: Equatable, Hashable, Sendable {
     let machineID: String
     let workspaceID: String
+    /// 工作区目录：绝对路径在它里面才是工作区的路径，见 FileReference.parse。
+    let root: String
+    /// 工作区目录顶层的名字，由工作机随工作区信息给出：路径的开头必须是其中之一。
+    let names: Set<String>
+    /// names 的首字，正文里逐字找路径开头时先用它筛。
+    let initials: Set<Character>
+
+    init(machineID: String, workspaceID: String, root: String = "", names: [String] = []) {
+        self.machineID = machineID
+        self.workspaceID = workspaceID
+        self.root = root
+        self.names = Set(names)
+        initials = Set(names.compactMap(\.first))
+    }
+
+    /// 完整链接是不是这个工作区的。链接里只有工作机和工作区，不比目录。
+    func owns(_ url: URL) -> Bool {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        return items.first { $0.name == "machine" }?.value == machineID && items.first { $0.name == "workspace" }?.value == workspaceID
+    }
 }
 
 struct FileReference: Equatable, Hashable, Sendable {
@@ -13,13 +33,17 @@ struct FileReference: Equatable, Hashable, Sendable {
     var endLine: Int?
 
     var label: String { (path as NSString).lastPathComponent }
+    /// 没有扩展名、也没带定位的可能是目录，打开时先按目录试（见 FileBrowser.navigate）。
+    var mayBeDirectory: Bool { diffID == nil && startLine == nil && (path as NSString).pathExtension.isEmpty }
 
     // 正文里每个像路径的词都要经这几条正则；编译比匹配贵得多，对话建行时曾占到正文属性串构建的四成（2026-10-12 实测）
     private static let lineSuffix = try! NSRegularExpression(pattern: #"#L(\d+)(?:-L?(\d+))?$"#)
     private static let parts = try! NSRegularExpression(pattern: #"^(.+?)(?::(diff_[A-Za-z0-9_-]+))?(?::([1-9][0-9]*)(?:-([1-9][0-9]*))?)?$"#)
     private static let fileExtension = try! NSRegularExpression(pattern: #"\.[A-Za-z][A-Za-z0-9_-]*$"#)
 
-    static func parse(_ source: String) -> Self? {
+    /// 工作机只打开工作区里的文件和目录，所以开头必须是工作区顶层的名字（scope.names）：绝对路径在工作区目录里的换成相对路径，
+    /// 在外面的（比如网址的路径 /crevo/login）不算。只有顶层名字一段时，带扩展名的文件或写了结尾 / 的目录才算，免得 app、docs 这类词被当成路径。
+    static func parse(_ source: String, in scope: ReferenceScope) -> Self? {
         var value = source
         if value.hasPrefix("file://"), let url = URL(string: value) { value = url.path }
         guard !value.contains("://"), !value.contains("\n"), !value.contains("\r") else { return nil }
@@ -27,12 +51,27 @@ struct FileReference: Equatable, Hashable, Sendable {
         if value.hasSuffix("-") { value.removeLast() }
         guard let match = parts.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) else { return nil }
         func part(_ i: Int) -> String? { Range(match.range(at: i), in: value).map { String(value[$0]) } }
-        guard let path = part(1), !path.contains(":"),
-              path.contains("/") || fileExtension.firstMatch(in: path, range: NSRange(path.startIndex..., in: path)) != nil else { return nil }
+        guard var path = part(1), !path.contains(":") else { return nil }
+        if path.hasPrefix("/") {
+            let base = scope.root.hasSuffix("/") ? scope.root : scope.root + "/"
+            guard base.count > 1, path.hasPrefix(base), path.count > base.count else { return nil }
+            path.removeFirst(base.count)
+        } else if path.hasPrefix("./") {
+            path.removeFirst(2)
+        }
+        let directory = path.hasSuffix("/")
+        if directory { path.removeLast() }
+        guard let first = path.split(separator: "/").first, scope.names.contains(String(first)),
+              path.contains("/") || directory || hasExtension(path) else { return nil }
         let start = part(3).flatMap(Int.init), end = part(4).flatMap(Int.init)
         guard part(3) == nil || start != nil, part(4) == nil || end != nil,
               end == nil || (start != nil && end! >= start!) else { return nil }
         return Self(path: path, diffID: part(2), startLine: start, endLine: end)
+    }
+
+    /// 最后一段带扩展名（.gitignore 这类点开头的名字也算）。
+    static func hasExtension(_ path: String) -> Bool {
+        fileExtension.firstMatch(in: path, range: NSRange(path.startIndex..., in: path)) != nil
     }
 
     func url(in scope: ReferenceScope) -> URL {
@@ -62,36 +101,48 @@ struct FileReference: Equatable, Hashable, Sendable {
               value("diff") == nil || value("diff")!.range(of: #"^diff_[A-Za-z0-9_-]+$"#, options: .regularExpression) != nil else { return nil }
         self.init(path: path, diffID: value("diff"), startLine: start, endLine: end)
     }
-
-    static func scope(of url: URL) -> ReferenceScope? {
-        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        guard let machine = items.first(where: { $0.name == "machine" })?.value,
-              let workspace = items.first(where: { $0.name == "workspace" })?.value else { return nil }
-        return ReferenceScope(machineID: machine, workspaceID: workspace)
-    }
 }
 
-/// 本机地址上某个端口的网页：工作机上运行中的终端监听的端口，在所属工作区内解析到那个终端（AppModel.openLocalPort）。
-enum LocalPort {
+/// 本机地址上某个端口的网页：工作机上运行中的终端监听的端口，在所属工作区内解析到那个终端，打开到链接的路径（AppModel.openLocalPort）。
+struct LocalPort: Equatable {
     private static let hosts: Set<String> = ["localhost", "127.0.0.1", "::1", "0.0.0.0"]
+    let port: Int
+    /// 端口后面的路径、查询和锚点，网页视图直接打开到这里；只到首页时为空。
+    let path: String
 
-    static func port(of url: URL) -> Int? {
+    init?(_ url: URL) {
         guard ["http", "https"].contains(url.scheme?.lowercased()), let host = url.host(percentEncoded: false)?.lowercased(),
-              hosts.contains(host), let port = url.port, (1...65535).contains(port) else { return nil }
-        return port
+              Self.hosts.contains(host), let port = url.port, (1...65535).contains(port),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        self.port = port
+        path = (components.percentEncodedPath == "/" ? "" : components.percentEncodedPath)
+            + (components.percentEncodedQuery.map { "?\($0)" } ?? "") + (components.percentEncodedFragment.map { "#\($0)" } ?? "")
     }
 
-    /// 正文里裸写的 localhost:端口，当作 http 链接。
+    /// 正文里裸写的 localhost:端口，可以带路径，当作 http 链接。
     static func bare(_ text: String) -> URL? {
-        let parts = text.split(separator: ":", omittingEmptySubsequences: false)
-        guard parts.count == 2, hosts.contains(parts[0].lowercased()), let port = Int(parts[1]), (1...65535).contains(port) else { return nil }
-        return URL(string: "http://\(text)")
+        guard let colon = text.firstIndex(of: ":"), hosts.contains(text[..<colon].lowercased()),
+              let url = URL(string: "http://\(text)"), Self(url) != nil else { return nil }
+        return url
     }
 }
 
-/// 纯文本识别不访问磁盘或网络；正文保留在原始记录中，缩短的文件名只用于显示。
+/// 点一次本机网页链接：终端的网页视图打开到它的路径。每点一次是新的一个，同一个链接再点也回到那里（见 PortPreview）。
+struct WebLink: Equatable {
+    let target: LocalPort
+    let id = UUID()
+}
+
+/// 识别只看文字和工作区顶层的名字，不查文件是否存在；正文保留在原始记录中，缩短的文件名只用于显示。规则见 docs/资源引用.md。
 enum ReferenceText {
-    private static let tokens = try! NSRegularExpression(pattern: #"https?://[^\s<>`\"'，。；！？（）]+|(?:\.?\.?/|/)?[\p{L}\p{N}_@.~-]+(?:/[\p{L}\p{N}_@.~-]+)*(?::diff_[A-Za-z0-9_-]+)?(?::[1-9][0-9]*(?:-[1-9][0-9]*)?)?"#)
+    private static let webTokens = try! NSRegularExpression(pattern: #"https?://[^\s<>`\"'，。；！？（）]+|(?:localhost|127\.0\.0\.1|0\.0\.0\.0):[0-9]{1,5}(?:[/?#][^\s<>`\"'，。；！？（）]*)?"#)
+    /// 路径后面紧跟的定位：#L 行号，或 diff 与行号。
+    private static let locator = try! NSRegularExpression(pattern: #"#L[1-9][0-9]*(?:-L?[1-9][0-9]*)?|(?::diff_[A-Za-z0-9_-]+)?(?::[1-9][0-9]*(?:-[1-9][0-9]*)?)?"#)
+
+    private enum Found {
+        case file(FileReference)
+        case web(URL)
+    }
 
     static func decorate(_ source: AttributedString, scope: ReferenceScope, compact: Bool = true) -> AttributedString {
         var result = AttributedString()
@@ -100,39 +151,186 @@ enum ReferenceText {
             labels += 1
             return Self.label(text, from: source, link: link, id: labels)
         }
-        for (link, range) in source.runs[\.link] {
+        for (link, intent, range) in source.runs[\.link, \.inlinePresentationIntent] {
             var part = AttributedString(source[range])
             if let link {
                 if let file = FileReference(url: link) {
                     part = label(compact ? file.label : String(part.characters), from: part, link: link)
-                } else if let file = FileReference.parse(link.absoluteString.removingPercentEncoding ?? link.absoluteString) {
+                } else if let file = FileReference.parse(link.absoluteString.removingPercentEncoding ?? link.absoluteString, in: scope) {
                     part = label(compact ? file.label : String(part.characters), from: part, link: file.url(in: scope))
+                } else if link.scheme == nil {
+                    // 不是工作区路径的相对链接（比如工作区外的 /crevo/login）没有地方打开，按普通文字显示
+                    part.link = nil
                 }
                 result.append(part)
                 continue
             }
             let plain = String(part.characters)
+            // 行内代码整段是一个候选：路径里的括号、方括号不切开；带空白的（比如一条命令）不认。
+            if intent?.contains(.code) == true {
+                if !plain.contains(where: \.isWhitespace) {
+                    if let file = FileReference.parse(plain, in: scope) {
+                        part = label(compact ? file.label : plain, from: part, link: file.url(in: scope))
+                    } else if let web = Self.web(plain) {
+                        part.link = web
+                    }
+                }
+                result.append(part)
+                continue
+            }
             var cursor = plain.startIndex
-            for match in tokens.matches(in: plain, range: NSRange(plain.startIndex..., in: plain)) {
-                guard let range = Range(match.range, in: plain) else { continue }
-                // 嵌在标识符中的碎片、邮箱地址和未支持的后缀不猜作文件。
-                if range.lowerBound > plain.startIndex, "@:".contains(plain[plain.index(before: range.lowerBound)]) { continue }
-                if range.upperBound < plain.endIndex, plain[range.upperBound] == ":" { continue }
-                var raw = String(plain[range])
-                while raw.last.map({ ".,;!?)。".contains($0) }) == true { raw.removeLast() }
-                let file = FileReference.parse(raw)
-                let web = raw.hasPrefix("https://") || raw.hasPrefix("http://") ? URL(string: raw) : LocalPort.bare(raw)
-                guard file != nil || web != nil else { continue }
-                let end = plain.index(range.lowerBound, offsetBy: raw.count)
+            for (range, found) in references(in: plain, scope: scope) {
                 result.append(slice(part, plain: plain, range: cursor..<range.lowerBound))
-                let original = slice(part, plain: plain, range: range.lowerBound..<end)
-                if let file { result.append(label(compact ? file.label : String(original.characters), from: original, link: file.url(in: scope))) }
-                else { var text = original; text.link = web; result.append(text) }
-                cursor = end
+                let original = slice(part, plain: plain, range: range)
+                switch found {
+                case .file(let file):
+                    result.append(label(compact ? file.label : String(original.characters), from: original, link: file.url(in: scope)))
+                case .web(let url):
+                    var text = original
+                    text.link = url
+                    result.append(text)
+                }
+                cursor = range.upperBound
             }
             result.append(slice(part, plain: plain, range: cursor..<plain.endIndex))
         }
         return result
+    }
+
+    /// 正文里的网址和工作区路径，按先后、不重叠。
+    private static func references(in text: String, scope: ReferenceScope) -> [(Range<String.Index>, Found)] {
+        var found: [(Range<String.Index>, Found)] = []
+        for match in webTokens.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard var range = Range(match.range, in: text) else { continue }
+            // 嵌在标识符里的碎片和邮箱地址不认
+            if range.lowerBound > text.startIndex, "@:".contains(text[text.index(before: range.lowerBound)]) { continue }
+            while let last = text[range].last, ".,;!?)。".contains(last) { range = range.lowerBound..<text.index(before: range.upperBound) }
+            if let url = web(String(text[range])) { found.append((range, .web(url))) }
+        }
+        let webs = found.map(\.0)
+        var i = text.startIndex
+        while i < text.endIndex {
+            if let web = webs.first(where: { $0.contains(i) }) {
+                i = web.upperBound
+                continue
+            }
+            if let (range, file) = path(in: text, at: i, scope: scope) {
+                found.append((range, .file(file)))
+                i = range.upperBound
+            } else {
+                i = text.index(after: i)
+            }
+        }
+        return found.sorted { $0.0.lowerBound < $1.0.lowerBound }
+    }
+
+    /// 从 i 起的工作区路径：开头是工作区顶层的名字（目录后面接 /，文件带扩展名），往后一段段读到路径结束，再带上定位。
+    private static func path(in text: String, at i: String.Index, scope: ReferenceScope) -> (Range<String.Index>, FileReference)? {
+        // 前面紧挨着英文、数字或路径符号的是别的词的一部分
+        if i > text.startIndex, case let previous = text[text.index(before: i)], continues(previous) || "@:".contains(previous) { return nil }
+        var start = i
+        if text[i] == ".", text[i...].hasPrefix("./") {
+            start = text.index(i, offsetBy: 2)
+        } else if text[i] == "/" {
+            let root = scope.root.hasSuffix("/") ? scope.root : scope.root + "/"
+            guard root.count > 1, text[i...].hasPrefix(root) else { return nil }
+            start = text.index(i, offsetBy: root.count)
+        }
+        guard start < text.endIndex, scope.initials.contains(text[start]) else { return nil }
+        // 顶层名字取最长的：目录后面接 /，文件后面不再接文件名里的字
+        var anchor: (end: String.Index, directory: Bool)?
+        for name in scope.names where text[start...].hasPrefix(name) {
+            let after = text.index(start, offsetBy: name.count)
+            if anchor.map({ after <= $0.end }) == true { continue }
+            if after < text.endIndex, text[after] == "/" { anchor = (after, true) }
+            else if FileReference.hasExtension(name), ends(text, at: after) { anchor = (after, false) }
+        }
+        guard let anchor else { return nil }
+        var end = anchor.end
+        if anchor.directory {
+            end = text.index(after: end)
+            while end < text.endIndex {
+                let segment = segmentEnd(in: text, from: end)
+                guard segment > end else { break }
+                end = segment
+                guard end < text.endIndex, text[end] == "/" else { break }
+                end = text.index(after: end)
+            }
+        }
+        // 句末的点不算路径
+        while text[i..<end].hasSuffix("."), end > anchor.end { end = text.index(before: end) }
+        if let match = locator.firstMatch(in: text, options: .anchored, range: NSRange(end..., in: text)),
+           let range = Range(match.range, in: text) { end = range.upperBound }
+        // 后面还接着 :字母数字 的是认不出的定位，不截一半当引用
+        if end < text.endIndex, text[end] == ":", case let next = text.index(after: end), next < text.endIndex, continues(text[next]) { return nil }
+        guard let file = FileReference.parse(String(text[i..<end]), in: scope) else { return nil }
+        return (i..<end, file)
+    }
+
+    /// 一段名字到哪里结束：返回 / 或结束处的位置。
+    /// 扩展名后面接的不是英文字母、数字、点、横线、下划线或 / 就结束；英文名字后面接中文也结束，除非中文后面紧跟扩展名（v2版本说明.md）；
+    /// 括起英文名字的成对括号、方括号算名字的一部分（Next.js 的 (auth)、[id]）；空白和其他标点结束。
+    private static func segmentEnd(in text: String, from start: String.Index) -> String.Index {
+        var j = start
+        var ascii = false
+        while j < text.endIndex {
+            let c = text[j]
+            if c == "/" { return j }
+            if c == "(" || c == "[" {
+                let close: Character = c == "(" ? ")" : "]"
+                var k = text.index(after: j)
+                while k < text.endIndex, text[k].isASCII, text[k].isLetter || text[k].isNumber || "._-@~+".contains(text[k]) { k = text.index(after: k) }
+                guard k < text.endIndex, text[k] == close else { return j }
+                ascii = true
+                j = text.index(after: k)
+                continue
+            }
+            if c == ".", let k = extensionEnd(in: text, at: j) {
+                if ends(text, at: k) { return k }
+                ascii = true
+                j = k
+                continue
+            }
+            if c.isASCII, c.isLetter || c.isNumber || "._-@~+".contains(c) {
+                ascii = true
+                j = text.index(after: j)
+                continue
+            }
+            if !c.isASCII, c.isLetter || c.isNumber {
+                var k = j
+                while k < text.endIndex, !text[k].isASCII, text[k].isLetter || text[k].isNumber { k = text.index(after: k) }
+                if ascii, k == text.endIndex || text[k] != "." || extensionEnd(in: text, at: k) == nil { return j }
+                j = k
+                continue
+            }
+            return j
+        }
+        return j
+    }
+
+    /// i 处的点开始一个扩展名（点后面是英文字母，接着英文字母或数字）时，扩展名结束的位置。
+    private static func extensionEnd(in text: String, at i: String.Index) -> String.Index? {
+        var k = text.index(after: i)
+        guard k < text.endIndex, text[k].isASCII, text[k].isLetter else { return nil }
+        while k < text.endIndex, text[k].isASCII, text[k].isLetter || text[k].isNumber { k = text.index(after: k) }
+        return k
+    }
+
+    /// 名字在 k 处结束：后面不再接名字里的字；句末的点也算结束。
+    private static func ends(_ text: String, at k: String.Index) -> Bool {
+        guard k < text.endIndex, continues(text[k]) else { return true }
+        guard text[k] == "." else { return false }
+        let next = text.index(after: k)
+        return next == text.endIndex || !continues(text[next])
+    }
+
+    /// 接在路径字符后面时仍属于同一个名字或路径的字符。
+    private static func continues(_ c: Character) -> Bool {
+        c.isASCII && (c.isLetter || c.isNumber || "._-/".contains(c))
+    }
+
+    private static func web(_ text: String) -> URL? {
+        text.hasPrefix("https://") || text.hasPrefix("http://") ? URL(string: text) : LocalPort.bare(text)
     }
 
     private static func slice(_ value: AttributedString, plain: String, range: Range<String.Index>) -> AttributedString {

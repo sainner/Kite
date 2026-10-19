@@ -58,6 +58,8 @@ final class WorkArea: Identifiable {
     @ObservationIgnored private var visibleInstances: Set<String> = []
     /// 为打开引用新建、工作机还没建好的文件实例：浏览器建出来就收着目录，见 AppModel.openFileReference。
     @ObservationIgnored var referencedFiles: Set<String> = []
+    /// 消息里点的本机网页链接，按终端实例 ID：网页视图打开到链接的路径。页面里的跳转按设备各自保存，这个也只在本机。
+    var webLinks: [String: WebLink] = [:]
     /// 停靠栏里展开的「更多」或家族格，外层在前；只在本机，不保存。
     var dockExpansion: [String] = []
     /// 指针停在停靠栏哪一格上，Mac 据此在左侧浮出名字与状态。

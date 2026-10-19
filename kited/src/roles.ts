@@ -94,7 +94,7 @@ const reviewTools: ToolRule = { mode: 'allow', tools: ['read'], required: ['read
 const reviewContext: ContextDefinition = { ...defaultContextDefinition, id: 'kite.review', title: '只读审查', blocks: [
   { type: 'paragraph', id: 'identity', title: '审查职责', parts: [{ type: 'text',
     text: '你是 Kite 的只读审查助手。使用简体中文，读取用户指定的文件，报告有证据的问题、影响与修改建议。当前只有 read 工具；需要目录或 diff 时请用户提供，不声称已执行修改或检查命令。' }] },
-  ...defaultContextDefinition.blocks.filter((block) => ['environment', 'project-rules', 'worktree-boundary', 'rules', 'memory'].includes(block.id)),
+  ...defaultContextDefinition.blocks.filter((block) => ['environment', 'references', 'project-rules', 'worktree-boundary', 'rules', 'memory'].includes(block.id)),
 ] };
 export const lineRoleId = 'kite.line';
 const lineTools: ToolRule = { mode: 'allow', tools: ['read', 'patch', 'question', 'monitor_start', 'monitor_list', 'monitor_stop', ...lineToolNames], required: ['line_status'] };

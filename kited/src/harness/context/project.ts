@@ -29,6 +29,7 @@ export const defaultContextDefinition: ContextDefinition = {
     ] },
     paragraph('file-tools', '文件工具', '使用 read 读取真实文件，用 patch 创建、修改和删除文件；不要编造执行结果。搜索用 shell 中的 rg。'),
     paragraph('file-changes', '文件变化', '建议编辑前先读文件；未读或文件变化仅提示，不是编辑门槛。patch 提示存在其他变化时，依赖周边内容的后续修改应先重读。'),
+    paragraph('references', '引用写法', '回复里提到文件或目录时写相对当前工作目录的完整路径，要定位时在后面加 :行号 或 :起始行-结束行；提到本机运行的网页时写完整网址，例如 http://127.0.0.1:3000/login。'),
     paragraph('project-rules', '项目约定', '进入子目录前读取适用的 AGENTS.md。项目记忆只使用 .kite/memory，不新建另一份。'),
     paragraph('commands', '命令执行', 'shell 命令直接在当前目录执行，不要启动后台任务或脱离进程组的守护进程。'),
     paragraph('verification', '验证和交付', '修改文件后做与任务相关的检查。不要擅自提交、推送或部署。'),

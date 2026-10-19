@@ -235,19 +235,20 @@ struct ReferenceNavigation: ViewModifier {
     @State private var error: String?
 
     func body(content: Content) -> some View {
-        let scope = ReferenceScope(machineID: area.remote.machine.id, workspaceID: area.id)
+        let scope = ReferenceScope(machineID: area.remote.machine.id, workspaceID: area.id, root: area.remote.workspace.cwd,
+                                   names: area.remote.workspace.rootNames ?? [])
         content.environment(\.referenceScope, scope)
             .environment(\.runInTerminal, RunInTerminalAction(model: model, area: area))
             .environment(\.openURL, OpenURLAction { url in
-                if let port = LocalPort.port(of: url) {
+                if let target = LocalPort(url) {
                     Task {
-                        do { try await model.openLocalPort(port, in: area) }
+                        do { try await model.openLocalPort(target, in: area) }
                         catch { self.error = error.localizedDescription }
                     }
                     return .handled
                 }
                 guard url.scheme == "kite" else { return .systemAction }
-                guard let file = FileReference(url: url), FileReference.scope(of: url) == scope else {
+                guard let file = FileReference(url: url), scope.owns(url) else {
                     error = "引用不属于当前工作机和工作区，或暂不支持此引用类型。"
                     return .handled
                 }

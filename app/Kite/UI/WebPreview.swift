@@ -136,6 +136,8 @@ struct PortPreview: View {
     let client: KitedClient
     let port: Int
     let store: UUID
+    /// 消息里点的链接：打开到它的路径，每点一次重新打开；没有时是首页。
+    var link: WebLink?
     var report: (String?) -> Void = { _ in }
     /// 见 WebPreview.visible。
     var visible = true
@@ -143,7 +145,11 @@ struct PortPreview: View {
 
     var body: some View {
         Group {
-            if let url { WebPreview(source: .address(url, store: store), report: report, visible: visible) } else { Color.clear }
+            if let url {
+                WebPreview(source: .address(URL(string: url.absoluteString + (link?.target.path ?? "")) ?? url, store: store),
+                           report: report, visible: visible)
+                    .id(link?.id)
+            } else { Color.clear }
         }
         .task(id: "\(client.identity) \(port)") {
             url = nil

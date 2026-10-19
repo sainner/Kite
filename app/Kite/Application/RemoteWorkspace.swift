@@ -91,6 +91,8 @@ struct WorkspaceInfo: Codable, Identifiable {
     var pullRequest: WorkspacePullRequest? = nil
     /// 子工作区挂在哪个工作区下；顶层工作区与较早的目录摘要里没有。只能合回它或放弃，随它流转。
     var parentId: String? = nil
+    /// 工作区目录顶层的文件和目录名，消息里的路径以它们开头才认（见 ReferenceScope）；只有打开的工作区有，目录摘要里没有。
+    var rootNames: [String]? = nil
 }
 
 /// 提交 PR 的工作区的 PR：url 是 PR 页面，不能自动开 PR 的平台是去开 PR 的网页、没有 number。

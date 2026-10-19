@@ -48,6 +48,8 @@ final class FileBrowser {
     /// 正在下载时的进度。
     private(set) var download: Progress?
     var showDirectory = true
+    /// 目录树要滚到的目录：展开到它时设上，目录树滚过去后清掉（见 FilePane.directory）。
+    var revealed: String?
     /// Markdown、HTML 显示渲染结果还是原文。
     var rendered = true
     var displayingFile: Bool { selection.path != nil }
@@ -155,7 +157,7 @@ final class FileBrowser {
         await load(path, offset: offset)
     }
 
-    /// 展开到这个目录：它和上面各级都展开，没读过的去读。
+    /// 展开到这个目录：它和上面各级都展开，没读过的去读，目录树再滚到它。
     func reveal(_ path: String) async {
         var prefix = ""
         for part in path.split(separator: "/") {
@@ -163,6 +165,7 @@ final class FileBrowser {
             expanded.insert(prefix)
             if listings[prefix] == nil { await load(prefix) }
         }
+        revealed = path
     }
 
     /// 按名字在整个工作区里找文件和目录；关键字为空时回到目录树。
@@ -405,6 +408,14 @@ final class FileBrowser {
     }
 
     func navigate(_ reference: FileReference) async throws {
+        // 读得出目录的是目录：打开目录栏、展开到它；读不出的（是文件、不存在）照文件选
+        if reference.mayBeDirectory,
+           let listing = try? await operation("list", body: PathRequest(instanceId: instanceID, path: reference.path, offset: 0), as: FileDirectory.self) {
+            listings[reference.path] = listing
+            showDirectory = true
+            await reveal(reference.path)
+            return
+        }
         if selection.path != reference.path || selection.diffId != reference.diffID {
             guard await select(reference.path, diffID: reference.diffID) else { throw KitedError(message: directoryError ?? "无法选择文件") }
         }

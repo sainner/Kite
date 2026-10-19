@@ -2,7 +2,7 @@
 import type { CompactionRequest, Input, InputNotice, InputOrigin, InputVia, StopRequest } from './harness/types.ts';
 import { AgentReports, agentReportContextDefinition, agentWorkspaceContextDefinition } from './agent-reports.ts';
 import { randomUUID } from 'node:crypto';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { FileDiffStore } from './workspace/file-diffs.ts';
 import { join, relative } from 'node:path';
 import { ChildrenPending, GitLoginRequired, KiteError } from './errors.ts';
@@ -853,12 +853,31 @@ export class Kite {
     if (!this.direct && !proxy) return Promise.reject(new KiteError('这台工作机没有开启组网', 409));
     return fetch(new URL(path, address), { ...init, ...(proxy ? { proxy } : {}) });
   }
-  /** 客户端读取的工作区列表；载入过的代理附活动摘要。 */
-  workspaces(projectId?: string): Array<WorkspaceModel & { threads: Array<WorkspaceModel['threads'][number] & { activity?: ThreadActivity }> }> {
-    return this.store.workspaceModels(projectId).map((model) => ({ ...model, threads: model.threads.map((thread) => {
-      const activity = this.transcripts.activity(thread.instanceId);
-      return activity ? { ...thread, activity } : thread;
-    }) }));
+  /** 客户端读取的工作区列表；载入过的代理附活动摘要，打开的工作区附顶层名字（见 rootNames）。 */
+  workspaces(projectId?: string): Array<WorkspaceModel & { workspace: { rootNames?: string[] };
+    threads: Array<WorkspaceModel['threads'][number] & { activity?: ThreadActivity }> }> {
+    return this.store.workspaceModels(projectId).map((model) => {
+      const rootNames = this.rootNames(model.workspace);
+      return { ...model, workspace: rootNames ? { ...model.workspace, rootNames } : model.workspace,
+        threads: model.threads.map((thread) => {
+          const activity = this.transcripts.activity(thread.instanceId);
+          return activity ? { ...thread, activity } : thread;
+        }) };
+    });
+  }
+  /** 客户端上次拿到的各工作区顶层名字，快照后据此判断要不要让它重读。 */
+  private readonly sentRootNames = new Map<string, string>();
+  /**
+   * 工作区目录顶层的文件和目录名：App 据此认出消息里的路径从哪里开始（docs/资源引用.md）。
+   * 只给打开的工作区，读不了时没有。
+   */
+  private rootNames(w: Workspace): string[] | undefined {
+    if (w.status !== 'open') return undefined;
+    let names: string[];
+    try { names = readdirSync(w.cwd).sort(); }
+    catch { return undefined; }
+    this.sentRootNames.set(w.id, names.join('/'));
+    return names;
   }
   /**
    * 这台工作机的状态汇总，供 Line 查询与 monitor 核对：未归档的工作区、其中线程的执行状态与等你回应的对象。
@@ -1661,7 +1680,11 @@ export class Kite {
   private snapshot(w: Workspace, toolUseIds: string[], label: string, threadId?: string): Promise<void> {
     return this.serial(`snap:${w.id}`, async () => {
       const r = await capture(w.cwd, w.id, label, toolUseIds, threadId);
-      if (r.created) this.bus.emit({ type: 'workspace.snapshot', workspaceId: w.id, originThreadId: threadId, commit: r.commit, changedFiles: r.changedFiles, label });
+      if (!r.created) return;
+      this.bus.emit({ type: 'workspace.snapshot', workspaceId: w.id, originThreadId: threadId, commit: r.commit, changedFiles: r.changedFiles, label });
+      // 顶层多了或少了名字：让客户端重读工作区列表，消息里新目录下的路径才认得出
+      const sent = this.sentRootNames.get(w.id);
+      if (sent !== undefined && sent !== this.rootNames(w)?.join('/')) this.changed(w.id);
     });
   }
   snapshots(id: string): Promise<Snapshot[]> { const m = this.workspace(id); return list(m.checkout.path, id); }
