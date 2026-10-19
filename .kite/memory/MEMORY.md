@@ -12,7 +12,7 @@
 - [Line 与工作区流转](line-direction.md) — 已合回 main、界面待验收；收件箱是 Line 的 monitor；待改进与部署注意
 - [界面改原生](decision-native-ui.md) — Mac 对话与外壳改 AppKit、iOS 改 UIKit，为拖缝 60 帧，外观逐项复刻；骨架、点阵是退路
 - [NAS 的现状](nas-setup.md) — 常开 Mac mini 上的外置硬盘，暂未插上；命名位置的提供方
-- [子 agent 的 worktree 起点](agent-worktree-base.md) — 从 origin/main 建、不含本地未推送提交；先快进到 main，合回时别碰别的会话的改动
+- [子 agent 的 worktree 起点](agent-worktree-base.md) — 默认从 origin/main 建、不含本地提交，可设 worktree.baseRef=head；合回时别碰别的会话的改动
 - [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、术语词典与整理后做、点阵表现、未选的识别候选
 
 ## 协作反馈
