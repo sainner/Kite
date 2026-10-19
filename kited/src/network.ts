@@ -143,8 +143,8 @@ export class Network {
   }
 
   /**
-   * 通道公钥，交给网络管理员登记；kite-net 第一次取时生成私钥存进钥匙串。重新编译过的 kite-net 读钥匙串要用户在弹窗里允许，
-   * 所以等得比较久。
+   * 通道公钥，交给网络管理员登记；kite-net 第一次取时生成私钥存进钥匙串。以前由 kite-net 直接存的私钥，头一次经 security 读
+   * 要用户在弹窗里允许，所以等得比较久。
    */
   async channelKey(): Promise<string> {
     if (!existsSync(this.opts.binary)) throw new KiteError(`缺少组网程序 ${this.opts.binary}，请在 kited/net 中运行 build.sh`, 409);
@@ -237,7 +237,8 @@ export class Network {
       .flatMap((key) => process.env[key] ? [[key, process.env[key]!]] : []));
     const child = Bun.spawn([this.opts.binary], {
       env: {
-        HOME: process.env.HOME ?? '', ...proxy,
+        // 组网库默认把后台日志（带地址）上传到 Tailscale 的日志服务，关掉；本地排查用节点目录的 debug.log。
+        HOME: process.env.HOME ?? '', ...proxy, TS_NO_LOGS_NO_SUPPORT: 'true',
         KITE_NET_DIR: this.nodeDir, KITE_NET_HOSTNAME: this.opts.hostname,
         KITE_NET_PORT: String(this.opts.port), KITE_NET_TARGET: `127.0.0.1:${this.opts.target}`,
         ...(this.opts.proxyToken ? { KITE_NET_PROXY_TOKEN: this.opts.proxyToken } : {}),

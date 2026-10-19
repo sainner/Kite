@@ -45,11 +45,18 @@ function parse(text: string): Buffer {
   return key;
 }
 
+/** 钥匙串锁着或在等人允许时 security 会一直等；后台服务不能跟着卡住，超时就算这次没取到，下次再取。 */
+const SECURITY_TIMEOUT_MS = 60_000;
+
 async function security(args: string[], input?: string) {
   const child = Bun.spawn(['/usr/bin/security', ...args], {
     env: { HOME: process.env.HOME ?? '', PATH: '/usr/bin:/bin' },
     stdin: input === undefined ? 'ignore' : new TextEncoder().encode(input), stdout: 'pipe', stderr: 'pipe',
   });
-  const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-  return { stdout, stderr, code };
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill(); }, SECURITY_TIMEOUT_MS);
+  try {
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    return timedOut ? { stdout: '', stderr: `钥匙串 ${SECURITY_TIMEOUT_MS / 1000} 秒没有回应，可能锁着或在等人允许`, code: -1 } : { stdout, stderr, code };
+  } finally { clearTimeout(timer); }
 }

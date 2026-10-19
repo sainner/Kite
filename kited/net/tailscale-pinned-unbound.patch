@@ -1,0 +1,32 @@
+diff --git a/net/netns/netns.go b/net/netns/netns.go
+--- a/net/netns/netns.go
++++ b/net/netns/netns.go
+@@ -60,6 +60,20 @@
+ 
+ var disableBindConnToInterface atomic.Bool
+ 
++// disableBindConnToInterfacePinned keeps disableBindConnToInterface set
++// regardless of later calls (Kite patch).
++var disableBindConnToInterfacePinned atomic.Bool
++
++// PinDisableBindConnToInterface disables binding connections to the default
++// network interface on Darwin for the rest of the process. Later calls to
++// SetDisableBindConnToInterface, such as the one made for every netmap from
++// its debug capabilities, can no longer turn binding back on. For tsnet nodes
++// that must follow the system routes, e.g. through a VPN tunnel (Kite patch).
++func PinDisableBindConnToInterface(logf logger.Logf) {
++	disableBindConnToInterfacePinned.Store(true)
++	SetDisableBindConnToInterface(logf, true)
++}
++
+ // SetDisableBindConnToInterface disables the (normal) behavior of binding
+ // connections to the default network interface on Darwin nodes.
+ //
+@@ -68,6 +82,7 @@
+ // SetDisableBindConnToInterfaceAppleExt which will disable explicit interface
+ // binding only when tailscaled is running inside a network extension process.
+ func SetDisableBindConnToInterface(logf logger.Logf, v bool) {
++	v = v || disableBindConnToInterfacePinned.Load()
+ 	if disableBindConnToInterface.Swap(v) != v {
+ 		logf("netns: disableBindConnToInterface changed to %v", v)
+ 	}

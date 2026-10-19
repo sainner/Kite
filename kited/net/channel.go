@@ -158,10 +158,10 @@ func (c *channel) status() channelStatus {
 	return state
 }
 
-// staticEndpoint 是通道 IPv6 的组网端点。它是可路由的全局地址，中间没有 NAT；宿主网卡没有 IPv6 时 magicsock
-// 不做 IPv6 的 STUN，要直接报成静态端点。
-func (c *channel) staticEndpoint() (netip.AddrPort, bool) {
-	return netip.AddrPortFrom(c.local6, channelPort), c.local6.IsValid()
+// lanEndpoint 判断本机网卡上的地址能不能报成对外端点：只报本机直连局域网的 IPv4，同一局域网的设备经它直连；
+// 其余（TUN、点对点网卡、宿主自己的 IPv6）对端发来的包到不了通道，报出去只会让对端白试。
+func (c *channel) lanEndpoint(ip netip.Addr) bool {
+	return ip.Is4() && c.links.contains(ip)
 }
 
 // ListenPacket 供 tsnet 创建 UDP：通道这一路固定用通道内地址和约定的端口；IPv4 另开一路局域网直连，

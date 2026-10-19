@@ -28,6 +28,8 @@ export interface Changes { epoch: string; seq: number; entries: WireEntry[]; mor
 interface Row { kind: EntryKind; id: string; body: string | null; revision: string | null; at: number; by: string; seen: string; seq: number }
 
 /** 版本是内容的摘要：写入方按同一份 JSON 算出的版本一致，资源库缓存的期望版本也按它算。 */
+/** 写进本机时要用到本机密钥的条目：凭据和凭据的冲突副本要封装，删除时要解开本机那份比较；删掉的冲突看不出是什么，也算。 */
+const sealable = (entry: WireEntry) => entry.kind === 'credential' || (entry.kind === 'conflict' && (entry.body == null || entry.body.kind === 'credential'));
 export const revisionOf = (body: unknown) => createHash('sha256').update(JSON.stringify(body)).digest('hex');
 const compare = (a: Version, b: Version) => a.at - b.at || (a.by < b.by ? -1 : a.by > b.by ? 1 : 0);
 const conflictId = (kind: EntryKind, id: string, version: Version) => `${kind}:${id}:${version.at}:${version.by}`;
@@ -174,14 +176,23 @@ export class AccountData {
     return this.db.query('select epoch, seq from cursors where machine = ?').get(machine) as { epoch: string; seq: number } | null ?? undefined;
   }
 
-  /** 应用其他工作机的一页变化：见过本机这份的替换它；互相没见过时版本大的为准，另一份另存为冲突。 */
+  /**
+   * 应用其他工作机的一页变化：见过本机这份的替换它；互相没见过时版本大的为准，另一份另存为冲突。
+   * 凭据要用本机密钥封装，密钥取不到（钥匙串锁着、在等人允许）时先写其余条目、不推进进度，凭据留到下次重试，再把错误抛给拉取的一方：
+   * 新版本的发布也在这些条目里，不能因为凭据卡住传不开，不然旧版的工作机永远收不到新版。
+   */
   async apply(machine: string, page: Changes): Promise<void> {
-    const sealed = await Promise.all(page.entries.map(async (entry) => ({
+    let entries = page.entries;
+    let keyError: unknown;
+    if (entries.some(sealable)) {
+      try { await this.sealingKey(); } catch (error) { keyError = error; entries = entries.filter((entry) => !sealable(entry)); }
+    }
+    const sealed = await Promise.all(entries.map(async (entry) => ({
       ...entry, body: entry.body == null ? null : await this.seal(entry.kind, entry.body) })));
-    const plain = new Map(page.entries.map((entry) => [`${entry.kind}\n${entry.id}`, entry.body]));
+    const plain = new Map(entries.map((entry) => [`${entry.kind}\n${entry.id}`, entry.body]));
     // 判断两份内容是否相同要比明文，本机库里的凭据要先解开。
     const locals = new Map<string, Body | null>();
-    for (const entry of page.entries) {
+    for (const entry of entries) {
       const row = this.row(entry.kind, entry.id);
       if (row?.body != null && row.revision == null) locals.set(`${entry.kind}\n${entry.id}`, await this.unseal(row.kind, JSON.parse(row.body)));
     }
@@ -205,10 +216,13 @@ export class AccountData {
           this.saveConflict(entry.kind, entry.id, entry, entry.body, changed);
         }
       }
-      this.db.query(`insert into cursors values (?, ?, ?) on conflict(machine) do update set epoch = excluded.epoch, seq = excluded.seq`)
-        .run(machine, page.epoch, page.seq);
+      if (keyError === undefined) {
+        this.db.query(`insert into cursors values (?, ?, ?) on conflict(machine) do update set epoch = excluded.epoch, seq = excluded.seq`)
+          .run(machine, page.epoch, page.seq);
+      }
     })();
     this.notify(changed);
+    if (keyError !== undefined) throw keyError;
   }
 
   /** 凭据的保密内容用本机密钥封装；其他种类原样。 */

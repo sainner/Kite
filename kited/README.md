@@ -20,7 +20,7 @@ bun run start
 
 组网程序 kite-net 是 `net/` 下的 Go 程序，用 `net/build.sh` 构建到 `net/bin/kite-net`：脚本先把 tailscale 打上 `net/tailscale-packet-listener.patch`（受管网络通道要用的自定义 UDP 监听），副本放在仓库的 `build/tailscale-kite`。重新编译过的 kite-net 第一次读钥匙串里的通道私钥时，系统会弹窗请用户允许。
 
-排查组网连接时，在节点目录 `$KITE_HOME/tailnet/node/` 下新建空文件 `debug.log`，组网程序 kite-net 下次启动时会把组网库日志带时间追加写进去；删除文件并重启组网即关闭。重启组网可以用 `kite net down` 再 `kite net up`，或结束 kite-net 进程，kited 会自动拉起。可与 App 的 TimingTrace（见 [App 说明](../app/README.md#预览和验证)）对照时间，iPhone 的时钟可能与工作机有偏差。
+组网库的日志不上传到 Tailscale。排查组网连接时，在节点目录 `$KITE_HOME/tailnet/node/` 下新建空文件 `debug.log`，组网程序 kite-net 下次启动时会把组网库日志带时间追加写进去；删除文件并重启组网即关闭。重启组网可以用 `kite net down` 再 `kite net up`，或结束 kite-net 进程，kited 会自动拉起。可与 App 的 TimingTrace（见 [App 说明](../app/README.md#预览和验证)）对照时间，iPhone 的时钟可能与工作机有偏差。
 
 ## 终端试用
 

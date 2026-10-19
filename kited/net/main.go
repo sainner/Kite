@@ -27,13 +27,16 @@ import (
 	"strings"
 	"sync"
 	"tailscale.com/client/local"
+	"tailscale.com/net/netcheck"
+	"tailscale.com/net/netmon"
 	"tailscale.com/net/netns"
 	"tailscale.com/net/socks5"
 	"time"
 
 	"tailscale.com/ipn"
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tsnet"
-	"tailscale.com/types/views"
+	"tailscale.com/wgengine/magicsock"
 )
 
 type status struct {
@@ -112,7 +115,9 @@ func main() {
 		return
 	}
 	// tsnet 不创建系统隧道，无需绑物理网卡来防止路由回环；交给系统路由才能使用代理的虚拟地址。
-	netns.SetDisableBindConnToInterface(log.Printf, true)
+	// 要钉住：组网库每收到一份网络地图都按调试能力重设这一项，普通节点没有那项能力，会被改回绑网卡，
+	// 之后新建的中继、日志与引导 DNS 连接都从物理网卡直接出去、绕开系统路由（2026-10-19 本机中继因此一直连不上）。
+	netns.PinDisableBindConnToInterface(log.Printf)
 	env := func(key string) string {
 		value := os.Getenv(key)
 		if value == "" {
@@ -144,16 +149,23 @@ func main() {
 		}
 		srv.Port = channelPort
 		srv.PacketListener = ch
+		// 组网 UDP 全经通道：通道里有 IPv6 时，宿主网卡没有 IPv6 也经通道做 IPv6 探测；UDP 不通时不改用宿主网络做 ICMP 探测。
+		// 对外端点只有经通道探测到的出口映射，加上本机局域网的 IPv4（同一局域网直连用）；TUN、宿主自己的 IPv6 这些地址
+		// 对端发过来收不到，也不该报出去。通道内的 IPv6 只是通道里的地址，不报成端点。
+		netcheck.SetManagedUDP(ch.local6.IsValid())
+		magicsock.SetLocalEndpointFilter(ch.lanEndpoint)
 		ch.start()
 	}
 	if err := srv.Start(); err != nil {
 		log.Fatalf("组网节点启动失败：%v", err)
 	}
 	if ch != nil {
-		if endpoint, ok := ch.staticEndpoint(); ok {
-			if conn, ok := srv.Sys().MagicSock.GetOK(); ok {
-				conn.SetStaticEndpoints(views.SliceOf([]netip.AddrPort{endpoint}))
-			}
+		if monitor, ok := srv.Sys().NetMon.GetOK(); ok {
+			monitor.RegisterChangeCallback(func(delta *netmon.ChangeDelta) {
+				if !delta.IsInitialState && (delta.DefaultInterfaceChanged || delta.InterfaceIPsChanged) {
+					reprobe(srv, "kite-network-change")
+				}
+			})
 		}
 	}
 	lc, err := srv.LocalClient()
@@ -193,6 +205,7 @@ func main() {
 	go readCommands(lc, ready, fw)
 	watchPower(report, ready)
 	go watch(srv, report, changed)
+	channelUp := false
 	go func() {
 		for range time.Tick(time.Second) {
 			changed()
@@ -203,6 +216,13 @@ func main() {
 				if ch != nil {
 					state := ch.status()
 					s.Channel = &state
+					// 通道断过又握上手（入口重建了映射）时重新探测
+					if up := state.State == "up"; up != channelUp {
+						channelUp = up
+						if up {
+							go reprobe(srv, "kite-channel-up")
+						}
+					}
 				}
 			})
 		}
@@ -287,6 +307,20 @@ func authorized(lc *local.Client, r *http.Request) bool {
 		self.Self.UserID != 0 && peer.Node.User == self.Self.UserID
 }
 
+// reprobe 在出口可能换了时重新探测对外端点：先丢掉以前探测到、缓存着的出口映射，免得换网后还报失效的端点，
+// 再马上重测；入口重建映射要一点时间，3 秒、10 秒后各补测一次。
+func reprobe(srv *tsnet.Server, why string) {
+	conn, ok := srv.Sys().MagicSock.GetOK()
+	if !ok {
+		return
+	}
+	conn.ForgetCachedEndpoints()
+	conn.ReSTUN(why)
+	for _, delay := range []time.Duration{3 * time.Second, 10 * time.Second} {
+		time.AfterFunc(delay, func() { conn.ReSTUN(why) })
+	}
+}
+
 // selfEndpoints 是本机对外报告的端点，顺序照组网库给的。
 func selfEndpoints(lc *local.Client) []string {
 	st, err := lc.StatusWithoutPeers(context.Background())
@@ -303,6 +337,7 @@ func peers(lc *local.Client, state string) []peer {
 	}
 	st, err := lc.Status(context.Background())
 	if err != nil || st.Self == nil || st.Self.UserID == 0 {
+		diagnosePeers(st, err)
 		return nil
 	}
 	var list []peer
@@ -326,10 +361,47 @@ func peers(lc *local.Client, state string) []peer {
 		}
 		list = append(list, p)
 	}
+	if len(list) == 0 {
+		diagnosePeers(st, nil)
+	} else {
+		peersDiagnosis = ""
+	}
 	sort.Slice(list, func(i, j int) bool {
 		return list[i].Name < list[j].Name || list[i].Name == list[j].Name && list[i].IP < list[j].IP
 	})
 	return list
+}
+
+// peersDiagnosis 是上次打出的诊断，情况没变不再重打；只在每秒采样的那个协程里读写。
+var peersDiagnosis string
+
+// diagnosePeers 在运行中却列不出对端时打一行诊断：从保存的状态重启后，有时一直运行着、有节点名，对端却是空的，
+// 重启 kite-net 又好了（2026-10-16、10-19 本机）。打出自己的用户 ID、网络映射里的用户资料和各用户的对端台数，查是哪一块缺了。
+func diagnosePeers(st *ipnstate.Status, err error) {
+	var line string
+	switch {
+	case err != nil:
+		line = fmt.Sprintf("读状态失败：%v", err)
+	case st.Self == nil:
+		line = fmt.Sprintf("状态里没有自己，后端 %s，有节点密钥 %v", st.BackendState, st.HaveNodeKey)
+	default:
+		byUser := map[string]int{}
+		for _, ps := range st.Peer {
+			byUser[fmt.Sprint(ps.UserID)]++
+		}
+		users := make([]string, 0, len(st.User))
+		for id := range st.User {
+			users = append(users, fmt.Sprint(id))
+		}
+		sort.Strings(users)
+		line = fmt.Sprintf("自己的用户 ID %d，网络映射里的用户资料 %v，对端 %d 台（按用户 %v），自己在线 %v，后端 %s，健康提示 %q",
+			st.Self.UserID, users, len(st.Peer), byUser, st.Self.Online, st.BackendState, st.Health)
+	}
+	if line == peersDiagnosis {
+		return
+	}
+	peersDiagnosis = line
+	log.Printf("对端为空：%s", line)
 }
 
 // watch 跟随节点状态。需要登录而还没有登录网址时主动请求一次，例如运行中节点密钥过期。

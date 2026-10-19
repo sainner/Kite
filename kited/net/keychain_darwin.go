@@ -2,56 +2,16 @@
 
 package main
 
-/*
-#cgo LDFLAGS: -framework Security -framework CoreFoundation
-#include <Security/Security.h>
-#include <stdlib.h>
-
-static CFMutableDictionaryRef kite_query(const char *service, const char *account) {
-	CFMutableDictionaryRef q = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-	CFStringRef s = CFStringCreateWithCString(NULL, service, kCFStringEncodingUTF8);
-	CFStringRef a = CFStringCreateWithCString(NULL, account, kCFStringEncodingUTF8);
-	CFDictionarySetValue(q, kSecClass, kSecClassGenericPassword);
-	CFDictionarySetValue(q, kSecAttrService, s);
-	CFDictionarySetValue(q, kSecAttrAccount, a);
-	CFRelease(s);
-	CFRelease(a);
-	return q;
-}
-
-static OSStatus kite_read(const char *service, const char *account, void *out, int capacity, int *length) {
-	CFMutableDictionaryRef q = kite_query(service, account);
-	CFDictionarySetValue(q, kSecReturnData, kCFBooleanTrue);
-	CFDictionarySetValue(q, kSecMatchLimit, kSecMatchLimitOne);
-	CFTypeRef data = NULL;
-	OSStatus status = SecItemCopyMatching(q, &data);
-	CFRelease(q);
-	if (status != errSecSuccess) return status;
-	CFIndex n = CFDataGetLength((CFDataRef)data);
-	if (n > capacity) { CFRelease(data); return errSecParam; }
-	CFDataGetBytes((CFDataRef)data, CFRangeMake(0, n), (UInt8 *)out);
-	*length = (int)n;
-	CFRelease(data);
-	return errSecSuccess;
-}
-
-static OSStatus kite_add(const char *service, const char *account, const void *bytes, int length) {
-	CFMutableDictionaryRef q = kite_query(service, account);
-	CFDataRef d = CFDataCreate(NULL, bytes, length);
-	CFDictionarySetValue(q, kSecValueData, d);
-	OSStatus status = SecItemAdd(q, NULL);
-	CFRelease(d);
-	CFRelease(q);
-	return status;
-}
-*/
-import "C"
-
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"fmt"
-	"unsafe"
+	"os"
+	"os/exec"
+	"strings"
 
 	"golang.org/x/crypto/curve25519"
 )
@@ -61,29 +21,77 @@ const (
 	keychainAccount = "router-wireguard"
 )
 
-// channelKey 取出受管网络通道的 WireGuard 私钥；没有就生成一把存进登录钥匙串。
-// 钥匙串条目由创建它的程序独占，其他程序（包括重新编译后签名变了的 kite-net）读取要用户在弹窗里允许；私钥不落任何文件。
+// channelKey 取出受管网络通道的 WireGuard 私钥；没有就生成一把存进登录钥匙串，私钥不落任何文件。
+// 经系统自带的 security 读写：钥匙串条目只认建它或被允许过的程序，kite-net 每次更新二进制都会变，直接用 Security 框架读
+// 会在每台机器上弹窗等人允许，没人看着的机器就一直停在 waitingKey；security 不随更新变。以前由 kite-net 自己建的条目，
+// 头一次经 security 读还要允许一次，选「始终允许」以后不再问。条目里存原始 32 字节，security -w 读出来是它的十六进制。
 func channelKey() (private [32]byte, err error) {
-	cService, cAccount := C.CString(keychainService), C.CString(keychainAccount)
-	defer C.free(unsafe.Pointer(cService))
-	defer C.free(unsafe.Pointer(cAccount))
-	var length C.int
-	status := C.kite_read(cService, cAccount, unsafe.Pointer(&private[0]), 32, &length)
-	if status == C.errSecSuccess && length == 32 {
-		return private, nil
+	read := func() (string, string, int, error) {
+		return security([]string{"find-generic-password", "-s", keychainService, "-a", keychainAccount, "-w"}, "")
 	}
-	if status != C.errSecItemNotFound {
-		return private, fmt.Errorf("读钥匙串失败（OSStatus %d）", int(status))
+	out, stderr, code, err := read()
+	if err != nil {
+		return private, err
+	}
+	if code == 0 {
+		return parseChannelKey(out)
+	}
+	// 44 是找不到条目；其他（钥匙串锁着、被拒绝）不能另建一把，否则路由器登记的公钥就对不上了。
+	if code != 44 {
+		return private, fmt.Errorf("读钥匙串失败：%s", securityError(stderr, code))
 	}
 	if _, err := rand.Read(private[:]); err != nil {
 		return private, err
 	}
 	private[0] &= 248
 	private[31] = private[31]&127 | 64
-	if status := C.kite_add(cService, cAccount, unsafe.Pointer(&private[0]), 32); status != C.errSecSuccess {
-		return private, fmt.Errorf("写钥匙串失败（OSStatus %d）", int(status))
+	// 私钥经标准输入交给 security 的交互模式，不出现在命令行里；交互模式里命令失败时退出码不一定反映出来，存完读回核对。
+	_, addErr, _, err := security([]string{"-i"}, fmt.Sprintf("add-generic-password -s \"%s\" -a \"%s\" -X %s\n",
+		keychainService, keychainAccount, hex.EncodeToString(private[:])))
+	if err != nil {
+		return private, err
+	}
+	out, stderr, code, err = read()
+	if err != nil {
+		return private, err
+	}
+	stored, parseErr := parseChannelKey(out)
+	if code != 0 || parseErr != nil || stored != private {
+		return private, fmt.Errorf("写钥匙串失败：%s", securityError(addErr+stderr, code))
 	}
 	return private, nil
+}
+
+func parseChannelKey(out string) (private [32]byte, err error) {
+	raw, err := hex.DecodeString(strings.TrimSpace(out))
+	if err != nil || len(raw) != 32 {
+		return private, errors.New("钥匙串里的通道私钥损坏")
+	}
+	copy(private[:], raw)
+	return private, nil
+}
+
+func security(args []string, input string) (stdout, stderr string, code int, err error) {
+	cmd := exec.Command("/usr/bin/security", args...)
+	cmd.Env = []string{"HOME=" + os.Getenv("HOME"), "PATH=/usr/bin:/bin"}
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
+	var out, errOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	err = cmd.Run()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return out.String(), errOut.String(), exit.ExitCode(), nil
+	}
+	return out.String(), errOut.String(), 0, err
+}
+
+func securityError(stderr string, code int) string {
+	if text := strings.TrimSpace(stderr); text != "" {
+		return text
+	}
+	return fmt.Sprintf("security 退出码 %d", code)
 }
 
 // channelPublicKey 是交给网络管理员登记的公钥（base64）；私钥还没有就先生成。

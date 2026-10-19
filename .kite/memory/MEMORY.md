@@ -41,7 +41,8 @@
 - [节假日表](todo-holiday-calendar.md) — DeepSeek 峰谷计价的法定节假日表每年补次年安排，现只有 2026
 - [终端插件收尾](todo-terminal-plugin.md) — 已实现待手测；旁观设备的尺寸、跨 kited 重启、后台命令的输入
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据；真发送开头掉帧
-- [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit 一起做、CloudKit、登出重启关机预告待真机实测、kite-net 重启后丢用户
+- [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit、登出重启关机预告待实测、本机受管通道已上线、Mac mini 收不到同步待人处理
+- [本机访问边界](todo-local-access-boundary.md) — 本机接口与 kite-net 代理不设认证、/network 暴露端点，待定收紧；排查装的系统版 Tailscale 要退
 - [上架前的版本做法](todo-store-release.md) — kited 兼容在用的旧版 App、先 App 后 kited、公共下载点、Mac App 签名后自更新
 - [工作区模型改造](todo-workspace-model.md) — 已实现、协议号 2；部署前清各工作机旧 kite.db（先征得同意）、真机验收、Line 不提交现场待确认
 - [本机先行的收尾](todo-local-first-actions.md) — 各路径已改为本机先行、待手测；失败时的收回方式；进入工作区卡顿待量（Mac、iPhone）

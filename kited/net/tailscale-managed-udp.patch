@@ -1,0 +1,97 @@
+diff --git a/net/netcheck/netcheck.go b/net/netcheck/netcheck.go
+--- a/net/netcheck/netcheck.go
++++ b/net/netcheck/netcheck.go
+@@ -20,6 +20,7 @@
+ 	"runtime"
+ 	"sort"
+ 	"sync"
++	"sync/atomic"
+ 	"syscall"
+ 	"time"
+ 
+@@ -452,11 +453,25 @@
+ // TODO(raggi): change from "preferred DERP" from a historical report to "home
+ // DERP" as in what DERP is the current home connection, this would further
+ // reduce flap events.
++// managedUDP and managedUDP6 are set when all UDP goes through an injected
++// PacketListener, such as an authenticated tunnel (Kite patch).
++var managedUDP, managedUDP6 atomic.Bool
++
++// SetManagedUDP declares that every UDP packet netcheck sends via SendPacket
++// leaves through an injected PacketListener rather than the host network, and
++// whether that path carries IPv6. IPv6 STUN is then probed even when the host
++// interfaces have no IPv6, and the ICMP fallback, which would use the host
++// network, is skipped (Kite patch).
++func SetManagedUDP(ipv6 bool) {
++	managedUDP.Store(true)
++	managedUDP6.Store(ipv6)
++}
++
+ func makeProbePlan(dm *tailcfg.DERPMap, ifState *netmon.State, last *Report, preferredDERP tailcfg.DERPRegionID) (plan probePlan) {
+ 	if last == nil || len(last.RegionLatency) == 0 {
+ 		return makeProbePlanInitial(dm, ifState)
+ 	}
+-	have6if := ifState.HaveV6
++	have6if := ifState.HaveV6 || managedUDP6.Load()
+ 	have4if := ifState.HaveV4
+ 	plan = make(probePlan)
+ 
+@@ -572,7 +587,7 @@
+ 			if n.IPv4 != "none" && ((ifState.HaveV4 && nodeMight4(n)) || n.IsTestNode()) {
+ 				p4 = append(p4, probe{delay: delay, node: n.Name, proto: probeIPv4})
+ 			}
+-			if n.IPv6 != "none" && ((ifState.HaveV6 && nodeMight6(n)) || n.IsTestNode()) {
++			if n.IPv6 != "none" && (((ifState.HaveV6 || managedUDP6.Load()) && nodeMight6(n)) || n.IsTestNode()) {
+ 				p6 = append(p6, probe{delay: delay, node: n.Name, proto: probeIPv6})
+ 			}
+ 		}
+@@ -1228,7 +1243,7 @@
+ }
+ 
+ func (c *Client) measureAllICMPLatency(ctx context.Context, rs *reportState, need []*tailcfg.DERPRegion) error {
+-	if len(need) == 0 {
++	if len(need) == 0 || managedUDP.Load() {
+ 		return nil
+ 	}
+ 	if runtime.GOOS == "plan9" {
+diff --git a/wgengine/magicsock/magicsock.go b/wgengine/magicsock/magicsock.go
+--- a/wgengine/magicsock/magicsock.go
++++ b/wgengine/magicsock/magicsock.go
+@@ -1275,6 +1275,27 @@
+ // without validating if the node can be reached via those endpoints.
+ //
+ // c.mu must NOT be held.
++// localEndpointFilter, if set, decides which local interface addresses are
++// advertised as endpoints (Kite patch).
++var localEndpointFilter atomic.Pointer[func(netip.Addr) bool]
++
++// SetLocalEndpointFilter limits the local interface addresses advertised as
++// endpoints to those for which keep returns true, e.g. when UDP goes through an
++// injected PacketListener and only some host addresses are actually reachable
++// (Kite patch).
++func SetLocalEndpointFilter(keep func(netip.Addr) bool) {
++	localEndpointFilter.Store(&keep)
++}
++
++// ForgetCachedEndpoints drops endpoints remembered from earlier netchecks, so
++// the next ReSTUN advertises only what it discovers. Call it when the network
++// changed and old mappings are known to be stale (Kite patch).
++func (c *Conn) ForgetCachedEndpoints() {
++	c.endpointTracker.mu.Lock()
++	defer c.endpointTracker.mu.Unlock()
++	c.endpointTracker.endpoints = nil
++}
++
+ func (c *Conn) determineEndpoints(ctx context.Context) ([]tailcfg.Endpoint, error) {
+ 	var havePortmap bool
+ 	var portmapExt netip.AddrPort
+@@ -1314,6 +1335,9 @@
+ 	}
+ 	addAddr := func(ipp netip.AddrPort, et tailcfg.EndpointType) {
+ 		if !ipp.IsValid() || (debugOmitLocalAddresses() && et == tailcfg.EndpointLocal) {
++			return
++		}
++		if keep := localEndpointFilter.Load(); keep != nil && et == tailcfg.EndpointLocal && !(*keep)(ipp.Addr()) {
+ 			return
+ 		}
+ 		if _, ok := already[ipp]; !ok {
