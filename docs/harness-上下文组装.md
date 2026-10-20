@@ -68,6 +68,7 @@
 | `agent.workspace` | 全部 | `child.workspace`、`child.id`、`child.result` | 用 isolation 开出的子工作区有了结果：合回或没能合回、没准备好 |
 | `template.emblem` | 环境 | `template.title`、`template.content` | 按角色名称与提示词设计点阵签名 |
 | `workspace.pull_request` | 环境、项目、工作区 | `pull_request.commits`、`pull_request.files` | 提交 PR 时按工作区相对远程主线的提交说明与改动文件起草标题和说明 |
+| `workspace.commit` | 环境、项目、工作区 | `commit.recent`、`commit.files`、`commit.diff` | 集成时按这次要提交的改动与最近的提交说明起草提交说明 |
 | `workspace.naming` | 环境、项目、工作区 | `naming.current`、`naming.agents` | 有几个用户开的代理时按它们的标题起工作区名称；当前名称与各标题均为 JSON |
 
 - 同一变量在所有场景格式一致。作为待处理数据、须用特定格式的材料（标题场景的当前标题与对话、语音识别的近期对话）是场景专有，名称按场景区分。
@@ -77,7 +78,7 @@
 
 ## 定义与变量
 
-HTTP 模板定义使用 `version: 2`，包含标识、名称、场景和有序内容块。标题、工作区名称、压缩与点阵签名场景另有 `input` 区域，与 `blocks` 共享版本和一次保存，其他场景不能有：标题的 `blocks` 用作命名指令，`input` 用作对话材料；工作区名称的 `blocks` 用作命名指令，`input` 用作当前名称与各代理的标题；压缩的 `blocks` 用作摘要指令，`input` 用作摘要在历史中的包装；点阵签名的 `blocks` 用作设计规则，`input` 用作角色材料。标题模板不能用作角色提示词。
+HTTP 模板定义使用 `version: 2`，包含标识、名称、场景和有序内容块。标题、工作区名称、压缩、点阵签名、PR 与提交说明场景另有 `input` 区域，与 `blocks` 共享版本和一次保存，其他场景不能有：标题的 `blocks` 用作命名指令，`input` 用作对话材料；工作区名称的 `blocks` 用作命名指令，`input` 用作当前名称与各代理的标题；压缩的 `blocks` 用作摘要指令，`input` 用作摘要在历史中的包装；点阵签名的 `blocks` 用作设计规则，`input` 用作角色材料；PR 与提交说明的 `blocks` 用作起草规则，`input` 用作改动材料。标题模板不能用作角色提示词。
 
 | 结构 | 含义 |
 |---|---|

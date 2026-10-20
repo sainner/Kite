@@ -24,7 +24,7 @@ export const pullRequestTemplate: ContextDefinition = {
   ],
 };
 
-const clip = (text: string) => text.length > 6000 ? `${text.slice(0, 6000)}\n…` : text;
+export const clip = (text: string, limit = 6_000) => text.length > limit ? `${text.slice(0, limit)}\n…` : text;
 
 /** base 是 PR 的目标（远程主线的引用）；工作树的 HEAD 已合好主线。 */
 export async function draftPullRequest(options: { tasks?: LightTasks; templates: ContextTemplates; base: string;

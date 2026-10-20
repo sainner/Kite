@@ -22,7 +22,7 @@ const editableScenes: Partial<Record<ContextScene, 'notification' | 'compaction'
   'agent.report': 'notification', 'agent.workspace': 'notification',
   'thread.compact': 'compaction',
   'thread.title': 'generation', 'workspace.naming': 'generation', 'template.emblem': 'generation', 'thread.voice': 'generation',
-  'workspace.pull_request': 'generation',
+  'workspace.pull_request': 'generation', 'workspace.commit': 'generation',
 };
 
 /**

@@ -70,6 +70,7 @@ import { LightTasks } from './light-tasks.ts';
 import { ThreadTitles, titleTemplate } from './thread-titles.ts';
 import { WorkspaceNames, workspaceNameTemplate } from './workspace-names.ts';
 import { draftPullRequest, pullRequestTemplate } from './pull-requests.ts';
+import { commitMessageTemplate, draftCommit } from './commit-messages.ts';
 import { emblemTemplate, TemplateEmblems } from './template-emblems.ts';
 import { ChatGPTModel } from './harness/chatgpt.ts';
 import { readSubscriptionCredentials } from './harness/auth.ts';
@@ -300,7 +301,7 @@ export class Kite {
     this.catalog = new PluginCatalog(join(home, 'plugins'));
     this.roles = new Roles(store);
     this.contextTemplates = new ContextTemplates(store, [
-      titleTemplate, workspaceNameTemplate, compactTemplate, emblemTemplate, pullRequestTemplate,
+      titleTemplate, workspaceNameTemplate, compactTemplate, emblemTemplate, pullRequestTemplate, commitMessageTemplate,
       agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
       pluginToolsContextDefinition, voiceTemplate, lineMonitorContextDefinition, monitorEventsContextDefinition, terminalExitContextDefinition,
       agentReportContextDefinition, agentWorkspaceContextDefinition,
@@ -1749,8 +1750,10 @@ export class Kite {
       const pending = this.store.descendantWorkspaces(id).reverse();
       if (pending.length) throw new ChildrenPending(pending.map((child) => ({ id: child.id, name: child.name })));
       const proposing = !!project.remote && this.registry.get(project.id)?.integration === 'pullRequest';
+      // 提交说明要等辅助模型，在检出锁外起草，不挡同一项目的其他工作区。
+      const message = await draftCommit({ tasks: this.lightTasks, templates: this.contextTemplates, model });
       const merged = await this.serial(`checkout:${checkout.id}`, (): Promise<AdoptResult | Proposal> => proposing
-        ? this.pushProposal(model, afterResolution) : this.mergeIntoMainline(w, checkout, afterResolution));
+        ? this.pushProposal(model, message, afterResolution) : this.mergeIntoMainline(w, checkout, message, afterResolution));
       // PR 的起草与开 PR 要等辅助模型与 GitHub，放在检出锁外，不挡同一项目的其他工作区。
       const result = merged.status === 'pushed' ? await this.openProposal(model, merged) : merged;
       if (result.status === 'conflict') await this.handConflict(id, 'adopt', w, result.files, afterResolution);
@@ -1765,11 +1768,11 @@ export class Kite {
    * 远程要求登录时另带主机；推送被拒说明远程刚有新提交，重新拉取、合并后再推，冲突同样留在工作区。
    * 没有远程的项目合进本机主线就结束，其他工作机同步时快进过来。
    */
-  private async mergeIntoMainline(w: Workspace, checkout: Checkout, afterResolution: boolean): Promise<AdoptResult> {
+  private async mergeIntoMainline(w: Workspace, checkout: Checkout, message: string, afterResolution: boolean): Promise<AdoptResult> {
     let { main, access, offline } = await this.checkoutManagement.refresh(checkout);
     const local = !this.store.project(checkout.projectId)?.remote;
     for (let attempt = 1; ; attempt++) {
-      const r = await mergeMainline(w.cwd, w.name, mainRefs(main), { stageResolved: afterResolution });
+      const r = await mergeMainline(w.cwd, message, mainRefs(main), { stageResolved: afterResolution });
       if (r.status === 'conflict') return r;
       await advanceMainline(checkout, main.branch, r.commit);
       const adopted = (push: PushOutcome): AdoptResult => ({ status: 'adopted', commit: r.commit, push });
@@ -1791,7 +1794,7 @@ export class Kite {
    * 提交 PR 的前一半，调用方持有检出锁：把远程主线（和远程上这个 PR 分支里别人推的提交）合进工作区分支，推到远程的 PR 分支，不动本机主线。
    * 第一次提交时按工作区名称起分支名，远程或本机别的工作区已占用的名字后面加序号；推上去就记下，之后开 PR 失败了重试也推到同一个分支。
    */
-  private async pushProposal(model: WorkspaceModel, afterResolution: boolean): Promise<Proposal | { status: 'conflict'; files: string[] }> {
+  private async pushProposal(model: WorkspaceModel, message: string, afterResolution: boolean): Promise<Proposal | { status: 'conflict'; files: string[] }> {
     const { workspace: w, checkout, project } = model;
     const { main, access, offline } = await this.checkoutManagement.refresh(checkout);
     // 拉不到远程就提交不了：照原样报出，远程要求登录时是 GitLoginRequired，错误体带上主机。
@@ -1808,7 +1811,7 @@ export class Kite {
     const theirs = w.pullRequest && await fetchBranch(checkout.path, branch, access) ? tracking(branch) : null;
     // 远程主线；远程还没有这个分支时是本机主线
     const target = main.upstream ?? main.local;
-    const r = await mergeMainline(w.cwd, w.name, [target, theirs], { stageResolved: afterResolution });
+    const r = await mergeMainline(w.cwd, message, [target, theirs], { stageResolved: afterResolution });
     if (r.status === 'conflict') return r;
     const pushed = await pushBranch(checkout.path, w.branch, access, branch);
     if (pushed === 'rejected') throw new KiteError(`远程的 ${branch} 刚有新的提交，请重试`, 409);

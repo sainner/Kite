@@ -71,6 +71,17 @@ export const contextScenes = {
       { name: 'pull_request.files', title: '改动文件', description: '相对远程主线改动的文件与增减行数（git diff --stat）；最多 6000 字。' },
     ],
   },
+  'workspace.commit': {
+    title: '起草提交说明',
+    input: true,
+    // 集成是工作区的操作，没有某个代理。
+    layers: ['environment', 'project', 'workspace'],
+    variables: [
+      { name: 'commit.recent', title: '最近的提交', description: '工作区分支上最近 10 条非合并提交的标题，每条以「- 」开头；没有时是「（没有）」。' },
+      { name: 'commit.files', title: '改动文件', description: '这次提交的文件与增减行数（git diff --stat），含新文件；最多 6000 字。' },
+      { name: 'commit.diff', title: '改动', description: '这次提交的 diff 正文，含新文件；最多 24000 字，超出的截掉。' },
+    ],
+  },
   'workspace.naming': {
     title: '生成工作区名称',
     input: true,
