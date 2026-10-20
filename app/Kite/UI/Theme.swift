@@ -184,8 +184,8 @@ enum Metrics {
     static var titleRefreshOutset: CGFloat { InputMode.current.titleOutset }
     /// 卡片和内部输入框保持同心。
     static var cardRadius: CGFloat { controlRadius + paneMargin }
-    /// iPhone 上标题栏后面的渐变遮罩往下伸过标题栏底边多少。
-    static let topFadeOverhang: CGFloat = 48
+    /// iPhone 上标题栏后面的渐变遮罩从顶边（h = 0）到标题栏底边（h = 1）的不透明度：大半截几乎不透明，到底边附近才很快淡掉，不盖到下面的消息。
+    static func topFadeOpacity(_ h: Double) -> Double { 1 - pow(h, 4) }
     /// 拖出布局或最小化后的窗口图标尺寸：Mac 三个模块，iPhone 四个模块，保留触控尺寸。
     static var dragBubble: CGFloat { InputMode.current.dockItem }
     /// Mac 右侧停靠栏与窗口图标同宽。

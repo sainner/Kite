@@ -154,7 +154,6 @@ struct PaneHeaderPlacement: ViewModifier {
             .background {
                 ScrollEdgeDots()
                     #if os(iOS)
-                    .padding(.bottom, -Metrics.topFadeOverhang)
                     .ignoresSafeArea(.container, edges: .top)
                     #endif
             }
@@ -172,16 +171,15 @@ struct PaneHeaderPlacement: ViewModifier {
 }
 
 #if os(iOS)
-/// 标题栏后面从窗口顶边的不透明渐变到透明，与底部遮罩上下对称，往下伸过标题栏底边 topFadeOverhang。
-/// SwiftUI 的标题栏（PaneHeaderPlacement）和原生标题栏下面的那条 safeAreaBar（PhoneThreadWindowView）共用。
+/// 标题栏后面从窗口顶边的不透明渐变到标题栏底边的透明（曲线见 Metrics.topFadeOpacity）。
+/// SwiftUI 的标题栏（PaneHeaderPlacement）用；原生标题栏用 TopFadeView，曲线相同。
 struct PaneTopFade: View {
     var body: some View {
         let stops = (0...10).map { i in
             let h = Double(i) / 10
-            return Gradient.Stop(color: Theme.card.opacity(1 - h * h), location: h)
+            return Gradient.Stop(color: Theme.card.opacity(Metrics.topFadeOpacity(h)), location: h)
         }
         LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
-            .padding(.bottom, -Metrics.topFadeOverhang)
             .ignoresSafeArea(.container, edges: .top)
             .allowsHitTesting(false)
     }

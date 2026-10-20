@@ -293,7 +293,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         if metrics.controlsHeight != barHeight { metrics.controlsHeight = barHeight }
 
         place(surface, bounds)
-        place(fade, CGRect(x: 0, y: 0, width: width, height: state.headerHeight + Metrics.topFadeOverhang))
+        place(fade, CGRect(x: 0, y: 0, width: width, height: state.headerHeight))
         place(headerBar, CGRect(x: 0, y: 0, width: width, height: state.headerHeight))
         headerBar.layoutIfNeeded()
         reportRegions()
@@ -417,7 +417,7 @@ private struct PhoneTranscriptSurface: View {
     }
 }
 
-/// 标题栏后面的渐变，同 PaneTopFade：卡片底色从顶上不透明到底下透明，11 个色标按 1 − h²，伸过标题栏底边 topFadeOverhang（视图的高已含）。
+/// 标题栏后面的渐变，同 PaneTopFade：卡片底色从顶上不透明到底下透明，11 个色标按 Metrics.topFadeOpacity，同标题栏一样高。
 final class TopFadeView: UIView {
     override class var layerClass: AnyClass { CAGradientLayer.self }
     private var gradient: CAGradientLayer { layer as! CAGradientLayer }
@@ -442,7 +442,7 @@ final class TopFadeView: UIView {
         card.getRed(nil, green: nil, blue: nil, alpha: &alpha)
         gradient.colors = (0...10).map { i in
             let h = CGFloat(i) / 10
-            return card.withAlphaComponent(alpha * (1 - h * h)).cgColor
+            return card.withAlphaComponent(alpha * Metrics.topFadeOpacity(h)).cgColor
         }
     }
 }
