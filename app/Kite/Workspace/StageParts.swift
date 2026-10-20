@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// 原生台面（Mac 的 StageView、iPad 的 PhoneStageView）两端共用的部分：往上报的几项、台面几何、图层动画的曲线，
-/// 和放进托管视图的几块 SwiftUI（停靠栏、停靠栏上面那一层、空画板、卡片里的正文、点阵、头像、窗口按钮）。
+/// 和放进托管视图的几块 SwiftUI（停靠栏、能展开的格子、停靠栏上面那一层、空画板、卡片里的正文、点阵、头像、窗口按钮）。
 
 /// 原生台面报给 SwiftUI 的几项，由台面外面的 SwiftUI 薄壳发成偏好：有没有窗口开点阵（App 背景让出静息点）、
 /// 摆在点阵上的图形（换栏目时收回）、停靠栏悬停浮出的标签。
@@ -26,11 +26,13 @@ struct StageAppearance: Equatable {
 }
 
 /// 看得见的台面（台面自己的坐标；Mac 拖侧栏改宽时左边让出被侧栏盖住的一段，见 StageView.stageRect），
-/// 和关闭途中、停靠栏里那一格先不显示的实例。停靠栏、空画板的托管视图读它，铺到 bounds 的右下角，自己从排布模型算停靠栏各格：
+/// 关闭途中、停靠栏里那一格先不显示的实例，和抬到卡片上面的格子。停靠栏、空画板的托管视图读它，铺到 bounds 的右下角，自己从排布模型算停靠栏各格：
 /// 排布的改动在 SwiftUI 的事务里，岛自己读模型才接得到同一个动画（见 StagePlan.dock）；原生层不把算好的格子推进去。
 @MainActor @Observable final class StageGeometry {
     var bounds: CGRect = .zero
     var retiring: Set<String> = []
+    /// 抬到卡片上面的格子：展开着和正收回的家族格、「更多」，见 DockUnfold。
+    var lifted: Set<String> = []
 }
 
 /// 台面上的图层动画：曲线与时长同 WindowMotionKind（cubic-bezier(0.2, 0, 0, 1)）；SwiftUI 的弹簧按同样的参数逐帧取样成关键帧。
@@ -102,7 +104,34 @@ struct StageDockRail: View {
     }
 }
 
-/// 停靠栏上面那一层：最小化窗口的脉冲、展开的面板。点了面板里父代理的窗口：在台面上就聚焦，否则放上台面。
+/// 停靠栏里能展开的一格单独一层，见 DockUnfold；lift 把这一层抬到卡片上面或放回去。
+/// 点了里面开着窗口的代理：在台面上就聚焦，否则放上台面。
+struct StageDockUnfold: View {
+    let layout: WindowLayout
+    let area: WorkArea?
+    let geometry: StageGeometry
+    let id: String
+    /// 台面排好以后才有的格子，见 DockUnfold.shown。
+    let appearing: Bool
+    let lift: (Bool) -> Void
+
+    var body: some View {
+        if let area {
+            let bounds = geometry.bounds
+            let (regions, dock) = StagePlan.dock(layout: layout, area: area, bounds: bounds)
+            DockUnfold(geometry: dock, regions: regions, id: id, hiddenInstances: geometry.retiring, appearing: appearing, lift: lift) { pane in
+                StagePlan.show(pane, layout: layout, in: bounds)
+            }
+            .environment(area)
+            .modifier(PausedInTransition(layout: layout))
+            .frame(width: bounds.maxX, height: bounds.maxY, alignment: .topLeading)
+            .coordinateSpace(.named(DockSpace.name))
+            .modifier(StageIslandFill())
+        }
+    }
+}
+
+/// 停靠栏上面那一层：最小化窗口的脉冲、悬停标签。
 struct StageDockOverlay: View {
     let layout: WindowLayout
     let area: WorkArea?
@@ -111,8 +140,8 @@ struct StageDockOverlay: View {
     var body: some View {
         if let area {
             let bounds = geometry.bounds
-            let (regions, dock) = StagePlan.dock(layout: layout, area: area, bounds: bounds)
-            DockOverlay(geometry: dock, bounds: bounds, regions: regions) { pane in StagePlan.show(pane, layout: layout, in: bounds) }
+            let dock = StagePlan.dock(layout: layout, area: area, bounds: bounds).dock
+            DockOverlay(geometry: dock, bounds: bounds, lifted: geometry.lifted)
             .environment(area)
             .modifier(PausedInTransition(layout: layout))
             .frame(width: bounds.maxX, height: bounds.maxY, alignment: .topLeading)

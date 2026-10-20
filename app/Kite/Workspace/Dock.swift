@@ -444,6 +444,29 @@ struct DockGeometry {
         return nil
     }
 
+    /// 悬停标签对着的范围：小头像的从停靠栏左边浮出，不盖住左列的小头像。
+    func hoverFrame(of cell: CGRect, mini: Bool) -> CGRect {
+        mini ? CGRect(x: add.minX, y: cell.minY, width: cell.maxX - add.minX, height: cell.height) : cell
+    }
+
+    /// 展开的家族格、「更多」从格子原地拉长成的面板：先往下，放不下再往上，最高到停靠栏全高，再多就在里面滚动；
+    /// 小头像展开后也居中在停靠栏上。extent 是里面排开时的长，比面板高时要滚动。
+    static func panel(_ entry: DockEntry, from cell: CGRect, path: ArraySlice<String>, regions: WindowRegions) -> (frame: CGRect, extent: CGFloat) {
+        let extent = DockGroup.extent(entry, path: path), breadth = DockGroup.breadth(entry, path: path)
+        let height = min(extent, regions.dock.height)
+        let top = max(min(cell.minY - DockGroup.padding, regions.dock.maxY - height), regions.dock.minY)
+        return (CGRect(x: regions.dock.midX - breadth / 2, y: top, width: breadth, height: height), extent)
+    }
+
+    /// 能展开的各格收着时的格子和展开后的面板，按格子的 ID；path 是展开着的那一格里又展开到哪。
+    func unfolds(path: ArraySlice<String>, regions: WindowRegions) -> [String: (cell: CGRect, panel: CGRect)] {
+        var frames: [String: (cell: CGRect, panel: CGRect)] = [:]
+        for (entry, frame) in allCells where entry.expands {
+            frames[entry.id] = (frame, Self.panel(entry, from: frame, path: path, regions: regions).frame)
+        }
+        return frames
+    }
+
     /// 竖排家族格里父代理的位置，胶囊最上面。
     static func parentFrame(in cell: CGRect) -> CGRect { faceFrame(in: cell, at: 0) }
 

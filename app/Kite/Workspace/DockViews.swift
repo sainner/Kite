@@ -178,8 +178,6 @@ struct DockCellButton: View {
     /// 紧凑布局里没有窗口的实例不缩成小头像，盖一层半透明的底色。
     var veiled = false
     var hoverFrame: CGRect?
-    /// 见 DockGroup.drawsParent。
-    var drawsParent = true
     /// 家族里点了开着窗口的子代理：同点父代理的窗口，见 DockGroup.showPane。
     var showPane: ((Pane) -> Void)?
     @Environment(AppModel.self) private var model
@@ -189,7 +187,7 @@ struct DockCellButton: View {
     var body: some View {
         if entry.expands {
             // 家族胶囊比格子短时贴着父代理那头（小头像里的家族）
-            DockGroup(entry: entry, depth: depth, mini: mini, veiled: veiled, drawsParent: drawsParent, hoverFrame: hoverFrame,
+            DockGroup(entry: entry, depth: depth, mini: mini, veiled: veiled, hoverFrame: hoverFrame,
                       showPane: showPane ?? { _ in })
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: axis == .vertical ? .top : .trailing)
         } else {
@@ -545,7 +543,7 @@ extension EnvironmentValues {
     @Entry var dockAxis: Axis = .vertical
     /// 紧凑布局的底栏里正显示的窗口，它的头像换成向上的箭头。
     @Entry var dockCurrentPane: Pane?
-    /// 宽屏展开的家族格在停靠栏上面那一层展开到哪，见 DockUnfold。
+    /// 宽屏能展开的那一格这一刻展开到哪，见 DockUnfold。
     @Entry var dockPanelOpenness: CGFloat = 1
     /// 头像画出来比排版的大小缩了多少：家族格收着时头像整个缩成格子里的大小，描边、箭头、模糊按画出来的大小算，见 DockFace。
     @Entry var dockFaceScale: CGFloat = 1
@@ -555,48 +553,6 @@ extension EnvironmentValues {
     @Entry var dockPulseOpacity: Double = 1
     /// 外层家族格展开到哪：收着时里面自己也带着子代理的那一项只露最前面的头像，展开途中其余的和描边淡入。
     @Entry var dockFaceDetail: Double = 1
-}
-
-/// 宽屏的家族格展开时要压在窗口卡片上面，画在停靠栏上面那一层：那一层另放一个同样的 DockGroup，先按收着的样子摆上
-/// （和下面那一格一模一样），再逐帧展开；收起时叠回收着的样子再拿掉。进度逐帧交给它（dockPanelOpenness）。
-/// 不用过渡：过渡的修饰里改的环境值传不到里面，一直按展开的样子排，两头之间没有过渡（2026-10-19 探针实测）。
-struct DockUnfold<Panel: View>: View {
-    let expanded: Bool
-    @ViewBuilder let panel: Panel
-    @State private var mounted = false
-    @State private var openness: CGFloat = 0
-
-    var body: some View {
-        ZStack {
-            if mounted { DockOpenness(openness: openness) { panel } }
-        }
-        .onChange(of: expanded, initial: true) { _, expanded in
-            if expanded {
-                // 先按收着的样子摆上，不带外面的动画
-                if !mounted { withTransaction(Transaction(animation: nil)) { mounted = true } }
-                withAnimation(.snappy) { openness = 1 }
-            } else if mounted {
-                withAnimation(.snappy, completionCriteria: .removed) { openness = 0 } completion: {
-                    if openness == 0 { mounted = false }
-                }
-            }
-        }
-    }
-}
-
-/// 逐帧把展开进度交给里面。
-private struct DockOpenness<Content: View>: View, Animatable {
-    var openness: CGFloat
-    @ViewBuilder let content: Content
-
-    var animatableData: CGFloat {
-        get { openness }
-        set { openness = newValue }
-    }
-
-    var body: some View {
-        content.environment(\.dockPanelOpenness, openness)
-    }
 }
 
 /// 停靠栏和内容区共用的坐标系名字。
