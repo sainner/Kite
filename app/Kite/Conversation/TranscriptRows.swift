@@ -31,11 +31,8 @@ struct TranscriptRow: Identifiable {
                 rows.append(TranscriptRow(id: id, content: content, gap: 0, startsHumanTurn: humanTurn))
                 return
             }
-            // 人发的消息和前后的内容之间多空一样多，连着的几条之间不加；它开启的新一轮不再另加，上下才一样。
-            // 代理来信、Kite 的通知虽然也画成气泡，间距同工具行；转交的用户回应开启的新一轮，和上一轮之间多空一点
-            let gap = if last.content.isMessage != content.isMessage { Metrics.messageGap }
-                else if startsTurn && !content.isMessage { Metrics.turnGap }
-                else { CGFloat(0) }
+            // 人发的消息和前后的内容之间多空一样多，连着的几条之间不加；代理来信、Kite 的通知虽然也画成气泡，间距同工具行
+            let gap = last.content.isMessage != content.isMessage ? Metrics.messageGap : 0
             rows.append(TranscriptRow(id: id, content: content, gap: gap, startsHumanTurn: humanTurn))
         }
         for item in items {
@@ -115,7 +112,6 @@ private extension Item {
     var startsTurn: Bool {
         switch kind {
         case .human(let message): !message.midTurn
-        case .kite(let notice): notice.response
         default: false
         }
     }

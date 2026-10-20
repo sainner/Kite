@@ -1,3 +1,4 @@
+import CoreText
 import SwiftUI
 
 /// 一级导航的各栏。
@@ -237,15 +238,37 @@ struct SidebarUserBar: View {
 struct SidebarAvatar: View {
     @Environment(AppModel.self) private var model
 
-    private var user: AccountUser? { model.account.user }
-
     var body: some View {
-        Text(user?.email.first.map { String($0).uppercased() } ?? "?")
+        Text(Self.initial(model.account.user))
             .font(Theme.body.weight(.semibold))
             .foregroundStyle(.white)
             .frame(width: Metrics.paneHeaderButton, height: Metrics.paneHeaderButton)
             .background(Color.accentColor, in: Circle())
             .accessibilityLabel("用户头像")
+    }
+
+    /// 邮箱首字母，没登录时是问号。
+    static func initial(_ user: AccountUser?) -> String { user?.email.first.map { String($0).uppercased() } ?? "?" }
+
+    /// 画成位图的用户头像，样子同侧栏的，对话里排在一行字旁边用（转交的用户回应）。字按行框竖着居中，同 SwiftUI 的 Text。
+    static func still(environment: EnvironmentValues, diameter: CGFloat, scale: CGFloat) -> CGImage? {
+        let pixels = Int((diameter * scale).rounded(.up))
+        guard pixels > 0, let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: pixels, height: pixels, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.scaleBy(x: scale, y: scale)
+        context.setFillColor(Color.accentColor.resolve(in: environment).cgColor)
+        context.fillEllipse(in: CGRect(x: 0, y: 0, width: diameter, height: diameter))
+        let font = Font.system(size: (diameter * 0.5).rounded(), weight: .semibold).resolve(in: environment.fontResolutionContext).ctFont
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: initial(environment[AppModel.self]?.account.user), attributes: [
+            NSAttributedString.Key(kCTFontAttributeName as String): font,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 1, alpha: 1),
+        ]))
+        var ascent: CGFloat = 0, descent: CGFloat = 0
+        let width = CTLineGetTypographicBounds(line, &ascent, &descent, nil)
+        context.textPosition = CGPoint(x: (diameter - width) / 2, y: (diameter - ascent - descent) / 2 + descent)
+        CTLineDraw(line, context)
+        return context.makeImage()
     }
 }
 

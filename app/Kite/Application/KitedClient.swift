@@ -186,6 +186,7 @@ struct RemoteRecord: Decodable, Identifiable {
         let kind: String
         let title: String
         var subject: String?
+        var instance: String?
     }
     let id: String
     let parent: String?
@@ -204,7 +205,7 @@ struct RemoteRecord: Decodable, Identifiable {
         case "kite":
             let notice = block.notice
             content = .kite(Notice(text: block.text ?? "", kind: notice.flatMap { Notice.Kind(rawValue: $0.kind) }, title: notice?.title,
-                                   subject: notice?.subject, response: block.response ?? false))
+                                   subject: notice?.subject, instance: notice?.instance, response: block.response ?? false))
         case "text": content = .text(block.text ?? "")
         case "thinking": content = .thinking(block.text ?? "")
         case "compacted":

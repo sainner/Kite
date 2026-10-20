@@ -7,8 +7,8 @@ import SwiftUI
 /// 附件排在气泡上面（AttachmentRowView，很少有）。正文和代码段用 SelectableText 同一套属性串，复制给打的原文。
 /// 刚发出去时从下面 bubbleRise 处浮上来、淡显，跟着对话往上滑的那一下走，见 TranscriptListView.rise。
 /// 代理来信也是它：靠左，agentBubble 的浅底、系统文字色，小圆角在左上；气泡上面一行是发信方的头像和名字（SenderLineView），折叠和操作同人发的。
-/// Kite 的通知（转交的用户回应除外）也是它：气泡同代理来信，里面是正文；上面一行是 NoticeHeaderView（Kite 的图标、种类、箭头），
-/// 点它气泡缩回左上角收起、只剩这一行，再点从左上角放大出来（BubbleLayout.pop），下面的行跟着按 snappy 的弹簧动。没有输入 ID，不能当压缩的起点终点。
+/// Kite 的通知也是它：气泡同代理来信，里面是正文；上面一行是 NoticeHeaderView（图标、种类、箭头）。默认收着、只有这一行，
+/// 点它气泡从左上角放大出来，再点缩回左上角（BubbleLayout.pop），下面的行跟着按 snappy 的弹簧动。没有输入 ID，不能当压缩的起点终点。
 final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     private let container = BubbleRowView()
     private let coordinator = ProseRowCoordinator()
@@ -19,8 +19,8 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     private(set) var sender: Sender?
     /// Kite 的通知，别的为 nil。
     private var notice: Notice?
-    /// 通知露着气泡（默认），点上面那一行收起。
-    private var opened = true
+    /// 通知露着气泡；默认收着，点上面那一行露出来。
+    private var opened = false
     /// 通知正在点开、收起：气泡按停着时的样子摆，行的高走到量的高为止。
     private var toggling = false
     /// 展开了全文。
@@ -340,7 +340,7 @@ final class BubbleRowView: NSView {
             self.header = header
             return header
         }()
-        header.show(notice, font: Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont, badge: environment)
+        header.show(notice, font: Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont, environment: environment)
         header.expanded = expanded
     }
 

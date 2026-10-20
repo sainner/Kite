@@ -252,19 +252,19 @@ extension Notice {
         }
     }
 
-    /// 转交的用户回应那一句前面的图标（SF Symbol），两端一样。
-    var symbol: String {
-        switch kind {
-        case .question: "questionmark.bubble"
-        case .secret: "key"
-        default: "bell"
-        }
+    /// 气泡上面那一行前面画什么，两端一样：用户自己的回应画用户的头像，Line 替用户回答的提问画 Line 的
+    /// （还没有 Line 自己的图标，先用代理头像），别的画 Kite 的铃铛。
+    enum Mark { case kite, user, agent(instance: String) }
+
+    var mark: Mark {
+        if response { return .user }
+        if kind == .question, let instance { return .agent(instance: instance) }
+        return .kite
     }
 }
 
 /// 两段话之间 agent 做的事折成的一行怎么量、展开到哪了，两端原生列表的工具行共用：汇总一行，点开下面是步骤，
 /// 展开收起和下面的行一起按 0.25 秒的普通缓出动，箭头跟着转、步骤跟着淡入淡出。汇总行、步骤的视图各端自己建。
-/// 转交的用户回应那一行（那一句，点开是正文）也照它量、照它动。
 enum WorkLayout {
     /// 汇总行和步骤之间的间距。
     static let spacing: CGFloat = 6

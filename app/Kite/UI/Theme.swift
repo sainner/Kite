@@ -248,9 +248,8 @@ enum Metrics {
     #else
     static let referenceIconBaselineOffset: CGFloat = 0
     #endif
-    /// 对话里人发的消息和前后的内容之间、别的新一轮（Kite 发来的、后台任务通知）和上一轮之间，在平常的间距之外多空多少。
+    /// 对话里人发的消息和前后的内容之间，在平常的间距之外多空多少。
     static let messageGap: CGFloat = 12
-    static let turnGap: CGFloat = 12
     /// 会话里的内容块（消息气泡、代码块、表格、附件）共用的圆角；人发的气泡右下角、代理来信的左上角小一点。
     nonisolated static let contentRadius: CGFloat = 18
     nonisolated static let bubbleTail: CGFloat = 6

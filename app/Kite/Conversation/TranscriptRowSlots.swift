@@ -9,7 +9,6 @@ import SwiftUI
     case .bubble: BubbleRowSlot(row: row)
     case .work: WorkRowSlot(row: row)
     case .thinking: ThinkingRowSlot(row: row)
-    case .kite: KiteRowSlot(row: row)
     case .compaction: CompactionRowSlot(row: row)
     }
 }
@@ -21,7 +20,6 @@ import SwiftUI
     case .bubble: slot is BubbleRowSlot
     case .work: slot is WorkRowSlot
     case .thinking: slot is ThinkingRowSlot
-    case .kite: slot is KiteRowSlot
     case .compaction: slot is CompactionRowSlot
     }
 }

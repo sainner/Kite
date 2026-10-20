@@ -22,7 +22,7 @@ export interface InputNotice {
   title: string;
   /** 说的是哪一个：子代理、子工作区、monitor、后台命令的名称，界面接在种类后面。 */
   subject?: string;
-  /** 子代理回报的那个子代理，或子工作区的结果里开子工作区时建的那个代理的实例 ID。 */
+  /** 子代理回报的那个子代理，子工作区的结果里开子工作区时建的那个代理，或替用户回答提问的 Line 的实例 ID。 */
   instance?: string;
 }
 

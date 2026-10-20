@@ -8,8 +8,8 @@ import UIKit
 /// 长按气泡任何地方（含内边距、折叠按钮）都开操作栏，接着拖是选字（用户 2026-10-13 定）；
 /// iPad 指针右键开关操作栏。刚发出去时从下面 bubbleRise 处浮上来、淡显，跟着对话往上滑的那一下走，浮的途中不能选字（同 Mac）。
 /// 代理来信也是它：靠左，agentBubble 的浅底、系统文字色，小圆角在左上；气泡上面一行是发信方的头像和名字（PhoneSenderLine），同 Mac。
-/// Kite 的通知（转交的用户回应除外）也是它：气泡同代理来信，里面是正文；上面一行是 PhoneNoticeHeader（Kite 的图标、种类、箭头），
-/// 点它气泡缩回左上角收起、只剩这一行，再点从左上角放大出来（BubbleLayout.pop），下面的行跟着按 snappy 的弹簧动。没有输入 ID，不能当压缩的起点终点。同 Mac。
+/// Kite 的通知也是它：气泡同代理来信，里面是正文；上面一行是 PhoneNoticeHeader（图标、种类、箭头）。默认收着、只有这一行，
+/// 点它气泡从左上角放大出来，再点缩回左上角（BubbleLayout.pop），下面的行跟着按 snappy 的弹簧动。没有输入 ID，不能当压缩的起点终点。同 Mac。
 final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var container: PhoneBubbleRowView?
     var proseViews: [PhoneProseTextView]? { container.map { [$0.text] } ?? [] }
@@ -22,8 +22,8 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private(set) var sender: Sender?
     /// Kite 的通知，别的为 nil。
     private var notice: Notice?
-    /// 通知露着气泡（默认），点上面那一行收起。
-    private var opened = true
+    /// 通知露着气泡；默认收着，点上面那一行露出来。
+    private var opened = false
     /// 通知正在点开、收起：气泡按停着时的样子摆，行的高走到量的高为止。
     private var toggling = false
     /// 展开了全文。
@@ -406,7 +406,7 @@ final class PhoneBubbleRowView: UIView {
             return header
         }()
         header.show(notice, font: Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as UIFont, expanded: expanded,
-                    badge: environment)
+                    environment: environment)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

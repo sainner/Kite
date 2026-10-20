@@ -2,115 +2,9 @@
 import AppKit
 import SwiftUI
 
-/// Kite 转交的用户回应（你回答了提问这类）：是用户自己做的事，靠右一行次要色小字，图标、那一句、箭头，整块可点；
-/// 点开下面是正文（写给模型的原文，次要色小字，能选），贴着字宽也靠右。展开收起和下面的行一起按 WorkLayout 的走法动，
-/// 箭头跟着转、正文跟着淡入淡出，收起走完拿掉正文。别的通知画成 Kite 发来的气泡（BubbleRowSlot）。
-final class KiteRowSlot: TranscriptRowSlot {
-    private let container = NoticeRowView()
-    private var notice: Notice?
-    private var expanded = false
-    private var font = NSFont.systemFont(ofSize: 11)
-    private var headerHeight: CGFloat = 0
-    private var bodySize = CGSize.zero
-    /// 自己正在展开收起：箭头、正文的透明度跟着行高走。
-    private var toggling = false
-
-    override init(row: TranscriptRow) {
-        super.init(row: row)
-        container.header.action = { [weak self] in self?.toggle() }
-    }
-
-    override var hasView: Bool { true }
-    override var view: NSView { container }
-
-    override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
-        super.update(row, context: context)
-        guard case .item(let item) = row.content, case .kite(let notice) = item.kind else { return }
-        self.notice = notice
-        font = Theme.secondary.resolve(in: context.environment.fontResolutionContext).ctFont as NSFont
-        container.header.show(notice, font: font)
-        container.body?.showPlain(notice.text, font: font, color: .secondaryLabelColor)
-    }
-
-    override func height(width: CGFloat) -> CGFloat {
-        if let measured, measured.width == width { return measured.height }
-        headerHeight = container.header.height
-        if expanded, let body = container.body {
-            // 贴着字宽、靠右，最宽到那一句的字的左边
-            let most = max(width - container.header.textX, 0)
-            let lineWidth = ProseTextCoordinator.naturalWidth(of: body.textStorage ?? NSAttributedString(), most: most)
-            bodySize = CGSize(width: lineWidth, height: body.measurePixel(lineWidth: lineWidth))
-        }
-        let height = WorkLayout.height(header: headerHeight, steps: bodySize.height, expanded: expanded)
-        measured = (width, height)
-        return height
-    }
-
-    override func layoutView(in frame: CGRect) {
-        var progress: CGFloat = expanded ? 1 : 0
-        if toggling {
-            progress = WorkLayout.progress(rowHeight: frame.height, header: headerHeight, steps: bodySize.height, expanded: expanded)
-            if let measured, abs(frame.height - measured.height) < 0.01 { toggling = false }
-        }
-        let header = container.header
-        let headerWidth = min(header.width, frame.width)
-        header.frame = CGRect(x: frame.width - headerWidth, y: 0, width: headerWidth, height: headerHeight)
-        header.turn = progress
-        guard let body = container.body else { return }
-        body.frame = CGRect(x: frame.width - bodySize.width, y: headerHeight + WorkLayout.spacing,
-                            width: bodySize.width, height: bodySize.height)
-        body.alphaValue = progress
-        // 收起走完拿掉正文
-        if !expanded, progress == 0 { container.removeBody() }
-    }
-
-    private func toggle() {
-        guard let notice else { return }
-        expanded.toggle()
-        if expanded, container.body == nil {
-            let body = container.addBody()
-            body.alphaValue = 0
-            body.showPlain(notice.text, font: font, color: .secondaryLabelColor)
-        }
-        container.header.expanded = expanded
-        toggling = true
-        measured = nil
-        heightChanged?(WorkLayout.motion)
-    }
-}
-
-/// 通知这一行的视图：那一句、展开后的正文，按自己的范围截（收起时退场的正文不画到后面的行上）。
-final class NoticeRowView: NSView {
-    let header = NoticeHeaderView()
-    private(set) var body: ProseTextView?
-
-    override var isFlipped: Bool { true }
-
-    init() {
-        super.init(frame: .zero)
-        wantsLayer = true
-        layer?.masksToBounds = true
-        addSubview(header)
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func addBody() -> ProseTextView {
-        let body = ProseTextView.makeReadOnly()
-        addSubview(body)
-        self.body = body
-        return body
-    }
-
-    func removeBody() {
-        body?.removeFromSuperview()
-        body = nil
-    }
-}
-
-/// 通知的那一句：图标（SwiftUI Label 的摆法，见 SymbolLabelMetrics）、那一句（放不下截掉）、间距 8、小号箭头，都是次要色。
-/// 画成气泡的通知（badge）换成 Kite 的图标（头像大小、agentBubble 底色的圆，中间次要色的铃铛，还没有 Kite 自己的图标，先用它；
-/// 间距 6，竖着居中），那一句换成种类（Notice.heading）。宽是内容的宽，整块可点，指针是手形；读屏读成展开收起的三角。
+/// Kite 通知气泡上面那一行：图标（头像大小，见 Notice.mark：Kite 的是 agentBubble 底色的圆、中间次要色的铃铛，还没有 Kite 自己的图标，先用它；
+/// 用户、Line 的是头像）、间距 6、种类（Notice.heading，放不下截掉）、间距 8、小号箭头，竖着居中，字和箭头是次要色。
+/// 宽是内容的宽，整块可点，指针是手形；读屏读成展开收起的三角。
 final class NoticeHeaderView: NativeButton {
     /// 箭头转了多少：0 朝右，1 朝下。
     var turn: CGFloat = 0 {
@@ -124,9 +18,9 @@ final class NoticeHeaderView: NativeButton {
     private let badge = CALayer()
     private let title = LineLabel()
     private let chevron = NSImageView()
-    private var font = NSFont.systemFont(ofSize: 11)
-    /// Kite 图标那个圆的直径，用 SF Symbol 图标时为 0。
+    /// 图标那个圆的直径。
     private var diameter: CGFloat = 0
+    private var shown: (mark: Notice.Mark, environment: EnvironmentValues)?
     private var speech = ""
 
     override var isFlipped: Bool { true }
@@ -145,31 +39,55 @@ final class NoticeHeaderView: NativeButton {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// badge：画 Kite 图标那个圆用的环境，用 SF Symbol 图标时为 nil。
-    func show(_ notice: Notice, font: NSFont, badge environment: EnvironmentValues? = nil) {
-        self.font = font
+    /// environment：画图标用的环境。
+    func show(_ notice: Notice, font: NSFont, environment: EnvironmentValues) {
         let secondary = NSColor.secondaryLabelColor
         speech = TranscriptSpeech.notice(notice)
-        title.set(environment != nil ? notice.heading : notice.title, font: font, color: secondary)
-        if let environment {
-            diameter = AgentAvatar.inlineDiameter(font: font.pointSize)
-            let configuration = NSImage.SymbolConfiguration(pointSize: (diameter * 0.5).rounded(), weight: .medium)
-            icon.image = NSImage(systemSymbolName: "bell.fill", accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
-            badge.backgroundColor = Theme.agentBubble.resolve(in: environment).cgColor
-        } else {
-            diameter = 0
-            icon.image = SymbolLabelMetrics.image(notice.symbol, font: font)
-            badge.backgroundColor = nil
-        }
-        icon.contentTintColor = secondary
+        title.set(notice.heading, font: font, color: secondary)
+        diameter = AgentAvatar.inlineDiameter(font: font.pointSize)
+        shown = (notice.mark, environment)
+        drawMark()
         let configuration = NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .regular, scale: .small)
         chevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
         chevron.contentTintColor = secondary
         needsLayout = true
     }
 
+    /// 铃铛是圆底上的符号，头像按屏幕的倍率画成位图放进圆那层。
+    private func drawMark() {
+        guard let shown else { return }
+        let scale = window?.backingScaleFactor ?? 2
+        let environment = shown.environment
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        badge.contentsScale = scale
+        switch shown.mark {
+        case .kite:
+            badge.contents = nil
+            badge.backgroundColor = Theme.agentBubble.resolve(in: environment).cgColor
+            let symbol = NSImage.SymbolConfiguration(pointSize: (diameter * 0.5).rounded(), weight: .medium)
+            icon.image = NSImage(systemSymbolName: "bell.fill", accessibilityDescription: nil)?.withSymbolConfiguration(symbol)
+            icon.contentTintColor = .secondaryLabelColor
+        case .user:
+            badge.contents = SidebarAvatar.still(environment: environment, diameter: diameter, scale: scale)
+            badge.backgroundColor = nil
+            icon.image = nil
+        case .agent(let instance):
+            badge.contents = AgentAvatar.still(design: AgentAvatar.design(for: instance, environment: environment), instance: instance,
+                                               diameter: diameter, scale: scale, environment: environment)
+            badge.backgroundColor = nil
+            icon.image = nil
+        }
+        CATransaction.commit()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        drawMark()
+    }
+
     /// 那一句从哪起。
-    var textX: CGFloat { diameter > 0 ? diameter + 6 : SymbolLabelMetrics(font: font, image: icon.image).textX }
+    private var textX: CGFloat { diameter + 6 }
     var height: CGFloat { max(title.lineHeight, diameter) }
     /// 内容的宽：图标、那一句、箭头。
     var width: CGFloat { textX + title.textWidth + 8 + (chevron.image?.size.width ?? 0) }
@@ -177,21 +95,16 @@ final class NoticeHeaderView: NativeButton {
     override func layout() {
         super.layout()
         let line = title.lineHeight
-        let top = (bounds.height - line) / 2
-        if diameter > 0 {
-            let circle = CGRect(x: 0, y: (bounds.height - diameter) / 2, width: diameter, height: diameter)
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            badge.frame = circle
-            badge.cornerRadius = diameter / 2
-            CATransaction.commit()
-            icon.frame = circle
-        } else {
-            icon.frame = SymbolLabelMetrics(font: font, image: icon.image).iconFrame(lineTop: top)
-        }
+        let circle = CGRect(x: 0, y: (bounds.height - diameter) / 2, width: diameter, height: diameter)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        badge.frame = circle
+        badge.cornerRadius = diameter / 2
+        CATransaction.commit()
+        icon.frame = circle
         let imageSize = chevron.image?.size ?? .zero
         let titleWidth = min(title.textWidth, max(bounds.width - textX - 8 - imageSize.width, 0))
-        title.frame = CGRect(x: textX, y: top, width: titleWidth, height: line)
+        title.frame = CGRect(x: textX, y: (bounds.height - line) / 2, width: titleWidth, height: line)
         let rotation = chevron.frameCenterRotation
         chevron.frameCenterRotation = 0
         chevron.frame = CGRect(x: textX + titleWidth + 8, y: (bounds.height - imageSize.height) / 2, width: imageSize.width, height: imageSize.height)
@@ -204,34 +117,6 @@ final class NoticeHeaderView: NativeButton {
     override func accessibilityLabel() -> String? { speech }
     override func accessibilityValue() -> Any? { expanded ? 1 : 0 }
     override func isAccessibilityExpanded() -> Bool { expanded }
-}
-
-/// SwiftUI 的 Label 在 Mac 上怎么摆图标和字（2026-10-13 与 SwiftUI 逐像素对过，铃铛、举手、三角、合并四种图标）：
-/// 字从图标的对齐宽度（NSImage.alignmentRect，SwiftUI 的图标就这么宽）后面 8 pt 起；图标和字按基线对齐，
-/// 图标的基线在它对齐框的底边（离图片底边 alignmentRect.minY），整张图往上取到像素。
-/// 举手这种比字高的图标，SwiftUI 会把整行撑高零点几点、字往下挪，这里不撑：图标照样按基线对齐，往上多画一点，字和行高不变。
-struct SymbolLabelMetrics {
-    let font: NSFont
-    let image: NSImage?
-
-    static func image(_ name: String, font: NSFont) -> NSImage? {
-        let configuration = NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .regular, scale: .medium)
-        return NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
-    }
-
-    /// 字从哪起。
-    var textX: CGFloat { (image?.alignmentRect.width ?? 0) + 8 }
-
-    /// 一行字的高。
-    var lineHeight: CGFloat { ceil(font.ascender - font.descender + font.leading) }
-
-    /// 图标的位置：lineTop 是第一行字的顶边。
-    func iconFrame(lineTop: CGFloat) -> CGRect {
-        guard let image else { return .zero }
-        let baseline = font.ascender + font.leading / 2
-        let top = ((baseline + image.alignmentRect.minY - image.size.height) * 2).rounded(.down) / 2
-        return CGRect(x: 0, y: lineTop + top, width: image.size.width, height: image.size.height)
-    }
 }
 
 #endif

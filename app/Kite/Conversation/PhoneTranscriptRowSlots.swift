@@ -26,7 +26,6 @@ extension PhoneRowSlot {
     case .bubble: PhoneBubbleRowSlot(row: row)
     case .work: PhoneWorkRowSlot(row: row)
     case .thinking: PhoneThinkingRowSlot(row: row)
-    case .kite: PhoneKiteRowSlot(row: row)
     case .compaction: PhoneCompactedRowSlot(row: row)
     }
 }
@@ -38,7 +37,6 @@ extension PhoneRowSlot {
     case .bubble: slot is PhoneBubbleRowSlot
     case .work: slot is PhoneWorkRowSlot
     case .thinking: slot is PhoneThinkingRowSlot
-    case .kite: slot is PhoneKiteRowSlot
     case .compaction: slot is PhoneCompactedRowSlot
     }
 }

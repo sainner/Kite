@@ -1127,7 +1127,8 @@ export class Kite {
       if (ask.kind === 'question') {
         const response = questionResponseOf(ask, value);
         text = questionResultText(ask, response, via);
-        notice = { kind: 'question', title: `${via ? 'Line 替你' : '你'}${'denied' in response ? '关掉了提问' : '回答了提问'}` };
+        notice = { kind: 'question', title: `${via ? 'Line 替你' : '你'}${'denied' in response ? '关掉了提问' : '回答了提问'}`,
+          ...(via ? { instance: via.instance } : {}) };
       } else {
         const response = secretResponseOf(ask, value);
         text = 'denied' in response ? secretDeniedText(ask, response.reason)
