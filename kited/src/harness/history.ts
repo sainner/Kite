@@ -123,13 +123,15 @@ export class HarnessHistory {
           this.pending.delete(input.id);
         }
         this.stops.set(row.id, structuredClone(row.returned));
-        this.waitingForResume = false;
+        // 没退回的通知和来信留在队列里，等新输入或继续，不自动推进。
+        this.waitingForResume = this.pending.size > 0;
         if (!this.openTurn) this.lastOutcome = { kind: 'interrupted' };
         return;
       case 'turn.started':
         if (this.openTurn) throw new Error('记录包含重叠回合');
         this.openTurn = row.turnId;
         this.lastOutcome = undefined;
+        this.waitingForResume = false;
         return;
       case 'context.prepared':
         if (this.contexts.has(row.snapshot.id)) throw new Error('上下文快照重复');
@@ -210,7 +212,8 @@ export class HarnessHistory {
         if (this.unfinishedRequest()?.turnId === row.turnId) throw new Error('回合结束时仍有未完成的请求或工具');
         this.openTurn = undefined;
         this.lastOutcome = row.outcome;
-        this.waitingForResume = row.outcome.kind === 'failed';
+        // 回合里只有手动停止会把它置为真（开回合时为假，停止期间不收新输入），收尾时保留。
+        this.waitingForResume = row.outcome.kind === 'failed' || this.waitingForResume;
         if (row.recovery) this.recovery = structuredClone(row.recovery);
         if (row.outcome.kind !== 'completed') this.segments.push({ feedback: outcomeFeedback(row.outcome)!, seq: row.seq, at: row.at });
         return;

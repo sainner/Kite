@@ -14,7 +14,7 @@ import { localTools, type ShellBackground, type ShellOutside } from '../executio
 import { commandEnvironment, type ExecutionPolicy } from '../execution/sandbox.ts';
 import { processGroupAlive, type NetworkAsk } from '../execution/command.ts';
 import type { CompactionRequest, Input, Outcome, Phase, StopRequest, Tool } from '../harness/types.ts';
-import { modelText } from '../harness/input.ts';
+import { modelText, returnedOnStop } from '../harness/input.ts';
 import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
 import { HarnessRunner } from '../harness/runner.ts';
 import { withThreadJournal } from '../harness/thread-host.ts';
@@ -423,11 +423,15 @@ export function openClaudeHost(options: {
         const running = driver;
         const cancelled = new Set(await running?.stop() ?? []);
         for (const entry of data.inputs) if (entry.status === 'queued' || entry.status === 'unconfirmed' || (cancelled.has(entry.sdkId) && !entry.delivered)) {
-          entry.status = 'cancelled'; receipt.returned.push(entry.input);
+          // 不退回的留在队列里，Claude 撤下的改回排队，下次重新交接。
+          if (returnedOnStop(entry.input)) { entry.status = 'cancelled'; receipt.returned.push(entry.input); }
+          else if (entry.status !== 'unconfirmed') entry.status = 'queued';
         }
         save();
         if (running) await running.shutdown();
         await waitTools(); await settling; processesStopped();
+        // 留下的等新输入或继续，不自动推进；进程退出时的收尾会改掉 paused，在这里定。
+        data.paused = data.inputs.some((entry) => entry.status === 'queued' || entry.status === 'unconfirmed');
         phase = 'idle'; data.outcome = { kind: 'interrupted' }; receipt.completed = true; save();
         return receipt.returned;
       })().catch((error) => {
@@ -462,7 +466,7 @@ export function openClaudeHost(options: {
         entry.status = entry.delivered ? 'done' : 'unconfirmed';
       }
       for (const receipt of data.stops) if (!receipt.completed) {
-        for (const entry of data.inputs) if (entry.status === 'queued' || entry.status === 'unconfirmed') {
+        for (const entry of data.inputs) if ((entry.status === 'queued' || entry.status === 'unconfirmed') && returnedOnStop(entry.input)) {
           if (!receipt.returned.some((input) => input.id === entry.input.id)) receipt.returned.push(entry.input);
           entry.status = 'cancelled';
         }

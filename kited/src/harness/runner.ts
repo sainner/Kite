@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { ToolBatch } from './tools.ts';
 import { HarnessHistory, type ContextUnit } from './history.ts';
-import { inputSchema } from './input.ts';
+import { inputSchema, returnedOnStop } from './input.ts';
 import { loadedDefinitions, sameDefinition, TOOL_SEARCH } from './tool-search.ts';
 import { assembleContext, literalContext, restoreContext } from './context/assembler.ts';
 import { contextUpdateContext } from './context/notifications.ts';
@@ -96,7 +96,7 @@ export class HarnessRunner implements ThreadRunner {
       return structuredClone(previous);
     }
     if (this.stopping) throw new Error('会话正在停止，请重试原停止请求');
-    const returned = new Map([...this.history.pending].map((id) => [id, this.history.inputs.get(id)!]));
+    const returned = new Map<string, Input>([...this.history.pending].map((id) => this.history.inputs.get(id)!).filter(returnedOnStop).map((input) => [input.id, input]));
     for (const input of request.inputs ?? []) {
       if (!inputSchema.safeParse(input).success) throw new Error('待核定输入无效');
       const known = this.history.inputs.get(input.id) ?? returned.get(input.id);
@@ -347,7 +347,7 @@ export class HarnessRunner implements ThreadRunner {
     }
     if (this.storageFailed) outcome = { kind: 'failed', message: this.history.recovery!.message };
     this.history.lastOutcome = outcome;
-    this.history.waitingForResume = outcome.kind === 'failed';
+    this.history.waitingForResume ||= outcome.kind === 'failed';
     if (!this.storageFailed) this.record({ type: 'turn.finished', turnId: turn.id, outcome,
       ...(this.history.recovery ? { recovery: this.history.recovery } : {}) });
   }

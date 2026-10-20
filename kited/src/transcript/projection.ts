@@ -214,7 +214,7 @@ export class TranscriptProjection {
       case 'input.cancelled': this.pending.delete(row.inputId); this.emitPending(); break;
       case 'thread.stopped':
         for (const input of row.returned) this.pending.delete(input.id);
-        this.waitingForResume = false;
+        this.waitingForResume = this.pending.size > 0;
         if (!this.busy) { this.lastOutcome = { kind: 'interrupted' }; this.error = undefined; }
         this.emitPending();
         break;
@@ -284,7 +284,7 @@ export class TranscriptProjection {
         this.busy = false;
         this.phase = 'idle';
         this.lastOutcome = row.outcome;
-        this.waitingForResume = row.outcome.kind === 'failed';
+        this.waitingForResume = row.outcome.kind === 'failed' || this.waitingForResume;
         if (row.recovery) this.recovery = row.recovery;
         // 失败说明与打断只在状态里，客户端显示在窗口标题栏，不进记录。
         this.error = 'message' in row.outcome ? row.outcome.message : undefined;

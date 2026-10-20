@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { assembleContext, literalContext } from '../../src/harness/context/assembler.ts';
 import { FileJournal } from '../../src/harness/journal.ts';
 import { requestSnapshot } from '../../src/harness/request-config.ts';
-import type { Journal, JournalEvent, JournalRecord } from '../../src/harness/types.ts';
+import type { Input, Journal, JournalEvent, JournalRecord } from '../../src/harness/types.ts';
 import {
   aborted, deferred, diskRecords, input, item, ManualModel, Seen, success, tool,
   useHarness, waitRecord, withAbort,
@@ -229,21 +229,31 @@ test('用户停止等收尾后退还输入，关闭重开保留未封定输入',
 }, 1000);
 
 // send 的接收、请求封定、停止记录和重开交错；同一停止 ID 必须重放原结果，迟到输入不能入模型。
-test('停止按序退还输入，同 ID 重试与重开不重复执行', async () => {
+// 实际 bug：停止把队列里 Kite 的通知和代理来信也放进 returned，App 把它们塞进了用户的输入框。
+// 它们留在队列里：停止收据先落盘、回合随后以 interrupted 收尾，收尾后和重开后都得是 waitingForResume，不自己跑起来。
+test('停止只退还人发的输入，通知和来信留到下一条输入，同 ID 重试与重开不重复执行', async () => {
   const root = h.root();
   const model = new ManualModel();
   const { runner, journal } = h.runner(root, { model });
+  const notice: Input = { id: 'notice', text: '整理文档 做完了', source: 'kite',
+    notice: { kind: 'agent.report', title: '整理文档 做完了', subject: '整理文档', instance: 'child' } };
+  const letter: Input = { id: 'letter', text: '另一个代理的来信', source: 'agent',
+    from: { kind: 'agent', instance: 'peer', title: '统筹' } };
   await runner.send(input('active'));
   const first = await model.call(1);
   await runner.send(input('queued-a'));
   await runner.send(input('queued-a'));
   await expect(runner.send({ ...input('queued-a'), text: '冲突内容' })).rejects.toThrow();
+  await runner.send(notice);
+  await runner.send(letter);
   const sending = runner.send(input('queued-b'));
   const request = { id: 'stop-race', inputs: [input('queued-b'), input('not-yet-received')] };
   const stopping = runner.interrupt(request);
   await sending.catch(() => {});
   const returned = await stopping;
   expect(returned).toEqual([input('queued-a'), input('queued-b'), input('not-yet-received')]);
+  expect(runner.state).toMatchObject({ phase: 'idle', busy: false, waitingForResume: true,
+    lastOutcome: { kind: 'interrupted' } });
   expect(first.signal.aborted).toBe(true);
   expect(model.calls.values).toHaveLength(1);
   expect(journal.records.filter((record) => record.type === 'input.received' && record.input.id === 'queued-a')).toHaveLength(1);
@@ -253,22 +263,27 @@ test('停止按序退还输入，同 ID 重试与重开不重复执行', async (
     expect.objectContaining({ id: request.id, returned }),
   ]);
   await runner.shutdown();
+  expect(model.calls.values).toHaveLength(1);
   const reopenedModel = new ManualModel();
   const reopened = h.runner(root, { model: reopenedModel });
   expect(await reopened.runner.interrupt(request)).toEqual(returned);
   await reopened.runner.send(input('not-yet-received')).catch(() => {});
   await reopened.runner.settled();
   expect(reopenedModel.calls.values).toHaveLength(0);
+  expect(reopened.runner.state).toMatchObject({ phase: 'idle', busy: false, waitingForResume: true });
   await reopened.runner.send(input('fresh'));
   const fresh = await reopenedModel.call(1);
   expect(fresh.request.history.filter((entry) => entry.type === 'input').map((entry) => entry.input.id))
-    .toEqual(['active', 'fresh']);
+    .toEqual(['active', 'notice', 'letter', 'fresh']);
   expect(reopened.runner.state.busy).toBe(true);
   expect(await reopened.runner.interrupt(request)).toEqual(returned);
   expect(fresh.signal.aborted).toBe(false);
   expect(reopened.runner.state.busy).toBe(true);
   fresh.response.complete();
   await reopened.runner.settled();
+  expect(reopenedModel.calls.values).toHaveLength(1);
+  expect(reopened.runner.state).toMatchObject({ phase: 'idle', busy: false, waitingForResume: false,
+    lastOutcome: { kind: 'completed' } });
   expect(reopened.journal.records.filter((record) => record.type === 'thread.stopped')).toHaveLength(1);
 }, 1000);
 
