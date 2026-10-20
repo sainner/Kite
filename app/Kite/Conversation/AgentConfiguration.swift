@@ -22,14 +22,12 @@ nonisolated struct AgentConfiguration: Codable, Equatable, Sendable {
     var model: AgentModelConfiguration
     var tools: [String]
     var context: JSON
-    var maxRequestsPerTurn: Int
 }
 
 /// 新代理草稿里在角色之上改过的参数；nil 表示沿用角色。还没有实例，发出第一条消息时随创建请求一起提交。
 struct DraftAgentChoice: Equatable {
     var model: AgentModelConfiguration?
     var tools: [String]?
-    var maxRequestsPerTurn: Int?
     /// 草稿里改过的审批模式；没改时用角色的默认。
     var approval: ApprovalMode?
 }

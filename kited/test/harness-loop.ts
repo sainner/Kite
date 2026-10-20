@@ -118,7 +118,6 @@ type RunnerOptions = Partial<Pick<HarnessOptions,
   model?: Model;
   tools?: Tool[];
   instructions?: string | ContextSource | (() => ContextSource);
-  maxRequestsPerTurn?: number;
   prepareRequest?: HarnessOptions['prepareRequest'];
 };
 
@@ -154,7 +153,7 @@ export function useHarness() {
           tools: options.tools ?? [],
           instructions: typeof options.instructions === 'function'
             ? options.instructions() : options.instructions ?? '测试主循环',
-          settings: { maxRequestsPerTurn: options.maxRequestsPerTurn },
+          settings: {},
         })),
         startPaused: options.startPaused,
         afterTools: options.afterTools,

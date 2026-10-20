@@ -23,7 +23,6 @@ const USAGE = `用法：
   --reasoning <强度>     默认 medium
   --auth <文件>         ChatGPT 登录凭据，默认 $KITE_HOME/auth/chatgpt/auth.json（KITE_HOME 默认 ~/.kite）；
                          DeepSeek 型号改读 DEEPSEEK_API_KEY
-  --max-requests <次数>  每回合请求预算，默认 50
 
 对话命令：/status /stop /resume /recover /exit
 工作过程中直接输入可以插话；Ctrl+C 停止执行并退回队列，空闲时退出。
@@ -33,7 +32,7 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
   const { values } = parseArgs({ args, strict: true, options: {
     cwd: { type: 'string' }, prompt: { type: 'string' }, resume: { type: 'string' },
     model: { type: 'string' }, reasoning: { type: 'string' }, auth: { type: 'string' },
-    'max-requests': { type: 'string' }, help: { type: 'boolean', short: 'h' },
+    help: { type: 'boolean', short: 'h' },
   } });
   if (values.help) { console.log(USAGE); return 0; }
   const home = resolve(process.env.KITE_HOME ?? join(homedir(), '.kite'));
@@ -45,8 +44,6 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
   const cwd = resolve(values.cwd ?? saved?.cwd ?? process.cwd());
   const modelName = values.model ?? saved?.settings?.model?.model ?? process.env.KITE_MODEL ?? defaultAgentModel;
   const reasoning = values.reasoning ?? saved?.settings?.model?.reasoning ?? 'medium';
-  const maxRequests = Number(values['max-requests'] ?? saved?.settings?.maxRequestsPerTurn ?? 50);
-  if (!Number.isSafeInteger(maxRequests) || maxRequests < 1) throw new Error('--max-requests 必须为正整数');
   // 启动时尽早发现登录问题，每次请求仍重新读取，以跟上独立认证目录的更新。
   if (vendorOfModel(modelName).id !== 'deepseek') await readSubscriptionCredentials(values.auth);
   else if (!await deepseekKey()) throw new Error('DeepSeek 型号需要设置 DEEPSEEK_API_KEY');
@@ -89,7 +86,7 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
       lastWasBusy = event.state.busy;
     }
   };
-  const settings = { model: { model: modelName, reasoning }, contextWindow, maxRequestsPerTurn: maxRequests };
+  const settings = { model: { model: modelName, reasoning }, contextWindow };
   // 独立终端直接在指定目录工作，没有 Kite 的工作机、项目与实例，只提供目录本身取得到的变量。
   const variables = { 'environment.date': today, ...directoryVariables(cwd) };
   const host = await openThreadHost({

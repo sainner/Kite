@@ -82,7 +82,7 @@ extension AppModel {
             var role = saved.role
             apply(&role)
             guard role != saved.role else { return }
-            guard role.isSavable else { throw KitedError(message: "角色需要名称，每回合至少能发一次请求") }
+            guard role.isSavable else { throw KitedError(message: "角色需要名称") }
             _ = try await saveRole(role, expectedRevision: saved.revision, connection: connection)
         }
     }
@@ -285,7 +285,7 @@ struct RoleContextPane: View {
     }
 }
 
-/// 资源库角色的初始配置窗口：用这个角色新建代理时的默认模型、每回合请求上限与工具，改了即时存到工作机；默认模型与思考强度在标题栏。
+/// 资源库角色的初始配置窗口：用这个角色新建代理时的默认模型与工具，改了即时存到工作机；默认模型与思考强度在标题栏。
 struct RoleSettingsPane: View {
     let id: String
     @Environment(AppModel.self) private var model
@@ -343,10 +343,9 @@ extension View {
 }
 
 private extension RoleDefinition {
-    /// 表单交回的是整份改后的角色：只把这一下改了的（换规则方向、开关哪几个工具、是否必需、每回合上限、执行授权的各项、
+    /// 表单交回的是整份改后的角色：只把这一下改了的（换规则方向、开关哪几个工具、是否必需、执行授权的各项、
     /// 默认审批模式）落到排队写入时工作机上最新的角色上。整份覆盖会把排在前面、没存上已撤掉的改动和别的设备的改动一起写回去。
     mutating func adopt(_ after: RoleDefinition, since before: RoleDefinition, in universe: [String]) {
-        if after.maxRequestsPerTurn != before.maxRequestsPerTurn { maxRequestsPerTurn = after.maxRequestsPerTurn }
         if after.approval != before.approval { approval = after.approval }
         if after.execution != before.execution {
             let (old, new) = (before.execution ?? ExecutionChanges(), after.execution ?? ExecutionChanges())

@@ -1,8 +1,8 @@
 import SwiftUI
 
-enum RoleField { case title, budget, read, write, network, unsandboxed }
+enum RoleField { case title, read, write, network, unsandboxed }
 
-/// 用这个角色新建代理时的初始配置：每回合请求上限、工具、执行授权与默认审批模式。资源库角色的初始配置窗口与新代理另存角色的弹窗共用；
+/// 用这个角色新建代理时的初始配置：工具、执行授权与默认审批模式。资源库角色的初始配置窗口与新代理另存角色的弹窗共用；
 /// 默认模型各放各的，初始配置窗口在标题栏，弹窗在表单里。
 struct RoleSettingsForm: View {
     @Binding var role: RoleDefinition
@@ -12,7 +12,6 @@ struct RoleSettingsForm: View {
     private var universe: [String] { catalog?.tools ?? [] }
 
     var body: some View {
-        TurnBudgetField(value: $role.maxRequestsPerTurn, focus: focus, field: .budget)
         tools
         execution
     }

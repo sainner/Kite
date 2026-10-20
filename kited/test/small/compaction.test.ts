@@ -27,10 +27,10 @@ const notice = (id: string, sequence: number, kind: string): ThreadNotification 
 });
 
 /** 投递给定的通知列表，按游标只给未投递的部分。 */
-function requests(model: Model, notices: ThreadNotification[] = [], extra: { contextWindow?: number; maxRequestsPerTurn?: number } = {}) {
+function requests(model: Model, notices: ThreadNotification[] = [], extra: { contextWindow?: number } = {}) {
   const prepareRequest: HarnessOptions['prepareRequest'] = ({ afterNotification }) => ({
     model, tools: [tool('noop', async () => success('无事'))], instructions: '测试主循环',
-    settings: { maxRequestsPerTurn: extra.maxRequestsPerTurn, contextWindow: extra.contextWindow },
+    settings: { contextWindow: extra.contextWindow },
     notifications: notices.filter((entry) => entry.sequence! > afterNotification),
   });
   return prepareRequest;
@@ -59,7 +59,7 @@ function shape(history: ContextItem[]): string[] {
 /** 把 runner 事件接进真实显示投影，读它给客户端的快照。 */
 function projected() {
   const agent: AgentDefinition = { runtime: 'harness', model: { model: 'gpt-6.1-sol', reasoning: 'high' },
-    tools: [], maxRequestsPerTurn: 100,
+    tools: [],
     context: { version: 2, id: 'test', title: '测试上下文', scene: 'thread.create', blocks: [] } };
   const thread = { id: 'thread', status: 'open', runtime: 'harness', config: { agent },
     workspace: { status: 'open' } } as unknown as ThreadContext;
@@ -205,11 +205,11 @@ test('外层压缩完整包含内层，部分重叠与撤销内层被拒绝，�
   expect(block('inner')).not.toHaveProperty('reverted', true);
 }, 1000);
 
-// 自动压缩夹在回合内两次请求之间：估算、后台摘要、请求预算和「压缩后未有新实测用量不再触发」要一起对。
-test('估算用量超过上限时回合内先自动压缩并保留人发原文，压缩不占请求预算，紧接的请求不再压缩', async () => {
+// 自动压缩夹在回合内两次请求之间：估算、后台摘要和「压缩后未有新实测用量不再触发」要一起对。
+test('估算用量超过上限时回合内先自动压缩并保留人发原文，紧接的请求不再压缩', async () => {
   const model = new ManualModel();
   const { runner, journal, events } = h.runner(h.root(), {
-    prepareRequest: requests(model, [], { contextWindow: 10_000, maxRequestsPerTurn: 2 }),
+    prepareRequest: requests(model, [], { contextWindow: 10_000 }),
   });
   await runner.send({ id: 'k1', text: 'Kite 发的输入', source: 'kite' });
   const first = await model.call(1);

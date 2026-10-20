@@ -62,7 +62,6 @@ export function threadVariables(thread: ThreadContext, constraint: ProjectToolRu
     'agent.model': text(() => agent().model.model),
     'agent.reasoning': text(() => agent().model.reasoning),
     'agent.tools': text(() => effectiveTools(agent(), constraint).join('、') || '无'),
-    'agent.max_requests_per_turn': text(() => String(agent().maxRequestsPerTurn)),
     'execution.grants': text(() => JSON.stringify(effectiveExecution(instanceExecutionChanges(thread), execution).grants)),
     // 按实例列出获准的插件工具：自研 harness 按实例 ID 用 tool_search 加载，Claude 按名字用 ToolSearch 搜；name 是调用用的名字。
     'plugin.tools': text(() => JSON.stringify([...Map.groupBy(pluginToolBindings(thread), (binding) => binding.instanceId)]

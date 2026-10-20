@@ -11,7 +11,6 @@ const digest = z.string().regex(/^[a-f0-9]{64}$/);
 export const requestSettingsSchema: z.ZodType<RequestSettings> = z.object({
   execution: z.object({ revision: digest, grants: executionGrantsSchema }).strict().optional(),
   model: z.object({ model: name, reasoning: name }).strict().optional(),
-  maxRequestsPerTurn: z.number().int().positive().optional(),
   contextWindow: z.number().int().positive().optional(),
   agent: z.object({ definitionId: name, revision: digest }).strict().optional(),
   allowedTools: z.array(name).optional(),

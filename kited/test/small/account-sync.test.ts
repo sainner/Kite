@@ -250,7 +250,7 @@ test('A 恢复内置角色默认、把模板原样改回默认后账号级数据
     { type: 'paragraph', id: 'test-extra', title: '补充规则', parts: [{ type: 'text', text: 'A 加的规则。' }] }] };
 
   const changedRole = await a.call('PUT', '/roles/kite.review', {
-    expectedRevision: role.revision, role: { ...role.role, maxRequestsPerTurn: role.role.maxRequestsPerTurn + 1 },
+    expectedRevision: role.revision, role: { ...role.role, approval: 'ask' },
   });
   expect(changedRole.status).toBe(200);
   const changedTemplate = await a.call('PUT', `/context-templates/${emblemTemplate.id}`, {
@@ -277,7 +277,7 @@ test('A 恢复内置角色默认、把模板原样改回默认后账号级数据
   expect(templateOn(b, emblemTemplate.id)!.definition).toEqual(template.definition);
 
   const staleRole = await b.call('PUT', '/roles/kite.review', {
-    expectedRevision: changedRole.body.revision, role: { ...role.role, maxRequestsPerTurn: role.role.maxRequestsPerTurn + 2 },
+    expectedRevision: changedRole.body.revision, role: { ...role.role, approval: 'allowlist' },
   });
   expect(staleRole.status).toBe(409);
   const staleTemplate = await b.call('PUT', `/context-templates/${emblemTemplate.id}`, {

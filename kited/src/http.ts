@@ -533,9 +533,9 @@ export function serve(kite: Kite, listen: Listen) {
         POST: bound(async (req) => {
           const b = await body(req);
           const parsed = z.object({ model: agentDefinitionSchema.shape.model.optional(), tools: agentDefinitionSchema.shape.tools.optional(),
-            maxRequestsPerTurn: agentDefinitionSchema.shape.maxRequestsPerTurn.optional(), approval: z.enum(approvalModes).optional(),
+            approval: z.enum(approvalModes).optional(),
             windowId: z.uuid().optional(), messageId: z.uuid().optional() })
-            .safeParse({ model: b.model, tools: b.tools, maxRequestsPerTurn: b.maxRequestsPerTurn, approval: b.approval, windowId: b.windowId, messageId: b.messageId });
+            .safeParse({ model: b.model, tools: b.tools, approval: b.approval, windowId: b.windowId, messageId: b.messageId });
           if (!parsed.success) throw new KiteError('代理创建参数无效');
           const { windowId, messageId, ...choice } = parsed.data;
           return kite.createThread(req.params.id, str(b.prompt, 'prompt'), { ...choice, role: roleSelection(b.role) }, windowId, messageId);

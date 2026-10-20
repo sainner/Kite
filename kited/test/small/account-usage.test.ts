@@ -136,7 +136,7 @@ const at = (daysAgo: number, hour: number, minute: number, second = 0) => {
 /** Kite 自研 harness 线程日志里的请求配置快照，形状照 2026-10 的真实记录；同一配置在一个线程里只记一次。 */
 function configured(time: Date, seq: number, id: string, model: string): string {
   return JSON.stringify({ version: 1, seq, at: time.getTime(), type: 'request.configured', snapshot: {
-    id, settings: { model: { model, reasoning: 'medium' }, contextWindow: 272_000, maxRequestsPerTurn: 100 }, tools: [] } });
+    id, settings: { model: { model, reasoning: 'medium' }, contextWindow: 272_000 }, tools: [] } });
 }
 /** Kite 自研 harness 线程日志里的请求开始，用 configurationId 引用此前记下的配置。 */
 function started(time: Date, seq: number, request: string, configuration: string): string {

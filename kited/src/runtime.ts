@@ -187,7 +187,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         instructions: projectContext(agent.context, variables), variables,
         contextUpdateTemplate: host.contextUpdateTemplate(),
         compactionTemplates: host.compactionTemplates(),
-        settings: { model: agent.model, contextWindow, maxRequestsPerTurn: agent.maxRequestsPerTurn,
+        settings: { model: agent.model, contextWindow,
           execution: { grants: execution, revision: executionRevision(execution) },
           agent: { definitionId: current.definitionId, revision: agentRevision(agent) },
           pluginTools: selection.sources },

@@ -250,11 +250,11 @@ export function openClaudeHost(options: {
     return accepted;
   };
   /**
-   * 进程随实例常驻，在实例归档、切换后端、手动停止或 kited 退出时结束。模型、思考强度、请求预算和工具集合只在启动时
+   * 进程随实例常驻，在实例归档、切换后端、手动停止或 kited 退出时结束。模型、思考强度和工具集合只在启动时
    * 交给 SDK，变化后在下一回合开始前重启进程，与「下次启动进程时生效」的约定一致。
    */
   const configKey = (prepared: ReturnType<typeof options.prepare>, available: Tool[]) => JSON.stringify({
-    model: prepared.agent.model, maxTurns: prepared.agent.maxRequestsPerTurn,
+    model: prepared.agent.model,
     tools: available.map(({ name, description, parameters }) => [name, description, parameters]),
   });
   const pump = () => {
@@ -291,7 +291,7 @@ export function openClaudeHost(options: {
     driverKey = key;
     const runner: Runner = new Runner({ cwd: options.cwd, nativeId: options.nativeId, title: options.title, resident: true,
       configuration: () => ({ model: prepared.agent.model.model, effort: prepared.agent.model.reasoning === 'default' ? undefined : prepared.agent.model.reasoning as Options['effort'],
-        maxTurns: prepared.agent.maxRequestsPerTurn, systemPrompt: { type: 'custom', snapshot: false, prompt: data.initialContext! } }),
+        systemPrompt: { type: 'custom', snapshot: false, prompt: data.initialContext! } }),
       mcpServers: () => ({ kite: claudeToolServer({ tools: available,
         allowed: (name) => options.prepare(data.through).allowed.has(name),
         context: (callId) => {

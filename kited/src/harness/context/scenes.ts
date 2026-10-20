@@ -41,7 +41,6 @@ export const contextLayers = {
       { name: 'agent.model', title: '模型', description: '当前模型的标识；修改配置后变化。' },
       { name: 'agent.reasoning', title: '推理强度', description: '当前推理强度；修改配置后变化。' },
       { name: 'agent.tools', title: '允许的工具', description: '允许的工具名称，已按项目约束过滤，用顿号分隔；一个都没有时是「无」，修改配置或项目约束后变化。' },
-      { name: 'agent.max_requests_per_turn', title: '回合请求预算', description: '每回合最多发几次模型请求；修改配置后变化。' },
       { name: 'execution.grants', title: '执行授权', description: '工作目录、额外读写路径与网络访问的当前授权，JSON 格式；修改执行授权后变化。' },
       { name: 'plugin.tools', title: '插件工具', description: '已授权的插件工具按实例分组，JSON 格式：每项是实例 ID 与它的工具，name 是调用用的名字；全部撤回时是 []，修改授权后变化。' },
     ],

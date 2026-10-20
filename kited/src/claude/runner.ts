@@ -79,7 +79,7 @@ export interface RunnerConfig {
   title: string;
   /** 只注入 Kite 已开放的能力；每次启动进程重新创建 SDK MCP 服务器。 */
   mcpServers?: () => Options['mcpServers'];
-  configuration?: () => Pick<Options, 'model' | 'effort' | 'maxTurns' | 'systemPrompt'>;
+  configuration?: () => Pick<Options, 'model' | 'effort' | 'systemPrompt'>;
   /** 进程随宿主常驻：回合结束、输入收齐后只报告空闲，不关闭输入流。 */
   resident?: boolean;
 }

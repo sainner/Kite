@@ -235,7 +235,7 @@ export class InstanceConfiguration {
   configureAgent(id: string, expectedRevision: string, value: unknown) {
     return this.updateAgentConfiguration(id, expectedRevision, value);
   }
-  /** 改选角色：提示词、工具、执行授权、审批模式、默认模型、预算与协作授权一起换成角色的，并记下新的角色约束。只在还没有对话时可用。 */
+  /** 改选角色：提示词、工具、执行授权、审批模式、默认模型与协作授权一起换成角色的，并记下新的角色约束。只在还没有对话时可用。 */
   configureRole(id: string, expectedRevision: string, selection: RoleSelection) {
     const thread = this.control.context(id);
     const bound = roleAgent(this.kite.roles.get(selection.id, selection.revision), {}, this.projectRule(thread.workspaceId));

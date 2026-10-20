@@ -41,7 +41,7 @@
 | | `workspace.branch` | 工作区的当前分支；分离 HEAD 时为空 |
 | 代理实例 | `agent.title` | 会话标题，纯文本；生成新标题或改名后变化 |
 | | `agent.role` | 创建代理时所选角色的名称，随实例保存，之后修改角色不影响 |
-| | `agent.model`、`agent.reasoning`、`agent.tools`、`agent.max_requests_per_turn` | 实例配置；工具用顿号分隔，一个都没有时是「无」 |
+| | `agent.model`、`agent.reasoning`、`agent.tools` | 实例配置；工具用顿号分隔，一个都没有时是「无」 |
 | | `execution.grants` | 当前执行授权，JSON |
 | | `plugin.tools` | 已授权的插件工具及目标实例，JSON；全部撤回时是 `[]` |
 

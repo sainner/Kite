@@ -88,7 +88,6 @@ export interface RequestSettings {
   model?: { model: string; reasoning: string };
   /** 宿主为这次请求采用的上下文窗口；显示与自动压缩共用，未知时省略。 */
   contextWindow?: number;
-  maxRequestsPerTurn?: number;
   agent?: { definitionId: string; revision: string };
   allowedTools?: string[];
   pluginTools?: import('../plugins/tools.ts').PluginToolSource[];
@@ -236,7 +235,7 @@ export interface HarnessOptions {
   onEvent?(event: HarnessEvent): void;
   afterTools?(turnId: string, callIds: string[]): Promise<void>;
   afterTurn?(turnId: string, outcome: Outcome): Promise<void>;
-  /** 返回非空反馈表示继续；计入同一模型请求预算。 */
+  /** 返回非空反馈表示继续。 */
   beforeStop?(turnId: string): Promise<string | undefined>;
   /** 压缩范围起止两个时刻（毫秒）之间工作区的净文件变化，作为通知正文的变量；没有变化或无从比较时返回 undefined。 */
   compactionFiles?(range: { from: number; to: number }, signal: AbortSignal): Promise<string | undefined>;

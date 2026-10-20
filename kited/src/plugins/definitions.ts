@@ -52,7 +52,7 @@ export const agentTools: AgentDefinition['tools'] = agentToolCatalog.map(({ name
 /** 定义上的 agent 只标明这是代理插件；提示词、工具规则与默认模型由角色决定。 */
 const agent: AgentDefinition = {
   runtime: 'harness', model: { model: defaultAgentModel, reasoning: 'medium' },
-  tools: agentTools, context: defaultContextDefinition, maxRequestsPerTurn: 50,
+  tools: agentTools, context: defaultContextDefinition,
 };
 
 const definitions: PluginDefinition[] = [

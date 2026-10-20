@@ -209,7 +209,7 @@ try {
   const expectedAgent = structuredClone(agentSnapshot.instance.config.agent);
   expectedAgent.model.model = nextModel;
   if (agentUpdate.expectedRevision !== agentSnapshot.revision || !isDeepStrictEqual(agentUpdate.agent, expectedAgent)) {
-    throw new Error('Swift 模型切换丢失上下文、工具、reasoning、预算或原始 revision');
+    throw new Error('Swift 模型切换丢失上下文、工具、reasoning 或原始 revision');
   }
   const agentSaved = await request<AgentConfigurationSnapshot>('PUT', agentPath, agentUpdate);
   if (!isDeepStrictEqual(agentSaved.instance.config.agent, expectedAgent) || agentSaved.revision === agentSnapshot.revision) {

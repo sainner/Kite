@@ -32,7 +32,6 @@ function revisedAgent(agent: AgentDefinition, model: string, tools: AgentDefinit
     ...structuredClone(agent),
     model: { model, reasoning: 'high' },
     tools,
-    maxRequestsPerTurn: 2,
     context: {
       ...structuredClone(agent.context),
       id: `${agent.context.id}.edited`,
@@ -105,7 +104,7 @@ test('运行中换配置不打断旧工具，下一请求再采用新配置', as
   expect(starts.map((record) => record.configurationId)).toEqual(configurations.map((record) => record.snapshot.id));
   expect(configurations[0]!.snapshot.settings.allowedTools).toEqual(first.request.allowedTools);
   expect(configurations[1]!.snapshot.settings).toMatchObject({
-    model: { model: 'test-new-model', reasoning: 'high' }, maxRequestsPerTurn: 2, allowedTools: ['read', TOOL_SEARCH],
+    model: { model: 'test-new-model', reasoning: 'high' }, allowedTools: ['read', TOOL_SEARCH],
   });
   second.response.complete();
   await kk.waitEvent((event) => event.type === 'idle' && event.threadId === threadId);

@@ -598,7 +598,7 @@ final class AppModel {
         let choice = draft.draftChoice
         _ = try await client.request("/workspaces/\(area.id)/threads", method: "POST",
             body: CreateThreadRequest(prompt: message.typed, role: newThreadRole(for: draft, in: area)?.selection, model: choice?.model,
-                                      tools: choice?.tools, maxRequestsPerTurn: choice?.maxRequestsPerTurn, approval: choice?.approval, windowId: window,
+                                      tools: choice?.tools, approval: choice?.approval, windowId: window,
                                       messageId: message.id), as: RemoteThread.self)
         // 读回的窗口指向新实例，草稿对象由 WorkArea.update 认领，接着当这个代理
         try await refresh(client)

@@ -325,12 +325,10 @@ export class HarnessRunner implements ThreadRunner {
 
   private async runTurn(turn: Turn): Promise<void> {
     let outcome: Outcome = { kind: 'completed' };
-    let requests = 0;
     try {
       while (true) {
         this.checkTurn(turn);
-        const followUp = await this.sample(turn, requests);
-        requests++;
+        const followUp = await this.sample(turn);
         this.checkTurn(turn);
         if (followUp || this.history.pending.size) continue;
         const feedback = await this.options.beforeStop?.(turn.id);
@@ -451,14 +449,12 @@ export class HarnessRunner implements ThreadRunner {
       automatic: options.automatic, items: replacement, summary, ...(usage ? { usage } : {}) });
   }
 
-  private async sample(turn: Turn, requests: number): Promise<boolean> {
+  private async sample(turn: Turn): Promise<boolean> {
     this.checkTurn(turn);
     const requestId = randomUUID();
     const ids = { turnId: turn.id, requestId };
     const prepared = this.options.prepareRequest({ afterNotification: this.history.notificationCursor });
     const { context, tools, configuration } = this.configure(prepared);
-    const budget = configuration.settings.maxRequestsPerTurn;
-    if (budget !== undefined && requests >= budget) throw new Error(`达到本回合 ${budget} 次模型请求预算`);
     const notifications = (prepared.notifications ?? []).map((notification) => notificationSchema.parse(notification));
     let cursor = this.history.notificationCursor;
     const seen = new Set(this.history.deliveredNotifications);

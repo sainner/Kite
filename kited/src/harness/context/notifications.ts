@@ -50,9 +50,7 @@ export const agentConfigurationContextDefinition: ContextDefinition = {
       { type: 'variable', name: 'agent.reasoning' },
       { type: 'text', text: '；允许工具：' },
       { type: 'variable', name: 'agent.tools' },
-      { type: 'text', text: '；每回合最多 ' },
-      { type: 'variable', name: 'agent.max_requests_per_turn' },
-      { type: 'text', text: ' 次模型请求。' },
+      { type: 'text', text: '。' },
     ],
   }],
 };

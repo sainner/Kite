@@ -208,7 +208,6 @@ struct CreateThreadRequest: Encodable {
     var role: RoleSelection? = nil
     var model: AgentModelConfiguration? = nil
     var tools: [String]? = nil
-    var maxRequestsPerTurn: Int? = nil
     /// 草稿里选的审批模式；没选时用角色的默认。
     var approval: ApprovalMode? = nil
     var windowId: String? = nil

@@ -27,14 +27,15 @@ const handmade: EmblemDesign = {
 // 算式本身可解析，但图案是空白，过不了 checkEmblemExpression；头像沿用 generated 的合法算式，只让签名算式不可用。
 const blank: EmblemDesign = { ...generated, expression: '0' };
 
-function role(id: string, text: string, maxRequestsPerTurn = 50): Role {
+function role(id: string, text: string, approval?: Role['approval']): Role {
   return {
     version: 1, id, title: '签名测试角色',
     context: {
       version: 2, id, title: '签名测试角色', scene: 'thread.create',
       blocks: [{ type: 'paragraph', id: 'rules', title: '规则', parts: [{ type: 'text', text }] }],
     },
-    tools: { mode: 'deny', tools: [], required: [] }, model: { model: defaultAgentModel, reasoning: 'medium' }, maxRequestsPerTurn,
+    tools: { mode: 'deny', tools: [], required: [] }, model: { model: defaultAgentModel, reasoning: 'medium' },
+    ...(approval ? { approval } : {}),
   };
 }
 
@@ -72,8 +73,8 @@ async function settle(k: Kited, id: string, since: number, done: (value: Entry) 
 }
 
 // 保存后的轻任务是异步串行的，重试要把上一次的校验结果带给模型，结果写回存储并通过目录事件流通知。
-// 签名只随提示词过期：只改预算的保存不能让刚生成的签名过期或重新生成。
-test('角色保存后后台生成签名，表达式不可用时带着错误重试，只改预算不重新生成，改提示词后两次都不可用记为失败', async () => {
+// 签名只随提示词过期：只改审批模式的保存不能让刚生成的签名过期或重新生成。
+test('角色保存后后台生成签名，表达式不可用时带着错误重试，只改审批模式不重新生成，改提示词后两次都不可用记为失败', async () => {
   const model = new ManualModel();
   kited = startKited(undefined, { model: () => model });
   const k = kited;
@@ -94,16 +95,16 @@ test('角色保存后后台生成签名，表达式不可用时带着错误重�
   expect(ready.emblem).toEqual({ ...generated, source: 'generated', templateRevision: promptRevision(created.body) });
   expect(ready.emblemError).toBeUndefined();
 
-  const budget = await k.call('PUT', '/roles/test.emblem', {
-    expectedRevision: created.body.revision, role: role('test.emblem', '审查改动并逐条报告风险。', 9),
+  const approval = await k.call('PUT', '/roles/test.emblem', {
+    expectedRevision: created.body.revision, role: role('test.emblem', '审查改动并逐条报告风险。', 'ask'),
   });
-  expect(budget.status).toBe(200);
-  expect(budget.body).toMatchObject({ emblemState: 'ready', emblem: ready.emblem });
+  expect(approval.status).toBe(200);
+  expect(approval.body).toMatchObject({ emblemState: 'ready', emblem: ready.emblem });
   expect(model.calls.values).toHaveLength(2);
 
   const editing = mark(k);
   const updated = await k.call('PUT', '/roles/test.emblem', {
-    expectedRevision: budget.body.revision, role: role('test.emblem', '把需求写成分步计划。'),
+    expectedRevision: approval.body.revision, role: role('test.emblem', '把需求写成分步计划。'),
   });
   expect(updated.status).toBe(200);
   const retry = await reply(model, 3, '先说明一下思路：这里没有 JSON');

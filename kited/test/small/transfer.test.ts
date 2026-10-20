@@ -126,7 +126,7 @@ test('有远程的项目：手动流转把独立工作区交给 B，未提交的
   rmSync(join(thread.workspace.cwd, 'gone.txt'));
   const config = await a.call('GET', `/instances/${thread.id}/agent-config`);
   expect((await a.call('PUT', `/instances/${thread.id}/agent-config`, {
-    expectedRevision: config.body.revision, agent: { ...config.body.instance.config.agent, maxRequestsPerTurn: 7 },
+    expectedRevision: config.body.revision, agent: { ...config.body.instance.config.agent, model: { ...config.body.instance.config.agent.model, reasoning: 'high' } },
   })).status).toBe(200);
   const notice = a.daemon.kite.store.instanceNotifications(thread.id, 0).find((n) => n.kind === 'agent.configuration.changed');
   if (!notice) throw new Error('改配置没有产生通知');

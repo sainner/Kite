@@ -65,7 +65,7 @@ function declaration(source: string, signature: string): string {
 }
 
 const agent: AgentDefinition = { runtime: 'harness', model: { model: 'gpt-6.1-sol', reasoning: 'high' },
-  tools: [], maxRequestsPerTurn: 100,
+  tools: [],
   context: { version: 2, id: 'fixture', title: '显示投影合同', scene: 'thread.create', blocks: [] } };
 const thread = { id: 'fixture-thread', status: 'open', runtime: 'harness', config: { agent },
   workspace: { status: 'open' } } as unknown as ThreadContext;

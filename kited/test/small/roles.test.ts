@@ -23,7 +23,7 @@ function role(id: string, text: string, overrides: Partial<Role> = {}): Role {
       blocks: [{ type: 'paragraph', id: 'rules', title: '规则', parts: [{ type: 'text', text }] }],
     },
     tools: { mode: 'deny', tools: [], required: [] },
-    model: { model: defaultAgentModel, reasoning: 'medium' }, maxRequestsPerTurn: 50,
+    model: { model: defaultAgentModel, reasoning: 'medium' },
     ...overrides,
   };
 }
@@ -100,7 +100,7 @@ test('角色保存处理重试与冲突，重启后按所选版本创建的首�
 }, 1000);
 
 // 角色目录、实例快照、改选角色与创建请求跨模块交接：改角色只影响之后创建的代理；改选角色把提示词、工具、执行授权的增减、
-// 默认审批模式、默认模型与预算一起换成角色的并记下新的角色约束（用户此前改过的执行授权一并换掉）；新旧角色都允许协作工具，
+// 默认审批模式与默认模型一起换成角色的并记下新的角色约束（用户此前改过的执行授权一并换掉）；新旧角色都允许协作工具，
 // 操作授权（含用户收窄过的）保持原样；版本过期的请求不改变实例。
 test('改角色不影响已有代理，改选到同样允许协作工具的角色换上角色的配置、执行授权与审批模式并保留操作授权，过期的角色版本或配置版本都不改变实例', async () => {
   const model = new ManualModel();
@@ -118,7 +118,7 @@ test('改角色不影响已有代理，改选到同样允许协作工具的角�
     expect(initial.status).toBe(200);
     const agent: AgentDefinition = {
       ...structuredClone(initial.body.instance.config.agent),
-      model: { model: 'role-test-model', reasoning: 'high' }, tools: ['read'], maxRequestsPerTurn: 7,
+      model: { model: 'role-test-model', reasoning: 'high' }, tools: ['read'],
     };
     const tuned = await k.call('PUT', configPath, { expectedRevision: initial.body.revision, agent });
     expect(tuned.status).toBe(200);
@@ -137,7 +137,7 @@ test('改角色不影响已有代理，改选到同样允许协作工具的角�
     expect(granted.body.revision).toBe(tuned.body.revision);
 
     const limited: Partial<Role> = {
-      tools: { mode: 'deny', tools: ['shell'], required: [] }, model: { model: defaultAgentModel, reasoning: 'high' }, maxRequestsPerTurn: 3,
+      tools: { mode: 'deny', tools: ['shell'], required: [] }, model: { model: defaultAgentModel, reasoning: 'high' },
       execution: { add: { read: [], write: [], network: ['registry.npmjs.org:443'], unsandboxed: [] }, remove: { read: [], write: [], network: [], unsandboxed: [] } },
       approval: 'ask',
     };
@@ -158,7 +158,7 @@ test('改角色不影响已有代理，改选到同样允许协作工具的角�
     });
     expect(applied.status).toBe(200);
     expect(applied.body.instance.config.agent).toMatchObject({
-      model: limited.model, maxRequestsPerTurn: 3, tools: universe.filter((name) => name !== 'shell'),
+      model: limited.model, tools: universe.filter((name) => name !== 'shell'),
     });
     expect(applied.body.instance.config.agent.context.blocks).toContainEqual(next.context.blocks[0]);
     expect(applied.body.instance.config.role).toEqual({ id: first.id, revision: edited.body.revision, tools: limited.tools });
@@ -227,7 +227,7 @@ test('只读审查角色建的代理只有 read，模型强发 patch 与 shell �
     ]));
 
     const created = await k.call('POST', `/workspaces/${workspaceId}/threads`, {
-      prompt: '审查改动', role: { id: 'kite.review', revision: review.revision }, maxRequestsPerTurn: 1,
+      prompt: '审查改动', role: { id: 'kite.review', revision: review.revision },
     });
     expect(created.status).toBe(200);
     const id = created.body.instanceId as string;
@@ -244,6 +244,8 @@ test('只读审查角色建的代理只有 read，模型强发 patch 与 shell �
       } },
     } });
     first.response.complete();
+    // 两个调用被拒后，主循环带着结果再请求一次；没有回复就结束回合。
+    (await model.call(2)).response.complete();
     await k.waitEvent((event) => event.type === 'idle' && event.threadId === id);
     const thread = await k.call('GET', `/threads/${id}`);
     expect(existsSync(join(thread.body.workspace.cwd, 'forbidden-patch.txt'))).toBe(false);
@@ -280,7 +282,7 @@ test('只读审查角色建的代理只有 read，模型强发 patch 与 shell �
       prompt: '黑名单角色也开 shell', role: { id: 'test.no-shell', revision: noShell.body.revision }, tools: ['read', 'shell'],
     });
     expect(withShell.status).toBe(200);
-    const second = await model.call(2);
+    const second = await model.call(3);
     expect(second.request.allowedTools).toEqual(['read', 'shell', TOOL_SEARCH]);
     second.response.complete();
     await k.waitEvent((event) => event.type === 'idle' && event.threadId === withShell.body.instanceId);

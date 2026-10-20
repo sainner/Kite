@@ -53,7 +53,7 @@ bun run harness --resume <会话id>
 
 当前提供 `read`、`patch`、`shell`、`credentials`，参数、失败和取消语义见 [基础工具契约](harness-主循环.md#工具执行约定)。上下文的编辑与生效见 [上下文模板](harness-上下文组装.md)。
 
-文件工具限制在工作目录内，shell 使用操作系统沙箱。默认工作区可读写、必要工具链可读、网络关闭；命令连接网络许可之外的主机时按实例的审批模式处理，默认问人，见 [工具审批与提问](工具审批与提问.md)。宿主凭据和内部记录受保护，Git 元数据只读。授权范围和平台限制见 [执行边界](Agent与插件契约.md#71-插件与-harness-共用操作系统沙箱)。独立终端尚无授权编辑入口，服务中的实例可在 App「执行授权」页编辑，见 [实例执行授权](实例操作.md#实例执行授权)。每回合的请求上限可用 `--max-requests` 调整，达到上限后等待显式继续。
+文件工具限制在工作目录内，shell 使用操作系统沙箱。默认工作区可读写、必要工具链可读、网络关闭；命令连接网络许可之外的主机时按实例的审批模式处理，默认问人，见 [工具审批与提问](工具审批与提问.md)。宿主凭据和内部记录受保护，Git 元数据只读。授权范围和平台限制见 [执行边界](Agent与插件契约.md#71-插件与-harness-共用操作系统沙箱)。独立终端尚无授权编辑入口，服务中的实例可在 App「执行授权」页编辑，见 [实例执行授权](实例操作.md#实例执行授权)。
 
 这个终端入口直接修改指定目录。需要独立工作树、快照与采纳时，通过 kited 创建工作区。独立终端不提供 agent 协作工具、账号凭据服务、skill 自动发现或外部 MCP 连接；上下文压缩只有自动触发，没有手动入口。服务中的 MCP 工具由 [Bun 插件宿主](Bun插件.md) 接入并授权。
 
@@ -226,7 +226,7 @@ Claude 负责模型循环与原生对话恢复；Kite 负责工具、项目上�
 
 Claude 使用统一的 `kite.agent` 定义，工具由角色、实例选择、项目约束及授权共同决定。基础工具共用 [工具契约](harness-主循环.md#工具执行约定)，协作与授权共用 [实例操作](实例操作.md)，工具名与自研 harness 相同，不带 MCP 前缀。工具执行完成并保存快照后才能继续模型请求。
 
-模型、工具、基础上下文与请求预算绑定到实例；`KITE_CLAUDE_MODEL` 可覆盖创建时的模型。配置和执行授权须在空闲时修改，恢复阻塞期间也可以改；可选型号与思考档位通过能力接口获取。项目规则与记忆索引仅由 Kite 的模板提供，Claude 不自行扫描。具体生效时机见 [线程通知投递](线程通知投递.md#claude-的交接边界)。
+模型、工具与基础上下文绑定到实例；`KITE_CLAUDE_MODEL` 可覆盖创建时的模型。配置和执行授权须在空闲时修改，恢复阻塞期间也可以改；可选型号与思考档位通过能力接口获取。项目规则与记忆索引仅由 Kite 的模板提供，Claude 不自行扫描。具体生效时机见 [线程通知投递](线程通知投递.md#claude-的交接边界)。
 
 Claude Code 进程随实例常驻：首次需要时启动，回合结束后不退出，在实例归档、切换后端、手动停止或 kited 退出时结束；回合之间意外退出的，下一条消息到来时恢复原生会话。运行中插话沿用 Claude 原生输入队列，在自然请求边界纳入，不要求等整轮结束。发送确认、撤回、停止与异常恢复遵守 [会话状态机](会话状态机.md#手动停止与消息交接)；已有原生记录不能重复投递，未知执行效果不能自动重放。
 
@@ -360,7 +360,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET / PUT | `/instances/:id/operation-grants` | 读取实例的协作授权及 revision；以 expectedRevision 与 grants 整体更新，代理的协作范围是其中几项授权共用的目标 |
 | POST | `/workspaces/:id/windows` | 创建实例及默认窗口，或打开已有实例的视图（实例已有窗口时换到这个视图）；请求使用稳定 id |
 | DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口，按插件生命周期回收实例或保留 |
-| POST | `/workspaces/:id/threads` | 在已有工作区创建代理并打开窗口 `{prompt, role?, model?, tools?, maxRequestsPerTurn?, approval?, windowId?, messageId?}`；`windowId` 是客户端生成的 UUID，用作新窗口的 ID，已用过返回 409，省略时由 kited 生成；`messageId` 是客户端生成的 UUID，用作第一条消息的 ID，省略时由 kited 生成；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具；`approval` 为审批模式 |
+| POST | `/workspaces/:id/threads` | 在已有工作区创建代理并打开窗口 `{prompt, role?, model?, tools?, approval?, windowId?, messageId?}`；`windowId` 是客户端生成的 UUID，用作新窗口的 ID，已用过返回 409，省略时由 kited 生成；`messageId` 是客户端生成的 UUID，用作第一条消息的 ID，省略时由 kited 生成；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具；`approval` 为审批模式 |
 | GET | `/threads/:id` | 线程和上下文，附带 `runner`、`busy` |
 | GET | `/threads/:id/state` | 只读执行与恢复状态，不启动模型 |
 | GET | `/threads/:id/history` | v1 显示历史、pending、state 和 cursor，只读 |

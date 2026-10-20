@@ -1,4 +1,4 @@
-/** 角色：代理的提示词、工具约束、默认模型与预算。创建代理时拷贝进实例配置，之后修改角色不影响已有代理。 */
+/** 角色：代理的提示词、工具约束与默认模型。创建代理时拷贝进实例配置，之后修改角色不影响已有代理。 */
 import { z } from 'zod';
 import { agentDefinitionSchema, bindAgentDefinition, chooseAgentModel, claudeReasoning, type AgentDefinition } from './agents/definition.ts';
 import { defaultAgentModel, modelVendors, runtimeOfModel } from './agents/models.ts';
@@ -26,7 +26,8 @@ export const roleSchema = z.object({
   /** 新建代理的默认审批模式，项目上限仍然适用；不设时跟随工作机的默认。 */
   approval: z.enum(approvalModes).optional(),
   model: agentDefinitionSchema.shape.model,
-  maxRequestsPerTurn: z.number().int().positive(),
+  /** 已不起作用：旧版存进账号的角色带着它，留着才能照原样读写、版本对得上。 */
+  maxRequestsPerTurn: z.number().int().positive().optional(),
 }).strict();
 export type Role = z.infer<typeof roleSchema>;
 /** defaultRevision 只有内置角色有，是默认内容的版本；与 revision 不同就是改过，可以恢复默认。 */
@@ -42,8 +43,8 @@ export function roleSelection(value: unknown): RoleSelection | undefined {
 
 /** 实例配置里记下创建时的角色与它的工具规则，作为之后修改工具的上限。 */
 export interface RoleBinding { id: string; revision: string; tools: ToolRule }
-/** 草稿里可调的初始参数；工具与预算只能在角色允许的范围内收窄。 */
-export interface RoleChoice { model?: AgentDefinition['model']; tools?: AgentDefinition['tools']; maxRequestsPerTurn?: number; approval?: ApprovalMode }
+/** 草稿里可调的初始参数，覆盖角色的默认值。 */
+export interface RoleChoice { model?: AgentDefinition['model']; tools?: AgentDefinition['tools']; approval?: ApprovalMode }
 
 /** 项目约束里的工具规则，没有必需项。 */
 export type ProjectToolRule = Pick<ToolRule, 'mode' | 'tools'>;
@@ -83,7 +84,7 @@ export function roleAgent({ role, revision }: RoleSnapshot, choice: RoleChoice =
   const tools = choice.tools ?? limits.allowed as AgentDefinition['tools'];
   checkTools(tools, limits);
   const agent = chooseAgentModel(bindAgentDefinition({ runtime: runtimeOfModel(role.model.model), model: role.model, tools,
-    context: role.context, maxRequestsPerTurn: choice.maxRequestsPerTurn ?? role.maxRequestsPerTurn }), choice.model);
+    context: role.context }), choice.model);
   const binding: RoleBinding = { id: role.id, revision, tools: role.tools };
   // 审批模式依次取草稿的选择、角色的默认、工作机的默认，解析好写进实例，App 照实例配置显示。
   const approval = choice.approval ?? role.approval ?? defaultApprovalMode;
@@ -115,9 +116,9 @@ const lineContext: ContextDefinition = { ...defaultContextDefinition, id: lineRo
 const builtinRoles: Role[] = [
   // 工作角色不带 Line 的管理工具：它们的目标范围是整个账号。
   { version: 1, id: defaultRoleId, title: defaultContextDefinition.title, context: defaultContextDefinition,
-    tools: { mode: 'deny', tools: [...lineToolNames], required: [] }, model: defaultModel, maxRequestsPerTurn: 50 },
-  { version: 1, id: 'kite.review', title: reviewContext.title, context: reviewContext, tools: reviewTools, model: defaultModel, maxRequestsPerTurn: 50 },
-  { version: 1, id: lineRoleId, title: 'Line', context: lineContext, tools: lineTools, model: defaultModel, maxRequestsPerTurn: 30 },
+    tools: { mode: 'deny', tools: [...lineToolNames], required: [] }, model: defaultModel },
+  { version: 1, id: 'kite.review', title: reviewContext.title, context: reviewContext, tools: reviewTools, model: defaultModel },
+  { version: 1, id: lineRoleId, title: 'Line', context: lineContext, tools: lineTools, model: defaultModel },
 ];
 
 const snapshot = (role: Role): RoleSnapshot => ({ role, revision: revisionOf(role) });

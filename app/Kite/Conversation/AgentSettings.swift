@@ -14,7 +14,6 @@ struct AgentSettings: View {
     @State private var capabilities: AgentCapabilities?
     @State private var phase = CardPhase.idle
     @State private var discard: String?
-    @FocusState private var editingLimit: Bool
 
     private var changed: Bool { draft != saved?.instance.config.agent }
     private var available: Bool {
@@ -24,12 +23,12 @@ struct AgentSettings: View {
     private var working: Bool { phase.working }
 
     private var canSave: Bool {
-        !working && available && changed && (draft?.maxRequestsPerTurn ?? 0) >= 1
+        !working && available && changed
             && capabilities?.canEdit(thread.state) == true && !thread.hasUnconfirmedStop
     }
 
     var body: some View {
-        CardSheet(title: "代理配置", subtitle: "选择模型、可用工具与回合预算", error: phase.error, typing: editingLimit, back: true, size: InstanceSettings.size,
+        CardSheet(title: "代理配置", subtitle: "选择模型与可用工具", error: phase.error, back: true, size: InstanceSettings.size,
                   close: { if changed { discard = "back" } else { back() } }) {
             Group {
                 if draft != nil, let capabilities {
@@ -41,8 +40,6 @@ struct AgentSettings: View {
                     CardSection("可用工具", note: "角色给出默认勾选，也可以开角色没给的；角色必需的不能关闭，项目禁用的暂不可用，项目放宽后恢复。勾选工具不会增加文件、网络或其他实例的访问权限，那些由执行授权和协作授权决定。") {
                         AgentToolToggles(capabilities: capabilities, tools: Binding(get: { draft?.tools ?? [] }, set: { draft?.tools = $0 }))
                     }
-                    TurnBudgetField(value: Binding(get: { draft!.maxRequestsPerTurn }, set: { draft?.maxRequestsPerTurn = $0 }),
-                                    focus: $editingLimit, field: true)
                 }
             }
             .disabled(working || !available)
@@ -54,7 +51,6 @@ struct AgentSettings: View {
             CardSheetAction(title: "保存", busy: working) { perform { try await save() } }
                 .disabled(!canSave)
         }
-        .endsTyping(editingLimit) { editingLimit = false }
         .interactiveDismissDisabled(working || changed)
         .discardAlert("放弃未保存的代理配置？", item: $discard) { action in
             if action == "back" { back() } else { perform { try await load() } }
@@ -116,39 +112,30 @@ extension AppModel {
     }
 }
 
-/// 新代理草稿的配置：在所选角色允许的范围内调整工具与每回合预算；模型与思考强度在标题栏和输入区改。完成只改本机草稿。
+/// 新代理草稿的配置：在所选角色允许的范围内调整工具；模型与思考强度在标题栏和输入区改。完成只改本机草稿。
 struct DraftAgentSettings: View {
-    @Environment(AppModel.self) private var model
-    @Environment(WorkArea.self) private var area
     @Environment(WorkThread.self) private var thread
     @Environment(\.dismiss) private var dismiss
     @State private var tools: [String] = []
-    @State private var budget = 50
-    @FocusState private var editingLimit: Bool
 
-    private var role: AgentRole? { model.newThreadRole(for: thread, in: area) }
     private var capabilities: AgentCapabilities? { thread.agentCapabilities }
-    private var roleBudget: Int { role?.role.maxRequestsPerTurn ?? 50 }
 
     var body: some View {
-        CardSheet(title: "配置", subtitle: "选择可用工具与回合预算", typing: editingLimit, size: InstanceSettings.size,
+        CardSheet(title: "配置", subtitle: "选择可用工具", size: InstanceSettings.size,
                   close: { dismiss() }) {
             if let capabilities {
                 CardSection("可用工具", note: "角色给出默认勾选，也可以开角色没给的；角色必需的不能关闭，项目禁用的暂不可用。") {
                     AgentToolToggles(capabilities: capabilities, tools: $tools)
                 }
-                TurnBudgetField(value: $budget, focus: $editingLimit, field: true)
             } else {
                 ProgressView()
             }
         } actions: {
             CardSheetAction(title: "完成", action: save)
-                .disabled(capabilities == nil || budget < 1)
+                .disabled(capabilities == nil)
         }
-        .endsTyping(editingLimit) { editingLimit = false }
         .onAppear {
             tools = thread.draftChoice?.tools ?? capabilities?.defaults ?? []
-            budget = thread.draftChoice?.maxRequestsPerTurn ?? roleBudget
         }
     }
 
@@ -157,52 +144,7 @@ struct DraftAgentSettings: View {
         guard let capabilities else { return }
         let selected = capabilities.tools.filter { tools.contains($0) }
         thread.draftChoice?.tools = selected == capabilities.tools.filter(capabilities.defaults.contains) ? nil : selected
-        thread.draftChoice?.maxRequestsPerTurn = budget == roleBudget ? nil : budget
         dismiss()
-    }
-}
-
-/// 每回合最多模型请求数：设置组里的一行，名称旁是说明图标，右边窄数字框连同步进按钮，聚焦时数字框描主题色；
-/// field 是这个输入框在所在页面焦点里的取值。
-struct TurnBudgetField<Focus: Hashable>: View {
-    @Binding var value: Int
-    let focus: FocusState<Focus>.Binding
-    let field: Focus
-
-    private var focused: Bool { focus.wrappedValue == field }
-
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
-        CardSection {
-            LabeledContent {
-                HStack(spacing: 8) {
-                    TextField("每回合最多模型请求数", value: $value, format: .number.grouping(.never))
-                        .labelsHidden()
-                        .textFieldStyle(.plain)
-                        .multilineTextAlignment(.trailing)
-                        .monospacedDigit()
-                        .focused(focus, equals: field)
-                        #if os(iOS)
-                        .keyboardType(.numberPad)
-                        #endif
-                        .frame(width: 48)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Theme.card, in: shape)
-                        .cardFocusRing(focused, in: shape)
-                        .contentShape(Rectangle())
-                        .onTapGesture { focus.wrappedValue = field }
-                        .typingTarget()
-                    Stepper("每回合最多模型请求数", value: $value, in: 1...Int.max)
-                        .labelsHidden()
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Text("每回合最多模型请求数")
-                    CardInfo(title: "每回合最多模型请求数", text: Text("达到上限后停止，保留已经产生的结果。"))
-                }
-            }
-        }
     }
 }
 

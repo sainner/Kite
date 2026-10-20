@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 角色：代理的提示词、工具规则、执行授权的增减、默认审批模式、默认模型与预算。与工作机上的角色同形，提示词按组装契约往返。
+/// 角色：代理的提示词、工具规则、执行授权的增减、默认审批模式与默认模型。与工作机上的角色同形，提示词按组装契约往返。
 nonisolated struct RoleDefinition: Codable, Equatable, Identifiable, Sendable {
     var version = 1
     var id: String
@@ -12,10 +12,9 @@ nonisolated struct RoleDefinition: Codable, Equatable, Identifiable, Sendable {
     /// 新建代理的默认审批模式；没给时跟随工作机的默认（RoleCatalog.defaultApproval）。
     var approval: ApprovalMode?
     var model: AgentModelConfiguration
-    var maxRequestsPerTurn: Int
 
-    /// 有名称、每回合至少能发一次请求才能保存。
-    var isSavable: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && maxRequestsPerTurn >= 1 }
+    /// 有名称才能保存。
+    var isSavable: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     /// 基于已有角色另存为新角色；提示词的 ID 与名称由工作机保存时随角色改写。
     func copy() -> Self {
