@@ -372,10 +372,16 @@ final class PhoneCardView: UIView {
     /// 正文的变换、裁切和标题两侧整段交给 Core Animation，poses 按时间均匀取。
     private func animateContent(_ poses: [WindowPose], duration: TimeInterval) {
         guard let placed, let container else { return }
-        let destination = placed.target.contentOrigin(size: placed.contentSize)
+        let size = laidSize(placed)
+        let destination = placed.target.contentOrigin(size: size)
         let area = container.frame
         link.animate(poses.map { HostedContentFrame(pose: $0, target: placed.target, destination: destination, area: area,
-                                                     contentSize: placed.contentSize) }, duration: duration)
+                                                     contentSize: size) }, duration: duration)
+    }
+
+    /// 正文眼下按多大排着：会话窗口推迟改大小时还是原来的大小（见 placeContent），别的就是这次排布给的。
+    private func laidSize(_ placed: CardPresentation.Placement) -> CGSize {
+        threadWindow != nil ? nativeSize ?? placed.contentSize : placed.contentSize
     }
 
     /// 推迟的那几项：按终点摆正文和标题栏。标题右边的截法按标题栏当时的宽算（见 WindowHeaderAnchored.follow），
@@ -437,14 +443,15 @@ final class PhoneCardView: UIView {
     /// 正文的范围：正文的排版框加上停着时的外框；岛的原点对齐窗口原点，同 Mac 的 CardView。
     private func placeContent(target: WindowPose, contentSize: CGSize) {
         guard let stage, let container else { return }
-        let destination = target.contentOrigin(size: contentSize)
-        let area = CGRect(origin: destination, size: contentSize).union(target.frame)
+        // 会话窗口推迟改大小时正文还是原来的大小，按它眼下的大小算摆在哪，同 Mac 的 CardView.placeContent
+        let size = threadWindow != nil && contentPending != nil ? nativeSize ?? contentSize : contentSize
+        let destination = target.contentOrigin(size: size)
+        let area = CGRect(origin: destination, size: size).union(target.frame)
         let origin = stage.origin
         if threadWindow != nil {
             // 原生外框：岛里的正文只剩桥，不跟着改尺寸；外框按正文停着的位置摆在这一层里，推迟改大小时先留着原来的大小
             let placement = HostedPlacementValue()
             if link.placement.value != placement { link.placement.value = placement }
-            let size = contentPending != nil ? nativeSize ?? contentSize : contentSize
             nativeSize = size
             container.nativeFrame = CGRect(x: destination.x - area.minX, y: destination.y - area.minY,
                                            width: size.width, height: size.height)
@@ -507,9 +514,10 @@ final class PhoneCardView: UIView {
         iconMover.alpha = pose.iconOpacity
         if dotsShown { maskDots(pose) }
         if let container {
-            let destination = placed.target.contentOrigin(size: placed.contentSize)
+            let size = laidSize(placed)
+            let destination = placed.target.contentOrigin(size: size)
             let frame = HostedContentFrame(pose: pose, target: placed.target, destination: destination, area: container.frame,
-                                           contentSize: placed.contentSize)
+                                           contentSize: size)
             if link.frame != frame { link.apply(frame) }
         }
         CATransaction.commit()

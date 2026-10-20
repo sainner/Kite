@@ -368,10 +368,16 @@ final class CardView: NSView {
     /// 正文的变换、裁切和标题两侧整段交给 Core Animation，poses 按时间均匀取。
     private func animateContent(_ poses: [WindowPose], duration: TimeInterval) {
         guard let placed, let container else { return }
-        let destination = placed.target.contentOrigin(size: placed.contentSize)
+        let size = laidSize(placed)
+        let destination = placed.target.contentOrigin(size: size)
         let area = container.frame
         link.animate(poses.map { HostedContentFrame(pose: $0, target: placed.target, destination: destination, area: area,
-                                                     contentSize: placed.contentSize) }, duration: duration)
+                                                     contentSize: size) }, duration: duration)
+    }
+
+    /// 正文眼下按多大排着：会话窗口推迟改大小时还是原来的大小（见 placeContent），别的就是这次排布给的。
+    private func laidSize(_ placed: CardPresentation.Placement) -> CGSize {
+        threadWindow != nil ? nativeSize ?? placed.contentSize : placed.contentSize
     }
 
     /// 推迟的会话窗口改大小：按终点摆正文和标题栏。标题右边的截法按标题栏当时的宽算（见 WindowHeaderAnchored.follow），
@@ -426,14 +432,16 @@ final class CardView: NSView {
     /// 托管视图的原点对齐窗口原点，正文保留窗口坐标（见 HostedContentContainer）。
     private func placeContent(target: WindowPose, contentSize: CGSize) {
         guard let stage, let container else { return }
-        let destination = target.contentOrigin(size: contentSize)
-        let area = CGRect(origin: destination, size: contentSize).union(target.frame)
+        // 会话窗口推迟改大小时正文还是原来的大小，按它眼下的大小算摆在哪：按新的大小居中的话，原来大小的正文偏出两者差的一半、
+        // 一边被外框切掉，改了大小再跳回来（2026-10-20 侧栏收起、展开逐帧截图，正文先偏后跳）
+        let size = threadWindow != nil && resizePending != nil ? nativeSize ?? contentSize : contentSize
+        let destination = target.contentOrigin(size: size)
+        let area = CGRect(origin: destination, size: size).union(target.frame)
         let origin = stage.origin
         if threadWindow != nil {
             // 原生外框：托管的正文只剩桥，不跟着改尺寸；外框按正文停着的位置摆在这一层里，推迟改大小时先留着原来的大小
             let placement = HostedPlacementValue()
             if link.placement.value != placement { link.placement.value = placement }
-            let size = resizePending != nil ? nativeSize ?? contentSize : contentSize
             nativeSize = size
             container.nativeFrame = CGRect(x: destination.x - area.minX, y: destination.y - area.minY,
                                            width: size.width, height: size.height)
@@ -452,8 +460,7 @@ final class CardView: NSView {
         if let backdrop, backdrop.frame != bounds, bodyReports.usesDots || backdrop.frame == .zero { backdrop.frame = bounds }
         for view in [fill, ring, iconMover] where view.frame != bounds { view.frame = bounds }
         // 摆在卡片上的图形按停着的位置落到点阵上
-        let offset = target.contentOrigin(size: contentSize)
-        let rest = DotCarrier.Mapping(origin: CGPoint(x: origin.x + offset.x, y: origin.y + offset.y), scale: target.scale)
+        let rest = DotCarrier.Mapping(origin: CGPoint(x: origin.x + destination.x, y: origin.y + destination.y), scale: target.scale)
         if carrier.rest != rest { carrier.rest = rest }
         scope.frame = target.frame.offsetBy(dx: origin.x, dy: origin.y)
     }
@@ -508,10 +515,10 @@ final class CardView: NSView {
         iconMover.alphaValue = pose.iconOpacity
         if dotsShown { maskDots(pose) }
         if let container {
-            let destination = placed.target.contentOrigin(size: placed.contentSize)
+            let size = laidSize(placed)
+            let destination = placed.target.contentOrigin(size: size)
             let area = container.frame
-            let frame = HostedContentFrame(pose: pose, target: placed.target, destination: destination, area: area,
-                                           contentSize: placed.contentSize)
+            let frame = HostedContentFrame(pose: pose, target: placed.target, destination: destination, area: area, contentSize: size)
             if link.frame != frame { link.apply(frame) }
         }
         CATransaction.commit()
