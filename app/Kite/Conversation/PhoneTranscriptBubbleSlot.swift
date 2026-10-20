@@ -346,7 +346,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
 final class PhoneBubbleRowView: UIView {
     let bubble = PhoneBubbleView()
     let text = PhoneProseTextView.make()
-    let fold = PhoneBubbleFoldButton()
+    let fold = PhoneFoldButton()
     /// Kite 通知的那一行，别的为 nil。
     private(set) var header: PhoneNoticeHeader?
     /// 点了通知那一行。
@@ -637,8 +637,9 @@ final class PhoneSenderLine: UIView {
     }
 }
 
-/// 折起来的气泡下面的按钮：「展开全文」「收起」连同箭头，HStack(spacing: 6) 居中，跟着气泡的宽，整条可点。
-final class PhoneBubbleFoldButton: PhonePlainControl {
+/// 折起来的内容下面的按钮：「展开全文」「收起」连同箭头，HStack(spacing: 6)，整条可点。气泡下面的居中、跟着气泡的宽；
+/// 工具详情里的靠左（leading）、边距小一些。
+final class PhoneFoldButton: PhonePlainControl {
     var expanded = false {
         didSet {
             guard expanded != oldValue else { return }
@@ -647,6 +648,10 @@ final class PhoneBubbleFoldButton: PhonePlainControl {
     }
     private let label = UILabel()
     private let chevron = UIImageView()
+    /// 字上下的边距。
+    var padding = Metrics.bubblePadding.height
+    /// 字和箭头靠左，不居中。
+    var leading = false
 
     override init() {
         super.init()
@@ -676,7 +681,7 @@ final class PhoneBubbleFoldButton: PhonePlainControl {
 
     /// 上下边距加一行字（字和箭头取高的那个，同 HStack），取到像素。
     var height: CGFloat {
-        PhonePixel.ceil(max(label.intrinsicContentSize.height, chevron.intrinsicContentSize.height)) + Metrics.bubblePadding.height * 2
+        PhonePixel.ceil(max(label.intrinsicContentSize.height, chevron.intrinsicContentSize.height)) + padding * 2
     }
 
     override func layoutSubviews() {
@@ -685,7 +690,7 @@ final class PhoneBubbleFoldButton: PhonePlainControl {
         let imageSize = chevron.intrinsicContentSize
         let spacing: CGFloat = 6
         let width = labelSize.width + spacing + imageSize.width
-        let x = PhonePixel.round((bounds.width - width) / 2)
+        let x = leading ? 0 : PhonePixel.round((bounds.width - width) / 2)
         label.frame = CGRect(x: x, y: (bounds.height - labelSize.height) / 2, width: labelSize.width, height: labelSize.height)
         chevron.frame = CGRect(x: x + labelSize.width + spacing, y: (bounds.height - imageSize.height) / 2,
                                width: imageSize.width, height: imageSize.height)

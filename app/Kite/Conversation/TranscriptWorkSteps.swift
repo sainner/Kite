@@ -151,6 +151,8 @@ final class CallRowView: NSView {
     private var environment: EnvironmentValues?
     private var expanded = false
     private var detailHeight: CGFloat = 0
+    /// 这一步自己正在展开收起（不是详情里的值或子 agent 的行）：详情的透明度跟着行高走。
+    private var toggling = false
 
     /// 详情左右、底下的留白。
     private static let inset = Metrics.toolRowInset
@@ -193,15 +195,22 @@ final class CallRowView: NSView {
         return height
     }
 
-    /// 动画中行的高在收起和展开之间：详情按露出多少淡入淡出，收起走完拿掉。
+    /// 自己展开收起的动画中行的高在收起和展开之间：详情按露出多少淡入淡出，收起走完拿掉。
+    /// 详情里的值或子 agent 的行在展开收起时，详情整块跟着行高走，多出、少掉的那截由详情交给正在动的那块。
     func layoutRow() {
         let headerHeight = Metrics.toolRowHeight
         header.frame = CGRect(x: 0, y: 0, width: bounds.width, height: headerHeight)
         guard let detail else { return }
-        detail.frame = CGRect(x: Self.inset, y: headerHeight, width: max(bounds.width - Self.inset * 2, 0), height: detailHeight)
-        detail.layoutDetail()
         let full = detailHeight + Self.inset
-        let shown = full > 0 ? min(max((bounds.height - headerHeight) / full, 0), 1) : 0
+        var shown: CGFloat = 1
+        var height = max(bounds.height - headerHeight - Self.inset, 0)
+        if toggling {
+            shown = full > 0 ? min(max((bounds.height - headerHeight) / full, 0), 1) : 0
+            height = detailHeight
+            if abs(bounds.height - (expanded ? headerHeight + full : headerHeight)) < 0.01 { toggling = false }
+        }
+        detail.frame = CGRect(x: Self.inset, y: headerHeight, width: max(bounds.width - Self.inset * 2, 0), height: height)
+        detail.layoutDetail(height: height)
         detail.alphaValue = shown
         if !expanded, shown == 0 {
             detail.removeFromSuperview()
@@ -220,6 +229,7 @@ final class CallRowView: NSView {
             detail = view
         }
         if let call, let environment { header.show(call, environment: environment, expanded: expanded) }
+        toggling = true
         changed?(WorkLayout.motion)
     }
 }
@@ -585,13 +595,15 @@ nonisolated final class ReferenceLinkElement: NSAccessibilityElement {
 /// 一次调用的详情：参数、结果各一张卡片（键在左、最宽 96，值在右能折行，等宽字、能选），之间 6；
 /// 子 agent 做的事接在下面，往里缩 12（一列原生的行，见 TranscriptStack）。
 final class CallDetailView: NSView {
-    /// 子 agent 的行自己变高了：motion 是它的走法。
+    /// 卡片里的值展开收起了、子 agent 的行自己变高了：motion 是它的走法。
     var changed: ((RowMotion?) -> Void)?
     private let input = ToolDetailCardView()
     private let result = ToolDetailCardView()
     private var children: TranscriptStack?
     private var heights: (input: CGFloat, result: CGFloat, children: CGFloat) = (0, 0, 0)
     private var width: CGFloat = 0
+    /// 正在变高变矮的那块，动画中多出、少掉的那截给它。
+    private var moving: DetailPart?
 
     override var isFlipped: Bool { true }
 
@@ -599,6 +611,8 @@ final class CallDetailView: NSView {
         super.init(frame: .zero)
         addSubview(input)
         addSubview(result)
+        input.changed = { [weak self] motion in self?.partChanged(.input, motion: motion) }
+        result.changed = { [weak self] motion in self?.partChanged(.result, motion: motion) }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -614,7 +628,7 @@ final class CallDetailView: NSView {
         } else {
             let stack = children ?? {
                 let stack = TranscriptStack()
-                stack.changed = { [weak self] motion in self?.changed?(motion) }
+                stack.changed = { [weak self] motion in self?.partChanged(.children, motion: motion) }
                 addSubview(stack.view)
                 children = stack
                 return stack
@@ -636,25 +650,47 @@ final class CallDetailView: NSView {
         return heights.input + 6 + heights.result + (children == nil ? 0 : 6 + heights.children)
     }
 
-    func layoutDetail() {
-        input.frame = CGRect(x: 0, y: 0, width: width, height: heights.input)
-        input.layoutCard()
-        result.frame = CGRect(x: 0, y: heights.input + 6, width: width, height: heights.result)
-        result.layoutCard()
+    private func partChanged(_ part: DetailPart, motion: RowMotion?) {
+        if motion != nil { moving = part }
+        changed?(motion)
+    }
+
+    /// 按给的高摆：动画中多出、少掉的那截给正在动的那块（同 WorkStepsView.layout），走到各块现量的高才算走完。
+    func layoutDetail(height: CGFloat) {
+        let total = heights.input + 6 + heights.result + (children == nil ? 0 : 6 + heights.children)
+        let extra = height - total
+        let moving = moving
+        if abs(extra) < 0.01 { self.moving = nil }
+        func part(_ part: DetailPart, _ height: CGFloat) -> CGFloat { part == moving ? max(height + extra, 0) : height }
+        let inputHeight = part(.input, heights.input), resultHeight = part(.result, heights.result)
+        input.frame = CGRect(x: 0, y: 0, width: width, height: inputHeight)
+        input.layoutCard(height: inputHeight)
+        result.frame = CGRect(x: 0, y: inputHeight + 6, width: width, height: resultHeight)
+        result.layoutCard(height: resultHeight)
         if let children {
-            children.view.frame = CGRect(x: 12, y: result.frame.maxY + 6, width: max(width - 12, 0), height: heights.children)
-            children.layout(height: heights.children)
+            let childrenHeight = part(.children, heights.children)
+            children.view.frame = CGRect(x: 12, y: result.frame.maxY + 6, width: max(width - 12, 0), height: childrenHeight)
+            children.layout(height: childrenHeight)
         }
     }
 }
 
 /// 参数或结果的卡片：代码底色、8 pt 圆角，内边距 10；只列顶层键，嵌套对象和数组整个序列化成一行；一行一个键，键在左（次要色，占 96 宽，放不下折行），
 /// 值在右（JSON 序列化，文件路径、网址可点，能折行），列间 12、行间 8，都是等宽字、能选，复制给原样的字。
+/// 太长的值折起来（DetailFold）：只露出开头几行、底下渐隐，下面靠左一个「展开全文」「收起」；展开了哪些按键记，收起这一步、详情拿掉后不留。
 final class ToolDetailCardView: NSView {
-    private var rows: [(key: ProseTextView, value: ProseTextView, coordinator: ProseRowCoordinator)] = []
+    /// 有一个值展开收起了：motion 是它的走法。
+    var changed: ((RowMotion?) -> Void)?
+    private var rows: [ToolDetailRow] = []
     private var heights: [CGFloat] = []
     private var keyWidth: CGFloat = 0
     private let background = CAShapeLayer()
+    /// 展开了的值的键。
+    private var expandedKeys: Set<String> = []
+    /// 折着时露出多高：detailFoldLines 行等宽字。
+    private var foldHeight: CGFloat = 0
+    /// 正在展开收起的那一行。
+    private var moving: Int?
 
     private static let padding: CGFloat = 10
     private static let columnSpacing: CGFloat = 12
@@ -674,29 +710,34 @@ final class ToolDetailCardView: NSView {
 
     func show(_ fields: [(key: String, value: JSON)], environment: EnvironmentValues) {
         let font = Theme.code.resolve(in: environment.fontResolutionContext).ctFont as NSFont
+        let secondary = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont
+        foldHeight = ceil((font.ascender - font.descender + font.leading) * Metrics.detailFoldLines)
         while rows.count < fields.count {
-            let key = ProseTextView.makeReadOnly(), value = ProseTextView.makeReadOnly()
-            let coordinator = ProseRowCoordinator()
-            // 键由值带着读（值的说明就是键），读屏不单独读键
-            key.setAccessibilityElement(false)
-            value.delegate = coordinator
-            coordinator.view = value
-            addSubview(key)
-            addSubview(value)
-            rows.append((key, value, coordinator))
+            let row = ToolDetailRow()
+            row.fold.action = { [weak self, weak row] in
+                guard let self, let row else { return }
+                toggle(row)
+            }
+            addSubview(row.key)
+            addSubview(row.clip)
+            addSubview(row.fold)
+            rows.append(row)
         }
         while rows.count > fields.count {
             let row = rows.removeLast()
-            row.key.removeFromSuperview()
-            row.value.removeFromSuperview()
+            for view in [row.key, row.clip, row.fold] { view.removeFromSuperview() }
         }
         // 键那一列是 frame(maxWidth: 96) 的格子，Grid 按最宽给它，总是 96（逐像素对过）
         keyWidth = Self.keyMaxWidth
         for (row, field) in zip(rows, fields) {
+            row.name = field.key
+            row.folding.expanded = expandedKeys.contains(field.key)
             row.key.showPlain(field.key, font: font, color: .secondaryLabelColor)
             row.coordinator.openURL = environment.openURL
             row.value.showLinked(field.value.detailText, scope: environment.referenceScope, font: font)
             row.value.setAccessibilityLabel(field.key)
+            row.fold.style(color: .secondaryLabelColor, font: secondary)
+            row.fold.expanded = row.folding.expanded
         }
         background.fillColor = Theme.codeBackground.resolve(in: environment).cgColor
         needsLayout = true
@@ -705,26 +746,87 @@ final class ToolDetailCardView: NSView {
     func height(width: CGFloat) -> CGFloat {
         let valueWidth = max(width - Self.padding * 2 - keyWidth - Self.columnSpacing, 0)
         heights = rows.map { row in
-            max(row.key.measurePixel(lineWidth: keyWidth), row.value.measurePixel(lineWidth: valueWidth))
+            row.folding.full = row.value.measurePixel(lineWidth: valueWidth)
+            row.folding.foldHeight = foldHeight
+            return max(row.key.measurePixel(lineWidth: keyWidth), row.folding.height(button: row.fold.height))
         }
         return Self.padding * 2 + heights.reduce(0, +) + Self.rowSpacing * CGFloat(max(rows.count - 1, 0))
     }
 
-    func layoutCard() {
+    /// 按给的高摆：动画中多出、少掉的那截给正在展开收起的那一行（同 WorkStepsView.layout），值按这一行眼下的高露出、渐隐。
+    func layoutCard(height: CGFloat) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         background.frame = bounds
         background.path = RoundedRectangle(cornerRadius: Metrics.toolGroupRadius).path(in: bounds).cgPath
-        CATransaction.commit()
+        let total = Self.padding * 2 + heights.reduce(0, +) + Self.rowSpacing * CGFloat(max(rows.count - 1, 0))
+        let moving = moving
+        if abs(height - total) < 0.01 { self.moving = nil }
         let valueX = Self.padding + keyWidth + Self.columnSpacing
         let valueWidth = max(bounds.width - Self.padding - valueX, 0)
         var y = Self.padding
         for (index, row) in rows.enumerated() {
-            let height = index < heights.count ? heights[index] : 0
-            row.key.frame = CGRect(x: Self.padding, y: y, width: keyWidth, height: height)
-            row.value.frame = CGRect(x: valueX, y: y, width: valueWidth, height: height)
-            y += height + Self.rowSpacing
+            var rowHeight = index < heights.count ? heights[index] : 0
+            let button = row.fold.height
+            var cell = row.folding.height(button: button)
+            if index == moving {
+                rowHeight = max(rowHeight + height - total, 0)
+                cell = rowHeight
+            }
+            row.key.frame = CGRect(x: Self.padding, y: y, width: keyWidth, height: rowHeight)
+            let foldable = row.folding.foldable
+            let shown = row.folding.shown(height: cell, button: button)
+            // 折着时值只给到露出来的底边，底下折起来的不排、不画（同气泡）
+            row.clip.frame = CGRect(x: valueX, y: y, width: max(bounds.width - valueX, 0), height: foldable ? shown.height : rowHeight)
+            row.value.frame = CGRect(x: 0, y: 0, width: valueWidth, height: foldable ? min(row.folding.full, shown.height) : rowHeight)
+            row.clip.layer?.masksToBounds = foldable
+            if foldable {
+                if row.clip.layer?.mask !== row.fade { row.clip.layer?.mask = row.fade }
+                row.fade.frame = row.clip.bounds
+                row.fade.locations = [0, NSNumber(value: shown.fadeStart), 1]
+                row.fade.colors = [NSColor.black.cgColor, NSColor.black.cgColor, NSColor.black.withAlphaComponent(1 - shown.faded).cgColor]
+            } else if row.clip.layer?.mask != nil {
+                row.clip.layer?.mask = nil
+            }
+            row.fold.isHidden = !foldable
+            row.fold.frame = CGRect(x: valueX, y: y + shown.height, width: valueWidth, height: button)
+            y += rowHeight + Self.rowSpacing
         }
+        CATransaction.commit()
+    }
+
+    /// 展开、收起一个值：这一步的详情和下面的行一起按工具步骤的走法动。
+    private func toggle(_ row: ToolDetailRow) {
+        guard let index = rows.firstIndex(where: { $0 === row }) else { return }
+        row.folding.expanded.toggle()
+        if row.folding.expanded { expandedKeys.insert(row.name) } else { expandedKeys.remove(row.name) }
+        row.fold.expanded = row.folding.expanded
+        moving = index
+        changed?(WorkLayout.motion)
+    }
+}
+
+/// 详情卡片里的一行：键，值（放在截住它的那层里，折着时底下渐隐），折叠按钮。
+private final class ToolDetailRow {
+    let key = ProseTextView.makeReadOnly()
+    let value = ProseTextView.makeReadOnly()
+    let coordinator = ProseRowCoordinator()
+    let clip = FlippedLayerView()
+    let fade = CAGradientLayer()
+    let fold = FoldButton()
+    /// 这一行的键。
+    var name = ""
+    var folding = DetailFold()
+
+    init() {
+        // 键由值带着读（值的说明就是键），读屏不单独读键
+        key.setAccessibilityElement(false)
+        value.delegate = coordinator
+        coordinator.view = value
+        clip.addSubview(value)
+        fade.actions = ["position": NSNull(), "bounds": NSNull(), "locations": NSNull(), "colors": NSNull()]
+        fold.leading = true
+        fold.padding = DetailFold.buttonPadding
     }
 }
 

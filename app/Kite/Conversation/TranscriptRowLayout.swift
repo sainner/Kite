@@ -281,3 +281,37 @@ enum WorkLayout {
         return full > 0 ? min(max((rowHeight - header) / full, 0), 1) : (expanded ? 1 : 0)
     }
 }
+
+/// 一次调用的详情里的几块：参数、结果的卡片，子 agent 的行。某一块变高变矮时动画中多出、少掉的那截给它。
+enum DetailPart {
+    case input, result, children
+}
+
+/// 工具详情卡片里一个值怎么折，两端共用：比折起来的高（foldHeight，detailFoldLines 行等宽字）高出不少（1.4 倍，同 BubbleLayout.foldable）才折；
+/// 折着只露出 foldHeight、底下渐隐，下面靠左一行「展开全文」「收起」（button 是它的高）。展开收起按工具步骤的走法（WorkLayout.motion）动，
+/// 动画中这一格的高在折起和全文之间，露出来的那截跟着它走。
+struct DetailFold {
+    /// 值全排出来多高。
+    var full: CGFloat = 0
+    var foldHeight: CGFloat = 0
+    var expanded = false
+
+    /// 按钮上下的边距：触屏上大一点，好点。
+    static var buttonPadding: CGFloat { InputMode.current.isTouch ? 6 : 4 }
+
+    var foldable: Bool { full > foldHeight * 1.4 }
+
+    /// 停着时这一格多高：露出来的字，能折时加上按钮。
+    func height(button: CGFloat) -> CGFloat {
+        guard foldable else { return full }
+        return (expanded ? full : foldHeight) + button
+    }
+
+    /// 这一格眼下给了 height 高（动画中在折起和全文之间）：字露出多高，底下渐隐从哪起（0～1，露出那截的比例）、
+    /// 到底边淡掉多少（0 不淡，1 全透），同 BubbleLayout.frames。不能折的整段露出、不渐隐。
+    func shown(height: CGFloat, button: CGFloat) -> (height: CGFloat, fadeStart: CGFloat, faded: CGFloat) {
+        guard foldable else { return (full, 1, 0) }
+        let shown = max(height - button, 0)
+        return (shown, max(0, 1 - Metrics.messageFoldFade / max(shown, 1)), min(max((full - shown) / Metrics.messageFoldFade, 0), 1))
+    }
+}

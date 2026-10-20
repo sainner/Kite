@@ -261,6 +261,8 @@ enum Metrics {
     static let messageFold: CGFloat = 132
     /// 折叠内容仅在末端短渐隐，展开按钮位于渐隐外。
     static let messageFoldFade: CGFloat = 20
+    /// 工具详情卡片里一个值折起来时露出几行等宽小字，比它高出不少才折（见 DetailFold）。
+    static let detailFoldLines: CGFloat = 10
     /// 审批卡片里的命令（代码块）展开全部以后，代码区最高多高（约十六行），再长在里面滚动；iPhone 随动态字体缩放。
     #if os(iOS)
     static let approvalCommandHeight: CGFloat = 288

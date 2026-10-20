@@ -124,6 +124,8 @@ final class PhoneCallRow: UIView {
     private var expanded = false
     private var headerHeight: CGFloat = 0
     private var detailHeight: CGFloat = 0
+    /// 这一步自己正在展开收起（不是详情里的值或子 agent 的行）：详情的透明度跟着行高走。
+    private var toggling = false
     private static let motion = RowMotion.curve(.easeOut, duration: 0.25)
 
     init() {
@@ -157,13 +159,20 @@ final class PhoneCallRow: UIView {
         detail?.release()
     }
 
-    /// 按给的高摆：动画中在收起和展开之间，详情按露出多少淡入淡出；收起走完拿掉详情，不留它的状态。
+    /// 按给的高摆：自己展开收起的动画中在收起和展开之间，详情按露出多少淡入淡出；收起走完拿掉详情，不留它的状态。
+    /// 详情里的值或子 agent 的行在展开收起时，详情整块跟着给的高走，多出、少掉的那截由详情交给正在动的那块。
     func layout(height: CGFloat) {
         header.frame = CGRect(x: 0, y: 0, width: bounds.width, height: headerHeight)
         guard let detail else { return }
         let full = detailHeight + 10
-        let progress = full > 0 ? min(max((height - headerHeight) / full, 0), 1) : 0
-        detail.frame = CGRect(x: Metrics.toolRowInset, y: headerHeight, width: max(bounds.width - Metrics.toolRowInset * 2, 0), height: detailHeight)
+        var progress: CGFloat = 1
+        var shown = max(height - headerHeight - 10, 0)
+        if toggling {
+            progress = full > 0 ? min(max((height - headerHeight) / full, 0), 1) : 0
+            shown = detailHeight
+            if abs(height - (expanded ? headerHeight + full : headerHeight)) < 0.01 { toggling = false }
+        }
+        detail.frame = CGRect(x: Metrics.toolRowInset, y: headerHeight, width: max(bounds.width - Metrics.toolRowInset * 2, 0), height: shown)
         detail.alpha = progress
         if !expanded, progress == 0 {
             detail.release()
@@ -185,6 +194,7 @@ final class PhoneCallRow: UIView {
             self.detail = detail
         }
         header.show(call, expanded: expanded, context: context)
+        toggling = true
         changed?(Self.motion)
     }
 }
@@ -412,17 +422,22 @@ final class PhoneChip: UIView {
 
 /// 一步的参数和结果：两张卡片（参数、结果）隔 6，子 agent 做的事接在下面、左边空 12。字是等宽的次要字号。
 final class PhoneCallDetail: UIView {
+    /// 卡片里的值展开收起了、子 agent 的行变了：motion 是它的走法。
     var changed: ((RowMotion?) -> Void)?
     private let input = PhoneDetailCard()
     private let result = PhoneDetailCard()
     private var children: PhoneTranscriptStack?
     private var heights: (input: CGFloat, result: CGFloat, children: CGFloat) = (0, 0, 0)
+    /// 正在变高变矮的那块，动画中多出、少掉的那截给它。
+    private var moving: DetailPart?
     private static let spacing: CGFloat = 6
 
     init() {
         super.init(frame: .zero)
         addSubview(input)
         addSubview(result)
+        input.changed = { [weak self] motion in self?.partChanged(.input, motion: motion) }
+        result.changed = { [weak self] motion in self?.partChanged(.result, motion: motion) }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -439,7 +454,7 @@ final class PhoneCallDetail: UIView {
         } else {
             let stack = children ?? {
                 let stack = PhoneTranscriptStack()
-                stack.changed = { [weak self] motion in self?.changed?(motion) }
+                stack.changed = { [weak self] motion in self?.partChanged(.children, motion: motion) }
                 addSubview(stack.view)
                 children = stack
                 return stack
@@ -461,12 +476,24 @@ final class PhoneCallDetail: UIView {
         children?.release()
     }
 
+    private func partChanged(_ part: DetailPart, motion: RowMotion?) {
+        if motion != nil { moving = part }
+        changed?(motion)
+    }
+
+    /// 按眼下的高摆：动画中多出、少掉的那截给正在动的那块（子 agent 的行在最下面，本来就拿剩下的），走到各块现量的高才算走完。
     override func layoutSubviews() {
         super.layoutSubviews()
-        input.frame = CGRect(x: 0, y: 0, width: bounds.width, height: heights.input)
-        result.frame = CGRect(x: 0, y: heights.input + Self.spacing, width: bounds.width, height: heights.result)
+        let total = heights.input + Self.spacing + heights.result + (children == nil ? 0 : Self.spacing + heights.children)
+        let extra = bounds.height - total
+        let moving = moving
+        if abs(extra) < 0.01 { self.moving = nil }
+        let inputHeight = moving == .input ? max(heights.input + extra, 0) : heights.input
+        let resultHeight = moving == .result ? max(heights.result + extra, 0) : heights.result
+        input.frame = CGRect(x: 0, y: 0, width: bounds.width, height: inputHeight)
+        result.frame = CGRect(x: 0, y: inputHeight + Self.spacing, width: bounds.width, height: resultHeight)
         if let children {
-            let y = heights.input + Self.spacing + heights.result + Self.spacing
+            let y = inputHeight + Self.spacing + resultHeight + Self.spacing
             children.view.frame = CGRect(x: 12, y: y, width: max(bounds.width - 12, 0), height: max(bounds.height - y, 0))
             children.layout(height: max(bounds.height - y, 0))
         }
@@ -475,11 +502,20 @@ final class PhoneCallDetail: UIView {
 
 /// 一张详情卡片：列间 12、行间 8，每行左边是键（次要色，最宽 96，长了折行），右边是值（序列化成一行的 JSON，
 /// 文件路径是链接，长了折行，能选字），四边空 10，代码底色、圆角 8。
+/// 太长的值折起来（DetailFold）：只露出开头几行、底下渐隐，下面靠左一个「展开全文」「收起」；展开了哪些按键记，收起这一步、详情拿掉后不留。
 final class PhoneDetailCard: UIView {
-    private var rows: [(key: PhoneTextLine, value: PhoneDetailValue)] = []
+    /// 有一个值展开收起了：motion 是它的走法。
+    var changed: ((RowMotion?) -> Void)?
+    private var rows: [PhoneDetailRow] = []
     private let background = CAShapeLayer()
     private var keyWidth: CGFloat = 0
     private var rowHeights: [CGFloat] = []
+    /// 展开了的值的键。
+    private var expandedKeys: Set<String> = []
+    /// 折着时露出多高：detailFoldLines 行等宽字。
+    private var foldHeight: CGFloat = 0
+    /// 正在展开收起的那一行。
+    private var moving: Int?
 
     init() {
         super.init(frame: .zero)
@@ -491,22 +527,30 @@ final class PhoneDetailCard: UIView {
     func show(_ fields: [(key: String, value: JSON)], context: TranscriptRowContext) {
         let environment = context.environment
         let font = Theme.code.resolve(in: environment.fontResolutionContext).ctFont as UIFont
+        foldHeight = PhonePixel.ceil(font.lineHeight * Metrics.detailFoldLines)
         while rows.count < fields.count {
-            let key = PhoneTextLine()
-            key.lines = 0
-            let value = PhoneDetailValue()
-            addSubview(key)
-            addSubview(value.text)
-            rows.append((key, value))
+            let row = PhoneDetailRow()
+            row.fold.action = { [weak self, weak row] in
+                guard let self, let row else { return }
+                toggle(row)
+            }
+            addSubview(row.key)
+            addSubview(row.clip)
+            addSubview(row.fold)
+            rows.append(row)
         }
         while rows.count > fields.count {
             let row = rows.removeLast()
-            row.key.removeFromSuperview()
-            row.value.text.removeFromSuperview()
+            for view in [row.key, row.clip, row.fold] { view.removeFromSuperview() }
         }
         for (index, field) in fields.enumerated() {
-            rows[index].key.set(field.key, font: font, color: .secondaryLabel)
-            rows[index].value.show(field.value.detailText, font: font, context: context)
+            let row = rows[index]
+            row.name = field.key
+            row.folding.expanded = expandedKeys.contains(field.key)
+            row.key.set(field.key, font: font, color: .secondaryLabel)
+            row.value.show(field.value.detailText, font: font, context: context)
+            row.fold.style(color: .secondaryLabel)
+            row.fold.expanded = row.folding.expanded
         }
         background.fillColor = Theme.codeBackground.resolve(in: environment).cgColor
         setNeedsLayout()
@@ -516,25 +560,89 @@ final class PhoneDetailCard: UIView {
         let inner = max(width - 20, 0)
         keyWidth = min(rows.map(\.key.naturalWidth).max() ?? 0, 96)
         let valueWidth = max(inner - keyWidth - 12, 0)
-        rowHeights = rows.map { max($0.key.height(width: keyWidth), $0.value.height(width: valueWidth)) }
+        rowHeights = rows.map { row in
+            row.folding.full = row.value.height(width: valueWidth)
+            row.folding.foldHeight = foldHeight
+            return max(row.key.height(width: keyWidth), row.folding.height(button: row.fold.height))
+        }
         return 20 + rowHeights.reduce(0, +) + CGFloat(max(rows.count - 1, 0)) * 8
     }
 
+    /// 按眼下的高摆：动画中多出、少掉的那截给正在展开收起的那一行（同 PhoneWorkSteps），值按这一行眼下的高露出、渐隐。
     override func layoutSubviews() {
         super.layoutSubviews()
+        let total = 20 + rowHeights.reduce(0, +) + CGFloat(max(rows.count - 1, 0)) * 8
+        let moving = moving
+        if abs(bounds.height - total) < 0.01 { self.moving = nil }
+        let valueX = 10 + keyWidth + 12
         let valueWidth = max(bounds.width - 20 - keyWidth - 12, 0)
         var y: CGFloat = 10
-        for (index, row) in rows.enumerated() where index < rowHeights.count {
-            row.key.frame = CGRect(x: 10, y: y, width: keyWidth, height: row.key.height(width: keyWidth))
-            // 视图宽固定（见 PhoneProseTextView.clipViewport），字排在值那一列的宽里
-            row.value.text.frame = CGRect(x: 10 + keyWidth + 12, y: y, width: PhoneProseTextView.widest, height: row.value.height(width: valueWidth))
-            y += rowHeights[index] + 8
-        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        for (index, row) in rows.enumerated() where index < rowHeights.count {
+            var rowHeight = rowHeights[index]
+            let button = row.fold.height
+            var cell = row.folding.height(button: button)
+            if index == moving {
+                rowHeight = max(rowHeight + bounds.height - total, 0)
+                cell = rowHeight
+            }
+            row.key.frame = CGRect(x: 10, y: y, width: keyWidth, height: row.key.height(width: keyWidth))
+            let foldable = row.folding.foldable
+            let shown = row.folding.shown(height: cell, button: button)
+            let textHeight = row.value.height(width: valueWidth)
+            // 文本视图按整段的高摆，由截住的那层截（同气泡），折着时底下的字不排、不画；截住的那层得盖住文本视图，触摸才落得进去
+            row.clip.frame = CGRect(x: valueX, y: y, width: max(bounds.width - valueX, 0), height: foldable ? shown.height : textHeight)
+            row.clip.clipsToBounds = foldable
+            // 视图宽固定（见 PhoneProseTextView.clipViewport），字排在值那一列的宽里
+            let textFrame = CGRect(x: 0, y: 0, width: PhoneProseTextView.widest, height: textHeight)
+            if row.value.text.frame != textFrame { row.value.text.frame = textFrame }
+            row.value.text.shownHeight = foldable ? shown.height : nil
+            if foldable {
+                if row.clip.layer.mask !== row.fade { row.clip.layer.mask = row.fade }
+                row.fade.frame = row.clip.bounds
+                row.fade.locations = [0, NSNumber(value: shown.fadeStart), 1]
+                row.fade.colors = [UIColor.black.cgColor, UIColor.black.cgColor, UIColor.black.withAlphaComponent(1 - shown.faded).cgColor]
+            } else if row.clip.layer.mask != nil {
+                row.clip.layer.mask = nil
+            }
+            row.fold.isHidden = !foldable
+            row.fold.frame = CGRect(x: valueX, y: y + shown.height, width: valueWidth, height: button)
+            y += rowHeight + 8
+        }
         background.frame = bounds
         background.path = RoundedRectangle(cornerRadius: Metrics.toolGroupRadius).path(in: bounds).cgPath
         CATransaction.commit()
+    }
+
+    /// 展开、收起一个值：这一步的详情和下面的行一起按工具步骤的走法动。
+    private func toggle(_ row: PhoneDetailRow) {
+        guard let index = rows.firstIndex(where: { $0 === row }) else { return }
+        row.folding.expanded.toggle()
+        if row.folding.expanded { expandedKeys.insert(row.name) } else { expandedKeys.remove(row.name) }
+        row.fold.expanded = row.folding.expanded
+        moving = index
+        setNeedsLayout()
+        changed?(WorkLayout.motion)
+    }
+}
+
+/// 详情卡片里的一行：键，值（放在截住它的那层里，折着时底下渐隐），折叠按钮。
+private final class PhoneDetailRow {
+    let key = PhoneTextLine()
+    let value = PhoneDetailValue()
+    let clip = UIView()
+    let fade = CAGradientLayer()
+    let fold = PhoneFoldButton()
+    /// 这一行的键。
+    var name = ""
+    var folding = DetailFold()
+
+    init() {
+        key.lines = 0
+        clip.addSubview(value.text)
+        fold.leading = true
+        fold.padding = DetailFold.buttonPadding
     }
 }
 

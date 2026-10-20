@@ -262,7 +262,7 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
 final class BubbleRowView: NSView {
     let bubble = BubbleView()
     let text = ProseTextView.make()
-    let fold = BubbleFoldButton()
+    let fold = FoldButton()
     /// Kite 通知的那一行，别的为 nil。
     private(set) var header: NoticeHeaderView?
     /// 点了通知那一行。
@@ -504,8 +504,8 @@ final class SenderLineView: NSView {
     }
 }
 
-/// 折起来的气泡下面的按钮：「展开全文」「收起」连同箭头，居中，跟着气泡的宽。
-final class BubbleFoldButton: NativeButton {
+/// 折起来的内容下面的按钮：「展开全文」「收起」连同箭头。气泡下面的居中、跟着气泡的宽；工具详情里的靠左（leading）、边距小一些。
+final class FoldButton: NativeButton {
     var expanded = false {
         didSet {
             guard expanded != oldValue else { return }
@@ -516,6 +516,10 @@ final class BubbleFoldButton: NativeButton {
     }
     private let label = NSTextField(labelWithString: "展开全文")
     private let chevron = NSImageView()
+    /// 字上下的边距。
+    var padding = Metrics.bubblePadding.height
+    /// 字和箭头靠左，不居中。
+    var leading = false
 
     override var isFlipped: Bool { true }
 
@@ -537,7 +541,7 @@ final class BubbleFoldButton: NativeButton {
 
     /// 上下边距加一行字。
     var height: CGFloat {
-        ceil(label.intrinsicContentSize.height) + Metrics.bubblePadding.height * 2
+        ceil(label.intrinsicContentSize.height) + padding * 2
     }
 
     private static func symbol(_ name: String, font: NSFont?) -> NSImage? {
@@ -555,7 +559,7 @@ final class BubbleFoldButton: NativeButton {
         let spacing: CGFloat = 8
         let width = textWidth + spacing + imageSize.width
         let scale = window?.backingScaleFactor ?? 2
-        let x = ((bounds.width - width) / 2 * scale).rounded() / scale
+        let x = leading ? 0 : ((bounds.width - width) / 2 * scale).rounded() / scale
         label.frame = CGRect(x: x - inset, y: (bounds.height - labelSize.height) / 2, width: labelSize.width, height: labelSize.height)
         chevron.frame = CGRect(x: x + textWidth + spacing, y: (bounds.height - imageSize.height) / 2,
                                width: imageSize.width, height: imageSize.height)
