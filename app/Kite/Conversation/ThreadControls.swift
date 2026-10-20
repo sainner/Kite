@@ -74,7 +74,16 @@ struct ThreadControls: View {
                 .lineLimit(1...8)
                 .focused(typing)
                 .scrollsOnlyWhileTyping(typing.wrappedValue)
-                .onSubmit { if controls.answering != nil { controls.advanceAnswer() } else { submit() } }
+                .onSubmit {
+                    // Shift+回车换行，同宽屏的 ComposerField：系统给它的也是 insertNewline，到这里才看得出按了 Shift
+                    if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                        NSApp.sendAction(#selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)), to: nil, from: nil)
+                    } else if controls.answering != nil {
+                        controls.advanceAnswer()
+                    } else {
+                        submit()
+                    }
+                }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fieldHeight = $0 }
                 .frame(minHeight: fading?.height, alignment: .top)
                 .opacity(fading == nil ? 1 : 0)

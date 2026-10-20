@@ -6,7 +6,7 @@ import AppKit
 /// 无边框、不画底、不画焦点环、正文字号、按字折行、最多 8 行，超过 8 行字段编辑器在里面滚；字段编辑器的拼写、替换、补全等开关
 /// 和系统默认的字段编辑器一样，只把插入点和选区换成主题色（同现版）。
 /// SwiftUI 把它摆得比自己的布局宽 4、往左挪 2，抵掉字段编辑器两边各 2 的行内边距，字和布局的左边对齐；外面照这样摆，见 fieldInset。
-/// 键位和现版一样：回车（含 Shift+回车、小键盘 Enter）发送，Option+回车换行，Control+回车插行分隔符（后两个是系统键位）；
+/// 键位：回车（含小键盘 Enter）发送，Shift+回车、Option+回车换行，Control+回车插行分隔符（后两个是系统键位）；
 /// 组字中的回车由输入法确认组字，不发送。外面改草稿时（发送后清空、语音写入）编辑中的字整段换掉、插入点到末尾，同现版。
 final class ComposerField: NSTextField {
     /// 回车发送。
@@ -161,13 +161,18 @@ final class ComposerField: NSTextField {
         view.subviews.flatMap { $0 is NSTextInsertionIndicator ? [$0] : indicators(in: $0) }
     }
 
-    /// 字段编辑器把命令先交给控件的代理：回车发送，其余照系统的。
+    /// 字段编辑器把命令先交给控件的代理：回车发送，Shift+回车换行，其余照系统的。
+    /// 系统没给 Shift+回车单独的命令，同样是 insertNewline，要看按键时的修饰键。
     private final class Coordinator: NSObject, NSTextFieldDelegate {
         weak var field: ComposerField?
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             guard commandSelector == #selector(NSResponder.insertNewline(_:)), !textView.hasMarkedText() else { return false }
-            field?.submit?()
+            if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                textView.insertNewlineIgnoringFieldEditor(nil)
+            } else {
+                field?.submit?()
+            }
             return true
         }
 
