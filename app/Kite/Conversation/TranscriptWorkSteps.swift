@@ -230,7 +230,7 @@ final class CallRowView: NSView {
     }
 }
 
-/// 一步的标题行：整行是按钮（指针手形、没有按下的样子），图标、名字、摘要一块带动效（等待呼吸、执行时像素扫掠，见 ToolActivityView），
+/// 一步的标题行：整行是按钮（指针手形、没有按下的样子），图标、名字、摘要一块在等待中呼吸（见 ToolActivityView；扫掠只在汇总行上），
 /// 摘要放不下截掉（命令截尾，其余截中间）；有结果里的文件时换成可点的文件引用；右边补丁行数、命令运行时间。出错时图标、名字、摘要是红的。
 final class CallHeaderView: NativeButton {
     private let activity = ToolActivityView()
@@ -289,7 +289,7 @@ final class CallHeaderView: NativeButton {
         }
         showDuration(environment: environment)
         activity.presence = environment.panePresence
-        activity.mode = call.state == .queued ? .breathing : call.state == .running ? .sweeping : .none
+        activity.mode = call.state == .queued ? .breathing : .none
         activity.contentChanged()
         let spoken = TranscriptSpeech.call(call, summary: text)
         speech = (spoken.label, spoken.value, TranscriptSpeech.callHint(expanded: expanded))

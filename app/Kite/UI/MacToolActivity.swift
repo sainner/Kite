@@ -2,7 +2,7 @@
 import AppKit
 import SwiftUI
 
-/// 工具行里正在做的事的动效：等待时整块透明度呼吸（WaitingBreath 的节奏），执行时像素扫掠
+/// 工具行里正在做的事的动效：等待时整块透明度呼吸（WaitingBreath 的节奏），工具组在做事时像素扫掠
 /// （扫过时笔画变成彩色方块，离开后恢复；算法同 KitePixels.metal 里 iOS 用的着色器）。里面的字、图标照常放在 content 里，链接照常能点。
 /// 扫掠每秒最多 60 帧（现版 30 帧）：内容画成一张图记下来、每一格方块的颜色一起算好（字、宽度、外观变了才重画，
 /// 拖缝改宽时只有被截短的字才要重画）；每一帧只算扫到的那一截，放进一个只有这一截宽的图层，原来的内容用遮罩挖掉这一截，其余照常画。
@@ -179,7 +179,11 @@ final class ToolActivityView: NSView {
         let size = bounds.size
         let width = Int((size.width * scale).rounded(.up)), height = Int((size.height * scale).rounded(.up))
         guard width > 0, height > 0, let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return nil }
+        // 画出来的图带着遮罩：扫掠中换字、变宽时重画，扫到的那一截会被挖空、记进图里，之后扫过那里就缺字。先摘下，画完挂回去，同一次提交里看不出来
+        let mask = content.layer?.mask
+        content.layer?.mask = nil
         content.cacheDisplay(in: content.bounds, to: rep)
+        content.layer?.mask = mask
         guard let image = rep.cgImage else { return nil }
         var pixels = [UInt8](repeating: 0, count: width * height * 4)
         let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in

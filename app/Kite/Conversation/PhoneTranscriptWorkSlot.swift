@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 
 /// 两段话之间 agent 做的事折成的一行：汇总一行（思考、正在做什么或汇总，出错和没跑完的步数、箭头，一行，放不下截汇总；
-/// 有调用在跑时正在做什么带像素扫掠，见 PhoneActivityView），点开后下面是每一步（PhoneWorkSteps）。
+/// 回合在跑、这是最后一组时不说汇总，一直带像素扫掠，见 PhoneActivityView），点开后下面是每一步（PhoneWorkSteps）。
 /// 展开收起和下面的行一起按 0.25 秒的普通缓出动，箭头跟着转、步骤跟着淡入淡出；收起走完拿掉步骤，不留各步的展开状态。
 /// 一步自己展开收起时，这一行的高由列表的行高动画给，多出、少掉的那截交给步骤去摆。量法、展开进度和 Mac 共用（WorkLayout）。
 final class PhoneWorkRowSlot: TranscriptRowSlot, PhoneRowSlot {
@@ -129,7 +129,7 @@ final class PhoneWorkRowView: UIView {
 }
 
 /// 工具组的汇总行：一行次要色小字，间距 8、竖着居中：汇总（见 Work.headline）、
-/// 没跑完步数、小号箭头；汇总放不下截掉。有调用在跑、没展开时正在做什么带像素扫掠（PhoneActivityView）。整行可点。
+/// 没跑完步数、小号箭头；汇总放不下截掉。这组还在做事（Work.active）时一直带像素扫掠（PhoneActivityView），展开着也扫。整行可点。
 final class PhoneWorkHeader: PhonePlainControl {
     /// 箭头转了多少：0 朝右，1 朝下。
     var turn: CGFloat = 0 {
@@ -160,7 +160,7 @@ final class PhoneWorkHeader: PhonePlainControl {
         chevron.image = UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(font: font, scale: .small))
         chevron.tintColor = .secondaryLabel
         activity.contentChanged()
-        activity.show(work.running != nil && !expanded && work.count(.running) > 0 ? .running : nil, presence: environment.panePresence)
+        activity.show(work.active ? .sweeping : .none, presence: environment.panePresence)
         accessibilityLabel = TranscriptSpeech.work(work)
         accessibilityValue = TranscriptSpeech.expanded(expanded)
         setNeedsLayout()

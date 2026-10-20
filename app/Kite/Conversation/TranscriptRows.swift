@@ -11,19 +11,6 @@ struct TranscriptRow: Identifiable {
         var isMessage: Bool {
             if case .message = self { true } else { false }
         }
-
-        /// 画成气泡的：人发的消息、代理来信、Kite 的通知（转交的用户回应除外）。
-        var isBubble: Bool {
-            switch self {
-            case .message: true
-            case .item(let item):
-                switch item.kind {
-                case .agent: true
-                case .kite(let notice): !notice.response
-                default: false
-                }
-            }
-        }
     }
 
     let id: RowID
@@ -44,10 +31,10 @@ struct TranscriptRow: Identifiable {
                 rows.append(TranscriptRow(id: id, content: content, gap: 0, startsHumanTurn: humanTurn))
                 return
             }
-            // 气泡（人发的消息、代理来信、Kite 的通知）和前后的内容之间多空一样多，连着的几个气泡之间不加；它开启的新一轮不再另加，上下才一样。
-            // 转交的用户回应开启的新一轮，和上一轮之间多空一点
-            let gap = if last.content.isBubble != content.isBubble { Metrics.messageGap }
-                else if startsTurn && !content.isBubble { Metrics.turnGap }
+            // 人发的消息和前后的内容之间多空一样多，连着的几条之间不加；它开启的新一轮不再另加，上下才一样。
+            // 代理来信、Kite 的通知虽然也画成气泡，间距同工具行；转交的用户回应开启的新一轮，和上一轮之间多空一点
+            let gap = if last.content.isMessage != content.isMessage { Metrics.messageGap }
+                else if startsTurn && !content.isMessage { Metrics.turnGap }
                 else { CGFloat(0) }
             rows.append(TranscriptRow(id: id, content: content, gap: gap, startsHumanTurn: humanTurn))
         }
@@ -93,6 +80,7 @@ private extension Item.Kind {
         case .work(let work):
             hasher.combine(5)
             hasher.combine(work.thinking?.utf8.count)
+            hasher.combine(work.active)
             for call in work.calls {
                 hasher.combine(call.state)
                 hasher.combine(call.result != nil)
@@ -127,7 +115,7 @@ private extension Item {
     var startsTurn: Bool {
         switch kind {
         case .human(let message): !message.midTurn
-        case .agent, .kite: true
+        case .kite(let notice): notice.response
         default: false
         }
     }

@@ -190,7 +190,7 @@ final class PhoneCallRow: UIView {
 }
 
 /// 一步的标题行：图标（16 宽）、名字（半粗）、摘要或文件引用，间距 6，右边是小标签；
-/// 竖着居中，高是 toolRowHeight 随字号缩放。整行点开、收起；点在文件引用上打开引用。等待中、执行中带动效（PhoneActivityView）。
+/// 竖着居中，高是 toolRowHeight 随字号缩放。整行点开、收起；点在文件引用上打开引用。等待中呼吸（PhoneActivityView；扫掠只在汇总行上）。
 final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
     var toggle: (() -> Void)?
     private let activity = PhoneActivityView()
@@ -252,7 +252,7 @@ final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
                         truncation: call.use.kind == .command ? .end : .middle)
         }
         activity.contentChanged()
-        activity.show(call.state, presence: environment.panePresence)
+        activity.show(call.state == .queued ? .breathing : .none, presence: environment.panePresence)
         let status = Theme.status.resolve(in: environment.fontResolutionContext).ctFont as UIFont
         diff.show(call.use.diffSummary, font: status.monospacedDigits, fill: Theme.codeBackground.resolve(in: environment).cgColor)
         diff.accessibilityLabel = call.use.diffSummary.map(TranscriptSpeech.patchLines)

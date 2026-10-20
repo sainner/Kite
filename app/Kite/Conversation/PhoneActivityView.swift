@@ -4,7 +4,7 @@ import QuartzCore
 import SwiftUI
 import UIKit
 
-/// 工具在跑时的动效：等待中（queued）内容透明度按等待呼吸起伏，执行中（running）像素扫掠。
+/// 工具行的动效：等待中内容透明度按等待呼吸起伏，工具组在做事时像素扫掠。
 /// 要带动效的字和图标放进 content。
 /// - 呼吸是 Core Animation 的关键帧动画，按绝对时间对齐，几行一起起伏，和 SwiftUI 里的 waitingBreath 共用一个时钟。
 /// - 扫掠时 content 画进一张贴图，盖在上面的 CAMetalLayer 按屏幕刷新率逐帧画（着色器 kiteSweepFragment，和 Mac 的
@@ -12,13 +12,15 @@ import UIKit
 /// - 减弱动态效果时不动；所在窗口不在屏上（PanePresence）时停。这一行被列表藏起、所在的层透明、滚出窗口或窗口在过渡中时
 ///   不画，看不见时显示链接降到低频，只等着看得见，不把屏幕拖在高刷新率上。
 final class PhoneActivityView: UIView {
+    enum Mode: Equatable { case none, breathing, sweeping }
+
     let content = UIView()
     private let metal = CAMetalLayer()
     private var link: CADisplayLink?
     /// 显示链接降到了低频（看不见时）。
     private var idling = false
     private var texture: MTLTexture?
-    private var state: Call.State?
+    private var mode: Mode = .none
     private var presence: PanePresence?
     private let tracking = ModelTracking()
 
@@ -42,13 +44,13 @@ final class PhoneActivityView: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// 换上这一次的状态和窗口在不在屏上的盒子。字变了由调用方 contentChanged。
-    func show(_ state: Call.State?, presence: PanePresence?) {
+    /// 换上这一次的动效和窗口在不在屏上的盒子。字变了由调用方 contentChanged。
+    func show(_ mode: Mode, presence: PanePresence?) {
         if self.presence !== presence {
             self.presence = presence
             tracking.cancel()
         }
-        self.state = UIAccessibility.isReduceMotionEnabled ? nil : state
+        self.mode = UIAccessibility.isReduceMotionEnabled ? .none : mode
         apply()
     }
 
@@ -80,13 +82,13 @@ final class PhoneActivityView: UIView {
             DispatchQueue.main.async { [weak self] in self?.apply() }
         }
         let onScreen = window != nil && shown
-        let breathing = state == .queued && onScreen
+        let breathing = mode == .breathing && onScreen
         if breathing, content.layer.animation(forKey: "breath") == nil {
             content.layer.add(Self.breath(), forKey: "breath")
         } else if !breathing {
             content.layer.removeAnimation(forKey: "breath")
         }
-        let sweeping = state == .running && onScreen && Self.renderer != nil
+        let sweeping = mode == .sweeping && onScreen && Self.renderer != nil
         if sweeping, link == nil {
             let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
             link.add(to: .main, forMode: .common)

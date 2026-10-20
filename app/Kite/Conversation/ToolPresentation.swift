@@ -415,8 +415,8 @@ extension Work {
     /// 正在跑的那次调用。
     var running: Call? { calls.first { [.generating, .queued, .running].contains($0.state) } }
 
-    /// 汇总行说的：接在后面的思考正在生成时说思考，其次是正在跑的调用，再是汇总。
-    var headline: String { thinking.map(TranscriptSpeech.thinking) ?? running?.use.title ?? summary }
+    /// 汇总行说的：接在后面的思考正在生成时说思考，其次是正在跑的调用，再是汇总；这组还在做事时不说汇总，两次调用之间说上一次调用。
+    var headline: String { thinking.map(TranscriptSpeech.thinking) ?? running?.use.title ?? (active ? calls.last?.use.title : nil) ?? summary }
 
 }
 

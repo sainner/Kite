@@ -248,6 +248,8 @@ struct Work {
     var calls: [Call]
     /// 接在这组后面正在生成的思考，汇总行先说它；又有调用并进来时清掉。
     var thinking: String? = nil
+    /// 回合在跑、这组是主对话的最后一项：agent 还在这组里做事，汇总行一直扫掠，不看各步的状态。
+    var active = false
 }
 
 struct Call {
@@ -272,7 +274,12 @@ extension Transcript {
         for record in records {
             if case .compacted(let compaction) = record.block, let id = compaction.id { compactions[id] = compaction }
         }
-        return derive(byParent[nil] ?? [], parent: nil, byParent, compactions: compactions)
+        var items = derive(byParent[nil] ?? [], parent: nil, byParent, compactions: compactions)
+        if running, let last = items.indices.last, case .work(var work) = items[last].kind {
+            work.active = true
+            items[last].kind = .work(work)
+        }
+        return items
     }
 
     private mutating func derive(under parent: String, _ byParent: [String?: [(offset: Int, element: Record)]]) -> [Item] {
