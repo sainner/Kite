@@ -15,7 +15,7 @@ struct WorkspaceContent: View {
         }
             .environment(workspace)
             .environment(workspace.layout)
-            .focusedSceneValue(workspace.layout)
+            .focusedSceneValue(workspace)
             .id(workspace.id)
     }
 }
