@@ -4,19 +4,19 @@ import Foundation
 struct ReferenceScope: Equatable, Hashable, Sendable {
     let machineID: String
     let workspaceID: String
-    /// 工作区目录：绝对路径在它里面才是工作区的路径，见 FileReference.parse。
+    /// 工作区目录，以 / 结尾，不知道时为空：绝对路径在它里面才是工作区的路径，见 FileReference.parse。
     let root: String
     /// 工作区目录顶层的名字，由工作机随工作区信息给出：路径的开头必须是其中之一。
     let names: Set<String>
-    /// names 的首字，正文里逐字找路径开头时先用它筛。
-    let initials: Set<Character>
+    /// names 按首字分组，正文里逐字找路径开头时只试首字对得上的。
+    let starts: [Character: [String]]
 
     init(machineID: String, workspaceID: String, root: String = "", names: [String] = []) {
         self.machineID = machineID
         self.workspaceID = workspaceID
-        self.root = root
+        self.root = root.isEmpty || root == "/" ? "" : root.hasSuffix("/") ? root : root + "/"
         self.names = Set(names)
-        initials = Set(names.compactMap(\.first))
+        starts = Dictionary(grouping: self.names.filter { !$0.isEmpty }, by: { $0.first! })
     }
 
     /// 完整链接是不是这个工作区的。链接里只有工作机和工作区，不比目录。
@@ -33,12 +33,15 @@ struct FileReference: Equatable, Hashable, Sendable {
     var endLine: Int?
 
     var label: String { (path as NSString).lastPathComponent }
-    /// 没有扩展名、也没带定位的可能是目录，打开时先按目录试（见 FileBrowser.navigate）。
+    /// 没有扩展名、也没带定位的可能是目录，打开时先按目录试（见 FileBrowser.open）。
     var mayBeDirectory: Bool { diffID == nil && startLine == nil && (path as NSString).pathExtension.isEmpty }
 
     // 正文里每个像路径的词都要经这几条正则；编译比匹配贵得多，对话建行时曾占到正文属性串构建的四成（2026-10-12 实测）
     private static let lineSuffix = try! NSRegularExpression(pattern: #"#L(\d+)(?:-L?(\d+))?$"#)
-    private static let parts = try! NSRegularExpression(pattern: #"^(.+?)(?::(diff_[A-Za-z0-9_-]+))?(?::([1-9][0-9]*)(?:-([1-9][0-9]*))?)?$"#)
+    /// 定位里的 diff 编号和行号，这里的正则和正文里认定位的（ReferenceText.locator）共用。
+    fileprivate static let diffPattern = "diff_[A-Za-z0-9_-]+"
+    fileprivate static let linePattern = "[1-9][0-9]*"
+    private static let parts = try! NSRegularExpression(pattern: #"^(.+?)(?::(\#(diffPattern)))?(?::(\#(linePattern))(?:-(\#(linePattern)))?)?$"#)
     private static let fileExtension = try! NSRegularExpression(pattern: #"\.[A-Za-z][A-Za-z0-9_-]*$"#)
 
     /// 工作机只打开工作区里的文件和目录，所以开头必须是工作区顶层的名字（scope.names）：绝对路径在工作区目录里的换成相对路径，
@@ -53,9 +56,8 @@ struct FileReference: Equatable, Hashable, Sendable {
         func part(_ i: Int) -> String? { Range(match.range(at: i), in: value).map { String(value[$0]) } }
         guard var path = part(1), !path.contains(":") else { return nil }
         if path.hasPrefix("/") {
-            let base = scope.root.hasSuffix("/") ? scope.root : scope.root + "/"
-            guard base.count > 1, path.hasPrefix(base), path.count > base.count else { return nil }
-            path.removeFirst(base.count)
+            guard !scope.root.isEmpty, path.hasPrefix(scope.root), path.count > scope.root.count else { return nil }
+            path.removeFirst(scope.root.count)
         } else if path.hasPrefix("./") {
             path.removeFirst(2)
         }
@@ -98,7 +100,7 @@ struct FileReference: Equatable, Hashable, Sendable {
         let start = value("start").flatMap(Int.init), end = value("end").flatMap(Int.init)
         guard value("start") == nil || (start ?? 0) > 0, value("end") == nil || (end ?? 0) > 0,
               end == nil || (start != nil && end! >= start!),
-              value("diff") == nil || value("diff")!.range(of: #"^diff_[A-Za-z0-9_-]+$"#, options: .regularExpression) != nil else { return nil }
+              value("diff") == nil || value("diff")!.range(of: "^\(Self.diffPattern)$", options: .regularExpression) != nil else { return nil }
         self.init(path: path, diffID: value("diff"), startLine: start, endLine: end)
     }
 }
@@ -137,7 +139,10 @@ struct WebLink: Equatable {
 enum ReferenceText {
     private static let webTokens = try! NSRegularExpression(pattern: #"https?://[^\s<>`\"'，。；！？（）]+|(?:localhost|127\.0\.0\.1|0\.0\.0\.0):[0-9]{1,5}(?:[/?#][^\s<>`\"'，。；！？（）]*)?"#)
     /// 路径后面紧跟的定位：#L 行号，或 diff 与行号。
-    private static let locator = try! NSRegularExpression(pattern: #"#L[1-9][0-9]*(?:-L?[1-9][0-9]*)?|(?::diff_[A-Za-z0-9_-]+)?(?::[1-9][0-9]*(?:-[1-9][0-9]*)?)?"#)
+    private static let locator: NSRegularExpression = {
+        let (diff, line) = (FileReference.diffPattern, FileReference.linePattern)
+        return try! NSRegularExpression(pattern: #"#L\#(line)(?:-L?\#(line))?|(?::\#(diff))?(?::\#(line)(?:-\#(line))?)?"#)
+    }()
 
     private enum Found {
         case file(FileReference)
@@ -150,6 +155,16 @@ enum ReferenceText {
         func label(_ text: String, from source: AttributedString, link: URL) -> AttributedString {
             labels += 1
             return Self.label(text, from: source, link: link, id: labels)
+        }
+        func render(_ found: Found, _ original: AttributedString) -> AttributedString {
+            switch found {
+            case .file(let file):
+                return label(compact ? file.label : String(original.characters), from: original, link: file.url(in: scope))
+            case .web(let url):
+                var text = original
+                text.link = url
+                return text
+            }
         }
         for (link, intent, range) in source.runs[\.link, \.inlinePresentationIntent] {
             var part = AttributedString(source[range])
@@ -168,28 +183,15 @@ enum ReferenceText {
             let plain = String(part.characters)
             // 行内代码整段是一个候选：路径里的括号、方括号不切开；带空白的（比如一条命令）不认。
             if intent?.contains(.code) == true {
-                if !plain.contains(where: \.isWhitespace) {
-                    if let file = FileReference.parse(plain, in: scope) {
-                        part = label(compact ? file.label : plain, from: part, link: file.url(in: scope))
-                    } else if let web = Self.web(plain) {
-                        part.link = web
-                    }
-                }
-                result.append(part)
+                let found = plain.contains(where: \.isWhitespace) ? nil
+                    : FileReference.parse(plain, in: scope).map(Found.file) ?? Self.web(plain).map(Found.web)
+                result.append(found.map { render($0, part) } ?? part)
                 continue
             }
             var cursor = plain.startIndex
             for (range, found) in references(in: plain, scope: scope) {
                 result.append(slice(part, plain: plain, range: cursor..<range.lowerBound))
-                let original = slice(part, plain: plain, range: range)
-                switch found {
-                case .file(let file):
-                    result.append(label(compact ? file.label : String(original.characters), from: original, link: file.url(in: scope)))
-                case .web(let url):
-                    var text = original
-                    text.link = url
-                    result.append(text)
-                }
+                result.append(render(found, slice(part, plain: plain, range: range)))
                 cursor = range.upperBound
             }
             result.append(slice(part, plain: plain, range: cursor..<plain.endIndex))
@@ -199,29 +201,31 @@ enum ReferenceText {
 
     /// 正文里的网址和工作区路径，按先后、不重叠。
     private static func references(in text: String, scope: ReferenceScope) -> [(Range<String.Index>, Found)] {
-        var found: [(Range<String.Index>, Found)] = []
+        var webs: [(Range<String.Index>, Found)] = []
         for match in webTokens.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
             guard var range = Range(match.range, in: text) else { continue }
             // 嵌在标识符里的碎片和邮箱地址不认
             if range.lowerBound > text.startIndex, "@:".contains(text[text.index(before: range.lowerBound)]) { continue }
             while let last = text[range].last, ".,;!?)。".contains(last) { range = range.lowerBound..<text.index(before: range.upperBound) }
-            if let url = web(String(text[range])) { found.append((range, .web(url))) }
+            if let url = web(String(text[range])) { webs.append((range, .web(url))) }
         }
-        let webs = found.map(\.0)
+        // 从前往后，先开始的算：路径读进后面的网址时（src/localhost:3000）网址不算
+        var found: [(Range<String.Index>, Found)] = []
+        var next = webs.startIndex
         var i = text.startIndex
         while i < text.endIndex {
-            if let web = webs.first(where: { $0.contains(i) }) {
-                i = web.upperBound
-                continue
-            }
-            if let (range, file) = path(in: text, at: i, scope: scope) {
+            while next < webs.endIndex, webs[next].0.lowerBound < i { next += 1 }
+            if next < webs.endIndex, webs[next].0.lowerBound == i {
+                found.append(webs[next])
+                i = webs[next].0.upperBound
+            } else if let (range, file) = path(in: text, at: i, scope: scope) {
                 found.append((range, .file(file)))
                 i = range.upperBound
             } else {
                 i = text.index(after: i)
             }
         }
-        return found.sorted { $0.0.lowerBound < $1.0.lowerBound }
+        return found
     }
 
     /// 从 i 起的工作区路径：开头是工作区顶层的名字（目录后面接 /，文件带扩展名），往后一段段读到路径结束，再带上定位。
@@ -232,14 +236,13 @@ enum ReferenceText {
         if text[i] == ".", text[i...].hasPrefix("./") {
             start = text.index(i, offsetBy: 2)
         } else if text[i] == "/" {
-            let root = scope.root.hasSuffix("/") ? scope.root : scope.root + "/"
-            guard root.count > 1, text[i...].hasPrefix(root) else { return nil }
-            start = text.index(i, offsetBy: root.count)
+            guard !scope.root.isEmpty, text[i...].hasPrefix(scope.root) else { return nil }
+            start = text.index(i, offsetBy: scope.root.count)
         }
-        guard start < text.endIndex, scope.initials.contains(text[start]) else { return nil }
+        guard start < text.endIndex, let names = scope.starts[text[start]] else { return nil }
         // 顶层名字取最长的：目录后面接 /，文件后面不再接文件名里的字
         var anchor: (end: String.Index, directory: Bool)?
-        for name in scope.names where text[start...].hasPrefix(name) {
+        for name in names where text[start...].hasPrefix(name) {
             let after = text.index(start, offsetBy: name.count)
             if anchor.map({ after <= $0.end }) == true { continue }
             if after < text.endIndex, text[after] == "/" { anchor = (after, true) }
@@ -279,7 +282,7 @@ enum ReferenceText {
             if c == "(" || c == "[" {
                 let close: Character = c == "(" ? ")" : "]"
                 var k = text.index(after: j)
-                while k < text.endIndex, text[k].isASCII, text[k].isLetter || text[k].isNumber || "._-@~+".contains(text[k]) { k = text.index(after: k) }
+                while k < text.endIndex, named(text[k]) { k = text.index(after: k) }
                 guard k < text.endIndex, text[k] == close else { return j }
                 ascii = true
                 j = text.index(after: k)
@@ -291,14 +294,14 @@ enum ReferenceText {
                 j = k
                 continue
             }
-            if c.isASCII, c.isLetter || c.isNumber || "._-@~+".contains(c) {
+            if named(c) {
                 ascii = true
                 j = text.index(after: j)
                 continue
             }
-            if !c.isASCII, c.isLetter || c.isNumber {
+            if wide(c) {
                 var k = j
-                while k < text.endIndex, !text[k].isASCII, text[k].isLetter || text[k].isNumber { k = text.index(after: k) }
+                while k < text.endIndex, wide(text[k]) { k = text.index(after: k) }
                 if ascii, k == text.endIndex || text[k] != "." || extensionEnd(in: text, at: k) == nil { return j }
                 j = k
                 continue
@@ -327,6 +330,16 @@ enum ReferenceText {
     /// 接在路径字符后面时仍属于同一个名字或路径的字符。
     private static func continues(_ c: Character) -> Bool {
         c.isASCII && (c.isLetter || c.isNumber || "._-/".contains(c))
+    }
+
+    /// 英文名字里的字。
+    private static func named(_ c: Character) -> Bool {
+        c.isASCII && (c.isLetter || c.isNumber || "._-@~+".contains(c))
+    }
+
+    /// 中文这类非英文的字和数字。
+    private static func wide(_ c: Character) -> Bool {
+        !c.isASCII && (c.isLetter || c.isNumber)
     }
 
     private static func web(_ text: String) -> URL? {

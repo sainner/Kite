@@ -114,7 +114,11 @@ struct TerminalPane: View {
                 outputKept = true
             }
         }
-        .onChange(of: port) { webFailure = nil }
+        .onChange(of: port) {
+            webFailure = nil
+            // 换到别的端口（比如自己选的）就从首页看起，回到原来的端口也不再停在之前点的链接上
+            if area.webLinks[instance.id]?.target.port != port { area.webLinks[instance.id] = nil }
+        }
         .task(id: connection) { await session.run(client: client) }
     }
 
@@ -128,10 +132,8 @@ struct TerminalPane: View {
         }
     }
 
-    /// 自己选的端口从首页看起，不再停在之前点的链接上。
     private func select(_ value: Int) {
         selectError = nil
-        area.webLinks[instance.id] = nil
         Task {
             do { try await model.selectTerminalPort(value, of: instance.id, in: area) }
             catch { selectError = error.localizedDescription }

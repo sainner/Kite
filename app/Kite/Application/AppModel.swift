@@ -746,12 +746,12 @@ final class AppModel {
             ?? area.instances.first { $0.status == .open && area.files[$0.id] != nil }?.id
         guard let instanceID = browsing else {
             let instanceID = UUID().uuidString.lowercased()
-            area.referencedFiles.insert(instanceID)
+            if !reference.mayBeDirectory { area.referencedFiles.insert(instanceID) }
             defer { area.referencedFiles.remove(instanceID) }
             let request = OpenWindowRequest(id: UUID().uuidString.lowercased(), content: .create("kite.files", instance: instanceID))
             let window = try await sendWindowRequest(request, in: area).value
             guard let browser = area.files[window.target.instanceId] else { throw KitedError(message: "文件窗口尚未就绪") }
-            try await browser.navigate(reference)
+            try await browser.open(reference)
             return
         }
         guard let browser = area.files[instanceID] else { throw KitedError(message: "文件窗口尚未就绪") }
@@ -764,7 +764,7 @@ final class AppModel {
         var opening: Task<RemoteWorkspaceWindow, Error>?
         if let window = area.window(of: instanceID) { area.layout.activate(Pane(window.id)) }
         else { opening = sendWindowRequest(OpenWindowRequest(id: UUID().uuidString.lowercased(), content: .open(target)), in: area) }
-        try await browser.navigate(reference)
+        try await browser.open(reference)
         _ = try await opening?.value
     }
 

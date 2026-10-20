@@ -407,15 +407,27 @@ final class FileBrowser {
         }
     }
 
-    func navigate(_ reference: FileReference) async throws {
-        // 读得出目录的是目录：打开目录栏、展开到它；读不出的（是文件、不存在）照文件选
-        if reference.mayBeDirectory,
-           let listing = try? await operation("list", body: PathRequest(instanceId: instanceID, path: reference.path, offset: 0), as: FileDirectory.self) {
-            listings[reference.path] = listing
+    /// 消息里的引用不知道是文件还是目录：读得出目录的是目录，打开目录栏、展开到它；读不出的（是文件、不存在）照文件选。
+    func open(_ reference: FileReference) async throws {
+        if reference.mayBeDirectory, await isDirectory(reference.path) {
             showDirectory = true
             await reveal(reference.path)
             return
         }
+        try await navigate(reference)
+    }
+
+    /// 上一级读过的按那里记的种类；没读过的去读一次，读得出就是目录，读到的记下，展开时不再读。
+    private func isDirectory(_ path: String) async -> Bool {
+        let parent = path.contains("/") ? (path as NSString).deletingLastPathComponent : "."
+        if let entry = listings[parent]?.entries.first(where: { $0.path == path }) { return entry.kind == "directory" }
+        guard let listing = try? await operation("list", body: PathRequest(instanceId: instanceID, path: path, offset: 0), as: FileDirectory.self)
+        else { return false }
+        listings[path] = listing
+        return true
+    }
+
+    func navigate(_ reference: FileReference) async throws {
         if selection.path != reference.path || selection.diffId != reference.diffID {
             guard await select(reference.path, diffID: reference.diffID) else { throw KitedError(message: directoryError ?? "无法选择文件") }
         }

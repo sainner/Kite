@@ -18,7 +18,9 @@ enum SelectableMarkdown {
     /// 要看的引用图标和上次（loaded）不一样就交给 ReferenceIcons 去载；在 ModelTracking 的登记里调，图标载完由登记通知重排。
     static func prose(_ blocks: [MarkdownBlock], source: String, body: PlatformFont, color: PlatformColor, environment: EnvironmentValues,
                       attachments: BlockAttachments, loaded: inout [URL]) -> (content: TextViewContent, topInset: CGFloat) {
-        let urls = blocks.flatMap { ReferenceText.decorate($0.text, scope: environment.referenceScope).runs.compactMap(\.link) }
+        var urls: [URL] = []
+        let content = content(blocks, source: source, body: body, color: color, colorScheme: environment.colorScheme,
+                              scope: environment.referenceScope, attachments: attachments, links: &urls)
         if urls != loaded {
             loaded = urls
             Task { await ReferenceIcons.shared.load(urls) }
@@ -27,8 +29,7 @@ enum SelectableMarkdown {
         #if os(iOS)
         topInset = PhonePixel.round(topInset)
         #endif
-        return (content(blocks, source: source, body: body, color: color, colorScheme: environment.colorScheme,
-                        scope: environment.referenceScope, attachments: attachments), topInset)
+        return (content, topInset)
     }
 
     /// 几块拼成一段带属性的字，块和块之间空 markdownBlockGap，标题上面再多空一点，和 MarkdownBlockView 排的一样。
@@ -36,8 +37,9 @@ enum SelectableMarkdown {
     /// （用户 2026-10-12 决定；量到的数值见 spikes/mac-textkit-prose/README.md「外观对照」）。
     /// 代码块、表格、分隔线各占一个附件字符、自成一段，段前空一个块距；附件按第几个复用（attachments）。
     /// body 是环境里解析出的正文字体，行距、块距、列表编号和行内代码的字号都从它推。
+    /// links 收下正文里引用的链接（代码块、表格不算，表格的由表格卡片自己载图标）。
     static func content(_ blocks: [MarkdownBlock], source: String, body: PlatformFont, color: PlatformColor, colorScheme: ColorScheme,
-                        scope: ReferenceScope, attachments: BlockAttachments) -> TextViewContent {
+                        scope: ReferenceScope, attachments: BlockAttachments, links: inout [URL]) -> TextViewContent {
         let blockGap = Metrics.markdownBlockGap(body.pointSize)
         let lineSpacing = Metrics.markdownLineSpacing(body.pointSize)
         // 文件图标的颜色：Mac 用主题色，iPhone、iPad 用链接色。
@@ -117,7 +119,9 @@ enum SelectableMarkdown {
                 break
             }
             let part = NSMutableAttributedString(string: prefix, attributes: [.font: body.monospacedDigits, .foregroundColor: color])
-            let (text, pieces) = inline(ReferenceText.decorate(block.text, scope: scope), source: block.source, offset: start + part.length,
+            let decorated = ReferenceText.decorate(block.text, scope: scope)
+            links += decorated.runs.compactMap(\.link)
+            let (text, pieces) = inline(decorated, source: block.source, offset: start + part.length,
                                         font: font, color: color, iconTint: iconTint, codeFill: codeFill)
             part.append(text)
             part.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: part.length))

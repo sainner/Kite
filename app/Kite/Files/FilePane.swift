@@ -321,12 +321,22 @@ struct FilePane: View {
                 .font(Theme.secondary).padding(Metrics.padding).frame(maxWidth: .infinity, alignment: .leading)
                 .separateScrollPocket()
             }
-            .onChange(of: browser.revealed, initial: true) {
-                guard let path = browser.revealed else { return }
-                withAnimation { proxy.scrollTo(path, anchor: .center) }
-                browser.revealed = nil
-            }
+            .onChange(of: browser.revealed, initial: true) { scrollToRevealed(proxy) }
+            // 收起搜索后目录树才出来，这时再滚
+            .onChange(of: searching) { scrollToRevealed(proxy) }
         }
+    }
+
+    /// 目录树滚到刚展开的目录。搜到的结果盖着目录树时（比如点了消息里的目录引用）先清空搜索，目录树出来再滚。
+    private func scrollToRevealed(_ proxy: ScrollViewProxy) {
+        guard let path = browser.revealed else { return }
+        if searching, searchTarget == .directory {
+            query = ""
+            withAnimation { searching = false }
+            return
+        }
+        withAnimation { proxy.scrollTo(path, anchor: .center) }
+        browser.revealed = nil
     }
 
     /// 一个搜到的文件或目录，后面是它所在的目录。点文件打开，点目录收起搜索、在目录树里展开到它。
