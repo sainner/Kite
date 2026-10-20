@@ -2,9 +2,9 @@
 import AppKit
 import SwiftUI
 
-/// Kite 的通知：一行次要色小字，图标（子代理回报是它的头像）、那一句、箭头，整块可点；点开下面是正文（写给模型的原文，次要色小字，能选），
-/// 和那一句的字对齐。展开收起和下面的行一起按 WorkLayout 的走法动，箭头跟着转、正文跟着淡入淡出，收起走完拿掉正文。
-/// 转交的用户回应（你回答了提问这类）是用户自己做的事，靠右，正文贴着字宽也靠右。
+/// Kite 转交的用户回应（你回答了提问这类）：是用户自己做的事，靠右一行次要色小字，图标、那一句、箭头，整块可点；
+/// 点开下面是正文（写给模型的原文，次要色小字，能选），贴着字宽也靠右。展开收起和下面的行一起按 WorkLayout 的走法动，
+/// 箭头跟着转、正文跟着淡入淡出，收起走完拿掉正文。别的通知画成 Kite 发来的气泡（BubbleRowSlot）。
 final class KiteRowSlot: TranscriptRowSlot {
     private let container = NoticeRowView()
     private var notice: Notice?
@@ -28,7 +28,7 @@ final class KiteRowSlot: TranscriptRowSlot {
         guard case .item(let item) = row.content, case .kite(let notice) = item.kind else { return }
         self.notice = notice
         font = Theme.secondary.resolve(in: context.environment.fontResolutionContext).ctFont as NSFont
-        container.header.show(notice, font: font, environment: context.environment)
+        container.header.show(notice, font: font)
         container.body?.showPlain(notice.text, font: font, color: .secondaryLabelColor)
     }
 
@@ -36,10 +36,9 @@ final class KiteRowSlot: TranscriptRowSlot {
         if let measured, measured.width == width { return measured.height }
         headerHeight = container.header.height
         if expanded, let body = container.body {
-            // 正文和那一句的字对齐；用户回应的贴着字宽、靠右
+            // 贴着字宽、靠右，最宽到那一句的字的左边
             let most = max(width - container.header.textX, 0)
-            let lineWidth = notice?.response == true
-                ? ProseTextCoordinator.naturalWidth(of: body.textStorage ?? NSAttributedString(), most: most) : most
+            let lineWidth = ProseTextCoordinator.naturalWidth(of: body.textStorage ?? NSAttributedString(), most: most)
             bodySize = CGSize(width: lineWidth, height: body.measurePixel(lineWidth: lineWidth))
         }
         let height = WorkLayout.height(header: headerHeight, steps: bodySize.height, expanded: expanded)
@@ -53,13 +52,12 @@ final class KiteRowSlot: TranscriptRowSlot {
             progress = WorkLayout.progress(rowHeight: frame.height, header: headerHeight, steps: bodySize.height, expanded: expanded)
             if let measured, abs(frame.height - measured.height) < 0.01 { toggling = false }
         }
-        let trailing = notice?.response == true
         let header = container.header
         let headerWidth = min(header.width, frame.width)
-        header.frame = CGRect(x: trailing ? frame.width - headerWidth : 0, y: 0, width: headerWidth, height: headerHeight)
+        header.frame = CGRect(x: frame.width - headerWidth, y: 0, width: headerWidth, height: headerHeight)
         header.turn = progress
         guard let body = container.body else { return }
-        body.frame = CGRect(x: trailing ? frame.width - bodySize.width : header.textX, y: headerHeight + WorkLayout.spacing,
+        body.frame = CGRect(x: frame.width - bodySize.width, y: headerHeight + WorkLayout.spacing,
                             width: bodySize.width, height: bodySize.height)
         body.alphaValue = progress
         // 收起走完拿掉正文
@@ -110,24 +108,25 @@ final class NoticeRowView: NSView {
     }
 }
 
-/// 通知的那一句：图标（SwiftUI Label 的摆法，见 SymbolLabelMetrics）或头像（间距 6，竖着居中）、那一句（放不下截掉）、
-/// 间距 8、小号箭头，都是次要色。宽是内容的宽，整块可点，指针是手形；读屏读成展开收起的三角。
+/// 通知的那一句：图标（SwiftUI Label 的摆法，见 SymbolLabelMetrics）、那一句（放不下截掉）、间距 8、小号箭头，都是次要色。
+/// 画成气泡的通知（badge）换成 Kite 的图标（头像大小、agentBubble 底色的圆，中间次要色的铃铛，还没有 Kite 自己的图标，先用它；
+/// 间距 6，竖着居中），那一句换成种类（Notice.heading）。宽是内容的宽，整块可点，指针是手形；读屏读成展开收起的三角。
 final class NoticeHeaderView: NativeButton {
     /// 箭头转了多少：0 朝右，1 朝下。
     var turn: CGFloat = 0 {
-        didSet { if turn != oldValue { chevron.frameCenterRotation = -90 * turn } }
+        // 翻转坐标里正的角度看上去是顺时针（2026-10-20 实测，-90 朝上）
+        didSet { if turn != oldValue { chevron.frameCenterRotation = 90 * turn } }
     }
     var expanded = false {
         didSet { if expanded != oldValue { NSAccessibility.post(element: self, notification: .valueChanged) } }
     }
     private let icon = NSImageView()
-    private let avatar = CALayer()
+    private let badge = CALayer()
     private let title = LineLabel()
     private let chevron = NSImageView()
     private var font = NSFont.systemFont(ofSize: 11)
-    /// 有头像时它的直径，没有为 0。
+    /// Kite 图标那个圆的直径，用 SF Symbol 图标时为 0。
     private var diameter: CGFloat = 0
-    private var avatarContent: (instance: String, environment: EnvironmentValues)?
     private var speech = ""
 
     override var isFlipped: Bool { true }
@@ -135,7 +134,7 @@ final class NoticeHeaderView: NativeButton {
     init() {
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.addSublayer(avatar)
+        layer?.addSublayer(badge)
         addSubview(icon)
         addSubview(title)
         addSubview(chevron)
@@ -146,47 +145,30 @@ final class NoticeHeaderView: NativeButton {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func show(_ notice: Notice, font: NSFont, environment: EnvironmentValues) {
+    /// badge：画 Kite 图标那个圆用的环境，用 SF Symbol 图标时为 nil。
+    func show(_ notice: Notice, font: NSFont, badge environment: EnvironmentValues? = nil) {
         self.font = font
         let secondary = NSColor.secondaryLabelColor
         speech = TranscriptSpeech.notice(notice)
-        title.set(notice.title, font: font, color: secondary)
-        if let instance = notice.avatarInstance {
+        title.set(environment != nil ? notice.heading : notice.title, font: font, color: secondary)
+        if let environment {
             diameter = AgentAvatar.inlineDiameter(font: font.pointSize)
-            avatarContent = (instance, environment)
-            icon.isHidden = true
-            drawAvatar()
+            let configuration = NSImage.SymbolConfiguration(pointSize: (diameter * 0.5).rounded(), weight: .medium)
+            icon.image = NSImage(systemSymbolName: "bell.fill", accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
+            badge.backgroundColor = Theme.agentBubble.resolve(in: environment).cgColor
         } else {
             diameter = 0
-            avatarContent = nil
-            avatar.contents = nil
-            icon.isHidden = false
             icon.image = SymbolLabelMetrics.image(notice.symbol, font: font)
-            icon.contentTintColor = secondary
+            badge.backgroundColor = nil
         }
+        icon.contentTintColor = secondary
         let configuration = NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .regular, scale: .small)
         chevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
         chevron.contentTintColor = secondary
         needsLayout = true
     }
 
-    private func drawAvatar() {
-        guard let avatarContent else { return }
-        let scale = window?.backingScaleFactor ?? 2
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        avatar.contentsScale = scale
-        avatar.contents = AgentAvatar.still(design: AgentAvatar.design(for: avatarContent.instance, environment: avatarContent.environment),
-                                            instance: avatarContent.instance, diameter: diameter, scale: scale, environment: avatarContent.environment)
-        CATransaction.commit()
-    }
-
-    override func viewDidChangeBackingProperties() {
-        super.viewDidChangeBackingProperties()
-        drawAvatar()
-    }
-
-    /// 那一句从哪起，展开的正文也从这里起。
+    /// 那一句从哪起。
     var textX: CGFloat { diameter > 0 ? diameter + 6 : SymbolLabelMetrics(font: font, image: icon.image).textX }
     var height: CGFloat { max(title.lineHeight, diameter) }
     /// 内容的宽：图标、那一句、箭头。
@@ -197,10 +179,13 @@ final class NoticeHeaderView: NativeButton {
         let line = title.lineHeight
         let top = (bounds.height - line) / 2
         if diameter > 0 {
+            let circle = CGRect(x: 0, y: (bounds.height - diameter) / 2, width: diameter, height: diameter)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            avatar.frame = CGRect(x: 0, y: (bounds.height - diameter) / 2, width: diameter, height: diameter)
+            badge.frame = circle
+            badge.cornerRadius = diameter / 2
             CATransaction.commit()
+            icon.frame = circle
         } else {
             icon.frame = SymbolLabelMetrics(font: font, image: icon.image).iconFrame(lineTop: top)
         }

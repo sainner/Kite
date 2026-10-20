@@ -2,9 +2,9 @@
 import SwiftUI
 import UIKit
 
-/// Kite 的通知：一行次要色小字，图标（子代理回报是它的头像）、那一句、箭头，整块可点；点开下面是正文（写给模型的原文，次要色小字，
-/// 长按弹出拷贝、共享），和那一句的字对齐。展开收起和下面的行一起按 WorkLayout 的走法动，箭头跟着转、正文跟着淡入淡出，收起走完拿掉正文。
-/// 转交的用户回应（你回答了提问这类）是用户自己做的事，靠右，正文贴着字宽也靠右。同 Mac 的 KiteRowSlot。
+/// Kite 转交的用户回应（你回答了提问这类）：是用户自己做的事，靠右一行次要色小字，图标、那一句、箭头，整块可点；
+/// 点开下面是正文（写给模型的原文，次要色小字，长按弹出拷贝、共享），贴着字宽也靠右。展开收起和下面的行一起按 WorkLayout 的走法动，
+/// 箭头跟着转、正文跟着淡入淡出，收起走完拿掉正文。别的通知画成 Kite 发来的气泡（PhoneBubbleRowSlot）。同 Mac 的 KiteRowSlot。
 final class PhoneKiteRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var container: PhoneNoticeRowView?
     private let menu = PhoneCopyMenu()
@@ -39,8 +39,8 @@ final class PhoneKiteRowSlot: TranscriptRowSlot, PhoneRowSlot {
     }
 
     private func show() {
-        guard let notice, let context, let container else { return }
-        container.header.show(notice, font: font, expanded: expanded, environment: context.environment)
+        guard let notice, let container else { return }
+        container.header.show(notice, font: font, expanded: expanded)
         container.body?.set(notice.text, font: font, color: .secondaryLabel)
     }
 
@@ -49,9 +49,8 @@ final class PhoneKiteRowSlot: TranscriptRowSlot, PhoneRowSlot {
         let container = rowView
         headerHeight = container.header.height
         if expanded, let body = container.body {
-            // 正文和那一句的字对齐；用户回应的贴着字宽、靠右
-            let most = max(width - container.header.textX, 0)
-            let lineWidth = notice?.response == true ? min(body.naturalWidth, most) : most
+            // 贴着字宽、靠右，最宽到那一句的字的左边
+            let lineWidth = min(body.naturalWidth, max(width - container.header.textX, 0))
             bodySize = CGSize(width: lineWidth, height: body.height(width: lineWidth))
         }
         let height = WorkLayout.height(header: headerHeight, steps: bodySize.height, expanded: expanded)
@@ -63,13 +62,12 @@ final class PhoneKiteRowSlot: TranscriptRowSlot, PhoneRowSlot {
     override func layoutView(in frame: CGRect) {
         guard let container else { return }
         let progress = WorkLayout.progress(rowHeight: frame.height, header: headerHeight, steps: bodySize.height, expanded: expanded)
-        let trailing = notice?.response == true
         let header = container.header
         let headerWidth = min(header.width, frame.width)
-        header.frame = CGRect(x: trailing ? frame.width - headerWidth : 0, y: 0, width: headerWidth, height: headerHeight)
+        header.frame = CGRect(x: frame.width - headerWidth, y: 0, width: headerWidth, height: headerHeight)
         header.turn = progress
         guard let body = container.body else { return }
-        body.frame = CGRect(x: trailing ? frame.width - bodySize.width : header.textX, y: headerHeight + WorkLayout.spacing,
+        body.frame = CGRect(x: frame.width - bodySize.width, y: headerHeight + WorkLayout.spacing,
                             width: bodySize.width, height: bodySize.height)
         body.alpha = progress
         // 收起走完拿掉正文
@@ -130,23 +128,24 @@ final class PhoneNoticeRowView: UIView {
     }
 }
 
-/// 通知的那一句：图标（间距 8）或头像（间距 6），竖着居中；那一句（放不下截掉）、间距 8、小号箭头，都是次要色。宽是内容的宽，整块可点。
+/// 通知的那一句：图标（间距 8）、那一句（放不下截掉）、间距 8、小号箭头，竖着居中，都是次要色。宽是内容的宽，整块可点。
+/// 画成气泡的通知（badge）换成 Kite 的图标（头像大小、agentBubble 底色的圆，中间次要色的铃铛，还没有 Kite 自己的图标，先用它；
+/// 间距 6），那一句换成种类（Notice.heading）。同 Mac 的 NoticeHeaderView。
 final class PhoneNoticeHeader: PhonePlainControl {
     /// 箭头转了多少：0 朝右，1 朝下。
     var turn: CGFloat = 0 {
         didSet { if turn != oldValue { chevron.transform = CGAffineTransform(rotationAngle: .pi / 2 * turn) } }
     }
     private let icon = UIImageView()
-    private let avatar = CALayer()
+    private let badge = CALayer()
     private let title = PhoneTextLine()
     private let chevron = UIImageView()
-    /// 有头像时它的直径，没有为 0。
+    /// Kite 图标那个圆的直径，用 SF Symbol 图标时为 0。
     private var diameter: CGFloat = 0
-    private var avatarContent: (instance: String, environment: EnvironmentValues)?
 
     override init() {
         super.init()
-        content.layer.addSublayer(avatar)
+        content.layer.addSublayer(badge)
         content.addSubview(icon)
         content.addSubview(title)
         content.addSubview(chevron)
@@ -156,21 +155,20 @@ final class PhoneNoticeHeader: PhonePlainControl {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func show(_ notice: Notice, font: UIFont, expanded: Bool, environment: EnvironmentValues) {
-        title.set(notice.title, font: font, color: .secondaryLabel)
-        if let instance = notice.avatarInstance {
+    /// badge：画 Kite 图标那个圆用的环境，用 SF Symbol 图标时为 nil。
+    func show(_ notice: Notice, font: UIFont, expanded: Bool, badge environment: EnvironmentValues? = nil) {
+        title.set(environment != nil ? notice.heading : notice.title, font: font, color: .secondaryLabel)
+        if let environment {
             diameter = AgentAvatar.inlineDiameter(font: font.pointSize)
-            avatarContent = (instance, environment)
-            icon.isHidden = true
-            drawAvatar()
+            icon.image = UIImage(systemName: "bell.fill",
+                                 withConfiguration: UIImage.SymbolConfiguration(pointSize: (diameter * 0.5).rounded(), weight: .medium))
+            badge.backgroundColor = Theme.agentBubble.resolve(in: environment).cgColor
         } else {
             diameter = 0
-            avatarContent = nil
-            avatar.contents = nil
-            icon.isHidden = false
             icon.image = UIImage(systemName: notice.symbol, withConfiguration: UIImage.SymbolConfiguration(font: font))
-            icon.tintColor = .secondaryLabel
+            badge.backgroundColor = nil
         }
+        icon.tintColor = .secondaryLabel
         chevron.image = UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(font: font, scale: .small))
         chevron.tintColor = .secondaryLabel
         accessibilityLabel = TranscriptSpeech.notice(notice)
@@ -179,23 +177,7 @@ final class PhoneNoticeHeader: PhonePlainControl {
         setNeedsLayout()
     }
 
-    private func drawAvatar() {
-        guard let avatarContent else { return }
-        let scale = traitCollection.displayScale > 0 ? traitCollection.displayScale : 3
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        avatar.contentsScale = scale
-        avatar.contents = AgentAvatar.still(design: AgentAvatar.design(for: avatarContent.instance, environment: avatarContent.environment),
-                                            instance: avatarContent.instance, diameter: diameter, scale: scale, environment: avatarContent.environment)
-        CATransaction.commit()
-    }
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil { drawAvatar() }
-    }
-
-    /// 那一句从哪起，展开的正文也从这里起。
+    /// 那一句从哪起。
     var textX: CGFloat { diameter > 0 ? diameter + 6 : (icon.image?.size.width ?? 0) + 8 }
     var height: CGFloat { max(title.lineHeight, diameter, icon.image?.size.height ?? 0) }
     /// 内容的宽：图标、那一句、箭头。
@@ -204,10 +186,13 @@ final class PhoneNoticeHeader: PhonePlainControl {
     override func layoutSubviews() {
         super.layoutSubviews()
         if diameter > 0 {
+            let circle = CGRect(x: 0, y: PhonePixel.round((bounds.height - diameter) / 2), width: diameter, height: diameter)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            avatar.frame = CGRect(x: 0, y: PhonePixel.round((bounds.height - diameter) / 2), width: diameter, height: diameter)
+            badge.frame = circle
+            badge.cornerRadius = diameter / 2
             CATransaction.commit()
+            icon.frame = circle
         } else {
             let size = icon.image?.size ?? .zero
             icon.frame = PhonePixel.align(CGRect(x: 0, y: (bounds.height - size.height) / 2, width: size.width, height: size.height))

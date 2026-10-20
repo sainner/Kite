@@ -100,7 +100,8 @@ final class WorkRowSlot: TranscriptRowSlot {
 final class WorkHeaderView: NativeButton {
     /// 箭头转了多少：0 朝右，1 朝下。
     var turn: CGFloat = 0 {
-        didSet { if turn != oldValue { chevron.frameCenterRotation = -90 * turn } }
+        // 翻转坐标里正的角度看上去是顺时针（2026-10-20 实测，-90 朝上）
+        didSet { if turn != oldValue { chevron.frameCenterRotation = 90 * turn } }
     }
     /// 汇总（见 Work.headline），扫掠只画在它上面。
     private let activity = ToolActivityView()

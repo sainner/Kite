@@ -54,11 +54,13 @@ struct AgentTextActions: View {
     }
 }
 
-/// 人发的消息的操作栏：排队中的是重试、编辑、取消发送；收到了的是压缩起点和终点。都有复制，折起来的还有展开全文。
+/// 人发的消息的操作栏：排队中的是重试、编辑、取消发送；收到了的是压缩起点和终点（Kite 的通知没有）。都有复制，折起来的还有展开全文。
 /// iPhone、iPad 的原生列表托管它（PhoneBubbleRowSlot.actionBar）；Mac 的见 BubbleRowSlot.actionItems，按钮和这里一一对应，改的时候两处一起改。
 struct MessageActionButtons: View {
     let message: Message
     let queued: Bool
+    /// 能当压缩的起点终点：Kite 的通知没有输入 ID，不能。
+    let compactable: Bool
     let foldable: Bool
     @Binding var expanded: Bool
     @Environment(WorkThread.self) private var thread
@@ -80,7 +82,7 @@ struct MessageActionButtons: View {
             copyToPasteboard(message.typed, toast: toast)
             done {}
         }
-        if !queued {
+        if !queued, compactable {
             if thread.compactionStart == nil {
                 ActionButton("从这里开始压缩", icon: "arrow.down.to.line") {
                     done { thread.compactionStart = message.id }

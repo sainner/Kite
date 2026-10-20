@@ -383,7 +383,7 @@ export class Monitors {
     });
     if (!pending) return;
     try {
-      await this.host.deliver(config.target, pending.text, pending.id, { kind: 'monitor.events', title: `${instance.title} 有新事件` });
+      await this.host.deliver(config.target, pending.text, pending.id, { kind: 'monitor.events', subject: instance.title, title: `${instance.title} 有新事件` });
       this.mutate(instanceId, (state) => {
         if (state.pending?.id !== pending.id) return;
         state.delivered = Math.max(state.delivered, pending.through);

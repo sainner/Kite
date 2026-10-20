@@ -7,6 +7,8 @@ import SwiftUI
 /// 附件排在气泡上面（AttachmentRowView，很少有）。正文和代码段用 SelectableText 同一套属性串，复制给打的原文。
 /// 刚发出去时从下面 bubbleRise 处浮上来、淡显，跟着对话往上滑的那一下走，见 TranscriptListView.rise。
 /// 代理来信也是它：靠左，agentBubble 的浅底、系统文字色，小圆角在左上；气泡上面一行是发信方的头像和名字（SenderLineView），折叠和操作同人发的。
+/// Kite 的通知（转交的用户回应除外）也是它：气泡同代理来信，里面是正文；上面一行是 NoticeHeaderView（Kite 的图标、种类、箭头），
+/// 点它气泡缩回左上角收起、只剩这一行，再点从左上角放大出来（BubbleLayout.pop），下面的行跟着按 snappy 的弹簧动。没有输入 ID，不能当压缩的起点终点。
 final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     private let container = BubbleRowView()
     private let coordinator = ProseRowCoordinator()
@@ -15,6 +17,12 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     private(set) var queued = false
     /// 代理来信的发信方，人发的为 nil。
     private(set) var sender: Sender?
+    /// Kite 的通知，别的为 nil。
+    private var notice: Notice?
+    /// 通知露着气泡（默认），点上面那一行收起。
+    private var opened = true
+    /// 通知正在点开、收起：气泡按停着时的样子摆，行的高走到量的高为止。
+    private var toggling = false
     /// 展开了全文。
     private(set) var expanded = false
     private var context: TranscriptRowContext?
@@ -55,6 +63,7 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
             heightChanged?(nil)
         }
         container.fold.action = { [weak self] in self?.setExpanded(!(self?.expanded ?? false)) }
+        container.toggleNotice = { [weak self] in self?.setOpened(!(self?.opened ?? false)) }
     }
 
     override var hasView: Bool { true }
@@ -65,25 +74,30 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
 
     override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
         super.update(row, context: context)
-        let message: Message, queued: Bool, sender: Sender?
+        let message: Message, queued: Bool, sender: Sender?, notice: Notice?
         switch row.content {
-        case .message(let typed, let pending): (message, queued, sender) = (typed, pending, nil)
+        case .message(let typed, let pending): (message, queued, sender, notice) = (typed, pending, nil, nil)
         case .item(let item):
-            guard case .agent(let letter, let from) = item.kind else { return }
-            (message, queued, sender) = (letter, false, from)
+            switch item.kind {
+            case .agent(let letter, let from): (message, queued, sender, notice) = (letter, false, from, nil)
+            case .kite(let kite): (message, queued, sender, notice) = (Message(id: "\(item.id)", text: kite.text), false, nil, kite)
+            default: return
+            }
         }
         let wasQueued = self.queued
         let first = self.message == nil
         self.message = message
         self.queued = queued
         self.sender = sender
+        self.notice = notice
         self.context = context
         let id = row.id
         // 压缩前的原文里的消息没有操作栏（actionable 为 false），右键是文本视图自己的菜单
         let toggle: (() -> Void)? = context.actionable ? { context.toggleActions(id) } : nil
         container.text.secondaryClick = toggle
         container.bubble.secondaryClick = toggle
-        container.text.setAccessibilityLabel(sender.map(TranscriptSpeech.agent) ?? TranscriptSpeech.message(queued: queued))
+        container.text.setAccessibilityLabel(notice != nil ? TranscriptSpeech.noticeBody
+                                             : sender.map(TranscriptSpeech.agent) ?? TranscriptSpeech.message(queued: queued))
         container.text.setAccessibilityCustomActions(toggle.map { toggle in
             [NSAccessibilityCustomAction(name: TranscriptSpeech.actions) { toggle(); return true }]
         })
@@ -91,22 +105,35 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
         let environment = context.environment
         let body = Theme.body.resolve(in: environment.fontResolutionContext).ctFont as NSFont
         let code = Theme.code.resolve(in: environment.fontResolutionContext).ctFont as NSFont
-        // 已接收的实色气泡恒用白字；排队中的透明描边气泡、代理来信的浅底气泡跟随系统文字色
-        let content = SelectableText.content(message, user: sender == nil, color: queued || sender != nil ? .labelColor : .white,
+        // 已接收的实色气泡恒用白字；排队中的透明描边气泡、代理来信和通知的浅底气泡跟随系统文字色
+        let content = SelectableText.content(message, user: !letter, color: queued || letter ? .labelColor : .white,
                                              body: body, code: code, attachments: attachments)
         hasBlocks = !content.blocks.isEmpty
         container.text.source = content.source
         coordinator.update(content.blocks, environment: EmbeddedEnvironment(environment))
         coordinator.show(content.text)
-        container.style(queued: queued, agent: sender != nil, animated: !first && wasQueued != queued, environment: environment)
+        container.style(queued: queued, agent: letter, animated: !first && wasQueued != queued, environment: environment)
         container.setAttachments(message.attachments)
         container.setSender(sender, environment: environment)
+        container.setNotice(notice, expanded: opened, environment: environment)
+        if first { container.bubble.isHidden = notice != nil && !opened }
     }
+
+    /// 靠左、浅底的来信：代理来信、Kite 的通知。
+    private var letter: Bool { sender != nil || notice != nil }
 
     /// 量正文见 BubbleLayout：拖缝和吸附中按近似量，记作 provisional，停下后按精确的重量。
     /// 拖缝中没折行的短消息（大多数）能给的宽还放得下就不再排：贴字的宽和高本来就不随能给的宽变，量准过的也还是准的。
     override func height(width: CGFloat) -> CGFloat {
         if let measured, measured.width == width { return measured.height }
+        // 收着的通知只有那一行，正文不排
+        if notice != nil, !opened {
+            provisional = false
+            topHeight = container.topHeight(width: width)
+            let height = container.header?.height ?? 0
+            measured = (width, height)
+            return height
+        }
         if resizing, let unwrapped, let measured, unwrapped <= width - Metrics.bubblePadding.width * 2 {
             self.measured = (width, measured.height)
             return measured.height
@@ -131,8 +158,21 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     override func viewFrame(in column: CGRect) -> CGRect { column }
 
     /// 摆好气泡里的东西：行的高可能正在展开、收起的动画里（比量的矮或高），正文按它截。
+    /// 通知点开、收起的途中气泡按停着时的样子摆（缩放、淡入淡出是图层动画），箭头按行的高走到哪了转。
     override func layoutView(in frame: CGRect) {
-        let frames = layout.frames(row: frame.size, top: topHeight, button: foldable ? container.fold.height : 0, leading: sender != nil)
+        var size = frame.size
+        if notice != nil {
+            let header = container.header?.height ?? 0
+            let full = topHeight + bubbleHeight(expanded: expanded)
+            var turn: CGFloat = opened ? 1 : 0
+            if toggling {
+                turn = full > header ? min(max((frame.height - header) / (full - header), 0), 1) : turn
+                size.height = full
+                if let measured, abs(frame.height - measured.height) < 0.01 { toggling = false }
+            }
+            container.header?.turn = turn
+        }
+        let frames = layout.frames(row: size, top: topHeight, button: foldable ? container.fold.height : 0, leading: letter)
         container.place(frames, topHeight: topHeight, foldable: foldable, expanded: expanded)
     }
 
@@ -146,11 +186,11 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
 
     /// 气泡内容在这一行里占的范围（上面那一截连同气泡），操作栏和它靠着的那边对齐。
     override var actionAnchor: CGRect {
-        layout.anchor(in: frame, topWidth: container.topWidth, leading: sender != nil)
+        layout.anchor(in: frame, topWidth: container.topWidth, leading: letter)
     }
 
     /// 消息的操作栏，和气泡靠着的那边对齐，同 MessageActionButtons：排队中的是重试发送（发送失败时）、编辑、取消发送；收到了的是压缩起点和终点。
-    /// 都有复制，折起来的还有展开全文。点了先收起操作栏，再在 snappy 动画里做这件事。读着会话的状态，变了列表重排（见 TranscriptListView.placeActions）。
+    /// 都有复制，折起来的还有展开全文；Kite 的通知没有压缩。点了先收起操作栏，再在 snappy 动画里做这件事。读着会话的状态，变了列表重排（见 TranscriptListView.placeActions）。
     func actionItems() -> (side: HorizontalEdge, items: [ActionItem])? {
         guard let message, let context, context.actionable, let thread = context.environment[WorkThread.self] else { return nil }
         let selection = context.environment.selectedRow
@@ -171,7 +211,7 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
             copyToPasteboard(message.typed, toast: toast)
             done {}()
         })
-        if !queued {
+        if !queued, notice == nil {
             if thread.compactionStart == nil {
                 items.append(ActionItem(title: "从这里开始压缩", icon: "arrow.down.to.line", enabled: thread.canCompact) {
                     done { thread.compactionStart = message.id }()
@@ -189,7 +229,7 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
                                     icon: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
                                     perform: done { [weak self] in self?.setExpanded(!expanded) }))
         }
-        return (sender == nil ? .trailing : .leading, items)
+        return (letter ? .leading : .trailing, items)
     }
 
     /// 展开、收起：气泡和下面的行一起按 snappy 的弹簧动，见 TranscriptListView 的行高动画。
@@ -200,13 +240,33 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
         container.fold.expanded = expanded
         heightChanged?(.spring(.snappy))
     }
+
+    /// 通知点开、收起：气泡从左上角放大出来、缩回去，下面的行跟着按 snappy 的弹簧动。收起时开着的操作栏一起收起，缩回去以后藏起气泡。
+    private func setOpened(_ opened: Bool) {
+        guard notice != nil, opened != self.opened else { return }
+        self.opened = opened
+        container.header?.expanded = opened
+        if !opened, let selection = context?.environment.selectedRow, selection.wrappedValue == row.id { selection.close() }
+        toggling = true
+        measured = nil
+        heightChanged?(.spring(.snappy))
+        guard let layer = container.bubble.layer else { return }
+        if opened { container.bubble.isHidden = false }
+        BubbleLayout.pop(layer, shown: opened) { [weak self] in
+            if self?.opened == false { self?.container.bubble.isHidden = true }
+        }
+    }
 }
 
-/// 气泡这一行的视图：上面的附件或发信方、气泡（底色、描边、截住的正文、展开按钮）。翻转坐标。
+/// 气泡这一行的视图：上面的附件、发信方或通知那一行，气泡（底色、描边、截住的正文、展开按钮）。翻转坐标。
 final class BubbleRowView: NSView {
     let bubble = BubbleView()
     let text = ProseTextView.make()
     let fold = BubbleFoldButton()
+    /// Kite 通知的那一行，别的为 nil。
+    private(set) var header: NoticeHeaderView?
+    /// 点了通知那一行。
+    var toggleNotice: (() -> Void)?
     /// 正文按折起来的高截住，底下渐隐。
     private let clip = FlippedLayerView()
     private let fade = CAGradientLayer()
@@ -266,14 +326,33 @@ final class BubbleRowView: NSView {
         line.show(sender, environment: environment)
     }
 
-    /// 气泡上面那一截（附件那一行、发信方那一行）连同和气泡之间的间距多高，都没有为 0。
+    /// Kite 通知的那一行（Kite 的图标、那一句、箭头），别的为 nil 时拿掉。
+    func setNotice(_ notice: Notice?, expanded: Bool, environment: EnvironmentValues) {
+        guard let notice else {
+            header?.removeFromSuperview()
+            header = nil
+            return
+        }
+        let header = self.header ?? {
+            let header = NoticeHeaderView()
+            header.action = { [weak self] in self?.toggleNotice?() }
+            addSubview(header)
+            self.header = header
+            return header
+        }()
+        header.show(notice, font: Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont, badge: environment)
+        header.expanded = expanded
+    }
+
+    /// 气泡上面那一截（附件那一行、发信方那一行、通知那一行）连同和气泡之间的间距多高，都没有为 0。
     func topHeight(width: CGFloat) -> CGFloat {
+        if let header { return header.height + SenderLineView.gap }
         if let sender { return sender.height + SenderLineView.gap }
         guard let attachments else { return 0 }
         return ceil(attachments.size(width: width).height) + 6
     }
 
-    var topWidth: CGFloat { sender?.width ?? attachments?.frame.width ?? 0 }
+    var topWidth: CGFloat { header?.width ?? sender?.width ?? attachments?.frame.width ?? 0 }
 
     /// 按 BubbleLayout 给的框摆：上面那一截、气泡、截住正文的那层（底下渐隐）、正文、折叠按钮。
     func place(_ frames: BubbleLayout.Frames, topHeight: CGFloat, foldable: Bool, expanded: Bool) {
@@ -282,6 +361,7 @@ final class BubbleRowView: NSView {
             attachments.frame = CGRect(x: bounds.width - size.width, y: 0, width: size.width, height: topHeight - 6)
         }
         sender?.frame = CGRect(x: 0, y: 0, width: min(sender?.width ?? 0, bounds.width), height: sender?.height ?? 0)
+        header?.frame = CGRect(x: 0, y: 0, width: min(header?.width ?? 0, bounds.width), height: header?.height ?? 0)
         if bubble.frame != frames.bubble { bubble.frame = frames.bubble }
         clip.frame = CGRect(x: 0, y: 0, width: frames.bubble.width, height: frames.shown)
         if text.frame != frames.text { text.frame = frames.text }
@@ -364,7 +444,7 @@ final class BubbleView: NSView {
 /// 代理来信上面那一行：发信方的头像（不动的一帧，见 AgentAvatar.still）、间距 6、名字（次要色小字，放不下截掉），竖着居中。
 final class SenderLineView: NSView {
     /// 和下面的气泡之间。
-    static let gap: CGFloat = 4
+    static let gap: CGFloat = 8
     private let avatar = CALayer()
     private let name = LineLabel()
     private var diameter: CGFloat = 18

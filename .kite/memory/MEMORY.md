@@ -5,7 +5,7 @@
 - [PDF 读取方案](pdf-read-direction.md) — Vision 与无备用解析器的明确取舍
 - [视觉参考与范围](visual-style-direction.md) — 色板、角色点阵、项目色和字体范围
 - [界面事件诊断](ui-hit-testing-debugging.md) — 合成输入与命中证据的限制，光标探针，simctl 两次内核崩溃后不再用，现场采集别挂调试器，真机崩溃报告的取法
-- [尺寸突变与裁剪怎么查](ui-layout-jump-diagnosis.md) — 预览自己打开、日志打各段高度或沿视图链打裁剪；zsh 的 log 写全路径；外层蒙版会裁；iPhone 动画在真机逐帧截图
+- [尺寸突变与裁剪怎么查](ui-layout-jump-diagnosis.md) — 预览自己打开、日志打高度或片段坐标、沿视图链打裁剪；log 写全路径；外层蒙版会裁；iPhone 动画真机逐帧截图；探针按块删
 - [卡顿怎么量](performance-diagnosis.md) — 测量入口与交替对照、帧间隔、真机 Time Profiler、合成滚动、软边诊断、UIKit 透明度坑，Mac 结论不外推到 iPhone
 - [真机量 iPhone、iPad 排版](ios-layout-probe.md) — 不登录：kited 取数据、参数开的探针渲染生产视图、App 里截图、devicectl 取回；不用模拟器
 - [对话正文的文本容器](text-container-direction.md) — 每条回复一个 TextKit 2 文本视图、附件嵌代码块、复制给原文、外观不改，第三步 iPhone 待验收

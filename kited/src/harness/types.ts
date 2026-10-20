@@ -15,12 +15,14 @@ export type InputOrigin =
   | { source: 'agent'; from: InputSender };
 export type Input = { id: string; text: string } & InputOrigin;
 
-/** Kite 自动发的是哪种通知。正文是写给模型的，界面显示 title 这一句、正文收起；只用于显示，不交给模型。 */
+/** Kite 自动发的是哪种通知，只用于界面显示，不交给模型。 */
 export interface InputNotice {
   kind: 'agent.report' | 'agent.workspace' | 'monitor.events' | 'terminal.exit' | 'line.monitor' | 'conflict' | 'moved' | 'resumed' | 'question' | 'secret';
   /** 从用户的角度说发生了什么，比如「整理文档 做完了」「你回答了提问」。 */
   title: string;
-  /** 子代理回报的那个子代理，或子工作区的结果里开子工作区时建的那个代理，界面画它的头像。 */
+  /** 说的是哪一个：子代理、子工作区、monitor、后台命令的名称，界面接在种类后面。 */
+  subject?: string;
+  /** 子代理回报的那个子代理，或子工作区的结果里开子工作区时建的那个代理的实例 ID。 */
   instance?: string;
 }
 

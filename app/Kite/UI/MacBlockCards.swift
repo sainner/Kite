@@ -517,7 +517,7 @@ final class CodeTextView: ProseTextView {
 // MARK: - 表格
 
 /// 表格，照 MarkdownTable：标题「表格」，右边导出为图片、复制为 Markdown；表头半粗，行与行之间分隔线顶到卡片两边，
-/// 格子上下各 8、列之间 16、首尾两列外侧各 10，表格比卡片窄时最后一列补足宽度，太宽横着滚。
+/// 格子上下各 8、列之间 16、首尾两列外侧各 12，表格比卡片窄时最后一列补足宽度，太宽横着滚。
 /// 整张表是一个文本视图（一行一段，格子按制表位对齐），能跨格选字，复制给原文。
 final class TableCardView: BlockCardView {
     private let scroller = OverflowScrollView()
@@ -550,7 +550,7 @@ final class TableCardView: BlockCardView {
         let dark: Bool
     }
 
-    private static let edgeInset: CGFloat = 10
+    private static let edgeInset: CGFloat = 12
     private static let columnSpacing: CGFloat = 16
     private static let cellPadding: CGFloat = 8
 
@@ -558,7 +558,6 @@ final class TableCardView: BlockCardView {
         super.init(frame: frame)
         text.clipsViewport = false
         text.textContainer?.widthTracksTextView = false
-        text.textContainer?.size = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
         text.textContainerInset = NSSize(width: 0, height: Self.cellPadding)
         text.setAccessibilityLabel(TranscriptSpeech.table)
         text.textLayoutManager?.delegate = decorations
@@ -691,6 +690,12 @@ final class TableCardView: BlockCardView {
             } else {
                 mapped = false
             }
+        }
+        // 容器宽给表格本身的宽（不小于视图的宽就行）：容器无限宽时，视图比排出来的范围窄或差不多宽，
+        // 文本视图会把容器原点往左挪到 -5～-10，首列外侧的 edgeInset 被吃掉（2026-10-19 实测）
+        let containerWidth = ceil(tableWidth)
+        if text.textContainer?.size.width != containerWidth {
+            text.textContainer?.size = NSSize(width: containerWidth, height: .greatestFiniteMagnitude)
         }
         text.source = mapped ? (markdown ?? "", map) : nil
         if text.textStorage?.isEqual(to: result) != true { text.textStorage?.setAttributedString(result) }

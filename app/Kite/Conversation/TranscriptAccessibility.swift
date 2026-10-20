@@ -17,6 +17,8 @@ enum TranscriptSpeech {
     /// Kite 的通知：读那一句，用户回应前面不另加说明（那一句就是「你回答了提问」这样的）。
     static func notice(_ notice: Notice) -> String { notice.response ? notice.title : "Kite 通知，" + notice.title }
     static func noticeHint(expanded: Bool) -> String { expanded ? "收起正文" : "展开正文" }
+    /// 通知点开后气泡里的正文：那一行已经读过是什么通知。
+    static let noticeBody = "通知正文"
 
     /// 压缩分界：不管展开没有都读这一句，展开收起由状态读出。
     static func compaction(_ compaction: Compaction) -> String {

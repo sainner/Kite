@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: context
   originSessionId: 5062538f-26bf-4ce9-9a1e-8b44d40a4fcc
-  modified: 2026-10-19T08:53:53.011Z
+  modified: 2026-10-19T14:36:13.245Z
 ---
 
 2026-10-18 新建工作区弹窗在 Mac 上打开时高度跳一下，量一轮就找到原因并修好（该弹窗随后按用户要求整个去掉）。经验：
@@ -17,6 +17,9 @@ metadata:
 - 2026-10-19 停靠栏展开的面板右边被裁：凭猜测改了两轮（滚动区、台面视图往右多排）都没好。在台面视图的排版里打一条日志，沿 superview 往上列出每层的类型、frame、clipsToBounds、layer.masksToBounds，一次读出裁的是 SwiftUI 为 PaneFade 的 mask 包的 `_NSGraphicsView`（按内容区大小、开着裁剪）。SwiftUI 里挂 mask、clipShape 的祖先会这样裁掉原生视图伸出去的部分。
 
 - 2026-10-19 iPhone 底栏家族格展开、收起时闪、抖、抽：在 Mac 和停靠栏预览里量排版数值宣称修好了好几轮，用户每次说「仍然」。最后在真机上取证一轮一个准：临时探针在 App 里每帧 `window.drawHierarchy(in:afterScreenUpdates: false)` 截底栏那一条、拼成一张长图存进 Library/Caches，同时把排版数值、UIScrollView 的 contentOffset 写进文本，`devicectl device copy from` 取回，`sips --cropOffset` 裁出几帧看。用户自己的工作区里才复现时，探针改成被动：挂在点开、收起的入口上，用户点一次就截 1.3 秒。查出的三样都是 SwiftUI 在这里的实际行为：过渡的修饰里改的环境值传不到内容，靠过渡改环境值的「展开动画」两头之间什么也没有；动画中每帧引起的重排不带动画，靠排版动画过渡的值（挤的程度、离右端的距离）第一帧就到终点，要做成 Layout 的 animatableData；iPhone 的 UIScrollView 每次重排都按锚点把位置拉回去，和滚动动画轮流生效，来回抖。
+
+- 2026-10-19 两处位置不对，各量一两轮就定位，凭读代码和独立小程序都没找到：表格首列贴边，日志打出文本视图的 `textContainerOrigin` 是 -5（容器无限宽时 AppKit 按排出的范围推原点）；拖缝后回复下面多一截空白，每段打出 `layoutFragmentFrame` 的 y 和高，对比量高时和稍后显示时，一眼看出五段各多空 16 pt。TextKit 的位置问题直接打片段坐标对比，比推机制快。日志一行太长会被 `<…>` 截掉，列表要分行打。
+- 清探针按块删，不要 `git checkout` 整个文件：主检出里常有别的会话同时在改（同日清探针时才发现另一个会话改了二十来个文件）。
 
 **Why:** 用户要求记下这次修 bug 的经验；凭猜测改样式容易多轮无效。
 **How to apply:** 窗口、弹窗、卡片的尺寸跳动、闪动或被裁，先照此量出是哪一段、哪一步变的，再改根因；诊断不靠猜，同 [[feedback-ui-workflow]]。

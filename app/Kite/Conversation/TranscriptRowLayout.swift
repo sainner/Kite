@@ -13,9 +13,19 @@ import AppKit
     private var rest: RestLayout?
     /// pin 记下的那段：起头的位置、当时在排版里的上沿。
     private var pinned: (location: NSTextLocation, top: CGFloat)?
+    /// 上次只排了一截：那截的位置是估的，之后整段 ensureLayout 不一定挪回去（2026-10-19 Mac 实测，停下后整段重量时
+    /// 有五段各比上一段的底边多空 16 pt，行高量大 80 pt，稍后视口重排才贴回去，回复下面多出一截空白）。量过的高作废时不清。
+    private var banded = false
 
     func invalidate() {
         rest = nil
+    }
+
+    /// 整段量之前调：上次只排过一截的，整段作废，从头排。
+    func settle(_ text: some TextKitMeasuring) {
+        guard banded, let layout = text.textLayoutManager else { return }
+        banded = false
+        layout.invalidateLayout(for: layout.documentRange)
     }
 
     /// 拖缝时只从 band 上沿那段起排到下沿（行内坐标）：上面没排的按 TextKit 估的高占位，下面没排的按拖缝前排准的段高、随宽度反比估。
@@ -43,6 +53,7 @@ import AppKit
                 from = location
             }
         }
+        banded = true
         guard let laid = text.measure(lineWidth: width, from: from, through: band.upperBound - topInset - top) else { return nil }
         let below = rest.below(end: layout.offset(from: start, to: laid.end)).map { $0 * rest.width / width } ?? 0
         // 同整段排的取整：估的位置带小数，不取整时贴底的可见区跟着它每步错开零点几点，字逐步抖一个像素
@@ -184,31 +195,76 @@ struct BubbleLayout {
     }
 }
 
+extension BubbleLayout {
+    /// Kite 的通知点开时气泡从左上角放大、淡入，收起时缩回左上角、淡出，同 Mac 操作栏出现、消失的弹簧（见 ActionBarView.appear）。
+    /// 绕图层的锚点缩放，锚点要在左上角（Mac 翻转坐标的视图本来就是，iOS 的气泡自己设）。只加图层动画、不动模型值，视图照常按 frame 摆；
+    /// 缩回去的停在末帧，播完调 done。中途反过来时从眼下的样子接着走，被接走的那次不调 done。
+    static func pop(_ layer: CALayer, shown: Bool, done: @escaping () -> Void = {}) {
+        let hidden = (transform: CATransform3DMakeScale(0.3, 0.3, 1), opacity: Float(0))
+        let current = layer.animation(forKey: "pop.transform") != nil ? layer.presentation() : nil
+        let from = current.map { ($0.transform, $0.opacity) } ?? (shown ? hidden : (CATransform3DIdentity, 1))
+        let to = shown ? (CATransform3DIdentity, Float(1)) : hidden
+        let spring = shown ? CASpringAnimation(perceptualDuration: 0.35, bounce: 0.3) : CASpringAnimation(perceptualDuration: 0.2, bounce: 0.15)
+        layer.setValue(shown, forKey: "popShown")
+        CATransaction.begin()
+        CATransaction.setCompletionBlock {
+            guard layer.value(forKey: "popShown") as? Bool == shown else { return }
+            done()
+            layer.removeAnimation(forKey: "pop.transform")
+            layer.removeAnimation(forKey: "pop.opacity")
+        }
+        let values: [(key: String, from: Any, to: Any)] = [("transform", from.0, to.0), ("opacity", from.1, to.1)]
+        for value in values {
+            let animation = spring.copy() as! CASpringAnimation
+            animation.keyPath = value.key
+            animation.fromValue = value.from
+            animation.toValue = value.to
+            animation.duration = animation.settlingDuration
+            animation.fillMode = .forwards
+            animation.isRemovedOnCompletion = false
+            layer.add(animation, forKey: "pop." + value.key)
+        }
+        CATransaction.commit()
+    }
+}
+
 extension Notice {
-    /// 那一句前面的图标（SF Symbol），两端一样；子代理回报画子代理的头像（avatarInstance），没有时也用图标。
-    var symbol: String {
+    /// 气泡上面那一行：「Kite-种类」，说的是哪一个的接在后面，比如「Kite-monitor 事件：部署检查」；没标种类的只写 Kite。
+    var heading: String {
+        guard let name = kindName else { return "Kite" }
+        guard let subject, !subject.isEmpty else { return "Kite-" + name }
+        return "Kite-" + name + "：" + subject
+    }
+
+    private var kindName: String? {
         switch kind {
-        case .report: "person.crop.circle"
-        case .workspace: "arrow.triangle.merge"
-        case .monitor: "tray"
-        case .terminal: "terminal"
-        case .line: "tray.full"
-        case .conflict: "arrow.triangle.merge"
-        case .moved: "arrow.left.arrow.right"
-        case .resumed: "arrow.clockwise"
-        case .question: "questionmark.bubble"
-        case .secret: "key"
-        case nil: "bell"
+        case .report: "子代理回报"
+        case .workspace: "子工作区结果"
+        case .monitor: "monitor 事件"
+        case .terminal: "后台命令结束"
+        case .line: "收件箱"
+        case .conflict: "合并冲突"
+        case .moved: "换了工作机"
+        case .resumed: "接着上次的任务"
+        case .question: "提问回应"
+        case .secret: "密钥回应"
+        case nil: nil
         }
     }
 
-    /// 画头像的实例：子代理回报的那个子代理，子工作区的结果里开子工作区时建的那个代理。
-    var avatarInstance: String? { kind == .report || kind == .workspace ? instance : nil }
+    /// 转交的用户回应那一句前面的图标（SF Symbol），两端一样。
+    var symbol: String {
+        switch kind {
+        case .question: "questionmark.bubble"
+        case .secret: "key"
+        default: "bell"
+        }
+    }
 }
 
 /// 两段话之间 agent 做的事折成的一行怎么量、展开到哪了，两端原生列表的工具行共用：汇总一行，点开下面是步骤，
 /// 展开收起和下面的行一起按 0.25 秒的普通缓出动，箭头跟着转、步骤跟着淡入淡出。汇总行、步骤的视图各端自己建。
-/// Kite 的通知那一行（那一句，点开是正文）也照它量、照它动。
+/// 转交的用户回应那一行（那一句，点开是正文）也照它量、照它动。
 enum WorkLayout {
     /// 汇总行和步骤之间的间距。
     static let spacing: CGFloat = 6

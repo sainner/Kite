@@ -62,7 +62,8 @@ struct Sender: Hashable {
     let instance: String
 }
 
-/// Kite 自动发给 agent 的一条（子代理回报、monitor 事件、合并冲突等）。正文是写给模型的，界面上显示 title 这一句，点开才看正文。
+/// Kite 自动发给 agent 的一条（子代理回报、monitor 事件、合并冲突等）。正文是写给模型的，界面上画成气泡，上面一行写种类（见 heading）；
+/// 转交的用户回应显示 title 这一句，点开才看正文。
 struct Notice {
     enum Kind: String {
         case report = "agent.report", workspace = "agent.workspace", monitor = "monitor.events", terminal = "terminal.exit", line = "line.monitor"
@@ -73,16 +74,16 @@ struct Notice {
     /// 没有的（Claude 原生行、工作机没标的）按正文第一行显示。
     var kind: Kind?
     var title: String
-    /// 子代理回报的那个子代理，或子工作区的结果里开子工作区时建的那个代理，画它的头像。
-    var instance: String?
+    /// 说的是哪一个：子代理、子工作区、monitor、后台命令的名称。
+    var subject: String?
     /// Kite 转交的用户回应（回答提问、密钥请求的结果）：是用户自己做的事，靠右。
     var response = false
 
-    init(text: String, kind: Kind? = nil, title: String? = nil, instance: String? = nil, response: Bool = false) {
+    init(text: String, kind: Kind? = nil, title: String? = nil, subject: String? = nil, response: Bool = false) {
         self.text = text
         self.kind = kind
         self.title = title ?? text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
-        self.instance = instance
+        self.subject = subject
         self.response = response
     }
 }

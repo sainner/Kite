@@ -258,8 +258,8 @@ enum Metrics {
     static func nestedRadius(inset: CGFloat) -> CGFloat { max(contentRadius - inset, bubbleTail) }
     /// 发送时气泡从多低的地方往上浮进来。
     static let bubbleRise: CGFloat = 32
-    /// 人发的消息折起来时显示多高，大约十行；比它高出不少才折（见 BubbleLayout.foldable）。
-    static let messageFold: CGFloat = 220
+    /// 气泡（人发的消息、代理来信）折起来时显示多高，大约六行；比它高出不少才折（见 BubbleLayout.foldable）。
+    static let messageFold: CGFloat = 132
     /// 折叠内容仅在末端短渐隐，展开按钮位于渐隐外。
     static let messageFoldFade: CGFloat = 20
     /// 审批卡片里的命令（代码块）展开全部以后，代码区最高多高（约十六行），再长在里面滚动；iPhone 随动态字体缩放。

@@ -93,6 +93,7 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
 
     override func height(width: CGFloat) -> CGFloat {
         if let measured, measured.width == width, !provisional { return measured.height }
+        layout.settle(text)
         let height = body.height(width: width)
         provisional = false
         keepsContainer = false

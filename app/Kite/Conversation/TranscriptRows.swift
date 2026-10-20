@@ -12,11 +12,16 @@ struct TranscriptRow: Identifiable {
             if case .message = self { true } else { false }
         }
 
-        /// 画成气泡的：人发的消息、代理来信。
+        /// 画成气泡的：人发的消息、代理来信、Kite 的通知（转交的用户回应除外）。
         var isBubble: Bool {
             switch self {
             case .message: true
-            case .item(let item): if case .agent = item.kind { true } else { false }
+            case .item(let item):
+                switch item.kind {
+                case .agent: true
+                case .kite(let notice): !notice.response
+                default: false
+                }
             }
         }
     }
@@ -39,8 +44,8 @@ struct TranscriptRow: Identifiable {
                 rows.append(TranscriptRow(id: id, content: content, gap: 0, startsHumanTurn: humanTurn))
                 return
             }
-            // 气泡（人发的消息、代理来信）和前后的内容之间多空一样多，连着的几个气泡之间不加；它开启的新一轮不再另加，上下才一样。
-            // Kite 发来的通知开启的新一轮，和上一轮之间多空一点
+            // 气泡（人发的消息、代理来信、Kite 的通知）和前后的内容之间多空一样多，连着的几个气泡之间不加；它开启的新一轮不再另加，上下才一样。
+            // 转交的用户回应开启的新一轮，和上一轮之间多空一点
             let gap = if last.content.isBubble != content.isBubble { Metrics.messageGap }
                 else if startsTurn && !content.isBubble { Metrics.turnGap }
                 else { CGFloat(0) }

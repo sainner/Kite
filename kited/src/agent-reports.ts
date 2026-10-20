@@ -83,7 +83,7 @@ export class AgentReports {
     const result = outcome.kind === 'completed' ? '完成' : outcome.kind === 'failed' ? `失败：${outcome.message}`
       : stopper!.kind === 'agent' ? `被「${this.host.title(stopper!.instance)}」停下` : stopper!.kind === 'line' ? '被 Line 停下' : '被用户停下';
     const title = this.host.title(threadId);
-    const notice: InputNotice = { kind: 'agent.report', instance: threadId,
+    const notice: InputNotice = { kind: 'agent.report', instance: threadId, subject: title,
       title: `${title} ${outcome.kind === 'completed' ? '做完了' : outcome.kind === 'failed' ? '失败了' : '被停下了'}` };
     const reply = (await this.host.reply(threadId))?.trim();
     const values = sceneValues<'agent.report'>({
@@ -105,7 +105,7 @@ export class AgentReports {
     if (!this.host.open(target)) return;
     await this.report(target, 'agent.workspace', `instance:${child.agent}`, sceneValues<'agent.workspace'>({
       'child.workspace': child.name, 'child.id': child.agent, 'child.result': result,
-    }), { kind: 'agent.workspace', instance: child.agent, title: `子工作区「${child.name}」${title}` });
+    }), { kind: 'agent.workspace', instance: child.agent, subject: child.name, title: `子工作区「${child.name}」${title}` });
   }
 
   /** kind 是场景，也是通知的种类与输入 ID 的开头。 */

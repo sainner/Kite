@@ -388,9 +388,10 @@ export class Terminals {
       'terminal.title': instance.title, 'terminal.id': instance.id, 'terminal.result': result,
       'terminal.output': output.trim() || '（没有输出）',
     }) })).instructions;
+    const notice = { kind: 'terminal.exit', subject: instance.title, title: `${instance.title} 结束了：${result}` } as const;
     const send = async (attempt: number): Promise<void> => {
       if (this.closed || this.host.store.instance(target)?.status !== 'open') return;
-      try { await this.host.deliver(target, text, `terminal:${instance.id}:exit`, { kind: 'terminal.exit', title: `${instance.title} 结束了：${result}` }); }
+      try { await this.host.deliver(target, text, `terminal:${instance.id}:exit`, notice); }
       catch (error) {
         console.error(`[终端] 通知 ${target} 失败：${(error as Error).message}`);
         if (attempt < 3) setTimeout(() => { void send(attempt + 1); }, NOTIFY_RETRY_MS).unref();

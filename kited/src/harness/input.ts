@@ -13,7 +13,7 @@ export const inputSender = z.discriminatedUnion('kind', [
 ]);
 const inputNotice: z.ZodType<InputNotice> = z.object({
   kind: z.enum(['agent.report', 'agent.workspace', 'monitor.events', 'terminal.exit', 'line.monitor', 'conflict', 'moved', 'resumed', 'question', 'secret']),
-  title: z.string(), instance: id.optional(),
+  title: z.string(), subject: z.string().optional(), instance: id.optional(),
 }).strict();
 /** 每种来源只带自己的字段，正文不能为空；收下输入、读回记录和接口参数都用它校验。 */
 export const inputSchema: z.ZodType<Input> = z.discriminatedUnion('source', [

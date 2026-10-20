@@ -163,6 +163,7 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         if let kept = keptHeight(width) { return kept }
         let lineWidth = resizeLineWidth(width)
         let rewrapped = laidLineWidth != lineWidth
+        layout.settle(textView)
         let height = textView.measure(lineWidth: lineWidth) + topInset
         if rewrapped { textView.relocateViewport() }
         // 拖缝中整段排过：之后只排一截时按这次的段高估没排的
