@@ -56,6 +56,8 @@ export interface ApprovalRequest {
   tool: string; target: string; reason: string; mustAsk: boolean;
   /** 申请在沙箱外运行这条命令：target 是命令原文，reason 是代理写的用途。 */
   outside?: boolean;
+  /** 出沙箱的命令绑定的密钥引用，如 {project.ssh_pw}；没绑定时没有。 */
+  secretReferences?: string[];
 }
 export type ApprovalDecision = 'once' | 'remember' | 'deny';
 /**

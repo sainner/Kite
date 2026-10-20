@@ -35,8 +35,8 @@ const outsideArg = z.boolean().optional().describe('true 时申请这条命令�
 export interface ShellOutside {
   /** 按生效的沙箱外命令与项目禁止判断这条调用：allowed 直接出沙箱，denied 不能出沙箱，unlisted 要申请。 */
   verdict(command: string): 'allowed' | 'denied' | 'unlisted';
-  /** 申请出沙箱：按审批模式放行、拒绝或问人；「允许并记住」由宿主写进实例。 */
-  ask(command: string, description: string, signal: AbortSignal): Promise<boolean>;
+  /** 申请出沙箱：按审批模式放行、拒绝或问人；「允许并记住」由宿主写进实例。secrets 是这条命令绑定的密钥引用，问人时一并给出。 */
+  ask(command: string, description: string, signal: AbortSignal, secrets?: string[]): Promise<boolean>;
 }
 
 /** 宿主提供后台终端时，shell 的长命令转到后台接着跑，见 terminal/terminals.ts。 */
@@ -184,25 +184,24 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       ...(options.outside ? { outside_sandbox: outsideArg } : {}) }).strict() as z.ZodType<z.output<typeof shellArgs> & { background?: boolean; outside_sandbox?: boolean }>,
       async (args, { signal, output, ...context }) => {
         const { command, description, secrets, timeout_ms = 120_000 } = args;
-        const confidential = !!secrets && Object.keys(secrets).length > 0;
-        // 带凭据的命令总在沙箱里；用户允许过的沙箱外命令直接出沙箱，没允许过的要申请。
+        const references = [...new Set(Object.values(secrets ?? {}))];
+        const confidential = references.length > 0;
+        // 用户允许过的沙箱外命令直接出沙箱，没允许过的要申请；申请时带上绑定的密钥引用给用户看。
         const { outside } = options;
-        const verdict = outside && !confidential ? outside.verdict(command) : 'unlisted';
+        const verdict = outside ? outside.verdict(command) : 'unlisted';
         let unsandboxed = verdict === 'allowed';
         if (outside && args.outside_sandbox && !unsandboxed) {
-          if (confidential) return { status: 'error', output: '带 secrets 的命令只能在沙箱里运行，命令没有执行。' };
           if (verdict === 'denied') return { status: 'error', output: '项目禁止这条命令在沙箱外运行，命令没有执行。' };
-          if (!await outside.ask(command, description, signal)) return { status: 'error', output: '没有获准在沙箱外运行，命令没有执行。' };
+          if (!await outside.ask(command, description, signal, references)) return { status: 'error', output: '没有获准在沙箱外运行，命令没有执行。' };
           signal.throwIfAborted();
           unsandboxed = true;
         }
         const credentials: Record<string, SecretValue> = {};
         if (confidential) {
           if (!options.secrets) throw new Error('当前宿主未连接凭据服务');
-          const references = [...new Set(Object.values(secrets))];
           const resolved = await options.secrets.resolve(references, signal);
           signal.throwIfAborted();
-          for (const [key, reference] of Object.entries(secrets)) {
+          for (const [key, reference] of Object.entries(secrets!)) {
             const found = resolved.find((entry) => entry.reference === reference);
             const parsed = found && secretValue.safeParse({ kind: found.kind, value: found.value });
             if (!parsed?.success) throw new Error(`无法使用密钥 ${reference}`);
@@ -223,7 +222,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       '不带参数时列出本账号共享和当前项目的可用密钥：引用、类型，以及宿主写进工作区的文件路径，不返回密钥内容。引用只在 shell 的 secrets 参数里使用。',
       '缺密钥时用 request 向用户要，同时缺几个就一起要：',
       '一条独立的密钥写 {name, reason, kind?}，存好后按引用使用；环境变量文件（如 .env）里的一项写 {file, key, reason}，存好后宿主把文件写进工作区。',
-      '这些文件不能直接改，要加或改其中一项也用 request。',
+      '这些文件不能直接改，要加或改其中一项也用 request；不私密、你给得出的值（端口、本地数据库地址）写在 value 里，文件里没有的项和值是你给的项直接存好，不问用户。',
       '请求不等用户填，立即返回请求 ID；用户填好或拒绝后，结果会作为一条新的输入发给你。',
       '用到这些密钥的步骤先放着，先做别的，没有就结束回合；不再需要时用 {withdraw: 请求 ID} 收回。',
     ].join(''), z.object({ request: secretRequest.optional(), withdraw: z.string().min(1).optional().describe('要收回的密钥请求的请求 ID') }).strict()

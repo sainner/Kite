@@ -1,11 +1,12 @@
 /** 工作机共用的命令执行与进程组检查；命令收齐输出并确认进程组停止后才交还控制。 */
 import { spawn } from 'node:child_process';
-import { closeSync, mkdirSync, openSync, writeSync } from 'node:fs';
+import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:net';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { prepareSandbox, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
+import { prepareSandbox, secretEnvironment, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
 import type { ToolResult } from '../harness/types.ts';
 import type { SecretValue } from '../secrets.ts';
 
@@ -32,7 +33,7 @@ export interface CommandOptions {
   askNetwork?: NetworkAsk;
   /** 有它时命令可以转到后台：超时、用户插话或一开始就要求时不停进程，交给它接着管，工具立刻返回。带凭据的命令不转。 */
   background?: CommandBackground;
-  /** 已获准在沙箱外运行（沙箱外命令或审批放行）：直接以用户身份跑，不加文件与网络限制；带凭据的命令不能出沙箱。 */
+  /** 已获准在沙箱外运行（沙箱外命令或审批放行）：直接以用户身份跑，不加文件与网络限制；凭据照样交给命令。 */
   unsandboxed?: boolean;
 }
 
@@ -99,6 +100,16 @@ function askServer(path: string, ask: NetworkAsk, signal: AbortSignal, hold: () 
   return new Promise((resolve, reject) => { server.once('error', reject); server.listen(path, () => resolve(server)); });
 }
 
+/** 沙箱外以用户身份直接跑；file 类凭据放进只有本人可读的临时目录，同沙箱里一样在进程组结束后删掉。 */
+function unsandboxed(command: string, env: NodeJS.ProcessEnv, credentials: Record<string, SecretValue>) {
+  const run = { executable: '/bin/sh', args: ['-c', command], env, askSocket: undefined };
+  if (!Object.keys(credentials).length) return { ...run, dispose: () => {} };
+  const dir = mkdtempSync(join(tmpdir(), 'kite-secret-'));
+  const dispose = () => rmSync(dir, { recursive: true, force: true });
+  try { return { ...run, env: { ...env, ...secretEnvironment(credentials, dir) }, dispose }; }
+  catch (error) { dispose(); throw error; }
+}
+
 export function processGroupAlive(pid: number): boolean {
   try { process.kill(-pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
@@ -141,8 +152,7 @@ export async function runCommand(command: string, timeout: number, signal: Abort
     return () => { if (--held === 0 && !stopped && !askingEnded.signal.aborted) startTimer(); };
   };
   try {
-    if (options.unsandboxed && confidential) throw new Error('带凭据的命令不能在沙箱外运行');
-    sandbox = options.unsandboxed ? { executable: '/bin/sh', args: ['-c', command], env: options.env, askSocket: undefined, dispose: () => {} }
+    sandbox = options.unsandboxed ? unsandboxed(command, options.env, options.credentials ?? {})
       : prepareSandbox(command, { cwd: options.cwd, env: options.env, policy: options.policy ?? workspacePolicy(options.cwd, options.env),
       credentials: options.credentials, ...(options.askNetwork ? { network: 'ask' as const } : {}) });
     if (sandbox.askSocket) asking = await askServer(sandbox.askSocket, options.askNetwork!, AbortSignal.any([signal, askingEnded.signal]), hold);

@@ -31,7 +31,8 @@ const fields: Record<CredentialType, { name: z.ZodType<string>; meta: z.ZodType<
   secret: {
     name: secretName,
     meta: z.object({ kind: secretValue.shape.kind, path: secretPath.optional() }).strict(),
-    secret: z.object({ value: secretValue.shape.value }).strict(),
+    // agentKeys：设了路径的环境变量文件里哪几项的值是代理给的，逗号分隔。放在保密内容里，旧版本替换内容时随之丢掉，各项回到算用户的。
+    secret: z.object({ value: secretValue.shape.value, agentKeys: z.string().optional() }).strict(),
   },
   git: {
     name: z.string().regex(/^[a-z0-9.-]+(:\d+)?$/, '主机名无效'),
@@ -151,17 +152,23 @@ export class Credentials {
     return this.create({ type: 'secret', name, ...(projectId ? { projectId } : {}), meta: { kind }, secret: { value } });
   }
 
-  /** 项目里设在 path 的文件密钥的内容；没有时为 undefined。 */
-  async fileSecret(projectId: string, path: string): Promise<string | undefined> {
+  /** 项目里设在 path 的文件密钥的内容，以及其中值是代理给的那几项；没有时为 undefined。 */
+  async fileSecret(projectId: string, path: string): Promise<{ value: string; agentKeys: string[] } | undefined> {
     const found = this.byPath(projectId, path);
-    return found && ((await this.secret(found.id))?.value ?? '');
+    if (!found) return undefined;
+    const secret = await this.secret(found.id);
+    return { value: secret?.value ?? '', agentKeys: secret?.agentKeys?.split(',').filter(Boolean) ?? [] };
   }
 
-  /** 存一条设了路径的项目密钥：项目里已有设在这个路径的就换内容，没有就新建，名称按路径起。 */
-  async saveFileSecret(projectId: string, path: string, value: string): Promise<Credential> {
+  /**
+   * 存一条设了路径的项目密钥：项目里已有设在这个路径的就换内容，没有就新建，名称按路径起。
+   * agentKeys 是其中值由代理给的项，其余都算用户的；用户在设置里替换内容时不带它，各项都回到算用户的。
+   */
+  async saveFileSecret(projectId: string, path: string, value: string, agentKeys: string[] = []): Promise<Credential> {
+    const secret = { value, ...(agentKeys.length ? { agentKeys: agentKeys.join(',') } : {}) };
     const found = this.byPath(projectId, path);
-    if (found) return this.update(found.id, { secret: { value } });
-    return this.create({ type: 'secret', name: this.nameFor(projectId, path), projectId, meta: { kind: 'file', path }, secret: { value } });
+    if (found) return this.update(found.id, { secret });
+    return this.create({ type: 'secret', name: this.nameFor(projectId, path), projectId, meta: { kind: 'file', path }, secret });
   }
 
   /** 按路径起的密钥名：.env → env，apps/web/.env.local → apps-web-env-local；重名时加数字。 */

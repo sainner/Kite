@@ -38,6 +38,21 @@ function developerDirectory(env: NodeJS.ProcessEnv): string | undefined {
   return process.platform === 'darwin' && existsSync(selected) ? realpathSync(selected) : undefined;
 }
 
+/** 凭据按专用变量交给命令：text 是值本身，file 写成 dir 里只有本人可读的文件，变量是它的路径。 */
+export function secretEnvironment(credentials: Record<string, SecretValue>, dir: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, credential] of Object.entries(credentials)) {
+    // 专用变量前缀避免凭据改写 PATH、运行时加载选项或沙箱代理设置。
+    if (!secretEnvironmentName.safeParse(key).success) throw new Error('凭据环境变量名称无效');
+    if (credential.kind === 'file') {
+      const path = join(dir, key);
+      writeFileSync(path, credential.value, { mode: 0o600, flag: 'wx' });
+      env[key] = path;
+    } else env[key] = credential.value;
+  }
+  return env;
+}
+
 /** 首期工作区策略：工作树可写，系统工具链可读，网络需宿主另行授权。 */
 export function workspacePolicy(cwd: string, env: NodeJS.ProcessEnv): ExecutionPolicy {
   const system = process.platform === 'darwin'
@@ -131,15 +146,7 @@ export function prepareSandbox(command: string, options: { cwd: string; env: Nod
       if (/^(?:LD_|DYLD_|SRT_)/.test(key) || /^(?:BUN_OPTIONS|NODE_OPTIONS|NODE_PATH|ENV|BASH_ENV)$/i.test(key)
         || /^(?:https?|all|no)_proxy$/i.test(key)) delete env[key];
     }
-    for (const [key, credential] of Object.entries(options.credentials ?? {})) {
-      // 专用变量前缀避免凭据改写 PATH、运行时加载选项或沙箱代理设置。
-      if (!secretEnvironmentName.safeParse(key).success) throw new Error('凭据环境变量名称无效');
-      if (credential.kind === 'file') {
-        const path = join(scratch, key);
-        writeFileSync(path, credential.value, { mode: 0o600, flag: 'wx' });
-        env[key] = path;
-      } else env[key] = credential.value;
-    }
+    Object.assign(env, secretEnvironment(options.credentials ?? {}, scratch));
     // 可信 CLI 在沙箱外初始化代理；用户命令直到进入 OS 沙箱后才由 sh 解释。
     const cli = fileURLToPath(new URL(options.network ? './sandbox-callback-host.ts' : './sandbox-host.ts', import.meta.url));
     const wrapped = `TMPDIR=${quote(scratch)} TMP=${quote(scratch)} TEMP=${quote(scratch)} exec /bin/sh -c ${quote(command)}`;

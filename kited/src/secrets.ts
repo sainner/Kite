@@ -36,7 +36,7 @@ export const secretItem = z.union([
     value: secretValue.shape.value.optional().describe('你自己给的值（例如生成的随机串），用户确认后保存；真正的密钥不要编，留空由用户填写') }).strict(),
   z.object({ file: secretPath.describe('环境变量文件在工作区里的路径，如 .env'), key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/).describe('变量名'),
     reason: reason.describe('要它做什么，展示给用户'),
-    value: secretValue.shape.value.optional().describe('你自己给的值（例如 PORT=3001 的 3001），用户确认后保存；真正的密钥不要编，留空由用户填写') }).strict(),
+    value: secretValue.shape.value.optional().describe('你自己给的值（例如 PORT=3001 的 3001）：文件里没有这一项或值本来是你给的时直接存，否则用户确认后保存；真正的密钥不要编，留空由用户填写') }).strict(),
 ]);
 export type SecretItem = z.infer<typeof secretItem>;
 

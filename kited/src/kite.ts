@@ -1063,8 +1063,8 @@ export class Kite {
   }
 
   /**
-   * credentials 的请求动作：每一项都给了值且审批模式为全放行时直接存好，否则发出请求、立即返回，用户回应后由 respondWaiting 交给代理。
-   * 交给模型的说明不含用户填的值。
+   * credentials 的请求动作：代理给了值、不用问用户的项直接存好，其余的发出请求、立即返回，用户回应后由 respondWaiting 交给代理。
+   * 不用问的是环境变量文件里还没有或值本来就是代理给的项，全放行时是代理给了值的每一项。交给模型的说明不含用户填的值。
    */
   private async requestSecret(threadId: string, request: SecretRequest): Promise<string> {
     const { project, workspace } = this.context(threadId);
@@ -1074,30 +1074,47 @@ export class Kite {
         throw new Error(`${file} 是项目跟踪的文件，宿主不会把密钥写进去；先把它从 Git 里移除并忽略，再请求`);
       }
     }
-    const contents = new Map(await Promise.all(files.map(async (file) => [file, await this.credentials.fileSecret(project.id, file) ?? ''] as const)));
+    const contents = new Map(await Promise.all(files.map(async (file) =>
+      [file, await this.credentials.fileSecret(project.id, file) ?? { value: '', agentKeys: [] }] as const)));
     const secrets: SecretWaitingItem[] = request.map((item) => ({ reason: item.reason,
-      exists: 'file' in item ? hasEnvKey(contents.get(item.file)!, item.key) : this.credentials.hasSecret(project.id, item.name),
+      exists: 'file' in item ? hasEnvKey(contents.get(item.file)!.value, item.key) : this.credentials.hasSecret(project.id, item.name),
       ...('file' in item ? { file: item.file, key: item.key } : { name: item.name, secretKind: item.kind ?? 'text' }),
       ...(item.value !== undefined ? { value: item.value } : {}) }));
-    if (request.every((item) => item.value !== undefined) && this.configuration.approvalMode(threadId).effective === 'allow_all') {
-      return this.saveSecrets(project.id, secrets, { values: request.map((item) => item.value!), scope: 'project' });
-    }
-    const ask = this.asks.add(threadId, { kind: 'secret', secrets });
-    return `已向用户要 ${secrets.length} 项密钥，请求 ID 是 ${ask.id}。用户填好或拒绝后，结果会作为一条新的输入发给你；用到这些密钥的步骤先放着，先做别的，没有就结束回合。`;
+    const allowAll = this.configuration.approvalMode(threadId).effective === 'allow_all';
+    // 用户给的项不让代理悄悄换掉
+    const direct = request.map((item, index) => item.value !== undefined && (allowAll
+      || ('file' in item && (!secrets[index]!.exists || contents.get(item.file)!.agentKeys.includes(item.key)))));
+    const saved = direct.some(Boolean) ? await this.saveSecrets(project.id, secrets.filter((_, index) => direct[index]),
+      { values: request.flatMap((item, index) => direct[index] ? [item.value!] : []), scope: 'project' }, true) : '';
+    const rest = secrets.filter((_, index) => !direct[index]);
+    if (!rest.length) return saved;
+    const ask = this.asks.add(threadId, { kind: 'secret', secrets: rest });
+    return `${saved ? `${saved}\n另外` : ''}已向用户要 ${rest.length} 项密钥，请求 ID 是 ${ask.id}。用户填好或拒绝后，结果会作为一条新的输入发给你；用到这些密钥的步骤先放着，先做别的，没有就结束回合。`;
   }
 
-  /** 存下用户填了的几项，返回逐项的说明：存好的给出引用或文件与变量名，没填的如实写明，不含填的值。 */
-  private async saveSecrets(projectId: string, secrets: SecretWaitingItem[], response: { values: Array<string | null>; scope: 'project' | 'account' }): Promise<string> {
+  /**
+   * 存下填了的几项，返回逐项的说明：存好的给出引用或文件与变量名，没填的如实写明，不含填的值。
+   * byAgent 表示存的是代理给的值、用户没看过：环境变量文件里这几项记成代理给的，之后代理可以直接改；用户在卡片上存的记成用户的。
+   */
+  private async saveSecrets(projectId: string, secrets: SecretWaitingItem[], response: { values: Array<string | null>; scope: 'project' | 'account' },
+    byAgent = false): Promise<string> {
     const scope = response.scope === 'account' ? null : projectId;
     const lines: string[] = [];
-    const written = new Map<string, string>();
+    const written = new Map<string, { value: string; agentKeys: Set<string> }>();
     for (const [index, item] of secrets.entries()) {
       const value = response.values[index];
       if (value == null) { lines.push(`- ${secretLabel(item)}：用户没有填，没有存`); continue; }
       if (item.file && item.key) {
         // 等用户的时候文件可能被改过，按存之前的最新内容替换这一行
-        const content = written.get(item.file) ?? await this.credentials.fileSecret(projectId, item.file) ?? '';
-        written.set(item.file, setEnvLine(content, item.key, value));
+        let file = written.get(item.file);
+        if (!file) {
+          const stored = await this.credentials.fileSecret(projectId, item.file);
+          file = { value: stored?.value ?? '', agentKeys: new Set(stored?.agentKeys) };
+          written.set(item.file, file);
+        }
+        file.value = setEnvLine(file.value, item.key, value);
+        if (byAgent) file.agentKeys.add(item.key);
+        else file.agentKeys.delete(item.key);
         lines.push(`- ${secretLabel(item)}：已存好，宿主正把这个文件重写进项目的所有工作区`);
       } else {
         // 环境变量文件里的项总是项目专用，账号共享只对独立的密钥
@@ -1105,7 +1122,9 @@ export class Kite {
         lines.push(`- ${secretLabel(item)}：已存好，引用是 {${scope ? 'project' : 'account'}.${item.name}}，在 shell 的 secrets 参数里使用`);
       }
     }
-    for (const [file, content] of written) await this.credentials.saveFileSecret(projectId, file, content);
+    for (const [path, file] of written) {
+      await this.credentials.saveFileSecret(projectId, path, file.value, [...file.agentKeys].filter((key) => hasEnvKey(file.value, key)));
+    }
     const missing = response.values.filter((value) => value == null).length;
     return [`存好 ${secrets.length - missing} 项${missing ? `，${missing} 项用户没有填` : ''}：`, ...lines].join('\n');
   }
@@ -1522,8 +1541,8 @@ export class Kite {
           return unsandboxedVerdict(command, grants.unsandboxed, denied.unsandboxed);
         },
         // 以「 *」结尾的命令记下来就成了带任意参数的模式，只能批准这一次。
-        ask: (command, description, signal) => this.askApproval(id, { tool: 'shell', target: command.trim(), reason: description,
-          mustAsk: command.trim().endsWith(' *'), outside: true }, signal),
+        ask: (command, description, signal, secrets) => this.askApproval(id, { tool: 'shell', target: command.trim(), reason: description,
+          mustAsk: command.trim().endsWith(' *'), outside: true, ...(secrets?.length ? { secretReferences: secrets } : {}) }, signal),
       },
     });
     this.runners.set(id, r);

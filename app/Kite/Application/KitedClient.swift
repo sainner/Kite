@@ -50,6 +50,8 @@ nonisolated struct RemoteWaiting: Decodable, Equatable, Sendable {
     var mustAsk: Bool?
     /// 代理申请在沙箱外运行命令：target 是命令原文，reason 是代理写的用途。
     var outside: Bool?
+    /// 出沙箱的命令绑定的密钥引用，如 {project.ssh_pw}。
+    var secretReferences: [String]?
     /// 密钥请求一次要的几项，用户在同一张卡片里填，填了几项存几项。
     var secrets: [Secret]?
 

@@ -422,27 +422,19 @@ function workspace(prefix: string) {
 
 /*
  * 几个部分的配合：outside_sandbox 的申请先过宿主判断再决定问不问；问的回答决定命令跑不跑、在哪跑。
- * 代码之外的东西：放行后命令真的不在 Seatbelt 沙箱里（写得了工作区外、连得上本机端口，依赖 /usr/bin/curl）；
- * 带 secrets 的命令即使判为可出沙箱也要留在沙箱里，写不了工作区外。
+ * 代码之外的东西：放行后命令真的不在 Seatbelt 沙箱里（写得了工作区外、连得上本机端口，依赖 /usr/bin/curl）。
  */
-test('申请出沙箱时项目禁止的直接拒绝、不问也不执行；没登记的交给 ask，拒绝时命令没执行，放行时在沙箱外执行；带 secrets 的即使判为 allowed 也在沙箱里、不问人', async () => {
+test('申请出沙箱时项目禁止的直接拒绝、不问也不执行；没登记的交给 ask，拒绝时命令没执行，放行时在沙箱外执行', async () => {
   const { root, cwd, outside } = workspace('layers-ask-');
   const { server, probe } = loopback();
   try {
     const denied = probe(join(outside, 'denied.txt'));
     const refused = probe(join(outside, 'refused.txt'));
     const approved = probe(join(outside, 'approved.txt'));
-    const secret = `printf ran > ${join(cwd, 'secret-ran.txt')}; printf leaked > ${join(outside, 'secret.txt')}`;
-    const { outside: host, asked } = outsideHost({ [denied]: 'denied', [secret]: 'allowed' }, [false, true]);
+    const { outside: host, asked } = outsideHost({ [denied]: 'denied' }, [false, true]);
     const tools = localTools({
       cwd, logDir: join(root, 'logs'), env: ENV(), outside: host, background: noBackground,
-      secrets: { async resolve() { return [{ reference: '{account.api_key}', kind: 'text', value: '假密钥-8c1f' }]; } },
     });
-
-    await shell(tools, cwd, { description: '带凭据', command: secret, secrets: { KITE_SECRET_TOKEN: '{account.api_key}' } });
-    expect(existsSync(join(cwd, 'secret-ran.txt'))).toBe(true);
-    expect(existsSync(join(outside, 'secret.txt'))).toBe(false);
-    expect(asked).toEqual([]);
 
     const rejected = await shell(tools, cwd, { description: '项目禁止', command: denied, outside_sandbox: true });
     expect(rejected.status).not.toBe('success');
