@@ -226,9 +226,9 @@ final class WorkArea: Identifiable {
 
     func isVisible(instance id: String) -> Bool { visibleInstances.contains(id) }
 
-    /// 回合收尾时窗口在台面上，或之后打开了窗口，都算看过。
+    /// 回合收尾时窗口在台面上，或之后打开了窗口，都算看过。子代理不算未查看：交代给它的回合结束时会回报给父代理。
     func unseen(_ id: String) -> Bool {
-        guard let settled = activities[id]?.settledAt, !visibleInstances.contains(id) else { return false }
+        guard let settled = activities[id]?.settledAt, !visibleInstances.contains(id), !isSubagent(id) else { return false }
         return settled > seenTurns[id] ?? 0
     }
 

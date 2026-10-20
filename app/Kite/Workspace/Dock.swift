@@ -256,13 +256,11 @@ extension WorkArea {
         return unseen(id) ? .unseen : nil
     }
 
-    /// 停靠栏头像上的状态：没有窗口的子代理不显示未读，交代给它的回合结束时会回报给父代理。
-    func dockAttention(of id: String) -> DockAttention? {
-        let value = attention(of: id)
-        guard value == .unseen, window(of: id) == nil, let instance = instances.first(where: { $0.id == id }), isAgent(instance),
-              let origin = instance.origin, let parent = instances.first(where: { $0.id == origin.instanceId }),
-              parent.status == .open, isAgent(parent) else { return value }
-        return nil
+    /// 挂在开着的父代理下面的子代理。
+    func isSubagent(_ id: String) -> Bool {
+        guard let instance = instances.first(where: { $0.id == id }), isAgent(instance), let origin = instance.origin,
+              let parent = instances.first(where: { $0.id == origin.instanceId }) else { return false }
+        return parent.status == .open && isAgent(parent)
     }
 
     /// 「更多」与家族里最要紧的一项。
@@ -271,7 +269,7 @@ extension WorkArea {
         func visit(_ entry: DockEntry) {
             switch entry {
             case .instance(let instance):
-                if let value = dockAttention(of: instance.id) { top = max(top ?? value, value) }
+                if let value = attention(of: instance.id) { top = max(top ?? value, value) }
             case .family(let family):
                 visit(.instance(family.parent))
                 family.children.forEach(visit)

@@ -70,7 +70,7 @@ struct DockEntryFace: View {
 
     var body: some View {
         let id = instanceID, arrow = self.arrow
-        DockFace(look: look, running: area.isRunning(id), tint: area.dockAttention(of: id)?.color, arrow: arrow, ring: ring)
+        DockFace(look: look, running: area.isRunning(id), tint: area.attention(of: id)?.color, arrow: arrow, ring: ring)
             .overlay { if pulse, pulseOpacity > 0, arrow == nil { DockPulse(instance: id).opacity(pulseOpacity) } }
     }
 
