@@ -222,7 +222,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       '不带参数时列出本账号共享和当前项目的可用密钥：引用、类型，以及宿主写进工作区的文件路径，不返回密钥内容。引用只在 shell 的 secrets 参数里使用。',
       '缺密钥时用 request 向用户要，同时缺几个就一起要：',
       '一条独立的密钥写 {name, reason, kind?}，存好后按引用使用；环境变量文件（如 .env）里的一项写 {file, key, reason}，存好后宿主把文件写进工作区。',
-      '这些文件不能直接改，要加或改其中一项也用 request；不私密、你给得出的值（端口、本地数据库地址）写在 value 里，文件里没有的项和值是你给的项直接存好，不问用户。',
+      '这些文件不能直接改，要加或改其中一项也用 request。你已知的值写在 value 里，不知道的不要编，留空由用户填写；文件里没有的项和值是你给的项直接存好，其余的用户确认后保存。',
       '请求不等用户填，立即返回请求 ID；用户填好或拒绝后，结果会作为一条新的输入发给你。',
       '用到这些密钥的步骤先放着，先做别的，没有就结束回合；不再需要时用 {withdraw: 请求 ID} 收回。',
     ].join(''), z.object({ request: secretRequest.optional(), withdraw: z.string().min(1).optional().describe('要收回的密钥请求的请求 ID') }).strict()

@@ -33,10 +33,10 @@ const reason = z.string().trim().min(1).max(2000);
 export const secretItem = z.union([
   z.object({ name: secretName.describe('密钥名称：英文字母开头，只含字母、数字、下划线与短横线'), reason: reason.describe('要它做什么，展示给用户'),
     kind: secretValue.shape.kind.optional().describe('text（默认，命令里是环境变量）或 file（命令里是临时文件路径）'),
-    value: secretValue.shape.value.optional().describe('你自己给的值（例如生成的随机串），用户确认后保存；真正的密钥不要编，留空由用户填写') }).strict(),
+    value: secretValue.shape.value.optional().describe('这一项的值') }).strict(),
   z.object({ file: secretPath.describe('环境变量文件在工作区里的路径，如 .env'), key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/).describe('变量名'),
     reason: reason.describe('要它做什么，展示给用户'),
-    value: secretValue.shape.value.optional().describe('你自己给的值（例如 PORT=3001 的 3001）：文件里没有这一项或值本来是你给的时直接存，否则用户确认后保存；真正的密钥不要编，留空由用户填写') }).strict(),
+    value: secretValue.shape.value.optional().describe('这一项的值') }).strict(),
 ]);
 export type SecretItem = z.infer<typeof secretItem>;
 
