@@ -46,7 +46,7 @@ export interface ShellBackground {
   /** 用户发来了消息：正在跑的命令转后台，好让消息送到模型。返回取消订阅。 */
   interjected(listener: () => void): () => void;
   /** 把转到后台的命令交给一个终端实例，返回告诉模型的说明。 */
-  adopt(command: BackgroundCommand, info: { description: string; command: string; turnId?: string; callId?: string }): string;
+  adopt(command: BackgroundCommand, info: { command: string; turnId?: string; callId?: string }): string;
 }
 
 const patchDescription = `用补丁创建、修改或删除当前工作目录内的文本文件，可一次处理多个文件，每个文件只列一次。
@@ -217,7 +217,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
           return await runCommand(command, timeout_ms, signal, { ...options, cwd: root, policy: policy(), credentials, onOutput: output ?? options.onOutput,
             ...(unsandboxed ? { unsandboxed: true, askNetwork: undefined } : {}),
             background: background && { now: interjection.signal, immediately: args.background === true,
-              adopt: (adopted) => background.adopt(adopted, { description, command, turnId: context.turnId, callId: context.callId }) } });
+              adopt: (adopted) => background.adopt(adopted, { command, turnId: context.turnId, callId: context.callId }) } });
         } finally { unsubscribe?.(); }
       }),
     make('credentials', [

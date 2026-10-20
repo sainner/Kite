@@ -328,15 +328,19 @@ export class Terminals {
    * 接管代理 shell 工具转到后台的命令：建一个没有窗口的终端实例，来源记为这次工具调用，返回告诉模型的说明。
    * 工作区不再打开（正在交接或归档）时不接管，停下命令。
    */
-  adopt(ownerId: string, command: BackgroundCommand, info: { description: string; command: string; turnId?: string; callId?: string }): string {
+  adopt(ownerId: string, command: BackgroundCommand, info: { command: string; turnId?: string; callId?: string }): string {
     const owner = this.host.store.instance(ownerId);
     const workspace = owner && this.host.store.workspace(owner.workspaceId);
     if (this.closed || !owner || owner.status !== 'open' || workspace?.status !== 'open') {
       command.stop('工作区不再在这台工作机上打开');
       return '但工作区已不在这台工作机上打开，命令已停下。';
     }
+    // 名字只用来在停靠栏和窗口上认出是哪个，同用户开的「终端 N」编号；不用 shell 的 description，它常写成申请出沙箱的理由，太长
+    const titles = new Set(this.host.store.instances(owner.workspaceId).map((instance) => instance.title));
+    let number = 1;
+    while (titles.has(`进程 ${number}`)) number++;
     const instance: PluginInstance = { id: randomUUID(), workspaceId: owner.workspaceId, definitionId: terminalDefinitionId,
-      title: info.description.trim().slice(0, 60), config: { terminal: { command: info.command, log: command.log } },
+      title: `进程 ${number}`, config: { terminal: { command: info.command, log: command.log } },
       state: { terminal: { phase: 'running' } }, presentation: 'background', status: 'open', createdAt: Date.now(),
       origin: { instanceId: ownerId, operationId: `${info.turnId ?? ''}:${info.callId ?? randomUUID()}`,
         ...(info.turnId ? { turnId: info.turnId } : {}), ...(info.callId ? { callId: info.callId } : {}) } };

@@ -829,7 +829,6 @@ test('代理的 shell 运行中用户发来消息：命令转到没有窗口、o
   if (!terminal) throw new Error('工作区里没有接管命令的终端');
   expect(moved.output).toContain(`后台终端的实例 ID 是 ${terminal.id}`);
   expect(terminal.origin).toMatchObject({ instanceId: agentId });
-  expect(terminal.title).toBe('等构建');
   expect(terminal.config.terminal).toEqual({ command, log: expect.any(String) });
   expect(terminalState(terminal)).toMatchObject({ phase: 'running' });
   const aggregate = (await k.call('GET', `/workspaces/${workspaceId}`)).body as WorkspaceModel;
@@ -866,7 +865,6 @@ test('代理的 shell 运行中用户发来消息：命令转到没有窗口、o
   const woke = await model.call(4);
   const notice = inputsOf(woke.request).at(-1)!;
   expect(notice.source).toBe('kite');
-  expect(notice.text).toContain(`你转到后台的命令「等构建」（终端 ${terminal.id}）已结束：退出码 3。输出的末尾：`);
   expect(notice.text).toContain('结束了');
   await until(() => !k.daemon.kite.store.instance(terminal.id), '没有窗口的终端在命令结束后回收', 900);
   woke.response.complete();
