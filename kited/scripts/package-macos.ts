@@ -16,6 +16,33 @@ async function run(command: string[], cwd = root): Promise<void> {
   if (await child.exited !== 0) throw new Error(`命令失败：${command[0]}`);
 }
 
+/** 代理的 shell 说明写着可用 rg 搜索，工作机不一定装了；固定版本与校验和，下载一次缓存在 build/tools。 */
+const ripgrep = { version: '15.2.0', sha256: {
+  arm64: '3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4',
+  x64: 'af7825fcc69a2afc7a7aea55fc9af90e26421d8f20fe59df32e233c0b8a231c1' } as Record<string, string> };
+
+async function ripgrepBinary(): Promise<string> {
+  const expected = ripgrep.sha256[process.arch];
+  if (!expected) throw new Error(`没有 ${process.arch} 架构的 ripgrep`);
+  const name = `ripgrep-${ripgrep.version}-${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}-apple-darwin`;
+  const tools = join(build, 'tools');
+  const cached = join(tools, name, 'rg');
+  if (existsSync(cached)) return cached;
+  console.log(`下载 ripgrep ${ripgrep.version}…`);
+  const response = await fetch(`https://github.com/BurntSushi/ripgrep/releases/download/${ripgrep.version}/${name}.tar.gz`);
+  if (!response.ok) throw new Error(`下载 ripgrep 失败：HTTP ${response.status}`);
+  const archive = new Uint8Array(await response.arrayBuffer());
+  if (new Bun.CryptoHasher('sha256').update(archive).digest('hex') !== expected) throw new Error('ripgrep 校验和不符');
+  mkdirSync(tools, { recursive: true });
+  const stage = mkdtempSync(join(tools, 'ripgrep.'));
+  try {
+    writeFileSync(join(stage, 'archive.tar.gz'), archive);
+    await run(['/usr/bin/tar', '-xzf', join(stage, 'archive.tar.gz'), '-C', stage, `${name}/rg`]);
+    renameSync(join(stage, name), join(tools, name));
+  } finally { rmSync(stage, { recursive: true, force: true }); }
+  return cached;
+}
+
 async function gitOutput(command: string[]): Promise<string> {
   const child = Bun.spawn(command, { cwd: root, env: process.env, stdout: 'pipe', stderr: 'inherit' });
   const [text, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
@@ -38,6 +65,8 @@ async function main(): Promise<void> {
     mkdirSync(join(kited, 'scripts'), { recursive: true });
     copyFileSync(process.execPath, join(runtime, 'bin/bun'));
     chmodSync(join(runtime, 'bin/bun'), 0o755);
+    copyFileSync(await ripgrepBinary(), join(runtime, 'bin/rg'));
+    chmodSync(join(runtime, 'bin/rg'), 0o755);
     cpSync(join(root, 'kited/src'), join(kited, 'src'), { recursive: true });
     cpSync(join(root, 'shared'), join(runtime, 'shared'), { recursive: true });
     const templates = '.claude/skills/kite-onboard/templates';

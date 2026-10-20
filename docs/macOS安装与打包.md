@@ -32,7 +32,7 @@
 
 也可使用 `./install.command --package`。只打包，不安装、启动或替换正在使用的服务。
 
-产物在 `build/Kite-macOS-<架构>/` 和同名 `.zip`，仅服务版本使用 `kited-macOS-<架构>`。完整包包含 `Kite.app`、`安装.command` 和安装说明；可选服务运行目录嵌在 App 资源中。Bun、生产依赖、沙箱与 Claude 适配资源随包携带，安装后不依赖源码仓库，也不依赖打包机上的依赖目录。包中不含开发依赖、`.env`、登录凭据或用户数据库。
+产物在 `build/Kite-macOS-<架构>/` 和同名 `.zip`，仅服务版本使用 `kited-macOS-<架构>`。完整包包含 `Kite.app`、`安装.command` 和安装说明；可选服务运行目录嵌在 App 资源中。Bun、ripgrep、生产依赖、沙箱与 Claude 适配资源随包携带，安装后不依赖源码仓库，也不依赖打包机上的依赖目录。包中不含开发依赖、`.env`、登录凭据或用户数据库。
 
 完整 App 仅支持 `arm64`。仅服务安装包按构建机架构生成 `arm64` 或 `x64`，不同架构分别构建。解压后双击 `安装.command`，目标机器需要 Git，完整包还需要 Apple Silicon Mac 和 macOS 26 或更新版本；无需安装 Bun、Go 或完整 Xcode。缺少 Git 时先运行 `xcode-select --install`。安装成功后可移走解压目录与源码仓库。
 
@@ -52,7 +52,7 @@ App 使用临时签名，打包时验证签名完整性。此签名适合本机�
 
 完整包初次安装只复制 App。首次配置时选择本机执行才安装 kited；仅远程控制不安装服务。服务由当前用户的 launchd 托管，安装后立即启动、登录后自动启动，进程退出后会重新拉起；退出 Mac App 不停止服务。它只监听 `127.0.0.1`，默认端口 5483。各设备登录 Tailscale 入网，组网与授权见 [身份与设备](身份与设备.md)。launchd 的用户 Agent 生命周期参考 [Apple 官方说明](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)。
 
-后台环境显式提供 Bun、常见开发工具目录和用户的 `~/.local/bin`，不读取 shell 配置，也不保存发起安装的终端中的密钥或代理环境。项目使用额外工具链时，仍须让其在这些路径中可访问。
+后台环境显式提供随包的 Bun 与 ripgrep（代理的 shell 用它搜索）、常见开发工具目录和用户的 `~/.local/bin`，不读取 shell 配置，也不保存发起安装的终端中的密钥或代理环境。项目使用额外工具链时，仍须让其在这些路径中可访问。
 
 首次使用模型需在这台工作机完成设备登录，见 [工作机授权说明](kited.md#终端试用)。安装包不携带其他机器的登录。App 的本机执行模式使用本机 5483；自定义端口的独立服务目前不由 App 初始配置管理。
 

@@ -58,7 +58,9 @@ export function workspacePolicy(cwd: string, env: NodeJS.ProcessEnv): ExecutionP
   const system = process.platform === 'darwin'
     ? ['/bin', '/sbin', '/usr', '/System', '/Library/Developer', '/Library/Apple', '/Applications/Xcode.app', '/opt/homebrew', '/dev', '/private/etc', '/private/var/select']
     : ['/bin', '/sbin', '/usr', '/lib', '/lib64', '/etc', '/dev', '/proc', '/sys'];
-  const tools = [process.execPath, developerDirectory(env), env.SDKROOT].filter((path): path is string => !!path && isAbsolute(path));
+  // 安装包把 rg 与 Bun 放在同一个 bin 里，见 kited/scripts/package-macos.ts；从源码运行时没有，靠系统装的。
+  const tools = [process.execPath, join(dirname(process.execPath), 'rg'), developerDirectory(env), env.SDKROOT]
+    .filter((path): path is string => !!path && isAbsolute(path));
   const gitConfigs = env.HOME && isAbsolute(env.HOME) ? [join(env.HOME, '.gitconfig'), join(env.HOME, '.config/git/config')] : [];
   return { read: [...new Set([cwd, ...system.filter(existsSync), ...tools.filter(existsSync), ...gitConfigs].map(canonicalPath))],
     write: [realpathSync(cwd)], network: [] };
