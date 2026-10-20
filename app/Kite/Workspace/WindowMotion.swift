@@ -96,6 +96,13 @@ final class WindowMotion {
         return (0...steps).map { presentation(at: start.addingTimeInterval(duration * Double($0) / Double(steps))) }
     }
 
+    /// 所在的台面在窗口里挪了：起点、终点一起反着平移，窗口里看着不动，走着的这一段照常走完。
+    func shift(by offset: CGVector) {
+        guard offset != .zero else { return }
+        source.frame = source.frame.offsetBy(dx: offset.dx, dy: offset.dy)
+        target.frame = target.frame.offsetBy(dx: offset.dx, dy: offset.dy)
+    }
+
     func move(to next: WindowPose, kind: WindowMotionKind, at date: Date = .now) {
         guard next != target || (kind == .immediate && moving) else { return }
         if kind == .tracking, self.kind == .tracking,

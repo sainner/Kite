@@ -15,6 +15,7 @@ final class AppModel {
     }
     /// iPad 上拖侧栏改宽的实时宽度，不进 SwiftUI，见 SidebarDrag。
     @ObservationIgnored let sidebarDrag = SidebarDrag()
+    /// 侧栏收着，只留一列图标；收起、展开经 setSidebarCollapsed。
     var sidebarCollapsed = false
     /// 侧栏底部一级导航选中的一栏。
     var sidebarSection = SidebarSection.workspaces
@@ -98,6 +99,11 @@ final class AppModel {
     var selectedProject: RemoteProject? {
         guard let selectedProjectID else { return nil }
         return knownProjects.first { $0.id == selectedProjectID }
+    }
+
+    /// 收起、展开侧栏：和窗口的排布动画同一条曲线、一样长，台面上的窗口贴着侧栏的边一起飞到终点（见 TilesLayer）。
+    func setSidebarCollapsed(_ collapsed: Bool) {
+        withAnimation(WindowMotionKind.settle.animation) { sidebarCollapsed = collapsed }
     }
 
     func selectProject(_ id: String) {

@@ -12,9 +12,9 @@ import { join, resolve } from 'node:path';
 import { command } from './command.ts';
 import { compare, mainThreadSamples, measureIntervals, profile, render, summarize, type Report, type Row, type Run } from './perf-analysis.ts';
 
-const MAC_SCENES = ['drag-bottom', 'drag-work', 'drag-long', 'drag-fold', 'drag-running', 'drag-actions', 'sidebar', 'motion',
+const MAC_SCENES = ['drag-bottom', 'drag-work', 'drag-long', 'drag-fold', 'drag-running', 'drag-actions', 'sidebar', 'toggle', 'motion',
   'reopen', 'enter', 'idle-normal', 'idle-empty', 'idle-ring', 'idle-pulse', 'idle-sweep', 'type', 'send'];
-const IPAD_SCENES = ['drag-bottom', 'sidebar', 'motion', 'reopen', 'enter'];
+const IPAD_SCENES = ['drag-bottom', 'sidebar', 'toggle', 'motion', 'reopen', 'enter'];
 const IPHONE_SCENES = ['drawer', 'pull', 'swipe', 'keyboard'];
 /**
  * Time Profiler 默认按这些关键词分主线程：每个样本归到给的次序里第一个在栈上出现的（见 perf-analysis.ts 的 profile），

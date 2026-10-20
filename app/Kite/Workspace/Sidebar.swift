@@ -170,7 +170,7 @@ struct WorkspaceSidebar: View {
     private var sidebarToggle: some View {
         let title = model.sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"
         return Button {
-            withAnimation(.snappy) { model.sidebarCollapsed.toggle() }
+            model.setSidebarCollapsed(!model.sidebarCollapsed)
         } label: {
             PaneHeaderButtonLabel(title, systemImage: "sidebar.left")
         }

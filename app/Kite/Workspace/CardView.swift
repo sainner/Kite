@@ -102,6 +102,8 @@ final class CardView: NSView {
     var needsFrames: Bool { guard let motion = placed?.motion else { return false }; return motion.moving && motion.tracking }
     /// 这一段已经交给 Core Animation。
     private var flying = false
+    /// 台面挪过，交给 Core Animation 的那一段收掉了，等这一轮 move 接着交（见 shift）。
+    private var flightCut = false
     /// 会话窗口的原生外框眼下按多大排着，见 placeContent。
     private var nativeSize: CGSize?
     /// 排布动画开始的那几轮，会话窗口的原生外框先不按终点改大小，等这一段交给 Core Animation 以后的下一帧再改（见 arrange）。
@@ -289,6 +291,16 @@ final class CardView: NSView {
         if !acceptsInput { setHovered(false) }
     }
 
+    /// 台面在窗口里挪了（侧栏收起、展开，见 StageView.layout）：在台面坐标里反着挪，窗口里看着不动。交给 Core Animation 的那一段
+    /// 是按原来的坐标取的，先收掉；接着台面这一轮照常 arrange、move，终点换了从这一刻重新起一段，没换的把剩下的接着交。
+    func shift(by offset: CGVector) {
+        presentation.shift(by: offset)
+        guard flying else { return }
+        flying = false
+        flightCut = true
+        stopFlight()
+    }
+
     /// 把终点交给 motion，当场按这一刻的样子摆一次：停着的直接到终点；刚开始动的停在起点，等这次排版交上去再计时（见 WindowMotion.move）。
     func move(to target: WindowPose, kind: WindowMotionKind) {
         guard let motion = placed?.motion else { return }
@@ -299,31 +311,23 @@ final class CardView: NSView {
             flying = false
             stopFlight()
         }
+        if flightCut {
+            flightCut = false
+            // 台面挪过、终点没换（见 shift）：这一段剩下的从这一刻接着交给 Core Animation
+            if !motion.tracking, let flight = motion.flight {
+                let now = Date.now, remaining = flight.start.addingTimeInterval(flight.duration).timeIntervalSince(now)
+                if remaining > 0 { handOff(motion.presentations(from: now, duration: remaining), duration: remaining) }
+            }
+        }
         motionChanged()
         if !flying { applyPresentation(at: .now) }
     }
 
-    /// 这一段开始计时（这次排版已经交上去）：按 WindowMotion 的曲线每 1/120 秒取一帧，外框、最小化色、描边、头像、正文的变换和遮罩、
-    /// 标题两侧整段交给 Core Animation，模型值停在终点。取样和逐帧驱动用的是同一个 presentation，飞出来一样。
+    /// 这一段开始计时（这次排版已经交上去）：按 WindowMotion 的曲线每 1/120 秒取一帧整段交给 Core Animation（见 handOff）。
+    /// 取样和逐帧驱动用的是同一个 presentation，飞出来一样。
     private func flightStarted(_ motion: WindowMotion) {
-        guard motion === placed?.motion, !motion.tracking, let flight = motion.flight, let placed else { return }
-        let poses = motion.presentations(from: flight.start, duration: flight.duration)
-        flying = true
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        fill.animate(poses, duration: flight.duration)
-        if ringColor != nil { ring.animate(poses, duration: flight.duration) }
-        let size = iconSize
-        if let layer = iconMover.layer {
-            let transforms = poses.map { NSValue(caTransform3D: iconTransform($0, size: size)) }
-            layer.sublayerTransform = iconTransform(poses[poses.count - 1], size: size)
-            iconMover.alphaValue = poses[poses.count - 1].iconOpacity
-            layer.add(StageKeyframes.make("sublayerTransform", transforms, duration: flight.duration), forKey: "flight")
-            layer.add(StageKeyframes.make("opacity", poses.map { Float($0.iconOpacity) }, duration: flight.duration), forKey: "flight-opacity")
-        }
-        animateContent(poses, duration: flight.duration)
-        CATransaction.commit()
-        stage?.updateDisplayLink()
+        guard motion === placed?.motion, !motion.tracking, let flight = motion.flight else { return }
+        handOff(motion.presentations(from: flight.start, duration: flight.duration), duration: flight.duration)
         // 这一段交上去以后的下一帧再按终点改会话窗口的大小，见 arrange。下一轮运行循环可能赶在下一帧之前，就把这一帧也压住了
         if resizePending != nil, resizeLink == nil {
             let link = displayLink(target: self, selector: #selector(resizeTick(_:)))
@@ -333,6 +337,27 @@ final class CardView: NSView {
     }
 
     private var resizeLink: CADisplayLink?
+
+    /// 外框、最小化色、描边、头像、正文的变换和遮罩、标题两侧按 poses（按时间均匀取）整段交给 Core Animation，模型值停在最后一帧。
+    private func handOff(_ poses: [WindowPose], duration: TimeInterval) {
+        guard let last = poses.last else { return }
+        flying = true
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fill.animate(poses, duration: duration)
+        if ringColor != nil { ring.animate(poses, duration: duration) }
+        let size = iconSize
+        if let layer = iconMover.layer {
+            let transforms = poses.map { NSValue(caTransform3D: iconTransform($0, size: size)) }
+            layer.sublayerTransform = iconTransform(last, size: size)
+            iconMover.alphaValue = last.iconOpacity
+            layer.add(StageKeyframes.make("sublayerTransform", transforms, duration: duration), forKey: "flight")
+            layer.add(StageKeyframes.make("opacity", poses.map { Float($0.iconOpacity) }, duration: duration), forKey: "flight-opacity")
+        }
+        animateContent(poses, duration: duration)
+        CATransaction.commit()
+        stage?.updateDisplayLink()
+    }
 
     @objc private func resizeTick(_ link: CADisplayLink) {
         link.invalidate()

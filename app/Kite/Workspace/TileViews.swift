@@ -3,15 +3,21 @@ import SwiftUI
 /// 宽屏的台面：各张卡片、空画板、卡片之间的缝和停靠栏按排布算好的位置摆在同一层。卡片始终是同一个视图，
 /// 排布变了、拖出去缩成停靠形状、松手展开，都只是它的位置和大小在变，动画连贯，不会出现新旧两份交叠。
 /// Mac 是原生的 StageView，iPad 是原生的 PhoneStageView。
+/// 台面的大小、位置不跟 SwiftUI 的动画逐帧变：侧栏收起、展开时它一下子换到终点，窗口由台面按终点排一次、交给 Core Animation 飞过去
+/// （见 StageView.layout）。逐帧改的话每一帧台面上的窗口都要改大小，正文跟着重排（2026-10-20 Mac 实测，收起、展开一次 0.8 秒里
+/// 主线程约 660 毫秒、掉 30 多帧）。
 struct TilesLayer: View {
     let group: PaneGroup
 
     var body: some View {
-        #if os(macOS)
-        StageHost(group: group)
-        #else
-        PhoneStageHost(group: group)
-        #endif
+        Group {
+            #if os(macOS)
+            StageHost(group: group)
+            #else
+            PhoneStageHost(group: group)
+            #endif
+        }
+        .transaction { $0.animation = nil }
     }
 }
 

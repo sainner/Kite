@@ -64,8 +64,12 @@ final class PhoneStageView: UIView, StageDotsReporting {
     let model: AppModel
     private let reports: StageReports
     let geometry = StageGeometry()
-    /// 空画板的台面大小：拖侧栏时停靠栏定住不排（geometry 定住），空画板照常跟着台面排。
+    /// 空画板的台面大小：侧栏收起、展开时空画板自己从原来的地方排过去（见 placeWindowless），停靠栏不跟着每帧排。
     private let windowlessGeometry = StageGeometry()
+    /// 侧栏收起、展开时空画板正在排过去的这一段，由显示链接逐帧排。
+    private var windowlessFlight: WindowlessFlight?
+    /// 上一轮排版时侧栏收没收起，认出侧栏收起、展开的那一轮（见 layoutSubviews）。
+    private var sidebarCollapsed: Bool?
     private(set) var environment = EnvironmentValues()
     private(set) var look: StageAppearance?
     private var openSidebar: (@MainActor () -> Void)?
@@ -215,13 +219,19 @@ final class PhoneStageView: UIView, StageDotsReporting {
         super.layoutSubviews()
         // 环境交过来以前不建卡片：托管的正文要从环境里取 App 模型
         guard look != nil else { return }
-        let previousOrigin = origin
+        let previous = origin
         origin = window.map { convert(CGPoint.zero, to: $0) } ?? .zero
-        // 台面在窗口里挪了（拖侧栏起手、松手时内容区往左伸、缩回，见 SidebarDrag）：卡片在台面坐标里跟着反向挪，窗口里看着不动，当场摆过去不走动画
-        let moved = origin.x != previousOrigin.x
+        // 台面在窗口里挪了（侧栏收起、展开；拖侧栏起手、松手时内容区往左伸、缩回，见 SidebarDrag）：摆着的卡片在台面坐标里反着挪，
+        // 窗口里看着不动，再从那里按这一轮的排布走
+        let offset = viewport == nil ? .zero : CGVector(dx: previous.x - origin.x, dy: previous.y - origin.y)
+        if offset != .zero { for card in cards.values { card.shift(by: offset) } }
+        // 侧栏收起、展开：台面一下子换到终点（SwiftUI 不逐帧改它的大小，见 TilesLayer），窗口照排布动画飞过去，正文只按终点排一次。
+        // 只认台面跟着挪了的那一轮，同 Mac 的 StageView.layout
+        let collapsed = model.sidebarCollapsed
+        let toggled = sidebarCollapsed.map { $0 != collapsed } == true && offset != .zero
+        sidebarCollapsed = collapsed
         laying = true
         defer { laying = false }
-        let sidebarResizing = tracking.track({ model.sidebarResizing }) { [weak self] in self?.invalidateArrangement() }
         // 拖侧栏改宽时内容区从侧栏最窄的宽起，台面自己把排窗口的那块让到侧栏实时的右边，见 SidebarDrag
         let shift = model.sidebarDrag.offset
         stageRect = CGRect(x: shift, y: 0, width: max(bounds.width - shift, 0), height: bounds.height)
@@ -229,16 +239,33 @@ final class PhoneStageView: UIView, StageDotsReporting {
         if viewport != size {
             viewport = size
             // 报视口会改排布模型，自己的改动不回头再排一遍。台面左边在哪交给排布：侧栏改宽时只由最左一列吸收
-            tracking.quietly { group.layout.updateViewport(size, presentation: .tiled, leading: origin.x + shift) }
+            tracking.quietly { group.layout.updateViewport(size, presentation: .tiled, leading: origin.x + shift, animated: toggled) }
         }
         for island in [dockRail, windowless, dockOverlay] + unfolds.values { place(island, bounds) }
         place(placeholder, bounds)
         // 停靠栏贴着台面右边，侧栏改宽时不动，按整个台面排；空画板（没有窗口时才露出来）拖侧栏时每步不跟着挪，
         // 只在起手、松手台面往左伸、缩回时按整个台面重排一次
         if geometry.bounds != bounds { geometry.bounds = bounds }
-        if windowlessGeometry.bounds != bounds { windowlessGeometry.bounds = bounds }
-        let arranged = tracking.track({ arrange(dotsHidden: sidebarResizing) }) { [weak self] in self?.invalidateArrangement() }
-        settle(arranged, immediate: moved)
+        placeWindowless(bounds, offset: offset, flies: toggled)
+        // 拖侧栏改宽（sidebarResizing）和排布读在同一条登记里：ModelTracking 同一时刻只留一条，分开读的话后一条不登记
+        let arranged = tracking.track({ arrange(dotsHidden: model.sidebarResizing) }) { [weak self] in self?.invalidateArrangement() }
+        // 别的挪动（拖侧栏起手、松手）当场摆过去，不走动画
+        settle(arranged, immediate: offset != .zero && !toggled)
+    }
+
+    /// 空画板排在哪：平时同台面。侧栏收起、展开时它露着（台面上没有窗口）就从原来的地方按窗口的曲线排过去，见 WindowlessFlight。
+    private func placeWindowless(_ rect: CGRect, offset: CGVector, flies: Bool) {
+        let layout = group.layout
+        let shown = (layout.shown?.panes.isEmpty ?? true) && windowlessGeometry.bounds != .zero
+        if flies, shown, look?.reduceMotion == false {
+            let flight = WindowlessFlight(from: windowlessGeometry.bounds.offsetBy(dx: offset.dx, dy: offset.dy), to: rect)
+            windowlessFlight = flight
+            windowlessGeometry.bounds = flight.from
+            updateDisplayLink()
+        } else if windowlessFlight?.to != rect {
+            windowlessFlight = nil
+            if windowlessGeometry.bounds != rect { windowlessGeometry.bounds = rect }
+        }
     }
 
     /// 台面上排窗口的那一块（台面坐标）：平时是整个台面，拖侧栏改宽时左边挪到侧栏实时的右边。
@@ -539,9 +566,9 @@ final class PhoneStageView: UIView, StageDotsReporting {
 
     // MARK: - 逐帧
 
-    /// 有卡片在跟手拖动时开显示链接，逐帧取样；别的排布动画整段交给 Core Animation（见 PhoneCardView.flightStarted）。
+    /// 有卡片在跟手拖动、空画板在排过去（见 placeWindowless）时开显示链接，逐帧取样；别的排布动画整段交给 Core Animation（见 PhoneCardView.flightStarted）。
     func updateDisplayLink() {
-        let moving = cards.values.contains { $0.needsFrames }
+        let moving = cards.values.contains { $0.needsFrames } || windowlessFlight != nil
         if moving, displayLink == nil {
             let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
             link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
@@ -558,6 +585,12 @@ final class PhoneStageView: UIView, StageDotsReporting {
         for card in cards.values where card.needsFrames {
             card.applyPresentation(at: date)
             moving = true
+        }
+        if var flight = windowlessFlight {
+            let frame = flight.frame(at: link.targetTimestamp)
+            windowlessFlight = frame == nil ? nil : flight
+            windowlessGeometry.bounds = frame ?? flight.to
+            moving = moving || frame != nil
         }
         if !moving { link.isPaused = true }
     }

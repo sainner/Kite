@@ -99,6 +99,8 @@ final class PhoneCardView: UIView {
     var needsFrames: Bool { guard let motion = placed?.motion else { return false }; return motion.moving && motion.tracking }
     /// 这一段已经交给 Core Animation。
     private var flying = false
+    /// 台面挪过，交给 Core Animation 的那一段收掉了，等这一轮 move 接着交（见 shift）。
+    private var flightCut = false
     /// 会话窗口的原生外框眼下按多大排着，见 placeContent。
     private var nativeSize: CGSize?
     /// 排布动画开始的那几轮，正文里要跟着重排的几项先不改，等这一段交给 Core Animation 以后的下一帧再改（见 arrange）：
@@ -298,6 +300,15 @@ final class PhoneCardView: UIView {
         if !acceptsInput { setHovered(false) }
     }
 
+    /// 台面在窗口里挪了（侧栏收起、展开，见 PhoneStageView.layoutSubviews）：在台面坐标里反着挪，窗口里看着不动，同 Mac 的 CardView.shift。
+    func shift(by offset: CGVector) {
+        presentation.shift(by: offset)
+        guard flying else { return }
+        flying = false
+        flightCut = true
+        stopFlight()
+    }
+
     /// 把终点交给 motion，当场按这一刻的样子摆一次：停着的直接到终点；刚开始动的停在起点，等这次排版交上去再计时（见 WindowMotion.move）。
     func move(to target: WindowPose, kind: WindowMotionKind) {
         guard let motion = placed?.motion else { return }
@@ -308,35 +319,48 @@ final class PhoneCardView: UIView {
             flying = false
             stopFlight()
         }
+        if flightCut {
+            flightCut = false
+            // 台面挪过、终点没换（见 shift）：这一段剩下的从这一刻接着交给 Core Animation
+            if !motion.tracking, let flight = motion.flight {
+                let now = Date.now, remaining = flight.start.addingTimeInterval(flight.duration).timeIntervalSince(now)
+                if remaining > 0 { handOff(motion.presentations(from: now, duration: remaining), duration: remaining) }
+            }
+        }
         motionChanged()
         if !flying { applyPresentation(at: .now) }
     }
 
-    /// 这一段开始计时（这次排版已经交上去）：按 WindowMotion 的曲线每 1/120 秒取一帧，外框、最小化色、描边、头像、正文的变换和遮罩、
-    /// 标题两侧整段交给 Core Animation，模型值停在终点。取样和逐帧驱动用的是同一个 presentation，飞出来一样。
+    /// 这一段开始计时（这次排版已经交上去）：按 WindowMotion 的曲线每 1/120 秒取一帧整段交给 Core Animation（见 handOff）。
+    /// 取样和逐帧驱动用的是同一个 presentation，飞出来一样。
     private func flightStarted(_ motion: WindowMotion) {
         guard motion === placed?.motion, !motion.tracking, let flight = motion.flight else { return }
-        let poses = motion.presentations(from: flight.start, duration: flight.duration)
-        flying = true
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        fill.animate(poses, duration: flight.duration)
-        if ringColor != nil { RingGeometry.animate(ring, poses, duration: flight.duration) }
-        let size = iconSize
-        let transforms = poses.map { NSValue(caTransform3D: iconTransform($0, size: size)) }
-        iconMover.layer.sublayerTransform = iconTransform(poses[poses.count - 1], size: size)
-        iconMover.alpha = poses[poses.count - 1].iconOpacity
-        iconMover.layer.add(StageKeyframes.make("sublayerTransform", transforms, duration: flight.duration), forKey: "flight")
-        iconMover.layer.add(StageKeyframes.make("opacity", poses.map { Float($0.iconOpacity) }, duration: flight.duration), forKey: "flight-opacity")
-        animateContent(poses, duration: flight.duration)
-        CATransaction.commit()
-        stage?.updateDisplayLink()
+        handOff(motion.presentations(from: flight.start, duration: flight.duration), duration: flight.duration)
         // 这一段交上去以后的下一帧再改推迟的那几项，见 arrange。下一轮运行循环可能赶在下一帧之前，就把这一帧也压住了
         if contentPending != nil, contentLink == nil {
             let link = CADisplayLink(target: self, selector: #selector(contentTick(_:)))
             link.add(to: .main, forMode: .common)
             contentLink = link
         }
+    }
+
+    /// 外框、最小化色、描边、头像、正文的变换和遮罩、标题两侧按 poses（按时间均匀取）整段交给 Core Animation，模型值停在最后一帧。
+    private func handOff(_ poses: [WindowPose], duration: TimeInterval) {
+        guard let last = poses.last else { return }
+        flying = true
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fill.animate(poses, duration: duration)
+        if ringColor != nil { RingGeometry.animate(ring, poses, duration: duration) }
+        let size = iconSize
+        let transforms = poses.map { NSValue(caTransform3D: iconTransform($0, size: size)) }
+        iconMover.layer.sublayerTransform = iconTransform(last, size: size)
+        iconMover.alpha = last.iconOpacity
+        iconMover.layer.add(StageKeyframes.make("sublayerTransform", transforms, duration: duration), forKey: "flight")
+        iconMover.layer.add(StageKeyframes.make("opacity", poses.map { Float($0.iconOpacity) }, duration: duration), forKey: "flight-opacity")
+        animateContent(poses, duration: duration)
+        CATransaction.commit()
+        stage?.updateDisplayLink()
     }
 
     @objc private func contentTick(_ link: CADisplayLink) {

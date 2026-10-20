@@ -62,9 +62,10 @@ function sweep(segment: Segment) {
   };
 }
 
-/** 一次动作到动画走完、逐帧记的段，按表分：iPad、Mac 的缩小恢复、打开关掉的窗口，iPhone 的抽屉开合、手指拉抽屉、横滑、键盘升降。 */
+/** 一次动作到动画走完、逐帧记的段，按表分：iPad、Mac 的缩小恢复、侧栏收起展开、打开关掉的窗口，iPhone 的抽屉开合、手指拉抽屉、横滑、键盘升降。 */
 const ACTIONS: Record<string, string[]> = {
   '缩小与恢复': ['minimize', 'restore'],
+  '侧栏收起与展开': ['collapse', 'expand'],
   '打开与关闭窗口': ['reopen', 'close'],
   '抽屉、横滑与键盘': ['sidebar-open', 'sidebar-close', 'actions-open', 'actions-close', 'pull-open', 'pull-close',
     'swipe-next', 'swipe-back', 'keyboard-show', 'keyboard-hide'],

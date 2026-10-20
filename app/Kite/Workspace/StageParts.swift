@@ -35,6 +35,31 @@ struct StageAppearance: Equatable {
     var lifted: Set<String> = []
 }
 
+/// 侧栏收起、展开时空画板从原来的地方排到终点。台面一下子换了大小（见 TilesLayer），卡片交给 Core Animation 飞；
+/// 空画板是 SwiftUI，摆在上面的点阵图形按它的排版走，所以由台面的显示链接按窗口的曲线和时长每帧排一次，和卡片、侧栏一起到。
+struct WindowlessFlight {
+    var from: CGRect
+    let to: CGRect
+    /// 头一帧的显示时刻，同卡片等这次排版交上去再计时（见 WindowMotion.move）。
+    private var start: CFTimeInterval?
+
+    init(from: CGRect, to: CGRect) {
+        self.from = from
+        self.to = to
+    }
+
+    /// 显示时刻 time 这一帧排在哪；走完返回 nil。
+    mutating func frame(at time: CFTimeInterval) -> CGRect? {
+        let start = start ?? time
+        self.start = start
+        let fraction = (time - start) / WindowMotionKind.settle.duration
+        guard fraction < 1 else { return nil }
+        let p = CGFloat(WindowMotionKind.curve.value(at: fraction))
+        func mix(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * p }
+        return CGRect(x: mix(from.minX, to.minX), y: mix(from.minY, to.minY), width: mix(from.width, to.width), height: mix(from.height, to.height))
+    }
+}
+
 /// 台面上的图层动画：曲线与时长同 WindowMotionKind（cubic-bezier(0.2, 0, 0, 1)）；SwiftUI 的弹簧按同样的参数逐帧取样成关键帧。
 enum StageAnimation {
     static let timing = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)

@@ -86,7 +86,7 @@ struct MainWindow: View {
 
     private var expandSidebar: (@MainActor () -> Void)? {
         guard model.sidebarCollapsed else { return nil }
-        return { withAnimation(.snappy) { model.sidebarCollapsed = false } }
+        return { model.setSidebarCollapsed(false) }
     }
 
     /// 侧栏在排版上占的宽：平时就是 sidebarWidth；iPad 拖侧栏改宽时只占最窄的宽，内容区（原生台面）往左伸到那里，
@@ -129,7 +129,7 @@ struct MainWindow: View {
         if collapse != model.sidebarCollapsed {
             // 收起、展开换了排法：先把挪着的宽交回 SwiftUI
             if let width = model.sidebarDrag.end() { model.sidebarWidth = width }
-            withAnimation(.snappy) { model.sidebarCollapsed = collapse }
+            model.setSidebarCollapsed(collapse)
         }
         guard !collapse else { return }
         // 取到像素：贴着侧栏的那一列跟着侧栏的边走，不落在半像素上

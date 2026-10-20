@@ -202,6 +202,7 @@ import UIKit
     private static func perform(_ scene: String, _ session: Session) async throws {
         switch scene {
         case "sidebar": try await sidebar(session)
+        case "toggle": try await toggle(session)
         case "motion": try await motion(session)
         case "reopen": try await reopen(session)
         case "enter": try await enter(session)
@@ -399,6 +400,27 @@ import UIKit
             segment.settleCpuMs = threadCPU() - settle.cpu
             session.record(segment)
             if index == 0 { await capture("sidebar-settled") }
+        }
+    }
+
+    // MARK: - 侧栏收起、展开
+
+    /// 侧栏收起、展开（同点侧栏的按钮），-perfPairs 次（默认 4）；对话停在底部，每次从动作起逐帧记 1.5 秒，停下后补量屏外的行也在里面。
+    private static func toggle(_ session: Session) async throws {
+        let model = session.model, collapsed = model.sidebarCollapsed
+        session.onFinish { model.sidebarCollapsed = collapsed }
+        if collapsed {
+            model.sidebarCollapsed = false
+            try await Task.sleep(for: .seconds(1))
+        }
+        try await prepareDrag("bottom", session)
+        try await ready(session)
+        for index in 0..<(number("perfPairs").map(Int.init) ?? 4) {
+            session.record(try await timed("collapse", index, seconds: 1.5) { model.setSidebarCollapsed(true) })
+            if index == 0 { await capture("toggle-collapsed") }
+            try await Task.sleep(for: .seconds(1.2))
+            session.record(try await timed("expand", index, seconds: 1.5) { model.setSidebarCollapsed(false) })
+            try await Task.sleep(for: .seconds(1.2))
         }
     }
 

@@ -96,7 +96,7 @@ struct KiteCommands: Commands {
         #if os(macOS)
         CommandGroup(before: .toolbar) {
             Button(model.sidebarCollapsed ? "展开侧边栏" : "收起侧边栏") {
-                withAnimation(.snappy) { model.sidebarCollapsed.toggle() }
+                model.setSidebarCollapsed(!model.sidebarCollapsed)
             }
             .keyboardShortcut("s", modifiers: [.control, .command])
             Menu("外观") { AppearancePicker() }

@@ -142,6 +142,12 @@ final class CardPresentation {
         return Placement(contentSize: contentSize, appearance: appearance, minimized: minimized, hidden: hidden, target: target, motion: motion)
     }
 
+    /// 台面在窗口里挪了：记下的外框和 motion 一起反着平移，窗口里看着不动（见 StageView.layout）。
+    func shift(by offset: CGVector) {
+        frame = frame?.offsetBy(dx: offset.dx, dy: offset.dy)
+        motion?.shift(by: offset)
+    }
+
     /// 交给 motion 新终点时用哪种动画：减少动态效果直接到位；拖着的跟手；拖缝跟手不动画；拖动中别的卡片让位；否则按这次排布改动的种类。
     static func motionKind(layout: WindowLayout, pane: Pane, reduceMotion: Bool) -> WindowMotionKind {
         reduceMotion ? .immediate : layout.drag?.pane == pane ? .tracking

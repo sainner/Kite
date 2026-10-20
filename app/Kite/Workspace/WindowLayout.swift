@@ -47,7 +47,8 @@ final class WindowLayout {
     /// 所有 App 窗口里有窗口组在拖缝，或者在拖侧栏改宽：对话列表这时只量可见区附近的行，停下后补量（见 TranscriptListView、PhoneTranscriptView）。
     static var anyResizing: Bool { sidebarResizing || resizingLeadingEdge || all.allObjects.contains { $0.resizing != nil } }
     /// 在拖侧栏改宽：贴着侧栏的那一列每步改宽（见 shiftLeadingEdge），对话列表和拖缝时一样省着量。
-    /// 侧栏改宽都经 updateViewport 认出来，最后一次改过后 leadingQuiet 秒内都算在拖（拖侧栏的边、侧栏收起展开的动画都是逐帧改）。
+    /// 拖侧栏的边每步都经 updateViewport 认出来，最后一次改过后 leadingQuiet 秒内都算在拖。侧栏收起、展开不算：台面一下子换到终点，
+    /// 窗口飞过去，正文只按终点排一次（见 updateViewport 的 animated）。
     static var resizingLeadingEdge: Bool { ProcessInfo.processInfo.systemUptime - leadingShiftedAt < leadingQuiet }
     private static var leadingShiftedAt: TimeInterval = -.infinity
     private static let leadingQuiet: TimeInterval = 0.2
@@ -74,7 +75,8 @@ final class WindowLayout {
     /// 窄屏只改变呈现，不把暂时放不下的卡片写成永久停靠。leading 是内容区左边在 App 窗口里的位置：
     /// 宽度的变化正好是左边挪的那一段，就是侧栏改了宽（拖动、收起、展开），由贴着侧栏的那一列吸收，见 shiftLeadingEdge；
     /// 其余的宽度变化（系统窗口改尺寸、换到另一个窗口里）各列照比例分。
-    func updateViewport(_ size: CGSize, presentation: WorkspacePresentation, leading: CGFloat = 0) {
+    /// animated 是侧栏收起、展开：台面一下子换到终点，窗口照排布动画飞过去；别的视口变化都是跟手的，当场摆到位。
+    func updateViewport(_ size: CGSize, presentation: WorkspacePresentation, leading: CGFloat = 0, animated: Bool = false) {
         let nextSize: CGSize? = presentation == .tiled ? size : nil
         if self.presentation != presentation || availableSize != nextSize {
             cancelDrag()
@@ -83,13 +85,13 @@ final class WindowLayout {
         // 界面按像素摆，内容区的左边和宽各自取整，两者的变化差不到一点
         if self.presentation == .tiled, presentation == .tiled, let previous = availableSize, size.width != previous.width,
            leading != viewportLeading, abs(size.width - previous.width + leading - viewportLeading) < 1 {
-            Self.leadingShiftedAt = ProcessInfo.processInfo.systemUptime
+            if !animated { Self.leadingShiftedAt = ProcessInfo.processInfo.systemUptime }
             shiftLeadingEdge(from: previous, to: size)
         }
         if self.presentation == .compact && presentation == .tiled {
             carriedFocus = focused.flatMap { docked.contains($0) ? $0 : nil }
         }
-        motionKind = .immediate
+        motionKind = animated ? .settle : .immediate
         self.presentation = presentation
         availableSize = nextSize
         viewportLeading = leading
