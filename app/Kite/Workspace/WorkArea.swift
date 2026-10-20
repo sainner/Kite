@@ -351,16 +351,16 @@ final class WorkArea: Identifiable {
     }
 
     /// 先在本机归档，见 archivingInstances。
-    func archiveLocally(_ id: String) {
-        guard !archivingInstances.contains(id) else { return }
-        archivingInstances.insert(id)
+    func archiveLocally(_ ids: [String]) {
+        guard !archivingInstances.isSuperset(of: ids) else { return }
+        archivingInstances.formUnion(ids)
         rebuildWindows()
     }
 
     /// 工作机没归档：放回来。
-    func restoreArchiving(_ id: String) {
-        guard archivingInstances.contains(id) else { return }
-        archivingInstances.remove(id)
+    func restoreArchiving(_ ids: [String]) {
+        guard !archivingInstances.isDisjoint(with: ids) else { return }
+        archivingInstances.subtract(ids)
         rebuildWindows()
     }
 

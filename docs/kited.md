@@ -205,7 +205,7 @@ bun src/cli.ts net up              # 开启已登录设备的组网
 | 快照与回退 | 每批工具后与回合结束时保存整个工作区的变更并记下触发的线程，快照不改变 HEAD、分支或暂存区；超过 10 MiB 且项目 Git 未跟踪的文件不进快照，与被忽略的文件一样回退不碰（见 [成果查看与位置](成果查看与位置.md#大文件)）。回退先保存现状，再恢复文件；任一线程在执行或恢复阻塞期间不允许回退 |
 | 采纳（集成） | 按项目的集成方式：直接合入把工作区改动合进主线并推送到远程；提交 PR 把工作区分支推到远程并开 PR。同一检出的采纳串行执行，冲突留在工作树；采纳后工作区与线程仍可继续使用 |
 | 同步 | 拉取主线并合进工作区分支，不推送；要求线程全部空闲，冲突同采纳，合完保存快照。工作区聚合带 `behind`，是主线比工作区分支多出的提交数，按最近一次拉取计算 |
-| 归档实例 | 停止该实例的执行并关闭它的窗口，保留会话、业务数据、工作区和快照；随窗口回收的实例关闭窗口即可，不提供归档 |
+| 归档实例 | 停止该实例的执行并关闭它的窗口，保留会话、业务数据、工作区和快照；归档代理时，同一工作区里它开出的各层子代理一起归档。随窗口回收的实例关闭窗口即可，不提供归档 |
 | 归档工作区 | 停止所有线程、保存最后快照，回收工作树和分支，归档实例并关闭共享窗口。未采纳改动须显式 `force`；提交 PR 的工作区以 PR 合并为已采纳。Line 所在的工作区不能归档 |
 | 跨机流转 | 所有线程空闲时交出工作区；另一台工作机把副本补到末尾、装到本机并接管后，本机记录冻结为 `transferred`。工作区 ID 不变，`epoch` 加 1；见 [工作区流转](Line与工作区流转.md#工作区流转) |
 | 子工作区 | 代理用 `agent_start` 的 `isolation` 从当前工作区最近的快照开出，挂在父工作区下；只能合回父工作区或放弃，随父工作区流转，见 [子工作区](项目与远程仓库.md#子工作区) |
@@ -373,7 +373,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/threads/:id/waiting/:waiting` | 回应线程在等的审批 `{decision}`，或没回应的提问 `{answers}`、密钥请求 `{secret: {values, scope?}}`（按请求的顺序逐项给值，没填的为 `null`），提问与密钥请求也可以 `{decision: "deny"}`；请求处理后结果作为一条输入交给代理，可带 `reason`；密钥请求不接受 `X-Kite-Source`，填的值只存进凭据；带 `X-Kite-Source` 时是 Line 代处理，提问的结果写明由 Line 代答及理由。已回应、作废或收回返回 409 与当前的 `waiting`。约定见 [工具审批与提问](工具审批与提问.md) |
 | POST | `/threads/:id/compactions` | 手动压缩上下文 `{id, from, through}`，起止为输入 id；校验通过即返回，结果经显示事件送达 |
 | DELETE | `/threads/:id/compactions/:compaction` | 撤销最外层的一次压缩 |
-| POST | `/instances/:id/archive` | 归档独立存续的实例（agent 或 Bun 插件），保留所属工作区 |
+| POST | `/instances/:id/archive` | 归档独立存续的实例（agent 或 Bun 插件），保留所属工作区；agent 连同同一工作区里它开出的各层子代理 |
 | GET | `/workspaces/:id/snapshots` | 工作区快照，新的在前 |
 | POST | `/workspaces/:id/restore` | 恢复文件到快照 `{commit}` |
 | POST | `/workspaces/:id/adopt` | 按项目的集成方式集成，可带 `{confirmRecovery: true}` 先确认工作区里待恢复的线程（App 手动合回用）。直接合入返回 `{status: "adopted", commit, push}`，`push` 为 `{status: "pushed"}`、`{status: "local"}`（没有远程）或 `{status: "failed", message, gitLogin?}`，远程要账号时带 `gitLogin`（主机）；提交 PR 返回 `{status: "proposed", branch, url, number?}`，`url` 是 PR 页面，不能自动开 PR 的平台是去开 PR 的网页、没有 `number`；有冲突时返回 `{status: "conflict", files}`；提交 PR 时拉取或推送不了 409，远程要账号时错误体带 `gitLogin` |

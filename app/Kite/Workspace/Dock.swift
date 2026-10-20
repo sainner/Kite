@@ -69,7 +69,7 @@ indirect enum DockEntry: Identifiable {
     }
 }
 
-/// 子代理不随父代理回收，只是挂在它下面显示：开没开窗口都在父代理这一格里，不另占一格。
+/// 子代理挂在父代理下面显示，随父代理归档：开没开窗口都在父代理这一格里，不另占一格。
 struct DockFamily {
     let parent: RemotePluginInstance
     /// 父代理在本机的窗口；没有窗口时整家占一个小头像。
@@ -171,7 +171,7 @@ extension WorkArea {
         for window in windows where window.target.instanceId != windowless && paneOf[window.target.instanceId] == nil {
             paneOf[window.target.instanceId] = Pane(window.id)
         }
-        // 子代理挂在仍然存在的父代理下面，开没开窗口都一样；父代理归档后提升为顶层。
+        // 子代理挂在开着的父代理下面，开没开窗口都一样。
         func parent(of instance: RemotePluginInstance) -> RemotePluginInstance? {
             guard isAgent(instance) else { return nil }
             return instance.origin.flatMap { byID[$0.instanceId] }.flatMap { isAgent($0) ? $0 : nil }
@@ -228,20 +228,18 @@ extension WorkArea {
         return model
     }
 
+    /// 代理开出、还开着的各层子代理，归档时一起归档，和工作机的规则一样（见 kited 的 Kite.subagents）；不是代理的没有。
+    func subagents(of instance: RemotePluginInstance) -> [RemotePluginInstance] {
+        guard isAgent(instance) else { return [] }
+        return instances.filter { $0.status == .open && $0.origin?.instanceId == instance.id && isAgent($0) }.flatMap { [$0] + subagents(of: $0) }
+    }
+
     /// 父代理关窗口时一起关的：各层子代理开着、但没在眼前的窗口（宽屏收在停靠栏里，紧凑布局不是当前窗口）。
     /// 台面上的留着，其余的随父代理收进它那一格。
     func descendantPanesClosing(with pane: Pane) -> [Pane] {
-        guard let instance = instance(of: pane), isAgent(instance) else { return [] }
+        guard let instance = instance(of: pane) else { return [] }
         let visible = layout.presentation == .tiled ? Set(layout.shown?.panes ?? []) : Set([layout.focused].compactMap(\.self))
-        var result: [Pane] = []
-        func visit(_ id: String) {
-            for child in instances where child.status == .open && child.origin?.instanceId == id && isAgent(child) {
-                if let window = window(of: child.id), !visible.contains(Pane(window.id)) { result.append(Pane(window.id)) }
-                visit(child.id)
-            }
-        }
-        visit(instance.id)
-        return result
+        return subagents(of: instance).compactMap { window(of: $0.id).map { Pane($0.id) } }.filter { !visible.contains($0) }
     }
 
     /// 按窗口集合的顺序取出台面上的窗口，结果稳定。

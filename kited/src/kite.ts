@@ -1978,18 +1978,28 @@ export class Kite {
       this.changed(instance.workspaceId);
     });
   }
+  /** 代理连同同一工作区里它开出的各层子代理一起归档；父代理先归档，子代理停下时不再回报给它。 */
   private archiveThread(id: string): Promise<void> {
     const t = this.context(id);
     this.preparations.get(t.workspaceId)?.abort();
     return this.control(t.workspaceId, async () => {
-      const current = this.context(id);
-      if (current.status === 'archived') return;
-      await this.stopThread(current);
-      await this.terminals.stopOwned(id, '启动它的代理已归档');
-      this.asks.clear(id);
-      this.store.archiveInstance(id);
-      this.threadChanged({ ...current, status: 'archived' });
+      for (const member of [id, ...this.subagents(t.workspaceId, id)]) {
+        const current = this.context(member);
+        if (current.status === 'archived') continue;
+        await this.stopThread(current);
+        await this.terminals.stopOwned(member, '启动它的代理已归档');
+        this.asks.clear(member);
+        this.store.archiveInstance(member);
+        this.threadChanged({ ...current, status: 'archived' });
+      }
     });
+  }
+  /** 同一工作区里由这个代理开出、还开着的各层子代理；中间一层已归档的，它下面的不算。 */
+  private subagents(workspaceId: string, id: string): string[] {
+    const open = this.store.threads(workspaceId).filter((t) => t.status === 'open');
+    const below = (parent: string): string[] =>
+      open.filter((t) => t.origin?.instanceId === parent).flatMap((t) => [t.id, ...below(t.id)]);
+    return below(id);
   }
   /** 手动起的名不再跟着代理的标题改；切回自动时当场按代理的标题重起，见 WorkspaceNames。 */
   nameWorkspace(id: string, input: { mode: 'auto' } | { mode: 'manual'; name: string }): WorkspaceModel {

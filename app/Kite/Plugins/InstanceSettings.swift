@@ -299,8 +299,10 @@ struct ArchiveInstanceConfirmation: ViewModifier {
                    presenting: instance) { target in
                 Button("归档", role: .destructive) { archive(target) }
                 Button("取消", role: .cancel) {}
-            } message: { _ in
-                Text("归档会停止它正在进行的执行并关闭它的窗口，会话和数据保留在工作机上。目前还不能在界面里查看或恢复已归档的实例。")
+            } message: { target in
+                let children = area.subagents(of: target).count
+                let who = children > 0 ? "它和它开出的 \(children) 个子代理" : "它"
+                Text("归档会停止\(who)正在进行的执行并关闭\(children > 0 ? "它们" : "它")的窗口，会话和数据保留在工作机上。目前还不能在界面里查看或恢复已归档的实例。")
             }
             .alert("归档失败", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("好", role: .cancel) { error = nil }
