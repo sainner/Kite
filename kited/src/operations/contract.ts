@@ -51,8 +51,8 @@ export const operationContracts = {
   },
   'agent.start': {
     title: '创建 agent', description: [
-      '在当前工作区按角色创建 agent 实例。role 是角色 ID，省略时用默认角色 kite.work（工作）；内置的还有 kite.review（只读审查）。省略 prompt 只创建空会话；同一工作区的代理可以同时工作，带 prompt 的回合结束时把结果回报给你。默认不打开窗口，由用户从创建它的 agent 处查看；只在用户要求在界面上看着它时传 presentation: window。',
-      'isolation: workspace 把它放进一个子工作区：宿主从当前工作区最近的快照开出子工作区（含还没集成的改动），跑完项目的准备脚本后它才开始，构建、测试和改动都与这里隔开，返回 workspaceId。适合要改很多文件、会和别的代理互相干扰的任务；做完用 agent_merge 合回，不要的停着即可，由用户放弃。',
+      '在当前工作区按角色创建 agent 实例。role 是角色 ID，省略时用默认角色 kite.work（工作）；内置的还有 kite.review（只读审查）。省略 prompt 只创建空会话；带 prompt 的回合结束时把结果回报给你。只在用户要求在界面上看着它时传 presentation: window。',
+      'isolation: workspace 把它放进一个子工作区：从当前工作区最近的快照开出（含还没集成的改动），构建、测试和改动都与这里隔开。适合要改很多文件、会和别的代理互相干扰的任务；做完用 agent_merge 合回，不要的停着即可，由用户放弃。',
     ].join(''),
     tool: 'agent_start', effect: 'create', retry: 'receipt',
     input: z.object({ operationId: id, role: id.optional(), title: text.optional(), prompt: text.optional(),
@@ -60,17 +60,17 @@ export const operationContracts = {
     output: z.object({ instanceId: id, windowId: id.optional(), workspaceId: id.optional() }).strict(),
   },
   'agent.list': {
-    title: '查询 agent', description: '查询你协作范围内的 agent 实例：谁建的、一行状态及你获准的操作；不会唤醒会话。',
+    title: '查询 agent', description: '查询你协作范围内的 agent 实例：谁建的、一行状态及你获准的操作。',
     tool: 'agent_list', effect: 'read', retry: 'read',
     input: z.object({}).strict(), output: z.object({ agents: z.array(summary) }).strict(),
   },
   'agent.send': {
-    title: '发送消息', description: '向获准的 agent 实例发送消息，对方看到的消息标明是你发的。消息落盘后返回；同一工作区的线程可以同时执行，对方这一回合结束时把结果回报给你。',
+    title: '发送消息', description: '向获准的 agent 实例发送消息，对方看到的消息标明是你发的；对方这一回合结束时把结果回报给你。',
     tool: 'agent_send', effect: 'write', retry: 'input',
     input: target.extend({ text }).strict(), output: z.object({ id }).strict(),
   },
   'agent.resume': {
-    title: '继续执行', description: '继续获准的 agent 实例。需要恢复确认时拒绝执行；不会替用户确认未知的执行结果。',
+    title: '继续执行', description: '继续获准的 agent 实例。',
     tool: 'agent_resume', effect: 'write', retry: 'receipt', input: target, output: ok,
   },
   'agent.stop': {
@@ -80,7 +80,7 @@ export const operationContracts = {
   },
   'agent.merge': {
     title: '合回子工作区', description: [
-      '把用 isolation: workspace 开出的子工作区合回它的父工作区，instanceId 是开子工作区时建的那个代理。要求子工作区里的代理都空闲，父工作区照常工作。',
+      '把用 isolation: workspace 开出的子工作区合回它的父工作区，instanceId 是开子工作区时建的那个代理。要求子工作区里的代理都空闲。',
       '合完（merged）或没有改动（unchanged）时子工作区连同其中的代理一起归档；有冲突时（conflict）立即返回，冲突交给子工作区里的代理解决，宿主随后接着合，合好或失败时把结果作为一条新的输入发给你。',
     ].join(''),
     tool: 'agent_merge', effect: 'write', retry: 'receipt', input: target,
@@ -125,12 +125,12 @@ export const operationContracts = {
       text: z.string(), offset: z.number().int(), totalLines: z.number().int(), nextOffset: z.number().int().nullable() }).strict(),
   },
   'terminal.list': {
-    title: '列出终端', description: '列出你协作范围内的终端：转到后台的命令与用户开的交互终端，带标题、谁建的、在运行还是已退出（退出码或原因）。读输出用 terminal_read。',
+    title: '列出终端', description: '列出你协作范围内的终端：转到后台的命令与用户开的交互终端，带标题、谁建的、在运行还是已退出（退出码或原因）。',
     tool: 'terminal_list', effect: 'read', retry: 'read', input: z.object({}).strict(),
     output: z.object({ terminals: z.array(terminalStateSchema.extend({ ...listed, command: z.string().optional() }).strict()) }).strict(),
   },
   'terminal.stop': {
-    title: '停止终端', description: '停下后台终端里的进程：先挂断，等不到退出再停整个进程组；等到进程结束才返回。你自己停下的不再发结束通知。',
+    title: '停止终端', description: '停下后台终端里的进程，等到进程结束才返回。你自己停下的不再发结束通知。',
     tool: 'terminal_stop', effect: 'write', retry: 'receipt', input: target, output: ok,
   },
   'terminal.select': {
@@ -141,9 +141,9 @@ export const operationContracts = {
   },
   'monitor.start': {
     title: '开始监视', description: [
-      '开一个常驻的 monitor 盯着某件事，有事件时宿主把它们合成一条消息交给你，你空闲时开始新回合，运行中在下一次请求纳入。title 简短写清在盯什么，会出现在每次唤醒里。',
-      '两种来源选一种：command 是 shell 命令，每一行标准输出是一个事件，200 毫秒内的几行合成一个，命令退出也是一个事件并结束这个来源；at（带时区的 ISO 8601 时间）或 minutes（多少分钟后）是定时，repeat 为 daily 或 weekly 时按天或按周重复。',
-      '命令在你的沙箱里、按你的执行授权运行，越界直接拒绝，不能用密钥。只输出你会据此行动的行，成功和失败的信号都要覆盖（没有输出不等于成功）；grep 加 --line-buffered；轮询远程接口间隔 30 秒以上，单次失败用 || true 吞掉；等一件事完成就让命令在那时退出。',
+      '开一个常驻的 monitor 盯着某件事，有事件时宿主把它们交给你，你空闲时会被唤醒。title 简短写清在盯什么，会出现在每次唤醒里。',
+      '两种来源选一种：command 是 shell 命令，每一行标准输出是一个事件，命令退出也是一个事件并结束这个来源；at（带时区的 ISO 8601 时间）或 minutes（多少分钟后）是定时，repeat 为 daily 或 weekly 时按天或按周重复。',
+      '命令在你的沙箱里、按你的执行授权运行，不能用密钥。只输出你会据此行动的行，成功和失败的信号都要覆盖（没有输出不等于成功）；grep 加 --line-buffered；轮询远程接口间隔 30 秒以上，单次失败用 || true 吞掉；等一件事完成就让命令在那时退出。',
       '事件太密（一分钟超过 60 个）会被停掉，每天最多唤醒你 40 次。工作机重启后命令重新开始，事件可能重复。不需要时用 monitor_stop 停掉。',
     ].join(''),
     tool: 'monitor_start', effect: 'create', retry: 'receipt',
@@ -156,7 +156,7 @@ export const operationContracts = {
     tool: 'monitor_list', effect: 'read', retry: 'read', input: z.object({}).strict(), output: z.object({ monitors: z.array(z.unknown()) }).strict(),
   },
   'monitor.stop': {
-    title: '停止监视', description: '停掉一个 monitor：停下它的来源并归档，时间线保留。',
+    title: '停止监视', description: '停掉一个 monitor：停下它的来源并归档。',
     tool: 'monitor_stop', effect: 'write', retry: 'receipt', input: target, output: ok,
   },
   'monitor.read': {

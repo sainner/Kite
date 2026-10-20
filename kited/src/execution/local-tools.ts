@@ -29,7 +29,7 @@ const shellArgs = z.object({
   timeout_ms: z.number().int().min(1).max(600_000).optional(),
 }).strict();
 const backgroundArg = z.boolean().optional().describe('true 时命令一开始就在后台终端里运行，立刻返回；用于开发服务器、监听构建这类不会自己结束或要跑很久的命令。');
-const outsideArg = z.boolean().optional().describe('true 时申请这条命令不进沙箱，以用户身份运行；description 写清用途和为什么沙箱里跑不了。');
+const outsideArg = z.boolean().optional().describe('true 时申请这条命令在沙箱外运行；description 写清为什么沙箱里跑不了。');
 
 /** 宿主决定一条命令能不能在沙箱外运行（docs/工具审批与提问.md）。 */
 export interface ShellOutside {
@@ -52,9 +52,7 @@ operations 中每项包含 type、path；create_file 和 update_file 还需 diff
 diff 使用无文件头的 V4A 格式，不含 *** Begin Patch、*** Update File 等包装，也不用行号或行数。
 创建：每行以 + 开头；例如 "+甲\\n+乙\\n+" 创建带末尾换行的两行文件，空 diff 创建空文件。目标必须不存在。
 修改：以 @@ 开始，空格开头是原文上下文，- 开头是删除行，+ 开头是新增行；例如 "@@\\n 甲\\n-乙\\n+丁\\n 丙"。
-提供足够上下文定位目标；必要时用 @@ 函数名等原文行作为定位锚点。补丁按当前内容匹配，匹配失败就读取后重做。
-建议先 read 了解内容；没有读取记录或文件读后变化仅提示，不阻止有效补丁。成功结果中的变化提示表示还有其他改动，依赖周边内容时请重读。
-整批先检查路径并计算补丁再写入；磁盘写入失败可能留下已完成的修改，结果会列明，不能盲目重试整批。
+提供足够上下文定位目标；必要时用 @@ 函数名等原文行作为定位锚点。
 结果中的 path:diffId 是这次已完成修改的历史引用，可直接在回复中使用；可写 path:diffId:10-20 定位修改后的文件行号，不需要区分旧侧和新侧。`;
 
 const readDescription = `读取当前工作目录内的文件，按内容自动区分：
@@ -81,14 +79,14 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
     execute: async (args, context) => { context.signal.throwIfAborted(); return execute(schema.parse(args), context); },
   });
   const background = options.background;
-  const shellDescription = '在当前工作目录的操作系统沙箱中运行 shell 命令，可用 rg 搜索、运行构建及 .kite/check。网络和工作区外的资源按宿主授权访问，连接授权之外的主机时可能要等用户批准；被禁止或拒绝时说明所需权限，不自行绕过或重放。'
+  const shellDescription = '在当前工作目录的操作系统沙箱中运行 shell 命令，可用 rg 搜索、运行构建及 .kite/check。网络和工作区外的资源按宿主授权访问；被禁止或拒绝时说明所需权限，不自行绕过或重放。'
     + (background
-      ? '命令到 timeout_ms（默认 2 分钟）还没结束、或者用户发来新消息时不会被停掉，而是转到后台终端接着跑，工具立刻返回终端的实例 ID；开发服务器这类不会自己结束的命令直接传 background: true。后台命令结束时宿主会通知你，不要用 sleep 或轮询等它；要看中途输出用 terminal_read，不再需要时用 terminal_stop 停下。转到后台后连接名单外的主机直接拒绝，不再问人。带 secrets 的命令不转后台，到时限就停。'
+      ? '超过 timeout_ms（默认 2 分钟）的命令转到后台终端接着跑，结束时宿主会通知你，不要用 sleep 或轮询等它。带 secrets 的命令不转后台，到时限就停。'
       : '不支持后台任务。')
     + (options.outside
-      ? '沙箱里跑不了的命令（开发服务器监听端口、docker、打开 App 或浏览器、连本机的服务、ssh 和数据库客户端这类不走代理的网络工具）传 outside_sandbox: true 申请在沙箱外运行，description 写清用途和为什么要出沙箱；获准后以用户身份运行，不受执行授权限制。用户事先允许的沙箱外命令不用申请，直接在沙箱外运行。不要为绕开执行授权申请出沙箱。'
+      ? '沙箱里跑不了的命令（开发服务器监听端口、docker、连本机的服务、ssh 和数据库客户端这类不走代理的网络工具）传 outside_sandbox: true 申请在沙箱外运行。'
       : '')
-    + 'Git 元数据只读，快照与采纳由宿主执行。输出过长时查看完整日志。使用 secrets 绑定密钥时只返回执行状态，隐藏全部标准输出和错误输出；不要把密钥写入工作区文件、命令参数或日志。';
+    + 'Git 元数据只读。使用 secrets 绑定密钥时只返回执行状态，隐藏全部标准输出和错误输出；不要把密钥写入工作区文件、命令参数或日志。';
   return [
     make('read', readDescription, readArgs, async ({ pages, ...args }, { signal }) => {
       const target = files.resolve(args.path);
@@ -222,11 +220,11 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
         } finally { unsubscribe?.(); }
       }),
     make('credentials', [
-      '不带参数时列出本账号共享和当前项目的可用密钥：引用、类型，以及宿主写进工作区的文件路径，不返回密钥内容。引用只在 shell 的 secrets 参数里使用，项目身份由宿主固定。',
-      '缺密钥时用 request 向用户要。request 是要的各项组成的数组，一次最多 10 项，同时缺几个就一起要，用户在同一张卡片里填：',
-      '一条独立的密钥写 {name, reason, kind?}，存好后按引用使用；环境变量文件（如 .env）里的一项写 {file, key, reason}，存好后宿主把文件重写进项目的所有工作区。',
-      '这些文件不能直接改，要加或改其中一项也用 request。你自己就能给出的值（端口号、生成的随机串）写在 value 里让用户确认；真正的密钥不要编，留空由用户填写。',
-      '请求不等用户填，立即返回请求 ID；用户填好或拒绝后，结果会作为一条新的输入发给你，逐项说明存好的（引用，或文件与变量名）和没填的，不含用户填的值。',
+      '不带参数时列出本账号共享和当前项目的可用密钥：引用、类型，以及宿主写进工作区的文件路径，不返回密钥内容。引用只在 shell 的 secrets 参数里使用。',
+      '缺密钥时用 request 向用户要，同时缺几个就一起要：',
+      '一条独立的密钥写 {name, reason, kind?}，存好后按引用使用；环境变量文件（如 .env）里的一项写 {file, key, reason}，存好后宿主把文件写进工作区。',
+      '这些文件不能直接改，要加或改其中一项也用 request。',
+      '请求不等用户填，立即返回请求 ID；用户填好或拒绝后，结果会作为一条新的输入发给你。',
       '用到这些密钥的步骤先放着，先做别的，没有就结束回合；不再需要时用 {withdraw: 请求 ID} 收回。',
     ].join(''), z.object({ request: secretRequest.optional(), withdraw: z.string().min(1).optional().describe('要收回的密钥请求的请求 ID') }).strict()
       .refine((args) => !(args.request && args.withdraw), 'request 与 withdraw 只写一个'), async ({ request, withdraw }, { signal }) => {

@@ -36,12 +36,6 @@ export const lineMonitorContextDefinition: ContextDefinition = {
       '下面这些收件箱事项交给你代用户处理（用户点了代处理，或在托管中）：\n'),
     section('results', '你发起的工作有了结果', 'monitor.results', '你之前发起的工作有了结果：\n'),
     section('briefing', '用户回来了', 'monitor.briefing', ''),
-    { type: 'paragraph', id: 'guidance', title: '处理方式', parts: [{ type: 'text', text: [
-      '先用 line_status 核对最新状态，回合结束的事项用 line_status 带 threadId 读最后的回复。',
-      '交给你的每一项都要用 line_handle 了结：按用户的习惯批准这一次或拒绝、回答提问、读完回复后清掉，拿不准的用 leave 留给用户并写明原因；',
-      '理由写清依据，处理完把决定和理由记进记忆。不要替用户「允许并记住」，也不要处理你自己发起的请求。',
-      '需要用户知道的事写在回复里，说清是哪台工作机、哪个项目、哪个线程。',
-    ].join('') }] },
   ],
 };
 

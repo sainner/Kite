@@ -27,8 +27,6 @@ export const monitorEventsContextDefinition: ContextDefinition = {
       { type: 'text', text: '」（' }, { type: 'variable', name: 'monitor.id' }, { type: 'text', text: '）有新事件：\n' },
       { type: 'variable', name: 'monitor.events' },
     ] },
-    { type: 'paragraph', id: 'guidance', title: '处理方式', parts: [{ type: 'text',
-      text: '按事件决定要不要接着做。来源都结束后监视不再有事件；不再需要时用 monitor_stop 停掉。' }] },
   ],
 };
 

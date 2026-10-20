@@ -101,9 +101,8 @@ export function lineTools(options: LineToolOptions): Tool[] {
     }),
     tool('line_handle', [
       '了结收件箱里交给你处理的一项（用户点了代处理或在托管中）。item 是事项 ID。',
-      '审批：decision 为 once（批准这一次）或 deny（拒绝），不能替用户允许并记住。提问：answers 按问题顺序，每项写 selected（选项标签）或 other（自己写的回答）。',
+      '审批：decision 为 once（批准这一次）或 deny（拒绝）。提问：answers 按问题顺序，每项写 selected（选项标签）或 other（自己写的回答）。',
       '回合结束与失败：读过回复、回答或继续之后用 done 清掉。拿不准的用 leave 留给用户。reason 写明依据，会给用户看。',
-      '没交给你的、你自己发起的请求都不能处理。',
     ].join(''), handleArgs, async (args, context) => {
       allowed('reply');
       const item = monitor.claim(args.item);
@@ -159,7 +158,6 @@ export function lineTools(options: LineToolOptions): Tool[] {
     }),
     tool('line_control', [
       '管理一个线程：send 发送你自己的说明（来源记为 Kite、经 Line），resume 继续暂停的线程，stop 停止，archive 归档线程（threadId）或独立工作区（workspaceId）。',
-      'stop 与 archive 执行前会等用户批准，用户拒绝时不执行。',
     ].join(''), controlArgs, async (args, context) => {
       allowed(args.action);
       const thread = () => { if (!args.threadId) throw new KiteError(`${args.action} 需要 threadId`); return args.threadId; };
@@ -185,7 +183,6 @@ export function lineTools(options: LineToolOptions): Tool[] {
       'create：在 machine 上为 project 建独立工作区，可带第一条消息 prompt，工作区跟着代理的标题起名；那台工作机没有检出时会先 clone。',
       'transfer：把 workspaceId 从 from 工作机流转到 to 工作机，源工作区须所有线程空闲，两台都要在线。',
       'from 已经丢失（用户确认过）时传 force：to 用手上的副本强制接管，不联系 from，副本落后的部分会丢；from 回来后自己冻结旧记录。',
-      '两者执行前都会等用户批准，用户拒绝时不执行。',
     ].join(''), workspaceArgs, async (args, context) => {
       allowed(args.action);
       if (args.action === 'create') {

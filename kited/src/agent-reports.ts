@@ -16,8 +16,6 @@ export const agentReportContextDefinition: ContextDefinition = {
       { type: 'text', text: '」（' }, { type: 'variable', name: 'report.id' }, { type: 'text', text: '）的这一回合结束了：' },
       { type: 'variable', name: 'report.result' }, { type: 'text', text: '。它最后的回复：\n' }, { type: 'variable', name: 'report.reply' },
     ] },
-    { type: 'paragraph', id: 'guidance', title: '处理方式', parts: [{ type: 'text',
-      text: '按结果决定要不要接着做；要它继续，用 agent_send 发给这个实例 ID。' }] },
   ],
 };
 

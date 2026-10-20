@@ -17,7 +17,7 @@ export const loadedText = (names: string[]) => `已加载 ${names.length} 个工
 export function searchTool(tools: Tool[]): Tool {
   return {
     name: TOOL_SEARCH,
-    description: '加载插件实例的工具。基础上下文里「插件工具」列出了可以加载的实例与工具名；按实例 ID 加载后，这些工具之后直接按名字调用，不用再加载。',
+    description: '加载插件实例的工具。按实例 ID 加载后，这些工具之后直接按名字调用，不用再加载。',
     parameters: z.toJSONSchema(input) as Tool['parameters'],
     validate(value) { input.parse(value); },
     async execute(value) {

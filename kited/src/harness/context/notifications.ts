@@ -10,7 +10,7 @@ export const pluginToolsContextDefinition: ContextDefinition = {
   blocks: [{ type: 'paragraph', id: 'tools', title: '当前插件工具', parts: [
     { type: 'text', text: '宿主已更新插件工具授权。当前获准的插件实例与工具：' },
     { type: 'variable', name: 'plugin.tools' },
-    { type: 'text', text: '。工具列表里还没有的，先用工具搜索加载再调用；不在这里的工具已经撤回，不要再调用。撤回授权立即阻止新的执行，已有执行结果保留；本通知不会撤销已经提交的动作。' },
+    { type: 'text', text: '。工具列表里还没有的，先用工具搜索加载再调用；不在这里的工具已经撤回，不要再调用。' },
   ] }],
 };
 
@@ -26,7 +26,7 @@ export const executionPermissionsContextDefinition: ContextDefinition = {
     { type: 'variable', name: 'execution.revision' },
     { type: 'text', text: '。当前授权：' },
     { type: 'variable', name: 'execution.grants' },
-    { type: 'text', text: '。workspace 表示工作目录的读写权限，read / write 是额外路径，network 是允许访问的域名和端口。系统工具链保持只读，宿主数据与 Git 元数据的保护继续生效。read / patch 仍限当前工作目录；额外路径通过 shell 访问。旧命令不会重放，已产生的改动保留。' },
+    { type: 'text', text: '。workspace 表示工作目录的读写权限，read / write 是额外路径，network 是允许访问的域名和端口。read / patch 仍限当前工作目录；额外路径通过 shell 访问。' },
   ] }],
 };
 
@@ -52,7 +52,7 @@ export const agentConfigurationContextDefinition: ContextDefinition = {
       { type: 'variable', name: 'agent.tools' },
       { type: 'text', text: '；每回合最多 ' },
       { type: 'variable', name: 'agent.max_requests_per_turn' },
-      { type: 'text', text: ' 次模型请求。上下文如有变化，由随后的基础上下文更新说明。' },
+      { type: 'text', text: ' 次模型请求。' },
     ],
   }],
 };
@@ -64,7 +64,6 @@ export const fileChangesContextDefinition: ContextDefinition = {
     { type: 'variable', name: 'files.origin' },
     { type: 'text', text: '）：\n' },
     { type: 'variable', name: 'files.changes' },
-    { type: 'text', text: '\n这里只列出文件与增减行数；需要具体内容时重新读取文件。' },
   ] }],
 };
 
@@ -80,7 +79,7 @@ export const contextUpdateContextDefinition: ContextDefinition = {
   blocks: [
     {
       type: 'paragraph', id: 'replacement', title: '生效范围',
-      parts: [{ type: 'text', text: '基础上下文已更新。以下内容从本次请求起替代先前的基础上下文，已有对话和执行结果仍然有效：' }],
+      parts: [{ type: 'text', text: '基础上下文已更新。以下内容从本次请求起替代先前的基础上下文：' }],
     },
     {
       type: 'paragraph', id: 'instructions', title: '更新内容',

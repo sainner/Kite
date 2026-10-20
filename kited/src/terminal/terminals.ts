@@ -43,7 +43,7 @@ export const terminalExitContextDefinition: ContextDefinition = {
       { type: 'variable', name: 'terminal.result' }, { type: 'text', text: '。输出的末尾：\n' }, { type: 'variable', name: 'terminal.output' },
     ] },
     { type: 'paragraph', id: 'guidance', title: '处理方式', parts: [{ type: 'text',
-      text: '按结果决定要不要接着做。终端没有窗口时随即回收，之后读不到它，以这里的输出为准。' }] },
+      text: '终端没有窗口时随即回收，之后读不到它，以这里的输出为准。' }] },
   ],
 };
 
