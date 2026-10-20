@@ -15,7 +15,10 @@ import { assembleContext, bindContext, sceneValues } from '../harness/context/as
 import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
 import type { InputNotice } from '../harness/types.ts';
 import type { PluginInstance } from '../model.ts';
+import { MONITOR_BURST_LIMIT, MONITOR_DAILY_WAKES } from '../operations/contract.ts';
 import type { Store } from '../store.ts';
+
+export { MONITOR_DAILY_WAKES };
 
 export const monitorDefinitionId = 'kite.monitor';
 
@@ -71,10 +74,6 @@ const stateSchema = z.object({
 export type MonitorRuntimeState = z.infer<typeof stateSchema>;
 export const monitorRuntimeState = (instance: Pick<PluginInstance, 'state'>) => stateSchema.parse(instance.state.monitor ?? {});
 
-/** 每个 monitor 每天最多唤醒对象代理的次数。 */
-export const MONITOR_DAILY_WAKES = 40;
-/** 一分钟里超过这么多事件就停掉这个来源。 */
-const BURST_LIMIT = 60;
 /** 同一来源 200 毫秒内的几行合成一个事件。 */
 const LINE_BATCH_MS = 200;
 /** 事件之后稍等再唤醒，把一串事件合成一次。 */
@@ -260,7 +259,7 @@ export class Monitors {
       if (!lines.length) return;
       const text = lines.join('\n');
       lines = [];
-      this.event(instance.id, source.id, text, () => { reason = `事件太密（一分钟超过 ${BURST_LIMIT} 个），已停掉这个来源`; controller.abort(); });
+      this.event(instance.id, source.id, text, () => { reason = `事件太密（一分钟超过 ${MONITOR_BURST_LIMIT} 个），已停掉这个来源`; controller.abort(); });
     };
     const onStdout = (part: string) => {
       buffer += part;
@@ -327,7 +326,7 @@ export class Monitors {
     const recent = [...(this.bursts.get(key) ?? []).filter((at) => now - at < 60_000), now];
     this.bursts.set(key, recent);
     this.mutate(instanceId, (state) => this.append(state, sourceId, 'event', clip(text)));
-    if (burst && recent.length > BURST_LIMIT) burst();
+    if (burst && recent.length > MONITOR_BURST_LIMIT) burst();
     this.scheduleWake(instanceId);
   }
 

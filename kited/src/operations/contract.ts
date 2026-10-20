@@ -17,6 +17,11 @@ export const lineToolActions: Record<(typeof lineToolNames)[number], readonly Li
   line_workspace: ['create', 'transfer'],
 };
 
+/** 每个 monitor 每天最多唤醒对象代理的次数。 */
+export const MONITOR_DAILY_WAKES = 40;
+/** 一分钟里超过这么多事件就停掉这个来源。 */
+export const MONITOR_BURST_LIMIT = 60;
+
 const id = z.string().min(1);
 const text = z.string().refine((value) => !!value.trim(), '内容不能为空');
 const target = z.object({ operationId: id, instanceId: id }).strict();
@@ -144,7 +149,7 @@ export const operationContracts = {
       '开一个常驻的 monitor 盯着某件事，有事件时宿主把它们交给你，你空闲时会被唤醒。title 简短写清在盯什么，会出现在每次唤醒里。',
       '两种来源选一种：command 是 shell 命令，每一行标准输出是一个事件，命令退出也是一个事件并结束这个来源；at（带时区的 ISO 8601 时间）或 minutes（多少分钟后）是定时，repeat 为 daily 或 weekly 时按天或按周重复。',
       '命令在你的沙箱里、按你的执行授权运行，不能用密钥。只输出你会据此行动的行，成功和失败的信号都要覆盖（没有输出不等于成功）；grep 加 --line-buffered；轮询远程接口间隔 30 秒以上，单次失败用 || true 吞掉；等一件事完成就让命令在那时退出。',
-      '事件太密（一分钟超过 60 个）会被停掉，每天最多唤醒你 40 次。工作机重启后命令重新开始，事件可能重复。不需要时用 monitor_stop 停掉。',
+      `事件太密（一分钟超过 ${MONITOR_BURST_LIMIT} 个）会被停掉，每天最多唤醒你 ${MONITOR_DAILY_WAKES} 次。工作机重启后命令重新开始，事件可能重复。不需要时用 monitor_stop 停掉。`,
     ].join(''),
     tool: 'monitor_start', effect: 'create', retry: 'receipt',
     input: z.object({ operationId: id, title: z.string().trim().min(1).max(80), command: z.string().min(1).max(20_000).optional(),

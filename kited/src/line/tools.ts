@@ -100,9 +100,9 @@ export function lineTools(options: LineToolOptions): Tool[] {
       return { now: when(Date.now()), machines: states, inbox };
     }),
     tool('line_handle', [
-      '了结收件箱里交给你处理的一项（用户点了代处理或在托管中）。item 是事项 ID。',
+      '了结收件箱里交给你处理的一项。item 是事项 ID。',
       '审批：decision 为 once（批准这一次）或 deny（拒绝）。提问：answers 按问题顺序，每项写 selected（选项标签）或 other（自己写的回答）。',
-      '回合结束与失败：读过回复、回答或继续之后用 done 清掉。拿不准的用 leave 留给用户。reason 写明依据，会给用户看。',
+      '回合结束与失败：要回答代理的问题或让它继续时先用 line_control（send 或 resume），再用 done 清掉。拿不准的用 leave 留给用户。reason 写明依据，会给用户看。',
     ].join(''), handleArgs, async (args, context) => {
       allowed('reply');
       const item = monitor.claim(args.item);

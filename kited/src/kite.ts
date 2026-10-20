@@ -138,7 +138,7 @@ function conflictPrompt(action: Merging, branch: string, files: string[]): strin
     : `Kite 正在${action === 'adopt' ? '把工作区的改动集成进主线' : '把主线的新改动同步进工作区'}。把主线（本机或远程）合进 ${branch} 时这些文件冲突了：`;
   return [head, ...files.map((f) => `- ${f}`), '',
     '请直接编辑这些文件解决冲突，保留双方意图，并删除全部冲突标记；需要删除的文件直接删除。',
-    `Git 元数据由 Kite 管理，不要运行 git add 或 git commit。本回合正常结束后，Kite 会提交合并并继续${mergingTitle[action]}。`].join('\n');
+    `本回合正常结束后，Kite 会提交合并并继续${mergingTitle[action]}。`].join('\n');
 }
 
 /** 提交 PR 时的远程分支名：按工作区名称取英文字母与数字，取不出来时用工作区 ID 的前 8 位。 */
@@ -1089,7 +1089,7 @@ export class Kite {
     const rest = secrets.filter((_, index) => !direct[index]);
     if (!rest.length) return saved;
     const ask = this.asks.add(threadId, { kind: 'secret', secrets: rest });
-    return `${saved ? `${saved}\n另外` : ''}已向用户要 ${rest.length} 项密钥，请求 ID 是 ${ask.id}。用户填好或拒绝后，结果会作为一条新的输入发给你；用到这些密钥的步骤先放着，先做别的，没有就结束回合。`;
+    return `${saved ? `${saved}\n另外` : ''}已向用户要 ${rest.length} 项密钥，请求 ID 是 ${ask.id}。`;
   }
 
   /**

@@ -28,6 +28,8 @@ const shellArgs = z.object({
   secrets: secretBindings.optional().describe('密钥引用绑定，如 {"KITE_SECRET_TOKEN":"{account.api_key}"}。命令中用 "$KITE_SECRET_TOKEN"；文件类型变量是临时文件路径。先用 credentials 查看可用引用。'),
   timeout_ms: z.number().int().min(1).max(600_000).optional(),
 }).strict();
+/** shell 的默认时限，超过就转后台（带密钥的到时限就停）。 */
+const SHELL_TIMEOUT_MS = 120_000;
 const backgroundArg = z.boolean().optional().describe('true 时命令一开始就在后台终端里运行，立刻返回；用于开发服务器、监听构建这类不会自己结束或要跑很久的命令。');
 const outsideArg = z.boolean().optional().describe('true 时申请这条命令在沙箱外运行；description 写清为什么沙箱里跑不了。');
 
@@ -79,9 +81,9 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
     execute: async (args, context) => { context.signal.throwIfAborted(); return execute(schema.parse(args), context); },
   });
   const background = options.background;
-  const shellDescription = '在当前工作目录的操作系统沙箱中运行 shell 命令，可用 rg 搜索、运行构建及 .kite/check。网络和工作区外的资源按宿主授权访问；被禁止或拒绝时说明所需权限，不自行绕过或重放。'
+  const shellDescription = '在当前工作目录的操作系统沙箱中运行 shell 命令，可用 rg 搜索、运行构建与测试。网络和工作区外的资源按宿主授权访问；被禁止或拒绝时说明所需权限，不自行绕过或重放。'
     + (background
-      ? '超过 timeout_ms（默认 2 分钟）的命令转到后台终端接着跑，结束时宿主会通知你，不要用 sleep 或轮询等它。带 secrets 的命令不转后台，到时限就停。'
+      ? `超过 timeout_ms（默认 ${SHELL_TIMEOUT_MS / 60_000} 分钟）的命令转到后台终端接着跑，结束时宿主会通知你，不要用 sleep 或轮询等它。带 secrets 的命令不转后台，到时限就停。`
       : '不支持后台任务。')
     + (options.outside
       ? '沙箱里跑不了的命令（开发服务器监听端口、docker、连本机的服务、ssh 和数据库客户端这类不走代理的网络工具）传 outside_sandbox: true 申请在沙箱外运行。'
@@ -183,7 +185,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
     make('shell', shellDescription, shellArgs.extend({ ...(background ? { background: backgroundArg } : {}),
       ...(options.outside ? { outside_sandbox: outsideArg } : {}) }).strict() as z.ZodType<z.output<typeof shellArgs> & { background?: boolean; outside_sandbox?: boolean }>,
       async (args, { signal, output, ...context }) => {
-        const { command, description, secrets, timeout_ms = 120_000 } = args;
+        const { command, description, secrets, timeout_ms = SHELL_TIMEOUT_MS } = args;
         const references = [...new Set(Object.values(secrets ?? {}))];
         const confidential = references.length > 0;
         // 用户允许过的沙箱外命令直接出沙箱，没允许过的要申请；申请时带上绑定的密钥引用给用户看。

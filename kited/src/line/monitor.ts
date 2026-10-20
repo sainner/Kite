@@ -33,7 +33,7 @@ export const lineMonitorContextDefinition: ContextDefinition = {
   version: 2, id: 'kite.line-monitor', title: 'Line 的唤醒', scene: 'line.monitor',
   blocks: [
     section('delegated', '交给你处理的事项', 'monitor.delegated',
-      '下面这些收件箱事项交给你代用户处理（用户点了代处理，或在托管中）：\n'),
+      '下面这些收件箱事项交给你代用户处理：\n'),
     section('results', '你发起的工作有了结果', 'monitor.results', '你之前发起的工作有了结果：\n'),
     section('briefing', '用户回来了', 'monitor.briefing', ''),
   ],

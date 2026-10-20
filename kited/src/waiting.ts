@@ -169,8 +169,7 @@ export class Asks {
         const args = questionArguments.parse(value);
         if (args.withdraw !== undefined) return { status: 'success', output: this.withdraw(threadId, args.withdraw, 'question') };
         const ask = this.add(threadId, { kind: 'question', questions: args.questions! });
-        return { status: 'success', output: `已向用户提问，请求 ID 是 ${ask.id}。用户回答后结果会作为一条新的输入发给你；下一步取决于答案时不要猜，`
-          + '先做不依赖答案的事，没有就结束回合。' };
+        return { status: 'success', output: `已向用户提问，请求 ID 是 ${ask.id}。` };
       },
     };
   }
