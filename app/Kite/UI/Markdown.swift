@@ -170,10 +170,12 @@ struct MarkdownBlock: Equatable {
     static func parse(_ source: String) -> [MarkdownBlock] {
         var options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible)
         options.appliesSourcePositionAttributes = true
-        guard let document = try? AttributedString(markdown: source, options: options) else {
+        let input = CJKDelimiters(source)
+        guard let parsed = try? AttributedString(markdown: input.parsed, options: options) else {
             return [MarkdownBlock(kind: .paragraph, text: AttributedString(source), source: .whole(source))]
         }
-        let locator = SourceLocator(source)
+        let document = input.placeholders.isEmpty ? parsed : CJKDelimiters.strip(parsed)
+        let locator = SourceLocator(input)
         var blocks: [MarkdownBlock] = []
         var lastListItem: Int?
         /// 正在收的表格：它的 identity、表头、各行。
@@ -255,7 +257,7 @@ extension MarkdownBlock {
     /// 表格以外的块、对不上原文的格给 nil。Mac 的表格卡片能选字，复制时按它取回原文。
     func tableCellSources(in source: String) -> [[MarkdownSource?]] {
         guard case .table(let header, let rows) = kind else { return [] }
-        let locator = SourceLocator(source)
+        let locator = SourceLocator(CJKDelimiters(source))
         return ([header] + rows).map { cells in
             cells.map { cell in
                 guard var found = locator.prose(cell), let first = found.runs.first else { return nil }
@@ -295,16 +297,132 @@ struct MarkdownSource: Equatable {
     }
 }
 
+/// CommonMark 规定 ** 一边是标点、另一边是字时只能开头或只能收尾，中文常见的「**影响：**这样」「说**“你好”**之后」因此成不了粗体。
+/// 解析前在这样的 ** 和标点之间插一个占位字（非字符 U+FDD0，Foundation 不当空白也不当标点），两边就都算字，
+/// 和夹在两个汉字中间的 ** 一样能开能收；解析完删掉，源位置由 SourceLocator 换回原文的下标。
+/// 只管 * 和 ~，一边是中日韩的字或标点才插，英文照 CommonMark。
+private struct CJKDelimiters {
+    private static let placeholder = Unicode.Scalar(0xFDD0)!
+    let source: String
+    /// 送去解析的：原文插上占位字。
+    let parsed: String
+    /// 每个占位字在 parsed 里的 UTF-16 下标，从小到大。
+    let placeholders: [Int]
+
+    init(_ source: String) {
+        self.source = source
+        let scalars = Array(source.unicodeScalars)
+        var parsed = String.UnicodeScalarView()
+        var placeholders: [Int] = []
+        var offset = 0
+        func append(_ scalar: Unicode.Scalar) {
+            parsed.append(scalar)
+            offset += UTF16.width(scalar)
+        }
+        func insert() {
+            placeholders.append(offset)
+            append(Self.placeholder)
+        }
+        var index = 0
+        while index < scalars.count {
+            let scalar = scalars[index]
+            if scalar == "\\" {
+                // 转义的 * 不是标记
+                scalars[index...].prefix(2).forEach(append)
+                index += 2
+                continue
+            }
+            guard scalar == "*" || scalar == "~" else {
+                append(scalar)
+                index += 1
+                continue
+            }
+            var end = index
+            while end < scalars.count, scalars[end] == scalar { end += 1 }
+            // 开头、结尾、换行都算空白，空白旁边的标记不用管
+            let before = index > 0 ? scalars[index - 1] : nil
+            let after = end < scalars.count ? scalars[end] : nil
+            let cjk = before.map(Self.isCJK) == true || after.map(Self.isCJK) == true
+            // 前面是标点、后面是字：收不了尾
+            if cjk, Self.isMark(before), Self.isWord(after) { insert() }
+            scalars[index..<end].forEach(append)
+            // 前面是字、后面是标点：开不了头
+            if cjk, Self.isWord(before), Self.isMark(after) { insert() }
+            index = end
+        }
+        self.parsed = String(parsed)
+        self.placeholders = placeholders
+    }
+
+    /// parsed 里的 UTF-16 下标换成原文里的。
+    func original(_ offset: Int) -> Int {
+        offset - placeholders.prefix { $0 < offset }.count
+    }
+
+    /// 解析出的正文删掉占位字。占位字只插在标记和标点之间，自成一个字。
+    static func strip(_ document: AttributedString) -> AttributedString {
+        let placeholder = Character(Self.placeholder)
+        var result = AttributedString()
+        var start = document.startIndex
+        var index = document.startIndex
+        while index < document.endIndex {
+            let next = document.characters.index(after: index)
+            if document.characters[index] == placeholder {
+                result.append(document[start..<index])
+                start = next
+            }
+            index = next
+        }
+        result.append(document[start...])
+        return result
+    }
+
+    private static func isWord(_ c: Unicode.Scalar?) -> Bool {
+        c.map { !isSpace($0) && !isPunctuation($0) } ?? false
+    }
+
+    private static func isMark(_ c: Unicode.Scalar?) -> Bool {
+        c.map(isPunctuation) ?? false
+    }
+
+    /// CommonMark 的空白。
+    private static func isSpace(_ c: Unicode.Scalar) -> Bool {
+        "\t\n\r\u{0C}".unicodeScalars.contains(c) || c.properties.generalCategory == .spaceSeparator
+    }
+
+    /// Foundation 认的标点：ASCII 的标点符号和 Unicode 的 P 类，¥、emoji 这类符号不算（2026-10-20 实测）。
+    private static func isPunctuation(_ c: Unicode.Scalar) -> Bool {
+        if c.isASCII { return ##"!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"##.unicodeScalars.contains(c) }
+        switch c.properties.generalCategory {
+        case .connectorPunctuation, .dashPunctuation, .openPunctuation, .closePunctuation,
+             .initialPunctuation, .finalPunctuation, .otherPunctuation: return true
+        default: return false
+        }
+    }
+
+    /// 中日韩的字、假名、谚文、全角标点和符号。
+    private static func isCJK(_ c: Unicode.Scalar) -> Bool {
+        switch c.value {
+        case 0x1100...0x11FF, 0x2E80...0xA4CF, 0xA960...0xA97F, 0xAC00...0xD7FF,
+             0xF900...0xFAFF, 0xFE30...0xFE4F, 0xFF00...0xFFEF, 0x20000...0x3FFFF: true
+        default: false
+        }
+    }
+}
+
 /// Foundation 给的源位置是第几行、第几个 UTF-8 字节，都从 1 起，结束列含这个字节；这里换成原文里的 UTF-16 下标。
+/// 位置对的是插了占位字的 parsed（见 CJKDelimiters），换回原文时减掉前面的占位字。
 private struct SourceLocator {
+    let input: CJKDelimiters
     let source: String
     let text: NSString
     /// 每一行行首的 UTF-8 下标。
     private let lineStarts: [String.Index]
 
-    init(_ source: String) {
-        self.source = source
-        text = source as NSString
+    init(_ input: CJKDelimiters) {
+        self.input = input
+        source = input.parsed
+        text = input.source as NSString
         var starts = [source.utf8.startIndex]
         var index = source.utf8.startIndex
         while index < source.utf8.endIndex {
@@ -318,7 +436,7 @@ private struct SourceLocator {
     private func offset(line: Int, column: Int) -> Int? {
         guard line >= 1, line <= lineStarts.count, column >= 1,
               let index = source.utf8.index(lineStarts[line - 1], offsetBy: column - 1, limitedBy: source.utf8.endIndex) else { return nil }
-        return index.utf16Offset(in: source)
+        return input.original(index.utf16Offset(in: source))
     }
 
     func range(_ position: AttributedString.MarkdownSourcePosition) -> NSRange? {
