@@ -240,6 +240,18 @@ extension AgentAvatar {
         return context.makeImage()
     }
 
+    /// 对话里创建 agent 那一步的图标：签名按参数里的角色（没给时是默认角色，同工作机），姿态按建出来的实例，和停靠栏里那个代理一样，
+    /// 还没建出来时按调用的 ID 取。角色目录没读到、找不到这个角色时用默认图案。
+    static func still(creating call: Call, diameter: CGFloat, scale: CGFloat, environment: EnvironmentValues) -> CGImage? {
+        var design: EmblemDesign?
+        if let model = environment[AppModel.self], let area = environment[WorkArea.self], let catalog = model.roles(in: area) {
+            let role = call.use.input["role"]?.string
+            let match = if let role { catalog.roles.first { $0.id == role } } else { catalog.defaultRole }
+            design = match?.emblem?.design
+        }
+        return still(design: design, instance: call.createdInstance ?? call.use.id, diameter: diameter, scale: scale, environment: environment)
+    }
+
     /// 对话里头像的直径：比次要字的字号大一圈，和名字、通知那一句排在一行。
     static func inlineDiameter(font pointSize: CGFloat) -> CGFloat { (pointSize * 1.6).rounded() }
 

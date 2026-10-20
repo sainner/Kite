@@ -499,6 +499,15 @@ extension Call {
 
 
 extension Call {
+    /// 创建 agent 建出来的实例：结果里的 instanceId。
+    var createdInstance: String? {
+        guard use.kind == .agentStart, let data = result?.text.data(using: .utf8),
+              let output = try? JSONDecoder().decode(JSON.self, from: data) else { return nil }
+        return output["instanceId"]?.string
+    }
+}
+
+extension Call {
     /// 修改引用只取实际工具结果；生成中的参数不冒充已保存的历史差异。
     var fileReferences: [FileReference] {
         if let diff = result?.diff { return diff.paths.map { FileReference(path: $0, diffID: diff.id) } }

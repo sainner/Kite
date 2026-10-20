@@ -15,9 +15,8 @@ final class WorkStepsView: NSView {
     private var work: Work?
     private var environment: EnvironmentValues?
     private var width: CGFloat = 0
-    private var laidHeight: CGFloat = 0
-    /// 正在动的那一步：它的高从哪到哪，整块的高从哪到哪。
-    private var animation: (index: Int, from: CGFloat, to: CGFloat, stepsFrom: CGFloat, stepsTo: CGFloat)?
+    /// 正在展开收起的那一步。
+    private var moving: Int?
     /// 最近一次量的各步的高，摆的时候照它摆。
     private var rowHeights: [CGFloat] = []
     /// 最近一次量出来的高里有近似的（拖缝时看不见的详情按上次的高占位），停下后要按准确的重量。
@@ -38,7 +37,7 @@ final class WorkStepsView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    var animating: Bool { animation != nil }
+    var animating: Bool { moving != nil }
 
     /// 内容或外观变了才调（同 TranscriptRowSlot.update），子 agent 的行跟着重排。
     func show(_ work: Work, environment: EnvironmentValues) {
@@ -84,10 +83,8 @@ final class WorkStepsView: NSView {
     private func rowChanged(_ index: Int, row: CallRowView, motion: RowMotion?) {
         guard width > 0 else { return changed?(nil) ?? () }
         if let motion {
-            let from = row.frame.height
-            let to = row.height(width: width)
-            if index < rowHeights.count { rowHeights[index] = to }
-            animation = (index, from, to, laidHeight, laidHeight + to - from)
+            if index < rowHeights.count { rowHeights[index] = row.height(width: width) }
+            moving = index
             changed?(motion)
         } else {
             changed?(nil)
@@ -101,15 +98,14 @@ final class WorkStepsView: NSView {
         return rowHeights.reduce(0, +) + CGFloat(max(rows.count - 1, 0))
     }
 
-    /// 按眼下整块的高摆各步：动画中那一步按整块走到哪给它中间的高。
+    /// 按眼下整块的高摆各步：动画中多出、少掉的那截都给正在动的那一步（同 iOS 的 PhoneWorkSteps）。
+    /// 不按开始时记下的起止高算比例：动画途中别的步骤变了高（生成中的参数换成正式的、输出在长、又来了一步），整块就走不到记下的终点，
+    /// 这一步会一直停在错的高上，多出一截空白或半透明地截在半路。整块走到各步现量的高才算走完。
     func layout(height: CGFloat) {
-        laidHeight = height
-        var progress: CGFloat = 1
-        if let animation {
-            let span = animation.stepsTo - animation.stepsFrom
-            progress = span == 0 ? 1 : (height - animation.stepsFrom) / span
-            if abs(height - animation.stepsTo) < 0.01 { self.animation = nil }
-        }
+        let heights = rows.indices.map { $0 < rowHeights.count ? rowHeights[$0] : rows[$0].height(width: width) }
+        let total = heights.reduce(0, +) + CGFloat(max(rows.count - 1, 0))
+        let moving = moving
+        if abs(height - total) < 0.01 { self.moving = nil }
         var y: CGFloat = 0
         for (index, row) in rows.enumerated() {
             if index > 0 {
@@ -124,10 +120,8 @@ final class WorkStepsView: NSView {
                 CATransaction.commit()
                 y += 1
             }
-            var rowHeight = index < rowHeights.count ? rowHeights[index] : row.height(width: width)
-            if let animation, animation.index == index {
-                rowHeight = animation.from + (animation.to - animation.from) * progress
-            }
+            var rowHeight = heights[index]
+            if index == moving { rowHeight = max(rowHeight + height - total, Metrics.toolRowHeight) }
             row.frame = CGRect(x: 0, y: y, width: width, height: rowHeight)
             row.layoutRow()
             y += rowHeight
@@ -266,9 +260,17 @@ final class CallHeaderView: NativeButton {
         let failed = call.state == .failed || call.state == .unknown
         let danger = NSColor(cgColor: Theme.danger.resolve(in: environment).cgColor) ?? .systemRed
         let tint = failed ? danger : NSColor.secondaryLabelColor
-        let configuration = NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .regular)
-        icon.image = NSImage(systemSymbolName: call.use.kind.icon, accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
-        icon.contentTintColor = tint
+        if call.use.kind == .agentStart {
+            // 创建 agent 画要建的那个角色的头像，出错时也不变色
+            let diameter = Metrics.toolIcon
+            icon.image = AgentAvatar.still(creating: call, diameter: diameter, scale: window?.backingScaleFactor ?? 2, environment: environment)
+                .map { NSImage(cgImage: $0, size: NSSize(width: diameter, height: diameter)) }
+            icon.contentTintColor = nil
+        } else {
+            let configuration = NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .regular)
+            icon.image = NSImage(systemSymbolName: call.use.kind.icon, accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
+            icon.contentTintColor = tint
+        }
         let bold = Theme.secondary.weight(.semibold).resolve(in: context).ctFont as NSFont
         name.set(call.use.displayName, font: bold, color: failed ? danger : .labelColor)
         let root = environment.workingDirectory
@@ -363,15 +365,18 @@ final class CallHeaderView: NativeButton {
         let available = max(bounds.width - inset * 2 - chipsWidth - gap * 2 - start, 0)
         let summaryWidth = min(showsReferences ? references.textWidth : summary.textWidth, available)
         let lineHeight = name.lineHeight
-        let top = ((bounds.height - lineHeight) / 2).rounded()
-        activity.frame = CGRect(x: inset, y: top, width: start + summaryWidth, height: lineHeight)
-        // 图标格 16 宽，按图标的对齐宽度居中、取到像素（同 SwiftUI 的符号图片）
+        // 比字高的图标（创建 agent 的头像）撑高这一组，字竖着居中
         let imageSize = icon.image?.size ?? .zero
+        let groupHeight = max(lineHeight, imageSize.height)
+        let top = ((bounds.height - groupHeight) / 2).rounded()
+        let textTop = ((groupHeight - lineHeight) / 2).rounded()
+        activity.frame = CGRect(x: inset, y: top, width: start + summaryWidth, height: groupHeight)
+        // 图标格 16 宽，按图标的对齐宽度居中、取到像素（同 SwiftUI 的符号图片）
         let iconWidth = icon.image?.alignmentRect.width ?? imageSize.width
-        icon.frame = CGRect(x: ((Metrics.toolIcon - iconWidth) / 2 * 2).rounded() / 2, y: (lineHeight - imageSize.height) / 2,
+        icon.frame = CGRect(x: ((Metrics.toolIcon - iconWidth) / 2 * 2).rounded() / 2, y: (groupHeight - imageSize.height) / 2,
                             width: imageSize.width, height: imageSize.height)
-        name.frame = CGRect(x: Metrics.toolIcon + gap, y: 0, width: nameWidth, height: lineHeight)
-        summary.frame = CGRect(x: start, y: 0, width: summaryWidth, height: lineHeight)
+        name.frame = CGRect(x: Metrics.toolIcon + gap, y: textTop, width: nameWidth, height: lineHeight)
+        summary.frame = CGRect(x: start, y: textTop, width: summaryWidth, height: lineHeight)
         references.frame = summary.frame
     }
 

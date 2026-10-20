@@ -229,8 +229,15 @@ final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
         let font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as UIFont
         let failed = call.state == .failed || call.state == .unknown
         let danger = UIColor(Theme.danger)
-        icon.image = UIImage(systemName: call.use.kind.icon, withConfiguration: UIImage.SymbolConfiguration(font: font, scale: .small))
-        icon.tintColor = failed ? danger : .secondaryLabel
+        if call.use.kind == .agentStart {
+            // 创建 agent 画要建的那个角色的头像，出错时也不变色
+            let scale = window?.screen.scale ?? traitCollection.displayScale
+            icon.image = AgentAvatar.still(creating: call, diameter: Metrics.toolIcon, scale: scale, environment: environment)
+                .map { UIImage(cgImage: $0, scale: scale, orientation: .up) }
+        } else {
+            icon.image = UIImage(systemName: call.use.kind.icon, withConfiguration: UIImage.SymbolConfiguration(font: font, scale: .small))
+            icon.tintColor = failed ? danger : .secondaryLabel
+        }
         let semibold = UIFont(descriptor: font.fontDescriptor.addingAttributes([.traits: [UIFontDescriptor.TraitKey.weight: UIFont.Weight.semibold]]),
                               size: 0)
         name.set(call.use.displayName, font: semibold, color: failed ? danger : .label)
