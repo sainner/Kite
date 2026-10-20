@@ -235,6 +235,9 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
         host.addGestureRecognizer(tap)
         secondary.addTarget(self, action: #selector(secondaryTap(_:)))
         secondary.buttonMaskRequired = .secondary
+        // 按键掩码只筛指针的点按，手指点按照样认；它和上面的点按互斥，又不用等长按失败，每次都抢先认出，链接点不开
+        // （2026-10-21 iPhone 真机记录）。只接指针。
+        secondary.allowedTouchTypes = [UITouch.TouchType.indirectPointer.rawValue as NSNumber]
         secondary.isEnabled = false
         host.addGestureRecognizer(secondary)
         text.addInteraction(menu)
