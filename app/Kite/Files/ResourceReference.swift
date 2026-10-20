@@ -129,7 +129,7 @@ struct LocalPort: Equatable {
     }
 }
 
-/// 点一次本机网页链接：终端的网页视图打开到它的路径。每点一次是新的一个，同一个链接再点也回到那里（见 PortPreview）。
+/// 点一次本机网页链接或在网页地址栏里回车：终端的网页视图打开到它的路径。每次是新的一个，同一个链接再点也回到那里（见 PortPreview）。
 struct WebLink: Equatable {
     let target: LocalPort
     let id = UUID()

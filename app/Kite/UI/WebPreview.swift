@@ -35,6 +35,8 @@ struct WebPreview: View {
     let source: WebSource
     /// 加载失败时报给所在窗口的信息区，成功后报 nil。
     var report: (String?) -> Void = { _ in }
+    /// 窗口里的浏览控件经它操作这个页面；不给就只是看。
+    var browser: WebBrowser?
     /// 藏起来时页面留着、网页视图摘下：不在窗口里的页面由 WebKit 节流，再显示时接着原来的页面。
     var visible = true
     @State private var page: WebPage?
@@ -42,11 +44,23 @@ struct WebPreview: View {
 
     var body: some View {
         Group {
-            if let page, visible { WebView(page) } else { Color.clear }
+            if let page, visible {
+                #if os(macOS)
+                // Mac 窗口底部没有系统安全区，页面直接铺到控制区后面，控制区浮在页面上，不为它让边。
+                WebView(page).ignoresSafeArea(.container, edges: .bottom)
+                #else
+                // WebView 自己把安全区（Home 条、控制区）交给页面：铺到控制区后面，被挡住的那一截让出来，同 Safari。
+                WebView(page)
+                #endif
+            } else { Color.clear }
+        }
+        .onChange(of: page?.isLoading) { _, loading in
+            if loading == false { browser?.refreshIcon() }
         }
         .task(id: source) {
             let page = makePage()
             self.page = page
+            browser?.attach(page, report: report)
             do {
                 for try await _ in page.load(source.url) {}
                 report(nil)
@@ -71,12 +85,101 @@ struct WebPreview: View {
         return WebPage(configuration: configuration, navigationDecider: WebNavigation(source: source, openURL: { openURL($0) }))
     }
 
-    private static func message(_ error: any Error) -> String {
+    fileprivate static func message(_ error: any Error) -> String {
         if case .failedProvisionalNavigation(let underlying) = error as? WebPage.NavigationError {
             return "网页打不开：\(underlying.localizedDescription)"
         }
         if case .webContentProcessTerminated = error as? WebPage.NavigationError { return "网页进程已退出，请刷新" }
         return "网页打不开：\(error.localizedDescription)"
+    }
+}
+
+/// 一个网页视图的浏览操作：窗口控制区的地址栏、前进后退、首页和重新加载经它在同一个页面里跳转，也从它读当前地址和站点图标。
+/// 页面由 WebPreview 建好交给它；换了来源（换端口）是新的页面，历史从头开始。跳转失败照样报给窗口的信息区。
+@MainActor @Observable final class WebBrowser {
+    private(set) var page: WebPage?
+    /// 站点图标，没有或画不出来时是 nil。
+    private(set) var icon: Image?
+    @ObservationIgnored private var report: (String?) -> Void = { _ in }
+    @ObservationIgnored private var navigation: Task<Void, Never>?
+
+    var url: URL? { page?.url }
+    var canGoBack: Bool { page?.backForwardList.backList.isEmpty == false }
+    var canGoForward: Bool { page?.backForwardList.forwardList.isEmpty == false }
+
+    fileprivate func attach(_ page: WebPage, report: @escaping (String?) -> Void) {
+        navigation?.cancel()
+        self.page = page
+        self.report = report
+        icon = nil
+    }
+
+    func back() {
+        guard let page, let item = page.backForwardList.backList.last else { return }
+        follow(page.load(item))
+    }
+
+    func forward() {
+        guard let page, let item = page.backForwardList.forwardList.first else { return }
+        follow(page.load(item))
+    }
+
+    func open(_ url: URL) {
+        guard let page else { return }
+        follow(page.load(url))
+    }
+
+    /// 重新加载当前页面。还没打开成功过（首次加载就失败了）时没有可重新加载的，返回 false，由窗口重建网页视图。
+    func reload() -> Bool {
+        guard let page, page.url != nil else { return false }
+        follow(page.reload())
+        return true
+    }
+
+    private func follow(_ events: some AsyncSequence<WebPage.NavigationEvent, any Error>) {
+        navigation?.cancel()
+        let report = report
+        navigation = Task {
+            do {
+                for try await _ in events {}
+                report(nil)
+            } catch {
+                // 被下一次跳转顶掉的不算失败
+                if !Task.isCancelled { report(WebPreview.message(error)) }
+            }
+        }
+    }
+
+    /// 让页面把图标画成 PNG 交回来：SVG、ICO 都由 WebKit 解码，两端一样。脚本在隔离的环境里跑，页面自己的脚本碰不到；
+    /// 图标跨源时画布读不出来，就没有图标。
+    fileprivate func refreshIcon() {
+        guard let page else { return }
+        Task {
+            let data = try? await page.callJavaScript(Self.iconScript, contentWorld: .defaultClient) as? String
+            guard self.page === page else { return }
+            icon = data.flatMap(Self.image)
+        }
+    }
+
+    private static let iconScript = """
+        const links = document.querySelectorAll('link[rel~="icon" i]');
+        const image = new Image();
+        image.src = links.length ? links[links.length - 1].href : new URL('/favicon.ico', location.href).href;
+        await image.decode();
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 64;
+        canvas.getContext('2d').drawImage(image, 0, 0, 64, 64);
+        return canvas.toDataURL('image/png');
+        """
+
+    private static func image(_ dataURL: String) -> Image? {
+        guard let comma = dataURL.firstIndex(of: ","), let data = Data(base64Encoded: String(dataURL[dataURL.index(after: comma)...])),
+              let image = PlatformImage(data: data) else { return nil }
+        #if os(macOS)
+        return Image(nsImage: image)
+        #else
+        return Image(uiImage: image)
+        #endif
     }
 }
 
@@ -136,29 +239,37 @@ struct PortPreview: View {
     let client: KitedClient
     let port: Int
     let store: UUID
-    /// 消息里点的链接：打开到它的路径，每点一次重新打开；没有时是首页。
+    /// 消息里点的链接或地址栏里输入的路径：在页面里打开到它，每次都打开一回；没有时是首页。
     var link: WebLink?
+    /// 其他设备上页面的地址是本机转发的地址，端口不是工作机上的端口，只看路径。
+    let browser: WebBrowser
     var report: (String?) -> Void = { _ in }
     /// 见 WebPreview.visible。
     var visible = true
+    /// 网站根地址：本机的 localhost，或本机转发的地址。
     @State private var url: URL?
+    /// 第一次打开到哪里：带上转发好时的链接路径；之后的链接在同一个页面里打开，前进后退接得上。
+    @State private var start: URL?
 
     var body: some View {
         Group {
-            if let url {
-                WebPreview(source: .address(URL(string: url.absoluteString + (link?.target.path ?? "")) ?? url, store: store),
-                           report: report, visible: visible)
-                    .id(link?.id)
+            if let start {
+                WebPreview(source: .address(start, store: store), report: report, browser: browser, visible: visible)
             } else { Color.clear }
+        }
+        .onChange(of: link) { _, link in
+            guard let url, let link, let target = URL(string: url.absoluteString + link.target.path) else { return }
+            browser.open(target)
         }
         .task(id: "\(client.identity) \(port)") {
             url = nil
+            start = nil
             // kited 自己的端口在本机和组网上都开着，页面开在它上面就和接口同源，能带上请求头调用接口
             guard port != URL(string: client.address)?.port, port != URL(string: KitedClient.local)?.port else {
                 report("这是工作机服务自己的端口，不能预览")
                 return
             }
-            if client.isLocal { url = URL(string: "http://localhost:\(port)"); return }
+            if client.isLocal { show(URL(string: "http://localhost:\(port)")); return }
             guard let host = URL(string: client.address)?.host(percentEncoded: false), let target = UInt16(exactly: port) else {
                 report("工作机地址或端口无效")
                 return
@@ -170,10 +281,16 @@ struct PortPreview: View {
                 return
             }
             // 转发只听 IPv4 回环；写 localhost 时 WebKit 先连 ::1，本机正好有服务占着同号端口就会打开错的页面。
-            url = URL(string: "http://127.0.0.1:\(relay.port)")
+            show(URL(string: "http://127.0.0.1:\(relay.port)"))
             // 视图在就一直转发，离开或换了目标时（任务取消）关掉
             while !Task.isCancelled { try? await Task.sleep(for: .seconds(3600)) }
             relay.stop()
         }
+    }
+
+    private func show(_ root: URL?) {
+        guard let root else { return }
+        url = root
+        start = URL(string: root.absoluteString + (link?.target.path ?? "")) ?? root
     }
 }
