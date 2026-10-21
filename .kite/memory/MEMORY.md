@@ -22,7 +22,7 @@
 - [交互连续性](feedback-interaction-quality.md) — 公共控件（报一处按类修全）、对象身份、动效性能；窗口动画不回弹、新建从添加入口展开、点阵收起；改尺寸只动相邻窗口；上一步与固定；触屏长按起拖、标题栏无右键菜单
 - [状态放标题栏](feedback-pane-status-placement.md) — 窗口状态归信息区，副行只放 description；为空画点阵图案配文字；弹窗副行说清做什么、状态写正文
 - [测试要克制](test-restraint.md) — 测试准入主来源；改设计只删旧断言、不改写、不给新功能补测试；事件断言与 PDF
-- [设计讨论先给意见](feedback-design-discussion.md) — 用户的总结是征求意见，落文档前先问
+- [设计讨论先给意见](feedback-design-discussion.md) — 用户的总结是征求意见，落文档前先问；认可了具体方案就算已决定
 - [讲方案说大白话](feedback-plain-explanations.md) — 先讲现状、解释工程术语、一次问一件事，流程选择给自动默认值
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行与数据流判断，不能只看引用
 - [什么要保存](feedback-save-scope.md) — 只有提示词这类文稿改完要保存，其他修改即时生效；新角色在上下文窗口一次建好
@@ -41,6 +41,7 @@
 - [DeepSeek 待实测](todo-deepseek-validation.md) — 纯文字已跑通；工具回合推理交回、跨厂商推理占位、图片待验
 - [节假日表](todo-holiday-calendar.md) — DeepSeek 峰谷计价的法定节假日表每年补次年安排，现只有 2026
 - [终端插件收尾](todo-terminal-plugin.md) — 已实现待手测；跨端口网页待验、旁观设备的尺寸、跨 kited 重启、后台命令的输入
+- [预览插件收尾](todo-preview-plugin.md) — 网页移出终端、各浏览器、模拟器、App 窗口，已决定未实现；逐帧的界面细节与 Claude 模拟器面板参照
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据；侧栏收起展开；真发送开头掉帧
 - [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit、登出重启关机预告待实测、本机受管通道已上线、Mac mini 收不到同步待人处理
 - [本机访问边界](todo-local-access-boundary.md) — 本机接口与 kite-net 代理不设认证、/network 暴露端点，待定收紧；排查装的系统版 Tailscale 要退
