@@ -97,7 +97,8 @@ struct WebPreview: View {
 /// 一个网页视图的浏览操作：窗口控制区的地址栏、前进后退、首页和重新加载经它在同一个页面里跳转，也从它读当前地址和站点图标。
 /// 页面由 WebPreview 建好交给它；换了来源（换端口）是新的页面，历史从头开始。跳转失败照样报给窗口的信息区。
 @MainActor @Observable final class WebBrowser {
-    private(set) var page: WebPage?
+    /// 页面由预览持有；端口消失、预览卸下后，控制区不继续留住它。
+    private(set) weak var page: WebPage?
     /// 站点图标，没有或画不出来时是 nil。
     private(set) var icon: Image?
     @ObservationIgnored private var report: (String?) -> Void = { _ in }

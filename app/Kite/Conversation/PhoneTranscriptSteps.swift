@@ -463,11 +463,15 @@ final class PhoneCallDetail: UIView {
         }
     }
 
+    private var measuredHeight: CGFloat {
+        heights.input + Self.spacing + heights.result + (children == nil ? 0 : Self.spacing + heights.children)
+    }
+
     func height(width: CGFloat) -> CGFloat {
         heights.input = input.height(width: width)
         heights.result = result.height(width: width)
         heights.children = children?.height(width: max(width - 12, 0)) ?? 0
-        return heights.input + Self.spacing + heights.result + (children == nil ? 0 : Self.spacing + heights.children)
+        return measuredHeight
     }
 
     var approximate: Bool { children?.approximate == true }
@@ -484,8 +488,7 @@ final class PhoneCallDetail: UIView {
     /// 按眼下的高摆：动画中多出、少掉的那截给正在动的那块（子 agent 的行在最下面，本来就拿剩下的），走到各块现量的高才算走完。
     override func layoutSubviews() {
         super.layoutSubviews()
-        let total = heights.input + Self.spacing + heights.result + (children == nil ? 0 : Self.spacing + heights.children)
-        let extra = bounds.height - total
+        let extra = bounds.height - measuredHeight
         let moving = moving
         if abs(extra) < 0.01 { self.moving = nil }
         let inputHeight = moving == .input ? max(heights.input + extra, 0) : heights.input
@@ -556,6 +559,10 @@ final class PhoneDetailCard: UIView {
         setNeedsLayout()
     }
 
+    private var measuredHeight: CGFloat {
+        20 + rowHeights.reduce(0, +) + CGFloat(max(rows.count - 1, 0)) * 8
+    }
+
     func height(width: CGFloat) -> CGFloat {
         let inner = max(width - 20, 0)
         keyWidth = min(rows.map(\.key.naturalWidth).max() ?? 0, 96)
@@ -565,13 +572,13 @@ final class PhoneDetailCard: UIView {
             row.folding.foldHeight = foldHeight
             return max(row.key.height(width: keyWidth), row.folding.height(button: row.fold.height))
         }
-        return 20 + rowHeights.reduce(0, +) + CGFloat(max(rows.count - 1, 0)) * 8
+        return measuredHeight
     }
 
     /// 按眼下的高摆：动画中多出、少掉的那截给正在展开收起的那一行（同 PhoneWorkSteps），值按这一行眼下的高露出、渐隐。
     override func layoutSubviews() {
         super.layoutSubviews()
-        let total = 20 + rowHeights.reduce(0, +) + CGFloat(max(rows.count - 1, 0)) * 8
+        let total = measuredHeight
         let moving = moving
         if abs(bounds.height - total) < 0.01 { self.moving = nil }
         let valueX = 10 + keyWidth + 12

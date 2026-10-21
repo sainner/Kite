@@ -642,12 +642,16 @@ final class CallDetailView: NSView {
     /// 子 agent 的行里有按近似量的，见 TranscriptStack.approximate。
     var approximate: Bool { children?.approximate ?? false }
 
+    private var measuredHeight: CGFloat {
+        heights.input + 6 + heights.result + (children == nil ? 0 : 6 + heights.children)
+    }
+
     func height(width: CGFloat) -> CGFloat {
         self.width = width
         heights.input = input.height(width: width)
         heights.result = result.height(width: width)
         heights.children = children.map { $0.height(width: max(width - 12, 0)) } ?? 0
-        return heights.input + 6 + heights.result + (children == nil ? 0 : 6 + heights.children)
+        return measuredHeight
     }
 
     private func partChanged(_ part: DetailPart, motion: RowMotion?) {
@@ -657,8 +661,7 @@ final class CallDetailView: NSView {
 
     /// 按给的高摆：动画中多出、少掉的那截给正在动的那块（同 WorkStepsView.layout），走到各块现量的高才算走完。
     func layoutDetail(height: CGFloat) {
-        let total = heights.input + 6 + heights.result + (children == nil ? 0 : 6 + heights.children)
-        let extra = height - total
+        let extra = height - measuredHeight
         let moving = moving
         if abs(extra) < 0.01 { self.moving = nil }
         func part(_ part: DetailPart, _ height: CGFloat) -> CGFloat { part == moving ? max(height + extra, 0) : height }
@@ -743,6 +746,10 @@ final class ToolDetailCardView: NSView {
         needsLayout = true
     }
 
+    private var measuredHeight: CGFloat {
+        Self.padding * 2 + heights.reduce(0, +) + Self.rowSpacing * CGFloat(max(rows.count - 1, 0))
+    }
+
     func height(width: CGFloat) -> CGFloat {
         let valueWidth = max(width - Self.padding * 2 - keyWidth - Self.columnSpacing, 0)
         heights = rows.map { row in
@@ -750,7 +757,7 @@ final class ToolDetailCardView: NSView {
             row.folding.foldHeight = foldHeight
             return max(row.key.measurePixel(lineWidth: keyWidth), row.folding.height(button: row.fold.height))
         }
-        return Self.padding * 2 + heights.reduce(0, +) + Self.rowSpacing * CGFloat(max(rows.count - 1, 0))
+        return measuredHeight
     }
 
     /// 按给的高摆：动画中多出、少掉的那截给正在展开收起的那一行（同 WorkStepsView.layout），值按这一行眼下的高露出、渐隐。
@@ -759,7 +766,7 @@ final class ToolDetailCardView: NSView {
         CATransaction.setDisableActions(true)
         background.frame = bounds
         background.path = RoundedRectangle(cornerRadius: Metrics.toolGroupRadius).path(in: bounds).cgPath
-        let total = Self.padding * 2 + heights.reduce(0, +) + Self.rowSpacing * CGFloat(max(rows.count - 1, 0))
+        let total = measuredHeight
         let moving = moving
         if abs(height - total) < 0.01 { self.moving = nil }
         let valueX = Self.padding + keyWidth + Self.columnSpacing
