@@ -276,11 +276,12 @@ struct InstanceSettingsPresentation: ViewModifier {
             InstanceSettings(instance: instance).environment(model).environment(area).toastHost().appAppearance()
         }
         .modifier(ArchiveInstanceConfirmation(instance: $area.archiveRequest))
+        .modifier(ArchiveIdleSubagentsConfirmation(parent: $area.archiveIdleRequest))
         // 归档先在本机生效、弹窗当场关掉，工作机归档不成时报在这里
         .alert("归档失败", isPresented: Binding(get: { area.archiveError != nil }, set: { if !$0 { area.archiveError = nil } })) {
             Button("好", role: .cancel) { area.archiveError = nil }
         } message: { Text(area.archiveError ?? "") }
-        .onChange(of: model.revision(for: area)) { area.settingsInstance = nil; area.archiveRequest = nil }
+        .onChange(of: model.revision(for: area)) { area.settingsInstance = nil; area.archiveRequest = nil; area.archiveIdleRequest = nil }
     }
 }
 
@@ -319,6 +320,39 @@ struct ArchiveInstanceConfirmation: ViewModifier {
     }
 }
 
+/// 家族格菜单里「归档空闲的子代理」的确认。点归档时按当时的状态重找一遍，期间又跑起来的留着；发不出去的原因报在工作区一层。
+struct ArchiveIdleSubagentsConfirmation: ViewModifier {
+    @Binding var parent: RemotePluginInstance?
+    @Environment(AppModel.self) private var model
+    @Environment(WorkArea.self) private var area
+    @Environment(\.toast) private var toast
+
+    func body(content: Content) -> some View {
+        content
+            .alert("归档空闲的子代理？", isPresented: Binding(get: { parent != nil }, set: { if !$0 { parent = nil } }),
+                   presenting: parent) { target in
+                Button("归档", role: .destructive) { archive(target) }
+                Button("取消", role: .cancel) {}
+            } message: { target in
+                Text("归档「\(target.title)」开出的 \(count(of: target)) 个空闲的子代理，关闭它们的窗口，会话和数据保留在工作机上；还在运行或等你回应的留着。目前还不能在界面里查看或恢复已归档的实例。")
+            }
+    }
+
+    /// 连同各层子代理一共归档几个。
+    private func count(of target: RemotePluginInstance) -> Int {
+        area.idleSubagents(of: target).reduce(0) { $0 + 1 + area.subagents(of: $1).count }
+    }
+
+    private func archive(_ target: RemotePluginInstance) {
+        let count = count(of: target), roots = area.idleSubagents(of: target)
+        guard !roots.isEmpty else { return }
+        do {
+            try model.archiveInstances(roots, in: area)
+            toast?.show("已归档 \(count) 个子代理")
+        } catch { area.archiveError = error.localizedDescription }
+    }
+}
+
 /// 窗口图标和无窗口实例使用同一套实例操作；给了窗口时带关闭窗口。
 struct InstanceActions: View {
     let instance: RemotePluginInstance
@@ -341,7 +375,8 @@ struct InstanceAction {
     var destructive = false
     let perform: @MainActor () -> Void
 
-    /// 打开它的各个视图，再是 managing 那几项；给了窗口时最后是关闭窗口。
+    /// 打开它的各个视图，再是 managing 那几项；带着空闲子代理的代理（停靠栏里是家族格）多一项归档空闲的子代理，会话窗口的更多菜单里没有；
+    /// 给了窗口时最后是关闭窗口。
     @MainActor static func all(for instance: RemotePluginInstance, in area: WorkArea, model: AppModel, pane: Pane? = nil) -> [InstanceAction] {
         var actions = (area.definition(of: instance)?.views ?? []).map { view in
             InstanceAction(title: "打开\(view.title)", symbol: "macwindow") {
@@ -349,6 +384,11 @@ struct InstanceAction {
             }
         }
         actions += managing(instance, in: area, model: model)
+        if !area.idleSubagents(of: instance).isEmpty {
+            actions.append(InstanceAction(title: "归档空闲的子代理", symbol: "archivebox", enabled: model.isConnected(area), destructive: true) {
+                area.archiveIdleRequest = instance
+            })
+        }
         if let pane {
             actions.append(InstanceAction(title: "关闭窗口", symbol: "xmark") { model.closeWindow(pane, in: area) })
         }

@@ -243,6 +243,20 @@ extension WorkArea {
         return instances.filter { $0.status == .open && $0.origin?.instanceId == instance.id && isAgent($0) }.flatMap { [$0] + subagents(of: $0) }
     }
 
+    /// 「归档空闲的子代理」要归档的：整棵都空闲的子代理，归档时连同它的各层子代理；有一个不空闲就留下它，往下一层找。
+    func idleSubagents(of instance: RemotePluginInstance) -> [RemotePluginInstance] {
+        guard isAgent(instance) else { return [] }
+        return instances.filter { $0.status == .open && $0.origin?.instanceId == instance.id && isAgent($0) }.flatMap { child in
+            ([child] + subagents(of: child)).allSatisfy { isIdle($0.id) } ? [child] : idleSubagents(of: child)
+        }
+    }
+
+    /// 空闲：回合已结束（完成、停止、失败都算），没在等人回应，也没在等确认继续。
+    func isIdle(_ id: String) -> Bool {
+        guard let activity = activities[id] else { return true }
+        return activity.phase == "idle" && activity.waiting == nil && !activity.waitingForResume
+    }
+
     /// 父代理关窗口时一起关的：各层子代理开着、但没在眼前的窗口（宽屏收在停靠栏里，紧凑布局不是当前窗口）。
     /// 台面上的留着，其余的随父代理收进它那一格。
     func descendantPanesClosing(with pane: Pane) -> [Pane] {

@@ -610,19 +610,28 @@ final class AppModel {
     /// 归档不等工作机：本机先按已归档算，停靠栏里那一格和它的窗口当场收掉（见 WorkArea.archivingInstances）；工作机归档不成再放回来，
     /// 报在归档失败的提示里。归档保留会话与数据，工作机停止执行并关闭它的全部窗口；代理的各层子代理一起归档（见 WorkArea.subagents）。
     func archiveInstance(_ instance: RemotePluginInstance, in area: WorkArea) throws {
+        try archiveInstances([instance], in: area)
+    }
+
+    /// 几个一起归档（家族格的「归档空闲的子代理」）：本机一起先收掉，工作机逐个归档，归档不成的放回来、报第一个原因，最后读一次列表。
+    func archiveInstances(_ instances: [RemotePluginInstance], in area: WorkArea) throws {
         let client = try activeClient(in: area)
         guard area.remote.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
         area.archiveError = nil
-        let members = [instance.id] + area.subagents(of: instance).map(\.id)
-        area.archiveLocally(members)
+        let members = instances.map { [$0.id] + area.subagents(of: $0).map(\.id) }
+        area.archiveLocally(members.flatMap(\.self))
         Task {
-            do {
-                let _: JSON = try await client.request("/instances/\(instance.id)/archive", method: "POST", as: JSON.self)
-            } catch {
-                area.restoreArchiving(members)
-                area.archiveError = error.localizedDescription
-                return
+            var archived = false
+            for (instance, ids) in zip(instances, members) {
+                do {
+                    let _: JSON = try await client.request("/instances/\(instance.id)/archive", method: "POST", as: JSON.self)
+                    archived = true
+                } catch {
+                    area.restoreArchiving(ids)
+                    if area.archiveError == nil { area.archiveError = error.localizedDescription }
+                }
             }
+            guard archived else { return }
             do { try await refresh(client) } catch { area.windowError = error.localizedDescription }
         }
     }

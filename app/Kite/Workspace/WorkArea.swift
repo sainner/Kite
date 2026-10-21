@@ -50,6 +50,8 @@ final class WorkArea: Identifiable {
     var archiveError: String?
     var settingsInstance: RemotePluginInstance?
     var archiveRequest: RemotePluginInstance?
+    /// 要归档哪个代理空闲的子代理，见 ArchiveIdleSubagentsConfirmation。
+    var archiveIdleRequest: RemotePluginInstance?
     /// 代理的活动摘要，按实例 ID。目录快照与单条推送谁新用谁，见 updateActivity。
     private(set) var activities: [String: ThreadActivity] = [:]
     @ObservationIgnored private var activityCursors: [String: EventCursor] = [:]
