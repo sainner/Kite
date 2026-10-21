@@ -8,7 +8,7 @@ import SwiftUI
 @MainActor @Observable final class StageReports {
     var usesDots = false
     var dotSlots: Set<String> = []
-    var hoverTip: DockHoverTip?
+    var hoverTips: [DockHoverTip] = []
 }
 
 /// 会影响托管视图外观的几项环境：变了才给各个托管视图重新交环境（rootView），其余时候托管视图自己读模型更新。

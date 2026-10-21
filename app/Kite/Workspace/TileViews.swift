@@ -48,7 +48,7 @@ struct DockRail: View {
                 }
             }
             ForEach(geometry.minis.filter { !$0.entry.expands }, id: \.entry.id) { mini in
-                DockCellButton(entry: mini.entry, depth: 0, mini: true, hoverFrame: geometry.hoverFrame(of: mini.frame, mini: true), showPane: showPane)
+                DockCellButton(entry: mini.entry, depth: 0, mini: true, hoverFrame: geometry.hoverFrame(of: mini.entry, cell: mini.frame, mini: true), showPane: showPane)
                     .placed(mini.frame)
                     .opacity(hidden(mini.entry) ? 0 : 1)
                     .modifier(DockDimmed(dimmed: dimmed))
@@ -137,12 +137,12 @@ struct DockOverlay: View {
         }
         // 原生台面拖侧栏改宽时 bounds 左边让出一段（见 StageView.stageRect），格子按台面坐标摆，这一层从台面原点铺到右下角
         .frame(width: bounds.maxX, height: bounds.maxY, alignment: .topLeading)
-        .dockHoverSource(hoverTip)
+        .dockHoverSource(hoverTips)
     }
 
-    private var hoverTip: DockHoverTip? {
-        guard workspace.drag == nil, workspace.resizing == nil else { return nil }
-        return area.dockHoverTip(in: geometry)
+    private var hoverTips: [DockHoverTip] {
+        guard workspace.drag == nil, workspace.resizing == nil else { return [] }
+        return area.dockHoverTips(in: geometry, numbered: model.shortcutHint == .dock)
     }
 
     @ViewBuilder
@@ -196,7 +196,7 @@ struct DockUnfold: View {
                 DockOpenness(openness: openness) {
                     DockUnfolding(entry: cell.entry, cell: cell.frame, regions: regions, expanded: expanded,
                                   drawsParent: expanded || lifted || drawsParent(cell.entry),
-                                  hoverFrame: geometry.hoverFrame(of: cell.frame, mini: mini), showPane: showPane)
+                                  hoverFrame: geometry.hoverFrame(of: cell.entry, cell: cell.frame, mini: mini), showPane: showPane)
                 }
                 .transition(.scale(0.6, placedIn: cell.frame).combined(with: .opacity))
             }

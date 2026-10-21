@@ -19,6 +19,8 @@ final class AppModel {
     var sidebarCollapsed = false
     /// 侧栏底部一级导航选中的一栏。
     var sidebarSection = SidebarSection.workspaces
+    /// 按住 ⌘ 或 ⌃⌘ 时标出的编号，只有 Mac 有，见 ShortcutHintMonitor。
+    var shortcutHint: ShortcutHint?
     var contentSize: CGSize = .zero
     /// Line 的收件箱，从 Line 所在的工作机读；标志旁的数目和收件箱窗口都用它，见 LineModel。
     var lineInboxSnapshot: LineInbox?

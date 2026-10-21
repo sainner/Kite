@@ -22,6 +22,9 @@ struct KiteApp: App {
         _model = State(initialValue: model)
         LineAttention.shared.install(model: model)
         LineNotifications.shared.install(model: model)
+        #if os(macOS)
+        ShortcutHintMonitor.shared.install(model: model)
+        #endif
         #if DEBUG && KITE_LAYOUT_AUDIT
         PerfProbe.arm(model: model)
         #endif
@@ -152,10 +155,9 @@ struct KiteCommands: Commands {
         }
     }
 
-    /// 换到侧栏工作区一栏里第 index 个工作区（从 0 数，收起时那一列圆点也是这个顺序，不含 Line），同点那一行：
-    /// Mac 上已分离的把它的窗口提到前面。
+    /// 换到第 index 个工作区（从 0 数，见 AppModel.numberedWorkspaces），同点侧栏那一行：Mac 上已分离的把它的窗口提到前面。
     private func switchWorkspace(at index: Int) {
-        let areas = model.workspaceGroups.flatMap(\.workspaces)
+        let areas = model.numberedWorkspaces
         guard areas.indices.contains(index) else { return }
         let target = areas[index]
         #if os(macOS)

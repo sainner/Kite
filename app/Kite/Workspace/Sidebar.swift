@@ -105,6 +105,12 @@ struct WorkspaceSidebar: View {
                             // 已经分离成独立窗口的画淡一点
                             Circle().fill(workspace.tint).frame(width: 24, height: 24)
                                 .opacity(model.detached.contains(workspace.id) ? 0.35 : 1)
+                                // 按住 ⌃⌘ 时编号写在圆点里，用底色，「文字色」的圆点在深色下是白的
+                                .overlay {
+                                    if let number = model.workspaceHint(workspace) {
+                                        Text("\(number)").font(Theme.caption.weight(.semibold)).monospacedDigit().foregroundStyle(Theme.background)
+                                    }
+                                }
                                 .frame(width: max(36, Metrics.paneButton), height: max(36, Metrics.paneButton))
                                 .background(current == workspace.id ? Theme.selection : .clear, in: sidebarRowShape)
                                 .overlay { source(workspace) }

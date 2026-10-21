@@ -320,8 +320,29 @@ extension WorkArea {
         }
     }
 
+    /// 停靠栏浮出的标签：悬停的那一格；numbered（按住 ⌘，见 ShortcutHint）时各格一起浮出、尾部带编号，小头像只在头像上标编号，
+    /// 悬停时照常浮出标签。展开着「更多」、家族格时不标。
+    func dockHoverTips(in geometry: DockGeometry, numbered: Bool) -> [DockHoverTip] {
+        var hover = dockHoverTip(in: geometry)
+        guard numbered, dockExpansion.isEmpty else { return hover.map { [$0] } ?? [] }
+        let numbers = Dictionary(uniqueKeysWithValues: geometry.numbered.enumerated().map { ($1, $0 + 1) })
+        var tips: [DockHoverTip] = []
+        for (entry, frame) in geometry.cells {
+            guard let number = numbers[entry.id] else { continue }
+            tips.append(DockHoverTip(id: entry.id, text: dockLabel(entry), frame: geometry.hoverFrame(of: entry, cell: frame, mini: false), number: number))
+        }
+        for (entry, frame) in geometry.minis {
+            guard let number = numbers[entry.id] else { continue }
+            tips.append(DockHoverTip(id: "badge:" + entry.id, text: "", frame: frame, number: number, badge: true))
+        }
+        // 别的格子的标签已经浮着
+        guard let id = hover?.id, geometry.minis.contains(where: { $0.entry.id == id }) else { return tips }
+        hover?.number = numbers[id]
+        return tips + [hover].compactMap(\.self)
+    }
+
     /// 停靠栏上悬停的那一格的标签；家族格里的父代理是窗口卡片报上来的，按窗口找。
-    func dockHoverTip(in geometry: DockGeometry) -> DockHoverTip? {
+    private func dockHoverTip(in geometry: DockGeometry) -> DockHoverTip? {
         guard let hover = dockHover else { return nil }
         let entry: DockEntry
         if let found = DockModel(agents: geometry.allCells.map(\.entry)).entry(hover.id) {
@@ -331,7 +352,7 @@ extension WorkArea {
         } else {
             return nil
         }
-        return DockHoverTip(text: dockLabel(entry), frame: hover.frame)
+        return DockHoverTip(id: hover.id, text: dockLabel(entry), frame: hover.frame)
     }
 }
 
@@ -394,11 +415,14 @@ struct DockGeometry {
     private(set) var faces: [String: CGRect] = [:]
     let onStage: Set<String>
     let grouped: Set<String>
+    /// ⌘1～9 打开的各格，按编号排，见 DockModel.topToBottom。
+    let numbered: [String]
     var allCells: [(entry: DockEntry, frame: CGRect)] { cells + minis }
 
     init(model: DockModel, regions: WindowRegions) {
         onStage = model.onStage
         grouped = model.grouped
+        numbered = model.topToBottom.prefix(9).map(\.id)
         let size = Metrics.dragBubble, step = size + Metrics.gap
         let x = regions.dock.midX - size / 2
         var y = regions.dock.minY
@@ -471,9 +495,14 @@ struct DockGeometry {
         return nil
     }
 
-    /// 悬停标签对着的范围：小头像的从停靠栏左边浮出，不盖住左列的小头像。
-    func hoverFrame(of cell: CGRect, mini: Bool) -> CGRect {
-        mini ? CGRect(x: add.minX, y: cell.minY, width: cell.maxX - add.minX, height: cell.height) : cell
+    /// 悬停标签对着的范围：小头像的从停靠栏左边浮出，不盖住左列的小头像；家族格的对着最上面父代理的头像，不对着整格。
+    func hoverFrame(of entry: DockEntry, cell: CGRect, mini: Bool) -> CGRect {
+        var frame = mini ? CGRect(x: add.minX, y: cell.minY, width: cell.maxX - add.minX, height: cell.height) : cell
+        if case .family = entry {
+            let face = Self.parentFrame(in: cell)
+            frame = CGRect(x: frame.minX, y: face.minY, width: frame.width, height: face.height)
+        }
+        return frame
     }
 
     /// 展开的家族格、「更多」从格子原地拉长成的面板：先往下，放不下再往上，最高到停靠栏全高，再多就在里面滚动；

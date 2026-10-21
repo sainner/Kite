@@ -32,7 +32,7 @@ struct StageHost: View {
                 .environment(\.stageLeadingInset, 0)
                 .preference(key: WindowDotsActive.self, value: reports.usesDots)
                 .preference(key: DotSlots.self, value: reports.dotSlots)
-                .dockHoverSource(reports.hoverTip)
+                .dockHoverSource(reports.hoverTips)
         }
     }
 }
@@ -360,7 +360,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         var transitioning = false
         var expanded = false
         var visible: Set<String> = []
-        var hoverTip: DockHoverTip?
+        var hoverTips: [DockHoverTip] = []
         var drag: Pane?
         var unfolds: [String: (cell: CGRect, panel: CGRect)] = [:]
         /// 台面排过一轮了：之后才有的格子动着出来。
@@ -435,15 +435,15 @@ final class StageView: RepresentedRoot, StageDotsReporting {
             $0.formUnion($1.bodyReports.dotSlots)
             $0.formUnion($1.bodyReports.threadSlots)
         })
-        arranged.hoverTip = hoverTip(plan: plan)
+        arranged.hoverTips = hoverTips(plan: plan)
         return arranged
     }
 
-    /// 拖动、拖缝时不浮标签。
-    private func hoverTip(plan: StagePlan) -> DockHoverTip? {
+    /// 拖动、拖缝时不浮标签。按住 ⌘ 标编号只标在前台的窗口里：⌘数字作用在它上面。
+    private func hoverTips(plan: StagePlan) -> [DockHoverTip] {
         let layout = group.layout
-        guard layout.drag == nil, layout.resizing == nil, let area = group.workspace, let geometry = plan.dock else { return nil }
-        return area.dockHoverTip(in: geometry)
+        guard layout.drag == nil, layout.resizing == nil, let area = group.workspace, let geometry = plan.dock else { return [] }
+        return area.dockHoverTips(in: geometry, numbered: model.shortcutHint == .dock && window?.isKeyWindow == true)
     }
 
     /// 观察之外：把终点交给各张卡片的 motion，再按这一轮的过渡状态冻结光标、报看得见的实例和悬停标签。
@@ -464,7 +464,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         freezeCursors(arranged.transitioning)
         if !arranged.transitioning && wasTransitioning { refreshHover() }
         wasTransitioning = arranged.transitioning
-        hoverTip = arranged.hoverTip
+        hoverTips = arranged.hoverTips
         if arranged.expanded { installEscapeMonitor() } else { removeEscapeMonitor() }
         if visibleInstances != arranged.visible, window != nil {
             visibleInstances = arranged.visible
@@ -808,7 +808,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
 
     // MARK: - 点阵
 
-    private var hoverTip: DockHoverTip?
+    private var hoverTips: [DockHoverTip] = []
     private var reporting = false
 
     /// 各张卡片和空画板报的点阵用量、停靠栏悬停标签交给 StageHost。外面的 SwiftUI 正在排版（台面就排在它里面），隔一拍再改它读的值。
@@ -822,7 +822,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
             let slots = windowlessReports.slots.union(cardDots.slots)
             if reports.usesDots != uses { reports.usesDots = uses }
             if reports.dotSlots != slots { reports.dotSlots = slots }
-            if reports.hoverTip != hoverTip { reports.hoverTip = hoverTip }
+            if reports.hoverTips != hoverTips { reports.hoverTips = hoverTips }
         }
     }
 

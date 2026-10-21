@@ -21,6 +21,7 @@ struct WorkspaceRow<Interaction: View>: View {
     var body: some View {
         let indent = CGFloat(model.ancestors(of: workspace).count) * metrics.childIndent
         let children = childrenToggle
+        let hint = model.workspaceHint(workspace)
         SidebarTreeRow(selected: current) {
             HStack(spacing: 0) {
                 HStack(spacing: 6) {
@@ -120,6 +121,15 @@ struct WorkspaceRow<Interaction: View>: View {
                 .buttonStyle(SidebarButtonStyle(foreground: current ? highlight : tint,
                                                size: metrics.workspaceRowHeight))
                 .modifier(SidebarRevealedControl())
+                // 按住 ⌃⌘ 时按钮让开，最右那个按钮的位置标 ⌃⌘数字切换到它的编号
+                .opacity(hint == nil ? 1 : 0)
+                .allowsHitTesting(hint == nil)
+                .overlay(alignment: .trailing) {
+                    if let hint {
+                        ShortcutNumber(number: hint)
+                            .frame(width: metrics.workspaceRowHeight, height: metrics.workspaceRowHeight)
+                    }
+                }
             }
         }
         .help("\(workspace.remote.machine.name) · \(workspace.remote.workspace.cwd)")
