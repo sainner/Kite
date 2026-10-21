@@ -634,7 +634,8 @@ private struct CodeBlockContent: View, Equatable {
                 .font(Theme.code)
                 .textSelection(.enabled)
                 .fixedSize()
-                .padding(10)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
             if let maxHeight {
                 // 横竖用同一个滚动视图：竖向的里面再套横向的，Mac 上横向的那个接下竖向的滑动、不往外传，外面的滚不动
                 HeightLimit(limit: maxHeight) {
@@ -682,7 +683,8 @@ struct Folded<Line, Content: View>: View {
                 Button("显示全部 \(lines.count) 行") { expanded = true }
                     .font(Theme.secondary)
                     .foregroundStyle(.secondary)
-                    .padding([.horizontal, .bottom], 10)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 10)
             }
         }
     }

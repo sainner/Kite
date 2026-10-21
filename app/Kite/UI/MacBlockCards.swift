@@ -448,7 +448,7 @@ final class CodeCardView: BlockCardView {
         if !code.isEmpty { show() }
     }
 
-    /// 标题栏、代码（上下左右各 10 的留白）、折着时底下的按钮（左右、下面各 10）。
+    /// 标题栏、代码（左右各 12、上下各 10 的留白）、折着时底下的按钮（左右各 12、下面 10）。
     override func height(width: CGFloat) -> CGFloat {
         let shown = shown
         var height = contentTop + text.size.height + 20
@@ -461,9 +461,9 @@ final class CodeCardView: BlockCardView {
         let size = text.size
         let codeHeight = size.height + 20
         scroller.frame = CGRect(x: 0, y: contentTop, width: bounds.width, height: codeHeight)
-        scroller.contentWidth = size.width + 20
-        text.frame = CGRect(x: 10, y: 10, width: size.width, height: size.height)
-        foldButton.frame = CGRect(x: 10, y: contentTop + codeHeight, width: foldButton.width, height: foldButton.lineHeight)
+        scroller.contentWidth = size.width + 24
+        text.frame = CGRect(x: 12, y: 10, width: size.width, height: size.height)
+        foldButton.frame = CGRect(x: 12, y: contentTop + codeHeight, width: foldButton.width, height: foldButton.lineHeight)
     }
 }
 
