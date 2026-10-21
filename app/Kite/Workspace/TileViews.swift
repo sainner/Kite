@@ -250,8 +250,9 @@ private struct DockOpenness<Content: View>: View, Animatable {
 }
 
 /// 能展开的一格这一刻画在哪：面板（见 DockGeometry.panel）不随进度变，家族格在里面从格子挪到面板上。
-/// 排不下要滚动时套一层滚动区，滚动区和它的内容在过渡中大小不变：Mac 的滚动区由 AppKit 承担，跟着动画改大小时内容会被裁掉右边，
-/// 收起时先掉到下面再回来。
+/// 面板始终套着滚动区，排不下时才能滚：排得下、排不下是同一个家族格的两种状态，里面再展开一层、子代理多了越过上限时不换视图。
+/// 滚动区只借它的手势、惯性和滚动范围，同紧凑布局的底栏：里面是一条和排开一样长的空轨道，家族格钉在可视区里，
+/// 按滚了多远自己堆叠（见 DockGroup.viewport）。家族格若跟着滚动内容走，收起时还带着滚过的那一段，落到格子上面。
 private struct DockUnfolding: View {
     let entry: DockEntry
     let cell: CGRect
@@ -262,27 +263,47 @@ private struct DockUnfolding: View {
     var showPane: (Pane) -> Void
     @Environment(WorkArea.self) private var area
     @Environment(\.dockPanelOpenness) private var openness
+    @State private var position = ScrollPosition(edge: .top)
+    /// 从开头滚了多远。
+    @State private var offset: CGFloat = 0
 
     var body: some View {
         let panel = DockGeometry.panel(entry, from: cell, path: area.dockExpansion.dropFirst(), regions: regions)
-        let frame = panel.frame
-        let content = DockGroup(entry: entry, depth: 0, expanded: expanded, openness: openness, mini: cell.width < Metrics.dragBubble,
-                                drawsParent: drawsParent, hoverFrame: hoverFrame, showPane: showPane)
-            .offset(CGSize(width: (cell.minX - frame.minX) * (1 - openness), height: (cell.minY - frame.minY) * (1 - openness)))
-            // 别的格子展开着：模糊淡出
-            .modifier(DockDimmed(dimmed: !area.dockExpansion.isEmpty && !expanded))
-            .frame(width: frame.width, height: panel.extent, alignment: .topLeading)
-        Group {
-            if panel.extent > frame.height {
-                ScrollView(.vertical, showsIndicators: false) { content }
-                    .scrollDisabled(!expanded)
-                    .scrollClipDisabled(!expanded)
-                    .transition(.identity)
-            } else {
-                content.transition(.identity)
-            }
+        let frame = panel.frame, scrolls = panel.extent > frame.height
+        // 收起时边叠回去边滚回开头：开头滚出去的从上面回到原来的间距再叠起来，不从面板外面飞进来
+        let viewport = DockViewport(length: frame.height, offset: offset * min(max(openness, 0), 1))
+        ScrollView(.vertical, showsIndicators: false) {
+            Color.clear
+                .frame(width: frame.width, height: panel.extent)
+                .overlay(alignment: .top) {
+                    DockGroup(entry: entry, depth: 0, expanded: expanded, openness: openness, mini: cell.width < Metrics.dragBubble,
+                              drawsParent: drawsParent, hoverFrame: hoverFrame, viewport: viewport, showPane: showPane)
+                        .offset(CGSize(width: (cell.minX - frame.minX) * (1 - openness), height: (cell.minY - frame.minY) * (1 - openness)))
+                        // 别的格子展开着：模糊淡出
+                        .modifier(DockDimmed(dimmed: !area.dockExpansion.isEmpty && !expanded))
+                        .frame(width: frame.width, height: frame.height, alignment: .topLeading)
+                        // 钉在可视区：滚动挪了多少，反着挪回来
+                        .visualEffect { content, proxy in
+                            content.offset(y: -proxy.frame(in: .scrollView(axis: .vertical)).minY)
+                        }
+                }
+        }
+        .scrollDisabled(!expanded || !scrolls)
+        // 钉住的家族格不出可视区，开头滚出去的由它自己渐隐；收着时脉冲伸出格子，不截
+        .scrollClipDisabled()
+        .scrollPosition($position)
+        .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, new in
+            withTransaction(Transaction(animation: nil)) { offset = new }
         }
         .placed(frame)
+        // 收好了、或排得下不用滚了，回到开头：下次展开从父代理排起
+        .onChange(of: openness <= 0 || !scrolls) { _, rewind in
+            guard rewind else { return }
+            withTransaction(Transaction(animation: nil)) {
+                position.scrollTo(edge: .top)
+                offset = 0
+            }
+        }
     }
 }
 

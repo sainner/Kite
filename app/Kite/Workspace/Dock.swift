@@ -342,10 +342,15 @@ extension WorkArea {
     }
 
     /// 停靠栏上悬停的那一格的标签；家族格里的父代理是窗口卡片报上来的，按窗口找。
+    /// 展开着「更多」、家族格时只标面板里的：别的格子、卡片压暗了，面板也盖在它们上面，报上来的悬停不算。
     private func dockHoverTip(in geometry: DockGeometry) -> DockHoverTip? {
         guard let hover = dockHover else { return nil }
         let entry: DockEntry
-        if let found = DockModel(agents: geometry.allCells.map(\.entry)).entry(hover.id) {
+        if let root = dockExpansion.first {
+            let members = geometry.allCells.first { $0.entry.id == root }?.entry.members ?? []
+            guard let found = DockModel(agents: members).entry(hover.id) else { return nil }
+            entry = found
+        } else if let found = DockModel(agents: geometry.allCells.map(\.entry)).entry(hover.id) {
             entry = found
         } else if hover.id.hasPrefix("pane:") {
             entry = .pane(Pane(String(hover.id.dropFirst("pane:".count))))
@@ -505,11 +510,15 @@ struct DockGeometry {
         return frame
     }
 
-    /// 展开的家族格、「更多」从格子原地拉长成的面板：先往下，放不下再往上，最高到停靠栏全高，再多就在里面滚动；
-    /// 小头像展开后也居中在停靠栏上。extent 是里面排开时的长，比面板高时要滚动。
+    /// 面板最高多高：照原来的间距排开八格。
+    static var panelLimit: CGFloat { 2 * DockGroup.padding + 8 * Metrics.dragBubble + 7 * Metrics.gap }
+
+    /// 展开的家族格、「更多」从格子原地拉长成的面板：先往下，放不下再往上，最高 panelLimit（停靠栏没那么高时到停靠栏全高），
+    /// 再多就在里面滚动，照紧凑布局的底栏堆叠（见 DockGroup.viewport）；小头像展开后也居中在停靠栏上。
+    /// extent 是里面排开时的长，比面板高时要滚动。
     static func panel(_ entry: DockEntry, from cell: CGRect, path: ArraySlice<String>, regions: WindowRegions) -> (frame: CGRect, extent: CGFloat) {
         let extent = DockGroup.extent(entry, path: path), breadth = DockGroup.breadth(entry, path: path)
-        let height = min(extent, regions.dock.height)
+        let height = min(extent, panelLimit, regions.dock.height)
         let top = max(min(cell.minY - DockGroup.padding, regions.dock.maxY - height), regions.dock.minY)
         return (CGRect(x: regions.dock.midX - breadth / 2, y: top, width: breadth, height: height), extent)
     }

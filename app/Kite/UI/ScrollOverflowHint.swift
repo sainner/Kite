@@ -32,14 +32,9 @@ private struct ScrollOverflowHint: ViewModifier {
         var any: Bool { before || after }
     }
 
-    /// 一个箭头沿滚动方向占的长度。
-    private static let caretExtent = DotMetrics.module
-    /// 箭头与滚动区的边之间留的距离。
-    private static let caretInset = DotMetrics.module / 2
-
-    /// 渐隐的长度：边上留的距离、箭头，再加一个模数的过渡，箭头落在靠外的一段里；并排的两个箭头占得多，渐隐也长一些。
+    /// 渐隐的长度：同 ScrollOverflowCaret.fade；并排的两个箭头占得多，渐隐也长一些。
     private var length: CGFloat {
-        Self.caretInset + Self.caretExtent * (carets == .atEnd ? 2 : 1) + DotMetrics.module
+        ScrollOverflowCaret.fade + ScrollOverflowCaret.extent * (carets == .atEnd ? 1 : 0)
     }
 
     func body(content: Content) -> some View {
@@ -56,7 +51,7 @@ private struct ScrollOverflowHint: ViewModifier {
             .mask { fade(vertical: vertical) }
             .overlay(alignment: vertical ? .top : .leading) {
                 if carets == .apart {
-                    caret(vertical: vertical, before: true).padding(vertical ? .top : .leading, Self.caretInset)
+                    caret(vertical: vertical, before: true).padding(vertical ? .top : .leading, ScrollOverflowCaret.inset)
                 }
             }
             .overlay(alignment: vertical ? .bottom : .trailing) {
@@ -72,7 +67,7 @@ private struct ScrollOverflowHint: ViewModifier {
                         }
                     }
                 }
-                .padding(vertical ? .bottom : .trailing, Self.caretInset)
+                .padding(vertical ? .bottom : .trailing, ScrollOverflowCaret.inset)
             }
     }
 
@@ -94,20 +89,42 @@ private struct ScrollOverflowHint: ViewModifier {
     }
 
     private func caret(vertical: Bool, before: Bool) -> some View {
-        let symbol = vertical ? (before ? "chevron.up" : "chevron.down") : (before ? "chevron.left" : "chevron.right")
-        return Image(systemName: symbol)
-            .font(Theme.status.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .frame(width: vertical ? nil : Self.caretExtent, height: vertical ? Self.caretExtent : nil)
+        ScrollOverflowCaret(edge: vertical ? (before ? .top : .bottom) : (before ? .leading : .trailing))
             .opacity(opacity(before: before))
             .modifier(DockDimmed(dimmed: dimmed))
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
     }
 
     /// 那一头被截掉时显示；并排时只要有一头被截掉两个都在，另一个变淡。
     private func opacity(before: Bool) -> Double {
         if before ? overflow.before : overflow.after { return 1 }
         return carets == .atEnd && overflow.any ? 0.3 : 0
+    }
+}
+
+/// 指向被截掉那一头的箭头，画在那条边的正中；只是提示，不接点击。
+struct ScrollOverflowCaret: View {
+    let edge: Edge
+
+    /// 沿滚动方向占的长度。
+    static let extent = DotMetrics.module
+    /// 与滚动区的边之间留的距离。
+    static let inset = DotMetrics.module / 2
+    /// 一个箭头时渐隐的长度：边上留的距离、箭头，再加一个模数的过渡，箭头落在靠外的一段里。
+    static var fade: CGFloat { inset + extent + DotMetrics.module }
+
+    var body: some View {
+        let vertical = edge == .top || edge == .bottom
+        let symbol = switch edge {
+        case .top: "chevron.up"
+        case .bottom: "chevron.down"
+        case .leading: "chevron.left"
+        case .trailing: "chevron.right"
+        }
+        Image(systemName: symbol)
+            .font(Theme.status.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: vertical ? nil : Self.extent, height: vertical ? Self.extent : nil)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }

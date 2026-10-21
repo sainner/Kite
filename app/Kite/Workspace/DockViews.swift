@@ -276,6 +276,8 @@ struct DockGroup: View, Animatable {
     var drawsParent = true
     /// 收着时浮出悬停标签的范围，内容区坐标。
     var hoverFrame: CGRect?
+    /// 宽屏面板看得见的那一段，排不下时在里面滚动，见 openSlots。
+    var viewport: DockViewport?
     /// 点了家族里开着窗口的代理：宽屏放上台面，紧凑布局切过去。
     var showPane: (Pane) -> Void = { _ in }
 
@@ -355,6 +357,7 @@ struct DockGroup: View, Animatable {
         .allowsHitTesting(expanded)
         .accessibilityHidden(!expanded)
         .frame(width: size.width, height: size.height, alignment: alignment)
+        .modifier(DockStartFade(axis: axis, amount: viewport.map { Double(min(max($0.offset / ScrollOverflowCaret.fade, 0), 1)) }))
         // 收着时没有底色，同停靠栏的底；「更多」收着时的描边由省略号那一格画
         .background {
             Capsule().fill(Theme.background).opacity(fill * detail)
@@ -452,16 +455,29 @@ struct DockGroup: View, Animatable {
         return (size, slots)
     }
 
-    /// 排开：沿排列方向依次排，两头留 padding。
+    /// 排开：沿排列方向依次排，两头留 padding。宽屏面板排不下时（viewport）只有看得见的那一段长，照紧凑布局的底栏堆叠
+    /// （见 DockStackCurve）：开头照原来的间距，末端还有没滚到的时候挤起来、叠进末端；开头滚出去的渐隐，见 DockStartFade。
     private func openSlots(path: ArraySlice<String>) -> (CGSize, [Slot]) {
         let extent = Self.extent(entry, path: path), breadth = Self.breadth(entry, path: path)
         var along = Self.padding
-        let slots = entry.members.map { member in
+        var slots = entry.members.map { member in
             let box = measure(member, path: path)
             defer { along += box.along + Metrics.gap }
             return Slot(box: box.size, along: along)
         }
-        return (axis == .vertical ? CGSize(width: breadth, height: extent) : CGSize(width: extent, height: breadth), slots)
+        var length = extent
+        if let viewport, extent > viewport.length {
+            // 同底栏从末端量：一项靠末端的那条边离内容末端多远，按曲线摆到离看得见的末端多远
+            let total = extent - 2 * Self.padding, region = viewport.length - 2 * Self.padding
+            let curve = DockStackCurve(total: total, region: region, distance: viewport.offset, stacking: 1)
+            for index in slots.indices {
+                let size = axis == .vertical ? slots[index].box.height : slots[index].box.width
+                let end = total - (slots[index].along - Self.padding + size)
+                slots[index].along = Self.padding + region - curve(end) - size
+            }
+            length = viewport.length
+        }
+        return (axis == .vertical ? CGSize(width: breadth, height: length) : CGSize(width: length, height: breadth), slots)
     }
 
     /// 叠着：家族的各项缩成格子里头像的大小，父代理在最前面，子代理往后每个错开三分之一格，露不出来的藏在最后一个后面；
@@ -519,6 +535,46 @@ private struct DockSlotScale: ViewModifier, Animatable {
         content
             .transformEnvironment(\.dockFaceScale) { $0 *= scale }
             .scaleEffect(scale, anchor: anchor)
+    }
+}
+
+/// 宽屏面板看得见的那一段：沿排列方向多长，从开头滚了多远。
+struct DockViewport: Equatable {
+    var length: CGFloat
+    var offset: CGFloat
+}
+
+/// 面板滚过开头时，开头那一头渐隐，边的正中有箭头指向它，同 hintsScrollOverflow：只遮里面的各项，胶囊的底色和描边不跟着渐隐。
+/// amount 从 0（在开头）到 1（滚过一段渐隐的长）；遮罩四周多让出脉冲那一圈，没滚动时不截掉什么。
+private struct DockStartFade: ViewModifier {
+    let axis: Axis
+    let amount: Double?
+
+    func body(content: Content) -> some View {
+        if let amount {
+            let vertical = axis == .vertical, margin = Metrics.dragBubble * DockPulse.reach
+            content
+                .mask {
+                    GeometryReader { proxy in
+                        let extent = (vertical ? proxy.size.height : proxy.size.width) + 2 * margin
+                        let edge = Color.black.opacity(1 - amount)
+                        LinearGradient(stops: [
+                            .init(color: edge, location: 0),
+                            .init(color: edge, location: margin / extent),
+                            .init(color: .black, location: min((margin + ScrollOverflowCaret.fade) / extent, 1)),
+                            .init(color: .black, location: 1),
+                        ], startPoint: vertical ? .top : .trailing, endPoint: vertical ? .bottom : .leading)
+                        .padding(-margin)
+                    }
+                }
+                .overlay(alignment: vertical ? .top : .trailing) {
+                    ScrollOverflowCaret(edge: vertical ? .top : .trailing)
+                        .padding(vertical ? .top : .trailing, ScrollOverflowCaret.inset)
+                        .opacity(amount)
+                }
+        } else {
+            content
+        }
     }
 }
 
@@ -914,6 +970,7 @@ private nonisolated struct DockScrollGeometry: Equatable {
 /// 左边还有滚出去的时候，靠右的一段照原来的间距，左边那段越往左挤得越紧，滚出去的都叠进最左端，越远叠得越密、最后完全重合。
 /// 从内容开头到挤的那段右端共 span 长，按 zone·(c/span)^(span/zone) 收进宽 zone 的那段：开头贴着左端，右端接上原来的间距、
 /// 连斜率也接上。挤的程度随滚出去的多少连续变化：滑到最左时全部照原来的间距排开；排不满时靠右；展开时不挤。
+/// 宽屏展开的面板排不下时也照它摆，末端在下面（见 DockGroup.openSlots）。
 private nonisolated struct DockStackCurve {
     /// 左边挤起来的那段占头像那一段的比例，靠右的其余部分照原来的间距。
     static let squeeze: CGFloat = 0.6
