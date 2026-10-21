@@ -115,7 +115,10 @@ export function prepareSandbox(command: string, options: { cwd: string; env: Nod
     const config: SandboxRuntimeConfig = {
       filesystem: {
         denyRead: ['/', control, ...denyRead],
-        allowRead,
+        // macOS 的 /etc 是指向 /private/etc 的符号链接，拒绝区域里的链接上游连元数据都不给，经 /etc 的路径就打不开：
+        // 解析 localhost 时 mDNSResponder 连不上，系统退回读 /etc/hosts，也读不到，vite、vitest 一启动就失败。
+        // 确切路径会被上游解析成真实目标，只能写成只匹配链接本身的 glob。
+        allowRead: [...allowRead, ...(process.platform === 'darwin' ? ['/et[c]'] : [])],
         allowWrite: paths([...policy.write, scratch]),
         // 上游有少量默认可写目录；本入口只开放策略声明和本次执行的临时目录。
         denyWrite: paths([control, '/tmp/claude', '/private/tmp/claude',
@@ -130,12 +133,6 @@ export function prepareSandbox(command: string, options: { cwd: string; env: Nod
     writeFileSync(settings, JSON.stringify(config), { mode: 0o600 });
     writeFileSync(bunfig, '[run]\nshell = "system"\n', { mode: 0o600 });
     const env: NodeJS.ProcessEnv = { ...options.env, TMPDIR: control, TMP: control, TEMP: control };
-    // 保留系统 Git 配置的真实来源，同时避开 macOS /etc 链接本身的元数据探测。
-    // 系统 CA 同理：curl 等按 /etc/ssl/cert.pem 找证书，经过 /etc 链接就读不到。
-    if (process.platform === 'darwin') {
-      env.GIT_CONFIG_SYSTEM = canonicalPath('/etc/gitconfig');
-      if (existsSync('/etc/ssl/cert.pem')) env.SSL_CERT_FILE ??= canonicalPath('/etc/ssl/cert.pem');
-    }
     const developer = developerDirectory(options.env);
     if (developer) {
       env.DEVELOPER_DIR = developer;

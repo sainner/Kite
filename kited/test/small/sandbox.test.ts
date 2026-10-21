@@ -22,8 +22,13 @@ function report(output: string): Record<string, any> {
   return JSON.parse(line.slice('KITE_SANDBOX_RESULT='.length));
 }
 
-// Seatbelt/bubblewrap 的文件解析、Git worktree 元数据、网络隔离与子进程继承不能通过检查启动参数确认。
-test('harness 沙箱允许 Git 状态与工作区写入，拦住宿主凭据、外部文件、本机端口和后代逃逸', async () => {
+/*
+ * Seatbelt/bubblewrap 的文件解析、Git worktree 元数据、网络隔离与子进程继承不能通过检查启动参数确认。
+ * localhost 一条挡住真实 bug：macOS 的 /etc 是指向 /private/etc 的符号链接，denyRead 含 / 时上游连链接本身的元数据
+ * 也不给；mDNSResponder 的 socket 有意挡着，libinfo 的 getaddrinfo 连不上它就退回读 /etc/hosts，也读不到，
+ * localhost 报 ENOTFOUND，vitest 一启动就失败。外部域名仍解析失败，说明放开的只是 hosts，DNS 没放开。
+ */
+test('harness 沙箱允许 Git 状态、工作区写入和解析 localhost，拦住宿主凭据、外部文件、本机端口、外部域名解析和后代逃逸', async () => {
   const root = temp('sandbox-default-');
   const main = newRepo(root, 'main', { 'tracked.txt': '原始内容\n' });
   const cwd = gitWorktree(main, join(root, 'workspace'), 'kite/sandbox-test');
@@ -48,6 +53,7 @@ test('harness 沙箱允许 Git 状态与工作区写入，拦住宿主凭据、�
     writeFileSync(fixture, [
       'import { readFileSync, writeFileSync } from "node:fs";',
       'import { createConnection } from "node:net";',
+      'import { lookup } from "node:dns/promises";',
       `const cwd = ${JSON.stringify(cwd)};`,
       `const secret = ${JSON.stringify(secret)};`,
       `const authFile = ${JSON.stringify(authFile)};`,
@@ -63,6 +69,11 @@ test('harness 沙箱允许 Git 状态与工作区写入，拦住宿主凭据、�
       '  socket.once("error", (error: NodeJS.ErrnoException) => resolve(error.code ?? "error"));',
       '  socket.setTimeout(250, () => { socket.destroy(); resolve("timeout"); });',
       '}); }',
+      'function resolve(host: string) { return new Promise<Record<string, unknown>>((done) => {',
+      '  const timer = setTimeout(() => done({ error: "timeout" }), 250);',
+      '  lookup(host, { all: true }).then((found) => done({ addresses: found.map((entry) => entry.address) }),',
+      '    (error: NodeJS.ErrnoException) => done({ error: error.code ?? "error" })).finally(() => clearTimeout(timer));',
+      '}); }',
       'const own = {',
       '  workspaceWrite: canWrite(`${cwd}/allowed.txt`),',
       '  externalRead: canRead(secret), externalWrite: canWrite(secret),',
@@ -73,6 +84,7 @@ test('harness 沙箱允许 Git 状态与工作区写入，拦住宿主凭据、�
       '  linkWrite: canWrite(`${cwd}/escape/through-link.txt`),',
       '  directNetwork: await dial({ host: "127.0.0.1", port }),',
       '  unixSocket: await dial({ path: unixSocket }),',
+      '  localhost: await resolve("localhost"), externalDns: await resolve("example.com"),',
       '};',
       'const gitStatus = Bun.spawnSync(["git", "status", "--porcelain"],',
       '  { cwd, env: process.env, stdout: "pipe", stderr: "pipe" });',
@@ -92,6 +104,8 @@ test('harness 沙箱允许 Git 状态与工作区写入，拦住宿主凭据、�
       '  const childExit = await child.exited;',
       '  console.log("KITE_SANDBOX_RESULT=" + JSON.stringify({ own, childExit, childError, child: JSON.parse(childOutput) }));',
       '}',
+      // Bun 1.4 解析失败后进程要再挂约 1 秒才退出（沙箱里实测），显式退出。
+      'process.exit(0);',
     ].join('\n'));
     const selectedEnv = env(cwd);
     const policy = await harnessPolicy({ cwd, env: selectedEnv, home, repository: main, authFile });
@@ -115,6 +129,8 @@ test('harness 沙箱允许 Git 状态与工作区写入，拦住宿主凭据、�
       expect(probe.directNetwork).not.toBe('timeout');
       expect(probe.unixSocket).not.toBe('connected');
       expect(probe.unixSocket).not.toBe('timeout');
+      if (process.platform === 'darwin') expect(probe.localhost).toEqual({ addresses: expect.arrayContaining(['127.0.0.1']) });
+      expect(probe.externalDns).not.toHaveProperty('addresses');
       expect(probe).toMatchObject({ gitStatus: 0 });
       expect(probe.gitAdd).not.toBe(0);
     }
