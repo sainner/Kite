@@ -509,13 +509,14 @@ final class FoldButton: NativeButton {
     var expanded = false {
         didSet {
             guard expanded != oldValue else { return }
-            label.stringValue = expanded ? "收起" : "展开全文"
-            chevron.image = Self.symbol(expanded ? "chevron.up" : "chevron.down", font: label.font)
-            needsLayout = true
+            restyle()
         }
     }
-    private let label = NSTextField(labelWithString: "展开全文")
+    /// 字从 0 起画：NSTextField 画字时左边留着单元格的边距，固有宽度却只有字宽（macOS 27 实测），按它排右边会截掉一截。
+    private let label = LineLabel()
     private let chevron = NSImageView()
+    private var font = NSFont.systemFont(ofSize: 11)
+    private var color = NSColor.labelColor
     /// 字上下的边距。
     var padding = Metrics.bubblePadding.height
     /// 字和箭头靠左，不居中。
@@ -527,46 +528,46 @@ final class FoldButton: NativeButton {
         super.init(frame: .zero)
         addSubview(label)
         addSubview(chevron)
+        restyle()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func style(color: NSColor, font: NSFont) {
-        label.font = font
-        label.textColor = color
-        chevron.image = Self.symbol(expanded ? "chevron.up" : "chevron.down", font: font)
+        self.color = color
+        self.font = font
         chevron.contentTintColor = color
+        restyle()
+    }
+
+    private func restyle() {
+        label.set(TranscriptSpeech.fold(expanded: expanded), font: font, color: color)
+        chevron.image = Self.symbol(expanded ? "chevron.up" : "chevron.down", font: font)
         needsLayout = true
     }
 
     /// 上下边距加一行字。
     var height: CGFloat {
-        ceil(label.intrinsicContentSize.height) + padding * 2
+        label.lineHeight + padding * 2
     }
 
-    private static func symbol(_ name: String, font: NSFont?) -> NSImage? {
-        let configuration = NSImage.SymbolConfiguration(pointSize: font?.pointSize ?? 13, weight: .regular)
+    private static func symbol(_ name: String, font: NSFont) -> NSImage? {
+        let configuration = NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .regular)
         return NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
     }
 
     override func layout() {
         super.layout()
-        // 按字本身的宽居中：NSTextField 的固有宽度两边各多出单元格的边距（约 2 pt），按它排字会偏
-        let labelSize = label.intrinsicContentSize
-        let inset = (labelSize.width - textWidth) / 2
+        let textWidth = label.exactWidth
         let imageSize = chevron.image?.size ?? .zero
         // 字和箭头之间：SwiftUI 的 HStack(spacing: 6) 排符号图片时两边比 NSImage 的尺寸多留约 1 pt，逐像素对过取 8
         let spacing: CGFloat = 8
         let width = textWidth + spacing + imageSize.width
         let scale = window?.backingScaleFactor ?? 2
         let x = leading ? 0 : ((bounds.width - width) / 2 * scale).rounded() / scale
-        label.frame = CGRect(x: x - inset, y: (bounds.height - labelSize.height) / 2, width: labelSize.width, height: labelSize.height)
+        label.frame = CGRect(x: x, y: (bounds.height - label.lineHeight) / 2, width: label.textWidth, height: label.lineHeight)
         chevron.frame = CGRect(x: x + textWidth + spacing, y: (bounds.height - imageSize.height) / 2,
                                width: imageSize.width, height: imageSize.height)
-    }
-
-    private var textWidth: CGFloat {
-        label.attributedStringValue.size().width
     }
 
     override func drawFocusRingMask() { bounds.fill() }
