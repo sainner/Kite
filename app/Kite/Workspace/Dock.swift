@@ -96,6 +96,15 @@ struct DockModel {
     /// 挂在父代理下面的子代理（各层都算），开着窗口的也算。
     var grouped: Set<String> = []
     var all: [DockEntry] { agents + tools + minis.map(\.entry) }
+    /// 宽屏停靠栏从上到下的各格，⌘数字按它数：代理组、工具组，再是贴着底边的小头像。小头像上面的一格在前，格里上面一行在前，
+    /// 行内从左到右；家族占一列上下两个位置，算在上面一行。
+    var topToBottom: [DockEntry] {
+        func top(_ mini: DockMini) -> Int {
+            if case .family = mini.entry { return 1 }
+            return mini.row
+        }
+        return agents + tools + minis.sorted { ($1.cell, top($1), $0.column) < ($0.cell, top($0), $1.column) }.map(\.entry)
+    }
     /// 小头像占的格数。
     var miniCells: Int { minis.map { $0.cell + 1 }.max() ?? 0 }
 
@@ -334,6 +343,28 @@ extension AppModel {
             return
         }
         openWindow(.open(.init(instanceId: instance.id, viewId: view)), in: area)
+    }
+
+    /// ⌘数字：点宽屏停靠栏从上到下第 index 格（从 0 数），同用指针点：收着的窗口放上台面，没有窗口的打开窗口，
+    /// 家族格打开父代理，「更多」原地展开。拖动、拖缝当中不做。
+    func openDockEntry(at index: Int, in area: WorkArea) {
+        let layout = area.layout
+        guard area.pluginClient != nil, layout.presentation == .tiled, layout.drag == nil, layout.resizing == nil else { return }
+        let entries = area.dockModel(docked: layout.shownDock, onStage: Set(layout.shown?.panes ?? [])).topToBottom
+        guard entries.indices.contains(index) else { return }
+        let entry = entries[index]
+        switch entry {
+        case .more:
+            area.toggleDock(entry.id, depth: 0)
+            return
+        case .pane(let pane):
+            layout.activate(pane)
+        case .family(let family):
+            if let pane = family.pane { layout.activate(pane) } else { openDockInstance(family.parent, in: area) }
+        case .instance(let instance):
+            openDockInstance(instance, in: area)
+        }
+        area.collapseDock()
     }
 
     /// 代理头像用实例记下的角色签名；角色列表还没读到或角色没有签名时用默认图案。

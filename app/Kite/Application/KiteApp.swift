@@ -70,6 +70,7 @@ struct KiteCommands: Commands {
     let model: AppModel
     /// 当前 App 窗口里的工作区，窗口命令和排布菜单作用在它上面。
     @FocusedValue(WorkArea.self) private var area
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         // 换掉系统的新建窗口：Mac 上是「新建工作区窗口」，工作区窗口只能从侧栏分离出来，从这里开是空的；iPad 上是再开一个场景，各场景共用一份选择
@@ -122,15 +123,46 @@ struct KiteCommands: Commands {
             }
             .keyboardShortcut("m", modifiers: [.command, .shift])
             .disabled(area == nil)
+            Divider()
+            // 第几格、第几个工作区按下时才数，菜单不随停靠栏、工作区列表重建
+            Menu("打开停靠栏里的窗口") {
+                ForEach(1...9, id: \.self) { number in
+                    Button("第 \(number) 格") {
+                        guard let area else { return }
+                        model.openDockEntry(at: number - 1, in: area)
+                    }
+                    .keyboardShortcut(KeyEquivalent(Character("\(number)")))
+                    .disabled(area == nil)
+                }
+            }
+            Menu("切换工作区") {
+                ForEach(1...9, id: \.self) { number in
+                    Button("第 \(number) 个工作区") { switchWorkspace(at: number - 1) }
+                        .keyboardShortcut(KeyEquivalent(Character("\(number)")), modifiers: [.command, .shift])
+                }
+            }
             #if os(macOS)
             Divider()
             ForEach(Array(Arrangement.allCases.enumerated()), id: \.element) { index, arrangement in
                 Button(arrangement.rawValue) { area?.layout.arrange(arrangement) }
-                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
+                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.command, .option])
                     .disabled(area == nil)
             }
             #endif
         }
+    }
+
+    /// 换到侧栏工作区一栏里第 index 个工作区（从 0 数，收起时那一列圆点也是这个顺序，不含 Line），同点那一行：
+    /// Mac 上已分离的把它的窗口提到前面。
+    private func switchWorkspace(at index: Int) {
+        let areas = model.workspaceGroups.flatMap(\.workspaces)
+        guard areas.indices.contains(index) else { return }
+        let target = areas[index]
+        #if os(macOS)
+        if model.detached.contains(target.id) { return openWindow(id: "workspace", value: target.id) }
+        #endif
+        if model.sidebarSection != .workspaces { withAnimation(.snappy) { model.sidebarSection = .workspaces } }
+        model.selectWorkspace(target.id)
     }
 
     /// 窗口命令作用在台面上聚焦的窗口（最后点过的那个）；台面上没有窗口时做 otherwise：Mac 上关闭、缩小这时照旧作用在 App 窗口上，
