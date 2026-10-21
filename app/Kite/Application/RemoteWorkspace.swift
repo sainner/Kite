@@ -258,20 +258,22 @@ struct OpenWindowRequest: Encodable {
     let content: Content
 
     /// 新建实例的 ID 也由本机定：本机先按它建好实例和窗口（见 AppModel.sendWindowRequest）。
-    /// title 省略时按插件名编号；command 只用于终端：工作机等 shell 起好后打进去执行。
+    /// title 省略时按插件名编号；command 和 script 只用于终端，二选一：command 等 shell 起好后打进去执行，
+    /// script 是要运行的预置脚本名，脚本已经在跑时工作机打开那个终端。
     enum Content: Encodable {
-        case create(String, instance: String, title: String? = nil, command: String? = nil)
+        case create(String, instance: String, title: String? = nil, command: String? = nil, script: String? = nil)
         case open(WindowTarget)
-        private enum Keys: String, CodingKey { case kind, definitionId, instanceId, title, command, viewId }
+        private enum Keys: String, CodingKey { case kind, definitionId, instanceId, title, command, script, viewId }
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
             switch self {
-            case .create(let definitionId, let instanceId, let title, let command):
+            case .create(let definitionId, let instanceId, let title, let command, let script):
                 try c.encode("create", forKey: .kind)
                 try c.encode(definitionId, forKey: .definitionId)
                 try c.encode(instanceId, forKey: .instanceId)
                 try c.encodeIfPresent(title, forKey: .title)
                 try c.encodeIfPresent(command, forKey: .command)
+                try c.encodeIfPresent(script, forKey: .script)
             case .open(let target):
                 try c.encode("open", forKey: .kind)
                 try c.encode(target.instanceId, forKey: .instanceId)

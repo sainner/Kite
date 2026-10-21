@@ -115,8 +115,11 @@ export interface WorkspaceWindow {
 
 export interface OpenWindowRequest {
   id: string;
-  /** create 的 instanceId 是新实例的 ID，App 给的话按它建（App 先按它在本机打开窗口）；title 省略时按插件名编号；command 只用于终端，shell 起好后打进去执行。 */
-  content: ({ kind: 'open' } & WindowTarget) | { kind: 'create'; definitionId: string; instanceId?: string; title?: string; command?: string };
+  /**
+   * create 的 instanceId 是新实例的 ID，App 给的话按它建（App 先按它在本机打开窗口）；title 省略时按插件名编号。
+   * command 和 script 只用于终端，二选一：command 等 shell 起好后打进去执行，script 是要运行的预置脚本名，已经在跑时打开那个终端。
+   */
+  content: ({ kind: 'open' } & WindowTarget) | { kind: 'create'; definitionId: string; instanceId?: string; title?: string; command?: string; script?: string };
 }
 
 export interface WorkspaceModel {

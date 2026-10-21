@@ -70,9 +70,14 @@ nonisolated struct InstanceAgentConfig: Decodable, Sendable {
         let target: String
         var system: String?
     }
+    /// 终端实例的配置：以预置脚本起的带脚本名。
+    struct Terminal: Decodable, Sendable {
+        var script: String?
+    }
     var agent: AgentConfiguration?
     var role: Role?
     var monitor: Monitor?
+    var terminal: Terminal?
     /// 审批模式：工作机建代理时写入解析好的（草稿、角色、工作机的默认依次取）；monitor 等不是代理的实例没有。
     var approval: ApprovalMode?
 }

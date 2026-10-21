@@ -1,20 +1,24 @@
 /**
- * 终端插件 kite.terminal，分三段：
+ * 终端插件 kite.terminal，分四段：
  * 一、PTY 会话、设备接入的画面镜像与尺寸归属、实例随进程的回收、一个实例一个窗口的视图切换、带命令新建（命令像粘贴那样打进 shell），
  *    以及跨两次 kited 启动的恢复；
  * 二、运行中的网页：终端从自己的进程树探测监听端口并试 HTTP，写进实例状态；本机全部终端的端口整组交给组网转发；
  *    terminal.select 选网页视图打开的端口；terminal.stop 停下带后台任务的终端；
- * 三、代理的长命令转到后台终端：shell 到时限、用户插话或要求时不停进程，交给接管方接着跑。
+ * 三、代理的长命令转到后台终端：shell 到时限、用户插话或要求时不停进程，交给接管方接着跑；
+ * 四、预置脚本（terminal.run）：在终端里经 shell 起项目 .kite/scripts/ 下的脚本，PORT 是分给它的端口段，同一脚本只跑一份；
+ *    代理起的脚本与主线比对，不一致的经审批（docs/实例操作.md「预置脚本」）。
  * shell 换成 /bin/sh（terminalShell），不起用户的登录 shell；带命令新建的两个用例另换成先输出一行、停一下再起交互 shell 的 sh 和 zsh（zsh 不读配置）。
  */
 import { afterEach, expect, test } from 'bun:test';
-import { closeSync, existsSync, openSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, openSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
+import type { Envelope } from '../../src/events.ts';
 import { processGroupAlive, type BackgroundCommand } from '../../src/execution/command.ts';
 import { localTools, type ShellBackground } from '../../src/execution/local-tools.ts';
 import type { Input, Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
 import type { PluginInstance, WorkspaceModel } from '../../src/model.ts';
 import type { Network, NetworkStatus } from '../../src/network.ts';
+import { SCRIPTS_DIR } from '../../src/terminal/scripts.ts';
 import { terminalState, type TerminalState } from '../../src/terminal/state.ts';
 import { terminalDefinitionId } from '../../src/terminal/terminals.ts';
 import { after, folderWorkspace, machine, mark, startKited, waitIdle, type Kited } from '../harness.ts';
@@ -868,5 +872,149 @@ test('代理的 shell 运行中用户发来消息：命令转到没有窗口、o
   expect(notice.text).toContain('结束了');
   await until(() => !k.daemon.kite.store.instance(terminal.id), '没有窗口的终端在命令结束后回收', 900);
   woke.response.complete();
+  await waitIdle(k, agentId, since);
+}, 1_000);
+
+// ---- 预置脚本 ----
+// 脚本在建项目文件夹时写好、设成可执行，导入后就在检出的主线上，工作区里检出的也带可执行位。
+// shell 是 /bin/sh（terminalShell），脚本经 `/bin/sh -c 'exec "$1"' kite-script <路径>` 起；探测端口的间隔缩到 50 毫秒。
+
+/** terminal.run 的结果：进程状态加上实例、脚本名、是否复用、端口段第一个与输出末尾（contract.ts 的 'terminal.run'）。 */
+type RunResult = Omit<TerminalState, 'port'> & { instanceId: string; title: string; script: string; reused: boolean; assignedPort: number; text: string };
+
+/** 在 k.root 下建项目文件夹，scripts 写进 .kite/scripts/ 并设成可执行。 */
+function scriptsFolder(k: Kited, scripts: Record<string, string>): string {
+  const files = Object.fromEntries(Object.entries(scripts).map(([name, body]) => [`${SCRIPTS_DIR}/${name}`, body]));
+  const dir = newDir(k.root, 'project', { 'README.md': '预置脚本\n', ...files });
+  for (const name of Object.keys(scripts)) chmodSync(join(dir, SCRIPTS_DIR, name), 0o755);
+  return dir;
+}
+
+/*
+ * 运行时与进程之间的配合：PTY 里的 sh 经 exec 换成脚本、脚本再 exec 成 bun，PORT 要一路交到 bun 进程；
+ * 新起的调用要等进程树端口探测与 HTTP 试探认出这个端口才返回。restart 先停掉旧进程（停止给进程组发 SIGHUP），
+ * 新进程立刻在同一端口上监听，旧的要已经放开端口（Bun.serve 默认不开 reusePort，旧的没放开时新的绑不上）。
+ * 服务回的是自己的 pid，用来分清端口上答话的是旧进程还是新进程。
+ */
+test('界面起预置脚本：调用等到脚本在 PORT 上起的服务能用 HTTP 打开才返回；再起返回同一个终端；restart 停掉旧的，在同一端口段起的新服务照样能打开', async () => {
+  const k = startKited(undefined, false, { terminalShell, terminalPortScanMs: 50 });
+  const pids: number[] = [];
+  try {
+    const serve = `#!/bin/sh\nexec "${process.execPath}" -e 'Bun.serve({ hostname: "127.0.0.1", port: Number(process.env.PORT), fetch: () => new Response(String(process.pid)) })'\n`;
+    const workspaceId = (await folderWorkspace(k, scriptsFolder(k, { serve }))).workspace.id;
+    const run = async (restart?: boolean): Promise<RunResult> => {
+      const r = await k.call('POST', `/workspaces/${workspaceId}/operations/terminal.run`, {
+        operationId: crypto.randomUUID(), script: 'serve', ...(restart === undefined ? {} : { restart }),
+      });
+      expect(r.status).toBe(200);
+      return r.body as RunResult;
+    };
+    /** 端口上答话的服务进程的 pid，记下来供失败时清理。 */
+    const servedBy = async (port: number): Promise<number> => {
+      const pid = Number(await (await fetch(`http://127.0.0.1:${port}/`)).text());
+      pids.push(pid);
+      return pid;
+    };
+
+    const first = await run();
+    expect(first).toMatchObject({ script: 'serve', reused: false, phase: 'running', ports: [{ port: first.assignedPort, http: true }] });
+    const firstPid = await servedBy(first.assignedPort);
+
+    const again = await run();
+    expect(again).toMatchObject({ instanceId: first.instanceId, reused: true, assignedPort: first.assignedPort, phase: 'running' });
+    expect(await servedBy(first.assignedPort)).toBe(firstPid);
+
+    const restarted = await run(true);
+    expect(restarted).toMatchObject({ script: 'serve', reused: false, assignedPort: first.assignedPort, phase: 'running',
+      ports: [{ port: first.assignedPort, http: true }] });
+    expect(restarted.instanceId).not.toBe(first.instanceId);
+    expect(await servedBy(first.assignedPort)).not.toBe(firstPid);
+    // 旧终端没有窗口时结束即回收，有窗口时记为 exited，两种都算结束。
+    const old = stateIn(await aggregate(k, workspaceId), first.instanceId);
+    expect(old === undefined || old.phase === 'exited' ? '已结束' : `仍在运行：${JSON.stringify(old)}`).toBe('已结束');
+  } finally {
+    // 测试中途失败时服务可能没停，按 pid 清掉。
+    for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* 已经停了 */ } }
+    await k.stop();
+  }
+}, 1_000);
+
+/*
+ * 几条 git 合起来的效果：工作树里的脚本要和检出（Kite 数据目录里的裸仓库）主线上的同名文件比对，工作树里改了没提交的算不一致。
+ * 几个部分的配合：不一致时审批等待挂在这次工具调用上，回合停着；「允许并记住」按内容记在实例上，下一次调用读到就不再问，
+ * 内容再变又问；拒绝的不起。这是沙箱外执行的把关：回归了，代理就能不经批准在沙箱外跑任意改过的脚本。
+ */
+test('代理起与主线一致的预置脚本直接运行，结果带退出码和输出；工作树里改过的先挂审批，允许并记住后运行，同样内容再起不问，再改又问，拒绝就不起', async () => {
+  const model = new ManualModel();
+  const k = kited = startKited(() => model, false, { terminalShell, terminalPortScanMs: 50 });
+  const registered = await folderWorkspace(k, scriptsFolder(k, { hello: '#!/bin/sh\necho hello-$((40+2))\n' }));
+  const workspaceId = registered.workspace.id;
+  const cwd = registered.workspace.cwd;
+  const script = join(cwd, SCRIPTS_DIR, 'hello');
+  const started = await k.call('POST', `/workspaces/${workspaceId}/operations/agent.start`, { operationId: 'agent' });
+  expect(started.status).toBe(200);
+  const agentId = started.body.instanceId as string;
+  expect((await k.call('POST', `/threads/${agentId}/messages`, { id: 'kickoff', text: '把服务起来' })).status).toBe(200);
+
+  const run = (id: string): ModelItem => calledItem(id, 'terminal_run', { script: 'hello' });
+  const ran = (request: ModelRequest, callId: string): RunResult => {
+    const result = resultOf(request, callId);
+    expect(result.status).toBe('success');
+    return JSON.parse(result.output) as RunResult;
+  };
+  const asked = (since: number) => k.events.filter((e) => e.type === 'waiting' && e.threadId === agentId && !!e.waiting && after(k, since)(e));
+  const approval = async (since: number) => {
+    const event = await k.waitEvent((e) => e.type === 'waiting' && e.threadId === agentId && !!e.waiting && after(k, since)(e));
+    return (event as Extract<Envelope, { type: 'waiting' }>).waiting!;
+  };
+
+  const first = await model.call(1);
+  expect(first.request.allowedTools).toContain('terminal_run');
+  let since = mark(k);
+  await first.response.emit({ type: 'item', item: run('mainline') });
+  first.response.complete();
+  const second = await model.call(2);
+  expect(ran(second.request, 'mainline')).toMatchObject({ script: 'hello', reused: false, phase: 'exited', exitCode: 0, text: expect.stringContaining('hello-42') });
+  expect(asked(since)).toEqual([]);
+
+  // 工作树里改了、没提交：与主线不一致，回合停在这次调用上等批准
+  const changed = '#!/bin/sh\necho changed-$((1+2))\n';
+  writeFileSync(script, changed);
+  since = mark(k);
+  await second.response.emit({ type: 'item', item: run('changed') });
+  second.response.complete();
+  const waiting = await approval(since);
+  expect(waiting).toMatchObject({ kind: 'approval', tool: 'terminal_run', target: 'hello', script: changed, mustAsk: false });
+  const pending = await k.call('GET', `/threads/${agentId}/state`);
+  expect(pending.body).toMatchObject({ phase: 'running', waiting });
+  expect(model.calls.values).toHaveLength(2);
+  expect(await k.call('POST', `/threads/${agentId}/waiting/${waiting.id}`, { decision: 'remember' })).toEqual({ status: 200, body: { ok: true } });
+  const third = await model.call(3);
+  expect(ran(third.request, 'changed')).toMatchObject({ phase: 'exited', exitCode: 0, text: expect.stringContaining('changed-3') });
+
+  // 同样的内容再起：记住过，不问
+  since = mark(k);
+  await third.response.emit({ type: 'item', item: run('remembered') });
+  third.response.complete();
+  const fourth = await model.call(4);
+  expect(ran(fourth.request, 'remembered')).toMatchObject({ phase: 'exited', exitCode: 0, text: expect.stringContaining('changed-3') });
+  expect(asked(since)).toEqual([]);
+
+  // 再改成别的内容：记住的是上一份内容，又问；拒绝的不起，脚本留下的标记文件不出现
+  const other = '#!/bin/sh\n: > ran-other\necho other-$((2+2))\n';
+  writeFileSync(script, other);
+  since = mark(k);
+  await fourth.response.emit({ type: 'item', item: run('other') });
+  fourth.response.complete();
+  const reasked = await approval(since);
+  expect(reasked).toMatchObject({ kind: 'approval', tool: 'terminal_run', target: 'hello', script: other });
+  expect(await k.call('POST', `/threads/${agentId}/waiting/${reasked.id}`, { decision: 'deny' })).toEqual({ status: 200, body: { ok: true } });
+  const fifth = await model.call(5);
+  const denied = resultOf(fifth.request, 'other');
+  expect(denied.status).not.toBe('success');
+  expect(denied.output).not.toContain('other-4');
+  expect(existsSync(join(cwd, 'ran-other'))).toBe(false);
+  since = mark(k);
+  fifth.response.complete();
   await waitIdle(k, agentId, since);
 }, 1_000);

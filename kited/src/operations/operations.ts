@@ -10,6 +10,7 @@ import { grantTools, operationContracts, operationGrantsSchema, scopedOperations
   type OperationName } from './contract.ts';
 import { effectiveExecution, instanceExecutionChanges } from '../execution/grants.ts';
 import { terminalDefinitionId } from '../terminal/terminals.ts';
+import { findScript, mainlineScript } from '../terminal/scripts.ts';
 import type { InputOrigin, JsonObject, Tool, ToolResult } from '../harness/types.ts';
 import { WorkspaceFiles, fileSelection } from '../workspace/files.ts';
 import { assertFileAccess, hostPrivatePaths } from '../execution/sandbox.ts';
@@ -18,7 +19,7 @@ import { defaultRoleId, instanceRole } from '../roles.ts';
 import { pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding, type PluginToolSource } from '../plugins/tools.ts';
 
 type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'reports' | 'waits' | 'interrupt' | 'resume' | 'mergeWorkspace' | 'selectFile'
-  | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox' | 'terminals'>;
+  | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox' | 'terminals' | 'approveScript'>;
 
 export interface OperationToolSelection {
   plugins: Tool[];
@@ -326,6 +327,25 @@ export class InstanceOperations {
         return this.kite.monitors.create(workspaceId, {
           instanceId: caller.instanceId, operationId: input.operationId, ...(caller.kind === 'model' ? { turnId: caller.turnId, callId: caller.callId } : {}),
         }, { title: input.title, ...(input.command !== undefined ? { command: input.command } : { at: at!, ...(input.repeat ? { repeat: input.repeat } : {}) }) });
+      }
+      case 'terminal.run': {
+        const input = args as OperationInput<'terminal.run'>;
+        const { workspace, checkout } = this.kite.workspace(workspaceId);
+        if (workspace.status !== 'open') throw new OperationError('工作区尚未打开', 'denied', 409);
+        const script = findScript(workspace.cwd, input.script);
+        // 用户起的直接运行；代理和插件起的与这台工作机检出主线上的同名文件一致才直接运行，不一致时代理的经审批，插件的拒绝。
+        if (caller.kind !== 'ui') {
+          const main = await mainlineScript(checkout, script.name);
+          if (main !== script.content) {
+            if (caller.kind !== 'model') throw new OperationError('插件只能起与主线一致的预置脚本', 'denied', 403);
+            const approved = await this.kite.approveScript(caller.instanceId, { name: script.name, content: script.content,
+              reason: main === null ? '主线上没有这个脚本，批准后在沙箱外运行' : '脚本与主线上的不一致，批准后在沙箱外运行' }, signal ?? new AbortController().signal);
+            if (!approved) throw new OperationError('没有获准运行这个预置脚本', 'denied', 403);
+          }
+        }
+        check();
+        return this.kite.terminals.runScript(workspaceId, script, { restart: input.restart, origin: caller.kind === 'ui' ? undefined
+          : { instanceId: caller.instanceId, operationId: input.operationId, turnId: caller.turnId, callId: caller.callId } }, signal);
       }
       case 'terminal.read': {
         const input = args as OperationInput<'terminal.read'>;

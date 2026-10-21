@@ -668,7 +668,7 @@ final class AppModel {
             } else {
                 local = target
             }
-        case .create(let definitionId, let instanceId, let title, _):
+        case .create(let definitionId, let instanceId, let title, _, _):
             if let definition = area.definitions.first(where: { $0.id == definitionId }) {
                 area.createLocally(RemotePluginInstance(id: instanceId, workspaceId: area.id, definitionId: definitionId,
                                                         title: title ?? area.newInstanceTitle(definition), status: .open, presentation: .window,
@@ -695,6 +695,8 @@ final class AppModel {
             }
             do { try await refresh(client) } catch { area.windowError = error.localizedDescription }
             if let switching { area.settleSwitch(switching, request: request.id) }
+            // 带预置脚本新建时脚本已经在跑，工作机打开的是那个终端：本机先建的实例收回
+            if let created, window.target.instanceId != created { area.settleInstance(created) }
             if accepts(client), switching == nil, local == nil || window.id != request.id {
                 // 本机没先开，或工作机交回了这个实例原有的窗口：本机先开的那个换成它
                 area.settleOpening(request.id)
@@ -739,6 +741,23 @@ final class AppModel {
         guard !command.isEmpty else { return }
         let title = String(firstLine(command).trimmingCharacters(in: .whitespaces).prefix(60))
         openWindow(.create("kite.terminal", instance: UUID().uuidString.lowercased(), title: title, command: command), in: area)
+    }
+
+    /// 工作区里的预置脚本（.kite/scripts/ 下的文件名），新建窗口每次打开都来取。
+    func scripts(in area: WorkArea) async throws -> [String] {
+        struct Scripts: Decodable { let scripts: [String] }
+        return try await activeClient(in: area).request("/workspaces/\(area.id)/scripts", as: Scripts.self).scripts
+    }
+
+    /// 新建窗口里选了预置脚本：这个窗口原地变成以它起的终端。同一脚本只跑一份，已经在跑的关掉新建窗口、打开那个终端。
+    func runScript(_ name: String, in area: WorkArea) {
+        if let running = area.runningScript(name) {
+            area.closeChooser()
+            openWindow(.open(.init(instanceId: running.id, viewId: "terminal")), in: area)
+            return
+        }
+        guard let window = area.chooserWindow else { return }
+        send(OpenWindowRequest(id: window, content: .create("kite.terminal", instance: UUID().uuidString.lowercased(), title: name, script: name)), in: area)
     }
 
     /// 菜单里的停止终端：不等结果，失败报在窗口提示里。

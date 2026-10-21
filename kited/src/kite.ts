@@ -81,6 +81,8 @@ import { agentModelCatalog } from './agents/capabilities.ts';
 import { TokenCounter } from './token-counts.ts';
 import { VoiceSessions, voiceTemplate } from './voice/sessions.ts';
 import { Terminals, terminalExitContextDefinition } from './terminal/terminals.ts';
+import { trustedScripts } from './terminal/scripts.ts';
+import { contentHash } from './harness/context/project.ts';
 import { type ApprovalRequest, type Ask, Asks, questionResponseOf, questionResultText, secretDeniedText, secretResponseOf, type SecretWaitingItem, type Waiting, WaitingConflict, Waits } from './waiting.ts';
 import { hasEnvKey, secretLabel, setEnvLine, type SecretRequest } from './secrets.ts';
 import type { Integration } from './account-data/registry.ts';
@@ -1537,9 +1539,10 @@ export class Kite {
       toolConstraint: () => this.store.projectConstraints(t.project.id)?.tools,
       executionConstraint: () => this.store.projectConstraints(t.project.id)?.execution,
       askNetwork: ({ host, port }, signal) => {
-        const target = host.includes(':') ? `[${host}]` : host;
-        return this.askApproval(id, { tool: 'shell', target: port === undefined ? target : `${target}:${port}`,
-          reason: '命令要连接网络许可之外的主机', mustAsk: false }, signal);
+        const bracketed = host.includes(':') ? `[${host}]` : host;
+        const target = port === undefined ? bracketed : `${bracketed}:${port}`;
+        return this.askApproval(id, { tool: 'shell', target, reason: '命令要连接网络许可之外的主机', mustAsk: false },
+          { what: '网络许可', save: () => this.configuration.remember(id, 'network', target) }, signal);
       },
       background: {
         interjected: (listener) => {
@@ -1557,25 +1560,32 @@ export class Kite {
         },
         // 以「 *」结尾的命令记下来就成了带任意参数的模式，只能批准这一次。
         ask: (command, description, signal, secrets) => this.askApproval(id, { tool: 'shell', target: command.trim(), reason: description,
-          mustAsk: command.trim().endsWith(' *'), outside: true, ...(secrets?.length ? { secretReferences: secrets } : {}) }, signal),
+          mustAsk: command.trim().endsWith(' *'), outside: true, ...(secrets?.length ? { secretReferences: secrets } : {}) },
+          { what: '沙箱外命令', save: () => this.configuration.remember(id, 'unsandboxed', command.trim()) }, signal),
       },
     });
     this.runners.set(id, r);
     return r;
   }
   /**
-   * 命令要连接执行授权之外的主机，或代理申请在沙箱外运行一条命令：按实例此刻的审批模式放行、拒绝或在线程上问人。
-   * 「允许并记住」把主机加进网络许可、把整条命令原样记成实例的沙箱外命令；记不住（如线程已归档）也放行这一次。
+   * 命令要连接执行授权之外的主机、代理申请在沙箱外运行一条命令，或起与主线不一致的预置脚本：按实例此刻的审批模式放行、拒绝或在线程上问人。
+   * 「允许并记住」时由调用方给的 save 记下许可（主机进网络许可、整条命令原样进沙箱外命令、脚本按内容记在实例上）；记不住（如线程已归档）也放行这一次。
    */
-  private async askApproval(id: string, request: ApprovalRequest, signal: AbortSignal): Promise<boolean> {
+  private async askApproval(id: string, request: ApprovalRequest, remember: { what: string; save: () => Promise<void> }, signal: AbortSignal): Promise<boolean> {
     const mode = this.configuration.approvalMode(id).effective;
     if (mode !== 'ask') return mode === 'allow_all';
     const decision = await this.waits.approve(id, request, signal);
     if (decision === 'remember') {
-      await this.configuration.remember(id, request.outside ? 'unsandboxed' : 'network', request.target)
-        .catch((error: Error) => console.error(`[审批] 记住${request.outside ? '沙箱外命令' : '网络许可'}失败：${error.message}`));
+      await remember.save().catch((error: Error) => console.error(`[审批] 记住${remember.what}失败：${error.message}`));
     }
     return decision === 'once' || decision === 'remember';
+  }
+  /** 代理用 terminal_run 起与主线不一致的预置脚本：这份内容记住过就放行，否则同其他越界请求按审批模式处理，见 askApproval。 */
+  approveScript(id: string, script: { name: string; content: string; reason: string }, signal: AbortSignal): Promise<boolean> {
+    const digest = contentHash(script.content);
+    if (trustedScripts(this.context(id)).includes(digest)) return Promise.resolve(true);
+    return this.askApproval(id, { tool: 'terminal_run', target: script.name, reason: script.reason, mustAsk: false, script: script.content },
+      { what: '预置脚本', save: () => this.configuration.rememberScript(id, digest) }, signal);
   }
   /** 恢复检查只打开 journal，不执行旧输入。 */
   private async runnerForManagement(t: AgentInstance): Promise<Runtime | undefined> {

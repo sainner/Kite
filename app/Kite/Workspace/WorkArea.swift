@@ -251,6 +251,11 @@ final class WorkArea: Identifiable {
         windows.first { $0.target.instanceId == instance }
     }
 
+    /// 以这个预置脚本起、还在跑的终端；同一脚本只跑一份。
+    func runningScript(_ name: String) -> RemotePluginInstance? {
+        instances.first { $0.status == .open && $0.config?.terminal?.script == name && $0.state?.terminal?.running == true }
+    }
+
     /// 实例集合是工作机上的实例，本机正归档的按已归档算，加上本机正建的；窗口集合是工作机上打开的窗口，
     /// 减去本机正关的和正归档的实例的，加上本机正开的和草稿。
     private func rebuildWindows() {

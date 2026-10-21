@@ -562,12 +562,14 @@ struct WindowSurfaceDots: View {
     }
 }
 
-/// 新建窗口的正文（见 WorkArea.chooserWindow），由停靠栏的加号打开：内置插件两列卡片，自定义插件列在下面；点一项，这个窗口原地变成它。
-/// 打开时重新读一次定义，别处新装的插件也能列出。上次创建没成功时标题栏有重试。
+/// 新建窗口的正文（见 WorkArea.chooserWindow），由停靠栏的加号打开：内置插件两列卡片，项目的预置脚本和自定义插件列在下面；
+/// 点一项，这个窗口原地变成它，预置脚本变成以它起的终端。打开时重新读一次定义和预置脚本，别处新装的插件、工作区里新加的脚本也能列出。
+/// 上次创建没成功时标题栏有重试。
 struct NewWindowChooser: View {
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @State private var error: String?
+    @State private var scripts: [String] = []
 
     var body: some View {
         // 监视只由代理或 Line 开启，工作机不接受从界面新建
@@ -594,19 +596,19 @@ struct NewWindowChooser: View {
                         }
                         .disabled(!canAdd)
                     }
+                    if !scripts.isEmpty {
+                        CardSection("预置脚本") {
+                            ForEach(scripts, id: \.self) { name in
+                                row(name, detail: area.runningScript(name) != nil ? "运行中，打开它的终端" : "在终端里运行",
+                                    systemImage: "play.fill") { model.runScript(name, in: area) }
+                            }
+                        }
+                        .disabled(!canAdd)
+                    }
                     if !custom.isEmpty {
                         CardSection("自定义插件") {
                             ForEach(custom) { definition in
-                                Button { model.choose(definition, in: area) } label: {
-                                    HStack(spacing: 12) {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(definition.title).foregroundStyle(.primary)
-                                            Text(views(of: definition)).font(Theme.caption).foregroundStyle(.secondary)
-                                        }
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        Image(systemName: "plus").font(Theme.caption.weight(.semibold))
-                                    }
-                                }
+                                row(definition.title, detail: views(of: definition), systemImage: "plus") { model.choose(definition, in: area) }
                             }
                         }
                         .disabled(!canAdd)
@@ -618,8 +620,26 @@ struct NewWindowChooser: View {
             EmptyView()
         }
         .task {
+            // 定义和预置脚本同时取，哪个没取到都报在提示里
+            async let listed = model.scripts(in: area)
             do { try await model.refreshDefinitions(model.activeClient(in: area)); error = nil }
             catch { self.error = error.localizedDescription }
+            do { scripts = try await listed }
+            catch { self.error = error.localizedDescription }
+        }
+    }
+
+    /// 下面两节的一行：名字、一行说明，右边是点了做什么的图标。
+    private func row(_ title: String, detail: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).foregroundStyle(.primary)
+                    Text(detail).font(Theme.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: systemImage).font(Theme.caption.weight(.semibold))
+            }
         }
     }
 

@@ -124,17 +124,33 @@ export const operationContracts = {
     tool: null, effect: 'write', retry: 'receipt',
     input: target.extend({ expectedRevision: id, path: id.nullable(), diffId: diffID.optional() }).strict(), output: fileSelectionSchema,
   },
+  'terminal.run': {
+    title: '运行预置脚本', description: [
+      '运行项目的预置脚本：.kite/scripts/ 下的可执行文件，script 写文件名，不知道有哪些就列出这个目录。脚本放的是开发服务器、构建并启动 App 这类反复要起的命令。',
+      '脚本在工作区目录的一个后台终端里运行，不在沙箱里，环境变量 PORT 是分给它的端口（同一脚本另起的服务用 PORT+1 往后），每次运行都是同一个。',
+      '同一脚本同时只跑一份：已经在跑时返回那个，restart 为 true 时先停掉再起。新起的最多等 30 秒，直到有能用 HTTP 打开的端口或脚本退出，返回端口、进程状态和输出末尾；',
+      '之后用 terminal_read 看输出，terminal_stop 停下，脚本退出时会通知你。要给用户看网页，在回复里写 http://localhost:<端口>/路径。',
+      '脚本与主线上的同名文件一致时直接运行；你新加或改过的要用户批准，没写成预置脚本的命令仍用 shell。',
+    ].join(''),
+    tool: 'terminal_run', effect: 'create', retry: 'receipt',
+    input: z.object({ operationId: id, script: z.string().trim().min(1).max(255), restart: z.boolean().optional() }).strict(),
+    output: terminalStateSchema.omit({ port: true }).extend({ instanceId: id, title: z.string(), script: z.string(),
+      /** 已经在跑、返回的是那个。 */
+      reused: z.boolean(),
+      /** 分给脚本的端口段的第一个，脚本里是 PORT。 */
+      assignedPort: z.number().int(), text: z.string() }).strict(),
+  },
   'terminal.read': {
     title: '读取终端输出', description: '按行读取后台终端的输出：转到后台的命令读完整输出，交互终端读屏幕和回滚里的文字。不给 offset 时读最后 limit 行（默认 200）；结果带进程状态，结束了有退出码或原因。',
     tool: 'terminal_read', effect: 'read', retry: 'read',
     input: z.object({ instanceId: id, offset: z.number().int().min(1).optional(), limit: z.number().int().min(1).max(2000).default(200) }).strict(),
-    output: terminalStateSchema.extend({ instanceId: id, title: z.string(), command: z.string().optional(),
+    output: terminalStateSchema.extend({ instanceId: id, title: z.string(), command: z.string().optional(), script: z.string().optional(),
       text: z.string(), offset: z.number().int(), totalLines: z.number().int(), nextOffset: z.number().int().nullable() }).strict(),
   },
   'terminal.list': {
-    title: '列出终端', description: '列出你协作范围内的终端：转到后台的命令与用户开的交互终端，带标题、谁建的、在运行还是已退出（退出码或原因）。',
+    title: '列出终端', description: '列出你协作范围内的终端：转到后台的命令、预置脚本与用户开的交互终端，带标题、谁建的、在运行还是已退出（退出码或原因）。',
     tool: 'terminal_list', effect: 'read', retry: 'read', input: z.object({}).strict(),
-    output: z.object({ terminals: z.array(terminalStateSchema.extend({ ...listed, command: z.string().optional() }).strict()) }).strict(),
+    output: z.object({ terminals: z.array(terminalStateSchema.extend({ ...listed, command: z.string().optional(), script: z.string().optional() }).strict()) }).strict(),
   },
   'terminal.stop': {
     title: '停止终端', description: '停下后台终端里的进程，等到进程结束才返回。你自己停下的不再发结束通知。',
@@ -214,6 +230,7 @@ export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
   ...(['agent.list', 'monitor.list', 'terminal.list'] as const).map((operation) => z.object({ operation: z.literal(operation), targets: range }).strict()),
   ...(['agent.send', 'agent.resume', 'agent.stop', 'agent.merge', 'monitor.stop', 'terminal.read', 'terminal.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
   z.object({ operation: z.literal('monitor.start') }).strict(),
+  z.object({ operation: z.literal('terminal.run') }).strict(),
   ...(['files.list', 'files.search', 'files.read', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
     targets: z.object({ kind: z.literal('instances'), instanceIds: z.array(id) }).strict() }).strict()),
   /** Line 的管理动作，目标范围是工作机目录里的全部工作区；actions 是用户允许的白名单。 */
@@ -228,10 +245,10 @@ export function grantTools(grant: OperationGrant): string[] {
   return tool ? [tool] : [];
 }
 
-/** 仅宿主登记的代理获得默认授权：可按内置角色创建代理、开 monitor，协作范围默认仅后代。自定义 manifest 不能自行授予。 */
+/** 仅宿主登记的代理获得默认授权：可按内置角色创建代理、开 monitor、起预置脚本，协作范围默认仅后代。自定义 manifest 不能自行授予。 */
 export function defaultOperationGrants(definitionId: string): OperationGrant[] {
   if (definitionId !== 'kite.agent') return [];
-  return [{ operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] }, { operation: 'monitor.start' },
+  return [{ operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] }, { operation: 'monitor.start' }, { operation: 'terminal.run' },
     ...scopedOperations.map((operation) => ({ operation, targets: { kind: 'descendants' } }) as OperationGrant)];
 }
 
@@ -259,7 +276,7 @@ export function roleOperationGrants(definitionId: string, grants: OperationGrant
 }
 
 export const operationToolNames = ['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop', 'agent_merge', 'monitor_start', 'monitor_list', 'monitor_stop',
-  'terminal_list', 'terminal_read', 'terminal_stop'] as const;
+  'terminal_run', 'terminal_list', 'terminal_read', 'terminal_stop'] as const;
 const failure = z.object({ error: z.string(), outcome: z.enum(['denied', 'failed', 'cancelled', 'unknown']) }).strict();
 
 export function operationCatalog() {

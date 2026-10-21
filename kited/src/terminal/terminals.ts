@@ -1,9 +1,10 @@
 /**
  * 终端插件 kite.terminal：一个实例一个进程，进程归工作机。实例的 lifetime 是 process：进程运行中独立存续，
  * 关掉窗口照跑，在停靠栏是没有窗口的小头像；进程结束后没有窗口就回收，有窗口的留到关掉窗口；随 kited 重启结束的连窗口一起回收。
- * 进程有两种：用户开的终端是用户的登录 shell，跑在 PTY 里，不加沙箱，相当于登录到这台工作机，起始目录是工作区目录，
+ * 进程有三种：用户开的终端是用户的登录 shell，跑在 PTY 里，不加沙箱，相当于登录到这台工作机，起始目录是工作区目录，
  * 新建时可以带一条命令（对话里代码块的「在终端中执行」），shell 起好后像粘贴那样打进去执行；
- * 代理的 shell 命令超时、用户插话或模型要求时转到后台，由这里接管，仍在代理的沙箱里、只有输出没有输入，结束时通知那个代理。
+ * 代理的 shell 命令超时、用户插话或模型要求时转到后台，由这里接管，仍在代理的沙箱里、只有输出没有输入，结束时通知那个代理；
+ * 项目的预置脚本（见 scripts.ts）同用户开的终端一样跑在 PTY 里、不加沙箱，环境变量 PORT 是分给它的端口段，同一工作区的同一脚本只跑一份。
  * 无头终端（@xterm/headless）跟着输出维护一份画面，设备接入时先发当前画面再推后续输出；PTY 的尺寸跟最近输入的那台设备。
  * 进程归 kited：kited 退出时终端随之结束，重启后不再拉起，只把上次留下的进程组停掉。
  * 运行中的终端定时从自己的进程树探测正在监听的端口，写进实例状态，本机全部运行中终端的端口合起来交给组网转发，
@@ -30,6 +31,7 @@ import type { InputNotice } from '../harness/types.ts';
 import { numberedTitle, type PluginInstance } from '../model.ts';
 import type { Store } from '../store.ts';
 import { systemCommand } from '../system-command.ts';
+import { allocateScriptPorts, SCRIPTS_DIR, type Script } from './scripts.ts';
 import { terminalState, type TerminalState } from './state.ts';
 
 export const terminalDefinitionId = 'kite.terminal';
@@ -38,7 +40,7 @@ export const terminalExitContextDefinition: ContextDefinition = {
   version: 2, id: 'kite.terminal-exit', title: '后台命令结束', scene: 'terminal.exit',
   blocks: [
     { type: 'paragraph', id: 'result', title: '结果', parts: [
-      { type: 'text', text: '你转到后台的命令「' }, { type: 'variable', name: 'terminal.title' },
+      { type: 'text', text: '你在后台运行的「' }, { type: 'variable', name: 'terminal.title' },
       { type: 'text', text: '」（终端 ' }, { type: 'variable', name: 'terminal.id' }, { type: 'text', text: '）已结束：' },
       { type: 'variable', name: 'terminal.result' }, { type: 'text', text: '。输出的末尾：\n' }, { type: 'variable', name: 'terminal.output' },
     ] },
@@ -47,10 +49,19 @@ export const terminalExitContextDefinition: ContextDefinition = {
   ],
 };
 
-/** 转到后台的命令在实例配置里记下命令与完整日志的位置。 */
-const configSchema = z.object({ command: z.string(), log: z.string() }).strict();
+/** 实例配置：转到后台的命令记下命令与完整日志的位置，预置脚本的终端记下脚本名；用户开的终端没有。 */
+const configSchema = z.union([z.object({ command: z.string(), log: z.string() }).strict(), z.object({ script: z.string() }).strict()]);
 const terminalConfig = (instance: Pick<PluginInstance, 'config'>) =>
   instance.config.terminal === undefined ? undefined : configSchema.parse(instance.config.terminal);
+const scriptName = (instance: Pick<PluginInstance, 'config'>) => {
+  const config = terminalConfig(instance);
+  return config && 'script' in config ? config.script : undefined;
+};
+/** 代理的 shell 转到后台的命令：跑在那个代理的沙箱里。 */
+const adoptedCommand = (instance: Pick<PluginInstance, 'config'>) => {
+  const config = terminalConfig(instance);
+  return config && 'command' in config ? config : undefined;
+};
 
 const sizeSchema = z.object({ cols: z.number().int().min(2).max(1000), rows: z.number().int().min(1).max(1000) }).strict();
 type Size = z.infer<typeof sizeSchema>;
@@ -110,6 +121,10 @@ const BRACKETED_SHELLS = new Set(['zsh', 'fish']);
 /** 一个端口开头连着试这么多次 HTTP；还不像网页的之后每隔 HTTP_RETRY_SCANS 次扫描（约半分钟）再试，不一直去敲数据库这类服务。 */
 const HTTP_PROBES = 5;
 const HTTP_RETRY_SCANS = 15;
+/** terminal.run 最多等这么久：开发服务器多半在这之前能响应，构建、安装这类脚本到时先返回，退出时再通知。 */
+const RUN_WAIT_MS = 30_000;
+/** 结束通知和 terminal.run 结果里，PTY 里跑的进程带画面与回滚的最后这么多行。 */
+const TAIL_LINES = 40;
 
 /** 终端里跑的进程。命令没有输入，也不跟着 PTY 尺寸走。 */
 interface Child {
@@ -136,12 +151,15 @@ class Session {
   reason?: string;
   /** 结束时要不要通知启动它的代理：代理自己停下的不通知。 */
   notify = true;
-  /** 最近的输出，结束通知里用。 */
+  /** terminal.run 正在等它：这期间结束的，结果随调用交给代理，不再发结束通知。 */
+  reported = false;
+  /** 转到后台的命令最近的输出原文，见 tail。 */
   recent = '';
   /** 最近一次输出的时间，带命令新建时据此等 shell 起好。 */
   outputAt = 0;
-  /** 进程树正在监听的端口 → 能不能用 HTTP 打开。 */
+  /** 进程树正在监听的端口 → 能不能用 HTTP 打开，变了用 setPorts 换。 */
   ports = new Map<number, boolean>();
+  private portsChange = Promise.withResolvers<void>();
   /** 每个端口扫描过几次，用来定 HTTP 探测的间隔。 */
   probes = new Map<number, number>();
   /** 进程树里各作业所在的进程组（交互 shell 开着作业控制，每个作业各在一组），端口扫描和停止时更新；shell 退出后它们就脱离了进程树。 */
@@ -153,6 +171,13 @@ class Session {
   }
 
   get finished(): Promise<void> { return this.done.promise; }
+  /** 下一次端口变化时兑现，terminal.run 据此等端口。 */
+  get portsChanged(): Promise<void> { return this.portsChange.promise; }
+  setPorts(ports: Map<number, boolean>): void {
+    this.ports = ports;
+    this.portsChange.resolve();
+    this.portsChange = Promise.withResolvers();
+  }
 
   output(data: Uint8Array): void {
     this.outputAt = Date.now();
@@ -170,6 +195,10 @@ class Session {
   }
   screen(): Promise<string> {
     return this.flushed(() => this.serializer.serialize());
+  }
+  /** 输出的末尾：转到后台的命令取原文，PTY 里跑的取画面与回滚的最后几行。 */
+  async tail(): Promise<string> {
+    return this.recent || (await this.lines()).slice(-TAIL_LINES).join('\n').slice(-TAIL_CHARS);
   }
   /** 画面和回滚里的文字，一行一项。 */
   lines(): Promise<string[]> {
@@ -255,6 +284,10 @@ function loginShell(): string[] {
   return basename(shell) === 'zsh' ? [shell, '-l', '-o', 'interactivecomments'] : [shell, '-l'];
 }
 
+/** 经用户的登录 shell 运行预置脚本，环境与用户开的终端一致；exec 换成脚本本身，进程就是脚本。fish 取参数的写法不同。 */
+const scriptCommand = (shell: string[], path: string) =>
+  basename(shell[0]!) === 'fish' ? [...shell, '-c', 'exec $argv[1]', path] : [...shell, '-c', 'exec "$1"', 'kite-script', path];
+
 /** 命令输出是管道里的文字：单独的换行在终端里补成回车换行。 */
 const terminalText = (text: string) => new TextEncoder().encode(text.replace(/\r?\n/g, '\r\n'));
 
@@ -286,19 +319,24 @@ export class Terminals {
     writeFileSync(this.marker(id), JSON.stringify({ pid }), { mode: 0o600 });
   }
 
-  /** 新实例刚入库就起 shell；起不来记为结束，窗口里看得到原因。带命令的等 shell 起好再打进去。 */
+  /**
+   * 新实例刚入库就起 shell；起不来记为结束，窗口里看得到原因。带命令的等 shell 起好再打进去。
+   * 以预置脚本起的（配置见 scriptConfig）经登录 shell 直接运行脚本，PORT 是分给它的端口段的第一个，脚本退出终端就结束。
+   */
   start(instance: PluginInstance, command?: string): void {
     if (this.closed) throw new KiteError('kited 正在关闭', 503);
     const workspace = this.host.store.workspace(instance.workspaceId);
     if (!workspace || workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
     const session = new Session();
     const shell = this.host.shell ?? loginShell();
+    const script = scriptName(instance);
     const env = { ...commandEnvironment(this.host.env), SHELL: shell[0], TERM: 'xterm-256color', COLORTERM: 'truecolor',
-      TERM_PROGRAM: 'Kite', LANG: this.host.env.LANG ?? 'en_US.UTF-8' };
+      TERM_PROGRAM: 'Kite', LANG: this.host.env.LANG ?? 'en_US.UTF-8',
+      ...(script ? { PORT: String(this.host.store.scriptPort(instance.workspaceId, script)) } : {}) };
     const eof = Promise.withResolvers<void>();
     let child;
     try {
-      child = Bun.spawn(shell, { cwd: workspace.cwd, env, terminal: {
+      child = Bun.spawn(script ? scriptCommand(shell, join(workspace.cwd, SCRIPTS_DIR, script)) : shell, { cwd: workspace.cwd, env, terminal: {
         ...session.size, data: (_, data) => session.output(data), exit: () => eof.resolve(),
       } });
     } catch (error) {
@@ -322,6 +360,59 @@ export class Terminals {
     void this.exited(instance.id, session);
     this.watchPorts();
     if (command) void session.type(command, BRACKETED_SHELLS.has(basename(shell[0]!)));
+  }
+
+  /** 以预置脚本起的终端的实例配置；先给工作区的这个脚本分好端口段，start 时经 PORT 交给脚本。 */
+  async scriptConfig(workspaceId: string, name: string): Promise<PluginInstance['config']> {
+    await allocateScriptPorts(this.host.store, workspaceId, name);
+    return { terminal: { script: name } };
+  }
+
+  /** 工作区里这个预置脚本正在跑的终端。 */
+  scriptInstance(workspaceId: string, name: string): string | undefined {
+    return [...this.sessions.keys()].find((id) => {
+      if (!this.running(id)) return false;
+      const instance = this.host.store.instance(id);
+      return instance?.workspaceId === workspaceId && scriptName(instance) === name;
+    });
+  }
+
+  /**
+   * terminal.run：起预置脚本，建一个没有窗口的终端实例，来源是调用方（界面起的没有）；审批由调用方先做完。
+   * 同一脚本已经在跑时返回那个，restart 时先停掉再起；脚本在核对内容（与主线比对或经审批）之后又改了的不起。
+   * 新起的限时等到有能用 HTTP 打开的端口或脚本退出，返回进程状态、端口段与输出末尾；等的期间退出的不再发结束通知，结果里已经有了。
+   */
+  async runScript(workspaceId: string, script: Script, options: { restart?: boolean; origin?: PluginInstance['origin'] }, signal?: AbortSignal) {
+    const { instance, reused } = await this.host.run(workspaceId, async () => {
+      const running = this.scriptInstance(workspaceId, script.name);
+      if (running && !options.restart) return { instance: this.host.store.instance(running)!, reused: true };
+      if (running) await this.stop(running, '预置脚本重新运行', true);
+      const config = await this.scriptConfig(workspaceId, script.name);
+      if (readFileSync(script.path, 'utf8') !== script.content) throw new KiteError(`预置脚本「${script.name}」刚刚又改了，重新运行一次`, 409);
+      const instance: PluginInstance = { id: randomUUID(), workspaceId, definitionId: terminalDefinitionId, title: script.name, config, state: {},
+        presentation: 'background', status: 'open', createdAt: Date.now(), origin: options.origin };
+      this.host.store.addPluginInstance(instance);
+      this.start(instance);
+      return { instance, reused: false };
+    });
+    const session = this.sessions.get(instance.id);
+    if (session && !reused) {
+      session.reported = true;
+      // 到时限或调用取消时兑现 over；等完撤掉定时器。
+      const settled = new AbortController();
+      const over = delay(RUN_WAIT_MS, 'over' as const, { signal: signal ? AbortSignal.any([signal, settled.signal]) : settled.signal })
+        .catch(() => 'over' as const);
+      while (!session.ended && ![...session.ports.values()].some(Boolean)) {
+        if (await Promise.race([session.finished, session.portsChanged, over]) === 'over') break;
+      }
+      settled.abort();
+      if (!session.ended) session.reported = false;
+    }
+    // 没有窗口的终端退出后随即回收，库里可能已经没有它了，状态取会话里的。
+    const current = this.host.store.instance(instance.id) ?? instance;
+    const { port: _selected, ...state } = session?.ended ?? terminalState(current) ?? { phase: 'exited' as const };
+    return { instanceId: instance.id, title: current.title, script: script.name, reused,
+      assignedPort: this.host.store.scriptPort(workspaceId, script.name)!, ...state, text: session ? await session.tail() : '' };
   }
 
   /**
@@ -374,9 +465,11 @@ export class Terminals {
     if (!instance) { this.sessions.delete(id); return; }
     // 工作机关闭时停下的不记结束：下次启动按还在运行认出是被重启结束的，连窗口一起回收（见 recover）
     if (!this.closed) this.save(id, state);
-    if (session.notify && instance.origin && terminalConfig(instance)) {
+    // 有来源的是代理转到后台的命令或起的预置脚本；用户开的终端没有。
+    if (session.notify && !session.reported && instance.origin) {
+      const output = await session.tail();
       // 模板或变量出错时通知发不出，回收照常进行。
-      try { this.notify(instance, state, session.recent); }
+      try { this.notify(instance, state, output); }
       catch (error) { console.error(`[终端] ${id} 的结束通知没有发出：${(error as Error).message}`); }
     }
     if (!this.closed) await this.collectIfWindowless(instance.workspaceId, id);
@@ -483,7 +576,7 @@ export class Terminals {
       }
       for (const port of session.probes.keys()) if (!found.has(port)) session.probes.delete(port);
       if (!this.running(id) || [...next].join() === [...session.ports].join()) continue;
-      session.ports = next;
+      session.setPorts(next);
       this.update(id, (state) => ({ ...state, ports: [...next].map(([port, http]) => ({ port, http })) }));
     }
     this.forwardAll();
@@ -503,12 +596,16 @@ export class Terminals {
     return { port };
   }
 
-  /** 这个代理转到后台、还在跑的命令。 */
+  /** 这个代理转到后台、还在跑的命令；它起的预置脚本不在沙箱里，属于工作区，不算。 */
   owned(agentId: string): string[] {
-    return [...this.sessions.keys()].filter((id) => this.running(id) && this.host.store.instance(id)?.origin?.instanceId === agentId);
+    return [...this.sessions.keys()].filter((id) => {
+      if (!this.running(id)) return false;
+      const instance = this.host.store.instance(id);
+      return instance?.origin?.instanceId === agentId && !!adoptedCommand(instance);
+    });
   }
 
-  /** 代理归档时停下它转到后台的命令，没人接收结束通知了。 */
+  /** 代理归档时停下它转到后台的命令，没人接收结束通知了；它起的预置脚本照跑。 */
   async stopOwned(agentId: string, reason: string): Promise<void> {
     await Promise.all(this.owned(agentId).map((id) => this.stop(id, reason, true)));
   }
@@ -569,24 +666,24 @@ export class Terminals {
     if (state) this.save(id, change(state));
   }
 
-  /** list 里的一项：标题、命令（转到后台的才有）与进程状态，不读输出。 */
+  /** list 里的一项：标题、命令（转到后台的才有）或预置脚本名与进程状态，不读输出。 */
   describe(instance: PluginInstance) {
     const config = terminalConfig(instance);
-    return { instanceId: instance.id, title: instance.title, ...(config ? { command: config.command } : {}),
+    return { instanceId: instance.id, title: instance.title, ...(config && 'command' in config ? { command: config.command } : config),
       ...(terminalState(instance) ?? { phase: 'exited' as const }) };
   }
 
   /**
-   * terminal.read：按行读输出。转到后台的命令读完整日志，shell 读画面和回滚里的文字；
+   * terminal.read：按行读输出。转到后台的命令读完整日志，shell 和预置脚本读画面和回滚里的文字；
    * 不给 offset 时读最后 limit 行。
    */
   async read(id: string, offset: number | undefined, limit: number) {
     const instance = this.host.store.instance(id);
     if (!instance) throw new KiteError('没有这个终端', 404);
-    const config = terminalConfig(instance);
+    const command = adoptedCommand(instance);
     const session = this.sessions.get(id);
     let lines: string[];
-    if (config) lines = readTail(config.log).split('\n');
+    if (command) lines = readTail(command.log).split('\n');
     else lines = session ? await session.lines() : [];
     if (lines.at(-1) === '') lines.pop();
     const total = lines.length;

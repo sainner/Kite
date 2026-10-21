@@ -108,6 +108,10 @@ create table if not exists usage_hours (
   account text not null, day text not null, hour integer not null, tokens integer not null,
   cost real not null, unpriced integer not null, primary key(account, day, hour)
 );
+-- 预置脚本的端口段：每个工作区的每个脚本一段，port 是段的第一个；工作区归档或删掉时一起删。
+create table if not exists script_ports (
+  workspace_id text not null, script text not null, port integer not null unique, primary key(workspace_id, script)
+);
 `;
 const projectOf = (r: any): Project => ({ id: r.id, name: r.name, remote: r.remote, createdAt: r.created_at });
 const checkoutOf = (r: any): Checkout => ({
@@ -676,6 +680,7 @@ export class Store implements UsageStore {
       this.db.query('delete from window_requests where workspace_id = ?').run(id);
       this.db.query('delete from workspace_windows where workspace_id = ?').run(id);
       this.db.query('delete from plugin_instances where workspace_id = ?').run(id);
+      this.db.query('delete from script_ports where workspace_id = ?').run(id);
       this.db.query('delete from workspaces where id = ?').run(id);
     });
   }
@@ -684,7 +689,21 @@ export class Store implements UsageStore {
       this.setWorkspaceStatus(id, 'archived');
       this.db.query("update plugin_instances set status = 'archived' where workspace_id = ?").run(id);
       this.db.query("update workspace_windows set state = 'closed' where workspace_id = ?").run(id);
+      this.db.query('delete from script_ports where workspace_id = ?').run(id);
     })();
+  }
+  /** 工作区的这个预置脚本分到的端口段的第一个端口；没分过时为 undefined。 */
+  scriptPort(workspaceId: string, script: string): number | undefined {
+    const row = this.db.query('select port from script_ports where workspace_id = ? and script = ?').get(workspaceId, script) as { port: number } | null;
+    return row?.port;
+  }
+  /** 各工作区的预置脚本已经分走的端口段。 */
+  scriptPorts(): number[] {
+    return (this.db.query('select port from script_ports').all() as Array<{ port: number }>).map((row) => row.port);
+  }
+  setScriptPort(workspaceId: string, script: string, port: number): void {
+    this.db.query(`insert into script_ports (workspace_id, script, port) values (?, ?, ?)
+      on conflict(workspace_id, script) do update set port = excluded.port`).run(workspaceId, script, port);
   }
   instances(workspaceId: string): PluginInstance[] {
     return this.db.query('select * from plugin_instances where workspace_id = ? order by created_at, id').all(workspaceId).map(instanceOf);

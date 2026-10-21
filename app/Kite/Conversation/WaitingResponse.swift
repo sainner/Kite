@@ -209,6 +209,7 @@ struct WaitingResponseCard: View {
 
     /// 出沙箱的申请：标题是代理写的用途，带密钥时下面写明带着哪几个，命令原文放在代码块里（同对话里的，太长的折起来，展开全部后代码区最高 commandHeight，
     /// 再长在里面滚动），灰底和选项一样离玻璃边 controlInset、圆角同心。连网和必问的动作：标题是要连的主机或动作，下面是为什么要问。
+    /// 预置脚本：标题是脚本名，下面是为什么要问，脚本内容同命令原文放在代码块里。
     /// 线程里的决定在输入区的按钮行上（ThreadControlsModel.deciding），收件箱里在卡片底下（decisionActions）。
     private var approval: some View {
         let outside = waiting.outside == true
@@ -224,8 +225,8 @@ struct WaitingResponseCard: View {
                 }
             }
             .padding(.horizontal, inset ? ComposerLayout.fieldInset : 0)
-            if outside, let command = waiting.target {
-                CodeBlock(text: command, language: "sh", maxLines: 6, radius: fillRadius, terminal: false, maxHeight: commandHeight)
+            if let code = outside ? waiting.target : waiting.script {
+                CodeBlock(text: code, language: "sh", maxLines: 6, radius: fillRadius, terminal: false, maxHeight: commandHeight)
                     .padding(.horizontal, inset ? Metrics.controlInset : 0)
             }
         }
@@ -234,7 +235,11 @@ struct WaitingResponseCard: View {
     private var approvalTitle: String {
         if waiting.outside == true { return waiting.reason ?? "运行命令（不在沙箱里）" }
         let target = waiting.target ?? ""
-        return waiting.tool == "shell" ? "命令要连 \(target)" : target
+        switch waiting.tool {
+        case "shell": return "命令要连 \(target)"
+        case "terminal_run": return "运行预置脚本 \(target)"
+        default: return target
+        }
     }
 
     // MARK: - 密钥请求

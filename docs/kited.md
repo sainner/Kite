@@ -359,6 +359,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET / PUT | `/instances/:id/approval-mode` | 读取或设置审批模式 `{mode}`：`allowlist`、`ask` 或 `allow_all`，运行中也可改，下一次越界请求生效；读取另给按项目上限收紧后实际用的 `effective` 与上限 `max`。新建代理时依次取创建请求的 `approval`、角色的默认与 `/roles` 的 `defaultApproval`，写进实例配置的 `approval`，随工作区的 instances 下发 |
 | GET / PUT | `/instances/:id/operation-grants` | 读取实例的协作授权及 revision；以 expectedRevision 与 grants 整体更新，代理的协作范围是其中几项授权共用的目标 |
 | POST | `/workspaces/:id/windows` | 创建实例及默认窗口，或打开已有实例的视图（实例已有窗口时换到这个视图）；请求使用稳定 id |
+| GET | `/workspaces/:id/scripts` | 工作区的预置脚本 `{scripts}`，每项是脚本名，见 [实例操作 · 预置脚本](实例操作.md#预置脚本) |
 | DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口，按插件生命周期回收实例或保留 |
 | POST | `/workspaces/:id/threads` | 在已有工作区创建代理并打开窗口 `{prompt, role?, model?, tools?, approval?, windowId?, messageId?, attachments?}`；`attachments` 是第一条消息带的附件 ID，带附件时 `prompt` 可以为空；`windowId` 是客户端生成的 UUID，用作新窗口的 ID，已用过返回 409，省略时由 kited 生成；`messageId` 是客户端生成的 UUID，用作第一条消息的 ID，省略时由 kited 生成；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具；`approval` 为审批模式 |
 | GET | `/threads/:id` | 线程和上下文，附带 `runner`、`busy` |
@@ -386,7 +387,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/events?thread=<id>` | 线程 SSE：首帧 `thread.history`，随后线程显示与状态事件 |
 | GET | `/voice?thread=<id>` | 语音输入的 WebSocket，见 [语音识别](#语音识别)；`thread` 是正在输入的会话，新会话不带。App 推 16 kHz 单声道 s16le 的 PCM 二进制帧，说完发 `{"type":"finish"}`；工作机推 `{"type":"partial","text"}`（到目前为止的全文），最后推 `{"type":"final","text"}` 或 `{"type":"error","message"}` 后关闭。连上之后的错误（如没有凭据）都以 `error` 消息给出 |
 
-窗口创建请求为 `{id, content: {kind: "create", definitionId, instanceId?, title?, command?}}`，`instanceId` 是客户端生成的 UUID，用作新实例的 ID，已用过返回 409，省略时由 kited 生成；`title` 是新实例的名字，省略时按插件名编号；`command` 只用于终端，见 [实例操作 · 终端](实例操作.md#终端)；打开已有视图为 `{id, content: {kind: "open", instanceId, viewId}}`。`id` 使用 UUID。内置代理（`kite.agent`）提供 `conversation`，文件提供 `files`，终端提供 `terminal` 与 `web`；文件视图包含预览。新建的空 agent 不调用模型；目标实例须属于当前工作区且处于可用状态，视图须由定义声明。
+窗口创建请求为 `{id, content: {kind: "create", definitionId, instanceId?, title?, command?, script?}}`，`instanceId` 是客户端生成的 UUID，用作新实例的 ID，已用过返回 409，省略时由 kited 生成；`title` 是新实例的名字，省略时按插件名编号（带 `script` 时用脚本名）；`command` 与 `script` 只用于终端、二选一，`script` 是要运行的预置脚本，已经在跑时打开那个终端，见 [实例操作 · 终端](实例操作.md#终端)；打开已有视图为 `{id, content: {kind: "open", instanceId, viewId}}`。`id` 使用 UUID。内置代理（`kite.agent`）提供 `conversation`，文件提供 `files`，终端提供 `terminal` 与 `web`；文件视图包含预览。新建的空 agent 不调用模型；目标实例须属于当前工作区且处于可用状态，视图须由定义声明。
 
 窗口响应包含 `{id, workspaceId, target: {instanceId, viewId}, state, createdAt}`。新建的窗口以请求 `id` 作窗口 ID，App 据此在工作机确认前先按这个 ID（和 `instanceId`）打开窗口；实例已有窗口时不另开，那个窗口换到请求的视图后返回。同一请求 ID 重试返回同一个窗口、不再切换视图，内容改变或窗口已关闭时拒绝，迟到重试不会复活窗口。实例回收与跨端布局的完整规则见 [Agent 与插件契约](Agent与插件契约.md#34-workspacewindow实例的呈现)。
 

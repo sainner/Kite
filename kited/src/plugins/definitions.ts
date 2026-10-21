@@ -32,6 +32,7 @@ export const agentToolCatalog: { name: AgentTool; title: string; group: string }
   { name: 'read', title: '读取文件', group: '文件与命令' },
   { name: 'patch', title: '修改文件', group: '文件与命令' },
   { name: 'shell', title: '运行命令', group: '文件与命令' },
+  { name: 'terminal_run', title: operationTitle('terminal_run'), group: '文件与命令' },
   { name: 'terminal_list', title: operationTitle('terminal_list'), group: '文件与命令' },
   { name: 'terminal_read', title: operationTitle('terminal_read'), group: '文件与命令' },
   { name: 'terminal_stop', title: operationTitle('terminal_stop'), group: '文件与命令' },

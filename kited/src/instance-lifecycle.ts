@@ -4,12 +4,13 @@ import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { KiteError } from './errors.ts';
 import type { Kite } from './kite.ts';
-import { numberedTitle, type OpenWindowRequest, type PluginInstance, type Thread, type WorkspaceWindow } from './model.ts';
+import { numberedTitle, type OpenWindowRequest, type PluginInstance, type Thread, type WindowTarget, type WorkspaceWindow } from './model.ts';
 import { roleOperationGrants } from './operations/contract.ts';
 import { defaultRoleId, roleAgent, toolLimits, type RoleChoice } from './roles.ts';
 import { instanceAgent } from './agents/definition.ts';
 import { monitorDefinitionId } from './monitor/monitors.ts';
 import { terminalDefinitionId } from './terminal/terminals.ts';
+import { findScript } from './terminal/scripts.ts';
 
 /** 新代理在本机草稿里选好的角色与初始参数，创建时一次写入实例配置；省略 revision 时用角色的最新版本。 */
 export interface AgentChoice extends RoleChoice {
@@ -45,7 +46,10 @@ export class InstanceLifecycle {
     return { id, workspaceId: instance.workspaceId, target: { instanceId: instance.id, viewId }, state: 'open', createdAt: Date.now() };
   }
 
-  /** 新实例和首窗口原子登记，打开已有实例的视图时它的窗口换过去；空会话不启动模型。 */
+  /**
+   * 新实例和首窗口原子登记，打开已有实例的视图时它的窗口换过去；空会话不启动模型。
+   * 带预置脚本新建终端时，这个脚本已经在跑就打开那个终端，同一脚本只跑一份。
+   */
   openWindow(workspaceId: string, request: OpenWindowRequest): Promise<WorkspaceWindow> {
     return this.control.run(workspaceId, async () => {
       const model = this.kite.workspace(workspaceId);
@@ -62,29 +66,39 @@ export class InstanceLifecycle {
       if (this.kite.store.window(request.id)) throw new KiteError('窗口 ID 已使用', 409);
       let created: PluginInstance | undefined;
       let thread: Thread | undefined;
-      let window: WorkspaceWindow;
+      let target: WindowTarget | undefined;
       const content = request.content;
       if (content.kind === 'create') {
         const definition = this.kite.catalog.get(content.definitionId);
         if (definition.id === monitorDefinitionId) throw new KiteError('monitor 由代理用 monitor_start 开启，或随 Line 创建');
-        if (content.command !== undefined && definition.id !== terminalDefinitionId) throw new KiteError('只有终端能带命令新建');
+        if ((content.command !== undefined || content.script !== undefined) && definition.id !== terminalDefinitionId) throw new KiteError('只有终端能带命令或预置脚本新建');
+        if (content.command !== undefined && content.script !== undefined) throw new KiteError('命令和预置脚本只能带一个');
         if (content.instanceId && (this.kite.store.instance(content.instanceId) || this.kite.store.hasInstanceWindows(content.instanceId))) {
           throw new KiteError('实例 ID 已使用', 409);
         }
-        created = { ...this.newInstance(workspaceId, definition.id, content.title ?? (definition.agent ? '新代理'
-          : numberedTitle(definition.title, model.instances.filter((p) => p.definitionId === definition.id).map((p) => p.title)))),
-          ...(content.instanceId ? { id: content.instanceId } : {}) };
-        if (definition.agent) thread = { instanceId: created.id, runtime: instanceAgent(created).runtime, nativeId: randomUUID() };
-        window = this.newWindow(created, request.id);
-      } else {
-        const instance = this.kite.store.instance(content.instanceId);
+        // 同一脚本只跑一份：已经在跑就照打开已有实例处理
+        const running = content.script !== undefined ? this.kite.terminals.scriptInstance(workspaceId, content.script) : undefined;
+        if (running) target = { instanceId: running, viewId: 'terminal' };
+        else {
+          const config = content.script !== undefined
+            ? await this.kite.terminals.scriptConfig(workspaceId, findScript(model.workspace.cwd, content.script).name) : undefined;
+          created = { ...this.newInstance(workspaceId, definition.id, content.title ?? content.script ?? (definition.agent ? '新代理'
+            : numberedTitle(definition.title, model.instances.filter((p) => p.definitionId === definition.id).map((p) => p.title)))),
+            ...(content.instanceId ? { id: content.instanceId } : {}), ...(config ? { config } : {}) };
+          if (definition.agent) thread = { instanceId: created.id, runtime: instanceAgent(created).runtime, nativeId: randomUUID() };
+        }
+      } else target = content;
+      let window: WorkspaceWindow;
+      if (target) {
+        const { instanceId, viewId } = target;
+        const instance = this.kite.store.instance(instanceId);
         if (!instance || instance.workspaceId !== workspaceId) throw new KiteError('工作区内没有这个实例', 404);
         if (instance.status !== 'open') throw new KiteError('实例已经归档', 409);
-        if (!this.kite.catalog.get(instance.definitionId).views.some((view) => view.id === content.viewId)) throw new KiteError('插件未声明这个视图');
+        if (!this.kite.catalog.get(instance.definitionId).views.some((view) => view.id === viewId)) throw new KiteError('插件未声明这个视图');
         // 实例已有窗口时不另开：那个窗口换到请求的视图
         const existing = model.windows.find((w) => w.target.instanceId === instance.id);
-        window = existing ? { ...existing, target: { instanceId: instance.id, viewId: content.viewId } } : this.newWindow(instance, request.id, content.viewId);
-      }
+        window = existing ? { ...existing, target: { instanceId: instance.id, viewId } } : this.newWindow(instance, request.id, viewId);
+      } else window = this.newWindow(created!, request.id);
       this.kite.store.openWindow(window, { id: request.id, content: key }, created, thread);
       if (created?.definitionId === terminalDefinitionId) this.kite.terminals.start(created, content.kind === 'create' ? content.command : undefined);
       this.control.changed(workspaceId);
