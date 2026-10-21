@@ -209,6 +209,24 @@ private struct WebNavigation: WebPage.NavigationDeciding {
     }
 }
 
+#if os(macOS)
+extension NSView {
+    /// 指针下是不是这个视图里面的网页。网页的光标由 WebKit 按页面的 cursor 样式在指针移动时自己设；WebKit 自己的跟踪区域收到的
+    /// cursorUpdate 网页视图不接，往外传到窗口就设回箭头。窗口里别的跟踪区域一变（SwiftUI 刷新悬停区域、别的窗口在动），AppKit 就再发一次，
+    /// 指针停在页面的按钮上时手形和箭头来回闪（2026-10-21 光标探针记到）。托管网页的视图按它不往外传，见 HostedContentView。
+    /// Mac 窄窗口里网页外面全是 SwiftUI 自己的视图，没有能拦的一层。
+    func webViewUnderPointer() -> Bool {
+        guard let window, let root = window.contentView?.superview else { return false }
+        var view = root.hitTest(window.mouseLocationOutsideOfEventStream)
+        while let current = view, current !== self {
+            if current is WKWebView { return true }
+            view = current.superview
+        }
+        return false
+    }
+}
+#endif
+
 /// 页面里的 kite-file 请求按路径到同一工作区取文件，越出工作区的由工作机拒绝。
 nonisolated private struct WorkspaceFileScheme: URLSchemeHandler {
     let fetch: @MainActor @Sendable (String) async throws -> CachedFile

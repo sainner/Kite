@@ -488,6 +488,8 @@ private extension View {
     var inset: CGFloat { get }
     /// 按钮藏着时也为它保留的高度，悬停时标题栏不跳动。
     var minHeight: CGFloat { get }
+    /// 指针在卡片上。控制区里随悬停显隐的控件（终端网页的浏览控件）也读它，和窗口按钮一起露出来。
+    var hovered: Bool { get }
 }
 
 /// 标题栏与更多菜单共用当前卡片的窗口动作。

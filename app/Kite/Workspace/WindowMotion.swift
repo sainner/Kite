@@ -307,6 +307,11 @@ final class FlippedView: NSView {
 /// 窗口背景照常能拖窗口，正文里按下不拖，和正文放在卡片里时一样。
 final class HostedContentView: NSHostingView<AnyView> {
     override var mouseDownCanMoveWindow: Bool { false }
+
+    /// 指针在网页上时光标归 WebKit，cursorUpdate 不往外传，见 webViewUnderPointer。
+    override func cursorUpdate(with event: NSEvent) {
+        if !webViewUnderPointer() { super.cursorUpdate(with: event) }
+    }
 }
 
 #endif

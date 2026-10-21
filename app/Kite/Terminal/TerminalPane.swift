@@ -6,6 +6,8 @@ import SwiftUI
 /// 网页是进程树里监听的端口上的页面，所选端口各设备共用，页面里的跳转、滚动与登录状态按设备各自保存（PortPreview 的 store 按实例分开）。
 /// 网页的控制区：左边后退、前进、首页，中间地址栏（站点图标、localhost:端口/路径），右边重新加载、在浏览器中打开。端口点了从监听的端口里选，
 /// 路径跟着页面显示，改了回车打开；都在同一个页面里跳转（WebBrowser），前进后退接得上。
+/// 宽屏卡片里控制区随悬停显隐，同窗口按钮（见 WebControls）。紧凑布局里左边只有后退，有下一页时才出现前进，首页挪到地址栏最右边；
+/// 键盘升起时收起键盘顶替左边这组，在地址栏里打字时清除输入顶替重新加载，点了路径回到打字前的样子、接着打字。
 /// 进程状态、端口写在副标题，失败在信息区。
 struct TerminalPane: View {
     let instance: RemotePluginInstance
@@ -28,6 +30,8 @@ struct TerminalPane: View {
     @State private var webFailure: String?
     @State private var selectError: String?
     @State private var reload = UUID()
+    /// 清除输入：每点一次，地址栏的路径回到打字前的样子。
+    @State private var pathReset = 0
 
     init(instance: RemotePluginInstance, client: KitedClient, connection: UUID, view: String) {
         self.instance = instance
@@ -38,6 +42,7 @@ struct TerminalPane: View {
     }
 
     private var showsWeb: Bool { view == "web" }
+    private var compact: Bool { presentation == .compact }
     /// 工作区推送的状态。端口与所选端口以它为准：选端口改的是实例状态。
     private var pushed: TerminalStatus? { instance.state?.terminal }
     /// 本次连接收到的状态比工作区推送早一步，先用它。
@@ -96,36 +101,54 @@ struct TerminalPane: View {
         } controls: { typing in
             // 网页端口一定在监听的端口里，没有端口就没有可选也没有可浏览的。
             if showsWeb, !ports.isEmpty {
-                HStack(spacing: Metrics.paneButtonGap) {
-                    if let port {
-                        PaneHeaderButtonGroup {
-                            ActionButton("后退", icon: "chevron.left", action: browser.back)
-                                .disabled(!browser.canGoBack)
-                            ActionButton("前进", icon: "chevron.right", action: browser.forward)
-                                .disabled(!browser.canGoForward)
-                            ActionButton("首页", icon: "house") { open("/", on: port) }
-                        }
-                        address(port: port, typing: typing)
-                        PaneHeaderButtonGroup {
-                            ActionButton("重新加载", icon: "arrow.clockwise") {
-                                webFailure = nil
-                                if !browser.reload() { reload = UUID() }
+                WebControls(typing: typing.wrappedValue) {
+                    HStack(spacing: Metrics.paneButtonGap) {
+                        if let port {
+                            KeyboardSwap {
+                                PaneHeaderButtonGroup {
+                                    ActionButton("后退", icon: "chevron.left", action: browser.back)
+                                        .disabled(!browser.canGoBack)
+                                    if !compact || browser.canGoForward {
+                                        ActionButton("前进", icon: "chevron.right", action: browser.forward)
+                                            .disabled(!browser.canGoForward)
+                                    }
+                                    if !compact {
+                                        ActionButton("首页", icon: "house") { open("/", on: port) }
+                                    }
+                                }
+                            } shown: {
+                                KeyboardDismissButton()
                             }
-                            #if os(macOS)
-                            // 只在 Mac 上：其他设备上页面开在本机转发上（PortRelay），转发随这个窗口的网页视图开着；
-                            // iPhone、iPad 切到浏览器后 App 进后台，转发停下，打不开。
-                            // 不走环境里的 openURL：本机地址会被它接回这个网页视图（见 ReferenceNavigation）。
-                            ActionButton("在浏览器中打开", icon: "arrow.up.right.square") {
-                                if let url = browser.url { NSWorkspace.shared.open(url) }
+                            address(port: port, typing: typing)
+                            KeyboardSwap(active: typing.wrappedValue) {
+                                PaneHeaderButtonGroup {
+                                    ActionButton("重新加载", icon: "arrow.clockwise") {
+                                        webFailure = nil
+                                        if !browser.reload() { reload = UUID() }
+                                    }
+                                    #if os(macOS)
+                                    // 只在 Mac 上：其他设备上页面开在本机转发上（PortRelay），转发随这个窗口的网页视图开着；
+                                    // iPhone、iPad 切到浏览器后 App 进后台，转发停下，打不开。
+                                    // 不走环境里的 openURL：本机地址会被它接回这个网页视图（见 ReferenceNavigation）。
+                                    ActionButton("在浏览器中打开", icon: "arrow.up.right.square") {
+                                        if let url = browser.url { NSWorkspace.shared.open(url) }
+                                    }
+                                    .disabled(browser.url == nil)
+                                    #endif
+                                }
+                            } shown: {
+                                PaneHeaderButtonGroup {
+                                    ActionButton("清除输入", icon: "xmark") { pathReset += 1 }
+                                }
                             }
-                            .disabled(browser.url == nil)
-                            #endif
+                        } else {
+                            Spacer(minLength: 0)
+                            address(port: nil, typing: typing)
+                            Spacer(minLength: 0)
                         }
-                    } else {
-                        Spacer(minLength: 0)
-                        address(port: nil, typing: typing)
-                        Spacer(minLength: 0)
                     }
+                    // 没选端口时只有地址栏，收起键盘仍在最左边
+                    .containerValue(\.placesKeyboardButton, port != nil)
                 }
             }
         }
@@ -145,7 +168,8 @@ struct TerminalPane: View {
         .task(id: connection) { await session.run(client: client) }
     }
 
-    /// 地址栏：站点图标、localhost:、端口菜单、路径。还没选端口时只有选端口。iPhone 上宽度不够，省掉 localhost:。
+    /// 地址栏：站点图标、localhost:、端口菜单、路径，端口和路径之间不留空。还没选端口时只有选端口。
+    /// 紧凑布局里宽度不够，省掉 localhost:，首页放在地址栏最右边。
     private func address(port: Int?, typing: FocusState<Bool>.Binding) -> some View {
         PaneHeaderButtonGroup(expands: port != nil) {
             HStack(spacing: Metrics.paneHeaderLogoGap) {
@@ -158,7 +182,7 @@ struct TerminalPane: View {
                 }
                 .frame(width: Metrics.paneHeaderLogo, height: Metrics.paneHeaderLogo)
                 .accessibilityHidden(true)
-                if !presentation.isCompactTouch {
+                if !compact {
                     Text("localhost:")
                         .font(Theme.body)
                         .foregroundStyle(.secondary)
@@ -176,7 +200,12 @@ struct TerminalPane: View {
                 .foregroundStyle(Color.primary)
                 .help("选要打开的端口")
             if let port {
-                WebPathField(path: webPath, typing: typing) { open($0, on: port) }
+                WebPathField(path: webPath, typing: typing, reset: pathReset) { open($0, on: port) }
+                    // 路径框压住端口按钮右边那半个按钮间距，端口的悬停高亮仍按整个按钮画
+                    .padding(.leading, -Metrics.paneHeaderButtonGap / 2)
+                if compact {
+                    ActionButton("首页", icon: "house") { open("/", on: port) }
+                }
             }
         }
     }
@@ -209,10 +238,27 @@ struct TerminalPane: View {
     }
 }
 
+/// 宽屏卡片里的网页控制区：指针在卡片上、或正在地址栏里打字时才有，同窗口按钮（见 PaneHeaderControls）；触屏一直有。
+/// 藏起来时控制区是空的，不接点击，后面的页面照常可点（见 PaneControlsBar）。不在卡片里（紧凑布局）时一直有。
+/// 悬停只在这一层读，窗口不跟着重算。
+private struct WebControls<Content: View>: View {
+    let typing: Bool
+    @ViewBuilder let content: Content
+    @Environment(\.paneHeaderControlsSpace) private var card
+
+    var body: some View {
+        if typing || card.map({ InputMode.current.revealsControls(hovered: $0.hovered) }) ?? true {
+            content
+        }
+    }
+}
+
 /// 地址栏里的路径：平时跟着页面显示当前路径，打字时不被页面的跳转改掉；回车打开，没打开就离开（Mac 上按 Esc 也是）回到当前路径。
+/// reset 变了（清除输入）也回到当前路径，接着打字。
 private struct WebPathField: View {
     let path: String
     let typing: FocusState<Bool>.Binding
+    let reset: Int
     let open: (String) -> Void
     @State private var text = ""
     /// 刚按回车打开：留着输入的路径等页面跳过去，不先退回旧路径。
@@ -242,6 +288,7 @@ private struct WebPathField: View {
             .onChange(of: path, initial: true) {
                 if !typing.wrappedValue { text = path }
             }
+            .onChange(of: reset) { text = path }
             .onChange(of: typing.wrappedValue) { _, editing in
                 if editing { submitted = false } else if !submitted { text = path }
             }

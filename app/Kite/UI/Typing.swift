@@ -54,7 +54,7 @@ extension EnvironmentValues {
 }
 
 extension ContainerValues {
-    /// 窗口控制区里的这一项自己排了收起键盘按钮（上下文编辑工具栏），窗口不再在左边加。
+    /// 窗口控制区里的这一项自己排了收起键盘按钮（上下文编辑工具栏、终端网页的浏览控件），窗口不再在左边加。
     @Entry var placesKeyboardButton = false
 }
 
@@ -77,6 +77,28 @@ struct KeyboardDismissButton: View {
             // 出现、消失时占的是空白，玻璃不和旁边融合
             .glassEffectTransition(.identity)
         }
+        #endif
+    }
+}
+
+/// 控制区里的一组按钮在键盘升起时原地换成另一组，什么时候算升起同 KeyboardDismissButton（只在 iPhone 上）；active 为 false 时不换。
+/// 终端网页用它把后退换成收起键盘、重新加载换成清除输入。自己放了收起键盘的控制区要标 placesKeyboardButton，不在最左边再加一个。
+struct KeyboardSwap<Normal: View, Shown: View>: View {
+    var active = true
+    @ViewBuilder var normal: Normal
+    @ViewBuilder var shown: Shown
+    @Environment(\.keyboardShown) private var keyboardShown
+
+    var body: some View {
+        #if os(iOS)
+        // 原地换掉，两块玻璃不互相融合
+        if active && ScreenKeyboard.shared.shown && keyboardShown {
+            shown.glassEffectTransition(.identity)
+        } else {
+            normal.glassEffectTransition(.identity)
+        }
+        #else
+        normal
         #endif
     }
 }
