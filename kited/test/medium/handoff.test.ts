@@ -168,7 +168,9 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
   summarize.response.complete();
   const compacted = await k.waitEvent((e) => e.type === 'harness' && e.threadId === id
     && e.event.type === 'record' && e.event.record.type === 'context.compacted');
-  await k.waitEvent((e) => e.type === 'idle' && e.threadId === id && k.events.indexOf(e) > k.events.indexOf(compacted));
+  // 手动压缩不是回合，结束时没有 idle 事件；等压缩记录之后线程回到空闲，再切后端。
+  await k.waitEvent((e) => e.type === 'harness' && e.threadId === id && e.event.type === 'state'
+    && e.event.state.phase === 'idle' && !e.event.state.busy && k.events.indexOf(e) > k.events.indexOf(compacted));
 
   // 第六段：切到 Claude。Claude 只接续合成分界之后的历史：第三段换成摘要正文，
   // 其余各段（含更早从 Claude 导入的第二、四段）各一次，原条目和压缩请求都不再发给模型。

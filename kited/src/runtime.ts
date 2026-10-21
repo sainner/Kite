@@ -213,8 +213,8 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       // 空闲中的状态变化（撤回排队输入等）不算回合收尾。
       if (event.type === 'state') {
         const was = busy;
-        // 手动压缩也把阶段置为运行，但不是回合；回合中途的自动压缩照旧算在回合里。
-        busy = event.state.phase !== 'idle' && !(event.state.compacting && !event.state.busy);
+        // 手动压缩也把阶段置为运行、busy 为真，但不在回合里（没有 turnId）；回合中途的自动压缩照旧算在回合里。
+        busy = event.state.phase !== 'idle' && !(event.state.compacting && !event.state.turnId);
         if (was && !busy) on.idle(event.state.lastOutcome);
       }
     },
