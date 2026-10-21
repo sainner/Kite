@@ -61,8 +61,12 @@ struct WebPreview: View {
             let page = makePage()
             self.page = page
             browser?.attach(page, report: report)
+            let events = page.load(source.url)
+            #if os(macOS)
+            page.enableDeveloperTools()
+            #endif
             do {
-                for try await _ in page.load(source.url) {}
+                for try await _ in events {}
                 report(nil)
             } catch is CancellationError {
             } catch {
@@ -82,7 +86,11 @@ struct WebPreview: View {
         case .address(_, let store):
             configuration.websiteDataStore = WKWebsiteDataStore(forIdentifier: store)
         }
-        return WebPage(configuration: configuration, navigationDecider: WebNavigation(source: source, openURL: { openURL($0) }))
+        let page = WebPage(configuration: configuration, navigationDecider: WebNavigation(source: source, openURL: { openURL($0) }))
+        // Safari 的网页检查器连得上：iPhone、iPad 没有自带的检查器，接上 Mac 后从 Safari 的「开发」菜单里选设备名下的这个页面；
+        // Mac 上在 Kite 里直接打开（见 WebBrowser.inspect）。检查器由用户打开，页面碰不到它，隔离不变。
+        page.isInspectable = true
+        return page
     }
 
     fileprivate static func message(_ error: any Error) -> String {
@@ -136,6 +144,19 @@ struct WebPreview: View {
         follow(page.reload())
         return true
     }
+
+    #if os(macOS)
+    /// 开发者工具：在 Kite 里打开 WebKit 自带的检查器，单独一个窗口。
+    func inspect() {
+        let inspector = NSSelectorFromString("_inspector"), show = NSSelectorFromString("show")
+        guard let page, page.enableDeveloperTools(), let view = page.backingWebView, view.responds(to: inspector),
+              let object = view.perform(inspector)?.takeUnretainedValue() as? NSObject, object.responds(to: show) else {
+            report("开发者工具打不开，可以从 Safari 的「开发」菜单里打开")
+            return
+        }
+        object.perform(show)
+    }
+    #endif
 
     private func follow(_ events: some AsyncSequence<WebPage.NavigationEvent, any Error>) {
         navigation?.cancel()
@@ -210,6 +231,26 @@ private struct WebNavigation: WebPage.NavigationDeciding {
 }
 
 #if os(macOS)
+/// 开发者工具用的是 WebKit 的私有接口：开发者选项（右键菜单里的「检查元素」）和检查器（_inspector）。Mac 版用 Developer ID 发布、不经商店审核；
+/// 系统更新后接口没了就只剩 Safari 的「开发」菜单，所以调用前先确认还在。检查器默认嵌在网页视图下方，而网页视图的大小归 SwiftUI 管，
+/// 嵌进去会被挤乱，所以登记成单独开窗口：WebKit 把这个选择记在用户默认值里，用户在检查器里改成嵌入也照记。
+extension WebPage {
+    /// WebPage 没有公开底下的 WKWebView，按反射取它惰性建好的那个，开始加载后才有。
+    fileprivate var backingWebView: WKWebView? {
+        Mirror(reflecting: self).children.lazy.compactMap { $0.value as? WKWebView }.first
+    }
+
+    /// 打开开发者选项，返回是否打开了。
+    @discardableResult
+    fileprivate func enableDeveloperTools() -> Bool {
+        guard let preferences = backingWebView?.configuration.preferences,
+              preferences.responds(to: NSSelectorFromString("_setDeveloperExtrasEnabled:")) else { return false }
+        UserDefaults.standard.register(defaults: ["__WebInspectorPageGroupLevel1__.WebKit2InspectorStartsAttached": false])
+        preferences.setValue(true, forKey: "developerExtrasEnabled")
+        return true
+    }
+}
+
 extension NSView {
     /// 指针下是不是这个视图里面的网页。网页的光标由 WebKit 按页面的 cursor 样式在指针移动时自己设；WebKit 自己的跟踪区域收到的
     /// cursorUpdate 网页视图不接，往外传到窗口就设回箭头。窗口里别的跟踪区域一变（SwiftUI 刷新悬停区域、别的窗口在动），AppKit 就再发一次，

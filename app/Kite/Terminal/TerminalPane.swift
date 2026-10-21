@@ -4,7 +4,7 @@ import SwiftUI
 /// 终端窗口：工作机上一个 PTY 会话，关掉窗口进程照跑。输出与网页是它的两个视图，在同一个窗口里切换（切换按钮由窗口统一加，
 /// 见 PaneWindow 的 viewSwitcher）；各自第一次显示时才接上，之后切走只是藏起来、不再绘制：输出的连接不断，网页里的跳转、滚动不丢。
 /// 网页是进程树里监听的端口上的页面，所选端口各设备共用，页面里的跳转、滚动与登录状态按设备各自保存（PortPreview 的 store 按实例分开）。
-/// 网页的控制区：左边后退、前进、首页，中间地址栏（站点图标、localhost:端口/路径），右边重新加载、在浏览器中打开。端口点了从监听的端口里选，
+/// 网页的控制区：左边后退、前进、首页，中间地址栏（站点图标、localhost:端口/路径），右边重新加载，Mac 上还有开发者工具、在浏览器中打开。端口点了从监听的端口里选，
 /// 路径跟着页面显示，改了回车打开；都在同一个页面里跳转（WebBrowser），前进后退接得上。
 /// 宽屏卡片里控制区随悬停显隐，同窗口按钮（见 WebControls）。紧凑布局里左边只有后退，有下一页时才出现前进，首页挪到地址栏最右边；
 /// 键盘升起时收起键盘顶替左边这组，在地址栏里打字时清除输入顶替重新加载，点了路径回到打字前的样子、接着打字。
@@ -127,6 +127,8 @@ struct TerminalPane: View {
                                         if !browser.reload() { reload = UUID() }
                                     }
                                     #if os(macOS)
+                                    // iPhone、iPad 没有自带的检查器，只能接上 Mac 从 Safari 打开（见 WebPreview）。
+                                    ActionButton("开发者工具", icon: "wrench.and.screwdriver", action: browser.inspect)
                                     // 只在 Mac 上：其他设备上页面开在本机转发上（PortRelay），转发随这个窗口的网页视图开着；
                                     // iPhone、iPad 切到浏览器后 App 进后台，转发停下，打不开。
                                     // 不走环境里的 openURL：本机地址会被它接回这个网页视图（见 ReferenceNavigation）。
