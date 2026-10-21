@@ -1,11 +1,11 @@
 ---
 name: ui-hit-testing-debugging
-description: 界面事件诊断的证据边界、光标被谁改掉的探针做法、simctl 两次内核崩溃（之后不再调用 simctl）、真机现场采集不挂调试器、真机崩溃报告怎么取
+description: 界面事件诊断的证据边界、光标被谁改掉的探针做法、SwiftUI 菜单行为的小程序验证、simctl 两次内核崩溃（之后不再调用 simctl）、真机现场采集不挂调试器、真机崩溃报告怎么取
 metadata:
   node_type: memory
   type: context
   originSessionId: 2b6008b7-bf52-4a23-b577-de6bc7b05c97
-  modified: 2026-10-21T07:36:14.551Z
+  modified: 2026-10-21T10:28:09.525Z
 ---
 
 合成事件后的画面变化可能混入真实用户输入，需要确认目标收到事件；AppKit/UIKit 的 hitTest 落点也不能单独证明 SwiftUI 内部命中或手势正确。
@@ -19,6 +19,8 @@ metadata:
 现场难复现时先做不碰进程的采集：`xcrun devicectl device capture screenshot` 截真机屏、`devicectl device copy from` 取偏好和缓存。2026-10-15 iPhone 侧栏浅底白字时，用 `xcrun lldb --batch` 加 `device process attach --pid` 想读视图层级，进程没有停下（`process interrupt` 报 Process must be launched），lldb 退出后 App 被结束，现场丢失；好在用户知道怎么复现（回主屏幕再进）。没确认能停住、能放开之前，不在用户正开着的 App 上挂调试器。
 
 真机上点了没反应这类，在 Debug 版里沿手势、命中、openURL、打开各步往 `Library/Caches` 的文件里记一行，请用户真实点一轮，用 `devicectl device copy from` 取回；手势的 delegate 与视图的 `gestureRecognizerShouldBegin`、动作方法都记，能分出「没开始」「开始了被别的手势挤掉」「认出了没命中」。探针版按工作机 kited 的那份提交（`/machine` 的 `version.commit`）在 worktree 里编：按主线编的协议号可能比工作机新，App 显示「工作机待更新」，升级 kited 要重启它、打断代理。2026-10-21 iOS 正文链接一直点不开，这样两轮查出是 `buttonMaskRequired = .secondary` 的右键点按也认手指（只筛指针），和点链接互斥又先认出，见 `PhoneTextInteraction`。
+
+SwiftUI 菜单的行为可以不打扰 Kite、用 swiftc 小程序验证：进程内找到菜单按钮的辅助功能节点调 `accessibilityPerformPress` 打开菜单（合成 NSEvent 点不开），自己在前台时往 HID 发方向键移到子菜单项、展开（`postToPid` 菜单收不到；发之前先确认 `NSApp.isActive`，不然键落到用户的 App），按可见的 `NSPopupMenuWindow` 个数判断子菜单开没开。程序会抢前台，用户一操作结果就作废，跑之前说一声。2026-10-21 Mac 审批模式子菜单老是自己收起，这样查出菜单开着时所在视图重算一次（内容不变也算）子菜单就被收起，修法见 `MoreMenu` 的注释；别的带子菜单的 SwiftUI 菜单（工作区列表、凭据、代理设置）遇到同样现象按这个查。
 
 真机闪退先取崩溃报告：`xcrun devicectl device info files --device <ID> --domain-type systemCrashLogs` 列出，`device copy from --source <文件名>` 取回 `.ips`。SwiftUI 环境里缺 Observable 对象这类断言，报告里只有 `EnvironmentBox.update` → `_assertionFailure` 的栈，没有报错文本和 App 帧；`log collect --device` 要 root，取不到真机日志。2026-10-16 添加窗口闪退是按栈推出机制，再用 `swiftc` 编几十行的 AppKit 小程序复现出同一条 `No Observable object` 报错、验证修法，没让用户再点一次。
 
