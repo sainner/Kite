@@ -3,7 +3,7 @@ import AppKit
 import SwiftUI
 
 /// 台面（StageView）上的一张卡片：
-/// 外框和最小化色、点阵层、窗口正文、头像、头像描边、标题栏一层（拖动区、窗口按钮）。视图铺满台面，各层按台面坐标摆；
+/// 外框和最小化色、点阵层、窗口正文、头像、描边、标题栏一层（拖动区、窗口按钮）。视图铺满台面，各层按台面坐标摆；
 /// 铺满台面的几层（外框、点阵、头像、描边）都不接点击，只有正文和标题栏一层接。
 /// 终点由台面按 CardPresentation 算好交过来，交给 WindowMotion。排布动画开始计时时整段交给 Core Animation（flightStarted），
 /// 跟手拖动由台面的显示链接逐帧取样（applyPresentation），都只改图层。
@@ -345,7 +345,7 @@ final class CardView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         fill.animate(poses, duration: duration)
-        if ringColor != nil { ring.animate(poses, duration: duration) }
+        ring.animate(poses, duration: duration, shown: ringColor != nil)
         let size = iconSize
         if let layer = iconMover.layer {
             let transforms = poses.map { NSValue(caTransform3D: iconTransform($0, size: size)) }
@@ -661,14 +661,15 @@ final class CardView: NSView {
         updateColors()
     }
 
-    /// 底色是卡片色；最小化色代理用卡片色、工具用它的颜色；描边是头像报来的颜色。按这个视图的外观解析成 SwiftUI 里同样的值。
+    /// 底色是卡片色；最小化色代理用卡片色、工具用它的颜色；描边展开时是 windowStroke、收起时是头像报来的颜色。
+    /// 按这个视图的外观解析成 SwiftUI 里同样的值。
     private func updateColors() {
         guard let stage, let placed else { return }
         var environment = stage.environment
         environment.colorScheme = effectiveAppearance.isDark ? .dark : .light
         func resolved(_ color: Color) -> CGColor { color.resolve(in: environment).cgColor }
         fill.colors(base: resolved(Theme.card), minimized: resolved(placed.appearance.isAgent ? Theme.card : placed.appearance.tint))
-        ring.color(ringColor.map(resolved))
+        ring.colors(edge: resolved(Theme.windowStroke), ring: ringColor.map(resolved))
     }
 
     // MARK: - 压暗
@@ -877,8 +878,12 @@ private final class CardFillView: NSView {
     }
 }
 
-/// 头像的描边压在外框上，随头像淡入：内缩半个线宽、外缘与外框贴合，飞过同色的窗口时也看得出轮廓，落进停靠栏外框就是头像那一圈。
+/// 外框的描边：内缩半个线宽、外缘与外框贴合。展开时是 windowStroke，随正文淡出；收起时换成头像的本色，随头像淡入，
+/// 飞过同色的窗口时也看得出轮廓，落进停靠栏外框就是头像那一圈。工具窗口的头像不报颜色，收起时没有描边。
 private final class CardRingView: NSView {
+    /// 展开时的那一圈。
+    private let edge = CAShapeLayer()
+    /// 头像的那一圈。
     private let shape = CAShapeLayer()
 
     override var isFlipped: Bool { true }
@@ -886,9 +891,11 @@ private final class CardRingView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        shape.fillColor = nil
-        shape.lineWidth = DockFace.ringWidth
-        layer?.addSublayer(shape)
+        for stroke in [edge, shape] {
+            stroke.fillColor = nil
+            stroke.lineWidth = DockFace.ringWidth
+            layer?.addSublayer(stroke)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -896,19 +903,25 @@ private final class CardRingView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func isAccessibilityElement() -> Bool { false }
 
-    func color(_ color: CGColor?) {
+    func colors(edge: CGColor, ring: CGColor?) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        shape.strokeColor = color
-        shape.isHidden = color == nil
+        self.edge.strokeColor = edge
+        shape.strokeColor = ring
+        shape.isHidden = ring == nil
         CATransaction.commit()
     }
 
     func apply(_ pose: WindowPose, shown: Bool) {
-        guard shown, let layer else { return }
+        guard let layer else { return }
         stopAnimations()
+        let path = path(pose, in: layer)
+        edge.frame = layer.bounds
+        edge.path = path
+        edge.opacity = Float(pose.contentOpacity)
+        guard shown else { return }
         shape.frame = layer.bounds
-        shape.path = path(pose, in: layer)
+        shape.path = path
         shape.opacity = Float(pose.iconOpacity)
     }
 
@@ -918,16 +931,22 @@ private final class CardRingView: NSView {
     }
 
     /// 整段交给 Core Animation，同 CardFillView.animate。
-    func animate(_ poses: [WindowPose], duration: TimeInterval) {
+    func animate(_ poses: [WindowPose], duration: TimeInterval, shown: Bool) {
         guard let layer, let last = poses.last else { return }
-        apply(last, shown: true)
-        shape.add(StageKeyframes.make("path", poses.map { path($0, in: layer) }, duration: duration), forKey: "flight")
+        apply(last, shown: shown)
+        let paths = StageKeyframes.make("path", poses.map { path($0, in: layer) }, duration: duration)
+        edge.add(paths, forKey: "flight")
+        edge.add(StageKeyframes.make("opacity", poses.map { Float($0.contentOpacity) }, duration: duration), forKey: "flight-opacity")
+        guard shown else { return }
+        shape.add(paths, forKey: "flight")
         shape.add(StageKeyframes.make("opacity", poses.map { Float($0.iconOpacity) }, duration: duration), forKey: "flight-opacity")
     }
 
     func stopAnimations() {
-        shape.removeAnimation(forKey: "flight")
-        shape.removeAnimation(forKey: "flight-opacity")
+        for stroke in [edge, shape] {
+            stroke.removeAnimation(forKey: "flight")
+            stroke.removeAnimation(forKey: "flight-opacity")
+        }
     }
 }
 

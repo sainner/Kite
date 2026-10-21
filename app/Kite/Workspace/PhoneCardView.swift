@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 
 /// 台面（PhoneStageView）上的一张卡片，外观、行为和结构照 Mac 的 CardView：
-/// 外框和最小化色、点阵层、窗口正文、头像、头像描边、标题栏一层（拖动区、窗口按钮）。视图铺满台面，各层按台面坐标摆；
+/// 外框和最小化色、点阵层、窗口正文、头像、描边、标题栏一层（拖动区、窗口按钮）。视图铺满台面，各层按台面坐标摆；
 /// 铺满台面的几层（外框、点阵、头像、描边）都不接点按，只有正文和标题栏一层接。
 /// 终点由台面按 CardPresentation 算好交过来，交给 WindowMotion。排布动画开始计时时整段交给 Core Animation（flightStarted），
 /// 跟手拖动由台面的显示链接逐帧取样（applyPresentation），都只改图层。外框、遮罩用图层的圆角（continuous，同 SwiftUI 的 RoundedRectangle）
@@ -69,6 +69,8 @@ final class PhoneCardView: UIView {
     /// 头像随外框平移的那一层，铺满台面：点按和读屏都穿过去。
     private let iconMover = PassThroughView()
     private let icon = HostIsland()
+    /// 展开时外框的描边，见 RingGeometry。
+    private let edge = CALayer()
     private let ring = CALayer()
     private let headerView = CardHeaderView()
     private let buttons = HostIsland(sizing: [.intrinsicContentSize])
@@ -120,9 +122,11 @@ final class PhoneCardView: UIView {
         layer.addSublayer(fill.minimized)
         iconMover.addSubview(icon)
         icon.isUserInteractionEnabled = false
-        ring.borderWidth = DockFace.ringWidth
-        ring.cornerCurve = .continuous
-        for layer in [ring, fill.base, fill.minimized] { layer.actions = Self.noActions }
+        for stroke in [edge, ring] {
+            stroke.borderWidth = DockFace.ringWidth
+            stroke.cornerCurve = .continuous
+        }
+        for layer in [edge, ring, fill.base, fill.minimized] { layer.actions = Self.noActions }
         headerView.addSubview(buttons)
         threadSlot.attach = { [weak self] thread, pane, environment in self?.attachThread(thread, pane: pane, environment: environment) }
         threadSlot.detach = { [weak self] pane in self?.detachThread(pane) }
@@ -153,9 +157,11 @@ final class PhoneCardView: UIView {
         addSubview(backdrop)
         addSubview(container)
         addSubview(iconMover)
+        layer.addSublayer(edge)
         layer.addSublayer(ring)
         addSubview(headerView)
         // 描边在头像上面、标题栏下面
+        edge.zPosition = 0
         ring.zPosition = 0
         let pane = pane
         headerView.dragged = { [weak stage] state, location in
@@ -351,6 +357,7 @@ final class PhoneCardView: UIView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         fill.animate(poses, duration: duration)
+        RingGeometry.animate(edge, poses, duration: duration, opacity: \.contentOpacity)
         if ringColor != nil { RingGeometry.animate(ring, poses, duration: duration) }
         let size = iconSize
         let transforms = poses.map { NSValue(caTransform3D: iconTransform($0, size: size)) }
@@ -430,6 +437,7 @@ final class PhoneCardView: UIView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         fill.stopAnimations()
+        edge.removeAnimation(forKey: "flight")
         ring.removeAnimation(forKey: "flight")
         iconMover.layer.removeAnimation(forKey: "flight")
         iconMover.layer.removeAnimation(forKey: "flight-opacity")
@@ -509,6 +517,7 @@ final class PhoneCardView: UIView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         fill.apply(pose)
+        RingGeometry.apply(edge, pose, opacity: \.contentOpacity)
         if ringColor != nil { RingGeometry.apply(ring, pose) }
         iconMover.layer.sublayerTransform = iconTransform(pose, size: iconSize)
         iconMover.alpha = pose.iconOpacity
@@ -672,13 +681,15 @@ final class PhoneCardView: UIView {
         if !flying { applyPresentation(at: .now) }
     }
 
-    /// 底色是卡片色；最小化色代理用卡片色、工具用它的颜色；描边是头像报来的颜色。按这个视图的外观解析成 SwiftUI 里同样的值。
+    /// 底色是卡片色；最小化色代理用卡片色、工具用它的颜色；描边展开时是 windowStroke、收起时是头像报来的颜色。
+    /// 按这个视图的外观解析成 SwiftUI 里同样的值。
     private func updateColors() {
         guard let stage, let placed else { return }
         let environment = stage.environment
         func color(_ color: Color) -> CGColor { resolved(color, traits: traitCollection, in: environment).cgColor }
         fill.base.backgroundColor = color(Theme.card)
         fill.minimized.backgroundColor = color(placed.appearance.isAgent ? Theme.card : placed.appearance.tint)
+        edge.borderColor = color(Theme.windowStroke)
         ring.borderColor = ringColor.map(color)
         ring.isHidden = ringColor == nil
     }
@@ -898,22 +909,24 @@ enum RingGeometry {
         layer.add(group, forKey: "flight")
     }
 
-    /// 头像的描边压在外框上，随头像淡入：边框画在外框里面、外缘与外框贴合。
-    static func apply(_ ring: CALayer, _ pose: WindowPose) {
+    /// 描边压在外框上：边框画在外框里面、外缘与外框贴合。头像的那一圈随头像淡入；展开时的那一圈（windowStroke）随正文淡出，
+    /// opacity 传 contentOpacity。
+    static func apply(_ ring: CALayer, _ pose: WindowPose, opacity: KeyPath<WindowPose, Double> = \.iconOpacity) {
         ring.removeAnimation(forKey: "flight")
         place(ring, frame: pose.frame, radius: pose.radius)
-        ring.opacity = Float(pose.iconOpacity)
+        ring.opacity = Float(pose[keyPath: opacity])
     }
 
-    static func animate(_ ring: CALayer, _ poses: [WindowPose], duration: TimeInterval) {
+    static func animate(_ ring: CALayer, _ poses: [WindowPose], duration: TimeInterval,
+                        opacity: KeyPath<WindowPose, Double> = \.iconOpacity) {
         guard let last = poses.last else { return }
-        apply(ring, last)
+        apply(ring, last, opacity: opacity)
         let group = CAAnimationGroup()
         group.animations = [
             StageKeyframes.make("bounds", poses.map { NSValue(cgRect: CGRect(origin: .zero, size: $0.frame.size)) }, duration: duration),
             StageKeyframes.make("position", poses.map { NSValue(cgPoint: CGPoint(x: $0.frame.midX, y: $0.frame.midY)) }, duration: duration),
             StageKeyframes.make("cornerRadius", poses.map { min($0.radius, min($0.frame.width, $0.frame.height) / 2) }, duration: duration),
-            StageKeyframes.make("opacity", poses.map { Float($0.iconOpacity) }, duration: duration),
+            StageKeyframes.make("opacity", poses.map { Float($0[keyPath: opacity]) }, duration: duration),
         ]
         group.duration = duration
         ring.add(group, forKey: "flight")

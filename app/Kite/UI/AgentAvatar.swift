@@ -129,7 +129,7 @@ struct DockFace: View {
     @Environment(\.self) private var environment
     @Environment(\.dockFaceScale) private var faceScale
 
-    static let ringWidth: CGFloat = 1.5
+    static let ringWidth: CGFloat = 1
 
     var body: some View {
         switch look {
