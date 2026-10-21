@@ -1083,11 +1083,10 @@ export class Kite {
       ...(item.value !== undefined ? { value: item.value } : {}) }));
     const allowAll = this.configuration.approvalMode(threadId).effective === 'allow_all';
     // 用户给的项不让代理悄悄换掉
-    const direct = request.map((item, index) => item.value !== undefined && (allowAll
-      || ('file' in item && (!secrets[index]!.exists || contents.get(item.file)!.agentKeys.includes(item.key)))));
-    const saved = direct.some(Boolean) ? await this.saveSecrets(project.id, secrets.filter((_, index) => direct[index]),
-      { values: request.flatMap((item, index) => direct[index] ? [item.value!] : []), scope: 'project' }, true) : '';
-    const rest = secrets.filter((_, index) => !direct[index]);
+    const direct = (item: SecretWaitingItem) => item.value !== undefined && (allowAll
+      || (item.file !== undefined && (!item.exists || contents.get(item.file)!.agentKeys.includes(item.key!))));
+    const now = secrets.filter(direct), rest = secrets.filter((item) => !direct(item));
+    const saved = now.length ? await this.saveSecrets(project.id, now, { values: now.map((item) => item.value!), scope: 'project' }, true) : '';
     if (!rest.length) return saved;
     const ask = this.asks.add(threadId, { kind: 'secret', secrets: rest });
     return `${saved ? `${saved}\n另外` : ''}已向用户要 ${rest.length} 项密钥，请求 ID 是 ${ask.id}。`;

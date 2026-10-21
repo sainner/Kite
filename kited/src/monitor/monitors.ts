@@ -18,8 +18,6 @@ import type { PluginInstance } from '../model.ts';
 import { MONITOR_BURST_LIMIT, MONITOR_DAILY_WAKES } from '../operations/contract.ts';
 import type { Store } from '../store.ts';
 
-export { MONITOR_DAILY_WAKES };
-
 export const monitorDefinitionId = 'kite.monitor';
 
 export const monitorEventsContextDefinition: ContextDefinition = {

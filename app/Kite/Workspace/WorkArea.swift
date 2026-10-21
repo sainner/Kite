@@ -39,7 +39,7 @@ final class WorkArea: Identifiable {
     private(set) var closingWindows: Set<String> = []
     /// 本机换了视图、工作机还没确认的窗口：窗口 ID 到视图和那次请求，当场按它显示；请求有了结果就去掉，以工作机的列表为准（见 AppModel.sendWindowRequest）。
     @ObservationIgnored private var switchingViews: [String: (view: String, request: String)] = [:]
-    /// 本机归档、工作机还没归档的实例：当场按已归档排，它的窗口一起收掉；归档不成再放回来（见 AppModel.archiveInstance）。
+    /// 本机归档、工作机还没归档的实例：当场按已归档排，它的窗口一起收掉；归档不成再放回来（见 AppModel.archiveInstances）。
     private(set) var archivingInstances: Set<String> = []
     /// 在路上的关窗口请求。之后打开窗口的请求等它们回来再发：工作机先收到打开的话，会把还没关的那个窗口交回来。
     @ObservationIgnored var closeRequests: [String: Task<Void, Never>] = [:]

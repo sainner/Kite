@@ -316,7 +316,6 @@ final class PhoneStageView: UIView, StageDotsReporting {
         }
         let retiring = Set(retained.filter { !layout.panes.contains($0) }.compactMap { paneInstances[$0] })
         if geometry.retiring != retiring { geometry.retiring = retiring }
-        if windowlessGeometry.retiring != retiring { windowlessGeometry.retiring = retiring }
 
         arrangeGaps(plan.tiles.gaps, blocked: layout.isFixed ? nil : layout.blocksInput)
         placeholder.show(plan.tiles.placeholder, kind: layout.motionKind, reduceMotion: look?.reduceMotion ?? false)

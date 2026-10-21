@@ -206,8 +206,32 @@ extension EmblemDesign {
 extension AgentAvatar {
     /// 不动的一帧头像（实例的起始时刻），对话里代理来信、子代理回报那一行用，原生视图直接放进图层：
     /// 卡片底色的圆、点阵、一圈本色描边，同停靠栏的 DockFace。design 为 nil 时用默认图案；diameter 是点，scale 是屏幕倍数。
+    /// 画过的一样的（图案、姿态、大小、颜色都一样）不重画：工具步骤流式输出时每来一段都重新 show，各步的头像跟着重取。
     static func still(design: EmblemDesign?, instance: String, diameter: CGFloat, scale: CGFloat, environment: EnvironmentValues) -> CGImage? {
-        let accent = DotColor(Color.accentColor.resolve(in: environment))
+        let key = StillKey(design: design, instance: instance, diameter: diameter, scale: scale, accent: Color.accentColor.resolve(in: environment),
+                           card: Theme.card.resolve(in: environment), rest: Theme.dotRest.resolve(in: environment))
+        if let image = stills[key] { return image }
+        guard let image = drawStill(key, environment: environment) else { return nil }
+        if stills.count >= 256 { stills.removeAll() }
+        stills[key] = image
+        return image
+    }
+
+    private struct StillKey: Hashable {
+        var design: EmblemDesign?
+        var instance: String
+        var diameter: CGFloat
+        var scale: CGFloat
+        var accent: Color.Resolved
+        var card: Color.Resolved
+        var rest: Color.Resolved
+    }
+
+    private static var stills: [StillKey: CGImage] = [:]
+
+    private static func drawStill(_ key: StillKey, environment: EnvironmentValues) -> CGImage? {
+        let (design, instance, diameter, scale) = (key.design, key.instance, key.diameter, key.scale)
+        let accent = DotColor(key.accent)
         let pixels = Int((diameter * scale).rounded(.up))
         guard pixels > 0, let pattern = (design ?? .fallback).avatarPattern(accent: accent) ?? EmblemDesign.fallback.avatarPattern(accent: accent),
               let space = CGColorSpace(name: CGColorSpace.sRGB),
@@ -220,12 +244,12 @@ extension AgentAvatar {
         let ring: CGFloat = 1
         context.addEllipse(in: bounds)
         context.clip()
-        context.setFillColor(Theme.card.resolve(in: environment).cgColor)
+        context.setFillColor(key.card.cgColor)
         context.fill(bounds)
         // 点阵往里留一个描边宽，同 DockFace 的 padding
         context.saveGState()
         context.translateBy(x: ring, y: ring)
-        let rest = DotColor(Theme.dotRest.resolve(in: environment))
+        let rest = DotColor(key.rest)
         let inner = CGSize(width: diameter - ring * 2, height: diameter - ring * 2)
         for cell in cells(pattern, rest: rest, at: seed(instance), size: inner) {
             let color = cell.color

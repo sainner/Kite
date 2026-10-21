@@ -14,6 +14,8 @@ enum TranscriptSpeech {
 
     /// 代理来信：正文前面读的说明。
     static func agent(_ sender: Sender, queued: Bool = false) -> String { "\(sender.name) 发来的消息" + (queued ? "，排队中" : "") }
+    /// 消息气泡：有发信方的读成它发来的，否则是我发的。
+    static func bubble(sender: Sender?, queued: Bool) -> String { sender.map { agent($0, queued: queued) } ?? message(queued: queued) }
     /// Kite 的通知：读那一句。
     static func notice(_ notice: Notice) -> String { "Kite 通知，" + notice.title }
     static func noticeHint(expanded: Bool) -> String { expanded ? "收起正文" : "展开正文" }
@@ -74,7 +76,7 @@ enum TranscriptSpeech {
     static func summary(_ row: TranscriptRow) -> String {
         switch row.content {
         case .message(let message, let queued, let sender):
-            return (sender.map { agent($0, queued: queued) } ?? self.message(queued: queued)) + "，" + message.typed
+            return bubble(sender: sender, queued: queued) + "，" + message.typed
         case .item(let item):
             switch item.kind {
             case .human(let message): return self.message(queued: false) + "，" + message.typed

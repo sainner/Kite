@@ -360,18 +360,18 @@ private struct CJKDelimiters {
     }
 
     /// 解析出的正文删掉占位字。占位字只插在标记和标点之间，自成一个字。
+    /// 先在普通字符串里数出各占位字是第几个标量，再在正文里一段段跳过去：逐字走 AttributedString 慢约十倍
+    /// （2026-10-21 实测，约 12KB 的中文回复要 1 ms 多，流式输出时每来一段都整段重解析）。
     static func strip(_ document: AttributedString) -> AttributedString {
-        let placeholder = Character(Self.placeholder)
+        let scalars = document.unicodeScalars
         var result = AttributedString()
-        var start = document.startIndex
-        var index = document.startIndex
-        while index < document.endIndex {
-            let next = document.characters.index(after: index)
-            if document.characters[index] == placeholder {
-                result.append(document[start..<index])
-                start = next
-            }
-            index = next
+        var start = scalars.startIndex
+        var startOffset = 0
+        for (offset, scalar) in String(document.characters).unicodeScalars.enumerated() where scalar == placeholder {
+            let at = scalars.index(start, offsetBy: offset - startOffset)
+            result.append(document[start..<at])
+            start = scalars.index(after: at)
+            startOffset = offset + 1
         }
         result.append(document[start...])
         return result

@@ -314,10 +314,7 @@ final class CardView: NSView {
         if flightCut {
             flightCut = false
             // 台面挪过、终点没换（见 shift）：这一段剩下的从这一刻接着交给 Core Animation
-            if !motion.tracking, let flight = motion.flight {
-                let now = Date.now, remaining = flight.start.addingTimeInterval(flight.duration).timeIntervalSince(now)
-                if remaining > 0 { handOff(motion.presentations(from: now, duration: remaining), duration: remaining) }
-            }
+            if !motion.tracking, let rest = motion.remaining(from: .now) { handOff(rest.poses, duration: rest.duration) }
         }
         motionChanged()
         if !flying { applyPresentation(at: .now) }
@@ -388,13 +385,11 @@ final class CardView: NSView {
         placeHeaderControls()
         placeContent(target: placed.target, contentSize: placed.contentSize)
         let motion = placed.motion
-        guard flying, let flight = motion.flight else { return }
-        let now = Date.now, remaining = flight.start.addingTimeInterval(flight.duration).timeIntervalSince(now)
-        guard remaining > 0 else { return }
+        guard flying, let rest = motion.remaining(from: .now) else { return }
         container?.layoutSubtreeIfNeeded()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        animateContent(motion.presentations(from: now, duration: remaining), duration: remaining)
+        animateContent(rest.poses, duration: rest.duration)
         CATransaction.commit()
     }
 

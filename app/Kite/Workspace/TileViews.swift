@@ -100,7 +100,7 @@ struct DockDivider: View {
     }
 }
 
-/// 画在卡片上面的一层：最小化窗口的脉冲、悬停标签，展开时点空白处收起。
+/// 画在卡片上面的一层：最小化窗口的脉冲，展开时点空白处收起。悬停标签由台面算好往上报（见 StageView.hoverTips）。
 struct DockOverlay: View {
     let geometry: DockGeometry
     let bounds: CGRect
@@ -108,7 +108,6 @@ struct DockOverlay: View {
     var lifted: Set<String> = []
     @Environment(WindowLayout.self) private var workspace
     @Environment(WorkArea.self) private var area
-    @Environment(AppModel.self) private var model
 
     var body: some View {
         let expanded = !area.dockExpansion.isEmpty
@@ -137,12 +136,6 @@ struct DockOverlay: View {
         }
         // 原生台面拖侧栏改宽时 bounds 左边让出一段（见 StageView.stageRect），格子按台面坐标摆，这一层从台面原点铺到右下角
         .frame(width: bounds.maxX, height: bounds.maxY, alignment: .topLeading)
-        .dockHoverSource(hoverTips)
-    }
-
-    private var hoverTips: [DockHoverTip] {
-        guard workspace.drag == nil, workspace.resizing == nil else { return [] }
-        return area.dockHoverTips(in: geometry, numbered: model.shortcutHint == .dock)
     }
 
     @ViewBuilder
@@ -193,11 +186,9 @@ struct DockUnfold: View {
         ZStack(alignment: .topLeading) {
             if shown, let cell = geometry.allCells.first(where: { $0.entry.id == id }) {
                 let mini = geometry.minis.contains { $0.entry.id == id }
-                DockOpenness(openness: openness) {
-                    DockUnfolding(entry: cell.entry, cell: cell.frame, regions: regions, expanded: expanded,
-                                  drawsParent: expanded || lifted || drawsParent(cell.entry),
-                                  hoverFrame: geometry.hoverFrame(of: cell.entry, cell: cell.frame, mini: mini), showPane: showPane)
-                }
+                DockUnfolding(entry: cell.entry, cell: cell.frame, regions: regions, expanded: expanded, openness: openness,
+                              drawsParent: expanded || lifted || drawsParent(cell.entry),
+                              hoverFrame: geometry.hoverFrame(of: cell.entry, cell: cell.frame, mini: mini), showPane: showPane)
                 .transition(.scale(0.6, placedIn: cell.frame).combined(with: .opacity))
             }
         }
@@ -234,38 +225,29 @@ struct DockUnfold: View {
     }
 }
 
-/// 逐帧把展开进度交给里面。
-private struct DockOpenness<Content: View>: View, Animatable {
+/// 能展开的一格这一刻画在哪：面板（见 DockGeometry.panel）不随进度变，家族格在里面从格子挪到面板上。
+/// 面板始终套着滚动区，排不下时才能滚：排得下、排不下是同一个家族格的两种状态，里面再展开一层、子代理多了越过上限时不换视图。
+/// 滚动区只借它的手势、惯性和滚动范围，同紧凑布局的底栏：里面是一条和排开一样长的空轨道，家族格钉在可视区里，
+/// 按滚了多远自己堆叠（见 DockGroup.viewport）。家族格若跟着滚动内容走，收起时还带着滚过的那一段，落到格子上面。
+private struct DockUnfolding: View, Animatable {
+    let entry: DockEntry
+    let cell: CGRect
+    let regions: WindowRegions
+    let expanded: Bool
+    /// 展开到哪，逐帧走。
     var openness: CGFloat
-    @ViewBuilder let content: Content
+    let drawsParent: Bool
+    let hoverFrame: CGRect
+    var showPane: (Pane) -> Void
+    @Environment(WorkArea.self) private var area
+    @State private var position = ScrollPosition(edge: .top)
+    /// 从开头滚了多远。
+    @State private var offset: CGFloat = 0
 
     var animatableData: CGFloat {
         get { openness }
         set { openness = newValue }
     }
-
-    var body: some View {
-        content.environment(\.dockPanelOpenness, openness)
-    }
-}
-
-/// 能展开的一格这一刻画在哪：面板（见 DockGeometry.panel）不随进度变，家族格在里面从格子挪到面板上。
-/// 面板始终套着滚动区，排不下时才能滚：排得下、排不下是同一个家族格的两种状态，里面再展开一层、子代理多了越过上限时不换视图。
-/// 滚动区只借它的手势、惯性和滚动范围，同紧凑布局的底栏：里面是一条和排开一样长的空轨道，家族格钉在可视区里，
-/// 按滚了多远自己堆叠（见 DockGroup.viewport）。家族格若跟着滚动内容走，收起时还带着滚过的那一段，落到格子上面。
-private struct DockUnfolding: View {
-    let entry: DockEntry
-    let cell: CGRect
-    let regions: WindowRegions
-    let expanded: Bool
-    let drawsParent: Bool
-    let hoverFrame: CGRect
-    var showPane: (Pane) -> Void
-    @Environment(WorkArea.self) private var area
-    @Environment(\.dockPanelOpenness) private var openness
-    @State private var position = ScrollPosition(edge: .top)
-    /// 从开头滚了多远。
-    @State private var offset: CGFloat = 0
 
     var body: some View {
         let panel = DockGeometry.panel(entry, from: cell, path: area.dockExpansion.dropFirst(), regions: regions)

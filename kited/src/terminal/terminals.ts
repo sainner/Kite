@@ -27,7 +27,7 @@ import { commandEnvironment } from '../execution/sandbox.ts';
 import { assembleContext, bindContext, sceneValues } from '../harness/context/assembler.ts';
 import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
 import type { InputNotice } from '../harness/types.ts';
-import type { PluginInstance } from '../model.ts';
+import { numberedTitle, type PluginInstance } from '../model.ts';
 import type { Store } from '../store.ts';
 import { systemCommand } from '../system-command.ts';
 import { terminalState, type TerminalState } from './state.ts';
@@ -336,11 +336,9 @@ export class Terminals {
       return '但工作区已不在这台工作机上打开，命令已停下。';
     }
     // 名字只用来在停靠栏和窗口上认出是哪个，同用户开的「终端 N」编号；不用 shell 的 description，它常写成申请出沙箱的理由，太长
-    const titles = new Set(this.host.store.instances(owner.workspaceId).map((instance) => instance.title));
-    let number = 1;
-    while (titles.has(`进程 ${number}`)) number++;
+    const title = numberedTitle('进程', this.host.store.instances(owner.workspaceId).map((instance) => instance.title));
     const instance: PluginInstance = { id: randomUUID(), workspaceId: owner.workspaceId, definitionId: terminalDefinitionId,
-      title: `进程 ${number}`, config: { terminal: { command: info.command, log: command.log } },
+      title, config: { terminal: { command: info.command, log: command.log } },
       state: { terminal: { phase: 'running' } }, presentation: 'background', status: 'open', createdAt: Date.now(),
       origin: { instanceId: ownerId, operationId: `${info.turnId ?? ''}:${info.callId ?? randomUUID()}`,
         ...(info.turnId ? { turnId: info.turnId } : {}), ...(info.callId ? { callId: info.callId } : {}) } };

@@ -4,7 +4,7 @@ import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { KiteError } from './errors.ts';
 import type { Kite } from './kite.ts';
-import type { OpenWindowRequest, PluginInstance, Thread, WorkspaceWindow } from './model.ts';
+import { numberedTitle, type OpenWindowRequest, type PluginInstance, type Thread, type WorkspaceWindow } from './model.ts';
 import { roleOperationGrants } from './operations/contract.ts';
 import { defaultRoleId, roleAgent, toolLimits, type RoleChoice } from './roles.ts';
 import { instanceAgent } from './agents/definition.ts';
@@ -68,13 +68,11 @@ export class InstanceLifecycle {
         const definition = this.kite.catalog.get(content.definitionId);
         if (definition.id === monitorDefinitionId) throw new KiteError('monitor 由代理用 monitor_start 开启，或随 Line 创建');
         if (content.command !== undefined && definition.id !== terminalDefinitionId) throw new KiteError('只有终端能带命令新建');
-        const titles = new Set(model.instances.filter((p) => p.definitionId === definition.id).map((p) => p.title));
-        let number = 1;
-        while (titles.has(`${definition.title} ${number}`)) number++;
         if (content.instanceId && (this.kite.store.instance(content.instanceId) || this.kite.store.hasInstanceWindows(content.instanceId))) {
           throw new KiteError('实例 ID 已使用', 409);
         }
-        created = { ...this.newInstance(workspaceId, definition.id, content.title ?? (definition.agent ? '新代理' : `${definition.title} ${number}`)),
+        created = { ...this.newInstance(workspaceId, definition.id, content.title ?? (definition.agent ? '新代理'
+          : numberedTitle(definition.title, model.instances.filter((p) => p.definitionId === definition.id).map((p) => p.title)))),
           ...(content.instanceId ? { id: content.instanceId } : {}) };
         if (definition.agent) thread = { instanceId: created.id, runtime: instanceAgent(created).runtime, nativeId: randomUUID() };
         window = this.newWindow(created, request.id);

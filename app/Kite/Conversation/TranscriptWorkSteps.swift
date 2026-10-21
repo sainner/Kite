@@ -205,7 +205,7 @@ final class CallRowView: NSView {
         var shown: CGFloat = 1
         var height = max(bounds.height - headerHeight - Self.inset, 0)
         if toggling {
-            shown = full > 0 ? min(max((bounds.height - headerHeight) / full, 0), 1) : 0
+            shown = WorkLayout.progress(rowHeight: bounds.height, collapsed: headerHeight, extra: full, expanded: expanded)
             height = detailHeight
             if abs(bounds.height - (expanded ? headerHeight + full : headerHeight)) < 0.01 { toggling = false }
         }
@@ -741,13 +741,12 @@ final class ToolDetailCardView: NSView {
         keyWidth = Self.keyMaxWidth
         for (row, field) in zip(rows, fields) {
             row.name = field.key
-            row.folding.expanded = expandedKeys.contains(field.key)
             row.key.showPlain(field.key, font: font, color: .secondaryLabelColor)
             row.coordinator.openURL = environment.openURL
             row.value.showLinked(field.value.detailText, scope: environment.referenceScope, font: font)
             row.value.setAccessibilityLabel(field.key)
             row.fold.style(color: .secondaryLabelColor, font: secondary)
-            row.fold.expanded = row.folding.expanded
+            row.fold.expanded = expandedKeys.contains(field.key)
         }
         background.fillColor = Theme.codeBackground.resolve(in: environment).cgColor
         needsLayout = true
@@ -760,9 +759,8 @@ final class ToolDetailCardView: NSView {
     func height(width: CGFloat) -> CGFloat {
         let valueWidth = max(width - Self.padding * 2 - keyWidth - Self.columnSpacing, 0)
         heights = rows.map { row in
-            row.folding.full = row.value.measurePixel(lineWidth: valueWidth)
-            row.folding.foldHeight = foldHeight
-            return max(row.key.measurePixel(lineWidth: keyWidth), row.folding.height(button: row.fold.height))
+            row.full = row.value.measurePixel(lineWidth: valueWidth)
+            return max(row.key.measurePixel(lineWidth: keyWidth), folding(row).height(button: row.fold.height))
         }
         return measuredHeight
     }
@@ -782,17 +780,18 @@ final class ToolDetailCardView: NSView {
         for (index, row) in rows.enumerated() {
             var rowHeight = index < heights.count ? heights[index] : 0
             let button = row.fold.height
-            var cell = row.folding.height(button: button)
+            let fold = folding(row)
+            var cell = fold.height(button: button)
             if index == moving {
                 rowHeight = max(rowHeight + height - total, 0)
                 cell = rowHeight
             }
             row.key.frame = CGRect(x: Self.padding, y: y, width: keyWidth, height: rowHeight)
-            let foldable = row.folding.foldable
-            let shown = row.folding.shown(height: cell, button: button)
+            let foldable = fold.foldable
+            let shown = fold.shown(height: cell, button: button)
             // 折着时值只给到露出来的底边，底下折起来的不排、不画（同气泡）
             row.clip.frame = CGRect(x: valueX, y: y, width: max(bounds.width - valueX, 0), height: foldable ? shown.height : rowHeight)
-            row.value.frame = CGRect(x: 0, y: 0, width: valueWidth, height: foldable ? min(row.folding.full, shown.height) : rowHeight)
+            row.value.frame = CGRect(x: 0, y: 0, width: valueWidth, height: foldable ? min(row.full, shown.height) : rowHeight)
             row.clip.layer?.masksToBounds = foldable
             if foldable {
                 if row.clip.layer?.mask !== row.fade { row.clip.layer?.mask = row.fade }
@@ -809,12 +808,17 @@ final class ToolDetailCardView: NSView {
         CATransaction.commit()
     }
 
+    /// 这一行的值怎么折：展开没有只记在 expandedKeys 里。
+    private func folding(_ row: ToolDetailRow) -> DetailFold {
+        DetailFold(full: row.full, foldHeight: foldHeight, expanded: expandedKeys.contains(row.name))
+    }
+
     /// 展开、收起一个值：这一步的详情和下面的行一起按工具步骤的走法动。
     private func toggle(_ row: ToolDetailRow) {
         guard let index = rows.firstIndex(where: { $0 === row }) else { return }
-        row.folding.expanded.toggle()
-        if row.folding.expanded { expandedKeys.insert(row.name) } else { expandedKeys.remove(row.name) }
-        row.fold.expanded = row.folding.expanded
+        let expanded = !expandedKeys.contains(row.name)
+        if expanded { expandedKeys.insert(row.name) } else { expandedKeys.remove(row.name) }
+        row.fold.expanded = expanded
         moving = index
         changed?(WorkLayout.motion)
     }
@@ -830,7 +834,8 @@ private final class ToolDetailRow {
     let fold = FoldButton()
     /// 这一行的键。
     var name = ""
-    var folding = DetailFold()
+    /// 值全排出来多高。
+    var full: CGFloat = 0
 
     init() {
         // 键由值带着读（值的说明就是键），读屏不单独读键

@@ -27,7 +27,7 @@ struct TranscriptRow: Identifiable {
     /// 一串记录排成的行，排队中的消息接在最后。
     static func rows(items: [Item], pending: [Queued]) -> [TranscriptRow] {
         var rows: [TranscriptRow] = []
-        func append(_ id: RowID, _ content: Content, startsTurn: Bool) {
+        func append(_ id: RowID, _ content: Content, startsTurn: Bool = false) {
             let humanTurn = startsTurn && content.isMessage
             guard let last = rows.last else {
                 rows.append(TranscriptRow(id: id, content: content, gap: 0, startsHumanTurn: humanTurn))
@@ -39,9 +39,9 @@ struct TranscriptRow: Identifiable {
         }
         for item in items {
             switch item.kind {
-            case .human(let message): append(.message(message.id), .message(message, queued: false), startsTurn: item.startsTurn)
-            case .agent(let letter, let sender): append(.message(letter.id), .message(letter, queued: false, sender: sender), startsTurn: false)
-            default: append(.item(item.id), .item(item), startsTurn: item.startsTurn)
+            case .human(let message): append(.message(message.id), .message(message, queued: false), startsTurn: !message.midTurn)
+            case .agent(let letter, let sender): append(.message(letter.id), .message(letter, queued: false, sender: sender))
+            default: append(.item(item.id), .item(item))
             }
         }
         for queued in pending {
@@ -108,14 +108,5 @@ private extension Message {
         hasher.combine(text.utf8.count)
         hasher.combine(command)
         hasher.combine(attachments.count)
-    }
-}
-
-private extension Item {
-    var startsTurn: Bool {
-        switch kind {
-        case .human(let message): !message.midTurn
-        default: false
-        }
     }
 }

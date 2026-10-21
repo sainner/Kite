@@ -116,8 +116,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         interaction.showActions = { if context.actionable { context.select(id) } }
         interaction.dismissActions = { context.select(nil) }
         interaction.secondaryClick = context.actionable ? { context.toggleActions(id) } : nil
-        container.text.accessibilityLabel = notice != nil ? TranscriptSpeech.noticeBody
-            : sender.map { TranscriptSpeech.agent($0, queued: queued) } ?? TranscriptSpeech.message(queued: queued)
+        container.text.accessibilityLabel = notice != nil ? TranscriptSpeech.noticeBody : TranscriptSpeech.bubble(sender: sender, queued: queued)
         container.text.accessibilityCustomActions = context.actionable
             ? [UIAccessibilityCustomAction(name: TranscriptSpeech.actions) { _ in context.select(id); return true }] : nil
     }
@@ -265,7 +264,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
             let full = topHeight + bubbleHeight(expanded: expanded)
             var turn: CGFloat = opened ? 1 : 0
             if toggling {
-                turn = full > header ? min(max((frame.height - header) / (full - header), 0), 1) : turn
+                turn = WorkLayout.progress(rowHeight: frame.height, collapsed: header, extra: full - header, expanded: opened)
                 size.height = full
                 if let measured, abs(frame.height - measured.height) < 0.01 { toggling = false }
             }

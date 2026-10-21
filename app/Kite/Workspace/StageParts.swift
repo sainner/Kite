@@ -54,9 +54,7 @@ struct WindowlessFlight {
         self.start = start
         let fraction = (time - start) / WindowMotionKind.settle.duration
         guard fraction < 1 else { return nil }
-        let p = CGFloat(WindowMotionKind.curve.value(at: fraction))
-        func mix(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * p }
-        return CGRect(x: mix(from.minX, to.minX), y: mix(from.minY, to.minY), width: mix(from.width, to.width), height: mix(from.height, to.height))
+        return WindowPose(frame: from).interpolated(to: WindowPose(frame: to), progress: WindowMotionKind.curve.value(at: fraction)).frame
     }
 }
 

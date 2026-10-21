@@ -97,7 +97,17 @@ struct BubbleLayout {
 
     /// 比折起来的高（foldHeight，iOS 随动态字体变）高出不少（1.4 倍）才折：只高出一点的不折，省得展开只多看两行。
     func foldable(foldHeight: CGFloat) -> Bool {
-        contentHeight > foldHeight * 1.4
+        Self.foldable(contentHeight, foldHeight: foldHeight)
+    }
+
+    /// 全文 height 高的一段折不折，气泡和工具详情里的值（DetailFold）同一条规则，见 foldable(foldHeight:)。
+    static func foldable(_ height: CGFloat, foldHeight: CGFloat) -> Bool {
+        height > foldHeight * 1.4
+    }
+
+    /// 全文 full 高、露出 shown 高时底下的渐隐：从哪起（0～1，露出那截的比例），到底边淡掉多少（0 不淡，1 全透）。
+    static func fade(shown: CGFloat, full: CGFloat) -> (start: CGFloat, faded: CGFloat) {
+        (max(0, 1 - Metrics.messageFoldFade / max(shown, 1)), min(max((full - shown) / Metrics.messageFoldFade, 0), 1))
     }
 
     /// 按内容列的宽量正文。有代码段时占满气泡能给的宽度，只有字时贴着字，同 SelectableText。贴字的宽照 SelectableText 用 boundingRect 量：
@@ -181,11 +191,11 @@ struct BubbleLayout {
         let bubble = CGRect(x: leading ? 0 : size.width - bubbleWidth, y: top, width: bubbleWidth, height: max(size.height - top, 0))
         let shown = max(bubble.height - button, 0)
         let textHeight = min(contentHeight - padding.height * 2, shown - padding.height)
+        let fade = Self.fade(shown: shown, full: contentHeight)
         return Frames(bubble: bubble, shown: shown,
                       text: CGRect(x: padding.width, y: padding.height, width: textWidth, height: max(textHeight, 0)),
                       fold: CGRect(x: 0, y: shown, width: bubble.width, height: button),
-                      fadeStart: max(0, 1 - Metrics.messageFoldFade / max(shown, 1)),
-                      faded: min(max((contentHeight - shown) / Metrics.messageFoldFade, 0), 1))
+                      fadeStart: fade.start, faded: fade.faded)
     }
 
     /// 气泡内容在行里占的范围（上面那一截连同气泡），操作栏和它靠着的那边对齐。
@@ -277,8 +287,12 @@ enum WorkLayout {
 
     /// 动画中行的高在收起和展开之间，按它算走到哪了：0 收起，1 展开。箭头转多少、步骤多透明都跟着它。
     static func progress(rowHeight: CGFloat, header: CGFloat, steps: CGFloat, expanded: Bool) -> CGFloat {
-        let full = spacing + steps
-        return full > 0 ? min(max((rowHeight - header) / full, 0), 1) : (expanded ? 1 : 0)
+        progress(rowHeight: rowHeight, collapsed: header, extra: spacing + steps, expanded: expanded)
+    }
+
+    /// 同上，点开时多出一截的行通用（工具的一步、Kite 的通知）：收起时 collapsed 高，展开多出 extra；多出的为 0 时按 expanded。
+    static func progress(rowHeight: CGFloat, collapsed: CGFloat, extra: CGFloat, expanded: Bool) -> CGFloat {
+        extra > 0 ? min(max((rowHeight - collapsed) / extra, 0), 1) : (expanded ? 1 : 0)
     }
 }
 
@@ -299,7 +313,7 @@ struct DetailFold {
     /// 按钮上下的边距：触屏上大一点，好点。
     static var buttonPadding: CGFloat { InputMode.current.isTouch ? 6 : 4 }
 
-    var foldable: Bool { full > foldHeight * 1.4 }
+    var foldable: Bool { BubbleLayout.foldable(full, foldHeight: foldHeight) }
 
     /// 停着时这一格多高：露出来的字，能折时加上按钮。
     func height(button: CGFloat) -> CGFloat {
@@ -312,6 +326,7 @@ struct DetailFold {
     func shown(height: CGFloat, button: CGFloat) -> (height: CGFloat, fadeStart: CGFloat, faded: CGFloat) {
         guard foldable else { return (full, 1, 0) }
         let shown = max(height - button, 0)
-        return (shown, max(0, 1 - Metrics.messageFoldFade / max(shown, 1)), min(max((full - shown) / Metrics.messageFoldFade, 0), 1))
+        let fade = BubbleLayout.fade(shown: shown, full: full)
+        return (shown, fade.start, fade.faded)
     }
 }

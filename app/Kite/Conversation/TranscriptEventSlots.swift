@@ -7,9 +7,9 @@ import SwiftUI
 /// 宽是内容的宽，整块可点，指针是手形；读屏读成展开收起的三角。
 final class NoticeHeaderView: NativeButton {
     /// 箭头转了多少：0 朝右，1 朝下。
-    var turn: CGFloat = 0 {
-        // 翻转坐标里正的角度看上去是顺时针（2026-10-20 实测，-90 朝上）
-        didSet { if turn != oldValue { chevron.frameCenterRotation = 90 * turn } }
+    var turn: CGFloat {
+        get { chevron.turn }
+        set { chevron.turn = newValue }
     }
     var expanded = false {
         didSet { if expanded != oldValue { NSAccessibility.post(element: self, notification: .valueChanged) } }
@@ -17,7 +17,7 @@ final class NoticeHeaderView: NativeButton {
     private let icon = NSImageView()
     private let badge = CALayer()
     private let title = LineLabel()
-    private let chevron = NSImageView()
+    private let chevron = TurningChevron()
     /// 图标那个圆的直径。
     private var diameter: CGFloat = 0
     private var shown: (mark: Notice.Mark, environment: EnvironmentValues)?
@@ -105,10 +105,7 @@ final class NoticeHeaderView: NativeButton {
         let imageSize = chevron.image?.size ?? .zero
         let titleWidth = min(title.textWidth, max(bounds.width - textX - 8 - imageSize.width, 0))
         title.frame = CGRect(x: textX, y: (bounds.height - line) / 2, width: titleWidth, height: line)
-        let rotation = chevron.frameCenterRotation
-        chevron.frameCenterRotation = 0
-        chevron.frame = CGRect(x: textX + titleWidth + 8, y: (bounds.height - imageSize.height) / 2, width: imageSize.width, height: imageSize.height)
-        chevron.frameCenterRotation = rotation
+        chevron.place(CGRect(x: textX + titleWidth + 8, y: (bounds.height - imageSize.height) / 2, width: imageSize.width, height: imageSize.height))
     }
 
     override func drawFocusRingMask() { bounds.fill() }

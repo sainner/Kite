@@ -158,28 +158,4 @@ final class PhoneTextLine: UIView {
                     options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
     }
 }
-
-/// 长按一段字弹出拷贝、共享，同 SwiftUI Text 的 textSelection(.enabled)：Kite 通知展开的正文用。
-@MainActor final class PhoneCopyMenu: NSObject, UIContextMenuInteractionDelegate {
-    var text: () -> String = { "" }
-
-    func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
-                                configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
-        let text = text()
-        guard !text.isEmpty else { return nil }
-        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
-            UIMenu(children: [
-                UIAction(title: "拷贝", image: UIImage(systemName: "doc.on.doc")) { _ in UIPasteboard.general.string = text },
-                UIAction(title: "共享…", image: UIImage(systemName: "square.and.arrow.up")) { [weak interaction] _ in
-                    guard let view = interaction?.view else { return }
-                    var responder: UIResponder? = view
-                    while let current = responder, !(current is UIViewController) { responder = current.next }
-                    let share = UIActivityViewController(activityItems: [text], applicationActivities: nil)
-                    share.popoverPresentationController?.sourceView = view
-                    (responder as? UIViewController)?.present(share, animated: true)
-                },
-            ])
-        }
-    }
-}
 #endif

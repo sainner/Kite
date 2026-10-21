@@ -237,16 +237,20 @@ extension WorkArea {
         return model
     }
 
-    /// 代理开出、还开着的各层子代理，归档时一起归档，和工作机的规则一样（见 kited 的 Kite.subagents）；不是代理的没有。
-    func subagents(of instance: RemotePluginInstance) -> [RemotePluginInstance] {
+    /// 代理开出、还开着的直接子代理；不是代理的没有。
+    private func childAgents(of instance: RemotePluginInstance) -> [RemotePluginInstance] {
         guard isAgent(instance) else { return [] }
-        return instances.filter { $0.status == .open && $0.origin?.instanceId == instance.id && isAgent($0) }.flatMap { [$0] + subagents(of: $0) }
+        return instances.filter { $0.status == .open && $0.origin?.instanceId == instance.id && isAgent($0) }
+    }
+
+    /// 代理开出、还开着的各层子代理，归档时一起归档，和工作机的规则一样（见 kited 的 Kite.subagents）。
+    func subagents(of instance: RemotePluginInstance) -> [RemotePluginInstance] {
+        childAgents(of: instance).flatMap { [$0] + subagents(of: $0) }
     }
 
     /// 「归档空闲的子代理」要归档的：整棵都空闲的子代理，归档时连同它的各层子代理；有一个不空闲就留下它，往下一层找。
     func idleSubagents(of instance: RemotePluginInstance) -> [RemotePluginInstance] {
-        guard isAgent(instance) else { return [] }
-        return instances.filter { $0.status == .open && $0.origin?.instanceId == instance.id && isAgent($0) }.flatMap { child in
+        childAgents(of: instance).flatMap { child in
             ([child] + subagents(of: child)).allSatisfy { isIdle($0.id) } ? [child] : idleSubagents(of: child)
         }
     }

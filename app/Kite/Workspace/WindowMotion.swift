@@ -96,6 +96,13 @@ final class WindowMotion {
         return (0...steps).map { presentation(at: start.addingTimeInterval(duration * Double($0) / Double(steps))) }
     }
 
+    /// 正在走的这一段从 date 起剩下的：取样的各帧（见 presentations）和剩下多久；没在走或已经走完时为 nil。
+    func remaining(from date: Date) -> (poses: [WindowPose], duration: TimeInterval)? {
+        guard let flight else { return nil }
+        let duration = flight.start.addingTimeInterval(flight.duration).timeIntervalSince(date)
+        return duration > 0 ? (presentations(from: date, duration: duration), duration) : nil
+    }
+
     /// 所在的台面在窗口里挪了：起点、终点一起反着平移，窗口里看着不动，走着的这一段照常走完。
     func shift(by offset: CGVector) {
         guard offset != .zero else { return }

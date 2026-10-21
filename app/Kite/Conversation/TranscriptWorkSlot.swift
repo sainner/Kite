@@ -95,18 +95,35 @@ final class WorkRowSlot: TranscriptRowSlot {
     }
 }
 
+/// 会转的展开箭头：工具组的汇总行、Kite 通知上面那一行用。
+final class TurningChevron: NSImageView {
+    /// 转了多少：0 朝右，1 朝下。
+    var turn: CGFloat = 0 {
+        // 翻转坐标里正的角度看上去是顺时针（2026-10-20 实测，-90 朝上）
+        didSet { if turn != oldValue { frameCenterRotation = 90 * turn } }
+    }
+
+    /// 按没转时的样子摆：转着时直接改 frame 会按转过以后的外框算，先转回去，摆好再转回来。
+    func place(_ frame: CGRect) {
+        let rotation = frameCenterRotation
+        frameCenterRotation = 0
+        self.frame = frame
+        frameCenterRotation = rotation
+    }
+}
+
 /// 工具组的汇总行：一行次要色小字，汇总、没跑完步数，箭头；整行可点，指针是手形。
 final class WorkHeaderView: NativeButton {
     /// 箭头转了多少：0 朝右，1 朝下。
-    var turn: CGFloat = 0 {
-        // 翻转坐标里正的角度看上去是顺时针（2026-10-20 实测，-90 朝上）
-        didSet { if turn != oldValue { chevron.frameCenterRotation = 90 * turn } }
+    var turn: CGFloat {
+        get { chevron.turn }
+        set { chevron.turn = newValue }
     }
     /// 汇总（见 Work.headline），扫掠只画在它上面。
     private let activity = ToolActivityView()
     private let summary = LineLabel()
     private let unfinished = LineLabel()
-    private let chevron = NSImageView()
+    private let chevron = TurningChevron()
     private var font = NSFont.systemFont(ofSize: 11)
 
     override var isFlipped: Bool { true }
@@ -171,10 +188,7 @@ final class WorkHeaderView: NativeButton {
             unfinished.frame = CGRect(x: x, y: 0, width: unfinished.textWidth, height: bounds.height)
             x += unfinishedWidth
         }
-        let rotation = chevron.frameCenterRotation
-        chevron.frameCenterRotation = 0
-        chevron.frame = CGRect(x: x, y: (bounds.height - imageSize.height) / 2, width: imageSize.width, height: imageSize.height)
-        chevron.frameCenterRotation = rotation
+        chevron.place(CGRect(x: x, y: (bounds.height - imageSize.height) / 2, width: imageSize.width, height: imageSize.height))
     }
 
     override func drawFocusRingMask() { bounds.fill() }

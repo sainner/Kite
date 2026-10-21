@@ -115,7 +115,7 @@ nonisolated struct ContextTemplate: Decodable, Identifiable, Sendable {
 }
 
 /// 角色点阵签名的设计：一行表达式、正负两种颜色（字母见 DotFigure.letters）和点的形状。
-nonisolated struct EmblemDesign: Codable, Equatable, Sendable {
+nonisolated struct EmblemDesign: Codable, Hashable, Sendable {
     var expression: String
     /// 停靠栏头像的算式：同一意象画在 9×9 格的圆形小画布上，见 AgentAvatar。
     var avatar: String

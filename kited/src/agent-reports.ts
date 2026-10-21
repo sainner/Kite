@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { assembleContext, bindContext, sceneValues } from './harness/context/assembler.ts';
 import type { ContextDefinition, ContextValues } from './harness/context/types.ts';
 import type { Input, InputNotice, Outcome, ThreadNotification } from './harness/types.ts';
-import { MONITOR_DAILY_WAKES } from './monitor/monitors.ts';
+import { MONITOR_DAILY_WAKES } from './operations/contract.ts';
 
 export const agentReportContextDefinition: ContextDefinition = {
   version: 2, id: 'kite.agent-report', title: '子代理回报', scene: 'agent.report',

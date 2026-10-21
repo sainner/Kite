@@ -328,10 +328,7 @@ final class PhoneCardView: UIView {
         if flightCut {
             flightCut = false
             // 台面挪过、终点没换（见 shift）：这一段剩下的从这一刻接着交给 Core Animation
-            if !motion.tracking, let flight = motion.flight {
-                let now = Date.now, remaining = flight.start.addingTimeInterval(flight.duration).timeIntervalSince(now)
-                if remaining > 0 { handOff(motion.presentations(from: now, duration: remaining), duration: remaining) }
-            }
+            if !motion.tracking, let rest = motion.remaining(from: .now) { handOff(rest.poses, duration: rest.duration) }
         }
         motionChanged()
         if !flying { applyPresentation(at: .now) }
@@ -399,14 +396,13 @@ final class PhoneCardView: UIView {
         placePendingContent()
         placeContent(target: placed.target, contentSize: placed.contentSize)
         let motion = placed.motion
-        guard flying, let flight = motion.flight else { return }
+        guard flying, motion.flight != nil else { return }
         // 先排好再取时刻：iPad 上整段对话按新宽重排要几十毫秒，按排之前的时刻接着交，正文会比外框落后这么一截
         container?.layoutIfNeeded()
-        let now = Date.now, remaining = flight.start.addingTimeInterval(flight.duration).timeIntervalSince(now)
-        guard remaining > 0 else { return }
+        guard let rest = motion.remaining(from: .now) else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        animateContent(motion.presentations(from: now, duration: remaining), duration: remaining)
+        animateContent(rest.poses, duration: rest.duration)
         CATransaction.commit()
     }
 

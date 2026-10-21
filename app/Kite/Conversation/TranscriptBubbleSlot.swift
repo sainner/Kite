@@ -93,8 +93,7 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
         let toggle: (() -> Void)? = context.actionable ? { context.toggleActions(id) } : nil
         container.text.secondaryClick = toggle
         container.bubble.secondaryClick = toggle
-        container.text.setAccessibilityLabel(notice != nil ? TranscriptSpeech.noticeBody
-                                             : sender.map { TranscriptSpeech.agent($0, queued: queued) } ?? TranscriptSpeech.message(queued: queued))
+        container.text.setAccessibilityLabel(notice != nil ? TranscriptSpeech.noticeBody : TranscriptSpeech.bubble(sender: sender, queued: queued))
         container.text.setAccessibilityCustomActions(toggle.map { toggle in
             [NSAccessibilityCustomAction(name: TranscriptSpeech.actions) { toggle(); return true }]
         })
@@ -163,7 +162,7 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
             let full = topHeight + bubbleHeight(expanded: expanded)
             var turn: CGFloat = opened ? 1 : 0
             if toggling {
-                turn = full > header ? min(max((frame.height - header) / (full - header), 0), 1) : turn
+                turn = WorkLayout.progress(rowHeight: frame.height, collapsed: header, extra: full - header, expanded: opened)
                 size.height = full
                 if let measured, abs(frame.height - measured.height) < 0.01 { toggling = false }
             }

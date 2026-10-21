@@ -168,7 +168,7 @@ final class PhoneCallRow: UIView {
         var progress: CGFloat = 1
         var shown = max(height - headerHeight - 10, 0)
         if toggling {
-            progress = full > 0 ? min(max((height - headerHeight) / full, 0), 1) : 0
+            progress = WorkLayout.progress(rowHeight: height, collapsed: headerHeight, extra: full, expanded: expanded)
             shown = detailHeight
             if abs(height - (expanded ? headerHeight + full : headerHeight)) < 0.01 { toggling = false }
         }
@@ -555,11 +555,10 @@ final class PhoneDetailCard: UIView {
         for (index, field) in fields.enumerated() {
             let row = rows[index]
             row.name = field.key
-            row.folding.expanded = expandedKeys.contains(field.key)
             row.key.set(field.key, font: font, color: .secondaryLabel)
             row.value.show(field.value.detailText, font: font, context: context)
             row.fold.style(color: .secondaryLabel)
-            row.fold.expanded = row.folding.expanded
+            row.fold.expanded = expandedKeys.contains(field.key)
         }
         background.fillColor = Theme.codeBackground.resolve(in: environment).cgColor
         setNeedsLayout()
@@ -574,9 +573,8 @@ final class PhoneDetailCard: UIView {
         keyWidth = min(rows.map(\.key.naturalWidth).max() ?? 0, 96)
         let valueWidth = max(inner - keyWidth - 12, 0)
         rowHeights = rows.map { row in
-            row.folding.full = row.value.height(width: valueWidth)
-            row.folding.foldHeight = foldHeight
-            return max(row.key.height(width: keyWidth), row.folding.height(button: row.fold.height))
+            row.full = row.value.height(width: valueWidth)
+            return max(row.key.height(width: keyWidth), folding(row).height(button: row.fold.height))
         }
         return measuredHeight
     }
@@ -595,14 +593,15 @@ final class PhoneDetailCard: UIView {
         for (index, row) in rows.enumerated() where index < rowHeights.count {
             var rowHeight = rowHeights[index]
             let button = row.fold.height
-            var cell = row.folding.height(button: button)
+            let fold = folding(row)
+            var cell = fold.height(button: button)
             if index == moving {
                 rowHeight = max(rowHeight + bounds.height - total, 0)
                 cell = rowHeight
             }
             row.key.frame = CGRect(x: 10, y: y, width: keyWidth, height: row.key.height(width: keyWidth))
-            let foldable = row.folding.foldable
-            let shown = row.folding.shown(height: cell, button: button)
+            let foldable = fold.foldable
+            let shown = fold.shown(height: cell, button: button)
             let textHeight = row.value.height(width: valueWidth)
             // 文本视图按整段的高摆，由截住的那层截（同气泡），折着时底下的字不排、不画；截住的那层得盖住文本视图，触摸才落得进去
             row.clip.frame = CGRect(x: valueX, y: y, width: max(bounds.width - valueX, 0), height: foldable ? shown.height : textHeight)
@@ -628,12 +627,17 @@ final class PhoneDetailCard: UIView {
         CATransaction.commit()
     }
 
+    /// 这一行的值怎么折：展开没有只记在 expandedKeys 里。
+    private func folding(_ row: PhoneDetailRow) -> DetailFold {
+        DetailFold(full: row.full, foldHeight: foldHeight, expanded: expandedKeys.contains(row.name))
+    }
+
     /// 展开、收起一个值：这一步的详情和下面的行一起按工具步骤的走法动。
     private func toggle(_ row: PhoneDetailRow) {
         guard let index = rows.firstIndex(where: { $0 === row }) else { return }
-        row.folding.expanded.toggle()
-        if row.folding.expanded { expandedKeys.insert(row.name) } else { expandedKeys.remove(row.name) }
-        row.fold.expanded = row.folding.expanded
+        let expanded = !expandedKeys.contains(row.name)
+        if expanded { expandedKeys.insert(row.name) } else { expandedKeys.remove(row.name) }
+        row.fold.expanded = expanded
         moving = index
         setNeedsLayout()
         changed?(WorkLayout.motion)
@@ -649,7 +653,8 @@ private final class PhoneDetailRow {
     let fold = PhoneFoldButton()
     /// 这一行的键。
     var name = ""
-    var folding = DetailFold()
+    /// 值全排出来多高。
+    var full: CGFloat = 0
 
     init() {
         key.lines = 0

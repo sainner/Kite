@@ -310,10 +310,10 @@ struct ArchiveInstanceConfirmation: ViewModifier {
             } message: { Text(error ?? "") }
     }
 
-    /// 归档当场生效（见 AppModel.archiveInstance），这里只报发不出去的原因；工作机归档不成报在工作区一层。
+    /// 归档当场生效（见 AppModel.archiveInstances），这里只报发不出去的原因；工作机归档不成报在工作区一层。
     private func archive(_ target: RemotePluginInstance) {
         do {
-            try model.archiveInstance(target, in: area)
+            try model.archiveInstances([target], in: area)
             toast?.show("已归档")
             archived()
         } catch { self.error = error.localizedDescription }
@@ -334,18 +334,19 @@ struct ArchiveIdleSubagentsConfirmation: ViewModifier {
                 Button("归档", role: .destructive) { archive(target) }
                 Button("取消", role: .cancel) {}
             } message: { target in
-                Text("归档「\(target.title)」开出的 \(count(of: target)) 个空闲的子代理，关闭它们的窗口，会话和数据保留在工作机上；还在运行或等你回应的留着。目前还不能在界面里查看或恢复已归档的实例。")
+                Text("归档「\(target.title)」开出的 \(count(of: area.idleSubagents(of: target))) 个空闲的子代理，关闭它们的窗口，会话和数据保留在工作机上；还在运行或等你回应的留着。目前还不能在界面里查看或恢复已归档的实例。")
             }
     }
 
     /// 连同各层子代理一共归档几个。
-    private func count(of target: RemotePluginInstance) -> Int {
-        area.idleSubagents(of: target).reduce(0) { $0 + 1 + area.subagents(of: $1).count }
+    private func count(of roots: [RemotePluginInstance]) -> Int {
+        roots.reduce(0) { $0 + 1 + area.subagents(of: $1).count }
     }
 
     private func archive(_ target: RemotePluginInstance) {
-        let count = count(of: target), roots = area.idleSubagents(of: target)
+        let roots = area.idleSubagents(of: target)
         guard !roots.isEmpty else { return }
+        let count = count(of: roots)
         do {
             try model.archiveInstances(roots, in: area)
             toast?.show("已归档 \(count) 个子代理")

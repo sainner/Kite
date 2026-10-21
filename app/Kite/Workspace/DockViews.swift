@@ -599,8 +599,6 @@ extension EnvironmentValues {
     @Entry var dockAxis: Axis = .vertical
     /// 紧凑布局的底栏里正显示的窗口，它的头像换成向上的箭头。
     @Entry var dockCurrentPane: Pane?
-    /// 宽屏能展开的那一格这一刻展开到哪，见 DockUnfold。
-    @Entry var dockPanelOpenness: CGFloat = 1
     /// 头像画出来比排版的大小缩了多少：家族格收着时头像整个缩成格子里的大小，描边、箭头、模糊按画出来的大小算，见 DockFace。
     @Entry var dockFaceScale: CGFloat = 1
     /// 宽屏台面上开着窗口的实例：家族格里的子代理画向左的箭头，见 DockModel.onStage。

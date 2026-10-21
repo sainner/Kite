@@ -91,6 +91,14 @@ export interface PluginInstance {
 /** 管理和执行时联表得到的只读投影，不额外持久化共有字段。 */
 export interface AgentInstance extends PluginInstance, Thread {}
 
+/** 「名字 N」里还没用过的最小编号：用户新开的「终端 N」、代理转到后台的「进程 N」都这么起名。 */
+export function numberedTitle(name: string, titles: Iterable<string>): string {
+  const used = new Set(titles);
+  let number = 1;
+  while (used.has(`${name} ${number}`)) number++;
+  return `${name} ${number}`;
+}
+
 export interface WindowTarget {
   instanceId: string;
   viewId: string;
