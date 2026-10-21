@@ -13,7 +13,7 @@ import { importClaude, syncToClaude } from '../../src/handoff/handoff.ts';
 import type { ContextItem, JournalEvent, JournalRecord } from '../../src/harness/types.ts';
 import type { ThreadContext } from '../../src/model.ts';
 import type { DisplayEnvelope, History } from '../../src/transcript/protocol.ts';
-import { api, call, claudeModel, type Kited, openAgent, folderWorkspace, startKited } from '../harness.ts';
+import { api, call, claudeModel, type Kited, machine, openAgent, folderWorkspace, startKited } from '../harness.ts';
 import { ManualModel, Seen } from '../harness-loop.ts';
 import { newDir, useTemp } from '../util.ts';
 import { writeClaudeHistory } from '../claude-history.ts';
@@ -42,7 +42,7 @@ const receipt = (id: string, at: number, delivered = false): ClaudeControl['inpu
 });
 
 // 真实回归：重启后 submitted 曾被当成完成而丢失；并发读取原生历史后，恢复和撤回仍须更新同一视图。
-test('Claude 恢复按原生记录确认已纳入输入，未知输入可撤回且停止重试跨重开退回原草稿', async () => {
+test('Claude 恢复按原生记录确认已纳入输入，未知输入可撤回且停止重试跨重开退回原草稿；Line 停止带来的未知通知和来信一律退回，迟到的同 ID 发送只去重', async () => {
   const { k, id, thread, directory } = await emptyThread();
   const at = Date.now();
   const accepted = receipt('native-accepted', at);
@@ -107,6 +107,26 @@ test('Claude 恢复按原生记录确认已纳入输入，未知输入可撤回�
   expect(afterStop.state.recovery).toBeUndefined();
   await reopened.stop(); reopened = startDaemon({ home: k.home, port: 0, lightTasks: false });
   expect(await call(reopened.url, 'POST', `/threads/${id}/interrupt`, retry)).toEqual(stopped);
+
+  // 真实回归：停止方（这里是带 X-Kite-Source 的 Line）带来的输入里有工作机还没收到、又不是它自己发的（Kite 的通知、别的代理的来信），
+  // 曾按来源留在被停线程的队列里，继续时交给了模型。工作机没收到的一律登记并退回（同自研后端），迟到的同 ID 发送只去重。
+  const notice = { id: 'unknown-notice', text: '整理文档 做完了', source: 'kite' as const };
+  const letter = { id: 'unknown-letter', text: '别的代理的来信', source: 'agent' as const,
+    from: { kind: 'agent' as const, instance: 'peer', title: '统筹' } };
+  const byLine = await fetch(`${reopened.url}/threads/${id}/interrupt`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json', 'X-Kite-Machine': (await machine(reopened.url)).id,
+      'X-Kite-Source': JSON.stringify({ kind: 'line', machine: 'line-machine', instance: 'line-instance' }),
+    },
+    body: JSON.stringify({ id: 'stop-by-line', inputs: [notice, letter] }),
+  });
+  expect(byLine.status).toBe(200);
+  expect(await byLine.json()).toEqual({ returned: [notice, letter] });
+  expect(await reopened.kite.send(id, letter.text, letter.id, { source: 'agent', from: letter.from })).toEqual({ id: letter.id });
+  const afterLineStop = (await call(reopened.url, 'GET', `/threads/${id}/history`)).body as History;
+  expect(afterLineStop.pending).toEqual([]);
+  expect(afterLineStop.state.waitingForResume).toBe(false);
   expect(api.log).toHaveLength(requestCount);
 }, 1000);
 

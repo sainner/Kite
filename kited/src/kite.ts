@@ -873,7 +873,7 @@ export class Kite {
    * 只给打开的工作区，读不了时没有。
    */
   private rootNames(w: Workspace): string[] | undefined {
-    if (w.status !== 'open') return undefined;
+    if (w.status !== 'open') { this.sentRootNames.delete(w.id); return undefined; }
     let names: string[];
     try { names = readdirSync(w.cwd).sort(); }
     catch { return undefined; }
@@ -1980,20 +1980,30 @@ export class Kite {
       this.changed(instance.workspaceId);
     });
   }
-  /** 代理连同同一工作区里它开出的各层子代理一起归档；父代理先归档，子代理停下时不再回报给它。 */
+  /**
+   * 代理连同同一工作区里它开出的各层子代理一起归档；父代理先归档，子代理停下时不再回报给它。
+   * 停下的执行退不回去：父代理归档不成就都不动；某个子代理归档不成，其余的照样归档，最后报第一个原因。
+   */
   private archiveThread(id: string): Promise<void> {
     const t = this.context(id);
     this.preparations.get(t.workspaceId)?.abort();
     return this.control(t.workspaceId, async () => {
-      for (const member of [id, ...this.subagents(t.workspaceId, id)]) {
+      const archive = async (member: string) => {
         const current = this.context(member);
-        if (current.status === 'archived') continue;
+        if (current.status === 'archived') return;
         await this.stopThread(current);
         await this.terminals.stopOwned(member, '启动它的代理已归档');
         this.asks.clear(member);
         this.store.archiveInstance(member);
         this.threadChanged({ ...current, status: 'archived' });
+      };
+      await archive(id);
+      let failure: unknown;
+      for (const member of this.subagents(t.workspaceId, id)) {
+        try { await archive(member); }
+        catch (error) { failure ??= error; }
       }
+      if (failure) throw failure;
     });
   }
   /** 同一工作区里由这个代理开出、还开着的各层子代理；中间一层已归档的，它下面的不算。 */

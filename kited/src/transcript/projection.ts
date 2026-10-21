@@ -131,7 +131,8 @@ export class TranscriptProjection {
       ...(context ? { context } : {}),
       // 恢复阻塞时，App 的发送、继续和换后端连带确认恢复，所以空闲后照常可用；交接未知的输入随发送或继续重发。
       capabilities: { send: interactive && this.phase !== 'stopping' && (!this.recovery || !this.busy),
-        interrupt: interactive && (this.busy || this.pending.size > 0) && this.phase !== 'stopping',
+        // 停下后留在队列里、等继续的不算要停的：再停一次什么也不做
+        interrupt: interactive && (this.busy || (this.pending.size > 0 && !this.waitingForResume)) && this.phase !== 'stopping',
         resume: interactive && !this.busy && (!!this.recovery || this.waitingForResume), cancel: interactive,
         switchRuntime: open && !this.busy && this.phase === 'idle' && this.pending.size === 0
           && !this.claudeProjection.hasUnconfirmedInput,
@@ -207,10 +208,13 @@ export class TranscriptProjection {
   private journalRow(row: JournalRecord): void {
     const put = (id: string, block: DisplayBlock) => this.put({ id, at: row.at, block });
     switch (row.type) {
-      case 'input.received':
+      case 'input.received': {
+        // 停下后留在队列里的不会自己开回合，这时来的是新一轮的头一条
+        const midTurn = this.busy || (this.pending.size > 0 && !this.waitingForResume);
         if (!this.recovery) this.waitingForResume = false;
-        this.pending.set(row.input.id, { ...row.input, midTurn: this.busy || this.pending.size > 0 }); this.emitPending();
+        this.pending.set(row.input.id, { ...row.input, midTurn }); this.emitPending();
         this.emit({ type: 'thread.state', state: this.state() }); break;
+      }
       case 'input.cancelled': this.pending.delete(row.inputId); this.emitPending(); break;
       case 'thread.stopped':
         for (const input of row.returned) this.pending.delete(input.id);
@@ -231,10 +235,11 @@ export class TranscriptProjection {
         if (window !== undefined) this.requestWindows.set(row.requestId, window);
         const midTurn = this.requests.has(row.turnId);
         this.requests.add(row.turnId);
-        row.inputIds.forEach((id, index) => {
+        row.inputIds.forEach((id) => {
           const input = this.pending.get(id);
           if (!input) return;
-          put(`input:${id}`, inputBlock(input, midTurn || index > 0));
+          // 是不是插话沿用收到时算的（见 input.received）：停下后留着的排在前面，开这一轮的是后来发的那条
+          put(`input:${id}`, inputBlock(input, midTurn || input.midTurn));
           this.pending.delete(id);
         });
         this.emitPending();

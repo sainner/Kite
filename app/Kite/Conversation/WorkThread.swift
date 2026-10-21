@@ -277,7 +277,8 @@ final class WorkThread: Identifiable {
         if let startsTurn = PerfProbe.hold(message, in: self) { return startsTurn }
         #endif
         guard canSend else { return false }
-        let startsTurn = !transcript.running && transcript.pending.isEmpty
+        // 停下后留在队列里的不会自己开回合，同 kited 的投影
+        let startsTurn = !transcript.running && (transcript.pending.isEmpty || state?.waitingForResume == true)
         var queued = message
         queued.midTurn = !startsTurn
         outbox.append(queued)

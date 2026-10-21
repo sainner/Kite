@@ -256,8 +256,9 @@ extension WorkArea {
     }
 
     /// 空闲：回合已结束（完成、停止、失败都算），没在等人回应，也没在等确认继续。
+    /// 工作机还没给出活动摘要的（刚开出、或工作机重启后没载入过）不知道在做什么，不算，免得归档掉在跑或等继续的。
     func isIdle(_ id: String) -> Bool {
-        guard let activity = activities[id] else { return true }
+        guard let activity = activities[id] else { return false }
         return activity.phase == "idle" && activity.waiting == nil && !activity.waitingForResume
     }
 

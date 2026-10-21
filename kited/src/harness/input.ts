@@ -27,11 +27,12 @@ export const inputSchema: z.ZodType<Input> = z.discriminatedUnion('source', [
 export const senderName = (from: InputSender) => from.kind === 'line' ? 'Line' : from.title;
 
 /**
- * 停止时退回的：人发的退给发起客户端、回到输入框；发起停止的代理或 Line 自己发来的退给它，免得它停下的线程带着它过时的话一直等继续。
- * Kite 自动发的通知和别人的来信留在队列里，随下一条输入或继续交给模型。
+ * 停止时退回的：退给发起停止的一方。用户自己停下时退人发的，回到输入框；代理或 Line 停下时退它自己发来的，
+ * 免得它停下的线程带着它过时的话一直等继续。别人的话（代理或 Line 停下时用户发的、别的代理的来信）和 Kite 自动发的通知
+ * 留在队列里，用户看得到，随下一条输入或继续交给模型。
  */
 export const returnedOnStop = (input: Input, by?: StopRequest['by']) => {
-  if (input.source === 'human') return true;
+  if (input.source === 'human') return !by;
   if (input.source !== 'agent' || !by) return false;
   const from = input.from;
   return from.kind === 'agent' ? by.kind === 'agent' && by.instance === from.instance

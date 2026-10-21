@@ -6,7 +6,10 @@ import { workspaceVariables } from './context-variables.ts';
 import type { LightTasks } from './light-tasks.ts';
 import type { Machine, Project, Workspace } from './model.ts';
 import { clip } from './pull-requests.ts';
-import { git, revParse } from './workspace/git.ts';
+import { git, gitHead, revParse } from './workspace/git.ts';
+
+/** 交给辅助模型的 diff 最多多少字。 */
+const DIFF_CHARS = 24_000;
 
 export const commitMessageTemplate: ContextDefinition = {
   version: 2, id: 'kite.commit-message.draft', title: '提交说明', scene: 'workspace.commit',
@@ -44,13 +47,13 @@ export async function draftCommit(options: { tasks?: LightTasks; templates: Cont
   try {
     if (await revParse(worktree, 'MERGE_HEAD')) return fallback;
     await git(worktree, ['add', '-A']);
-    // 改动统计在前、空一行后是 diff 正文，一次算出；暂存后什么都没有就是没有改动。
-    const [recent, staged] = await Promise.all([git(worktree, ['log', '-10', '--no-merges', '--format=- %s', 'HEAD']),
-      git(worktree, ['diff', '--cached', '--stat=120', '--patch', '--no-ext-diff', '--no-color'])]);
-    if (!staged) return fallback;
-    const split = staged.indexOf('\n\ndiff --git ');
-    const files = clip(split < 0 ? staged : staged.slice(0, split));
-    const diff = clip(split < 0 ? '' : staged.slice(split + 2), 24_000);
+    // 暂存后统计为空就是没有改动。diff 正文只读起草用得到的开头一截：锁文件、生成的资源这类大改动不整份读进内存
+    const [recent, stat, patch] = await Promise.all([git(worktree, ['log', '-10', '--no-merges', '--format=- %s', 'HEAD']),
+      git(worktree, ['diff', '--cached', '--stat=120']),
+      gitHead(worktree, ['diff', '--cached', '--patch', '--no-ext-diff', '--no-color'], DIFF_CHARS * 4)]);
+    if (!stat) return fallback;
+    const files = clip(stat);
+    const diff = clip(patch.trim(), DIFF_CHARS);
     const template = options.templates.get(commitMessageTemplate.id, 'workspace.commit');
     const { instructions, input } = assembleContext(bindContext(template.definition, {
       ...workspaceVariables(options.model),

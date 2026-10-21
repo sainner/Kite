@@ -9,6 +9,7 @@ import type { Json, ModelItem, ModelRequest, ToolResult } from '../../src/harnes
 import type { OperationGrant } from '../../src/operations/contract.ts';
 import { OperationReceipts } from '../../src/operations/receipts.ts';
 import { Store } from '../../src/store.ts';
+import type { PendingInput } from '../../src/transcript/protocol.ts';
 import { after, call, folderWorkspace, mark, startKited, waitIdle, type Kited } from '../harness.ts';
 import { deferred, diskRecords, item, ManualModel } from '../harness-loop.ts';
 import { makeTemp, newDir } from '../util.ts';
@@ -481,8 +482,12 @@ const failedOutcome = (result: ToolResult | undefined) => {
  * 几个部分的配合：协作范围是授权的目标，经 operation-grants 把 agent.stop 等几项的目标改成同工作区后，下一回合的 agent_stop 才能对准非后代；
  * 超出后代范围的停止在操作入口里经 Waits.approve 挂在调用方线程上，线程状态里出现这项审批，
  * 用户经 POST /threads/:id/waiting/:id 回应后工具调用才失败或继续，对方的回合随之照跑或真的被停下。
+ * 停下时对方队里还有用户排着的话：agent_stop 带着停止方（by 是 A）经操作、主循环的停止收据到显示投影，
+ * 退回只看停止方，留在队里的输入决定显示的能停、等继续和下一条是不是插话，要整条跑起来才知道配合得对不对。
+ * 真实出过的 bug：代理用 agent_stop 停下别的线程，用户排在那个线程队里的话被退进了停止方的工具结果，待发送里没了、也不回输入框；
+ * 停下后队里留着输入时停止按钮一直在、再停什么也不做；用户再发一条被标成插话（midTurn），因为队里有留下的消息。
  */
-test('同工作区范围的代理停非后代的代理要逐次等用户批准：拒绝时工具失败且对方照跑，批准后对方停下；仅后代范围下直接拒绝、不问', async () => {
+test('同工作区范围的代理停非后代的代理要逐次等用户批准：拒绝时工具失败且对方照跑，批准后对方停下；仅后代范围下直接拒绝、不问；停下时用户排在对方队里的话不退给停止方，留在队里等继续、不能再停，用户再发一条开新一轮、不算插话', async () => {
   const models = threadModels();
   kited = startKited(models.factory);
   const kk = kited;
@@ -544,15 +549,39 @@ test('同工作区范围的代理停非后代的代理要逐次等用户批准�
   expect(await waitingOf()).toBeUndefined();
   expect(running.signal.aborted).toBe(false);
 
-  // 再调一次，批准这一次后 B 停下。
+  // 再调一次，批准这一次后 B 停下。停之前用户给 B 排了一条话。
+  expect((await kk.call('POST', `/threads/${bId}/messages`, { id: 'user-queued', text: '用户排着的话' })).status).toBe(200);
   const second = await approval(await stopB(denied, 'stop-approved'));
   expect(second.id).not.toBe(first.id);
   expect(running.signal.aborted).toBe(false);
+  const stopping = mark(kk);
   expect(await respond(second.id, 'once')).toEqual({ status: 200, body: { ok: true } });
   const approved = await a.call(5);
   expect(resultOf(approved.request, 'stop-approved')?.status).toBe('success');
   expect(running.signal.aborted).toBe(true);
+  // A 停 B 只退 A 自己发去的，用户的话不进 A 的工具结果，留在 B 的待发送里；B 等继续，停止按钮没了。
+  expect(JSON.parse(resultOf(approved.request, 'stop-approved')!.output)).toEqual({ returned: [] });
+  await kk.waitEvent((event) => after(kk, stopping)(event) && event.type === 'harness' && event.threadId === bId
+    && event.event.type === 'state' && event.event.state.waitingForResume);
+  const stoppedB = (await kk.call('GET', `/threads/${bId}/history`)).body;
+  expect(stoppedB.pending).toEqual([expect.objectContaining({ id: 'user-queued', text: '用户排着的话', source: 'human' })]);
+  expect(stoppedB.state).toMatchObject({ busy: false, waitingForResume: true, capabilities: { interrupt: false } });
   since = mark(kk);
   approved.response.complete();
   await waitIdle(kk, aId, since);
+
+  // 用户再发一条：留下的那条先交给模型，新的这条开新一轮，待发送和记录里都不算插话。
+  const pendingSeen: PendingInput[] = [];
+  const unsubscribe = kk.daemon.kite.events.subscribe((event) => 'threadId' in event && event.threadId === bId,
+    (event) => { if (event.type === 'thread.pending') pendingSeen.push(...event.pending); });
+  since = mark(kk);
+  expect((await kk.call('POST', `/threads/${bId}/messages`, { id: 'user-again', text: '用户再发一条' })).status).toBe(200);
+  const resumedB = await models.of(bId).call(2);
+  unsubscribe();
+  expect(inputsOf(resumedB.request).map((input) => input.id).slice(-2)).toEqual(['user-queued', 'user-again']);
+  expect([...new Set(pendingSeen.filter((input) => input.id === 'user-again').map((input) => input.midTurn))]).toEqual([false]);
+  resumedB.response.complete();
+  await waitIdle(kk, bId, since);
+  const records = (await kk.call('GET', `/threads/${bId}/history`)).body.records as Array<{ block: { type: string; id?: string; midTurn?: boolean } }>;
+  expect(records.find((record) => record.block.type === 'human' && record.block.id === 'user-again')?.block.midTurn).toBe(false);
 }, 1000);

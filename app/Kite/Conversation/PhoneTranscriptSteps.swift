@@ -215,6 +215,7 @@ final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
     /// 在跑的命令每秒更新运行时间。
     private var timer: Timer?
     private var call: Call?
+    private var environment: EnvironmentValues?
 
     init() {
         super.init(frame: .zero)
@@ -235,21 +236,14 @@ final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
     func show(_ call: Call, expanded: Bool, context: TranscriptRowContext) {
         self.call = call
         let environment = context.environment
+        self.environment = environment
         openURL = environment.openURL
         let font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as UIFont
         let failed = call.state == .failed || call.state == .unknown
         let danger = UIColor(Theme.danger)
-        let scale = window?.screen.scale ?? traitCollection.displayScale
         switch call.use.kind {
-        case .agentStart:
-            // 创建 agent 画要建的那个角色的头像，出错时也不变色
-            icon.image = AgentAvatar.still(creating: call, diameter: Metrics.toolIcon, scale: scale, environment: environment)
-                .map { UIImage(cgImage: $0, scale: scale, orientation: .up) }
-        case .sendMessage:
-            // 告知 agent 画对方的头像，右下角的纸飞机同别的图标变色
-            let badge = (failed ? Theme.danger : Color.secondary).resolve(in: environment).cgColor
-            icon.image = AgentAvatar.still(telling: call, diameter: Metrics.toolIcon, scale: scale, color: badge, environment: environment)
-                .map { UIImage(cgImage: $0, scale: scale, orientation: .up) }
+        case .agentStart, .sendMessage:
+            drawAvatar()
         default:
             icon.image = UIImage(systemName: call.use.kind.icon, withConfiguration: UIImage.SymbolConfiguration(font: font, scale: .small))
             icon.tintColor = failed ? danger : .secondaryLabel
@@ -289,6 +283,31 @@ final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
         accessibilityValue = spoken.value
         accessibilityHint = TranscriptSpeech.callHint(expanded: expanded)
         setNeedsLayout()
+    }
+
+    /// 创建 agent、告知 agent 两步的图标是头像，按屏幕的倍率画成位图；还没放进窗口时倍率可能是 0，放进去再画一次（同 PhoneNoticeHeader）。
+    private func drawAvatar() {
+        guard let call, let environment else { return }
+        let scale = traitCollection.displayScale > 0 ? traitCollection.displayScale : 3
+        let image: CGImage?
+        switch call.use.kind {
+        case .agentStart:
+            // 创建 agent 画要建的那个角色的头像，出错时也不变色
+            image = AgentAvatar.still(creating: call, diameter: Metrics.toolIcon, scale: scale, environment: environment)
+        case .sendMessage:
+            // 告知 agent 画对方的头像，右下角的纸飞机同别的图标变色
+            let failed = call.state == .failed || call.state == .unknown
+            let badge = (failed ? Theme.danger : Color.secondary).resolve(in: environment).cgColor
+            image = AgentAvatar.still(telling: call, diameter: Metrics.toolIcon, scale: scale, color: badge, environment: environment)
+        default:
+            return
+        }
+        icon.image = image.map { UIImage(cgImage: $0, scale: scale, orientation: .up) }
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { drawAvatar() }
     }
 
     /// 命令的运行时间：跑完了按开始到结束，在跑时每秒按现在更新。

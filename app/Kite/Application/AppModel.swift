@@ -710,9 +710,16 @@ final class AppModel {
             instance.status == .open && instance.state?.terminal?.running == true
                 && instance.state?.terminal?.ports?.contains(where: { $0.port == target.port }) == true
         }) else { throw KitedError(message: "localhost:\(target.port) 不是这个工作区里运行中的终端在监听的端口") }
-        // 先记下再选端口：网页视图换到这个端口时直接打开到链接的路径，不先开一次首页
+        // 先记下再选端口：网页视图换到这个端口时直接打开到链接的路径，不先开一次首页；选不成就放回原来的，免得之后选到这个端口时跳到这条链接
+        let previous = area.webLinks[instance.id]
         area.webLinks[instance.id] = WebLink(target: target)
-        if instance.state?.terminal?.webPort != target.port { try await selectTerminalPort(target.port, of: instance.id, in: area) }
+        if instance.state?.terminal?.webPort != target.port {
+            do { try await selectTerminalPort(target.port, of: instance.id, in: area) }
+            catch {
+                area.webLinks[instance.id] = previous
+                throw error
+            }
+        }
         openWindow(.open(.init(instanceId: instance.id, viewId: "web")), in: area)
     }
 

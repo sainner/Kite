@@ -16,6 +16,25 @@ export async function gitTry(cwd: string, args: string[], opts: GitOptions = {})
   return { code, stdout, stderr };
 }
 
+/** 只要标准输出的开头：读满 limit 个字节就停下 git，不把大输出整份读进内存。没读满就失败时抛错。 */
+export async function gitHead(cwd: string, args: string[], limit: number): Promise<string> {
+  const p = Bun.spawn(['git', '-c', 'core.quotePath=false', ...args], { cwd, env: { ...process.env }, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
+  const reader = p.stdout.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (size < limit) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    size += value.byteLength;
+  }
+  const cut = size >= limit;
+  if (cut) { await reader.cancel(); p.kill(); }
+  const [stderr, code] = await Promise.all([new Response(p.stderr).text(), p.exited]);
+  if (!cut && code !== 0) throw new Error(`git ${args.join(' ')} 失败（${code}）：${stderr.trim()}`);
+  return new TextDecoder().decode(Buffer.concat(chunks).subarray(0, limit));
+}
+
 /** 失败抛错；返回去掉首尾空白的标准输出。 */
 export async function git(cwd: string, args: string[], opts: GitOptions = {}): Promise<string> {
   const r = await gitTry(cwd, args, opts);

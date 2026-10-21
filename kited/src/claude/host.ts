@@ -407,10 +407,13 @@ export function openClaudeHost(options: {
         if (known && !sameInput(known, input)) return Promise.reject(new KiteError('消息 ID 已用于其他内容', 409));
         incoming.set(input.id, input);
       }
+      // 还没收到的照登记、一律退回（同 harness），迟到的发送只去重；不按来源留在队列里，否则停止反而把它们送进了被停的线程。
+      const unknown = new Set<string>();
       for (const input of incoming.values()) {
         const known = data.inputs.find((entry) => entry.input.id === input.id);
         if (!known) {
           data.inputs.push({ input, sdkId: randomUUID(), at: Date.now(), status: 'queued', delivered: false, midTurn: false });
+          unknown.add(input.id);
         }
       }
       const receipt = { id: request.id, request: encoded, returned: [] as Input[], completed: false, ...(request.by ? { by: request.by } : {}) };
@@ -424,7 +427,7 @@ export function openClaudeHost(options: {
         const cancelled = new Set(await running?.stop() ?? []);
         for (const entry of data.inputs) if (entry.status === 'queued' || entry.status === 'unconfirmed' || (cancelled.has(entry.sdkId) && !entry.delivered)) {
           // 不退回的留在队列里，Claude 撤下的改回排队，下次重新交接。
-          if (returnedOnStop(entry.input, request.by)) { entry.status = 'cancelled'; receipt.returned.push(entry.input); }
+          if (unknown.has(entry.input.id) || returnedOnStop(entry.input, request.by)) { entry.status = 'cancelled'; receipt.returned.push(entry.input); }
           else if (entry.status !== 'unconfirmed') entry.status = 'queued';
         }
         save();
